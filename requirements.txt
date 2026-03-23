@@ -1,0 +1,28 @@
+# Multi-agent build system
+claude-agent-sdk
+anyio
+
+# Agent runtime dependencies
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-anthropic
+langchain-openai
+
+# Document processing
+openpyxl>=3.1.0
+python-docx>=1.0.0
+
+# Checkpoint store
+langgraph-checkpoint-sqlite
+
+# API server (optional)
+fastapi>=0.110.0
+uvicorn>=0.30.0
+
+# Utilities
+pydantic>=2.0
+python-dotenv
+
+# Testing
+pytest
+pytest-asyncio

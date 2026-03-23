@@ -1,0 +1,36 @@
+# 환경변수
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 체크포인트 DB
+*.db
+checkpoints.db
+
+# 로그
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 캐시
+.cache/
+
+# 가상환경
+venv/
+.venv/
+env/

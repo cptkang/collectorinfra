@@ -1,0 +1,275 @@
+# config/global_synonyms.yaml
+# 글로벌 유사단어 사전 - 인프라 모니터링 도메인
+# 각 항목: 컬럼명(bare name) -> words(유사 표현 목록), description(컬럼 의미)
+#
+# 이 파일은 synonym_loader.py에 의해 Redis synonyms:global에 로드된다.
+# 수정 후 로더를 재실행하면 Redis에 반영된다.
+#
+# 3가지 계층의 유사단어:
+#   1. columns: 컬럼명(bare name) 기준 -- Redis synonyms:global에 직접 저장
+#   2. resource_type_values: 특정 컬럼의 값에 대한 유사 표현 -- 쿼리 생성 시 LLM 프롬프트에 참조 정보로 제공
+#   3. eav_name_values: EAV 패턴의 Attribute 이름에 대한 유사 표현 -- 쿼리 생성 시 LLM 프롬프트에 참조 정보로 제공
+
+version: "1.0"
+domain: "infrastructure_monitoring"
+updated_at: "2026-03-20"
+
+# ===========================================================================
+# 컬럼명 기반 유사단어
+# ===========================================================================
+columns:
+  # ===== 서버 기본 정보 =====
+  HOSTNAME:
+    description: "서버의 호스트명"
+    words:
+      - "호스트명"
+      - "서버명"
+      - "호스트 이름"
+      - "서버 이름"
+      - "host name"
+      - "서버"
+      - "호스트"
+
+  IPADDRESS:
+    description: "서버의 IP 주소"
+    words:
+      - "IP주소"
+      - "IP 주소"
+      - "아이피"
+      - "아이피 주소"
+      - "IP"
+      - "ip address"
+      - "아이피주소"
+
+  LOCATION:
+    description: "서버의 물리적 위치"
+    words:
+      - "위치"
+      - "설치 위치"
+      - "물리 위치"
+      - "장소"
+      - "서버 위치"
+
+  # ===== 리소스 분류 =====
+  RESOURCE_TYPE:
+    description: "리소스의 유형 분류"
+    words:
+      - "리소스 유형"
+      - "리소스 종류"
+      - "자원 유형"
+      - "자원 종류"
+      - "resource type"
+      - "유형"
+      - "종류"
+      - "타입"
+
+  AVAIL_STATUS:
+    description: "리소스의 가용 상태 (0=정상, 1=비정상)"
+    words:
+      - "가용 상태"
+      - "상태"
+      - "사용 가능 상태"
+      - "가용성"
+      - "서버 상태"
+      - "리소스 상태"
+      - "정상 여부"
+
+  DESCRIPTION:
+    description: "리소스에 대한 설명 텍스트"
+    words:
+      - "설명"
+      - "리소스 설명"
+      - "서버 설명"
+      - "상세 설명"
+      - "비고"
+
+  NAME:
+    description: "리소스 또는 설정 항목의 이름"
+    words:
+      - "이름"
+      - "리소스명"
+      - "항목명"
+      - "필드명"
+      - "name"
+
+  # ===== 시간 정보 =====
+  CTIME:
+    description: "리소스 생성 시각 (epoch 밀리초)"
+    words:
+      - "생성 시각"
+      - "생성 시간"
+      - "생성일"
+      - "등록일"
+      - "created time"
+
+  MTIME:
+    description: "리소스 수정 시각 (epoch 밀리초)"
+    words:
+      - "수정 시각"
+      - "수정 시간"
+      - "수정일"
+      - "변경일"
+      - "최종 수정일"
+      - "modified time"
+
+  # ===== 계층 구조 =====
+  PARENT_RESOURCE_ID:
+    description: "부모 리소스의 ID (계층 구조)"
+    words:
+      - "부모 리소스"
+      - "상위 리소스"
+      - "부모 ID"
+      - "상위 ID"
+
+  PLATFORM_RESOURCE_ID:
+    description: "플랫폼(서버) 리소스의 ID"
+    words:
+      - "플랫폼 리소스"
+      - "서버 리소스"
+      - "플랫폼 ID"
+
+  # ===== EAV 패턴 (CORE_CONFIG_PROP) =====
+  CONFIGURATION_ID:
+    description: "설정 그룹 식별자 (EAV의 Entity)"
+    words:
+      - "설정 그룹"
+      - "설정 ID"
+      - "구성 ID"
+      - "configuration"
+
+  STRINGVALUE_SHORT:
+    description: "설정 값 (EAV의 Value, 짧은 텍스트)"
+    words:
+      - "설정 값"
+      - "설정값"
+      - "속성 값"
+      - "속성값"
+      - "value"
+      - "값"
+
+  STRINGVALUE:
+    description: "대용량 설정 값 (CLOB)"
+    words:
+      - "대용량 설정 값"
+      - "CLOB 값"
+      - "긴 설정 값"
+
+  IS_LOB:
+    description: "LOB 사용 여부 (0=SHORT, 1=CLOB)"
+    words:
+      - "LOB 여부"
+      - "대용량 여부"
+      - "CLOB 사용"
+
+  PROPERTYDEFINITION_ID:
+    description: "속성 정의 ID"
+    words:
+      - "속성 정의"
+      - "정의 ID"
+      - "property definition"
+
+  # ===== 식별자/버전 =====
+  UUID:
+    description: "범용 고유 식별자"
+    words:
+      - "UUID"
+      - "고유 식별자"
+      - "유니크 ID"
+
+  VERSION:
+    description: "버전 정보"
+    words:
+      - "버전"
+      - "version"
+      - "소프트웨어 버전"
+
+  # ===== 기타 =====
+  DTYPE:
+    description: "데이터 타입 분류 (리소스 구분 또는 속성 유형)"
+    words:
+      - "데이터 타입"
+      - "구분"
+      - "분류"
+      - "타입"
+
+  RESOURCE_KEY:
+    description: "리소스 고유 키 (UUID 형식)"
+    words:
+      - "리소스 키"
+      - "자원 키"
+      - "고유 키"
+      - "resource key"
+
+# ===========================================================================
+# RESOURCE_TYPE 값에 대한 유사 단어
+# (컬럼명이 아닌 값(value)에 대한 매핑)
+# ===========================================================================
+resource_type_values:
+  "server.Cpu":
+    words: ["CPU", "씨피유", "프로세서", "CPU 코어", "코어"]
+  "server.Cpus":
+    words: ["CPU 컨테이너", "CPU 관리", "전체 CPU"]
+  "server.Memory":
+    words: ["메모리", "물리 메모리", "RAM", "물리적 메모리"]
+  "server.VirtualMemory":
+    words: ["가상 메모리", "가상메모리", "swap", "스왑"]
+  "server.OtherMemory":
+    words: ["기타 메모리", "페이지 메모리", "문맥교환"]
+  "server.FileSystem":
+    words: ["파일시스템", "파일 시스템", "마운트포인트", "디스크 파티션", "파티션"]
+  "server.FileSystems":
+    words: ["파일시스템 컨테이너", "파일시스템 관리", "전체 파일시스템"]
+  "server.Disks":
+    words: ["디스크", "디스크 관리", "전체 디스크"]
+  "server.NetworkInterface":
+    words: ["네트워크 인터페이스", "NIC", "네트워크 카드", "네트워크", "랜카드"]
+  "server.NetworkInterfaces":
+    words: ["네트워크 인터페이스 컨테이너", "네트워크 관리"]
+  "server.Netstat":
+    words: ["네트워크 세션", "네트워크 연결", "세션", "연결 정보"]
+  "server.Process":
+    words: ["프로세스", "프로세스 관제", "실행 프로세스"]
+  "server.ProcessMonitor":
+    words: ["프로세스 모니터", "프로세스 감시", "프로세스 모니터링"]
+  "server.LogMonitor":
+    words: ["로그 모니터", "로그 감시", "로그 모니터링"]
+  "server.Other":
+    words: ["기타 정보", "기타", "IPCS", "OS Table"]
+  "server.Hbas":
+    words: ["HBA 관리", "HBA 컨테이너"]
+  "server.Hba":
+    words: ["HBA", "HBA 어댑터", "호스트 버스 어댑터"]
+  "server.HbaPort":
+    words: ["HBA 포트", "HBA port"]
+  "management.MonitorGroup":
+    words: ["모니터 그룹", "모니터링 그룹", "감시 그룹"]
+
+# ===========================================================================
+# EAV NAME 값에 대한 유사 단어
+# (CORE_CONFIG_PROP.NAME 컬럼의 값에 대한 매핑)
+# ===========================================================================
+eav_name_values:
+  "AgentID":
+    words: ["에이전트 ID", "에이전트 식별자", "agent ID"]
+  "AgentVersion":
+    words: ["에이전트 버전", "agent version", "모니터링 에이전트 버전"]
+  "GMT":
+    words: ["타임존", "시간대", "GMT", "timezone"]
+  "Hostname":
+    words: ["호스트명", "서버명", "hostname"]
+  "IPaddress":
+    words: ["IP주소", "IP 주소", "아이피", "ip address"]
+  "InstallPath":
+    words: ["설치 경로", "에이전트 설치 경로", "install path"]
+  "Model":
+    words: ["서버 모델", "모델명", "하드웨어 모델", "장비 모델"]
+  "OSParameter":
+    words: ["OS 파라미터", "커널 파라미터", "시스템 파라미터", "sysctl"]
+  "OSType":
+    words: ["운영체제", "OS 종류", "운영체제 종류", "OS", "운영체제 타입"]
+  "OSVerson":
+    words: ["OS 버전", "운영체제 버전", "커널 버전", "OS version"]
+  "SerialNumber":
+    words: ["시리얼 번호", "일련번호", "serial number", "S/N"]
+  "Vendor":
+    words: ["제조사", "벤더", "vendor", "서버 제조사", "하드웨어 제조사"]

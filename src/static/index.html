@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>인프라 데이터 조회 에이전트</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>INFRA QUERY AGENT</h1>
+            <nav>
+                <span class="status-badge status-badge--online">ONLINE</span>
+                <a href="/admin/login" class="btn btn-secondary" style="font-size: 0.8125rem; padding: 7px 14px;">Admin</a>
+            </nav>
+        </div>
+    </header>
+
+    <div class="chat-layout">
+        <!-- Main Chat Area -->
+        <div class="chat-main">
+            <!-- Chat Messages Area -->
+            <div class="chat-messages" id="chatMessages">
+                <!-- Welcome screen (shown when no messages) -->
+                <div class="chat-welcome" id="chatWelcome">
+                    <div class="chat-welcome-icon">
+                        <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                    </div>
+                    <h2>Infrastructure Query Agent</h2>
+                    <p>자연어로 인프라 데이터를 조회하세요. 서버 현황, CPU/메모리/디스크 사용률, 네트워크 트래픽 등을 질의할 수 있습니다.</p>
+                    <div class="chat-welcome-hints">
+                        <button class="chat-welcome-hint" data-query="전체 서버의 CPU 사용률 현황을 알려줘">CPU 사용률 현황</button>
+                        <button class="chat-welcome-hint" data-query="메모리 사용률이 80% 이상인 서버 목록">고사용 메모리 서버</button>
+                        <button class="chat-welcome-hint" data-query="디스크 사용량 상위 10개 서버">디스크 사용량 TOP 10</button>
+                        <button class="chat-welcome-hint" data-query="최근 24시간 네트워크 트래픽 추이">네트워크 트래픽 추이</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error alert -->
+            <div class="chat-error" id="chatError">
+                <div class="chat-error-inner" id="chatErrorText"></div>
+            </div>
+
+            <!-- Input Bar (Bottom Fixed) -->
+            <div class="input-bar">
+                <div class="input-bar-inner">
+                    <!-- File preview -->
+                    <div class="input-file-preview" id="filePreview">
+                        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        <span class="input-file-name" id="fileName"></span>
+                        <span class="input-file-size" id="fileSize"></span>
+                        <button class="input-file-remove" id="removeFile">Remove</button>
+                    </div>
+
+                    <!-- Input row -->
+                    <div class="input-row">
+                        <textarea
+                            id="prompt"
+                            placeholder="인프라 데이터에 대해 질문하세요..."
+                            rows="1"
+                        ></textarea>
+                        <div class="input-actions">
+                            <button class="input-btn input-btn--attach" id="attachBtn" title="파일 첨부 (.xlsx, .docx)">
+                                <input type="file" id="fileInput" accept=".xlsx,.docx">
+                                <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                            </button>
+                            <button class="input-btn input-btn--send" id="sendBtn" title="전송 (Ctrl+Enter)">
+                                <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="input-hint">
+                        <span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 전송</span>
+                        <span>.xlsx, .docx 첨부 가능</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Progress Panel -->
+        <div class="progress-panel" id="progressPanel">
+            <div class="progress-panel-header">
+                <h3>처리 현황</h3>
+                <button class="progress-panel-toggle" id="panelToggle" title="패널 접기/펼치기">
+                    <svg viewBox="0 0 24 24" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+            </div>
+            <div class="progress-panel-body" id="progressPanelBody">
+                <div class="progress-empty" id="progressEmpty">
+                    <svg viewBox="0 0 24 24" width="32" height="32"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <p>질의를 실행하면 처리 과정이 여기에 표시됩니다.</p>
+                </div>
+                <!-- Pipeline Steps -->
+                <div class="progress-pipeline" id="progressPipeline"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>운영자 로그인 - 인프라 데이터 조회 에이전트</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="card">
+            <div class="login-logo">
+                <div class="logo-icon">&#9881;</div>
+            </div>
+            <h1>운영자 로그인</h1>
+            <p class="subtitle">인프라 데이터 조회 에이전트 관리</p>
+
+            <div class="alert alert-error" id="alertError"></div>
+
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="username">ADMIN ID</label>
+                    <input type="text" id="username" placeholder="관리자 ID" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="password">PASSWORD</label>
+                    <input type="password" id="password" placeholder="비밀번호" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">로그인</button>
+            </form>
+
+            <a href="/" class="login-back">&#8592; 사용자 화면으로 돌아가기</a>
+        </div>
+    </div>
+
+    <div class="footer">INFRA QUERY AGENT v1.0</div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        // 이미 로그인되어 있으면 대시보드로 이동
+        if (localStorage.getItem("admin_token")) {
+            window.location.href = "/admin";
+        }
+
+        var form = document.getElementById("loginForm");
+        var alertError = document.getElementById("alertError");
+
+        form.addEventListener("submit", async function (e) {
+            e.preventDefault();
+
+            var username = document.getElementById("username").value.trim();
+            var password = document.getElementById("password").value;
+
+            alertError.classList.remove("active");
+
+            try {
+                var response = await fetch("/api/v1/admin/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: username, password: password }),
+                });
+
+                var data = await response.json();
+
+                if (!response.ok) {
+                    alertError.textContent = data.detail || "로그인에 실패했습니다.";
+                    alertError.classList.add("active");
+                    return;
+                }
+
+                // 토큰 저장 후 대시보드로 이동
+                localStorage.setItem("admin_token", data.access_token);
+                window.location.href = "/admin";
+            } catch (err) {
+                alertError.textContent = "서버와의 통신에 실패했습니다.";
+                alertError.classList.add("active");
+            }
+        });
+
+        // Enter키로 로그인
+        document.getElementById("password").addEventListener("keydown", function (e) {
+            if (e.key === "Enter") {
+                form.dispatchEvent(new Event("submit"));
+            }
+        });
+    })();
+    </script>
+</body>
+</html>

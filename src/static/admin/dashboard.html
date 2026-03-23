@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>운영자 대시보드 - 인프라 데이터 조회 에이전트</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>ADMIN DASHBOARD</h1>
+            <nav>
+                <span class="status-badge status-badge--online" id="healthStatus">HEALTHY</span>
+                <a href="/" class="btn btn-secondary" style="font-size: 0.8125rem; padding: 7px 14px; text-decoration: none;">사용자 화면</a>
+                <button class="btn btn-secondary" id="logoutBtn" style="font-size: 0.8125rem; padding: 7px 14px;">로그아웃</button>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <div class="alert alert-error" id="alertError"></div>
+            <div class="alert alert-success" id="alertSuccess"></div>
+
+            <!-- 탭 -->
+            <div class="tabs">
+                <button class="tab active" data-tab="settings">환경변수 설정</button>
+                <button class="tab" data-tab="dbconfig">DB 연결 설정</button>
+            </div>
+
+            <!-- 환경변수 설정 탭 -->
+            <div class="tab-content active" id="tab-settings">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>환경변수 설정</h2>
+                        <button class="btn btn-primary" id="saveSettingsBtn" style="padding: 8px 18px; font-size: 0.8125rem;">저장</button>
+                    </div>
+                    <p style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); margin-bottom: 20px;">
+                        .env 파일의 설정값을 조회하고 수정합니다. 민감한 값은 마스킹 처리됩니다.
+                    </p>
+                    <div id="settingsLoading" class="loading active">
+                        <div class="spinner"></div>
+                        <div class="loading-text">설정을 불러오는 중...</div>
+                    </div>
+                    <table class="settings-table" id="settingsTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th style="width: 35%;">KEY</th>
+                                <th>VALUE</th>
+                            </tr>
+                        </thead>
+                        <tbody id="settingsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- DB 연결 설정 탭 -->
+            <div class="tab-content" id="tab-dbconfig">
+                <div class="card">
+                    <h2>DB 연결 설정</h2>
+                    <p style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); margin-bottom: 20px;">
+                        데이터베이스 연결 정보를 입력하고 저장합니다. 저장 시 .env와 dbhub.toml이 업데이트됩니다.
+                    </p>
+
+                    <form id="dbConfigForm">
+                        <div class="form-group">
+                            <label>DB TYPE</label>
+                            <div class="db-type-selector" id="dbTypeSelector">
+                                <div class="db-type-option selected" data-value="postgresql">PostgreSQL</div>
+                                <div class="db-type-option" data-value="mysql">MySQL</div>
+                                <div class="db-type-option" data-value="mariadb">MariaDB</div>
+                            </div>
+                            <input type="hidden" id="dbType" value="postgresql">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="dbHost">HOST</label>
+                                <input type="text" id="dbHost" placeholder="localhost">
+                            </div>
+                            <div class="form-group">
+                                <label for="dbPort">PORT</label>
+                                <input type="number" id="dbPort" placeholder="5432" min="1" max="65535">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="dbName">DATABASE</label>
+                            <input type="text" id="dbName" placeholder="infra_db">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="dbUser">USERNAME</label>
+                                <input type="text" id="dbUser" placeholder="사용자명" autocomplete="off">
+                            </div>
+                            <div class="form-group">
+                                <label for="dbPassword">PASSWORD</label>
+                                <input type="password" id="dbPassword" placeholder="비밀번호" autocomplete="off">
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 8px;">
+                            <button type="button" class="btn btn-secondary" id="testDbBtn">연결 테스트</button>
+                            <button type="button" class="btn btn-primary" id="saveDbBtn">저장</button>
+                        </div>
+                    </form>
+
+                    <div id="dbTestResult" style="display: none; margin-top: 16px;"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div class="footer">INFRA QUERY AGENT v1.0 &mdash; ADMIN</div>
+
+    <script src="/static/js/admin.js"></script>
+</body>
+</html>

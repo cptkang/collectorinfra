@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: infra_monitoring_db
+    environment:
+      POSTGRES_DB: infra_db
+      POSTGRES_USER: infra_user
+      POSTGRES_PASSWORD: infra_pass_2024
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U infra_user -d infra_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

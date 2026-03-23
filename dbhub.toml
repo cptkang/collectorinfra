@@ -1,0 +1,16 @@
+# DEPRECATED: 이 파일은 더 이상 사용하지 않습니다.
+# MCP 서버 도입으로 DB 연결 설정은 mcp_server/config.toml + mcp_server/.env 에서 관리합니다.
+# 롤백이 필요한 경우를 위해 파일을 유지합니다.
+
+[[sources]]
+name = "infra_db"
+type = "postgresql"
+connection = "postgresql://infra_user:infra_pass_2024@localhost:5433/infra_db"
+readonly = true
+query_timeout = 30
+
+[[tools]]
+name = "execute_sql"
+sources = ["infra_db"]
+readonly = true
+max_rows = 10000

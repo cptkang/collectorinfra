@@ -1,0 +1,33 @@
+[project]
+name = "dbhub-mcp-server"
+version = "0.1.0"
+description = "인프라 DB 접근용 MCP 서버 (PostgreSQL + DB2)"
+requires-python = ">=3.11"
+
+dependencies = [
+    "mcp[cli]",              # FastMCP 서버 프레임워크 + SSE transport
+    "asyncpg>=0.29.0",       # PostgreSQL async 드라이버
+    "ibm-db>=3.2.0",         # DB2 드라이버 (동기, asyncio.to_thread로 래핑)
+    "sqlparse>=0.5.0",       # SQL 파싱 (읽기 전용 검증)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+dbhub-mcp-server = "mcp_server.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_server*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

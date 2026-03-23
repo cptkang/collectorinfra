@@ -1,0 +1,57 @@
+[server]
+name = "dbhub-server"
+host = "0.0.0.0"
+port = 9090
+transport = "sse"          # 네트워크 transport (별도 VM이므로 sse 필수)
+log_level = "info"
+
+# === PostgreSQL (Docker :5433) ===
+[[sources]]
+name = "infra_db"
+type = "postgresql"
+# connection은 .env에서 오버라이드 (보안상 TOML에 직접 기재하지 않음)
+readonly = true
+query_timeout = 30
+max_rows = 10000
+pool_min_size = 1
+pool_max_size = 5
+
+# === DB2 (Docker :50000) ===
+[[sources]]
+name = "infra_db2"
+type = "db2"
+# connection은 .env에서 오버라이드
+readonly = true
+query_timeout = 30
+max_rows = 10000
+
+# === 멀티 DB (운영 환경용, 개발 시 비활성) ===
+[[sources]]
+name = "polestar"
+type = "postgresql"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+pool_min_size = 1
+pool_max_size = 3
+
+[[sources]]
+name = "cloud_portal"
+type = "postgresql"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+
+[[sources]]
+name = "itsm"
+type = "postgresql"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+
+[[sources]]
+name = "itam"
+type = "postgresql"
+readonly = true
+query_timeout = 30
+max_rows = 10000
