@@ -62,28 +62,27 @@ Task: 사용자의 요청을 분석하여, 아래에 정의된 [Target Query Tem
 [Target Query Template - EAV 피벗 패턴]
 호스트 설정(OS, 호스트명, 파라미터 등)을 조회하는 요청이 들어오면, LLM은 자의적인 쿼리 구조 생성을 중단하고 반드시 아래 템플릿을 베이스로 사용하여 필요한 컬럼(NAME)만 IN 절과 SELECT 절에 추가/변경하여 출력해야 한다.
 
-SELECT 
-    R.HOSTNAME AS RESOURCE_HOSTNAME,
-    MAX(CASE WHEN P.NAME = 'OSType' THEN P.STRINGVALUE_SHORT END) AS OS_TYPE,
-    MAX(CASE WHEN P.NAME = 'OSVerson' THEN P.STRINGVALUE_SHORT END) AS OS_VERSION,
-    MAX(CASE WHEN P.NAME = 'OSParameter' THEN 
-        CASE WHEN P.IS_LOB = 1 THEN P.STRINGVALUE ELSE P.STRINGVALUE_SHORT END 
-    END) AS OS_PARAMETER
-FROM 
-    POLESTAR.CMM_RESOURCE R
-JOIN 
-    POLESTAR.CORE_CONFIG_PROP P_HOST 
-    ON R.HOSTNAME = P_HOST.STRINGVALUE_SHORT 
-    AND P_HOST.NAME = 'Hostname'
-JOIN 
-    POLESTAR.CORE_CONFIG_PROP P 
-    ON P_HOST.CONFIGURATION_ID = P.CONFIGURATION_ID
-WHERE 
-    R.DTYPE = 'ServiceResource'
-    AND R.PARENT_RESOURCE_ID IS NULL
-    AND P.NAME IN ('OSType', 'OSVerson', 'OSParameter')
-GROUP BY 
-    R.HOSTNAME;
+
+
+SELECT
+NVL(C.PLATFORM_RESOURCE_ID,C.ID) AS ID
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Server' AND CC.NAME = 'Hostname' THEN CC.STRINGVALUE_SHORT END) AS HOSTNAME
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Server' AND CC.NAME = 'IPaddress' THEN CC.STRINGVALUE_SHORT END) AS IPADDRESS
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Server' AND CC.NAME = 'Model' THEN CC.STRINGVALUE_SHORT END) AS MODEL
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Server' AND CC.NAME = 'SerialNumber' THEN CC.STRINGVALUE_SHORT END) AS SERIALNUMBER
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Cpus' AND CC.NAME = 'MODEL' THEN CC.STRINGVALUE_SHORT END) AS CPU_MODEL
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Cpus' AND CC.NAME = 'LOGICALCORE' THEN CC.STRINGVALUE_SHORT END) AS LOGICALCORE
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Cpus' AND CC.NAME = 'PHYSICALCORE' THEN CC.STRINGVALUE_SHORT END) AS PHYSICALCORE
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Cpus' AND CC.NAME = 'PHYSICALCPU' THEN CC.STRINGVALUE_SHORT END) AS CORESOCKET
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Memory' AND CC.NAME = 'TotalSize' THEN CC.STRINGVALUE_SHORT END) AS MEM_SIZE
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Server' AND CC.NAME = 'OSType' THEN CC.STRINGVALUE_SHORT END) AS OSTYPE
+,MAX(CASE WHEN C.RESOURCE_TYPE ='server.Server' AND CC.NAME = 'OSVerson' THEN CC.STRINGVALUE_SHORT END) AS OSVERSION
+,MAX(CASE WHEN C.RESOURCE_TYPE = 'server.Server' AND CC.NAME = 'PatchLevel' THEN CC.STRINGVALUE_SHORT END) AS OS_PatchLevel
+FROM CMM_RESOURCE C
+LEFT OUTER JOIN CORE_CONFIG_PROP CC ON C.RESOURCE_CONF_ID = CC.CONFIGURATION_ID
+WHERE
+ C.DTIME IS NULL -- 동작중인 리소스만 조회한다. 
+GROUP BY NVL(C.PLATFORM_RESOURCE_ID,C.ID);  -- postgresql에서는 NVL대신 COALESCE를 사용한다.
 
 4. Output Format:
 - {db_engine_hint}
@@ -112,7 +111,7 @@ GROUP BY
 6. 쿼리에 주석(-- 설명)을 포함하여 쿼리의 목적을 설명한다.
 7. 테이블 별칭(alias)을 사용하여 가독성을 높인다.
 8. 양식-DB 매핑이 제공된 경우, 매핑된 모든 컬럼을 SELECT에 포함하고 "테이블명.컬럼명" 형태의 alias를 부여한다.
-9. core_config_prop.resource_conf_id =core_config_prop.configuration_id을  join으로 사용하고 테이블간 join으로는 사용하지 않는다. 
+9. cmm_resource.resource_conf_id =core_config_prop.configuration_id을  join으로 사용한다. 
 10. **(critical) 사용할 수 있는 테이블은 cmm_resource, core_config_prop만 사용한다. **
 
 ## 출력 형식

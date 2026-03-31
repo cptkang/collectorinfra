@@ -32,47 +32,110 @@ patterns:
         entity_column: ipaddress
         description: "EAV IPaddress 속성값 = cmm_resource.ipaddress"
 
-    # JOIN에 사용하면 안 되는 컬럼 목록
-    # 해당 컬럼이 스키마 프롬프트에 출력될 때 "-- JOIN 금지(NULL)" 주석이 추가된다.
-    excluded_join_columns:
-      - table: cmm_resource
-        column: resource_conf_id
-        reason: "운영 DB에서 NULL. core_config_prop.configuration_id와 매핑되지 않음"
+    # resource_conf_id 기반 직접 조인
+    # cmm_resource.resource_conf_id = core_config_prop.configuration_id
+    # 각 리소스(server.Server, server.Cpus, server.Memory 등)는 자신의 resource_conf_id를 가지며,
+    # 이 값으로 core_config_prop의 해당 configuration_id 그룹에 속하는 EAV 속성을 조회한다.
+    direct_join:
+      entity_column: resource_conf_id
+      config_column: configuration_id
+      description: "cmm_resource.resource_conf_id = core_config_prop.configuration_id (리소스별 설정 조인)"
 
     # 알려진 EAV 속성 목록
     # core_config_prop.name 컬럼에 저장되는 주요 속성값과 한글 동의어.
     # field_mapper의 EAV synonym 매칭과 Redis eav_name_synonyms에 자동 동기화된다.
+    # 주의: 코드는 "known_attributes" 키만 읽으므로 모든 resource_type의 속성을 여기에 통합한다.
     known_attributes:
+      # --- server.Server / platform.server 속성 ---
       - name: OSType
-        description: "운영체제 종류 (예: Linux, Windows)"
+        description: "운영체제 종류 (예: Linux, Windows) [resource_type: server.Server]"
         synonyms: ["운영체제", "OS종류", "OS 타입", "OS"]
       - name: OSVerson
-        description: "운영체제 버전 (주의: 원본 Polestar 제품의 오탈자가 DB에 그대로 반영됨)"
+        description: "운영체제 버전 (주의: Polestar 제품 오탈자 반영) [resource_type: server.Server]"
         synonyms: ["OS버전", "운영체제버전"]
       - name: OSParameter
-        description: "OS 파라미터 (커널 버전 등)"
+        description: "OS 파라미터 (커널 설정 등) [resource_type: server.Server]"
         synonyms: ["OS파라미터", "OS 설정", "커널"]
+      - name: PatchLevel
+        description: "OS 패치 레벨 / 커널 버전 [resource_type: server.Server]"
+        synonyms: ["패치레벨", "커널버전", "패치"]
       - name: Vendor
-        description: "서버 제조사 (예: Dell, HP)"
+        description: "서버 제조사 (예: Dell, HP) [resource_type: server.Server]"
         synonyms: ["벤더", "제조사", "제조업체"]
       - name: Model
-        description: "서버 모델명"
+        description: "서버 모델명 [resource_type: server.Server]"
         synonyms: ["모델", "장비모델", "모델명"]
       - name: SerialNumber
-        description: "시리얼 번호"
+        description: "시리얼 번호 [resource_type: server.Server]"
         synonyms: ["시리얼", "S/N", "일련번호", "시리얼번호"]
-      - name: AgentID
-        description: "모니터링 에이전트 ID"
-        synonyms: ["에이전트ID", "에이전트", "Agent"]
       - name: Hostname
-        description: "호스트명 (EAV, cmm_resource.hostname과 동일 값)"
-        synonyms: ["EAV호스트명"]
+        description: "호스트명 (EAV, cmm_resource.hostname과 동일 값) [resource_type: server.Server]"
+        synonyms: ["EAV호스트명", "서버명"]
       - name: IPaddress
-        description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)"
-        synonyms: ["EAV IP"]
+        description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값) [resource_type: server.Server]"
+        synonyms: ["EAV IP", "IP"]
       - name: GMT
-        description: "시간대 (GMT offset)"
+        description: "시간대 (GMT offset) [resource_type: server.Server]"
         synonyms: ["시간대", "타임존"]
+      - name: AgentID
+        description: "모니터링 에이전트 ID [resource_type: server.Server]"
+        synonyms: ["에이전트ID", "에이전트", "Agent"]
+      - name: AgentVersion
+        description: "에이전트 버전 [resource_type: server.Server]"
+        synonyms: ["에이전트버전", "Agent버전"]
+      - name: InstallPath
+        description: "에이전트 설치 경로 [resource_type: server.Server]"
+        synonyms: ["설치경로", "설치 경로"]
+      # --- server.Cpus 속성 (resource_type = 'server.Cpus') ---
+      - name: MODEL
+        description: "CPU 모델명 (예: Intel Xeon Gold 6248R) [resource_type: server.Cpus]"
+        synonyms: ["CPU모델", "CPU 모델", "프로세서", "프로세서모델", "CPU_MODEL"]
+      - name: LOGICALCORE
+        description: "논리 CPU 코어 수 (하이퍼스레딩 포함) [resource_type: server.Cpus]"
+        synonyms: ["논리코어", "논리 코어", "CPU", "CPU코어", "코어수", "코어"]
+      - name: PHYSICALCORE
+        description: "물리 CPU 코어 수 [resource_type: server.Cpus]"
+        synonyms: ["물리코어", "물리 코어", "물리CPU"]
+      - name: PHYSICALCPU
+        description: "물리 CPU 소켓 수 [resource_type: server.Cpus]"
+        synonyms: ["CPU소켓", "소켓", "소켓수", "CORESOCKET"]
+      - name: SPEED
+        description: "CPU 클럭 속도 MHz (예: 2100.0) [resource_type: server.Cpus]"
+        synonyms: ["CPU속도", "클럭", "클럭속도", "CPU클럭"]
+      - name: HYPERTHREADING
+        description: "하이퍼스레딩 활성 여부 (on/off) [resource_type: server.Cpus]"
+        synonyms: ["하이퍼스레딩", "HT"]
+      # --- server.Memory 속성 (resource_type = 'server.Memory') ---
+      - name: TotalSize
+        description: "총 물리 메모리 크기 (예: 62.1 GB) [resource_type: server.Memory] / 전체 디스크 용량 [resource_type: server.Disks]"
+        synonyms: ["메모리", "MEMORY", "메모리크기", "총메모리", "메모리용량", "MEM", "디스크용량", "디스크크기"]
+      # --- server.VirtualMemory 속성 (resource_type = 'server.VirtualMemory') ---
+      - name: SwapTotalSize
+        description: "Swap 메모리 총 크기 (예: 3.9 GB) [resource_type: server.VirtualMemory]"
+        synonyms: ["스왑", "스왑메모리", "SWAP", "스왑크기"]
+      # --- server.Disks 속성 (resource_type = 'server.Disks') ---
+      - name: DiskCount
+        description: "디스크 수 [resource_type: server.Disks]"
+        synonyms: ["디스크수", "디스크개수", "디스크 수"]
+      # --- server.NetworkInterface 속성 (resource_type = 'server.NetworkInterface') ---
+      - name: IP
+        description: "네트워크 인터페이스 IP 주소 [resource_type: server.NetworkInterface]"
+        synonyms: ["NIC IP", "인터페이스IP"]
+      - name: MAC
+        description: "MAC 주소 (예: b4:96:91:0e:bd:a6) [resource_type: server.NetworkInterface]"
+        synonyms: ["MAC주소", "맥주소", "MACAddress"]
+      - name: BANDW
+        description: "대역폭 (예: 10 Gb) [resource_type: server.NetworkInterface]"
+        synonyms: ["대역폭", "bandwidth", "네트워크속도"]
+      - name: MTU
+        description: "MTU 크기 (예: 1500.0) [resource_type: server.NetworkInterface]"
+        synonyms: []
+      - name: NETMASK
+        description: "서브넷 마스크 (예: 255.255.255.0) [resource_type: server.NetworkInterface]"
+        synonyms: ["서브넷", "넷마스크", "서브넷마스크"]
+      - name: STATUS
+        description: "인터페이스 상태 (UP/DOWN) [resource_type: server.NetworkInterface]"
+        synonyms: ["NIC상태", "인터페이스상태"]
 
   # === 계층형 패턴 ===
   # cmm_resource는 서버, CPU, 메모리, 디스크, 네트워크 등 모든 인프라 리소스를 하나의 테이블에
@@ -87,26 +150,41 @@ patterns:
 
 query_guide: |
   Polestar DB는 cmm_resource(리소스 계층)와 core_config_prop(EAV 설정) 2개 테이블로 구성됩니다.
-  FK 제약이 없으므로, 테이블 간 관계는 값 기반 조인으로만 파악합니다.
 
-  [값 기반 조인]
-  EAV 속성값이 cmm_resource의 컬럼과 동일한 값을 가지는 대응 관계:
-    - core_config_prop.name='Hostname'인 행의 stringvalue_short = cmm_resource.hostname
-    - core_config_prop.name='IPaddress'인 행의 stringvalue_short = cmm_resource.ipaddress
+  [테이블 조인 방법]
+  cmm_resource와 core_config_prop의 조인:
+    cmm_resource.resource_conf_id = core_config_prop.configuration_id
+  이 조인으로 각 리소스의 EAV 설정 속성을 조회할 수 있습니다.
 
-  [EAV 피벗 쿼리 패턴]
-  [금지] cmm_resource와 core_config_prop를 직접 조인하는 것은 금지입니다:
-    - cmm_resource.id = core_config_prop.configuration_id (X) -- 서로 다른 ID 체계
-    - cmm_resource.resource_conf_id = core_config_prop.configuration_id (X) -- 운영 DB에서 resource_conf_id는 NULL
-  반드시 아래 hostname 값 기반 브릿지 조인 패턴만 사용하세요.
+  [주의] cmm_resource.id = core_config_prop.configuration_id 직접 조인은 금지합니다.
+  반드시 resource_conf_id를 사용하세요.
+
+  [리소스 타입별 EAV 속성]
+  cmm_resource의 resource_type에 따라 서로 다른 configuration_id 그룹을 가집니다.
+  같은 서버에 속한 리소스들은 platform_resource_id가 동일합니다.
+
+  resource_type별 주요 EAV 속성:
+    - platform.server / server.Server: Hostname, IPaddress, Model, Vendor, SerialNumber, OSType, OSVerson, PatchLevel, AgentVersion, GMT
+    - server.Cpus: MODEL(CPU모델), LOGICALCORE(논리코어수), PHYSICALCORE(물리코어수), PHYSICALCPU(소켓수), SPEED(클럭MHz), VENDOR(CPU제조사), HYPERTHREADING
+    - server.Memory: TotalSize(메모리 크기, 예: 62.1 GB)
+    - server.VirtualMemory: SwapTotalSize(스왑크기), TotalPageFileSize(페이지파일)
+    - server.Disks: DiskCount(디스크수), TotalSize(전체 디스크용량)
+    - server.NetworkInterface: IP, MAC, BANDW(대역폭), MTU, NETMASK, STATUS(UP/DOWN), DUPLEX, TYPE(Ethernet)
+
+  [서버 종합 정보 조회 패턴]
+  한 서버의 서버정보 + CPU + 메모리를 한 행으로 조회하려면:
+    GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계하고,
+    MAX(CASE WHEN resource_type = '...' AND name = '...' THEN stringvalue_short END)로 피벗합니다.
 
   [계층 구조]
   cmm_resource.resource_type으로 리소스 종류를 구분합니다:
-    - platform.server%: 서버
-    - server.Cpu: CPU
+    - platform.server% / server.Server: 서버 (최상위)
+    - server.Cpus: CPU 컨테이너, server.Cpu: 개별 CPU 코어
+    - server.Memory: 메모리
     - server.FileSystem: 파일시스템
-    - server.NetworkInterface: 네트워크
+    - server.NetworkInterface: 네트워크 인터페이스
   부모-자식 관계: cmm_resource.parent_resource_id = cmm_resource.id
+  같은 서버 소속: cmm_resource.platform_resource_id가 동일
 
 # === 쿼리 예시 (Few-shot) ===
 # LLM이 쿼리를 생성할 때 참조할 질문→SQL 쌍.
@@ -117,54 +195,77 @@ query_examples:
     sql: |
       SELECT
         r.hostname,
-        p_ostype.stringvalue_short AS os_type,
-        p_vendor.stringvalue_short AS vendor
+        cc_ostype.stringvalue_short AS os_type,
+        cc_vendor.stringvalue_short AS vendor
       FROM polestar.cmm_resource r
-      -- 1단계: hostname 값으로 core_config_prop의 Hostname 속성 행을 찾는다
-      LEFT JOIN polestar.core_config_prop p_host
-        ON p_host.name = 'Hostname' AND p_host.stringvalue_short = r.hostname
-      -- 2단계: 동일 configuration_id를 공유하는 다른 EAV 속성을 조인한다
-      LEFT JOIN polestar.core_config_prop p_ostype
-        ON p_ostype.configuration_id = p_host.configuration_id AND p_ostype.name = 'OSType'
-      LEFT JOIN polestar.core_config_prop p_vendor
-        ON p_vendor.configuration_id = p_host.configuration_id AND p_vendor.name = 'Vendor'
+      LEFT JOIN polestar.core_config_prop cc_ostype
+        ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
+      LEFT JOIN polestar.core_config_prop cc_vendor
+        ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
       WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
       LIMIT 100;
-    explanation: "hostname 값 기반 브릿지 조인으로 EAV 속성(OSType, Vendor)을 피벗 조회"
+    explanation: "resource_conf_id = configuration_id 조인으로 서버의 EAV 속성을 조회"
 
   - question: "서버별 호스트명, IP, OS버전, 시리얼번호를 조회해줘"
     sql: |
       SELECT
         r.hostname,
         r.ipaddress,
-        p_osver.stringvalue_short AS os_version,
-        p_serial.stringvalue_short AS serial_number
+        cc_osver.stringvalue_short AS os_version,
+        cc_serial.stringvalue_short AS serial_number
       FROM polestar.cmm_resource r
-      LEFT JOIN polestar.core_config_prop p_host
-        ON p_host.name = 'Hostname' AND p_host.stringvalue_short = r.hostname
-      LEFT JOIN polestar.core_config_prop p_osver
-        ON p_osver.configuration_id = p_host.configuration_id AND p_osver.name = 'OSVerson'
-      LEFT JOIN polestar.core_config_prop p_serial
-        ON p_serial.configuration_id = p_host.configuration_id AND p_serial.name = 'SerialNumber'
+      LEFT JOIN polestar.core_config_prop cc_osver
+        ON r.resource_conf_id = cc_osver.configuration_id AND cc_osver.name = 'OSVerson'
+      LEFT JOIN polestar.core_config_prop cc_serial
+        ON r.resource_conf_id = cc_serial.configuration_id AND cc_serial.name = 'SerialNumber'
       WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
       LIMIT 100;
-    explanation: "EAV 속성을 추가할 때마다 p_host.configuration_id 기반으로 LEFT JOIN을 추가하는 패턴"
+    explanation: "resource_conf_id로 EAV 속성을 추가할 때마다 LEFT JOIN을 추가하는 패턴"
 
   - question: "서버 수를 조회해줘"
     sql: |
       SELECT COUNT(*) AS server_count
       FROM polestar.cmm_resource r
       WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
       LIMIT 1;
     explanation: "EAV 조인이 필요 없는 단순 집계 — cmm_resource만 사용"
 
+  - question: "서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+    sql: |
+      SELECT
+        C.platform_resource_id AS id,
+        MAX(CASE WHEN C.resource_type IN ('server.Server','platform.server') AND CC.name = 'Hostname' THEN CC.stringvalue_short END) AS hostname,
+        MAX(CASE WHEN C.resource_type IN ('server.Server','platform.server') AND CC.name = 'IPaddress' THEN CC.stringvalue_short END) AS ipaddress,
+        MAX(CASE WHEN C.resource_type IN ('server.Server','platform.server') AND CC.name = 'SerialNumber' THEN CC.stringvalue_short END) AS serial_number,
+        MAX(CASE WHEN C.resource_type = 'server.Cpus' AND CC.name = 'MODEL' THEN CC.stringvalue_short END) AS cpu_model,
+        MAX(CASE WHEN C.resource_type = 'server.Cpus' AND CC.name = 'LOGICALCORE' THEN CC.stringvalue_short END) AS logical_core,
+        MAX(CASE WHEN C.resource_type = 'server.Cpus' AND CC.name = 'PHYSICALCORE' THEN CC.stringvalue_short END) AS physical_core,
+        MAX(CASE WHEN C.resource_type = 'server.Cpus' AND CC.name = 'PHYSICALCPU' THEN CC.stringvalue_short END) AS cpu_socket,
+        MAX(CASE WHEN C.resource_type = 'server.Memory' AND CC.name = 'TotalSize' THEN CC.stringvalue_short END) AS mem_size,
+        MAX(CASE WHEN C.resource_type IN ('server.Server','platform.server') AND CC.name = 'OSType' THEN CC.stringvalue_short END) AS os_type,
+        MAX(CASE WHEN C.resource_type IN ('server.Server','platform.server') AND CC.name = 'OSVerson' THEN CC.stringvalue_short END) AS os_version
+      FROM polestar.cmm_resource C
+      LEFT JOIN polestar.core_config_prop CC ON C.resource_conf_id = CC.configuration_id
+      WHERE C.dtime IS NULL
+      GROUP BY C.platform_resource_id
+      HAVING MAX(CASE WHEN C.resource_type IN ('server.Server','platform.server') AND CC.name = 'Hostname' THEN CC.stringvalue_short END) IS NOT NULL
+      ORDER BY hostname
+      LIMIT 100;
+    explanation: |
+      서버 종합 정보 조회 — GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계.
+      resource_type별로 CASE WHEN을 사용하여 server.Server(호스트/OS), server.Cpus(CPU), server.Memory(메모리) 속성을 한 행으로 피벗.
+
   - question: "특정 서버의 CPU 리소스를 조회해줘"
     sql: |
-      SELECT child.id, child.hostname AS cpu_name, child.resource_type
+      SELECT child.id, child.name, child.resource_type
       FROM polestar.cmm_resource parent
       JOIN polestar.cmm_resource child
         ON child.parent_resource_id = parent.id
       WHERE parent.hostname = '서버명'
         AND child.resource_type = 'server.Cpu'
+        AND child.dtime IS NULL
       LIMIT 100;
-    explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인 (id 사용이 올바른 케이스)"
+    explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인"
