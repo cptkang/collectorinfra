@@ -298,7 +298,7 @@ def _get_value_from_row(
 
     Args:
         data_row: 조회 결과 행
-        db_column: "table.column" 형식의 DB 컬럼명
+        db_column: "table.column" 또는 "EAV:속성명" 형식의 DB 컬럼명
 
     Returns:
         추출된 값 또는 None
@@ -311,11 +311,42 @@ def _get_value_from_row(
         if col_name in data_row:
             return data_row[col_name]
 
-    lower_col = db_column.lower()
+    # EAV 접두사 처리: "EAV:OSType" -> "OSType"
+    if db_column.startswith("EAV:"):
+        attr_name = db_column[4:]
+        if attr_name in data_row:
+            return data_row[attr_name]
+        lower_attr = attr_name.lower()
+        for key, value in data_row.items():
+            if key.lower() == lower_attr:
+                return value
+
+    # 대소문자 무시 (EAV 접두사 고려)
+    effective = db_column[4:] if db_column.startswith("EAV:") else db_column
+    lower_col = effective.lower()
     for key, value in data_row.items():
         if key.lower() == lower_col or (
-            "." in db_column and key.lower() == db_column.split(".", 1)[1].lower()
+            "." in effective and key.lower() == effective.split(".", 1)[1].lower()
         ):
+            return value
+
+    # CamelCase<->snake_case 변환 + 언더스코어 제거 비교 (Layer 3 폴백)
+    from src.utils.column_matcher import _is_close_match, camel_to_snake
+
+    effective_snake = camel_to_snake(effective)
+    effective_no_underscore = effective.lower().replace("_", "")
+    for key, value in data_row.items():
+        if camel_to_snake(key) == effective_snake:
+            return value
+        if key.lower().replace("_", "") == effective_no_underscore:
+            return value
+
+    # 오타 대응: snake_case 변환 후 편집 거리 1 이내 매칭
+    for key, value in data_row.items():
+        key_snake = camel_to_snake(key)
+        if _is_close_match(effective_snake, key_snake):
+            return value
+        if _is_close_match(effective_no_underscore, key.lower().replace("_", "")):
             return value
 
     return None

@@ -57,7 +57,7 @@ class TestFillExcelTemplate:
             {"hostname": "web-02", "ip_address": "10.0.0.2", "status": "inactive"},
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, total_filled = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -77,7 +77,7 @@ class TestFillExcelTemplate:
         column_mapping = {"서버명": "servers.hostname", "IP주소": "servers.ip_address"}
         rows = [{"hostname": "web-01", "ip_address": "10.0.0.1"}]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -101,7 +101,7 @@ class TestFillExcelTemplate:
         }
         rows = [{"name": "test", "value": 100, "calc": 999}]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -123,7 +123,7 @@ class TestFillExcelTemplate:
         }
         rows = [{"hostname": "web-01"}]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -140,7 +140,7 @@ class TestFillExcelTemplate:
         template_structure = parse_excel_template(template_bytes)
         column_mapping = {"서버명": "servers.hostname", "IP": "servers.ip"}
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, []
         )
 
@@ -157,7 +157,7 @@ class TestFillExcelTemplate:
         column_mapping = {"서버명": "servers.Hostname", "IP": "servers.ip"}
         rows = [{"hostname": "web-01", "ip": "10.0.0.1"}]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -176,7 +176,7 @@ class TestFillExcelTemplate:
             for i in range(10)
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 

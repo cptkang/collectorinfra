@@ -1,0 +1,28 @@
+# ============================================================
+# 민감 키 전용 환경변수 파일
+# ============================================================
+# 이 파일을 .encenv로 복사하여 실제 API 키를 입력하세요.
+#   cp .encenv.example .encenv
+#
+# .encenv는 .gitignore에 등록되어 git에 업로드되지 않습니다.
+# API 키, 시크릿 등 민감 정보만 이 파일에 관리하세요.
+# ============================================================
+
+# Gemini API 키 (LLM_PROVIDER=gemini 시 필수)
+# Google AI Studio에서 발급: https://aistudio.google.com/apikey
+LLM_GEMINI_API_KEY=
+
+# Ollama Gateway API 키 (선택, 게이트웨이 사용 시)
+LLM_API_KEY=
+
+# FabriX API 키 (LLM_PROVIDER=fabrix 시)
+FABRIX_API_KEY=
+FABRIX_CLIENT_KEY=
+
+# 운영자 비밀번호 (운영 환경에서는 반드시 변경)
+ADMIN_PASSWORD=admin123
+# JWT 시크릿 (비어있으면 서버 시작 시 자동 생성, 운영 시 고정값 권장: openssl rand -hex 32)
+ADMIN_JWT_SECRET=
+
+# Redis 비밀번호
+REDIS_PASSWORD=

@@ -37,10 +37,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         None
     """
     # 시작 시
-    setup_logging()
     config = load_config()
+    setup_logging(config.log_level)
 
-    app.state.graph = build_graph(config)
+    # SQL 파일 로거 초기화
+    from src.utils.sql_file_logger import init_sql_file_logger
+    init_sql_file_logger()
+
+    from src.graph import _create_checkpointer_async
+
+    checkpointer = await _create_checkpointer_async(config)
+    app.state.graph = build_graph(config, checkpointer=checkpointer)
     app.state.config = config
     logger.info("에이전트 그래프 빌드 완료")
 
@@ -56,7 +63,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     yield
 
-    # 종료 시
+    # 종료 시: 체크포인터 연결 정리
+    if hasattr(checkpointer, "conn") and hasattr(checkpointer.conn, "close"):
+        try:
+            await checkpointer.conn.close()
+        except Exception:
+            pass
+
     if config.schema_cache.backend == "redis":
         from src.schema_cache.cache_manager import get_cache_manager
         cache_mgr = get_cache_manager(config)

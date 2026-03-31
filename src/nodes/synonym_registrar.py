@@ -53,7 +53,7 @@ async def synonym_registrar(
     syn_reg = parsed.get("synonym_registration")
 
     if syn_reg:
-        mode = syn_reg.get("mode", "skip")
+        mode = syn_reg.get("mode", "all")
         indices = syn_reg.get("indices", [])
     else:
         # 직접 파싱 폴백
@@ -180,5 +180,5 @@ def _parse_registration_intent(user_query: str) -> tuple[str, list[int]]:
     if nums_only and ("등록" in query or len(query) < 20):
         return ("selective", [int(n) for n in nums_only])
 
-    # 기본: 건너뛰기 (모호한 경우)
+    # 기본: 모호한 입력은 건너뛰기 (명시적 등록 의사가 없으면 안전하게 skip)
     return ("skip", [])

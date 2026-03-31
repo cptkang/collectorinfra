@@ -11,17 +11,19 @@ import sys
 
 def main() -> None:
     """MCP 서버를 시작한다."""
-    # 로깅 설정
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
-    logger = logging.getLogger("mcp_server")
-
     from mcp_server.config import load_config
 
     config = load_config()
+
+    # 로깅 설정 (.env의 SERVER_LOG_LEVEL 사용)
+    log_level = getattr(logging, config.server.log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+        force=True,
+    )
+    logger = logging.getLogger("mcp_server")
 
     logger.info(
         "MCP 서버 시작: %s (host=%s, port=%d, transport=%s)",

@@ -70,6 +70,9 @@ class QueryResponse(BaseModel):
     turn_count: Optional[int] = Field(
         default=None, description="현재 대화 턴 수"
     )
+    has_mapping_report: bool = Field(
+        default=False, description="매핑 보고서 존재 여부"
+    )
 
 
 class HealthResponse(BaseModel):

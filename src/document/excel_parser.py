@@ -101,12 +101,23 @@ def _analyze_sheet(ws: Worksheet) -> dict[str, Any] | None:
     }
 
 
+def _normalize_header_value(value: str) -> str:
+    """헤더 셀 값을 정규화한다.
+
+    줄바꿈, 다중 공백, Unicode 정규화를 적용한다.
+    """
+    from src.utils.schema_utils import normalize_field_name
+
+    return normalize_field_name(value)
+
+
 def _detect_header_row(
     ws: Worksheet,
 ) -> tuple[int | None, list[dict[str, Any]]]:
     """헤더 행을 자동 탐지한다.
 
-    첫 번째로 연속 비어있지 않은 셀이 _MIN_HEADER_CELLS개 이상인 행을 헤더로 판단한다.
+    탐색 범위 내에서 비어있지 않은 셀이 가장 많은 행을 헤더로 판단한다.
+    이를 통해 카테고리/그룹 헤더(병합 셀 등)보다 실제 컬럼 헤더 행을 우선 선택한다.
 
     Args:
         ws: openpyxl Worksheet 객체
@@ -114,6 +125,9 @@ def _detect_header_row(
     Returns:
         (헤더 행 번호(1-based), 헤더 셀 목록) 또는 (None, [])
     """
+    best_row: int | None = None
+    best_cells: list[dict[str, Any]] = []
+
     for row_idx in range(1, min(ws.max_row or 1, _MAX_HEADER_SEARCH_ROWS) + 1):
         cells: list[dict[str, Any]] = []
         for col_idx in range(1, (ws.max_column or 1) + 1):
@@ -122,13 +136,14 @@ def _detect_header_row(
             if value is not None and str(value).strip():
                 cells.append({
                     "col": col_idx,
-                    "value": str(value).strip(),
+                    "value": _normalize_header_value(str(value)),
                 })
 
-        if len(cells) >= _MIN_HEADER_CELLS:
-            return row_idx, cells
+        if len(cells) >= _MIN_HEADER_CELLS and len(cells) > len(best_cells):
+            best_row = row_idx
+            best_cells = cells
 
-    return None, []
+    return best_row, best_cells
 
 
 def _detect_data_end_row(

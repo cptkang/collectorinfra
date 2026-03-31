@@ -471,6 +471,9 @@ class SynonymLoader:
                     words = eav_info.get("words", [])
                     eav_synonyms[eav_name] = words
                     result.total_words += len(words)
+                    # EAV 속성명도 global에 등록하여 통합 비교 인프라 공유
+                    if words:
+                        await self._redis_cache.add_global_synonym(eav_name, words)
                 await self._redis_cache.save_eav_name_synonyms(eav_synonyms)
                 result.eav_names_loaded = len(eav_synonyms)
 

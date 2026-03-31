@@ -9,6 +9,7 @@ import pytest
 
 from src.document.field_mapper import (
     MappingResult,
+    _resolve_fallback_db_id,
     _synonym_match,
     extract_field_names,
     perform_3step_mapping,
@@ -94,7 +95,7 @@ class TestPerform3StepMapping:
         """1단계 힌트가 최우선 적용된다."""
         mock_llm = AsyncMock()
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "IP주소"],
             field_mapping_hints=[
@@ -117,7 +118,7 @@ class TestPerform3StepMapping:
         """2단계 synonyms 매핑이 동작한다."""
         mock_llm = AsyncMock()
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "IP주소"],
             field_mapping_hints=[],
@@ -146,11 +147,12 @@ class TestPerform3StepMapping:
                 "CPU 사용률": {
                     "db_id": "polestar",
                     "column": "cpu_metrics.usage_pct",
+                    "confidence": "high",
                 }
             })
         )
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "CPU 사용률"],
             field_mapping_hints=[],
@@ -176,7 +178,7 @@ class TestPerform3StepMapping:
         mock_llm = AsyncMock()
 
         # 동일 synonym이 두 DB에 존재
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명"],
             field_mapping_hints=[],
@@ -197,7 +199,7 @@ class TestPerform3StepMapping:
         """여러 DB에 걸친 매핑이 동작한다."""
         mock_llm = AsyncMock()
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "VM 이름"],
             field_mapping_hints=[],
@@ -223,7 +225,7 @@ class TestPerform3StepMapping:
             content=json.dumps({"비고": None})
         )
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["비고"],
             field_mapping_hints=[],
@@ -243,12 +245,13 @@ class TestPerform3StepMapping:
                 "서버명": {
                     "db_id": "polestar",
                     "column": "servers.hostname",
+                    "confidence": "high",
                 }
             })
         )
 
         # synonyms 비어있음 (Redis 미존재 시뮬레이션)
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명"],
             field_mapping_hints=[],
@@ -312,7 +315,7 @@ class TestFieldMapperNode:
         )
 
         with patch("src.nodes.field_mapper._load_db_cache_data") as mock_load:
-            mock_load.return_value = ({}, {}, [])
+            mock_load.return_value = ({}, {}, [], {}, {}, None)
             result = await field_mapper(state, llm=mock_llm, app_config=mock_config)
 
         assert result["current_node"] == "field_mapper"
@@ -355,3 +358,104 @@ class TestBuildPendingRegistrations:
 
         pending = _build_pending_registrations(mr)
         assert len(pending) == 0
+
+
+# === _resolve_fallback_db_id 및 "unknown" 제거 검증 ===
+
+
+class TestResolveFallbackDbId:
+    """EAV 폴백 DB ID 결정 로직을 검증한다."""
+
+    def test_priority_first(self):
+        """priority_db_ids가 있으면 첫 번째를 반환한다."""
+        assert _resolve_fallback_db_id(
+            ["polestar", "cloud_portal"], ["itsm"], {}
+        ) == "polestar"
+
+    def test_active_fallback(self):
+        """priority가 비어있으면 active_db_ids[0]을 반환한다."""
+        assert _resolve_fallback_db_id(
+            [], ["polestar", "cloud_portal"], {}
+        ) == "polestar"
+
+    def test_synonyms_key_fallback(self):
+        """priority와 active 모두 없으면 synonyms 키를 사용한다."""
+        assert _resolve_fallback_db_id(
+            [], None, {"cloud_portal": {"t.col": ["word"]}}
+        ) == "cloud_portal"
+
+    def test_default_fallback(self):
+        """모두 없으면 '_default'를 반환한다."""
+        assert _resolve_fallback_db_id([], None, {}) == "_default"
+
+    def test_empty_active_uses_synonyms(self):
+        """active_db_ids가 빈 리스트이면 synonyms 키를 사용한다."""
+        assert _resolve_fallback_db_id(
+            [], [], {"itsm": {}}
+        ) == "itsm"
+
+
+class TestNoUnknownDbId:
+    """mapped_db_ids에 'unknown'이 포함되지 않음을 검증한다."""
+
+    @pytest.mark.asyncio
+    async def test_eav_mapping_uses_active_db_id(self):
+        """priority_db_ids가 빈 리스트일 때 EAV 매핑은 active_db_ids[0]을 사용한다."""
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = MagicMock(content="{}")
+
+        result, _ = await perform_3step_mapping(
+            llm=mock_llm,
+            field_names=["OS유형"],
+            field_mapping_hints=[],
+            all_db_synonyms={},
+            all_db_descriptions={},
+            priority_db_ids=[],
+            eav_name_synonyms={"OSType": ["OS유형", "운영체제"]},
+            active_db_ids=["polestar"],
+        )
+
+        # "unknown"이 아닌 "polestar"가 DB ID로 사용됨
+        assert "unknown" not in result.db_column_mapping
+        if result.db_column_mapping:
+            assert "polestar" in result.db_column_mapping
+
+    @pytest.mark.asyncio
+    async def test_mapped_db_ids_never_contains_unknown(self):
+        """mapped_db_ids에 'unknown'이 절대 포함되지 않는다."""
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = MagicMock(content="{}")
+
+        result, _ = await perform_3step_mapping(
+            llm=mock_llm,
+            field_names=["OS유형"],
+            field_mapping_hints=[],
+            all_db_synonyms={"polestar": {"config.os_type": ["OS유형"]}},
+            all_db_descriptions={},
+            priority_db_ids=[],
+            eav_name_synonyms=None,
+            active_db_ids=["polestar"],
+        )
+
+        assert "unknown" not in result.mapped_db_ids
+
+    @pytest.mark.asyncio
+    async def test_eav_no_active_db_uses_default(self):
+        """active_db_ids도 없으면 '_default'를 사용한다."""
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = MagicMock(content="{}")
+
+        result, _ = await perform_3step_mapping(
+            llm=mock_llm,
+            field_names=["OS유형"],
+            field_mapping_hints=[],
+            all_db_synonyms={},
+            all_db_descriptions={},
+            priority_db_ids=[],
+            eav_name_synonyms={"OSType": ["OS유형"]},
+            active_db_ids=[],
+        )
+
+        assert "unknown" not in result.db_column_mapping
+        if result.db_column_mapping:
+            assert "_default" in result.db_column_mapping

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -69,6 +70,19 @@ async def output_generator(
         if file_result:
             text_response = await _generate_text_response(app_config, state, llm=llm)
             text_response = _append_inferred_mapping_info(text_response, state)
+
+            # Excel 데이터 0건 채움 경고 메시지 추가
+            total_filled = file_result.get("total_filled")
+            organized = state["organized_data"]
+            rows = organized.get("rows", [])
+            if total_filled == 0 and rows:
+                text_response = (
+                    f"조회된 데이터 {len(rows)}건을 Excel 양식에 매핑하지 못했습니다.\n"
+                    f"양식의 헤더와 DB 컬럼 간 매핑이 일치하지 않습니다.\n"
+                    f"매핑 보고서를 확인하고 유사어를 등록해주세요.\n\n"
+                    + text_response
+                )
+
             return {
                 "final_response": text_response,
                 "output_file": file_result["file_bytes"],
@@ -261,6 +275,52 @@ def _append_inferred_mapping_info(response: str, state: AgentState) -> str:
     return response
 
 
+def _validate_mapping_against_csv(
+    csv_sheet_data: dict[str, Any],
+    column_mapping: dict[str, Optional[str]],
+) -> None:
+    """CSV 헤더와 column_mapping 키의 정합성을 검증하고 경고 로깅한다.
+
+    Args:
+        csv_sheet_data: {시트명: {"headers": [...], ...}} 형태
+        column_mapping: {필드명: DB 컬럼명 또는 None} 매핑
+    """
+    # csv_sheet_data에서 전체 헤더 수집
+    csv_headers: set[str] = set()
+    for sheet_data in csv_sheet_data.values():
+        if isinstance(sheet_data, dict):
+            csv_headers.update(sheet_data.get("headers", []))
+
+    mapping_keys = set(column_mapping.keys())
+    mapped_keys = {k for k, v in column_mapping.items() if v is not None}
+
+    # 1. CSV 헤더 중 column_mapping에 없는 것
+    unmapped_headers = csv_headers - mapping_keys
+    if unmapped_headers:
+        logger.info("CSV 헤더 중 매핑 미존재: %s", unmapped_headers)
+
+    # 2. column_mapping 키 중 CSV 헤더에 없는 것 (불일치)
+    orphan_keys = mapping_keys - csv_headers
+    if orphan_keys:
+        logger.warning("column_mapping 키가 CSV 헤더와 불일치: %s", orphan_keys)
+
+    # 3. 매핑된 필드 비율 검증
+    if csv_headers:
+        mapped_ratio = len(mapped_keys & csv_headers) / len(csv_headers)
+        logger.info(
+            "매핑 정합성: CSV 헤더 %d개 중 %d개 매핑됨 (%.0f%%)",
+            len(csv_headers),
+            len(mapped_keys & csv_headers),
+            mapped_ratio * 100,
+        )
+        if mapped_ratio == 0:
+            logger.warning(
+                "매핑률 0%%: column_mapping 값이 모두 None이거나 "
+                "CSV 헤더와 키가 완전히 불일치합니다. "
+                "Excel 데이터 채우기가 실패할 가능성이 높습니다."
+            )
+
+
 def _generate_document_file(
     state: AgentState,
     output_format: str,
@@ -278,6 +338,9 @@ def _generate_document_file(
     rows = organized.get("rows", [])
     # field_mapper State의 column_mapping을 우선 사용, 없으면 organized_data에서 가져옴
     column_mapping = state.get("column_mapping") or organized.get("column_mapping")
+    # resolved_mapping 우선: result_organizer가 생성한 해석된 매핑
+    resolved_mapping = organized.get("resolved_mapping")
+    effective_mapping = resolved_mapping or column_mapping
     template = state.get("template_structure")
     uploaded_file = state.get("uploaded_file")
 
@@ -285,9 +348,14 @@ def _generate_document_file(
         logger.warning("양식 구조 또는 원본 파일이 없어 파일 생성 불가")
         return None
 
-    if not column_mapping:
+    if not effective_mapping:
         logger.warning("컬럼 매핑이 없어 파일 생성 불가")
         return None
+
+    # 매핑 검증: csv_sheet_data 헤더와 column_mapping 비교
+    csv_sheet_data = state.get("csv_sheet_data")
+    if csv_sheet_data and effective_mapping:
+        _validate_mapping_against_csv(csv_sheet_data, effective_mapping)
 
     import datetime
 
@@ -301,17 +369,28 @@ def _generate_document_file(
             sheet_mappings = organized.get("sheet_mappings")
             target_sheets = state.get("target_sheets")
 
-            file_bytes = fill_excel_template(
+            file_bytes, total_filled = fill_excel_template(
                 file_data=uploaded_file,
                 template_structure=template,
-                column_mapping=column_mapping,
+                column_mapping=effective_mapping,
                 rows=rows,
                 sheet_mappings=sheet_mappings,
                 target_sheets=target_sheets,
             )
+
+            if total_filled == 0 and rows:
+                logger.warning(
+                    "데이터 %d건이 조회되었으나 Excel에 0건 채워짐. "
+                    "column_mapping=%s, row_keys=%s",
+                    len(rows),
+                    {k: v for k, v in list(effective_mapping.items())[:5]},
+                    list(rows[0].keys())[:10] if rows else [],
+                )
+
             return {
                 "file_bytes": file_bytes,
                 "file_name": f"result_{timestamp}.xlsx",
+                "total_filled": total_filled,
             }
 
         elif output_format == "docx":
@@ -320,7 +399,7 @@ def _generate_document_file(
             file_bytes = fill_word_template(
                 file_data=uploaded_file,
                 template_structure=template,
-                column_mapping=column_mapping,
+                column_mapping=effective_mapping,
                 rows=rows,
             )
             return {

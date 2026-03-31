@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class LLMConfig(BaseSettings):
     """LLM 관련 설정."""
 
-    provider: Literal["ollama", "fabrix"] = "ollama"
+    provider: Literal["ollama", "fabrix", "gemini"] = "ollama"
     model: str = "llama3.1:8b"
 
     # Ollama 설정
@@ -26,13 +26,17 @@ class LLMConfig(BaseSettings):
     ollama_api_key: str = ""
     ollama_timeout: int = 180
 
+    # Gemini 설정
+    gemini_api_key: str = ""
+    gemini_model: str = ""
+
     # FabriX 설정
     fabrix_base_url: str = ""
     fabrix_api_key: str = ""
     fabrix_client_key: str = ""
     fabrix_chat_model: str = ""
 
-    model_config = {"env_prefix": "LLM_", "env_file": ".env", "extra": "ignore"}
+    model_config = {"env_prefix": "LLM_", "env_file": [".env", ".encenv"], "extra": "ignore"}
 
     def model_post_init(self, __context: object) -> None:
         """환경변수를 직접 읽어 보정한다."""
@@ -48,6 +52,10 @@ class LLMConfig(BaseSettings):
         if not self.fabrix_chat_model:
             self.fabrix_chat_model = os.getenv("FABRIX_CHAT_MODEL", "")
 
+        # Gemini API 키
+        if not self.gemini_api_key:
+            self.gemini_api_key = os.getenv("GOOGLE_API_KEY", "")
+
         # Ollama API 키 (게이트웨이용)
         if not self.ollama_api_key:
             self.ollama_api_key = os.getenv("LLM_API_KEY", "")
@@ -61,7 +69,7 @@ class DBHubConfig(BaseSettings):
     """
 
     server_url: str = "http://localhost:9090/sse"   # MCP 서버 SSE 엔드포인트
-    source_name: str = "infra_db"                    # 기본 쿼리 대상 소스
+    source_name: str = ""                              # 기본 쿼리 대상 소스 (DBHUB_SOURCE_NAME으로 설정)
     mcp_call_timeout: int = 60                       # MCP 호출 전체 대기시간 (초)
 
     model_config = {"env_prefix": "DBHUB_", "env_file": ".env", "extra": "ignore"}
@@ -76,6 +84,10 @@ class QueryConfig(BaseSettings):
 
     max_retry_count: int = 3   # MCP 호출 재시도 횟수
     default_limit: int = 1000  # SQL 생성 시 기본 LIMIT
+
+    # 데이터 충분성 검사 임계값 (0.0 ~ 1.0)
+    sufficiency_required_threshold: float = 0.7   # hint/synonym 매핑
+    sufficiency_optional_threshold: float = 0.5   # llm_inferred 매핑
 
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
 
@@ -123,7 +135,7 @@ class AdminConfig(BaseSettings):
     jwt_secret: str = ""
     jwt_expire_hours: int = 24
 
-    model_config = {"env_prefix": "ADMIN_", "env_file": ".env", "extra": "ignore"}
+    model_config = {"env_prefix": "ADMIN_", "env_file": [".env", ".encenv"], "extra": "ignore"}
 
     def model_post_init(self, __context: object) -> None:
         """JWT 시크릿이 비어있으면 자동 생성한다."""
@@ -180,7 +192,7 @@ class RedisConfig(BaseSettings):
     ssl: bool = False
     socket_timeout: int = 5
 
-    model_config = {"env_prefix": "REDIS_", "env_file": ".env", "extra": "ignore"}
+    model_config = {"env_prefix": "REDIS_", "env_file": [".env", ".encenv"], "extra": "ignore"}
 
 
 class SchemaCacheConfig(BaseSettings):
@@ -190,6 +202,7 @@ class SchemaCacheConfig(BaseSettings):
     enabled: bool = True
     backend: str = "redis"  # "redis" | "file"
     auto_generate_descriptions: bool = True
+    fingerprint_ttl_seconds: int = 1800  # fingerprint 검증 주기 (기본 30분)
 
     model_config = {"env_prefix": "SCHEMA_CACHE_", "env_file": ".env", "extra": "ignore"}
 
@@ -216,8 +229,17 @@ class AppConfig(BaseSettings):
     # 시멘틱 라우팅 활성화 여부
     enable_semantic_routing: bool = False
 
+    # Polestar 전용 프롬프트를 적용할 DB ID
+    # .env에서 POLESTAR_DB_ID=polestar 로 설정하면
+    # active_db_id가 이 값과 일치할 때 Polestar 전용 시스템 프롬프트를 사용한다.
+    # 비어있으면 전용 프롬프트를 사용하지 않음 (범용 프롬프트 적용).
+    polestar_db_id: str = ""
+
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
     # Phase 3: 멀티턴 대화 / Human-in-the-loop
     enable_sql_approval: bool = False         # SQL 승인 기능 활성화
+    enable_structure_approval: bool = True    # 구조 분석 HITL 승인 (기본 활성화)
     conversation_max_turns: int = 20          # 대화 최대 턴 수
     conversation_ttl_hours: int = 24          # 대화 세션 유효 시간
 

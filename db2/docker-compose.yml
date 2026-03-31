@@ -1,17 +1,16 @@
-version: "3.8"
-
 services:
   db2:
     image: icr.io/db2_community/db2
     platform: linux/amd64
     container_name: infra_db2
     privileged: true
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 8g
-        reservations:
           memory: 4g
+        reservations:
+          memory: 2g
     environment:
       LICENSE: accept
       DB2INST1_PASSWORD: db2pass2024
@@ -20,17 +19,23 @@ services:
       ENABLE_ORACLE_COMPATIBILITY: "false"
       SAMPLEDB: "false"
       PERSISTENT_HOME: "true"
+      AUTOCONFIG: "false"
+      ARCHIVE_LOGS: "false"
+      DB2INSTANCE: db2inst1
+      TO_CREATE_SAMPLEDB: "false"
     ports:
       - "50000:50000"
     volumes:
       - db2data:/database
       - ./init:/var/custom
+      - ./scripts/post-start.sh:/var/db2_setup/lib/post-start.sh:ro
     healthcheck:
-      test: [ "CMD", "su", "-", "db2inst1", "-c", "db2 connect to infradb" ]
-      interval: 30s
+      test: ["CMD", "su", "-", "db2inst1", "-c", "db2 connect to infradb"]
+      interval: 60s
       timeout: 30s
-      retries: 10
-      start_period: 300s
+      retries: 15
+      start_period: 600s
+    stop_grace_period: 60s
 
 volumes:
   db2data:

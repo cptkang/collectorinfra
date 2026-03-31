@@ -68,7 +68,7 @@ class TestMultiSheetBasicFill:
             {"hostname": "web-02", "ip_address": "10.0.0.2", "usage_pct": 42.1},
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -106,7 +106,7 @@ class TestMultiSheetBasicFill:
             {"hostname": "web-01", "ip_address": "10.0.0.1", "usage_pct": 85.2},
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows,
             target_sheets=["Servers"],
         )
@@ -158,7 +158,7 @@ class TestMultiSheetPerSheetMapping:
             },
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes,
             template_structure,
             column_mapping={},  # fallback (unused when sheet_mappings provided)
@@ -204,7 +204,7 @@ class TestMultiSheetPerSheetMapping:
             },
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes,
             template_structure,
             column_mapping={},
@@ -238,7 +238,7 @@ class TestBackwardCompatibility:
         column_mapping = {"name": "items.name", "count": "items.count"}
         rows = [{"name": "apple", "count": 5}]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows
         )
 
@@ -258,7 +258,7 @@ class TestBackwardCompatibility:
         column_mapping = {"host": "servers.hostname", "status": "servers.status"}
         rows = [{"hostname": "db-01", "status": "running"}]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, column_mapping, rows,
             sheet_mappings=None,
             target_sheets=None,
@@ -279,7 +279,7 @@ class TestEdgeCases:
         ])
         template_structure = parse_excel_template(template_bytes)
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure,
             column_mapping={"data": "t.data", "extra": "t.extra"},
             rows=[{"data": "value", "extra": "x"}],
@@ -300,7 +300,7 @@ class TestEdgeCases:
         ])
         template_structure = parse_excel_template(template_bytes)
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure,
             column_mapping={"x": "t.val", "y": "t.val2"},
             rows=[{"val": 42, "val2": 99}],
@@ -324,7 +324,7 @@ class TestEdgeCases:
             {"sheet_name": "Empty", "column_mapping": {}, "rows": [{"val": 2, "extra": "e2"}]},
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure,
             column_mapping={},
             rows=[],

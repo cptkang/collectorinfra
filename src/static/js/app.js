@@ -32,6 +32,7 @@
     var isProcessing = false;
     var messages = []; // session message history
     var stageTimer = null;
+    var currentThreadId = null;
 
     // Stage definitions
     var stages = ["parse", "schema", "sql", "exec", "result"];
@@ -53,6 +54,7 @@
     // Node → Pipeline display mapping
     var nodeLabels = {
         input_parser: "입력 분석",
+        field_mapper: "필드 매핑",
         semantic_router: "DB 라우팅",
         schema_analyzer: "스키마 탐색",
         query_generator: "SQL 생성",
@@ -96,7 +98,7 @@
     // ─── Keyboard Handling ───
 
     function handleKeydown(e) {
-        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handleSend();
         }
@@ -267,27 +269,39 @@
 
     // ─── Stage Animation ───
 
+    // Node name → chat indicator stage mapping
+    var nodeToStage = {
+        input_parser: "parse", context_resolver: "parse",
+        semantic_router: "schema", schema_analyzer: "schema",
+        query_generator: "sql", query_validator: "sql",
+        query_executor: "exec", multi_db_executor: "exec",
+        result_organizer: "result", result_merger: "result",
+        output_generator: "result",
+    };
+
     function startStageAnimation() {
-        var container = document.getElementById("processingStages");
-        if (!container) return;
-
-        var stageEls = container.querySelectorAll(".stage");
+        // 초기 상태만 설정하고, SSE 이벤트를 대기한다.
+        // 타이머 기반 자동 진행은 사용하지 않는다.
         var textEl = document.getElementById("processingText");
-        var idx = 0;
+        if (textEl) textEl.textContent = "처리 대기 중...";
+    }
 
-        function advance() {
-            if (idx > 0 && idx <= stageEls.length) {
-                stageEls[idx - 1].classList.remove("active");
-                stageEls[idx - 1].classList.add("done");
-            }
-            if (idx < stageEls.length) {
-                stageEls[idx].classList.add("active");
-                if (textEl) textEl.textContent = stageMessages[stages[idx]];
-                idx++;
-                stageTimer = setTimeout(advance, 2000 + Math.random() * 2000);
-            }
+    function updateProcessingStage(node, status) {
+        var stage = nodeToStage[node];
+        if (!stage) return;
+
+        var stageEl = document.querySelector('.stage[data-stage="' + stage + '"]');
+        if (!stageEl) return;
+
+        var textEl = document.getElementById("processingText");
+
+        if (status === "start") {
+            stageEl.classList.add("active");
+            if (textEl) textEl.textContent = stageMessages[stage] || "처리 중...";
+        } else if (status === "complete") {
+            stageEl.classList.remove("active");
+            stageEl.classList.add("done");
         }
-        advance();
     }
 
     function stopStageAnimation() {
@@ -341,10 +355,37 @@
         var downloadHtml = "";
         if (data.has_file && data.query_id) {
             downloadHtml =
-                '<a class="message-download" href="/api/v1/query/' + data.query_id + '/download">' +
+                '<a class="message-download" href="/api/v1/query/' + encodeURIComponent(data.query_id) + '/download">' +
                     '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
                     escapeHtml(data.file_name || "파일") + ' 다운로드' +
                 '</a>';
+        }
+
+        // CSV download button
+        var csvHtml = "";
+        if (data.row_count > 0 && data.query_id) {
+            csvHtml =
+                '<a class="message-download message-download--csv" href="/api/v1/query/' + encodeURIComponent(data.query_id) + '/download-csv">' +
+                    '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+                    'CSV 다운로드 (' + data.row_count + '건)' +
+                '</a>';
+        }
+
+        // Mapping report buttons
+        var reportHtml = "";
+        if (data.has_mapping_report && data.query_id) {
+            reportHtml =
+                '<div class="mapping-report-actions">' +
+                    '<a class="message-download message-download--report" href="/api/v1/query/' + encodeURIComponent(data.query_id) + '/mapping-report">' +
+                        '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+                        '매핑 보고서 다운로드' +
+                    '</a>' +
+                    '<label class="message-download message-download--upload" data-query-id="' + data.query_id + '">' +
+                        '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>' +
+                        '수정된 보고서 업로드' +
+                        '<input type="file" accept=".md" style="display:none" onchange="handleMappingFeedbackUpload(this)">' +
+                    '</label>' +
+                '</div>';
         }
 
         el.innerHTML =
@@ -355,6 +396,8 @@
                     metaHtml +
                     sqlHtml +
                     downloadHtml +
+                    csvHtml +
+                    reportHtml +
                 '</div>' +
                 '<div class="message-time">' + formatTime(new Date()) + '</div>' +
             '</div>';
@@ -471,8 +514,10 @@
                                 scrollToBottom();
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
+                                updateProcessingStage(event.node, "start");
                             } else if (event.type === "node_complete") {
                                 handleNodeComplete(event);
+                                updateProcessingStage(event.node, "complete");
                             } else if (event.type === "meta") {
                                 metaData = event;
                             } else if (event.type === "done") {
@@ -491,6 +536,7 @@
 
             // Finalize streaming message
             finalizeStreamingMessage(accumulatedText, metaData);
+            currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
                 data: {
@@ -559,6 +605,55 @@
                 '</div>';
         }
 
+        // Add download button
+        if (meta.has_file && meta.query_id) {
+            var streamingMsg = document.getElementById("streamingMessage");
+            var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
+            if (bubble) {
+                var downloadHtml =
+                    '<a class="message-download" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download">' +
+                        '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+                        escapeHtml(meta.file_name || "파일") + ' 다운로드' +
+                    '</a>';
+                bubble.insertAdjacentHTML("beforeend", downloadHtml);
+            }
+        }
+
+        // Add CSV download button
+        if (meta.row_count > 0 && meta.query_id) {
+            var streamingMsgCsv = document.getElementById("streamingMessage");
+            var bubbleCsv = streamingMsgCsv ? streamingMsgCsv.querySelector(".message-bubble") : null;
+            if (bubbleCsv) {
+                var csvHtml =
+                    '<a class="message-download message-download--csv" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download-csv">' +
+                        '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+                        'CSV 다운로드 (' + meta.row_count + '건)' +
+                    '</a>';
+                bubbleCsv.insertAdjacentHTML("beforeend", csvHtml);
+            }
+        }
+
+        // Add mapping report download + upload buttons
+        if (meta.has_mapping_report && meta.query_id) {
+            var streamingMsg2 = document.getElementById("streamingMessage");
+            var bubble2 = streamingMsg2 ? streamingMsg2.querySelector(".message-bubble") : null;
+            if (bubble2) {
+                var reportHtml =
+                    '<div class="mapping-report-actions">' +
+                        '<a class="message-download message-download--report" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/mapping-report">' +
+                            '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+                            '매핑 보고서 다운로드' +
+                        '</a>' +
+                        '<label class="message-download message-download--upload" data-query-id="' + meta.query_id + '">' +
+                            '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>' +
+                            '수정된 보고서 업로드' +
+                            '<input type="file" accept=".md" style="display:none" onchange="handleMappingFeedbackUpload(this)">' +
+                        '</label>' +
+                    '</div>';
+                bubble2.insertAdjacentHTML("beforeend", reportHtml);
+            }
+        }
+
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
         if (streamingMsg) streamingMsg.removeAttribute("id");
@@ -593,6 +688,8 @@
             }
 
             renderAgentMessage(data);
+            showPostHocProgress(data);
+            currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
 
         } catch (err) {
@@ -614,6 +711,9 @@
             var formData = new FormData();
             formData.append("query", query);
             formData.append("file", file);
+            if (currentThreadId) {
+                formData.append("thread_id", currentThreadId);
+            }
 
             var response = await fetch("/api/v1/query/file", {
                 method: "POST",
@@ -630,6 +730,8 @@
             }
 
             renderAgentMessage(data);
+            showPostHocProgress(data);
+            currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
 
         } catch (err) {
@@ -664,6 +766,74 @@
         codeEl.classList.toggle("open");
     };
 
+    // ─── Mapping Feedback Upload Handler ───
+
+    window.handleMappingFeedbackUpload = async function (inputEl) {
+        var file = inputEl.files[0];
+        if (!file) return;
+
+        var queryId = inputEl.closest("[data-query-id]").getAttribute("data-query-id");
+        if (!queryId) {
+            showError("query_id를 찾을 수 없습니다.");
+            return;
+        }
+
+        var label = inputEl.closest("label");
+        var origText = label ? label.textContent.trim() : "";
+        if (label) label.style.opacity = "0.6";
+
+        try {
+            var formData = new FormData();
+            formData.append("file", file);
+            formData.append("query_id", queryId);
+
+            var response = await fetch("/api/v1/query/mapping-feedback", {
+                method: "POST",
+                body: formData,
+            });
+
+            var result = await response.json();
+
+            if (!response.ok) {
+                showError(result.detail || "피드백 처리 중 오류가 발생했습니다.");
+                return;
+            }
+
+            // Show result as a chat message
+            var summary = "";
+            if (result.status === "no_changes") {
+                summary = result.summary || "변경사항이 없습니다.";
+            } else if (result.status === "applied") {
+                var d = result.diff || {};
+                var parts = [];
+                if (d.added) parts.push(d.added + "건 추가");
+                if (d.modified) parts.push(d.modified + "건 수정");
+                if (d.deleted) parts.push(d.deleted + "건 삭제");
+                summary = "매핑 피드백이 Redis에 반영되었습니다: " + parts.join(", ");
+            }
+
+            // Add feedback result as agent message
+            var el = document.createElement("div");
+            el.className = "message message--agent";
+            el.innerHTML =
+                '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>' +
+                '<div class="message-content">' +
+                    '<div class="message-bubble">' +
+                        '<div class="response-text">' + escapeHtml(summary) + '</div>' +
+                    '</div>' +
+                    '<div class="message-time">' + formatTime(new Date()) + '</div>' +
+                '</div>';
+            chatMessages.appendChild(el);
+            scrollToBottom();
+
+        } catch (err) {
+            showError("피드백 업로드 실패: " + err.message);
+        } finally {
+            if (label) label.style.opacity = "1";
+            inputEl.value = "";
+        }
+    };
+
     // ─── Progress Panel ───
 
     function resetProgressPanel() {
@@ -674,6 +844,37 @@
     function showProgressEmpty() {
         progressPipeline.innerHTML = "";
         progressEmpty.style.display = "flex";
+    }
+
+    function showPostHocProgress(data) {
+        resetProgressPanel();
+        progressEmpty.style.display = "none";
+
+        // 쿼리 처리 완료 단계들을 순서대로 표시
+        var steps = [];
+
+        steps.push({ node: "input_parser", data: null });
+
+        if (data.executed_sql) {
+            steps.push({ node: "schema_analyzer", data: null });
+            steps.push({ node: "query_generator", data: { generated_sql: data.executed_sql } });
+            steps.push({ node: "query_validator", data: { passed: true, reason: "" } });
+        }
+
+        if (data.row_count != null) {
+            steps.push({ node: "query_executor", data: { row_count: data.row_count, preview_rows: [] } });
+        }
+
+        steps.push({ node: "output_generator", data: { status: "완료" } });
+
+        steps.forEach(function (step) {
+            handleNodeStart({ node: step.node, timestamp_ms: 0 });
+            handleNodeComplete({
+                node: step.node,
+                data: step.data || {},
+                timestamp_ms: 0,
+            });
+        });
     }
 
     function handleNodeStart(event) {
@@ -751,6 +952,26 @@
             }
             if (data.template_structure) {
                 html += renderSection("템플릿 구조", renderJsonPreview(data.template_structure));
+            }
+        }
+
+        else if (node === "field_mapper") {
+            if (data.mapped_count != null && data.total_count != null) {
+                var pct = data.total_count > 0 ? Math.round(data.mapped_count / data.total_count * 100) : 0;
+                html += renderSection("매핑 결과", '<span class="step-data-badge step-data-badge--info">' + data.mapped_count + '/' + data.total_count + ' (' + pct + '%)</span>');
+            }
+            if (data.sources) {
+                var srcParts = [];
+                if (data.sources.hint) srcParts.push("힌트: " + data.sources.hint);
+                if (data.sources.synonym) srcParts.push("유사어: " + data.sources.synonym);
+                if (data.sources.eav_synonym) srcParts.push("EAV: " + data.sources.eav_synonym);
+                if (data.sources.llm_inferred) srcParts.push("LLM: " + data.sources.llm_inferred);
+                if (srcParts.length > 0) {
+                    html += renderSection("매핑 출처", '<div class="step-data-value">' + escapeHtml(srcParts.join(", ")) + '</div>');
+                }
+            }
+            if (data.has_mapping_report) {
+                html += renderSection("보고서", '<span class="step-data-badge step-data-badge--success">생성됨</span>');
             }
         }
 
@@ -863,7 +1084,7 @@
             keys.forEach(function (k) {
                 var val = row[k];
                 if (val == null) val = "";
-                html += "<td title='" + escapeHtml(String(val)) + "'>" + escapeHtml(String(val)) + "</td>";
+                html += '<td title="' + escapeHtml(String(val)).replace(/"/g, "&quot;") + '">' + escapeHtml(String(val)) + "</td>";
             });
             html += "</tr>";
         });

@@ -7,6 +7,7 @@ Phase 2에서 양식 매핑 기능을 추가한다.
 
 from __future__ import annotations
 
+import json as json_module
 import logging
 from typing import Any, Optional
 
@@ -57,8 +58,13 @@ async def result_organizer(
 
     # 2. 데이터 충분성 판단
     state_column_mapping = state.get("column_mapping")
-    is_sufficient = _check_data_sufficiency(
-        masked_results, parsed, template, column_mapping=state_column_mapping
+    is_sufficient = await _check_data_sufficiency(
+        masked_results,
+        parsed,
+        template,
+        column_mapping=state_column_mapping,
+        llm=llm,
+        app_config=app_config,
     )
 
     if not is_sufficient and state.get("retry_count", 0) < 3:
@@ -68,6 +74,7 @@ async def result_organizer(
                 summary="데이터가 부족합니다.",
                 rows=masked_results,
                 column_mapping=None,
+                resolved_mapping=None,
                 is_sufficient=False,
             ),
             "error_message": "data_insufficient",
@@ -115,6 +122,39 @@ async def result_organizer(
                     schema_info=state.get("schema_info", {}),
                 )
 
+    # 4.5 resolved_mapping 생성 (3계층 하이브리드 Layer 1 + Layer 2)
+    resolved_mapping: Optional[dict[str, str]] = None
+    if column_mapping and formatted_results:
+        result_keys = set(formatted_results[0].keys())
+
+        # Layer 1: 규칙 기반 매칭
+        from src.utils.column_matcher import build_resolved_mapping
+        resolved_mapping, unresolved_fields = build_resolved_mapping(
+            column_mapping, result_keys,
+        )
+        logger.info(
+            "Layer 1 규칙 기반 resolved_mapping: %d건 해석, %d건 미해결",
+            len(resolved_mapping) - len(unresolved_fields),
+            len(unresolved_fields),
+        )
+
+        # Layer 2: 미해결 항목에 대해 LLM 유사성 판단
+        if unresolved_fields:
+            llm_resolved = await _resolve_unmatched_via_llm(
+                llm=llm,
+                column_mapping=column_mapping,
+                unresolved_fields=unresolved_fields,
+                result_keys=result_keys,
+                app_config=app_config,
+            )
+            if llm_resolved:
+                for field, resolved_key in llm_resolved.items():
+                    resolved_mapping[field] = resolved_key
+                logger.info(
+                    "Layer 2 LLM 유사성 판단으로 %d건 추가 해석: %s",
+                    len(llm_resolved), llm_resolved,
+                )
+
     # 5. 요약 생성
     summary = _generate_summary(formatted_results, parsed)
 
@@ -125,6 +165,7 @@ async def result_organizer(
             summary=summary,
             rows=formatted_results,
             column_mapping=column_mapping,
+            resolved_mapping=resolved_mapping,
             is_sufficient=True,
             sheet_mappings=sheet_mappings,
         ),
@@ -133,60 +174,238 @@ async def result_organizer(
     }
 
 
-def _check_data_sufficiency(
+async def _resolve_unmatched_via_llm(
+    llm: BaseChatModel | None,
+    column_mapping: dict[str, str | None],
+    unresolved_fields: list[str],
+    result_keys: set[str],
+    app_config: AppConfig | None = None,
+) -> dict[str, str] | None:
+    """미해결 매핑 항목에 대해 LLM 유사성 판단을 수행한다.
+
+    Args:
+        llm: LLM 인스턴스
+        column_mapping: 원본 column_mapping
+        unresolved_fields: 규칙 기반 매칭 실패 필드명 목록
+        result_keys: SQL 결과의 실제 키 집합
+        app_config: 앱 설정 (LLM 생성용)
+
+    Returns:
+        {field: resolved_result_key} 또는 None (실패/불필요 시)
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from src.prompts.column_resolver import (
+        COLUMN_RESOLVER_SYSTEM_PROMPT,
+        COLUMN_RESOLVER_USER_PROMPT,
+    )
+
+    # 미해결 필드의 매핑값만 추출
+    unresolved_columns: dict[str, str] = {}
+    for f in unresolved_fields:
+        val = column_mapping.get(f)
+        if val is not None:
+            unresolved_columns[f] = val
+
+    if not unresolved_columns:
+        return None
+
+    # LLM 인스턴스 확보
+    if llm is None:
+        try:
+            if app_config is None:
+                app_config = load_config()
+            llm = create_llm(app_config)
+        except Exception as e:
+            logger.warning("Layer 2 LLM 생성 실패, 스킵: %s", e)
+            return None
+
+    # 프롬프트 구성
+    user_prompt = COLUMN_RESOLVER_USER_PROMPT.format(
+        unresolved_columns=json_module.dumps(
+            {f: v for f, v in unresolved_columns.items()},
+            ensure_ascii=False,
+        ),
+        result_keys=json_module.dumps(sorted(result_keys), ensure_ascii=False),
+    )
+
+    try:
+        messages = [
+            SystemMessage(content=COLUMN_RESOLVER_SYSTEM_PROMPT),
+            HumanMessage(content=user_prompt),
+        ]
+        response = await llm.ainvoke(messages)
+        content = response.content.strip()
+
+        # JSON 블록 추출
+        if "```json" in content:
+            content = content.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in content:
+            content = content.split("```", 1)[1].split("```", 1)[0].strip()
+
+        llm_mapping: dict[str, str] = json_module.loads(content)
+        if not isinstance(llm_mapping, dict):
+            logger.warning("Layer 2 LLM 응답이 dict가 아님: %s", type(llm_mapping))
+            return None
+
+        # LLM 응답 검증: 매핑값 -> 결과 키 매핑을 field -> 결과 키로 변환
+        resolved: dict[str, str] = {}
+        for field, db_col_val in unresolved_columns.items():
+            matched_key = llm_mapping.get(db_col_val)
+            if matched_key and matched_key in result_keys:
+                resolved[field] = matched_key
+
+        return resolved if resolved else None
+
+    except Exception as e:
+        logger.warning("Layer 2 LLM 유사성 판단 실패 (graceful 스킵): %s", e)
+        return None
+
+
+async def _check_data_sufficiency(
     results: list[dict[str, Any]],
     parsed: dict,
     template: Optional[dict],
     column_mapping: Optional[dict[str, Optional[str]]] = None,
+    llm: BaseChatModel | None = None,
+    app_config: Optional[AppConfig] = None,
 ) -> bool:
-    """결과 데이터의 충분성을 판단한다.
+    """결과 데이터의 충분성을 LLM 기반으로 판단한다.
 
-    column_mapping이 제공되면 매핑된 컬럼 기준으로 충분성을 판단한다.
+    column_mapping이 제공되면 LLM을 사용해 매핑된 컬럼이
+    쿼리 결과 키에 의미적으로 존재하는지 판단한다.
 
     Args:
         results: 쿼리 결과
         parsed: 파싱된 요구사항
         template: 양식 구조 (있을 때)
         column_mapping: 필드-컬럼 매핑 (field_mapper 결과, 선택)
+        llm: LLM 인스턴스 (없으면 내부 생성)
+        app_config: 앱 설정 (임계값 참조, 없으면 내부 로드)
 
     Returns:
         데이터가 충분하면 True
     """
-    # 결과가 0건이면 부족하지 않음 (empty는 정상 응답)
-    if len(results) == 0:
-        return True  # "해당 데이터 없음"으로 응답
+    # --- Case 1: 빈 결과 ---
+    if not results:
+        if parsed.get("aggregation"):
+            return False
+        return True
 
-    # column_mapping 기반 충분성 검사 (개선된 방식)
-    if column_mapping and results:
-        result_keys = set(results[0].keys())
-        mapped_columns = [v for v in column_mapping.values() if v is not None]
-        if not mapped_columns:
+    result_keys = set(results[0].keys())
+
+    # --- Case 2: column_mapping 기반 (Excel/문서 모드) — LLM 매칭 ---
+    if column_mapping:
+        mapped_cols = [col for col in column_mapping.values() if col is not None]
+        if not mapped_cols:
             return True
 
-        matched = 0
-        for mc in mapped_columns:
-            if mc in result_keys:
-                matched += 1
-            elif "." in mc and mc.split(".", 1)[-1] in result_keys:
-                matched += 1
+        if app_config is None:
+            app_config = load_config()
+        threshold = app_config.query.sufficiency_required_threshold
 
-        return matched >= len(mapped_columns) * 0.5
+        matched_count = await _llm_check_column_coverage(
+            llm, mapped_cols, result_keys, app_config,
+        )
 
-    # 레거시: 양식 헤더 대비 컬럼 수 비교
+        if matched_count < len(mapped_cols) * threshold:
+            logger.warning(
+                "LLM 판단 매핑 컬럼 부족: %d/%d (기준 %.0f%%)",
+                matched_count, len(mapped_cols), threshold * 100,
+            )
+            return False
+
+        return True
+
+    # --- Case 3: 레거시 template 기반 ---
     if template:
         sheets = template.get("sheets", [{}])
         required_headers = sheets[0].get("headers", []) if sheets else []
         if required_headers:
-            available_cols = set(results[0].keys()) if results else set()
-            if len(available_cols) < len(required_headers) * 0.5:
+            result_keys_lower = {k.lower() for k in result_keys}
+            matched = sum(1 for h in required_headers if h.lower() in result_keys_lower)
+            if matched < len(required_headers) * 0.5:
                 return False
+
+    # --- Case 4: text 모드 ---
+    if not template and not column_mapping:
+        if len(result_keys) == 0:
+            return False
 
     return True
 
 
+async def _llm_check_column_coverage(
+    llm: BaseChatModel | None,
+    mapped_cols: list[str],
+    result_keys: set[str],
+    app_config: Optional[AppConfig] = None,
+) -> int:
+    """LLM을 사용하여 매핑된 컬럼이 결과 키에 포함되는 수를 판단한다.
+
+    Args:
+        llm: LLM 인스턴스 (없으면 내부 생성)
+        mapped_cols: 매핑된 DB 컬럼 목록
+        result_keys: SQL 결과의 실제 키 집합
+        app_config: 앱 설정
+
+    Returns:
+        매칭된 컬럼 수 (LLM 호출 실패 시 전체 수를 반환하여 충분으로 간주)
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    if llm is None:
+        try:
+            if app_config is None:
+                app_config = load_config()
+            llm = create_llm(app_config)
+        except Exception as e:
+            logger.warning("LLM 생성 실패, 충분성 검사 스킵: %s", e)
+            return len(mapped_cols)
+
+    system_prompt = (
+        "당신은 DB 컬럼명 매칭 전문가입니다.\n"
+        "매핑된 컬럼이 SQL 결과 키에 존재하는지 판단하세요.\n"
+        "이름이 다르더라도 의미적으로 동일하면 매칭입니다.\n"
+        "(예: table.column ↔ table_column, EAV:OSType ↔ os_type, CamelCase ↔ snake_case)\n\n"
+        "매칭된 매핑 컬럼만 JSON 배열로 출력하세요. 다른 설명은 불필요합니다.\n"
+        '```json\n["matched_col1", "matched_col2"]\n```'
+    )
+    user_prompt = (
+        f"## 매핑된 컬럼\n{json_module.dumps(mapped_cols, ensure_ascii=False)}\n\n"
+        f"## SQL 결과 키\n{json_module.dumps(sorted(result_keys), ensure_ascii=False)}"
+    )
+
+    try:
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
+        response = await llm.ainvoke(messages)
+        content = response.content.strip()
+
+        if "```json" in content:
+            content = content.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in content:
+            content = content.split("```", 1)[1].split("```", 1)[0].strip()
+
+        matched: list = json_module.loads(content)
+        if isinstance(matched, list):
+            count = len(matched)
+            logger.info(
+                "LLM 컬럼 커버리지 판단: %d/%d 매칭", count, len(mapped_cols),
+            )
+            return count
+
+    except Exception as e:
+        logger.warning("LLM 컬럼 커버리지 판단 실패, 충분으로 간주: %s", e)
+
+    return len(mapped_cols)
+
+
 def _format_numbers(
     results: list[dict[str, Any]],
-    parsed: dict,
+    parsed: dict,  # noqa: ARG001 - 향후 요구사항 기반 포맷팅 확장용
 ) -> list[dict[str, Any]]:
     """숫자 데이터에 적절한 포맷을 적용한다.
 
@@ -194,7 +413,7 @@ def _format_numbers(
 
     Args:
         results: 원본 결과
-        parsed: 파싱된 요구사항
+        parsed: 파싱된 요구사항 (향후 확장용)
 
     Returns:
         포맷팅된 결과
@@ -362,6 +581,7 @@ async def _perform_per_sheet_field_mapping(
             results.append(SheetMappingResult(
                 sheet_name=sheet_name,
                 column_mapping=col_mapping,
+                resolved_mapping=None,
                 rows=rows,
             ))
 

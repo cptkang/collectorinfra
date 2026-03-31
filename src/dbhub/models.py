@@ -84,3 +84,52 @@ class QueryExecutionError(DBHubError):
         """
         self.sql = sql
         super().__init__(message)
+
+
+def schema_to_dict(
+    schema: SchemaInfo,
+    relevant_tables: list[str],
+) -> dict[str, Any]:
+    """SchemaInfo를 dict로 변환한다 (State에 저장 가능한 형태).
+
+    Args:
+        schema: SchemaInfo 인스턴스
+        relevant_tables: 포함할 테이블 목록
+
+    Returns:
+        스키마 딕셔너리
+    """
+    tables_dict: dict[str, Any] = {}
+    for table_name in relevant_tables:
+        if table_name in schema.tables:
+            table = schema.tables[table_name]
+            tables_dict[table_name] = {
+                "columns": [
+                    {
+                        "name": col.name,
+                        "type": col.data_type,
+                        "nullable": col.nullable,
+                        "primary_key": col.is_primary_key,
+                        "foreign_key": col.is_foreign_key,
+                        "references": col.references,
+                    }
+                    for col in table.columns
+                ],
+                "row_count_estimate": table.row_count_estimate,
+                "sample_data": [],
+            }
+
+    relevant_set = set(relevant_tables)
+    relationships = [
+        rel
+        for rel in schema.relationships
+        if (
+            rel["from"].split(".")[0] in relevant_set
+            and rel["to"].split(".")[0] in relevant_set
+        )
+    ]
+
+    return {
+        "tables": tables_dict,
+        "relationships": relationships,
+    }

@@ -27,7 +27,7 @@ def fill_excel_template(
     *,
     sheet_mappings: list[dict[str, Any]] | None = None,
     target_sheets: list[str] | None = None,
-) -> bytes:
+) -> tuple[bytes, int]:
     """Excel 양식에 조회 결과를 채워넣는다.
 
     멀티시트 지원:
@@ -44,7 +44,7 @@ def fill_excel_template(
         target_sheets: 대상 시트명 목록 (None이면 전체 시트)
 
     Returns:
-        데이터가 채워진 Excel 파일 바이너리
+        (데이터가 채워진 Excel 파일 바이너리, 채워진 데이터 건수) 튜플
 
     Raises:
         ValueError: 파일을 처리할 수 없는 경우
@@ -86,10 +86,16 @@ def fill_excel_template(
         sheet_rows = per_sheet_rows.get(sheet_name, rows)
 
         if sheet_col_mapping:
-            _fill_sheet(ws, sheet_info, sheet_col_mapping, sheet_rows)
-            total_filled += len(sheet_rows)
+            sheet_filled = _fill_sheet(ws, sheet_info, sheet_col_mapping, sheet_rows)
+            total_filled += sheet_filled
         else:
             logger.debug("시트 '%s': 매핑 정보가 없어 스킵", sheet_name)
+
+    # 결과 검증 로깅
+    if total_filled == 0 and any(sheet.get("header_cells") for sheet in sheets_info):
+        logger.warning(
+            "데이터가 0건 채워졌습니다! column_mapping 키와 header_cells 값을 확인하세요."
+        )
 
     # 바이너리로 저장
     output = io.BytesIO()
@@ -98,7 +104,7 @@ def fill_excel_template(
     output.seek(0)
 
     logger.info("Excel 파일 생성 완료: %d건 데이터 채움 (시트 수: %d)", total_filled, len(sheets_info))
-    return output.getvalue()
+    return output.getvalue(), total_filled
 
 
 def _fill_sheet(
@@ -106,7 +112,7 @@ def _fill_sheet(
     sheet_info: dict[str, Any],
     column_mapping: dict[str, Optional[str]],
     rows: list[dict[str, Any]],
-) -> None:
+) -> int:
     """단일 시트에 데이터를 채운다.
 
     Args:
@@ -114,6 +120,9 @@ def _fill_sheet(
         sheet_info: 시트 구조 정보
         column_mapping: 필드-컬럼 매핑
         rows: 조회 결과 행 목록
+
+    Returns:
+        실제로 값이 채워진 셀 수
     """
     header_cells = sheet_info.get("header_cells", [])
     data_start_row = sheet_info.get("data_start_row", 2)
@@ -128,9 +137,19 @@ def _fill_sheet(
         if mapped:
             col_assignments.append((col_idx, mapped))
 
+    # Phase 3: 상세 로깅
+    logger.debug(
+        "시트 '%s': col_assignments=%d/%d, 매핑된 헤더=%s, 데이터 rows=%d",
+        ws.title,
+        len(col_assignments),
+        len(header_cells),
+        [(hc["value"], column_mapping.get(hc["value"])) for hc in header_cells[:5]],
+        len(rows),
+    )
+
     if not col_assignments:
         logger.warning("시트 '%s': 매핑된 컬럼이 없어 데이터 채우기 스킵", ws.title)
-        return
+        return 0
 
     # 매칭 실패한 헤더 경고 로그
     mapped_headers = {hc["value"] for hc in header_cells if column_mapping.get(hc["value"])}
@@ -139,10 +158,22 @@ def _fill_sheet(
     if unmapped:
         logger.info("시트 '%s': 매핑 안 된 헤더=%s", ws.title, unmapped)
 
+    # Phase 3: 첫 번째 row의 키 로깅
+    if rows:
+        logger.debug(
+            "시트 '%s': 첫 행 키=%s",
+            ws.title,
+            list(rows[0].keys())[:10],
+        )
+
+    # Phase 4: 역방향 매핑 구축 (db_column -> field_name)
+    reverse_mapping = {v: k for k, v in column_mapping.items() if v}
+
     # 서식 참조용: 데이터 시작 행의 기존 셀 스타일 수집
     style_cache = _collect_row_styles(ws, data_start_row, [ca[0] for ca in col_assignments])
 
     # 데이터 채우기
+    filled_count = 0
     for row_offset, data_row in enumerate(rows):
         target_row = data_start_row + row_offset
 
@@ -152,17 +183,25 @@ def _fill_sheet(
                 continue  # 수식 셀은 건너뜀
 
             # DB 컬럼에서 값 추출 (table.column -> column)
-            value = _get_value_from_row(data_row, db_column)
+            value = _get_value_from_row(data_row, db_column, reverse_mapping)
 
             cell = ws.cell(row=target_row, column=col_idx)
             # None 값 처리: 매핑된 컬럼에 값이 없으면 원본 셀 값 유지
             if value is None:
                 continue
             cell.value = value
+            filled_count += 1
 
             # 서식 적용
             if col_idx in style_cache:
                 _apply_style(cell, style_cache[col_idx])
+
+    logger.debug(
+        "시트 '%s': 데이터 채우기 완료, 채워진 셀=%d",
+        ws.title,
+        filled_count,
+    )
+    return filled_count
 
 
 def _collect_row_styles(
@@ -217,14 +256,17 @@ def _apply_style(cell: Cell, style: dict[str, Any]) -> None:
 def _get_value_from_row(
     data_row: dict[str, Any],
     db_column: str,
+    reverse_mapping: dict[str, str] | None = None,
 ) -> Any:
     """데이터 행에서 DB 컬럼에 해당하는 값을 추출한다.
 
     "table.column" 형식의 키와 "column" 형식의 키를 모두 시도한다.
+    역방향 매핑(db_column -> field_name)을 사용하여 한글 필드명으로도 검색한다.
 
     Args:
         data_row: 조회 결과 행
         db_column: "table.column" 형식의 DB 컬럼명
+        reverse_mapping: {db_column: field_name} 역매핑 딕셔너리 (선택)
 
     Returns:
         추출된 값 또는 None
@@ -239,12 +281,69 @@ def _get_value_from_row(
         if col_name in data_row:
             return data_row[col_name]
 
-    # 3. 대소문자 무시 검색
-    lower_col = db_column.lower()
+    # 2.5 "EAV:attr" 형식 처리 (EAV 피벗 쿼리 결과 매칭)
+    if db_column.startswith("EAV:"):
+        attr_name = db_column[4:]
+        if attr_name in data_row:
+            return data_row[attr_name]
+        lower_attr = attr_name.lower()
+        for key, value in data_row.items():
+            if key.lower() == lower_attr:
+                return value
+
+    # 3. 대소문자 무시 검색 (EAV 접두사 고려)
+    effective = db_column[4:] if db_column.startswith("EAV:") else db_column
+    lower_col = effective.lower()
+    col_only_lower = (
+        effective.split(".", 1)[1].lower() if "." in effective else lower_col
+    )
     for key, value in data_row.items():
-        if key.lower() == lower_col or (
-            "." in db_column and key.lower() == db_column.split(".", 1)[1].lower()
-        ):
+        if key.lower() == lower_col or key.lower() == col_only_lower:
+            return value
+
+    # 3.5 CamelCase<->snake_case 변환 + 언더스코어 제거 비교 (Layer 3 폴백)
+    from src.utils.column_matcher import _is_close_match, camel_to_snake
+
+    effective_snake = camel_to_snake(effective)
+    effective_no_underscore = effective.lower().replace("_", "")
+    for key, value in data_row.items():
+        if camel_to_snake(key) == effective_snake:
+            return value
+        if key.lower().replace("_", "") == effective_no_underscore:
+            return value
+
+    # 3.6 오타 대응: snake_case 변환 후 편집 거리 1 이내 매칭
+    for key, value in data_row.items():
+        key_snake = camel_to_snake(key)
+        if _is_close_match(effective_snake, key_snake):
+            return value
+        if _is_close_match(effective_no_underscore, key.lower().replace("_", "")):
+            return value
+
+    # 4. 역방향 매핑: 한글 필드명(alias)으로 검색
+    if reverse_mapping:
+        field_name = reverse_mapping.get(db_column)
+        if field_name and field_name in data_row:
+            logger.debug("역매핑 매칭: '%s' -> field_name '%s'", db_column, field_name)
+            return data_row[field_name]
+        # 역매핑 필드명도 대소문자 무시로 시도
+        if field_name:
+            lower_field = field_name.lower()
+            for key, value in data_row.items():
+                if key.lower() == lower_field:
+                    logger.debug(
+                        "역매핑 대소문자 무시 매칭: '%s' -> '%s'",
+                        db_column, key,
+                    )
+                    return value
+
+    # 5. 부분 매칭 (substring) 폴백
+    lower_col_base = (
+        db_column.split(".", 1)[-1].lower() if "." in db_column else lower_col
+    )
+    for key, value in data_row.items():
+        if lower_col_base in key.lower() or key.lower() in lower_col_base:
+            logger.debug("부분 매칭 성공: '%s' <-> '%s'", db_column, key)
             return value
 
     return None

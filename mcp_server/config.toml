@@ -1,13 +1,35 @@
 [server]
 name = "dbhub-server"
 host = "0.0.0.0"
-port = 9090
-transport = "sse"          # 네트워크 transport (별도 VM이므로 sse 필수)
+port = 9099
+transport = "sse"     # 네트워크 transport (별도 VM이므로 sse 필수)
 log_level = "info"
+
+# ============================================================
+# 데이터소스 정의
+# ============================================================
+# 여기서 정의한 name 값이 MCP 프로토콜의 source 식별자로 사용된다.
+#
+# [연동 설정 체크리스트] — 소스를 추가/변경할 때 아래 3곳을 반드시 맞춰야 한다:
+#
+#  ① 여기 (mcp_server/config.toml)  ← 기준점
+#     → [[sources]] name = "소스명"  으로 소스를 정의
+#
+#  ② MCP 서버 환경변수 (mcp_server/.env)
+#     → {소스명을 대문자로}_CONNECTION 으로 DB 연결 문자열 설정
+#     → 예: name="polestar" → POLESTAR_CONNECTION=postgresql://...
+#     → 연결 문자열이 비어있거나 주석 처리된 소스는 자동 비활성
+#
+#  ③ 클라이언트 환경변수 (프로젝트 루트 .env)
+#     → 단일 DB 모드: DBHUB_SOURCE_NAME=소스명     (여기 name과 정확히 일치해야 함)
+#     → 멀티 DB 모드: ACTIVE_DB_IDS=소스명1,소스명2  (쉼표 구분, 여기 name과 정확히 일치해야 함)
+#
+# ※ 소스명이 하나라도 불일치하면 "알 수 없는 소스" 에러 발생
+# ============================================================
 
 # === PostgreSQL (Docker :5433) ===
 [[sources]]
-name = "infra_db"
+name = "infra_db"   # → mcp_server/.env: INFRA_DB_CONNECTION
 type = "postgresql"
 # connection은 .env에서 오버라이드 (보안상 TOML에 직접 기재하지 않음)
 readonly = true
@@ -18,39 +40,34 @@ pool_max_size = 5
 
 # === DB2 (Docker :50000) ===
 [[sources]]
-name = "infra_db2"
+name = "infra_db2" # → mcp_server/.env: INFRA_DB2_CONNECTION
 type = "db2"
 # connection은 .env에서 오버라이드
 readonly = true
 query_timeout = 30
 max_rows = 10000
 
-# === 멀티 DB (운영 환경용, 개발 시 비활성) ===
+# === Polestar (개발: Docker :5434 PostgreSQL / 운영: 실제 DB2) ===
 [[sources]]
-name = "polestar"
+name = "polestar"   # → mcp_server/.env: POLESTAR_CONNECTION
 type = "postgresql"
+# connection은 .env에서 오버라이드
 readonly = true
 query_timeout = 30
 max_rows = 10000
 pool_min_size = 1
 pool_max_size = 3
 
+# === 멀티 DB (운영 환경용, 개발 시 비활성) ===
 [[sources]]
-name = "cloud_portal"
+name = "cloud_portal" # → mcp_server/.env: CLOUD_PORTAL_CONNECTION
 type = "postgresql"
 readonly = true
 query_timeout = 30
 max_rows = 10000
 
 [[sources]]
-name = "itsm"
-type = "postgresql"
-readonly = true
-query_timeout = 30
-max_rows = 10000
-
-[[sources]]
-name = "itam"
+name = "itsm"       # → mcp_server/.env: ITSM_CONNECTION
 type = "postgresql"
 readonly = true
 query_timeout = 30

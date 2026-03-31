@@ -632,16 +632,16 @@ async def _handle_invalidate(
     cache_mgr: Any,
     db_id: Optional[str],
 ) -> str:
-    """캐시 삭제를 처리한다 (synonyms는 보존)."""
+    """캐시 삭제를 처리한다 (글로벌 사전만 보존)."""
     if db_id:
         success = await cache_mgr.invalidate(db_id)
         return (
             f"{db_id} 캐시 삭제 {'성공' if success else '실패'} "
-            f"(유사 단어는 보존됩니다)"
+            f"(글로벌 사전만 보존됩니다)"
         )
     else:
         count = await cache_mgr.invalidate_all()
-        return f"전체 캐시 {count}개 삭제 완료 (유사 단어는 보존됩니다)"
+        return f"전체 캐시 {count}개 삭제 완료 (글로벌 사전만 보존됩니다)"
 
 
 async def _handle_list_synonyms(

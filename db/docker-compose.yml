@@ -1,9 +1,8 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:16-alpine
     container_name: infra_monitoring_db
+    restart: unless-stopped
     environment:
       POSTGRES_DB: infra_db
       POSTGRES_USER: infra_user
@@ -21,3 +20,4 @@ services:
 
 volumes:
   pgdata:
+    name: infra_pgdata

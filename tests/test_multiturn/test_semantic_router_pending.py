@@ -45,6 +45,9 @@ class TestPendingSynonymRegistrationsRouting:
 
     async def test_routes_to_synonym_registrar(self):
         state = create_initial_state(user_query="전체 등록")
+        state["parsed_requirements"] = {
+            "synonym_registration": {"mode": "all", "indices": []},
+        }
         state["pending_synonym_registrations"] = [
             {"index": 1, "field": "CPU 사용률", "column": "cpu_metrics.usage_pct", "db_id": "polestar"},
         ]

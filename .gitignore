@@ -1,5 +1,6 @@
 # 환경변수
 .env
+.encenv
 
 # Python
 __pycache__/
@@ -16,6 +17,7 @@ checkpoints.db
 
 # 로그
 logs/
+sqls/act/*.sql
 
 # IDE
 .vscode/

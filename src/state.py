@@ -25,6 +25,7 @@ class SheetMappingResult(TypedDict):
 
     sheet_name: str
     column_mapping: Optional[dict[str, str]]
+    resolved_mapping: Optional[dict[str, str]]
     rows: list[dict[str, Any]]
 
 
@@ -34,6 +35,7 @@ class OrganizedData(TypedDict):
     summary: str
     rows: list[dict[str, Any]]
     column_mapping: Optional[dict[str, str]]
+    resolved_mapping: Optional[dict[str, str]]
     is_sufficient: bool
     sheet_mappings: Optional[list[SheetMappingResult]]
 
@@ -68,6 +70,7 @@ class AgentState(TypedDict):
     parsed_requirements: dict                # 구조화된 요구사항
     template_structure: Optional[dict]       # 양식 구조 정보
     target_sheets: Optional[list[str]]       # 대상 시트 목록 (None이면 전체 시트)
+    csv_sheet_data: Optional[dict[str, Any]]  # 시트별 CsvSheetData (dict 형태)
 
     # === DB 관련 ===
     relevant_tables: list[str]               # 관련 테이블 목록
@@ -97,6 +100,8 @@ class AgentState(TypedDict):
     mapping_sources: Optional[dict[str, str]]                # 매핑 출처 {field: "hint"|"synonym"|"llm_inferred"}
     mapped_db_ids: Optional[list[str]]                       # 매핑에서 식별된 DB 목록
     pending_synonym_registrations: Optional[list[dict]]      # 유사어 등록 대기 [{index, field, column, db_id}]
+    llm_inference_details: Optional[list[dict]]              # LLM 추론 매핑 상세 [{field, db_id, column, matched_synonym, confidence, reason}]
+    mapping_report_md: Optional[str]                         # 매핑 보고서 Markdown 텍스트
 
     # === 유사단어 재활용 대기 ===
     pending_synonym_reuse: Optional[dict]
@@ -105,6 +110,9 @@ class AgentState(TypedDict):
     #   "target_db_id": "new_db",  (선택)
     #   "suggestions": [{"column": "hostname", "words": [...], "description": "..."}],
     # }
+
+    # === DB 엔진 정보 ===
+    active_db_engine: Optional[str]  # 현재 DB의 엔진 타입 ("db2", "postgresql", etc.)
 
     # === 시멘틱 라우팅 ===
     routing_intent: Optional[str]            # 라우팅 의도 ("data_query" | "cache_management")
@@ -138,6 +146,7 @@ def create_initial_state(
     uploaded_file: Optional[bytes] = None,
     file_type: Optional[str] = None,
     thread_id: Optional[str] = None,
+    csv_sheet_data: Optional[dict[str, Any]] = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -146,6 +155,7 @@ def create_initial_state(
         uploaded_file: 업로드된 파일 바이너리 (선택)
         file_type: 파일 유형 (선택)
         thread_id: 세션 식별자 (선택, 멀티턴 대화용)
+        csv_sheet_data: 시트별 CsvSheetData dict (선택, Excel CSV 변환 결과)
 
     Returns:
         초기화된 AgentState
@@ -157,6 +167,7 @@ def create_initial_state(
         parsed_requirements={},
         template_structure=None,
         target_sheets=None,
+        csv_sheet_data=csv_sheet_data,
         relevant_tables=[],
         schema_info={},
         column_mapping=None,
@@ -164,6 +175,8 @@ def create_initial_state(
         mapping_sources=None,
         mapped_db_ids=None,
         pending_synonym_registrations=None,
+        llm_inference_details=None,
+        mapping_report_md=None,
         pending_synonym_reuse=None,
         column_descriptions={},
         column_synonyms={},
@@ -176,6 +189,7 @@ def create_initial_state(
             "summary": "",
             "rows": [],
             "column_mapping": None,
+            "resolved_mapping": None,
             "is_sufficient": False,
             "sheet_mappings": None,
         },
@@ -183,6 +197,7 @@ def create_initial_state(
         error_message=None,
         current_node="",
         query_attempts=[],
+        active_db_engine=None,
         routing_intent=None,
         target_databases=[],
         active_db_id=None,

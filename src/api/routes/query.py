@@ -8,6 +8,7 @@ SSE 스트리밍 응답도 지원한다.
 from __future__ import annotations
 
 import asyncio
+import csv
 import io
 import json
 import logging
@@ -186,6 +187,24 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 return {"turn_count": ctx.get("turn_count", 1)}
             return None
 
+        elif node_name == "field_mapper":
+            mapping = output.get("column_mapping") or {}
+            sources = output.get("mapping_sources") or {}
+            has_report = output.get("mapping_report_md") is not None
+            data = {
+                "mapped_count": sum(1 for v in mapping.values() if v is not None),
+                "total_count": len(mapping),
+                "has_mapping_report": has_report,
+            }
+            if sources:
+                data["sources"] = {
+                    "hint": sum(1 for s in sources.values() if s == "hint"),
+                    "synonym": sum(1 for s in sources.values() if s == "synonym"),
+                    "eav_synonym": sum(1 for s in sources.values() if s == "eav_synonym"),
+                    "llm_inferred": sum(1 for s in sources.values() if s == "llm_inferred"),
+                }
+            return data if data.get("total_count") else None
+
         elif node_name == "approval_gate":
             if output.get("awaiting_approval"):
                 return {"awaiting_approval": True, "sql": output.get("approval_context", {}).get("sql", "")}
@@ -287,8 +306,14 @@ async def process_query(
         "row_count": len(result.get("query_results", [])),
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
+        "has_mapping_report": result.get("mapping_report_md") is not None,
     }
-    _store_result(query_id, {**response_data, "output_file": result.get("output_file")})
+    _store_result(query_id, {
+        **response_data,
+        "output_file": result.get("output_file"),
+        "mapping_report_md": result.get("mapping_report_md"),
+        "query_results": result.get("query_results", []),
+    })
 
     return QueryResponse(**response_data)
 
@@ -340,6 +365,8 @@ async def process_query_stream(
         start_time = time.time()
         streamed_any_token = False
         _seen_nodes: set[str] = set()
+        _tracked_row_count: int = 0
+        _tracked_query_results: list[dict] = []
 
         try:
             if hasattr(graph, "astream_events"):
@@ -357,6 +384,7 @@ async def process_query_stream(
                             _known_nodes = {
                                 "context_resolver", "input_parser",
                                 "semantic_router", "schema_analyzer",
+                                "field_mapper",
                                 "query_generator", "query_validator",
                                 "approval_gate", "query_executor",
                                 "result_organizer", "output_generator",
@@ -375,6 +403,12 @@ async def process_query_stream(
                         if kind == "on_chain_end" and name:
                             node_output = event.get("data", {}).get("output", {})
                             if isinstance(node_output, dict) and name in _seen_nodes:
+                                # query_results를 반환하는 노드에서 추적
+                                if name in ("query_executor", "multi_db_executor", "result_merger"):
+                                    node_qr = node_output.get("query_results")
+                                    if isinstance(node_qr, list):
+                                        _tracked_row_count = len(node_qr)
+                                        _tracked_query_results = node_qr
                                 progress_data = _extract_node_progress(name, node_output)
                                 if progress_data:
                                     yield _sse_event({
@@ -405,10 +439,14 @@ async def process_query_stream(
                                         "content": output.get("final_response", ""),
                                     })
 
+                                # output_generator 노드 출력에는 query_results가 없으므로
+                                # 이전 노드에서 추적한 _tracked_row_count 사용
+                                _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
+
                                 yield _sse_event({
                                     "type": "meta",
                                     "executed_sql": output.get("generated_sql"),
-                                    "row_count": len(output.get("query_results", [])),
+                                    "row_count": _final_row_count,
                                 })
 
                                 status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
@@ -422,13 +460,16 @@ async def process_query_stream(
                                     "has_file": output.get("output_file") is not None,
                                     "file_name": output.get("output_file_name"),
                                     "executed_sql": output.get("generated_sql"),
-                                    "row_count": len(output.get("query_results", [])),
+                                    "row_count": _final_row_count,
                                     "processing_time_ms": elapsed_ms,
                                     "turn_count": turn_count,
+                                    "has_mapping_report": output.get("mapping_report_md") is not None,
                                 }
                                 _store_result(query_id, {
                                     **response_data,
                                     "output_file": output.get("output_file"),
+                                    "mapping_report_md": output.get("mapping_report_md"),
+                                    "query_results": output.get("query_results") or _tracked_query_results,
                                 })
 
                                 yield _sse_event({
@@ -442,6 +483,7 @@ async def process_query_stream(
                                     "file_name": response_data.get("file_name"),
                                     "awaiting_approval": output.get("awaiting_approval", False),
                                     "turn_count": turn_count,
+                                    "has_mapping_report": response_data.get("has_mapping_report", False),
                                 })
                                 return
 
@@ -482,10 +524,13 @@ async def process_query_stream(
                 "row_count": len(result.get("query_results", [])),
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,
+                "has_mapping_report": result.get("mapping_report_md") is not None,
             }
             _store_result(query_id, {
                 **response_data,
                 "output_file": result.get("output_file"),
+                "mapping_report_md": result.get("mapping_report_md"),
+                "query_results": result.get("query_results", []),
             })
 
             yield _sse_event({
@@ -498,6 +543,7 @@ async def process_query_stream(
                 "has_file": response_data["has_file"],
                 "file_name": response_data.get("file_name"),
                 "turn_count": turn_count,
+                "has_mapping_report": response_data.get("has_mapping_report", False),
             })
 
         except asyncio.TimeoutError:
@@ -551,7 +597,24 @@ async def process_file_query(
     if len(file_bytes) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="파일 크기가 10MB를 초과합니다.")
 
-    # 3. 초기 State 생성
+    # 3. Excel → CSV 변환 (xlsx인 경우, Redis 캐시 활용)
+    csv_sheet_data = None
+    if file_ext == "xlsx":
+        try:
+            from dataclasses import asdict
+
+            from src.document.excel_csv_converter import excel_to_csv_cached
+            from src.schema_cache.cache_manager import get_cache_manager
+
+            cache_mgr = get_cache_manager(request.app.state.config)
+            csv_result = await excel_to_csv_cached(
+                file_bytes, cache_manager=cache_mgr
+            )
+            csv_sheet_data = {k: asdict(v) for k, v in csv_result.items()}
+        except Exception as e:
+            logger.warning("Excel→CSV 변환 실패, 기존 방식으로 진행: %s", e)
+
+    # 4. 초기 State 생성
     query_id = str(uuid.uuid4())
     start_time = time.time()
 
@@ -564,11 +627,12 @@ async def process_file_query(
         uploaded_file=file_bytes,
         file_type=file_ext,
         thread_id=actual_thread_id,
+        csv_sheet_data=csv_sheet_data,
     )
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
 
-    # 4. 그래프 실행
+    # 5. 그래프 실행
     try:
         result = await asyncio.wait_for(
             graph.ainvoke(initial_state, thread_config),
@@ -597,8 +661,14 @@ async def process_file_query(
         "row_count": len(result.get("query_results", [])),
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
+        "has_mapping_report": result.get("mapping_report_md") is not None,
     }
-    _store_result(query_id, {**response_data, "output_file": result.get("output_file")})
+    _store_result(query_id, {
+        **response_data,
+        "output_file": result.get("output_file"),
+        "mapping_report_md": result.get("mapping_report_md"),
+        "query_results": result.get("query_results", []),
+    })
 
     return QueryResponse(**response_data)
 
@@ -631,7 +701,120 @@ async def get_query_result(query_id: str) -> QueryResponse:
         row_count=stored.get("row_count"),
         processing_time_ms=stored.get("processing_time_ms"),
         turn_count=stored.get("turn_count"),
+        has_mapping_report=stored.get("has_mapping_report", False),
     )
+
+
+@router.get("/query/{query_id}/mapping-report")
+async def download_mapping_report(query_id: str) -> StreamingResponse:
+    """매핑 보고서 MD 파일을 다운로드한다."""
+    if query_id not in _results_store:
+        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+
+    stored = _results_store[query_id]
+    report_md = stored.get("mapping_report_md")
+
+    if not report_md:
+        raise HTTPException(status_code=404, detail="매핑 보고서가 없습니다.")
+
+    return StreamingResponse(
+        io.BytesIO(report_md.encode("utf-8")),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="mapping_report_{query_id[:8]}.md"'
+        },
+    )
+
+
+@router.post("/query/mapping-feedback")
+async def process_mapping_feedback(
+    request: Request,
+    file: UploadFile = File(...),
+    query_id: str = Form(...),
+) -> dict:
+    """수정된 매핑 보고서 MD 파일을 업로드하여 Redis에 반영한다.
+
+    사용자가 매핑 보고서를 다운로드 -> 수정 -> 업로드하면
+    원본과 비교하여 변경사항을 Redis synonyms에 반영한다.
+
+    Args:
+        request: FastAPI Request (app.state.config 접근용)
+        file: 수정된 매핑 보고서 MD 파일
+        query_id: 원본 결과의 query_id
+
+    Returns:
+        반영 결과 딕셔너리
+    """
+    # 1. 원본 보고서 조회
+    if query_id not in _results_store:
+        raise HTTPException(status_code=404, detail="원본 결과를 찾을 수 없습니다.")
+
+    stored = _results_store[query_id]
+    original_md = stored.get("mapping_report_md")
+    if not original_md:
+        raise HTTPException(status_code=404, detail="원본 매핑 보고서가 없습니다.")
+
+    # 2. 업로드된 파일 읽기
+    file_bytes = await file.read()
+    if len(file_bytes) > 1 * 1024 * 1024:  # 1MB 제한
+        raise HTTPException(status_code=400, detail="파일 크기가 1MB를 초과합니다.")
+
+    try:
+        modified_md = file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="파일 인코딩이 올바르지 않습니다. UTF-8 형식이어야 합니다.",
+        )
+
+    # 3. 원본/수정본 파싱
+    from src.document.mapping_report import parse_mapping_report
+
+    original_mappings = parse_mapping_report(original_md)
+    modified_mappings = parse_mapping_report(modified_md)
+
+    if not original_mappings:
+        raise HTTPException(
+            status_code=400, detail="원본 보고서 파싱에 실패했습니다."
+        )
+    if not modified_mappings:
+        raise HTTPException(
+            status_code=400,
+            detail="수정된 보고서 파싱에 실패했습니다. 테이블 형식을 확인하세요.",
+        )
+
+    # 4. 변경사항 추출
+    from src.document.field_mapper import analyze_md_diff
+
+    diff = analyze_md_diff(original_mappings, modified_mappings)
+
+    if (
+        not diff.get("added")
+        and not diff.get("modified")
+        and not diff.get("deleted")
+    ):
+        return {"status": "no_changes", "summary": "변경사항이 없습니다."}
+
+    # 5. Redis 반영
+    from src.document.field_mapper import apply_mapping_feedback_to_redis
+    from src.schema_cache.cache_manager import get_cache_manager
+
+    config = request.app.state.config
+    cache_mgr = get_cache_manager(config)
+    if not cache_mgr.redis_available:
+        await cache_mgr.ensure_redis_connected()
+
+    result = await apply_mapping_feedback_to_redis(cache_mgr, diff)
+
+    return {
+        "status": "applied",
+        "diff": {
+            "added": len(diff.get("added", [])),
+            "modified": len(diff.get("modified", [])),
+            "deleted": len(diff.get("deleted", [])),
+        },
+        "result": result,
+    }
 
 
 @router.get("/query/{query_id}/download")
@@ -658,5 +841,38 @@ async def download_file(query_id: str) -> StreamingResponse:
         media_type=content_type,
         headers={
             "Content-Disposition": f'attachment; filename="{file_name}"'
+        },
+    )
+
+
+@router.get("/query/{query_id}/download-csv")
+async def download_csv(query_id: str) -> StreamingResponse:
+    """조회 결과를 CSV 파일로 다운로드한다."""
+    if query_id not in _results_store:
+        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+
+    stored = _results_store[query_id]
+    rows = stored.get("query_results", [])
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="다운로드할 조회 결과가 없습니다.")
+
+    # CSV 생성 (BOM 포함하여 Excel에서 한글 깨짐 방지)
+    output = io.StringIO()
+    output.write("\ufeff")  # UTF-8 BOM
+
+    # 첫 번째 행에서 컬럼명 추출
+    fieldnames = list(rows[0].keys())
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+
+    csv_bytes = output.getvalue().encode("utf-8")
+
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="query_result_{query_id[:8]}.csv"'
         },
     )

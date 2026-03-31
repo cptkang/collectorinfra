@@ -46,6 +46,8 @@ class PersistentSchemaCache:
         """
         self._cache_dir = Path(cache_dir)
         self._enabled = enabled
+        self._mem_buffer: dict[str, Optional[dict]] = {}  # db_id -> 파일 내용 (None은 "파일 없음" 캐시)
+        self._mem_loaded: set[str] = set()  # 한번이라도 load 시도된 db_id
 
         if self._enabled:
             self._ensure_cache_dir()
@@ -78,6 +80,8 @@ class PersistentSchemaCache:
     def load(self, db_id: str) -> Optional[dict]:
         """캐시 파일에서 스키마 정보를 로드한다.
 
+        인메모리 버퍼에 이미 로드된 데이터가 있으면 파일 I/O를 스킵한다.
+
         Args:
             db_id: DB 식별자
 
@@ -87,6 +91,26 @@ class PersistentSchemaCache:
         if not self._enabled:
             return None
 
+        # 이미 메모리에 로드된 경우 파일 I/O 스킵
+        if db_id in self._mem_loaded:
+            return self._mem_buffer.get(db_id)
+
+        # 최초 파일 읽기
+        data = self._load_from_file(db_id)
+        self._mem_loaded.add(db_id)
+        if data is not None:
+            self._mem_buffer[db_id] = data
+        return data
+
+    def _load_from_file(self, db_id: str) -> Optional[dict]:
+        """파일에서 직접 캐시 데이터를 읽는다 (내부용).
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            캐시 데이터 또는 None
+        """
         cache_path = self._cache_file_path(db_id)
         if not cache_path.exists():
             logger.debug("캐시 파일 없음: %s", cache_path)
@@ -168,6 +192,9 @@ class PersistentSchemaCache:
                 fingerprint,
                 cache_path,
             )
+            # 저장 성공 시 메모리 버퍼 갱신
+            self._mem_buffer[db_id] = cache_data
+            self._mem_loaded.add(db_id)
             return True
 
         except OSError as e:
@@ -225,21 +252,29 @@ class PersistentSchemaCache:
     def invalidate(self, db_id: str) -> bool:
         """특정 DB의 캐시를 무효화(삭제)한다.
 
+        메모리 버퍼와 파일 캐시를 모두 삭제한다.
+
         Args:
             db_id: DB 식별자
 
         Returns:
             삭제 성공 여부
         """
+        self._mem_buffer.pop(db_id, None)
+        self._mem_loaded.discard(db_id)
         cache_path = self._cache_file_path(db_id)
         return self._safe_delete(cache_path)
 
     def invalidate_all(self) -> int:
         """모든 캐시 파일을 삭제한다.
 
+        메모리 버퍼와 파일 캐시를 모두 초기화한다.
+
         Returns:
             삭제된 파일 수
         """
+        self._mem_buffer.clear()
+        self._mem_loaded.clear()
         if not self._cache_dir.exists():
             return 0
 
@@ -324,10 +359,123 @@ class PersistentSchemaCache:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             tmp_path.replace(cache_path)
+            # 성공 시 메모리 버퍼 갱신
+            if db_id in self._mem_loaded and db_id in self._mem_buffer:
+                self._mem_buffer[db_id][field] = value
             return True
         except OSError as e:
             logger.warning("캐시 파일 필드 업데이트 실패 (%s): %s", cache_path, e)
             self._safe_delete(tmp_path)
+            return False
+
+    # === descriptions / synonyms 저장·로드 ===
+
+    def save_descriptions(self, db_id: str, descriptions: dict[str, str]) -> bool:
+        """컬럼 설명(descriptions)을 캐시 파일의 _descriptions 필드에 저장한다.
+
+        기존 캐시 파일이 존재해야 저장이 가능하다.
+        (캐시 파일이 없으면 False를 반환한다.)
+
+        Args:
+            db_id: DB 식별자
+            descriptions: {table.column: description} 매핑
+
+        Returns:
+            저장 성공 여부
+        """
+        return self.update_field(db_id, "_descriptions", descriptions)
+
+    def load_descriptions(self, db_id: str) -> dict[str, str]:
+        """캐시 파일에서 컬럼 설명(descriptions)을 로드한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            {table.column: description} 매핑. 캐시 파일이 없거나
+            _descriptions 필드가 없으면 빈 딕셔너리를 반환한다.
+        """
+        data = self.load(db_id)
+        if data is None:
+            return {}
+        return data.get("_descriptions", {})
+
+    def save_synonyms(self, db_id: str, synonyms: dict[str, list[str]]) -> bool:
+        """유사 단어(synonyms)를 캐시 파일의 _synonyms 필드에 저장한다.
+
+        기존 캐시 파일이 존재해야 저장이 가능하다.
+        (캐시 파일이 없으면 False를 반환한다.)
+
+        Args:
+            db_id: DB 식별자
+            synonyms: {table.column: [synonym, ...]} 매핑
+
+        Returns:
+            저장 성공 여부
+        """
+        return self.update_field(db_id, "_synonyms", synonyms)
+
+    def load_synonyms(self, db_id: str) -> dict[str, list[str]]:
+        """캐시 파일에서 유사 단어(synonyms)를 로드한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            {table.column: [synonym, ...]} 매핑. 캐시 파일이 없거나
+            _synonyms 필드가 없으면 빈 딕셔너리를 반환한다.
+        """
+        data = self.load(db_id)
+        if data is None:
+            return {}
+        return data.get("_synonyms", {})
+
+    def delete_field(self, db_id: str, field: str) -> bool:
+        """캐시 파일에서 특정 필드를 삭제한다.
+
+        원자적 쓰기(임시 파일 → replace) 패턴을 사용하여 안전하게 삭제한다.
+
+        Args:
+            db_id: DB 식별자
+            field: 삭제할 필드 이름 (예: "_descriptions", "_db_description")
+
+        Returns:
+            삭제 성공 여부. 필드가 이미 없으면 True를 반환한다.
+            캐시 파일 자체가 없으면 False를 반환한다.
+        """
+        data = self.load(db_id)
+        if data is None:
+            return False
+
+        if field not in data:
+            # 필드가 이미 존재하지 않으므로 성공으로 간주
+            return True
+
+        del data[field]
+
+        cache_path = self._cache_file_path(db_id)
+        try:
+            tmp_path = cache_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp_path.replace(cache_path)
+            logger.debug(
+                "캐시 필드 삭제 완료: db_id=%s, field=%s",
+                db_id,
+                field,
+            )
+            # 성공 시 메모리 버퍼 갱신
+            if db_id in self._mem_loaded and db_id in self._mem_buffer:
+                self._mem_buffer[db_id].pop(field, None)
+            return True
+        except OSError as e:
+            logger.warning(
+                "캐시 필드 삭제 실패 (db_id=%s, field=%s): %s",
+                db_id,
+                field,
+                e,
+            )
+            self._safe_delete(cache_path.with_suffix(".tmp"))
             return False
 
     @property

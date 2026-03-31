@@ -284,24 +284,45 @@ def register_tools(mcp: FastMCP) -> None:
 # --- PostgreSQL 스키마 조회 SQL ---
 
 
+def _pg_split_table_name(table_name: str) -> tuple[str, str]:
+    """테이블명에서 스키마와 테이블을 분리한다.
+
+    'schema.table' 형태면 분리하고, bare name이면 'public'을 기본으로 한다.
+    """
+    if "." in table_name:
+        schema, bare = table_name.split(".", 1)
+        return schema, bare
+    return "public", table_name
+
+
 def _pg_search_objects_sql(pattern: str, obj_type: str) -> str:
-    """PostgreSQL 객체 검색 SQL을 생성한다."""
+    """PostgreSQL 객체 검색 SQL을 생성한다.
+
+    public 스키마의 테이블은 bare name, 그 외 스키마는 schema.table 형태로 반환한다.
+    """
     type_filter = "BASE TABLE" if obj_type == "table" else "VIEW"
+    schema_exclude = (
+        "table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')"
+    )
+    name_expr = (
+        "CASE WHEN table_schema = 'public' THEN table_name "
+        "ELSE table_schema || '.' || table_name END AS name"
+    )
     if pattern == "*":
         return (
-            "SELECT table_name AS name, table_schema AS schema "
+            f"SELECT {name_expr}, table_schema AS schema "
             "FROM information_schema.tables "
-            f"WHERE table_schema = 'public' AND table_type = '{type_filter}' "
-            "ORDER BY table_name"
+            f"WHERE {schema_exclude} AND table_type = '{type_filter}' "
+            "ORDER BY table_schema, table_name"
         )
     else:
         safe_pattern = pattern.replace("'", "''").replace("*", "%")
         return (
-            "SELECT table_name AS name, table_schema AS schema "
+            f"SELECT {name_expr}, table_schema AS schema "
             "FROM information_schema.tables "
-            f"WHERE table_schema = 'public' AND table_type = '{type_filter}' "
+            f"WHERE {schema_exclude} AND table_type = '{type_filter}' "
             f"AND table_name LIKE '{safe_pattern}' "
-            "ORDER BY table_name"
+            "ORDER BY table_schema, table_name"
         )
 
 
@@ -309,10 +330,11 @@ async def _pg_get_columns(
     pm: DBPoolManager, source: str, table_name: str
 ) -> list[dict[str, Any]]:
     """PostgreSQL 테이블의 컬럼 정보를 조회한다."""
+    schema, bare = _pg_split_table_name(table_name)
     sql = (
         "SELECT column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns "
-        f"WHERE table_schema = 'public' AND table_name = '{table_name}' "
+        f"WHERE table_schema = '{schema}' AND table_name = '{bare}' "
         "ORDER BY ordinal_position"
     )
     return await pm.execute(source, sql)
@@ -322,13 +344,14 @@ async def _pg_get_primary_keys(
     pm: DBPoolManager, source: str, table_name: str
 ) -> list[dict[str, Any]]:
     """PostgreSQL 테이블의 PK 컬럼을 조회한다."""
+    schema, bare = _pg_split_table_name(table_name)
     sql = (
         "SELECT kcu.column_name "
         "FROM information_schema.table_constraints tc "
         "JOIN information_schema.key_column_usage kcu "
         "ON tc.constraint_name = kcu.constraint_name "
         "AND tc.table_schema = kcu.table_schema "
-        f"WHERE tc.table_schema = 'public' AND tc.table_name = '{table_name}' "
+        f"WHERE tc.table_schema = '{schema}' AND tc.table_name = '{bare}' "
         "AND tc.constraint_type = 'PRIMARY KEY'"
     )
     return await pm.execute(source, sql)
@@ -338,6 +361,7 @@ async def _pg_get_foreign_keys(
     pm: DBPoolManager, source: str, table_name: str
 ) -> list[dict[str, Any]]:
     """PostgreSQL 테이블의 FK 관계를 조회한다."""
+    schema, bare = _pg_split_table_name(table_name)
     sql = (
         "SELECT "
         "kcu.column_name AS from_column, "
@@ -350,7 +374,7 @@ async def _pg_get_foreign_keys(
         "JOIN information_schema.constraint_column_usage ccu "
         "ON tc.constraint_name = ccu.constraint_name "
         "AND tc.table_schema = ccu.table_schema "
-        f"WHERE tc.table_schema = 'public' AND tc.table_name = '{table_name}' "
+        f"WHERE tc.table_schema = '{schema}' AND tc.table_name = '{bare}' "
         "AND tc.constraint_type = 'FOREIGN KEY'"
     )
     try:

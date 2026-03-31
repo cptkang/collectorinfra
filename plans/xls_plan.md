@@ -744,20 +744,114 @@ Redis 캐시가 미구현인 경우에도 **2단계(synonyms 매핑)를 스킵**
 
 ### 구현 단계
 
-| 단계 | 작업 | 변경 파일 | 의존성 |
-|------|------|----------|--------|
-| **1** | State 변경 — 매핑 관련 필드 추가 | `src/state.py` | 없음 |
-| **2** | input_parser 확장 — `field_mapping_hints` 추출 | `src/nodes/input_parser.py`, `src/prompts/input_parser.py` | 없음 |
-| **3** | field_mapper 모듈 개선 — 3단계 매핑 로직, 멀티 DB, descriptions 프롬프트 | `src/document/field_mapper.py`, `src/prompts/field_mapper.py` | 단계 1 |
-| **4** | field_mapper 그래프 노드 신설 | `src/nodes/field_mapper.py`, `src/graph.py` | 단계 2, 3 |
-| **5** | semantic_router 개선 — mapped_db_ids 기반 라우팅 | `src/routing/semantic_router.py` | 단계 4 |
-| **6** | query_generator 프롬프트 개선 — column_mapping 기반 SELECT + alias | `src/nodes/query_generator.py`, `src/prompts/query_generator.py` | 단계 4 |
-| **7** | multi_db_executor 확장 — DB별 column_mapping 전달 | `src/nodes/multi_db_executor.py` | 단계 6 |
-| **8** | result_organizer 정리 — 중복 매핑 제거, 충분성 검사 개선 | `src/nodes/result_organizer.py` | 단계 4 |
-| **9** | output_generator — LLM 추론 매핑 정보 응답 + 유사어 등록 질문 포함 | `src/nodes/output_generator.py` | 단계 4 |
-| **10** | Excel/Word Writer 개선 — None 값 처리, .doc 변환 지원 | `src/document/excel_writer.py`, `src/document/word_writer.py`, `src/nodes/input_parser.py` | 단계 8 |
-| **11** | 유사어 등록 플로우 — 사용자 승인 시 Redis synonyms 등록 | `src/nodes/field_mapper.py`, `src/nodes/input_parser.py` | 단계 4, 9 |
-| **12** | 테스트 — end-to-end 검증 | `tests/` | 전체 |
+> **진행 현황 업데이트: 2026-03-23**
+> 전체 12단계 모두 구현 완료 (✅). 코드 리뷰 기준 계획 대비 100% 구현됨.
+
+| 단계 | 작업 | 변경 파일 | 의존성 | 상태 |
+|------|------|----------|--------|------|
+| **1** | State 변경 — 매핑 관련 필드 추가 | `src/state.py` | 없음 | ✅ 완료 |
+| **2** | input_parser 확장 — `field_mapping_hints` 추출 | `src/nodes/input_parser.py`, `src/prompts/input_parser.py` | 없음 | ✅ 완료 |
+| **3** | field_mapper 모듈 개선 — 3단계 매핑 로직, 멀티 DB, descriptions 프롬프트 | `src/document/field_mapper.py`, `src/prompts/field_mapper.py` | 단계 1 | ✅ 완료 |
+| **4** | field_mapper 그래프 노드 신설 | `src/nodes/field_mapper.py`, `src/graph.py` | 단계 2, 3 | ✅ 완료 |
+| **5** | semantic_router 개선 — mapped_db_ids 기반 라우팅 | `src/routing/semantic_router.py` | 단계 4 | ✅ 완료 |
+| **6** | query_generator 프롬프트 개선 — column_mapping 기반 SELECT + alias | `src/nodes/query_generator.py`, `src/prompts/query_generator.py` | 단계 4 | ✅ 완료 |
+| **7** | multi_db_executor 확장 — DB별 column_mapping 전달 | `src/nodes/multi_db_executor.py` | 단계 6 | ✅ 완료 |
+| **8** | result_organizer 정리 — 중복 매핑 제거, 충분성 검사 개선 | `src/nodes/result_organizer.py` | 단계 4 | ✅ 완료 |
+| **9** | output_generator — LLM 추론 매핑 정보 응답 + 유사어 등록 질문 포함 | `src/nodes/output_generator.py` | 단계 4 | ✅ 완료 |
+| **10** | Excel/Word Writer 개선 — None 값 처리, .doc 변환 지원 | `src/document/excel_writer.py`, `src/document/word_writer.py`, `src/nodes/input_parser.py` | 단계 8 | ✅ 완료 |
+| **11** | 유사어 등록 플로우 — 사용자 승인 시 Redis synonyms 등록 | `src/nodes/field_mapper.py`, `src/nodes/input_parser.py` | 단계 4, 9 | ✅ 완료 |
+| **12** | 테스트 — end-to-end 검증 | `tests/` | 전체 | ✅ 완료 |
+
+### 구현 상세 현황 (2026-03-23 기준)
+
+#### 단계 1: State 변경 ✅
+- `src/state.py`: `AgentState`에 `column_mapping`, `db_column_mapping`, `mapping_sources`, `mapped_db_ids`, `pending_synonym_registrations`, `pending_synonym_reuse` 필드 추가 완료
+- `create_initial_state()`에서 모든 신규 필드를 `None`으로 초기화 완료
+- `column_descriptions`, `column_synonyms`는 기존 flat dict 구조로 유지 (DB별 분리는 `db_column_mapping` 레벨에서 처리)
+
+#### 단계 2: input_parser 확장 ✅
+- `src/prompts/input_parser.py`: `field_mapping_hints`, `target_db_hints`, `synonym_registration` 추출 지시 추가 완료 (규칙 9~11)
+- `src/nodes/input_parser.py`: `_parse_natural_language()`에서 `field_mapping_hints`, `target_db_hints`, `synonym_registration` 기본값 설정 완료
+- `.doc` → `.docx` 변환: `_convert_doc_to_docx()` 함수로 `libreoffice --headless --convert-to docx` 실행, 타임아웃 30초, 실패 시 안내 메시지 반환
+- `_extract_target_sheets()`: LLM 파싱 + 정규식 폴백으로 시트명 추출 완료
+
+#### 단계 3: field_mapper 모듈 개선 ✅
+- `src/document/field_mapper.py`: `perform_3step_mapping()` 구현 완료
+  - 1단계 `_apply_hint_mapping()`: 프롬프트 힌트 → `_find_db_for_column()`로 DB 자동 결정
+  - 2단계 `_apply_synonym_mapping()`: `priority_db_ids` 우선 순회, `_synonym_match()`로 소문자 정규화 매칭
+  - 3단계 `_apply_llm_mapping()`: `_invoke_llm_mapping_multi_db()`로 멀티 DB descriptions 포함 프롬프트, 2회 재시도
+- `MappingResult` 클래스: `column_mapping`, `db_column_mapping`, `mapping_sources`, `mapped_db_ids` 포함
+- `extract_field_names()`: xlsx(sheets[*].headers) + docx(placeholders + tables[*].headers) 통합 추출
+- `src/prompts/field_mapper.py`: 단일 DB 프롬프트(`FIELD_MAPPER_SYSTEM_PROMPT`) + 멀티 DB 프롬프트(`FIELD_MAPPER_MULTI_DB_SYSTEM_PROMPT`) 완료
+- 레거시 API `map_fields()`, `map_fields_per_sheet()` 하위 호환 유지
+
+#### 단계 4: field_mapper 그래프 노드 ✅
+- `src/nodes/field_mapper.py`: 독립 노드로 구현 완료
+  - template_structure 없으면 스킵 (텍스트 모드 하위 호환)
+  - Redis 캐시 로드 → 3단계 매핑 → pending_synonym_registrations 생성
+  - `_load_db_cache_data()`: target_db_hints 기반 우선순위 DB 조회, Redis 실패 시 graceful fallback
+  - `_handle_synonym_registration()`: 전체/선택/단건 등록 처리
+  - `_build_pending_registrations()`: llm_inferred 항목만 추출하여 번호 부여
+- `src/graph.py`: `input_parser → field_mapper → semantic_router` 엣지 연결 완료
+
+#### 단계 5: semantic_router 개선 ✅
+- `src/routing/semantic_router.py`: 우선순위 라우팅 구현 완료
+  - [우선순위 1] `pending_synonym_reuse` → `cache_management` 강제 라우팅
+  - [우선순위 2] `pending_synonym_registrations` → `synonym_registrar` 라우팅
+  - [우선순위 3] `mapped_db_ids` → LLM 라우팅 스킵, 매핑 결과 기반 target_databases 생성
+  - 이후: 기존 LLM 라우팅 (텍스트 모드 하위 호환)
+
+#### 단계 6: query_generator 프롬프트 개선 ✅
+- `src/nodes/query_generator.py`: `_build_user_prompt()`에서 `column_mapping` 전달 시 "양식-DB 매핑" 섹션 생성, alias 규칙 `"테이블명.컬럼명"` 지시 포함
+- `column_mapping` 없으면 기존 `template_structure` JSON 전달 방식 유지 (하위 호환)
+- `src/prompts/query_generator.py`: 규칙 8 (alias 부여), 규칙 9 (여러 테이블 JOIN) 추가 완료
+
+#### 단계 7: multi_db_executor 확장 ✅
+- `src/nodes/multi_db_executor.py`: `_generate_sql()`에 `column_mapping` 파라미터 추가
+- DB별 `db_column_mapping[db_id]`를 전달하여 해당 DB의 매핑 컬럼만 SELECT에 포함하도록 프롬프트 구성
+- column_mapping이 있을 때 "양식-DB 매핑" 섹션을 user_parts에 추가
+
+#### 단계 8: result_organizer 정리 ✅
+- `src/nodes/result_organizer.py`: `state.get("column_mapping")`으로 field_mapper 매핑 결과 직접 사용
+- column_mapping 존재 시 LLM `_perform_field_mapping()` 호출 완전 스킵 ("field_mapper 매핑 사용" 로그)
+- column_mapping 없을 때만 레거시 폴백 (`_perform_field_mapping`, `_perform_per_sheet_field_mapping`)
+- `_check_data_sufficiency()`: column_mapping 기반 충분성 검사 (매핑 컬럼 50% 이상 매칭 시 충분), `table.column` → `column` 폴백 매칭 포함
+
+#### 단계 9: output_generator 개선 ✅
+- `src/nodes/output_generator.py`: `_append_inferred_mapping_info()` 함수로 LLM 추론 매핑 표시
+  - `mapping_sources`에서 `llm_inferred` 항목 수집
+  - 번호 부여하여 응답에 "[자동 매핑 안내]" 섹션 추가
+  - 유사어 등록 안내 (전체 등록 / 선택 등록 / 매핑 변경) 포함
+- `_generate_document_file()`: field_mapper State의 `column_mapping`을 우선 사용, 없으면 `organized_data`에서 폴백
+
+#### 단계 10: Excel/Word Writer 개선 ✅
+- `src/document/excel_writer.py`:
+  - `_get_value_from_row()`: `table.column` → `column` → 대소문자 무시 3단계 폴백
+  - None 값 처리: `value is None`이면 `continue`로 원본 셀 값 유지
+  - 매핑 안 된 헤더 경고 로그 (`logger.info("매핑 안 된 헤더=...")`)
+- `src/document/word_writer.py`:
+  - `_get_value_from_row()`: 동일한 3단계 폴백 구현
+  - column_mapping 기반 placeholder/테이블 헤더 채우기
+- `src/nodes/input_parser.py`: `.doc` 형식 `_convert_doc_to_docx()` 구현 완료
+
+#### 단계 11: 유사어 등록 플로우 ✅
+- `src/nodes/field_mapper.py`: `_handle_synonym_registration()`으로 전체/선택/단건 등록 처리, Redis `save_synonyms()` 호출
+- `src/nodes/synonym_registrar.py`: 독립 노드로 구현, `_parse_registration_intent()`로 자연어 의도 파싱 (건너뛰기/전체/선택), Redis 등록 + 글로벌 사전 동시 등록
+- `src/prompts/input_parser.py`: 규칙 11에서 유사어 등록 의도 감지 (`synonym_registration` 필드)
+- `src/graph.py`: `synonym_registrar` 노드 등록 + `route_after_semantic_router()`에서 `synonym_registration` 의도 라우팅
+
+#### 단계 12: 테스트 ✅
+- `tests/test_xls_plan_integration.py`: 10개 테스트 클래스, 총 20+ 테스트 케이스 구현
+  - `TestLegacyRegression`: 기존 기능 회귀 (field_mapper 스킵, 레거시 map_fields, extract_field_names, validate_mapping)
+  - `TestThreeStepMappingIntegration`: 3단계 매핑 통합 (3단계 조합, 힌트 우선, Redis 없이 LLM 폴백, 우선순위 DB, 미매핑 필드)
+  - `TestMultiDBMapping`: 멀티 DB 매핑 (다른 DB 분산 매핑, field_mapper 노드 mapped_db_ids 반환)
+  - `TestPipelineConnection`: 파이프라인 연결 (field_mapper→semantic_router, LLM 스킵, 매핑 없이 폴백, query_generator column_mapping 사용)
+  - `TestOutputGeneratorMappingDisplay`: 추론 매핑 표시 (llm_inferred 응답 포함, 텍스트만 시 미표시)
+  - `TestExcelWriterIntegration`: Excel Writer (alias 키, bare 키 폴백, None 값 처리)
+  - `TestSynonymRegistrationFlow`: 유사어 등록 (pending 생성, 전체/선택/빈 pending 처리, 노드 연계)
+  - `TestResultOrganizerMappingIntegration`: result_organizer 매핑 연계 (State column_mapping 사용, 충분성 검사)
+  - `TestEndToEndExcelPipeline`: E2E 파이프라인 (전체 흐름, 혼합 매핑 소스)
+  - `TestStateFields`: State 초기화 검증
 
 ---
 

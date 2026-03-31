@@ -26,6 +26,7 @@ class DBDomainConfig:
     aliases: list[str] = field(default_factory=list)
     env_connection_key: str = ""
     env_type_key: str = ""
+    db_engine: str = "postgresql"  # "postgresql", "mysql", "db2", etc.
 
 
 DB_DOMAINS: list[DBDomainConfig] = [
@@ -42,6 +43,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
         aliases=["polestar", "폴스타", "Polestar", "Polestar DB"],
         env_connection_key="POLESTAR_DB_CONNECTION",
         env_type_key="POLESTAR_DB_TYPE",
+        db_engine="db2",
     ),
     DBDomainConfig(
         db_id="cloud_portal",

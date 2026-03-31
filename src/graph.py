@@ -29,6 +29,7 @@ from src.nodes.query_validator import query_validator
 from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
+from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
@@ -122,6 +123,31 @@ def route_after_semantic_router(state: AgentState) -> str:
     return "schema_analyzer"
 
 
+def route_after_schema_analyzer(state: AgentState) -> str:
+    """schema_analyzer 이후 라우팅을 결정한다.
+
+    - 구조 분석 HITL 승인 대기: structure_approval_gate로 진행
+    - 그 외: query_generator로 진행
+    """
+    if state.get("awaiting_approval"):
+        ctx = state.get("approval_context", {})
+        if ctx.get("type") == "structure_analysis":
+            return "structure_approval_gate"
+    return "query_generator"
+
+
+def route_after_structure_approval(state: AgentState) -> str:
+    """structure_approval_gate 이후 라우팅을 결정한다.
+
+    - approve: schema_analyzer로 재진입 (승인된 결과로 캐시 저장 후 계속)
+    - reject: query_generator로 진행 (구조 메타 없이)
+    """
+    action = state.get("approval_action")
+    if action == "approve":
+        return "schema_analyzer"
+    return "query_generator"
+
+
 def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
     error_msg = state.get("error_message") if state.get("error_message") is not None else "알 수 없는 에러가 발생했습니다."
@@ -142,6 +168,9 @@ def _create_checkpointer(config: AppConfig):
         import sqlite3
 
         conn = sqlite3.connect(config.checkpoint_db_url, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -152,12 +181,33 @@ def _create_checkpointer(config: AppConfig):
         yield InMemorySaver()
 
 
-def _create_checkpointer_simple(config: AppConfig):
-    """간단한 체크포인트 저장소를 생성한다.
+async def _create_checkpointer_async(config: AppConfig):
+    """비동기 체크포인트 저장소를 생성한다.
 
-    멀티턴 대화를 위해 SQLite 체크포인터를 기본 사용한다.
-    메모리 DB(':memory:')이면 InMemorySaver로 폴백한다.
+    event loop 내에서 호출해야 한다 (lifespan 등).
+    `from_conn_string`은 async context manager이므로 직접 aiosqlite 연결을 생성하여
+    연결이 lifespan 동안 유지되도록 한다.
     """
+    if config.checkpoint_backend == "sqlite":
+        if config.checkpoint_db_url == ":memory:":
+            return InMemorySaver()
+        try:
+            import aiosqlite
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            conn = await aiosqlite.connect(config.checkpoint_db_url)
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.execute("PRAGMA synchronous=NORMAL")
+            return AsyncSqliteSaver(conn)
+        except Exception as e:
+            logger.warning("AsyncSqliteSaver 생성 실패, InMemory 폴백: %s", e)
+            return InMemorySaver()
+    return InMemorySaver()
+
+
+def _create_checkpointer_simple(config: AppConfig):
+    """동기 체크포인트 저장소를 생성한다 (테스트/CLI용)."""
     if config.checkpoint_backend == "sqlite":
         if config.checkpoint_db_url == ":memory:":
             return InMemorySaver()
@@ -169,6 +219,9 @@ def _create_checkpointer_simple(config: AppConfig):
             conn = sqlite3.connect(
                 config.checkpoint_db_url, check_same_thread=False
             )
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             return SqliteSaver(conn)
         except Exception as e:
             logger.warning("SQLite 체크포인터 생성 실패, InMemory 폴백: %s", e)
@@ -176,13 +229,14 @@ def _create_checkpointer_simple(config: AppConfig):
     return InMemorySaver()
 
 
-def build_graph(config: AppConfig):
+def build_graph(config: AppConfig, checkpointer=None):
     """에이전트 그래프를 빌드한다.
 
     LLM 인스턴스를 한 번 생성하여 partial로 LLM을 사용하는 노드에 주입한다.
 
     Args:
         config: 애플리케이션 설정
+        checkpointer: 외부에서 주입할 체크포인터 (None이면 동기 SqliteSaver 사용)
 
     Returns:
         컴파일된 LangGraph 그래프
@@ -250,6 +304,10 @@ def build_graph(config: AppConfig):
     if config.enable_sql_approval:
         graph.add_node("approval_gate", approval_gate)
 
+    # 구조 분석 HITL 승인 (활성화 시)
+    if config.enable_structure_approval:
+        graph.add_node("structure_approval_gate", structure_approval_gate)
+
     graph.add_node(
         "query_executor",
         partial(query_executor, app_config=config),
@@ -301,8 +359,26 @@ def build_graph(config: AppConfig):
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")
 
-    # 단일 DB 경로
-    graph.add_edge("schema_analyzer", "query_generator")
+    # 단일 DB 경로: schema_analyzer -> (조건부) -> query_generator
+    if config.enable_structure_approval:
+        graph.add_conditional_edges(
+            "schema_analyzer",
+            route_after_schema_analyzer,
+            {
+                "structure_approval_gate": "structure_approval_gate",
+                "query_generator": "query_generator",
+            },
+        )
+        graph.add_conditional_edges(
+            "structure_approval_gate",
+            route_after_structure_approval,
+            {
+                "schema_analyzer": "schema_analyzer",
+                "query_generator": "query_generator",
+            },
+        )
+    else:
+        graph.add_edge("schema_analyzer", "query_generator")
     graph.add_edge("query_generator", "query_validator")
 
     # query_validator 이후: 조건부 라우팅
@@ -363,17 +439,24 @@ def build_graph(config: AppConfig):
     graph.add_edge("error_response", END)
 
     # --- 체크포인트 ---
-    checkpointer = _create_checkpointer_simple(config)
+    if checkpointer is None:
+        checkpointer = _create_checkpointer_simple(config)
 
-    # Phase 3: SQL 승인 시 interrupt_before 설정
+    # Phase 3: HITL 승인 시 interrupt_before 설정
     interrupt_before = []
     if config.enable_sql_approval:
         interrupt_before.append("approval_gate")
+    if config.enable_structure_approval:
+        interrupt_before.append("structure_approval_gate")
 
     compiled = graph.compile(
         checkpointer=checkpointer,
         interrupt_before=interrupt_before if interrupt_before else None,
     )
 
-    logger.info("에이전트 그래프 빌드 완료 (sql_approval=%s)", config.enable_sql_approval)
+    logger.info(
+        "에이전트 그래프 빌드 완료 (sql_approval=%s, structure_approval=%s)",
+        config.enable_sql_approval,
+        config.enable_structure_approval,
+    )
     return compiled

@@ -44,6 +44,8 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.utils":                     "utils",
     "src.utils.json_extract":        "utils",
     "src.utils.retry":               "utils",
+    "src.utils.schema_utils":        "utils",
+    "src.utils.column_matcher":      "utils",
     "src.prompts":                   "prompts",
     "src.llm":                       "infrastructure",
     "src.clients":                   "infrastructure",

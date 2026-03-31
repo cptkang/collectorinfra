@@ -124,7 +124,7 @@ class TestExcelIntegration:
             {"hostname": "db-01", "ip_address": "10.0.1.1", "usage_pct": 92.5, "total_gb": 64.0},
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             template_bytes, template_structure, mapping, rows
         )
 

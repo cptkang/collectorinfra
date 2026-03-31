@@ -28,7 +28,8 @@
 
 **A. 스키마 캐시 테스트 환경 구축 (영역 1-2)**
 - 실제 DB2 환경에 Polestar 스키마 테이블을 생성하고 현실적인 샘플 데이터를 투입한다.
-- DBHub MCP 서버를 통해 DB2에 접속한 후, 기존 `SchemaCacheManager` + `DescriptionGenerator`가 스키마를 읽어 Redis 캐시를 자동 생성하는 전체 파이프라인을 E2E 검증한다.
+- **macOS/Apple Silicon 호환성**: DB2 Docker 이미지는 `linux/amd64` 전용으로 macOS에서 불안정하므로, PostgreSQL 기반 대체 환경(`testdata/pg/`)을 추가 제공한다. DDL/DML은 PostgreSQL 호환 문법으로 변환되어 있다.
+- DBHub MCP 서버를 통해 DB2 또는 PostgreSQL에 접속한 후, 기존 `SchemaCacheManager` + `DescriptionGenerator`가 스키마를 읽어 Redis 캐시를 자동 생성하는 전체 파이프라인을 E2E 검증한다.
 
 **B. 글로벌 유사단어 사전 파일 관리 체계 (영역 3-4)**
 - 인프라 모니터링 도메인에 특화된 글로벌 유사단어 사전의 초기 데이터를 YAML 파일로 정의한다.
@@ -40,8 +41,8 @@
 
 | 단계 | 테스트 유형 | 대상 | 검증 목표 |
 |------|-----------|------|----------|
-| 1단계 | 데이터 준비 검증 | DB2 테이블/데이터 | DDL 실행 + 30대 서버 샘플 데이터 정합성 |
-| 2단계 | 캐시 파이프라인 검증 | Redis 캐시 자동 생성 | DB2 → DBHub → SchemaCacheManager → Redis 전체 흐름 |
+| 1단계 | 데이터 준비 검증 | DB2 또는 PostgreSQL 테이블/데이터 | DDL 실행 + 30대 서버 샘플 데이터 정합성 |
+| 2단계 | 캐시 파이프라인 검증 | Redis 캐시 자동 생성 | DB → DBHub → SchemaCacheManager → Redis 전체 흐름 |
 | 3단계 | 유사단어 사전 검증 | 글로벌 사전 파일 로드 | YAML → Redis 로드/병합/내보내기 라운드트립 |
 | 4단계 | E2E 통합 검증 | 자연어 질의 + 문서 생성 + 유사단어 관리 | 캐시 정보 기반 SQL 생성 정확도, 엑셀 양식 채우기, 유사단어 CRUD |
 
@@ -331,11 +332,13 @@ GROUP BY STRINGVALUE_SHORT;
 
 ### 3.2 MCP 서버 설정 (테스트용)
 
-MCP 서버의 `mcp_server/config.toml`에 이미 `infra_db2` 소스가 정의되어 있다. 테스트 시 이 소스를 사용한다. DB 연결 문자열은 `mcp_server/.env`에서 환경변수로 오버라이드한다.
+MCP 서버의 `mcp_server/config.toml`에 DB2(`infra_db2`)와 PostgreSQL(`polestar_pg`) 두 소스가 정의되어 있다. 환경에 따라 적합한 소스를 사용한다. DB 연결 문자열은 `mcp_server/.env`에서 환경변수로 오버라이드한다.
 
 > **참고**: 프로젝트 루트의 `dbhub.toml`은 **DEPRECATED**이다. MCP 서버 도입으로 DB 연결 설정은 `mcp_server/config.toml` + `mcp_server/.env`에서 관리한다.
 
-**기존 설정** (`mcp_server/config.toml` 발췌):
+#### DB2 소스 (Linux/x86_64)
+
+**설정** (`mcp_server/config.toml` 발췌):
 ```toml
 # === DB2 (Docker :50000) ===
 [[sources]]
@@ -347,12 +350,34 @@ query_timeout = 30
 max_rows = 10000
 ```
 
-**환경변수 설정** (`mcp_server/.env`):
+**환경변수** (`mcp_server/.env`):
 ```
 INFRA_DB2_CONNECTION=db2://db2inst1:password@localhost:50000/INFRADB
 ```
 
-MCP 서버 시작:
+#### PostgreSQL 소스 (macOS 권장)
+
+**설정** (`mcp_server/config.toml` 발췌):
+```toml
+# === Polestar PostgreSQL (Docker :5434) ===
+[[sources]]
+name = "polestar_pg"
+type = "postgresql"
+# connection은 .env에서 오버라이드
+readonly = true
+query_timeout = 30
+max_rows = 10000
+pool_min_size = 1
+pool_max_size = 3
+```
+
+**환경변수** (`mcp_server/.env`):
+```
+POLESTAR_PG_CONNECTION=postgresql://polestar_user:polestar_pass_2024@localhost:5434/infradb
+```
+
+#### MCP 서버 시작
+
 ```bash
 cd mcp_server
 python -m mcp_server
@@ -538,6 +563,91 @@ python -m mcp_server
 | SYN-7 | Redis → YAML 내보내기 | 1. 대화/CLI로 여러 유사단어 추가<br>2. `export-synonyms` 실행<br>3. 내보낸 YAML 재로드 후 데이터 일치 확인 | 라운드트립 무손실 (Redis → YAML → Redis) |
 
 ### 3.5 테스트 실행 방법
+
+#### 방법 A: PostgreSQL 사용 (macOS 권장)
+
+> DB2는 macOS/Apple Silicon에서 호환성 이슈가 있으므로, PostgreSQL 기반 테스트 환경을 사용한다.
+> PostgreSQL 버전 SQL 파일은 `testdata/pg/`에 위치한다 (DB2 원본은 `testdata/`에 보존).
+
+```bash
+# 1. PostgreSQL 컨테이너 시작
+cd testdata/pg
+docker compose up -d
+
+# 1-1. 컨테이너 상태 확인 (healthy 될 때까지 대기)
+docker compose ps
+# 또는: docker exec polestar_pg pg_isready -U polestar_user -d infradb
+
+# ─── 방법 1: 자동 실행 (권장) ───
+# docker compose up 시 init/ 디렉토리의 SQL 파일이 알파벳 순으로 자동 실행됩니다.
+#   01_create_tables.sql          → 스키마 + 테이블 생성
+#   02_insert_cmm_resource.sql    → CMM_RESOURCE 데이터 INSERT (~1,115행)
+#   03_insert_core_config_prop.sql → CORE_CONFIG_PROP 데이터 INSERT (360행)
+# ※ 자동 실행은 최초 볼륨 생성 시에만 동작합니다.
+#   재실행하려면 볼륨을 삭제 후 다시 시작: docker compose down -v && docker compose up -d
+
+# ─── 방법 2: 수동 실행 ───
+# 이미 컨테이너가 실행 중이고 테이블을 재생성해야 할 경우 아래 순서로 실행합니다.
+
+# 1-2. DDL 실행 (스키마 + 테이블 생성)
+docker exec -i polestar_pg psql -U polestar_user -d infradb < init/01_create_tables.sql
+
+# 1-3. CMM_RESOURCE 데이터 INSERT
+docker exec -i polestar_pg psql -U polestar_user -d infradb < init/02_insert_cmm_resource.sql
+
+# 1-4. CORE_CONFIG_PROP 데이터 INSERT
+docker exec -i polestar_pg psql -U polestar_user -d infradb < init/03_insert_core_config_prop.sql
+
+# 1-5. 데이터 검증
+docker exec -i polestar_pg psql -U polestar_user -d infradb < 04_verify_data.sql
+
+# 정리 시:
+# docker exec -i polestar_pg psql -U polestar_user -d infradb < 99_cleanup.sql
+# docker compose down -v   # 컨테이너 + 볼륨 완전 삭제
+
+# 2. Redis 시작 확인
+docker exec -it collectorinfra-redis redis-cli ping  # PONG
+
+# 3. MCP 서버 시작 (별도 터미널)
+# 설정 파일: mcp_server/config.toml (polestar_pg 소스 사용)
+# DB 연결 문자열: mcp_server/.env 에서 환경변수로 관리
+
+# 3-0. 사전 준비 (최초 1회)
+pip install "mcp[cli]"                                     # FastMCP 패키지 설치
+cp mcp_server/.env.example mcp_server/.env                 # .env 파일 생성
+
+# 3-1. mcp_server/.env에 아래 연결 문자열 추가
+# POLESTAR_PG_CONNECTION=postgresql://polestar_user:polestar_pass_2024@localhost:5434/infradb
+
+# 3-2. MCP 서버 실행
+cd mcp_server
+python -m mcp_server
+# 활성 소스로 polestar_pg (postgresql)가 표시되면 정상
+
+# 4. 캐시 생성 (CLI 스크립트 사용)
+python scripts/schema_cache_cli.py generate --db-id polestar_pg --force
+python scripts/schema_cache_cli.py generate-descriptions --db-id polestar_pg
+
+# 5. 글로벌 유사단어 사전 로드
+python scripts/schema_cache_cli.py load-synonyms --file config/global_synonyms.yaml
+
+# 6. 캐시 및 유사단어 상태 확인
+python scripts/schema_cache_cli.py status --db-id polestar_pg
+python scripts/schema_cache_cli.py synonym-status
+
+# 7. E2E 자연어 질의 테스트
+python -m pytest tests/test_e2e_polestar.py -v --timeout=120
+
+# 8. 엑셀 양식 기반 테스트 (sample/취합 예시1.xlsx 사용)
+python -m pytest tests/test_e2e_polestar.py -k "test_template" -v --timeout=180
+
+# 9. 유사단어 관리 테스트
+python -m pytest tests/test_e2e_polestar.py -k "test_synonym" -v --timeout=120
+```
+
+#### 방법 B: DB2 사용 (Linux/x86_64)
+
+> DB2 Docker 이미지는 `linux/amd64` 전용이다. macOS에서 Rosetta 에뮬레이션으로 실행 가능하나 불안정할 수 있다.
 
 ```bash
 # 1. DB2 테이블/데이터 생성 (Docker 컨테이너 사용)
@@ -1256,16 +1366,25 @@ collectorinfra/
 │   └── global_synonyms.yaml         # [영역 3] 글로벌 유사단어 사전 (초기 데이터)
 │
 ├── mcp_server/
-│   ├── config.toml                  # [영역 2] MCP 서버 설정 (infra_db2 소스 포함, 기존)
-│   └── .env                         # [영역 2] DB 연결 문자열 (환경변수, 기존)
+│   ├── config.toml                  # [영역 2] MCP 서버 설정 (infra_db2, polestar_pg 소스 포함)
+│   └── .env                         # [영역 2] DB 연결 문자열 (환경변수)
 │
 ├── testdata/
-│   ├── README.md                    # [영역 1] SQL 스크립트 설명
-│   ├── 01_create_tables.sql         # [영역 1] CREATE TABLE DDL
-│   ├── 02_insert_cmm_resource.sql   # [영역 1] CMM_RESOURCE INSERT (약 700행, 30대 서버)
-│   ├── 03_insert_core_config_prop.sql # [영역 1] CORE_CONFIG_PROP INSERT (360행)
-│   ├── 04_verify_data.sql           # [영역 1] 데이터 검증 쿼리
-│   ├── 99_cleanup.sql               # [영역 1] 정리 스크립트
+│   ├── README.md                    # [영역 1] SQL 스크립트 설명 (DB2)
+│   ├── 01_create_tables.sql         # [영역 1] CREATE TABLE DDL (DB2)
+│   ├── 02_insert_cmm_resource.sql   # [영역 1] CMM_RESOURCE INSERT (약 700행, DB2)
+│   ├── 03_insert_core_config_prop.sql # [영역 1] CORE_CONFIG_PROP INSERT (360행, DB2)
+│   ├── 04_verify_data.sql           # [영역 1] 데이터 검증 쿼리 (DB2)
+│   ├── 99_cleanup.sql               # [영역 1] 정리 스크립트 (DB2)
+│   ├── pg/                          # [영역 1] PostgreSQL 버전 (macOS 호환)
+│   │   ├── docker-compose.yml       #   PostgreSQL 컨테이너 (포트 5434)
+│   │   ├── README.md                #   환경 설정 및 사용법
+│   │   ├── init/                    #   docker-entrypoint-initdb.d에 마운트 (자동 실행)
+│   │   │   ├── 01_create_tables.sql       # DDL (PostgreSQL 문법)
+│   │   │   ├── 02_insert_cmm_resource.sql # CMM_RESOURCE INSERT
+│   │   │   └── 03_insert_core_config_prop.sql # CORE_CONFIG_PROP INSERT
+│   │   ├── 04_verify_data.sql       #   검증 쿼리 (PostgreSQL 문법)
+│   │   └── 99_cleanup.sql           #   정리 스크립트 (PostgreSQL 문법)
 │   └── templates/                   # [영역 2] 단순 양식 템플릿 (신규 생성)
 │       ├── server_list_template.xlsx       # 서버 인벤토리 목록 (1단 헤더)
 │       ├── resource_status_template.xlsx   # 리소스 상태 보고서 (1단 헤더)

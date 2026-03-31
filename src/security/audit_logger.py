@@ -185,9 +185,22 @@ def _write_audit_file_sync(entry: AuditEntry) -> None:
 def setup_logging(log_level: str = "INFO") -> None:
     """structlog 기반 구조화된 로깅을 설정한다.
 
+    표준 logging 루트 로거도 함께 설정하여
+    logging.getLogger(__name__) 로그도 출력되도록 한다.
+
     Args:
         log_level: 로그 레벨 (DEBUG, INFO, WARNING, ERROR)
     """
+    level = getattr(logging, log_level.upper(), logging.INFO)
+
+    # 표준 logging 설정
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
+
+    # structlog 설정
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -197,9 +210,7 @@ def setup_logging(log_level: str = "INFO") -> None:
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer(ensure_ascii=False),
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, log_level),
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,

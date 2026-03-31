@@ -1,0 +1,23 @@
+services:
+  polestar-pg:
+    image: postgres:16-alpine
+    container_name: polestar_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: infradb
+      POSTGRES_USER: polestar_user
+      POSTGRES_PASSWORD: polestar_pass_2024
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d
+      - polestar_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polestar_user -d infradb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  polestar_pgdata:
+    name: polestar_pgdata

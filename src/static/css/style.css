@@ -918,6 +918,68 @@ header nav {
     stroke-width: 2;
 }
 
+/* Mapping report action buttons */
+.mapping-report-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+.message-download--csv {
+    background: rgba(163, 230, 53, 0.15);
+    border-color: rgba(163, 230, 53, 0.3);
+    color: #a3e635;
+}
+
+.message-download--csv:hover {
+    background: #a3e635;
+    color: #000;
+    box-shadow: 0 0 16px rgba(163, 230, 53, 0.3);
+}
+
+.message-download--report {
+    background: rgba(96, 165, 250, 0.15);
+    border-color: rgba(96, 165, 250, 0.3);
+    color: #60a5fa;
+}
+
+.message-download--report:hover {
+    background: #60a5fa;
+    color: #fff;
+    box-shadow: 0 0 16px rgba(96, 165, 250, 0.3);
+}
+
+.message-download--upload {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: rgba(251, 191, 36, 0.15);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: 8px;
+    color: #fbbf24;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.message-download--upload:hover {
+    background: #fbbf24;
+    color: #000;
+    box-shadow: 0 0 16px rgba(251, 191, 36, 0.3);
+    transform: translateY(-1px);
+}
+
+.message-download--upload svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+}
+
 /* ─── Processing Indicator (inline in chat) ─── */
 
 .message--processing .message-bubble {

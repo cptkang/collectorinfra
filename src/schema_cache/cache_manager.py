@@ -5,7 +5,7 @@ backend 설정에 따라 Redis 또는 파일 캐시를 선택하며,
 Redis 장애 시 파일 캐시로 graceful fallback한다.
 
 조회 우선순위:
-  1차: 메모리 캐시 (SchemaCache, TTL 5분)
+  1차: 메모리 캐시 (SchemaMemoryCache, TTL 5분)
   2차: Redis 캐시 (fingerprint 기반)
   2차-fallback: 파일 캐시 (Redis 장애 시)
   3차: DB 전체 조회
@@ -14,15 +14,105 @@ Redis 장애 시 파일 캐시로 graceful fallback한다.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.config import AppConfig
-from src.schema_cache.fingerprint import compute_fingerprint_from_schema_dict
+from src.schema_cache.fingerprint import (
+    FINGERPRINT_SQL,
+    compute_fingerprint,
+    compute_fingerprint_from_schema_dict,
+)
 from src.schema_cache.persistent_cache import PersistentSchemaCache
 from src.schema_cache.redis_cache import RedisSchemaCache
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_schema_dict(schema_dict: dict) -> tuple[bool, str]:
+    """스키마 딕셔너리의 유효성을 검증한다.
+
+    Returns:
+        (유효 여부, 실패 사유)
+    """
+    tables = schema_dict.get("tables", {})
+    if not tables:
+        return False, "tables가 비어있음"
+
+    empty_tables = [t for t, d in tables.items() if not d.get("columns")]
+    if empty_tables:
+        return False, f"컬럼 없는 테이블: {empty_tables}"
+
+    return True, ""
+
+
+def _validate_column_keys(data: dict, label: str) -> dict:
+    """table.column 형식이 아닌 키를 필터링하고 유효한 항목만 반환한다."""
+    valid = {}
+    for key, value in data.items():
+        if "." in key:
+            valid[key] = value
+        else:
+            logger.warning("%s 키 형식 오류 무시: %s", label, key)
+    return valid
+
+
+class SchemaMemoryCache:
+    """스키마 정보를 TTL 기반으로 메모리에 캐시한다 (1차 캐시).
+
+    SchemaCacheManager 내부에서 사용되며, 프로세스 내 동일 db_id에 대한
+    반복 조회를 빠르게 처리한다. dict 형태의 스키마를 저장한다.
+    """
+
+    def __init__(self, ttl_seconds: int = 300) -> None:
+        """캐시를 초기화한다.
+
+        Args:
+            ttl_seconds: 캐시 유효 시간 (기본 5분)
+        """
+        self._cache: dict[str, dict] = {}
+        self._timestamps: dict[str, float] = {}
+        self._ttl = ttl_seconds
+
+    def get(self, db_id: str = "_default") -> Optional[dict]:
+        """캐시된 스키마 딕셔너리를 반환한다. 만료 시 None.
+
+        Args:
+            db_id: DB 식별자 (단일 DB는 "_default")
+
+        Returns:
+            캐시된 스키마 딕셔너리 또는 None
+        """
+        if db_id in self._cache and (
+            time.time() - self._timestamps.get(db_id, 0)
+        ) < self._ttl:
+            return self._cache[db_id]
+        return None
+
+    def set(self, schema_dict: dict, db_id: str = "_default") -> None:
+        """스키마 딕셔너리를 캐시에 저장한다.
+
+        Args:
+            schema_dict: 저장할 스키마 딕셔너리
+            db_id: DB 식별자
+        """
+        self._cache[db_id] = schema_dict
+        self._timestamps[db_id] = time.time()
+
+    def invalidate(self, db_id: Optional[str] = None) -> None:
+        """캐시를 무효화한다.
+
+        Args:
+            db_id: 특정 DB만 무효화 (None이면 전체)
+        """
+        if db_id is None:
+            self._cache.clear()
+            self._timestamps.clear()
+        else:
+            self._cache.pop(db_id, None)
+            self._timestamps.pop(db_id, None)
 
 
 @dataclass
@@ -73,6 +163,7 @@ class SchemaCacheManager:
             enabled=app_config.schema_cache.enabled,
         )
         self._redis_available = False
+        self._memory_cache = SchemaMemoryCache(ttl_seconds=300)
 
         if self._backend == "redis":
             self._redis_cache = RedisSchemaCache(
@@ -167,6 +258,31 @@ class SchemaCacheManager:
 
         return self._file_cache.is_changed(db_id, current_fingerprint)
 
+    async def is_fingerprint_fresh(self, db_id: str) -> bool:
+        """fingerprint의 TTL이 아직 유효한지 확인한다.
+
+        Redis 백엔드에서만 동작하며, 파일 백엔드는 항상 False 반환.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            TTL 유효 시 True
+        """
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            ttl = self._config.schema_cache.fingerprint_ttl_seconds
+            return await self._redis_cache.is_fingerprint_fresh(db_id, ttl)
+        return False
+
+    async def refresh_fingerprint_ttl(self, db_id: str) -> None:
+        """fingerprint 검증 타임스탬프를 현재 시각으로 갱신한다.
+
+        Args:
+            db_id: DB 식별자
+        """
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            await self._redis_cache.refresh_fingerprint_checked_at(db_id)
+
     async def save_schema(
         self,
         db_id: str,
@@ -185,6 +301,21 @@ class SchemaCacheManager:
         Returns:
             저장 성공 여부 (하나라도 성공하면 True)
         """
+        # 유효성 검증: fingerprint가 빈 문자열이면 저장 거부
+        if fingerprint is not None and fingerprint == "":
+            logger.warning(
+                "스키마 저장 거부: fingerprint가 빈 문자열 (db_id=%s)", db_id
+            )
+            return False
+
+        # 유효성 검증: 스키마 딕셔너리 검증
+        valid, reason = _validate_schema_dict(schema_dict)
+        if not valid:
+            logger.warning(
+                "스키마 저장 거부: %s (db_id=%s)", reason, db_id
+            )
+            return False
+
         if fingerprint is None:
             fingerprint = compute_fingerprint_from_schema_dict(schema_dict)
 
@@ -200,6 +331,54 @@ class SchemaCacheManager:
             saved = True
 
         return saved
+
+    # === 구조 분석 메타 (structure_meta) ===
+
+    async def save_structure_meta(
+        self,
+        db_id: str,
+        structure_meta: dict,
+    ) -> bool:
+        """구조 분석 결과(structure_meta)를 캐시에 저장한다.
+
+        structure_meta는 EAV 패턴 등 DB 구조 분석 결과로,
+        스키마(tables/relationships)와 다른 구조이므로 별도 검증·저장 경로를 사용한다.
+
+        Args:
+            db_id: DB 식별자
+            structure_meta: 구조 분석 결과 (patterns, query_guide 등)
+
+        Returns:
+            저장 성공 여부
+        """
+        if not structure_meta:
+            logger.warning(
+                "structure_meta 저장 거부: 빈 데이터 (db_id=%s)", db_id
+            )
+            return False
+
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            return await self._redis_cache.save_structure_meta(
+                db_id, structure_meta
+            )
+
+        logger.debug(
+            "structure_meta 저장 스킵: Redis 미연결 (db_id=%s)", db_id
+        )
+        return False
+
+    async def get_structure_meta(self, db_id: str) -> Optional[dict]:
+        """캐시에서 구조 분석 결과(structure_meta)를 로드한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            구조 분석 딕셔너리 또는 None
+        """
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            return await self._redis_cache.load_structure_meta(db_id)
+        return None
 
     # === DB 설명 ===
 
@@ -255,6 +434,13 @@ class SchemaCacheManager:
         Returns:
             저장 성공 여부
         """
+        # 유효성 검증: 빈 문자열이면 저장 거부
+        if not description:
+            logger.warning(
+                "DB 설명 저장 거부: 빈 문자열 (db_id=%s)", db_id
+            )
+            return False
+
         saved = False
 
         # Redis 저장
@@ -271,20 +457,29 @@ class SchemaCacheManager:
     async def delete_db_description(self, db_id: str) -> bool:
         """DB 설명을 삭제한다.
 
+        Redis와 파일 캐시 모두에서 삭제한다.
+
         Args:
             db_id: DB 식별자
 
         Returns:
             삭제 성공 여부
         """
+        success = False
         if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.delete_db_description(db_id)
-        return False
+            if await self._redis_cache.delete_db_description(db_id):
+                success = True
+        # 파일 캐시의 _db_description 필드도 삭제
+        if self._file_cache.delete_field(db_id, "_db_description"):
+            success = True
+        return success
 
     # === 컬럼 설명 ===
 
     async def get_descriptions(self, db_id: str) -> dict[str, str]:
         """컬럼 설명을 로드한다.
+
+        Redis 우선, 실패 시 파일 캐시 폴백.
 
         Args:
             db_id: DB 식별자
@@ -293,8 +488,11 @@ class SchemaCacheManager:
             {table.column: description} 매핑
         """
         if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.load_descriptions(db_id)
-        return {}
+            result = await self._redis_cache.load_descriptions(db_id)
+            if result:
+                return result
+        # 파일 캐시 폴백
+        return self._file_cache.load_descriptions(db_id)
 
     async def save_descriptions(
         self,
@@ -303,21 +501,38 @@ class SchemaCacheManager:
     ) -> bool:
         """컬럼 설명을 저장한다.
 
+        Redis와 파일 캐시 모두에 저장한다 (이중 저장으로 폴백 보장).
+
         Args:
             db_id: DB 식별자
             descriptions: {table.column: description} 매핑
 
         Returns:
-            저장 성공 여부
+            저장 성공 여부 (하나라도 성공하면 True)
         """
+        # 유효성 검증: table.column 형식이 아닌 키 필터링
+        descriptions = _validate_column_keys(descriptions, "descriptions")
+        if not descriptions:
+            logger.warning(
+                "descriptions 저장 거부: 유효한 키가 없음 (db_id=%s)", db_id
+            )
+            return False
+
+        saved = False
         if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.save_descriptions(db_id, descriptions)
-        return False
+            if await self._redis_cache.save_descriptions(db_id, descriptions):
+                saved = True
+        # 파일 캐시에도 저장 (폴백 보장)
+        if self._file_cache.save_descriptions(db_id, descriptions):
+            saved = True
+        return saved
 
     # === 유사 단어 ===
 
     async def get_synonyms(self, db_id: str) -> dict[str, list[str]]:
         """유사 단어를 로드한다.
+
+        Redis 우선, 실패 시 파일 캐시 폴백.
 
         Args:
             db_id: DB 식별자
@@ -326,8 +541,11 @@ class SchemaCacheManager:
             {table.column: [synonym, ...]} 매핑
         """
         if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.load_synonyms(db_id)
-        return {}
+            result = await self._redis_cache.load_synonyms(db_id)
+            if result:
+                return result
+        # 파일 캐시 폴백
+        return self._file_cache.load_synonyms(db_id)
 
     async def save_synonyms(
         self,
@@ -337,19 +555,36 @@ class SchemaCacheManager:
     ) -> bool:
         """유사 단어를 저장한다.
 
+        Redis와 파일 캐시 모두에 저장한다 (이중 저장으로 폴백 보장).
+
         Args:
             db_id: DB 식별자
             synonyms: {table.column: [synonym, ...]} 매핑
             source: source 태그 ("llm" | "operator")
 
         Returns:
-            저장 성공 여부
+            저장 성공 여부 (하나라도 성공하면 True)
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.save_synonyms(
-                db_id, synonyms, source=source
+        # 유효성 검증: table.column 형식이 아닌 키 필터링
+        synonyms = _validate_column_keys(synonyms, "synonyms")
+        # 빈 리스트 값 제거
+        synonyms = {k: v for k, v in synonyms.items() if v}
+        if not synonyms:
+            logger.warning(
+                "synonyms 저장 거부: 유효한 항목이 없음 (db_id=%s)", db_id
             )
-        return False
+            return False
+
+        saved = False
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            if await self._redis_cache.save_synonyms(
+                db_id, synonyms, source=source
+            ):
+                saved = True
+        # 파일 캐시에도 저장 (폴백 보장)
+        if self._file_cache.save_synonyms(db_id, synonyms):
+            saved = True
+        return saved
 
     async def add_synonyms(
         self,
@@ -826,6 +1061,257 @@ class SchemaCacheManager:
         )
         return merged_count
 
+    # === 통합 스키마 조회 (3단계 캐시 + DB 폴백) ===
+
+    async def get_schema_or_fetch(
+        self,
+        client: Any,
+        db_id: str,
+    ) -> tuple[dict, bool, dict[str, str], dict[str, list[str]]]:
+        """3단계 캐시를 거쳐 스키마를 조회한다. 캐시 미스 시 DB에서 직접 조회.
+
+        조회 순서:
+          1차: 메모리 캐시 (TTL 기반)
+          2차-A: Redis/파일 캐시 (fingerprint TTL 유효 시)
+          2차-B: fingerprint TTL 만료 시 DB fingerprint 재검증
+          3차: DB 전체 스키마 조회 (캐시 미스)
+
+        Args:
+            client: DB 클라이언트 (execute_sql, get_full_schema 메서드 필요)
+            db_id: DB 식별자
+
+        Returns:
+            (schema_dict, cache_hit, descriptions, synonyms) 튜플
+            - schema_dict: 스키마 딕셔너리
+            - cache_hit: 캐시에서 로드했으면 True (save 불필요)
+            - descriptions: {table.column: description}
+            - synonyms: {table.column: [synonym, ...]}
+        """
+        descriptions: dict[str, str] = {}
+        synonyms: dict[str, list[str]] = {}
+
+        # 1차: 메모리 캐시
+        cached_mem = self._memory_cache.get(db_id)
+        if cached_mem is not None:
+            logger.debug("메모리 캐시 히트: db_id=%s", db_id)
+            descriptions = await self.get_descriptions(db_id)
+            synonyms = await self.load_synonyms_with_global_fallback(
+                db_id, cached_mem
+            )
+            return cached_mem, True, descriptions, synonyms
+
+        # 2차-A: Redis/파일 캐시 + fingerprint TTL 유효
+        try:
+            fingerprint_fresh = await self.is_fingerprint_fresh(db_id)
+            if fingerprint_fresh:
+                cached_schema = await self.get_schema(db_id)
+                if cached_schema is not None:
+                    self._memory_cache.set(cached_schema, db_id)
+                    descriptions = await self.get_descriptions(db_id)
+                    synonyms = await self.load_synonyms_with_global_fallback(
+                        db_id, cached_schema
+                    )
+                    logger.info(
+                        "Redis/파일 캐시 히트 (fingerprint TTL 유효): db_id=%s",
+                        db_id,
+                    )
+                    return cached_schema, True, descriptions, synonyms
+        except Exception as e:
+            logger.warning("fingerprint TTL 확인 실패 (%s): %s", db_id, e)
+
+        # 2차-B: fingerprint TTL 만료 -- DB에서 fingerprint 재검증
+        try:
+            result = await client.execute_sql(FINGERPRINT_SQL)
+            if result.rows:
+                current_fp = compute_fingerprint(result.rows)
+                changed = await self.is_changed(db_id, current_fp)
+                if not changed:
+                    await self.refresh_fingerprint_ttl(db_id)
+                    cached_schema = await self.get_schema(db_id)
+                    if cached_schema is not None:
+                        self._memory_cache.set(cached_schema, db_id)
+                        descriptions = await self.get_descriptions(db_id)
+                        synonyms = await self.load_synonyms_with_global_fallback(
+                            db_id, cached_schema
+                        )
+                        logger.info(
+                            "캐시 히트 (fingerprint 재검증): db_id=%s, fingerprint=%s",
+                            db_id,
+                            current_fp,
+                        )
+                        return cached_schema, True, descriptions, synonyms
+        except Exception as e:
+            logger.warning("fingerprint 조회 실패 (%s): %s", db_id, e)
+
+        # 3차: DB 전체 조회
+        logger.info("캐시 미스, DB 전체 스키마 조회: db_id=%s", db_id)
+        full_schema = await client.get_full_schema()
+
+        # SchemaInfo -> dict 변환
+        tables_dict: dict[str, Any] = {}
+        for table_name, table_info in full_schema.tables.items():
+            columns = [
+                {
+                    "name": col.name,
+                    "type": col.data_type,
+                    "nullable": col.nullable,
+                    "primary_key": col.is_primary_key,
+                    "foreign_key": col.is_foreign_key,
+                    "references": col.references,
+                }
+                for col in table_info.columns
+            ]
+            tables_dict[table_name] = {
+                "columns": columns,
+                "row_count_estimate": table_info.row_count_estimate,
+                "sample_data": [],
+            }
+
+        schema_dict: dict[str, Any] = {
+            "tables": tables_dict,
+            "relationships": full_schema.relationships,
+        }
+
+        # Redis/파일 캐시에 저장
+        await self.save_schema(db_id, schema_dict)
+        self._memory_cache.set(schema_dict, db_id)
+
+        # stale entry 정리
+        await self.cleanup_stale_entries(db_id, schema_dict)
+
+        # descriptions/synonyms 자동 생성 (캐시 미스 시)
+        descriptions = await self.get_descriptions(db_id)
+        if not descriptions:
+            try:
+                from src.schema_cache.description_generator import (
+                    DescriptionGenerator,
+                )
+                from src.llm import create_llm
+                from src.config import load_config
+
+                config = load_config()
+                if config.schema_cache.auto_generate_descriptions:
+                    llm = create_llm(config)
+                    generator = DescriptionGenerator(llm)
+                    descriptions, gen_synonyms = (
+                        await generator.generate_for_db(schema_dict)
+                    )
+                    await self.save_descriptions(db_id, descriptions)
+                    await self.save_synonyms(db_id, gen_synonyms)
+                    await self.sync_global_synonyms(db_id)
+                    logger.info(
+                        "스키마 최초 조회 시 descriptions/synonyms 자동 생성: "
+                        "db_id=%s, descriptions=%d, synonyms=%d",
+                        db_id,
+                        len(descriptions),
+                        len(gen_synonyms),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "descriptions/synonyms 자동 생성 실패 (%s): %s", db_id, e
+                )
+
+        synonyms = await self.load_synonyms_with_global_fallback(
+            db_id, schema_dict
+        )
+
+        logger.info(
+            "스키마 수집 완료: db_id=%s, %d개 테이블",
+            db_id,
+            len(tables_dict),
+        )
+        return schema_dict, False, descriptions, synonyms
+
+    async def cleanup_stale_entries(
+        self,
+        db_id: str,
+        schema_dict: dict,
+    ) -> dict:
+        """스키마 갱신 후 descriptions/synonyms에서 stale 항목을 정리한다.
+
+        새 스키마의 table.column 집합과 비교하여 존재하지 않는 키를 제거한다.
+
+        Args:
+            db_id: DB 식별자
+            schema_dict: 새로 갱신된 스키마 딕셔너리
+
+        Returns:
+            정리 결과 {"removed_descriptions": [...], "removed_synonyms": [...]}
+        """
+        result: dict[str, list[str]] = {
+            "removed_descriptions": [],
+            "removed_synonyms": [],
+        }
+
+        try:
+            # 새 스키마에서 유효한 table.column 키 집합 추출
+            valid_keys: set[str] = set()
+            for table_name, table_data in schema_dict.get("tables", {}).items():
+                for col in table_data.get("columns", []):
+                    valid_keys.add(f"{table_name}.{col['name']}")
+
+            if not valid_keys:
+                logger.debug(
+                    "cleanup_stale_entries: 유효 키가 없음, 건너뜀 (db_id=%s)",
+                    db_id,
+                )
+                return result
+
+            # descriptions 정리
+            descriptions = await self.get_descriptions(db_id)
+            if descriptions:
+                stale_desc_keys = [
+                    k for k in descriptions if k not in valid_keys
+                ]
+                if stale_desc_keys:
+                    cleaned_descriptions = {
+                        k: v
+                        for k, v in descriptions.items()
+                        if k in valid_keys
+                    }
+                    await self.save_descriptions(db_id, cleaned_descriptions)
+                    result["removed_descriptions"] = stale_desc_keys
+                    logger.debug(
+                        "stale descriptions 제거: db_id=%s, keys=%s",
+                        db_id,
+                        stale_desc_keys,
+                    )
+
+            # synonyms 정리
+            synonyms = await self.get_synonyms(db_id)
+            if synonyms:
+                stale_syn_keys = [
+                    k for k in synonyms if k not in valid_keys
+                ]
+                if stale_syn_keys:
+                    cleaned_synonyms = {
+                        k: v
+                        for k, v in synonyms.items()
+                        if k in valid_keys
+                    }
+                    await self.save_synonyms(db_id, cleaned_synonyms)
+                    result["removed_synonyms"] = stale_syn_keys
+                    logger.debug(
+                        "stale synonyms 제거: db_id=%s, keys=%s",
+                        db_id,
+                        stale_syn_keys,
+                    )
+
+        except Exception as e:
+            logger.warning(
+                "stale entry 정리 중 오류 발생 (db_id=%s): %s", db_id, e
+            )
+
+        return result
+
+    def invalidate_memory_cache(self, db_id: Optional[str] = None) -> None:
+        """메모리 캐시를 무효화한다.
+
+        Args:
+            db_id: 특정 DB만 무효화 (None이면 전체)
+        """
+        self._memory_cache.invalidate(db_id)
+
     # === 캐시 갱신 ===
 
     async def refresh_cache(
@@ -847,8 +1333,6 @@ class SchemaCacheManager:
         Returns:
             갱신 결과
         """
-        from src.schema_cache.fingerprint import FINGERPRINT_SQL, compute_fingerprint
-
         try:
             # 현재 fingerprint 조회
             result = await client.execute_sql(FINGERPRINT_SQL)
@@ -879,13 +1363,25 @@ class SchemaCacheManager:
             full_schema = await client.get_full_schema()
 
             # 스키마를 dict로 변환
-            from src.nodes.schema_analyzer import _schema_to_dict
-            schema_dict = _schema_to_dict(
+            from src.dbhub.models import schema_to_dict
+            schema_dict = schema_to_dict(
                 full_schema, list(full_schema.tables.keys())
             )
 
             # 캐시 저장
             await self.save_schema(db_id, schema_dict, current_fp)
+
+            # stale entry 정리
+            cleanup_result = await self.cleanup_stale_entries(db_id, schema_dict)
+            if cleanup_result.get("removed_descriptions") or cleanup_result.get(
+                "removed_synonyms"
+            ):
+                logger.info(
+                    "stale entry 정리: db_id=%s, descriptions=%d, synonyms=%d",
+                    db_id,
+                    len(cleanup_result.get("removed_descriptions", [])),
+                    len(cleanup_result.get("removed_synonyms", [])),
+                )
 
             table_count = len(schema_dict.get("tables", {}))
             return CacheRefreshResult(
@@ -908,7 +1404,9 @@ class SchemaCacheManager:
     # === 관리 ===
 
     async def invalidate(self, db_id: str) -> bool:
-        """특정 DB 캐시를 삭제한다.
+        """특정 DB 캐시를 삭제한다 (메모리 + Redis + 파일 + db_profile).
+
+        DB별 데이터를 전체 삭제하며, 글로벌 사전만 보존한다.
 
         Args:
             db_id: DB 식별자
@@ -916,25 +1414,48 @@ class SchemaCacheManager:
         Returns:
             삭제 성공 여부
         """
+        self._memory_cache.invalidate(db_id)
         success = False
         if self._backend == "redis" and await self.ensure_redis_connected():
             if await self._redis_cache.invalidate(db_id):
                 success = True
         if self._file_cache.invalidate(db_id):
             success = True
+        self._delete_db_profile(db_id)
         return success
 
     async def invalidate_all(self) -> int:
-        """모든 캐시를 삭제한다.
+        """모든 캐시를 삭제한다 (메모리 + Redis + 파일).
+
+        글로벌 사전만 보존한다.
 
         Returns:
             삭제된 항목 수
         """
+        self._memory_cache.invalidate()
         count = 0
         if self._backend == "redis" and await self.ensure_redis_connected():
             count += await self._redis_cache.invalidate_all()
         count += self._file_cache.invalidate_all()
         return count
+
+    def _delete_db_profile(self, db_id: str) -> None:
+        """config/db_profiles/{db_id} 파일을 삭제한다.
+
+        Args:
+            db_id: DB 식별자
+        """
+        for ext in (".yaml", ".json"):
+            safe_id = "".join(
+                c if c.isalnum() or c in ("_", "-") else "_" for c in db_id
+            )
+            profile_path = os.path.join("config", "db_profiles", f"{safe_id}{ext}")
+            try:
+                if os.path.exists(profile_path):
+                    os.unlink(profile_path)
+                    logger.info("db_profile 삭제: %s", profile_path)
+            except OSError as e:
+                logger.warning("db_profile 삭제 실패 (%s): %s", profile_path, e)
 
     async def get_status(self, db_id: str) -> CacheStatus:
         """특정 DB의 캐시 상태를 반환한다.
@@ -1015,6 +1536,25 @@ class SchemaCacheManager:
     def redis_available(self) -> bool:
         """Redis 연결 가능 여부."""
         return self._redis_available
+
+    async def sync_known_attributes_to_eav_synonyms(
+        self, known_attributes_detail: list[dict]
+    ) -> int:
+        """수동 프로필 known_attributes를 Redis eav_name_synonyms에 동기화한다.
+
+        Redis가 없는 환경에서는 0을 반환하고 graceful하게 스킵한다.
+
+        Args:
+            known_attributes_detail: [{name: str, description: str, synonyms: [str]}, ...]
+
+        Returns:
+            동기화된 속성 수
+        """
+        if self._redis_cache and self._redis_available:
+            return await self._redis_cache.sync_known_attributes_to_eav_synonyms(
+                known_attributes_detail
+            )
+        return 0
 
     @property
     def backend(self) -> str:

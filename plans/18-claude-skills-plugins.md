@@ -173,6 +173,7 @@ browser_evaluate     → API 응답 JSON 검증
 | Phase 4 (UI) | 화면 구현·테스트 | **frontend-design**, **webapp-testing** |
 | MCP 서버 개발 | 도구 추가, 보안 강화 | **mcp-builder** |
 | 전 Phase | 코드 품질, 문서 관리 | code-review, simplify, claude-md |
+| 전 Phase | 계층 의존성 규칙 검증 | **arch-check** (커스텀 스킬) |
 
 ---
 
@@ -229,3 +230,4 @@ browser_click → 로그인
 | claude-md | `/revise-claude-md` 또는 `/claude-md-improver` | CLAUDE.md 갱신 |
 | frontend-design | UI/프론트엔드 구축 요청 시 자동 트리거 | |
 | skill-creator | `/skill-creator` | 커스텀 스킬 생성 |
+| **arch-check** | `/arch-check` 또는 `python scripts/arch_check.py` | Clean Architecture 위반 탐지 |

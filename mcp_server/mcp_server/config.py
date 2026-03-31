@@ -168,9 +168,26 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
     """환경변수로 설정을 오버라이드한다.
 
     규칙:
+    - SERVER_*: 서버 설정
+      SERVER_NAME, SERVER_HOST, SERVER_PORT, SERVER_TRANSPORT, SERVER_LOG_LEVEL
     - {SOURCE_NAME_UPPER}_CONNECTION: 소스별 DB 연결 문자열
       예: INFRA_DB_CONNECTION, INFRA_DB2_CONNECTION, POLESTAR_CONNECTION
     """
+    # 서버 설정 오버라이드
+    _env_overrides = {
+        "SERVER_NAME": ("name", str),
+        "SERVER_HOST": ("host", str),
+        "SERVER_PORT": ("port", int),
+        "SERVER_TRANSPORT": ("transport", str),
+        "SERVER_LOG_LEVEL": ("log_level", str),
+    }
+    for env_key, (attr, cast) in _env_overrides.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(config.server, attr, cast(env_val))
+            logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # 소스별 연결 문자열 오버라이드
     for source in config.sources:
         env_key = f"{source.name.upper()}_CONNECTION"
         env_val = os.environ.get(env_key, "")

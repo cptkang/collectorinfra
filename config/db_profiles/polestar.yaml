@@ -1,0 +1,170 @@
+# Polestar DB 구조 프로필
+# source: manual — 이 파일은 운영자가 직접 작성/검증한 설정이며, LLM 자동 분석으로 덮어쓰지 않습니다.
+# db_id: polestar_pg
+
+source: manual
+
+patterns:
+  # === EAV 패턴 ===
+  # core_config_prop은 Entity-Attribute-Value 구조로, cmm_resource의 속성을 행 단위로 저장한다.
+  # name 컬럼이 속성 타입(Attribute)을 결정하고, stringvalue_short/stringvalue가 값(Value)을 저장한다.
+  - type: eav
+    entity_table: cmm_resource
+    config_table: core_config_prop
+    # join_condition: FK 제약이 없으므로 생략. 테이블 간 관계는 value_joins로 정의.
+    attribute_column: name
+    value_column: stringvalue_short
+    lob_value_column: stringvalue
+    lob_flag_column: is_lob
+
+    # 값 기반 조인 (value-based join)
+    # FK가 없으므로 이것이 entity-EAV 테이블 간 관계를 정의하는 유일한 수단이다.
+    # 예: core_config_prop.name='Hostname'인 행의 stringvalue_short 값('server01')은
+    #     cmm_resource.hostname 컬럼의 값('server01')과 동일하다.
+    # 이 정보는 LLM이 올바른 WHERE/JOIN 조건을 생성하도록 프롬프트에 삽입된다.
+    value_joins:
+      - eav_attribute: Hostname
+        eav_value_column: stringvalue_short
+        entity_column: hostname
+        description: "EAV Hostname 속성값 = cmm_resource.hostname"
+      - eav_attribute: IPaddress
+        eav_value_column: stringvalue_short
+        entity_column: ipaddress
+        description: "EAV IPaddress 속성값 = cmm_resource.ipaddress"
+
+    # JOIN에 사용하면 안 되는 컬럼 목록
+    # 해당 컬럼이 스키마 프롬프트에 출력될 때 "-- JOIN 금지(NULL)" 주석이 추가된다.
+    excluded_join_columns:
+      - table: cmm_resource
+        column: resource_conf_id
+        reason: "운영 DB에서 NULL. core_config_prop.configuration_id와 매핑되지 않음"
+
+    # 알려진 EAV 속성 목록
+    # core_config_prop.name 컬럼에 저장되는 주요 속성값과 한글 동의어.
+    # field_mapper의 EAV synonym 매칭과 Redis eav_name_synonyms에 자동 동기화된다.
+    known_attributes:
+      - name: OSType
+        description: "운영체제 종류 (예: Linux, Windows)"
+        synonyms: ["운영체제", "OS종류", "OS 타입", "OS"]
+      - name: OSVerson
+        description: "운영체제 버전 (주의: 원본 Polestar 제품의 오탈자가 DB에 그대로 반영됨)"
+        synonyms: ["OS버전", "운영체제버전"]
+      - name: OSParameter
+        description: "OS 파라미터 (커널 버전 등)"
+        synonyms: ["OS파라미터", "OS 설정", "커널"]
+      - name: Vendor
+        description: "서버 제조사 (예: Dell, HP)"
+        synonyms: ["벤더", "제조사", "제조업체"]
+      - name: Model
+        description: "서버 모델명"
+        synonyms: ["모델", "장비모델", "모델명"]
+      - name: SerialNumber
+        description: "시리얼 번호"
+        synonyms: ["시리얼", "S/N", "일련번호", "시리얼번호"]
+      - name: AgentID
+        description: "모니터링 에이전트 ID"
+        synonyms: ["에이전트ID", "에이전트", "Agent"]
+      - name: Hostname
+        description: "호스트명 (EAV, cmm_resource.hostname과 동일 값)"
+        synonyms: ["EAV호스트명"]
+      - name: IPaddress
+        description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)"
+        synonyms: ["EAV IP"]
+      - name: GMT
+        description: "시간대 (GMT offset)"
+        synonyms: ["시간대", "타임존"]
+
+  # === 계층형 패턴 ===
+  # cmm_resource는 서버, CPU, 메모리, 디스크, 네트워크 등 모든 인프라 리소스를 하나의 테이블에
+  # parent_resource_id를 통한 계층 구조로 저장한다.
+  # resource_type으로 리소스 종류를 구분한다 (예: platform.server, server.Cpu, server.FileSystem).
+  - type: hierarchy
+    table: cmm_resource
+    id_column: id
+    parent_column: parent_resource_id
+    type_column: resource_type
+    name_column: hostname
+
+query_guide: |
+  Polestar DB는 cmm_resource(리소스 계층)와 core_config_prop(EAV 설정) 2개 테이블로 구성됩니다.
+  FK 제약이 없으므로, 테이블 간 관계는 값 기반 조인으로만 파악합니다.
+
+  [값 기반 조인]
+  EAV 속성값이 cmm_resource의 컬럼과 동일한 값을 가지는 대응 관계:
+    - core_config_prop.name='Hostname'인 행의 stringvalue_short = cmm_resource.hostname
+    - core_config_prop.name='IPaddress'인 행의 stringvalue_short = cmm_resource.ipaddress
+
+  [EAV 피벗 쿼리 패턴]
+  [금지] cmm_resource와 core_config_prop를 직접 조인하는 것은 금지입니다:
+    - cmm_resource.id = core_config_prop.configuration_id (X) -- 서로 다른 ID 체계
+    - cmm_resource.resource_conf_id = core_config_prop.configuration_id (X) -- 운영 DB에서 resource_conf_id는 NULL
+  반드시 아래 hostname 값 기반 브릿지 조인 패턴만 사용하세요.
+
+  [계층 구조]
+  cmm_resource.resource_type으로 리소스 종류를 구분합니다:
+    - platform.server%: 서버
+    - server.Cpu: CPU
+    - server.FileSystem: 파일시스템
+    - server.NetworkInterface: 네트워크
+  부모-자식 관계: cmm_resource.parent_resource_id = cmm_resource.id
+
+# === 쿼리 예시 (Few-shot) ===
+# LLM이 쿼리를 생성할 때 참조할 질문→SQL 쌍.
+# 이 예시들은 시스템 프롬프트에 그대로 삽입되어 LLM의 환각을 줄인다.
+# 운영자가 필요에 따라 예시를 추가/수정할 수 있다.
+query_examples:
+  - question: "호스트명, OS종류, 벤더를 조회해줘"
+    sql: |
+      SELECT
+        r.hostname,
+        p_ostype.stringvalue_short AS os_type,
+        p_vendor.stringvalue_short AS vendor
+      FROM polestar.cmm_resource r
+      -- 1단계: hostname 값으로 core_config_prop의 Hostname 속성 행을 찾는다
+      LEFT JOIN polestar.core_config_prop p_host
+        ON p_host.name = 'Hostname' AND p_host.stringvalue_short = r.hostname
+      -- 2단계: 동일 configuration_id를 공유하는 다른 EAV 속성을 조인한다
+      LEFT JOIN polestar.core_config_prop p_ostype
+        ON p_ostype.configuration_id = p_host.configuration_id AND p_ostype.name = 'OSType'
+      LEFT JOIN polestar.core_config_prop p_vendor
+        ON p_vendor.configuration_id = p_host.configuration_id AND p_vendor.name = 'Vendor'
+      WHERE r.resource_type LIKE 'platform.server%'
+      LIMIT 100;
+    explanation: "hostname 값 기반 브릿지 조인으로 EAV 속성(OSType, Vendor)을 피벗 조회"
+
+  - question: "서버별 호스트명, IP, OS버전, 시리얼번호를 조회해줘"
+    sql: |
+      SELECT
+        r.hostname,
+        r.ipaddress,
+        p_osver.stringvalue_short AS os_version,
+        p_serial.stringvalue_short AS serial_number
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop p_host
+        ON p_host.name = 'Hostname' AND p_host.stringvalue_short = r.hostname
+      LEFT JOIN polestar.core_config_prop p_osver
+        ON p_osver.configuration_id = p_host.configuration_id AND p_osver.name = 'OSVerson'
+      LEFT JOIN polestar.core_config_prop p_serial
+        ON p_serial.configuration_id = p_host.configuration_id AND p_serial.name = 'SerialNumber'
+      WHERE r.resource_type LIKE 'platform.server%'
+      LIMIT 100;
+    explanation: "EAV 속성을 추가할 때마다 p_host.configuration_id 기반으로 LEFT JOIN을 추가하는 패턴"
+
+  - question: "서버 수를 조회해줘"
+    sql: |
+      SELECT COUNT(*) AS server_count
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type LIKE 'platform.server%'
+      LIMIT 1;
+    explanation: "EAV 조인이 필요 없는 단순 집계 — cmm_resource만 사용"
+
+  - question: "특정 서버의 CPU 리소스를 조회해줘"
+    sql: |
+      SELECT child.id, child.hostname AS cpu_name, child.resource_type
+      FROM polestar.cmm_resource parent
+      JOIN polestar.cmm_resource child
+        ON child.parent_resource_id = parent.id
+      WHERE parent.hostname = '서버명'
+        AND child.resource_type = 'server.Cpu'
+      LIMIT 100;
+    explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인 (id 사용이 올바른 케이스)"

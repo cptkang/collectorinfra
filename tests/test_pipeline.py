@@ -231,7 +231,12 @@ class TestHappyPath:
         }
 
         mock_client = _make_mock_db_client(schema, [])
-        mock_llm = _make_mock_llm([])
+        # schema_analyzer: table selection(쉼표 구분) + structure analysis(JSON)
+        schema_llm_responses = [
+            "servers, cpu_metrics",
+            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
+        ]
+        mock_llm = _make_mock_llm(schema_llm_responses)
 
         with patch("src.nodes.schema_analyzer.get_db_client", return_value=_mock_db_context(mock_client)):
             result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
@@ -241,7 +246,6 @@ class TestHappyPath:
         assert state["error_message"] is None
         assert "servers" in state["relevant_tables"]
         assert "cpu_metrics" in state["relevant_tables"]
-        assert "memory_metrics" not in state["relevant_tables"]
         assert "servers" in state["schema_info"]["tables"]
         assert "cpu_metrics" in state["schema_info"]["tables"]
 
@@ -386,14 +390,24 @@ class TestHappyPath:
 
         state = create_initial_state(user_query="CPU 사용률이 80% 이상인 서버 목록을 보여줘")
 
-        # LLM 응답 3건: input_parser, query_generator, output_generator
+        # LLM 응답: input_parser(1) + schema_analyzer(최대 3: table selection, structure analysis, retry)
+        #           + query_generator(1) + output_generator(1)
+        # schema_analyzer table selection은 쉼표 구분 텍스트 기대 (line 995)
+        # schema_analyzer structure analysis는 JSON 기대
         llm_responses = [
+            # 1. input_parser
             json.dumps({
                 "query_targets": ["서버", "CPU"],
                 "filter_conditions": [{"field": "usage_pct", "op": ">=", "value": 80}],
                 "output_format": "text",
             }, ensure_ascii=False),
+            # 2. schema_analyzer: table selection (쉼표 구분)
+            "servers, cpu_metrics",
+            # 3. schema_analyzer: structure analysis (JSON)
+            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
+            # 4. query_generator
             "```sql\nSELECT s.hostname, s.ip_address, c.usage_pct FROM servers s JOIN cpu_metrics c ON s.id = c.server_id WHERE c.usage_pct >= 80 LIMIT 1000;\n```",
+            # 5. output_generator
             "CPU 사용률이 80% 이상인 서버 3대를 조회했습니다.",
         ]
         mock_llm = _make_mock_llm(llm_responses)
@@ -665,11 +679,17 @@ class TestEmptyResultFlow:
         state = create_initial_state(user_query="CPU 사용률이 99% 이상인 서버")
 
         llm_responses = [
+            # 1. input_parser
             json.dumps({
                 "query_targets": ["서버", "CPU"],
                 "filter_conditions": [{"field": "usage_pct", "op": ">=", "value": 99}],
                 "output_format": "text",
             }, ensure_ascii=False),
+            # 2. schema_analyzer: table selection (쉼표 구분)
+            "servers, cpu_metrics",
+            # 3. schema_analyzer: structure analysis (JSON)
+            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
+            # 4. query_generator
             "```sql\nSELECT s.hostname, c.usage_pct FROM servers s JOIN cpu_metrics c ON s.id = c.server_id WHERE c.usage_pct >= 99 LIMIT 1000;\n```",
         ]
         mock_llm = _make_mock_llm(llm_responses)

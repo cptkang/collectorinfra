@@ -84,29 +84,52 @@ async def field_mapper(
 
     # 3. Redis 캐시에서 전체 DB의 synonyms/descriptions 로드
     active_db_ids = _get_active_db_ids(app_config)
-    all_db_synonyms, all_db_descriptions, priority_db_ids = await _load_db_cache_data(
+    all_db_synonyms, all_db_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms_raw, cache_mgr = await _load_db_cache_data(
         app_config, active_db_ids, target_db_hints
     )
 
-    # 4. 3단계 매핑 수행
-    mapping_result = await perform_3step_mapping(
+    # 4. 3단계 매핑 수행 (cache_manager를 전달하여 LLM 매핑 즉시 Redis 등록)
+    mapping_result, llm_inference_details = await perform_3step_mapping(
         llm=llm,
         field_names=field_names,
         field_mapping_hints=field_mapping_hints,
         all_db_synonyms=all_db_synonyms,
         all_db_descriptions=all_db_descriptions,
         priority_db_ids=priority_db_ids,
+        eav_name_synonyms=eav_name_synonyms,
+        cache_manager=cache_mgr,
+        active_db_ids=active_db_ids,
+        global_synonyms=global_synonyms_raw,
     )
 
     # 5. LLM 추론 매핑에 대한 pending_synonym_registrations 생성
     pending = _build_pending_registrations(mapping_result)
 
+    if llm_inference_details:
+        logger.info(
+            "LLM 추론 매핑 %d건이 Redis에 즉시 등록되었습니다.",
+            len(llm_inference_details),
+        )
+
+    # 6. 매핑 보고서 MD 생성
+    mapping_report_md: str | None = None
+    if mapping_result.column_mapping:
+        from src.document.mapping_report import generate_mapping_report
+
+        mapping_report_md = generate_mapping_report(
+            field_names=field_names,
+            mapping_result=mapping_result,
+            template_name=state.get("output_file_name"),
+            llm_inference_details=llm_inference_details,
+        )
+
     logger.info(
-        "field_mapper 완료: %d/%d 매핑, DB=%s, pending_synonyms=%d",
+        "field_mapper 완료: %d/%d 매핑, DB=%s, pending_synonyms=%d, report=%s",
         sum(1 for v in mapping_result.column_mapping.values() if v is not None),
         len(field_names),
         mapping_result.mapped_db_ids,
         len(pending),
+        "생성됨" if mapping_report_md else "없음",
     )
 
     return {
@@ -115,6 +138,8 @@ async def field_mapper(
         "mapping_sources": mapping_result.mapping_sources,
         "mapped_db_ids": mapping_result.mapped_db_ids,
         "pending_synonym_registrations": pending if pending else None,
+        "llm_inference_details": llm_inference_details if llm_inference_details else None,
+        "mapping_report_md": mapping_report_md,
         "current_node": "field_mapper",
     }
 
@@ -138,7 +163,7 @@ async def _load_db_cache_data(
     app_config: AppConfig,
     active_db_ids: list[str],
     target_db_hints: list[str],
-) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, str]], list[str]]:
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, str]], list[str], dict[str, list[str]], dict[str, list[str]], Any]:
     """Redis 캐시에서 전체 DB의 synonyms/descriptions를 로드한다.
 
     target_db_hints가 있으면 해당 DB를 우선 조회한다.
@@ -150,7 +175,7 @@ async def _load_db_cache_data(
         target_db_hints: 프롬프트에서 추출한 대상 DB 힌트
 
     Returns:
-        (all_db_synonyms, all_db_descriptions, priority_db_ids)
+        (all_db_synonyms, all_db_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms, cache_manager)
     """
     all_synonyms: dict[str, dict[str, list[str]]] = {}
     all_descriptions: dict[str, dict[str, str]] = {}
@@ -170,6 +195,9 @@ async def _load_db_cache_data(
 
     ordered_db_ids = priority_db_ids + remaining_db_ids
 
+    eav_name_synonyms: dict[str, list[str]] = {}
+    cache_mgr: Any = None
+
     try:
         from src.schema_cache.cache_manager import get_cache_manager
 
@@ -177,7 +205,7 @@ async def _load_db_cache_data(
 
         for db_id in ordered_db_ids:
             try:
-                synonyms = await cache_mgr.get_synonyms(db_id)
+                synonyms = await cache_mgr.load_synonyms_with_global_fallback(db_id)
                 if synonyms:
                     all_synonyms[db_id] = synonyms
             except Exception as e:
@@ -190,12 +218,27 @@ async def _load_db_cache_data(
             except Exception as e:
                 logger.debug("DB '%s' descriptions 로드 실패: %s", db_id, e)
 
+        # EAV name synonyms + global synonyms 로드
+        try:
+            if cache_mgr.redis_available:
+                eav_name_synonyms = await cache_mgr._redis_cache.load_eav_name_synonyms()
+        except Exception as e:
+            logger.debug("eav_name_synonyms 로드 실패: %s", e)
+
+        global_synonyms_raw: dict[str, list[str]] = {}
+        try:
+            if cache_mgr.redis_available:
+                global_synonyms_raw = await cache_mgr.get_global_synonyms()
+        except Exception as e:
+            logger.debug("global_synonyms 로드 실패: %s", e)
+
     except Exception as e:
         logger.info(
             "Redis 캐시 로드 실패, LLM 폴백으로 동작합니다: %s", e
         )
+        global_synonyms_raw = {}
 
-    return all_synonyms, all_descriptions, priority_db_ids
+    return all_synonyms, all_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms_raw, cache_mgr
 
 
 async def _handle_synonym_registration(

@@ -18,6 +18,7 @@ from typing import Any, AsyncGenerator, Optional
 import asyncpg
 
 from src.config import AppConfig
+from src.utils import sql_file_logger
 from src.dbhub.models import (
     ColumnInfo,
     DBConnectionError,
@@ -47,6 +48,8 @@ class PostgresClient:
         self._max_rows = max_rows
         self._pool: Optional[asyncpg.Pool] = None
         self._connected: bool = False
+        # DSN에서 DB명 추출 (SQL 파일 로거용)
+        self._db_name = dsn.rsplit("/", 1)[-1].split("?")[0] if "/" in dsn else "unknown"
 
     async def connect(self) -> None:
         try:
@@ -85,6 +88,9 @@ class PostgresClient:
         except Exception:
             return False
 
+    # 시스템 스키마 목록 (information_schema, pg_catalog 등 제외)
+    _SYSTEM_SCHEMAS = ("information_schema", "pg_catalog", "pg_toast")
+
     async def search_objects(
         self,
         pattern: str = "*",
@@ -92,25 +98,37 @@ class PostgresClient:
     ) -> list[TableInfo]:
         self._ensure_connected()
         sql = """
-            SELECT table_name
+            SELECT table_schema, table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public'
+            WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
               AND table_type = 'BASE TABLE'
-            ORDER BY table_name
+            ORDER BY table_schema, table_name
         """
         result = await self.execute_sql(sql)
-        return [TableInfo(name=row["table_name"]) for row in result.rows]
+        tables = []
+        for row in result.rows:
+            schema = row["table_schema"]
+            name = row["table_name"]
+            # public 스키마는 스키마 접두어 생략, 그 외는 schema.table 형태
+            full_name = name if schema == "public" else f"{schema}.{name}"
+            tables.append(TableInfo(name=full_name))
+        return tables
 
     async def get_table_schema(self, table_name: str) -> TableInfo:
         self._ensure_connected()
-        import re
-        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table_name):
+        # schema.table 형태 또는 bare table name 지원
+        if "." in table_name:
+            schema, bare_name = table_name.split(".", 1)
+        else:
+            schema, bare_name = "public", table_name
+
+        if not _VALID_TABLE_NAME.match(bare_name) or not _VALID_TABLE_NAME.match(schema):
             raise DBHubError(f"유효하지 않은 테이블명: {table_name}")
 
         col_sql = """
             SELECT column_name, data_type, is_nullable, column_default
             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1
+            WHERE table_schema = $1 AND table_name = $2
             ORDER BY ordinal_position
         """
         pk_sql = """
@@ -119,14 +137,14 @@ class PostgresClient:
             JOIN information_schema.key_column_usage kcu
               ON tc.constraint_name = kcu.constraint_name
               AND tc.table_schema = kcu.table_schema
-            WHERE tc.table_schema = 'public'
-              AND tc.table_name = $1
+            WHERE tc.table_schema = $1
+              AND tc.table_name = $2
               AND tc.constraint_type = 'PRIMARY KEY'
         """
 
         async with self._pool.acquire() as conn:
-            col_rows = await conn.fetch(col_sql, table_name)
-            pk_rows = await conn.fetch(pk_sql, table_name)
+            col_rows = await conn.fetch(col_sql, schema, bare_name)
+            pk_rows = await conn.fetch(pk_sql, schema, bare_name)
 
         pk_columns = {row["column_name"] for row in pk_rows}
 
@@ -166,9 +184,14 @@ class PostgresClient:
         Raises:
             DBHubError: 유효하지 않은 테이블명일 때
         """
-        # 테이블명 검증 추가 (SQL 인젝션 방어)
-        if not _VALID_TABLE_NAME.match(table_name):
-            raise DBHubError(f"유효하지 않은 테이블명: {table_name}")
+        # schema.table 형태 지원 + SQL 인젝션 방어
+        if "." in table_name:
+            schema_part, bare_part = table_name.split(".", 1)
+            if not _VALID_TABLE_NAME.match(schema_part) or not _VALID_TABLE_NAME.match(bare_part):
+                raise DBHubError(f"유효하지 않은 테이블명: {table_name}")
+        else:
+            if not _VALID_TABLE_NAME.match(table_name):
+                raise DBHubError(f"유효하지 않은 테이블명: {table_name}")
 
         result = await self.execute_sql(
             f"SELECT * FROM {table_name} LIMIT {limit}"
@@ -186,6 +209,10 @@ class PostgresClient:
             elapsed_ms = (time.time() - start_time) * 1000
 
             if not rows:
+                sql_file_logger.log_sql(
+                    sql, execution_time_ms=elapsed_ms, row_count=0,
+                    source=self._db_name,
+                )
                 return QueryResult(
                     columns=[],
                     rows=[],
@@ -211,6 +238,12 @@ class PostgresClient:
 
             truncated = len(result_rows) >= self._max_rows
 
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=elapsed_ms,
+                row_count=len(result_rows),
+                source=self._db_name,
+            )
+
             return QueryResult(
                 columns=columns,
                 rows=result_rows,
@@ -220,14 +253,26 @@ class PostgresClient:
             )
 
         except asyncpg.exceptions.QueryCanceledError as e:
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._db_name, error=str(e),
+            )
             raise QueryTimeoutError(
                 f"쿼리 타임아웃 ({self._query_timeout}초 초과)"
             ) from e
         except asyncpg.exceptions.PostgresSyntaxError as e:
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._db_name, error=str(e),
+            )
             raise QueryExecutionError(str(e), sql) from e
         except (QueryTimeoutError, QueryExecutionError):
             raise
         except Exception as e:
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._db_name, error=str(e),
+            )
             raise QueryExecutionError(str(e), sql) from e
 
     def _ensure_connected(self) -> None:
@@ -251,7 +296,7 @@ class PostgresClient:
                 ON tc.constraint_name = ccu.constraint_name
                 AND tc.table_schema = ccu.table_schema
             WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = 'public'
+              AND tc.table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
         """
         try:
             result = await self.execute_sql(fk_sql)

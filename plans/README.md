@@ -23,6 +23,23 @@
 | 16 | [16-field-cache-test-plan.md](./16-field-cache-test-plan.md) | 필드 캐시 테스트 계획 | - |
 | 17 | [17-testenv-and-synonym-dict.md](./17-testenv-and-synonym-dict.md) | 테스트 환경 및 동의어 사전 | - |
 | 18 | [18-claude-skills-plugins.md](./18-claude-skills-plugins.md) | Claude Code 스킬/플러그인 활용 계획 | 신규 |
+| 19 | [19-excel-csv-llm-pipeline.md](./19-excel-csv-llm-pipeline.md) | Excel-CSV 변환 LLM 파이프라인 | 완료 |
+| 20 | [20-eav-pivot-query-support.md](./20-eav-pivot-query-support.md) | EAV 피벗 쿼리 지원 | 완료 |
+| 21 | [21-eav-field-mapper-support.md](./21-eav-field-mapper-support.md) | EAV 필드 매퍼 지원 | 완료 |
+| 22 | [22-llm-intelligent-field-mapping.md](./22-llm-intelligent-field-mapping.md) | LLM 지능형 필드 매핑 | 완료 |
+| 23 | [23-ui-progress-and-excel-fix.md](./23-ui-progress-and-excel-fix.md) | UI 진행률 표시 및 Excel 수정 | 완료 |
+| 24 | [24-ui-playwright-test-plan.md](./24-ui-playwright-test-plan.md) | UI Playwright 테스트 계획 | - |
+| 25 | [25-eav-query-field-validation.md](./25-eav-query-field-validation.md) | EAV 쿼리 필드 검증 | 완료 |
+| 26 | [26-schema-redis-cache-optimization.md](./26-schema-redis-cache-optimization.md) | 스키마 Redis 캐시 최적화 | 완료 |
+| 27 | [27-schema-analyzer-dependency-removal.md](./27-schema-analyzer-dependency-removal.md) | 스키마 분석기 의존성 제거 | 완료 |
+| 28 | [28-gemini-api-support.md](./28-gemini-api-support.md) | Gemini API 지원 | 완료 |
+| 29 | [29-cache-policy-violations-fix.md](./29-cache-policy-violations-fix.md) | 캐시 정책 위반 수정 | 완료 |
+| 30 | [30-cache-validity-and-invalidation-audit.md](./30-cache-validity-and-invalidation-audit.md) | 캐시 유효성 및 무효화 감사 | 완료 |
+| 31 | [31-field-mapping-failure-fix.md](./31-field-mapping-failure-fix.md) | 필드 매핑 실패 수정 | 완료 |
+| 32 | [32-eav-manual-profile-config.md](./32-eav-manual-profile-config.md) | EAV 수동 프로필 설정 | 완료 |
+| 33 | [33-resource-conf-id-join-prevention.md](./33-resource-conf-id-join-prevention.md) | resource_conf_id JOIN 방지 (D-022 보강) | 신규 |
+| 35 | [35-excel-empty-data-fix.md](./35-excel-empty-data-fix.md) | Excel 데이터 미채움 버그 수정 | - |
+| 36 | [36-data-sufficiency-check-improvement.md](./36-data-sufficiency-check-improvement.md) | 데이터 충분성 검사 로직 개선 (mapping_sources 기반 동적 임계값) | 신규 |
 
 ---
 

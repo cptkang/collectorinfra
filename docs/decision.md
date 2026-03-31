@@ -20,6 +20,18 @@
 11. [Redis 기반 스키마 캐시 + LLM 컬럼 설명/유사 단어](#d-011-redis-기반-스키마-캐시--llm-컬럼-설명유사-단어)
 12. [매핑-우선 필드 매핑 + 유사어 등록](#d-012-매핑-우선mapping-first-필드-매핑--유사어-등록)
 13. [멀티턴 대화 + Human-in-the-loop](#d-013-멀티턴-대화--human-in-the-loop-phase-3)
+14. [자체 MCP 서버 구축 + SSE Transport 전환](#d-014-자체-mcp-서버-구축--sse-transport-전환)
+15. [Excel→CSV 변환으로 LLM 컨텍스트 보강](#d-015-excelcsv-변환으로-llm-컨텍스트-보강-plan-19)
+16. [EAV 비정규화 테이블 쿼리 지원](#d-016-eav-비정규화-테이블-쿼리-지원-plan-20)
+17. [EAV Field Mapper 전체 파이프라인 지원](#d-017-eav-field-mapper-전체-파이프라인-지원-plan-21)
+18. [LLM 지능형 필드 매핑 + 매핑 보고서 + 피드백 학습](#d-018-llm-지능형-필드-매핑--매핑-보고서--사용자-피드백-학습-plan-22)
+19. [Fingerprint TTL 기반 Redis 캐시 최적화](#d-019-fingerprint-ttl-기반-redis-캐시-최적화-plan-26)
+20. [LLM 기반 범용 스키마 구조 분석](#d-020-llm-기반-범용-스키마-구조-분석-plan-27)
+21. [Gemini API 프로바이더 추가 + 민감 키 분리](#d-021-gemini-api-프로바이더-추가--민감-키-분리-plan-28)
+22. [RESOURCE_CONF_ID JOIN 금지 + hostname 브릿지 조인 필수화](#d-022-resource_conf_id-join-금지--hostname-브릿지-조인-필수화)
+23. [데이터 충분성 검사 로직 개선](#d-023-데이터-충분성-검사-로직-개선-plan-36)
+24. [Synonym 통합 관리 + EAV 접두사 비교 정규화](#d-024-synonym-통합-관리--eav-접두사-비교-정규화-plan-37)
+25. [3계층 하이브리드 필드 매핑 전파 정합성](#d-025-3계층-하이브리드-필드-매핑-전파-정합성-plan-38)
 
 ---
 
@@ -512,7 +524,7 @@ SCHEMA_CACHE_ENABLED=true          # 캐시 활성화 여부
 
 - Redis 키 구조 변경 시 `CACHE_FORMAT_VERSION` 증가 필요
 - 3중 읽기 전용 방어(D-003) 유지: Redis에 저장하는 것은 스키마 메타데이터뿐, DB 쓰기 아님
-- 유사 단어 운영자 수동 추가분은 LLM 재생성 시에도 보존해야 함
+- 유사 단어 운영자 수동 추가분은 **글로벌 사전(`synonyms:global`)에 보존**. DB별 synonyms는 `invalidate()` 시 삭제되며, 스키마 재생성 시 `load_synonyms_with_global_fallback()`으로 글로벌 사전에서 자동 재구축됨 (Plan 30 정책 변경)
 
 ---
 
@@ -654,10 +666,512 @@ query_validator → approval_gate (interrupt) → query_executor
 
 ---
 
+## D-015. Excel→CSV 변환으로 LLM 컨텍스트 보강 (Plan 19)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-23 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-007 확장 |
+
+### 결정
+
+Excel 업로드 시 CSV 변환을 통해 **헤더 + 예시 데이터**를 추출하여 LLM 컨텍스트에 전달한다. 기존 파이프라인(field_mapper → SQL → DB 쿼리 → Excel 채우기)은 유지하며, CSV는 LLM 컨텍스트 보강 수단으로만 사용한다.
+
+### 핵심 변경사항
+
+1. **`CsvSheetData` 데이터클래스**: 시트별 헤더, 예시 데이터(최대 50행), CSV 텍스트 구조화
+2. **`excel_to_csv()` 함수**: Excel→시트별 CsvSheetData 변환, 기존 `excel_parser` 함수 재활용
+3. **폴백 경로**: CSV 변환 실패(복잡 구조) 시 `template_structure` 기반 헤더 추출
+4. **시트별 순환 LLM 호출**: `map_fields_per_sheet()` 패턴 재활용, input_parser에서 시트별 개별 파싱
+5. **field_mapper 예시 데이터**: 프롬프트에 예시 값 포함하여 매핑 정확도 향상
+
+### 근거
+
+- LLM이 헤더명만 보는 것보다 예시 데이터 패턴을 참고하면 필드 매핑 정확도 향상 (예: "서버명" → `hostname` vs `server_id` 판별)
+- 멀티시트 시 시트별 개별 LLM 호출로 컨텍스트 윈도우 관리 유리
+- output_generator는 변경 없음 — 기존 `excel_writer`가 DB 결과를 Excel에 채우는 방식 유지
+
+### 향후 수정 시 고려사항
+
+- 예시 데이터 최대 행 수(50행)는 LLM 토큰 사용량에 따라 조정 가능
+- 시트별 LLM 호출 병렬화(`asyncio.gather`) 검토 가능
+
+---
+
+## D-016. EAV 비정규화 테이블 쿼리 지원 (Plan 20)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-24 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-001 확장, D-014 연계 |
+
+### 결정
+
+Polestar DB의 **EAV(Entity-Attribute-Value) 구조**와 **계층형 리소스 테이블**(CMM_RESOURCE + CORE_CONFIG_PROP)에 대한 쿼리 지원을 추가한다. DB 엔진(DB2/PostgreSQL)에 따른 SQL 문법 분기도 도입한다.
+
+### 핵심 변경사항
+
+1. **`src/prompts/polestar_patterns.py` 신규**: POLESTAR_QUERY_PATTERNS(6개 패턴), POLESTAR_META(메타데이터 상수), POLESTAR_QUERY_GUIDE(프롬프트 가이드)
+2. **schema_analyzer 자동 감지**: CMM_RESOURCE + CORE_CONFIG_PROP 테이블 존재 시 `_polestar_meta`를 schema_info에 자동 삽입. EAV 샘플/RESOURCE_TYPE 분포도 수집
+3. **query_generator 분기**: `_polestar_meta` 존재 시 EAV 피벗, 계층 탐색, 조인 조건 가이드를 프롬프트에 삽입. 예시 쿼리 3개 포함
+4. **DB 엔진 지원**: `DBDomainConfig.db_engine` 필드, `AgentState.active_db_engine` 필드 추가. query_validator가 DB2(`FETCH FIRST N ROWS ONLY`)/PostgreSQL(`LIMIT N`) 문법 자동 대응
+5. **query_validator 보강**: LIMIT 검사에 DB2 패턴 인식, 테이블명 대소문자 무시 비교
+6. **input_parser 확장**: query_targets에 "파일시스템", "프로세스", "HBA", "에이전트", "서버설정" 추가. filter_conditions에 `is_eav` 플래그 가이드 추가
+
+### 하위 호환성
+
+- `_polestar_meta`가 없으면 기존 로직 그대로 동작 (비-Polestar DB에 영향 없음)
+- `db_engine` 기본값은 "postgresql"로 기존 DB 동작 불변
+- `polestar_guide` 플레이스홀더는 비-Polestar 시 빈 문자열
+
+### 근거
+
+- Polestar DB는 EAV 패턴과 계층형 self-join이 필수이나, LLM이 이 구조를 자동으로 파악하기 어려움
+- 쿼리 패턴 예시와 메타데이터를 프롬프트에 제공하면 LLM의 올바른 SQL 생성 가능성 증가
+- DB2와 PostgreSQL의 LIMIT 문법 차이를 validator 수준에서 자동 처리하여 엔진 불문 올바른 SQL 보장
+
+### 향후 수정 시 고려사항
+
+- RESOURCE_TYPE 값이 추가되면 `POLESTAR_META["resource_types"]`에 반영
+- EAV known_attributes가 추가되면 `POLESTAR_META["eav"]["known_attributes"]`에 반영
+- 새로운 DB 엔진(Oracle 등) 추가 시 `_add_limit_clause`에 분기 추가 필요
+- Polestar 이외의 EAV 구조 DB 지원 시 감지 로직을 일반화 검토
+
+---
+
+## D-017. EAV Field Mapper 전체 파이프라인 지원 (Plan 21)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-24 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-016 확장, D-012 확장 |
+
+### 결정
+
+Field Mapper의 3단계 매핑에 **2.5단계 EAV synonym 매칭**을 삽입하고, `EAV:속성명` 접두사 규약으로 EAV 속성 매핑을 표현한다. query_generator가 이를 감지하여 CASE WHEN 피벗 쿼리 힌트를 자동 생성한다.
+
+### 핵심 변경사항
+
+1. **`_apply_eav_synonym_mapping()` 신규** (`src/document/field_mapper.py`): Redis `eav_name_synonyms`에서 필드명을 매칭하여 `EAV:속성명` 형식으로 polestar DB에 매핑
+2. **`perform_3step_mapping()` 확장**: `eav_name_synonyms` 파라미터 추가, 2단계-3단계 사이에 2.5단계 EAV 매칭 삽입
+3. **field_mapper 노드 EAV 로드**: `_load_db_cache_data()`에서 `load_eav_name_synonyms()` 호출하여 `perform_3step_mapping()`에 전달
+4. **field_mapper 프롬프트 EAV 가이드**: 단일/멀티 DB 프롬프트에 EAV 매핑 패턴 설명 추가
+5. **`_format_schema_columns()` EAV 가상 컬럼**: `_polestar_meta` 감지 시 known_attributes를 `EAV:속성명` 형식으로 스키마에 포함
+6. **`_validate_mapping()` EAV 검증**: `EAV:` 접두사 매핑을 known_attributes 기준으로 검증
+7. **query_generator EAV 피벗 힌트**: `_build_user_prompt()`에서 `EAV:` 매핑 감지 → CASE WHEN 피벗 쿼리 힌트 + 조인 조건 프롬프트 삽입
+
+### EAV 매핑 규약
+
+- 매핑 결과: `"EAV:속성명"` (예: `"EAV:OSType"`, `"EAV:Vendor"`)
+- mapping_sources: `"eav_synonym"` (기존 `"hint"`, `"synonym"`, `"llm_inferred"`에 추가)
+- 정규 컬럼 매핑(`table.column`)과 공존 가능
+
+### 하위 호환성
+
+- `eav_name_synonyms`가 None/빈 dict이면 2.5단계 스킵 → 기존 동작 불변
+- `EAV:` 접두사가 없는 매핑은 기존 로직 그대로 처리
+- 비-Polestar DB에는 영향 없음
+
+### 근거
+
+- Plan 20에서 query_generator만 EAV를 지원했으나, 양식 기반 조회 시 field_mapper도 EAV를 이해해야 올바른 매핑 가능
+- `EAV:` 접두사 규약으로 정규/EAV 매핑을 명확히 구분하여 파이프라인 전체에서 투명하게 처리
+
+---
+
+## D-018. LLM 지능형 필드 매핑 + 매핑 보고서 + 사용자 피드백 학습 (Plan 22)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-24 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-012 확장, D-017 확장 |
+
+### 결정
+
+Field Mapper의 LLM 추론 단계를 **Redis 유사어 + DB descriptions + EAV names를 결합한 통합 컨텍스트**로 강화하고, LLM 매핑 결과를 **즉시 Redis에 등록**하며, **구조화된 MD 보고서**를 생성하여 사용자가 **MD 수정/업로드**로 매핑을 교정할 수 있도록 한다.
+
+### 핵심 변경사항
+
+1. **`_apply_llm_mapping_with_synonyms()` 신규** (`src/document/field_mapper.py`): Redis synonyms + descriptions + EAV names를 결합한 프롬프트로 전체 필드를 1회 LLM 호출로 매핑. confidence/reason/matched_synonym 포함 응답.
+2. **`_register_llm_mappings_to_redis()` 신규**: LLM 매핑 결과를 즉시 Redis synonyms에 등록 (source: `llm_inferred`). EAV 매핑은 eav_name_synonyms에 등록.
+3. **`perform_3step_mapping()` 확장**: `cache_manager` 파라미터 추가, 반환 타입 `tuple[MappingResult, list[dict]]`로 변경.
+4. **`src/document/mapping_report.py` 신규 모듈**: `generate_mapping_report()` (매핑→MD), `parse_mapping_report()` (MD→매핑 리스트).
+5. **`analyze_md_diff()` / `apply_mapping_feedback_to_redis()` 신규**: 원본/수정 MD 비교 → 변경사항 Redis 반영.
+6. **API 엔드포인트 2개 추가**: `GET /query/{id}/mapping-report` (다운로드), `POST /query/mapping-feedback` (수정 MD 업로드).
+7. **프론트엔드**: 매핑 보고서 다운로드 버튼 + 수정 MD 업로드 버튼 추가.
+
+### 전략: "기본 등록 → 사후 교정"
+
+- 기존: LLM 매핑 결과를 pending 상태로 대기 → 사용자 자연어 승인 필요
+- 변경: LLM 매핑 결과를 **즉시 Redis에 등록** → MD 보고서로 현황 제공 → 문제 시 MD 수정/업로드로 교정
+- 효과: 사용자 액션 없이도 자기학습, 동일 양식 2차 조회 시 LLM 호출 제거
+
+### 근거
+
+- Redis에 이미 있는 유사어 정보를 LLM 컨텍스트로 활용하면 매핑 정확도 향상
+- 즉시 등록 전략으로 반복 양식 조회 비용 대폭 절감
+- MD 파일 기반 피드백은 자연어 파싱의 불확실성을 제거하고 구조화된 변경 의도 전달
+
+### 향후 수정 시 고려사항
+
+- source 태그 `llm_inferred`와 `user_corrected`로 자동/수동 등록 구분 가능
+- `mapping_history:{template_hash}` Redis 키로 양식별 매핑 이력 추적 가능 (미구현, 필요 시 추가)
+
+---
+
+## D-019. Fingerprint TTL 기반 Redis 캐시 최적화 (Plan 26)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-25 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-010 확장, D-011 확장 |
+
+### 결정
+
+메모리 캐시(5분 TTL) 만료 후 Redis 캐시를 조회할 때, **fingerprint 검증 타임스탬프(기본 30분 TTL)**가 유효하면 DB에 fingerprint SQL을 실행하지 않고 Redis 캐시를 그대로 신뢰한다.
+
+### 핵심 변경사항
+
+1. **`SchemaCacheConfig.fingerprint_ttl_seconds: int = 1800`** (`src/config.py`): fingerprint 재검증 주기 설정 (기본 30분)
+2. **Redis 키 추가**: `schema:{db_id}:fingerprint_checked_at` — 마지막 fingerprint 검증 시각 (Unix timestamp)
+3. **`RedisSchemaCache.is_fingerprint_fresh()` / `refresh_fingerprint_checked_at()`** (`src/schema_cache/redis_cache.py`): TTL 확인 및 갱신
+4. **`SchemaCacheManager.is_fingerprint_fresh()` / `refresh_fingerprint_ttl()`** (`src/schema_cache/cache_manager.py`): Redis 위임, 파일 백엔드는 항상 False
+5. **캐시 조회 흐름 2단계 분리** (`schema_analyzer.py`, `multi_db_executor.py`):
+   - 2차-A: fingerprint TTL 유효 → DB 조회 없이 Redis에서 복원
+   - 2차-B: fingerprint TTL 만료 → DB fingerprint SQL 1회 → 불변이면 TTL 갱신 후 Redis에서 복원
+6. **`multi_db_executor._analyze_schema()`**: `PersistentSchemaCache` 직접 사용 → `SchemaCacheManager` 통합 사용으로 변경
+
+### 효과
+
+| 시나리오 | 변경 전 DB 조회 | 변경 후 DB 조회 |
+|---------|---------------|---------------|
+| 5분 이내 재요청 | 없음 (메모리 캐시) | 없음 (메모리 캐시) |
+| 5~30분 이내 재요청 | fingerprint SQL 1회 | **없음 (Redis TTL 유효)** |
+| 30분 후 재요청 | fingerprint SQL 1회 | fingerprint SQL 1회 (TTL 갱신) |
+
+### 트레이드오프
+
+스키마 변경 반영이 최대 30분 지연될 수 있다. `SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS` 환경변수로 조절 가능.
+
+### 근거
+
+- 인프라 DB 스키마는 빈번하게 변경되지 않으므로 30분 지연은 허용 가능
+- Redis 장애 시 `is_fingerprint_fresh()`가 항상 False를 반환하여 기존 경로로 안전하게 폴백
+- `multi_db_executor`가 `SchemaCacheManager`를 사용하도록 통합하여 캐시 전략 일관성 확보
+
+---
+
+## D-020. LLM 기반 범용 스키마 구조 분석 (Plan 27)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-25 |
+| **상태** | 확정 |
+
+### 결정
+
+`schema_analyzer.py`의 특정 DB(Polestar) 하드코딩 의존성을 전면 제거하고, **LLM 전면 분석 + HITL 검증 + 결과 자동 캐싱** 방식으로 전환한다.
+
+### 주요 변경
+
+1. **`DOMAIN_TABLE_HINTS` 삭제** → LLM 기반 테이블 선택(`_llm_select_relevant_tables`)으로 대체
+2. **Polestar 전용 함수 3개 삭제** (`_detect_polestar_structure`, `_enrich_polestar_metadata`, `_collect_polestar_samples`) → 범용 구조 분석(`_analyze_db_structure`, `_collect_structure_samples`)으로 대체
+3. **`_polestar_meta` → `_structure_meta`** 키 변경 (다운스트림 4개 파일 포함)
+4. **`polestar_patterns.py` 파일 삭제** — `POLESTAR_META`, `POLESTAR_QUERY_PATTERNS`, `POLESTAR_QUERY_GUIDE` 상수 제거
+5. **DB 프로필 자동 생성** — LLM 분석 결과를 `config/db_profiles/{db_id}.yaml`에 자동 저장 (수동 작성 없음)
+6. **구조 분석 결과 캐싱** — Redis + YAML 이중 저장, 스키마 미변경 시 LLM 호출 생략
+7. **HITL 승인 흐름** — `structure_approval_gate` 노드 + `interrupt_before` + `enable_structure_approval` config (기본 활성화)
+
+### 설계 원칙
+
+- YAML/JSON 프로필 파일은 **LLM + HITL의 산출물**이며 수동 편집하지 않는다
+- 환각 위험은 HITL(사용자 승인/수정)로 처리한다
+- 새 DB 추가 시 `schema_analyzer.py` 코드 변경 없이 동작한다
+
+### 근거
+
+- 기존 방식은 새 DB마다 전용 감지/보강 코드를 추가해야 하는 확장성 문제
+- LLM이 EAV, 계층형 등 구조적 패턴을 스키마에서 자동 감지할 수 있음
+- 분석 결과를 캐싱하면 LLM 비용/지연 영향이 최초 1회로 제한됨
+
+---
+
+## D-021. Gemini API 프로바이더 추가 + 민감 키 분리 (Plan 28)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-25 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-006 확장 (설정 계층화) |
+
+### 결정
+
+Ollama 환각(hallucination) 검증 목적으로 **Google Gemini API**를 3번째 LLM 프로바이더로 추가한다. 동시에 API 키 등 민감 정보를 **`.encenv` 파일로 분리**하여 `.env`와 독립 관리한다.
+
+### 핵심 변경사항
+
+1. **`LLMConfig.provider`에 `"gemini"` 추가** (`src/config.py`): `Literal["ollama", "fabrix", "gemini"]`
+2. **`_create_gemini()` 팩토리 함수** (`src/llm.py`): `langchain-google-genai`의 `ChatGoogleGenerativeAI` 사용
+3. **`.encenv` 민감 키 파일 도입**: `.gitignore`에 등록, `LLMConfig`/`AdminConfig`/`RedisConfig`의 `env_file`을 `[".env", ".encenv"]`로 확장
+4. **`langchain-google-genai>=2.0.0`**: `pyproject.toml` optional dependency (`pip install -e ".[gemini]"`)
+5. **Gemini 모델 권장**: `gemini-2.0-flash` (안정, 기본), `gemini-3.1-pro` (최신 추론). `gemini-2.5-*` 시리즈는 2026-06-17 deprecated 예정이므로 사용 금지
+
+### 설계 원칙
+
+- **팩토리 패턴 유지**: 모든 노드는 `create_llm()` 단일 진입점만 사용 → 노드 코드 변경 없음
+- **Lazy import**: `langchain_google_genai`는 `_create_gemini()` 내부에서만 import → 미설치 환경에서도 import 에러 없음
+- **키 분리**: `.encenv`에 API 키를 격리하여 `.env`가 실수로 커밋되어도 키 유출 방지
+
+### 트레이드오프
+
+- Gemini API는 외부 네트워크 필요 (폐쇄망 불가)
+- optional dependency이므로 Gemini 미사용 환경에서는 `pip install -e ".[gemini]"` 불필요
+
+### 근거
+
+- Ollama 로컬 LLM의 환각 현상으로 SQL 생성 정확도 판단이 어려움
+- Gemini API로 동일 쿼리 결과를 비교하여 환각 여부를 검증할 수 있음
+- `ChatGoogleGenerativeAI`가 `BaseChatModel`을 상속하므로 기존 LangChain/LangGraph 파이프라인과 100% 호환
+- `langchain-google-genai`가 `bind_tools()`, `ainvoke()` 등 표준 인터페이스를 지원하므로 커스텀 클라이언트 불필요
+
+### 대안 (미채택)
+
+| 대안 | 미채택 사유 |
+|------|-----------|
+| OpenAI API | 비용 대비 Gemini 무료 티어가 검증 용도로 충분 |
+| Anthropic Claude API | 이미 개발 도구로 사용 중, 별도 검증용 LLM은 다른 벤더가 적절 |
+| 커스텀 HTTP 클라이언트 | `langchain-google-genai`가 LangChain 표준 인터페이스를 제공하므로 불필요한 코드 |
+
+---
+
+## D-022. RESOURCE_CONF_ID JOIN 금지 + hostname 브릿지 조인 필수화
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-26 |
+| **상태** | 확정 |
+| **이전 결정** | D-016 수정 (EAV 조인 조건 교정), D-020 보강 |
+
+### 결정
+
+`CMM_RESOURCE.RESOURCE_CONF_ID`는 `CORE_CONFIG_PROP.CONFIGURATION_ID`와의 JOIN 조건으로 **사용할 수 없다**. 두 테이블(CMM_RESOURCE <-> CORE_CONFIG_PROP) 간 조인은 반드시 **hostname 기반 값 브릿지 조인(value_joins)**을 통해서만 수행한다.
+
+### 올바른 조인 패턴
+
+```sql
+-- 1단계: hostname 값으로 core_config_prop의 Hostname 속성 행을 찾는다
+LEFT JOIN core_config_prop p_host
+  ON p_host.name = 'Hostname' AND p_host.stringvalue_short = r.hostname
+-- 2단계: 동일 configuration_id를 공유하는 다른 EAV 속성을 조인한다
+LEFT JOIN core_config_prop p_ostype
+  ON p_ostype.configuration_id = p_host.configuration_id AND p_ostype.name = 'OSType'
+```
+
+### 수정된 파일
+
+1. **`sqls/02_polestar_eav_patterns.sql`**: EAV 피벗 쿼리의 JOIN을 `RESOURCE_CONF_ID` 기반에서 hostname 브릿지 패턴으로 교체
+2. **`src/prompts/structure_analyzer.py`**: LLM 구조 분석 프롬프트에 `join_condition`을 optional로 변경, `value_joins` 필드 안내 추가
+3. **`src/nodes/schema_analyzer.py`**: HITL 승인 요약에서 `join_condition` 없을 때 `value_joins` 정보를 표시하도록 개선
+4. **`src/nodes/query_generator.py`**: `value_joins`가 있으면 `join_condition`보다 우선하여 LLM에 브릿지 조인 힌트 제공
+5. **`src/nodes/multi_db_executor.py`**: query_generator.py와 동일한 value_joins 우선 로직 적용
+
+### Plan 33 보강 (2026-03-26): 3중 방어 + 사후 감지
+
+D-022의 기존 조치에도 불구하고 LLM이 `resource_conf_id` 기반 JOIN을 생성하는 문제를 근본적으로 차단하기 위해 3중 방어 + 사후 감지를 추가하였다.
+
+**추가/수정된 파일:**
+1. **`config/db_profiles/polestar_pg.yaml`**: query_guide 금지 문구에 resource_conf_id 명시, `excluded_join_columns` 필드 신규 추가
+2. **`src/utils/schema_utils.py`** (신규): `build_excluded_join_map()` 공용 유틸 함수
+3. **`src/prompts/query_generator.py`**: 시스템 프롬프트 규칙 10 추가 (JOIN 금지 컬럼 규칙)
+4. **`src/nodes/query_generator.py`**: `_format_schema_for_prompt()`에 "-- JOIN 금지" 주석 추가, `_format_structure_guide()`에 금지 컬럼 경고 섹션 추가
+5. **`src/nodes/multi_db_executor.py`**: `_format_schema()`에 "-- JOIN 금지" 주석 추가, `_generate_sql()`에 금지 컬럼 경고 추가
+6. **`src/nodes/query_validator.py`**: `_check_excluded_join_columns()` 경고 레벨 감지 추가 (ON 절에서 금지 컬럼 사용 시 warning)
+7. **`scripts/arch_check.py`**: `src.utils.schema_utils` MODULE_LAYER_MAP 등록
+
+**방어 체계:**
+- 1층 (YAML): query_guide에서 금지 문구 명시 + excluded_join_columns 선언
+- 2층 (프롬프트): 시스템 규칙 10 + 스키마 출력에 "-- JOIN 금지" 주석 + 구조 가이드에 금지 컬럼 경고
+- 3층 (검증): query_validator에서 ON 절 내 금지 컬럼 사용 감지 (현재 warning, 반복 시 error 승격 검토)
+
+### 근거
+
+- 운영 DB 데이터 분석 결과, `CMM_RESOURCE.RESOURCE_CONF_ID`와 `CORE_CONFIG_PROP.CONFIGURATION_ID`가 직접 매핑되지 않음을 확인
+- FK 제약이 존재하지 않으며, `RESOURCE_CONF_ID` 기반 조인은 잘못된 결과를 반환함
+- `config/db_profiles/polestar_pg.yaml`은 이미 올바른 `value_joins` 패턴을 사용 중이었으나, SQL 패턴 파일과 소스 코드가 구식 조인 방식을 유지하고 있어 불일치 발생
+- LLM이 참조하는 모든 소스에서 일관된 조인 패턴을 제시해야 정확한 SQL 생성 가능
+
+### 향후 수정 시 고려사항
+
+- 새로운 value_joins 대응 관계 발견 시 `config/db_profiles/polestar_pg.yaml`의 `value_joins` 배열에 추가
+- `join_condition` 필드는 FK가 존재하는 다른 DB에서는 여전히 유효하므로 코드에서 제거하지 않음 (폴백 경로 유지)
+- `plans/` 문서의 `RESOURCE_CONF_ID` 참조는 이력 보존 목적으로 수정하지 않음
+- 새로운 JOIN 금지 컬럼 추가 시 `config/db_profiles/` YAML의 `excluded_join_columns` 배열에 항목 추가 (코드 변경 불필요)
+- `query_validator`의 `_check_excluded_join_columns()` 경고가 운영 로그에서 3회 이상 반복 발생하면 error 승격을 검토
+
+---
+
+## D-023. 데이터 충분성 검사 로직 개선 (Plan 36)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-30 |
+| **상태** | 확정 |
+
+### 결정
+
+`result_organizer` 노드의 `_check_data_sufficiency()` 함수를 개편하여, **하드코딩 50% 임계값**을 제거하고 **매핑 출처별 차등 임계값**(`mapping_sources` 기반)과 **.env 설정 가능한 임계값**을 도입한다.
+
+### 변경 내용
+
+1. **`src/config.py`** (`QueryConfig`): `sufficiency_required_threshold` (기본 0.7), `sufficiency_optional_threshold` (기본 0.5) 필드 추가
+2. **`.env.example`**: `QUERY_SUFFICIENCY_REQUIRED_THRESHOLD`, `QUERY_SUFFICIENCY_OPTIONAL_THRESHOLD` 항목 추가
+3. **`src/nodes/result_organizer.py`**:
+   - `_match_column_in_results()`: 인라인 매칭 로직을 별도 함수로 추출 (정확/컬럼명/EAV/대소문자 무시 4단계 매칭)
+   - `_classify_mapped_columns()`: mapping_sources 기반 필수(hint/synonym)/선택(llm_inferred) 분류
+   - `_check_data_sufficiency()`: 시그니처에 `mapping_sources`, `app_config` 추가, 4-Case 로직 (빈 결과/column_mapping/레거시 template/text 모드)
+   - 호출부에 `mapping_sources`, `app_config` 전달
+
+### 하위 호환성
+
+- `mapping_sources=None` (레거시): 모든 non-None 매핑을 required(70%)로 취급 (기존 50%보다 엄격 -- 의도적 강화)
+- 빈 결과 + 집계 쿼리: `True` -> `False` (의도적 변경, 재시도 유도)
+- 빈 결과 + 일반 조회: 동일 (`True`)
+- text 모드: 거의 동일 (결과 컬럼 0개일 때만 `False`)
+
+### 근거
+
+- hint/synonym 매핑(사용자 지정/유사어 정확 매칭)과 llm_inferred(LLM 추론) 매핑은 확신도가 다르므로 동일 임계값 적용은 부적절
+- 50% 하드코딩은 불완전한 Excel/Word 결과물을 사용자에게 전달하는 원인
+- 운영 환경별 임계값 조정이 필요하므로 `.env` 설정 가능화
+
+### 향후 수정 시 고려사항
+
+- 임계값 변경 시 `.env`의 `QUERY_SUFFICIENCY_REQUIRED_THRESHOLD`, `QUERY_SUFFICIENCY_OPTIONAL_THRESHOLD`만 수정하면 됨
+- EAV 피벗 alias가 예측 불가한 형태로 반환될 경우 `_match_column_in_results`에 fuzzy 매칭 확장 가능
+
+---
+
+## D-024. Synonym 통합 관리 + EAV 접두사 비교 정규화 (Plan 37)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-30 |
+| **상태** | 확정 |
+
+### 결정
+
+EAV synonym을 `synonyms:global`에도 등록하여 global 비교 인프라를 공유하고, 필드명 비교에 `normalize_field_name()` 정규화를 도입하며, EAV 접두사(`EAV:`)를 파이프라인 전체에서 일관되게 처리한다. 또한 EAV 쿼리 시 정규 컬럼 과도 필터링을 제거한다.
+
+### 변경 내용
+
+1. **Synonym 통합 관리** (그룹 1):
+   - `SynonymLoader._process_synonym_data()`: EAV synonym을 `synonyms:eav_names` + `synonyms:global` 양쪽에 등록
+   - `cache_manager.get_schema_or_fetch()`: 캐시 미스 시 `auto_generate_descriptions` 설정 참조하여 descriptions/synonyms 자동 생성
+   - LLM 추론 결과(Step 2.8, Step 3): EAV는 `eav_names` + `global` 양쪽, 비-EAV는 `redis_cache.add_global_synonym(bare_name)` 직접 호출
+   - `_apply_eav_synonym_mapping()`: `global_synonyms` 파라미터 추가, EAV words와 global words를 병합 비교
+   - `_load_db_cache_data()`: `global_synonyms` 별도 로드, 반환값 6-tuple로 확장
+
+2. **비교 로직 정규화** (그룹 2):
+   - `src/utils/schema_utils.py`에 `normalize_field_name()` 추가: Unicode NFC, 줄바꿈/탭 -> 공백, 다중 공백 축소, strip
+   - `excel_parser._detect_header_row()`: 헤더 추출 시 정규화 적용
+   - `field_mapper._synonym_match()`, `_apply_synonym_mapping()`, `_apply_eav_synonym_mapping()`: 정규화 후 비교
+   - LLM 응답 매칭(Step 2.8, Step 3): `normalized_lookup` 구축하여 퍼지 매칭
+
+3. **EAV 접두사 처리** (그룹 3):
+   - `word_writer._get_value_from_row()`: EAV 접두사 처리 추가
+   - `excel_writer._get_value_from_row()`: 폴백 매칭에서 EAV 접두사 제거
+   - `query_generator`, `multi_db_executor`: **EAV 쿼리 시 정규 컬럼 필터링 제거** (LLM이 JOIN 판단)
+   - `result_organizer._match_column_in_results()`: 폴백에서 EAV 접두사 제거
+   - `result_organizer._classify_mapped_columns()`: `eav_synonym` 소스를 `required`로 분류
+
+### 근거
+
+- EAV synonym이 `synonyms:eav_names`에만 격리되면 global의 폴백/비교 인프라를 활용 못함
+- `synonyms:global`은 bare column name 기반이므로 EAV 속성명도 동일 체계로 관리 가능
+- 스키마 최초 조회 시 descriptions/synonyms가 자동 생성되지 않으면 정상 사용 흐름에서 synonym 매칭이 전적으로 LLM 의존
+- 엑셀 헤더의 줄바꿈/다중 공백은 `str.strip()`만으로 처리 불가
+- EAV 테이블 필터링은 entity 테이블과 config 테이블이 다를 수 있어 정규 컬럼을 잘못 제외
+
+### 향후 수정 시 고려사항
+
+- `normalize_field_name()`에 새 정규화 규칙 추가 시 기존 매칭에 영향이 없는지 확인
+- EAV 접두사 처리 로직이 추가된 모듈에서 새 컬럼명 형식 도입 시 해당 로직도 갱신
+- 정규 컬럼 필터링 제거로 LLM이 비-EAV 테이블도 프롬프트에서 볼 수 있으므로, 부적절한 JOIN이 생성되면 프롬프트 튜닝 필요
+
+---
+
+## D-025. 3계층 하이브리드 필드 매핑 전파 정합성 (Plan 38)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-03-30 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-007 확장, D-012 확장, D-024 확장 |
+
+### 결정
+
+field_mapper가 생성한 column_mapping 형식(`"cmm_resource.hostname"`, `"EAV:OSType"`)과 query_generator가 생성한 SQL alias 형식(`"cmm_resource_hostname"`, `"os_type"`)의 불일치를 **3계층 하이브리드 매칭**으로 해결한다.
+
+### 핵심 변경사항
+
+1. **`src/utils/column_matcher.py` 신규**: 규칙 기반 매칭 유틸 (LLM 의존 없음, utils 계층)
+   - `resolve_column_key()`: 7단계 매칭 (정확, table.column분리, EAV접두사, 대소문자, dot->underscore, CamelCase<->snake_case, 오타 편집거리1)
+   - `build_resolved_mapping()`: column_mapping 전체를 결과 키로 해석, unresolved 필드 목록 반환
+   - `camel_to_snake()`, `_is_close_match()`: 정규화/오타 대응 유틸
+2. **`src/prompts/column_resolver.py` 신규**: LLM 유사성 판단 프롬프트 (prompts 계층)
+3. **`src/state.py` 수정**: `OrganizedData`, `SheetMappingResult`에 `resolved_mapping: Optional[dict]` 추가
+4. **`src/nodes/result_organizer.py` 수정**:
+   - `_match_column_in_results()` 리팩터: `resolve_column_key` 유틸로 위임 (시그니처 유지)
+   - `_resolve_unmatched_via_llm()` 신규: Layer 2 LLM 유사성 판단 (미해결 항목에만 호출)
+   - Step 4.5: Layer 1 (규칙) + Layer 2 (LLM) -> `resolved_mapping` 생성
+5. **`src/nodes/output_generator.py` 수정**: `resolved_mapping` 우선, `column_mapping` 폴백
+6. **`src/document/excel_writer.py` 수정**: `_get_value_from_row`에 Layer 3 폴백 추가 (CamelCase<->snake_case, 오타 대응)
+7. **`src/document/word_writer.py` 수정**: 동일 Layer 3 폴백
+
+### 3계층 구조
+
+```
+Layer 1 (규칙): build_resolved_mapping()       -> 80%+ 즉시 해결
+Layer 2 (LLM):  _resolve_unmatched_via_llm()   -> 축약/창의적 alias 대응
+Layer 3 (폴백): _get_value_from_row() 정규화    -> 레거시 경로 대비
+```
+
+### 근거
+
+- Layer 1이 대부분의 케이스를 지연 없이 해결하므로 LLM 호출 비용/지연 최소화
+- Layer 2는 미해결 항목(축약 alias, 재명명)에만 소규모 컨텍스트로 호출
+- Layer 3은 resolved_mapping이 없는 레거시 경로를 커버
+
+### 향후 수정 시 고려사항
+
+- `resolve_column_key`에 새 매칭 단계 추가 시 우선순위(정확 매칭 최우선) 유지
+- `_is_close_match` 편집거리를 2 이상으로 확장하면 오탐 위험, 신중히 판단
+- Layer 2 LLM 실패 시 graceful 처리(Layer 3 위임)가 유지되는지 확인
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-03-30 | D-025 | 3계층 하이브리드 필드 매핑 전파 정합성 (Plan 38): column_matcher.py 신규, column_resolver.py 프롬프트 신규, resolved_mapping State 추가, result_organizer Layer 1+2 통합, output_generator resolved_mapping 우선, excel_writer/word_writer Layer 3 폴백 |
+| 2026-03-30 | D-024 | Synonym 통합 관리 + EAV 접두사 비교 정규화 (Plan 37): EAV synonym global 통합, normalize_field_name 도입, 스키마 조회 시 synonym 자동 생성, word_writer/excel_writer/result_organizer EAV 접두사 처리, query_generator 정규 컬럼 필터링 제거, eav_synonym 소스 분류 |
+| 2026-03-30 | D-023 | 데이터 충분성 검사 로직 개선 (Plan 36): mapping_sources 기반 차등 임계값 도입, _match_column_in_results/_classify_mapped_columns 추출, QueryConfig에 sufficiency 임계값 추가 |
+| 2026-03-26 | D-022 | Plan 33 보강: 3중 방어 + 사후 감지. excluded_join_columns YAML 필드, 시스템 프롬프트 규칙 10, 스키마 "-- JOIN 금지" 주석, 구조 가이드 금지 컬럼 경고, query_validator ON 절 감지. src/utils/schema_utils.py 신규 |
+| 2026-03-26 | D-022 | RESOURCE_CONF_ID JOIN 금지: hostname 브릿지 조인 필수화. SQL 패턴 파일, 구조 분석 프롬프트, query_generator/multi_db_executor의 조인 힌트 로직을 value_joins 우선으로 변경 |
+| 2026-03-26 | D-011 | 캐시 유효성 검증 및 무효화 정합성 개선 (Plan 30): save_schema/descriptions/synonyms 저장 전 유효성 검증 게이트, invalidate 정책 변경 (DB별 synonyms/descriptions도 삭제, 글로벌 사전만 보존), stale entry 자동 정리 (cleanup_stale_entries), 파일 캐시 인메모리 버퍼 |
+| 2026-03-25 | D-021 | Gemini API 프로바이더 추가 + .encenv 민감 키 분리 (Plan 28): LLMConfig.provider gemini 추가, _create_gemini() 팩토리, .encenv 도입, langchain-google-genai optional dep |
+| 2026-03-25 | D-019 | Fingerprint TTL 기반 Redis 캐시 최적화 (Plan 26): fingerprint_ttl_seconds 설정, fingerprint_checked_at Redis 키, 2차-A/2차-B 캐시 분기, multi_db_executor SchemaCacheManager 통합 |
+| 2026-03-24 | D-018 | LLM 지능형 필드 매핑 (Plan 22): LLM 통합 추론 (synonyms+descriptions 컨텍스트), 즉시 Redis 등록, 매핑 보고서 MD 생성/파싱, MD 수정/업로드 피드백, API 2개 신규, 프론트엔드 다운로드/업로드 UI |
+| 2026-03-24 | D-009 | Plan 23 UI 수정: SSE 연동 인디케이터, 스트리밍 다운로드 버튼, Fallback Progress Panel, thread_id 전달, URL encodeURIComponent 보안 강화 |
+| 2026-03-24 | D-017 | EAV Field Mapper 전체 파이프라인 지원: _apply_eav_synonym_mapping 신규, perform_3step_mapping 2.5단계, EAV: 접두사 규약, field_mapper 프롬프트 EAV 가이드, _validate_mapping EAV 검증, query_generator EAV 피벗 힌트 |
+| 2026-03-24 | D-016 | EAV 비정규화 테이블 쿼리 지원: polestar_patterns.py 신규, schema_analyzer 자동 감지, query_generator Polestar 가이드, DB 엔진별 LIMIT 문법, query_validator DB2 대응 |
+| 2026-03-23 | D-015 | Excel→CSV 변환 LLM 컨텍스트 보강: CsvSheetData, excel_to_csv(), 시트별 순환 LLM 호출, field_mapper 예시 데이터 프롬프트 |
 | 2026-03-19 | D-014 | 자체 MCP 서버 구축: mcp_server/ 독립 패키지, SSE transport, DB2 지원, 설정 분리, DBHubConfig/QueryConfig/MultiDBConfig 재설계 |
 | 2026-03-18 | D-013 | Phase 3 멀티턴 대화 + Human-in-the-loop 구현: context_resolver, approval_gate, synonym_registrar 노드 신설, 체크포인트 기반 State 복원, API 멀티턴 지원 |
 | 2026-03-17 | D-012 | 매핑-우선(Mapping-First) 전략 도입: field_mapper 노드 신설, 3단계 매핑, 유사어 등록 플로우 |
@@ -674,4 +1188,5 @@ query_validator → approval_gate (interrupt) → query_executor
 | 2026-03-18 | D-011 | 글로벌 유사단어 description 확장: synonyms:global value를 {words, description} 형태로 확장, update-description action, list-synonyms에 description 표시 |
 | 2026-03-18 | D-011 | 프롬프트 기반 글로벌 유사 단어 LLM 생성: generate-global-synonyms action, seed_words 지원, 기존 항목 merge |
 | 2026-03-18 | D-011 | Smart Synonym Reuse: 글로벌 사전에 없는 새 필드 추가 시 LLM 유사 컬럼 탐색 및 재활용 제안, pending_synonym_reuse State, reuse/new/merge 모드 |
+| 2026-03-25 | D-020 | LLM 기반 범용 스키마 구조 분석: Polestar 하드코딩 제거, LLM+HITL 기반 DB 구조 자동 감지 |
 | 2026-03-17 | 전체 | 초기 decision.md 작성 |

@@ -166,34 +166,40 @@ class TestSynonymSourceTagging:
 # === invalidate synonyms 보존 테스트 ===
 
 
-class TestInvalidatePreservesSynonyms:
-    """invalidate 시 synonyms 보존 테스트."""
+class TestInvalidateDeletesDBSynonyms:
+    """invalidate 시 DB별 synonyms도 삭제 테스트 (Plan 30 정책 변경).
+
+    글로벌 synonyms만 보존하고, DB별 synonyms는 함께 삭제한다.
+    """
 
     @pytest.mark.asyncio
-    async def test_invalidate_does_not_delete_synonyms(self, cache, mock_redis):
-        """invalidate는 synonyms 키를 삭제하지 않음."""
+    async def test_invalidate_deletes_db_synonyms(self, cache, mock_redis):
+        """invalidate는 DB별 synonyms 키도 삭제한다."""
         await cache.invalidate("polestar")
 
         call_args = mock_redis.delete.call_args
         deleted_keys = call_args[0]
 
-        # synonyms 키가 삭제 대상에 포함되지 않아야 함
-        assert "schema:polestar:synonyms" not in deleted_keys
-        # meta, tables, relationships, descriptions는 삭제되어야 함
+        # DB별 synonyms도 삭제 대상에 포함
+        assert "schema:polestar:synonyms" in deleted_keys
+        # meta, tables, relationships, descriptions도 삭제
         assert "schema:polestar:meta" in deleted_keys
         assert "schema:polestar:tables" in deleted_keys
         assert "schema:polestar:relationships" in deleted_keys
         assert "schema:polestar:descriptions" in deleted_keys
+        # fingerprint_checked_at, structure_meta도 삭제
+        assert "schema:polestar:fingerprint_checked_at" in deleted_keys
+        assert "schema:polestar:structure_meta" in deleted_keys
 
     @pytest.mark.asyncio
-    async def test_invalidate_all_preserves_synonyms(self, cache, mock_redis):
-        """invalidate_all은 synonyms 키를 보존."""
+    async def test_invalidate_all_deletes_db_synonyms(self, cache, mock_redis):
+        """invalidate_all은 DB별 synonyms를 삭제하고 글로벌 사전만 보존."""
         # scan_iter가 여러 키를 반환하는 시뮬레이션
         mock_redis.scan_iter = MagicMock()
         keys = [
             "schema:polestar:meta",
             "schema:polestar:tables",
-            "schema:polestar:synonyms",  # 이 키는 보존되어야 함
+            "schema:polestar:synonyms",  # DB별 synonyms는 삭제됨
             "schema:polestar:descriptions",
         ]
         mock_redis.scan_iter.return_value = AsyncIterator(keys)
@@ -206,7 +212,8 @@ class TestInvalidatePreservesSynonyms:
             for call in mock_redis.delete.call_args_list
         ]
 
-        assert "schema:polestar:synonyms" not in deleted_keys
+        # DB별 synonyms도 삭제됨
+        assert "schema:polestar:synonyms" in deleted_keys
         assert "schema:polestar:meta" in deleted_keys
 
     @pytest.mark.asyncio

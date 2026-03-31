@@ -258,11 +258,12 @@ class TestThreeStepMappingIntegration:
                 "메모리(GB)": {
                     "db_id": "polestar",
                     "column": "memory_metrics.total_gb",
+                    "confidence": "high",
                 }
             })
         )
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "IP주소", "메모리(GB)"],
             field_mapping_hints=[
@@ -299,7 +300,7 @@ class TestThreeStepMappingIntegration:
 
         mock_llm = AsyncMock()
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명"],
             field_mapping_hints=[
@@ -325,12 +326,12 @@ class TestThreeStepMappingIntegration:
         mock_llm = AsyncMock()
         mock_llm.ainvoke.return_value = MagicMock(
             content=json.dumps({
-                "서버명": {"db_id": "polestar", "column": "servers.hostname"},
-                "CPU 사용률": {"db_id": "polestar", "column": "cpu_metrics.usage_pct"},
+                "서버명": {"db_id": "polestar", "column": "servers.hostname", "confidence": "high"},
+                "CPU 사용률": {"db_id": "polestar", "column": "cpu_metrics.usage_pct", "confidence": "high"},
             })
         )
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "CPU 사용률"],
             field_mapping_hints=[],
@@ -356,7 +357,7 @@ class TestThreeStepMappingIntegration:
 
         mock_llm = AsyncMock()
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명"],
             field_mapping_hints=[],
@@ -381,7 +382,7 @@ class TestThreeStepMappingIntegration:
             content=json.dumps({"비고": None})
         )
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "비고"],
             field_mapping_hints=[],
@@ -409,7 +410,7 @@ class TestMultiDBMapping:
 
         mock_llm = AsyncMock()
 
-        result = await perform_3step_mapping(
+        result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=["서버명", "클라우드 인스턴스"],
             field_mapping_hints=[],
@@ -453,6 +454,9 @@ class TestMultiDBMapping:
                 },
                 {},
                 [],
+                {},
+                {},
+                None,
             )
             result = await field_mapper(state, llm=mock_llm, app_config=mock_config)
 
@@ -680,7 +684,7 @@ class TestExcelWriterIntegration:
             {"servers.hostname": "web-02", "servers.ip_address": "10.0.0.2", "cpu_metrics.usage_pct": 72.0},
         ]
 
-        result_bytes = fill_excel_template(file_data, template, column_mapping, rows)
+        result_bytes, _ = fill_excel_template(file_data, template, column_mapping, rows)
 
         # 결과 파일을 읽어서 데이터가 올바르게 채워졌는지 확인
         from openpyxl import load_workbook
@@ -707,7 +711,7 @@ class TestExcelWriterIntegration:
             {"hostname": "web-01", "ip_address": "10.0.0.1"},  # bare keys
         ]
 
-        result_bytes = fill_excel_template(file_data, template, column_mapping, rows)
+        result_bytes, _ = fill_excel_template(file_data, template, column_mapping, rows)
 
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(result_bytes))
@@ -730,7 +734,7 @@ class TestExcelWriterIntegration:
         }
         rows = [{"servers.hostname": "web-01"}]
 
-        result_bytes = fill_excel_template(file_data, template, column_mapping, rows)
+        result_bytes, _ = fill_excel_template(file_data, template, column_mapping, rows)
 
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(result_bytes))
@@ -905,6 +909,8 @@ class TestResultOrganizerMappingIntegration:
         mock_config = MagicMock()
         mock_config.security.sensitive_columns = []
         mock_config.security.mask_pattern = "***"
+        mock_config.query.sufficiency_required_threshold = 0.7
+        mock_config.query.sufficiency_optional_threshold = 0.5
 
         result = await result_organizer(state, app_config=mock_config)
 
@@ -978,7 +984,7 @@ class TestEndToEndExcelPipeline:
 
         # 3. 3단계 매핑 수행
         mock_llm = AsyncMock()
-        mapping_result = await perform_3step_mapping(
+        mapping_result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=field_names,
             field_mapping_hints=[],
@@ -1005,7 +1011,7 @@ class TestEndToEndExcelPipeline:
         ]
 
         # 5. Excel 채우기
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             file_data, template, mapping_result.column_mapping, query_results
         )
 
@@ -1040,11 +1046,11 @@ class TestEndToEndExcelPipeline:
         mock_llm = AsyncMock()
         mock_llm.ainvoke.return_value = MagicMock(
             content=json.dumps({
-                "메모리(GB)": {"db_id": "polestar", "column": "memory_metrics.total_gb"}
+                "메모리(GB)": {"db_id": "polestar", "column": "memory_metrics.total_gb", "confidence": "high", "reason": "메모리 총량"}
             })
         )
 
-        mapping_result = await perform_3step_mapping(
+        mapping_result, _llm_details = await perform_3step_mapping(
             llm=mock_llm,
             field_names=extract_field_names(template),
             field_mapping_hints=[
@@ -1070,7 +1076,7 @@ class TestEndToEndExcelPipeline:
             {"servers.hostname": "web-01", "servers.ip_address": "10.0.0.1", "memory_metrics.total_gb": 32.0},
         ]
 
-        result_bytes = fill_excel_template(
+        result_bytes, _ = fill_excel_template(
             file_data, template, mapping_result.column_mapping, rows
         )
 

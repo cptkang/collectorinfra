@@ -76,21 +76,26 @@ async def semantic_router(
             "current_node": "semantic_router",
         }
 
-    # [우선순위 2] pending_synonym_registrations → synonym_registration 라우팅
-    pending_regs = state.get("pending_synonym_registrations")
-    if pending_regs and len(pending_regs) > 0:
-        logger.info(
-            "pending_synonym_registrations 감지 (%d건), synonym_registrar로 라우팅",
-            len(pending_regs),
-        )
-        return {
-            "target_databases": [],
-            "is_multi_db": False,
-            "active_db_id": None,
-            "user_specified_db": None,
-            "routing_intent": "synonym_registration",
-            "current_node": "semantic_router",
-        }
+    # [우선순위 2] 명시적 유사어 등록 요청 → synonym_registration 라우팅
+    # parsed_requirements에 synonym_registration이 있을 때만 (멀티턴 두 번째 요청)
+    # 첫 번째 요청에서 field_mapper가 생성한 pending은 쿼리 파이프라인 완료 후 안내만 표시
+    parsed = state.get("parsed_requirements", {})
+    synonym_reg = parsed.get("synonym_registration")
+    if synonym_reg:
+        pending_regs = state.get("pending_synonym_registrations")
+        if pending_regs and len(pending_regs) > 0:
+            logger.info(
+                "유사어 등록 요청 감지 (%d건), synonym_registrar로 라우팅",
+                len(pending_regs),
+            )
+            return {
+                "target_databases": [],
+                "is_multi_db": False,
+                "active_db_id": None,
+                "user_specified_db": None,
+                "routing_intent": "synonym_registration",
+                "current_node": "semantic_router",
+            }
 
     # [우선순위 3] field_mapper에서 이미 대상 DB를 결정한 경우 (양식 업로드 시)
     mapped_db_ids = state.get("mapped_db_ids")

@@ -1,7 +1,7 @@
 """LLM 인스턴스 생성 모듈.
 
 설정에 따라 적절한 LLM 백엔드를 생성하는 팩토리 함수를 제공한다.
-지원 프로바이더: ollama, fabrix
+지원 프로바이더: ollama, fabrix, gemini
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ def create_llm(config: AppConfig) -> BaseChatModel:
         return _create_ollama(config)
     elif provider == "fabrix":
         return _create_fabrix(config)
+    elif provider == "gemini":
+        return _create_gemini(config)
     else:
         raise ValueError(f"지원하지 않는 LLM 프로바이더: {provider}")
 
@@ -51,6 +53,27 @@ def _create_ollama(config: AppConfig) -> BaseChatModel:
         chat_model=config.llm.model,
         api_key=config.llm.ollama_api_key or None,
         timeout=config.llm.ollama_timeout,
+        temperature=0.0,
+    )
+
+
+def _create_gemini(config: AppConfig) -> BaseChatModel:
+    """Google Gemini LLM 클라이언트를 생성한다."""
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    api_key = config.llm.gemini_api_key
+    if not api_key:
+        raise ValueError(
+            "Gemini API 키가 설정되지 않았습니다. "
+            ".env에 LLM_GEMINI_API_KEY 또는 GOOGLE_API_KEY를 추가하세요."
+        )
+
+    model = config.llm.gemini_model or config.llm.model
+    logger.info("Gemini LLM 초기화: model=%s", model)
+
+    return ChatGoogleGenerativeAI(
+        model=model,
+        google_api_key=api_key,
         temperature=0.0,
     )
 

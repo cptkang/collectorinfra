@@ -15,7 +15,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
 from src.llm import create_llm
-from src.prompts.input_parser import INPUT_PARSER_SYSTEM_PROMPT
+from src.prompts.input_parser import (
+    INPUT_PARSER_CSV_CONTEXT_PROMPT,
+    INPUT_PARSER_SYSTEM_PROMPT,
+)
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
 
@@ -51,11 +54,24 @@ async def input_parser(
         llm = create_llm(app_config)
 
     try:
-        # 1. 자연어 질의 파싱 (멀티턴 맥락 주입)
         context = state.get("conversation_context")
-        parsed = await _parse_natural_language(
-            llm, state["user_query"], conversation_context=context
-        )
+        csv_sheet_data = state.get("csv_sheet_data")
+
+        if csv_sheet_data:
+            # 시트별 순환 LLM 호출
+            all_sheet_results = []
+            for sheet_name, sheet_data in csv_sheet_data.items():
+                csv_context = _format_single_sheet_csv(sheet_data)
+                sheet_parsed = await _parse_natural_language_with_csv(
+                    llm, state["user_query"], csv_context,
+                    sheet_name=sheet_name, conversation_context=context,
+                )
+                all_sheet_results.append(sheet_parsed)
+            parsed = _merge_sheet_parse_results(all_sheet_results)
+        else:
+            parsed = await _parse_natural_language(
+                llm, state["user_query"], conversation_context=context
+            )
     except Exception as e:
         logger.error(f"입력 파싱 실패: {e}")
         # 최소한의 파싱 결과로 진행 (그래프가 중단되지 않도록)
@@ -66,7 +82,7 @@ async def input_parser(
             "output_format": "text",
         }
 
-    # 2. 파일 업로드 처리 (Phase 2)
+    # 2. 파일 업로드 처리 — 서식 보존용 template_structure 병행 생성
     template: Optional[dict] = None
     if state.get("uploaded_file") and state.get("file_type"):
         template = _parse_uploaded_file(
@@ -161,6 +177,144 @@ async def _parse_natural_language(
     parsed.setdefault("synonym_registration", None)
 
     return parsed
+
+
+def _format_single_sheet_csv(sheet_data: dict) -> str:
+    """CsvSheetData dict를 LLM 컨텍스트 문자열로 포맷한다.
+
+    Args:
+        sheet_data: CsvSheetData를 dict로 직렬화한 형태
+
+    Returns:
+        포맷된 텍스트 (헤더 + 예시 데이터)
+    """
+    headers = sheet_data.get("headers", [])
+    example_rows = sheet_data.get("example_rows", [])
+
+    parts = [f"#### 헤더\n{', '.join(headers)}"]
+
+    if example_rows:
+        csv_text = sheet_data.get("csv_text", "")
+        parts.append(
+            f"\n#### 예시 데이터 ({len(example_rows)}행)\n```csv\n{csv_text}\n```"
+        )
+
+    return "\n".join(parts)
+
+
+async def _parse_natural_language_with_csv(
+    llm: BaseChatModel,
+    user_query: str,
+    csv_context: str,
+    *,
+    sheet_name: str = "",
+    conversation_context: dict | None = None,
+) -> dict:
+    """CSV 컨텍스트를 포함하여 자연어 질의를 파싱한다.
+
+    기존 _parse_natural_language와 동일하되, 시스템 프롬프트에 CSV 컨텍스트를 추가한다.
+
+    Args:
+        llm: LLM 인스턴스
+        user_query: 사용자 자연어 질의
+        csv_context: 시트별 헤더+예시 데이터 텍스트
+        sheet_name: 현재 분석 중인 시트명
+        conversation_context: 이전 대화 맥락 (멀티턴 시)
+
+    Returns:
+        구조화된 요구사항 딕셔너리
+    """
+    system_prompt = INPUT_PARSER_SYSTEM_PROMPT
+
+    # CSV 컨텍스트 추가
+    csv_section = INPUT_PARSER_CSV_CONTEXT_PROMPT.format(
+        sheet_name=sheet_name, csv_context=csv_context
+    )
+    system_prompt = system_prompt + csv_section
+
+    # 멀티턴 맥락 (기존 로직 재활용)
+    if conversation_context and conversation_context.get("turn_count", 0) > 1:
+        context_section = (
+            "\n\n## 이전 대화 맥락\n"
+            f"- 이전 SQL: {conversation_context.get('previous_sql', '없음')}\n"
+            f"- 이전 결과: {conversation_context.get('previous_results_summary', '없음')}\n"
+            f"- 사용된 테이블: {', '.join(conversation_context.get('previous_tables', []))}\n"
+            f"- 대화 턴: {conversation_context['turn_count']}번째\n\n"
+            "사용자가 이전 대화를 참조하는 표현을 사용하면, "
+            "이전 맥락을 활용하여 요구사항을 해석하세요.\n"
+        )
+        system_prompt = system_prompt + context_section
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_query),
+    ]
+
+    parsed: dict = {}
+    for attempt in range(2):
+        response = await llm.ainvoke(messages)
+        parsed = extract_json_from_response(response.content) or {}
+        if parsed and parsed.get("query_targets"):
+            break
+        messages.append(HumanMessage(
+            content="반드시 유효한 JSON만 출력하세요. query_targets는 필수입니다."
+        ))
+
+    parsed["original_query"] = user_query
+    parsed["_sheet_name"] = sheet_name  # 시트 출처 추적용
+    parsed.setdefault("output_format", "text")
+    parsed.setdefault("query_targets", [])
+    parsed.setdefault("filter_conditions", [])
+    parsed.setdefault("time_range", None)
+    parsed.setdefault("aggregation", None)
+    parsed.setdefault("limit", None)
+    parsed.setdefault("field_mapping_hints", [])
+    parsed.setdefault("target_db_hints", [])
+
+    return parsed
+
+
+def _merge_sheet_parse_results(results: list[dict]) -> dict:
+    """여러 시트의 파싱 결과를 병합한다.
+
+    Args:
+        results: 시트별 파싱 결과 리스트
+
+    Returns:
+        병합된 구조화 요구사항 딕셔너리
+    """
+    if not results:
+        return {"query_targets": [], "filter_conditions": [], "output_format": "text"}
+    if len(results) == 1:
+        return results[0]
+
+    merged = dict(results[0])  # 첫 번째 결과를 기반으로
+
+    # query_targets 합집합
+    all_targets: set[str] = set()
+    for r in results:
+        all_targets.update(r.get("query_targets", []))
+    merged["query_targets"] = sorted(all_targets)
+
+    # filter_conditions 합산
+    all_filters: list[dict] = []
+    for r in results:
+        all_filters.extend(r.get("filter_conditions", []))
+    merged["filter_conditions"] = all_filters
+
+    # field_mapping_hints 합산
+    all_hints: list[dict] = []
+    for r in results:
+        all_hints.extend(r.get("field_mapping_hints", []))
+    merged["field_mapping_hints"] = all_hints
+
+    # target_db_hints 합집합
+    all_db_hints: set[str] = set()
+    for r in results:
+        all_db_hints.update(r.get("target_db_hints", []))
+    merged["target_db_hints"] = sorted(all_db_hints)
+
+    return merged
 
 
 def _parse_uploaded_file(

@@ -96,27 +96,23 @@ class TestSchemaCacheManagerInit:
 class TestSchemaCacheManagerFileFallback:
     """파일 캐시 폴백 테스트."""
 
-    def test_file_mode_get_schema_from_file(self, file_config, sample_schema):
+    @pytest.mark.asyncio
+    async def test_file_mode_get_schema_from_file(self, file_config, sample_schema):
         """file 모드에서는 파일 캐시만 사용한다."""
         mgr = SchemaCacheManager(file_config)
 
         with patch.object(mgr._file_cache, "get_schema", return_value=sample_schema):
-            import asyncio
-            result = asyncio.get_event_loop().run_until_complete(
-                mgr.get_schema("test_db")
-            )
+            result = await mgr.get_schema("test_db")
             assert result is not None
             assert "tables" in result
 
-    def test_file_mode_save_schema(self, file_config, sample_schema):
+    @pytest.mark.asyncio
+    async def test_file_mode_save_schema(self, file_config, sample_schema):
         """file 모드에서 저장은 파일 캐시만 사용한다."""
         mgr = SchemaCacheManager(file_config)
 
         with patch.object(mgr._file_cache, "save", return_value=True):
-            import asyncio
-            result = asyncio.get_event_loop().run_until_complete(
-                mgr.save_schema("test_db", sample_schema, "fp123")
-            )
+            result = await mgr.save_schema("test_db", sample_schema, "fp123")
             assert result is True
 
 

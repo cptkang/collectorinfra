@@ -36,6 +36,10 @@ async def run_query(query: str) -> str:
         최종 응답 텍스트
     """
     config = load_config()
+
+    from src.utils.sql_file_logger import init_sql_file_logger
+    init_sql_file_logger()
+
     graph = build_graph(config)
 
     initial_state = create_initial_state(user_query=query)
@@ -84,15 +88,17 @@ def main() -> None:
     parser.add_argument(
         "--log-level",
         type=str,
-        default="INFO",
+        default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="로그 레벨 (기본: INFO)",
+        help="로그 레벨 (기본: .env의 LOG_LEVEL 또는 INFO)",
     )
 
     args = parser.parse_args()
 
-    # 로깅 설정
-    setup_logging(args.log_level)
+    # 로깅 설정: CLI 인자 > .env > 기본값(INFO)
+    config = load_config()
+    log_level = args.log_level or config.log_level
+    setup_logging(log_level)
 
     if args.server:
         # API 서버 모드

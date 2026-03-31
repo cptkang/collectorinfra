@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
 
 from src.config import DBHubConfig, QueryConfig
+from src.utils import sql_file_logger
 from src.dbhub.models import (
     ColumnInfo,
     DBConnectionError,
@@ -52,6 +53,11 @@ class DBHubClient:
             dbhub_config: DBHub 연결 설정 (MCP 서버 URL 포함)
             query_config: 쿼리 제한 설정 (선택, 재시도/기본 LIMIT용)
         """
+        if not dbhub_config.source_name:
+            raise ValueError(
+                "DBHubConfig.source_name이 설정되지 않았습니다. "
+                "환경변수 DBHUB_SOURCE_NAME을 설정하세요."
+            )
         self._config = dbhub_config
         self._query_config = query_config or QueryConfig()
         self._mcp_session: Optional[Any] = None
@@ -255,8 +261,8 @@ class DBHubClient:
         Raises:
             DBHubError: 유효하지 않은 테이블명일 때
         """
-        # 테이블명 검증 추가 (SQL 인젝션 방어)
-        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table_name):
+        # 테이블명 검증 (SQL 인젝션 방어, schema.table 형태 허용)
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", table_name):
             raise DBHubError(f"유효하지 않은 테이블명: {table_name}")
 
         result = await self.execute_sql(
@@ -299,8 +305,17 @@ class DBHubClient:
             elapsed_ms = (time.time() - start_time) * 1000
             query_result = self._parse_query_result(result)
             query_result.execution_time_ms = elapsed_ms
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=elapsed_ms,
+                row_count=query_result.row_count,
+                source=self._config.source_name,
+            )
             return query_result
         except asyncio.TimeoutError:
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._config.source_name, error="MCP 호출 타임아웃",
+            )
             raise QueryTimeoutError(
                 f"MCP 호출 타임아웃 ({self._config.mcp_call_timeout}초 초과): "
                 f"{sql[:100]}..."
@@ -308,6 +323,10 @@ class DBHubClient:
         except (QueryTimeoutError, QueryExecutionError):
             raise
         except Exception as e:
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._config.source_name, error=str(e),
+            )
             raise QueryExecutionError(str(e), sql) from e
 
     # --- 내부 메서드 ---

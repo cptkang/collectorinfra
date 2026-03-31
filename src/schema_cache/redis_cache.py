@@ -169,6 +169,10 @@ class RedisSchemaCache:
             rels = schema_dict.get("relationships", [])
             pipe.set(rels_key, json.dumps(rels, ensure_ascii=False))
 
+            # fingerprint 검증 타임스탬프 기록
+            fp_ts_key = self._key(db_id, "fingerprint_checked_at")
+            pipe.set(fp_ts_key, str(time.time()))
+
             await pipe.execute()
             logger.info(
                 "Redis 스키마 캐시 저장: db_id=%s, fingerprint=%s, tables=%d",
@@ -232,6 +236,63 @@ class RedisSchemaCache:
             logger.error("Redis 스키마 로드 실패 (db_id=%s): %s", db_id, e)
             return None
 
+    # === 구조 분석 메타 (structure_meta) ===
+
+    async def save_structure_meta(
+        self,
+        db_id: str,
+        structure_meta: dict,
+    ) -> bool:
+        """구조 분석 결과(structure_meta)를 Redis에 저장한다.
+
+        structure_meta는 스키마(tables/relationships)와 다른 구조이므로
+        별도 키에 JSON 문자열로 저장한다.
+
+        Args:
+            db_id: DB 식별자
+            structure_meta: 구조 분석 결과 (patterns, query_guide 등)
+
+        Returns:
+            저장 성공 여부
+        """
+        if not self._connected or self._redis is None:
+            return False
+
+        try:
+            key = self._key(db_id, "structure_meta")
+            await self._redis.set(
+                key, json.dumps(structure_meta, ensure_ascii=False)
+            )
+            logger.info("Redis structure_meta 저장: db_id=%s", db_id)
+            return True
+        except Exception as e:
+            logger.error("Redis structure_meta 저장 실패 (db_id=%s): %s", db_id, e)
+            return False
+
+    async def load_structure_meta(self, db_id: str) -> Optional[dict]:
+        """Redis에서 구조 분석 결과(structure_meta)를 로드한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            구조 분석 딕셔너리 또는 None
+        """
+        if not self._connected or self._redis is None:
+            return None
+
+        try:
+            key = self._key(db_id, "structure_meta")
+            raw = await self._redis.get(key)
+            if raw:
+                return json.loads(raw)
+            return None
+        except Exception as e:
+            logger.error(
+                "Redis structure_meta 로드 실패 (db_id=%s): %s", db_id, e
+            )
+            return None
+
     async def get_fingerprint(self, db_id: str) -> Optional[str]:
         """캐시된 fingerprint를 반환한다.
 
@@ -264,6 +325,42 @@ class RedisSchemaCache:
         if cached is None:
             return True
         return cached != current_fingerprint
+
+    async def is_fingerprint_fresh(self, db_id: str, ttl_seconds: int) -> bool:
+        """Redis에 저장된 fingerprint 검증 타임스탬프가 TTL 내인지 확인한다.
+
+        Args:
+            db_id: DB 식별자
+            ttl_seconds: TTL 초 단위
+
+        Returns:
+            TTL 내이면 True
+        """
+        if not self._connected or self._redis is None:
+            return False
+        try:
+            key = self._key(db_id, "fingerprint_checked_at")
+            checked_at = await self._redis.get(key)
+            if checked_at is None:
+                return False
+            return (time.time() - float(checked_at)) < ttl_seconds
+        except Exception as e:
+            logger.warning("fingerprint freshness 확인 실패: %s", e)
+            return False
+
+    async def refresh_fingerprint_checked_at(self, db_id: str) -> None:
+        """fingerprint 검증 타임스탬프를 현재 시각으로 갱신한다.
+
+        Args:
+            db_id: DB 식별자
+        """
+        if not self._connected or self._redis is None:
+            return
+        try:
+            key = self._key(db_id, "fingerprint_checked_at")
+            await self._redis.set(key, str(time.time()))
+        except Exception as e:
+            logger.warning("fingerprint 타임스탬프 갱신 실패: %s", e)
 
     # === 컬럼 설명 ===
 
@@ -965,13 +1062,59 @@ class RedisSchemaCache:
             logger.error("Redis 글로벌 유사단어 삭제 실패: %s", e)
             return False
 
+    # === CSV 캐시 ===
+
+    CSV_CACHE_PREFIX = "csv_cache:"
+    CSV_CACHE_TTL = 86400 * 7  # 7일
+
+    async def save_csv_cache(self, file_hash: str, csv_data: dict) -> None:
+        """CSV 변환 결과를 Redis에 저장한다.
+
+        Args:
+            file_hash: SHA-256 파일 해시
+            csv_data: {시트명: CsvSheetData를 dict로 직렬화한 형태}
+        """
+        if not self._connected:
+            return
+        try:
+            key = f"{self.CSV_CACHE_PREFIX}{file_hash}"
+            await self._redis.set(
+                key,
+                json.dumps(csv_data, ensure_ascii=False),
+                ex=self.CSV_CACHE_TTL,
+            )
+            logger.debug("CSV 캐시 Redis 저장: %s...", file_hash[:12])
+        except Exception as e:
+            logger.debug("CSV 캐시 Redis 저장 실패: %s", e)
+
+    async def load_csv_cache(self, file_hash: str) -> dict | None:
+        """Redis에서 CSV 변환 결과를 조회한다.
+
+        Args:
+            file_hash: SHA-256 파일 해시
+
+        Returns:
+            {시트명: CsvSheetData dict} 또는 None (미스 시)
+        """
+        if not self._connected:
+            return None
+        try:
+            key = f"{self.CSV_CACHE_PREFIX}{file_hash}"
+            raw = await self._redis.get(key)
+            if raw:
+                logger.debug("CSV 캐시 Redis 히트: %s...", file_hash[:12])
+                return json.loads(raw)
+        except Exception as e:
+            logger.debug("CSV 캐시 Redis 조회 실패: %s", e)
+        return None
+
     # === 관리 ===
 
     async def invalidate(self, db_id: str) -> bool:
         """특정 DB의 캐시를 삭제한다.
 
-        synonyms는 보존한다 (유사단어 영구 보존 원칙).
-        synonyms를 삭제하려면 delete_synonyms()를 사용한다.
+        DB별 데이터를 전체 삭제하며, 글로벌 사전(synonyms:global 등)만 보존한다.
+        글로벌 사전을 삭제하려면 delete_global_synonyms()를 사용한다.
 
         Args:
             db_id: DB 식별자
@@ -983,14 +1126,22 @@ class RedisSchemaCache:
             return False
 
         try:
-            # synonyms 키는 삭제하지 않음 (영구 보존)
+            # 글로벌 사전(synonyms:global 등)만 보존, DB별 데이터는 전체 삭제
             keys = [
                 self._key(db_id, suffix)
-                for suffix in ("meta", "tables", "relationships", "descriptions")
+                for suffix in (
+                    "meta",
+                    "tables",
+                    "relationships",
+                    "descriptions",
+                    "synonyms",
+                    "fingerprint_checked_at",
+                    "structure_meta",
+                )
             ]
             await self._redis.delete(*keys)
             logger.info(
-                "Redis 캐시 삭제 (synonyms 보존): db_id=%s", db_id
+                "Redis 캐시 삭제 (글로벌 사전만 보존): db_id=%s", db_id
             )
             return True
         except Exception as e:
@@ -1000,7 +1151,13 @@ class RedisSchemaCache:
     async def invalidate_all(self) -> int:
         """모든 스키마 캐시를 삭제한다.
 
-        synonyms와 글로벌 사전은 보존한다.
+        글로벌 사전만 보존한다:
+        - synonyms:global (GLOBAL_SYNONYMS_KEY)
+        - synonyms:resource_types (RESOURCE_TYPE_SYNONYMS_KEY)
+        - synonyms:eav_names (EAV_NAME_SYNONYMS_KEY)
+        - schema:db_descriptions (DB_DESCRIPTIONS_KEY)
+
+        DB별 synonyms도 삭제 대상에 포함된다.
 
         Returns:
             삭제된 키 수
@@ -1009,18 +1166,22 @@ class RedisSchemaCache:
             return 0
 
         try:
+            # 보존 대상 글로벌 키
+            preserved_keys = {
+                self.GLOBAL_SYNONYMS_KEY,
+                self.RESOURCE_TYPE_SYNONYMS_KEY,
+                self.EAV_NAME_SYNONYMS_KEY,
+                self.DB_DESCRIPTIONS_KEY,
+            }
             count = 0
             async for key in self._redis.scan_iter(match="schema:*"):
-                # synonyms 키와 db_descriptions는 보존
-                if key.endswith(":synonyms"):
-                    continue
-                if key == self.DB_DESCRIPTIONS_KEY:
+                if key in preserved_keys:
                     continue
                 await self._redis.delete(key)
                 count += 1
-            # 글로벌 synonyms, db_descriptions는 절대 삭제하지 않음
+            # synonyms:global 등은 schema: 접두사가 아니므로 스캔에 잡히지 않음
             logger.info(
-                "Redis 전체 캐시 삭제 (synonyms/global 보존): %d keys", count
+                "Redis 전체 캐시 삭제 (글로벌 사전만 보존): %d keys", count
             )
             return count
         except Exception as e:
@@ -1183,6 +1344,57 @@ class RedisSchemaCache:
         except Exception as e:
             logger.warning("Redis EAV NAME 유사단어 로드 실패: %s", e)
             return {}
+
+    async def sync_known_attributes_to_eav_synonyms(
+        self,
+        known_attributes_detail: list[dict],
+    ) -> int:
+        """수동 프로필의 known_attributes를 Redis eav_name_synonyms에 동기화한다.
+
+        기존 Redis에 저장된 synonyms는 보존하고, 프로필의 synonyms를 추가만 한다.
+        description 필드는 Redis에 저장하지 않는다 (eav_name_synonyms는
+        {name: [words]} 형식만 지원).
+
+        Args:
+            known_attributes_detail: [{name: str, description: str, synonyms: [str]}, ...]
+
+        Returns:
+            동기화된 속성 수
+        """
+        if not self._connected or self._redis is None:
+            return 0
+
+        if not known_attributes_detail:
+            return 0
+
+        try:
+            existing = await self.load_eav_name_synonyms()
+
+            synced_count = 0
+            for attr in known_attributes_detail:
+                attr_name: str = attr.get("name", "")
+                attr_synonyms: list[str] = attr.get("synonyms", [])
+                if not attr_name or not attr_synonyms:
+                    continue
+
+                current = existing.get(attr_name, [])
+                merged = list(dict.fromkeys(current + attr_synonyms))
+                existing[attr_name] = merged
+                synced_count += 1
+
+            if synced_count > 0:
+                await self.save_eav_name_synonyms(existing)
+                logger.info(
+                    "known_attributes → eav_name_synonyms 동기화 완료: %d개 속성",
+                    synced_count,
+                )
+
+            return synced_count
+        except Exception as e:
+            logger.error(
+                "known_attributes → eav_name_synonyms 동기화 실패: %s", e
+            )
+            return 0
 
     async def list_cached_dbs(self) -> list[dict]:
         """캐시된 DB 목록과 메타정보를 반환한다.
