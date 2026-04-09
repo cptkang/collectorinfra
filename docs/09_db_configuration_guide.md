@@ -21,6 +21,8 @@
 13. [개발환경 빠른 시작](#13-개발환경-빠른-시작)
 14. [운영환경 설정 요령](#14-운영환경-설정-요령)
 15. [트러블슈팅](#15-트러블슈팅)
+16. [Redis 캐시 마이그레이션](#16-redis-캐시-마이그레이션)
+17. [Export 파일을 이용한 Redis 복원](#17-export-파일을-이용한-redis-복원)
 
 ---
 
@@ -775,4 +777,410 @@ SECURITY_SENSITIVE_COLUMNS=password,secret,token
 
 # 올바른 예
 SECURITY_SENSITIVE_COLUMNS=["password","secret","token"]
+```
+
+---
+
+## 16. Redis 캐시 마이그레이션
+
+Redis 서버를 교체하거나 환경을 이전할 때 기존 캐시 데이터를 마이그레이션하는 방법을 설명한다.
+
+### 16.1 Redis에 저장되는 데이터 구조
+
+마이그레이션 전에 어떤 데이터가 Redis에 있는지 파악해야 한다.
+
+#### DB별 스키마 캐시 (`schema:{db_id}:*`)
+
+| 키 | Redis 타입 | 내용 |
+|----|-----------|------|
+| `schema:{db_id}:meta` | Hash | fingerprint, cached_at, cache_version, table_count 등 메타정보 |
+| `schema:{db_id}:tables` | Hash | 테이블명 → 컬럼/샘플 데이터 JSON |
+| `schema:{db_id}:relationships` | String | FK 관계 JSON 배열 |
+| `schema:{db_id}:structure_meta` | String | EAV 패턴 분석 결과 JSON |
+| `schema:{db_id}:descriptions` | Hash | `table.column` → 한국어 설명 |
+| `schema:{db_id}:synonyms` | Hash | `table.column` → `{"words": [...], "sources": {...}}` JSON |
+| `schema:{db_id}:fingerprint_checked_at` | String | fingerprint 검증 타임스탬프 |
+
+#### 글로벌 사전 (DB 무관, 영구 보존)
+
+| 키 | Redis 타입 | 내용 |
+|----|-----------|------|
+| `synonyms:global` | Hash | 컬럼명 → `{"words": [...], "description": "..."}` JSON |
+| `synonyms:resource_types` | Hash | RESOURCE_TYPE 값 → 유사 단어 JSON 배열 |
+| `synonyms:eav_names` | Hash | EAV NAME → 유사 단어 JSON 배열 |
+| `schema:db_descriptions` | Hash | db_id → DB 설명 문자열 |
+
+#### CSV 변환 캐시 (임시, TTL 7일)
+
+| 키 | Redis 타입 | 내용 |
+|----|-----------|------|
+| `csv_cache:{file_hash}` | String | 파일 해시 기반 CSV 변환 결과 JSON |
+
+> **참고**: CSV 캐시는 TTL 7일로 자동 만료되므로 마이그레이션 시 옮기지 않아도 된다.
+
+### 16.2 마이그레이션 방법 선택
+
+데이터 중요도와 환경에 따라 3가지 방법 중 선택한다.
+
+| 방법 | 적용 상황 | 장점 | 단점 |
+|------|----------|------|------|
+| A. RDB/AOF 파일 복사 | 동일 Redis 버전, 전체 데이터 이전 | 가장 빠름, 완전한 복사 | Redis 버전 호환 필요 |
+| B. CLI 도구로 Export/Import | 글로벌 사전만 이전, 버전 무관 | 선택적 이전, 사람이 읽을 수 있는 형식 | 스키마 캐시는 재생성 필요 |
+| C. redis-cli DUMP/RESTORE | 키 단위 세밀한 이전 | 키별 선택 이전 가능 | 수작업 많음, 스크립트 필요 |
+
+### 16.3 방법 A: RDB/AOF 파일 복사 (전체 이전)
+
+Redis의 영속성 파일을 직접 복사하는 방법. 가장 빠르고 완전하다.
+
+#### 1단계: 원본 Redis에서 스냅샷 생성
+
+```bash
+# 원본 Redis에서 즉시 RDB 스냅샷 생성
+redis-cli -h <원본_HOST> -p <원본_PORT> BGSAVE
+
+# 저장 완료 대기 (BGSAVE 완료 시각 확인)
+redis-cli -h <원본_HOST> -p <원본_PORT> LASTSAVE
+```
+
+#### 2단계: 원본 Redis 정지 및 파일 복사
+
+```bash
+# 원본 Redis 정지
+sudo systemctl stop redis        # 또는 redis-server
+
+# RDB 파일 위치 확인
+redis-cli -h <원본_HOST> CONFIG GET dir
+redis-cli -h <원본_HOST> CONFIG GET dbfilename
+# 기본: /var/lib/redis/dump.rdb
+
+# RDB 파일 복사 (AOF도 함께)
+scp <원본_HOST>:/var/lib/redis/dump.rdb /tmp/
+scp <원본_HOST>:/var/lib/redis/appendonly.aof /tmp/    # AOF 사용 시
+```
+
+#### 3단계: 대상 Redis에 파일 배치 및 시작
+
+```bash
+# 대상 Redis 정지
+sudo systemctl stop redis
+
+# 기존 데이터 백업 후 파일 교체
+sudo cp /var/lib/redis/dump.rdb /var/lib/redis/dump.rdb.bak
+sudo cp /tmp/dump.rdb /var/lib/redis/dump.rdb
+sudo cp /tmp/appendonly.aof /var/lib/redis/appendonly.aof  # AOF 사용 시
+
+# 파일 소유권 설정
+sudo chown redis:redis /var/lib/redis/dump.rdb
+sudo chown redis:redis /var/lib/redis/appendonly.aof
+
+# 대상 Redis 시작
+sudo systemctl start redis
+```
+
+#### 4단계: 검증
+
+```bash
+# 키 개수 확인
+redis-cli -h <대상_HOST> -p <대상_PORT> DBSIZE
+
+# 글로벌 사전 확인
+redis-cli -h <대상_HOST> -p <대상_PORT> HLEN synonyms:global
+redis-cli -h <대상_HOST> -p <대상_PORT> HLEN synonyms:eav_names
+redis-cli -h <대상_HOST> -p <대상_PORT> HLEN synonyms:resource_types
+
+# DB별 스키마 캐시 확인
+redis-cli -h <대상_HOST> -p <대상_PORT> KEYS "schema:*:meta"
+```
+
+### 16.4 방법 B: CLI 도구로 Export/Import (권장)
+
+프로젝트 내장 CLI 도구를 사용하여 글로벌 유사 단어 사전을 YAML/JSON 파일로 내보내고 새 환경에서 가져온다.
+스키마 캐시는 DB에서 자동 재생성되므로 별도 이전이 불필요하다.
+
+#### 1단계: 원본에서 글로벌 유사 단어 사전 내보내기
+
+```bash
+# YAML 형식 (사람이 읽기 쉬움, 수정 가능)
+python scripts/schema_cache_cli.py export-synonyms \
+    --output backup/synonyms_backup.yaml \
+    --format yaml
+
+# 또는 JSON 형식
+python scripts/schema_cache_cli.py export-synonyms \
+    --output backup/synonyms_backup.json \
+    --format json
+```
+
+내보내기 파일 구조:
+
+```yaml
+version: "1.0"
+domain: "infrastructure"
+updated_at: "2026-04-09T12:00:00"
+columns:
+  hostname:
+    words: ["호스트명", "서버명", "서버이름"]
+    description: "서버의 호스트명"
+  ip_address:
+    words: ["IP", "아이피", "IP주소"]
+    description: "서버의 IP 주소"
+resource_type_values:
+  CPU:
+    words: ["씨피유", "프로세서", "cpu"]
+  Memory:
+    words: ["메모리", "RAM", "ram"]
+eav_name_values:
+  Hostname:
+    words: ["호스트명", "서버명"]
+  IPaddress:
+    words: ["IP주소", "아이피"]
+```
+
+#### 2단계: 현재 상태 확인 (선택)
+
+```bash
+# 현재 글로벌 유사 단어 상태 요약
+python scripts/schema_cache_cli.py synonym-status
+
+# 전체 캐시 상태 조회
+python scripts/schema_cache_cli.py status
+```
+
+#### 3단계: 대상 환경에서 가져오기
+
+```bash
+# 병합 모드 (기본값: 기존 데이터에 추가, 중복 제거)
+python scripts/schema_cache_cli.py load-synonyms \
+    --file backup/synonyms_backup.yaml
+
+# 덮어쓰기 모드 (기존 데이터를 완전 교체)
+python scripts/schema_cache_cli.py load-synonyms \
+    --file backup/synonyms_backup.yaml \
+    --no-merge
+```
+
+#### 4단계: 스키마 캐시 재생성
+
+글로벌 사전을 가져온 후 DB 스키마 캐시를 새로 생성한다:
+
+```bash
+# 전체 DB 캐시 생성 (활성 DB 자동 감지)
+python scripts/schema_cache_cli.py generate
+
+# 특정 DB만 생성
+python scripts/schema_cache_cli.py generate --db-id polestar
+
+# 강제 재생성 (기존 캐시 무시)
+python scripts/schema_cache_cli.py generate --force
+```
+
+#### 5단계: 검증
+
+```bash
+# 캐시 상태 확인
+python scripts/schema_cache_cli.py status
+
+# 특정 DB 상세 확인
+python scripts/schema_cache_cli.py show --db-id infra_db
+
+# 유사 단어 상태 확인
+python scripts/schema_cache_cli.py synonym-status
+```
+
+### 16.5 방법 C: redis-cli로 키 단위 이전
+
+특정 키만 선택적으로 이전할 때 사용한다.
+
+#### 글로벌 사전 키 이전 (DUMP/RESTORE)
+
+```bash
+# 이전할 글로벌 사전 키 목록
+KEYS=("synonyms:global" "synonyms:resource_types" "synonyms:eav_names" "schema:db_descriptions")
+
+SRC_HOST=<원본_HOST>
+SRC_PORT=<원본_PORT>
+DST_HOST=<대상_HOST>
+DST_PORT=<대상_PORT>
+
+for KEY in "${KEYS[@]}"; do
+    # 원본에서 직렬화된 데이터 추출
+    DUMP=$(redis-cli -h $SRC_HOST -p $SRC_PORT DUMP "$KEY")
+
+    if [ "$DUMP" != "" ] && [ "$DUMP" != "(nil)" ]; then
+        # 대상에서 기존 키 삭제 후 복원 (TTL 0 = 만료 없음)
+        redis-cli -h $DST_HOST -p $DST_PORT DEL "$KEY"
+        redis-cli -h $DST_HOST -p $DST_PORT RESTORE "$KEY" 0 "$DUMP"
+        echo "Migrated: $KEY"
+    else
+        echo "Skipped (empty): $KEY"
+    fi
+done
+```
+
+#### 특정 DB의 스키마 캐시 이전
+
+```bash
+DB_ID="infra_db"
+SRC_HOST=<원본_HOST>
+SRC_PORT=<원본_PORT>
+DST_HOST=<대상_HOST>
+DST_PORT=<대상_PORT>
+
+# 해당 DB의 모든 캐시 키 조회
+KEYS=$(redis-cli -h $SRC_HOST -p $SRC_PORT KEYS "schema:${DB_ID}:*")
+
+for KEY in $KEYS; do
+    DUMP=$(redis-cli -h $SRC_HOST -p $SRC_PORT DUMP "$KEY")
+    if [ "$DUMP" != "" ] && [ "$DUMP" != "(nil)" ]; then
+        redis-cli -h $DST_HOST -p $DST_PORT DEL "$KEY"
+        redis-cli -h $DST_HOST -p $DST_PORT RESTORE "$KEY" 0 "$DUMP"
+        echo "Migrated: $KEY"
+    fi
+done
+```
+
+### 16.6 마이그레이션 후 체크리스트
+
+| # | 확인 항목 | 명령어 |
+|---|----------|--------|
+| 1 | Redis 접속 정상 | `redis-cli -h <HOST> -p <PORT> PING` |
+| 2 | 글로벌 유사 단어 존재 | `redis-cli HLEN synonyms:global` |
+| 3 | EAV 유사 단어 존재 | `redis-cli HLEN synonyms:eav_names` |
+| 4 | RESOURCE_TYPE 유사 단어 존재 | `redis-cli HLEN synonyms:resource_types` |
+| 5 | DB 설명 존재 | `redis-cli HLEN schema:db_descriptions` |
+| 6 | 스키마 캐시 존재 | `redis-cli KEYS "schema:*:meta"` |
+| 7 | 애플리케이션 .env 반영 | `REDIS_HOST`, `REDIS_PORT` 가 새 서버를 가리키는지 확인 |
+| 8 | 애플리케이션 정상 동작 | 웹 UI에서 질의 테스트 |
+
+### 16.7 데이터 복구 우선순위
+
+마이그레이션 실패 시 또는 부분 이전만 가능한 경우, 아래 우선순위로 복구한다:
+
+| 우선순위 | 데이터 | 복구 방법 | 사유 |
+|----------|--------|----------|------|
+| 1 (필수) | `synonyms:global` | export/import 또는 DUMP/RESTORE | 운영자가 수동 축적한 유사 단어. 재생성 불가 |
+| 2 (필수) | `synonyms:eav_names` | export/import 또는 DUMP/RESTORE | EAV 필드 매핑에 필수. 수동 축적 데이터 |
+| 3 (필수) | `synonyms:resource_types` | export/import 또는 DUMP/RESTORE | RESOURCE_TYPE 매핑에 필수 |
+| 4 (권장) | `schema:db_descriptions` | DUMP/RESTORE | DB 설명. 없으면 LLM이 재생성 가능 |
+| 5 (선택) | `schema:{db_id}:descriptions` | CLI `generate` 재생성 | LLM이 자동 생성 가능 |
+| 6 (선택) | `schema:{db_id}:synonyms` | CLI `generate` 재생성 | 글로벌 사전에서 복원 가능 |
+| 7 (불필요) | `schema:{db_id}:tables` 등 | CLI `generate` 재생성 | DB에서 자동 조회하여 재구축 |
+| 8 (불필요) | `csv_cache:*` | 재생성 불필요 | 임시 캐시, TTL 7일 자동 만료 |
+
+> **핵심**: 글로벌 사전 3개 키(`synonyms:global`, `synonyms:eav_names`, `synonyms:resource_types`)는 운영 중 수동으로 축적된 데이터이므로 반드시 백업하고 이전해야 한다. 나머지 스키마 캐시는 `python scripts/schema_cache_cli.py generate --force`로 재생성 가능하다.
+
+---
+
+## 17. Export 파일을 이용한 Redis 복원
+
+`redis/export/` 디렉토리에 사전 내보내기한 캐시 백업 파일이 존재한다. 새 환경에서 Redis를 구성한 후 이 파일들을 사용하여 캐시를 복원하는 방법을 설명한다.
+
+### 17.1 Export 파일 목록
+
+| 파일 | 내용 | 복원 대상 |
+|------|------|----------|
+| `global_synonyms.yaml` | 글로벌 유사단어 사전 (컬럼, RESOURCE_TYPE, EAV NAME) | `synonyms:global`, `synonyms:resource_types`, `synonyms:eav_names` |
+| `default_schema.json` | default DB 스키마 (servers, cpu/memory/disk/network_metrics, 5 tables) | `schema:default:*` |
+| `polestar_schema.json` | polestar DB 스키마 (cmm_resource, core_config_prop) | `schema:polestar:*` |
+| `polestar_pg_schema.json` | polestar_pg DB 스키마 | `schema:polestar_pg:*` |
+| `_default_schema.json` | _default DB 스키마 | `schema:_default:*` |
+| `unknown_schema.json` | unknown DB 스키마 | `schema:unknown:*` |
+| `unknown_structure_meta_schema.json` | unknown DB 구조 분석 메타 | `schema:unknown:structure_meta` |
+
+### 17.2 사전 조건
+
+- Redis 서버가 실행 중이어야 한다
+- `.env`의 `REDIS_HOST`, `REDIS_PORT` 가 새 Redis를 가리켜야 한다
+- Python 가상환경이 활성화되어 있어야 한다 (`source .venv/bin/activate`)
+
+### 17.3 복원 절차
+
+#### 1단계: Redis 연결 확인
+
+```bash
+source .venv/bin/activate
+python -c "
+import redis
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+print('PING:', r.ping())
+print('DBSIZE:', r.dbsize())
+"
+```
+
+#### 2단계: 글로벌 유사단어 사전 복원 (최우선)
+
+프로젝트 내장 CLI 도구를 사용하여 `global_synonyms.yaml`을 Redis에 로드한다:
+
+```bash
+# 병합 모드 (기존 데이터가 있으면 합침)
+python scripts/schema_cache_cli.py load-synonyms \
+    --file redis/export/global_synonyms.yaml
+
+# 또는 덮어쓰기 모드 (기존 데이터를 완전 교체)
+python scripts/schema_cache_cli.py load-synonyms \
+    --file redis/export/global_synonyms.yaml \
+    --no-merge
+```
+
+이 명령은 YAML 파일의 3개 섹션을 각각의 Redis 키에 저장한다:
+
+| YAML 섹션 | Redis 키 |
+|-----------|---------|
+| `columns` | `synonyms:global` |
+| `resource_type_values` | `synonyms:resource_types` |
+| `eav_name_values` | `synonyms:eav_names` |
+
+#### 3단계: 스키마 캐시 복원
+
+스키마 캐시 JSON 파일은 파일 캐시 형식으로 저장되어 있다. 이를 `.cache/schema/` 디렉토리에 배치하면 애플리케이션이 파일 캐시로 읽어들인 후 Redis에 자동으로 이중 저장한다.
+
+```bash
+# 파일 캐시 디렉토리 생성
+mkdir -p .cache/schema
+
+# export 파일을 파일 캐시 위치에 복사
+cp redis/export/*_schema.json .cache/schema/
+```
+
+또는 DB에 직접 연결 가능한 환경이면 CLI로 캐시를 새로 생성하는 것이 더 정확하다:
+
+```bash
+# 전체 DB 캐시 신규 생성 (DB에서 직접 스키마 조회)
+python scripts/schema_cache_cli.py generate --force
+
+# 특정 DB만 생성
+python scripts/schema_cache_cli.py generate --db-id polestar --force
+```
+
+#### 4단계: 복원 확인
+
+```bash
+# 글로벌 유사단어 상태 확인
+python scripts/schema_cache_cli.py synonym-status
+
+# 전체 캐시 상태 확인
+python scripts/schema_cache_cli.py status
+
+# 특정 DB 상세 확인
+python scripts/schema_cache_cli.py show --db-id default
+```
+
+Redis에서 직접 확인:
+
+```bash
+redis-cli HLEN synonyms:global           # 글로벌 유사단어 컬럼 수
+redis-cli HLEN synonyms:eav_names        # EAV NAME 유사단어 수
+redis-cli HLEN synonyms:resource_types   # RESOURCE_TYPE 유사단어 수
+redis-cli KEYS "schema:*:meta"           # 캐시된 DB 목록
+```
+
+### 17.4 복원 순서 요약
+
+```
+1. Redis 서비스 시작 및 연결 확인
+2. .env에서 REDIS_HOST/PORT 설정 확인
+3. global_synonyms.yaml → Redis 로드 (load-synonyms)
+4. 스키마 캐시: DB 연결 가능하면 generate --force, 불가하면 파일 복사
+5. synonym-status / status 로 복원 결과 검증
+6. 웹 UI에서 질의 테스트
 ```

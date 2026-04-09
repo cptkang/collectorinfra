@@ -1,0 +1,491 @@
+{
+  "_cache_version": 1,
+  "_fingerprint": "80e7b6ec0c820b21ea91b665d2c677cde74f6bbd6260e612086f1e7dd8dc3a21",
+  "_db_id": "default",
+  "_cached_at": 1774312499.441652,
+  "_cached_at_iso": "2026-03-24T09:34:59+0900",
+  "schema": {
+    "tables": {
+      "memory_metrics": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "server_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "collected_at",
+            "type": "timestamp without time zone",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "total_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "used_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "free_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "usage_pct",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "swap_total_gb",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "swap_used_gb",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "cached_gb",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "buffers_gb",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      },
+      "network_metrics": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "server_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "collected_at",
+            "type": "timestamp without time zone",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "interface",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "in_bytes",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "out_bytes",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "in_packets",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "out_packets",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "in_errors",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "out_errors",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "bandwidth_mbps",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      },
+      "disk_metrics": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "server_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "collected_at",
+            "type": "timestamp without time zone",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "mount_point",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "filesystem",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "total_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "used_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "free_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "usage_pct",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "inode_usage_pct",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      },
+      "cpu_metrics": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "server_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "collected_at",
+            "type": "timestamp without time zone",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "core_count",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "usage_pct",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "system_pct",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "user_pct",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "idle_pct",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "load_avg_1m",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "load_avg_5m",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "load_avg_15m",
+            "type": "numeric",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      },
+      "servers": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "hostname",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "ip_address",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "os",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "location",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "purpose",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "cpu_cores",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "memory_total_gb",
+            "type": "numeric",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "status",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp without time zone",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "updated_at",
+            "type": "timestamp without time zone",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      }
+    },
+    "relationships": [
+      {
+        "from": "cpu_metrics.server_id",
+        "to": "servers.id"
+      },
+      {
+        "from": "memory_metrics.server_id",
+        "to": "servers.id"
+      },
+      {
+        "from": "disk_metrics.server_id",
+        "to": "servers.id"
+      },
+      {
+        "from": "network_metrics.server_id",
+        "to": "servers.id"
+      }
+    ]
+  }
+}

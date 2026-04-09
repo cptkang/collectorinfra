@@ -1,0 +1,151 @@
+{
+  "_cache_version": 1,
+  "_fingerprint": "78cd3dfad85418a42b645e054dba30f9f0160f73dae0bc4cdd556ce6bfdcb419",
+  "_db_id": "_default",
+  "_cached_at": 1774910423.547392,
+  "_cached_at_iso": "2026-03-31T07:40:23+0900",
+  "schema": {
+    "tables": {
+      "servers": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "hostname",
+            "type": "varchar(255)",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "ip_address",
+            "type": "varchar(45)",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "os",
+            "type": "varchar(100)",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "password",
+            "type": "varchar(255)",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": 50,
+        "sample_data": []
+      },
+      "cpu_metrics": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "server_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": true,
+            "references": "servers.id"
+          },
+          {
+            "name": "usage_pct",
+            "type": "double",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "timestamp",
+            "type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": 500000,
+        "sample_data": []
+      },
+      "memory_metrics": {
+        "columns": [
+          {
+            "name": "id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "server_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": true,
+            "references": "servers.id"
+          },
+          {
+            "name": "usage_pct",
+            "type": "double",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "total_gb",
+            "type": "double",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "timestamp",
+            "type": "timestamp",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": 500000,
+        "sample_data": []
+      }
+    },
+    "relationships": [
+      {
+        "from": "cpu_metrics.server_id",
+        "to": "servers.id"
+      },
+      {
+        "from": "memory_metrics.server_id",
+        "to": "servers.id"
+      }
+    ]
+  }
+}

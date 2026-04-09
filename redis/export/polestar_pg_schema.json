@@ -1,0 +1,592 @@
+{
+  "_cache_version": 1,
+  "_fingerprint": "a602b806b1c12c1593c9160e6d52f9371f69639a3021b6a80100b54f337ad04c",
+  "_db_id": "polestar_pg",
+  "_cached_at": 1774838252.797933,
+  "_cached_at_iso": "2026-03-30T11:37:32+0900",
+  "schema": {
+    "tables": {
+      "polestar.cmm_resource": {
+        "columns": [
+          {
+            "name": "dtype",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "acl_id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "acl_manager_group_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "acl_manager_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "avail_status",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "ctime",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "dtime",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "description",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "group_path",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "haschildren",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "hostname",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "id_ancestry",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "identifier",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "importance_id",
+            "type": "integer",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_inherit_avail_depend",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_inherit_custom_conf",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_inherit_manager_zone",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "inheritstatus",
+            "type": "smallint",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "inventorypollinginterval",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "invisible",
+            "type": "smallint",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "ipaddress",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "lc",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "location",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "longpollinginterval",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "mtime",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_maintenance",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "manager_zone",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "mesurementpollinginterval",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "modifiedby",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "name",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "optlock",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "order_num",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "parent_resource_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "platform_resource_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "pollingpolicy",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "priority",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resourceicon",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resource_key",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resourcestatus",
+            "type": "integer",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resource_type",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resourcetypeversion",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "service_resource_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_sync_desc",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_sync_name",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "uuid",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "version",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "system",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "avail_depend_resource_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "avail_depend_resource_id_2",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "connection_conf_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "custom_conf_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "realtime_info_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resource_conf_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resource_path_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "schedule_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "resource_system_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "group_resource_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "business_group_resource_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      },
+      "polestar.core_config_prop": {
+        "columns": [
+          {
+            "name": "dtype",
+            "type": "character varying",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": true,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "errormessage",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "name",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "time_stamp",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "stringvalue",
+            "type": "text",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "is_lob",
+            "type": "smallint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "stringvalue_short",
+            "type": "character varying",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "configuration_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "parent_list_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "parent_map_id",
+            "type": "bigint",
+            "nullable": true,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          },
+          {
+            "name": "propertydefinition_id",
+            "type": "bigint",
+            "nullable": false,
+            "primary_key": false,
+            "foreign_key": false,
+            "references": null
+          }
+        ],
+        "row_count_estimate": null,
+        "sample_data": []
+      }
+    },
+    "relationships": []
+  }
+}
