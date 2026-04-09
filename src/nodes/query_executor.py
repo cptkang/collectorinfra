@@ -69,6 +69,9 @@ async def query_executor(
             execution_time_ms=elapsed_ms,
             success=True,
             retry_attempt=state.get("retry_count", 0),
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            source_name=state.get("active_db_id"),
         )
 
         logger.info(
@@ -105,6 +108,9 @@ async def query_executor(
             success=False,
             error=str(e),
             retry_attempt=state.get("retry_count", 0),
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            source_name=state.get("active_db_id"),
         )
 
         return {
@@ -134,6 +140,9 @@ async def query_executor(
             success=False,
             error=str(e),
             retry_attempt=state.get("retry_count", 0),
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            source_name=state.get("active_db_id"),
         )
 
         return {
@@ -163,6 +172,9 @@ async def query_executor(
             success=False,
             error=str(e),
             retry_attempt=state.get("retry_count", 0),
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            source_name=state.get("active_db_id"),
         )
 
         return {

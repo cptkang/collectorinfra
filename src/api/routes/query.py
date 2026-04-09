@@ -18,10 +18,11 @@ import uuid
 from collections import OrderedDict
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
+from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.state import create_initial_state
 
@@ -226,6 +227,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
 async def process_query(
     request: Request,
     body: QueryRequest,
+    current_user: dict = Depends(require_user),
 ) -> QueryResponse:
     """자연어 질의를 처리하고 결과를 반환한다.
 
@@ -268,6 +270,9 @@ async def process_query(
         input_state = create_initial_state(
             user_query=body.query,
             thread_id=thread_id,
+            user_id=current_user.get("sub"),
+            user_department=current_user.get("department"),
+            allowed_db_ids=current_user.get("allowed_db_ids"),
         )
 
     try:
@@ -324,6 +329,7 @@ async def process_query(
 async def process_query_stream(
     request: Request,
     body: QueryRequest,
+    current_user: dict = Depends(require_user),
 ) -> StreamingResponse:
     """SSE 스트리밍 방식으로 질의를 처리한다.
 
@@ -358,6 +364,9 @@ async def process_query_stream(
         input_state = create_initial_state(
             user_query=body.query,
             thread_id=thread_id,
+            user_id=current_user.get("sub"),
+            user_department=current_user.get("department"),
+            allowed_db_ids=current_user.get("allowed_db_ids"),
         )
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -582,6 +591,7 @@ async def process_file_query(
     query: str = Form(..., min_length=1, max_length=2000),
     file: UploadFile = File(...),
     thread_id: Optional[str] = Form(None),
+    current_user: dict = Depends(require_user),
 ) -> QueryResponse:
     """양식 파일과 함께 질의를 처리한다."""
     # 1. 파일 타입 검증
@@ -628,6 +638,9 @@ async def process_file_query(
         file_type=file_ext,
         thread_id=actual_thread_id,
         csv_sheet_data=csv_sheet_data,
+        user_id=current_user.get("sub"),
+        user_department=current_user.get("department"),
+        allowed_db_ids=current_user.get("allowed_db_ids"),
     )
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}

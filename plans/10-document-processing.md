@@ -1,7 +1,7 @@
 # Plan 10: Phase 2 - 문서 처리 (Excel/Word 양식 파싱 및 생성)
 
 > 작성일: 2026-03-17
-> 관련 요건: spec.md 섹션 5, docs/decision.md D-007, docs/requirements.md F-07, F-08
+> 관련 요건: spec.md 섹션 5, docs/02_decision.md D-007, docs/01_requirements.md F-07, F-08
 > 선행 조건: Phase 1 완료 (LangGraph 파이프라인, 330개 테스트 통과)
 
 ---
@@ -265,3 +265,176 @@ tests/test_document/
 8. `src/nodes/result_organizer.py` 수정
 9. `src/nodes/output_generator.py` 수정
 10. `src/graph.py` 수정
+
+
+---
+
+# Verification Report
+
+# Phase 2 문서 처리 기능 - 검증 보고서
+
+> 검증일: 2026-03-17
+> 검증 대상: Phase 2 Excel/Word 양식 파싱 및 생성 기능
+
+---
+
+## 1. 테스트 결과 요약
+
+| 항목 | 수치 |
+|------|------|
+| 전체 테스트 수 | 406 |
+| 통과 | 406 |
+| 실패 | 0 |
+| 기존 테스트 (Phase 1 + 시멘틱 라우팅) | 356 |
+| 신규 테스트 (Phase 2 문서 처리) | 50 |
+| 회귀 테스트 실패 | 0 |
+
+## 2. 모듈별 테스트 결과
+
+### 2.1 Excel 파서 (excel_parser.py) - 9개 테스트 통과
+
+| 테스트 | 설명 | 결과 |
+|--------|------|------|
+| test_basic_single_sheet | 기본 단일 시트 파싱 | PASS |
+| test_header_detection_non_first_row | 비첫행 헤더 탐지 | PASS |
+| test_empty_sheet_skipped | 빈 시트 스킵 | PASS |
+| test_merged_cells_detected | 병합 셀 탐지 | PASS |
+| test_formula_cells_detected | 수식 셀 탐지 | PASS |
+| test_multi_sheet | 다중 시트 파싱 | PASS |
+| test_invalid_file_raises_error | 유효하지 않은 파일 오류 | PASS |
+| test_data_end_row_detection | 데이터 영역 끝 탐지 | PASS |
+| test_header_cells_structure | 헤더 셀 구조 검증 | PASS |
+
+### 2.2 Word 파서 (word_parser.py) - 8개 테스트 통과
+
+| 테스트 | 설명 | 결과 |
+|--------|------|------|
+| test_basic_placeholders | 본문 플레이스홀더 추출 | PASS |
+| test_table_structure | 표 구조 분석 | PASS |
+| test_table_with_placeholders | 표 내부 플레이스홀더 | PASS |
+| test_no_placeholders_or_tables | 빈 문서 처리 | PASS |
+| test_duplicate_placeholders_deduplicated | 중복 제거 | PASS |
+| test_multiple_tables | 다중 표 | PASS |
+| test_invalid_file_raises_error | 유효하지 않은 파일 오류 | PASS |
+| test_mixed_paragraphs_and_tables | 혼합 문서 | PASS |
+
+### 2.3 Excel 작성기 (excel_writer.py) - 8개 테스트 통과
+
+| 테스트 | 설명 | 결과 |
+|--------|------|------|
+| test_basic_data_fill | 기본 데이터 채우기 | PASS |
+| test_preserves_headers | 헤더 보존 | PASS |
+| test_formula_cells_preserved | 수식 보존 | PASS |
+| test_unmapped_columns_ignored | 미매핑 컬럼 스킵 | PASS |
+| test_empty_rows | 빈 결과 처리 | PASS |
+| test_column_name_case_insensitive | 대소문자 무시 | PASS |
+| test_multiple_rows | 다중 행 채우기 | PASS |
+| test_invalid_file_raises_error | 유효하지 않은 파일 오류 | PASS |
+
+### 2.4 Word 작성기 (word_writer.py) - 8개 테스트 통과
+
+| 테스트 | 설명 | 결과 |
+|--------|------|------|
+| test_placeholder_replacement | 플레이스홀더 치환 | PASS |
+| test_table_data_fill | 표 데이터 채우기 | PASS |
+| test_table_placeholder_replacement | 표 내부 치환 | PASS |
+| test_unmapped_placeholder_cleared | 미매핑 플레이스홀더 처리 | PASS |
+| test_empty_rows | 빈 결과 처리 | PASS |
+| test_single_row_parameter | 단일 행 매개변수 | PASS |
+| test_invalid_file_raises_error | 유효하지 않은 파일 오류 | PASS |
+| test_mixed_placeholders_and_tables | 혼합 문서 채우기 | PASS |
+
+### 2.5 필드 매퍼 (field_mapper.py) - 15개 테스트 통과
+
+| 테스트 | 설명 | 결과 |
+|--------|------|------|
+| test_excel_headers | Excel 헤더 추출 | PASS |
+| test_word_placeholders | Word 플레이스홀더 추출 | PASS |
+| test_deduplication | 중복 필드 제거 | PASS |
+| test_empty_template | 빈 양식 | PASS |
+| test_basic_format | 스키마 포맷 | PASS |
+| test_empty_schema | 빈 스키마 | PASS |
+| test_valid_mapping | 유효 매핑 보존 | PASS |
+| test_invalid_column_removed | 무효 컬럼 제거 | PASS |
+| test_null_mapping_preserved | null 매핑 유지 | PASS |
+| test_successful_mapping | LLM 매핑 성공 | PASS |
+| test_llm_returns_json_in_codeblock | 코드블록 JSON 파싱 | PASS |
+| test_empty_fields | 빈 필드 | PASS |
+| test_empty_schema (map_fields) | 빈 스키마 | PASS |
+| test_llm_failure_returns_none_mapping | LLM 실패 처리 | PASS |
+| test_invalid_json_retries | JSON 파싱 재시도 | PASS |
+
+### 2.6 통합 테스트 - 2개 통과
+
+| 테스트 | 설명 | 결과 |
+|--------|------|------|
+| test_full_excel_flow | Excel 파싱->매핑->생성 전체 흐름 | PASS |
+| test_full_word_flow | Word 파싱->매핑->생성 전체 흐름 | PASS |
+
+## 3. 요건 충족 검증
+
+### F-07: Excel 양식 처리
+
+| 수용 기준 | 상태 |
+|-----------|------|
+| Excel 파일의 시트별 헤더, 데이터 영역, 병합 셀 정보 추출 | 충족 |
+| 데이터를 정확한 셀 위치에 채워넣기 | 충족 |
+| 원본의 병합 셀, 서식, 수식 보존 | 충족 |
+| 생성된 파일이 정상적으로 열리는지 검증 | 충족 |
+
+### F-08: Word 양식 처리
+
+| 수용 기준 | 상태 |
+|-----------|------|
+| {{placeholder}} 패턴과 표 구조 정확히 추출 | 충족 |
+| 플레이스홀더를 실제 데이터로 치환 | 충족 |
+| 표 데이터 행에 결과 채우기 | 충족 |
+| 원본 스타일 및 서식 보존 | 충족 |
+
+### D-007: LLM 의미 매핑
+
+| 수용 기준 | 상태 |
+|-----------|------|
+| 양식 필드명과 DB 컬럼명 간 LLM 매핑 | 충족 |
+| 매핑 불가 필드 null 처리 | 충족 |
+| 매핑 결과 검증 (존재하지 않는 컬럼 제거) | 충족 |
+| 대소문자 무시 매칭 | 충족 |
+
+## 4. 기존 코드 호환성
+
+- 기존 356개 테스트 모두 통과 (회귀 0건)
+- `input_parser.py`: 유효하지 않은 파일 업로드 시 에러 처리 추가 (기존 스텁 동작 호환)
+- `output_generator.py`: xlsx/docx 폴백 메시지 변경 (테스트 1건 업데이트)
+- `result_organizer.py`: llm 파라미터 추가 (기존 호출에 영향 없음, 기본값 None)
+- `graph.py`: result_organizer에 llm 주입 추가
+
+## 5. 변경 파일 목록
+
+| 파일 | 변경 유형 | 설명 |
+|------|----------|------|
+| `src/document/__init__.py` | 신규 | 문서 처리 모듈 패키지 |
+| `src/document/excel_parser.py` | 신규 | Excel 양식 구조 분석 |
+| `src/document/word_parser.py` | 신규 | Word 양식 구조 분석 |
+| `src/document/field_mapper.py` | 신규 | LLM 기반 필드-컬럼 매핑 |
+| `src/document/excel_writer.py` | 신규 | Excel 양식 데이터 채우기 |
+| `src/document/word_writer.py` | 신규 | Word 양식 데이터 채우기 |
+| `src/prompts/field_mapper.py` | 신규 | 필드 매핑 LLM 프롬프트 |
+| `src/nodes/input_parser.py` | 수정 | 파서 에러 처리 추가 |
+| `src/nodes/result_organizer.py` | 수정 | 양식 매핑 로직 추가, llm 파라미터 추가 |
+| `src/nodes/output_generator.py` | 수정 | xlsx/docx 파일 생성 로직 추가 |
+| `src/graph.py` | 수정 | result_organizer에 llm 주입 |
+| `plans/10-document-processing.md` | 신규 | Phase 2 구현 계획서 |
+| `tests/test_document/` | 신규 | 50개 테스트 |
+| `tests/test_nodes/test_output_generator.py` | 수정 | 폴백 테스트 업데이트 |
+
+## 6. Critical 이슈
+
+없음.
+
+## 7. 권장 사항 (Non-Critical)
+
+1. **대용량 데이터 성능**: 10,000건 이상의 Excel 생성 시 성능 테스트 별도 수행 권장.
+2. **복잡한 양식**: 다중 시트 간 크로스 참조, 피벗 테이블 등은 현재 미지원. 필요 시 단계적 확장.
+3. **Run 분리 플레이스홀더**: Word에서 {{placeholder}}가 여러 Run에 걸쳐 분리된 경우, 현재는 전체 텍스트를 합쳐서 치환 후 첫 번째 Run에 설정. 복잡한 서식이 손실될 수 있음.
+
+---

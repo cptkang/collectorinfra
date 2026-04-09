@@ -19,6 +19,7 @@ from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
     INPUT_PARSER_SYSTEM_PROMPT,
 )
+from src.security.audit_logger import log_user_request
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
 
@@ -99,6 +100,15 @@ async def input_parser(
         "입력 파싱 완료: targets=%s, target_sheets=%s",
         parsed.get("query_targets", []),
         target_sheets,
+    )
+
+    # 감사 로그: 사용자 요청 기록
+    await log_user_request(
+        user_query=state["user_query"],
+        output_format=parsed.get("output_format", "text"),
+        has_file=bool(state.get("uploaded_file")),
+        user_id=state.get("user_id"),
+        thread_id=state.get("thread_id"),
     )
 
     return {

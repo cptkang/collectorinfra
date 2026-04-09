@@ -806,7 +806,7 @@ async def test_llm_generates_hostname_bridge_join():
 
 ---
 
-## `docs/decision.md` D-022 업데이트 내용
+## `docs/02_decision.md` D-022 업데이트 내용
 
 D-022의 "수정된 파일" 섹션에 아래 항목을 추가한다:
 

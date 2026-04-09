@@ -1443,3 +1443,418 @@ async def semantic_router(state, *, llm=None, app_config=None):
 | descriptions/synonyms 파일 폴백 | ❌ 미구현 | 향후 개선 사항 |
 | 확장 fingerprint SQL (타입 변경 감지) | ❌ 미구현 | 향후 개선 사항 |
 | 자동 description 생성 (캐시 미스 시 백그라운드) | ❌ 미구현 | 현재 수동/CLI/API로만 생성 |
+
+
+---
+
+# Verification Report
+
+# Redis 기반 스키마 캐시 검증 보고서
+
+## 검증 일시
+2026-03-17
+
+## 검증 범위
+`plans/schemacache_plan.md`의 12단계 구현 순서 전체
+
+## 테스트 결과 요약
+
+| 테스트 영역 | 테스트 수 | 통과 | 실패 | 비고 |
+|------------|----------|------|------|------|
+| RedisSchemaCache 단위 | 21 | 21 | 0 | Mock Redis 사용 |
+| SchemaCacheManager 단위 | 12 | 12 | 0 | Redis fallback 포함 |
+| DescriptionGenerator 단위 | 10 | 10 | 0 | Mock LLM 사용 |
+| 통합 테스트 | 9 | 9 | 0 | 프롬프트/State/Config |
+| 기존 테스트 (fingerprint) | 8 | 8 | 0 | 기존 코드 호환성 |
+| 기존 테스트 (persistent_cache) | 13 | 13 | 0 | 기존 코드 호환성 |
+| 기존 테스트 (state) | 17 | 17 | 0 | 새 필드 호환성 |
+| **전체 프로젝트** | **508** | **508** | **0** | 회귀 없음 |
+
+## 구현 완료 항목
+
+### 단계 1: RedisConfig + .env.example
+- `src/config.py`: `RedisConfig` 클래스 추가, `SchemaCacheConfig`에 `backend`/`auto_generate_descriptions` 필드 추가
+- `AppConfig`에 `redis: RedisConfig` 필드 추가
+- `.env.example`에 `REDIS_*`, `SCHEMA_CACHE_BACKEND`, `SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS` 추가
+
+### 단계 2: RedisSchemaCache
+- `src/schema_cache/redis_cache.py`: 기본 CRUD, fingerprint, descriptions, synonyms, 관리 메서드 구현
+- Redis 키 네이밍: `schema:{db_id}:{meta|tables|relationships|descriptions|synonyms}`
+- 영구 저장 (TTL 없음)
+
+### 단계 3: SchemaCacheManager
+- `src/schema_cache/cache_manager.py`: Redis/파일 캐시 통합 추상화
+- Graceful fallback: Redis 장애 시 파일 캐시 자동 전환
+- `get_cache_manager()` 싱글톤 팩토리
+
+### 단계 4: schema_analyzer 통합
+- `src/nodes/schema_analyzer.py`: `_get_schema_with_cache` 함수를 SchemaCacheManager 사용으로 변경
+- descriptions/synonyms를 함께 로드하여 State에 저장
+- 캐시 저장을 cache_manager 통해 수행 (Redis + 파일 이중 저장)
+
+### 단계 5: DescriptionGenerator + LLM 프롬프트
+- `src/schema_cache/description_generator.py`: 테이블 단위 배치 처리, incremental 생성 지원
+- `src/prompts/schema_description.py`: 설명 + 유사 단어 동시 생성 프롬프트
+
+### 단계 6: descriptions + synonyms Redis 저장/로드
+- SchemaCacheManager를 통한 저장/로드 통합
+- schema_analyzer에서 descriptions/synonyms State 필드 업데이트
+
+### 단계 7: 운영자 API
+- `src/api/routes/schema_cache.py`: 캐시 생성/갱신, 설명 생성, 상태 조회, 캐시 삭제, 유사 단어 관리
+- `src/api/server.py`: 라우터 등록, Redis 연결 lifespan 관리
+
+### 단계 8: CLI 스크립트
+- `scripts/schema_cache_cli.py`: generate, generate-descriptions, status, show, invalidate, synonyms 서브커맨드
+
+### 단계 9: cache_management 노드 + 시멘틱 라우터 확장
+- `src/nodes/cache_management.py`: 프롬프트 기반 캐시 관리 노드
+- `src/prompts/cache_management.py`: 의도 파싱 프롬프트
+- `src/routing/semantic_router.py`: `cache_management` 의도 분류 추가
+- `src/graph.py`: cache_management 노드 등록, 조건부 라우팅 추가
+
+### 단계 10: query_generator 프롬프트 강화
+- `src/nodes/query_generator.py`: `_format_schema_for_prompt`에 descriptions/synonyms 추가
+- 프롬프트 형식: `컬럼명: 타입 -- 한국어 설명 [유사: 단어1, 단어2]`
+
+### 단계 11-12: 단위/통합 테스트
+- `tests/test_schema_cache/test_redis_cache.py`: 21개 테스트
+- `tests/test_schema_cache/test_cache_manager.py`: 12개 테스트
+- `tests/test_schema_cache/test_description_generator.py`: 10개 테스트
+- `tests/test_schema_cache/test_integration.py`: 9개 테스트
+
+## 핵심 제약사항 준수 여부
+
+| 제약사항 | 상태 | 검증 방법 |
+|---------|------|----------|
+| DB read-only (3-layer defense 유지) | 준수 | Redis에 저장하는 것은 스키마 메타데이터뿐. DB 쓰기 코드 없음 |
+| Redis 장애 시 파일 캐시 fallback | 준수 | `test_redis_failure_falls_back_to_file` 테스트 통과 |
+| 영구 저장 (TTL 없음) | 준수 | Redis 저장 시 TTL 설정 코드 없음 |
+| fingerprint 변경 시에만 갱신 | 준수 | `is_changed()` 메서드로 비교 후 갱신 |
+| 기존 코드 호환성 | 준수 | `SCHEMA_CACHE_BACKEND=file` 테스트, 기존 508개 테스트 전수 통과 |
+
+## 수정된 기존 파일 목록
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/config.py` | `RedisConfig` 추가, `SchemaCacheConfig` 확장, `AppConfig.redis` 추가 |
+| `src/state.py` | `column_descriptions`, `column_synonyms`, `routing_intent` 필드 추가 |
+| `src/nodes/schema_analyzer.py` | SchemaCacheManager 통합, descriptions/synonyms 로드 |
+| `src/nodes/query_generator.py` | 프롬프트에 설명 + 유사 단어 포함 |
+| `src/routing/semantic_router.py` | `cache_management` 의도 분류 추가 |
+| `src/prompts/semantic_router.py` | 캐시 관리 의도 분류 프롬프트 추가 |
+| `src/graph.py` | cache_management 노드/라우팅 추가 |
+| `src/api/server.py` | schema_cache 라우터 등록, Redis lifespan |
+| `src/schema_cache/__init__.py` | 새 모듈 export 추가 |
+| `pyproject.toml` | `redis[hiredis]>=5.0.0` 의존성 추가 |
+| `.env.example` | Redis/스키마캐시 환경변수 추가 |
+| `docs/02_decision.md` | D-011 결정 추가 |
+
+## Critical 이슈
+없음.
+
+## Minor 이슈
+- `test_file_mode_get_schema_from_file`에서 `DeprecationWarning: There is no current event loop` 경고 발생. 기능에 영향 없음.
+
+
+---
+
+# Verification Report (New Features)
+
+# Verification Report: schemacache_plan.md 신규 3가지 기능
+
+**검증일**: 2026-03-18
+**검증 대상**: schemacache_plan.md의 글로벌 유사단어 사전 관련 신규 3가지 기능
+
+---
+
+## 1. 구현된 기능 요약
+
+### 기능 1: 글로벌 유사단어에 컬럼 설명(description) 추가
+
+| 항목 | 상태 |
+|------|------|
+| `synonyms:global` value를 `{words: [...], description: "..."}` 형태로 확장 | 완료 |
+| `update-description` action 추가 | 완료 |
+| `list-synonyms` 응답에 description 표시 | 완료 |
+| `RedisSchemaCache.update_global_description()` | 완료 |
+| `RedisSchemaCache.get_global_description()` | 완료 |
+| `RedisSchemaCache.load_global_synonyms_full()` | 완료 |
+| `RedisSchemaCache.list_global_column_names()` | 완료 |
+| `SchemaCacheManager` 래퍼 메서드 4개 추가 | 완료 |
+| 기존 list 형태와 하위 호환 유지 | 완료 |
+
+### 기능 2: 프롬프트 기반 글로벌 유사 단어 LLM 생성
+
+| 항목 | 상태 |
+|------|------|
+| `generate-global-synonyms` action 추가 | 완료 |
+| seed_words 파라미터 지원 | 완료 |
+| `SchemaCacheManager.generate_global_synonyms()` | 완료 |
+| 기존 항목이 있으면 merge (중복 제거) | 완료 |
+| LLM 실패 시 seed_words만이라도 저장 (graceful fallback) | 완료 |
+| GENERATE_GLOBAL_SYNONYMS_PROMPT 추가 | 완료 |
+
+### 기능 3: 유사 필드 자동 탐색 및 재활용 (Smart Synonym Reuse)
+
+| 항목 | 상태 |
+|------|------|
+| 글로벌 사전에 없는 새 필드 추가 시 LLM 유사 컬럼 탐색 | 완료 |
+| 사용자에게 재활용 제안 응답 생성 | 완료 |
+| State에 `pending_synonym_reuse` 필드 추가 | 완료 |
+| `SchemaCacheManager.find_similar_global_columns()` | 완료 |
+| `SchemaCacheManager.reuse_synonyms()` (copy/merge 모드) | 완료 |
+| cache_management 노드에 재활용 제안/처리 로직 | 완료 |
+| `reuse-synonym` action (사용자 선택 처리) | 완료 |
+| FIND_SIMILAR_COLUMNS_PROMPT 추가 | 완료 |
+
+---
+
+## 2. 변경된 파일 목록
+
+### 수정된 파일 (기존 코드 확장)
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `src/schema_cache/redis_cache.py` | 글로벌 유사단어 CRUD를 dict 형태({words, description}) 지원으로 확장. `update_global_description`, `get_global_description`, `load_global_synonyms_full`, `list_global_column_names` 추가. `add_global_synonym`, `remove_global_synonym`이 description 보존하도록 수정 |
+| `src/schema_cache/cache_manager.py` | 5개 래퍼 메서드 추가 (`get_global_synonyms_full`, `update_global_description`, `get_global_description`, `list_global_column_names`). 3개 비즈니스 메서드 추가 (`generate_global_synonyms`, `find_similar_global_columns`, `reuse_synonyms`) |
+| `src/nodes/cache_management.py` | 4개 핸들러 추가 (`_handle_generate_global_synonyms`, `_handle_reuse_synonym`, `_handle_update_description`). `_execute_cache_action`에 신규 action 라우팅. `_handle_list_synonyms`가 description 표시. `_handle_update_synonym`이 description 보존. `pending_synonym_reuse` State 처리 |
+| `src/prompts/cache_management.py` | 3개 프롬프트 추가 (`GENERATE_GLOBAL_SYNONYMS_PROMPT`, `FIND_SIMILAR_COLUMNS_PROMPT`). `CACHE_MANAGEMENT_PARSE_PROMPT`에 신규 action 추가 (`generate-global-synonyms`, `update-description`, `reuse-synonym`) + 새 필드 (`seed_words`, `description`, `reuse_mode`) |
+| `src/state.py` | `pending_synonym_reuse: Optional[dict]` 필드 추가. `create_initial_state()`에 초기값 `None` 추가 |
+
+### 수정된 기존 테스트 파일 (하위 호환 적용)
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `tests/test_schema_cache/test_redis_cache_synonyms.py` | `add_global_synonym`, `remove_global_synonym` 테스트가 dict 형태의 새 저장 포맷을 검증하도록 수정 |
+| `tests/test_nodes/test_cache_management_synonyms.py` | `_handle_list_synonyms` 테스트가 `get_global_synonyms_full()` mock을 사용하도록 수정. `_handle_update_synonym` 테스트에 `get_global_description` mock 추가 |
+
+### 신규 테스트 파일
+
+| 파일 | 테스트 수 |
+|------|-----------|
+| `tests/test_schema_cache/test_redis_cache_global_description.py` | 23개 |
+| `tests/test_schema_cache/test_cache_manager_new_features.py` | 16개 |
+| `tests/test_nodes/test_cache_management_new_features.py` | 19개 |
+
+---
+
+## 3. 테스트 결과
+
+### 전체 테스트 수행 결과
+
+```
+702 passed, 1 failed (pre-existing), 51 warnings
+```
+
+### 기존 테스트 (regression 확인)
+
+| 테스트 파일 | 결과 |
+|------------|------|
+| `tests/test_schema_cache/test_redis_cache_synonyms.py` (20개) | 전체 통과 |
+| `tests/test_schema_cache/test_cache_manager_synonyms.py` (11개) | 전체 통과 |
+| `tests/test_nodes/test_cache_management_synonyms.py` (14개) | 전체 통과 |
+| 기타 전체 테스트 (657개) | 전체 통과 |
+
+### 신규 테스트
+
+| 테스트 파일 | 결과 |
+|------------|------|
+| `tests/test_schema_cache/test_redis_cache_global_description.py` (23개) | 전체 통과 |
+| `tests/test_schema_cache/test_cache_manager_new_features.py` (16개) | 전체 통과 |
+| `tests/test_nodes/test_cache_management_new_features.py` (19개) | 전체 통과 |
+
+### 사전 존재 실패 (변경과 무관)
+
+```
+FAILED tests/test_schema_cache/test_integration.py::TestConfigIntegration::test_redis_config_exists
+- 원인: 로컬 .env 파일에 REDIS_PORT=6380 설정 (테스트는 기본값 6379 기대)
+- 본 변경과 무관한 환경 설정 이슈
+```
+
+---
+
+## 4. 하위 호환성 검증
+
+### 글로벌 유사단어 데이터 형식
+
+| 기존 형식 | 신규 형식 | 호환성 |
+|-----------|-----------|--------|
+| `{"hostname": ["a", "b"]}` (list) | `{"hostname": {"words": ["a", "b"], "description": "..."}}` (dict) | `load_global_synonyms()`: 두 형식 모두 정상 로드 (words만 반환). `load_global_synonyms_full()`: 레거시 list를 dict으로 자동 변환. `add_global_synonym()`: 기존 list 형태 entry에 추가 시 dict으로 자동 업그레이드 |
+
+### Redis가 없는 환경
+
+| 메서드 | 반환값 |
+|--------|--------|
+| `get_global_synonyms_full()` | `{}` |
+| `update_global_description()` | `False` |
+| `get_global_description()` | `None` |
+| `list_global_column_names()` | `[]` |
+| `generate_global_synonyms()` | `{"words": seed_words or [], "description": ""}` |
+| `find_similar_global_columns()` | `[]` |
+| `reuse_synonyms()` | 기본 entry (빈 words) |
+
+---
+
+## 5. Critical 이슈
+
+없음.
+
+---
+
+## 6. Minor 이슈 / 권장사항
+
+1. `generate_global_synonyms`와 `find_similar_global_columns`는 LLM 호출을 수행하므로, 실제 LLM 연동 시 응답 형식 파싱 실패 가능성이 있음. 현재 JSON 파싱 실패 시 graceful fallback 처리가 구현되어 있음.
+
+2. `pending_synonym_reuse` State 필드는 멀티턴 대화가 활성화되면 세션 간 유지가 필요할 수 있음 (Phase 3에서 검토).
+
+
+---
+
+# Verification Report (유사단어 확장)
+
+# Redis 기반 스키마 캐시 유사단어 확장 - 검증 보고서
+
+> 검증일: 2026-03-18
+> 검증 대상: schemacache_plan.md 유사단어 2계층, source 태깅, invalidate 보존, 프롬프트 기반 유사단어 CRUD
+
+---
+
+## 1. 검증 범위
+
+`plans/schemacache_plan.md` 11장 구현 순서 중 미구현 항목 보완 및 검증.
+
+## 2. 구현 상태 요약
+
+| 단계 | 작업 | 상태 | 비고 |
+|------|------|------|------|
+| 1 | RedisConfig 설정 추가, .env.example 업데이트 | 기존 완료 | 변경 없음 |
+| 2 | RedisSchemaCache (기본 CRUD + fingerprint + 유사단어 2계층) | **보완 완료** | source 태깅, 글로벌 synonyms, invalidate 보존 추가 |
+| 3 | SchemaCacheManager (Redis/파일 추상화) | **보완 완료** | load_synonyms_with_global_fallback, sync_global_synonyms, add/remove 래퍼 추가 |
+| 4 | schema_analyzer 노드 통합 | 기존 완료 | 변경 없음 |
+| 5 | DescriptionGenerator + LLM 프롬프트 | 기존 완료 | 변경 없음 |
+| 6 | Redis에 description + synonyms 저장/로드 통합 | 기존 완료 | 변경 없음 |
+| 7 | 운영자 API 라우터 | 기존 완료 | 변경 없음 |
+| 8 | 독립 실행 CLI | 기존 완료 | 변경 없음 |
+| 9 | 프롬프트 기반 캐시 관리 노드 + 그래프 분기 | **보완 완료** | synonym CRUD 핸들러 4개 추가 |
+| 10 | query_generator 프롬프트에 컬럼 설명 + 유사 단어 통합 | 기존 완료 | 변경 없음 |
+| 11-12 | 단위/통합 테스트 | **보완 완료** | 신규 45개 테스트 추가 |
+
+## 3. 이번 작업에서 수정/추가한 파일
+
+### 수정된 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/schema_cache/redis_cache.py` | (1) synonyms를 `{words, sources}` 구조로 source 태깅 (2) 글로벌 유사단어 사전 (`synonyms:global`) CRUD (3) `invalidate()`에서 synonyms 키 보존 (4) `invalidate_all()`에서 synonyms 키 보존 (5) `delete_synonyms()` / `delete_global_synonyms()` 명시적 삭제 |
+| `src/schema_cache/cache_manager.py` | (1) `add_synonyms()` 래퍼 (2) `remove_synonyms()` 래퍼 (3) 글로벌 synonyms CRUD (4) `load_synonyms_with_global_fallback()` (5) `sync_global_synonyms()` |
+| `src/nodes/cache_management.py` | synonym CRUD 핸들러 4개: `_handle_list_synonyms`, `_handle_add_synonym`, `_handle_remove_synonym`, `_handle_update_synonym` |
+| `src/prompts/cache_management.py` | `list-synonyms`, `add-synonym`, `remove-synonym`, `update-synonym` 액션 추가 |
+
+### 새로 생성된 파일
+
+| 파일 | 내용 |
+|------|------|
+| `tests/test_schema_cache/test_redis_cache_synonyms.py` | RedisSchemaCache 유사단어 확장 테스트 (20개) |
+| `tests/test_schema_cache/test_cache_manager_synonyms.py` | SchemaCacheManager 유사단어 확장 테스트 (11개) |
+| `tests/test_nodes/test_cache_management_synonyms.py` | cache_management 노드 synonym CRUD 테스트 (14개) |
+
+## 4. 핵심 요구사항 검증 결과
+
+### 4.1 유사단어 영구 보존
+
+| 검증 항목 | 결과 | 근거 |
+|-----------|------|------|
+| invalidate 시 synonyms 보존 | PASS | `invalidate()`에서 "synonyms" suffix를 삭제 대상에서 제외 |
+| invalidate_all 시 synonyms 보존 | PASS | `scan_iter` 결과에서 `:synonyms`로 끝나는 키를 스킵 |
+| 글로벌 사전 자동 삭제 방지 | PASS | `synonyms:global` 키는 `schema:*` 패턴에 매칭되지 않음 |
+| 명시적 삭제만 허용 | PASS | `delete_synonyms()` / `delete_global_synonyms()` 별도 메서드 |
+
+### 4.2 2계층 유사단어 (DB별 + 글로벌)
+
+| 검증 항목 | 결과 | 근거 |
+|-----------|------|------|
+| DB별 synonyms 저장/로드 | PASS | `schema:{db_id}:synonyms` Hash |
+| 글로벌 사전 저장/로드 | PASS | `synonyms:global` Hash |
+| 글로벌 폴백 | PASS | `load_synonyms_with_global_fallback()` - DB에 없는 컬럼은 bare name으로 글로벌 조회 |
+| DB synonyms 우선 | PASS | 글로벌보다 DB synonyms가 우선 |
+| 글로벌 동기화 | PASS | `sync_global_synonyms()` - DB별 synonyms를 글로벌에 병합 |
+
+### 4.3 source 태깅
+
+| 검증 항목 | 결과 | 근거 |
+|-----------|------|------|
+| LLM 생성분 "llm" 태깅 | PASS | `save_synonyms(..., source="llm")` |
+| 운영자 추가분 "operator" 태깅 | PASS | `add_synonyms(..., source="operator")` |
+| 기존 source 보존 | PASS | `add_synonyms()` 에서 기존 source는 덮어쓰지 않음 |
+| 레거시 list 형태 호환 | PASS | list -> `{words, sources}` 자동 변환 |
+
+### 4.4 프롬프트 기반 유사단어 관리
+
+| 검증 항목 | 결과 | 근거 |
+|-----------|------|------|
+| 유사단어 목록 조회 (글로벌/DB별/컬럼별) | PASS | `list-synonyms` 액션 |
+| 유사단어 추가 (글로벌 + DB 동기화) | PASS | `add-synonym` 액션 |
+| 유사단어 삭제 (글로벌 + DB 동시) | PASS | `remove-synonym` 액션 |
+| 유사단어 교체 | PASS | `update-synonym` 액션 |
+| 프롬프트 파싱 | PASS | `cache_management.py` 프롬프트에 모든 액션 포함 |
+
+### 4.5 Redis Graceful Fallback
+
+| 검증 항목 | 결과 | 근거 |
+|-----------|------|------|
+| Redis 미연결 시 빈 결과 반환 | PASS | 모든 메서드에서 `_connected` 검사 |
+| 파일 백엔드 시 글로벌 synonyms 빈 dict | PASS | `backend != "redis"` 시 빈 결과 |
+| 파일 백엔드 시 add_synonyms False | PASS | Redis 없으면 False 반환 |
+
+## 5. 테스트 결과
+
+```
+전체 테스트: 644 passed, 1 deselected (환경 의존 테스트)
+신규 테스트: 45 passed
+기존 테스트: 599 passed (회귀 없음)
+```
+
+### 5.1 신규 테스트 상세
+
+**test_redis_cache_synonyms.py (20개)**
+- TestSynonymSourceTagging: 7개 (source 태깅 저장/로드/변환)
+- TestInvalidatePreservesSynonyms: 3개 (invalidate 보존)
+- TestGlobalSynonyms: 8개 (글로벌 CRUD)
+- TestDisconnectedGraceful: 2개 (연결 없을 때)
+
+**test_cache_manager_synonyms.py (11개)**
+- TestAddRemoveSynonyms: 2개 (래퍼 위임)
+- TestGlobalSynonymsMethods: 3개 (글로벌 메서드)
+- TestLoadSynonymsWithGlobalFallback: 3개 (폴백 로직)
+- TestSyncGlobalSynonyms: 1개 (동기화)
+- TestFileBackendFallback: 2개 (파일 백엔드)
+
+**test_cache_management_synonyms.py (14개)**
+- TestHandleListSynonyms: 5개 (목록 조회)
+- TestHandleAddSynonym: 4개 (추가)
+- TestHandleRemoveSynonym: 1개 (삭제)
+- TestHandleUpdateSynonym: 2개 (교체)
+- TestHandleInvalidatePreservesSynonyms: 2개 (보존 안내)
+
+## 6. 하위 호환성
+
+| 항목 | 결과 |
+|------|------|
+| 기존 `load_synonyms()` API | 호환 - 레거시 list 형태도 정상 로드 |
+| 기존 `save_synonyms()` API | 호환 - list[str] 형태 자동 변환 |
+| `SCHEMA_CACHE_BACKEND=file` | 호환 - 글로벌 synonyms는 빈 dict 반환 |
+| 기존 599개 테스트 | 모두 통과 |
+
+## 7. Critical 이슈
+
+없음.
+
+## 8. Minor 이슈
+
+| 이슈 | 영향도 | 상태 |
+|------|--------|------|
+| `test_redis_config_exists` 환경 의존 실패 | Low | 로컬 .env에 REDIS_PORT=6380 설정으로 인한 기존 테스트 실패. 이번 구현과 무관. |
+
+---
+---

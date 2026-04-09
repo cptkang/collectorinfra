@@ -31,7 +31,7 @@ INJECTION_PATTERNS: list[str] = [
     r";\s*(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE)",
     r"UNION\s+(ALL\s+)?SELECT",
     r"/\*.*?\*/",
-    r"(xp_|sp_)\w+",
+    r"\b(xp_|sp_)\w+",
     r"INTO\s+(OUTFILE|DUMPFILE)",
     r"\bsys\.\w+",
 
@@ -41,8 +41,6 @@ INJECTION_PATTERNS: list[str] = [
     r"LOAD_FILE\s*\(",            # 파일 읽기 시도
     r"@@\w+",                     # 시스템 변수 접근
     r"INFORMATION_SCHEMA\.",      # 스키마 직접 접근 시도
-    r"CHAR\s*\(\s*\d+",          # 문자열 인코딩 우회
-    r"CONCAT\s*\(.+SELECT",      # CONCAT으로 감싼 서브쿼리
 ]
 
 
@@ -91,6 +89,9 @@ class SQLGuard:
     ) -> list[str]:
         """SQL 인젝션 패턴을 탐지한다.
 
+        문자열 리터럴과 단일행 주석(--) 내부는 검사 대상에서 제외한다.
+        블록 주석(/* */)은 인젝션 기법이므로 제거하지 않는다.
+
         Args:
             sql: SQL 쿼리
             patterns: 검사할 정규식 패턴 목록 (기본: INJECTION_PATTERNS)
@@ -101,9 +102,14 @@ class SQLGuard:
         if patterns is None:
             patterns = INJECTION_PATTERNS
 
+        # 문자열 리터럴 제거 (오탐 방지)
+        sql_clean = re.sub(r"'[^']*'", "''", sql)
+        # 단일행 주석 제거 (LLM이 생성하는 -- 주석은 안전)
+        sql_clean = re.sub(r"--[^\n]*", "", sql_clean)
+
         detected: list[str] = []
         for pattern in patterns:
-            if re.search(pattern, sql, re.IGNORECASE | re.MULTILINE):
+            if re.search(pattern, sql_clean, re.IGNORECASE | re.MULTILINE):
                 detected.append(pattern)
         return detected
 

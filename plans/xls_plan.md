@@ -883,3 +883,105 @@ Redis 캐시가 미구현인 경우에도 **2단계(synonyms 매핑)를 스킵**
 | **선택 유사어 등록** | "1, 3 등록" 입력 → 지정 번호 항목만 Redis에 등록, 나머지는 미등록 상태 유지 |
 | **단건 유사어 등록** | "1번 등록" 입력 → 1건만 Redis에 등록 |
 | **등록 후 자동 매핑 전환** | synonyms 등록 후 동일 필드명으로 재요청 시 LLM 호출 없이 synonym 매핑 되는지 |
+
+
+---
+
+# Verification Report
+
+# 매핑-우선(Mapping-First) 구현 - 검증 보고서
+
+> 검증일: 2026-03-17
+> 검증 대상: xls_plan.md Excel/Word 양식 기반 데이터 조회 및 파일 작성 개선
+
+---
+
+## 1. 구현 범위
+
+plans/xls_plan.md의 12단계 구현 계획에 따른 전체 구현
+
+## 2. 변경 파일 요약
+
+### 신규 파일
+| 파일 | 역할 |
+|------|------|
+| `src/nodes/field_mapper.py` | 필드 매핑 그래프 노드 (3단계 매핑, 유사어 등록 처리) |
+| `tests/test_nodes/test_field_mapper_node.py` | field_mapper 노드 단위 테스트 (19건) |
+| `tests/test_nodes/test_output_generator_mapping.py` | 매핑 정보 표시 테스트 (4건) |
+| `tests/test_nodes/test_semantic_router_mapping.py` | 매핑 기반 라우팅 테스트 (3건) |
+| `tests/test_nodes/test_query_generator_mapping.py` | column_mapping 프롬프트 테스트 (4건) |
+| `tests/test_nodes/test_result_organizer_mapping.py` | 충분성 검사 테스트 (6건) |
+
+### 수정 파일
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/state.py` | `column_mapping`, `db_column_mapping`, `mapping_sources`, `mapped_db_ids`, `pending_synonym_registrations` 필드 추가 |
+| `src/nodes/input_parser.py` | `field_mapping_hints`, `target_db_hints`, `synonym_registration` 추출, `.doc` 변환 처리 |
+| `src/prompts/input_parser.py` | 매핑 힌트, DB 힌트, 유사어 등록 추출 규칙 추가 |
+| `src/document/field_mapper.py` | 3단계 매핑 로직 (힌트/synonyms/LLM), 멀티 DB, `extract_field_names` (public) |
+| `src/prompts/field_mapper.py` | 멀티 DB 매핑 프롬프트 추가 (`FIELD_MAPPER_MULTI_DB_*`) |
+| `src/graph.py` | `field_mapper` 노드 추가 (input_parser -> field_mapper -> semantic_router) |
+| `src/routing/semantic_router.py` | `mapped_db_ids` 기반 라우팅 (LLM 스킵), 우선순위 DB 지원 |
+| `src/nodes/query_generator.py` | `column_mapping` 기반 프롬프트 (alias 규칙) |
+| `src/prompts/query_generator.py` | alias 규칙 (rule 8, 9) 추가 |
+| `src/nodes/multi_db_executor.py` | DB별 `column_mapping` 전달하여 SQL 생성 |
+| `src/nodes/result_organizer.py` | 중복 매핑 LLM 호출 제거, `column_mapping` 기반 충분성 검사 |
+| `src/nodes/output_generator.py` | LLM 추론 매핑 정보 + 유사어 등록 안내 표시, State column_mapping 우선 사용 |
+| `src/document/excel_writer.py` | None 값 처리 (원본 셀 유지), 미매핑 헤더 경고 로그 |
+| `src/document/word_writer.py` | None 값 처리 (빈 문자열 치환) |
+| `docs/02_decision.md` | D-012 매핑-우선 전략 결정 추가 |
+| `tests/test_document/test_field_mapper.py` | import 경로 수정 (`_extract_field_names` -> `extract_field_names`) |
+
+## 3. 테스트 결과
+
+### 전체 테스트
+- **554 passed**, 51 warnings
+- 기존 테스트 518건 모두 통과 (하위 호환성 확인)
+- 신규 테스트 36건 모두 통과
+
+### 신규 테스트 상세
+
+| 테스트 클래스 | 건수 | 검증 항목 |
+|-------------|------|----------|
+| `TestExtractFieldNames` | 3 | xlsx/docx/doc 필드 추출 |
+| `TestSynonymMatch` | 4 | 정확/대소문자/컬럼명/미매칭 |
+| `TestPerform3StepMapping` | 7 | 힌트 우선/synonyms/LLM 폴백/우선순위 DB/멀티 DB/미매핑/Redis 없음 |
+| `TestFieldMapperNode` | 3 | 스킵/빈 필드/매핑 생성 |
+| `TestBuildPendingRegistrations` | 2 | LLM 추론 항목 생성/빈 결과 |
+| `TestAppendInferredMappingInfo` | 4 | 미표시/미추론/추론 표시/번호 매기기 |
+| `TestMappedDbIdsRouting` | 3 | 단일 DB/멀티 DB/LLM 폴백 |
+| `TestBuildUserPromptWithMapping` | 4 | 매핑 포함/template 폴백/둘 다 없음/null 제외 |
+| `TestCheckDataSufficiencyWithMapping` | 6 | alias 키/컬럼 키/부족/빈 결과/레거시/전체 null |
+
+## 4. 구현 검증 체크리스트
+
+| 단계 | 항목 | 상태 | 비고 |
+|------|------|------|------|
+| 1 | State 변경 | PASS | 5개 필드 추가, create_initial_state 반영 |
+| 2 | input_parser 확장 | PASS | field_mapping_hints, target_db_hints, synonym_registration, .doc 변환 |
+| 3 | field_mapper 모듈 개선 | PASS | 3단계 매핑, 멀티 DB, descriptions 프롬프트 |
+| 4 | field_mapper 그래프 노드 | PASS | input_parser -> field_mapper -> semantic_router |
+| 5 | semantic_router 개선 | PASS | mapped_db_ids 기반 라우팅, LLM 스킵 |
+| 6 | query_generator 프롬프트 개선 | PASS | column_mapping 기반 SELECT + alias 규칙 |
+| 7 | multi_db_executor 확장 | PASS | DB별 column_mapping 전달 |
+| 8 | result_organizer 정리 | PASS | 중복 매핑 제거, 충분성 검사 개선 |
+| 9 | output_generator | PASS | LLM 추론 매핑 정보 + 유사어 등록 질문 |
+| 10 | Excel/Word Writer 개선 | PASS | None 값 처리, 경고 로그 |
+| 11 | 유사어 등록 플로우 | PASS | 전체/선택/단건 등록 |
+| 12 | 테스트 | PASS | 36건 신규 테스트, 554건 전체 통과 |
+
+## 5. 하위 호환성
+
+- template_structure가 없는 경우 (텍스트 출력 모드): field_mapper가 스킵되어 기존 흐름 유지
+- column_mapping이 없는 경우: result_organizer에서 레거시 LLM 매핑 폴백
+- Redis 캐시 미존재 시: synonyms 2단계 스킵, LLM 폴백으로 동작
+- 기존 518개 테스트 전부 통과
+
+## 6. 아키텍처 결정 기록
+- `docs/02_decision.md`에 D-012 (매핑-우선 전략) 추가 완료
+
+## 7. Critical 이슈
+- 없음
+
+---
+---

@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
+
+from src.api.dependencies import require_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,6 +43,7 @@ class ConversationResponse(BaseModel):
 async def get_conversation(
     request: Request,
     thread_id: str,
+    current_user: dict = Depends(require_user),
 ) -> ConversationResponse:
     """대화 히스토리를 조회한다.
 

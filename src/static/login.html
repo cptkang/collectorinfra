@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>로그인 - 인프라 데이터 조회 에이전트</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .auth-container {
+            max-width: 400px;
+            margin: 80px auto;
+            padding: 0 20px;
+        }
+        .auth-card {
+            background: var(--bg-card, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 12px;
+            padding: 32px;
+        }
+        .auth-card h2 {
+            text-align: center;
+            margin-bottom: 24px;
+            font-size: 1.5rem;
+        }
+        .auth-form .form-group {
+            margin-bottom: 16px;
+        }
+        .auth-form label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-secondary, #aaa);
+        }
+        .auth-form input[type="text"],
+        .auth-form input[type="password"] {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-input, #2a2a3e);
+            border: 1px solid var(--border, #444);
+            border-radius: 8px;
+            color: var(--text-primary, #eee);
+            font-size: 0.9375rem;
+            box-sizing: border-box;
+        }
+        .auth-form input:focus {
+            outline: none;
+            border-color: var(--accent, #7c3aed);
+        }
+        .auth-btn {
+            width: 100%;
+            padding: 12px;
+            background: var(--accent, #7c3aed);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+        .auth-btn:hover {
+            opacity: 0.9;
+        }
+        .auth-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .auth-footer {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 0.875rem;
+            color: var(--text-secondary, #aaa);
+        }
+        .auth-footer a {
+            color: var(--accent, #7c3aed);
+            text-decoration: none;
+        }
+        .auth-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .auth-logo {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .auth-logo svg {
+            width: 48px;
+            height: 48px;
+            fill: var(--accent, #7c3aed);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>INFRA QUERY AGENT</h1>
+        </div>
+    </header>
+
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-logo">
+                <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+            </div>
+            <h2>로그인</h2>
+
+            <div class="auth-error" id="loginError"></div>
+
+            <form class="auth-form" id="loginForm">
+                <div class="form-group">
+                    <label for="userId">사용자 ID</label>
+                    <input type="text" id="userId" name="user_id" required autocomplete="username" placeholder="사용자 ID를 입력하세요">
+                </div>
+                <div class="form-group">
+                    <label for="password">비밀번호</label>
+                    <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="비밀번호를 입력하세요">
+                </div>
+                <button type="submit" class="auth-btn" id="loginBtn">로그인</button>
+            </form>
+
+            <div class="auth-footer">
+                계정이 없으신가요? <a href="/register">회원가입</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        "use strict";
+
+        var form = document.getElementById("loginForm");
+        var errorEl = document.getElementById("loginError");
+        var loginBtn = document.getElementById("loginBtn");
+
+        // 이미 로그인된 경우 메인으로 이동
+        if (localStorage.getItem("user_token")) {
+            window.location.href = "/";
+            return;
+        }
+
+        form.addEventListener("submit", function(e) {
+            e.preventDefault();
+            errorEl.style.display = "none";
+            loginBtn.disabled = true;
+            loginBtn.textContent = "로그인 중...";
+
+            var userId = document.getElementById("userId").value.trim();
+            var password = document.getElementById("password").value;
+
+            fetch("/api/v1/auth/login", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({user_id: userId, password: password})
+            })
+            .then(function(res) {
+                if (!res.ok) {
+                    return res.json().then(function(data) {
+                        throw new Error(data.detail || "로그인에 실패했습니다.");
+                    });
+                }
+                return res.json();
+            })
+            .then(function(data) {
+                localStorage.setItem("user_token", data.access_token);
+                localStorage.setItem("user_info", JSON.stringify(data.user));
+                window.location.href = "/";
+            })
+            .catch(function(err) {
+                errorEl.textContent = err.message;
+                errorEl.style.display = "block";
+                loginBtn.disabled = false;
+                loginBtn.textContent = "로그인";
+            });
+        });
+    })();
+    </script>
+</body>
+</html>

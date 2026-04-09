@@ -135,6 +135,16 @@ class AgentState(TypedDict):
     approval_action: Optional[str]             # 사용자 승인 응답 ("approve"|"reject"|"modify")
     approval_modified_sql: Optional[str]       # 수정된 SQL (modify 시)
 
+    # === 사용자 컨텍스트 (인증 시스템에서 주입) ===
+    user_id: Optional[str]                   # "anonymous" 또는 실제 user_id
+    user_department: Optional[str]
+    allowed_db_ids: Optional[list[str]]      # None=전체 허용
+
+    # === 감사 로깅 ===
+    request_id: Optional[str]                # 요청 추적 ID
+    client_ip: Optional[str]                 # 클라이언트 IP
+    accessed_tables: list[str]               # 실제 접근한 테이블 목록
+
     # === 출력 ===
     final_response: str                      # 자연어 응답
     output_file: Optional[bytes]             # 생성된 파일 바이너리
@@ -147,6 +157,11 @@ def create_initial_state(
     file_type: Optional[str] = None,
     thread_id: Optional[str] = None,
     csv_sheet_data: Optional[dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    user_department: Optional[str] = None,
+    allowed_db_ids: Optional[list[str]] = None,
+    request_id: Optional[str] = None,
+    client_ip: Optional[str] = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -156,6 +171,11 @@ def create_initial_state(
         file_type: 파일 유형 (선택)
         thread_id: 세션 식별자 (선택, 멀티턴 대화용)
         csv_sheet_data: 시트별 CsvSheetData dict (선택, Excel CSV 변환 결과)
+        user_id: 인증된 사용자 ID (선택, 인증 비활성화 시 None)
+        user_department: 사용자 부서 (선택)
+        allowed_db_ids: 허용 DB 목록 (선택, None=전체 허용)
+        request_id: 요청 추적 ID (선택, 미들웨어에서 주입)
+        client_ip: 클라이언트 IP (선택, 미들웨어에서 주입)
 
     Returns:
         초기화된 AgentState
@@ -215,6 +235,14 @@ def create_initial_state(
         approval_context=None,
         approval_action=None,
         approval_modified_sql=None,
+        # 사용자 컨텍스트
+        user_id=user_id,
+        user_department=user_department,
+        allowed_db_ids=allowed_db_ids,
+        # 감사 로깅
+        request_id=request_id,
+        client_ip=client_ip,
+        accessed_tables=[],
         # 출력
         final_response="",
         output_file=None,

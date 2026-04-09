@@ -1,0 +1,33 @@
+# Redis Export Manifest
+# exported_at: 2026-04-01T10:01:51+0900
+# source: localhost:6380/0
+# total_keys: 27
+# data_file: redis_export_20260401_100151.json
+
+string   ttl=428645337ms      len=753      csv_cache:5e9d33beae00db0ac9f0abd2dc342452f3b91262403d15621ef85ecac757102c
+hash     persistent           fields=71     schema:_default:descriptions
+string   persistent           len=17       schema:_default:fingerprint_checked_at
+hash     persistent           fields=6      schema:_default:meta
+string   persistent           len=113      schema:_default:relationships
+hash     persistent           fields=71     schema:_default:synonyms
+hash     persistent           fields=3      schema:_default:tables
+hash     persistent           fields=6      schema:default:meta
+string   persistent           len=228      schema:default:relationships
+hash     persistent           fields=5      schema:default:tables
+hash     persistent           fields=71     schema:polestar:descriptions
+string   persistent           len=17       schema:polestar:fingerprint_checked_at
+hash     persistent           fields=6      schema:polestar:meta
+string   persistent           len=2        schema:polestar:relationships
+string   persistent           len=10603    schema:polestar:structure_meta
+hash     persistent           fields=71     schema:polestar:synonyms
+hash     persistent           fields=2      schema:polestar:tables
+string   persistent           len=18       schema:unknown:fingerprint_checked_at
+hash     persistent           fields=6      schema:unknown:meta
+string   persistent           len=2        schema:unknown:relationships
+string   persistent           len=18       schema:unknown:structure_meta:fingerprint_checked_at
+hash     persistent           fields=6      schema:unknown:structure_meta:meta
+string   persistent           len=2        schema:unknown:structure_meta:relationships
+hash     persistent           fields=2      schema:unknown:tables
+hash     persistent           fields=27     synonyms:eav_names
+hash     persistent           fields=109    synonyms:global
+hash     persistent           fields=19     synonyms:resource_types

@@ -1,0 +1,47 @@
+# Redis 마이그레이션 설정 예시
+# 사용법: python -m tools.redis_migration --config tools/redis_migration/migration.yaml
+
+# === 소스 Redis (기존 서버) ===
+source:
+  host: localhost
+  port: 6379
+  db: 0
+  password: ""
+  ssl: false
+  socket_timeout: 10
+
+# === 타겟 Redis (새 서버) ===
+target:
+  host: 10.0.0.2
+  port: 6379
+  db: 0
+  password: ""
+  ssl: false
+  socket_timeout: 10
+
+# === 마이그레이션 옵션 ===
+
+# 마이그레이션할 키 패턴 (collectorinfra 기본 키 구조)
+patterns:
+  - "schema:*"           # DB별 스키마 캐시 (meta, tables, relationships, descriptions, synonyms 등)
+  - "synonyms:*"         # 글로벌 유사단어 사전 (global, resource_types, eav_names)
+  - "csv_cache:*"        # CSV 변환 결과 캐시
+
+# 제외할 키 패턴 (필요 시)
+exclude: []
+  # - "csv_cache:*"      # 예: CSV 캐시는 마이그레이션하지 않음
+
+# dry-run 모드 (true: 실제 쓰기 없이 대상 키만 출력)
+dry_run: false
+
+# 타겟에 이미 존재하는 키 덮어쓰기
+overwrite: false
+
+# TTL 보존 여부
+preserve_ttl: true
+
+# 마이그레이션 후 검증 (타입·크기 비교)
+verify: true
+
+# SCAN 배치 크기
+batch_size: 100

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Infrastructure data query agent that converts natural language queries (Korean) into SQL, executes them against infrastructure databases via DBHub (MCP server), and returns results as natural language responses or filled Excel/Word templates.
 
 Full requirements are in `spec.md`.
-Architecture decisions and design rationale are documented in `docs/decision.md` — **team-lead agent must consult this file before making changes and update it when new decisions are made.**
+Architecture decisions and design rationale are documented in `docs/02_decision.md` — **team-lead agent must consult this file before making changes and update it when new decisions are made.**
 
 ## Architecture
 
@@ -78,7 +78,7 @@ agents/
 
 | Phase | Agent | 산출물 |
 |-------|-------|--------|
-| 1 | **requirements-analyst** | `docs/requirements.md` |
+| 1 | **requirements-analyst** | `docs/01_requirements.md` |
 | 2 | **research-planner** | `plans/*.md` (영역별 계획서) |
 | 3 | **implementer** | `src/`, `pyproject.toml` |
 | 4 | **verifier** | `tests/`, `docs/verification_report.md` |
@@ -121,17 +121,17 @@ Claude Code 스킬: `/arch-check` 로 호출 가능 (`.claude/skills/arch-check.
 - 작업 시작 시: Known Mistakes 섹션을 확인하여 동일 패턴 재발 방지
 - 형식: `[날짜] 실수 내용 — 원인 — 방지책`
 
-### 의사결정 기록 (`docs/decision.md`)
+### 의사결정 기록 (`docs/02_decision.md`)
 
-프로젝트의 아키텍처·설계 의사결정은 `docs/decision.md`에 일원화하여 관리한다.
+프로젝트의 아키텍처·설계 의사결정은 `docs/02_decision.md`에 일원화하여 관리한다.
 
 **작업 전 (필수)**:
-1. `docs/decision.md`를 읽고 기존 결정 사항을 확인한다.
+1. `docs/02_decision.md`를 읽고 기존 결정 사항을 확인한다.
 2. 수행할 작업이 기존 결정과 충돌하는지 검토한다.
 3. **충돌이 발견되면 임의로 진행하지 말고 사용자에게 문의**하여 결정을 받는다.
 
 **작업 후 (필수)**:
-1. 작업 중 새로운 의사결정이 발생하면 `docs/decision.md`에 추가한다.
+1. 작업 중 새로운 의사결정이 발생하면 `docs/02_decision.md`에 추가한다.
 2. 기존 결정이 변경되었으면 해당 항목의 상태를 갱신한다.
 3. 형식: 기존 `D-NNN` 번호 체계를 따른다 (결정일, 상태, 결정 내용, 근거, 대안).
 

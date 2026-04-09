@@ -27,6 +27,8 @@
             <div class="tabs">
                 <button class="tab active" data-tab="settings">환경변수 설정</button>
                 <button class="tab" data-tab="dbconfig">DB 연결 설정</button>
+                <button class="tab" data-tab="users">사용자 관리</button>
+                <button class="tab" data-tab="auditlogs">감사 로그</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -105,6 +107,156 @@
                     </form>
 
                     <div id="dbTestResult" style="display: none; margin-top: 16px;"></div>
+                </div>
+            </div>
+
+            <!-- 사용자 관리 탭 -->
+            <div class="tab-content" id="tab-users">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>사용자 관리</h2>
+                        <button class="btn btn-secondary" id="refreshUsersBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); margin-bottom: 20px;">
+                        등록된 사용자를 관리합니다. 역할, 상태, DB 접근 권한을 수정할 수 있습니다.
+                    </p>
+                    <div id="usersLoading" class="loading active">
+                        <div class="spinner"></div>
+                        <div class="loading-text">사용자 목록을 불러오는 중...</div>
+                    </div>
+                    <table class="settings-table" id="usersTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>이름</th>
+                                <th>역할</th>
+                                <th>상태</th>
+                                <th>부서</th>
+                                <th>마지막 로그인</th>
+                                <th>작업</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 감사 로그 탭 -->
+            <div class="tab-content" id="tab-auditlogs">
+                <!-- 통계 카드 -->
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                    <div class="card" style="padding: 16px; text-align: center;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">총 요청</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;" id="statTotalRequests">-</div>
+                    </div>
+                    <div class="card" style="padding: 16px; text-align: center;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">고유 사용자</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;" id="statUniqueUsers">-</div>
+                    </div>
+                    <div class="card" style="padding: 16px; text-align: center;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">성공률</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;" id="statSuccessRate">-</div>
+                    </div>
+                    <div class="card" style="padding: 16px; text-align: center;">
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">보안 경고</div>
+                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--error);" id="statAlerts">-</div>
+                    </div>
+                </div>
+
+                <!-- 필터 + 로그 -->
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>감사 로그</h2>
+                        <button class="btn btn-secondary" id="refreshLogsBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+
+                    <!-- 필터 영역 -->
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: flex-end;">
+                        <div>
+                            <label style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-bottom: 2px;">시작일</label>
+                            <input type="date" id="filterStartDate" style="padding: 6px 8px; font-size: 0.8rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px;">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-bottom: 2px;">종료일</label>
+                            <input type="date" id="filterEndDate" style="padding: 6px 8px; font-size: 0.8rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px;">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-bottom: 2px;">사용자</label>
+                            <input type="text" id="filterUserId" placeholder="사용자 ID" style="padding: 6px 8px; font-size: 0.8rem; width: 120px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px;">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-bottom: 2px;">이벤트</label>
+                            <select id="filterEventType" style="padding: 6px 8px; font-size: 0.8rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px;">
+                                <option value="">전체</option>
+                                <option value="user_login">로그인</option>
+                                <option value="login_fail">로그인 실패</option>
+                                <option value="user_logout">로그아웃</option>
+                                <option value="register">가입</option>
+                                <option value="user_request">질의 요청</option>
+                                <option value="query_execution">쿼리 실행</option>
+                                <option value="data_access">데이터 접근</option>
+                                <option value="file_download">파일 다운로드</option>
+                                <option value="security_alert">보안 경고</option>
+                                <option value="password_change">비밀번호 변경</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-bottom: 2px;">키워드</label>
+                            <input type="text" id="filterKeyword" placeholder="검색어" style="padding: 6px 8px; font-size: 0.8rem; width: 140px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px;">
+                        </div>
+                        <button class="btn btn-primary" id="searchLogsBtn" style="padding: 6px 14px; font-size: 0.8rem;">검색</button>
+                    </div>
+
+                    <div id="logsLoading" class="loading active">
+                        <div class="spinner"></div>
+                        <div class="loading-text">감사 로그를 불러오는 중...</div>
+                    </div>
+                    <table class="settings-table" id="logsTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>시간</th>
+                                <th>이벤트</th>
+                                <th>사용자</th>
+                                <th>IP</th>
+                                <th>상세</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logsBody"></tbody>
+                    </table>
+
+                    <!-- 페이지네이션 -->
+                    <div id="logsPagination" style="display: none; margin-top: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem;">
+                        <span id="logsPageInfo" style="color: var(--text-muted);"></span>
+                        <div style="display: flex; gap: 4px;">
+                            <button class="btn btn-secondary" id="logsPrevBtn" style="padding: 4px 10px; font-size: 0.75rem;">이전</button>
+                            <button class="btn btn-secondary" id="logsNextBtn" style="padding: 4px 10px; font-size: 0.75rem;">다음</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 보안 경고 -->
+                <div class="card" style="margin-top: 16px;">
+                    <div class="toolbar">
+                        <h2>보안 경고</h2>
+                        <button class="btn btn-secondary" id="refreshAlertsBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <div id="alertsLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">보안 경고를 불러오는 중...</div>
+                    </div>
+                    <table class="settings-table" id="alertsTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>시간</th>
+                                <th>심각도</th>
+                                <th>사용자</th>
+                                <th>IP</th>
+                                <th>내용</th>
+                            </tr>
+                        </thead>
+                        <tbody id="alertsBody"></tbody>
+                    </table>
+                    <p id="alertsEmpty" style="display: none; color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 20px 0;">보안 경고가 없습니다.</p>
                 </div>
             </div>
         </div>

@@ -510,7 +510,7 @@ def _add_limit_clause(sql: str, limit: int, db_engine: str = "postgresql") -> st
 | `src/routing/domain_config.py` | `db_engine` 필드 추가 (polestar=db2, 나머지 postgresql) | P1 | ✅ 완료 |
 | `src/state.py` | `active_db_engine: Optional[str]` 필드 추가 | P1 | ✅ 완료 |
 | `tests/test_polestar_eav.py` | **신규** - 단위 테스트 19개 (구조 감지, LIMIT 검사, 가이드 포맷, 회귀, db_engine) | P2 | ✅ 완료 |
-| `docs/decision.md` | D-016 의사결정 기록 추가 | - | ✅ 완료 |
+| `docs/02_decision.md` | D-016 의사결정 기록 추가 | - | ✅ 완료 |
 
 ---
 
@@ -543,7 +543,7 @@ Step 5 (P2): 테스트                                      ✅ 완료
 - **arch-check**: 위반 0건, 경고 0건 (63개 파일, 186개 import 검사 통과)
 - **테스트**: 19개 전체 통과 (0.13초)
 - **병렬 실행**: Step 1+4 병렬, Step 2+3 병렬로 진행하여 효율 극대화
-- **의사결정 기록**: `docs/decision.md`에 D-016 추가
+- **의사결정 기록**: `docs/02_decision.md`에 D-016 추가
 
 ---
 

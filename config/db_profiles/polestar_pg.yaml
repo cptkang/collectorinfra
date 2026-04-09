@@ -17,6 +17,20 @@ patterns:
     lob_value_column: stringvalue
     lob_flag_column: is_lob
 
+    # JOIN 금지 컬럼 — 기존 3중 방어 체계(프롬프트 주석 + 구조 가이드 + validator)에 연동
+    # cmm_vendor, cmm_os, cmm_os_param은 레거시 lookup 테이블로 실제 운영에서 사용하지 않음.
+    # 해당 데이터는 core_config_prop EAV 속성(Vendor, OSType, OSParameter)으로 관리됨.
+    excluded_join_columns:
+      - table: cmm_resource
+        column: vendor_id
+        reason: "벤더 정보는 core_config_prop EAV에서 name='Vendor'로 조회. cmm_vendor JOIN 불필요"
+      - table: cmm_resource
+        column: os_id
+        reason: "OS 정보는 core_config_prop EAV에서 name='OSType'/'OSVerson'으로 조회. cmm_os JOIN 불필요"
+      - table: cmm_resource
+        column: os_param_id
+        reason: "OS 파라미터는 core_config_prop EAV에서 name='OSParameter'로 조회. cmm_os_param JOIN 불필요"
+
     # 값 기반 조인 (value-based join)
     # FK가 없으므로 이것이 entity-EAV 테이블 간 관계를 정의하는 유일한 수단이다.
     # 예: core_config_prop.name='Hostname'인 행의 stringvalue_short 값('server01')은
@@ -269,3 +283,10 @@ query_examples:
         AND child.dtime IS NULL
       LIMIT 100;
     explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인"
+
+# 허용 테이블 목록 — schema_analyzer가 이 목록에 없는 테이블을 relevant_tables에서 제외한다.
+# Polestar DB는 cmm_resource + core_config_prop 2개 테이블만 사용한다.
+# cmm_vendor, cmm_os, cmm_os_param 등 레거시 lookup 테이블은 조회 대상이 아니다.
+allowed_tables:
+  - cmm_resource
+  - core_config_prop

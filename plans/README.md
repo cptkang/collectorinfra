@@ -1,7 +1,7 @@
 # 인프라 데이터 조회 에이전트 - 구현 계획서 목차
 
 > 작성일: 2026-03-13
-> 기준: `spec.md` + `docs/requirements.md` + 기존 `src/` 코드 분석
+> 기준: `spec.md` + `docs/01_requirements.md` + 기존 `src/` 코드 분석
 
 ---
 

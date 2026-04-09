@@ -145,6 +145,24 @@ class AdminConfig(BaseSettings):
             self.jwt_secret = secrets.token_hex(32)
 
 
+class AuthConfig(BaseSettings):
+    """사용자 인증 설정.
+
+    AUTH_ENABLED=false (기본값): 개발 단계에서 인증 없이 모든 기능 동작.
+    AUTH_ENABLED=true: 사용자 로그인 필수.
+    """
+
+    enabled: bool = False
+    auth_db_url: str = ""
+    jwt_expire_hours: int = 8
+    max_login_attempts: int = 5
+    lockout_minutes: int = 30
+    password_min_length: int = 8
+    default_allowed_db_ids: str = ""
+
+    model_config = {"env_prefix": "AUTH_", "env_file": [".env", ".encenv"], "extra": "ignore"}
+
+
 class MultiDBConfig(BaseSettings):
     """멀티 DB 라우팅 설정.
 
@@ -195,6 +213,21 @@ class RedisConfig(BaseSettings):
     model_config = {"env_prefix": "REDIS_", "env_file": [".env", ".encenv"], "extra": "ignore"}
 
 
+class AuditConfig(BaseSettings):
+    """감사 로그 설정."""
+
+    jsonl_enabled: bool = True
+    db_enabled: bool = True
+    retention_days: int = 90
+    sensitive_tables: list[str] = []
+    alert_on_failed_login: int = 5
+    alert_on_large_result: int = 5000
+    night_alert_start: int = 2
+    night_alert_end: int = 6
+
+    model_config = {"env_prefix": "AUDIT_", "env_file": ".env", "extra": "ignore"}
+
+
 class SchemaCacheConfig(BaseSettings):
     """스키마 캐시 관련 설정."""
 
@@ -216,9 +249,11 @@ class AppConfig(BaseSettings):
     security: SecurityConfig = SecurityConfig()
     server: ServerConfig = ServerConfig()
     admin: AdminConfig = AdminConfig()
+    auth: AuthConfig = AuthConfig()
     multi_db: MultiDBConfig = MultiDBConfig()
     redis: RedisConfig = RedisConfig()
     schema_cache: SchemaCacheConfig = SchemaCacheConfig()
+    audit: AuditConfig = AuditConfig()
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

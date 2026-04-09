@@ -26,6 +26,99 @@
     var progressEmpty = document.getElementById("progressEmpty");
     var panelToggle = document.getElementById("panelToggle");
 
+    // ─── Auth Helpers ───
+
+    function getAuthHeaders() {
+        var headers = {};
+        var token = localStorage.getItem("user_token");
+        if (token) {
+            headers["Authorization"] = "Bearer " + token;
+        }
+        return headers;
+    }
+
+    function checkAuthOnLoad() {
+        fetch("/api/v1/auth/status", { headers: getAuthHeaders() })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data.auth_enabled && !localStorage.getItem("user_token")) {
+                    window.location.href = "/login";
+                    return;
+                }
+                // 사용자 정보 표시
+                var userInfo = data.user;
+                var userArea = document.getElementById("userInfoArea");
+                if (userArea && userInfo) {
+                    userArea.style.display = "inline-flex";
+                    var nameEl = document.getElementById("userDisplayName");
+                    if (nameEl) nameEl.textContent = userInfo.username || userInfo.user_id;
+                }
+                // 로그아웃 버튼
+                var logoutBtn = document.getElementById("userLogoutBtn");
+                if (logoutBtn && data.auth_enabled) {
+                    logoutBtn.style.display = "inline-block";
+                    logoutBtn.addEventListener("click", function() {
+                        fetch("/api/v1/auth/logout", {
+                            method: "POST",
+                            headers: getAuthHeaders()
+                        }).finally(function() {
+                            localStorage.removeItem("user_token");
+                            localStorage.removeItem("user_info");
+                            window.location.href = "/login";
+                        });
+                    });
+                }
+            })
+            .catch(function() {
+                // 인증 상태 확인 실패 시 무시 (AUTH_ENABLED=false 기본)
+            });
+    }
+
+    checkAuthOnLoad();
+
+    // ─── Health Check ───
+
+    var statusBadge = document.getElementById("statusBadge");
+    var dbWarningBanner = document.getElementById("dbWarningBanner");
+    var dbWarningText = document.getElementById("dbWarningText");
+    var _healthOk = false;
+
+    function checkHealth() {
+        fetch("/api/v1/health", { headers: getAuthHeaders() })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.db_connected) {
+                    _healthOk = true;
+                    statusBadge.className = "status-badge status-badge--online";
+                    statusBadge.textContent = "ONLINE";
+                    if (dbWarningBanner) dbWarningBanner.classList.remove("active");
+                } else {
+                    _healthOk = false;
+                    statusBadge.className = "status-badge status-badge--offline";
+                    statusBadge.textContent = "DB OFFLINE";
+                    if (dbWarningBanner) {
+                        dbWarningText.textContent =
+                            "DB 서버(MCP Server)에 연결할 수 없습니다. 쿼리 실행이 불가능합니다. MCP 서버 상태를 확인하세요.";
+                        dbWarningBanner.classList.add("active");
+                    }
+                }
+            })
+            .catch(function () {
+                _healthOk = false;
+                statusBadge.className = "status-badge status-badge--offline";
+                statusBadge.textContent = "OFFLINE";
+                if (dbWarningBanner) {
+                    dbWarningText.textContent =
+                        "API 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.";
+                    dbWarningBanner.classList.add("active");
+                }
+            });
+    }
+
+    // 즉시 + 30초마다 헬스체크
+    checkHealth();
+    setInterval(checkHealth, 30000);
+
     // ─── State ───
 
     var selectedFile = null;
@@ -33,6 +126,11 @@
     var messages = []; // session message history
     var stageTimer = null;
     var currentThreadId = null;
+
+    // ─── Prompt History ───
+    var promptHistory = [];           // 전송된 프롬프트 히스토리 (오래된 순)
+    var historyIndex = -1;            // 현재 탐색 위치 (-1 = 탐색 안 함)
+    var savedCurrentInput = "";       // 히스토리 진입 전 입력 중이던 텍스트 보존
 
     // Stage definitions
     var stages = ["parse", "schema", "sql", "exec", "result"];
@@ -101,6 +199,57 @@
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handleSend();
+            return;
+        }
+
+        // 방향키 히스토리 탐색 (히스토리가 없으면 무시)
+        if (promptHistory.length === 0) return;
+
+        if (e.key === "ArrowUp") {
+            // textarea가 여러 줄이면 커서가 첫 줄에 있을 때만 히스토리 탐색
+            var cursorAtTop = (promptEl.selectionStart === 0) ||
+                (promptEl.value.substring(0, promptEl.selectionStart).indexOf("\n") === -1);
+            if (!cursorAtTop) return;
+
+            e.preventDefault();
+
+            if (historyIndex === -1) {
+                // 히스토리 탐색 시작 — 현재 입력 텍스트를 보존
+                savedCurrentInput = promptEl.value;
+                historyIndex = promptHistory.length - 1;
+            } else if (historyIndex > 0) {
+                historyIndex--;
+            }
+
+            promptEl.value = promptHistory[historyIndex];
+            autoResizeTextarea.call(promptEl);
+            // 커서를 맨 끝으로 이동
+            promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+            return;
+        }
+
+        if (e.key === "ArrowDown") {
+            if (historyIndex === -1) return; // 탐색 중이 아니면 무시
+
+            // textarea가 여러 줄이면 커서가 마지막 줄에 있을 때만 히스토리 탐색
+            var cursorAtBottom = (promptEl.selectionStart === promptEl.value.length) ||
+                (promptEl.value.substring(promptEl.selectionStart).indexOf("\n") === -1);
+            if (!cursorAtBottom) return;
+
+            e.preventDefault();
+
+            if (historyIndex < promptHistory.length - 1) {
+                historyIndex++;
+                promptEl.value = promptHistory[historyIndex];
+            } else {
+                // 가장 최근 항목을 지나면 원래 입력 텍스트 복원
+                historyIndex = -1;
+                promptEl.value = savedCurrentInput;
+            }
+
+            autoResizeTextarea.call(promptEl);
+            promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+            return;
         }
     }
 
@@ -174,6 +323,13 @@
             showError("질의를 입력해주세요.");
             return;
         }
+
+        // 프롬프트 히스토리에 저장 (중복 연속 방지)
+        if (promptHistory.length === 0 || promptHistory[promptHistory.length - 1] !== query) {
+            promptHistory.push(query);
+        }
+        historyIndex = -1;
+        savedCurrentInput = "";
 
         hideError();
 
@@ -446,7 +602,7 @@
             // Try SSE streaming first
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
                 body: JSON.stringify({ query: query }),
             });
 
@@ -674,7 +830,7 @@
         try {
             var response = await fetch("/api/v1/query", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
                 body: JSON.stringify({ query: query }),
             });
 
@@ -717,6 +873,7 @@
 
             var response = await fetch("/api/v1/query/file", {
                 method: "POST",
+                headers: getAuthHeaders(),
                 body: formData,
             });
 
@@ -789,6 +946,7 @@
 
             var response = await fetch("/api/v1/query/mapping-feedback", {
                 method: "POST",
+                headers: getAuthHeaders(),
                 body: formData,
             });
 

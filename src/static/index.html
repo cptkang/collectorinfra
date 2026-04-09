@@ -11,7 +11,11 @@
         <div class="container">
             <h1>INFRA QUERY AGENT</h1>
             <nav>
-                <span class="status-badge status-badge--online">ONLINE</span>
+                <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
+                <span id="userInfoArea" style="display: none; align-items: center; gap: 8px; font-size: 0.8125rem; color: var(--text-secondary, #aaa);">
+                    <span id="userDisplayName"></span>
+                    <button id="userLogoutBtn" class="btn btn-secondary" style="display: none; font-size: 0.75rem; padding: 5px 10px;">Logout</button>
+                </span>
                 <a href="/admin/login" class="btn btn-secondary" style="font-size: 0.8125rem; padding: 7px 14px;">Admin</a>
             </nav>
         </div>
@@ -36,6 +40,12 @@
                         <button class="chat-welcome-hint" data-query="최근 24시간 네트워크 트래픽 추이">네트워크 트래픽 추이</button>
                     </div>
                 </div>
+            </div>
+
+            <!-- DB connection warning banner -->
+            <div class="db-warning-banner" id="dbWarningBanner">
+                <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span id="dbWarningText">DB 서버에 연결할 수 없습니다. MCP 서버 상태를 확인하세요.</span>
             </div>
 
             <!-- Error alert -->
@@ -73,7 +83,7 @@
                     </div>
 
                     <div class="input-hint">
-                        <span><kbd>Enter</kbd> 전송 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 개행</span>
+                        <span><kbd>Enter</kbd> 전송 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 개행 · <kbd>&uarr;</kbd><kbd>&darr;</kbd> 이전 질의</span>
                         <span>.xlsx, .docx 첨부 가능</span>
                     </div>
                 </div>

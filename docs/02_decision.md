@@ -32,6 +32,8 @@
 23. [데이터 충분성 검사 로직 개선](#d-023-데이터-충분성-검사-로직-개선-plan-36)
 24. [Synonym 통합 관리 + EAV 접두사 비교 정규화](#d-024-synonym-통합-관리--eav-접두사-비교-정규화-plan-37)
 25. [3계층 하이브리드 필드 매핑 전파 정합성](#d-025-3계층-하이브리드-필드-매핑-전파-정합성-plan-38)
+26. [사용자 로그인 및 인증 시스템](#d-026-사용자-로그인-및-인증-시스템-plan-39)
+27. [사용자 행위 감사 로깅 강화](#d-027-사용자-행위-감사-로깅-강화-plan-40)
 
 ---
 
@@ -1155,10 +1157,145 @@ Layer 3 (폴백): _get_value_from_row() 정규화    -> 레거시 경로 대비
 
 ---
 
+## D-026. 사용자 로그인 및 인증 시스템 (Plan 39)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-04-01 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-006 확장 (설정 계층화) |
+
+### 결정
+
+사용자 인증 시스템을 **AUTH_ENABLED=false 기본** (개발단계 무인증) 방식으로 구현한다. DB 기반 사용자 저장, 자유 가입 + 관리자 권한 부여, SAML SSO 확장 기반(AuthProvider 추상화)을 적용한다.
+
+### 핵심 변경사항
+
+1. **`src/domain/auth.py` 신규**: AuthProvider ABC, AuthMethod 열거형 (domain 계층)
+2. **`src/domain/user.py` 신규**: User 엔터티, UserRole/UserStatus 열거형, UserRepository/AuditRepository ABC (domain 계층)
+3. **`src/utils/password.py` 신규**: bcrypt 해싱/검증 유틸리티 (utils 계층)
+4. **`src/infrastructure/auth_provider.py` 신규**: LocalAuthProvider (infrastructure 계층)
+5. **`src/infrastructure/user_repository.py` 신규**: PostgresUserRepository (infrastructure 계층)
+6. **`src/infrastructure/audit_repository.py` 신규**: PostgresAuditRepository (infrastructure 계층)
+7. **`src/api/dependencies.py` 신규**: require_user, get_current_user 의존성, ANONYMOUS_USER (interface 계층)
+8. **`src/api/routes/user_auth.py` 신규**: 가입/로그인/로그아웃/비밀번호변경/인증상태 API (interface 계층)
+9. **`src/config.py` 수정**: AuthConfig 추가 (AUTH_ENABLED, auth_db_url, jwt_expire_hours 등)
+10. **`src/state.py` 수정**: user_id, user_department, allowed_db_ids 필드 추가
+11. **`src/api/routes/query.py` 수정**: Depends(require_user) 적용, 사용자 컨텍스트 주입
+12. **`src/api/routes/conversation.py` 수정**: Depends(require_user) 적용
+13. **`src/api/routes/admin.py` 수정**: 사용자 관리/권한/감사로그 API 추가
+14. **`src/api/server.py` 수정**: 인증 DB 초기화, DDL 자동 실행, user_auth 라우터 등록
+15. **`src/api/schemas.py` 수정**: 사용자 인증 관련 Pydantic 모델 추가
+16. **`scripts/arch_check.py` 수정**: domain, infrastructure, utils.password 모듈 매핑 추가
+17. **`ddl/auth_tables.sql` 신규**: auth_users, audit_logs 테이블 DDL
+18. **UI**: login.html, register.html 신규, index.html/app.js에 인증 헤더 주입, 관리자 대시보드에 사용자 관리/감사로그 탭 추가
+19. **`pyproject.toml` 수정**: bcrypt>=4.0.0 의존성 추가
+
+### 설계 원칙
+
+| 원칙 | 설명 |
+|------|------|
+| 인증 비활성화 기본 | `AUTH_ENABLED=false` 기본값. 개발 환경에서 인증 없이 모든 기능 동작 |
+| DB 기반 저장 | PostgreSQL에 저장, 향후 DB2 전환 가능 (raw SQL + asyncpg, ORM 미사용) |
+| 자유 가입 + 관리자 권한 부여 | 사용자 직접 가입 (승인 불필요), 관리자가 역할/권한 부여 |
+| SAML SSO 확장 기반 | AuthProvider 추상화로 ID/PW 외 SAML SSO 연동 가능 구조 |
+| JWT 시크릿 공유 | AdminConfig.jwt_secret을 사용자 토큰에도 공유, `type` 클레임으로 구분 |
+| 실시간 권한 반영 | 토큰에 최소 정보만 포함, 매 요청마다 DB에서 최신 사용자 정보 조회 |
+
+### 근거
+
+- 개발 초기에 인증 없이 기능 개발/테스트 가능 (AUTH_ENABLED=false)
+- Clean Architecture 계층 분리: domain(인터페이스) -> infrastructure(구현체) -> interface(API)
+- 기존 admin_auth.py와 구조를 공유하되 사용자 인증은 별도 라우터로 분리
+- bcrypt 비밀번호 해싱, 로그인 시도 제한(5회), 계정 잠금(30분) 등 보안 강화
+
+### 향후 수정 시 고려사항
+
+- SAML SSO 연동 시 `SamlAuthProvider` 구현체만 추가하면 됨
+- DB2 전환 시 `Db2UserRepository`, `Db2AuditRepository` 구현체만 교체
+- Redis 토큰 블랙리스트 추가 시 `require_user`에 블랙리스트 검사 추가
+- `allowed_db_ids`는 Plan 41 접근 제어의 전제 조건
+
+---
+
+## D-027. 사용자 행위 감사 로깅 강화 (Plan 40)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-04-02 |
+| **상태** | 확정 |
+
+### 결정
+
+1. **이중 기록 유지**: 기존 JSONL 파일 + PostgreSQL DB 이중 기록 구조를 유지한다.
+2. **SQLite 대신 PostgreSQL 사용**: Plan 40 원안은 조회/통계용으로 SQLite를 제안했으나, Plan 39에서 이미 PostgreSQL 기반 `audit_logs` 테이블을 구축했으므로 PostgreSQL을 확장하여 사용한다.
+3. **통합 AuditService**: `src/security/audit_service.py`에 통합 서비스를 구현하여 JSONL과 DB 기록을 단일 인터페이스로 통합한다.
+4. **AuditMiddleware**: `src/api/middleware/audit_middleware.py`에서 요청별 request_id와 client_ip를 자동 수집한다.
+5. **10개 이벤트 유형**: 기존 2개(user_request, query_execution)에서 10개로 확장 (user_login, user_logout, login_fail, register, password_change, data_access, file_download, security_alert, admin_action, cache_operation).
+6. **보안 경고 자동 감지**: 금지 SQL 시도, SQL 인젝션 패턴, 대량 데이터 조회, 로그인 실패 반복 시 security_alert 이벤트를 자동 생성한다.
+
+### 근거
+
+- PostgreSQL은 이미 인증 시스템에서 사용 중이며, 별도 SQLite 파일을 추가하면 관리 포인트가 증가한다.
+- JSONL은 빠른 쓰기와 운영 디버깅에 유리하고, PostgreSQL은 복잡한 조회/통계에 유리하므로 이중 기록이 최적이다.
+- AuditService로 통합하면 각 노드/라우트에서 개별 저장소를 직접 호출하지 않아 의존성이 단순해진다.
+
+### 고려한 대안
+
+| 대안 | 제외 이유 |
+|------|----------|
+| SQLite 병행 (Plan 40 원안) | PostgreSQL이 이미 구축되어 있어 중복 관리 비용 |
+| JSONL만 확장 | 복잡한 조회/통계에 부적합 (파일 스캔 필요) |
+| PostgreSQL만 사용 (JSONL 제거) | 운영 환경에서 빠른 파일 로그 확인이 불가 |
+
+### 향후 수정 시 고려사항
+
+- 감사 로그 테이블이 대량화되면 파티셔닝(월별) 적용 검토
+- `AuditConfig.retention_days`로 보관 기간 관리 (현재 90일)
+- 실시간 보안 경고 알림은 별도 알림 시스템(이메일, 슬랙) 연동 필요
+
+---
+
+## D-028. Polestar 불필요 lookup 테이블 JOIN 차단
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-04-02 |
+| **상태** | 확정 |
+| **이전 결정** | D-022 보강 (3중 방어 체계를 vendor_id/os_id/os_param_id로 확장) |
+
+### 결정
+
+Polestar DB의 `cmm_vendor`, `cmm_os`, `cmm_os_param` 테이블은 쿼리 대상에서 제외한다. 해당 테이블의 데이터는 `core_config_prop` EAV에 속성(`Vendor`, `OSType`, `OSParameter`)으로 존재하므로 직접 JOIN이 불필요하다.
+
+### 조치
+
+1. **YAML 프로필** (`config/db_profiles/polestar.yaml`, `polestar_pg.yaml`): EAV 패턴에 `excluded_join_columns` 추가 (vendor_id, os_id, os_param_id) — 기존 3중 방어 체계(프롬프트 "-- JOIN 금지" 주석 + 구조 가이드 경고 + validator 감지)가 자동으로 작동
+2. **YAML 프로필**: `allowed_tables` 필드 신규 추가 (cmm_resource, core_config_prop만 허용) — 근본적으로 불필요 테이블 차단
+3. **`src/nodes/schema_analyzer.py`**: `_load_manual_profile()`에서 `allowed_tables`를 읽어 `relevant_tables`를 필터링
+4. **`src/nodes/query_validator.py`**: `_validate_forbidden_joins()` 패턴 3 추가 — excluded_join_columns 컬럼이 config_table 외 임의 테이블과의 JOIN에 사용되어도 에러로 감지
+
+### 근거
+
+- `cmm_vendor`, `cmm_os`, `cmm_os_param`은 레거시 lookup 테이블로, 실제 운영 데이터 조회에 사용하지 않음
+- LLM이 DB 스키마에서 FK-like 컬럼명(vendor_id, os_id, os_param_id)을 보고 불필요한 JOIN을 생성
+- 기존 D-022의 3중 방어 체계는 `resource_conf_id ↔ configuration_id` 패턴만 커버하여 이 문제를 차단하지 못했음
+
+### 향후 수정 시 고려사항
+
+- `allowed_tables`는 선택적 필드이므로 미설정 DB는 기존 동작 유지 (하위 호환성 보장)
+- Polestar에 새 테이블이 추가되면 `allowed_tables`에 명시적 등록 필요
+- 다른 DB에서 유사 문제 발생 시 해당 DB의 YAML에 `allowed_tables` + `excluded_join_columns` 추가
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-04-02 | D-028 | Polestar 불필요 lookup 테이블 JOIN 차단 (Plan 42): excluded_join_columns에 vendor_id/os_id/os_param_id 추가, allowed_tables 필드 신규, schema_analyzer 테이블 필터링, query_validator 패턴 3 추가 |
+| 2026-04-02 | D-027 | 사용자 행위 감사 로깅 강화 (Plan 40): JSONL+PostgreSQL 이중 기록, SQLite 대신 PostgreSQL 확장, 통합 AuditService, AuditMiddleware, 10개 이벤트 유형, 보안 경고 자동 감지 |
+| 2026-04-01 | D-026 | 사용자 로그인 및 인증 시스템 (Plan 39): domain/auth.py, domain/user.py, utils/password.py, infrastructure/auth_provider.py, infrastructure/user_repository.py, infrastructure/audit_repository.py, api/dependencies.py, api/routes/user_auth.py 신규. config.py AuthConfig, state.py 사용자 컨텍스트, query.py/conversation.py/admin.py/server.py/schemas.py 수정, arch_check.py 모듈 매핑, ddl/auth_tables.sql, UI login/register/admin 사용자 관리 |
 | 2026-03-30 | D-025 | 3계층 하이브리드 필드 매핑 전파 정합성 (Plan 38): column_matcher.py 신규, column_resolver.py 프롬프트 신규, resolved_mapping State 추가, result_organizer Layer 1+2 통합, output_generator resolved_mapping 우선, excel_writer/word_writer Layer 3 폴백 |
 | 2026-03-30 | D-024 | Synonym 통합 관리 + EAV 접두사 비교 정규화 (Plan 37): EAV synonym global 통합, normalize_field_name 도입, 스키마 조회 시 synonym 자동 생성, word_writer/excel_writer/result_organizer EAV 접두사 처리, query_generator 정규 컬럼 필터링 제거, eav_synonym 소스 분류 |
 | 2026-03-30 | D-023 | 데이터 충분성 검사 로직 개선 (Plan 36): mapping_sources 기반 차등 임계값 도입, _match_column_in_results/_classify_mapped_columns 추출, QueryConfig에 sufficiency 임계값 추가 |

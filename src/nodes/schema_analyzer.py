@@ -734,6 +734,23 @@ async def schema_analyzer(
                 db_id,
             )
 
+            # 2-2. allowed_tables 필터링 (수동 프로필에 허용 테이블이 정의된 경우)
+            _manual_prof = _load_manual_profile(db_id)
+            if _manual_prof and "allowed_tables" in _manual_prof:
+                _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
+                _filtered = [
+                    t for t in relevant
+                    if t.rsplit(".", 1)[-1].lower() in _allowed
+                ]
+                if _filtered:
+                    _removed = set(relevant) - set(_filtered)
+                    if _removed:
+                        logger.info(
+                            "allowed_tables 필터링: 제거=%s, 유지=%s",
+                            _removed, [t for t in _filtered],
+                        )
+                    relevant = _filtered
+
             # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
             schema_dict = schema_to_dict(full_schema, relevant)
 

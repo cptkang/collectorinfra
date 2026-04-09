@@ -4,7 +4,7 @@
 > 구현 완료일: 2026-03-25
 > 상태: **구현 완료**
 > 관련 파일: `src/nodes/schema_analyzer.py`, `src/schema_cache/`, `src/config.py`
-> 의사결정: `docs/decision.md` D-019
+> 의사결정: `docs/02_decision.md` D-019
 
 ---
 

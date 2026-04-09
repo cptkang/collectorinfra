@@ -891,5 +891,5 @@ domain → config/utils → prompts → infrastructure → application → orche
 
 - LangGraph 공식 문서: https://langchain-ai.github.io/langgraph/
 - FastMCP 문서: https://github.com/jlowin/fastmcp
-- 의사결정 기록: `docs/decision.md`
+- 의사결정 기록: `docs/02_decision.md`
 - 구현 계획서: `plans/*.md`

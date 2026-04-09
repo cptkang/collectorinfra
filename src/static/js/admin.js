@@ -333,4 +333,323 @@
             showError("서버와의 통신에 실패했습니다.");
         }
     });
+
+    // --- 사용자 관리 ---
+
+    var usersLoading = document.getElementById("usersLoading");
+    var usersTable = document.getElementById("usersTable");
+    var usersBody = document.getElementById("usersBody");
+    var refreshUsersBtn = document.getElementById("refreshUsersBtn");
+
+    if (refreshUsersBtn) {
+        refreshUsersBtn.addEventListener("click", loadUsers);
+    }
+
+    // 사용자 관리 탭 클릭 시 로드
+    document.querySelectorAll('.tab[data-tab="users"]').forEach(function(tab) {
+        tab.addEventListener("click", loadUsers);
+    });
+
+    async function loadUsers() {
+        if (!usersBody) return;
+        if (usersLoading) usersLoading.classList.add("active");
+        if (usersTable) usersTable.style.display = "none";
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/users");
+            if (!response.ok) {
+                showError("사용자 목록을 불러오지 못했습니다.");
+                return;
+            }
+            var users = await response.json();
+            usersBody.innerHTML = "";
+
+            users.forEach(function(u) {
+                var tr = document.createElement("tr");
+                tr.innerHTML =
+                    "<td>" + escapeHtml(u.user_id) + "</td>" +
+                    "<td>" + escapeHtml(u.username) + "</td>" +
+                    "<td><select class='role-select' data-uid='" + escapeHtml(u.user_id) + "'>" +
+                        "<option value='user'" + (u.role === "user" ? " selected" : "") + ">user</option>" +
+                        "<option value='admin'" + (u.role === "admin" ? " selected" : "") + ">admin</option>" +
+                    "</select></td>" +
+                    "<td><select class='status-select' data-uid='" + escapeHtml(u.user_id) + "'>" +
+                        "<option value='active'" + (u.status === "active" ? " selected" : "") + ">active</option>" +
+                        "<option value='inactive'" + (u.status === "inactive" ? " selected" : "") + ">inactive</option>" +
+                        "<option value='locked'" + (u.status === "locked" ? " selected" : "") + ">locked</option>" +
+                    "</select></td>" +
+                    "<td>" + escapeHtml(u.department || "-") + "</td>" +
+                    "<td style='font-size:0.75rem'>" + (u.last_login_at ? u.last_login_at.substring(0, 19) : "-") + "</td>" +
+                    "<td>" +
+                        "<button class='btn btn-secondary btn-sm reset-pw-btn' data-uid='" + escapeHtml(u.user_id) + "' style='font-size:0.7rem;padding:3px 8px;margin-right:4px'>PW초기화</button>" +
+                        "<button class='btn btn-secondary btn-sm delete-user-btn' data-uid='" + escapeHtml(u.user_id) + "' style='font-size:0.7rem;padding:3px 8px;color:#ef4444'>삭제</button>" +
+                    "</td>";
+                usersBody.appendChild(tr);
+            });
+
+            // 이벤트 바인딩
+            usersBody.querySelectorAll(".role-select").forEach(function(sel) {
+                sel.addEventListener("change", function() { updateUser(sel.dataset.uid, {role: sel.value}); });
+            });
+            usersBody.querySelectorAll(".status-select").forEach(function(sel) {
+                sel.addEventListener("change", function() { updateUser(sel.dataset.uid, {status: sel.value}); });
+            });
+            usersBody.querySelectorAll(".reset-pw-btn").forEach(function(btn) {
+                btn.addEventListener("click", function() { resetPassword(btn.dataset.uid); });
+            });
+            usersBody.querySelectorAll(".delete-user-btn").forEach(function(btn) {
+                btn.addEventListener("click", function() { deleteUser(btn.dataset.uid); });
+            });
+
+            if (usersLoading) usersLoading.classList.remove("active");
+            if (usersTable) usersTable.style.display = "table";
+        } catch (err) {
+            showError("사용자 목록 로드 실패");
+            if (usersLoading) usersLoading.classList.remove("active");
+        }
+    }
+
+    async function updateUser(uid, data) {
+        try {
+            var response = await apiRequest("PUT", "/api/v1/admin/users/" + uid, data);
+            if (response.ok) {
+                showSuccess("사용자 '" + uid + "' 수정 완료");
+            } else {
+                var err = await response.json();
+                showError(err.detail || "수정 실패");
+                loadUsers();
+            }
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
+    async function resetPassword(uid) {
+        if (!confirm("'" + uid + "'의 비밀번호를 초기화하시겠습니까?")) return;
+        try {
+            var response = await apiRequest("POST", "/api/v1/admin/users/" + uid + "/reset-password");
+            var result = await response.json();
+            if (response.ok) {
+                alert("임시 비밀번호: " + result.temp_password + "\n사용자에게 전달하세요.");
+                showSuccess(result.message);
+            } else {
+                showError(result.detail || "초기화 실패");
+            }
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
+    async function deleteUser(uid) {
+        if (!confirm("'" + uid + "' 사용자를 삭제하시겠습니까?")) return;
+        try {
+            var response = await apiRequest("DELETE", "/api/v1/admin/users/" + uid);
+            if (response.ok) {
+                showSuccess("사용자 '" + uid + "' 삭제 완료");
+                loadUsers();
+            } else {
+                var err = await response.json();
+                showError(err.detail || "삭제 실패");
+            }
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
+    function escapeHtml(str) {
+        if (!str) return "";
+        return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+
+    // --- 감사 로그 ---
+
+    var logsLoading = document.getElementById("logsLoading");
+    var logsTable = document.getElementById("logsTable");
+    var logsBody = document.getElementById("logsBody");
+    var refreshLogsBtn = document.getElementById("refreshLogsBtn");
+    var searchLogsBtn = document.getElementById("searchLogsBtn");
+    var logsPrevBtn = document.getElementById("logsPrevBtn");
+    var logsNextBtn = document.getElementById("logsNextBtn");
+    var logsPageInfo = document.getElementById("logsPageInfo");
+    var logsPagination = document.getElementById("logsPagination");
+    var currentPage = 1;
+    var currentPageSize = 50;
+    var totalPages = 0;
+
+    if (refreshLogsBtn) {
+        refreshLogsBtn.addEventListener("click", function() { currentPage = 1; loadAuditLogs(); });
+    }
+    if (searchLogsBtn) {
+        searchLogsBtn.addEventListener("click", function() { currentPage = 1; loadAuditLogs(); });
+    }
+    if (logsPrevBtn) {
+        logsPrevBtn.addEventListener("click", function() {
+            if (currentPage > 1) { currentPage--; loadAuditLogs(); }
+        });
+    }
+    if (logsNextBtn) {
+        logsNextBtn.addEventListener("click", function() {
+            if (currentPage < totalPages) { currentPage++; loadAuditLogs(); }
+        });
+    }
+
+    document.querySelectorAll('.tab[data-tab="auditlogs"]').forEach(function(tab) {
+        tab.addEventListener("click", function() { loadAuditLogs(); loadAuditStats(); loadSecurityAlerts(); });
+    });
+
+    function buildAuditQuery() {
+        var params = new URLSearchParams();
+        var sd = document.getElementById("filterStartDate");
+        var ed = document.getElementById("filterEndDate");
+        var uid = document.getElementById("filterUserId");
+        var et = document.getElementById("filterEventType");
+        var kw = document.getElementById("filterKeyword");
+        if (sd && sd.value) params.set("start_date", sd.value);
+        if (ed && ed.value) params.set("end_date", ed.value);
+        if (uid && uid.value) params.set("user_id", uid.value.trim());
+        if (et && et.value) params.set("event_type", et.value);
+        if (kw && kw.value) params.set("keyword", kw.value.trim());
+        params.set("page", currentPage);
+        params.set("page_size", currentPageSize);
+        return params.toString();
+    }
+
+    async function loadAuditLogs() {
+        if (!logsBody) return;
+        if (logsLoading) logsLoading.classList.add("active");
+        if (logsTable) logsTable.style.display = "none";
+        if (logsPagination) logsPagination.style.display = "none";
+
+        try {
+            var qs = buildAuditQuery();
+            var response = await apiRequest("GET", "/api/v1/admin/audit/logs?" + qs);
+            if (!response.ok) {
+                // 새 API 실패 시 기존 API 폴백
+                response = await apiRequest("GET", "/api/v1/admin/audit-logs?limit=200");
+                if (!response.ok) {
+                    showError("감사 로그를 불러오지 못했습니다.");
+                    if (logsLoading) logsLoading.classList.remove("active");
+                    return;
+                }
+                var logs = await response.json();
+                renderAuditLogs(logs);
+                return;
+            }
+
+            var data = await response.json();
+            totalPages = data.total_pages || 0;
+            renderAuditLogs(data.logs || []);
+
+            // 페이지네이션 업데이트
+            if (logsPagination) {
+                logsPagination.style.display = "flex";
+                if (logsPageInfo) logsPageInfo.textContent = "페이지 " + data.page + " / " + totalPages + " (총 " + data.total + "건)";
+                if (logsPrevBtn) logsPrevBtn.disabled = currentPage <= 1;
+                if (logsNextBtn) logsNextBtn.disabled = currentPage >= totalPages;
+            }
+        } catch (err) {
+            showError("감사 로그 로드 실패");
+            if (logsLoading) logsLoading.classList.remove("active");
+        }
+    }
+
+    function renderAuditLogs(logs) {
+        logsBody.innerHTML = "";
+        logs.forEach(function(log) {
+            var tr = document.createElement("tr");
+            var time = log.created_at ? log.created_at.substring(0, 19) : "-";
+            var eventType = log.event_type || "-";
+            var userId = log.user_id || "-";
+            var ip = log.ip_address || "-";
+            var detail = log.detail ? JSON.stringify(log.detail) : "{}";
+            if (detail.length > 120) detail = detail.substring(0, 117) + "...";
+            tr.innerHTML =
+                "<td style='font-size:0.75rem;white-space:nowrap'>" + escapeHtml(time) + "</td>" +
+                "<td><span style='font-size:0.75rem;padding:2px 6px;border-radius:3px;background:var(--bg-tertiary)'>" + escapeHtml(eventType) + "</span></td>" +
+                "<td>" + escapeHtml(userId) + "</td>" +
+                "<td style='font-size:0.75rem'>" + escapeHtml(ip) + "</td>" +
+                "<td style='font-size:0.75rem;max-width:300px;overflow:hidden;text-overflow:ellipsis' title='" + escapeHtml(detail) + "'>" + escapeHtml(detail) + "</td>";
+            logsBody.appendChild(tr);
+        });
+        if (logsLoading) logsLoading.classList.remove("active");
+        if (logsTable) logsTable.style.display = "table";
+    }
+
+    // --- 감사 통계 ---
+
+    async function loadAuditStats() {
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/audit/stats");
+            if (!response.ok) return;
+            var stats = await response.json();
+            var el;
+            el = document.getElementById("statTotalRequests");
+            if (el) el.textContent = (stats.total_requests || 0).toLocaleString();
+            el = document.getElementById("statUniqueUsers");
+            if (el) el.textContent = stats.unique_users || 0;
+            el = document.getElementById("statSuccessRate");
+            if (el) el.textContent = stats.success_rate != null ? (stats.success_rate * 100).toFixed(1) + "%" : "-";
+            el = document.getElementById("statAlerts");
+            if (el) el.textContent = stats.security_alerts_count || 0;
+        } catch (err) {
+            // 통계 로드 실패는 무시
+        }
+    }
+
+    // --- 보안 경고 ---
+
+    var alertsBody = document.getElementById("alertsBody");
+    var alertsTable = document.getElementById("alertsTable");
+    var alertsLoading = document.getElementById("alertsLoading");
+    var alertsEmpty = document.getElementById("alertsEmpty");
+    var refreshAlertsBtn = document.getElementById("refreshAlertsBtn");
+
+    if (refreshAlertsBtn) {
+        refreshAlertsBtn.addEventListener("click", loadSecurityAlerts);
+    }
+
+    async function loadSecurityAlerts() {
+        if (!alertsBody) return;
+        if (alertsLoading) alertsLoading.classList.add("active");
+        if (alertsTable) alertsTable.style.display = "none";
+        if (alertsEmpty) alertsEmpty.style.display = "none";
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/audit/alerts?limit=50");
+            if (!response.ok) {
+                if (alertsLoading) alertsLoading.classList.remove("active");
+                return;
+            }
+            var alerts = await response.json();
+            alertsBody.innerHTML = "";
+
+            if (alerts.length === 0) {
+                if (alertsLoading) alertsLoading.classList.remove("active");
+                if (alertsEmpty) alertsEmpty.style.display = "block";
+                return;
+            }
+
+            alerts.forEach(function(a) {
+                var tr = document.createElement("tr");
+                var time = a.created_at ? a.created_at.substring(0, 19) : "-";
+                var severity = (a.detail && a.detail.severity) || "warning";
+                var sevColor = severity === "critical" ? "var(--error)" : severity === "warning" ? "#f59e0b" : "var(--text-muted)";
+                var userId = a.user_id || "-";
+                var ip = a.ip_address || "-";
+                var detail = (a.detail && a.detail.detail) || JSON.stringify(a.detail || {});
+                tr.innerHTML =
+                    "<td style='font-size:0.75rem;white-space:nowrap'>" + escapeHtml(time) + "</td>" +
+                    "<td><span style='font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:3px;color:" + sevColor + ";background:color-mix(in srgb," + sevColor + " 15%,transparent)'>" + escapeHtml(severity.toUpperCase()) + "</span></td>" +
+                    "<td>" + escapeHtml(userId) + "</td>" +
+                    "<td style='font-size:0.75rem'>" + escapeHtml(ip) + "</td>" +
+                    "<td style='font-size:0.75rem'>" + escapeHtml(detail) + "</td>";
+                alertsBody.appendChild(tr);
+            });
+
+            if (alertsLoading) alertsLoading.classList.remove("active");
+            if (alertsTable) alertsTable.style.display = "table";
+        } catch (err) {
+            if (alertsLoading) alertsLoading.classList.remove("active");
+        }
+    }
 })();

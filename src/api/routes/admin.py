@@ -11,10 +11,15 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.api.routes.admin_auth import require_admin
+from src.api.schemas import (
+    UpdatePermissionsRequest,
+    UpdateUserRequest,
+    UserInfoResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -114,6 +119,30 @@ class DbTestResponse(BaseModel):
     success: bool
     message: str
     details: Optional[str] = None
+
+
+class AuditLogFilterParams(BaseModel):
+    """감사 로그 조회 필터."""
+
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    user_id: Optional[str] = None
+    event_type: Optional[str] = None
+    target_db: Optional[str] = None
+    success: Optional[bool] = None
+    keyword: Optional[str] = None
+    page: int = 1
+    page_size: int = 50
+
+
+class AuditLogPageResponse(BaseModel):
+    """페이지네이션 감사 로그 응답."""
+
+    logs: list[dict]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 # --- 유틸리티 ---
@@ -492,4 +521,438 @@ async def test_db_connection(
             success=False,
             message="DB 연결에 실패했습니다.",
             details=str(e),
+        )
+
+
+# --- 엔드포인트: 사용자 관리 ---
+
+
+@router.get(
+    "/admin/users",
+    response_model=list[UserInfoResponse],
+)
+async def list_users(
+    request: Request,
+    _username: str = Depends(require_admin),
+) -> list[UserInfoResponse]:
+    """사용자 목록을 조회한다.
+
+    Args:
+        request: FastAPI Request
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        사용자 목록
+    """
+    user_repo = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
+
+    users = await user_repo.list_all()
+    return [
+        UserInfoResponse(
+            user_id=u.user_id,
+            username=u.username,
+            role=u.role.value,
+            department=u.department,
+            allowed_db_ids=u.allowed_db_ids,
+            status=u.status.value,
+            last_login_at=u.last_login_at.isoformat() if u.last_login_at else None,
+        )
+        for u in users
+    ]
+
+
+@router.put(
+    "/admin/users/{user_id}",
+    response_model=UserInfoResponse,
+)
+async def update_user(
+    request: Request,
+    user_id: str,
+    body: UpdateUserRequest,
+    _username: str = Depends(require_admin),
+) -> UserInfoResponse:
+    """사용자 정보를 수정한다 (역할/상태/부서 등).
+
+    Args:
+        request: FastAPI Request
+        user_id: 대상 사용자 ID
+        body: 수정 요청
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        수정된 사용자 정보
+
+    Raises:
+        HTTPException: 사용자를 찾을 수 없을 때
+    """
+    user_repo = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
+
+    from src.domain.user import UserRole, UserStatus
+
+    user = await user_repo.get_by_user_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+
+    if body.username is not None:
+        user.username = body.username
+    if body.role is not None:
+        user.role = UserRole(body.role)
+    if body.department is not None:
+        user.department = body.department
+    if body.status is not None:
+        user.status = UserStatus(body.status)
+        if body.status == "active":
+            user.login_fail_count = 0
+
+    await user_repo.update(user)
+    logger.info("관리자가 사용자 수정: %s (by %s)", user_id, _username)
+
+    return UserInfoResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        department=user.department,
+        allowed_db_ids=user.allowed_db_ids,
+        status=user.status.value,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+    )
+
+
+@router.delete(
+    "/admin/users/{user_id}",
+)
+async def delete_user(
+    request: Request,
+    user_id: str,
+    _username: str = Depends(require_admin),
+) -> dict:
+    """사용자를 삭제한다.
+
+    Args:
+        request: FastAPI Request
+        user_id: 대상 사용자 ID
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        삭제 결과
+
+    Raises:
+        HTTPException: 사용자를 찾을 수 없을 때
+    """
+    user_repo = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
+
+    if not await user_repo.exists(user_id):
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+
+    await user_repo.delete(user_id)
+    logger.info("관리자가 사용자 삭제: %s (by %s)", user_id, _username)
+
+    return {"message": f"사용자 '{user_id}'가 삭제되었습니다."}
+
+
+@router.post(
+    "/admin/users/{user_id}/reset-password",
+)
+async def reset_user_password(
+    request: Request,
+    user_id: str,
+    _username: str = Depends(require_admin),
+) -> dict:
+    """사용자 비밀번호를 초기화한다.
+
+    임시 비밀번호를 생성하여 설정하고, 사용자에게 알려준다.
+
+    Args:
+        request: FastAPI Request
+        user_id: 대상 사용자 ID
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        임시 비밀번호 정보
+    """
+    user_repo = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
+
+    user = await user_repo.get_by_user_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+
+    import secrets
+
+    from src.utils.password import hash_password
+
+    temp_password = secrets.token_urlsafe(12)
+    user.hashed_password = hash_password(temp_password)
+    user.login_fail_count = 0
+    if user.status.value == "locked":
+        from src.domain.user import UserStatus
+        user.status = UserStatus.ACTIVE
+
+    await user_repo.update(user)
+    logger.info("관리자가 비밀번호 초기화: %s (by %s)", user_id, _username)
+
+    return {
+        "message": f"사용자 '{user_id}'의 비밀번호가 초기화되었습니다.",
+        "temp_password": temp_password,
+    }
+
+
+@router.put(
+    "/admin/users/{user_id}/permissions",
+    response_model=UserInfoResponse,
+)
+async def update_user_permissions(
+    request: Request,
+    user_id: str,
+    body: UpdatePermissionsRequest,
+    _username: str = Depends(require_admin),
+) -> UserInfoResponse:
+    """사용자의 DB 접근 권한을 수정한다.
+
+    Args:
+        request: FastAPI Request
+        user_id: 대상 사용자 ID
+        body: 권한 수정 요청
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        수정된 사용자 정보
+    """
+    user_repo = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
+
+    user = await user_repo.get_by_user_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+
+    user.allowed_db_ids = body.allowed_db_ids
+    await user_repo.update(user)
+    logger.info(
+        "관리자가 사용자 권한 수정: %s -> allowed_db_ids=%s (by %s)",
+        user_id, body.allowed_db_ids, _username,
+    )
+
+    return UserInfoResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        department=user.department,
+        allowed_db_ids=user.allowed_db_ids,
+        status=user.status.value,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+    )
+
+
+@router.get(
+    "/admin/audit-logs",
+)
+async def get_audit_logs(
+    request: Request,
+    user_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+    _username: str = Depends(require_admin),
+) -> list[dict]:
+    """감사 로그를 조회한다.
+
+    Args:
+        request: FastAPI Request
+        user_id: 필터: 사용자 ID
+        event_type: 필터: 이벤트 타입
+        limit: 최대 조회 수
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        감사 로그 목록
+    """
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if not audit_repo:
+        return []
+
+    return await audit_repo.query_logs(
+        user_id=user_id,
+        event_type=event_type,
+        limit=min(limit, 1000),
+    )
+
+
+# --- 엔드포인트: 감사 로그 확장 ---
+
+
+@router.get(
+    "/admin/audit/logs",
+    response_model=AuditLogPageResponse,
+)
+async def get_audit_logs_paginated(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    user_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    target_db: Optional[str] = None,
+    success: Optional[bool] = None,
+    keyword: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    _username: str = Depends(require_admin),
+) -> AuditLogPageResponse:
+    """확장된 감사 로그 조회 (페이지네이션, 필터).
+
+    Args:
+        request: FastAPI Request
+        start_date: 시작 날짜 (ISO 형식)
+        end_date: 종료 날짜 (ISO 형식)
+        user_id: 필터: 사용자 ID
+        event_type: 필터: 이벤트 타입
+        target_db: 필터: 대상 DB
+        success: 필터: 성공 여부
+        keyword: 키워드 검색
+        page: 페이지 번호
+        page_size: 페이지 크기
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        페이지네이션된 감사 로그 응답
+    """
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if not audit_repo:
+        return AuditLogPageResponse(
+            logs=[], total=0, page=page, page_size=page_size, total_pages=0,
+        )
+
+    page_size = min(page_size, 200)  # 최대 200
+
+    try:
+        logs, total = await audit_repo.query_logs_paginated(
+            start_date=start_date,
+            end_date=end_date,
+            user_id=user_id,
+            event_type=event_type,
+            target_db=target_db,
+            success=success,
+            keyword=keyword,
+            page=page,
+            page_size=page_size,
+        )
+    except AttributeError:
+        # query_logs_paginated 미구현 시 기존 메서드 폴백
+        logs = await audit_repo.query_logs(
+            user_id=user_id, event_type=event_type, limit=page_size,
+        )
+        total = len(logs)
+
+    total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+
+    return AuditLogPageResponse(
+        logs=logs,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@router.get(
+    "/admin/audit/stats",
+)
+async def get_audit_stats(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    _username: str = Depends(require_admin),
+) -> dict:
+    """감사 통계를 반환한다.
+
+    Args:
+        request: FastAPI Request
+        start_date: 통계 시작 날짜 (ISO 형식)
+        end_date: 통계 종료 날짜 (ISO 형식)
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        감사 통계 딕셔너리
+    """
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if not audit_repo:
+        return {"error": "감사 서비스를 사용할 수 없습니다."}
+
+    try:
+        return await audit_repo.get_stats(
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except AttributeError:
+        return {"error": "통계 기능이 지원되지 않습니다."}
+
+
+@router.get(
+    "/admin/audit/users/{user_id}/activity",
+)
+async def get_user_activity(
+    request: Request,
+    user_id: str,
+    limit: int = 100,
+    _username: str = Depends(require_admin),
+) -> list[dict]:
+    """특정 사용자의 활동 이력을 반환한다.
+
+    Args:
+        request: FastAPI Request
+        user_id: 대상 사용자 ID
+        limit: 최대 조회 수
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        사용자 활동 이력 목록
+    """
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if not audit_repo:
+        return []
+
+    try:
+        return await audit_repo.get_user_activity(
+            user_id=user_id,
+            limit=min(limit, 500),
+        )
+    except AttributeError:
+        return await audit_repo.query_logs(
+            user_id=user_id, limit=min(limit, 500),
+        )
+
+
+@router.get(
+    "/admin/audit/alerts",
+)
+async def get_security_alerts(
+    request: Request,
+    limit: int = 100,
+    _username: str = Depends(require_admin),
+) -> list[dict]:
+    """보안 경고 목록을 반환한다.
+
+    Args:
+        request: FastAPI Request
+        limit: 최대 조회 수
+        _username: 인증된 관리자 (의존성 주입)
+
+    Returns:
+        보안 경고 목록
+    """
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if not audit_repo:
+        return []
+
+    try:
+        return await audit_repo.get_alerts(limit=min(limit, 500))
+    except AttributeError:
+        return await audit_repo.query_logs(
+            event_type="security_alert", limit=min(limit, 500),
         )

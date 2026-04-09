@@ -1,0 +1,47 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - heading "INFRA QUERY AGENT" [level=1] [ref=e4]
+      - navigation [ref=e5]:
+        - generic [ref=e6]: ONLINE
+        - generic [ref=e8]: Anonymous
+        - link "Admin" [ref=e9] [cursor=pointer]:
+          - /url: /admin/login
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e13]:
+        - img [ref=e15]
+        - heading "Infrastructure Query Agent" [level=2] [ref=e18]
+        - paragraph [ref=e19]: 자연어로 인프라 데이터를 조회하세요. 서버 현황, CPU/메모리/디스크 사용률, 네트워크 트래픽 등을 질의할 수 있습니다.
+        - generic [ref=e20]:
+          - button "CPU 사용률 현황" [ref=e21] [cursor=pointer]
+          - button "고사용 메모리 서버" [ref=e22] [cursor=pointer]
+          - button "디스크 사용량 TOP 10" [ref=e23] [cursor=pointer]
+          - button "네트워크 트래픽 추이" [ref=e24] [cursor=pointer]
+      - text: "!"
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - textbox "인프라 데이터에 대해 질문하세요..." [ref=e28]
+          - generic [ref=e29]:
+            - button "Choose File" [ref=e30] [cursor=pointer]:
+              - button "Choose File" [ref=e31]
+              - img [ref=e32]
+            - button "전송 (Enter)" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - generic [ref=e40]: Enter
+            - text: 전송 ·
+            - generic [ref=e41]: Shift
+            - text: +
+            - generic [ref=e42]: Enter
+            - text: 개행
+          - generic [ref=e43]: .xlsx, .docx 첨부 가능
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - heading "처리 현황" [level=3] [ref=e46]
+        - button "패널 접기/펼치기" [ref=e47] [cursor=pointer]:
+          - img [ref=e48]
+      - generic [ref=e51]:
+        - img [ref=e52]
+        - paragraph [ref=e54]: 질의를 실행하면 처리 과정이 여기에 표시됩니다.

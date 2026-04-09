@@ -11,12 +11,14 @@ import re
 from typing import Optional
 
 import sqlparse
+import structlog
 
 from src.config import AppConfig, load_config
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
+_audit_logger = structlog.get_logger("audit")
 
 
 async def query_validator(
@@ -75,6 +77,13 @@ async def query_validator(
     forbidden = guard.detect_forbidden_keywords(sql, FORBIDDEN_SQL_KEYWORDS)
     if forbidden:
         errors.append(f"금지된 키워드가 포함되어 있습니다: {', '.join(forbidden)}")
+        _audit_logger.warning(
+            "security_alert",
+            alert_type="forbidden_sql",
+            forbidden_keywords=forbidden,
+            sql=sql[:200],
+            user_id=state.get("user_id"),
+        )
 
     # 4. SQL 인젝션 패턴 탐지
     injections = guard.detect_injection_patterns(sql, INJECTION_PATTERNS)
@@ -82,9 +91,22 @@ async def query_validator(
         errors.append(
             f"SQL 인젝션 위험 패턴이 감지되었습니다: {len(injections)}건"
         )
+        _audit_logger.warning(
+            "security_alert",
+            alert_type="sql_injection_attempt",
+            pattern_count=len(injections),
+            sql=sql[:200],
+            user_id=state.get("user_id"),
+        )
 
     # 5. 참조 테이블 존재 여부 (대소문자 무시 + bare name fallback)
     referenced_tables = _extract_table_names(sql)
+    # CTE는 가상 테이블이므로 검증 대상에서 제외
+    cte_names = _extract_cte_names(sql)
+    cte_names_lower = {c.lower() for c in cte_names}
+    referenced_tables = {
+        t for t in referenced_tables if t.lower() not in cte_names_lower
+    }
     available_tables = set(schema_info.get("tables", {}).keys())
     available_tables_lower = {t.lower() for t in available_tables}
     # bare name → schema.table fallback 매핑 구축
@@ -196,10 +218,62 @@ def _get_statement_type(sql: str) -> str:
     return "UNKNOWN"
 
 
+def _extract_cte_names(sql: str) -> set[str]:
+    """WITH 절에서 CTE(Common Table Expression) 이름을 추출한다.
+
+    Args:
+        sql: SQL 쿼리 문자열
+
+    Returns:
+        CTE 이름 집합
+    """
+    cte_names: set[str] = set()
+    if not re.search(r"^\s*WITH\b", sql, re.IGNORECASE):
+        return cte_names
+    # "name AS (" 패턴에서 이름 추출
+    _skip_keywords = frozenset({
+        "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "RECURSIVE",
+        "NOT", "CAST", "TREAT", "EXTRACT", "TRIM", "SUBSTRING",
+    })
+    for m in re.finditer(r"\b(\w+)\s+AS\s*\(", sql, re.IGNORECASE):
+        name = m.group(1)
+        if name.upper() not in _skip_keywords:
+            cte_names.add(name)
+    return cte_names
+
+
+def _clean_sql_for_table_extraction(sql: str) -> str:
+    """테이블 추출 전 SQL에서 오탐 원인이 되는 요소를 제거한다.
+
+    1. 주석 제거 (-- 주석 내 FROM이 테이블로 오인)
+    2. 문자열 리터럴 제거
+    3. SQL 함수 내부의 FROM 제거 (EXTRACT, SUBSTRING, TRIM 등)
+
+    Args:
+        sql: 원본 SQL
+
+    Returns:
+        정제된 SQL
+    """
+    # 주석 제거
+    sql_clean = sqlparse.format(sql, strip_comments=True)
+    # 문자열 리터럴 제거
+    sql_clean = re.sub(r"'[^']*'", "''", sql_clean)
+    # SQL 함수 내부의 FROM 제거 (EXTRACT(... FROM ...), SUBSTRING(... FROM ...) 등)
+    sql_clean = re.sub(
+        r"\b(?:EXTRACT|SUBSTRING|TRIM|OVERLAY|POSITION)\s*\([^)]*\)",
+        " ",
+        sql_clean,
+        flags=re.IGNORECASE,
+    )
+    return sql_clean
+
+
 def _extract_table_names(sql: str) -> set[str]:
     """SQL에서 참조하는 테이블명을 추출한다.
 
     FROM, JOIN 절에서 테이블명을 추출한다.
+    주석, 문자열 리터럴, 함수 내 FROM은 사전에 제거하여 오탐을 방지한다.
 
     Args:
         sql: SQL 쿼리 문자열
@@ -209,12 +283,14 @@ def _extract_table_names(sql: str) -> set[str]:
     """
     tables: set[str] = set()
 
+    sql_clean = _clean_sql_for_table_extraction(sql)
+
     # schema.table 형태를 포함하는 식별자 패턴 (예: polestar.cmm_resource)
     _ident = r"[\w]+(?:\.[\w]+)?"
 
     # FROM 절 (콤마로 구분된 다중 테이블 지원: FROM t1, t2, t3)
     from_clauses = re.findall(
-        rf"\bFROM\s+((?:{_ident}\s*,\s*)*{_ident})", sql, re.IGNORECASE
+        rf"\bFROM\s+((?:{_ident}\s*,\s*)*{_ident})", sql_clean, re.IGNORECASE
     )
     for clause in from_clauses:
         for table in clause.split(","):
@@ -225,11 +301,16 @@ def _extract_table_names(sql: str) -> set[str]:
                 tables.add(table_name)
 
     # JOIN 절 (schema.table 형태 지원)
-    join_match = re.findall(rf"\bJOIN\s+({_ident})", sql, re.IGNORECASE)
+    join_match = re.findall(rf"\bJOIN\s+({_ident})", sql_clean, re.IGNORECASE)
     tables.update(join_match)
 
-    # information_schema 참조는 무시
-    tables = {t for t in tables if not t.lower().startswith("information_schema")}
+    # 필터링
+    tables = {
+        t for t in tables
+        if not t.lower().startswith("information_schema")
+        and t  # 빈 문자열 제외
+        and not t[0].isdigit()  # 숫자로 시작하면 테이블명 아님
+    }
 
     return tables
 
@@ -526,6 +607,28 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
                         f"반드시 hostname 기반 브릿지 조인을 사용하세요: "
                         f"{config_table}.name='Hostname' AND {config_table}.stringvalue_short = {entity_table}.hostname 으로 "
                         f"브릿지한 후, configuration_id로 다른 속성을 조인하세요."
+                    )
+
+                # 패턴 3: excluded_join_columns 컬럼이 임의 테이블과의 조인에 사용
+                # config_table 대상이 아니더라도 차단 (cmm_vendor, cmm_os 등 레거시 lookup 테이블)
+                if (
+                    actual_left == exc_table
+                    and col_left_lower == exc_column
+                    and actual_right != config_table
+                ):
+                    errors.append(
+                        f"금지된 조인 감지: {exc_table}.{exc_column}이 JOIN ON 절에 사용되었습니다. "
+                        f"사유: {exc_reason}"
+                    )
+                # 패턴 3 역방향
+                if (
+                    actual_right == exc_table
+                    and col_right_lower == exc_column
+                    and actual_left != config_table
+                ):
+                    errors.append(
+                        f"금지된 조인 감지: {exc_table}.{exc_column}이 JOIN ON 절에 사용되었습니다. "
+                        f"사유: {exc_reason}"
                     )
 
     return errors
