@@ -40,7 +40,10 @@ async def run_query(query: str) -> str:
     from src.utils.sql_file_logger import init_sql_file_logger
     init_sql_file_logger()
 
-    graph = build_graph(config)
+    from src.graph import _create_checkpointer_async
+
+    checkpointer = await _create_checkpointer_async(config)
+    graph = build_graph(config, checkpointer=checkpointer)
 
     initial_state = create_initial_state(user_query=query)
 
@@ -50,8 +53,16 @@ async def run_query(query: str) -> str:
         }
     }
 
-    result = await graph.ainvoke(initial_state, thread_config)
-    return result.get("final_response", "응답을 생성할 수 없습니다.")
+    try:
+        result = await graph.ainvoke(initial_state, thread_config)
+        return result.get("final_response", "응답을 생성할 수 없습니다.")
+    finally:
+        conn = getattr(checkpointer, "conn", None)
+        if conn is not None and hasattr(conn, "close"):
+            try:
+                await conn.close()
+            except Exception:
+                pass
 
 
 def run_server() -> None:
