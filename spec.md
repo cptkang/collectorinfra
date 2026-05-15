@@ -775,7 +775,7 @@ AppConfig
 |------|--------|------|
 | `LLM_PROVIDER` | `ollama` | LLM 프로바이더 (ollama/fabrix/gemini) |
 | `LLM_MODEL` | `llama3.1:8b` | 모델명 |
-| `DBHUB_SERVER_URL` | `http://localhost:9090/sse` | MCP 서버 URL |
+| `DBHUB_SERVER_URL` | `http://localhost:9099/sse` | MCP 서버 URL |
 | `MULTI_DB_ACTIVE_DB_IDS_CSV` | - | 활성 DB 목록 (쉼표 구분) |
 | `SCHEMA_CACHE_BACKEND` | `redis` | 캐시 백엔드 (redis/file) |
 | `REDIS_HOST` | `localhost` | Redis 호스트 |

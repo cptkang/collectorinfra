@@ -68,7 +68,7 @@ class DBHubConfig(BaseSettings):
     클라이언트는 서버 URL만 보유한다.
     """
 
-    server_url: str = "http://localhost:9090/sse"   # MCP 서버 SSE 엔드포인트
+    server_url: str = "http://localhost:9099/sse"   # MCP 서버 SSE 엔드포인트
     source_name: str = ""                              # 기본 쿼리 대상 소스 (DBHUB_SOURCE_NAME으로 설정)
     mcp_call_timeout: int = 60                       # MCP 호출 전체 대기시간 (초)
 

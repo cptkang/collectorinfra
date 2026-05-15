@@ -25,7 +25,7 @@ class ServerConfig:
 
     name: str = "dbhub-server"
     host: str = "0.0.0.0"
-    port: int = 9090
+    port: int = 9099
     transport: str = "sse"
     log_level: str = "info"
 
@@ -141,7 +141,7 @@ def _load_toml(path: Path) -> AppServerConfig:
     server = ServerConfig(
         name=server_data.get("name", "dbhub-server"),
         host=server_data.get("host", "0.0.0.0"),
-        port=server_data.get("port", 9090),
+        port=server_data.get("port", 9099),
         transport=server_data.get("transport", "sse"),
         log_level=server_data.get("log_level", "info"),
     )
