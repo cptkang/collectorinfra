@@ -766,7 +766,7 @@ AppConfig
   ├─ enable_semantic_routing      # bool (자동 감지)
   ├─ enable_sql_approval          # bool (HITL)
   ├─ enable_structure_approval    # bool (HITL)
-  └─ polestar_db_id               # Polestar 전용 프롬프트 대상 DB
+  └─ polestar_db_ids              # Polestar 전용 프롬프트 대상 DB (콤마 구분)
 ```
 
 ### 15.2 주요 환경변수
