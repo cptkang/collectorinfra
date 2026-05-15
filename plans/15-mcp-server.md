@@ -24,7 +24,7 @@
 
 - **`dbhub` npm 패키지**: 시스템에서 미설치 상태 (npm 의존성 제거 완료)
 - **`config/dbhub_test.toml`**: 이 파일은 존재하지 않으며, 기존 `dbhub` CLI용 설정이므로 생성 불필요. MCP 서버 설정은 `mcp_server/config.toml`에 일원화됨
-- **런타임 검증 완료**: `python -m mcp_server`로 서버 구동 확인 (`0.0.0.0:9090` SSE). DB 미연결 상태에서 서버 라이프사이클 정상 동작
+- **런타임 검증 완료**: `python -m mcp_server`로 서버 구동 확인 (`0.0.0.0:9099` SSE). DB 미연결 상태에서 서버 라이프사이클 정상 동작
 
 ---
 
@@ -113,7 +113,7 @@ MCP 서버는 **별도 VM**에서 독립 구동된다. 클라이언트(에이전
 │                                  │    │                                           │
 │  # MCP 서버 접속 (개발: localhost)  │    │  [server]                                 │
 │  DBHUB_SERVER_URL=               │    │    host = "0.0.0.0"                       │
-│    http://localhost:9090/sse     │    │    port = 9090                            │
+│    http://localhost:9099/sse     │    │    port = 9099                            │
 │  DBHUB_SOURCE_NAME=infra_db     │    │    transport = "sse"                      │
 │  DBHUB_MCP_CALL_TIMEOUT=60      │    │                                           │
 │                                  │    │  [[sources]]  # PostgreSQL (Docker :5433) │
@@ -331,7 +331,7 @@ dependencies = [
 
 | 이전 | 현재 | 비고 |
 |------|------|------|
-| `DBHUB_CONFIG_PATH=./dbhub.toml` | `DBHUB_SERVER_URL=http://localhost:9090/sse` | 로컬 파일 → 원격 URL |
+| `DBHUB_CONFIG_PATH=./dbhub.toml` | `DBHUB_SERVER_URL=http://localhost:9099/sse` | 로컬 파일 → 원격 URL |
 | `QUERY_TIMEOUT=30` | (제거) | 서버 VM으로 이관 |
 | `QUERY_MAX_ROWS=10000` | (제거) | 서버 VM으로 이관 |
 | `POLESTAR_DB_CONNECTION=...` | (제거) | 서버 VM으로 이관 |
@@ -375,8 +375,8 @@ dependencies = [
 
 ```
 1. Docker 컨테이너 시작 (PostgreSQL :5433, DB2 :50000)
-2. MCP 서버 시작: cd mcp_server && python -m mcp_server  (localhost:9090)
-3. 에이전트 시작: 클라이언트 .env에 DBHUB_SERVER_URL=http://localhost:9090/sse
+2. MCP 서버 시작: cd mcp_server && python -m mcp_server  (localhost:9099)
+3. 에이전트 시작: 클라이언트 .env에 DBHUB_SERVER_URL=http://localhost:9099/sse
 4. 클라이언트 → SSE → MCP 서버 → PostgreSQL/DB2 → 결과 반환
 ```
 
@@ -394,7 +394,7 @@ dependencies = [
 
 - [x] `mcp_server/` 폴더가 독립 Python 패키지로 구성됨 (자체 `pyproject.toml`)
 - [x] `mcp_server/`는 `src/`에 대한 import 의존성이 없음
-- [x] `python -m mcp_server`로 서버가 SSE transport로 `0.0.0.0:9090`에서 실행됨 (런타임 검증 완료)
+- [x] `python -m mcp_server`로 서버가 SSE transport로 `0.0.0.0:9099`에서 실행됨 (런타임 검증 완료)
 - [x] `search_objects`, `execute_sql`, `get_table_schema`, `health_check`, `list_sources` 5개 도구 구현됨
 - [ ] PostgreSQL(Docker :5433) 연결 및 쿼리 실행 정상 동작 — **Docker 미실행 상태, 코드 구현 완료**
 - [ ] DB2(Docker :50000) 연결 및 쿼리 실행 정상 동작 — **ibm-db 미설치, 코드 구현 완료**
@@ -521,7 +521,7 @@ tests/test_tools.py     8 skipped (mcp 패키지 미설치)
 
 - [x] `mcp_server/` 폴더가 독립 Python 패키지로 구성됨 (자체 pyproject.toml)
 - [x] `mcp_server/`는 `src/`에 대한 import 의존성이 없음
-- [x] `python -m mcp_server`로 서버가 SSE transport로 localhost:9090에서 실행 가능
+- [x] `python -m mcp_server`로 서버가 SSE transport로 localhost:9099에서 실행 가능
 - [x] 5개 도구 구현 완료 (search_objects, execute_sql, get_table_schema, health_check, list_sources)
 - [x] PostgreSQL(asyncpg) 연결 코드 구현
 - [x] DB2(ibm_db + asyncio.to_thread) 연결 코드 구현

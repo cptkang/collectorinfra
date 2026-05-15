@@ -83,7 +83,7 @@ def mock_config() -> AppConfig:
     """테스트용 AppConfig를 반환한다."""
     return AppConfig(
         llm=LLMConfig(provider="ollama", model="llama3.1:8b"),
-        dbhub=DBHubConfig(server_url="http://localhost:9090/sse", source_name="infra_db", mcp_call_timeout=60),
+        dbhub=DBHubConfig(server_url="http://localhost:9099/sse", source_name="infra_db", mcp_call_timeout=60),
         query=QueryConfig(max_retry_count=3, default_limit=1000),
         security=SecurityConfig(sensitive_columns=["password", "secret", "token", "api_key"], mask_pattern="***MASKED***"),
         server=ServerConfig(host="0.0.0.0", port=8000),

@@ -766,7 +766,7 @@ AppConfig
   ├─ enable_semantic_routing      # bool (자동 감지)
   ├─ enable_sql_approval          # bool (HITL)
   ├─ enable_structure_approval    # bool (HITL)
-  └─ polestar_db_id               # Polestar 전용 프롬프트 대상 DB
+  └─ polestar_db_ids              # Polestar 전용 프롬프트 대상 DB (콤마 구분)
 ```
 
 ### 15.2 주요 환경변수
@@ -775,7 +775,7 @@ AppConfig
 |------|--------|------|
 | `LLM_PROVIDER` | `ollama` | LLM 프로바이더 (ollama/fabrix/gemini) |
 | `LLM_MODEL` | `llama3.1:8b` | 모델명 |
-| `DBHUB_SERVER_URL` | `http://localhost:9090/sse` | MCP 서버 URL |
+| `DBHUB_SERVER_URL` | `http://localhost:9099/sse` | MCP 서버 URL |
 | `MULTI_DB_ACTIVE_DB_IDS_CSV` | - | 활성 DB 목록 (쉼표 구분) |
 | `SCHEMA_CACHE_BACKEND` | `redis` | 캐시 백엔드 (redis/file) |
 | `REDIS_HOST` | `localhost` | Redis 호스트 |

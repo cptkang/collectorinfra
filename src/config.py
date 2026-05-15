@@ -68,7 +68,7 @@ class DBHubConfig(BaseSettings):
     클라이언트는 서버 URL만 보유한다.
     """
 
-    server_url: str = "http://localhost:9090/sse"   # MCP 서버 SSE 엔드포인트
+    server_url: str = "http://localhost:9099/sse"   # MCP 서버 SSE 엔드포인트
     source_name: str = ""                              # 기본 쿼리 대상 소스 (DBHUB_SOURCE_NAME으로 설정)
     mcp_call_timeout: int = 60                       # MCP 호출 전체 대기시간 (초)
 
@@ -264,11 +264,17 @@ class AppConfig(BaseSettings):
     # 시멘틱 라우팅 활성화 여부
     enable_semantic_routing: bool = False
 
-    # Polestar 전용 프롬프트를 적용할 DB ID
-    # .env에서 POLESTAR_DB_ID=polestar 로 설정하면
-    # active_db_id가 이 값과 일치할 때 Polestar 전용 시스템 프롬프트를 사용한다.
+    # Polestar 전용 프롬프트를 적용할 DB ID (콤마 구분으로 복수 지정 가능)
+    # .env에서 POLESTAR_DB_IDS=polestar,polestar2 로 설정하면
+    # active_db_id가 이 목록에 포함될 때 Polestar 전용 시스템 프롬프트를 사용한다.
     # 비어있으면 전용 프롬프트를 사용하지 않음 (범용 프롬프트 적용).
-    polestar_db_id: str = ""
+    polestar_db_ids: str = ""
+
+    def get_polestar_db_ids(self) -> set[str]:
+        """Polestar 전용 프롬프트를 적용할 DB ID 집합을 반환한다."""
+        if not self.polestar_db_ids:
+            return set()
+        return {x.strip() for x in self.polestar_db_ids.split(",") if x.strip()}
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 

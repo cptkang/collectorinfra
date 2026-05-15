@@ -214,7 +214,7 @@
 입력: parsed_requirements, schema_info, column_mapping, conversation_context
 처리:
   1. 시스템 프롬프트 구성:
-     - 범용 프롬프트 또는 Polestar 전용 프롬프트 (polestar_db_id 매칭 시)
+     - 범용 프롬프트 또는 Polestar 전용 프롬프트 (polestar_db_ids 매칭 시)
      - 스키마 정보 (테이블, 컬럼, FK, EAV 패턴)
      - 구조 가이드 (금지 JOIN 컬럼, value-based join 규칙)
      - 컬럼 매핑 정보 (column_mapping)

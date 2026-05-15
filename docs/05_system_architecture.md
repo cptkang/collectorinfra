@@ -293,7 +293,7 @@ AppConfig (pydantic-settings, 싱글톤)
 ├── enable_semantic_routing: bool (자동 판단)
 ├── enable_sql_approval: bool
 ├── enable_structure_approval: bool
-├── polestar_db_id: str
+├── polestar_db_ids: str          # 콤마 구분 (예: "polestar,polestar2")
 ├── conversation_max_turns: 20
 └── conversation_ttl_hours: 24
 ```

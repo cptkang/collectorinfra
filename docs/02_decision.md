@@ -646,7 +646,7 @@ query_validator → approval_gate (interrupt) → query_executor
 | 항목 | 변경 전 | 변경 후 |
 |------|---------|---------|
 | `DBHubConfig.config_path` | `./dbhub.toml` | 제거 |
-| `DBHubConfig.server_url` | (없음) | `http://localhost:9090/sse` |
+| `DBHubConfig.server_url` | (없음) | `http://localhost:9099/sse` |
 | `DBHubConfig.mcp_call_timeout` | (없음) | `60`초 |
 | `QueryConfig.query_timeout` | `30` | 제거 (서버 관리) |
 | `QueryConfig.max_rows` | `10000` | 제거 (서버 관리) |

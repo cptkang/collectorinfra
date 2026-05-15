@@ -180,7 +180,7 @@ async def query_generator(
         resource_type_synonyms=state.get("resource_type_synonyms"),
         eav_name_synonyms=state.get("eav_name_synonyms"),
         active_db_id=state.get("active_db_id"),
-        polestar_db_id=app_config.polestar_db_id or None,
+        polestar_db_ids=app_config.get_polestar_db_ids() or None,
         active_db_engine=state.get("active_db_engine"),
     )
 
@@ -222,7 +222,7 @@ def _build_system_prompt(
     resource_type_synonyms: dict[str, list[str]] | None = None,
     eav_name_synonyms: dict[str, list[str]] | None = None,
     active_db_id: str | None = None,
-    polestar_db_id: str | None = None,
+    polestar_db_ids: set[str] | None = None,
     active_db_engine: str | None = None,
 ) -> str:
     """시스템 프롬프트를 구성한다.
@@ -235,7 +235,7 @@ def _build_system_prompt(
         resource_type_synonyms: RESOURCE_TYPE 값-한국어 매핑 (선택)
         eav_name_synonyms: EAV NAME 값-한국어 매핑 (선택)
         active_db_id: 현재 활성 DB 식별자 (선택)
-        polestar_db_id: Polestar 전용 프롬프트 적용 DB ID (선택, .env 설정)
+        polestar_db_ids: Polestar 전용 프롬프트 적용 DB ID 집합 (선택, .env 설정)
         active_db_engine: 대상 DB 엔진 타입 (선택, 예: "db2", "postgresql")
 
     Returns:
@@ -263,8 +263,8 @@ def _build_system_prompt(
     db_engine = active_db_engine or "postgresql"
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
-    # Polestar 전용 프롬프트 선택: .env의 POLESTAR_DB_ID와 active_db_id가 일치하면 전용 템플릿 사용
-    if polestar_db_id and active_db_id == polestar_db_id:
+    # Polestar 전용 프롬프트 선택: .env의 POLESTAR_DB_IDS에 active_db_id가 포함되면 전용 템플릿 사용
+    if polestar_db_ids and active_db_id in polestar_db_ids:
         template = POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
     else:
         template = QUERY_GENERATOR_SYSTEM_TEMPLATE

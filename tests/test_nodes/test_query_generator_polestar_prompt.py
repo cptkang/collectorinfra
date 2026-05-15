@@ -26,57 +26,81 @@ def _minimal_schema_info() -> dict:
 class TestPolestarPromptSelection:
     """_build_system_prompt()의 Polestar 전용 프롬프트 선택 로직을 검증한다."""
 
-    def test_polestar_db_id_matches_active_db_id(self):
-        """polestar_db_id="polestar" + active_db_id="polestar" 이면
+    def test_polestar_db_ids_matches_active_db_id(self):
+        """polestar_db_ids={"polestar"} + active_db_id="polestar" 이면
         Polestar 전용 프롬프트가 사용되어야 한다."""
         result = _build_system_prompt(
             schema_info=_minimal_schema_info(),
             default_limit=1000,
             active_db_id="polestar",
-            polestar_db_id="polestar",
+            polestar_db_ids={"polestar"},
         )
         # Polestar 전용 프롬프트의 핵심 키워드 확인
         assert "POLESTAR 인프라 모니터링 DB" in result
         # 범용 프롬프트의 키워드는 포함되지 않아야 함
         assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" not in result
 
-    def test_polestar_db_id_does_not_match_active_db_id(self):
-        """polestar_db_id="polestar" + active_db_id="cloud_portal" 이면
+    def test_polestar_db_ids_does_not_match_active_db_id(self):
+        """polestar_db_ids={"polestar"} + active_db_id="cloud_portal" 이면
         범용 프롬프트가 사용되어야 한다."""
         result = _build_system_prompt(
             schema_info=_minimal_schema_info(),
             default_limit=1000,
             active_db_id="cloud_portal",
-            polestar_db_id="polestar",
+            polestar_db_ids={"polestar"},
         )
         # 범용 프롬프트의 키워드 확인
         assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" in result
         # Polestar 전용 키워드는 포함되지 않아야 함
         assert "POLESTAR 인프라 모니터링 DB" not in result
 
-    def test_polestar_db_id_empty_uses_generic(self):
-        """polestar_db_id="" (미설정) + active_db_id="polestar" 이면
+    def test_polestar_db_ids_empty_uses_generic(self):
+        """polestar_db_ids=None (미설정) + active_db_id="polestar" 이면
         범용 프롬프트가 사용되어야 한다 (전용 프롬프트 비활성화)."""
         result = _build_system_prompt(
             schema_info=_minimal_schema_info(),
             default_limit=1000,
             active_db_id="polestar",
-            polestar_db_id=None,  # .env에서 POLESTAR_DB_ID="" -> app_config.polestar_db_id or None -> None
+            polestar_db_ids=None,
         )
         assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" in result
         assert "POLESTAR 인프라 모니터링 DB" not in result
 
-    def test_polestar_db_id_renamed_matches(self):
-        """polestar_db_id="polestar_prod" + active_db_id="polestar_prod" 이면
+    def test_polestar_db_ids_renamed_matches(self):
+        """polestar_db_ids={"polestar_prod"} + active_db_id="polestar_prod" 이면
         Polestar 전용 프롬프트가 사용되어야 한다 (DB명 변경 대응)."""
         result = _build_system_prompt(
             schema_info=_minimal_schema_info(),
             default_limit=1000,
             active_db_id="polestar_prod",
-            polestar_db_id="polestar_prod",
+            polestar_db_ids={"polestar_prod"},
         )
         assert "POLESTAR 인프라 모니터링 DB" in result
         assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" not in result
+
+    def test_polestar_db_ids_multiple_matches(self):
+        """polestar_db_ids={"polestar", "polestar2"} + active_db_id="polestar2" 이면
+        Polestar 전용 프롬프트가 사용되어야 한다 (멀티 DB ID 지원)."""
+        result = _build_system_prompt(
+            schema_info=_minimal_schema_info(),
+            default_limit=1000,
+            active_db_id="polestar2",
+            polestar_db_ids={"polestar", "polestar2"},
+        )
+        assert "POLESTAR 인프라 모니터링 DB" in result
+        assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" not in result
+
+    def test_polestar_db_ids_multiple_no_match(self):
+        """polestar_db_ids={"polestar", "polestar2"} + active_db_id="cloud_portal" 이면
+        범용 프롬프트가 사용되어야 한다."""
+        result = _build_system_prompt(
+            schema_info=_minimal_schema_info(),
+            default_limit=1000,
+            active_db_id="cloud_portal",
+            polestar_db_ids={"polestar", "polestar2"},
+        )
+        assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" in result
+        assert "POLESTAR 인프라 모니터링 DB" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +161,7 @@ class TestPolestarPromptFormatting:
             schema_info=schema_info,
             default_limit=500,
             active_db_id="polestar",
-            polestar_db_id="polestar",
+            polestar_db_ids={"polestar"},
             active_db_engine="db2",
         )
         # 포맷 변수가 치환되었는지 확인
@@ -158,7 +182,7 @@ class TestPolestarPromptFormatting:
             schema_info=schema_info,
             default_limit=1000,
             active_db_id="polestar",
-            polestar_db_id="polestar",
+            polestar_db_ids={"polestar"},
         )
         assert "EAV 구조 가이드 텍스트" in result
 
@@ -168,17 +192,17 @@ class TestPolestarPromptFormatting:
             schema_info=_minimal_schema_info(),
             default_limit=1000,
             active_db_id=None,
-            polestar_db_id="polestar",
+            polestar_db_ids={"polestar"},
         )
         assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" in result
         assert "POLESTAR 인프라 모니터링 DB" not in result
 
     def test_both_none_uses_generic(self):
-        """active_db_id=None, polestar_db_id=None 이면 범용 프롬프트가 사용된다."""
+        """active_db_id=None, polestar_db_ids=None 이면 범용 프롬프트가 사용된다."""
         result = _build_system_prompt(
             schema_info=_minimal_schema_info(),
             default_limit=1000,
             active_db_id=None,
-            polestar_db_id=None,
+            polestar_db_ids=None,
         )
         assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" in result
