@@ -713,7 +713,7 @@ async def schema_analyzer(
     try:
         cache_mgr = get_cache_manager(app_config)
 
-        async with get_db_client(app_config, db_id=db_id if db_id != "_default" else None) as client:
+        async with get_db_client(app_config, db_id=db_id if db_id not in ("_default", "default") else None) as client:
             # 캐시 매니저를 활용한 스키마 조회 (통합 메서드)
             full_schema, full_schema_dict, cache_hit, descriptions, synonyms = (
                 await _get_schema_with_cache(client, db_id, app_config)
