@@ -57,8 +57,19 @@ Task: 사용자의 요청을 분석하여, 아래에 정의된 [Query Template]�
 
 [Strict Constraints - 절대 위반 불가]
 1. 환각 금지: 스키마에 없는 테이블, 컬럼, 리소스 타입(예: resource_type = 'platform.server')을 절대 지어내지 않는다.
-2. 사용 가능한 테이블: cmm_resource, core_config_prop, cmm_metric_stat_m 세 가지만 사용한다.
-3. 성능 지표(CPU 사용률, 메모리 사용률, 디스크 사용률 등)는 반드시 cmm_metric_stat_m 테이블에서 조회한다. cmm_resource나 core_config_prop에서 사용률을 조회하려 하지 않는다.
+2. 사용 가능한 테이블: cmm_resource, core_config_prop, cmm_metric_stat_[h,d,m] (시간/일/월 통계) 만 사용한다.
+3. 성능 지표(CPU 사용률, 메모리 사용률, 디스크 사용률 등)는 반드시 cmm_metric_stat_[h,d,m] 테이블 중 하나에서 조회한다. cmm_resource나 core_config_prop에서 사용률을 조회하려 하지 않는다.
+4. **반드시 SQL을 생성하라.** "실시간 데이터에 접근할 수 없다" 등의 거부 응답을 절대 하지 않는다. 시간 단위 요청 시 _h, 일 단위 요청 시 _d, 월 단위 요청 시 _m 테이블을 사용한다. 항상 SQL을 생성하라.
+
+[날짜/시간 및 통계 테이블(cmm_metric_stat_[h,d,m]) 분기 처리]
+사용자가 요청하는 시간 단위에 따라 알맞은 통계 테이블을 조회한다:
+- 시간 단위 ("현재", "실시간", "최근 N시간") → `cmm_metric_stat_h` 조인 (stat_date 형식: YYYYMMDDHH, 예: '2026052214')
+  * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')
+- 일 단위 ("오늘", "어제", "최근 N일", "특정 일자") → `cmm_metric_stat_d` 조인 (stat_date 형식: YYYYMMDD, 예: '20260522')
+  * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
+- 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 조인 (stat_date 형식: YYYYMM, 예: '202605')
+  * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
+주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 MAX(stat_date) 서브쿼리 또는 CURRENT_DATE 기반의 동적 계산을 사용한다.
 
 ---
 
@@ -93,16 +104,15 @@ GROUP BY COALESCE(c.platform_resource_id, c.id);
 
 ---
 
-[Template B - 성능 지표 조회: cmm_metric_stat_m 패턴]
+[Template B - 성능 지표 조회: cmm_metric_stat_[h,d,m] 패턴]
 CPU 사용률, 메모리 사용률, 파일시스템 사용률, 디스크 IO 등 **성능/사용률 지표**가 포함된 경우 반드시 이 패턴을 사용한다.
 
 핵심 조인 구조:
 - cmm_resource r: 리소스 행 (Cpus, Memory, FileSystems, Disks 등 서브 리소스)
 - cmm_resource svr: 서버 행 (r.platform_resource_id = svr.id, svr.resource_type = 'server.Server')
-- cmm_metric_stat_m s: 성능 통계 (r.id = s.resource_id)
-- 서브쿼리 hi: 하드웨어 설정 정보 (Template A 패턴, svr.ipaddress = hi.ipaddress 로 조인)
+- cmm_metric_stat_[h,d,m] s: 성능 통계 (r.id = s.resource_id)
 
-cmm_metric_stat_m 주요 컬럼:
+통계 테이블 주요 컬럼:
 - resource_id: cmm_resource.id 와 조인
 - definition_name: 지표 종류 ('Utilization' = CPU/메모리/파일시스템 사용률, 'MaxIORate' = 디스크 IO)
 - stat_date: 통계 기준 월 (YYYYMM 형식 문자열, 예: '202601')
@@ -156,14 +166,20 @@ LEFT JOIN (
 ) hi ON svr.ipaddress = hi.ipaddress
 WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
   AND s.definition_name IN ('Utilization', 'MaxIORate')
-  AND TO_DATE(s.stat_date || '01', 'YYYYMMDD') BETWEEN DATE '2026-01-01' AND DATE '2026-01-31'
+  AND s.stat_date = (SELECT MAX(stat_date) FROM polestar.cmm_metric_stat_m)
 GROUP BY svr.name, svr.ipaddress, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD'), hi.physicalcore, hi.mem_size
-ORDER BY stat_date
+ORDER BY svr.hostname
 LIMIT {default_limit};
 ```
 
 사용자가 특정 지표만 요청한 경우(예: CPU와 메모리만), 해당 resource_type의 CASE WHEN 절만 포함하고 나머지는 제거한다.
-사용자가 시간 범위를 지정하지 않은 경우, WHERE의 stat_date 조건을 제거하거나 최근 1개월로 설정한다.
+시간 범위 필터 및 테이블 적용 방법:
+- "현재", "실시간" 명시 → `cmm_metric_stat_h` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')`
+- "오늘" 명시 → `cmm_metric_stat_d` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')`
+- "최근", 시간 미지정 → `cmm_metric_stat_m` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')`
+- "최근 3일" → `cmm_metric_stat_d` 테이블 사용, `s.stat_date IN (SELECT DISTINCT stat_date FROM polestar.cmm_metric_stat_d ORDER BY stat_date DESC FETCH FIRST 3 ROWS ONLY)`
+- "2026년 1월" → `cmm_metric_stat_m` 테이블 사용, `s.stat_date = '202601'`
+- "1월~3월" → `cmm_metric_stat_m` 테이블 사용, `s.stat_date BETWEEN '202601' AND '202603'`
 
 ---
 
@@ -196,7 +212,7 @@ LIMIT {default_limit};
 7. 테이블 별칭(alias)을 사용하여 가독성을 높인다.
 8. 양식-DB 매핑이 제공된 경우, 매핑된 모든 컬럼을 SELECT에 포함하고 "테이블명.컬럼명" 형태의 alias를 부여한다.
 9. 설정 정보 조회 시: cmm_resource.resource_conf_id = core_config_prop.configuration_id 를 JOIN 조건으로 사용한다.
-10. 성능 지표 조회 시: cmm_resource.id = cmm_metric_stat_m.resource_id 를 JOIN 조건으로 사용한다.
+10. 성능 지표 조회 시: cmm_resource.id = cmm_metric_stat_[h,d,m].resource_id 를 JOIN 조건으로 사용한다.
 
 ## 출력 형식
 

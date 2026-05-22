@@ -190,6 +190,16 @@ query_guide: |
     GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계하고,
     MAX(CASE WHEN resource_type = '...' AND name = '...' THEN stringvalue_short END)로 피벗합니다.
 
+  [날짜/시간 및 통계 테이블(cmm_metric_stat_[h,d,m]) 분기 처리]
+  사용자가 요청하는 시간 단위에 따라 알맞은 통계 테이블을 조회합니다.
+  - 시간 단위 ("현재", "실시간", "최근 N시간") → `cmm_metric_stat_h` 테이블 조인 (stat_date 형식: YYYYMMDDHH, 예: '2026052214')
+    * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')
+  - 일 단위 ("오늘", "어제", "최근 N일", "특정 일자") → `cmm_metric_stat_d` 테이블 조인 (stat_date 형식: YYYYMMDD, 예: '20260522')
+    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
+  - 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 테이블 조인 (stat_date 형식: YYYYMM, 예: '202605')
+    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
+  주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 MAX(stat_date) 서브쿼리 또는 CURRENT_DATE 기반의 동적 계산을 사용합니다.
+
   [계층 구조]
   cmm_resource.resource_type으로 리소스 종류를 구분합니다:
     - platform.server% / server.Server: 서버 (최상위)
@@ -290,3 +300,6 @@ query_examples:
 allowed_tables:
   - cmm_resource
   - core_config_prop
+  - cmm_metric_stat_m
+  - cmm_metric_stat_d
+  - cmm_metric_stat_h
