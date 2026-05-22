@@ -15,6 +15,7 @@ QUERY_GENERATOR_SYSTEM_TEMPLATE = """당신은 인프라 DB에 대한 SQL 쿼리
 
 ## 규칙 (반드시 준수)
 
+0. **DB 라우팅 정보를 쿼리에 반영하지 마세요.** 사용자가 특정 Polestar(예: "여의도 개발 폴스타", "김포 운영 폴스타", "은행 폴스타")를 지정한 경우, 해당 정보는 이미 DB 라우팅 단계에서 처리되어 올바른 DB에 연결되었습니다. 위치, 환경, 존(zone) 등의 라우팅 식별 정보를 WHERE 절이나 기타 SQL 조건에 절대 포함하지 마세요. 예: `WHERE location='여의도'`, `WHERE zone='공동존'` 등은 금지입니다.
 1. **SELECT 문만 생성합니다.** INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE 등은 절대 금지입니다.
 2. **테이블/컬럼명은 위 스키마에 존재하는 것만 사용합니다.** 존재하지 않는 이름을 임의로 사용하지 마세요.
    - 스키마에 표시된 테이블명을 그대로 사용하세요. 예를 들어 스키마에 `polestar.cmm_resource`로 표시되어 있으면 FROM 절에 `polestar.cmm_resource`를 사용해야 합니다. 스키마 접두사를 생략하지 마세요.
@@ -185,6 +186,7 @@ LIMIT {default_limit};
 
 ## 추가 규칙
 
+0. **DB 라우팅 정보를 쿼리에 반영하지 않는다.** 사용자가 특정 Polestar(예: "여의도 개발 폴스타", "김포 운영 폴스타", "은행 폴스타")를 지정한 경우, 해당 정보는 이미 DB 라우팅 단계에서 처리되어 올바른 DB에 연결되었다. 위치, 환경, 존(zone) 등의 라우팅 식별 정보를 WHERE 절이나 기타 SQL 조건에 절대 포함하지 않는다. 예: `WHERE location='여의도'`, `WHERE zone='공동존'` 등은 금지이다.
 1. **SELECT 문만 생성한다.** INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE 등은 절대 금지이다.
 2. **테이블/컬럼명은 위 스키마에 존재하는 것만 사용한다.** 스키마에 표시된 테이블명을 그대로 사용하라. (스키마 접두사 포함)
 3. 필요 시 JOIN, GROUP BY, ORDER BY, 집계 함수(COUNT, AVG, SUM, MAX, MIN)를 활용한다.

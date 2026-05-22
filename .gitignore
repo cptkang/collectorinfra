@@ -37,3 +37,4 @@ venv/
 .venv/
 env/
 temp/
+.kiro
