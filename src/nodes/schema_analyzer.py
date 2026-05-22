@@ -713,11 +713,13 @@ async def schema_analyzer(
     try:
         cache_mgr = get_cache_manager(app_config)
 
-        async with get_db_client(app_config, db_id=db_id if db_id != "_default" else None) as client:
+        async with get_db_client(app_config, db_id=db_id if db_id not in ("_default", "default") else None) as client:
             # 캐시 매니저를 활용한 스키마 조회 (통합 메서드)
             full_schema, full_schema_dict, cache_hit, descriptions, synonyms = (
                 await _get_schema_with_cache(client, db_id, app_config)
             )
+            # ★ DEBUG[1]: 캐시에서 로드된 전체 테이블 확인
+            logger.warning("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
 
             # 2. LLM 기반 관련 테이블 선택
             relevant = await _llm_select_relevant_tables(
@@ -726,6 +728,8 @@ async def schema_analyzer(
                 query_targets,
                 parsed.get("original_query", ""),
             )
+            # ★ DEBUG[2]: LLM이 선택한 테이블 확인
+            logger.warning("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
             # 2-1. EAV 동반 테이블 자동 보충
             relevant = _supplement_eav_tables(
@@ -733,15 +737,47 @@ async def schema_analyzer(
                 list(full_schema.tables.keys()),
                 db_id,
             )
+            # ★ DEBUG[3]: EAV 보충 후 테이블 확인
+            logger.warning("DEBUG[3] after EAV supplement: %s", relevant)
 
-            # 2-2. allowed_tables 필터링 (수동 프로필에 허용 테이블이 정의된 경우)
+            # 2-2. allowed_tables 필터링 + 보충 (수동 프로필에 허용 테이블이 정의된 경우)
+            # allowed_tables가 정의되면:
+            #   1) LLM이 선택한 테이블 중 allowed_tables에 없는 것을 제거
+            #   2) allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
+            #      (LLM 환각으로 누락되는 문제 방지)
             _manual_prof = _load_manual_profile(db_id)
             if _manual_prof and "allowed_tables" in _manual_prof:
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
+                # ★ DEBUG[4]: 필터링 조건 확인
+                logger.warning("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
+                logger.warning("DEBUG[4] relevant before filter: %s", relevant)
+                logger.warning("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
+
+                # Step 1: LLM 선택 중 allowed_tables에 있는 것만 남김
                 _filtered = [
                     t for t in relevant
                     if t.rsplit(".", 1)[-1].lower() in _allowed
                 ]
+
+                # Step 2: allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
+                # full_schema에서 실제 존재하는 테이블명(schema.table 형식)으로 매핑
+                _filtered_bare = {t.rsplit(".", 1)[-1].lower() for t in _filtered}
+                _all_tables_map: dict[str, str] = {}  # bare_lower -> full_name
+                for t in full_schema.tables.keys():
+                    _all_tables_map[t.rsplit(".", 1)[-1].lower()] = t
+
+                for allowed_bare in _allowed:
+                    if allowed_bare not in _filtered_bare:
+                        full_name = _all_tables_map.get(allowed_bare)
+                        if full_name:
+                            _filtered.append(full_name)
+                            logger.info(
+                                "allowed_tables 보충: LLM 미선택 테이블 추가 '%s'",
+                                full_name,
+                            )
+
+                # ★ DEBUG[4]: 필터링+보충 결과
+                logger.warning("DEBUG[4] filtered+supplemented result: %s", _filtered)
                 if _filtered:
                     _removed = set(relevant) - set(_filtered)
                     if _removed:
@@ -753,6 +789,8 @@ async def schema_analyzer(
 
             # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
             schema_dict = schema_to_dict(full_schema, relevant)
+            # ★ DEBUG[5]: 최종 schema_dict의 테이블 키 확인
+            logger.warning("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
 
             # 4. 샘플 데이터 수집 (관련 테이블만)
             # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음

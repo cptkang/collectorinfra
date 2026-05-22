@@ -72,3 +72,28 @@ type = "postgresql"
 readonly = true
 query_timeout = 30
 max_rows = 10000
+
+[[sources]]
+name = "polestar_b0"
+type = "db2"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+
+[[sources]]
+name = "polestar_cm_gp"
+type = "postgresql"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+pool_min_size = 1
+pool_max_size = 3
+
+[[sources]]
+name = "polestar_cm_yd"
+type = "postgresql"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+pool_min_size = 1
+pool_max_size = 3

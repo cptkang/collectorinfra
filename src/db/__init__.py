@@ -28,6 +28,10 @@ async def get_db_client(
     Yields:
         연결된 DB 클라이언트 인스턴스
     """
+    # "_default" / "default"는 설정값(DBHUB_SOURCE_NAME)을 사용하라는 sentinel
+    if db_id in ("_default", "default"):
+        db_id = None
+
     if config.db_backend == "direct":
         from src.db.client import PostgresClient
 

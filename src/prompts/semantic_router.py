@@ -34,10 +34,24 @@ SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE = """당신은 인프라 관련 질의를
 하나의 질의가 여러 DB의 데이터를 필요로 할 수 있습니다.
 이 경우 각 DB별로 조회해야 할 내용을 sub_query_context에 분리하여 기술하세요.
 
+**중요: sub_query_context에는 순수한 데이터 조회 의도만 기술하세요.**
+DB를 식별하기 위해 사용된 위치/환경/존 정보(여의도, 김포, 은행, 공동존, 개발, 운영 등)는
+sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 사용되며,
+실제 SQL 쿼리 조건으로 변환되어서는 안 됩니다.
+
+예시:
+- 입력: "여의도 개발 폴스타에서 서버 리스트 출력"
+  -> polestar_cm_yd: sub_query_context = "서버 목록 조회" (O)
+  -> polestar_cm_yd: sub_query_context = "여의도 개발 서버 목록 조회" (X - 위치 정보 포함 금지)
+
 예시:
 - 입력: "서버 사양과 해당 서버의 VM 정보를 알려줘"
   -> polestar: sub_query_context = "서버 사양(CPU, Memory, Disk) 조회"
   -> cloud_portal: sub_query_context = "서버에 연결된 VM 정보 조회"
+
+- 입력: "김포 운영 폴스타에서 CPU 사용률 높은 서버 보여줘"
+  -> polestar_cm_gp: sub_query_context = "CPU 사용률이 높은 서버 목록 조회"
+  (주의: "김포 운영"은 DB 식별 정보이므로 sub_query_context에 포함하지 않음)
 
 ## 출력 형식
 

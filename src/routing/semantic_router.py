@@ -16,9 +16,10 @@ import logging
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from src.config import AppConfig, load_config
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.llm import create_llm
 from src.prompts.semantic_router import SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
@@ -259,10 +260,11 @@ async def _llm_classify(
         분류 결과 목록
     """
     system_prompt = _build_router_prompt(domains, db_descriptions=db_descriptions)
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=query),
-    ]
+
+    messages = [SystemMessage(content=system_prompt)]
+    if type(llm) is KBGenAIChat:
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=query))
 
     response = await llm.ainvoke(messages)
     parsed = extract_json_from_response(response.content)

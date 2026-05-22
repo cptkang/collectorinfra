@@ -48,7 +48,7 @@ async def query_executor(
 
     try:
         db_id = state.get("active_db_id")
-        async with get_db_client(app_config, db_id=db_id if db_id and db_id != "_default" else None) as client:
+        async with get_db_client(app_config, db_id=db_id if db_id and db_id not in ("_default", "default") else None) as client:
             result = await client.execute_sql(sql)
 
         elapsed_ms = (time.time() - start_time) * 1000
