@@ -11,8 +11,9 @@ import re
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.input_parser import (
@@ -158,8 +159,12 @@ async def _parse_natural_language(
 
     messages = [
         SystemMessage(content=system_prompt),
+        # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
+        AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
         HumanMessage(content=user_query),
     ]
+    # Remove any None entries (no effect for other LLMs)
+    messages = [m for m in messages if m is not None]
 
     parsed: dict = {}
     for attempt in range(2):  # 최대 2회 시도
@@ -257,6 +262,7 @@ async def _parse_natural_language_with_csv(
 
     messages = [
         SystemMessage(content=system_prompt),
+        AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
         HumanMessage(content=user_query),
     ]
 

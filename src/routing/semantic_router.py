@@ -16,7 +16,7 @@ import logging
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
 from src.config import AppConfig, load_config
 from src.clients.fabrix_kbgenai import KBGenAIChat
@@ -261,8 +261,8 @@ async def _llm_classify(
     """
     system_prompt = _build_router_prompt(domains, db_descriptions=db_descriptions)
 
-    messages = [SystemMessage(content=system_prompt)]
-    if type(llm) is KBGenAIChat:
+    messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
+    if isinstance(llm, KBGenAIChat):
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=query))
 

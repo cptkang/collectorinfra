@@ -16,8 +16,9 @@ from typing import Any, Optional
 
 import sqlparse
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
@@ -460,10 +461,12 @@ async def _generate_sql(
             f"## 이전 에러\n{error_context}\n위 에러를 수정한 새로운 SQL을 생성하세요."
         )
 
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content="\n\n".join(user_parts)),
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system_prompt)
     ]
+    if isinstance(llm, KBGenAIChat):
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content="\n\n".join(user_parts)))
 
     response = await llm.ainvoke(messages)
     return _extract_sql(response.content)
