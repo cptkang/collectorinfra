@@ -11,8 +11,9 @@ import logging
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
@@ -149,10 +150,12 @@ async def _generate_text_response(
         sql=state["generated_sql"],
     )
 
-    messages = [
-        SystemMessage(content=OUTPUT_GENERATOR_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt),
+    messages: list[BaseMessage] = [
+        SystemMessage(content=OUTPUT_GENERATOR_SYSTEM_PROMPT)
     ]
+    if type(llm) is KBGenAIChat:
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=user_prompt))
 
     response = await llm.ainvoke(messages)
     return response.content

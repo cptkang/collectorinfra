@@ -13,8 +13,9 @@ import re
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import (
@@ -197,8 +198,12 @@ async def query_generator(
     # LLM 호출
     messages = [
         SystemMessage(content=system_prompt),
+        # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
+        AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
         HumanMessage(content=user_prompt),
     ]
+# Remove any None entries (no effect for other LLMs)
+    messages = [m for m in messages if m is not None]
     response = await llm.ainvoke(messages)
 
     # SQL 추출

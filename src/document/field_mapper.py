@@ -14,8 +14,9 @@ import logging
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.prompts.field_mapper import (
     FIELD_MAPPER_SYSTEM_PROMPT,
     FIELD_MAPPER_USER_PROMPT,
@@ -603,10 +604,12 @@ async def _apply_llm_synonym_discovery(
         eav_attributes_with_synonyms=eav_attributes_with_synonyms,
     )
 
-    messages = [
-        SystemMessage(content=FIELD_MAPPER_SYNONYM_DISCOVERY_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt),
+    messages: list[BaseMessage] = [
+        SystemMessage(content=FIELD_MAPPER_SYNONYM_DISCOVERY_SYSTEM_PROMPT)
     ]
+    if type(llm) is KBGenAIChat:
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=user_prompt))
 
     try:
         response = await llm.ainvoke(messages)
@@ -860,10 +863,12 @@ async def _apply_llm_mapping_with_synonyms(
         eav_context=eav_context_text,
     )
 
-    messages = [
-        SystemMessage(content=FIELD_MAPPER_ENHANCED_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt),
+    messages: list[BaseMessage] = [
+        SystemMessage(content=FIELD_MAPPER_ENHANCED_SYSTEM_PROMPT)
     ]
+    if isinstance(llm, KBGenAIChat):
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=user_prompt))
 
     llm_inference_details: list[dict] = []
 
@@ -1121,10 +1126,12 @@ async def _invoke_llm_mapping_multi_db(
         db_schema_columns=schema_text,
     )
 
-    messages = [
-        SystemMessage(content=FIELD_MAPPER_MULTI_DB_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt),
+    messages: list[BaseMessage] = [
+        SystemMessage(content=FIELD_MAPPER_MULTI_DB_SYSTEM_PROMPT)
     ]
+    if isinstance(llm, KBGenAIChat):
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=user_prompt))
 
     for attempt in range(2):
         try:
@@ -1193,10 +1200,12 @@ async def _invoke_llm_mapping(
             schema_columns=schema_columns,
         )
 
-    messages = [
-        SystemMessage(content=FIELD_MAPPER_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt),
+    messages: list[BaseMessage] = [
+        SystemMessage(content=FIELD_MAPPER_SYSTEM_PROMPT)
     ]
+    if isinstance(llm, KBGenAIChat):
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=user_prompt))
 
     for attempt in range(2):
         try:

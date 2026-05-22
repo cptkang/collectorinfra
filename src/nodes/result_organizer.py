@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.security.data_masker import DataMasker
@@ -193,7 +194,7 @@ async def _resolve_unmatched_via_llm(
     Returns:
         {field: resolved_result_key} 또는 None (실패/불필요 시)
     """
-    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
     from src.prompts.column_resolver import (
         COLUMN_RESOLVER_SYSTEM_PROMPT,
@@ -232,8 +233,12 @@ async def _resolve_unmatched_via_llm(
     try:
         messages = [
             SystemMessage(content=COLUMN_RESOLVER_SYSTEM_PROMPT),
+            # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
+            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
             HumanMessage(content=user_prompt),
         ]
+        # Remove any None entries (no effect for other LLMs)
+        messages = [m for m in messages if m is not None]
         response = await llm.ainvoke(messages)
         content = response.content.strip()
 
@@ -352,7 +357,7 @@ async def _llm_check_column_coverage(
     Returns:
         매칭된 컬럼 수 (LLM 호출 실패 시 전체 수를 반환하여 충분으로 간주)
     """
-    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
     if llm is None:
         try:
@@ -379,8 +384,12 @@ async def _llm_check_column_coverage(
     try:
         messages = [
             SystemMessage(content=system_prompt),
+            # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
+            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
             HumanMessage(content=user_prompt),
         ]
+        # Remove any None entries (no effect for other LLMs)
+        messages = [m for m in messages if m is not None]
         response = await llm.ainvoke(messages)
         content = response.content.strip()
 
