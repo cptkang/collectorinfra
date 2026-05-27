@@ -19,26 +19,30 @@ from src.state import create_initial_state
 class TestCheckDataSufficiency:
     """데이터 충분성 판단 검증."""
 
-    def test_empty_results_are_sufficient(self):
+    @pytest.mark.asyncio
+    async def test_empty_results_are_sufficient(self):
         """빈 결과(0건)는 충분하다고 판단한다 ('해당 데이터 없음' 응답)."""
-        assert _check_data_sufficiency([], {}, None) is True
+        assert await _check_data_sufficiency([], {}, None) is True
 
-    def test_results_without_template_are_sufficient(self):
+    @pytest.mark.asyncio
+    async def test_results_without_template_are_sufficient(self):
         """양식 없이 결과가 있으면 충분하다."""
         results = [{"hostname": "web-01"}]
-        assert _check_data_sufficiency(results, {}, None) is True
+        assert await _check_data_sufficiency(results, {}, None) is True
 
-    def test_template_with_enough_columns(self):
+    @pytest.mark.asyncio
+    async def test_template_with_enough_columns(self):
         """양식 헤더 대비 충분한 컬럼이 있으면 충분하다."""
         results = [{"hostname": "web-01", "ip": "10.0.0.1", "os": "Ubuntu"}]
         template = {"sheets": [{"headers": ["서버명", "IP"], "header_row": 1, "data_start_row": 2}]}
-        assert _check_data_sufficiency(results, {}, template) is True
+        assert await _check_data_sufficiency(results, {}, template) is True
 
-    def test_template_with_insufficient_columns(self):
+    @pytest.mark.asyncio
+    async def test_template_with_insufficient_columns(self):
         """양식 헤더 대비 컬럼이 50% 미만이면 부족하다."""
         results = [{"hostname": "web-01"}]
         template = {"sheets": [{"headers": ["서버명", "IP", "OS", "CPU", "메모리"], "header_row": 1, "data_start_row": 2}]}
-        assert _check_data_sufficiency(results, {}, template) is False
+        assert await _check_data_sufficiency(results, {}, template) is False
 
 
 class TestGetUnitForColumn:

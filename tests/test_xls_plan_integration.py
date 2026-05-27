@@ -932,7 +932,7 @@ class TestResultOrganizerMappingIntegration:
             "CPU 사용률": "cpu_metrics.usage_pct",
         }
 
-        is_sufficient = _check_data_sufficiency(
+        is_sufficient = await _check_data_sufficiency(
             results, parsed, template, column_mapping=column_mapping
         )
         assert is_sufficient is True
@@ -952,7 +952,7 @@ class TestResultOrganizerMappingIntegration:
             "메모리": "memory_metrics.total_gb",
         }
 
-        is_sufficient = _check_data_sufficiency(
+        is_sufficient = await _check_data_sufficiency(
             results, parsed, template, column_mapping=column_mapping
         )
         # 매핑된 4개 컬럼 중 0개가 결과에 있음 → 불충분
