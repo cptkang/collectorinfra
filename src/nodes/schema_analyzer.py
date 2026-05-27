@@ -748,6 +748,15 @@ async def schema_analyzer(
             _manual_prof = _load_manual_profile(db_id)
             if _manual_prof and "allowed_tables" in _manual_prof:
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
+                # 매핑 피드백(synonyms)에 등록된 테이블도 allowed_tables에 동적 추가하여 캐시 갱신 이후 필터링 유실 방지
+                try:
+                    db_syns = await cache_mgr.get_synonyms(db_id)
+                    for col_key in db_syns.keys():
+                        if "." in col_key:
+                            tbl = col_key.split(".", 1)[0].lower()
+                            _allowed.add(tbl)
+                except Exception as e:
+                    logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
                 # ★ DEBUG[4]: 필터링 조건 확인
                 logger.warning("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
                 logger.warning("DEBUG[4] relevant before filter: %s", relevant)

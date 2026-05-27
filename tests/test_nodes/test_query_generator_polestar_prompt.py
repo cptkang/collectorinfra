@@ -115,15 +115,16 @@ class TestPolestarPromptContent:
         assert "Hallucination" in POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
 
     def test_contains_join_relation(self):
-        """hostname 기반 값 조인 규칙이 포함되어야 한다."""
+        """서버 설정 조인 규칙이 포함되어야 한다."""
         assert (
-            "R.HOSTNAME = P_HOST.STRINGVALUE_SHORT"
+            "resource_conf_id = cc.configuration_id"
             in POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
         )
 
     def test_contains_is_lob_handling(self):
-        """IS_LOB 분기 규칙이 포함되어야 한다."""
-        assert "IS_LOB" in POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        """dtime IS NULL 분기 규칙이 포함되어야 한다."""
+        assert "dtime IS NULL" in POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+
 
     def test_contains_eav_pivot_pattern(self):
         """MAX(CASE WHEN 피벗 패턴이 포함되어야 한다."""

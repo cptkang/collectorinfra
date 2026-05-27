@@ -140,17 +140,23 @@ async def query_validator(
 
     # 7. LIMIT 절 존재 여부
     db_engine = state.get("active_db_engine") or "postgresql"
+    user_query = state.get("user_query", "") or ""
+    is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
     if not _has_limit_clause(sql):
-        default_limit = app_config.query.default_limit
-        auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
-        if db_engine == "db2":
-            warnings.append(
-                f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
-            )
+        if is_all_query:
+            # 모든/전체 결과 조회 질의의 경우 LIMIT 자동 추가 생략
+            logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
         else:
-            warnings.append(
-                f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
-            )
+            default_limit = app_config.query.default_limit
+            auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
+            if db_engine == "db2":
+                warnings.append(
+                    f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
+                )
+            else:
+                warnings.append(
+                    f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
+                )
 
     # 8. 성능 위험 패턴
     perf_warnings = _check_performance_risks(sql, schema_info)

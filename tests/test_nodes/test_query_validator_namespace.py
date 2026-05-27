@@ -180,3 +180,23 @@ async def test_dotless_schema_fallback(dotless_schema_info):
     assert result["validation_result"]["passed"] is True, f"검증 실패 사유: {result.get('error_message')}"
     assert result["error_message"] is None
 
+
+@pytest.mark.asyncio
+async def test_all_query_skips_limit_addition(dotless_schema_info):
+    """사용자 질의에 '모든'이 들어간 경우 LIMIT 자동 추가가 생략되는지 테스트."""
+    state = create_initial_state(user_query="모든 서버 조회")
+    state["schema_info"] = dotless_schema_info
+    # LIMIT 절이 없는 쿼리
+    state["generated_sql"] = (
+        "SELECT c.id FROM cmm_resource c"
+    )
+
+    with patch("src.nodes.query_validator.load_config") as mock_config:
+        mock_config.return_value.query.default_limit = 1000
+        result = await query_validator(state)
+
+    assert result["validation_result"]["passed"] is True
+    # LIMIT 1000이 생성된 SQL에 자동으로 덧붙지 않아야 함
+    assert "LIMIT" not in result["generated_sql"]
+
+

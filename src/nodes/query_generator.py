@@ -172,10 +172,15 @@ async def query_generator(
     # 멀티턴 맥락에서 이전 SQL 참조
     conversation_context = state.get("conversation_context")
 
+    # 모든/전체 조회 쿼리인 경우 LIMIT 값을 100,000으로 높여 1000건 제한 우회
+    user_query = state.get("user_query", "") or ""
+    is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
+    limit_value = 100000 if is_all_query else app_config.query.default_limit
+
     # 프롬프트 구성
     system_prompt = _build_system_prompt(
         schema_info=state["schema_info"],
-        default_limit=app_config.query.default_limit,
+        default_limit=limit_value,
         column_descriptions=state.get("column_descriptions", {}),
         column_synonyms=state.get("column_synonyms", {}),
         resource_type_synonyms=state.get("resource_type_synonyms"),
