@@ -1,14 +1,14 @@
-"""?�라?�언??- MCP ?�버 ?�동 ?�합 ?�스??
+"""?대씪?댁뼵??- MCP ?쒕쾭 ?곕룞 ?듯빀 ?뚯뒪??
 
-DB ?�결 ?�이 DBPoolManager�?mock?�여
-MCP ?�버 ?�구 ?�수?� DBHubClient ?�서??end-to-end ?�름??검증한??
+DB ?곌껐 ?놁씠 DBPoolManager瑜?mock?섏뿬
+MCP ?쒕쾭 ?꾧뎄 ?⑥닔?� DBHubClient ?뚯꽌??end-to-end ?먮쫫??寃�利앺븳??
 
-?�스???�??
-- MCP ?�버 ?�구 5�?(list_sources, health_check, search_objects, execute_sql, get_table_schema)
-- DBHubClient??결과 ?�싱 로직 (_parse_table_list, _parse_table_schema, _parse_query_result)
-- ?�기 ?�용 ?�반 거�?
-- ?�?�아??처리
-- ?�연�?로직
+?뚯뒪???�??
+- MCP ?쒕쾭 ?꾧뎄 5媛?(list_sources, health_check, search_objects, execute_sql, get_table_schema)
+- DBHubClient??寃곌낵 ?뚯떛 濡쒖쭅 (_parse_table_list, _parse_table_schema, _parse_query_result)
+- ?쎄린 ?꾩슜 ?꾨컲 嫄곕?
+- ?�?꾩븘??泥섎━
+- ?ъ뿰寃?濡쒖쭅
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# mcp_server ?�키지???�립 ?�브?�키지(mcp_server/)�?pip install ?�이 ?�용?��?�?
-# sys.path??mcp_server/ ?�렉?�리�?추�??�여 import가 가?�하�??�다.
+# mcp_server ?⑦궎吏�???낅┰ ?쒕툕?⑦궎吏�(mcp_server/)濡?pip install ?놁씠 ?ъ슜?섎?濡?
+# sys.path??mcp_server/ ?붾젆?좊━瑜?異붽??섏뿬 import媛� 媛�?ν븯寃??쒕떎.
 _MCP_SERVER_ROOT = str(Path(__file__).resolve().parent.parent / "mcp_server")
 if _MCP_SERVER_ROOT not in sys.path:
     sys.path.insert(0, _MCP_SERVER_ROOT)
@@ -32,8 +32,8 @@ from mcp_server.config import SourceConfig
 from mcp_server.db import DBPoolManager
 from mcp_server.security import ReadOnlyViolationError
 
-# --- MCP ?�버 ?�구 ?�수 ?�포??(register_tools ?��? ?�수 직접 ?�출 불�??��?�?
-#     tools 모듈???�퍼 + register_tools ???�구 ?�수�?추출?�는 방식 ?�용) ---
+# --- MCP ?쒕쾭 ?꾧뎄 ?⑥닔 ?꾪룷??(register_tools ?대? ?⑥닔 吏곸젒 ?몄텧 遺덇??섎?濡?
+#     tools 紐⑤뱢???ы띁 + register_tools ???꾧뎄 ?⑥닔瑜?異붿텧?섎뒗 諛⑹떇 ?ъ슜) ---
 from mcp_server.tools import register_tools
 
 from src.config import DBHubConfig, QueryConfig
@@ -50,7 +50,7 @@ from src.dbhub.models import (
 
 
 # ============================================================================
-# Fixture: ?�스?�용 SourceConfig
+# Fixture: ?뚯뒪?몄슜 SourceConfig
 # ============================================================================
 
 
@@ -61,7 +61,7 @@ def _make_source_config(
     max_rows: int = 10000,
     query_timeout: int = 30,
 ) -> SourceConfig:
-    """?�스?�용 SourceConfig�??�성?�다."""
+    """?뚯뒪?몄슜 SourceConfig瑜??앹꽦?쒕떎."""
     return SourceConfig(
         name=name,
         type=db_type,
@@ -81,22 +81,22 @@ def _make_source_config(
 
 @pytest.fixture
 def mock_pool_manager() -> DBPoolManager:
-    """DB ?�결 ?�이 ?�작?�는 mock DBPoolManager�??�성?�다.
+    """DB ?곌껐 ?놁씠 ?숈옉?섎뒗 mock DBPoolManager瑜??앹꽦?쒕떎.
 
     Returns:
-        모든 메서?��? mock??DBPoolManager ?�스?�스
+        紐⑤뱺 硫붿꽌?쒓? mock??DBPoolManager ?몄뒪?댁뒪
     """
     pm = MagicMock(spec=DBPoolManager)
 
     source_config = _make_source_config()
 
-    # 기본 메서??mock
+    # 湲곕낯 硫붿꽌??mock
     pm.get_active_sources.return_value = ["infra_db"]
     pm.is_source_active.side_effect = lambda name: name == "infra_db"
     pm.get_source_config.return_value = source_config
     pm.get_source_type.return_value = "postgresql"
 
-    # async 메서??mock
+    # async 硫붿꽌??mock
     pm.execute = AsyncMock(return_value=[])
     pm.health_check = AsyncMock(return_value=True)
 
@@ -110,13 +110,13 @@ def mock_pool_manager() -> DBPoolManager:
 
 @pytest.fixture
 def mock_ctx(mock_pool_manager: DBPoolManager) -> MagicMock:
-    """MCP Context�?mock?�여 pool_manager�?주입?�다.
+    """MCP Context瑜?mock?섏뿬 pool_manager瑜?二쇱엯?쒕떎.
 
     Args:
         mock_pool_manager: mock??DBPoolManager
 
     Returns:
-        pool_manager가 주입??mock Context
+        pool_manager媛� 二쇱엯??mock Context
     """
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {
@@ -127,26 +127,26 @@ def mock_ctx(mock_pool_manager: DBPoolManager) -> MagicMock:
 
 
 # ============================================================================
-# Fixture: MCP ?�버 ?�구 ?�수 추출
+# Fixture: MCP ?쒕쾭 ?꾧뎄 ?⑥닔 異붿텧
 # ============================================================================
 
 
 @pytest.fixture
 def mcp_tools() -> dict[str, Any]:
-    """FastMCP???�록???�구 ?�수?�을 추출?�다.
+    """FastMCP???깅줉???꾧뎄 ?⑥닔?ㅼ쓣 異붿텧?쒕떎.
 
-    register_tools()가 @mcp.tool() ?�코?�이?�로 ?�록?�는 ?�수?�을
-    캡처?�여 dict�?반환?�다.
+    register_tools()媛� @mcp.tool() ?곗퐫?덉씠?곕줈 ?깅줉?섎뒗 ?⑥닔?ㅼ쓣
+    罹≪쿂?섏뿬 dict濡?諛섑솚?쒕떎.
 
     Returns:
-        ?�구 ?�름 -> ?�수 매핑
+        ?꾧뎄 ?대쫫 -> ?⑥닔 留ㅽ븨
     """
     tools: dict[str, Any] = {}
 
     mock_mcp = MagicMock()
 
     def capture_tool(*args: Any, **kwargs: Any) -> Any:
-        """@mcp.tool() ?�코?�이?��? 가로채???�수�?캡처?�다."""
+        """@mcp.tool() ?곗퐫?덉씠?곕? 媛�濡쒖콈???⑥닔瑜?罹≪쿂?쒕떎."""
         def decorator(func: Any) -> Any:
             tools[func.__name__] = func
             return func
@@ -158,18 +158,18 @@ def mcp_tools() -> dict[str, Any]:
 
 
 # ============================================================================
-# Fixture: DBHubClient (mock ?�결)
+# Fixture: DBHubClient (mock ?곌껐)
 # ============================================================================
 
 
 @pytest.fixture
 def dbhub_client() -> DBHubClient:
-    """?�스?�용 DBHubClient�??�성?�다.
+    """?뚯뒪?몄슜 DBHubClient瑜??앹꽦?쒕떎.
 
-    MCP ?�션??mock?�여 ?�제 ?�버 ?�결 ?�이 ?�서 로직???�스?�한??
+    MCP ?몄뀡??mock?섏뿬 ?ㅼ젣 ?쒕쾭 ?곌껐 ?놁씠 ?뚯꽌 濡쒖쭅???뚯뒪?명븳??
 
     Returns:
-        mock ?�션???�정??DBHubClient
+        mock ?몄뀡???ㅼ젙??DBHubClient
     """
     config = DBHubConfig(
         server_url="http://localhost:9099/sse",
@@ -184,17 +184,17 @@ def dbhub_client() -> DBHubClient:
 
 
 # ============================================================================
-# ?�스?? list_sources
+# ?뚯뒪?? list_sources
 # ============================================================================
 
 
 class TestListSources:
-    """list_sources ?�구 ?�출 �??�성 ?�스 목록 반환 ?�스??"""
+    """list_sources ?꾧뎄 ?몄텧 諛??쒖꽦 ?뚯뒪 紐⑸줉 諛섑솚 ?뚯뒪??"""
 
     async def test_returns_active_sources(
         self, mcp_tools: dict, mock_ctx: MagicMock
     ) -> None:
-        """?�성 ?�스 목록??JSON?�로 반환?�다."""
+        """?쒖꽦 ?뚯뒪 紐⑸줉??JSON?쇰줈 諛섑솚?쒕떎."""
         result_json = await mcp_tools["list_sources"](ctx=mock_ctx)
         result = json.loads(result_json)
 
@@ -207,7 +207,7 @@ class TestListSources:
     async def test_includes_source_settings(
         self, mcp_tools: dict, mock_ctx: MagicMock
     ) -> None:
-        """?�스 ?�정(query_timeout, max_rows)???�함?�다."""
+        """?뚯뒪 ?ㅼ젙(query_timeout, max_rows)???ы븿?쒕떎."""
         result_json = await mcp_tools["list_sources"](ctx=mock_ctx)
         result = json.loads(result_json)
 
@@ -223,7 +223,7 @@ class TestListSources:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """?�러 ?�스가 ?�록??경우 모두 반환?�다."""
+        """?щ윭 ?뚯뒪媛� ?깅줉??寃쎌슦 紐⑤몢 諛섑솚?쒕떎."""
         source_configs = {
             "infra_db": _make_source_config("infra_db", "postgresql"),
             "infra_db2": _make_source_config("infra_db2", "db2"),
@@ -246,17 +246,17 @@ class TestListSources:
 
 
 # ============================================================================
-# ?�스?? health_check
+# ?뚯뒪?? health_check
 # ============================================================================
 
 
 class TestHealthCheck:
-    """health_check ?�구 ?�출 �??�상/비정???�답 처리 ?�스??"""
+    """health_check ?꾧뎄 ?몄텧 諛??뺤긽/鍮꾩젙???묐떟 泥섎━ ?뚯뒪??"""
 
     async def test_healthy_source(
         self, mcp_tools: dict, mock_ctx: MagicMock
     ) -> None:
-        """?�상 ?�스???�??healthy ?�태�?반환?�다."""
+        """?뺤긽 ?뚯뒪???�??healthy ?곹깭瑜?諛섑솚?쒕떎."""
         result_json = await mcp_tools["health_check"](
             source="infra_db", ctx=mock_ctx
         )
@@ -273,7 +273,7 @@ class TestHealthCheck:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """비정???�스???�??unhealthy ?�태�?반환?�다."""
+        """鍮꾩젙???뚯뒪???�??unhealthy ?곹깭瑜?諛섑솚?쒕떎."""
         mock_pool_manager.health_check = AsyncMock(return_value=False)
 
         result_json = await mcp_tools["health_check"](
@@ -289,7 +289,7 @@ class TestHealthCheck:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """미등�??�스???�??not_found ?�태�?반환?�다."""
+        """誘몃벑濡??뚯뒪???�??not_found ?곹깭瑜?諛섑솚?쒕떎."""
         mock_pool_manager.is_source_active.return_value = False
 
         result_json = await mcp_tools["health_check"](
@@ -302,12 +302,12 @@ class TestHealthCheck:
 
 
 # ============================================================================
-# ?�스?? search_objects
+# ?뚯뒪?? search_objects
 # ============================================================================
 
 
 class TestSearchObjects:
-    """search_objects ?�구 ?�출 �?TableInfo 변???�스??"""
+    """search_objects ?꾧뎄 ?몄텧 諛?TableInfo 蹂�???뚯뒪??"""
 
     async def test_returns_table_list(
         self,
@@ -315,7 +315,7 @@ class TestSearchObjects:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """?�이�?목록??JSON?�로 반환?�다."""
+        """?뚯씠釉?紐⑸줉??JSON?쇰줈 諛섑솚?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
             return_value=[
                 {"name": "servers", "schema": "public"},
@@ -341,7 +341,7 @@ class TestSearchObjects:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """?�턴 ?�터링으�??�정 ?�이블만 반환?�다."""
+        """?⑦꽩 ?꾪꽣留곸쑝濡??뱀젙 ?뚯씠釉붾쭔 諛섑솚?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
             return_value=[{"name": "cpu_metrics", "schema": "public"}]
         )
@@ -357,8 +357,8 @@ class TestSearchObjects:
     async def test_client_parse_table_list(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�라?�언?��? search_objects 결과�?TableInfo 목록?�로 변?�한??"""
-        # MCP 결과 ?�식???��??�이??(TextContent 구조)
+        """?대씪?댁뼵?멸? search_objects 寃곌낵瑜?TableInfo 紐⑸줉?쇰줈 蹂�?섑븳??"""
+        # MCP 寃곌낵 ?뺤떇???쒕??덉씠??(TextContent 援ъ“)
         mock_text_content = MagicMock()
         mock_text_content.text = json.dumps([
             {"name": "servers", "schema": "public"},
@@ -382,7 +382,7 @@ class TestSearchObjects:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """DB ?�러 발생 ???�러 JSON??반환?�다."""
+        """DB ?먮윭 諛쒖깮 ???먮윭 JSON??諛섑솚?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
             side_effect=Exception("connection refused")
         )
@@ -397,12 +397,12 @@ class TestSearchObjects:
 
 
 # ============================================================================
-# ?�스?? execute_sql
+# ?뚯뒪?? execute_sql
 # ============================================================================
 
 
 class TestExecuteSql:
-    """execute_sql ?�구 ?�출 �?QueryResult 변???�스??"""
+    """execute_sql ?꾧뎄 ?몄텧 諛?QueryResult 蹂�???뚯뒪??"""
 
     async def test_returns_query_result(
         self,
@@ -410,7 +410,7 @@ class TestExecuteSql:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """쿼리 결과가 columns, rows, row_count ?�식?�로 반환?�다."""
+        """荑쇰━ 寃곌낵媛� columns, rows, row_count ?뺤떇?쇰줈 諛섑솚?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
             return_value=[
                 {"hostname": "web-01", "ip_address": "10.0.0.1", "usage_pct": 85.3},
@@ -437,8 +437,8 @@ class TestExecuteSql:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """max_rows 초과 ??결과가 ?�리�?truncated=True가 ?�다."""
-        # max_rows=2???�스 ?�정
+        """max_rows 珥덇낵 ??寃곌낵媛� ?섎━怨?truncated=True媛� ?쒕떎."""
+        # max_rows=2???뚯뒪 ?ㅼ젙
         small_source = _make_source_config(max_rows=2)
         mock_pool_manager.get_source_config.return_value = small_source
 
@@ -466,7 +466,7 @@ class TestExecuteSql:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """�?결과???�상?�으�?처리?�다."""
+        """鍮?寃곌낵???뺤긽?곸쑝濡?泥섎━?쒕떎."""
         mock_pool_manager.execute = AsyncMock(return_value=[])
 
         result_json = await mcp_tools["execute_sql"](
@@ -483,7 +483,7 @@ class TestExecuteSql:
     async def test_client_parse_query_result(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�라?�언?��? execute_sql 결과�?QueryResult�?변?�한??"""
+        """?대씪?댁뼵?멸? execute_sql 寃곌낵瑜?QueryResult濡?蹂�?섑븳??"""
         mock_text_content = MagicMock()
         mock_text_content.text = json.dumps({
             "columns": ["hostname", "usage_pct"],
@@ -510,7 +510,7 @@ class TestExecuteSql:
     async def test_client_parse_error_result(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�러 ?�답??QueryExecutionError�?변?�된??"""
+        """?먮윭 ?묐떟??QueryExecutionError濡?蹂�?섎맂??"""
         mock_text_content = MagicMock()
         mock_text_content.text = json.dumps({
             "error": "relation 'nonexistent' does not exist"
@@ -530,7 +530,7 @@ class TestExecuteSql:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """SQL ?�행 ?�러 ???�러 JSON??반환?�다."""
+        """SQL ?ㅽ뻾 ?먮윭 ???먮윭 JSON??諛섑솚?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
             side_effect=Exception("syntax error at or near 'SELEC'")
         )
@@ -547,16 +547,16 @@ class TestExecuteSql:
 
 
 # ============================================================================
-# ?�스?? get_table_schema
+# ?뚯뒪?? get_table_schema
 # ============================================================================
 
 
 class TestGetTableSchema:
-    """get_table_schema ?�구 ?�출 �?TableInfo (컬럼, PK, FK) 변???�스??"""
+    """get_table_schema ?꾧뎄 ?몄텧 諛?TableInfo (而щ읆, PK, FK) 蹂�???뚯뒪??"""
 
     @pytest.fixture
     def schema_mock_data(self) -> dict[str, list[dict]]:
-        """get_table_schema ?�스?�용 mock ?�이?��? 반환?�다."""
+        """get_table_schema ?뚯뒪?몄슜 mock ?곗씠?곕? 諛섑솚?쒕떎."""
         return {
             "columns": [
                 {
@@ -595,8 +595,8 @@ class TestGetTableSchema:
         mock_pool_manager: MagicMock,
         schema_mock_data: dict,
     ) -> None:
-        """?�이�??�키마�? 컬럼, PK, FK ?�보�??�함?�여 반환?�다."""
-        # execute ?�출 ???�서?��?columns, PK, FK 결과 반환
+        """?뚯씠釉??ㅽ궎留덇? 而щ읆, PK, FK ?뺣낫瑜??ы븿?섏뿬 諛섑솚?쒕떎."""
+        # execute ?몄텧 ???쒖꽌?�濡?columns, PK, FK 寃곌낵 諛섑솚
         mock_pool_manager.execute = AsyncMock(
             side_effect=[
                 schema_mock_data["columns"],
@@ -616,7 +616,7 @@ class TestGetTableSchema:
         assert len(result["columns"]) == 4
         assert result["primary_keys"] == ["id"]
 
-        # PK 컬럼 ?�시 ?�인
+        # PK 而щ읆 ?쒖떆 ?뺤씤
         id_col = next(c for c in result["columns"] if c["column_name"] == "id")
         assert id_col["is_primary_key"] is True
 
@@ -631,7 +631,7 @@ class TestGetTableSchema:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """FK가 ?�는 ?�이블의 ?�키마�? FK 관계�? ?�함?�다."""
+        """FK媛� ?덈뒗 ?뚯씠釉붿쓽 ?ㅽ궎留덇? FK 愿�怨꾨? ?ы븿?쒕떎."""
         columns = [
             {
                 "column_name": "id",
@@ -677,7 +677,7 @@ class TestGetTableSchema:
     async def test_client_parse_table_schema(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�라?�언?��? get_table_schema 결과�?TableInfo�?변?�한??"""
+        """?대씪?댁뼵?멸? get_table_schema 寃곌낵瑜?TableInfo濡?蹂�?섑븳??"""
         schema_data = {
             "table_name": "cpu_metrics",
             "source": "infra_db",
@@ -723,18 +723,18 @@ class TestGetTableSchema:
         assert table_info.name == "cpu_metrics"
         assert len(table_info.columns) == 3
 
-        # PK 컬럼 ?�인
+        # PK 而щ읆 ?뺤씤
         id_col = next(c for c in table_info.columns if c.name == "id")
         assert id_col.is_primary_key is True
 
-        # FK 컬럼 ?�인
+        # FK 而щ읆 ?뺤씤
         server_id_col = next(
             c for c in table_info.columns if c.name == "server_id"
         )
         assert server_id_col.is_foreign_key is True
         assert server_id_col.references == "servers.id"
 
-        # nullable ?�인
+        # nullable ?뺤씤
         usage_col = next(
             c for c in table_info.columns if c.name == "usage_pct"
         )
@@ -744,7 +744,7 @@ class TestGetTableSchema:
     async def test_client_parse_schema_error(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�키�?조회 ?�러 ?�답??DBHubError�?변?�된??"""
+        """?ㅽ궎留?議고쉶 ?먮윭 ?묐떟??DBHubError濡?蹂�?섎맂??"""
         mock_text_content = MagicMock()
         mock_text_content.text = json.dumps({
             "error": "relation 'nonexistent' does not exist"
@@ -759,12 +759,12 @@ class TestGetTableSchema:
 
 
 # ============================================================================
-# ?�스?? ?�기 ?�용 ?�반 (INSERT/UPDATE/DELETE 거�?)
+# ?뚯뒪?? ?쎄린 ?꾩슜 ?꾨컲 (INSERT/UPDATE/DELETE 嫄곕?)
 # ============================================================================
 
 
 class TestReadOnlyViolation:
-    """?�기 ?�용 ?�반 ???�러 ?�답???�인?�다."""
+    """?쎄린 ?꾩슜 ?꾨컲 ???먮윭 ?묐떟???뺤씤?쒕떎."""
 
     @pytest.mark.parametrize(
         "sql,keyword",
@@ -794,14 +794,14 @@ class TestReadOnlyViolation:
         sql: str,
         keyword: str,
     ) -> None:
-        """?�기 ?�용 ?�스???�??변�?SQL??거�??�다."""
+        """?쎄린 ?꾩슜 ?뚯뒪???�??蹂�寃?SQL??嫄곕??쒕떎."""
         result_json = await mcp_tools["execute_sql"](
             source="infra_db", sql=sql, ctx=mock_ctx
         )
         result = json.loads(result_json)
 
         assert "error" in result
-        assert "?�기 ?�용 ?�반" in result["error"]
+        assert "?쎄린 ?꾩슜 ?꾨컲" in result["error"]
 
     async def test_select_is_allowed(
         self,
@@ -809,7 +809,7 @@ class TestReadOnlyViolation:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """SELECT 문�? ?�상?�으�??�행?�다."""
+        """SELECT 臾몄? ?뺤긽?곸쑝濡??ㅽ뻾?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
             return_value=[{"count": 42}]
         )
@@ -830,7 +830,7 @@ class TestReadOnlyViolation:
         mock_ctx: MagicMock,
         mock_pool_manager: MagicMock,
     ) -> None:
-        """readonly=False???�스?�서??변�?SQL???�용?�다."""
+        """readonly=False???뚯뒪?먯꽌??蹂�寃?SQL???덉슜?쒕떎."""
         writable_source = _make_source_config(readonly=False)
         mock_pool_manager.get_source_config.return_value = writable_source
         mock_pool_manager.execute = AsyncMock(return_value=[])
@@ -842,24 +842,24 @@ class TestReadOnlyViolation:
         )
         result = json.loads(result_json)
 
-        # readonly=False?��?�??�러 ?�이 ?�행??
+        # readonly=False?대?濡??먮윭 ?놁씠 ?ㅽ뻾??
         assert "error" not in result
 
 
 # ============================================================================
-# ?�스?? ?�?�아??처리
+# ?뚯뒪?? ?�?꾩븘??泥섎━
 # ============================================================================
 
 
 class TestTimeout:
-    """?�?�아??처리�?검증한??"""
+    """?�?꾩븘??泥섎━瑜?寃�利앺븳??"""
 
     async def test_client_execute_sql_timeout(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """MCP ?�출 ?�?�아??초과 ??QueryTimeoutError가 발생?�다."""
-        # mcp_call_timeout=10초로 ?�정???�라?�언?�에??
-        # call_tool???�래 걸리�??�?�아??발생
+        """MCP ?몄텧 ?�?꾩븘??珥덇낵 ??QueryTimeoutError媛� 諛쒖깮?쒕떎."""
+        # mcp_call_timeout=10珥덈줈 ?ㅼ젙???대씪?댁뼵?몄뿉??
+        # call_tool???ㅻ옒 嫄몃━硫??�?꾩븘??諛쒖깮
 
         async def slow_call(*args: Any, **kwargs: Any) -> None:
             await asyncio.sleep(20)
@@ -869,39 +869,39 @@ class TestTimeout:
         with pytest.raises(QueryTimeoutError) as exc_info:
             await dbhub_client.execute_sql("SELECT * FROM servers")
 
-        assert "?�?�아?? in str(exc_info.value)
+        assert "타임아웃" in str(exc_info.value)
 
     async def test_client_health_check_timeout(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """health_check가 HEALTH_CHECK_TIMEOUT ?�에 ?�답?��? ?�으�?False�?반환?�다."""
+        """health_check媛� HEALTH_CHECK_TIMEOUT ?댁뿉 ?묐떟?섏? ?딆쑝硫?False瑜?諛섑솚?쒕떎."""
         async def slow_call(*args: Any, **kwargs: Any) -> None:
             await asyncio.sleep(10)
 
         dbhub_client._mcp_session.call_tool = slow_call
 
-        # health_check??HEALTH_CHECK_TIMEOUT(5�? ?�내???�답?�야 ??
+        # health_check??HEALTH_CHECK_TIMEOUT(5珥? ?대궡???묐떟?댁빞 ??
         result = await dbhub_client.health_check()
         assert result is False
 
 
 # ============================================================================
-# ?�스?? ?�연�?로직
+# ?뚯뒪?? ?ъ뿰寃?濡쒖쭅
 # ============================================================================
 
 
 class TestReconnection:
-    """?�결 ?�패 ???�연�?로직??검증한??"""
+    """?곌껐 ?ㅽ뙣 ???ъ뿰寃?濡쒖쭅??寃�利앺븳??"""
 
     async def test_reconnect_on_disconnected_state(self) -> None:
-        """?�결???�긴 ?�태?�서 execute_sql ?�출 ???�연결을 ?�도?�다."""
+        """?곌껐???딄릿 ?곹깭?먯꽌 execute_sql ?몄텧 ???ъ뿰寃곗쓣 ?쒕룄?쒕떎."""
         config = DBHubConfig(
             server_url="http://localhost:9099/sse",
             source_name="infra_db",
             mcp_call_timeout=10,
         )
         client = DBHubClient(config)
-        # ?�결?��? ?��? ?�태
+        # ?곌껐?섏? ?딆? ?곹깭
         client._connected = False
         client._mcp_session = None
 
@@ -913,7 +913,7 @@ class TestReconnection:
             client._connected = True
             client._mcp_session = AsyncMock()
 
-            # connect ?�공 ??call_tool???�상 결과 반환?�도�??�정
+            # connect ?깃났 ??call_tool???뺤긽 寃곌낵 諛섑솚?섎룄濡??ㅼ젙
             mock_text = MagicMock()
             mock_text.text = json.dumps({
                 "columns": ["ok"],
@@ -934,7 +934,7 @@ class TestReconnection:
         assert result.row_count == 1
 
     async def test_reconnect_max_attempts_exceeded(self) -> None:
-        """최�? ?�연�??�도(3?? 초과 ??DBConnectionError가 발생?�다."""
+        """理쒕? ?ъ뿰寃??쒕룄(3?? 珥덇낵 ??DBConnectionError媛� 諛쒖깮?쒕떎."""
         config = DBHubConfig(
             server_url="http://localhost:9099/sse",
             source_name="infra_db",
@@ -943,7 +943,7 @@ class TestReconnection:
         client = DBHubClient(config)
         client._connected = False
         client._mcp_session = None
-        client.RECONNECT_DELAY = 0.01  # ?�스???�도�??�해 지??최소??
+        client.RECONNECT_DELAY = 0.01  # ?뚯뒪???띾룄瑜??꾪빐 吏�??理쒖냼??
 
         connect_attempts = 0
 
@@ -958,10 +958,10 @@ class TestReconnection:
             await client.execute_sql("SELECT 1")
 
         assert connect_attempts == 3
-        assert "?�연�??�패" in str(exc_info.value)
+        assert "?ъ뿰寃??ㅽ뙣" in str(exc_info.value)
 
     async def test_reconnect_succeeds_on_second_attempt(self) -> None:
-        """�?번째 ?�결 ?�패 ????번째???�공?�다."""
+        """泥?踰덉㎏ ?곌껐 ?ㅽ뙣 ????踰덉㎏???깃났?쒕떎."""
         config = DBHubConfig(
             server_url="http://localhost:9099/sse",
             source_name="infra_db",
@@ -979,7 +979,7 @@ class TestReconnection:
             connect_attempts += 1
             if connect_attempts == 1:
                 raise Exception("Temporary failure")
-            # ??번째 ?�도?�서 ?�공
+            # ??踰덉㎏ ?쒕룄?먯꽌 ?깃났
             client._connected = True
             client._mcp_session = AsyncMock()
 
@@ -1005,7 +1005,7 @@ class TestReconnection:
     async def test_ensure_connected_skips_when_already_connected(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?��? ?�결???�태?�서???�연결을 ?�도?��? ?�는??"""
+        """?대? ?곌껐???곹깭?먯꽌???ъ뿰寃곗쓣 ?쒕룄?섏? ?딅뒗??"""
         connect_called = False
 
         async def mock_connect() -> None:
@@ -1020,19 +1020,19 @@ class TestReconnection:
 
 
 # ============================================================================
-# ?�스?? ?�라?�언??_parse_json_result 공통 ?�서
+# ?뚯뒪?? ?대씪?댁뼵??_parse_json_result 怨듯넻 ?뚯꽌
 # ============================================================================
 
 
 class TestParseJsonResult:
-    """_parse_json_result 공통 ?�서???�양???�력 처리�?검증한??"""
+    """_parse_json_result 怨듯넻 ?뚯꽌???ㅼ뼇???낅젰 泥섎━瑜?寃�利앺븳??"""
 
     def test_none_input(self, dbhub_client: DBHubClient) -> None:
-        """None ?�력 ??�?dict�?반환?�다."""
+        """None ?낅젰 ??鍮?dict瑜?諛섑솚?쒕떎."""
         assert dbhub_client._parse_json_result(None) == {}
 
     def test_string_content(self, dbhub_client: DBHubClient) -> None:
-        """문자??content�??�싱?�다."""
+        """臾몄옄??content瑜??뚯떛?쒕떎."""
         mock_result = MagicMock()
         mock_result.content = json.dumps({"key": "value"})
 
@@ -1040,7 +1040,7 @@ class TestParseJsonResult:
         assert result == {"key": "value"}
 
     def test_text_content_list(self, dbhub_client: DBHubClient) -> None:
-        """TextContent 리스?��? ?�싱?�다."""
+        """TextContent 由ъ뒪?몃? ?뚯떛?쒕떎."""
         mock_text = MagicMock()
         mock_text.text = json.dumps({"status": "ok"})
         mock_result = MagicMock()
@@ -1050,7 +1050,7 @@ class TestParseJsonResult:
         assert result == {"status": "ok"}
 
     def test_invalid_json(self, dbhub_client: DBHubClient) -> None:
-        """?�효?��? ?��? JSON ?�력 ??�?dict�?반환?�다."""
+        """?좏슚?섏? ?딆? JSON ?낅젰 ??鍮?dict瑜?諛섑솚?쒕떎."""
         mock_result = MagicMock()
         mock_result.content = "not valid json {"
 
@@ -1059,22 +1059,22 @@ class TestParseJsonResult:
 
 
 # ============================================================================
-# ?�스?? ?�라?�언??_parse_table_list ?��? 케?�스
+# ?뚯뒪?? ?대씪?댁뼵??_parse_table_list ?ｌ? 耳�?댁뒪
 # ============================================================================
 
 
 class TestParseTableListEdgeCases:
-    """_parse_table_list ?�서???��? 케?�스�?검증한??"""
+    """_parse_table_list ?뚯꽌???ｌ? 耳�?댁뒪瑜?寃�利앺븳??"""
 
     def test_none_result(self, dbhub_client: DBHubClient) -> None:
-        """None 결과 ??�?리스?��? 반환?�다."""
+        """None 寃곌낵 ??鍮?由ъ뒪?몃? 諛섑솚?쒕떎."""
         tables = dbhub_client._parse_table_list(None)
         assert tables == []
 
     def test_error_response_returns_empty(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�러 ?�답 ??�?리스?��? 반환?�다 (경고 로깅)."""
+        """?먮윭 ?묐떟 ??鍮?由ъ뒪?몃? 諛섑솚?쒕떎 (寃쎄퀬 濡쒓퉭)."""
         mock_text = MagicMock()
         mock_text.text = json.dumps({"error": "permission denied"})
         mock_result = MagicMock()
@@ -1084,7 +1084,7 @@ class TestParseTableListEdgeCases:
         assert tables == []
 
     def test_single_dict_result(self, dbhub_client: DBHubClient) -> None:
-        """?�일 dict 결과??TableInfo�?변?�된??"""
+        """?⑥씪 dict 寃곌낵??TableInfo濡?蹂�?섎맂??"""
         mock_text = MagicMock()
         mock_text.text = json.dumps({"name": "servers", "schema": "public"})
         mock_result = MagicMock()
@@ -1096,15 +1096,15 @@ class TestParseTableListEdgeCases:
 
 
 # ============================================================================
-# ?�스?? ?�라?�언???�결 ?�태 검�?
+# ?뚯뒪?? ?대씪?댁뼵???곌껐 ?곹깭 寃�利?
 # ============================================================================
 
 
 class TestConnectionState:
-    """?�결 ?�태 검�?로직???�스?�한??"""
+    """?곌껐 ?곹깭 寃�利?濡쒖쭅???뚯뒪?명븳??"""
 
     def test_ensure_connected_raises_when_disconnected(self) -> None:
-        """?�결?��? ?��? ?�태?�서 _ensure_connected ?�출 ???�외가 발생?�다."""
+        """?곌껐?섏? ?딆? ?곹깭?먯꽌 _ensure_connected ?몄텧 ???덉쇅媛� 諛쒖깮?쒕떎."""
         config = DBHubConfig(
             server_url="http://localhost:9099/sse",
             source_name="infra_db",
@@ -1114,10 +1114,10 @@ class TestConnectionState:
         with pytest.raises(DBConnectionError) as exc_info:
             client._ensure_connected()
 
-        assert "?�결?��? ?�았?�니?? in str(exc_info.value)
+        assert "타임아웃" in str(exc_info.value)
 
     async def test_search_objects_requires_connection(self) -> None:
-        """search_objects???�결???�요?�다."""
+        """search_objects???곌껐???꾩슂?섎떎."""
         config = DBHubConfig(
             server_url="http://localhost:9099/sse",
             source_name="infra_db",
@@ -1128,7 +1128,7 @@ class TestConnectionState:
             await client.search_objects()
 
     async def test_get_table_schema_requires_connection(self) -> None:
-        """get_table_schema???�결???�요?�다."""
+        """get_table_schema???곌껐???꾩슂?섎떎."""
         config = DBHubConfig(
             server_url="http://localhost:9099/sse",
             source_name="infra_db",
@@ -1141,27 +1141,27 @@ class TestConnectionState:
     async def test_call_tool_requires_session(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """_call_tool?� MCP ?�션??초기?�되?�야 ?�다."""
+        """_call_tool?� MCP ?몄뀡??珥덇린?붾릺?댁빞 ?쒕떎."""
         dbhub_client._mcp_session = None
 
         with pytest.raises(DBConnectionError) as exc_info:
             await dbhub_client._call_tool("test", {})
 
-        assert "?�션??초기?�되지 ?�았?�니?? in str(exc_info.value)
+        assert "타임아웃" in str(exc_info.value)
 
 
 # ============================================================================
-# ?�스?? ?�이블명 검�?(SQL ?�젝??방어)
+# ?뚯뒪?? ?뚯씠釉붾챸 寃�利?(SQL ?몄젥??諛⑹뼱)
 # ============================================================================
 
 
 class TestTableNameValidation:
-    """get_table_schema???�이블명 검증을 ?�스?�한??"""
+    """get_table_schema???뚯씠釉붾챸 寃�利앹쓣 ?뚯뒪?명븳??"""
 
     async def test_valid_table_name(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�효???�이블명?� ?�과?�다."""
+        """?좏슚???뚯씠釉붾챸?� ?듦낵?쒕떎."""
         schema_data = {
             "table_name": "servers",
             "columns": [],
@@ -1182,7 +1182,7 @@ class TestTableNameValidation:
     async def test_valid_schema_qualified_name(
         self, dbhub_client: DBHubClient
     ) -> None:
-        """?�키�??�식 ?�이블명(public.servers)?� ?�과?�다."""
+        """?ㅽ궎留??섏떇 ?뚯씠釉붾챸(public.servers)?� ?듦낵?쒕떎."""
         schema_data = {
             "table_name": "public.servers",
             "columns": [],
@@ -1220,20 +1220,20 @@ class TestTableNameValidation:
     async def test_invalid_table_name_rejected(
         self, dbhub_client: DBHubClient, invalid_name: str
     ) -> None:
-        """?�효?��? ?��? ?�이블명?� DBHubError�?거�??�다."""
+        """?좏슚?섏? ?딆? ?뚯씠釉붾챸?� DBHubError濡?嫄곕??쒕떎."""
         with pytest.raises(DBHubError) as exc_info:
             await dbhub_client.get_table_schema(invalid_name)
 
-        assert "?�효?��? ?��? ?�이블명" in str(exc_info.value)
+        assert "?좏슚?섏? ?딆? ?뚯씠釉붾챸" in str(exc_info.value)
 
 
 # ============================================================================
-# ?�스?? end-to-end ?�버 ?�구 -> ?�라?�언???�서 ?�름
+# ?뚯뒪?? end-to-end ?쒕쾭 ?꾧뎄 -> ?대씪?댁뼵???뚯꽌 ?먮쫫
 # ============================================================================
 
 
 class TestEndToEndFlow:
-    """?�버 ?�구 출력???�라?�언???�서??직접 ?�달?�는 end-to-end ?�름??검증한??"""
+    """?쒕쾭 ?꾧뎄 異쒕젰???대씪?댁뼵???뚯꽌??吏곸젒 ?꾨떖?섎뒗 end-to-end ?먮쫫??寃�利앺븳??"""
 
     async def test_search_objects_to_parse_table_list(
         self,
@@ -1242,7 +1242,7 @@ class TestEndToEndFlow:
         mock_pool_manager: MagicMock,
         dbhub_client: DBHubClient,
     ) -> None:
-        """?�버 search_objects 출력???�라?�언??_parse_table_list�??�바르게 변?�된??"""
+        """?쒕쾭 search_objects 異쒕젰???대씪?댁뼵??_parse_table_list濡??щ컮瑜닿쾶 蹂�?섎맂??"""
         mock_pool_manager.execute = AsyncMock(
             return_value=[
                 {"name": "servers", "schema": "public"},
@@ -1250,12 +1250,12 @@ class TestEndToEndFlow:
             ]
         )
 
-        # ?�버 ?�구 ?�출 (JSON 문자??반환)
+        # ?쒕쾭 ?꾧뎄 ?몄텧 (JSON 臾몄옄??諛섑솚)
         server_json = await mcp_tools["search_objects"](
             source="infra_db", pattern="*", type="table", ctx=mock_ctx
         )
 
-        # ?�라?�언???�서???�달 (MCP TextContent ?�식?�로 감싸�?
+        # ?대씪?댁뼵???뚯꽌???꾨떖 (MCP TextContent ?뺤떇?쇰줈 媛먯떥湲?
         mock_text = MagicMock()
         mock_text.text = server_json
         mock_result = MagicMock()
@@ -1274,7 +1274,7 @@ class TestEndToEndFlow:
         mock_pool_manager: MagicMock,
         dbhub_client: DBHubClient,
     ) -> None:
-        """?�버 execute_sql 출력???�라?�언??_parse_query_result�??�바르게 변?�된??"""
+        """?쒕쾭 execute_sql 異쒕젰???대씪?댁뼵??_parse_query_result濡??щ컮瑜닿쾶 蹂�?섎맂??"""
         mock_pool_manager.execute = AsyncMock(
             return_value=[
                 {"hostname": "web-01", "usage_pct": 85.3},
@@ -1309,7 +1309,7 @@ class TestEndToEndFlow:
         mock_pool_manager: MagicMock,
         dbhub_client: DBHubClient,
     ) -> None:
-        """?�버 get_table_schema 출력???�라?�언??_parse_table_schema�??�바르게 변?�된??"""
+        """?쒕쾭 get_table_schema 異쒕젰???대씪?댁뼵??_parse_table_schema濡??щ컮瑜닿쾶 蹂�?섎맂??"""
         columns = [
             {
                 "column_name": "id",
@@ -1358,18 +1358,18 @@ class TestEndToEndFlow:
         assert table_info.name == "cpu_metrics"
         assert len(table_info.columns) == 3
 
-        # PK ?�인
+        # PK ?뺤씤
         id_col = next(c for c in table_info.columns if c.name == "id")
         assert id_col.is_primary_key is True
 
-        # FK ?�인
+        # FK ?뺤씤
         server_id_col = next(
             c for c in table_info.columns if c.name == "server_id"
         )
         assert server_id_col.is_foreign_key is True
         assert server_id_col.references == "servers.id"
 
-        # nullable ?�인
+        # nullable ?뺤씤
         usage_col = next(
             c for c in table_info.columns if c.name == "usage_pct"
         )
@@ -1381,7 +1381,7 @@ class TestEndToEndFlow:
         mock_ctx: MagicMock,
         dbhub_client: DBHubClient,
     ) -> None:
-        """?�버???�기 ?�용 ?�반 ?�러가 ?�라?�언?�에??QueryExecutionError�?변?�된??"""
+        """?쒕쾭???쎄린 ?꾩슜 ?꾨컲 ?먮윭媛� ?대씪?댁뼵?몄뿉??QueryExecutionError濡?蹂�?섎맂??"""
         server_json = await mcp_tools["execute_sql"](
             source="infra_db",
             sql="DELETE FROM servers WHERE id = 1",
@@ -1396,4 +1396,4 @@ class TestEndToEndFlow:
         with pytest.raises(QueryExecutionError) as exc_info:
             dbhub_client._parse_query_result(mock_result)
 
-        assert "?�기 ?�용 ?�반" in str(exc_info.value)
+        assert "?쎄린 ?꾩슜 ?꾨컲" in str(exc_info.value)

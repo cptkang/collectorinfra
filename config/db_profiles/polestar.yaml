@@ -143,7 +143,7 @@ patterns:
         synonyms: ["대역폭", "bandwidth", "네트워크속도"]
       - name: MTU
         description: "MTU 크기 (예: 1500.0) [resource_type: server.NetworkInterface]"
-        synonyms: []
+        synonyms: ["MTU"]
       - name: NETMASK
         description: "서브넷 마스크 (예: 255.255.255.0) [resource_type: server.NetworkInterface]"
         synonyms: ["서브넷", "넷마스크", "서브넷마스크"]
