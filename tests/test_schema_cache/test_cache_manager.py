@@ -266,3 +266,50 @@ class TestGetCacheManagerSingleton:
         reset_cache_manager()
         mgr2 = get_cache_manager(file_config)
         assert mgr1 is not mgr2
+
+
+class TestLoadSynonymsWithGlobalFallbackCaseInsensitive:
+    """load_synonyms_with_global_fallback의 대소문자 무관 매칭 검증."""
+
+    @pytest.mark.asyncio
+    async def test_load_synonyms_case_insensitive_matching(self, mock_config):
+        mgr = SchemaCacheManager(mock_config)
+
+        # 1. synonyms 및 global_synonyms mock 데이터 설정
+        # DB synonyms에는 아무것도 없다고 가정
+        mgr.get_synonyms = AsyncMock(return_value={})
+        
+        # global_synonyms에는 대문자 'NAME'과 'IPADDRESS' 등록
+        global_syns = {
+            "NAME": ["서버 이름", "이름"],
+            "IPADDRESS": ["IP주소", "아이피"],
+        }
+        mgr.get_global_synonyms = AsyncMock(return_value=global_syns)
+
+        # 2. 스키마에는 소문자 'name'과 'ipaddress' 컬럼이 존재
+        test_schema = {
+            "tables": {
+                "cmm_resource": {
+                    "columns": [
+                        {"name": "name", "type": "varchar(255)"},
+                        {"name": "ipaddress", "type": "varchar(255)"},
+                        {"name": "other_col", "type": "integer"},
+                    ]
+                }
+            }
+        }
+        mgr.get_schema = AsyncMock(return_value=test_schema)
+
+        # 3. 함수 실행
+        result = await mgr.load_synonyms_with_global_fallback("polestar_cm_yd", schema_dict=test_schema)
+
+        # 4. 검증: 대소문자가 다름에도 불구하고 매칭이 성공해야 함
+        assert "cmm_resource.name" in result
+        assert result["cmm_resource.name"] == ["서버 이름", "이름"]
+        
+        assert "cmm_resource.ipaddress" in result
+        assert result["cmm_resource.ipaddress"] == ["IP주소", "아이피"]
+        
+        # global_synonyms에 없는 컬럼은 폴백되지 않아야 함
+        assert "cmm_resource.other_col" not in result
+

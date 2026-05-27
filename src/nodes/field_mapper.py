@@ -183,6 +183,30 @@ def _resolve_priority_db_ids(
                     break
             if has_specific_region:
                 continue
+        elif db_id_lower == "polestar_cm_gp":
+            has_other_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["여의도", "은행", "레거시"]):
+                    has_other_region = True
+                    break
+            if has_other_region:
+                continue
+        elif db_id_lower == "polestar_cm_yd":
+            has_other_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["김포", "은행", "레거시"]):
+                    has_other_region = True
+                    break
+            if has_other_region:
+                continue
+        elif db_id_lower == "polestar_b0":
+            has_other_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["여의도", "김포"]):
+                    has_other_region = True
+                    break
+            if has_other_region:
+                continue
 
         # 1. raw db_id와 직접 비교 (대소문자 무시)
         if db_id_lower in normalized_hints:

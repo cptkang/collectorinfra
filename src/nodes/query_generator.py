@@ -435,6 +435,21 @@ def _build_user_prompt(
         # (Plan 37: 수정 3-2)
 
         if regular_entries:
+            # cmm_resource.name 컬럼 매핑이 포함되어 있는지 검사 (대소문자 및 접두사 무관)
+            has_resource_name = any(
+                col.lower().endswith("cmm_resource.name") or col.lower() == "name"
+                for field, col in regular_entries
+            )
+            resource_name_hint = ""
+            if has_resource_name:
+                resource_name_hint = (
+                    "\n\n**특별 지침 (서버 이름 조회)**:\n"
+                    "- `cmm_resource.name` 컬럼은 서버 종합 정보 피벗 쿼리 시, "
+                    "서버 리소스 행(`resource_type = 'server.Server'`)의 이름을 뜻합니다.\n"
+                    "- 따라서 SELECT 절에 단독으로 쓰지 말고, 반드시 다음과 같이 피벗 집계 함수 형태로 변환하여 사용하세요:\n"
+                    "  `MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name`"
+                )
+
             mapping_lines = "\n".join(
                 f'- "{field}" -> {col}' for field, col in regular_entries
             )
@@ -443,6 +458,7 @@ def _build_user_prompt(
                 "위 매핑에 포함된 모든 DB 컬럼을 반드시 SELECT에 포함하고,\n"
                 'SELECT 시 "테이블명.컬럼명" 형식의 alias를 사용하세요.\n'
                 '예: SELECT s.hostname AS "servers.hostname", ...'
+                f"{resource_name_hint}"
             )
 
         if eav_entries:

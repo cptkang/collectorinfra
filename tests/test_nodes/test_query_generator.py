@@ -137,6 +137,36 @@ class TestBuildUserPrompt:
         assert "양식" in prompt
         assert "서버명" in prompt
 
+    def test_includes_server_name_pivot_hint(self):
+        """cmm_resource.name 매핑 시 서버 이름 피벗 특별 지침이 포함된다."""
+        # 1. cmm_resource.name 매핑이 포함된 경우
+        column_mapping = {
+            "서버 이름": "polestar.cmm_resource.name",
+            "IP": "cmm_resource.ipaddress"
+        }
+        prompt = _build_user_prompt(
+            parsed_requirements={"original_query": "test"},
+            template_structure=None,
+            error_message=None,
+            previous_sql=None,
+            column_mapping=column_mapping
+        )
+        assert "특별 지침 (서버 이름 조회)" in prompt
+        assert "MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END)" in prompt
+
+        # 2. cmm_resource.name 매핑이 포함되지 않은 경우
+        column_mapping_no_name = {
+            "IP": "cmm_resource.ipaddress"
+        }
+        prompt_no_name = _build_user_prompt(
+            parsed_requirements={"original_query": "test"},
+            template_structure=None,
+            error_message=None,
+            previous_sql=None,
+            column_mapping=column_mapping_no_name
+        )
+        assert "특별 지침 (서버 이름 조회)" not in prompt_no_name
+
 
 class TestFormatSchemaForPrompt:
     """스키마 포맷팅 검증."""

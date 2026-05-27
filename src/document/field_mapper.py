@@ -238,17 +238,17 @@ async def perform_3step_mapping(
         remaining, field_mapping_hints, all_db_synonyms, result, priority_db_ids
     )
 
-    # --- 2단계: Redis synonyms 규칙 매핑 ---
-    if remaining and all_db_synonyms:
-        _apply_synonym_mapping(
-            remaining, all_db_synonyms, priority_db_ids, result
-        )
-
-    # --- 2.5단계: EAV name synonyms 매칭 ---
+    # --- 2단계: EAV name synonyms 매칭 ---
     if remaining and eav_name_synonyms:
         _apply_eav_synonym_mapping(
             remaining, eav_name_synonyms, result, eav_db_id=_fallback_db_id,
             global_synonyms=global_synonyms,
+        )
+
+    # --- 2.5단계: Redis synonyms 규칙 매핑 ---
+    if remaining and all_db_synonyms:
+        _apply_synonym_mapping(
+            remaining, all_db_synonyms, priority_db_ids, result
         )
 
     # --- 2.8단계: LLM 유사어 발견 ---
@@ -441,18 +441,49 @@ def _apply_synonym_mapping(
         priority_db_ids: 우선순위 DB 목록
         result: 매핑 결과 객체
     """
-    ordered_db_ids = priority_db_ids + [
-        d for d in all_db_synonyms if d not in priority_db_ids
-    ]
+    if priority_db_ids:
+        ordered_db_ids = priority_db_ids
+    else:
+        ordered_db_ids = list(all_db_synonyms.keys())
 
     from src.utils.schema_utils import normalize_field_name
 
+    CORE_TABLES = {"cmm_resource"}
+
     for field in list(remaining):
         field_lower = normalize_field_name(field).lower()
+        matched = False
 
+        # Pass 1: 핵심 테이블(cmm_resource 등)에 속한 컬럼 유의어를 우선 매칭
         for db_id in ordered_db_ids:
             synonyms = all_db_synonyms.get(db_id, {})
-            matched_column = _synonym_match(field_lower, synonyms)
+            core_syns = {}
+            for col, words in synonyms.items():
+                parts = col.split(".")
+                table_name = parts[-2].lower() if len(parts) >= 2 else parts[0].lower()
+                if table_name in CORE_TABLES:
+                    core_syns[col] = words
+            matched_column = _synonym_match(field_lower, core_syns)
+            if matched_column:
+                result.db_column_mapping.setdefault(db_id, {})[field] = matched_column
+                result.mapping_sources[field] = "synonym"
+                remaining.discard(field)
+                matched = True
+                break
+
+        if matched:
+            continue
+
+        # Pass 2: 핵심 테이블에서 발견되지 않은 필드에 대해 기타 서브 테이블 컬럼 매칭 시도
+        for db_id in ordered_db_ids:
+            synonyms = all_db_synonyms.get(db_id, {})
+            non_core_syns = {}
+            for col, words in synonyms.items():
+                parts = col.split(".")
+                table_name = parts[-2].lower() if len(parts) >= 2 else parts[0].lower()
+                if table_name not in CORE_TABLES:
+                    non_core_syns[col] = words
+            matched_column = _synonym_match(field_lower, non_core_syns)
             if matched_column:
                 result.db_column_mapping.setdefault(db_id, {})[field] = matched_column
                 result.mapping_sources[field] = "synonym"
@@ -681,6 +712,14 @@ async def _apply_llm_synonym_discovery(
             parts = matched_key.split(":", 1)
             db_id = parts[0]
             column = parts[1]
+            if priority_db_ids and db_id not in priority_db_ids:
+                logger.warning(
+                    "Step 2.8 LLM 유사어 발견: 우선순위 DB 이외의 DB 매핑 감지되어 제외. %s -> %s (우선순위 DB: %s)",
+                    field,
+                    matched_key,
+                    priority_db_ids,
+                )
+                continue
             if field not in result.mapping_sources:
                 result.db_column_mapping.setdefault(db_id, {})[field] = column
                 result.mapping_sources[field] = "llm_synonym"
@@ -941,6 +980,15 @@ async def _apply_llm_mapping_with_synonyms(
                     if not db_id or not column:
                         continue
 
+                    if priority_db_ids and db_id not in priority_db_ids:
+                        logger.warning(
+                            "Step 3 LLM 통합 추론: 우선순위 DB 이외의 DB 매핑 감지되어 제외. %s -> %s.%s",
+                            field,
+                            db_id,
+                            column,
+                        )
+                        continue
+
                     result.db_column_mapping.setdefault(db_id, {})[field] = column
                     result.mapping_sources[field] = "llm_inferred"
 
@@ -1110,6 +1158,8 @@ async def _apply_llm_mapping(
             db_id = mapping_info.get("db_id")
             column = mapping_info.get("column")
             if db_id and column:
+                if priority_db_ids and db_id not in priority_db_ids:
+                    continue
                 result.db_column_mapping.setdefault(db_id, {})[field] = column
                 result.mapping_sources[field] = "llm_inferred"
 
