@@ -81,6 +81,7 @@ async def map_fields(
     llm: BaseChatModel,
     template_structure: dict[str, Any],
     schema_info: dict[str, Any],
+    priority_db_ids: list[str] | None = None,
 ) -> dict[str, Optional[str]]:
     """양식 필드명과 DB 컬럼명 간의 의미적 매핑을 수행한다.
 
@@ -122,6 +123,7 @@ async def map_fields_per_sheet(
     schema_info: dict[str, Any],
     target_sheets: list[str] | None = None,
     example_rows_by_sheet: dict[str, list[list[str]]] | None = None,
+    priority_db_ids: list[str] | None = None,
 ) -> dict[str, dict[str, Optional[str]]]:
     """시트별로 독립적으로 필드 매핑을 수행한다.
 
@@ -233,20 +235,20 @@ async def perform_3step_mapping(
 
     # --- 1단계: 프롬프트 힌트 ---
     _apply_hint_mapping(
-        remaining, field_mapping_hints, all_db_synonyms, result
+        remaining, field_mapping_hints, all_db_synonyms, result, priority_db_ids
     )
 
-    # --- 2단계: Redis synonyms 규칙 매핑 ---
-    if remaining and all_db_synonyms:
-        _apply_synonym_mapping(
-            remaining, all_db_synonyms, priority_db_ids, result
-        )
-
-    # --- 2.5단계: EAV name synonyms 매칭 ---
+    # --- 2단계: EAV name synonyms 매칭 ---
     if remaining and eav_name_synonyms:
         _apply_eav_synonym_mapping(
             remaining, eav_name_synonyms, result, eav_db_id=_fallback_db_id,
             global_synonyms=global_synonyms,
+        )
+
+    # --- 2.5단계: Redis synonyms 규칙 매핑 ---
+    if remaining and all_db_synonyms:
+        _apply_synonym_mapping(
+            remaining, all_db_synonyms, priority_db_ids, result
         )
 
     # --- 2.8단계: LLM 유사어 발견 ---
@@ -367,6 +369,7 @@ def _apply_hint_mapping(
     hints: list[dict],
     all_db_synonyms: dict[str, dict[str, list[str]]],
     result: MappingResult,
+    priority_db_ids: list[str] | None = None,
 ) -> None:
     """프롬프트 힌트로 매핑을 수행한다.
 
@@ -387,7 +390,11 @@ def _apply_hint_mapping(
 
         db_id = hint.get("db_id")
         if not db_id:
-            db_id = _find_db_for_column(column, all_db_synonyms)
+            # If user supplied priority DB list, use its first element as default DB
+            if priority_db_ids:
+                db_id = priority_db_ids[0]
+            else:
+                db_id = _find_db_for_column(column, all_db_synonyms)
 
         if db_id:
             result.db_column_mapping.setdefault(db_id, {})[field] = column
@@ -434,18 +441,49 @@ def _apply_synonym_mapping(
         priority_db_ids: 우선순위 DB 목록
         result: 매핑 결과 객체
     """
-    ordered_db_ids = priority_db_ids + [
-        d for d in all_db_synonyms if d not in priority_db_ids
-    ]
+    if priority_db_ids:
+        ordered_db_ids = priority_db_ids
+    else:
+        ordered_db_ids = list(all_db_synonyms.keys())
 
     from src.utils.schema_utils import normalize_field_name
 
+    CORE_TABLES = {"cmm_resource"}
+
     for field in list(remaining):
         field_lower = normalize_field_name(field).lower()
+        matched = False
 
+        # Pass 1: 핵심 테이블(cmm_resource 등)에 속한 컬럼 유의어를 우선 매칭
         for db_id in ordered_db_ids:
             synonyms = all_db_synonyms.get(db_id, {})
-            matched_column = _synonym_match(field_lower, synonyms)
+            core_syns = {}
+            for col, words in synonyms.items():
+                parts = col.split(".")
+                table_name = parts[-2].lower() if len(parts) >= 2 else parts[0].lower()
+                if table_name in CORE_TABLES:
+                    core_syns[col] = words
+            matched_column = _synonym_match(field_lower, core_syns)
+            if matched_column:
+                result.db_column_mapping.setdefault(db_id, {})[field] = matched_column
+                result.mapping_sources[field] = "synonym"
+                remaining.discard(field)
+                matched = True
+                break
+
+        if matched:
+            continue
+
+        # Pass 2: 핵심 테이블에서 발견되지 않은 필드에 대해 기타 서브 테이블 컬럼 매칭 시도
+        for db_id in ordered_db_ids:
+            synonyms = all_db_synonyms.get(db_id, {})
+            non_core_syns = {}
+            for col, words in synonyms.items():
+                parts = col.split(".")
+                table_name = parts[-2].lower() if len(parts) >= 2 else parts[0].lower()
+                if table_name not in CORE_TABLES:
+                    non_core_syns[col] = words
+            matched_column = _synonym_match(field_lower, non_core_syns)
             if matched_column:
                 result.db_column_mapping.setdefault(db_id, {})[field] = matched_column
                 result.mapping_sources[field] = "synonym"
@@ -460,6 +498,7 @@ def _synonym_match(
     """필드명을 synonyms에서 매칭한다.
 
     정규화된 소문자 필드명과 synonym 단어들을 비교한다.
+    공백을 제거한 형태(space-stripped)로도 비교하여 유연한 매칭을 지원한다.
 
     Args:
         field_lower: 정규화된 소문자 필드명
@@ -470,13 +509,19 @@ def _synonym_match(
     """
     from src.utils.schema_utils import normalize_field_name
 
+    field_lower = field_lower.lower()
+
+    field_no_space = field_lower.replace(" ", "")
+
     for col_key, words in synonyms.items():
         for word in words:
-            if normalize_field_name(word).lower() == field_lower:
+            word_norm = normalize_field_name(word).lower()
+            if word_norm == field_lower or word_norm.replace(" ", "") == field_no_space:
                 return col_key
         # 컬럼명 자체도 매칭 시도
         col_name = col_key.split(".", 1)[-1] if "." in col_key else col_key
-        if col_name.lower() == field_lower:
+        col_lower = col_name.lower()
+        if col_lower == field_lower or col_lower.replace("_", "").replace(" ", "") == field_no_space:
             return col_key
 
     return None
@@ -496,6 +541,7 @@ def _apply_eav_synonym_mapping(
 
     EAV 속성명(OSType, Vendor 등)의 유사어에서 필드명이 매칭되면
     "EAV:속성명" 형식으로 매핑한다. global_synonyms에서도 병합하여 비교.
+    공백을 제거한 형태(space-stripped)로도 비교하여 유연한 매칭을 지원한다.
 
     Args:
         remaining: 아직 매핑되지 않은 필드 set
@@ -508,6 +554,7 @@ def _apply_eav_synonym_mapping(
 
     for field in list(remaining):
         field_norm = normalize_field_name(field).lower()
+        field_no_space = field_norm.replace(" ", "")
         for eav_name, words in eav_name_synonyms.items():
             # eav_names의 words + global에 같은 이름으로 등록된 words 병합
             combined_words = list(words)
@@ -518,12 +565,15 @@ def _apply_eav_synonym_mapping(
 
             matched = False
             for word in combined_words:
-                if normalize_field_name(word).lower() == field_norm:
+                word_norm = normalize_field_name(word).lower()
+                if word_norm == field_norm or word_norm.replace(" ", "") == field_no_space:
                     matched = True
                     break
             # EAV 속성명 자체도 매칭 시도
-            if not matched and normalize_field_name(eav_name).lower() == field_norm:
-                matched = True
+            if not matched:
+                eav_norm = normalize_field_name(eav_name).lower()
+                if eav_norm == field_norm or eav_norm.replace(" ", "") == field_no_space:
+                    matched = True
             if matched:
                 eav_key = f"EAV:{eav_name}"
                 result.db_column_mapping.setdefault(eav_db_id, {})[field] = eav_key
@@ -566,9 +616,16 @@ async def _apply_llm_synonym_discovery(
     # DB 컬럼명 + synonym words를 {db_id:table.column: [유의어]} 형식으로 구성
     import json as _json
 
-    ordered_db_ids = priority_db_ids + [
-        d for d in all_db_synonyms if d not in priority_db_ids
-    ]
+    if priority_db_ids:
+        ordered_db_ids = priority_db_ids
+    else:
+        logger.warning(
+            "Step 2.8 LLM 유사어 발견: priority_db_ids가 비어 있습니다. "
+            "모든 DB(%s)의 유사어 정보가 LLM 프롬프트에 포함되어 "
+            "HTTP 413 (Request entity too large) 에러가 발생할 수 있습니다.",
+            list(all_db_synonyms.keys())
+        )
+        ordered_db_ids = list(all_db_synonyms.keys())
     db_schema_dict: dict[str, list[str]] = {}
     for db_id in ordered_db_ids:
         synonyms = all_db_synonyms.get(db_id, {})
@@ -645,19 +702,29 @@ async def _apply_llm_synonym_discovery(
 
         if matched_key.startswith("EAV:"):
             # EAV 매핑
-            result.db_column_mapping.setdefault(eav_db_id, {})[field] = matched_key
-            result.mapping_sources[field] = "llm_synonym"
-            remaining.discard(field)
-            mapped_fields.append((field, matched_key, "eav"))
+            if field not in result.mapping_sources:
+                result.db_column_mapping.setdefault(eav_db_id, {})[field] = matched_key
+                result.mapping_sources[field] = "llm_synonym"
+                remaining.discard(field)
+                mapped_fields.append((field, matched_key, "eav"))
         elif ":" in matched_key:
             # db_id:table.column 형식
             parts = matched_key.split(":", 1)
             db_id = parts[0]
             column = parts[1]
-            result.db_column_mapping.setdefault(db_id, {})[field] = column
-            result.mapping_sources[field] = "llm_synonym"
-            remaining.discard(field)
-            mapped_fields.append((field, matched_key, "column"))
+            if priority_db_ids and db_id not in priority_db_ids:
+                logger.warning(
+                    "Step 2.8 LLM 유사어 발견: 우선순위 DB 이외의 DB 매핑 감지되어 제외. %s -> %s (우선순위 DB: %s)",
+                    field,
+                    matched_key,
+                    priority_db_ids,
+                )
+                continue
+            if field not in result.mapping_sources:
+                result.db_column_mapping.setdefault(db_id, {})[field] = column
+                result.mapping_sources[field] = "llm_synonym"
+                remaining.discard(field)
+                mapped_fields.append((field, matched_key, "column"))
 
     if mapped_fields:
         logger.info(
@@ -796,9 +863,16 @@ async def _apply_llm_mapping_with_synonyms(
         return []
 
     # DB별 스키마 정보를 synonyms + descriptions 결합 형식으로 포맷
-    ordered_db_ids = priority_db_ids + [
-        d for d in all_db_descriptions if d not in priority_db_ids
-    ]
+    if priority_db_ids:
+        ordered_db_ids = priority_db_ids
+    else:
+        logger.warning(
+            "Step 3 LLM 통합 추론: priority_db_ids가 비어 있습니다. "
+            "모든 DB(%s)의 설명 정보가 LLM 프롬프트에 포함되어 "
+            "HTTP 413 (Request entity too large) 에러가 발생할 수 있습니다.",
+            list(all_db_descriptions.keys())
+        )
+        ordered_db_ids = list(all_db_descriptions.keys())
 
     db_schema_parts: list[str] = []
     for db_id in ordered_db_ids:
@@ -904,6 +978,15 @@ async def _apply_llm_mapping_with_synonyms(
                     db_id = mapping_info.get("db_id")
                     column = mapping_info.get("column")
                     if not db_id or not column:
+                        continue
+
+                    if priority_db_ids and db_id not in priority_db_ids:
+                        logger.warning(
+                            "Step 3 LLM 통합 추론: 우선순위 DB 이외의 DB 매핑 감지되어 제외. %s -> %s.%s",
+                            field,
+                            db_id,
+                            column,
+                        )
                         continue
 
                     result.db_column_mapping.setdefault(db_id, {})[field] = column
@@ -1075,6 +1158,8 @@ async def _apply_llm_mapping(
             db_id = mapping_info.get("db_id")
             column = mapping_info.get("column")
             if db_id and column:
+                if priority_db_ids and db_id not in priority_db_ids:
+                    continue
                 result.db_column_mapping.setdefault(db_id, {})[field] = column
                 result.mapping_sources[field] = "llm_inferred"
 
@@ -1100,9 +1185,10 @@ async def _invoke_llm_mapping_multi_db(
     """
     # DB별 스키마 정보를 프롬프트용으로 포맷
     db_schema_parts: list[str] = []
-    ordered_db_ids = priority_db_ids + [
-        d for d in all_db_descriptions if d not in priority_db_ids
-    ]
+    if priority_db_ids:
+        ordered_db_ids = priority_db_ids
+    else:
+        ordered_db_ids = list(all_db_descriptions.keys())
     for db_id in ordered_db_ids:
         descs = all_db_descriptions.get(db_id, {})
         if not descs:

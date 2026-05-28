@@ -11,6 +11,7 @@ from src.document.field_mapper import (
     MappingResult,
     _resolve_fallback_db_id,
     _synonym_match,
+    _apply_eav_synonym_mapping,
     extract_field_names,
     perform_3step_mapping,
 )
@@ -459,3 +460,136 @@ class TestNoUnknownDbId:
         assert "unknown" not in result.db_column_mapping
         if result.db_column_mapping:
             assert "_default" in result.db_column_mapping
+
+
+class TestResolvePriorityDbIds:
+    """_resolve_priority_db_ids 함수 테스트."""
+
+    def test_empty_hints_returns_empty(self):
+        from src.nodes.field_mapper import _resolve_priority_db_ids
+        assert _resolve_priority_db_ids([], ["polestar", "cloud_portal"]) == []
+        assert _resolve_priority_db_ids(None, ["polestar", "cloud_portal"]) == []
+
+    def test_raw_db_id_match(self):
+        from src.nodes.field_mapper import _resolve_priority_db_ids
+        # 대소문자 구분 없이 매칭 확인
+        assert _resolve_priority_db_ids(["Polestar"], ["polestar", "cloud_portal"]) == ["polestar"]
+        assert _resolve_priority_db_ids(["polestar"], ["polestar", "cloud_portal"]) == ["polestar"]
+
+    def test_alias_exact_match(self):
+        from src.nodes.field_mapper import _resolve_priority_db_ids
+        # "폴스타" -> "polestar"
+        assert _resolve_priority_db_ids(["폴스타"], ["polestar", "cloud_portal"]) == ["polestar"]
+        # "클라우드 포탈" -> "cloud_portal"
+        assert _resolve_priority_db_ids(["클라우드 포탈"], ["polestar", "cloud_portal"]) == ["cloud_portal"]
+
+    def test_alias_substring_match(self):
+        from src.nodes.field_mapper import _resolve_priority_db_ids
+        # "여의도 폴스타" -> "polestar_cm_yd" ("공동존 여의도 폴스타" 의 부분 문자열)
+        active_dbs = ["polestar", "polestar_cm_yd", "cloud_portal"]
+        assert _resolve_priority_db_ids(["여의도 폴스타"], active_dbs) == ["polestar_cm_yd"]
+
+    def test_multiple_hints_match(self):
+        from src.nodes.field_mapper import _resolve_priority_db_ids
+        active_dbs = ["polestar", "polestar_cm_yd", "cloud_portal", "itsm"]
+        assert _resolve_priority_db_ids(["여의도 폴스타", "itsm"], active_dbs) == ["polestar_cm_yd", "itsm"]
+
+
+class TestSpaceInsensitiveSynonymMatch:
+    """공백 무시 동의어 매칭 단위 테스트."""
+
+    def test_space_insensitive_match_synonyms(self):
+        # field에 공백이 있고 synonym에 공백이 없는 경우
+        synonyms = {"cmm_resource.logicalcore": ["CPU코어", "논리코어"]}
+        assert _synonym_match("CPU 코어", synonyms) == "cmm_resource.logicalcore"
+
+        # field에 공백이 없고 synonym에 공백이 있는 경우
+        synonyms_with_space = {"cmm_resource.logicalcore": ["CPU 코어", "논리 코어"]}
+        assert _synonym_match("CPU코어", synonyms_with_space) == "cmm_resource.logicalcore"
+
+    def test_space_insensitive_match_column(self):
+        synonyms = {"cmm_resource.logicalcore": ["논리코어"]}
+        # 컬럼명 자체(logicalcore)와 공백/밑줄 무시 매칭 시도
+        assert _synonym_match("logical core", synonyms) == "cmm_resource.logicalcore"
+
+
+class TestSpaceInsensitiveEavSynonymMapping:
+    """EAV 공백 무시 동의어 매칭 단위 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_eav_space_insensitive(self):
+        mr = MappingResult()
+        remaining = {"메모리 용량"}
+        
+        # eav_name_synonyms 에는 "메모리용량"으로 등록되어 있음
+        eav_name_synonyms = {"TotalSize": ["메모리용량", "메모리크기"]}
+        
+        _apply_eav_synonym_mapping(
+            remaining=remaining,
+            eav_name_synonyms=eav_name_synonyms,
+            result=mr,
+            eav_db_id="polestar_cm_yd"
+        )
+        
+        assert "메모리 용량" not in remaining
+        assert mr.db_column_mapping["polestar_cm_yd"]["메모리 용량"] == "EAV:TotalSize"
+        assert mr.mapping_sources["메모리 용량"] == "eav_synonym"
+
+
+class TestLocalYamlFallback:
+    """로컬 YAML 폴백 로직 테스트."""
+
+    def test_load_local_yaml_fallback(self):
+        from src.nodes.field_mapper import _load_local_yaml_fallback
+        
+        all_syns, eav_syns, global_syns = _load_local_yaml_fallback(["polestar_cm_yd"])
+        
+        # global_synonyms 가 정상 로드되었는지 확인
+        assert "HOSTNAME" in global_syns
+        assert "호스트네임" in global_syns["HOSTNAME"]
+        assert "NAME" in global_syns
+        assert "서버 이름" in global_syns["NAME"]
+        
+        # DB 프로필 (polestar_cm_yd) known_attributes 가 로드되었는지 확인
+        assert "OSType" in eav_syns
+        assert "운영체제" in eav_syns["OSType"]
+        
+        # all_syns에 allowed_tables의 가상 컬럼 synonyms가 생성되었는지 확인
+        assert "polestar_cm_yd" in all_syns
+        assert "cmm_resource.hostname" in all_syns["polestar_cm_yd"]
+        assert "호스트네임" in all_syns["polestar_cm_yd"]["cmm_resource.hostname"]
+
+
+class TestServerNameVsHostname:
+    """서버 이름과 호스트네임의 명확한 구분 매핑 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_server_name_maps_to_name(self):
+        mock_llm = AsyncMock()
+        
+        # 로컬 폴백을 통한 synonyms를 직접 주입받는 상황 시뮬레이션
+        from src.nodes.field_mapper import _load_local_yaml_fallback
+        all_syns, eav_syns, global_syns = _load_local_yaml_fallback(["polestar_cm_yd"])
+        
+        result, _ = await perform_3step_mapping(
+            llm=mock_llm,
+            field_names=["서버 이름", "호스트네임"],
+            field_mapping_hints=[],
+            all_db_synonyms=all_syns,
+            all_db_descriptions={},
+            priority_db_ids=["polestar_cm_yd"],
+            eav_name_synonyms=eav_syns,
+            global_synonyms=global_syns
+        )
+        
+        # "서버 이름" -> cmm_resource.name 으로 매핑되어야 함
+        assert result.column_mapping["서버 이름"] == "cmm_resource.name"
+        assert result.mapping_sources["서버 이름"] == "synonym"
+        
+        # "호스트네임" -> cmm_resource.hostname 또는 EAV:Hostname 으로 매핑되어야 함
+        # priority_db_ids에 polestar_cm_yd가 있으므로 EAV:Hostname 혹은 cmm_resource.hostname 중 적절한 곳으로 매핑됨
+        # global_syns["HOSTNAME"] 에 "호스트네임"이 있으므로 all_syns["polestar_cm_yd"]["cmm_resource.hostname"] 에 호스트네임이 등록되어 synonym 매핑됨
+        assert result.column_mapping["호스트네임"] in ("cmm_resource.hostname", "EAV:Hostname")
+        assert result.mapping_sources["호스트네임"] in ("synonym", "eav_synonym")
+
+

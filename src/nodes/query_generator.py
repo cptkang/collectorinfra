@@ -172,10 +172,15 @@ async def query_generator(
     # 멀티턴 맥락에서 이전 SQL 참조
     conversation_context = state.get("conversation_context")
 
+    # 모든/전체 조회 쿼리인 경우 LIMIT 값을 100,000으로 높여 1000건 제한 우회
+    user_query = state.get("user_query", "") or ""
+    is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
+    limit_value = 100000 if is_all_query else app_config.query.default_limit
+
     # 프롬프트 구성
     system_prompt = _build_system_prompt(
         schema_info=state["schema_info"],
-        default_limit=app_config.query.default_limit,
+        default_limit=limit_value,
         column_descriptions=state.get("column_descriptions", {}),
         column_synonyms=state.get("column_synonyms", {}),
         resource_type_synonyms=state.get("resource_type_synonyms"),
@@ -435,6 +440,21 @@ def _build_user_prompt(
         # (Plan 37: 수정 3-2)
 
         if regular_entries:
+            # cmm_resource.name 컬럼 매핑이 포함되어 있는지 검사 (대소문자 및 접두사 무관)
+            has_resource_name = any(
+                col.lower().endswith("cmm_resource.name") or col.lower() == "name"
+                for field, col in regular_entries
+            )
+            resource_name_hint = ""
+            if has_resource_name:
+                resource_name_hint = (
+                    "\n\n**특별 지침 (서버 이름 조회)**:\n"
+                    "- `cmm_resource.name` 컬럼은 서버 종합 정보 피벗 쿼리 시, "
+                    "서버 리소스 행(`resource_type = 'server.Server'`)의 이름을 뜻합니다.\n"
+                    "- 따라서 SELECT 절에 단독으로 쓰지 말고, 반드시 다음과 같이 피벗 집계 함수 형태로 변환하여 사용하세요:\n"
+                    "  `MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name`"
+                )
+
             mapping_lines = "\n".join(
                 f'- "{field}" -> {col}' for field, col in regular_entries
             )
@@ -443,6 +463,7 @@ def _build_user_prompt(
                 "위 매핑에 포함된 모든 DB 컬럼을 반드시 SELECT에 포함하고,\n"
                 'SELECT 시 "테이블명.컬럼명" 형식의 alias를 사용하세요.\n'
                 '예: SELECT s.hostname AS "servers.hostname", ...'
+                f"{resource_name_hint}"
             )
 
         if eav_entries:

@@ -17,6 +17,7 @@ from langchain_core.language_models import BaseChatModel
 from src.config import AppConfig, load_config
 from src.document.field_mapper import extract_field_names, perform_3step_mapping
 from src.llm import create_llm
+from src.routing.domain_config import get_domain_by_id
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,152 @@ def _get_active_db_ids(app_config: AppConfig) -> list[str]:
         return []
 
 
+def _resolve_priority_db_ids(
+    target_db_hints: list[str],
+    active_db_ids: list[str],
+) -> list[str]:
+    """target_db_hints의 DB명/별칭을 active_db_ids에 매핑하여 우선순위 DB ID 목록을 반환한다."""
+    if not target_db_hints:
+        return []
+
+    priority_set = set()
+    normalized_hints = [hint.strip().lower() for hint in target_db_hints if hint.strip()]
+
+    for db_id in active_db_ids:
+        db_id_lower = db_id.lower()
+
+        # default polestar DB는 힌트에 특정 지역/존(여의도, 김포, 은행, 레거시)이 명시되어 있을 때 매칭에서 제외
+        if db_id_lower == "polestar":
+            has_specific_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["여의도", "김포", "은행", "레거시"]):
+                    has_specific_region = True
+                    break
+            if has_specific_region:
+                continue
+        elif db_id_lower == "polestar_cm_gp":
+            has_other_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["여의도", "은행", "레거시"]):
+                    has_other_region = True
+                    break
+            if has_other_region:
+                continue
+        elif db_id_lower == "polestar_cm_yd":
+            has_other_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["김포", "은행", "레거시"]):
+                    has_other_region = True
+                    break
+            if has_other_region:
+                continue
+        elif db_id_lower == "polestar_b0":
+            has_other_region = False
+            for hint in normalized_hints:
+                if any(region in hint for region in ["여의도", "김포"]):
+                    has_other_region = True
+                    break
+            if has_other_region:
+                continue
+
+        # 1. raw db_id와 직접 비교 (대소문자 무시)
+        if db_id_lower in normalized_hints:
+            priority_set.add(db_id)
+            continue
+
+        # 2. 별칭(aliases)과 비교 (부분 일치 포함)
+        domain_cfg = get_domain_by_id(db_id)
+        if domain_cfg:
+            for alias in domain_cfg.aliases:
+                alias_lower = alias.strip().lower()
+                for hint in normalized_hints:
+                    if hint == alias_lower or hint in alias_lower or alias_lower in hint:
+                        priority_set.add(db_id)
+                        break
+                if db_id in priority_set:
+                    break
+
+    # 원래 active_db_ids의 순서를 유지하면서 필터링
+    return [db_id for db_id in active_db_ids if db_id in priority_set]
+
+
+def _load_local_yaml_fallback(
+    active_db_ids: list[str],
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, list[str]], dict[str, list[str]]]:
+    """Redis 캐시 미존재 시 로컬 YAML 설정 파일들에서 유사어 사전을 직접 로드하여 폴백한다.
+
+    Returns:
+        (all_synonyms, eav_name_synonyms, global_synonyms)
+    """
+    import yaml
+    from pathlib import Path
+
+    all_synonyms: dict[str, dict[str, list[str]]] = {}
+    eav_name_synonyms: dict[str, list[str]] = {}
+    global_synonyms: dict[str, list[str]] = {}
+
+    # 1. global_synonyms.yaml 로드
+    global_yaml_path = Path("config/global_synonyms.yaml")
+    if global_yaml_path.exists():
+        try:
+            with open(global_yaml_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if isinstance(data, dict):
+                # columns -> global_synonyms
+                columns = data.get("columns", {})
+                for col, info in columns.items():
+                    global_synonyms[col] = info.get("words", [])
+                
+                # eav_name_values -> eav_name_synonyms
+                eav_values = data.get("eav_name_values", {})
+                for eav_name, info in eav_values.items():
+                    eav_name_synonyms[eav_name] = info.get("words", [])
+        except Exception as e:
+            logger.debug("로컬 global_synonyms.yaml 로드 실패: %s", e)
+
+    # 2. 각 DB 프로필 YAML 파일 로드
+    for db_id in active_db_ids:
+        profile_path = Path(f"config/db_profiles/{db_id}.yaml")
+        if profile_path.exists():
+            try:
+                with open(profile_path, encoding="utf-8") as f:
+                    profile_data = yaml.safe_load(f)
+                if isinstance(profile_data, dict):
+                    db_syns: dict[str, list[str]] = {}
+                    
+                    # patterns에서 eav 타입과 known_attributes 추출
+                    patterns = profile_data.get("patterns", [])
+                    for pattern in patterns:
+                        if pattern.get("type") == "eav":
+                            known_attrs = pattern.get("known_attributes", [])
+                            for attr in known_attrs:
+                                if isinstance(attr, dict):
+                                    name = attr.get("name")
+                                    syns = attr.get("synonyms", [])
+                                    if name:
+                                        # EAV synonym에 병합
+                                        eav_name_synonyms.setdefault(name, [])
+                                        for s in syns:
+                                            if s not in eav_name_synonyms[name]:
+                                                eav_name_synonyms[name].append(s)
+                                        # EAV 속성명 자체도 유사어에 포함
+                                        if name not in eav_name_synonyms[name]:
+                                            eav_name_synonyms[name].append(name)
+                    
+                    # DB 테이블 컬럼에 대한 synonyms를 global_synonyms 기반으로 가상 구축
+                    allowed_tables = profile_data.get("allowed_tables", ["cmm_resource"])
+                    for table in allowed_tables:
+                        for col_name, words in global_synonyms.items():
+                            col_lower = col_name.lower()
+                            db_syns[f"{table}.{col_lower}"] = words
+                    
+                    all_synonyms[db_id] = db_syns
+            except Exception as e:
+                logger.debug("로컬 DB 프로필 '%s' 로드 실패: %s", db_id, e)
+
+    return all_synonyms, eav_name_synonyms, global_synonyms
+
+
 async def _load_db_cache_data(
     app_config: AppConfig,
     active_db_ids: list[str],
@@ -167,7 +314,7 @@ async def _load_db_cache_data(
     """Redis 캐시에서 전체 DB의 synonyms/descriptions를 로드한다.
 
     target_db_hints가 있으면 해당 DB를 우선 조회한다.
-    Redis 미존재 시 빈 딕셔너리를 반환 (graceful fallback).
+    Redis 미존재 시 로컬 YAML 파일에서 로드하여 폴백한다.
 
     Args:
         app_config: 앱 설정
@@ -181,62 +328,73 @@ async def _load_db_cache_data(
     all_descriptions: dict[str, dict[str, str]] = {}
 
     # 우선순위 DB 결정
-    priority_db_ids: list[str] = []
-    remaining_db_ids: list[str] = []
-
-    if target_db_hints:
-        for db_id in active_db_ids:
-            if db_id in target_db_hints:
-                priority_db_ids.append(db_id)
-            else:
-                remaining_db_ids.append(db_id)
-    else:
-        remaining_db_ids = list(active_db_ids)
+    priority_db_ids = _resolve_priority_db_ids(target_db_hints, active_db_ids)
+    remaining_db_ids = [db_id for db_id in active_db_ids if db_id not in priority_db_ids]
 
     ordered_db_ids = priority_db_ids + remaining_db_ids
 
     eav_name_synonyms: dict[str, list[str]] = {}
+    global_synonyms_raw: dict[str, list[str]] = {}
     cache_mgr: Any = None
 
     try:
         from src.schema_cache.cache_manager import get_cache_manager
 
         cache_mgr = get_cache_manager(app_config)
+        redis_available = getattr(cache_mgr, "redis_available", False)
 
-        for db_id in ordered_db_ids:
+        if redis_available:
+            for db_id in ordered_db_ids:
+                try:
+                    synonyms = await cache_mgr.load_synonyms_with_global_fallback(db_id)
+                    if synonyms:
+                        all_synonyms[db_id] = synonyms
+                except Exception as e:
+                    logger.debug("DB '%s' synonyms 로드 실패: %s", db_id, e)
+
+                try:
+                    descriptions = await cache_mgr.get_descriptions(db_id)
+                    if descriptions:
+                        all_descriptions[db_id] = descriptions
+                except Exception as e:
+                    logger.debug("DB '%s' descriptions 로드 실패: %s", db_id, e)
+
+            # EAV name synonyms + global synonyms 로드
             try:
-                synonyms = await cache_mgr.load_synonyms_with_global_fallback(db_id)
-                if synonyms:
-                    all_synonyms[db_id] = synonyms
-            except Exception as e:
-                logger.debug("DB '%s' synonyms 로드 실패: %s", db_id, e)
-
-            try:
-                descriptions = await cache_mgr.get_descriptions(db_id)
-                if descriptions:
-                    all_descriptions[db_id] = descriptions
-            except Exception as e:
-                logger.debug("DB '%s' descriptions 로드 실패: %s", db_id, e)
-
-        # EAV name synonyms + global synonyms 로드
-        try:
-            if cache_mgr.redis_available:
                 eav_name_synonyms = await cache_mgr._redis_cache.load_eav_name_synonyms()
-        except Exception as e:
-            logger.debug("eav_name_synonyms 로드 실패: %s", e)
+            except Exception as e:
+                logger.debug("eav_name_synonyms 로드 실패: %s", e)
 
-        global_synonyms_raw: dict[str, list[str]] = {}
-        try:
-            if cache_mgr.redis_available:
+            try:
                 global_synonyms_raw = await cache_mgr.get_global_synonyms()
-        except Exception as e:
-            logger.debug("global_synonyms 로드 실패: %s", e)
+            except Exception as e:
+                logger.debug("global_synonyms 로드 실패: %s", e)
+        else:
+            logger.info("Redis 연결 실패 혹은 미사용 상태. 로컬 YAML 설정을 직접 로드하여 폴백합니다.")
+            local_syns, local_eav, local_global = _load_local_yaml_fallback(active_db_ids)
+            all_synonyms.update(local_syns)
+            eav_name_synonyms.update(local_eav)
+            global_synonyms_raw = local_global
 
     except Exception as e:
         logger.info(
-            "Redis 캐시 로드 실패, LLM 폴백으로 동작합니다: %s", e
+            "Redis 캐시 로드 중 예외 발생, 로컬 YAML 폴백 및 LLM으로 동작합니다: %s", e
         )
-        global_synonyms_raw = {}
+        local_syns, local_eav, local_global = _load_local_yaml_fallback(active_db_ids)
+        all_synonyms.update(local_syns)
+        eav_name_synonyms.update(local_eav)
+        global_synonyms_raw = local_global
+
+    # 일부 캐시 데이터가 비어있다면 로컬 YAML 설정으로 보강
+    if not eav_name_synonyms or not global_synonyms_raw or not all_synonyms:
+        logger.info("일부 캐시 데이터가 비어있어 로컬 YAML 설정으로 보강(폴백)합니다.")
+        local_syns, local_eav, local_global = _load_local_yaml_fallback(active_db_ids)
+        if not all_synonyms:
+            all_synonyms.update(local_syns)
+        if not eav_name_synonyms:
+            eav_name_synonyms.update(local_eav)
+        if not global_synonyms_raw:
+            global_synonyms_raw = local_global
 
     return all_synonyms, all_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms_raw, cache_mgr
 

@@ -5,6 +5,8 @@ SQL 생성, 재시도 로직, 프롬프트 구성을 검증한다.
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from langchain_core.messages import SystemMessage
+
 
 from src.nodes.query_generator import (
     _build_system_prompt,
@@ -101,6 +103,30 @@ class TestQueryGeneratorNode:
 
         assert result["retry_count"] == 0
 
+    @pytest.mark.asyncio
+    async def test_query_generator_is_all_query_sets_large_limit(self, sample_state):
+        """'모든', '전체', '모두' 키워드가 들어간 경우 default_limit이 100000으로 설정된다."""
+        sample_state["user_query"] = "모든 서버들의 정보를 조회하시오"
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = MagicMock(
+            content="```sql\nSELECT * FROM servers LIMIT 100000;\n```"
+        )
+        mock_config = MagicMock()
+        mock_config.query.default_limit = 1000
+        mock_config.get_polestar_db_ids.return_value = set()
+
+        result = await query_generator(sample_state, llm=mock_llm, app_config=mock_config)
+
+        # ainvoke가 호출되었을 때, 첫 번째 메시지(SystemMessage)의 내용에 100000이 포함되어 있는지 확인
+        call_args = mock_llm.ainvoke.call_args[0][0]
+        system_message = next(msg for msg in call_args if isinstance(msg, SystemMessage))
+        assert "100000" in system_message.content
+        assert "LIMIT 1000\n" not in system_message.content
+        assert "LIMIT 1000;" not in system_message.content
+        assert "LIMIT 1000 " not in system_message.content
+
+
+
 
 class TestBuildUserPrompt:
     """사용자 프롬프트 구성 검증."""
@@ -136,6 +162,36 @@ class TestBuildUserPrompt:
         )
         assert "양식" in prompt
         assert "서버명" in prompt
+
+    def test_includes_server_name_pivot_hint(self):
+        """cmm_resource.name 매핑 시 서버 이름 피벗 특별 지침이 포함된다."""
+        # 1. cmm_resource.name 매핑이 포함된 경우
+        column_mapping = {
+            "서버 이름": "polestar.cmm_resource.name",
+            "IP": "cmm_resource.ipaddress"
+        }
+        prompt = _build_user_prompt(
+            parsed_requirements={"original_query": "test"},
+            template_structure=None,
+            error_message=None,
+            previous_sql=None,
+            column_mapping=column_mapping
+        )
+        assert "특별 지침 (서버 이름 조회)" in prompt
+        assert "MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END)" in prompt
+
+        # 2. cmm_resource.name 매핑이 포함되지 않은 경우
+        column_mapping_no_name = {
+            "IP": "cmm_resource.ipaddress"
+        }
+        prompt_no_name = _build_user_prompt(
+            parsed_requirements={"original_query": "test"},
+            template_structure=None,
+            error_message=None,
+            previous_sql=None,
+            column_mapping=column_mapping_no_name
+        )
+        assert "특별 지침 (서버 이름 조회)" not in prompt_no_name
 
 
 class TestFormatSchemaForPrompt:

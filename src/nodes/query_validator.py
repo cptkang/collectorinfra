@@ -113,13 +113,13 @@ async def query_validator(
     # 예: "cmm_resource" → "polestar.cmm_resource"
     bare_to_qualified: dict[str, str] = {}
     for t in available_tables:
-        if "." in t:
-            bare = t.rsplit(".", 1)[1].lower()
-            bare_to_qualified[bare] = t
+        bare = t.rsplit(".", 1)[-1].lower()
+        bare_to_qualified[bare] = t
     unknown_tables = set()
     for t in referenced_tables:
         if t.lower() not in available_tables_lower:
-            if t.lower() not in bare_to_qualified:
+            bare_t = t.rsplit(".", 1)[-1].lower()
+            if bare_t not in bare_to_qualified:
                 unknown_tables.add(t)
     if unknown_tables and available_tables:
         errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
@@ -140,17 +140,23 @@ async def query_validator(
 
     # 7. LIMIT 절 존재 여부
     db_engine = state.get("active_db_engine") or "postgresql"
+    user_query = state.get("user_query", "") or ""
+    is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
     if not _has_limit_clause(sql):
-        default_limit = app_config.query.default_limit
-        auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
-        if db_engine == "db2":
-            warnings.append(
-                f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
-            )
+        if is_all_query:
+            # 모든/전체 결과 조회 질의의 경우 LIMIT 자동 추가 생략
+            logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
         else:
-            warnings.append(
-                f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
-            )
+            default_limit = app_config.query.default_limit
+            auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
+            if db_engine == "db2":
+                warnings.append(
+                    f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
+                )
+            else:
+                warnings.append(
+                    f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
+                )
 
     # 8. 성능 위험 패턴
     perf_warnings = _check_performance_risks(sql, schema_info)
@@ -390,9 +396,8 @@ def _validate_columns(
     all_tables = schema_info.get("tables", {})
     bare_to_qualified: dict[str, str] = {}
     for t in all_tables:
-        if "." in t:
-            bare = t.rsplit(".", 1)[1].lower()
-            bare_to_qualified[bare] = t
+        bare = t.rsplit(".", 1)[-1].lower()
+        bare_to_qualified[bare] = t
 
     available_columns: dict[str, set[str]] = {}
     # 대소문자 무시를 위한 소문자→원본 테이블명 매핑
@@ -401,7 +406,8 @@ def _validate_columns(
         # 직접 매칭 → bare name fallback
         table_data = all_tables.get(table_name)
         if table_data is None:
-            qualified = bare_to_qualified.get(table_name.lower())
+            bare_t = table_name.rsplit(".", 1)[-1].lower()
+            qualified = bare_to_qualified.get(bare_t)
             if qualified:
                 table_data = all_tables.get(qualified)
         if table_data is None:
@@ -497,8 +503,7 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
         """별칭이면 실제 테이블명으로 변환하고, 스키마 접두사를 제거하여 bare name을 반환한다."""
         actual = alias_map.get(ref, ref)
         # 스키마 접두사 제거 (예: polestar.cmm_resource → cmm_resource)
-        if "." in actual:
-            actual = actual.rsplit(".", 1)[1]
+        actual = actual.rsplit(".", 1)[-1]
         return actual.lower()
 
     # ON 절에서 조인 조건 추출: alias.column = alias.column
@@ -523,10 +528,8 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
         entity_table = eav_pat.get("entity_table", "").lower()
         config_table = eav_pat.get("config_table", "").lower()
         # 스키마 접두사 제거
-        if "." in entity_table:
-            entity_table = entity_table.rsplit(".", 1)[1]
-        if "." in config_table:
-            config_table = config_table.rsplit(".", 1)[1]
+        entity_table = entity_table.rsplit(".", 1)[-1]
+        config_table = config_table.rsplit(".", 1)[-1]
 
         if not entity_table or not config_table:
             continue
@@ -575,8 +578,7 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
                 exc_column = exc.get("column", "").lower()
                 exc_reason = exc.get("reason", "NULL")
                 # 스키마 접두사 제거
-                if "." in exc_table:
-                    exc_table = exc_table.rsplit(".", 1)[1]
+                exc_table = exc_table.rsplit(".", 1)[-1]
 
                 if not exc_table or not exc_column:
                     continue

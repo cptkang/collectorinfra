@@ -68,7 +68,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
             "서버 정보(hostname, IP, gateway)"
         ),
-        aliases=["polestar_cm_gp", "공동존 김포 폴스타", "공동존 운영 폴스타", "공동존 DR 폴스타"],
+        aliases=["polestar_cm_gp", "공동존 김포 폴스타", "공동존 운영 폴스타", "공동존 DR 폴스타", "김포", "김포 폴스타"],
         env_connection_key="POLESTAR_CM_GP_CONNECTION",
         env_type_key="POLESTAR_CM_GP_TYPE",
         db_engine="postgresql",
@@ -82,7 +82,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
             "서버 정보(hostname, IP, gateway)"
         ),
-        aliases=["polestar_cm_yd", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타"],
+        aliases=["polestar_cm_yd", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타", "여의도", "여의도 폴스타"],
         env_connection_key="POLESTAR_CM_YD_CONNECTION",
         env_type_key="POLESTAR_CM_YD_TYPE",
         db_engine="postgresql",

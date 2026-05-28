@@ -639,7 +639,26 @@ class SchemaCacheManager:
             {column_name: [synonym, ...]} 매핑
         """
         if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.load_global_synonyms()
+            res = await self._redis_cache.load_global_synonyms()
+            if res:
+                return res
+
+        # 로컬 global_synonyms.yaml 폴백 구현
+        import yaml
+        from pathlib import Path
+        global_yaml_path = Path("config/global_synonyms.yaml")
+        if global_yaml_path.exists():
+            try:
+                with open(global_yaml_path, encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                if isinstance(data, dict):
+                    global_synonyms = {}
+                    columns = data.get("columns", {})
+                    for col, info in columns.items():
+                        global_synonyms[col] = info.get("words", [])
+                    return global_synonyms
+            except Exception as e:
+                logger.warning("로컬 global_synonyms.yaml 로드 실패: %s", e)
         return {}
 
     async def save_global_synonyms(
@@ -1011,19 +1030,44 @@ class SchemaCacheManager:
         # DB 스키마에서 컬럼명 목록 추출
         if schema_dict is None:
             schema_dict = await self.get_schema(db_id)
-        if schema_dict is None:
-            return db_synonyms
 
         result = dict(db_synonyms)
-        tables = schema_dict.get("tables", {})
-        for table_name, table_data in tables.items():
-            for col in table_data.get("columns", []):
-                col_key = f"{table_name}.{col['name']}"
-                if col_key not in result:
-                    # 글로벌 사전에서 bare column name으로 폴백
-                    bare_name = col["name"]
-                    if bare_name in global_synonyms:
-                        result[col_key] = global_synonyms[bare_name]
+
+        if schema_dict is not None and isinstance(schema_dict, dict):
+            tables = schema_dict.get("tables", {})
+            for table_name, table_data in tables.items():
+                for col in table_data.get("columns", []):
+                    col_key = f"{table_name}.{col['name']}"
+                    if col_key not in result:
+                        # 글로벌 사전에서 bare column name으로 폴백 (대소문자 무관 비교)
+                        bare_name_lower = col["name"].lower()
+                        matched_words = None
+                        for g_key, g_words in global_synonyms.items():
+                            if g_key.lower() == bare_name_lower:
+                                matched_words = g_words
+                                break
+                        if matched_words is not None:
+                            result[col_key] = matched_words
+        else:
+            # schema_dict가 None인 경우: db_profiles/{db_id}.yaml 의 allowed_tables를 읽어 가상 스키마 구축
+            import yaml
+            from pathlib import Path
+            profile_path = Path(f"config/db_profiles/{db_id}.yaml")
+            allowed_tables = ["cmm_resource"]
+            if profile_path.exists():
+                try:
+                    with open(profile_path, encoding="utf-8") as f:
+                        profile_data = yaml.safe_load(f)
+                    if isinstance(profile_data, dict):
+                        allowed_tables = profile_data.get("allowed_tables", ["cmm_resource"])
+                except Exception as e:
+                    logger.debug("로컬 DB 프로필 '%s' 로드 실패: %s", db_id, e)
+
+            for table in allowed_tables:
+                for g_key, g_words in global_synonyms.items():
+                    col_key = f"{table}.{g_key.lower()}"
+                    if col_key not in result:
+                        result[col_key] = g_words
 
         return result
 

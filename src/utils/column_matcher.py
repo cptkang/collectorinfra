@@ -91,6 +91,11 @@ def resolve_column_key(mapped_col: str, result_keys: set[str]) -> str | None:
         col_only = mapped_col.split(".", 1)[-1]
         if col_only in result_keys:
             return col_only
+        if col_only == "name":
+            # "name" 컬럼은 SQL 결과에서 "server_name" 또는 "pname"으로 자주 매핑됩니다.
+            for name_key in ("server_name", "pname"):
+                if name_key in result_keys:
+                    return name_key
 
     # 3. "EAV:" 접두사 제거 후 정확 매칭
     if mapped_col.startswith("EAV:"):
