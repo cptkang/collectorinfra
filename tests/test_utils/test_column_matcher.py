@@ -149,6 +149,11 @@ class TestResolveColumnKey:
     def test_case_insensitive(self) -> None:
         assert resolve_column_key("OS_TYPE", RESULT_KEYS) == "os_type"
 
+    def test_name_column_mapping_fallback(self) -> None:
+        """cmm_resource.name -> server_name 또는 pname 폴백 매칭 검증."""
+        assert resolve_column_key("cmm_resource.name", {"server_name"}) == "server_name"
+        assert resolve_column_key("cmm_resource.name", {"pname"}) == "pname"
+
 
 # ──────────────────────────────────────────────
 # build_resolved_mapping

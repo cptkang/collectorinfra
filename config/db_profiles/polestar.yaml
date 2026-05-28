@@ -84,7 +84,7 @@ patterns:
         synonyms: ["시리얼", "S/N", "일련번호", "시리얼번호"]
       - name: Hostname
         description: "호스트명 (EAV, cmm_resource.hostname과 동일 값) [resource_type: server.Server]"
-        synonyms: ["EAV호스트명", "서버명"]
+        synonyms: ["EAV호스트명", "서버명", "호스트네임"]
       - name: IPaddress
         description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값) [resource_type: server.Server]"
         synonyms: ["EAV IP", "IP"]

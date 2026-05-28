@@ -81,6 +81,7 @@ Task: 사용자의 요청을 분석하여, 아래에 정의된 [Query Template]�
 -- 서버 설정 정보 조회
 SELECT
     COALESCE(c.platform_resource_id, c.id) AS id,
+    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname'      THEN cc.stringvalue_short END) AS hostname,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
