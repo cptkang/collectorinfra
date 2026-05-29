@@ -236,6 +236,23 @@ POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인
 지시사항: 주어진 스키마와 아래 규칙을 엄격히 준수하여 알람 조회 SQL을 작성하라.
 스키마에 없는 테이블·컬럼을 임의로 추측하거나 생성(Hallucination)하는 것을 엄격히 금지한다.
 
+[절대 금지 — DB 라우팅 정보를 SQL에 포함하지 않는다]
+사용자가 특정 Polestar("김포 폴스타", "여의도 개발 폴스타", "은행 폴스타" 등)를 지정한 경우,
+해당 정보는 이미 DB 라우팅 단계에서 처리되어 올바른 DB에 연결되었다.
+위치명(김포, 여의도 등), Polestar 이름, 환경(운영/개발), 존(zone) 등의 식별자를
+WHERE 절, LIKE/ILIKE 조건, GROUP_PATH 필터, 서브쿼리 조건에 절대 포함하지 않는다.
+
+GROUP_PATH는 CMM_RESOURCE의 내부 계층 그룹 경로(예: "그룹A>하위그룹B")를 나타내며,
+Polestar 이름이나 물리적 위치 정보를 저장하지 않는다.
+GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 발생한다.
+
+절대 금지 예시:
+  WHERE GROUP_PATH ILIKE '%김포%'             -- 절대 금지
+  WHERE GROUP_PATH ILIKE '%폴스타%'           -- 절대 금지
+  WHERE CR.NAME ILIKE '%김포 폴스타%'          -- 절대 금지
+  WHERE RESOURCE_NAME LIKE '%김포%'            -- 절대 금지
+  AND A.RESOURCE_NAME ILIKE '%김포 폴스타%'    -- 절대 금지
+
 [사용 가능한 핵심 테이블]
 - CMM_ALARM (CA): 알람 레코드 — ALARMSEVERITY, CTIME, CONDITIONLOGTEXT, CURRENTALARMSTATUS
 - CMM_RESOURCE (CR): 장비 정보 — NAME, HOSTNAME, IPADDRESS, RESOURCE_TYPE, PARENT_RESOURCE_ID,
@@ -262,10 +279,22 @@ POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인
 - 미지정 시 → IN (1, 2, 3) 전체 포함
 
 [리소스 타입 매핑 — innermost 서브쿼리 WHERE에 추가]
-- 서버/server → CR.RESOURCE_TYPE = 'server.Server'
+⚠ 폴스타 알람은 서버 본체(server.Server)와 서버 하위 자원(server.Cpus, server.Memory,
+  server.Disks, server.FileSystems 등)에 독립적으로 발생한다.
+  "서버에 발생한 알람" 조회 시 = 'server.Server'만 쓰면 CPU·메모리·디스크 알람이 누락된다.
+
+- 서버 전체 (하위 자원 포함) — "서버 알람", "서버에 발생한 알람" → CR.RESOURCE_TYPE LIKE 'server.%'
+- 서버 본체만 — 에이전트 통신 단절 등 서버 자체 이벤트 → CR.RESOURCE_TYPE = 'server.Server'
 - 네트워크 장비/NMS → CR.RESOURCE_TYPE = 'network.NMSNode'
 - 인터페이스 → CR.RESOURCE_TYPE IN ('network.Interface', 'network.VirtualInterface')
-- 미지정 시 → RESOURCE_TYPE 조건 없음 (전체 장비)
+- 미지정 시 → RESOURCE_TYPE 조건 없음 (전체 장비 — Template C-5 사용)
+
+[템플릿 선택 가이드]
+- 자원 유형 미지정 / "전체 알람" / "발생한 알람" (서버·네트워크 구분 없음) → Template C-5
+- "서버 알람" (CPU·메모리·디스크 하위 자원 포함) → Template C-2 (RESOURCE_TYPE LIKE 'server.%')
+- "서버 CPU/메모리 알람" 키워드 필터 → Template C-3 (CONDITIONLOGTEXT 키워드 필터)
+- 현재 활성 알람 → Template C-1 (CMM_ALARM_ACTIVE JOIN 포함)
+- 장비별/심각도별 집계 → Template C-4
 
 [현재 활성 알람 vs 알람 이력 분기]
 - "현재 알람", "발생 중인 알람" → innermost 서브쿼리에 CMM_ALARM_ACTIVE JOIN 반드시 포함
@@ -283,6 +312,44 @@ POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인
 - 특정 기간: A.CTIME BETWEEN TO_TIMESTAMP(...) AND TO_TIMESTAMP(...)
 - 이번 달: A.CTIME >= DATE_TRUNC('month', CURRENT_DATE)
 - 하드코딩 날짜 절대 사용 금지 — CURRENT_DATE 기반 동적 계산 사용
+
+[서버/장비 필터링 — 반드시 외부 WHERE에 적용]
+⚠ 서버/장비 관련 모든 필터(이름·호스트명·IP 등)는 가장 바깥쪽 WHERE 절에만 추가한다.
+  innermost 서브쿼리의 WHERE에 추가하면 결과 누락 또는 0건이 발생한다.
+
+이유: 3중 서브쿼리 구조에서 innermost의 CR은 알람이 발생한 하위 자원(server.Cpus, server.Memory,
+      server.Disks 등)의 CMM_RESOURCE 행이다. 하위 자원 자체의 NAME/HOSTNAME은 서버의 것이 아니다.
+      외부 LEFT JOIN CMM_RESOURCE CR ON A.ID = CR.ID 의 CR이 실제 장비(서버) 행이므로,
+      모든 장비 필터는 이 CR을 참조하는 outermost WHERE 절에 추가해야 한다.
+
+[CMM_RESOURCE 컬럼 도메인 의미 — 혼동 금지]
+- CR.NAME     : 폴스타(Polestar)에 등록된 자원명(장비명). VMware VM, AWS EC2, Azure VM,
+                물리 서버 등 인프라 종류와 무관하게, 폴스타가 관리 대상 장비를 식별하는 이름.
+                사용자가 쿼리에서 언급한 서버 이름은 항상 이 컬럼과 대응한다.
+- CR.HOSTNAME : 장비 OS 내부의 hostname. CR.NAME과 같을 수도, 다를 수도 있다.
+                사용자가 "호스트명", "hostname"이라고 명시적으로 요청한 경우에만 사용한다.
+
+⚠ 중요: 사용자가 말한 서버 이름이 "cocm-ngcmwo01"처럼 OS hostname 형식처럼 보이더라도,
+   폴스타 자원명(CR.NAME)으로 등록되어 있으므로 반드시 CR.NAME 으로 필터링한다.
+   이름의 형식(대소문자, 하이픈, 숫자 등)이 hostname처럼 보인다는 이유로
+   CR.HOSTNAME 을 사용하면 일치하는 장비를 찾지 못할 수 있다.
+
+컬럼 선택 기준:
+- 사용자가 서버/장비 이름을 언급한 모든 경우 → CR.NAME ILIKE '%{{서버명}}%'
+- 사용자가 "호스트명", "hostname"이라고 명시한 경우만 → CR.HOSTNAME ILIKE '%{{호스트명}}%'
+- "IP", "IP 주소" → CR.IPADDRESS = '{{IP}}' 또는 ILIKE '%{{IP}}%'
+
+올바른 예시 (외부 WHERE에 시간 조건과 함께):
+  -- 사용자 질의: "cocm-ngcmwo01 서버에 대해" → CR.NAME 사용
+  WHERE A.CTIME BETWEEN TO_TIMESTAMP(...) AND TO_TIMESTAMP(...)
+    AND CR.NAME ILIKE '%cocm-ngcmwo01%'
+
+금지 예시:
+  -- 절대 금지: 서버명처럼 보이는 이름에 HOSTNAME 사용
+    AND CR.HOSTNAME ILIKE '%cocm-ngcmwo01%'    -- 금지 (서버명은 항상 CR.NAME)
+  -- 절대 금지: innermost WHERE에 장비 필터 추가
+  WHERE CR.DTIME IS NULL
+    AND CR.NAME ILIKE '%cocm-ngcmwo01%'         -- 금지 (innermost 서브쿼리 안)
 
 [GROUP_PATH 계층 경로 구성]
 - 장비의 계층 경로(소속 그룹 경로)를 표시할 때 C2~C10 셀프 조인 사용
@@ -360,7 +427,7 @@ FROM (
         JOIN CMM_ALARM_ACTIVE A ON A.ALARM_ID = CA.ID  -- 현재 활성 알람만 (이력 조회 시 이 행 제거)
         WHERE CR.DTIME IS NULL
           AND CA.ALARMSEVERITY IN (1, 2, 3)
-          -- 리소스 타입 필터 예시: AND CR.RESOURCE_TYPE = 'server.Server'
+          -- 리소스 타입 필터 예시 (서버+하위 자원 포함): AND CR.RESOURCE_TYPE LIKE 'server.%'
           -- 키워드 필터 예시: AND UPPER(CA.CONDITIONLOGTEXT) LIKE '%CPU%'
     ) AR
     LEFT JOIN CMM_RESOURCE C ON AR.PARENT_RESOURCE_ID = C.ID
@@ -385,12 +452,15 @@ LIMIT {default_limit};
 
 ---
 
-[Template C-2 — 서버 알람 이력: 특정 기간 조회 패턴]
+[Template C-2 — 서버 관련 알람 이력: 특정 기간 조회 패턴 (서버 하위 자원 포함)]
 
 "서버에 대한 특정 기간동안의 알람 확인" 질의에 사용한다.
-- innermost WHERE에 `CR.RESOURCE_TYPE = 'server.Server'` 추가
+서버 본체(server.Server) + CPU(server.Cpus) + 메모리(server.Memory) + 디스크(server.Disks) 등
+서버에 속한 모든 자원의 알람을 포함한다.
+- innermost WHERE에 `CR.RESOURCE_TYPE LIKE 'server.%'` 사용 (= 'server.Server'만 쓰면 CPU/메모리 알람 누락)
 - CMM_ALARM_ACTIVE JOIN 제거 (이력 조회)
 - 외부 WHERE에 기간 조건 추가
+- "자원유형" 컬럼으로 어떤 하위 자원에서 알람이 발생했는지 확인 가능
 
 ```sql
 SELECT
@@ -406,6 +476,7 @@ SELECT
     ) AS "GROUP_PATH",
     CR.HOSTNAME AS "호스트명",
     A.RESOURCE_NAME AS "리소스명",
+    A.RESOURCE_TYPE AS "자원유형",
     A.ALARM_NAME AS "이벤트",
     A.CONDITIONLOGTEXT AS "상세내용",
     A.ID
@@ -415,6 +486,7 @@ FROM (
         AR.CTIME,
         AR.ALARM_NAME,
         AR.RESOURCE_NAME,
+        AR.RESOURCE_TYPE,
         AR.CONDITIONLOGTEXT,
         AR.ID,
         AR.HOSTNAME,
@@ -436,6 +508,7 @@ FROM (
                 CR.PLATFORM_RESOURCE_ID,
                 COALESCE(CR.SERVICE_RESOURCE_ID, CR.ID)
             ) AS ID,
+            CR.RESOURCE_TYPE,
             CR.HOSTNAME,
             CR.PARENT_RESOURCE_ID
         FROM CMM_RESOURCE CR
@@ -444,7 +517,7 @@ FROM (
         -- CMM_ALARM_ACTIVE JOIN 없음 (이력 조회)
         WHERE CR.DTIME IS NULL
           AND CA.ALARMSEVERITY IN (1, 2, 3)
-          AND CR.RESOURCE_TYPE = 'server.Server'  -- 서버만 필터
+          AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 서버 본체 + 하위 자원(CPU/메모리/디스크/파일시스템 등) 포함
     ) AR
     LEFT JOIN CMM_RESOURCE C ON AR.PARENT_RESOURCE_ID = C.ID
 ) A
@@ -461,16 +534,18 @@ LEFT JOIN CMM_RESOURCE C10 ON C9.PARENT_RESOURCE_ID = C10.ID
 WHERE A.CTIME BETWEEN
     TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
 AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
+  -- 장비 필터는 반드시 여기에 추가: AND CR.NAME ILIKE '%서버명%' (장비명) 또는 AND CR.HOSTNAME ILIKE '%호스트명%' (호스트명)
 ORDER BY A.CTIME DESC
 LIMIT {default_limit};
 ```
 
 ---
 
-[Template C-3 — 서버 CPU/메모리 알람 이력: 특정 기간 조회 패턴]
+[Template C-3 — 서버 CPU/메모리 알람 이력: 특정 기간 조회 패턴 (서버 하위 자원 포함)]
 
 "서버의 CPU 및 메모리에 대한 특정 기간동안의 알람 확인" 질의에 사용한다.
-- Template C-2에서 CONDITIONLOGTEXT 키워드 필터 추가
+Template C-2에서 CONDITIONLOGTEXT 키워드 필터 추가.
+- innermost WHERE에 `CR.RESOURCE_TYPE LIKE 'server.%'` 사용 (서버 본체 + 하위 자원 포함)
 - CPU: `UPPER(CA.CONDITIONLOGTEXT) LIKE '%CPU%'`
 - 메모리: `UPPER(CA.CONDITIONLOGTEXT) LIKE '%MEMORY%' OR UPPER(CA.CONDITIONLOGTEXT) LIKE '%메모리%'`
 - CPU + 메모리 동시: OR 조합
@@ -489,6 +564,7 @@ SELECT
     ) AS "GROUP_PATH",
     CR.HOSTNAME AS "호스트명",
     A.RESOURCE_NAME AS "리소스명",
+    A.RESOURCE_TYPE AS "자원유형",
     A.ALARM_NAME AS "이벤트",
     A.CONDITIONLOGTEXT AS "상세내용",
     A.ID
@@ -498,6 +574,7 @@ FROM (
         AR.CTIME,
         AR.ALARM_NAME,
         AR.RESOURCE_NAME,
+        AR.RESOURCE_TYPE,
         AR.CONDITIONLOGTEXT,
         AR.ID,
         AR.HOSTNAME,
@@ -519,6 +596,7 @@ FROM (
                 CR.PLATFORM_RESOURCE_ID,
                 COALESCE(CR.SERVICE_RESOURCE_ID, CR.ID)
             ) AS ID,
+            CR.RESOURCE_TYPE,
             CR.HOSTNAME,
             CR.PARENT_RESOURCE_ID
         FROM CMM_RESOURCE CR
@@ -526,7 +604,7 @@ FROM (
         JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
         WHERE CR.DTIME IS NULL
           AND CA.ALARMSEVERITY IN (1, 2, 3)
-          AND CR.RESOURCE_TYPE = 'server.Server'
+          AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 서버 본체 + 하위 자원 포함
           AND (
               UPPER(CA.CONDITIONLOGTEXT) LIKE '%CPU%'
               OR UPPER(CA.CONDITIONLOGTEXT) LIKE '%MEMORY%'
@@ -548,6 +626,7 @@ LEFT JOIN CMM_RESOURCE C10 ON C9.PARENT_RESOURCE_ID = C10.ID
 WHERE A.CTIME BETWEEN
     TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
 AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
+  -- 장비 필터는 반드시 여기에 추가: AND CR.NAME ILIKE '%서버명%' (장비명) 또는 AND CR.HOSTNAME ILIKE '%호스트명%' (호스트명)
 ORDER BY A.CTIME DESC
 LIMIT {default_limit};
 ```
@@ -586,7 +665,7 @@ FROM (
     JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
     WHERE CR.DTIME IS NULL
       AND CA.ALARMSEVERITY IN (1, 2, 3)
-      -- 서버만 집계 예시: AND CR.RESOURCE_TYPE = 'server.Server'
+      -- 서버 관련 전체 집계 예시: AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 하위 자원(CPU/메모리/디스크) 포함
 ) A
 LEFT JOIN CMM_RESOURCE CR ON A.ID = CR.ID
 -- 기간 조건 예시: WHERE A.CTIME >= DATE_TRUNC('month', CURRENT_DATE)
@@ -673,8 +752,31 @@ LEFT JOIN CMM_RESOURCE C10 ON C9.PARENT_RESOURCE_ID = C10.ID
 WHERE A.CTIME BETWEEN
     TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
 AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
+  -- 장비 필터는 반드시 여기에 추가: AND CR.NAME ILIKE '%서버명%' (장비명) 또는 AND CR.HOSTNAME ILIKE '%호스트명%' (호스트명)
 ORDER BY A.CTIME DESC
 LIMIT {default_limit};
+```
+
+---
+
+## 출력 형식 (엄격히 준수)
+
+**SQL 코드블록만 출력한다.** 아래 금지 항목을 절대 포함하지 않는다:
+- 분석 절차, 수행 내용, 기대 효과 설명
+- 예시/예상 분석 결과 (실제 쿼리 실행 전 가상 데이터)
+- 권장 조치, 결론, 참고 사항
+- SQL 이전/이후의 어떠한 설명 텍스트도 금지
+
+실제 데이터 분석 및 결과 해석은 쿼리 실행 후 별도 단계에서 수행한다.
+이 단계에서는 **실행 가능한 SQL 한 개**만 생성하면 된다.
+
+```sql
+-- 쿼리 목적 (한 줄 주석)
+SELECT ...
+FROM ...
+WHERE ...
+ORDER BY ...
+LIMIT N;
 ```
 
 ---

@@ -303,3 +303,18 @@ allowed_tables:
   - cmm_metric_stat_m
   - cmm_metric_stat_d
   - cmm_metric_stat_h
+
+# alarm_query 전용 허용 테이블 — routing_intent=alarm_query 시 이 목록으로 필터링한다.
+alarm_allowed_tables:
+  - cmm_alarm
+  - cmm_alarm_def
+  - cmm_alarm_active
+  - cmm_resource
+  - cmm_alarm_def_noti
+  - cmm_alarm_def_noti_user
+  - cmm_alarm_def_noti_group
+  - cmm_alarm_def_noti_role
+  - cmm_alarm_def_noti_rmtype
+  - acc_acl_resource_manager_type
+  - acc_role
+  - acc_user_group

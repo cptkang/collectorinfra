@@ -30,7 +30,6 @@ INJECTION_PATTERNS: list[str] = [
     # 기존 패턴
     r";\s*(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE)",
     r"UNION\s+(ALL\s+)?SELECT",
-    r"/\*.*?\*/",
     r"\b(xp_|sp_)\w+",
     r"INTO\s+(OUTFILE|DUMPFILE)",
     r"\bsys\.\w+",
@@ -106,6 +105,8 @@ class SQLGuard:
         sql_clean = re.sub(r"'[^']*'", "''", sql)
         # 단일행 주석 제거 (LLM이 생성하는 -- 주석은 안전)
         sql_clean = re.sub(r"--[^\n]*", "", sql_clean)
+        # 블록 주석 제거 (LLM이 생성하는 /* ... */ 주석은 안전 — 내부 위험 패턴은 제거 후 검사)
+        sql_clean = re.sub(r"/\*.*?\*/", "", sql_clean, flags=re.DOTALL)
 
         detected: list[str] = []
         for pattern in patterns:
