@@ -374,6 +374,7 @@ async def process_query_stream(
         start_time = time.time()
         streamed_any_token = False
         _seen_nodes: set[str] = set()
+        _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
 
@@ -402,6 +403,7 @@ async def process_query_stream(
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
+                                _current_node = name
                                 yield _sse_event({
                                     "type": "node_start",
                                     "node": name,
@@ -427,15 +429,17 @@ async def process_query_stream(
                                         "timestamp_ms": (time.time() - start_time) * 1000,
                                     })
 
-                        # LLM 토큰 스트리밍
+                        # LLM 토큰 스트리밍 (output_generator 노드만)
                         if kind == "on_chat_model_stream":
-                            chunk = event.get("data", {}).get("chunk")
-                            if chunk and hasattr(chunk, "content") and chunk.content:
-                                streamed_any_token = True
-                                yield _sse_event({
-                                    "type": "token",
-                                    "content": chunk.content,
-                                })
+                            _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
+                            if _event_node == "output_generator":
+                                chunk = event.get("data", {}).get("chunk")
+                                if chunk and hasattr(chunk, "content") and chunk.content:
+                                    streamed_any_token = True
+                                    yield _sse_event({
+                                        "type": "token",
+                                        "content": chunk.content,
+                                    })
 
                         elif kind == "on_chain_end":
                             output = event.get("data", {}).get("output", {})

@@ -548,7 +548,7 @@
             avatarHtml +
             '<div class="message-content">' +
                 '<div class="message-bubble">' +
-                    '<div class="response-text">' + escapeHtml(responseText) + '</div>' +
+                    '<div class="response-text">' + renderMarkdown(responseText) + '</div>' +
                     metaHtml +
                     sqlHtml +
                     downloadHtml +
@@ -666,7 +666,7 @@
                             if (event.type === "token") {
                                 accumulatedText += event.content;
                                 var textEl = document.getElementById("streamingText");
-                                if (textEl) textEl.textContent = accumulatedText;
+                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
                                 scrollToBottom();
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
@@ -906,6 +906,32 @@
         var div = document.createElement("div");
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // marked.js 초기화 (로드된 경우에만)
+    var _markedReady = false;
+    if (typeof marked !== 'undefined' && typeof marked.parse === 'function') {
+        try {
+            marked.use({ breaks: true, gfm: true });
+            _markedReady = true;
+        } catch (_e) {
+            console.warn('[renderMarkdown] marked.use() 실패:', _e);
+        }
+    } else {
+        console.warn('[renderMarkdown] marked.js 미로드 — 폴백 렌더링 사용');
+    }
+
+    function renderMarkdown(text) {
+        if (!text) return '';
+        if (_markedReady) {
+            try {
+                var result = marked.parse(text);
+                if (typeof result === 'string') return result;
+            } catch (_e) {
+                console.warn('[renderMarkdown] marked.parse 실패:', _e);
+            }
+        }
+        return escapeHtml(text).replace(/\n/g, '<br>');
     }
 
     function scrollToBottom() {

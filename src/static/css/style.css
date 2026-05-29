@@ -4,7 +4,19 @@
    Chat UI edition
    ═══════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap');
+@font-face {
+    font-family: 'Pretendard';
+    src: url('/static/fonts/PretendardVariable.woff2') format('woff2-variations');
+    font-weight: 100 900;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'D2Coding';
+    src: url('/static/fonts/D2Coding.woff2') format('woff2');
+    font-weight: 400;
+    font-display: swap;
+}
 
 :root {
     /* Core palette */
@@ -45,8 +57,8 @@
     --info-bg: rgba(56, 189, 248, 0.1);
 
     /* Typography */
-    --font-display: 'Outfit', -apple-system, sans-serif;
-    --font-mono: 'IBM Plex Mono', 'SF Mono', monospace;
+    --font-display: 'Pretendard', -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    --font-mono: 'D2Coding', 'Consolas', 'Monaco', monospace;
 
     /* Spatial */
     --radius-sm: 6px;
@@ -748,10 +760,148 @@ header nav {
 }
 
 .message--agent .message-bubble .response-text {
-    white-space: pre-wrap;
-    font-family: var(--font-mono);
+    white-space: normal;
+    font-family: var(--font-display);
     font-size: 0.8125rem;
-    line-height: 1.8;
+    line-height: 1.7;
+}
+
+/* ─── Markdown Rendered Elements ─── */
+
+/* Agent bubble fills full width so markdown block elements lay out correctly */
+.message--agent .message-bubble {
+    display: block;
+    width: 100%;
+}
+
+.response-text p {
+    margin: 0 0 0.6em 0;
+}
+.response-text p:last-child {
+    margin-bottom: 0;
+}
+
+/* Headings — distinct size for each level */
+.response-text h1, .response-text h2, .response-text h3,
+.response-text h4, .response-text h5, .response-text h6 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    color: var(--accent);
+    margin: 1em 0 0.4em 0;
+    line-height: 1.35;
+}
+.response-text h1 {
+    font-size: 2.5rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.3em;
+}
+.response-text h2 { font-size: 2.0rem; }
+.response-text h3 { font-size: 1.5rem; }
+.response-text h4 { font-size: 1.25rem; color: var(--text); }
+.response-text h5 { font-size: 1.125rem; color: var(--text-secondary); }
+.response-text h6 { font-size: 1.0rem; color: var(--text-muted); }
+
+.response-text strong { color: var(--text); font-weight: 600; }
+.response-text em { color: var(--text-secondary); font-style: italic; }
+
+.response-text hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 0.75em 0;
+}
+
+/* Lists — prevent overflow from the bubble */
+.response-text ul, .response-text ol {
+    padding-left: 1.5em;
+    margin: 0.4em 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+.response-text li {
+    margin: 0.25em 0;
+    line-height: 1.6;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+/* Inline code */
+.response-text code {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    background: rgba(0, 228, 184, 0.08);
+    border: 1px solid rgba(0, 228, 184, 0.22);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: var(--accent);
+}
+
+/* Code block — visible border with accent left stripe */
+.response-text pre {
+    background: var(--bg-deep);
+    border: 1px solid var(--surface-active);
+    border-left: 3px solid var(--accent-dim);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    margin: 0.6em 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.7;
+    color: var(--accent);
+    white-space: pre;
+}
+.response-text pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+}
+
+/* Responsive table — scroll horizontally when content is wider than bubble */
+.response-text table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: max-content;
+    max-width: 100%;
+    border-collapse: collapse;
+    margin: 0.6em 0;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+}
+.response-text th {
+    background: var(--surface-active);
+    color: var(--accent);
+    font-weight: 600;
+    padding: 7px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    text-align: left;
+    white-space: nowrap;
+}
+.response-text td {
+    padding: 6px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    line-height: 1.5;
+    white-space: nowrap;
+}
+.response-text tr:nth-child(even) td {
+    background: rgba(255, 255, 255, 0.03);
+}
+.response-text tr:hover td {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+.response-text blockquote {
+    border-left: 3px solid var(--accent-dim);
+    margin: 0.5em 0;
+    padding: 0.25em 0.75em;
+    color: var(--text-secondary);
+    background: var(--surface);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
 /* Typing cursor for streaming */
