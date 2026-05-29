@@ -34,6 +34,8 @@
 25. [3계층 하이브리드 필드 매핑 전파 정합성](#d-025-3계층-하이브리드-필드-매핑-전파-정합성-plan-38)
 26. [사용자 로그인 및 인증 시스템](#d-026-사용자-로그인-및-인증-시스템-plan-39)
 27. [사용자 행위 감사 로깅 강화](#d-027-사용자-행위-감사-로깅-강화-plan-40)
+28. [Polestar 불필요 lookup 테이블 JOIN 차단](#d-028-polestar-불필요-lookup-테이블-join-차단)
+29. [알람 조회 의도 분리 + 알람 전용 쿼리 템플릿 주입](#d-029-알람-조회-의도-분리--알람-전용-쿼리-템플릿-주입-plan-44)
 
 ---
 
@@ -1289,10 +1291,58 @@ Polestar DB의 `cmm_vendor`, `cmm_os`, `cmm_os_param` 테이블은 쿼리 대상
 
 ---
 
+## D-029. 알람 조회 의도 분리 + 알람 전용 쿼리 템플릿 주입 (Plan 44)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-05-29 |
+| **상태** | 확정 |
+| **이전 결정** | D-004 확장 (시멘틱 라우팅), D-016 확장 (Polestar 쿼리) |
+
+### 결정
+
+알람/모니터링 관련 질의에 대해 `routing_intent = "alarm_query"`를 독립 의도로 분류하고,
+이를 `query_generator`까지 전파하여 알람 전용 프롬프트 템플릿(`POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE`)을 주입한다.
+
+### 핵심 변경사항
+
+1. **`src/routing/domain_config.py`**: polestar 4개 도메인 description에 모니터링/알람 테이블(CMM_ALARM, CMM_ALARM_DEF 등) 및 컬럼 정보 추가 — LLM이 알람 질의 시 polestar DB를 높은 관련도로 평가하도록 유도
+2. **`src/prompts/semantic_router.py`**: 출력 JSON의 `intent` 필드에 `"alarm_query"` 추가, `## 알람 조회 판단` 섹션 + 예시 7건 추가
+3. **`src/nodes/query_generator.py`**: `_build_system_prompt()` 호출부 + 시그니처에 `routing_intent` 파라미터 추가, 템플릿 선택 분기에 `alarm_query` 조건 추가
+4. **`src/prompts/query_generator.py`**: `POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE` 상수 추가 (Template C-1~C-5)
+
+### 설계 원칙 (방안 2 채택)
+
+`routing_intent`를 semantic_router → State → query_generator로 결정론적으로 전달하여,
+LLM의 자율 선택이 아닌 **의도 기반 강제 주입**으로 올바른 쿼리 패턴을 보장한다.
+
+### backward compatibility
+
+- `routing_intent`가 None이거나 "data_query"이면 기존 `POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE` 그대로 사용 (변경 없음)
+- 비-Polestar DB에는 영향 없음 (polestar_db_ids 조건 유지)
+
+### 알람 Template 구조
+
+| Template | 용도 |
+|---------|------|
+| C-1 | 현재 활성 알람 목록 (CMM_ALARM_ACTIVE JOIN 포함) |
+| C-2 | 서버 알람 기간 이력 (RESOURCE_TYPE 필터 + 기간 조건) |
+| C-3 | 서버 CPU/메모리 알람 기간 이력 (CONDITIONLOGTEXT LIKE 필터 추가) |
+| C-4 | 알람 집계 (GROUP BY, GROUP_PATH 불필요) |
+| C-5 | 전체 장비 알람 기간 이력 (RESOURCE_TYPE 무관) |
+
+### 주의사항
+
+- polestar/polestar_b0는 DB2 엔진이나 Template C는 PostgreSQL 문법으로 작성됨. PostgreSQL 대상(polestar_cm_gp, polestar_cm_yd)에서 우선 검증 필요
+- 알람 테이블(CMM_ALARM 등)이 Redis 스키마 캐시에 없으면 해당 polestar DB 캐시 갱신 필요
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-05-29 | D-029 | 알람 조회 의도 분리 (Plan 44): routing_intent="alarm_query" 의도 추가, domain_config.py 4개 도메인 description 보강, semantic_router.py alarm_query 규칙+예시 7건, query_generator.py routing_intent 파라미터 전파, prompts/query_generator.py Template C-1~C-5 신규 상수 추가 |
 | 2026-04-02 | D-028 | Polestar 불필요 lookup 테이블 JOIN 차단 (Plan 42): excluded_join_columns에 vendor_id/os_id/os_param_id 추가, allowed_tables 필드 신규, schema_analyzer 테이블 필터링, query_validator 패턴 3 추가 |
 | 2026-04-02 | D-027 | 사용자 행위 감사 로깅 강화 (Plan 40): JSONL+PostgreSQL 이중 기록, SQLite 대신 PostgreSQL 확장, 통합 AuditService, AuditMiddleware, 10개 이벤트 유형, 보안 경고 자동 감지 |
 | 2026-04-01 | D-026 | 사용자 로그인 및 인증 시스템 (Plan 39): domain/auth.py, domain/user.py, utils/password.py, infrastructure/auth_provider.py, infrastructure/user_repository.py, infrastructure/audit_repository.py, api/dependencies.py, api/routes/user_auth.py 신규. config.py AuthConfig, state.py 사용자 컨텍스트, query.py/conversation.py/admin.py/server.py/schemas.py 수정, arch_check.py 모듈 매핑, ddl/auth_tables.sql, UI login/register/admin 사용자 관리 |

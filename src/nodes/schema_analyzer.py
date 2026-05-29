@@ -746,7 +746,8 @@ async def schema_analyzer(
             #   2) allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
             #      (LLM 환각으로 누락되는 문제 방지)
             _manual_prof = _load_manual_profile(db_id)
-            if _manual_prof and "allowed_tables" in _manual_prof:
+            _routing_intent = state.get("routing_intent")
+            if _manual_prof and "allowed_tables" in _manual_prof and _routing_intent != "alarm_query":
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
                 # 매핑 피드백(synonyms)에 등록된 테이블도 allowed_tables에 동적 추가하여 캐시 갱신 이후 필터링 유실 방지
                 try:
