@@ -270,13 +270,20 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
 
 [필수 WHERE 조건 — 반드시 포함 (innermost 서브쿼리 안)]
 - CR.DTIME IS NULL                  -- 삭제된 리소스 제외
-- CA.ALARMSEVERITY IN (1, 2, 3)     -- 유효한 심각도만 (1=주의, 2=경고, 3=심각)
+- [활성 알람 쿼리] CA.ALARMSEVERITY IN (1, 2, 3)
+  -- CMM_ALARM_ACTIVE JOIN을 사용하는 현재 활성 알람 조회(C-1)에만 적용
+  -- ALARM_ACTIVE JOIN이 이미 활성 알람만 걸러주므로 사실상 중복 조건이나 명시적 안전망으로 유지
+- [이력 쿼리] CA.ALARMSEVERITY IN (0, 1, 2, 3)
+  -- CMM_ALARM_ACTIVE JOIN 없는 이력 조회(C-2~C-5)에 적용
+  -- 0=해소 레코드를 포함하여 완전한 발생-해소 이력을 반환
 
 [심각도 매핑]
-- 심각/critical/CRITICAL → ALARMSEVERITY = 3
-- 경고/warning/WARNING   → ALARMSEVERITY = 2
-- 주의/info/INFO/notice  → ALARMSEVERITY = 1
-- 미지정 시 → IN (1, 2, 3) 전체 포함
+- 심각/critical/CRITICAL              → ALARMSEVERITY = 3
+- 경고/warning/WARNING                → ALARMSEVERITY = 2
+- 주의/info/INFO/notice               → ALARMSEVERITY = 1
+- 해소/해제/resolved/cleared/normal   → ALARMSEVERITY = 0
+- 미지정 시 (활성 알람 쿼리)          → IN (1, 2, 3)
+- 미지정 시 (이력 쿼리)               → IN (0, 1, 2, 3)  -- 0=해소 포함
 
 [리소스 타입 매핑 — innermost 서브쿼리 WHERE에 추가]
 ⚠ 폴스타 알람은 서버 본체(server.Server)와 서버 하위 자원(server.Cpus, server.Memory,
@@ -300,6 +307,15 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
 - "현재 알람", "발생 중인 알람" → innermost 서브쿼리에 CMM_ALARM_ACTIVE JOIN 반드시 포함
   JOIN CMM_ALARM_ACTIVE A ON A.ALARM_ID = CA.ID
 - "알람 이력", "지난 N일/월 알람", "특정 기간 알람" → CMM_ALARM_ACTIVE JOIN 제외, 외부 WHERE에 기간 조건만 적용
+
+[심각도 0(해소)과 활성/이력 분기]
+- ALARMSEVERITY = 0 레코드는 알람이 해소된 시점에 기록된다.
+- 현재 활성 알람(CMM_ALARM_ACTIVE JOIN) 조회 시: 해소된 알람은 ALARM_ACTIVE에 존재하지 않으므로
+  severity=0 레코드는 JOIN 조건에 의해 자동 제외된다. WHERE 조건은 IN (1, 2, 3) 유지.
+- 이력 조회 시: severity=0을 포함해야 발생→해소 전체 이력을 조회할 수 있다.
+  WHERE 조건은 IN (0, 1, 2, 3) 사용.
+- 사용자가 "해소된 알람만 조회" 요청 시 → ALARMSEVERITY = 0 단독 조건 사용
+  (이 경우에도 CMM_ALARM_ACTIVE JOIN 제외)
 
 [CONDITIONLOGTEXT 키워드 필터 — innermost 서브쿼리 WHERE에 추가]
 - CPU 알람 → AND UPPER(CA.CONDITIONLOGTEXT) LIKE '%CPU%'
@@ -406,6 +422,7 @@ FROM (
     FROM (
         SELECT
             CASE
+                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
                 WHEN CA.ALARMSEVERITY = 1 THEN '주의'
                 WHEN CA.ALARMSEVERITY = 2 THEN '경고'
                 WHEN CA.ALARMSEVERITY = 3 THEN '심각'
@@ -426,7 +443,7 @@ FROM (
         JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
         JOIN CMM_ALARM_ACTIVE A ON A.ALARM_ID = CA.ID  -- 현재 활성 알람만 (이력 조회 시 이 행 제거)
         WHERE CR.DTIME IS NULL
-          AND CA.ALARMSEVERITY IN (1, 2, 3)
+          AND CA.ALARMSEVERITY IN (1, 2, 3)  -- 활성 알람: ALARM_ACTIVE JOIN이 0 자동 제외하므로 1~3 유지
           -- 리소스 타입 필터 예시 (서버+하위 자원 포함): AND CR.RESOURCE_TYPE LIKE 'server.%'
           -- 키워드 필터 예시: AND UPPER(CA.CONDITIONLOGTEXT) LIKE '%CPU%'
     ) AR
@@ -495,6 +512,7 @@ FROM (
     FROM (
         SELECT
             CASE
+                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
                 WHEN CA.ALARMSEVERITY = 1 THEN '주의'
                 WHEN CA.ALARMSEVERITY = 2 THEN '경고'
                 WHEN CA.ALARMSEVERITY = 3 THEN '심각'
@@ -516,7 +534,7 @@ FROM (
         JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
         -- CMM_ALARM_ACTIVE JOIN 없음 (이력 조회)
         WHERE CR.DTIME IS NULL
-          AND CA.ALARMSEVERITY IN (1, 2, 3)
+          AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
           AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 서버 본체 + 하위 자원(CPU/메모리/디스크/파일시스템 등) 포함
     ) AR
     LEFT JOIN CMM_RESOURCE C ON AR.PARENT_RESOURCE_ID = C.ID
@@ -583,6 +601,7 @@ FROM (
     FROM (
         SELECT
             CASE
+                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
                 WHEN CA.ALARMSEVERITY = 1 THEN '주의'
                 WHEN CA.ALARMSEVERITY = 2 THEN '경고'
                 WHEN CA.ALARMSEVERITY = 3 THEN '심각'
@@ -603,7 +622,7 @@ FROM (
         JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
         JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
         WHERE CR.DTIME IS NULL
-          AND CA.ALARMSEVERITY IN (1, 2, 3)
+          AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
           AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 서버 본체 + 하위 자원 포함
           AND (
               UPPER(CA.CONDITIONLOGTEXT) LIKE '%CPU%'
@@ -643,6 +662,7 @@ SELECT
     CR.HOSTNAME AS "호스트명",
     CR.IPADDRESS AS "IP",
     COUNT(*) AS "총_알람_수",
+    COUNT(CASE WHEN A.ALARMSEVERITY = '해소' THEN 1 END) AS "해소_수",
     COUNT(CASE WHEN A.ALARMSEVERITY = '심각' THEN 1 END) AS "심각_수",
     COUNT(CASE WHEN A.ALARMSEVERITY = '경고' THEN 1 END) AS "경고_수",
     COUNT(CASE WHEN A.ALARMSEVERITY = '주의' THEN 1 END) AS "주의_수",
@@ -650,6 +670,7 @@ SELECT
 FROM (
     SELECT
         CASE
+            WHEN CA.ALARMSEVERITY = 0 THEN '해소'
             WHEN CA.ALARMSEVERITY = 1 THEN '주의'
             WHEN CA.ALARMSEVERITY = 2 THEN '경고'
             WHEN CA.ALARMSEVERITY = 3 THEN '심각'
@@ -664,7 +685,7 @@ FROM (
     JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
     JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
     WHERE CR.DTIME IS NULL
-      AND CA.ALARMSEVERITY IN (1, 2, 3)
+      AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
       -- 서버 관련 전체 집계 예시: AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 하위 자원(CPU/메모리/디스크) 포함
 ) A
 LEFT JOIN CMM_RESOURCE CR ON A.ID = CR.ID
@@ -714,6 +735,7 @@ FROM (
     FROM (
         SELECT
             CASE
+                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
                 WHEN CA.ALARMSEVERITY = 1 THEN '주의'
                 WHEN CA.ALARMSEVERITY = 2 THEN '경고'
                 WHEN CA.ALARMSEVERITY = 3 THEN '심각'
@@ -735,7 +757,7 @@ FROM (
         -- CMM_ALARM_ACTIVE JOIN 없음 (이력 조회)
         -- RESOURCE_TYPE 조건 없음 (전체 장비)
         WHERE CR.DTIME IS NULL
-          AND CA.ALARMSEVERITY IN (1, 2, 3)
+          AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
     ) AR
     LEFT JOIN CMM_RESOURCE C ON AR.PARENT_RESOURCE_ID = C.ID
 ) A

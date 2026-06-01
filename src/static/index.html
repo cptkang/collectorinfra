@@ -13,7 +13,10 @@
         <div class="container">
             <h1>INFRA QUERY AGENT</h1>
             <nav>
-                <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
+                <span class="status-badge-wrapper">
+                    <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
+                    <div class="status-tooltip" id="statusTooltip"></div>
+                </span>
                 <span id="userInfoArea"
                     style="display: none; align-items: center; gap: 8px; font-size: 0.8125rem; color: var(--text-secondary, #aaa);">
                     <span id="userDisplayName"></span>

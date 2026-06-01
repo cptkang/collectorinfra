@@ -40,7 +40,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "서버 정보(hostname, IP, gateway), "
             "프로세스 정보(서버에서 동작 중인 프로세스 종류), "
             "모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, "
-            "알람 심각도(1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
+            "알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
             "알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), "
             "알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)"
         ),
@@ -58,7 +58,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
             "서버 정보(hostname, IP, gateway), "
             "모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, "
-            "알람 심각도(1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
+            "알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
             "알람 담당자(ACKUSERNAME), 알람 대상 장비(CMM_RESOURCE)"
         ),
         aliases=["polestar_b0", "은행 폴스타", "레거시 폴스타"],
@@ -75,7 +75,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
             "서버 정보(hostname, IP, gateway), "
             "모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, "
-            "알람 심각도(1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
+            "알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
             "알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), "
             "알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)"
         ),
@@ -93,7 +93,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
             "서버 정보(hostname, IP, gateway), "
             "모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, "
-            "알람 심각도(1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
+            "알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
             "알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), "
             "알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)"
         ),

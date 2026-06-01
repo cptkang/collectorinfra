@@ -38,19 +38,21 @@ async def health_check(request: Request) -> HealthResponse:
     """
     config = request.app.state.config
     db_connected = False
+    db_status_map: dict[str, bool] = {}
 
-    # 멀티 DB 모드: ACTIVE_DB_IDS가 설정되어 있으면 활성 소스로 헬스체크
+    # 멀티 DB 모드: ACTIVE_DB_IDS가 설정되어 있으면 활성 소스 전체 헬스체크
     active_db_ids = config.multi_db.get_active_db_ids()
     if active_db_ids:
         for db_id in active_db_ids:
             try:
                 async with get_db_client(config, db_id=db_id) as client:
-                    if await client.health_check():
+                    connected = await client.health_check()
+                    db_status_map[db_id] = connected
+                    if connected:
                         db_connected = True
-                        break
             except Exception as e:
                 logger.debug("헬스체크 실패 (%s): %s", db_id, e)
-                continue
+                db_status_map[db_id] = False
     else:
         # 단일 DB 모드 (레거시)
         try:
@@ -63,5 +65,6 @@ async def health_check(request: Request) -> HealthResponse:
         status="healthy" if db_connected else "unhealthy",
         version="0.1.0",
         db_connected=db_connected,
+        db_status_map=db_status_map,
         timestamp=datetime.now(),
     )

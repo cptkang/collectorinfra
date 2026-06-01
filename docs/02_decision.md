@@ -1338,10 +1338,57 @@ LLM의 자율 선택이 아닌 **의도 기반 강제 주입**으로 올바른 �
 
 ---
 
+## D-030. ALARMSEVERITY=0 해소 상태 이력 쿼리 포함 (Plan 45)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-01 |
+| **상태** | 확정 |
+| **이전 결정** | D-029 확장 (알람 쿼리 템플릿) |
+
+### 결정
+
+ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에서 기본 포함 대상으로 처리한다.
+활성 알람 조회(CMM_ALARM_ACTIVE JOIN)는 JOIN 구조상 0이 자연 배제되므로 별도 필터 불필요.
+
+### 핵심 변경사항
+
+1. **`src/routing/domain_config.py`**: polestar 4개 도메인 description의 알람 심각도 설명을 `"알람 심각도(1=주의/2=경고/3=심각)"` → `"알람 심각도(0=해소/1=주의/2=경고/3=심각)"` 으로 변경 — LLM이 0=해소를 인식하도록 보강
+2. **`src/prompts/query_generator.py`**: POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE 수정
+   - [필수 WHERE 조건] 섹션: 활성/이력 쿼리 분리 — C-1은 IN (1,2,3), C-2~C-5는 IN (0,1,2,3)
+   - [심각도 매핑] 섹션: `해소/해제/resolved/cleared/normal → ALARMSEVERITY = 0` 추가
+   - [심각도 0(해소)과 활성/이력 분기] 섹션 신규 추가
+   - Template C-1~C-5 CASE WHEN: `WHEN CA.ALARMSEVERITY = 0 THEN '해소'` 추가
+   - Template C-2~C-5 WHERE: `IN (1, 2, 3)` → `IN (0, 1, 2, 3)` 변경
+   - Template C-4 집계 컬럼: `"해소_수"` 컬럼 추가
+3. **`plans/44-polestar-monitoring-alert-routing.md`**: 심각도 코드 정의 2곳에 `ALARMSEVERITY = 0 → "해소" (Resolved/Cleared)` 추가
+
+### 설계 원칙
+
+| 쿼리 유형 | JOIN 구조 | ALARMSEVERITY 조건 | 이유 |
+|---|---|---|---|
+| 현재 활성 알람 (C-1) | CMM_ALARM_ACTIVE JOIN 포함 | IN (1, 2, 3) | ALARM_ACTIVE가 해소 레코드를 이미 배제 |
+| 이력 조회 (C-2~C-5) | CMM_ALARM_ACTIVE JOIN 없음 | IN (0, 1, 2, 3) | 발생→해소 전체 이력 반환 필요 |
+| 해소만 조회 | CMM_ALARM_ACTIVE JOIN 없음 | = 0 단독 | 사용자 명시 요청 시 |
+
+### 근거
+
+- ALARMSEVERITY=0 레코드가 이력 쿼리에서 배제되면 "지난달 알람 이력" 등의 요청에서 해소된 알람이 누락됨
+- CASE WHEN에 0이 없으면 해소 레코드의 `등급` 컬럼이 공백('')으로 출력됨
+- 활성 알람 조회는 CMM_ALARM_ACTIVE가 INNER JOIN으로 해소 레코드를 구조적으로 배제하므로 추가 필터 불필요
+
+### 향후 수정 시 고려사항
+
+- 사용자가 "해소된 알람만 조회" 요청 시: ALARMSEVERITY = 0 단독 + CMM_ALARM_ACTIVE JOIN 제외
+- polestar_b0(DB2 엔진) 에서 동일 템플릿 적용 시 DB2 문법 호환성 확인 필요
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-01 | D-030 | ALARMSEVERITY=0 해소 상태 이력 쿼리 포함 (Plan 45): domain_config.py 4개 도메인 description 0=해소 추가, query_generator.py 필수 WHERE/심각도 매핑/분기 섹션 수정, Template C-1~C-5 CASE WHEN 0 추가, C-2~C-5 WHERE IN(0,1,2,3) 변경, C-4 해소_수 집계 컬럼 추가, plan 44 심각도 코드표 갱신 |
 | 2026-05-29 | D-029 | 알람 조회 의도 분리 (Plan 44): routing_intent="alarm_query" 의도 추가, domain_config.py 4개 도메인 description 보강, semantic_router.py alarm_query 규칙+예시 7건, query_generator.py routing_intent 파라미터 전파, prompts/query_generator.py Template C-1~C-5 신규 상수 추가 |
 | 2026-04-02 | D-028 | Polestar 불필요 lookup 테이블 JOIN 차단 (Plan 42): excluded_join_columns에 vendor_id/os_id/os_param_id 추가, allowed_tables 필드 신규, schema_analyzer 테이블 필터링, query_validator 패턴 3 추가 |
 | 2026-04-02 | D-027 | 사용자 행위 감사 로깅 강화 (Plan 40): JSONL+PostgreSQL 이중 기록, SQLite 대신 PostgreSQL 확장, 통합 AuditService, AuditMiddleware, 10개 이벤트 유형, 보안 경고 자동 감지 |

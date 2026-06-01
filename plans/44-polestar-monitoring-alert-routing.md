@@ -442,10 +442,11 @@ POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인
 - CA.ALARMSEVERITY IN (1, 2, 3)     -- 유효한 심각도만 (1=주의, 2=경고, 3=심각)
 
 [심각도 매핑]
-- 심각/critical/CRITICAL → ALARMSEVERITY = 3
-- 경고/warning/WARNING   → ALARMSEVERITY = 2
-- 주의/info/INFO/notice  → ALARMSEVERITY = 1
-- 미지정 시 → IN (1, 2, 3) 전체 포함
+- 심각/critical/CRITICAL              → ALARMSEVERITY = 3
+- 경고/warning/WARNING                → ALARMSEVERITY = 2
+- 주의/info/INFO/notice               → ALARMSEVERITY = 1
+- 해소/해제/resolved/cleared/normal   → ALARMSEVERITY = 0
+- 미지정 시 → IN (1, 2, 3) 전체 포함 (활성 알람) / IN (0, 1, 2, 3) (이력 쿼리)
 
 [리소스 타입 매핑 — innermost 서브쿼리 WHERE에 추가]
 - 서버/server → CR.RESOURCE_TYPE = 'server.Server'
@@ -1026,6 +1027,7 @@ routing_intent = "alarm_query"
 | 심각, critical | 3 |
 | 경고, warning | 2 |
 | 주의, info, notice | 1 |
+| 해소, 해제, resolved, cleared, normal | 0 |
 
 ### 7.6 리소스 타입 분류
 

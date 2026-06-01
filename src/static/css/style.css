@@ -2308,6 +2308,72 @@ select:focus {
     animation: pulse-dot 1s ease-in-out infinite;
 }
 
+.status-badge--warning {
+    background: var(--warning-bg);
+    color: var(--warning);
+    border: 1px solid rgba(245, 158, 11, 0.15);
+}
+
+.status-badge--warning::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warning);
+    animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* ─── Status Badge Tooltip ─── */
+
+.status-badge-wrapper {
+    position: relative;
+    display: inline-flex;
+}
+
+.status-tooltip {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    background: var(--bg-secondary, #1a1a2e);
+    border: 1px solid var(--border, rgba(255,255,255,0.1));
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    z-index: 200;
+    min-width: 160px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.status-badge-wrapper:hover .status-tooltip:not(:empty) {
+    display: block;
+}
+
+.status-tooltip-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    color: var(--text-secondary, #aaa);
+}
+
+.status-tooltip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-tooltip-dot--online {
+    background: var(--success, #10b981);
+}
+
+.status-tooltip-dot--offline {
+    background: var(--error, #f43f5e);
+}
+
 /* ─── DB Warning Banner ─── */
 
 .db-warning-banner {

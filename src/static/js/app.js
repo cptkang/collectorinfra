@@ -83,23 +83,74 @@
     var dbWarningText = document.getElementById("dbWarningText");
     var _healthOk = false;
 
+    function updateStatusTooltip(statusMap) {
+        var tooltip = document.getElementById("statusTooltip");
+        if (!tooltip) return;
+        var dbIds = Object.keys(statusMap);
+        if (dbIds.length === 0) { tooltip.innerHTML = ""; return; }
+        tooltip.innerHTML = dbIds.map(function (id) {
+            var ok = statusMap[id];
+            return '<div class="status-tooltip-item">' +
+                '<span class="status-tooltip-dot status-tooltip-dot--' + (ok ? "online" : "offline") + '"></span>' +
+                '<span>' + id + '</span>' +
+                '</div>';
+        }).join("");
+    }
+
     function checkHealth() {
         fetch("/api/v1/health", { headers: getAuthHeaders() })
             .then(function (res) { return res.json(); })
             .then(function (data) {
-                if (data.db_connected) {
-                    _healthOk = true;
-                    statusBadge.className = "status-badge status-badge--online";
-                    statusBadge.textContent = "ONLINE";
-                    if (dbWarningBanner) dbWarningBanner.classList.remove("active");
+                var statusMap = data.db_status_map || {};
+                var dbIds = Object.keys(statusMap);
+                updateStatusTooltip(statusMap);
+
+                if (dbIds.length > 0) {
+                    var onlineCount = dbIds.filter(function (id) { return statusMap[id]; }).length;
+                    var allOnline = onlineCount === dbIds.length;
+                    var allOffline = onlineCount === 0;
+
+                    if (allOnline) {
+                        _healthOk = true;
+                        statusBadge.className = "status-badge status-badge--online";
+                        statusBadge.textContent = "ONLINE";
+                        if (dbWarningBanner) dbWarningBanner.classList.remove("active");
+                    } else if (allOffline) {
+                        _healthOk = false;
+                        statusBadge.className = "status-badge status-badge--offline";
+                        statusBadge.textContent = "OFFLINE";
+                        if (dbWarningBanner) {
+                            dbWarningText.textContent =
+                                "모든 DB 서버에 연결할 수 없습니다. MCP 서버 상태를 확인하세요.";
+                            dbWarningBanner.classList.add("active");
+                        }
+                    } else {
+                        _healthOk = true;
+                        statusBadge.className = "status-badge status-badge--warning";
+                        statusBadge.textContent = "WARNING";
+                        if (dbWarningBanner) {
+                            var offlineIds = dbIds.filter(function (id) { return !statusMap[id]; });
+                            dbWarningText.textContent =
+                                "일부 DB 연결 불가: " + offlineIds.join(", ") + ". 쿼리 결과가 불완전할 수 있습니다.";
+                            dbWarningBanner.classList.add("active");
+                        }
+                    }
                 } else {
-                    _healthOk = false;
-                    statusBadge.className = "status-badge status-badge--offline";
-                    statusBadge.textContent = "DB OFFLINE";
-                    if (dbWarningBanner) {
-                        dbWarningText.textContent =
-                            "DB 서버(MCP Server)에 연결할 수 없습니다. 쿼리 실행이 불가능합니다. MCP 서버 상태를 확인하세요.";
-                        dbWarningBanner.classList.add("active");
+                    // 단일 DB 모드 (레거시)
+                    if (data.db_connected) {
+                        _healthOk = true;
+                        statusBadge.className = "status-badge status-badge--online";
+                        statusBadge.textContent = "ONLINE";
+                        if (dbWarningBanner) dbWarningBanner.classList.remove("active");
+                    } else {
+                        _healthOk = false;
+                        statusBadge.className = "status-badge status-badge--offline";
+                        statusBadge.textContent = "DB OFFLINE";
+                        if (dbWarningBanner) {
+                            dbWarningText.textContent =
+                                "DB 서버(MCP Server)에 연결할 수 없습니다. 쿼리 실행이 불가능합니다. MCP 서버 상태를 확인하세요.";
+                            dbWarningBanner.classList.add("active");
+                        }
                     }
                 }
             })
@@ -107,6 +158,7 @@
                 _healthOk = false;
                 statusBadge.className = "status-badge status-badge--offline";
                 statusBadge.textContent = "OFFLINE";
+                updateStatusTooltip({});
                 if (dbWarningBanner) {
                     dbWarningText.textContent =
                         "API 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.";

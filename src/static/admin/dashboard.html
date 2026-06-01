@@ -11,7 +11,10 @@
         <div class="container">
             <h1>ADMIN DASHBOARD</h1>
             <nav>
-                <span class="status-badge status-badge--online" id="healthStatus">HEALTHY</span>
+                <span class="status-badge-wrapper">
+                    <span class="status-badge status-badge--online" id="healthStatus">HEALTHY</span>
+                    <div class="status-tooltip" id="adminStatusTooltip"></div>
+                </span>
                 <a href="/" class="btn btn-secondary" style="font-size: 0.8125rem; padding: 7px 14px; text-decoration: none;">사용자 화면</a>
                 <button class="btn btn-secondary" id="logoutBtn" style="font-size: 0.8125rem; padding: 7px 14px;">로그아웃</button>
             </nav>
