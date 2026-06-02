@@ -234,7 +234,7 @@ async def semantic_router(
         "is_multi_db": is_multi_db,
         "active_db_id": active_db_id,
         "user_specified_db": user_specified_db,
-        "routing_intent": "data_query",
+        "routing_intent": intent,
         "current_node": "semantic_router",
     }
 
@@ -270,15 +270,13 @@ async def _llm_classify(
     parsed = extract_json_from_response(response.content)
 
     if not parsed:
-        return []
+        return {"intent": "data_query", "databases": []}
 
-    # 캐시 관리 의도 확인
+    # 의도 추출 (cache_management, alarm_query, data_query)
     intent = parsed.get("intent", "data_query")
-    if intent == "cache_management":
-        return {"intent": "cache_management", "databases": []}
 
     if "databases" not in parsed:
-        return []
+        return {"intent": intent, "databases": []}
 
     # 활성 도메인 필터링
     valid_db_ids = {d.db_id for d in domains}
@@ -295,7 +293,7 @@ async def _llm_classify(
                 "reason": db_entry.get("reason", ""),
             })
 
-    return results
+    return {"intent": intent, "databases": results}
 
 
 def _build_router_prompt(

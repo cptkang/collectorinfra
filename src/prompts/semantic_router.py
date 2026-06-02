@@ -59,6 +59,7 @@ sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 �
 
 ```json
 {{
+    "intent": "data_query",
     "databases": [
         {{
             "db_id": "데이터베이스 식별자",
@@ -71,6 +72,10 @@ sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 �
 }}
 ```
 
+- data_query: 서버 사양, 성능 지표, 프로세스 등 일반 인프라 데이터 조회
+- alarm_query: 알람 현황, 알람 이력, 임계값 초과, 모니터링 alert 조회
+- cache_management: 캐시 생성/갱신/삭제, 유사어 관리, 컬럼 설명 변경
+
 ## 판단 규칙
 
 1. 질의가 하나의 DB 도메인에만 해당하면 해당 DB만 선택합니다.
@@ -79,6 +84,20 @@ sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 �
 4. 확실한 매칭이면 0.8 이상, 가능성 있는 매칭이면 0.5~0.8, 약한 연관이면 0.3~0.5를 부여합니다.
 5. 0.3 미만의 관련도를 가진 DB는 포함하지 마세요.
 6. 사용자가 DB를 직접 지정한 경우 해당 DB의 relevance_score를 1.0으로, user_specified를 true로 설정하세요.
+
+## 알람 조회 판단 (alarm_query)
+
+사용자가 알람 현황, 알람 이력, 임계값 초과 등 모니터링 이벤트 정보를 요청하는 경우:
+- intent를 "alarm_query"로 설정하고 해당 polestar DB를 선택합니다.
+- 지역/환경이 명시된 경우: "김포 알람" → polestar_cm_gp, "여의도 알람" → polestar_cm_yd
+
+alarm_query로 분류할 질의 패턴:
+- 알람 목록: "현재 발생 중인 알람", "알람 목록", "alert 현황", "알람 조회"
+- 심각도 필터: "critical 알람", "warning 알람", "심각도별 알람", "심각 알람"
+- 임계값/이상: "임계값 초과 서버", "CPU 알람", "디스크 알람", "메모리 알람"
+- 알람 이력: "알람 이력", "지난주 알람", "알람 발생 횟수", "이번 달 알람"
+- 모니터링 현황: "모니터링 정보", "모니터링 현황", "서버 모니터링", "모니터링 상태"
+- 담당자 조회: "미확인 알람", "처리되지 않은 알람", "담당자 없는 알람"
 
 ## 예시
 
@@ -109,6 +128,83 @@ sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 �
     "databases": [
         {{"db_id": "cloud_portal", "relevance_score": 0.9, "reason": "김포 영역 VM 목록 조회", "sub_query_context": "김포 영역의 VM 목록과 상세 정보 조회", "user_specified": false}},
         {{"db_id": "polestar", "relevance_score": 0.8, "reason": "VM이 설치된 서버 스펙 조회", "sub_query_context": "VM이 설치된 서버의 CPU, Memory, Disk 사양 조회", "user_specified": false}}
+    ]
+}}
+```
+
+입력: "현재 발생 중인 서버 알람 목록을 보여줘"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "서버 알람 목록 조회 — alarm_query 의도", "sub_query_context": "현재 활성 알람 목록 조회", "user_specified": false}}
+    ]
+}}
+```
+
+입력: "김포 폴스타에서 critical 알람 이력을 조회해줘"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar_cm_gp", "relevance_score": 1.0, "reason": "사용자가 김포 폴스타 직접 지정, critical 알람 이력 조회", "sub_query_context": "critical 심각도 알람 이력 조회", "user_specified": true}}
+    ]
+}}
+```
+
+입력: "여의도 개발 서버 중 CPU 임계값 초과 알람이 발생한 서버 목록"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar_cm_yd", "relevance_score": 0.95, "reason": "여의도 개발 환경 CPU 알람 조회", "sub_query_context": "CPU 임계값 초과 알람 발생 서버 목록 조회", "user_specified": false}}
+    ]
+}}
+```
+
+입력: "이번 달 경고 이상 알람 발생 횟수를 장비별로 집계해줘"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar", "relevance_score": 0.9, "reason": "월별 알람 발생 횟수 집계 — alarm_query 의도", "sub_query_context": "이번 달 경고/심각 알람 장비별 집계 조회", "user_specified": false}}
+    ]
+}}
+```
+
+입력: "미확인(NOT_ACK) 알람 목록과 담당자 정보를 보여줘"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "미확인 알람 및 담당자 조회 — alarm_query 의도", "sub_query_context": "미확인 알람 목록과 담당자 정보 조회", "user_specified": false}}
+    ]
+}}
+```
+
+입력: "5월 한 달간 서버에서 발생한 알람 목록을 보여줘"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar", "relevance_score": 0.9, "reason": "서버 장비 대상 특정 기간 알람 이력 조회 — alarm_query 의도", "sub_query_context": "서버 알람 2026-05-01~2026-05-31 이력 조회", "user_specified": false}}
+    ]
+}}
+```
+
+입력: "이번 달 서버의 CPU 및 메모리 알람 이력을 보여줘"
+출력:
+```json
+{{
+    "intent": "alarm_query",
+    "databases": [
+        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "서버 CPU/메모리 키워드 알람 이력 조회 — alarm_query 의도", "sub_query_context": "서버 CPU 및 메모리 알람 이번 달 이력 조회", "user_specified": false}}
     ]
 }}
 ```
@@ -148,6 +244,7 @@ action을 "db-guide"로 설정하세요.
 - "병합" -> intent: "cache_management"
 
 캐시 관리가 아닌 일반 데이터 조회 요청이면 intent를 "data_query"로 설정하세요 (기본값).
+알람/모니터링 이벤트 조회 요청이면 intent를 "alarm_query"로 설정하세요.
 
 JSON에 "intent" 필드를 포함하세요:
 ```json

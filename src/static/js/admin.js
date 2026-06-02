@@ -38,28 +38,55 @@
 
     checkHealth();
 
+    function updateAdminTooltip(statusMap) {
+        var tooltip = document.getElementById("adminStatusTooltip");
+        if (!tooltip) return;
+        var dbIds = Object.keys(statusMap);
+        if (dbIds.length === 0) { tooltip.innerHTML = ""; return; }
+        tooltip.innerHTML = dbIds.map(function (id) {
+            var ok = statusMap[id];
+            return '<div class="status-tooltip-item">' +
+                '<span class="status-tooltip-dot status-tooltip-dot--' + (ok ? "online" : "offline") + '"></span>' +
+                '<span>' + id + '</span>' +
+                '</div>';
+        }).join("");
+    }
+
     async function checkHealth() {
         try {
             var response = await fetch("/api/v1/health");
             var data = await response.json();
             var badge = document.getElementById("healthStatus");
-            if (data.status === "healthy") {
-                badge.textContent = "HEALTHY";
-                badge.className = "status-badge status-badge--online";
+            var statusMap = data.db_status_map || {};
+            var dbIds = Object.keys(statusMap);
+            updateAdminTooltip(statusMap);
+
+            if (dbIds.length > 0) {
+                var onlineCount = dbIds.filter(function (id) { return statusMap[id]; }).length;
+                if (onlineCount === dbIds.length) {
+                    badge.textContent = "HEALTHY";
+                    badge.className = "status-badge status-badge--online";
+                } else if (onlineCount === 0) {
+                    badge.textContent = "OFFLINE";
+                    badge.className = "status-badge status-badge--offline";
+                } else {
+                    badge.textContent = "WARNING";
+                    badge.className = "status-badge status-badge--warning";
+                }
             } else {
-                badge.textContent = "DEGRADED";
-                badge.className = "status-badge";
-                badge.style.background = "var(--warning-bg)";
-                badge.style.color = "var(--warning)";
-                badge.style.border = "1px solid rgba(245, 158, 11, 0.15)";
+                if (data.status === "healthy") {
+                    badge.textContent = "HEALTHY";
+                    badge.className = "status-badge status-badge--online";
+                } else {
+                    badge.textContent = "DEGRADED";
+                    badge.className = "status-badge status-badge--warning";
+                }
             }
         } catch (err) {
             var badge = document.getElementById("healthStatus");
             badge.textContent = "OFFLINE";
-            badge.className = "status-badge";
-            badge.style.background = "var(--error-bg)";
-            badge.style.color = "var(--error)";
-            badge.style.border = "1px solid rgba(244, 63, 94, 0.15)";
+            badge.className = "status-badge status-badge--offline";
+            updateAdminTooltip({});
         }
     }
 

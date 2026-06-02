@@ -81,6 +81,9 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="서비스 상태: healthy | unhealthy")
     version: str = Field(..., description="버전")
     db_connected: bool = Field(..., description="DB 연결 상태")
+    db_status_map: dict[str, bool] = Field(
+        default_factory=dict, description="DB ID별 연결 상태 (멀티 DB 모드)"
+    )
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

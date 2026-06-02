@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>인프라 데이터 조회 에이전트</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=4">
 </head>
 
 <body>
@@ -13,7 +13,10 @@
         <div class="container">
             <h1>INFRA QUERY AGENT</h1>
             <nav>
-                <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
+                <span class="status-badge-wrapper">
+                    <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
+                    <div class="status-tooltip" id="statusTooltip"></div>
+                </span>
                 <span id="userInfoArea"
                     style="display: none; align-items: center; gap: 8px; font-size: 0.8125rem; color: var(--text-secondary, #aaa);">
                     <span id="userDisplayName"></span>
@@ -136,7 +139,8 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/marked.min.js?v=1"></script>
+    <script src="/static/js/app.js?v=2"></script>
 </body>
 
 </html>

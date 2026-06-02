@@ -19,6 +19,7 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import (
+    POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE,
     POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE,
     QUERY_GENERATOR_SYSTEM_TEMPLATE,
 )
@@ -188,6 +189,7 @@ async def query_generator(
         active_db_id=state.get("active_db_id"),
         polestar_db_ids=app_config.get_polestar_db_ids() or None,
         active_db_engine=state.get("active_db_engine"),
+        routing_intent=state.get("routing_intent"),
     )
 
     user_prompt = _build_user_prompt(
@@ -234,6 +236,7 @@ def _build_system_prompt(
     active_db_id: str | None = None,
     polestar_db_ids: set[str] | None = None,
     active_db_engine: str | None = None,
+    routing_intent: str | None = None,
 ) -> str:
     """시스템 프롬프트를 구성한다.
 
@@ -247,6 +250,7 @@ def _build_system_prompt(
         active_db_id: 현재 활성 DB 식별자 (선택)
         polestar_db_ids: Polestar 전용 프롬프트 적용 DB ID 집합 (선택, .env 설정)
         active_db_engine: 대상 DB 엔진 타입 (선택, 예: "db2", "postgresql")
+        routing_intent: 시멘틱 라우터가 분류한 의도 (선택, 예: "alarm_query", "data_query")
 
     Returns:
         시스템 프롬프트 문자열
@@ -274,8 +278,12 @@ def _build_system_prompt(
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
     # Polestar 전용 프롬프트 선택: .env의 POLESTAR_DB_IDS에 active_db_id가 포함되면 전용 템플릿 사용
+    # routing_intent == "alarm_query"인 경우 알람 전용 템플릿 사용
     if polestar_db_ids and active_db_id in polestar_db_ids:
-        template = POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        if routing_intent == "alarm_query":
+            template = POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        else:
+            template = POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
     else:
         template = QUERY_GENERATOR_SYSTEM_TEMPLATE
 

@@ -727,6 +727,7 @@ async def schema_analyzer(
                 full_schema,
                 query_targets,
                 parsed.get("original_query", ""),
+                routing_intent=state.get("routing_intent"),
             )
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
             logger.warning("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
@@ -746,7 +747,8 @@ async def schema_analyzer(
             #   2) allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
             #      (LLM 환각으로 누락되는 문제 방지)
             _manual_prof = _load_manual_profile(db_id)
-            if _manual_prof and "allowed_tables" in _manual_prof:
+            _routing_intent = state.get("routing_intent")
+            if _manual_prof and "allowed_tables" in _manual_prof and _routing_intent != "alarm_query":
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
                 # 매핑 피드백(synonyms)에 등록된 테이블도 allowed_tables에 동적 추가하여 캐시 갱신 이후 필터링 유실 방지
                 try:
@@ -795,6 +797,62 @@ async def schema_analyzer(
                             _removed, [t for t in _filtered],
                         )
                     relevant = _filtered
+
+            # alarm_query: 알람 전용 테이블 필터링 + 핵심 테이블 보충
+            if _routing_intent == "alarm_query":
+                _all_tables_map = {t.rsplit(".", 1)[-1].lower(): t for t in full_schema.tables.keys()}
+                _alarm_core_set = {"cmm_alarm", "cmm_alarm_def", "cmm_alarm_active"}
+
+                # [Fix C-1] alarm_allowed_tables 명시 필터링
+                # LLM 폴백(전체 또는 과다 선택) 감지: 전체 테이블의 50% 초과 or 10개 초과
+                _total_count = len(full_schema.tables)
+                _is_llm_fallback = len(relevant) > max(int(_total_count * 0.5), 10)
+
+                _alarm_allowed: set[str] | None = None
+                if _manual_prof and "alarm_allowed_tables" in _manual_prof:
+                    _alarm_allowed = {t.lower() for t in _manual_prof["alarm_allowed_tables"]}
+
+                if _alarm_allowed:
+                    # 명시적 alarm_allowed_tables 기반 필터
+                    _filtered_alarm = [
+                        t for t in relevant
+                        if t.rsplit(".", 1)[-1].lower() in _alarm_allowed
+                    ]
+                    if _filtered_alarm:
+                        relevant = _filtered_alarm
+                        logger.info(
+                            "alarm_query: alarm_allowed_tables 필터 적용: %d → %d개",
+                            len(full_schema.tables), len(relevant),
+                        )
+                    else:
+                        # 필터 후 빈 경우 core 테이블만 유지
+                        relevant = [
+                            _all_tables_map[b] for b in _alarm_core_set
+                            if b in _all_tables_map
+                        ]
+                        logger.warning(
+                            "alarm_query: alarm_allowed_tables 필터 후 빈 결과, core 테이블로 복원: %s",
+                            relevant,
+                        )
+                elif _is_llm_fallback:
+                    # [Fix C-2] alarm_allowed_tables 미정의 + LLM 폴백: core 테이블 하드캡
+                    relevant = [
+                        _all_tables_map[b] for b in _alarm_core_set
+                        if b in _all_tables_map
+                    ]
+                    logger.warning(
+                        "alarm_query: LLM 폴백 감지 (%d개), core 테이블로 제한: %s",
+                        _total_count, relevant,
+                    )
+
+                # [Fix C-3] 핵심 알람 테이블 누락 보충
+                _relevant_bare = {t.rsplit(".", 1)[-1].lower() for t in relevant}
+                for _alarm_bare in _alarm_core_set:
+                    if _alarm_bare not in _relevant_bare:
+                        _full_name = _all_tables_map.get(_alarm_bare)
+                        if _full_name:
+                            relevant.append(_full_name)
+                            logger.info("alarm_query: 알람 핵심 테이블 보충: %s", _full_name)
 
             # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
             schema_dict = schema_to_dict(full_schema, relevant)
@@ -995,6 +1053,7 @@ async def _llm_select_relevant_tables(
     full_schema: SchemaInfo,
     query_targets: list[str],
     user_query: str,
+    routing_intent: str | None = None,
 ) -> list[str]:
     """LLM을 사용하여 사용자 질의에 관련된 테이블을 선택한다.
 
@@ -1007,6 +1066,7 @@ async def _llm_select_relevant_tables(
         full_schema: 전체 스키마 정보 (테이블, 컬럼, 관계 포함)
         query_targets: 조회 대상 도메인 목록
         user_query: 원본 사용자 질의
+        routing_intent: 시멘틱 라우터가 분류한 의도 (예: "alarm_query", "data_query")
 
     Returns:
         LLM이 선택한 관련 테이블 이름 목록
@@ -1036,11 +1096,22 @@ async def _llm_select_relevant_tables(
         ]
         relationship_text = "\n\nFK 관계:\n" + "\n".join(rel_lines)
 
+    # routing_intent별 추가 힌트
+    intent_hint = ""
+    if routing_intent == "alarm_query":
+        intent_hint = (
+            "\n\n[중요] 이 질의는 알람(Alert/Alarm) 조회입니다. "
+            "cmm_alarm, cmm_alarm_def, cmm_alarm_active, cmm_resource 등 "
+            "알람 관련 테이블만 선택하세요. "
+            "cmm_metric_stat_*(성능 통계), core_config_prop(EAV 설정) 등 "
+            "알람과 무관한 테이블은 절대 선택하지 마세요."
+        )
+
     prompt = f"""다음 DB 테이블 목록에서 사용자 질의에 필요한 테이블만 선택하세요.
 
 테이블 및 주요 컬럼:
 {table_info_text}
-{relationship_text}
+{relationship_text}{intent_hint}
 
 사용자 질의: {user_query}
 조회 대상 도메인: {', '.join(query_targets)}
