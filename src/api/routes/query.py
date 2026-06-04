@@ -697,6 +697,259 @@ def _get_file_extension(filename: str | None) -> str:
     return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
+@router.post("/query/file/stream")
+async def process_file_query_stream(
+    request: Request,
+    query: str = Form(..., min_length=1, max_length=2000),
+    file: UploadFile = File(...),
+    thread_id: Optional[str] = Form(None),
+    current_user: dict = Depends(require_user),
+) -> StreamingResponse:
+    """파일 업로드와 함께 SSE 스트리밍 방식으로 질의를 처리한다."""
+    file_ext = _get_file_extension(file.filename)
+    if file_ext not in ("xlsx", "docx"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"지원하지 않는 파일 형식: .{file_ext}"},
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > 10 * 1024 * 1024:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "파일 크기가 10MB를 초과합니다."},
+        )
+
+    csv_sheet_data = None
+    if file_ext == "xlsx":
+        try:
+            from dataclasses import asdict
+            from src.document.excel_csv_converter import excel_to_csv_cached
+            from src.schema_cache.cache_manager import get_cache_manager
+            cache_mgr = get_cache_manager(request.app.state.config)
+            csv_result = await excel_to_csv_cached(file_bytes, cache_manager=cache_mgr)
+            csv_sheet_data = {k: asdict(v) for k, v in csv_result.items()}
+        except Exception as e:
+            logger.warning("Excel→CSV 변환 실패, 기존 방식으로 진행: %s", e)
+
+    query_id = str(uuid.uuid4())
+    graph = request.app.state.graph
+    config = request.app.state.config
+    actual_thread_id = thread_id or query_id
+
+    initial_state = create_initial_state(
+        user_query=query,
+        uploaded_file=file_bytes,
+        file_type=file_ext,
+        thread_id=actual_thread_id,
+        csv_sheet_data=csv_sheet_data,
+        user_id=current_user.get("sub"),
+        user_department=current_user.get("department"),
+        allowed_db_ids=current_user.get("allowed_db_ids"),
+    )
+
+    thread_config = {"configurable": {"thread_id": actual_thread_id}}
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        start_time = time.time()
+        streamed_any_token = False
+        _seen_nodes: set[str] = set()
+        _current_node: str | None = None
+        _tracked_row_count: int = 0
+        _tracked_query_results: list[dict] = []
+
+        try:
+            if hasattr(graph, "astream_events"):
+                try:
+                    async for event in graph.astream_events(
+                        initial_state,
+                        thread_config,
+                        version="v2",
+                    ):
+                        kind = event.get("event", "")
+                        name = event.get("name", "")
+
+                        if kind == "on_chain_start" and name and name not in _seen_nodes:
+                            _known_nodes = {
+                                "context_resolver", "input_parser",
+                                "semantic_router", "schema_analyzer",
+                                "field_mapper",
+                                "query_generator", "query_validator",
+                                "approval_gate", "query_executor",
+                                "result_organizer", "output_generator",
+                                "multi_db_executor", "result_merger",
+                                "synonym_registrar", "error_response",
+                            }
+                            if name in _known_nodes:
+                                _seen_nodes.add(name)
+                                _current_node = name
+                                yield _sse_event({
+                                    "type": "node_start",
+                                    "node": name,
+                                    "timestamp_ms": (time.time() - start_time) * 1000,
+                                })
+
+                        if kind == "on_chain_end" and name:
+                            node_output = event.get("data", {}).get("output", {})
+                            if isinstance(node_output, dict) and name in _seen_nodes:
+                                if name in ("query_executor", "multi_db_executor", "result_merger"):
+                                    node_qr = node_output.get("query_results")
+                                    if isinstance(node_qr, list):
+                                        _tracked_row_count = len(node_qr)
+                                        _tracked_query_results = node_qr
+                                progress_data = _extract_node_progress(name, node_output)
+                                if progress_data:
+                                    yield _sse_event({
+                                        "type": "node_complete",
+                                        "node": name,
+                                        "data": progress_data,
+                                        "timestamp_ms": (time.time() - start_time) * 1000,
+                                    })
+
+                        if kind == "on_chat_model_stream":
+                            _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
+                            if _event_node == "output_generator":
+                                chunk = event.get("data", {}).get("chunk")
+                                if chunk and hasattr(chunk, "content") and chunk.content:
+                                    streamed_any_token = True
+                                    yield _sse_event({
+                                        "type": "token",
+                                        "content": chunk.content,
+                                    })
+
+                        elif kind == "on_chain_end":
+                            output = event.get("data", {}).get("output", {})
+                            if isinstance(output, dict) and "final_response" in output:
+                                elapsed_ms = (time.time() - start_time) * 1000
+
+                                if not streamed_any_token:
+                                    yield _sse_event({
+                                        "type": "token",
+                                        "content": output.get("final_response", ""),
+                                    })
+
+                                _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
+
+                                yield _sse_event({
+                                    "type": "meta",
+                                    "executed_sql": output.get("generated_sql"),
+                                    "row_count": _final_row_count,
+                                })
+
+                                turn_count = _count_human_messages(output.get("messages", []))
+                                response_data = {
+                                    "query_id": query_id,
+                                    "status": "completed",
+                                    "response": output.get("final_response", ""),
+                                    "thread_id": actual_thread_id,
+                                    "has_file": output.get("output_file") is not None,
+                                    "file_name": output.get("output_file_name"),
+                                    "executed_sql": output.get("generated_sql"),
+                                    "row_count": _final_row_count,
+                                    "processing_time_ms": elapsed_ms,
+                                    "turn_count": turn_count,
+                                    "has_mapping_report": output.get("mapping_report_md") is not None,
+                                }
+                                _store_result(query_id, {
+                                    **response_data,
+                                    "output_file": output.get("output_file"),
+                                    "mapping_report_md": output.get("mapping_report_md"),
+                                    "query_results": output.get("query_results") or _tracked_query_results,
+                                })
+
+                                yield _sse_event({
+                                    "type": "done",
+                                    "query_id": query_id,
+                                    "thread_id": actual_thread_id,
+                                    "processing_time_ms": elapsed_ms,
+                                    "row_count": response_data["row_count"],
+                                    "executed_sql": response_data["executed_sql"],
+                                    "has_file": response_data["has_file"],
+                                    "file_name": response_data.get("file_name"),
+                                    "awaiting_approval": False,
+                                    "turn_count": turn_count,
+                                    "has_mapping_report": response_data.get("has_mapping_report", False),
+                                })
+                                return
+
+                    if not streamed_any_token:
+                        raise AttributeError("astream_events did not produce output")
+
+                except (AttributeError, TypeError, NotImplementedError):
+                    pass
+
+            # Fallback: ainvoke
+            result = await asyncio.wait_for(
+                graph.ainvoke(initial_state, thread_config),
+                timeout=config.server.file_query_timeout,
+            )
+            elapsed_ms = (time.time() - start_time) * 1000
+            final_response = result.get("final_response", "")
+            yield _sse_event({"type": "token", "content": final_response})
+            _final_row_count = len(result.get("query_results", []))
+            yield _sse_event({
+                "type": "meta",
+                "executed_sql": result.get("generated_sql"),
+                "row_count": _final_row_count,
+            })
+            turn_count = _count_human_messages(result.get("messages", []))
+            response_data = {
+                "query_id": query_id,
+                "status": "completed",
+                "response": final_response,
+                "thread_id": actual_thread_id,
+                "has_file": result.get("output_file") is not None,
+                "file_name": result.get("output_file_name"),
+                "executed_sql": result.get("generated_sql"),
+                "row_count": _final_row_count,
+                "processing_time_ms": elapsed_ms,
+                "turn_count": turn_count,
+                "has_mapping_report": result.get("mapping_report_md") is not None,
+            }
+            _store_result(query_id, {
+                **response_data,
+                "output_file": result.get("output_file"),
+                "mapping_report_md": result.get("mapping_report_md"),
+                "query_results": result.get("query_results", []),
+            })
+            yield _sse_event({
+                "type": "done",
+                "query_id": query_id,
+                "thread_id": actual_thread_id,
+                "processing_time_ms": elapsed_ms,
+                "row_count": response_data["row_count"],
+                "executed_sql": response_data["executed_sql"],
+                "has_file": response_data["has_file"],
+                "file_name": response_data.get("file_name"),
+                "turn_count": turn_count,
+                "has_mapping_report": response_data.get("has_mapping_report", False),
+            })
+
+        except asyncio.TimeoutError:
+            yield _sse_event({
+                "type": "error",
+                "message": "처리 시간이 초과되었습니다.",
+            })
+        except Exception as e:
+            logger.error(f"파일 SSE 스트리밍 에러: {e}")
+            yield _sse_event({
+                "type": "error",
+                "message": f"처리 중 오류가 발생했습니다: {str(e)}",
+            })
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get(
     "/query/{query_id}/result",
     response_model=QueryResponse,

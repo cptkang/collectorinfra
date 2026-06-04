@@ -906,7 +906,7 @@
         }
     }
 
-    // ─── File Query (no SSE needed) ───
+    // ─── File Query (SSE streaming) ───
 
     async function executeFileQuery(query, file) {
         isProcessing = true;
@@ -915,34 +915,144 @@
         renderProcessingMessage();
         resetProgressPanel();
 
-        try {
-            var formData = new FormData();
-            formData.append("query", query);
-            formData.append("file", file);
-            if (currentThreadId) {
-                formData.append("thread_id", currentThreadId);
-            }
+        var formData = new FormData();
+        formData.append("query", query);
+        formData.append("file", file);
+        if (currentThreadId) {
+            formData.append("thread_id", currentThreadId);
+        }
 
-            var response = await fetch("/api/v1/query/file", {
+        try {
+            // SSE 스트리밍 시도
+            var response = await fetch("/api/v1/query/file/stream", {
                 method: "POST",
                 headers: getAuthHeaders(),
                 body: formData,
             });
 
-            var data = await response.json();
+            if (response.status === 404 || response.status === 405) {
+                // 스트리밍 엔드포인트 없으면 폴백
+                removeProcessingMessage();
+                await _executeFileQueryFallback(formData);
+                return;
+            }
 
+            if (!response.ok) {
+                var errData;
+                try { errData = await response.json(); } catch (_e) { errData = { detail: "처리 중 오류가 발생했습니다." }; }
+                removeProcessingMessage();
+                showError(errData.detail || "처리 중 오류가 발생했습니다.");
+                return;
+            }
+
+            var contentType = response.headers.get("content-type") || "";
+            if (!contentType.includes("text/event-stream")) {
+                removeProcessingMessage();
+                var jsonData = await response.json();
+                renderAgentMessage(jsonData);
+                showPostHocProgress(jsonData);
+                currentThreadId = jsonData.thread_id || currentThreadId;
+                messages.push({ role: "agent", data: jsonData, time: new Date() });
+                return;
+            }
+
+            // SSE 스트림 처리 (executeStreamingQuery와 동일한 로직)
             removeProcessingMessage();
+            createStreamingMessage();
 
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = "";
+            var accumulatedText = "";
+            var metaData = {};
+            var done = false;
+
+            while (!done) {
+                var chunk = await reader.read();
+                if (chunk.done) break;
+
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (line.startsWith("data: ")) {
+                        var dataStr = line.substring(6);
+                        try {
+                            var event = JSON.parse(dataStr);
+                            if (event.type === "token") {
+                                accumulatedText += event.content;
+                                var textEl = document.getElementById("streamingText");
+                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
+                                scrollToBottom();
+                            } else if (event.type === "node_start") {
+                                handleNodeStart(event);
+                                updateProcessingStage(event.node, "start");
+                            } else if (event.type === "node_complete") {
+                                handleNodeComplete(event);
+                                updateProcessingStage(event.node, "complete");
+                            } else if (event.type === "meta") {
+                                metaData = event;
+                            } else if (event.type === "done") {
+                                done = true;
+                                metaData = Object.assign(metaData, event);
+                            } else if (event.type === "error") {
+                                showError(event.message || "처리 중 오류가 발생했습니다.");
+                                done = true;
+                            }
+                        } catch (_parseErr) {}
+                    }
+                }
+            }
+
+            finalizeStreamingMessage(accumulatedText, metaData);
+            currentThreadId = metaData.thread_id || currentThreadId;
+            messages.push({
+                role: "agent",
+                data: {
+                    response: accumulatedText,
+                    query_id: metaData.query_id,
+                    executed_sql: metaData.executed_sql,
+                    row_count: metaData.row_count,
+                    processing_time_ms: metaData.processing_time_ms,
+                    has_file: metaData.has_file,
+                    file_name: metaData.file_name,
+                },
+                time: new Date(),
+            });
+
+        } catch (err) {
+            removeProcessingMessage();
+            showError("서버와의 통신에 실패했습니다: " + err.message);
+        } finally {
+            isProcessing = false;
+            sendBtn.disabled = false;
+        }
+    }
+
+    // ─── File Query Fallback (non-streaming) ───
+
+    async function _executeFileQueryFallback(formData) {
+        isProcessing = true;
+        sendBtn.disabled = true;
+        renderProcessingMessage();
+        try {
+            var response = await fetch("/api/v1/query/file", {
+                method: "POST",
+                headers: getAuthHeaders(),
+                body: formData,
+            });
+            var data = await response.json();
+            removeProcessingMessage();
             if (!response.ok) {
                 showError(data.detail || "처리 중 오류가 발생했습니다.");
                 return;
             }
-
             renderAgentMessage(data);
             showPostHocProgress(data);
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
-
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);

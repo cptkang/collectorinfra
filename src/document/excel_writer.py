@@ -129,6 +129,8 @@ def _fill_sheet(
     formula_cells_set = set(sheet_info.get("formula_cells", []))
 
     # 헤더별 열 인덱스와 매핑된 DB 컬럼 매칭
+    # column_mapping에 None인 필드는 필드명 자체를 조회 키로 사용한다.
+    # 이는 query_generator가 한글 필드명을 SQL alias로 사용했을 때 자동으로 매칭된다.
     col_assignments: list[tuple[int, str]] = []
     for hc in header_cells:
         col_idx = hc["col"]
@@ -136,6 +138,9 @@ def _fill_sheet(
         mapped = column_mapping.get(header_name)
         if mapped:
             col_assignments.append((col_idx, mapped))
+        elif header_name in column_mapping:
+            # column_mapping에는 있지만 None인 경우: 필드명 자체로 시도
+            col_assignments.append((col_idx, header_name))
 
     # Phase 3: 상세 로깅
     logger.debug(

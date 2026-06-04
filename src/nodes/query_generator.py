@@ -512,6 +512,23 @@ def _build_user_prompt(
                 f"{join_hint}\n"
                 "반드시 GROUP BY를 포함하세요."
             )
+        # 미매핑 필드 (column_mapping[field] = None) 별도 안내
+        unmapped_fields = [
+            field for field, col in column_mapping.items()
+            if col is None
+        ]
+        if unmapped_fields:
+            parts.append(
+                "## 자동 매핑 실패 필드 (스키마에서 직접 조회 필요)\n"
+                "아래 양식 필드들은 자동 매핑에 실패했습니다. "
+                "스키마와 사용자 질의를 참고하여 적절한 DB 컬럼 또는 계산식으로 반드시 SELECT에 포함하세요.\n"
+                "**중요**: 각 필드명을 그대로 SQL alias로 사용하세요 (따옴표 포함).\n"
+                "예: ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS \"CPU 평균\"\n"
+                "CPU/메모리/디스크 사용률·통계 관련 필드는 cmm_metric_stat_[h,d,m] 테이블을 활용하고, "
+                "Template B 패턴을 따르세요:\n"
+                + "\n".join(f'- "{f}"' for f in unmapped_fields)
+            )
+
     elif template_structure:
         # column_mapping이 없으면 기존 방식 (하위 호환)
         tmpl_json = json.dumps(template_structure, ensure_ascii=False, indent=2)
