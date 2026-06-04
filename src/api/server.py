@@ -144,7 +144,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         except Exception as e:
             logger.warning("Redis 연결 실패 (파일 캐시로 폴백): %s", e)
 
+    # 알람 분석 워커 시작 (ALARM_ENABLED=true인 경우에만)
+    alarm_worker_task = None
+    if config.alarm.enabled:
+        import asyncio as _asyncio
+        from src.alarm.application.alarm_worker import AlarmWorker
+        alarm_worker_task = _asyncio.create_task(AlarmWorker(config).run())
+        logger.info(
+            "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
+        )
+
     yield
+
+    # 종료 시: 알람 워커 정리
+    if alarm_worker_task:
+        alarm_worker_task.cancel()
+        try:
+            import asyncio as _asyncio
+            await alarm_worker_task
+        except Exception:
+            pass
 
     # 종료 시: 인증 DB 풀 정리
     if app.state.auth_pool:
