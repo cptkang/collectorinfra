@@ -54,7 +54,9 @@ class KBGenAIChat(BaseChatModel):
     def _convert_messages_to_prompts(self, messages: List[BaseMessage]) -> List[str]:
         prompts = []
         for m in messages:
-            if isinstance(m, (HumanMessage, AIMessage, SystemMessage)):
+            if isinstance(m, SystemMessage):
+                continue  # SystemMessage는 systemPrompt 필드로 별도 전달
+            if isinstance(m, (HumanMessage, AIMessage)):
                 prompts.append(m.content)
             elif isinstance(m, str):
                 prompts.append(m)
@@ -77,6 +79,13 @@ class KBGenAIChat(BaseChatModel):
     def _get_payload(
         self, messages: List[BaseMessage], is_stream: bool = False
     ) -> dict:
+        # 메시지 리스트에 SystemMessage가 있으면 systemPrompt로 사용하고,
+        # 없으면 인스턴스 기본값(self.system_prompt)을 사용한다.
+        system_prompt = self.system_prompt
+        for m in messages:
+            if isinstance(m, SystemMessage):
+                system_prompt = m.content
+                break
         return {
             "modelId": self.asset_id,
             "contents": self._convert_messages_to_prompts(messages),
@@ -84,7 +93,7 @@ class KBGenAIChat(BaseChatModel):
             "isRagOn": False,
             "executeRagFinalAnswer": False,
             "executeRagStandaloneQuery": False,
-            "systemPrompt": self.system_prompt,
+            "systemPrompt": system_prompt,
         }
 
     def _generate(

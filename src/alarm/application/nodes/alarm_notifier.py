@@ -23,6 +23,27 @@ from src.alarm.domain.alarm import AlarmAnalysisResult
 
 logger = logging.getLogger(__name__)
 
+_SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
+
+
+def build_workb_body(result: AlarmAnalysisResult) -> str:
+    """WorkB 쪽지 본문을 HTML 형식으로 생성한다."""
+    ev = result.alarm_event
+    color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
+    severity_html = f'<span style="color:{color};font-weight:bold">{result.severity_label}</span>'
+    return (
+        f"<b>심각도:</b> {severity_html}<br>"
+        f"<b>알람명:</b> {ev.alarm_name}<br>"
+        f"<b>설명:</b> {ev.alarm_description}<br>"
+        f"<b>자원:</b> {ev.resource_name} ({ev.resource_type})<br>"
+        f"<b>호스트:</b> {ev.hostname}<br>"
+        f"<b>컨디션:</b> {ev.condition_log}"
+        f"<hr>"
+        f"<b>요약</b><br>{result.summary}<br><br>"
+        f"<b>추정 원인</b><br>{result.probable_cause}<br><br>"
+        f"<b>권고 조치</b><br>{result.recommended_action}"
+    )
+
 
 async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """분석 결과를 알림 채널에 발송한다.
@@ -89,15 +110,7 @@ async def _send_workb(workb_cfg, result: AlarmAnalysisResult) -> None:
 
     ev = result.alarm_event
     msg_title = f"[{result.severity_label}] {ev.resource_name} ({ev.hostname})"
-    msg_body = (
-        f"알람명: {ev.alarm_name}\n"
-        f"설명: {ev.alarm_description}\n"
-        f"자원: {ev.resource_name} ({ev.resource_type})\n"
-        f"컨디션: {ev.condition_log}\n\n"
-        f"요약: {result.summary}\n"
-        f"원인: {result.probable_cause}\n"
-        f"권고 조치: {result.recommended_action}"
-    )
+    msg_body = build_workb_body(result)
     payload = {
         "systemDiv": workb_cfg.system_div,
         "msgTitle": msg_title,

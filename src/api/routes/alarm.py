@@ -157,17 +157,11 @@ _SEVERITY_LABELS = {0: "해소", 1: "주의", 2: "경고", 3: "심각"}
 
 def _build_workb_preview(workb_cfg, result: AlarmAnalysisResult) -> _WorkbPreview:
     """WorkB 발송 미리보기를 생성한다."""
+    from src.alarm.application.nodes.alarm_notifier import build_workb_body
+
     ev = result.alarm_event
     title = f"[{result.severity_label}] {ev.resource_name} ({ev.hostname})"
-    body = (
-        f"알람명: {ev.alarm_name}\n"
-        f"설명: {ev.alarm_description}\n"
-        f"자원: {ev.resource_name} ({ev.resource_type})\n"
-        f"컨디션: {ev.condition_log}\n\n"
-        f"요약: {result.summary}\n"
-        f"원인: {result.probable_cause}\n"
-        f"권고 조치: {result.recommended_action}"
-    )
+    body = build_workb_body(result)
     api_url = (
         f"{workb_cfg.base_url.rstrip('/')}/api/sendWorkbMsg"
         if workb_cfg.base_url else None
