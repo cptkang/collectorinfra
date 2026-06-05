@@ -298,7 +298,9 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
 
 [템플릿 선택 가이드]
 - 자원 유형 미지정 / "전체 알람" / "발생한 알람" (서버·네트워크 구분 없음) → Template C-5
-- "서버 알람" (CPU·메모리·디스크 하위 자원 포함) → Template C-2 (RESOURCE_TYPE LIKE 'server.%')
+- "서버 알람" (서버명 미지정, CPU·메모리·디스크 하위 자원 포함) → Template C-2 (RESOURCE_TYPE LIKE 'server.%')
+- "특정 서버명 지정 + 하위 자원 포함 알람" → Template C-6 (PLATFORM_RESOURCE_ID JOIN, SVR.NAME 필터)
+  ※ 예: "cocm-mgcapp03 서버와 하위 리소스 알람", "특정 서버의 CPU/메모리 알람 이력"
 - "서버 CPU/메모리 알람" 키워드 필터 → Template C-3 (CONDITIONLOGTEXT 키워드 필터)
 - 현재 활성 알람 → Template C-1 (CMM_ALARM_ACTIVE JOIN 포함)
 - 장비별/심각도별 집계 → Template C-4
@@ -329,47 +331,52 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
 - 이번 달: A.CTIME >= DATE_TRUNC('month', CURRENT_DATE)
 - 하드코딩 날짜 절대 사용 금지 — CURRENT_DATE 기반 동적 계산 사용
 
-[서버/장비 필터링 — 반드시 외부 WHERE에 적용]
-⚠ 서버/장비 관련 모든 필터(이름·호스트명·IP 등)는 가장 바깥쪽 WHERE 절에만 추가한다.
-  innermost 서브쿼리의 WHERE에 추가하면 결과 누락 또는 0건이 발생한다.
+[서버/장비 필터링]
+특정 서버명이 지정된 경우 → Template C-6을 사용한다.
+Template C-6은 PLATFORM_RESOURCE_ID로 server.Server(SVR)를 직접 JOIN하므로:
+  AND SVR.NAME ILIKE '%서버명%'   한 줄로 server.Server 자체 알람 + 모든 하위 자원 알람을 포착한다.
 
-이유: 3중 서브쿼리 구조에서 innermost의 CR은 알람이 발생한 하위 자원(server.Cpus, server.Memory,
-      server.Disks 등)의 CMM_RESOURCE 행이다. 하위 자원 자체의 NAME/HOSTNAME은 서버의 것이 아니다.
-      외부 LEFT JOIN CMM_RESOURCE CR ON A.ID = CR.ID 의 CR이 실제 장비(서버) 행이므로,
-      모든 장비 필터는 이 CR을 참조하는 outermost WHERE 절에 추가해야 한다.
+이유:
+  CR (알람 발생 자원)  →  COALESCE(PLATFORM_RESOURCE_ID, CR.ID)  →  SVR (항상 server.Server)
+  - server.Server 알람: CR = SVR (동일 행) → SVR.NAME = 서버명 ✓
+  - server.Cpus 알람:   CR.PLATFORM_RESOURCE_ID = SVR.ID → SVR.NAME = 서버명 ✓
+  - server.Memory/Disks 등도 동일
+
+⚠ Template C-2/C-5 (서버명 미지정 일반 조회)에서 특정 서버명을 필터링하면 안 된다.
+  서버명이 지정된 경우에는 반드시 Template C-6으로 전환한다.
 
 [CMM_RESOURCE 컬럼 도메인 의미 — 혼동 금지]
-- CR.NAME     : 폴스타(Polestar)에 등록된 자원명(장비명). VMware VM, AWS EC2, Azure VM,
-                물리 서버 등 인프라 종류와 무관하게, 폴스타가 관리 대상 장비를 식별하는 이름.
-                사용자가 쿼리에서 언급한 서버 이름은 항상 이 컬럼과 대응한다.
-- CR.HOSTNAME : 장비 OS 내부의 hostname. CR.NAME과 같을 수도, 다를 수도 있다.
-                사용자가 "호스트명", "hostname"이라고 명시적으로 요청한 경우에만 사용한다.
+- SVR.NAME     : Template C-6에서 항상 server.Server 행을 가리키는 별칭.
+                 사용자가 언급한 서버명은 이 컬럼으로 필터링한다.
+- CR.NAME      : 알람이 발생한 자원명. server.Server이면 서버명, 하위 자원이면 하위자원 내부명.
+- CR.HOSTNAME  : 장비 OS 내부의 hostname. 사용자가 "호스트명", "hostname"이라고
+                 명시적으로 요청한 경우에만 사용한다.
 
 ⚠ 중요: 사용자가 말한 서버 이름이 "cocm-ngcmwo01"처럼 OS hostname 형식처럼 보이더라도,
-   폴스타 자원명(CR.NAME)으로 등록되어 있으므로 반드시 CR.NAME 으로 필터링한다.
-   이름의 형식(대소문자, 하이픈, 숫자 등)이 hostname처럼 보인다는 이유로
-   CR.HOSTNAME 을 사용하면 일치하는 장비를 찾지 못할 수 있다.
+   폴스타 자원명(SVR.NAME)으로 등록되어 있으므로 SVR.NAME으로 필터링한다.
+   CR.HOSTNAME을 사용하면 일치하는 장비를 찾지 못할 수 있다.
 
-컬럼 선택 기준:
-- 사용자가 서버/장비 이름을 언급한 모든 경우 → CR.NAME ILIKE '%{{서버명}}%'
-- 사용자가 "호스트명", "hostname"이라고 명시한 경우만 → CR.HOSTNAME ILIKE '%{{호스트명}}%'
-- "IP", "IP 주소" → CR.IPADDRESS = '{{IP}}' 또는 ILIKE '%{{IP}}%'
+컬럼 선택 기준 (Template C-6 기준):
+- 서버명이 지정된 경우 → SVR.NAME ILIKE '%{{서버명}}%' (외부 WHERE)
+- "호스트명", "hostname" 명시 시 → SVR.HOSTNAME ILIKE '%{{호스트명}}%'
+- "IP", "IP 주소" → SVR.IPADDRESS = '{{IP}}' 또는 ILIKE '%{{IP}}%'
 
-올바른 예시 (외부 WHERE에 시간 조건과 함께):
-  -- 사용자 질의: "cocm-ngcmwo01 서버에 대해" → CR.NAME 사용
-  WHERE A.CTIME BETWEEN TO_TIMESTAMP(...) AND TO_TIMESTAMP(...)
-    AND CR.NAME ILIKE '%cocm-ngcmwo01%'
+올바른 예시:
+  -- Template C-6, 사용자 질의: "cocm-ngcmwo01 서버에 대해"
+  WHERE CA.CTIME BETWEEN TO_TIMESTAMP(...) AND TO_TIMESTAMP(...)
+    AND SVR.NAME ILIKE '%cocm-ngcmwo01%'
 
 금지 예시:
-  -- 절대 금지: 서버명처럼 보이는 이름에 HOSTNAME 사용
-    AND CR.HOSTNAME ILIKE '%cocm-ngcmwo01%'    -- 금지 (서버명은 항상 CR.NAME)
-  -- 절대 금지: innermost WHERE에 장비 필터 추가
+  -- 절대 금지: HOSTNAME으로 서버명 필터
+    AND SVR.HOSTNAME ILIKE '%cocm-ngcmwo01%'    -- 금지 (서버명은 SVR.NAME)
+  -- 절대 금지: innermost WHERE에 서버명 필터 추가
   WHERE CR.DTIME IS NULL
-    AND CR.NAME ILIKE '%cocm-ngcmwo01%'         -- 금지 (innermost 서브쿼리 안)
+    AND SVR.NAME ILIKE '%cocm-ngcmwo01%'        -- 금지 (innermost 서브쿼리 안)
 
 [GROUP_PATH 계층 경로 구성]
 - 장비의 계층 경로(소속 그룹 경로)를 표시할 때 C2~C10 셀프 조인 사용
-- LTRIM(CONCAT_WS('>', C10.NAME, C9.NAME, ..., C2.NAME, A.PARENT_NAME), '>') AS GROUP_PATH
+- LTRIM(CONCAT_WS('>', C10.NAME, C9.NAME, ..., C2.NAME, A.PARENT_NAME, A.RESOURCE_NAME), '>') AS GROUP_PATH
+- A.RESOURCE_NAME을 끝에 포함하여 Polestar UI 경로 형식("...> 운영 > 서버명 > 하위자원명")과 일치시킨다
 - GROUP_PATH가 불필요한 경우 C2~C10 조인 전체 생략 (쿼리 단순화)
 
 [담당자 정보 조회 시]
@@ -400,7 +407,7 @@ SELECT
     LTRIM(
         CONCAT_WS('>',
             C10.NAME, C9.NAME, C8.NAME, C7.NAME, C6.NAME,
-            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME
+            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME, A.RESOURCE_NAME
         ), '>'
     ) AS "GROUP_PATH",
     CR.HOSTNAME AS "호스트명",
@@ -488,7 +495,7 @@ SELECT
     LTRIM(
         CONCAT_WS('>',
             C10.NAME, C9.NAME, C8.NAME, C7.NAME, C6.NAME,
-            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME
+            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME, A.RESOURCE_NAME
         ), '>'
     ) AS "GROUP_PATH",
     CR.HOSTNAME AS "호스트명",
@@ -552,7 +559,7 @@ LEFT JOIN CMM_RESOURCE C10 ON C9.PARENT_RESOURCE_ID = C10.ID
 WHERE A.CTIME BETWEEN
     TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
 AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
-  -- 장비 필터는 반드시 여기에 추가: AND CR.NAME ILIKE '%서버명%' (장비명) 또는 AND CR.HOSTNAME ILIKE '%호스트명%' (호스트명)
+  -- 특정 서버 필터: AND (A.RESOURCE_NAME ILIKE '%서버명%' OR A.PARENT_NAME ILIKE '%서버명%')
 ORDER BY A.CTIME DESC
 LIMIT {default_limit};
 ```
@@ -577,7 +584,7 @@ SELECT
     LTRIM(
         CONCAT_WS('>',
             C10.NAME, C9.NAME, C8.NAME, C7.NAME, C6.NAME,
-            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME
+            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME, A.RESOURCE_NAME
         ), '>'
     ) AS "GROUP_PATH",
     CR.HOSTNAME AS "호스트명",
@@ -645,7 +652,7 @@ LEFT JOIN CMM_RESOURCE C10 ON C9.PARENT_RESOURCE_ID = C10.ID
 WHERE A.CTIME BETWEEN
     TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
 AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
-  -- 장비 필터는 반드시 여기에 추가: AND CR.NAME ILIKE '%서버명%' (장비명) 또는 AND CR.HOSTNAME ILIKE '%호스트명%' (호스트명)
+  -- 특정 서버 필터: AND (A.RESOURCE_NAME ILIKE '%서버명%' OR A.PARENT_NAME ILIKE '%서버명%')
 ORDER BY A.CTIME DESC
 LIMIT {default_limit};
 ```
@@ -713,7 +720,7 @@ SELECT
     LTRIM(
         CONCAT_WS('>',
             C10.NAME, C9.NAME, C8.NAME, C7.NAME, C6.NAME,
-            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME
+            C5.NAME, C4.NAME, C3.NAME, C2.NAME, A.PARENT_NAME, A.RESOURCE_NAME
         ), '>'
     ) AS "GROUP_PATH",
     CR.HOSTNAME AS "호스트명",
@@ -774,8 +781,81 @@ LEFT JOIN CMM_RESOURCE C10 ON C9.PARENT_RESOURCE_ID = C10.ID
 WHERE A.CTIME BETWEEN
     TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
 AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
-  -- 장비 필터는 반드시 여기에 추가: AND CR.NAME ILIKE '%서버명%' (장비명) 또는 AND CR.HOSTNAME ILIKE '%호스트명%' (호스트명)
+  -- 특정 서버 필터: AND (A.RESOURCE_NAME ILIKE '%서버명%' OR A.PARENT_NAME ILIKE '%서버명%')
 ORDER BY A.CTIME DESC
+LIMIT {default_limit};
+```
+
+---
+
+[Template C-6 — 특정 서버 + 하위 자원 알람 이력: PLATFORM_RESOURCE_ID 직접 JOIN 패턴]
+
+사용자가 특정 서버명을 지정하여 해당 서버와 모든 하위 자원(CPU, 메모리, 디스크 등)의 알람을
+통합 조회할 때 사용한다.
+- PLATFORM_RESOURCE_ID로 server.Server(SVR)를 직접 식별하므로 서버명 필터가 단순하다
+- SVR은 항상 server.Server 행 → SVR.NAME ILIKE '%서버명%' 한 줄로 server.Server 자체 + 하위 자원 알람 포착
+- GROUP_PATH는 서버의 직접 부모(GP)를 기준으로 구성하여 Polestar UI 경로 형식과 일치
+
+구조:
+  CR (알람 발생 자원: server.Server 또는 하위 자원)
+  JOIN SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID) AND SVR.RESOURCE_TYPE = 'server.Server'
+    → CR이 server.Server이면 SVR = CR (동일 행)
+    → CR이 서버 하위 자원이면 SVR = 부모 server.Server
+  LEFT JOIN GP ON GP.ID = SVR.PARENT_RESOURCE_ID  -- 서버의 직접 부모 그룹
+  LEFT JOIN C2 ON C2.ID = GP.PARENT_RESOURCE_ID   -- GP의 부모
+  ... (C10까지)
+
+GROUP_PATH: "...>C2>GP>SVR.NAME>CR.NAME(하위자원일 때만)"
+  - server.Server 알람: "...>GP_name>서버명"
+  - server.Cpus 알람:   "...>GP_name>서버명>Cpus"
+
+```sql
+SELECT
+    CASE
+        WHEN CA.ALARMSEVERITY = 0 THEN '해소'
+        WHEN CA.ALARMSEVERITY = 1 THEN '주의'
+        WHEN CA.ALARMSEVERITY = 2 THEN '경고'
+        WHEN CA.ALARMSEVERITY = 3 THEN '심각'
+        ELSE ''
+    END AS "등급",
+    TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS') AS "발생시간",
+    SVR.NAME AS "장비명",
+    SVR.IPADDRESS AS "IP",
+    LTRIM(
+        CONCAT_WS('>',
+            C10.NAME, C9.NAME, C8.NAME, C7.NAME, C6.NAME,
+            C5.NAME, C4.NAME, C3.NAME, C2.NAME, GP.NAME, SVR.NAME,
+            NULLIF(CR.NAME, SVR.NAME)
+        ), '>'
+    ) AS "GROUP_PATH",
+    SVR.HOSTNAME AS "호스트명",
+    CR.NAME AS "리소스명",
+    CR.RESOURCE_TYPE AS "자원유형",
+    D.NAME AS "이벤트",
+    UPPER(CA.CONDITIONLOGTEXT) AS "상세내용"
+FROM CMM_RESOURCE CR
+JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
+JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
+JOIN CMM_RESOURCE SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)
+                       AND SVR.RESOURCE_TYPE = 'server.Server'
+                       AND SVR.DTIME IS NULL
+LEFT JOIN CMM_RESOURCE GP  ON GP.ID = SVR.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C2  ON C2.ID = GP.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C3  ON C3.ID = C2.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C4  ON C4.ID = C3.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C5  ON C5.ID = C4.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C6  ON C6.ID = C5.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C7  ON C7.ID = C6.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C8  ON C8.ID = C7.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C9  ON C9.ID = C8.PARENT_RESOURCE_ID
+LEFT JOIN CMM_RESOURCE C10 ON C10.ID = C9.PARENT_RESOURCE_ID
+WHERE CR.DTIME IS NULL
+  AND CA.ALARMSEVERITY IN (0, 1, 2, 3)
+  AND CA.CTIME BETWEEN
+      TO_TIMESTAMP('{{시작시간}}', 'YYYY-MM-DD HH24:MI:SS')
+  AND TO_TIMESTAMP('{{끝시간}}', 'YYYY-MM-DD HH24:MI:SS')
+  AND SVR.NAME ILIKE '%{{서버명}}%'
+ORDER BY CA.CTIME DESC
 LIMIT {default_limit};
 ```
 
