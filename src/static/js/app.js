@@ -1445,4 +1445,70 @@
         step.classList.toggle("expanded");
     };
 
+    // ─── Alarm Notification SSE ───
+
+    var ALARM_SEVERITY_COLORS = {
+        "심각": "#dc3545",
+        "경고": "#fd7e14",
+        "주의": "#ffc107",
+        "해소": "#28a745"
+    };
+
+    function renderAlarmMessage(data) {
+        var el = document.createElement("div");
+        el.className = "message message--alarm";
+
+        var severityColor = ALARM_SEVERITY_COLORS[data.severity_label] || "#fd7e14";
+        var alarmSvg = '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+
+        el.innerHTML =
+            '<div class="message-avatar">' + alarmSvg + '</div>' +
+            '<div class="message-content">' +
+                '<div class="message-bubble">' +
+                    '<div class="alarm-header">' +
+                        '<span style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
+                        escapeHtml(data.resource_name) +
+                        '<span class="alarm-host"> (' + escapeHtml(data.hostname) + ')</span>' +
+                    '</div>' +
+                    '<div class="alarm-name">' + escapeHtml(data.alarm_name) + '</div>' +
+                    '<div class="alarm-section">' +
+                        '<span class="alarm-section-label">요약</span>' +
+                        '<p>' + escapeHtml(data.summary) + '</p>' +
+                    '</div>' +
+                    '<div class="alarm-section">' +
+                        '<span class="alarm-section-label">추정 원인</span>' +
+                        '<p>' + escapeHtml(data.probable_cause) + '</p>' +
+                    '</div>' +
+                    '<div class="alarm-section">' +
+                        '<span class="alarm-section-label">권고 조치</span>' +
+                        '<p>' + escapeHtml(data.recommended_action) + '</p>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+
+        if (chatWelcome && !chatWelcome.classList.contains("hidden")) {
+            chatWelcome.classList.add("hidden");
+        }
+        chatMessages.appendChild(el);
+        scrollToBottom();
+    }
+
+    function connectAlarmStream() {
+        var es = new EventSource("/api/v1/alarm/notifications/stream");
+        es.onmessage = function (e) {
+            try {
+                var data = JSON.parse(e.data);
+                if (data.type === "alarm_notification") {
+                    renderAlarmMessage(data);
+                }
+            } catch (_) {}
+        };
+        es.onerror = function () {
+            es.close();
+            setTimeout(connectAlarmStream, 5000);
+        };
+    }
+
+    connectAlarmStream();
+
 })();

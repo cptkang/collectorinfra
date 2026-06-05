@@ -97,6 +97,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     app.state.config = config
     logger.info("에이전트 그래프 빌드 완료")
 
+    from src.alarm.infrastructure.notification_bus import AlarmNotificationBus
+    app.state.alarm_bus = AlarmNotificationBus()
+
     # 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성)
     auth_db_url = config.auth.auth_db_url or config.db_connection_string
     app.state.auth_pool = None

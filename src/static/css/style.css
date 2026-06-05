@@ -1130,6 +1130,62 @@ header nav {
     stroke-width: 2;
 }
 
+/* ─── Alarm Notification Bubble ─── */
+
+.message--alarm .message-avatar {
+    background: linear-gradient(135deg, rgba(253, 126, 20, 0.2), var(--surface));
+    border: 1px solid rgba(253, 126, 20, 0.4);
+    color: #fd7e14;
+}
+
+.message--alarm .message-bubble {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid rgba(253, 126, 20, 0.3);
+    border-left: 3px solid #fd7e14;
+    border-bottom-left-radius: var(--radius-sm);
+    display: block;
+    width: 100%;
+}
+
+.alarm-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.alarm-host {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 400;
+}
+
+.alarm-name {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-bottom: 10px;
+}
+
+.alarm-section {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+    line-height: 1.6;
+}
+
+.alarm-section-label {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    display: block;
+    margin-bottom: 2px;
+}
+
+.alarm-section p {
+    margin: 0;
+    color: var(--text);
+}
+
 /* ─── Processing Indicator (inline in chat) ─── */
 
 .message--processing .message-bubble {

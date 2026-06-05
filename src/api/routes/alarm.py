@@ -11,11 +11,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_user
@@ -77,6 +80,10 @@ class AlarmTestRequest(BaseModel):
             "null이면 서버 설정(ALARM_NOTIFICATION_CHANNELS_CSV) 사용. "
             "예: [\"workb\"], [\"workb\", \"webhook\"]"
         ),
+    )
+    push_to_ui: bool = Field(
+        default=False,
+        description="True이면 분석 결과를 웹 UI 채팅창에 알람 말풍선으로 실시간 표시한다.",
     )
 
     model_config = {"json_schema_extra": {
@@ -305,6 +312,21 @@ async def analyze_alarm_test(
     # 5. 분석 결과 채널 동기화
     analysis_result.notification_channels = channels
 
+    # 5-1. 웹 UI 푸시 (push_to_ui=True일 때)
+    if body.push_to_ui:
+        await request.app.state.alarm_bus.publish({
+            "type": "alarm_notification",
+            "alarm_id": event.alarm_id,
+            "severity": event.severity,
+            "severity_label": analysis_result.severity_label,
+            "alarm_name": event.alarm_name,
+            "hostname": event.hostname,
+            "resource_name": event.resource_name,
+            "summary": analysis_result.summary,
+            "probable_cause": analysis_result.probable_cause,
+            "recommended_action": analysis_result.recommended_action,
+        })
+
     # 6. 발송 미리보기 생성 (dry_run 여부와 무관하게 항상 생성)
     preview = _build_notification_preview(config, analysis_result, channels)
 
@@ -340,3 +362,35 @@ async def analyze_alarm_test(
         error=analyzer_error,
         processing_time_ms=elapsed_ms,
     )
+
+
+# ─── 알람 알림 SSE 스트림 ─────────────────────────────────────────────────────
+
+@router.get(
+    "/alarm/notifications/stream",
+    summary="웹 UI 알람 알림 SSE 스트림",
+    description=(
+        "웹 UI가 구독하는 Server-Sent Events 엔드포인트. "
+        "analyze-test API에서 push_to_ui=true로 호출하면 이 스트림으로 알람이 전송된다."
+    ),
+    tags=["alarm"],
+)
+async def alarm_notifications_stream(request: Request) -> StreamingResponse:
+    """분석된 알람 이벤트를 SSE로 브로드캐스트한다."""
+    bus = request.app.state.alarm_bus
+    q = bus.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=25.0)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield 'data: {"type":"ping"}\n\n'
+        finally:
+            bus.unsubscribe(q)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
