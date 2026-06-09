@@ -119,12 +119,16 @@ def _replace_placeholders_in_paragraph(
         if db_column:
             value = _get_value_from_row(data_row, db_column)
             if value is None:
-                # 매핑된 컬럼이지만 데이터에 값이 없음: 빈 문자열로 치환
                 replacement = ""
             else:
                 replacement = str(value)
+        elif field_name_stripped in column_mapping:
+            # column_mapping에는 있지만 None인 경우:
+            # query_generator가 한글 필드명을 SQL alias로 사용했을 수 있으므로
+            # 필드명 자체로 데이터 조회 시도
+            value = _get_value_from_row(data_row, field_name_stripped)
+            replacement = str(value) if value is not None else ""
         else:
-            # 매핑되지 않은 필드 (column_mapping에서 None): 빈 문자열로 치환
             replacement = ""
 
         new_text = new_text.replace("{{" + field_name + "}}", replacement)
@@ -210,10 +214,16 @@ def _fill_table_rows(
         return
 
     # 헤더별 매핑된 DB 컬럼 확인
+    # None인 경우 헤더명 자체를 조회 키로 사용 (SQL alias 매칭용)
     col_assignments: list[tuple[int, Optional[str]]] = []
     for idx, header in enumerate(headers):
         mapped = column_mapping.get(header)
-        col_assignments.append((idx, mapped))
+        if mapped:
+            col_assignments.append((idx, mapped))
+        elif header in column_mapping:
+            col_assignments.append((idx, header))
+        else:
+            col_assignments.append((idx, None))
 
     # 기존 데이터 행 (헤더 행 = index 0 이후)
     existing_data_rows = list(table.rows[1:])

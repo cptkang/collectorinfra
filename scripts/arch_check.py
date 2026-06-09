@@ -68,6 +68,14 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.graph":                     "orchestration",
     "src.api":                       "interface",
     "src.main":                      "entry",
+    # alarm 서브패키지 계층 매핑
+    "src.alarm.domain":                         "domain",
+    "src.alarm.prompts":                        "prompts",
+    "src.alarm.infrastructure":                 "infrastructure",
+    "src.alarm.application.nodes":              "application",
+    "src.alarm.application.alarm_worker":       "orchestration",
+    "src.alarm.application":                    "application",
+    "src.alarm.orchestration":                  "orchestration",
 }
 
 # ──────────────────────────────────────────────

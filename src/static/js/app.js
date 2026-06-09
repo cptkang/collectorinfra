@@ -906,7 +906,7 @@
         }
     }
 
-    // ─── File Query (no SSE needed) ───
+    // ─── File Query (SSE streaming) ───
 
     async function executeFileQuery(query, file) {
         isProcessing = true;
@@ -915,34 +915,144 @@
         renderProcessingMessage();
         resetProgressPanel();
 
-        try {
-            var formData = new FormData();
-            formData.append("query", query);
-            formData.append("file", file);
-            if (currentThreadId) {
-                formData.append("thread_id", currentThreadId);
-            }
+        var formData = new FormData();
+        formData.append("query", query);
+        formData.append("file", file);
+        if (currentThreadId) {
+            formData.append("thread_id", currentThreadId);
+        }
 
-            var response = await fetch("/api/v1/query/file", {
+        try {
+            // SSE 스트리밍 시도
+            var response = await fetch("/api/v1/query/file/stream", {
                 method: "POST",
                 headers: getAuthHeaders(),
                 body: formData,
             });
 
-            var data = await response.json();
+            if (response.status === 404 || response.status === 405) {
+                // 스트리밍 엔드포인트 없으면 폴백
+                removeProcessingMessage();
+                await _executeFileQueryFallback(formData);
+                return;
+            }
 
+            if (!response.ok) {
+                var errData;
+                try { errData = await response.json(); } catch (_e) { errData = { detail: "처리 중 오류가 발생했습니다." }; }
+                removeProcessingMessage();
+                showError(errData.detail || "처리 중 오류가 발생했습니다.");
+                return;
+            }
+
+            var contentType = response.headers.get("content-type") || "";
+            if (!contentType.includes("text/event-stream")) {
+                removeProcessingMessage();
+                var jsonData = await response.json();
+                renderAgentMessage(jsonData);
+                showPostHocProgress(jsonData);
+                currentThreadId = jsonData.thread_id || currentThreadId;
+                messages.push({ role: "agent", data: jsonData, time: new Date() });
+                return;
+            }
+
+            // SSE 스트림 처리 (executeStreamingQuery와 동일한 로직)
             removeProcessingMessage();
+            createStreamingMessage();
 
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = "";
+            var accumulatedText = "";
+            var metaData = {};
+            var done = false;
+
+            while (!done) {
+                var chunk = await reader.read();
+                if (chunk.done) break;
+
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (line.startsWith("data: ")) {
+                        var dataStr = line.substring(6);
+                        try {
+                            var event = JSON.parse(dataStr);
+                            if (event.type === "token") {
+                                accumulatedText += event.content;
+                                var textEl = document.getElementById("streamingText");
+                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
+                                scrollToBottom();
+                            } else if (event.type === "node_start") {
+                                handleNodeStart(event);
+                                updateProcessingStage(event.node, "start");
+                            } else if (event.type === "node_complete") {
+                                handleNodeComplete(event);
+                                updateProcessingStage(event.node, "complete");
+                            } else if (event.type === "meta") {
+                                metaData = event;
+                            } else if (event.type === "done") {
+                                done = true;
+                                metaData = Object.assign(metaData, event);
+                            } else if (event.type === "error") {
+                                showError(event.message || "처리 중 오류가 발생했습니다.");
+                                done = true;
+                            }
+                        } catch (_parseErr) {}
+                    }
+                }
+            }
+
+            finalizeStreamingMessage(accumulatedText, metaData);
+            currentThreadId = metaData.thread_id || currentThreadId;
+            messages.push({
+                role: "agent",
+                data: {
+                    response: accumulatedText,
+                    query_id: metaData.query_id,
+                    executed_sql: metaData.executed_sql,
+                    row_count: metaData.row_count,
+                    processing_time_ms: metaData.processing_time_ms,
+                    has_file: metaData.has_file,
+                    file_name: metaData.file_name,
+                },
+                time: new Date(),
+            });
+
+        } catch (err) {
+            removeProcessingMessage();
+            showError("서버와의 통신에 실패했습니다: " + err.message);
+        } finally {
+            isProcessing = false;
+            sendBtn.disabled = false;
+        }
+    }
+
+    // ─── File Query Fallback (non-streaming) ───
+
+    async function _executeFileQueryFallback(formData) {
+        isProcessing = true;
+        sendBtn.disabled = true;
+        renderProcessingMessage();
+        try {
+            var response = await fetch("/api/v1/query/file", {
+                method: "POST",
+                headers: getAuthHeaders(),
+                body: formData,
+            });
+            var data = await response.json();
+            removeProcessingMessage();
             if (!response.ok) {
                 showError(data.detail || "처리 중 오류가 발생했습니다.");
                 return;
             }
-
             renderAgentMessage(data);
             showPostHocProgress(data);
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
-
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);
@@ -1334,5 +1444,71 @@
         var step = headerEl.parentElement;
         step.classList.toggle("expanded");
     };
+
+    // ─── Alarm Notification SSE ───
+
+    var ALARM_SEVERITY_COLORS = {
+        "심각": "#dc3545",
+        "경고": "#fd7e14",
+        "주의": "#ffc107",
+        "해소": "#28a745"
+    };
+
+    function renderAlarmMessage(data) {
+        var el = document.createElement("div");
+        el.className = "message message--alarm";
+
+        var severityColor = ALARM_SEVERITY_COLORS[data.severity_label] || "#fd7e14";
+        var alarmSvg = '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+
+        el.innerHTML =
+            '<div class="message-avatar">' + alarmSvg + '</div>' +
+            '<div class="message-content">' +
+                '<div class="message-bubble">' +
+                    '<div class="alarm-header">' +
+                        '<span style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
+                        escapeHtml(data.resource_name) +
+                        '<span class="alarm-host"> (' + escapeHtml(data.hostname) + ')</span>' +
+                    '</div>' +
+                    '<div class="alarm-name">' + escapeHtml(data.alarm_name) + '</div>' +
+                    '<div class="alarm-section">' +
+                        '<span class="alarm-section-label">요약</span>' +
+                        '<p>' + escapeHtml(data.summary) + '</p>' +
+                    '</div>' +
+                    '<div class="alarm-section">' +
+                        '<span class="alarm-section-label">추정 원인</span>' +
+                        '<p>' + escapeHtml(data.probable_cause) + '</p>' +
+                    '</div>' +
+                    '<div class="alarm-section">' +
+                        '<span class="alarm-section-label">권고 조치</span>' +
+                        '<p>' + escapeHtml(data.recommended_action) + '</p>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+
+        if (chatWelcome && !chatWelcome.classList.contains("hidden")) {
+            chatWelcome.classList.add("hidden");
+        }
+        chatMessages.appendChild(el);
+        scrollToBottom();
+    }
+
+    function connectAlarmStream() {
+        var es = new EventSource("/api/v1/alarm/notifications/stream");
+        es.onmessage = function (e) {
+            try {
+                var data = JSON.parse(e.data);
+                if (data.type === "alarm_notification") {
+                    renderAlarmMessage(data);
+                }
+            } catch (_) {}
+        };
+        es.onerror = function () {
+            es.close();
+            setTimeout(connectAlarmStream, 5000);
+        };
+    }
+
+    connectAlarmStream();
 
 })();

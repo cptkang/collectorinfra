@@ -12,10 +12,10 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import admin, admin_auth, conversation, health, query, schema_cache, user_auth
+from src.api.routes import admin, admin_auth, alarm, conversation, health, query, schema_cache, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
@@ -97,6 +97,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     app.state.config = config
     logger.info("에이전트 그래프 빌드 완료")
 
+    from src.alarm.infrastructure.notification_bus import AlarmNotificationBus
+    app.state.alarm_bus = AlarmNotificationBus()
+
     # 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성)
     auth_db_url = config.auth.auth_db_url or config.db_connection_string
     app.state.auth_pool = None
@@ -144,7 +147,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         except Exception as e:
             logger.warning("Redis 연결 실패 (파일 캐시로 폴백): %s", e)
 
+    # 알람 분석 워커 시작 (ALARM_ENABLED=true인 경우에만)
+    alarm_worker_task = None
+    if config.alarm.enabled:
+        import asyncio as _asyncio
+        from src.alarm.application.alarm_worker import AlarmWorker
+        alarm_worker_task = _asyncio.create_task(AlarmWorker(config).run())
+        logger.info(
+            "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
+        )
+
     yield
+
+    # 종료 시: 알람 워커 정리
+    if alarm_worker_task:
+        alarm_worker_task.cancel()
+        try:
+            import asyncio as _asyncio
+            await alarm_worker_task
+        except Exception:
+            pass
 
     # 종료 시: 인증 DB 풀 정리
     if app.state.auth_pool:
@@ -188,6 +210,8 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         ),
         version="0.1.0",
         lifespan=lifespan,
+        docs_url=None,   # 기본 CDN 기반 Swagger UI 비활성화
+        redoc_url=None,  # ReDoc도 동일하게 비활성화
     )
 
     # 설정을 app.state에 저장 (lifespan 이전에도 접근 가능하도록)
@@ -210,6 +234,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     # 라우트 등록
     application.include_router(health.router, prefix="/api/v1", tags=["health"])
     application.include_router(query.router, prefix="/api/v1", tags=["query"])
+    application.include_router(alarm.router, prefix="/api/v1", tags=["alarm"])
     application.include_router(
         admin_auth.router, prefix="/api/v1", tags=["admin-auth"]
     )
@@ -226,6 +251,18 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 
     # 정적 파일 디렉토리
     static_dir = Path(__file__).resolve().parent.parent / "static"
+
+    # 로컬 에셋을 사용하는 Swagger UI (내부망 오프라인 환경 지원)
+    @application.get("/docs", include_in_schema=False)
+    async def custom_swagger_ui() -> HTMLResponse:
+        from fastapi.openapi.docs import get_swagger_ui_html
+        return get_swagger_ui_html(
+            openapi_url="/openapi.json",
+            title=application.title + " - Swagger UI",
+            swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
+            swagger_css_url="/static/swagger-ui/swagger-ui.css",
+            swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+        )
 
     # HTML 페이지 라우트
     @application.get("/", include_in_schema=False)

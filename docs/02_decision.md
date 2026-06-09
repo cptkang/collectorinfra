@@ -1384,10 +1384,70 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ---
 
+## D-031. 알람 소켓 수신 → LLM 분석 → worKB 발송 (Plan 46)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-04 |
+| **상태** | 구현 완료 |
+| **이전 결정** | D-014 확장 (독립 프로세스 분리 원칙), D-029 연계 (알람 기능) |
+
+### 결정
+
+알람 소켓 수신을 `alarm_server/`(독립 프로세스)로 분리하고, 에이전트 서버(`src/alarm/`)와 Redis Stream(`alarm:raw`)으로 연결한다. 알람 분석·발송은 2-노드 LangGraph 서브그래프(`AlarmAnalysisGraph`)로 구현한다.
+
+### 구현 내용
+
+| 파일 | 역할 | 계층 |
+|------|------|------|
+| `alarm_server/__init__.py` | 패키지 설명 | alarm_server (독립) |
+| `alarm_server/config.py` | AlarmServerConfig (ALARM_SERVER_ 접두사) | alarm_server (독립) |
+| `alarm_server/base_receiver.py` | BaseReceiver 추상 클래스 (Redis 발행 공통) | alarm_server (독립) |
+| `alarm_server/tcp_receiver.py` | TcpReceiver (asyncio TCP, 포트 9100) | alarm_server (독립) |
+| `alarm_server/__main__.py` | python -m alarm_server 진입점 | alarm_server (독립) |
+| `alarm_server/alarm_server.env` | 소켓 서버 전용 env (.gitignore) | 설정 |
+| `src/config.py` | AlarmConfig, WorkbConfig 추가 + AppConfig.alarm/workb 필드 | config |
+| `src/alarm/domain/alarm.py` | AlarmEvent, AlarmAnalysisResult dataclass | domain |
+| `src/alarm/prompts/alarm_analyzer.py` | 시스템 프롬프트 + 유저 템플릿 | prompts |
+| `src/alarm/infrastructure/redis_queue.py` | Redis Stream XREAD 헬퍼 | infrastructure |
+| `src/alarm/application/nodes/alarm_analyzer.py` | LLM 분석 노드 | application |
+| `src/alarm/application/nodes/alarm_notifier.py` | worKB/webhook 발송 노드 | application |
+| `src/alarm/orchestration/alarm_graph.py` | 2-노드 LangGraph 서브그래프 | orchestration |
+| `src/alarm/application/alarm_worker.py` | Redis Stream 소비 + dedup + 그래프 호출 | orchestration |
+| `src/api/server.py` | lifespan에 AlarmWorker 백그라운드 태스크 추가 | interface |
+
+### 핵심 설계 결정
+
+| 항목 | 결정 |
+|------|------|
+| 발송 채널 | 현재 worKB 단일 지원. Generic Webhook 분기 구조 포함. Slack 제외 (외부망 불가) |
+| TCP 수신 포트 | 9100 (ALARM_SERVER_SOCKET_PORT) |
+| Redis Stream 키 | alarm:raw |
+| 중복 제거 | in-memory dedup dict (alarm_id TTL 기반, dedup_ttl_seconds=300) |
+| 심각도 필터 | min_severity=2 기본 (경고 이상만 처리) |
+| worKB 토큰 | .encenv 저장 (기존 AdminConfig/LLMConfig 패턴 동일) |
+| arch_check 계층 | AlarmWorker: orchestration (그래프 조합 역할), nodes: application |
+
+### 근거
+
+- `mcp_server/`로 DB 접근을 분리한 것과 동일한 원칙 — 라이프사이클 독립, 설정 분리, 독립 배포
+- Redis Stream으로 alarm_server 재시작 시에도 알람 유실 방지
+- 현재 내부망 환경에서 worKB가 유일하게 사용 가능한 채널 (Slack 외부망 불가)
+
+### 대안 (미채택)
+
+| 대안 | 미채택 이유 |
+|------|-----------|
+| 에이전트 서버 내 asyncio 태스크로 통합 | 에이전트 재시작 시 소켓 끊김, 로그 혼재 |
+| FastAPI WebSocket 수신 | 폴스타가 TCP 소켓 방식으로 전송, 프로토콜 불일치 |
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-04 | D-031 | 알람 소켓 수신 → LLM 분석 → worKB 발송 (Plan 46): alarm_server/ 독립 프로세스, AlarmConfig/WorkbConfig 추가, src/alarm/ 서브패키지 신규, AlarmWorker Redis Stream 소비, 2-노드 AlarmAnalysisGraph, FastAPI lifespan AlarmWorker 등록, arch_check MODULE_LAYER_MAP alarm 계층 추가 |
 | 2026-06-01 | D-030 | ALARMSEVERITY=0 해소 상태 이력 쿼리 포함 (Plan 45): domain_config.py 4개 도메인 description 0=해소 추가, query_generator.py 필수 WHERE/심각도 매핑/분기 섹션 수정, Template C-1~C-5 CASE WHEN 0 추가, C-2~C-5 WHERE IN(0,1,2,3) 변경, C-4 해소_수 집계 컬럼 추가, plan 44 심각도 코드표 갱신 |
 | 2026-05-29 | D-029 | 알람 조회 의도 분리 (Plan 44): routing_intent="alarm_query" 의도 추가, domain_config.py 4개 도메인 description 보강, semantic_router.py alarm_query 규칙+예시 7건, query_generator.py routing_intent 파라미터 전파, prompts/query_generator.py Template C-1~C-5 신규 상수 추가 |
 | 2026-04-02 | D-028 | Polestar 불필요 lookup 테이블 JOIN 차단 (Plan 42): excluded_join_columns에 vendor_id/os_id/os_param_id 추가, allowed_tables 필드 신규, schema_analyzer 테이블 필터링, query_validator 패턴 3 추가 |

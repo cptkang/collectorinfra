@@ -240,6 +240,67 @@ class SchemaCacheConfig(BaseSettings):
     model_config = {"env_prefix": "SCHEMA_CACHE_", "env_file": ".env", "extra": "ignore"}
 
 
+class AlarmConfig(BaseSettings):
+    """에이전트 서버의 알람 분석·발송 설정.
+
+    소켓 수신 설정은 alarm_server/config.py에서 관리.
+    에이전트 서버는 Redis Stream 소비 및 알림 발송만 담당.
+    """
+
+    enabled: bool = False
+    redis_stream_key: str = "alarm:raw"
+    redis_consumer_group: str = "alarm-workers"
+    min_severity: int = 2                 # 처리할 최소 심각도 (0=해소, 1=주의, 2=경고, 3=심각)
+    dedup_ttl_seconds: int = 300          # 중복 알람 억제 TTL (초)
+    # 현재 지원 채널: workb만 사용 가능.
+    # 추후 "slack,workb" 등 복수 지정 가능하도록 CSV 구조를 유지한다.
+    notification_channels_csv: str = "workb"
+    # Generic Webhook 채널 설정 (비어있으면 webhook 채널 자동 무시)
+    webhook_url: str = ""
+    webhook_timeout_seconds: int = 10
+
+    model_config = {"env_prefix": "ALARM_", "env_file": ".env", "extra": "ignore"}
+
+    def get_notification_channels(self) -> list[str]:
+        """활성 알림 채널 목록을 반환한다."""
+        return [c.strip() for c in self.notification_channels_csv.split(",") if c.strip()]
+
+
+class WorkbConfig(BaseSettings):
+    """KB One 클라우드 포탈 worKB(사내메신저) 쪽지 발송 설정.
+
+    민감 정보(bearer_token)는 .encenv 파일에 저장 권장.
+    """
+
+    base_url: str = ""                    # 예: http://kbone-portal.internal:28080
+    bearer_token: str = ""               # Bearer 인증 토큰 (.encenv 권장)
+    system_div: str = ""                 # 시스템 구분자 (worKB 관리자로부터 발급)
+    send_id: str = ""                    # 발송자 사번
+    user_ids_csv: str = ""              # 기본 수신자 사번 목록 (쉼표 구분)
+    alias: str = "[인프라알람]"          # 쪽지 제목 접두어 (실제 제목 = alias + " " + msgTitle)
+    # 심각도별 수신자 오버라이드 (비어있으면 user_ids_csv 공통 사용)
+    critical_user_ids_csv: str = ""      # 심각도 3 전용 수신자
+    warning_user_ids_csv: str = ""       # 심각도 2 전용 수신자
+    timeout_seconds: int = 10
+
+    model_config = {"env_prefix": "WORKB_", "env_file": [".env", ".encenv"], "extra": "ignore"}
+
+    def get_user_ids(self, severity: int) -> str:
+        """심각도에 맞는 수신자 목록을 반환한다.
+
+        Args:
+            severity: 알람 심각도 (1=주의, 2=경고, 3=심각)
+
+        Returns:
+            쉼표 구분 수신자 사번 문자열
+        """
+        if severity == 3 and self.critical_user_ids_csv:
+            return self.critical_user_ids_csv
+        if severity == 2 and self.warning_user_ids_csv:
+            return self.warning_user_ids_csv
+        return self.user_ids_csv
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -254,6 +315,8 @@ class AppConfig(BaseSettings):
     redis: RedisConfig = RedisConfig()
     schema_cache: SchemaCacheConfig = SchemaCacheConfig()
     audit: AuditConfig = AuditConfig()
+    alarm: AlarmConfig = AlarmConfig()
+    workb: WorkbConfig = WorkbConfig()
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

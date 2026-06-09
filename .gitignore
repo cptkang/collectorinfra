@@ -1,6 +1,7 @@
 # 환경변수
 .env
 .encenv
+alarm_server/alarm_server.env
 
 # Python
 __pycache__/
