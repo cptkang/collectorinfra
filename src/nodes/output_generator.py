@@ -147,7 +147,6 @@ async def _generate_text_response(
         original_query=parsed.get("original_query", ""),
         summary=organized["summary"],
         rows=organized["rows"],
-        sql=state["generated_sql"],
     )
 
     messages: list[BaseMessage] = [
@@ -188,7 +187,6 @@ def _build_response_prompt(
     original_query: str,
     summary: str,
     rows: list[dict],
-    sql: str,
 ) -> str:
     """응답 생성 프롬프트를 구성한다.
 
@@ -196,7 +194,6 @@ def _build_response_prompt(
         original_query: 원본 사용자 질의
         summary: 데이터 요약
         rows: 결과 데이터 행
-        sql: 실행된 SQL
 
     Returns:
         구성된 프롬프트 문자열
@@ -208,7 +205,6 @@ def _build_response_prompt(
     parts = [
         f"## 사용자 질의\n{original_query}",
         f"## 데이터 요약\n{summary}",
-        f"## 실행된 SQL\n```sql\n{sql}\n```",
         (
             f"## 조회 결과 ({len(rows)}건"
             f"{', 상위 20건 표시' if truncated else ''})\n"
