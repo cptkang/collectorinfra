@@ -40,7 +40,7 @@
 │  alarm_server/  (독립 프로세스)          │
 │  python -m alarm_server                 │
 │  - asyncio TCP 서버                     │
-│  - 페이로드 파싱·정규화 (JSON 단일 행)  │
+│  - 페이로드 파싱·정규화 (단일행 JSON)  │
 │  - 연결 끊김 자동 재연결                │
 │  - Redis Stream XADD                    │
 └──────────────────┬──────────────────────┘
@@ -147,37 +147,43 @@ src/alarm/                             # 에이전트 서버 내 알람 분석·
 
 ### 4.1 `src/alarm/domain/alarm.py`
 
-`AlarmEvent` 필드는 폴스타 템플릿 변수(Section 6 참고)와 1:1 대응하도록 설계한다.
+`AlarmEvent` 필드는 실제 폴스타 전송 메시지 포맷(Section 6 참고)과 1:1 대응하도록 설계한다.
 
 ```python
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 @dataclass
 class AlarmEvent:
-    # --- 폴스타 템플릿 변수 직접 매핑 ---
-    alarm_id: str                       # ${alarmId}           — 중복 제거 키
-    severity: int                       # ${severity}          — 1=주의, 2=경고, 3=심각
-    alarm_name: str                     # ${alarmName}         — 알람 이름
-    alarm_description: str              # ${alarmDescription}  — 알람 설명
-    alarm_definition: str               # ${alarmDefinition}   — 알람 정의
-    hostname: str                       # ${hostname}          — 대상 호스트명
-    resource_name: str                  # ${resourceName}      — 대상 자원 이름
-    resource_description: str           # ${resourceDescription} — 자원 설명
-    resource_type: str                  # ${resourceType}      — 'server.Server' 등
-    condition_log: str                  # ${conditionLog}      — 컨디션 로그
-    # --- 수신 메타 ---
-    source_db_id: str = ""              # 발신 DB ID (polestar, polestar_cm_gp 등)
-    raw_payload: dict = field(default_factory=dict)   # 원본 페이로드 보존
+    # --- 식별자 ---
+    db_id: str                          # 상수 (직접 기입) — 폴스타 인스턴스 식별자, DB의 db_id와 매핑
+    server_name: str                    # ${platformName}  — 폴스타에 등록된 서버명, DB의 server_name과 매핑
+    # --- 네트워크 정보 ---
+    hostname: str                       # ${hostname}      — 호스트네임
+    ip_address: str                     # ${ipAddress}     — IP 주소
+    resource_ancestry: str              # ${resourceAncestry} — 폴스타 트리 전체 경로
+    # --- 알람 상세 ---
+    alarm_id: str                       # ${alarmId}       — 중복 제거 키
+    severity: int                       # ${severity}      — 0=해소, 1=주의, 2=경고, 3=심각
+    alarm_status: str                   # ${alarmStatus}   — '발생' / '해소'
+    resource_type: str                  # ${resourceType}  — 'server.Server' 등
+    alarm_name: str                     # ${alarmName}     — 알람 이름
+    alarm_time: datetime                # ${formatAlarmDate('yyyyMMddHHmmss')} 파싱
+    conditions: str                     # ${conditions}    — 발생/해소 임계 조건 정의
+    condition_log: str                  # ${conditionLog}  — 이 알람이 울린 실제 값
+    # --- 파생 필드 ---
+    is_clear: bool = False              # alarm_status == '해소' 또는 severity == 0
+    raw_payload: dict = field(default_factory=dict)  # 원본 JSON dict 보존
 
 @dataclass
 class AlarmAnalysisResult:
     alarm_event: AlarmEvent
-    severity_label: str                 # "심각" / "경고" / "주의"
+    severity_label: str                 # "심각" / "경고" / "주의" / "해소"
     summary: str                        # LLM 생성 요약 (1~2문장)
     probable_cause: str                 # 추정 원인
     recommended_action: str             # 권고 조치
-    notification_channels: list[str]    # ["slack", "workb"] 등 복수 채널
+    notification_channels: list[str]    # ["workb"] 등 복수 채널
     notifications_sent: dict[str, bool] = field(default_factory=dict)  # 채널별 발송 결과
     error: Optional[str] = None
 ```
@@ -268,8 +274,9 @@ class BaseReceiver(abc.ABC):
             self._config.stream_key,
             {"data": json.dumps(payload, ensure_ascii=False)},
         )
-        logger.debug("알람 발행 완료: alarmId=%s severity=%s",
-                     payload.get("alarmId"), payload.get("severity"))
+        logger.debug("알람 발행 완료: alarmId=%s severity=%s alarmStatus=%s",
+                     payload.get("alarmId"), payload.get("severity"),
+                     payload.get("alarmStatus"))
 
     @abc.abstractmethod
     async def start(self) -> None:
@@ -279,7 +286,7 @@ class BaseReceiver(abc.ABC):
 
 #### 1-3. `alarm_server/tcp_receiver.py`
 
-TCP 소켓 수신 구체 구현. 폴스타 → TCP 지속 연결 → 단일 행 JSON 파싱 → Redis XADD.
+TCP 소켓 수신 구체 구현. 폴스타 → TCP 지속 연결 → 단일행 JSON 파싱 → Redis XADD.
 
 ```python
 import asyncio
@@ -327,7 +334,7 @@ class TcpReceiver(BaseReceiver):
             logger.info("알람 연결 종료: %s", peer)
 
     def _parse(self, raw: bytes) -> dict | None:
-        """수신 바이트를 dict으로 변환한다 (Section 6 폴스타 템플릿 기준)."""
+        """수신 바이트를 dict으로 변환한다 (Section 6.1 단일행 JSON 기준)."""
         try:
             return json.loads(raw.decode("utf-8").strip())
         except Exception:
@@ -506,16 +513,21 @@ async def alarm_analyzer_node(state: dict, config: dict) -> dict:
     cfg = config["configurable"]["app_config"]
     llm = get_llm(cfg)
 
+    severity_label = _SEVERITY_LABELS.get(event.severity, "해소" if event.is_clear else "알 수 없음")
     user_msg = ALARM_ANALYZER_USER_TEMPLATE.format(
-        alarm_name=event.alarm_name,
-        alarm_description=event.alarm_description,
-        alarm_definition=event.alarm_definition,
+        db_id=event.db_id,
+        server_name=event.server_name,
         hostname=event.hostname,
-        resource_name=event.resource_name,
-        resource_description=event.resource_description,
+        ip_address=event.ip_address,
+        resource_ancestry=event.resource_ancestry,
         resource_type=event.resource_type,
+        alarm_name=event.alarm_name,
+        alarm_id=event.alarm_id,
         severity=event.severity,
-        severity_label=_SEVERITY_LABELS.get(event.severity, "알 수 없음"),
+        severity_label=severity_label,
+        alarm_status=event.alarm_status,
+        alarm_time=event.alarm_time.strftime("%Y-%m-%d %H:%M:%S"),
+        conditions=event.conditions,
         condition_log=event.condition_log,
     )
     try:
@@ -620,6 +632,7 @@ async def _send_workb(workb_cfg, result: AlarmAnalysisResult) -> None:
 import asyncio
 import json
 import logging
+from datetime import datetime
 import redis.asyncio as aioredis
 from src.alarm.domain.alarm import AlarmEvent
 from src.alarm.orchestration.alarm_graph import build_alarm_graph
@@ -671,18 +684,31 @@ class AlarmWorker:
     async def _process(self, r, stream_key, group, msg_id, fields, dedup) -> None:
         try:
             payload = json.loads(fields[b"data"])
+            alarm_time_str = payload.get("alarmTime", "")
+            try:
+                alarm_time = datetime.strptime(alarm_time_str, "%Y%m%d%H%M%S")
+            except ValueError:
+                alarm_time = datetime.now()
+
+            alarm_status = payload.get("alarmStatus", "")
+            severity = int(payload["severity"])
+            is_clear = (alarm_status == "해소" or severity == 0)
+
             event = AlarmEvent(
-                alarm_id=str(payload["alarmId"]),
-                severity=int(payload["severity"]),
-                alarm_name=payload.get("alarmName", ""),
-                alarm_description=payload.get("alarmDescription", ""),
-                alarm_definition=payload.get("alarmDefinition", ""),
+                db_id=payload.get("dbId", ""),
+                server_name=payload.get("serverName", ""),
                 hostname=payload.get("hostname", ""),
-                resource_name=payload.get("resourceName", ""),
-                resource_description=payload.get("resourceDescription", ""),
+                ip_address=payload.get("ipAddress", ""),
+                resource_ancestry=payload.get("resourceAncestry", ""),
+                alarm_id=str(payload["alarmId"]),
+                severity=severity,
+                alarm_status=alarm_status,
                 resource_type=payload.get("resourceType", ""),
+                alarm_name=payload.get("alarmName", ""),
+                alarm_time=alarm_time,
+                conditions=payload.get("conditions", ""),
                 condition_log=payload.get("conditionLog", ""),
-                source_db_id=payload.get("sourceDbId", ""),
+                is_clear=is_clear,
                 raw_payload=payload,
             )
             if self._is_duplicate(event, dedup):
@@ -753,58 +779,84 @@ if alarm_worker_task:
 
 ---
 
-## 6. 폴스타 메시지 템플릿 설계
+## 6. 폴스타 메시지 포맷 및 파싱 설계
 
-폴스타는 알람 발생 시 외부 액션(스크립트/HTTP/TCP)을 실행할 수 있으며,
-메시지 본문에 아래 템플릿 변수를 사용할 수 있다.
+폴스타는 알람 발생/해소 시 TCP 액션으로 에이전트 서버에 알람 메시지를 전송한다.
+폴스타 템플릿은 자유롭게 지정할 수 있으므로, **단일행 JSON 형식**을 채택한다.
 
-### 6.1 폴스타 제공 템플릿 변수
+### 6.1 폴스타 등록 템플릿 (단일행 JSON)
 
-| 변수 | 폴스타 설명 | `AlarmEvent` 매핑 |
-|------|------------|------------------|
-| `${alarmId}` | 알람의 고유 ID | `alarm_id` |
-| `${severity}` | 심각도 (정수) | `severity` (int) |
-| `${alarmName}` | 알람 이름 | `alarm_name` |
-| `${alarmDescription}` | 알람 설명 | `alarm_description` |
-| `${alarmDefinition}` | 알람 정의 | `alarm_definition` |
-| `${hostname}` | 대상 호스트명 | `hostname` |
-| `${resourceName}` | 대상 자원 이름 | `resource_name` |
-| `${resourceDescription}` | 대상 자원 설명 | `resource_description` |
-| `${resourceType}` | 대상 자원 종류 | `resource_type` |
-| `${conditionLog}` | 컨디션 로그 | `condition_log` |
-| `${custom['...']}` | 사용자 정의 프로퍼티 | `raw_payload`에 보존 |
+폴스타 알람 액션의 메시지 본문에 아래 형식으로 등록한다.
+`dbId` 값은 폴스타 인스턴스마다 **상수로 직접 기입**한다 (템플릿 변수 아님).
 
-### 6.2 권장 폴스타 메시지 템플릿
-
-폴스타 알람 액션에서 TCP 소켓으로 전송할 메시지를 아래 **단일 행 JSON 형식**으로 구성한다.
-
+**템플릿 형식:**
 ```
-{"alarmId":"${alarmId}","severity":${severity},"alarmName":"${alarmName}","alarmDescription":"${alarmDescription}","alarmDefinition":"${alarmDefinition}","hostname":"${hostname}","resourceName":"${resourceName}","resourceDescription":"${resourceDescription}","resourceType":"${resourceType}","conditionLog":"${conditionLog}"}
+{"dbId":"<인스턴스_DB_ID>","serverName":"${platformName}","hostname":"${hostname}","ipAddress":"${ipAddress}","resourceAncestry":"${resourceAncestry}","alarmId":"${alarmId}","severity":${severity},"alarmStatus":"${alarmStatus}","resourceType":"${resourceType}","resourceName":"${resourceName}","alarmName":"${alarmName}","alarmTime":"${formatAlarmDate('yyyyMMddHHmmss')}","conditions":"${conditions}","conditionLog":"${conditionLog}"}
 ```
 
-**이 형식을 선택한 이유:**
+**인스턴스별 등록 예시:**
 
-| 이유 | 설명 |
-|------|------|
-| **파싱 단순화** | `receiver.py`의 `_parse()`에서 `json.loads()` 한 줄로 완료 |
-| **LLM 입력 최적화** | 키-값 구조가 필드 이름과 값을 명확히 분리해 LLM이 혼동 없이 인식 |
-| **`AlarmEvent` 직접 매핑** | JSON 키가 `AlarmEvent` 필드명과 대응하여 변환 로직 최소화 |
-| **확장성** | 추가 필드는 JSON에 키 추가만으로 `raw_payload`에 자동 보존 |
-| **단일 행 + `\n` 구분** | 한 행 = 한 알람 — 스트림 파싱 구분이 명확 |
+| 폴스타 인스턴스 | 등록 템플릿의 `dbId` 값 |
+|---------------|------------------------|
+| 김포 폴스타 | `"dbId":"polestar_cm_gp"` |
+| 본사 폴스타 | `"dbId":"polestar"` |
 
-### 6.3 렌더링 결과 예시
+**폴스타 템플릿 변수 → `AlarmEvent` 필드 매핑:**
 
-폴스타가 템플릿을 렌더링하면 아래와 같은 단일 행 JSON이 소켓으로 전송된다.
+| 원천 | JSON 키 | `AlarmEvent` 필드 | 설명 |
+|------|---------|-------------------|------|
+| 상수 (직접 기입) | `dbId` | `db_id` | 폴스타 인스턴스 식별자 — DB의 `db_id`와 매핑 |
+| `${platformName}` | `serverName` | `server_name` | 폴스타에 등록된 서버 이름 — DB의 `server_name`과 매핑 |
+| `${hostname}` | `hostname` | `hostname` | 호스트네임 |
+| `${ipAddress}` | `ipAddress` | `ip_address` | IP 주소 |
+| `${resourceAncestry}` | `resourceAncestry` | `resource_ancestry` | 폴스타 트리 전체 경로 |
+| `${alarmId}` | `alarmId` | `alarm_id` | 알람 고유 ID (중복 제거 키) |
+| `${severity}` | `severity` | `severity` | 0=해소, 1=주의, 2=경고, 3=심각 |
+| `${alarmStatus}` | `alarmStatus` | `alarm_status` | `발생` / `해소` |
+| `${resourceType}` | `resourceType` | `resource_type` | `server.Server`, `server.Cpus` 등 |
+| `${resourceName}` | `resourceName` | `resource_name` | 자원 이름 |
+| `${alarmName}` | `alarmName` | `alarm_name` | 알람 이름 |
+| `${formatAlarmDate('yyyyMMddHHmmss')}` | `alarmTime` | `alarm_time` | 알람 일시 → `datetime` 변환 |
+| `${conditions}` | `conditions` | `conditions` | 발생/해소 조건 정의 |
+| `${conditionLog}` | `conditionLog` | `condition_log` | 이 알람이 울리게 된 조건 값 |
+| — | — | `is_clear` | 파생: `alarm_status == '해소'` 또는 `severity == 0` |
+| — | — | `raw_payload` | 원본 JSON dict 보존 |
+
+### 6.2 메시지 예시 (발생 알람 — 김포 폴스타)
+
+폴스타가 템플릿 변수를 렌더링한 결과 (`dbId`는 상수로 기입):
 
 ```json
-{"alarmId":"1234567","severity":3,"alarmName":"CPU 사용률 임계값 초과","alarmDescription":"서버 CPU 사용률이 설정된 임계값을 초과하였습니다.","alarmDefinition":"CPU Over Threshold Alert","hostname":"svr-infra-001","resourceName":"인프라서버-001","resourceDescription":"주요 인프라 서버","resourceType":"server.Server","conditionLog":"CPU Usage: 95.3% (Threshold: 90%)"}
+{"dbId":"polestar_cm_gp","serverName":"svr-infra-001","hostname":"svr-infra-001.internal","ipAddress":"10.1.2.3","resourceAncestry":"/Servers/Infrastructure/svr-infra-001/Cpus","alarmId":"1234567","severity":3,"alarmStatus":"발생","resourceType":"server.Cpus","alarmName":"CPU 사용률 임계 초과","alarmTime":"20260602143520","conditions":"사용률 Threashold [TROUBLE (> 90.0 %), ATTENTION (>80.0 %), CLEAR (< 70.0 %)]","conditionLog":"사용률 Threashold [86.1 % (> 80.0 %)]"}
 ```
 
-### 6.4 alarm_server receiver 파싱 구현
+### 6.3 메시지 예시 (해소 알람 — 김포 폴스타)
 
-`alarm_server/receiver.py`의 `_parse()`는 단순 `json.loads()`로 동작한다.
-`AlarmEvent`로의 변환(`AlarmWorker._process()`)은 에이전트 서버 측(`src/alarm/`)에서 수행한다.
-두 책임이 분리되어 있으므로 프로토콜 변경 시 `_parse()`만 수정하면 된다.
+```json
+{"dbId":"polestar_cm_gp","serverName":"svr-infra-001","hostname":"svr-infra-001.internal","ipAddress":"10.1.2.3","resourceAncestry":"/Servers/Infrastructure/svr-infra-001/Cpus","alarmId":"1234567","severity":0,"alarmStatus":"해소","resourceType":"server.Cpus","alarmName":"CPU 사용률 임계 초과","alarmTime":"20260602145208","conditions":"사용률 Threashold [TROUBLE (> 90.0 %), ATTENTION (>80.0 %), CLEAR (< 70.0 %)]","conditionLog":"사용률 Threashold [65.2 % (< 70.0 %)]"}
+```
+
+- `severity = 0`, `alarmStatus = "해소"` → `is_clear = True`
+- `conditions`는 발생·해소 조건이 모두 포함된 동일 정의
+- `conditionLog`는 해소 시점의 실제 측정값 — 해소 조건(`CLEAR < 70.0 %`) 충족 확인 가능
+
+### 6.4 파싱 구현 (`alarm_server/tcp_receiver.py`)
+
+JSON 형식이므로 `_parse()`는 `json.loads()` 한 줄로 완료된다.
+복잡한 정규식·앵커 탐색이 전혀 필요 없다.
+
+```python
+def _parse(self, raw: bytes) -> dict | None:
+    try:
+        return json.loads(raw.decode("utf-8").strip())
+    except Exception:
+        logger.warning("알람 페이로드 파싱 실패: %r", raw[:200])
+        return None
+```
+
+> **JSON 이스케이프 안전성**: `conditions`·`conditionLog`·`alarmName` 값에 큰따옴표(`"`)나
+> 백슬래시(`\`)가 포함되면 JSON 파싱이 깨진다. 폴스타의 알람 조건은 수치·괄호·퍼센트로만
+> 구성되므로 실용적 위험은 낮다. 만약 문제가 발생하면 파이프(`|`) 구분 포맷으로 전환한다.
 
 ### 6.5 LLM 분석 프롬프트 (`src/alarm/prompts/alarm_analyzer.py`)
 
@@ -813,28 +865,30 @@ ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분
 주어진 알람 정보를 바탕으로 다음을 JSON으로 응답하세요:
 
 {
-    "severity_label": "심각" | "경고" | "주의",
+    "severity_label": "심각" | "경고" | "주의" | "해소",
     "summary": "알람 요약 (1~2문장, 한국어, 장비명·알람명·심각도 포함)",
-    "probable_cause": "추정 원인 (conditionLog와 alarmDefinition 근거, 1~2문장)",
+    "probable_cause": "추정 원인 (conditions와 conditionLog 근거, 1~2문장)",
     "recommended_action": "권고 조치 (구체적, 1~3문장)"
 }
 
 규칙:
-- 심각도: 3=심각, 2=경고, 1=주의
-- conditionLog와 alarmDefinition을 원인 분석의 주요 근거로 사용할 것
+- 심각도: 3=심각, 2=경고, 1=주의, 0=해소
+- conditions(발생/해소 임계 정의)와 conditionLog(실제 측정값)를 원인 분석의 핵심 근거로 사용
+- 해소 알람(alarmStatus=해소)인 경우 severity_label은 "해소"로 출력
 - JSON 이외의 텍스트를 절대 출력하지 말 것
 """
 
 ALARM_ANALYZER_USER_TEMPLATE = """알람 정보:
+- DB: {db_id} / 서버: {server_name} ({hostname}, {ip_address})
+- 자원 경로: {resource_ancestry}
+- 자원 종류: {resource_type}
 - 알람명: {alarm_name}
-- 알람 설명: {alarm_description}
-- 알람 정의: {alarm_definition}
+- 알람 ID: {alarm_id}
 - 심각도: {severity} ({severity_label})
-- 호스트명: {hostname}
-- 자원 이름: {resource_name}
-- 자원 설명: {resource_description}
-- 자원 유형: {resource_type}
-- 컨디션 로그: {condition_log}
+- 알람 상태: {alarm_status}
+- 알람 일시: {alarm_time}
+- 임계 조건: {conditions}
+- 조건 로그: {condition_log}
 """
 ```
 
@@ -931,7 +985,7 @@ ALARM_ANALYZER_USER_TEMPLATE = """알람 정보:
 | **근거** | `mcp_server/`로 DB 접근을 분리한 것과 동일한 원칙 — 라이프사이클 독립, 설정 분리, 독립 배포 |
 | **대안** | 에이전트 서버 내 asyncio 태스크로 통합 (설정·로그 혼재, 에이전트 재시작 시 소켓 끊김) |
 | **알람 조회 vs 알람 수신** | DB 내 알람 데이터 조회는 Plan 44의 `alarm_query` 의도로 처리, 실시간 수신은 `alarm_server/` 소켓으로 처리 — 두 기능 명확히 분리 |
-| **폴스타 템플릿 포맷** | 단일 행 JSON (`\n` 구분) — `json.loads()` 파싱, LLM 키-값 인식, `AlarmEvent` 직접 매핑 |
+| **폴스타 메시지 포맷** | 단일행 JSON — 폴스타 템플릿 변수 12개(`${platformName}` 등)를 JSON 키-값으로 구성, `json.loads()` 파싱, `AlarmEvent` 직접 매핑 |
 | **worKB 토큰 관리** | `.encenv` 파일 저장 (기존 `LLMConfig`, `AdminConfig` 패턴 동일) |
 
 ---
@@ -944,9 +998,9 @@ ALARM_ANALYZER_USER_TEMPLATE = """알람 정보:
 - [ ] `alarm_server/config.py`: `AlarmServerConfig` 구현 (`ALARM_SERVER_` 접두사)
 - [ ] `alarm_server/base_receiver.py`: `BaseReceiver` 추상 클래스 구현 (Redis 발행 공통 로직)
 - [ ] `alarm_server/tcp_receiver.py`: `TcpReceiver(BaseReceiver)` 구현
-  - [ ] `_parse()`: 단일 행 JSON 파싱 (Section 6.2 권장 템플릿 기준)
-  - [ ] 폴스타 관리자에게 TCP 알람 액션 설정 요청 (Section 6.2 템플릿 전달)
-  - [ ] 실제 폴스타 렌더링 샘플로 파싱 검증
+  - [ ] `_parse()`: 단일행 JSON `json.loads()` (Section 6.1 템플릿 기준)
+  - [ ] 폴스타 관리자에게 Section 6.1 템플릿 한 줄 전달 — TCP 알람 액션 메시지 본문으로 등록 요청
+  - [ ] 파싱 단위 테스트 작성 (발생 알람 / 해소 알람 각 1건, Section 6.2~6.3 예시 활용)
 - [ ] `alarm_server/__main__.py`: 진입점 구현 — `TcpReceiver` 사용 (`python -m alarm_server`)
 - [ ] `alarm_server.env`: 소켓 서버 전용 환경변수 파일 작성 (`.gitignore` 등록)
 

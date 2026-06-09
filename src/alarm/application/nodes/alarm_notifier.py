@@ -34,10 +34,13 @@ def build_workb_body(result: AlarmAnalysisResult) -> str:
     return (
         f"<b>심각도:</b> {severity_html}<br>"
         f"<b>알람명:</b> {ev.alarm_name}<br>"
-        f"<b>설명:</b> {ev.alarm_description}<br>"
-        f"<b>자원:</b> {ev.resource_name} ({ev.resource_type})<br>"
-        f"<b>호스트:</b> {ev.hostname}<br>"
-        f"<b>컨디션:</b> {ev.condition_log}"
+        f"<b>서버:</b> {ev.server_name} ({ev.hostname}, {ev.ip_address})<br>"
+        f"<b>자원 경로:</b> {ev.resource_ancestry}<br>"
+        f"<b>자원 종류:</b> {ev.resource_type}<br>"
+        f"<b>자원 이름:</b> {ev.resource_name}<br>"
+        f"<b>알람 상태:</b> {ev.alarm_status}<br>"
+        f"<b>임계 조건:</b> {ev.conditions}<br>"
+        f"<b>조건 로그:</b> {ev.condition_log}"
         f"<hr>"
         f"<b>요약</b><br>{result.summary}<br><br>"
         f"<b>추정 원인</b><br>{result.probable_cause}<br><br>"
@@ -109,7 +112,7 @@ async def _send_workb(workb_cfg, result: AlarmAnalysisResult) -> None:
         raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")
 
     ev = result.alarm_event
-    msg_title = f"[{result.severity_label}] {ev.resource_name} ({ev.hostname})"
+    msg_title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
     msg_body = build_workb_body(result)
     payload = {
         "systemDiv": workb_cfg.system_div,
@@ -150,16 +153,19 @@ async def _send_webhook(alarm_cfg, result: AlarmAnalysisResult) -> None:
         "severity": ev.severity,
         "severity_label": result.severity_label,
         "alarm_name": ev.alarm_name,
+        "db_id": ev.db_id,
+        "server_name": ev.server_name,
         "hostname": ev.hostname,
-        "resource_name": ev.resource_name,
+        "ip_address": ev.ip_address,
+        "resource_ancestry": ev.resource_ancestry,
         "resource_type": ev.resource_type,
+        "alarm_status": ev.alarm_status,
+        "conditions": ev.conditions,
         "condition_log": ev.condition_log,
         "summary": result.summary,
         "probable_cause": result.probable_cause,
         "recommended_action": result.recommended_action,
-        "source_db_id": ev.source_db_id,
         "is_clear": ev.is_clear,
-        "triggered_at": ev.triggered_at.isoformat() if ev.triggered_at else None,
     }
     headers = {
         "Content-Type": "application/json; charset=utf-8",

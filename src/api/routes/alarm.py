@@ -32,10 +32,15 @@ router = APIRouter()
 class AlarmTestRequest(BaseModel):
     """알람 분석 테스트 요청.
 
-    폴스타 템플릿 변수 이름과 동일하게 맞춰 실제 메시지를 그대로 붙여넣을 수 있도록 한다.
+    폴스타 단일행 JSON 템플릿 변수 이름과 동일하게 맞춰 실제 메시지를 그대로 붙여넣을 수 있도록 한다.
     """
 
     # ── 폴스타 알람 필드 (AlarmEvent와 1:1 대응) ──
+    db_id: str = Field(default="polestar", description="dbId — 폴스타 인스턴스 식별자 (상수 직접 기입)")
+    server_name: str = Field(default="", description="${platformName} — 폴스타 등록 서버명")
+    hostname: str = Field(default="", description="${hostname} — 호스트네임")
+    ip_address: str = Field(default="", description="${ipAddress} — IP 주소")
+    resource_ancestry: str = Field(default="", description="${resourceAncestry} — 폴스타 트리 전체 경로")
     alarm_id: str = Field(default="TEST-001", description="${alarmId} — 중복 제거 키")
     severity: int = Field(
         default=2,
@@ -43,18 +48,19 @@ class AlarmTestRequest(BaseModel):
         le=3,
         description="${severity} — 0=해소, 1=주의, 2=경고, 3=심각",
     )
-    alarm_name: str = Field(default="", description="${alarmName} — 알람 이름")
-    alarm_description: str = Field(default="", description="${alarmDescription} — 알람 설명")
-    alarm_definition: str = Field(default="", description="${alarmDefinition} — 알람 정의")
-    hostname: str = Field(default="", description="${hostname} — 대상 호스트명")
-    resource_name: str = Field(default="", description="${resourceName} — 대상 자원 이름")
-    resource_description: str = Field(default="", description="${resourceDescription} — 자원 설명")
+    alarm_status: str = Field(default="발생", description="${alarmStatus} — '발생' / '해소'")
     resource_type: str = Field(
         default="server.Server",
         description="${resourceType} — 예: server.Server, server.Cpus, network.NMSNode",
     )
-    condition_log: str = Field(default="", description="${conditionLog} — 컨디션 로그 (임계치 정보 포함)")
-    source_db_id: str = Field(default="polestar", description="발신 DB 식별자 (polestar, polestar_cm_gp 등)")
+    resource_name: str = Field(default="", description="${resourceName} — 자원 이름")
+    alarm_name: str = Field(default="", description="${alarmName} — 알람 이름")
+    alarm_time: str = Field(
+        default="",
+        description="${formatAlarmDate('yyyyMMddHHmmss')} — 알람 일시 (yyyyMMddHHmmss 형식, 비어있으면 현재 시각)",
+    )
+    conditions: str = Field(default="", description="${conditions} — 발생/해소 임계 조건 정의")
+    condition_log: str = Field(default="", description="${conditionLog} — 이 알람이 울린 실제 값")
     is_clear: bool = Field(default=False, description="True이면 알람 해소 이벤트")
 
     # ── 테스트 제어 파라미터 ──
@@ -82,27 +88,68 @@ class AlarmTestRequest(BaseModel):
         ),
     )
     push_to_ui: bool = Field(
-        default=False,
+        default=True,
         description="True이면 분석 결과를 웹 UI 채팅창에 알람 말풍선으로 실시간 표시한다.",
     )
 
     model_config = {"json_schema_extra": {
         "example": {
+            "db_id": "polestar_cm_gp",
+            "server_name": "svr-infra-001",
+            "hostname": "svr-infra-001.internal",
+            "ip_address": "10.1.2.3",
+            "resource_ancestry": "/Servers/Infrastructure/svr-infra-001/Cpus",
             "alarm_id": "ALARM-20260604-001",
             "severity": 3,
-            "alarm_name": "CPU 사용률 임계 초과",
-            "alarm_description": "서버 CPU 사용률이 설정된 임계값을 초과하였습니다.",
-            "alarm_definition": "서버의 최근 5분 평균 CPU 사용률이 90%를 초과하면 심각 알람 발생",
-            "hostname": "svr-infra-001",
-            "resource_name": "svr-infra-001 CPU",
-            "resource_description": "인프라 서버 CPU 리소스",
+            "alarm_status": "발생",
             "resource_type": "server.Cpus",
-            "condition_log": "CPU Usage=95.2%, Threshold=90%, Duration=5min",
-            "source_db_id": "polestar",
+            "resource_name": "svr-infra-001-CPU",
+            "alarm_name": "CPU 사용률 임계 초과",
+            "alarm_time": "20260604143520",
+            "conditions": "사용률 Threashold [TROUBLE (> 90.0 %), ATTENTION (>80.0 %), CLEAR (< 70.0 %)]",
+            "condition_log": "사용률 Threashold [95.2 % (> 90.0 %)]",
             "is_clear": False,
             "dry_run": True,
             "send_notification": False,
             "channels": None,
+        }
+    }}
+
+
+class AlarmRawTestRequest(BaseModel):
+    """폴스타 TCP 소켓 원문 메시지로 알람 분석을 실행하는 요청.
+
+    폴스타에서 실제로 전송되는 단일행 JSON을 그대로 붙여넣어
+    소켓 수신 → 파싱 → 분석 전체 파이프라인을 시뮬레이션한다.
+    """
+
+    message: str = Field(
+        description=(
+            "폴스타 TCP 소켓으로 전달된 단일행 JSON 원문. "
+            "예: {\"dbId\":\"polestar_cm_gp\",\"serverName\":\"svr-infra-001\",...}"
+        ),
+    )
+    dry_run: bool = Field(default=True, description="True: 발송 없이 분석 결과 + 미리보기만 반환")
+    send_notification: bool = Field(default=False, description="dry_run=False일 때만 유효. 실제 채널 발송 여부")
+    channels: Optional[list[str]] = Field(default=None, description="채널 오버라이드. null이면 서버 설정 사용")
+    push_to_ui: bool = Field(default=True, description="True이면 분석 결과를 웹 UI에 실시간 표시")
+
+    model_config = {"json_schema_extra": {
+        "example": {
+            "message": (
+                '{"dbId":"polestar_cm_gp","serverName":"svr-infra-001",'
+                '"hostname":"svr-infra-001.internal","ipAddress":"10.1.2.3",'
+                '"resourceAncestry":"/Servers/Infrastructure/svr-infra-001/Cpus",'
+                '"alarmId":"1234567","severity":3,"alarmStatus":"발생",'
+                '"resourceType":"server.Cpus","alarmName":"CPU 사용률 임계 초과",'
+                '"alarmTime":"20260602143520",'
+                '"conditions":"사용률 Threashold [TROUBLE (> 90.0 %), ATTENTION (>80.0 %), CLEAR (< 70.0 %)]",'
+                '"conditionLog":"사용률 Threashold [86.1 % (> 80.0 %)]"}'
+            ),
+            "dry_run": True,
+            "send_notification": False,
+            "channels": None,
+            "push_to_ui": True,
         }
     }}
 
@@ -167,7 +214,7 @@ def _build_workb_preview(workb_cfg, result: AlarmAnalysisResult) -> _WorkbPrevie
     from src.alarm.application.nodes.alarm_notifier import build_workb_body
 
     ev = result.alarm_event
-    title = f"[{result.severity_label}] {ev.resource_name} ({ev.hostname})"
+    title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
     body = build_workb_body(result)
     api_url = (
         f"{workb_cfg.base_url.rstrip('/')}/api/sendWorkbMsg"
@@ -190,14 +237,18 @@ def _build_webhook_preview(alarm_cfg, result: AlarmAnalysisResult) -> _WebhookPr
         "severity": ev.severity,
         "severity_label": result.severity_label,
         "alarm_name": ev.alarm_name,
+        "db_id": ev.db_id,
+        "server_name": ev.server_name,
         "hostname": ev.hostname,
-        "resource_name": ev.resource_name,
+        "ip_address": ev.ip_address,
+        "resource_ancestry": ev.resource_ancestry,
         "resource_type": ev.resource_type,
+        "alarm_status": ev.alarm_status,
+        "conditions": ev.conditions,
         "condition_log": ev.condition_log,
         "summary": result.summary,
         "probable_cause": result.probable_cause,
         "recommended_action": result.recommended_action,
-        "source_db_id": ev.source_db_id,
         "is_clear": ev.is_clear,
     }
     return _WebhookPreview(
@@ -245,19 +296,34 @@ async def analyze_alarm_test(
     config = request.app.state.config
 
     # 1. AlarmEvent 구성
+    from datetime import datetime as _dt
+    alarm_time_str = body.alarm_time
+    try:
+        alarm_time = _dt.strptime(alarm_time_str, "%Y%m%d%H%M%S") if alarm_time_str else _dt.now()
+    except ValueError:
+        alarm_time = _dt.now()
+
+    alarm_status = body.alarm_status
+    severity = body.severity
+    is_clear = body.is_clear or alarm_status == "해소" or severity == 0
+
     event = AlarmEvent(
-        alarm_id=body.alarm_id or str(uuid.uuid4()),
-        severity=body.severity,
-        alarm_name=body.alarm_name,
-        alarm_description=body.alarm_description,
-        alarm_definition=body.alarm_definition,
+        db_id=body.db_id,
+        server_name=body.server_name,
         hostname=body.hostname,
-        resource_name=body.resource_name,
-        resource_description=body.resource_description,
+        ip_address=body.ip_address,
+        resource_ancestry=body.resource_ancestry,
+        alarm_id=body.alarm_id or str(uuid.uuid4()),
+        severity=severity,
+        alarm_status=alarm_status,
         resource_type=body.resource_type,
+        resource_name=body.resource_name,
+        alarm_name=body.alarm_name,
+        alarm_time=alarm_time,
+        conditions=body.conditions,
         condition_log=body.condition_log,
-        source_db_id=body.source_db_id,
-        is_clear=body.is_clear,
+        is_clear=is_clear,
+        raw_payload=body.model_dump(exclude={"dry_run", "send_notification", "channels", "push_to_ui"}),
     )
 
     # 2. 사용할 채널 결정 (요청 오버라이드 > 서버 설정)
@@ -320,8 +386,13 @@ async def analyze_alarm_test(
             "severity": event.severity,
             "severity_label": analysis_result.severity_label,
             "alarm_name": event.alarm_name,
+            "db_id": event.db_id,
+            "server_name": event.server_name,
             "hostname": event.hostname,
+            "ip_address": event.ip_address,
+            "resource_type": event.resource_type,
             "resource_name": event.resource_name,
+            "alarm_status": event.alarm_status,
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
@@ -394,3 +465,189 @@ async def alarm_notifications_stream(request: Request) -> StreamingResponse:
             bus.unsubscribe(q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────
+
+def _parse_raw_message(message: str) -> dict:
+    """폴스타 단일행 JSON 원문을 파싱한다 (TcpReceiver._parse()와 동일한 로직)."""
+    return json.loads(message.strip())
+
+
+def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
+    """Redis Stream 페이로드(또는 파싱된 폴스타 JSON)를 AlarmEvent로 변환한다."""
+    from datetime import datetime as _dt
+
+    alarm_time_str = payload.get("alarmTime", "")
+    try:
+        alarm_time = _dt.strptime(alarm_time_str, "%Y%m%d%H%M%S") if alarm_time_str else _dt.now()
+    except ValueError:
+        alarm_time = _dt.now()
+
+    alarm_status = payload.get("alarmStatus", "")
+    severity = int(payload.get("severity", 0))
+    is_clear = alarm_status == "해소" or severity == 0
+
+    return AlarmEvent(
+        db_id=payload.get("dbId", ""),
+        server_name=payload.get("serverName", ""),
+        hostname=payload.get("hostname", ""),
+        ip_address=payload.get("ipAddress", ""),
+        resource_ancestry=payload.get("resourceAncestry", ""),
+        alarm_id=str(payload.get("alarmId", str(uuid.uuid4()))),
+        severity=severity,
+        alarm_status=alarm_status,
+        resource_type=payload.get("resourceType", ""),
+        resource_name=payload.get("resourceName", ""),
+        alarm_name=payload.get("alarmName", ""),
+        alarm_time=alarm_time,
+        conditions=payload.get("conditions", ""),
+        condition_log=payload.get("conditionLog", ""),
+        is_clear=is_clear,
+        raw_payload=payload,
+    )
+
+
+@router.post(
+    "/alarm/analyze-test/raw",
+    response_model=AlarmTestResponse,
+    summary="폴스타 원문 메시지 알람 분석 테스트",
+    description=(
+        "폴스타 TCP 소켓으로 전달되는 <b>단일행 JSON 원문</b>을 그대로 붙여넣어 분석합니다.<br/>"
+        "소켓 수신 → JSON 파싱 → AlarmEvent 변환 → LLM 분석 전체 파이프라인을 시뮬레이션합니다.<br/>"
+        "실제 폴스타 메시지를 복사해서 테스트할 때 사용하세요."
+    ),
+    tags=["alarm"],
+)
+async def analyze_alarm_raw(
+    request: Request,
+    body: AlarmRawTestRequest,
+    current_user: dict = Depends(require_user),
+) -> AlarmTestResponse:
+    """폴스타 원문 JSON을 파싱해 AlarmEvent를 구성하고 LLM 분석을 실행한다."""
+    start_time = time.time()
+    config = request.app.state.config
+
+    # 1. 원문 JSON 파싱 (TcpReceiver._parse()와 동일)
+    try:
+        payload = _parse_raw_message(body.message)
+    except Exception as exc:
+        return AlarmTestResponse(
+            alarm_id="PARSE-ERROR",
+            severity=0,
+            severity_label="알 수 없음",
+            analysis=None,
+            notification_channels=[],
+            notification_preview=NotificationPreview(),
+            error=f"메시지 파싱 실패: {exc}",
+            processing_time_ms=(time.time() - start_time) * 1000,
+        )
+
+    # 2. AlarmEvent 구성 (AlarmWorker._process()와 동일)
+    event = _build_alarm_event_from_payload(payload)
+
+    # 3. 사용할 채널 결정
+    channels: list[str] = (
+        body.channels
+        if body.channels is not None
+        else config.alarm.get_notification_channels()
+    )
+
+    # 4. LLM 알람 분석
+    from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
+
+    state: dict[str, Any] = {
+        "alarm_event": event,
+        "analysis_result": None,
+        "error": None,
+    }
+    lc_config = {"configurable": {"app_config": config}}
+
+    try:
+        result_state = await alarm_analyzer_node(state, lc_config)
+    except Exception as exc:
+        elapsed_ms = (time.time() - start_time) * 1000
+        return AlarmTestResponse(
+            alarm_id=event.alarm_id,
+            severity=event.severity,
+            severity_label=_SEVERITY_LABELS.get(event.severity, str(event.severity)),
+            analysis=None,
+            notification_channels=channels,
+            notification_preview=NotificationPreview(),
+            error=f"알람 분석 실패: {exc}",
+            processing_time_ms=elapsed_ms,
+        )
+
+    analysis_result: Optional[AlarmAnalysisResult] = result_state.get("analysis_result")
+    analyzer_error: Optional[str] = result_state.get("error")
+
+    if analyzer_error or not analysis_result:
+        elapsed_ms = (time.time() - start_time) * 1000
+        return AlarmTestResponse(
+            alarm_id=event.alarm_id,
+            severity=event.severity,
+            severity_label=_SEVERITY_LABELS.get(event.severity, str(event.severity)),
+            analysis=None,
+            notification_channels=channels,
+            notification_preview=NotificationPreview(),
+            error=analyzer_error or "알람 분석 결과를 받지 못했습니다.",
+            processing_time_ms=elapsed_ms,
+        )
+
+    analysis_result.notification_channels = channels
+
+    # 5. 웹 UI 푸시
+    if body.push_to_ui:
+        await request.app.state.alarm_bus.publish({
+            "type": "alarm_notification",
+            "alarm_id": event.alarm_id,
+            "severity": event.severity,
+            "severity_label": analysis_result.severity_label,
+            "alarm_name": event.alarm_name,
+            "db_id": event.db_id,
+            "server_name": event.server_name,
+            "hostname": event.hostname,
+            "ip_address": event.ip_address,
+            "resource_type": event.resource_type,
+            "resource_name": event.resource_name,
+            "alarm_status": event.alarm_status,
+            "summary": analysis_result.summary,
+            "probable_cause": analysis_result.probable_cause,
+            "recommended_action": analysis_result.recommended_action,
+        })
+
+    # 6. 발송 미리보기
+    preview = _build_notification_preview(config, analysis_result, channels)
+
+    # 7. 실제 발송 (dry_run=False + send_notification=True)
+    notifications_sent: Optional[dict[str, bool]] = None
+    if not body.dry_run and body.send_notification:
+        from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
+
+        notifier_state = {**result_state, "error": None}
+        try:
+            notifier_out = await alarm_notifier_node(notifier_state, lc_config)
+            sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")
+            notifications_sent = sent_result.notifications_sent if sent_result else {}
+        except Exception as exc:
+            notifications_sent = {ch: False for ch in channels}
+            analyzer_error = f"알림 발송 실패: {exc}"
+
+    elapsed_ms = (time.time() - start_time) * 1000
+
+    return AlarmTestResponse(
+        alarm_id=event.alarm_id,
+        severity=event.severity,
+        severity_label=analysis_result.severity_label,
+        analysis=AlarmAnalysisOutput(
+            severity_label=analysis_result.severity_label,
+            summary=analysis_result.summary,
+            probable_cause=analysis_result.probable_cause,
+            recommended_action=analysis_result.recommended_action,
+        ),
+        notification_channels=channels,
+        notification_preview=preview,
+        notifications_sent=notifications_sent,
+        error=analyzer_error,
+        processing_time_ms=elapsed_ms,
+    )

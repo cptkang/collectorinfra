@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 
 import redis.asyncio as aioredis
 
@@ -114,18 +115,32 @@ class AlarmWorker:
         """
         try:
             payload = json.loads(fields[b"data"])
+            alarm_time_str = payload.get("alarmTime", "")
+            try:
+                alarm_time = datetime.strptime(alarm_time_str, "%Y%m%d%H%M%S")
+            except ValueError:
+                alarm_time = datetime.now()
+
+            alarm_status = payload.get("alarmStatus", "")
+            severity = int(payload["severity"])
+            is_clear = (alarm_status == "해소" or severity == 0)
+
             event = AlarmEvent(
-                alarm_id=str(payload["alarmId"]),
-                severity=int(payload["severity"]),
-                alarm_name=payload.get("alarmName", ""),
-                alarm_description=payload.get("alarmDescription", ""),
-                alarm_definition=payload.get("alarmDefinition", ""),
+                db_id=payload.get("dbId", ""),
+                server_name=payload.get("serverName", ""),
                 hostname=payload.get("hostname", ""),
-                resource_name=payload.get("resourceName", ""),
-                resource_description=payload.get("resourceDescription", ""),
+                ip_address=payload.get("ipAddress", ""),
+                resource_ancestry=payload.get("resourceAncestry", ""),
+                alarm_id=str(payload["alarmId"]),
+                severity=severity,
+                alarm_status=alarm_status,
                 resource_type=payload.get("resourceType", ""),
+                resource_name=payload.get("resourceName", ""),
+                alarm_name=payload.get("alarmName", ""),
+                alarm_time=alarm_time,
+                conditions=payload.get("conditions", ""),
                 condition_log=payload.get("conditionLog", ""),
-                source_db_id=payload.get("sourceDbId", ""),
+                is_clear=is_clear,
                 raw_payload=payload,
             )
 

@@ -5,7 +5,7 @@ AlarmAnalysisResult를 생성한다.
 
 LLM 응답 형식 (JSON):
     {
-        "severity_label": "심각" | "경고" | "주의",
+        "severity_label": "심각" | "경고" | "주의" | "해소",
         "summary": "...",
         "probable_cause": "...",
         "recommended_action": "..."
@@ -30,7 +30,7 @@ from src.llm import create_llm
 
 logger = logging.getLogger(__name__)
 
-_SEVERITY_LABELS = {0: "해소", 1: "주의", 2: "경고", 3: "심각"}
+_SEVERITY_LABELS = {1: "주의", 2: "경고", 3: "심각"}
 
 
 def _extract_json(text: str) -> dict:
@@ -73,16 +73,22 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
     cfg = config["configurable"]["app_config"]
     llm = create_llm(cfg)
 
+    severity_label = _SEVERITY_LABELS.get(event.severity, "해소" if event.is_clear else "알 수 없음")
     user_msg = ALARM_ANALYZER_USER_TEMPLATE.format(
-        alarm_name=event.alarm_name,
-        alarm_description=event.alarm_description,
-        alarm_definition=event.alarm_definition,
+        db_id=event.db_id,
+        server_name=event.server_name,
         hostname=event.hostname,
-        resource_name=event.resource_name,
-        resource_description=event.resource_description,
+        ip_address=event.ip_address,
+        resource_ancestry=event.resource_ancestry,
         resource_type=event.resource_type,
+        resource_name=event.resource_name,
+        alarm_name=event.alarm_name,
+        alarm_id=event.alarm_id,
         severity=event.severity,
-        severity_label=_SEVERITY_LABELS.get(event.severity, "알 수 없음"),
+        severity_label=severity_label,
+        alarm_status=event.alarm_status,
+        alarm_time=event.alarm_time.strftime("%Y-%m-%d %H:%M:%S"),
+        conditions=event.conditions,
         condition_log=event.condition_log,
     )
     try:
