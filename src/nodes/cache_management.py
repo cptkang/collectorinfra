@@ -652,50 +652,75 @@ async def _handle_list_synonyms(
 ) -> str:
     """유사 단어 목록 조회를 처리한다. description도 함께 표시."""
     lines: list[str] = []
+    redis_warning = (
+        "\n\n⚠️ Redis에 연결할 수 없어 로컬 파일 캐시를 사용합니다. "
+        "LLM으로 생성한 유사 단어는 표시되지 않을 수 있습니다."
+        if not cache_mgr.redis_available
+        else ""
+    )
 
     if target_column:
         # 특정 컬럼의 유사 단어 + description 조회
         bare_name = target_column.split(".", 1)[-1] if "." in target_column else target_column
+        bare_name_lower = bare_name.lower()
 
         # 글로벌 사전 조회 (full - description 포함)
         global_full = await cache_mgr.get_global_synonyms_full()
-        global_entry = global_full.get(bare_name, {})
+
+        # 1. 정확 매칭 (대소문자 무관)
+        matched_key = None
+        for key in global_full:
+            if key.lower() == bare_name_lower:
+                matched_key = key
+                break
+
+        # 2. 정확 매칭 실패 시 역방향 탐색: bare_name이 다른 컬럼의 유사어 목록에 있는지 확인
+        if matched_key is None:
+            for key, entry in global_full.items():
+                words_lower = [w.lower() for w in entry.get("words", [])]
+                if bare_name_lower in words_lower:
+                    matched_key = key
+                    lines.append(f"[안내] '{bare_name}'은 '{key}' 컬럼의 유사 단어입니다.")
+                    break
+
+        global_entry = global_full.get(matched_key, {}) if matched_key else {}
         global_words = global_entry.get("words", [])
         global_desc = global_entry.get("description", "")
+        display_name = matched_key or bare_name
 
         if global_desc:
             lines.append(f"[설명] {global_desc}")
         if global_words:
             lines.append(f"[글로벌 유사 단어] {', '.join(global_words)}")
 
-        # 활성 DB별 조회
+        # 활성 DB별 조회 (대소문자 무관 비교)
         active_db_ids = app_config.multi_db.get_active_db_ids()
         for did in active_db_ids:
             db_syns = await cache_mgr.get_synonyms(did)
             for col_key, words in db_syns.items():
                 col_bare = col_key.split(".", 1)[-1] if "." in col_key else col_key
-                if col_bare == bare_name or col_key == target_column:
+                if col_bare.lower() == bare_name_lower or col_key == target_column:
                     lines.append(f"[{did}] {col_key}: {', '.join(words)}")
 
         if not lines:
-            return f"'{target_column}' 컬럼의 유사 단어가 없습니다."
-        return f"{target_column} 컬럼 정보:\n" + "\n".join(lines)
+            return f"'{target_column}' 컬럼의 유사 단어가 없습니다.{redis_warning}"
+        return f"{display_name} 컬럼 정보:\n" + "\n".join(lines) + redis_warning
 
     elif db_id:
         # 특정 DB의 유사 단어 조회
         db_syns = await cache_mgr.get_synonyms(db_id)
         if not db_syns:
-            return f"{db_id} DB의 유사 단어가 없습니다."
+            return f"{db_id} DB의 유사 단어가 없습니다.{redis_warning}"
         lines.append(f"{db_id} DB의 유사 단어 목록:\n")
         for col, words in sorted(db_syns.items()):
             lines.append(f"- {col}: {', '.join(words)}")
-        return "\n".join(lines)
+        return "\n".join(lines) + redis_warning
 
     else:
         # 글로벌 유사 단어 전체 조회 (description 포함)
         global_full = await cache_mgr.get_global_synonyms_full()
         if not global_full:
-            return "글로벌 유사 단어 사전이 비어 있습니다."
+            return f"글로벌 유사 단어 사전이 비어 있습니다.{redis_warning}"
         lines.append("글로벌 유사 단어 사전:\n")
         for col, entry in sorted(global_full.items()):
             words = entry.get("words", [])
@@ -704,7 +729,7 @@ async def _handle_list_synonyms(
             if desc:
                 line += f" ({desc})"
             lines.append(line)
-        return "\n".join(lines)
+        return "\n".join(lines) + redis_warning
 
 
 async def _handle_add_synonym(
@@ -715,10 +740,30 @@ async def _handle_add_synonym(
     words: Optional[list[str]],
 ) -> str:
     """유사 단어 추가를 처리한다."""
+    if not cache_mgr.redis_available:
+        return "Redis에 연결할 수 없어 유사 단어를 추가할 수 없습니다. Redis 상태를 확인해 주세요."
     if not target_column:
-        return "유사 단어를 추가할 대상 컬럼을 지정해야 합니다."
+        return (
+            "유사 단어를 추가할 **컬럼명**을 지정해 주세요.\n\n"
+            "**유사 단어란?**\n"
+            "사용자가 자연어로 질의할 때 DB 컬럼명 대신 사용할 수 있는 동의어입니다.\n"
+            "예를 들어 `hostname` 컬럼에 '서버명', '호스트' 등을 등록하면,\n"
+            "\"서버명이 web01인 장비 조회\"처럼 질의할 때 자동으로 `hostname` 컬럼으로 매핑됩니다.\n\n"
+            "**요청 형식:**\n"
+            "`{컬럼명}에 '{유사단어}' 유사 단어를 추가해줘`\n\n"
+            "**예시:**\n"
+            "- `hostname에 '서버이름', '호스트' 유사 단어를 추가해줘`\n"
+            "- `usage_pct에 '사용률' 유사 단어를 추가해줘`\n"
+            "- `avail_status에 '가용성', '상태' 유사 단어를 추가해줘`"
+        )
     if not words:
-        return "추가할 유사 단어를 지정해야 합니다."
+        return (
+            f"추가할 **유사 단어**를 지정해 주세요.\n\n"
+            f"**요청 형식:**\n"
+            f"`{target_column}에 '유사단어1', '유사단어2' 유사 단어를 추가해줘`\n\n"
+            f"**예시:**\n"
+            f"- `{target_column}에 '서버이름', '호스트명' 유사 단어를 추가해줘`"
+        )
 
     bare_name = target_column.split(".", 1)[-1] if "." in target_column else target_column
     results: list[str] = []
@@ -759,10 +804,25 @@ async def _handle_remove_synonym(
     words: Optional[list[str]],
 ) -> str:
     """유사 단어 삭제를 처리한다."""
+    if not cache_mgr.redis_available:
+        return "Redis에 연결할 수 없어 유사 단어를 삭제할 수 없습니다. Redis 상태를 확인해 주세요."
     if not target_column:
-        return "유사 단어를 삭제할 대상 컬럼을 지정해야 합니다."
+        return (
+            "유사 단어를 삭제할 **컬럼명**을 지정해 주세요.\n\n"
+            "**요청 형식:**\n"
+            "`{컬럼명}에서 '{유사단어}' 유사 단어를 삭제해줘`\n\n"
+            "**예시:**\n"
+            "- `hostname에서 '서버이름' 유사 단어를 삭제해줘`\n"
+            "- `usage_pct에서 '사용률', '사용비율' 유사 단어를 삭제해줘`\n\n"
+            "현재 등록된 유사 단어를 확인하려면: `hostname의 유사 단어를 보여줘`"
+        )
     if not words:
-        return "삭제할 유사 단어를 지정해야 합니다."
+        return (
+            f"삭제할 **유사 단어**를 지정해 주세요.\n\n"
+            f"**요청 형식:**\n"
+            f"`{target_column}에서 '유사단어1', '유사단어2' 유사 단어를 삭제해줘`\n\n"
+            f"현재 등록된 유사 단어 확인: `{target_column}의 유사 단어를 보여줘`"
+        )
 
     bare_name = target_column.split(".", 1)[-1] if "." in target_column else target_column
     results: list[str] = []
@@ -797,10 +857,26 @@ async def _handle_update_synonym(
     words: Optional[list[str]],
 ) -> str:
     """유사 단어 교체를 처리한다 (기존 전체 삭제 후 새로 설정)."""
+    if not cache_mgr.redis_available:
+        return "Redis에 연결할 수 없어 유사 단어를 변경할 수 없습니다. Redis 상태를 확인해 주세요."
     if not target_column:
-        return "유사 단어를 교체할 대상 컬럼을 지정해야 합니다."
+        return (
+            "유사 단어를 교체할 **컬럼명**을 지정해 주세요.\n\n"
+            "**교체란?** 기존에 등록된 유사 단어를 모두 지우고 새 목록으로 덮어씁니다.\n"
+            "일부만 바꾸려면 추가/삭제를 각각 사용하세요.\n\n"
+            "**요청 형식:**\n"
+            "`{컬럼명}의 유사 단어를 '{단어1}', '{단어2}'로 변경해줘`\n\n"
+            "**예시:**\n"
+            "- `hostname의 유사 단어를 '서버명', '호스트명', '장비명'으로 변경해줘`\n"
+            "- `usage_pct의 유사 단어를 '사용률', 'CPU 사용률'로 변경해줘`"
+        )
     if not words:
-        return "새로 설정할 유사 단어를 지정해야 합니다."
+        return (
+            f"새로 설정할 **유사 단어 목록**을 지정해 주세요.\n\n"
+            f"**요청 형식:**\n"
+            f"`{target_column}의 유사 단어를 '단어1', '단어2'로 변경해줘`\n\n"
+            f"현재 등록된 유사 단어 확인: `{target_column}의 유사 단어를 보여줘`"
+        )
 
     bare_name = target_column.split(".", 1)[-1] if "." in target_column else target_column
 
