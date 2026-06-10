@@ -243,6 +243,70 @@ action을 "db-guide"로 설정하세요.
 - "재활용" -> intent: "cache_management"
 - "병합" -> intent: "cache_management"
 
+## intent 판단 우선순위
+
+**반드시 아래 순서대로 검토하고, 먼저 해당하는 intent로 분류하세요.**
+
+1. **cache_management 우선**: 캐시, 유사어/유사 단어, 컬럼 설명, DB 설명, 스키마 관련 키워드가 있으면 → `cache_management`
+2. **alarm_query**: 알람, 모니터링, 임계값 초과, alert 관련이면 → `alarm_query`
+3. **data_query**: 인프라 데이터 조회(서버, CPU, 메모리, 디스크, 네트워크, VM, 자산 등)가 필요하면 → `data_query`
+4. **general_inference**: 위 세 가지 중 어디에도 해당하지 않을 때만 → `general_inference`
+
+`general_inference`는 **최후 수단(last resort)**입니다. 에이전트가 다룰 수 있는 영역과 조금이라도 관련이 있으면 다른 intent로 분류하세요.
+
+## 일반 추론 의도 (general_inference)
+
+**위의 cache_management, alarm_query, data_query 중 어디에도 해당하지 않을 때만** intent를 "general_inference"로 설정하고 databases를 빈 배열([])로 반환하세요.
+
+### 양성 조건 (아래 조건을 만족하고, 음성 조건에 해당하지 않을 때만 general_inference)
+
+1. [에이전트 외부 IT 개념 설명] 이 에이전트의 기능·운영과 무관한 순수 IT/인프라 개념 질문
+   - 패턴: "~란?", "~가 뭐야?", "~의 차이는?", "~는 어떻게 동작해?"
+   - 예: "쿠버네티스란?", "RAID 5와 RAID 6의 차이는?", "로드밸런서가 뭔지 설명해줘"
+   - **주의**: "유사어란?", "캐시란?", "유사 단어가 뭐야?" 등 에이전트 자체 기능에 대한 "~란?" 질문은 → `cache_management`
+
+2. [순수 기능 문의] 에이전트가 할 수 있는 것을 포괄적으로 묻는 질문 (특정 기능 아님)
+   - 예: "너는 뭘 할 수 있어?", "어떤 기능이 있어?"
+   - **주의**: "유사어 기능이 뭐야?", "캐시 관리가 어떻게 돼?" 등 특정 기능 문의는 → `cache_management`
+
+3. [범위 외 요청] DB 조회·에이전트 기능과 완전히 무관한 작업 요청
+   - 예: "코드 짜줘", "문서 만들어줘", "이메일 초안 작성해줘", "번역해줘"
+
+4. [인사·감사·단순 확인]
+   - 예: "안녕!", "고마워", "알겠어", "확인했어"
+
+### 음성 조건 (아래 중 하나라도 해당하면 general_inference 절대 금지)
+
+- **에이전트 고유 기능 키워드 포함**: 유사어, 유사 단어, 캐시, 컬럼 설명, DB 설명, 스키마, cache
+  → 이 키워드가 있으면 형태("란?", "뭐야?", "삭제", "추가")에 무관하게 반드시 `cache_management`
+- **인프라 데이터 조회**: 서버, CPU, 메모리, 디스크, 네트워크, VM, 자산, 프로세스, 장비, 사용률, 스펙 등
+- **알람·모니터링 키워드**: 알람, alert, 모니터링, 임계값, 이력
+- **특정 DB 명칭**: polestar, cloud_portal, itsm, itam, 폴스타, 포탈 등
+- **조회 동사**: "~목록 보여줘", "~에서 조회해줘", "~찾아줘"
+
+### 예시
+
+입력: "쿠버네티스가 뭐야?"
+출력: {{"intent": "general_inference", "databases": []}}
+
+입력: "안녕!"
+출력: {{"intent": "general_inference", "databases": []}}
+
+입력: "코드 짜줘"
+출력: {{"intent": "general_inference", "databases": []}}
+
+입력: "유사어 삭제란?"  (← "유사어" 키워드 → cache_management 우선)
+출력: {{"intent": "cache_management", "databases": []}}
+
+입력: "유사 단어가 뭐야?"  (← "유사 단어" 키워드 → cache_management 우선)
+출력: {{"intent": "cache_management", "databases": []}}
+
+입력: "캐시란 무엇인가요?"  (← "캐시" 키워드 → cache_management 우선)
+출력: {{"intent": "cache_management", "databases": []}}
+
+입력: "우리 서버 중 CPU 사용률 높은 것 보여줘"  (← 데이터 조회 필요)
+출력: {{"intent": "data_query", "databases": [...]}}
+
 캐시 관리가 아닌 일반 데이터 조회 요청이면 intent를 "data_query"로 설정하세요 (기본값).
 알람/모니터링 이벤트 조회 요청이면 intent를 "alarm_query"로 설정하세요.
 

@@ -141,6 +141,7 @@ DB 접근은 **DBHub (MCP 서버)**를 단일 게이트웨이로 사용한다.
 | 항목 | 내용 |
 |------|------|
 | **결정일** | 2026-03 (v2 개정) |
+| **개정일** | 2026-06-10 |
 | **상태** | 확정 |
 | **이전 결정** | v1: 키워드 1차 + LLM 폴백 2단계 → **폐기** |
 
@@ -167,6 +168,41 @@ DB 라우팅은 **LLM 전용**으로 수행한다. 키워드 기반 사전 분�
 - **동적 프롬프트**: 활성 도메인만 포함하여 LLM 혼동 방지 (`_build_router_prompt()`)
 - **confidence 기반 필터링**: `relevance_score` 임계값 이하의 DB는 제외
 
+### routing_intent 값 목록
+
+| intent | 설명 | 라우팅 대상 노드 |
+|--------|------|----------------|
+| `data_query` | 일반 인프라 데이터 조회 | `schema_analyzer` 또는 `multi_db_executor` |
+| `alarm_query` | 알람/모니터링 이벤트 조회 | `schema_analyzer` 또는 `multi_db_executor` |
+| `cache_management` | 스키마 캐시 관리, 유사어 관리, 컬럼 설명 변경 | `cache_management` |
+| `synonym_registration` | 유사어 등록 (pending 상태에서 사용자 확인 후) | `synonym_registrar` |
+| `general_inference` | DB 조회 불필요 (IT 개념 설명, 에이전트 능력 문의, 범위 외 요청, 인사말 등) | `general_inference` |
+
+### route_after_semantic_router() 설계
+
+**변경 전 (if-chain 방식)**: 새 intent 추가 시마다 함수 내부 if 분기 수정 필요.
+
+**변경 후 (레지스트리 방식, 2026-06-10 적용)**:
+
+```python
+_INTENT_ROUTE_MAP: dict[str, str] = {
+    "cache_management": "cache_management",
+    "synonym_registration": "synonym_registrar",
+    "general_inference": "general_inference",
+}
+
+def route_after_semantic_router(state: AgentState) -> str:
+    intent = state.get("routing_intent")
+    if intent in _INTENT_ROUTE_MAP:
+        return _INTENT_ROUTE_MAP[intent]
+    if state.get("is_multi_db"):
+        return "multi_db_executor"
+    return "schema_analyzer"
+```
+
+`_INTENT_ROUTE_MAP`에 등재된 intent는 `is_multi_db` 여부와 무관하게 고정 노드로 라우팅된다.
+`data_query` / `alarm_query`는 map에 없으므로 기존 multi_db 분기 로직을 그대로 탄다.
+
 ### 도메인 구성 (현재)
 
 | DB ID | 대상 데이터 | 별칭 예시 |
@@ -181,6 +217,7 @@ DB 라우팅은 **LLM 전용**으로 수행한다. 키워드 기반 사전 분�
 - DB 추가 시: `domain_config.py`에 `DBDomainConfig` 추가 + `.env`에 연결 정보 추가
 - 라우팅 정확도 문제 시: `src/prompts/semantic_router.py` 프롬프트 튜닝으로 해결
 - **키워드 기반 분류 재도입 금지** — v1에서 폐기한 이유 유지
+- **새 intent 추가 시 3곳 수정**: (1) `_INTENT_ROUTE_MAP`에 `{intent: node_name}` 추가, (2) `build_graph()`에 노드 등록, (3) `conditional_edges` dict에 항목 추가
 
 ---
 

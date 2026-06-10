@@ -192,6 +192,17 @@ async def semantic_router(
             "current_node": "semantic_router",
         }
 
+    if intent == "general_inference":
+        logger.info("시멘틱 라우팅: 일반 추론 의도 감지")
+        return {
+            "target_databases": [],
+            "is_multi_db": False,
+            "active_db_id": None,
+            "user_specified_db": None,
+            "routing_intent": "general_inference",
+            "current_node": "semantic_router",
+        }
+
     # 최소 관련도 필터링 및 정렬
     targets = [
         r for r in llm_results
