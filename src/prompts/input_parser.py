@@ -61,6 +61,12 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
 10. 사용자가 "폴스타에서 조회", "polestar DB에서", "클라우드 포탈 데이터", "여의도 폴스타" 등 특정 DB/서비스를 언급하면 target_db_hints에 추출합니다. (지역명 포함 시에도 filter_conditions의 location 등으로 빼지 말고 DB명으로 취급)
 11. "전체 등록", "모두 등록", "1, 3 등록", "1번 등록" 등의 유사어 등록 요청을 감지하면 synonym_registration 필드에 {mode: "all"} 또는 {mode: "selective", indices: [1, 3]} 형태로 추출합니다.
 12. 사용자가 "첨부 파일", "양식", "칼럼" 등을 언급하며 파일 데이터를 참조하도록 요청한 경우, 하단에 제공된 `## 첨부된 Excel 데이터`의 헤더(칼럼명)들을 반드시 분석하세요. 헤더에 CPU, 메모리, 디스크, 프로세스 등 특정 도메인과 관련된 항목이 포함되어 있다면, 사용자의 자연어 질의 텍스트에 해당 단어가 없더라도 `query_targets`에 그 도메인들을 모두 포함시켜야 합니다.
+13. **가용성 상태(avail_status) 값 변환**: 사용자가 가용 상태를 자연어로 표현하면 반드시 아래 규칙에 따라 filter_conditions에 추출합니다. 사용자는 숫자(0, 1, 2)를 직접 사용하지 않습니다.
+    - "정상", "UP", "가동중", "가동", "운영중" → {"field": "avail_status", "op": "=", "value": 0}
+    - "비정상", "정상이 아닌", "DOWN", "중지", "중단", "연결 끊김", "이상", "장애", "비정상 상태", "알 수 없음" 등 정상이 아닌 모든 표현 → {"field": "avail_status", "op": "!=", "value": 0}
+    예: "가용성 상태가 비정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
+    예: "가용성이 정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "=", "value": 0}]
+    예: "가용성 상태가 정상이 아닌 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
 
 ## 예시
 

@@ -68,8 +68,8 @@ patterns:
         description: "운영체제 버전 (주의: Polestar 제품 오탈자 반영) [resource_type: server.Server]"
         synonyms: ["OS버전", "운영체제버전"]
       - name: OSParameter
-        description: "OS 파라미터 (커널 설정 등) [resource_type: server.Server]"
-        synonyms: ["OS파라미터", "OS 설정", "커널"]
+        description: "OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용) [resource_type: server.Server]"
+        synonyms: ["OS파라미터", "OS 파라미터", "OS설정", "OS 설정", "커널", "커널 파라미터", "커널파라미터", "시스템 파라미터", "커널 설정", "커널 설정값", "sysctl"]
       - name: PatchLevel
         description: "OS 패치 레벨 / 커널 버전 [resource_type: server.Server]"
         synonyms: ["패치레벨", "커널버전", "패치"]
@@ -184,6 +184,21 @@ query_guide: |
     - server.VirtualMemory: SwapTotalSize(스왑크기), TotalPageFileSize(페이지파일)
     - server.Disks: DiskCount(디스크수), TotalSize(전체 디스크용량)
     - server.NetworkInterface: IP, MAC, BANDW(대역폭), MTU, NETMASK, STATUS(UP/DOWN), DUPLEX, TYPE(Ethernet)
+
+  [OSParameter(커널 파라미터) LOB 값 조회 주의]
+  OSParameter(커널 파라미터, 시스템 파라미터 등)는 LOB 값으로 core_config_prop.stringvalue에 저장됩니다.
+    - COALESCE(cc.stringvalue, cc.stringvalue_short) 사용 — OSParameter는 LOB로 저장될 수 있어 stringvalue_short가 빈 값일 수 있음
+    - 필터: core_config_prop.name = 'OSParameter'
+  예시:
+    SELECT r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
+    FROM cmm_resource r
+    JOIN core_config_prop cc ON r.resource_conf_id = cc.configuration_id
+    WHERE r.resource_type = 'server.Server'
+      AND r.hostname = '조회할_서버명'
+      AND cc.name = 'OSParameter'
+
+      AND r.dtime IS NULL;
+
 
   [서버 종합 정보 조회 패턴]
   한 서버의 서버정보 + CPU + 메모리를 한 행으로 조회하려면:

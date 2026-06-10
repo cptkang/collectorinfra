@@ -201,6 +201,35 @@ LIMIT {default_limit};
 - DB2: `FETCH FIRST {default_limit} ROWS ONLY`
 사용자가 특정 개수를 지정하면 그 값을 사용한다.
 
+## filter_conditions 적용 (필수)
+
+파싱된 요구사항의 `filter_conditions` 배열에 조건이 있으면 반드시 SQL에 반영한다.
+
+**avail_status 필터 적용 패턴**:
+- `{{"field": "avail_status", "op": "!=", "value": 0}}` → 비정상 서버 필터
+- `{{"field": "avail_status", "op": "=", "value": 0}}` → 정상 서버 필터
+
+단순 조회(server.Server 단독):
+```sql
+WHERE r.resource_type = 'server.Server'
+  AND r.avail_status != 0   -- 비정상
+  AND r.dtime IS NULL
+```
+
+GROUP BY 피벗 패턴(Template A):
+```sql
+-- WHERE 절에 직접 추가 (server.Server 행 기준)
+WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+  AND c.dtime IS NULL
+GROUP BY COALESCE(c.platform_resource_id, c.id)
+HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.avail_status END) != 0
+```
+
+avail_status 필터가 있을 때 SELECT에도 avail_status를 포함하여 결과를 확인할 수 있게 한다:
+```sql
+MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.avail_status END) AS avail_status
+```
+
 ## 추가 규칙
 
 0. **DB 라우팅 정보를 쿼리에 반영하지 않는다.** 사용자가 특정 Polestar(예: "여의도 개발 폴스타", "김포 운영 폴스타", "은행 폴스타")를 지정한 경우, 해당 정보는 이미 DB 라우팅 단계에서 처리되어 올바른 DB에 연결되었다. 위치, 환경, 존(zone) 등의 라우팅 식별 정보를 WHERE 절이나 기타 SQL 조건에 절대 포함하지 않는다. 예: `WHERE location='여의도'`, `WHERE zone='공동존'` 등은 금지이다.

@@ -64,7 +64,7 @@ columns:
       - "타입"
 
   AVAIL_STATUS:
-    description: "리소스의 가용 상태 (0=정상, 1=비정상)"
+    description: "리소스의 가용 상태 (0=정상/UP, 1=비정상/DOWN, 2=알 수 없음/UNKNOWN)"
     words:
       - "가용 상태"
       - "상태"
@@ -73,6 +73,7 @@ columns:
       - "서버 상태"
       - "리소스 상태"
       - "정상 여부"
+      - "가동 상태"
 
   DESCRIPTION:
     description: "리소스에 대한 설명 텍스트"
@@ -266,7 +267,7 @@ eav_name_values:
   "Model":
     words: ["서버 모델", "모델명", "하드웨어 모델", "장비 모델"]
   "OSParameter":
-    words: ["OS 파라미터", "커널 파라미터", "시스템 파라미터", "sysctl"]
+    words: ["OS파라미터", "OS 파라미터", "OS설정", "OS 설정", "커널", "커널 파라미터", "커널파라미터", "시스템 파라미터", "커널 설정", "커널 설정값", "sysctl"]
   "OSType":
     words: ["운영체제", "OS 종류", "운영체제 종류", "OS", "운영체제 타입"]
   "OSVerson":
@@ -275,3 +276,28 @@ eav_name_values:
     words: ["시리얼 번호", "일련번호", "serial number", "S/N"]
   "Vendor":
     words: ["제조사", "벤더", "vendor", "서버 제조사", "하드웨어 제조사"]
+
+# ===========================================================================
+# 컬럼 값에 대한 유사 단어 (filter_conditions value를 DB 조건으로 변환)
+# op: "=" 또는 "!=" / value: 실제 DB 정수값
+# ===========================================================================
+column_value_synonyms:
+  AVAIL_STATUS:
+    description: "가용 상태 값 매핑 (정상=0, 비정상=avail_status != 0)"
+    values:
+      "정상": {op: "=", value: 0}
+      "UP": {op: "=", value: 0}
+      "가동중": {op: "=", value: 0}
+      "가동": {op: "=", value: 0}
+      "운영중": {op: "=", value: 0}
+      "비정상": {op: "!=", value: 0}
+      "DOWN": {op: "!=", value: 0}
+      "중지": {op: "!=", value: 0}
+      "중단": {op: "!=", value: 0}
+      "연결 끊김": {op: "!=", value: 0}
+      "이상": {op: "!=", value: 0}
+      "장애": {op: "!=", value: 0}
+      "알 수 없음": {op: "!=", value: 0}
+      "UNKNOWN": {op: "!=", value: 0}
+      "정상이 아닌": {op: "!=", value: 0}
+      "비정상 상태": {op: "!=", value: 0}

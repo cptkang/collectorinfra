@@ -765,6 +765,7 @@ class RedisSchemaCache:
     GLOBAL_SYNONYMS_KEY = "synonyms:global"
     RESOURCE_TYPE_SYNONYMS_KEY = "synonyms:resource_types"
     EAV_NAME_SYNONYMS_KEY = "synonyms:eav_names"
+    COLUMN_VALUE_SYNONYMS_KEY = "synonyms:column_values"
 
     async def save_global_synonyms(
         self,
@@ -1172,6 +1173,7 @@ class RedisSchemaCache:
                 self.RESOURCE_TYPE_SYNONYMS_KEY,
                 self.EAV_NAME_SYNONYMS_KEY,
                 self.DB_DESCRIPTIONS_KEY,
+                self.COLUMN_VALUE_SYNONYMS_KEY,
             }
             count = 0
             async for key in self._redis.scan_iter(match="schema:*"):
@@ -1343,6 +1345,59 @@ class RedisSchemaCache:
             return result
         except Exception as e:
             logger.warning("Redis EAV NAME 유사단어 로드 실패: %s", e)
+            return {}
+
+    async def save_column_value_synonyms(
+        self,
+        synonyms: dict[str, dict[str, dict]],
+    ) -> bool:
+        """컬럼 값 유사단어를 Redis에 저장한다.
+
+        Redis Hash synonyms:column_values에 field=컬럼명(대문자), value=JSON object로 저장.
+
+        Args:
+            synonyms: {column_name: {term: {op, value}}} 매핑
+                      예: {"AVAIL_STATUS": {"비정상": {"op": "!=", "value": 0}}}
+
+        Returns:
+            저장 성공 여부
+        """
+        if not self._connected or self._redis is None:
+            return False
+
+        try:
+            mapping = {}
+            for col_name, value_map in synonyms.items():
+                mapping[col_name.upper()] = json.dumps(value_map, ensure_ascii=False)
+            if mapping:
+                await self._redis.hset(self.COLUMN_VALUE_SYNONYMS_KEY, mapping=mapping)
+            logger.info(
+                "Redis 컬럼값 유사단어 저장: count=%d", len(synonyms)
+            )
+            return True
+        except Exception as e:
+            logger.error("Redis 컬럼값 유사단어 저장 실패: %s", e)
+            return False
+
+    async def load_column_value_synonyms(self) -> dict[str, dict[str, dict]]:
+        """컬럼 값 유사단어를 Redis에서 로드한다.
+
+        Returns:
+            {column_name: {term: {op, value}}} 매핑
+        """
+        if not self._connected or self._redis is None:
+            return {}
+
+        try:
+            raw = await self._redis.hgetall(self.COLUMN_VALUE_SYNONYMS_KEY)
+            result: dict[str, dict[str, dict]] = {}
+            for col_name, data in raw.items():
+                parsed = json.loads(data)
+                if isinstance(parsed, dict):
+                    result[col_name] = parsed
+            return result
+        except Exception as e:
+            logger.warning("Redis 컬럼값 유사단어 로드 실패: %s", e)
             return {}
 
     async def sync_known_attributes_to_eav_synonyms(
