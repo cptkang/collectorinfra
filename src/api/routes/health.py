@@ -51,15 +51,15 @@ async def health_check(request: Request) -> HealthResponse:
                     if connected:
                         db_connected = True
             except Exception as e:
-                logger.debug("헬스체크 실패 (%s): %s", db_id, e)
+                logger.warning("헬스체크 실패 (%s): %s: %s", db_id, type(e).__name__, e)
                 db_status_map[db_id] = False
     else:
         # 단일 DB 모드 (레거시)
         try:
             async with get_db_client(config) as client:
                 db_connected = await client.health_check()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("헬스체크 실패: %s", e)
 
     return HealthResponse(
         status="healthy" if db_connected else "unhealthy",

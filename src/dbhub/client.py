@@ -131,8 +131,12 @@ class DBHubClient:
                 timeout=self.HEALTH_CHECK_TIMEOUT,
             )
             parsed = self._parse_json_result(result)
-            return parsed.get("status") == "healthy"
-        except Exception:
+            status = parsed.get("status")
+            if status != "healthy":
+                logger.warning("health_check 비정상 (source=%s): %s", self._config.source_name, parsed)
+            return status == "healthy"
+        except Exception as e:
+            logger.warning("health_check 실패 (source=%s): %s: %s", self._config.source_name, type(e).__name__, e)
             return False
 
     async def _ensure_connected_with_retry(self) -> None:

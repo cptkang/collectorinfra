@@ -10,6 +10,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -174,16 +175,17 @@ class MultiDBConfig(BaseSettings):
 
     # 활성 DB ID 목록 (쉼표 구분, 환경변수로 설정)
     # 예: ACTIVE_DB_IDS=polestar,cloud_portal,itsm,itam
-    active_db_ids_csv: str = ""
+    active_db_ids_csv: str = Field(
+        default="",
+        validation_alias=AliasChoices("ACTIVE_DB_IDS", "MULTI_DB_ACTIVE_DB_IDS_CSV"),
+    )
 
-    model_config = {"env_prefix": "MULTI_DB_", "env_file": ".env", "extra": "ignore"}
-
-    def model_post_init(self, __context: object) -> None:
-        """환경변수를 직접 읽어 보정한다."""
-        import os
-
-        if not self.active_db_ids_csv:
-            self.active_db_ids_csv = os.getenv("ACTIVE_DB_IDS", "")
+    model_config = {
+        "env_prefix": "MULTI_DB_",
+        "env_file": ".env",
+        "extra": "ignore",
+        "populate_by_name": True,
+    }
 
     def get_active_db_ids(self) -> list[str]:
         """활성 DB 식별자 목록을 반환한다.

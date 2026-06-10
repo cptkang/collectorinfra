@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from src.config import AppConfig, DBHubConfig
 from src.db.client import PostgresClient, get_postgres_client
 from src.db.interface import DBClient
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -54,6 +57,9 @@ async def get_db_client(
     try:
         await client.connect()
         yield client
+    except Exception as e:
+        logger.warning("DB 클라이언트 connect 실패: %s: %s", type(e).__name__, e)
+        raise
     finally:
         await client.disconnect()
 
