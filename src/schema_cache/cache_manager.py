@@ -1007,6 +1007,37 @@ class SchemaCacheManager:
                 )
             return entry
 
+    async def _load_profile_column_synonyms(self, db_id: str) -> dict[str, list[str]]:
+        """db_profiles/{db_id}.yaml의 column_synonyms 섹션을 읽어 반환한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            {"table.column": [synonym, ...]} 형태의 딕셔너리.
+            파일 없음 또는 섹션 없음이면 빈 dict.
+        """
+        try:
+            import yaml
+            from pathlib import Path
+            profile_path = Path(f"config/db_profiles/{db_id}.yaml")
+            if not profile_path.exists():
+                return {}
+            with open(profile_path, encoding="utf-8") as f:
+                profile_data = yaml.safe_load(f)
+            if not isinstance(profile_data, dict):
+                return {}
+            col_syns = profile_data.get("column_synonyms", {})
+            result: dict[str, list[str]] = {}
+            for col_key, col_info in col_syns.items():
+                words = col_info.get("words", []) if isinstance(col_info, dict) else []
+                if words:
+                    result[col_key.lower()] = words
+            return result
+        except Exception as e:
+            logger.debug("DB 프로필 column_synonyms 로드 실패 (%s): %s", db_id, e)
+            return {}
+
     async def load_synonyms_with_global_fallback(
         self,
         db_id: str,
@@ -1023,15 +1054,17 @@ class SchemaCacheManager:
         """
         db_synonyms = await self.get_synonyms(db_id)
         global_synonyms = await self.get_global_synonyms()
+        profile_synonyms = await self._load_profile_column_synonyms(db_id)
 
-        if not global_synonyms:
+        if not global_synonyms and not profile_synonyms:
             return db_synonyms
 
         # DB 스키마에서 컬럼명 목록 추출
         if schema_dict is None:
             schema_dict = await self.get_schema(db_id)
 
-        result = dict(db_synonyms)
+        # 우선순위: db_synonyms(Redis LLM생성) > profile_synonyms(YAML) > global_synonyms
+        result = {**profile_synonyms, **db_synonyms}
 
         if schema_dict is not None and isinstance(schema_dict, dict):
             tables = schema_dict.get("tables", {})
@@ -1580,6 +1613,34 @@ class SchemaCacheManager:
     def redis_available(self) -> bool:
         """Redis 연결 가능 여부."""
         return self._redis_available
+
+    async def get_column_value_synonyms(self) -> dict[str, dict[str, dict]]:
+        """컬럼 값 유사단어를 로드한다.
+
+        Returns:
+            {column_name: {term: {op, value}}} 매핑
+        """
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            result = await self._redis_cache.load_column_value_synonyms()
+            if result:
+                return result
+        return {}
+
+    async def save_column_value_synonyms(
+        self,
+        synonyms: dict[str, dict[str, dict]],
+    ) -> bool:
+        """컬럼 값 유사단어를 저장한다.
+
+        Args:
+            synonyms: {column_name: {term: {op, value}}} 매핑
+
+        Returns:
+            저장 성공 여부
+        """
+        if self._backend == "redis" and await self.ensure_redis_connected():
+            return await self._redis_cache.save_column_value_synonyms(synonyms)
+        return False
 
     async def sync_known_attributes_to_eav_synonyms(
         self, known_attributes_detail: list[dict]

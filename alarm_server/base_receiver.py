@@ -46,9 +46,10 @@ class BaseReceiver(abc.ABC):
             {"data": json.dumps(payload, ensure_ascii=False)},
         )
         logger.debug(
-            "알람 발행 완료: alarmId=%s severity=%s",
+            "알람 발행 완료: alarmId=%s severity=%s alarmStatus=%s",
             payload.get("alarmId"),
             payload.get("severity"),
+            payload.get("alarmStatus"),
         )
 
     @abc.abstractmethod

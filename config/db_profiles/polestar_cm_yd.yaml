@@ -68,8 +68,8 @@ patterns:
         description: "운영체제 버전 (주의: Polestar 제품 오탈자 반영) [resource_type: server.Server]"
         synonyms: ["OS버전", "운영체제버전"]
       - name: OSParameter
-        description: "OS 파라미터 (커널 설정 등) [resource_type: server.Server]"
-        synonyms: ["OS파라미터", "OS 설정", "커널"]
+        description: "OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용) [resource_type: server.Server]"
+        synonyms: ["OS파라미터", "OS 파라미터", "OS설정", "OS 설정", "커널", "커널 파라미터", "커널파라미터", "시스템 파라미터", "커널 설정", "커널 설정값", "sysctl"]
       - name: PatchLevel
         description: "OS 패치 레벨 / 커널 버전 [resource_type: server.Server]"
         synonyms: ["패치레벨", "커널버전", "패치"]
@@ -165,6 +165,27 @@ patterns:
 query_guide: |
   Polestar DB는 cmm_resource(리소스 계층), core_config_prop(EAV 설정), cmm_metric_stat_m(성능 통계) 3개 테이블로 구성됩니다.
 
+  [★ 공동존 폴스타 전용 — 장비명(서버명)과 호스트명 구분]
+  이 시스템(공동존 폴스타)에서는 폴스타에 등록된 장비 식별명과 OS 호스트명이 서로 다른 값입니다.
+  - cmm_resource.name     → 폴스타에 등록된 장비 식별명. 사용자가 "서버명", "장비명", "서버 이름" 등으로 지칭하는 컬럼.
+  - cmm_resource.hostname → OS에서 인식하는 실제 호스트명. 사용자가 명시적으로 "호스트명", "호스트네임"이라고 할 때만 사용.
+  **기본값**: 사용자가 서버를 특정할 때 "호스트명/호스트네임"이라고 명시하지 않으면 반드시 cmm_resource.name 을 사용하세요.
+  서버 목록 출력 시에도 name 컬럼을 우선 표시하고, 필요 시 hostname을 함께 출력합니다.
+
+  [★ filter_conditions 필드명 재매핑 — 공동존 폴스타 전용]
+  input_parser가 생성한 filter_conditions의 field 값이 무엇이든, 사용자의 원문이 "서버 이름", "서버명", "장비명", "장비 이름"에 해당하면
+  SQL에서 cmm_resource.name 컬럼으로 매핑한다. filter_conditions.field = "hostname"이 전달되더라도 예외 없이 적용한다.
+  단, 사용자가 명시적으로 "호스트명" 또는 "호스트네임"이라고 언급한 경우에만 cmm_resource.hostname 을 사용한다.
+  예: filter_conditions = [{"field": "hostname", "op": "=", "value": "cocm-hdkapp01"}] + 원문 "서버 이름이 cocm-hdkapp01인"
+      → WHERE r.name = 'cocm-hdkapp01'  (r.hostname 이 아님)
+
+  [avail_status 값 의미]
+  cmm_resource.avail_status 컬럼의 정수 값:
+    - 0 = 정상 (UP)
+    - 0이 아닌 값(1, 2 등) = 비정상 (DOWN, 알 수 없음 등)
+  "정상"인 조건은 avail_status = 0, "비정상"이거나 "정상이 아닌" 조건은 avail_status != 0 으로 생성하세요.
+  filter_conditions에 문자열("비정상" 등)이 전달된 경우 avail_status != 0 조건으로 변환하세요.
+
   [테이블 조인 방법]
   cmm_resource와 core_config_prop의 조인:
     cmm_resource.resource_conf_id = core_config_prop.configuration_id
@@ -172,6 +193,19 @@ query_guide: |
 
   [주의] cmm_resource.id = core_config_prop.configuration_id 직접 조인은 금지합니다.
   반드시 resource_conf_id를 사용하세요.
+
+  [OSParameter(커널 파라미터) LOB 값 조회 주의]
+  OSParameter(커널 파라미터, 시스템 파라미터 등)는 LOB 값으로 core_config_prop.stringvalue에 저장됩니다.
+    - COALESCE(cc.stringvalue, cc.stringvalue_short) 사용 — OSParameter는 LOB로 저장될 수 있어 stringvalue_short가 빈 값일 수 있음
+    - 필터: core_config_prop.name = 'OSParameter'
+  예시 (공동존 폴스타 — 장비명으로 필터):
+    SELECT r.name AS server_name, r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
+    FROM polestar.cmm_resource r
+    JOIN polestar.core_config_prop cc ON r.resource_conf_id = cc.configuration_id
+    WHERE r.resource_type = 'server.Server'
+      AND r.name = '조회할_장비명'
+      AND cc.name = 'OSParameter'
+      AND r.dtime IS NULL;
 
   [cmm_metric_stat_[h,d,m] — 성능 지표 통계 테이블]
   CPU 사용률, 메모리 사용률, 파일시스템 사용률, 디스크 IO 등 성능 지표를 월별로 집계한 테이블입니다.
@@ -305,6 +339,36 @@ query_examples:
       서버 종합 정보 조회 — GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계.
       resource_type별로 CASE WHEN을 사용하여 server.Server(호스트/OS), server.Cpus(CPU), server.Memory(메모리) 속성을 한 행으로 피벗.
 
+  - question: "비정상 서버 목록과 IP를 조회해줘"
+    sql: |
+      -- 공동존 폴스타: 서버명은 r.name, 비정상은 avail_status != 0
+      SELECT
+        r.name AS server_name,
+        r.hostname AS os_hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND r.avail_status != 0
+        AND r.dtime IS NULL
+      LIMIT 100;
+    explanation: "공동존 폴스타 전용 — 서버 식별은 r.name(장비명) 우선, 비정상은 avail_status != 0"
+
+  - question: "장비명이 'SV-WEB-001'인 서버의 가용성 상태와 IP를 조회해줘"
+    sql: |
+      -- 공동존 폴스타: 서버명/장비명 필터는 cmm_resource.name 사용 (hostname 아님)
+      SELECT
+        r.name AS server_name,
+        r.hostname AS os_hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND r.name = 'SV-WEB-001'
+        AND r.dtime IS NULL
+      LIMIT 10;
+    explanation: "공동존 폴스타 전용 — 장비명 필터는 r.name 컬럼 사용, hostname은 OS 호스트명으로 별도 출력"
+
   - question: "특정 서버의 CPU 리소스를 조회해줘"
     sql: |
       SELECT child.id, child.name, child.resource_type
@@ -410,6 +474,20 @@ query_examples:
       월간 성능 통계 전체 조회 — CPU/메모리/파일시스템/디스크 IO를 한 행으로 피벗.
       시간 범위 필터가 필요하면 WHERE에 AND TO_DATE(s.stat_date || '01', 'YYYYMMDD') BETWEEN ... AND ... 추가.
 
+  - question: "장비명이 'SV-WEB-001'인 서버의 OS파라미터(커널 파라미터)를 조회해줘"
+    sql: |
+      -- OSParameter는 LOB일 수 있음 → COALESCE(stringvalue, stringvalue_short) 사용
+      -- 공동존 폴스타: 장비명 필터는 r.name 사용
+      SELECT r.name AS server_name, r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
+      FROM polestar.cmm_resource r
+      JOIN polestar.core_config_prop cc ON r.resource_conf_id = cc.configuration_id
+      WHERE r.resource_type = 'server.Server'
+        AND r.name = 'SV-WEB-001'
+        AND cc.name = 'OSParameter'
+
+        AND r.dtime IS NULL;
+    explanation: "OSParameter는 stringvalue(LOB) 사용. 공동존 폴스타에서 장비명 필터는 r.name 컬럼."
+
 # 허용 테이블 목록 — schema_analyzer가 이 목록에 없는 테이블을 relevant_tables에서 제외한다.
 # cmm_vendor, cmm_os, cmm_os_param 등 레거시 lookup 테이블은 조회 대상이 아니다.
 allowed_tables:
@@ -433,3 +511,13 @@ alarm_allowed_tables:
   - acc_acl_resource_manager_type
   - acc_role
   - acc_user_group
+
+# DB별 컬럼 유사단어 — 글로벌 사전보다 우선 적용
+# "서버명/장비명" → cmm_resource.name (공동존 폴스타 전용)
+column_synonyms:
+  cmm_resource.name:
+    words: ["서버명", "장비명", "서버 이름", "서버이름", "장비 이름", "장비이름", "리소스명", "장비 식별명"]
+    description: "폴스타에 등록된 장비 식별명 (공동존 폴스타에서 서버명=name, hostname과 다름)"
+  cmm_resource.hostname:
+    words: ["호스트명", "호스트네임", "호스트 이름", "hostname", "OS호스트명"]
+    description: "OS에서 인식하는 실제 호스트명 (공동존 폴스타에서 hostname≠name)"

@@ -20,6 +20,7 @@ from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
     INPUT_PARSER_SYSTEM_PROMPT,
 )
+from src.schema_cache.cache_manager import get_cache_manager
 from src.security.audit_logger import log_user_request
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
@@ -83,6 +84,9 @@ async def input_parser(
             "filter_conditions": [],
             "output_format": "text",
         }
+
+    # filter_conditions 자연어 값 → DB 조건 치환
+    parsed = await _apply_column_value_synonyms(parsed)
 
     # 2. 파일 업로드 처리 — 서식 보존용 template_structure 병행 생성
     template: Optional[dict] = None
@@ -427,6 +431,64 @@ def _extract_target_sheets(
                 sheets.append(name)
 
     return sheets if sheets else None
+
+
+async def _apply_column_value_synonyms(parsed: dict) -> dict:
+    """filter_conditions의 자연어 value를 column_value_synonyms에 따라 DB 조건으로 치환한다.
+
+    예: {"field": "avail_status", "op": "=", "value": "비정상"}
+      → {"field": "avail_status", "op": "!=", "value": 0}
+
+    Args:
+        parsed: LLM이 파싱한 요구사항 딕셔너리
+
+    Returns:
+        치환이 적용된 요구사항 딕셔너리
+    """
+    filter_conditions = parsed.get("filter_conditions", [])
+    if not filter_conditions:
+        return parsed
+
+    try:
+        cache = get_cache_manager()
+        column_value_synonyms = await cache.get_column_value_synonyms()
+    except Exception:
+        return parsed
+
+    if not column_value_synonyms:
+        return parsed
+
+    new_conditions = []
+    for cond in filter_conditions:
+        field = str(cond.get("field", "")).upper()
+        value = cond.get("value")
+
+        # 문자열 값만 치환 대상
+        if not isinstance(value, str):
+            new_conditions.append(cond)
+            continue
+
+        matched = False
+        for col_name, value_map in column_value_synonyms.items():
+            if col_name.upper() == field or field.endswith(col_name.upper()):
+                # 대소문자 무관 비교
+                value_lower = value.strip().lower()
+                for term, mapping in value_map.items():
+                    if term.lower() == value_lower:
+                        new_cond = dict(cond)
+                        new_cond["op"] = mapping["op"]
+                        new_cond["value"] = mapping["value"]
+                        new_conditions.append(new_cond)
+                        matched = True
+                        break
+                if matched:
+                    break
+
+        if not matched:
+            new_conditions.append(cond)
+
+    parsed["filter_conditions"] = new_conditions
+    return parsed
 
 
 def _convert_doc_to_docx(file_data: bytes) -> Optional[bytes]:

@@ -1443,10 +1443,70 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ---
 
+## D-032. 폴스타 알람 메시지 포맷 확정 — 단일행 JSON + AlarmEvent 필드 재설계 (Plan 46 개정)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-09 |
+| **상태** | 확정 |
+| **이전 결정** | D-031 개정 (AlarmEvent 필드 체계 변경) |
+
+### 결정
+
+폴스타 알람 메시지 포맷을 **단일행 JSON**으로 확정하고, `AlarmEvent` 필드 구조를 실제 폴스타 템플릿 변수와 정확히 1:1 대응하도록 전면 재설계한다.
+
+### 폴스타 등록 템플릿 (최종 확정)
+
+```
+{"dbId":"<인스턴스_DB_ID>","serverName":"${platformName}","hostname":"${hostname}","ipAddress":"${ipAddress}","resourceAncestry":"${resourceAncestry}","alarmId":"${alarmId}","severity":${severity},"alarmStatus":"${alarmStatus}","resourceType":"${resourceType}","alarmName":"${alarmName}","alarmTime":"${formatAlarmDate('yyyyMMddHHmmss')}","conditions":"${conditions}","conditionLog":"${conditionLog}"}
+```
+
+- `dbId`: 폴스타 인스턴스마다 **상수로 직접 기입** (템플릿 변수 아님)
+- `serverName`: `${platformName}` 렌더링 결과 — DB의 `server_name` 컬럼과 매핑
+
+### AlarmEvent 필드 변경 요약
+
+| 구 필드 | 신 필드 | 변경 이유 |
+|--------|--------|----------|
+| `source_db_id` | `db_id` | 폴스타 JSON 키 `dbId`와 직접 대응 |
+| (없음) | `server_name` | `${platformName}` — DB `server_name` 매핑 |
+| (없음) | `ip_address` | `${ipAddress}` 추가 |
+| (없음) | `resource_ancestry` | `${resourceAncestry}` 추가 |
+| `alarm_state` | `alarm_status` | `${alarmStatus}` '발생'/'해소' |
+| `alarm_conditions` | `conditions` | `${conditions}` 임계 조건 정의 |
+| `alarm_description` | (제거) | 폴스타 템플릿에 없는 필드 |
+| `alarm_definition` | (제거) | 폴스타 템플릿에 없는 필드 |
+| `resource_name` | (제거) | 폴스타 템플릿에 없는 필드 |
+| `resource_description` | (제거) | 폴스타 템플릿에 없는 필드 |
+| `raw_text` | `raw_payload` | 원본 JSON dict으로 타입 변경 |
+| (없음) | `alarm_time` | `${formatAlarmDate('yyyyMMddHHmmss')}` 파싱 → datetime |
+
+### 변경된 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/alarm/domain/alarm.py` | AlarmEvent 필드 전면 재설계 |
+| `src/alarm/application/alarm_worker.py` | `_process()` 필드 매핑 + datetime 파싱 + `is_clear` 파생 |
+| `src/alarm/prompts/alarm_analyzer.py` | 시스템/유저 프롬프트 새 필드 기반으로 교체 |
+| `src/alarm/application/nodes/alarm_analyzer.py` | 템플릿 변수 호출 수정, `_SEVERITY_LABELS` 수정 |
+| `src/alarm/application/nodes/alarm_notifier.py` | `build_workb_body` + `_send_webhook` 새 필드 반영 |
+| `src/api/routes/alarm.py` | `AlarmTestRequest` 모델 + AlarmEvent 생성 코드 새 필드 반영 |
+| `alarm_server/base_receiver.py` | 로그 필드명 `alarmState` → `alarmStatus` |
+
+### 근거
+
+- 실제 폴스타 관리자가 등록한 템플릿을 직접 확인한 결과, 기존 `AlarmEvent`가 실제 전송 필드와 불일치
+- `${platformName}`(→`serverName`)은 DB의 `server_name`과 직접 매핑되어 알람 발신 서버 식별에 핵심
+- `${conditions}`는 임계 조건 정의, `${conditionLog}`는 실제 측정값으로 LLM 원인 분석의 핵심 근거
+- `_parse()`는 단일행 JSON이므로 `json.loads()` 4줄로 완전히 처리됨 (기존 복잡한 텍스트 파싱 불필요)
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-09 | D-032 | 폴스타 알람 메시지 포맷 확정 + AlarmEvent 필드 재설계 (Plan 46 개정): 단일행 JSON 템플릿 확정, AlarmEvent 구 필드 제거(alarm_description/alarm_definition/resource_name/resource_description/alarm_state/alarm_conditions/source_db_id/raw_text), 신 필드 추가(db_id/server_name/ip_address/resource_ancestry/alarm_status/conditions/alarm_time/raw_payload), alarm_worker._process() 재작성, 프롬프트/노드/API 라우터 전면 업데이트 |
 | 2026-06-04 | D-031 | 알람 소켓 수신 → LLM 분석 → worKB 발송 (Plan 46): alarm_server/ 독립 프로세스, AlarmConfig/WorkbConfig 추가, src/alarm/ 서브패키지 신규, AlarmWorker Redis Stream 소비, 2-노드 AlarmAnalysisGraph, FastAPI lifespan AlarmWorker 등록, arch_check MODULE_LAYER_MAP alarm 계층 추가 |
 | 2026-06-01 | D-030 | ALARMSEVERITY=0 해소 상태 이력 쿼리 포함 (Plan 45): domain_config.py 4개 도메인 description 0=해소 추가, query_generator.py 필수 WHERE/심각도 매핑/분기 섹션 수정, Template C-1~C-5 CASE WHEN 0 추가, C-2~C-5 WHERE IN(0,1,2,3) 변경, C-4 해소_수 집계 컬럼 추가, plan 44 심각도 코드표 갱신 |
 | 2026-05-29 | D-029 | 알람 조회 의도 분리 (Plan 44): routing_intent="alarm_query" 의도 추가, domain_config.py 4개 도메인 description 보강, semantic_router.py alarm_query 규칙+예시 7건, query_generator.py routing_intent 파라미터 전파, prompts/query_generator.py Template C-1~C-5 신규 상수 추가 |

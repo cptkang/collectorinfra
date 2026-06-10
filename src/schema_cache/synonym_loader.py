@@ -26,6 +26,7 @@ class SynonymLoadResult:
     columns_loaded: int = 0
     resource_types_loaded: int = 0
     eav_names_loaded: int = 0
+    column_values_loaded: int = 0
     total_words: int = 0
     merge_mode: bool = True
     errors: list[str] = field(default_factory=list)
@@ -294,6 +295,12 @@ class SynonymLoader:
             for eav_name, words in eav_synonyms.items():
                 eav_section[eav_name] = {"words": words}
 
+            # column_value_synonyms 섹션
+            cv_synonyms = await self._redis_cache.load_column_value_synonyms()
+            cv_section: dict[str, dict] = {}
+            for col_name, value_map in cv_synonyms.items():
+                cv_section[col_name] = {"values": value_map}
+
             data: dict[str, Any] = {
                 "version": "1.0",
                 "domain": "infrastructure",
@@ -301,6 +308,7 @@ class SynonymLoader:
                 "columns": columns_section,
                 "resource_type_values": rt_section,
                 "eav_name_values": eav_section,
+                "column_value_synonyms": cv_section,
             }
 
             # 부모 디렉토리 생성
@@ -357,6 +365,12 @@ class SynonymLoader:
             for eav_name, words in eav_synonyms.items():
                 eav_section[eav_name] = {"words": words}
 
+            # column_value_synonyms 섹션
+            cv_synonyms = await self._redis_cache.load_column_value_synonyms()
+            cv_section: dict[str, dict] = {}
+            for col_name, value_map in cv_synonyms.items():
+                cv_section[col_name] = {"values": value_map}
+
             data: dict[str, Any] = {
                 "version": "1.0",
                 "domain": "infrastructure",
@@ -364,6 +378,7 @@ class SynonymLoader:
                 "columns": columns_section,
                 "resource_type_values": rt_section,
                 "eav_name_values": eav_section,
+                "column_value_synonyms": cv_section,
             }
 
             # 부모 디렉토리 생성
@@ -477,6 +492,18 @@ class SynonymLoader:
                 await self._redis_cache.save_eav_name_synonyms(eav_synonyms)
                 result.eav_names_loaded = len(eav_synonyms)
 
+            # 4. column_value_synonyms 섹션 처리
+            col_val_synonyms = data.get("column_value_synonyms", {})
+            if col_val_synonyms:
+                cv_map: dict[str, dict[str, dict]] = {}
+                for col_name, col_info in col_val_synonyms.items():
+                    values = col_info.get("values", {})
+                    if values:
+                        cv_map[col_name.upper()] = values
+                        result.column_values_loaded += 1
+                if cv_map:
+                    await self._redis_cache.save_column_value_synonyms(cv_map)
+
             # 통계 업데이트
             self._last_loaded_at = datetime.now(timezone.utc).isoformat()
             self._last_file_path = file_path
@@ -487,6 +514,7 @@ class SynonymLoader:
                 "column_count": result.columns_loaded,
                 "resource_type_count": result.resource_types_loaded,
                 "eav_name_count": result.eav_names_loaded,
+                "column_value_count": result.column_values_loaded,
                 "total_words": result.total_words,
             }
 
@@ -494,6 +522,7 @@ class SynonymLoader:
                 f"로드 완료: columns={result.columns_loaded}, "
                 f"resource_types={result.resource_types_loaded}, "
                 f"eav_names={result.eav_names_loaded}, "
+                f"column_values={result.column_values_loaded}, "
                 f"total_words={result.total_words}"
             )
 
