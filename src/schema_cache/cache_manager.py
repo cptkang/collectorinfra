@@ -1199,7 +1199,7 @@ class SchemaCacheManager:
             synonyms = await self.load_synonyms_with_global_fallback(
                 db_id, cached_mem
             )
-            return cached_mem, True, descriptions, synonyms
+            return cached_mem, True, "메모리", descriptions, synonyms
 
         # 2차-A: Redis/파일 캐시 + fingerprint TTL 유효
         try:
@@ -1216,7 +1216,7 @@ class SchemaCacheManager:
                         "Redis/파일 캐시 히트 (fingerprint TTL 유효): db_id=%s",
                         db_id,
                     )
-                    return cached_schema, True, descriptions, synonyms
+                    return cached_schema, True, "Redis", descriptions, synonyms
         except Exception as e:
             logger.warning("fingerprint TTL 확인 실패 (%s): %s", db_id, e)
 
@@ -1240,7 +1240,7 @@ class SchemaCacheManager:
                             db_id,
                             current_fp,
                         )
-                        return cached_schema, True, descriptions, synonyms
+                        return cached_schema, True, "Redis", descriptions, synonyms
         except Exception as e:
             logger.warning("fingerprint 조회 실패 (%s): %s", db_id, e)
 
@@ -1321,7 +1321,7 @@ class SchemaCacheManager:
             db_id,
             len(tables_dict),
         )
-        return schema_dict, False, descriptions, synonyms
+        return schema_dict, False, "DB 직접 조회", descriptions, synonyms
 
     async def cleanup_stale_entries(
         self,

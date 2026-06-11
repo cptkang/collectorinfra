@@ -122,6 +122,9 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
             schema = output.get("schema_info", {})
             tables = output.get("relevant_tables", [])
             data = {}
+            cache_source = output.get("schema_cache_source")
+            if cache_source:
+                data["cache_source"] = cache_source
             if tables:
                 data["relevant_tables"] = tables
             if schema:
@@ -184,15 +187,16 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
 
         elif node_name == "context_resolver":
             ctx = output.get("conversation_context")
-            if ctx:
-                return {"turn_count": ctx.get("turn_count", 1)}
-            return None
+            turn = ctx.get("turn_count", 1) if ctx else 1
+            return {"turn": turn}
 
         elif node_name == "field_mapper":
+            if "column_mapping" not in output:
+                return {"skipped": True}
             mapping = output.get("column_mapping") or {}
             sources = output.get("mapping_sources") or {}
             has_report = output.get("mapping_report_md") is not None
-            data = {
+            data: dict = {
                 "mapped_count": sum(1 for v in mapping.values() if v is not None),
                 "total_count": len(mapping),
                 "has_mapping_report": has_report,
@@ -204,7 +208,27 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                     "eav_synonym": sum(1 for s in sources.values() if s == "eav_synonym"),
                     "llm_inferred": sum(1 for s in sources.values() if s == "llm_inferred"),
                 }
-            return data if data.get("total_count") else None
+            return data
+
+        elif node_name == "semantic_router":
+            intent = output.get("routing_intent", "")
+            active_db = output.get("active_db_id")
+            is_multi = output.get("is_multi_db", False)
+            targets = output.get("target_databases", [])
+            data = {"routing_intent": intent}
+            if active_db:
+                data["active_db_id"] = active_db
+            if is_multi:
+                data["is_multi_db"] = True
+            if targets:
+                data["targets"] = [
+                    {"db_id": t.get("db_id"), "reason": t.get("reason", "")}
+                    for t in targets[:3]
+                ]
+            return data
+
+        elif node_name == "general_inference":
+            return {"status": "응답 생성 완료"}
 
         elif node_name == "approval_gate":
             if output.get("awaiting_approval"):
@@ -399,7 +423,7 @@ async def process_query_stream(
                                 "approval_gate", "query_executor",
                                 "result_organizer", "output_generator",
                                 "multi_db_executor", "result_merger",
-                                "synonym_registrar", "error_response",
+                                "synonym_registrar", "general_inference", "error_response",
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
@@ -429,10 +453,10 @@ async def process_query_stream(
                                         "timestamp_ms": (time.time() - start_time) * 1000,
                                     })
 
-                        # LLM 토큰 스트리밍 (output_generator 노드만)
+                        # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
                         if kind == "on_chat_model_stream":
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if _event_node == "output_generator":
+                            if _event_node in ("output_generator", "general_inference"):
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk and hasattr(chunk, "content") and chunk.content:
                                     streamed_any_token = True
@@ -780,7 +804,7 @@ async def process_file_query_stream(
                                 "approval_gate", "query_executor",
                                 "result_organizer", "output_generator",
                                 "multi_db_executor", "result_merger",
-                                "synonym_registrar", "error_response",
+                                "synonym_registrar", "general_inference", "error_response",
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
@@ -810,7 +834,7 @@ async def process_file_query_stream(
 
                         if kind == "on_chat_model_stream":
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if _event_node == "output_generator":
+                            if _event_node in ("output_generator", "general_inference"):
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk and hasattr(chunk, "content") and chunk.content:
                                     streamed_any_token = True

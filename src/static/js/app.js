@@ -202,6 +202,24 @@
     };
 
     // Node → Pipeline display mapping
+    var nodeTooltips = {
+        context_resolver:  "이전 대화 맥락을 분석하여 멀티턴 질의를 지원합니다",
+        input_parser:      "자연어 질의를 구조화된 요구사항으로 파싱합니다",
+        field_mapper:      "양식 파일의 필드명을 DB 컬럼에 매핑합니다 (파일 없으면 스킵)",
+        semantic_router:   "질의 의도를 분류하고 대상 DB를 선택합니다",
+        schema_analyzer:   "DB 스키마를 조회하고 관련 테이블을 탐색합니다",
+        query_generator:   "요구사항에 맞는 SQL 쿼리를 생성합니다",
+        query_validator:   "생성된 SQL의 안전성과 정확성을 검증합니다",
+        query_executor:    "검증된 SQL을 DB에서 실행합니다",
+        result_organizer:  "조회 결과의 충분성을 검토하고 정리합니다",
+        output_generator:  "조회 결과를 바탕으로 자연어 응답을 생성합니다",
+        general_inference: "DB 조회 없이 LLM이 직접 응답을 생성합니다",
+        multi_db_executor: "여러 DB에서 동시에 쿼리를 실행합니다",
+        result_merger:     "다중 DB 결과를 통합합니다",
+        synonym_registrar: "새로운 유사어를 등록합니다",
+        error_response:    "처리 중 오류가 발생했습니다",
+    };
+
     var nodeLabels = {
         input_parser: "입력 분석",
         field_mapper: "필드 매핑",
@@ -214,8 +232,40 @@
         output_generator: "응답 생성",
         multi_db_executor: "멀티 DB 실행",
         result_merger: "결과 병합",
+        general_inference: "일반 추론",
         error_response: "에러 처리",
     };
+
+    // ─── Tooltip ───
+
+    var _tooltip = document.createElement("div");
+    _tooltip.id = "appTooltip";
+    document.body.appendChild(_tooltip);
+
+    document.addEventListener("mouseover", function (e) {
+        var el = e.target.closest("[data-tooltip]");
+        if (!el) return;
+        var text = el.getAttribute("data-tooltip");
+        if (!text) return;
+        _tooltip.textContent = text;
+        _tooltip.style.opacity = "1";
+    });
+    document.addEventListener("mousemove", function (e) {
+        if (_tooltip.style.opacity !== "1") return;
+        var x = e.clientX + 12;
+        var y = e.clientY + 18;
+        var tw = _tooltip.offsetWidth;
+        var th = _tooltip.offsetHeight;
+        if (x + tw > window.innerWidth - 8) x = e.clientX - tw - 12;
+        if (y + th > window.innerHeight - 8) y = e.clientY - th - 8;
+        _tooltip.style.left = x + "px";
+        _tooltip.style.top  = y + "px";
+    });
+    document.addEventListener("mouseout", function (e) {
+        var el = e.target.closest("[data-tooltip]");
+        if (!el) return;
+        _tooltip.style.opacity = "0";
+    });
 
     // ─── Initialization ───
 
@@ -1226,6 +1276,7 @@
     function handleNodeStart(event) {
         var node = event.node;
         var label = nodeLabels[node] || node;
+        var tooltip = nodeTooltips[node] || "";
 
         progressEmpty.style.display = "none";
 
@@ -1242,10 +1293,11 @@
         stepEl.id = "step-" + node;
         stepEl.setAttribute("data-node", node);
 
+        var tooltipAttr = tooltip ? ' data-tooltip="' + escapeHtml(tooltip) + '"' : "";
         stepEl.innerHTML =
             '<div class="pipeline-step-header" onclick="togglePipelineStep(this)">' +
                 '<span class="pipeline-step-dot"></span>' +
-                '<span class="pipeline-step-name">' + escapeHtml(label) + '</span>' +
+                '<span class="pipeline-step-name"' + tooltipAttr + '>' + escapeHtml(label) + '</span>' +
                 '<span class="pipeline-step-time" data-start="' + (event.timestamp_ms || 0) + '"></span>' +
                 '<span class="pipeline-step-arrow">&#9654;</span>' +
             '</div>' +
@@ -1321,7 +1373,65 @@
             }
         }
 
+        else if (node === "context_resolver") {
+            var turnLabel = data.turn === 1 ? "신규 대화 (1턴)" : data.turn + "번째 턴";
+            html += renderSection("대화 상태", '<span class="step-data-badge step-data-badge--info">' + escapeHtml(turnLabel) + '</span>');
+        }
+
+        else if (node === "semantic_router") {
+            var intentMap = {
+                data_query: "DB 조회",
+                general_inference: "일반 추론",
+                cache_management: "캐시 관리",
+                synonym_registration: "유사어 등록",
+            };
+            var intentLabel = intentMap[data.routing_intent] || data.routing_intent || "알 수 없음";
+            var intentBadgeClass = data.routing_intent === "data_query" ? "step-data-badge--success" : "step-data-badge--info";
+            html += renderSection("분류된 의도", '<span class="step-data-badge ' + intentBadgeClass + '">' + escapeHtml(intentLabel) + '</span>');
+            if (data.active_db_id) {
+                html += renderSection("선택된 DB", '<span class="step-data-value">' + escapeHtml(data.active_db_id) + (data.is_multi_db ? " (멀티 DB)" : "") + '</span>');
+            }
+            if (data.targets && data.targets.length > 0) {
+                var targetHtml = '<ul class="step-data-list">';
+                data.targets.forEach(function (t) {
+                    targetHtml += "<li><strong>" + escapeHtml(t.db_id) + "</strong>";
+                    if (t.reason) targetHtml += ": " + escapeHtml(t.reason);
+                    targetHtml += "</li>";
+                });
+                targetHtml += "</ul>";
+                html += renderSection("라우팅 근거", targetHtml);
+            }
+        }
+
+        else if (node === "field_mapper") {
+            if (data.skipped) {
+                html += renderSection("매핑 상태", '<span class="step-data-badge step-data-badge--info">자연어 질의 — 필드 매핑 불필요</span>');
+            } else {
+                if (data.mapped_count != null && data.total_count != null) {
+                    var pct = data.total_count > 0 ? Math.round(data.mapped_count / data.total_count * 100) : 0;
+                    html += renderSection("매핑 결과", '<span class="step-data-badge step-data-badge--info">' + data.mapped_count + '/' + data.total_count + ' (' + pct + '%)</span>');
+                }
+                if (data.sources) {
+                    var srcParts = [];
+                    if (data.sources.hint) srcParts.push("힌트: " + data.sources.hint);
+                    if (data.sources.synonym) srcParts.push("유사어: " + data.sources.synonym);
+                    if (data.sources.eav_synonym) srcParts.push("EAV: " + data.sources.eav_synonym);
+                    if (data.sources.llm_inferred) srcParts.push("LLM: " + data.sources.llm_inferred);
+                    if (srcParts.length > 0) {
+                        html += renderSection("매핑 출처", '<div class="step-data-value">' + escapeHtml(srcParts.join(", ")) + '</div>');
+                    }
+                }
+                if (data.has_mapping_report) {
+                    html += renderSection("보고서", '<span class="step-data-badge step-data-badge--success">생성됨</span>');
+                }
+            }
+        }
+
         else if (node === "schema_analyzer") {
+            if (data.cache_source) {
+                var cacheBadgeClass = data.cache_source === "DB 직접 조회" ? "step-data-badge--warning" : "step-data-badge--success";
+                html += renderSection("스키마 캐시", '<span class="step-data-badge ' + cacheBadgeClass + '">' + escapeHtml(data.cache_source) + '</span>');
+            }
             if (data.relevant_tables && data.relevant_tables.length > 0) {
                 var listHtml = '<ul class="step-data-list">';
                 data.relevant_tables.forEach(function (t) {
@@ -1389,7 +1499,7 @@
             }
         }
 
-        else if (node === "output_generator") {
+        else if (node === "output_generator" || node === "general_inference") {
             html += renderSection("상태", '<span class="step-data-badge step-data-badge--success">' + escapeHtml(data.status || "완료") + "</span>");
         }
 

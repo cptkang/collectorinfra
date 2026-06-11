@@ -253,7 +253,7 @@ async def _analyze_schema(
     cache_mgr = get_cache_manager(app_config)
 
     # 통합 메서드로 3단계 캐시 + DB 폴백 수행
-    schema_dict, cache_hit, _descriptions, _synonyms = (
+    schema_dict, cache_hit, _cache_source, _descriptions, _synonyms = (
         await cache_mgr.get_schema_or_fetch(client, db_id)
     )
 

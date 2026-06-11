@@ -410,6 +410,26 @@ header nav {
     flex: 1;
 }
 
+/* JS-driven tooltip — rendered in #appTooltip appended to body */
+#appTooltip {
+    position: fixed;
+    z-index: 9999;
+    background: #0d1626;
+    color: var(--text);
+    font-family: var(--font-sans, sans-serif);
+    font-size: 0.6875rem;
+    font-weight: 400;
+    line-height: 1.5;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-accent);
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
 .pipeline-step.active .pipeline-step-name {
     color: var(--accent);
 }
