@@ -1584,10 +1584,42 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ---
 
+## D-034. 주기적 헬스체크 로그 노이즈 감소 — 성공 경로 로그 전역 강등
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-11 |
+| **상태** | 확정 |
+| **관련 결정** | D-027 (감사 로깅 — 영향 없음) |
+
+### 결정
+
+`/health` API 1회 호출 시 약 19줄(활성 DB 3개 기준: DB당 httpx 4줄 + 연결 성공/종료 2줄, + uvicorn 액세스 로그 1줄)의 INFO 로그가 발생하고 프런트엔드가 30초마다 폴링하여 로그 노이즈가 컸다. 이를 해결하기 위해 **성공 경로 로그를 전역으로 강등**한다:
+
+1. `setup_logging()`에서 `httpx` 로거를 WARNING으로 상향 — 성공한 모든 HTTP 요청 INFO 로그 억제 (MCP, LLM API 호출 포함)
+2. DB 클라이언트(`DBHubClient`, `PostgresClient`)의 연결 성공/종료 로그를 INFO → DEBUG로 강등
+
+### 근거
+
+- 강등 대상은 **성공 경로 로그뿐**. 연결 실패는 `DBConnectionError` 예외와 호출부 WARNING 로그(`헬스체크 실패 (source=...)` 등)로 여전히 드러나므로 연결성 이슈 진단 능력은 유지됨
+- 질의 실행 이력은 `sql_file_logger`와 감사 로깅(D-027)이 별도 기록하므로 추적성 손실 없음
+- /health 한정 필터 방식(contextvar 기반)도 검토했으나, 평소 연결 수명 로그를 모니터링하지 않으므로 전역 강등의 단순함을 선택 (사용자 확인 완료)
+
+### 변경된 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/security/audit_logger.py` | `setup_logging()`에 httpx 로거 WARNING 설정 추가 |
+| `src/dbhub/client.py` | connect/disconnect 성공 로그 INFO → DEBUG |
+| `src/db/client.py` | connect/disconnect 성공 로그 INFO → DEBUG |
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-11 | D-034 | 주기적 헬스체크 로그 노이즈 감소: httpx 로거 WARNING 상향, DBHubClient/PostgresClient 연결 성공·종료 로그 INFO→DEBUG 전역 강등. 실패 경로(WARNING/예외) 로그는 유지. 부수: tests/test_dbhub_integration.py 인코딩 깨짐으로 잘못된 단정문 6건 복원 |
 | 2026-06-11 | D-033 | 처리 현황 유사어 매핑 표시: src/utils/synonym_usage.py 신규(SQL 리터럴 역조회 + 사전 미등록 감지), query_generator synonym_usage 반환, AgentState 필드 추가, SSE/UI 렌더링 추가 |
 | 2026-06-11 | D-033 | 일반 컬럼 매핑 대량 출력 수정: bare 컬럼명 그룹화·중복 제거, 사용자 용어 매칭 항목만 포함, 매핑 상한 15건 (_MAX_MAPPINGS) |
 | 2026-06-11 | D-009 | 처리 현황 schema_analyzer "스키마 요약"(schema_summary) 제거: schema_info 중첩 구조를 잘못 읽어 정상 출력된 적 없던 버그성 표시. 관련 테이블 목록과 중복 정보로 판단해 백엔드/프론트/명세(11_web_ui_progress_specification.md) 일괄 제거 |

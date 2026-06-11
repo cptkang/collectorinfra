@@ -200,6 +200,10 @@ def setup_logging(log_level: str = "INFO") -> None:
         force=True,
     )
 
+    # httpx는 성공한 모든 HTTP 요청을 INFO로 기록하여 노이즈가 큼 (헬스체크, MCP, LLM 호출 등)
+    # 오류는 예외로 전파되어 앱 레벨에서 별도 로깅되므로 WARNING 이상만 출력
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     # structlog 설정
     structlog.configure(
         processors=[

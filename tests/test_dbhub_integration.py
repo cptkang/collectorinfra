@@ -801,7 +801,7 @@ class TestReadOnlyViolation:
         result = json.loads(result_json)
 
         assert "error" in result
-        assert "?쎄린 ?꾩슜 ?꾨컲" in result["error"]
+        assert "읽기 전용 위반" in result["error"]
 
     async def test_select_is_allowed(
         self,
@@ -958,7 +958,7 @@ class TestReconnection:
             await client.execute_sql("SELECT 1")
 
         assert connect_attempts == 3
-        assert "?ъ뿰寃??ㅽ뙣" in str(exc_info.value)
+        assert "재연결 실패" in str(exc_info.value)
 
     async def test_reconnect_succeeds_on_second_attempt(self) -> None:
         """泥?踰덉㎏ ?곌껐 ?ㅽ뙣 ????踰덉㎏???깃났?쒕떎."""
@@ -1114,7 +1114,7 @@ class TestConnectionState:
         with pytest.raises(DBConnectionError) as exc_info:
             client._ensure_connected()
 
-        assert "타임아웃" in str(exc_info.value)
+        assert "연결되지 않았습니다" in str(exc_info.value)
 
     async def test_search_objects_requires_connection(self) -> None:
         """search_objects???곌껐???꾩슂?섎떎."""
@@ -1147,7 +1147,7 @@ class TestConnectionState:
         with pytest.raises(DBConnectionError) as exc_info:
             await dbhub_client._call_tool("test", {})
 
-        assert "타임아웃" in str(exc_info.value)
+        assert "초기화되지 않았습니다" in str(exc_info.value)
 
 
 # ============================================================================
@@ -1224,7 +1224,7 @@ class TestTableNameValidation:
         with pytest.raises(DBHubError) as exc_info:
             await dbhub_client.get_table_schema(invalid_name)
 
-        assert "?좏슚?섏? ?딆? ?뚯씠釉붾챸" in str(exc_info.value)
+        assert "유효하지 않은 테이블명" in str(exc_info.value)
 
 
 # ============================================================================
@@ -1396,4 +1396,4 @@ class TestEndToEndFlow:
         with pytest.raises(QueryExecutionError) as exc_info:
             dbhub_client._parse_query_result(mock_result)
 
-        assert "?쎄린 ?꾩슜 ?꾨컲" in str(exc_info.value)
+        assert "읽기 전용 위반" in str(exc_info.value)

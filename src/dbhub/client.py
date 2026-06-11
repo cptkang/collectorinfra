@@ -86,7 +86,7 @@ class DBHubClient:
             await self._mcp_session.initialize()
 
             self._connected = True
-            logger.info(
+            logger.debug(
                 "MCP 서버 연결 성공 (SSE): %s", self._config.server_url
             )
         except ImportError:
@@ -114,7 +114,7 @@ class DBHubClient:
             self._sse_context = None
             self._session_context = None
             self._connected = False
-            logger.info("MCP 서버 연결 종료")
+            logger.debug("MCP 서버 연결 종료")
 
     async def health_check(self) -> bool:
         """연결 상태를 확인한다. 5초 이내 응답하지 않으면 실패로 판단한다.
