@@ -25,6 +25,7 @@ from src.prompts.query_generator import (
 )
 from src.state import AgentState
 from src.utils.schema_utils import build_excluded_join_map
+from src.utils.synonym_usage import extract_synonym_usage
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +219,32 @@ async def query_generator(
 
     logger.info(f"SQL 생성 완료 (retry={retry_count}): {sql[:1000]}...")
 
+    # 유사어 사용 역조회 (처리 현황 표시용) — 실패해도 SQL 생성에는 영향 없음
+    synonym_usage: dict | None = None
+    try:
+        structure_meta = (state.get("schema_info") or {}).get("_structure_meta") or {}
+        attr_cols = [
+            p["attribute_column"]
+            for p in structure_meta.get("patterns", [])
+            if p.get("type") == "eav" and p.get("attribute_column")
+        ]
+        synonym_usage = extract_synonym_usage(
+            sql,
+            column_synonyms=state.get("column_synonyms") or {},
+            resource_type_synonyms=state.get("resource_type_synonyms") or {},
+            eav_name_synonyms=state.get("eav_name_synonyms") or {},
+            query_targets=(state.get("parsed_requirements") or {}).get(
+                "query_targets"
+            )
+            or [],
+            attribute_columns=attr_cols or None,
+        )
+    except Exception as e:
+        logger.warning("유사어 사용 역조회 실패: %s", e)
+
     return {
         "generated_sql": sql,
+        "synonym_usage": synonym_usage,
         "retry_count": retry_count,
         "error_message": None,  # 에러 메시지 초기화
         "current_node": "query_generator",

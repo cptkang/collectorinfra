@@ -1440,25 +1440,41 @@
                 listHtml += "</ul>";
                 html += renderSection("관련 테이블", listHtml);
             }
-            if (data.schema_summary) {
-                var schemaHtml = "";
-                for (var tbl in data.schema_summary) {
-                    var cols = data.schema_summary[tbl];
-                    schemaHtml += '<div style="margin-bottom:6px"><strong style="color:var(--accent-dim);font-size:0.6875rem">' + escapeHtml(tbl) + '</strong>';
-                    if (Array.isArray(cols)) {
-                        schemaHtml += '<div class="step-data-value">' + cols.map(escapeHtml).join(", ") + "</div>";
-                    } else {
-                        schemaHtml += '<div class="step-data-value">' + escapeHtml(String(cols)) + "</div>";
-                    }
-                    schemaHtml += "</div>";
-                }
-                html += renderSection("스키마 요약", schemaHtml);
-            }
         }
 
         else if (node === "query_generator") {
             if (data.generated_sql) {
                 html += renderSection("생성된 SQL", '<pre class="step-data-code">' + escapeHtml(data.generated_sql) + "</pre>");
+            }
+            if (data.synonym_usage) {
+                var su = data.synonym_usage;
+                var suTypeLabel = { eav_name: "EAV 속성", resource_type: "리소스 타입", column: "컬럼" };
+                if (su.mappings && su.mappings.length > 0) {
+                    var suHtml = '<ul class="step-data-list">';
+                    su.mappings.forEach(function (m) {
+                        suHtml += "<li><strong>" + escapeHtml(m.key) + "</strong>";
+                        suHtml += ' <span class="step-data-badge step-data-badge--info">' + escapeHtml(suTypeLabel[m.type] || m.type) + "</span>";
+                        if (m.matched_user_terms && m.matched_user_terms.length > 0) {
+                            suHtml += ' <span class="step-data-badge step-data-badge--success">사용자 용어: ' + m.matched_user_terms.map(escapeHtml).join(", ") + "</span>";
+                        }
+                        if (m.synonyms && m.synonyms.length > 0) {
+                            suHtml += '<div class="step-data-value">유사어: ' + m.synonyms.map(escapeHtml).join(", ") + "</div>";
+                        }
+                        suHtml += "</li>";
+                    });
+                    suHtml += "</ul>";
+                    html += renderSection("유사어 매핑 (생성된 SQL 기준)", suHtml);
+                }
+                if (su.unregistered && su.unregistered.length > 0) {
+                    var unregHtml = '<ul class="step-data-list">';
+                    su.unregistered.forEach(function (u) {
+                        unregHtml += "<li><strong>" + escapeHtml(u.literal) + "</strong>";
+                        unregHtml += ' <span class="step-data-badge step-data-badge--info">' + escapeHtml(suTypeLabel[u.type] || u.type) + "</span>";
+                        unregHtml += ' <span class="step-data-badge step-data-badge--warning">사전 미등록 (LLM 직접 추론)</span></li>';
+                    });
+                    unregHtml += "</ul>";
+                    html += renderSection("사전 미등록 항목", unregHtml);
+                }
             }
         }
 

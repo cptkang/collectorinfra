@@ -119,7 +119,6 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
             return data if data else None
 
         elif node_name == "schema_analyzer":
-            schema = output.get("schema_info", {})
             tables = output.get("relevant_tables", [])
             data = {}
             cache_source = output.get("schema_cache_source")
@@ -127,26 +126,19 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 data["cache_source"] = cache_source
             if tables:
                 data["relevant_tables"] = tables
-            if schema:
-                table_summaries = {}
-                for tbl_name, tbl_info in schema.items():
-                    if isinstance(tbl_info, dict):
-                        cols = tbl_info.get("columns", [])
-                        if isinstance(cols, list):
-                            table_summaries[tbl_name] = [
-                                c.get("name", c) if isinstance(c, dict) else str(c)
-                                for c in cols[:20]
-                            ]
-                        else:
-                            table_summaries[tbl_name] = str(cols)[:200]
-                    else:
-                        table_summaries[tbl_name] = str(tbl_info)[:200]
-                data["schema_summary"] = table_summaries
             return data if data else None
 
         elif node_name == "query_generator":
             sql = output.get("generated_sql", "")
-            return {"generated_sql": sql} if sql else None
+            data = {}
+            if sql:
+                data["generated_sql"] = sql
+            usage = output.get("synonym_usage")
+            if isinstance(usage, dict) and (
+                usage.get("mappings") or usage.get("unregistered")
+            ):
+                data["synonym_usage"] = usage
+            return data if data else None
 
         elif node_name == "query_validator":
             result = output.get("validation_result", {})

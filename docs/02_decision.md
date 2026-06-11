@@ -36,6 +36,10 @@
 27. [사용자 행위 감사 로깅 강화](#d-027-사용자-행위-감사-로깅-강화-plan-40)
 28. [Polestar 불필요 lookup 테이블 JOIN 차단](#d-028-polestar-불필요-lookup-테이블-join-차단)
 29. [알람 조회 의도 분리 + 알람 전용 쿼리 템플릿 주입](#d-029-알람-조회-의도-분리--알람-전용-쿼리-템플릿-주입-plan-44)
+30. [ALARMSEVERITY=0 해소 상태 이력 쿼리 포함](#d-030-alarmseverity0-해소-상태-이력-쿼리-포함-plan-45)
+31. [알람 소켓 수신 → LLM 분석 → worKB 발송](#d-031-알람-소켓-수신--llm-분석--workb-발송-plan-46)
+32. [폴스타 알람 메시지 포맷 확정](#d-032-폴스타-알람-메시지-포맷-확정--단일행-json--alarmevent-필드-재설계-plan-46-개정)
+33. [처리 현황에 유사어 매핑 표시 — SQL 기반 역조회](#d-033-처리-현황에-유사어-매핑-표시--생성된-sql-기반-역조회)
 
 ---
 
@@ -1539,10 +1543,54 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ---
 
+## D-033. 처리 현황에 유사어 매핑 표시 — 생성된 SQL 기반 역조회
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-11 |
+| **상태** | 확정 |
+| **관련 결정** | D-009 (SSE 스트리밍 UI), D-011/D-024 (유사어 사전) |
+
+### 결정
+
+처리 현황 UI의 "SQL 생성" 단계에 **사용자 용어 → 유사어 → 선택된 컬럼/속성** 매핑 과정을 표시한다. 매핑 정보는 LLM에게 자기 보고시키지 않고, **생성된 SQL에 등장한 리터럴/컬럼을 유사어 사전 key와 대조하는 결정적(deterministic) 역조회**로 추출한다.
+
+### 핵심 설계
+
+- `src/utils/synonym_usage.py` 신규 — `extract_synonym_usage(sql, ...)`:
+  - EAV 속성명/RESOURCE_TYPE: 따옴표로 감싼 리터럴(`'TotalSize'`, `'server.Memory'`)을 사전 key와 정확 일치 검색 (따옴표 경계 덕분에 `server.Memory` vs `server.VirtualMemory` 오인 없음)
+  - 일반 컬럼: 리터럴 제거 후 컬럼명 단어 경계 검색. **단, column_synonyms가 DB 전체 테이블×컬럼 규모(수백 키)이고 `name`/`id` 등 공통 컬럼명이 테이블마다 중복되므로, bare 컬럼명 기준으로 그룹화·중복 제거하고 `matched_user_terms`가 있는 항목만 포함** (2026-06-11 보강 — 대량 출력 방지). 전체 매핑은 최대 15건으로 제한
+  - `matched_user_terms`: 사전 유사어와 `query_targets` 표현을 정규화(공백 제거·소문자) 후 포함 관계로 대조하여 어떤 사용자 용어가 매핑을 유발했는지 표시
+  - **사전 미등록 감지**: EAV 속성 컬럼(`_structure_meta`의 `attribute_column`, 기본 `NAME`)과 `RESOURCE_TYPE`의 비교 리터럴 중 사전에 없는 값을 `unregistered`로 보고 → UI에 "사전 미등록 (LLM 직접 추론)" 경고 배지 표시, 유사어 등록 후보 안내 용도
+- `query_generator` 노드가 SQL 생성 직후 역조회를 수행해 `synonym_usage` State 필드로 반환 (실패해도 SQL 생성에 영향 없도록 try/except)
+- `_extract_node_progress`(query.py) → SSE `node_complete` → `renderNodeData`(app.js) "유사어 매핑 (생성된 SQL 기준)" / "사전 미등록 항목" 섹션 렌더링
+
+### 근거
+
+- 실제 유사어→컬럼 매핑은 query_generator LLM 내부에서 일어나 직접 관찰 불가. SQL은 LLM 결정의 산출물이므로 SQL 기반 역조회가 "LLM이 실제 결정한 매핑"을 가장 정직하게 반영
+- LLM 자기 보고 방식(프롬프트에 매핑 JSON 출력 요구)은 환각 위험과 프롬프트 변경 부담이 있어 배제
+- 재시도 루프 시 매 `node_complete`마다 갱신되므로 최종 실행 SQL 기준 매핑이 자연히 표시됨
+
+### 변경된 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `src/utils/synonym_usage.py` | 신규 — SQL 기반 유사어 역조회 + 사전 미등록 리터럴 감지 |
+| `src/nodes/query_generator.py` | SQL 생성 후 `extract_synonym_usage` 호출, `synonym_usage` 반환 |
+| `src/state.py` | `AgentState.synonym_usage` 필드 추가 |
+| `src/api/routes/query.py` | `_extract_node_progress` query_generator 분기에 `synonym_usage` 전달 |
+| `src/static/js/app.js` | query_generator 렌더링에 유사어 매핑/미등록 섹션 추가 |
+| `tests/test_synonym_usage.py` | 신규 — 역조회 단위 테스트 11건 |
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-11 | D-033 | 처리 현황 유사어 매핑 표시: src/utils/synonym_usage.py 신규(SQL 리터럴 역조회 + 사전 미등록 감지), query_generator synonym_usage 반환, AgentState 필드 추가, SSE/UI 렌더링 추가 |
+| 2026-06-11 | D-033 | 일반 컬럼 매핑 대량 출력 수정: bare 컬럼명 그룹화·중복 제거, 사용자 용어 매칭 항목만 포함, 매핑 상한 15건 (_MAX_MAPPINGS) |
+| 2026-06-11 | D-009 | 처리 현황 schema_analyzer "스키마 요약"(schema_summary) 제거: schema_info 중첩 구조를 잘못 읽어 정상 출력된 적 없던 버그성 표시. 관련 테이블 목록과 중복 정보로 판단해 백엔드/프론트/명세(11_web_ui_progress_specification.md) 일괄 제거 |
 | 2026-06-09 | D-032 | 폴스타 알람 메시지 포맷 확정 + AlarmEvent 필드 재설계 (Plan 46 개정): 단일행 JSON 템플릿 확정, AlarmEvent 구 필드 제거(alarm_description/alarm_definition/resource_name/resource_description/alarm_state/alarm_conditions/source_db_id/raw_text), 신 필드 추가(db_id/server_name/ip_address/resource_ancestry/alarm_status/conditions/alarm_time/raw_payload), alarm_worker._process() 재작성, 프롬프트/노드/API 라우터 전면 업데이트 |
 | 2026-06-04 | D-031 | 알람 소켓 수신 → LLM 분석 → worKB 발송 (Plan 46): alarm_server/ 독립 프로세스, AlarmConfig/WorkbConfig 추가, src/alarm/ 서브패키지 신규, AlarmWorker Redis Stream 소비, 2-노드 AlarmAnalysisGraph, FastAPI lifespan AlarmWorker 등록, arch_check MODULE_LAYER_MAP alarm 계층 추가 |
 | 2026-06-01 | D-030 | ALARMSEVERITY=0 해소 상태 이력 쿼리 포함 (Plan 45): domain_config.py 4개 도메인 description 0=해소 추가, query_generator.py 필수 WHERE/심각도 매핑/분기 섹션 수정, Template C-1~C-5 CASE WHEN 0 추가, C-2~C-5 WHERE IN(0,1,2,3) 변경, C-4 해소_수 집계 컬럼 추가, plan 44 심각도 코드표 갱신 |

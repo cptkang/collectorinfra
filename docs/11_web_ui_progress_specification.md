@@ -171,7 +171,9 @@ var nodeToStage = {
 | 필드 | 표시 라벨 | 형태 | 설명 |
 |------|----------|------|------|
 | `relevant_tables` | 관련 테이블 | 리스트 (`<ul>`) | 질의와 관련된 것으로 식별된 테이블명 목록. 예: `servers`, `cpu_metrics` |
-| `schema_summary` | 스키마 요약 | 테이블별 컬럼 목록 | 각 관련 테이블의 컬럼명을 쉼표 구분으로 표시. 테이블명은 teal 색상의 소제목으로 표시. |
+| `cache_source` | 스키마 캐시 | 뱃지 | 스키마 출처 (`메모리`/`Redis`/`DB 직접 조회`). DB 직접 조회는 warning 뱃지. |
+
+> `schema_summary`(스키마 요약)는 2026-06-11 제거됨 — `schema_info` 중첩 구조를 잘못 읽어 정상 출력된 적이 없었고, 관련 테이블 목록과 중복되는 정보로 판단.
 
 ### 4.5 `query_generator` — SQL 생성
 

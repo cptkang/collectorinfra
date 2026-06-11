@@ -81,6 +81,7 @@ class AgentState(TypedDict):
     resource_type_synonyms: dict[str, list[str]]  # RESOURCE_TYPE 값 유사단어
     eav_name_synonyms: dict[str, list[str]]       # EAV NAME 값 유사단어
     generated_sql: str                       # 현재 SQL 쿼리
+    synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
     validation_result: ValidationResult      # 검증 결과
     query_results: list[dict[str, Any]]      # 현재 쿼리 실행 결과
 
@@ -205,6 +206,7 @@ def create_initial_state(
         resource_type_synonyms={},
         eav_name_synonyms={},
         generated_sql="",
+        synonym_usage=None,
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={
