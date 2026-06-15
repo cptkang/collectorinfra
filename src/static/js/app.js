@@ -1580,12 +1580,122 @@
         "해소": "#28a745"
     };
 
+    // Plan 47: 패턴 근거 표 렌더 헬퍼 — history_stats(결정적 통계)를 그대로 표시한다.
+
+    function fmtHistTs(iso) {
+        // "2026-06-11T14:35:00" → "06-11 14:35" (타임존 변환 없이 문자열 슬라이스)
+        if (!iso || typeof iso !== "string" || iso.length < 16) return "-";
+        return iso.slice(5, 16).replace("T", " ");
+    }
+
+    function fmtInterval(mins) {
+        if (mins === null || mins === undefined) return "";
+        return mins >= 60 ? (mins / 60).toFixed(1) + "시간" : Math.round(mins) + "분";
+    }
+
+    var HIST_SOURCE_LABEL = {
+        "polestar_db": "폴스타 DB",
+        "cache": "폴스타 DB (캐시)",
+        "simulated": "시뮬레이션"
+    };
+
+    function renderHistoryEvidence(hs, alarmTimeIso) {
+        if (!hs) return "";  // 이력 없으면 표 생략 — 문장만 표시 (graceful degradation)
+
+        // 1) 근거 요약표
+        var rows = [];
+        rows.push(["발생 빈도",
+            "총 " + hs.total_count + "건 (24h " + hs.count_24h +
+            " / 7일 " + hs.count_7d + " / 30일 " + hs.count_30d + ")"]);
+        if (hs.median_interval_minutes !== null && hs.median_interval_minutes !== undefined) {
+            var iv = "중앙값 " + fmtInterval(hs.median_interval_minutes);
+            if (hs.interval_cv !== null && hs.interval_cv !== undefined) {
+                iv += " · 변동 " + hs.interval_cv.toFixed(2);
+            }
+            if (hs.period_label) iv += " → " + hs.period_label;
+            rows.push(["발생 간격", iv]);
+        }
+        if (hs.first_seen || hs.last_seen) {
+            rows.push(["최초/직전", fmtHistTs(hs.first_seen) + " / " + fmtHistTs(hs.last_seen)]);
+        }
+        if (alarmTimeIso) rows.push(["이번 발생", fmtHistTs(alarmTimeIso)]);
+        if (hs.truncated) rows.push(["참고", "이력 일부만 반영 (상한 도달)"]);
+
+        var summaryRows = rows.map(function (r) {
+            return '<tr><th>' + escapeHtml(r[0]) + '</th><td>' + escapeHtml(r[1]) + '</td></tr>';
+        }).join("");
+        var srcLabel = HIST_SOURCE_LABEL[hs.source] || hs.source || "이력";
+        var summary =
+            '<table class="alarm-evidence">' +
+                '<caption>근거 · ' + escapeHtml(srcLabel) + '</caption>' +
+                summaryRows +
+            '</table>';
+
+        // 2) 시간대 분포 막대 (최근 30일) — 현재 발생 시각 강조
+        var hist = hs.hour_histogram || {};
+        var hours = Object.keys(hist).map(function (k) { return parseInt(k, 10); });
+        var curHour = (alarmTimeIso && alarmTimeIso.length >= 13)
+            ? parseInt(alarmTimeIso.slice(11, 13), 10) : -1;
+        // 현재 시각대가 이력에 없으면 0건 행으로 추가하여 "시간대 차이"를 드러낸다
+        if (curHour >= 0 && hours.indexOf(curHour) === -1) hours.push(curHour);
+        hours.sort(function (a, b) { return a - b; });
+
+        var histHtml = "";
+        if (hours.length) {
+            var maxc = 1;
+            hours.forEach(function (h) {
+                var c = hist[String(h)] || 0;
+                if (c > maxc) maxc = c;
+            });
+            var barRows = hours.map(function (h) {
+                var c = hist[String(h)] || 0;
+                var pct = Math.round(c / maxc * 100);
+                var isCur = (h === curHour);
+                var hh = (h < 10 ? "0" + h : "" + h) + "시";
+                return '<div class="alarm-hist-row' + (isCur ? ' is-current' : '') + '">' +
+                    '<span class="alarm-hist-hour">' + hh + '</span>' +
+                    '<span class="alarm-hist-track">' +
+                        '<span class="alarm-hist-bar" style="width:' + pct + '%"></span>' +
+                    '</span>' +
+                    '<span class="alarm-hist-cnt">' + c + (isCur ? ' ← 이번' : '') + '</span>' +
+                    '</div>';
+            }).join("");
+            histHtml =
+                '<div class="alarm-hist">' +
+                    '<div class="alarm-hist-title">시간대 분포 (최근 30일)</div>' +
+                    barRows +
+                '</div>';
+        }
+
+        return summary + histHtml;
+    }
+
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
 
         var severityColor = ALARM_SEVERITY_COLORS[data.severity_label] || "#fd7e14";
         var alarmSvg = '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+
+        // Plan 47: 패턴 분석 배지 — is_routine=true는 회색(일상), false는 강조색(확인 필요)
+        var patternHtml = "";
+        if (data.pattern_type) {
+            var badgeColor = data.is_routine === true ? "#6c757d" : "#dc3545";
+            var badgeText = data.pattern_type;
+            if (data.is_routine === true) {
+                badgeText += " · 일상 알람";
+            } else if (data.is_routine === false) {
+                badgeText += " · 확인 필요";
+            }
+            patternHtml =
+                '<div class="alarm-section">' +
+                    '<span class="alarm-section-label">패턴 분석</span>' +
+                    '<p><span style="color:' + badgeColor + ';font-weight:bold">[' +
+                    escapeHtml(badgeText) + ']</span> ' +
+                    escapeHtml(data.pattern_analysis || "") + '</p>' +
+                    renderHistoryEvidence(data.history_stats, data.alarm_time) +
+                '</div>';
+        }
 
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
@@ -1609,6 +1719,7 @@
                         '<span class="alarm-section-label">권고 조치</span>' +
                         '<p>' + escapeHtml(data.recommended_action) + '</p>' +
                     '</div>' +
+                    patternHtml +
                 '</div>' +
             '</div>';
 

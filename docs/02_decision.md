@@ -1507,13 +1507,17 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ### AlarmEvent 필드 변경 요약
 
+> **정정 (2026-06-11, D-035)**: 아래 표의 `alarmStatus` '발생'/'해소' 기술은 실측과 다르다.
+> `${alarmStatus}`는 발생/해소 구분이 아니라 **폴스타 UI의 인지(ACK) 버튼 클릭 여부**(`NOT_ACK` 등)이며
+> 해소 여부와 무관하다. 해소 판정(is_clear)은 `severity == 0` 단독 기준이 옳다 — D-035 참조.
+
 | 구 필드 | 신 필드 | 변경 이유 |
 |--------|--------|----------|
 | `source_db_id` | `db_id` | 폴스타 JSON 키 `dbId`와 직접 대응 |
 | (없음) | `server_name` | `${platformName}` — DB `server_name` 매핑 |
 | (없음) | `ip_address` | `${ipAddress}` 추가 |
 | (없음) | `resource_ancestry` | `${resourceAncestry}` 추가 |
-| `alarm_state` | `alarm_status` | `${alarmStatus}` '발생'/'해소' |
+| `alarm_state` | `alarm_status` | `${alarmStatus}` '발생'/'해소' (→ 정정: ACK 상태값, 위 정정 주석 참조) |
 | `alarm_conditions` | `conditions` | `${conditions}` 임계 조건 정의 |
 | `alarm_description` | (제거) | 폴스타 템플릿에 없는 필드 |
 | `alarm_definition` | (제거) | 폴스타 템플릿에 없는 필드 |
@@ -1615,10 +1619,79 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ---
 
+## D-035. 알람 이력 기반 패턴 분석 — 폴스타 DB 직접 조회 (Plan 47)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-11 |
+| **상태** | 구현 완료 |
+| **관련 결정** | D-022 (조인 규칙 준수), D-030 (해소 이력 포함), D-031/D-032 (알람 파이프라인) — **D-032 alarmStatus 기술 정정 포함** |
+
+### 결정
+
+알람 패턴 분석의 이력 소스를 **폴스타 DB 직접 조회**(고정 SQL, DBHub 경유, **기본 lookback 90일**)로 구현. 통계 계산·1차 분류는 Python 결정적 수행, LLM은 해석만 담당. 그래프를 3-노드(`alarm_context_enricher` 추가)로 확장. 알람 폭주 대비 조회 결과 단기 Redis 캐시(TTL 5분) 적용.
+
+### 근거
+
+폴스타 DB에 전체 알람 이력이 이미 존재(단일 진실 원천) — 별도 저장소 신설은 중복 저장·도입 초기 이력 공백·정합성 관리 부담만 추가. DB 의존 리스크는 타임아웃 + graceful degradation + 단기 캐시로 완화. lookback 90일은 일·주·월 주기를 각 3회 이상 관측할 수 있는 최소 기간(월 주기 3회 = 약 3개월), 180일은 과거 패턴 희석·조회량 2배로 기본값에서 제외하고 설정 확장으로 제공.
+
+### 대안 (미채택)
+
+| 대안 | 미채택 이유 |
+|------|-----------|
+| ① 자체 Redis 이력 적재 (Plan 47 초안) | 배포 시점 이후 데이터만 보유, 중복 저장, 사용자 결정으로 기각 |
+| ② LLM에 원시 이력 직접 주입 | 토큰 비용·계산 환각으로 기각 |
+
+### 핵심 설계 결정
+
+| 항목 | 결정 |
+|------|------|
+| 시간 윈도우 기준 | 모든 통계 윈도우(24h/7일/30일/90일)와 SQL lookback_start는 `event.alarm_time` 기준 (처리 시점 now 기준 아님) |
+| 서버 매칭 | Template C-6 패턴 (`SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)`) + `SVR.NAME = server_name(=${platformName})`. 공동존(gp/yd)은 r.name 매칭 — hostname 금지 (Known Mistakes 2026-06-10). db_id별 매칭 식 분기 가능 (`_SERVER_MATCH_BY_DB_ID`) |
+| 1차 분류 | 첫 발생(이력 0건) → 급증(count_24h ≥ 5 이고 30일 일평균 3배 이상) → 주기적(≥3건 + 간격 CV<0.5, 일/주/월 라벨) → 산발적 |
+| graceful degradation | 이력 조회 실패/타임아웃(5초)/db_id 미등록/Redis 장애 시 history_stats=None — 알람 분석·발송 절대 차단 금지. LLM 패턴 필드 누락도 `parsed.get()` 기본값 처리 |
+| 패턴 = 부가 정보 | 알림 발송 억제에 사용하지 않음. 심각도 3은 is_routine과 무관하게 권고 조치 유지 (프롬프트 규칙) |
+| 캐시 | `alarm:histcache:{db_id}:{server_name}:{alarm_name}` 키에 조회 행 원본 SETEX (TTL 300초, 0이면 비활성). 캐시 실패 무시 |
+| 상한 | history_max_rows=2,000 (truncated 플래그 연동 — 프롬프트에 "이력 일부만 반영" 명시) |
+| **is_clear 정정** | `severity == 0` 단독 기준으로 통일. `alarmStatus`는 폴스타 UI 인지(ACK) 상태(`NOT_ACK` 등)로 해소 여부와 무관 — **D-032에 기술된 alarmStatus='발생'/'해소'는 실측과 다르므로 정정** (worker·API의 `alarm_status == "해소"` 조건 제거, 프롬프트 "alarmStatus=해소" 규칙을 severity=0 기준으로 수정, AlarmEvent 주석 갱신) |
+| 미등록 db_id | enricher가 조회 전 차단하여 history_stats=None 유지 — 빈 이력으로 통계 계산 시 "첫 발생" 오판 방지 |
+| ALARM_HISTORY_ENABLED=false | enricher 노드 자체를 그래프에서 제외 — 기존 2-노드 동작과 완전 동일 |
+
+### 변경된 파일
+
+| 파일 | 변경 내용 | 계층 |
+|------|----------|------|
+| `src/alarm/domain/alarm.py` | `AlarmHistoryEntry`/`AlarmHistoryStats` 신규, `AlarmAnalysisResult` 패턴 필드 3개(pattern_type/is_routine/pattern_analysis), AlarmEvent alarm_status·is_clear 주석 정정 | domain |
+| `src/alarm/domain/alarm_pattern.py` | 신규 — `compute_history_stats()` 순수 함수 (1차 분류 + 주기 라벨), 캐시 직렬화 헬퍼 | domain |
+| `src/alarm/infrastructure/polestar_history.py` | 신규 — `PolestarAlarmHistoryRepository` (고정 SQL, 리터럴 이스케이프, LIMIT 상한, 미등록 db_id 처리) | infrastructure |
+| `src/alarm/application/nodes/alarm_context_enricher.py` | 신규 — enricher 노드 + `enrich_history()` (캐시→DB→통계, 타임아웃, graceful degradation, 해소 알람 스킵) | application |
+| `src/alarm/orchestration/alarm_graph.py` | `AlarmState.history_stats` 추가, history_enabled에 따른 3-노드/2-노드 분기 | orchestration |
+| `src/alarm/application/alarm_worker.py` | is_clear severity=0 단독 기준, DBRegistry 기반 리포지토리 생성·graph config 주입(history_repo/history_redis) | orchestration |
+| `src/alarm/prompts/alarm_analyzer.py` | 응답 스키마 패턴 필드 3개, 패턴 판단 규칙 7개 추가, "alarmStatus=해소"→"severity=0" 정정, `{history_section}` 추가 | prompts |
+| `src/alarm/application/nodes/alarm_analyzer.py` | `_render_history_section()` 신규, 패턴 필드 `parsed.get()` 기본값 파싱 | application |
+| `src/alarm/application/nodes/alarm_notifier.py` | workb 본문 "패턴 분석" 섹션(배지+해석), webhook payload 패턴 필드 3개 | application |
+| `src/api/routes/alarm.py` | is_clear 정정 2곳, UI push 2곳 패턴 필드, `AlarmAnalysisOutput`/`AlarmTestResponse` 확장, `query_history`/`simulated_history` 파라미터, `_resolve_history_stats()`/`_stats_to_dict()`/`_simulated_entries()` 헬퍼 | interface |
+| `src/static/js/app.js` | 알람 말풍선 패턴 배지 (is_routine=true 회색 "일상 알람", false 강조색 "확인 필요") | static |
+| `src/config.py` | `AlarmConfig`에 Plan 47 필드 6개 (history_enabled/lookback_days/max_rows/cache_ttl/enrich_timeout/burst_threshold) | config |
+| `.env.example` | `ALARM_HISTORY_*` 등 6개 항목 추가 (모두 스칼라 — list 필드 아님) | 설정 |
+| `tests/test_alarm_pattern.py` | 신규 — 분류 4종·주기 라벨 3종·윈도우 기준·truncated·현재 이벤트 제외·직렬화 (21건) | 테스트 |
+| `tests/test_alarm_history_repo.py` | 신규 — SQL 조립(D-022/D-030 준수, 이스케이프, gp 서버 매칭)·행 변환·미등록 db_id (8건) | 테스트 |
+| `tests/test_alarm_enricher.py` | 신규 — graceful degradation 7종·캐시·그래프 분기·is_clear 판정·notifier/webhook 패턴 출력·analyzer 이력 주입 (23건) | 테스트 |
+
+### 향후 수정 시 고려사항
+
+- `CMM_ALARM.CTIME` 인덱스 부재로 90일 범위 조회가 느리면 `ALARM_HISTORY_LOOKBACK_DAYS` 축소(30) 또는 인덱스 협의 후 확대 — enricher 타임아웃(5초)이 1차 방어선
+- 월 주기 작업이 많은 환경은 `ALARM_HISTORY_LOOKBACK_DAYS=180` 확장 (분기 주기는 판정 범위 외 — 프롬프트에 전제 명시됨)
+- 새 폴스타 인스턴스의 서버 매칭 컬럼이 다르면 `polestar_history.py`의 `_SERVER_MATCH_BY_DB_ID`에 db_id별 식 추가
+- 패턴 기반 알림 발송 억제는 별도 계획으로 분리 (현재 패턴은 부가 정보로만 사용)
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-11 | D-035 | 알람 이력 기반 패턴 분석 (Plan 47): 폴스타 DB 직접 조회(고정 SQL, lookback 90일, max_rows 2,000), alarm_pattern.py 통계·1차 분류 순수 함수, polestar_history.py 리포지토리(C-6 패턴 서버 매칭, gp/yd r.name), alarm_context_enricher 노드(+Redis 단기 캐시 TTL 300초, 타임아웃 5초, graceful degradation), 3-노드 그래프 전환, 프롬프트/notifier/UI 패턴 필드 확장, 테스트 API query_history/simulated_history. **is_clear를 severity=0 단독 기준으로 정정 — D-032의 alarmStatus='발생'/'해소' 기술은 실측과 다름(폴스타 UI ACK 상태값)** |
 | 2026-06-11 | D-034 | 주기적 헬스체크 로그 노이즈 감소: httpx 로거 WARNING 상향, DBHubClient/PostgresClient 연결 성공·종료 로그 INFO→DEBUG 전역 강등. 실패 경로(WARNING/예외) 로그는 유지. 부수: tests/test_dbhub_integration.py 인코딩 깨짐으로 잘못된 단정문 6건 복원 |
 | 2026-06-11 | D-033 | 처리 현황 유사어 매핑 표시: src/utils/synonym_usage.py 신규(SQL 리터럴 역조회 + 사전 미등록 감지), query_generator synonym_usage 반환, AgentState 필드 추가, SSE/UI 렌더링 추가 |
 | 2026-06-11 | D-033 | 일반 컬럼 매핑 대량 출력 수정: bare 컬럼명 그룹화·중복 제거, 사용자 용어 매칭 항목만 포함, 매핑 상한 15건 (_MAX_MAPPINGS) |

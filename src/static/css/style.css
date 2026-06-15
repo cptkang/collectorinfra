@@ -1206,6 +1206,94 @@ header nav {
     color: var(--text);
 }
 
+/* ─── Plan 47: 패턴 분석 근거 표 + 시간대 막대 ─── */
+
+.alarm-evidence {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+    font-size: 0.75rem;
+}
+
+.alarm-evidence caption {
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    padding-bottom: 2px;
+}
+
+.alarm-evidence th {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 500;
+    white-space: nowrap;
+    vertical-align: top;
+    width: 64px;
+    padding: 2px 8px 2px 0;
+}
+
+.alarm-evidence td {
+    color: var(--text);
+    padding: 2px 0;
+}
+
+.alarm-hist {
+    margin-top: 6px;
+}
+
+.alarm-hist-title {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    margin-bottom: 3px;
+}
+
+.alarm-hist-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 1px 0;
+    font-size: 0.72rem;
+}
+
+.alarm-hist-hour {
+    width: 30px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+}
+
+.alarm-hist-track {
+    flex: 1 1 auto;
+    height: 10px;
+    background: rgba(125, 145, 170, 0.16);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.alarm-hist-bar {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    background: rgba(125, 145, 170, 0.7);
+    border-radius: 3px;
+}
+
+.alarm-hist-cnt {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.alarm-hist-row.is-current .alarm-hist-bar {
+    background: #dc3545;
+}
+
+.alarm-hist-row.is-current .alarm-hist-cnt {
+    color: #dc3545;
+    font-weight: 600;
+}
+
 /* ─── Processing Indicator (inline in chat) ─── */
 
 .message--processing .message-bubble {

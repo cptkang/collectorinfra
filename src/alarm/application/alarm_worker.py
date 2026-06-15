@@ -46,6 +46,29 @@ class AlarmWorker:
         """
         self._config = config
         self._graph = None
+        self._history_repo = None
+        self._redis = None
+
+    def _build_history_repo(self):  # noqa: ANN202
+        """이력 조회 리포지토리를 생성한다 (Plan 47).
+
+        history_enabled=False이거나 생성 실패 시 None을 반환한다 —
+        패턴 분석만 생략되고 알람 분석·발송은 정상 진행된다 (graceful degradation).
+        """
+        if not self._config.alarm.history_enabled:
+            return None
+        try:
+            from src.alarm.infrastructure.polestar_history import (
+                PolestarAlarmHistoryRepository,
+            )
+            from src.routing.db_registry import DBRegistry
+
+            return PolestarAlarmHistoryRepository(
+                DBRegistry(self._config), self._config.alarm
+            )
+        except Exception:
+            logger.exception("알람 이력 리포지토리 생성 실패 — 패턴 분석 비활성으로 진행")
+            return None
 
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
@@ -67,6 +90,8 @@ class AlarmWorker:
 
         await ensure_consumer_group(r, stream_key, group)
         self._graph = build_alarm_graph(self._config)
+        self._history_repo = self._build_history_repo()
+        self._redis = r
         dedup: dict[str, float] = {}
 
         logger.info(
@@ -123,7 +148,9 @@ class AlarmWorker:
 
             alarm_status = payload.get("alarmStatus", "")
             severity = int(payload["severity"])
-            is_clear = (alarm_status == "해소" or severity == 0)
+            # is_clear는 severity == 0 단독 기준 — alarmStatus는 폴스타 UI 인지(ACK)
+            # 상태(NOT_ACK 등)로 해소 여부와 무관하다 (Plan 47 §9, D-035)
+            is_clear = (severity == 0)
 
             event = AlarmEvent(
                 db_id=payload.get("dbId", ""),
@@ -169,8 +196,19 @@ class AlarmWorker:
             )
 
             await self._graph.ainvoke(
-                {"alarm_event": event, "analysis_result": None, "error": None},
-                config={"configurable": {"app_config": self._config}},
+                {
+                    "alarm_event": event,
+                    "history_stats": None,
+                    "analysis_result": None,
+                    "error": None,
+                },
+                config={
+                    "configurable": {
+                        "app_config": self._config,
+                        "history_repo": self._history_repo,
+                        "history_redis": self._redis,
+                    }
+                },
             )
         except Exception:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)

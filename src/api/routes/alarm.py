@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from typing import Any, Optional
@@ -22,7 +23,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_user
-from src.alarm.domain.alarm import AlarmAnalysisResult, AlarmEvent
+from src.alarm.domain.alarm import (
+    AlarmAnalysisResult,
+    AlarmEvent,
+    AlarmHistoryEntry,
+    AlarmHistoryStats,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -48,7 +56,13 @@ class AlarmTestRequest(BaseModel):
         le=3,
         description="${severity} — 0=해소, 1=주의, 2=경고, 3=심각",
     )
-    alarm_status: str = Field(default="발생", description="${alarmStatus} — '발생' / '해소'")
+    alarm_status: str = Field(
+        default="NOT_ACK",
+        description=(
+            "${alarmStatus} — 폴스타 UI 인지(ACK) 상태 (NOT_ACK 등). "
+            "해소 판정에 사용하지 않음 (해소는 severity=0 단독 기준)"
+        ),
+    )
     resource_type: str = Field(
         default="server.Server",
         description="${resourceType} — 예: server.Server, server.Cpus, network.NMSNode",
@@ -91,6 +105,23 @@ class AlarmTestRequest(BaseModel):
         default=True,
         description="True이면 분석 결과를 웹 UI 채팅창에 알람 말풍선으로 실시간 표시한다.",
     )
+    # ── Plan 47: 이력 패턴 분석 테스트 파라미터 ──
+    query_history: bool = Field(
+        default=False,
+        description=(
+            "True이면 실제 폴스타 DB 이력 조회 수행 — DB 연결이 있는 환경에서 "
+            "end-to-end 검증용. 기본 False로 기존 동작 보존."
+        ),
+    )
+    simulated_history: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "[{\"alarm_time\":\"yyyyMMddHHmmss\",\"severity\":3,"
+            "\"alarm_status\":\"NOT_ACK\",\"resource_name\":\"...\"}] 형식. "
+            "지정 시 DB 조회 대신 이 목록으로 통계 계산 — 이력 시나리오"
+            "(주기/급증/첫 발생)를 임의 구성하여 LLM 응답 검증 가능."
+        ),
+    )
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -101,7 +132,7 @@ class AlarmTestRequest(BaseModel):
             "resource_ancestry": "/Servers/Infrastructure/svr-infra-001/Cpus",
             "alarm_id": "ALARM-20260604-001",
             "severity": 3,
-            "alarm_status": "발생",
+            "alarm_status": "NOT_ACK",
             "resource_type": "server.Cpus",
             "resource_name": "svr-infra-001-CPU",
             "alarm_name": "CPU 사용률 임계 초과",
@@ -133,6 +164,19 @@ class AlarmRawTestRequest(BaseModel):
     send_notification: bool = Field(default=False, description="dry_run=False일 때만 유효. 실제 채널 발송 여부")
     channels: Optional[list[str]] = Field(default=None, description="채널 오버라이드. null이면 서버 설정 사용")
     push_to_ui: bool = Field(default=True, description="True이면 분석 결과를 웹 UI에 실시간 표시")
+    # ── Plan 47: 이력 패턴 분석 테스트 파라미터 ──
+    query_history: bool = Field(
+        default=False,
+        description="True이면 실제 폴스타 DB 이력 조회 수행 (end-to-end 검증용)",
+    )
+    simulated_history: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "[{\"alarm_time\":\"yyyyMMddHHmmss\",\"severity\":3,"
+            "\"alarm_status\":\"NOT_ACK\",\"resource_name\":\"...\"}] 형식. "
+            "지정 시 DB 조회 대신 이 목록으로 통계 계산."
+        ),
+    )
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -140,7 +184,7 @@ class AlarmRawTestRequest(BaseModel):
                 '{"dbId":"polestar_cm_gp","serverName":"svr-infra-001",'
                 '"hostname":"svr-infra-001.internal","ipAddress":"10.1.2.3",'
                 '"resourceAncestry":"/Servers/Infrastructure/svr-infra-001/Cpus",'
-                '"alarmId":"1234567","severity":3,"alarmStatus":"발생",'
+                '"alarmId":"1234567","severity":3,"alarmStatus":"NOT_ACK",'
                 '"resourceType":"server.Cpus","alarmName":"CPU 사용률 임계 초과",'
                 '"alarmTime":"20260602143520",'
                 '"conditions":"사용률 Threashold [TROUBLE (> 90.0 %), ATTENTION (>80.0 %), CLEAR (< 70.0 %)]",'
@@ -181,6 +225,19 @@ class AlarmAnalysisOutput(BaseModel):
     summary: str = Field(description="LLM 생성 요약 (1~2문장)")
     probable_cause: str = Field(description="추정 원인")
     recommended_action: str = Field(description="권고 조치")
+    # ── Plan 47: 패턴 분석 ──
+    pattern_type: Optional[str] = Field(
+        default="",
+        description="첫 발생 | 주기적 | 급증 | 산발적 (이력 분석 불가 시 빈 값)",
+    )
+    is_routine: Optional[bool] = Field(
+        default=None,
+        description="True=일상적 반복 알람, None=판단 불가",
+    )
+    pattern_analysis: Optional[str] = Field(
+        default="",
+        description="LLM 패턴 해석 (1~3문장)",
+    )
 
 
 class AlarmTestResponse(BaseModel):
@@ -200,6 +257,13 @@ class AlarmTestResponse(BaseModel):
         default=None,
         description="실제 발송 시 채널별 성공 여부. dry_run=True이면 null.",
     )
+    history_stats: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "이력 통계 요약 (Plan 47) — query_history=true 또는 simulated_history "
+            "지정 시 채워짐. 통계 + 사전 분류(pre_classification) + source 포함."
+        ),
+    )
     error: Optional[str] = Field(default=None, description="분석 실패 시 오류 메시지")
     processing_time_ms: float
 
@@ -207,6 +271,91 @@ class AlarmTestResponse(BaseModel):
 # ─── 유틸 함수 ───────────────────────────────────────────────────────────────
 
 _SEVERITY_LABELS = {0: "해소", 1: "주의", 2: "경고", 3: "심각"}
+
+
+def _stats_to_dict(stats: AlarmHistoryStats) -> dict[str, Any]:
+    """AlarmHistoryStats를 응답용 dict로 변환한다 (Plan 47 §5.9)."""
+    return {
+        "total_count": stats.total_count,
+        "count_24h": stats.count_24h,
+        "count_7d": stats.count_7d,
+        "count_30d": stats.count_30d,
+        "same_resource_count": stats.same_resource_count,
+        "first_seen": stats.first_seen.isoformat() if stats.first_seen else None,
+        "last_seen": stats.last_seen.isoformat() if stats.last_seen else None,
+        "hour_histogram": {str(h): c for h, c in sorted(stats.hour_histogram.items())},
+        "median_interval_minutes": stats.median_interval_minutes,
+        "interval_cv": stats.interval_cv,
+        "period_label": stats.period_label,
+        "truncated": stats.truncated,
+        "pre_classification": stats.pre_classification,
+        "source": stats.source,
+    }
+
+
+def _simulated_entries(items: list[dict[str, Any]]) -> list[AlarmHistoryEntry]:
+    """simulated_history 항목을 AlarmHistoryEntry 목록으로 변환한다 (Plan 47 §5.9)."""
+    from datetime import datetime as _dt
+
+    entries: list[AlarmHistoryEntry] = []
+    for i, item in enumerate(items):
+        alarm_time = _dt.strptime(str(item["alarm_time"]), "%Y%m%d%H%M%S")
+        entries.append(
+            AlarmHistoryEntry(
+                alarm_id=str(item.get("alarm_id", f"SIM-{i}")),
+                severity=int(item.get("severity", 1)),
+                alarm_status=str(item.get("alarm_status", "")),
+                resource_name=str(item.get("resource_name", "")),
+                alarm_time=alarm_time,
+            )
+        )
+    return entries
+
+
+async def _resolve_history_stats(
+    config,
+    event: AlarmEvent,
+    query_history: bool,
+    simulated_history: Optional[list[dict[str, Any]]],
+) -> Optional[AlarmHistoryStats]:
+    """테스트 요청의 이력 파라미터에 따라 AlarmHistoryStats를 산출한다.
+
+    - simulated_history 지정 시: DB 조회 없이 해당 목록으로 통계 계산 (source="simulated")
+    - query_history=True: 실제 폴스타 DB 이력 조회 (enrich_timeout_seconds 적용)
+    - 실패 시 None 반환 — 분석 파이프라인은 계속 진행 (graceful degradation)
+    """
+    try:
+        if simulated_history is not None:
+            from src.alarm.domain.alarm_pattern import compute_history_stats
+
+            entries = _simulated_entries(simulated_history)
+            return compute_history_stats(
+                event,
+                entries,
+                burst_threshold_24h=config.alarm.burst_threshold_24h,
+                lookback_days=config.alarm.history_lookback_days,
+                source="simulated",
+            )
+        if query_history:
+            from src.alarm.application.nodes.alarm_context_enricher import enrich_history
+            from src.alarm.infrastructure.polestar_history import (
+                PolestarAlarmHistoryRepository,
+            )
+            from src.routing.db_registry import DBRegistry
+
+            repo = PolestarAlarmHistoryRepository(DBRegistry(config), config.alarm)
+            if not repo.is_db_registered(event.db_id):
+                logger.warning(
+                    "이력 조회 건너뜀 — 미등록 db_id: %s", event.db_id
+                )
+                return None
+            return await asyncio.wait_for(
+                enrich_history(event, config.alarm, repo, None),
+                timeout=config.alarm.enrich_timeout_seconds,
+            )
+    except Exception as exc:
+        logger.warning("테스트 이력 통계 산출 실패 — 이력 없이 분석 진행: %s", exc)
+    return None
 
 
 def _build_workb_preview(workb_cfg, result: AlarmAnalysisResult) -> _WorkbPreview:
@@ -250,6 +399,10 @@ def _build_webhook_preview(alarm_cfg, result: AlarmAnalysisResult) -> _WebhookPr
         "probable_cause": result.probable_cause,
         "recommended_action": result.recommended_action,
         "is_clear": ev.is_clear,
+        # Plan 47: 패턴 분석 결과 (_send_webhook payload와 동기 유지)
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
     }
     return _WebhookPreview(
         url=alarm_cfg.webhook_url or None,
@@ -305,7 +458,8 @@ async def analyze_alarm_test(
 
     alarm_status = body.alarm_status
     severity = body.severity
-    is_clear = body.is_clear or alarm_status == "해소" or severity == 0
+    # is_clear는 severity == 0 단독 기준 — alarmStatus는 ACK 상태로 무관 (Plan 47 §9)
+    is_clear = body.is_clear or severity == 0
 
     event = AlarmEvent(
         db_id=body.db_id,
@@ -323,7 +477,12 @@ async def analyze_alarm_test(
         conditions=body.conditions,
         condition_log=body.condition_log,
         is_clear=is_clear,
-        raw_payload=body.model_dump(exclude={"dry_run", "send_notification", "channels", "push_to_ui"}),
+        raw_payload=body.model_dump(
+            exclude={
+                "dry_run", "send_notification", "channels", "push_to_ui",
+                "query_history", "simulated_history",
+            }
+        ),
     )
 
     # 2. 사용할 채널 결정 (요청 오버라이드 > 서버 설정)
@@ -333,11 +492,17 @@ async def analyze_alarm_test(
         else config.alarm.get_notification_channels()
     )
 
+    # 2-1. 이력 통계 산출 (Plan 47 — query_history / simulated_history)
+    history_stats = await _resolve_history_stats(
+        config, event, body.query_history, body.simulated_history
+    )
+
     # 3. LLM 알람 분석 실행 (analyzer 노드만 직접 호출)
     from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
+        "history_stats": history_stats,
         "analysis_result": None,
         "error": None,
     }
@@ -396,6 +561,13 @@ async def analyze_alarm_test(
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
+            # Plan 47: 패턴 분석 결과
+            "pattern_type": analysis_result.pattern_type,
+            "is_routine": analysis_result.is_routine,
+            "pattern_analysis": analysis_result.pattern_analysis,
+            # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
+            "alarm_time": event.alarm_time.isoformat(),
+            "history_stats": _stats_to_dict(history_stats) if history_stats else None,
         })
 
     # 6. 발송 미리보기 생성 (dry_run 여부와 무관하게 항상 생성)
@@ -426,10 +598,14 @@ async def analyze_alarm_test(
             summary=analysis_result.summary,
             probable_cause=analysis_result.probable_cause,
             recommended_action=analysis_result.recommended_action,
+            pattern_type=analysis_result.pattern_type,
+            is_routine=analysis_result.is_routine,
+            pattern_analysis=analysis_result.pattern_analysis,
         ),
         notification_channels=channels,
         notification_preview=preview,
         notifications_sent=notifications_sent,
+        history_stats=_stats_to_dict(history_stats) if history_stats else None,
         error=analyzer_error,
         processing_time_ms=elapsed_ms,
     )
@@ -486,7 +662,8 @@ def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
 
     alarm_status = payload.get("alarmStatus", "")
     severity = int(payload.get("severity", 0))
-    is_clear = alarm_status == "해소" or severity == 0
+    # is_clear는 severity == 0 단독 기준 — alarmStatus는 ACK 상태로 무관 (Plan 47 §9)
+    is_clear = severity == 0
 
     return AlarmEvent(
         db_id=payload.get("dbId", ""),
@@ -553,11 +730,17 @@ async def analyze_alarm_raw(
         else config.alarm.get_notification_channels()
     )
 
+    # 3-1. 이력 통계 산출 (Plan 47 — query_history / simulated_history)
+    history_stats = await _resolve_history_stats(
+        config, event, body.query_history, body.simulated_history
+    )
+
     # 4. LLM 알람 분석
     from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
+        "history_stats": history_stats,
         "analysis_result": None,
         "error": None,
     }
@@ -614,6 +797,13 @@ async def analyze_alarm_raw(
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
+            # Plan 47: 패턴 분석 결과
+            "pattern_type": analysis_result.pattern_type,
+            "is_routine": analysis_result.is_routine,
+            "pattern_analysis": analysis_result.pattern_analysis,
+            # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
+            "alarm_time": event.alarm_time.isoformat(),
+            "history_stats": _stats_to_dict(history_stats) if history_stats else None,
         })
 
     # 6. 발송 미리보기
@@ -644,10 +834,14 @@ async def analyze_alarm_raw(
             summary=analysis_result.summary,
             probable_cause=analysis_result.probable_cause,
             recommended_action=analysis_result.recommended_action,
+            pattern_type=analysis_result.pattern_type,
+            is_routine=analysis_result.is_routine,
+            pattern_analysis=analysis_result.pattern_analysis,
         ),
         notification_channels=channels,
         notification_preview=preview,
         notifications_sent=notifications_sent,
+        history_stats=_stats_to_dict(history_stats) if history_stats else None,
         error=analyzer_error,
         processing_time_ms=elapsed_ms,
     )

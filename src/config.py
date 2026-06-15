@@ -261,6 +261,15 @@ class AlarmConfig(BaseSettings):
     webhook_url: str = ""
     webhook_timeout_seconds: int = 10
 
+    # ── Plan 47: 폴스타 DB 이력 기반 패턴 분석 ──
+    history_enabled: bool = True              # 이력 조회 + 패턴 분석 활성화
+    history_lookback_days: int = 90           # 패턴 분석 조회 기간 — 일·주·월 주기 3회 관측 가능한 최소 기간 (Plan 47 §3.2)
+                                              # 월 주기 작업이 많은 환경은 180까지 확장 가능
+    history_max_rows: int = 2000              # 조회 행 수 상한 (일 10건 빈발 알람 × 90일 = 900건 수용, truncated 플래그 연동)
+    history_cache_ttl_seconds: int = 300      # 조회 결과 단기 캐시 TTL (0이면 캐시 비활성)
+    enrich_timeout_seconds: int = 5           # enricher 전체 타임아웃
+    burst_threshold_24h: int = 5              # 급증 판정 24h 최소 건수
+
     model_config = {"env_prefix": "ALARM_", "env_file": ".env", "extra": "ignore"}
 
     def get_notification_channels(self) -> list[str]:

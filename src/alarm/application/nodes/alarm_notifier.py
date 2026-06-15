@@ -26,12 +26,21 @@ logger = logging.getLogger(__name__)
 _SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
 
 
+def _pattern_badge(result: AlarmAnalysisResult) -> str:
+    """패턴 분석 배지 텍스트를 생성한다 (예: "[주기적 · 일상 알람]")."""
+    if result.is_routine is True:
+        return f"[{result.pattern_type} · 일상 알람]"
+    if result.is_routine is False:
+        return f"[{result.pattern_type} · 확인 필요]"
+    return f"[{result.pattern_type}]"
+
+
 def build_workb_body(result: AlarmAnalysisResult) -> str:
     """WorkB 쪽지 본문을 HTML 형식으로 생성한다."""
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
     severity_html = f'<span style="color:{color};font-weight:bold">{result.severity_label}</span>'
-    return (
+    body = (
         f"<b>심각도:</b> {severity_html}<br>"
         f"<b>알람명:</b> {ev.alarm_name}<br>"
         f"<b>서버:</b> {ev.server_name} ({ev.hostname}, {ev.ip_address})<br>"
@@ -46,6 +55,13 @@ def build_workb_body(result: AlarmAnalysisResult) -> str:
         f"<b>추정 원인</b><br>{result.probable_cause}<br><br>"
         f"<b>권고 조치</b><br>{result.recommended_action}"
     )
+    # Plan 47: 패턴 분석 섹션 (pattern_type=""이면 생략)
+    if result.pattern_type:
+        body += (
+            f"<br><br><b>패턴 분석</b><br>"
+            f"{_pattern_badge(result)} {result.pattern_analysis}"
+        )
+    return body
 
 
 async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
@@ -166,6 +182,10 @@ async def _send_webhook(alarm_cfg, result: AlarmAnalysisResult) -> None:
         "probable_cause": result.probable_cause,
         "recommended_action": result.recommended_action,
         "is_clear": ev.is_clear,
+        # Plan 47: 패턴 분석 결과
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
     }
     headers = {
         "Content-Type": "application/json; charset=utf-8",
