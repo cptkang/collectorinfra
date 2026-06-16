@@ -42,6 +42,7 @@
 33. [처리 현황에 유사어 매핑 표시 — SQL 기반 역조회](#d-033-처리-현황에-유사어-매핑-표시--생성된-sql-기반-역조회)
 34. [알람 이력 기반 패턴 분석 — 폴스타 DB 직접 조회 (Plan 47)](#d-035-알람-이력-기반-패턴-분석--폴스타-db-직접-조회-plan-47)
 35. [알람 영향 프로세스 보강 — 폴스타 실시간 프로세스 API (Plan 47-1)](#d-036-알람-영향-프로세스-보강--폴스타-실시간-프로세스-api-plan-47-1)
+36. [deepagents 기반 의도 분해 오케스트레이션 (Plan 48)](#d-037-deepagents-기반-의도-분해-오케스트레이션-plan-48)
 
 ---
 
@@ -148,7 +149,7 @@ DB 접근은 **DBHub (MCP 서버)**를 단일 게이트웨이로 사용한다.
 |------|------|
 | **결정일** | 2026-03 (v2 개정) |
 | **개정일** | 2026-06-10 |
-| **상태** | 확정 |
+| **상태** | 확정 (D-037로 복합 의도 분해 오케스트레이션 확장 계획 — Plan 48) |
 | **이전 결정** | v1: 키워드 1차 + LLM 폴백 2단계 → **폐기** |
 
 ### 결정
@@ -224,6 +225,7 @@ def route_after_semantic_router(state: AgentState) -> str:
 - 라우팅 정확도 문제 시: `src/prompts/semantic_router.py` 프롬프트 튜닝으로 해결
 - **키워드 기반 분류 재도입 금지** — v1에서 폐기한 이유 유지
 - **새 intent 추가 시 3곳 수정**: (1) `_INTENT_ROUTE_MAP`에 `{intent: node_name}` 추가, (2) `build_graph()`에 노드 등록, (3) `conditional_edges` dict에 항목 추가
+- **복합 의도 분해 확장(D-037, Plan 48)**: 단일 의도 라우팅을 planner 기반 다중 task 분해로 확장 예정. `semantic_router`의 DB 분류 로직은 폐기하지 않고 `data_query` subagent가 재사용. `ENABLE_DEEPAGENT_ORCHESTRATION` 플래그로 제어
 
 ---
 
@@ -1759,10 +1761,65 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
+## D-037. deepagents 기반 의도 분해 오케스트레이션 (Plan 48)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-16 |
+| **상태** | 계획 확정 / 구현 예정 (Plan 48) |
+| **관련 결정** | D-004 확장, D-005 일반화 |
+
+### 결정
+
+`semantic_router`의 **단일 의도 라우팅**을 LangChain **deepagents 패턴**(planner + subagent 위임)으로 확장하여,
+사용자 질의를 **여러 sub-task로 분해**하고 **순차/병렬 실행** 후 결과를 통합 응답한다.
+
+**도입 방식은 단계적 하이브리드로 확정**한다.
+- **1단계 (자체 구현)**: 현재 스택(langchain-core 0.3 / langgraph 0.2)을 유지한 채 deepagents 패턴을 자체 LangGraph 노드(`intent_planner` → `agent_orchestrator` → `result_aggregator`)로 구현한다.
+- **2단계 (격리 PoC)**: 별도 모듈(`experiments/`)에서 deepagents 실제 패키지를 검증한 뒤 점진 전환 여부를 결정한다.
+
+### 근거
+
+- **복합 의도 미지원 한계**: 현 `semantic_router`는 한 질의=한 작업으로만 분기하여 "A 하고 B 조회" 같은 복합 질의를 처리 못 함.
+- **검증된 패턴 차용**: deepagents의 planning(`write_todos`) + task 위임은 작업 분해·격리 실행의 표준 패턴.
+- **메이저 버전 리스크 회피**: deepagents 0.6.10은 `langchain-core>=1.4.7` / `langchain>=1.3.9`(1.x)를 요구. 현 프로젝트는 0.x이며 사내 커스텀 LLM(`KBGenAIChat`/`FabriXAPIClient`/`LLMAPIClient`)을 `BaseChatModel`로 직접 구현. 직접 도입 시 전 스택 breaking change → 1단계는 패턴만 자체 구현하여 리스크 격리.
+
+### 세부 설계
+
+- **TaskSpec**: `{task_id, agent, sub_query, depends_on, order}`. `agent` ∈ {data_query, cache_management, synonym_registration, general_inference, alarm_query}.
+- **intent_planner**: 질의 → task 목록 분해 + agent 분류. DB 선택은 `data_query` subagent로 위임(관심사 분리). 실패 시 단일 data_query task 폴백.
+- **agent_orchestrator**: `depends_on` 위상정렬 → 같은 레벨 병렬(`asyncio.gather`), 레벨 간 순차. 부분 실패 허용(D-005 계승). 기존 노드/`multi_db_executor`를 subagent 헬퍼로 재사용.
+- **result_aggregator**: task 결과 통합 응답(단일 task는 통과). `output_generator` 재사용.
+- **하위 호환**: `ENABLE_DEEPAGENT_ORCHESTRATION` 플래그(기본 false). 비활성 시 기존 `semantic_router` 경로 유지. `semantic_router` 로직은 **삭제하지 않고 재사용**.
+- **계층**: 신규 `src/orchestration/` 패키지(application 노드 조합). `arch_check.py` 위반 검사 필수.
+- **단계적 로드맵(Plan 48 §5)**: deepagents 11개 미들웨어 대비 1단계는 Planning(정적)·SubAgent 2개만 부분 차용(≈18%). 누락 기능을 Phase 2(동적 재계획)→3(state offloading, D-013 이행)→4(HITL 세분화)→5(컨텍스트 압축)→6(subagent 격리)→7(tool calling/구조화 출력)→8(실제 패키지 PoC)→9(운영 전환)로 단계 배치. **트랙 A(자체구현, Phase 1~7) / 트랙 B(실제 패키지·langchain 1.x, Phase 8~9)** 분리. skills/memory/async subagent는 Phase 8 PoC에서 가치 평가 후 결정.
+- **tool-calling 전제(Plan 48 §5.1, R-08)**: FabriX(KBGenAIChat)는 네이티브 tool-calling이 불안정. **트랙 A(Phase 1~6)는 프롬프트+JSON 방식으로 tool-calling 미사용 → 제약 무관**. Phase 7 구조화 출력은 json_mode/프롬프트로 한정(tool-calling 강제 안 함). **트랙 B(deepagents 실제 패키지)는 tool-calling 필수** → FabriX 개선 / `LLMToolEmulator` / 오케스트레이터 LLM 분리 중 1을 Phase 8 PoC에서 검증, 모두 불가 시 트랙 A 영구 운영도 유효.
+- **버전 정정 + 트랙 A 단일 확정(2026-06-16)**: 배포 wheel(`wheels/{os}/`) 확인 결과 운영 스택은 **이미 1.x**(langchain-core 1.2.30 / langgraph 1.1.6) — `requirements.txt` 하한(`>=0.2.0`)만 보고 0.x로 오판했던 것을 정정(R-01 **High→Low** 하향). **단, FabriX는 tool 호출이 불가한 것으로 확정** → deepagents 실제 패키지(전 기능 tool-calling 기반)는 작동 불가하므로 **트랙 B(실제 패키지)·검증 PoC(Phase 8) 제거**. 본 계획은 **트랙 A — deepagents 패턴을 tool-calling 없이(프롬프트+JSON) 자체 구현 — 으로 단일 확정**(Phase 1~6, 착수 순서 1→(2∥3)→4→5→6). Phase 7(구조화 출력)·8·9는 보류/제거, **tool-calling 지원 LLM 교체 시에만 재고**. 사용자 요구(복합 의도·결과 기반 후속)는 트랙 A로 전부 충족.
+- **Skills 검토(Plan 48 §5.2)**: deepagents skills는 혼합형 — L1 메타 노출(프롬프트 주입, **tool-calling 무관**) + L2 온디맨드 로드(`read_file`, tool-calling 의존). 실제 미들웨어는 FabriX 불가하나 **패턴은 트랙 A 자체 구현 가능**(트랙 B 전제 아님). 단 기존 `config/db_profiles/`(query_guide·known_attributes)가 동일 가치(작업별 지식 모듈화+온디맨드 주입)를 이미 제공 → **신규 skills 시스템 미신설**, 필요 시 SUBAGENT_REGISTRY per-agent `prompt` 슬롯으로 흡수(db_profiles 중복 정리 후, 선택적·우선순위 낮음).
+- **현재 코드 치환 매핑(Plan 48 §4.9)**: `semantic_router` 의도분석은 2계층 — (A) deterministic pre-route(`pending_synonym_reuse`①/`synonym_registration`②/`mapped_db_ids`③), (B) `_llm_classify` 의도 분류(④⑤). 계층 A는 `intent_planner` pre-check로 **그대로 이식**(멀티턴 pending 결합 보존), 계층 B만 복합 task 분해로 대체. 의도별 노드(cache_management/synonym_registrar/general_inference/multi_db_executor/단일 DB 파이프라인)는 그래프에 등록하지 않고 `SUBAGENT_REGISTRY` handler가 **함수로 호출**. `_llm_classify`의 DB 분류부는 `classify_dbs`로 재사용, 단일 DB 풀 재시도는 `_run_single_db_pipeline`로 보존(R-09). `route_after_semantic_router`/`_INTENT_ROUTE_MAP`은 deepagent 모드 미사용(하위 호환 위해 삭제 금지).
+- **결과 기반 후속 처리(Plan 48 §4.10)**: 단일 의도만 처리하던 한계를 task 관계 **3패턴**으로 확장 — ① 독립 병렬(Phase 1) ② **데이터 의존 순차**(Phase 1; `input_from`으로 선행 task 결과 행을 후속 task SQL 생성 컨텍스트에 주입, 키 컬럼·행수 상한 R-12) ③ **결과 조건부 동적 재계획**(Phase 2; `replanner` 노드 + `agent_orchestrator` 조건부 루프, `MAX_REPLAN` 상한 R-11, tool-calling 불필요). 사용자가 복합 의도 + 결과 기반 후속을 한 프롬프트에 담는 경우를 지원. Phase 1=계획 사전 확정(①②, 선형 그래프), Phase 2=계획이 실행 중 변함(③, 루프). **후속 처리 주체는 '에이전트 자동'으로 확정(2026-06-16)** — 단일 프롬프트 내 시스템 자동 후속(②③)이 핵심이며, 사용자 직접 멀티턴 후속은 D-013으로 처리(본 결정 범위 밖).
+
+### 고려한 대안
+
+| 대안 | 제외 이유 |
+|------|----------|
+| deepagents 패키지 즉시 도입 | langchain 1.x 메이저 마이그레이션 강제, 커스텀 LLM 재작성 리스크 → 2단계 PoC로 연기 |
+| 단일 의도 라우팅 고도화만 | 복합 의도 분해(사용자 요구) 미충족 |
+| LangGraph Send fan-out | 0.2 reducer 충돌 관리 복잡 → supervisor 노드 방식(A안) 채택 |
+
+### 향후 수정 시 고려사항
+
+- 새 agent 추가 시: planner 프롬프트 분류 규칙 + `agent_orchestrator._run_agent` 분기 + subagent 헬퍼 추가.
+- 복합 task 중 HITL(SQL/구조 승인) 인터럽트 재개 처리는 1단계에서 순차 분리로 제한. 전면 지원은 후속 과제.
+- 2단계 PoC 결과는 `docs/deepagents_poc_report.md`에 기록하고, 전환 시 langchain 1.x 업그레이드를 별도 계획으로 분리.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-16 | D-037 | deepagents 기반 의도 분해 오케스트레이션 계획 확정 (Plan 48): 단계적 하이브리드 도입(1단계 패턴 자체 구현 / 2단계 격리 PoC), 복합 의도 분해 + 순차·병렬 실행. `intent_planner`→`agent_orchestrator`→`result_aggregator` 신규 orchestration 계층, 5개 작업(data_query/cache_management/synonym_registration/general_inference/alarm_query)을 subagent로 노출, `ENABLE_DEEPAGENT_ORCHESTRATION` 플래그 하위 호환. **deepagents 0.6.10은 langchain 1.x 요구 → 직접 도입 회피, 패턴만 자체 구현.** D-004 확장 / D-005 일반화 |
 | 2026-06-16 | D-036 | 알람 영향 프로세스 보강 (Plan 47-1): CPU/메모리 발생 알람에 한해 폴스타 실시간 프로세스 API를 **hostname으로 조회**(Plan 47 DB 이력의 serverName과 정반대 키), 상위 N을 결정적 선별·마스킹하여 패턴 근거에 추가. `alarm_context_enricher`에 프로세스 조회 단계 추가(노드 수 3개 불변, history와 `asyncio.gather` 동시 실행·독립 degradation). process_rank.py(순수 함수)·polestar_process_api.py(httpx GET, 비인증 http, URL 인코딩) 신규, AlarmState.process_snapshot, 프롬프트 `{process_section}`+인용 규칙, notifier workb 표·webhook 필드, app.js/style.css 영향 프로세스 표, AlarmConfig 4필드+`get_process_api_base_url()`, 테스트 API query_process/simulated_processes. **args 민감정보(password/token/접속문자열) mask_args() 마스킹 필수 — 회귀 테스트 고정** |
 | 2026-06-11 | D-035 | 알람 이력 기반 패턴 분석 (Plan 47): 폴스타 DB 직접 조회(고정 SQL, lookback 90일, max_rows 2,000), alarm_pattern.py 통계·1차 분류 순수 함수, polestar_history.py 리포지토리(C-6 패턴 서버 매칭, gp/yd r.name), alarm_context_enricher 노드(+Redis 단기 캐시 TTL 300초, 타임아웃 5초, graceful degradation), 3-노드 그래프 전환, 프롬프트/notifier/UI 패턴 필드 확장, 테스트 API query_history/simulated_history. **is_clear를 severity=0 단독 기준으로 정정 — D-032의 alarmStatus='발생'/'해소' 기술은 실측과 다름(폴스타 UI ACK 상태값)** |
 | 2026-06-11 | D-034 | 주기적 헬스체크 로그 노이즈 감소: httpx 로거 WARNING 상향, DBHubClient/PostgresClient 연결 성공·종료 로그 INFO→DEBUG 전역 강등. 실패 경로(WARNING/예외) 로그는 유지. 부수: tests/test_dbhub_integration.py 인코딩 깨짐으로 잘못된 단정문 6건 복원 |
