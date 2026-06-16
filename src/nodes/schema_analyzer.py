@@ -628,19 +628,20 @@ async def _get_schema_with_cache(
         app_config: 앱 설정
 
     Returns:
-        (SchemaInfo, schema_dict, cache_hit, descriptions, synonyms) 튜플
+        (SchemaInfo, schema_dict, cache_hit, cache_source, descriptions, synonyms) 튜플
         - SchemaInfo: 복원된 SchemaInfo 객체
         - schema_dict: 스키마 딕셔너리
         - cache_hit: 캐시 히트 여부 (True이면 save 불필요)
+        - cache_source: 캐시 출처 ("메모리" | "Redis" | "DB 직접 조회")
         - descriptions: {table.column: description}
         - synonyms: {table.column: [synonym, ...]}
     """
     cache_mgr = get_cache_manager(app_config)
-    schema_dict, cache_hit, descriptions, synonyms = (
+    schema_dict, cache_hit, cache_source, descriptions, synonyms = (
         await cache_mgr.get_schema_or_fetch(client, db_id)
     )
     full_schema = _reconstruct_schema_info(schema_dict)
-    return full_schema, schema_dict, cache_hit, descriptions, synonyms
+    return full_schema, schema_dict, cache_hit, cache_source, descriptions, synonyms
 
 
 def _reconstruct_schema_info(schema_dict: dict) -> SchemaInfo:
@@ -715,7 +716,7 @@ async def schema_analyzer(
 
         async with get_db_client(app_config, db_id=db_id if db_id not in ("_default", "default") else None) as client:
             # 캐시 매니저를 활용한 스키마 조회 (통합 메서드)
-            full_schema, full_schema_dict, cache_hit, descriptions, synonyms = (
+            full_schema, full_schema_dict, cache_hit, cache_source, descriptions, synonyms = (
                 await _get_schema_with_cache(client, db_id, app_config)
             )
             # ★ DEBUG[1]: 캐시에서 로드된 전체 테이블 확인
@@ -1030,6 +1031,7 @@ async def schema_analyzer(
                 "column_synonyms": synonyms,
                 "resource_type_synonyms": resource_type_synonyms,
                 "eav_name_synonyms": eav_name_synonyms,
+                "schema_cache_source": cache_source,
                 "current_node": "schema_analyzer",
                 "error_message": None,
             }

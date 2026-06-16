@@ -13,25 +13,72 @@ AlarmAnalysisResult의 notification_channels에 따라 채널별로 순차 발�
 
 from __future__ import annotations
 
+import html
 import logging
 from typing import Any
 
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from src.alarm.domain.alarm import AlarmAnalysisResult
+from typing import Optional
+
+from src.alarm.domain.alarm import AlarmAnalysisResult, ProcessSnapshot
 
 logger = logging.getLogger(__name__)
 
 _SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
 
 
-def build_workb_body(result: AlarmAnalysisResult) -> str:
+def _pattern_badge(result: AlarmAnalysisResult) -> str:
+    """패턴 분석 배지 텍스트를 생성한다 (예: "[주기적 · 일상 알람]")."""
+    if result.is_routine is True:
+        return f"[{result.pattern_type} · 일상 알람]"
+    if result.is_routine is False:
+        return f"[{result.pattern_type} · 확인 필요]"
+    return f"[{result.pattern_type}]"
+
+
+def _process_table_html(snapshot: ProcessSnapshot) -> str:
+    """영향 프로세스 텍스트 표(HTML) — workb 본문용 (Plan 47-1 §5.6).
+
+    수치는 결정적으로 선별된 값, args는 마스킹된 값만 사용한다.
+    """
+    if not snapshot.top:
+        return ""
+    metric = "메모리" if snapshot.alarm_kind == "memory" else "CPU"
+    captured = (
+        f" ({snapshot.captured_at:%Y-%m-%d %H:%M:%S} 기준)"
+        if snapshot.captured_at is not None
+        else ""
+    )
+    rows = "".join(
+        f"<tr><td>{i}. {p.name} (pid {p.pid})</td>"
+        f"<td>CPU {p.p100cpu:.1f}% · 메모리 {p.pmem:.1f}%</td></tr>"
+        # 실행 파라미터(args, 마스킹됨) — 행 아래 전체폭 보조 줄 (서비스 추적용)
+        + (
+            f'<tr><td colspan="2" style="color:#6c757d;font-size:0.85em;'
+            f'word-break:break-all">{html.escape(p.args)}</td></tr>'
+            if p.args
+            else ""
+        )
+        for i, p in enumerate(snapshot.top, start=1)
+    )
+    return (
+        f"<br><br><b>영향 프로세스 — {metric} 상위 "
+        f"(전체 {snapshot.total_count}개{captured})</b>"
+        f"<table>{rows}</table>"
+    )
+
+
+def build_workb_body(
+    result: AlarmAnalysisResult,
+    process_snapshot: Optional[ProcessSnapshot] = None,
+) -> str:
     """WorkB 쪽지 본문을 HTML 형식으로 생성한다."""
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
     severity_html = f'<span style="color:{color};font-weight:bold">{result.severity_label}</span>'
-    return (
+    body = (
         f"<b>심각도:</b> {severity_html}<br>"
         f"<b>알람명:</b> {ev.alarm_name}<br>"
         f"<b>서버:</b> {ev.server_name} ({ev.hostname}, {ev.ip_address})<br>"
@@ -46,6 +93,17 @@ def build_workb_body(result: AlarmAnalysisResult) -> str:
         f"<b>추정 원인</b><br>{result.probable_cause}<br><br>"
         f"<b>권고 조치</b><br>{result.recommended_action}"
     )
+    # Plan 47-1: 영향 프로세스 표 (스냅샷 없으면 생략)
+    # — 패턴 분석보다 먼저 출력: "무엇이 문제인가 → 얼마나 잦은가" 순이 자연스러움
+    if process_snapshot is not None:
+        body += _process_table_html(process_snapshot)
+    # Plan 47: 패턴 분석 섹션 (pattern_type=""이면 생략)
+    if result.pattern_type:
+        body += (
+            f"<br><br><b>패턴 분석</b><br>"
+            f"{_pattern_badge(result)} {result.pattern_analysis}"
+        )
+    return body
 
 
 async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
@@ -65,13 +123,14 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
         return {}
 
     cfg = config["configurable"]["app_config"]
+    process_snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
 
     for channel in result.notification_channels:
         try:
             if channel == "workb":
-                await _send_workb(cfg.workb, result)
+                await _send_workb(cfg.workb, result, process_snapshot)
             elif channel == "webhook":
-                await _send_webhook(cfg.alarm, result)
+                await _send_webhook(cfg.alarm, result, process_snapshot)
             else:
                 # 현재 worKB 외 채널 미지원
                 # 추후 Slack/email 채널 추가 시 여기에 분기 추가
@@ -98,7 +157,11 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     return {"analysis_result": result}
 
 
-async def _send_workb(workb_cfg, result: AlarmAnalysisResult) -> None:
+async def _send_workb(
+    workb_cfg,
+    result: AlarmAnalysisResult,
+    process_snapshot: Optional[ProcessSnapshot] = None,
+) -> None:
     """worKB 사내메신저 쪽지 발송.
 
     실제 쪽지 제목: "{alias} {msgTitle}" 형태로 사용자 쪽지창에 표시된다.
@@ -107,13 +170,14 @@ async def _send_workb(workb_cfg, result: AlarmAnalysisResult) -> None:
     Args:
         workb_cfg: WorkbConfig 인스턴스
         result: 알람 분석 결과
+        process_snapshot: 영향 프로세스 스냅샷 (Plan 47-1, None이면 표 생략)
     """
     if not workb_cfg.base_url:
         raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")
 
     ev = result.alarm_event
     msg_title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
-    msg_body = build_workb_body(result)
+    msg_body = build_workb_body(result, process_snapshot)
     payload = {
         "systemDiv": workb_cfg.system_div,
         "msgTitle": msg_title,
@@ -133,7 +197,31 @@ async def _send_workb(workb_cfg, result: AlarmAnalysisResult) -> None:
         resp.raise_for_status()
 
 
-async def _send_webhook(alarm_cfg, result: AlarmAnalysisResult) -> None:
+def _process_payload(snapshot: Optional[ProcessSnapshot]) -> Optional[dict]:
+    """webhook payload용 프로세스 스냅샷 dict (Plan 47-1). args는 마스킹된 값만 포함."""
+    if snapshot is None:
+        return None
+    return {
+        "alarm_kind": snapshot.alarm_kind,
+        "captured_at": snapshot.captured_at.isoformat() if snapshot.captured_at else None,
+        "total_count": snapshot.total_count,
+        "source_host": snapshot.source_host,
+        "top": [
+            {
+                "name": p.name, "pid": p.pid, "user": p.user,
+                "p100cpu": p.p100cpu, "pcpu": p.pcpu, "pmem": p.pmem,
+                "rss": p.rss, "args": p.args,
+            }
+            for p in snapshot.top
+        ],
+    }
+
+
+async def _send_webhook(
+    alarm_cfg,
+    result: AlarmAnalysisResult,
+    process_snapshot: Optional[ProcessSnapshot] = None,
+) -> None:
     """Generic Webhook 발송.
 
     내부 시스템 간 연동용 HTTP 콜백 채널.
@@ -142,6 +230,7 @@ async def _send_webhook(alarm_cfg, result: AlarmAnalysisResult) -> None:
     Args:
         alarm_cfg: AlarmConfig 인스턴스
         result: 알람 분석 결과
+        process_snapshot: 영향 프로세스 스냅샷 (Plan 47-1, None이면 payload에 null)
     """
     url = alarm_cfg.webhook_url
     if not url:
@@ -166,6 +255,12 @@ async def _send_webhook(alarm_cfg, result: AlarmAnalysisResult) -> None:
         "probable_cause": result.probable_cause,
         "recommended_action": result.recommended_action,
         "is_clear": ev.is_clear,
+        # Plan 47: 패턴 분석 결과
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
+        # Plan 47-1: 영향 프로세스 스냅샷 (args 마스킹됨)
+        "process_snapshot": _process_payload(process_snapshot),
     }
     headers = {
         "Content-Type": "application/json; charset=utf-8",

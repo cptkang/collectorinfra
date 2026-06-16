@@ -19,6 +19,7 @@ from src.llm import create_llm
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
 from src.nodes.context_resolver import context_resolver
+from src.nodes.general_inference import general_inference as general_inference_node
 from src.nodes.field_mapper import field_mapper
 from src.nodes.input_parser import input_parser
 from src.nodes.multi_db_executor import multi_db_executor
@@ -105,19 +106,25 @@ def route_after_organization(state: AgentState) -> str:
     return "output_generator"
 
 
+_INTENT_ROUTE_MAP: dict[str, str] = {
+    "cache_management": "cache_management",
+    "synonym_registration": "synonym_registrar",
+    "general_inference": "general_inference",
+}
+
+
 def route_after_semantic_router(state: AgentState) -> str:
     """semantic_router 이후 라우팅을 결정한다.
 
     - 캐시 관리 의도: cache_management로 진행
     - 유사어 등록 의도: synonym_registrar로 진행
+    - 일반 추론 의도: general_inference로 진행
     - 멀티 DB: multi_db_executor로 진행
     - 단일 DB: 기존 파이프라인(schema_analyzer)으로 진행
     """
     intent = state.get("routing_intent")
-    if intent == "cache_management":
-        return "cache_management"
-    if intent == "synonym_registration":
-        return "synonym_registrar"
+    if intent in _INTENT_ROUTE_MAP:
+        return _INTENT_ROUTE_MAP[intent]
     if state.get("is_multi_db"):
         return "multi_db_executor"
     return "schema_analyzer"
@@ -286,6 +293,11 @@ def build_graph(config: AppConfig, checkpointer=None):
             "synonym_registrar",
             partial(synonym_registrar, app_config=config),
         )
+        # 일반 추론 노드 (DB 접근 없이 LLM 직접 응답)
+        graph.add_node(
+            "general_inference",
+            partial(general_inference_node, llm=llm, app_config=config),
+        )
 
     graph.add_node(
         "schema_analyzer",
@@ -343,6 +355,7 @@ def build_graph(config: AppConfig, checkpointer=None):
                 "multi_db_executor": "multi_db_executor",
                 "cache_management": "cache_management",
                 "synonym_registrar": "synonym_registrar",
+                "general_inference": "general_inference",
             },
         )
 
@@ -355,6 +368,9 @@ def build_graph(config: AppConfig, checkpointer=None):
 
         # 유사어 등록 경로
         graph.add_edge("synonym_registrar", END)
+
+        # 일반 추론 경로
+        graph.add_edge("general_inference", END)
     else:
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")

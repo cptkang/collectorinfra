@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
@@ -261,11 +261,47 @@ class AlarmConfig(BaseSettings):
     webhook_url: str = ""
     webhook_timeout_seconds: int = 10
 
+    # ── Plan 47: 폴스타 DB 이력 기반 패턴 분석 ──
+    history_enabled: bool = True              # 이력 조회 + 패턴 분석 활성화
+    history_lookback_days: int = 90           # 패턴 분석 조회 기간 — 일·주·월 주기 3회 관측 가능한 최소 기간 (Plan 47 §3.2)
+                                              # 월 주기 작업이 많은 환경은 180까지 확장 가능
+    history_max_rows: int = 2000              # 조회 행 수 상한 (일 10건 빈발 알람 × 90일 = 900건 수용, truncated 플래그 연동)
+    history_cache_ttl_seconds: int = 300      # 조회 결과 단기 캐시 TTL (0이면 캐시 비활성)
+    enrich_timeout_seconds: int = 5           # enricher 전체 타임아웃
+    burst_threshold_24h: int = 5              # 급증 판정 24h 최소 건수
+
+    # ── Plan 47-1: 영향 프로세스 보강 (CPU/메모리 알람) ──
+    process_enrich_enabled: bool = True
+    # db_id=base_url 매핑 (CSV — .env JSON 회피, notification_channels_csv 패턴과 동일).
+    # 내부망 시스템이라 scheme는 http:// (TLS 없음). 인증 불필요 (Plan 47-1 §2/§9).
+    process_api_base_urls_csv: str = (
+        "polestar_cm_gp=http://polestar.kbonecloud.com,"
+        "polestar_cm_yd=http://yd-polestar.kbonecloud.com"
+    )
+    process_api_timeout_seconds: int = 3      # 추가 외부 호출 — 이력보다 짧게
+    process_top_n: int = 5                     # 표시할 상위 프로세스 수
+    # 인증·TLS 설정 없음 — 내부 시스템 http, 비로그인 조회 (Plan 47-1 §9)
+
     model_config = {"env_prefix": "ALARM_", "env_file": ".env", "extra": "ignore"}
 
     def get_notification_channels(self) -> list[str]:
         """활성 알림 채널 목록을 반환한다."""
         return [c.strip() for c in self.notification_channels_csv.split(",") if c.strip()]
+
+    def get_process_api_base_url(self, db_id: str) -> Optional[str]:
+        """db_id에 매핑된 프로세스 API base_url을 반환한다 (없으면 None — Plan 47-1).
+
+        매핑 형식: "db_id1=http://host1,db_id2=http://host2" (CSV, '=' 구분).
+        잘못된 항목(= 미포함)은 무시한다.
+        """
+        for pair in self.process_api_base_urls_csv.split(","):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            key, _, url = pair.partition("=")
+            if key.strip() == db_id:
+                return url.strip() or None
+        return None
 
 
 class WorkbConfig(BaseSettings):

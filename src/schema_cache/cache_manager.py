@@ -716,11 +716,35 @@ class SchemaCacheManager:
     async def get_global_synonyms_full(self) -> dict[str, dict]:
         """글로벌 유사단어 사전을 description 포함하여 로드한다.
 
+        Redis 우선, 실패 시 local global_synonyms.yaml 폴백.
+
         Returns:
             {column_name: {"words": [...], "description": "..."}} 매핑
         """
         if self._backend == "redis" and await self.ensure_redis_connected():
-            return await self._redis_cache.load_global_synonyms_full()
+            result = await self._redis_cache.load_global_synonyms_full()
+            if result:
+                return result
+
+        # yaml 폴백
+        import yaml
+        from pathlib import Path
+        global_yaml_path = Path("config/global_synonyms.yaml")
+        if global_yaml_path.exists():
+            try:
+                with open(global_yaml_path, encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                if isinstance(data, dict):
+                    result = {}
+                    for col, info in data.get("columns", {}).items():
+                        entry: dict = {"words": info.get("words", [])}
+                        desc = info.get("description", "")
+                        if desc:
+                            entry["description"] = desc
+                        result[col] = entry
+                    return result
+            except Exception as e:
+                logger.warning("로컬 global_synonyms.yaml (full) 로드 실패: %s", e)
         return {}
 
     async def update_global_description(
@@ -1175,7 +1199,7 @@ class SchemaCacheManager:
             synonyms = await self.load_synonyms_with_global_fallback(
                 db_id, cached_mem
             )
-            return cached_mem, True, descriptions, synonyms
+            return cached_mem, True, "메모리", descriptions, synonyms
 
         # 2차-A: Redis/파일 캐시 + fingerprint TTL 유효
         try:
@@ -1192,7 +1216,7 @@ class SchemaCacheManager:
                         "Redis/파일 캐시 히트 (fingerprint TTL 유효): db_id=%s",
                         db_id,
                     )
-                    return cached_schema, True, descriptions, synonyms
+                    return cached_schema, True, "Redis", descriptions, synonyms
         except Exception as e:
             logger.warning("fingerprint TTL 확인 실패 (%s): %s", db_id, e)
 
@@ -1216,7 +1240,7 @@ class SchemaCacheManager:
                             db_id,
                             current_fp,
                         )
-                        return cached_schema, True, descriptions, synonyms
+                        return cached_schema, True, "Redis", descriptions, synonyms
         except Exception as e:
             logger.warning("fingerprint 조회 실패 (%s): %s", db_id, e)
 
@@ -1297,7 +1321,7 @@ class SchemaCacheManager:
             db_id,
             len(tables_dict),
         )
-        return schema_dict, False, descriptions, synonyms
+        return schema_dict, False, "DB 직접 조회", descriptions, synonyms
 
     async def cleanup_stale_entries(
         self,

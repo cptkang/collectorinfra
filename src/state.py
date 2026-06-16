@@ -75,11 +75,13 @@ class AgentState(TypedDict):
     # === DB 관련 ===
     relevant_tables: list[str]               # 관련 테이블 목록
     schema_info: dict                        # 스키마 상세 (테이블, 컬럼, FK)
+    schema_cache_source: Optional[str]       # 스키마 캐시 출처 ("메모리" | "Redis" | "DB 직접 조회")
     column_descriptions: dict[str, str]      # 컬럼 설명 {table.column: description}
     column_synonyms: dict[str, list[str]]    # 유사 단어 {table.column: [synonym, ...]}
     resource_type_synonyms: dict[str, list[str]]  # RESOURCE_TYPE 값 유사단어
     eav_name_synonyms: dict[str, list[str]]       # EAV NAME 값 유사단어
     generated_sql: str                       # 현재 SQL 쿼리
+    synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
     validation_result: ValidationResult      # 검증 결과
     query_results: list[dict[str, Any]]      # 현재 쿼리 실행 결과
 
@@ -190,6 +192,7 @@ def create_initial_state(
         csv_sheet_data=csv_sheet_data,
         relevant_tables=[],
         schema_info={},
+        schema_cache_source=None,
         column_mapping=None,
         db_column_mapping=None,
         mapping_sources=None,
@@ -203,6 +206,7 @@ def create_initial_state(
         resource_type_synonyms={},
         eav_name_synonyms={},
         generated_sql="",
+        synonym_usage=None,
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={

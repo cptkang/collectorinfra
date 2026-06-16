@@ -60,7 +60,7 @@ class PostgresClient:
                 command_timeout=self._query_timeout,
             )
             self._connected = True
-            logger.info("PostgreSQL 직접 연결 성공")
+            logger.debug("PostgreSQL 직접 연결 성공")
         except Exception as e:
             raise DBConnectionError(f"PostgreSQL 연결 실패: {e}") from e
 
@@ -69,7 +69,7 @@ class PostgresClient:
             await self._pool.close()
             self._pool = None
         self._connected = False
-        logger.info("PostgreSQL 연결 종료")
+        logger.debug("PostgreSQL 연결 종료")
 
     HEALTH_CHECK_TIMEOUT: int = 5  # 초
 

@@ -410,6 +410,26 @@ header nav {
     flex: 1;
 }
 
+/* JS-driven tooltip — rendered in #appTooltip appended to body */
+#appTooltip {
+    position: fixed;
+    z-index: 9999;
+    background: #0d1626;
+    color: var(--text);
+    font-family: var(--font-sans, sans-serif);
+    font-size: 0.6875rem;
+    font-weight: 400;
+    line-height: 1.5;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-accent);
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
 .pipeline-step.active .pipeline-step-name {
     color: var(--accent);
 }
@@ -1184,6 +1204,130 @@ header nav {
 .alarm-section p {
     margin: 0;
     color: var(--text);
+}
+
+/* ─── Plan 47: 패턴 분석 근거 표 + 시간대 막대 ─── */
+
+.alarm-evidence {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+    font-size: 0.75rem;
+}
+
+.alarm-evidence caption {
+    text-align: left;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    padding-bottom: 2px;
+}
+
+.alarm-evidence th {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 500;
+    white-space: nowrap;
+    vertical-align: top;
+    width: 64px;
+    padding: 2px 8px 2px 0;
+}
+
+.alarm-evidence td {
+    color: var(--text);
+    padding: 2px 0;
+}
+
+.alarm-hist {
+    margin-top: 6px;
+}
+
+.alarm-hist-title {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    margin-bottom: 3px;
+}
+
+.alarm-hist-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 1px 0;
+    font-size: 0.72rem;
+}
+
+.alarm-hist-hour {
+    width: 30px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+}
+
+.alarm-hist-track {
+    flex: 1 1 auto;
+    height: 10px;
+    background: rgba(125, 145, 170, 0.16);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.alarm-hist-bar {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    background: rgba(125, 145, 170, 0.7);
+    border-radius: 3px;
+}
+
+.alarm-hist-cnt {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.alarm-hist-row.is-current .alarm-hist-bar {
+    background: #dc3545;
+}
+
+.alarm-hist-row.is-current .alarm-hist-cnt {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+/* ─── Plan 47-1: 영향 프로세스 표 (.alarm-evidence 재사용 + 컬럼 헤더 조정) ─── */
+
+.alarm-proc-table th {
+    /* 행 헤더(고정폭)가 아니라 컬럼 헤더이므로 .alarm-evidence th의 width/정렬을 해제 */
+    width: auto;
+    border-bottom: 1px solid rgba(125, 145, 170, 0.25);
+    padding: 2px 8px 4px 0;
+}
+
+.alarm-proc-table td {
+    padding: 2px 8px 2px 0;
+    white-space: nowrap;
+}
+
+.alarm-proc-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.alarm-proc-table th.is-primary,
+.alarm-proc-table td.is-primary {
+    /* 알람 지표(CPU 알람=CPU열, 메모리 알람=MEM열) 강조 */
+    color: var(--text);
+    font-weight: 600;
+}
+
+.alarm-proc-table tr.alarm-proc-args td {
+    /* 실행 파라미터(args) — 프로세스 행 아래 전체폭 보조 줄, 줄바꿈 허용 */
+    padding: 0 0 5px 12px;
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.68rem;
+    white-space: normal;
+    word-break: break-all;
 }
 
 /* ─── Processing Indicator (inline in chat) ─── */
