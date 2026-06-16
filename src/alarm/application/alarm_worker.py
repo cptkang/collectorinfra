@@ -47,6 +47,7 @@ class AlarmWorker:
         self._config = config
         self._graph = None
         self._history_repo = None
+        self._process_client = None
         self._redis = None
 
     def _build_history_repo(self):  # noqa: ANN202
@@ -70,6 +71,24 @@ class AlarmWorker:
             logger.exception("알람 이력 리포지토리 생성 실패 — 패턴 분석 비활성으로 진행")
             return None
 
+    def _build_process_client(self):  # noqa: ANN202
+        """영향 프로세스 API 클라이언트를 생성한다 (Plan 47-1).
+
+        process_enrich_enabled=False이거나 생성 실패 시 None을 반환한다 —
+        프로세스 보강만 생략되고 알람 분석·발송은 정상 진행된다 (graceful degradation).
+        """
+        if not self._config.alarm.process_enrich_enabled:
+            return None
+        try:
+            from src.alarm.infrastructure.polestar_process_api import (
+                PolestarProcessApiClient,
+            )
+
+            return PolestarProcessApiClient(self._config.alarm)
+        except Exception:
+            logger.exception("영향 프로세스 클라이언트 생성 실패 — 프로세스 보강 비활성으로 진행")
+            return None
+
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
 
@@ -91,6 +110,7 @@ class AlarmWorker:
         await ensure_consumer_group(r, stream_key, group)
         self._graph = build_alarm_graph(self._config)
         self._history_repo = self._build_history_repo()
+        self._process_client = self._build_process_client()
         self._redis = r
         dedup: dict[str, float] = {}
 
@@ -199,6 +219,7 @@ class AlarmWorker:
                 {
                     "alarm_event": event,
                     "history_stats": None,
+                    "process_snapshot": None,
                     "analysis_result": None,
                     "error": None,
                 },
@@ -207,6 +228,7 @@ class AlarmWorker:
                         "app_config": self._config,
                         "history_repo": self._history_repo,
                         "history_redis": self._redis,
+                        "process_client": self._process_client,
                     }
                 },
             )

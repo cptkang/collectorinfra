@@ -12,6 +12,7 @@ ALARM_HISTORY_ENABLED=false이면 기존 2-노드 구조를 유지한다 (완전
 상태(AlarmState):
     alarm_event: AlarmEvent        — 입력 알람 이벤트
     history_stats: Optional        — 폴스타 DB 이력 통계 (Plan 47, 실패 시 None)
+    process_snapshot: Optional     — 영향 프로세스 스냅샷 (Plan 47-1, CPU/메모리 발생 알람만)
     analysis_result: Optional      — LLM 분석 결과
     error: Optional[str]           — 오류 메시지
 """
@@ -22,7 +23,12 @@ from typing import Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from src.alarm.domain.alarm import AlarmAnalysisResult, AlarmEvent, AlarmHistoryStats
+from src.alarm.domain.alarm import (
+    AlarmAnalysisResult,
+    AlarmEvent,
+    AlarmHistoryStats,
+    ProcessSnapshot,
+)
 
 
 class AlarmState(TypedDict):
@@ -30,6 +36,7 @@ class AlarmState(TypedDict):
 
     alarm_event: AlarmEvent
     history_stats: Optional[AlarmHistoryStats]
+    process_snapshot: Optional[ProcessSnapshot]
     analysis_result: Optional[AlarmAnalysisResult]
     error: Optional[str]
 

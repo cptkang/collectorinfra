@@ -28,6 +28,7 @@ from src.alarm.domain.alarm import (
     AlarmEvent,
     AlarmHistoryEntry,
     AlarmHistoryStats,
+    ProcessSnapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,10 +108,11 @@ class AlarmTestRequest(BaseModel):
     )
     # ── Plan 47: 이력 패턴 분석 테스트 파라미터 ──
     query_history: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "True이면 실제 폴스타 DB 이력 조회 수행 — DB 연결이 있는 환경에서 "
-            "end-to-end 검증용. 기본 False로 기존 동작 보존."
+            "폴스타 DB 이력 조회 수행 여부. 테스트 엔드포인트 기본값 True — "
+            "패턴 근거표를 바로 확인할 수 있다. simulated_history 지정 시 그쪽 우선, "
+            "false로 주면 이력 조회를 생략한다."
         ),
     )
     simulated_history: Optional[list[dict[str, Any]]] = Field(
@@ -120,6 +122,24 @@ class AlarmTestRequest(BaseModel):
             "\"alarm_status\":\"NOT_ACK\",\"resource_name\":\"...\"}] 형식. "
             "지정 시 DB 조회 대신 이 목록으로 통계 계산 — 이력 시나리오"
             "(주기/급증/첫 발생)를 임의 구성하여 LLM 응답 검증 가능."
+        ),
+    )
+    # ── Plan 47-1: 영향 프로세스 보강 테스트 파라미터 ──
+    query_process: bool = Field(
+        default=True,
+        description=(
+            "폴스타 프로세스 API 호출 여부 (hostname 기준). 테스트 엔드포인트 기본값 True. "
+            "CPU/메모리 발생 알람 + base_url 매핑이 있어야 실제 조회되며(그 외엔 자동 생략), "
+            "simulated_processes 지정 시 그쪽 우선."
+        ),
+    )
+    simulated_processes: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "지정 시 API 호출 없이 이 목록으로 select_top_processes 수행 — "
+            "시나리오 검증·마스킹 확인용. "
+            "예: [{\"name\":\"java\",\"pid\":12345,\"pmem\":38.0,\"p100cpu\":12.0,"
+            "\"args\":\"--password=secret -jar app.jar\"}]"
         ),
     )
 
@@ -166,8 +186,8 @@ class AlarmRawTestRequest(BaseModel):
     push_to_ui: bool = Field(default=True, description="True이면 분석 결과를 웹 UI에 실시간 표시")
     # ── Plan 47: 이력 패턴 분석 테스트 파라미터 ──
     query_history: bool = Field(
-        default=False,
-        description="True이면 실제 폴스타 DB 이력 조회 수행 (end-to-end 검증용)",
+        default=True,
+        description="폴스타 DB 이력 조회 수행 여부 (기본 True — 패턴 근거표 표시). simulated_history 지정 시 그쪽 우선",
     )
     simulated_history: Optional[list[dict[str, Any]]] = Field(
         default=None,
@@ -176,6 +196,15 @@ class AlarmRawTestRequest(BaseModel):
             "\"alarm_status\":\"NOT_ACK\",\"resource_name\":\"...\"}] 형식. "
             "지정 시 DB 조회 대신 이 목록으로 통계 계산."
         ),
+    )
+    # ── Plan 47-1: 영향 프로세스 보강 테스트 파라미터 ──
+    query_process: bool = Field(
+        default=True,
+        description="폴스타 프로세스 API 호출 여부 (hostname 기준, 기본 True). CPU/메모리 발생 알람만 실제 조회",
+    )
+    simulated_processes: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description="지정 시 API 호출 없이 이 목록으로 select_top_processes 수행 (마스킹 확인용)",
     )
 
     model_config = {"json_schema_extra": {
@@ -264,6 +293,14 @@ class AlarmTestResponse(BaseModel):
             "지정 시 채워짐. 통계 + 사전 분류(pre_classification) + source 포함."
         ),
     )
+    process_snapshot: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "영향 프로세스 스냅샷 요약 (Plan 47-1) — query_process=true 또는 "
+            "simulated_processes 지정 시 채워짐. 상위 N + 전체 건수 + 스냅샷 시각 + "
+            "alarm_kind 포함. args는 마스킹된 값만 노출됨."
+        ),
+    )
     error: Optional[str] = Field(default=None, description="분석 실패 시 오류 메시지")
     processing_time_ms: float
 
@@ -291,6 +328,84 @@ def _stats_to_dict(stats: AlarmHistoryStats) -> dict[str, Any]:
         "pre_classification": stats.pre_classification,
         "source": stats.source,
     }
+
+
+def _process_to_dict(snapshot: ProcessSnapshot) -> dict[str, Any]:
+    """ProcessSnapshot을 응답/UI push용 dict로 변환한다 (Plan 47-1 §5.6).
+
+    args는 이미 마스킹된 값이므로 그대로 노출한다 (평문 인자는 ProcessInfo에 없음).
+    """
+    return {
+        "alarm_kind": snapshot.alarm_kind,
+        "captured_at": snapshot.captured_at.isoformat() if snapshot.captured_at else None,
+        "total_count": snapshot.total_count,
+        "source_host": snapshot.source_host,
+        "top": [
+            {
+                "name": p.name,
+                "pid": p.pid,
+                "ppid": p.ppid,
+                "user": p.user,
+                "p100cpu": p.p100cpu,
+                "pcpu": p.pcpu,
+                "pmem": p.pmem,
+                "rss": p.rss,
+                "args": p.args,
+            }
+            for p in snapshot.top
+        ],
+    }
+
+
+async def _resolve_process_snapshot(
+    config,
+    event: AlarmEvent,
+    query_process: bool,
+    simulated_processes: Optional[list[dict[str, Any]]],
+) -> Optional[ProcessSnapshot]:
+    """테스트 요청의 프로세스 파라미터에 따라 ProcessSnapshot을 산출한다 (Plan 47-1 §5.8).
+
+    - simulated_processes 지정 시: API 호출 없이 해당 목록으로 select_top_processes
+      (게이팅 없이 알람 종류만 판정해 정렬·마스킹 확인). 비CPU/메모리 알람이면 None.
+    - query_process=True: 실제 폴스타 프로세스 API 호출 (enrich_processes 게이팅 적용).
+    - 실패 시 None — 분석 파이프라인은 계속 진행 (graceful degradation).
+    """
+    try:
+        if simulated_processes is not None:
+            from src.alarm.domain.process_rank import (
+                classify_alarm_kind,
+                select_top_processes,
+            )
+
+            kind = classify_alarm_kind(event)
+            if kind is None:
+                return None
+            top, total = select_top_processes(
+                simulated_processes, kind, config.alarm.process_top_n
+            )
+            return ProcessSnapshot(
+                alarm_kind=kind,
+                captured_at=None,
+                top=top,
+                total_count=total,
+                source_host=event.hostname,
+            )
+        if query_process:
+            from src.alarm.application.nodes.alarm_context_enricher import (
+                enrich_processes,
+            )
+            from src.alarm.infrastructure.polestar_process_api import (
+                PolestarProcessApiClient,
+            )
+
+            client = PolestarProcessApiClient(config.alarm)
+            return await asyncio.wait_for(
+                enrich_processes(event, config.alarm, client),
+                timeout=config.alarm.enrich_timeout_seconds,
+            )
+    except Exception as exc:
+        logger.warning("테스트 프로세스 스냅샷 산출 실패 — 프로세스 없이 분석 진행: %s", exc)
+    return None
 
 
 def _simulated_entries(items: list[dict[str, Any]]) -> list[AlarmHistoryEntry]:
@@ -358,13 +473,17 @@ async def _resolve_history_stats(
     return None
 
 
-def _build_workb_preview(workb_cfg, result: AlarmAnalysisResult) -> _WorkbPreview:
+def _build_workb_preview(
+    workb_cfg,
+    result: AlarmAnalysisResult,
+    process_snapshot: Optional[ProcessSnapshot] = None,
+) -> _WorkbPreview:
     """WorkB 발송 미리보기를 생성한다."""
     from src.alarm.application.nodes.alarm_notifier import build_workb_body
 
     ev = result.alarm_event
     title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
-    body = build_workb_body(result)
+    body = build_workb_body(result, process_snapshot)
     api_url = (
         f"{workb_cfg.base_url.rstrip('/')}/api/sendWorkbMsg"
         if workb_cfg.base_url else None
@@ -378,8 +497,14 @@ def _build_workb_preview(workb_cfg, result: AlarmAnalysisResult) -> _WorkbPrevie
     )
 
 
-def _build_webhook_preview(alarm_cfg, result: AlarmAnalysisResult) -> _WebhookPreview:
+def _build_webhook_preview(
+    alarm_cfg,
+    result: AlarmAnalysisResult,
+    process_snapshot: Optional[ProcessSnapshot] = None,
+) -> _WebhookPreview:
     """Webhook 발송 미리보기를 생성한다."""
+    from src.alarm.application.nodes.alarm_notifier import _process_payload
+
     ev = result.alarm_event
     payload = {
         "alarm_id": ev.alarm_id,
@@ -403,6 +528,8 @@ def _build_webhook_preview(alarm_cfg, result: AlarmAnalysisResult) -> _WebhookPr
         "pattern_type": result.pattern_type,
         "is_routine": result.is_routine,
         "pattern_analysis": result.pattern_analysis,
+        # Plan 47-1: 영향 프로세스 스냅샷 (_send_webhook payload와 동기 유지)
+        "process_snapshot": _process_payload(process_snapshot),
     }
     return _WebhookPreview(
         url=alarm_cfg.webhook_url or None,
@@ -414,14 +541,15 @@ def _build_notification_preview(
     config,
     result: AlarmAnalysisResult,
     channels: list[str],
+    process_snapshot: Optional[ProcessSnapshot] = None,
 ) -> NotificationPreview:
     """채널 목록에 따라 발송 미리보기를 생성한다."""
     preview = NotificationPreview()
     for ch in channels:
         if ch == "workb":
-            preview.workb = _build_workb_preview(config.workb, result)
+            preview.workb = _build_workb_preview(config.workb, result, process_snapshot)
         elif ch == "webhook":
-            preview.webhook = _build_webhook_preview(config.alarm, result)
+            preview.webhook = _build_webhook_preview(config.alarm, result, process_snapshot)
     return preview
 
 
@@ -481,6 +609,7 @@ async def analyze_alarm_test(
             exclude={
                 "dry_run", "send_notification", "channels", "push_to_ui",
                 "query_history", "simulated_history",
+                "query_process", "simulated_processes",
             }
         ),
     )
@@ -497,12 +626,18 @@ async def analyze_alarm_test(
         config, event, body.query_history, body.simulated_history
     )
 
+    # 2-2. 영향 프로세스 스냅샷 산출 (Plan 47-1 — query_process / simulated_processes)
+    process_snapshot = await _resolve_process_snapshot(
+        config, event, body.query_process, body.simulated_processes
+    )
+
     # 3. LLM 알람 분석 실행 (analyzer 노드만 직접 호출)
     from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
         "history_stats": history_stats,
+        "process_snapshot": process_snapshot,
         "analysis_result": None,
         "error": None,
     }
@@ -568,17 +703,19 @@ async def analyze_alarm_test(
             # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
             "alarm_time": event.alarm_time.isoformat(),
             "history_stats": _stats_to_dict(history_stats) if history_stats else None,
+            # Plan 47-1: 영향 프로세스 표 렌더용 (args는 마스킹된 값)
+            "process_snapshot": _process_to_dict(process_snapshot) if process_snapshot else None,
         })
 
     # 6. 발송 미리보기 생성 (dry_run 여부와 무관하게 항상 생성)
-    preview = _build_notification_preview(config, analysis_result, channels)
+    preview = _build_notification_preview(config, analysis_result, channels, process_snapshot)
 
     # 7. 실제 발송 (dry_run=False + send_notification=True일 때만)
     notifications_sent: Optional[dict[str, bool]] = None
     if not body.dry_run and body.send_notification:
         from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
 
-        notifier_state = {**result_state, "error": None}
+        notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")
@@ -606,6 +743,7 @@ async def analyze_alarm_test(
         notification_preview=preview,
         notifications_sent=notifications_sent,
         history_stats=_stats_to_dict(history_stats) if history_stats else None,
+        process_snapshot=_process_to_dict(process_snapshot) if process_snapshot else None,
         error=analyzer_error,
         processing_time_ms=elapsed_ms,
     )
@@ -735,12 +873,18 @@ async def analyze_alarm_raw(
         config, event, body.query_history, body.simulated_history
     )
 
+    # 3-2. 영향 프로세스 스냅샷 산출 (Plan 47-1 — query_process / simulated_processes)
+    process_snapshot = await _resolve_process_snapshot(
+        config, event, body.query_process, body.simulated_processes
+    )
+
     # 4. LLM 알람 분석
     from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
         "history_stats": history_stats,
+        "process_snapshot": process_snapshot,
         "analysis_result": None,
         "error": None,
     }
@@ -804,17 +948,19 @@ async def analyze_alarm_raw(
             # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
             "alarm_time": event.alarm_time.isoformat(),
             "history_stats": _stats_to_dict(history_stats) if history_stats else None,
+            # Plan 47-1: 영향 프로세스 표 렌더용 (args는 마스킹된 값)
+            "process_snapshot": _process_to_dict(process_snapshot) if process_snapshot else None,
         })
 
     # 6. 발송 미리보기
-    preview = _build_notification_preview(config, analysis_result, channels)
+    preview = _build_notification_preview(config, analysis_result, channels, process_snapshot)
 
     # 7. 실제 발송 (dry_run=False + send_notification=True)
     notifications_sent: Optional[dict[str, bool]] = None
     if not body.dry_run and body.send_notification:
         from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
 
-        notifier_state = {**result_state, "error": None}
+        notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")
@@ -842,6 +988,7 @@ async def analyze_alarm_raw(
         notification_preview=preview,
         notifications_sent=notifications_sent,
         history_stats=_stats_to_dict(history_stats) if history_stats else None,
+        process_snapshot=_process_to_dict(process_snapshot) if process_snapshot else None,
         error=analyzer_error,
         processing_time_ms=elapsed_ms,
     )

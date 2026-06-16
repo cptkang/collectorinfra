@@ -92,19 +92,20 @@ def lc_config(cfg, repo=None, redis=None) -> dict:
 
 class TestEnricherGracefulDegradation:
     async def test_history_disabled_returns_none(self):
+        # process_client 미주입 → process_snapshot도 None (Plan 47-1: 노드는 항상 두 키 반환)
         cfg = make_app_cfg(history_enabled=False)
         repo = FakeRepo()
         out = await alarm_context_enricher_node(
             {"alarm_event": make_event()}, lc_config(cfg, repo)
         )
-        assert out == {"history_stats": None}
+        assert out == {"history_stats": None, "process_snapshot": None}
         assert repo.fetch_calls == 0
 
     async def test_no_repo_returns_none(self):
         out = await alarm_context_enricher_node(
             {"alarm_event": make_event()}, lc_config(make_app_cfg(), repo=None)
         )
-        assert out == {"history_stats": None}
+        assert out == {"history_stats": None, "process_snapshot": None}
 
     async def test_clear_alarm_skips_history(self):
         repo = FakeRepo()
@@ -112,7 +113,7 @@ class TestEnricherGracefulDegradation:
         out = await alarm_context_enricher_node(
             {"alarm_event": event}, lc_config(make_app_cfg(), repo)
         )
-        assert out == {"history_stats": None}
+        assert out == {"history_stats": None, "process_snapshot": None}
         assert repo.fetch_calls == 0
 
     async def test_unregistered_db_id_returns_none(self):
@@ -122,15 +123,16 @@ class TestEnricherGracefulDegradation:
             {"alarm_event": make_event(db_id="unknown")},
             lc_config(make_app_cfg(), repo),
         )
-        assert out == {"history_stats": None}
+        assert out == {"history_stats": None, "process_snapshot": None}
         assert repo.fetch_calls == 0
 
     async def test_db_failure_returns_none(self):
+        # 이력 조회 실패해도 process_snapshot은 독립적으로 None 처리되며 전체 분석 계속
         repo = FakeRepo(error=RuntimeError("DB down"))
         out = await alarm_context_enricher_node(
             {"alarm_event": make_event()}, lc_config(make_app_cfg(), repo)
         )
-        assert out == {"history_stats": None}
+        assert out == {"history_stats": None, "process_snapshot": None}
 
     async def test_timeout_returns_none(self):
         repo = FakeRepo(delay=3.0)
@@ -138,7 +140,7 @@ class TestEnricherGracefulDegradation:
             {"alarm_event": make_event()},
             lc_config(make_app_cfg(enrich_timeout_seconds=1), repo),
         )
-        assert out == {"history_stats": None}
+        assert out == {"history_stats": None, "process_snapshot": None}
 
     async def test_redis_failure_falls_back_to_db(self):
         entries = [make_entry(REF - timedelta(hours=24 * i)) for i in range(1, 4)]

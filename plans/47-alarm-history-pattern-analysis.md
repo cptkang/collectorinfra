@@ -412,7 +412,7 @@ ALARM_BURST_THRESHOLD_24H=5
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
-| `query_history: bool` | `False` | True이면 실제 폴스타 DB 이력 조회 수행 — DB 연결이 있는 환경에서 end-to-end 검증용. 기본 False로 기존 동작 보존 |
+| `query_history: bool` | `True` | 폴스타 DB 이력 조회 수행 여부. 테스트 엔드포인트는 기본 True로 패턴 근거표를 바로 확인. simulated_history 지정 시 그쪽 우선, false로 주면 생략 (2026-06-16 기본값 False→True 변경: 테스트 시 매번 깜빡하는 문제 해소) |
 | `simulated_history: Optional[list]` | `None` | `[{"alarm_time":"yyyyMMddHHmmss","severity":3,"alarm_status":"발생","resource_name":"..."}]` 형식. 지정 시 DB 조회 대신 이 목록으로 통계 계산 — 이력 시나리오(주기/급증/첫 발생)를 임의 구성하여 LLM 응답 검증 가능 |
 
 테스트 경로는 그래프 대신 노드를 직접 호출하므로, `simulated_history` → `AlarmHistoryEntry` 변환 → `compute_history_stats()` → `state["history_stats"]` 주입 후 `alarm_analyzer_node` 호출 순으로 구성한다.

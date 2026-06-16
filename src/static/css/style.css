@@ -1294,6 +1294,42 @@ header nav {
     font-weight: 600;
 }
 
+/* ─── Plan 47-1: 영향 프로세스 표 (.alarm-evidence 재사용 + 컬럼 헤더 조정) ─── */
+
+.alarm-proc-table th {
+    /* 행 헤더(고정폭)가 아니라 컬럼 헤더이므로 .alarm-evidence th의 width/정렬을 해제 */
+    width: auto;
+    border-bottom: 1px solid rgba(125, 145, 170, 0.25);
+    padding: 2px 8px 4px 0;
+}
+
+.alarm-proc-table td {
+    padding: 2px 8px 2px 0;
+    white-space: nowrap;
+}
+
+.alarm-proc-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.alarm-proc-table th.is-primary,
+.alarm-proc-table td.is-primary {
+    /* 알람 지표(CPU 알람=CPU열, 메모리 알람=MEM열) 강조 */
+    color: var(--text);
+    font-weight: 600;
+}
+
+.alarm-proc-table tr.alarm-proc-args td {
+    /* 실행 파라미터(args) — 프로세스 행 아래 전체폭 보조 줄, 줄바꿈 허용 */
+    padding: 0 0 5px 12px;
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.68rem;
+    white-space: normal;
+    word-break: break-all;
+}
+
 /* ─── Processing Indicator (inline in chat) ─── */
 
 .message--processing .message-bubble {

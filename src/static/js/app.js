@@ -1670,6 +1670,52 @@
         return summary + histHtml;
     }
 
+    function fmtPctCell(v) {
+        return (v === null || v === undefined) ? "-" : Number(v).toFixed(1) + "%";
+    }
+
+    // Plan 47-1: 영향 프로세스 표 — CPU/메모리 알람의 상위 N 점유 프로세스.
+    // args는 백엔드에서 이미 마스킹된 값만 전달되므로 그대로 표시한다.
+    function renderProcessEvidence(ps) {
+        if (!ps || !ps.top || !ps.top.length) return "";
+        var isMem = ps.alarm_kind === "memory";
+        var metricLabel = isMem ? "메모리" : "CPU";
+        var caption = "영향 프로세스 · " + metricLabel + " 상위";
+        var meta = [];
+        if (ps.captured_at) meta.push(fmtHistTs(ps.captured_at) + " 기준");
+        if (ps.total_count !== null && ps.total_count !== undefined) {
+            meta.push("전체 " + ps.total_count + "개");
+        }
+        if (meta.length) caption += " (" + meta.join(", ") + ")";
+
+        var head =
+            '<tr><th>프로세스</th><th>PID</th>' +
+            '<th class="alarm-proc-num' + (isMem ? '' : ' is-primary') + '">CPU</th>' +
+            '<th class="alarm-proc-num' + (isMem ? ' is-primary' : '') + '">MEM</th>' +
+            '<th>사용자</th></tr>';
+        var body = ps.top.map(function (p) {
+            var mainRow = '<tr>' +
+                '<td>' + escapeHtml(p.name || "-") + '</td>' +
+                '<td class="alarm-proc-num">' + escapeHtml(String(p.pid)) + '</td>' +
+                '<td class="alarm-proc-num' + (isMem ? '' : ' is-primary') + '">' +
+                    fmtPctCell(p.p100cpu) + '</td>' +
+                '<td class="alarm-proc-num' + (isMem ? ' is-primary' : '') + '">' +
+                    fmtPctCell(p.pmem) + '</td>' +
+                '<td>' + escapeHtml(p.user || "-") + '</td>' +
+                '</tr>';
+            // 실행 파라미터(args, 마스킹됨)를 행 아래 전체폭 보조 줄로 표시 — 서비스 추적용
+            var argsRow = p.args
+                ? '<tr class="alarm-proc-args"><td colspan="5">' +
+                    escapeHtml(p.args) + '</td></tr>'
+                : "";
+            return mainRow + argsRow;
+        }).join("");
+        return '<table class="alarm-evidence alarm-proc-table">' +
+            '<caption>' + escapeHtml(caption) + '</caption>' +
+            head + body +
+            '</table>';
+    }
+
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
@@ -1697,6 +1743,17 @@
                 '</div>';
         }
 
+        // Plan 47-1: 영향 프로세스 표 (CPU/메모리 알람만 — 스냅샷 없으면 생략)
+        var processHtml = "";
+        var procTable = renderProcessEvidence(data.process_snapshot);
+        if (procTable) {
+            processHtml =
+                '<div class="alarm-section">' +
+                    '<span class="alarm-section-label">영향 프로세스</span>' +
+                    procTable +
+                '</div>';
+        }
+
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
@@ -1719,6 +1776,7 @@
                         '<span class="alarm-section-label">권고 조치</span>' +
                         '<p>' + escapeHtml(data.recommended_action) + '</p>' +
                     '</div>' +
+                    processHtml +
                     patternHtml +
                 '</div>' +
             '</div>';

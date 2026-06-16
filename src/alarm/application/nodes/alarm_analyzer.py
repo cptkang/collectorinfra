@@ -16,6 +16,9 @@ LLM 응답 형식 (JSON):
 
 패턴 필드(pattern_type/is_routine/pattern_analysis)는 `parsed.get()` 기본값으로
 처리한다 — LLM이 누락 응답해도 기존 분석 결과 생성에 실패하지 않는다 (Plan 47 §5.6).
+
+이력 통계(history_section)와 영향 프로세스(process_section, Plan 47-1)는 state에 있으면
+프롬프트에 주입하고, 없으면 빈 문자열로 주입한다 (graceful degradation).
 """
 
 from __future__ import annotations
@@ -27,7 +30,12 @@ from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from src.alarm.domain.alarm import AlarmAnalysisResult, AlarmEvent, AlarmHistoryStats
+from src.alarm.domain.alarm import (
+    AlarmAnalysisResult,
+    AlarmEvent,
+    AlarmHistoryStats,
+    ProcessSnapshot,
+)
 from src.alarm.prompts.alarm_analyzer import (
     ALARM_ANALYZER_SYSTEM_PROMPT,
     ALARM_ANALYZER_USER_TEMPLATE,
@@ -119,6 +127,34 @@ def _render_history_section(
     return "\n".join(lines)
 
 
+def _render_process_section(snapshot: ProcessSnapshot) -> str:
+    """ProcessSnapshot을 LLM 프롬프트용 텍스트로 렌더링한다 (Plan 47-1 §5.5).
+
+    수치·선별·마스킹은 이미 결정적으로 완료된 상태이며, LLM은 상위 프로세스를
+    원인/권고에 인용만 한다 (새로 계산 금지). args는 마스킹된 값만 노출된다.
+    """
+    metric_label = "메모리" if snapshot.alarm_kind == "memory" else "CPU"
+    captured = (
+        f"{snapshot.captured_at:%Y-%m-%d %H:%M:%S} 기준, "
+        if snapshot.captured_at is not None
+        else ""
+    )
+    lines = [
+        f"[영향 프로세스 — {metric_label} 상위 "
+        f"({captured}전체 {snapshot.total_count}개)]"
+    ]
+    if not snapshot.top:
+        lines.append("- 조회된 프로세스 없음")
+        return "\n".join(lines)
+    for i, p in enumerate(snapshot.top, start=1):
+        args = p.args if p.args else "-"
+        lines.append(
+            f"{i}. {p.name:<10} pid {p.pid} user {p.user}  "
+            f"메모리 {p.pmem:.1f}% · CPU {p.p100cpu:.1f}%  args: {args}"
+        )
+    return "\n".join(lines)
+
+
 async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """알람 이벤트를 LLM으로 분석하여 AlarmAnalysisResult를 반환한다.
 
@@ -140,6 +176,12 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
     if stats is not None:
         history_section = "\n" + _render_history_section(stats, event, cfg.alarm)
 
+    # Plan 47-1: 영향 프로세스 스냅샷이 있으면 프롬프트에 주입, 없으면 빈 문자열
+    snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
+    process_section = ""
+    if snapshot is not None:
+        process_section = "\n" + _render_process_section(snapshot)
+
     severity_label = _SEVERITY_LABELS.get(event.severity, "해소" if event.is_clear else "알 수 없음")
     user_msg = ALARM_ANALYZER_USER_TEMPLATE.format(
         db_id=event.db_id,
@@ -158,6 +200,7 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         conditions=event.conditions,
         condition_log=event.condition_log,
         history_section=history_section,
+        process_section=process_section,
     )
     try:
         response = await llm.ainvoke([

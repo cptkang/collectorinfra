@@ -40,6 +40,8 @@
 31. [알람 소켓 수신 → LLM 분석 → worKB 발송](#d-031-알람-소켓-수신--llm-분석--workb-발송-plan-46)
 32. [폴스타 알람 메시지 포맷 확정](#d-032-폴스타-알람-메시지-포맷-확정--단일행-json--alarmevent-필드-재설계-plan-46-개정)
 33. [처리 현황에 유사어 매핑 표시 — SQL 기반 역조회](#d-033-처리-현황에-유사어-매핑-표시--생성된-sql-기반-역조회)
+34. [알람 이력 기반 패턴 분석 — 폴스타 DB 직접 조회 (Plan 47)](#d-035-알람-이력-기반-패턴-분석--폴스타-db-직접-조회-plan-47)
+35. [알람 영향 프로세스 보강 — 폴스타 실시간 프로세스 API (Plan 47-1)](#d-036-알람-영향-프로세스-보강--폴스타-실시간-프로세스-api-plan-47-1)
 
 ---
 
@@ -1687,10 +1689,81 @@ ALARMSEVERITY=0은 알람 해소 상태를 나타내며, 이력 조회 쿼리에
 
 ---
 
+## D-036. 알람 영향 프로세스 보강 — 폴스타 실시간 프로세스 API (Plan 47-1)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-16 |
+| **상태** | 구현 완료 |
+| **관련 결정** | D-035(Plan 47 enricher 확장), D-032(AlarmEvent 필드), D-022(조인 규칙 — 본 계획은 DB 미사용) |
+
+### 결정
+
+CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`GET {base_url}/rest/server/process/listByhostname?hostname=`)를 **hostname으로 조회**하여, 그 시점 자원을 점유 중인 상위 프로세스를 결정적으로 선별·마스킹해 패턴 근거에 더해 제공한다. 별도 노드를 만들지 않고 `alarm_context_enricher`에 프로세스 조회 단계를 추가(그래프 노드 수 3개 불변)하고, 이력 조회(폴스타 DB)와 `asyncio.gather`로 **동시 실행**하며 각자 독립 graceful degradation한다.
+
+### 근거
+
+"왜 자원이 높은가"의 직접 근거가 프로세스 점유율 — DB 이력(패턴)과 보완 관계. 별도 노드 없이 enricher 확장으로 응집. 외부 HTTP 의존은 짧은 타임아웃(기본 3초)+graceful degradation으로 격리. 정렬·선별·마스킹은 Python 순수 함수로 결정적 처리하고 LLM은 상위 프로세스(이름·pid) 인용만 — 토큰·환각·민감정보 노출 회피.
+
+### 대안 (미채택)
+
+| 대안 | 미채택 이유 |
+|------|-----------|
+| ① 별도 노드 분리 | 그래프 복잡도만 증가 — enricher 확장으로 응집 |
+| ② 모든 알람에 프로세스 조회 | 디스크/네트워크엔 무의미, 외부 호출 낭비 |
+| ③ 프로세스 원시 데이터를 LLM에 그대로 주입 | 토큰·환각·민감정보 노출 — 결정적 선별+마스킹 채택 |
+
+### 핵심 설계 결정
+
+| 항목 | 결정 |
+|------|------|
+| **조회 키 (키 차이 주의)** | 프로세스 API는 **`event.hostname`** 사용. Plan 47 DB 이력 조회는 `r.name`(=serverName)을 쓰는 것과 **정반대 키** — 동일 알람에서 서로 다른 식별자(실측: serverName="cop0-aisapd02" vs hostname="saisvd01") |
+| 인증·scheme | 인증 불필요(내부 시스템, 비로그인 조회 확인) · `http://`만 사용(TLS 없음). 인증 헤더/토큰/verify_ssl 설정 두지 않음 |
+| 게이팅 | CPU/메모리(`classify_alarm_kind`) + 발생 알람(is_clear=False) + base_url 매핑 존재 + process_enrich_enabled + client 주입 시에만 조회. 디스크/네트워크/해소/미매핑 db_id 스킵 |
+| graceful degradation | API 타임아웃/비200/네트워크오류/미주입 어느 경우에도 `process_snapshot=None` — 분석·발송 차단 금지. 노드는 항상 `{history_stats, process_snapshot}` 두 키 반환 |
+| 동시 실행 | history와 process를 `asyncio.gather`로 동시 실행, 각자 try/except 독립 degradation, 노드 전체 `enrich_timeout_seconds` 상한 |
+| 결정적 선별 + LLM 인용 | 정렬(CPU=p100cpu→pcpu 폴백, 메모리=pmem)·상위 N 선별·마스킹은 Python 순수함수(`process_rank.py`). LLM은 probable_cause/recommended_action에 상위 프로세스 인용만, 미조회 시 추측 금지 |
+| **민감정보 마스킹 (필수)** | args의 password/passwd/pwd/secret/token/api_key/access_key/credential 값과 접속문자열(scheme://user:pass@host) 비밀번호를 `mask_args()`로 마스킹한 값만 LLM·UI·workb·webhook에 노출. 마스킹 회귀를 단위 테스트로 고정 |
+| SSRF/인젝션 방지 | base_url은 설정 고정값(사용자 입력 아님), hostname만 `urllib.parse.quote(safe='')`로 인코딩하여 쿼리에 부착 — 경로/호스트 조작 불가 |
+| `.env` 신규 필드 | 스칼라 + `=`구분 CSV (`ALARM_PROCESS_API_BASE_URLS_CSV`) — JSON dict 회피 (Known Mistakes 2026-03-23 비해당) |
+| API 응답 시각 | 응답 최상위 `date`를 `ProcessApiResult.captured_at`으로 파싱(표시용). `list_by_hostname` 반환을 (captured_at, processes) 튜플로 확장 (Plan 47-1 §5.3의 list 반환을 시각 포함으로 보강) |
+| ALARM_PROCESS_ENRICH_ENABLED=false | process_section 미주입 — 기존 Plan 47 동작과 완전 동일 |
+
+### 변경된 파일
+
+| 파일 | 변경 내용 | 계층 |
+|------|----------|------|
+| `src/alarm/domain/alarm.py` | `ProcessInfo`/`ProcessSnapshot` 신규 | domain |
+| `src/alarm/domain/process_rank.py` | 신규 — `classify_alarm_kind`/`select_top_processes`/`mask_args` 순수 함수 | domain |
+| `src/alarm/infrastructure/polestar_process_api.py` | 신규 — `PolestarProcessApiClient`(httpx GET, hostname URL 인코딩, 타임아웃, None degradation), `ProcessApiResult`(captured_at+processes) | infrastructure |
+| `src/alarm/application/nodes/alarm_context_enricher.py` | `enrich_processes()` 신규, 노드를 history∥process `asyncio.gather` 동시 실행+독립 degradation으로 재구성 (항상 두 키 반환) | application |
+| `src/alarm/application/nodes/alarm_analyzer.py` | `_render_process_section()` 신규, `{process_section}` 주입 | application |
+| `src/alarm/application/nodes/alarm_notifier.py` | workb `영향 프로세스` 텍스트 표(`_process_table_html`), webhook `process_snapshot` 필드(`_process_payload`), `_send_workb`/`_send_webhook` 시그니처 확장 | application |
+| `src/alarm/application/alarm_worker.py` | `_build_process_client()` 신규, graph config에 `process_client` 주입, 초기 state에 `process_snapshot` | application |
+| `src/alarm/orchestration/alarm_graph.py` | `AlarmState.process_snapshot` 추가 | orchestration |
+| `src/alarm/prompts/alarm_analyzer.py` | `{process_section}` + 프로세스 인용 규칙 4개(인용/수치 비계산/미조회 추측 금지/마스킹 복원 금지) | prompts |
+| `src/api/routes/alarm.py` | `query_process`/`simulated_processes` 파라미터(2 요청), `process_snapshot` 응답 필드, `_process_to_dict`/`_resolve_process_snapshot` 헬퍼, UI push 2곳·미리보기·실발송에 스냅샷 연동 | interface |
+| `src/static/js/app.js` | `renderProcessEvidence()` 영향 프로세스 표(CPU/MEM 컬럼, 알람 지표 강조 정렬), 알람 말풍선 주입 | static |
+| `src/static/css/style.css` | `.alarm-proc-table`/`.alarm-proc-num`/`.is-primary` (`.alarm-evidence` 재사용+컬럼 헤더 조정) | static |
+| `src/config.py` | `AlarmConfig`에 `process_enrich_enabled`/`process_api_base_urls_csv`/`process_api_timeout_seconds`/`process_top_n` + `get_process_api_base_url()` | config |
+| `.env.example` | `ALARM_PROCESS_*` 4개 항목 추가 (스칼라+CSV) | 설정 |
+| `tests/test_alarm_process_rank.py` | 신규 — 알람 종류 판정·CPU/메모리 정렬·마스킹 회귀·누락 필드·base_url 매핑 (31건) | 테스트 |
+| `tests/test_alarm_process_enrich.py` | 신규 — 게이팅·hostname 사용·동시 실행·독립 degradation·analyzer 주입·API 클라이언트·notifier/webhook·API 헬퍼 (33건) | 테스트 |
+| `tests/test_alarm_enricher.py` | 노드 반환 계약 변경(항상 `process_snapshot` 키 포함) 반영 6건 | 테스트 |
+
+### 향후 수정 시 고려사항
+
+- 폴스타 프로세스 API에 향후 인증이 도입되면 그때 헤더/토큰 처리를 추가 (현재 비인증 확인됨)
+- 새 폴스타 인스턴스 추가 시 `ALARM_PROCESS_API_BASE_URLS_CSV`에 `db_id=http://host` 항목 추가
+- `mask_args()` 마스킹 패턴은 신규 민감 키워드(예: bearer, jwt) 발견 시 `_SENSITIVE_KEY`에 보강 — 마스킹 회귀 테스트로 고정
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-16 | D-036 | 알람 영향 프로세스 보강 (Plan 47-1): CPU/메모리 발생 알람에 한해 폴스타 실시간 프로세스 API를 **hostname으로 조회**(Plan 47 DB 이력의 serverName과 정반대 키), 상위 N을 결정적 선별·마스킹하여 패턴 근거에 추가. `alarm_context_enricher`에 프로세스 조회 단계 추가(노드 수 3개 불변, history와 `asyncio.gather` 동시 실행·독립 degradation). process_rank.py(순수 함수)·polestar_process_api.py(httpx GET, 비인증 http, URL 인코딩) 신규, AlarmState.process_snapshot, 프롬프트 `{process_section}`+인용 규칙, notifier workb 표·webhook 필드, app.js/style.css 영향 프로세스 표, AlarmConfig 4필드+`get_process_api_base_url()`, 테스트 API query_process/simulated_processes. **args 민감정보(password/token/접속문자열) mask_args() 마스킹 필수 — 회귀 테스트 고정** |
 | 2026-06-11 | D-035 | 알람 이력 기반 패턴 분석 (Plan 47): 폴스타 DB 직접 조회(고정 SQL, lookback 90일, max_rows 2,000), alarm_pattern.py 통계·1차 분류 순수 함수, polestar_history.py 리포지토리(C-6 패턴 서버 매칭, gp/yd r.name), alarm_context_enricher 노드(+Redis 단기 캐시 TTL 300초, 타임아웃 5초, graceful degradation), 3-노드 그래프 전환, 프롬프트/notifier/UI 패턴 필드 확장, 테스트 API query_history/simulated_history. **is_clear를 severity=0 단독 기준으로 정정 — D-032의 alarmStatus='발생'/'해소' 기술은 실측과 다름(폴스타 UI ACK 상태값)** |
 | 2026-06-11 | D-034 | 주기적 헬스체크 로그 노이즈 감소: httpx 로거 WARNING 상향, DBHubClient/PostgresClient 연결 성공·종료 로그 INFO→DEBUG 전역 강등. 실패 경로(WARNING/예외) 로그는 유지. 부수: tests/test_dbhub_integration.py 인코딩 깨짐으로 잘못된 단정문 6건 복원 |
 | 2026-06-11 | D-033 | 처리 현황 유사어 매핑 표시: src/utils/synonym_usage.py 신규(SQL 리터럴 역조회 + 사전 미등록 감지), query_generator synonym_usage 반환, AgentState 필드 추가, SSE/UI 렌더링 추가 |

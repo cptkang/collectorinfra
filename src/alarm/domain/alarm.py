@@ -3,6 +3,7 @@
 AlarmEvent: 폴스타로부터 수신된 알람 이벤트 (폴스타 템플릿 변수와 1:1 대응)
 AlarmHistoryEntry: 폴스타 DB에서 조회된 과거 알람 1건 (Plan 47)
 AlarmHistoryStats: 이력 통계 + 1차 분류 결과 (Plan 47)
+ProcessInfo / ProcessSnapshot: 알람 시점 영향 프로세스 스냅샷 (Plan 47-1)
 AlarmAnalysisResult: LLM 분석 결과 및 발송 내역
 """
 
@@ -85,6 +86,40 @@ class AlarmHistoryStats:
     truncated: bool                       # max_rows 도달로 이력 일부만 반영됨
     pre_classification: str               # "첫 발생"|"주기적"|"급증"|"산발적"
     source: str                           # "polestar_db" | "cache" (테스트 경로는 "simulated")
+
+
+@dataclass
+class ProcessInfo:
+    """프로세스 1건 (마스킹·정규화 완료 — Plan 47-1).
+
+    폴스타 실시간 프로세스 API 응답의 단일 프로세스를 선별·마스킹·정규화한 값.
+    args는 반드시 mask_args()로 민감정보(비밀번호·토큰·접속문자열)를 제거한 값만 보관한다.
+    """
+
+    name: str
+    pid: int
+    ppid: int
+    user: str
+    p100cpu: float       # 100% 기준 CPU% (표시·랭킹 기본)
+    pcpu: float          # 코어 합산 CPU%
+    pmem: float          # 물리 메모리 %
+    rss: int             # resident set size (bytes, 0 허용)
+    args: str            # 마스킹·절단된 실행 인자
+
+
+@dataclass
+class ProcessSnapshot:
+    """알람 시점 영향 프로세스 스냅샷 (Plan 47-1).
+
+    CPU/메모리 발생 알람에 한해 폴스타 실시간 프로세스 API를 hostname으로 조회하여
+    해당 지표(cpu=p100cpu, memory=pmem) 내림차순 상위 N개를 결정적으로 선별한 결과.
+    """
+
+    alarm_kind: str                   # "cpu" | "memory"
+    captured_at: Optional[datetime]   # 응답 date (스냅샷 시각)
+    top: list["ProcessInfo"]          # 해당 지표 내림차순 상위 N
+    total_count: int                  # 조회된 전체 프로세스 수
+    source_host: str                  # 조회에 사용한 hostname
 
 
 @dataclass

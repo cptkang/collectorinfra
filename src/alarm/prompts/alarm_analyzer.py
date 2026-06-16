@@ -9,6 +9,7 @@ ALARM_ANALYZER_USER_TEMPLATE: 알람 정보 입력 템플릿
     severity, severity_label, alarm_status, alarm_time,
     conditions, condition_log,
     history_section — 알람 이력 통계 텍스트 (Plan 47, 이력 없으면 빈 문자열)
+    process_section — 영향 프로세스 텍스트 (Plan 47-1, 미조회/비대상 알람이면 빈 문자열)
 """
 
 ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분석하는 전문가입니다.
@@ -39,6 +40,11 @@ ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분
 - 이력 통계는 최근 90일 기준 — 분기(3개월) 이상의 장주기 패턴은 판단 대상이 아니며 추측하지 말 것
 - "(이력 일부만 반영)" 표기가 있으면 최초 발생·전체 건수 해석에 그 한계를 반영할 것
 - 통계 수치를 새로 계산하지 말 것 — 제공된 수치만 인용할 것
+- [영향 프로세스] 섹션이 주어지면 probable_cause/recommended_action에 상위 프로세스
+  (이름·pid)를 구체적으로 인용할 것 (예: "java(pid 12345)가 메모리 38% 점유")
+- 프로세스 수치(CPU%/메모리%)를 새로 계산하지 말고 제공된 값만 인용할 것
+- [영향 프로세스] 섹션이 없으면(조회 불가/비대상 알람) 프로세스를 추측하지 말 것
+- 마스킹된(***) 인자의 내용을 추정·복원하지 말 것
 - JSON 이외의 텍스트를 절대 출력하지 말 것
 """
 
@@ -54,4 +60,4 @@ ALARM_ANALYZER_USER_TEMPLATE = """알람 정보:
 - 알람 일시: {alarm_time}
 - 임계 조건: {conditions}
 - 조건 로그: {condition_log}
-{history_section}"""
+{history_section}{process_section}"""
