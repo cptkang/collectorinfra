@@ -90,6 +90,10 @@ class QueryConfig(BaseSettings):
     sufficiency_required_threshold: float = 0.7   # hint/synonym 매핑
     sufficiency_optional_threshold: float = 0.5   # llm_inferred 매핑
 
+    # 양식 채우기 결정적 SQL 빌더(D-038) 사용 여부. False면 항상 LLM 생성으로 폴백.
+    # 운영 중 문제 시 즉시 LLM 전용으로 회귀하는 킬 스위치.
+    enable_deterministic_report_sql: bool = True
+
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
 
 

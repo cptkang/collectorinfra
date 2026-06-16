@@ -241,6 +241,18 @@ query_guide: |
     - server.Disks: DiskCount(디스크수), TotalSize(전체 디스크용량)
     - server.NetworkInterface: IP, MAC, BANDW(대역폭), MTU, NETMASK, STATUS(UP/DOWN), DUPLEX, TYPE(Ethernet)
 
+  [★ 양식 채우기 / 성능 통계 조인 시 server.Server 행 탈락 주의]
+  cmm_metric_stat_[h,d,m]에는 server.Cpus/server.Memory 등 하위 리소스의 통계만 있고
+  server.Server(서버 본체) 행은 들어있지 않다. 메트릭 테이블을 cmm_resource와 단일 평면 조인
+  (JOIN ... ON r.id = s.resource_id)으로 묶으면 server.Server 행이 INNER JOIN으로 전부 탈락하여,
+  server.Server에서 뽑는 모든 CASE 컬럼(서버명/Hostname/IPaddress/OSType/OSVerson)이 NULL이 된다
+  (server.Cpus/server.Memory 컬럼과 사용률만 값이 나옴).
+  → 식별/OS 정보는 반드시 (a) 서버 행 svr(svr.id = r.platform_resource_id,
+    svr.resource_type='server.Server')의 직접 컬럼/EAV에서 가져오거나,
+    (b) 메트릭 조인과 분리된 서브쿼리에서 platform_resource_id로 조인해 가져온다.
+    단일 평면 조인에 server.Server CASE 피벗과 메트릭 조인을 함께 쓰지 말 것.
+  → OSVerson은 폴스타 제품 오탈자가 실제 EAV 속성명이다. 절대 'OSVersion'으로 정정하지 말 것.
+
   [서버 종합 정보 조회 패턴]
   한 서버의 서버정보 + CPU + 메모리를 한 행으로 조회하려면:
     GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계하고,
@@ -487,6 +499,61 @@ query_examples:
 
         AND r.dtime IS NULL;
     explanation: "OSParameter는 stringvalue(LOB) 사용. 공동존 폴스타에서 장비명 필터는 r.name 컬럼."
+
+# === 성능 지표 메트릭 패턴 (D-038) ===
+# cmm_metric_stat_[h,d,m] 통계 테이블의 구조화 메타데이터.
+# 결정적 SQL 빌더가 "CPU 평균"/"메모리 최대 사용률" 같은 양식 필드를
+# (resource_type + definition_name + 집계종류 + 값컬럼)으로 분류하는 데 사용한다.
+# 분류 규칙은 src/utils/metric_classifier.py 참조.
+metric_patterns:
+  # 시간 단위별 통계 테이블 (stat_date 문자열 포맷 포함)
+  stat_tables:
+    hour:  {table: cmm_metric_stat_h, stat_date_format: YYYYMMDDHH}
+    day:   {table: cmm_metric_stat_d, stat_date_format: YYYYMMDD}
+    month: {table: cmm_metric_stat_m, stat_date_format: YYYYMM}
+  default_resolution: month
+  # 조인 키
+  join:
+    resource_id_column: resource_id           # cmm_resource.id = stat.resource_id
+    server_link_column: platform_resource_id  # 하위리소스 r.platform_resource_id = svr.id
+  # 집계종류 → 값 컬럼
+  value_columns:
+    min: min_val
+    avg: avg_val
+    max: max_val
+  # 집계종류 한국어 인식어 (필드명에서 감지)
+  aggregations:
+    avg: ["평균", "avg", "average", "mean"]
+    max: ["최대", "최고", "피크", "max", "peak"]
+    min: ["최소", "최저", "min"]
+  # 지표 정의: resource_type + definition_name + 단위 + 도메인어/동의어
+  #  - synonyms: "CPU 사용률"처럼 그 자체로 메트릭이 분명한 완전 표현
+  #  - domain_terms: "CPU"처럼 집계어(평균/최대)와 결합될 때만 메트릭으로 보는 도메인 단어
+  metrics:
+    - name: cpu_utilization
+      resource_type: server.Cpus
+      definition_name: Utilization
+      unit: "%"
+      domain_terms: ["CPU", "씨피유", "프로세서"]
+      synonyms: ["CPU 사용률", "CPU 사용율", "CPU 이용률", "프로세서 사용률"]
+    - name: memory_utilization
+      resource_type: server.Memory
+      definition_name: Utilization
+      unit: "%"
+      domain_terms: ["메모리", "MEM", "RAM"]
+      synonyms: ["메모리 사용률", "메모리 사용율", "메모리 이용률", "RAM 사용률", "MEM 사용률"]
+    - name: filesystem_utilization
+      resource_type: server.FileSystems
+      definition_name: Utilization
+      unit: "%"
+      domain_terms: ["파일시스템", "파일 시스템", "FS"]
+      synonyms: ["파일시스템 사용률", "파일 시스템 사용률", "디스크 사용률", "FS 사용률"]
+    - name: disk_io
+      resource_type: server.Disks
+      definition_name: MaxIORate
+      unit: ""
+      domain_terms: []
+      synonyms: ["디스크 IO", "디스크 I/O", "디스크 IO율", "IO율", "MaxIORate", "디스크 입출력"]
 
 # 허용 테이블 목록 — schema_analyzer가 이 목록에 없는 테이블을 relevant_tables에서 제외한다.
 # cmm_vendor, cmm_os, cmm_os_param 등 레거시 lookup 테이블은 조회 대상이 아니다.

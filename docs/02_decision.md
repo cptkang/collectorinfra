@@ -42,6 +42,8 @@
 33. [처리 현황에 유사어 매핑 표시 — SQL 기반 역조회](#d-033-처리-현황에-유사어-매핑-표시--생성된-sql-기반-역조회)
 34. [알람 이력 기반 패턴 분석 — 폴스타 DB 직접 조회 (Plan 47)](#d-035-알람-이력-기반-패턴-분석--폴스타-db-직접-조회-plan-47)
 35. [알람 영향 프로세스 보강 — 폴스타 실시간 프로세스 API (Plan 47-1)](#d-036-알람-영향-프로세스-보강--폴스타-실시간-프로세스-api-plan-47-1)
+36. [양식 채우기 SQL 정합성 — server.Server 메트릭 조인 분리 + EAV 오탈자 결정적 치환](#d-037-양식-채우기-sql-정합성--serverserver-메트릭-조인-분리--알려진-eav-오탈자-결정적-치환)
+37. [양식 채우기 결정적 SQL 빌더 — 메트릭 메타데이터 + 분류기 + 빌더](#d-038-양식-채우기-결정적-sql-빌더--메트릭-메타데이터--분류기--빌더)
 
 ---
 
@@ -1759,10 +1761,148 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
+## D-037. 양식 채우기 SQL 정합성 — server.Server 메트릭 조인 분리 + 알려진 EAV 오탈자 결정적 치환
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-16 |
+| **상태** | 확정 |
+| **관련** | D-016(EAV 쿼리), D-022(조인 규칙), D-033(유사어 매핑 표시) |
+
+### 배경 / 문제
+
+여의도 공동존 폴스타 양식 채우기에서 **서버명/호스트명/IP/OS 컬럼이 전부 NULL**(컬럼 자체는 존재, 값만 빔)인 반면 CPU/메모리 용량·사용률은 정상 출력되는 현상. 두 가지 독립 원인이 동시에 작용:
+
+1. **메트릭 INNER JOIN으로 server.Server 행 탈락**: 생성된 SQL이 server.Server EAV 피벗에 성능 통계(`cmm_metric_stat_*`)를 단일 평면 조인(`JOIN ... ON r.id = s.resource_id`)으로 묶음. 메트릭은 server.Cpus/server.Memory 등 하위 리소스에만 존재하므로 server.Server 행이 INNER JOIN으로 전부 탈락 → server.Server에서 뽑는 모든 CASE 컬럼만 NULL.
+2. **EAV 속성명 오탈자 자동 교정**: LLM이 DB 실제 속성명 `'OSVerson'`(폴스타 제품 오탈자)을 정상 철자 `'OSVersion'`으로 자동 교정해 생성 → EAV NAME 매칭 0건. 프롬프트에 정확한 값을 제공해도 재발.
+
+### 결정
+
+1. **프로필 가이드/예시 (버그1)**: 5개 polestar 프로필(`polestar.yaml`, `polestar_pg.yaml`, `polestar_cm_gp.yaml`, `polestar_cm_yd.yaml`, `polestar_b0.yaml`) query_guide에 `[★ 양식 채우기 / 성능 통계 조인 시 server.Server 행 탈락 주의]` 규칙 추가. 식별/OS는 (a) 서버 행 `svr`(`svr.id = r.platform_resource_id`)의 직접 컬럼/EAV, 또는 (b) 메트릭과 분리된 서브쿼리에서 `platform_resource_id`로 조인해 조회. `polestar_cm_yd.yaml`에 식별+OS+설정+사용률 통합 few-shot 예시 추가.
+2. **결정적 치환 (버그2)**: `query_generator`에서 생성 SQL의 따옴표 리터럴 `'OSVersion'` → `'OSVerson'`을 결정적으로 치환(`_fix_known_attribute_typos()` / `_KNOWN_ATTRIBUTE_TYPO_FIXES`). SQL 추출 직후·`extract_synonym_usage` 이전에 적용하여 처리 현황 표시·실행 모두 보정값 사용. 프로필 query_guide에도 정정 금지 경고 명시(보조).
+
+### 근거
+
+- **D-003 정신 계승(LLM 신뢰 불가)**: 오탈자 자동 교정은 프롬프트로 막기 어려움이 실증됨 → 좁은 범위의 결정적 후처리를 1차 방어로 둔다.
+- INNER JOIN grain 문제는 가이드 텍스트만으로 재발 위험 → 올바른 구조의 few-shot 예시로 고정.
+
+### 적용 범위 / 부작용
+
+- 치환은 **따옴표로 감싼 리터럴만** 대상 → alias(`AS os_version` 등)·snake_case 식별자 영향 없음.
+- `'OSVersion'` 리터럴은 폴스타 EAV NAME 비교에만 의미가 있어 타 DB 부작용 없음.
+
+### 향후 수정 시 고려사항
+
+- 새 오탈자 속성명 발견 시 `_KNOWN_ATTRIBUTE_TYPO_FIXES`에 한 줄 등록(코드 단일 지점).
+- 정적 속성 + 메트릭을 함께 조회할 때는 항상 식별/속성 경로와 메트릭 경로를 분리.
+
+### 변경 파일
+
+| 파일 | 변경 | 계층 |
+|------|------|------|
+| `src/nodes/query_generator.py` | `_fix_known_attribute_typos()`/`_KNOWN_ATTRIBUTE_TYPO_FIXES` 신규, SQL 추출 직후 호출 | application |
+| `config/db_profiles/polestar*.yaml` (5개) | query_guide 규칙 추가; yd에 통합 few-shot 예시 | 설정 |
+| `CLAUDE.md` | Known Mistakes 2건 추가 | 문서 |
+
+---
+
+## D-038. 양식 채우기 결정적 SQL 빌더 — 메트릭 메타데이터 + 분류기 + 빌더
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-16 |
+| **상태** | 진행 중 (Phase 1~2 완료, Phase 3 예정) |
+| **관련** | D-007(문서처리), D-012(Mapping-First), D-016(EAV), D-037 |
+
+### 배경 / 문제
+
+양식 채우기(서버 인벤토리+사용량) 리포트가 **실행마다 결과가 달라짐**(예: 1651건 설정만 출력 / 389건 사용률만 출력). 원인은 LLM이 매 실행 SQL을 새로 생성하며 "설정 피벗 ↔ 메트릭 조인" 두 패턴을 비결정적으로 오가기 때문(temperature는 이미 0). 모양이 고정된 리포트는 LLM 재생성만으로는 일관성을 보장할 수 없다.
+
+### 결정 (전체 방향)
+
+양식 채우기처럼 모양이 고정된 폴스타 리포트는 field_mapper 매핑을 입력으로 **코드가 결정적으로 SQL을 생성**한다(Mapping-First 확장, D-012). 단 **분류-아니면-폴백** 원칙: 모든 필드가 분류 가능할 때만 결정적 생성하고, 하나라도 미분류면 기존 LLM 경로로 폴백한다. 알람/프로세스/임의 분석 등 모양이 불특정한 질의는 계속 LLM이 담당한다.
+
+### 단계화
+
+- **Phase 1 (완료)**: 메트릭 메타데이터 + 분류기 토대 마련 (라이브 동작 무변경).
+- **Phase 2 (완료)**: 결정적 SQL 빌더 + query_generator 게이팅 + **재시도 시 LLM 폴백** + alias 규약 준수.
+- **Phase 3 (예정)**: 디스크/파일시스템/네트워크/특정서버 필터 등 도메인·조건 확장.
+
+### Phase 1 구현
+
+1. **구조화 메타데이터 `metric_patterns` 신설** (5개 polestar 프로필). cmm_metric_stat_[h,d,m] 테이블·값컬럼(min/avg/max_val)·시간단위→테이블 매핑·집계어 인식·지표(resource_type + definition_name + 단위 + 도메인어/동의어). 기존 로더(`_load_manual_profile` → `schema_analyzer`)가 `source` 제외 전 키를 structure_meta로 복사하므로 **자동 surface**(schema_analyzer 수정 불필요).
+2. **순수 유틸 `src/utils/metric_classifier.py`**: `classify_metric_field()`(양식 필드 → `MetricFieldSpec`), `detect_aggregation()`, `resolve_stat_table()`, `load_metric_patterns()`. 판정 규칙: (1) 완전 동의어 매칭, (2) 도메인어+집계어 조합. "CPU 코어 수"·"메모리 용량"은 메트릭 아님(None)으로 EAV/직접컬럼에 양보.
+
+### Phase 2 구현
+
+1. **결정적 빌더 `src/utils/report_sql_builder.py`** (순수 함수). 각 양식 필드를 (ⓐ직접컬럼 / ⓑEAV / ⓒ메트릭)으로 분류 후 폴스타 인벤토리+사용량 SQL을 생성. **하나라도 미분류면 None 반환 → LLM 폴백**(분류-아니면-폴백).
+   - 구조: **단일 피벗 + 메트릭 LEFT JOIN(ON절 stat_date 필터)** → server.Server 행이 메트릭 INNER JOIN으로 탈락하지 않음(D-037 내장). EAV는 소유 resource_type별 `MAX(CASE …)`로 분리.
+   - **value_joins로 직접컬럼 등가가 있는 식별 속성(Hostname↔hostname, IPaddress↔ipaddress)은 직접컬럼 사용** → 공동존처럼 식별 EAV가 비어도 안전.
+   - EAV 소유 resource_type은 `known_attributes_detail` description의 `[resource_type: X]`에서 해석, 모호(예: TotalSize=Memory/Disks)하면 필드 도메인어로 해소, 그래도 모호하면 미분류→폴백.
+   - definition_name·EAV 속성명은 메타데이터 상수 → 오타(OSVerson 등) 불가.
+2. **query_generator 게이팅** (`_try_build_deterministic_sql`): 폴스타 양식 채우기(xlsx/docx) + column_mapping 존재 + **필터/멀티DB 없음** + 전 필드 분류 성공 시에만 결정적 SQL 사용. 그 외/예외는 기존 LLM 경로.
+3. **재시도 LLM 폴백**: `is_retry`(validator/executor/충분성 회귀)면 빌더를 건너뛰고 LLM이 생성 → 결정적 SQL이 어떤 이유로 실패해도 무한 동일에러 루프 없이 LLM으로 복구.
+4. **alias 규약**: SELECT alias를 column_mapping 값과 동일하게(EAV는 `EAV:attr`, 직접은 `table.column`, 메트릭은 `metric_<name>_<agg>`) 부여하고, 빌더가 산출한 `field_aliases`로 `column_mapping`을 갱신 → 다운스트림(result_organizer/excel_writer) 셀 매핑이 정확히 일치.
+5. **킬 스위치 (3-f)**: `QueryConfig.enable_deterministic_report_sql`(env `QUERY_ENABLE_DETERMINISTIC_REPORT_SQL`, 기본 true). false면 빌더를 건너뛰고 항상 LLM 생성 → 운영 중 문제 시 즉시 LLM 전용으로 회귀하는 안전장치.
+
+### 근거
+
+- 매핑은 이미 확보된 정보 → 기계적 SQL 조립은 코드가 결정적·완전·테스트 가능. LLM이 가장 흔들리는 지점.
+- 메트릭은 매핑이 표현할 수단이 없던 영역(definition_name/집계/시간단위) → 구조화 메타데이터로 정형화해야 결정적 생성이 가능.
+
+### 영향 범위 / 부작용 (Phase 1)
+
+- **라이브 동작 무변경**: metric_patterns가 structure_meta로 흐르지만 `_format_structure_guide()`는 이 키를 읽지 않는다(특정 키만 `.get()`). 분류기는 Phase 2 배선 전까지 휴면이며, metric_patterns가 없는 DB에서는 분류기가 항상 None → 무영향.
+- arch_check 0 위반, metric_classifier 단위/통합 테스트 26건(사용자 양식 컬럼 분류 검증 포함).
+
+### 향후 수정 시 고려사항
+
+- 새 지표/도메인은 프로필 `metric_patterns.metrics`에 항목 추가만으로 확장(코드 변경 불필요).
+- 결정적 빌더가 의심되는 동작을 보이면 `QUERY_ENABLE_DETERMINISTIC_REPORT_SQL=false`로 즉시 LLM 전용 회귀.
+
+### Phase 3 후보 (백로그 — 미반영, 추후 반영 여부 결정)
+
+현재 아래 유형은 모두 **LLM 폴백**으로 처리된다(동작은 정상, 다만 결정적이지 않음). 수요가 확인되면 "분류-아니면-폴백" 원칙을 유지한 채 결정적 경로로 점진 편입한다.
+
+| 후보 | 현재 | 작업 내용 | 우선순위/난이도 | 비고 |
+|------|------|----------|----------------|------|
+| **3-a 행 필터** | 필터 있으면 LLM | filter_conditions를 직접컬럼 WHERE/HAVING로 결정적 생성(서버명→`r.name`, avail_status 0=정상 등). 모든 필터가 알려진 컬럼일 때만 결정적, 아니면 폴백 | 높음 / 중 | 가장 흔한 케이스(특정 서버·비정상 서버). EAV 필터(OS=Linux)는 HAVING/서브쿼리 필요 → 후속 |
+| **3-b 비메트릭 EAV 도메인 확장** | 대부분 이미 동작 | DiskCount/SwapTotalSize/CPU 모델 등 1:1 속성 — `[resource_type]` 태그 검증·보강 | 낮음 / 하 | 메트릭 도메인(파일시스템/디스크IO)은 메타데이터 기반이라 이미 커버됨(검증만) |
+| **3-c 1:N 리소스(네트워크 인터페이스)** | LLM 폴백 | 서버당 NIC 다중 → "한 서버=한 행" 피벗으로 표현 불가. 서버×NIC 다중행 별도 셰이프/빌더 필요 | 낮음 / 상 | 구조적으로 다름 → 폴백 유지 권장 |
+| **3-d 멀티시트 양식** | 통합 매핑만 | 시트별 매핑(`sheet_mappings`)이 query_generator 시점엔 없음 → 시트별 빌드 위해 파이프라인 손질 필요 | 낮음 / 상 | |
+| **3-e 시간 범위 정교화** | 최신 1개 기간(MAX stat_date) | "지난 N개월 평균", 특정 월/기간 `BETWEEN` 지원 | 중 / 중 | 현재도 "지난 1개월/현재"는 정확(기간 집계 통계) |
+| **3-f 스키마 접두사 메타데이터화** | `polestar.` 하드코딩 | DB별 스키마가 다를 때 대비해 메타데이터로 분리 | 낮음 / 하 | 현재 모든 프로필 예시가 `polestar.`로 일치, 불일치 시 실행에러→LLM 폴백 |
+
+추천 진행 순서(수요 발생 시): **3-a 행 필터 → 3-e 시간 범위 → 3-b 검증**. 3-c/3-d는 별도 수요 확인 후.
+
+### 변경 파일 (Phase 1)
+
+| 파일 | 변경 | 계층 |
+|------|------|------|
+| `config/db_profiles/polestar*.yaml` (5개) | `metric_patterns` 메타데이터 추가 | 설정 |
+| `src/utils/metric_classifier.py` | 신규 — 메트릭 분류 순수 유틸 | utils |
+| `tests/test_utils/test_metric_classifier.py` | 신규 — 26건 | 테스트 |
+
+### 변경 파일 (Phase 2)
+
+| 파일 | 변경 | 계층 |
+|------|------|------|
+| `src/utils/report_sql_builder.py` | 신규 — 결정적 SQL 빌더 순수 유틸 | utils |
+| `src/nodes/query_generator.py` | `_try_build_deterministic_sql`/`_infer_resolution`/`_safe_extract_synonym_usage` 추가, 빌더 게이팅 early-return(재시도 시 LLM 폴백), 킬 스위치 연동, 유사어 역조회 리팩터 | application |
+| `src/config.py` | `QueryConfig.enable_deterministic_report_sql`(킬 스위치, 기본 true) | config |
+| `.env.example` | `QUERY_ENABLE_DETERMINISTIC_REPORT_SQL` 항목 추가 | 설정 |
+| `tests/test_utils/test_report_sql_builder.py` | 신규 — 빌더 단위/통합 | 테스트 |
+| `tests/test_nodes/test_query_generator.py` | 게이팅·폴백·킬 스위치 테스트 추가 | 테스트 |
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-16 | D-038 | 양식 채우기 결정적 SQL 빌더 Phase 2: `src/utils/report_sql_builder.py` 신규 — 양식 필드를 직접컬럼/EAV/메트릭으로 분류 후 **단일 피벗 + 메트릭 LEFT JOIN(ON절 필터)** 구조로 결정적 생성(server.Server 탈락 방지), value_joins로 Hostname/IPaddress 직접컬럼 대체(공동존 안전), TotalSize 등 모호 resource_type은 도메인어로 해소·실패 시 폴백. query_generator에 `_try_build_deterministic_sql` 게이팅(폴스타 양식채우기+필터/멀티DB 없음+전필드 분류 성공 시만) + **재시도 시 LLM 폴백** + alias 규약(field_aliases로 column_mapping 갱신). 미분류/비대상/예외는 기존 LLM 경로. **킬 스위치 `QUERY_ENABLE_DETERMINISTIC_REPORT_SQL`(QueryConfig, 기본 true) 추가 — false 시 즉시 LLM 전용 회귀(3-f)**. Phase 3 후보(행 필터/시간범위/네트워크/멀티시트 등)는 D-038 백로그로 기록. 테스트(빌더 단위·통합 + 게이팅·폴백·킬스위치) 추가 |
+| 2026-06-16 | D-038 | 양식 채우기 결정적 SQL 빌더 Phase 1: 5개 polestar 프로필에 구조화 메타데이터 `metric_patterns`(stat_tables h/d/m, value_columns min/avg/max_val, aggregations 인식어, metrics=resource_type+definition_name+단위+도메인어/동의어) 신설. 순수 유틸 `src/utils/metric_classifier.py` 신규(classify_metric_field/detect_aggregation/resolve_stat_table/load_metric_patterns) — "CPU 평균"·"메모리 최대"를 메트릭으로 결정적 분류, "CPU 코어수"·"메모리 용량"은 None(EAV 양보). 라이브 동작 무변경(분류기 Phase 2 배선 전 휴면, metric_patterns는 _format_structure_guide가 읽지 않음). 테스트 26건. **Phase 2(빌더+게이팅+재시도 LLM 폴백), Phase 3(도메인 확장) 예정** |
+| 2026-06-16 | D-037 | 양식 채우기 SQL 정합성: (1) 5개 polestar 프로필 query_guide에 `[★ 양식 채우기 / 성능 통계 조인 시 server.Server 행 탈락 주의]` 추가 + yd 통합 few-shot 예시 — 메트릭(cmm_metric_stat_*) 단일 평면 INNER JOIN 시 server.Server 행 탈락으로 식별/OS 컬럼 전체 NULL 방지. (2) query_generator `_fix_known_attribute_typos()`로 생성 SQL 리터럴 `'OSVersion'`→`'OSVerson'`(폴스타 오탈자 실제값) 결정적 치환 — LLM 자동 교정 무력화, 따옴표 리터럴만 대상이라 alias 무영향. CLAUDE.md Known Mistakes 2건 |
 | 2026-06-16 | D-036 | 알람 영향 프로세스 보강 (Plan 47-1): CPU/메모리 발생 알람에 한해 폴스타 실시간 프로세스 API를 **hostname으로 조회**(Plan 47 DB 이력의 serverName과 정반대 키), 상위 N을 결정적 선별·마스킹하여 패턴 근거에 추가. `alarm_context_enricher`에 프로세스 조회 단계 추가(노드 수 3개 불변, history와 `asyncio.gather` 동시 실행·독립 degradation). process_rank.py(순수 함수)·polestar_process_api.py(httpx GET, 비인증 http, URL 인코딩) 신규, AlarmState.process_snapshot, 프롬프트 `{process_section}`+인용 규칙, notifier workb 표·webhook 필드, app.js/style.css 영향 프로세스 표, AlarmConfig 4필드+`get_process_api_base_url()`, 테스트 API query_process/simulated_processes. **args 민감정보(password/token/접속문자열) mask_args() 마스킹 필수 — 회귀 테스트 고정** |
 | 2026-06-11 | D-035 | 알람 이력 기반 패턴 분석 (Plan 47): 폴스타 DB 직접 조회(고정 SQL, lookback 90일, max_rows 2,000), alarm_pattern.py 통계·1차 분류 순수 함수, polestar_history.py 리포지토리(C-6 패턴 서버 매칭, gp/yd r.name), alarm_context_enricher 노드(+Redis 단기 캐시 TTL 300초, 타임아웃 5초, graceful degradation), 3-노드 그래프 전환, 프롬프트/notifier/UI 패턴 필드 확장, 테스트 API query_history/simulated_history. **is_clear를 severity=0 단독 기준으로 정정 — D-032의 alarmStatus='발생'/'해소' 기술은 실측과 다름(폴스타 UI ACK 상태값)** |
 | 2026-06-11 | D-034 | 주기적 헬스체크 로그 노이즈 감소: httpx 로거 WARNING 상향, DBHubClient/PostgresClient 연결 성공·종료 로그 INFO→DEBUG 전역 강등. 실패 경로(WARNING/예외) 로그는 유지. 부수: tests/test_dbhub_integration.py 인코딩 깨짐으로 잘못된 단정문 6건 복원 |
