@@ -5,6 +5,8 @@
 > 도입 방식: **단계적 하이브리드** (1단계 패턴 자체 구현 → 2단계 격리 PoC)
 > 분해 범위: **복합 의도 분해 + 순차/병렬 실행**
 > 개정: 2026-06-16 (v2) — deepagents 전체 기능(11개 미들웨어) 충분성 분석 및 Phase 2~9 단계적 로드맵 추가 (§2.5, §5)
+> 개정: 2026-06-16 (v3) — 모호성 명료화 인터럽트(Clarification HITL) 추가: 처리 방법 모호 시 사용자에게 선택지 되묻기. Phase 1 훅 + Phase 4 구현, 계획 단계 감지 한정 (§4.11, §5 Phase 4, R-13)
+> 개정: 2026-06-17 (v4) — **트랙 B 재진입 확정**(D-037 갱신). FabriX tool 호출 불가 블로커를 **폐쇄망 vLLM 오케스트레이터**(Qwen3.5-9B, `ChatOpenAI` 네이티브 tool-calling) + **FabriX 워커(실질 응답처리)** 분리로 해소. Phase 8(실제 패키지) **부활**, Phase 9 재개. 상세 구현은 **Plan 49** · D-037 참조. **이하 본문(§2.4·§5·R-08 등)의 '트랙 B 제거 / FabriX tool 불가 확정'(2026-06-16) 서술은 본 개정으로 대체됨**(이력 보존 목적 유지).
 
 ---
 
@@ -22,13 +24,20 @@
 결과를 통합 응답하는 오케스트레이션 계층을 추가한다.
 task 간 관계는 **3패턴**(①독립 병렬 ②데이터 의존 순차 ③결과 조건부 동적 재계획)으로 다룬다(§4.10).
 
-**진행 방식(2026-06-16 확정)**: **FabriX는 tool 호출(tool-calling)이 불가한 것으로 확정**되었다.
-deepagents 실제 패키지는 모든 기능(planning `write_todos`·`task` 위임·filesystem)이 tool-calling 기반이므로
-FabriX로는 작동 불가 → **트랙 B(실제 패키지)와 검증 PoC는 제거**한다. 따라서 본 계획은 **트랙 A — deepagents의
-패턴(planner + subagent + 결과 기반 후속)을 tool-calling 없이(프롬프트+JSON 방식) 자체 LangGraph 노드로 구현 —
-으로 단일 확정**한다(§4). 운영 스택은 이미 1.x이나 실제 패키지를 쓰지 않으므로 버전 업글도 불필요(현행 유지).
-트랙 A로 사용자 요구(복합 의도·결과 기반 후속)는 전부 충족된다. 트랙 B는 *향후 tool-calling 지원 LLM으로
-교체할 경우*의 옵션으로만 남긴다(§5).
+**진행 방식(2026-06-17 갱신 — 트랙 B 재진입)**: 당초(2026-06-16)는 'FabriX tool 호출 불가 → 트랙 B(실제
+패키지) 제거, 트랙 A 단일화'로 확정했으나, **폐쇄망 vLLM 오케스트레이터**로 tool-calling 블로커가 해소되어
+**트랙 B(deepagents 실제 패키지)를 주 경로로 도입**한다(D-037 갱신, 상세 Plan 49).
+
+- **제어 평면 = vLLM**: 폐쇄망 내부에 tool-calling 지원 오픈모델(**Qwen3.5-9B**)을 서빙하고,
+  `langchain-openai`의 `ChatOpenAI`(base_url=vLLM)로 **네이티브 `bind_tools`** 를 구동 → deepagents
+  `write_todos`(동적 재계획)·`task`(위임)·filesystem 정상 동작.
+- **데이터 평면 = FabriX(KBGenAIChat)**: 자연어→SQL→DB 조회→결과 정리·**최종 자연어 응답**(실질 응답처리).
+  기존 `SUBAGENT_REGISTRY` 작업을 `@tool`로 노출하되 **FabriX는 도구 내부에서만 호출**(tool-calling 강요 방지).
+- **백엔드 선택은 vLLM 가용성 옵션**: vLLM 서빙 시 트랙 B, **미서빙 시 기존 `semantic_router`** 로 동작.
+- **트랙 A**(Phase 1~6, tool-calling 없이 자체 구현)는 **구현 완료되어 폴백으로 보존**한다.
+
+> 비고: 아래 §2.4~§5·§6(R-08)의 '트랙 B 제거'·'FabriX tool 호출 불가 확정' 서술은 2026-06-16 시점 기록이며,
+> 본 개정(2026-06-17)으로 **대체**되었다(이력 보존 목적 유지).
 
 > **충분성 분석**: 트랙 A의 Phase 1은 deepagents 11개 핵심 미들웨어 중 Planning(정적 분해)·SubAgent(위임) **2개만 부분 차용**한다(≈18%).
 > 누락 기능과 이를 보완하는 **Phase 2~9 단계적 로드맵은 §2.5(커버리지 분석)·§5(로드맵)** 에 정의한다.
@@ -84,7 +93,7 @@ FabriX로는 작동 불가 → **트랙 B(실제 패키지)와 검증 PoC는 제
 | langchain | 미설치(메타패키지) | `>=1.3.9,<2.0.0` | wheel 반입 필요(폐쇄망) |
 | langgraph | **`1.1.6` (1.x)** | langchain 1.x와 호환 | **호환**(현행 유지) |
 | Python | `>=3.11` | `>=3.11,<4.0` | **호환** |
-| tool calling | 커스텀 LLM 3종 `bind_tools` 구현, **FabriX 네이티브 불안정** | tool calling **필수** | ★ **유일한 실질 블로커**(R-08) |
+| tool calling | **vLLM 오케스트레이터**(`ChatOpenAI`→vLLM, 네이티브 tool-calling). FabriX는 워커(tool-calling 불요) | tool calling **필수** | **해소** — vLLM이 제공(R-08, 트랙 B) |
 
 > **주의**: `requirements.txt`는 하한(`>=0.2.0`/`>=0.3.0`)만 명시하나, 실제 배포 wheel(`wheels/{os}/`)은 위와 같이 **1.x**다.
 
@@ -92,8 +101,9 @@ FabriX로는 작동 불가 → **트랙 B(실제 패키지)와 검증 PoC는 제
   (`requirements.txt`의 `>=0.2.0` 하한만 보고 0.x로 오판했던 것을 정정.) 따라서 deepagents 도입은 **메이저 마이그레이션이 아니라
   마이너 업글**(core 1.2→1.4) + `langchain` 메타패키지·`deepagents` wheel 반입(폐쇄망)이다. 커스텀 LLM 클라이언트도
   이미 1.x에서 동작 중이므로 재작성 리스크는 낮다.
-- **남은 유일한 실질 블로커는 tool-calling**(R-08): 버전을 올려도 FabriX가 tool-calling을 못 하면 deepagents가 작동하지 않는다.
-  따라서 **트랙 A의 존재 이유는 "버전 회피"가 아니라 "tool-calling 없이 핵심 가치 선확보"** 로 재정의된다.
+- **tool-calling 블로커(R-08) 해소(2026-06-17)**: FabriX 자체는 tool-calling을 못 하나, **별도 vLLM 오케스트레이터**가
+  tool-calling을 담당하고 FabriX는 워커(실질 응답처리)로 분리되어 deepagents 실제 패키지가 작동한다(트랙 B, Plan 49).
+  트랙 A(자체 구현)는 폴백으로 보존되며, vLLM 미서빙 시 `semantic_router`로 회귀한다.
 
 > 출처: [deepagents overview](https://docs.langchain.com/oss/python/deepagents/overview),
 > [subagents](https://docs.langchain.com/oss/python/deepagents/subagents),
@@ -112,7 +122,7 @@ FabriX로는 작동 불가 → **트랙 B(실제 패키지)와 검증 PoC는 제
 | 3 | tool calling 기본화 + **response_format** | 프롬프트+JSON 대신 도구호출/구조화출력으로 신뢰성 확보 | ✗ (수동 JSON 파싱) | **Phase 7** |
 | 4 | **FilesystemMiddleware** | 대용량 도구 출력을 파일로 오프로딩, 컨텍스트/state 경량화 | ✗ | **Phase 3** |
 | 5 | **SummarizationMiddleware** | 토큰 ≈85% 임계 시 대화 자동 압축 | ✗ (단순 슬라이싱) | **Phase 5** |
-| 6 | **HumanInTheLoopMiddleware** (`interrupt_on`) | 도구별 승인/편집/거부 | △ SQL·구조 2개 고정 | **Phase 4** |
+| 6 | **HumanInTheLoopMiddleware** (`interrupt_on`) | 도구별 승인/편집/거부 + **`respond`(되묻기)** | △ SQL·구조 2개 고정, 모호성 되묻기 ✗ | **Phase 4** (승인 세분화 + **모호성 명료화** §4.11) |
 | 7 | **AsyncSubAgentMiddleware** | 비동기 background 위임(task ID 즉시 반환) | ✗ | Phase 8+ (가치 평가) |
 | 8 | **SkillsMiddleware** (`SKILL.md`) | 메타 노출(프롬프트 주입) + 온디맨드 로드(`read_file`) | ✗ | **메타 노출은 트랙 A 가능**, 온디맨드는 코드 기반 대체. 기존 `db_profiles`와 중복 → 선택적 (§5.2) |
 | 9 | **MemoryMiddleware** (`AGENTS.md`) | 세션 간 학습 영속 | ✗ | 보류 (가치 평가) |
@@ -227,8 +237,8 @@ context_resolver → input_parser → field_mapper → intent_planner → agent_
                                                   (단일 task면 기존 경로와 동일)
 ```
 
-- `ENABLE_DEEPAGENT_ORCHESTRATION=true` 일 때만 `intent_planner`/`agent_orchestrator`/`result_aggregator`가 활성.
-- `false`(기본) 이면 기존 `semantic_router` 경로 유지 → **하위 호환**.
+- `ENABLE_DEEPAGENT_ORCHESTRATION` **미입력(기본)** 시 **멀티 DB 환경이면 `intent_planner`/`agent_orchestrator`/`result_aggregator` 신규 경로가 기본 동작**(D-037, 2026-06-16 기본값 전환). 단일/레거시면 비활성.
+- `=false` 명시 시 기존 `semantic_router` 경로로 회귀 → **하위 호환 opt-out**. `=true`로 강제 활성.
 
 ### 4.2 신규 노드 ①: `intent_planner` (deepagents `write_todos` 대응)
 
@@ -273,12 +283,18 @@ context_resolver → input_parser → field_mapper → intent_planner → agent_
 - **DB 라우팅은 task 내부로 위임**한다. planner는 `agent`와 `sub_query`만 결정하고,
   실제 대상 DB 선택은 `data_query` subagent가 (기존 `semantic_router`의 DB 분류 로직을 재사용해) 수행한다.
   → 관심사 분리: planner=무엇을, subagent=어디서·어떻게.
+  - ⚠ 단, planner는 질의에 포함된 **DB 식별 신호**(폴스타 위치: 김포/여의도/은행/공동존, DB명: polestar/cloud_portal 등,
+    환경: 운영/개발/스테이징)를 **`sub_query`에 그대로 보존**해야 `classify_dbs`가 올바른 DB를 고를 수 있다(§4.9.6).
+    이 신호는 DB 선택에만 쓰이고 SQL 조건으로 변환되지 않는다.
 - LLM 실패/파싱 실패 시 **단일 `data_query` task로 폴백** (현행 폴백 정책 계승).
 - **상태추적(Planning 정합)**: 생성된 모든 task의 `status`를 `pending`으로 초기화한다.
   `agent_orchestrator`가 실행 시작 시 `in_progress`, 완료 시 `completed`/`failed`로 갱신한다.
   `task_plan`은 SSE/로그로 노출하여 진행 가시성을 제공한다(실시간 진행률 스트리밍은 Phase 2).
 - **위임 분류(SubAgent 정합)**: planner는 각 agent를 `SUBAGENT_REGISTRY`(§4.3)의 `description`을 근거로 선택한다.
   이는 deepagents에서 메인 LLM이 `task` 도구의 subagent `description`을 보고 위임 대상을 고르는 것과 의미상 동형이다.
+- **모호성 훅(Phase 1 예약 슬롯)**: planner 출력에 선택적 `clarification_needed` 필드를 **예약**한다.
+  Phase 1은 이를 **방출만** 하고 보수적 기본 선택(단일 task 폴백 등)으로 진행하며, 실제 되묻기 인터럽트는
+  **Phase 4에서 처리**한다(§4.11). per-agent model/prompt 슬롯(S6)과 동일한 '슬롯 예약' 방식이다.
 
 ### 4.3 신규 노드 ②: `agent_orchestrator` (deepagents `task` 위임 대응)
 
@@ -401,10 +417,11 @@ else:
 
 ```python
 class AppConfig(BaseSettings):
-    enable_deepagent_orchestration: bool = False   # 신규 (기본 비활성)
+    enable_deepagent_orchestration: bool | None = None   # 신규 (None=미입력: 멀티 DB면 기본 활성)
 ```
 
-- 환경변수 `ENABLE_DEEPAGENT_ORCHESTRATION`로 제어. `semantic_routing`과 **상호 배타**(둘 다 true면 orchestration 우선).
+- 환경변수 `ENABLE_DEEPAGENT_ORCHESTRATION`로 제어. **미입력(None) 시 멀티 DB 환경에서 기본 활성**(신규 경로가 기본 동작 — D-037, 2026-06-16). `=false`로 `semantic_router` 회귀, `=true`로 강제 활성. `semantic_routing`과 **상호 배타**(둘 다 활성이면 orchestration 우선).
+- 명시값은 pydantic-settings가 `.env`·OS env에서 필드로 직접 읽음(`model_post_init`에서 `os.getenv` 미사용 — Known Mistakes 2026-06-10 준수). 미입력만 `model_post_init`이 `multi_db` 기준으로 해석.
 - HITL(SQL/구조 승인)·체크포인트는 기존 설정 그대로 적용. 단 복합 task 중 HITL 인터럽트 처리 방식은 §6 리스크 참조.
 
 ### 4.8 Clean Architecture 계층 배치
@@ -532,6 +549,49 @@ graph.add_edge("result_aggregator", END)
 - `route_after_semantic_router`/`_INTENT_ROUTE_MAP`은 deepagent 모드에서 **미사용**(registry가 대체).
   단 semantic_routing 모드 하위 호환을 위해 **삭제하지 않는다**.
 
+#### 4.9.6 다양한 라우팅·의도 신호 보존 (현재 구현 점검 — ★ 위치→DB 선택 등)
+
+기존 `semantic_router`는 **의도 분류 + DB 라우팅을 1회 LLM 호출**로 처리하며, 그 과정에서 위치·존·사용자 지정 DB
+같은 **라우팅 신호**를 풍부하게 활용한다(`domain_config.aliases`, `prompts/semantic_router.py` 예시).
+오케스트레이션은 이를 **2단계로 분리**(planner=agent+sub_query / `classify_dbs`=DB 선택)했으므로,
+라우팅 신호가 단계 사이에서 **소실되지 않도록** 명시적으로 보존해야 한다. 아래는 현재 코드 기준 점검표다.
+
+| # | 라우팅·의도 신호 | 현재 코드 근거 | 오케스트레이션 처리 | 상태 |
+|---|---|---|---|---|
+| 1 | **위치/존 → DB** (김포→`polestar_cm_gp`, 여의도→`polestar_cm_yd`, 은행→`polestar_b0`) | `domain_config.py` aliases(:82,:100,:64) + router 프롬프트 예시 | planner가 `sub_query`에 위치 보존 → `classify_dbs`가 alias로 DB 선택 | **갭(보완 필요)** |
+| 2 | **사용자 직접 DB 지정** ("polestar에서") | router 프롬프트 `user_specified`/aliases | planner가 `sub_query`에 DB명 보존 → `classify_dbs`가 `user_specified=1.0` | **갭(보완 필요)** |
+| 3 | **멀티 DB sub_query 분리** (서버사양+VM → polestar+cloud_portal) | router 프롬프트 `sub_query_context` 규칙 | `classify_dbs`가 target별 `sub_query_context` 산출 → SQL 생성엔 정제 context 사용 | 부분 |
+| 4 | alarm_query vs data_query | router 프롬프트 우선순위 | planner 분류(둘 다 `run_data_query_pipeline`) | 보존 |
+| 5 | cache 하위액션(캐시/유사어/컬럼·DB 설명/db-guide) | semantic_router 프롬프트 §"캐시 관리 의도" | planner→`cache_management`(노드가 내부 분기) | 보존 |
+| 6 | deterministic pre-route(pending/synonym/mapped_db) | `semantic_router.py:67~126` | `intent_planner` 계층 A pre-check | 보존(R-10) |
+| 7 | **위치 정보의 SQL 필터 누출 금지** | router 프롬프트 "sub_query_context에 위치 포함 금지" | `classify_dbs`의 `sub_query_context`(위치 제거)를 SQL 생성에 사용 | **갭(보완 필요)** |
+
+**핵심 보완 — planner→classify_dbs 라우팅 신호 전달** (3건):
+
+1. **planner 프롬프트 규칙 추가**(`prompts/intent_planner.py`): "DB는 선택하지 말되, 질의에 포함된
+   **DB 식별 신호(폴스타 위치: 김포/여의도/은행/공동존, DB명: polestar/cloud_portal, 환경: 운영/개발/스테이징)는
+   `sub_query`에 그대로 보존**하라. 이 신호는 DB 선택에 쓰이고 SQL 조건으로 변환되지 않는다." + 위치 포함 예시 2건.
+2. **`classify_dbs` 충실화**(`subagents.py`):
+   - (a) `_llm_classify` 호출 시 **`db_descriptions`(Redis 캐시) 주입을 복원**한다. 원래 `semantic_router`는
+     `cache_mgr.get_db_descriptions()`를 전달(`semantic_router.py:150~163`)하나, 현재 `classify_dbs`는 **누락**(`subagents.py:112`).
+   - (b) 반환 target의 **`sub_query_context`(위치 제거된 정제 질의)** 를 SQL 생성 입력으로 사용한다.
+3. **`run_data_query_pipeline` 보완**(§4.9.3): 단일 DB 분기에서 `user_query`를 raw `sub_query`가 아니라
+   **선택된 target의 `sub_query_context`** 로 설정한다(위치의 SQL 누출 방지 — 디멘전 7). 멀티 분기는 이미 target별 context 사용.
+
+**현재 구현 상태(2026-06-16, 보강 완료)**: 위 보완 1~3을 **모두 반영**했다 — planner 프롬프트에 DB 식별 신호
+보존 규칙 + 위치 예시(예시 4) 추가, `classify_dbs`에 `db_descriptions`(Redis 캐시) 주입 복원, 단일 DB는
+`sub_query_context`(정제 질의)를 SQL 생성 입력으로 사용. 회귀 테스트 3건(`test_routing_signal_preservation`)
+통과로 **신호 전달 경로의 구조적 갭은 해소**(R-14 완화). 단, 실제 위치→DB 분류 정확도는 LLM에 의존하므로 라이브
+환경 E2E(보완 4)는 별도 검증 과제로 남는다.
+
+**예시 트레이스 — "김포 폴스타에서 CPU 높은 서버 보여줘"**:
+
+```
+intent_planner → {agent: data_query, sub_query: "김포 폴스타에서 CPU 사용률 높은 서버 조회"}   ← "김포" 보존(보완 1)
+classify_dbs("김포 폴스타…", db_descriptions=캐시)  → polestar_cm_gp 선택, sub_query_context="CPU 사용률 높은 서버 조회"  (보완 2)
+run_data_query_pipeline → 단일 DB(polestar_cm_gp), SQL 생성 입력 = "CPU 사용률 높은 서버 조회"  ← 위치 누출 없음(보완 3)
+```
+
 ### 4.10 결과 기반 후속 처리: task 관계 3패턴 (★ 사용자 요구 직결)
 
 사용자 프롬프트는 (1) 여러 **독립 의도**를 담거나, (2) 한 작업의 **결과를 입력으로** 다음 작업을 하거나,
@@ -588,16 +648,59 @@ def _make_isolated_input(task, state, prior):
 > 패턴 ③(계획이 실행 중 변함)은 루프가 필요하므로 Phase 2. 사용자 요구의 "결과를 보고 추가 처리"는
 > 데이터만 넘기면 되는 경우(②)는 Phase 1에서, 후속 여부·내용을 판단해야 하는 경우(③)는 Phase 2에서 충족된다.
 
+### 4.11 모호성 명료화 인터럽트 (Clarification HITL, Phase 1 훅 + Phase 4 구현)
+
+사용자 질의의 **처리 방법이 모호**할 때(의도 판별 불확실, 대상 DB 미지정, 복수의 유효한 해석 등),
+임의로 진행하지 않고 **사용자에게 선택지를 제시해 되묻는** 멀티턴 인터럽트를 도입한다.
+deepagents **HumanInTheLoopMiddleware의 `respond`(질의-응답형)** 유형에 대응하며,
+기존 `approval_gate`(노드 단위 `interrupt_before`, tool-calling 불필요 — `nodes/approval_gate.py`)와 **동형**으로 구현한다.
+세 요소의 융합이다: **① 모호성 판단(intent_planner/Planning) + ② 되묻기 인터럽트(interrupt_before/HITL) + ③ 멀티턴 재개(체크포인터/D-013)**.
+
+**감지 범위(2026-06-16 확정)**: **계획 단계만** — `intent_planner`가 의도/처리방법/대상 DB의 모호성을
+감지했을 때만 되묻는다. subagent 실행 중(컬럼·테이블 매핑 모호 등) 되묻기는 복합 task 다중 인터럽트
+재개 복잡성(R-03) 때문에 **범위 밖**(향후 과제).
+
+**Phase 1 (훅만)**: `intent_planner` 출력 스키마에 선택적 `clarification_needed` 슬롯을 **예약**한다(§4.2).
+Phase 1은 이를 방출만 하고 **보수적 기본 선택**(단일 task 폴백 등)으로 진행한다 — 인터럽트 미발생.
+
+**Phase 4 (구현)**: 신규 `clarification_gate` 노드 + `interrupt_before`로 되묻기·재개를 구현한다.
+
+```
+intent_planner → [clarification_needed?]
+   ├─ 없음 → agent_orchestrator (기존 흐름)
+   └─ 있음 → clarification_gate (interrupt) → 사용자 선택 → intent_planner 재진입(선택 주입) → orchestrator
+```
+
+planner 출력(모호 시):
+
+```json
+{
+  "clarification_needed": {
+    "question": "어느 환경의 서버를 조회할까요?",
+    "options": ["김포 운영", "여의도 개발", "전체"],
+    "reason": "대상 DB가 명시되지 않음"
+  },
+  "tasks": [ /* 잠정 계획 */ ]
+}
+```
+
+- **상태 재사용**: 기존 HITL 필드(`awaiting_approval`/`approval_context`/`approval_action`, D-013)에
+  `approval_context.type = "clarification"` 변형을 추가한다. 신규 state 최소화.
+- **멀티턴 재개**: 체크포인터(D-013)로 ask→사용자 응답→`intent_planner` 재진입. 단일/멀티턴 통합 단일 경로 유지.
+- **안전장치**: 되묻기 횟수 상한(`MAX_CLARIFY`, 예: 2) 초과 시 보수적 기본 선택으로 자동 진행(무한 되묻기 방지 — R-13).
+- **tool-calling 불필요**: `approval_gate`와 동일한 노드 인터럽트 → FabriX로 정상 동작(트랙 A).
+
 ---
 
 ## 5. 단계적 구현 로드맵 (Phase 1 ~ Phase 9)
 
-**FabriX tool 호출 불가 확정(2026-06-16)** → **트랙 A로 단일화**한다. 트랙 B(deepagents 실제 패키지)·검증 PoC는
-제거하며, *향후 tool-calling 지원 LLM 교체 시*의 옵션으로만 보존한다.
+**갱신(2026-06-17)**: 당초 'FabriX tool 호출 불가 → 트랙 A 단일화, 트랙 B 제거'(2026-06-16)였으나,
+**폐쇄망 vLLM 오케스트레이터**로 tool-calling 블로커가 해소되어 **트랙 B(deepagents 실제 패키지)를 주 경로로
+도입**한다(D-037 갱신, Plan 49). 트랙 A는 폴백으로 보존.
 
-- **트랙 A (확정 · tool-calling 불필요)** — **Phase 1~6**. deepagents 패턴을 자체 LangGraph 노드로 구현.
-- **Phase 7 (tool calling 구조화 출력)** — **보류**: FabriX tool 호출 불가 → 현행 프롬프트+JSON 파싱 유지.
-- **Phase 8 (PoC) / Phase 9 (운영 전환)** — **제거/보류**: FabriX로 deepagents 실제 패키지 불가(향후 LLM 교체 시 재고).
+- **트랙 A (구현 완료 · 폴백 보존 · tool-calling 불필요)** — **Phase 1~6**. deepagents 패턴을 자체 LangGraph 노드로 구현. vLLM 미서빙 시 회귀 경로.
+- **Phase 7 (tool calling 구조화 출력)** — 트랙 B의 vLLM tool-calling으로 가능.
+- **Phase 8 (실제 패키지 도입) / Phase 9 (운영 전환)** — **부활·확정/재개**: 폐쇄망 vLLM 오케스트레이터 + FabriX 워커로 도입(Plan 49).
 
 각 Phase는 독립 착수 가능하다. **Phase 1만 본 문서에서 상세(§4·§8·§9)** 하고,
 Phase 2~9는 아래 **계획 개요**로 정의하며, 착수 시 각각 별도 plan 문서(plan 49~)로 상세화한다.
@@ -625,13 +728,13 @@ Phase 2~9는 아래 **계획 개요**로 정의하며, 착수 시 각각 별도 
 - 접근: `result_organizer`/`result_aggregator`에 대용량 페이로드 오프로딩 헬퍼.
 - 산출물: plan 50 / 선행: Phase 1 (우선도 **고**).
 
-### Phase 4 — HITL 도구별 세분화 (트랙 A)
+### Phase 4 — HITL 도구별 세분화 + 모호성 명료화 (트랙 A)
 
-- 목표: task/도구 단위 승인 정책(data_query=SQL 승인, cache_management=확인, synonym_registration=확인 등). 복합 질의에서 task별 차등 승인.
-- 대상 기능: **HumanInTheLoopMiddleware** (`interrupt_on` per-tool).
-- Gap 근거: `approval_gate`/`structure_approval_gate` 2종 고정(graph.py:315-321), task별 세분화 불가. `approval_context`에 task 정보 없음.
-- 접근: `interrupt_before` 일반화 + `approval_context`에 task_id/agent 부가. 복합 질의 SQL 승인은 순차 분리(R-03 연계).
-- 산출물: plan 51 / 선행: Phase 1.
+- 목표: (a) task/도구 단위 승인 정책(data_query=SQL 승인, cache_management=확인, synonym_registration=확인 등). 복합 질의에서 task별 차등 승인. (b) **모호성 명료화 인터럽트** — 처리 방법 모호 시 사용자에게 선택지 되묻기(§4.11, 계획 단계 감지 한정).
+- 대상 기능: **HumanInTheLoopMiddleware** (`interrupt_on` per-tool + `respond` 질의-응답형).
+- Gap 근거: `approval_gate`/`structure_approval_gate` 2종 고정(graph.py:315-321), task별 세분화 불가. `approval_context`에 task 정보 없음. **모호성 되묻기 경로 부재**(planner가 불확실해도 임의 진행).
+- 접근: (a) `interrupt_before` 일반화 + `approval_context`에 task_id/agent 부가. 복합 질의 SQL 승인은 순차 분리(R-03 연계). (b) 신규 `clarification_gate` 노드(`approval_gate` 동형) + `intent_planner` 모호성 감지(Phase 1 예약 슬롯 활성화) + `MAX_CLARIFY` 안전장치 + `intent_planner` 재진입.
+- 산출물: plan 51 / 선행: Phase 1(`clarification_needed` 슬롯 훅).
 
 ### Phase 5 — 멀티턴 컨텍스트 압축 (트랙 A)
 
@@ -655,20 +758,23 @@ Phase 2~9는 아래 **계획 개요**로 정의하며, 착수 시 각각 별도 
 - 결정: **현행 프롬프트 + JSON 파싱(`extract_json_from_response`)을 유지**한다(파싱 신뢰성은 R-07로 관리).
 - 재고 조건: tool-calling 지원 LLM으로 교체하거나 FabriX가 안정적 json_mode를 제공할 경우에만 재검토.
 
-### Phase 8 — deepagents 실제 패키지 PoC (**제거** — 검증 불필요)
+### Phase 8 — deepagents 실제 패키지 도입 (**부활·확정** — vLLM 오케스트레이터, 2026-06-17)
 
-- 상태: **제거**. FabriX tool 호출 불가가 확정되어, 모든 기능이 tool-calling 기반인 deepagents 실제 패키지는 작동 불가.
-  PoC로 검증할 실익이 없다(2026-06-16 사용자 결정).
-- 재고 조건: tool-calling 지원 LLM 교체 시 본 PoC를 부활 — 마이너 업글(core 1.2→1.4) + `langchain`/`deepagents` wheel 반입(폐쇄망) + 기존 파이프라인 `CompiledSubAgent` 래핑으로 도입 타당성 실측.
+- 상태: **부활·확정**(D-037 갱신, 상세 Plan 49). 폐쇄망 **vLLM 오케스트레이터**(Qwen3.5-9B, `ChatOpenAI`
+  네이티브 tool-calling)가 tool-calling 블로커를 해소하여 deepagents 실제 패키지를 도입한다. **FabriX는 워커**(실질 응답처리).
+- 도입 요건: `langchain-core` 1.2→`>=1.4.7` 업글 + `langchain`/`deepagents` wheel 반입(폐쇄망) + vLLM 인프라.
+  기존 `SUBAGENT_REGISTRY`를 `@tool`로 노출(FabriX는 도구 내부 호출). 백엔드는 vLLM 가용성으로 선택(미서빙 시 semantic_router).
+- 상세 계획·PoC 게이트(R-B2 tool-calling 신뢰도)·구현 순서는 **Plan 49**. PoC 결과는 `docs/deepagents_poc_report.md`.
 
-### Phase 9 — 운영 스택 전환 (**보류** — 트랙 B 미진입)
+### Phase 9 — 운영 스택 전환 (**재개** — 트랙 B 진입)
 
-- 상태: **보류**. 트랙 B(deepagents 실제 패키지)를 도입하지 않으므로 미진입. 운영 스택은 현행 1.x 유지(추가 업글 불필요).
-- 재고 조건: Phase 8 부활·성공 시에만.
+- 상태: **재개**(2026-06-17). 트랙 B 도입에 따라 `langchain-core` 1.4.7 업글 + `langchain`/`deepagents` wheel 반입
+  + vLLM 인프라를 운영 스택에 반영한다.
+- 선행: Phase 8 PoC 성공(오픈모델 tool-calling 신뢰도 게이트, Plan 49 §7).
 
-### 향후(LLM 교체 시) 재고 항목
+### 향후 재고 항목 (트랙 B 도입 후)
 
-- 트랙 B(Phase 8·9)와 **MemoryMiddleware(AGENTS.md) / AsyncSubAgentMiddleware**는 deepagents 실제 패키지(tool-calling) 전제. FabriX로는 불가하므로 **tool-calling 지원 LLM으로 교체할 경우에만** 재고한다.
+- **MemoryMiddleware(AGENTS.md) / AsyncSubAgentMiddleware**는 deepagents 실제 패키지(tool-calling) 전제다. **vLLM 오케스트레이터 도입(트랙 B, 2026-06-17)으로 이용 가능**해졌으나, Phase 8(코어 도입) 안정화 이후 별도 평가로 **후순위 도입** 검토한다(현 시점 미차용).
 - **Skills는 트랙 B 전제가 아니다** — 메타 노출(L1)은 tool-calling 무관이라 트랙 A에서 가능하다. 단 기존 `config/db_profiles/`와 중복되어 **선택적**이며, 별도 검토는 **§5.2** 참조.
 
 ### 로드맵 요약
@@ -678,31 +784,34 @@ Phase 2~9는 아래 **계획 개요**로 정의하며, 착수 시 각각 별도 
 | 1 | 정적 분해 + 위임 | A | Planning(정적)·SubAgent | 진행 중 |
 | 2 | **결과 기반 동적 재계획** + 진행추적 | A | TodoList | **고** (사용자 요구) |
 | 3 | State offloading | A | Filesystem | **고** (D-013) |
-| 4 | HITL 세분화 | A | interrupt_on | 중 |
+| 4 | HITL 세분화 + **모호성 명료화** | A | interrupt_on(`respond`) | 중 |
 | 5 | 컨텍스트 압축 | A | Summarization | 중 |
 | 6 | subagent 격리 강화 | A→B 준비 | SubAgent/CompiledSubAgent | 중 |
-| 7 | tool calling / 구조화 출력 | — | response_format | **보류** (FabriX 불가) |
-| 8 | 실제 패키지 PoC | — | 전체 스택 | **제거** (FabriX 불가) |
-| 9 | 운영 전환 | — | 전체 스택 | **보류** (LLM 교체 시) |
+| 7 | tool calling / 구조화 출력 | B | response_format | 트랙 B에서 vLLM tool-calling으로 가능 |
+| 8 | **실제 패키지 도입** | B | 전체 스택 | **부활·확정** (vLLM 오케스트레이터, Plan 49) |
+| 9 | 운영 전환 | B | 전체 스택 | **재개** (Phase 8 성공 시) |
 
-**권장 착수 순서(2026-06-16 확정 — 트랙 A 단일화)**: **1 → (2 ∥ 3) → 4 → 5 → 6**.
-(Phase 2는 사용자 요구(결과 기반 후속)로 우선, Phase 3은 D-013 이행으로 조기 권장. Phase 7~9는 보류/제거 — FabriX tool 호출 불가)
+**권장 착수 순서**: 트랙 A는 **1 → (2 ∥ 3) → 4 → 5 → 6**(Phase 1·2 구현 완료). **트랙 B(Phase 8·9)는 2026-06-17
+재진입** — 폐쇄망 vLLM 오케스트레이터로 deepagents 실제 패키지 도입(Plan 49). Phase 7(구조화 출력)은 트랙 B의 vLLM tool-calling으로 가능.
 
 ### 5.1 tool-calling 의존성 매트릭스 (★ FabriX tool 호출 불가 확정)
 
-> **FabriX(KBGenAIChat / FabriXAPIClient)는 tool 호출이 불가한 것으로 확정**(2026-06-16). 본 계획은 tool-calling 없이 동작하는 **트랙 A로 단일화**한다.
+> **갱신(2026-06-17)**: FabriX 자체는 tool 호출 불가이나, **별도 vLLM 오케스트레이터**가 tool-calling을 담당하고
+> FabriX는 워커로 분리되어 **트랙 B(실제 패키지)를 주 경로로 도입**한다(D-037, Plan 49). 트랙 A(1~6)는 폴백 보존.
+> (아래 표의 '8~9 불가'는 2026-06-16 기록 → 본 갱신으로 대체.)
 
 | Phase | tool-calling | 처리 |
 |-------|-------------|------|
-| **1~6 (트랙 A, 확정)** | **불필요** | `intent_planner`·`agent_orchestrator`·subagent handler 모두 **프롬프트 + JSON 파싱**(`extract_json_from_response`). 기존 `semantic_router`와 동일 방식. 위임은 코드 dispatch, 상태추적은 dict 갱신 → **FabriX로 정상 동작** |
-| **7 (구조화 출력)** | 회피 불가 시 | tool/provider 기반 `with_structured_output` 어려움 → **현행 JSON 파싱 유지**(보류) |
-| **8~9 (트랙 B)** | **필수 → 불가** | deepagents 실제 패키지는 전부 tool-calling 기반 → **FabriX로 도입 불가, 제거** |
+| **1~6 (트랙 A, 구현 완료·폴백)** | **불필요** | `intent_planner`·`agent_orchestrator`·subagent handler 모두 **프롬프트 + JSON 파싱**(`extract_json_from_response`). 기존 `semantic_router`와 동일 방식. 위임은 코드 dispatch → **FabriX로 정상 동작**. vLLM 미서빙 시 폴백 경로 |
+| **7 (구조화 출력)** | 트랙 B에서 가능 | vLLM tool-calling/`with_structured_output` 사용 가능(트랙 B). 트랙 A는 현행 JSON 파싱 유지 |
+| **8~9 (트랙 B, 도입)** | **필수 → vLLM이 제공** | deepagents 실제 패키지를 **vLLM 오케스트레이터**(네이티브 tool-calling)로 구동, **FabriX는 워커**(도구 내부 실질 응답처리). 백엔드는 vLLM 가용성으로 선택(미서빙 시 `semantic_router`) |
 
-**핵심 함의**: deepagents의 _패턴_(분해·위임·상태추적·격리·결과 기반 후속)은 tool-calling 없이 트랙 A로 모두 구현된다.
-tool-calling이 필요한 건 deepagents _실제 패키지_(트랙 B)뿐이며, 이는 FabriX로 불가하므로 채택하지 않는다.
-→ **트랙 A가 유일·확정 경로이며, 사용자 요구(복합 의도·결과 기반 후속)는 전부 충족된다.**
+**핵심 함의**: deepagents의 _패턴_은 트랙 A로 tool-calling 없이 구현된다(Phase 1~6, 구현 완료·폴백 보존).
+deepagents _실제 패키지_(트랙 B)는 tool-calling이 필수인데, 이를 **폐쇄망 vLLM 오케스트레이터**로 충족하여 **도입**한다
+(2026-06-17, Plan 49). FabriX는 실질 응답처리(워커)를 담당한다.
+→ **트랙 B를 주 경로로 도입하되, vLLM 미서빙 시 `semantic_router`로 회귀하는 가용성 옵션을 둔다.**
 
-**트랙 B 재진입 조건(향후)**: tool-calling 지원 LLM으로 교체할 경우에만 (Phase 8 부활).
+**트랙 B 진입(2026-06-17 확정)**: 폐쇄망 vLLM 오케스트레이터로 tool-calling 충족 → Phase 8 도입(Plan 49, D-037).
 
 ### 5.2 Skills 기능 검토 (트랙 A 선택적 확장)
 
@@ -733,11 +842,13 @@ deepagents skills를 본 계획에 포함할지 검토한 결과를 정리한다
 | R-05 | D-004(LLM 전용 시멘틱 라우팅)와 충돌 | — | §7 의사결정으로 명시 해소. semantic_router 로직은 data_query subagent 내부 DB 분류로 **흡수·재사용**(폐기 아님) |
 | R-06 | 응답시간 증가(planner LLM 1회 추가 + 다중 작업) | Low | 단일 task는 planner를 거쳐도 1회 LLM 추가뿐. 독립 작업 병렬화로 상쇄 |
 | R-07 | 커스텀 LLM의 JSON 미준수로 task_plan 파싱 실패 | Low | 기존 `extract_json_from_response` 재사용 + 폴백 |
-| R-08 | **FabriX tool 호출 불가(확정)** | 없음(트랙 A) | 트랙 A(Phase 1~6)는 tool-calling 미사용 → **무관**. 트랙 B(Phase 8~9, deepagents 실제 패키지)는 tool-calling 필수라 **FabriX로 불가 → 제거**. 트랙 A로 단일 확정, 사용자 요구는 전부 충족 (§5.1) |
+| R-08 | FabriX tool 호출 불가 | **해소(2026-06-17)** | **별도 vLLM 오케스트레이터**(`ChatOpenAI`→vLLM, 네이티브 tool-calling)가 deepagents를 구동, FabriX는 워커(실질 응답처리). 트랙 B 도입(Plan 49, D-037). vLLM 미서빙 시 `semantic_router` 폴백, 트랙 A(1~6) 폴백 보존 (§5.1) |
 | R-09 | data_query를 `multi_db_executor`로 통합 시 단일 DB의 풀 검증·재시도(max 3회) 손실 | Med | 단일 분기는 `_run_single_db_pipeline`로 기존 `query_validator`/재시도 루프 보존(§4.9.3). Phase 6에서 컴파일 서브그래프로 분리 |
 | R-10 | 멀티턴 pending 분기(synonym reuse/registration)를 planner가 누락 | Med | `intent_planner` 계층 A pre-check로 `semantic_router` 우선순위 ①~③를 **그대로 이식**(§4.9.1). pending E2E 회귀 테스트 필수 |
 | R-11 | 결과 기반 동적 재계획(패턴 ③)이 무한 루프 | Med(Phase 2) | `replan_count ≤ MAX_REPLAN`(예: 3) 강제 종료, 재계획은 **신규 task만** 추가·완료 task 보존 (§4.10.2) |
 | R-12 | 데이터 의존(패턴 ②) 시 대량 선행 결과 주입 → 토큰·`IN` 절 폭증 | Med | `input_from` 주입 시 **식별 키 컬럼만** 추출 + 행수 상한, 초과 시 요약·경고 (§4.10.1) |
+| R-13 | 모호성 되묻기(§4.11)가 반복(무한 되묻기) 또는 복합 task 중 다중 인터럽트로 재개 복잡 | Med(Phase 4) | 감지를 **계획 단계로 한정**(§4.11), `MAX_CLARIFY`(예: 2) 초과 시 보수적 기본 선택으로 자동 진행. 복합 task 다중 인터럽트는 R-03 정책(순차 분리) 적용 |
+| R-14 | planner가 `sub_query` 추출 시 **위치/DB 지정 신호를 누락** → `classify_dbs`가 잘못된 DB 선택(위치→DB 라우팅 불안정) | **Med (Phase 1 보강)** | planner 프롬프트에 **라우팅 신호 보존 규칙 + 위치 예시**(§4.9.6), `classify_dbs`에 `db_descriptions` 복원, target `sub_query_context`를 SQL 생성에 사용. 위치 라우팅 E2E 회귀 테스트(김포/여의도/은행/공동존 → 올바른 DB) |
 
 ---
 
@@ -760,13 +871,23 @@ deepagents skills를 본 계획에 포함할지 검토한 결과를 정리한다
 1. `src/config.py` — `enable_deepagent_orchestration` 플래그 추가 → verify: 설정 로드 테스트
 2. `src/state.py` — `task_plan`/`task_results`/`is_composite` 추가 + 초기값 → verify: state 확장 테스트
 3. `src/prompts/intent_planner.py` — 분해+분류 프롬프트 작성 (registry `description` 기반 위임 규칙 포함, 기존 `prompts/semantic_router.py` 의도 규칙 이식)
-4. `src/orchestration/intent_planner.py` — **계층 A pre-check(pending/synonym/mapped_db 우선순위 ①~③ 이식)** + 계층 B LLM 분해 + 단일 task 폴백 + `status="pending"` 초기화 → verify: 분해 단위 테스트(단일/복합/폴백/status/**pending 분기**)
+4. `src/orchestration/intent_planner.py` — **계층 A pre-check(pending/synonym/mapped_db 우선순위 ①~③ 이식)** + 계층 B LLM 분해 + 단일 task 폴백 + `status="pending"` 초기화 + **`clarification_needed` 슬롯 예약(Phase 1은 방출만, 인터럽트는 Phase 4 §4.11)** → verify: 분해 단위 테스트(단일/복합/폴백/status/**pending 분기**)
 5. `src/orchestration/subagents.py` — `SUBAGENT_REGISTRY` + handler(`run_cache_management`/`run_synonym_registration`/`run_general_inference`/`run_data_query_pipeline`) + `classify_dbs`(기존 `_llm_classify` DB 분류부 재사용) + `_run_single_db_pipeline`(단일 DB 풀 검증·재시도 보존) + `_make_isolated_input` → verify: 각 handler가 기존 경로와 동일 출력, isolated 입력이 전체 state가 아님, 단일 DB 재시도 동작
 6. `src/orchestration/agent_orchestrator.py` — 위상정렬·레벨 병렬 실행 + status 전이 → verify: 순차/병렬/부분실패/status 갱신 테스트
 7. `src/orchestration/result_aggregator.py` — 결과 통합 → verify: 단일/복합 통합 응답 테스트
 8. `src/graph.py` — 플래그 분기·엣지 추가 → verify: `scripts/arch_check.py` 통과 + 그래프 빌드 테스트
 9. 통합 테스트: 복합 질의 E2E, 하위 호환(플래그 off) 회귀
 10. `docs/02_decision.md` D-037 등재 / D-004 갱신
+
+### 8.1 Phase 1 보강 — 라우팅 신호 보존 (§4.9.6, R-14)
+
+> Phase 1 골격 구현 완료 후 식별된 보완 항목. 위치→DB 등 **다양한 라우팅 의도**의 안정적 처리를 위해 적용한다.
+> **상태(2026-06-16): 1~3 구현·단위 테스트 완료**(`test_routing_signal_preservation` 3건). 4(위치 E2E)는 라이브 LLM 필요로 통합 환경 검증 과제.
+
+1. `src/prompts/intent_planner.py` — **DB 식별 신호 보존 규칙 + 위치 포함 예시 2건**(김포/여의도) 추가 → verify: planner가 위치를 `sub_query`에 보존
+2. `src/orchestration/subagents.py` `classify_dbs` — (a) `_llm_classify` 호출에 **`db_descriptions` 주입 복원**(Redis 캐시), (b) 반환 target의 **`sub_query_context`(정제 질의)** 노출 → verify: 위치 alias로 올바른 DB 선택, 정제 질의 반환
+3. `src/orchestration/subagents.py` `run_data_query_pipeline` — 단일 DB 분기 SQL 생성 입력을 **`sub_query_context`** 로 설정(위치 SQL 누출 방지) → verify: 위치가 SQL `WHERE`에 미포함
+4. 위치 라우팅 E2E 회귀: 김포→`polestar_cm_gp`, 여의도→`polestar_cm_yd`, 은행→`polestar_b0`, 사용자 지정 "polestar에서"→`polestar`
 
 ---
 

@@ -62,6 +62,29 @@ class LLMConfig(BaseSettings):
             self.ollama_api_key = os.getenv("LLM_API_KEY", "")
 
 
+class OrchestratorConfig(BaseSettings):
+    """deepagents 오케스트레이터(vLLM, OpenAI 호환) 설정 (Plan 49 / D-037, 트랙 B).
+
+    vLLM이 tool-calling(제어 평면)을 담당하고, FabriX(LLMConfig)는 워커(실질 응답처리)를 담당한다.
+    base_url 미설정 또는 vLLM 미서빙 시 트랙 B를 사용하지 않고 semantic_router로 회귀한다
+    (가용성 분기 — deep_agent.select_orchestration_backend).
+    """
+
+    # provider: vllm(운영, OpenAI 호환) | gemini(테스트/PoC 전용 — egress 필요, Plan 49 §4.7)
+    provider: Literal["vllm", "gemini"] = "vllm"
+    base_url: str = ""            # vLLM /v1 엔드포인트 (예: http://vllm-host:8000/v1)
+    model: str = "Qwen3.5-9B"     # vLLM 서빙 모델 (gemini 사용 시 gemini 모델명으로 설정)
+    api_key: str = ""             # vLLM은 보통 불필요 / gemini는 미설정 시 LLM_GEMINI_API_KEY 폴백
+    timeout: int = 120
+    health_timeout: int = 3       # 가용성 health check 타임아웃(초, vLLM)
+
+    model_config = {
+        "env_prefix": "ORCHESTRATOR_",
+        "env_file": [".env", ".encenv"],
+        "extra": "ignore",
+    }
+
+
 class DBHubConfig(BaseSettings):
     """MCP 서버 접속 설정.
 
@@ -343,6 +366,7 @@ class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
     llm: LLMConfig = LLMConfig()
+    orchestrator: OrchestratorConfig = OrchestratorConfig()
     dbhub: DBHubConfig = DBHubConfig()
     query: QueryConfig = QueryConfig()
     security: SecurityConfig = SecurityConfig()
@@ -364,6 +388,20 @@ class AppConfig(BaseSettings):
 
     # 시멘틱 라우팅 활성화 여부
     enable_semantic_routing: bool = False
+
+    # deepagents 기반 의도 분해 오케스트레이션 활성화 여부 (Plan 48 / D-037)
+    # None(미입력) = 멀티 DB 환경이면 신규 경로를 기본 활성화(신규 경로가 기본 동작), 단일/레거시면 비활성
+    # True/False = 명시적 강제(.env·OS env 모두 반영). semantic_routing과 상호 배타 — 둘 다 활성이면 orchestration 우선 (graph.py 분기)
+    enable_deepagent_orchestration: bool | None = None
+
+    # 결과 기반 재계획 최대 반복 (무한 루프 방지, R-A3/R-11)
+    max_replan: int = 3
+
+    # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 활성화 여부.
+    # 명시적 opt-in(기본 False) — vLLM 인프라가 필요하므로 자동 활성화하지 않는다.
+    # True + vLLM 가용 시 트랙 B, 그 외(False/미서빙)는 semantic_router 사용
+    # (가용성 분기 — deep_agent.select_orchestration_backend).
+    enable_deepagents_package: bool = False
 
     # Polestar 전용 프롬프트를 적용할 DB ID (콤마 구분으로 복수 지정 가능)
     # .env에서 POLESTAR_DB_IDS=polestar,polestar2 로 설정하면
@@ -388,7 +426,7 @@ class AppConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     def model_post_init(self, __context: object) -> None:
-        """시멘틱 라우팅 활성화를 자동 판단한다."""
+        """시멘틱 라우팅 및 오케스트레이션 활성화를 자동 판단한다."""
         import os
 
         env_val = os.getenv("ENABLE_SEMANTIC_ROUTING", "")
@@ -397,6 +435,12 @@ class AppConfig(BaseSettings):
         elif not env_val and self.multi_db.get_active_db_ids():
             # 멀티 DB 연결이 하나라도 설정되어 있으면 자동 활성화
             self.enable_semantic_routing = True
+
+        # Plan 48 / D-037: 플래그 미입력(None)이면 멀티 DB 환경에서 신규 오케스트레이션 경로를
+        # 기본 활성화한다(신규 경로가 기본 동작). 명시적 true/false는 pydantic-settings가 .env·OS env에서
+        # 필드로 직접 읽어 그대로 존중한다(os.getenv 미사용 — .env-only 설정도 반영, Known Mistakes 2026-06-10).
+        if self.enable_deepagent_orchestration is None:
+            self.enable_deepagent_orchestration = bool(self.multi_db.get_active_db_ids())
 
 
 @lru_cache(maxsize=1)

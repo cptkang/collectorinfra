@@ -39,6 +39,80 @@ def create_llm(config: AppConfig) -> BaseChatModel:
         raise ValueError(f"지원하지 않는 LLM 프로바이더: {provider}")
 
 
+def create_orchestrator_llm(config: AppConfig) -> BaseChatModel:
+    """deepagents 구동용 tool-calling LLM을 생성한다 (Plan 49 / D-037, 트랙 B).
+
+    provider로 오케스트레이터를 선택한다:
+    - "vllm"(기본·운영): vLLM의 OpenAI 호환 `/v1`에 `ChatOpenAI`로 연결, 네이티브 bind_tools 사용.
+    - "gemini"(테스트/PoC 전용 — §4.7): `ChatGoogleGenerativeAI`. 외부 egress 필요, 폐쇄망 운영 부적합.
+
+    (FabriX 워커는 create_llm으로 별도 생성 — 실질 응답처리 담당. provider와 무관하게 동일.)
+
+    Args:
+        config: 애플리케이션 설정
+
+    Returns:
+        오케스트레이터 LLM 인스턴스
+
+    Raises:
+        ValueError: vLLM base_url 또는 Gemini api_key 미설정
+    """
+    if config.orchestrator.provider == "gemini":
+        return _create_orchestrator_gemini(config)
+    return _create_orchestrator_vllm(config)
+
+
+def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
+    """vLLM(OpenAI 호환) 오케스트레이터 LLM을 생성한다."""
+    if not config.orchestrator.base_url:
+        raise ValueError(
+            "ORCHESTRATOR_BASE_URL이 설정되지 않았습니다. "
+            ".env에 ORCHESTRATOR_BASE_URL(vLLM /v1 엔드포인트)을 추가하세요."
+        )
+
+    from langchain_openai import ChatOpenAI
+
+    logger.info(
+        "오케스트레이터 LLM(vLLM) 초기화: base_url=%s, model=%s",
+        config.orchestrator.base_url,
+        config.orchestrator.model,
+    )
+    return ChatOpenAI(
+        base_url=config.orchestrator.base_url,
+        api_key=config.orchestrator.api_key or "EMPTY",
+        model=config.orchestrator.model,
+        temperature=0.0,
+        timeout=config.orchestrator.timeout,
+    )
+
+
+def _create_orchestrator_gemini(config: AppConfig) -> BaseChatModel:
+    """Gemini 오케스트레이터 LLM을 생성한다 (테스트/PoC 전용 — Plan 49 §4.7).
+
+    api_key 검증을 패키지 import보다 먼저 수행한다(미설치 환경에서도 명확한 오류).
+    오케스트레이터 모델이 미설정/비-gemini면 LLM_GEMINI_MODEL 또는 gemini-2.5-pro로 폴백한다.
+    """
+    api_key = config.orchestrator.api_key or config.llm.gemini_api_key
+    if not api_key:
+        raise ValueError(
+            "Gemini 오케스트레이터(테스트 모드) API 키가 없습니다. "
+            ".env(.encenv)에 ORCHESTRATOR_API_KEY 또는 LLM_GEMINI_API_KEY(GOOGLE_API_KEY)를 추가하세요."
+        )
+
+    model = config.orchestrator.model
+    if not model or not model.startswith("gemini"):
+        model = config.llm.gemini_model or "gemini-2.5-pro"
+
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    logger.info("오케스트레이터 LLM(Gemini, 테스트 모드) 초기화: model=%s", model)
+    return ChatGoogleGenerativeAI(
+        model=model,
+        google_api_key=api_key,
+        temperature=0.0,
+    )
+
+
 def _create_ollama(config: AppConfig) -> BaseChatModel:
     """Ollama LLM 클라이언트를 생성한다."""
     from src.clients.ollama_client import LLMAPIClient

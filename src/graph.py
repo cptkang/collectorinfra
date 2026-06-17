@@ -32,6 +32,7 @@ from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
+from src.orchestration import agent_orchestrator, intent_planner, replanner, result_aggregator
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
 
@@ -128,6 +129,26 @@ def route_after_semantic_router(state: AgentState) -> str:
     if state.get("is_multi_db"):
         return "multi_db_executor"
     return "schema_analyzer"
+
+
+def route_after_orchestrator(state: AgentState) -> str:
+    """agent_orchestrator 이후 항상 replanner로 보내 종료/추가를 평가한다.
+
+    루프 제어를 replanner 단일 지점에 집중시켜 분기 복잡도를 낮춘다(Plan 49 §3.3).
+    재진입 여부는 replanner가 needs_replan으로 결정한다.
+    """
+    return "replanner"
+
+
+def route_after_replanner(state: AgentState) -> str:
+    """replanner 이후 라우팅을 결정한다.
+
+    - 재계획 필요(needs_replan=True): agent_orchestrator로 재진입(신규 task 실행)
+    - 종료(needs_replan=False): result_aggregator로 진행
+    """
+    if state.get("needs_replan"):
+        return "agent_orchestrator"
+    return "result_aggregator"
 
 
 def route_after_schema_analyzer(state: AgentState) -> str:
@@ -270,6 +291,26 @@ def build_graph(config: AppConfig, checkpointer=None):
         partial(field_mapper, llm=llm, app_config=config),
     )
 
+    # Plan 48: deepagents 의도 분해 오케스트레이션 노드 (semantic_routing보다 우선, 상호 배타)
+    if config.enable_deepagent_orchestration:
+        graph.add_node(
+            "intent_planner",
+            partial(intent_planner, llm=llm, app_config=config),
+        )
+        graph.add_node(
+            "agent_orchestrator",
+            partial(agent_orchestrator, llm=llm, app_config=config),
+        )
+        graph.add_node(
+            "result_aggregator",
+            partial(result_aggregator, llm=llm, app_config=config),
+        )
+        # Plan 49: 결과 기반 동적 재계획 노드 (orchestrator↔replanner 루프)
+        graph.add_node(
+            "replanner",
+            partial(replanner, llm=llm, app_config=config),
+        )
+
     # 시멘틱 라우팅 노드 (멀티 DB 지원)
     if config.enable_semantic_routing:
         graph.add_node(
@@ -343,7 +384,26 @@ def build_graph(config: AppConfig, checkpointer=None):
     # input_parser -> field_mapper
     graph.add_edge("input_parser", "field_mapper")
 
-    if config.enable_semantic_routing:
+    if config.enable_deepagent_orchestration:
+        # Plan 48/49: 의도 분해 오케스트레이션 경로 (semantic_routing보다 우선)
+        # field_mapper -> intent_planner -> agent_orchestrator -> [replanner 루프] -> result_aggregator -> END
+        graph.add_edge("field_mapper", "intent_planner")
+        graph.add_edge("intent_planner", "agent_orchestrator")
+        graph.add_conditional_edges(
+            "agent_orchestrator",
+            route_after_orchestrator,
+            {"replanner": "replanner"},
+        )
+        graph.add_conditional_edges(
+            "replanner",
+            route_after_replanner,
+            {
+                "agent_orchestrator": "agent_orchestrator",
+                "result_aggregator": "result_aggregator",
+            },
+        )
+        graph.add_edge("result_aggregator", END)
+    elif config.enable_semantic_routing:
         # field_mapper -> semantic_router -> 조건부
         graph.add_edge("field_mapper", "semantic_router")
 
@@ -471,7 +531,9 @@ def build_graph(config: AppConfig, checkpointer=None):
     )
 
     logger.info(
-        "에이전트 그래프 빌드 완료 (sql_approval=%s, structure_approval=%s)",
+        "에이전트 그래프 빌드 완료 (orchestration=%s, semantic_routing=%s, sql_approval=%s, structure_approval=%s)",
+        config.enable_deepagent_orchestration,
+        config.enable_semantic_routing,
         config.enable_sql_approval,
         config.enable_structure_approval,
     )

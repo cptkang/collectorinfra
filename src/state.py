@@ -152,6 +152,15 @@ class AgentState(TypedDict):
     output_file: Optional[bytes]             # 생성된 파일 바이너리
     output_file_name: Optional[str]          # 출력 파일명
 
+    # === [Plan 48] deepagents 의도 분해 오케스트레이션 ===
+    task_plan: list[dict]            # intent_planner 결과 (TaskSpec 목록; 각 항목에 status)
+    task_results: dict[str, dict]    # {task_id: {organized_data, query_results, source, error, ...}}
+    is_composite: bool               # task 2개 이상 여부
+
+    # === [Plan 49] 동적 재계획 ===
+    replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
+    needs_replan: bool               # replanner → 라우팅 신호 (True면 agent_orchestrator 재진입)
+
 
 def create_initial_state(
     user_query: str,
@@ -251,4 +260,11 @@ def create_initial_state(
         final_response="",
         output_file=None,
         output_file_name=None,
+        # Plan 48: deepagents 오케스트레이션
+        task_plan=[],
+        task_results={},
+        is_composite=False,
+        # Plan 49: 동적 재계획
+        replan_count=0,
+        needs_replan=False,
     )
