@@ -1384,6 +1384,7 @@
                 general_inference: "일반 추론",
                 cache_management: "캐시 관리",
                 synonym_registration: "유사어 등록",
+                process_query: "프로세스 조회",
             };
             var intentLabel = intentMap[data.routing_intent] || data.routing_intent || "알 수 없음";
             var intentBadgeClass = data.routing_intent === "data_query" ? "step-data-badge--success" : "step-data-badge--info";
@@ -1400,6 +1401,15 @@
                 });
                 targetHtml += "</ul>";
                 html += renderSection("라우팅 근거", targetHtml);
+            }
+        }
+
+        else if (node === "process_query") {
+            // Plan 48: 실시간 프로세스 조회 — 의도 배지 + 프로세스 표
+            html += renderSection("분류된 의도", '<span class="step-data-badge step-data-badge--info">프로세스 조회</span>');
+            var ovTable = renderProcessOverview(data.process_overview);
+            if (ovTable) {
+                html += renderSection("실시간 프로세스 현황", ovTable);
             }
         }
 
@@ -1714,6 +1724,65 @@
             '<caption>' + escapeHtml(caption) + '</caption>' +
             head + body +
             '</table>';
+    }
+
+    // Plan 48: 사용자 프로세스 조회 현황 표.
+    // process_overview(이미 마스킹된 dict)의 metric에 따라 top_by_cpu/top_by_mem를
+    // .alarm-proc-table 스타일로 렌더한다. args는 백엔드에서 마스킹된 값만 전달됨.
+    function renderProcessOverview(ov) {
+        if (!ov) return "";
+        var metric = ov.metric || "both";
+
+        function buildTable(rows, isMem) {
+            if (!rows || !rows.length) return "";
+            var metricLabel = isMem ? "메모리" : "CPU";
+            var caption = (ov.source_host || "-") + " · " + metricLabel + " 상위";
+            var meta = [];
+            if (ov.captured_at) meta.push(fmtHistTs(ov.captured_at) + " 기준");
+            if (ov.total_count !== null && ov.total_count !== undefined) {
+                meta.push("전체 " + ov.total_count + "개");
+            }
+            if (meta.length) caption += " (" + meta.join(", ") + ")";
+
+            var head =
+                '<tr><th>프로세스</th><th>PID</th>' +
+                '<th class="alarm-proc-num' + (isMem ? '' : ' is-primary') + '">CPU</th>' +
+                '<th class="alarm-proc-num' + (isMem ? ' is-primary' : '') + '">MEM</th>' +
+                '<th>사용자</th></tr>';
+            var body = rows.map(function (p) {
+                var mainRow = '<tr>' +
+                    '<td>' + escapeHtml(p.name || "-") + '</td>' +
+                    '<td class="alarm-proc-num">' + escapeHtml(String(p.pid)) + '</td>' +
+                    '<td class="alarm-proc-num' + (isMem ? '' : ' is-primary') + '">' +
+                        fmtPctCell(p.p100cpu) + '</td>' +
+                    '<td class="alarm-proc-num' + (isMem ? ' is-primary' : '') + '">' +
+                        fmtPctCell(p.pmem) + '</td>' +
+                    '<td>' + escapeHtml(p.user || "-") + '</td>' +
+                    '</tr>';
+                var argsRow = p.args
+                    ? '<tr class="alarm-proc-args"><td colspan="5">' +
+                        escapeHtml(p.args) + '</td></tr>'
+                    : "";
+                return mainRow + argsRow;
+            }).join("");
+            return '<table class="alarm-evidence alarm-proc-table">' +
+                '<caption>' + escapeHtml(caption) + '</caption>' +
+                head + body +
+                '</table>';
+        }
+
+        var out = "";
+        if (metric === "cpu" || metric === "both") {
+            out += buildTable(ov.top_by_cpu, false);
+        }
+        if (metric === "memory" || metric === "both") {
+            out += buildTable(ov.top_by_mem, true);
+        }
+        if (!out && ov.total_count === 0) {
+            out = '<div class="step-data-value">조회된 프로세스가 없습니다 (' +
+                escapeHtml(ov.source_host || "-") + ').</div>';
+        }
+        return out;
     }
 
     function renderAlarmMessage(data) {

@@ -233,6 +233,27 @@ async def semantic_router(
     is_multi_db = len(targets) > 1
     active_db_id = targets[0]["db_id"]
 
+    # [Plan 48] 프로세스 조회 오버라이드:
+    # parsed_requirements.process_query 신호(또는 LLM이 직접 준 process_query intent)가
+    # 있으면, DB 결정(target_databases/active_db_id/user_specified_db)은 일반 data_query
+    # 경로처럼 그대로 살리고 routing_intent만 "process_query"로 오버라이드한다.
+    # → 무-DB 분기(cache_management/general_inference)를 타지 않으면서 active_db_id가
+    #   확정된 채로 process_query_node로 분기된다 (§3.4 ③ 폴백 스킵 근거: user_specified_db 전파).
+    if parsed.get("process_query") or intent == "process_query":
+        logger.info(
+            "시멘틱 라우팅: 프로세스 조회 의도 — intent override, active_db_id=%s, user_specified=%s",
+            active_db_id,
+            user_specified_db,
+        )
+        return {
+            "target_databases": targets,
+            "is_multi_db": is_multi_db,
+            "active_db_id": active_db_id,
+            "user_specified_db": user_specified_db,
+            "routing_intent": "process_query",
+            "current_node": "semantic_router",
+        }
+
     logger.info(
         "시멘틱 라우팅 완료: targets=%s, multi_db=%s, user_specified=%s",
         [t["db_id"] for t in targets],

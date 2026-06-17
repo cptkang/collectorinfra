@@ -116,13 +116,51 @@ async def input_parser(
         thread_id=state.get("thread_id"),
     )
 
-    return {
+    result: dict = {
         "parsed_requirements": parsed,
         "template_structure": template,
         "target_sheets": target_sheets,
         "current_node": "input_parser",
         "error_message": None,
     }
+
+    # Plan 48: 프로세스 조회 신호가 있으면 process_query_target을 채운다 (없으면 미설정).
+    process_target = _build_process_query_target(parsed)
+    if process_target is not None:
+        result["process_query_target"] = process_target
+
+    return result
+
+
+def _build_process_query_target(parsed: dict) -> Optional[dict]:
+    """parsed_requirements의 process_query 신호를 process_query_target dict로 변환한다.
+
+    process_query 필드가 없거나 identifier가 비어있으면 None을 반환한다(미설정).
+    metric은 cpu/memory/both 중 하나로 정규화하며, 미지정은 "both"로 둔다.
+
+    Args:
+        parsed: input_parser가 추출한 구조화 요구사항.
+
+    Returns:
+        {"identifier": str, "metric": str, "top_n": int|None} 또는 None.
+    """
+    pq = parsed.get("process_query")
+    if not isinstance(pq, dict):
+        return None
+
+    identifier = str(pq.get("identifier") or "").strip()
+    if not identifier:
+        return None
+
+    metric = pq.get("metric")
+    if metric not in ("cpu", "memory", "both"):
+        metric = "both"
+
+    top_n = pq.get("top_n")
+    if not isinstance(top_n, int) or top_n <= 0:
+        top_n = None
+
+    return {"identifier": identifier, "metric": metric, "top_n": top_n}
 
 
 async def _parse_natural_language(

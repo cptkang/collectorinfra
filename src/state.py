@@ -116,8 +116,12 @@ class AgentState(TypedDict):
     # === DB 엔진 정보 ===
     active_db_engine: Optional[str]  # 현재 DB의 엔진 타입 ("db2", "postgresql", etc.)
 
+    # === Plan 48: 프로세스 조회 ===
+    process_query_target: Optional[dict]     # {"identifier": str, "metric": "cpu"|"memory"|"both", "top_n": int}
+    process_overview: Optional[dict]         # build_process_overview 결과(결정적, 마스킹 완료) — UI/엑셀/LLM 공용
+
     # === 시멘틱 라우팅 ===
-    routing_intent: Optional[str]            # 라우팅 의도 ("data_query" | "cache_management")
+    routing_intent: Optional[str]            # 라우팅 의도 ("data_query" | "cache_management" | "process_query")
     target_databases: list[dict]             # 라우팅된 대상 DB 목록 (DBRouteTarget)
     active_db_id: Optional[str]              # 현재 처리 중인 DB 식별자
     db_results: dict[str, list[dict]]        # DB별 쿼리 결과 {db_id: rows}
@@ -222,6 +226,8 @@ def create_initial_state(
         current_node="",
         query_attempts=[],
         active_db_engine=None,
+        process_query_target=None,
+        process_overview=None,
         routing_intent=None,
         target_databases=[],
         active_db_id=None,

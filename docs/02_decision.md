@@ -1761,6 +1761,124 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
+## D-039. 특정 자원 실시간 프로세스 리스트 조회 + 현황 분석 (Plan 48)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-16 |
+| **상태** | 구현 완료 |
+| **관련 결정** | D-036(Plan 47-1 프로세스 API 클라이언트/도메인 재사용), D-004(LLM 전용 라우팅), D-013(멀티턴/HITL), D-020(LLM 범용 스키마) |
+| **번호 비고** | Plan 48 §8은 "D-037 예정"으로 예약했으나, 그 사이 D-037·D-038이 양식 채우기 SQL 작업에 선점됨. CLAUDE.md 번호 규약(마지막 번호+1)에 따라 **D-039**로 부여 (설계 충돌 아님 — 번호 충돌만 해소) |
+
+### 결정
+
+사용자가 특정 자원의 프로세스 목록/현황을 질의하면, 신규 `process_query` 라우팅 의도로 **전용 노드**(`process_query_node`)를 분기시켜 SQL 파이프라인을 우회하고, 폴스타 실시간 프로세스 API(Plan 47-1 `PolestarProcessApiClient` 재사용)를 **hostname으로 조회**한 뒤 결정적 선별·집계·마스킹(`build_process_overview`) 후 LLM이 현황만 해석한다. 프로세스 선별 원시 함수(`ProcessInfo`/`mask_args`/`select_top_processes`)를 `src/domain/process.py`로 **승격**하여 알람·메인이 공유하고, 알람 도메인은 re-export로 무회귀 보존한다. 서버명/hostname을 문자열로 구분하려 시도하지 않고 `cmm_resource`의 `name`·`hostname` **동시 매칭**(read-only SELECT)으로 정규 hostname을 해석하며, 모호 시 HITL 되물음·미해석 시 직접 hostname 폴백·라우터 db 오선택 대비 타 폴스타 db 재해석 폴백을 둔다.
+
+### 근거
+
+프로세스는 DB(EAV/메트릭)가 아닌 실시간 API에만 존재 → SQL 파이프라인으로 처리 불가. Plan 47-1 자산(API 클라이언트·선별·마스킹) 재사용으로 중복 제거. 결정적 표 + LLM 해석 분리로 환각·토큰·민감정보 위험 차단(47-1 §3.3 계승). 서버명/hostname은 둘 다 임의 문자열이라 패턴 판별이 오판을 부르므로 `name OR hostname` 동시 매칭이 입력 종류와 무관하게 정규 hostname을 흡수한다.
+
+### 대안 (미채택)
+
+| 대안 | 미채택 이유 |
+|------|-----------|
+| ① SQL 파이프라인 내 특수 분기 | 외부 HTTP를 SQL 노드에 섞어 응집 저하 — 전용 노드 분기 채택 |
+| ② 메인이 `src/alarm`을 직접 import | 서브시스템 결합 — 공유 도메인(`src/domain/process.py`) 승격 채택 |
+| ③ 원시 프로세스를 LLM에 그대로 주입 | 토큰·환각·민감정보 노출 — 결정적 선별+마스킹 채택 |
+| ④ 서버명/hostname을 정규식으로 구분 | 둘 다 임의 문자열이라 오판 — `name OR hostname` 동시 매칭 채택 |
+
+### 핵심 설계 결정
+
+| 항목 | 결정 |
+|------|------|
+| **조회 키 (키 차이 주의)** | 프로세스 API는 **hostname**, DB(`cmm_resource`)는 `name`(서버명)/`hostname` 둘 다 보유 → 노드가 name→hostname 변환·모호성 해소 책임 (47-1 §9·D-036 연계) |
+| **hostname 해석 순서** | ① 활성 db DB해석(name OR hostname 동시 매칭, 정확 hostname 우선 `ORDER BY CASE`, 2건까지 조회) → 1건 확정 / 모호(2건↑) HITL 후보 안내(임의 선택 금지) / 0건 → ② identifier를 직접 hostname으로 API 시도 → ③ 타 폴스타 db 재해석(매핑 db 수 상한) → 끝내 미해석 시 안내 종료(추측 금지) |
+| **user_specified_db 시 ③ 스킵** | "김포 폴스타의 ### 서버"처럼 db 명시 시 `semantic_router`가 `domain_config.py` alias로 `active_db_id`·`user_specified_db` 확정 → ③ 다중-db 폴백 미발동(해당 db에 없으면 "그 폴스타에 없음" 안내). `state.user_specified_db` truthy 시 ③ 루프 스킵 |
+| **라우팅 오버라이드** | `semantic_router`가 일반 data_query처럼 LLM 분류로 `target_databases`/`active_db_id`/`user_specified_db`를 정상 결정한 뒤, `parsed_requirements.process_query` 신호(또는 LLM 직접 intent)가 있으면 `routing_intent`만 `"process_query"`로 오버라이드 — 무-DB 분기(cache/general)를 타지 않으면서 `active_db_id`가 확정된 채 노드로 분기 |
+| **read-only / 인젝션 방지** | hostname 해석은 단일 SELECT + `_sql_literal()` 이스케이프(작은따옴표 `''`+`\x00` 제거, DBHub 바인딩 미지원 대응) + `polestar.cmm_resource` 스키마 한정 + db_engine별 LIMIT(db2=`FETCH FIRST 2 ROWS ONLY`, postgresql=`LIMIT 2`). INSERT/UPDATE/DDL 생성 금지 |
+| **결정적 선별 + LLM 해석** | 정렬(cpu=p100cpu→pcpu 폴백, memory=pmem)·상위 N·집계(상위 점유 합/고유 계정 수/최다 계정)·마스킹은 순수함수. LLM은 마스킹된 결정적 요약만 인용·해석, 수치 재계산·`***` 복원·0건 추측 금지 |
+| **민감정보 마스킹 (필수)** | 프로세스 `args`는 `mask_args()` 후에만 LLM·UI·엑셀에 노출 — 평문 비밀번호/토큰/접속문자열 비노출을 단위 테스트로 회귀 고정 |
+| **graceful degradation** | DB 해석/API 호출 각각 try/except + 타임아웃(`process_query_resolve_timeout_seconds`/`process_api_timeout_seconds`). 미주입·미설정·비폴스타·미매핑 db·0건 모두 안내 텍스트로 종료(추측 없음) |
+| **설정 분리** | 신규 `ProcessQueryConfig`(env_prefix `PROCESS_QUERY_`) — `process_query_enabled`/`process_query_top_n`(10)/`process_query_resolve_timeout_seconds`(3). base_url 매핑·API 타임아웃은 `AlarmConfig.get_process_api_base_url`/`process_api_timeout_seconds` 재사용(동일 엔드포인트). AlarmConfig에 사용자 조회 설정을 섞지 않음 |
+| **도메인 승격 무회귀** | `ProcessInfo`/`mask_args`/`select_top_processes`를 `src/domain/process.py`로 이동, `src/alarm/domain/{alarm,process_rank}.py`는 re-export — 47-1 테스트(63건) 전수 통과로 무회귀 확인 후 진행. `classify_alarm_kind`만 `AlarmEvent` 의존이라 알람 도메인 잔류 |
+| **출력 채널** | `output_format=xlsx/docx`면 `process_query_node`가 `organized_data.rows` 구성 → `output_generator` 위임(문서 생성 재사용). 텍스트면 END. UI는 기존 `.alarm-proc-table`/`renderProcessEvidence` 재사용 |
+| **`.env` 신규 필드** | 스칼라만 (`PROCESS_QUERY_ENABLED`/`_TOP_N`/`_RESOLVE_TIMEOUT_SECONDS`) — list/dict JSON 없음 (Known Mistakes 2026-03-23 비해당) |
+
+### 변경된 파일
+
+| 파일 | 변경 내용 | 계층 |
+|------|----------|------|
+| `src/domain/process.py` | 신규 — 47-1에서 `ProcessInfo`/`mask_args`/`select_top_processes` 승격 + `ProcessOverview`/`build_process_overview`/`resolve_metric_from_text` | domain |
+| `src/alarm/domain/alarm.py` | `ProcessInfo` 정의 삭제 → `src.domain.process`에서 re-export (`ProcessSnapshot` 잔류) | domain |
+| `src/alarm/domain/process_rank.py` | `mask_args`/`select_top_processes`/헬퍼·정규식 상수 re-export (`classify_alarm_kind` 잔류) | domain |
+| `src/infrastructure/polestar_host_resolver.py` | 신규 — `HostResolution`, `PolestarHostResolver`(read-only SELECT, `_sql_literal` 이스케이프, db_engine별 LIMIT, name/hostname 동시 매칭, 모호 2건 감지) | infrastructure |
+| `src/nodes/process_query_node.py` | 신규 — 게이팅 + §3.4 해석 순서 + API 재사용 + overview + LLM 분석 + degradation + organized_data 위임 | application |
+| `src/prompts/process_query.py` | 신규 — 현황 분석 프롬프트(결정적 수치만 인용·재계산/마스킹 복원/0건 추측 금지) | prompts |
+| `src/nodes/input_parser.py` | `_build_process_query_target()` + 조건부 `process_query_target` 반환 | application |
+| `src/prompts/input_parser.py` | 규칙 14 — process_query 신호 추출(identifier/metric/top_n) | prompts |
+| `src/routing/semantic_router.py` | process_query intent 오버라이드(DB 결정 보존 후 routing_intent만 변경) | orchestration |
+| `src/prompts/semantic_router.py` | intent 목록에 process_query 설명 추가 | prompts |
+| `src/graph.py` | `_INTENT_ROUTE_MAP`·노드 등록(`PolestarProcessApiClient`/`PolestarHostResolver`/`get_db_client` 주입)·조건부 엣지·`route_after_process_query` | orchestration |
+| `src/api/routes/query.py` | SSE `process_query` 노드 블록(`process_overview` 전달, 마스킹 dict) | interface |
+| `src/static/js/app.js` | intentMap 라벨, `process_overview` 프로세스 표 렌더(`.alarm-proc-table` 재사용) | static |
+| `src/config.py` | `ProcessQueryConfig` + `AppConfig.process_query` | config |
+| `src/state.py` | `AgentState.process_query_target`/`process_overview` + 초기화 | orchestration |
+| `.env.example` | `PROCESS_QUERY_*` 3개 (스칼라) | 설정 |
+| `tests/test_process_overview.py` | 신규 — build_process_overview 정렬·집계·마스킹 회귀·엣지 (17건) | 테스트 |
+| `tests/test_polestar_host_resolver.py` | 신규 — read-only SQL·이스케이프·db_engine별 LIMIT·1/2건/0건/예외 | 테스트 |
+| `tests/test_process_query_node.py` | 신규 — 해석 순서·폴백·모호·user_specified 스킵·게이팅·마스킹 비노출 | 테스트 |
+| `tests/test_process_query_integration.py` | 신규 — 시나리오·라우터 오버라이드·input_parser·graph 배선 (15건) | 테스트 |
+
+### 향후 수정 시 고려사항
+
+- 실 폴스타 프로세스 API end-to-end, 실 `cmm_resource` 서버명→hostname 해석 정확도, base_url 매핑 도달성, xlsx/docx 실제 생성, 외부 호출 audit 로깅 부합은 **운영 환경 수동 확인** 필요 (§7 일부)
+- 새 폴스타 인스턴스 추가 시 `ALARM_PROCESS_API_BASE_URLS_CSV`에 항목 추가하면 프로세스 조회도 자동 지원
+- 향후 base_url/타임아웃을 `ProcessApiConfig`로 추출해 AlarmConfig와 분리 가능(현재는 동일 엔드포인트라 재사용)
+- 사전 존재 실패: `tests/test_semantic_routing/test_semantic_router.py::TestLLMClassify` 5건은 `_llm_classify`가 intent 도입(D-029) 이후 dict를 반환하는데 테스트가 list를 가정해 발생 — Plan 48과 무관(stash 후에도 동일 실패), 별도 테스트 갱신 권장
+
+---
+
+## D-040. process_query 출력 채널 보강 — 스트리밍 / args 전달 / CSV (Plan 48 §10)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-17 |
+| **상태** | 구현 완료 |
+| **관련 결정** | D-039(process_query 도입 — 핵심 파이프라인 불변) |
+
+### 배경 / 문제
+
+D-039 구현 후 사용자 피드백 3건: (1) `process_query` 응답이 토큰 스트리밍 없이 한 번에 출력됨, (2) LLM이 `args` 등 정보 부족을 이유로 "데이터 부족/추가 확인 필요"를 출력, (3) 프로세스 조회 결과를 CSV로 받을 수 없음.
+
+### 결정
+
+핵심 결정(D-039)과 파이프라인은 **불변**으로 두고 **출력 채널 배선만** 보강한다.
+
+| 사안 | 원인 | 조치 |
+|------|------|------|
+| **스트리밍** | SSE 스트리밍(`query.py`)이 `process_query`를 화이트리스트에서 누락 — `_known_nodes`(2곳)에 없어 진행 패널·프로세스 표 미렌더, `on_chat_model_stream` 노드 필터가 `output_generator`/`general_inference`만이라 노드 LLM 토큰 미스트리밍 → `on_chain_end` 폴백이 전체 응답을 단일 청크로 전송 | `/query/stream`·`/query/file/stream` 두 제너레이터의 `_known_nodes`(2곳)와 `on_chat_model_stream` 노드 필터(2곳)에 `"process_query"` 추가. 노드는 기존 `llm.ainvoke` 유지 — `output_generator`와 동일하게 `astream_events`가 토큰 포착 |
+| **args 전달 (버그 아님)** | API 필드 `args`(47-1 §2.2)는 `_to_process_info`가 `mask_args()`로 마스킹해 보관하고 `_build_summary_text`가 상위 프로세스마다 포함 — 이미 LLM에 전달됨. "데이터 부족" 출력은 프롬프트가 "상위 N 요약"을 불완전 데이터로 오해한 프레이밍 문제 | `process_query` 프롬프트에 "상위 N + 전체 건수 + 집계 = 현황 분석에 충분. `total_count>0`·상위 목록 존재 시 '데이터 부족'이라 하지 말 것. '데이터 부족/추가 확인'은 0건·hostname 미해석 등 실제 데이터 없을 때만" 규칙 추가. 요약의 빈 args는 `(없음)`으로 명시, args는 서비스 식별 근거로 해석하되 `***` 복원 금지 |
+| **CSV** | `download-csv`는 저장소 `query_results`를 CSV화하고 UI 버튼은 `row_count>0`일 때 노출 — `process_query`가 `query_results` 미설정이라 404·버튼 미표시 | `process_query_node`가 성공 시 **전체 프로세스(마스킹 args 포함)**를 기본 지표 내림차순으로 정렬해 `query_results`(평면 dict 행, 상한 10,000)로 반환 → 기존 CSV 엔드포인트·UI 버튼 무변경 재사용. `_text_only` 조기 종료(게이팅/모호/미해석/0건)는 `query_results` 미설정 → CSV 미표시(정상) |
+
+### 근거
+
+기존 스트리밍·CSV 인프라가 노드 화이트리스트와 `query_results` 키에만 의존하므로, 엔드포인트·프런트엔드 변경 없이 배선만으로 3건을 해소. args는 이미 전달되고 있었고(보안 마스킹 유지), 문제는 LLM 프레이밍이라 프롬프트로 교정. CSV는 LLM 주입 요약(top N)과 분리된 결정적 전체 행으로 제공해 "전체 목록" 요구를 충족하면서 max rows 10,000·마스킹 제약 준수.
+
+### 변경된 파일
+
+| 파일 | 변경 내용 | 계층 |
+|------|----------|------|
+| `src/api/routes/query.py` | `_known_nodes`(2곳)·`on_chat_model_stream` 노드 필터(2곳)에 `"process_query"` 추가 | interface |
+| `src/nodes/process_query_node.py` | `_full_process_rows()`(전체 마스킹 행, 상한 `_MAX_CSV_ROWS=10000`) + 성공 시 `query_results` 반환, `_build_summary_text`에 "전체 N건 중 상위 K개"·CSV 안내·빈 args `(없음)` 표기 | application |
+| `src/prompts/process_query.py` | "데이터 부족" 오프레이밍 교정 규칙(5)·args 해석 규칙(6) 추가, 분석 항목 4 조건화 | prompts |
+
+### 향후 수정 시 고려사항
+
+- 스트리밍 토큰·진행 패널·프로세스 표 렌더, CSV 전체 목록 다운로드는 **운영 환경에서 수동 확인** 필요(실 API 연동)
+- 프로세스 수가 비정상적으로 많은 서버(>10,000)는 CSV가 상위 10,000행으로 절단됨 — 현재 현실 범위 밖
+
+---
+
 ## D-037. 양식 채우기 SQL 정합성 — server.Server 메트릭 조인 분리 + 알려진 EAV 오탈자 결정적 치환
 
 | 항목 | 내용 |
@@ -1900,6 +2018,8 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-17 | D-040 | process_query 출력 채널 보강 (Plan 48 §10) — 핵심 파이프라인(D-039) 불변, 배선만 변경: (1) **스트리밍** — SSE `query.py` 두 제너레이터의 `_known_nodes`(2곳)·`on_chat_model_stream` 노드 필터(2곳)에 `"process_query"` 추가 → 토큰 스트리밍·진행 패널·프로세스 표 렌더(노드는 `ainvoke` 유지, `astream_events`가 토큰 포착). (2) **args(버그 아님)** — args는 이미 마스킹돼 LLM에 전달 중이었고, "데이터 부족" 출력은 프롬프트 프레이밍 문제 → `process_query` 프롬프트에 "상위 N+전체 건수+집계=현황 분석 충분, total_count>0·상위목록 존재 시 '데이터 부족' 금지, 0건/미해석에서만 사용" 규칙·args 해석 규칙 추가, 빈 args `(없음)` 표기. (3) **CSV** — `process_query_node`가 성공 시 전체 프로세스(마스킹 args, 상한 10,000)를 `query_results`로 반환 → 기존 download-csv·UI 버튼 무변경 재사용, 조기 종료엔 미설정(미표시). 변경 3파일(query.py/process_query_node.py/process_query.py) |
+| 2026-06-16 | D-039 | 특정 자원 실시간 프로세스 리스트 조회 + 현황 분석 (Plan 48): 신규 `process_query` 라우팅 의도로 전용 노드(`process_query_node`) 분기, 폴스타 실시간 프로세스 API(47-1 `PolestarProcessApiClient` 재사용)를 **hostname으로 조회** 후 결정적 선별·집계·마스킹(`build_process_overview`)·LLM 현황 해석. `ProcessInfo`/`mask_args`/`select_top_processes`를 `src/domain/process.py`로 승격(알람 도메인 re-export 무회귀, 63건 통과). 서버명/hostname 구분 시도 없이 `cmm_resource` `name OR hostname` 동시 매칭(read-only SELECT, `_sql_literal` 이스케이프, db_engine별 LIMIT, 정확 hostname 우선)으로 정규 hostname 해석, 모호 2건↑ HITL 후보 안내·미해석 직접 hostname 폴백·라우터 db 오선택 대비 타 폴스타 db 재해석(**user_specified_db 시 ③ 스킵**). `semantic_router`는 DB 결정 보존 후 routing_intent만 오버라이드. `ProcessQueryConfig`(PROCESS_QUERY_*, base_url은 AlarmConfig 재사용), input_parser 규칙 14, graph 배선(노드 주입·조건부 엣지·`route_after_process_query`), SSE/app.js 출력. **args 민감정보 mask_args() 마스킹 필수 — LLM·UI·엑셀 평문 비노출 회귀 고정**. 테스트 신규 4파일(120건 전수 통과), arch_check 위반 0. **번호 비고: Plan 48 §8은 D-037 예약했으나 D-037/D-038이 선점되어 규약대로 D-039 부여** |
 | 2026-06-16 | D-038 | 양식 채우기 결정적 SQL 빌더 Phase 2: `src/utils/report_sql_builder.py` 신규 — 양식 필드를 직접컬럼/EAV/메트릭으로 분류 후 **단일 피벗 + 메트릭 LEFT JOIN(ON절 필터)** 구조로 결정적 생성(server.Server 탈락 방지), value_joins로 Hostname/IPaddress 직접컬럼 대체(공동존 안전), TotalSize 등 모호 resource_type은 도메인어로 해소·실패 시 폴백. query_generator에 `_try_build_deterministic_sql` 게이팅(폴스타 양식채우기+필터/멀티DB 없음+전필드 분류 성공 시만) + **재시도 시 LLM 폴백** + alias 규약(field_aliases로 column_mapping 갱신). 미분류/비대상/예외는 기존 LLM 경로. **킬 스위치 `QUERY_ENABLE_DETERMINISTIC_REPORT_SQL`(QueryConfig, 기본 true) 추가 — false 시 즉시 LLM 전용 회귀(3-f)**. Phase 3 후보(행 필터/시간범위/네트워크/멀티시트 등)는 D-038 백로그로 기록. 테스트(빌더 단위·통합 + 게이팅·폴백·킬스위치) 추가 |
 | 2026-06-16 | D-038 | 양식 채우기 결정적 SQL 빌더 Phase 1: 5개 polestar 프로필에 구조화 메타데이터 `metric_patterns`(stat_tables h/d/m, value_columns min/avg/max_val, aggregations 인식어, metrics=resource_type+definition_name+단위+도메인어/동의어) 신설. 순수 유틸 `src/utils/metric_classifier.py` 신규(classify_metric_field/detect_aggregation/resolve_stat_table/load_metric_patterns) — "CPU 평균"·"메모리 최대"를 메트릭으로 결정적 분류, "CPU 코어수"·"메모리 용량"은 None(EAV 양보). 라이브 동작 무변경(분류기 Phase 2 배선 전 휴면, metric_patterns는 _format_structure_guide가 읽지 않음). 테스트 26건. **Phase 2(빌더+게이팅+재시도 LLM 폴백), Phase 3(도메인 확장) 예정** |
 | 2026-06-16 | D-037 | 양식 채우기 SQL 정합성: (1) 5개 polestar 프로필 query_guide에 `[★ 양식 채우기 / 성능 통계 조인 시 server.Server 행 탈락 주의]` 추가 + yd 통합 few-shot 예시 — 메트릭(cmm_metric_stat_*) 단일 평면 INNER JOIN 시 server.Server 행 탈락으로 식별/OS 컬럼 전체 NULL 방지. (2) query_generator `_fix_known_attribute_typos()`로 생성 SQL 리터럴 `'OSVersion'`→`'OSVerson'`(폴스타 오탈자 실제값) 결정적 치환 — LLM 자동 교정 무력화, 따옴표 리터럴만 대상이라 alias 무영향. CLAUDE.md Known Mistakes 2건 |

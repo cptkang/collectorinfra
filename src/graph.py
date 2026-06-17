@@ -14,7 +14,10 @@ from functools import partial
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from src.alarm.infrastructure.polestar_process_api import PolestarProcessApiClient
 from src.config import AppConfig
+from src.db import get_db_client
+from src.infrastructure.polestar_host_resolver import PolestarHostResolver
 from src.llm import create_llm
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
@@ -24,6 +27,7 @@ from src.nodes.field_mapper import field_mapper
 from src.nodes.input_parser import input_parser
 from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.output_generator import output_generator
+from src.nodes.process_query_node import process_query_node
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import query_validator
@@ -110,6 +114,7 @@ _INTENT_ROUTE_MAP: dict[str, str] = {
     "cache_management": "cache_management",
     "synonym_registration": "synonym_registrar",
     "general_inference": "general_inference",
+    "process_query": "process_query",
 }
 
 
@@ -128,6 +133,17 @@ def route_after_semantic_router(state: AgentState) -> str:
     if state.get("is_multi_db"):
         return "multi_db_executor"
     return "schema_analyzer"
+
+
+def route_after_process_query(state: AgentState) -> str:
+    """process_query 노드 이후 라우팅을 결정한다 (Plan 48 §5.8).
+
+    - 문서 출력(xlsx/docx) 요청: output_generator로 위임 (organized_data 재사용)
+    - 그 외(텍스트): END
+    """
+    if state.get("file_type") in ("xlsx", "docx"):
+        return "output_generator"
+    return END
 
 
 def route_after_schema_analyzer(state: AgentState) -> str:
@@ -298,6 +314,20 @@ def build_graph(config: AppConfig, checkpointer=None):
             "general_inference",
             partial(general_inference_node, llm=llm, app_config=config),
         )
+        # Plan 48: 프로세스 조회 노드 (실시간 프로세스 API — SQL 파이프라인 우회)
+        # host_resolver(infrastructure)·process_client(alarm 47-1 자산)를 partial 주입.
+        process_client = PolestarProcessApiClient(config.alarm)
+        host_resolver = PolestarHostResolver(get_db_client, config)
+        graph.add_node(
+            "process_query",
+            partial(
+                process_query_node,
+                llm=llm,
+                app_config=config,
+                host_resolver=host_resolver,
+                process_client=process_client,
+            ),
+        )
 
     graph.add_node(
         "schema_analyzer",
@@ -356,6 +386,7 @@ def build_graph(config: AppConfig, checkpointer=None):
                 "cache_management": "cache_management",
                 "synonym_registrar": "synonym_registrar",
                 "general_inference": "general_inference",
+                "process_query": "process_query",
             },
         )
 
@@ -371,6 +402,16 @@ def build_graph(config: AppConfig, checkpointer=None):
 
         # 일반 추론 경로
         graph.add_edge("general_inference", END)
+
+        # Plan 48: 프로세스 조회 경로 (문서 요청 시 output_generator 위임, 아니면 END)
+        graph.add_conditional_edges(
+            "process_query",
+            route_after_process_query,
+            {
+                "output_generator": "output_generator",
+                END: END,
+            },
+        )
     else:
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")
