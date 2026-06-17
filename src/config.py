@@ -90,6 +90,10 @@ class QueryConfig(BaseSettings):
     sufficiency_required_threshold: float = 0.7   # hint/synonym 매핑
     sufficiency_optional_threshold: float = 0.5   # llm_inferred 매핑
 
+    # 양식 채우기 결정적 SQL 빌더(D-038) 사용 여부. False면 항상 LLM 생성으로 폴백.
+    # 운영 중 문제 시 즉시 LLM 전용으로 회귀하는 킬 스위치.
+    enable_deterministic_report_sql: bool = True
+
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -304,6 +308,25 @@ class AlarmConfig(BaseSettings):
         return None
 
 
+class ProcessQueryConfig(BaseSettings):
+    """사용자 프로세스 조회 설정 (Plan 48 §5.5).
+
+    사용자가 "특정 서버의 프로세스 목록/현황"을 직접 질의할 때 사용한다.
+    폴스타 프로세스 API base_url 매핑·API 타임아웃은 AlarmConfig(동일 엔드포인트)를
+    재사용하므로 여기서 중복 생성하지 않는다
+    (AlarmConfig.get_process_api_base_url / process_api_timeout_seconds).
+
+    AlarmConfig는 alarm 서브시스템 전용(env_prefix=ALARM_)이므로 사용자 조회 설정을
+    섞지 않고 별도 클래스로 분리한다 (응집도 — Plan 48 §5.5 권장안).
+    """
+
+    process_query_enabled: bool = True
+    process_query_top_n: int = 10                 # 사용자 조회는 알람(5)보다 많이 노출
+    process_query_resolve_timeout_seconds: int = 3  # hostname 해석 DB 조회 상한 (초)
+
+    model_config = {"env_prefix": "PROCESS_QUERY_", "env_file": ".env", "extra": "ignore"}
+
+
 class WorkbConfig(BaseSettings):
     """KB One 클라우드 포탈 worKB(사내메신저) 쪽지 발송 설정.
 
@@ -354,6 +377,7 @@ class AppConfig(BaseSettings):
     schema_cache: SchemaCacheConfig = SchemaCacheConfig()
     audit: AuditConfig = AuditConfig()
     alarm: AlarmConfig = AlarmConfig()
+    process_query: ProcessQueryConfig = ProcessQueryConfig()
     workb: WorkbConfig = WorkbConfig()
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"

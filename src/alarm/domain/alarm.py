@@ -3,7 +3,8 @@
 AlarmEvent: 폴스타로부터 수신된 알람 이벤트 (폴스타 템플릿 변수와 1:1 대응)
 AlarmHistoryEntry: 폴스타 DB에서 조회된 과거 알람 1건 (Plan 47)
 AlarmHistoryStats: 이력 통계 + 1차 분류 결과 (Plan 47)
-ProcessInfo / ProcessSnapshot: 알람 시점 영향 프로세스 스냅샷 (Plan 47-1)
+ProcessInfo: 공유 프로세스 도메인(src/domain/process.py)에서 re-export (Plan 48 §3.2)
+ProcessSnapshot: 알람 시점 영향 프로세스 스냅샷 (Plan 47-1, 알람 전용으로 잔류)
 AlarmAnalysisResult: LLM 분석 결과 및 발송 내역
 """
 
@@ -12,6 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+
+# Plan 48 §3.2: ProcessInfo는 공유 프로세스 도메인으로 승격됨.
+# 기존 import 경로(`from src.alarm.domain.alarm import ProcessInfo`)를 보존하기 위해 re-export.
+from src.domain.process import ProcessInfo  # noqa: F401  (re-export)
 
 
 @dataclass
@@ -86,25 +91,6 @@ class AlarmHistoryStats:
     truncated: bool                       # max_rows 도달로 이력 일부만 반영됨
     pre_classification: str               # "첫 발생"|"주기적"|"급증"|"산발적"
     source: str                           # "polestar_db" | "cache" (테스트 경로는 "simulated")
-
-
-@dataclass
-class ProcessInfo:
-    """프로세스 1건 (마스킹·정규화 완료 — Plan 47-1).
-
-    폴스타 실시간 프로세스 API 응답의 단일 프로세스를 선별·마스킹·정규화한 값.
-    args는 반드시 mask_args()로 민감정보(비밀번호·토큰·접속문자열)를 제거한 값만 보관한다.
-    """
-
-    name: str
-    pid: int
-    ppid: int
-    user: str
-    p100cpu: float       # 100% 기준 CPU% (표시·랭킹 기본)
-    pcpu: float          # 코어 합산 CPU%
-    pmem: float          # 물리 메모리 %
-    rss: int             # resident set size (bytes, 0 허용)
-    args: str            # 마스킹·절단된 실행 인자
 
 
 @dataclass

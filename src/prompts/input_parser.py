@@ -67,6 +67,21 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
     예: "가용성 상태가 비정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
     예: "가용성이 정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "=", "value": 0}]
     예: "가용성 상태가 정상이 아닌 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
+14. **실시간 프로세스 조회 신호 (process_query)**: 사용자가 특정 자원(서버)에서 **실행 중인 프로세스 목록/현황**을 요청하면 선택적 `process_query` 필드를 추출합니다. 신호 키워드: "프로세스", "process", "실행 중인", "돌고 있는", "ps", "프로세스 목록", "프로세스 현황" 등이 **특정 서버/장비 식별자와 함께** 나타날 때.
+    - `identifier`: 사용자가 말한 **서버명/hostname 원문 그대로**(가공·번역·정규화 금지). 예: "saisvd01", "cop-was01". 지역/DB 수식어(여의도, 김포 등)는 identifier에 넣지 말고 기존 규칙대로 target_db_hints로 분리합니다.
+    - `metric`: 정렬 기준. "cpu 많이", "CPU 점유" → "cpu" / "메모리 많이", "메모리 사용" → "memory" / 둘 다 또는 미지정 → "both".
+    - `top_n`: "상위 10개", "top 5" 같은 표현에서 정수. 명시 없으면 null.
+    - process_query 신호가 없으면 이 필드를 출력하지 마세요(임의 추가 금지).
+    형식:
+    ```json
+    "process_query": {"identifier": "<서버명/hostname 원문>", "metric": "cpu | memory | both", "top_n": <정수 또는 null>}
+    ```
+    예: "saisvd01 서버에서 실행 중인 프로세스 목록 보여줘"
+      → "process_query": {"identifier": "saisvd01", "metric": "both", "top_n": null}
+    예: "cop-was01 의 메모리 많이 쓰는 프로세스 상위 10개"
+      → "process_query": {"identifier": "cop-was01", "metric": "memory", "top_n": 10}
+    예: "여의도 폴스타의 myhost 프로세스 현황 분석해줘"
+      → target_db_hints: ["여의도 폴스타"], "process_query": {"identifier": "myhost", "metric": "both", "top_n": null}
 
 ## 예시
 

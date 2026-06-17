@@ -222,6 +222,14 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
         elif node_name == "general_inference":
             return {"status": "응답 생성 완료"}
 
+        elif node_name == "process_query":
+            # Plan 48: 실시간 프로세스 현황 (process_overview는 이미 마스킹된 dict, None 가능)
+            data = {"routing_intent": output.get("routing_intent", "process_query")}
+            overview = output.get("process_overview")
+            if overview:
+                data["process_overview"] = overview
+            return data
+
         elif node_name == "approval_gate":
             if output.get("awaiting_approval"):
                 return {"awaiting_approval": True, "sql": output.get("approval_context", {}).get("sql", "")}
@@ -416,6 +424,7 @@ async def process_query_stream(
                                 "result_organizer", "output_generator",
                                 "multi_db_executor", "result_merger",
                                 "synonym_registrar", "general_inference", "error_response",
+                                "process_query",
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
@@ -448,7 +457,7 @@ async def process_query_stream(
                         # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
                         if kind == "on_chat_model_stream":
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if _event_node in ("output_generator", "general_inference"):
+                            if _event_node in ("output_generator", "general_inference", "process_query"):
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk and hasattr(chunk, "content") and chunk.content:
                                     streamed_any_token = True
@@ -797,6 +806,7 @@ async def process_file_query_stream(
                                 "result_organizer", "output_generator",
                                 "multi_db_executor", "result_merger",
                                 "synonym_registrar", "general_inference", "error_response",
+                                "process_query",
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
@@ -826,7 +836,7 @@ async def process_file_query_stream(
 
                         if kind == "on_chat_model_stream":
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if _event_node in ("output_generator", "general_inference"):
+                            if _event_node in ("output_generator", "general_inference", "process_query"):
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk and hasattr(chunk, "content") and chunk.content:
                                     streamed_any_token = True

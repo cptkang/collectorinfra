@@ -72,9 +72,10 @@ sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 �
 }}
 ```
 
-- data_query: 서버 사양, 성능 지표, 프로세스 등 일반 인프라 데이터 조회
+- data_query: 서버 사양, 성능 지표 등 일반 인프라 데이터 조회 (DB에 저장된 정적 데이터)
 - alarm_query: 알람 현황, 알람 이력, 임계값 초과, 모니터링 alert 조회
 - cache_management: 캐시 생성/갱신/삭제, 유사어 관리, 컬럼 설명 변경
+- process_query: 특정 서버/자원의 **실시간 프로세스 목록/현황** 조회 ("saisvd01 프로세스 보여줘", "그 서버 CPU 많이 먹는 프로세스 상위 N", "장비 프로세스 현황"). 이때도 자원이 속한 DB는 정상적으로 databases에 선택하세요 (active_db_id 확정 필요).
 
 ## 판단 규칙
 
@@ -248,9 +249,10 @@ action을 "db-guide"로 설정하세요.
 **반드시 아래 순서대로 검토하고, 먼저 해당하는 intent로 분류하세요.**
 
 1. **cache_management 우선**: 캐시, 유사어/유사 단어, 컬럼 설명, DB 설명, 스키마 관련 키워드가 있으면 → `cache_management`
-2. **alarm_query**: 알람, 모니터링, 임계값 초과, alert 관련이면 → `alarm_query`
-3. **data_query**: 인프라 데이터 조회(서버, CPU, 메모리, 디스크, 네트워크, VM, 자산 등)가 필요하면 → `data_query`
-4. **general_inference**: 위 세 가지 중 어디에도 해당하지 않을 때만 → `general_inference`
+2. **process_query**: 특정 서버/자원의 **실시간 프로세스 목록/현황**(프로세스, process, 실행 중인, 돌고 있는, ps 등 + 서버 식별자)이면 → `process_query`. 이때도 해당 자원이 속한 DB를 databases에 선택하세요.
+3. **alarm_query**: 알람, 모니터링, 임계값 초과, alert 관련이면 → `alarm_query`
+4. **data_query**: 인프라 데이터 조회(서버, CPU, 메모리, 디스크, 네트워크, VM, 자산 등)가 필요하면 → `data_query`
+5. **general_inference**: 위 네 가지 중 어디에도 해당하지 않을 때만 → `general_inference`
 
 `general_inference`는 **최후 수단(last resort)**입니다. 에이전트가 다룰 수 있는 영역과 조금이라도 관련이 있으면 다른 intent로 분류하세요.
 

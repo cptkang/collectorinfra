@@ -212,6 +212,7 @@ header nav {
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
+    position: relative; /* 플로팅 '맨 아래로' 버튼 앵커 (Plan 49) */
 }
 
 /* ─── Chat Messages Area ─── */
@@ -223,7 +224,7 @@ header nav {
     max-width: 920px;
     width: 100%;
     margin: 0 auto;
-    scroll-behavior: smooth;
+    /* scroll-behavior는 JS에서 제어한다 (자동 따라가기=즉시, 버튼 클릭=smooth) — Plan 49 */
 }
 
 /* ─── Right Progress Panel ─── */
@@ -1601,6 +1602,102 @@ header nav {
 .input-btn--send svg {
     width: 16px;
     height: 16px;
+}
+
+/* 전송/중지 아이콘 토글 (Plan 49 §6.2) */
+.input-btn--send .icon-stop {
+    display: none;
+}
+
+.input-btn--send.is-stop .icon-send {
+    display: none;
+}
+
+.input-btn--send.is-stop .icon-stop {
+    display: block;
+}
+
+.input-btn--send.is-stop .icon-stop rect {
+    fill: currentColor;
+    stroke: none;
+}
+
+/* ─── Floating "scroll to bottom" button (Plan 49 §3.3) ─── */
+
+.scroll-to-bottom-btn {
+    position: absolute;
+    right: 28px;
+    bottom: 120px; /* 입력 바 위 — 입력 영역과 겹치지 않게 */
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border-accent);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    z-index: 20;
+    box-shadow: var(--shadow);
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.scroll-to-bottom-btn.is-visible {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+
+.scroll-to-bottom-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: var(--shadow-glow);
+}
+
+.scroll-to-bottom-btn svg {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+}
+
+/* 스트리밍 중 새 응답이 쌓이는데 바닥에 없을 때 표시되는 배지 */
+.scroll-to-bottom-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow-strong);
+    opacity: 0;
+    transform: scale(0.5);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.scroll-to-bottom-btn.has-new .scroll-to-bottom-badge {
+    opacity: 1;
+    transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .scroll-to-bottom-btn {
+        transition: opacity 0.01s;
+    }
+}
+
+@media (max-width: 640px) {
+    .scroll-to-bottom-btn {
+        right: 16px;
+        bottom: 104px;
+        width: 36px;
+        height: 36px;
+    }
 }
 
 /* Hint below input */

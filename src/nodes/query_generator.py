@@ -137,6 +137,96 @@ def _format_structure_guide(
     return guide
 
 
+def _safe_extract_synonym_usage(state: AgentState, sql: str) -> dict | None:
+    """생성된 SQL에서 유사어 사용을 역조회한다(처리 현황 표시용).
+
+    실패해도 SQL 생성 흐름에 영향을 주지 않도록 예외를 흡수한다.
+    LLM 경로와 결정적 빌더 경로가 동일하게 사용한다.
+    """
+    try:
+        structure_meta = (state.get("schema_info") or {}).get("_structure_meta") or {}
+        attr_cols = [
+            p["attribute_column"]
+            for p in structure_meta.get("patterns", [])
+            if p.get("type") == "eav" and p.get("attribute_column")
+        ]
+        return extract_synonym_usage(
+            sql,
+            column_synonyms=state.get("column_synonyms") or {},
+            resource_type_synonyms=state.get("resource_type_synonyms") or {},
+            eav_name_synonyms=state.get("eav_name_synonyms") or {},
+            query_targets=(state.get("parsed_requirements") or {}).get("query_targets")
+            or [],
+            attribute_columns=attr_cols or None,
+        )
+    except Exception as e:
+        logger.warning("유사어 사용 역조회 실패: %s", e)
+        return None
+
+
+def _infer_resolution(parsed_requirements: dict, user_query: str) -> str:
+    """질의/요구사항 텍스트에서 통계 시간 단위(hour/day/month)를 추론한다."""
+    text = " ".join(
+        [str((parsed_requirements or {}).get("time_range") or ""), user_query or ""]
+    )
+    if ("실시간" in text) or ("현재" in text) or ("시간" in text):
+        return "hour"
+    if ("오늘" in text) or ("어제" in text) or ("일간" in text) or ("일별" in text):
+        return "day"
+    return "month"
+
+
+def _try_build_deterministic_sql(
+    state: AgentState, limit_value: int, app_config: AppConfig | None = None
+):
+    """양식 채우기 대상이면 결정적 SQL을 생성한다. 비대상/미분류면 None(→ LLM 폴백).
+
+    게이팅: 결정적 빌더 활성화(킬 스위치) + 폴스타 양식 채우기(xlsx/docx)
+    + column_mapping 존재 + 필터/멀티DB 없음.
+    """
+    from src.utils.metric_classifier import load_metric_patterns
+    from src.utils.report_sql_builder import build_polestar_report_sql
+
+    # 킬 스위치: QUERY_ENABLE_DETERMINISTIC_REPORT_SQL=false 시 항상 LLM 폴백
+    if app_config is not None and not app_config.query.enable_deterministic_report_sql:
+        return None
+
+    parsed = state.get("parsed_requirements") or {}
+    if parsed.get("output_format") not in ("xlsx", "docx"):
+        return None
+    column_mapping = state.get("column_mapping") or {}
+    if not column_mapping:
+        return None
+    # 행 필터/멀티DB는 Phase 2 미지원 → LLM 경로
+    if parsed.get("filter_conditions"):
+        return None
+    if state.get("is_multi_db"):
+        return None
+
+    structure_meta = (state.get("schema_info") or {}).get("_structure_meta") or {}
+    metric_patterns = load_metric_patterns(structure_meta)
+    if not metric_patterns:
+        return None  # metric_patterns 없는 DB(=폴스타 아님)
+
+    known_attrs: list = []
+    value_joins: list = []
+    for p in structure_meta.get("patterns", []):
+        if p.get("type") == "eav":
+            known_attrs = p.get("known_attributes_detail") or known_attrs
+            value_joins = p.get("value_joins") or value_joins
+
+    resolution = _infer_resolution(parsed, state.get("user_query", "") or "")
+    return build_polestar_report_sql(
+        list(column_mapping.keys()),
+        column_mapping,
+        metric_patterns,
+        known_attrs,
+        value_joins=value_joins,
+        resolution=resolution,
+        limit=limit_value,
+    )
+
+
 async def query_generator(
     state: AgentState,
     *,
@@ -179,6 +269,30 @@ async def query_generator(
     is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
     limit_value = 100000 if is_all_query else app_config.query.default_limit
 
+    # === D-038 Phase 2: 양식 채우기 결정적 SQL 빌더 ===
+    # 재시도가 아니고 폴스타 양식 채우기이며 전 필드가 분류되면 결정적 SQL을 사용한다.
+    # 빌더가 None(미분류/비대상)이거나 재시도면 아래 기존 LLM 경로로 폴백한다.
+    if not is_retry:
+        try:
+            build = _try_build_deterministic_sql(state, limit_value, app_config)
+        except Exception as e:
+            logger.warning("결정적 SQL 빌더 예외, LLM 폴백: %s", e)
+            build = None
+        if build is not None:
+            det_sql = _fix_known_attribute_typos(build.sql)
+            logger.info(
+                "결정적 SQL 빌더 사용 (양식 채우기, fields=%d)",
+                len(build.field_aliases),
+            )
+            return {
+                "generated_sql": det_sql,
+                "synonym_usage": _safe_extract_synonym_usage(state, det_sql),
+                "retry_count": retry_count,
+                "error_message": None,
+                "current_node": "query_generator",
+                "column_mapping": build.field_aliases,
+            }
+
     # 프롬프트 구성
     system_prompt = _build_system_prompt(
         schema_info=state["schema_info"],
@@ -217,30 +331,16 @@ async def query_generator(
     # SQL 추출
     sql = _extract_sql_from_response(response.content)
 
+    # 알려진 폴스타 EAV 속성명 오탈자 보정 (D-037):
+    # LLM이 DB 실제 속성명 'OSVerson'(폴스타 제품 오탈자)을 'OSVersion'으로
+    # 자동 교정해 생성하면 EAV 매칭이 0건이 되어 해당 컬럼이 NULL이 된다.
+    # 따옴표로 감싼 리터럴에 한해 결정적으로 되돌린다.
+    sql = _fix_known_attribute_typos(sql)
+
     logger.info(f"SQL 생성 완료 (retry={retry_count}): {sql[:1000]}...")
 
     # 유사어 사용 역조회 (처리 현황 표시용) — 실패해도 SQL 생성에는 영향 없음
-    synonym_usage: dict | None = None
-    try:
-        structure_meta = (state.get("schema_info") or {}).get("_structure_meta") or {}
-        attr_cols = [
-            p["attribute_column"]
-            for p in structure_meta.get("patterns", [])
-            if p.get("type") == "eav" and p.get("attribute_column")
-        ]
-        synonym_usage = extract_synonym_usage(
-            sql,
-            column_synonyms=state.get("column_synonyms") or {},
-            resource_type_synonyms=state.get("resource_type_synonyms") or {},
-            eav_name_synonyms=state.get("eav_name_synonyms") or {},
-            query_targets=(state.get("parsed_requirements") or {}).get(
-                "query_targets"
-            )
-            or [],
-            attribute_columns=attr_cols or None,
-        )
-    except Exception as e:
-        logger.warning("유사어 사용 역조회 실패: %s", e)
+    synonym_usage = _safe_extract_synonym_usage(state, sql)
 
     return {
         "generated_sql": sql,
@@ -667,6 +767,30 @@ def _format_schema_for_prompt(
             lines.append(f"  {rel['from']} -> {rel['to']}")
 
     return "\n".join(lines)
+
+
+# 폴스타 EAV 속성명 중 LLM이 정상 철자로 "교정"하기 쉬운 오탈자 → 실제 DB 값 매핑.
+# 값은 core_config_prop.name 리터럴로만 의미가 있으므로 따옴표로 감싼 리터럴만 치환한다.
+_KNOWN_ATTRIBUTE_TYPO_FIXES = {
+    "OSVersion": "OSVerson",  # 폴스타 제품 오탈자가 실제 EAV 속성명
+}
+
+
+def _fix_known_attribute_typos(sql: str) -> str:
+    """생성된 SQL의 알려진 EAV 속성명 오탈자를 실제 DB 값으로 되돌린다.
+
+    LLM이 폴스타 제품의 오탈자 속성명(예: 'OSVerson')을 정상 철자('OSVersion')로
+    자동 교정하면 EAV NAME 매칭이 0건이 되어 해당 컬럼이 NULL이 된다. 따옴표로 감싼
+    문자열 리터럴에 한해 결정적으로 치환하여 alias(AS os_version 등)에는 영향을 주지 않는다.
+    """
+    if not sql:
+        return sql
+    fixed = sql
+    for wrong, correct in _KNOWN_ATTRIBUTE_TYPO_FIXES.items():
+        fixed = re.sub(
+            rf"'{re.escape(wrong)}'", f"'{correct}'", fixed, flags=re.IGNORECASE
+        )
+    return fixed
 
 
 def _extract_sql_from_response(content: str) -> str:
