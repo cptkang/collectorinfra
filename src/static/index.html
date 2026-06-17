@@ -96,10 +96,13 @@
                                         d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                                 </svg>
                             </button>
-                            <button class="input-btn input-btn--send" id="sendBtn" title="전송 (Enter)">
-                                <svg viewBox="0 0 24 24">
+                            <button class="input-btn input-btn--send" id="sendBtn" title="전송 (Enter)" aria-label="전송">
+                                <svg class="icon-send" viewBox="0 0 24 24" aria-hidden="true">
                                     <line x1="22" y1="2" x2="11" y2="13" />
                                     <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                                </svg>
+                                <svg class="icon-stop" viewBox="0 0 24 24" aria-hidden="true">
+                                    <rect x="6" y="6" width="12" height="12" rx="2" />
                                 </svg>
                             </button>
                         </div>
@@ -112,6 +115,16 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Floating "scroll to bottom" button (Plan 49) -->
+            <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" type="button"
+                    aria-label="맨 아래로 이동" title="맨 아래로 이동">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <polyline points="19 12 12 19 5 12" />
+                </svg>
+                <span class="scroll-to-bottom-badge" aria-hidden="true"></span>
+            </button>
         </div>
 
         <!-- Right Progress Panel -->

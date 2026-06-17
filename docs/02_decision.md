@@ -1838,6 +1838,48 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
+## D-041. 스트리밍 출력 UX — 스크롤 자유화 + "맨 아래로" 버튼 + Stop 버튼 (Plan 49)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-17 |
+| **상태** | 구현 완료 (핵심 §3 + §6.1 + §6.2). §6.3~6.8은 백로그 |
+| **관련 결정** | D-039/D-040(process_query·스트리밍 출력 배선) |
+
+### 배경 / 문제
+
+AI 응답이 SSE로 스트리밍될 때 `app.js`가 **토큰마다 무조건 `scrollToBottom()`**을 호출 → 사용자가 출력 중 위로 스크롤해도 매 토큰마다 바닥으로 끌려가 이전 내용을 읽을 수 없었다("새로고침" 체감). 또한 토큰마다 `innerHTML = renderMarkdown(전체)` 재생성으로 깜빡임·텍스트 선택 끊김이 발생했고, 진행 중 응답을 멈출 수단이 없었다.
+
+### 결정 (프런트엔드 한정 — 서버/그래프/도메인 무변경)
+
+| 영역 | 내용 |
+|------|------|
+| **자동 스크롤 게이팅(§3)** | `#chatMessages` scroll 리스너(rAF throttle)에서 `distanceFromBottom <= 80px`로 `autoStick`을 매 프레임 재계산(별도 플래그 동기화 없이 프로그램적 스크롤까지 흡수). 스트리밍 토큰·finalize는 `autoScrollIfStuck()`(바닥 고정 시에만 이동), 메시지 전송·버튼 클릭 등 의도적 이동만 `scrollToBottom({behavior})`로 강제+`autoStick=true`. CSS의 전역 `scroll-behavior:smooth`를 제거하고 JS에서 제어(따라가기=즉시, 버튼=smooth) |
+| **"맨 아래로" 플로팅 버튼(§3.3)** | `.chat-main`(→`position:relative`) 내부 `#scrollToBottomBtn`(absolute, 입력 바 위). `autoStick=false`일 때만 노출, 클릭 시 smooth 바닥 이동+따라가기 재개. 스트리밍 중 바닥에서 떨어진 상태로 새 토큰 도착 시 `has-new` 배지. `aria-label`·`prefers-reduced-motion`·모바일 반응형 |
+| **토큰 렌더 최적화(§6.1)** | `scheduleStreamRender()`가 누적 텍스트를 rAF로 **프레임당 1회** 렌더(토큰당 재렌더 제거). 렌더 직전 `hasSelectionInside(#streamingText)`면 그 프레임 렌더 보류(드래그 선택 보존), 종료 시 `flushFinalStreamRender()`로 강제 1회 렌더 |
+| **응답 중지(Stop) 버튼(§6.2)** | 처리 중 전송 버튼을 비활성화하지 않고 `setSendButtonMode(true)`로 정지(`is-stop`) 모드 전환(활성 유지, aria-label "응답 중지", 사각형 아이콘). `AbortController`를 `fetch(...,{signal})`에 전달, 클릭 시 `abort()`→`AbortError`를 잡아 **부분 응답을 그대로 확정**(에러 처리 안 함). `finally`에서 전송 모드 복귀 |
+
+### 근거
+
+기존 스트리밍 인프라가 노드 화이트리스트·`query_results` 키에만 의존하듯, 스크롤/렌더/취소도 **프런트엔드 배선만**으로 해소 가능. 자동 스크롤을 "바닥 고정 의도"로 게이팅하는 것이 타 AI 어시스턴트 UI의 표준 패턴이며, 거리 기반 재계산은 프로그램적/사용자 스크롤을 구분하는 플래그 juggling을 피해 견고하다.
+
+### 변경된 파일
+
+| 파일 | 변경 | 계층 |
+|------|------|------|
+| `src/static/index.html` | `#scrollToBottomBtn`(↓+배지) 마크업, 전송 버튼 정지 아이콘(`.icon-stop`) | static |
+| `src/static/css/style.css` | `.chat-main{position:relative}`, `.chat-messages` 전역 smooth 제거, `.scroll-to-bottom-btn`/`.is-visible`/`.has-new`/배지+반응형·reduced-motion, `.input-btn--send.is-stop` 토글 | static |
+| `src/static/js/app.js` | `autoStick`·scroll 리스너, `scrollToBottom(opts)`/`autoScrollIfStuck()` 분리, `scheduleStreamRender`/`flushFinalStreamRender`(선택 보존), 플로팅 버튼·`has-new`, `AbortController`+`setSendButtonMode`/`stopStreaming`+AbortError 부분 확정 | static |
+| `tests/e2e/test_basic_ui.py` | B-07을 "전송 후 Stop 모드 전환(is-stop, 활성 유지)"으로 갱신 | 테스트 |
+
+### 향후 수정 시 고려사항
+
+- 실제 브라우저 상호작용(스크롤 따라가기 해제/재개, 버튼 노출, 선택 보존, 중지 시 부분 확정)은 **e2e/수동 확인** 필요(`node --check`·구조 검증만 자동)
+- 서버 측 생성 중단: 클라이언트 abort 시 SSE 연결이 끊겨 생성이 중단되는지 운영 환경 확인 권장
+- 백로그(§6.3 복사 버튼, §6.4 스크롤 정책 전역화, §6.5 진행 패널 동기화, §6.6 새 응답 토스트, §6.7 접근성, §6.8 위치 보존)는 후속 과제
+
+---
+
 ## D-040. process_query 출력 채널 보강 — 스트리밍 / args 전달 / CSV (Plan 48 §10)
 
 | 항목 | 내용 |
@@ -2018,6 +2060,7 @@ D-039 구현 후 사용자 피드백 3건: (1) `process_query` 응답이 토큰 
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-17 | D-041 | 스트리밍 출력 UX (Plan 49) — 프런트엔드 한정: (1) **자동 스크롤 게이팅** — 토큰마다 무조건 `scrollToBottom()` 제거, `#chatMessages` scroll 리스너(rAF throttle)로 `distanceFromBottom<=80px`면 `autoStick`, 스트리밍/finalize는 `autoScrollIfStuck()`(바닥 고정 시만), 전송·버튼만 강제 이동. CSS 전역 `scroll-behavior:smooth` 제거 후 JS 제어. (2) **"맨 아래로" 플로팅 버튼** — `.chat-main`(position:relative) 내 `#scrollToBottomBtn`, `autoStick=false`에서 노출·`has-new` 배지·클릭 시 smooth 복귀, aria/reduced-motion/반응형. (3) **§6.1 렌더 최적화** — `scheduleStreamRender` rAF 배칭(프레임당 1회 markdown), 선택 중 렌더 보류+종료 시 강제 flush(텍스트 선택 보존). (4) **§6.2 Stop 버튼** — 처리 중 비활성화 대신 `is-stop` 모드(활성), `AbortController`로 SSE 취소, AbortError 시 부분 응답 확정. e2e B-07 계약 갱신(disabled→is-stop). `node --check` 통과. 변경: index.html/style.css/app.js + test_basic_ui.py |
 | 2026-06-17 | D-040 | process_query 출력 채널 보강 (Plan 48 §10) — 핵심 파이프라인(D-039) 불변, 배선만 변경: (1) **스트리밍** — SSE `query.py` 두 제너레이터의 `_known_nodes`(2곳)·`on_chat_model_stream` 노드 필터(2곳)에 `"process_query"` 추가 → 토큰 스트리밍·진행 패널·프로세스 표 렌더(노드는 `ainvoke` 유지, `astream_events`가 토큰 포착). (2) **args(버그 아님)** — args는 이미 마스킹돼 LLM에 전달 중이었고, "데이터 부족" 출력은 프롬프트 프레이밍 문제 → `process_query` 프롬프트에 "상위 N+전체 건수+집계=현황 분석 충분, total_count>0·상위목록 존재 시 '데이터 부족' 금지, 0건/미해석에서만 사용" 규칙·args 해석 규칙 추가, 빈 args `(없음)` 표기. (3) **CSV** — `process_query_node`가 성공 시 전체 프로세스(마스킹 args, 상한 10,000)를 `query_results`로 반환 → 기존 download-csv·UI 버튼 무변경 재사용, 조기 종료엔 미설정(미표시). 변경 3파일(query.py/process_query_node.py/process_query.py) |
 | 2026-06-16 | D-039 | 특정 자원 실시간 프로세스 리스트 조회 + 현황 분석 (Plan 48): 신규 `process_query` 라우팅 의도로 전용 노드(`process_query_node`) 분기, 폴스타 실시간 프로세스 API(47-1 `PolestarProcessApiClient` 재사용)를 **hostname으로 조회** 후 결정적 선별·집계·마스킹(`build_process_overview`)·LLM 현황 해석. `ProcessInfo`/`mask_args`/`select_top_processes`를 `src/domain/process.py`로 승격(알람 도메인 re-export 무회귀, 63건 통과). 서버명/hostname 구분 시도 없이 `cmm_resource` `name OR hostname` 동시 매칭(read-only SELECT, `_sql_literal` 이스케이프, db_engine별 LIMIT, 정확 hostname 우선)으로 정규 hostname 해석, 모호 2건↑ HITL 후보 안내·미해석 직접 hostname 폴백·라우터 db 오선택 대비 타 폴스타 db 재해석(**user_specified_db 시 ③ 스킵**). `semantic_router`는 DB 결정 보존 후 routing_intent만 오버라이드. `ProcessQueryConfig`(PROCESS_QUERY_*, base_url은 AlarmConfig 재사용), input_parser 규칙 14, graph 배선(노드 주입·조건부 엣지·`route_after_process_query`), SSE/app.js 출력. **args 민감정보 mask_args() 마스킹 필수 — LLM·UI·엑셀 평문 비노출 회귀 고정**. 테스트 신규 4파일(120건 전수 통과), arch_check 위반 0. **번호 비고: Plan 48 §8은 D-037 예약했으나 D-037/D-038이 선점되어 규약대로 D-039 부여** |
 | 2026-06-16 | D-038 | 양식 채우기 결정적 SQL 빌더 Phase 2: `src/utils/report_sql_builder.py` 신규 — 양식 필드를 직접컬럼/EAV/메트릭으로 분류 후 **단일 피벗 + 메트릭 LEFT JOIN(ON절 필터)** 구조로 결정적 생성(server.Server 탈락 방지), value_joins로 Hostname/IPaddress 직접컬럼 대체(공동존 안전), TotalSize 등 모호 resource_type은 도메인어로 해소·실패 시 폴백. query_generator에 `_try_build_deterministic_sql` 게이팅(폴스타 양식채우기+필터/멀티DB 없음+전필드 분류 성공 시만) + **재시도 시 LLM 폴백** + alias 규약(field_aliases로 column_mapping 갱신). 미분류/비대상/예외는 기존 LLM 경로. **킬 스위치 `QUERY_ENABLE_DETERMINISTIC_REPORT_SQL`(QueryConfig, 기본 true) 추가 — false 시 즉시 LLM 전용 회귀(3-f)**. Phase 3 후보(행 필터/시간범위/네트워크/멀티시트 등)는 D-038 백로그로 기록. 테스트(빌더 단위·통합 + 게이팅·폴백·킬스위치) 추가 |

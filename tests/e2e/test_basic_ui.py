@@ -149,34 +149,35 @@ def test_enter_sends_shift_enter_newline(page: Page) -> None:
 
 
 # ---------------------------------------------------------------------------
-# B-07: 처리 중 버튼 비활성화
+# B-07: 처리 중 버튼이 "응답 중지(Stop)" 모드로 전환 (Plan 49 §6.2)
 # ---------------------------------------------------------------------------
 
 
-def test_send_disables_button(page: Page) -> None:
-    """B-07: 전송 후 sendBtn이 비활성화되는지 확인한다.
+def test_send_switches_to_stop_mode(page: Page) -> None:
+    """B-07: 전송 후 sendBtn이 비활성화 대신 '응답 중지' 모드가 되는지 확인한다.
 
-    handleSend 진입 직후 isProcessing=true, sendBtn.disabled=true가
-    되는 것을 확인한다.
+    Plan 49 §6.2: 처리 중에는 버튼을 비활성화하지 않고 Stop 버튼으로 전환한다
+    (is-stop 클래스 + aria-label '응답 중지', 클릭 시 스트림 취소). 따라서
+    전송 직후 버튼은 enabled 상태를 유지하며 is-stop 클래스를 갖는다.
     """
     textarea = page.locator("#prompt")
     textarea.fill("처리 중 테스트 질의")
 
     send_btn = page.locator("#sendBtn")
 
-    # 전송 전에는 활성화 상태
+    # 전송 전에는 send 모드 (is-stop 없음)
     assert send_btn.is_enabled()
 
     # 전송 버튼 클릭
     send_btn.click()
 
-    # 전송 직후 disabled 상태 확인
-    # executeStreamingQuery에서 isProcessing=true, sendBtn.disabled=true가 된다.
+    # 전송 직후 is-stop 모드로 전환되며, 중지 가능하도록 활성 상태를 유지한다.
     page.wait_for_function(
-        "document.getElementById('sendBtn').disabled === true",
+        "document.getElementById('sendBtn').classList.contains('is-stop') === true",
         timeout=3000,
     )
-    assert send_btn.is_disabled()
+    assert send_btn.is_enabled()
+    assert send_btn.get_attribute("aria-label") == "응답 중지"
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@
     var progressPipeline = document.getElementById("progressPipeline");
     var progressEmpty = document.getElementById("progressEmpty");
     var panelToggle = document.getElementById("panelToggle");
+    var scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 
     // ─── Auth Helpers ───
 
@@ -179,6 +180,14 @@
     var stageTimer = null;
     var currentThreadId = null;
 
+    // ─── Scroll / Streaming Control (Plan 49) ───
+    var autoStick = true;                 // 바닥 따라가기 여부 (false면 사용자가 위로 스크롤한 상태)
+    var SCROLL_STICK_THRESHOLD = 80;      // px — 바닥과 이 거리 이내면 "붙어있음"으로 간주
+    var currentAbortController = null;    // 진행 중 SSE 스트림 취소용 (Stop, §6.2)
+    var pendingRenderText = null;         // rAF 배칭용 누적 텍스트 (§6.1)
+    var renderRafId = null;               // 스트리밍 렌더 rAF 핸들
+    var scrollRafPending = false;         // 스크롤 이벤트 throttle 플래그
+
     // ─── Prompt History ───
     var promptHistory = [];           // 전송된 프롬프트 히스토리 (오래된 순)
     var historyIndex = -1;            // 현재 탐색 위치 (-1 = 탐색 안 함)
@@ -271,9 +280,36 @@
 
     promptEl.addEventListener("input", autoResizeTextarea);
     promptEl.addEventListener("keydown", handleKeydown);
-    sendBtn.addEventListener("click", handleSend);
+    // 전송 버튼: 처리 중이면 응답 중지(Stop, §6.2), 아니면 전송
+    sendBtn.addEventListener("click", function () {
+        if (isProcessing) {
+            stopStreaming();
+        } else {
+            handleSend();
+        }
+    });
     fileInput.addEventListener("change", handleFileChange);
     removeFileBtn.addEventListener("click", clearFile);
+
+    // 채팅 영역 스크롤 추적 (Plan 49 §3.1) — rAF throttle
+    if (chatMessages) {
+        chatMessages.addEventListener("scroll", function () {
+            if (scrollRafPending) return;
+            scrollRafPending = true;
+            requestAnimationFrame(function () {
+                scrollRafPending = false;
+                autoStick = isNearBottom();
+                updateScrollButton();
+            });
+        });
+    }
+
+    // 플로팅 "맨 아래로" 버튼 클릭 (Plan 49 §3.3)
+    if (scrollToBottomBtn) {
+        scrollToBottomBtn.addEventListener("click", function () {
+            scrollToBottom({ behavior: "smooth" });
+        });
+    }
 
     hintButtons.forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -416,6 +452,27 @@
     }
 
     // ─── Send Message ───
+
+    // ─── Stop / Send button mode (Plan 49 §6.2) ───
+
+    function setSendButtonMode(processing) {
+        if (processing) {
+            sendBtn.classList.add("is-stop");
+            sendBtn.title = "응답 중지";
+            sendBtn.setAttribute("aria-label", "응답 중지");
+        } else {
+            sendBtn.classList.remove("is-stop");
+            sendBtn.title = "전송 (Enter)";
+            sendBtn.setAttribute("aria-label", "전송");
+        }
+        sendBtn.disabled = false; // 중지 가능하도록 항상 활성 유지
+    }
+
+    function stopStreaming() {
+        if (currentAbortController) {
+            try { currentAbortController.abort(); } catch (_e) {}
+        }
+    }
 
     function handleSend() {
         if (isProcessing) return;
@@ -694,7 +751,8 @@
 
     async function executeStreamingQuery(query) {
         isProcessing = true;
-        sendBtn.disabled = true;
+        setSendButtonMode(true);
+        currentAbortController = new AbortController();
 
         // Show processing first
         renderProcessingMessage();
@@ -706,6 +764,7 @@
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
                 body: JSON.stringify({ query: query }),
+                signal: currentAbortController.signal,
             });
 
             if (response.status === 404 || response.status === 405) {
@@ -767,9 +826,7 @@
                             var event = JSON.parse(dataStr);
                             if (event.type === "token") {
                                 accumulatedText += event.content;
-                                var textEl = document.getElementById("streamingText");
-                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
-                                scrollToBottom();
+                                scheduleStreamRender(accumulatedText);
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
@@ -810,20 +867,33 @@
             });
 
         } catch (err) {
-            removeProcessingMessage();
-            // Network error - fallback to regular query
-            if (err.name === "TypeError" || err.message.includes("fetch")) {
-                await executeFallbackQuery(query);
+            // 사용자가 중지(Stop) — 부분 응답을 그대로 확정 (§6.2)
+            if (err && err.name === "AbortError") {
+                if (document.getElementById("streamingText")) {
+                    finalizeStreamingMessage(accumulatedText, metaData);
+                } else {
+                    removeProcessingMessage();
+                }
             } else {
-                showError("서버와의 통신에 실패했습니다: " + err.message);
+                removeProcessingMessage();
+                // Network error - fallback to regular query
+                if (err.name === "TypeError" || err.message.includes("fetch")) {
+                    await executeFallbackQuery(query);
+                } else {
+                    showError("서버와의 통신에 실패했습니다: " + err.message);
+                }
             }
         } finally {
             isProcessing = false;
-            sendBtn.disabled = false;
+            currentAbortController = null;
+            setSendButtonMode(false);
         }
     }
 
     function finalizeStreamingMessage(text, meta) {
+        // 보류 중인 스트리밍 렌더를 강제로 1회 반영 (§6.1)
+        flushFinalStreamRender(text);
+
         // Remove cursor
         var cursor = document.getElementById("streamingCursor");
         if (cursor) cursor.remove();
@@ -920,7 +990,8 @@
             if (el) el.removeAttribute("id");
         });
 
-        scrollToBottom();
+        // 사용자가 위로 스크롤해 읽는 중이면 바닥으로 끌어내리지 않는다 (Plan 49 §3.2)
+        autoScrollIfStuck();
     }
 
     // ─── Fallback (non-streaming) Query ───
@@ -960,7 +1031,8 @@
 
     async function executeFileQuery(query, file) {
         isProcessing = true;
-        sendBtn.disabled = true;
+        setSendButtonMode(true);
+        currentAbortController = new AbortController();
 
         renderProcessingMessage();
         resetProgressPanel();
@@ -978,6 +1050,7 @@
                 method: "POST",
                 headers: getAuthHeaders(),
                 body: formData,
+                signal: currentAbortController.signal,
             });
 
             if (response.status === 404 || response.status === 405) {
@@ -1033,9 +1106,7 @@
                             var event = JSON.parse(dataStr);
                             if (event.type === "token") {
                                 accumulatedText += event.content;
-                                var textEl = document.getElementById("streamingText");
-                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
-                                scrollToBottom();
+                                scheduleStreamRender(accumulatedText);
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
@@ -1073,11 +1144,21 @@
             });
 
         } catch (err) {
-            removeProcessingMessage();
-            showError("서버와의 통신에 실패했습니다: " + err.message);
+            // 사용자가 중지(Stop) — 부분 응답 확정 (§6.2)
+            if (err && err.name === "AbortError") {
+                if (document.getElementById("streamingText")) {
+                    finalizeStreamingMessage(accumulatedText, metaData);
+                } else {
+                    removeProcessingMessage();
+                }
+            } else {
+                removeProcessingMessage();
+                showError("서버와의 통신에 실패했습니다: " + err.message);
+            }
         } finally {
             isProcessing = false;
-            sendBtn.disabled = false;
+            currentAbortController = null;
+            setSendButtonMode(false);
         }
     }
 
@@ -1146,10 +1227,91 @@
         return escapeHtml(text).replace(/\n/g, '<br>');
     }
 
-    function scrollToBottom() {
+    // ─── Scroll control (Plan 49 §3) ───
+
+    function prefersReducedMotion() {
+        return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    }
+
+    function isNearBottom() {
+        return (chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight) <= SCROLL_STICK_THRESHOLD;
+    }
+
+    function updateScrollButton() {
+        if (!scrollToBottomBtn) return;
+        if (autoStick) {
+            scrollToBottomBtn.classList.remove("is-visible");
+            scrollToBottomBtn.classList.remove("has-new");
+        } else {
+            scrollToBottomBtn.classList.add("is-visible");
+        }
+    }
+
+    // 의도적 이동(메시지 전송·버튼 클릭): 바닥으로 이동 + 따라가기 재개
+    function scrollToBottom(opts) {
+        opts = opts || {};
+        var behavior = (opts.behavior === "smooth" && !prefersReducedMotion()) ? "smooth" : "auto";
+        autoStick = true;
+        requestAnimationFrame(function () {
+            try {
+                chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: behavior });
+            } catch (_e) {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+        });
+        updateScrollButton();
+    }
+
+    // 자동 따라가기: 사용자가 바닥에 붙어있을 때만 이동(스트리밍·자동 append용)
+    function autoScrollIfStuck() {
+        if (!autoStick) return;
         requestAnimationFrame(function () {
             chatMessages.scrollTop = chatMessages.scrollHeight;
         });
+    }
+
+    // 선택 영역이 특정 요소 안에 있는지 (스트리밍 중 텍스트 선택 보존용 — §6.1)
+    function hasSelectionInside(el) {
+        if (!el) return false;
+        var sel = window.getSelection ? window.getSelection() : null;
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+        var node = sel.getRangeAt(0).commonAncestorContainer;
+        return el.contains(node);
+    }
+
+    // 스트리밍 토큰 렌더를 프레임당 1회로 배칭한다 (§6.1: 깜빡임·O(n²) 방지, 선택 보존)
+    function flushStreamRender() {
+        renderRafId = null;
+        var textEl = document.getElementById("streamingText");
+        if (textEl && pendingRenderText !== null && !hasSelectionInside(textEl)) {
+            textEl.innerHTML = renderMarkdown(pendingRenderText);
+            pendingRenderText = null;
+        }
+        if (autoStick) {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        } else if (scrollToBottomBtn) {
+            scrollToBottomBtn.classList.add("has-new");
+        }
+    }
+
+    function scheduleStreamRender(text) {
+        pendingRenderText = text;
+        if (renderRafId === null) {
+            renderRafId = requestAnimationFrame(flushStreamRender);
+        }
+    }
+
+    // 스트리밍 종료 시 마지막 누적 텍스트를 강제로 1회 렌더(선택 보류분 반영)
+    function flushFinalStreamRender(text) {
+        if (renderRafId !== null) {
+            cancelAnimationFrame(renderRafId);
+            renderRafId = null;
+        }
+        var textEl = document.getElementById("streamingText");
+        if (textEl) {
+            textEl.innerHTML = renderMarkdown(text || pendingRenderText || "");
+        }
+        pendingRenderText = null;
     }
 
     // ─── Global function for SQL toggle ───
