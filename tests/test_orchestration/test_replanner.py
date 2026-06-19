@@ -430,6 +430,9 @@ def _build_orchestration_config() -> AppConfig:
     )
     cfg.enable_deepagent_orchestration = True
     cfg.enable_semantic_routing = False
+    # 트랙 B는 범위 밖 — .env의 ENABLE_DEEPAGENTS_PACKAGE 누수로 deep_agent 경로가
+    # 선택되면 replanner 루프 노드가 미등록되어 오탐한다(D-037 Decision 2 패턴).
+    cfg.enable_deepagents_package = False
     return cfg
 
 

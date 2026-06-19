@@ -32,7 +32,14 @@ from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
-from src.orchestration import agent_orchestrator, intent_planner, replanner, result_aggregator
+from src.orchestration import (
+    agent_orchestrator,
+    intent_planner,
+    replanner,
+    result_aggregator,
+    run_deep_agent,
+    select_orchestration_backend,
+)
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
 
@@ -257,6 +264,33 @@ def _create_checkpointer_simple(config: AppConfig):
     return InMemorySaver()
 
 
+def _deep_agent_buildable(config: AppConfig, worker_llm) -> bool:
+    """deepagents 에이전트를 실제로 조립 가능한지 빌드 시점에 확인한다.
+
+    `build_deep_agent`는 deepagents 패키지 미설치(폐쇄망 wheel 미반입) 시 RuntimeError를
+    던진다. 가용성 판정(select_orchestration_backend)이 통과해도 패키지가 없으면 그래프 빌드가
+    크래시하므로, 여기서 조립을 시도해보고 실패 시 False를 반환하여 semantic_router로 폴백한다.
+
+    Args:
+        config: 앱 설정
+        worker_llm: FabriX 워커 LLM (조립 시도에 재사용)
+
+    Returns:
+        조립 가능하면 True, RuntimeError(패키지/조립 실패) 시 False
+    """
+    from src.orchestration import build_deep_agent
+
+    try:
+        build_deep_agent(config, worker_llm=worker_llm)
+        return True
+    except RuntimeError as e:
+        logger.info("deepagents 조립 불가(빌드 시점 점검): %s", e)
+        return False
+    except Exception as e:  # noqa: BLE001 — 조립 단계의 어떤 실패도 폴백 사유로 처리
+        logger.warning("deepagents 조립 중 예기치 못한 오류 → 폴백: %s", e)
+        return False
+
+
 def build_graph(config: AppConfig, checkpointer=None):
     """에이전트 그래프를 빌드한다.
 
@@ -269,7 +303,28 @@ def build_graph(config: AppConfig, checkpointer=None):
     Returns:
         컴파일된 LangGraph 그래프
     """
-    llm = create_llm(config)
+    # 워커(데이터 평면) LLM. worker_provider_override가 설정되면(테스트 전용) 운영
+    # config.llm.provider(보통 fabrix) 대신 해당 provider로 강제 생성한다 — deepagent 경로
+    # 전체(input_parser/field_mapper + deep_agent 워커)를 gemini로 검증 (D-037 / Plan 49 §4.7).
+    llm = create_llm(config, provider_override=config.worker_provider_override)
+    if config.worker_provider_override:
+        logger.info(
+            "워커 provider override 활성(테스트): %s (운영 기본=%s)",
+            config.worker_provider_override, config.llm.provider,
+        )
+
+    # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
+    # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"(§4.6).
+    # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
+    # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
+    # 실패하면 기존 semantic_router 경로로 안전 폴백한다(그래프 크래시 방지 — 회귀 없음).
+    use_deep_agent = select_orchestration_backend(config) == "deep_agent"
+    if use_deep_agent and not _deep_agent_buildable(config, llm):
+        logger.warning(
+            "Track B 선택(deep_agent)이나 deepagents 패키지 조립 불가 → "
+            "semantic_router 경로로 폴백합니다(폐쇄망 wheel 반입 필요)."
+        )
+        use_deep_agent = False
 
     graph = StateGraph(AgentState)
 
@@ -291,8 +346,17 @@ def build_graph(config: AppConfig, checkpointer=None):
         partial(field_mapper, llm=llm, app_config=config),
     )
 
+    # Plan 49 트랙 B: deepagents 실제 패키지 노드 (vLLM 오케스트레이터 + FabriX 워커).
+    # 가용 시 다른 모든 경로보다 우선하며, field_mapper -> deep_agent -> END로 배선한다.
+    if use_deep_agent:
+        graph.add_node(
+            "deep_agent",
+            partial(run_deep_agent, app_config=config, worker_llm=llm),
+        )
+
     # Plan 48: deepagents 의도 분해 오케스트레이션 노드 (semantic_routing보다 우선, 상호 배타)
-    if config.enable_deepagent_orchestration:
+    # 트랙 B(deep_agent) 활성 시에는 트랙 A 노드를 등록하지 않는다(상호 배타, 죽은 노드 방지).
+    if config.enable_deepagent_orchestration and not use_deep_agent:
         graph.add_node(
             "intent_planner",
             partial(intent_planner, llm=llm, app_config=config),
@@ -312,7 +376,8 @@ def build_graph(config: AppConfig, checkpointer=None):
         )
 
     # 시멘틱 라우팅 노드 (멀티 DB 지원)
-    if config.enable_semantic_routing:
+    # 트랙 B(deep_agent) 활성 시에는 등록하지 않는다(상호 배타, 죽은 노드 방지).
+    if config.enable_semantic_routing and not use_deep_agent:
         graph.add_node(
             "semantic_router",
             partial(semantic_router, llm=llm, app_config=config),
@@ -384,7 +449,12 @@ def build_graph(config: AppConfig, checkpointer=None):
     # input_parser -> field_mapper
     graph.add_edge("input_parser", "field_mapper")
 
-    if config.enable_deepagent_orchestration:
+    if use_deep_agent:
+        # Plan 49 트랙 B: field_mapper -> deep_agent -> END (모든 경로 중 최우선)
+        # deepagents가 도구(=FabriX 파이프라인) 호출·동적 재계획·최종 응답 생성을 담당한다.
+        graph.add_edge("field_mapper", "deep_agent")
+        graph.add_edge("deep_agent", END)
+    elif config.enable_deepagent_orchestration:
         # Plan 48/49: 의도 분해 오케스트레이션 경로 (semantic_routing보다 우선)
         # field_mapper -> intent_planner -> agent_orchestrator -> [replanner 루프] -> result_aggregator -> END
         graph.add_edge("field_mapper", "intent_planner")

@@ -44,6 +44,15 @@ document = [
 gemini = [
     "langchain-google-genai>=2.0.0",
 ]
+# deepagents Track B (D-037 / Plan 49): 실제 패키지 오케스트레이션 경로 (opt-in).
+# deepagents 0.6.10 → langchain-core>=1.4.7 / langchain>=1.3.9 (1.x). 오케스트레이터는
+# vLLM(langchain-openai ChatOpenAI) 또는 Gemini(langchain-google-genai). 폐쇄망은 wheel 반입.
+deepagents = [
+    "deepagents>=0.6.10",
+    "langchain>=1.3.9",
+    "langchain-core>=1.4.7",
+    "langchain-openai>=1.1.13",
+]
 postgres-checkpoint = [
     "langgraph-checkpoint-postgres",
 ]

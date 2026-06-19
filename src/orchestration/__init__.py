@@ -10,6 +10,7 @@ from src.orchestration.agent_orchestrator import agent_orchestrator
 from src.orchestration.deep_agent import (
     build_deep_agent,
     orchestrator_available,
+    run_deep_agent,
     select_orchestration_backend,
     vllm_healthy,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "classify_dbs",
     "build_tools",
     "build_deep_agent",
+    "run_deep_agent",
     "select_orchestration_backend",
     "orchestrator_available",
     "vllm_healthy",

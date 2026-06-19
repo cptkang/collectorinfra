@@ -54,17 +54,24 @@ def test_orchestrator_config_default_provider_vllm():
 # ──────────────────────────────────────────────
 
 def test_create_orchestrator_llm_requires_base_url(mock_config):
-    """base_url 미설정 시 ValueError."""
-    mock_config.orchestrator = OrchestratorConfig(base_url="")
+    """base_url 미설정 시 ValueError (vLLM provider).
+
+    provider를 명시한다 — OrchestratorConfig는 .env(env_prefix=ORCHESTRATOR_)를 읽으므로
+    로컬 .env의 ORCHESTRATOR_PROVIDER 값이 누수되지 않도록 vllm을 고정한다.
+    """
+    mock_config.orchestrator = OrchestratorConfig(provider="vllm", base_url="")
     with pytest.raises(ValueError, match="ORCHESTRATOR_BASE_URL"):
         create_orchestrator_llm(mock_config)
 
 
 def test_create_orchestrator_llm_builds_chatopenai(mock_config):
-    """base_url 설정 시 ChatOpenAI(vLLM)를 모델명·엔드포인트로 생성한다."""
+    """base_url 설정 시 ChatOpenAI(vLLM)를 모델명·엔드포인트로 생성한다.
+
+    provider=vllm 명시 — .env(env_prefix=ORCHESTRATOR_)의 provider 누수 방지.
+    """
     ChatOpenAI = pytest.importorskip("langchain_openai").ChatOpenAI
     mock_config.orchestrator = OrchestratorConfig(
-        base_url="http://vllm-host:8000/v1", model="Qwen3.5-9B"
+        provider="vllm", base_url="http://vllm-host:8000/v1", model="Qwen3.5-9B"
     )
     llm = create_orchestrator_llm(mock_config)
     assert isinstance(llm, ChatOpenAI)
@@ -138,9 +145,13 @@ def test_select_backend_flag_off(mock_config, monkeypatch):
 
 
 def test_select_backend_vllm_down(mock_config, monkeypatch):
-    """플래그 on이어도 vLLM 미서빙이면 semantic_router."""
+    """플래그 on이어도 vLLM 미서빙이면 semantic_router.
+
+    provider=vllm 고정 — .env의 ORCHESTRATOR_PROVIDER 누수로 가용성 판정이 health check
+    대신 gemini api_key 경로를 타지 않도록 한다(vLLM health 경로 검증 의도 보존).
+    """
     mock_config.enable_deepagents_package = True
-    mock_config.orchestrator = OrchestratorConfig(base_url="http://vllm:8000/v1")
+    mock_config.orchestrator = OrchestratorConfig(provider="vllm", base_url="http://vllm:8000/v1")
     monkeypatch.setattr("src.orchestration.deep_agent.vllm_healthy", lambda *a, **k: False)
     assert select_orchestration_backend(mock_config) == "semantic_router"
 
@@ -148,7 +159,7 @@ def test_select_backend_vllm_down(mock_config, monkeypatch):
 def test_select_backend_vllm_up(mock_config, monkeypatch):
     """플래그 on + vLLM 가용이면 deep_agent."""
     mock_config.enable_deepagents_package = True
-    mock_config.orchestrator = OrchestratorConfig(base_url="http://vllm:8000/v1")
+    mock_config.orchestrator = OrchestratorConfig(provider="vllm", base_url="http://vllm:8000/v1")
     monkeypatch.setattr("src.orchestration.deep_agent.vllm_healthy", lambda *a, **k: True)
     assert select_orchestration_backend(mock_config) == "deep_agent"
 
@@ -235,6 +246,32 @@ async def test_run_subagent_tool_invokes_handler(mock_config, monkeypatch):
     )
     assert captured["sub_query"] == "서버 목록 조회"
     assert "처리 완료" in out
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_tool_collects_full_result(mock_config, monkeypatch):
+    """collector 주어지면 truncate 전 원본 결과를 (task, result)로 적재한다(step6 입력)."""
+    # 도구 반환 텍스트는 상한이 적용되지만, collector에는 전체 행이 보존되어야 한다.
+    full_rows = [{"hostname": f"h{i}"} for i in range(120)]
+
+    async def fake_handler(task, isolated, *, llm, app_config):
+        return {"organized_data": {"summary": "120행", "rows": full_rows, "is_sufficient": True}}
+
+    monkeypatch.setitem(
+        SUBAGENT_REGISTRY, "data_query",
+        SubAgentSpec("data_query", "인프라 DB 조회", fake_handler),
+    )
+    collector: list = []
+    await _run_subagent_tool(
+        "data_query", "서버 목록",
+        worker_llm=None, app_config=mock_config, ambient_state={}, collector=collector,
+    )
+    assert len(collector) == 1
+    task, result = collector[0]
+    assert task["agent"] == "data_query"
+    assert task["status"] == "completed"
+    # 원본 결과는 상한 없이 전체 보존 (120행)
+    assert len(result["organized_data"]["rows"]) == 120
 
 
 # ──────────────────────────────────────────────

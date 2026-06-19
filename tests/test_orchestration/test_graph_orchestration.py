@@ -41,6 +41,10 @@ def _build_config(*, orchestration: bool, semantic: bool) -> AppConfig:
     )
     cfg.enable_deepagent_orchestration = orchestration
     cfg.enable_semantic_routing = semantic
+    # 트랙 B(deepagents 실제 패키지)는 이 테스트 범위 밖 — .env의 ENABLE_DEEPAGENTS_PACKAGE
+    # 누수로 deep_agent 경로가 선택되면 orchestration/semantic 노드가 미등록되어 오탐한다.
+    # 명시적으로 비활성화하여 누수를 차단한다(D-037 Decision 2 패턴).
+    cfg.enable_deepagents_package = False
     return cfg
 
 

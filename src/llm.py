@@ -15,11 +15,15 @@ from src.config import AppConfig
 logger = logging.getLogger(__name__)
 
 
-def create_llm(config: AppConfig) -> BaseChatModel:
-    """설정에 따라 LLM 인스턴스를 생성한다.
+def create_llm(config: AppConfig, *, provider_override: str | None = None) -> BaseChatModel:
+    """설정에 따라 워커(데이터 평면) LLM 인스턴스를 생성한다.
 
     Args:
         config: 애플리케이션 설정
+        provider_override: 워커 provider 강제 지정 (테스트 전용). 지정 시
+            `config.llm.provider` 대신 사용한다. 미지정(None)이면 설정값을 그대로
+            따른다 — 운영 동작 무변. (deepagent 경로 전체를 gemini로 테스트하기 위한
+            `worker_provider_override` 주입 경로 — Plan 49 §4.7 / D-037)
 
     Returns:
         LLM 인스턴스
@@ -27,7 +31,7 @@ def create_llm(config: AppConfig) -> BaseChatModel:
     Raises:
         ValueError: 필수 설정이 누락된 경우
     """
-    provider = config.llm.provider
+    provider = provider_override or config.llm.provider
 
     if provider == "ollama":
         return _create_ollama(config)

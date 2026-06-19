@@ -327,8 +327,23 @@ vLLM 인프라 구축(R-B1) 전에 deepagents tool-calling 파이프라인을 �
 > **구현 현황(2026-06-17)**: 인프라 비의존 스캐폴딩 **완료·검증**(arch_check error 0, 신규 단위 16건 통과,
 > orchestration 회귀 68건 통과) — `OrchestratorConfig`+플래그, `create_orchestrator_llm`(vLLM/ChatOpenAI),
 > `deepagents_tools`(@tool 래퍼+직렬화), `deep_agent`(vllm_healthy/select_orchestration_backend/build_deep_agent
-> lazy-import), `prompts/orchestrator`, `.env.example`. **잔여(인프라/PoC 의존)**: 아래 1·2(wheel 반입·vLLM 기동),
-> 5(동적 재계획 E2E), 6(최종 FabriX 응답 수집), 그래프 실제 배선(§4.6), `langchain-core` 1.4.7 업글.
+> lazy-import), `prompts/orchestrator`, `.env.example`.
+> **그래프 실제 배선(§4.6 / step 7) 완료(2026-06-17)**: `build_graph`가 빌드 시 `select_orchestration_backend`로
+> 백엔드를 확정하여 `deep_agent` 노드를 등록·연결(`field_mapper → deep_agent → END`). 신규
+> `deep_agent.run_deep_agent`(노드)가 `build_deep_agent` 조립 에이전트를 `ainvoke`하고 최종 응답을 추출하며,
+> deepagents 미설치(RuntimeError) 시 빌드 시점 `_deep_agent_buildable` 점검 + 런타임 양쪽에서 `semantic_router`로
+> 안전 폴백한다(회귀 없음).
+> **deepagents 0.6.10 실제 설치 + step 6(최종 FabriX 응답) 완료(2026-06-17)**: 폐쇄망 wheel을 기다리지 않고 현
+> 환경에 deepagents 0.6.10 설치(→`langchain-core 1.4.7`/`langchain 1.3.9`/`langgraph 1.2.5` 업글, `langchain-openai
+> 1.3.2` 추가; R-B3 전이 비호환 실증 해소 — 신규 실패 0건). **실측 결과**: `create_deep_agent` 인자는 `instructions`가
+> 아니라 **`system_prompt`**(코드 수정), 반환 state top-level 키는 `['files','messages']`로 **도구 결과 전용 키 없음** —
+> 도구 결과는 `messages`의 `ToolMessage`로만 존재. step 6 구현: `build_tools`/`_run_subagent_tool`에 **원본 결과
+> 수집기(collector)** 추가 → `run_deep_agent`가 종료 후 collector 원본을 `task_plan`/`task_results`로 재구성해
+> **FabriX `result_aggregator`로 최종 응답 생성**(오케스트레이터 자유 서술 미노출). 실제 `create_deep_agent` 런타임으로
+> 도구 호출 → collector → FabriX 재정리 E2E 통과, 실제 vLLM `ChatOpenAI` 오케스트레이터로 조립 성공.
+> `tests/test_orchestration/test_deep_agent_wiring.py`(step6·실패키지 통합 포함) 통과.
+> **잔여(라이브 인프라 의존)**: 아래 2(실 vLLM HTTP 왕복·tool_calls 신뢰도 R-B2), 5(라이브 동적 재계획 E2E),
+> 폐쇄망 3플랫폼 wheel 반입(현재는 개발 환경 단일 설치).
 
 1. **wheel 반입 + 설치 검증** — `deepagents`·`langchain`·`langchain-core>=1.4.7`(+전이) 3플랫폼 wheel 수집,
    격리 venv에서 설치 → verify: import·기존 회귀(langgraph 1.1.6 호환) 통과.

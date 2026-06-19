@@ -81,11 +81,16 @@ async def _run_subagent_tool(
     worker_llm: BaseChatModel,
     app_config: AppConfig,
     ambient_state: dict,
+    collector: Optional[list] = None,
 ) -> str:
     """단일 subagent handler를 도구로 실행하고 결과를 직렬화한다.
 
     `agent_orchestrator._run_agent`와 동일한 호출 규약(task 구성 → isolated 입력 →
     handler 호출)을 따른다. FabriX는 handler 내부에서만 호출된다.
+
+    `collector`가 주어지면 **truncate 전 원본 handler 결과**를 (task, result) 튜플로
+    적재한다(Plan §4.4 — 최종 FabriX 응답 생성용). 도구가 vLLM에 반환하는 텍스트는
+    토큰 폭증 방지를 위해 요약/상한이 적용되지만, 최종 응답은 원본 결과로 생성한다.
 
     Args:
         agent_name: SUBAGENT_REGISTRY 키 (없으면 fallback)
@@ -93,18 +98,20 @@ async def _run_subagent_tool(
         worker_llm: FabriX 워커 LLM
         app_config: 앱 설정
         ambient_state: thread_id/user_id/allowed_db_ids 등 주변 컨텍스트
+        collector: (선택) 원본 결과 수집기 — [(task, result), ...]
 
     Returns:
         직렬화된 결과 텍스트
     """
     spec = SUBAGENT_REGISTRY.get(agent_name) or _fallback_spec()
+    order = (len(collector) + 1) if collector is not None else 1
     task: dict[str, Any] = {
-        "task_id": f"tool_{agent_name}",
+        "task_id": f"tool_{agent_name}_{order}",
         "agent": agent_name,
         "sub_query": sub_query,
         "depends_on": [],
         "input_from": [],
-        "order": 1,
+        "order": order,
         "status": "pending",
     }
     isolated = _make_isolated_input(task, ambient_state, prior={})
@@ -112,6 +119,9 @@ async def _run_subagent_tool(
     result = await spec.handler(
         task, isolated, llm=spec.model or worker_llm, app_config=app_config
     )
+    if collector is not None:
+        task["status"] = "failed" if isinstance(result, dict) and result.get("error") else "completed"
+        collector.append((task, result))
     return _serialize_for_tool(result)
 
 
@@ -127,6 +137,7 @@ def build_tools(
     worker_llm: BaseChatModel,
     app_config: AppConfig,
     ambient_state: Optional[dict] = None,
+    collector: Optional[list] = None,
 ) -> list[StructuredTool]:
     """SUBAGENT_REGISTRY를 vLLM 오케스트레이터용 도구 목록으로 변환한다.
 
@@ -134,6 +145,8 @@ def build_tools(
         worker_llm: FabriX 워커 LLM (도구 내부 실행에 사용)
         app_config: 앱 설정
         ambient_state: 주변 컨텍스트(thread_id/user_id 등). 없으면 빈 dict.
+        collector: (선택) 원본 결과 수집기 — 도구 실행마다 (task, result)를 적재하여
+            최종 FabriX 응답 생성(result_aggregator)에 사용한다(Plan §4.4/§4.3 step6).
 
     Returns:
         LangChain StructuredTool 목록 (deepagents create_deep_agent의 tools 인자)
@@ -151,6 +164,7 @@ def build_tools(
                     worker_llm=worker_llm,
                     app_config=app_config,
                     ambient_state=ambient,
+                    collector=collector,
                 )
             return _run
 

@@ -403,6 +403,12 @@ class AppConfig(BaseSettings):
     # (가용성 분기 — deep_agent.select_orchestration_backend).
     enable_deepagents_package: bool = False
 
+    # 테스트 전용 — deepagent(트랙 B) 경로 검증 시 워커(데이터 평면) LLM provider를 강제 교체.
+    # 미설정(None)=운영 그대로(config.llm.provider, 보통 fabrix). "gemini" 지정 시 deepagent
+    # 경로 전체(input_parser/field_mapper + deep_agent 워커)가 gemini로 동작 → FabriX 없이 검증.
+    # 오케스트레이터(제어 평면)는 ORCHESTRATOR_PROVIDER로 별도 지정 (Plan 49 §4.7 / D-037).
+    worker_provider_override: Literal["ollama", "fabrix", "gemini"] | None = None
+
     # Polestar 전용 프롬프트를 적용할 DB ID (콤마 구분으로 복수 지정 가능)
     # .env에서 POLESTAR_DB_IDS=polestar,polestar2 로 설정하면
     # active_db_id가 이 목록에 포함될 때 Polestar 전용 시스템 프롬프트를 사용한다.
