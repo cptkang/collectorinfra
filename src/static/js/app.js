@@ -235,6 +235,10 @@
         result_merger:     "다중 DB 결과를 통합합니다",
         synonym_registrar: "새로운 유사어를 등록합니다",
         error_response:    "처리 중 오류가 발생했습니다",
+        intent_planner:    "사용자 질의를 처리할 작업(의도) 단위로 분해합니다",
+        agent_orchestrator:"분해된 작업들을 순서/병렬로 실행합니다",
+        replanner:         "1차 결과를 평가하여 후속 작업이 필요한지 판단합니다",
+        result_aggregator: "여러 작업 결과를 하나의 응답으로 통합합니다",
     };
 
     var nodeLabels = {
@@ -251,6 +255,19 @@
         result_merger: "결과 병합",
         general_inference: "일반 추론",
         error_response: "에러 처리",
+        intent_planner: "의도 분석",
+        agent_orchestrator: "작업 실행",
+        replanner: "재계획",
+        result_aggregator: "결과 통합",
+    };
+
+    // task agent 식별자 → 사용자용 라벨 (처리 현황 작업 목록 표시)
+    var agentLabels = {
+        data_query: "DB 조회",
+        alarm_query: "알람 조회",
+        cache_management: "캐시 관리",
+        synonym_registration: "유사어 등록",
+        general_inference: "일반 안내",
     };
 
     // ─── Tooltip ───
@@ -1544,6 +1561,41 @@
             html += renderSection("에러", '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(data.error || "") + "</div>");
         }
 
+        else if (node === "intent_planner") {
+            var cnt = data.task_count != null ? data.task_count : (data.tasks ? data.tasks.length : 0);
+            html += renderSection("의도 분석", '<span class="step-data-badge step-data-badge--info">' + escapeHtml(cnt + "개 작업으로 분석됨") + "</span>");
+            if (data.tasks && data.tasks.length > 0) {
+                html += renderSection("작업 목록", renderTaskList(data.tasks));
+            }
+        }
+
+        else if (node === "agent_orchestrator") {
+            if (data.tasks && data.tasks.length > 0) {
+                html += renderSection("작업 진행", renderTaskList(data.tasks));
+            }
+        }
+
+        else if (node === "replanner") {
+            if (data.replan_history && data.replan_history.length > 0) {
+                var histHtml = '<ul class="step-data-list">';
+                data.replan_history.forEach(function (h) {
+                    histHtml += "<li><strong>재계획 " + (h.count || "?") + "회</strong>";
+                    histHtml += ' <span class="step-data-badge step-data-badge--warning">작업 ' + (h.added || 0) + "개 추가</span>";
+                    if (h.reason) histHtml += '<div class="step-data-value">' + escapeHtml(h.reason) + "</div>";
+                    histHtml += "</li>";
+                });
+                histHtml += "</ul>";
+                html += renderSection("재계획 이력", histHtml);
+            }
+            if (!data.needs_replan) {
+                html += renderSection("재계획 상태", '<span class="step-data-badge step-data-badge--success">추가 작업 없음 (완료)</span>');
+            }
+        }
+
+        else if (node === "result_aggregator") {
+            html += renderSection("상태", '<span class="step-data-badge step-data-badge--success">' + escapeHtml(data.status || "통합 완료") + "</span>");
+        }
+
         else {
             // Generic fallback
             html += renderSection("데이터", renderJsonPreview(data));
@@ -1554,6 +1606,32 @@
 
     function renderSection(label, contentHtml) {
         return '<div class="step-data-section"><div class="step-data-label">' + escapeHtml(label) + "</div>" + contentHtml + "</div>";
+    }
+
+    // 다중 의도 task 목록 렌더링 (의도 분석 / 작업 실행 단계 공용)
+    function renderTaskList(tasks) {
+        var html = '<ul class="step-data-list">';
+        tasks.forEach(function (t, idx) {
+            var label = agentLabels[t.agent] || t.agent || "작업";
+            var ordinal = t.order != null ? t.order : (idx + 1);
+            var statusBadge = "";
+            if (t.status === "completed") {
+                statusBadge = ' <span class="step-data-badge step-data-badge--success">완료</span>';
+            } else if (t.status === "failed") {
+                statusBadge = ' <span class="step-data-badge step-data-badge--error">실패</span>';
+            } else if (t.status === "in_progress") {
+                statusBadge = ' <span class="step-data-badge step-data-badge--info">진행 중</span>';
+            } else if (t.status) {
+                statusBadge = ' <span class="step-data-badge step-data-badge--info">대기</span>';
+            }
+            html += "<li><strong>" + ordinal + ". " + escapeHtml(label) + "</strong>" + statusBadge;
+            if (t.sub_query) {
+                html += '<div class="step-data-value">' + escapeHtml(t.sub_query) + "</div>";
+            }
+            html += "</li>";
+        });
+        html += "</ul>";
+        return html;
     }
 
     function renderJsonPreview(obj) {

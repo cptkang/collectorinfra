@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 # 결과 요약에 포함할 task별 샘플 행 상한 (토큰 폭증 방지)
 _MAX_SUMMARY_ROWS = 5
 
+# 텍스트 계열(general/cache/synonym) 결과 요약 상한.
+# 너무 짧으면(예: 300자) 사용법+소스+데이터를 모두 담은 긴 안내 답변이 앞부분만 보여
+# replanner가 "뒷부분 누락"으로 오판→불필요 재계획을 유발하므로 충분히 크게 둔다.
+_MAX_SUMMARY_TEXT_CHARS = 1500
+
 
 async def replanner(
     state: AgentState,
@@ -58,10 +63,13 @@ async def replanner(
 
     replan_count = state.get("replan_count", 0)
 
+    # 처리 현황 표시용 누적 이력 (루프 종료 시에도 보존되도록 항상 그대로 carry forward)
+    replan_history = list(state.get("replan_history", []))
+
     # 상한 가드(R-A3): 재계획 반복 상한 초과 시 현재 결과로 종료
     if replan_count >= app_config.max_replan:
         logger.info("replanner: 재계획 상한(%d) 도달, 현재 결과로 종료", app_config.max_replan)
-        return {"needs_replan": False, "current_node": "replanner"}
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
     decision = await _llm_evaluate(
         llm,
@@ -74,23 +82,42 @@ async def replanner(
     # 보수적 종료(R-A1/R-A4): 후속 불필요·빈 task·파싱 실패 시 루프 종료
     if not decision.get("needs_followup") or not decision.get("new_tasks"):
         logger.debug("replanner: 후속 불필요, 종료 (reason=%s)", decision.get("reason"))
-        return {"needs_replan": False, "current_node": "replanner"}
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
     new_tasks = _assign_ids(decision["new_tasks"], existing=state.get("task_plan", []))
     if not new_tasks:
         # 유효 신규 task가 없으면 보수적 종료
-        return {"needs_replan": False, "current_node": "replanner"}
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
+    # 중복 재답변 방지(R-A4 강화): 후속이 모두 general_inference(일반 안내)면
+    # 데이터 기반 후속이 아니라 같은 주제를 다시 답변하는 패턴이다. general_inference는
+    # 자체 완결적 안내 답변(사용법·지원 소스·조회 가능 데이터 등)이므로, 여기에 또
+    # general_inference를 붙이면 동일 내용이 중복 출력된다. 추가하지 않고 종료한다.
+    if all(t.get("agent") == "general_inference" for t in new_tasks):
+        logger.info(
+            "replanner: 후속이 모두 general_inference → 중복 재답변 방지로 종료 (reason=%s)",
+            decision.get("reason"),
+        )
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
     logger.info(
         "replanner: 후속 task %d개 추가 (replan_count=%d, reason=%s)",
         len(new_tasks), replan_count + 1, decision.get("reason"),
     )
 
+    # 처리 현황용 이력 누적 (이번 재계획 회차의 사유·추가 개수)
+    replan_history.append({
+        "count": replan_count + 1,
+        "reason": decision.get("reason") or "",
+        "added": len(new_tasks),
+    })
+
     # 증분 추가(R-A1): 기존 task_plan 보존 + 신규만 append (전체 교체 금지)
     return {
         "task_plan": state.get("task_plan", []) + new_tasks,
         "needs_replan": True,
         "replan_count": replan_count + 1,
+        "replan_history": replan_history,
         "current_node": "replanner",
     }
 
@@ -187,7 +214,7 @@ def _summarize_result(res: dict) -> str:
         # 텍스트 계열(cache/synonym/general) 결과
         text = res.get("final_response")
         if text:
-            return text[:300]
+            return text[:_MAX_SUMMARY_TEXT_CHARS]
         return "결과 없음"
 
     n = len(rows)

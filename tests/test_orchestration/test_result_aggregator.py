@@ -63,7 +63,7 @@ async def test_finalize_data_agent_uses_output_generator(mock_config):
 # ──────────────────────────────────────────────
 
 def test_merge_finalized_orders_and_marks_failure():
-    """복합 결과를 order 순으로 '### 작업 N' 묶음 통합, 실패 task 안내 포함."""
+    """복합 결과를 order 순으로 묶되 본문에 내부 task 라벨을 노출하지 않고, 실패 task 안내는 포함."""
     finalized = [
         {"order": 1, "agent": "data_query", "text": "작업1 본문", "output_file": None,
          "output_file_name": None, "error": None},
@@ -73,11 +73,15 @@ def test_merge_finalized_orders_and_marks_failure():
     out = _merge_finalized(finalized)
 
     body = out["final_response"]
-    assert "### 작업 1 (data_query)" in body
-    assert "### 작업 2 (alarm_query)" in body
+    # 본문에는 "### 작업 N (agent)" 라벨/내부 agent명을 노출하지 않는다 (처리 현황으로 이전)
+    assert "### 작업" not in body
+    assert "data_query" not in body
+    assert "alarm_query" not in body
+    # 각 task 결과 텍스트는 순서대로 이어붙인다
     assert "작업1 본문" in body
     assert "작업2 본문" in body
-    # 부분 실패 안내 포함 (D-005)
+    assert body.index("작업1 본문") < body.index("작업2 본문")
+    # 부분 실패 안내 포함 (D-005), 내부 agent명 없이 작업 순번만 노출
     assert "일부 작업이 실패했습니다" in body
     assert "조회 실패" in body
     assert out["current_node"] == "result_aggregator"
@@ -114,10 +118,11 @@ async def test_result_aggregator_composite_merge(mock_config):
     out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
 
     body = out["final_response"]
-    assert "### 작업 1" in body
-    assert "### 작업 2" in body
+    # 본문에는 내부 task 라벨을 노출하지 않고 각 답변을 순서대로 이어붙인다
+    assert "### 작업" not in body
     assert "첫 번째 답변" in body
     assert "두 번째 답변" in body
+    assert body.index("첫 번째 답변") < body.index("두 번째 답변")
 
 
 @pytest.mark.asyncio
