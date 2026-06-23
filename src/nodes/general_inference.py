@@ -18,7 +18,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
-from src.llm import create_llm
+from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.routing.domain_config import get_domain_by_id
 from src.state import AgentState
 
@@ -147,8 +147,10 @@ async def general_inference(
     messages.append(HumanMessage(content=user_query))
 
     try:
-        response = await llm.ainvoke(messages)
-        response_text = response.content
+        # 토큰 단위 SSE 스트리밍(D-009)을 위해 .astream()으로 호출하고,
+        # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다(orchestration 경로에서도
+        # SQL 생성 등 중간 LLM 토큰과 구분되어 스트리밍됨).
+        response_text = await astream_text(llm, messages, tags=[USER_RESPONSE_TAG])
     except Exception as e:
         logger.error("general_inference LLM 호출 실패: %s", e)
         response_text = (

@@ -274,6 +274,48 @@ async def test_replanner_exception_terminates(mock_config):
 
 
 # ──────────────────────────────────────────────
+# 5b. test_replanner_blocks_general_inference_followup
+# ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_replanner_blocks_general_inference_followup(mock_config):
+    """LLM이 general_inference 후속을 제안해도 → 중복 재답변 방지 가드로 종료(추가 안 함).
+
+    일반 안내(사용법/지원 소스/조회 가능 데이터)는 자체 완결적이므로 general_inference
+    후속을 붙이면 동일 내용이 중복 출력된다. needs_replan=False로 종료해야 한다.
+    """
+    content = json.dumps(
+        {
+            "needs_followup": True,
+            "reason": "지원 소스와 조회 가능 데이터가 누락됨",
+            "new_tasks": [
+                {"agent": "general_inference", "sub_query": "지원 가능한 소스와 조회 가능한 데이터 안내",
+                 "depends_on": [], "input_from": []}
+            ],
+        },
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    task_plan = [
+        {"task_id": "t1", "agent": "general_inference", "sub_query": "에이전트 사용법 안내",
+         "depends_on": [], "input_from": [], "order": 1, "status": "completed"},
+    ]
+    state = _make_state(
+        task_plan=task_plan,
+        task_results={"t1": {"final_response": "사용법: ... 지원 소스: ... 조회 가능 데이터: ..."}},
+    )
+
+    result = await replanner(state, llm=llm, app_config=mock_config)
+
+    # general_inference 후속은 추가하지 않고 종료
+    assert result["needs_replan"] is False
+    assert result["current_node"] == "replanner"
+    assert "task_plan" not in result
+    # 원본 task_plan 미변경
+    assert len(state["task_plan"]) == 1
+
+
+# ──────────────────────────────────────────────
 # 6. test_orchestrator_skips_completed
 # ──────────────────────────────────────────────
 

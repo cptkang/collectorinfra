@@ -173,6 +173,10 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
 def _merge_finalized(finalized: list[dict]) -> dict:
     """복합 task 결과를 order 순으로 묶어 통합 응답을 생성한다 (D-005 부분 실패 안내).
 
+    답변 본문에는 내부 task 라벨("작업 N (agent)")을 노출하지 않고 각 결과 텍스트만
+    자연스럽게 이어붙인다. task 구성·개수·재계획 이력은 처리 현황 패널(SSE)에서 보여준다.
+    부분 실패가 있으면 본문 말미에 사용자용 안내(내부 agent명 미노출)를 덧붙인다.
+
     Args:
         finalized: _finalize_task 결과 목록
 
@@ -185,11 +189,11 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     output_file_name: Optional[str] = None
 
     for i, f in enumerate(finalized, 1):
-        agent = f.get("agent", "작업")
         text = f.get("text", "")
         if f.get("error"):
-            failed.append(f"- 작업 {i} ({agent}): {f['error']}")
-        parts.append(f"### 작업 {i} ({agent})\n{text}")
+            failed.append(f"- 작업 {i}: {f['error']}")
+        if text:
+            parts.append(text)
         # output_file이 있는 첫 task의 파일을 우선 채택
         if output_file is None and f.get("output_file") is not None:
             output_file = f["output_file"]

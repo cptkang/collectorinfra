@@ -6,12 +6,29 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from langchain_core.messages import AIMessageChunk
+
 from src.nodes.output_generator import (
     _build_response_prompt,
     _generate_empty_result_response,
     output_generator,
 )
 from src.state import create_initial_state
+
+
+def _make_streaming_llm(text: str) -> AsyncMock:
+    """astream()으로 주어진 텍스트를 흘리는 모의 LLM을 만든다.
+
+    output_generator는 토큰 단위 SSE 스트리밍(D-009)을 위해 llm.astream()을
+    사용하므로, 테스트 모의 LLM도 async iterator를 반환해야 한다.
+    """
+    mock_llm = AsyncMock()
+
+    async def _astream(messages, config=None):
+        yield AIMessageChunk(content=text)
+
+    mock_llm.astream = _astream
+    return mock_llm
 
 
 class TestGenerateEmptyResultResponse:
@@ -93,9 +110,8 @@ class TestOutputGeneratorNode:
         }
         state["generated_sql"] = "SELECT * FROM servers LIMIT 10"
 
-        mock_llm = AsyncMock()
-        mock_llm.ainvoke.return_value = MagicMock(
-            content="서버 목록 조회 결과입니다. 총 1건의 서버가 있습니다."
+        mock_llm = _make_streaming_llm(
+            "서버 목록 조회 결과입니다. 총 1건의 서버가 있습니다."
         )
 
         result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
@@ -143,8 +159,7 @@ class TestOutputGeneratorNode:
         }
         state["generated_sql"] = "SELECT * FROM servers LIMIT 10"
 
-        mock_llm = AsyncMock()
-        mock_llm.ainvoke.return_value = MagicMock(content="텍스트 응답")
+        mock_llm = _make_streaming_llm("텍스트 응답")
 
         result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
 

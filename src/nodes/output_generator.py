@@ -15,7 +15,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
-from src.llm import create_llm
+from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
 from src.state import AgentState
 
@@ -156,8 +156,9 @@ async def _generate_text_response(
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=user_prompt))
 
-    response = await llm.ainvoke(messages)
-    return response.content
+    # 토큰 단위 SSE 스트리밍(D-009)을 위해 .astream()으로 호출하고,
+    # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다.
+    return await astream_text(llm, messages, tags=[USER_RESPONSE_TAG])
 
 
 def _generate_empty_result_response(parsed: dict) -> str:

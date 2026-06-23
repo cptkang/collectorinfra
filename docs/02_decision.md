@@ -454,11 +454,30 @@ data: {"type": "error", "message": "..."}\n\n           # 에러
 - **체감 속도 향상**: SSE 스트리밍으로 첫 토큰까지의 대기 시간(TTFT) 단축
 - **기존 API 호환**: 기존 엔드포인트를 그대로 유지하면서 새 스트리밍 엔드포인트 추가
 
+### 토큰 스트리밍 구현 (2026-06-24 보강)
+
+토큰 단위 스트리밍이 실제로 동작하려면 노드가 LLM을 `.astream()`으로 호출해야 한다.
+`ainvoke()`는 `_agenerate`(단일 호출) 경로를 타므로 `astream_events`가
+`on_chat_model_stream` 토큰 이벤트를 내보내지 않아, 응답이 한 번에 출력된다.
+
+- 최종 사용자 응답 생성 노드(`output_generator`, `general_inference`)는 공용
+  헬퍼 `src/llm.py::astream_text(llm, messages, tags=[USER_RESPONSE_TAG])`로 호출한다.
+- SSE 핸들러는 **노드명이 아닌 `USER_RESPONSE_TAG` 태그**로 토큰을 거른다.
+  orchestration 경로(`agent_orchestrator`)에서는 SQL 생성·DB 분류·최종 응답이 모두
+  같은 노드에서 일어나므로, 노드명 필터로는 SQL/분류 토큰이 채팅으로 새어 나간다.
+- 복합(composite) 질의는 같은 레벨 task가 `asyncio.gather`로 병렬 실행되어 토큰이
+  뒤섞일 수 있다. `done` 이벤트에 권위 있는 `response`(최종 `final_response`)를 실어
+  보내고, 프론트엔드가 마무리 시점에 누적 토큰 대신 이 값으로 보정한다.
+- `_astream` 미구현 클라이언트(FabriX OpenAI 호환/Ollama)는 `.astream()`이 단일
+  청크로 폴백되므로 회귀가 없다(KBGenAIChat은 `_astream` 구현).
+
 ### 향후 수정 시 고려사항
 
 - 멀티턴 대화(Phase 3) 구현 시 `thread_id`를 세션에서 자동 관리
 - WebSocket 전환 검토 시 SSE의 단방향 한계와 WebSocket의 양방향 이점 비교 필요
 - 기존 `/api/v1/query` 엔드포인트는 CLI/API 클라이언트용으로 유지
+- 신규 "최종 사용자 응답" LLM 호출을 추가하면 반드시 `astream_text`+`USER_RESPONSE_TAG`를
+  사용해야 스트리밍된다(중간 LLM 호출에는 태그를 붙이지 말 것)
 
 ---
 
@@ -1873,6 +1892,8 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-23 | D-040 | **replanner 과(過)재계획으로 인한 일반 안내 답변 중복 출력 수정**: 동일 안내 질의("사용법+지원 소스+조회 가능 데이터")에서 1차 `general_inference` 답변이 3가지를 모두 담았는데도 replanner가 후속 `general_inference`를 추가해 "지원 소스/조회 가능 데이터"를 **중복 재출력**하던 버그 해결. **원인 2가지**: (1) [결정적] `replanner._summarize_result`가 텍스트 결과를 `text[:300]`로 절단 → 긴 안내 답변의 앞부분(사용법)만 평가 컨텍스트에 노출 → replanner가 "뒷부분 누락"으로 오판. (2) [개념적] `general_inference`(자체 완결적 안내)에 또 `general_inference` 후속을 붙이는 것은 데이터 의존 후속(replanner 본래 목적: 0건→재조회, 장애→알람조회)이 아니라 "같은 주제 재서술"임. **수정 3중**: (a) `_summarize_result` 텍스트 상한 `300→1500자`(`_MAX_SUMMARY_TEXT_CHARS`) — 완결성 판단이 잘린 답변에 기반하지 않도록. (b) **결정적 가드**(`replanner`): `_assign_ids` 후 신규 task가 모두 `general_inference`이면 추가하지 않고 `needs_replan=False` 종료(데이터 의존 후속만 허용, data_query→data_query 등 정당한 재계획은 영향 없음). (c) **프롬프트 규칙 6**(`prompts/replanner.py`): 안내성 답변은 완결로 간주, general_inference 후속 생성 금지 명시. **범위**: 과분해(intent_planner)·다중 general_inference 인사 중복은 본 건과 별개(미해결). 관련: D-037(replanner), D-039(처리 현황/라벨). 검증: arch_check --ci exit 0, replanner 12건(신규 가드 테스트 1건 포함)·orchestration 85 passed/4 skipped 통과 |
+| 2026-06-23 | D-039 | **다중 의도 처리 현황 표시 + 본문 작업 라벨 제거 (Plan 49 §3.6/§5 step 7 "SSE progress 보류" 완성)**: 다중 의도 경로(`intent_planner → agent_orchestrator → replanner 루프 → result_aggregator`)의 4개 노드가 SSE 화이트리스트(`_known_nodes`, query.py 양쪽 스트림 핸들러)에 없어 **처리 현황 패널에 미표시**되던 문제 해결. (1) **백엔드**(`query.py`): 4개 노드를 화이트리스트에 추가 + `_extract_node_progress` 분기 추가(`intent_planner`=task_count/tasks, `agent_orchestrator`=tasks 상태, `replanner`=replan_history/needs_replan, `result_aggregator`=status), `_summarize_tasks` 헬퍼(order 정렬·표시 필드만). node_complete는 루프 재진입 시 매 회차 재방출되므로 status 갱신은 자연 동작. (2) **재계획 사유 보존**: replanner 종료 회차의 node_complete가 추가 회차 데이터를 덮어써 사유가 사라지던 문제를 `state.replan_history`(신규 필드, 루프 누적; replanner가 추가/종료 양 경로에서 carry forward)로 해결 — 종료 후에도 회차별 추가 작업 수·사유 표시. (3) **본문 라벨 제거**(`result_aggregator._merge_finalized`): `### 작업 N (general_inference)` 헤딩·내부 agent명을 본문에서 제거하고 각 결과 텍스트만 순서대로 연결, 작업 구성/개수/재계획 이력은 처리 현황으로 이전(사용자 요청). 부분 실패 안내는 내부 agent명 없이 `작업 N` 순번만 유지(D-005). (4) **프론트**(`app.js`): nodeLabels/nodeTooltips 4개 + `agentLabels`(agent→사용자 라벨) + `renderTaskList` 헬퍼 + renderNodeData 4분기. **범위 한정(사용자 결정)**: 이번엔 처리 현황/라벨만 — 과분해·인사 중복 등 근본 원인(planner 분해 규칙·general_inference 인사 반복)은 후속. 관련 결정: D-033(처리 현황 추가 패턴 `_extract_node_progress→node_complete→renderNodeData` 재사용), D-037(replanner), D-038(result_aggregator 단일 task verbatim 통과 — 본 변경은 복합 task merge만 수정해 무충돌). 검증: arch_check --ci exit 0(pre-existing WARN orchestration→prompts만), orchestration 84 passed/4 skipped, graph 30건 회귀 통과, result_aggregator 테스트 2건 신 동작 갱신. 문서: `docs/11_web_ui_progress_specification.md` §3.2/§4.13 갱신 |
 | 2026-06-23 | D-038 | **사용법/지원 소스 안내 — general_inference 그라운딩 + 도움말 버튼**: "뭘 할 수 있어?/지원 소스?" 능력 문의에 실제 `active_db_ids ∩ allowed_db_ids` + `DB_DOMAINS` 설명을 코드로 조립해 시스템 프롬프트에 그라운딩(사실은 코드, 문장만 LLM, 멀티턴 마무리). deep_agent·semantic_router·intent_planner 3 백엔드가 모두 수렴하는 `general_inference` 1노드만 수정 → 전 백엔드 자동 커버. deep_agent 트랙 우회 방지로 `ORCHESTRATOR_INSTRUCTIONS`에 general_answer 위임 1줄 추가. `allowed_db_ids`(D-026) 교집합으로 못 쓰는 소스 광고 차단. `general_inference`의 "DB 미접근" 계약 유지(라이브 health 미수행, 설정·도메인 정의만 참조). UI: `❓ 사용법` 버튼(점선 메타 스타일, 클릭 즉시 실행). result_aggregator 무변(텍스트 결과 verbatim 통과 실측 확인). 검증: arch_check --ci exit 0(신규 error/warning 없음), orchestration 27건 통과, 카탈로그 교집합·폴백·멀티턴 마무리 동작 확인 |
 | 2026-06-17 | D-037 | **테스트용 워커 provider override 추가 — deepagent 경로 전체 gemini 검증 (Plan 49 §4.7)**: 데이터 평면(워커=FabriX, "실질 응답처리")을 **운영은 FabriX 유지, 테스트 환경에서는 gemini로 deepagent 경로 전체를 검증**할 수 있도록 토글 추가. 갭 규명 결과: 워커 파이프라인(`run_data_query_pipeline`→schema_analyzer/query_generator/result_organizer)은 일반 경로와 동일 노드에 주입된 `llm`을 쓰며 gemini는 `create_llm`에서 이미 지원 — **deepagent 고유 버그 없음**. 진짜 갭은 "운영(FabriX)과 분리된 테스트 토글 부재"(전역 `LLM_PROVIDER`를 바꿔야만 gemini 테스트 가능). **구현**: (1) `create_llm(config, *, provider_override=None)` — 지정 시 `config.llm.provider` 대신 사용(기본 None=운영 무변, keyword-only로 하위호환). (2) `AppConfig.worker_provider_override: Literal["ollama","fabrix","gemini"]|None=None`(env `WORKER_PROVIDER_OVERRIDE`). (3) `build_graph`가 워커 LLM을 `create_llm(config, provider_override=config.worker_provider_override)`로 생성 → deepagent 경로 전체(input_parser/field_mapper + deep_agent 워커)가 override provider로 동작. (4) `.env`에 운영/테스트 전환 주석. **사용자 결정(범위)**: "테스트 시 deepagent 경로 전체 gemini"(워커 일부만이 아닌 전체). 운영은 override 미설정으로 FabriX 무변. **부수 수정**: 사용자가 `.env`에 `ENABLE_DEEPAGENTS_PACKAGE=true`를 켜자 `enable_deepagents_package`가 `_build_config`/`_build_orchestration_config` 픽스처에 누수되어 deep_agent 경로가 선택→orchestration/replanner 테스트 3건 오탐 → 픽스처에 `enable_deepagents_package=False` 명시로 차단(D-037 Decision 2 패턴). 검증: `arch_check --ci` exit 0, override 단위 8건 통과, orchestration 87 passed/1 skipped(0 failed), graph 30건 회귀 통과. (사전 존재 실패 2건 `test_gemini_api_key/model_default_empty`은 로컬 `.env`/`.encenv`의 `LLM_GEMINI_*`를 BaseSettings가 파일에서 읽어 기본값 `""` 단언이 깨지는 것 — 본 작업·`.env` 변경과 무관) |
 | 2026-06-17 | D-037 | **deepagents 0.6.10 실제 설치 + step6(도구 결과→FabriX 재정리) 실측 구현 (Plan 49 §4.3 step6/§7 step 6)**: 폐쇄망 wheel을 기다리지 않고 **현 개발 환경에 deepagents 0.6.10을 실제 설치**하여 런타임 표면을 실측 후 step6를 추측이 아닌 실제 구현으로 완성. **설치 영향**: deepagents 0.6.10이 `langchain-core>=1.4.7`/`langchain>=1.3.9`를 요구 → `langchain-core 1.2.18→1.4.7`, `langchain 1.2.12→1.3.9`, `langgraph 1.1.1→1.2.5` 업글(+`langchain-openai 1.3.2`·`langchain-google-genai 4.2.5` 등). **R-B3(1.2→1.4 전이 비호환) 실증 해소** — 업글 전후 전체 스위트 동일(업글로 인한 신규 실패 0건, 모듈 단위 격리 실행 시 회귀 없음). **실측한 런타임 표면**: `create_deep_agent`의 실제 인자는 `instructions`가 **아니라 `system_prompt`**(기존 코드의 `instructions=`는 0.6.10에서 TypeError였음 → 수정). 반환은 `CompiledStateGraph`이며 `ainvoke` 결과 top-level 키는 `['files','messages']`로 **도구 결과 전용 state 키 없음** — 도구 결과는 `messages` 내 `ToolMessage`(name=도구명, content=직렬화 JSON)로만 존재. **step6 구현**: 토큰 폭증 방지 직렬화로 인한 손실을 피하려 `build_tools`/`_run_subagent_tool`에 **원본 결과 수집기(collector)** 추가 → `run_deep_agent`가 에이전트 종료 후 collector의 **원본 결과**를 `task_plan`/`task_results`로 재구성해 **FabriX `result_aggregator`로 최종 응답 생성**(오케스트레이터 자유 서술 미노출 — 성공기준 5). 도구 미호출 시에만 마지막 메시지 폴백. **실증 범위**: 실제 `create_deep_agent` 런타임으로 fake tool-calling LLM이 도구 호출 → collector 원본 적재 → FabriX 재정리까지 E2E 통과(`test_real_deepagents_collector_and_fabrix_step6`), 실제 vLLM `ChatOpenAI` 오케스트레이터로 `build_deep_agent` 조립 성공(HTTP 왕복만 라이브 vLLM 필요). **사전 존재 테스트 3건 수정**(Decision 2): `.env`의 `ORCHESTRATOR_PROVIDER=gemini`가 `OrchestratorConfig(BaseSettings)`에 누수되던 것을 테스트 픽스처에 `provider="vllm"` 명시로 차단(surgical, 타 모듈 무영향). 의존성: `requirements.txt`/`pyproject.toml`에 deepagents(opt-in 그룹) 반영. 검증: `arch_check --ci` exit 0, orchestration 87 passed/1 skipped(0 failed) |

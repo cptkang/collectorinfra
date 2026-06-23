@@ -9,10 +9,58 @@ from __future__ import annotations
 import logging
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 
 from src.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+
+# SSE 토큰 스트리밍 대상으로 식별할 LLM 실행 태그(D-009).
+# 최종 "사용자 응답" 생성 호출에만 부여하여, SQL 생성·DB 분류 등 중간 LLM 호출의
+# 토큰이 채팅 응답으로 새어 나오지 않도록 한다. SSE 핸들러는 이 태그가 붙은
+# on_chat_model_stream 이벤트만 토큰으로 전달한다.
+USER_RESPONSE_TAG = "user_response"
+
+
+async def astream_text(
+    llm: BaseChatModel,
+    messages: list[BaseMessage],
+    *,
+    tags: list[str] | None = None,
+) -> str:
+    """LLM을 스트리밍 방식으로 호출하고 전체 응답 텍스트를 누적해 반환한다.
+
+    `ainvoke()`는 `_agenerate`(단일 호출) 경로를 타기 때문에 `astream_events`가
+    `on_chat_model_stream` 토큰 이벤트를 내보내지 않는다. 토큰 단위 SSE 스트리밍
+    (D-009)을 실제로 동작시키려면 노드가 `.astream()`을 호출해 모델의 스트리밍
+    경로(`_astream`)를 거쳐야 한다.
+
+    `_astream`을 구현한 클라이언트(KBGenAIChat)는 토큰 단위로 흘러나오고,
+    `_generate`만 구현한 클라이언트(FabriX OpenAI 호환/Ollama)는 BaseChatModel의
+    기본 동작에 따라 단일 청크로 폴백되므로 회귀가 없다.
+
+    Args:
+        llm: LLM 인스턴스
+        messages: 입력 메시지 목록
+        tags: 이 LLM 실행에 부여할 태그. SSE 핸들러가 토큰 스트리밍 대상을 식별하는
+            데 사용한다(예: [USER_RESPONSE_TAG]). 태그는 자식 run에 전파되어
+            astream_events 이벤트의 `tags`로 노출된다.
+
+    Returns:
+        누적된 전체 응답 텍스트
+    """
+    config = {"tags": tags} if tags else None
+    parts: list[str] = []
+    async for chunk in llm.astream(messages, config=config):
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            if content:
+                parts.append(content)
+        elif content:
+            # 일부 모델은 content를 블록 리스트로 반환할 수 있다.
+            parts.append(str(content))
+    return "".join(parts)
 
 
 def create_llm(config: AppConfig, *, provider_override: str | None = None) -> BaseChatModel:

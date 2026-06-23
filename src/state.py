@@ -160,6 +160,7 @@ class AgentState(TypedDict):
     # === [Plan 49] 동적 재계획 ===
     replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
     needs_replan: bool               # replanner → 라우팅 신호 (True면 agent_orchestrator 재진입)
+    replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
 
 
 def create_initial_state(
@@ -267,4 +268,5 @@ def create_initial_state(
         # Plan 49: 동적 재계획
         replan_count=0,
         needs_replan=False,
+        replan_history=[],
     )

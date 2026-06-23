@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
+from src.llm import USER_RESPONSE_TAG
 from src.state import create_initial_state
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,20 @@ def _parse_approval(query: str) -> tuple[str, str]:
 def _count_human_messages(messages: list) -> int:
     """메시지 목록에서 HumanMessage 수를 반환한다."""
     return len([m for m in messages if isinstance(m, HumanMessage)])
+
+
+def _summarize_tasks(tasks: list[dict]) -> list[dict]:
+    """task_plan을 처리 현황 표시용 경량 항목으로 요약한다 (order 정렬, 표시 필드만)."""
+    ordered = sorted(tasks, key=lambda t: t.get("order", 0))
+    return [
+        {
+            "order": t.get("order", i + 1),
+            "agent": t.get("agent", ""),
+            "sub_query": t.get("sub_query", ""),
+            "status": t.get("status", "pending"),
+        }
+        for i, t in enumerate(ordered)
+    ]
 
 
 def _extract_node_progress(node_name: str, output: dict) -> dict | None:
@@ -226,6 +241,38 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
             if output.get("awaiting_approval"):
                 return {"awaiting_approval": True, "sql": output.get("approval_context", {}).get("sql", "")}
             return None
+
+        elif node_name == "intent_planner":
+            tasks = output.get("task_plan", [])
+            if not tasks:
+                return None
+            return {
+                "task_count": len(tasks),
+                "is_composite": output.get("is_composite", False),
+                "tasks": _summarize_tasks(tasks),
+            }
+
+        elif node_name == "agent_orchestrator":
+            tasks = output.get("task_plan", [])
+            if not tasks:
+                return None
+            return {
+                "task_count": len(tasks),
+                "tasks": _summarize_tasks(tasks),
+            }
+
+        elif node_name == "replanner":
+            needs = output.get("needs_replan", False)
+            history = output.get("replan_history") or []
+            data: dict = {"needs_replan": needs}
+            if history:
+                data["replan_history"] = history
+            if needs:
+                data["replan_count"] = output.get("replan_count", 0)
+            return data
+
+        elif node_name == "result_aggregator":
+            return {"status": "응답 통합 완료"}
 
     except Exception as e:
         logger.debug(f"노드 진행 데이터 추출 실패 ({node_name}): {e}")
@@ -416,6 +463,9 @@ async def process_query_stream(
                                 "result_organizer", "output_generator",
                                 "multi_db_executor", "result_merger",
                                 "synonym_registrar", "general_inference", "error_response",
+                                # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
+                                "intent_planner", "agent_orchestrator",
+                                "replanner", "result_aggregator",
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
@@ -447,8 +497,13 @@ async def process_query_stream(
 
                         # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
                         if kind == "on_chat_model_stream":
+                            # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
+                            # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
+                            # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
+                            # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
+                            _tags = event.get("tags", []) or []
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if _event_node in ("output_generator", "general_inference"):
+                            if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk and hasattr(chunk, "content") and chunk.content:
                                     streamed_any_token = True
@@ -503,6 +558,7 @@ async def process_query_stream(
 
                                 yield _sse_event({
                                     "type": "done",
+                                    "response": response_data["response"],
                                     "query_id": query_id,
                                     "thread_id": thread_id,
                                     "processing_time_ms": elapsed_ms,
@@ -564,6 +620,7 @@ async def process_query_stream(
 
             yield _sse_event({
                 "type": "done",
+                "response": response_data["response"],
                 "query_id": query_id,
                 "thread_id": thread_id,
                 "processing_time_ms": elapsed_ms,
@@ -797,6 +854,9 @@ async def process_file_query_stream(
                                 "result_organizer", "output_generator",
                                 "multi_db_executor", "result_merger",
                                 "synonym_registrar", "general_inference", "error_response",
+                                # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
+                                "intent_planner", "agent_orchestrator",
+                                "replanner", "result_aggregator",
                             }
                             if name in _known_nodes:
                                 _seen_nodes.add(name)
@@ -825,8 +885,13 @@ async def process_file_query_stream(
                                     })
 
                         if kind == "on_chat_model_stream":
+                            # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
+                            # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
+                            # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
+                            # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
+                            _tags = event.get("tags", []) or []
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if _event_node in ("output_generator", "general_inference"):
+                            if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk and hasattr(chunk, "content") and chunk.content:
                                     streamed_any_token = True
@@ -877,6 +942,7 @@ async def process_file_query_stream(
 
                                 yield _sse_event({
                                     "type": "done",
+                                    "response": response_data["response"],
                                     "query_id": query_id,
                                     "thread_id": actual_thread_id,
                                     "processing_time_ms": elapsed_ms,
@@ -932,6 +998,7 @@ async def process_file_query_stream(
             })
             yield _sse_event({
                 "type": "done",
+                "response": response_data["response"],
                 "query_id": query_id,
                 "thread_id": actual_thread_id,
                 "processing_time_ms": elapsed_ms,
