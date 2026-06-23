@@ -1818,10 +1818,62 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
+## D-038. 사용법/지원 소스 안내 — general_inference 그라운딩 (도움말 디스커버리)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-23 |
+| **상태** | **구현 완료 (2026-06-23)** |
+| **관련 결정** | D-026(allowed_db_ids 접근제어), D-037(deep_agent/semantic_router 이원 백엔드) |
+
+### 결정
+
+"이 에이전트로 무엇을 할 수 있는가 / 현재 지원 소스는 무엇인가"를 묻는 **사용법·능력 문의**에 대해,
+실제 활성·허용 소스에 근거한 안내를 채팅으로 제공한다. 안내문 **생성 위치는 `general_inference` 노드 한 곳**으로 일원화하고,
+메인 화면에 **도움말 버튼**을 추가해 같은 핸들러로 질의를 주입한다.
+
+- **백엔드 무관 단일 수렴점**: deep_agent 트랙(`general_answer` 도구)·semantic_router 트랙·intent_planner 그래프 트랙이
+  모두 `src/nodes/general_inference.py` 한 함수로 수렴 → 그라운딩을 이 노드에만 주입하면 전 백엔드 자동 커버.
+- **그라운딩 = 코드 조립 + LLM 문장화**: 소스 목록(사실)은 `active_db_ids ∩ allowed_db_ids` + `DB_DOMAINS`의
+  display_name/description으로 노드 안에서 조립하고, 자연어 안내문은 LLM이 그 사실에 근거해 생성(소스/메트릭이
+  늘어도 자동 반영). 멀티턴 마무리 문장("어떤 것을 확인해 드릴까요?")으로 끝맺도록 지시.
+- **접근제어 반영**: `allowed_db_ids`(D-026)가 지정된 사용자에게는 교집합 소스만 안내(못 쓰는 소스 광고 금지).
+- **도움말 버튼**: 예시 칩(쿼리 실행)과 시각적으로 구분(점선·메타 액션)하고, 클릭 즉시 실행(`data-help`).
+
+### 근거
+
+- **디스커버리 가치**: 신규 사용자가 지원 소스(김포/여의도/은행존 폴스타 등)·조회 가능 메트릭을 몰라 빈 질의→실패→이탈하는 흐름을 완화.
+- **환각 차단이 핵심**: 사실(온라인 소스·지원 메트릭)은 시스템 상태이므로 LLM에 맡기면 꺼진 소스/없는 기능을 지어냄 → **사실은 코드가 조립, 문장만 LLM**.
+- **노드 계약 유지**: `general_inference`는 "DB 미접근" 노드 → 라이브 health 체크(연결 오픈) 미수행. 활성 소스는 설정(`get_active_db_ids`), 설명은 `DB_DOMAINS`(도메인 정의)만 참조하여 계층 위반·부작용 없음.
+- **분류는 기존 자원 재사용**: `semantic_router`/`intent_planner`가 이미 "뭘 할 수 있어?"류를 general_inference로 분류. deep_agent 트랙만 오케스트레이터가 직접 답해 그라운딩을 우회할 수 있어 `ORCHESTRATOR_INSTRUCTIONS`에 "사용법·능력 문의 → general_answer 위임" 한 줄 추가.
+
+### 세부 변경
+
+- `src/nodes/general_inference.py`: `_build_source_catalog`(active ∩ allowed + DB_DOMAINS), `_build_system_prompt`(카탈로그·지원 메트릭·멀티턴 마무리 안내 규칙 그라운딩) 추가, 시스템 프롬프트 주입.
+- `src/prompts/orchestrator.py`: 사용법·능력 문의 → `general_answer` 도구 위임 규칙 추가(deep_agent 트랙 그라운딩 보장).
+- `src/static/index.html`·`css/style.css`·`js/app.js`: `❓ 사용법` 버튼(점선 메타 스타일) + 클릭 즉시 실행 배선.
+- **result_aggregator 무변**: deep_agent 트랙도 행 없는 텍스트 결과의 `final_response`를 verbatim 통과(실측 확인) → 통과 분기 추가 불필요.
+
+### 고려한 대안
+
+| 대안 | 제외 이유 |
+|------|----------|
+| 전용 `/api/v1/help` + 정적 템플릿 | 결정적·저비용이나 자유 타이핑("여기 뭐 돼?") 미대응, 안내 경로 이원화. 사용자 의도는 "채팅으로 안내" |
+| 도움말 쿼리를 SQL 파이프라인에 태움 | 도움말은 시스템 메타데이터 — SQL 생성 시 실패/환각. 파이프라인 부적합 |
+| 도움말 버튼만(타이핑 미지원) | 자유 입력 능력 문의를 놓침. general_inference 그라운딩이 양쪽을 한 번에 해결 |
+
+### 향후 수정 시 고려사항
+
+- 새 소스/메트릭 추가 시 안내문은 자동 반영되나, 소스 비의존 메트릭 요약(`_SUPPORTED_CAPABILITIES`)은 수기 목록이므로 신규 도메인(예: 신규 DB 유형) 추가 시 동기화 필요.
+- 향후 "현재 연결(healthy) 소스만" 정밀 표기가 필요하면, general_inference 계약(DB 미접근)을 깨지 말고 프론트의 `/health` `db_status_map`(배너가 이미 사용)을 별도 표기로 결합할 것.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-23 | D-038 | **사용법/지원 소스 안내 — general_inference 그라운딩 + 도움말 버튼**: "뭘 할 수 있어?/지원 소스?" 능력 문의에 실제 `active_db_ids ∩ allowed_db_ids` + `DB_DOMAINS` 설명을 코드로 조립해 시스템 프롬프트에 그라운딩(사실은 코드, 문장만 LLM, 멀티턴 마무리). deep_agent·semantic_router·intent_planner 3 백엔드가 모두 수렴하는 `general_inference` 1노드만 수정 → 전 백엔드 자동 커버. deep_agent 트랙 우회 방지로 `ORCHESTRATOR_INSTRUCTIONS`에 general_answer 위임 1줄 추가. `allowed_db_ids`(D-026) 교집합으로 못 쓰는 소스 광고 차단. `general_inference`의 "DB 미접근" 계약 유지(라이브 health 미수행, 설정·도메인 정의만 참조). UI: `❓ 사용법` 버튼(점선 메타 스타일, 클릭 즉시 실행). result_aggregator 무변(텍스트 결과 verbatim 통과 실측 확인). 검증: arch_check --ci exit 0(신규 error/warning 없음), orchestration 27건 통과, 카탈로그 교집합·폴백·멀티턴 마무리 동작 확인 |
 | 2026-06-17 | D-037 | **테스트용 워커 provider override 추가 — deepagent 경로 전체 gemini 검증 (Plan 49 §4.7)**: 데이터 평면(워커=FabriX, "실질 응답처리")을 **운영은 FabriX 유지, 테스트 환경에서는 gemini로 deepagent 경로 전체를 검증**할 수 있도록 토글 추가. 갭 규명 결과: 워커 파이프라인(`run_data_query_pipeline`→schema_analyzer/query_generator/result_organizer)은 일반 경로와 동일 노드에 주입된 `llm`을 쓰며 gemini는 `create_llm`에서 이미 지원 — **deepagent 고유 버그 없음**. 진짜 갭은 "운영(FabriX)과 분리된 테스트 토글 부재"(전역 `LLM_PROVIDER`를 바꿔야만 gemini 테스트 가능). **구현**: (1) `create_llm(config, *, provider_override=None)` — 지정 시 `config.llm.provider` 대신 사용(기본 None=운영 무변, keyword-only로 하위호환). (2) `AppConfig.worker_provider_override: Literal["ollama","fabrix","gemini"]|None=None`(env `WORKER_PROVIDER_OVERRIDE`). (3) `build_graph`가 워커 LLM을 `create_llm(config, provider_override=config.worker_provider_override)`로 생성 → deepagent 경로 전체(input_parser/field_mapper + deep_agent 워커)가 override provider로 동작. (4) `.env`에 운영/테스트 전환 주석. **사용자 결정(범위)**: "테스트 시 deepagent 경로 전체 gemini"(워커 일부만이 아닌 전체). 운영은 override 미설정으로 FabriX 무변. **부수 수정**: 사용자가 `.env`에 `ENABLE_DEEPAGENTS_PACKAGE=true`를 켜자 `enable_deepagents_package`가 `_build_config`/`_build_orchestration_config` 픽스처에 누수되어 deep_agent 경로가 선택→orchestration/replanner 테스트 3건 오탐 → 픽스처에 `enable_deepagents_package=False` 명시로 차단(D-037 Decision 2 패턴). 검증: `arch_check --ci` exit 0, override 단위 8건 통과, orchestration 87 passed/1 skipped(0 failed), graph 30건 회귀 통과. (사전 존재 실패 2건 `test_gemini_api_key/model_default_empty`은 로컬 `.env`/`.encenv`의 `LLM_GEMINI_*`를 BaseSettings가 파일에서 읽어 기본값 `""` 단언이 깨지는 것 — 본 작업·`.env` 변경과 무관) |
 | 2026-06-17 | D-037 | **deepagents 0.6.10 실제 설치 + step6(도구 결과→FabriX 재정리) 실측 구현 (Plan 49 §4.3 step6/§7 step 6)**: 폐쇄망 wheel을 기다리지 않고 **현 개발 환경에 deepagents 0.6.10을 실제 설치**하여 런타임 표면을 실측 후 step6를 추측이 아닌 실제 구현으로 완성. **설치 영향**: deepagents 0.6.10이 `langchain-core>=1.4.7`/`langchain>=1.3.9`를 요구 → `langchain-core 1.2.18→1.4.7`, `langchain 1.2.12→1.3.9`, `langgraph 1.1.1→1.2.5` 업글(+`langchain-openai 1.3.2`·`langchain-google-genai 4.2.5` 등). **R-B3(1.2→1.4 전이 비호환) 실증 해소** — 업글 전후 전체 스위트 동일(업글로 인한 신규 실패 0건, 모듈 단위 격리 실행 시 회귀 없음). **실측한 런타임 표면**: `create_deep_agent`의 실제 인자는 `instructions`가 **아니라 `system_prompt`**(기존 코드의 `instructions=`는 0.6.10에서 TypeError였음 → 수정). 반환은 `CompiledStateGraph`이며 `ainvoke` 결과 top-level 키는 `['files','messages']`로 **도구 결과 전용 state 키 없음** — 도구 결과는 `messages` 내 `ToolMessage`(name=도구명, content=직렬화 JSON)로만 존재. **step6 구현**: 토큰 폭증 방지 직렬화로 인한 손실을 피하려 `build_tools`/`_run_subagent_tool`에 **원본 결과 수집기(collector)** 추가 → `run_deep_agent`가 에이전트 종료 후 collector의 **원본 결과**를 `task_plan`/`task_results`로 재구성해 **FabriX `result_aggregator`로 최종 응답 생성**(오케스트레이터 자유 서술 미노출 — 성공기준 5). 도구 미호출 시에만 마지막 메시지 폴백. **실증 범위**: 실제 `create_deep_agent` 런타임으로 fake tool-calling LLM이 도구 호출 → collector 원본 적재 → FabriX 재정리까지 E2E 통과(`test_real_deepagents_collector_and_fabrix_step6`), 실제 vLLM `ChatOpenAI` 오케스트레이터로 `build_deep_agent` 조립 성공(HTTP 왕복만 라이브 vLLM 필요). **사전 존재 테스트 3건 수정**(Decision 2): `.env`의 `ORCHESTRATOR_PROVIDER=gemini`가 `OrchestratorConfig(BaseSettings)`에 누수되던 것을 테스트 픽스처에 `provider="vllm"` 명시로 차단(surgical, 타 모듈 무영향). 의존성: `requirements.txt`/`pyproject.toml`에 deepagents(opt-in 그룹) 반영. 검증: `arch_check --ci` exit 0, orchestration 87 passed/1 skipped(0 failed) |
 | 2026-06-17 | D-037 | **트랙 B 런타임 그래프 배선 완료 (Plan 49 §7 step 7 / §9)**: 그동안 정의·테스트만 되고 어떤 진입점에도 연결되지 않았던 `build_deep_agent`(→`deepagents.create_deep_agent`)를 **실제 실행 경로에 배선**. `src/graph.py`의 `build_graph`가 빌드 시 `select_orchestration_backend(config)`로 백엔드를 확정하여 `"deep_agent"`면 신규 `deep_agent` 노드를 등록하고 `field_mapper → deep_agent → END`로 연결(트랙 A·semantic_router보다 최우선, 상호 배타로 해당 노드 미등록). 신규 `src/orchestration/deep_agent.py:run_deep_agent` 노드가 `build_deep_agent`로 조립한 에이전트를 `ainvoke`하고 최종 메시지를 `final_response`로 추출(ambient 컨텍스트 = thread_id/user_id/allowed_db_ids/양식 등 화이트리스트 주입, §4.4). **안전 폴백 2중**: (1) 빌드 시 `_deep_agent_buildable`가 조립을 시도해 deepagents 미설치(RuntimeError)면 `semantic_router`로 폴백(그래프 크래시 방지) (2) 런타임 `run_deep_agent`도 RuntimeError를 잡아 안내 응답 반환. 기본값(`enable_deepagents_package=False`)에서는 `semantic_router` 선택으로 기존 경로 무변(회귀 없음). 검증: `arch_check --ci` exit 0(error 0, 신규 warning 없음), 신규 `tests/test_orchestration/test_deep_agent_wiring.py` 10건 통과, orchestration 회귀 동일(전·후 모두 기존 2건 실패 — 로컬 `.env`의 `ORCHESTRATOR_PROVIDER=gemini` 누수로 인한 사전 존재 실패, 본 작업과 무관). **실제 deepagents 패키지 동작 확인은 폐쇄망 wheel 반입(§3.1) + vLLM 기동(§3.2) 후 가능** — 본 배선은 그 인프라가 갖춰지면 즉시 동작하도록 완성됨 |

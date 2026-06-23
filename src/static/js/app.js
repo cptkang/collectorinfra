@@ -37,12 +37,29 @@
         return headers;
     }
 
+    function redirectToLogin() {
+        // 만료/무효 토큰을 정리하여 로그인 후 동일 증상 재발을 방지한다.
+        localStorage.removeItem("user_token");
+        localStorage.removeItem("user_info");
+        window.location.href = "/login";
+    }
+
     function checkAuthOnLoad() {
         fetch("/api/v1/auth/status", { headers: getAuthHeaders() })
-            .then(function(res) { return res.json(); })
+            .then(function(res) {
+                // 토큰이 만료/무효(예: 서버 재시작로 JWT 시크릿 회전)이면 status가 401을 반환한다.
+                // 본문에 auth_enabled가 없어 아래 분기로 잡히지 않으므로 여기서 먼저 처리한다.
+                if (res.status === 401) {
+                    redirectToLogin();
+                    return null;
+                }
+                return res.json();
+            })
             .then(function(data) {
-                if (data.auth_enabled && !localStorage.getItem("user_token")) {
-                    window.location.href = "/login";
+                if (!data) return;  // 401 처리 후 리다이렉트된 경우
+                // 인증이 켜져 있는데 유효 사용자가 없으면(토큰 부재 또는 무효) 로그인으로 유도한다.
+                if (data.auth_enabled && !data.user) {
+                    redirectToLogin();
                     return;
                 }
                 // 사용자 정보 표시
@@ -280,6 +297,10 @@
             promptEl.value = btn.dataset.query;
             autoResizeTextarea.call(promptEl);
             promptEl.focus();
+            // 도움말 버튼은 예시와 달리 클릭 즉시 실행하여 채팅으로 안내를 전달한다.
+            if (btn.dataset.help) {
+                handleSend();
+            }
         });
     });
 

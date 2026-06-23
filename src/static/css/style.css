@@ -687,6 +687,18 @@ header nav {
     color: var(--accent);
 }
 
+/* 도움말 버튼: 예시(쿼리 실행)와 구분되는 메타 액션 */
+.chat-welcome-hint--help {
+    border-style: dashed;
+    border-color: var(--border-accent);
+    color: var(--accent);
+}
+
+.chat-welcome-hint--help:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
 /* ─── Message Bubbles ─── */
 
 .message {
