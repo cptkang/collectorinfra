@@ -509,6 +509,29 @@ async def run_data_query_pipeline(
     }
     if s.get("error_message"):
         result["error"] = s["error_message"]
+
+    # 관찰성(처리 현황): orchestration에서는 query_generator가 그래프 노드가 아니라
+    # 함수 호출이어서 생성 SQL이 SSE node_complete로 노출되지 않는다. task 결과에
+    # 생성 SQL·대상 DB·DB별 에러를 담아 _extract_node_progress(agent_orchestrator)가
+    # 처리 현황에 표시하도록 한다(어떤 SQL이 어느 DB로 실행됐는지·b0 오선택 가시화).
+    result["target_db_ids"] = [t.get("db_id") for t in targets if t.get("db_id")]
+    gen_sql = s.get("generated_sql")
+    if not gen_sql:
+        # 멀티 DB 경로: multi_db_executor는 generated_sql을 두지 않으므로
+        # query_attempts에서 시도된 SQL을 수집한다(대표 1건).
+        sqls: list[str] = []
+        for a in (s.get("query_attempts") or []):
+            q = getattr(a, "sql", None)
+            if q is None and isinstance(a, dict):
+                q = a.get("sql")
+            if q:
+                sqls.append(q)
+        gen_sql = sqls[-1] if sqls else None
+    if gen_sql:
+        result["generated_sql"] = gen_sql
+    db_errors = s.get("db_errors")
+    if db_errors:
+        result["db_errors"] = db_errors
     return result
 
 

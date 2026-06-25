@@ -1639,6 +1639,26 @@
             if (t.sub_query) {
                 html += '<div class="step-data-value">' + escapeHtml(t.sub_query) + "</div>";
             }
+            // 대상 DB (b0 등 오선택을 즉시 확인하기 위해 노출)
+            if (t.target_db_ids && t.target_db_ids.length > 0) {
+                html += '<div class="step-data-value">대상 DB: ' + escapeHtml(t.target_db_ids.join(", ")) + "</div>";
+            }
+            // 행 수
+            if (t.row_count != null) {
+                html += ' <span class="step-data-badge step-data-badge--info">' + t.row_count + "건</span>";
+            }
+            // 생성된 SQL (orchestration에서 어떤 쿼리가 만들어졌는지 확인)
+            if (t.generated_sql) {
+                html += '<pre class="step-data-code">' + escapeHtml(t.generated_sql) + "</pre>";
+            }
+            // DB별 실행 에러 (예: polestar_b0 SQL0204N)
+            if (t.db_errors) {
+                Object.keys(t.db_errors).forEach(function (dbId) {
+                    html += '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(dbId + ": " + t.db_errors[dbId]) + "</div>";
+                });
+            } else if (t.error) {
+                html += '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(t.error) + "</div>";
+            }
             html += "</li>";
         });
         html += "</ul>";
