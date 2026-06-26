@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, patch
 
 import sys
 
-from src.orchestration.result_aggregator import _finalize_task, _merge_finalized, result_aggregator
+from src.orchestration.result_aggregator import (
+    _collect_superseded,
+    _finalize_task,
+    _merge_finalized,
+    result_aggregator,
+)
 
 # 패키지 __init__.py가 result_aggregator(함수)를 재노출하여 동명 서브모듈을 가린다.
 # 패치 대상 서브모듈은 sys.modules에서 직접 참조한다.
@@ -123,6 +128,76 @@ async def test_result_aggregator_composite_merge(mock_config):
     assert "첫 번째 답변" in body
     assert "두 번째 답변" in body
     assert body.index("첫 번째 답변") < body.index("두 번째 답변")
+
+
+# ──────────────────────────────────────────────
+# test_supersedes (D-043: 재조회 대체 task 본문 제외)
+# ──────────────────────────────────────────────
+
+def test_collect_superseded_when_followup_succeeds():
+    """후속 task가 성공했으면 그 supersedes 대상이 숨김 집합에 포함된다."""
+    tasks = [
+        {"task_id": "t1", "supersedes": []},
+        {"task_id": "t2", "supersedes": ["t1"]},
+    ]
+    results = {"t1": {"final_response": "없음"}, "t2": {"final_response": "1건"}}
+    assert _collect_superseded(tasks, results) == {"t1"}
+
+
+def test_collect_superseded_skips_when_followup_failed():
+    """후속(대체) task가 실패했으면 선행을 숨기지 않는다(안전)."""
+    tasks = [
+        {"task_id": "t1", "supersedes": []},
+        {"task_id": "t2", "supersedes": ["t1"]},
+    ]
+    results = {"t1": {"final_response": "없음"}, "t2": {"error": "재조회 실패"}}
+    assert _collect_superseded(tasks, results) == set()
+
+
+@pytest.mark.asyncio
+async def test_result_aggregator_hides_superseded_attempt(mock_config):
+    """재조회로 대체된 1차 task 서술은 최종 답변 본문에서 제외되고, 성공한 후속만 노출."""
+    tasks = [
+        {"task_id": "t1", "agent": "general_inference", "sub_query": "q", "order": 1,
+         "status": "completed", "supersedes": []},
+        {"task_id": "t2", "agent": "general_inference", "sub_query": "q", "order": 2,
+         "status": "completed", "supersedes": ["t1"]},
+    ]
+    state = create_initial_state(user_query="김포 ### 서버 사양")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"final_response": "조회된 1000건 중 존재하지 않습니다"},
+        "t2": {"final_response": "기본 사양을 1건 확인했습니다"},
+    }
+
+    out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    body = out["final_response"]
+    # 대체된 1차(실패 서술)는 숨기고, 성공한 재조회 결과만 단일 노출
+    assert body == "기본 사양을 1건 확인했습니다"
+    assert "존재하지 않습니다" not in body
+
+
+@pytest.mark.asyncio
+async def test_result_aggregator_keeps_attempt_when_followup_failed(mock_config):
+    """재조회(대체) task가 실패하면 1차 결과를 그대로 유지한다(빈 답변 방지)."""
+    tasks = [
+        {"task_id": "t1", "agent": "general_inference", "sub_query": "q", "order": 1,
+         "status": "completed", "supersedes": []},
+        {"task_id": "t2", "agent": "general_inference", "sub_query": "q", "order": 2,
+         "status": "failed", "supersedes": ["t1"]},
+    ]
+    state = create_initial_state(user_query="q")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"final_response": "1차 부분 결과"},
+        "t2": {"error": "재조회 실패"},
+    }
+
+    out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    body = out["final_response"]
+    assert "1차 부분 결과" in body
 
 
 @pytest.mark.asyncio

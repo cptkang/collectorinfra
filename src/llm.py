@@ -124,18 +124,40 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
 
     from langchain_openai import ChatOpenAI
 
+    # Plan 50 / D-040 (B7): Qwen 계열 vLLM은 no-think(enable_thinking=false)를 기본 적용한다.
+    # 추론 토큰이 입력/출력 토큰을 키워 제어 평면 한계를 압박하고 tool_call JSON 파싱을
+    # 불안정하게 하므로, vLLM 확장 필드 extra_body.chat_template_kwargs.enable_thinking로 토글한다.
+    # 계열 가드: 모델이 Qwen 계열일 때만 extra_body를 부착한다(비-Qwen/미지원 서버에서
+    # 알 수 없는 chat_template_kwargs로 오류가 나는 것을 회피 — Plan 50 §3.6(2)).
+    #
+    # 주의(실측): ChatOpenAI는 model_kwargs 안의 extra_body를 전용 extra_body 인자로 끌어내며
+    # UserWarning을 낸다 → langchain_openai 0.x 기준 extra_body는 **전용 생성자 인자**로 직접
+    # 전달한다(요청 바디에 동일하게 실려 vLLM chat template로 전파됨, 경고 없음).
+    extra_body: dict | None = None
+    if "qwen" in config.orchestrator.model.lower():
+        extra_body = {
+            "chat_template_kwargs": {
+                "enable_thinking": config.orchestrator.enable_thinking
+            }
+        }
+
     logger.info(
-        "오케스트레이터 LLM(vLLM) 초기화: base_url=%s, model=%s",
+        "오케스트레이터 LLM(vLLM) 초기화: base_url=%s, model=%s, enable_thinking=%s, extra_body=%s",
         config.orchestrator.base_url,
         config.orchestrator.model,
+        config.orchestrator.enable_thinking,
+        extra_body is not None,
     )
-    return ChatOpenAI(
-        base_url=config.orchestrator.base_url,
-        api_key=config.orchestrator.api_key or "EMPTY",
-        model=config.orchestrator.model,
-        temperature=0.0,
-        timeout=config.orchestrator.timeout,
-    )
+    kwargs: dict = {
+        "base_url": config.orchestrator.base_url,
+        "api_key": config.orchestrator.api_key or "EMPTY",
+        "model": config.orchestrator.model,
+        "temperature": 0.0,
+        "timeout": config.orchestrator.timeout,
+    }
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+    return ChatOpenAI(**kwargs)
 
 
 def _create_orchestrator_gemini(config: AppConfig) -> BaseChatModel:

@@ -32,6 +32,7 @@ from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.synonym_registrar import synonym_registrar
+from src.orchestration.process_query import run_process_query
 from src.routing.domain_config import DB_DOMAINS
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 
@@ -43,6 +44,12 @@ _MAX_PIPELINE_STEPS = 10
 _MAX_PRIOR_ROWS = 100
 # 식별 키 컬럼 추출 우선순위 (보수적: 식별성 높은 컬럼 우선)
 _IDENTITY_KEY_HINTS = ("hostname", "host_name", "name", "server_name", "id")
+# 이번 턴 질의에서 "새 위치/DB 신호"로 인정할 키워드 (M2 — DB 승계 차단 조건).
+# 사용자가 이번 턴에 아래 신호를 명시하면 직전 DB를 승계하지 않고 분류 결과를 따른다.
+_LOCATION_DB_SIGNALS = (
+    "김포", "여의도", "은행", "공동존", "운영", "개발", "스테이징",
+    "polestar", "폴스타", "cloud_portal", "클라우드", "itsm", "itam",
+)
 
 
 # ──────────────────────────────────────────────
@@ -146,6 +153,86 @@ async def classify_dbs(
         ]
 
     return targets
+
+
+def _has_new_location_db_signal(text: str) -> bool:
+    """이번 턴 질의에 새 위치/DB 신호가 있는지 표면 검사한다 (M2 — 승계 차단 조건).
+
+    사용자가 이번 턴에 위치(김포/여의도 등)·DB명(polestar 등)·환경을 명시하면
+    직전 DB를 승계하지 않고 이번 분류 결과를 따라야 한다(리스크 표: 새 의도를 덮어쓰지 않음).
+
+    Args:
+        text: 이번 턴 sub_query(또는 user_query)
+
+    Returns:
+        새 위치/DB 신호가 있으면 True
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(sig.lower() in lowered for sig in _LOCATION_DB_SIGNALS)
+
+
+def _apply_db_succession(
+    targets: list[dict],
+    sub_query: str,
+    conversation_context: Optional[dict],
+    active_db_ids: list[str],
+) -> tuple[list[dict], bool]:
+    """이전 턴 DB를 우선 후보로 승계한다 (M2, Plan 50 §3.2).
+
+    우선순위: ① 이번 턴 명시 위치/DB > ② mapped_db_ids(호출 전 db_ids 고정) >
+    ③ previous_db_ids(멀티턴 승계) > ④ 전체 후보 fan-out.
+
+    본 함수는 ①(이번 턴 신호)이 없고 직전 DB가 있을 때만 승계를 적용한다.
+    승계 조건:
+      - 이번 턴 sub_query에 새 위치/DB 신호가 **없음**.
+      - conversation_context.previous_db_ids 가 **활성 DB 중 1개 이상** 존재.
+    승계 시 직전 DB를 단일 우선 후보로 좁혀 fan-out(다중 폴스타 오선택)을 방지한다.
+
+    Args:
+        targets: classify_dbs가 반환한 target_databases 목록
+        sub_query: 이번 턴 SQL 생성 입력 질의
+        conversation_context: context_resolver 보존 맥락(없으면 첫 턴)
+        active_db_ids: 활성 DB 목록(승계 후보 유효성 검사용)
+
+    Returns:
+        (적용된 targets, 승계 적용 여부)
+    """
+    if not conversation_context:
+        return targets, False
+    prev_db_ids = conversation_context.get("previous_db_ids") or []
+    if not prev_db_ids:
+        return targets, False
+
+    # ① 이번 턴에 새 위치/DB 신호가 있으면 승계하지 않는다(사용자 새 의도 최우선).
+    if _has_new_location_db_signal(sub_query):
+        return targets, False
+
+    # 직전 DB 중 현재 활성인 것만 후보로 인정.
+    valid_prev = [d for d in prev_db_ids if not active_db_ids or d in active_db_ids]
+    if not valid_prev:
+        return targets, False
+
+    # 이미 분류 결과가 직전 DB 1개로 수렴했으면 승계 불필요.
+    current_ids = [t.get("db_id") for t in targets]
+    if len(targets) == 1 and current_ids[0] in valid_prev:
+        return targets, False
+
+    # 승계: 직전 DB(우선순위 1개)를 단일 우선 후보로 사용.
+    succeeded_id = valid_prev[0]
+    succeeded = [{
+        "db_id": succeeded_id,
+        "relevance_score": 1.0,
+        "sub_query_context": sub_query,
+        "user_specified": False,
+        "reason": f"이전 턴 DB 승계(멀티턴, previous_db_ids={valid_prev})",
+    }]
+    logger.info(
+        "data_query DB 승계 적용: %s (분류 결과 %s → 직전 DB 우선)",
+        succeeded_id, current_ids,
+    )
+    return succeeded, True
 
 
 def _normalize_targets(targets: list, sub_query: str) -> list[dict]:
@@ -462,12 +549,20 @@ async def run_data_query_pipeline(
     """
     sub_query = task.get("sub_query", isolated.get("user_query", ""))
 
-    # 1) DB 선택 — db_ids 고정이 있으면 우선, 없으면 classify_dbs
+    # 1) DB 선택 — db_ids 고정(②mapped_db_ids)이 있으면 우선, 없으면 classify_dbs.
+    #    classify_dbs 후, 이번 턴에 새 위치/DB 신호가 없으면 직전 턴 DB를 승계한다(③, M2).
     raw_targets = task.get("db_ids")
+    db_succeeded = False
     if raw_targets:
         targets = _normalize_targets(raw_targets, sub_query)
     else:
         targets = await classify_dbs(llm, sub_query, app_config)
+        targets, db_succeeded = _apply_db_succession(
+            targets,
+            sub_query,
+            isolated.get("conversation_context"),
+            app_config.multi_db.get_active_db_ids(),
+        )
 
     if not targets:
         # 방어적 폴백 (classify_dbs가 항상 1개 이상 반환하지만 안전 차원)
@@ -515,6 +610,13 @@ async def run_data_query_pipeline(
     # 생성 SQL·대상 DB·DB별 에러를 담아 _extract_node_progress(agent_orchestrator)가
     # 처리 현황에 표시하도록 한다(어떤 SQL이 어느 DB로 실행됐는지·b0 오선택 가시화).
     result["target_db_ids"] = [t.get("db_id") for t in targets if t.get("db_id")]
+    if db_succeeded:
+        # 처리현황 UI 투명성: 이전 턴 DB 승계 사실을 노출한다(Plan 50 §3.2).
+        result["db_succession"] = {
+            "succeeded": True,
+            "db_ids": result["target_db_ids"],
+            "note": "이전 턴 DB 승계(멀티턴)",
+        }
     gen_sql = s.get("generated_sql")
     if not gen_sql:
         # 멀티 DB 경로: multi_db_executor는 generated_sql을 두지 않으므로
@@ -542,6 +644,11 @@ async def run_data_query_pipeline(
 SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
     "data_query": SubAgentSpec(
         "data_query", "인프라 DB(서버 사양·사용량·모니터링) 조회", run_data_query_pipeline
+    ),
+    "process_query": SubAgentSpec(
+        "process_query",
+        "특정 서버의 현재/실시간 프로세스 리스트 조회 (DB 이력이 아닌 실시간 폴스타 프로세스 API)",
+        run_process_query,
     ),
     "alarm_query": SubAgentSpec(
         "alarm_query", "알람/모니터링 이벤트 조회", run_data_query_pipeline

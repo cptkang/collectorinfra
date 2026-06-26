@@ -108,6 +108,60 @@ class TestContextResolverFollowUpTurn:
         assert ctx["previous_db_id"] == "polestar"
 
 
+class TestContextResolverEntityPreservation:
+    """Plan 50 M3 — 후속 턴 DB/엔티티/위치 보존 검증."""
+
+    def _follow_up_state(self):
+        state = create_initial_state(user_query="해당 서버의 현재 프로세스 리스트를 확인해줘")
+        state["messages"] = [
+            HumanMessage(content="김포 운영 폴스타 ### 서버의 CPU 코어 수, 메모리 용량"),
+            AIMessage(content="결과입니다..."),
+            HumanMessage(content="해당 서버의 현재 프로세스 리스트를 확인해줘"),
+        ]
+        state["generated_sql"] = "SELECT hostname, cpu_cores FROM ..."
+        state["query_results"] = [{"hostname": "###", "cpu_cores": 8, "mem_gb": 64}]
+        state["target_databases"] = [
+            {"db_id": "polestar_cm_gp", "relevance_score": 0.9},
+        ]
+        state["active_db_id"] = "polestar_cm_gp"
+        state["parsed_requirements"] = {
+            "filter_conditions": [{"field": "hostname", "value": "###"}],
+            "target_db_hints": ["김포", "운영"],
+        }
+        return state
+
+    async def test_previous_db_ids_unified(self):
+        """previous_db_ids에 target_databases/active_db_id가 통합된다."""
+        result = await context_resolver(self._follow_up_state())
+        ctx = result["conversation_context"]
+        assert ctx["previous_db_ids"] == ["polestar_cm_gp"]
+
+    async def test_previous_entities_from_filter_and_results(self):
+        """식별 키(hostname)가 filter와 결과에서 값까지 보존된다."""
+        result = await context_resolver(self._follow_up_state())
+        ctx = result["conversation_context"]
+        values = {(e["field"].lower(), str(e["value"])) for e in ctx["previous_entities"]}
+        assert ("hostname", "###") in values
+
+    async def test_previous_location_surface_extracted(self):
+        """직전 위치/환경 신호(김포 운영)가 표면 추출된다."""
+        result = await context_resolver(self._follow_up_state())
+        ctx = result["conversation_context"]
+        assert "김포" in ctx["previous_location"]
+        assert "운영" in ctx["previous_location"]
+
+    async def test_entity_row_cap_enforced(self):
+        """대량 결과여도 엔티티 보존은 상한(_MAX_ENTITY_ROWS)을 넘지 않는다."""
+        from src.nodes.context_resolver import _MAX_ENTITY_ROWS
+
+        state = self._follow_up_state()
+        state["query_results"] = [{"hostname": f"host-{i}"} for i in range(500)]
+        state["parsed_requirements"] = {}
+        result = await context_resolver(state)
+        ctx = result["conversation_context"]
+        assert len(ctx["previous_entities"]) <= _MAX_ENTITY_ROWS
+
+
 class TestTrimMessages:
     """대화 히스토리 트리밍 검증."""
 
@@ -129,3 +183,20 @@ class TestTrimMessages:
         # 최근 메시지가 유지되는지 확인
         last_msg = result[-1]
         assert isinstance(last_msg, AIMessage)
+
+    def test_trims_on_token_budget(self):
+        """턴 수가 적어도 누적 문자수 상한 초과 시 추가 트리밍한다 (B3 이중 기준)."""
+        from src.nodes.context_resolver import MAX_HISTORY_CHARS
+
+        # 2턴(4메시지)이지만 각 메시지가 비대 → 누적 문자수 상한 초과
+        big = "x" * (MAX_HISTORY_CHARS // 2)
+        messages = [
+            HumanMessage(content=big),
+            AIMessage(content=big),
+            HumanMessage(content=big),
+            AIMessage(content="최근 응답"),
+        ]
+        result = _trim_messages(messages)
+        # 최소 마지막 2개는 보존, 누적은 상한 이하로 줄어든다
+        assert len(result) >= 2
+        assert len(result) < len(messages)

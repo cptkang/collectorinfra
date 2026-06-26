@@ -286,6 +286,9 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
             "sub_query": raw.get("sub_query", ""),
             "depends_on": list(raw.get("depends_on") or []),
             "input_from": list(raw.get("input_from") or []),
+            # 대체(재조회) 관계: 이 후속이 대체하는 선행 task_id 목록 (없으면 빈 배열).
+            # result_aggregator가 최종 답변 본문에서 대체된 선행 task 서술을 숨긴다(D-043).
+            "supersedes": list(raw.get("supersedes") or []),
             "order": max_order + 1 + len(assigned),
             "status": "pending",
         }
@@ -296,5 +299,6 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
         for task in assigned:
             task["depends_on"] = [id_map.get(d, d) for d in task["depends_on"]]
             task["input_from"] = [id_map.get(d, d) for d in task["input_from"]]
+            task["supersedes"] = [id_map.get(d, d) for d in task["supersedes"]]
 
     return assigned

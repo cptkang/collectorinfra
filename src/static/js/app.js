@@ -740,10 +740,16 @@
 
         try {
             // Try SSE streaming first
+            // 멀티턴: 진행 중 세션이 있으면 thread_id를 함께 전송해야 백엔드가
+            // 체크포인트(이전 대화 맥락)를 복원한다. 누락 시 매 턴 새 세션(1턴)으로 처리됨.
+            var streamBody = { query: query };
+            if (currentThreadId) {
+                streamBody.thread_id = currentThreadId;
+            }
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
-                body: JSON.stringify({ query: query }),
+                body: JSON.stringify(streamBody),
             });
 
             if (response.status === 404 || response.status === 405) {
@@ -977,10 +983,15 @@
         resetProgressPanel();
 
         try {
+            // 멀티턴: 진행 중 세션이 있으면 thread_id를 함께 전송 (체크포인트 복원).
+            var queryBody = { query: query };
+            if (currentThreadId) {
+                queryBody.thread_id = currentThreadId;
+            }
             var response = await fetch("/api/v1/query", {
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
-                body: JSON.stringify({ query: query }),
+                body: JSON.stringify(queryBody),
             });
 
             var data = await response.json();
