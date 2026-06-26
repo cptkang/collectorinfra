@@ -25,6 +25,7 @@
     var progressPipeline = document.getElementById("progressPipeline");
     var progressEmpty = document.getElementById("progressEmpty");
     var panelToggle = document.getElementById("panelToggle");
+    var scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 
     // ─── Auth Helpers ───
 
@@ -196,6 +197,15 @@
     var stageTimer = null;
     var currentThreadId = null;
 
+    // ─── Scroll (stick-to-bottom) State ───
+    var stickToBottom = true;          // 맨 아래 고정 여부
+    var hasNewContent = false;         // 고정 해제 상태에서 미확인 신규 출력 존재 여부(버튼 강조용)
+    var BOTTOM_THRESHOLD_PX = 24;      // 이 거리 이내면 "맨 아래"로 간주(테스트 후 조정 가능)
+
+    // ─── Streaming Render State (비파괴 렌더 + rAF 코얼레싱) ───
+    var _streamAccumulated = "";       // 현재 스트리밍 메시지의 누적 마크다운(렌더 입력)
+    var _streamRafQueued = false;      // 이번 프레임 렌더 예약 여부(토큰 버스트 코얼레싱)
+
     // ─── Prompt History ───
     var promptHistory = [];           // 전송된 프롬프트 히스토리 (오래된 순)
     var historyIndex = -1;            // 현재 탐색 위치 (-1 = 탐색 안 함)
@@ -325,6 +335,19 @@
     panelToggle.addEventListener("click", function () {
         document.querySelector(".chat-layout").classList.toggle("panel-collapsed");
     });
+
+    // 채팅 스크롤: 맨 아래 고정(stick-to-bottom) 상태 추적 + 플로팅 버튼 토글
+    chatMessages.addEventListener("scroll", function () {
+        stickToBottom = isNearBottom();
+        if (stickToBottom) hasNewContent = false;   // 맨 아래 복귀 → 신규 강조 해제
+        updateScrollToBottomBtn();
+    }, { passive: true });
+
+    if (scrollToBottomBtn) {
+        scrollToBottomBtn.addEventListener("click", function () {
+            scrollToBottom(true);   // smooth 이동 + stickToBottom=true 복귀
+        });
+    }
 
     // ─── Auto-resize Textarea ───
 
@@ -553,7 +576,7 @@
             '</div>';
 
         chatMessages.appendChild(el);
-        scrollToBottom();
+        scrollToBottomIfSticky();
         startStageAnimation();
     }
 
@@ -699,12 +722,14 @@
             '</div>';
 
         chatMessages.appendChild(el);
-        scrollToBottom();
+        scrollToBottomIfSticky();
     }
 
     // ─── Create Streaming Agent Message ───
 
     function createStreamingMessage() {
+        // 새 스트리밍 시작 — 이전 스트림의 잔여 rAF가 새 버블에 옛 텍스트를 렌더하지 않도록 초기화
+        _streamAccumulated = "";
         var el = document.createElement("div");
         el.className = "message message--agent";
         el.id = "streamingMessage";
@@ -724,7 +749,7 @@
             '</div>';
 
         chatMessages.appendChild(el);
-        scrollToBottom();
+        scrollToBottomIfSticky();
         return el;
     }
 
@@ -811,9 +836,8 @@
                             var event = JSON.parse(dataStr);
                             if (event.type === "token") {
                                 accumulatedText += event.content;
-                                var textEl = document.getElementById("streamingText");
-                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
-                                scrollToBottom();
+                                _streamAccumulated = accumulatedText;
+                                scheduleStreamingRender();   // 비파괴 렌더 + 스크롤(rAF 코얼레싱)
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
@@ -973,7 +997,7 @@
             if (el) el.removeAttribute("id");
         });
 
-        scrollToBottom();
+        scrollToBottomIfSticky();
     }
 
     // ─── Fallback (non-streaming) Query ───
@@ -1091,9 +1115,8 @@
                             var event = JSON.parse(dataStr);
                             if (event.type === "token") {
                                 accumulatedText += event.content;
-                                var textEl = document.getElementById("streamingText");
-                                if (textEl) textEl.innerHTML = renderMarkdown(accumulatedText);
-                                scrollToBottom();
+                                _streamAccumulated = accumulatedText;
+                                scheduleStreamingRender();   // 비파괴 렌더 + 스크롤(rAF 코얼레싱)
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
@@ -1206,9 +1229,125 @@
         return escapeHtml(text).replace(/\n/g, '<br>');
     }
 
-    function scrollToBottom() {
+    // ─── Streaming Non-destructive Render (DOM 모핑) ───
+    //
+    // 토큰마다 innerHTML 전체 교체 대신, 새 파싱 결과를 기존 DOM에 diff 적용한다.
+    // 동일 위치·태그의 요소를 "재사용"하므로 표(table)의 가로 스크롤 위치(scrollLeft)와
+    // 텍스트 드래그 선택이 보존된다. 출력 HTML은 full-parse 결과와 동일.
+    // 폐쇄망 제약으로 외부 morphdom 의존성 대신 동등 동작의 경량 자체 구현 사용.
+
+    function syncAttributes(fromEl, toEl) {
+        var toAttrs = toEl.attributes;
+        for (var i = 0; i < toAttrs.length; i++) {
+            var a = toAttrs[i];
+            if (fromEl.getAttribute(a.name) !== a.value) fromEl.setAttribute(a.name, a.value);
+        }
+        var fromAttrs = fromEl.attributes;
+        for (var j = fromAttrs.length - 1; j >= 0; j--) {
+            var name = fromAttrs[j].name;
+            if (!toEl.hasAttribute(name)) fromEl.removeAttribute(name);
+        }
+    }
+
+    // 두 부모의 자식들을 인덱스 기준으로 reconcile(기존 노드 재사용 → scrollLeft/선택 보존)
+    function morphChildren(fromParent, toParent) {
+        var toNodes = toParent.childNodes;
+        var i = 0;
+        while (i < toNodes.length) {
+            var toNode = toNodes[i];
+            var fromNode = fromParent.childNodes[i];
+            if (!fromNode) {
+                // 새 노드 추가(끝에 append) — toNode를 옮기지 않도록 clone
+                fromParent.appendChild(toNode.cloneNode(true));
+            } else if (fromNode.nodeType !== toNode.nodeType ||
+                       (fromNode.nodeType === 1 && fromNode.nodeName !== toNode.nodeName)) {
+                // 타입/태그 불일치 → 해당 노드만 교체
+                fromParent.replaceChild(toNode.cloneNode(true), fromNode);
+            } else if (fromNode.nodeType === 3 || fromNode.nodeType === 8) {
+                // 텍스트/주석 → 값만 갱신
+                if (fromNode.nodeValue !== toNode.nodeValue) fromNode.nodeValue = toNode.nodeValue;
+            } else if (fromNode.nodeType === 1 && !fromNode.isEqualNode(toNode)) {
+                // 동일 태그 요소이며 내용이 다를 때만 어트리뷰트 동기화 + 재귀
+                syncAttributes(fromNode, toNode);
+                morphChildren(fromNode, toNode);
+            }
+            // isEqualNode가 true면 변화 없음 → 기존 노드 유지(불필요 reflow 방지)
+            i++;
+        }
+        // 남는 기존 노드 제거
+        while (fromParent.childNodes.length > toNodes.length) {
+            fromParent.removeChild(fromParent.lastChild);
+        }
+    }
+
+    // 스트리밍 마크다운을 기존 DOM 보존하며 갱신. 실패 시 폴백(가로 스크롤 위치만 보존).
+    function renderStreamingMarkdown(el, md) {
+        var html = renderMarkdown(md);
+        try {
+            var tpl = document.createElement("div");
+            tpl.innerHTML = html;
+            morphChildren(el, tpl);
+        } catch (_e) {
+            console.warn('[renderStreamingMarkdown] morph 실패 — 폴백 사용:', _e);
+            var prev = el.querySelectorAll("table");
+            var sc = [];
+            for (var i = 0; i < prev.length; i++) sc[i] = prev[i].scrollLeft;
+            el.innerHTML = html;
+            var next = el.querySelectorAll("table");
+            for (var j = 0; j < next.length && j < sc.length; j++) {
+                if (sc[j]) next[j].scrollLeft = sc[j];
+            }
+        }
+    }
+
+    // 토큰 버스트를 프레임당 1회 렌더로 코얼레싱(전체 재파싱 O(L²) 상수 절감)
+    function scheduleStreamingRender() {
+        if (_streamRafQueued) return;
+        _streamRafQueued = true;
         requestAnimationFrame(function () {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            _streamRafQueued = false;
+            var el = document.getElementById("streamingText");
+            if (el) renderStreamingMarkdown(el, _streamAccumulated);
+            scrollToBottomIfSticky();   // 렌더 후 높이 갱신된 상태에서 추종
+        });
+    }
+
+    function isNearBottom() {
+        var gap = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
+        return gap <= BOTTOM_THRESHOLD_PX;
+    }
+
+    function updateScrollToBottomBtn() {
+        if (!scrollToBottomBtn) return;
+        var show = !isNearBottom();
+        scrollToBottomBtn.classList.toggle("is-visible", show);
+        // 버튼이 보이고 미확인 신규 출력이 있을 때만 강조
+        scrollToBottomBtn.classList.toggle("has-new", show && hasNewContent);
+    }
+
+    // 무조건 맨 아래로 (사용자 본인 질의 등 명시적 의도)
+    function scrollToBottom(smooth) {
+        requestAnimationFrame(function () {
+            if (smooth) {
+                chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: "smooth" });
+            } else {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+            stickToBottom = true;
+            hasNewContent = false;       // 맨 아래로 강제 이동 → 신규 강조 해제
+            updateScrollToBottomBtn();
+        });
+    }
+
+    // 고정 상태일 때만 따라 내려감 (토큰 스트리밍 / 에이전트 출력 전용)
+    function scrollToBottomIfSticky() {
+        if (!stickToBottom) {
+            hasNewContent = true;        // 미확인 신규 출력 → 버튼 강조 대상
+            updateScrollToBottomBtn();
+            return;
+        }
+        requestAnimationFrame(function () {
+            chatMessages.scrollTop = chatMessages.scrollHeight;  // 즉시(비smooth)
         });
     }
 
@@ -1280,7 +1419,7 @@
                     '<div class="message-time">' + formatTime(new Date()) + '</div>' +
                 '</div>';
             chatMessages.appendChild(el);
-            scrollToBottom();
+            scrollToBottomIfSticky();
 
         } catch (err) {
             showError("피드백 업로드 실패: " + err.message);
@@ -1926,7 +2065,7 @@
             chatWelcome.classList.add("hidden");
         }
         chatMessages.appendChild(el);
-        scrollToBottom();
+        scrollToBottomIfSticky();
     }
 
     function connectAlarmStream() {

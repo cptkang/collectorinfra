@@ -72,6 +72,15 @@
                 <div class="chat-error-inner" id="chatErrorText"></div>
             </div>
 
+            <!-- 맨 아래로 이동 플로팅 버튼 (스크롤이 맨 아래가 아닐 때만 표시) -->
+            <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" type="button" aria-label="맨 아래로 이동">
+                <svg viewBox="0 0 24 24" width="20" height="20">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+                <!-- 신규 내용 강조 점: .has-new 클래스일 때만 보임 -->
+                <span class="scroll-to-bottom-dot" aria-hidden="true"></span>
+            </button>
+
             <!-- Input Bar (Bottom Fixed) -->
             <div class="input-bar">
                 <div class="input-bar-inner">

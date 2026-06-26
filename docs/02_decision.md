@@ -2029,10 +2029,104 @@ tool-calling 제어 평면(vLLM **Qwen3.5-9B**, 소용량)에는 **계획 신호
 
 ---
 
+## D-044. 스트리밍 응답 조건부 자동 스크롤 (stick-to-bottom) + 맨 아래 이동 플로팅 버튼
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+D-009로 최종 사용자 응답이 SSE `token` 이벤트로 토큰 단위 스트리밍되는데, 프론트(`app.js`)가
+토큰마다 **무조건** `scrollToBottom()`을 호출하고 `.chat-messages`에 `scroll-behavior: smooth`가
+걸려 있어, (1) 토큰마다 부드러운 스크롤이 재트리거되어 화면이 "튀어" 응답을 즉시 읽기 어렵고,
+(2) 사용자가 위로 스크롤해 과거를 읽으려 해도 다음 토큰에 강제로 맨 아래로 끌려 내려갔다.
+또한 (3) 위로 올린 뒤 최신 응답으로 되돌아갈 빠른 수단(버튼)이 없었다.
+
+### 결정
+
+ChatGPT/Claude류 **stick-to-bottom 모델**을 도입한다(프론트엔드 전용, 백엔드/SSE 무변경).
+
+- **맨 아래 고정 상태**(`stickToBottom`)를 추적: 맨 아래(임계값 `BOTTOM_THRESHOLD_PX=24` 이내)면 고정, 위로 스크롤하면 해제.
+- **토큰/에이전트 출력 추종은 조건부**: 고정 상태일 때만 즉시(비smooth) 따라 내려가고, 해제 상태면 스크롤 위치를 건드리지 않는다(면역). **사용자 본인 질의 메시지 추가만 무조건** 맨 아래로 이동.
+- **플로팅 "맨 아래로" 버튼**(우측 하단): 고정 해제 상태에서만 표시, 클릭 시 부드럽게 맨 아래로 이동·고정 복귀.
+- **신규 내용 강조**: 고정 해제 상태에서 새 토큰/응답이 도착하면 위치는 유지하되 버튼에 점(`has-new`)을 띄워 새 답변 도착을 인지시킨다.
+
+### 구현
+
+- `static/js/app.js`: `stickToBottom`/`hasNewContent`/`BOTTOM_THRESHOLD_PX` 상태, `isNearBottom()`,
+  `scrollToBottom(smooth)`(무조건), `scrollToBottomIfSticky()`(조건부), `updateScrollToBottomBtn()` 추가.
+  `chatMessages` scroll 리스너로 상태/버튼 갱신, 버튼 클릭 핸들러. 토큰 루프 및 에이전트 측 출력
+  (스트리밍 컨테이너 생성·finalize·에이전트/시스템 메시지)은 `scrollToBottomIfSticky()`로 교체,
+  사용자 질의(`renderUserMessage`)만 `scrollToBottom()` 유지.
+- `static/index.html`: `.chat-main` 내 `.chat-messages` 형제로 `#scrollToBottomBtn`(+ 강조 점) 추가.
+- `static/css/style.css`: `.chat-main`에 `position: relative`, `.chat-messages`의 `scroll-behavior: smooth` 제거,
+  `.scroll-to-bottom-btn`(+`.is-visible`/`.has-new`/`.scroll-to-bottom-dot`) 스타일, 반응형 `bottom` 조정.
+
+### 근거 / 대안
+
+- 사용자 결정: 신규 메시지 정책은 (B) 조건부 + 신규 강조 채택(무조건 끌어내리기 기각 — 읽기 흐름 방해).
+  임계값은 80px로 두고 테스트 후 조정. 버튼 강조는 적용.
+- 관련: D-009(SSE 토큰 스트리밍). 계획서: `plans/51-streaming-scroll-ux.md`.
+- 주의: 계획서 초안이 가정한 결정 번호 D-043은 같은 날 다른 결정(supersedes)이 선점하여 **D-044**로 부여
+  (변경 이력 표까지 grep하여 확정 — 2026-06-25 번호 충돌 교훈 반영).
+
+---
+
+## D-045. 스트리밍 마크다운 비파괴 렌더 (DOM 모핑) — 표 가로 스크롤·텍스트 선택 보존
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+D-009 스트리밍에서 토큰마다 `#streamingText.innerHTML = marked.parse(누적텍스트 전체)`로 **서브트리 전체를
+파괴·재생성**한다. 표는 `.response-text table { display:block; overflow-x:auto }`로 **테이블 요소 자체가
+가로 스크롤 컨테이너**이고 `scrollLeft`은 어트리뷰트가 아닌 라이브 프로퍼티라, 매 토큰 새 테이블이 생성되면
+사용자가 우측으로 스크롤한 표가 **좌측으로 초기화**된다(동일 원인으로 스트리밍 중 텍스트 선택도 끊김).
+스트리밍 구간 한정 문제(finalize 후 DOM 고정 시 정상).
+
+### 결정
+
+토큰마다 `innerHTML` 전체 교체 대신 **DOM 모핑(B-1)** 으로 전환한다. full `marked.parse` 결과를 기존 DOM에
+diff 적용하여 **동일 위치·태그 요소를 재사용** → 표 `scrollLeft`·텍스트 선택 보존. 출력 HTML은 full-parse와
+**동일**하므로 출력 정확성 영향 없음(블록 증분 파싱 B-2의 맥락 오판 위험과 대비). 추가로 토큰 버스트를
+**rAF로 코얼레싱**(프레임당 1회 렌더)하여 전체 재파싱 O(L²)의 상수를 줄인다.
+
+**구현 방식 — 자체 morph(외부 의존성 없음)**: 계획서 초안은 `morphdom`(UMD) 로컬 벤더를 제안했으나,
+폐쇄망이라 CDN 취득이 불가하고 라이브러리 재현 정확성 리스크가 있어 **동등 동작의 경량 자체 구현**으로 결정.
+`morphChildren`(인덱스+nodeName 기준 노드 재사용, `isEqualNode`로 무변경 서브트리 스킵) + `syncAttributes`.
+실패 시 **폴백(방안 A: 표 `scrollLeft`만 스냅샷·복원하며 전체 교체)** 으로 강등.
+
+### 구현
+
+- `static/js/app.js`:
+  - `morphChildren`/`syncAttributes`: 비파괴 DOM 모프(자체 구현).
+  - `renderStreamingMarkdown(el, md)`: morph 적용, 예외 시 폴백 A.
+  - `scheduleStreamingRender()`: rAF 코얼레싱(`_streamAccumulated`/`_streamRafQueued`), 렌더 후 `scrollToBottomIfSticky()`.
+  - 두 스트리밍 토큰 루프: `textEl.innerHTML = renderMarkdown(...)` → `scheduleStreamingRender()`로 교체.
+  - `createStreamingMessage()`에서 `_streamAccumulated=""` 초기화(이전 스트림 잔여 rAF 누수 차단).
+- 외부 의존성/`index.html` 스크립트 추가 **없음**(morphdom 미사용).
+
+### 근거 / 대안
+
+- 대안(기각) **morphdom 벤더**: 폐쇄망 CDN 불가 + 재현 리스크. 자체 구현이 의존성 0으로 더 견고.
+- 대안(보류) **B-2 블록 증분 파싱**: 파싱을 O(L)에 근접시키나 맥락 의존 마크다운 블록 경계 오판 시 출력 정확성
+  회귀 위험 → 실사용 응답 크기 분포로 정당화된 뒤 검토(계획서 §13).
+- 검증: `morphChildren` 단위 검증(표 2→3행 성장 시 `<table>` 인스턴스 재사용·`scrollLeft=120` 보존·무변경 노드 재사용 PASS), `node --check` 통과. 수동(브라우저) 검증은 잔여.
+- 관련: D-009(SSE 토큰 스트리밍), D-044(Part 1 스크롤 UX). 계획서: `plans/51-streaming-scroll-ux.md` Part 2.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-26 | D-045 | **스트리밍 마크다운 비파괴 렌더(DOM 모핑) — 표 가로 스크롤·텍스트 선택 보존**: 토큰마다 `#streamingText.innerHTML = marked.parse(전체)`가 서브트리를 파괴·재생성 → 표(자체가 `overflow-x:auto` 스크롤 컨테이너)의 `scrollLeft`이 매 토큰 0으로 초기화되어 가로 스크롤이 좌측으로 리셋되던 문제 해결(텍스트 선택 끊김도 동반). **B-1 DOM 모핑**: full-parse 결과를 기존 DOM에 diff 적용해 동일 위치·태그 요소 재사용 → 스크롤·선택 보존, 출력 HTML은 full-parse와 동일(정확성 영향 0). 폐쇄망이라 `morphdom` 벤더 대신 **자체 경량 morph 구현**(`morphChildren`+`syncAttributes`, `isEqualNode`로 무변경 스킵), 실패 시 폴백 A(표 `scrollLeft`만 보존하며 전체 교체). 추가로 **rAF 렌더 코얼레싱**(`scheduleStreamingRender`, 프레임당 1회)으로 재파싱 O(L²) 상수 절감. 수정: `app.js`(두 토큰 루프→`scheduleStreamingRender`, `createStreamingMessage` 누적 초기화). 외부 의존성/`index.html` 변경 없음. 검증: morphChildren 단위(표 2→3행 성장 시 인스턴스 재사용·scrollLeft=120 보존 PASS)+`node --check`. 관련: D-009, D-044. 계획서 `plans/51-streaming-scroll-ux.md` Part 2. ※ 초안 가정 morphdom 벤더는 폐쇄망 사유로 자체 구현으로 변경 |
+| 2026-06-26 | D-044 | **스트리밍 응답 조건부 자동 스크롤(stick-to-bottom) + 맨 아래 이동 플로팅 버튼**: SSE 토큰마다 무조건 `scrollToBottom()` 호출 + `.chat-messages`의 `scroll-behavior: smooth`가 겹쳐 화면이 "튀고"(즉시 읽기 어려움), 위로 스크롤해도 다음 토큰에 강제로 끌려 내려가던(과거 읽기 불가) 문제 해결. **stick-to-bottom 모델**(프론트 전용, 백엔드/SSE 무변경): `stickToBottom` 상태 추적(임계값 80px), 토큰·에이전트 출력은 **고정 상태일 때만** 즉시 추종(`scrollToBottomIfSticky`)하고 해제 시 면역, **사용자 본인 질의만 무조건**(`scrollToBottom`) 이동. 고정 해제 시 표시되는 **플로팅 "맨 아래로" 버튼** + 신규 토큰 도착 시 점(`has-new`) 강조로 새 답변 인지. `scroll-behavior: smooth`는 제거하고 버튼 클릭 이동에만 국소 적용. 결정(사용자): 신규 메시지 (B)조건부+강조 채택, 임계값 24px(초안 80px이 과해 축소), 버튼 우측 하단 배치. 수정: `app.js`/`index.html`/`style.css`. 관련: D-009(SSE 스트리밍). 계획서 `plans/51-streaming-scroll-ux.md`. ※ 계획 초안 가정 D-043은 같은 날 supersedes가 선점→**D-044** 부여(변경 이력 표까지 grep, 2026-06-25 충돌 교훈) |
 | 2026-06-26 | D-043 | **재조회(대체) 후속 task의 1차 시도 결과 본문 숨김 (supersedes)**: 단일 의도 질의에서 1차 task가 빈/누락 결과를 내자 replanner가 같은 의도 재조회 후속(t2)을 추가→성공했는데, `result_aggregator._merge_finalized`가 t1(실패 서술)·t2(성공 서술)를 **둘 다 본문에 이어붙여** "없음→있음" 모순 이중 답변이 출력되던 문제 해결. **수정 3중**: (a) `prompts/replanner.py`에 `supersedes`(대체 대상 선행 task_id) 필드 규칙·예시 추가(예시1=대체/예시2=추가 구분). (b) `replanner._assign_ids`가 `supersedes` 보존·신규 task 간 임시 id 재매핑(depends_on/input_from과 동일), 누락 시 `[]` 보정. (c) `result_aggregator._collect_superseded`로 **후속이 성공(에러 없음)했을 때만** 대체된 선행 task_id를 본문 조립 대상에서 제외(재조회 실패 시 1차 유지=안전, 전부 제외 시 전체 사용=방어). 숨김은 **최종 답변 본문 한정** — 처리 현황(SSE) 패널은 두 task 모두 투명 유지(D-039). 관련: D-005(부분 실패 병합), D-037/D-039(orchestration·현황), D-040(replanner 중복 가드). 검증: arch_check --ci exit 0, result_aggregator·replanner 신규 6건 포함 25건 통과 |
 | 2026-06-24 | D-039 | **orchestration 처리 현황에 생성 SQL·대상 DB·DB 에러 노출 (관찰성 보강)**: deepagent orchestration 경로에서는 `schema_analyzer`/`query_generator`/`query_executor`가 그래프 노드가 아니라 `agent_orchestrator` 내부 함수 호출이라, 생성 SQL이 SSE `node_complete`로 노출되지 않아 **어떤 쿼리가 어느 DB로 실행됐는지 처리 현황에서 볼 수 없던 문제** 해결(자원 조회 성능/품질 저하 진단의 1차 장애물). **수정 3중**: (a) `subagents.run_data_query_pipeline` 결과에 `generated_sql`(단일 DB는 state, 멀티 DB는 `query_attempts`에서 수집)·`target_db_ids`·`db_errors` 추가 → `agent_orchestrator`가 `task_results`에 보존. (b) `query.py::_summarize_tasks(tasks, results=...)`가 task별 생성 SQL·대상 DB·행수·DB 에러를 포함하도록 확장하고 `_extract_node_progress`의 `agent_orchestrator` 분기가 `task_results` 전달(node_complete가 재계획 회차마다 재방출되므로 회차별 SQL도 누적 노출). intent_planner는 results 미전달(계획 시점엔 결과 없음). (c) 프론트 `renderTaskList`에 대상 DB·생성 SQL(`<pre>`)·행수·DB별 에러 렌더링 추가 — `polestar_b0`(은행) 오선택·SQL0204N 같은 잘못된 DB 실행이 즉시 가시화. **목적**: null 값이 실제 null인지 EAV 조인 누락/DB 오선택의 결과인지 SQL로 판별 가능하게 함(후속 DB 핀 고정·replanner null 가드 교정의 전제). 관련: D-039(처리 현황), D-037(orchestration). 검증: arch_check --ci exit 0, python/js 구문 OK, orchestration 85 passed/4 skipped |
 | 2026-06-23 | D-040 | **replanner 과(過)재계획으로 인한 일반 안내 답변 중복 출력 수정**: 동일 안내 질의("사용법+지원 소스+조회 가능 데이터")에서 1차 `general_inference` 답변이 3가지를 모두 담았는데도 replanner가 후속 `general_inference`를 추가해 "지원 소스/조회 가능 데이터"를 **중복 재출력**하던 버그 해결. **원인 2가지**: (1) [결정적] `replanner._summarize_result`가 텍스트 결과를 `text[:300]`로 절단 → 긴 안내 답변의 앞부분(사용법)만 평가 컨텍스트에 노출 → replanner가 "뒷부분 누락"으로 오판. (2) [개념적] `general_inference`(자체 완결적 안내)에 또 `general_inference` 후속을 붙이는 것은 데이터 의존 후속(replanner 본래 목적: 0건→재조회, 장애→알람조회)이 아니라 "같은 주제 재서술"임. **수정 3중**: (a) `_summarize_result` 텍스트 상한 `300→1500자`(`_MAX_SUMMARY_TEXT_CHARS`) — 완결성 판단이 잘린 답변에 기반하지 않도록. (b) **결정적 가드**(`replanner`): `_assign_ids` 후 신규 task가 모두 `general_inference`이면 추가하지 않고 `needs_replan=False` 종료(데이터 의존 후속만 허용, data_query→data_query 등 정당한 재계획은 영향 없음). (c) **프롬프트 규칙 6**(`prompts/replanner.py`): 안내성 답변은 완결로 간주, general_inference 후속 생성 금지 명시. **범위**: 과분해(intent_planner)·다중 general_inference 인사 중복은 본 건과 별개(미해결). 관련: D-037(replanner), D-039(처리 현황/라벨). 검증: arch_check --ci exit 0, replanner 12건(신규 가드 테스트 1건 포함)·orchestration 85 passed/4 skipped 통과 |
