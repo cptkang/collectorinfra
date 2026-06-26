@@ -82,6 +82,8 @@ async def result_aggregator(
         out: dict = {
             "final_response": f["text"],
             "current_node": "result_aggregator",
+            # CSV 다운로드/row_count용 결과를 top-level state로 승격(D-047)
+            "query_results": f.get("query_results") or [],
         }
         if f.get("output_file") is not None:
             out["output_file"] = f["output_file"]
@@ -150,11 +152,25 @@ async def _finalize_task(
         "output_file": None,
         "output_file_name": None,
         "error": res.get("error"),
+        # CSV 다운로드/row_count용 원시 결과를 보존한다(orchestration 경로에서 query_results를
+        # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
+        "query_results": res.get("query_results") or [],
     }
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     organized = res.get("organized_data")
     if organized is not None:
+        # 결정적 subagent(process_query)는 빈 결과에도 **원인 진단 summary**를 제공한다
+        # (서버 식별 실패·API 미연결·API 미응답·0건 등). output_generator의 일반
+        # "조건에 해당하는 …데이터가 없습니다" 문구로 덮어쓰면 실제 원인이 사라지므로,
+        # 빈 결과(rows=[]) + summary가 있으면 그 summary를 그대로 노출한다(Plan 50 M4 / D-046).
+        if (
+            agent == "process_query"
+            and not organized.get("rows")
+            and organized.get("summary")
+        ):
+            base["text"] = organized["summary"]
+            return base
         s = _build_output_state(state, task, res)
         try:
             out = await output_generator(s, llm=llm, app_config=app_config)
@@ -226,6 +242,7 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     failed: list[str] = []
     output_file: Optional[bytes] = None
     output_file_name: Optional[str] = None
+    merged_rows: list[dict] = []
 
     for i, f in enumerate(finalized, 1):
         text = f.get("text", "")
@@ -237,6 +254,10 @@ def _merge_finalized(finalized: list[dict]) -> dict:
         if output_file is None and f.get("output_file") is not None:
             output_file = f["output_file"]
             output_file_name = f.get("output_file_name")
+        # CSV 다운로드용 결과 누적(복합 task — 각 task의 행을 순서대로 이어붙임, D-047)
+        rows = f.get("query_results")
+        if isinstance(rows, list):
+            merged_rows.extend(rows)
 
     body = "\n\n".join(parts)
     if failed:
@@ -245,6 +266,7 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     result: dict = {
         "final_response": body,
         "current_node": "result_aggregator",
+        "query_results": merged_rows,
     }
     if output_file is not None:
         result["output_file"] = output_file

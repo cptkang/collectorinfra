@@ -1236,11 +1236,22 @@ async def download_csv(query_id: str) -> StreamingResponse:
     output = io.StringIO()
     output.write("\ufeff")  # UTF-8 BOM
 
-    # 첫 번째 행에서 컬럼명 추출
-    fieldnames = list(rows[0].keys())
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    # 컬럼명: 행마다 키가 다를 수 있으므로(복합 task 병합 등) 등장 순서를 유지하며
+    # 키 합집합을 만든다. 누락 키는 빈 값(restval), 초과 키는 무시(extrasaction)한다.
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for k in row.keys():
+            if k not in seen:
+                seen.add(k)
+                fieldnames.append(k)
+    writer = csv.DictWriter(
+        output, fieldnames=fieldnames, restval="", extrasaction="ignore"
+    )
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows(r for r in rows if isinstance(r, dict))
 
     csv_bytes = output.getvalue().encode("utf-8")
 

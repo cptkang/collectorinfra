@@ -2121,10 +2121,138 @@ diff 적용하여 **동일 위치·태그 요소를 재사용** → 표 `scrollL
 
 ---
 
+## D-046. 프로세스 조회 시 서버명 → 호스트명 해소 (process_query)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+| **관련 결정** | D-041(M4 process_query 신설), D-036(프로세스 API 재사용) 보강 — 충돌 없음 |
+
+### 배경 / 문제
+
+폴스타 실시간 프로세스 API(`polestar_process_api.py`)의 조회 키는 **hostname**(=`cmm_resource.hostname`,
+OS 호스트명)이다. 그러나 사용자는 보통 **서버명**(=`cmm_resource.name`, 폴스타 등록 장비명)으로 질의한다.
+공동존 폴스타(gp/yd)는 `name ≠ hostname`(Known Mistakes 2026-06-10 실측)이므로, `process_query`가
+서버명을 그대로 `hostname=서버명`으로 API에 전달하면 **0건**이 반환된다. 이때 오케스트레이터가
+프로세스 의도를 DB 조회로 폴백하여 **리소스명이 '프로세스'인 행을 가져오는 환각**이 발생했다.
+
+### 결정
+
+`process_query`가 프로세스 API를 호출하기 **전에** 입력 식별자(서버명 또는 호스트명)를
+**정규 hostname으로 해소**한다. D-041(M4) 보강이며 되돌리지 않는다.
+
+- 신규 `PolestarHostnameResolver`(infrastructure)가 폴스타 DB(`cmm_resource`)에 **고정 SELECT 단일문**
+  (LLM 미사용, 읽기 전용)을 실행하여 hostname을 얻는다 — `polestar_history.py`와 동일 DBHub(MCP) 경로 재사용.
+- 매칭: 입력 값을 `name`(서버명) **또는** `hostname`(호스트명) 양쪽과 비교, `name` 일치 우선
+  (서버명 질의가 일반적). 입력이 이미 hostname이면 idempotent하게 같은 값 반환.
+- **graceful 폴백**: 미등록 db_id / 조회 실패 / 0건 / 빈 hostname이면 해소 None → 원시 입력 값을 그대로
+  사용한다(이미 hostname이거나 DB 미연결이어도 회귀 없음).
+- 관찰성: 결과 `process_query`에 `server_name`(원본 입력)·`hostname`(해소값) 동시 보존, 요약에는
+  서버명을 표기하되 hostname이 다르면 `서버명(호스트명 ...)` 형태로 병기.
+
+### 세부 변경
+
+- `src/alarm/infrastructure/polestar_hostname_resolver.py` **신규**: `build_hostname_sql`(고정 SELECT,
+  `server.Server`·`DTIME IS NULL`·name/hostname OR·name 우선 ORDER BY)·`PolestarHostnameResolver.resolve`.
+  D-022(RESOURCE_CONF_ID JOIN 금지)·2026-06-10(`is_lob` 조건 금지) 정합.
+- `src/orchestration/process_query.py`: `_resolve_hostname` 결과를 `identifier`로 받아 `_resolve_canonical_hostname`
+  (DBRegistry+resolver, 예외 시 None)로 hostname 해소 후 API 호출. 미식별 안내문을 "hostname"→"서버명"으로 수정.
+
+### 근거
+
+- 환각의 구조적 원인(서버명≠hostname을 무해소로 API 전달)을 호출 직전에 차단.
+- 회귀 없음: 해소 실패·DB 미연결 경로는 기존 원시 값 사용 동작 유지(테스트로 고정).
+
+### 향후 수정 시 고려사항
+
+- 폴스타 인스턴스별 스키마가 다르면 `polestar_hostname_resolver._SCHEMA_BY_DB_ID`에 db_id별 스키마를 등록
+  (`polestar_history._SCHEMA_BY_DB_ID`와 동일 패턴).
+- 해소 쿼리는 매 프로세스 조회마다 1회 실행(LIMIT 1, 가벼움). 빈도 급증 시 캐시 검토.
+
+---
+
+## D-047. 프로세스 조회 대상 서버 식별자 추출 (input_parser 규칙 보강)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 |
+| **관련 결정** | D-046(서버명→hostname 해소), D-041(M4 process_query) 보강 — 충돌 없음 |
+
+### 배경 / 문제
+
+"김포 ###서버에 대한 프로세스 리스트 조회" 질의가 **"프로세스 조회 대상 서버(서버명)를 식별하지 못했습니다"**
+로 응답되었다. `process_query._resolve_hostname`는 이번 턴 `filter_conditions` 중 field가
+`_HOST_FIELDS`(`hostname/host_name/server_name/name`)인 조건의 value를 서버 식별자로 쓰는데,
+**input_parser 프롬프트에 지목된 서버 이름을 hostname filter로 추출하는 규칙이 없었다.** LLM이
+서버명을 filter_condition으로 만들지 않거나 한글 field명(`서버명`/`장비명`)으로 만들어 `_HOST_FIELDS`
+매칭에 실패 → `identifier=None`. D-046(서버명→hostname 해소)는 `identifier`를 **얻은 뒤** 동작하므로
+이 공백은 D-046 이전 단계의 누락이었다.
+
+### 결정
+
+특정 서버를 지목하는 질의(특히 프로세스 조회)에서 **서버 식별자를 항상 filter_conditions로 추출**하고,
+`_resolve_hostname`은 LLM 출력 비결정성을 고려해 **한글 field 변형까지 방어적으로 인정**한다.
+추가로 **시간성(이력/추세) 신호가 없는 프로세스 조회는 `process_query`(실시간 API)로 결정적 교정**한다.
+되돌리지 않는다.
+
+- `input_parser` 프롬프트 규칙 14 신설: "XXX 서버", "XXX에 대한 프로세스/CPU", "XXX의 프로세스" 등 단일
+  서버 지목 시 `{"field": "hostname", "op": "=", "value": "<서버식별자>"}`로 추출. 위치/DB 수식어
+  (김포/여의도/폴스타)는 value에서 분리해 target_db_hints로(규칙 10 정합). 프로세스 리스트 질의는 대상
+  식별 필수임을 명시. 예시 1건 추가.
+- `process_query._HOST_FIELDS` 확장: 영문(`host`/`device_name`)·한글(`서버명`/`서버이름`/`장비명`/
+  `호스트명`/`서버`/`장비`) 변형 수용. 매칭 성공 후의 정규화는 기존 D-046 해소가 그대로 처리.
+- **라우팅 교정(2차 원인)**: "현재/실시간/리스트" 같은 시간성 수식어가 없는 "프로세스 조회"를 LLM이
+  보수적으로 `data_query`로 분류 → `cmm_resource`의 `resource_type='process'` 행을 가져오는 환각(D-046이
+  경고한 폴백)이 발생했다. (a) `prompts/intent_planner.py` 규칙 3을 "프로세스 조회는 기본 process_query,
+  명시적 과거/이력 신호가 있을 때만 data_query"로 강화. (b) `intent_planner._coerce_process_intent`:
+  LLM 분해(폴백 포함) 결과에서 `agent=="data_query"`이고 sub_query에 "프로세스"가 있으나 이력 신호
+  (이력/추세/추이/지난/과거/기간/동안/시점 등)가 없으면 `process_query`로 결정적 교정.
+
+### 근거
+
+- 식별자 추출은 자연어 파싱 단계의 책임 — 프롬프트 규칙으로 결정적 유도가 정석. field 변형 수용은
+  LLM 비결정성에 대한 저비용 안전망(회귀 없음: 기존 영문 field 동작 유지).
+- D-046의 graceful 폴백과 합쳐, 식별자가 잡히면 잘못된 값이어도 0건 안내로 수렴(환각 폴백 없음).
+
+### 프로세스 결과 표시/다운로드 (채팅 상위 N + CSV 전체)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 (사용자 결정) |
+
+- **문제**: process_query가 `select_top_processes`로 상위 N(기본 `process_top_n=5`)만 남기고 **전체를 폐기**해,
+  채팅·CSV 모두 5건만 노출됐다. 또한 orchestration 경로는 `query_results`를 top-level state로 승격하지 않아
+  (result_aggregator가 `final_response`만 반환) **CSV 다운로드 버튼 자체가 뜨지 않았다**(`row_count=0`).
+- **결정(사용자)**: 채팅 말풍선은 상위 N만 표시하되, **CSV 다운로드는 전체 프로세스**를 받도록 한다.
+- **변경**:
+  - `process_query.py`: 전체를 1회 정렬·마스킹(`select_top_processes(.., len(processes))`)한 뒤
+    `organized_data.rows`=상위 N(채팅 표 — output_generator가 이 rows로 생성), `query_results`=전체(CSV·row_count).
+    요약에 "전체 X건은 CSV 다운로드" 안내, `process_query.shown_count` 추가. `process_top_n`은 **표시 전용**.
+  - `result_aggregator.py`: `_finalize_task` 결과(base)에 `query_results`를 보존하고, 단일/복합(`_merge_finalized`,
+    행 이어붙임) 모두 **top-level `query_results`로 승격** → orchestration 결과(데이터/프로세스 공통)에서
+    CSV 버튼·row_count가 동작. (스트리밍 `done`/비스트리밍 응답 모두 result_aggregator 출력의 query_results 사용.)
+  - `api/routes/query.py::download_csv`: 행마다 키가 달라도(복합 병합) 깨지지 않도록 컬럼명을 **등장 순서 합집합**으로
+    만들고 `restval=""`/`extrasaction="ignore"` 적용.
+
+### 향후 수정 시 고려사항
+
+- 한 질의에서 복수 서버를 지목하는 경우는 현재 첫 번째 host filter만 사용. 다중 서버 프로세스 조회
+  요구가 생기면 `_resolve_hostname`을 리스트 반환으로 확장 검토.
+- 전체 프로세스가 매우 많으면(수백+) CSV는 전부 받지만 채팅 표는 상위 N만 — 표시 N 조정은
+  `ALARM_PROCESS_TOP_N`. 채팅에서도 더 보고 싶다는 요구가 잦으면 표시 N 기본값 상향 검토.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-29 | D-047 | **프로세스 결과: 채팅 상위 N + CSV 전체 다운로드(사용자 결정)**: process_query가 상위 N(`process_top_n=5`)만 남기고 전체를 폐기 → 채팅·CSV 모두 5건만 노출. 또 orchestration 경로는 `query_results`를 top-level state로 승격하지 않아(result_aggregator가 final_response만 반환) CSV 버튼 자체가 미노출(row_count=0). **수정**: (a) `process_query.py` 전체 1회 정렬·마스킹 후 `organized_data.rows`=상위 N(채팅), `query_results`=전체(CSV/row_count), 요약에 CSV 안내+`shown_count`. (b) `result_aggregator.py` `_finalize_task`/단일·복합 경로에서 `query_results`를 top-level로 승격(데이터/프로세스 공통으로 CSV·row_count 동작). (c) `download_csv` 컬럼명 합집합+`restval`/`extrasaction`로 이종 행 견고화. `process_top_n`은 표시 전용으로 의미 변경. 검증: orchestration+multiturn 신규 2건 포함 통과, arch_check exit 0 |
+| 2026-06-29 | D-047 | **프로세스 조회 대상 서버 식별자 추출 + 실시간 라우팅 결정적 교정**: "김포 ### 서버에 대한 프로세스 조회"가 (1차) "서버명을 식별하지 못했습니다"로, 이어 (2차) DB에서 `resource_type='process'` 행을 가져오는 환각으로 응답되던 문제 해결. **원인1**: `process_query._resolve_hostname`은 filter_conditions 중 field가 `_HOST_FIELDS`인 조건을 서버 식별자로 쓰는데 input_parser에 지목 서버명을 hostname filter로 추출하는 규칙이 없어 `identifier=None`(D-046 해소는 identifier 확보 후 동작이라 공백을 못 메움). **원인2**: 시간성 수식어 없는 "프로세스 조회"를 intent_planner LLM이 보수적으로 `data_query`로 분류 → D-046이 경고한 DB 폴백 환각. **수정**: (a) `prompts/input_parser.py` 규칙 14 신설 — 단일 서버 지목 시 `{"field":"hostname","op":"=","value":"<서버식별자>"}`로 추출, 위치/DB 수식어는 target_db_hints로 분리, 예시 1건. (b) `process_query._HOST_FIELDS`를 영문(host/device_name)·한글(서버명/장비명/호스트명/서버/장비) 변형까지 확장. (c) `prompts/intent_planner.py` 규칙 3을 "프로세스 조회 기본=process_query, 명시적 과거/이력 신호만 data_query"로 강화. (d) `intent_planner._coerce_process_intent` 결정적 가드 — data_query+프로세스+이력신호 없음 → process_query 교정(폴백 포함). 회귀 없음(영문 field·이력 프로세스 data_query 동작 유지). 관련: D-046, D-041. 검증: arch_check --ci exit 0, orchestration+multiturn 194 passed/4 skipped(신규: 한글 field 1, 라우팅 교정 3) |
+| 2026-06-26 | D-046 | **프로세스 조회 시 서버명 → 호스트명 해소 (process_query)**: 폴스타 실시간 프로세스 API의 조회 키는 hostname(`cmm_resource.hostname`)이지만 사용자는 서버명(`cmm_resource.name`)으로 질의한다. 공동존 폴스타(gp/yd)는 name≠hostname이라 `hostname=서버명`으로 보내면 0건 → 오케스트레이터가 DB 조회로 폴백해 **리소스명이 '프로세스'인 행을 가져오는 환각** 발생. **수정**: 프로세스 API 호출 전 입력을 정규 hostname으로 해소. (a) `src/alarm/infrastructure/polestar_hostname_resolver.py` 신규 — DBHub(MCP) 고정 SELECT(`server.Server`·`DTIME IS NULL`·name/hostname OR·name 우선)로 hostname 조회(`polestar_history.py` 경로 재사용, D-022/`is_lob` 금지 정합). (b) `process_query.py`가 `_resolve_canonical_hostname`(예외/0건 시 None→원시 값 폴백)로 해소 후 API 호출, 결과에 `server_name`·`hostname` 동시 보존·요약 병기. 회귀 없음(해소 실패·DB 미연결 경로 기존 동작 유지). 관련: D-041(M4 process_query), D-036(프로세스 API 재사용). 검증: arch_check --ci exit 0, 신규 11건 포함 orchestration/multiturn/alarm 260 passed/4 skipped |
 | 2026-06-26 | D-045 | **스트리밍 마크다운 비파괴 렌더(DOM 모핑) — 표 가로 스크롤·텍스트 선택 보존**: 토큰마다 `#streamingText.innerHTML = marked.parse(전체)`가 서브트리를 파괴·재생성 → 표(자체가 `overflow-x:auto` 스크롤 컨테이너)의 `scrollLeft`이 매 토큰 0으로 초기화되어 가로 스크롤이 좌측으로 리셋되던 문제 해결(텍스트 선택 끊김도 동반). **B-1 DOM 모핑**: full-parse 결과를 기존 DOM에 diff 적용해 동일 위치·태그 요소 재사용 → 스크롤·선택 보존, 출력 HTML은 full-parse와 동일(정확성 영향 0). 폐쇄망이라 `morphdom` 벤더 대신 **자체 경량 morph 구현**(`morphChildren`+`syncAttributes`, `isEqualNode`로 무변경 스킵), 실패 시 폴백 A(표 `scrollLeft`만 보존하며 전체 교체). 추가로 **rAF 렌더 코얼레싱**(`scheduleStreamingRender`, 프레임당 1회)으로 재파싱 O(L²) 상수 절감. 수정: `app.js`(두 토큰 루프→`scheduleStreamingRender`, `createStreamingMessage` 누적 초기화). 외부 의존성/`index.html` 변경 없음. 검증: morphChildren 단위(표 2→3행 성장 시 인스턴스 재사용·scrollLeft=120 보존 PASS)+`node --check`. 관련: D-009, D-044. 계획서 `plans/51-streaming-scroll-ux.md` Part 2. ※ 초안 가정 morphdom 벤더는 폐쇄망 사유로 자체 구현으로 변경 |
 | 2026-06-26 | D-044 | **스트리밍 응답 조건부 자동 스크롤(stick-to-bottom) + 맨 아래 이동 플로팅 버튼**: SSE 토큰마다 무조건 `scrollToBottom()` 호출 + `.chat-messages`의 `scroll-behavior: smooth`가 겹쳐 화면이 "튀고"(즉시 읽기 어려움), 위로 스크롤해도 다음 토큰에 강제로 끌려 내려가던(과거 읽기 불가) 문제 해결. **stick-to-bottom 모델**(프론트 전용, 백엔드/SSE 무변경): `stickToBottom` 상태 추적(임계값 80px), 토큰·에이전트 출력은 **고정 상태일 때만** 즉시 추종(`scrollToBottomIfSticky`)하고 해제 시 면역, **사용자 본인 질의만 무조건**(`scrollToBottom`) 이동. 고정 해제 시 표시되는 **플로팅 "맨 아래로" 버튼** + 신규 토큰 도착 시 점(`has-new`) 강조로 새 답변 인지. `scroll-behavior: smooth`는 제거하고 버튼 클릭 이동에만 국소 적용. 결정(사용자): 신규 메시지 (B)조건부+강조 채택, 임계값 24px(초안 80px이 과해 축소), 버튼 우측 하단 배치. 수정: `app.js`/`index.html`/`style.css`. 관련: D-009(SSE 스트리밍). 계획서 `plans/51-streaming-scroll-ux.md`. ※ 계획 초안 가정 D-043은 같은 날 supersedes가 선점→**D-044** 부여(변경 이력 표까지 grep, 2026-06-25 충돌 교훈) |
 | 2026-06-26 | D-043 | **재조회(대체) 후속 task의 1차 시도 결과 본문 숨김 (supersedes)**: 단일 의도 질의에서 1차 task가 빈/누락 결과를 내자 replanner가 같은 의도 재조회 후속(t2)을 추가→성공했는데, `result_aggregator._merge_finalized`가 t1(실패 서술)·t2(성공 서술)를 **둘 다 본문에 이어붙여** "없음→있음" 모순 이중 답변이 출력되던 문제 해결. **수정 3중**: (a) `prompts/replanner.py`에 `supersedes`(대체 대상 선행 task_id) 필드 규칙·예시 추가(예시1=대체/예시2=추가 구분). (b) `replanner._assign_ids`가 `supersedes` 보존·신규 task 간 임시 id 재매핑(depends_on/input_from과 동일), 누락 시 `[]` 보정. (c) `result_aggregator._collect_superseded`로 **후속이 성공(에러 없음)했을 때만** 대체된 선행 task_id를 본문 조립 대상에서 제외(재조회 실패 시 1차 유지=안전, 전부 제외 시 전체 사용=방어). 숨김은 **최종 답변 본문 한정** — 처리 현황(SSE) 패널은 두 task 모두 투명 유지(D-039). 관련: D-005(부분 실패 병합), D-037/D-039(orchestration·현황), D-040(replanner 중복 가드). 검증: arch_check --ci exit 0, result_aggregator·replanner 신규 6건 포함 25건 통과 |

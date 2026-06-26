@@ -28,6 +28,45 @@ from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
+# process_query 결정적 가드 키워드 (D-041/D-046 정합).
+# 프로세스 신호 — 있으면 실시간 프로세스 조회 후보.
+_PROCESS_KEYWORDS = ("프로세스", "process")
+# 과거/이력 신호 — 있으면 DB 이력 조회(data_query)로 유지(실시간 교정 제외).
+_PROCESS_HISTORY_KEYWORDS = (
+    "이력", "추세", "추이", "트렌드", "지난", "과거", "기간",
+    "일간", "주간", "월간", "동안", "history", "변화", "시점",
+)
+
+
+def _coerce_process_intent(tasks: list[dict]) -> list[dict]:
+    """현재/실시간 프로세스 조회인데 data_query로 분류된 task를 process_query로 교정한다.
+
+    배경(D-046): "프로세스 조회/리스트"에 '현재/실시간' 같은 시간성 신호가 없으면 LLM이
+    보수적으로 `data_query`로 분류 → `cmm_resource`에서 `resource_type='process'` 행을 가져오는
+    환각이 발생한다. 시간성(이력/추세 등) 신호가 없는 프로세스 조회는 실시간 API(`process_query`)가
+    1급 의도이므로(D-041) LLM 비결정성에 의존하지 않고 결정적으로 교정한다.
+
+    Args:
+        tasks: 분해된 task 목록(각 dict는 agent/sub_query 보유)
+
+    Returns:
+        교정이 적용된 동일 리스트(in-place 수정 후 반환)
+    """
+    for task in tasks:
+        if task.get("agent") != "data_query":
+            continue
+        sub = str(task.get("sub_query", "")).lower()
+        if not any(k in sub for k in _PROCESS_KEYWORDS):
+            continue
+        if any(h in sub for h in _PROCESS_HISTORY_KEYWORDS):
+            continue  # 과거/이력 프로세스는 DB 조회 유지
+        task["agent"] = "process_query"
+        logger.info(
+            "intent_planner: 프로세스 조회 결정적 교정 — data_query→process_query (sub_query=%r)",
+            task.get("sub_query"),
+        )
+    return tasks
+
 
 async def intent_planner(
     state: AgentState,
@@ -82,7 +121,8 @@ async def intent_planner(
     decomposed = await _llm_decompose(
         llm, user_query, app_config, conversation_context=conversation_context
     )
-    tasks = decomposed["tasks"]
+    # 결정적 가드: 시간성 신호 없는 프로세스 조회는 실시간 API로 교정(D-041/D-046, 폴백 포함)
+    tasks = _coerce_process_intent(decomposed["tasks"])
     result: dict = {
         "task_plan": tasks,
         "is_composite": len(tasks) > 1,

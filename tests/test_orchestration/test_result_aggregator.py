@@ -63,6 +63,60 @@ async def test_finalize_data_agent_uses_output_generator(mock_config):
     assert out["text"] == "서버 3대입니다"
 
 
+@pytest.mark.asyncio
+async def test_finalize_process_query_empty_keeps_diagnostic_summary(mock_config):
+    """process_query 빈 결과(rows=[])는 진단 summary를 output_generator로 덮어쓰지 않고 노출한다.
+
+    회귀 방지: 과거 result_aggregator가 organized_data를 무조건 output_generator로
+    최종화하여, process_query의 원인 메시지(서버 식별 실패·API 미응답·0건 등)가
+    일반 "조건에 해당하는 …데이터가 없습니다" 문구로 사라졌다(Plan 50 M4 / D-046).
+    """
+    task = {"task_id": "t1", "agent": "process_query", "sub_query": "김포 ### 프로세스", "order": 1}
+    res = {
+        "organized_data": {
+            "summary": "서버 '###'의 실시간 프로세스를 조회하지 못했습니다 (프로세스 API 미응답/타임아웃).",
+            "rows": [],
+            "is_sufficient": False,
+        },
+        "query_results": [],
+        "process_query": {"db_id": "polestar_cm_gp", "hostname": "###", "total_count": 0},
+    }
+    state = create_initial_state(user_query="김포 운영 ###의 프로세스 리스트 조회")
+
+    # 빈 결과여도 output_generator(일반 빈-결과 문구)를 호출하지 않아야 함
+    with patch.object(agg_mod, "output_generator", new=AsyncMock()) as og:
+        out = await _finalize_task(task, res, state, AsyncMock(), mock_config)
+
+    assert out["text"] == res["organized_data"]["summary"]
+    assert "데이터가 없습니다" not in out["text"]
+    og.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_process_query_nonempty_uses_output_generator(mock_config):
+    """process_query 비-빈 결과(rows 존재)는 기존대로 output_generator로 최종화한다."""
+    task = {"task_id": "t1", "agent": "process_query", "sub_query": "김포 ### 프로세스", "order": 1}
+    res = {
+        "organized_data": {
+            "summary": "상위 5건",
+            "rows": [{"name": "java", "pid": 1234}],
+            "is_sufficient": True,
+        },
+        "query_results": [{"name": "java", "pid": 1234}],
+        "process_query": {"db_id": "polestar_cm_gp", "hostname": "###", "total_count": 1},
+    }
+    state = create_initial_state(user_query="김포 운영 ###의 프로세스 리스트 조회")
+
+    with patch.object(
+        agg_mod, "output_generator",
+        new=AsyncMock(return_value={"final_response": "java(pid 1234)", "output_file": None, "output_file_name": None}),
+    ) as og:
+        out = await _finalize_task(task, res, state, AsyncMock(), mock_config)
+
+    og.assert_awaited_once()
+    assert out["text"] == "java(pid 1234)"
+
+
 # ──────────────────────────────────────────────
 # test_result_aggregator_merge
 # ──────────────────────────────────────────────
@@ -214,3 +268,30 @@ async def test_result_aggregator_single_passthrough(mock_config):
 
     assert out["final_response"] == "단일 답변"
     assert "### 작업" not in out["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_result_aggregator_promotes_query_results(mock_config):
+    """단일 task의 query_results를 top-level state로 승격한다(CSV/row_count, D-047)."""
+    tasks = [
+        {"task_id": "t1", "agent": "process_query", "sub_query": "프로세스", "order": 1, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="### 서버 프로세스")
+    state["task_plan"] = tasks
+    full = [{"name": f"p{i}", "pid": i} for i in range(7)]
+    state["task_results"] = {
+        "t1": {
+            "organized_data": {"summary": "상위 5건", "rows": full[:5], "is_sufficient": True},
+            "query_results": full,
+        }
+    }
+
+    with patch.object(
+        agg_mod, "output_generator",
+        new=AsyncMock(return_value={"final_response": "표", "output_file": None, "output_file_name": None}),
+    ):
+        out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    # 전체 7건이 top-level query_results로 승격됨(CSV 다운로드/row_count 근거)
+    assert out["query_results"] == full
+    assert len(out["query_results"]) == 7

@@ -227,6 +227,16 @@ class TestProcessQueryResolution:
         }
         assert _resolve_hostname(isolated) == "new-host"
 
+    def test_resolve_hostname_accepts_korean_field_names(self):
+        """LLM이 한글 필드명(서버명/장비명 등)으로 추출해도 서버 식별자로 인정한다."""
+        for field in ("서버명", "장비명", "호스트명", "서버"):
+            isolated = {
+                "parsed_requirements": {
+                    "filter_conditions": [{"field": field, "value": "webdb01"}]
+                }
+            }
+            assert _resolve_hostname(isolated) == "webdb01", field
+
 
 class TestProcessQueryHandler:
     async def test_missing_db_id_graceful(self):
@@ -292,3 +302,43 @@ class TestProcessQueryHandler:
         # 민감정보 마스킹 (평문 secret 노출 금지)
         assert "secret123" not in rows[0]["args"]
         assert out["target_db_ids"] == ["polestar_cm_gp"]
+
+    async def test_chat_topN_csv_full_split(self, monkeypatch):
+        """채팅 표시는 상위 N(=2)으로 제한, query_results(CSV)는 전체 보존(D-047)."""
+        from src.alarm.infrastructure.polestar_process_api import ProcessApiResult
+
+        alarm = _ProcCfg({"polestar_cm_gp": "http://gp"})
+        alarm.process_top_n = 2  # 상위 2개만 채팅 표시
+        cfg = _AppCfgStub(alarm, ["polestar_cm_gp"])
+        isolated = {
+            "conversation_context": {
+                "previous_db_ids": ["polestar_cm_gp"],
+                "previous_entities": [{"field": "hostname", "value": "###"}],
+            }
+        }
+
+        procs = [
+            {"name": f"p{i}", "pid": i, "p100cpu": float(i), "pmem": 1.0, "args": f"p{i}"}
+            for i in range(5)
+        ]
+
+        async def _fake_list(self, db_id, hostname):
+            return ProcessApiResult(captured_at=None, processes=procs)
+
+        monkeypatch.setattr(
+            "src.alarm.infrastructure.polestar_process_api.PolestarProcessApiClient.list_by_hostname",
+            _fake_list,
+        )
+        out = await run_process_query(
+            {"sub_query": "해당 서버 현재 프로세스"}, isolated, llm=None, app_config=cfg
+        )
+        # 채팅 표시(organized_data.rows)는 상위 2개
+        assert len(out["organized_data"]["rows"]) == 2
+        # CSV/row_count용 query_results는 전체 5개
+        assert len(out["query_results"]) == 5
+        # 정렬 내림차순(CPU 큰 순) — 첫 행은 p4
+        assert out["organized_data"]["rows"][0]["name"] == "p4"
+        assert out["process_query"]["total_count"] == 5
+        assert out["process_query"]["shown_count"] == 2
+        # 전체>표시이면 요약에 CSV 안내
+        assert "CSV" in out["organized_data"]["summary"]
