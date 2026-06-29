@@ -1957,11 +1957,445 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
+## D-041. 알람 노이즈 캔슬링 — 4-티어 발송 게이트 (Plan 52 E1)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 구현 완료 (Phase E1 MVP, 2026-06-29) |
+| **관련 결정** | **D-035 확장**(패턴을 부가정보→결정적 게이트의 보조 입력으로, 심각도3 보존 유지), D-003(읽기전용 준수), D-029~D-032(알람 파이프라인 재사용), D-037(트랙 B vLLM — D-041.7 전제) |
+| **번호 정정** | Plan 52/53 §13은 **D-040**으로 명시했으나, **D-039·D-040은 이미 2026-06-23 변경이력에 사용됨**(다중의도 처리현황 / replanner 중복수정). 충돌 회피를 위해 다음 빈 번호 **D-041**로 등재한다. Plan 53의 D-041(로드맵)·D-042(진단 분리)·Plan 55 D-043 예약 번호는 등재 시 한 칸씩 밀어 재조정 필요. |
+
+### 결정
+
+폴스타 알람을 수신 시 **결정적 규칙 파이프라인**으로 **PAGE / TICKET / DASHBOARD / SUPPRESS** 4-티어로 라우팅하는 발송 게이트를 추가한다(전 기능 옵트인 `enable_noise_gate=False` 기본). LLM(`is_routine`)은 보조 입력 1개일 뿐 판단은 결정적이며, **심각도 3은 어떤 억제 단계도 거치지 않고 항상 PAGE**한다(D-035 계승). 억제·강등 결정도 감사 기록한다(억제 ≠ 삭제). 신호는 폴스타 읽기전용 DB(중요도·유지보수·알림정책)에서 고정 SQL로 수집하며 실패 시 보수적 PAGE(재현율 우선).
+
+### 하위 결정 (Plan 52 §13 — 원안 D-040.x를 D-041.x로 등재)
+
+- **D-041.1** 4-티어(PAGE/TICKET/DASHBOARD/SUPPRESS), 결정적 규칙=판단·LLM=보조, 결정 근거(reason) 기록.
+- **D-041.2** 중요도×심각도 매트릭스 + 유지보수/자가복구 억제(E1). 의존성/인히비션/플래핑은 E2. **심각도3 절대 PAGE**.
+- **D-041.3** 신호는 폴스타 읽기전용 DB(IMPORTANCE_ID/IS_MAINTENANCE/`cmm_alarm_def_noti*` 앵커). `IMPORTANCE_ID` 값코드 미확정 시 **미매핑=보통(보수적)**(`importance_value_map_csv` 기본 빈값). `cmm_alarm_def_noti*` 통보대상 존재→`notify`, 불확실→`None`(절대 단정적 `suppress` 미반환).
+- **D-041.4** 재현율 우선·억제≠삭제(`decision_store` JSONL 감사)·억제기 메타모니터링(억제율 집계). 전 기능 옵트인.
+- **D-041.5** (E3, 미구현) AI 분석은 **LLM 인컨텍스트, ML 모델 미사용**. 메시지 심각도 보강은 **상향 전용(monotonic) `max()`** + 결정적 시그니처(Plan51 부록A.1) 우선. 폴스타 심각도가 베이스라인(SSOT).
+- **D-041.6** (향후·미구현) **Plan 55 멀티소스 확장 대비** — `noise_context`는 소스 무관 확장형 dict(`parent_avail_status` 등 자리예약), step 8 보조 축, 영향 신호 **승격 비대칭**(§6.4·§8.6). 지금은 설계 예약만.
+- **D-041.7** (향후·옵션, E5) **deepagents Advisory Enricher** — agentic 분석은 **보조(`signals` 승격 전용)** 만, 판단은 결정적. vLLM(트랙 B, D-037) 옵트인 전제, 미가용 시 **semantic-routing(FabriX 1회 분류) → 결정적 게이트** 3중 폴백. 환각→오억제는 R-12로 통제(강등 경로 부재).
+
+### 핵심 설계 결정 (E1 구현)
+
+| 항목 | 결정 |
+|------|------|
+| 결정 파이프라인 | `notification_policy.decide_notification`(순수함수, domain) 8단계: 실효심각도→수집실패 보수화→심각도3 단락 PAGE→해소/자가복구→유지보수 SUPPRESS→매트릭스→보조 조정(앵커·is_routine, 1단계·승격 우선)→확정 |
+| `min_severity` 역할 분리(§4.8) | 게이트 활성 시 워커는 `1 ≤ severity < min_severity`만 드롭. **severity 0(해소)은 자가복구용 전달, severity 3은 절대 드롭 금지**. 권장 운영값 `ALARM_MIN_SEVERITY=1`. 게이트 off면 기존 `severity < min_severity` 유지 |
+| 핑거프린트 dedup(§6.1) | 게이트 활성 시 dedup 키를 `alarm_id`→`compute_fingerprint(db_id,server\|hostname,alarm_name,resource)`로 교정. 해소 이벤트는 dedup 제외(자가복구 상관). TTL=`repeat_interval_seconds`(기본 4h, Alertmanager 패턴). **재발생 재통보 억제는 모든 심각도에 적용** — 단 최초 발생 severity 3은 항상 게이트 도달 PAGE(설계 관찰: §6.1 재통보 억제 ≠ §4.8 임계 드롭) |
+| 자가복구 상관(§3.7) | 워커 인메모리 `_firing_registry`로 발생(severity ≤ `suppress_max_severity`, 기본2)을 기록, `self_heal_window_seconds`(기본300) 내 해소(severity 0) 매칭 시 SUPPRESS. **심각도3 제외**(해소가 와도 발생 PAGE 보존) |
+| 독립 해소(§6.3) | 매칭 발생 없는 severity 0 → 기본 SUPPRESS(감사), `resolved_to_dashboard=true`면 DASHBOARD |
+| 4-티어 라우팅(§7) | PAGE→기존 `_send_workb`/`_send_webhook`(무변경), TICKET/DASHBOARD/SUPPRESS→발송 안 함·로그(감사는 게이트가 적재). DASHBOARD SSE 푸시는 워커 경로에 `alarm_bus` 미주입이라 **E3 후속** |
+| 설정 구조(§8.5) | `NoiseGateConfig`를 `AppConfig`의 **형제 필드** `cfg.noise_gate.*`로 신설(env_prefix `NOISE_`). AlarmConfig 이중 중첩 회피. 전 필드 스칼라/CSV(JSON list 회피) |
+| graceful degradation | 노이즈 신호 수집 실패/미등록 db_id/타임아웃 → `source="unavailable"` → 보수적 PAGE. 발송 절대 차단 금지(Plan 47 enricher 패턴 계승) |
+| 회귀 0(옵트인) | `enable_noise_gate=False`(기본)면 그래프에 게이트 노드 미포함, 워커 dedup/필터 기존 경로, notifier `notification_decision=None` 분기로 기존 발송 무변경 |
+
+### 변경된 파일
+
+| 파일 | 변경 | 계층 |
+|------|------|------|
+| `src/alarm/domain/notification_policy.py` | 신규 — `decide_notification`/`compute_fingerprint`/`map_importance`/`NotificationDecision`(signals 12키 §8.2) | domain |
+| `src/alarm/infrastructure/polestar_noise_context.py` | 신규 — 중요도/유지보수/알림정책 고정 SQL(읽기전용, `_sql_literal`, Template C-6 서버매칭, graceful) | infrastructure |
+| `src/alarm/infrastructure/decision_store.py` | 신규 — `DecisionStore` JSONL 결정 감사 + 집계(억제율) | infrastructure |
+| `src/alarm/application/nodes/notification_gate.py` | 신규 — 게이트 노드(결정 산출 + decision_store 적재) | application |
+| `src/alarm/orchestration/alarm_graph.py` | `AlarmState`에 noise_context/notification_decision/self_heal, 배선 `history_enabled or enable_noise_gate`(§8.1) | orchestration |
+| `src/alarm/application/nodes/alarm_context_enricher.py` | noise_context 동시 수집(gather, 게이트 활성 시) | application |
+| `src/alarm/application/nodes/alarm_notifier.py` | 4-티어 라우팅 분기(decision None=기존 경로) | application |
+| `src/alarm/application/alarm_worker.py` | 핑거프린트 dedup(§6.1)+min_severity(§4.8)+self_heal 시드+noise_repo/decision_store 주입(게이트 활성 시) | orchestration |
+| `src/config.py` | `NoiseGateConfig` 신규(형제 필드 §8.5) | config |
+| `.env.example` | `NOISE_*` 추가(기본 비활성) | 설정 |
+| `tests/test_alarm/` (신규 패키지) | 정책/스토어/컬렉터 단위(57) + 통합(배선/게이트오프/티어/감사/min_severity 35) = **92 통과** | 테스트 |
+
+### 검증 (2026-06-29 실측, §11.1 baseline 정책)
+
+- `tests/test_alarm/` 92 passed(0 fail), 기존 알람 회귀 116 passed, graph 30 passed — 노이즈 모듈 import 파일 13개 신규 실패 0.
+- `python scripts/arch_check.py --ci` exit 0(error 0, 기존 orchestration→prompts warning 3건만 — 무관).
+- `AppConfig()` 정상 생성, `NOISE_` env prefix 로드 확인, 게이트오프 회귀 0.
+- 전체 스위트의 기타 실패는 **52와 무관한 multiintent/인증 부채 + 라이브 DB/LLM/Redis 부재**로 baseline 차감(별도 트랙).
+
+### 향후 수정 시 고려사항
+
+- **E2 착수**: 의존성 억제(`AVAIL_DEPEND_RESOURCE_ID`+부모 `AVAIL_STATUS`)·인히비션·스톰 그룹핑·플래핑(Nagios). `noise_context.parent_avail_status` 자리예약 활용.
+- **심각도3 재발생 재통보**: 현재 `repeat_interval_seconds`(4h)가 모든 심각도에 적용 → 운영에서 심각도3 재통보가 잦아야 하면 severity별 `repeat_interval` 분리 검토(현 동작은 Alertmanager 표준 계승, 최초 발생 PAGE는 보장).
+- **`IMPORTANCE_ID` 값코드**: 인스턴스별 표본 확인 후 `NOISE_IMPORTANCE_VALUE_MAP_CSV` 설정(미설정=전부 보통).
+- **DASHBOARD SSE**(E3): 워커 경로에 `alarm_bus` 주입 경로 마련 후 DASHBOARD 티어 UI push 활성화.
+
+---
+
+## D-041. 멀티턴 컨텍스트 전파 및 엔티티 보존 (Plan 50)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-25 |
+| **상태** | 구현 완료 (2026-06-25) |
+| **관련 결정** | D-013(멀티턴) 확장, D-037(orchestration), D-009(SSE) — 충돌 없음 |
+
+> **번호 주의**: Plan 50 §6은 이 결정을 "D-039"로 적었으나, 변경 이력 표에서 D-039/D-040이 이미
+> 다른 결정(orchestration 처리 현황 관찰성·replanner 과재계획 수정)에 선점되어 있었다. 번호 충돌을
+> 피하기 위해 **다음 빈 번호 D-041**을 부여한다(team-lead 판단, 사용자 확인 필요 항목으로 보고).
+
+### 결정
+
+후속 턴 분해(`intent_planner`)에 **직전 턴의 해소된 DB/위치/대상 엔티티를 압축 주입**하고,
+`data_query`가 **이전 턴 DB를 승계**하며, "현재/실시간 프로세스" 류는 **`process_query` 1급 의도**로
+실시간 폴스타 프로세스 API에 라우팅한다. D-013(멀티턴) 확장이며 되돌리지 않는다.
+
+### 세부 변경
+
+- **M3 — 엔티티 보존(`context_resolver`)**: `conversation_context`에 `previous_db_ids`
+  (target_databases∪active_db_id∪mapped_db_ids), `previous_entities`(filter_conditions 식별 키 +
+  결과 식별 컬럼 값, **행수 상한** `_MAX_ENTITY_ROWS=20`), `previous_location`(김포/여의도/운영 등
+  표면 추출) 추가. 대량 보존 금지(Known Mistakes 2026-06-11 사전 순회 상한 원칙).
+- **M1 — 맥락 주입(`intent_planner`)**: `_llm_decompose(..., conversation_context=)` 추가,
+  후속 턴이면 `_build_context_block`이 **압축 1블록**(원시 메시지 히스토리 금지)을 HumanMessage 앞에
+  주입. `prompts/intent_planner.py`에 지시어 해소·DB 승계 규칙 + 예시 5(후속 턴) 추가.
+- **M2 — DB 승계(`subagents.run_data_query_pipeline`)**: 우선순위 ① 이번 턴 명시 위치/DB >
+  ② mapped_db_ids > ③ `previous_db_ids`(멀티턴) > ④ 전체 fan-out. 이번 턴에 새 위치/DB 신호가
+  있으면 승계하지 않음(`_has_new_location_db_signal`). 승계 시 처리현황에 `db_succession` 노출(투명성).
+- **M4 — `process_query` 신규 의도/subagent**: `src/orchestration/process_query.py` 신규.
+  조회는 `alarm` 모듈의 `polestar_process_api.py`(infrastructure)·`process_rank.py`(domain)를 **재사용**
+  (마스킹·상위 N 선별은 결정적 — LLM 원시 주입 금지, D-036 정합). db_id는 승계로, hostname은
+  `previous_entities`로 해소. 대상 미식별/미연결 시 graceful 안내(없는 테이블 조회·`SQL0204N` 방지).
+  계층: orchestration → {infrastructure, domain} 정합(arch_check 통과).
+
+### 근거
+
+- 검증 시나리오(턴2 "해당 서버 프로세스" → "데이터 없음")의 구조적 단절점 M1~M4를 직접 해소.
+- 회귀 없음: 첫 턴/단일 의도/맥락 없음 경로는 무변경(테스트로 고정).
+
+### 향후 수정 시 고려사항
+
+- `process_query`는 base_url 매핑(`AlarmConfig.process_api_base_urls_csv`)이 있는 폴스타(김포/여의도)에서만
+  실동작. 신규 폴스타 추가 시 매핑 추가 필요.
+- 엔티티/맥락 블록은 압축 1블록·상한 유지(토큰 재증가 방지) — 확장 시 상한을 함께 검토.
+
+---
+
+## D-042. 제어 평면 컨텍스트 예산 · 평면 분리 강제 · Qwen no-think (Plan 50)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-25 |
+| **상태** | 구현 완료 (2026-06-25, 클라이언트 코드) / 서버 기동 파라미터(B8)는 인프라 진행 중 |
+| **관련 결정** | D-037(deepagents 이원 백엔드) 운영 보강 — 충돌 없음 |
+
+> **번호 주의**: Plan 50 §6은 "D-040"으로 적었으나 D-040이 선점되어 **D-042**를 부여한다(D-041과 동일 사유).
+
+### 결정
+
+tool-calling 제어 평면(vLLM **Qwen3.5-9B**, 소용량)에는 **계획 신호만**, 대용량 작업(SQL/데이터/응답)은
+**FabriX 평면**으로 강제한다. 원시 도구 결과는 collector에만 보관하고 오케스트레이터 컨텍스트에는
+요약본만 노출한다. **상한값은 하드코딩하지 않고 `OrchestratorConfig`(env `ORCHESTRATOR_*`) 노브로 노출**
+하여 모델 교체 시 `.env`만으로 예산을 확장한다. 또한 **Qwen 계열은 no-think를 기본 적용**한다.
+
+### 세부 변경
+
+- **B6 — 예산 노브(`OrchestratorConfig`)**: `max_input_tokens`(기본 **12000**), `context_budget_ratio`(0.8),
+  `max_tool_result_tokens`(2000), `max_history_turns`(6). 단순 int/float이라 `.env` JSON 이슈 없음
+  (2026-03-23 정합). `os.getenv` 미사용(pydantic-settings 필드 — 2026-06-10 정합).
+- **서버값 정합(중요)**: 인프라에서 서버 `max_model_len=16384`, `gpu_memory_utilization=0.85`로 상향
+  진행 중. 따라서 클라이언트 입력 예산 = 16384 − 출력 여유(~4000) = **12000**으로 확정(계획서의 32768
+  가정·24000은 무효 — Plan 50 B6 표/§3.7 갱신 반영).
+- **B7 — Qwen no-think(`_create_orchestrator_vllm`)**: `enable_thinking: bool=False` 노브 추가. 모델이
+  Qwen 계열일 때만 `model_kwargs.extra_body.chat_template_kwargs.enable_thinking`를 부착(계열 가드 —
+  비-Qwen/미지원 서버 오류 회피). `ORCHESTRATOR_ENABLE_THINKING`로 모델 교체 시 전환.
+- **B1/B2 — 도구 반환 축소(`deepagents_tools`)**: vLLM 반환 텍스트는 `max_tool_result_tokens`(chars≈tokens×4
+  근사) 상한으로 요약·축소. **원본은 collector에만 적재**(최종 FabriX 응답 생성용 — 기존 동작 보존).
+- **B8 — 서버 기동 파라미터**: 레포 코드 변경 아님. 인프라에서 `max_model_len=16384`/`gpu_memory_utilization=0.85`
+  상향 진행 중(클라이언트 B6 예산과 정합 유지가 배포 체크리스트).
+
+### 근거
+
+- 관찰 오류 `Input tokens must be <=95232. Given: 197986`은 제어 평면(vLLM Qwen) 컨텍스트 폭증.
+  멀티턴 압축(D-041)·도구 결과 축소·예산 노브·no-think의 다중 방어로 상한 내 유지.
+- 모델 교체 시 코드 수정 없이 `.env`만으로 예산 확장(one-knob scaling).
+
+### 향후 수정 시 고려사항
+
+- 대형 모델 교체 시: 서버 `max_model_len`↑ + 클라이언트 `ORCHESTRATOR_MAX_INPUT_TOKENS`↑ + 필요 시
+  `ORCHESTRATOR_ENABLE_THINKING=true`를 **한 세트로** 변경.
+- `extra_body`는 langchain_openai에서 top-level 인자로도 전달 가능(향후 model_kwargs 경고 회피 시 검토).
+
+---
+
+## D-043. 재조회(대체) 후속 task의 1차 시도 결과 본문 숨김 (supersedes)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+단일 의도 질의(예: "김포 ### 서버의 호스트네임·IP·OS·CPU·메모리")에서 1차 task가
+빈/누락 결과("조회된 1000건 중 존재하지 않음, 값 모두 null")를 내자, `replanner`가
+프롬프트 예시 1("0건 → 재조회") 패턴에 따라 **같은 의도를 다시 묻는 후속 task(t2)** 를
+추가했다. t2가 1건을 찾아 성공했으나, `result_aggregator._merge_finalized`가
+**t1(실패 서술)과 t2(성공 서술)를 둘 다 본문에 이어붙여** 출력 →
+"없다고 했다가 있다고 하는" 모순된 이중 답변으로 사용자가 혼란스러웠다.
+
+### 결정
+
+후속 task에 **`supersedes`(대체하는 선행 task_id 목록)** 필드를 도입한다.
+
+- **대체(재조회)형 후속**: 같은 질문을 다른 방식으로 재시도 → `supersedes: ["t1"]`.
+  → `result_aggregator`가 최종 답변 본문에서 대체된 선행 task 서술을 **숨기고 후속 결과만 노출**.
+- **추가(보강)형 후속**(예: 장애 발견 → 알람 이력): `supersedes: []` → 두 결과 모두 노출(D-005 유지).
+
+안전장치: 대체 후속이 **성공(에러 없음)했을 때만** 선행을 숨긴다. 재조회 자체가 실패하면
+1차 결과를 그대로 유지하여 빈 답변만 보이는 상황을 방지한다. 숨김은 **최종 답변 본문에만**
+적용하며, 처리 현황(SSE) 패널에는 두 task가 모두 투명하게 남는다(관찰성 보존, D-039).
+
+### 구현
+
+- `prompts/replanner.py`: `supersedes` 필드 규칙·예시(예시 1=대체, 예시 2=추가) 추가.
+- `orchestration/replanner.py::_assign_ids`: `supersedes` 보존 + 신규 task 간 임시 id 재매핑
+  (depends_on/input_from과 동일 처리). 누락 시 빈 배열로 보정.
+- `orchestration/result_aggregator.py`: `_collect_superseded`로 숨김 대상 task_id 집합을
+  계산(후속 성공 시에만)하여 본문 조립 대상에서 제외. 전부 제외되는 비정상 시 전체 사용(방어).
+
+### 근거 / 대안
+
+- 대안(기각): "특정 엔티티 단일 조회는 0건이어도 replanner 재조회 차단" — 1차 쿼리가 틀려서
+  못 찾은 경우 교정 기회를 잃어 사용자에게 '없음'만 답하게 됨. 사용자 결정으로 supersedes 채택.
+- 관련: D-005(부분 실패 병합), D-037/D-039(orchestration·처리 현황), D-040(replanner 중복 가드).
+- 검증: arch_check --ci exit 0, result_aggregator·replanner 단위 테스트 신규 6건 포함 전체 통과.
+
+---
+
+## D-044. 스트리밍 응답 조건부 자동 스크롤 (stick-to-bottom) + 맨 아래 이동 플로팅 버튼
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+D-009로 최종 사용자 응답이 SSE `token` 이벤트로 토큰 단위 스트리밍되는데, 프론트(`app.js`)가
+토큰마다 **무조건** `scrollToBottom()`을 호출하고 `.chat-messages`에 `scroll-behavior: smooth`가
+걸려 있어, (1) 토큰마다 부드러운 스크롤이 재트리거되어 화면이 "튀어" 응답을 즉시 읽기 어렵고,
+(2) 사용자가 위로 스크롤해 과거를 읽으려 해도 다음 토큰에 강제로 맨 아래로 끌려 내려갔다.
+또한 (3) 위로 올린 뒤 최신 응답으로 되돌아갈 빠른 수단(버튼)이 없었다.
+
+### 결정
+
+ChatGPT/Claude류 **stick-to-bottom 모델**을 도입한다(프론트엔드 전용, 백엔드/SSE 무변경).
+
+- **맨 아래 고정 상태**(`stickToBottom`)를 추적: 맨 아래(임계값 `BOTTOM_THRESHOLD_PX=24` 이내)면 고정, 위로 스크롤하면 해제.
+- **토큰/에이전트 출력 추종은 조건부**: 고정 상태일 때만 즉시(비smooth) 따라 내려가고, 해제 상태면 스크롤 위치를 건드리지 않는다(면역). **사용자 본인 질의 메시지 추가만 무조건** 맨 아래로 이동.
+- **플로팅 "맨 아래로" 버튼**(우측 하단): 고정 해제 상태에서만 표시, 클릭 시 부드럽게 맨 아래로 이동·고정 복귀.
+- **신규 내용 강조**: 고정 해제 상태에서 새 토큰/응답이 도착하면 위치는 유지하되 버튼에 점(`has-new`)을 띄워 새 답변 도착을 인지시킨다.
+
+### 구현
+
+- `static/js/app.js`: `stickToBottom`/`hasNewContent`/`BOTTOM_THRESHOLD_PX` 상태, `isNearBottom()`,
+  `scrollToBottom(smooth)`(무조건), `scrollToBottomIfSticky()`(조건부), `updateScrollToBottomBtn()` 추가.
+  `chatMessages` scroll 리스너로 상태/버튼 갱신, 버튼 클릭 핸들러. 토큰 루프 및 에이전트 측 출력
+  (스트리밍 컨테이너 생성·finalize·에이전트/시스템 메시지)은 `scrollToBottomIfSticky()`로 교체,
+  사용자 질의(`renderUserMessage`)만 `scrollToBottom()` 유지.
+- `static/index.html`: `.chat-main` 내 `.chat-messages` 형제로 `#scrollToBottomBtn`(+ 강조 점) 추가.
+- `static/css/style.css`: `.chat-main`에 `position: relative`, `.chat-messages`의 `scroll-behavior: smooth` 제거,
+  `.scroll-to-bottom-btn`(+`.is-visible`/`.has-new`/`.scroll-to-bottom-dot`) 스타일, 반응형 `bottom` 조정.
+
+### 근거 / 대안
+
+- 사용자 결정: 신규 메시지 정책은 (B) 조건부 + 신규 강조 채택(무조건 끌어내리기 기각 — 읽기 흐름 방해).
+  임계값은 80px로 두고 테스트 후 조정. 버튼 강조는 적용.
+- 관련: D-009(SSE 토큰 스트리밍). 계획서: `plans/51-streaming-scroll-ux.md`.
+- 주의: 계획서 초안이 가정한 결정 번호 D-043은 같은 날 다른 결정(supersedes)이 선점하여 **D-044**로 부여
+  (변경 이력 표까지 grep하여 확정 — 2026-06-25 번호 충돌 교훈 반영).
+
+---
+
+## D-045. 스트리밍 마크다운 비파괴 렌더 (DOM 모핑) — 표 가로 스크롤·텍스트 선택 보존
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+D-009 스트리밍에서 토큰마다 `#streamingText.innerHTML = marked.parse(누적텍스트 전체)`로 **서브트리 전체를
+파괴·재생성**한다. 표는 `.response-text table { display:block; overflow-x:auto }`로 **테이블 요소 자체가
+가로 스크롤 컨테이너**이고 `scrollLeft`은 어트리뷰트가 아닌 라이브 프로퍼티라, 매 토큰 새 테이블이 생성되면
+사용자가 우측으로 스크롤한 표가 **좌측으로 초기화**된다(동일 원인으로 스트리밍 중 텍스트 선택도 끊김).
+스트리밍 구간 한정 문제(finalize 후 DOM 고정 시 정상).
+
+### 결정
+
+토큰마다 `innerHTML` 전체 교체 대신 **DOM 모핑(B-1)** 으로 전환한다. full `marked.parse` 결과를 기존 DOM에
+diff 적용하여 **동일 위치·태그 요소를 재사용** → 표 `scrollLeft`·텍스트 선택 보존. 출력 HTML은 full-parse와
+**동일**하므로 출력 정확성 영향 없음(블록 증분 파싱 B-2의 맥락 오판 위험과 대비). 추가로 토큰 버스트를
+**rAF로 코얼레싱**(프레임당 1회 렌더)하여 전체 재파싱 O(L²)의 상수를 줄인다.
+
+**구현 방식 — 자체 morph(외부 의존성 없음)**: 계획서 초안은 `morphdom`(UMD) 로컬 벤더를 제안했으나,
+폐쇄망이라 CDN 취득이 불가하고 라이브러리 재현 정확성 리스크가 있어 **동등 동작의 경량 자체 구현**으로 결정.
+`morphChildren`(인덱스+nodeName 기준 노드 재사용, `isEqualNode`로 무변경 서브트리 스킵) + `syncAttributes`.
+실패 시 **폴백(방안 A: 표 `scrollLeft`만 스냅샷·복원하며 전체 교체)** 으로 강등.
+
+### 구현
+
+- `static/js/app.js`:
+  - `morphChildren`/`syncAttributes`: 비파괴 DOM 모프(자체 구현).
+  - `renderStreamingMarkdown(el, md)`: morph 적용, 예외 시 폴백 A.
+  - `scheduleStreamingRender()`: rAF 코얼레싱(`_streamAccumulated`/`_streamRafQueued`), 렌더 후 `scrollToBottomIfSticky()`.
+  - 두 스트리밍 토큰 루프: `textEl.innerHTML = renderMarkdown(...)` → `scheduleStreamingRender()`로 교체.
+  - `createStreamingMessage()`에서 `_streamAccumulated=""` 초기화(이전 스트림 잔여 rAF 누수 차단).
+- 외부 의존성/`index.html` 스크립트 추가 **없음**(morphdom 미사용).
+
+### 근거 / 대안
+
+- 대안(기각) **morphdom 벤더**: 폐쇄망 CDN 불가 + 재현 리스크. 자체 구현이 의존성 0으로 더 견고.
+- 대안(보류) **B-2 블록 증분 파싱**: 파싱을 O(L)에 근접시키나 맥락 의존 마크다운 블록 경계 오판 시 출력 정확성
+  회귀 위험 → 실사용 응답 크기 분포로 정당화된 뒤 검토(계획서 §13).
+- 검증: `morphChildren` 단위 검증(표 2→3행 성장 시 `<table>` 인스턴스 재사용·`scrollLeft=120` 보존·무변경 노드 재사용 PASS), `node --check` 통과. 수동(브라우저) 검증은 잔여.
+- 관련: D-009(SSE 토큰 스트리밍), D-044(Part 1 스크롤 UX). 계획서: `plans/51-streaming-scroll-ux.md` Part 2.
+
+---
+
+## D-046. 프로세스 조회 시 서버명 → 호스트명 해소 (process_query)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-26 |
+| **상태** | 확정 |
+| **관련 결정** | D-041(M4 process_query 신설), D-036(프로세스 API 재사용) 보강 — 충돌 없음 |
+
+### 배경 / 문제
+
+폴스타 실시간 프로세스 API(`polestar_process_api.py`)의 조회 키는 **hostname**(=`cmm_resource.hostname`,
+OS 호스트명)이다. 그러나 사용자는 보통 **서버명**(=`cmm_resource.name`, 폴스타 등록 장비명)으로 질의한다.
+공동존 폴스타(gp/yd)는 `name ≠ hostname`(Known Mistakes 2026-06-10 실측)이므로, `process_query`가
+서버명을 그대로 `hostname=서버명`으로 API에 전달하면 **0건**이 반환된다. 이때 오케스트레이터가
+프로세스 의도를 DB 조회로 폴백하여 **리소스명이 '프로세스'인 행을 가져오는 환각**이 발생했다.
+
+### 결정
+
+`process_query`가 프로세스 API를 호출하기 **전에** 입력 식별자(서버명 또는 호스트명)를
+**정규 hostname으로 해소**한다. D-041(M4) 보강이며 되돌리지 않는다.
+
+- 신규 `PolestarHostnameResolver`(infrastructure)가 폴스타 DB(`cmm_resource`)에 **고정 SELECT 단일문**
+  (LLM 미사용, 읽기 전용)을 실행하여 hostname을 얻는다 — `polestar_history.py`와 동일 DBHub(MCP) 경로 재사용.
+- 매칭: 입력 값을 `name`(서버명) **또는** `hostname`(호스트명) 양쪽과 비교, `name` 일치 우선
+  (서버명 질의가 일반적). 입력이 이미 hostname이면 idempotent하게 같은 값 반환.
+- **graceful 폴백**: 미등록 db_id / 조회 실패 / 0건 / 빈 hostname이면 해소 None → 원시 입력 값을 그대로
+  사용한다(이미 hostname이거나 DB 미연결이어도 회귀 없음).
+- 관찰성: 결과 `process_query`에 `server_name`(원본 입력)·`hostname`(해소값) 동시 보존, 요약에는
+  서버명을 표기하되 hostname이 다르면 `서버명(호스트명 ...)` 형태로 병기.
+
+### 세부 변경
+
+- `src/alarm/infrastructure/polestar_hostname_resolver.py` **신규**: `build_hostname_sql`(고정 SELECT,
+  `server.Server`·`DTIME IS NULL`·name/hostname OR·name 우선 ORDER BY)·`PolestarHostnameResolver.resolve`.
+  D-022(RESOURCE_CONF_ID JOIN 금지)·2026-06-10(`is_lob` 조건 금지) 정합.
+- `src/orchestration/process_query.py`: `_resolve_hostname` 결과를 `identifier`로 받아 `_resolve_canonical_hostname`
+  (DBRegistry+resolver, 예외 시 None)로 hostname 해소 후 API 호출. 미식별 안내문을 "hostname"→"서버명"으로 수정.
+
+### 근거
+
+- 환각의 구조적 원인(서버명≠hostname을 무해소로 API 전달)을 호출 직전에 차단.
+- 회귀 없음: 해소 실패·DB 미연결 경로는 기존 원시 값 사용 동작 유지(테스트로 고정).
+
+### 향후 수정 시 고려사항
+
+- 폴스타 인스턴스별 스키마가 다르면 `polestar_hostname_resolver._SCHEMA_BY_DB_ID`에 db_id별 스키마를 등록
+  (`polestar_history._SCHEMA_BY_DB_ID`와 동일 패턴).
+- 해소 쿼리는 매 프로세스 조회마다 1회 실행(LIMIT 1, 가벼움). 빈도 급증 시 캐시 검토.
+
+---
+
+## D-047. 프로세스 조회 대상 서버 식별자 추출 (input_parser 규칙 보강)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 |
+| **관련 결정** | D-046(서버명→hostname 해소), D-041(M4 process_query) 보강 — 충돌 없음 |
+
+### 배경 / 문제
+
+"김포 ###서버에 대한 프로세스 리스트 조회" 질의가 **"프로세스 조회 대상 서버(서버명)를 식별하지 못했습니다"**
+로 응답되었다. `process_query._resolve_hostname`는 이번 턴 `filter_conditions` 중 field가
+`_HOST_FIELDS`(`hostname/host_name/server_name/name`)인 조건의 value를 서버 식별자로 쓰는데,
+**input_parser 프롬프트에 지목된 서버 이름을 hostname filter로 추출하는 규칙이 없었다.** LLM이
+서버명을 filter_condition으로 만들지 않거나 한글 field명(`서버명`/`장비명`)으로 만들어 `_HOST_FIELDS`
+매칭에 실패 → `identifier=None`. D-046(서버명→hostname 해소)는 `identifier`를 **얻은 뒤** 동작하므로
+이 공백은 D-046 이전 단계의 누락이었다.
+
+### 결정
+
+특정 서버를 지목하는 질의(특히 프로세스 조회)에서 **서버 식별자를 항상 filter_conditions로 추출**하고,
+`_resolve_hostname`은 LLM 출력 비결정성을 고려해 **한글 field 변형까지 방어적으로 인정**한다.
+추가로 **시간성(이력/추세) 신호가 없는 프로세스 조회는 `process_query`(실시간 API)로 결정적 교정**한다.
+되돌리지 않는다.
+
+- `input_parser` 프롬프트 규칙 14 신설: "XXX 서버", "XXX에 대한 프로세스/CPU", "XXX의 프로세스" 등 단일
+  서버 지목 시 `{"field": "hostname", "op": "=", "value": "<서버식별자>"}`로 추출. 위치/DB 수식어
+  (김포/여의도/폴스타)는 value에서 분리해 target_db_hints로(규칙 10 정합). 프로세스 리스트 질의는 대상
+  식별 필수임을 명시. 예시 1건 추가.
+- `process_query._HOST_FIELDS` 확장: 영문(`host`/`device_name`)·한글(`서버명`/`서버이름`/`장비명`/
+  `호스트명`/`서버`/`장비`) 변형 수용. 매칭 성공 후의 정규화는 기존 D-046 해소가 그대로 처리.
+- **라우팅 교정(2차 원인)**: "현재/실시간/리스트" 같은 시간성 수식어가 없는 "프로세스 조회"를 LLM이
+  보수적으로 `data_query`로 분류 → `cmm_resource`의 `resource_type='process'` 행을 가져오는 환각(D-046이
+  경고한 폴백)이 발생했다. (a) `prompts/intent_planner.py` 규칙 3을 "프로세스 조회는 기본 process_query,
+  명시적 과거/이력 신호가 있을 때만 data_query"로 강화. (b) `intent_planner._coerce_process_intent`:
+  LLM 분해(폴백 포함) 결과에서 `agent=="data_query"`이고 sub_query에 "프로세스"가 있으나 이력 신호
+  (이력/추세/추이/지난/과거/기간/동안/시점 등)가 없으면 `process_query`로 결정적 교정.
+
+### 근거
+
+- 식별자 추출은 자연어 파싱 단계의 책임 — 프롬프트 규칙으로 결정적 유도가 정석. field 변형 수용은
+  LLM 비결정성에 대한 저비용 안전망(회귀 없음: 기존 영문 field 동작 유지).
+- D-046의 graceful 폴백과 합쳐, 식별자가 잡히면 잘못된 값이어도 0건 안내로 수렴(환각 폴백 없음).
+
+### 프로세스 결과 표시/다운로드 (채팅 상위 N + CSV 전체)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 (사용자 결정) |
+
+- **문제**: process_query가 `select_top_processes`로 상위 N(기본 `process_top_n=5`)만 남기고 **전체를 폐기**해,
+  채팅·CSV 모두 5건만 노출됐다. 또한 orchestration 경로는 `query_results`를 top-level state로 승격하지 않아
+  (result_aggregator가 `final_response`만 반환) **CSV 다운로드 버튼 자체가 뜨지 않았다**(`row_count=0`).
+- **결정(사용자)**: 채팅 말풍선은 상위 N만 표시하되, **CSV 다운로드는 전체 프로세스**를 받도록 한다.
+- **변경**:
+  - `process_query.py`: 전체를 1회 정렬·마스킹(`select_top_processes(.., len(processes))`)한 뒤
+    `organized_data.rows`=상위 N(채팅 표 — output_generator가 이 rows로 생성), `query_results`=전체(CSV·row_count).
+    요약에 "전체 X건은 CSV 다운로드" 안내, `process_query.shown_count` 추가. `process_top_n`은 **표시 전용**.
+  - `result_aggregator.py`: `_finalize_task` 결과(base)에 `query_results`를 보존하고, 단일/복합(`_merge_finalized`,
+    행 이어붙임) 모두 **top-level `query_results`로 승격** → orchestration 결과(데이터/프로세스 공통)에서
+    CSV 버튼·row_count가 동작. (스트리밍 `done`/비스트리밍 응답 모두 result_aggregator 출력의 query_results 사용.)
+  - `api/routes/query.py::download_csv`: 행마다 키가 달라도(복합 병합) 깨지지 않도록 컬럼명을 **등장 순서 합집합**으로
+    만들고 `restval=""`/`extrasaction="ignore"` 적용.
+
+### 향후 수정 시 고려사항
+
+- 한 질의에서 복수 서버를 지목하는 경우는 현재 첫 번째 host filter만 사용. 다중 서버 프로세스 조회
+  요구가 생기면 `_resolve_hostname`을 리스트 반환으로 확장 검토.
+- 전체 프로세스가 매우 많으면(수백+) CSV는 전부 받지만 채팅 표는 상위 N만 — 표시 N 조정은
+  `ALARM_PROCESS_TOP_N`. 채팅에서도 더 보고 싶다는 요구가 잦으면 표시 N 기본값 상향 검토.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
 | 2026-06-29 | D-041 | **알람 노이즈 캔슬링 4-티어 발송 게이트 (Plan 52 E1 MVP)**: 폴스타 알람을 결정적 규칙으로 PAGE/TICKET/DASHBOARD/SUPPRESS 라우팅(옵트인 `enable_noise_gate`, 기본 off). 신규 `notification_policy.py`(순수함수 결정 파이프라인+`NotificationDecision` signals 12키)·`polestar_noise_context.py`(중요도/유지보수/알림정책 고정SQL, graceful)·`decision_store.py`(JSONL 결정 감사+억제율)·`notification_gate.py`(노드). 수정 `alarm_graph.py`(AlarmState+배선 `history_enabled or enable_noise_gate`)·`alarm_context_enricher.py`(noise_context gather)·`alarm_notifier.py`(4-티어, decision=None→기존 경로 무변경)·`alarm_worker.py`(핑거프린트 dedup §6.1+min_severity 역할분리 §4.8: sev0·sev3 비드롭+self_heal 시드)·`config.py`(`NoiseGateConfig` 형제 필드 `cfg.noise_gate.*`, env `NOISE_`)·`.env.example`. **심각도3 절대 PAGE(억제 단락)·재현율 우선(수집실패→보수적 PAGE)·억제≠삭제(감사)·전 기능 옵트인**(D-035 확장, D-003 준수). **번호 정정**: Plan §13의 D-040은 2026-06-23 changelog가 D-039/D-040을 선점하여 충돌 → 다음 빈 번호 D-041로 등재(상세 ## D-041 §번호 정정). 하위 D-041.1~.7(E2~E5/Plan55/Advisory Enricher 예약). 검증(§11.1 baseline): tests/test_alarm 92 passed(단위57+통합35)·기존 알람회귀 116·graph 30 passed, 노이즈 모듈 신규실패 0, arch_check --ci exit 0(error 0), 게이트오프 회귀 0. 미구현: E2(의존성/스톰/플래핑)·E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4(LLM 액션가능성)·E5(Advisory Enricher) |
+| 2026-06-29 | D-047 | **프로세스 결과: 채팅 상위 N + CSV 전체 다운로드(사용자 결정)**: process_query가 상위 N(`process_top_n=5`)만 남기고 전체를 폐기 → 채팅·CSV 모두 5건만 노출. 또 orchestration 경로는 `query_results`를 top-level state로 승격하지 않아(result_aggregator가 final_response만 반환) CSV 버튼 자체가 미노출(row_count=0). **수정**: (a) `process_query.py` 전체 1회 정렬·마스킹 후 `organized_data.rows`=상위 N(채팅), `query_results`=전체(CSV/row_count), 요약에 CSV 안내+`shown_count`. (b) `result_aggregator.py` `_finalize_task`/단일·복합 경로에서 `query_results`를 top-level로 승격(데이터/프로세스 공통으로 CSV·row_count 동작). (c) `download_csv` 컬럼명 합집합+`restval`/`extrasaction`로 이종 행 견고화. `process_top_n`은 표시 전용으로 의미 변경. 검증: orchestration+multiturn 신규 2건 포함 통과, arch_check exit 0 |
+| 2026-06-29 | D-047 | **프로세스 조회 대상 서버 식별자 추출 + 실시간 라우팅 결정적 교정**: "김포 ### 서버에 대한 프로세스 조회"가 (1차) "서버명을 식별하지 못했습니다"로, 이어 (2차) DB에서 `resource_type='process'` 행을 가져오는 환각으로 응답되던 문제 해결. **원인1**: `process_query._resolve_hostname`은 filter_conditions 중 field가 `_HOST_FIELDS`인 조건을 서버 식별자로 쓰는데 input_parser에 지목 서버명을 hostname filter로 추출하는 규칙이 없어 `identifier=None`(D-046 해소는 identifier 확보 후 동작이라 공백을 못 메움). **원인2**: 시간성 수식어 없는 "프로세스 조회"를 intent_planner LLM이 보수적으로 `data_query`로 분류 → D-046이 경고한 DB 폴백 환각. **수정**: (a) `prompts/input_parser.py` 규칙 14 신설 — 단일 서버 지목 시 `{"field":"hostname","op":"=","value":"<서버식별자>"}`로 추출, 위치/DB 수식어는 target_db_hints로 분리, 예시 1건. (b) `process_query._HOST_FIELDS`를 영문(host/device_name)·한글(서버명/장비명/호스트명/서버/장비) 변형까지 확장. (c) `prompts/intent_planner.py` 규칙 3을 "프로세스 조회 기본=process_query, 명시적 과거/이력 신호만 data_query"로 강화. (d) `intent_planner._coerce_process_intent` 결정적 가드 — data_query+프로세스+이력신호 없음 → process_query 교정(폴백 포함). 회귀 없음(영문 field·이력 프로세스 data_query 동작 유지). 관련: D-046, D-041. 검증: arch_check --ci exit 0, orchestration+multiturn 194 passed/4 skipped(신규: 한글 field 1, 라우팅 교정 3) |
+| 2026-06-26 | D-046 | **프로세스 조회 시 서버명 → 호스트명 해소 (process_query)**: 폴스타 실시간 프로세스 API의 조회 키는 hostname(`cmm_resource.hostname`)이지만 사용자는 서버명(`cmm_resource.name`)으로 질의한다. 공동존 폴스타(gp/yd)는 name≠hostname이라 `hostname=서버명`으로 보내면 0건 → 오케스트레이터가 DB 조회로 폴백해 **리소스명이 '프로세스'인 행을 가져오는 환각** 발생. **수정**: 프로세스 API 호출 전 입력을 정규 hostname으로 해소. (a) `src/alarm/infrastructure/polestar_hostname_resolver.py` 신규 — DBHub(MCP) 고정 SELECT(`server.Server`·`DTIME IS NULL`·name/hostname OR·name 우선)로 hostname 조회(`polestar_history.py` 경로 재사용, D-022/`is_lob` 금지 정합). (b) `process_query.py`가 `_resolve_canonical_hostname`(예외/0건 시 None→원시 값 폴백)로 해소 후 API 호출, 결과에 `server_name`·`hostname` 동시 보존·요약 병기. 회귀 없음(해소 실패·DB 미연결 경로 기존 동작 유지). 관련: D-041(M4 process_query), D-036(프로세스 API 재사용). 검증: arch_check --ci exit 0, 신규 11건 포함 orchestration/multiturn/alarm 260 passed/4 skipped |
+| 2026-06-26 | D-045 | **스트리밍 마크다운 비파괴 렌더(DOM 모핑) — 표 가로 스크롤·텍스트 선택 보존**: 토큰마다 `#streamingText.innerHTML = marked.parse(전체)`가 서브트리를 파괴·재생성 → 표(자체가 `overflow-x:auto` 스크롤 컨테이너)의 `scrollLeft`이 매 토큰 0으로 초기화되어 가로 스크롤이 좌측으로 리셋되던 문제 해결(텍스트 선택 끊김도 동반). **B-1 DOM 모핑**: full-parse 결과를 기존 DOM에 diff 적용해 동일 위치·태그 요소 재사용 → 스크롤·선택 보존, 출력 HTML은 full-parse와 동일(정확성 영향 0). 폐쇄망이라 `morphdom` 벤더 대신 **자체 경량 morph 구현**(`morphChildren`+`syncAttributes`, `isEqualNode`로 무변경 스킵), 실패 시 폴백 A(표 `scrollLeft`만 보존하며 전체 교체). 추가로 **rAF 렌더 코얼레싱**(`scheduleStreamingRender`, 프레임당 1회)으로 재파싱 O(L²) 상수 절감. 수정: `app.js`(두 토큰 루프→`scheduleStreamingRender`, `createStreamingMessage` 누적 초기화). 외부 의존성/`index.html` 변경 없음. 검증: morphChildren 단위(표 2→3행 성장 시 인스턴스 재사용·scrollLeft=120 보존 PASS)+`node --check`. 관련: D-009, D-044. 계획서 `plans/51-streaming-scroll-ux.md` Part 2. ※ 초안 가정 morphdom 벤더는 폐쇄망 사유로 자체 구현으로 변경 |
+| 2026-06-26 | D-044 | **스트리밍 응답 조건부 자동 스크롤(stick-to-bottom) + 맨 아래 이동 플로팅 버튼**: SSE 토큰마다 무조건 `scrollToBottom()` 호출 + `.chat-messages`의 `scroll-behavior: smooth`가 겹쳐 화면이 "튀고"(즉시 읽기 어려움), 위로 스크롤해도 다음 토큰에 강제로 끌려 내려가던(과거 읽기 불가) 문제 해결. **stick-to-bottom 모델**(프론트 전용, 백엔드/SSE 무변경): `stickToBottom` 상태 추적(임계값 80px), 토큰·에이전트 출력은 **고정 상태일 때만** 즉시 추종(`scrollToBottomIfSticky`)하고 해제 시 면역, **사용자 본인 질의만 무조건**(`scrollToBottom`) 이동. 고정 해제 시 표시되는 **플로팅 "맨 아래로" 버튼** + 신규 토큰 도착 시 점(`has-new`) 강조로 새 답변 인지. `scroll-behavior: smooth`는 제거하고 버튼 클릭 이동에만 국소 적용. 결정(사용자): 신규 메시지 (B)조건부+강조 채택, 임계값 24px(초안 80px이 과해 축소), 버튼 우측 하단 배치. 수정: `app.js`/`index.html`/`style.css`. 관련: D-009(SSE 스트리밍). 계획서 `plans/51-streaming-scroll-ux.md`. ※ 계획 초안 가정 D-043은 같은 날 supersedes가 선점→**D-044** 부여(변경 이력 표까지 grep, 2026-06-25 충돌 교훈) |
+| 2026-06-26 | D-043 | **재조회(대체) 후속 task의 1차 시도 결과 본문 숨김 (supersedes)**: 단일 의도 질의에서 1차 task가 빈/누락 결과를 내자 replanner가 같은 의도 재조회 후속(t2)을 추가→성공했는데, `result_aggregator._merge_finalized`가 t1(실패 서술)·t2(성공 서술)를 **둘 다 본문에 이어붙여** "없음→있음" 모순 이중 답변이 출력되던 문제 해결. **수정 3중**: (a) `prompts/replanner.py`에 `supersedes`(대체 대상 선행 task_id) 필드 규칙·예시 추가(예시1=대체/예시2=추가 구분). (b) `replanner._assign_ids`가 `supersedes` 보존·신규 task 간 임시 id 재매핑(depends_on/input_from과 동일), 누락 시 `[]` 보정. (c) `result_aggregator._collect_superseded`로 **후속이 성공(에러 없음)했을 때만** 대체된 선행 task_id를 본문 조립 대상에서 제외(재조회 실패 시 1차 유지=안전, 전부 제외 시 전체 사용=방어). 숨김은 **최종 답변 본문 한정** — 처리 현황(SSE) 패널은 두 task 모두 투명 유지(D-039). 관련: D-005(부분 실패 병합), D-037/D-039(orchestration·현황), D-040(replanner 중복 가드). 검증: arch_check --ci exit 0, result_aggregator·replanner 신규 6건 포함 25건 통과 |
+| 2026-06-24 | D-039 | **orchestration 처리 현황에 생성 SQL·대상 DB·DB 에러 노출 (관찰성 보강)**: deepagent orchestration 경로에서는 `schema_analyzer`/`query_generator`/`query_executor`가 그래프 노드가 아니라 `agent_orchestrator` 내부 함수 호출이라, 생성 SQL이 SSE `node_complete`로 노출되지 않아 **어떤 쿼리가 어느 DB로 실행됐는지 처리 현황에서 볼 수 없던 문제** 해결(자원 조회 성능/품질 저하 진단의 1차 장애물). **수정 3중**: (a) `subagents.run_data_query_pipeline` 결과에 `generated_sql`(단일 DB는 state, 멀티 DB는 `query_attempts`에서 수집)·`target_db_ids`·`db_errors` 추가 → `agent_orchestrator`가 `task_results`에 보존. (b) `query.py::_summarize_tasks(tasks, results=...)`가 task별 생성 SQL·대상 DB·행수·DB 에러를 포함하도록 확장하고 `_extract_node_progress`의 `agent_orchestrator` 분기가 `task_results` 전달(node_complete가 재계획 회차마다 재방출되므로 회차별 SQL도 누적 노출). intent_planner는 results 미전달(계획 시점엔 결과 없음). (c) 프론트 `renderTaskList`에 대상 DB·생성 SQL(`<pre>`)·행수·DB별 에러 렌더링 추가 — `polestar_b0`(은행) 오선택·SQL0204N 같은 잘못된 DB 실행이 즉시 가시화. **목적**: null 값이 실제 null인지 EAV 조인 누락/DB 오선택의 결과인지 SQL로 판별 가능하게 함(후속 DB 핀 고정·replanner null 가드 교정의 전제). 관련: D-039(처리 현황), D-037(orchestration). 검증: arch_check --ci exit 0, python/js 구문 OK, orchestration 85 passed/4 skipped |
 | 2026-06-23 | D-040 | **replanner 과(過)재계획으로 인한 일반 안내 답변 중복 출력 수정**: 동일 안내 질의("사용법+지원 소스+조회 가능 데이터")에서 1차 `general_inference` 답변이 3가지를 모두 담았는데도 replanner가 후속 `general_inference`를 추가해 "지원 소스/조회 가능 데이터"를 **중복 재출력**하던 버그 해결. **원인 2가지**: (1) [결정적] `replanner._summarize_result`가 텍스트 결과를 `text[:300]`로 절단 → 긴 안내 답변의 앞부분(사용법)만 평가 컨텍스트에 노출 → replanner가 "뒷부분 누락"으로 오판. (2) [개념적] `general_inference`(자체 완결적 안내)에 또 `general_inference` 후속을 붙이는 것은 데이터 의존 후속(replanner 본래 목적: 0건→재조회, 장애→알람조회)이 아니라 "같은 주제 재서술"임. **수정 3중**: (a) `_summarize_result` 텍스트 상한 `300→1500자`(`_MAX_SUMMARY_TEXT_CHARS`) — 완결성 판단이 잘린 답변에 기반하지 않도록. (b) **결정적 가드**(`replanner`): `_assign_ids` 후 신규 task가 모두 `general_inference`이면 추가하지 않고 `needs_replan=False` 종료(데이터 의존 후속만 허용, data_query→data_query 등 정당한 재계획은 영향 없음). (c) **프롬프트 규칙 6**(`prompts/replanner.py`): 안내성 답변은 완결로 간주, general_inference 후속 생성 금지 명시. **범위**: 과분해(intent_planner)·다중 general_inference 인사 중복은 본 건과 별개(미해결). 관련: D-037(replanner), D-039(처리 현황/라벨). 검증: arch_check --ci exit 0, replanner 12건(신규 가드 테스트 1건 포함)·orchestration 85 passed/4 skipped 통과 |
 | 2026-06-23 | D-039 | **다중 의도 처리 현황 표시 + 본문 작업 라벨 제거 (Plan 49 §3.6/§5 step 7 "SSE progress 보류" 완성)**: 다중 의도 경로(`intent_planner → agent_orchestrator → replanner 루프 → result_aggregator`)의 4개 노드가 SSE 화이트리스트(`_known_nodes`, query.py 양쪽 스트림 핸들러)에 없어 **처리 현황 패널에 미표시**되던 문제 해결. (1) **백엔드**(`query.py`): 4개 노드를 화이트리스트에 추가 + `_extract_node_progress` 분기 추가(`intent_planner`=task_count/tasks, `agent_orchestrator`=tasks 상태, `replanner`=replan_history/needs_replan, `result_aggregator`=status), `_summarize_tasks` 헬퍼(order 정렬·표시 필드만). node_complete는 루프 재진입 시 매 회차 재방출되므로 status 갱신은 자연 동작. (2) **재계획 사유 보존**: replanner 종료 회차의 node_complete가 추가 회차 데이터를 덮어써 사유가 사라지던 문제를 `state.replan_history`(신규 필드, 루프 누적; replanner가 추가/종료 양 경로에서 carry forward)로 해결 — 종료 후에도 회차별 추가 작업 수·사유 표시. (3) **본문 라벨 제거**(`result_aggregator._merge_finalized`): `### 작업 N (general_inference)` 헤딩·내부 agent명을 본문에서 제거하고 각 결과 텍스트만 순서대로 연결, 작업 구성/개수/재계획 이력은 처리 현황으로 이전(사용자 요청). 부분 실패 안내는 내부 agent명 없이 `작업 N` 순번만 유지(D-005). (4) **프론트**(`app.js`): nodeLabels/nodeTooltips 4개 + `agentLabels`(agent→사용자 라벨) + `renderTaskList` 헬퍼 + renderNodeData 4분기. **범위 한정(사용자 결정)**: 이번엔 처리 현황/라벨만 — 과분해·인사 중복 등 근본 원인(planner 분해 규칙·general_inference 인사 반복)은 후속. 관련 결정: D-033(처리 현황 추가 패턴 `_extract_node_progress→node_complete→renderNodeData` 재사용), D-037(replanner), D-038(result_aggregator 단일 task verbatim 통과 — 본 변경은 복합 task merge만 수정해 무충돌). 검증: arch_check --ci exit 0(pre-existing WARN orchestration→prompts만), orchestration 84 passed/4 skipped, graph 30건 회귀 통과, result_aggregator 테스트 2건 신 동작 갱신. 문서: `docs/11_web_ui_progress_specification.md` §3.2/§4.13 갱신 |
 | 2026-06-23 | D-038 | **사용법/지원 소스 안내 — general_inference 그라운딩 + 도움말 버튼**: "뭘 할 수 있어?/지원 소스?" 능력 문의에 실제 `active_db_ids ∩ allowed_db_ids` + `DB_DOMAINS` 설명을 코드로 조립해 시스템 프롬프트에 그라운딩(사실은 코드, 문장만 LLM, 멀티턴 마무리). deep_agent·semantic_router·intent_planner 3 백엔드가 모두 수렴하는 `general_inference` 1노드만 수정 → 전 백엔드 자동 커버. deep_agent 트랙 우회 방지로 `ORCHESTRATOR_INSTRUCTIONS`에 general_answer 위임 1줄 추가. `allowed_db_ids`(D-026) 교집합으로 못 쓰는 소스 광고 차단. `general_inference`의 "DB 미접근" 계약 유지(라이브 health 미수행, 설정·도메인 정의만 참조). UI: `❓ 사용법` 버튼(점선 메타 스타일, 클릭 즉시 실행). result_aggregator 무변(텍스트 결과 verbatim 통과 실측 확인). 검증: arch_check --ci exit 0(신규 error/warning 없음), orchestration 27건 통과, 카탈로그 교집합·폴백·멀티턴 마무리 동작 확인 |

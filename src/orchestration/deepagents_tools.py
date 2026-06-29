@@ -23,12 +23,15 @@ logger = logging.getLogger(__name__)
 
 # 도구 반환 시 포함할 최대 행 수 (토큰 폭증 방지 — R-B6/R-12와 동일 취지)
 _MAX_TOOL_ROWS = 50
-# organized_data/query_results가 없는 결과의 직렬화 길이 상한
+# organized_data/query_results가 없는 결과의 직렬화 길이 상한(폴백 — config 미전달 시)
 _MAX_RAW_CHARS = 4000
+# 토큰 → 문자수 보수 근사 계수 (Plan 50 §3.5(3): 정밀 토크나이저 대신 chars≈tokens*4)
+_CHARS_PER_TOKEN = 4
 
 # agent 식별자 → 도구 이름 (vLLM에 노출되는 함수명)
 _TOOL_NAMES: dict[str, str] = {
     "data_query": "query_infra_db",
+    "process_query": "query_live_processes",
     "alarm_query": "query_alarm",
     "cache_management": "manage_cache",
     "synonym_registration": "register_synonym",
@@ -36,22 +39,53 @@ _TOOL_NAMES: dict[str, str] = {
 }
 
 
-def _serialize_for_tool(result: Any) -> str:
+def _max_chars(app_config: Optional[AppConfig]) -> int:
+    """제어 평면 도구 결과 1건의 최대 문자수를 산정한다 (Plan 50 B1/B2).
+
+    OrchestratorConfig.max_tool_result_tokens(토큰) × _CHARS_PER_TOKEN(보수 근사)로
+    문자 상한을 구한다. config 미전달 시 정적 폴백(_MAX_RAW_CHARS)을 사용한다.
+
+    Args:
+        app_config: 앱 설정 (None이면 폴백 상한)
+
+    Returns:
+        직렬화 결과 텍스트의 최대 문자수
+    """
+    if app_config is None:
+        return _MAX_RAW_CHARS
+    return max(1, app_config.orchestrator.max_tool_result_tokens * _CHARS_PER_TOKEN)
+
+
+def _truncate(text: str, limit: int) -> str:
+    """텍스트를 상한 내로 자르고 초과 시 축소 표시를 붙인다."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…(축소됨)"
+
+
+def _serialize_for_tool(result: Any, app_config: Optional[AppConfig] = None) -> str:
     """handler 반환 dict를 도구 반환용 텍스트(JSON)로 직렬화한다.
 
     organized_data.summary + 행수 + 상한 적용 행을 담는다. 실패 시 오류 텍스트,
     조회형이 아닌 결과는 dict 전체를 길이 상한 내에서 직렬화한다.
 
+    이 함수의 출력은 **제어 평면(vLLM)에 ToolMessage로 노출되는 요약본**이며,
+    OrchestratorConfig.max_tool_result_tokens(B1)를 chars 근사로 환산한 상한을 넘으면
+    truncate + "…(축소됨)" 표시한다. 행 상한(_MAX_TOOL_ROWS)도 함께 적용한다.
+    원본 결과는 collector에만 적재되며(축소 미적용) 최종 응답 생성에 사용된다.
+
     Args:
         result: subagent handler 반환값
+        app_config: 앱 설정 (제어 평면 토큰 예산 산정용 — 없으면 정적 폴백)
 
     Returns:
         vLLM 오케스트레이터에 ToolMessage로 전달할 텍스트
     """
+    limit = _max_chars(app_config)
     if not isinstance(result, dict):
-        return str(result)
+        return _truncate(str(result), limit)
     if result.get("error"):
-        return f"[실패] {result['error']}"
+        return _truncate(f"[실패] {result['error']}", limit)
 
     organized = result.get("organized_data") or {}
     rows = organized.get("rows")
@@ -60,7 +94,7 @@ def _serialize_for_tool(result: Any) -> str:
 
     # 조회형(행 데이터)이 아니면 결과 dict 전체를 상한 내에서 직렬화
     if not organized and rows is None:
-        return json.dumps(result, ensure_ascii=False, default=str)[:_MAX_RAW_CHARS]
+        return _truncate(json.dumps(result, ensure_ascii=False, default=str), limit)
 
     rows = rows or []
     total = len(rows) if isinstance(rows, list) else 0
@@ -71,7 +105,7 @@ def _serialize_for_tool(result: Any) -> str:
         "rows": capped,
         "truncated": isinstance(rows, list) and total > _MAX_TOOL_ROWS,
     }
-    return json.dumps(payload, ensure_ascii=False, default=str)
+    return _truncate(json.dumps(payload, ensure_ascii=False, default=str), limit)
 
 
 async def _run_subagent_tool(
@@ -121,8 +155,10 @@ async def _run_subagent_tool(
     )
     if collector is not None:
         task["status"] = "failed" if isinstance(result, dict) and result.get("error") else "completed"
+        # collector에는 truncate 전 원본 결과를 적재한다(B1 — 최종 응답은 원본 기반).
         collector.append((task, result))
-    return _serialize_for_tool(result)
+    # vLLM에 반환하는 텍스트만 제어 평면 토큰 예산(B1)으로 축소한다.
+    return _serialize_for_tool(result, app_config)
 
 
 def _fallback_spec():

@@ -28,6 +28,45 @@ from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
+# process_query 결정적 가드 키워드 (D-041/D-046 정합).
+# 프로세스 신호 — 있으면 실시간 프로세스 조회 후보.
+_PROCESS_KEYWORDS = ("프로세스", "process")
+# 과거/이력 신호 — 있으면 DB 이력 조회(data_query)로 유지(실시간 교정 제외).
+_PROCESS_HISTORY_KEYWORDS = (
+    "이력", "추세", "추이", "트렌드", "지난", "과거", "기간",
+    "일간", "주간", "월간", "동안", "history", "변화", "시점",
+)
+
+
+def _coerce_process_intent(tasks: list[dict]) -> list[dict]:
+    """현재/실시간 프로세스 조회인데 data_query로 분류된 task를 process_query로 교정한다.
+
+    배경(D-046): "프로세스 조회/리스트"에 '현재/실시간' 같은 시간성 신호가 없으면 LLM이
+    보수적으로 `data_query`로 분류 → `cmm_resource`에서 `resource_type='process'` 행을 가져오는
+    환각이 발생한다. 시간성(이력/추세 등) 신호가 없는 프로세스 조회는 실시간 API(`process_query`)가
+    1급 의도이므로(D-041) LLM 비결정성에 의존하지 않고 결정적으로 교정한다.
+
+    Args:
+        tasks: 분해된 task 목록(각 dict는 agent/sub_query 보유)
+
+    Returns:
+        교정이 적용된 동일 리스트(in-place 수정 후 반환)
+    """
+    for task in tasks:
+        if task.get("agent") != "data_query":
+            continue
+        sub = str(task.get("sub_query", "")).lower()
+        if not any(k in sub for k in _PROCESS_KEYWORDS):
+            continue
+        if any(h in sub for h in _PROCESS_HISTORY_KEYWORDS):
+            continue  # 과거/이력 프로세스는 DB 조회 유지
+        task["agent"] = "process_query"
+        logger.info(
+            "intent_planner: 프로세스 조회 결정적 교정 — data_query→process_query (sub_query=%r)",
+            task.get("sub_query"),
+        )
+    return tasks
+
 
 async def intent_planner(
     state: AgentState,
@@ -77,9 +116,13 @@ async def intent_planner(
         logger.info("intent_planner: mapped_db_ids 감지, data_query 단일 task (DB 고정=%s)", mapped_db_ids)
         return _single_task_plan("data_query", user_query, db_ids=mapped_db_ids)
 
-    # [계층 B] LLM 복합 분해
-    decomposed = await _llm_decompose(llm, user_query, app_config)
-    tasks = decomposed["tasks"]
+    # [계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1).
+    conversation_context = state.get("conversation_context")
+    decomposed = await _llm_decompose(
+        llm, user_query, app_config, conversation_context=conversation_context
+    )
+    # 결정적 가드: 시간성 신호 없는 프로세스 조회는 실시간 API로 교정(D-041/D-046, 폴백 포함)
+    tasks = _coerce_process_intent(decomposed["tasks"])
     result: dict = {
         "task_plan": tasks,
         "is_composite": len(tasks) > 1,
@@ -126,20 +169,78 @@ def _single_task_plan(
     }
 
 
+def _build_context_block(conversation_context: Optional[dict]) -> str:
+    """후속 턴 분해용 압축 맥락 블록을 만든다 (Plan 50 M1/M3, B3).
+
+    첫 턴(맥락 없음)이거나 turn_count<=1이면 빈 문자열을 반환한다.
+    원시 메시지 히스토리는 절대 넣지 않고, context_resolver가 보존한 압축 신호
+    (previous_location/previous_db_ids/previous_entities/요약)만 1블록으로 주입한다.
+
+    Args:
+        conversation_context: context_resolver가 채운 맥락 dict (없으면 None)
+
+    Returns:
+        HumanMessage 앞에 붙일 압축 맥락 블록 텍스트(없으면 "")
+    """
+    if not conversation_context:
+        return ""
+    if conversation_context.get("turn_count", 0) <= 1:
+        return ""
+
+    location = conversation_context.get("previous_location") or ""
+    db_ids = conversation_context.get("previous_db_ids") or []
+    entities = conversation_context.get("previous_entities") or []
+    summary = conversation_context.get("previous_results_summary") or ""
+
+    # 식별 엔티티는 상한 내 소량만 표면화(토큰 절약 — 2026-06-11 상한 원칙).
+    entity_strs: list[str] = []
+    seen: set[str] = set()
+    for e in entities[:10]:
+        if not isinstance(e, dict):
+            continue
+        field = e.get("field", "")
+        value = e.get("value", "")
+        token = f"{field}={value}"
+        if value != "" and token not in seen:
+            seen.add(token)
+            entity_strs.append(token)
+    entity_line = ", ".join(entity_strs) if entity_strs else "(없음)"
+
+    lines = [
+        "## 이전 대화 맥락 (후속 턴 분해 시 활용)",
+        f"- 직전 대상 위치/환경: {location or '(미상)'}",
+        f"- 직전 대상 DB 후보: {', '.join(db_ids) if db_ids else '(미상)'}",
+        f"- 직전 대상 서버/장비: {entity_line}",
+        f"- 직전 작업 요약: {summary or '(없음)'}",
+        "",
+        '지시어("해당 서버", "그 장비", "위 결과", "이 DB") 해소 규칙:',
+        "- 사용자가 이번 질의에서 새 위치/DB/대상을 **명시하지 않으면** 위 직전 값을 sub_query에 그대로 보존하라.",
+        "- 예: 후속 질의가 \"해당 서버의 프로세스\"이면 sub_query에 직전 위치·서버 식별자를 포함시켜라",
+        "  (예: \"김포 운영 폴스타의 ### 서버 현재 프로세스 리스트\").",
+        "- 사용자가 명시적으로 다른 위치/DB/대상을 지정하면 그 신호를 최우선으로 따르라(승계하지 말 것).",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 async def _llm_decompose(
     llm: BaseChatModel,
     user_query: str,
     app_config: AppConfig,
+    *,
+    conversation_context: Optional[dict] = None,
 ) -> dict:
     """LLM으로 질의를 sub-task 목록으로 분해한다.
 
     INTENT_PLANNER_SYSTEM_TEMPLATE로 LLM을 호출하고 JSON을 파싱한다.
+    후속 턴(conversation_context 있음)이면 HumanMessage 앞에 압축 맥락 블록을 주입한다(M1).
     실패/빈 결과면 단일 data_query task로 폴백한다.
 
     Args:
         llm: LLM 인스턴스
         user_query: 사용자 질의
         app_config: 앱 설정
+        conversation_context: context_resolver가 보존한 직전 턴 압축 신호 (없으면 첫 턴)
 
     Returns:
         {"tasks": [...], "clarification_needed": {...} | None}
@@ -160,13 +261,16 @@ async def _llm_decompose(
         "clarification_needed": None,
     }
 
+    context_block = _build_context_block(conversation_context)
+    human_content = f"{context_block}{user_query}" if context_block else user_query
+
     try:
         messages: list[BaseMessage] = [
             SystemMessage(content=INTENT_PLANNER_SYSTEM_TEMPLATE)
         ]
         if isinstance(llm, KBGenAIChat):
             messages.append(AIMessage(content=""))
-        messages.append(HumanMessage(content=user_query))
+        messages.append(HumanMessage(content=human_content))
 
         response = await llm.ainvoke(messages)
         parsed = extract_json_from_response(response.content)

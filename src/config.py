@@ -78,6 +78,26 @@ class OrchestratorConfig(BaseSettings):
     timeout: int = 120
     health_timeout: int = 3       # 가용성 health check 타임아웃(초, vLLM)
 
+    # ── Plan 50 / D-040 (B6): 제어 평면 컨텍스트 예산 노브 ──
+    # 모델 교체(예: 9B → 대형) 시 코드 수정 없이 .env(ORCHESTRATOR_*)만 조정하면 예산이 확장된다.
+    # 단순 int/float이므로 .env JSON 파싱 이슈 없음(Known Mistakes 2026-03-23).
+    # 제어 평면 입력 토큰 안전 상한. 서버 max_model_len(=16384 상향 진행) − 출력 여유(~4000) = 12000.
+    # 초과 예상 시 트리밍/요약/강등(B2) 트리거. 모델 교체 시 서버 max_model_len 상향과 함께 올린다.
+    max_input_tokens: int = 12000
+    # 상한 대비 트리밍 시작 임계 비율(80% 도달 시 오래된 도구 결과 쌍을 요약). 보통 유지.
+    context_budget_ratio: float = 0.8
+    # 제어 평면으로 반환하는 도구 결과 1건 요약 상한(B1). 원본은 collector에만 보관한다.
+    # 모델 교체로 컨텍스트가 커지면 상향 가능.
+    max_tool_result_tokens: int = 2000
+    # 제어 평면에 유지할 멀티턴 압축 맥락 턴 수(B3). 데이터 평면 MAX_HISTORY_TURNS=10과 별도.
+    # 모델 교체로 컨텍스트가 커지면 상향 가능.
+    max_history_turns: int = 6
+
+    # ── Plan 50 / D-040 (B7): Qwen 계열 no-think(추론 비활성) 모드 ──
+    # 제어 평면 추론 모드. Qwen 계열은 false(no-think) 권장 — 추론 토큰으로 인한 한계 압박과
+    # tool_call JSON 파싱 불안정을 회피한다. 추론이 유리한 큰 모델로 교체 시 .env로 true 전환.
+    enable_thinking: bool = False
+
     model_config = {
         "env_prefix": "ORCHESTRATOR_",
         "env_file": [".env", ".encenv"],

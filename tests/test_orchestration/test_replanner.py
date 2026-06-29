@@ -37,7 +37,7 @@ from src.graph import (
     route_after_replanner,
 )
 from src.orchestration.agent_orchestrator import agent_orchestrator
-from src.orchestration.replanner import replanner
+from src.orchestration.replanner import _assign_ids, replanner
 from src.orchestration.subagents import SUBAGENT_REGISTRY, SubAgentSpec
 from src.state import create_initial_state
 
@@ -514,6 +514,48 @@ def test_graph_loop_shape():
     assert route_after_replanner({"needs_replan": False}) == "result_aggregator"
     # 기본값(키 없음) → 종료
     assert route_after_replanner({}) == "result_aggregator"
+
+
+# ──────────────────────────────────────────────
+# 9b. test_assign_ids supersedes (D-043)
+# ──────────────────────────────────────────────
+
+def test_assign_ids_carries_supersedes_to_existing_task():
+    """기존 task_id를 가리키는 supersedes는 그대로 보존된다."""
+    new_tasks = [{"agent": "data_query", "sub_query": "재조회", "supersedes": ["t1"]}]
+    existing = [{"task_id": "t1", "order": 1}]
+
+    assigned = _assign_ids(new_tasks, existing=existing)
+
+    assert len(assigned) == 1
+    assert assigned[0]["task_id"] == "t2"
+    assert assigned[0]["supersedes"] == ["t1"]
+
+
+def test_assign_ids_defaults_supersedes_empty():
+    """supersedes 누락 시 빈 배열로 보정된다(추가형 후속)."""
+    new_tasks = [{"agent": "alarm_query", "sub_query": "알람", "depends_on": ["t1"]}]
+    existing = [{"task_id": "t1", "order": 1}]
+
+    assigned = _assign_ids(new_tasks, existing=existing)
+
+    assert assigned[0]["supersedes"] == []
+
+
+def test_assign_ids_remaps_supersedes_between_new_tasks():
+    """신규 task끼리의 supersedes 상대 참조(임시 id)를 실제 부여 id로 재매핑한다."""
+    new_tasks = [
+        {"task_id": "a", "agent": "data_query", "sub_query": "1차"},
+        {"task_id": "b", "agent": "data_query", "sub_query": "재조회", "supersedes": ["a"]},
+    ]
+    existing = [{"task_id": "t1", "order": 1}]
+
+    assigned = _assign_ids(new_tasks, existing=existing)
+
+    # a→t2, b→t3 로 부여되고 b.supersedes는 t2로 재매핑
+    ids = [t["task_id"] for t in assigned]
+    assert ids == ["t2", "t3"]
+    assert assigned[1]["supersedes"] == ["t2"]
 
 
 # ──────────────────────────────────────────────

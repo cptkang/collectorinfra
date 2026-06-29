@@ -106,18 +106,40 @@ def _count_human_messages(messages: list) -> int:
     return len([m for m in messages if isinstance(m, HumanMessage)])
 
 
-def _summarize_tasks(tasks: list[dict]) -> list[dict]:
-    """task_plan을 처리 현황 표시용 경량 항목으로 요약한다 (order 정렬, 표시 필드만)."""
+def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dict]:
+    """task_plan을 처리 현황 표시용 경량 항목으로 요약한다 (order 정렬, 표시 필드만).
+
+    results(task_results)가 주어지면 task별 생성 SQL·대상 DB·행수·DB 에러를 함께
+    포함한다. orchestration 경로에서는 query_generator가 그래프 노드가 아니어서
+    생성 SQL이 따로 노출되지 않으므로, 어떤 SQL이 어느 DB로 실행됐는지 보이게 한다.
+    """
     ordered = sorted(tasks, key=lambda t: t.get("order", 0))
-    return [
-        {
+    summarized: list[dict] = []
+    for i, t in enumerate(ordered):
+        item: dict = {
             "order": t.get("order", i + 1),
             "agent": t.get("agent", ""),
             "sub_query": t.get("sub_query", ""),
             "status": t.get("status", "pending"),
         }
-        for i, t in enumerate(ordered)
-    ]
+        res = results.get(t.get("task_id")) if isinstance(results, dict) else None
+        if isinstance(res, dict):
+            sql = res.get("generated_sql")
+            if sql:
+                item["generated_sql"] = sql
+            db_ids = res.get("target_db_ids")
+            if db_ids:
+                item["target_db_ids"] = db_ids
+            rows = res.get("query_results")
+            if isinstance(rows, list):
+                item["row_count"] = len(rows)
+            db_errors = res.get("db_errors")
+            if db_errors:
+                item["db_errors"] = db_errors
+            elif res.get("error"):
+                item["error"] = res.get("error")
+        summarized.append(item)
+    return summarized
 
 
 def _extract_node_progress(node_name: str, output: dict) -> dict | None:
@@ -258,7 +280,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 return None
             return {
                 "task_count": len(tasks),
-                "tasks": _summarize_tasks(tasks),
+                "tasks": _summarize_tasks(tasks, results=output.get("task_results")),
             }
 
         elif node_name == "replanner":
@@ -1214,11 +1236,22 @@ async def download_csv(query_id: str) -> StreamingResponse:
     output = io.StringIO()
     output.write("\ufeff")  # UTF-8 BOM
 
-    # 첫 번째 행에서 컬럼명 추출
-    fieldnames = list(rows[0].keys())
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    # 컬럼명: 행마다 키가 다를 수 있으므로(복합 task 병합 등) 등장 순서를 유지하며
+    # 키 합집합을 만든다. 누락 키는 빈 값(restval), 초과 키는 무시(extrasaction)한다.
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for k in row.keys():
+            if k not in seen:
+                seen.add(k)
+                fieldnames.append(k)
+    writer = csv.DictWriter(
+        output, fieldnames=fieldnames, restval="", extrasaction="ignore"
+    )
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows(r for r in rows if isinstance(r, dict))
 
     csv_bytes = output.getvalue().encode("utf-8")
 

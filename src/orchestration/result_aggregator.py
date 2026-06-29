@@ -54,8 +54,20 @@ async def result_aggregator(
     tasks = state["task_plan"]
     task_results = state.get("task_results", {})
 
-    # order 순으로 task 정렬 (표시 순서 안정화)
-    ordered_tasks = sorted(tasks, key=lambda t: t.get("order", 0))
+    # 대체(재조회)된 선행 task는 최종 답변 본문에서 제외한다(D-043).
+    # replanner가 "0건/누락 → 재조회" 후속을 만들면 supersedes에 선행 task_id가 담긴다.
+    # 그 후속이 성공(에러 없음)했을 때만 선행을 숨겨, 동일 질문에 대한 상반된 이중 답변
+    # (없음→있음)을 방지한다. 재조회 자체가 실패하면 선행 결과를 그대로 유지한다(안전).
+    superseded = _collect_superseded(tasks, task_results)
+
+    # order 순으로 task 정렬 (표시 순서 안정화), 대체된 task는 본문에서 제외.
+    ordered_tasks = [
+        t for t in sorted(tasks, key=lambda t: t.get("order", 0))
+        if t["task_id"] not in superseded
+    ]
+    # 방어: 모든 task가 제외되는 비정상 상황이면 제외를 무시하고 전체 사용.
+    if not ordered_tasks:
+        ordered_tasks = sorted(tasks, key=lambda t: t.get("order", 0))
 
     # 각 task 결과를 최종화 (텍스트 응답 + 선택적 output_file)
     finalized: list[dict] = []
@@ -70,6 +82,8 @@ async def result_aggregator(
         out: dict = {
             "final_response": f["text"],
             "current_node": "result_aggregator",
+            # CSV 다운로드/row_count용 결과를 top-level state로 승격(D-047)
+            "query_results": f.get("query_results") or [],
         }
         if f.get("output_file") is not None:
             out["output_file"] = f["output_file"]
@@ -78,6 +92,33 @@ async def result_aggregator(
 
     # 복합 task: order 순으로 묶어 통합
     return _merge_finalized(finalized)
+
+
+def _collect_superseded(tasks: list[dict], task_results: dict[str, dict]) -> set[str]:
+    """대체(재조회)되어 최종 답변 본문에서 숨길 선행 task_id 집합을 계산한다(D-043).
+
+    각 task의 `supersedes`(선행 task_id 목록)를 읽되, **그 후속 task가 성공했을 때만**
+    선행을 숨김 대상으로 인정한다. 후속이 실패(error)했거나 결과가 없으면 선행을 그대로
+    유지하여, 재조회 실패 시 사용자에게 빈 답변만 보이는 상황을 방지한다.
+
+    Args:
+        tasks: 전체 task_plan
+        task_results: {task_id: 정규화된 결과}
+
+    Returns:
+        본문에서 제외할 선행 task_id 집합
+    """
+    superseded: set[str] = set()
+    for t in tasks:
+        targets = t.get("supersedes") or []
+        if not targets:
+            continue
+        res = task_results.get(t.get("task_id"), {})
+        # 후속(대체) task 자체가 실패했으면 선행을 숨기지 않는다.
+        if res.get("error"):
+            continue
+        superseded.update(tid for tid in targets if tid)
+    return superseded
 
 
 async def _finalize_task(
@@ -111,11 +152,25 @@ async def _finalize_task(
         "output_file": None,
         "output_file_name": None,
         "error": res.get("error"),
+        # CSV 다운로드/row_count용 원시 결과를 보존한다(orchestration 경로에서 query_results를
+        # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
+        "query_results": res.get("query_results") or [],
     }
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     organized = res.get("organized_data")
     if organized is not None:
+        # 결정적 subagent(process_query)는 빈 결과에도 **원인 진단 summary**를 제공한다
+        # (서버 식별 실패·API 미연결·API 미응답·0건 등). output_generator의 일반
+        # "조건에 해당하는 …데이터가 없습니다" 문구로 덮어쓰면 실제 원인이 사라지므로,
+        # 빈 결과(rows=[]) + summary가 있으면 그 summary를 그대로 노출한다(Plan 50 M4 / D-046).
+        if (
+            agent == "process_query"
+            and not organized.get("rows")
+            and organized.get("summary")
+        ):
+            base["text"] = organized["summary"]
+            return base
         s = _build_output_state(state, task, res)
         try:
             out = await output_generator(s, llm=llm, app_config=app_config)
@@ -187,6 +242,7 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     failed: list[str] = []
     output_file: Optional[bytes] = None
     output_file_name: Optional[str] = None
+    merged_rows: list[dict] = []
 
     for i, f in enumerate(finalized, 1):
         text = f.get("text", "")
@@ -198,6 +254,10 @@ def _merge_finalized(finalized: list[dict]) -> dict:
         if output_file is None and f.get("output_file") is not None:
             output_file = f["output_file"]
             output_file_name = f.get("output_file_name")
+        # CSV 다운로드용 결과 누적(복합 task — 각 task의 행을 순서대로 이어붙임, D-047)
+        rows = f.get("query_results")
+        if isinstance(rows, list):
+            merged_rows.extend(rows)
 
     body = "\n\n".join(parts)
     if failed:
@@ -206,6 +266,7 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     result: dict = {
         "final_response": body,
         "current_node": "result_aggregator",
+        "query_results": merged_rows,
     }
     if output_file is not None:
         result["output_file"] = output_file

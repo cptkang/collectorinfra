@@ -212,6 +212,7 @@ header nav {
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
+    position: relative;   /* 플로팅 "맨 아래로" 버튼 기준 */
 }
 
 /* ─── Chat Messages Area ─── */
@@ -223,7 +224,66 @@ header nav {
     max-width: 920px;
     width: 100%;
     margin: 0 auto;
-    scroll-behavior: smooth;
+    /* scroll-behavior: smooth 제거 — 토큰 스트리밍 추종은 JS에서 즉시(비smooth) 처리.
+       부드러운 이동은 "맨 아래로" 버튼 클릭 시에만 국소 적용한다. */
+}
+
+/* ─── Scroll-to-bottom Floating Button ─── */
+
+.scroll-to-bottom-btn {
+    position: absolute;
+    bottom: 120px;           /* 입력 바 위. 반응형에서 조정 */
+    right: 24px;             /* 우측 하단 */
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    z-index: 15;
+}
+
+.scroll-to-bottom-btn.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.scroll-to-bottom-btn:hover {
+    background: var(--surface-hover);
+}
+
+.scroll-to-bottom-btn svg {
+    stroke: var(--text-secondary);
+    fill: none;
+    stroke-width: 2;
+}
+
+/* 신규 내용 강조: 점 + 테두리 강조 */
+.scroll-to-bottom-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface);
+    display: none;
+}
+
+.scroll-to-bottom-btn.has-new .scroll-to-bottom-dot {
+    display: block;
+}
+
+.scroll-to-bottom-btn.has-new {
+    border-color: var(--accent);
 }
 
 /* ─── Right Progress Panel ─── */
@@ -2809,6 +2869,11 @@ select:focus {
 
     .input-bar {
         padding: 12px 16px 16px;
+    }
+
+    .scroll-to-bottom-btn {
+        bottom: 96px;
+        right: 16px;
     }
 
     .message-content {

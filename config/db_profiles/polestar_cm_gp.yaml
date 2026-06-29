@@ -160,7 +160,7 @@ patterns:
     id_column: id
     parent_column: parent_resource_id
     type_column: resource_type
-    name_column: hostname
+    name_column: name
 
 query_guide: |
   Polestar DB는 cmm_resource(리소스 계층), core_config_prop(EAV 설정), cmm_metric_stat_m(성능 통계) 3개 테이블로 구성됩니다.
@@ -172,10 +172,19 @@ query_guide: |
   **기본값**: 사용자가 서버를 특정할 때 "호스트명/호스트네임"이라고 명시하지 않으면 반드시 cmm_resource.name 을 사용하세요.
   서버 목록 출력 시에도 name 컬럼을 우선 표시하고, 필요 시 hostname을 함께 출력합니다.
 
+  [★★ hostname / ipaddress 출력은 직접 컬럼 사용 — EAV 금지]
+  이 DB에서 호스트명·IP주소의 실제 값은 cmm_resource.hostname / cmm_resource.ipaddress **직접 컬럼**에 있습니다.
+  EAV(core_config_prop)의 cc.name = 'Hostname' / 'IPaddress' 속성은 **값이 비어 있어** 조회 시 NULL이 반환됩니다.
+  따라서 호스트명·IP주소를 출력할 때는 반드시 r.hostname / r.ipaddress(피벗 시 MAX(CASE WHEN c.resource_type='server.Server' THEN c.hostname END))를 사용하고,
+  **cc.name = 'Hostname' / 'IPaddress' 의 stringvalue_short 는 절대 사용하지 마세요.**
+  (CPU·메모리·OS종류·버전 등 나머지 속성은 EAV 사용이 맞습니다 — hostname/ipaddress만 직접 컬럼.)
+
   [★ filter_conditions 필드명 재매핑 — 공동존 폴스타 전용]
   input_parser가 생성한 filter_conditions의 field 값이 무엇이든, 사용자의 원문이 "서버 이름", "서버명", "장비명", "장비 이름"에 해당하면
   SQL에서 cmm_resource.name 컬럼으로 매핑한다. filter_conditions.field = "hostname"이 전달되더라도 예외 없이 적용한다.
-  단, 사용자가 명시적으로 "호스트명" 또는 "호스트네임"이라고 언급한 경우에만 cmm_resource.hostname 을 사용한다.
+  **사용자가 "<값> 서버"(예: "cocm-hdkapp01 서버")처럼 값으로 서버를 지칭하면 그 값은 장비명이므로 WHERE r.name = '<값>' 으로 거른다.**
+  **출력 컬럼으로 "호스트네임/IP"를 함께 요청하더라도 서버 식별 필터는 절대 hostname 으로 하지 말 것 (필터=r.name, 출력=r.hostname 은 별개).**
+  단, 사용자가 명시적으로 "호스트명/호스트네임이 XXX인 서버"처럼 호스트명 자체로 필터하라고 한 경우에만 cmm_resource.hostname 을 사용한다.
   예: filter_conditions = [{"field": "hostname", "op": "=", "value": "cocm-hdkapp01"}] + 원문 "서버 이름이 cocm-hdkapp01인"
       → WHERE r.name = 'cocm-hdkapp01'  (r.hostname 이 아님)
 
@@ -317,8 +326,8 @@ query_examples:
     sql: |
       SELECT
           COALESCE(c.platform_resource_id, c.id) AS id,
-          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname'      THEN cc.stringvalue_short END) AS hostname,
-          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,    -- 직접 컬럼 (EAV 'Hostname' 속성은 비어있어 NULL)
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,   -- 직접 컬럼 (EAV 'IPaddress' 속성은 비어있어 NULL)
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
@@ -405,7 +414,7 @@ query_examples:
       LEFT JOIN (
           SELECT
               COALESCE(c.platform_resource_id, c.id) AS id,
-              MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+              MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,   -- 직접 컬럼 (EAV 'IPaddress'는 비어있어 조인 깨짐)
               MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
               MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
           FROM polestar.cmm_resource c
@@ -455,7 +464,7 @@ query_examples:
       LEFT JOIN (
           SELECT
               COALESCE(c.platform_resource_id, c.id) AS id,
-              MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+              MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,   -- 직접 컬럼 (EAV 'IPaddress'는 비어있어 조인 깨짐)
               MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
               MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
           FROM polestar.cmm_resource c

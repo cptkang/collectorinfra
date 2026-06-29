@@ -67,6 +67,10 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
     예: "가용성 상태가 비정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
     예: "가용성이 정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "=", "value": 0}]
     예: "가용성 상태가 정상이 아닌 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
+14. **특정 서버 지목 시 식별자 추출**: 사용자가 하나의 특정 서버/장비를 지목하면(예: "XXX 서버", "XXX 장비", "XXX에 대한 프로세스/CPU/메모리", "XXX의 프로세스", "XXX 서버 프로세스 리스트") 그 서버 식별자(서버명 또는 호스트명)를 반드시 filter_conditions에 `{"field": "hostname", "op": "=", "value": "<서버식별자>"}` 형태로 추출하세요. 특히 "프로세스 리스트/조회" 질의는 대상 서버 식별이 필수이므로 빠뜨리지 마세요.
+    - 위치/DB 수식어(김포·여의도·폴스타 등)는 value에 포함하지 말고 규칙 10에 따라 target_db_hints로 분리합니다.
+    - value에는 서버 식별자만 담고, 일반 명사 "서버"/"장비"가 단순 수식어로 뒤에 붙은 경우(예: "webdb01 서버")에는 식별자("webdb01")만 추출합니다. 단, 식별자와 "서버"가 공백 없이 붙어 한 토큰처럼 보이면("webdb01서버") 원문 토큰 그대로 추출합니다.
+    예: "김포 webdb01 서버 프로세스 리스트 조회" → filter_conditions: [{"field": "hostname", "op": "=", "value": "webdb01"}], target_db_hints: ["김포"]
 
 ## 예시
 
@@ -93,6 +97,20 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
     "output_format": "text",
     "aggregation": "top_n",
     "limit": 10
+}
+```
+
+입력: "김포 webdb01 서버에 대한 프로세스 리스트 조회"
+출력:
+```json
+{
+    "query_targets": ["프로세스"],
+    "filter_conditions": [{"field": "hostname", "op": "=", "value": "webdb01"}],
+    "time_range": null,
+    "output_format": "text",
+    "aggregation": null,
+    "limit": null,
+    "target_db_hints": ["김포"]
 }
 ```
 

@@ -26,10 +26,14 @@ from src.state import create_initial_state
 # test_subagent_registry (S1·S5)
 # ──────────────────────────────────────────────
 
-def test_subagent_registry_has_five_agents():
-    """SUBAGENT_REGISTRY에 5개 agent가 존재하고 각 handler가 callable이다."""
+def test_subagent_registry_has_expected_agents():
+    """SUBAGENT_REGISTRY에 기대 agent가 존재하고 각 handler가 callable이다.
+
+    Plan 50 M4에서 process_query(실시간 프로세스 API)가 추가되었다.
+    """
     expected = {
         "data_query",
+        "process_query",
         "alarm_query",
         "cache_management",
         "synonym_registration",

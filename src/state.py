@@ -130,6 +130,20 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
     thread_id: Optional[str]                              # 세션 식별자
     conversation_context: Optional[dict]                  # context_resolver가 추출한 이전 맥락
+    # conversation_context 구조 (context_resolver가 채움, 후속 턴에만 non-None):
+    #   previous_sql: str                  — 직전 턴 생성 SQL
+    #   previous_results_summary: str      — "N건 조회됨, 컬럼: ..."
+    #   previous_result_count: int
+    #   previous_tables: list[str]
+    #   previous_db_id: Optional[str]      — 직전 단일 DB 경로 active_db_id (레거시 호환)
+    #   turn_count: int
+    #   has_pending_synonym_reuse / has_pending_synonym_registrations / pending_synonym_reg_count
+    #   [Plan 50 / M3 신규]
+    #   previous_db_ids: list[str]         — 직전 턴 대상 DB 통합(target_databases∪active_db_id∪mapped_db_ids).
+    #                                        후속 턴 DB 승계 우선 후보 (M2).
+    #   previous_entities: list[dict]      — [{"field": "hostname", "value": "###"}] 직전 식별 서버/장비
+    #                                        (filter_conditions 식별 키 + 결과 식별 컬럼 값, 행수 상한). "해당 서버" 해소.
+    #   previous_location: str             — 직전 폴스타 위치/환경 신호("김포 운영" 등). DB 식별 신호 승계.
 
     # === [Phase 3] Human-in-the-loop ===
     awaiting_approval: bool                    # 사용자 승인 대기 여부
