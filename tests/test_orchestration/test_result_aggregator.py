@@ -14,8 +14,10 @@ from src.orchestration.result_aggregator import (
     _collect_superseded,
     _finalize_task,
     _merge_finalized,
+    _synthesize_finalized,
     result_aggregator,
 )
+from src.llm import USER_RESPONSE_TAG
 
 # 패키지 __init__.py가 result_aggregator(함수)를 재노출하여 동명 서브모듈을 가린다.
 # 패치 대상 서브모듈은 sys.modules에서 직접 참조한다.
@@ -268,6 +270,157 @@ async def test_result_aggregator_single_passthrough(mock_config):
 
     assert out["final_response"] == "단일 답변"
     assert "### 작업" not in out["final_response"]
+
+
+# ──────────────────────────────────────────────
+# test_synthesize (D-048: 딥 에이전트 경로 단일 LLM 합성)
+# ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_synthesize_merges_into_single_answer(mock_config):
+    """synthesize=True + 복합 task → LLM 1회 합성으로 단일 답변(이어붙이기 아님)을 만든다.
+
+    회귀 방지: 딥 에이전트가 동일 질문을 재시도하면 collector에 1·2차 결과가 모두 쌓여
+    "없음→있음" 모순 이중 답변이 한 말풍선에 이어붙는다(D-048). 합성으로 단일화한다.
+    """
+    tasks = [
+        {"task_id": "tool_data_query_1", "agent": "general_inference", "sub_query": "q", "order": 1, "status": "completed"},
+        {"task_id": "tool_data_query_2", "agent": "general_inference", "sub_query": "q", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="김포 ### 서버 사양")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "tool_data_query_1": {"final_response": "CPU/메모리는 데이터에 존재하지 않습니다"},
+        "tool_data_query_2": {"final_response": "CPU 8코어, 메모리 32GB로 확인되었습니다"},
+    }
+
+    synth = AsyncMock(return_value="CPU 8코어, 메모리 32GB입니다")
+    with patch.object(agg_mod, "astream_text", new=synth) as st:
+        out = await result_aggregator(
+            state, llm=AsyncMock(), app_config=mock_config, synthesize=True
+        )
+
+    # 단일 합성 결과만 노출(이어붙인 모순 서술 없음)
+    assert out["final_response"] == "CPU 8코어, 메모리 32GB입니다"
+    assert "존재하지 않습니다" not in out["final_response"]
+    # 합성은 최종 사용자 응답 태그로 1회 스트리밍 호출되어야 한다(D-009)
+    st.assert_awaited_once()
+    assert USER_RESPONSE_TAG in st.call_args.kwargs.get("tags", [])
+
+
+@pytest.mark.asyncio
+async def test_synthesize_suppresses_pertask_streaming(mock_config):
+    """합성 모드에서 per-task output_generator는 USER_RESPONSE_TAG를 끄고 호출된다.
+
+    중간 per-task 토큰이 SSE로 새어 합성 전 답변이 보이는 것을 방지(D-048/D-009).
+    """
+    tasks = [
+        {"task_id": "tool_data_query_1", "agent": "data_query", "sub_query": "q1", "order": 1, "status": "completed"},
+        {"task_id": "tool_data_query_2", "agent": "data_query", "sub_query": "q2", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="복합")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "tool_data_query_1": {"organized_data": {"summary": "s1", "rows": [{"a": 1}], "is_sufficient": True}, "query_results": [{"a": 1}]},
+        "tool_data_query_2": {"organized_data": {"summary": "s2", "rows": [{"a": 2}], "is_sufficient": True}, "query_results": [{"a": 2}]},
+    }
+
+    og = AsyncMock(return_value={"final_response": "표", "output_file": None, "output_file_name": None})
+    with patch.object(agg_mod, "output_generator", new=og), \
+         patch.object(agg_mod, "astream_text", new=AsyncMock(return_value="합성")):
+        await result_aggregator(state, llm=AsyncMock(), app_config=mock_config, synthesize=True)
+
+    # 두 task 모두 stream_user_response=False로 마감되어야 함
+    assert og.await_count == 2
+    for call in og.await_args_list:
+        assert call.kwargs.get("stream_user_response") is False
+
+
+@pytest.mark.asyncio
+async def test_synthesize_falls_back_to_merge_on_error(mock_config):
+    """합성 LLM 호출이 실패하면 deterministic 이어붙이기로 안전 폴백한다."""
+    tasks = [
+        {"task_id": "t1", "agent": "general_inference", "sub_query": "q", "order": 1, "status": "completed"},
+        {"task_id": "t2", "agent": "general_inference", "sub_query": "q", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="q")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"final_response": "첫 결과"},
+        "t2": {"final_response": "둘째 결과"},
+    }
+
+    with patch.object(agg_mod, "astream_text", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        out = await result_aggregator(
+            state, llm=AsyncMock(), app_config=mock_config, synthesize=True
+        )
+
+    # 폴백: 두 결과가 이어붙어 노출(빈 답변 방지)
+    body = out["final_response"]
+    assert "첫 결과" in body and "둘째 결과" in body
+
+
+@pytest.mark.asyncio
+async def test_synthesize_single_task_passthrough(mock_config):
+    """synthesize=True여도 단일 task는 합성 없이 그대로 통과한다(스트리밍 유지)."""
+    tasks = [
+        {"task_id": "t1", "agent": "general_inference", "sub_query": "q", "order": 1, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="단일")
+    state["task_plan"] = tasks
+    state["task_results"] = {"t1": {"final_response": "단일 답변"}}
+
+    synth = AsyncMock(return_value="합성되면 안 됨")
+    with patch.object(agg_mod, "astream_text", new=synth):
+        out = await result_aggregator(
+            state, llm=AsyncMock(), app_config=mock_config, synthesize=True
+        )
+
+    assert out["final_response"] == "단일 답변"
+    synth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_synthesize_finalized_preserves_file_and_rows(mock_config):
+    """합성은 첫 산출 task의 output_file을 채택하고 query_results를 누적한다."""
+    finalized = [
+        {"order": 1, "agent": "data_query", "text": "표1", "output_file": None,
+         "output_file_name": None, "error": None, "query_results": [{"a": 1}]},
+        {"order": 2, "agent": "data_query", "text": "표2", "output_file": b"xlsx",
+         "output_file_name": "r.xlsx", "error": None, "query_results": [{"a": 2}]},
+    ]
+    state = create_initial_state(user_query="복합")
+
+    with patch.object(agg_mod, "astream_text", new=AsyncMock(return_value="합성 본문")):
+        out = await _synthesize_finalized(finalized, state, AsyncMock(), mock_config)
+
+    assert out["final_response"] == "합성 본문"
+    assert out["output_file"] == b"xlsx"
+    assert out["output_file_name"] == "r.xlsx"
+    assert out["query_results"] == [{"a": 1}, {"a": 2}]
+
+
+@pytest.mark.asyncio
+async def test_non_synthesize_composite_still_concatenates(mock_config):
+    """synthesize 미지정(replanner 경로)은 기존 deterministic 이어붙이기를 유지한다(D-005)."""
+    tasks = [
+        {"task_id": "t1", "agent": "general_inference", "sub_query": "q1", "order": 1, "status": "completed"},
+        {"task_id": "t2", "agent": "general_inference", "sub_query": "q2", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="복합")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"final_response": "첫 번째"},
+        "t2": {"final_response": "두 번째"},
+    }
+
+    synth = AsyncMock(return_value="합성되면 안 됨")
+    with patch.object(agg_mod, "astream_text", new=synth):
+        out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    body = out["final_response"]
+    assert "첫 번째" in body and "두 번째" in body
+    synth.assert_not_awaited()
 
 
 @pytest.mark.asyncio

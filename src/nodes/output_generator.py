@@ -27,6 +27,7 @@ async def output_generator(
     *,
     llm: BaseChatModel | None = None,
     app_config: AppConfig | None = None,
+    stream_user_response: bool = True,
 ) -> dict:
     """최종 응답을 생성한다.
 
@@ -39,6 +40,10 @@ async def output_generator(
         state: 현재 에이전트 상태
         llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
         app_config: 앱 설정 (외부 주입, 없으면 내부 로드)
+        stream_user_response: 자연어 응답 LLM 호출에 USER_RESPONSE_TAG를 부여해
+            토큰 단위 SSE 스트리밍(D-009)을 활성화할지 여부. 딥 에이전트 경로에서
+            여러 하위 결과를 별도 LLM으로 단일 합성하는 경우(D-048), 중간 per-task
+            토큰이 새지 않도록 False로 호출하고 최종 합성에만 태그를 부여한다.
 
     Returns:
         업데이트할 State 필드:
@@ -55,7 +60,9 @@ async def output_generator(
     output_format = parsed.get("output_format", "text")
 
     if output_format == "text":
-        response = await _generate_text_response(app_config, state, llm=llm)
+        response = await _generate_text_response(
+            app_config, state, llm=llm, stream_user_response=stream_user_response
+        )
         response = _append_inferred_mapping_info(response, state)
         return {
             "final_response": response,
@@ -69,7 +76,9 @@ async def output_generator(
         # Phase 2: 파일 생성
         file_result = _generate_document_file(state, output_format)
         if file_result:
-            text_response = await _generate_text_response(app_config, state, llm=llm)
+            text_response = await _generate_text_response(
+                app_config, state, llm=llm, stream_user_response=stream_user_response
+            )
             text_response = _append_inferred_mapping_info(text_response, state)
 
             # Excel 데이터 0건 채움 경고 메시지 추가
@@ -94,7 +103,9 @@ async def output_generator(
         else:
             # 파일 생성 실패: 텍스트 응답으로 폴백
             logger.warning("파일 생성 실패, 텍스트 응답으로 대체")
-            text_response = await _generate_text_response(app_config, state, llm=llm)
+            text_response = await _generate_text_response(
+                app_config, state, llm=llm, stream_user_response=stream_user_response
+            )
             text_response = _append_inferred_mapping_info(text_response, state)
             return {
                 "final_response": (
@@ -122,6 +133,7 @@ async def _generate_text_response(
     state: AgentState,
     *,
     llm: BaseChatModel | None = None,
+    stream_user_response: bool = True,
 ) -> str:
     """LLM을 사용하여 자연어 응답을 생성한다.
 
@@ -129,6 +141,7 @@ async def _generate_text_response(
         config: 앱 설정
         state: 에이전트 상태
         llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
+        stream_user_response: USER_RESPONSE_TAG 부여 여부 (D-048 합성 시 False).
 
     Returns:
         자연어 응답 텍스트
@@ -157,8 +170,10 @@ async def _generate_text_response(
     messages.append(HumanMessage(content=user_prompt))
 
     # 토큰 단위 SSE 스트리밍(D-009)을 위해 .astream()으로 호출하고,
-    # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다.
-    return await astream_text(llm, messages, tags=[USER_RESPONSE_TAG])
+    # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다. 단, 딥 에이전트 단일
+    # 합성(D-048)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
+    tags = [USER_RESPONSE_TAG] if stream_user_response else None
+    return await astream_text(llm, messages, tags=tags)
 
 
 def _generate_empty_result_response(parsed: dict) -> str:

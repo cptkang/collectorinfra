@@ -348,6 +348,32 @@ query_examples:
       서버 종합 정보 조회 — GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계.
       resource_type별로 CASE WHEN을 사용하여 server.Server(호스트/OS), server.Cpus(CPU), server.Memory(메모리) 속성을 한 행으로 피벗.
 
+  - question: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, 호스트네임, CPU 모델, 메모리 용량을 조회해줘"
+    sql: |
+      -- ★ 단일 서버 + CPU·메모리(다른 resource_type) 동시 조회: 서버 식별은 HAVING으로 (WHERE 금지)
+      -- WHERE에 c.name='...'을 두면 server.Cpus/server.Memory 행이 GROUP BY 전에 걸러져 CPU·메모리가 NULL이 됨
+      SELECT
+          COALESCE(c.platform_resource_id, c.id) AS id,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name      END) AS server_name,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'    THEN cc.stringvalue_short END) AS ostype,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'  THEN cc.stringvalue_short END) AS osversion,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'     THEN cc.stringvalue_short END) AS cpu_model,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize' THEN cc.stringvalue_short END) AS mem_size
+      FROM polestar.cmm_resource c
+      LEFT JOIN polestar.core_config_prop cc
+            ON c.resource_conf_id = cc.configuration_id
+      WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id)
+      HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = 'cocm-hdkapp01';
+    explanation: |
+      단일 서버의 종합 정보(OS/IP/호스트명 + CPU/메모리)를 한 행으로 피벗.
+      ★ 서버 식별(장비명)은 WHERE가 아니라 HAVING(집계 후 server.Server 행 기준)으로 적용한다.
+      WHERE에 c.name='...'을 두면 server.Cpus/server.Memory 행이 GROUP BY 전에 제거되어 CPU·메모리가 NULL이 된다.
+      장비명 대신 "호스트명/호스트네임이 XXX인"이라고 명시한 경우에만 HAVING의 c.name을 c.hostname으로 바꾼다.
+
   - question: "비정상 서버 목록과 IP를 조회해줘"
     sql: |
       -- 공동존 폴스타: 서버명은 r.name, 비정상은 avail_status != 0

@@ -37,7 +37,7 @@ from src.graph import (
     route_after_replanner,
 )
 from src.orchestration.agent_orchestrator import agent_orchestrator
-from src.orchestration.replanner import _assign_ids, replanner
+from src.orchestration.replanner import _assign_ids, _filter_futile_retries, replanner
 from src.orchestration.subagents import SUBAGENT_REGISTRY, SubAgentSpec
 from src.state import create_initial_state
 
@@ -313,6 +313,113 @@ async def test_replanner_blocks_general_inference_followup(mock_config):
     assert "task_plan" not in result
     # 원본 task_plan 미변경
     assert len(state["task_plan"]) == 1
+
+
+# ──────────────────────────────────────────────
+# 5b. test_filter_futile_retries (D-049: 엔티티 확보 후 무의미 재시도 차단)
+# ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_replanner_blocks_futile_retry_with_supersedes(mock_config):
+    """선행이 >0행을 찾았는데 같은 의도를 supersedes로 재조회 → 차단 후 종료(D-049 규칙 a).
+
+    "행은 찾았으나 일부 필드 null"을 LLM이 재조회로 메우려 해도, 누락 필드는 데이터에
+    없는 것이므로 max_replan까지 헛돈다. 결정적으로 차단한다.
+    """
+    content = json.dumps(
+        {
+            "needs_followup": True,
+            "reason": "CPU·메모리가 null이라 재조회 필요",
+            "new_tasks": [
+                {"agent": "data_query", "sub_query": "김포 ### 서버 CPU·메모리 재조회",
+                 "depends_on": [], "input_from": [], "supersedes": ["t1"]}
+            ],
+        },
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    task_plan = [
+        {"task_id": "t1", "agent": "data_query", "sub_query": "김포 ### 서버 사양",
+         "depends_on": [], "input_from": [], "order": 1, "status": "completed"},
+    ]
+    state = _make_state(
+        task_plan=task_plan,
+        task_results={"t1": {"query_results": [{"hostname": "gp-001", "cpu": None, "mem": None}]}},
+    )
+
+    result = await replanner(state, llm=llm, app_config=mock_config)
+
+    assert result["needs_replan"] is False
+    assert "task_plan" not in result  # 신규 미추가
+
+
+@pytest.mark.asyncio
+async def test_replanner_blocks_futile_retry_without_supersedes(mock_config):
+    """supersedes 누락(LLM 비준수)이어도 독립+같은 agent 재조회면 차단(D-049 규칙 b, 원인 B 견고).
+
+    이것이 원인 B 회귀 방지의 핵심: LLM이 supersedes를 빠뜨려도 헛 재시도를 막는다.
+    """
+    content = json.dumps(
+        {
+            "needs_followup": True,
+            "reason": "CPU·메모리 누락, 모든 데이터소스로 재조회",
+            "new_tasks": [
+                {"agent": "data_query", "sub_query": "모든 소스에서 ### 서버 CPU·메모리 조회",
+                 "depends_on": [], "input_from": []}  # supersedes 없음
+            ],
+        },
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    task_plan = [
+        {"task_id": "t1", "agent": "data_query", "sub_query": "김포 ### 서버 사양",
+         "depends_on": [], "input_from": [], "order": 1, "status": "completed"},
+    ]
+    state = _make_state(
+        task_plan=task_plan,
+        task_results={"t1": {"query_results": [{"hostname": "gp-001"}]}},
+    )
+
+    result = await replanner(state, llm=llm, app_config=mock_config)
+
+    assert result["needs_replan"] is False
+    assert "task_plan" not in result
+
+
+def test_filter_futile_retries_allows_zero_row_requery():
+    """선행이 0건(엔티티 못 찾음)이면 재조회를 허용한다(정당한 '0건 → 재조회')."""
+    existing = [{"task_id": "t1", "agent": "data_query", "order": 1, "status": "completed"}]
+    task_results = {"t1": {"query_results": []}}  # 0건
+    new_tasks = [
+        {"task_id": "t2", "agent": "data_query", "sub_query": "임계값 낮춰 재조회",
+         "depends_on": [], "input_from": [], "supersedes": ["t1"]},
+    ]
+    kept = _filter_futile_retries(new_tasks, existing, task_results)
+    assert len(kept) == 1
+
+
+def test_filter_futile_retries_allows_dependent_augmentation():
+    """선행이 행을 찾았어도 데이터 의존 보강(depends_on 존재)은 허용한다(장애→알람 패턴)."""
+    existing = [{"task_id": "t1", "agent": "data_query", "order": 1, "status": "completed"}]
+    task_results = {"t1": {"query_results": [{"hostname": "web-01", "avail_status": 1}]}}
+    new_tasks = [
+        {"task_id": "t2", "agent": "alarm_query", "sub_query": "선행 장애 서버의 알람 이력",
+         "depends_on": ["t1"], "input_from": ["t1"], "supersedes": []},
+    ]
+    kept = _filter_futile_retries(new_tasks, existing, task_results)
+    assert len(kept) == 1
+
+
+def test_filter_futile_retries_allows_different_agent_independent():
+    """다른 agent의 독립 후속(data_query 행 발견 → alarm_query)은 허용한다."""
+    existing = [{"task_id": "t1", "agent": "data_query", "order": 1, "status": "completed"}]
+    task_results = {"t1": {"query_results": [{"hostname": "web-01"}]}}
+    new_tasks = [
+        {"task_id": "t2", "agent": "alarm_query", "sub_query": "최근 알람 현황",
+         "depends_on": [], "input_from": [], "supersedes": []},
+    ]
+    kept = _filter_futile_retries(new_tasks, existing, task_results)
+    assert len(kept) == 1
 
 
 # ──────────────────────────────────────────────

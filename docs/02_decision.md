@@ -2246,10 +2246,196 @@ OS 호스트명)이다. 그러나 사용자는 보통 **서버명**(=`cmm_resour
 
 ---
 
+## D-048. 딥 에이전트 경로 복합 결과의 단일 LLM 합성 (모순 이중 답변 제거)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+딥 에이전트(트랙 B) 경로에서 오케스트레이터(vLLM/Gemini)가 동일 질문을 **재시도**(도구
+재호출)하면, `deepagents_tools._run_subagent_tool`이 매 호출마다 새 고유 `task_id`로
+collector에 `(task, result)`를 append한다. 1차가 "부분 성공"(예: 서버는 찾았으나 CPU/메모리
+컬럼 null — `error` 없음 → `status="completed"`)이고 2차가 완전 성공이면, **두 결과 모두
+`completed`** 상태로 남는다. `_aggregate_with_fabrix`가 collector 전체를 `task_plan`/
+`task_results`로 재구성 → `result_aggregator._merge_finalized`가 1·2차 텍스트를 `"\n\n".join`
+으로 이어붙여 **"CPU 없음" 서술과 "CPU 8코어" 서술이 한 말풍선에 혼재**, 사용자 혼란 유발.
+
+D-043(supersedes)은 이 모순을 막기 위한 기존 장치이나, (a) `_run_subagent_tool`이 task에
+`supersedes`를 설정하지 않고 (b) 이를 설정하는 replanner는 딥 에이전트 경로에 배선되지
+않으며 (c) **1차가 error가 아닌 "부분 성공"**이라 failed→success 매칭으로도 못 잡는다.
+
+### 결정
+
+딥 에이전트 경로의 복합 결과는 deterministic 이어붙이기 대신 **LLM 1회 호출로 단일 일관
+답변을 합성**한다(사용자 결정: "단일 LLM 합성"). 재시도 모순(없음→있음)과 보강 결과를
+모두 하나의 답변으로 통합하므로, "같은 질문 재시도 vs 서로 다른 질문(멀티의도)"을 휴리스틱
+으로 구분할 필요가 없다(동일 agent로 서로 다른 대상을 조회하는 멀티의도 회귀 위험 회피).
+
+- `result_aggregator(..., synthesize=True)`: 복합 task일 때 `_synthesize_finalized`로 합성.
+  단일 task는 기존대로 통과(스트리밍 유지).
+- **적용 경로 — 둘 다**: (1) 딥 에이전트(트랙 B) `_aggregate_with_fabrix`, (2) **다중 의도
+  오케스트레이션(트랙 A, Plan 48) `result_aggregator` 그래프 노드**. 폐쇄망(deepagents
+  미설치)에서 실제 활성 경로는 (2)이므로 `graph.py`에서 이 노드를 `synthesize=True`로
+  바인딩해야 합성이 실제로 동작한다. (1)만 적용하면 사용자 런타임에서 미발동(최초 누락 원인).
+  이로써 트랙 A의 복합 task는 기존 deterministic 병합(_merge_finalized)을 LLM 합성으로
+  대체한다(D-005/D-043은 supersedes 사전 제외 단계로 여전히 유효, 병합 방식만 변경).
+- **스트리밍 정합(D-009)**: 합성 모드 + 복합 task일 때 per-task `output_generator`는
+  `stream_user_response=False`로 호출해 USER_RESPONSE_TAG를 떼고(중간 토큰 누출 방지),
+  **최종 합성 1회만** USER_RESPONSE_TAG로 토큰 스트리밍. 딥 에이전트 그래프 노드는
+  `deep_agent`라 SSE 핸들러가 태그로만 토큰을 거르므로(노드명 매칭 아님) 단일 스트림이 된다.
+- **안전 폴백**: 합성 LLM 호출이 예외/빈 결과면 `_merge_finalized`(이어붙이기)로 폴백.
+- output_file은 첫 산출 task의 것을 채택, `query_results`는 전체 누적(CSV/row_count, D-047).
+
+### 구현
+
+- `prompts/result_synthesizer.py` 신규: `RESULT_SYNTHESIZER_SYSTEM_PROMPT`(모순은 구체적
+  값으로 해소, 내부 라벨 비노출, 구체 데이터 보존, 미확인 항목만 "확인되지 않음").
+- `nodes/output_generator.py`: `stream_user_response: bool = True` 파라미터 추가 →
+  `_generate_text_response`가 태그 부여 여부 결정.
+- `orchestration/result_aggregator.py`: `synthesize` 파라미터, `suppress_stream` 계산,
+  `_finalize_task(stream_user_response=...)`, `_synthesize_finalized` 신규.
+- `orchestration/deep_agent.py::_aggregate_with_fabrix`: `synthesize=True` 전달(트랙 B).
+- `graph.py`: 트랙 A(`enable_deepagent_orchestration and not use_deep_agent`)의
+  `result_aggregator` 노드를 `partial(..., synthesize=True)`로 바인딩(실제 활성 경로 — 필수).
+
+### 근거 / 대안
+
+- 대안(기각) supersedes 휴리스틱: 1차가 error가 아닌 "부분 성공"이라 failed→success 매칭이
+  안 되고, "동일 agent+둘 다 completed"를 합치면 멀티의도(같은 agent·다른 대상)에서 앞
+  답변이 사라지는 더 나쁜 회귀. 대안(기각) 오케스트레이터 명시 태깅: 도구 스키마 변경 +
+  LLM 신뢰 의존. 사용자 결정으로 단일 합성 채택.
+- 관련: D-005(부분 실패 병합), D-009(SSE 토큰 스트리밍), D-043(supersedes — replanner 경로
+  한정), D-047(query_results 승격).
+- 검증: arch_check --ci exit 0(pre-existing WARN orchestration→prompts만), result_aggregator
+  합성 신규 6건 + deep_agent wiring synthesize 검증 포함 통과.
+
+---
+
+## D-049. 엔티티 확보 후 무의미 재시도 차단 (replanner 필드-null 재조회 가드)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정(가드). **단, 이 사례의 진짜 원인은 조회 SQL 오류 — 근본 수정은 D-050**. 본 가드는 "필드 null=속성 부재"를 단정하지 않으며, 동일 쿼리 반복 재시도(무익) 방지용 효율 가드로만 유효 |
+
+### 배경 / 문제
+
+"김포 ### 서버의 OS·IP·호스트명·CPU·메모리" 단일 질의에서, 1차 task(t1)가 **서버는 1건
+찾았으나 CPU·메모리 컬럼이 null**이었다. (당초 "속성 미수집"으로 추정했으나 — **오판**.
+실제로는 데이터가 존재하는데 EAV 피벗+서버명 필터 SQL이 잘못 생성되어 못 가져온 것이었다.
+근본 원인·수정은 **D-050**.) `replanner`의 LLM이 이를 프롬프트의 "0건 → 재조회" 예시에
+잘못 적용해 "불충분 → 재조회"로 판단, DB 범위를 바꿔가며(gp→전체 소스→gp→전체)
+**`max_replan`(3)까지 헛 재시도**했다(t1~t4). 결과:
+(1) 불필요한 DB 왕복 4회, (2) 각 시도가 부분/빈 답변을 내고 `_merge_finalized`가 모두
+이어붙여 "1건 확인" + "데이터 없음"의 **모순 이중 답변**(D-048 합성으로 사후 통합은 되나
+근원 낭비는 잔존). 또한 replanner LLM이 `supersedes`(D-043)를 신뢰성 있게 설정하지 않아
+(원인 B) D-043 숨김도 작동하지 않았다.
+
+### 결정
+
+`replanner`에 **결정적 가드** `_filter_futile_retries`를 추가한다. 엔티티가 이미 확보된
+(선행이 >0행 반환) 조회를 같은 방식으로 다시 묻는 후속을 제거하고, 전부 제거되면 루프를
+종료한다. **`supersedes` 필드 존재에만 의존하지 않도록 행수 + 독립성으로 판정**(원인 B에
+견고):
+
+- 제거 (a): 신규 task의 `supersedes`가 **>0행을 반환한** 선행 task_id를 가리킴(명시적 재조회).
+- 제거 (b): 신규 task가 **독립**(`depends_on` 비어있음)이면서 **같은 agent**의 선행이 이미
+  >0행을 반환함(LLM이 supersedes를 빠뜨린 암묵적 재조회).
+- 보존: 선행이 0건이면(엔티티 못 찾음) "0건 → 재조회" 허용 / 데이터 의존 보강(`depends_on`
+  존재, 장애→알람) 허용 / 다른 agent 보강 허용.
+
+보조로 `prompts/replanner.py`에 판단 원칙 7 추가: "행은 찾았으나 일부 요청 필드가 null인
+경우는 속성 부재이므로 재조회 금지(0건=대상 못 찾음 vs 필드 null=속성 부재 구분)". 가드가
+안전망, 프롬프트는 LLM이 애초에 덜 제안하도록 보조.
+
+### 근거 / 대안
+
+- 채택: **옵션 ① 엔티티 찾으면 즉시 중단**(사용자 분석 요청에 대한 권장). data_query agent가
+  내부적으로 DB를 선택하므로 1차 task가 이미 관련 DB를 고려하고, 실측상 "전체 소스" 확장도
+  CPU/메모리를 못 찾아 교차 DB 회수 가치가 낮음. 엔티티 확보 후 종료 시 단일 task → 합성조차
+  불필요한 정직한 단일 답변("CPU·메모리는 데이터에 없어 확인 불가").
+- 대안(기각) 옵션 ② 1회 확장 후 중단: 재시도 이력 추적 필요(복잡)하고 모순 답변 표면이 잔존.
+  대안(기각) 옵션 ③ 프롬프트만: 원인 B와 동일하게 LLM 준수에 의존해 신뢰성 낮음.
+- 한계: 필드가 정말 다른 DB에 있는데 1차가 그 DB를 놓친 경우 회수 못 함 — 그 경우의 옳은
+  수정 지점은 field_mapper/data_query DB 선택이지 replanner 재시도가 아님. honest "확인 불가"가
+  4회 모순 답변보다 낫다.
+- 관련: D-043(supersedes — 원인 B 보완), D-048(합성 안전망), D-040(replanner 중복 가드).
+- 검증: arch_check --ci exit 0, replanner 신규 6건 포함 orchestration 130 passed/4 skipped.
+
+---
+
+## D-050. 단일 서버 필터 + EAV 피벗(CPU·메모리) 조회 SQL 교정 (HAVING 패턴)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+"김포 ### 서버의 OS·IP·호스트명·CPU·메모리" 질의에서 **서버는 실재하고 CPU·메모리 데이터도
+존재하는데** 조회 결과 CPU·메모리만 null로 나왔다(OS/IP/호스트명은 정상). 사용자가 "데이터를
+제대로 못 가져오는 게 문제"라고 지적 → 조사 결과 **조회 SQL 생성 오류**로 확인.
+
+폴스타(공동존)는 EAV 모델: CPU는 `resource_type='server.Cpus'`, 메모리는 `'server.Memory'`
+**행**에 저장되어 server.Server 행과는 `platform_resource_id`로만 묶인다. 한 행으로 보려면
+`GROUP BY COALESCE(platform_resource_id, id)` 피벗(Template A)이 필요하다. 그런데:
+- 피벗 예시(query_example #4, Template A)에는 **단일 서버 필터가 없고**,
+- 서버명 필터 예시(#5/#6, 재매핑 규칙)는 **server.Server 단독 조회**(CPU/메모리 없음)뿐.
+- **둘을 결합한 예시·지침이 전무**했다.
+
+그래서 LLM이 피벗에 `WHERE c.name = '###'`를 그대로 붙이면, 그 술어가 **server.Server 행에만
+참**이라 `GROUP BY` 전에 server.Cpus/server.Memory 행이 제거되어 **CPU·메모리 CASE 집계가
+NULL**이 된다(OS/IP/호스트명은 살아남은 server.Server 행에서 정상). 관측 증상과 정확히 일치.
+
+avail_status 필터는 이미 **HAVING(집계 후 server.Server 행 기준)** 기법을 가르치는데
+(`query_generator.py`), **서버명/호스트명 필터에는 그 기법이 없던 것**이 구멍이었다.
+
+### 결정
+
+서버 식별 필터를 EAV 피벗과 함께 쓸 때는 **WHERE가 아니라 HAVING**(집계 후 server.Server 행
+기준)으로 적용한다(WHERE는 resource_type/dtime 등 행집합 한정용으로만). avail_status와 동일 기법.
+
+```sql
+WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory') AND c.dtime IS NULL
+GROUP BY COALESCE(c.platform_resource_id, c.id)
+HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '조회할_장비명'
+-- "호스트명이 XXX인"으로 명시한 경우에만 c.name → c.hostname
+```
+
+### 구현
+
+- `prompts/query_generator.py`: filter_conditions 섹션에 "서버명/호스트명 필터 + GROUP BY 피벗
+  동시 적용 시 반드시 HAVING" 규칙·예시 추가(WHERE에 두면 CPU/메모리 NULL이 되는 이유 명시).
+- `config/db_profiles/polestar_cm_gp.yaml`·`polestar_cm_yd.yaml`: 단일 서버 + OS/IP/호스트명 +
+  CPU/메모리를 한 번에 조회하는 query_example 신규(HAVING 패턴, 잘못된 WHERE 주의 주석 포함).
+
+### 근거 / 대안
+
+- HAVING 채택: 이 코드베이스가 이미 avail_status에 동일 기법을 쓰므로 일관적이고, 구체
+  query_example이 LLM에 가장 강한 신호. 대안 — `platform_resource_id` IN (서버 식별 서브쿼리):
+  동등하나 예시가 길고 기존 패턴과 덜 일관적이라 보조로만 언급.
+- 한계: 쿼리 생성은 LLM 의존이라 100% 보장은 아니다. 구체 예시 + 명시 규칙 + 오류 사유 설명으로
+  신뢰도를 높였고, query_validator/result 단계가 후속 안전망. 필드가 정말 다른 DB에 있는 경우는
+  본 결정 범위 밖(field_mapper/DB 선택 영역).
+- 관련: D-049(이 사례를 "속성 부재"로 오판했던 가드 — 본 결정이 진짜 원인), D-046(폴스타 EAV/
+  hostname 해소), CLAUDE.md Known Mistakes(OSParameter LOB — 그건 LOB 값 컬럼 이슈, 본 건은
+  교차 행 피벗 이슈로 별개).
+- 검증: 두 YAML safe_load OK, arch_check --ci exit 0, 전체 회귀 통과(사전 실패 3건은 본 변경과
+  무관 — git stash 대조 확인).
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-29 | D-050 | **단일 서버 필터 + EAV 피벗(CPU·메모리) 조회 SQL 교정(HAVING 패턴)**: 실재하는 김포 서버의 CPU·메모리가 조회 시 null로 나오던 문제 — "데이터를 못 가져오는 게 문제"라는 사용자 지적이 정확. 근본 원인: 폴스타 EAV에서 CPU(`server.Cpus`)·메모리(`server.Memory`)는 server.Server와 다른 행이라 `GROUP BY platform_resource_id` 피벗이 필요한데, **단일 서버 필터+피벗을 결합한 예시·지침이 없어** LLM이 피벗에 `WHERE c.name='###'`를 붙임 → 그 술어가 server.Server 행에만 참이라 GROUP BY 전에 Cpus/Memory 행이 제거 → CPU·메모리 NULL(OS/IP/호스트명만 정상). avail_status는 이미 HAVING 기법을 쓰는데 서버명 필터엔 없던 게 구멍. **결정**: 서버 식별 필터는 WHERE가 아니라 **HAVING(집계 후 server.Server 행 기준)**으로 적용. **수정**: `prompts/query_generator.py`(서버명+피벗 HAVING 규칙·예시), `config/db_profiles/polestar_cm_gp.yaml`·`polestar_cm_yd.yaml`(단일 서버 OS/IP/호스트명+CPU/메모리 query_example 신규). 관련: D-049(이 사례를 "속성 부재"로 오판한 가드 — 본 결정이 진짜 원인), D-046. 검증: YAML safe_load OK, arch_check exit 0, 회귀 통과(사전 실패 3건 무관) |
+| 2026-06-29 | D-049 | **엔티티 확보 후 무의미 재시도 차단(replanner 필드-null 재조회 가드)**: 단일 서버 단일 의도 질의에서 1차가 서버는 찾았으나 CPU·메모리 컬럼이 null(속성 미수집)이자, replanner LLM이 "0건→재조회" 예시를 오적용해 DB 범위를 바꿔가며 max_replan(3)까지 헛 재시도(t1~t4) → 불필요 DB 왕복 4회 + 부분/빈 답변 모순 이중 출력. **결정**: `replanner._filter_futile_retries` 결정적 가드 — 엔티티 확보(선행 >0행) 후 같은 의도 재조회를 제거(전부 제거 시 종료). supersedes 필드에만 의존하지 않도록 **행수+독립성**으로 판정(원인 B=LLM이 supersedes 미설정에 견고): (a) supersedes가 >0행 선행을 가리키거나, (b) 독립(depends_on 빈)+같은 agent 선행이 >0행이면 제거. 보존: 선행 0건 재조회/데이터 의존 보강(장애→알람)/다른 agent 보강. 보조로 `prompts/replanner.py` 원칙 7(행 찾음+필드 null=속성 부재→재조회 금지) 추가. **수정**: `orchestration/replanner.py`(`_filter_futile_retries`+호출), `prompts/replanner.py`. 채택=옵션①(즉시 중단; data_query가 내부 DB 선택하므로 교차 DB 회수 가치 낮음, 종료 시 단일 task→정직한 단일 답변). 관련: D-043, D-048, D-040. 검증: arch_check --ci exit 0, replanner 신규 6건 포함 orchestration 130 passed/4 skipped |
+| 2026-06-29 | D-048 | **딥 에이전트 경로 복합 결과의 단일 LLM 합성(모순 이중 답변 제거)**: 딥 에이전트(트랙 B)에서 오케스트레이터가 동일 질문을 재시도하면 collector에 1·2차 결과가 모두 쌓이는데, 1차가 error가 아닌 "부분 성공"(서버는 찾았으나 CPU/메모리 null → `completed`)이라 D-043(supersedes)이 못 잡고 `_merge_finalized`가 "CPU 없음"·"CPU 8코어" 서술을 한 말풍선에 이어붙여 모순 이중 답변을 내던 문제 해결. **결정(사용자): 단일 LLM 합성** — `result_aggregator(synthesize=True)`(딥 경로 전용, replanner 경로는 기존 deterministic 병합 유지)가 복합 task를 `_synthesize_finalized`로 LLM 1회 합성(재시도 모순은 구체적 값으로 해소, 멀티의도는 통합). **스트리밍 정합(D-009)**: 합성 시 per-task `output_generator`는 `stream_user_response=False`로 태그를 떼고 최종 합성 1회만 USER_RESPONSE_TAG로 스트리밍(딥 노드는 `deep_agent`라 태그로만 토큰을 거름) → 단일 스트림. 합성 예외/빈 결과는 `_merge_finalized`로 안전 폴백, output_file 첫 task 채택·query_results 누적(D-047). **적용 경로 — 둘 다**: 딥 에이전트(트랙 B) `_aggregate_with_fabrix`와 **다중 의도 오케스트레이션(트랙 A, Plan 48) `result_aggregator` 그래프 노드**. 폐쇄망(deepagents 미설치)에서 실제 활성 경로는 트랙 A이므로 `graph.py`에서 이 노드를 `synthesize=True`로 바인딩해야 발동(트랙 B만 적용 시 사용자 런타임 미발동 — 최초 누락 원인). **수정**: `prompts/result_synthesizer.py` 신규, `output_generator.py`(`stream_user_response` 파라미터), `result_aggregator.py`(`synthesize`/`_synthesize_finalized`), `deep_agent.py`(트랙 B `synthesize=True`), `graph.py`(트랙 A result_aggregator 노드 `synthesize=True` 바인딩). 관련: D-005, D-009, D-043, D-047. 검증: arch_check --ci exit 0, result_aggregator 합성 신규 6건+wiring synthesize 검증(트랙 A/B) 통과 |
 | 2026-06-29 | D-047 | **프로세스 결과: 채팅 상위 N + CSV 전체 다운로드(사용자 결정)**: process_query가 상위 N(`process_top_n=5`)만 남기고 전체를 폐기 → 채팅·CSV 모두 5건만 노출. 또 orchestration 경로는 `query_results`를 top-level state로 승격하지 않아(result_aggregator가 final_response만 반환) CSV 버튼 자체가 미노출(row_count=0). **수정**: (a) `process_query.py` 전체 1회 정렬·마스킹 후 `organized_data.rows`=상위 N(채팅), `query_results`=전체(CSV/row_count), 요약에 CSV 안내+`shown_count`. (b) `result_aggregator.py` `_finalize_task`/단일·복합 경로에서 `query_results`를 top-level로 승격(데이터/프로세스 공통으로 CSV·row_count 동작). (c) `download_csv` 컬럼명 합집합+`restval`/`extrasaction`로 이종 행 견고화. `process_top_n`은 표시 전용으로 의미 변경. 검증: orchestration+multiturn 신규 2건 포함 통과, arch_check exit 0 |
 | 2026-06-29 | D-047 | **프로세스 조회 대상 서버 식별자 추출 + 실시간 라우팅 결정적 교정**: "김포 ### 서버에 대한 프로세스 조회"가 (1차) "서버명을 식별하지 못했습니다"로, 이어 (2차) DB에서 `resource_type='process'` 행을 가져오는 환각으로 응답되던 문제 해결. **원인1**: `process_query._resolve_hostname`은 filter_conditions 중 field가 `_HOST_FIELDS`인 조건을 서버 식별자로 쓰는데 input_parser에 지목 서버명을 hostname filter로 추출하는 규칙이 없어 `identifier=None`(D-046 해소는 identifier 확보 후 동작이라 공백을 못 메움). **원인2**: 시간성 수식어 없는 "프로세스 조회"를 intent_planner LLM이 보수적으로 `data_query`로 분류 → D-046이 경고한 DB 폴백 환각. **수정**: (a) `prompts/input_parser.py` 규칙 14 신설 — 단일 서버 지목 시 `{"field":"hostname","op":"=","value":"<서버식별자>"}`로 추출, 위치/DB 수식어는 target_db_hints로 분리, 예시 1건. (b) `process_query._HOST_FIELDS`를 영문(host/device_name)·한글(서버명/장비명/호스트명/서버/장비) 변형까지 확장. (c) `prompts/intent_planner.py` 규칙 3을 "프로세스 조회 기본=process_query, 명시적 과거/이력 신호만 data_query"로 강화. (d) `intent_planner._coerce_process_intent` 결정적 가드 — data_query+프로세스+이력신호 없음 → process_query 교정(폴백 포함). 회귀 없음(영문 field·이력 프로세스 data_query 동작 유지). 관련: D-046, D-041. 검증: arch_check --ci exit 0, orchestration+multiturn 194 passed/4 skipped(신규: 한글 field 1, 라우팅 교정 3) |
 | 2026-06-26 | D-046 | **프로세스 조회 시 서버명 → 호스트명 해소 (process_query)**: 폴스타 실시간 프로세스 API의 조회 키는 hostname(`cmm_resource.hostname`)이지만 사용자는 서버명(`cmm_resource.name`)으로 질의한다. 공동존 폴스타(gp/yd)는 name≠hostname이라 `hostname=서버명`으로 보내면 0건 → 오케스트레이터가 DB 조회로 폴백해 **리소스명이 '프로세스'인 행을 가져오는 환각** 발생. **수정**: 프로세스 API 호출 전 입력을 정규 hostname으로 해소. (a) `src/alarm/infrastructure/polestar_hostname_resolver.py` 신규 — DBHub(MCP) 고정 SELECT(`server.Server`·`DTIME IS NULL`·name/hostname OR·name 우선)로 hostname 조회(`polestar_history.py` 경로 재사용, D-022/`is_lob` 금지 정합). (b) `process_query.py`가 `_resolve_canonical_hostname`(예외/0건 시 None→원시 값 폴백)로 해소 후 API 호출, 결과에 `server_name`·`hostname` 동시 보존·요약 병기. 회귀 없음(해소 실패·DB 미연결 경로 기존 동작 유지). 관련: D-041(M4 process_query), D-036(프로세스 API 재사용). 검증: arch_check --ci exit 0, 신규 11건 포함 orchestration/multiturn/alarm 260 passed/4 skipped |

@@ -18,10 +18,13 @@ import logging
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
+from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
-from src.llm import create_llm
+from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.output_generator import output_generator
+from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,7 @@ async def result_aggregator(
     *,
     llm: BaseChatModel | None = None,
     app_config: AppConfig | None = None,
+    synthesize: bool = False,
 ) -> dict:
     """task_results를 통합하여 최종 응답을 생성한다.
 
@@ -39,6 +43,12 @@ async def result_aggregator(
         state: 현재 에이전트 상태 (task_plan, task_results 포함)
         llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
         app_config: 앱 설정 (외부 주입, 없으면 내부 로드)
+        synthesize: 복합 결과를 deterministic 이어붙이기(_merge_finalized) 대신 LLM
+            1회로 단일 답변 합성(_synthesize_finalized)할지 여부. 딥 에이전트 경로
+            (D-048)에서만 True — 오케스트레이터가 동일 질문을 재시도(부분 성공→재조회)할
+            때 collector에 1·2차 결과가 모두 쌓여 "없음→있음" 모순 이중 답변이 한
+            말풍선에 섞이는 문제를 합성으로 해소한다. replanner 경로(D-005/D-043)는
+            기존 deterministic 병합을 유지한다(False).
 
     Returns:
         업데이트할 State 필드:
@@ -69,12 +79,25 @@ async def result_aggregator(
     if not ordered_tasks:
         ordered_tasks = sorted(tasks, key=lambda t: t.get("order", 0))
 
+    # 합성 모드 + 복합 task일 때만 per-task 마감의 토큰 스트리밍을 억제한다.
+    # (최종 합성 1회에만 USER_RESPONSE_TAG를 부여하여 중간 답변 토큰 누출 방지 — D-048/D-009)
+    suppress_stream = synthesize and len(ordered_tasks) > 1
+
     # 각 task 결과를 최종화 (텍스트 응답 + 선택적 output_file)
     finalized: list[dict] = []
     for task in ordered_tasks:
         tid = task["task_id"]
         res = task_results.get(tid, {})
-        finalized.append(await _finalize_task(task, res, state, llm, app_config))
+        finalized.append(
+            await _finalize_task(
+                task, res, state, llm, app_config,
+                stream_user_response=not suppress_stream,
+            )
+        )
+
+    # 복합 task + 합성 모드(딥 에이전트): LLM 1회로 단일 일관 답변 합성 (D-048)
+    if synthesize and len(finalized) > 1:
+        return await _synthesize_finalized(finalized, state, llm, app_config)
 
     # 단일 task: 그대로 최종화
     if len(finalized) == 1:
@@ -127,6 +150,8 @@ async def _finalize_task(
     state: AgentState,
     llm: BaseChatModel,
     app_config: AppConfig,
+    *,
+    stream_user_response: bool = True,
 ) -> dict:
     """단일 task 결과를 최종 텍스트(+선택적 파일)로 정규화한다.
 
@@ -140,6 +165,8 @@ async def _finalize_task(
         state: 전체 에이전트 상태 (output_generator 입력 보강용)
         llm: LLM 인스턴스
         app_config: 앱 설정
+        stream_user_response: output_generator의 USER_RESPONSE_TAG 부여 여부.
+            합성 모드(D-048)에서 중간 per-task 토큰 누출을 막기 위해 False로 전달.
 
     Returns:
         {"order", "agent", "text", "output_file", "output_file_name", "error"} dict
@@ -173,7 +200,10 @@ async def _finalize_task(
             return base
         s = _build_output_state(state, task, res)
         try:
-            out = await output_generator(s, llm=llm, app_config=app_config)
+            out = await output_generator(
+                s, llm=llm, app_config=app_config,
+                stream_user_response=stream_user_response,
+            )
             base["text"] = out.get("final_response", "")
             base["output_file"] = out.get("output_file")
             base["output_file_name"] = out.get("output_file_name")
@@ -262,6 +292,85 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     body = "\n\n".join(parts)
     if failed:
         body += "\n\n---\n일부 작업이 실패했습니다:\n" + "\n".join(failed)
+
+    result: dict = {
+        "final_response": body,
+        "current_node": "result_aggregator",
+        "query_results": merged_rows,
+    }
+    if output_file is not None:
+        result["output_file"] = output_file
+        result["output_file_name"] = output_file_name
+    return result
+
+
+async def _synthesize_finalized(
+    finalized: list[dict],
+    state: AgentState,
+    llm: BaseChatModel | None,
+    app_config: AppConfig,
+) -> dict:
+    """복합 task 결과를 LLM 1회 호출로 단일 일관 답변으로 합성한다 (D-048, 딥 에이전트 경로).
+
+    동일 질문 재시도로 인한 모순(없음→있음)·중복을 deterministic 이어붙이기(_merge_finalized)
+    대신 LLM 합성으로 해소한다. 최종 합성만 USER_RESPONSE_TAG로 토큰 스트리밍(D-009)하며,
+    per-task 마감의 스트리밍은 호출부(result_aggregator)가 억제한다. 합성이 실패하거나
+    빈 결과면 기존 deterministic 병합으로 안전하게 폴백한다.
+
+    Args:
+        finalized: _finalize_task 결과 목록 (각 하위 응답 텍스트/파일/오류 포함)
+        state: 전체 에이전트 상태 (원본 질의 등)
+        llm: LLM 인스턴스 (없으면 내부 생성)
+        app_config: 앱 설정
+
+    Returns:
+        통합 final_response(+선택적 output_file/query_results)를 포함한 State 갱신 dict
+    """
+    # 각 하위 응답을 라벨링하여 합성 입력으로 모은다(내부 라벨은 프롬프트가 비노출 지시).
+    sections: list[str] = []
+    for i, f in enumerate(finalized, 1):
+        text = f.get("text", "") or ""
+        if f.get("error") and not text:
+            text = f"(처리 중 오류: {f['error']})"
+        sections.append(f"[조회 {i}]\n{text}")
+
+    # 파일은 첫 산출 task의 것을 채택, query_results는 전체 누적(CSV/row_count — D-047).
+    output_file: Optional[bytes] = None
+    output_file_name: Optional[str] = None
+    merged_rows: list[dict] = []
+    for f in finalized:
+        if output_file is None and f.get("output_file") is not None:
+            output_file = f["output_file"]
+            output_file_name = f.get("output_file_name")
+        rows = f.get("query_results")
+        if isinstance(rows, list):
+            merged_rows.extend(rows)
+
+    if llm is None:
+        llm = create_llm(app_config)
+
+    user_prompt = (
+        f"## 사용자 원본 질의\n{state.get('user_query', '')}\n\n"
+        f"## 수집된 하위 응답\n" + "\n\n".join(sections)
+    )
+    messages: list[BaseMessage] = [
+        SystemMessage(content=RESULT_SYNTHESIZER_SYSTEM_PROMPT)
+    ]
+    # KBGenAIChat(FabriX)은 system 다음 AIMessage 빈 턴을 요구한다(output_generator와 동일 규약).
+    if type(llm) is KBGenAIChat:
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=user_prompt))
+
+    try:
+        body = await astream_text(llm, messages, tags=[USER_RESPONSE_TAG])
+    except Exception as e:  # noqa: BLE001 — 합성 실패는 deterministic 병합으로 폴백
+        logger.error("result_aggregator 단일 합성 실패 → 이어붙이기 폴백: %s", e)
+        return _merge_finalized(finalized)
+
+    if not body.strip():
+        # 빈 합성 결과 방어: deterministic 병합으로 폴백
+        logger.warning("result_aggregator 합성 결과가 비어 있어 이어붙이기로 폴백")
+        return _merge_finalized(finalized)
 
     result: dict = {
         "final_response": body,

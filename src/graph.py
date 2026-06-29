@@ -365,9 +365,12 @@ def build_graph(config: AppConfig, checkpointer=None):
             "agent_orchestrator",
             partial(agent_orchestrator, llm=llm, app_config=config),
         )
+        # synthesize=True: 다중 의도 분해/재계획으로 task가 여러 개면 deterministic
+        # 이어붙이기(_merge_finalized)는 "없음→있음" 모순·부분 결과를 한 말풍선에 그대로
+        # 나열한다. LLM 1회로 단일 일관 답변을 합성해 모순/중복을 해소한다(D-048).
         graph.add_node(
             "result_aggregator",
-            partial(result_aggregator, llm=llm, app_config=config),
+            partial(result_aggregator, llm=llm, app_config=config, synthesize=True),
         )
         # Plan 49: 결과 기반 동적 재계획 노드 (orchestrator↔replanner 루프)
         graph.add_node(

@@ -89,6 +89,19 @@ async def replanner(
         # 유효 신규 task가 없으면 보수적 종료
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
+    # 무의미 재시도 차단(D-049): 엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는
+    # 후속을 제거한다. 행은 찾았으나 일부 요청 필드가 null인 것은 "데이터에 그 속성이
+    # 없음"이지 쿼리 오류가 아니므로, 재조회해도 채워지지 않고 max_replan까지 헛돈다.
+    new_tasks = _filter_futile_retries(
+        new_tasks, state.get("task_plan", []), state.get("task_results", {})
+    )
+    if not new_tasks:
+        logger.info(
+            "replanner: 엔티티를 이미 확보한 무의미 재시도 전부 제거 → 종료 (reason=%s)",
+            decision.get("reason"),
+        )
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
     # 중복 재답변 방지(R-A4 강화): 후속이 모두 general_inference(일반 안내)면
     # 데이터 기반 후속이 아니라 같은 주제를 다시 답변하는 패턴이다. general_inference는
     # 자체 완결적 안내 답변(사용법·지원 소스·조회 가능 데이터 등)이므로, 여기에 또
@@ -302,3 +315,69 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
             task["supersedes"] = [id_map.get(d, d) for d in task["supersedes"]]
 
     return assigned
+
+
+def _filter_futile_retries(
+    new_tasks: list[dict],
+    existing: list[dict],
+    task_results: dict[str, dict],
+) -> list[dict]:
+    """엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는 무의미 재시도를 제거한다 (D-049).
+
+    `replanner`의 LLM은 "행은 찾았으나 일부 요청 필드가 null"인 결과를 "0건/불충분 → 재조회"
+    예시에 잘못 적용해, 데이터에 애초에 없는 속성을 채우려고 max_replan까지 헛 재시도한다.
+    엔티티가 이미 확보되었으면(선행이 >0행 반환) 같은 의도 재조회로는 누락 필드가 채워질 수
+    없으므로 결정적으로 차단한다. supersedes 필드 누락(LLM 비준수)에도 견고하도록 **행수 +
+    독립성**으로 판정한다.
+
+    제거 규칙 — 신규 task가 다음 중 하나면 제거:
+    - (a) 그 `supersedes`가 **>0행을 반환한** 선행 task_id를 가리킨다(명시적 재조회).
+    - (b) **독립**(`depends_on` 비어있음)이면서 **같은 agent**의 선행이 이미 >0행을 반환했다
+      (LLM이 supersedes를 빠뜨린 암묵적 재조회).
+
+    보존 — 정당한 후속은 그대로 둔다:
+    - 선행이 0건이면(엔티티 못 찾음) "0건 → 재조회"는 (a)/(b) 모두 미해당 → 허용.
+    - 데이터 의존 보강(`depends_on` 존재, 예: 장애 서버 → 알람 이력)은 (b) 미해당 → 허용.
+    - 다른 agent의 보강(data_query 행 발견 → alarm_query)은 (b) 미해당 → 허용.
+
+    Args:
+        new_tasks: _assign_ids로 id/supersedes가 부여된 신규 task 목록
+        existing: 기존 task_plan(완료 task 포함 — 행수 판정 기준)
+        task_results: {task_id: 정규화된 결과}
+
+    Returns:
+        무의미 재시도를 제외한 신규 task 목록
+    """
+    # >0행을 반환한 완료 선행의 task_id 집합과 agent 집합
+    rows_ids: set[str] = set()
+    rows_agents: set[str] = set()
+    for t in existing:
+        if _extract_rows(task_results.get(t.get("task_id"), {})):
+            rows_ids.add(t.get("task_id"))
+            if t.get("agent"):
+                rows_agents.add(t["agent"])
+
+    if not rows_ids:
+        # 아직 어떤 선행도 데이터를 못 찾음 → 재조회 가치가 있으므로 전부 보존
+        return new_tasks
+
+    kept: list[dict] = []
+    for t in new_tasks:
+        supersedes = t.get("supersedes") or []
+        # (a) 데이터를 이미 찾은 선행을 명시적으로 재조회
+        if any(sid in rows_ids for sid in supersedes):
+            logger.info(
+                "replanner: 무의미 재시도 제거(명시적 supersedes %s, 선행 이미 데이터 확보)",
+                supersedes,
+            )
+            continue
+        # (b) 독립 재조회인데 같은 agent가 이미 데이터를 찾음
+        if not t.get("depends_on") and t.get("agent") in rows_agents:
+            logger.info(
+                "replanner: 무의미 재시도 제거(독립 %s 재조회, 같은 agent 이미 데이터 확보)",
+                t.get("agent"),
+            )
+            continue
+        kept.append(t)
+
+    return kept

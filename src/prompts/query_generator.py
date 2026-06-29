@@ -230,6 +230,22 @@ avail_status 필터가 있을 때 SELECT에도 avail_status를 포함하여 결�
 MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.avail_status END) AS avail_status
 ```
 
+**★ 서버명/호스트명 필터 + GROUP BY 피벗(CPU·메모리 등) 동시 적용 — 반드시 HAVING 사용**:
+특정 서버 1대의 OS·IP·호스트명에 더해 **CPU·메모리 같은 다른 resource_type 속성**(server.Cpus/server.Memory)을
+함께 조회할 때, 서버 식별 조건을 **WHERE 절에 넣으면 안 된다.** `c.name = '...'`(또는 `c.hostname = '...'`)는
+**server.Server 행에서만 참**이므로 WHERE에 두면 server.Cpus/server.Memory 행이 **GROUP BY 전에 제거되어
+CPU·메모리가 NULL**이 된다(OS/IP/호스트명만 나오고 CPU/메모리가 빈 값으로 보이는 전형적 증상).
+서버 식별 조건은 **집계 후 server.Server 행 기준의 HAVING**으로 적용한다(avail_status와 동일 기법):
+```sql
+WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+  AND c.dtime IS NULL
+GROUP BY COALESCE(c.platform_resource_id, c.id)
+HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '조회할_장비명'
+-- 호스트명으로 특정하라고 명시한 경우에만 c.name 대신 c.hostname 사용
+```
+즉 **WHERE는 resource_type/dtime 등 행 집합 한정용, 서버 식별 필터는 HAVING**으로 분리한다.
+(서버 식별 없이 단일 resource_type만 조회하는 경우는 기존처럼 WHERE에 두어도 된다.)
+
 ## 추가 규칙
 
 0. **DB 라우팅 정보를 쿼리에 반영하지 않는다.** 사용자가 특정 Polestar(예: "여의도 개발 폴스타", "김포 운영 폴스타", "은행 폴스타")를 지정한 경우, 해당 정보는 이미 DB 라우팅 단계에서 처리되어 올바른 DB에 연결되었다. 위치, 환경, 존(zone) 등의 라우팅 식별 정보를 WHERE 절이나 기타 SQL 조건에 절대 포함하지 않는다. 예: `WHERE location='여의도'`, `WHERE zone='공동존'` 등은 금지이다.

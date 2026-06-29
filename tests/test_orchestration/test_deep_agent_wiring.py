@@ -64,6 +64,35 @@ def _node_names(compiled) -> set[str]:
     return set(compiled.get_graph().nodes.keys())
 
 
+def _bound_partial(compiled, node_name):
+    """컴파일된 그래프 노드에 바인딩된 functools.partial을 추출한다(동기/비동기 모두)."""
+    import functools
+
+    rc = compiled.nodes[node_name].bound
+    target = rc.afunc if getattr(rc, "afunc", None) is not None else rc.func
+    return target if isinstance(target, functools.partial) else None
+
+
+def test_orchestration_result_aggregator_wired_with_synthesize(monkeypatch):
+    """다중 의도 오케스트레이션(replanner) 경로의 result_aggregator는 synthesize=True로 배선된다(D-048).
+
+    회귀 방지: 폐쇄망(deepagents 미설치)에서 실제 활성 경로는 deep_agent가 아니라
+    intent_planner→agent_orchestrator→replanner→result_aggregator이다. 이 경로의
+    result_aggregator가 synthesize 없이(기본 False) 배선되면 복합 task가 deterministic
+    이어붙이기로 모순 이중 답변이 한 말풍선에 노출된다. 단일 LLM 합성을 강제한다.
+    """
+    monkeypatch.setattr(graph_module, "select_orchestration_backend", lambda c: "semantic_router")
+
+    cfg = _build_config(package=False, semantic=False)
+    cfg.enable_deepagent_orchestration = True
+    compiled = build_graph(cfg)
+
+    assert "result_aggregator" in _node_names(compiled)
+    partial = _bound_partial(compiled, "result_aggregator")
+    assert partial is not None
+    assert partial.keywords.get("synthesize") is True
+
+
 # ──────────────────────────────────────────────
 # 그래프 배선: deep_agent 노드 등록 + 진입 경로
 # ──────────────────────────────────────────────
@@ -184,9 +213,10 @@ async def test_run_deep_agent_step6_aggregates_via_fabrix(monkeypatch):
         collector_ref["c"] = collector
         return agent
 
-    async def _fake_aggregator(state, *, llm=None, app_config=None):
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
         captured["task_plan"] = state["task_plan"]
         captured["task_results"] = state["task_results"]
+        captured["synthesize"] = synthesize
         summary = state["task_results"]["tool_data_query_1"]["organized_data"]["summary"]
         return {"final_response": f"[FabriX] {summary}", "current_node": "result_aggregator"}
 
@@ -205,6 +235,8 @@ async def test_run_deep_agent_step6_aggregates_via_fabrix(monkeypatch):
     # collector 원본 결과가 task_plan/task_results로 전달됨
     assert captured["task_plan"][0]["agent"] == "data_query"
     assert "tool_data_query_1" in captured["task_results"]
+    # 딥 에이전트 경로는 단일 합성 모드로 aggregator를 호출한다(D-048)
+    assert captured["synthesize"] is True
 
 
 @pytest.mark.asyncio
