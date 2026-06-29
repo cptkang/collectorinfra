@@ -23,10 +23,18 @@ from langchain_core.runnables import RunnableConfig
 from typing import Optional
 
 from src.alarm.domain.alarm import AlarmAnalysisResult, ProcessSnapshot
+from src.alarm.domain.notification_policy import (
+    TIER_DASHBOARD,
+    TIER_SUPPRESS,
+    TIER_TICKET,
+)
 
 logger = logging.getLogger(__name__)
 
 _SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
+
+# 발송하지 않는 티어(§7) — PAGE/미상 티어는 기존 발송 경로로 폴백(보수적, 재현율 우선)
+_NON_PAGE_TIERS = frozenset({TIER_TICKET, TIER_DASHBOARD, TIER_SUPPRESS})
 
 
 def _pattern_badge(result: AlarmAnalysisResult) -> str:
@@ -125,6 +133,15 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     cfg = config["configurable"]["app_config"]
     process_snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
 
+    # ── Plan 52: 4-티어 라우팅 (게이트 활성 시에만 decision 존재) ──
+    # decision is None(게이트 off) → 아래 기존 발송 경로 그대로(무변경).
+    # decision 존재 + TICKET/DASHBOARD/SUPPRESS → 발송하지 않고 로그만(감사는 gate가 기록).
+    # decision 존재 + PAGE(또는 미상 티어) → 아래 기존 발송 경로로 폴백(보수적 PAGE).
+    decision = state.get("notification_decision")
+    if decision is not None and decision.tier in _NON_PAGE_TIERS:
+        _log_non_page_tier(result.alarm_event.alarm_id, decision)
+        return {"analysis_result": result}
+
     for channel in result.notification_channels:
         try:
             if channel == "workb":
@@ -155,6 +172,35 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             )
 
     return {"analysis_result": result}
+
+
+def _log_non_page_tier(alarm_id: str, decision) -> None:  # noqa: ANN001 — NotificationDecision
+    """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 로그로 남긴다(발송 안 함, §7).
+
+    감사 기록(tier·reason·signals)은 notification_gate가 decision_store에 이미 적재했으므로
+    여기서는 로그만 남긴다(중복 적재 금지). 어떤 티어든 예외로 파이프라인을 막지 않는다.
+
+    DASHBOARD SSE 푸시: 워커 경로(AlarmWorker)에는 FastAPI app.state.alarm_bus가
+    주입되지 않으므로 E1에서는 로그+감사만 수행하고, SSE 푸시는 후속(E3)으로 남긴다.
+    """
+    if decision.tier == TIER_TICKET:
+        logger.info(
+            "TICKET 보류(저우선 — 발송 안 함, 감사 기록됨): alarm_id=%s reason=%s",
+            alarm_id,
+            decision.reason,
+        )
+    elif decision.tier == TIER_DASHBOARD:
+        logger.info(
+            "DASHBOARD(UI 표시만 — 발송 안 함, SSE는 후속): alarm_id=%s reason=%s",
+            alarm_id,
+            decision.reason,
+        )
+    else:  # TIER_SUPPRESS
+        logger.info(
+            "SUPPRESS(미통보 — 감사 기록만): alarm_id=%s reason=%s",
+            alarm_id,
+            decision.reason,
+        )
 
 
 async def _send_workb(
