@@ -736,6 +736,10 @@ D-029~D-032 재사용, D-003(읽기전용) 준수. 충돌 없음.
    (b) **incident 라이프사이클 관리 위치**(ITSM 연동/내부 incident 테이블) 결정이 선행되어야 한다.
    MTTR은 기존 자가복구 상관에 소요시간 기록 추가로 단기 산출 가능(저위험), MTTA·사건전환율은 ack/
    incident 소스 확정 후 계측. (억제 결정과 독립 — 관측성 보강)
+10. **워커 PAGE→UI 라이브피드 parity(선택·후속)** — D-048.10 SSE 브리지는 TICKET/DASHBOARD만 브리지한다
+    (워커 PAGE는 이미 workb/webhook 실발송되어 "안 보이는" 문제 대상 아님). PAGE도 UI 라이브피드에 표시하길
+    원하면 별도 소규모 후속으로 분리(notifier PAGE 경로 SSE publish 추가 + API `push_to_ui` 직접 발행과
+    이중발행 게이팅 필요). 현재 범위 외.
 
 ---
 
