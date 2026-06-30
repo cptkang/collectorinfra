@@ -139,7 +139,10 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     # decision 존재 + PAGE(또는 미상 티어) → 아래 기존 발송 경로로 폴백(보수적 PAGE).
     decision = state.get("notification_decision")
     if decision is not None and decision.tier in _NON_PAGE_TIERS:
-        _log_non_page_tier(result.alarm_event.alarm_id, decision)
+        configurable = (config or {}).get("configurable", {})
+        ticket_queue = configurable.get("ticket_queue")
+        alarm_bus = configurable.get("alarm_bus")
+        await _route_non_page_tier(result, decision, ticket_queue, alarm_bus)
         return {"analysis_result": result}
 
     for channel in result.notification_channels:
@@ -174,24 +177,74 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     return {"analysis_result": result}
 
 
-def _log_non_page_tier(alarm_id: str, decision) -> None:  # noqa: ANN001 — NotificationDecision
-    """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 로그로 남긴다(발송 안 함, §7).
+def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
+    """티어 라우팅용 SSE 이벤트 payload를 생성한다(§7 · Phase E3).
+
+    기존 `/alarm/notifications/stream`·analyze 경로의 publish 형식(alarm 필드 + 분석 결과)을
+    그대로 따르고, 티어/근거(tier·tier_reason)를 추가해 일관성을 유지한다.
+    """
+    ev = result.alarm_event
+    return {
+        "type": "alarm_notification",
+        "alarm_id": ev.alarm_id,
+        "severity": ev.severity,
+        "severity_label": result.severity_label,
+        "alarm_name": ev.alarm_name,
+        "db_id": ev.db_id,
+        "server_name": ev.server_name,
+        "hostname": ev.hostname,
+        "ip_address": ev.ip_address,
+        "resource_type": ev.resource_type,
+        "resource_name": ev.resource_name,
+        "alarm_status": ev.alarm_status,
+        "summary": result.summary,
+        "probable_cause": result.probable_cause,
+        "recommended_action": result.recommended_action,
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
+        # ── Phase E3: 4-티어 라우팅 메타데이터 ──
+        "tier": decision.tier,
+        "tier_reason": decision.reason,
+    }
+
+
+async def _route_non_page_tier(
+    result: AlarmAnalysisResult,
+    decision,  # noqa: ANN001 — NotificationDecision
+    ticket_queue,  # noqa: ANN001 — TicketBatchQueue | None (덕 타이핑)
+    alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None (덕 타이핑)
+) -> None:
+    """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 라우팅한다(발송 안 함, §7 · Phase E3).
 
     감사 기록(tier·reason·signals)은 notification_gate가 decision_store에 이미 적재했으므로
-    여기서는 로그만 남긴다(중복 적재 금지). 어떤 티어든 예외로 파이프라인을 막지 않는다.
+    여기서는 큐 적재/SSE만 수행한다(중복 적재 금지). 모든 부수효과는 graceful —
+    큐/SSE 실패는 warning 후 무시하여 파이프라인을 막지 않는다.
 
-    DASHBOARD SSE 푸시: 워커 경로(AlarmWorker)에는 FastAPI app.state.alarm_bus가
-    주입되지 않으므로 E1에서는 로그+감사만 수행하고, SSE 푸시는 후속(E3)으로 남긴다.
+    - TICKET: 일배치 요약 큐 적재(ticket_queue 있으면) + DASHBOARD와 동일하게 SSE 표시.
+    - DASHBOARD: SSE(alarm_bus 있으면)로 UI에만 표시.
+    - SUPPRESS: 발송·큐·SSE 모두 없음 — 로그만.
+
+    alarm_bus는 API 경로(app.state.alarm_bus)에서만 주입되고 워커 경로(cross-process)에는
+    주입되지 않는다. bus가 None이면 로그 폴백한다(워커 정상 동작).
     """
+    alarm_id = result.alarm_event.alarm_id
     if decision.tier == TIER_TICKET:
+        if ticket_queue is not None:
+            try:
+                ticket_queue.enqueue(decision, alarm_id=alarm_id)
+            except Exception:  # noqa: BLE001 — 큐 적재 실패가 파이프라인을 막지 않는다
+                logger.warning("TICKET 일배치 큐 적재 실패(무시): alarm_id=%s", alarm_id)
+        await _publish_tier_sse(result, decision, alarm_bus)
         logger.info(
-            "TICKET 보류(저우선 — 발송 안 함, 감사 기록됨): alarm_id=%s reason=%s",
+            "TICKET(저우선 — 일배치 큐 적재 + SSE 표시, 감사 기록됨): alarm_id=%s reason=%s",
             alarm_id,
             decision.reason,
         )
     elif decision.tier == TIER_DASHBOARD:
+        await _publish_tier_sse(result, decision, alarm_bus)
         logger.info(
-            "DASHBOARD(UI 표시만 — 발송 안 함, SSE는 후속): alarm_id=%s reason=%s",
+            "DASHBOARD(UI 표시만 — SSE, 발송 안 함): alarm_id=%s reason=%s",
             alarm_id,
             decision.reason,
         )
@@ -200,6 +253,29 @@ def _log_non_page_tier(alarm_id: str, decision) -> None:  # noqa: ANN001 — Not
             "SUPPRESS(미통보 — 감사 기록만): alarm_id=%s reason=%s",
             alarm_id,
             decision.reason,
+        )
+
+
+async def _publish_tier_sse(
+    result: AlarmAnalysisResult,
+    decision,  # noqa: ANN001 — NotificationDecision
+    alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None
+) -> None:
+    """티어 SSE 이벤트를 publish한다(bus 없으면 로그 폴백, 실패는 graceful)."""
+    if alarm_bus is None:
+        logger.info(
+            "SSE 미주입(워커 경로 — 로그 폴백): alarm_id=%s tier=%s",
+            result.alarm_event.alarm_id,
+            decision.tier,
+        )
+        return
+    try:
+        await alarm_bus.publish(_tier_sse_payload(result, decision))
+    except Exception:  # noqa: BLE001 — SSE 실패가 파이프라인을 막지 않는다
+        logger.warning(
+            "티어 SSE publish 실패(무시): alarm_id=%s tier=%s",
+            result.alarm_event.alarm_id,
+            decision.tier,
         )
 
 

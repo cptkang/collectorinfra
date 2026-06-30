@@ -278,9 +278,10 @@ class TestTierRoutingThroughGraph:
         final = await harness.run(make_polestar_payload(serverName=SRV_LOW, severity=2))
         assert final["notification_decision"].tier == TIER_DASHBOARD
 
-    async def test_low_sev1_suppress(self, harness):
+    async def test_low_sev1_dashboard(self, harness):
+        # E3 결정: sev1×낮음 SUPPRESS→DASHBOARD (저중요도 주의알람은 묵살 아닌 대시보드 강등)
         final = await harness.run(make_polestar_payload(serverName=SRV_LOW, severity=1))
-        assert final["notification_decision"].tier == TIER_SUPPRESS
+        assert final["notification_decision"].tier == TIER_DASHBOARD
 
     async def test_noti_policy_promotes_to_page(self, harness):
         # 보통×sev2=TICKET 이지만 폴스타 통보정책(실 JOIN) 승격 → PAGE

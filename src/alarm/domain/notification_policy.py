@@ -81,13 +81,14 @@ def _matrix_tier(effective_severity: int, importance: str) -> str:
     """심각도×중요도 우선순위 매트릭스(§3.2)로 기본 티어를 산출한다.
 
     심각도 2 {높음:PAGE, 보통:TICKET, 낮음:DASHBOARD}
-    심각도 1 {높음:TICKET, 보통:DASHBOARD, 낮음:SUPPRESS}
+    심각도 1 {높음:TICKET, 보통:DASHBOARD, 낮음:DASHBOARD}
     그 외(정의되지 않은 심각도)는 보수적으로 PAGE.
     """
     if effective_severity == 2:
         return {"높음": TIER_PAGE, "보통": TIER_TICKET, "낮음": TIER_DASHBOARD}[importance]
     if effective_severity == 1:
-        return {"높음": TIER_TICKET, "보통": TIER_DASHBOARD, "낮음": TIER_SUPPRESS}[importance]
+        # (E3 결정: 저중요도 주의알람은 묵살 아닌 대시보드 강등) "낮음" SUPPRESS→DASHBOARD
+        return {"높음": TIER_TICKET, "보통": TIER_DASHBOARD, "낮음": TIER_DASHBOARD}[importance]
     return TIER_PAGE
 
 
@@ -142,9 +143,15 @@ def decide_notification(
     flapping_enabled = bool(getattr(config, "flapping_enabled", False))
     storm_grouping_enabled = bool(getattr(config, "storm_grouping_enabled", False))
 
-    # ── step 1: 실효 심각도 (E1은 AI 보강 없음) ──────────────
+    # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
+    # 실효심각도 = max(폴스타 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
+    # 보강 비활성(enable_ai_severity_boost=False)이면 AI 값을 무시한다(이중 안전·E2 회귀 0).
+    # step3의 심각도3 단락은 effective_severity 기준이므로 AI가 2→3 상향 시에도 올바르게 PAGE 단락.
     severity = int(getattr(event, "severity", 0) or 0)
-    effective_severity = severity  # E1: ai_severity = None
+    ai_severity = getattr(analysis, "ai_message_severity", None)
+    if not getattr(config, "enable_ai_severity_boost", False):
+        ai_severity = None
+    effective_severity = max(severity, ai_severity) if ai_severity is not None else severity
 
     # ── step 2: 신호 수집 실패 시 보수화 ─────────────────────
     collection_failed = noise_ctx is None or noise_ctx.get("source") == "unavailable"
@@ -169,7 +176,7 @@ def decide_notification(
         """§8.2 동결 스키마(모든 키 필수)로 신호 스냅샷을 구성한다."""
         return {
             "severity": severity,
-            "ai_severity": None,
+            "ai_severity": ai_severity,
             "effective_severity": effective_severity,
             "importance": importance,
             "maintenance": maintenance,

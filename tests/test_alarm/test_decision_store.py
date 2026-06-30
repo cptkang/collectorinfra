@@ -87,7 +87,13 @@ class TestEnabledFlag:
         store = DecisionStore(str(store_path), enabled=False)
         store.record(make_decision())
         assert not store_path.exists()
-        assert store.aggregate() == {"total": 0, "by_tier": {}, "suppress_ratio": 0.0}
+        # E3 확장: aggregate는 빈 경우에도 전 키를 포함한다(기존 3키 하위호환 유지)
+        agg = store.aggregate()
+        assert agg["total"] == 0
+        assert agg["by_tier"] == {}
+        assert agg["suppress_ratio"] == 0.0
+        assert agg["actionable"] == 0
+        assert agg["last_event_ts"] is None
 
 
 class TestGracefulFailure:
@@ -104,7 +110,13 @@ class TestAggregate:
     def test_empty_when_no_file(self, tmp_path):
         store = DecisionStore(str(tmp_path / "missing.jsonl"))
         agg = store.aggregate()
-        assert agg == {"total": 0, "by_tier": {}, "suppress_ratio": 0.0}
+        # E3 확장: 빈 경우에도 전 키 포함 — 기존 3키는 동일 값 유지(하위호환)
+        assert agg["total"] == 0
+        assert agg["by_tier"] == {}
+        assert agg["suppress_ratio"] == 0.0
+        assert agg["page_count"] == 0
+        assert agg["actionable_ratio"] == 0.0
+        assert agg["last_event_age_seconds"] is None
 
     def test_suppress_ratio(self, tmp_path):
         store_path = tmp_path / "decisions.jsonl"

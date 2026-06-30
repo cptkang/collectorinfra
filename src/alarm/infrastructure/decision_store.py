@@ -16,7 +16,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from src.alarm.domain.notification_policy import NotificationDecision, TIER_SUPPRESS
+from src.alarm.domain.notification_policy import (
+    NotificationDecision,
+    TIER_DASHBOARD,
+    TIER_PAGE,
+    TIER_SUPPRESS,
+    TIER_TICKET,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +72,37 @@ class DecisionStore:
         except OSError as exc:  # 디스크/권한 등 — 발송을 막지 않고 경고만
             logger.warning("결정 감사 기록 실패(무시): %s", exc)
 
+    @staticmethod
+    def _empty_aggregate() -> dict:
+        """집계 결과의 빈 형태(전 키 포함)를 반환한다(E3 확장 — 키 스키마 일관성)."""
+        return {
+            "total": 0,
+            "by_tier": {},
+            "suppress_ratio": 0.0,
+            # ── E3 확장(하위호환 — 기존 3키 유지) ──
+            "page_count": 0,
+            "ticket_count": 0,
+            "dashboard_count": 0,
+            "suppress_count": 0,
+            "actionable": 0,        # page + ticket
+            "actionable_ratio": 0.0,
+            "last_event_ts": None,
+            "last_event_age_seconds": None,
+        }
+
     def aggregate(self, *, window_seconds: Optional[int] = None) -> dict:
-        """티어별 건수와 억제율(suppress/total)을 집계한다.
+        """티어별 건수와 억제율·액션가능 비율·최근 이벤트 경과를 집계한다(E3 확장).
+
+        기존 키(total/by_tier/suppress_ratio)는 그대로 유지하며(하위호환), 운영지표용으로
+        page_count/ticket_count/dashboard_count/suppress_count, actionable(=page+ticket),
+        actionable_ratio(=actionable/total), last_event_ts(ISO|None),
+        last_event_age_seconds(now-last|None)를 추가한다.
 
         window_seconds가 주어지면 현재 시각 기준 해당 창 내 기록만 집계한다.
-        파일이 없거나 비활성이면 빈 집계를 반환한다.
+        파일이 없거나 비활성이면 빈 집계(전 키 포함)를 반환한다.
         """
-        empty = {"total": 0, "by_tier": {}, "suppress_ratio": 0.0}
         if not self.enabled or not self.path.exists():
-            return empty
+            return self._empty_aggregate()
 
         cutoff_ts: Optional[float] = None
         if window_seconds is not None:
@@ -82,6 +110,8 @@ class DecisionStore:
 
         by_tier: dict[str, int] = {}
         total = 0
+        latest_dt: Optional[datetime] = None
+        latest_iso: Optional[str] = None
         try:
             with self.path.open("r", encoding="utf-8") as fh:
                 for line in fh:
@@ -97,13 +127,85 @@ class DecisionStore:
                     tier = rec.get("tier", "")
                     by_tier[tier] = by_tier.get(tier, 0) + 1
                     total += 1
+                    parsed = self._parse_ts(rec.get("ts"))
+                    if parsed is not None and (latest_dt is None or parsed > latest_dt):
+                        latest_dt = parsed
+                        latest_iso = str(rec.get("ts"))
         except OSError as exc:
             logger.warning("결정 감사 집계 읽기 실패(무시): %s", exc)
-            return empty
+            return self._empty_aggregate()
 
+        page = by_tier.get(TIER_PAGE, 0)
+        ticket = by_tier.get(TIER_TICKET, 0)
+        dashboard = by_tier.get(TIER_DASHBOARD, 0)
         suppress = by_tier.get(TIER_SUPPRESS, 0)
-        ratio = (suppress / total) if total else 0.0
-        return {"total": total, "by_tier": by_tier, "suppress_ratio": ratio}
+        actionable = page + ticket
+        last_age: Optional[float] = None
+        if latest_dt is not None:
+            last_age = max(
+                0.0, datetime.now(timezone.utc).timestamp() - latest_dt.timestamp()
+            )
+        return {
+            "total": total,
+            "by_tier": by_tier,
+            "suppress_ratio": (suppress / total) if total else 0.0,
+            "page_count": page,
+            "ticket_count": ticket,
+            "dashboard_count": dashboard,
+            "suppress_count": suppress,
+            "actionable": actionable,
+            "actionable_ratio": (actionable / total) if total else 0.0,
+            "last_event_ts": latest_iso,
+            "last_event_age_seconds": last_age,
+        }
+
+    def meta_alerts(
+        self,
+        *,
+        window_seconds: int,
+        suppress_ratio_threshold: float,
+        min_events: int,
+    ) -> list[dict]:
+        """억제기 메타모니터링 경보를 산출한다(Google SRE "모니터를 모니터링").
+
+        decision_store에서 직접 산출 가능한 신호만 사용한다(외부 데이터 금지):
+            - 억제율 > suppress_ratio_threshold → high_suppress_ratio
+              (억제기가 과도하게 억제 — 진짜 장애 묵살 위험).
+            - 창 내 total < min_events → no_events
+              (이벤트 무수신 — 억제기·수집 경로 장애 가능성).
+
+        둘은 OR 조건이며 동시 충족 시 모두 반환한다. 정상이면 빈 리스트.
+        """
+        agg = self.aggregate(window_seconds=window_seconds)
+        total = agg["total"]
+        suppress_ratio = agg["suppress_ratio"]
+
+        alerts: list[dict] = []
+        if total > 0 and suppress_ratio > suppress_ratio_threshold:
+            alerts.append({
+                "type": "high_suppress_ratio",
+                "value": suppress_ratio,
+                "threshold": suppress_ratio_threshold,
+                "window_seconds": window_seconds,
+            })
+        if total < min_events:
+            alerts.append({
+                "type": "no_events",
+                "total": total,
+                "min_events": min_events,
+                "window_seconds": window_seconds,
+            })
+        return alerts
+
+    @staticmethod
+    def _parse_ts(raw) -> Optional[datetime]:  # noqa: ANN001
+        """기록의 ts(ISO)를 datetime으로 파싱한다(실패 시 None)."""
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(raw))
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _within_window(rec: dict, cutoff_ts: float) -> bool:

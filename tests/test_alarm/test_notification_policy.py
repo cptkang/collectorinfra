@@ -99,7 +99,8 @@ class TestPriorityMatrix:
 
     def test_severity1_matrix(self):
         cfg = make_config(importance_value_map=IMP_MAP)
-        cases = {"HIGH": TIER_TICKET, "MID": TIER_DASHBOARD, "LOW": TIER_SUPPRESS}
+        # E3 결정: sev1×낮음 SUPPRESS→DASHBOARD (저중요도 주의알람은 묵살 아닌 대시보드 강등)
+        cases = {"HIGH": TIER_TICKET, "MID": TIER_DASHBOARD, "LOW": TIER_DASHBOARD}
         for imp, expected in cases.items():
             event = make_event(severity=1)
             d = decide_notification(event, None, None, make_ctx(importance_id=imp), cfg)

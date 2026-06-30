@@ -55,6 +55,7 @@ class AlarmWorker:
         # ── Plan 52: 노이즈 게이트 (enable_noise_gate 활성 시에만 사용) ──
         self._noise_repo = None
         self._decision_store = None
+        self._ticket_queue = None  # (E3) TICKET 티어 일배치 요약 큐
         # 핑거프린트 dedup(재발생 억제, §6.1) — alarm_id dedup과 별개 경로.
         self._gate_dedup: dict[str, float] = {}
         # 자가복구 상관용 발생 레지스트리(§3.7): fingerprint → (발생시각, severity).
@@ -150,6 +151,27 @@ class AlarmWorker:
             logger.exception("발송 판단 감사 저장소 생성 실패 — 감사 없이 진행")
             return None
 
+    def _build_ticket_queue(self):  # noqa: ANN202
+        """TICKET 티어 일배치 요약 큐를 생성한다 (Plan 52 §7 · Phase E3).
+
+        enable_noise_gate=False이거나 ticket_batch_queue_enabled=False이면 None을 반환한다 —
+        큐 적재만 생략되고 발송 판단·발송은 정상 진행된다 (graceful degradation).
+        """
+        if not self._config.noise_gate.enable_noise_gate:
+            return None
+        if not self._config.noise_gate.ticket_batch_queue_enabled:
+            return None
+        try:
+            from src.alarm.infrastructure.ticket_queue import TicketBatchQueue
+
+            return TicketBatchQueue(
+                self._config.noise_gate.ticket_batch_queue_path,
+                self._config.noise_gate.ticket_batch_queue_enabled,
+            )
+        except Exception:
+            logger.exception("TICKET 일배치 큐 생성 실패 — 큐 없이 진행")
+            return None
+
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
 
@@ -174,6 +196,7 @@ class AlarmWorker:
         self._process_client = self._build_process_client()
         self._noise_repo = self._build_noise_repo()
         self._decision_store = self._build_decision_store()
+        self._ticket_queue = self._build_ticket_queue()
         self._redis = r
         dedup: dict[str, float] = {}
 
@@ -355,6 +378,9 @@ class AlarmWorker:
                         "process_client": self._process_client,
                         "noise_repo": self._noise_repo,
                         "decision_store": self._decision_store,
+                        # (E3) TICKET 일배치 큐 — 워커는 cross-process라 alarm_bus는 미주입.
+                        # notifier의 DASHBOARD/TICKET SSE는 로그 폴백(정상), 큐 적재는 동작한다.
+                        "ticket_queue": self._ticket_queue,
                     }
                 },
             )

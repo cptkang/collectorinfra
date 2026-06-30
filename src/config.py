@@ -414,12 +414,16 @@ class NoiseGateConfig(BaseSettings):
     noise_context_timeout_seconds: float = 3.0
     noise_context_cache_ttl_seconds: int = 300
     meta_alert_suppress_ratio: float = 0.9    # (E3) 억제율 이 값 초과 시 메타경보
+    meta_alert_window_seconds: int = 3600     # (E3) 메타경보·운영지표 집계 창 (1h)
+    meta_alert_min_events: int = 1            # (E3) 창 내 이벤트 수가 이 값 미만이면 무수신 메타경보
     enable_ai_severity_boost: bool = False    # (E3) AI 메시지 심각도 보강 (상향 전용)
     ai_severity_escalate_only: bool = True    # (E3) True=상향만 (하향 억제 금지) — 안전 고정 권장
     enable_llm_actionability: bool = False    # (E3) LLM 피드백 few-shot 액션가능성 판단
     resolved_to_dashboard: bool = False       # 독립 해소(severity 0)를 DASHBOARD로 표시할지 (E1)
     decision_store_path: str = "logs/alarm_decisions.jsonl"
     decision_store_enabled: bool = True
+    ticket_batch_queue_path: str = "logs/alarm_ticket_queue.jsonl"   # (E3) TICKET 일배치 요약 큐
+    ticket_batch_queue_enabled: bool = True   # (E3) TICKET 티어를 일배치 요약 큐에 적재할지
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

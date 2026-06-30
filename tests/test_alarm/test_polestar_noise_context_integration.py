@@ -189,9 +189,10 @@ class TestDecisionRouting:
         _, d = await _decide(repo, SRV_LOW, ALARM_NONOTI, 2)
         assert d.tier == TIER_DASHBOARD  # 매트릭스 sev2×낮음
 
-    async def test_low_sev1_suppress(self, repo):
+    async def test_low_sev1_dashboard(self, repo):
         _, d = await _decide(repo, SRV_LOW, ALARM_NONOTI, 1)
-        assert d.tier == TIER_SUPPRESS  # 매트릭스 sev1×낮음
+        # 매트릭스 sev1×낮음 — E3 결정: 묵살(SUPPRESS) 아닌 대시보드 강등(DASHBOARD)
+        assert d.tier == TIER_DASHBOARD
 
     async def test_noti_policy_promotes_ticket_to_page(self, repo):
         # 보통×sev2=TICKET 이지만 폴스타 통보정책(notify) 승격 → PAGE

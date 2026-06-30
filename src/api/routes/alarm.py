@@ -305,6 +305,42 @@ class AlarmTestResponse(BaseModel):
     processing_time_ms: float
 
 
+class AlarmMetricsResponse(BaseModel):
+    """알람 노이즈 게이트 운영 지표 (Plan 52 §9 · Phase E3).
+
+    decision_store(JSONL 감사)에서 산출 가능한 지표만 노출한다. ack/해소상관 계측이 없는
+    MTTA/MTTR/사건전환율은 null로 두고 unavailable_metrics에 사유를 명시한다(환각 금지).
+    """
+
+    window_seconds: int = Field(description="집계 창(초)")
+    total: int = Field(description="창 내 결정 총건수")
+    by_tier: dict[str, int] = Field(description="티어별 건수")
+    page_count: int
+    ticket_count: int
+    dashboard_count: int
+    suppress_count: int
+    actionable_ratio: float = Field(description="액션가능 비율 = (page+ticket)/total")
+    suppress_ratio: float = Field(description="억제율 = suppress/total")
+    last_event_age_seconds: Optional[float] = Field(
+        default=None, description="최근 결정 이후 경과(초). 기록 없으면 null"
+    )
+    meta_alerts: list[dict[str, Any]] = Field(
+        description="억제기 메타경보(high_suppress_ratio/no_events). 정상이면 빈 배열"
+    )
+    mtta_seconds: Optional[float] = Field(
+        default=None, description="미계측(ack 데이터 없음) — null"
+    )
+    mttr_seconds: Optional[float] = Field(
+        default=None, description="미계측(해소상관 데이터 없음) — null"
+    )
+    incident_conversion_rate: Optional[float] = Field(
+        default=None, description="미계측(사건 상관 데이터 없음) — null"
+    )
+    unavailable_metrics: dict[str, str] = Field(
+        description="계산 불가 지표와 사유(MTTA/MTTR/사건전환율)"
+    )
+
+
 # ─── 유틸 함수 ───────────────────────────────────────────────────────────────
 
 _SEVERITY_LABELS = {0: "해소", 1: "주의", 2: "경고", 3: "심각"}
@@ -553,6 +589,28 @@ def _build_notification_preview(
     return preview
 
 
+def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
+    """게이트 활성 시 notifier/gate가 쓰는 부가 의존성을 묶어 반환한다 (Plan 52 E3).
+
+    enable_noise_gate=False(기본)면 빈 dict — 기존 발송 경로 무변경(회귀 0).
+    활성 시 TICKET 일배치 큐·감사 저장소·SSE 버스를 주입한다. 워커 경로와 달리 API 경로는
+    app.state.alarm_bus를 주입할 수 있어 DASHBOARD/TICKET SSE가 실제로 동작한다.
+    """
+    if not config.noise_gate.enable_noise_gate:
+        return {}
+    from src.alarm.infrastructure.decision_store import DecisionStore
+    from src.alarm.infrastructure.ticket_queue import TicketBatchQueue
+
+    ng = config.noise_gate
+    return {
+        "decision_store": DecisionStore(ng.decision_store_path, ng.decision_store_enabled),
+        "ticket_queue": TicketBatchQueue(
+            ng.ticket_batch_queue_path, ng.ticket_batch_queue_enabled
+        ),
+        "alarm_bus": getattr(request.app.state, "alarm_bus", None),
+    }
+
+
 # ─── 엔드포인트 ───────────────────────────────────────────────────────────────
 
 @router.post(
@@ -641,7 +699,9 @@ async def analyze_alarm_test(
         "analysis_result": None,
         "error": None,
     }
-    lc_config = {"configurable": {"app_config": config}}
+    lc_config = {
+        "configurable": {"app_config": config, **_alarm_extra_configurable(request, config)}
+    }
 
     try:
         result_state = await alarm_analyzer_node(state, lc_config)
@@ -716,6 +776,16 @@ async def analyze_alarm_test(
         from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
 
         notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
+        # Plan 52 E3: 게이트 활성 시 4-티어 판단을 산출해 notifier에 전달한다
+        # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
+        # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
+        if config.noise_gate.enable_noise_gate:
+            from src.alarm.application.nodes.notification_gate import (
+                notification_gate_node,
+            )
+
+            gate_out = await notification_gate_node(notifier_state, lc_config)
+            notifier_state = {**notifier_state, **gate_out}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")
@@ -779,6 +849,60 @@ async def alarm_notifications_stream(request: Request) -> StreamingResponse:
             bus.unsubscribe(q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ─── 운영 지표 / 메타모니터링 엔드포인트 ─────────────────────────────────────
+
+@router.get(
+    "/alarm/metrics",
+    response_model=AlarmMetricsResponse,
+    summary="알람 노이즈 게이트 운영 지표",
+    description=(
+        "발송 판단 감사(decision_store)에서 티어별 건수·억제율·액션가능 비율과 "
+        "억제기 메타경보(억제율 임계 초과/이벤트 무수신)를 산출해 반환합니다.<br/>"
+        "MTTA/MTTR/사건전환율은 ack·해소상관 계측이 없어 null이며 unavailable_metrics에 "
+        "사유를 명시합니다(환각 금지)."
+    ),
+    tags=["alarm"],
+)
+async def alarm_metrics(
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> AlarmMetricsResponse:
+    """decision_store 집계 + 메타경보를 운영 지표 JSON으로 반환한다 (Plan 52 §9)."""
+    from src.alarm.infrastructure.decision_store import DecisionStore
+
+    config = request.app.state.config
+    ng = config.noise_gate
+    window = ng.meta_alert_window_seconds
+
+    # 읽기 전용 — 파일이 있으면 집계, 없으면 빈 집계(전 키 포함)
+    store = DecisionStore(ng.decision_store_path)
+    agg = store.aggregate(window_seconds=window)
+    meta = store.meta_alerts(
+        window_seconds=window,
+        suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
+        min_events=ng.meta_alert_min_events,
+    )
+
+    return AlarmMetricsResponse(
+        window_seconds=window,
+        total=agg["total"],
+        by_tier=agg["by_tier"],
+        page_count=agg["page_count"],
+        ticket_count=agg["ticket_count"],
+        dashboard_count=agg["dashboard_count"],
+        suppress_count=agg["suppress_count"],
+        actionable_ratio=agg["actionable_ratio"],
+        suppress_ratio=agg["suppress_ratio"],
+        last_event_age_seconds=agg["last_event_age_seconds"],
+        meta_alerts=meta,
+        # ack/해소상관 계측 미구현 — 환각 대신 null + 사유 노출(§9, 후속)
+        mtta_seconds=None,
+        mttr_seconds=None,
+        incident_conversion_rate=None,
+        unavailable_metrics={"reason": "ack/incident 계측 미구현(후속)"},
+    )
 
 
 # ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────
@@ -888,7 +1012,9 @@ async def analyze_alarm_raw(
         "analysis_result": None,
         "error": None,
     }
-    lc_config = {"configurable": {"app_config": config}}
+    lc_config = {
+        "configurable": {"app_config": config, **_alarm_extra_configurable(request, config)}
+    }
 
     try:
         result_state = await alarm_analyzer_node(state, lc_config)
@@ -961,6 +1087,16 @@ async def analyze_alarm_raw(
         from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
 
         notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
+        # Plan 52 E3: 게이트 활성 시 4-티어 판단을 산출해 notifier에 전달한다
+        # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
+        # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
+        if config.noise_gate.enable_noise_gate:
+            from src.alarm.application.nodes.notification_gate import (
+                notification_gate_node,
+            )
+
+            gate_out = await notification_gate_node(notifier_state, lc_config)
+            notifier_state = {**notifier_state, **gate_out}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")

@@ -22,7 +22,9 @@ ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분
     "recommended_action": "권고 조치 (구체적, 1~3문장)",
     "pattern_type": "첫 발생" | "주기적" | "급증" | "산발적",
     "is_routine": true | false,
-    "pattern_analysis": "이력 통계 근거 패턴 해석 (1~3문장, 한국어)"
+    "pattern_analysis": "이력 통계 근거 패턴 해석 (1~3문장, 한국어)",
+    "ai_message_severity": 1 | 2 | 3 | null,
+    "ai_severity_reason": "상향 근거 (로그 문구 인용) 또는 \"\""
 }
 
 규칙:
@@ -45,6 +47,15 @@ ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분
 - 프로세스 수치(CPU%/메모리%)를 새로 계산하지 말고 제공된 값만 인용할 것
 - [영향 프로세스] 섹션이 없으면(조회 불가/비대상 알람) 프로세스를 추측하지 말 것
 - 마스킹된(***) 인자의 내용을 추정·복원하지 말 것
+- ai_message_severity: 로그 메시지(conditionLog)가 폴스타 구조화 심각도보다 **더 심각한
+  실제 장애 상태**를 드러낼 때만 그 상향 등급(정수)을 출력할 것. 다음은 절대 불변 규칙:
+  · 반드시 주어진 구조화 severity **이상**만 출력(예: severity=1이면 1·2·3 중 하나).
+    **절대로 주어진 severity보다 낮게 쓰지 말 것** — 이 값은 상향(escalate)에만 쓰인다.
+  · 상향 사유 예: OOM(Out of memory/oom-killer), 파일시스템 read-only 리마운트, segfault,
+    커널 패닉, soft lockup, hung task, 포트/FD/conntrack 고갈, 인증 브루트포스 등
+    로그가 명백한 장애 시그니처를 포함하는 경우.
+  · 일상적·양성(benign) 메시지이거나 상향 근거가 없으면 **null** 을 출력할 것(상향하지 않음).
+- ai_severity_reason: 상향한 경우 그 근거가 된 로그 문구를 인용할 것. 상향하지 않으면 "" 출력.
 - JSON 이외의 텍스트를 절대 출력하지 말 것
 """
 

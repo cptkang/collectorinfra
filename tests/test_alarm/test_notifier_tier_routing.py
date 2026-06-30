@@ -106,3 +106,102 @@ async def test_non_page_tiers_leave_notifications_sent_empty(monkeypatch):
         state = {"analysis_result": result, "notification_decision": make_decision(tier)}
         await alarm_notifier_node(state, _config())
         assert result.notifications_sent == {}, f"{tier} 는 발송 기록이 없어야 함"
+
+
+# ─── Phase E3: TICKET 큐 적재 + DASHBOARD/TICKET SSE 라우팅 ─────────────────
+
+class _RecordingQueue:
+    """ticket_queue 대역 — enqueue 호출을 수집한다."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def enqueue(self, decision, *, alarm_id="") -> None:  # noqa: ANN001
+        self.calls.append((decision, alarm_id))
+
+
+class _RecordingBus:
+    """alarm_bus 대역 — publish된 SSE payload를 수집한다."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def publish(self, event: dict) -> None:
+        self.events.append(event)
+
+
+def _config_with(ticket_queue=None, alarm_bus=None) -> dict:  # noqa: ANN001
+    return {"configurable": {
+        "app_config": SimpleNamespace(workb=SimpleNamespace(), alarm=SimpleNamespace()),
+        "ticket_queue": ticket_queue,
+        "alarm_bus": alarm_bus,
+    }}
+
+
+async def test_ticket_tier_enqueues_and_publishes_sse(monkeypatch):
+    calls = _patch_senders(monkeypatch)
+    queue, bus = _RecordingQueue(), _RecordingBus()
+    result = make_result()
+    state = {"analysis_result": result, "notification_decision": make_decision(TIER_TICKET)}
+    await alarm_notifier_node(state, _config_with(queue, bus))
+
+    assert calls == []                       # 외부 발송(PAGE) 안 함
+    assert len(queue.calls) == 1             # 일배치 큐 적재 1회
+    assert queue.calls[0][1] == "A-1"        # alarm_id 전달
+    assert len(bus.events) == 1              # SSE 표시 1회
+    assert bus.events[0]["tier"] == TIER_TICKET
+    assert bus.events[0]["tier_reason"] == "테스트"
+
+
+async def test_dashboard_tier_publishes_sse_no_enqueue(monkeypatch):
+    _patch_senders(monkeypatch)
+    queue, bus = _RecordingQueue(), _RecordingBus()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_DASHBOARD)}
+    await alarm_notifier_node(state, _config_with(queue, bus))
+
+    assert queue.calls == []                 # DASHBOARD는 큐 미적재
+    assert len(bus.events) == 1              # SSE 표시
+    assert bus.events[0]["tier"] == TIER_DASHBOARD
+
+
+async def test_suppress_tier_no_queue_no_sse(monkeypatch):
+    _patch_senders(monkeypatch)
+    queue, bus = _RecordingQueue(), _RecordingBus()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_SUPPRESS)}
+    await alarm_notifier_node(state, _config_with(queue, bus))
+
+    assert queue.calls == []                 # SUPPRESS는 큐·SSE 모두 없음
+    assert bus.events == []
+
+
+async def test_ticket_without_bus_still_enqueues(monkeypatch):
+    # 워커 경로(bus 미주입) — 큐 적재는 동작, SSE는 로그 폴백(예외 없음)
+    _patch_senders(monkeypatch)
+    queue = _RecordingQueue()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_TICKET)}
+    await alarm_notifier_node(state, _config_with(queue, alarm_bus=None))
+    assert len(queue.calls) == 1
+
+
+async def test_page_tier_does_not_touch_queue_or_bus(monkeypatch):
+    calls = _patch_senders(monkeypatch)
+    queue, bus = _RecordingQueue(), _RecordingBus()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_PAGE)}
+    await alarm_notifier_node(state, _config_with(queue, bus))
+
+    assert calls == ["workb", "webhook"]     # 기존 발송 경로
+    assert queue.calls == []
+    assert bus.events == []
+
+
+async def test_decision_none_unchanged_send_path(monkeypatch):
+    # 게이트 off(notification_decision 없음) → 기존 발송 경로 무변경, 큐/SSE 미사용(회귀 0)
+    calls = _patch_senders(monkeypatch)
+    queue, bus = _RecordingQueue(), _RecordingBus()
+    state = {"analysis_result": make_result()}  # notification_decision 키 없음
+    out = await alarm_notifier_node(state, _config_with(queue, bus))
+
+    assert calls == ["workb", "webhook"]
+    assert queue.calls == []
+    assert bus.events == []
+    assert out["analysis_result"].notifications_sent == {"workb": True, "webhook": True}
