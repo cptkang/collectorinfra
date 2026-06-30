@@ -58,6 +58,24 @@ class TestBuildHostnameSql:
         assert "RESOURCE_CONF_ID" not in sql
         assert "is_lob" not in sql
 
+    def test_db2_uses_fetch_first_and_no_schema(self):
+        # 은행 레거시 b0(DB2)는 LIMIT 미지원 → FETCH FIRST, 무스키마 테이블(CURRENT SCHEMA).
+        sql = build_hostname_sql("polestar_b0", "WEB-SVR-01", db_engine="db2")
+        assert "FETCH FIRST 1 ROWS ONLY" in sql
+        assert "LIMIT" not in sql
+        assert "polestar.cmm_resource" not in sql
+        assert "FROM cmm_resource r" in sql
+        # 매칭 규칙은 엔진 무관 동일
+        assert "r.resource_type = 'server.Server'" in sql
+        assert "ORDER BY CASE WHEN r.name = 'WEB-SVR-01' THEN 0 ELSE 1 END" in sql
+
+    def test_postgresql_default_keeps_limit_and_schema(self):
+        # 기본(postgresql) 경로는 회귀 없이 LIMIT + polestar. 스키마 유지.
+        sql = build_hostname_sql("polestar_cm_gp", "WEB-SVR-01", db_engine="postgresql")
+        assert "LIMIT 1" in sql
+        assert "polestar.cmm_resource" in sql
+        assert "FETCH FIRST" not in sql
+
     def test_literal_escaping(self):
         sql = build_hostname_sql("polestar_cm_gp", "x'; DROP TABLE y--")
         assert "x''; DROP TABLE y--" in sql
@@ -96,6 +114,15 @@ class TestResolver:
         resolver = PolestarHostnameResolver(_FakeRegistry(client))
         assert await resolver.resolve("polestar_cm_gp", "WEB-SVR-01") is None
 
+    async def test_b0_resolve_executes_db2_dialect(self):
+        # b0(db2)는 resolve가 엔진을 조회해 FETCH FIRST·무스키마 SQL을 실행해야 한다.
+        client = _FakeClient([{"hostname": "bankhost01", "name": "은행서버-01"}])
+        resolver = PolestarHostnameResolver(_FakeRegistry(client))
+        result = await resolver.resolve("polestar_b0", "은행서버-01")
+        assert result == "bankhost01"
+        assert "FETCH FIRST 1 ROWS ONLY" in client.executed_sql
+        assert "polestar.cmm_resource" not in client.executed_sql
+
     async def test_uppercase_keys(self):
         client = _FakeClient([{"HOSTNAME": "saisvd01", "NAME": "WEB-SVR-01"}])
         resolver = PolestarHostnameResolver(_FakeRegistry(client))
@@ -129,6 +156,38 @@ class _AppCfgStub:
                 return active_db_ids
 
         self.multi_db = _Multi()
+
+
+class TestResolveDbIdLocationHint:
+    """첫 턴(task.db_ids/previous 공백)에 질의 텍스트로 db_id를 재도출하는 위치 힌트."""
+
+    def test_bank_keyword_resolves_b0(self):
+        from src.orchestration.process_query import _resolve_db_id
+
+        cfg = _AppCfgStub(_ProcCfg({"polestar_b0": "http://10.37.16.51:9010"}), ["polestar_b0"])
+        db_id = _resolve_db_id(
+            {}, {}, "은행 폴스타 ### 서버 현재 프로세스 리스트 조회", cfg
+        )
+        assert db_id == "polestar_b0"
+
+    def test_legacy_keyword_resolves_b0(self):
+        from src.orchestration.process_query import _resolve_db_id
+
+        cfg = _AppCfgStub(_ProcCfg({"polestar_b0": "http://b0"}), ["polestar_b0"])
+        assert _resolve_db_id({}, {}, "레거시 폴스타 SVR-1 프로세스", cfg) == "polestar_b0"
+
+    def test_bank_hint_without_base_url_still_returns_b0(self):
+        # base_url 미매핑이어도 위치 신호가 명확하면 db_id를 반환 → 호출부가 정확한 안내.
+        from src.orchestration.process_query import _resolve_db_id
+
+        cfg = _AppCfgStub(_ProcCfg({}), [])
+        assert _resolve_db_id({}, {}, "은행 폴스타 ### 프로세스", cfg) == "polestar_b0"
+
+    def test_gimpo_still_resolves_gp(self):
+        from src.orchestration.process_query import _resolve_db_id
+
+        cfg = _AppCfgStub(_ProcCfg({"polestar_cm_gp": "http://gp"}), ["polestar_cm_gp"])
+        assert _resolve_db_id({}, {}, "김포 ### 서버 프로세스", cfg) == "polestar_cm_gp"
 
 
 class TestRunProcessQueryUsesResolvedHostname:

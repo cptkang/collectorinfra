@@ -79,6 +79,12 @@ async def result_aggregator(
     if not ordered_tasks:
         ordered_tasks = sorted(tasks, key=lambda t: t.get("order", 0))
 
+    # 멀티턴 DB 승계용 db_id 승격(D-053): orchestration 경로는 agent_orchestrator가
+    # active_db_id/target_databases를 top-level state에 쓰지 않아, 다음 턴 context_resolver의
+    # previous_db_ids가 비어 "해당 서버 …" 후속 질의의 db_id를 잃는다(process_query는 위치어가
+    # 없어 위치 힌트로도 못 잡음). 실행된 task들의 target_db_ids를 top-level로 승격한다.
+    db_promotion = _collect_db_promotion(tasks, task_results)
+
     # 합성 모드 + 복합 task일 때만 per-task 마감의 토큰 스트리밍을 억제한다.
     # (최종 합성 1회에만 USER_RESPONSE_TAG를 부여하여 중간 답변 토큰 누출 방지 — D-048/D-009)
     suppress_stream = synthesize and len(ordered_tasks) > 1
@@ -97,7 +103,7 @@ async def result_aggregator(
 
     # 복합 task + 합성 모드(딥 에이전트): LLM 1회로 단일 일관 답변 합성 (D-048)
     if synthesize and len(finalized) > 1:
-        return await _synthesize_finalized(finalized, state, llm, app_config)
+        return {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion}
 
     # 단일 task: 그대로 최종화
     if len(finalized) == 1:
@@ -111,10 +117,42 @@ async def result_aggregator(
         if f.get("output_file") is not None:
             out["output_file"] = f["output_file"]
             out["output_file_name"] = f.get("output_file_name")
+        out.update(db_promotion)
         return out
 
     # 복합 task: order 순으로 묶어 통합
-    return _merge_finalized(finalized)
+    return {**_merge_finalized(finalized), **db_promotion}
+
+
+def _collect_db_promotion(
+    tasks: list[dict], task_results: dict[str, dict]
+) -> dict:
+    """실행된 task들의 target_db_ids를 top-level state 필드로 승격한다 (D-053, 멀티턴 DB 승계).
+
+    orchestration 경로는 subagent가 active_db_id/target_databases를 isolated에만 쓰고
+    top-level로 올리지 않아, 다음 턴 context_resolver._extract_previous_db_ids가 읽을
+    값이 없다. 본 함수가 task_results의 target_db_ids를 모아 `active_db_id`(첫 DB)와
+    `target_databases`([{db_id}])로 승격하여 멀티턴 DB 승계를 복원한다.
+
+    Args:
+        tasks: 전체 task_plan
+        task_results: {task_id: 정규화된 결과}
+
+    Returns:
+        {"active_db_id", "target_databases"} dict (승격할 db_id가 없으면 빈 dict)
+    """
+    db_ids: list[str] = []
+    for t in tasks:
+        res = task_results.get(t.get("task_id"), {})
+        for did in res.get("target_db_ids") or []:
+            if did and did not in db_ids:
+                db_ids.append(did)
+    if not db_ids:
+        return {}
+    return {
+        "active_db_id": db_ids[0],
+        "target_databases": [{"db_id": d} for d in db_ids],
+    }
 
 
 def _collect_superseded(tasks: list[dict], task_results: dict[str, dict]) -> set[str]:

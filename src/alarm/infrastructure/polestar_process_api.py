@@ -122,7 +122,21 @@ class PolestarProcessApiClient:
         data = payload.get("data") if isinstance(payload, dict) else None
         proc_list = data.get("list") if isinstance(data, dict) else None
         if proc_list is None:
+            # 200을 받았으나 기대 경로(data.list)가 없음 — 응답 envelope이 인스턴스마다 다를 수
+            # 있다(예: 은행 레거시 b0). 실제 형태를 진단할 수 있도록 최상위 구조를 로깅한다.
+            top_keys = list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__
+            data_keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+            logger.warning(
+                "프로세스 API 응답에 data.list 경로 없음 — 0건 처리: db_id=%s hostname=%s "
+                "top_keys=%s data_keys=%s body=%s",
+                db_id, hostname, top_keys, data_keys, repr(payload)[:800],
+            )
             return ProcessApiResult(captured_at=captured_at, processes=[])
+        if not proc_list:
+            logger.info(
+                "프로세스 API data.list 비어있음(0건): db_id=%s hostname=%s captured_at=%s",
+                db_id, hostname, captured_at,
+            )
         return ProcessApiResult(
             captured_at=captured_at,
             processes=[it for it in proc_list if isinstance(it, dict)],

@@ -448,3 +448,36 @@ async def test_result_aggregator_promotes_query_results(mock_config):
     # 전체 7건이 top-level query_results로 승격됨(CSV 다운로드/row_count 근거)
     assert out["query_results"] == full
     assert len(out["query_results"]) == 7
+
+
+@pytest.mark.asyncio
+async def test_result_aggregator_promotes_db_id_for_multiturn(mock_config):
+    """실행 task의 target_db_ids를 active_db_id/target_databases로 승격한다(멀티턴 DB 승계, D-053)."""
+    tasks = [
+        {"task_id": "t1", "agent": "data_query", "sub_query": "은행 ### OS/CPU", "order": 1, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="은행 ### 서버 OS/CPU/메모리")
+    state["task_plan"] = tasks
+    rows = [{"hostname": "bankhost01", "os": "RHEL"}]
+    state["task_results"] = {
+        "t1": {
+            "organized_data": {"summary": "조회됨", "rows": rows, "is_sufficient": True},
+            "query_results": rows,
+            "target_db_ids": ["polestar_b0"],
+        }
+    }
+
+    with patch.object(
+        agg_mod, "output_generator",
+        new=AsyncMock(return_value={"final_response": "결과", "output_file": None, "output_file_name": None}),
+    ):
+        out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    # 다음 턴 context_resolver._extract_previous_db_ids가 읽을 필드로 승격
+    assert out["active_db_id"] == "polestar_b0"
+    assert out["target_databases"] == [{"db_id": "polestar_b0"}]
+
+    # 승격된 필드가 실제로 previous_db_ids로 추출되는지 종단 확인
+    from src.nodes.context_resolver import _extract_previous_db_ids
+    assert _extract_previous_db_ids({"target_databases": out["target_databases"],
+                                     "active_db_id": out["active_db_id"]}) == ["polestar_b0"]

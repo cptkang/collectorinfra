@@ -127,9 +127,11 @@ class TestSchemaAnalyzerSynonymsAllowedTables:
         # 1. State/DB 설정
         db_id = "polestar_test"
         sample_state["active_db_id"] = db_id
+        # D-051(Plan 52 §4.★): 유사어 동적 보완은 이번 질의 용어와 매칭될 때만 적용된다.
+        # cmm_resource_system의 유사어 "시스템명"이 질의에 등장해야 allowed_tables에 보완된다.
         sample_state["parsed_requirements"] = {
             "query_targets": ["서버", "CPU"],
-            "original_query": "모든 서버 조회"
+            "original_query": "모든 서버의 시스템명 조회"
         }
 
         # 2. Mock DB Client 및 SchemaInfo 구성
@@ -163,11 +165,13 @@ class TestSchemaAnalyzerSynonymsAllowedTables:
             "relationships": []
         }
         mock_cache_mgr = AsyncMock()
+        # get_schema_or_fetch는 (schema_dict, cache_hit, cache_source, descriptions, synonyms) 5-tuple 반환
         mock_cache_mgr.get_schema_or_fetch.return_value = (
             schema_dict,
             True,
+            "메모리",
             {},
-            {}
+            {},
         )
 
         mock_cache_mgr.get_synonyms.return_value = {
@@ -197,6 +201,63 @@ class TestSchemaAnalyzerSynonymsAllowedTables:
         # 6. 검증
         assert "relevant_tables" in result
         assert "polestar.cmm_resource" in result["relevant_tables"]
-        # cmm_resource_system 이 synonyms에 설정되어 있었으므로 allowed_tables에 보완되어 필터링되지 않아야 함
+        # cmm_resource_system의 유사어 "시스템명"이 질의에 등장하므로(게이트 통과)
+        # allowed_tables에 보완되어 필터링되지 않아야 함 (D-051 게이트 동작)
         assert "polestar.cmm_resource_system" in result["relevant_tables"]
+
+    @pytest.mark.asyncio
+    async def test_unmatched_synonym_table_not_supplemented(
+        self, sample_state, mock_config
+    ):
+        """유사어가 이번 질의에 등장하지 않으면 그 테이블은 보완되지 않는다 (D-051 폭증 회귀 차단).
+
+        게이트 부재 시 등록된 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트가
+        폭증했다(실측: b0 _allowed 5→407). 질의 무관 유사어 테이블이 들어오지 않음을 확인한다.
+        """
+        db_id = "polestar_test"
+        sample_state["active_db_id"] = db_id
+        # 질의에 "시스템명"이 없음 → cmm_resource_system은 보완 대상이 아님
+        sample_state["parsed_requirements"] = {
+            "query_targets": ["서버", "CPU"],
+            "original_query": "모든 서버의 CPU 조회",
+        }
+
+        schema_dict = {
+            "tables": {
+                "polestar.cmm_resource": {"columns": [{"name": "id", "type": "integer"}]},
+                "polestar.cmm_resource_system": {
+                    "columns": [{"name": "systemname", "type": "varchar"}]
+                },
+            },
+            "relationships": [],
+        }
+        mock_cache_mgr = AsyncMock()
+        mock_cache_mgr.get_schema_or_fetch.return_value = (
+            schema_dict, True, "메모리", {}, {},
+        )
+        # cmm_resource_system에 유사어가 등록돼 있으나, 질의에 그 유사어("시스템명")가 없음
+        mock_cache_mgr.get_synonyms.return_value = {
+            "cmm_resource_system.systemname": ["시스템명"]
+        }
+
+        mock_client = AsyncMock()
+        mock_llm = AsyncMock()
+        # LLM이 환각으로 cmm_resource_system까지 선택해도, allowed_tables 필터에서 제거돼야 함
+        mock_llm.ainvoke.return_value = MagicMock(
+            content="polestar.cmm_resource, polestar.cmm_resource_system"
+        )
+        mock_profile = {"source": "manual", "allowed_tables": ["cmm_resource"]}
+
+        @asynccontextmanager
+        async def mock_db_context(client):
+            yield client
+
+        with patch("src.nodes.schema_analyzer.get_db_client", return_value=mock_db_context(mock_client)), \
+             patch("src.nodes.schema_analyzer.get_cache_manager", return_value=mock_cache_mgr), \
+             patch("src.nodes.schema_analyzer._load_manual_profile", return_value=mock_profile):
+            result = await schema_analyzer(sample_state, llm=mock_llm, app_config=mock_config)
+
+        assert "polestar.cmm_resource" in result["relevant_tables"]
+        # 게이트 미통과 → cmm_resource_system은 relevant에서 제외되어야 한다
+        assert "polestar.cmm_resource_system" not in result["relevant_tables"]
 

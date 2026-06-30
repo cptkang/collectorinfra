@@ -26,6 +26,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from src.routing.domain_config import get_domain_by_id
+
 logger = logging.getLogger(__name__)
 
 # 폴스타 테이블은 'polestar' 스키마에 존재한다(polestar_history.py와 동일 전제).
@@ -44,21 +46,31 @@ def _sql_literal(value: str) -> str:
     return f"'{cleaned}'"
 
 
-def _table(db_id: str, name: str) -> str:
-    """db_id에 해당하는 스키마로 한정된 테이블 참조를 반환한다."""
+def _table(db_id: str, name: str, db_engine: str = "postgresql") -> str:
+    """db_id/엔진에 맞는 테이블 참조를 반환한다.
+
+    DB2(은행 레거시 polestar_b0 등)는 무스키마 테이블을 연결 계정의 CURRENT SCHEMA로
+    해소하므로 스키마 prefix를 붙이지 않는다(b0 프로필이 스키마 prefix 없이 cmm_resource를
+    참조하는 것과 정합). PostgreSQL(gp/yd)은 기존대로 `polestar.` 스키마로 한정한다.
+    """
+    if db_engine == "db2":
+        return name
     schema = _SCHEMA_BY_DB_ID.get(db_id, _DEFAULT_SCHEMA)
     return f"{schema}.{name}"
 
 
-def build_hostname_sql(db_id: str, value: str) -> str:
+def build_hostname_sql(db_id: str, value: str, db_engine: str = "postgresql") -> str:
     """서버명/호스트명 → 정규 hostname 해소용 고정 SELECT를 조립한다 (읽기 전용 단일문).
 
     - server.Server 행만 대상(DTIME IS NULL — 삭제 리소스 제외).
     - name 또는 hostname 일치, name 일치를 우선(ORDER BY).
     - RESOURCE_CONF_ID JOIN 미포함(D-022). is_lob 조건 미사용(2026-06-10).
+    - 엔진 인지(D-051): DB2(b0)는 `LIMIT` 미지원 → `FETCH FIRST 1 ROWS ONLY`,
+      무스키마 테이블 사용. PostgreSQL(gp/yd)은 `LIMIT 1` + `polestar.` 스키마.
     """
     lit = _sql_literal(value)
-    t_resource = _table(db_id, "cmm_resource")
+    t_resource = _table(db_id, "cmm_resource", db_engine)
+    row_limit = "FETCH FIRST 1 ROWS ONLY" if db_engine == "db2" else "LIMIT 1"
     return (
         "SELECT r.hostname AS hostname, r.name AS name\n"
         f"FROM {t_resource} r\n"
@@ -66,7 +78,7 @@ def build_hostname_sql(db_id: str, value: str) -> str:
         "  AND r.dtime IS NULL\n"
         f"  AND (r.name = {lit} OR r.hostname = {lit})\n"
         f"ORDER BY CASE WHEN r.name = {lit} THEN 0 ELSE 1 END\n"
-        "LIMIT 1"
+        f"{row_limit}"
     )
 
 
@@ -110,14 +122,19 @@ class PolestarHostnameResolver:
             logger.debug("hostname 해소 건너뜀 — 미등록 db_id: %s", db_id)
             return None
 
-        sql = build_hostname_sql(db_id, value)
+        # 대상 DB 엔진에 맞는 방언으로 SQL을 생성한다(DB2 b0는 LIMIT 미지원 → FETCH FIRST).
+        domain = get_domain_by_id(db_id)
+        db_engine = domain.db_engine if domain else "postgresql"
+        sql = build_hostname_sql(db_id, value, db_engine)
         try:
             async with self._registry.get_client(db_id) as client:
                 result = await client.execute_sql(sql)
         except Exception as exc:
+            # 방언/스키마 불일치(예: b0의 CURRENT SCHEMA 미스매치)를 테스트 중 식별할 수 있도록
+            # 실패한 SQL을 함께 남긴다(원시 값 폴백 동작은 유지 — 회귀 없음).
             logger.warning(
-                "hostname 해소 조회 실패 — 원시 값 폴백: db_id=%s value=%s err=%s",
-                db_id, value, exc,
+                "hostname 해소 조회 실패 — 원시 값 폴백: db_id=%s engine=%s value=%s err=%s sql=%s",
+                db_id, db_engine, value, exc, sql,
             )
             return None
 

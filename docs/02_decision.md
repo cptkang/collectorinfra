@@ -2429,10 +2429,131 @@ HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '조�
 
 ---
 
+## D-051. allowed_tables 유사어 동적 보완을 질의 매칭분으로 게이트 (b0 토큰 폭증 차단)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-30 |
+| **상태** | 확정 (1차 구현 완료 — schema_analyzer 게이트) |
+
+### 배경 / 문제
+
+"은행 폴스타(polestar_b0)의 ### 서버 IP/OS/CPU/메모리" 단일 조회가 4개 task 전부
+`Input tokens must be <= 95232. Given: 197951`로 실패. 이 오류는 vLLM 제어 평면이 아니라
+**FabriX(KBGenAI) 데이터 평면 백엔드(GptOss, 입력 ~95K 한도)** 가 던진 것으로(D-042의
+"데이터 평면=대용량" 전제는 실측과 다름), SQL 생성 프롬프트가 한도의 2배로 팽창했다.
+
+VS Code 디버거 단계별 실측으로 원인을 확정:
+- `schema_analyzer.py`에서 LLM 테이블 선택 직후 `relevant`=4 (전체-폴백 미발동), query_targets 정상.
+- 그러나 **최종 relevant=400, `_allowed`=407** (b0 프로필 `allowed_tables`는 5개뿐).
+- `query_generator` 직전 `system_prompt`=104,632 토큰(>95K), `column_synonyms`=72K·`schema_info`=134K 토큰.
+
+근본 원인: `schema_analyzer`의 allowed_tables 동적 보완이 **`cache_mgr.get_synonyms(db_id)`의
+모든 col_key 테이블을 무조건 `_allowed`에 추가**(`:756-762`)하고 Step2가 이를 전량 relevant로
+보충(`:781-789`). b0는 거의 전 테이블에 컬럼 유사어가 누적돼 있어 5개 화이트리스트가 407개
+(전체 409 거의 전부)로 부풀고, 그 스키마가 통째로 프롬프트에 덤프됐다. **DB2라서가 아니라
+유사어가 가장 많이 누적된 DB**여서이며, 유사어가 늘수록 악화되는 시한폭탄형 버그.
+(Known Mistakes 2026-06-11 "사전류 전 테이블 순회 시 매칭+상한 필수"의 재발.)
+
+### 결정
+
+allowed_tables 유사어 동적 보완을 **이번 질의(원질의 + query_targets)에 실제 등장한 유사어의
+테이블만**으로 게이트하고 보완 수 상한(`_MAX_SYNONYM_SUPPLEMENT_TABLES=15`)을 적용한다.
+`schema_analyzer._synonym_tables_matching_query()` 헬퍼 신설(빈 문자열·1글자 유사어 제외로
+전체 매칭 함정 차단). 이로써 b0 relevant이 5개 수준으로 수렴해 프롬프트가 ~5-10K로 떨어진다.
+
+**보조 방어선**(Plan 52, 후속): FabriX 데이터 평면 토큰 가드(`WORKER_MAX_INPUT_TOKENS` +
+노이즈 우선 제거, D-042 전제 정정), schema_analyzer 전체-테이블 폴백 제거(P1),
+DB2 introspection 앱 스키마 스코프(부차), replanner 인프라성 에러 가드(D-052 예정).
+
+### 근거 / 대안
+
+- **게이트 채택 이유**: 유사어 매핑 보존이라는 원 취지를 살리되 질의 관련분만 포함 → 누적과
+  무관하게 relevant 경계 유지. 회귀 안전(다른 DB도 질의 매칭분만 추가).
+- **대안(전면 제거)**: 프로필 화이트리스트만 권위. 더 단순하나, 비-화이트리스트 테이블을
+  유사어로 매핑해 쓰는 DB가 있으면 깨질 수 있어 보류.
+
+### 검증
+
+- `tests/test_nodes/test_schema_analyzer_synonym_gate.py`(8) + `test_schema_analyzer_eav_supplement.py`
+  통합 양성/음성(유사어 미매칭 시 테이블 미보완) — 15 passed. arch_check 영향 없음(WARN 2건은
+  기존 orchestration→prompts, 본 변경 무관). 상세: `plans/52-polestar-b0-token-overflow-and-replan-misdiagnosis.md` §1.5/§4.★.
+
+---
+
+## D-053. hostname 해소 SQL 엔진 인지(은행 레거시 b0 DB2 프로세스 조회)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-30 |
+| **상태** | 확정 |
+| **관련 결정** | D-046(서버명→hostname 해소) 보강 — 충돌 없음 |
+
+### 배경 / 문제
+
+은행 레거시 폴스타(`polestar_b0`)의 실시간 프로세스 조회가 0건으로 나오고, 빈 결과가
+replanner를 깨워 후속 회차에서 일반 DB 조회로 폴백됐다. 김포/여의도(gp/yd)는 정상.
+근본 원인은 D-046의 `build_hostname_sql`이 **엔진 무관하게 PostgreSQL 방언으로 고정**돼 있던 것:
+(1) `LIMIT 1` — DB2(b0)는 미지원, (2) `polestar.cmm_resource` 스키마 prefix 고정 — b0(DB2)는
+연결 계정 CURRENT SCHEMA를 쓰며 b0 프로필도 무스키마 `cmm_resource`를 참조. b0에서 이 SQL이
+실패하면 `resolve()`가 예외를 삼키고 None을 반환(D-046 graceful 폴백) → 원시 **서버명**이
+hostname으로 프로세스 API에 전달 → b0 API 0건. gp/yd는 PostgreSQL이라 동일 SQL이 성공해
+정규 hostname을 얻으므로 정상 동작했다.
+
+### 결정
+
+`build_hostname_sql`을 **엔진 인지**로 만든다. `resolve()`가 `get_domain_by_id(db_id).db_engine`로
+대상 엔진을 조회해 전달:
+- **db2**(b0/polestar): `FETCH FIRST 1 ROWS ONLY` + 무스키마 `cmm_resource`(CURRENT SCHEMA 해소).
+- **postgresql**(gp/yd, 기본): 기존 `LIMIT 1` + `polestar.` 스키마 유지(회귀 없음).
+
+진단성: 해소 실패 시 WARNING 로그에 `engine`·실패 SQL을 함께 남겨 방언/스키마 미스매치를
+테스트 중 식별 가능하게 한다(폴백 동작 자체는 불변).
+
+### 세부 변경
+
+- `src/alarm/infrastructure/polestar_hostname_resolver.py`: `_table(db_id, name, db_engine)` /
+  `build_hostname_sql(db_id, value, db_engine)` 엔진 분기, `resolve()`가 엔진 조회·전달,
+  실패 로그에 engine·sql 추가. `get_domain_by_id` import(same-layer: routing↔alarm.infrastructure).
+- `src/orchestration/process_query.py`: **(라이브 진단으로 드러난 실제 1차 게이트)** `_resolve_db_id`의
+  `_LOCATION_DB_HINTS`에 김포/여의도만 있고 **은행(b0)이 누락**돼 "은행 폴스타 … 프로세스" 질의의
+  db_id가 None으로 빠짐(첫 턴은 task.db_ids/previous 공백 → ③ 위치 힌트로 와야 하는데 b0 힌트 부재).
+  → b0 힌트(`"은행"/"레거시"/"은행존"`) 추가. 위치 신호가 명확하면 base_url 미매핑이어도 db_id를
+  반환하도록 ③ 보강(잘못된 "위치 미식별" 대신 정확한 "API 미연결" 안내). 진입/게이트 진단 로그 추가.
+- `src/alarm/infrastructure/polestar_process_api.py`: 200이지만 `data.list` 경로가 없을 때 응답
+  envelope(top_keys·body 일부)를 WARNING 로깅(인스턴스별 형식 차이 진단). b0 응답 형식은 gp/yd와
+  동일함이 라이브 확인됨(`{date, data.list, id}`) — 형식 mismatch 아님.
+- `src/orchestration/result_aggregator.py`: **(멀티턴 후속 질의 펑 — 추가 근본원인)** orchestration
+  경로의 `agent_orchestrator`는 최종 state로 `{task_plan, task_results, current_node}`만 반환하고
+  subagent가 세팅한 `active_db_id`/`target_databases`를 top-level로 올리지 않는다. 그래서 다음 턴
+  `context_resolver._extract_previous_db_ids`가 읽을 값이 없어 **previous_db_ids가 비고**, "해당 서버
+  …" 후속 process_query가 db_id=None으로 펑(위치어가 없어 ③ 힌트로도 못 잡음). query_results는
+  이미 승격돼 previous_entities(hostname)는 살아남던 비대칭이 단서. → `_collect_db_promotion`이
+  실행 task들의 `target_db_ids`를 `active_db_id`(첫 DB)·`target_databases`([{db_id}])로 승격(3개 반환
+  경로 모두). 1·2턴 모두에서 b0 DB 승계 복원.
+- `tests/test_orchestration/test_process_hostname_resolve.py`: b0(db2) FETCH FIRST·무스키마,
+  postgres 기본 회귀, resolve가 b0에서 db2 방언 실행, b0 위치 힌트(은행/레거시/base_url 무관)·김포 회귀 — 7건 신규.
+
+### 향후 수정 시 고려사항
+
+- b0 CURRENT SCHEMA가 cmm_resource를 해소하지 못하면(WARNING 로그 SQLCODE -204) `_SCHEMA_BY_DB_ID`에
+  b0 실제 스키마를 등록한다.
+- `polestar_history.py`도 동일한 `_DEFAULT_SCHEMA='polestar'`+`LIMIT` 패턴이라 b0 알람 이력 보강에서
+  같은 방언 불일치 잠재. 본 결정은 프로세스 조회 경로에 한정했으며 history는 후속 과제로 남긴다.
+
+### 검증
+
+- `tests/test_orchestration/test_process_hostname_resolve.py` 14 passed,
+  `test_alarm_process_enrich.py`·`test_alarm_process_rank.py` 63 passed, arch_check --ci exit 0.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-30 | D-053 | **은행 b0 실시간 프로세스 조회 0건 수정(2건)**: (1·실제 1차 게이트) `_resolve_db_id._LOCATION_DB_HINTS`에 은행(b0)이 없어 "은행 폴스타 … 프로세스" 질의 db_id=None → 조기 0건(라이브 진입 로그로 확인). → b0 힌트(은행/레거시/은행존) 추가, 위치 신호 명확 시 base_url 무관 db_id 반환. (2·후속 게이트) `build_hostname_sql`이 엔진 무관 PostgreSQL 방언(`LIMIT 1`+`polestar.` 스키마) 고정 → DB2 b0에서 SQL 실패 → D-046 graceful 폴백이 서버명을 그대로 API에 전달 → 0건. → `resolve()`가 `get_domain_by_id(db_id).db_engine` 조회, db2는 `FETCH FIRST 1 ROWS ONLY`+무스키마(CURRENT SCHEMA). 진입/게이트/응답-envelope 진단 로그 추가. b0 API 형식은 gp/yd와 동일 확인(형식 mismatch 아님). (3·멀티턴) `agent_orchestrator`가 `active_db_id`/`target_databases`를 top-level로 안 올려 다음 턴 previous_db_ids 공백 → "해당 서버 …" 후속 process_query db_id=None 펑. → `result_aggregator._collect_db_promotion`이 실행 task target_db_ids를 승격(멀티턴 DB 승계 복원). 런타임 `.env`에 `ALARM_PROCESS_API_BASE_URLS_CSV`의 b0 매핑 필요(코드 기본값엔 gp/yd만). 관련: D-046, D-047. 검증: orchestration 201 passed/4 skipped, 알람 프로세스 63 passed, arch_check exit 0 |
+| 2026-06-30 | D-051 | **allowed_tables 유사어 동적 보완을 질의 매칭분으로 게이트**: `schema_analyzer`가 `get_synonyms`의 모든 테이블을 무조건 `_allowed`에 추가하던 것(b0 실측 5→407, relevant 400, system_prompt 104K>95K FabriX 한도)을, 이번 질의 용어와 매칭된 유사어의 테이블만(상한 15) 보완하도록 `_synonym_tables_matching_query()` 게이트 신설. FabriX 데이터 평면도 ~95K 입력 한도임을 확인(D-042 전제 정정). 회귀: synonym_gate 8 + eav_supplement 통합 양성/음성. 계획 `plans/52-...md` |
 | 2026-06-29 | D-050 | **단일 서버 필터 + EAV 피벗(CPU·메모리) 조회 SQL 교정(HAVING 패턴)**: 실재하는 김포 서버의 CPU·메모리가 조회 시 null로 나오던 문제 — "데이터를 못 가져오는 게 문제"라는 사용자 지적이 정확. 근본 원인: 폴스타 EAV에서 CPU(`server.Cpus`)·메모리(`server.Memory`)는 server.Server와 다른 행이라 `GROUP BY platform_resource_id` 피벗이 필요한데, **단일 서버 필터+피벗을 결합한 예시·지침이 없어** LLM이 피벗에 `WHERE c.name='###'`를 붙임 → 그 술어가 server.Server 행에만 참이라 GROUP BY 전에 Cpus/Memory 행이 제거 → CPU·메모리 NULL(OS/IP/호스트명만 정상). avail_status는 이미 HAVING 기법을 쓰는데 서버명 필터엔 없던 게 구멍. **결정**: 서버 식별 필터는 WHERE가 아니라 **HAVING(집계 후 server.Server 행 기준)**으로 적용. **수정**: `prompts/query_generator.py`(서버명+피벗 HAVING 규칙·예시), `config/db_profiles/polestar_cm_gp.yaml`·`polestar_cm_yd.yaml`(단일 서버 OS/IP/호스트명+CPU/메모리 query_example 신규). 관련: D-049(이 사례를 "속성 부재"로 오판한 가드 — 본 결정이 진짜 원인), D-046. 검증: YAML safe_load OK, arch_check exit 0, 회귀 통과(사전 실패 3건 무관) |
 | 2026-06-29 | D-049 | **엔티티 확보 후 무의미 재시도 차단(replanner 필드-null 재조회 가드)**: 단일 서버 단일 의도 질의에서 1차가 서버는 찾았으나 CPU·메모리 컬럼이 null(속성 미수집)이자, replanner LLM이 "0건→재조회" 예시를 오적용해 DB 범위를 바꿔가며 max_replan(3)까지 헛 재시도(t1~t4) → 불필요 DB 왕복 4회 + 부분/빈 답변 모순 이중 출력. **결정**: `replanner._filter_futile_retries` 결정적 가드 — 엔티티 확보(선행 >0행) 후 같은 의도 재조회를 제거(전부 제거 시 종료). supersedes 필드에만 의존하지 않도록 **행수+독립성**으로 판정(원인 B=LLM이 supersedes 미설정에 견고): (a) supersedes가 >0행 선행을 가리키거나, (b) 독립(depends_on 빈)+같은 agent 선행이 >0행이면 제거. 보존: 선행 0건 재조회/데이터 의존 보강(장애→알람)/다른 agent 보강. 보조로 `prompts/replanner.py` 원칙 7(행 찾음+필드 null=속성 부재→재조회 금지) 추가. **수정**: `orchestration/replanner.py`(`_filter_futile_retries`+호출), `prompts/replanner.py`. 채택=옵션①(즉시 중단; data_query가 내부 DB 선택하므로 교차 DB 회수 가치 낮음, 종료 시 단일 task→정직한 단일 답변). 관련: D-043, D-048, D-040. 검증: arch_check --ci exit 0, replanner 신규 6건 포함 orchestration 130 passed/4 skipped |
 | 2026-06-29 | D-048 | **딥 에이전트 경로 복합 결과의 단일 LLM 합성(모순 이중 답변 제거)**: 딥 에이전트(트랙 B)에서 오케스트레이터가 동일 질문을 재시도하면 collector에 1·2차 결과가 모두 쌓이는데, 1차가 error가 아닌 "부분 성공"(서버는 찾았으나 CPU/메모리 null → `completed`)이라 D-043(supersedes)이 못 잡고 `_merge_finalized`가 "CPU 없음"·"CPU 8코어" 서술을 한 말풍선에 이어붙여 모순 이중 답변을 내던 문제 해결. **결정(사용자): 단일 LLM 합성** — `result_aggregator(synthesize=True)`(딥 경로 전용, replanner 경로는 기존 deterministic 병합 유지)가 복합 task를 `_synthesize_finalized`로 LLM 1회 합성(재시도 모순은 구체적 값으로 해소, 멀티의도는 통합). **스트리밍 정합(D-009)**: 합성 시 per-task `output_generator`는 `stream_user_response=False`로 태그를 떼고 최종 합성 1회만 USER_RESPONSE_TAG로 스트리밍(딥 노드는 `deep_agent`라 태그로만 토큰을 거름) → 단일 스트림. 합성 예외/빈 결과는 `_merge_finalized`로 안전 폴백, output_file 첫 task 채택·query_results 누적(D-047). **적용 경로 — 둘 다**: 딥 에이전트(트랙 B) `_aggregate_with_fabrix`와 **다중 의도 오케스트레이션(트랙 A, Plan 48) `result_aggregator` 그래프 노드**. 폐쇄망(deepagents 미설치)에서 실제 활성 경로는 트랙 A이므로 `graph.py`에서 이 노드를 `synthesize=True`로 바인딩해야 발동(트랙 B만 적용 시 사용자 런타임 미발동 — 최초 누락 원인). **수정**: `prompts/result_synthesizer.py` 신규, `output_generator.py`(`stream_user_response` 파라미터), `result_aggregator.py`(`synthesize`/`_synthesize_finalized`), `deep_agent.py`(트랙 B `synthesize=True`), `graph.py`(트랙 A result_aggregator 노드 `synthesize=True` 바인딩). 관련: D-005, D-009, D-043, D-047. 검증: arch_check --ci exit 0, result_aggregator 합성 신규 6건+wiring synthesize 검증(트랙 A/B) 통과 |

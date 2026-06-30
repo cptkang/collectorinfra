@@ -46,10 +46,13 @@ _HOST_FIELDS = (
     "hostname", "host_name", "server_name", "name", "host", "device_name",
     "서버명", "서버이름", "장비명", "호스트명", "서버", "장비",
 )
-# 위치 → 폴스타 db_id 매핑 신호 (base_url 매핑이 있는 db_id로만 좁힘).
+# 위치 → 폴스타 db_id 매핑 신호. 첫 턴(task.db_ids/previous_db_ids 공백)에 질의 텍스트로
+# db_id를 재도출하는 결정적 폴백. 은행 레거시(b0)는 "은행"/"레거시" 신호로 식별한다
+# (도메인 alias: "은행 폴스타"/"레거시 폴스타", display_name "은행 레거시 및 K리전(은행존)").
 _LOCATION_DB_HINTS: dict[str, tuple[str, ...]] = {
     "polestar_cm_gp": ("김포",),
     "polestar_cm_yd": ("여의도",),
+    "polestar_b0": ("은행", "레거시", "은행존"),
 }
 
 
@@ -106,9 +109,18 @@ def _resolve_db_id(
 
     # ③ 위치 신호 매칭 (sub_query + previous_location)
     location_text = f"{sub_query} {ctx.get('previous_location', '')}"
-    for did, hints in _LOCATION_DB_HINTS.items():
-        if _has_base_url(did) and any(h in location_text for h in hints):
+    hint_matches = [
+        did for did, hints in _LOCATION_DB_HINTS.items()
+        if any(h in location_text for h in hints)
+    ]
+    # base_url 매핑이 있는 매치를 우선하되, 없더라도 위치 신호가 명확하면 해당 db_id를 반환한다
+    # (db_id=None으로 빠져 "위치 미식별"이라는 잘못된 안내가 나가는 것을 막고, base_url 게이트가
+    #  "API 미연결" 같은 정확한 원인을 알리도록 한다).
+    for did in hint_matches:
+        if _has_base_url(did):
             return did
+    if hint_matches:
+        return hint_matches[0]
 
     # 후보가 있으나 base_url이 없으면 첫 후보 반환(호출부에서 graceful 안내)
     return candidates[0] if candidates else None
@@ -218,17 +230,27 @@ async def run_process_query(
     sub_query = task.get("sub_query", isolated.get("user_query", ""))
     db_id = _resolve_db_id(task, isolated, sub_query, app_config)
     identifier = _resolve_hostname(isolated)
+    base_url_present = bool(db_id and app_config.alarm.get_process_api_base_url(db_id))
+    # 진입 진단(early-return으로 hostname 해소·API 로그가 안 남는 경우를 식별하기 위함):
+    # 어느 게이트(db_id/identifier/base_url)에서 0건으로 빠지는지 한 줄로 드러낸다.
+    logger.info(
+        "process_query 진입: db_id=%s identifier=%s base_url=%s sub_query=%r",
+        db_id, identifier, "있음" if base_url_present else "없음", (sub_query or "")[:120],
+    )
 
     # 대상 미식별 → graceful 안내 (없는 테이블 조회로 폴백하지 않음 — SQL0204N 방지)
     if not db_id:
+        logger.warning("process_query 0건: db_id 미식별 (위치 신호 부족)")
         msg = "프로세스 조회 대상 DB(위치)를 식별하지 못했습니다. 위치(예: 김포/여의도)를 지정해 주세요."
         return _empty_result(msg, db_id, identifier)
     if not identifier:
+        logger.warning("process_query 0건: identifier(서버명) 미식별 db_id=%s", db_id)
         msg = "프로세스 조회 대상 서버(서버명)를 식별하지 못했습니다. 서버명을 지정해 주세요."
         return _empty_result(msg, db_id, identifier)
 
     base_url = app_config.alarm.get_process_api_base_url(db_id)
     if not base_url:
+        logger.warning("process_query 0건: base_url 미매핑 db_id=%s (런타임 .env 확인 필요)", db_id)
         msg = (
             f"'{db_id}'는 실시간 프로세스 API가 연결되지 않은 DB입니다. "
             "프로세스 API가 매핑된 폴스타(예: 김포/여의도)에서만 실시간 프로세스 조회가 가능합니다."

@@ -28,6 +28,51 @@ from src.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+# 유사어 기반 allowed_tables 동적 보완 상한 (D-051: 누적 유사어 전 테이블 유입 차단)
+_MAX_SYNONYM_SUPPLEMENT_TABLES = 15
+
+
+def _synonym_tables_matching_query(
+    db_syns: dict[str, list[str]],
+    match_text: str,
+    cap: int = _MAX_SYNONYM_SUPPLEMENT_TABLES,
+) -> set[str]:
+    """등록된 컬럼 유사어 중 이번 질의 용어와 매칭되는 것의 테이블만 추린다 (D-051).
+
+    유사어 사전(column_synonyms)은 전 테이블×컬럼 규모일 수 있다(Known Mistakes
+    2026-06-11). allowed_tables 동적 보완 시 등록된 유사어 테이블을 **무조건 전량**
+    추가하면, 유사어가 누적된 DB(예: polestar_b0)에서 `_allowed`가 화이트리스트(5개)에서
+    전체 테이블(실측 407)로 부풀고 relevant·프롬프트 토큰이 폭증한다(system_prompt 104K
+    > FabriX 한도 95K). 따라서 **이번 질의(원질의 + query_targets)에 실제 등장한 유사어**의
+    테이블만 보완 대상으로 게이트하고 상한을 적용한다.
+
+    Args:
+        db_syns: {"table.column": [synonym, ...]} 형태의 등록 유사어
+        match_text: 소문자화한 (원질의 + query_targets) 매칭 텍스트
+        cap: 보완 테이블 수 상한 (기본 _MAX_SYNONYM_SUPPLEMENT_TABLES)
+
+    Returns:
+        질의와 매칭된 유사어가 속한 테이블명(소문자) 집합 (최대 cap개)
+    """
+    matched: set[str] = set()
+    if not match_text or not db_syns:
+        return matched
+    for col_key, syns in db_syns.items():
+        if "." not in col_key:
+            continue
+        # 빈 문자열 유사어는 항상 매칭(="" in text)되어 전 테이블 유입을 유발하므로 제외.
+        # 1글자 유사어는 오매칭 위험이 커 길이 2 이상만 인정한다.
+        for s in syns or []:
+            if s and len(s) >= 2 and s.lower() in match_text:
+                matched.add(col_key.split(".", 1)[0].lower())
+                break
+        if len(matched) >= cap:
+            logger.warning(
+                "유사어 기반 allowed_tables 보완 상한(%d) 도달, 이후 생략", cap
+            )
+            break
+    return matched
+
 
 class _SchemaCacheProxy:
     """호환성 프록시: 기존 _schema_cache 심볼을 사용하는 코드를 위한 래퍼.
@@ -751,13 +796,18 @@ async def schema_analyzer(
             _routing_intent = state.get("routing_intent")
             if _manual_prof and "allowed_tables" in _manual_prof and _routing_intent != "alarm_query":
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
-                # 매핑 피드백(synonyms)에 등록된 테이블도 allowed_tables에 동적 추가하여 캐시 갱신 이후 필터링 유실 방지
+                # 매핑 피드백(synonyms)에 등록된 테이블을 allowed_tables에 동적 보완하되,
+                # **이번 질의 용어와 매칭된 유사어의 테이블만** 추가한다(D-051). 전량 추가하면
+                # 누적 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트 토큰이 폭증한다
+                # (실측: b0 _allowed 5→407, relevant 400, system_prompt 104K > 95K 한도).
                 try:
                     db_syns = await cache_mgr.get_synonyms(db_id)
-                    for col_key in db_syns.keys():
-                        if "." in col_key:
-                            tbl = col_key.split(".", 1)[0].lower()
-                            _allowed.add(tbl)
+                    _match_text = (
+                        (parsed.get("original_query", "") or "")
+                        + " "
+                        + " ".join(query_targets or [])
+                    ).lower()
+                    _allowed |= _synonym_tables_matching_query(db_syns, _match_text)
                 except Exception as e:
                     logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
                 # ★ DEBUG[4]: 필터링 조건 확인
