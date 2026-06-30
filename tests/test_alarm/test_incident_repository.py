@@ -83,13 +83,40 @@ async def test_create_open_returns_inserted_id():
     conn = _FakeConn()
     conn.fetchval_returns.append(42)
     iid = await _store(conn).create_open(
-        fingerprint="fp", alarm_id="A-1", db_id="polestar", server_name="srv-1",
-        severity=2, priority="320", tier="page", created_at=REF,
+        fingerprint="fp", alarm_id="A-1", alarm_name="CPU 임계", db_id="polestar",
+        server_name="srv-1", severity=2, priority="320", tier="page", created_at=REF,
     )
     assert iid == 42
     # INSERT ... RETURNING id 가 호출되었는지(첫 호출이 fetchval)
     assert conn.calls[0][0] == "fetchval"
     assert "INSERT INTO alarm_incidents" in conn.calls[0][1]
+    # alarm_name 컬럼이 INSERT에 포함되고 값이 바인딩되는지 (D-049 delta)
+    assert "alarm_name" in conn.calls[0][1]
+    assert "CPU 임계" in conn.calls[0][2]
+
+
+async def test_create_open_binds_args_in_exact_column_order():
+    """INSERT의 컬럼 순서와 위치 인자($N) 매핑이 정확한지 고정한다 (D-049 $오프셋 회귀 가드).
+
+    alarm_name을 3번째 컬럼($3)으로 추가하면서 이후 모든 플레이스홀더가 한 칸씩
+    밀린다. 멤버십(`value in args`) 단언만으로는 위치가 틀려도 통과하므로, 고유 센티넬
+    값으로 args 튜플 전체를 **순서까지** 단언하고 컬럼 목록의 상대 위치를 검증한다.
+    """
+    conn = _FakeConn()
+    conn.fetchval_returns.append(7)
+    await _store(conn).create_open(
+        fingerprint="FP", alarm_id="AID", alarm_name="ANAME", db_id="DBID",
+        server_name="SRV", severity=2, priority="PRIO", tier="page", created_at=REF,
+    )
+    sql, args = conn.calls[0][1], conn.calls[0][2]
+    # 위치 인자 순서 고정: status는 리터럴('open'), created_at은 마지막($9)
+    assert args == ("FP", "AID", "ANAME", "DBID", "SRV", 2, "PRIO", "page", REF)
+    # 컬럼 목록 상대 순서: alarm_id → alarm_name → db_id (3번째 컬럼 삽입 확인)
+    assert sql.index("alarm_id") < sql.index("alarm_name") < sql.index("db_id")
+    # VALUES 플레이스홀더 시퀀스 고정 — $오프셋 밀림(예: alarm_name→$4) 즉시 포착
+    normalized = " ".join(sql.split())
+    assert "($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9)" in normalized
+    assert "$10" not in normalized
 
 
 async def test_create_open_graceful_returns_zero_on_error():
@@ -157,14 +184,15 @@ async def test_ack_graceful_false_on_error():
 async def test_list_open_maps_rows_with_iso_times():
     conn = _FakeConn()
     conn.fetch_return = [{
-        "id": 1, "fingerprint": "fp", "alarm_id": "A-1", "db_id": "polestar",
-        "server_name": "srv-1", "severity": 2, "priority": "320", "tier": "page",
-        "status": "open", "created_at": REF, "acked_at": None, "acked_by": None,
-        "resolved_at": None, "resolution": None,
+        "id": 1, "fingerprint": "fp", "alarm_id": "A-1", "alarm_name": "CPU 임계",
+        "db_id": "polestar", "server_name": "srv-1", "severity": 2, "priority": "320",
+        "tier": "page", "status": "open", "created_at": REF, "acked_at": None,
+        "acked_by": None, "resolved_at": None, "resolution": None,
     }]
     rows = await _store(conn).list_open(limit=10)
     assert len(rows) == 1
     assert rows[0]["id"] == 1
+    assert rows[0]["alarm_name"] == "CPU 임계"          # D-049 delta: 알람명 매핑
     assert rows[0]["created_at"] == REF.isoformat()   # datetime → ISO
     assert rows[0]["acked_at"] is None
 

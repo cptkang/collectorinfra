@@ -28,6 +28,7 @@ class IncidentStore(ABC):
         *,
         fingerprint: str,
         alarm_id: str,
+        alarm_name: str = "",
         db_id: str,
         server_name: str,
         severity: int,
@@ -40,6 +41,7 @@ class IncidentStore(ABC):
         Args:
             fingerprint: 재발생 상관용 안정 식별자(compute_fingerprint 결과)
             alarm_id: 폴스타 알람 ID
+            alarm_name: 폴스타 알람 이름(admin 목록 "알람명" 표시용)
             db_id: 폴스타 인스턴스 식별자
             server_name: 대상 서버명
             severity: 알람 심각도(0~3)

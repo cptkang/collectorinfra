@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS alarm_incidents (
     id          BIGSERIAL PRIMARY KEY,
     fingerprint VARCHAR(128) NOT NULL,
     alarm_id    VARCHAR(64),
+    alarm_name  VARCHAR(255),
     db_id       VARCHAR(64),
     server_name VARCHAR(255),
     severity    INTEGER,
@@ -95,6 +96,13 @@ async def _ensure_incident_tables(pool) -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute(_INCIDENT_DDL)
+        # 기존 테이블(IF NOT EXISTS로 컬럼 미추가)에 alarm_name을 멱등 보강한다 (D-049 delta).
+        # 신규 환경은 위 CREATE로, 기존 환경은 이 ALTER로 커버한다(graceful·auth 패턴 일관).
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE alarm_incidents "
+                "ADD COLUMN IF NOT EXISTS alarm_name VARCHAR(255)"
+            )
         async with pool.acquire() as conn:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_status "

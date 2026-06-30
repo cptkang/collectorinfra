@@ -154,6 +154,12 @@ async def test_page_decision_publishes_open(monkeypatch):
     assert payload["alarm_id"] == "A-1"
     assert payload["tier"] == TIER_PAGE
     assert payload["priority"] == "320"           # int → str
+    # D-049 delta: 재발행 카드가 빈 칸 없이 렌더되도록 표시필드를 함께 싣는다
+    assert payload["alarm_name"] == "CPU 임계"
+    assert payload["severity_label"] == "경고"
+    assert payload["summary"] == "s"
+    assert payload["hostname"] == "h-1"
+    assert payload["recommended_action"] == "a"
     assert calls == ["workb"]
 
 

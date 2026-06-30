@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS alarm_incidents (
     id          BIGSERIAL PRIMARY KEY,
     fingerprint VARCHAR(128) NOT NULL,
     alarm_id    VARCHAR(64),
+    alarm_name  VARCHAR(255),
     db_id       VARCHAR(64),
     server_name VARCHAR(255),
     severity    INTEGER,

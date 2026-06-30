@@ -303,18 +303,39 @@ async def _publish_tier_sse(
 
 
 def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
-    """incident open 이벤트 payload를 생성한다(§5 양측 합의 스키마, D-049)."""
+    """incident open 이벤트 payload를 생성한다(§5 양측 합의 스키마 + 카드 표시필드, D-049).
+
+    재발행 SSE 카드(app.js renderAlarmMessage)가 빈 칸 없이 렌더되도록 `_tier_sse_payload`의
+    전체 표시필드(severity/severity_label/alarm_name/.../pattern_analysis)를 포함하고,
+    incident 식별필드(type·fingerprint·priority·ts)를 합친다. process_snapshot/history_stats는
+    SSE 직렬화 부담으로 `_tier_sse_payload`와 동일하게 제외한다(카드의 해당 섹션은 생략됨).
+    """
     ev = result.alarm_event
     return {
+        # ── incident 식별필드 ──
         "type": "open",
         "fingerprint": decision.fingerprint,
+        "priority": str(decision.priority),
+        "ts": datetime.now().isoformat(),
+        # ── 카드 표시필드 (_tier_sse_payload 미러) ──
         "alarm_id": ev.alarm_id,
+        "severity": ev.severity,
+        "severity_label": result.severity_label,
+        "alarm_name": ev.alarm_name,
         "db_id": ev.db_id,
         "server_name": ev.server_name,
-        "severity": ev.severity,
-        "priority": str(decision.priority),
+        "hostname": ev.hostname,
+        "ip_address": ev.ip_address,
+        "resource_type": ev.resource_type,
+        "resource_name": ev.resource_name,
+        "alarm_status": ev.alarm_status,
+        "summary": result.summary,
+        "probable_cause": result.probable_cause,
+        "recommended_action": result.recommended_action,
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
         "tier": decision.tier,
-        "ts": datetime.now().isoformat(),
     }
 
 

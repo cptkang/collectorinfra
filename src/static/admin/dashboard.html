@@ -32,6 +32,7 @@
                 <button class="tab" data-tab="dbconfig">DB 연결 설정</button>
                 <button class="tab" data-tab="users">사용자 관리</button>
                 <button class="tab" data-tab="auditlogs">감사 로그</button>
+                <button class="tab" data-tab="incidents">열린 사건</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -260,6 +261,36 @@
                         <tbody id="alertsBody"></tbody>
                     </table>
                     <p id="alertsEmpty" style="display: none; color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 20px 0;">보안 경고가 없습니다.</p>
+                </div>
+            </div>
+
+            <!-- 열린 사건(incident) — D-049 -->
+            <div class="tab-content" id="tab-incidents">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>열린 사건 (incident)</h2>
+                        <button class="btn btn-secondary" id="refreshIncidentsBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">PAGE로 통보된 미해소(open) 사건입니다. "확인"을 누르면 ack 처리되어 MTTA가 계측됩니다. (incident 계측 비활성 시 빈 목록)</p>
+                    <div id="incidentsLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">열린 사건을 불러오는 중...</div>
+                    </div>
+                    <table class="settings-table" id="incidentsTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>발생시각</th>
+                                <th>경과</th>
+                                <th>서버 (DB)</th>
+                                <th>알람명</th>
+                                <th>심각도</th>
+                                <th>tier</th>
+                                <th>확인</th>
+                            </tr>
+                        </thead>
+                        <tbody id="incidentsBody"></tbody>
+                    </table>
+                    <p id="incidentsEmpty" style="display: none; color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 20px 0;">열린 사건이 없습니다.</p>
                 </div>
             </div>
         </div>

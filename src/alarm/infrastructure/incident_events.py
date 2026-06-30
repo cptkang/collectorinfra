@@ -71,6 +71,7 @@ async def _handle_open(message: dict, incident_store, alarm_bus) -> None:  # noq
     iid = await incident_store.create_open(
         fingerprint=str(message.get("fingerprint", "")),
         alarm_id=str(message.get("alarm_id", "")),
+        alarm_name=str(message.get("alarm_name", "")),
         db_id=str(message.get("db_id", "")),
         server_name=str(message.get("server_name", "")),
         severity=int(message.get("severity", 0) or 0),

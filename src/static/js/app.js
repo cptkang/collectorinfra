@@ -2034,6 +2034,16 @@
                 '</div>';
         }
 
+        // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
+        var ackHtml = "";
+        if (data.incident_id) {
+            ackHtml =
+                '<div class="alarm-section alarm-ack-section">' +
+                    '<button type="button" class="btn-alarm-ack">확인</button>' +
+                    '<span class="alarm-ack-msg"></span>' +
+                '</div>';
+        }
+
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
@@ -2058,6 +2068,7 @@
                     '</div>' +
                     processHtml +
                     patternHtml +
+                    ackHtml +
                 '</div>' +
             '</div>';
 
@@ -2065,7 +2076,53 @@
             chatWelcome.classList.add("hidden");
         }
         chatMessages.appendChild(el);
+
+        // D-049: ack 버튼 이벤트 바인딩(closure로 incident_id 캡처 — 인라인 onclick 미사용)
+        if (data.incident_id) {
+            var ackBtn = el.querySelector(".btn-alarm-ack");
+            var ackMsg = el.querySelector(".alarm-ack-msg");
+            if (ackBtn) {
+                bindIncidentAck(ackBtn, ackMsg, data.incident_id);
+            }
+        }
+
         scrollToBottomIfSticky();
+    }
+
+    // D-049: incident 확인(ack) 버튼 핸들러를 바인딩한다.
+    // POST /api/v1/alarm/incidents/{id}/ack → {acked, incident_id}.
+    // 성공(acked) 시 "확인됨 · HH:MM:SS" 비활성, 이미 처리됨(acked=false)이면 "이미 확인됨",
+    // 실패(네트워크/503)면 옆 에러 텍스트 + 재시도 가능(카드 자체는 유지 — graceful).
+    function bindIncidentAck(btn, msgEl, incidentId) {
+        btn.addEventListener("click", function () {
+            btn.disabled = true;
+            if (msgEl) msgEl.textContent = "";
+            fetch("/api/v1/alarm/incidents/" + encodeURIComponent(incidentId) + "/ack", {
+                method: "POST",
+                headers: getAuthHeaders()
+            })
+                .then(function (resp) {
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    return resp.json();
+                })
+                .then(function (result) {
+                    btn.classList.add("btn-alarm-ack--done");
+                    btn.disabled = true;
+                    if (result && result.acked) {
+                        var now = new Date();
+                        var hh = String(now.getHours()).padStart(2, "0");
+                        var mm = String(now.getMinutes()).padStart(2, "0");
+                        var ss = String(now.getSeconds()).padStart(2, "0");
+                        btn.textContent = "확인됨 · " + hh + ":" + mm + ":" + ss;
+                    } else {
+                        btn.textContent = "이미 확인됨";
+                    }
+                })
+                .catch(function () {
+                    btn.disabled = false;
+                    if (msgEl) msgEl.textContent = "확인 실패 · 다시 시도";
+                });
+        });
     }
 
     function connectAlarmStream() {

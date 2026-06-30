@@ -32,6 +32,7 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
         "id": row["id"],
         "fingerprint": row["fingerprint"],
         "alarm_id": row["alarm_id"],
+        "alarm_name": row["alarm_name"],
         "db_id": row["db_id"],
         "server_name": row["server_name"],
         "severity": row["severity"],
@@ -68,6 +69,7 @@ class PostgresIncidentStore(IncidentStore):
         *,
         fingerprint: str,
         alarm_id: str,
+        alarm_name: str = "",
         db_id: str,
         server_name: str,
         severity: int,
@@ -81,13 +83,14 @@ class PostgresIncidentStore(IncidentStore):
                 incident_id = await conn.fetchval(
                     """
                     INSERT INTO alarm_incidents
-                        (fingerprint, alarm_id, db_id, server_name,
+                        (fingerprint, alarm_id, alarm_name, db_id, server_name,
                          severity, priority, tier, status, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'open', $8)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9)
                     RETURNING id
                     """,
                     fingerprint,
                     alarm_id,
+                    alarm_name,
                     db_id,
                     server_name,
                     severity,
@@ -173,7 +176,7 @@ class PostgresIncidentStore(IncidentStore):
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
-                    SELECT id, fingerprint, alarm_id, db_id, server_name,
+                    SELECT id, fingerprint, alarm_id, alarm_name, db_id, server_name,
                            severity, priority, tier, status,
                            created_at, acked_at, acked_by, resolved_at, resolution
                     FROM alarm_incidents

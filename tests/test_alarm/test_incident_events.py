@@ -87,9 +87,9 @@ def _msg(payload: dict) -> dict:
 
 async def test_subscriber_open_creates_incident_and_refanouts_with_id():
     open_event = {
-        "type": "open", "fingerprint": "fp", "alarm_id": "A-1", "db_id": "polestar",
-        "server_name": "srv-1", "severity": 2, "priority": "320", "tier": "page",
-        "ts": "2026-06-30T09:00:00",
+        "type": "open", "fingerprint": "fp", "alarm_id": "A-1", "alarm_name": "CPU 임계",
+        "db_id": "polestar", "server_name": "srv-1", "severity": 2, "priority": "320",
+        "tier": "page", "ts": "2026-06-30T09:00:00",
     }
     redis, pubsub = _mock_redis_with_pubsub([_msg(open_event), asyncio.CancelledError()])
     store = _FakeIncidentStore(create_returns=77)
@@ -100,10 +100,13 @@ async def test_subscriber_open_creates_incident_and_refanouts_with_id():
     assert len(store.create_calls) == 1
     assert store.create_calls[0]["fingerprint"] == "fp"
     assert store.create_calls[0]["severity"] == 2
-    # alarm_bus 재발행 — incident_id 포함(후속 UI ack 연결용)
+    # D-049 delta: alarm_name이 create_open으로 전달되어 admin 목록 "알람명"에 노출됨
+    assert store.create_calls[0]["alarm_name"] == "CPU 임계"
+    # alarm_bus 재발행 — incident_id + 카드 표시필드(alarm_name) 포함(후속 UI ack 연결용)
     bus.publish.assert_awaited_once()
     refanout = bus.publish.await_args.args[0]
     assert refanout["incident_id"] == 77
+    assert refanout["alarm_name"] == "CPU 임계"
     pubsub.unsubscribe.assert_awaited_once_with(CHANNEL)
 
 

@@ -96,3 +96,72 @@
 
 - 변경 승인 가능. 팀리드 커밋 진행 권장.
 - (후속, 비차단) ITSM/외부 incident id, ack 권한(`acked_by` 인증연계)은 D-049 향후고려사항대로 차기 확장.
+
+---
+
+## D-049 — ack/incident UI 2개 surface + 백엔드 delta (미커밋 working-tree)
+
+- 검증일: 2026-06-30
+- 검증자: verifier (독립 correctness 심층 리뷰 — 코드 직접 단언)
+- SSOT: `docs/02_decision.md` `## D-049` + 위 백엔드 섹션
+- 결론: **UI 검증 통과 (Critical/Major 이슈 없음)** — 7항목 전부 PASS
+- 라이브 브라우저 E2E: **미수행(정직 명시)** — 실 PostgreSQL/Redis/LLM 인프라 부재 환경. 대신 SSE→렌더 경로, API 계약, 이스케이프, 위치 인자 매핑을 정적·단위로 단언.
+
+### 검증 환경 결과
+
+- `node --check src/static/js/app.js` → OK. `node --check src/static/js/admin.js` → OK.
+- `python scripts/arch_check.py --ci` → **exit 0, error 0**. WARN 3건은 모두 `src/orchestration/{intent_planner,replanner}.py`→`prompts` 직접참조(기존, D-049 무관). D-049 변경 파일에는 위반·경고 0.
+- `python -m pytest tests/test_alarm/ -q` → **337 passed**(baseline 336 + verifier 신규 INSERT $오프셋 회귀 가드 1).
+
+### 7항목 PASS/FAIL + 근거
+
+**1. 백엔드 delta 1 (payload 보강) — PASS**
+- `alarm_notifier.py::_incident_open_payload`(L305–) 가 `_tier_sse_payload`(L195–224)의 전체 표시필드(severity·severity_label·alarm_name·db_id·server_name·hostname·ip_address·resource_type·resource_name·alarm_status·summary·probable_cause·recommended_action·pattern_type·is_routine·pattern_analysis)+식별필드(type·fingerprint·priority·ts·tier)를 모두 포함. 유일 차이는 `tier_reason`(카드 미사용) 제외 — 빈 칸 유발 없음.
+- `incident_events.py::_handle_open`(L71–89): `create_open(..., alarm_name=str(message.get("alarm_name","")), ...)` 전달 + 재발행 payload=`{**message, type:"alarm_notification", tier:"page", incident_id:iid}` — 보강필드+incident_id를 carry.
+- `app.js::connectAlarmStream`(L2133)이 `type==="alarm_notification"`→`renderAlarmMessage`로 디스패치, 렌더 필드 전부 payload에 존재. process_snapshot/history_stats 제외분은 `renderProcessEvidence`(L1960 `if(!ps...)return""`)·`renderHistoryEvidence`(L1883 `if(!hs)return""`)가 graceful 생략 — 카드 깨짐 없음.
+
+**2. 백엔드 delta 2 (alarm_name 컬럼) — PASS**
+- DDL: `ddl/alarm_incidents.sql` + `src/api/server.py::_INCIDENT_DDL` 양쪽에 `alarm_name VARCHAR(255)` 추가.
+- 멱등 ALTER: `server.py::_ensure_incident_tables`(L96–) `ALTER TABLE alarm_incidents ADD COLUMN IF NOT EXISTS alarm_name VARCHAR(255)` — 기존 테이블 커버, auth 패턴 일관·graceful try/except.
+- port 전파: `incident_store.py::create_open` 시그니처 `alarm_name: str = ""` 추가 + docstring.
+- `incident_repository.py`: `_row_to_dict`(L35) `alarm_name` 매핑, `create_open` INSERT 컬럼/값, `list_open` SELECT 컬럼 일관.
+- **INSERT $오프셋 정확 — PASS(핵심)**: 컬럼 `(fingerprint,alarm_id,alarm_name,db_id,server_name,severity,priority,tier,status,created_at)` ↔ `VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9)` ↔ 위치 인자 `(fingerprint,alarm_id,alarm_name,db_id,server_name,severity,priority,tier,created_at)`. alarm_name=3번째 컬럼=$3, 이후 db_id$4·…·tier$8, status는 리터럴, created_at=$9. 1:1 정합, 밀림 버그 없음. verifier가 회귀 가드 `test_create_open_binds_args_in_exact_column_order` 추가(센티넬 args 튜플 순서 + `($1..$8,'open',$9)` 시퀀스 + `$10` 부재 단언).
+
+**3. delta 테스트 약화 여부 — PASS (약화 없음, 강화만)**
+- `test_incident_events.py`: 이벤트에 `alarm_name:"CPU 임계"` 추가 후 `create_calls[0]["alarm_name"]=="CPU 임계"`(전파) + `refanout["alarm_name"]=="CPU 임계"`(재발행 carry) **신규 단언**. 기존 단언(fingerprint·severity·incident_id·unsubscribe) 보존.
+- `test_incident_repository.py`: `create_open`에 alarm_name 추가 + `"alarm_name" in SQL`·`"CPU 임계" in args`; `list_open` row에 alarm_name + `rows[0]["alarm_name"]` 매핑 단언. 기존 단언 보존.
+- `test_incident_worker_publish.py`: `payload["alarm_name"·severity_label·summary·hostname·recommended_action]` **신규 단언**(보강필드 적재). 기존 alarm_id·tier·priority·channels 보존.
+- 멤버십(`value in args`) 단언이 위치 오류를 못 잡는 공백 1건 발견 → verifier가 항목 2의 위치-정합 가드로 보완(테스트 +1).
+
+**4. 채팅 ack 버튼 (app.js) — PASS**
+- `renderAlarmMessage`(L2037–2045): `if(data.incident_id)`일 때만 ackHtml 삽입 — 비-incident 알람 불변.
+- `bindIncidentAck`(L2096–): 클릭→`POST /api/v1/alarm/incidents/{encodeURIComponent(id)}/ack`, `headers:getAuthHeaders()`(L32 Bearer 토큰). acked=true→`textContent="확인됨 · HH:MM:SS"`+disabled; acked=false→"이미 확인됨"; `.catch`→`btn.disabled=false`+"확인 실패 · 다시 시도"(카드 유지·재시도 가능).
+- closure 캡처: `bindIncidentAck(ackBtn, ackMsg, data.incident_id)`(L2085) — **인라인 onclick 없음**. 시각 표시는 `textContent`(innerHTML 아님) — XSS 안전.
+
+**5. admin 패널 (admin.js/dashboard.html) — PASS**
+- `loadIncidents`(L709–): `apiRequest("GET","/api/v1/alarm/incidents?status=open&limit=100")`(L95 Authorization Bearer 자동). `renderIncidents`(L724–): 발생시각·경과(`formatElapsed`)·서버(db_id)·알람명·심각도(`sevColor`/`INCIDENT_SEVERITY_LABELS`)·tier·확인 버튼.
+- 행별 ack: `.incident-ack-btn`→`ackIncident(dataset.iid)`→`apiRequest("POST",".../ack")`→`loadIncidents()` 재조회. acked=true→`showSuccess`, false→"이미 확인/해소된 사건입니다.".
+- 빈 목록/트래커 off(빈 배열): `incidents.length===0`→`incidentsEmpty.style.display="block"`("열린 사건이 없습니다." dashboard.html L295).
+- 탭 컨벤션: `dashboard.html` `data-tab="incidents"`→`#tab-incidents`, ID 정합(incidentsBody/Table/Loading/Empty/refreshIncidentsBtn). 제네릭 탭 스위처와 추가 리스너(loadIncidents) 양립.
+
+**6. 플래그 off 회귀 0 — PASS**
+- `GET /alarm/incidents`: `incident_store is None`→`IncidentListResponse(incidents=[])`(routes/alarm.py L1023–1027)→admin "열린 사건이 없습니다.".
+- open 미발행: `alarm_notifier_node`(L157–161) `decision.tier==TIER_PAGE` + `incident_publisher` 주입 시에만 `_publish_incident_open`; 트래커 off→미주입→`_publish_incident_open`(L353 `if incident_publisher is None: return`)→subscriber 미기동→재발행 없음→`data.incident_id` 없음→**ack 버튼 미표시**.
+- ALTER/payload 보강은 트래커 on lifespan 경로에서만 작동 → 기존 알람카드/admin 동작 불변.
+
+**7. escape/안전 (XSS) — PASS**
+- app.js `renderAlarmMessage`: severity_label·resource_name·hostname·alarm_name·summary·probable_cause·recommended_action·pattern_analysis·badgeText 전부 `escapeHtml`(L1200 textContent 기반, 따옴표 포함 인코딩) 통과. ack 영역은 정적 문자열만 — 서버 값 innerHTML 직삽입 0.
+- admin.js `renderIncidents`: time·formatElapsed·server_name·db_id·alarm_name·sevLabel·tier·String(id) 전부 `escapeHtml`(L486, `& < > "` 인코딩). sevColor는 내부 상수(서버 무관) — 주입 불가.
+
+### 발견 이슈
+
+- **Critical**: 없음.
+- **Major**: 없음.
+- **Minor**:
+  - (보완 완료) delta 단위 테스트의 `value in args` 멤버십 단언이 INSERT 위치 오류를 못 잡는 공백 → verifier가 위치-정합 회귀 가드 추가(`test_create_open_binds_args_in_exact_column_order`). 현 INSERT 매핑은 정확.
+  - (관찰, 결함 아님) admin.js `escapeHtml`는 `'`(single quote)를 인코딩하지 않으나, 단일 속성 삽입 지점은 `data-iid='{escapeHtml(String(inc.id))}'`(DB BIGSERIAL 정수)뿐이라 실질 주입 불가. 나머지 escapeHtml 호출은 모두 텍스트 노드 컨텍스트.
+  - (관찰, D-049 무관) `list_incidents`는 `status` 쿼리 파라미터 값을 사용하지 않고 항상 `list_open` 호출 — admin.js가 `status=open`만 보내므로 현 동작 정상(기존 라우트, 본 delta 무관).
+
+### 권고
+
+- UI 검증 통과. 팀리드 커밋 진행 가능(verifier는 커밋하지 않음).
