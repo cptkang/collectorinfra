@@ -1,7 +1,7 @@
 """알람 발송 판단 정책 (Plan 52 Phase E1 — 결정적 순수함수).
 
 4-티어 라우팅(PAGE/TICKET/DASHBOARD/SUPPRESS)을 결정적 규칙으로 산출한다.
-LLM(`is_routine`)은 보조 입력일 뿐이며, 하드 규칙·심각도3 PAGE·재현율 우선은 불변이다(D-035/D-041).
+LLM(`is_routine`)은 보조 입력일 뿐이며, 하드 규칙·심각도3 PAGE·재현율 우선은 불변이다(D-035/D-048).
 
 설계 원칙:
     - 재현율 우선·비용 비대칭: 불확실·신호 수집 실패·미식별 중요도 → 보수적 PAGE.
@@ -108,19 +108,39 @@ def decide_notification(
     config,
     *,
     self_heal: bool = False,
+    inhibited: bool = False,
+    flapping: bool = False,
+    storm: bool = False,
 ) -> NotificationDecision:
-    """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정).
+    """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정) + E2 의존성/인히비션/플래핑/스톰 단계.
 
     심각도 3은 모든 억제 단계를 단락(short-circuit)하고 항상 PAGE.
     config 속성은 안전 접근(getattr 기본값)한다:
-        suppress_max_severity(기본 2), importance_value_map(dict), resolved_to_dashboard(기본 False).
+        suppress_max_severity(기본 2), importance_value_map(dict), resolved_to_dashboard(기본 False),
+        dependency_suppression(기본 False·E2), inhibition_enabled(기본 False·E2),
+        flapping_enabled(기본 False·E2), storm_grouping_enabled(기본 False·E2).
 
     noise_ctx 계약: {importance_id, maintenance, noti_policy, parent_avail_status, source}
     수집 실패(None 또는 source=="unavailable") 시 보수화 후 effective_severity>=1이면 PAGE.
+
+    E2 추가(모두 플래그 뒤 — 기본값 False면 E1 동작 무변경):
+        - dependency_suppression + parent_avail_status≠0(비정상) → SUPPRESS(연쇄 노이즈, §3.6).
+          parent_avail_status가 None(미수집·매핑없음·stale)이면 억제 안 함(보수적, R-3).
+        - inhibition_enabled + inhibited(인자) → SUPPRESS(상위 심각도 음소거, §3.4).
+        - flapping_enabled + flapping(인자) + effective_severity<=suppress_max_severity
+          → SUPPRESS(상태 진동 안정화까지 보류, §3.7). 플래핑 판정은 워커가 도메인
+          순수함수(flapping.py)로 산출하여 인자로 전달한다(이 모듈은 flapping을 import하지 않음).
+        - storm_grouping_enabled + storm(인자) → SUPPRESS(동일 서버 다발, 대표 1건만 통보, §3.8).
+        - 모든 단계가 maintenance SUPPRESS 다음·매트릭스 이전에 위치하며, 심각도3은 위에서
+          이미 단락되어 이 단계에 도달하지 않는다(불변).
     """
     suppress_max_severity = int(getattr(config, "suppress_max_severity", 2))
     importance_value_map = getattr(config, "importance_value_map", {}) or {}
     resolved_to_dashboard = bool(getattr(config, "resolved_to_dashboard", False))
+    dependency_suppression = bool(getattr(config, "dependency_suppression", False))
+    inhibition_enabled = bool(getattr(config, "inhibition_enabled", False))
+    flapping_enabled = bool(getattr(config, "flapping_enabled", False))
+    storm_grouping_enabled = bool(getattr(config, "storm_grouping_enabled", False))
 
     # ── step 1: 실효 심각도 (E1은 AI 보강 없음) ──────────────
     severity = int(getattr(event, "severity", 0) or 0)
@@ -153,13 +173,17 @@ def decide_notification(
             "effective_severity": effective_severity,
             "importance": importance,
             "maintenance": maintenance,
-            "parent_avail_status": None,
+            # 수집 실패(noise_ctx None)·미수집(E1, collect_dependency=False)이면 None.
+            # E1(dependency_suppression=False)은 컬렉터가 항상 None을 반환하므로 무변경(회귀 0).
+            "parent_avail_status": (
+                noise_ctx.get("parent_avail_status") if noise_ctx else None
+            ),
             "pattern": pattern,
             "is_routine": is_routine,
             "noti_policy": noti_policy,
-            "flapping": False,
+            "flapping": bool(flapping),
             "self_heal": bool(self_heal),
-            "storm": False,
+            "storm": bool(storm),
         }
 
     def _decision(tier: str, reason: str) -> NotificationDecision:
@@ -191,10 +215,47 @@ def decide_notification(
     if maintenance:
         return _decision(TIER_SUPPRESS, "유지보수 모드 — 신규 발송 억제(감사 기록)")
 
-    # ── step 7: 우선순위 매트릭스(§3.2) ─────────────────────
+    # ── step 6.4(E2): 의존성 억제 — 부모 리소스 비정상 시 자식 연쇄 노이즈(§3.6) ──
+    # parent_avail_status: 0=정상, ≠0=비정상, None=미수집·매핑없음·stale(보수적 비억제·R-3).
+    # dependency_suppression=False(기본)면 단계 자체를 평가하지 않아 E1 무변경.
+    if dependency_suppression:
+        parent_avail_status = noise_ctx.get("parent_avail_status") if noise_ctx else None
+        if parent_avail_status is not None and parent_avail_status != 0:
+            return _decision(
+                TIER_SUPPRESS,
+                f"의존성 억제 — 부모 리소스 비정상(AVAIL_STATUS={parent_avail_status}),"
+                " 자식 연쇄 노이즈",
+            )
+
+    # ── step 6.5(E2): 인히비션 — 동일 서버 상위 심각도 발생 중 하위 음소거(§3.4) ──
+    # inhibited는 워커가 결정적으로 탐지(자기억제 금지·window)하여 인자로 전달.
+    # inhibition_enabled=False(기본)면 평가하지 않아 E1 무변경.
+    if inhibition_enabled and inhibited:
+        return _decision(
+            TIER_SUPPRESS, "인히비션 — 동일 서버 상위 심각도 발생 중, 하위 음소거"
+        )
+
+    # ── step 6(§6 파이프라인·E2): 플래핑 — 상태 진동 시 안정화까지 보류(§3.7) ──
+    # flapping은 워커가 도메인 순수함수(flapping.py)로 산출하여 인자로 전달.
+    # 저심각도(effective_severity<=suppress_max_severity)만 억제 — 심각도3은 위에서 단락(불변).
+    # flapping_enabled=False(기본)면 평가하지 않아 E1 무변경.
+    if flapping_enabled and flapping and effective_severity <= suppress_max_severity:
+        return _decision(
+            TIER_SUPPRESS, "플래핑 — 상태 진동(Nagios), 안정화까지 통보 보류"
+        )
+
+    # ── step 7(§6 파이프라인·E2): 스톰 — 동일 서버 다발 시 대표만 통보(§3.8) ──
+    # storm은 워커가 사건창(동일 db_id|server) 카운트로 산출하여 인자로 전달.
+    # storm_grouping_enabled=False(기본)면 평가하지 않아 E1 무변경.
+    if storm_grouping_enabled and storm:
+        return _decision(
+            TIER_SUPPRESS, "스톰 — 동일 서버 다발, 대표 1건만 통보"
+        )
+
+    # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
     base_tier = _matrix_tier(effective_severity, importance)
 
-    # ── step 8: 보조 조정(1단계 이내·보수적, 승격 우선) ──────
+    # ── step 9: 보조 조정(1단계 이내·보수적, 승격 우선) ──────
     promote: list[str] = []
     demote: list[str] = []
     if noti_policy == "notify":

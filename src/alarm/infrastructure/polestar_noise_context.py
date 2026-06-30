@@ -1,4 +1,4 @@
-"""폴스타 DB 노이즈 컨텍스트 조회 리포지토리 (Plan 52, Phase E1).
+"""폴스타 DB 노이즈 컨텍스트 조회 리포지토리 (Plan 52, Phase E1/E2).
 
 알람 발송 판단(notification gate)에 필요한 **억제 신호**를 폴스타 DB에서 **고정 SQL**
 (LLM 미사용, 읽기 전용 SELECT 단일문)로 수집한다. 기존 DBHub(MCP) 경로
@@ -9,9 +9,12 @@ Phase E1 수집 범위 (Plan 52 §10):
     2. **유지보수 상태** — `cmm_resource.IS_MAINTENANCE` (불리언)
     3. **폴스타 알림정책** — `cmm_alarm_def_noti` 통보대상 존재 여부 (보수적 판정)
 
-수집 제외 (E2 범위, Plan 52 §3.6 — 본 파일에서 절대 수집 금지):
-    - 의존성/부모 상태(`AVAIL_DEPEND_RESOURCE_ID` + 부모 `AVAIL_STATUS`). 반환 dict의
-      `parent_avail_status`는 항상 None(자리예약).
+Phase E2 수집 범위 (Plan 52 §3.6 — `collect_dependency=True` 게이팅, 기본 off):
+    4. **의존성/부모 상태** — server.Server 행의 `AVAIL_DEPEND_RESOURCE_ID`로 부모
+       cmm_resource를 self-join하여 부모의 `AVAIL_STATUS`(0=정상, ≠0=비정상)를 조회.
+       부모 비정상이면 자식 알람을 연쇄 노이즈로 억제 가능(판정은 결정 파이프라인 책임).
+       `fetch(collect_dependency=True)`일 때만 의존성 SQL을 실행하며, 기본(False)이면
+       의존성 SQL을 실행하지 않고 `parent_avail_status=None`(E1 동작·기존 계약 동결).
 
 서버 매칭 규칙 (Plan 47 §5.3, Known Mistakes 2026-06-10 계승):
     - 알람 이벤트의 `server_name`(=${platformName})은 폴스타 등록 서버명으로, server.Server
@@ -123,6 +126,46 @@ def build_noti_policy_sql(db_id: str, alarm_name: str) -> str:
     )
 
 
+def build_dependency_sql(db_id: str, server_name: str) -> str:
+    """서버 본체(server.Server)의 가용성 의존 부모 리소스 상태 조회 SQL을 조립한다.
+
+    (Plan 52 §3.6 의존성/토폴로지 억제, Phase E2 — `collect_dependency=True`에서만 실행)
+
+    읽기 전용 SELECT 단일문. server.Server 행을 NAME(서버명)으로 식별하고, 그 행의
+    `AVAIL_DEPEND_RESOURCE_ID`(가용성 의존 부모)를 키로 **같은 cmm_resource를 self-join**
+    하여 부모의 `AVAIL_STATUS`(0=정상, ≠0=비정상, Plan 52 §2.2)를 조회한다. 부모가
+    비정상이면 자식 알람은 연쇄 노이즈로 억제 가능(판정은 결정 파이프라인 책임 — 본
+    SQL은 신호만 수집한다).
+
+    동작/안전:
+    - `SVR.AVAIL_DEPEND_RESOURCE_ID`가 NULL이면(도커 testdata 등 의존성 미설정) JOIN이
+      0행 → 부모 None → **억제 안 함(보수적)**. (실측: 도커 폴스타 testdata는 전부 NULL)
+    - RESOURCE_CONF_ID JOIN 미포함 (D-022).
+    - DTIME IS NULL — 삭제된 리소스 제외(자식 SVR·부모 P 양쪽).
+    - LIMIT 1 — 단일 부모행만 필요.
+    - server_match는 `build_resource_signal_sql`과 동일하게 `_SERVER_MATCH_BY_DB_ID`
+      (gp/yd는 SVR.NAME) 재사용 — hostname 매칭 금지.
+    - `AVAIL_DEPEND_RESOURCE_ID_2`(보조 의존)는 E2 1차에서 **생략**한다. 필요 시 향후
+      JOIN 조건을 `ON P.ID = SVR.AVAIL_DEPEND_RESOURCE_ID OR P.ID =
+      SVR.AVAIL_DEPEND_RESOURCE_ID_2`로 확장(다부모 OR 매칭 — LIMIT 1과 정렬 규칙 별도 검토).
+    """
+    server_match = _SERVER_MATCH_BY_DB_ID.get(db_id, _DEFAULT_SERVER_MATCH).format(
+        server_name=_sql_literal(server_name),
+    )
+    t_resource = _table(db_id, "cmm_resource")
+    return (
+        "SELECT\n"
+        "    P.AVAIL_STATUS AS parent_avail_status\n"
+        f"FROM {t_resource} SVR\n"
+        f"JOIN {t_resource} P ON P.ID = SVR.AVAIL_DEPEND_RESOURCE_ID\n"
+        "WHERE SVR.DTIME IS NULL\n"
+        "  AND SVR.RESOURCE_TYPE = 'server.Server'\n"
+        f"  AND {server_match}\n"
+        "  AND P.DTIME IS NULL\n"
+        "LIMIT 1"
+    )
+
+
 def _row_value(row: dict[str, Any], key: str) -> Any:
     """행에서 컬럼 값을 대소문자 무시하고 조회한다 (DB 드라이버별 키 케이스 상이)."""
     if key in row:
@@ -200,13 +243,32 @@ def _parse_noti_policy(rows: list[dict[str, Any]]) -> Optional[str]:
         return None
 
 
+def _parse_parent_avail_status(rows: list[dict[str, Any]]) -> Optional[int]:
+    """부모 리소스의 가용 상태(AVAIL_STATUS)를 int로 파싱한다 (Plan 52 §3.6 의존성 억제).
+
+    행이 없으면(=의존성 미설정·부모 미존재·미수집) None을 반환한다 — **보수적**(억제 안 함).
+    값이 있으면 int로 변환하고, 변환 실패·미상은 None으로 강등한다(graceful degradation).
+    AVAIL_STATUS 의미: 0=정상, 0이 아닌 값=비정상(Plan 52 §2.2) — 의미 해석은 정책 계층 책임.
+    """
+    try:
+        if not rows:
+            return None
+        value = _row_value(rows[0], "parent_avail_status")
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        logger.debug("부모 가용상태 파싱 실패 — None 처리", exc_info=True)
+        return None
+
+
 def _unavailable() -> dict[str, Any]:
     """신호 수집 불가 시 반환하는 동결 dict (모든 신호 None, source='unavailable')."""
     return {
         "importance_id": None,
         "maintenance": None,
         "noti_policy": None,
-        "parent_avail_status": None,  # E2 자리예약 — 항상 None
+        "parent_avail_status": None,  # 의존성 미수집/연결 실패 — None(보수적)
         "source": "unavailable",
     }
 
@@ -228,20 +290,30 @@ class PolestarNoiseContextRepository:
         """event.db_id가 DB 레지스트리에 등록되어 있는지 확인한다."""
         return bool(self._registry.is_registered(db_id))
 
-    async def fetch(self, event: AlarmEvent) -> dict[str, Any]:
+    async def fetch(
+        self, event: AlarmEvent, *, collect_dependency: bool = False
+    ) -> dict[str, Any]:
         """노이즈 컨텍스트를 수집하여 동결 dict로 반환한다 (Plan 52 §8.2 계약).
+
+        Args:
+            event: 알람 이벤트(db_id/server_name/alarm_name 사용).
+            collect_dependency: True면 의존성/부모 상태(E2, §3.6)를 **별도 SQL**로 수집한다.
+                기본 False(E1 동작 동결) — 의존성 SQL을 실행하지 않고
+                `parent_avail_status=None`을 반환한다.
 
         반환 dict (동결):
             {"importance_id": int|str|None,   # 원값 그대로
              "maintenance": bool|None,
              "noti_policy": "notify"|None,     # 보수적 — "suppress" 미반환
-             "parent_avail_status": None,      # E2 자리예약 — 항상 None
+             "parent_avail_status": int|None,  # 부모 AVAIL_STATUS(E2). 기본 off면 항상 None
              "source": "polestar_db"|"unavailable"}
 
         graceful degradation:
             - 미등록 db_id → 즉시 source="unavailable" (DB 미접근).
             - 조회/연결 예외 → 잡아서 source="unavailable" (예외 전파 금지).
             - 빈 결과/파싱 실패 → 해당 신호만 None, source="polestar_db" (부분 반환).
+            - **의존성 조회는 resource/noti와 독립된 별도 try/except** — 의존성 조회 실패가
+              importance/maintenance/noti_policy 신호를 절대 손실시키지 않는다(D-048 계승).
         """
         if not self.is_db_registered(event.db_id):
             logger.warning(
@@ -253,26 +325,68 @@ class PolestarNoiseContextRepository:
 
         resource_sql = build_resource_signal_sql(event.db_id, event.server_name)
         noti_sql = build_noti_policy_sql(event.db_id, event.alarm_name)
+        resource_rows: list[dict[str, Any]] = []
+        noti_rows: list[dict[str, Any]] = []
+        dependency_rows: list[dict[str, Any]] = []
+        got_any = False
         try:
             async with self._registry.get_client(event.db_id) as client:
-                resource_result = await client.execute_sql(resource_sql)
-                noti_result = await client.execute_sql(noti_sql)
-        except Exception as exc:  # noqa: BLE001 — graceful: 연결/조회 실패는 unavailable
+                # resource 신호(중요도/유지보수)와 알림정책을 **독립 수집** — 한쪽 실패
+                # (테이블 부재·권한 등)가 다른 쪽 신호를 손실시키지 않는다
+                # (§5 부분 실패 허용·graceful degradation, Plan 47 enricher 계승).
+                try:
+                    resource_result = await client.execute_sql(resource_sql)
+                    resource_rows = list(getattr(resource_result, "rows", []) or [])
+                    got_any = True
+                except Exception as exc:  # noqa: BLE001 — resource만 실패, noti는 계속
+                    logger.warning(
+                        "노이즈 컨텍스트 resource 조회 실패 — db_id=%s alarm_id=%s: %s",
+                        event.db_id, event.alarm_id, exc,
+                    )
+                try:
+                    noti_result = await client.execute_sql(noti_sql)
+                    noti_rows = list(getattr(noti_result, "rows", []) or [])
+                    got_any = True
+                except Exception as exc:  # noqa: BLE001 — noti만 실패, resource는 보존
+                    logger.warning(
+                        "노이즈 컨텍스트 noti 조회 실패 — db_id=%s alarm_id=%s: %s",
+                        event.db_id, event.alarm_id, exc,
+                    )
+                # 의존성/부모 상태(E2, §3.6)는 **게이팅(collect_dependency)** 뒤에서만,
+                # 그리고 resource/noti와 **독립된 별도 try/except**로 수집한다 — 의존성
+                # 조회 실패가 importance/maintenance/noti_policy 신호를 절대 손실시키지
+                # 않는다(D-048 graceful degradation 계승). 기본(False)이면 SQL 미실행.
+                if collect_dependency:
+                    dependency_sql = build_dependency_sql(
+                        event.db_id, event.server_name
+                    )
+                    try:
+                        dependency_result = await client.execute_sql(dependency_sql)
+                        dependency_rows = list(
+                            getattr(dependency_result, "rows", []) or []
+                        )
+                        got_any = True
+                    except Exception as exc:  # noqa: BLE001 — 의존성만 실패, 타 신호 보존
+                        logger.warning(
+                            "노이즈 컨텍스트 dependency 조회 실패 — db_id=%s alarm_id=%s: %s",
+                            event.db_id, event.alarm_id, exc,
+                        )
+        except Exception as exc:  # noqa: BLE001 — 연결 자체 실패는 unavailable
             logger.warning(
-                "노이즈 컨텍스트 조회 실패 — db_id=%s alarm_id=%s: %s",
-                event.db_id,
-                event.alarm_id,
-                exc,
+                "노이즈 컨텍스트 연결 실패 — db_id=%s alarm_id=%s: %s",
+                event.db_id, event.alarm_id, exc,
             )
             return _unavailable()
 
-        resource_rows = list(getattr(resource_result, "rows", []) or [])
-        noti_rows = list(getattr(noti_result, "rows", []) or [])
+        # 연결은 됐으나 모든 조회 실패 → 신호 없음 → 보수적 unavailable
+        if not got_any:
+            return _unavailable()
         context = {
             "importance_id": _parse_importance(resource_rows),
             "maintenance": _parse_maintenance(resource_rows),
             "noti_policy": _parse_noti_policy(noti_rows),
-            "parent_avail_status": None,  # E2 자리예약 — 본 파일에서 수집 금지
+            # collect_dependency=False면 dependency_rows=[] → None(E1 동작 동결).
+            "parent_avail_status": _parse_parent_avail_status(dependency_rows),
             "source": "polestar_db",
         }
         logger.debug(

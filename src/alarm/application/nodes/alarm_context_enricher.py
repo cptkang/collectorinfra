@@ -71,6 +71,8 @@ async def enrich_noise_context(
     noise_cfg,  # noqa: ANN001 — NoiseGateConfig
     repo,  # noqa: ANN001 — PolestarNoiseContextRepository
     redis_client=None,  # noqa: ANN001 — redis.asyncio.Redis | None
+    *,
+    collect_dependency: bool = False,
 ) -> dict[str, Any]:
     """캐시 확인 → 폴스타 노이즈 컨텍스트 고정 SQL 조회 → 캐시 적재 (Plan 52 §8.3).
 
@@ -78,6 +80,9 @@ async def enrich_noise_context(
     캐시 TTL은 noise_context_cache_ttl_seconds(0이면 캐시 비활성)를 사용한다.
     repo.fetch는 자체적으로 graceful degradation하여 실패 시 source="unavailable"을
     반환하므로, unavailable 결과는 캐시에 적재하지 않는다(재조회 기회 보존).
+
+    collect_dependency(E2, §3.6): True면 repo.fetch가 의존성/부모 상태 SQL을 추가 실행해
+    parent_avail_status를 채운다. False(기본·E1)면 의존성 SQL 미실행(parent_avail_status=None).
 
     Returns:
         {"importance_id","maintenance","noti_policy","parent_avail_status","source"}
@@ -98,7 +103,7 @@ async def enrich_noise_context(
         except Exception as e:
             logger.debug("노이즈 컨텍스트 캐시 조회 실패 — 무시하고 DB 조회 진행: %s", e)
 
-    ctx = await repo.fetch(event)
+    ctx = await repo.fetch(event, collect_dependency=collect_dependency)
 
     if cache_enabled and ctx.get("source") != "unavailable":
         try:
@@ -329,7 +334,14 @@ async def alarm_context_enricher_node(
         if not gate_on:
             return None
         try:
-            return await enrich_noise_context(event, gate_cfg, noise_repo, redis_client)
+            return await enrich_noise_context(
+                event,
+                gate_cfg,
+                noise_repo,
+                redis_client,
+                # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
+                collect_dependency=bool(getattr(gate_cfg, "dependency_suppression", False)),
+            )
         except Exception:
             logger.exception(
                 "노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s", event.alarm_id

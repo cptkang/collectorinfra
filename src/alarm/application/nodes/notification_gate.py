@@ -60,6 +60,9 @@ async def notification_gate_node(
         state.get("noise_context"),
         gate_cfg,
         self_heal=bool(state.get("self_heal", False)),
+        inhibited=bool(state.get("inhibited", False)),
+        flapping=bool(state.get("flapping", False)),
+        storm=bool(state.get("storm", False)),
     )
 
     store = configurable.get("decision_store")

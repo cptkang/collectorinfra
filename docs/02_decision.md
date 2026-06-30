@@ -1888,97 +1888,28 @@ CPU/메모리 **발생** 알람에 한해 폴스타 실시간 프로세스 API(`
 
 ---
 
-## D-041. 알람 노이즈 캔슬링 — 4-티어 발송 게이트 (Plan 52 E1)
+## D-048. 알람 노이즈 캔슬링 — 4-티어 발송 게이트 (Plan 52 E1)
 
 | 항목 | 내용 |
 |------|------|
 | **결정일** | 2026-06-29 |
 | **상태** | 구현 완료 (Phase E1 MVP, 2026-06-29) |
-| **관련 결정** | **D-035 확장**(패턴을 부가정보→결정적 게이트의 보조 입력으로, 심각도3 보존 유지), D-003(읽기전용 준수), D-029~D-032(알람 파이프라인 재사용), D-037(트랙 B vLLM — D-041.7 전제) |
-| **번호 정정** | Plan 52/53 §13은 **D-040**으로 명시했으나, **D-039·D-040은 이미 2026-06-23 변경이력에 사용됨**(다중의도 처리현황 / replanner 중복수정). 충돌 회피를 위해 다음 빈 번호 **D-041**로 등재한다. Plan 53의 D-041(로드맵)·D-042(진단 분리)·Plan 55 D-043 예약 번호는 등재 시 한 칸씩 밀어 재조정 필요. |
+| **관련 결정** | **D-035 확장**(패턴을 부가정보→결정적 게이트의 보조 입력으로, 심각도3 보존 유지), D-003(읽기전용 준수), D-029~D-032(알람 파이프라인 재사용), D-037(트랙 B vLLM — D-048.7 전제) |
+| **번호 정정** | 최초 계획(Plan 52/53 §13)은 **D-040** 명시 → D-039/D-040이 2026-06-23 변경이력에 선점되어 **D-041**로 1차 등재했으나, 병렬 multiintent 작업이 **D-041(멀티턴, Plan 50)~D-047**을 점유(2026-06-25)하여 재충돌. 사용자 승인(2026-06-29)으로 노이즈 게이트를 **D-048**로 최종 리넘버. **Plan 50의 D-041~D-047은 보존**. |
 
 ### 결정
 
 폴스타 알람을 수신 시 **결정적 규칙 파이프라인**으로 **PAGE / TICKET / DASHBOARD / SUPPRESS** 4-티어로 라우팅하는 발송 게이트를 추가한다(전 기능 옵트인 `enable_noise_gate=False` 기본). LLM(`is_routine`)은 보조 입력 1개일 뿐 판단은 결정적이며, **심각도 3은 어떤 억제 단계도 거치지 않고 항상 PAGE**한다(D-035 계승). 억제·강등 결정도 감사 기록한다(억제 ≠ 삭제). 신호는 폴스타 읽기전용 DB(중요도·유지보수·알림정책)에서 고정 SQL로 수집하며 실패 시 보수적 PAGE(재현율 우선).
 
-### 하위 결정 (Plan 52 §13 — 원안 D-040.x를 D-041.x로 등재)
+### 하위 결정 (Plan 52 §13 — 원안 D-040.x를 D-048.x로 등재)
 
-- **D-041.1** 4-티어(PAGE/TICKET/DASHBOARD/SUPPRESS), 결정적 규칙=판단·LLM=보조, 결정 근거(reason) 기록.
-- **D-041.2** 중요도×심각도 매트릭스 + 유지보수/자가복구 억제(E1). 의존성/인히비션/플래핑은 E2. **심각도3 절대 PAGE**.
-- **D-041.3** 신호는 폴스타 읽기전용 DB(IMPORTANCE_ID/IS_MAINTENANCE/`cmm_alarm_def_noti*` 앵커). `IMPORTANCE_ID` 값코드 미확정 시 **미매핑=보통(보수적)**(`importance_value_map_csv` 기본 빈값). `cmm_alarm_def_noti*` 통보대상 존재→`notify`, 불확실→`None`(절대 단정적 `suppress` 미반환).
-- **D-041.4** 재현율 우선·억제≠삭제(`decision_store` JSONL 감사)·억제기 메타모니터링(억제율 집계). 전 기능 옵트인.
-- **D-041.5** (E3, 미구현) AI 분석은 **LLM 인컨텍스트, ML 모델 미사용**. 메시지 심각도 보강은 **상향 전용(monotonic) `max()`** + 결정적 시그니처(Plan51 부록A.1) 우선. 폴스타 심각도가 베이스라인(SSOT).
-- **D-041.6** (향후·미구현) **Plan 55 멀티소스 확장 대비** — `noise_context`는 소스 무관 확장형 dict(`parent_avail_status` 등 자리예약), step 8 보조 축, 영향 신호 **승격 비대칭**(§6.4·§8.6). 지금은 설계 예약만.
-- **D-041.7** (향후·옵션, E5) **deepagents Advisory Enricher** — agentic 분석은 **보조(`signals` 승격 전용)** 만, 판단은 결정적. vLLM(트랙 B, D-037) 옵트인 전제, 미가용 시 **semantic-routing(FabriX 1회 분류) → 결정적 게이트** 3중 폴백. 환각→오억제는 R-12로 통제(강등 경로 부재).
-
-### 핵심 설계 결정 (E1 구현)
-
-| 항목 | 결정 |
-|------|------|
-| 결정 파이프라인 | `notification_policy.decide_notification`(순수함수, domain) 8단계: 실효심각도→수집실패 보수화→심각도3 단락 PAGE→해소/자가복구→유지보수 SUPPRESS→매트릭스→보조 조정(앵커·is_routine, 1단계·승격 우선)→확정 |
-| `min_severity` 역할 분리(§4.8) | 게이트 활성 시 워커는 `1 ≤ severity < min_severity`만 드롭. **severity 0(해소)은 자가복구용 전달, severity 3은 절대 드롭 금지**. 권장 운영값 `ALARM_MIN_SEVERITY=1`. 게이트 off면 기존 `severity < min_severity` 유지 |
-| 핑거프린트 dedup(§6.1) | 게이트 활성 시 dedup 키를 `alarm_id`→`compute_fingerprint(db_id,server\|hostname,alarm_name,resource)`로 교정. 해소 이벤트는 dedup 제외(자가복구 상관). TTL=`repeat_interval_seconds`(기본 4h, Alertmanager 패턴). **재발생 재통보 억제는 모든 심각도에 적용** — 단 최초 발생 severity 3은 항상 게이트 도달 PAGE(설계 관찰: §6.1 재통보 억제 ≠ §4.8 임계 드롭) |
-| 자가복구 상관(§3.7) | 워커 인메모리 `_firing_registry`로 발생(severity ≤ `suppress_max_severity`, 기본2)을 기록, `self_heal_window_seconds`(기본300) 내 해소(severity 0) 매칭 시 SUPPRESS. **심각도3 제외**(해소가 와도 발생 PAGE 보존) |
-| 독립 해소(§6.3) | 매칭 발생 없는 severity 0 → 기본 SUPPRESS(감사), `resolved_to_dashboard=true`면 DASHBOARD |
-| 4-티어 라우팅(§7) | PAGE→기존 `_send_workb`/`_send_webhook`(무변경), TICKET/DASHBOARD/SUPPRESS→발송 안 함·로그(감사는 게이트가 적재). DASHBOARD SSE 푸시는 워커 경로에 `alarm_bus` 미주입이라 **E3 후속** |
-| 설정 구조(§8.5) | `NoiseGateConfig`를 `AppConfig`의 **형제 필드** `cfg.noise_gate.*`로 신설(env_prefix `NOISE_`). AlarmConfig 이중 중첩 회피. 전 필드 스칼라/CSV(JSON list 회피) |
-| graceful degradation | 노이즈 신호 수집 실패/미등록 db_id/타임아웃 → `source="unavailable"` → 보수적 PAGE. 발송 절대 차단 금지(Plan 47 enricher 패턴 계승) |
-| 회귀 0(옵트인) | `enable_noise_gate=False`(기본)면 그래프에 게이트 노드 미포함, 워커 dedup/필터 기존 경로, notifier `notification_decision=None` 분기로 기존 발송 무변경 |
-
-### 변경된 파일
-
-| 파일 | 변경 | 계층 |
-|------|------|------|
-| `src/alarm/domain/notification_policy.py` | 신규 — `decide_notification`/`compute_fingerprint`/`map_importance`/`NotificationDecision`(signals 12키 §8.2) | domain |
-| `src/alarm/infrastructure/polestar_noise_context.py` | 신규 — 중요도/유지보수/알림정책 고정 SQL(읽기전용, `_sql_literal`, Template C-6 서버매칭, graceful) | infrastructure |
-| `src/alarm/infrastructure/decision_store.py` | 신규 — `DecisionStore` JSONL 결정 감사 + 집계(억제율) | infrastructure |
-| `src/alarm/application/nodes/notification_gate.py` | 신규 — 게이트 노드(결정 산출 + decision_store 적재) | application |
-| `src/alarm/orchestration/alarm_graph.py` | `AlarmState`에 noise_context/notification_decision/self_heal, 배선 `history_enabled or enable_noise_gate`(§8.1) | orchestration |
-| `src/alarm/application/nodes/alarm_context_enricher.py` | noise_context 동시 수집(gather, 게이트 활성 시) | application |
-| `src/alarm/application/nodes/alarm_notifier.py` | 4-티어 라우팅 분기(decision None=기존 경로) | application |
-| `src/alarm/application/alarm_worker.py` | 핑거프린트 dedup(§6.1)+min_severity(§4.8)+self_heal 시드+noise_repo/decision_store 주입(게이트 활성 시) | orchestration |
-| `src/config.py` | `NoiseGateConfig` 신규(형제 필드 §8.5) | config |
-| `.env.example` | `NOISE_*` 추가(기본 비활성) | 설정 |
-| `tests/test_alarm/` (신규 패키지) | 정책/스토어/컬렉터 단위(57) + 통합(배선/게이트오프/티어/감사/min_severity 35) = **92 통과** | 테스트 |
-
-### 검증 (2026-06-29 실측, §11.1 baseline 정책)
-
-- `tests/test_alarm/` 92 passed(0 fail), 기존 알람 회귀 116 passed, graph 30 passed — 노이즈 모듈 import 파일 13개 신규 실패 0.
-- `python scripts/arch_check.py --ci` exit 0(error 0, 기존 orchestration→prompts warning 3건만 — 무관).
-- `AppConfig()` 정상 생성, `NOISE_` env prefix 로드 확인, 게이트오프 회귀 0.
-- 전체 스위트의 기타 실패는 **52와 무관한 multiintent/인증 부채 + 라이브 DB/LLM/Redis 부재**로 baseline 차감(별도 트랙).
-
-### 향후 수정 시 고려사항
-
-- **E2 착수**: 의존성 억제(`AVAIL_DEPEND_RESOURCE_ID`+부모 `AVAIL_STATUS`)·인히비션·스톰 그룹핑·플래핑(Nagios). `noise_context.parent_avail_status` 자리예약 활용.
-- **심각도3 재발생 재통보**: 현재 `repeat_interval_seconds`(4h)가 모든 심각도에 적용 → 운영에서 심각도3 재통보가 잦아야 하면 severity별 `repeat_interval` 분리 검토(현 동작은 Alertmanager 표준 계승, 최초 발생 PAGE는 보장).
-- **`IMPORTANCE_ID` 값코드**: 인스턴스별 표본 확인 후 `NOISE_IMPORTANCE_VALUE_MAP_CSV` 설정(미설정=전부 보통).
-- **DASHBOARD SSE**(E3): 워커 경로에 `alarm_bus` 주입 경로 마련 후 DASHBOARD 티어 UI push 활성화.
-
----
-
-## D-041. 알람 노이즈 캔슬링 — 4-티어 발송 게이트 (Plan 52 E1)
-
-| 항목 | 내용 |
-|------|------|
-| **결정일** | 2026-06-29 |
-| **상태** | 구현 완료 (Phase E1 MVP, 2026-06-29) |
-| **관련 결정** | **D-035 확장**(패턴을 부가정보→결정적 게이트의 보조 입력으로, 심각도3 보존 유지), D-003(읽기전용 준수), D-029~D-032(알람 파이프라인 재사용), D-037(트랙 B vLLM — D-041.7 전제) |
-| **번호 정정** | Plan 52/53 §13은 **D-040**으로 명시했으나, **D-039·D-040은 이미 2026-06-23 변경이력에 사용됨**(다중의도 처리현황 / replanner 중복수정). 충돌 회피를 위해 다음 빈 번호 **D-041**로 등재한다. Plan 53의 D-041(로드맵)·D-042(진단 분리)·Plan 55 D-043 예약 번호는 등재 시 한 칸씩 밀어 재조정 필요. |
-
-### 결정
-
-폴스타 알람을 수신 시 **결정적 규칙 파이프라인**으로 **PAGE / TICKET / DASHBOARD / SUPPRESS** 4-티어로 라우팅하는 발송 게이트를 추가한다(전 기능 옵트인 `enable_noise_gate=False` 기본). LLM(`is_routine`)은 보조 입력 1개일 뿐 판단은 결정적이며, **심각도 3은 어떤 억제 단계도 거치지 않고 항상 PAGE**한다(D-035 계승). 억제·강등 결정도 감사 기록한다(억제 ≠ 삭제). 신호는 폴스타 읽기전용 DB(중요도·유지보수·알림정책)에서 고정 SQL로 수집하며 실패 시 보수적 PAGE(재현율 우선).
-
-### 하위 결정 (Plan 52 §13 — 원안 D-040.x를 D-041.x로 등재)
-
-- **D-041.1** 4-티어(PAGE/TICKET/DASHBOARD/SUPPRESS), 결정적 규칙=판단·LLM=보조, 결정 근거(reason) 기록.
-- **D-041.2** 중요도×심각도 매트릭스 + 유지보수/자가복구 억제(E1). 의존성/인히비션/플래핑은 E2. **심각도3 절대 PAGE**.
-- **D-041.3** 신호는 폴스타 읽기전용 DB(IMPORTANCE_ID/IS_MAINTENANCE/`cmm_alarm_def_noti*` 앵커). `IMPORTANCE_ID` 값코드 미확정 시 **미매핑=보통(보수적)**(`importance_value_map_csv` 기본 빈값). `cmm_alarm_def_noti*` 통보대상 존재→`notify`, 불확실→`None`(절대 단정적 `suppress` 미반환).
-- **D-041.4** 재현율 우선·억제≠삭제(`decision_store` JSONL 감사)·억제기 메타모니터링(억제율 집계). 전 기능 옵트인.
-- **D-041.5** (E3, 미구현) AI 분석은 **LLM 인컨텍스트, ML 모델 미사용**. 메시지 심각도 보강은 **상향 전용(monotonic) `max()`** + 결정적 시그니처(Plan51 부록A.1) 우선. 폴스타 심각도가 베이스라인(SSOT).
-- **D-041.6** (향후·미구현) **Plan 55 멀티소스 확장 대비** — `noise_context`는 소스 무관 확장형 dict(`parent_avail_status` 등 자리예약), step 8 보조 축, 영향 신호 **승격 비대칭**(§6.4·§8.6). 지금은 설계 예약만.
-- **D-041.7** (향후·옵션, E5) **deepagents Advisory Enricher** — agentic 분석은 **보조(`signals` 승격 전용)** 만, 판단은 결정적. vLLM(트랙 B, D-037) 옵트인 전제, 미가용 시 **semantic-routing(FabriX 1회 분류) → 결정적 게이트** 3중 폴백. 환각→오억제는 R-12로 통제(강등 경로 부재).
+- **D-048.1** 4-티어(PAGE/TICKET/DASHBOARD/SUPPRESS), 결정적 규칙=판단·LLM=보조, 결정 근거(reason) 기록.
+- **D-048.2** 중요도×심각도 매트릭스 + 유지보수/자가복구 억제(E1). 의존성/인히비션/플래핑은 E2. **심각도3 절대 PAGE**.
+- **D-048.3** 신호는 폴스타 읽기전용 DB(IMPORTANCE_ID/IS_MAINTENANCE/`cmm_alarm_def_noti*` 앵커). `IMPORTANCE_ID` 값코드 미확정 시 **미매핑=보통(보수적)**(`importance_value_map_csv` 기본 빈값). `cmm_alarm_def_noti*` 통보대상 존재→`notify`, 불확실→`None`(절대 단정적 `suppress` 미반환).
+- **D-048.4** 재현율 우선·억제≠삭제(`decision_store` JSONL 감사)·억제기 메타모니터링(억제율 집계). 전 기능 옵트인.
+- **D-048.5** (E3, 미구현) AI 분석은 **LLM 인컨텍스트, ML 모델 미사용**. 메시지 심각도 보강은 **상향 전용(monotonic) `max()`** + 결정적 시그니처(Plan51 부록A.1) 우선. 폴스타 심각도가 베이스라인(SSOT).
+- **D-048.6** (향후·미구현) **Plan 55 멀티소스 확장 대비** — `noise_context`는 소스 무관 확장형 dict(`parent_avail_status` 등 자리예약), step 8 보조 축, 영향 신호 **승격 비대칭**(§6.4·§8.6). 지금은 설계 예약만.
+- **D-048.7** (향후·옵션, E5) **deepagents Advisory Enricher** — agentic 분석은 **보조(`signals` 승격 전용)** 만, 판단은 결정적. vLLM(트랙 B, D-037) 옵트인 전제, 미가용 시 **semantic-routing(FabriX 1회 분류) → 결정적 게이트** 3중 폴백. 환각→오억제는 R-12로 통제(강등 경로 부재).
 
 ### 핵심 설계 결정 (E1 구현)
 
@@ -2388,7 +2319,9 @@ OS 호스트명)이다. 그러나 사용자는 보통 **서버명**(=`cmm_resour
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
-| 2026-06-29 | D-041 | **알람 노이즈 캔슬링 4-티어 발송 게이트 (Plan 52 E1 MVP)**: 폴스타 알람을 결정적 규칙으로 PAGE/TICKET/DASHBOARD/SUPPRESS 라우팅(옵트인 `enable_noise_gate`, 기본 off). 신규 `notification_policy.py`(순수함수 결정 파이프라인+`NotificationDecision` signals 12키)·`polestar_noise_context.py`(중요도/유지보수/알림정책 고정SQL, graceful)·`decision_store.py`(JSONL 결정 감사+억제율)·`notification_gate.py`(노드). 수정 `alarm_graph.py`(AlarmState+배선 `history_enabled or enable_noise_gate`)·`alarm_context_enricher.py`(noise_context gather)·`alarm_notifier.py`(4-티어, decision=None→기존 경로 무변경)·`alarm_worker.py`(핑거프린트 dedup §6.1+min_severity 역할분리 §4.8: sev0·sev3 비드롭+self_heal 시드)·`config.py`(`NoiseGateConfig` 형제 필드 `cfg.noise_gate.*`, env `NOISE_`)·`.env.example`. **심각도3 절대 PAGE(억제 단락)·재현율 우선(수집실패→보수적 PAGE)·억제≠삭제(감사)·전 기능 옵트인**(D-035 확장, D-003 준수). **번호 정정**: Plan §13의 D-040은 2026-06-23 changelog가 D-039/D-040을 선점하여 충돌 → 다음 빈 번호 D-041로 등재(상세 ## D-041 §번호 정정). 하위 D-041.1~.7(E2~E5/Plan55/Advisory Enricher 예약). 검증(§11.1 baseline): tests/test_alarm 92 passed(단위57+통합35)·기존 알람회귀 116·graph 30 passed, 노이즈 모듈 신규실패 0, arch_check --ci exit 0(error 0), 게이트오프 회귀 0. 미구현: E2(의존성/스톰/플래핑)·E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4(LLM 액션가능성)·E5(Advisory Enricher) |
+| 2026-06-29 | D-048 | **Phase E2 — 연쇄/인히비션/플래핑/스톰 억제 (의존성→인히비션→스톰→플래핑)**: 결정 파이프라인 step4~7을 결정적 규칙으로 구현(전부 옵트인, 기본 off→E1 무변경). (step4 의존성 §3.6) `polestar_noise_context.build_dependency_sql`+`fetch(collect_dependency=)`로 부모 `AVAIL_STATUS` 수집(독립 try/except — graceful 교훈 적용), parent≠0→자식 SUPPRESS·None(stale)→보수적 미억제. (step5 인히비션 §3.4) worker `_detect_inhibition`(scope=db_id\|server, 상위 심각도 활성+self-inhibition 금지)→SUPPRESS. (step6 플래핑 §3.7) 신규 domain `flapping.py`(Nagios 가중 %-state-change 1.0→1.5+히스테리시스 20/5%) + worker `_detect_flapping`(deque21+직전상태)→저심각도 SUPPRESS. (step7 스톰 §3.8) worker `_detect_storm`(사건창 deque, 대표 후 억제)→SUPPRESS. (§6.1) `_is_duplicate_fingerprint` severity별 `sev3_repeat_interval_seconds` 분리(기본 공통 4h). signals 12키의 parent_avail_status/flapping/storm 실채움. config 8플래그 추가(dependency_suppression/inhibition_enabled/+window/flapping_enabled/storm_grouping_enabled/+window/threshold/sev3_repeat). **심각도3 모든 단계 단락·PAGE 불변**(4기능 각각 테스트 고정). `AVAIL_DEPEND_RESOURCE_ID_2`는 향후 OR 확장(주석). 후속 교정: worker `_flap_states`/`_storm_window` 키 만료 sweep 추가(기존 `_firing_registry` 패턴 일관 — 단조 메모리 증가 차단). 검증(§11.1 baseline): tests/test_alarm **184 passed**(E1 92→+92: 단위 flapping21/dependency13 + 통합 dependency/inhibition/flapping/storm/sev3/회귀 41 + 기타), 기존 알람/graph 회귀 129 passed, arch_check --ci exit 0(error 0). 실 DB(도커 폴스타): 의존성 SQL 라이브 실행 OK(testdata avail_depend 전부 NULL→parent None 확인), parent≠0 SUPPRESS는 데이터 제약으로 mock 단위 검증. 미구현: E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4·E5 |
+| 2026-06-29 | D-048 | **noise_context graceful degradation 부분 반환 교정**(실 폴스타 도커 DB 검증으로 발견): `polestar_noise_context.fetch()`가 resource SQL과 noti SQL을 한 try 블록에 묶어, 실 폴스타에 `cmm_alarm_def` 부재로 noti 조회만 실패해도 실재하는 중요도/유지보수까지 전부 `unavailable`로 손실하던 결함을 **독립 try/except 분리**로 교정(연결 실패만 전체 unavailable, 한쪽 조회 실패는 타 신호 보존, 양쪽 실패 시 unavailable). 회귀 테스트 4종 추가(`TestPartialFailureGracefulDegradation`: noti만 실패→resource 보존·resource만 실패→noti 보존·양쪽 실패→unavailable·연결 실패→unavailable). 기존 mock(항상 성공)이 못 잡던 공백 보완. 검증: tests/test_alarm/test_polestar_noise_context 20 passed, arch_check --ci exit 0. 교훈은 CLAUDE.md Known Mistakes 등재 |
+| 2026-06-29 | D-048 | **알람 노이즈 캔슬링 4-티어 발송 게이트 (Plan 52 E1 MVP)**: 폴스타 알람을 결정적 규칙으로 PAGE/TICKET/DASHBOARD/SUPPRESS 라우팅(옵트인 `enable_noise_gate`, 기본 off). 신규 `notification_policy.py`(순수함수 결정 파이프라인+`NotificationDecision` signals 12키)·`polestar_noise_context.py`(중요도/유지보수/알림정책 고정SQL, graceful)·`decision_store.py`(JSONL 결정 감사+억제율)·`notification_gate.py`(노드). 수정 `alarm_graph.py`(AlarmState+배선 `history_enabled or enable_noise_gate`)·`alarm_context_enricher.py`(noise_context gather)·`alarm_notifier.py`(4-티어, decision=None→기존 경로 무변경)·`alarm_worker.py`(핑거프린트 dedup §6.1+min_severity 역할분리 §4.8: sev0·sev3 비드롭+self_heal 시드)·`config.py`(`NoiseGateConfig` 형제 필드 `cfg.noise_gate.*`, env `NOISE_`)·`.env.example`. **심각도3 절대 PAGE(억제 단락)·재현율 우선(수집실패→보수적 PAGE)·억제≠삭제(감사)·전 기능 옵트인**(D-035 확장, D-003 준수). **번호 정정**: Plan §13의 D-040은 2026-06-23 changelog가 D-039/D-040을 선점하여 충돌 → 다음 빈 번호 D-041→최종 D-048로 등재(상세 ## D-048 §번호 정정). 하위 D-048.1~.7(E2~E5/Plan55/Advisory Enricher 예약). 검증(§11.1 baseline): tests/test_alarm 92 passed(단위57+통합35)·기존 알람회귀 116·graph 30 passed, 노이즈 모듈 신규실패 0, arch_check --ci exit 0(error 0), 게이트오프 회귀 0. 미구현: E2(의존성/스톰/플래핑)·E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4(LLM 액션가능성)·E5(Advisory Enricher) |
 | 2026-06-29 | D-047 | **프로세스 결과: 채팅 상위 N + CSV 전체 다운로드(사용자 결정)**: process_query가 상위 N(`process_top_n=5`)만 남기고 전체를 폐기 → 채팅·CSV 모두 5건만 노출. 또 orchestration 경로는 `query_results`를 top-level state로 승격하지 않아(result_aggregator가 final_response만 반환) CSV 버튼 자체가 미노출(row_count=0). **수정**: (a) `process_query.py` 전체 1회 정렬·마스킹 후 `organized_data.rows`=상위 N(채팅), `query_results`=전체(CSV/row_count), 요약에 CSV 안내+`shown_count`. (b) `result_aggregator.py` `_finalize_task`/단일·복합 경로에서 `query_results`를 top-level로 승격(데이터/프로세스 공통으로 CSV·row_count 동작). (c) `download_csv` 컬럼명 합집합+`restval`/`extrasaction`로 이종 행 견고화. `process_top_n`은 표시 전용으로 의미 변경. 검증: orchestration+multiturn 신규 2건 포함 통과, arch_check exit 0 |
 | 2026-06-29 | D-047 | **프로세스 조회 대상 서버 식별자 추출 + 실시간 라우팅 결정적 교정**: "김포 ### 서버에 대한 프로세스 조회"가 (1차) "서버명을 식별하지 못했습니다"로, 이어 (2차) DB에서 `resource_type='process'` 행을 가져오는 환각으로 응답되던 문제 해결. **원인1**: `process_query._resolve_hostname`은 filter_conditions 중 field가 `_HOST_FIELDS`인 조건을 서버 식별자로 쓰는데 input_parser에 지목 서버명을 hostname filter로 추출하는 규칙이 없어 `identifier=None`(D-046 해소는 identifier 확보 후 동작이라 공백을 못 메움). **원인2**: 시간성 수식어 없는 "프로세스 조회"를 intent_planner LLM이 보수적으로 `data_query`로 분류 → D-046이 경고한 DB 폴백 환각. **수정**: (a) `prompts/input_parser.py` 규칙 14 신설 — 단일 서버 지목 시 `{"field":"hostname","op":"=","value":"<서버식별자>"}`로 추출, 위치/DB 수식어는 target_db_hints로 분리, 예시 1건. (b) `process_query._HOST_FIELDS`를 영문(host/device_name)·한글(서버명/장비명/호스트명/서버/장비) 변형까지 확장. (c) `prompts/intent_planner.py` 규칙 3을 "프로세스 조회 기본=process_query, 명시적 과거/이력 신호만 data_query"로 강화. (d) `intent_planner._coerce_process_intent` 결정적 가드 — data_query+프로세스+이력신호 없음 → process_query 교정(폴백 포함). 회귀 없음(영문 field·이력 프로세스 data_query 동작 유지). 관련: D-046, D-041. 검증: arch_check --ci exit 0, orchestration+multiturn 194 passed/4 skipped(신규: 한글 field 1, 라우팅 교정 3) |
 | 2026-06-26 | D-046 | **프로세스 조회 시 서버명 → 호스트명 해소 (process_query)**: 폴스타 실시간 프로세스 API의 조회 키는 hostname(`cmm_resource.hostname`)이지만 사용자는 서버명(`cmm_resource.name`)으로 질의한다. 공동존 폴스타(gp/yd)는 name≠hostname이라 `hostname=서버명`으로 보내면 0건 → 오케스트레이터가 DB 조회로 폴백해 **리소스명이 '프로세스'인 행을 가져오는 환각** 발생. **수정**: 프로세스 API 호출 전 입력을 정규 hostname으로 해소. (a) `src/alarm/infrastructure/polestar_hostname_resolver.py` 신규 — DBHub(MCP) 고정 SELECT(`server.Server`·`DTIME IS NULL`·name/hostname OR·name 우선)로 hostname 조회(`polestar_history.py` 경로 재사용, D-022/`is_lob` 금지 정합). (b) `process_query.py`가 `_resolve_canonical_hostname`(예외/0건 시 None→원시 값 폴백)로 해소 후 API 호출, 결과에 `server_name`·`hostname` 동시 보존·요약 병기. 회귀 없음(해소 실패·DB 미연결 경로 기존 동작 유지). 관련: D-041(M4 process_query), D-036(프로세스 API 재사용). 검증: arch_check --ci exit 0, 신규 11건 포함 orchestration/multiturn/alarm 260 passed/4 skipped |

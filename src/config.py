@@ -401,9 +401,16 @@ class NoiseGateConfig(BaseSettings):
     debounce_seconds: int = 0                 # (E2) 상태 안정화 (0=미사용)
     flap_high_threshold: float = 20.0         # (E2) 플래핑 시작 % (Nagios 기본)
     flap_low_threshold: float = 5.0           # (E2) 플래핑 종료 %
+    flapping_enabled: bool = False            # (E2) 플래핑 억제 on/off (상태 진동 보류)
     dependency_suppression: bool = False      # (E2) 의존성 억제 on/off
+    inhibition_enabled: bool = False          # (E2) 인히비션 on/off (상위 심각도 음소거)
+    inhibition_window_seconds: int = 300      # (E2) 상위 심각도 활성 간주 창
+    storm_grouping_enabled: bool = False      # (E2) 스톰 그룹핑 on/off (동일 서버 다발 억제)
+    storm_window_seconds: int = 60            # (E2) 스톰 사건창 (초)
+    storm_threshold: int = 5                  # (E2) 창 내 이 수 초과 시 스톰(대표 외 억제)
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
+    sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)
     noise_context_timeout_seconds: float = 3.0
     noise_context_cache_ttl_seconds: int = 300
     meta_alert_suppress_ratio: float = 0.9    # (E3) 억제율 이 값 초과 시 메타경보

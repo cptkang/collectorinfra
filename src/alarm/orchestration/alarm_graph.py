@@ -44,6 +44,9 @@ class AlarmState(TypedDict):
     noise_context: Optional[dict]                       # enricher가 수집한 억제 신호
     notification_decision: Optional[NotificationDecision]  # gate가 산출한 4-티어 판단
     self_heal: bool                                     # 워커가 시드한 자가복구 매칭 여부
+    inhibited: bool                                     # 워커가 시드한 인히비션 매칭 여부 (E2)
+    flapping: bool                                      # 워커가 시드한 플래핑 매칭 여부 (E2)
+    storm: bool                                         # 워커가 시드한 스톰 매칭 여부 (E2)
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001
