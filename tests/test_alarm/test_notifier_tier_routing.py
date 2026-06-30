@@ -205,3 +205,72 @@ async def test_decision_none_unchanged_send_path(monkeypatch):
     assert queue.calls == []
     assert bus.events == []
     assert out["analysis_result"].notifications_sent == {"workb": True, "webhook": True}
+
+
+# ─── E3 후속: 워커 경로 SSE Redis 브리지 발행기(sse_publisher) ────────────────
+
+
+class _RecordingPublisher:
+    """sse_publisher(RedisSseBridgePublisher) 대역 — publish된 payload를 수집한다."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def publish(self, event: dict) -> None:
+        self.events.append(event)
+
+
+def _config_bridge(*, ticket_queue=None, alarm_bus=None, sse_publisher=None) -> dict:  # noqa: ANN001
+    return {"configurable": {
+        "app_config": SimpleNamespace(workb=SimpleNamespace(), alarm=SimpleNamespace()),
+        "ticket_queue": ticket_queue,
+        "alarm_bus": alarm_bus,
+        "sse_publisher": sse_publisher,
+    }}
+
+
+async def test_worker_path_ticket_uses_sse_publisher(monkeypatch):
+    # 워커 경로(alarm_bus=None) → sse_publisher로 SSE 발행(payload=_tier_sse_payload)
+    _patch_senders(monkeypatch)
+    pub = _RecordingPublisher()
+    decision = make_decision(TIER_TICKET)
+    state = {"analysis_result": make_result(), "notification_decision": decision}
+    await alarm_notifier_node(state, _config_bridge(sse_publisher=pub))
+
+    assert len(pub.events) == 1
+    assert pub.events[0]["tier"] == TIER_TICKET
+    assert pub.events[0]["tier_reason"] == "테스트"
+
+
+async def test_worker_path_dashboard_uses_sse_publisher(monkeypatch):
+    _patch_senders(monkeypatch)
+    pub = _RecordingPublisher()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_DASHBOARD)}
+    await alarm_notifier_node(state, _config_bridge(sse_publisher=pub))
+
+    assert len(pub.events) == 1
+    assert pub.events[0]["tier"] == TIER_DASHBOARD
+
+
+async def test_double_publish_prevention_bus_wins(monkeypatch):
+    # ⑤ alarm_bus + sse_publisher 동시 주입 → alarm_bus만 호출(sse_publisher 미호출)
+    _patch_senders(monkeypatch)
+    bus, pub = _RecordingBus(), _RecordingPublisher()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_TICKET)}
+    await alarm_notifier_node(state, _config_bridge(alarm_bus=bus, sse_publisher=pub))
+
+    assert len(bus.events) == 1          # API 경로 버스 우선
+    assert pub.events == []              # 브리지는 이중 발행하지 않음
+
+
+async def test_worker_path_no_publisher_log_fallback(monkeypatch):
+    # ③ 플래그 off(sse_publisher=None, alarm_bus=None) → 발행 대상 없음, 예외 없이 로그 폴백
+    _patch_senders(monkeypatch)
+    queue = _RecordingQueue()
+    state = {"analysis_result": make_result(), "notification_decision": make_decision(TIER_TICKET)}
+    out = await alarm_notifier_node(
+        state, _config_bridge(ticket_queue=queue, alarm_bus=None, sse_publisher=None)
+    )
+    # 큐 적재는 동작(워커 무변경), SSE는 로그 폴백 — 예외 없이 정상 반환
+    assert len(queue.calls) == 1
+    assert "analysis_result" in out

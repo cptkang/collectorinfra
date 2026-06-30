@@ -56,6 +56,7 @@ class AlarmWorker:
         self._noise_repo = None
         self._decision_store = None
         self._ticket_queue = None  # (E3) TICKET 티어 일배치 요약 큐
+        self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         # 핑거프린트 dedup(재발생 억제, §6.1) — alarm_id dedup과 별개 경로.
         self._gate_dedup: dict[str, float] = {}
         # 자가복구 상관용 발생 레지스트리(§3.7): fingerprint → (발생시각, severity).
@@ -172,6 +173,29 @@ class AlarmWorker:
             logger.exception("TICKET 일배치 큐 생성 실패 — 큐 없이 진행")
             return None
 
+    def _build_sse_publisher(self):  # noqa: ANN202
+        """워커→UI 실시간 SSE Redis pub/sub 발행기를 생성한다 (E3 후속 · D-048.9 해소).
+
+        enable_noise_gate=False·sse_bridge_enabled=False·Redis 클라이언트 부재 시 None을
+        반환한다 — 티어 SSE는 로그 폴백(E3 무변경)으로 진행된다 (graceful degradation).
+        self._redis가 설정된 이후(run() 내)에 호출해야 한다.
+        """
+        if not self._config.noise_gate.enable_noise_gate:
+            return None
+        if not getattr(self._config.noise_gate, "sse_bridge_enabled", False):
+            return None
+        if self._redis is None:
+            return None
+        try:
+            from src.alarm.infrastructure.sse_bridge import RedisSseBridgePublisher
+
+            return RedisSseBridgePublisher(
+                self._redis, self._config.noise_gate.sse_bridge_channel
+            )
+        except Exception:
+            logger.exception("SSE 브리지 발행기 생성 실패 — 로그 폴백으로 진행")
+            return None
+
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
 
@@ -198,6 +222,7 @@ class AlarmWorker:
         self._decision_store = self._build_decision_store()
         self._ticket_queue = self._build_ticket_queue()
         self._redis = r
+        self._sse_publisher = self._build_sse_publisher()
         dedup: dict[str, float] = {}
 
         logger.info(
@@ -379,8 +404,11 @@ class AlarmWorker:
                         "noise_repo": self._noise_repo,
                         "decision_store": self._decision_store,
                         # (E3) TICKET 일배치 큐 — 워커는 cross-process라 alarm_bus는 미주입.
-                        # notifier의 DASHBOARD/TICKET SSE는 로그 폴백(정상), 큐 적재는 동작한다.
+                        # 큐 적재는 동작하고, 티어 SSE는 sse_publisher(Redis 브리지)로 중계한다.
                         "ticket_queue": self._ticket_queue,
+                        # (E3 후속·D-048.9) 워커→UI 실시간 SSE Redis pub/sub 발행기.
+                        # off/Redis 부재 시 None → notifier는 로그 폴백(E3 무변경).
+                        "sse_publisher": self._sse_publisher,
                     }
                 },
             )

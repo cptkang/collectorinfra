@@ -157,6 +157,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
         )
 
+    # 알람 SSE Redis pub/sub 브리지 구독 (워커→UI 실시간 SSE — D-048.9 해소).
+    # 워커는 cross-process라 in-memory alarm_bus를 공유 못 하므로 Redis로 중계받는다.
+    # 게이트 활성 + NOISE_SSE_BRIDGE_ENABLED=true일 때만 기동(기본 off → E3 무변경, 회귀 0).
+    # Redis 연결 실패는 warning 후 폴백 — 서버 기동을 막지 않는다.
+    sse_bridge_task = None
+    sse_bridge_redis = None
+    sse_bridge_stop = None
+    if config.noise_gate.enable_noise_gate and config.noise_gate.sse_bridge_enabled:
+        try:
+            import asyncio as _asyncio
+            import redis.asyncio as _aioredis
+
+            from src.alarm.infrastructure.sse_bridge import run_sse_bridge_subscriber
+
+            sse_bridge_redis = _aioredis.from_url(
+                f"redis://{config.redis.host}:{config.redis.port}",
+                password=config.redis.password or None,
+                db=config.redis.db,
+            )
+            sse_bridge_stop = _asyncio.Event()
+            sse_bridge_task = _asyncio.create_task(
+                run_sse_bridge_subscriber(
+                    sse_bridge_redis,
+                    config.noise_gate.sse_bridge_channel,
+                    app.state.alarm_bus,
+                    stop_event=sse_bridge_stop,
+                )
+            )
+            logger.info(
+                "알람 SSE 브리지 구독 시작 (channel=%s)",
+                config.noise_gate.sse_bridge_channel,
+            )
+        except Exception as e:
+            logger.warning("알람 SSE 브리지 구독 시작 실패 (실시간 SSE 비활성): %s", e)
+
     yield
 
     # 종료 시: 알람 워커 정리
@@ -165,6 +200,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         try:
             import asyncio as _asyncio
             await alarm_worker_task
+        except Exception:
+            pass
+
+    # 종료 시: SSE 브리지 구독 task·Redis 연결 정리
+    if sse_bridge_task:
+        if sse_bridge_stop is not None:
+            sse_bridge_stop.set()
+        sse_bridge_task.cancel()
+        try:
+            await sse_bridge_task
+        except Exception:
+            pass
+    if sse_bridge_redis is not None:
+        try:
+            await sse_bridge_redis.aclose()
         except Exception:
             pass
 

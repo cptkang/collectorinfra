@@ -142,7 +142,11 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
         configurable = (config or {}).get("configurable", {})
         ticket_queue = configurable.get("ticket_queue")
         alarm_bus = configurable.get("alarm_bus")
-        await _route_non_page_tier(result, decision, ticket_queue, alarm_bus)
+        # (E3 후속) 워커 경로 SSE Redis pub/sub 발행기 — alarm_bus 미주입 시에만 사용.
+        sse_publisher = configurable.get("sse_publisher")
+        await _route_non_page_tier(
+            result, decision, ticket_queue, alarm_bus, sse_publisher
+        )
         return {"analysis_result": result}
 
     for channel in result.notification_channels:
@@ -214,6 +218,7 @@ async def _route_non_page_tier(
     decision,  # noqa: ANN001 — NotificationDecision
     ticket_queue,  # noqa: ANN001 — TicketBatchQueue | None (덕 타이핑)
     alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None (덕 타이핑)
+    sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None (덕 타이핑)
 ) -> None:
     """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 라우팅한다(발송 안 함, §7 · Phase E3).
 
@@ -222,11 +227,12 @@ async def _route_non_page_tier(
     큐/SSE 실패는 warning 후 무시하여 파이프라인을 막지 않는다.
 
     - TICKET: 일배치 요약 큐 적재(ticket_queue 있으면) + DASHBOARD와 동일하게 SSE 표시.
-    - DASHBOARD: SSE(alarm_bus 있으면)로 UI에만 표시.
+    - DASHBOARD: SSE(alarm_bus 또는 sse_publisher 있으면)로 UI에만 표시.
     - SUPPRESS: 발송·큐·SSE 모두 없음 — 로그만.
 
-    alarm_bus는 API 경로(app.state.alarm_bus)에서만 주입되고 워커 경로(cross-process)에는
-    주입되지 않는다. bus가 None이면 로그 폴백한다(워커 정상 동작).
+    alarm_bus는 API 경로(app.state.alarm_bus)에서만 주입된다. 워커 경로(cross-process)는
+    alarm_bus를 공유할 수 없어 대신 sse_publisher(Redis pub/sub 브리지, E3 후속·D-048.9)를
+    주입받는다. 둘 다 None이면 로그 폴백한다(워커 정상 동작).
     """
     alarm_id = result.alarm_event.alarm_id
     if decision.tier == TIER_TICKET:
@@ -235,14 +241,14 @@ async def _route_non_page_tier(
                 ticket_queue.enqueue(decision, alarm_id=alarm_id)
             except Exception:  # noqa: BLE001 — 큐 적재 실패가 파이프라인을 막지 않는다
                 logger.warning("TICKET 일배치 큐 적재 실패(무시): alarm_id=%s", alarm_id)
-        await _publish_tier_sse(result, decision, alarm_bus)
+        await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
         logger.info(
             "TICKET(저우선 — 일배치 큐 적재 + SSE 표시, 감사 기록됨): alarm_id=%s reason=%s",
             alarm_id,
             decision.reason,
         )
     elif decision.tier == TIER_DASHBOARD:
-        await _publish_tier_sse(result, decision, alarm_bus)
+        await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
         logger.info(
             "DASHBOARD(UI 표시만 — SSE, 발송 안 함): alarm_id=%s reason=%s",
             alarm_id,
@@ -260,17 +266,23 @@ async def _publish_tier_sse(
     result: AlarmAnalysisResult,
     decision,  # noqa: ANN001 — NotificationDecision
     alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None
+    sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None
 ) -> None:
-    """티어 SSE 이벤트를 publish한다(bus 없으면 로그 폴백, 실패는 graceful)."""
-    if alarm_bus is None:
+    """티어 SSE 이벤트를 publish한다(대상 없으면 로그 폴백, 실패는 graceful).
+
+    이중 발행 방지: API 경로의 alarm_bus를 우선 사용하고, 미주입(워커 경로)일 때만
+    sse_publisher(Redis 브리지)를 사용한다 — 둘 중 하나만 호출된다(E3 후속·D-048.9).
+    """
+    target = alarm_bus if alarm_bus is not None else sse_publisher
+    if target is None:
         logger.info(
-            "SSE 미주입(워커 경로 — 로그 폴백): alarm_id=%s tier=%s",
+            "SSE 미주입(로그 폴백): alarm_id=%s tier=%s",
             result.alarm_event.alarm_id,
             decision.tier,
         )
         return
     try:
-        await alarm_bus.publish(_tier_sse_payload(result, decision))
+        await target.publish(_tier_sse_payload(result, decision))
     except Exception:  # noqa: BLE001 — SSE 실패가 파이프라인을 막지 않는다
         logger.warning(
             "티어 SSE publish 실패(무시): alarm_id=%s tier=%s",
