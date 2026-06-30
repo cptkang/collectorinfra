@@ -106,17 +106,17 @@ alarm_query로 분류할 질의 패턴:
 ```json
 {{
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "서버 CPU 사용률 조회", "sub_query_context": "CPU 사용률이 80% 이상인 서버 목록 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.95, "reason": "서버 CPU 사용률 조회", "sub_query_context": "CPU 사용률이 80% 이상인 서버 목록 조회", "user_specified": false}}
     ]
 }}
 ```
 
-입력: "polestar에서 서버 목록 조회해줘"
+입력: "은행 폴스타에서 서버 목록 조회해줘"
 출력:
 ```json
 {{
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 1.0, "reason": "사용자가 polestar DB를 직접 지정", "sub_query_context": "서버 목록 조회", "user_specified": true}}
+        {{"db_id": "polestar_b0", "relevance_score": 1.0, "reason": "사용자가 은행 폴스타 DB를 직접 지정", "sub_query_context": "서버 목록 조회", "user_specified": true}}
     ]
 }}
 ```
@@ -127,7 +127,7 @@ alarm_query로 분류할 질의 패턴:
 {{
     "databases": [
         {{"db_id": "cloud_portal", "relevance_score": 0.9, "reason": "김포 영역 VM 목록 조회", "sub_query_context": "김포 영역의 VM 목록과 상세 정보 조회", "user_specified": false}},
-        {{"db_id": "polestar", "relevance_score": 0.8, "reason": "VM이 설치된 서버 스펙 조회", "sub_query_context": "VM이 설치된 서버의 CPU, Memory, Disk 사양 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.8, "reason": "VM이 설치된 서버 스펙 조회", "sub_query_context": "VM이 설치된 서버의 CPU, Memory, Disk 사양 조회", "user_specified": false}}
     ]
 }}
 ```
@@ -138,7 +138,7 @@ alarm_query로 분류할 질의 패턴:
 {{
     "intent": "alarm_query",
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "서버 알람 목록 조회 — alarm_query 의도", "sub_query_context": "현재 활성 알람 목록 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.95, "reason": "서버 알람 목록 조회 — alarm_query 의도", "sub_query_context": "현재 활성 알람 목록 조회", "user_specified": false}}
     ]
 }}
 ```
@@ -171,7 +171,7 @@ alarm_query로 분류할 질의 패턴:
 {{
     "intent": "alarm_query",
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 0.9, "reason": "월별 알람 발생 횟수 집계 — alarm_query 의도", "sub_query_context": "이번 달 경고/심각 알람 장비별 집계 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.9, "reason": "월별 알람 발생 횟수 집계 — alarm_query 의도", "sub_query_context": "이번 달 경고/심각 알람 장비별 집계 조회", "user_specified": false}}
     ]
 }}
 ```
@@ -182,7 +182,7 @@ alarm_query로 분류할 질의 패턴:
 {{
     "intent": "alarm_query",
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "미확인 알람 및 담당자 조회 — alarm_query 의도", "sub_query_context": "미확인 알람 목록과 담당자 정보 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.95, "reason": "미확인 알람 및 담당자 조회 — alarm_query 의도", "sub_query_context": "미확인 알람 목록과 담당자 정보 조회", "user_specified": false}}
     ]
 }}
 ```
@@ -193,7 +193,7 @@ alarm_query로 분류할 질의 패턴:
 {{
     "intent": "alarm_query",
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 0.9, "reason": "서버 장비 대상 특정 기간 알람 이력 조회 — alarm_query 의도", "sub_query_context": "서버 알람 2026-05-01~2026-05-31 이력 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.9, "reason": "서버 장비 대상 특정 기간 알람 이력 조회 — alarm_query 의도", "sub_query_context": "서버 알람 2026-05-01~2026-05-31 이력 조회", "user_specified": false}}
     ]
 }}
 ```
@@ -204,7 +204,7 @@ alarm_query로 분류할 질의 패턴:
 {{
     "intent": "alarm_query",
     "databases": [
-        {{"db_id": "polestar", "relevance_score": 0.95, "reason": "서버 CPU/메모리 키워드 알람 이력 조회 — alarm_query 의도", "sub_query_context": "서버 CPU 및 메모리 알람 이번 달 이력 조회", "user_specified": false}}
+        {{"db_id": "polestar_b0", "relevance_score": 0.95, "reason": "서버 CPU/메모리 키워드 알람 이력 조회 — alarm_query 의도", "sub_query_context": "서버 CPU 및 메모리 알람 이번 달 이력 조회", "user_specified": false}}
     ]
 }}
 ```

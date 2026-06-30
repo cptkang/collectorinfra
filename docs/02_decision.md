@@ -2548,10 +2548,71 @@ hostname으로 프로세스 API에 전달 → b0 API 0건. gp/yd는 PostgreSQL�
 
 ---
 
+## D-054. 레거시 단일 `polestar` 도메인 폐기 + db_profiles 정리 + 면책 문구 환각 차단
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-30 |
+| **상태** | 확정 |
+| **관련 결정** | D-004(도메인 구성), D-053(b0 엔진 인지) 후속 — 충돌 없음 |
+
+### 배경 / 문제
+
+(1) `config/db_profiles/`에 운영 3종(`polestar_b0`/`polestar_cm_gp`/`polestar_cm_yd`) 외에
+불필요 파일이 잔존했다: `test_db.yaml`(빈 auto 스텁), `unknown.yaml`(auto, db_id 미사용),
+`polestar_pg.yaml`(도메인 미등록·테스트 전용), `polestar.yaml`(레거시 단일 폴스타 — b0로 대체됨).
+(2) `output_generator` LLM이 조회 결과 말미에 "현재 조회된 데이터에 avail_status 컬럼이 없으므로
+정상·비정상 여부를 판단할 수 없습니다 …" 같은 **묻지 않은 면책 문구를 자발적으로 환각**했다
+(코드에 해당 문자열 없음 — 순수 LLM 생성).
+
+### 결정
+
+- **레거시 `polestar` 도메인 폐기**: `DB_DOMAINS`에서 `db_id="polestar"` 엔트리 제거(7→6).
+  b0가 "은행 레거시"를 승계하므로 기능 손실 없음. 바 별칭("폴스타"/"polestar")은 이제 특정
+  DB로 직결되지 않고 LLM 시멘틱 라우팅이 b0/gp/yd 중 선택(3 인스턴스 환경에서 "폴스타"는 본질적 모호).
+- **db_profiles 정리**: 위 4개 파일 삭제. `_load_manual_profile`은 파일명=db_id 규칙이라 미등록
+  db_id 파일은 어차피 미로드(영향 없음). `polestar_pg` 참조 테스트는 모두 `pytest.skip` graceful 처리.
+- **면책 문구 차단**: `OUTPUT_GENERATOR_SYSTEM_PROMPT`에 규칙 6 추가 — 사용자가 가용성/상태를
+  묻지 않았다면 특정 컬럼(avail_status 등) 부재 언급·면책·안내 문구를 추가하지 말 것.
+
+### 세부 변경
+
+- `config/db_profiles/{test_db,unknown,polestar_pg,polestar}.yaml` 삭제.
+- `src/routing/domain_config.py`: `polestar` DBDomainConfig 엔트리 제거.
+- `src/prompts/output_generator.py`: 면책 문구 금지 규칙 6 추가.
+- `src/api/routes/alarm.py`: `AlarmTestRequest.db_id` 기본값 `"polestar"`→`"polestar_b0"`.
+- `src/prompts/semantic_router.py`·`cache_management.py`: few-shot 예시 db_id `"polestar"`→`"polestar_b0"`,
+  사용자 직접지정 예시 입력을 "은행 폴스타"로 정합화(존재하지 않는 db_id 예시 제거).
+- `.env.example`: `POLESTAR_DB_IDS`·`ACTIVE_DB_IDS` 예시를 b0/gp/yd로 갱신.
+- 테스트: `test_domain_config.py`(6개·polestar_b0 기준), `test_structure_analysis.py`
+  (`test_polestar_db_engine`→polestar_b0) 갱신.
+
+### 남겨둔 항목 (의도)
+
+- `src/nodes/field_mapper.py`의 `if db_id_lower == "polestar"` 우선순위 분기: active_db_ids 루프
+  내부라 polestar 미활성 시 자연히 비활성(무해 dead branch). 라우팅 우선순위 로직 변경 리스크를
+  피하기 위해 그대로 둠.
+- `tests/test_document/*`의 `db_id="polestar"` 픽스처: 도메인 등록과 무관한 단순 예시 키 문자열.
+- `redis/export/*.json`(polestar_schema 등): 마이그레이션 스냅샷 산출물(런타임 프로필 아님), 범위 외.
+
+### 향후 수정 시 고려사항
+
+- 레거시 DB2 단일 `polestar`를 다시 붙일 일이 생기면 도메인 엔트리·프로필을 재등록한다
+  (b0와 별도 인스턴스인 경우에 한함).
+
+### 검증
+
+- `test_semantic_routing/test_domain_config.py`·`test_structure_analysis.py`·
+  `test_plan32_manual_profile.py`: 93 passed, 7 skipped. (기존 실패 1건
+  `TestSaveStructureProfile::test_yaml_file_created`은 본 변경과 무관 — HEAD에서도 실패).
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-30 | D-054 | **레거시 `polestar` 도메인 폐기 + db_profiles 정리 + 면책 문구 환각 차단**: (1) `DB_DOMAINS`에서 레거시 단일 `polestar` 엔트리 제거(7→6, b0가 은행 레거시 승계). (2) `config/db_profiles/{test_db,unknown,polestar_pg,polestar}.yaml` 삭제(빈 auto 스텁·미등록 db_id·b0로 대체). (3) `output_generator` 프롬프트 규칙 6 추가 — 사용자가 묻지 않은 컬럼(avail_status 등) 부재·면책·안내 문구 자발 추가 금지(코드에 없던 순수 LLM 환각). 부수: `alarm.py` db_id 기본값·`semantic_router`/`cache_management` few-shot 예시·`.env.example` POLESTAR_DB_IDS/ACTIVE_DB_IDS·테스트(domain_config 6개, structure_analysis polestar_b0) 갱신. field_mapper polestar 분기·test_document 픽스처·redis/export 스냅샷은 의도적 보존. 검증: 영향 테스트 93 passed/7 skipped(기존 실패 1건 무관). 관련: D-004, D-053 |
 | 2026-06-30 | D-053 | **은행 b0 실시간 프로세스 조회 0건 수정(2건)**: (1·실제 1차 게이트) `_resolve_db_id._LOCATION_DB_HINTS`에 은행(b0)이 없어 "은행 폴스타 … 프로세스" 질의 db_id=None → 조기 0건(라이브 진입 로그로 확인). → b0 힌트(은행/레거시/은행존) 추가, 위치 신호 명확 시 base_url 무관 db_id 반환. (2·후속 게이트) `build_hostname_sql`이 엔진 무관 PostgreSQL 방언(`LIMIT 1`+`polestar.` 스키마) 고정 → DB2 b0에서 SQL 실패 → D-046 graceful 폴백이 서버명을 그대로 API에 전달 → 0건. → `resolve()`가 `get_domain_by_id(db_id).db_engine` 조회, db2는 `FETCH FIRST 1 ROWS ONLY`+무스키마(CURRENT SCHEMA). 진입/게이트/응답-envelope 진단 로그 추가. b0 API 형식은 gp/yd와 동일 확인(형식 mismatch 아님). (3·멀티턴) `agent_orchestrator`가 `active_db_id`/`target_databases`를 top-level로 안 올려 다음 턴 previous_db_ids 공백 → "해당 서버 …" 후속 process_query db_id=None 펑. → `result_aggregator._collect_db_promotion`이 실행 task target_db_ids를 승격(멀티턴 DB 승계 복원). 런타임 `.env`에 `ALARM_PROCESS_API_BASE_URLS_CSV`의 b0 매핑 필요(코드 기본값엔 gp/yd만). 관련: D-046, D-047. 검증: orchestration 201 passed/4 skipped, 알람 프로세스 63 passed, arch_check exit 0 |
 | 2026-06-30 | D-051 | **allowed_tables 유사어 동적 보완을 질의 매칭분으로 게이트**: `schema_analyzer`가 `get_synonyms`의 모든 테이블을 무조건 `_allowed`에 추가하던 것(b0 실측 5→407, relevant 400, system_prompt 104K>95K FabriX 한도)을, 이번 질의 용어와 매칭된 유사어의 테이블만(상한 15) 보완하도록 `_synonym_tables_matching_query()` 게이트 신설. FabriX 데이터 평면도 ~95K 입력 한도임을 확인(D-042 전제 정정). 회귀: synonym_gate 8 + eav_supplement 통합 양성/음성. 계획 `plans/52-...md` |
 | 2026-06-29 | D-050 | **단일 서버 필터 + EAV 피벗(CPU·메모리) 조회 SQL 교정(HAVING 패턴)**: 실재하는 김포 서버의 CPU·메모리가 조회 시 null로 나오던 문제 — "데이터를 못 가져오는 게 문제"라는 사용자 지적이 정확. 근본 원인: 폴스타 EAV에서 CPU(`server.Cpus`)·메모리(`server.Memory`)는 server.Server와 다른 행이라 `GROUP BY platform_resource_id` 피벗이 필요한데, **단일 서버 필터+피벗을 결합한 예시·지침이 없어** LLM이 피벗에 `WHERE c.name='###'`를 붙임 → 그 술어가 server.Server 행에만 참이라 GROUP BY 전에 Cpus/Memory 행이 제거 → CPU·메모리 NULL(OS/IP/호스트명만 정상). avail_status는 이미 HAVING 기법을 쓰는데 서버명 필터엔 없던 게 구멍. **결정**: 서버 식별 필터는 WHERE가 아니라 **HAVING(집계 후 server.Server 행 기준)**으로 적용. **수정**: `prompts/query_generator.py`(서버명+피벗 HAVING 규칙·예시), `config/db_profiles/polestar_cm_gp.yaml`·`polestar_cm_yd.yaml`(단일 서버 OS/IP/호스트명+CPU/메모리 query_example 신규). 관련: D-049(이 사례를 "속성 부재"로 오판한 가드 — 본 결정이 진짜 원인), D-046. 검증: YAML safe_load OK, arch_check exit 0, 회귀 통과(사전 실패 3건 무관) |

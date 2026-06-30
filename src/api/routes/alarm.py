@@ -45,7 +45,7 @@ class AlarmTestRequest(BaseModel):
     """
 
     # ── 폴스타 알람 필드 (AlarmEvent와 1:1 대응) ──
-    db_id: str = Field(default="polestar", description="dbId — 폴스타 인스턴스 식별자 (상수 직접 기입)")
+    db_id: str = Field(default="polestar_b0", description="dbId — 폴스타 인스턴스 식별자 (상수 직접 기입)")
     server_name: str = Field(default="", description="${platformName} — 폴스타 등록 서버명")
     hostname: str = Field(default="", description="${hostname} — 호스트네임")
     ip_address: str = Field(default="", description="${ipAddress} — IP 주소")

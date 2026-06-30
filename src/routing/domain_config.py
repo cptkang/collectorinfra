@@ -31,25 +31,6 @@ class DBDomainConfig:
 
 DB_DOMAINS: list[DBDomainConfig] = [
     DBDomainConfig(
-        db_id="polestar",
-        display_name="Polestar DB",
-        description=(
-            "서버 물리 사양, 사용량 및 모니터링 데이터. "
-            "서버 사양(CPU, Core 수, Memory 크기, Disk 크기), "
-            "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
-            "서버 정보(hostname, IP, gateway), "
-            "프로세스 정보(서버에서 동작 중인 프로세스 종류), "
-            "모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, "
-            "알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
-            "알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), "
-            "알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)"
-        ),
-        aliases=["polestar", "폴스타", "Polestar", "Polestar DB"],
-        env_connection_key="POLESTAR_DB_CONNECTION",
-        env_type_key="POLESTAR_DB_TYPE",
-        db_engine="db2",
-    ),
-    DBDomainConfig(
         db_id="polestar_b0",
         display_name="은행 레거시 및 K리전(은행존) Polestar",
         description=(

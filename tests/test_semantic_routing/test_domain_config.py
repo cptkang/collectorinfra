@@ -14,13 +14,13 @@ class TestDBDomains:
     """DB_DOMAINS 정의 테스트."""
 
     def test_four_domains_defined(self):
-        """4개의 DB 도메인이 정의되어 있다."""
-        assert len(DB_DOMAINS) == 7
+        """6개의 DB 도메인이 정의되어 있다 (레거시 polestar 제거)."""
+        assert len(DB_DOMAINS) == 6
 
     def test_all_domain_ids(self):
         """모든 도메인 식별자가 올바르다."""
         ids = {d.db_id for d in DB_DOMAINS}
-        assert ids == {"polestar", "polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "cloud_portal", "itsm", "itam"}
+        assert ids == {"polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "cloud_portal", "itsm", "itam"}
 
     def test_no_keywords_field(self):
         """각 도메인에 keywords 필드가 없다 (v2에서 제거됨)."""
@@ -42,10 +42,10 @@ class TestDBDomains:
 
     def test_polestar_aliases(self):
         """Polestar DB의 별칭이 정의되어 있다."""
-        polestar = get_domain_by_id("polestar")
+        polestar = get_domain_by_id("polestar_b0")
         assert polestar is not None
         aliases_lower = [a.lower() for a in polestar.aliases]
-        assert "polestar" in aliases_lower
+        assert "polestar_b0" in aliases_lower
 
     def test_cloud_portal_aliases(self):
         """Cloud Portal DB의 별칭이 정의되어 있다."""
@@ -79,9 +79,9 @@ class TestGetDomainById:
 
     def test_valid_id(self):
         """유효한 식별자로 조회한다."""
-        result = get_domain_by_id("polestar")
+        result = get_domain_by_id("polestar_b0")
         assert result is not None
-        assert result.db_id == "polestar"
+        assert result.db_id == "polestar_b0"
 
     def test_invalid_id(self):
         """유효하지 않은 식별자로 조회하면 None을 반환한다."""
@@ -95,8 +95,8 @@ class TestGetAllDbIds:
     def test_returns_all_ids(self):
         """모든 DB 식별자를 반환한다."""
         ids = get_all_db_ids()
-        assert len(ids) == 7
-        assert "polestar" in ids
+        assert len(ids) == 6
+        assert "polestar_b0" in ids
         assert "polestar_cm_yd" in ids
         assert "cloud_portal" in ids
         assert "itsm" in ids

@@ -29,7 +29,7 @@ CACHE_MANAGEMENT_PARSE_PROMPT = """사용자의 캐시 관리 요청을 분석�
 ```json
 {{
     "action": "generate",
-    "db_id": "polestar",
+    "db_id": "polestar_b0",
     "target_table": null,
     "target_column": null,
     "words": null,

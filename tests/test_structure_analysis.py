@@ -134,7 +134,7 @@ class TestDBDomainConfigEngine:
     """DBDomainConfig의 db_engine 필드 검증."""
 
     def test_polestar_db_engine(self):
-        polestar = get_domain_by_id("polestar")
+        polestar = get_domain_by_id("polestar_b0")
         assert polestar is not None
         assert polestar.db_engine == "db2"
 
