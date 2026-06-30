@@ -72,6 +72,42 @@ class DecisionStore:
         except OSError as exc:  # 디스크/권한 등 — 발송을 막지 않고 경고만
             logger.warning("결정 감사 기록 실패(무시): %s", exc)
 
+    def record_resolution(
+        self,
+        *,
+        fingerprint: str,
+        duration_seconds: float,
+        ts: Optional[datetime] = None,
+    ) -> None:
+        """자가복구(self-heal) 소요시간을 JSONL 한 줄로 append 한다 (D-049).
+
+        `type="resolution"` 레코드로 적재하여 발송 판단(decision) 레코드와 구분한다.
+        aggregate가 이 레코드를 by_tier/total 집계에서 제외하고
+        `auto_recovery_mttr_seconds`(self-heal 소요시간 평균) 산출에만 사용한다.
+
+        주의(환각 금지): self-heal은 sev1..suppress_max만 대상(sev3 제외)이라
+        **편향 부분지표**이며, paged incident의 운영자 MTTR(`incident_mttr_seconds`)과
+        명확히 구분된다(라벨 `auto_recovery_mttr_seconds`).
+
+        기록 실패는 warning 후 무시(발송 차단 금지). enabled=False면 no-op.
+        """
+        if not self.enabled:
+            return
+        when = ts or datetime.now(timezone.utc)
+        record = {
+            "type": "resolution",
+            "fingerprint": fingerprint,
+            "duration_seconds": duration_seconds,
+            "ts": when.isoformat(),
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, ensure_ascii=False)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError as exc:
+            logger.warning("자가복구 소요시간 기록 실패(무시): %s", exc)
+
     @staticmethod
     def _empty_aggregate() -> dict:
         """집계 결과의 빈 형태(전 키 포함)를 반환한다(E3 확장 — 키 스키마 일관성)."""
@@ -88,6 +124,8 @@ class DecisionStore:
             "actionable_ratio": 0.0,
             "last_event_ts": None,
             "last_event_age_seconds": None,
+            # ── D-049: 자가복구 소요시간 평균(편향 부분지표 — sev3 제외) ──
+            "auto_recovery_mttr_seconds": None,
         }
 
     def aggregate(self, *, window_seconds: Optional[int] = None) -> dict:
@@ -112,6 +150,7 @@ class DecisionStore:
         total = 0
         latest_dt: Optional[datetime] = None
         latest_iso: Optional[str] = None
+        resolution_durations: list[float] = []  # (D-049) self-heal 소요시간 수집
         try:
             with self.path.open("r", encoding="utf-8") as fh:
                 for line in fh:
@@ -123,6 +162,13 @@ class DecisionStore:
                     except json.JSONDecodeError:
                         continue  # 손상된 줄은 건너뜀
                     if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
+                        continue
+                    # (D-049) resolution 레코드는 by_tier/total 집계에서 제외하고
+                    # auto_recovery_mttr 산출에만 사용한다(기존 키·동작 불변).
+                    if rec.get("type") == "resolution":
+                        dur = rec.get("duration_seconds")
+                        if isinstance(dur, (int, float)):
+                            resolution_durations.append(float(dur))
                         continue
                     tier = rec.get("tier", "")
                     by_tier[tier] = by_tier.get(tier, 0) + 1
@@ -157,6 +203,11 @@ class DecisionStore:
             "actionable_ratio": (actionable / total) if total else 0.0,
             "last_event_ts": latest_iso,
             "last_event_age_seconds": last_age,
+            "auto_recovery_mttr_seconds": (
+                sum(resolution_durations) / len(resolution_durations)
+                if resolution_durations
+                else None
+            ),
         }
 
     def meta_alerts(

@@ -20,6 +20,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime
+from typing import Optional
 
 import redis.asyncio as aioredis
 
@@ -57,6 +58,10 @@ class AlarmWorker:
         self._decision_store = None
         self._ticket_queue = None  # (E3) TICKET 티어 일배치 요약 큐
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
+        self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
+        # (D-049) 직전 self-heal 매칭 소요시간(초) — _update_firing_registry가 설정,
+        # _process가 decision_store.record_resolution 기록에 사용(매칭 없으면 None).
+        self._last_self_heal_duration: Optional[float] = None
         # 핑거프린트 dedup(재발생 억제, §6.1) — alarm_id dedup과 별개 경로.
         self._gate_dedup: dict[str, float] = {}
         # 자가복구 상관용 발생 레지스트리(§3.7): fingerprint → (발생시각, severity).
@@ -196,6 +201,29 @@ class AlarmWorker:
             logger.exception("SSE 브리지 발행기 생성 실패 — 로그 폴백으로 진행")
             return None
 
+    def _build_incident_publisher(self):  # noqa: ANN202
+        """incident 이벤트 Redis pub/sub 발행기를 생성한다 (D-049 · _build_sse_publisher 미러).
+
+        enable_noise_gate=False·incident_tracking_enabled=False·Redis 클라이언트 부재 시
+        None을 반환한다 — incident 발행은 스킵되고 발송은 정상 진행된다(회귀 0).
+        self._redis가 설정된 이후(run() 내)에 호출해야 한다.
+        """
+        if not self._config.noise_gate.enable_noise_gate:
+            return None
+        if not getattr(self._config.noise_gate, "incident_tracking_enabled", False):
+            return None
+        if self._redis is None:
+            return None
+        try:
+            from src.alarm.infrastructure.incident_events import RedisIncidentPublisher
+
+            return RedisIncidentPublisher(
+                self._redis, self._config.noise_gate.incident_event_channel
+            )
+        except Exception:
+            logger.exception("incident 발행기 생성 실패 — incident 계측 없이 진행")
+            return None
+
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
 
@@ -223,6 +251,7 @@ class AlarmWorker:
         self._ticket_queue = self._build_ticket_queue()
         self._redis = r
         self._sse_publisher = self._build_sse_publisher()
+        self._incident_publisher = self._build_incident_publisher()
         dedup: dict[str, float] = {}
 
         logger.info(
@@ -342,6 +371,20 @@ class AlarmWorker:
                 # 자가복구 상관 시드(§3.7) — 발생 기록/해소 매칭.
                 self_heal = self._update_firing_registry(event, fingerprint, now)
 
+                # (D-049) 해소 이벤트 시 incident resolved 발행(트래커 off면 스킵) +
+                # self-heal 매칭 시 자가복구 소요시간을 decision_store에 기록(편향 부분지표).
+                if event.is_clear:
+                    await self._publish_incident_resolved(event, fingerprint, self_heal)
+                    if (
+                        self_heal
+                        and self._decision_store is not None
+                        and self._last_self_heal_duration is not None
+                    ):
+                        self._decision_store.record_resolution(
+                            fingerprint=fingerprint,
+                            duration_seconds=self._last_self_heal_duration,
+                        )
+
                 # 인히비션 시드(§3.4·E2) — inhibition_enabled일 때만 탐지(아니면 detection
                 # 자체 스킵 → 회귀 0). 동일 서버 상위 심각도 활성 시 inhibited=True.
                 # getattr 기본 False — 경량 설정(테스트 SimpleNamespace 등)도 안전 처리.
@@ -409,6 +452,9 @@ class AlarmWorker:
                         # (E3 후속·D-048.9) 워커→UI 실시간 SSE Redis pub/sub 발행기.
                         # off/Redis 부재 시 None → notifier는 로그 폴백(E3 무변경).
                         "sse_publisher": self._sse_publisher,
+                        # (D-049) incident open 발행기 — notifier가 PAGE 결정 시 사용.
+                        # off/Redis 부재 시 None → notifier는 발행 스킵(회귀 0).
+                        "incident_publisher": self._incident_publisher,
                     }
                 },
             )
@@ -416,6 +462,31 @@ class AlarmWorker:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)
         finally:
             await ack_message(r, stream_key, group, msg_id)
+
+    async def _publish_incident_resolved(
+        self, event: AlarmEvent, fingerprint: str, self_heal: bool
+    ) -> None:
+        """해소 이벤트 시 incident resolved 이벤트를 발행한다 (D-049 · graceful).
+
+        incident_publisher 미주입(트래커 off) 시 발행을 스킵한다(회귀 0). resolution은
+        self-heal 매칭이면 'self_heal', 아니면 'clear'다. subscriber(API)가 fingerprint로
+        매칭 open incident를 resolved UPDATE하며, 매칭이 없으면 no-op이다.
+        발행 실패는 발행기 내부에서 삼킨다(graceful — 워커 파이프라인 무차단).
+        """
+        if self._incident_publisher is None:
+            return
+        payload = {
+            "type": "resolved",
+            "fingerprint": fingerprint,
+            "alarm_id": event.alarm_id,
+            "db_id": event.db_id,
+            "server_name": event.server_name,
+            "severity": event.severity,
+            "tier": "",
+            "ts": datetime.now().isoformat(),
+            "resolution": "self_heal" if self_heal else "clear",
+        }
+        await self._incident_publisher.publish(payload)
 
     def _is_duplicate(self, event: AlarmEvent, dedup: dict[str, float]) -> bool:
         """중복 알람 여부를 확인하고 dedup 딕셔너리를 갱신한다.
@@ -503,12 +574,15 @@ class AlarmWorker:
         suppress_max = self._config.noise_gate.suppress_max_severity
         window = self._config.noise_gate.self_heal_window_seconds
         self_heal = False
+        # (D-049) 직전 self-heal 소요시간 리셋 — 매칭 시에만 채운다(호출부가 기록).
+        self._last_self_heal_duration = None
         if event.is_clear:
             rec = self._firing_registry.pop(fingerprint, None)
             if rec is not None:
                 fired_ts, fired_sev = rec
                 if now - fired_ts <= window and 1 <= fired_sev <= suppress_max:
                     self_heal = True
+                    self._last_self_heal_duration = now - fired_ts
         elif 1 <= event.severity <= suppress_max:
             self._firing_registry[fingerprint] = (now, event.severity)
 

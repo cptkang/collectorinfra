@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -25,6 +26,7 @@ from typing import Optional
 from src.alarm.domain.alarm import AlarmAnalysisResult, ProcessSnapshot
 from src.alarm.domain.notification_policy import (
     TIER_DASHBOARD,
+    TIER_PAGE,
     TIER_SUPPRESS,
     TIER_TICKET,
 )
@@ -148,6 +150,15 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             result, decision, ticket_queue, alarm_bus, sse_publisher
         )
         return {"analysis_result": result}
+
+    # ── D-049: PAGE 결정 시 incident open 이벤트 발행 ──
+    # PAGE만 incident(TICKET/DASHBOARD/SUPPRESS는 위에서 분기·종료) → 전환율 분모=page_count 정합.
+    # incident_publisher 미주입(트래커 off) 시 발행 스킵 → 회귀 0. 발행은 graceful(아래 workb 무차단).
+    if decision is not None and decision.tier == TIER_PAGE:
+        incident_publisher = (config or {}).get("configurable", {}).get(
+            "incident_publisher"
+        )
+        await _publish_incident_open(result, decision, incident_publisher)
 
     for channel in result.notification_channels:
         try:
@@ -288,6 +299,44 @@ async def _publish_tier_sse(
             "티어 SSE publish 실패(무시): alarm_id=%s tier=%s",
             result.alarm_event.alarm_id,
             decision.tier,
+        )
+
+
+def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
+    """incident open 이벤트 payload를 생성한다(§5 양측 합의 스키마, D-049)."""
+    ev = result.alarm_event
+    return {
+        "type": "open",
+        "fingerprint": decision.fingerprint,
+        "alarm_id": ev.alarm_id,
+        "db_id": ev.db_id,
+        "server_name": ev.server_name,
+        "severity": ev.severity,
+        "priority": str(decision.priority),
+        "tier": decision.tier,
+        "ts": datetime.now().isoformat(),
+    }
+
+
+async def _publish_incident_open(
+    result: AlarmAnalysisResult,
+    decision,  # noqa: ANN001 — NotificationDecision
+    incident_publisher=None,  # noqa: ANN001 — RedisIncidentPublisher | None (덕 타이핑)
+) -> None:
+    """PAGE 결정 시 incident open 이벤트를 발행한다(미주입·실패는 graceful).
+
+    incident_publisher 미주입(트래커 off) 시 발행을 스킵한다 → 회귀 0.
+    notifier(application)는 redis를 직접 import하지 않고 주입된 발행기를 덕타이핑 호출한다.
+    발행 실패가 workb 발송을 막지 않는다(graceful degradation).
+    """
+    if incident_publisher is None:
+        return
+    try:
+        await incident_publisher.publish(_incident_open_payload(result, decision))
+    except Exception:  # noqa: BLE001 — incident 발행 실패가 발송을 막지 않는다
+        logger.warning(
+            "incident open 발행 실패(무시): alarm_id=%s",
+            result.alarm_event.alarm_id,
         )
 
 

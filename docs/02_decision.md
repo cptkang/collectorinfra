@@ -2320,10 +2320,90 @@ OS 호스트명)이다. 그러나 사용자는 보통 **서버명**(=`cmm_resour
 
 ---
 
+## D-049. ack/incident 라이프사이클 계측 — PostgreSQL 단일 저장소 (Plan 52 §9.1 · §13.1 #9)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-30 |
+| **상태** | 확정 (사용자 결정) — **백엔드 구현 완료** (사용자 UI "확인" 버튼은 surface 미정으로 후속) |
+| **관련 결정** | D-048.9(MTTA/MTTR/사건전환율을 `null`+`unavailable_metrics`로 유보 — 본 결정이 그 후속 계측), D-048.10(워커→Redis→API 브리지 패턴 재사용), D-048.4(억제≠삭제 감사), D-026/D-027(앱 운영데이터 쓰기 PG `audit_logs`/`auth_users` 선례), D-003(읽기전용은 폴스타 한정 — 앱 운영데이터 쓰기와 무관) |
+
+### 배경 / 문제
+
+E3(`GET /alarm/metrics`)는 `decision_store`(발송 판단 JSONL) 집계로 산출 가능한 지표(티어별 건수·억제율·
+액션가능 비율·무수신 메타경보)만 노출하고, **MTTA·MTTR·사건전환율은 `null`+`unavailable_metrics`**(환각 금지)
+로 두었다(D-048.9). 이 세 지표는 **incident 라이프사이클(firing→ack→resolved) 상태 전이**와 **시간창 집계**가
+필요한데, 다음 두 가지 구조적 제약 때문에 현행 JSONL `decision_store`로는 불가능하다:
+
+- **프로세스 경계**: ack(확인)은 웹 UI "확인" 버튼 → **API 프로세스**에서 발생하고, incident 생성(PAGE)·해소
+  (clear/self-heal)는 **워커 프로세스**(`alarm_worker`)에서 발생한다. 같은 incident 레코드를 두 프로세스가
+  갱신해야 한다.
+- **가변 상태 + 집계**: JSONL은 append-only라 상태 전이 UPDATE 불가, 로컬 파일이라 cross-process 갱신 비안전,
+  열린 incident 조회·시간창 집계가 약하다.
+
+### 결정
+
+incident 라이프사이클 저장소를 **PostgreSQL 단일 저장소**로 한다(Redis 단독·혼합 기각). 앱은 이미
+`audit_repository`(`audit_logs`)·`user_repository`(`auth_users`)로 **쓰기 가능한 PG**를 운영하므로 신규 의존이
+아니며, 동일 repo 패턴을 재사용한다.
+
+- **계층(arch_check clean)**: port `IncidentStore`(domain) + 어댑터 `src/alarm/infrastructure/incident_repository.py`
+  (`audit_repository` 미러). application(notifier/worker subscriber)은 주입된 port만 호출.
+- **테이블 `alarm_incidents`**: `id`(PK), `fingerprint`, `alarm_id`, `db_id`/`server`, `severity`, `priority`,
+  `tier`, **`status`(open|ack|resolved)**, `created_at`(PAGE/firing), `acked_at`, `acked_by`, `resolved_at`,
+  `resolution`(self_heal|clear|manual). 인덱스: `status`, `fingerprint`(부분 `WHERE status='open'`), `created_at`.
+  DDL은 기존 `ddl/auth_tables.sql` + 기동시 `_ensure_*_tables()` 자동 생성 패턴을 따른다(신규 `ddl/` SQL 파일 +
+  lifespan auto-create).
+- **쓰기 단일화(D-048.10 브리지 패턴 재사용)**: 워커는 PG 쓰기 풀을 신설하지 않는다. incident 이벤트를
+  **Redis 채널 `alarm:incident`로 발행 → API 프로세스의 단일 PG 라이터(subscriber)가 영속**한다.
+  - **open**: notifier가 **PAGE 결정 시** open 이벤트 발행 → subscriber가 open 행 INSERT.
+  - **resolved**: 워커가 **clear 이벤트(is_clear)** 수신 시 fingerprint 키로 resolved 이벤트 발행 →
+    subscriber가 매칭 open 행을 `resolved`로 UPDATE(`resolution='clear'`). self-heal 매칭은 `resolution='self_heal'`.
+  - **ack**: 웹 UI "확인" 버튼 → `POST /alarm/incidents/{id}/ack`(API가 PG 직접 UPDATE: `status=ack`,
+    `acked_at=now`, `acked_by`). **식별키 = incident id**.
+- **PG 풀(④ 확정)**: `incident_tracking_enabled` 플래그 기준 **전용 풀**(auth_pool 종속 회피 — `AUTH_ENABLED`와
+  독립). DSN은 기존 앱 쓰기 PG(`db_connection_string`) 재사용. 풀 수명주기는 lifespan에서 관리.
+- **지표 `/alarm/metrics`**: `mtta_seconds=AVG(acked_at-created_at)`, `incident_mttr_seconds=AVG(resolved_at-created_at)`,
+  `incident_conversion_rate=incidents/page_count` — 모두 window SQL. 해당 항목의 `null`/`unavailable_metrics` 제거.
+- **MTTR 라벨 분리(정직성 — 환각 금지)**: self-heal 상관(`_update_firing_registry`)은 발생↔해소 소요시간을
+  **이미 in-memory 계산**하므로 `decision_store` JSONL에 resolved 레코드 append로 `auto_recovery_mttr_seconds`를
+  **저위험·선행** 산출한다. 단 self-heal은 **sev1..suppress_max만 대상(sev3 제외)** 이라 **편향(부분)** 지표이며,
+  paged incident의 운영자 MTTR은 PG 기반 `incident_mttr_seconds`로 별도 노출한다. **두 지표는 라벨로 명확히 구분**한다.
+- **옵트인**: `incident_tracking_enabled`(기본 False) + `incident_event_channel`(기본 `alarm:incident`).
+  기본 off → 트래커 미기동, `/alarm/metrics`는 기존 null 동작 유지(**회귀 0**). graceful: Redis/PG 미가용 시 warning
+  후 폴백, 알람 발송·서버 기동 무차단.
+
+### 근거
+
+- incident 요건의 지배 비용은 **상태 전이 UPDATE + 이력 시간창 집계**이고 둘 다 PostgreSQL 강점. "열린 incident"는
+  상시 소수라 Redis의 속도 이점이 무의미(인덱스 조회로 충분).
+- `audit_repository`(쓰기 repo)·`sse_bridge`(워커→Redis→API)·startup DDL auto-create — **기존 자산 3종을 그대로
+  재사용** → 신규 표면 최소·arch_check clean·회귀 리스크 낮음.
+- MTTA/MTTR/전환율이 순수 SQL(`AVG(ts차)`, count 비율)로 산출됨.
+
+### 대안 (기각)
+
+- **Redis 단독**: 활성 incident 상태(HASH/ZSET)는 빠르나 **감사급 이력의 시간창 집계가 약하고** 내구성이
+  persistence 설정 의존 → MTTA/MTTR 산출 부적합.
+- **혼합(Redis 활성 + PG 이력)**: 활성셋이 작아 이중 저장·dual-write 일관성 부담이 이득을 초과 → 과설계
+  (Simplicity First 위배).
+- **현행 JSONL 확장**: append-only·로컬 파일·cross-process 갱신 비안전 → 3요건(상태 전이·열린 incident 조회·집계)
+  모두 미충족.
+
+### 향후 수정 시 고려사항
+
+- 복수 open incident가 같은 fingerprint를 가질 수 있는 경합(재발생) — resolved UPDATE는 가장 최근 open 1건 대상
+  또는 전체 정책 확정 필요(구현 시 `ORDER BY created_at DESC LIMIT 1` 기본).
+- ITSM 연동(외부 incident 시스템) 확장 시 `resolution='manual'`/외부 incident id 컬럼 추가 검토(현재 자기완결).
+- ack 권한(운영자 전용) — `acked_by`는 인증 사용자 id, AUTH 비활성 환경에서는 익명/UI 입력 허용 여부 확정 필요.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-06-30 | D-049 | **ack/incident 라이프사이클 계측 — PostgreSQL 단일 저장소 (Plan 52 §9.1·§13.1 #9, 사용자 확정)**: D-048.9가 `null`+`unavailable_metrics`로 유보한 MTTA/MTTR/사건전환율을 산출하기 위한 후속 계측 결정(이 changelog는 결정 등재 — 구현은 후속 커밋). **핵심 진단**: ack(웹 UI "확인")는 **API 프로세스**, incident 생성(PAGE)·해소(clear/self-heal)는 **워커 프로세스**에서 발생 → 같은 incident 레코드를 두 프로세스가 갱신해야 하고, 상태 전이(firing→ack→resolved) UPDATE·열린 incident 조회·시간창 집계가 필요 → 현행 JSONL `decision_store`(append-only·로컬·집계 약함) 부적합. **결정**: incident 저장소=**PostgreSQL 단일**(Redis 단독·혼합 기각 — 활성셋 소수라 Redis 속도 무의미, 감사급 이력 집계는 PG 강점). 신규 의존 아님(`audit_repository`/`user_repository`가 쓰기 PG 선례). port `IncidentStore`(domain)+`incident_repository.py`(infra, audit 미러)·테이블 `alarm_incidents`(status open\|ack\|resolved, created/acked/resolved_at, fingerprint·alarm_id·tier·resolution; 인덱스 status/fingerprint(부분)/created_at; DDL은 `ddl/` SQL+기동시 `_ensure_*_tables` auto-create 패턴). **쓰기 단일화(D-048.10 브리지 재사용)**: 워커는 PG 풀 신설 없이 incident 이벤트를 **Redis `alarm:incident` 발행→API 단일 PG 라이터(subscriber)** 영속(open=notifier PAGE 시, resolved=워커 clear/self-heal 시 fingerprint 매칭 UPDATE). **ack**=`POST /alarm/incidents/{id}/ack`(API 직접 UPDATE, **식별키=incident id**)+`app.js` SSE 카드 "확인" 버튼. **PG 풀**=`incident_tracking_enabled` 기준 전용 풀(auth 독립, DSN 재사용). **지표**: MTTA=AVG(acked-created)·`incident_mttr`=AVG(resolved-created)·전환율=incidents/page_count(window SQL, null/unavailable 제거). **MTTR 라벨 분리(환각 금지)**: self-heal 소요시간을 JSONL로 **저위험 선행** 산출하되 sev3 제외 **편향**이라 `auto_recovery_mttr_seconds`로, paged 운영자 MTTR은 PG `incident_mttr_seconds`로 **명확히 구분**. **옵트인**(기본 False)→트래커 미기동·기존 null 동작 유지(회귀 0), graceful(Redis/PG 미가용 폴백·서버 무차단). 상세: `## D-049`. 번호: 등재 직전 `## D-` 헤더+변경이력 표 둘 다 grep, 최대 D-048→**D-049** 부여(2026-06-29 충돌 교훈 준수). **구현 완료(백엔드, 동일 effort)**: 신규 `src/alarm/domain/incident_store.py`(port ABC)·`src/alarm/infrastructure/incident_repository.py`(PostgresIncidentStore, audit_repository 미러)·`src/alarm/infrastructure/incident_events.py`(RedisIncidentPublisher+run_incident_event_subscriber, sse_bridge 미러)·`ddl/alarm_incidents.sql`. 수정 `config.py`(NoiseGateConfig `incident_tracking_enabled`/`incident_event_channel`)·`decision_store.py`(`record_resolution`+aggregate `auto_recovery_mttr_seconds`, resolution 줄 by_tier/total 제외)·`alarm_notifier.py`(PAGE 시 open 발행, 미주입 스킵)·`alarm_worker.py`(`_build_incident_publisher`·is_clear 시 resolved 발행·self-heal duration→record_resolution·graph configurable 주입)·`api/server.py`(`_ensure_incident_tables`+lifespan 전용 PG풀/store/subscriber 기동·종료, 전체 try/except 무차단)·`api/routes/alarm.py`(`POST /alarm/incidents/{id}/ack`·`GET /alarm/incidents`·/alarm/metrics에 incident_store 주입·`AlarmMetricsResponse` incident_mttr_seconds/auto_recovery_mttr_seconds/open_incident_count)·`.env.example`. **쓰기 단일화**: 워커는 PG풀 미신설(Redis 발행만)·API 단일 라이터가 영속. **라벨 분리**: `incident_mttr_seconds`(PG, paged 운영자) vs `auto_recovery_mttr_seconds`(JSONL self-heal, sev3 제외 편향 — 명시). 검증(verifier 독립 PASS·7항목): fingerprint 대칭성(open=decision.fingerprint↔resolved=compute_fingerprint 동일식 — resolve 매칭 성립)·aggregate resolution 제외(기존 비율지표 비오염)·옵트인 게이팅·graceful·계층경계(domain asyncpg/redis 0, notifier/worker redis 직접 0)·metrics 0division None안전·resolve 경합(최근1건)·ack 멱등. tests/test_alarm **336 passed**(baseline 333+verifier 신규 fingerprint 대칭성 3), arch_check --ci exit 0(error 0), 광역 스위트 회귀 0(git stash pristine=working 631 failed 동일 — 환경 baseline). **UI "확인" 버튼은 surface(admin 대시보드 권고) 미정으로 후속** — subscriber가 open 시 incident_id를 alarm_bus 재발행하는 지점까지 구현해 연결만 남김. `docs/verification_report.md` D-049 섹션. |
 | 2026-06-30 | D-048 | **E3 후속 — 워커→UI 실시간 SSE Redis pub/sub 브리지 (D-048.10, D-048.9 한계 해소)**: 워커는 cross-process(또는 API 내 asyncio task지만 bus 미주입)라 DASHBOARD/TICKET 티어 결정이 UI에 실시간 표시 안 되던 D-048.9 한계를 해소. 신규 `infrastructure/sse_bridge.py` — 워커측 `RedisSseBridgePublisher`(`publish(event)`→`redis.publish("alarm:sse",json)`, graceful) + API측 `run_sse_bridge_subscriber`(채널 구독→기존 `app.state.alarm_bus.publish` 재팬아웃→`/alarm/notifications/stream`→프론트 무변경). 수정 `alarm_notifier._publish_tier_sse`(alarm_bus 우선·없으면 주입 `sse_publisher`로만 — **이중 발행 방지**, notifier는 redis 직접 import 없이 덕타이핑 호출)·`alarm_worker._build_sse_publisher`(게이트+브리지 플래그+redis 가용 시만 주입)·`api/server.py` lifespan(플래그 on 시 구독 task 기동·종료 cancel/close, Redis 실패에도 서버 기동 무차단)·`config.py`(`sse_bridge_enabled`/`sse_bridge_channel`)·`.env.example`. **pub/sub 선택**(Stream 아님): SSE fire-and-forget·TICKET은 큐+감사로 영속·DASHBOARD 정보성→ACK/소비그룹 불요(과설계 회피). **티어 분기 불변**(TICKET/DASHBOARD만, SUPPRESS=로그·PAGE=workb, 감사·큐 중복 적재 없음). **옵트인**(`enable_noise_gate` AND `sse_bridge_enabled`, 기본 False)+graceful→**회귀 0**. 검증(verifier 독립 PASS·§11.1): tests/test_alarm **287 passed**(E3 271→+16: test_sse_bridge 12+notifier 보강), arch_check --ci exit 0(error 0, notifier→infra redis 직접의존 0), AppConfig OK, 플래그오프 회귀 0(로그 폴백·E3 동일). 인프로세스/standalone 워커 양 배포 동작. (#11) `plans/52` §9.1+§13.1#9에 ack/incident 계측 후속(미구현) 명시 — MTTA/MTTR/사건전환율 null 사유. |
 | 2026-06-30 | D-048 | **Phase E3 — AI 메시지 심각도 보강(상향 전용) + 억제 매트릭스 강등 + TICKET 일배치 큐 + 메타모니터링/운영지표** (사용자 확정 §13.1 #2/#3/#7, 전부 옵트인·기본 off→E2 무변경). **(AI 심각도 §3.11·D-048.5)** 신규 domain `severity_signatures.py`(Plan51 A.1 결정적 시그니처 스캔, stdlib만)·`notification_policy.py` step1 `effective_severity=max(severity, ai_severity)`(보강 off면 ai 무시·이중안전)·`alarm.py` `AlarmAnalysisResult.ai_message_severity/ai_severity_reason`·`alarm_analyzer.py`(기존 단일 LLM 응답 재파싱, **추가 호출 없음**; `is_message_alarm`=condition_log 보유∧메트릭류 제외; `cand>event.severity`일 때만 채움)·`prompts/alarm_analyzer.py`. **상향 전용 불변식**: max로만 결합→AI 하향 불가, 강등/SUPPRESS 경로 부재(R-10), `ai_severity_escalate_only=True` 고정. 심각도3은 effective 기준 단락 PAGE 불변. **(매트릭스 강등 §3.2·D-048.8)** sev1×낮음 SUPPRESS→**DASHBOARD**(타 셀 불변). **(TICKET §7·D-048.9)** 신규 `ticket_queue.py`(JSONL graceful)·`alarm_notifier.py`(TICKET→큐+SSE, DASHBOARD→SSE, SUPPRESS→로그)·`alarm_worker.py`(`_build_ticket_queue` 주입, 워커는 bus 미주입→큐만)·`api/routes/alarm.py`(analyze 경로 ticket_queue/decision_store/alarm_bus 주입→API경로 SSE 실동작). **(메타모니터링/지표 §9)** `decision_store.aggregate` 확장(page/ticket/dashboard/suppress count·actionable_ratio·last_event_age, 기존 키 하위호환)+신규 `meta_alerts`(억제율>임계→high_suppress_ratio·무수신→no_events)·`GET /alarm/metrics`. **MTTA/MTTR/사건전환율은 ack/incident 계측 부재로 null+`unavailable_metrics` 사유 명시(환각 금지)**. config E3 필드(meta_alert_window/min_events·ticket_batch_queue_*)는 팀리드 추가. 검증(§11.1 baseline): tests/test_alarm **271 passed**(E2 196→+75: severity_signatures 37·escalate_only 6·ticket_queue·meta_monitoring·metrics·notifier_tier 등), arch_check --ci exit 0(error 0, severity_signatures stdlib만), AppConfig OK, 보강오프/게이트오프 회귀 0. 미구현: 워커→UI 실시간 SSE(Redis 브리지)·ack/incident 계측·E4(LLM 액션가능성)·E5(Advisory Enricher). |
 | 2026-06-29 | D-048 | **Phase E2 — 연쇄/인히비션/플래핑/스톰 억제 (의존성→인히비션→스톰→플래핑)**: 결정 파이프라인 step4~7을 결정적 규칙으로 구현(전부 옵트인, 기본 off→E1 무변경). (step4 의존성 §3.6) `polestar_noise_context.build_dependency_sql`+`fetch(collect_dependency=)`로 부모 `AVAIL_STATUS` 수집(독립 try/except — graceful 교훈 적용), parent≠0→자식 SUPPRESS·None(stale)→보수적 미억제. (step5 인히비션 §3.4) worker `_detect_inhibition`(scope=db_id\|server, 상위 심각도 활성+self-inhibition 금지)→SUPPRESS. (step6 플래핑 §3.7) 신규 domain `flapping.py`(Nagios 가중 %-state-change 1.0→1.5+히스테리시스 20/5%) + worker `_detect_flapping`(deque21+직전상태)→저심각도 SUPPRESS. (step7 스톰 §3.8) worker `_detect_storm`(사건창 deque, 대표 후 억제)→SUPPRESS. (§6.1) `_is_duplicate_fingerprint` severity별 `sev3_repeat_interval_seconds` 분리(기본 공통 4h). signals 12키의 parent_avail_status/flapping/storm 실채움. config 8플래그 추가(dependency_suppression/inhibition_enabled/+window/flapping_enabled/storm_grouping_enabled/+window/threshold/sev3_repeat). **심각도3 모든 단계 단락·PAGE 불변**(4기능 각각 테스트 고정). `AVAIL_DEPEND_RESOURCE_ID_2`는 향후 OR 확장(주석). 후속 교정: worker `_flap_states`/`_storm_window` 키 만료 sweep 추가(기존 `_firing_registry` 패턴 일관 — 단조 메모리 증가 차단). 검증(§11.1 baseline): tests/test_alarm **184 passed**(E1 92→+92: 단위 flapping21/dependency13 + 통합 dependency/inhibition/flapping/storm/sev3/회귀 41 + 기타), 기존 알람/graph 회귀 129 passed, arch_check --ci exit 0(error 0). 실 DB(도커 폴스타): 의존성 SQL 라이브 실행 OK(testdata avail_depend 전부 NULL→parent None 확인), parent≠0 SUPPRESS는 데이터 제약으로 mock 단위 검증. 미구현: E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4·E5 |

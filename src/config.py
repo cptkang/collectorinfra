@@ -429,6 +429,11 @@ class NoiseGateConfig(BaseSettings):
     # 기본 off면 워커 경로 티어 SSE는 로그 폴백(E3 무변경, 회귀 0). 스칼라라 .env JSON 회피.
     sse_bridge_enabled: bool = False          # (E3 후속) 워커→UI 실시간 SSE 브리지 on/off
     sse_bridge_channel: str = "alarm:sse"     # (E3 후속) SSE 브리지 Redis pub/sub 채널명
+    # ── D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소) ──
+    # 기본 off면 incident 트래커 미기동 → /alarm/metrics는 기존 null 동작 유지(회귀 0).
+    # 활성 시 워커는 incident 이벤트를 Redis로 발행, API 단일 라이터가 PG에 영속한다.
+    incident_tracking_enabled: bool = False   # (D-049) incident 계측 on/off
+    incident_event_channel: str = "alarm:incident"  # (D-049) incident 이벤트 Redis pub/sub 채널명
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

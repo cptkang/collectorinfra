@@ -18,7 +18,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -328,16 +328,53 @@ class AlarmMetricsResponse(BaseModel):
         description="억제기 메타경보(high_suppress_ratio/no_events). 정상이면 빈 배열"
     )
     mtta_seconds: Optional[float] = Field(
-        default=None, description="미계측(ack 데이터 없음) — null"
+        default=None,
+        description="평균 확인 시간 = AVG(acked_at-created_at). 트래커 off면 null",
     )
     mttr_seconds: Optional[float] = Field(
-        default=None, description="미계측(해소상관 데이터 없음) — null"
+        default=None,
+        description=(
+            "하위호환 — incident_mttr_seconds와 동일 값(paged incident 운영자 MTTR). "
+            "트래커 off면 null. auto_recovery_mttr_seconds(self-heal 편향지표)와 혼동 금지"
+        ),
+    )
+    incident_mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "paged incident 운영자 MTTR = AVG(resolved_at-created_at) (PG). 트래커 off면 null"
+        ),
+    )
+    auto_recovery_mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "자가복구(self-heal) 소요시간 평균 — **sev1..suppress_max 한정·sev3 제외 편향 부분지표** "
+            "(decision_store JSONL). incident_mttr_seconds와 다름. 기록 없으면 null"
+        ),
     )
     incident_conversion_rate: Optional[float] = Field(
-        default=None, description="미계측(사건 상관 데이터 없음) — null"
+        default=None,
+        description="사건전환율 = incidents/page_count (window SQL). 트래커 off면 null",
+    )
+    open_incident_count: int = Field(
+        default=0, description="현재 열린(open) incident 수. 트래커 off면 0"
     )
     unavailable_metrics: dict[str, str] = Field(
-        description="계산 불가 지표와 사유(MTTA/MTTR/사건전환율)"
+        description="계산 불가 지표와 사유. 트래커 활성 시 해당 키 제거됨"
+    )
+
+
+class IncidentAckResponse(BaseModel):
+    """incident ack 응답 (D-049)."""
+
+    acked: bool = Field(description="ack 성공 여부(이미 ack/resolved면 False)")
+    incident_id: int = Field(description="확인 대상 incident id")
+
+
+class IncidentListResponse(BaseModel):
+    """열린 incident 목록 응답 (D-049)."""
+
+    incidents: list[dict[str, Any]] = Field(
+        description="열린 incident 목록(트래커 off면 빈 배열)"
     )
 
 
@@ -608,6 +645,8 @@ def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
             ng.ticket_batch_queue_path, ng.ticket_batch_queue_enabled
         ),
         "alarm_bus": getattr(request.app.state, "alarm_bus", None),
+        # (D-049) PAGE 결정 시 incident open 발행기 — 트래커 off면 app.state에 None.
+        "incident_publisher": getattr(request.app.state, "incident_publisher", None),
     }
 
 
@@ -885,6 +924,28 @@ async def alarm_metrics(
         min_events=ng.meta_alert_min_events,
     )
 
+    # ── D-049: incident_store 주입 시 MTTA/incident_mttr/사건전환율 채움 ──
+    # 트래커 off(store=None)면 기존 null + unavailable_metrics 동작 유지(회귀 0).
+    incident_store = getattr(request.app.state, "incident_store", None)
+    mtta_seconds: Optional[float] = None
+    incident_mttr_seconds: Optional[float] = None
+    incident_conversion_rate: Optional[float] = None
+    open_incident_count = 0
+    # 트래커 off — 기존 동작 유지(회귀 0): MTTA/MTTR/사건전환율 null + reason 사유 노출
+    unavailable_metrics: dict[str, str] = {
+        "reason": "ack/incident 계측 미활성(NOISE_INCIDENT_TRACKING_ENABLED=false)",
+    }
+    if incident_store is not None:
+        m = await incident_store.metrics(
+            window_seconds=window, page_count=agg["page_count"]
+        )
+        mtta_seconds = m["mtta_seconds"]
+        incident_mttr_seconds = m["incident_mttr_seconds"]
+        incident_conversion_rate = m["incident_conversion_rate"]
+        open_incident_count = m["open_count"]
+        # 계측 활성 — 해당 지표 사유를 제거(채워진 값으로 노출)
+        unavailable_metrics = {}
+
     return AlarmMetricsResponse(
         window_seconds=window,
         total=agg["total"],
@@ -897,12 +958,73 @@ async def alarm_metrics(
         suppress_ratio=agg["suppress_ratio"],
         last_event_age_seconds=agg["last_event_age_seconds"],
         meta_alerts=meta,
-        # ack/해소상관 계측 미구현 — 환각 대신 null + 사유 노출(§9, 후속)
-        mtta_seconds=None,
-        mttr_seconds=None,
-        incident_conversion_rate=None,
-        unavailable_metrics={"reason": "ack/incident 계측 미구현(후속)"},
+        mtta_seconds=mtta_seconds,
+        # 하위호환 — mttr_seconds는 incident_mttr_seconds와 동일 값(운영자 MTTR)
+        mttr_seconds=incident_mttr_seconds,
+        incident_mttr_seconds=incident_mttr_seconds,
+        # self-heal 편향 부분지표(sev3 제외) — incident_mttr와 명확히 구분
+        auto_recovery_mttr_seconds=agg["auto_recovery_mttr_seconds"],
+        incident_conversion_rate=incident_conversion_rate,
+        open_incident_count=open_incident_count,
+        unavailable_metrics=unavailable_metrics,
     )
+
+
+# ─── incident ack / 조회 엔드포인트 (D-049) ──────────────────────────────────
+
+@router.post(
+    "/alarm/incidents/{incident_id}/ack",
+    response_model=IncidentAckResponse,
+    summary="incident 확인(ack)",
+    description=(
+        "열린 incident를 확인(ack) 상태로 전이합니다(식별키=incident id, MTTA 계측).<br/>"
+        "incident 계측이 비활성(NOISE_INCIDENT_TRACKING_ENABLED=false)이면 503을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def ack_incident(
+    incident_id: int,
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> IncidentAckResponse:
+    """incident를 ack 처리한다(트래커 비활성 시 503)."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    store = getattr(request.app.state, "incident_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="incident tracking 비활성")
+
+    acked_by = current_user.get("sub") or current_user.get("name") or "operator"
+    ok = await store.ack(
+        incident_id=incident_id,
+        acked_at=_dt.now(tz=_tz.utc),
+        acked_by=acked_by,
+    )
+    return IncidentAckResponse(acked=ok, incident_id=incident_id)
+
+
+@router.get(
+    "/alarm/incidents",
+    response_model=IncidentListResponse,
+    summary="열린 incident 목록",
+    description=(
+        "열린(open) incident 목록을 최신순으로 반환합니다.<br/>"
+        "incident 계측이 비활성이면 빈 배열을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def list_incidents(
+    request: Request,
+    status: str = "open",
+    limit: int = 100,
+    current_user: dict = Depends(require_user),
+) -> IncidentListResponse:
+    """열린 incident 목록을 반환한다(트래커 비활성 시 빈 배열)."""
+    store = getattr(request.app.state, "incident_store", None)
+    if store is None:
+        return IncidentListResponse(incidents=[])
+    incidents = await store.list_open(limit=limit)
+    return IncidentListResponse(incidents=incidents)
 
 
 # ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────
