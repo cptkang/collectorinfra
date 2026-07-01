@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
 from src.nodes.cache_management import cache_management
@@ -32,7 +33,14 @@ from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.synonym_registrar import synonym_registrar
-from src.orchestration.process_query import run_process_query
+from src.orchestration.process_query import (
+    _DEMONSTRATIVE_NOUNS,
+    _DEMONSTRATIVE_PREFIXES,
+    _HOST_FIELDS,
+    _is_demonstrative_value,
+    _resolve_hostname,
+    run_process_query,
+)
 from src.routing.domain_config import DB_DOMAINS
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 
@@ -42,6 +50,9 @@ logger = logging.getLogger(__name__)
 _MAX_PIPELINE_STEPS = 10
 # input_from 선행 결과 주입 시 행수 상한 (R-12: 토큰·IN 절 폭증 방지)
 _MAX_PRIOR_ROWS = 100
+# 추론 agent(general_inference)에 전달할 이전 대화 메시지 상한 (①, 토큰 폭증 방지).
+# general_inference가 재차 [-10:]로 자르므로 상한은 보수적으로만 둔다.
+_MAX_HISTORY_MESSAGES = 10
 # 식별 키 컬럼 추출 우선순위 (보수적: 식별성 높은 컬럼 우선)
 _IDENTITY_KEY_HINTS = ("hostname", "host_name", "name", "server_name", "id")
 # 이번 턴 질의에서 "새 위치/DB 신호"로 인정할 키워드 (M2 — DB 승계 차단 조건).
@@ -67,6 +78,10 @@ class SubAgentSpec:
         model: per-agent 모델 슬롯 — Phase 7 예약 (None=메인 LLM 사용)
         prompt: per-agent 프롬프트 슬롯 — Phase 7 예약
         fallback: general-purpose(미분류 시 기본) 여부
+        needs_history: 이전 대화 이력(messages)을 격리 입력에 전달할지 여부(①).
+            추론/판단형 응답(general_inference)은 직전 턴 답변을 근거로 삼아야 하므로 True.
+            데이터 조회 agent(data_query/process_query)는 이력이 SQL 생성에 불필요·토큰
+            부담·오염 위험이 있어 False(격리 유지).
     """
 
     name: str
@@ -75,6 +90,7 @@ class SubAgentSpec:
     model: Optional[BaseChatModel] = None
     prompt: Optional[str] = None
     fallback: bool = False
+    needs_history: bool = False
 
 
 # ──────────────────────────────────────────────
@@ -171,6 +187,75 @@ def _has_new_location_db_signal(text: str) -> bool:
         return False
     lowered = text.lower()
     return any(sig.lower() in lowered for sig in _LOCATION_DB_SIGNALS)
+
+
+def _refers_to_specific_server(text: str) -> bool:
+    """질의가 지시어로 특정 서버 하나를 가리키는지 판정한다 (전체 조회 방지 게이트).
+
+    "전체/모든/모두" 같은 전역 조회 신호가 있으면 False(서버 스코프 강제 금지).
+    "해당/그/이/저/위/직전 … 서버/장비/노드/…" 같은 지시어 서버 참조가 있으면 True.
+
+    Args:
+        text: 판정 대상 질의 텍스트(보통 original_query)
+
+    Returns:
+        지시어로 특정 서버를 지목하면 True
+    """
+    if not text:
+        return False
+    if any(k in text for k in ("전체", "모든", "모두")):
+        return False
+    # 지시어 접두 + (선택 공백) + 서버 명사 인접 구문만 인정한다.
+    # 단순 부분매칭은 단일 문자 접두("이"/"그"/"위")가 "이상"/"그래서" 등에 오탐하므로 금지.
+    for p in _DEMONSTRATIVE_PREFIXES:
+        for n in _DEMONSTRATIVE_NOUNS:
+            if f"{p}{n}" in text or f"{p} {n}" in text:
+                return True
+    return False
+
+
+def _inject_demonstrative_hostname(isolated: dict) -> dict:
+    """지시어("해당 서버") data/alarm 조회에 직전 서버 hostname을 filter_conditions로 주입한다.
+
+    query_generator는 parsed_requirements(original_query + filter_conditions)로 SQL을
+    생성하며 intent_planner가 확장한 sub_query(state.user_query)는 프롬프트에 사용하지 않는다.
+    따라서 지시어 후속 질의는 filter_conditions가 비어(D-055) 서버 필터 없이 전체 조회
+    (전체 서버/전체 알람)로 빠진다. concrete "webdb01 서버 알람"과 동일하게 filter에 hostname을
+    채워, 이미 검증된 filter_conditions.hostname 경로로 서버 필터를 강제한다(D-056 후속).
+
+    주입 조건(모두 충족):
+    - 이번 턴 filter_conditions에 서버 식별 필터가 없음(concrete 질의면 그대로 둠).
+    - original_query가 지시어로 특정 서버를 가리킴(전체 조회 신호 없음).
+    - 직전 턴 서버(previous_entities)에서 지시어가 아닌 실제 hostname이 해소됨.
+
+    Args:
+        isolated: subagent 격리 입력(parsed_requirements/conversation_context 포함)
+
+    Returns:
+        (필요 시) hostname 필터가 추가된 parsed_requirements 사본, 아니면 원본 참조
+    """
+    parsed = isolated.get("parsed_requirements") or {}
+    filters = parsed.get("filter_conditions") or []
+    if any(
+        isinstance(c, dict) and str(c.get("field", "")).lower() in _HOST_FIELDS
+        for c in filters
+    ):
+        return parsed  # 이미 서버 식별 필터 있음(concrete 질의)
+    if not _refers_to_specific_server(str(parsed.get("original_query", ""))):
+        return parsed  # 특정 서버 지목 아님(전체 조회 등) — 스코프 강제 금지
+    hostname = _resolve_hostname(isolated)
+    if not hostname or _is_demonstrative_value(hostname):
+        return parsed  # 직전 실제 서버 미해소
+    new_parsed = dict(parsed)
+    new_parsed["filter_conditions"] = [
+        *filters,
+        {"field": "hostname", "op": "=", "value": hostname},
+    ]
+    logger.info(
+        "data_query 지시어 서버 해소: hostname=%s 를 filter_conditions에 주입(전체 조회 방지)",
+        hostname,
+    )
+    return new_parsed
 
 
 def _apply_db_succession(
@@ -365,12 +450,38 @@ def _extract_identity_rows(rows: list[dict]) -> list[dict]:
     return [{col: row.get(col) for col in key_cols} for row in limited if isinstance(row, dict)]
 
 
+def _history_for_agent(task: dict, state: dict) -> list:
+    """추론 agent(needs_history=True)에 한해 이전 대화 이력을 소량 반환한다 (①).
+
+    데이터 조회 agent는 빈 리스트를 유지(격리)하고, general_inference처럼 직전 턴 답변을
+    근거로 판단해야 하는 agent에만 트리밍된 messages를 전달한다. 호출 노드가 user_query를
+    다시 HumanMessage로 덧붙이므로, 말미의 현재 턴 질의(HumanMessage)는 중복 방지를 위해
+    제외한다. 상한(_MAX_HISTORY_MESSAGES)으로 토큰 폭증을 막는다.
+
+    Args:
+        task: 현재 TaskSpec (agent 명으로 needs_history 판정)
+        state: 전체 에이전트 상태 (messages 원본)
+
+    Returns:
+        전달할 이전 대화 메시지 목록 (needs_history가 아니면 빈 리스트)
+    """
+    spec = SUBAGENT_REGISTRY.get(task.get("agent"))
+    if not spec or not spec.needs_history:
+        return []
+    msgs = state.get("messages") or []
+    if msgs and isinstance(msgs[-1], HumanMessage):
+        # 현재 턴 질의는 노드가 user_query로 재부착하므로 제외(near-duplicate 방지)
+        msgs = msgs[:-1]
+    return list(msgs[-_MAX_HISTORY_MESSAGES:])
+
+
 def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
     """subagent에 전달할 필터된 얇은 컨텍스트를 만든다 (SubAgent S3 부분 격리).
 
     전체 AgentState를 넘기지 않고 실행에 필요한 필드 + 노드 KeyError 방지용 기본값만 포함한다.
     대형·히스토리 필드(원본 query_results/db_results/messages 누적분)는 제외한다.
-    선행 결과(input_from)는 식별 키 컬럼만·행수 상한으로 추려 prior_rows에 주입한다.
+    단, 추론 agent(needs_history=True)에는 직전 턴 답변 근거를 위해 트리밍된 messages를
+    선별 전달한다(①). 선행 결과(input_from)는 식별 키 컬럼만·행수 상한으로 추려 prior_rows에 주입한다.
 
     Args:
         task: 현재 TaskSpec
@@ -433,7 +544,9 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "eav_name_synonyms": {},
         "active_db_engine": None,
         "accessed_tables": [],
-        "messages": [],
+        # 추론 agent(general_inference)에만 트리밍된 이전 대화 이력을 전달한다(①).
+        # 데이터 조회 agent는 [] 유지(격리) — 이력이 SQL 생성에 불필요·오염 위험.
+        "messages": _history_for_agent(task, state),
         "is_multi_db": False,
         "target_databases": [],
         "active_db_id": None,
@@ -579,8 +692,13 @@ async def run_data_query_pipeline(
     #   → 위치가 SQL WHERE 절로 누출되는 것을 방지 (§4.9.6 디멘전 7).
     #   멀티 DB는 multi_db_executor가 target별 sub_query_context를 사용하므로 user_query는 원본 유지.
     sql_query = sub_query if is_multi_db else (targets[0].get("sub_query_context") or sub_query)
+    # 지시어("해당 서버") 후속 조회는 filter_conditions가 비어 전체 조회로 빠진다. 직전 서버
+    # hostname을 filter에 결정적으로 주입해 서버 스코프를 강제한다(D-056 후속, query_generator는
+    # sub_query 확장이 아니라 parsed_requirements로 SQL을 생성하므로 filter 주입이 필요).
+    parsed_for_gen = _inject_demonstrative_hostname(isolated)
     s: dict[str, Any] = {
         **isolated,
+        "parsed_requirements": parsed_for_gen,
         "user_query": sql_query,
         "target_databases": targets,
         "is_multi_db": is_multi_db,
@@ -660,6 +778,7 @@ SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
         "synonym_registration", "유사어 등록", run_synonym_registration
     ),
     "general_inference": SubAgentSpec(
-        "general_inference", "DB 미접근 일반 응답", run_general_inference, fallback=True
+        "general_inference", "DB 미접근 일반 응답", run_general_inference,
+        fallback=True, needs_history=True,
     ),
 }

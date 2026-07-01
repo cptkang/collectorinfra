@@ -11,6 +11,7 @@ import logging
 from contextlib import contextmanager
 from functools import partial
 
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
@@ -186,13 +187,16 @@ def route_after_structure_approval(state: AgentState) -> str:
 def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
     error_msg = state.get("error_message") if state.get("error_message") is not None else "알 수 없는 에러가 발생했습니다."
+    response = (
+        f"죄송합니다. 요청을 처리하는 중 문제가 발생했습니다.\n"
+        f"에러 내용: {error_msg}\n"
+        f"재시도 횟수가 최대({state['retry_count']}회)에 도달하여 처리를 중단합니다."
+    )
+    # 답변을 대화 이력에 누적한다(②, 멀티턴 후속 턴이 직전 상황을 인지하도록).
     return {
-        "final_response": (
-            f"죄송합니다. 요청을 처리하는 중 문제가 발생했습니다.\n"
-            f"에러 내용: {error_msg}\n"
-            f"재시도 횟수가 최대({state['retry_count']}회)에 도달하여 처리를 중단합니다."
-        ),
+        "final_response": response,
         "current_node": "error_response",
+        "messages": [AIMessage(content=response)],
     }
 
 

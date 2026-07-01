@@ -46,6 +46,10 @@ _HOST_FIELDS = (
     "hostname", "host_name", "server_name", "name", "host", "device_name",
     "서버명", "서버이름", "장비명", "호스트명", "서버", "장비",
 )
+# 지시어(demonstrative) 접두 — 실제 서버명이 아니라 직전 대상을 가리키는 표현.
+_DEMONSTRATIVE_PREFIXES = ("해당", "그", "이", "저", "위", "방금", "앞서", "직전", "이전")
+# 지시어 뒤에 붙는 일반 명사 (식별자 아님).
+_DEMONSTRATIVE_NOUNS = ("서버", "장비", "호스트명", "호스트", "인스턴스", "노드", "머신", "시스템")
 # 위치 → 폴스타 db_id 매핑 신호. 첫 턴(task.db_ids/previous_db_ids 공백)에 질의 텍스트로
 # db_id를 재도출하는 결정적 폴백. 은행 레거시(b0)는 "은행"/"레거시" 신호로 식별한다
 # (도메인 alias: "은행 폴스타"/"레거시 폴스타", display_name "은행 레거시 및 K리전(은행존)").
@@ -126,6 +130,41 @@ def _resolve_db_id(
     return candidates[0] if candidates else None
 
 
+def _is_demonstrative_value(value: object) -> bool:
+    """서버 식별자 값이 실제 이름이 아니라 지시어/플레이스홀더인지 판정한다.
+
+    후속 턴에서 "해당 서버/그 장비/위 서버" 같은 지시어가 input_parser에 의해 hostname
+    필터로 그대로 추출되거나, LLM이 "previous_server" 같은 플레이스홀더를 지어내는 경우가
+    있다. 이런 값이 이번 턴 filter로 들어오면 previous_entities(직전 실제 서버)보다
+    우선순위가 높아 잘못된 hostname으로 API를 호출(0건→환각)하게 된다. 이를 결정적으로
+    걸러 previous_entities 폴백으로 넘긴다(Known Mistakes: LLM 의존은 결정적 가드로 교정).
+
+    Args:
+        value: filter_conditions/previous_entities의 식별자 값
+
+    Returns:
+        지시어/플레이스홀더면 True (실제 서버명이면 False)
+    """
+    if value is None:
+        return True
+    v = str(value).strip()
+    if not v:
+        return True
+    # 영문 플레이스홀더: previous/prev + server/host (예: previous_server, prev_host)
+    compact = v.lower().replace(" ", "").replace("_", "").replace("-", "")
+    if ("previous" in compact or compact.startswith("prev")) and (
+        "server" in compact or "host" in compact
+    ):
+        return True
+    # 한글 지시어(+ 일반 명사): "해당", "해당 서버", "그 장비", "위 서버" 등
+    body = v
+    for noun in _DEMONSTRATIVE_NOUNS:
+        if body.endswith(noun):
+            body = body[: -len(noun)].strip()
+            break
+    return body in _DEMONSTRATIVE_PREFIXES
+
+
 def _resolve_hostname(isolated: dict) -> Optional[str]:
     """대상 hostname을 결정한다 (이번 턴 filter → previous_entities, M3).
 
@@ -135,14 +174,14 @@ def _resolve_hostname(isolated: dict) -> Optional[str]:
     Returns:
         hostname 문자열 또는 None
     """
-    # ① 이번 턴 filter_conditions의 식별 키
+    # ① 이번 턴 filter_conditions의 식별 키 (지시어/플레이스홀더는 제외 — ②로 폴백)
     parsed = isolated.get("parsed_requirements") or {}
     for cond in parsed.get("filter_conditions", []) or []:
         if not isinstance(cond, dict):
             continue
         if str(cond.get("field", "")).lower() in _HOST_FIELDS:
             value = cond.get("value")
-            if value:
+            if value and not _is_demonstrative_value(value):
                 return str(value)
 
     # ② 직전 턴 식별 엔티티 (M3 — "해당 서버" 해소)
@@ -152,7 +191,7 @@ def _resolve_hostname(isolated: dict) -> Optional[str]:
             continue
         if str(ent.get("field", "")).lower() in _HOST_FIELDS:
             value = ent.get("value")
-            if value:
+            if value and not _is_demonstrative_value(value):
                 return str(value)
 
     return None

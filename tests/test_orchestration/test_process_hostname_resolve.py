@@ -137,6 +137,56 @@ class TestResolver:
         assert await resolver.resolve("polestar_cm_gp", "WEB-SVR-01") is None
 
 
+class TestResolveHostnameDemonstrative:
+    """지시어/플레이스홀더 hostname 필터는 무시하고 previous_entities로 폴백해야 한다."""
+
+    def test_is_demonstrative_value(self):
+        from src.orchestration.process_query import _is_demonstrative_value
+
+        # 지시어/플레이스홀더 → True
+        for v in [
+            "해당 서버", "해당서버", "그 장비", "이 서버", "위 서버", "직전 서버",
+            "해당", "그", "위",
+            "previous_server", "prev_host", "previous-server", "previousServer",
+            "", "   ", None,
+        ]:
+            assert _is_demonstrative_value(v) is True, v
+
+        # 실제 서버명 → False (지시어로 시작하는 이름도 오탐 없어야 함)
+        for v in ["webdb01", "WEB-SVR-01", "saisvd01", "prevprod01", "이순신-svr", "은행서버-01"]:
+            assert _is_demonstrative_value(v) is False, v
+
+    def test_this_turn_demonstrative_filter_falls_back_to_previous_entity(self):
+        from src.orchestration.process_query import _resolve_hostname
+
+        isolated = {
+            # 이번 턴 input_parser가 "해당 서버"를 hostname 필터로 잘못 추출/환각한 경우
+            "parsed_requirements": {
+                "filter_conditions": [
+                    {"field": "hostname", "op": "=", "value": "previous_server"}
+                ]
+            },
+            # 직전 턴 실제 서버
+            "conversation_context": {
+                "previous_entities": [{"field": "hostname", "value": "WEB-SVR-01"}]
+            },
+        }
+        assert _resolve_hostname(isolated) == "WEB-SVR-01"
+
+    def test_real_hostname_filter_takes_priority(self):
+        from src.orchestration.process_query import _resolve_hostname
+
+        isolated = {
+            "parsed_requirements": {
+                "filter_conditions": [{"field": "hostname", "op": "=", "value": "webdb01"}]
+            },
+            "conversation_context": {
+                "previous_entities": [{"field": "hostname", "value": "WEB-SVR-01"}]
+            },
+        }
+        assert _resolve_hostname(isolated) == "webdb01"
+
+
 class _ProcCfg:
     process_top_n = 5
 

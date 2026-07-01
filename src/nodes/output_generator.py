@@ -29,6 +29,39 @@ async def output_generator(
     app_config: AppConfig | None = None,
     stream_user_response: bool = True,
 ) -> dict:
+    """최종 응답을 생성하고 직접 경로에서는 답변을 대화 이력에 누적한다.
+
+    실제 생성은 `_run_output_generator`가 담당하고, 본 래퍼는 반환에 `messages`
+    (AIMessage 1건)를 덧붙인다(②, 멀티턴 후속 판단용). orchestration 경로에서는
+    result_aggregator._finalize_task가 이 함수를 호출하되 반환 messages를 사용하지 않고
+    자체적으로 top-level 누적하므로 이중 누적이 없다(단일 append 원칙).
+
+    Args:
+        state: 현재 에이전트 상태
+        llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
+        app_config: 앱 설정 (외부 주입, 없으면 내부 로드)
+        stream_user_response: 자연어 응답 LLM 호출에 USER_RESPONSE_TAG를 부여해
+            토큰 단위 SSE 스트리밍(D-009)을 활성화할지 여부.
+
+    Returns:
+        _run_output_generator 반환 dict + (final_response가 비지 않으면) messages.
+    """
+    result = await _run_output_generator(
+        state, llm=llm, app_config=app_config, stream_user_response=stream_user_response
+    )
+    text = result.get("final_response")
+    if text and text.strip():
+        result = {**result, "messages": [AIMessage(content=text)]}
+    return result
+
+
+async def _run_output_generator(
+    state: AgentState,
+    *,
+    llm: BaseChatModel | None = None,
+    app_config: AppConfig | None = None,
+    stream_user_response: bool = True,
+) -> dict:
     """최종 응답을 생성한다.
 
     output_format에 따라 분기:

@@ -103,7 +103,9 @@ async def result_aggregator(
 
     # 복합 task + 합성 모드(딥 에이전트): LLM 1회로 단일 일관 답변 합성 (D-048)
     if synthesize and len(finalized) > 1:
-        return {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion}
+        return _with_answer_history(
+            {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion}
+        )
 
     # 단일 task: 그대로 최종화
     if len(finalized) == 1:
@@ -118,10 +120,31 @@ async def result_aggregator(
             out["output_file"] = f["output_file"]
             out["output_file_name"] = f.get("output_file_name")
         out.update(db_promotion)
-        return out
+        return _with_answer_history(out)
 
     # 복합 task: order 순으로 묶어 통합
-    return {**_merge_finalized(finalized), **db_promotion}
+    return _with_answer_history({**_merge_finalized(finalized), **db_promotion})
+
+
+def _with_answer_history(result: dict) -> dict:
+    """최종 응답을 대화 이력(messages)에 AIMessage로 누적한다 (②, 멀티턴 후속 판단용).
+
+    orchestration 경로의 유일한 top-level finalizer인 result_aggregator에서만 어시스턴트
+    답변을 messages에 append한다(add_messages 리듀서로 누적). 이렇게 해야 다음 턴의
+    추론 agent(general_inference)가 직전 턴 답변을 근거로 rightsizing 등 판단을 할 수 있다.
+    subagent 반환은 task_results에만 담기고 top-level messages로 승격되지 않으므로(D-053
+    비대칭) 이중 누적 위험이 없다. final_response가 비면 append하지 않는다.
+
+    Args:
+        result: result_aggregator가 반환할 State 갱신 dict
+
+    Returns:
+        messages(AIMessage 1건)가 추가된 dict (final_response가 비면 원본 그대로)
+    """
+    text = (result.get("final_response") or "").strip()
+    if not text:
+        return result
+    return {**result, "messages": [AIMessage(content=text)]}
 
 
 def _collect_db_promotion(

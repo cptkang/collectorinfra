@@ -22,6 +22,8 @@ from src.orchestration.process_query import (
 from src.orchestration.subagents import (
     _apply_db_succession,
     _has_new_location_db_signal,
+    _inject_demonstrative_hostname,
+    _refers_to_specific_server,
 )
 
 
@@ -156,6 +158,67 @@ class TestDbSuccession:
             targets, "해당 서버", ctx, ["polestar_cm_gp", "polestar_cm_yd"]
         )
         assert ok is False
+
+
+# ──────────────────────────────────────────────
+# 지시어("해당 서버") data/alarm_query hostname 결정적 주입 (D-056 후속)
+# ──────────────────────────────────────────────
+
+class TestDemonstrativeHostnameInjection:
+    def test_refers_to_specific_server(self):
+        assert _refers_to_specific_server("해당 서버는 특이사항이 없는가?")
+        assert _refers_to_specific_server("지난 한 달 해당 서버의 알람 분석")
+        assert _refers_to_specific_server("그 장비의 알람")
+        # 전체 조회 신호가 있으면 서버 스코프 강제 안 함
+        assert not _refers_to_specific_server("전체 서버의 알람")
+        assert not _refers_to_specific_server("모든 서버 CPU")
+        # 지시어 없는 일반 질의
+        assert not _refers_to_specific_server("CPU 80% 이상 서버 목록")
+
+    def _isolated(self, original, filters, prev_entities):
+        return {
+            "parsed_requirements": {
+                "original_query": original,
+                "filter_conditions": filters,
+            },
+            "conversation_context": {"previous_entities": prev_entities},
+        }
+
+    def test_injects_hostname_for_demonstrative(self):
+        """지시어 후속 + 직전 서버 있음 → hostname 필터 주입."""
+        iso = self._isolated(
+            "해당 서버 알람 분석", [], [{"field": "hostname", "value": "###"}]
+        )
+        parsed = _inject_demonstrative_hostname(iso)
+        assert {"field": "hostname", "op": "=", "value": "###"} in parsed["filter_conditions"]
+
+    def test_skips_when_filter_already_has_server(self):
+        """concrete 서버 필터가 있으면 주입 안 함(원본 유지)."""
+        iso = self._isolated(
+            "webdb01 서버 알람",
+            [{"field": "hostname", "op": "=", "value": "webdb01"}],
+            [{"field": "hostname", "value": "###"}],
+        )
+        parsed = _inject_demonstrative_hostname(iso)
+        assert {c["value"] for c in parsed["filter_conditions"]} == {"webdb01"}
+
+    def test_skips_for_all_servers_query(self):
+        """'전체 서버' 등 전역 조회는 서버 필터 강제 금지."""
+        iso = self._isolated(
+            "전체 서버 알람", [], [{"field": "hostname", "value": "###"}]
+        )
+        assert _inject_demonstrative_hostname(iso)["filter_conditions"] == []
+
+    def test_skips_when_no_previous_server(self):
+        iso = self._isolated("해당 서버 알람", [], [])
+        assert _inject_demonstrative_hostname(iso)["filter_conditions"] == []
+
+    def test_skips_demonstrative_previous_value(self):
+        """previous_entities 값이 지시어/플레이스홀더면 주입 안 함(오염 방지)."""
+        iso = self._isolated(
+            "해당 서버 알람", [], [{"field": "hostname", "value": "해당 서버"}]
+        )
+        assert _inject_demonstrative_hostname(iso)["filter_conditions"] == []
 
 
 # ──────────────────────────────────────────────

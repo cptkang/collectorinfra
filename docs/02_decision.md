@@ -2608,10 +2608,192 @@ hostname으로 프로세스 API에 전달 → b0 API 0건. gp/yd는 PostgreSQL�
 
 ---
 
+## D-055. 후속 턴 "해당 서버" 지시어 hostname 오추출 차단 + 결과 요약 유지 정정
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-01 |
+| **상태** | 확정 |
+| **관련 결정** | D-046(서버명→hostname 해소), D-047(멀티턴 승계), D-053(멀티턴 db_id 승격), D-054(면책 문구 차단) 후속 — 충돌 없음 |
+
+### 배경 / 문제
+
+(1) **멀티턴 hostname 오추출**: 후속 턴 "해당 서버의 프로세스 리스트를 확인해줘"에서 프로세스
+조회 서버가 `previous_server`(영문 플레이스홀더)로 들어가 0건. 원인은 `input_parser` 규칙 14가
+"특정 서버 지목 시 hostname 추출"을 강제하는데, **지시어("해당 서버")도 서버 지목으로 보고 hostname
+필터를 만들며 LLM이 값으로 플레이스홀더를 지어냄**. 이 이번-턴 필터가 `process_query._resolve_hostname`
+①(이번 턴 filter)에서 ②(previous_entities, 직전 실제 서버)보다 **우선순위가 높아** 잘못된 값이 채택됨.
+D-053이 db_id 승계를 복원했어도 hostname 신호가 이 지점에서 오염되어 0건 재발.
+
+(2) **결과 요약 소실**: D-054 규칙 6(면책 문구 차단)을 LLM이 과잉 적용해, 특정 서버 정보 조회 시
+avail_status 환각 문구뿐 아니라 **정상적인 1~2문장 요약·이상 징후 분석까지 통째로 생략**함.
+
+### 결정
+
+- **결정적 지시어 가드**(주 방어): `process_query._is_demonstrative_value()`로 이번 턴 filter 값이
+  지시어(해당/그/이/저/위/직전 등 + 서버/장비 등)·영문 플레이스홀더(previous/prev + server/host)이면
+  hostname으로 인정하지 않고 `previous_entities`로 폴백. LLM 비결정성에 의존하지 않는 결정적 교정
+  (Known Mistakes 원칙: LLM 분류 의존 의도는 결정적 가드로 후처리). ①·② 양쪽에 적용.
+- **input_parser 규칙 14 보강**(부 방어): 지시어만으로 지목한 경우 hostname filter를 만들지 말고
+  filter_conditions를 비워 두도록 명시(+플레이스홀더 임의 생성 금지). 예시 추가.
+- **output_generator 규칙 6 정정**: 규칙 6은 "데이터에 없는 컬럼에 대한 면책·안내"만 금지하며,
+  조회된 데이터 자체의 요약·이상 징후 분석(규칙 2·5)은 생략하지 말 것을 명시.
+
+### 세부 변경
+
+- `src/orchestration/process_query.py`: `_is_demonstrative_value()` 신규, `_resolve_hostname` ①·②에 가드 적용,
+  `_DEMONSTRATIVE_PREFIXES`/`_DEMONSTRATIVE_NOUNS` 상수 추가.
+- `src/prompts/input_parser.py`: 규칙 14에 지시어 미추출 지침·예시 추가.
+- `src/prompts/output_generator.py`: 규칙 6에 "요약·분석은 유지" 단서 추가.
+- 테스트: `test_process_hostname_resolve.py`에 `TestResolveHostnameDemonstrative`(가드 단위 3건).
+
+### 검증
+
+- `test_orchestration/` 141 passed/4 skipped, `arch_check --ci` exit 0.
+
+---
+
+## D-056. 멀티턴 후속 판단형 질의에 직전 턴 답변 전파 (Approach A)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-01 |
+| **상태** | 확정 (1단계 A — ③ rows 보존/intent_planner 분석 라우팅은 2단계 유보) |
+| **관련 결정** | D-041(M3 압축 맥락 보존), D-047(query_results 승격), D-048(합성), D-053(db_id 승격), D-055(지시어 해소) 후속 — 충돌 없음 |
+
+### 배경 / 문제
+
+멀티턴 3턴 시나리오에서 판단형 후속 질의가 직전 턴 데이터를 활용하지 못하고 거부:
+- 턴1 "은행 ### 서버 스펙"(정상) → 턴2 "해당 서버 프로세스 리스트/분석"(정상) →
+  턴3 "위와 같은 상태면 rightsizing 해도 되는가?" → **"구체적 모니터링 데이터가 확보되지
+  않아 판단할 수 없다"** 며 거부(환각).
+
+코드 기반 진단 결과 근본 원인(활성 경로 = orchestration, Track A):
+1. **어시스턴트 답변이 `messages`에 누적되지 않음** — `final_response`를 AIMessage로
+   messages에 append하는 노드가 `synonym_registrar` 하나뿐. 대화 이력엔 HumanMessage(질문)만 쌓임.
+2. **격리 입력이 이력을 통째로 삭제** — `subagents._make_isolated_input`이 `"messages": []`로
+   설정 → subagent(특히 general_inference)가 직전 답변을 못 봄. general_inference의
+   `prior_messages[-10:]` 멀티턴 코드가 orchestration에서 무력화.
+3. 판단형 질의는 intent_planner에서 `general_inference`(fallback)로 분류되는데, 이 노드가
+   `conversation_context`(압축 신호)를 읽지도 않음.
+
+### 결정 (Approach A = ①②④, 최소 침습·결정적)
+
+- **② 답변 이력 누적**: 경로별 **단일 종료 노드**에서만 최종 답변을 AIMessage로 messages에
+  append. orchestration=`result_aggregator._with_answer_history`(유일 top-level finalizer),
+  직접/레거시 경로=`output_generator`(래퍼)·`general_inference`·`error_response`.
+  subagent 반환 messages는 task_results에만 담겨 top-level로 승격 안 됨(D-053 비대칭) → 이중 누적 없음.
+- **① 이력 선별 전달**: `SubAgentSpec.needs_history` 플래그 신설, `general_inference`만 True.
+  `_make_isolated_input`이 needs_history agent에만 트리밍 이력(`_history_for_agent`, 상한
+  `_MAX_HISTORY_MESSAGES=10`, 말미 현재 턴 질의 제외) 전달. 데이터 조회 agent는 `[]` 유지(격리 —
+  이력이 SQL 생성에 불필요·토큰 부담·오염 위험).
+- **④ 판단 그라운딩**: general_inference가 후속 턴(turn_count>1)에 `conversation_context`를
+  판단 근거 블록으로 그라운딩 + `_JUDGMENT_GUIDANCE`(긍정 지시) 부착 — "대화에 이미 제공된
+  데이터가 있으면 확보 안 됐다고 단정해 거부하지 말고, 확보 데이터로 판단 가능 범위를 답한 뒤
+  추가 필요 데이터만 짚으라". D-055 교훈(부정 지시엔 유지할 정상 동작 명시)과 정합.
+
+### 유보 (2단계, 필요 시 증설)
+
+- **③ 이전 턴 rows 소량 보존**: 정성 판단은 A로 충분한지 관찰 후, 정량 근거가 부족하면
+  rows를 planner엔 넣지 않고 general_inference에만 상한(상위 N행×핵심 컬럼)으로 전달 +
+  "직전 조회 시점" 라벨 + 본 결정 개정. (95K 토큰 민감 구간·D-041 "대량 보존 금지" 완화라 신중.)
+- **intent_planner 분석/판단 후속 라우팅 규칙**: LLM 라우팅 변경은 오분류 리스크 대비 이득이
+  작아 후순위. general_inference 그라운딩(④)으로 대부분 해결.
+
+### 세부 변경
+
+- `src/orchestration/result_aggregator.py`: `_with_answer_history()` 신규, 3개 반환 분기 래핑.
+- `src/orchestration/subagents.py`: `SubAgentSpec.needs_history` 필드, general_inference=True,
+  `_history_for_agent()` 신규, `_make_isolated_input`의 `"messages"` 선별 주입, `_MAX_HISTORY_MESSAGES`.
+- `src/nodes/general_inference.py`: `_JUDGMENT_GUIDANCE` 상수, `_build_context_grounding()` 신규,
+  `_build_system_prompt` 후속 턴 addendum 부착, 반환에 AIMessage messages 누적.
+- `src/nodes/output_generator.py`: `output_generator`를 얇은 래퍼로 분리(`_run_output_generator`),
+  final_response를 messages로 누적.
+- `src/graph.py`: `_error_response_node`가 답변을 messages로 누적(AIMessage import 추가).
+- 테스트: `tests/test_multiturn/test_answer_history_propagation.py`(①②④ 11건).
+
+### 후속 보강 (같은 날, 엔티티 승계 sticky)
+
+**증상**: A 적용 후 턴3(판단, general_inference)은 정상이나, 다음 턴4 "해당 서버의 최근 1개월
+CPU/메모리 사용률…"이 특정 서버가 아닌 **은행 폴스타 전체 서버**를 조회. **원인**: 판단 턴은 DB
+조회를 안 해 `result_aggregator`가 top-level `query_results=[]`로 덮어씀(리듀서 없는 plain 필드)
+→ 다음 턴 `context_resolver._extract_previous_entities`가 빈 결과·빈 filter에서 추출 →
+`previous_entities=[]`로 hostname(=###) 신호 소실 → "해당 서버" 미해소로 필터 누락. **수정**:
+`context_resolver`가 이번 턴 신규 추출이 비면 **직전 `conversation_context`의
+`previous_entities`/`previous_db_ids`/`previous_location`을 승계(sticky)**. 이번 턴에 새 대상이
+잡히면 그 값이 우선(오염 없음) — 조회 없는 분석 턴을 건너뛰어도 지시어가 유지된다. 회귀:
+`test_context_resolver.py::TestContextResolverEntityStickiness` 2건.
+
+**미해결(별건)**: b0(은행, DB2) 월간 사용률 통계가 소수점 없이 정수로 표시됨. gp/yd는
+`ROUND(AVG(...)::numeric, 2)` 캐스트가 있으나 b0 query_guide는 `ROUND(AVG(...), 2)`로 캐스트
+부재. 다운스트림(result_organizer/query_executor)엔 값 정수화 없음 확인 → SQL/DB2 레벨 이슈로
+추정. DB2 캐스트 문법은 `cmm_metric_stat_m.{min,avg,max}_val` 실제 타입 확인 후 적용해야
+SQL 에러(Known Mistakes 방언 교훈)를 피함 — 검증 전 미수정.
+
+### 후속 보강 (같은 날, 미지원 역량 광고 차단 — 프롬프트 하드 제약)
+
+**증상**: general_inference가 판단/분석 마무리에서 후속 조회를 제안할 때 **지원하지 않는 기능**
+(예: "MySQL InnoDB Buffer Pool 설정 확인", DB 엔진 내부·앱 튜닝값)을 예시로 지어내 광고 →
+사용자가 그걸 실제 요청하면 data_query로 라우팅돼 존재하지 않는 속성을 찾느라 재시도 낭비 후
+"없음" 결론. **원인**: ④의 `_JUDGMENT_GUIDANCE`("추가로 필요한 데이터를 짚어라")가 제안을
+지원 역량 목록(`_SUPPORTED_CAPABILITIES`)으로 **바운딩하지 않아** LLM이 목록 밖 항목을 자유
+생성. 목록은 프롬프트에 있으나 "이 목록 안에서만 제안" 강제가 없어 그라운딩이 샜다(같은 턴에서
+어떤 때는 정확, 어떤 때는 환각 — 일관성 부재가 증거). **수정(사용자 선택: 프롬프트 하드 제약)**:
+`_JUDGMENT_GUIDANCE`와 general_inference 카탈로그 분기 [안내 규칙]에 "후속 제안·예시는 반드시
+[지원 가능한 조회 유형] 목록 안에서만, 목록 밖 항목(DB 엔진 내부 설정·MySQL/InnoDB/버퍼풀·앱
+파라미터·임의 IT 개념)은 예시로도 금지, 없는 기능을 있는 것처럼 안내 금지"를 명시. 소스 카탈로그가
+없는 후속 턴에도 지원 목록을 함께 실어 제약의 참조 기준을 보장. 회귀: `test_answer_history_propagation.py::TestCapabilityScopeConstraint` 3건. **유보**: 미지원 요청의
+data_query 재시도 낭비(2차 증상)는 스코프 게이트 필요 — 라우팅 변경 리스크로 후순위(사용자 결정).
+
+### 후속 보강 3 (같은 날, 프로세스 결과 행의 엔티티 오수집 차단)
+
+**증상**: 멀티턴 "프로세스 리스트 조회" 후 "해당 서버의 알람을 분석해줘"가 실제 서버(###)가
+아닌 **프로세스명들**(name=mysql pid=30176, name=node_exporter …)을 "서버"로 삼아 알람을 조회.
+**원인**: `_extract_previous_entities`가 결과 행의 식별 컬럼을 harvesting하는데, 프로세스 조회
+결과 행(`_process_to_dict`: {name, pid, user, cpu_pct, …})의 `name`(프로세스명)이 `name` 힌트에,
+`pid`가 `id` 힌트에 **부분매칭**되어 서버 엔티티로 오수집됨. "해당 서버 프로세스"는 지시어라
+input_parser가 hostname filter를 안 만들어(D-055) filter 경유 서버 식별자도 없어, 그 턴의
+previous_entities가 통째로 프로세스명으로 오염 → sticky 승계로 다음 턴까지 전파. **수정**:
+`_looks_like_process_rows()`(첫 행에 `pid` 키 존재)로 프로세스 결과 행을 감지해 **결과 harvesting
+에서 제외**(서버 식별자는 filter_conditions에서만 수집). 프로세스 행에는 hostname이 없어 손실
+없음. 이로써 그 턴 fresh 추출이 비면 후속 보강(sticky)이 직전 ctx의 hostname(###)을 승계 →
+"해당 서버"가 서버로 올바로 해소. 회귀: `test_context_resolver.py::TestProcessRowEntityExclusion` 5건.
+
+### 후속 보강 4 (같은 날, data/alarm_query 지시어 서버 필터 결정적 주입 — 근본)
+
+**증상**: "해당 서버는 특이사항이 없는가?"(→alarm_query)가 특정 서버가 아닌 **전체 알람**을 조회.
+data_query "해당 서버 CPU/메모리"의 전체-서버 조회도 동일 뿌리(앞선 sticky 수정은 필요조건일 뿐
+불충분이었음). **근본 원인**: `query_generator._build_user_prompt`가 SQL 생성 입력으로
+`parsed_requirements["original_query"]`(원본 질의)+`filter_conditions`만 사용하고, **intent_planner가
+확장한 sub_query(`state["user_query"]`)는 프롬프트에 쓰지 않는다**. 지시어 후속은 (1)filter_conditions가
+비어 있고(D-055, 지시어 hostname 미추출) (2)original_query엔 구체 서버명이 없어 → query_generator에
+**hostname이 전혀 도달하지 않아** 서버 필터 없이 전체 조회(alarm은 Template C-2, data는 전체 서버).
+process_query만 `_resolve_hostname` 결정적 해소를 갖고 data/alarm_query엔 없었음. **수정**:
+`subagents._inject_demonstrative_hostname()` — data/alarm 파이프라인(run_data_query_pipeline)에서
+original_query가 지시어로 특정 서버를 지목하고(`_refers_to_specific_server`, "전체/모든" 제외)
+filter에 서버 식별자가 없으면, 직전 서버 hostname(`_resolve_hostname`: previous_entities, 지시어 가드)을
+`filter_conditions`에 주입. concrete "webdb01 서버 알람"과 **동일한 filter_conditions.hostname 경로**
+(이미 동작)로 서버 필터를 강제 → alarm C-6(SVR.NAME)·data 서버 필터가 걸린다. 전역 조회("전체 서버")·
+concrete 질의는 미주입(스코프 오확대 없음). 회귀: `test_multiturn_propagation.py::TestDemonstrativeHostnameInjection` 6건.
+※ 남은 가정: query_generator 알람 템플릿이 filter_conditions.hostname을 C-6(SVR.NAME)으로 매핑
+(concrete 알람 경로와 동일) — 라이브 미검증 시 프롬프트 보강 여지.
+
+### 검증
+
+- 신규 11건 + `test_multiturn/`·`test_orchestration/{result_aggregator,subagents}` 123 passed.
+  엔티티 승계·역량 제약·프로세스 행 제외·지시어 hostname 주입 후속 포함
+  `test_multiturn/`·`test_orchestration/` 246 passed/4 skipped.
+- `arch_check --ci` exit 0. 기존 무관 실패: `test_output_generator.py::TestBuildResponsePrompt`
+  2건(코드에 없는 `sql` kwarg 기대 — 본 변경 전부터 실패, 범위 외).
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-01 | D-056 | **멀티턴 후속 판단형 질의에 직전 턴 답변 전파(Approach A, ①②④)**: 3턴 "rightsizing 해도 되나?"가 "데이터 확보 안 됨"으로 거부되던 환각 수정. 근본원인(orchestration): (1)어시스턴트 답변이 `messages`에 누적 안 됨(append 노드가 synonym_registrar뿐), (2)`_make_isolated_input`이 `messages:[]`로 이력 삭제 → general_inference 멀티턴 코드 무력화, (3)general_inference가 conversation_context 미참조. → **②** 경로별 단일 종료 노드(result_aggregator `_with_answer_history`/output_generator 래퍼/general_inference/error_response)에서만 AIMessage 누적(subagent 반환은 task_results에만 담겨 이중 누적 없음). **①** `SubAgentSpec.needs_history`(general_inference만 True)로 추론 agent에만 트리밍 이력 전달(`_history_for_agent`, 상한 10, 현재 턴 질의 제외), 조회 agent는 [] 격리. **④** general_inference 후속 턴 conversation_context 그라운딩 + `_JUDGMENT_GUIDANCE`(확보 데이터로 판단 가능 범위 답하고 추가 필요분만 지목, 거부 금지). ③rows 보존·intent_planner 분석 라우팅은 2단계 유보(95K/D-041 신중). **후속 보강(같은 날)**: A 적용 후 조회 없는 판단 턴(general_inference)이 top-level `query_results=[]`로 덮어써 다음 턴 `previous_entities`가 소실 → "해당 서버"가 전체 서버로 조회되던 문제 → `context_resolver`가 이번 턴 추출이 비면 직전 conversation_context의 entities/db_ids/location을 **sticky 승계**(이번 턴 신규값 우선). 별건 미해결: b0(DB2) 월간 사용률 통계 정수 표시(gp/yd만 `::numeric` 캐스트, b0 부재 — SQL 레벨 추정, DB2 컬럼 타입 검증 후 수정 예정). **후속 보강 2(같은 날)**: general_inference가 판단/분석 마무리에서 **미지원 기능**(MySQL InnoDB 버퍼풀·DB 엔진 내부 설정 등)을 후속 조회 예시로 지어내 광고(→ 실제 요청 시 data_query 재시도 낭비 후 "없음") → `_JUDGMENT_GUIDANCE`가 제안을 `_SUPPORTED_CAPABILITIES`로 바운딩 안 한 탓. 프롬프트 하드 제약(사용자 선택): `_JUDGMENT_GUIDANCE`·general_inference [안내 규칙]에 "제안·예시는 [지원 가능한 조회 유형] 목록 안에서만, 목록 밖(엔진 내부 설정·앱 파라미터·임의 IT 개념) 예시 금지" 명시 + 카탈로그 없는 후속 턴에도 지원 목록 주입. 미지원 요청 재시도 낭비(2차 증상)는 스코프 게이트 유보. **후속 보강3(같은 날)**: 프로세스 리스트 조회 후 "해당 서버 알람"이 프로세스명(name=mysql,pid…)을 서버로 오조회 → `_extract_previous_entities`가 프로세스 결과 행의 `name`/`pid`를 서버 식별자로 오수집(name/id 힌트 부분매칭)한 탓 → `_looks_like_process_rows`(pid 키 감지)로 프로세스 행을 결과 harvesting에서 제외(서버 식별자는 filter만), sticky 승계로 hostname 복원. **후속 보강4(같은 날, 근본)**: "해당 서버 알람/CPU"가 전체 조회로 빠지던 근본 — `query_generator`가 SQL 생성에 `parsed_requirements.original_query`+filter만 쓰고 intent_planner 확장 sub_query는 안 씀 → 지시어 후속은 filter 비고(D-055) original_query에 구체 서버명 없어 hostname 미도달. `subagents._inject_demonstrative_hostname`으로 data/alarm 파이프라인에서 지시어 특정-서버 질의(전체 조회 제외)에 직전 hostname을 filter_conditions에 결정적 주입(concrete 경로와 동일). 회귀: 신규 11건 + 승계 2건 + 역량 제약 3건 + 프로세스 제외 5건 + hostname 주입 6건, test_multiturn·test_orchestration 246 passed/4 skipped. 관련: D-041, D-047, D-048, D-053, D-055. 검증: arch_check exit 0 |
+| 2026-07-01 | D-055 | **후속 턴 "해당 서버" 지시어 hostname 오추출 차단 + 결과 요약 유지 정정**: (1) 멀티턴 후속 "해당 서버 프로세스"에서 서버가 `previous_server`로 들어가 0건 — `input_parser` 규칙 14가 지시어도 서버 지목으로 보고 hostname 필터를 만들며 LLM이 플레이스홀더를 지어냄 → 이번-턴 필터가 `_resolve_hostname` ①에서 previous_entities ②보다 우선순위가 높아 오염. → `process_query._is_demonstrative_value()` 결정적 가드로 지시어(해당/그/이/위 + 서버/장비)·영문 플레이스홀더(previous/prev+server/host)를 hostname에서 배제하고 previous_entities로 폴백(①·② 모두). input_parser 규칙 14에 지시어 미추출 지침·예시 보강. (2) D-054 규칙 6을 LLM이 과잉 적용해 정상 요약·이상 징후 분석까지 소실 → 규칙 6에 "데이터에 없는 컬럼 면책만 금지, 조회 데이터 요약·분석은 유지" 단서 추가. 회귀: 지시어 가드 단위 3건. 관련: D-046, D-047, D-053, D-054. 검증: orchestration 141 passed/4 skipped, arch_check exit 0 |
 | 2026-06-30 | D-054 | **레거시 `polestar` 도메인 폐기 + db_profiles 정리 + 면책 문구 환각 차단**: (1) `DB_DOMAINS`에서 레거시 단일 `polestar` 엔트리 제거(7→6, b0가 은행 레거시 승계). (2) `config/db_profiles/{test_db,unknown,polestar_pg,polestar}.yaml` 삭제(빈 auto 스텁·미등록 db_id·b0로 대체). (3) `output_generator` 프롬프트 규칙 6 추가 — 사용자가 묻지 않은 컬럼(avail_status 등) 부재·면책·안내 문구 자발 추가 금지(코드에 없던 순수 LLM 환각). 부수: `alarm.py` db_id 기본값·`semantic_router`/`cache_management` few-shot 예시·`.env.example` POLESTAR_DB_IDS/ACTIVE_DB_IDS·테스트(domain_config 6개, structure_analysis polestar_b0) 갱신. field_mapper polestar 분기·test_document 픽스처·redis/export 스냅샷은 의도적 보존. 검증: 영향 테스트 93 passed/7 skipped(기존 실패 1건 무관). 관련: D-004, D-053 |
 | 2026-06-30 | D-053 | **은행 b0 실시간 프로세스 조회 0건 수정(2건)**: (1·실제 1차 게이트) `_resolve_db_id._LOCATION_DB_HINTS`에 은행(b0)이 없어 "은행 폴스타 … 프로세스" 질의 db_id=None → 조기 0건(라이브 진입 로그로 확인). → b0 힌트(은행/레거시/은행존) 추가, 위치 신호 명확 시 base_url 무관 db_id 반환. (2·후속 게이트) `build_hostname_sql`이 엔진 무관 PostgreSQL 방언(`LIMIT 1`+`polestar.` 스키마) 고정 → DB2 b0에서 SQL 실패 → D-046 graceful 폴백이 서버명을 그대로 API에 전달 → 0건. → `resolve()`가 `get_domain_by_id(db_id).db_engine` 조회, db2는 `FETCH FIRST 1 ROWS ONLY`+무스키마(CURRENT SCHEMA). 진입/게이트/응답-envelope 진단 로그 추가. b0 API 형식은 gp/yd와 동일 확인(형식 mismatch 아님). (3·멀티턴) `agent_orchestrator`가 `active_db_id`/`target_databases`를 top-level로 안 올려 다음 턴 previous_db_ids 공백 → "해당 서버 …" 후속 process_query db_id=None 펑. → `result_aggregator._collect_db_promotion`이 실행 task target_db_ids를 승격(멀티턴 DB 승계 복원). 런타임 `.env`에 `ALARM_PROCESS_API_BASE_URLS_CSV`의 b0 매핑 필요(코드 기본값엔 gp/yd만). 관련: D-046, D-047. 검증: orchestration 201 passed/4 skipped, 알람 프로세스 63 passed, arch_check exit 0 |
 | 2026-06-30 | D-051 | **allowed_tables 유사어 동적 보완을 질의 매칭분으로 게이트**: `schema_analyzer`가 `get_synonyms`의 모든 테이블을 무조건 `_allowed`에 추가하던 것(b0 실측 5→407, relevant 400, system_prompt 104K>95K FabriX 한도)을, 이번 질의 용어와 매칭된 유사어의 테이블만(상한 15) 보완하도록 `_synonym_tables_matching_query()` 게이트 신설. FabriX 데이터 평면도 ~95K 입력 한도임을 확인(D-042 전제 정정). 회귀: synonym_gate 8 + eav_supplement 통합 양성/음성. 계획 `plans/52-...md` |

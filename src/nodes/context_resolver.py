@@ -93,10 +93,21 @@ async def context_resolver(
             cols = list(previous_results[0].keys())
             results_summary += f", 컬럼: {', '.join(cols[:5])}"
 
-    # [M3] 후속 턴 분해·승계를 위한 구조적 엔티티 보존
-    previous_db_ids = _extract_previous_db_ids(state)
-    previous_entities = _extract_previous_entities(state, previous_results)
-    previous_location = _extract_previous_location(state)
+    # [M3] 후속 턴 분해·승계를 위한 구조적 엔티티 보존.
+    # [D-056 후속] 직전 턴이 DB 조회 없이 분석/판단(general_inference)만 수행하면 top-level
+    # query_results/parsed_requirements가 비거나 갱신되어 엔티티(hostname 등)가 소실된다.
+    # 이 경우 직전 conversation_context에 보존돼 있던 신호를 승계(sticky)하여, "해당 서버"
+    # 지시어가 분석 턴을 건너뛰어도 유지되게 한다. 이번 턴에서 새로 추출된 값이 있으면 그것을
+    # 우선하고, 없을 때만 직전 맥락을 물려받는다(사용자가 이번 턴에 새 대상을 지목하면 그 값이
+    # 이번 턴 추출로 잡혀 승계보다 우선 — 오염 없음).
+    prior_ctx = state.get("conversation_context") or {}
+    previous_db_ids = _extract_previous_db_ids(state) or (prior_ctx.get("previous_db_ids") or [])
+    previous_entities = _extract_previous_entities(state, previous_results) or (
+        prior_ctx.get("previous_entities") or []
+    )
+    previous_location = _extract_previous_location(state) or (
+        prior_ctx.get("previous_location") or ""
+    )
 
     context = {
         "previous_sql": previous_sql,
@@ -178,6 +189,28 @@ def _extract_previous_db_ids(state: AgentState) -> list[str]:
     return db_ids
 
 
+def _looks_like_process_rows(rows: list[dict]) -> bool:
+    """결과 행이 프로세스 조회 결과인지 판별한다 (엔티티 오수집 방지용).
+
+    프로세스 조회 결과 행은 `pid`를 갖는다(process_query._process_to_dict:
+    {name, pid, user, cpu_pct, mem_pct, rss, args}). `name`은 프로세스명, `pid`는 서버가
+    아니므로 이런 행에서 서버 식별 엔티티를 수집하면 안 된다. 서버 조회 결과 행에는 `pid`가 없다.
+
+    Args:
+        rows: 직전 턴 결과 행 목록
+
+    Returns:
+        첫 행이 `pid` 키를 가지면 True(프로세스 행으로 간주)
+    """
+    if not rows:
+        return False
+    first = rows[0]
+    if not isinstance(first, dict):
+        return False
+    keys = {str(k).lower() for k in first.keys()}
+    return "pid" in keys
+
+
 def _extract_previous_entities(
     state: AgentState, previous_results: list[dict]
 ) -> list[dict]:
@@ -218,7 +251,11 @@ def _extract_previous_entities(
             _add(field, cond.get("value"))
 
     # 2) 결과 첫 행들의 식별 키 컬럼 값 (행수 상한)
-    if previous_results:
+    #    단, 프로세스 조회 결과 행({name, pid, ...})은 서버 식별자가 아니다. 여기서 harvesting하면
+    #    name=프로세스명(mysql 등)·pid(→"id" 부분매칭)가 "서버"로 오수집되어, 이후 턴 "해당 서버"가
+    #    프로세스명으로 오해소된다(알람/데이터 조회가 엉뚱한 대상으로 감). 프로세스 조회의 서버
+    #    식별자는 filter_conditions(위 1)에서 이미 수집되므로, 프로세스 행은 결과 harvesting에서 제외한다.
+    if previous_results and not _looks_like_process_rows(previous_results):
         limited = previous_results[: _MAX_ENTITY_ROWS]
         first = limited[0] if isinstance(limited[0], dict) else None
         if first:

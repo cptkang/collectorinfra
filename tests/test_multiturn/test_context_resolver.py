@@ -4,7 +4,13 @@ import pytest
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.nodes.context_resolver import MAX_HISTORY_TURNS, _trim_messages, context_resolver
+from src.nodes.context_resolver import (
+    MAX_HISTORY_TURNS,
+    _extract_previous_entities,
+    _looks_like_process_rows,
+    _trim_messages,
+    context_resolver,
+)
 from src.state import create_initial_state
 
 
@@ -160,6 +166,140 @@ class TestContextResolverEntityPreservation:
         result = await context_resolver(state)
         ctx = result["conversation_context"]
         assert len(ctx["previous_entities"]) <= _MAX_ENTITY_ROWS
+
+
+class TestContextResolverEntityStickiness:
+    """D-056 후속 — 분석/판단 턴(조회 없음)을 건너뛰어도 엔티티가 승계되는지 검증."""
+
+    async def test_inherits_entities_when_current_extraction_empty(self):
+        """직전 턴이 조회 없이(query_results=[]) 분석만 했으면, 그 직전 conversation_context의
+        엔티티/DB/위치를 승계한다("해당 서버" 유지)."""
+        state = create_initial_state(user_query="해당 서버의 최근 1개월 CPU 사용률 평균/최대")
+        # 3턴: 스펙조회 → 프로세스 → 판단(general_inference, 조회없음) → (이번4턴)
+        state["messages"] = [
+            HumanMessage(content="은행존 ### 서버 IP/CPU/메모리"),
+            AIMessage(content="사양입니다..."),
+            HumanMessage(content="해당 서버 프로세스 리스트"),
+            AIMessage(content="상위 5건..."),
+            HumanMessage(content="프로세스 보니 정상인가"),
+            AIMessage(content="판단 결과..."),
+            HumanMessage(content="해당 서버의 최근 1개월 CPU 사용률 평균/최대"),
+        ]
+        # 직전 턴(판단)이 조회를 안 해 top-level 신호가 비어 있음
+        state["query_results"] = []
+        state["parsed_requirements"] = {"filter_conditions": []}
+        # 직전 conversation_context엔 앞 턴들에서 보존된 엔티티/DB/위치가 남아 있음
+        state["conversation_context"] = {
+            "turn_count": 3,
+            "previous_entities": [{"field": "hostname", "value": "###"}],
+            "previous_db_ids": ["polestar_b0"],
+            "previous_location": "은행",
+        }
+
+        result = await context_resolver(state)
+        ctx = result["conversation_context"]
+
+        values = {(e["field"].lower(), str(e["value"])) for e in ctx["previous_entities"]}
+        assert ("hostname", "###") in values  # 분석 턴을 건너뛰어도 유지
+        assert ctx["previous_db_ids"] == ["polestar_b0"]
+        assert "은행" in ctx["previous_location"]
+
+    async def test_current_extraction_takes_priority_over_inherited(self):
+        """이번 턴에서 새 엔티티가 잡히면 승계값보다 우선한다(오염 없음)."""
+        state = create_initial_state(user_query="다른 서버 조회")
+        state["messages"] = [
+            HumanMessage(content="### 서버"),
+            AIMessage(content="..."),
+            HumanMessage(content="다른 서버 조회"),
+        ]
+        state["query_results"] = [{"hostname": "NEW-HOST"}]
+        state["parsed_requirements"] = {"filter_conditions": []}
+        state["conversation_context"] = {
+            "turn_count": 2,
+            "previous_entities": [{"field": "hostname", "value": "###"}],
+        }
+
+        result = await context_resolver(state)
+        values = {str(e["value"]) for e in result["conversation_context"]["previous_entities"]}
+        assert "NEW-HOST" in values
+        assert "###" not in values  # 이번 턴 추출이 있으면 승계 안 함
+
+
+class TestProcessRowEntityExclusion:
+    """프로세스 조회 결과 행이 서버 식별 엔티티로 오수집되지 않는지 검증.
+
+    버그: 프로세스 리스트 조회 후 "해당 서버"가 프로세스명(mysql 등)으로 오해소되어
+    알람/데이터 조회가 엉뚱한 대상으로 감. 프로세스 행({name,pid,...})은 서버가 아님.
+    """
+
+    _PROC_ROWS = [
+        {"name": "mysql", "pid": 30176, "user": "mysql", "cpu_pct": 12.0, "args": "mysqld"},
+        {"name": "node_exporter", "pid": 50482, "user": "root", "cpu_pct": 1.0, "args": "ne"},
+    ]
+
+    def test_looks_like_process_rows(self):
+        assert _looks_like_process_rows(self._PROC_ROWS) is True
+        assert _looks_like_process_rows([{"hostname": "###", "cpu_cores": 8}]) is False
+        assert _looks_like_process_rows([]) is False
+
+    def test_process_rows_not_harvested_as_entities(self):
+        """프로세스 행은 결과 harvesting에서 제외 — 프로세스명/pid가 엔티티로 안 들어간다."""
+        state = {"parsed_requirements": {"filter_conditions": []}}
+        entities = _extract_previous_entities(state, self._PROC_ROWS)
+        values = {str(e["value"]) for e in entities}
+        assert "mysql" not in values
+        assert "30176" not in values
+        assert entities == []
+
+    def test_hostname_filter_survives_with_process_results(self):
+        """프로세스 조회여도 filter_conditions의 hostname은 서버 식별자로 보존된다."""
+        state = {
+            "parsed_requirements": {
+                "filter_conditions": [{"field": "hostname", "value": "###"}]
+            }
+        }
+        entities = _extract_previous_entities(state, self._PROC_ROWS)
+        values = {(e["field"].lower(), str(e["value"])) for e in entities}
+        assert ("hostname", "###") in values
+        assert "mysql" not in {str(e["value"]) for e in entities}
+
+    def test_server_rows_still_harvested(self):
+        """서버 조회 결과 행(pid 없음)은 기존대로 hostname 등을 수집한다(회귀 방지)."""
+        state = {"parsed_requirements": {"filter_conditions": []}}
+        rows = [{"hostname": "web-01", "cpu_cores": 8}, {"hostname": "db-01", "cpu_cores": 16}]
+        entities = _extract_previous_entities(state, rows)
+        values = {str(e["value"]) for e in entities}
+        assert "web-01" in values and "db-01" in values
+
+    async def test_chain_process_turn_keeps_server_via_stickiness(self):
+        """프로세스 턴 다음 판단/알람 턴에서 '해당 서버'가 프로세스명이 아닌 서버로 유지된다.
+
+        프로세스 결과가 harvesting에서 제외되어 fresh 추출이 비면, 직전 ctx의 hostname을
+        sticky 승계한다(process 오염 없이)."""
+        state = create_initial_state(user_query="지난 한 달 해당 서버의 알람 분석")
+        state["messages"] = [
+            HumanMessage(content="김포 ### 서버 사양"),
+            AIMessage(content="사양..."),
+            HumanMessage(content="해당 서버 프로세스 리스트"),
+            AIMessage(content="프로세스..."),
+            HumanMessage(content="지난 한 달 해당 서버의 알람 분석"),
+        ]
+        # 직전 턴이 프로세스 조회였음: query_results=프로세스 행, filter엔 hostname 없음(지시어)
+        state["query_results"] = self._PROC_ROWS
+        state["parsed_requirements"] = {"filter_conditions": []}
+        # 직전 ctx엔 앞 턴에서 보존된 서버 hostname이 있음
+        state["conversation_context"] = {
+            "turn_count": 2,
+            "previous_entities": [{"field": "hostname", "value": "###"}],
+            "previous_db_ids": ["polestar_cm_gp"],
+            "previous_location": "김포",
+        }
+
+        result = await context_resolver(state)
+        ctx = result["conversation_context"]
+        values = {str(e["value"]) for e in ctx["previous_entities"]}
+        assert "###" in values  # 서버 유지
+        assert "mysql" not in values and "30176" not in values  # 프로세스 오염 없음
 
 
 class TestTrimMessages:

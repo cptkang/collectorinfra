@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
@@ -28,6 +28,25 @@ _SYSTEM_PROMPT = (
     "당신은 인프라 관리 시스템의 AI 어시스턴트입니다. "
     "데이터베이스 조회가 필요하지 않은 질문에 한국어로 친절하게 답변하세요. "
     "에이전트 기능 범위 밖의 요청이라면 무엇을 할 수 있는지 안내해 주세요."
+)
+
+# 후속 턴 판단/분석 요청(rightsizing 권고 등) 처리 지침(④/D-055 정합 — 긍정 지시).
+# 관측 증상: 직전 턴 조회 결과가 대화 이력·맥락으로 전달돼도 "구체적 데이터가 확보되지
+# 않았다"며 판단을 통째로 거부(환각). 이전 대화의 조회 결과를 근거로 판단을 제시하도록 강제한다.
+_JUDGMENT_GUIDANCE = (
+    "\n\n[이전 결과 기반 분석·판단 요청 처리]\n"
+    "- 사용자가 앞선 대화에서 조회된 결과(서버 사양·프로세스·CPU/메모리/디스크 사용량·알람 등)를 "
+    "근거로 분석·판단·권고(예: rightsizing 적정성)를 요청하면, **위 대화 이력과 아래 이전 대화 맥락에 "
+    "담긴 실제 값을 근거로** 판단을 제시하세요.\n"
+    "- 대화에 이미 제공된 데이터가 있으면 \"데이터가 확보되지 않았다\"고 단정하여 판단을 거부하지 마세요. "
+    "먼저 확보된 데이터로 판단 가능한 범위를 답하고, 정밀 판단에 **추가로 필요한 데이터만** 구체적으로 "
+    "짚어 주세요.\n"
+    "- **추가 조회를 제안할 때는 반드시 위 [지원 가능한 조회 유형] 목록 안의 항목만 제시하세요.** "
+    "그 목록에 없는 항목 — DB 엔진 내부 설정·MySQL/InnoDB/버퍼풀 등 애플리케이션 내부 파라미터, "
+    "OS·미들웨어 튜닝 가이드, 임의의 IT 개념 — 은 **예시로도 제안하지 말고**, 지원하지 않는 기능을 "
+    "있는 것처럼 안내하지 마세요. 제안 예시는 목록에 있는 표현(CPU/메모리/디스크 사용률, 프로세스, "
+    "알람 등)을 그대로 사용하세요.\n"
+    "- 근거로 삼은 수치를 답변에 명시하고, 데이터가 직전 조회 시점 기준임을 필요 시 밝혀 주세요."
 )
 
 # 사용법/능력 문의 시 안내할 지원 메트릭 요약(소스 비의존 공통 도메인).
@@ -74,6 +93,50 @@ def _build_source_catalog(state: AgentState, app_config: AppConfig) -> str:
     return "\n".join(lines)
 
 
+def _build_context_grounding(state: AgentState) -> str:
+    """직전 턴 압축 맥락(conversation_context)을 판단 근거 블록으로 조립한다 (④).
+
+    orchestration 경로에서 general_inference는 messages(대화 이력, ①)와 함께 압축 신호
+    (위치/DB/서버 식별자/직전 결과 요약)를 받는다. 대화 이력만으로 식별자·대상 DB가
+    분명치 않을 때 이 블록이 판단의 그라운딩을 보강한다. 첫 턴(맥락 없음/turn_count<=1)이면
+    빈 문자열을 반환한다(회귀 방지).
+
+    Args:
+        state: 현재 에이전트 상태 (conversation_context 참조)
+
+    Returns:
+        판단 근거 그라운딩 텍스트 블록. 첫 턴이면 빈 문자열.
+    """
+    ctx = state.get("conversation_context")
+    if not ctx or ctx.get("turn_count", 0) <= 1:
+        return ""
+
+    location = ctx.get("previous_location") or ""
+    db_ids = ctx.get("previous_db_ids") or []
+    entities = ctx.get("previous_entities") or []
+    summary = ctx.get("previous_results_summary") or ""
+
+    entity_strs: list[str] = []
+    seen: set[str] = set()
+    for e in entities[:10]:
+        if not isinstance(e, dict):
+            continue
+        token = f"{e.get('field', '')}={e.get('value', '')}"
+        if e.get("value") not in (None, "") and token not in seen:
+            seen.add(token)
+            entity_strs.append(token)
+
+    lines = [
+        "\n\n[이전 대화 맥락 (후속 턴 판단 근거)]",
+        f"- 직전 대상 위치/환경: {location or '(미상)'}",
+        f"- 직전 대상 DB: {', '.join(db_ids) if db_ids else '(미상)'}",
+        f"- 직전 대상 서버/장비: {', '.join(entity_strs) if entity_strs else '(없음)'}",
+        f"- 직전 조회 요약: {summary or '(없음)'}",
+        "위 대상과 직전 조회 결과는 **바로 앞 대화 메시지**에 상세 내용이 있습니다. 이를 근거로 답하세요.",
+    ]
+    return "\n".join(lines)
+
+
 def _build_system_prompt(state: AgentState, app_config: AppConfig) -> str:
     """기본 시스템 프롬프트에 소스 카탈로그·능력 안내 컨텍스트를 그라운딩한다.
 
@@ -88,9 +151,19 @@ def _build_system_prompt(state: AgentState, app_config: AppConfig) -> str:
     Returns:
         그라운딩된 시스템 프롬프트
     """
+    # 후속 턴이면 판단 근거 그라운딩 + 판단 지침을 덧붙인다(④). 첫 턴이면 빈 문자열.
+    grounding = _build_context_grounding(state)
+    addendum = (grounding + _JUDGMENT_GUIDANCE) if grounding else ""
+
     catalog = _build_source_catalog(state, app_config)
     if not catalog:
-        return _SYSTEM_PROMPT
+        # 소스 카탈로그가 없어도 판단/제안(addendum)이 붙는 후속 턴이면 지원 역량 목록을 함께
+        # 실어, 제안 범위 제약(_JUDGMENT_GUIDANCE의 "[지원 가능한 조회 유형] 안에서만")이 참조할
+        # 기준을 제공한다(미지원 기능 광고 차단).
+        base = _SYSTEM_PROMPT
+        if addendum:
+            base += "\n\n[지원 가능한 조회 유형]\n" + _SUPPORTED_CAPABILITIES
+        return base + addendum
 
     return (
         _SYSTEM_PROMPT
@@ -102,9 +175,23 @@ def _build_system_prompt(state: AgentState, app_config: AppConfig) -> str:
         "- 사용자가 사용법·기능·조회 가능 범위·지원 소스를 물으면, 위 목록에 근거해 "
         "현재 지원 소스와 조회 유형을 자연스럽게 소개하세요. 목록에 없는 소스나 기능은 "
         "있다고 답하지 마세요.\n"
+        "- **예시 질의를 제시할 때 위치(김포/여의도/은행 등)는 데이터가 '등록된 소스'"
+        "(폴스타 인스턴스)를 가리킵니다.** 위치를 서버 이름의 일부처럼 붙이지 말고, "
+        "소스를 지목하는 형태로 표현하세요. "
+        "(권장: \"여의도 폴스타에 등록된 서버의 …\", \"김포 운영 폴스타의 …\", \"여의도의 …\" / "
+        "지양: \"여의도 개발 서버의 …\" — 위치가 서버명인지 소스인지 혼동됩니다.)\n"
+        "- 예시 질의는 아래처럼 '소스(위치) + 대상/항목' 형태로 제시하세요.\n"
+        "  · \"여의도 폴스타에 등록된 서버의 CPU 코어 수와 메모리 용량을 알려줘\"\n"
+        "  · \"김포 운영 폴스타의 디스크 사용량을 조회해줘\"\n"
+        "  · \"은행 폴스타의 현재 알람 현황을 보여줘\"\n"
         "- 멀티턴 대화를 지원하므로, 안내 끝에는 \"어떤 것을 확인해 드릴까요?\"처럼 "
         "후속 질문을 유도하는 문장으로 마무리하세요.\n"
+        "- **후속 조회를 제안(예시 포함)할 때는 반드시 위 [지원 가능한 조회 유형] 목록 안의 "
+        "항목만 사용하세요.** 목록에 없는 항목(DB 엔진 내부 설정·MySQL/InnoDB/버퍼풀 등 "
+        "애플리케이션 내부 파라미터, OS·미들웨어 튜닝값, 임의 IT 개념)은 예시로도 제안하지 말고, "
+        "지원하지 않는 기능을 있는 것처럼 말하지 마세요.\n"
         "- 단순 인사·개념 설명 등 안내가 불필요한 질문에는 위 목록을 굳이 나열하지 마세요."
+        + addendum
     )
 
 
@@ -160,8 +247,14 @@ async def general_inference(
 
     logger.info("general_inference 응답 생성 완료 (query=%r)", user_query[:50])
 
-    return {
+    result: dict = {
         "final_response": response_text,
         "routing_intent": "general_inference",
         "current_node": "general_inference",
     }
+    # 직접(semantic) 경로에서 general_inference가 그래프 종료 노드일 때 답변을 대화 이력에
+    # 누적한다(멀티턴 후속 판단용, ②). orchestration 경로에서는 subagent로 실행되어 반환
+    # messages가 top-level로 승격되지 않으므로(result_aggregator가 별도 누적) 이중 누적이 없다.
+    if response_text and response_text.strip():
+        result["messages"] = [AIMessage(content=response_text)]
+    return result
