@@ -157,6 +157,20 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
     }
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
+
+    # D-060: 목적지 vLLM이 443을 listen하되 유효 인증서를 쓰지 않는 폐쇄망에서는
+    # SSL 검증을 끈다. health check(vllm_healthy)만 끄면 실제 tool-calling 요청이 SSL로
+    # 실패하므로, ChatOpenAI가 쓰는 httpx 클라이언트(sync/async 모두)에 verify=False를 주입한다.
+    if not config.orchestrator.verify_ssl:
+        import httpx
+
+        logger.warning(
+            "오케스트레이터 vLLM SSL 검증 비활성화(ORCHESTRATOR_VERIFY_SSL=false, D-060): base_url=%s",
+            config.orchestrator.base_url,
+        )
+        kwargs["http_client"] = httpx.Client(verify=False)
+        kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
+
     return ChatOpenAI(**kwargs)
 
 

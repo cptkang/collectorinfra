@@ -77,6 +77,10 @@ class OrchestratorConfig(BaseSettings):
     api_key: str = ""             # vLLM은 보통 불필요 / gemini는 미설정 시 LLM_GEMINI_API_KEY 폴백
     timeout: int = 120
     health_timeout: int = 3       # 가용성 health check 타임아웃(초, vLLM)
+    # SSL 인증서 검증 여부(D-060). 목적지 vLLM이 443을 listen하되 유효 인증서를 쓰지 않는
+    # 폐쇄망 환경에서 False로 두면 health check·tool-calling 요청의 SSL 검증을 건너뛴다.
+    # 미설정 시 True(안전 기본값) — `.env`에 ORCHESTRATOR_VERIFY_SSL=false로 비활성화.
+    verify_ssl: bool = True
 
     # ── Plan 50 / D-040 (B6): 제어 평면 컨텍스트 예산 노브 ──
     # 모델 교체(예: 9B → 대형) 시 코드 수정 없이 .env(ORCHESTRATOR_*)만 조정하면 예산이 확장된다.

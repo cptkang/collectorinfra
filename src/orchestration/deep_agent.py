@@ -21,7 +21,7 @@ from src.prompts.orchestrator import ORCHESTRATOR_INSTRUCTIONS
 logger = logging.getLogger(__name__)
 
 
-def vllm_healthy(base_url: str, timeout: int = 3) -> bool:
+def vllm_healthy(base_url: str, timeout: int = 3, *, verify_ssl: bool = True) -> bool:
     """vLLM(OpenAI 호환) 엔드포인트의 가용성을 health check한다.
 
     `{base_url}/models`에 GET하여 200이면 가용으로 판정한다(비용 0에 가까움).
@@ -29,6 +29,9 @@ def vllm_healthy(base_url: str, timeout: int = 3) -> bool:
     Args:
         base_url: vLLM /v1 엔드포인트
         timeout: 요청 타임아웃(초)
+        verify_ssl: SSL 인증서 검증 여부(D-060). 목적지가 443을 listen하되 유효 인증서를
+            쓰지 않는 폐쇄망에서 False로 두면 SSL 검증을 건너뛴다. False면 SSL 검증 실패로
+            인한 잘못된 semantic_router 폴백을 방지한다.
 
     Returns:
         가용 시 True, 미설정/미응답/오류 시 False
@@ -39,7 +42,7 @@ def vllm_healthy(base_url: str, timeout: int = 3) -> bool:
 
     url = base_url.rstrip("/") + "/models"
     try:
-        resp = requests.get(url, timeout=timeout)
+        resp = requests.get(url, timeout=timeout, verify=verify_ssl)
         return resp.status_code == 200
     except Exception as e:  # noqa: BLE001 — 가용성 판정이므로 모든 예외를 미가용으로 처리
         logger.info("vLLM health check 실패(%s) → semantic_router 폴백: %s", url, e)
@@ -60,7 +63,11 @@ def orchestrator_available(config: AppConfig) -> bool:
     """
     if config.orchestrator.provider == "gemini":
         return bool(config.orchestrator.api_key or config.llm.gemini_api_key)
-    return vllm_healthy(config.orchestrator.base_url, config.orchestrator.health_timeout)
+    return vllm_healthy(
+        config.orchestrator.base_url,
+        config.orchestrator.health_timeout,
+        verify_ssl=config.orchestrator.verify_ssl,
+    )
 
 
 def select_orchestration_backend(config: AppConfig) -> str:

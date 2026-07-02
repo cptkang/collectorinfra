@@ -304,6 +304,9 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "organized_data": res.get("organized_data"),
         "query_results": res.get("query_results", []),
         "template_structure": state.get("template_structure"),
+        # uploaded_file(원본 파일 바이너리)이 없으면 output_generator가 양식을 채우지 못하고
+        # CSV로만 강등된다(비대칭 전파 방지, D-053 계열).
+        "uploaded_file": state.get("uploaded_file"),
         "target_sheets": state.get("target_sheets"),
         "file_type": state.get("file_type"),
         "mapping_sources": state.get("mapping_sources"),

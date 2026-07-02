@@ -49,10 +49,16 @@ def _sql_literal(value: str) -> str:
 def _table(db_id: str, name: str, db_engine: str = "postgresql") -> str:
     """db_id/엔진에 맞는 테이블 참조를 반환한다.
 
-    DB2(은행 레거시 polestar_b0 등)는 무스키마 테이블을 연결 계정의 CURRENT SCHEMA로
-    해소하므로 스키마 prefix를 붙이지 않는다(b0 프로필이 스키마 prefix 없이 cmm_resource를
-    참조하는 것과 정합). PostgreSQL(gp/yd)은 기존대로 `polestar.` 스키마로 한정한다.
+    스키마는 domain_config의 `db_schema`(D-057)를 단일 출처로 사용한다. 설정돼 있으면
+    `schema.table`로 한정하고, 비어 있으면 무스키마(연결 CURRENT SCHEMA)로 참조한다.
+    DB2(b0)는 db_schema 미설정 시 무스키마로 두되, 실 스키마가 확인되면 domain_config에
+    등록하는 즉시 본 경로와 LLM 생성 경로가 동시에 스키마 한정된다.
+    (하위호환: domain_config에 값이 없고 PostgreSQL이면 기존 `polestar.` 기본값 유지.)
     """
+    domain = get_domain_by_id(db_id)
+    schema = (getattr(domain, "db_schema", "") or "") if domain else ""
+    if schema:
+        return f"{schema}.{name}"
     if db_engine == "db2":
         return name
     schema = _SCHEMA_BY_DB_ID.get(db_id, _DEFAULT_SCHEMA)

@@ -27,6 +27,12 @@ class DBDomainConfig:
     env_connection_key: str = ""
     env_type_key: str = ""
     db_engine: str = "postgresql"  # "postgresql", "mysql", "db2", etc.
+    # 테이블 참조 시 붙일 스키마명(D-057). 빈 문자열이면 무스키마(연결 CURRENT SCHEMA)로 참조한다.
+    # LLM SQL 생성 경로(multi_db_executor)와 hostname 해소(polestar_hostname_resolver)가
+    # 이 값을 단일 출처로 사용하여 `schema.table`을 결정적으로 한정한다.
+    # DB2(b0)는 연결 계정 CURRENT SCHEMA(예: SDQ000)가 테이블 소유 스키마와 다를 수 있으므로,
+    # 실 스키마를 SYSCAT.TABLES로 확인 후 여기에 명시해야 SQL0204N(-204)을 방지할 수 있다.
+    db_schema: str = ""
 
 
 DB_DOMAINS: list[DBDomainConfig] = [
@@ -46,6 +52,11 @@ DB_DOMAINS: list[DBDomainConfig] = [
         env_connection_key="POLESTAR_B0_CONNECTION",
         env_type_key="POLESTAR_B0_TYPE",
         db_engine="db2",
+        # D-057(2026-07-02 실측): 운영 b0 DB2에서 cmm_resource 소유 스키마 = POLESTAR
+        #   (SYSCAT.TABLES 조회 결과 TABSCHEMA='POLESTAR'). 연결 계정 CURRENT SCHEMA는 SDQ000이라
+        #   무스키마 참조 시 SDQ000.CMM_RESOURCE로 해소되어 SQL0204N(-204) 발생 → 명시 스키마 한정 필수.
+        #   DB2는 미인용 식별자를 대문자로 저장하므로 스키마명도 대문자 POLESTAR로 지정한다.
+        db_schema="POLESTAR",
     ),
     DBDomainConfig(
         db_id="polestar_cm_gp",
@@ -64,6 +75,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
         env_connection_key="POLESTAR_CM_GP_CONNECTION",
         env_type_key="POLESTAR_CM_GP_TYPE",
         db_engine="postgresql",
+        db_schema="polestar",
     ),
     DBDomainConfig(
         db_id="polestar_cm_yd",
@@ -82,6 +94,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
         env_connection_key="POLESTAR_CM_YD_CONNECTION",
         env_type_key="POLESTAR_CM_YD_TYPE",
         db_engine="postgresql",
+        db_schema="polestar",
     ),
     DBDomainConfig(
         db_id="cloud_portal",

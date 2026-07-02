@@ -121,6 +121,27 @@ def test_isolated_input_filters_large_fields():
     assert len(isolated["query_results"]) == 0
 
 
+def test_isolated_input_propagates_form_fill_fields():
+    """양식 채우기 필드(uploaded_file/template_structure)가 격리 state로 전파된다.
+
+    회귀 방지: uploaded_file을 빠뜨리면 output_generator가 원본 파일 없음으로
+    CSV 강등된다(비대칭 전파, D-053 계열).
+    """
+    state = create_initial_state(user_query="양식 채워줘", user_id="kim")
+    state["uploaded_file"] = b"PK\x03\x04fake-xlsx-bytes"
+    state["template_structure"] = {"sheets": [{"name": "Sheet1", "header_cells": []}]}
+    state["file_type"] = "xlsx"
+
+    task = {"task_id": "t1", "agent": "data_query", "sub_query": "조회",
+            "depends_on": [], "input_from": [], "order": 1}
+
+    isolated = _make_isolated_input(task, state, prior={})
+
+    assert isolated["uploaded_file"] == b"PK\x03\x04fake-xlsx-bytes"
+    assert isolated["template_structure"] == state["template_structure"]
+    assert isolated["file_type"] == "xlsx"
+
+
 # ──────────────────────────────────────────────
 # test_data_query_single_vs_multi (R-09, §4.9.3)
 # ──────────────────────────────────────────────

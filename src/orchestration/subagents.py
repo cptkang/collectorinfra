@@ -503,6 +503,10 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "request_id": state.get("request_id"),
         "client_ip": state.get("client_ip"),
         "template_structure": state.get("template_structure"),
+        # uploaded_file(원본 파일 바이너리)은 output_generator가 Excel/Word를 실제로 채우는 데
+        # 필수다. template_structure만 전파하고 이 값을 빠뜨리면 "원본 파일 정보가 없어 채울 수
+        # 없습니다"로 CSV 강등된다(비대칭 전파, D-053 계열).
+        "uploaded_file": state.get("uploaded_file"),
         "target_sheets": state.get("target_sheets"),
         "file_type": state.get("file_type"),
         "csv_sheet_data": state.get("csv_sheet_data"),

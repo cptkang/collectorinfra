@@ -2788,10 +2788,190 @@ concrete 질의는 미주입(스코프 오확대 없음). 회귀: `test_multitur
 
 ---
 
+## D-057. 폼필(멀티DB) SQL 생성의 엔진·스키마 인지 — b0(DB2) POLESTAR 스키마 한정
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-02 |
+| **상태** | 확정 |
+| **관련 결정** | D-053(hostname 해소 SQL 엔진 인지) 확장 — 충돌 없음 |
+
+### 배경 / 문제
+
+파일 업로드 양식 채우기(멀티DB 경로 `multi_db_executor`)에서 은행존(`polestar_b0`, DB2)이
+`SQL0204N "SDQ000.CMM_RESOURCE" is an undefined name`으로 실패. 엔진·스키마 인지 SQL 조립이
+`polestar_hostname_resolver.build_hostname_sql`(D-053)에만 있고, **LLM 기반 일반 SQL 생성 경로
+(`multi_db_executor`/`query_generator`)에는 이식되지 않아** b0 폼필이 무스키마 `cmm_resource`를
+생성 → DB2가 연결 계정 CURRENT SCHEMA(`SDQ000`)로 해소 → 미존재. D-053이 "향후 고려사항"으로
+예측한 시나리오(SQLCODE -204 → b0 실제 스키마 등록)가 폼필 경로에서 현실화. 실측(2026-07-02):
+`SYSCAT.TABLES.TABSCHEMA='POLESTAR'`, `CURRENT SCHEMA=SDQ000`.
+
+### 결정
+
+테이블 스키마 한정을 **domain_config `db_schema`를 단일 출처**로 결정적으로 적용한다.
+- `DBDomainConfig.db_schema` 필드 신설: gp/yd=`polestar`, **b0=`POLESTAR`**(DB2 대문자 식별자), 그 외 미설정.
+- `src/routing/db_schema.py`(`get_schema_prefix`/`qualify_table`) — 접두사 계산을 한 곳에 집약.
+- `multi_db_executor._generate_sql(db_id=...)`가 스키마 한정 규칙을 프롬프트에 **결정적 주입**
+  (설정 시 `POLESTAR.테이블`, 미설정 시 무스키마 지침 + DB2면 FETCH FIRST 방언 명시).
+- `polestar_hostname_resolver._table`도 `db_schema`를 우선 사용(하위호환 폴백 유지) → b0 hostname
+  해소도 동시에 스키마 한정되어 D-053의 잠재 -204를 함께 해소.
+- b0 프로필 `query_examples`를 `POLESTAR.` 한정으로 정합화(PostgreSQL식 `polestar.` 접두사 제거),
+  query_guide에 DB2 스키마 규칙 명시.
+
+### 세부 변경
+
+- `src/routing/domain_config.py`: `db_schema` 필드 + gp/yd/b0 값.
+- `src/routing/db_schema.py`(신규), `src/nodes/multi_db_executor.py`(`db_id` 인자·규칙 주입),
+  `src/alarm/infrastructure/polestar_hostname_resolver.py`(`_table` db_schema 우선),
+  `config/db_profiles/polestar_b0.yaml`(예시 POLESTAR 한정·가이드).
+- `tests/test_routing/test_db_schema.py`(신규), `test_process_hostname_resolve.py`(b0 POLESTAR 한정으로 갱신).
+
+### 방향성 정정 (2026-07-02 사용자 검토)
+
+본 결정의 앱-레벨 명시 한정(db_schema=POLESTAR)은 **인-리포 안전망**으로 유지하되, **최선(운영)**은
+mcp_server `.env`의 `POLESTAR_B0_CONNECTION`에 **`CURRENTSCHEMA=POLESTAR`를 추가**하는 것이다
+(`...;UID=SDQ000;PWD=###;CURRENTSCHEMA=POLESTAR;`). 연결 시 CURRENT SCHEMA를 POLESTAR로 고정하면
+무스키마 참조가 **전 경로**(LLM SQL·리졸버·`polestar_history`·alarm 등)에서 자동 해소되어, 본 결정이 배선하지
+못한 경로까지 커버한다. 앱 `SET CURRENT SCHEMA` 앞단(플랜 B)은 DBHub 읽기전용(`_validate_sql_simple`이
+비-SELECT 차단)이라 execute_sql 경로로는 불가 — 연결 초기화에 넣어야 하므로 사실상 연결 문자열과 수렴.
+우선순위/액션 아이템: `plans/53-...md` §0.
+
+### 검증
+
+- 신규 helper/규칙 주입 테스트 + 갱신 resolver 테스트 통과. arch_check exit 0.
+- **운영 확인 필요**: (권고) 연결 문자열 `CURRENTSCHEMA=POLESTAR` 반영 후 b0 폼필 재실행하여 `SQL0204N` 소멸 확인.
+
+---
+
+## D-058. 공동존(gp/yd) 서버 식별자 NULL 폴백 — COALESCE(name, hostname)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-02 |
+| **상태** | **잠정(graceful degradation)** — H1/H2 확정은 D-057 해소 후 진단(사용자 검토: "057 먼저") |
+| **관련 결정** | D-050(EAV 피벗 HAVING·null은 SQL 오류일 수 있음), D-057(선행), 2026-06-10 name≠hostname |
+
+### 순서 조정 (2026-07-02 사용자 검토)
+
+`COALESCE(name, hostname)`는 H1(피벗 SQL 오류)·H2(데이터 미채움) **양쪽에서 안전**하므로 임시 유지하되
+**확정 수정 아님**. yd `name` NULL의 원인 판별은 파이프라인이 정상 동작(D-057 해소)해 실제 생성 SQL·데이터를
+관찰할 수 있어야 정확하다(D-050 원칙). 057 해소 후 처리현황(D-039) 생성 SQL + `COUNT(*) FILTER(WHERE name
+IS NOT NULL)`로 H1/H2 확정 → H1이면 피벗 SQL 교정(COALESCE로 덮지 말 것), H2면 COALESCE 확정.
+
+### 배경 / 문제
+
+여의도(`polestar_cm_yd`) 양식 채우기에서 데이터는 조회되나 `cmm_resource.name`(서버명)이 전부
+NULL이라 개별 서버 식별 불가. 공동존 프로필은 "서버명=name, 기본 식별자"를 강제하는데(2026-06-10),
+개발/스테이징 환경은 name이 미채워졌을 수 있음(H2) 또는 피벗 SQL 구성 오류일 수 있음(H1, D-050류).
+
+### 결정
+
+서버 식별 **출력 컬럼**을 항상 `COALESCE(cmm_resource.name, cmm_resource.hostname)`로 생성해
+name이 비어도 식별 불가(전부 NULL)를 방지한다(gp/yd 공통). 값 필터도 `(r.name = 'X' OR r.hostname = 'X')`로
+매칭 권장. name/hostname을 별도 컬럼으로 함께 요청받으면 각각 그대로 출력하되 식별 대표 컬럼은 COALESCE.
+(H1/H2 판별을 위해 실행된 생성 SQL·`name IS NOT NULL` 카운트 확인을 권장 — D-050 원칙.)
+
+### 세부 변경
+
+- `config/db_profiles/polestar_cm_yd.yaml`·`polestar_cm_gp.yaml`: query_guide에 `[★ 서버 식별자 NULL 폴백]`
+  절 신설, 대표 query_examples(서버 종합/목록/비정상/장비명 필터)의 server_name 출력을 COALESCE로 갱신.
+
+### 검증
+
+- YAML 로드·기존 문서/매핑 테스트 통과. **라이브 확인 권장**: 생성 SQL·데이터 카운트로 H1/H2 확정 후 폴백 효과 검증.
+
+---
+
+## D-059. 폼필 실패 시 침묵적 CSV 강등 금지 — 사유 노출
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-02 |
+| **상태** | 확정 |
+| **관련 결정** | D-047/2026-06-26(결정적 진단 메시지를 일반 문구로 덮지 말 것) 정합 |
+
+### 배경 / 문제
+
+양식 채우기 불가 시 `output_generator._generate_document_file`이 `None`을 반환 → `output_file=None` →
+API `has_file=False` → 프론트가 Excel 링크를 감추고 CSV만 노출. 사용자는 **왜 Excel이 안 나오는지**
+알 수 없이 조용히 CSV로 강등됨(실패 원인 은닉 안티패턴).
+
+### 결정
+
+`_generate_document_file`이 실패 시 `{"reason": ...}`(매핑 없음/양식·파일 없음/채우기 오류)를 반환하고,
+`output_generator`가 사유를 최종 응답에 **결정적으로 노출**("업로드하신 XLSX 양식을 채우지 못했습니다. 사유: …,
+아래 CSV로 확인"). 성공 판별은 `file_bytes` 키 존재로. 데이터·매핑이 있으면 일부 NULL이어도 Excel은 생성
+유지(`total_filled==0`도 bytes 반환) — `None` 반환은 실제 불가 시로 국한.
+
+### 세부 변경
+
+- `src/nodes/output_generator.py`: `_generate_document_file` 반환 규약 변경(성공=`file_bytes`, 실패=`reason`),
+  호출부 성공 판별·사유 노출 메시지.
+- `tests/test_nodes/test_output_generator.py`: 폴백 테스트를 사유 노출 검증으로 갱신.
+
+### 검증
+
+- 갱신 테스트 통과. arch_check exit 0.
+
+---
+
+## D-061. 은행존(b0) 서버명(등록명)·호스트명·IP 구분 — 직접 컬럼 사용
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-08 |
+| **상태** | 확정(라이브 실측 기반) |
+| **관련 결정** | D-058(공동존 서버 식별자), 2026-06-10(공동존 name≠hostname) |
+
+### 배경 / 문제
+
+은행존(`polestar_b0`) 양식 채우기에서 "서버 이름"과 "호스트네임" 칼럼이 **둘 다 등록명(cmm_resource.name)**
+으로 출력됨. 원인: b0 프로필에 gp/yd 같은 name/hostname 구분(`column_synonyms`)이 없고, EAV `Hostname`
+속성의 synonyms가 **"서버명"을 포함**해 서버명↔호스트명을 혼동.
+
+### 라이브 실측 (2026-07-08, `b0_query.py` 진단 스크립트)
+
+- `cmm_resource.name` = 폴스타 등록명. 대개 `"<호스트명> (<설명>)"` 구조(**호스트명과 괄호 사이 공백은 있을
+  수도/없을 수도** 있음, 예: `fccsttso065(콜센터 시각화 #3)`, `sicwso01 (이미지 업무 WAS#1)`).
+  **단, 설명 없이 `name == hostname`으로 등록된 서버도 상당수** 존재.
+- `cmm_resource.hostname` 직접 컬럼 = **클린 호스트명**(예: `sicwso01`).
+- `cmm_resource.ipaddress` 직접 컬럼 = **클린 IP**(EAV IPaddress와 동일 값 확인).
+- (gp/yd는 EAV Hostname/IPaddress가 비어 있으나, b0는 EAV에도 값이 있음 — 그래도 직접 컬럼이 단순.)
+
+### 결정
+
+b0도 서버명(name) ≠ 호스트명(hostname)을 구분한다.
+- `column_synonyms` 추가: `서버명/서버 이름/장비명 → cmm_resource.name`, `호스트명/호스트네임 → cmm_resource.hostname`.
+- EAV `Hostname` synonyms에서 **"서버명" 제거**(혼동 차단).
+- **호스트명·IP 출력은 직접 컬럼(`r.hostname`/`r.ipaddress`)** 사용. **name에서 호스트명을 파싱하지 말 것** —
+  `name == hostname` 서버가 있고 `"<host> (<desc>)"` 구조도 불규칙(공백 유무)이라 파싱은 취약하며, 직접
+  컬럼이 항상 클린이다.
+- **주의(회귀 오판 금지)**: `name == hostname`으로 등록된 서버는 "서버 이름"과 "호스트네임" 칼럼이 **같은 값**
+  으로 나오는 것이 정상이다(버그 아님).
+
+### 경로 독립성
+
+`column_synonyms`(서버명→name, 호스트명→hostname)는 field_mapper 단계에서 적용되므로 **LLM 생성 경로와
+D-038 결정적 빌더(`_ALLOWED_DIRECT_COLUMNS={name,hostname,ipaddress,...}`) 양쪽 모두** 올바르게 분리된다.
+query_guide/예시는 LLM 경로 보강용.
+
+### 세부 변경
+
+- `config/db_profiles/polestar_b0.yaml`: EAV Hostname synonyms 정리, `column_synonyms` 신설,
+  query_guide `[★ 은행존 전용 — 서버명(등록명)과 호스트명 구분]` 절, 종합 조회 예시에 `server_name`(name)·
+  `hostname`(직접)·`ipaddress`(직접) 구분 시연. (코드 변경 없음 — 프로필 단일 파일.)
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-08 | D-061 | **은행존(b0) 서버명(등록명)·호스트명·IP 구분**: 은행존 폼필에서 "서버 이름"·"호스트네임"이 둘 다 등록명(name)으로 출력 — b0에 name/hostname 구분 부재 + EAV `Hostname` synonyms가 "서버명" 포함(혼동). 라이브 실측(`b0_query.py`): name=등록명(대개 `"<host> (<desc>)"`, 공백 유무 무관, **일부 서버는 name==hostname**), hostname/ipaddress 직접 컬럼=클린 값. → column_synonyms(서버명→name, 호스트명→hostname) 추가, EAV Hostname synonyms에서 "서버명" 제거, 호스트명·IP는 **직접 컬럼** 사용(name 파싱 금지 — name==hostname 서버 존재+구조 불규칙). name==hostname 서버는 두 칼럼 동일값이 정상(회귀 아님). column_synonyms는 field_mapper 단계라 LLM·D-038 빌더 경로 모두 적용. 수정: `polestar_b0.yaml`(단일 파일). 관련: D-058, 2026-06-10. 계획 `plans/53-...md` |
+| 2026-07-07 | D-060 | **오케스트레이터 vLLM SSL 검증 토글 — 인증서 없는 443 엔드포인트 대응**: 목적지 vLLM이 443을 listen하되 유효 SSL 인증서를 쓰지 않는 폐쇄망에서 `deep_agent`가 `semantic_router`로 잘못 폴백하던 문제. 근본 원인: `deep_agent.vllm_healthy`의 health check(`requests.get(base_url/models)`)가 `verify` 미지정(기본 True)이라 SSL 검증 실패→예외→`orchestrator_available=False`→`select_orchestration_backend`가 `semantic_router` 반환. health check만 고쳐도 실제 tool-calling 요청(`ChatOpenAI`)이 같은 이유로 실패하므로 **두 경로 모두** 처리. **결정**: `OrchestratorConfig.verify_ssl: bool = True`(안전 기본값) 노브 추가(`.env`의 `ORCHESTRATOR_VERIFY_SSL=false`로 비활성). (a) `vllm_healthy(..., verify_ssl=)` 파라미터 추가, `orchestrator_available`이 `config.orchestrator.verify_ssl` 전파. (b) `_create_orchestrator_vllm`이 `verify_ssl=False`면 `httpx.Client(verify=False)`/`httpx.AsyncClient(verify=False)`를 `http_client`/`http_async_client`로 주입(async ainvoke 경로 필수, sync도 대칭). 수정: `config.py`·`orchestration/deep_agent.py`·`llm.py`·`.env.example`. FabriX 워커(`fabrix_kbgenai.py`)는 이미 `verify=False`라 무관. 관련: D-037(트랙 B), D-053(엔진별 방언). |
+| 2026-07-02 | D-059 | **폼필 실패 시 침묵적 CSV 강등 금지 — 사유 노출**: 양식 채우기 불가 시 `_generate_document_file`이 None 반환→`output_file=None`→프론트가 Excel 링크 감추고 CSV만 노출(원인 은닉). → 실패 시 `{"reason":...}`(매핑 없음/양식·파일 없음/채우기 오류) 반환, `output_generator`가 사유를 최종 응답에 결정적 노출. 성공 판별=`file_bytes` 키. 수정: `output_generator.py`, `test_output_generator.py`. 관련: D-047(2026-06-26 진단 은닉 금지). 계획 `plans/53-...md` |
+| 2026-07-02 | D-058 | **공동존(gp/yd) 서버 식별자 NULL 폴백**: yd 양식 채우기에서 `cmm_resource.name`(서버명)이 전부 NULL이라 개별 서버 식별 불가(개발/스테이징 name 미채움 H2 또는 피벗 SQL 오류 H1). → 서버 식별 출력 컬럼을 `COALESCE(name, hostname)`로, 값 필터도 `(name OR hostname)` 매칭. 수정: `polestar_cm_yd.yaml`·`polestar_cm_gp.yaml`(가이드 절+대표 예시 COALESCE). 라이브에서 생성 SQL·카운트로 H1/H2 확정 권장(D-050 원칙). 관련: D-050, 2026-06-10(name≠hostname). 계획 `plans/53-...md` |
+| 2026-07-02 | D-057 | **폼필(멀티DB) SQL 생성의 엔진·스키마 인지 — b0(DB2) POLESTAR 한정**: 양식 채우기(`multi_db_executor`)에서 b0가 `SQL0204N "SDQ000.CMM_RESOURCE" undefined`로 실패. 엔진·스키마 인지가 hostname resolver(D-053)에만 있고 LLM SQL 생성 경로엔 미이식 → 무스키마 생성→CURRENT SCHEMA(SDQ000) 오해소. 실측: cmm_resource 소유 스키마=POLESTAR. → `DBDomainConfig.db_schema`(gp/yd=polestar, b0=POLESTAR) 단일 출처, `routing/db_schema.py` 헬퍼, `_generate_sql(db_id)`가 스키마 규칙+DB2 방언 결정적 주입, resolver `_table`도 db_schema 우선(b0 hostname 해소 -204 동시 해소), b0 프로필 예시 POLESTAR 한정. 수정: `domain_config.py`·`db_schema.py`(신규)·`multi_db_executor.py`·`polestar_hostname_resolver.py`·`polestar_b0.yaml`·`test_db_schema.py`(신규)·`test_process_hostname_resolve.py`. D-053이 예측한 -204 시나리오 현실화(폼필 경로). 관련: D-053. 계획 `plans/53-...md` |
 | 2026-07-01 | D-056 | **멀티턴 후속 판단형 질의에 직전 턴 답변 전파(Approach A, ①②④)**: 3턴 "rightsizing 해도 되나?"가 "데이터 확보 안 됨"으로 거부되던 환각 수정. 근본원인(orchestration): (1)어시스턴트 답변이 `messages`에 누적 안 됨(append 노드가 synonym_registrar뿐), (2)`_make_isolated_input`이 `messages:[]`로 이력 삭제 → general_inference 멀티턴 코드 무력화, (3)general_inference가 conversation_context 미참조. → **②** 경로별 단일 종료 노드(result_aggregator `_with_answer_history`/output_generator 래퍼/general_inference/error_response)에서만 AIMessage 누적(subagent 반환은 task_results에만 담겨 이중 누적 없음). **①** `SubAgentSpec.needs_history`(general_inference만 True)로 추론 agent에만 트리밍 이력 전달(`_history_for_agent`, 상한 10, 현재 턴 질의 제외), 조회 agent는 [] 격리. **④** general_inference 후속 턴 conversation_context 그라운딩 + `_JUDGMENT_GUIDANCE`(확보 데이터로 판단 가능 범위 답하고 추가 필요분만 지목, 거부 금지). ③rows 보존·intent_planner 분석 라우팅은 2단계 유보(95K/D-041 신중). **후속 보강(같은 날)**: A 적용 후 조회 없는 판단 턴(general_inference)이 top-level `query_results=[]`로 덮어써 다음 턴 `previous_entities`가 소실 → "해당 서버"가 전체 서버로 조회되던 문제 → `context_resolver`가 이번 턴 추출이 비면 직전 conversation_context의 entities/db_ids/location을 **sticky 승계**(이번 턴 신규값 우선). 별건 미해결: b0(DB2) 월간 사용률 통계 정수 표시(gp/yd만 `::numeric` 캐스트, b0 부재 — SQL 레벨 추정, DB2 컬럼 타입 검증 후 수정 예정). **후속 보강 2(같은 날)**: general_inference가 판단/분석 마무리에서 **미지원 기능**(MySQL InnoDB 버퍼풀·DB 엔진 내부 설정 등)을 후속 조회 예시로 지어내 광고(→ 실제 요청 시 data_query 재시도 낭비 후 "없음") → `_JUDGMENT_GUIDANCE`가 제안을 `_SUPPORTED_CAPABILITIES`로 바운딩 안 한 탓. 프롬프트 하드 제약(사용자 선택): `_JUDGMENT_GUIDANCE`·general_inference [안내 규칙]에 "제안·예시는 [지원 가능한 조회 유형] 목록 안에서만, 목록 밖(엔진 내부 설정·앱 파라미터·임의 IT 개념) 예시 금지" 명시 + 카탈로그 없는 후속 턴에도 지원 목록 주입. 미지원 요청 재시도 낭비(2차 증상)는 스코프 게이트 유보. **후속 보강3(같은 날)**: 프로세스 리스트 조회 후 "해당 서버 알람"이 프로세스명(name=mysql,pid…)을 서버로 오조회 → `_extract_previous_entities`가 프로세스 결과 행의 `name`/`pid`를 서버 식별자로 오수집(name/id 힌트 부분매칭)한 탓 → `_looks_like_process_rows`(pid 키 감지)로 프로세스 행을 결과 harvesting에서 제외(서버 식별자는 filter만), sticky 승계로 hostname 복원. **후속 보강4(같은 날, 근본)**: "해당 서버 알람/CPU"가 전체 조회로 빠지던 근본 — `query_generator`가 SQL 생성에 `parsed_requirements.original_query`+filter만 쓰고 intent_planner 확장 sub_query는 안 씀 → 지시어 후속은 filter 비고(D-055) original_query에 구체 서버명 없어 hostname 미도달. `subagents._inject_demonstrative_hostname`으로 data/alarm 파이프라인에서 지시어 특정-서버 질의(전체 조회 제외)에 직전 hostname을 filter_conditions에 결정적 주입(concrete 경로와 동일). 회귀: 신규 11건 + 승계 2건 + 역량 제약 3건 + 프로세스 제외 5건 + hostname 주입 6건, test_multiturn·test_orchestration 246 passed/4 skipped. 관련: D-041, D-047, D-048, D-053, D-055. 검증: arch_check exit 0 |
 | 2026-07-01 | D-055 | **후속 턴 "해당 서버" 지시어 hostname 오추출 차단 + 결과 요약 유지 정정**: (1) 멀티턴 후속 "해당 서버 프로세스"에서 서버가 `previous_server`로 들어가 0건 — `input_parser` 규칙 14가 지시어도 서버 지목으로 보고 hostname 필터를 만들며 LLM이 플레이스홀더를 지어냄 → 이번-턴 필터가 `_resolve_hostname` ①에서 previous_entities ②보다 우선순위가 높아 오염. → `process_query._is_demonstrative_value()` 결정적 가드로 지시어(해당/그/이/위 + 서버/장비)·영문 플레이스홀더(previous/prev+server/host)를 hostname에서 배제하고 previous_entities로 폴백(①·② 모두). input_parser 규칙 14에 지시어 미추출 지침·예시 보강. (2) D-054 규칙 6을 LLM이 과잉 적용해 정상 요약·이상 징후 분석까지 소실 → 규칙 6에 "데이터에 없는 컬럼 면책만 금지, 조회 데이터 요약·분석은 유지" 단서 추가. 회귀: 지시어 가드 단위 3건. 관련: D-046, D-047, D-053, D-054. 검증: orchestration 141 passed/4 skipped, arch_check exit 0 |
 | 2026-06-30 | D-054 | **레거시 `polestar` 도메인 폐기 + db_profiles 정리 + 면책 문구 환각 차단**: (1) `DB_DOMAINS`에서 레거시 단일 `polestar` 엔트리 제거(7→6, b0가 은행 레거시 승계). (2) `config/db_profiles/{test_db,unknown,polestar_pg,polestar}.yaml` 삭제(빈 auto 스텁·미등록 db_id·b0로 대체). (3) `output_generator` 프롬프트 규칙 6 추가 — 사용자가 묻지 않은 컬럼(avail_status 등) 부재·면책·안내 문구 자발 추가 금지(코드에 없던 순수 LLM 환각). 부수: `alarm.py` db_id 기본값·`semantic_router`/`cache_management` few-shot 예시·`.env.example` POLESTAR_DB_IDS/ACTIVE_DB_IDS·테스트(domain_config 6개, structure_analysis polestar_b0) 갱신. field_mapper polestar 분기·test_document 픽스처·redis/export 스냅샷은 의도적 보존. 검증: 영향 테스트 93 passed/7 skipped(기존 실패 1건 무관). 관련: D-004, D-053 |

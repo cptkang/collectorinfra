@@ -149,6 +149,7 @@ async def multi_db_executor(
                     sub_context, app_config.query.default_limit,
                     column_mapping=db_mapping,
                     db_engine=db_engine,
+                    db_id=db_id,
                 )
 
                 # 3. SQL 검증 (간이)
@@ -165,6 +166,7 @@ async def multi_db_executor(
                         error_context=validation_error,
                         column_mapping=db_mapping,
                         db_engine=db_engine,
+                        db_id=db_id,
                     )
                     validation_error = _validate_sql_simple(sql, schema_info)
                     if validation_error:
@@ -279,6 +281,7 @@ async def _generate_sql(
     error_context: str | None = None,
     column_mapping: dict[str, str] | None = None,
     db_engine: str = "postgresql",
+    db_id: str = "",
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -291,6 +294,7 @@ async def _generate_sql(
         error_context: 이전 에러 메시지 (재시도 시)
         column_mapping: DB별 필드-컬럼 매핑 (field_mapper 결과, 선택)
         db_engine: DB 엔진 타입 ("postgresql", "db2" 등)
+        db_id: DB 식별자 (스키마 한정 규칙 결정용, D-057)
 
     Returns:
         생성된 SQL 문자열
@@ -343,6 +347,28 @@ async def _generate_sql(
                 )
 
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
+
+    # D-057: 스키마 한정 규칙을 결정적으로 주입한다.
+    # LLM이 임의로 스키마(예: PostgreSQL식 `polestar.`)를 붙이거나, DB2에서 무스키마로 두어
+    # 연결 계정 CURRENT SCHEMA(예: SDQ000)로 잘못 해소되는 것을 방지한다.
+    from src.routing.db_schema import get_schema_prefix
+
+    schema_prefix = get_schema_prefix(db_id) if db_id else ""
+    if schema_prefix:
+        db_engine_hint += (
+            f"\n[스키마 한정 규칙] 이 DB의 모든 테이블은 반드시 접두사 `{schema_prefix}`를 붙여 "
+            f"`{schema_prefix}테이블명` 형식으로 참조하세요 (예: {schema_prefix}cmm_resource). "
+            f"다른 스키마명을 임의로 붙이지 마세요."
+        )
+    else:
+        db_engine_hint += (
+            "\n[스키마 한정 규칙] 이 DB의 테이블은 **스키마 접두사 없이(무스키마)** 참조하세요 "
+            "(예: cmm_resource). `polestar.` 등 임의의 스키마 접두사를 붙이지 마세요."
+        )
+    if db_engine == "db2":
+        db_engine_hint += (
+            "\n[DB2 방언] 행 수 제한은 `LIMIT` 대신 `FETCH FIRST n ROWS ONLY`를 사용하세요."
+        )
 
     system_prompt = QUERY_GENERATOR_SYSTEM_TEMPLATE.format(
         schema=schema_text,

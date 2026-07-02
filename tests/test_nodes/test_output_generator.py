@@ -163,7 +163,9 @@ class TestOutputGeneratorNode:
 
         result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
 
-        assert "텍스트 응답으로 대체" in result["final_response"]
+        # D-059: 침묵적 강등 대신 실패 사유를 노출한다.
+        assert "채우지 못했습니다" in result["final_response"]
+        assert "사유:" in result["final_response"]
         assert result["output_file"] is None
 
     @pytest.mark.asyncio

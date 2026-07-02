@@ -83,8 +83,8 @@ patterns:
         description: "시리얼 번호 [resource_type: server.Server]"
         synonyms: ["시리얼", "S/N", "일련번호", "시리얼번호"]
       - name: Hostname
-        description: "호스트명 (EAV, cmm_resource.hostname과 동일 값) [resource_type: server.Server]"
-        synonyms: ["EAV호스트명", "서버명", "호스트네임"]
+        description: "호스트명 (EAV). '서버명'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지 [resource_type: server.Server]"
+        synonyms: ["EAV호스트명"]
       - name: IPaddress
         description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값) [resource_type: server.Server]"
         synonyms: ["EAV IP", "IP"]
@@ -165,6 +165,21 @@ patterns:
 query_guide: |
   Polestar DB는 cmm_resource(리소스 계층), core_config_prop(EAV 설정), cmm_metric_stat_m(성능 통계) 3개 테이블로 구성됩니다.
 
+  [★ 스키마 참조 — DB2 (D-057)]
+  이 DB는 DB2 엔진이며, 폴스타 테이블은 **POLESTAR 스키마**에 있습니다(2026-07-02 실측: SYSCAT.TABLES.TABSCHEMA='POLESTAR').
+  연결 계정의 CURRENT SCHEMA는 SDQ000이므로, **반드시 `POLESTAR.` 접두사로 한정**하세요 (예: POLESTAR.cmm_resource, POLESTAR.core_config_prop).
+  접두사를 생략하면 SDQ000.CMM_RESOURCE로 해소되어 SQL0204N(-204, undefined name)이 발생합니다.
+  (DB2는 미인용 식별자를 대문자로 저장하므로 스키마명은 대문자 POLESTAR 사용.)
+  행 수 제한은 `LIMIT`이 아니라 `FETCH FIRST n ROWS ONLY`를 사용하세요.
+
+  [★ 은행존 전용 — 서버명(등록명)과 호스트명 구분]
+  은행존(b0)은 cmm_resource.name(등록명)이 "<호스트명>(<설명>)" 또는 "<호스트명> (<설명>)" 구조인 경우가 많습니다
+  (예: name='sicwso01 (이미지 업무 WAS#1)', hostname='sicwso01').
+  - cmm_resource.name     → 폴스타 등록명. 사용자가 "서버명", "서버 이름", "장비명"이라고 지칭하는 컬럼(설명이 붙어 있음).
+  - cmm_resource.hostname → OS 호스트명(클린, 예: 'sicwso01'). 사용자가 "호스트명/호스트네임"이라고 할 때 사용.
+  **둘은 다른 값이므로 반드시 구분**하세요. "서버 이름"과 "호스트네임"을 함께 요청받으면 각각 r.name, r.hostname으로 출력합니다.
+  **호스트명·IP는 직접 컬럼(r.hostname / r.ipaddress)** 을 사용하세요 — 은행존은 두 컬럼에 클린 값이 들어 있음(실측 확인). (EAV Hostname/IPaddress 속성에도 동일 값이 있으나 직접 컬럼이 단순.)
+
   [avail_status 값 의미]
   cmm_resource.avail_status 컬럼의 정수 값:
     - 0 = 정상 (UP)
@@ -186,8 +201,8 @@ query_guide: |
     - 필터: core_config_prop.name = 'OSParameter'
   예시:
     SELECT r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
-    FROM cmm_resource r
-    JOIN core_config_prop cc ON r.resource_conf_id = cc.configuration_id
+    FROM POLESTAR.cmm_resource r
+    JOIN POLESTAR.core_config_prop cc ON r.resource_conf_id = cc.configuration_id
     WHERE r.resource_type = 'server.Server'
       AND r.hostname = '조회할_서버명'
       AND cc.name = 'OSParameter'
@@ -264,10 +279,10 @@ query_examples:
         r.hostname,
         cc_ostype.stringvalue_short AS os_type,
         cc_vendor.stringvalue_short AS vendor
-      FROM polestar.cmm_resource r
-      LEFT JOIN polestar.core_config_prop cc_ostype
+      FROM POLESTAR.cmm_resource r
+      LEFT JOIN POLESTAR.core_config_prop cc_ostype
         ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
-      LEFT JOIN polestar.core_config_prop cc_vendor
+      LEFT JOIN POLESTAR.core_config_prop cc_vendor
         ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
       WHERE r.resource_type LIKE 'platform.server%'
         AND r.dtime IS NULL
@@ -281,10 +296,10 @@ query_examples:
         r.ipaddress,
         cc_osver.stringvalue_short AS os_version,
         cc_serial.stringvalue_short AS serial_number
-      FROM polestar.cmm_resource r
-      LEFT JOIN polestar.core_config_prop cc_osver
+      FROM POLESTAR.cmm_resource r
+      LEFT JOIN POLESTAR.core_config_prop cc_osver
         ON r.resource_conf_id = cc_osver.configuration_id AND cc_osver.name = 'OSVerson'
-      LEFT JOIN polestar.core_config_prop cc_serial
+      LEFT JOIN POLESTAR.core_config_prop cc_serial
         ON r.resource_conf_id = cc_serial.configuration_id AND cc_serial.name = 'SerialNumber'
       WHERE r.resource_type LIKE 'platform.server%'
         AND r.dtime IS NULL
@@ -294,18 +309,20 @@ query_examples:
   - question: "서버 수를 조회해줘"
     sql: |
       SELECT COUNT(*) AS server_count
-      FROM polestar.cmm_resource r
+      FROM POLESTAR.cmm_resource r
       WHERE r.resource_type LIKE 'platform.server%'
         AND r.dtime IS NULL
       FETCH FIRST 1 ROWS ONLY;
     explanation: "EAV 조인이 필요 없는 단순 집계 — cmm_resource만 사용"
 
-  - question: "서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+  - question: "서버별 서버이름, 호스트네임, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
     sql: |
+      -- ★ 은행존: 서버이름=등록명(c.name, "<호스트명>(<설명>)"), 호스트네임=클린 OS 호스트명(c.hostname 직접 컬럼) — 둘은 다른 값
       SELECT
           COALESCE(c.platform_resource_id, c.id) AS id,
-          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname'      THEN cc.stringvalue_short END) AS hostname,
-          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name      END) AS server_name,  -- 등록명 "<호스트명>(<설명>)"
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,      -- 클린 OS 호스트명(직접 컬럼, 실측 확인)
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,     -- 직접 컬럼(실측 확인: EAV와 동일 값)
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
@@ -316,8 +333,8 @@ query_examples:
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'       THEN cc.stringvalue_short END) AS ostype,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'     THEN cc.stringvalue_short END) AS osversion,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'PatchLevel'   THEN cc.stringvalue_short END) AS os_patchlevel
-      FROM polestar.cmm_resource c
-      LEFT JOIN polestar.core_config_prop cc
+      FROM POLESTAR.cmm_resource c
+      LEFT JOIN POLESTAR.core_config_prop cc
             ON c.resource_conf_id = cc.configuration_id
       WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
         AND c.dtime IS NULL
@@ -329,8 +346,8 @@ query_examples:
   - question: "특정 서버의 CPU 리소스를 조회해줘"
     sql: |
       SELECT child.id, child.name, child.resource_type
-      FROM polestar.cmm_resource parent
-      JOIN polestar.cmm_resource child
+      FROM POLESTAR.cmm_resource parent
+      JOIN POLESTAR.cmm_resource child
         ON child.parent_resource_id = parent.id
       WHERE parent.hostname = '서버명'
         AND child.resource_type = 'server.Cpu'
@@ -353,11 +370,11 @@ query_examples:
           ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS mem_min,
           ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS mem_avg,
           ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS mem_max
-      FROM polestar.cmm_resource r
-      JOIN polestar.cmm_resource svr
+      FROM POLESTAR.cmm_resource r
+      JOIN POLESTAR.cmm_resource svr
           ON svr.id = r.platform_resource_id
          AND svr.resource_type = 'server.Server'
-      JOIN polestar.cmm_metric_stat_m s
+      JOIN POLESTAR.cmm_metric_stat_m s
           ON r.id = s.resource_id
       LEFT JOIN (
           SELECT
@@ -365,8 +382,8 @@ query_examples:
               MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
               MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
               MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
-          FROM polestar.cmm_resource c
-          LEFT JOIN polestar.core_config_prop cc
+          FROM POLESTAR.cmm_resource c
+          LEFT JOIN POLESTAR.core_config_prop cc
               ON c.resource_conf_id = cc.configuration_id
           WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
             AND c.dtime IS NULL
@@ -403,11 +420,11 @@ query_examples:
           ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.min_val END), 2) AS disks_io_min,
           ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END), 2) AS disks_io_avg,
           ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.max_val END), 2) AS disks_io_max
-      FROM polestar.cmm_resource r
-      JOIN polestar.cmm_resource svr
+      FROM POLESTAR.cmm_resource r
+      JOIN POLESTAR.cmm_resource svr
           ON svr.id = r.platform_resource_id
          AND svr.resource_type = 'server.Server'
-      JOIN polestar.cmm_metric_stat_m s
+      JOIN POLESTAR.cmm_metric_stat_m s
           ON r.id = s.resource_id
       LEFT JOIN (
           SELECT
@@ -415,8 +432,8 @@ query_examples:
               MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
               MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
               MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
-          FROM polestar.cmm_resource c
-          LEFT JOIN polestar.core_config_prop cc
+          FROM POLESTAR.cmm_resource c
+          LEFT JOIN POLESTAR.core_config_prop cc
               ON c.resource_conf_id = cc.configuration_id
           WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
             AND c.dtime IS NULL
@@ -454,3 +471,14 @@ alarm_allowed_tables:
   - acc_acl_resource_manager_type
   - acc_role
   - acc_user_group
+
+# DB별 컬럼 유사단어 — 글로벌 사전보다 우선 적용 (은행존 전용)
+# 은행존(b0)은 등록명(cmm_resource.name)이 "<호스트명> (<설명>)" 구조인 경우가 많아
+# 서버명(등록명)과 호스트네임(OS 호스트명)을 반드시 구분해야 한다.
+column_synonyms:
+  cmm_resource.name:
+    words: ["서버명", "서버 이름", "서버이름", "장비명", "장비 이름", "리소스명", "등록명", "폴스타 등록명"]
+    description: "폴스타에 등록된 이름 (은행존은 '<호스트명> (<설명>)' 구조인 경우가 많음). 호스트네임과 다름."
+  cmm_resource.hostname:
+    words: ["호스트명", "호스트네임", "호스트 이름", "hostname", "OS호스트명"]
+    description: "OS 호스트명. 은행존에서 등록명(name)과 다르며, 클린 호스트명 출력이 필요."

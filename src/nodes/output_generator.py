@@ -108,7 +108,7 @@ async def _run_output_generator(
     elif output_format in ("xlsx", "docx"):
         # Phase 2: 파일 생성
         file_result = _generate_document_file(state, output_format)
-        if file_result:
+        if file_result and file_result.get("file_bytes"):
             text_response = await _generate_text_response(
                 app_config, state, llm=llm, stream_user_response=stream_user_response
             )
@@ -134,16 +134,19 @@ async def _run_output_generator(
                 "error_message": None,
             }
         else:
-            # 파일 생성 실패: 텍스트 응답으로 폴백
-            logger.warning("파일 생성 실패, 텍스트 응답으로 대체")
+            # 파일 생성 실패: 사유를 사용자에게 노출하고 텍스트/CSV로 폴백 (D-059 — 침묵적 강등 금지)
+            reason = (file_result or {}).get("reason") or "알 수 없는 이유로 양식을 채우지 못했습니다."
+            logger.warning("파일 생성 실패, 텍스트 응답으로 대체 — 사유: %s", reason)
             text_response = await _generate_text_response(
                 app_config, state, llm=llm, stream_user_response=stream_user_response
             )
             text_response = _append_inferred_mapping_info(text_response, state)
             return {
                 "final_response": (
-                    f"{output_format.upper()} 파일 생성에 실패하여 "
-                    f"텍스트 응답으로 대체합니다.\n\n{text_response}"
+                    f"업로드하신 {output_format.upper()} 양식을 채우지 못했습니다.\n"
+                    f"사유: {reason}\n"
+                    f"아래 원본 조회 데이터(CSV 다운로드)로 결과를 확인하실 수 있습니다.\n\n"
+                    f"{text_response}"
                 ),
                 "output_file": None,
                 "output_file_name": None,
@@ -380,7 +383,9 @@ def _generate_document_file(
         output_format: "xlsx" 또는 "docx"
 
     Returns:
-        {"file_bytes": bytes, "file_name": str} 또는 None (실패 시)
+        성공 시 {"file_bytes": bytes, "file_name": str, "total_filled": int},
+        실패 시 {"reason": str} (D-059 — 사유를 호출부가 사용자에게 노출한다).
+        성공 여부는 "file_bytes" 키 존재로 판별한다.
     """
     organized = state["organized_data"]
     rows = organized.get("rows", [])
@@ -393,12 +398,24 @@ def _generate_document_file(
     uploaded_file = state.get("uploaded_file")
 
     if not template or not uploaded_file:
-        logger.warning("양식 구조 또는 원본 파일이 없어 파일 생성 불가")
-        return None
+        missing = []
+        if not template:
+            missing.append("template_structure(양식 구조)")
+        if not uploaded_file:
+            missing.append("uploaded_file(원본 파일 바이너리)")
+        missing_str = ", ".join(missing)
+        logger.warning("양식 파일 생성 불가 — state 누락: %s", missing_str)
+        return {"reason": (
+            f"양식을 채우는 데 필요한 정보가 state에서 누락되었습니다: {missing_str}. "
+            "(오케스트레이션 경로의 상태 전파 누락 가능성 — 원본 파일이면 D-053 계열)"
+        )}
 
     if not effective_mapping:
         logger.warning("컬럼 매핑이 없어 파일 생성 불가")
-        return None
+        return {"reason": (
+            "양식 헤더와 조회 데이터 간 매핑을 만들지 못해 양식을 채울 수 없습니다 "
+            "(조회 데이터 부족 또는 서버 식별 컬럼 누락일 수 있습니다)."
+        )}
 
     # 매핑 검증: csv_sheet_data 헤더와 column_mapping 비교
     csv_sheet_data = state.get("csv_sheet_data")
@@ -457,5 +474,6 @@ def _generate_document_file(
 
     except Exception as e:
         logger.error("파일 생성 실패 (%s): %s", output_format, e)
+        return {"reason": f"양식 채우기 중 오류가 발생했습니다: {e}"}
 
-    return None
+    return {"reason": "알 수 없는 이유로 양식을 생성하지 못했습니다."}

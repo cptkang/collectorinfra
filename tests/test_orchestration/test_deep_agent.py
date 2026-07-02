@@ -123,13 +123,29 @@ def test_vllm_healthy_200_true(monkeypatch):
     class _Resp:
         status_code = 200
 
-    monkeypatch.setattr("requests.get", lambda url, timeout: _Resp())
+    monkeypatch.setattr("requests.get", lambda url, timeout, verify=True: _Resp())
     assert vllm_healthy("http://vllm:8000/v1") is True
+
+
+def test_vllm_healthy_verify_ssl_false_passes_verify(monkeypatch):
+    """verify_ssl=False면 requests.get에 verify=False 전달(SSL 검증 스킵, D-060)."""
+    class _Resp:
+        status_code = 200
+
+    captured = {}
+
+    def _get(url, timeout, verify=True):
+        captured["verify"] = verify
+        return _Resp()
+
+    monkeypatch.setattr("requests.get", _get)
+    assert vllm_healthy("https://vllm:443/v1", verify_ssl=False) is True
+    assert captured["verify"] is False
 
 
 def test_vllm_healthy_exception_false(monkeypatch):
     """연결 예외 시 False(미가용)."""
-    def _raise(url, timeout):
+    def _raise(url, timeout, verify=True):
         raise ConnectionError("refused")
 
     monkeypatch.setattr("requests.get", _raise)

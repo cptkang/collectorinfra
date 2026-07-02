@@ -58,13 +58,14 @@ class TestBuildHostnameSql:
         assert "RESOURCE_CONF_ID" not in sql
         assert "is_lob" not in sql
 
-    def test_db2_uses_fetch_first_and_no_schema(self):
-        # 은행 레거시 b0(DB2)는 LIMIT 미지원 → FETCH FIRST, 무스키마 테이블(CURRENT SCHEMA).
+    def test_db2_uses_fetch_first_and_polestar_schema(self):
+        # 은행 레거시 b0(DB2)는 LIMIT 미지원 → FETCH FIRST.
+        # D-057(2026-07-02 실측): b0 테이블은 POLESTAR 스키마 소유(연결 CURRENT SCHEMA=SDQ000과 다름).
+        # 무스키마 참조 시 SDQ000.CMM_RESOURCE로 해소되어 SQL0204N → 반드시 POLESTAR. 한정.
         sql = build_hostname_sql("polestar_b0", "WEB-SVR-01", db_engine="db2")
         assert "FETCH FIRST 1 ROWS ONLY" in sql
         assert "LIMIT" not in sql
-        assert "polestar.cmm_resource" not in sql
-        assert "FROM cmm_resource r" in sql
+        assert "POLESTAR.cmm_resource r" in sql
         # 매칭 규칙은 엔진 무관 동일
         assert "r.resource_type = 'server.Server'" in sql
         assert "ORDER BY CASE WHEN r.name = 'WEB-SVR-01' THEN 0 ELSE 1 END" in sql
