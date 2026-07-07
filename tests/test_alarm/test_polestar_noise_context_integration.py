@@ -220,7 +220,7 @@ class TestDecisionRouting:
         expected = {
             "severity", "ai_severity", "effective_severity", "importance",
             "maintenance", "parent_avail_status", "pattern", "is_routine",
-            "noti_policy", "flapping", "self_heal", "storm",
+            "noti_policy", "flapping", "self_heal", "storm", "llm_actionability",
         }
         assert set(d.signals.keys()) == expected
         assert d.signals["importance"] == "높음"

@@ -26,3 +26,6 @@ ADMIN_JWT_SECRET=
 
 # Redis 비밀번호
 REDIS_PASSWORD=
+
+# worKB(사내메신저) 쪽지 발송 Bearer 인증 토큰 (알람 발송 채널 — 나머지 WORKB_* 설정은 .env)
+WORKB_BEARER_TOKEN=

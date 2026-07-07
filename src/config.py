@@ -418,7 +418,18 @@ class NoiseGateConfig(BaseSettings):
     meta_alert_min_events: int = 1            # (E3) 창 내 이벤트 수가 이 값 미만이면 무수신 메타경보
     enable_ai_severity_boost: bool = False    # (E3) AI 메시지 심각도 보강 (상향 전용)
     ai_severity_escalate_only: bool = True    # (E3) True=상향만 (하향 억제 금지) — 안전 고정 권장
-    enable_llm_actionability: bool = False    # (E3) LLM 피드백 few-shot 액션가능성 판단
+    enable_llm_actionability: bool = False    # (E4) LLM 피드백 few-shot 액션가능성 판단
+    feedback_store_path: str = "logs/alarm_feedback.jsonl"   # (E4) 운영자 피드백 저장
+    feedback_store_enabled: bool = True                      # (E4) 피드백 적재 on/off
+    actionability_fewshot_count: int = 3                     # (E4) few-shot 예시 최대 개수
+    # ── E5: deepagents Advisory Enricher (agentic 보조 분석기, §8.5/§8.7, D-048.7) ──
+    # 전부 옵트인(기본 off) — enable_agentic_enricher=False면 E1~E4 배선·발송 판단 무변경.
+    # 판단은 결정적 notification_policy가 하고, enricher는 signals(승격 전용)만 보강한다.
+    enable_agentic_enricher: bool = False     # (E5) 보조 분석기 옵트인
+    agentic_enricher_fallback: str = "semantic_routing"  # (E5) vLLM 미서빙 시: "semantic_routing" | "deterministic_only"
+    agentic_enricher_timeout_seconds: float = 8.0  # (E5) enricher 전체 타임아웃(초, 초과 시 no-op)
+    agentic_enricher_max_tool_calls: int = 5  # (E5) 트랙 B ReAct 루프 도구 호출 상한
+    agentic_enricher_message_alarms_only: bool = True  # (E5) LogMonitor/보안/앱 로그 한정
     resolved_to_dashboard: bool = False       # 독립 해소(severity 0)를 DASHBOARD로 표시할지 (E1)
     decision_store_path: str = "logs/alarm_decisions.jsonl"
     decision_store_enabled: bool = True

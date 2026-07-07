@@ -209,6 +209,7 @@ class TestSignalsSchema:
         "flapping",
         "self_heal",
         "storm",
+        "llm_actionability",
     }
 
     def test_all_keys_present(self):

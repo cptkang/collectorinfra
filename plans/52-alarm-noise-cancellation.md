@@ -5,7 +5,9 @@
 > 50/51(장애진단·원인분석 — 사후 분석)
 > **관련 결정**: D-029~D-036(알람 계열), 특히 **D-035**(패턴은 부가정보, 심각도 3은 is_routine 무관) /
 > **D-048**로 등재 완료(2026-06-29 — 원안 D-040→D-041→최종 D-048; 변경이력·Plan 50 선점 회피, §13)
-> **상태**: 계획 (미구현)
+> **상태**: E1~E5 구현 완료 (E5: 2026-07-02, D-048.7 — 사용자 확정 §13.1#8 3경로 전체·메시지형 한정).
+> E1~E4(D-048.1~.11). D-049(ack/incident 계측)·D-048.10(SSE 브리지)은 E3 후속 완료.
+> — E5 트랙 B는 **Gemini API로 라이브 검증 가능**(2026-07-02 추가: `provider=gemini`+키 시 vLLM 없이 트랙 B, `test_agentic_enricher_gemini_live.py`). vLLM 실서빙 라이브는 여전히 후속.
 
 ---
 
@@ -622,11 +624,17 @@ E3에서 `GET /alarm/metrics`는 `decision_store`(발송 판단 JSONL) 집계로
     (상향 전용) → `max()`로 우선순위 결합.
   - 억제기 메타경보, 티어/액션가능 비율 지표, 결정 근거 대시보드, 수동 침묵(silence) 관리.
   - verify: AI는 **상향만**(하향 억제 0)·심각도3 PAGE 불변, 억제율 급변·무수신 경보, 지표 산출.
-- **Phase E4 — LLM 액션가능성 판단(피드백 few-shot, ML 미사용·선택)**
+- **Phase E4 — LLM 액션가능성 판단(피드백 few-shot, ML 미사용·선택)** ✅ **구현 완료 2026-07-01 (D-048.11)**
   - 운영자 "노이즈/유효" 피드백 저장 → 유사 과거 알람 few-shot으로 `alarm_analyzer` 프롬프트에 주입 →
     LLM 인컨텍스트 판단을 매트릭스 보조 입력(§3.9). **ML 모델 학습 없음.**
-  - verify: 피드백 few-shot이 후속 결정에 반영, 재현율 우선 유지, 심각도3 PAGE 불변.
-- **Phase E5 — deepagents Advisory Enricher (agentic 보조 — 옵션, 3경로 폴백)**
+  - verify: 피드백 few-shot이 후속 결정에 반영, 재현율 우선 유지, 심각도3 PAGE 불변. → **완료**:
+    신규 `feedback_store.py`(JSONL·graceful)·`POST /alarm/feedback`·app.js 피드백 버튼. 판단은 결정적
+    step9(actionable→승격/noise→강등, `severity≤suppress_max` 가드·승격 우선), 추가 LLM 호출 없음(재파싱).
+    옵트인(`enable_llm_actionability=False`면 E3 무변경). `tests/test_alarm` **359 passed**·arch exit 0.
+- **Phase E5 — deepagents Advisory Enricher (agentic 보조 — 옵션, 3경로 폴백)** ✅ **구현 완료 2026-07-02 (D-048.7)**
+  - `agentic_enricher.py` 노드 + 읽기전용 신호 수집 도구(`noise_signal_tools.py`, **infra 배치** — arch 역방향 회피).
+    3경로 자동선택(`_select_backend`)·승격 전용·심각도3 미개입·메시지형 한정·collector 패턴. `tests/test_alarm` **390 passed**·arch 0.
+    트랙 B(vLLM)는 로컬 gemini라 fake bound LLM으로 ReAct 상한만 검증 → vLLM 서빙 후 통합 검증 후속.
   - `agentic_enricher.py` 노드 + 읽기전용 신호 수집 도구. **트랙 B**(vLLM `bind_tools`, Plan 49) /
     **트랙 A 폴백**(vLLM 미서빙 시 FabriX 1회 분류→결정적 수집, §3.12) / **결정적 only**(옵트아웃) 자동 선택.
     경계·메시지 알람 한정, **승격 전용**, `signals` 보조만.

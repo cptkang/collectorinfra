@@ -165,3 +165,40 @@
 ### 권고
 
 - UI 검증 통과. 팀리드 커밋 진행 가능(verifier는 커밋하지 않음).
+
+---
+
+## Plan 52 E4 — LLM 액션가능성 판단(피드백 few-shot) 검증 (2026-07-01, D-048.11)
+
+구현: implementer-e4 서브에이전트 / 검증: 팀리드 **독립 재실행 + 전 diff 리뷰**(보고 신뢰 아님).
+
+### 품질 게이트 (팀리드 독립 재실행 결과)
+
+| 게이트 | 결과 |
+|--------|------|
+| `pytest tests/test_alarm/ -q` | **359 passed** (E3/D-049 baseline 337 + 신규 22, 실패 0) |
+| `scripts/arch_check.py --ci` | **exit 0** (WARN은 기존 orchestration→prompts replanner 건, E4 무관) |
+| `python -c "from src.config import AppConfig; AppConfig()"` | **OK** |
+| `node --check src/static/js/app.js` | **OK** |
+
+### 안전 불변식 검증 (diff 리뷰 + 테스트 고정)
+
+1. **심각도3 절대 PAGE — PASS**: E4는 step9만 관여, sev3는 step3에서 단락. `test_severity3_always_page_regardless`(noise여도 PAGE) 고정. `llm_actionability` 추출을 첫 `_decision` 이전으로 hoist하여 sev3 조기반환 경로 `_signals()` 클로저 NameError도 차단.
+2. **승격 비대칭·재현율 우선 — PASS**: `actionable`→promote(항상), `noise`→demote(단 `effective_severity≤suppress_max_severity` 가드). 승격우선 기계가 promote 공존 시 noise 무시(`test_noise_with_promote_signal_promotion_wins`). 1단계 이내·SUPPRESS 하한 불변(`test_noise_demotes_one_step`/`test_noise_respects_suppress_floor`).
+3. **게이트오프 회귀 0 — PASS**: `enable_llm_actionability=False`면 policy는 값 미독·None(`test_disabled_ignores_actionability`, E3와 동일 티어), analyzer는 few-shot 미조회·재파싱 스킵(`test_disabled_skips_fewshot_and_reparse`).
+4. **추가 LLM 호출 없음 — PASS**: analyzer가 기존 단일 응답 재파싱(D-048.5 패턴). `_CapturingLLM` 단일 `ainvoke`로 확인.
+5. **계층 경계 — PASS**: `feedback_store.py`=infrastructure·stdlib만(domain/외부 import 0), `notification_policy.py`=stdlib 유지. arch_check exit 0.
+6. **캡처 안전 — PASS**: `POST /alarm/feedback` require_user + 게이트/액션가능성 off면 503 + label 검증 400. app.js 피드백 버튼 closure 바인딩(인라인 onclick 0)·`textContent` XSS 안전·503 처리·graceful 재시도.
+
+### signals 스키마 가드
+
+`signals["llm_actionability"]` 키 추가에 따라 set-equality 단언 **2곳 전수 갱신**(`test_notification_policy.py::TestSignalsSchema.REQUIRED_KEYS`·`test_polestar_noise_context_integration.py` expected) — D-048.8 "매트릭스/상수 변경 시 단언 전수 grep" 교훈 준수.
+
+### 발견 이슈
+
+- **Critical/Major**: 없음.
+- **Minor(관찰)**: `test_noise_respects_suppress_floor`가 `tier in (DASHBOARD, "suppress")`로 다소 느슨하나(실제=SUPPRESS), 1단계 하한 규칙을 문서화하는 의도로 결함 아님.
+
+### 권고
+
+- E4 검증 통과. E5(deepagents Advisory Enricher, D-048.7)는 vLLM 가용성 확인 후 별도 착수(§13.1 #8).

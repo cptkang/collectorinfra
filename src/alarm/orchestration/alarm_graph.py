@@ -78,10 +78,15 @@ def build_alarm_graph(config=None):  # noqa: ANN001
 
     history_enabled = True
     gate_enabled = False
+    enricher_enabled = False
     if config is not None:
         history_enabled = bool(config.alarm.history_enabled)
         noise_gate = getattr(config, "noise_gate", None)
         gate_enabled = bool(getattr(noise_gate, "enable_noise_gate", False))
+        # (E5) Advisory Enricher는 게이트 활성 + enable_agentic_enricher일 때만 삽입한다.
+        enricher_enabled = gate_enabled and bool(
+            getattr(noise_gate, "enable_agentic_enricher", False)
+        )
 
     # 게이트 활성 시 enricher 강제 포함(noise_context 수집원이므로 끌 수 없음).
     include_enricher = history_enabled or gate_enabled
@@ -108,7 +113,18 @@ def build_alarm_graph(config=None):  # noqa: ANN001
         )
 
         builder.add_node("notification_gate", notification_gate_node)
-        builder.add_edge("alarm_analyzer", "notification_gate")
+        if enricher_enabled:
+            # (E5) alarm_analyzer → agentic_enricher → notification_gate 삽입.
+            # 지연 import — enricher 활성 시에만 로드한다.
+            from src.alarm.application.nodes.agentic_enricher import (
+                agentic_enricher_node,
+            )
+
+            builder.add_node("agentic_enricher", agentic_enricher_node)
+            builder.add_edge("alarm_analyzer", "agentic_enricher")
+            builder.add_edge("agentic_enricher", "notification_gate")
+        else:
+            builder.add_edge("alarm_analyzer", "notification_gate")
         builder.add_edge("notification_gate", "alarm_notifier")
     else:
         builder.add_edge("alarm_analyzer", "alarm_notifier")

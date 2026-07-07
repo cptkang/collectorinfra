@@ -193,6 +193,33 @@ def _render_process_section(snapshot: ProcessSnapshot) -> str:
     return "\n".join(lines)
 
 
+def _render_feedback_section(examples: list[dict]) -> str:
+    """운영자 피드백 few-shot 예시를 LLM 프롬프트용 텍스트로 렌더링한다 (Plan 52 E4).
+
+    examples가 빈 리스트면 빈 문자열을 반환한다(섹션 미주입 — 프롬프트 규칙상
+    [운영자 피드백] 섹션이 없으면 LLM은 llm_actionability=null 을 출력한다).
+    각 예시는 `- [유효|노이즈] alarm_name (resource_name, pattern): note` 형식으로 렌더한다.
+    """
+    if not examples:
+        return ""
+    label_ko = {"valid": "유효", "noise": "노이즈"}
+    lines = ["[운영자 피드백 — 유사 과거 알람에 대한 운영자 라벨]"]
+    for ex in examples:
+        label = label_ko.get(ex.get("label", ""), str(ex.get("label", "")))
+        alarm_name = str(ex.get("alarm_name", ""))
+        meta = ", ".join(
+            p for p in (str(ex.get("resource_name", "")), str(ex.get("pattern", ""))) if p
+        )
+        note = str(ex.get("note", ""))
+        line = f"- [{label}] {alarm_name}"
+        if meta:
+            line += f" ({meta})"
+        if note:
+            line += f": {note}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """알람 이벤트를 LLM으로 분석하여 AlarmAnalysisResult를 반환한다.
 
@@ -220,6 +247,28 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
     if snapshot is not None:
         process_section = "\n" + _render_process_section(snapshot)
 
+    # Plan 52 E4: LLM 액션가능성 few-shot — 게이트 활성(enable_llm_actionability) + feedback_store
+    # 주입 시에만 유사 과거 피드백을 조회해 프롬프트에 주입한다. 추가 LLM 호출은 없으며(단일
+    # 응답 재파싱), off/미주입/실패면 빈 문자열 → 프롬프트 규칙상 LLM이 null을 출력한다(회귀 0).
+    feedback_section = ""
+    gate = getattr(cfg, "noise_gate", None)
+    if gate is not None and getattr(gate, "enable_llm_actionability", False):
+        fb_store = config["configurable"].get("feedback_store")
+        if fb_store is not None:
+            try:
+                pattern = stats.pre_classification if stats is not None else ""
+                examples = fb_store.find_similar(
+                    alarm_name=event.alarm_name,
+                    resource_name=event.resource_name,
+                    pattern=pattern or "",
+                    limit=getattr(gate, "actionability_fewshot_count", 3),
+                )
+                rendered = _render_feedback_section(examples)
+                if rendered:
+                    feedback_section = "\n" + rendered
+            except Exception:  # noqa: BLE001 — few-shot 없이 진행(graceful)
+                feedback_section = ""
+
     severity_label = _SEVERITY_LABELS.get(event.severity, "해소" if event.is_clear else "알 수 없음")
     user_msg = ALARM_ANALYZER_USER_TEMPLATE.format(
         db_id=event.db_id,
@@ -239,6 +288,7 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         condition_log=event.condition_log,
         history_section=history_section,
         process_section=process_section,
+        feedback_section=feedback_section,
     )
     try:
         response = await llm.ainvoke([
@@ -281,6 +331,13 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
                 ai_reason = (sig[1] if sig else "") or "LLM 메시지 해석"
         result.ai_message_severity = ai_sev
         result.ai_severity_reason = ai_reason
+
+        # Plan 52 E4: LLM 액션가능성 재파싱(추가 호출 없이 기존 응답 재파싱) — 게이트 활성 시에만.
+        # enable off면 필드가 기본 None/""로 남아 정책 계층(step 9)이 무시한다(이중 안전·회귀 0).
+        if gate is not None and getattr(gate, "enable_llm_actionability", False):
+            act = parsed.get("llm_actionability")
+            result.llm_actionability = act if act in ("actionable", "noise") else None
+            result.actionability_reason = str(parsed.get("actionability_reason") or "")
 
         logger.info(
             "알람 LLM 분석 완료: alarm_id=%s severity_label=%s pattern_type=%s",

@@ -2044,6 +2044,15 @@
                 '</div>';
         }
 
+        // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 — incident 여부와 무관하게 항상 표시.
+        var feedbackHtml =
+            '<div class="alarm-section alarm-feedback-section">' +
+                '<span class="alarm-feedback-label">이 알람이 유용했나요?</span>' +
+                '<button type="button" class="btn-alarm-feedback" data-label="valid">유효</button>' +
+                '<button type="button" class="btn-alarm-feedback" data-label="noise">노이즈</button>' +
+                '<span class="alarm-feedback-msg"></span>' +
+            '</div>';
+
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
@@ -2069,6 +2078,7 @@
                     processHtml +
                     patternHtml +
                     ackHtml +
+                    feedbackHtml +
                 '</div>' +
             '</div>';
 
@@ -2086,7 +2096,51 @@
             }
         }
 
+        // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
+        bindAlarmFeedback(el, data);
+
         scrollToBottomIfSticky();
+    }
+
+    // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 핸들러를 바인딩한다.
+    // POST /api/v1/alarm/feedback → {recorded}. 성공 시 버튼 비활성 + "피드백 감사합니다",
+    // 503(비활성)이면 "피드백 비활성", 그 외 실패면 "전송 실패"(카드 유지·재시도 가능 — graceful).
+    function bindAlarmFeedback(el, data) {
+        var buttons = el.querySelectorAll(".btn-alarm-feedback");
+        var msgEl = el.querySelector(".alarm-feedback-msg");
+        buttons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var label = btn.dataset.label;
+                buttons.forEach(function (b) { b.disabled = true; });
+                if (msgEl) msgEl.textContent = "";
+                fetch("/api/v1/alarm/feedback", {
+                    method: "POST",
+                    headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                    body: JSON.stringify({
+                        alarm_name: data.alarm_name,
+                        resource_name: data.resource_name,
+                        pattern_type: data.pattern_type,
+                        severity: data.severity,
+                        label: label
+                    })
+                })
+                    .then(function (resp) {
+                        if (resp.status === 503) throw new Error("disabled");
+                        if (!resp.ok) throw new Error("HTTP " + resp.status);
+                        return resp.json();
+                    })
+                    .then(function () {
+                        if (msgEl) msgEl.textContent = "피드백 감사합니다";
+                    })
+                    .catch(function (err) {
+                        buttons.forEach(function (b) { b.disabled = false; });
+                        if (msgEl) {
+                            msgEl.textContent =
+                                (err && err.message === "disabled") ? "피드백 비활성" : "전송 실패";
+                        }
+                    });
+            });
+        });
     }
 
     // D-049: incident 확인(ack) 버튼 핸들러를 바인딩한다.

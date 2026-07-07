@@ -10,6 +10,7 @@ ALARM_ANALYZER_USER_TEMPLATE: 알람 정보 입력 템플릿
     conditions, condition_log,
     history_section — 알람 이력 통계 텍스트 (Plan 47, 이력 없으면 빈 문자열)
     process_section — 영향 프로세스 텍스트 (Plan 47-1, 미조회/비대상 알람이면 빈 문자열)
+    feedback_section — 운영자 피드백 few-shot 텍스트 (Plan 52 E4, 미주입/비활성이면 빈 문자열)
 """
 
 ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분석하는 전문가입니다.
@@ -24,7 +25,9 @@ ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분
     "is_routine": true | false,
     "pattern_analysis": "이력 통계 근거 패턴 해석 (1~3문장, 한국어)",
     "ai_message_severity": 1 | 2 | 3 | null,
-    "ai_severity_reason": "상향 근거 (로그 문구 인용) 또는 \"\""
+    "ai_severity_reason": "상향 근거 (로그 문구 인용) 또는 \"\"",
+    "llm_actionability": "actionable" | "noise" | null,
+    "actionability_reason": "판단 근거(1문장) 또는 \"\""
 }
 
 규칙:
@@ -56,6 +59,13 @@ ALARM_ANALYZER_SYSTEM_PROMPT = """당신은 인프라 모니터링 알람을 분
     로그가 명백한 장애 시그니처를 포함하는 경우.
   · 일상적·양성(benign) 메시지이거나 상향 근거가 없으면 **null** 을 출력할 것(상향하지 않음).
 - ai_severity_reason: 상향한 경우 그 근거가 된 로그 문구를 인용할 것. 상향하지 않으면 "" 출력.
+- llm_actionability: [운영자 피드백] 섹션이 주어지면, 유사 과거 알람에 대한 운영자 라벨
+  (유효/노이즈)을 참고하여 현재 알람의 액션가능성을 판단할 것. 다음 규칙을 따른다:
+  · actionable = 운영자 조치가 필요할 가능성, noise = 반복적·양성(benign)으로 무시 가능성.
+  · **불확실하면 반드시 null** 을 출력할 것 — 억제(noise)로 기울지 말 것(재현율 우선·상향 안전).
+  · 심각도 3(심각)은 액션가능성과 무관하게 항상 통보되므로 noise로 낮추려 하지 말 것.
+  · [운영자 피드백] 섹션이 없으면 반드시 null 을 출력할 것.
+- actionability_reason: actionable/noise로 판단한 경우 그 근거를 1문장으로 쓸 것. null이면 "".
 - JSON 이외의 텍스트를 절대 출력하지 말 것
 """
 
@@ -71,4 +81,4 @@ ALARM_ANALYZER_USER_TEMPLATE = """알람 정보:
 - 알람 일시: {alarm_time}
 - 임계 조건: {conditions}
 - 조건 로그: {condition_log}
-{history_section}{process_section}"""
+{history_section}{process_section}{feedback_section}"""

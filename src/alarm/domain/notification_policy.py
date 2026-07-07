@@ -119,7 +119,8 @@ def decide_notification(
     config 속성은 안전 접근(getattr 기본값)한다:
         suppress_max_severity(기본 2), importance_value_map(dict), resolved_to_dashboard(기본 False),
         dependency_suppression(기본 False·E2), inhibition_enabled(기본 False·E2),
-        flapping_enabled(기본 False·E2), storm_grouping_enabled(기본 False·E2).
+        flapping_enabled(기본 False·E2), storm_grouping_enabled(기본 False·E2),
+        enable_llm_actionability(기본 False·E4).
 
     noise_ctx 계약: {importance_id, maintenance, noti_policy, parent_avail_status, source}
     수집 실패(None 또는 source=="unavailable") 시 보수화 후 effective_severity>=1이면 PAGE.
@@ -134,6 +135,13 @@ def decide_notification(
         - storm_grouping_enabled + storm(인자) → SUPPRESS(동일 서버 다발, 대표 1건만 통보, §3.8).
         - 모든 단계가 maintenance SUPPRESS 다음·매트릭스 이전에 위치하며, 심각도3은 위에서
           이미 단락되어 이 단계에 도달하지 않는다(불변).
+
+    E4 추가(step 9 보조 조정 — enable_llm_actionability 뒤, 기본 False면 무변경):
+        - analysis.llm_actionability("actionable"|"noise"|None)를 보조 신호로 소비한다.
+          "actionable" → promote(승격은 항상 안전·재현율 우선), "noise" → demote(단
+          effective_severity<=suppress_max_severity 가드, is_routine demote와 동일). 승격우선
+          기계가 promote 공존 시 noise demote를 무시한다. 1단계 이내 이동·SUPPRESS 하한은 불변.
+        - signals["llm_actionability"]에 소비값을 스냅샷한다(enable off면 None).
     """
     suppress_max_severity = int(getattr(config, "suppress_max_severity", 2))
     importance_value_map = getattr(config, "importance_value_map", {}) or {}
@@ -172,6 +180,17 @@ def decide_notification(
         pattern = str(getattr(history_stats, "pre_classification", "") or "")
     is_routine = getattr(analysis, "is_routine", None) if analysis is not None else None
 
+    # LLM 액션가능성(피드백 few-shot·E4) — 보조 신호일 뿐 판단은 결정적 규칙(step 9)이 내린다.
+    # enable off(기본)면 값을 읽지 않고 None으로 무시한다(E3 회귀 0). 심각도3은 step3에서 이미
+    # 단락되어 이 신호와 무관하다. _signals()(sev3 포함 첫 _decision 경로)가 참조하므로
+    # 여기서(첫 _decision 이전) 확정해야 클로저 참조 시 NameError가 없다.
+    enable_actionability = bool(getattr(config, "enable_llm_actionability", False))
+    llm_actionability = (
+        getattr(analysis, "llm_actionability", None) if analysis is not None else None
+    )
+    if not enable_actionability:
+        llm_actionability = None
+
     def _signals() -> dict:
         """§8.2 동결 스키마(모든 키 필수)로 신호 스냅샷을 구성한다."""
         return {
@@ -191,6 +210,8 @@ def decide_notification(
             "flapping": bool(flapping),
             "self_heal": bool(self_heal),
             "storm": bool(storm),
+            # E4: LLM 액션가능성 자문(actionable|noise|None). enable off면 None(무시).
+            "llm_actionability": llm_actionability,
         }
 
     def _decision(tier: str, reason: str) -> NotificationDecision:
@@ -273,6 +294,13 @@ def decide_notification(
         demote.append("일상 반복 패턴(is_routine)")
     if is_routine is False:
         promote.append("비일상 패턴(is_routine=False)")
+    # E4: LLM 액션가능성(피드백 few-shot) — 승격 비대칭(재현율 우선).
+    # actionable → promote(항상 안전). noise → demote(is_routine과 동일하게 SUPPRESS 하한 가드).
+    # 아래 승격우선 기계가 promote 신호와 공존 시 noise demote를 무시한다.
+    if llm_actionability == "actionable":
+        promote.append("LLM 액션가능성(피드백)")
+    if llm_actionability == "noise" and effective_severity <= suppress_max_severity:
+        demote.append("LLM 노이즈 판단(피드백)")
 
     tier = base_tier
     adjust_note = ""
