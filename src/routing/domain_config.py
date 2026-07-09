@@ -71,7 +71,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), "
             "알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)"
         ),
-        aliases=["polestar_cm_gp", "공동존 김포 폴스타", "공동존 운영 폴스타", "공동존 DR 폴스타", "김포", "김포 폴스타"],
+        aliases=["polestar_cm_gp", "공동존", "공동존 폴스타", "공동존 김포 폴스타", "공동존 운영 폴스타", "공동존 DR 폴스타", "김포", "김포 폴스타"],
         env_connection_key="POLESTAR_CM_GP_CONNECTION",
         env_type_key="POLESTAR_CM_GP_TYPE",
         db_engine="postgresql",
@@ -90,7 +90,7 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), "
             "알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)"
         ),
-        aliases=["polestar_cm_yd", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타", "여의도", "여의도 폴스타"],
+        aliases=["polestar_cm_yd", "공동존", "공동존 폴스타", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타", "여의도", "여의도 폴스타"],
         env_connection_key="POLESTAR_CM_YD_CONNECTION",
         env_type_key="POLESTAR_CM_YD_TYPE",
         db_engine="postgresql",

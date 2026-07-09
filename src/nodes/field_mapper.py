@@ -22,6 +22,20 @@ from src.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+# 이번 턴에 양식(template_structure)이 없으면 폼필 매핑 산출물이 존재해선 안 된다(D-064).
+# 체크포인터가 직전 폼업로드 턴의 매핑을 복원해 잔존시키면 intent_planner가 옛 DB로
+# 고정된다([intent_planner] mapped_db_ids 단축). 스킵 경로에서 명시적으로 비워, 진입 경로와
+# 무관하게 "template 없음 → 매핑 없음" 불변식을 보장한다.
+# 단, pending_synonym_registrations 는 멀티턴 유사어 등록 흐름의 신호이므로 여기서 비우지 않는다.
+_CLEARED_MAPPING_FIELDS: dict[str, None] = {
+    "column_mapping": None,
+    "db_column_mapping": None,
+    "mapping_sources": None,
+    "mapped_db_ids": None,
+    "llm_inference_details": None,
+    "mapping_report_md": None,
+}
+
 
 async def field_mapper(
     state: AgentState,
@@ -59,10 +73,11 @@ async def field_mapper(
 
     template = state.get("template_structure")
     if not template:
-        # 텍스트 출력 모드: 매핑 불필요, 스킵
+        # 텍스트 출력 모드: 매핑 불필요, 스킵. 잔존 매핑 산출물 정리(D-064).
         logger.debug("template_structure 없음, field_mapper 스킵")
         return {
             "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
         }
 
     if app_config is None:
@@ -76,6 +91,7 @@ async def field_mapper(
         logger.warning("양식에서 필드명을 추출할 수 없습니다. field_mapper 스킵")
         return {
             "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
         }
 
     # 2. 파싱 결과에서 매핑 힌트와 대상 DB 추출

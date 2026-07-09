@@ -27,6 +27,40 @@ from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
+# 폴스타 위치/환경 표면어 — target_db_hints 결정적 보강용(D-065).
+# LLM(규칙 10)이 "공동존"처럼 예시에 없는 위치어를 target_db_hints로 안 뽑는 경우가 있어,
+# 원문에 이 표면어가 있으면 결정적으로 target_db_hints에 보강한다. DB 해소는 하지 않고
+# 표면어만 넘겨(field_mapper._resolve_priority_db_ids / semantic_router가 alias로 해소),
+# "공동존 김포"처럼 더 구체적 표현이 이미 힌트에 있으면 중복 추가하지 않는다.
+_LOCATION_HINT_TERMS: tuple[str, ...] = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+
+
+def _ensure_location_hints(parsed: dict, user_query: str) -> dict:
+    """원문의 위치/환경 표면어를 target_db_hints에 결정적으로 보강한다(D-065).
+
+    LLM 프롬프트(규칙 10)만으로는 "공동존" 등 예시에 없는 위치어 추출이 비결정적이라,
+    표면어가 원문에 있고 기존 힌트에 (부분 문자열로도) 없으면 추가한다.
+
+    Args:
+        parsed: 파싱 결과 dict
+        user_query: 사용자 원문
+
+    Returns:
+        target_db_hints가 보강된 parsed (동일 객체)
+    """
+    if not isinstance(parsed, dict) or not user_query:
+        return parsed
+    hints = parsed.get("target_db_hints")
+    if not isinstance(hints, list):
+        hints = [] if hints in (None, "") else [hints]
+    existing_text = " ".join(str(h) for h in hints)
+    for term in _LOCATION_HINT_TERMS:
+        if term in user_query and term not in existing_text:
+            hints.append(term)
+            existing_text += f" {term}"
+    parsed["target_db_hints"] = hints
+    return parsed
+
 
 async def input_parser(
     state: AgentState,
@@ -87,6 +121,9 @@ async def input_parser(
 
     # filter_conditions 자연어 값 → DB 조건 치환
     parsed = await _apply_column_value_synonyms(parsed)
+
+    # 위치/환경 표면어(공동존 등) target_db_hints 결정적 보강(D-065)
+    parsed = _ensure_location_hints(parsed, state.get("user_query", ""))
 
     # 2. 파일 업로드 처리 — 서식 보존용 template_structure 병행 생성
     template: Optional[dict] = None

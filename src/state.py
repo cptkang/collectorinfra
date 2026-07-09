@@ -177,6 +177,38 @@ class AgentState(TypedDict):
     replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
 
 
+def create_followup_input(user_query: str) -> dict:
+    """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
+
+    멀티턴에서 체크포인터는 이전 턴 State 전체를 복원하고, 텍스트 경로는 델타 키만
+    병합한다. 따라서 직전 폼업로드 턴의 **요청-스코프 폼필 트리거**(uploaded_file/
+    file_type/csv_sheet_data)가 새 텍스트 턴으로 잔존하면 input_parser가 옛 파일을
+    재파싱하여 template_structure를 되살리고(field_mapper 재실행) → intent_planner가
+    옛 mapped_db_ids로 DB를 고정한다(2026-07-09 버그). 이를 막기 위해 트리거를
+    명시적으로 비운다. 나머지 매핑 산출물(mapped_db_ids/column_mapping 등)은
+    field_mapper 스킵 경로가 정리한다(단일 출처, 진입 경로 무관).
+
+    세션 승계 신호(messages/conversation_context/pending_synonym_reuse/
+    pending_synonym_registrations/승인 컨텍스트)는 **보존**한다 — 멀티턴 지시어 해소
+    (D-055/D-056)와 유사어 등록 흐름이 이 신호에 의존한다.
+
+    Args:
+        user_query: 이번 턴 자연어 질의
+
+    Returns:
+        graph.ainvoke에 전달할 델타 입력 dict
+    """
+    return {
+        "user_query": user_query,
+        "messages": [HumanMessage(content=user_query)],
+        # 폼필 트리거 초기화 (input_parser 재파싱 방지). 파일 업로드 경로는 이 함수를
+        # 쓰지 않고 create_initial_state로 새 파일을 실어 보낸다.
+        "uploaded_file": None,
+        "file_type": None,
+        "csv_sheet_data": None,
+    }
+
+
 def create_initial_state(
     user_query: str,
     uploaded_file: Optional[bytes] = None,

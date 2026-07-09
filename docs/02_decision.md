@@ -3117,10 +3117,109 @@ D-043(supersedes)은 이 모순을 막기 위한 기존 장치이나, (a) `_run_
 
 ---
 
+## D-064. 텍스트 후속 턴의 폼필 요청-스코프 상태 누수 차단
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-09 |
+| **상태** | 확정 (옵션 B — 경로에서 트리거만 초기화 + field_mapper 스킵 자기정리, 진입 경로 무관) |
+| **관련 결정** | D-053(db_id 승격), D-055/D-056(멀티턴 지시어·엔티티 sticky) — 충돌 없음(세션 승계 신호 불변) |
+
+### 배경 / 문제
+
+멀티턴 테스트에서: 폼업로드 턴(은행 b0 양식 채우기) 다음의 **텍스트 질의**(파일 없이 "공동존
+전체 서버 메트릭 조회")가 (1) "입력 분석"에 **템플릿 구조가 재출력**되고 (2) "DB 조회" 대상이
+**polestar_b0로 고정**되며 (3) 직전 양식을 그대로 재활용해 채워 넣었다.
+
+근본 원인 — LangGraph 체크포인터의 **델타 병합**: 텍스트 경로(`/query`, `/query/stream`)는
+후속 턴에 `{user_query, messages}`만 입력으로 준다([query.py]). 체크포인터는 나머지 필드를
+직전 턴 값으로 유지하므로, 직전 폼업로드 턴의 `uploaded_file`/`file_type`/`csv_sheet_data`/
+`template_structure`/`mapped_db_ids`가 **잔존**한다(실측: MemorySaver 2턴 재현으로 확인).
+그 결과 `input_parser`가 옛 파일을 재파싱해 `template_structure`를 되살리고([input_parser.py]
+`if state.get("uploaded_file")`), `intent_planner`가 잔존 `mapped_db_ids`로 DB를 고정한다
+([intent_planner.py] mapped_db_ids 단축 — LLM 분해·위치 라우팅을 전부 우회). 파일 업로드
+경로는 `create_initial_state`가 전 필드를 리셋하므로 무관 — **텍스트 경로 전용 누수**.
+
+### 결정 (옵션 B)
+
+폼필 상태는 **요청-스코프**(세션-스코프 아님)로 취급하여, 이번 턴에 파일이 없으면 존재해선 안 된다.
+
+- **경로**: 텍스트 후속 턴 입력을 `state.create_followup_input()`로 생성 — 폼필 **트리거**
+  (`uploaded_file`/`file_type`/`csv_sheet_data`)를 `None`으로 명시 초기화(input_parser 재파싱 차단).
+  파일이 없음을 아는 곳은 라우트뿐이라 트리거 초기화는 라우트에 둔다.
+- **노드(단일 출처)**: `field_mapper`가 template 없이 스킵할 때 매핑 산출물
+  (`mapped_db_ids`/`column_mapping`/`db_column_mapping`/`mapping_sources`/`llm_inference_details`/
+  `mapping_report_md`)을 `None`으로 정리(`_CLEARED_MAPPING_FIELDS`). "template 없음 → 매핑 없음"
+  불변식을 **진입 경로와 무관하게** 보장(경로별 목록 중복 방지).
+- **보존(승계 신호)**: `messages`/`conversation_context`/`pending_synonym_reuse`/
+  **`pending_synonym_registrations`**(멀티턴 유사어 등록 흐름)/승인 컨텍스트는 건드리지 않는다.
+  특히 `pending_synonym_registrations`를 지우면 "N턴 폼필 → N+1턴 등록" 흐름이 깨지므로 제외.
+
+### 근거 / 대안
+
+- 채택: 옵션 B(노드 자기정리) — 진입 경로가 늘어도 매핑 누수가 자동 봉인. "template 없음=매핑
+  없음"은 의미적으로 옳아 부작용이 낮다. 트리거만 라우트에서 지우면 됨(2곳, 승인 분기는 폼필
+  approval이 드물어 제외 — 보수적).
+- 대안(기각) 옵션 A(라우트에서 전 필드 명시 초기화): 라우트 2곳에 긴 목록 중복·누락 위험.
+- 동작 변화(1건): 텍스트 후속 턴이 직전 양식을 **자동 상속하지 않음**("방금 올린 양식으로 이번엔
+  공동존 채워줘"는 재업로드 필요). 현재는 그게 조용히 틀린 DB로 채워지는 버그라 상속 차단이 안전.
+  사용자 확인 완료(2026-07-09): 기본 동작 정합 우선, 상속 재사용은 후속 기능으로 유보.
+- 수정: `src/state.py`(`create_followup_input`), `src/api/routes/query.py`(텍스트 경로 2곳),
+  `src/nodes/field_mapper.py`(`_CLEARED_MAPPING_FIELDS`, 스킵 2경로).
+- 검증: `tests/test_multiturn/test_form_state_reset.py`(6건), `test_field_mapper_node.py` 갱신.
+
+---
+
+## D-065. 바(bare) "공동존" 위치의 DB 라우팅 (gp+yd)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-09 |
+| **상태** | 확정 (aliases 보강 + input_parser 결정적 가드 — `_resolve_priority_db_ids` 전용 분기 미사용) |
+| **관련 결정** | D-053(위치→db_id 힌트), D-057/D-058(공동존 gp/yd 폼필) |
+
+### 배경 / 문제
+
+"공동존 전체 서버" 폼필(3턴)이 gp/yd가 아닌 **polestar_b0**로 라우팅됐다(D-064의 누수와 별개 —
+파일 경로라 `create_initial_state`가 리셋하므로 잔존이 아님, 실측 확인). "공동존"은 김포+여의도
+K리전 공동존 **두 DB**를 포괄하는데:
+- gp/yd `aliases`가 `"공동존 김포 폴스타"`처럼 **복합어만** 있고 단독 `"공동존"`이 없었다.
+- `input_parser` 규칙 10 예시에 여의도/김포만 있어 LLM이 "공동존"을 `target_db_hints`로 뽑는
+  것이 **비결정적**이었다.
+
+→ 힌트가 비면 `field_mapper._resolve_priority_db_ids`의 priority가 비고, 폼필 DB 선택이
+`active_db_ids` 순서(b0가 첫 항목, [domain_config.py])대로 **b0로 잘못 확정**됐다.
+
+### 결정
+
+- **aliases 보강**: gp/yd `aliases`에 단독 `"공동존"`/`"공동존 폴스타"` 추가. 기존 지역-배제
+  로직상 `"공동존"`→`[gp, yd]`, `"공동존 김포"`→`[gp]`(복합어 세분화 유지), `"은행"`→`[b0]`
+  으로 정확히 해소된다(실측).
+- **input_parser 결정적 가드**: `_ensure_location_hints`로 원문의 위치 표면어
+  (`공동존`/`김포`/`여의도`/`은행`/`레거시`/`은행존`)를 `target_db_hints`에 보강(부분문자열
+  중복 방지). LLM 프롬프트(규칙 10 예시에 "공동존" 추가)만으론 비결정적이라 결정적 후처리 병행
+  (Known Mistakes 2026-06-29 "LLM 분류는 결정적 가드로 교정" 원칙).
+
+### 근거 / 대안
+
+- **`_resolve_priority_db_ids` 전용 분기 미채택**(사용자 검토 요청): 기존 alias-substring +
+  지역-배제 for-루프가 이미 `"공동존"`→`[gp,yd]`와 `"공동존 김포"`→`[gp]`를 올바르게 낸다.
+  `if "공동존" in hint: return [gp,yd]` 같은 무조건 분기를 넣으면 `"공동존 김포"`의 세분화를
+  **덮어써** yd가 잘못 포함된다 → 분기는 오히려 회귀 위험. **aliases만이 안전**.
+- process_query `_LOCATION_DB_HINTS`(실시간 프로세스/알람 API 경로)는 이번 폼필 버그와 무관이라
+  변경하지 않음(폼필 DB는 field_mapper가 결정). 향후 공동존 프로세스 조회 편입 시 별도 등재.
+- 수정: `src/routing/domain_config.py`(gp/yd aliases), `src/nodes/input_parser.py`
+  (`_ensure_location_hints`), `src/prompts/input_parser.py`(규칙 10 예시).
+- 검증: `tests/test_routing/test_gongdongjon_routing.py`(10건).
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-09 | D-064 | **텍스트 후속 턴의 폼필 요청-스코프 상태 누수 차단**: 폼업로드 턴 다음 텍스트 질의가 옛 template_structure 재출력·옛 mapped_db_ids(b0)로 DB 고정·양식 재활용. 근본원인=LangGraph 체크포인터 델타 병합(텍스트 경로는 `{user_query,messages}`만 전달→직전 폼업로드의 uploaded_file/template_structure/mapped_db_ids 잔존, MemorySaver 2턴 재현 실측). 옵션 B: `state.create_followup_input()`가 폼필 트리거(uploaded_file/file_type/csv_sheet_data) None 초기화(라우트 2곳), `field_mapper` 스킵 경로가 매핑 산출물(`_CLEARED_MAPPING_FIELDS`) None 정리("template 없음→매핑 없음" 불변식, 진입 경로 무관). 승계 신호(messages/conversation_context/**pending_synonym_registrations**/승인)는 보존(등록 흐름 유지). 동작변화 1건: 텍스트 후속이 직전 양식 자동 상속 안 함(사용자 확정, 기본 동작 정합 우선). 수정 `state.py`·`api/routes/query.py`·`nodes/field_mapper.py`. 검증 `test_form_state_reset.py` 6건+`test_field_mapper_node.py` 갱신. 상세 `## D-064`. |
+| 2026-07-09 | D-065 | **바 "공동존" 위치 DB 라우팅(gp+yd)**: "공동존 전체 서버" 폼필이 b0로 오라우팅(D-064 누수와 별개 — 파일 경로라 create_initial_state 리셋, 잔존 아님). 원인: gp/yd aliases에 복합어("공동존 김포 폴스타")만 있고 단독 "공동존" 부재 + input_parser 규칙10 예시에 공동존 없어 target_db_hints 추출 비결정적 → priority 비면 active_db_ids 순서(b0 첫 항목)로 오확정. 수정: (1) gp/yd aliases에 "공동존"/"공동존 폴스타" 추가(→"공동존"=[gp,yd], "공동존 김포"=[gp] 세분화 유지 실측), (2) `_ensure_location_hints` 결정적 가드로 위치 표면어 target_db_hints 보강, (3) 규칙10 예시 보강. **`_resolve_priority_db_ids` 전용 분기 미채택**(사용자 검토): 무조건 분기는 "공동존 김포" 세분화를 덮어써 회귀 위험 — aliases만 안전. process_query `_LOCATION_DB_HINTS`(프로세스/알람 경로)는 폼필과 무관이라 미변경. 수정 `domain_config.py`·`nodes/input_parser.py`·`prompts/input_parser.py`. 검증 `test_gongdongjon_routing.py` 10건. 상세 `## D-065`. |
 | 2026-07-01 | D-048 | **Phase E4 — LLM 액션가능성 판단(피드백 few-shot, ML 모델 미사용)** (D-048.11 등재, 사용자 확정 §13.1, 전부 옵트인·기본 off→E3/D-049 무변경). 잔여작업 E4/E5 중 **E4 우선** 착수(E5는 vLLM 가용성 확인 후 별도). 운영자 피드백(유효/노이즈)을 신규 `feedback_store.py`(JSONL·decision_store 미러·graceful, stdlib만)에 적재→유사 과거 알람을 **alarm_name·resource·pattern 키**(§3.9, fingerprint 아님)로 few-shot 검색→`alarm_analyzer`가 **기존 단일 LLM 응답 재파싱**(추가 호출 없음·D-048.5 패턴)하여 `llm_actionability`(actionable\|noise\|null) 자문 산출. **판단은 결정적 `notification_policy` step 9**: actionable→promote(항상 안전), noise→demote(단 `effective_severity≤suppress_max_severity` 가드 — is_routine과 동일), **승격우선 기계**가 promote 공존 시 noise 무시, 1단계·SUPPRESS 하한 불변. **심각도3 절대 PAGE 불변**(step3 단락, E4는 step9만), 불확실→null(재현율 우선·승격 비대칭). `signals["llm_actionability"]` 키 추가(§8.2 스키마 가드 2곳 `test_notification_policy`·`test_polestar_noise_context_integration` 갱신). 캡처: `POST /alarm/feedback`(require_user, 게이트/액션가능성 off면 503·label 검증 400) + `app.js` 알람 카드 유효/노이즈 버튼(closure 바인딩·503 처리·`textContent` XSS 안전). 게이트오프 회귀 0: policy는 값 미독·None, analyzer는 few-shot 미조회·재파싱 스킵(3계층 테스트 고정). **구현 주의**: `llm_actionability` 추출을 첫 `_decision` **이전으로 hoist**(sev3 조기 반환 경로 `_signals()` 클로저 free-variable NameError 방지 — 회귀 테스트 고정). 수정 `alarm.py`(필드2)·`notification_policy.py`(step9)·`prompts/alarm_analyzer.py`·`alarm_analyzer.py`(`_render_feedback_section`+재파싱)·`config.py`(3필드+주석 E3→E4)·`alarm_worker.py`(`_build_feedback_store`+주입)·`api/routes/alarm.py`(`_alarm_extra_configurable`+엔드포인트)·`app.js`/`style.css`·`.env.example`. 검증(§11.1 baseline·**팀리드 독립 재실행**): `tests/test_alarm` **359 passed**(337+신규 22, 실패 0), `arch_check --ci` exit 0(feedback_store=infra·stdlib, policy=stdlib 유지), `AppConfig()` OK, `node --check app.js` OK. 상세: `## D-048` §D-048.11. 번호: `## D-` 헤더+변경이력 표 둘 다 grep, E4는 D-048 하위(.10→**.11**)로 등재(top-level 신번호 아님·D-049 보존). |
 | 2026-06-30 | D-049 | **ack/incident 라이프사이클 계측 — PostgreSQL 단일 저장소 (Plan 52 §9.1·§13.1 #9, 사용자 확정)**: D-048.9가 `null`+`unavailable_metrics`로 유보한 MTTA/MTTR/사건전환율을 산출하기 위한 후속 계측 결정(이 changelog는 결정 등재 — 구현은 후속 커밋). **핵심 진단**: ack(웹 UI "확인")는 **API 프로세스**, incident 생성(PAGE)·해소(clear/self-heal)는 **워커 프로세스**에서 발생 → 같은 incident 레코드를 두 프로세스가 갱신해야 하고, 상태 전이(firing→ack→resolved) UPDATE·열린 incident 조회·시간창 집계가 필요 → 현행 JSONL `decision_store`(append-only·로컬·집계 약함) 부적합. **결정**: incident 저장소=**PostgreSQL 단일**(Redis 단독·혼합 기각 — 활성셋 소수라 Redis 속도 무의미, 감사급 이력 집계는 PG 강점). 신규 의존 아님(`audit_repository`/`user_repository`가 쓰기 PG 선례). port `IncidentStore`(domain)+`incident_repository.py`(infra, audit 미러)·테이블 `alarm_incidents`(status open\|ack\|resolved, created/acked/resolved_at, fingerprint·alarm_id·tier·resolution; 인덱스 status/fingerprint(부분)/created_at; DDL은 `ddl/` SQL+기동시 `_ensure_*_tables` auto-create 패턴). **쓰기 단일화(D-048.10 브리지 재사용)**: 워커는 PG 풀 신설 없이 incident 이벤트를 **Redis `alarm:incident` 발행→API 단일 PG 라이터(subscriber)** 영속(open=notifier PAGE 시, resolved=워커 clear/self-heal 시 fingerprint 매칭 UPDATE). **ack**=`POST /alarm/incidents/{id}/ack`(API 직접 UPDATE, **식별키=incident id**)+`app.js` SSE 카드 "확인" 버튼. **PG 풀**=`incident_tracking_enabled` 기준 전용 풀(auth 독립, DSN 재사용). **지표**: MTTA=AVG(acked-created)·`incident_mttr`=AVG(resolved-created)·전환율=incidents/page_count(window SQL, null/unavailable 제거). **MTTR 라벨 분리(환각 금지)**: self-heal 소요시간을 JSONL로 **저위험 선행** 산출하되 sev3 제외 **편향**이라 `auto_recovery_mttr_seconds`로, paged 운영자 MTTR은 PG `incident_mttr_seconds`로 **명확히 구분**. **옵트인**(기본 False)→트래커 미기동·기존 null 동작 유지(회귀 0), graceful(Redis/PG 미가용 폴백·서버 무차단). 상세: `## D-049`. 번호: 등재 직전 `## D-` 헤더+변경이력 표 둘 다 grep, 최대 D-048→**D-049** 부여(2026-06-29 충돌 교훈 준수). **구현 완료(백엔드, 동일 effort)**: 신규 `src/alarm/domain/incident_store.py`(port ABC)·`src/alarm/infrastructure/incident_repository.py`(PostgresIncidentStore, audit_repository 미러)·`src/alarm/infrastructure/incident_events.py`(RedisIncidentPublisher+run_incident_event_subscriber, sse_bridge 미러)·`ddl/alarm_incidents.sql`. 수정 `config.py`(NoiseGateConfig `incident_tracking_enabled`/`incident_event_channel`)·`decision_store.py`(`record_resolution`+aggregate `auto_recovery_mttr_seconds`, resolution 줄 by_tier/total 제외)·`alarm_notifier.py`(PAGE 시 open 발행, 미주입 스킵)·`alarm_worker.py`(`_build_incident_publisher`·is_clear 시 resolved 발행·self-heal duration→record_resolution·graph configurable 주입)·`api/server.py`(`_ensure_incident_tables`+lifespan 전용 PG풀/store/subscriber 기동·종료, 전체 try/except 무차단)·`api/routes/alarm.py`(`POST /alarm/incidents/{id}/ack`·`GET /alarm/incidents`·/alarm/metrics에 incident_store 주입·`AlarmMetricsResponse` incident_mttr_seconds/auto_recovery_mttr_seconds/open_incident_count)·`.env.example`. **쓰기 단일화**: 워커는 PG풀 미신설(Redis 발행만)·API 단일 라이터가 영속. **라벨 분리**: `incident_mttr_seconds`(PG, paged 운영자) vs `auto_recovery_mttr_seconds`(JSONL self-heal, sev3 제외 편향 — 명시). 검증(verifier 독립 PASS·7항목): fingerprint 대칭성(open=decision.fingerprint↔resolved=compute_fingerprint 동일식 — resolve 매칭 성립)·aggregate resolution 제외(기존 비율지표 비오염)·옵트인 게이팅·graceful·계층경계(domain asyncpg/redis 0, notifier/worker redis 직접 0)·metrics 0division None안전·resolve 경합(최근1건)·ack 멱등. tests/test_alarm **336 passed**(baseline 333+verifier 신규 fingerprint 대칭성 3), arch_check --ci exit 0(error 0), 광역 스위트 회귀 0(git stash pristine=working 631 failed 동일 — 환경 baseline). **UI(후속 완료, 사용자 확정=둘 다)**: (1) 채팅 알람카드(`app.js renderAlarmMessage`) — `data.incident_id` 있을 때만 "확인" 버튼(closure 캡처·인라인 onclick 없음), 클릭→`POST /alarm/incidents/{id}/ack`→확인됨/이미확인됨/재시도 상태 갱신; (2) admin 대시보드(`dashboard.html`+`admin.js`) "열린 사건" 탭 — `GET /alarm/incidents?status=open` 목록(서버/알람명/심각도/tier/생성시각/경과)+행별 확인 버튼. **카드/목록 표시용 백엔드 delta(소규모)**: `_incident_open_payload`를 `_tier_sse_payload` 전체 표시필드+식별필드로 보강(리치 카드), `alarm_incidents`에 `alarm_name` 컬럼 추가(`ALTER ... ADD COLUMN IF NOT EXISTS` 멱등·port/repo/list_open 전파). 전부 옵트인(off→빈 목록·버튼 미표시·회귀 0). 검증(verifier 독립 UI 7항목 PASS): payload 보강·alarm_name INSERT $오프셋 정확(컬럼순서 가드 테스트 추가)·테스트 약화 0(강화만)·ack 버튼 incident_id 게이팅·admin 인증조회/빈목록·플래그off 회귀·escapeHtml/textContent XSS 안전. tests/test_alarm **337 passed**, arch_check --ci exit 0, node --check app.js·admin.js OK. 라이브 브라우저 E2E는 인프라 부재로 미수행(정적·단위 단언 대체). `docs/verification_report.md` D-049 + D-049 UI 섹션. |
 | 2026-06-30 | D-048 | **E3 후속 — 워커→UI 실시간 SSE Redis pub/sub 브리지 (D-048.10, D-048.9 한계 해소)**: 워커는 cross-process(또는 API 내 asyncio task지만 bus 미주입)라 DASHBOARD/TICKET 티어 결정이 UI에 실시간 표시 안 되던 D-048.9 한계를 해소. 신규 `infrastructure/sse_bridge.py` — 워커측 `RedisSseBridgePublisher`(`publish(event)`→`redis.publish("alarm:sse",json)`, graceful) + API측 `run_sse_bridge_subscriber`(채널 구독→기존 `app.state.alarm_bus.publish` 재팬아웃→`/alarm/notifications/stream`→프론트 무변경). 수정 `alarm_notifier._publish_tier_sse`(alarm_bus 우선·없으면 주입 `sse_publisher`로만 — **이중 발행 방지**, notifier는 redis 직접 import 없이 덕타이핑 호출)·`alarm_worker._build_sse_publisher`(게이트+브리지 플래그+redis 가용 시만 주입)·`api/server.py` lifespan(플래그 on 시 구독 task 기동·종료 cancel/close, Redis 실패에도 서버 기동 무차단)·`config.py`(`sse_bridge_enabled`/`sse_bridge_channel`)·`.env.example`. **pub/sub 선택**(Stream 아님): SSE fire-and-forget·TICKET은 큐+감사로 영속·DASHBOARD 정보성→ACK/소비그룹 불요(과설계 회피). **티어 분기 불변**(TICKET/DASHBOARD만, SUPPRESS=로그·PAGE=workb, 감사·큐 중복 적재 없음). **옵트인**(`enable_noise_gate` AND `sse_bridge_enabled`, 기본 False)+graceful→**회귀 0**. 검증(verifier 독립 PASS·§11.1): tests/test_alarm **287 passed**(E3 271→+16: test_sse_bridge 12+notifier 보강), arch_check --ci exit 0(error 0, notifier→infra redis 직접의존 0), AppConfig OK, 플래그오프 회귀 0(로그 폴백·E3 동일). 인프로세스/standalone 워커 양 배포 동작. (#11) `plans/52` §9.1+§13.1#9에 ack/incident 계측 후속(미구현) 명시 — MTTA/MTTR/사건전환율 null 사유. |

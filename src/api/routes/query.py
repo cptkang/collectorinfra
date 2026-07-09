@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
-from src.state import create_initial_state
+from src.state import create_followup_input, create_initial_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -345,11 +345,8 @@ async def process_query(
                 "approval_modified_sql": modified_sql if action == "modify" else None,
             }
         else:
-            # 일반 후속 질의
-            input_state = {
-                "user_query": body.query,
-                "messages": [HumanMessage(content=body.query)],
-            }
+            # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
+            input_state = create_followup_input(body.query)
     else:
         # 첫 턴: 전체 초기화
         input_state = create_initial_state(

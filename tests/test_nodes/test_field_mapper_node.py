@@ -275,11 +275,17 @@ class TestFieldMapperNode:
 
     @pytest.mark.asyncio
     async def test_skip_without_template(self):
-        """template_structure가 없으면 스킵한다."""
+        """template_structure가 없으면 스킵하고 잔존 매핑 산출물을 비운다(D-064)."""
         state = _make_state()
         result = await field_mapper(state, llm=AsyncMock(), app_config=MagicMock())
         assert result["current_node"] == "field_mapper"
-        assert "column_mapping" not in result
+        # D-064: 텍스트 턴으로 잔존한 폼필 매핑을 None으로 정리(누수 차단)
+        assert result["mapped_db_ids"] is None
+        assert result["column_mapping"] is None
+        assert result["db_column_mapping"] is None
+        assert result["mapping_sources"] is None
+        # 멀티턴 유사어 등록 신호는 정리 대상이 아니다(반환 dict에 없음 → 보존)
+        assert "pending_synonym_registrations" not in result
 
     @pytest.mark.asyncio
     async def test_skip_with_empty_fields(self):
