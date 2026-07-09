@@ -15,6 +15,7 @@ build/
 # 체크포인트 DB
 *.db
 checkpoints.db
+checkpoints.db-*
 
 # 로그
 logs/
