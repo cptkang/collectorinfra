@@ -3210,7 +3210,354 @@ K리전 공동존 **두 DB**를 포괄하는데:
   변경하지 않음(폼필 DB는 field_mapper가 결정). 향후 공동존 프로세스 조회 편입 시 별도 등재.
 - 수정: `src/routing/domain_config.py`(gp/yd aliases), `src/nodes/input_parser.py`
   (`_ensure_location_hints`), `src/prompts/input_parser.py`(규칙 10 예시).
-- 검증: `tests/test_routing/test_gongdongjon_routing.py`(10건).
+- 검증: `tests/test_routing/test_gongdongjon_routing.py`.
+
+### 후속 (실측 재테스트 — 제품명 단독 "폴스타"가 b0를 끌어들임)
+
+"공동존 폴스타의 모든 서버" 폼필이 여전히 b0(은행존) 참조. 원인: LLM이 `target_db_hints`에 bare
+"폴스타"를 넣으면, `_resolve_priority_db_ids`의 부분매칭이 "폴스타"를 b0 alias "은행 폴스타"에
+매칭 → b0가 priority에 포함되고 active 순서(b0 첫째)상 **b0가 우선 선택**됐다. (`_ensure_location_hints`가
+"공동존"을 넣어도, "폴스타"가 별도 hint로 b0를 끌어옴.) **소수점 소실(사용률 int·0% 표시)은 이
+오라우팅의 결과** — b0(DB2)는 사용률 통계를 정수로 반환하고 gp/yd만 `ROUND(::numeric,2)`를 쓴다
+(2026-07-01 기록). 수정: `_resolve_priority_db_ids`가 **지역 토큰(공동존/김포/여의도/은행 등)이
+있으면 제품명 단독 토큰(폴스타/polestar)을 제거**(`_is_generic_only_hint`) → 지역이 우선. 지역 없는
+순수 "폴스타"는 종전대로 전체 폴스타 후보 유지. b0 자체의 소수점(DB2 컬럼 타입) 수정은 별도 유보.
+회귀: `test_gongdongjon_routing.py::TestGenericProductTokenDoesNotPullB0`. 교훈: **제품명 공통 토큰은
+지역 변별력이 없다 — 지역 명시 시 무시. 잘못된 DB 참조가 다운스트림 증상(소수점)으로 위장**.
+
+### 후속 2 (라우팅 정상화 후 — 공동존 다중 DB 조회 + b0 소수점)
+
+라우팅 수정 후 공동존이 gp로 정상 라우팅됐으나 두 잔여:
+
+- **공동존인데 gp만 조회(yd 누락)**: `_resolve_priority_db_ids(["공동존"])=[gp,yd]`지만, field_mapper가
+  각 필드를 첫 priority DB(gp)에만 매핑해 `mapped_db_ids=[gp]`가 됐다. gp/yd는 스키마 동일이나
+  **데이터(김포/여의도 서버)는 달라 둘 다 조회 필요**. 수정: `_replicate_mapping_for_multi_location` —
+  priority가 다중이면 매핑(union)을 전 priority DB에 복제하고 mapped_db_ids를 priority 전체로 확장
+  (스키마 다른 DB로 잘못 복제돼도 multi_db_executor 테이블 필터가 제거). 회귀:
+  `test_gongdongjon_routing.py::TestMultiLocationReplication`.
+- **은행존(b0) 사용률 정수 표시(소수점 소실)**: 원인은 데이터 저장 방식이 아니라 **DB2의 `AVG()`가
+  정수 컬럼을 정수로 집계**하는 것(PostgreSQL AVG는 numeric 반환). gp/yd는 `::numeric` 캐스트로
+  회피하지만 b0 예시는 캐스트 없어 truncate. 수정: b0 예시·가이드의 집계 값을 **집계 전 DECIMAL
+  캐스트**(`AVG(CAST(s.avg_val AS DECIMAL(15,4)))`). `::numeric`은 DB2 문법 오류라 CAST 사용. 2026-07-01
+  "b0 정수 표시(SQL 레벨 추정)" 유보 항목 해소. 저장은 동형 솔루션이라 동일(사용자 지적) — SQL 방언 차이.
+
+---
+
+## D-066. 단일/멀티 DB SQL 생성 경로 동등화 (few-shot 예시·전체조회 LIMIT 공유)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-09 |
+| **상태** | 확정 (RC1+RC4 우선 — 공용 헬퍼로 동등화. RC2/RC3는 결과 관찰 후 판단) |
+| **관련 결정** | D-057(multi_db_executor 스키마·엔진 인지), D-050(EAV 피벗), D-058(gp/yd COALESCE) — 충돌 없음(parity 연장) |
+
+### 배경 / 문제
+
+"공동존의 전체 서버 + 지난 1개월 CPU/메모리 사용률" 폼필이 gp/yd로 정상 매핑됐으나
+`data_insufficient` 실패·NULL 난무·`LIMIT 1000`. 생성 SQL이 실존하지 않는 조인
+(`cmm_metric_stat_h`에 서버행 직접 조인 + `definition_name='CPUUtilization'` 환각)을 만듦.
+반면 **은행존(b0, 단일 DB)은 동일 양식으로 정상 동작**.
+
+근본 원인 — **DB 개수가 갈라놓은 두 SQL 생성 경로의 품질 비대칭**([subagents.py]
+`run_data_query_pipeline`: `is_multi_db = len(targets) > 1`):
+- 단일 DB(b0) → `_run_single_db_pipeline` → `schema_analyzer→query_generator→query_validator`
+  풀 파이프라인. **query_generator가 프로필 few-shot `query_examples` 주입 + "전체/모든"
+  LIMIT 상향(100000) + 풀 검증·재시도**를 수행 → 올바른 `cmm_metric_stat_m` 피벗 SQL.
+- 멀티 DB(gp+yd) → `multi_db_executor` → query_generator를 **덜 갖춘 형태로 재구현한 별도
+  경로**: `query_examples` 미주입(query_guide 텍스트만)·`default_limit`(1000) 고정·간이 검증만.
+  프로필엔 정답 예시("서버들의 CPU/메모리 사용률")가 **있는데도** 주입 안 돼 LLM이 field_mapper의
+  가짜 컬럼 매핑(`cmm_metric_stat_h.cpu_avg_val` 등)을 그대로 따라 환각 SQL 생성.
+
+즉 b0가 동작한 건 스키마 차이가 아니라 **few-shot 예시가 field_mapper 가짜 매핑을 이겼기**
+때문. 멀티 경로엔 그 예시가 없어 가짜 매핑이 이김.
+
+### 결정 (RC1 + RC4)
+
+두 경로가 **동일 출처**를 쓰도록 공용 헬퍼 `src/utils/query_gen_common.py` 신설:
+- **`build_query_examples_block(structure_meta)`** — 프로필 `query_examples`를 few-shot 블록으로.
+  `query_generator._format_structure_guide`의 인라인 로직을 이 함수로 대체(동작 동일),
+  `multi_db_executor._generate_sql`이 `structure_guide`에 동일 블록을 append(RC1).
+- **`resolve_query_limit(user_query, default_limit)`** — "전체/모든/모두" → 100000 상향.
+  query_generator의 인라인 규칙을 이 함수로 대체(동작 동일), `multi_db_executor`가
+  `state["user_query"]` 기준으로 동일 규칙 적용(RC4, 전체 서버 1000건 절단 방지).
+
+### 근거 / 대안
+
+- RC1+RC4 우선: b0 선례가 "예시 주입만으로 가짜 매핑을 이긴다"는 증거. RC2(field_mapper가
+  사용률 지표를 가짜 컬럼으로 매핑)·RC3(시간단위 _h/_d/_m 미반영)은 **RC1 적용 후 실제 결과를
+  보고** 필요 시에만(과수정 회피). query_examples가 `_m` 기준이라 RC3도 상당 완화 기대.
+- 공용 헬퍼 단일화: multi_db_executor는 query_generator의 축소 재구현이라 기능이 계속 어긋남
+  (D-057에서도 스키마 인지 이식 필요했음). 예시·LIMIT을 단일 출처화해 **경로 간 재발 방지**
+  (`query_generator.py와 동일 로직 적용` 선례 — 변경이력 2026-03 EAV value_joins 참조).
+- 대안(기각): multi_db_executor를 폐기하고 멀티 DB도 query_generator 루프를 N회 호출 — 대규모
+  리팩터·회귀 위험 큼. 동등화가 최소 침습.
+- 수정: `src/utils/query_gen_common.py`(신규), `src/nodes/query_generator.py`(헬퍼 사용),
+  `src/nodes/multi_db_executor.py`(예시 주입·effective_limit).
+- 검증: `tests/test_nodes/test_query_gen_parity.py`, query_generator 회귀 동일(behavior).
+- 잔여(관찰 후): RC2 field_mapper 사용률-지표 매핑 완화, RC3 시간단위→metric 테이블 힌트.
+
+### 후속 (실측 재테스트 — 진짜 근본원인: 멀티 DB 경로에 structure_meta 미부착)
+
+RC1(예시 주입) 적용 후 공동존 재테스트에서도 **동일 환각 SQL**(`cmm_metric_stat_h`,
+`definition_name='CPU'`, 서버행 직접 조인). RC4(LIMIT 100000)는 적용됨 → 새 코드는 도는데
+RC1만 무효. 원인: `build_query_examples_block(structure_meta)`의 **structure_meta가 멀티 DB
+경로에선 항상 None**이었다.
+
+- `multi_db_executor._analyze_schema`는 `cache_mgr.get_schema_or_fetch`만 호출 — 이는 **테이블
+  스키마만** 반환하고 `_structure_meta`(query_guide/query_examples/patterns)는 **별도 캐시 키**라
+  부착하지 않는다. `_structure_meta`를 붙이는 건 단일 DB 경로의 **`schema_analyzer` 노드**뿐
+  (line 1037, get_schema_or_fetch가 저장한 **이후** 인메모리로 추가 → 캐시 블롭엔 미포함).
+- 결과: 멀티 DB 경로는 **query_guide·query_examples·EAV 힌트가 프롬프트에 전혀 안 들어감**.
+  LLM은 원시 테이블 컬럼(cmm_metric_stat_h.resource_id/definition_name/avg_val)만 보고 조인
+  의미(resource_type 피벗·`_m` 월별·`'Utilization'`)를 몰라 환각. RC1은 no-op였던 것.
+- **수정**: `_analyze_schema`가 `_load_manual_profile(db_id)`(수동 프로필 우선) → 실패 시
+  `cache_mgr.get_structure_meta(db_id)` 폴백으로 `_structure_meta`를 **명시적으로 부착**(단일 DB
+  schema_analyzer 노드와 동등). 이걸로 query_guide + query_examples + EAV 힌트가 비로소 프롬프트에
+  실려 RC1이 실효를 갖는다.
+- 회귀: `test_query_gen_parity.py::TestAnalyzeSchemaAttachesStructureMeta`(수동 프로필에서
+  사용률 예시·guide 부착 확인). 교훈: **"주입 코드 추가"만으론 부족 — 주입 대상 데이터가 그
+  경로에 실제로 존재하는지 실측**(단일/멀티 경로의 schema 조립 차이).
+
+### 후속 2 (실측 재테스트 — 예시는 실렸으나 강제 매핑·프로필 synonym이 방해)
+
+structure_meta 부착 후 SQL이 CTE/예시 패턴으로 바뀌었으나 잔여 3증상: (1) 여전히
+`cmm_metric_stat_h` 참조, (2) 서버 이름에 등록명(name) 대신 OS hostname, (3) 부분 채움·
+data_insufficient. 각 원인·수정:
+
+- **RC2b (서버이름=hostname)**: gp/yd 프로필의 EAV `Hostname` synonyms가 아직 `["EAV호스트명",
+  "서버명", "호스트네임"]` — **b0가 D-061에서 제거한 바로 그 버그가 gp/yd엔 미적용**. "서버 이름"이
+  EAV Hostname(→hostname)으로 매핑됨. 수정: gp/yd의 EAV Hostname synonyms를 `["EAV호스트명"]`으로
+  축소(D-061 미러). column_synonyms(name←서버명/서버 이름, hostname←호스트명)는 이미 존재.
+- **RC2 (강제 매핑이 예시를 이김)**: `## 양식-DB 매핑 (반드시 SELECT에 포함할 컬럼)`이 field_mapper가
+  지어낸 `cmm_metric_stat_h.cpu_avg_val` 같은 컬럼을 강제 → LLM이 _h·잘못된 조인 생성.
+  사용률 지표는 resource_type+definition_name 피벗이라 단일 field→column 매핑 불가.
+  수정: `_generate_sql`이 `cmm_metric_stat` 참조 매핑을 강제 블록에서 **제외**하고, 대신 "쿼리
+  예시의 `cmm_metric_stat_m` 피벗을 따르라 + `_h/_d` 금지 + 지어낸 컬럼명 대신 avg_val/max_val를
+  resource_type로 구분"하라는 안내로 전환(RC3 월별 강제 포함). 단순 컬럼(name/hostname/ip/OS/코어수/
+  메모리크기)은 계속 강제.
+- 회귀: `test_query_gen_parity.py::TestMetricMappingDeferredToExamples`(지어낸 metric 컬럼 미강제·
+  안내 전환·단순 컬럼 강제 유지). 교훈: **EAV/피벗형 지표는 "field→table.column" 강제 매핑으로
+  표현 불가 — 강제하면 few-shot 예시를 이겨 환각**. 프로필 synonym 수정(D-061)은 **DB별로 전파
+  확인**(b0만 고치고 gp/yd 누락).
+
+### 후속 3 (실측 재테스트 — 요청 무한 hang + field_mapper 완결)
+
+재테스트에서 **요청이 영영 안 끝남**(로그 마지막이 field_mapper step 2.8 제외 3줄, 이후
+healthcheck만). 두 원인:
+
+- **트리거**: field_mapper가 사용률 필드(CPU/메모리 평균·최고)를 계속 매핑 시도 → step 2.8 배치
+  LLM은 응답했으나(malformed `matched_key="db_id:polestar_cm_yd:..."` 파싱으로 제외), 이어지는
+  **step 3(`_apply_llm_mapping_with_synonyms`) LLM 호출이 응답 없이 멈춤**(closed-net, 더 큰 프롬프트).
+  수정(Fix A): `perform_3step_mapping`이 사용률 필드(`_is_metric_usage_field`: metric 명사+집계어)를
+  `remaining`에서 **제외** → step 2.8/3 LLM을 아예 안 돌림, 미매핑(None)으로 두어 SQL 예시 피벗에
+  위임(RC2의 field_mapper 쪽 완성). '메모리 용량'·'CPU 코어 수'(사양 EAV)는 집계어 없어 정상 매핑 유지.
+  **스킵은 cmm_metric_stat 피벗 스키마일 때만**(`_schema_uses_metric_stat_pivot`) — 사용률이 직접
+  컬럼(cpu_metrics.usage_pct 등)인 스키마에서는 정상 매핑 대상이라 스킵하지 않음(과대적용 방지).
+- **증폭**: SSE 스트리밍 경로(`/query/stream`·`/query/file/stream`)의 `astream_events` 루프에 **전체
+  타임아웃 부재** — `file_query_timeout`은 폴백 ainvoke에만 적용. 노드 내부 LLM이 멈추면 다음 이벤트가
+  영영 안 나와 무한 hang. 수정(Fix B): `async for`를 수동 iterator + `asyncio.wait_for(anext,
+  timeout=query_timeout|file_query_timeout)`로 바꿔 stuck fetch를 끊고 error 이벤트 방출 후 종료.
+- 회귀: `test_query_gen_parity.py::TestMetricUsageFieldSkip`(사용률 필드 판별 12케이스 + metric-only는
+  LLM 미호출·미매핑). 교훈: **(1)매핑 불가한 파생 필드를 매핑 시도하면 환각·hang 유발 → 조기 제외.
+  (2)장시간 실행 경로(SSE)는 반드시 전체 타임아웃 가드** — per-call 타임아웃(FabriX 300s)만으론
+  스트리밍/재시도로 무력화됨.
+- 수정 파일: `src/document/field_mapper.py`(`_is_metric_usage_field`·remaining 제외),
+  `src/api/routes/query.py`(두 스트리밍 루프 wait_for).
+
+### 후속 4 (실측 재테스트 — 공동존 폼 metric 칼럼 공백 + b0 정수)
+
+Fix A(metric 필드 미매핑)가 **폼필 채우기의 헤더→결과칼럼 연결을 끊음**. excel_writer는 미매핑 헤더에
+대해 **한글 헤더명 자체를 결과 칼럼 키로 fuzzy 매칭**하는데(`excel_writer._get_value_from_row`),
+
+- **단일 DB(query_generator)**: "자동 매핑 실패 필드" 블록이 미매핑 필드를 **한글 헤더 그대로
+  `AS "CPU 평균"`** 로 alias하라 지시 → 결과 키=한글 → 매칭·채움 성공(은행존 정상).
+- **멀티 DB(multi_db_executor)**: 그 블록이 **없어** metric 필드가 프롬프트에서 누락 → LLM이 영문
+  alias(`cpu_util_avg`) → 한글 헤더 매칭 실패 → **공동존 Excel metric 칼럼 공백**(또 다른 경로 비대칭).
+
+수정: query_generator의 미매핑-필드 블록을 `multi_db_executor._generate_sql`로 이식(통합 column_mapping의
+None 필드를 `unmapped_fields`로 전달). 더불어 블록의 소수 캐스트 예시가 `::numeric`(PostgreSQL) 고정이라
+b0(DB2)에서 정수 표시·문법 위험 → 공용 `decimal_cast_example(db_engine)`로 **엔진별 캐스트**(PostgreSQL
+`::numeric`, DB2 `CAST(... AS DECIMAL(15,4))`) 주입. 두 경로 모두 적용. 회귀:
+`test_query_gen_parity.py`(unmapped alias 블록·엔진별 캐스트·경로 패리티). 교훈: **필드를 "미매핑"으로
+두면 SQL 정확성은 얻지만 폼필이 결과칼럼 이름에 의존하게 된다 — 미매핑 필드는 반드시 헤더명으로 alias
+지시. 이것도 단일/멀티 경로 비대칭(D-066 계열 반복).**
+
+### 후속 5 (실측 — 공동존 매핑 필드 alias 불일치 + 엑셀 소수 표시)
+
+metric은 채워졌으나 **식별 필드(서버 이름/호스트네임/IP)가 gp/yd 간 제각각**(gp=한글 임의명, yd=영문
+Server Name/Hostname)이라 폼 헤더와 안 맞아 공백. 원인: 멀티 DB는 **DB별 독립 LLM 호출**로 SQL을
+따로 생성 → alias가 비결정적. 기존 forcing 블록은 `"table.column" alias`를 지시했으나 LLM이 안 따름.
+수정: `multi_db_executor`의 regular/EAV 블록을 **"결과 alias는 반드시 양식 필드명(한글 헤더) 그대로,
+임의 영문 alias 금지"** 로 변경 → gp/yd 모두 동일 헤더 alias → `excel_writer._get_value_from_row`의
+reverse_mapping(step4)이 매핑 필드를, 헤더-키 fallback이 미매핑 필드를 일관 매칭. (단일 DB는 정상이라
+미변경 — excel의 dual 매칭이 양쪽 흡수.) **엑셀 소수 표시**(은행존 1.55000000000): 값은 정상(CSV=1.55),
+템플릿 셀 number_format zero-fill이 원인. `excel_writer._normalize_cell_value`로 Decimal→float 정규화
+(스케일 trailing zero 제거·정수는 int). 잔존 시 템플릿 셀 서식 문제라 서식 override는 유보. 회귀:
+`test_query_gen_parity.py::TestMetricMappingDeferredToExamples`(헤더 alias 지시), normalize 단위 확인.
+교훈: **DB별 독립 SQL 생성은 결과 컬럼명이 비결정적 — 폼필처럼 컬럼명 일치가 필요하면 결정적 alias
+규칙(양식 헤더)을 강제**.
+
+### 후속 6 (실측 — 프롬프트 튜닝 한계 → 결정적 구조 수정 3종)
+
+후속5의 프롬프트(헤더 alias 강제) 후에도 재발: gp="서버 이름"/yd="서버명"(alias 여전히 흔들림),
+b0 소수↔정수 왕복, "IP주소"↔"ip 주소"(대소문자·공백). 근본은 **LLM alias/cast 비결정성** — 프롬프트로는
+한계. 결정적 구조 수정 3종:
+
+- **① 멀티 DB 동일 스키마 SQL 재사용**(`multi_db_executor`): 공동존(gp/yd)은 스키마·`db_schema`(polestar)
+  동일 → 첫 DB의 **검증된 SQL을 나머지 동일 스키마 DB에 재사용**(`_sql_by_schema` 캐시, 키=(engine,schema)).
+  두 DB가 **동일 컬럼명** → 병합·폼필 정합. DB별 독립 LLM 호출의 alias 비결정성 원천 제거(서버명 중복·
+  여의도 빈칸 해소).
+- **② active_db_engine 실제 설정**(`subagents.run_data_query_pipeline`): 지금껏 항상 None →
+  query_generator/validator가 b0(DB2)를 PostgreSQL로 취급(`::numeric`·LIMIT) → 문법 오류·정수·
+  data_insufficient. `get_domain_by_id(db_id).db_engine`로 실제 엔진 주입 → DB2는 `FETCH FIRST`·
+  `CAST DECIMAL`·`decimal_cast_example('db2')` 적용.
+- **③ excel 매칭 표기 정규화**(`_get_value_from_row` 3.7): 소문자+공백/언더스코어 제거 비교로
+  "IP주소" vs "ip 주소" 등 alias 표기 흔들림 흡수(reverse_mapping 필드명도 정규화).
+
+교훈: **LLM 출력(alias/cast/방언)에 정합성을 의존하지 말 것 — (a)동일 스키마는 SQL 재사용으로
+결정화, (b)엔진 메타는 config에서 결정적 주입, (c)이름 매칭은 표기 정규화로 흡수**. 잔여(관찰):
+b0 metric cast는 재사용 대상 아니라 여전히 LLM 의존(단일 DB) — 반복 시 결정적 SELECT 구성 검토.
+
+---
+
+## D-067. 재발 방지 드리프트 가드 (프로필·경로 중복 감시 테스트)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-09 |
+| **상태** | 확정 (B+C 가드레일 도입. 근본 리팩터 A(프로필 상속)는 부담이 커 보류) |
+| **관련 결정** | D-061(서버명), D-066(경로 동등화) — 이들의 재발을 자동 감지 |
+
+### 배경 / 문제
+
+같은 결함이 반복 "재발"하는 근본 이유는 regression이 아니라 **중복**: (1) gp/yd/b0가 동일
+Polestar 스키마를 기술하는 near-duplicate 프로필 3벌(**gp/yd는 567줄 중 실질 1줄만 차이**),
+(2) 단일 DB(`query_generator`)/멀티 DB(`multi_db_executor`) SQL 생성 로직 2벌. 한 복사본만
+패치하면 나머지에 결함이 남아 나중에 표면화한다(D-061=b0만 고쳐 gp/yd 누락, D-066=단일 경로만
+갖춰 멀티 경로 누락). Known Mistakes에 같은 메타-교훈이 3회 등장("한 엔진/경로만 고치지 말라").
+
+근본 해소는 **A. 프로필 상속(공통 base + delta override)** 이나 구조 변경 부담이 커 보류하고,
+저비용 **가드레일**로 "전파 누락·경로 비대칭"을 CI에서 즉시 실패시킨다.
+
+### 결정 (B + C, 테스트 전용 — 프로덕션 코드 미변경)
+
+- **B. 프로필 드리프트 가드** (`tests/test_routing/test_polestar_profile_consistency.py`):
+  - **B-1 불변식**: 3개 Polestar 프로필 각각이 과거 버그를 규칙화한 불변식을 만족(EAV Hostname
+    synonyms에 식별어 없음=D-061, name/hostname column_synonyms 분리, 월별 metric 예시 존재=D-066,
+    예시 SQL에 환각 패턴(`definition_name='CPU'`·`cpu_avg_val`) 없음, source=manual).
+  - **B-2 gp/yd 등가성**: 주석 제외 실질 라인 차이가 allowlist(OSParameter synonym 1건)뿐. 한쪽만
+    수정하면 즉시 실패(RC2b 재발 차단).
+- **C. 경로 패리티 가드** (`tests/test_nodes/test_query_gen_parity.py::TestCrossPathParity`):
+  두 SQL 생성 경로가 **동일 공유 헬퍼 객체**(`build_query_examples_block`/`resolve_query_limit`)를
+  참조(복붙 분기 차단), 각 프롬프트 빌더가 예시를 실제 주입, LIMIT 상향 대칭.
+
+### 근거 / 한계
+
+- 채택 이유: 저비용(LLM/DB 불필요, 수 ms)·즉효. 부정검증으로 실제 재발 시 실패함을 확인(누출·
+  divergence 주입 → 감지). B=데이터(프로필) 중복, C=코드(경로) 중복을 각각 커버(상보적).
+- **한계(명시)**: 둘 다 **"이미 아는 결함의 재발"만** 잡는 가드레일 — 신규 버그 유형은 그에 대한
+  불변식을 한 줄 추가하기 전까지 못 잡는다. 새 지뢰를 밟을 때마다 B-1에 assert 한 줄 추가로 성장시킨다.
+- 유지: 공통 속성을 의도적으로 바꾸거나 gp/yd를 다르게 할 때만 불변식/allowlist 갱신(드묾).
+- 보류(A): 프로필 상속은 loader 변경·마이그레이션 부담이 커 후속 과제로 남김(가드가 있으면
+  A 없이도 재발은 CI에서 드러남).
+- 검증: B 16건 + C 3건 통과, 부정검증(누출·divergence 주입 시 실패) 확인, arch_check exit 0.
+
+---
+
+## D-068. 폼필 EAV 강제 SELECT의 resource_type 인지 다중 리소스 피벗
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-13 |
+| **상태** | 확정 (강제 블록 결정화 + 단일/멀티 경로 공유 헬퍼) |
+| **관련 결정** | D-050(EAV 피벗은 HAVING), D-066(경로 동등화), D-067(중복 가드) |
+
+### 배경 / 문제
+
+양식 채우기에서 `CPU 코어 수`·`메모리 용량` 칼럼이 **전부 빈칸**(공동존 멀티·여의도 단일 공통).
+생성 SQL은 `MAX(CASE WHEN cc.name='LOGICALCORE' THEN cc.stringvalue_short END)`처럼 피벗 형태는
+있으나 값이 NULL. 근본 원인은 EAV 강제 블록(`query_generator`/`multi_db_executor` 양쪽 복제)이:
+
+1. **resource_type 구분이 없음** — `cc.name='LOGICALCORE'`만 생성. 그러나 LOGICALCORE는
+   `server.Cpus`, TotalSize는 `server.Memory` **자식 리소스 행**의 속성이다.
+2. **조인 힌트가 `value_joins`(Hostname/IPaddress = server.Server만) 기반** — config를 서버 행의
+   `resource_conf_id`에만 붙임. 자식 리소스 속성은 그 config 그룹에 없어 영영 NULL.
+
+프로필 query_example엔 올바른 멀티 리소스 피벗(`GROUP BY platform_resource_id` +
+`MAX(CASE WHEN c.resource_type='server.Cpus' AND cc.name='LOGICALCORE' ...)`)이 있으나, **강제
+블록의 (틀린) 명시 지시가 예시를 이긴다**. 사용률(cmm_metric_stat) 필드가 단일 field→컬럼
+매핑 불가라 강제에서 제외됐던 것(D-066 후속3)과 **동일 계열** — 정적 EAV 자식 속성도 동일.
+
+### 결정 (1차: config 피벗 결정화)
+
+- **`eav_attr_resource_types(schema_info)`**: known_attributes 설명의 `[resource_type: …]`를
+  파싱해 `속성명→resource_type` 맵 구성(복수 표기는 첫 매치). 프로필에 이미 있는 메타를 활용.
+- **`build_multi_resource_pivot_block(...)`**: 자식 리소스 EAV 속성이 하나라도 있으면, 직접 컬럼
+  (`c.name`/`c.hostname`)·server.Server EAV·자식 EAV를 **resource_type 구분 CASE WHEN + config를
+  `cc.configuration_id = c.resource_conf_id`로 조인 + `GROUP BY COALESCE(platform_resource_id, id)`**
+  형태로 **결정적 생성**. Hostname 브릿지 조인 금지 명시. 두 경로가 이 공유 헬퍼를 호출(D-067 정신).
+- **순수 server.Server EAV(OS-only 등)·비폼필 경로는 기존 브릿지 블록 유지** → 회귀 없음.
+- **부수 발견/수정**: `query_generator._build_user_prompt`가 column_mapping 필터링 루프에서 누적
+  리스트 `parts`를 `parts = col.split('.')`로 **덮어써**, schema_info+정규컬럼이 있는 폼필 프롬프트에서
+  `## 사용자 질의`·`## 파싱된 요구사항` 섹션이 **유실**되던 기존 버그를 `col_parts`로 격리 수정.
+  (멀티 경로는 누적 변수명이 `user_parts`라 무해했음.)
+
+### 결정 (2차 정정: metric 통합 — GROUP BY 충돌 회귀 대응)
+
+1차(config 전용 피벗 스켈레톤)를 넣자 공동존 재테스트에서 **`column "r.name" must appear in the
+GROUP BY clause`** 에러 + 전체 빈칸으로 **회귀**. 원인: 사용률 필드(`CPU 평균/최고`, `메모리 평균/최고`)는
+field_mapper가 **미매핑(None)** 으로 넘겨 `unmapped_fields` 블록(alias `r`/`s`, cmm_metric_stat_m
+피벗)이 **별도로** 붙는데, 이게 내 config 피벗(alias `c`, GROUP BY) 스켈레톤과 **구조·alias 충돌** →
+LLM이 둘을 섞다 `r.name`을 집계 밖에 둠. 프로필 정식 예시는 metric을 서브쿼리로 분리한 2-scope지만,
+**단일 스코프로도 합칠 수 있다**(config·metric 이중 LEFT JOIN은 AVG/MAX/MIN 값에 불변 — 중복행이
+같은 값이라 집계 결과 동일).
+
+- **정정**: `build_multi_resource_pivot_block`에 `metric_fields`·`db_engine` 인자를 추가하여 사용률
+  필드를 **같은 GROUP BY 스켈레톤에 접어 넣음**(`ROUND(AVG/MAX(CASE WHEN c.resource_type='server.Cpus'
+  AND s.definition_name='Utilization' THEN s.avg_val END)…, 2)` + `LEFT JOIN cmm_metric_stat_m s
+  ON s.resource_id=c.id`). 엔진별 소수 보존(PG `::numeric` / DB2 `CAST DECIMAL`).
+- **`classify_metric_field(field)`**: metric 명사(cpu/메모리…)+집계어(평균/최고…)로 (resource_type,
+  집계함수, 값컬럼) 분류. 두 경로가 unmapped(+metric_entries)에서 사용률 필드를 골라 피벗에 접고,
+  **미매핑/metric 별도 블록에서 제외**해 충돌 원천 제거.
+- 결과: identity+config+metric이 **하나의 GROUP-BY-valid 쿼리**(모든 SELECT식이 집계, 맨 컬럼 없음).
+  기간(지난달)은 `s.stat_date`에 적용하도록 지시로 위임.
+
+### 결정 (3차: 결정적 SQL 조립 — 프롬프트 유도 포기)
+
+2차(통합 스켈레톤을 프롬프트로 강제)에서도 공동존 재테스트가 **서버 2~3중 중복(2만건)+config 빈칸**으로
+실패. 원인: 스켈레톤을 프롬프트에 "제안"으로 넣어도 **프로필 few-shot 예시**("사용률 리스트" 예시는
+`GROUP BY … TO_DATE(s.stat_date…)` 월별 + config를 PHYSICALCORE만 담는 `hi` 서브쿼리)와 **경쟁**해
+LLM이 예시를 택함 → 월별 분해로 서버 중복 + LOGICALCORE/TotalSize 누락. 프롬프트 텍스트를 더 넣는
+접근은 매 라운드 새 실패를 낳음(경쟁하는 지시가 늘어날 뿐).
+
+- **결정**: 이 well-defined 폼필 쿼리(자식 리소스 EAV 포함)는 **코드가 runnable SQL을 직접 조립**하고
+  **LLM을 우회**한다. `build_multi_resource_pivot_sql(...)`가 프로필의 검증된 조인 패턴 그대로(단, 사용률까지
+  단일 GROUP BY로 합침) 완성 SQL을 생성: 스키마 한정(`db_schema`, DB2 대문자)·엔진별 소수캐스트·엔진별
+  LIMIT/FETCH·`resolve_stat_month`로 기간(`s.stat_date`) 필터까지 결정적. 멀티(`_generate_sql`)는 자식
+  EAV 감지 시 즉시 이 SQL을 return(프롬프트 미구성), 단일(`query_generator._try_build_form_fill_pivot_sql`)은
+  LLM 호출 전 단락. **재시도(에러 컨텍스트) 시에만 LLM 폴백**(결정적 SQL이 실행 실패했을 때 에러 반영).
+- 자식 EAV가 없는 일반 질의·비폼필은 종전 LLM 경로 유지(회귀 0). 2차의 프롬프트 블록
+  (`build_multi_resource_pivot_block`)은 단일 경로 **재시도 폴백**으로만 잔존.
+- **date 처리**: "지난달"/"전월"/"이번달" 등만 결정(연말↔연초 롤오버 포함), 그 외 표현은 월 필터 없이
+  전체 월 평균(서버당 1행은 유지 — GROUP BY가 월을 포함하지 않으므로 중복 불가).
+
+### 근거 / 한계
+
+- LLM 비결정성·조각 블록 충돌 대신 **강제 지시 자체를 하나의 정답 쿼리로** 결정화(최근 방향과 일치).
+- 한계: regular_entries가 entity 테이블(cmm_resource) 컬럼, 사용률 통계 테이블=`cmm_metric_stat_m`,
+  키=`resource_id`/`definition_name='Utilization'`/`avg_val|max_val|min_val`라는 폴스타 규약 가정
+  (gp/yd/b0 동형이라 성립). 기간 필터는 여전히 LLM이 `s.stat_date`에 채움.
+- **교훈**: 조각난 강제 블록에 **또 다른 구조 강제(GROUP BY 피벗)를 얹으면 alias·집계 스코프가
+  충돌**한다 — 폼필처럼 여러 필드류(식별/EAV/사용률)가 한 쿼리에 필요하면 **하나의 스켈레톤으로 통합**해
+  생성해야 하며, 부분 블록을 켠 채로 두면 안 된다(반드시 상호배타 게이팅).
+- 검증: 신규 단위(분류·피벗·metric 접힘·DB2 캐스트·GROUP BY 라인 전수 집계 + **결정적 SQL**: 단일
+  GROUP BY·월 미포함·resource_type 구분·스키마 한정·엔진별 LIMIT/캐스트·stat_month 롤오버) + 단일
+  `_try_build_form_fill_pivot_sql`·멀티 `_generate_sql` 실측(자식 EAV 감지 시 완성 SQL 반환), 회귀
+  스위트 신규 실패 0, arch_check exit 0.
+- **한계/교훈(3차)**: **프롬프트로 LLM을 유도하는 접근은 경쟁 지시(프로필 few-shot 등)가 있으면
+  비결정적으로 실패**한다 — 스키마·조인이 고정된 well-defined 쿼리는 프롬프트 강제가 아니라 **코드가
+  직접 조립**해야 안정적. 기간처럼 런타임 값이 필요한 부분만 결정적 파서로 처리하고, 파싱 불가 시에도
+  구조(서버당 1행)는 깨지지 않게 설계.
 
 ---
 
@@ -3218,6 +3565,9 @@ K리전 공동존 **두 DB**를 포괄하는데:
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-13 | D-068 | **폼필 EAV 강제 SELECT의 resource_type 인지 다중 리소스 피벗**: 양식 `CPU 코어 수`(LOGICALCORE=server.Cpus)·`메모리 용량`(TotalSize=server.Memory)이 빈칸(공동존 멀티·여의도 단일 공통). 생성 SQL에 `MAX(CASE WHEN cc.name='LOGICALCORE' ...)` 피벗은 있으나 NULL. 원인: EAV 강제 블록(query_generator/multi_db_executor 복제)이 (1) resource_type 구분 없이 `cc.name='...'`만 생성, (2) 조인 힌트가 `value_joins`(Hostname/IPaddress=server.Server만) 기반이라 config를 **서버 행 resource_conf_id에만** 붙임 → 자식 리소스(server.Cpus/Memory) 속성이 영영 NULL. 프로필 query_example엔 올바른 멀티리소스 피벗이 있으나 강제 블록의 틀린 명시 지시가 예시를 이김(사용률 필드 강제 제외 D-066 후속3과 동일 계열). 수정: 공유 헬퍼 `eav_attr_resource_types`(설명 `[resource_type: …]` 파싱)+`build_multi_resource_pivot_block`(자식 EAV 있으면 resource_type 구분 CASE WHEN + `cc.configuration_id=c.resource_conf_id` 조인 + `GROUP BY COALESCE(platform_resource_id,id)` 결정적 생성, 브릿지 조인 금지 명시)을 두 경로가 호출(D-067 정신). 순수 server.Server EAV·비폼필은 기존 블록 유지(회귀 0). **2차 정정(GROUP BY 회귀 대응)**: 1차 config-전용 피벗을 넣자 공동존 재테스트에서 `column "r.name" must appear in the GROUP BY clause`+전체 빈칸 회귀 — 사용률 필드가 미매핑 경로로 **별도 metric 블록**(alias r/s)이 붙어 config 피벗(alias c, GROUP BY)과 alias·스코프 충돌. 프로필 정식 예시는 2-scope(metric 서브쿼리)지만 **단일 스코프로 합쳐도 config·metric 이중 조인이 AVG/MAX에 불변**이라 유효 → `build_multi_resource_pivot_block(metric_fields, db_engine)`로 사용률을 **같은 GROUP BY에 접어 넣고**(`ROUND(AVG/MAX(CASE WHEN c.resource_type=... AND s.definition_name='Utilization' THEN s.avg_val END)…)`+`LEFT JOIN cmm_metric_stat_m s ON s.resource_id=c.id`, 엔진별 소수캐스트), `classify_metric_field`로 골라 미매핑/metric 별도 블록에서 제외(상호배타 게이팅). 결과=identity+config+metric 하나의 GROUP-BY-valid 쿼리. **3차 정정(결정적 SQL 조립)**: 2차(통합 스켈레톤을 프롬프트 강제)도 공동존이 **서버 2~3중 중복(2만건)+config 빈칸** 재발 — 프롬프트 "제안"이 프로필 few-shot("사용률 리스트" 예시=월별 `GROUP BY stat_date`+config PHYSICALCORE만 담는 서브쿼리)과 경쟁해 LLM이 예시를 택함. → 폼필 다중리소스 쿼리(자식 EAV 포함)를 **코드가 runnable SQL로 직접 조립·LLM 우회**: `build_multi_resource_pivot_sql`(스키마 한정·엔진별 캐스트/LIMIT·`resolve_stat_month`로 s.stat_date 기간필터, 단일 GROUP BY=서버당 1행). 멀티 `_generate_sql`은 자식 EAV 감지 시 즉시 return, 단일 `_try_build_form_fill_pivot_sql`은 LLM 전 단락, 재시도 시만 LLM 폴백. **부수 수정**: `_build_user_prompt` 필터링 루프가 누적리스트 `parts`를 `parts=col.split('.')`로 덮어써 `## 사용자 질의`·`## 파싱된 요구사항`이 유실되던 기존 버그를 `col_parts`로 격리(멀티는 `user_parts`라 무해). 미해결: 증상 1(b0 OS 미SELECT)은 매핑 실패 가설 — field_mapper 로그 확인 대기. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 `test_multi_resource_pivot.py` 18건+단일/멀티 실측(서버당 1행·월 미포함·엔진별 SQL), 회귀 신규 실패 0, arch exit 0. 상세 `## D-068`. |
+| 2026-07-09 | D-067 | **재발 방지 드리프트 가드(테스트 전용)**: 같은 결함 반복은 regression이 아니라 **중복**(gp/yd/b0 near-duplicate 프로필 3벌=gp/yd는 567줄 중 실질 1줄 차이 + query_generator/multi_db_executor SQL생성 2벌) → 한 복사본만 패치해 나머지에 잔존(D-061 gp/yd 누락, D-066 경로 비대칭). 근본해소 A(프로필 상속)는 부담 커 보류, 저비용 가드 도입. **B**(`test_polestar_profile_consistency.py`): B-1 3프로필 공통 불변식(EAV Hostname 식별어 없음·name/hostname 분리·월별 metric 예시·환각패턴 없음·source=manual), B-2 gp/yd 등가성(주석 제외 실질차이 allowlist뿐). **C**(`test_query_gen_parity.py::TestCrossPathParity`): 두 경로가 동일 공유헬퍼 참조·예시 주입·LIMIT 대칭. 한계: "아는 결함 재발"만 감지(신규 유형은 불변식 추가 필요). 부정검증(누출·divergence 주입시 실패) 확인. 프로덕션 코드 미변경. 검증 B 16+C 3 통과, arch exit 0. 상세 `## D-067`. |
+| 2026-07-09 | D-066 | **단일/멀티 DB SQL 생성 경로 동등화(few-shot 예시·전체조회 LIMIT 공유)**: "공동존 전체 서버+월간 CPU/메모리 사용률" 폼필이 gp/yd로 매핑됐으나 환각 SQL(`cmm_metric_stat_h` 서버행 직접조인+`definition_name='CPUUtilization'`)로 data_insufficient·NULL·LIMIT 1000. 은행존(b0)은 정상. 근본원인=DB 개수가 경로를 가름(`is_multi_db=len(targets)>1`): 단일(b0)→`_run_single_db_pipeline`→query_generator(프로필 `query_examples` few-shot 주입+"전체" LIMIT 상향+풀 검증)로 올바른 `cmm_metric_stat_m` 피벗 생성; 멀티(gp+yd)→`multi_db_executor`(예시 미주입·default_limit 1000 고정·간이검증)라 field_mapper 가짜 컬럼 매핑을 그대로 따름. b0가 동작한 건 few-shot 예시가 가짜 매핑을 이겼기 때문(스키마 차이 아님). 수정(RC1+RC4): 공용 `src/utils/query_gen_common.py`(`build_query_examples_block`·`resolve_query_limit`)로 두 경로 단일 출처화 — query_generator 인라인 로직 대체(동작 동일), multi_db_executor `_generate_sql`이 예시 append+`effective_limit` 사용. RC2(field_mapper 사용률→가짜컬럼)·RC3(시간단위 _h/_d/_m)는 결과 관찰 후 판단(예시가 _m 기준이라 완화 기대). 수정 `utils/query_gen_common.py`(신규)·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 `test_query_gen_parity.py` 10건+query_generator 회귀 동일. 상세 `## D-066`. |
 | 2026-07-09 | D-064 | **텍스트 후속 턴의 폼필 요청-스코프 상태 누수 차단**: 폼업로드 턴 다음 텍스트 질의가 옛 template_structure 재출력·옛 mapped_db_ids(b0)로 DB 고정·양식 재활용. 근본원인=LangGraph 체크포인터 델타 병합(텍스트 경로는 `{user_query,messages}`만 전달→직전 폼업로드의 uploaded_file/template_structure/mapped_db_ids 잔존, MemorySaver 2턴 재현 실측). 옵션 B: `state.create_followup_input()`가 폼필 트리거(uploaded_file/file_type/csv_sheet_data) None 초기화(라우트 2곳), `field_mapper` 스킵 경로가 매핑 산출물(`_CLEARED_MAPPING_FIELDS`) None 정리("template 없음→매핑 없음" 불변식, 진입 경로 무관). 승계 신호(messages/conversation_context/**pending_synonym_registrations**/승인)는 보존(등록 흐름 유지). 동작변화 1건: 텍스트 후속이 직전 양식 자동 상속 안 함(사용자 확정, 기본 동작 정합 우선). 수정 `state.py`·`api/routes/query.py`·`nodes/field_mapper.py`. 검증 `test_form_state_reset.py` 6건+`test_field_mapper_node.py` 갱신. 상세 `## D-064`. |
 | 2026-07-09 | D-065 | **바 "공동존" 위치 DB 라우팅(gp+yd)**: "공동존 전체 서버" 폼필이 b0로 오라우팅(D-064 누수와 별개 — 파일 경로라 create_initial_state 리셋, 잔존 아님). 원인: gp/yd aliases에 복합어("공동존 김포 폴스타")만 있고 단독 "공동존" 부재 + input_parser 규칙10 예시에 공동존 없어 target_db_hints 추출 비결정적 → priority 비면 active_db_ids 순서(b0 첫 항목)로 오확정. 수정: (1) gp/yd aliases에 "공동존"/"공동존 폴스타" 추가(→"공동존"=[gp,yd], "공동존 김포"=[gp] 세분화 유지 실측), (2) `_ensure_location_hints` 결정적 가드로 위치 표면어 target_db_hints 보강, (3) 규칙10 예시 보강. **`_resolve_priority_db_ids` 전용 분기 미채택**(사용자 검토): 무조건 분기는 "공동존 김포" 세분화를 덮어써 회귀 위험 — aliases만 안전. process_query `_LOCATION_DB_HINTS`(프로세스/알람 경로)는 폼필과 무관이라 미변경. 수정 `domain_config.py`·`nodes/input_parser.py`·`prompts/input_parser.py`. 검증 `test_gongdongjon_routing.py` 10건. 상세 `## D-065`. |
 | 2026-07-01 | D-048 | **Phase E4 — LLM 액션가능성 판단(피드백 few-shot, ML 모델 미사용)** (D-048.11 등재, 사용자 확정 §13.1, 전부 옵트인·기본 off→E3/D-049 무변경). 잔여작업 E4/E5 중 **E4 우선** 착수(E5는 vLLM 가용성 확인 후 별도). 운영자 피드백(유효/노이즈)을 신규 `feedback_store.py`(JSONL·decision_store 미러·graceful, stdlib만)에 적재→유사 과거 알람을 **alarm_name·resource·pattern 키**(§3.9, fingerprint 아님)로 few-shot 검색→`alarm_analyzer`가 **기존 단일 LLM 응답 재파싱**(추가 호출 없음·D-048.5 패턴)하여 `llm_actionability`(actionable\|noise\|null) 자문 산출. **판단은 결정적 `notification_policy` step 9**: actionable→promote(항상 안전), noise→demote(단 `effective_severity≤suppress_max_severity` 가드 — is_routine과 동일), **승격우선 기계**가 promote 공존 시 noise 무시, 1단계·SUPPRESS 하한 불변. **심각도3 절대 PAGE 불변**(step3 단락, E4는 step9만), 불확실→null(재현율 우선·승격 비대칭). `signals["llm_actionability"]` 키 추가(§8.2 스키마 가드 2곳 `test_notification_policy`·`test_polestar_noise_context_integration` 갱신). 캡처: `POST /alarm/feedback`(require_user, 게이트/액션가능성 off면 503·label 검증 400) + `app.js` 알람 카드 유효/노이즈 버튼(closure 바인딩·503 처리·`textContent` XSS 안전). 게이트오프 회귀 0: policy는 값 미독·None, analyzer는 few-shot 미조회·재파싱 스킵(3계층 테스트 고정). **구현 주의**: `llm_actionability` 추출을 첫 `_decision` **이전으로 hoist**(sev3 조기 반환 경로 `_signals()` 클로저 free-variable NameError 방지 — 회귀 테스트 고정). 수정 `alarm.py`(필드2)·`notification_policy.py`(step9)·`prompts/alarm_analyzer.py`·`alarm_analyzer.py`(`_render_feedback_section`+재파싱)·`config.py`(3필드+주석 E3→E4)·`alarm_worker.py`(`_build_feedback_store`+주입)·`api/routes/alarm.py`(`_alarm_extra_configurable`+엔드포인트)·`app.js`/`style.css`·`.env.example`. 검증(§11.1 baseline·**팀리드 독립 재실행**): `tests/test_alarm` **359 passed**(337+신규 22, 실패 0), `arch_check --ci` exit 0(feedback_store=infra·stdlib, policy=stdlib 유지), `AppConfig()` OK, `node --check app.js` OK. 상세: `## D-048` §D-048.11. 번호: `## D-` 헤더+변경이력 표 둘 다 grep, E4는 D-048 하위(.10→**.11**)로 등재(top-level 신번호 아님·D-049 보존). |

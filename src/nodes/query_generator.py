@@ -24,6 +24,17 @@ from src.prompts.query_generator import (
     QUERY_GENERATOR_SYSTEM_TEMPLATE,
 )
 from src.state import AgentState
+from src.routing.domain_config import get_domain_by_id
+from src.utils.query_gen_common import (
+    build_multi_resource_pivot_block,
+    build_multi_resource_pivot_sql,
+    build_query_examples_block,
+    classify_metric_field,
+    decimal_cast_example,
+    eav_attr_resource_types,
+    resolve_query_limit,
+    resolve_stat_month,
+)
 from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
 
@@ -119,22 +130,64 @@ def _format_structure_guide(
                     f"{excl.get('reason', 'JOIN 불가')}"
                 )
 
-    # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지
-    query_examples = structure_meta.get("query_examples", [])
-    if query_examples:
-        guide += "\n\n## 쿼리 예시 (반드시 이 패턴을 따르세요)"
-        guide += "\n아래 예시의 JOIN 패턴을 그대로 따라하세요. 임의로 다른 조인 조건을 만들지 마세요.\n"
-        for i, ex in enumerate(query_examples, 1):
-            question = ex.get("question", "")
-            sql_example = ex.get("sql", "").rstrip()
-            explanation = ex.get("explanation", "")
-            guide += f"\n### 예시 {i}: \"{question}\""
-            guide += f"\n```sql\n{sql_example}\n```"
-            if explanation:
-                guide += f"\n설명: {explanation}"
-            guide += "\n"
+    # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지.
+    # 멀티 DB 경로(multi_db_executor)와 동일 출처를 쓰도록 공용 헬퍼로 분리(D-066).
+    guide += build_query_examples_block(structure_meta)
 
     return guide
+
+
+def _try_build_form_fill_pivot_sql(
+    state: AgentState, limit_value: int, user_query: str
+) -> Optional[str]:
+    """폼필에 자식 리소스 EAV(CPU 코어 수/메모리 용량 등)가 있으면 결정적 피벗 SQL을 조립한다.
+
+    프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
+    (서버 중복·config 누락)한다. well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을 우회한다
+    (D-068 2차). 해당 케이스가 아니면 None(LLM 경로 유지).
+    """
+    column_mapping = state.get("column_mapping")
+    if not column_mapping:
+        return None
+    schema_info = state.get("schema_info") or {}
+    attr_rt = eav_attr_resource_types(schema_info)
+    eav_entries = [
+        (f, c[4:]) for f, c in column_mapping.items()
+        if c and c.startswith("EAV:")
+    ]
+    child_eav = [
+        (f, a, attr_rt[a.upper()])
+        for f, a in eav_entries
+        if a.upper() in attr_rt and attr_rt[a.upper()] != "server.Server"
+    ]
+    if not child_eav:
+        return None
+    eav_pattern = _get_eav_pattern(schema_info)
+    if not eav_pattern:
+        return None
+    server_eav = [
+        (f, a) for f, a in eav_entries
+        if a.upper() not in attr_rt or attr_rt[a.upper()] == "server.Server"
+    ]
+    # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(미매핑으로 접힘)
+    regular_entries = [
+        (f, c) for f, c in column_mapping.items()
+        if c and not c.startswith("EAV:") and "cmm_metric_stat" not in c.lower()
+    ]
+    metric_fields = [
+        f for f, c in column_mapping.items()
+        if c is None and classify_metric_field(f)
+    ]
+    domain = get_domain_by_id(state.get("active_db_id") or "")
+    db_schema = domain.db_schema if domain else ""
+    return build_multi_resource_pivot_sql(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        metric_fields=metric_fields,
+        db_engine=state.get("active_db_engine"),
+        db_schema=db_schema,
+        limit=limit_value,
+        stat_month=resolve_stat_month(user_query),
+    )
 
 
 async def query_generator(
@@ -174,48 +227,57 @@ async def query_generator(
     # 멀티턴 맥락에서 이전 SQL 참조
     conversation_context = state.get("conversation_context")
 
-    # 모든/전체 조회 쿼리인 경우 LIMIT 값을 100,000으로 높여 1000건 제한 우회
+    # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
     user_query = state.get("user_query", "") or ""
-    is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
-    limit_value = 100000 if is_all_query else app_config.query.default_limit
+    limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
 
-    # 프롬프트 구성
-    system_prompt = _build_system_prompt(
-        schema_info=state["schema_info"],
-        default_limit=limit_value,
-        column_descriptions=state.get("column_descriptions", {}),
-        column_synonyms=state.get("column_synonyms", {}),
-        resource_type_synonyms=state.get("resource_type_synonyms"),
-        eav_name_synonyms=state.get("eav_name_synonyms"),
-        active_db_id=state.get("active_db_id"),
-        polestar_db_ids=app_config.get_polestar_db_ids() or None,
-        active_db_engine=state.get("active_db_engine"),
-        routing_intent=state.get("routing_intent"),
+    # 폼필 다중 리소스 피벗은 코드가 결정적으로 조립(LLM 우회). 재시도(에러 컨텍스트) 시엔
+    # 결정적 SQL이 이미 실패했을 수 있으므로 LLM 폴백으로 에러를 반영해 수정한다.
+    deterministic_sql = None if is_retry else _try_build_form_fill_pivot_sql(
+        state, limit_value, user_query
     )
+    if deterministic_sql:
+        sql = deterministic_sql
+        logger.info("폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s", sql[:500])
+    else:
+        # 프롬프트 구성
+        system_prompt = _build_system_prompt(
+            schema_info=state["schema_info"],
+            default_limit=limit_value,
+            column_descriptions=state.get("column_descriptions", {}),
+            column_synonyms=state.get("column_synonyms", {}),
+            resource_type_synonyms=state.get("resource_type_synonyms"),
+            eav_name_synonyms=state.get("eav_name_synonyms"),
+            active_db_id=state.get("active_db_id"),
+            polestar_db_ids=app_config.get_polestar_db_ids() or None,
+            active_db_engine=state.get("active_db_engine"),
+            routing_intent=state.get("routing_intent"),
+        )
 
-    user_prompt = _build_user_prompt(
-        parsed_requirements=state["parsed_requirements"],
-        template_structure=state.get("template_structure"),
-        error_message=state.get("error_message") if is_retry else None,
-        previous_sql=state.get("generated_sql") if is_retry else None,
-        column_mapping=state.get("column_mapping"),
-        conversation_context=conversation_context,
-        schema_info=state["schema_info"],
-    )
+        user_prompt = _build_user_prompt(
+            parsed_requirements=state["parsed_requirements"],
+            template_structure=state.get("template_structure"),
+            error_message=state.get("error_message") if is_retry else None,
+            previous_sql=state.get("generated_sql") if is_retry else None,
+            column_mapping=state.get("column_mapping"),
+            conversation_context=conversation_context,
+            schema_info=state["schema_info"],
+            db_engine=state.get("active_db_engine"),
+        )
 
-    # LLM 호출
-    messages = [
-        SystemMessage(content=system_prompt),
-        # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-        AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
-        HumanMessage(content=user_prompt),
-    ]
-# Remove any None entries (no effect for other LLMs)
-    messages = [m for m in messages if m is not None]
-    response = await llm.ainvoke(messages)
+        # LLM 호출
+        messages = [
+            SystemMessage(content=system_prompt),
+            # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
+            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+            HumanMessage(content=user_prompt),
+        ]
+        # Remove any None entries (no effect for other LLMs)
+        messages = [m for m in messages if m is not None]
+        response = await llm.ainvoke(messages)
 
-    # SQL 추출
-    sql = _extract_sql_from_response(response.content)
+        # SQL 추출
+        sql = _extract_sql_from_response(response.content)
 
     logger.info(f"SQL 생성 완료 (retry={retry_count}): {sql[:1000]}...")
 
@@ -372,6 +434,7 @@ def _build_user_prompt(
     column_mapping: Optional[dict[str, Optional[str]]] = None,
     conversation_context: Optional[dict] = None,
     schema_info: Optional[dict] = None,
+    db_engine: Optional[str] = None,
 ) -> str:
     """사용자 프롬프트를 구성한다.
 
@@ -435,14 +498,17 @@ def _build_user_prompt(
                 if col and not col.startswith("EAV:"):
                     # "db_id:table.column" → "table.column" (콜론 접두사 제거)
                     effective_col = col.split(":", 1)[-1] if ":" in col else col
-                    parts = effective_col.split(".")
-                    # "db_id.table.column" (3단계) → table = parts[-2]
-                    # "table.column" (2단계) → table = parts[0]
-                    if len(parts) >= 3:
-                        table_part = parts[-2]
-                        col = f"{parts[-2]}.{parts[-1]}"
-                    elif len(parts) == 2:
-                        table_part = parts[0]
+                    # 주의: 누적 리스트 `parts`를 덮어쓰지 않도록 별도 변수 사용.
+                    # (과거 `parts = split(...)`가 프롬프트 누적 리스트를 클로버링해
+                    #  '## 사용자 질의'·'## 파싱된 요구사항' 섹션이 유실됐음)
+                    col_parts = effective_col.split(".")
+                    # "db_id.table.column" (3단계) → table = col_parts[-2]
+                    # "table.column" (2단계) → table = col_parts[0]
+                    if len(col_parts) >= 3:
+                        table_part = col_parts[-2]
+                        col = f"{col_parts[-2]}.{col_parts[-1]}"
+                    elif len(col_parts) == 2:
+                        table_part = col_parts[0]
                     else:
                         table_part = ""
 
@@ -472,7 +538,35 @@ def _build_user_prompt(
         # 정규 컬럼 필터링을 제거하고 LLM이 schema_info를 보고 적절한 JOIN을 결정하도록 함.
         # (Plan 37: 수정 3-2)
 
-        if regular_entries:
+        # 미매핑 필드(column_mapping[field] = None) — 사용률 통계 필드가 여기로 흐른다(D-066 후속3).
+        unmapped_fields = [field for field, col in column_mapping.items() if col is None]
+        # 자식 리소스(server.Cpus/Memory 등) EAV 속성이 섞이면 서버 행 브릿지 조인으로는
+        # NULL이 되므로, resource_type 구분 다중 리소스 피벗 블록으로 대체한다(D-068).
+        attr_rt = eav_attr_resource_types(schema_info)
+        child_eav = [
+            (field, attr, attr_rt[attr.upper()])
+            for field, attr in eav_entries
+            if attr.upper() in attr_rt and attr_rt[attr.upper()] != "server.Server"
+        ]
+        use_multi_resource_pivot = bool(child_eav)
+        if use_multi_resource_pivot:
+            server_eav = [
+                (field, attr)
+                for field, attr in eav_entries
+                if attr.upper() not in attr_rt or attr_rt[attr.upper()] == "server.Server"
+            ]
+            eav_pattern = _get_eav_pattern(schema_info) or {}
+            # 사용률 통계 필드는 통합 피벗에 접어 넣고 미매핑 목록에서 뺀다(블록 충돌·GROUP BY 위반 방지).
+            metric_unmapped = [f for f in unmapped_fields if classify_metric_field(f)]
+            unmapped_fields = [f for f in unmapped_fields if f not in metric_unmapped]
+            parts.append(
+                build_multi_resource_pivot_block(
+                    regular_entries, server_eav, child_eav, eav_pattern,
+                    metric_fields=metric_unmapped, db_engine=db_engine,
+                )
+            )
+
+        if not use_multi_resource_pivot and regular_entries:
             # cmm_resource.name 컬럼 매핑이 포함되어 있는지 검사 (대소문자 및 접두사 무관)
             has_resource_name = any(
                 col.lower().endswith("cmm_resource.name") or col.lower() == "name"
@@ -499,7 +593,7 @@ def _build_user_prompt(
                 f"{resource_name_hint}"
             )
 
-        if eav_entries:
+        if eav_entries and not use_multi_resource_pivot:
             # _structure_meta에서 EAV 패턴 정보를 동적 추출
             eav_pattern = _get_eav_pattern(schema_info)
             config_table = eav_pattern.get("config_table", "config_table") if eav_pattern else "config_table"
@@ -537,18 +631,14 @@ def _build_user_prompt(
                 f"{join_hint}\n"
                 "반드시 GROUP BY를 포함하세요."
             )
-        # 미매핑 필드 (column_mapping[field] = None) 별도 안내
-        unmapped_fields = [
-            field for field, col in column_mapping.items()
-            if col is None
-        ]
+        # 미매핑 필드 별도 안내 — 위에서 계산·필터링한 unmapped_fields 사용(사용률은 통합 피벗에 접혀 제외됨).
         if unmapped_fields:
             parts.append(
                 "## 자동 매핑 실패 필드 (스키마에서 직접 조회 필요)\n"
                 "아래 양식 필드들은 자동 매핑에 실패했습니다. "
                 "스키마와 사용자 질의를 참고하여 적절한 DB 컬럼 또는 계산식으로 반드시 SELECT에 포함하세요.\n"
                 "**중요**: 각 필드명을 그대로 SQL alias로 사용하세요 (따옴표 포함).\n"
-                "예: ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS \"CPU 평균\"\n"
+                f"예: {decimal_cast_example(db_engine)}\n"
                 "CPU/메모리/디스크 사용률·통계 관련 필드는 cmm_metric_stat_[h,d,m] 테이블을 활용하고, "
                 "Template B 패턴을 따르세요:\n"
                 + "\n".join(f'- "{f}"' for f in unmapped_fields)

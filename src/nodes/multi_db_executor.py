@@ -26,6 +26,15 @@ from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
 from src.security.audit_logger import log_query_execution
 from src.state import AgentState, QueryAttempt
+from src.utils.query_gen_common import (
+    build_multi_resource_pivot_sql,
+    build_query_examples_block,
+    classify_metric_field,
+    decimal_cast_example,
+    eav_attr_resource_types,
+    resolve_query_limit,
+    resolve_stat_month,
+)
 from src.utils.schema_utils import build_excluded_join_map
 
 logger = logging.getLogger(__name__)
@@ -112,10 +121,26 @@ async def multi_db_executor(
     targets = state.get("target_databases", [])
     parsed_requirements = state.get("parsed_requirements", {})
 
+    # "전체/모든" 조회는 LIMIT를 상향해 1000건 절단을 방지한다 — 단일 DB 경로와 동등화(RC4/D-066).
+    effective_limit = resolve_query_limit(
+        state.get("user_query", ""), app_config.query.default_limit
+    )
+    # 미매핑 필드(사용률 지표 등, column_mapping=None) — SQL이 한글 헤더로 alias하도록 전달한다.
+    # db_column_mapping[db_id]에는 미매핑 필드가 없으므로 통합 column_mapping에서 추출한다(D-066 후속3).
+    unmapped_fields = [
+        f for f, c in (state.get("column_mapping") or {}).items() if c is None
+    ]
+
     db_results: dict[str, list[dict]] = {}
     db_schemas: dict[str, dict] = {}
     db_errors: dict[str, str] = {}
     all_attempts: list[QueryAttempt] = list(state.get("query_attempts", []))
+
+    # 동일 스키마(엔진+스키마명) DB는 SQL을 한 번만 생성해 재사용한다(D-066 후속6).
+    # 공동존(gp/yd)은 스키마가 동일해 같은 SQL이 양쪽에서 동작하는데, DB별 독립 LLM 호출은
+    # alias를 비결정적으로 만들어(서버 이름 vs 서버명) 병합 결과 컬럼이 어긋나고 폼필이 깨진다.
+    # 첫 DB의 검증된 SQL을 같은 스키마의 나머지 DB에 재사용해 컬럼명을 일관되게 만든다.
+    _sql_by_schema: dict[tuple, str] = {}
 
     for target in targets:
         db_id = target["db_id"]
@@ -144,34 +169,49 @@ async def multi_db_executor(
                 # DB 엔진 정보 조회
                 domain_cfg = get_domain_by_id(db_id)
                 db_engine = domain_cfg.db_engine if domain_cfg else "postgresql"
-                sql = await _generate_sql(
-                    llm, parsed_requirements, schema_info,
-                    sub_context, app_config.query.default_limit,
-                    column_mapping=db_mapping,
-                    db_engine=db_engine,
-                    db_id=db_id,
-                )
+                db_schema = domain_cfg.db_schema if domain_cfg else ""
+                schema_key = (db_engine, db_schema)
 
-                # 3. SQL 검증 (간이)
-                validation_error = _validate_sql_simple(sql, schema_info)
-                if validation_error:
-                    # 1회 재시도
-                    logger.warning(
-                        "DB '%s' SQL 검증 실패, 재생성 시도: %s",
-                        db_id, validation_error,
+                cached_sql = _sql_by_schema.get(schema_key)
+                if cached_sql:
+                    # 동일 스키마 DB: 검증된 SQL 재사용 → 컬럼 alias 일관성 보장(폼필 병합 정합)
+                    sql = cached_sql
+                    logger.info(
+                        "DB '%s': 동일 스키마%s SQL 재사용 (alias 일관성)", db_id, schema_key
                     )
+                else:
                     sql = await _generate_sql(
                         llm, parsed_requirements, schema_info,
-                        sub_context, app_config.query.default_limit,
-                        error_context=validation_error,
+                        sub_context, effective_limit,
                         column_mapping=db_mapping,
                         db_engine=db_engine,
                         db_id=db_id,
+                        unmapped_fields=unmapped_fields,
                     )
+
+                    # 3. SQL 검증 (간이)
                     validation_error = _validate_sql_simple(sql, schema_info)
                     if validation_error:
-                        db_errors[db_id] = f"SQL 검증 실패: {validation_error}"
-                        continue
+                        # 1회 재시도
+                        logger.warning(
+                            "DB '%s' SQL 검증 실패, 재생성 시도: %s",
+                            db_id, validation_error,
+                        )
+                        sql = await _generate_sql(
+                            llm, parsed_requirements, schema_info,
+                            sub_context, effective_limit,
+                            error_context=validation_error,
+                            column_mapping=db_mapping,
+                            db_engine=db_engine,
+                            db_id=db_id,
+                            unmapped_fields=unmapped_fields,
+                        )
+                        validation_error = _validate_sql_simple(sql, schema_info)
+                        if validation_error:
+                            db_errors[db_id] = f"SQL 검증 실패: {validation_error}"
+                            continue
+                    # 검증 통과한 SQL을 스키마 키로 캐시 (다음 동일 스키마 DB가 재사용)
+                    _sql_by_schema[schema_key] = sql
 
                 # 4. SQL 실행
                 start_time = time.time()
@@ -269,6 +309,32 @@ async def _analyze_schema(
             except Exception:
                 pass
 
+    # 구조 메타(query_guide/query_examples/patterns) 부착 — 단일 DB(schema_analyzer 노드)와 동등화(D-066).
+    # get_schema_or_fetch는 테이블 스키마만 반환하고 _structure_meta는 별도 캐시 키로 관리돼 여기에
+    # 부착되지 않는다. 이게 없으면 query_guide·query_examples·EAV 힌트가 프롬프트에 전혀 들어가지
+    # 않아 멀티 DB 폼필이 metric 조인 환각(존재하지 않는 definition_name·잘못된 조인)을 낸다.
+    if not schema_dict.get("_structure_meta"):
+        structure_meta: Optional[dict] = None
+        try:
+            from src.nodes.schema_analyzer import _load_manual_profile
+
+            manual = _load_manual_profile(db_id)
+        except Exception:
+            manual = None
+        if manual is not None:
+            structure_meta = {k: v for k, v in manual.items() if k != "source"}
+        else:
+            try:
+                structure_meta = await cache_mgr.get_structure_meta(db_id)
+            except Exception:
+                structure_meta = None
+        if structure_meta:
+            schema_dict["_structure_meta"] = structure_meta
+            logger.info(
+                "multi_db _analyze_schema: _structure_meta 부착 (db_id=%s, query_examples=%d)",
+                db_id, len(structure_meta.get("query_examples", []) or []),
+            )
+
     return schema_dict
 
 
@@ -282,6 +348,7 @@ async def _generate_sql(
     column_mapping: dict[str, str] | None = None,
     db_engine: str = "postgresql",
     db_id: str = "",
+    unmapped_fields: list[str] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -345,6 +412,10 @@ async def _generate_sql(
                     f"\n[금지] {excl.get('table', '?')}.{excl.get('column', '?')}는 "
                     f"JOIN ON 절에서 사용할 수 없습니다: {excl.get('reason', 'JOIN 불가')}"
                 )
+
+    # 프로필 few-shot 쿼리 예시 주입 — 단일 DB 경로(query_generator)와 동등화(RC1/D-066).
+    # 예시 부재로 멀티 DB 폼필이 조인 환각(존재하지 않는 컬럼)을 내던 문제 차단.
+    structure_guide += build_query_examples_block(structure_meta)
 
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
@@ -428,22 +499,93 @@ async def _generate_sql(
             if col and col.startswith("EAV:")
         ]
 
+        # 성능 지표(사용률) 매핑은 강제 SELECT에서 제외한다(D-066 후속/RC2).
+        # CPU/메모리 사용률(평균/최고)은 cmm_metric_stat_[h,d,m]에서 resource_type +
+        # definition_name 피벗으로만 얻을 수 있어 단일 field→table.column 매핑이 불가능하다.
+        # field_mapper가 지어낸 컬럼(예: cmm_metric_stat_h.cpu_avg_val)을 "반드시 포함"으로
+        # 강제하면 LLM이 잘못된 테이블(_h)·조인을 만든다. 이 항목은 강제 대신 쿼리 예시의
+        # cmm_metric_stat_m 피벗 패턴을 따르도록 안내로 넘긴다.
+        metric_entries = [
+            (field, col) for field, col in regular_entries
+            if "cmm_metric_stat" in col.lower()
+        ]
+        regular_entries = [
+            (field, col) for field, col in regular_entries
+            if "cmm_metric_stat" not in col.lower()
+        ]
+
         # EAV config 테이블과 entity 테이블이 다를 수 있으므로
         # 정규 컬럼 필터링을 제거하고 LLM이 schema_info를 보고 적절한 JOIN을 결정하도록 함.
         # (Plan 37: 수정 3-2)
 
-        if regular_entries:
+        # 자식 리소스(server.Cpus/Memory 등) EAV 속성이 섞이면 서버 행 브릿지 조인으로는
+        # NULL이 되므로, resource_type 구분 다중 리소스 피벗 블록으로 대체한다(D-068).
+        # 단일 DB 경로(query_generator)와 동일 로직 — 공유 헬퍼 사용.
+        attr_rt = eav_attr_resource_types(schema_info)
+        child_eav = [
+            (field, attr, attr_rt[attr.upper()])
+            for field, attr in eav_entries
+            if attr.upper() in attr_rt and attr_rt[attr.upper()] != "server.Server"
+        ]
+        use_multi_resource_pivot = bool(child_eav)
+        if use_multi_resource_pivot:
+            server_eav = [
+                (field, attr)
+                for field, attr in eav_entries
+                if attr.upper() not in attr_rt or attr_rt[attr.upper()] == "server.Server"
+            ]
+            # 사용률 통계 필드는 통합 피벗에 접어 넣는다(미매핑 경로 + metric 컬럼 매핑 경로).
+            _um = list(unmapped_fields or [])
+            pivot_metric_fields = [f for f in _um if classify_metric_field(f)]
+            pivot_metric_fields += [
+                field for field, _ in metric_entries if classify_metric_field(field)
+            ]
+            eav_pattern_mr = _get_eav_pattern(schema_info) or {}
+            # 프롬프트로 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
+            # (서버 중복·config 누락)한다. 이 well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을
+            # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
+            domain_cfg = get_domain_by_id(db_id)
+            db_schema = domain_cfg.db_schema if domain_cfg else ""
+            stat_month = resolve_stat_month(parsed_requirements.get("original_query", ""))
+            deterministic_sql = build_multi_resource_pivot_sql(
+                regular_entries, server_eav, child_eav, eav_pattern_mr,
+                metric_fields=pivot_metric_fields, db_engine=db_engine,
+                db_schema=db_schema, limit=default_limit, stat_month=stat_month,
+            )
+            logger.info(
+                "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, month=%s",
+                db_id, len(child_eav), len(pivot_metric_fields), stat_month or "전체",
+            )
+            return deterministic_sql
+
+        if regular_entries and not use_multi_resource_pivot:
             mapping_lines = "\n".join(
-                f'- "{field}" -> {col}' for field, col in regular_entries
+                f'- "{field}" ← {col}' for field, col in regular_entries
             )
             user_parts.append(
-                f"## 양식-DB 매핑 (반드시 SELECT에 포함할 컬럼)\n{mapping_lines}\n\n"
-                "위 매핑에 포함된 모든 DB 컬럼을 반드시 SELECT에 포함하고,\n"
-                '"테이블명.컬럼명" 형식의 alias를 사용하세요.\n'
-                '예: SELECT s.hostname AS "servers.hostname"'
+                f"## 양식 필드 매핑 (반드시 SELECT에 포함)\n{mapping_lines}\n\n"
+                "각 양식 필드를 지정된 DB 컬럼에서 조회하되, **결과 alias는 반드시 왼쪽 양식 필드명"
+                "(한글, 따옴표 포함) 그대로** 사용하세요. 결과 컬럼명이 양식 헤더와 정확히 일치해야 "
+                "채워지며, DB마다 다른 임의 영문 alias(server_name 등)는 절대 쓰지 마세요.\n"
+                '예: SELECT r.name AS "서버 이름", r.hostname AS "호스트네임"'
             )
 
-        if eav_entries:
+        if metric_entries:
+            metric_fields = ", ".join(f'"{field}"' for field, _ in metric_entries)
+            user_parts.append(
+                f"## 성능 지표 필드 (사용률) — 위 쿼리 예시 패턴을 따르세요\n"
+                f"{metric_fields} 는 CPU/메모리 등 사용률 지표입니다. 이 값들은 단일 컬럼이 "
+                "아니라 cmm_metric_stat 통계 테이블에서 resource_type + definition_name 피벗으로만 "
+                "얻을 수 있으므로, 위 '쿼리 예시'의 성능 지표 SQL(cmm_metric_stat_m 3중 조인 + "
+                "CASE WHEN resource_type='server.Cpus'/'server.Memory' AND definition_name='Utilization' "
+                "피벗)을 그대로 따르세요.\n"
+                "- 시간 표현이 '월/개월/월간' 또는 미지정이면 반드시 cmm_metric_stat_m(월별)을 사용하고, "
+                "cmm_metric_stat_h(시간)·cmm_metric_stat_d(일)는 사용하지 마세요.\n"
+                "- 각 지표 필드는 위 매핑이 지어낸 임의 컬럼명(cpu_avg_val 등)이 아니라 avg_val/max_val을 "
+                "resource_type로 구분해 alias 하세요."
+            )
+
+        if eav_entries and not use_multi_resource_pivot:
             # _structure_meta에서 EAV 패턴 정보를 동적 추출
             eav_pattern = _get_eav_pattern(schema_info)
             config_table = eav_pattern.get("config_table", "config_table") if eav_pattern else "config_table"
@@ -476,11 +618,31 @@ async def _generate_sql(
                     join_hint = f"\n조인 조건: {join_cond}"
             user_parts.append(
                 f"## EAV 피벗 매핑 (반드시 CASE WHEN 피벗으로 변환)\n{eav_lines}\n\n"
-                f"위 EAV 속성은 {config_table} 테이블에서 피벗 쿼리로 추출해야 합니다:\n"
-                f"  MAX(CASE WHEN p.{attr_col} = '속성명' THEN p.{val_col} END) AS alias"
+                f"위 EAV 속성은 {config_table} 테이블에서 피벗 쿼리로 추출해야 합니다.\n"
+                "**결과 alias는 반드시 양식 필드명(왼쪽 한글, 따옴표 포함) 그대로** 하세요"
+                "(임의 영문 alias 금지 — 결과 컬럼명이 양식 헤더와 일치해야 채워집니다):\n"
+                f"  MAX(CASE WHEN p.{attr_col} = '속성명' THEN p.{val_col} END) AS \"양식필드명\""
                 f"{join_hint}\n"
                 "반드시 GROUP BY를 포함하세요."
             )
+
+    # 미매핑 필드(column_mapping=None) — 반드시 한글 필드명 그대로 alias (D-066 후속3/폼필 채우기).
+    # 사용률 지표는 field_mapper가 의도적으로 미매핑하므로, 결과 컬럼명이 양식 헤더와 일치해야
+    # excel_writer가 채운다. 단일 DB(query_generator)에 있는 "자동 매핑 실패 필드" 블록을 이식.
+    if unmapped_fields:
+        field_lines = "\n".join(f'- "{f}"' for f in unmapped_fields)
+        user_parts.append(
+            "## 자동 매핑 실패 필드 (스키마에서 직접 조회 필요)\n"
+            "아래 양식 필드들은 자동 매핑에 실패했습니다. 스키마와 **위 쿼리 예시**를 참고하여 "
+            "적절한 DB 컬럼 또는 계산식으로 반드시 SELECT에 포함하세요.\n"
+            "**중요**: 각 필드명을 그대로(따옴표 포함) SQL alias로 사용하세요 — 결과 컬럼명이 "
+            "양식 헤더와 정확히 일치해야 값이 채워집니다.\n"
+            f"예: {decimal_cast_example(db_engine)}\n"
+            "CPU/메모리 사용률(평균/최고) 등 성능 지표는 위 쿼리 예시의 cmm_metric_stat_m 피벗"
+            "(resource_type + definition_name='Utilization', avg_val/max_val)을 그대로 따르되, "
+            "**결과 alias는 아래 한글 필드명으로** 하세요(임의 영문명 금지):\n"
+            f"{field_lines}"
+        )
 
     if error_context:
         user_parts.append(

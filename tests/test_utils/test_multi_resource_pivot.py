@@ -1,0 +1,214 @@
+"""EAV 다중 리소스 피벗 강제 블록 회귀 테스트 (D-068).
+
+CPU 코어 수(LOGICALCORE=server.Cpus)·메모리 용량(TotalSize=server.Memory) 등
+자식 리소스 EAV 속성은 server.Server 행 config에만 조인하면 NULL이 된다. 강제 블록이
+resource_type 구분 + platform_resource_id GROUP BY 피벗을 생성하는지 검증한다.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+from src.utils.query_gen_common import (
+    build_multi_resource_pivot_block,
+    build_multi_resource_pivot_sql,
+    classify_metric_field,
+    eav_attr_resource_types,
+    resolve_stat_month,
+)
+
+_SCHEMA_INFO = {
+    "_structure_meta": {
+        "patterns": [
+            {
+                "type": "eav",
+                "entity_table": "cmm_resource",
+                "config_table": "core_config_prop",
+                "attribute_column": "name",
+                "value_column": "stringvalue_short",
+                "direct_join": {
+                    "entity_column": "resource_conf_id",
+                    "config_column": "configuration_id",
+                },
+                "known_attributes": [
+                    {"name": "OSType", "description": "운영체제 종류 [resource_type: server.Server]"},
+                    {"name": "LOGICALCORE", "description": "논리코어 [resource_type: server.Cpus]"},
+                    {
+                        "name": "TotalSize",
+                        "description": "메모리 [resource_type: server.Memory] / 디스크 [resource_type: server.Disks]",
+                    },
+                ],
+            }
+        ]
+    }
+}
+
+
+def test_resource_type_map_extracted_from_description():
+    rt = eav_attr_resource_types(_SCHEMA_INFO)
+    assert rt["OSTYPE"] == "server.Server"
+    assert rt["LOGICALCORE"] == "server.Cpus"
+    # 복수 resource_type 설명이면 첫 번째(server.Memory)만 사용
+    assert rt["TOTALSIZE"] == "server.Memory"
+
+
+def test_resource_type_map_empty_when_no_meta():
+    assert eav_attr_resource_types(None) == {}
+    assert eav_attr_resource_types({}) == {}
+
+
+def test_child_resource_pivot_uses_correct_resource_type():
+    pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+    block = build_multi_resource_pivot_block(
+        regular_entries=[
+            ("서버 이름", "cmm_resource.name"),
+            ("호스트네임", "cmm_resource.hostname"),
+        ],
+        server_eav=[("OS 종류", "OSType")],
+        child_eav=[
+            ("CPU 코어 수", "LOGICALCORE", "server.Cpus"),
+            ("메모리 용량", "TotalSize", "server.Memory"),
+        ],
+        eav_pattern=pattern,
+    )
+
+    # 자식 리소스 속성은 자기 resource_type로 구분되어야 함 (서버 행이 아님)
+    assert "c.resource_type='server.Cpus' AND cc.name='LOGICALCORE'" in block
+    assert "c.resource_type='server.Memory' AND cc.name='TotalSize'" in block
+    # 서버 EAV/직접 컬럼은 server.Server 행에서
+    assert "c.resource_type='server.Server' AND cc.name='OSType'" in block
+    assert "c.resource_type='server.Server' THEN c.name END" in block
+    # platform_resource_id로 묶는 GROUP BY 피벗
+    assert "GROUP BY COALESCE(c.platform_resource_id, c.id)" in block
+    assert "cc.configuration_id = c.resource_conf_id" in block
+    # 필요한 resource_type이 모두 WHERE IN에 포함
+    for rt in ("'server.Server'", "'server.Cpus'", "'server.Memory'"):
+        assert rt in block
+    # 양식 필드명(한글) 그대로 alias
+    assert 'AS "CPU 코어 수"' in block
+    assert 'AS "메모리 용량"' in block
+    # 실패 원인이던 Hostname 브릿지 조인은 쓰지 말라고 명시
+    assert "브릿지 조인하지 마세요" in block
+
+
+def test_metric_field_classification():
+    assert classify_metric_field("CPU 평균") == ("server.Cpus", "AVG", "avg_val")
+    assert classify_metric_field("CPU 최고") == ("server.Cpus", "MAX", "max_val")
+    assert classify_metric_field("메모리 평균") == ("server.Memory", "AVG", "avg_val")
+    assert classify_metric_field("메모리 최고") == ("server.Memory", "MAX", "max_val")
+    # 사양(EAV) 필드는 집계어가 없어 metric 아님
+    assert classify_metric_field("CPU 코어 수") is None
+    assert classify_metric_field("메모리 용량") is None
+    assert classify_metric_field("서버 이름") is None
+
+
+def test_metric_fields_folded_into_single_pivot():
+    """사용률 필드가 config 피벗과 같은 GROUP BY 스코프에 접혀 GROUP BY 위반이 없어야 한다."""
+    pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+    block = build_multi_resource_pivot_block(
+        regular_entries=[("서버 이름", "cmm_resource.name")],
+        server_eav=[],
+        child_eav=[("CPU 코어 수", "LOGICALCORE", "server.Cpus")],
+        eav_pattern=pattern,
+        metric_fields=["CPU 평균", "CPU 최고", "메모리 평균", "메모리 최고"],
+        db_engine="postgresql",
+    )
+    # 사용률은 같은 c/s 조인으로 집계 (별도 스코프 아님)
+    assert "LEFT JOIN cmm_metric_stat_m s ON s.resource_id = c.id" in block
+    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' THEN s.avg_val END)::numeric" in block
+    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' THEN s.max_val END)::numeric" in block
+    # 단일 GROUP BY, 맨 컬럼 금지 명시
+    assert block.count("GROUP BY COALESCE(c.platform_resource_id, c.id)") == 1
+    assert "집계 밖의 맨 컬럼" in block
+    # 모든 SELECT 라인이 집계(MAX/AVG/MIN)로 시작 → GROUP BY 위반 없음
+    import re
+    sql = re.search(r"```sql\n(.*?)```", block, re.S).group(1)
+    select_body = sql.split("SELECT", 1)[1].split("FROM", 1)[0]
+    for line in select_body.strip().splitlines():
+        stripped = line.strip().rstrip(",")
+        assert stripped.startswith(("MAX(", "ROUND(AVG(", "ROUND(MAX(", "ROUND(MIN(")), stripped
+
+
+def test_db2_metric_uses_decimal_cast():
+    pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+    block = build_multi_resource_pivot_block(
+        regular_entries=[],
+        server_eav=[],
+        child_eav=[("메모리 용량", "TotalSize", "server.Memory")],
+        eav_pattern=pattern,
+        metric_fields=["CPU 평균"],
+        db_engine="db2",
+    )
+    assert "CAST(s.avg_val AS DECIMAL(15,4))" in block
+    assert "::numeric" not in block
+
+
+def test_resolve_stat_month():
+    # 지난달: 월 롤백 + 연말→연초 롤오버
+    assert resolve_stat_month("지난달 1개월 통계", date(2026, 7, 13)) == "202606"
+    assert resolve_stat_month("지난달 통계", date(2026, 1, 5)) == "202512"
+    # 당월
+    assert resolve_stat_month("이번달 통계", date(2026, 7, 13)) == "202607"
+    # 기간 표현 없으면 None(전체 월 평균)
+    assert resolve_stat_month("모든 서버 조회") is None
+
+
+class TestDeterministicPivotSql:
+    """폼필 다중 리소스 피벗의 runnable SQL 결정적 조립(LLM 우회, D-068 2차)."""
+
+    _PATTERN = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+    _REG = [("서버 이름", "cmm_resource.name"), ("호스트네임", "cmm_resource.hostname")]
+    _SEAV = [("OS 종류", "OSType")]
+    _CEAV = [("CPU 코어 수", "LOGICALCORE", "server.Cpus"), ("메모리 용량", "TotalSize", "server.Memory")]
+    _MF = ["CPU 평균", "CPU 최고", "메모리 평균", "메모리 최고"]
+
+    def _sql(self, **kw):
+        base = dict(
+            regular_entries=self._REG, server_eav=self._SEAV, child_eav=self._CEAV,
+            eav_pattern=self._PATTERN, metric_fields=self._MF,
+        )
+        base.update(kw)
+        return build_multi_resource_pivot_sql(**base)
+
+    def test_single_group_by_no_duplication(self):
+        """서버당 1행 — GROUP BY는 platform_resource_id 하나뿐(월별 중복 없음)."""
+        sql = self._sql(db_engine="postgresql")
+        assert sql.count("GROUP BY") == 1
+        assert "GROUP BY COALESCE(c.platform_resource_id, c.id)" in sql
+        # stat_date는 GROUP BY에 없어야 함(월별 분해 = 서버 중복의 원인)
+        gb = sql.split("GROUP BY", 1)[1]
+        assert "stat_date" not in gb
+
+    def test_config_and_metric_resource_types(self):
+        sql = self._sql(db_engine="postgresql")
+        assert "c.resource_type='server.Cpus' AND cc.name='LOGICALCORE'" in sql
+        assert "c.resource_type='server.Memory' AND cc.name='TotalSize'" in sql
+        assert "LEFT JOIN cmm_metric_stat_m s ON s.resource_id = c.id" in sql
+
+    def test_schema_prefix_and_limit_pg(self):
+        sql = self._sql(db_engine="postgresql", db_schema="polestar", limit=100000)
+        assert "FROM polestar.cmm_resource c" in sql
+        assert "polestar.core_config_prop" in sql
+        assert sql.rstrip().endswith("LIMIT 100000;")
+
+    def test_schema_prefix_and_fetch_db2(self):
+        sql = self._sql(db_engine="db2", db_schema="POLESTAR", limit=100000)
+        assert "FROM POLESTAR.cmm_resource c" in sql
+        assert "CAST(s.avg_val AS DECIMAL(15,4))" in sql
+        assert "::numeric" not in sql
+        assert sql.rstrip().endswith("FETCH FIRST 100000 ROWS ONLY;")
+
+    def test_stat_month_filter_applied(self):
+        sql = self._sql(db_engine="postgresql", stat_month="202606")
+        assert "s.stat_date = '202606'" in sql
+        # 미지정이면 월 필터 없음
+        sql2 = self._sql(db_engine="postgresql", stat_month=None)
+        assert "s.stat_date" not in sql2
+
+    def test_all_select_lines_aggregated(self):
+        """모든 SELECT 컬럼이 집계 → GROUP BY 위반(r.name 등) 원천 차단."""
+        sql = self._sql(db_engine="postgresql")
+        body = sql.split("SELECT", 1)[1].split("FROM", 1)[0]
+        for line in body.strip().splitlines():
+            stripped = line.strip().rstrip(",")
+            assert stripped.startswith(("MAX(", "ROUND(AVG(", "ROUND(MAX(", "ROUND(MIN(")), stripped

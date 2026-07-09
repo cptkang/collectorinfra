@@ -119,6 +119,9 @@ async def field_mapper(
         global_synonyms=global_synonyms_raw,
     )
 
+    # 4.5. 다중 위치(공동존=김포+여의도) 대응 — 전 priority DB 조회.
+    _replicate_mapping_for_multi_location(mapping_result, priority_db_ids)
+
     # 5. LLM 추론 매핑에 대한 pending_synonym_registrations 생성
     pending = _build_pending_registrations(mapping_result)
 
@@ -161,6 +164,33 @@ async def field_mapper(
     }
 
 
+def _replicate_mapping_for_multi_location(
+    mapping_result: Any,
+    priority_db_ids: list[str],
+) -> None:
+    """다중 위치(공동존=김포+여의도)일 때 매핑을 전 priority DB에 복제한다(in-place).
+
+    priority_db_ids가 여러 폴스타 DB를 포괄하면(공동존→[gp,yd]), 스키마가 동일해 각 필드가 첫
+    priority DB(gp)에만 매핑돼 mapped_db_ids=[gp]가 된다. 그러나 데이터(김포/여의도 서버)는 다르므로
+    둘 다 조회해야 한다. 매핑(union)을 모든 priority DB에 복제하고 mapped_db_ids를 priority 전체로
+    확장한다. 스키마가 다른 DB로 잘못 복제돼도 multi_db_executor의 테이블 존재 필터가 걸러낸다.
+
+    단일 위치(priority 1개)거나 매핑이 없으면 아무것도 하지 않는다.
+    """
+    if len(priority_db_ids) <= 1 or not mapping_result.db_column_mapping:
+        return
+    union_mapping: dict[str, str] = {}
+    for db_map in mapping_result.db_column_mapping.values():
+        union_mapping.update(db_map)
+    for db_id in priority_db_ids:
+        mapping_result.db_column_mapping[db_id] = dict(union_mapping)
+    mapping_result.mapped_db_ids = list(priority_db_ids)
+    logger.info(
+        "다중 위치 감지(priority=%s) → 매핑을 전 priority DB에 복제하여 모두 조회",
+        priority_db_ids,
+    )
+
+
 def _get_active_db_ids(app_config: AppConfig) -> list[str]:
     """활성 DB ID 목록을 반환한다.
 
@@ -176,6 +206,21 @@ def _get_active_db_ids(app_config: AppConfig) -> list[str]:
         return []
 
 
+# 지역/존 변별 토큰 — 이게 hint에 있으면 특정 폴스타 DB(gp/yd/b0)를 가리킨다.
+_REGION_HINT_TOKENS = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+# 제품명 단독 토큰 — 모든 폴스타 DB에 공통이라 지역 변별력이 없다. 지역 토큰과 함께 있으면
+# priority 확대(예: "폴스타"가 "은행 폴스타"에 부분매칭돼 b0를 끌어들임)를 유발하므로 제거 대상.
+_GENERIC_DB_TOKENS = ("폴스타", "polestar", "포탈", "portal")
+
+
+def _is_generic_only_hint(hint: str) -> bool:
+    """제품명(폴스타 등)만 있고 지역 변별 토큰이 없는 hint인지 판정한다."""
+    low = hint.strip().lower()
+    if not any(g in low for g in _GENERIC_DB_TOKENS):
+        return False
+    return not any(r in low for r in _REGION_HINT_TOKENS)
+
+
 def _resolve_priority_db_ids(
     target_db_hints: list[str],
     active_db_ids: list[str],
@@ -186,6 +231,17 @@ def _resolve_priority_db_ids(
 
     priority_set = set()
     normalized_hints = [hint.strip().lower() for hint in target_db_hints if hint.strip()]
+
+    # 지역(공동존/김포/여의도/은행 등)이 명시된 경우, 제품명 단독 토큰("폴스타")은 변별력이 없어
+    # 오히려 b0("은행 폴스타") 등을 부분매칭으로 끌어들인다(D-065 후속). 지역 토큰이 있으면
+    # 제품명 단독 hint를 제거해 지역이 우선하도록 한다. 지역 토큰이 전혀 없으면(순수 "폴스타") 유지.
+    has_region = any(
+        any(r in h for r in _REGION_HINT_TOKENS) for h in normalized_hints
+    )
+    if has_region:
+        filtered = [h for h in normalized_hints if not _is_generic_only_hint(h)]
+        if filtered:
+            normalized_hints = filtered
 
     for db_id in active_db_ids:
         db_id_lower = db_id.lower()

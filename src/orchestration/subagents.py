@@ -41,7 +41,7 @@ from src.orchestration.process_query import (
     _resolve_hostname,
     run_process_query,
 )
-from src.routing.domain_config import DB_DOMAINS
+from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 
 logger = logging.getLogger(__name__)
@@ -700,6 +700,11 @@ async def run_data_query_pipeline(
     # hostname을 filter에 결정적으로 주입해 서버 스코프를 강제한다(D-056 후속, query_generator는
     # sub_query 확장이 아니라 parsed_requirements로 SQL을 생성하므로 filter 주입이 필요).
     parsed_for_gen = _inject_demonstrative_hostname(isolated)
+    # 활성 DB 엔진을 설정한다 — query_generator/query_validator가 엔진별 방언(DB2 FETCH FIRST·
+    # DECIMAL 캐스트 vs PostgreSQL LIMIT·::numeric)을 올바로 쓰도록. 미설정 시 항상 PostgreSQL로
+    # 취급돼 b0(DB2)가 정수 표시·문법 오류(data_insufficient)를 냈다(D-066 후속6).
+    _active_domain = get_domain_by_id(targets[0]["db_id"])
+    _active_engine = _active_domain.db_engine if _active_domain else None
     s: dict[str, Any] = {
         **isolated,
         "parsed_requirements": parsed_for_gen,
@@ -707,6 +712,7 @@ async def run_data_query_pipeline(
         "target_databases": targets,
         "is_multi_db": is_multi_db,
         "active_db_id": targets[0]["db_id"],
+        "active_db_engine": _active_engine,
     }
 
     # 2) 실행 — 단일/멀티 분기

@@ -219,6 +219,12 @@ query_guide: |
     - stat_date: 통계 기준 월 (YYYYMM 형식 문자열, 예: '202601')
     - min_val, avg_val, max_val: 기간 내 최소/평균/최대값
 
+  [★ DB2 소수점 보존 — 집계 전 DECIMAL 캐스트 필수]
+  DB2의 AVG()는 정수 컬럼을 정수로 집계하여 소수점이 사라진다(0.35% → 0). 사용률 통계를 소수
+  2자리로 출력하려면 **집계 함수 내부에서 값을 DECIMAL로 먼저 캐스트**해야 한다:
+    ROUND(AVG(CASE WHEN ... THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2)
+  (PostgreSQL식 `::numeric` 캐스트는 DB2에서 문법 오류이므로 사용 금지 — CAST(... AS DECIMAL) 사용.)
+
   resource_type별 조회 가능한 성능 지표:
     - 'server.Cpus'        + definition_name = 'Utilization'  → CPU 사용률 (%)
     - 'server.Memory'      + definition_name = 'Utilization'  → 메모리 사용률 (%)
@@ -364,12 +370,12 @@ query_examples:
           DATE(s.stat_date || '01') AS stat_date,
           hi.physicalcore,
           hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS mem_max
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN CAST(s.min_val AS DECIMAL(15,4)) END), 2) AS cpu_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS cpu_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN CAST(s.max_val AS DECIMAL(15,4)) END), 2) AS cpu_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN CAST(s.min_val AS DECIMAL(15,4)) END), 2) AS mem_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS mem_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN CAST(s.max_val AS DECIMAL(15,4)) END), 2) AS mem_max
       FROM POLESTAR.cmm_resource r
       JOIN POLESTAR.cmm_resource svr
           ON svr.id = r.platform_resource_id
@@ -408,18 +414,18 @@ query_examples:
           DATE(s.stat_date || '01') AS stat_date,
           hi.physicalcore,
           hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS mem_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS fs_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS fs_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS fs_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.min_val END), 2) AS disks_io_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END), 2) AS disks_io_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.max_val END), 2) AS disks_io_max
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN CAST(s.min_val AS DECIMAL(15,4)) END), 2) AS cpu_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS cpu_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN CAST(s.max_val AS DECIMAL(15,4)) END), 2) AS cpu_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN CAST(s.min_val AS DECIMAL(15,4)) END), 2) AS mem_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS mem_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN CAST(s.max_val AS DECIMAL(15,4)) END), 2) AS mem_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN CAST(s.min_val AS DECIMAL(15,4)) END), 2) AS fs_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS fs_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN CAST(s.max_val AS DECIMAL(15,4)) END), 2) AS fs_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN CAST(s.min_val AS DECIMAL(15,4)) END), 2) AS disks_io_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS disks_io_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN CAST(s.max_val AS DECIMAL(15,4)) END), 2) AS disks_io_max
       FROM POLESTAR.cmm_resource r
       JOIN POLESTAR.cmm_resource svr
           ON svr.id = r.platform_resource_id

@@ -19,6 +19,25 @@ from openpyxl.worksheet.worksheet import Worksheet
 logger = logging.getLogger(__name__)
 
 
+def _normalize_cell_value(value: Any) -> Any:
+    """Excel 셀 값을 정규화한다.
+
+    DB 드라이버가 반환하는 `Decimal`은 스케일(예: 1.5500)을 보존해 openpyxl이 직렬화 시
+    trailing zero가 남을 수 있다(엑셀에 1.55000000000 형태로 표시). `float`로 변환해
+    불필요한 0을 제거한다. 숫자가 아니면 원본 그대로 반환한다.
+    """
+    try:
+        from decimal import Decimal
+
+        if isinstance(value, Decimal):
+            f = float(value)
+            # 정수값(1.00)은 int로 — 불필요한 소수점 제거
+            return int(f) if f.is_integer() else f
+    except Exception:
+        pass
+    return value
+
+
 def fill_excel_template(
     file_data: bytes,
     template_structure: dict[str, Any],
@@ -194,7 +213,7 @@ def _fill_sheet(
             # None 값 처리: 매핑된 컬럼에 값이 없으면 원본 셀 값 유지
             if value is None:
                 continue
-            cell.value = value
+            cell.value = _normalize_cell_value(value)
             filled_count += 1
 
             # 서식 적용
@@ -324,6 +343,26 @@ def _get_value_from_row(
             return value
         if _is_close_match(effective_no_underscore, key.lower().replace("_", "")):
             return value
+
+    # 3.7 표기 정규화(소문자 + 공백/언더스코어 제거) 매칭 — "IP주소" vs "ip 주소" 같은
+    #     대소문자·공백 변형을 흡수한다(LLM alias 표기 흔들림 대응).
+    def _norm(s: str) -> str:
+        return s.lower().replace(" ", "").replace("_", "")
+
+    norm_target = _norm(effective)
+    norm_col_only = _norm(col_only_lower)
+    for key, value in data_row.items():
+        nk = _norm(key)
+        if nk == norm_target or nk == norm_col_only:
+            return value
+    # 역매핑 필드명(한글 헤더)도 정규화 비교
+    if reverse_mapping:
+        field_name = reverse_mapping.get(db_column)
+        if field_name:
+            norm_field = _norm(field_name)
+            for key, value in data_row.items():
+                if _norm(key) == norm_field:
+                    return value
 
     # 4. 역방향 매핑: 한글 필드명(alias)으로 검색
     if reverse_mapping:

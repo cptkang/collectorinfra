@@ -463,11 +463,28 @@ async def process_query_stream(
         try:
             if hasattr(graph, "astream_events"):
                 try:
-                    async for event in graph.astream_events(
+                    # 이벤트 fetch마다 타임아웃을 건다(D-066 후속). 노드 내부 LLM 호출이
+                    # 응답 없이 멈추면 astream_events가 다음 이벤트를 영영 못 내놓아 SSE가
+                    # 무한 hang된다(healthcheck만 도는 증상). wait_for로 stuck fetch를 끊는다.
+                    _event_iter = graph.astream_events(
                         input_state,
                         thread_config,
                         version="v2",
-                    ):
+                    ).__aiter__()
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                _event_iter.__anext__(),
+                                timeout=config.server.query_timeout,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            yield _sse_event({
+                                "type": "error",
+                                "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                            })
+                            return
                         kind = event.get("event", "")
                         name = event.get("name", "")
 
@@ -855,11 +872,27 @@ async def process_file_query_stream(
         try:
             if hasattr(graph, "astream_events"):
                 try:
-                    async for event in graph.astream_events(
+                    # 이벤트 fetch마다 타임아웃(D-066 후속). 노드 내부 LLM 호출이 응답 없이
+                    # 멈추면 SSE가 무한 hang되므로 stuck fetch를 wait_for로 끊는다.
+                    _event_iter = graph.astream_events(
                         initial_state,
                         thread_config,
                         version="v2",
-                    ):
+                    ).__aiter__()
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                _event_iter.__anext__(),
+                                timeout=config.server.file_query_timeout,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            yield _sse_event({
+                                "type": "error",
+                                "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                            })
+                            return
                         kind = event.get("event", "")
                         name = event.get("name", "")
 

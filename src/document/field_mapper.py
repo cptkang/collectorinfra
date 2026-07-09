@@ -32,6 +32,46 @@ from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
+# 사용률 통계 필드 판별용 (D-066 후속/RC2). 이런 필드는 cmm_metric_stat_[h,d,m]에서
+# resource_type + definition_name 피벗으로만 얻을 수 있어 단일 field→컬럼 매핑이 불가능하다.
+# 매핑을 시도하면 LLM이 존재하지 않는 컬럼(cpu_avg_val 등)을 지어내고, step 3 LLM 호출이
+# 응답 없이 멈춰(closed-net) 요청 전체가 hang될 수 있다. 이런 필드는 매핑을 건너뛰고
+# 미매핑(None)으로 두어 SQL 생성 단계의 쿼리 예시(cmm_metric_stat_m 피벗)에 위임한다.
+_METRIC_USAGE_NOUNS = ("cpu", "메모리", "mem", "디스크", "disk", "파일시스템", "filesystem")
+_METRIC_USAGE_AGG_TERMS = (
+    "평균", "최고", "최대", "최소", "사용률", "avg", "max", "min", "util", "usage",
+)
+
+
+def _is_metric_usage_field(field: str) -> bool:
+    """사용률 통계(평균/최고 등) 필드인지 판정한다.
+
+    metric 명사(CPU/메모리/디스크 등) + 집계·사용률 표현(평균/최고/사용률 등)이 함께 있을 때만 True.
+    '메모리 용량'·'CPU 코어 수' 같은 사양(EAV) 필드는 집계어가 없어 False(정상 매핑 대상 유지).
+    """
+    low = (field or "").lower()
+    if not any(noun in low for noun in _METRIC_USAGE_NOUNS):
+        return False
+    return any(term in low for term in _METRIC_USAGE_AGG_TERMS)
+
+
+def _schema_uses_metric_stat_pivot(
+    all_db_synonyms: dict[str, dict[str, list[str]]] | None,
+    all_db_descriptions: dict[str, dict[str, str]] | None,
+) -> bool:
+    """스키마가 cmm_metric_stat 피벗 구조를 쓰는지 판정한다(사용률 필드 스킵 게이트).
+
+    사용률이 **직접 컬럼**(예: cpu_metrics.usage_pct)인 스키마에서는 사용률 필드가 정상 매핑
+    대상이므로 스킵하면 안 된다. cmm_metric_stat_[h,d,m] 피벗 스키마(폴스타)일 때만 스킵한다.
+    synonyms/descriptions 키에 cmm_metric_stat 컬럼이 있으면 피벗 스키마로 간주한다.
+    """
+    for source in (all_db_synonyms, all_db_descriptions):
+        for db_map in (source or {}).values():
+            for key in db_map or {}:
+                if "cmm_metric_stat" in str(key).lower():
+                    return True
+    return False
+
 
 # === 3-Step Mapping Results ===
 
@@ -227,6 +267,21 @@ async def perform_3step_mapping(
     result = MappingResult()
     remaining = set(field_names)
     llm_inference_details: list[dict] = []
+
+    # 사용률 지표 필드는 매핑 대상에서 제외한다(D-066 후속/RC2). 피벗 파생이라 단일 컬럼 매핑이
+    # 불가능하며, 매핑 시도가 존재하지 않는 컬럼 환각·step3 LLM 호출 hang을 유발한다. 미매핑(None)으로
+    # 두면 뒤에서 column_mapping에 None으로 채워져 SQL 생성의 쿼리 예시(cmm_metric_stat_m 피벗)로 위임된다.
+    # 단, 사용률이 직접 컬럼인 스키마(cpu_metrics.usage_pct 등)에서는 정상 매핑 대상이므로 스킵 금지 —
+    # cmm_metric_stat 피벗 스키마(폴스타)일 때만 스킵한다.
+    metric_usage_fields: set[str] = set()
+    if _schema_uses_metric_stat_pivot(all_db_synonyms, all_db_descriptions):
+        metric_usage_fields = {f for f in remaining if _is_metric_usage_field(f)}
+    if metric_usage_fields:
+        remaining -= metric_usage_fields
+        logger.info(
+            "사용률 지표 필드는 매핑 스킵 → 쿼리 예시 피벗에 위임: %s",
+            sorted(metric_usage_fields),
+        )
 
     # EAV 폴백 DB ID 결정: priority > active > synonyms 키 > _default
     _fallback_db_id = _resolve_fallback_db_id(

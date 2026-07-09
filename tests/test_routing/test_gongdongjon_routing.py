@@ -8,7 +8,11 @@ active_db_ids 순서(b0 우선)로 잘못 확정.
 "공동존"을 target_db_hints에 보강.
 """
 
-from src.nodes.field_mapper import _resolve_priority_db_ids
+from src.document.field_mapper import MappingResult
+from src.nodes.field_mapper import (
+    _replicate_mapping_for_multi_location,
+    _resolve_priority_db_ids,
+)
 from src.nodes.input_parser import _ensure_location_hints
 
 _ACTIVE = ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "cloud_portal", "itsm", "itam"]
@@ -35,6 +39,77 @@ class TestGongdongjonPriorityResolution:
 
     def test_bank_still_maps_to_b0(self):
         assert _resolve_priority_db_ids(["은행"], _ACTIVE) == ["polestar_b0"]
+
+
+class TestGenericProductTokenDoesNotPullB0:
+    """지역 명시 + 제품명 단독("폴스타") 조합이 b0를 끌어들이지 않는지 (D-065 후속).
+
+    버그(2026-07-09 재발): "공동존 폴스타의 모든 서버"에서 LLM이 target_db_hints에 bare "폴스타"를
+    넣으면, "폴스타"가 b0 alias "은행 폴스타"에 부분매칭돼 b0가 priority에 들어가고 active 순서상
+    b0가 우선 선택됐다. 지역 토큰이 있으면 제품명 단독 토큰을 제거해 방지한다.
+    """
+
+    def test_gongdongjon_plus_bare_polestar_excludes_b0(self):
+        assert _resolve_priority_db_ids(["공동존", "폴스타"], _ACTIVE) == [
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+    def test_gongdongjon_polestar_compound_excludes_b0(self):
+        assert _resolve_priority_db_ids(["공동존 폴스타"], _ACTIVE) == [
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+    def test_gongdongjon_gimpo_plus_polestar_narrows_to_gp(self):
+        assert _resolve_priority_db_ids(["공동존 김포", "폴스타"], _ACTIVE) == ["polestar_cm_gp"]
+
+    def test_bank_plus_polestar_still_b0(self):
+        """은행(지역) + 폴스타 → b0 유지(지역이 은행이므로)."""
+        assert _resolve_priority_db_ids(["은행", "폴스타"], _ACTIVE) == ["polestar_b0"]
+
+    def test_bare_polestar_without_region_unchanged(self):
+        """지역 없는 순수 '폴스타'는 종전대로 전체 폴스타 후보(변별 불가라 좁히지 않음)."""
+        assert _resolve_priority_db_ids(["폴스타"], _ACTIVE) == [
+            "polestar_b0",
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+
+class TestMultiLocationReplication:
+    """공동존(gp+yd 다중 priority)일 때 매핑이 전 priority DB에 복제돼 둘 다 조회되는지."""
+
+    def _make_result(self, mapping_by_db):
+        r = MappingResult()
+        r.db_column_mapping = {k: dict(v) for k, v in mapping_by_db.items()}
+        r.mapped_db_ids = list(mapping_by_db.keys())
+        return r
+
+    def test_gongdongjon_replicates_to_gp_and_yd(self):
+        """gp에만 매핑됐어도 priority=[gp,yd]면 yd에도 복제되고 mapped_db_ids=[gp,yd]."""
+        result = self._make_result({"polestar_cm_gp": {"서버명": "cmm_resource.name"}})
+        _replicate_mapping_for_multi_location(
+            result, ["polestar_cm_gp", "polestar_cm_yd"]
+        )
+        assert result.mapped_db_ids == ["polestar_cm_gp", "polestar_cm_yd"]
+        assert result.db_column_mapping["polestar_cm_yd"] == {"서버명": "cmm_resource.name"}
+        assert result.db_column_mapping["polestar_cm_gp"] == {"서버명": "cmm_resource.name"}
+
+    def test_single_location_unchanged(self):
+        """단일 위치(priority 1개)면 복제 안 함."""
+        result = self._make_result({"polestar_cm_gp": {"서버명": "cmm_resource.name"}})
+        _replicate_mapping_for_multi_location(result, ["polestar_cm_gp"])
+        assert result.mapped_db_ids == ["polestar_cm_gp"]
+        assert "polestar_cm_yd" not in result.db_column_mapping
+
+    def test_empty_mapping_noop(self):
+        """매핑이 비면(전부 미매핑) 아무 것도 안 함."""
+        result = self._make_result({})
+        _replicate_mapping_for_multi_location(
+            result, ["polestar_cm_gp", "polestar_cm_yd"]
+        )
+        assert result.db_column_mapping == {}
 
 
 class TestEnsureLocationHints:
