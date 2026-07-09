@@ -2246,124 +2246,157 @@ OS 호스트명)이다. 그러나 사용자는 보통 **서버명**(=`cmm_resour
 
 ---
 
-## D-062. 딥 에이전트 경로 복합 결과의 단일 LLM 합성 (모순 이중 답변 제거)
+## D-048. 알람 노이즈 캔슬링 — 4-티어 발송 게이트 (Plan 52 E1)
 
 | 항목 | 내용 |
 |------|------|
 | **결정일** | 2026-06-29 |
-| **상태** | 확정 |
-
-### 배경 / 문제
-
-딥 에이전트(트랙 B) 경로에서 오케스트레이터(vLLM/Gemini)가 동일 질문을 **재시도**(도구
-재호출)하면, `deepagents_tools._run_subagent_tool`이 매 호출마다 새 고유 `task_id`로
-collector에 `(task, result)`를 append한다. 1차가 "부분 성공"(예: 서버는 찾았으나 CPU/메모리
-컬럼 null — `error` 없음 → `status="completed"`)이고 2차가 완전 성공이면, **두 결과 모두
-`completed`** 상태로 남는다. `_aggregate_with_fabrix`가 collector 전체를 `task_plan`/
-`task_results`로 재구성 → `result_aggregator._merge_finalized`가 1·2차 텍스트를 `"\n\n".join`
-으로 이어붙여 **"CPU 없음" 서술과 "CPU 8코어" 서술이 한 말풍선에 혼재**, 사용자 혼란 유발.
-
-D-043(supersedes)은 이 모순을 막기 위한 기존 장치이나, (a) `_run_subagent_tool`이 task에
-`supersedes`를 설정하지 않고 (b) 이를 설정하는 replanner는 딥 에이전트 경로에 배선되지
-않으며 (c) **1차가 error가 아닌 "부분 성공"**이라 failed→success 매칭으로도 못 잡는다.
+| **상태** | 구현 완료 (Phase E1 MVP, 2026-06-29) |
+| **관련 결정** | **D-035 확장**(패턴을 부가정보→결정적 게이트의 보조 입력으로, 심각도3 보존 유지), D-003(읽기전용 준수), D-029~D-032(알람 파이프라인 재사용), D-037(트랙 B vLLM — D-048.7 전제) |
+| **번호 정정** | 최초 계획(Plan 52/53 §13)은 **D-040** 명시 → D-039/D-040이 2026-06-23 변경이력에 선점되어 **D-041**로 1차 등재했으나, 병렬 multiintent 작업이 **D-041(멀티턴, Plan 50)~D-047**을 점유(2026-06-25)하여 재충돌. 사용자 승인(2026-06-29)으로 노이즈 게이트를 **D-048**로 최종 리넘버. **Plan 50의 D-041~D-047은 보존**. |
 
 ### 결정
 
-딥 에이전트 경로의 복합 결과는 deterministic 이어붙이기 대신 **LLM 1회 호출로 단일 일관
-답변을 합성**한다(사용자 결정: "단일 LLM 합성"). 재시도 모순(없음→있음)과 보강 결과를
-모두 하나의 답변으로 통합하므로, "같은 질문 재시도 vs 서로 다른 질문(멀티의도)"을 휴리스틱
-으로 구분할 필요가 없다(동일 agent로 서로 다른 대상을 조회하는 멀티의도 회귀 위험 회피).
+폴스타 알람을 수신 시 **결정적 규칙 파이프라인**으로 **PAGE / TICKET / DASHBOARD / SUPPRESS** 4-티어로 라우팅하는 발송 게이트를 추가한다(전 기능 옵트인 `enable_noise_gate=False` 기본). LLM(`is_routine`)은 보조 입력 1개일 뿐 판단은 결정적이며, **심각도 3은 어떤 억제 단계도 거치지 않고 항상 PAGE**한다(D-035 계승). 억제·강등 결정도 감사 기록한다(억제 ≠ 삭제). 신호는 폴스타 읽기전용 DB(중요도·유지보수·알림정책)에서 고정 SQL로 수집하며 실패 시 보수적 PAGE(재현율 우선).
 
-- `result_aggregator(..., synthesize=True)`: 복합 task일 때 `_synthesize_finalized`로 합성.
-  단일 task는 기존대로 통과(스트리밍 유지).
-- **적용 경로 — 둘 다**: (1) 딥 에이전트(트랙 B) `_aggregate_with_fabrix`, (2) **다중 의도
-  오케스트레이션(트랙 A, Plan 48) `result_aggregator` 그래프 노드**. 폐쇄망(deepagents
-  미설치)에서 실제 활성 경로는 (2)이므로 `graph.py`에서 이 노드를 `synthesize=True`로
-  바인딩해야 합성이 실제로 동작한다. (1)만 적용하면 사용자 런타임에서 미발동(최초 누락 원인).
-  이로써 트랙 A의 복합 task는 기존 deterministic 병합(_merge_finalized)을 LLM 합성으로
-  대체한다(D-005/D-043은 supersedes 사전 제외 단계로 여전히 유효, 병합 방식만 변경).
-- **스트리밍 정합(D-009)**: 합성 모드 + 복합 task일 때 per-task `output_generator`는
-  `stream_user_response=False`로 호출해 USER_RESPONSE_TAG를 떼고(중간 토큰 누출 방지),
-  **최종 합성 1회만** USER_RESPONSE_TAG로 토큰 스트리밍. 딥 에이전트 그래프 노드는
-  `deep_agent`라 SSE 핸들러가 태그로만 토큰을 거르므로(노드명 매칭 아님) 단일 스트림이 된다.
-- **안전 폴백**: 합성 LLM 호출이 예외/빈 결과면 `_merge_finalized`(이어붙이기)로 폴백.
-- output_file은 첫 산출 task의 것을 채택, `query_results`는 전체 누적(CSV/row_count, D-047).
+### 하위 결정 (Plan 52 §13 — 원안 D-040.x를 D-048.x로 등재)
 
-### 구현
+- **D-048.1** 4-티어(PAGE/TICKET/DASHBOARD/SUPPRESS), 결정적 규칙=판단·LLM=보조, 결정 근거(reason) 기록.
+- **D-048.2** 중요도×심각도 매트릭스 + 유지보수/자가복구 억제(E1). 의존성/인히비션/플래핑은 E2. **심각도3 절대 PAGE**.
+- **D-048.3** 신호는 폴스타 읽기전용 DB(IMPORTANCE_ID/IS_MAINTENANCE/`cmm_alarm_def_noti*` 앵커). `IMPORTANCE_ID` 값코드 미확정 시 **미매핑=보통(보수적)**(`importance_value_map_csv` 기본 빈값). `cmm_alarm_def_noti*` 통보대상 존재→`notify`, 불확실→`None`(절대 단정적 `suppress` 미반환).
+- **D-048.4** 재현율 우선·억제≠삭제(`decision_store` JSONL 감사)·억제기 메타모니터링(억제율 집계). 전 기능 옵트인.
+- **D-048.5** (E3, **구현 완료 2026-06-30**) AI 분석은 **LLM 인컨텍스트, ML 모델 미사용**. 메시지 심각도 보강은 **상향 전용(monotonic) `max()`** + 결정적 시그니처(Plan51 부록A.1) 우선. 폴스타 심각도가 베이스라인(SSOT). 적용 범위는 **메시지형 알람(`condition_log` 보유, 임계형 수치 알람 제외)** 한정(사용자 확정 §13.1#7: LogMonitor+보안+앱 로그). `ai_severity_escalate_only=True` 안전 고정, 하향/강등 경로 부재(R-10). `alarm_analyzer`가 기존 단일 LLM 응답을 재파싱(추가 호출 없음)하여 `ai_message_severity`를 산출, `decide_notification` step1이 `max(severity, ai_severity)`로 결합. 심각도3은 AI와 무관하게 항상 PAGE.
+- **D-048.6** (향후·미구현) **Plan 55 멀티소스 확장 대비** — `noise_context`는 소스 무관 확장형 dict(`parent_avail_status` 등 자리예약), step 8 보조 축, 영향 신호 **승격 비대칭**(§6.4·§8.6). 지금은 설계 예약만.
+- **D-048.7** (E5, **구현 완료 2026-07-02** — 사용자 확정 §13.1#8: 3경로 전체 구현·메시지형 한정) **deepagents Advisory Enricher** — agentic 분석은 **보조(`signals` 승격 전용)** 만, 판단은 결정적. 신규 `agentic_enricher_node`(application)를 `alarm_analyzer → agentic_enricher → notification_gate` 사이에 삽입. **3경로 자동 선택**(`_select_backend`): (트랙 B) vLLM health OK → 읽기전용 `@tool` bind_tools ReAct(`run_signal_react_loop`, `max_tool_calls` 상한) / (트랙 A) vLLM 미가용+`fallback="semantic_routing"` → FabriX 1회 JSON 분류(`needed_signals`)→결정적 컬렉터 고정 SQL·시그니처 스캔 / (no-op) `deterministic_only` 또는 LLM 부재 → 결정적 게이트만. **승격 전용 비대칭**(R-10/R-12): 후보가 `event.severity` **초과** && 기존 `ai_message_severity` 초과일 때만 상향, **하향/강등 경로 부재**. **심각도3은 step0 PAGE 단락으로 enricher 미개입**(PAGE 불변·비용절감). **메시지형 한정**(`message_alarms_only=True` — 임계형 CPU/메모리 수치 알람 제외). **계층 배치(치명적)**: 도구·health check·ReAct 루프를 **infrastructure(`noise_signal_tools.py`)** 에 두어 application→orchestration 역방향(arch error) 회피 — 계획서 §14의 "orchestration/deepagents_tools 재사용" 표기는 참고이며 실제는 infra 배치가 정답(arch_check로 확정). **collector 패턴**(Known Mistakes 2026-06-17): 도구는 truncate 전 원본을 collector에 적재, enricher는 ToolMessage 재파싱 없이 원본 소비. **graceful**: 타임아웃(`agentic_enricher_timeout_seconds`)·예외·no-op은 발송 무차단(빈 dict 반환). **전 기능 옵트인**(`enable_agentic_enricher=False`면 E1~E4 배선·판단 무변경 — 게이트 off면 enricher_enabled=`gate and enricher`로 강제 False, 회귀 0). 환각→오억제는 R-12로 통제(강등 경로 부재). 신규 `noise_signal_tools.py`(infra)·`prompts/agentic_enricher.py`·`nodes/agentic_enricher.py`·`test_agentic_enricher.py`(36) + `config.py` 설정 5종·`alarm_graph.py` 조건 배선. **트랙 B Gemini 테스트 경로 추가(2026-07-02, 사용자 요청)**: `_select_backend`가 `orchestrator.provider=="gemini"` + api_key 존재 시 **vLLM 없이 트랙 B 선택**(Gemini 네이티브 tool-calling — `create_orchestrator_llm` gemini 분기가 실행 코드 공용이라 라우팅만 개방). provider="vllm"(운영)은 종전대로 `vllm_healthy`로만 track_b(회귀 0). 키 없으면 폴백(gemini에서도 vllm_healthy 미호출). 이는 D-037/§4.7의 "gemini=테스트/PoC 오케스트레이터" 패턴 계승 — agentic 경로를 vLLM 인프라 없이 실검증하기 위함. 신규 `test_agentic_enricher_gemini_live.py`(실 Gemini bind_tools ReAct·노드 end-to-end·승격전용 불변, gemini 키 없으면 모듈 skip). 검증(§11.1 baseline): `tests/test_alarm` **398 passed**(기존 359 + enricher 단위 36 + gemini live 3, 실패 0 — live는 이 환경 실 키로 실제 Gemini 호출 통과), `arch_check --ci` exit 0. **운영 주의**: 트랙 B의 vLLM 실서빙 라이브 검증은 여전히 vLLM 준비 후 별도 필요(gemini는 테스트/PoC 경로).
+- **D-048.8** (E3, **구현 완료 2026-06-30** — 사용자 확정 §13.1#2) **억제 적극성 = DASHBOARD 강등**. 저중요도 자산의 **severity 1(주의)×중요도 낮음 매트릭스 셀을 SUPPRESS → DASHBOARD**로 확정(묵살이 아니라 대시보드 가시화). §3.2 매트릭스 외 셀은 불변. 메타경보 억제율 임계(`meta_alert_suppress_ratio`)는 보수적(기본 0.9).
+- **D-048.9** (E3, **구현 완료 2026-06-30** — 사용자 확정 §13.1#3) **TICKET 티어 = 감사 + DASHBOARD(SSE) + 일배치 요약 큐 조합**(실시간 별도 채널 없음). 신규 `ticket_queue.py`(JSONL, graceful) 적재 + bus 가용 시 SSE 푸시. 워커 경로는 cross-process라 `alarm_bus` 미주입 → SSE는 로그 폴백·일배치 큐만 동작, **API 경로(`analyze_alarm_*`)는 bus 주입으로 SSE 실동작**(이 워커 경로 한계는 **D-048.10에서 해소**). 운영지표(`/alarm/metrics`)는 `decision_store` 집계(티어별·액션가능 비율·억제율·무수신)로 노출하되, **MTTA/MTTR/사건전환율은 ack·incident 계측 부재로 `null`+`unavailable_metrics` 사유 명시**(환각 수치 금지) — 후속 계측 필요.
+- **D-048.10** (E3 후속, **구현 완료 2026-06-30** — 사용자 확정) **워커→UI 실시간 SSE Redis pub/sub 브리지**로 D-048.9의 워커 경로 한계 해소. 신규 `infrastructure/sse_bridge.py`: 워커측 `RedisSseBridgePublisher`(`publish(event)`→`redis.publish("alarm:sse", json)`, graceful) + API측 `run_sse_bridge_subscriber`(채널 구독→기존 `app.state.alarm_bus.publish`로 재팬아웃→`/alarm/notifications/stream`→프론트 무변경). **pub/sub 선택 근거**: SSE는 fire-and-forget(at-most-once 허용) — TICKET은 큐+감사로 영속, DASHBOARD는 정보성이라 소비그룹/ACK 불요(과설계 회피). **단방향**: `_publish_tier_sse`가 `alarm_bus` 우선, 없을 때(워커 경로)만 주입된 `sse_publisher`로 Redis 발행 → API 직접 publish·주입 bus와 **이중 발행 방지**. **티어 분기 불변**: TICKET/DASHBOARD만 브리지(SUPPRESS=로그, PAGE=workb), 감사·큐 중복 적재 없음(SSE 표시만). **계층**: notifier(application)는 redis 직접 import 없이 주입된 `sse_publisher` 덕타이핑만 호출. **옵트인**(`enable_noise_gate` AND `sse_bridge_enabled`, 기본 False) + graceful(Redis 미가용/실패→로그 폴백, 서버 기동 무차단) → 회귀 0. 인프로세스(워커 task가 같은 API 프로세스)·standalone 워커 양 배포 모두 Redis 채널 경유로 동작. 운영 주석: 브리지 on인데 Redis 다운 시 인프로세스에서도 티어-SSE가 조용히 미도달(graceful이나 비가시) — 메타모니터링으로 보완.
+- **D-048.11** (E4, **구현 완료 2026-07-01** — 사용자 확정 §13.1) **LLM 액션가능성 판단(피드백 few-shot, ML 모델 미사용)**. 운영자 피드백(유효/노이즈)을 `feedback_store`(신규 JSONL, decision_store 미러·graceful)에 적재 → 유사 과거 알람을 **alarm_name·resource·pattern 키**(§3.9, fingerprint 아님)로 few-shot 검색 → `alarm_analyzer`가 **기존 단일 LLM 응답을 재파싱**(추가 호출 없음·D-048.5 패턴)하여 `llm_actionability`(actionable|noise|null) 자문 산출. **판단은 결정적 규칙(step 9)**: `actionable`→promote(승격은 항상 안전), `noise`→demote(단 `effective_severity ≤ suppress_max_severity` 가드 — is_routine demote와 동일), **승격우선 기계**가 promote 공존 시 noise demote를 무시, 1단계 이내 이동·SUPPRESS 하한 불변. **심각도3 절대 PAGE 불변**(step3 단락, E4는 step9만 관여), 불확실→`null`(재현율 우선·승격 비대칭). `signals["llm_actionability"]` 키 추가(감사·설명가능성·Plan 54 드로어 정합 — §8.2 스키마 가드 2곳 갱신). **전 기능 옵트인**(`enable_llm_actionability=False`면 E3 무변경·회귀 0 — policy는 값 미독·None, analyzer는 few-shot 미조회·재파싱 스킵). 캡처: `POST /alarm/feedback`(require_user, 게이트/액션가능성 off면 503·label 검증) + `app.js` 알람 카드 유효/노이즈 버튼(closure 바인딩·503 처리·`textContent` XSS 안전). 구현상 주의: `llm_actionability` 추출을 첫 `_decision` **이전으로 hoist**(sev3 조기 반환 경로의 `_signals()` 클로저 참조 시 NameError 방지 — `test_severity3_always_page_regardless`로 고정). 신규 `feedback_store.py`·`POST /alarm/feedback`·테스트 22. 검증(§11.1 baseline·팀리드 독립 재실행): `tests/test_alarm` **359 passed**(E3/D-049 337 + 신규 22, 실패 0), `arch_check --ci` exit 0(feedback_store=infra·stdlib, notification_policy=stdlib 유지), `AppConfig()` OK, `node --check app.js` OK, 게이트오프 회귀 0(3계층 테스트 고정). E5(deepagents Advisory Enricher, D-048.7)는 vLLM 가용성 확인 후 별도 착수(§13.1#8).
 
-- `prompts/result_synthesizer.py` 신규: `RESULT_SYNTHESIZER_SYSTEM_PROMPT`(모순은 구체적
-  값으로 해소, 내부 라벨 비노출, 구체 데이터 보존, 미확인 항목만 "확인되지 않음").
-- `nodes/output_generator.py`: `stream_user_response: bool = True` 파라미터 추가 →
-  `_generate_text_response`가 태그 부여 여부 결정.
-- `orchestration/result_aggregator.py`: `synthesize` 파라미터, `suppress_stream` 계산,
-  `_finalize_task(stream_user_response=...)`, `_synthesize_finalized` 신규.
-- `orchestration/deep_agent.py::_aggregate_with_fabrix`: `synthesize=True` 전달(트랙 B).
-- `graph.py`: 트랙 A(`enable_deepagent_orchestration and not use_deep_agent`)의
-  `result_aggregator` 노드를 `partial(..., synthesize=True)`로 바인딩(실제 활성 경로 — 필수).
+### 핵심 설계 결정 (E1 구현)
 
-### 근거 / 대안
+| 항목 | 결정 |
+|------|------|
+| 결정 파이프라인 | `notification_policy.decide_notification`(순수함수, domain) 8단계: 실효심각도→수집실패 보수화→심각도3 단락 PAGE→해소/자가복구→유지보수 SUPPRESS→매트릭스→보조 조정(앵커·is_routine, 1단계·승격 우선)→확정 |
+| `min_severity` 역할 분리(§4.8) | 게이트 활성 시 워커는 `1 ≤ severity < min_severity`만 드롭. **severity 0(해소)은 자가복구용 전달, severity 3은 절대 드롭 금지**. 권장 운영값 `ALARM_MIN_SEVERITY=1`. 게이트 off면 기존 `severity < min_severity` 유지 |
+| 핑거프린트 dedup(§6.1) | 게이트 활성 시 dedup 키를 `alarm_id`→`compute_fingerprint(db_id,server\|hostname,alarm_name,resource)`로 교정. 해소 이벤트는 dedup 제외(자가복구 상관). TTL=`repeat_interval_seconds`(기본 4h, Alertmanager 패턴). **재발생 재통보 억제는 모든 심각도에 적용** — 단 최초 발생 severity 3은 항상 게이트 도달 PAGE(설계 관찰: §6.1 재통보 억제 ≠ §4.8 임계 드롭) |
+| 자가복구 상관(§3.7) | 워커 인메모리 `_firing_registry`로 발생(severity ≤ `suppress_max_severity`, 기본2)을 기록, `self_heal_window_seconds`(기본300) 내 해소(severity 0) 매칭 시 SUPPRESS. **심각도3 제외**(해소가 와도 발생 PAGE 보존) |
+| 독립 해소(§6.3) | 매칭 발생 없는 severity 0 → 기본 SUPPRESS(감사), `resolved_to_dashboard=true`면 DASHBOARD |
+| 4-티어 라우팅(§7) | PAGE→기존 `_send_workb`/`_send_webhook`(무변경), TICKET/DASHBOARD/SUPPRESS→발송 안 함·로그(감사는 게이트가 적재). DASHBOARD SSE 푸시는 워커 경로에 `alarm_bus` 미주입이라 **E3 후속** |
+| 설정 구조(§8.5) | `NoiseGateConfig`를 `AppConfig`의 **형제 필드** `cfg.noise_gate.*`로 신설(env_prefix `NOISE_`). AlarmConfig 이중 중첩 회피. 전 필드 스칼라/CSV(JSON list 회피) |
+| graceful degradation | 노이즈 신호 수집 실패/미등록 db_id/타임아웃 → `source="unavailable"` → 보수적 PAGE. 발송 절대 차단 금지(Plan 47 enricher 패턴 계승) |
+| 회귀 0(옵트인) | `enable_noise_gate=False`(기본)면 그래프에 게이트 노드 미포함, 워커 dedup/필터 기존 경로, notifier `notification_decision=None` 분기로 기존 발송 무변경 |
 
-- 대안(기각) supersedes 휴리스틱: 1차가 error가 아닌 "부분 성공"이라 failed→success 매칭이
-  안 되고, "동일 agent+둘 다 completed"를 합치면 멀티의도(같은 agent·다른 대상)에서 앞
-  답변이 사라지는 더 나쁜 회귀. 대안(기각) 오케스트레이터 명시 태깅: 도구 스키마 변경 +
-  LLM 신뢰 의존. 사용자 결정으로 단일 합성 채택.
-- 관련: D-005(부분 실패 병합), D-009(SSE 토큰 스트리밍), D-043(supersedes — replanner 경로
-  한정), D-047(query_results 승격).
-- 검증: arch_check --ci exit 0(pre-existing WARN orchestration→prompts만), result_aggregator
-  합성 신규 6건 + deep_agent wiring synthesize 검증 포함 통과.
+### 변경된 파일
+
+| 파일 | 변경 | 계층 |
+|------|------|------|
+| `src/alarm/domain/notification_policy.py` | 신규 — `decide_notification`/`compute_fingerprint`/`map_importance`/`NotificationDecision`(signals 12키 §8.2) | domain |
+| `src/alarm/infrastructure/polestar_noise_context.py` | 신규 — 중요도/유지보수/알림정책 고정 SQL(읽기전용, `_sql_literal`, Template C-6 서버매칭, graceful) | infrastructure |
+| `src/alarm/infrastructure/decision_store.py` | 신규 — `DecisionStore` JSONL 결정 감사 + 집계(억제율) | infrastructure |
+| `src/alarm/application/nodes/notification_gate.py` | 신규 — 게이트 노드(결정 산출 + decision_store 적재) | application |
+| `src/alarm/orchestration/alarm_graph.py` | `AlarmState`에 noise_context/notification_decision/self_heal, 배선 `history_enabled or enable_noise_gate`(§8.1) | orchestration |
+| `src/alarm/application/nodes/alarm_context_enricher.py` | noise_context 동시 수집(gather, 게이트 활성 시) | application |
+| `src/alarm/application/nodes/alarm_notifier.py` | 4-티어 라우팅 분기(decision None=기존 경로) | application |
+| `src/alarm/application/alarm_worker.py` | 핑거프린트 dedup(§6.1)+min_severity(§4.8)+self_heal 시드+noise_repo/decision_store 주입(게이트 활성 시) | orchestration |
+| `src/config.py` | `NoiseGateConfig` 신규(형제 필드 §8.5) | config |
+| `.env.example` | `NOISE_*` 추가(기본 비활성) | 설정 |
+| `tests/test_alarm/` (신규 패키지) | 정책/스토어/컬렉터 단위(57) + 통합(배선/게이트오프/티어/감사/min_severity 35) = **92 통과** | 테스트 |
+
+### 검증 (2026-06-29 실측, §11.1 baseline 정책)
+
+- `tests/test_alarm/` 92 passed(0 fail), 기존 알람 회귀 116 passed, graph 30 passed — 노이즈 모듈 import 파일 13개 신규 실패 0.
+- `python scripts/arch_check.py --ci` exit 0(error 0, 기존 orchestration→prompts warning 3건만 — 무관).
+- `AppConfig()` 정상 생성, `NOISE_` env prefix 로드 확인, 게이트오프 회귀 0.
+- 전체 스위트의 기타 실패는 **52와 무관한 multiintent/인증 부채 + 라이브 DB/LLM/Redis 부재**로 baseline 차감(별도 트랙).
+
+### 향후 수정 시 고려사항
+
+- **E2 착수**: 의존성 억제(`AVAIL_DEPEND_RESOURCE_ID`+부모 `AVAIL_STATUS`)·인히비션·스톰 그룹핑·플래핑(Nagios). `noise_context.parent_avail_status` 자리예약 활용.
+- **심각도3 재발생 재통보**: 현재 `repeat_interval_seconds`(4h)가 모든 심각도에 적용 → 운영에서 심각도3 재통보가 잦아야 하면 severity별 `repeat_interval` 분리 검토(현 동작은 Alertmanager 표준 계승, 최초 발생 PAGE는 보장).
+- **`IMPORTANCE_ID` 값코드**: 인스턴스별 표본 확인 후 `NOISE_IMPORTANCE_VALUE_MAP_CSV` 설정(미설정=전부 보통).
+- **DASHBOARD SSE**(E3 + 후속 완료): API 경로는 `alarm_bus` 직접 주입으로 동작하고, **워커 경로는 D-048.10 Redis pub/sub 브리지로 해소**(`sse_bridge_enabled` 옵트인). 남은 후속은 없음(브리지 기본 off — 운영 활성화 시 Redis 가용 필요).
+- **운영지표 ack/incident 계측**(E3 후속): `/alarm/metrics`의 MTTA/MTTR/사건전환율은 ack·해소상관 데이터가 decision_store에 없어 미산출(null). 향후 ack/incident 이벤트 계측 추가 시 활성화.
+- **AI 심각도 보강 적용 확대**(E3 후속): 현재 메시지형(`condition_log`) 한정. 시그니처 치트시트(Plan51 A.1) 확장·신규 로그 패턴 추가 시 `severity_signatures.py` 보강.
 
 ---
 
-## D-063. 엔티티 확보 후 무의미 재시도 차단 (replanner 필드-null 재조회 가드)
+## D-049. ack/incident 라이프사이클 계측 — PostgreSQL 단일 저장소 (Plan 52 §9.1 · §13.1 #9)
 
 | 항목 | 내용 |
 |------|------|
-| **결정일** | 2026-06-29 |
-| **상태** | 확정(가드). **단, 이 사례의 진짜 원인은 조회 SQL 오류 — 근본 수정은 D-050**. 본 가드는 "필드 null=속성 부재"를 단정하지 않으며, 동일 쿼리 반복 재시도(무익) 방지용 효율 가드로만 유효 |
+| **결정일** | 2026-06-30 |
+| **상태** | 확정 (사용자 결정) — **구현 완료** (백엔드 + UI 2 surface: 채팅 알람카드 확인버튼 + admin "열린 사건" 패널) |
+| **관련 결정** | D-048.9(MTTA/MTTR/사건전환율을 `null`+`unavailable_metrics`로 유보 — 본 결정이 그 후속 계측), D-048.10(워커→Redis→API 브리지 패턴 재사용), D-048.4(억제≠삭제 감사), D-026/D-027(앱 운영데이터 쓰기 PG `audit_logs`/`auth_users` 선례), D-003(읽기전용은 폴스타 한정 — 앱 운영데이터 쓰기와 무관) |
 
 ### 배경 / 문제
 
-"김포 ### 서버의 OS·IP·호스트명·CPU·메모리" 단일 질의에서, 1차 task(t1)가 **서버는 1건
-찾았으나 CPU·메모리 컬럼이 null**이었다. (당초 "속성 미수집"으로 추정했으나 — **오판**.
-실제로는 데이터가 존재하는데 EAV 피벗+서버명 필터 SQL이 잘못 생성되어 못 가져온 것이었다.
-근본 원인·수정은 **D-050**.) `replanner`의 LLM이 이를 프롬프트의 "0건 → 재조회" 예시에
-잘못 적용해 "불충분 → 재조회"로 판단, DB 범위를 바꿔가며(gp→전체 소스→gp→전체)
-**`max_replan`(3)까지 헛 재시도**했다(t1~t4). 결과:
-(1) 불필요한 DB 왕복 4회, (2) 각 시도가 부분/빈 답변을 내고 `_merge_finalized`가 모두
-이어붙여 "1건 확인" + "데이터 없음"의 **모순 이중 답변**(D-062 합성으로 사후 통합은 되나
-근원 낭비는 잔존). 또한 replanner LLM이 `supersedes`(D-043)를 신뢰성 있게 설정하지 않아
-(원인 B) D-043 숨김도 작동하지 않았다.
+E3(`GET /alarm/metrics`)는 `decision_store`(발송 판단 JSONL) 집계로 산출 가능한 지표(티어별 건수·억제율·
+액션가능 비율·무수신 메타경보)만 노출하고, **MTTA·MTTR·사건전환율은 `null`+`unavailable_metrics`**(환각 금지)
+로 두었다(D-048.9). 이 세 지표는 **incident 라이프사이클(firing→ack→resolved) 상태 전이**와 **시간창 집계**가
+필요한데, 다음 두 가지 구조적 제약 때문에 현행 JSONL `decision_store`로는 불가능하다:
+
+- **프로세스 경계**: ack(확인)은 웹 UI "확인" 버튼 → **API 프로세스**에서 발생하고, incident 생성(PAGE)·해소
+  (clear/self-heal)는 **워커 프로세스**(`alarm_worker`)에서 발생한다. 같은 incident 레코드를 두 프로세스가
+  갱신해야 한다.
+- **가변 상태 + 집계**: JSONL은 append-only라 상태 전이 UPDATE 불가, 로컬 파일이라 cross-process 갱신 비안전,
+  열린 incident 조회·시간창 집계가 약하다.
 
 ### 결정
 
-`replanner`에 **결정적 가드** `_filter_futile_retries`를 추가한다. 엔티티가 이미 확보된
-(선행이 >0행 반환) 조회를 같은 방식으로 다시 묻는 후속을 제거하고, 전부 제거되면 루프를
-종료한다. **`supersedes` 필드 존재에만 의존하지 않도록 행수 + 독립성으로 판정**(원인 B에
-견고):
+incident 라이프사이클 저장소를 **PostgreSQL 단일 저장소**로 한다(Redis 단독·혼합 기각). 앱은 이미
+`audit_repository`(`audit_logs`)·`user_repository`(`auth_users`)로 **쓰기 가능한 PG**를 운영하므로 신규 의존이
+아니며, 동일 repo 패턴을 재사용한다.
 
-- 제거 (a): 신규 task의 `supersedes`가 **>0행을 반환한** 선행 task_id를 가리킴(명시적 재조회).
-- 제거 (b): 신규 task가 **독립**(`depends_on` 비어있음)이면서 **같은 agent**의 선행이 이미
-  >0행을 반환함(LLM이 supersedes를 빠뜨린 암묵적 재조회).
-- 보존: 선행이 0건이면(엔티티 못 찾음) "0건 → 재조회" 허용 / 데이터 의존 보강(`depends_on`
-  존재, 장애→알람) 허용 / 다른 agent 보강 허용.
+- **계층(arch_check clean)**: port `IncidentStore`(domain) + 어댑터 `src/alarm/infrastructure/incident_repository.py`
+  (`audit_repository` 미러). application(notifier/worker subscriber)은 주입된 port만 호출.
+- **테이블 `alarm_incidents`**: `id`(PK), `fingerprint`, `alarm_id`, `db_id`/`server`, `severity`, `priority`,
+  `tier`, **`status`(open|ack|resolved)**, `created_at`(PAGE/firing), `acked_at`, `acked_by`, `resolved_at`,
+  `resolution`(self_heal|clear|manual). 인덱스: `status`, `fingerprint`(부분 `WHERE status='open'`), `created_at`.
+  DDL은 기존 `ddl/auth_tables.sql` + 기동시 `_ensure_*_tables()` 자동 생성 패턴을 따른다(신규 `ddl/` SQL 파일 +
+  lifespan auto-create).
+- **쓰기 단일화(D-048.10 브리지 패턴 재사용)**: 워커는 PG 쓰기 풀을 신설하지 않는다. incident 이벤트를
+  **Redis 채널 `alarm:incident`로 발행 → API 프로세스의 단일 PG 라이터(subscriber)가 영속**한다.
+  - **open**: notifier가 **PAGE 결정 시** open 이벤트 발행 → subscriber가 open 행 INSERT.
+  - **resolved**: 워커가 **clear 이벤트(is_clear)** 수신 시 fingerprint 키로 resolved 이벤트 발행 →
+    subscriber가 매칭 open 행을 `resolved`로 UPDATE(`resolution='clear'`). self-heal 매칭은 `resolution='self_heal'`.
+  - **ack**: 웹 UI "확인" 버튼 → `POST /alarm/incidents/{id}/ack`(API가 PG 직접 UPDATE: `status=ack`,
+    `acked_at=now`, `acked_by`). **식별키 = incident id**.
+- **PG 풀(④ 확정)**: `incident_tracking_enabled` 플래그 기준 **전용 풀**(auth_pool 종속 회피 — `AUTH_ENABLED`와
+  독립). DSN은 기존 앱 쓰기 PG(`db_connection_string`) 재사용. 풀 수명주기는 lifespan에서 관리.
+- **지표 `/alarm/metrics`**: `mtta_seconds=AVG(acked_at-created_at)`, `incident_mttr_seconds=AVG(resolved_at-created_at)`,
+  `incident_conversion_rate=incidents/page_count` — 모두 window SQL. 해당 항목의 `null`/`unavailable_metrics` 제거.
+- **MTTR 라벨 분리(정직성 — 환각 금지)**: self-heal 상관(`_update_firing_registry`)은 발생↔해소 소요시간을
+  **이미 in-memory 계산**하므로 `decision_store` JSONL에 resolved 레코드 append로 `auto_recovery_mttr_seconds`를
+  **저위험·선행** 산출한다. 단 self-heal은 **sev1..suppress_max만 대상(sev3 제외)** 이라 **편향(부분)** 지표이며,
+  paged incident의 운영자 MTTR은 PG 기반 `incident_mttr_seconds`로 별도 노출한다. **두 지표는 라벨로 명확히 구분**한다.
+- **옵트인**: `incident_tracking_enabled`(기본 False) + `incident_event_channel`(기본 `alarm:incident`).
+  기본 off → 트래커 미기동, `/alarm/metrics`는 기존 null 동작 유지(**회귀 0**). graceful: Redis/PG 미가용 시 warning
+  후 폴백, 알람 발송·서버 기동 무차단.
 
-보조로 `prompts/replanner.py`에 판단 원칙 7 추가: "행은 찾았으나 일부 요청 필드가 null인
-경우는 속성 부재이므로 재조회 금지(0건=대상 못 찾음 vs 필드 null=속성 부재 구분)". 가드가
-안전망, 프롬프트는 LLM이 애초에 덜 제안하도록 보조.
+### 근거
 
-### 근거 / 대안
+- incident 요건의 지배 비용은 **상태 전이 UPDATE + 이력 시간창 집계**이고 둘 다 PostgreSQL 강점. "열린 incident"는
+  상시 소수라 Redis의 속도 이점이 무의미(인덱스 조회로 충분).
+- `audit_repository`(쓰기 repo)·`sse_bridge`(워커→Redis→API)·startup DDL auto-create — **기존 자산 3종을 그대로
+  재사용** → 신규 표면 최소·arch_check clean·회귀 리스크 낮음.
+- MTTA/MTTR/전환율이 순수 SQL(`AVG(ts차)`, count 비율)로 산출됨.
 
-- 채택: **옵션 ① 엔티티 찾으면 즉시 중단**(사용자 분석 요청에 대한 권장). data_query agent가
-  내부적으로 DB를 선택하므로 1차 task가 이미 관련 DB를 고려하고, 실측상 "전체 소스" 확장도
-  CPU/메모리를 못 찾아 교차 DB 회수 가치가 낮음. 엔티티 확보 후 종료 시 단일 task → 합성조차
-  불필요한 정직한 단일 답변("CPU·메모리는 데이터에 없어 확인 불가").
-- 대안(기각) 옵션 ② 1회 확장 후 중단: 재시도 이력 추적 필요(복잡)하고 모순 답변 표면이 잔존.
-  대안(기각) 옵션 ③ 프롬프트만: 원인 B와 동일하게 LLM 준수에 의존해 신뢰성 낮음.
-- 한계: 필드가 정말 다른 DB에 있는데 1차가 그 DB를 놓친 경우 회수 못 함 — 그 경우의 옳은
-  수정 지점은 field_mapper/data_query DB 선택이지 replanner 재시도가 아님. honest "확인 불가"가
-  4회 모순 답변보다 낫다.
-- 관련: D-043(supersedes — 원인 B 보완), D-062(합성 안전망), D-040(replanner 중복 가드).
-- 검증: arch_check --ci exit 0, replanner 신규 6건 포함 orchestration 130 passed/4 skipped.
+### 대안 (기각)
+
+- **Redis 단독**: 활성 incident 상태(HASH/ZSET)는 빠르나 **감사급 이력의 시간창 집계가 약하고** 내구성이
+  persistence 설정 의존 → MTTA/MTTR 산출 부적합.
+- **혼합(Redis 활성 + PG 이력)**: 활성셋이 작아 이중 저장·dual-write 일관성 부담이 이득을 초과 → 과설계
+  (Simplicity First 위배).
+- **현행 JSONL 확장**: append-only·로컬 파일·cross-process 갱신 비안전 → 3요건(상태 전이·열린 incident 조회·집계)
+  모두 미충족.
+
+### 향후 수정 시 고려사항
+
+- 복수 open incident가 같은 fingerprint를 가질 수 있는 경합(재발생) — resolved UPDATE는 가장 최근 open 1건 대상
+  또는 전체 정책 확정 필요(구현 시 `ORDER BY created_at DESC LIMIT 1` 기본).
+- ITSM 연동(외부 incident 시스템) 확장 시 `resolution='manual'`/외부 incident id 컬럼 추가 검토(현재 자기완결).
+- ack 권한(운영자 전용) — `acked_by`는 인증 사용자 id, AUTH 비활성 환경에서는 익명/UI 입력 허용 여부 확정 필요.
 
 ---
 
@@ -2963,10 +2996,138 @@ query_guide/예시는 LLM 경로 보강용.
 
 ---
 
+## D-062. 딥 에이전트 경로 복합 결과의 단일 LLM 합성 (모순 이중 답변 제거)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정 |
+
+### 배경 / 문제
+
+딥 에이전트(트랙 B) 경로에서 오케스트레이터(vLLM/Gemini)가 동일 질문을 **재시도**(도구
+재호출)하면, `deepagents_tools._run_subagent_tool`이 매 호출마다 새 고유 `task_id`로
+collector에 `(task, result)`를 append한다. 1차가 "부분 성공"(예: 서버는 찾았으나 CPU/메모리
+컬럼 null — `error` 없음 → `status="completed"`)이고 2차가 완전 성공이면, **두 결과 모두
+`completed`** 상태로 남는다. `_aggregate_with_fabrix`가 collector 전체를 `task_plan`/
+`task_results`로 재구성 → `result_aggregator._merge_finalized`가 1·2차 텍스트를 `"\n\n".join`
+으로 이어붙여 **"CPU 없음" 서술과 "CPU 8코어" 서술이 한 말풍선에 혼재**, 사용자 혼란 유발.
+
+D-043(supersedes)은 이 모순을 막기 위한 기존 장치이나, (a) `_run_subagent_tool`이 task에
+`supersedes`를 설정하지 않고 (b) 이를 설정하는 replanner는 딥 에이전트 경로에 배선되지
+않으며 (c) **1차가 error가 아닌 "부분 성공"**이라 failed→success 매칭으로도 못 잡는다.
+
+### 결정
+
+딥 에이전트 경로의 복합 결과는 deterministic 이어붙이기 대신 **LLM 1회 호출로 단일 일관
+답변을 합성**한다(사용자 결정: "단일 LLM 합성"). 재시도 모순(없음→있음)과 보강 결과를
+모두 하나의 답변으로 통합하므로, "같은 질문 재시도 vs 서로 다른 질문(멀티의도)"을 휴리스틱
+으로 구분할 필요가 없다(동일 agent로 서로 다른 대상을 조회하는 멀티의도 회귀 위험 회피).
+
+- `result_aggregator(..., synthesize=True)`: 복합 task일 때 `_synthesize_finalized`로 합성.
+  단일 task는 기존대로 통과(스트리밍 유지).
+- **적용 경로 — 둘 다**: (1) 딥 에이전트(트랙 B) `_aggregate_with_fabrix`, (2) **다중 의도
+  오케스트레이션(트랙 A, Plan 48) `result_aggregator` 그래프 노드**. 폐쇄망(deepagents
+  미설치)에서 실제 활성 경로는 (2)이므로 `graph.py`에서 이 노드를 `synthesize=True`로
+  바인딩해야 합성이 실제로 동작한다. (1)만 적용하면 사용자 런타임에서 미발동(최초 누락 원인).
+  이로써 트랙 A의 복합 task는 기존 deterministic 병합(_merge_finalized)을 LLM 합성으로
+  대체한다(D-005/D-043은 supersedes 사전 제외 단계로 여전히 유효, 병합 방식만 변경).
+- **스트리밍 정합(D-009)**: 합성 모드 + 복합 task일 때 per-task `output_generator`는
+  `stream_user_response=False`로 호출해 USER_RESPONSE_TAG를 떼고(중간 토큰 누출 방지),
+  **최종 합성 1회만** USER_RESPONSE_TAG로 토큰 스트리밍. 딥 에이전트 그래프 노드는
+  `deep_agent`라 SSE 핸들러가 태그로만 토큰을 거르므로(노드명 매칭 아님) 단일 스트림이 된다.
+- **안전 폴백**: 합성 LLM 호출이 예외/빈 결과면 `_merge_finalized`(이어붙이기)로 폴백.
+- output_file은 첫 산출 task의 것을 채택, `query_results`는 전체 누적(CSV/row_count, D-047).
+
+### 구현
+
+- `prompts/result_synthesizer.py` 신규: `RESULT_SYNTHESIZER_SYSTEM_PROMPT`(모순은 구체적
+  값으로 해소, 내부 라벨 비노출, 구체 데이터 보존, 미확인 항목만 "확인되지 않음").
+- `nodes/output_generator.py`: `stream_user_response: bool = True` 파라미터 추가 →
+  `_generate_text_response`가 태그 부여 여부 결정.
+- `orchestration/result_aggregator.py`: `synthesize` 파라미터, `suppress_stream` 계산,
+  `_finalize_task(stream_user_response=...)`, `_synthesize_finalized` 신규.
+- `orchestration/deep_agent.py::_aggregate_with_fabrix`: `synthesize=True` 전달(트랙 B).
+- `graph.py`: 트랙 A(`enable_deepagent_orchestration and not use_deep_agent`)의
+  `result_aggregator` 노드를 `partial(..., synthesize=True)`로 바인딩(실제 활성 경로 — 필수).
+
+### 근거 / 대안
+
+- 대안(기각) supersedes 휴리스틱: 1차가 error가 아닌 "부분 성공"이라 failed→success 매칭이
+  안 되고, "동일 agent+둘 다 completed"를 합치면 멀티의도(같은 agent·다른 대상)에서 앞
+  답변이 사라지는 더 나쁜 회귀. 대안(기각) 오케스트레이터 명시 태깅: 도구 스키마 변경 +
+  LLM 신뢰 의존. 사용자 결정으로 단일 합성 채택.
+- 관련: D-005(부분 실패 병합), D-009(SSE 토큰 스트리밍), D-043(supersedes — replanner 경로
+  한정), D-047(query_results 승격).
+- 검증: arch_check --ci exit 0(pre-existing WARN orchestration→prompts만), result_aggregator
+  합성 신규 6건 + deep_agent wiring synthesize 검증 포함 통과.
+
+---
+
+## D-063. 엔티티 확보 후 무의미 재시도 차단 (replanner 필드-null 재조회 가드)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-06-29 |
+| **상태** | 확정(가드). **단, 이 사례의 진짜 원인은 조회 SQL 오류 — 근본 수정은 D-050**. 본 가드는 "필드 null=속성 부재"를 단정하지 않으며, 동일 쿼리 반복 재시도(무익) 방지용 효율 가드로만 유효 |
+
+### 배경 / 문제
+
+"김포 ### 서버의 OS·IP·호스트명·CPU·메모리" 단일 질의에서, 1차 task(t1)가 **서버는 1건
+찾았으나 CPU·메모리 컬럼이 null**이었다. (당초 "속성 미수집"으로 추정했으나 — **오판**.
+실제로는 데이터가 존재하는데 EAV 피벗+서버명 필터 SQL이 잘못 생성되어 못 가져온 것이었다.
+근본 원인·수정은 **D-050**.) `replanner`의 LLM이 이를 프롬프트의 "0건 → 재조회" 예시에
+잘못 적용해 "불충분 → 재조회"로 판단, DB 범위를 바꿔가며(gp→전체 소스→gp→전체)
+**`max_replan`(3)까지 헛 재시도**했다(t1~t4). 결과:
+(1) 불필요한 DB 왕복 4회, (2) 각 시도가 부분/빈 답변을 내고 `_merge_finalized`가 모두
+이어붙여 "1건 확인" + "데이터 없음"의 **모순 이중 답변**(D-062 합성으로 사후 통합은 되나
+근원 낭비는 잔존). 또한 replanner LLM이 `supersedes`(D-043)를 신뢰성 있게 설정하지 않아
+(원인 B) D-043 숨김도 작동하지 않았다.
+
+### 결정
+
+`replanner`에 **결정적 가드** `_filter_futile_retries`를 추가한다. 엔티티가 이미 확보된
+(선행이 >0행 반환) 조회를 같은 방식으로 다시 묻는 후속을 제거하고, 전부 제거되면 루프를
+종료한다. **`supersedes` 필드 존재에만 의존하지 않도록 행수 + 독립성으로 판정**(원인 B에
+견고):
+
+- 제거 (a): 신규 task의 `supersedes`가 **>0행을 반환한** 선행 task_id를 가리킴(명시적 재조회).
+- 제거 (b): 신규 task가 **독립**(`depends_on` 비어있음)이면서 **같은 agent**의 선행이 이미
+  >0행을 반환함(LLM이 supersedes를 빠뜨린 암묵적 재조회).
+- 보존: 선행이 0건이면(엔티티 못 찾음) "0건 → 재조회" 허용 / 데이터 의존 보강(`depends_on`
+  존재, 장애→알람) 허용 / 다른 agent 보강 허용.
+
+보조로 `prompts/replanner.py`에 판단 원칙 7 추가: "행은 찾았으나 일부 요청 필드가 null인
+경우는 속성 부재이므로 재조회 금지(0건=대상 못 찾음 vs 필드 null=속성 부재 구분)". 가드가
+안전망, 프롬프트는 LLM이 애초에 덜 제안하도록 보조.
+
+### 근거 / 대안
+
+- 채택: **옵션 ① 엔티티 찾으면 즉시 중단**(사용자 분석 요청에 대한 권장). data_query agent가
+  내부적으로 DB를 선택하므로 1차 task가 이미 관련 DB를 고려하고, 실측상 "전체 소스" 확장도
+  CPU/메모리를 못 찾아 교차 DB 회수 가치가 낮음. 엔티티 확보 후 종료 시 단일 task → 합성조차
+  불필요한 정직한 단일 답변("CPU·메모리는 데이터에 없어 확인 불가").
+- 대안(기각) 옵션 ② 1회 확장 후 중단: 재시도 이력 추적 필요(복잡)하고 모순 답변 표면이 잔존.
+  대안(기각) 옵션 ③ 프롬프트만: 원인 B와 동일하게 LLM 준수에 의존해 신뢰성 낮음.
+- 한계: 필드가 정말 다른 DB에 있는데 1차가 그 DB를 놓친 경우 회수 못 함 — 그 경우의 옳은
+  수정 지점은 field_mapper/data_query DB 선택이지 replanner 재시도가 아님. honest "확인 불가"가
+  4회 모순 답변보다 낫다.
+- 관련: D-043(supersedes — 원인 B 보완), D-062(합성 안전망), D-040(replanner 중복 가드).
+- 검증: arch_check --ci exit 0, replanner 신규 6건 포함 orchestration 130 passed/4 skipped.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-01 | D-048 | **Phase E4 — LLM 액션가능성 판단(피드백 few-shot, ML 모델 미사용)** (D-048.11 등재, 사용자 확정 §13.1, 전부 옵트인·기본 off→E3/D-049 무변경). 잔여작업 E4/E5 중 **E4 우선** 착수(E5는 vLLM 가용성 확인 후 별도). 운영자 피드백(유효/노이즈)을 신규 `feedback_store.py`(JSONL·decision_store 미러·graceful, stdlib만)에 적재→유사 과거 알람을 **alarm_name·resource·pattern 키**(§3.9, fingerprint 아님)로 few-shot 검색→`alarm_analyzer`가 **기존 단일 LLM 응답 재파싱**(추가 호출 없음·D-048.5 패턴)하여 `llm_actionability`(actionable\|noise\|null) 자문 산출. **판단은 결정적 `notification_policy` step 9**: actionable→promote(항상 안전), noise→demote(단 `effective_severity≤suppress_max_severity` 가드 — is_routine과 동일), **승격우선 기계**가 promote 공존 시 noise 무시, 1단계·SUPPRESS 하한 불변. **심각도3 절대 PAGE 불변**(step3 단락, E4는 step9만), 불확실→null(재현율 우선·승격 비대칭). `signals["llm_actionability"]` 키 추가(§8.2 스키마 가드 2곳 `test_notification_policy`·`test_polestar_noise_context_integration` 갱신). 캡처: `POST /alarm/feedback`(require_user, 게이트/액션가능성 off면 503·label 검증 400) + `app.js` 알람 카드 유효/노이즈 버튼(closure 바인딩·503 처리·`textContent` XSS 안전). 게이트오프 회귀 0: policy는 값 미독·None, analyzer는 few-shot 미조회·재파싱 스킵(3계층 테스트 고정). **구현 주의**: `llm_actionability` 추출을 첫 `_decision` **이전으로 hoist**(sev3 조기 반환 경로 `_signals()` 클로저 free-variable NameError 방지 — 회귀 테스트 고정). 수정 `alarm.py`(필드2)·`notification_policy.py`(step9)·`prompts/alarm_analyzer.py`·`alarm_analyzer.py`(`_render_feedback_section`+재파싱)·`config.py`(3필드+주석 E3→E4)·`alarm_worker.py`(`_build_feedback_store`+주입)·`api/routes/alarm.py`(`_alarm_extra_configurable`+엔드포인트)·`app.js`/`style.css`·`.env.example`. 검증(§11.1 baseline·**팀리드 독립 재실행**): `tests/test_alarm` **359 passed**(337+신규 22, 실패 0), `arch_check --ci` exit 0(feedback_store=infra·stdlib, policy=stdlib 유지), `AppConfig()` OK, `node --check app.js` OK. 상세: `## D-048` §D-048.11. 번호: `## D-` 헤더+변경이력 표 둘 다 grep, E4는 D-048 하위(.10→**.11**)로 등재(top-level 신번호 아님·D-049 보존). |
+| 2026-06-30 | D-049 | **ack/incident 라이프사이클 계측 — PostgreSQL 단일 저장소 (Plan 52 §9.1·§13.1 #9, 사용자 확정)**: D-048.9가 `null`+`unavailable_metrics`로 유보한 MTTA/MTTR/사건전환율을 산출하기 위한 후속 계측 결정(이 changelog는 결정 등재 — 구현은 후속 커밋). **핵심 진단**: ack(웹 UI "확인")는 **API 프로세스**, incident 생성(PAGE)·해소(clear/self-heal)는 **워커 프로세스**에서 발생 → 같은 incident 레코드를 두 프로세스가 갱신해야 하고, 상태 전이(firing→ack→resolved) UPDATE·열린 incident 조회·시간창 집계가 필요 → 현행 JSONL `decision_store`(append-only·로컬·집계 약함) 부적합. **결정**: incident 저장소=**PostgreSQL 단일**(Redis 단독·혼합 기각 — 활성셋 소수라 Redis 속도 무의미, 감사급 이력 집계는 PG 강점). 신규 의존 아님(`audit_repository`/`user_repository`가 쓰기 PG 선례). port `IncidentStore`(domain)+`incident_repository.py`(infra, audit 미러)·테이블 `alarm_incidents`(status open\|ack\|resolved, created/acked/resolved_at, fingerprint·alarm_id·tier·resolution; 인덱스 status/fingerprint(부분)/created_at; DDL은 `ddl/` SQL+기동시 `_ensure_*_tables` auto-create 패턴). **쓰기 단일화(D-048.10 브리지 재사용)**: 워커는 PG 풀 신설 없이 incident 이벤트를 **Redis `alarm:incident` 발행→API 단일 PG 라이터(subscriber)** 영속(open=notifier PAGE 시, resolved=워커 clear/self-heal 시 fingerprint 매칭 UPDATE). **ack**=`POST /alarm/incidents/{id}/ack`(API 직접 UPDATE, **식별키=incident id**)+`app.js` SSE 카드 "확인" 버튼. **PG 풀**=`incident_tracking_enabled` 기준 전용 풀(auth 독립, DSN 재사용). **지표**: MTTA=AVG(acked-created)·`incident_mttr`=AVG(resolved-created)·전환율=incidents/page_count(window SQL, null/unavailable 제거). **MTTR 라벨 분리(환각 금지)**: self-heal 소요시간을 JSONL로 **저위험 선행** 산출하되 sev3 제외 **편향**이라 `auto_recovery_mttr_seconds`로, paged 운영자 MTTR은 PG `incident_mttr_seconds`로 **명확히 구분**. **옵트인**(기본 False)→트래커 미기동·기존 null 동작 유지(회귀 0), graceful(Redis/PG 미가용 폴백·서버 무차단). 상세: `## D-049`. 번호: 등재 직전 `## D-` 헤더+변경이력 표 둘 다 grep, 최대 D-048→**D-049** 부여(2026-06-29 충돌 교훈 준수). **구현 완료(백엔드, 동일 effort)**: 신규 `src/alarm/domain/incident_store.py`(port ABC)·`src/alarm/infrastructure/incident_repository.py`(PostgresIncidentStore, audit_repository 미러)·`src/alarm/infrastructure/incident_events.py`(RedisIncidentPublisher+run_incident_event_subscriber, sse_bridge 미러)·`ddl/alarm_incidents.sql`. 수정 `config.py`(NoiseGateConfig `incident_tracking_enabled`/`incident_event_channel`)·`decision_store.py`(`record_resolution`+aggregate `auto_recovery_mttr_seconds`, resolution 줄 by_tier/total 제외)·`alarm_notifier.py`(PAGE 시 open 발행, 미주입 스킵)·`alarm_worker.py`(`_build_incident_publisher`·is_clear 시 resolved 발행·self-heal duration→record_resolution·graph configurable 주입)·`api/server.py`(`_ensure_incident_tables`+lifespan 전용 PG풀/store/subscriber 기동·종료, 전체 try/except 무차단)·`api/routes/alarm.py`(`POST /alarm/incidents/{id}/ack`·`GET /alarm/incidents`·/alarm/metrics에 incident_store 주입·`AlarmMetricsResponse` incident_mttr_seconds/auto_recovery_mttr_seconds/open_incident_count)·`.env.example`. **쓰기 단일화**: 워커는 PG풀 미신설(Redis 발행만)·API 단일 라이터가 영속. **라벨 분리**: `incident_mttr_seconds`(PG, paged 운영자) vs `auto_recovery_mttr_seconds`(JSONL self-heal, sev3 제외 편향 — 명시). 검증(verifier 독립 PASS·7항목): fingerprint 대칭성(open=decision.fingerprint↔resolved=compute_fingerprint 동일식 — resolve 매칭 성립)·aggregate resolution 제외(기존 비율지표 비오염)·옵트인 게이팅·graceful·계층경계(domain asyncpg/redis 0, notifier/worker redis 직접 0)·metrics 0division None안전·resolve 경합(최근1건)·ack 멱등. tests/test_alarm **336 passed**(baseline 333+verifier 신규 fingerprint 대칭성 3), arch_check --ci exit 0(error 0), 광역 스위트 회귀 0(git stash pristine=working 631 failed 동일 — 환경 baseline). **UI(후속 완료, 사용자 확정=둘 다)**: (1) 채팅 알람카드(`app.js renderAlarmMessage`) — `data.incident_id` 있을 때만 "확인" 버튼(closure 캡처·인라인 onclick 없음), 클릭→`POST /alarm/incidents/{id}/ack`→확인됨/이미확인됨/재시도 상태 갱신; (2) admin 대시보드(`dashboard.html`+`admin.js`) "열린 사건" 탭 — `GET /alarm/incidents?status=open` 목록(서버/알람명/심각도/tier/생성시각/경과)+행별 확인 버튼. **카드/목록 표시용 백엔드 delta(소규모)**: `_incident_open_payload`를 `_tier_sse_payload` 전체 표시필드+식별필드로 보강(리치 카드), `alarm_incidents`에 `alarm_name` 컬럼 추가(`ALTER ... ADD COLUMN IF NOT EXISTS` 멱등·port/repo/list_open 전파). 전부 옵트인(off→빈 목록·버튼 미표시·회귀 0). 검증(verifier 독립 UI 7항목 PASS): payload 보강·alarm_name INSERT $오프셋 정확(컬럼순서 가드 테스트 추가)·테스트 약화 0(강화만)·ack 버튼 incident_id 게이팅·admin 인증조회/빈목록·플래그off 회귀·escapeHtml/textContent XSS 안전. tests/test_alarm **337 passed**, arch_check --ci exit 0, node --check app.js·admin.js OK. 라이브 브라우저 E2E는 인프라 부재로 미수행(정적·단위 단언 대체). `docs/verification_report.md` D-049 + D-049 UI 섹션. |
+| 2026-06-30 | D-048 | **E3 후속 — 워커→UI 실시간 SSE Redis pub/sub 브리지 (D-048.10, D-048.9 한계 해소)**: 워커는 cross-process(또는 API 내 asyncio task지만 bus 미주입)라 DASHBOARD/TICKET 티어 결정이 UI에 실시간 표시 안 되던 D-048.9 한계를 해소. 신규 `infrastructure/sse_bridge.py` — 워커측 `RedisSseBridgePublisher`(`publish(event)`→`redis.publish("alarm:sse",json)`, graceful) + API측 `run_sse_bridge_subscriber`(채널 구독→기존 `app.state.alarm_bus.publish` 재팬아웃→`/alarm/notifications/stream`→프론트 무변경). 수정 `alarm_notifier._publish_tier_sse`(alarm_bus 우선·없으면 주입 `sse_publisher`로만 — **이중 발행 방지**, notifier는 redis 직접 import 없이 덕타이핑 호출)·`alarm_worker._build_sse_publisher`(게이트+브리지 플래그+redis 가용 시만 주입)·`api/server.py` lifespan(플래그 on 시 구독 task 기동·종료 cancel/close, Redis 실패에도 서버 기동 무차단)·`config.py`(`sse_bridge_enabled`/`sse_bridge_channel`)·`.env.example`. **pub/sub 선택**(Stream 아님): SSE fire-and-forget·TICKET은 큐+감사로 영속·DASHBOARD 정보성→ACK/소비그룹 불요(과설계 회피). **티어 분기 불변**(TICKET/DASHBOARD만, SUPPRESS=로그·PAGE=workb, 감사·큐 중복 적재 없음). **옵트인**(`enable_noise_gate` AND `sse_bridge_enabled`, 기본 False)+graceful→**회귀 0**. 검증(verifier 독립 PASS·§11.1): tests/test_alarm **287 passed**(E3 271→+16: test_sse_bridge 12+notifier 보강), arch_check --ci exit 0(error 0, notifier→infra redis 직접의존 0), AppConfig OK, 플래그오프 회귀 0(로그 폴백·E3 동일). 인프로세스/standalone 워커 양 배포 동작. (#11) `plans/52` §9.1+§13.1#9에 ack/incident 계측 후속(미구현) 명시 — MTTA/MTTR/사건전환율 null 사유. |
+| 2026-06-30 | D-048 | **Phase E3 — AI 메시지 심각도 보강(상향 전용) + 억제 매트릭스 강등 + TICKET 일배치 큐 + 메타모니터링/운영지표** (사용자 확정 §13.1 #2/#3/#7, 전부 옵트인·기본 off→E2 무변경). **(AI 심각도 §3.11·D-048.5)** 신규 domain `severity_signatures.py`(Plan51 A.1 결정적 시그니처 스캔, stdlib만)·`notification_policy.py` step1 `effective_severity=max(severity, ai_severity)`(보강 off면 ai 무시·이중안전)·`alarm.py` `AlarmAnalysisResult.ai_message_severity/ai_severity_reason`·`alarm_analyzer.py`(기존 단일 LLM 응답 재파싱, **추가 호출 없음**; `is_message_alarm`=condition_log 보유∧메트릭류 제외; `cand>event.severity`일 때만 채움)·`prompts/alarm_analyzer.py`. **상향 전용 불변식**: max로만 결합→AI 하향 불가, 강등/SUPPRESS 경로 부재(R-10), `ai_severity_escalate_only=True` 고정. 심각도3은 effective 기준 단락 PAGE 불변. **(매트릭스 강등 §3.2·D-048.8)** sev1×낮음 SUPPRESS→**DASHBOARD**(타 셀 불변). **(TICKET §7·D-048.9)** 신규 `ticket_queue.py`(JSONL graceful)·`alarm_notifier.py`(TICKET→큐+SSE, DASHBOARD→SSE, SUPPRESS→로그)·`alarm_worker.py`(`_build_ticket_queue` 주입, 워커는 bus 미주입→큐만)·`api/routes/alarm.py`(analyze 경로 ticket_queue/decision_store/alarm_bus 주입→API경로 SSE 실동작). **(메타모니터링/지표 §9)** `decision_store.aggregate` 확장(page/ticket/dashboard/suppress count·actionable_ratio·last_event_age, 기존 키 하위호환)+신규 `meta_alerts`(억제율>임계→high_suppress_ratio·무수신→no_events)·`GET /alarm/metrics`. **MTTA/MTTR/사건전환율은 ack/incident 계측 부재로 null+`unavailable_metrics` 사유 명시(환각 금지)**. config E3 필드(meta_alert_window/min_events·ticket_batch_queue_*)는 팀리드 추가. 검증(§11.1 baseline): tests/test_alarm **271 passed**(E2 196→+75: severity_signatures 37·escalate_only 6·ticket_queue·meta_monitoring·metrics·notifier_tier 등), arch_check --ci exit 0(error 0, severity_signatures stdlib만), AppConfig OK, 보강오프/게이트오프 회귀 0. 미구현: 워커→UI 실시간 SSE(Redis 브리지)·ack/incident 계측·E4(LLM 액션가능성)·E5(Advisory Enricher). |
+| 2026-06-29 | D-048 | **Phase E2 — 연쇄/인히비션/플래핑/스톰 억제 (의존성→인히비션→스톰→플래핑)**: 결정 파이프라인 step4~7을 결정적 규칙으로 구현(전부 옵트인, 기본 off→E1 무변경). (step4 의존성 §3.6) `polestar_noise_context.build_dependency_sql`+`fetch(collect_dependency=)`로 부모 `AVAIL_STATUS` 수집(독립 try/except — graceful 교훈 적용), parent≠0→자식 SUPPRESS·None(stale)→보수적 미억제. (step5 인히비션 §3.4) worker `_detect_inhibition`(scope=db_id\|server, 상위 심각도 활성+self-inhibition 금지)→SUPPRESS. (step6 플래핑 §3.7) 신규 domain `flapping.py`(Nagios 가중 %-state-change 1.0→1.5+히스테리시스 20/5%) + worker `_detect_flapping`(deque21+직전상태)→저심각도 SUPPRESS. (step7 스톰 §3.8) worker `_detect_storm`(사건창 deque, 대표 후 억제)→SUPPRESS. (§6.1) `_is_duplicate_fingerprint` severity별 `sev3_repeat_interval_seconds` 분리(기본 공통 4h). signals 12키의 parent_avail_status/flapping/storm 실채움. config 8플래그 추가(dependency_suppression/inhibition_enabled/+window/flapping_enabled/storm_grouping_enabled/+window/threshold/sev3_repeat). **심각도3 모든 단계 단락·PAGE 불변**(4기능 각각 테스트 고정). `AVAIL_DEPEND_RESOURCE_ID_2`는 향후 OR 확장(주석). 후속 교정: worker `_flap_states`/`_storm_window` 키 만료 sweep 추가(기존 `_firing_registry` 패턴 일관 — 단조 메모리 증가 차단). 검증(§11.1 baseline): tests/test_alarm **184 passed**(E1 92→+92: 단위 flapping21/dependency13 + 통합 dependency/inhibition/flapping/storm/sev3/회귀 41 + 기타), 기존 알람/graph 회귀 129 passed, arch_check --ci exit 0(error 0). 실 DB(도커 폴스타): 의존성 SQL 라이브 실행 OK(testdata avail_depend 전부 NULL→parent None 확인), parent≠0 SUPPRESS는 데이터 제약으로 mock 단위 검증. 미구현: E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4·E5 |
+| 2026-06-29 | D-048 | **noise_context graceful degradation 부분 반환 교정**(실 폴스타 도커 DB 검증으로 발견): `polestar_noise_context.fetch()`가 resource SQL과 noti SQL을 한 try 블록에 묶어, 실 폴스타에 `cmm_alarm_def` 부재로 noti 조회만 실패해도 실재하는 중요도/유지보수까지 전부 `unavailable`로 손실하던 결함을 **독립 try/except 분리**로 교정(연결 실패만 전체 unavailable, 한쪽 조회 실패는 타 신호 보존, 양쪽 실패 시 unavailable). 회귀 테스트 4종 추가(`TestPartialFailureGracefulDegradation`: noti만 실패→resource 보존·resource만 실패→noti 보존·양쪽 실패→unavailable·연결 실패→unavailable). 기존 mock(항상 성공)이 못 잡던 공백 보완. 검증: tests/test_alarm/test_polestar_noise_context 20 passed, arch_check --ci exit 0. 교훈은 CLAUDE.md Known Mistakes 등재 |
+| 2026-06-29 | D-048 | **알람 노이즈 캔슬링 4-티어 발송 게이트 (Plan 52 E1 MVP)**: 폴스타 알람을 결정적 규칙으로 PAGE/TICKET/DASHBOARD/SUPPRESS 라우팅(옵트인 `enable_noise_gate`, 기본 off). 신규 `notification_policy.py`(순수함수 결정 파이프라인+`NotificationDecision` signals 12키)·`polestar_noise_context.py`(중요도/유지보수/알림정책 고정SQL, graceful)·`decision_store.py`(JSONL 결정 감사+억제율)·`notification_gate.py`(노드). 수정 `alarm_graph.py`(AlarmState+배선 `history_enabled or enable_noise_gate`)·`alarm_context_enricher.py`(noise_context gather)·`alarm_notifier.py`(4-티어, decision=None→기존 경로 무변경)·`alarm_worker.py`(핑거프린트 dedup §6.1+min_severity 역할분리 §4.8: sev0·sev3 비드롭+self_heal 시드)·`config.py`(`NoiseGateConfig` 형제 필드 `cfg.noise_gate.*`, env `NOISE_`)·`.env.example`. **심각도3 절대 PAGE(억제 단락)·재현율 우선(수집실패→보수적 PAGE)·억제≠삭제(감사)·전 기능 옵트인**(D-035 확장, D-003 준수). **번호 정정**: Plan §13의 D-040은 2026-06-23 changelog가 D-039/D-040을 선점하여 충돌 → 다음 빈 번호 D-041→최종 D-048로 등재(상세 ## D-048 §번호 정정). 하위 D-048.1~.7(E2~E5/Plan55/Advisory Enricher 예약). 검증(§11.1 baseline): tests/test_alarm 92 passed(단위57+통합35)·기존 알람회귀 116·graph 30 passed, 노이즈 모듈 신규실패 0, arch_check --ci exit 0(error 0), 게이트오프 회귀 0. 미구현: E2(의존성/스톰/플래핑)·E3(AI심각도/메타모니터링/DASHBOARD SSE)·E4(LLM 액션가능성)·E5(Advisory Enricher) |
 | 2026-07-08 | D-061 | **은행존(b0) 서버명(등록명)·호스트명·IP 구분**: 은행존 폼필에서 "서버 이름"·"호스트네임"이 둘 다 등록명(name)으로 출력 — b0에 name/hostname 구분 부재 + EAV `Hostname` synonyms가 "서버명" 포함(혼동). 라이브 실측(`b0_query.py`): name=등록명(대개 `"<host> (<desc>)"`, 공백 유무 무관, **일부 서버는 name==hostname**), hostname/ipaddress 직접 컬럼=클린 값. → column_synonyms(서버명→name, 호스트명→hostname) 추가, EAV Hostname synonyms에서 "서버명" 제거, 호스트명·IP는 **직접 컬럼** 사용(name 파싱 금지 — name==hostname 서버 존재+구조 불규칙). name==hostname 서버는 두 칼럼 동일값이 정상(회귀 아님). column_synonyms는 field_mapper 단계라 LLM·D-038 빌더 경로 모두 적용. 수정: `polestar_b0.yaml`(단일 파일). 관련: D-058, 2026-06-10. 계획 `plans/58-...md` |
 | 2026-07-07 | D-060 | **오케스트레이터 vLLM SSL 검증 토글 — 인증서 없는 443 엔드포인트 대응**: 목적지 vLLM이 443을 listen하되 유효 SSL 인증서를 쓰지 않는 폐쇄망에서 `deep_agent`가 `semantic_router`로 잘못 폴백하던 문제. 근본 원인: `deep_agent.vllm_healthy`의 health check(`requests.get(base_url/models)`)가 `verify` 미지정(기본 True)이라 SSL 검증 실패→예외→`orchestrator_available=False`→`select_orchestration_backend`가 `semantic_router` 반환. health check만 고쳐도 실제 tool-calling 요청(`ChatOpenAI`)이 같은 이유로 실패하므로 **두 경로 모두** 처리. **결정**: `OrchestratorConfig.verify_ssl: bool = True`(안전 기본값) 노브 추가(`.env`의 `ORCHESTRATOR_VERIFY_SSL=false`로 비활성). (a) `vllm_healthy(..., verify_ssl=)` 파라미터 추가, `orchestrator_available`이 `config.orchestrator.verify_ssl` 전파. (b) `_create_orchestrator_vllm`이 `verify_ssl=False`면 `httpx.Client(verify=False)`/`httpx.AsyncClient(verify=False)`를 `http_client`/`http_async_client`로 주입(async ainvoke 경로 필수, sync도 대칭). 수정: `config.py`·`orchestration/deep_agent.py`·`llm.py`·`.env.example`. FabriX 워커(`fabrix_kbgenai.py`)는 이미 `verify=False`라 무관. 관련: D-037(트랙 B), D-053(엔진별 방언). |
 | 2026-07-02 | D-059 | **폼필 실패 시 침묵적 CSV 강등 금지 — 사유 노출**: 양식 채우기 불가 시 `_generate_document_file`이 None 반환→`output_file=None`→프론트가 Excel 링크 감추고 CSV만 노출(원인 은닉). → 실패 시 `{"reason":...}`(매핑 없음/양식·파일 없음/채우기 오류) 반환, `output_generator`가 사유를 최종 응답에 결정적 노출. 성공 판별=`file_bytes` 키. 수정: `output_generator.py`, `test_output_generator.py`. 관련: D-047(2026-06-26 진단 은닉 금지). 계획 `plans/58-...md` |

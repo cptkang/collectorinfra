@@ -1278,6 +1278,86 @@ header nav {
     color: var(--text);
 }
 
+/* ─── D-049: incident 확인(ack) 버튼 ─── */
+
+.alarm-ack-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.btn-alarm-ack {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 5px 14px;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-alarm-ack:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.btn-alarm-ack:disabled {
+    cursor: default;
+}
+
+.btn-alarm-ack--done {
+    color: var(--success);
+    background: var(--success-bg);
+    border-color: var(--success);
+}
+
+.alarm-ack-msg {
+    font-size: 0.72rem;
+    color: var(--error);
+}
+
+/* ─── Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 ─── */
+.alarm-feedback-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.alarm-feedback-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.btn-alarm-feedback {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 4px 12px;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-alarm-feedback:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.btn-alarm-feedback:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.alarm-feedback-msg {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
 /* ─── Plan 47: 패턴 분석 근거 표 + 시간대 막대 ─── */
 
 .alarm-evidence {

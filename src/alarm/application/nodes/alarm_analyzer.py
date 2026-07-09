@@ -11,7 +11,9 @@ LLM 응답 형식 (JSON):
         "recommended_action": "...",
         "pattern_type": "첫 발생" | "주기적" | "급증" | "산발적",
         "is_routine": true | false,
-        "pattern_analysis": "..."
+        "pattern_analysis": "...",
+        "ai_message_severity": 1 | 2 | 3 | null,   # E3: 메시지형 알람 상향 등급(상향 전용)
+        "ai_severity_reason": "..."                # E3: 상향 근거
     }
 
 패턴 필드(pattern_type/is_routine/pattern_analysis)는 `parsed.get()` 기본값으로
@@ -36,6 +38,7 @@ from src.alarm.domain.alarm import (
     AlarmHistoryStats,
     ProcessSnapshot,
 )
+from src.alarm.domain.severity_signatures import scan_signature_severity
 from src.alarm.prompts.alarm_analyzer import (
     ALARM_ANALYZER_SYSTEM_PROMPT,
     ALARM_ANALYZER_USER_TEMPLATE,
@@ -45,6 +48,41 @@ from src.llm import create_llm
 logger = logging.getLogger(__name__)
 
 _SEVERITY_LABELS = {1: "주의", 2: "경고", 3: "심각"}
+
+# E3: 임계형(메트릭) 자원 토큰 — resource_type에 포함되면 메시지형 알람에서 제외한다.
+_METRIC_RESOURCE_TOKENS = ("cpu", "memory", "disk", "filesystem", "network")
+
+
+def is_message_alarm(event: AlarmEvent) -> bool:
+    """메시지형 알람(condition_log 보유) 여부를 보수적으로 판정한다 (Plan 52 E3).
+
+    LogMonitor/보안/앱 로그처럼 conditionLog에 실제 로그 메시지가 담긴 알람에만
+    LLM 메시지 심각도 자문을 적용한다. CPU/메모리 등 수치 임계형(condition_log가 측정값)
+    자원은 제외한다 — resource_type에 메트릭 토큰이 포함되면 False.
+    """
+    if not (event.condition_log and event.condition_log.strip()):
+        return False
+    resource_type = (event.resource_type or "").lower()
+    if any(token in resource_type for token in _METRIC_RESOURCE_TOKENS):
+        return False
+    return True
+
+
+def _coerce_severity_int(value: Any) -> Optional[int]:
+    """LLM이 반환한 ai_message_severity 후보를 안전하게 1~3 정수로 변환한다.
+
+    문자열 숫자("3")·None·범위 밖·bool 등 비정상 입력은 None으로 처리한다(환각 방어).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 1 <= value <= 3 else None
+    if isinstance(value, str):
+        s = value.strip()
+        if s.isdigit():
+            v = int(s)
+            return v if 1 <= v <= 3 else None
+    return None
 
 
 def _extract_json(text: str) -> dict:
@@ -155,6 +193,33 @@ def _render_process_section(snapshot: ProcessSnapshot) -> str:
     return "\n".join(lines)
 
 
+def _render_feedback_section(examples: list[dict]) -> str:
+    """운영자 피드백 few-shot 예시를 LLM 프롬프트용 텍스트로 렌더링한다 (Plan 52 E4).
+
+    examples가 빈 리스트면 빈 문자열을 반환한다(섹션 미주입 — 프롬프트 규칙상
+    [운영자 피드백] 섹션이 없으면 LLM은 llm_actionability=null 을 출력한다).
+    각 예시는 `- [유효|노이즈] alarm_name (resource_name, pattern): note` 형식으로 렌더한다.
+    """
+    if not examples:
+        return ""
+    label_ko = {"valid": "유효", "noise": "노이즈"}
+    lines = ["[운영자 피드백 — 유사 과거 알람에 대한 운영자 라벨]"]
+    for ex in examples:
+        label = label_ko.get(ex.get("label", ""), str(ex.get("label", "")))
+        alarm_name = str(ex.get("alarm_name", ""))
+        meta = ", ".join(
+            p for p in (str(ex.get("resource_name", "")), str(ex.get("pattern", ""))) if p
+        )
+        note = str(ex.get("note", ""))
+        line = f"- [{label}] {alarm_name}"
+        if meta:
+            line += f" ({meta})"
+        if note:
+            line += f": {note}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """알람 이벤트를 LLM으로 분석하여 AlarmAnalysisResult를 반환한다.
 
@@ -182,6 +247,28 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
     if snapshot is not None:
         process_section = "\n" + _render_process_section(snapshot)
 
+    # Plan 52 E4: LLM 액션가능성 few-shot — 게이트 활성(enable_llm_actionability) + feedback_store
+    # 주입 시에만 유사 과거 피드백을 조회해 프롬프트에 주입한다. 추가 LLM 호출은 없으며(단일
+    # 응답 재파싱), off/미주입/실패면 빈 문자열 → 프롬프트 규칙상 LLM이 null을 출력한다(회귀 0).
+    feedback_section = ""
+    gate = getattr(cfg, "noise_gate", None)
+    if gate is not None and getattr(gate, "enable_llm_actionability", False):
+        fb_store = config["configurable"].get("feedback_store")
+        if fb_store is not None:
+            try:
+                pattern = stats.pre_classification if stats is not None else ""
+                examples = fb_store.find_similar(
+                    alarm_name=event.alarm_name,
+                    resource_name=event.resource_name,
+                    pattern=pattern or "",
+                    limit=getattr(gate, "actionability_fewshot_count", 3),
+                )
+                rendered = _render_feedback_section(examples)
+                if rendered:
+                    feedback_section = "\n" + rendered
+            except Exception:  # noqa: BLE001 — few-shot 없이 진행(graceful)
+                feedback_section = ""
+
     severity_label = _SEVERITY_LABELS.get(event.severity, "해소" if event.is_clear else "알 수 없음")
     user_msg = ALARM_ANALYZER_USER_TEMPLATE.format(
         db_id=event.db_id,
@@ -201,6 +288,7 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         condition_log=event.condition_log,
         history_section=history_section,
         process_section=process_section,
+        feedback_section=feedback_section,
     )
     try:
         response = await llm.ainvoke([
@@ -221,6 +309,36 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
             is_routine=is_routine if isinstance(is_routine, bool) else None,
             pattern_analysis=str(parsed.get("pattern_analysis") or ""),
         )
+
+        # Plan 52 E3: AI 메시지 심각도 보강(상향 전용) — 추가 LLM 호출 없이 기존 응답 재파싱.
+        # 결정적 시그니처 스캔(항상)과 LLM 메시지 해석(메시지형 알람만)을 결합하여, 후보가
+        # 원 severity보다 클 때만(상향) 채운다. 정책 계층이 max()로 결합하여 하향은 불가하다.
+        ai_sev: Optional[int] = None
+        ai_reason = ""
+        if cfg.noise_gate.enable_ai_severity_boost:
+            sig = scan_signature_severity(event.condition_log or "")
+            llm_sev = (
+                _coerce_severity_int(parsed.get("ai_message_severity"))
+                if is_message_alarm(event)
+                else None
+            )
+            cands = [
+                s for s in ((sig[0] if sig else None), llm_sev) if isinstance(s, int)
+            ]
+            cand = max(cands) if cands else None
+            if cand is not None and cand > event.severity:  # 상향일 때만
+                ai_sev = cand
+                ai_reason = (sig[1] if sig else "") or "LLM 메시지 해석"
+        result.ai_message_severity = ai_sev
+        result.ai_severity_reason = ai_reason
+
+        # Plan 52 E4: LLM 액션가능성 재파싱(추가 호출 없이 기존 응답 재파싱) — 게이트 활성 시에만.
+        # enable off면 필드가 기본 None/""로 남아 정책 계층(step 9)이 무시한다(이중 안전·회귀 0).
+        if gate is not None and getattr(gate, "enable_llm_actionability", False):
+            act = parsed.get("llm_actionability")
+            result.llm_actionability = act if act in ("actionable", "noise") else None
+            result.actionability_reason = str(parsed.get("actionability_reason") or "")
+
         logger.info(
             "알람 LLM 분석 완료: alarm_id=%s severity_label=%s pattern_type=%s",
             event.alarm_id,

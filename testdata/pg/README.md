@@ -18,10 +18,15 @@ cd testdata/pg
 docker compose up -d
 ```
 
-컨테이너가 시작되면 `init/` 디렉토리의 SQL 파일이 **자동 실행**됩니다:
-- `01_create_tables.sql` → 스키마 및 테이블 생성
-- `02_insert_cmm_resource.sql` → CMM_RESOURCE 데이터 (약 1,115행)
-- `03_insert_core_config_prop.sql` → CORE_CONFIG_PROP 데이터 (360행)
+컨테이너가 시작되면 `init/` 디렉토리의 SQL 파일이 **자동 실행**됩니다 (파일명 순):
+- `01_create_tables.sql` → 스키마 및 핵심 2개 테이블 생성
+- `02_insert_cmm_resource.sql` → CMM_RESOURCE 실데이터 (약 1,115행)
+- `03_insert_core_config_prop.sql` → CORE_CONFIG_PROP 실데이터 (360행)
+- `04_create_all_tables.sql` → 폴스타 전체 스키마 394개 테이블 생성 (`IF NOT EXISTS` — 위 2개 보존)
+- `05_insert_dummy_data.sql` → 나머지 392개 테이블 타입 기반 더미 데이터 (테이블당 5행, 실데이터 2개 테이블 제외)
+
+> `04`/`05`는 `sample/cleaned_tables.json`(폴스타 DB 스키마 덤프)에서 `testdata/pg/generate_full_schema.py`로 생성합니다.
+> 원본 JSON에 PK/FK·길이·실데이터 정보가 없어 컬럼명+타입만 반영하며, 더미는 순수 타입 기반이라 테이블 간 JOIN 정합성은 보장하지 않습니다.
 
 ### 2. 데이터 검증
 
@@ -87,10 +92,13 @@ INSERT문은 표준 SQL이므로 그대로 호환됩니다. PostgreSQL은 unquot
 ```
 testdata/pg/
 ├── docker-compose.yml          # PostgreSQL 컨테이너 정의
+├── generate_full_schema.py     # cleaned_tables.json → 04/05 SQL 생성기
 ├── init/                       # docker-entrypoint-initdb.d에 마운트
-│   ├── 01_create_tables.sql    # DDL (스키마 + 2개 테이블)
+│   ├── 01_create_tables.sql    # DDL (스키마 + 핵심 2개 테이블)
 │   ├── 02_insert_cmm_resource.sql  # CMM_RESOURCE INSERT (~1,115행)
-│   └── 03_insert_core_config_prop.sql  # CORE_CONFIG_PROP INSERT (360행)
+│   ├── 03_insert_core_config_prop.sql  # CORE_CONFIG_PROP INSERT (360행)
+│   ├── 04_create_all_tables.sql    # 폴스타 전체 394개 테이블 DDL (IF NOT EXISTS)
+│   └── 05_insert_dummy_data.sql    # 392개 테이블 타입 기반 더미 (테이블당 5행)
 ├── 04_verify_data.sql          # 데이터 검증 쿼리 (수동 실행)
 ├── 99_cleanup.sql              # 정리 스크립트 (수동 실행)
 └── README.md                   # 이 파일

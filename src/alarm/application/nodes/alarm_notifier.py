@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -23,10 +24,19 @@ from langchain_core.runnables import RunnableConfig
 from typing import Optional
 
 from src.alarm.domain.alarm import AlarmAnalysisResult, ProcessSnapshot
+from src.alarm.domain.notification_policy import (
+    TIER_DASHBOARD,
+    TIER_PAGE,
+    TIER_SUPPRESS,
+    TIER_TICKET,
+)
 
 logger = logging.getLogger(__name__)
 
 _SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
+
+# 발송하지 않는 티어(§7) — PAGE/미상 티어는 기존 발송 경로로 폴백(보수적, 재현율 우선)
+_NON_PAGE_TIERS = frozenset({TIER_TICKET, TIER_DASHBOARD, TIER_SUPPRESS})
 
 
 def _pattern_badge(result: AlarmAnalysisResult) -> str:
@@ -125,6 +135,31 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     cfg = config["configurable"]["app_config"]
     process_snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
 
+    # ── Plan 52: 4-티어 라우팅 (게이트 활성 시에만 decision 존재) ──
+    # decision is None(게이트 off) → 아래 기존 발송 경로 그대로(무변경).
+    # decision 존재 + TICKET/DASHBOARD/SUPPRESS → 발송하지 않고 로그만(감사는 gate가 기록).
+    # decision 존재 + PAGE(또는 미상 티어) → 아래 기존 발송 경로로 폴백(보수적 PAGE).
+    decision = state.get("notification_decision")
+    if decision is not None and decision.tier in _NON_PAGE_TIERS:
+        configurable = (config or {}).get("configurable", {})
+        ticket_queue = configurable.get("ticket_queue")
+        alarm_bus = configurable.get("alarm_bus")
+        # (E3 후속) 워커 경로 SSE Redis pub/sub 발행기 — alarm_bus 미주입 시에만 사용.
+        sse_publisher = configurable.get("sse_publisher")
+        await _route_non_page_tier(
+            result, decision, ticket_queue, alarm_bus, sse_publisher
+        )
+        return {"analysis_result": result}
+
+    # ── D-049: PAGE 결정 시 incident open 이벤트 발행 ──
+    # PAGE만 incident(TICKET/DASHBOARD/SUPPRESS는 위에서 분기·종료) → 전환율 분모=page_count 정합.
+    # incident_publisher 미주입(트래커 off) 시 발행 스킵 → 회귀 0. 발행은 graceful(아래 workb 무차단).
+    if decision is not None and decision.tier == TIER_PAGE:
+        incident_publisher = (config or {}).get("configurable", {}).get(
+            "incident_publisher"
+        )
+        await _publish_incident_open(result, decision, incident_publisher)
+
     for channel in result.notification_channels:
         try:
             if channel == "workb":
@@ -155,6 +190,175 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             )
 
     return {"analysis_result": result}
+
+
+def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
+    """티어 라우팅용 SSE 이벤트 payload를 생성한다(§7 · Phase E3).
+
+    기존 `/alarm/notifications/stream`·analyze 경로의 publish 형식(alarm 필드 + 분석 결과)을
+    그대로 따르고, 티어/근거(tier·tier_reason)를 추가해 일관성을 유지한다.
+    """
+    ev = result.alarm_event
+    return {
+        "type": "alarm_notification",
+        "alarm_id": ev.alarm_id,
+        "severity": ev.severity,
+        "severity_label": result.severity_label,
+        "alarm_name": ev.alarm_name,
+        "db_id": ev.db_id,
+        "server_name": ev.server_name,
+        "hostname": ev.hostname,
+        "ip_address": ev.ip_address,
+        "resource_type": ev.resource_type,
+        "resource_name": ev.resource_name,
+        "alarm_status": ev.alarm_status,
+        "summary": result.summary,
+        "probable_cause": result.probable_cause,
+        "recommended_action": result.recommended_action,
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
+        # ── Phase E3: 4-티어 라우팅 메타데이터 ──
+        "tier": decision.tier,
+        "tier_reason": decision.reason,
+    }
+
+
+async def _route_non_page_tier(
+    result: AlarmAnalysisResult,
+    decision,  # noqa: ANN001 — NotificationDecision
+    ticket_queue,  # noqa: ANN001 — TicketBatchQueue | None (덕 타이핑)
+    alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None (덕 타이핑)
+    sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None (덕 타이핑)
+) -> None:
+    """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 라우팅한다(발송 안 함, §7 · Phase E3).
+
+    감사 기록(tier·reason·signals)은 notification_gate가 decision_store에 이미 적재했으므로
+    여기서는 큐 적재/SSE만 수행한다(중복 적재 금지). 모든 부수효과는 graceful —
+    큐/SSE 실패는 warning 후 무시하여 파이프라인을 막지 않는다.
+
+    - TICKET: 일배치 요약 큐 적재(ticket_queue 있으면) + DASHBOARD와 동일하게 SSE 표시.
+    - DASHBOARD: SSE(alarm_bus 또는 sse_publisher 있으면)로 UI에만 표시.
+    - SUPPRESS: 발송·큐·SSE 모두 없음 — 로그만.
+
+    alarm_bus는 API 경로(app.state.alarm_bus)에서만 주입된다. 워커 경로(cross-process)는
+    alarm_bus를 공유할 수 없어 대신 sse_publisher(Redis pub/sub 브리지, E3 후속·D-048.9)를
+    주입받는다. 둘 다 None이면 로그 폴백한다(워커 정상 동작).
+    """
+    alarm_id = result.alarm_event.alarm_id
+    if decision.tier == TIER_TICKET:
+        if ticket_queue is not None:
+            try:
+                ticket_queue.enqueue(decision, alarm_id=alarm_id)
+            except Exception:  # noqa: BLE001 — 큐 적재 실패가 파이프라인을 막지 않는다
+                logger.warning("TICKET 일배치 큐 적재 실패(무시): alarm_id=%s", alarm_id)
+        await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
+        logger.info(
+            "TICKET(저우선 — 일배치 큐 적재 + SSE 표시, 감사 기록됨): alarm_id=%s reason=%s",
+            alarm_id,
+            decision.reason,
+        )
+    elif decision.tier == TIER_DASHBOARD:
+        await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
+        logger.info(
+            "DASHBOARD(UI 표시만 — SSE, 발송 안 함): alarm_id=%s reason=%s",
+            alarm_id,
+            decision.reason,
+        )
+    else:  # TIER_SUPPRESS
+        logger.info(
+            "SUPPRESS(미통보 — 감사 기록만): alarm_id=%s reason=%s",
+            alarm_id,
+            decision.reason,
+        )
+
+
+async def _publish_tier_sse(
+    result: AlarmAnalysisResult,
+    decision,  # noqa: ANN001 — NotificationDecision
+    alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None
+    sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None
+) -> None:
+    """티어 SSE 이벤트를 publish한다(대상 없으면 로그 폴백, 실패는 graceful).
+
+    이중 발행 방지: API 경로의 alarm_bus를 우선 사용하고, 미주입(워커 경로)일 때만
+    sse_publisher(Redis 브리지)를 사용한다 — 둘 중 하나만 호출된다(E3 후속·D-048.9).
+    """
+    target = alarm_bus if alarm_bus is not None else sse_publisher
+    if target is None:
+        logger.info(
+            "SSE 미주입(로그 폴백): alarm_id=%s tier=%s",
+            result.alarm_event.alarm_id,
+            decision.tier,
+        )
+        return
+    try:
+        await target.publish(_tier_sse_payload(result, decision))
+    except Exception:  # noqa: BLE001 — SSE 실패가 파이프라인을 막지 않는다
+        logger.warning(
+            "티어 SSE publish 실패(무시): alarm_id=%s tier=%s",
+            result.alarm_event.alarm_id,
+            decision.tier,
+        )
+
+
+def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
+    """incident open 이벤트 payload를 생성한다(§5 양측 합의 스키마 + 카드 표시필드, D-049).
+
+    재발행 SSE 카드(app.js renderAlarmMessage)가 빈 칸 없이 렌더되도록 `_tier_sse_payload`의
+    전체 표시필드(severity/severity_label/alarm_name/.../pattern_analysis)를 포함하고,
+    incident 식별필드(type·fingerprint·priority·ts)를 합친다. process_snapshot/history_stats는
+    SSE 직렬화 부담으로 `_tier_sse_payload`와 동일하게 제외한다(카드의 해당 섹션은 생략됨).
+    """
+    ev = result.alarm_event
+    return {
+        # ── incident 식별필드 ──
+        "type": "open",
+        "fingerprint": decision.fingerprint,
+        "priority": str(decision.priority),
+        "ts": datetime.now().isoformat(),
+        # ── 카드 표시필드 (_tier_sse_payload 미러) ──
+        "alarm_id": ev.alarm_id,
+        "severity": ev.severity,
+        "severity_label": result.severity_label,
+        "alarm_name": ev.alarm_name,
+        "db_id": ev.db_id,
+        "server_name": ev.server_name,
+        "hostname": ev.hostname,
+        "ip_address": ev.ip_address,
+        "resource_type": ev.resource_type,
+        "resource_name": ev.resource_name,
+        "alarm_status": ev.alarm_status,
+        "summary": result.summary,
+        "probable_cause": result.probable_cause,
+        "recommended_action": result.recommended_action,
+        "pattern_type": result.pattern_type,
+        "is_routine": result.is_routine,
+        "pattern_analysis": result.pattern_analysis,
+        "tier": decision.tier,
+    }
+
+
+async def _publish_incident_open(
+    result: AlarmAnalysisResult,
+    decision,  # noqa: ANN001 — NotificationDecision
+    incident_publisher=None,  # noqa: ANN001 — RedisIncidentPublisher | None (덕 타이핑)
+) -> None:
+    """PAGE 결정 시 incident open 이벤트를 발행한다(미주입·실패는 graceful).
+
+    incident_publisher 미주입(트래커 off) 시 발행을 스킵한다 → 회귀 0.
+    notifier(application)는 redis를 직접 import하지 않고 주입된 발행기를 덕타이핑 호출한다.
+    발행 실패가 workb 발송을 막지 않는다(graceful degradation).
+    """
+    if incident_publisher is None:
+        return
+    try:
+        await incident_publisher.publish(_incident_open_payload(result, decision))
+    except Exception:  # noqa: BLE001 — incident 발행 실패가 발송을 막지 않는다
+        logger.warning(
+            "incident open 발행 실패(무시): alarm_id=%s",
+            result.alarm_event.alarm_id,
+        )
 
 
 async def _send_workb(

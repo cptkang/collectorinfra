@@ -679,4 +679,109 @@
             if (alertsLoading) alertsLoading.classList.remove("active");
         }
     }
+
+    // --- 열린 사건(incident) — D-049 ---
+
+    var incidentsBody = document.getElementById("incidentsBody");
+    var incidentsTable = document.getElementById("incidentsTable");
+    var incidentsLoading = document.getElementById("incidentsLoading");
+    var incidentsEmpty = document.getElementById("incidentsEmpty");
+    var refreshIncidentsBtn = document.getElementById("refreshIncidentsBtn");
+
+    var INCIDENT_SEVERITY_LABELS = { 0: "해소", 1: "주의", 2: "경고", 3: "심각" };
+
+    if (refreshIncidentsBtn) {
+        refreshIncidentsBtn.addEventListener("click", loadIncidents);
+    }
+
+    document.querySelectorAll('.tab[data-tab="incidents"]').forEach(function (tab) {
+        tab.addEventListener("click", loadIncidents);
+    });
+
+    function formatElapsed(createdAt) {
+        if (!createdAt) return "-";
+        var start = new Date(createdAt).getTime();
+        if (isNaN(start)) return "-";
+        var sec = Math.floor((Date.now() - start) / 1000);
+        if (sec < 0) sec = 0;
+        if (sec < 60) return sec + "초";
+        if (sec < 3600) return Math.floor(sec / 60) + "분";
+        if (sec < 86400) return Math.floor(sec / 3600) + "시간";
+        return Math.floor(sec / 86400) + "일";
+    }
+
+    async function loadIncidents() {
+        if (!incidentsBody) return;
+        if (incidentsLoading) incidentsLoading.classList.add("active");
+        if (incidentsTable) incidentsTable.style.display = "none";
+        if (incidentsEmpty) incidentsEmpty.style.display = "none";
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/alarm/incidents?status=open&limit=100");
+            if (!response.ok) {
+                if (incidentsLoading) incidentsLoading.classList.remove("active");
+                showError("열린 사건을 불러오지 못했습니다.");
+                return;
+            }
+            var data = await response.json();
+            renderIncidents((data && data.incidents) || []);
+        } catch (err) {
+            if (incidentsLoading) incidentsLoading.classList.remove("active");
+            showError("열린 사건 로드 실패");
+        }
+    }
+
+    function renderIncidents(incidents) {
+        incidentsBody.innerHTML = "";
+        if (incidents.length === 0) {
+            if (incidentsLoading) incidentsLoading.classList.remove("active");
+            if (incidentsEmpty) incidentsEmpty.style.display = "block";
+            return;
+        }
+        incidents.forEach(function (inc) {
+            var tr = document.createElement("tr");
+            var time = inc.created_at ? inc.created_at.substring(0, 19) : "-";
+            var sevLabel = INCIDENT_SEVERITY_LABELS[inc.severity] || String(inc.severity);
+            var sevColor = inc.severity >= 3 ? "var(--error)" : inc.severity === 2 ? "#f59e0b" : "var(--text-muted)";
+            tr.innerHTML =
+                "<td style='font-size:0.75rem;white-space:nowrap'>" + escapeHtml(time) + "</td>" +
+                "<td style='font-size:0.75rem'>" + escapeHtml(formatElapsed(inc.created_at)) + "</td>" +
+                "<td style='font-size:0.8rem'>" + escapeHtml(inc.server_name || "-") +
+                    "<span style='color:var(--text-muted);font-size:0.7rem'> (" + escapeHtml(inc.db_id || "-") + ")</span></td>" +
+                "<td style='font-size:0.8rem'>" + escapeHtml(inc.alarm_name || "-") + "</td>" +
+                "<td><span style='font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:3px;color:" + sevColor +
+                    ";background:color-mix(in srgb," + sevColor + " 15%,transparent)'>" + escapeHtml(sevLabel) + "</span></td>" +
+                "<td style='font-size:0.75rem'>" + escapeHtml(inc.tier || "-") + "</td>" +
+                "<td><button class='btn btn-secondary btn-sm incident-ack-btn' data-iid='" + escapeHtml(String(inc.id)) +
+                    "' style='font-size:0.7rem;padding:3px 10px'>확인</button></td>";
+            incidentsBody.appendChild(tr);
+        });
+        incidentsBody.querySelectorAll(".incident-ack-btn").forEach(function (btn) {
+            btn.addEventListener("click", function () { ackIncident(btn.dataset.iid, btn); });
+        });
+        if (incidentsLoading) incidentsLoading.classList.remove("active");
+        if (incidentsTable) incidentsTable.style.display = "table";
+    }
+
+    async function ackIncident(incidentId, btn) {
+        if (btn) btn.disabled = true;
+        try {
+            var response = await apiRequest("POST", "/api/v1/alarm/incidents/" + incidentId + "/ack");
+            if (!response.ok) {
+                showError("확인 처리 실패");
+                if (btn) btn.disabled = false;
+                return;
+            }
+            var res = await response.json();
+            if (res && res.acked) {
+                showSuccess("사건 #" + incidentId + " 확인됨");
+            } else {
+                showError("이미 확인/해소된 사건입니다.");
+            }
+            loadIncidents();
+        } catch (err) {
+            showError("확인 처리 실패");
+            if (btn) btn.disabled = false;
+        }
+    }
 })();

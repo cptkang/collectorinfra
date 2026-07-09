@@ -2034,6 +2034,25 @@
                 '</div>';
         }
 
+        // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
+        var ackHtml = "";
+        if (data.incident_id) {
+            ackHtml =
+                '<div class="alarm-section alarm-ack-section">' +
+                    '<button type="button" class="btn-alarm-ack">확인</button>' +
+                    '<span class="alarm-ack-msg"></span>' +
+                '</div>';
+        }
+
+        // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 — incident 여부와 무관하게 항상 표시.
+        var feedbackHtml =
+            '<div class="alarm-section alarm-feedback-section">' +
+                '<span class="alarm-feedback-label">이 알람이 유용했나요?</span>' +
+                '<button type="button" class="btn-alarm-feedback" data-label="valid">유효</button>' +
+                '<button type="button" class="btn-alarm-feedback" data-label="noise">노이즈</button>' +
+                '<span class="alarm-feedback-msg"></span>' +
+            '</div>';
+
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
@@ -2058,6 +2077,8 @@
                     '</div>' +
                     processHtml +
                     patternHtml +
+                    ackHtml +
+                    feedbackHtml +
                 '</div>' +
             '</div>';
 
@@ -2065,7 +2086,97 @@
             chatWelcome.classList.add("hidden");
         }
         chatMessages.appendChild(el);
+
+        // D-049: ack 버튼 이벤트 바인딩(closure로 incident_id 캡처 — 인라인 onclick 미사용)
+        if (data.incident_id) {
+            var ackBtn = el.querySelector(".btn-alarm-ack");
+            var ackMsg = el.querySelector(".alarm-ack-msg");
+            if (ackBtn) {
+                bindIncidentAck(ackBtn, ackMsg, data.incident_id);
+            }
+        }
+
+        // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
+        bindAlarmFeedback(el, data);
+
         scrollToBottomIfSticky();
+    }
+
+    // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 핸들러를 바인딩한다.
+    // POST /api/v1/alarm/feedback → {recorded}. 성공 시 버튼 비활성 + "피드백 감사합니다",
+    // 503(비활성)이면 "피드백 비활성", 그 외 실패면 "전송 실패"(카드 유지·재시도 가능 — graceful).
+    function bindAlarmFeedback(el, data) {
+        var buttons = el.querySelectorAll(".btn-alarm-feedback");
+        var msgEl = el.querySelector(".alarm-feedback-msg");
+        buttons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var label = btn.dataset.label;
+                buttons.forEach(function (b) { b.disabled = true; });
+                if (msgEl) msgEl.textContent = "";
+                fetch("/api/v1/alarm/feedback", {
+                    method: "POST",
+                    headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                    body: JSON.stringify({
+                        alarm_name: data.alarm_name,
+                        resource_name: data.resource_name,
+                        pattern_type: data.pattern_type,
+                        severity: data.severity,
+                        label: label
+                    })
+                })
+                    .then(function (resp) {
+                        if (resp.status === 503) throw new Error("disabled");
+                        if (!resp.ok) throw new Error("HTTP " + resp.status);
+                        return resp.json();
+                    })
+                    .then(function () {
+                        if (msgEl) msgEl.textContent = "피드백 감사합니다";
+                    })
+                    .catch(function (err) {
+                        buttons.forEach(function (b) { b.disabled = false; });
+                        if (msgEl) {
+                            msgEl.textContent =
+                                (err && err.message === "disabled") ? "피드백 비활성" : "전송 실패";
+                        }
+                    });
+            });
+        });
+    }
+
+    // D-049: incident 확인(ack) 버튼 핸들러를 바인딩한다.
+    // POST /api/v1/alarm/incidents/{id}/ack → {acked, incident_id}.
+    // 성공(acked) 시 "확인됨 · HH:MM:SS" 비활성, 이미 처리됨(acked=false)이면 "이미 확인됨",
+    // 실패(네트워크/503)면 옆 에러 텍스트 + 재시도 가능(카드 자체는 유지 — graceful).
+    function bindIncidentAck(btn, msgEl, incidentId) {
+        btn.addEventListener("click", function () {
+            btn.disabled = true;
+            if (msgEl) msgEl.textContent = "";
+            fetch("/api/v1/alarm/incidents/" + encodeURIComponent(incidentId) + "/ack", {
+                method: "POST",
+                headers: getAuthHeaders()
+            })
+                .then(function (resp) {
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    return resp.json();
+                })
+                .then(function (result) {
+                    btn.classList.add("btn-alarm-ack--done");
+                    btn.disabled = true;
+                    if (result && result.acked) {
+                        var now = new Date();
+                        var hh = String(now.getHours()).padStart(2, "0");
+                        var mm = String(now.getMinutes()).padStart(2, "0");
+                        var ss = String(now.getSeconds()).padStart(2, "0");
+                        btn.textContent = "확인됨 · " + hh + ":" + mm + ":" + ss;
+                    } else {
+                        btn.textContent = "이미 확인됨";
+                    }
+                })
+                .catch(function () {
+                    btn.disabled = false;
+                    if (msgEl) msgEl.textContent = "확인 실패 · 다시 시도";
+                });
+        });
     }
 
     function connectAlarmStream() {

@@ -18,7 +18,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -305,6 +305,103 @@ class AlarmTestResponse(BaseModel):
     processing_time_ms: float
 
 
+class AlarmMetricsResponse(BaseModel):
+    """알람 노이즈 게이트 운영 지표 (Plan 52 §9 · Phase E3).
+
+    decision_store(JSONL 감사)에서 산출 가능한 지표만 노출한다. ack/해소상관 계측이 없는
+    MTTA/MTTR/사건전환율은 null로 두고 unavailable_metrics에 사유를 명시한다(환각 금지).
+    """
+
+    window_seconds: int = Field(description="집계 창(초)")
+    total: int = Field(description="창 내 결정 총건수")
+    by_tier: dict[str, int] = Field(description="티어별 건수")
+    page_count: int
+    ticket_count: int
+    dashboard_count: int
+    suppress_count: int
+    actionable_ratio: float = Field(description="액션가능 비율 = (page+ticket)/total")
+    suppress_ratio: float = Field(description="억제율 = suppress/total")
+    last_event_age_seconds: Optional[float] = Field(
+        default=None, description="최근 결정 이후 경과(초). 기록 없으면 null"
+    )
+    meta_alerts: list[dict[str, Any]] = Field(
+        description="억제기 메타경보(high_suppress_ratio/no_events). 정상이면 빈 배열"
+    )
+    mtta_seconds: Optional[float] = Field(
+        default=None,
+        description="평균 확인 시간 = AVG(acked_at-created_at). 트래커 off면 null",
+    )
+    mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "하위호환 — incident_mttr_seconds와 동일 값(paged incident 운영자 MTTR). "
+            "트래커 off면 null. auto_recovery_mttr_seconds(self-heal 편향지표)와 혼동 금지"
+        ),
+    )
+    incident_mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "paged incident 운영자 MTTR = AVG(resolved_at-created_at) (PG). 트래커 off면 null"
+        ),
+    )
+    auto_recovery_mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "자가복구(self-heal) 소요시간 평균 — **sev1..suppress_max 한정·sev3 제외 편향 부분지표** "
+            "(decision_store JSONL). incident_mttr_seconds와 다름. 기록 없으면 null"
+        ),
+    )
+    incident_conversion_rate: Optional[float] = Field(
+        default=None,
+        description="사건전환율 = incidents/page_count (window SQL). 트래커 off면 null",
+    )
+    open_incident_count: int = Field(
+        default=0, description="현재 열린(open) incident 수. 트래커 off면 0"
+    )
+    unavailable_metrics: dict[str, str] = Field(
+        description="계산 불가 지표와 사유. 트래커 활성 시 해당 키 제거됨"
+    )
+
+
+class IncidentAckResponse(BaseModel):
+    """incident ack 응답 (D-049)."""
+
+    acked: bool = Field(description="ack 성공 여부(이미 ack/resolved면 False)")
+    incident_id: int = Field(description="확인 대상 incident id")
+
+
+class IncidentListResponse(BaseModel):
+    """열린 incident 목록 응답 (D-049)."""
+
+    incidents: list[dict[str, Any]] = Field(
+        description="열린 incident 목록(트래커 off면 빈 배열)"
+    )
+
+
+class AlarmFeedbackRequest(BaseModel):
+    """운영자 알람 피드백 요청 (Plan 52 E4).
+
+    운영자가 알람 카드에서 매긴 라벨(유효/노이즈)을 few-shot 저장소에 적재한다.
+    이 피드백은 이후 유사 알람의 LLM 액션가능성 자문(보조 입력)에만 쓰이며, 발송 판단은
+    결정적 규칙이 내린다(승격 우선·재현율 우선).
+    """
+
+    alarm_name: str = Field(description="${alarmName} — 피드백 대상 알람 이름")
+    label: str = Field(description="운영자 라벨 — 'noise'(노이즈) | 'valid'(유효)")
+    resource_name: str = Field(default="", description="${resourceName} — 자원 이름(선택)")
+    pattern_type: str = Field(default="", description="패턴 분류(첫 발생/주기적/급증/산발적, 선택)")
+    server_name: str = Field(default="", description="${platformName} — 서버명(선택)")
+    db_id: str = Field(default="", description="dbId — 폴스타 인스턴스 식별자(선택)")
+    note: str = Field(default="", description="운영자 메모(선택)")
+    severity: Optional[int] = Field(default=None, description="심각도(선택)")
+
+
+class AlarmFeedbackResponse(BaseModel):
+    """운영자 알람 피드백 응답 (Plan 52 E4)."""
+
+    recorded: bool = Field(description="피드백 적재 성공 여부")
+
+
 # ─── 유틸 함수 ───────────────────────────────────────────────────────────────
 
 _SEVERITY_LABELS = {0: "해소", 1: "주의", 2: "경고", 3: "심각"}
@@ -553,6 +650,38 @@ def _build_notification_preview(
     return preview
 
 
+def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
+    """게이트 활성 시 notifier/gate가 쓰는 부가 의존성을 묶어 반환한다 (Plan 52 E3).
+
+    enable_noise_gate=False(기본)면 빈 dict — 기존 발송 경로 무변경(회귀 0).
+    활성 시 TICKET 일배치 큐·감사 저장소·SSE 버스를 주입한다. 워커 경로와 달리 API 경로는
+    app.state.alarm_bus를 주입할 수 있어 DASHBOARD/TICKET SSE가 실제로 동작한다.
+    """
+    if not config.noise_gate.enable_noise_gate:
+        return {}
+    from src.alarm.infrastructure.decision_store import DecisionStore
+    from src.alarm.infrastructure.feedback_store import FeedbackStore
+    from src.alarm.infrastructure.ticket_queue import TicketBatchQueue
+
+    ng = config.noise_gate
+    return {
+        "decision_store": DecisionStore(ng.decision_store_path, ng.decision_store_enabled),
+        "ticket_queue": TicketBatchQueue(
+            ng.ticket_batch_queue_path, ng.ticket_batch_queue_enabled
+        ),
+        # (E4) 운영자 피드백 few-shot 저장소 — enable_llm_actionability off면 None → analyzer는
+        # 피드백 섹션 없이 진행(회귀 0).
+        "feedback_store": (
+            FeedbackStore(ng.feedback_store_path, ng.feedback_store_enabled)
+            if getattr(ng, "enable_llm_actionability", False)
+            else None
+        ),
+        "alarm_bus": getattr(request.app.state, "alarm_bus", None),
+        # (D-049) PAGE 결정 시 incident open 발행기 — 트래커 off면 app.state에 None.
+        "incident_publisher": getattr(request.app.state, "incident_publisher", None),
+    }
+
+
 # ─── 엔드포인트 ───────────────────────────────────────────────────────────────
 
 @router.post(
@@ -641,7 +770,9 @@ async def analyze_alarm_test(
         "analysis_result": None,
         "error": None,
     }
-    lc_config = {"configurable": {"app_config": config}}
+    lc_config = {
+        "configurable": {"app_config": config, **_alarm_extra_configurable(request, config)}
+    }
 
     try:
         result_state = await alarm_analyzer_node(state, lc_config)
@@ -715,7 +846,21 @@ async def analyze_alarm_test(
     if not body.dry_run and body.send_notification:
         from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
 
-        notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
+        # result_state는 노드의 업데이트 dict({"analysis_result": ...})만 담으므로
+        # 게이트/notifier가 쓰는 alarm_event·history_stats는 원본 state에서 병합한다.
+        notifier_state = {
+            **state, **result_state, "process_snapshot": process_snapshot, "error": None
+        }
+        # Plan 52 E3: 게이트 활성 시 4-티어 판단을 산출해 notifier에 전달한다
+        # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
+        # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
+        if config.noise_gate.enable_noise_gate:
+            from src.alarm.application.nodes.notification_gate import (
+                notification_gate_node,
+            )
+
+            gate_out = await notification_gate_node(notifier_state, lc_config)
+            notifier_state = {**notifier_state, **gate_out}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")
@@ -779,6 +924,185 @@ async def alarm_notifications_stream(request: Request) -> StreamingResponse:
             bus.unsubscribe(q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ─── 운영 지표 / 메타모니터링 엔드포인트 ─────────────────────────────────────
+
+@router.get(
+    "/alarm/metrics",
+    response_model=AlarmMetricsResponse,
+    summary="알람 노이즈 게이트 운영 지표",
+    description=(
+        "발송 판단 감사(decision_store)에서 티어별 건수·억제율·액션가능 비율과 "
+        "억제기 메타경보(억제율 임계 초과/이벤트 무수신)를 산출해 반환합니다.<br/>"
+        "MTTA/MTTR/사건전환율은 ack·해소상관 계측이 없어 null이며 unavailable_metrics에 "
+        "사유를 명시합니다(환각 금지)."
+    ),
+    tags=["alarm"],
+)
+async def alarm_metrics(
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> AlarmMetricsResponse:
+    """decision_store 집계 + 메타경보를 운영 지표 JSON으로 반환한다 (Plan 52 §9)."""
+    from src.alarm.infrastructure.decision_store import DecisionStore
+
+    config = request.app.state.config
+    ng = config.noise_gate
+    window = ng.meta_alert_window_seconds
+
+    # 읽기 전용 — 파일이 있으면 집계, 없으면 빈 집계(전 키 포함)
+    store = DecisionStore(ng.decision_store_path)
+    agg = store.aggregate(window_seconds=window)
+    meta = store.meta_alerts(
+        window_seconds=window,
+        suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
+        min_events=ng.meta_alert_min_events,
+    )
+
+    # ── D-049: incident_store 주입 시 MTTA/incident_mttr/사건전환율 채움 ──
+    # 트래커 off(store=None)면 기존 null + unavailable_metrics 동작 유지(회귀 0).
+    incident_store = getattr(request.app.state, "incident_store", None)
+    mtta_seconds: Optional[float] = None
+    incident_mttr_seconds: Optional[float] = None
+    incident_conversion_rate: Optional[float] = None
+    open_incident_count = 0
+    # 트래커 off — 기존 동작 유지(회귀 0): MTTA/MTTR/사건전환율 null + reason 사유 노출
+    unavailable_metrics: dict[str, str] = {
+        "reason": "ack/incident 계측 미활성(NOISE_INCIDENT_TRACKING_ENABLED=false)",
+    }
+    if incident_store is not None:
+        m = await incident_store.metrics(
+            window_seconds=window, page_count=agg["page_count"]
+        )
+        mtta_seconds = m["mtta_seconds"]
+        incident_mttr_seconds = m["incident_mttr_seconds"]
+        incident_conversion_rate = m["incident_conversion_rate"]
+        open_incident_count = m["open_count"]
+        # 계측 활성 — 해당 지표 사유를 제거(채워진 값으로 노출)
+        unavailable_metrics = {}
+
+    return AlarmMetricsResponse(
+        window_seconds=window,
+        total=agg["total"],
+        by_tier=agg["by_tier"],
+        page_count=agg["page_count"],
+        ticket_count=agg["ticket_count"],
+        dashboard_count=agg["dashboard_count"],
+        suppress_count=agg["suppress_count"],
+        actionable_ratio=agg["actionable_ratio"],
+        suppress_ratio=agg["suppress_ratio"],
+        last_event_age_seconds=agg["last_event_age_seconds"],
+        meta_alerts=meta,
+        mtta_seconds=mtta_seconds,
+        # 하위호환 — mttr_seconds는 incident_mttr_seconds와 동일 값(운영자 MTTR)
+        mttr_seconds=incident_mttr_seconds,
+        incident_mttr_seconds=incident_mttr_seconds,
+        # self-heal 편향 부분지표(sev3 제외) — incident_mttr와 명확히 구분
+        auto_recovery_mttr_seconds=agg["auto_recovery_mttr_seconds"],
+        incident_conversion_rate=incident_conversion_rate,
+        open_incident_count=open_incident_count,
+        unavailable_metrics=unavailable_metrics,
+    )
+
+
+# ─── incident ack / 조회 엔드포인트 (D-049) ──────────────────────────────────
+
+@router.post(
+    "/alarm/incidents/{incident_id}/ack",
+    response_model=IncidentAckResponse,
+    summary="incident 확인(ack)",
+    description=(
+        "열린 incident를 확인(ack) 상태로 전이합니다(식별키=incident id, MTTA 계측).<br/>"
+        "incident 계측이 비활성(NOISE_INCIDENT_TRACKING_ENABLED=false)이면 503을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def ack_incident(
+    incident_id: int,
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> IncidentAckResponse:
+    """incident를 ack 처리한다(트래커 비활성 시 503)."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    store = getattr(request.app.state, "incident_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="incident tracking 비활성")
+
+    acked_by = current_user.get("sub") or current_user.get("name") or "operator"
+    ok = await store.ack(
+        incident_id=incident_id,
+        acked_at=_dt.now(tz=_tz.utc),
+        acked_by=acked_by,
+    )
+    return IncidentAckResponse(acked=ok, incident_id=incident_id)
+
+
+@router.get(
+    "/alarm/incidents",
+    response_model=IncidentListResponse,
+    summary="열린 incident 목록",
+    description=(
+        "열린(open) incident 목록을 최신순으로 반환합니다.<br/>"
+        "incident 계측이 비활성이면 빈 배열을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def list_incidents(
+    request: Request,
+    status: str = "open",
+    limit: int = 100,
+    current_user: dict = Depends(require_user),
+) -> IncidentListResponse:
+    """열린 incident 목록을 반환한다(트래커 비활성 시 빈 배열)."""
+    store = getattr(request.app.state, "incident_store", None)
+    if store is None:
+        return IncidentListResponse(incidents=[])
+    incidents = await store.list_open(limit=limit)
+    return IncidentListResponse(incidents=incidents)
+
+
+# ─── 운영자 피드백 엔드포인트 (Plan 52 E4) ───────────────────────────────────
+
+@router.post(
+    "/alarm/feedback",
+    response_model=AlarmFeedbackResponse,
+    summary="운영자 알람 피드백(유효/노이즈)",
+    description=(
+        "운영자가 알람 카드에서 매긴 라벨(유효/노이즈)을 few-shot 저장소에 적재합니다.<br/>"
+        "이후 유사 알람의 LLM 액션가능성 자문(보조 입력)에 활용됩니다.<br/>"
+        "게이트 또는 LLM 액션가능성이 비활성이면 503을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def submit_alarm_feedback(
+    request: Request,
+    body: AlarmFeedbackRequest,
+    current_user: dict = Depends(require_user),
+) -> AlarmFeedbackResponse:
+    """운영자 피드백을 검증·적재한다(게이트/액션가능성 비활성 시 503)."""
+    config = request.app.state.config
+    ng = config.noise_gate
+    if not ng.enable_noise_gate or not getattr(ng, "enable_llm_actionability", False):
+        raise HTTPException(status_code=503, detail="LLM actionability 비활성")
+    if body.label not in ("noise", "valid"):
+        raise HTTPException(status_code=400, detail="label은 'noise' 또는 'valid'만 허용")
+
+    from src.alarm.infrastructure.feedback_store import FeedbackStore
+
+    store = FeedbackStore(ng.feedback_store_path, ng.feedback_store_enabled)
+    store.record_feedback(
+        label=body.label,
+        alarm_name=body.alarm_name,
+        resource_name=body.resource_name,
+        pattern=body.pattern_type,
+        server_name=body.server_name,
+        db_id=body.db_id,
+        severity=body.severity,
+        note=body.note,
+    )
+    return AlarmFeedbackResponse(recorded=True)
 
 
 # ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────
@@ -888,7 +1212,9 @@ async def analyze_alarm_raw(
         "analysis_result": None,
         "error": None,
     }
-    lc_config = {"configurable": {"app_config": config}}
+    lc_config = {
+        "configurable": {"app_config": config, **_alarm_extra_configurable(request, config)}
+    }
 
     try:
         result_state = await alarm_analyzer_node(state, lc_config)
@@ -960,7 +1286,21 @@ async def analyze_alarm_raw(
     if not body.dry_run and body.send_notification:
         from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
 
-        notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
+        # result_state는 노드의 업데이트 dict({"analysis_result": ...})만 담으므로
+        # 게이트/notifier가 쓰는 alarm_event·history_stats는 원본 state에서 병합한다.
+        notifier_state = {
+            **state, **result_state, "process_snapshot": process_snapshot, "error": None
+        }
+        # Plan 52 E3: 게이트 활성 시 4-티어 판단을 산출해 notifier에 전달한다
+        # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
+        # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
+        if config.noise_gate.enable_noise_gate:
+            from src.alarm.application.nodes.notification_gate import (
+                notification_gate_node,
+            )
+
+            gate_out = await notification_gate_node(notifier_state, lc_config)
+            notifier_state = {**notifier_state, **gate_out}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")

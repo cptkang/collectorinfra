@@ -47,6 +47,77 @@ def _cache_key(event: AlarmEvent) -> str:
     return f"alarm:histcache:{event.db_id}:{event.server_name}:{event.alarm_name}"
 
 
+def _noise_cache_key(event: AlarmEvent) -> str:
+    """노이즈 컨텍스트 단기 조회 캐시 키 (Plan 52 §8.3)."""
+    return f"alarm:noisectx:{event.db_id}:{event.server_name}:{event.alarm_name}"
+
+
+def _noise_unavailable() -> dict[str, Any]:
+    """노이즈 컨텍스트 수집 불가 시 보수 dict (모든 신호 None, source='unavailable').
+
+    정책 계층(decide_notification)이 source=='unavailable'을 보수적 PAGE로 처리한다(§6.3).
+    """
+    return {
+        "importance_id": None,
+        "maintenance": None,
+        "noti_policy": None,
+        "parent_avail_status": None,
+        "source": "unavailable",
+    }
+
+
+async def enrich_noise_context(
+    event: AlarmEvent,
+    noise_cfg,  # noqa: ANN001 — NoiseGateConfig
+    repo,  # noqa: ANN001 — PolestarNoiseContextRepository
+    redis_client=None,  # noqa: ANN001 — redis.asyncio.Redis | None
+    *,
+    collect_dependency: bool = False,
+) -> dict[str, Any]:
+    """캐시 확인 → 폴스타 노이즈 컨텍스트 고정 SQL 조회 → 캐시 적재 (Plan 52 §8.3).
+
+    Redis 캐시는 폴스타 DB 부하 보호용 순수 최적화 — 캐시 실패는 무시하고 DB 조회한다.
+    캐시 TTL은 noise_context_cache_ttl_seconds(0이면 캐시 비활성)를 사용한다.
+    repo.fetch는 자체적으로 graceful degradation하여 실패 시 source="unavailable"을
+    반환하므로, unavailable 결과는 캐시에 적재하지 않는다(재조회 기회 보존).
+
+    collect_dependency(E2, §3.6): True면 repo.fetch가 의존성/부모 상태 SQL을 추가 실행해
+    parent_avail_status를 채운다. False(기본·E1)면 의존성 SQL 미실행(parent_avail_status=None).
+
+    Returns:
+        {"importance_id","maintenance","noti_policy","parent_avail_status","source"}
+    """
+    cache_enabled = (
+        redis_client is not None and noise_cfg.noise_context_cache_ttl_seconds > 0
+    )
+    key = _noise_cache_key(event)
+
+    if cache_enabled:
+        try:
+            raw = await redis_client.get(key)
+            if raw:
+                ctx = json.loads(raw)
+                # 캐시 히트 — 정책상 정상취급("unavailable"만 특별 처리되므로 "cache"는 정상)
+                ctx["source"] = "cache"
+                return ctx
+        except Exception as e:
+            logger.debug("노이즈 컨텍스트 캐시 조회 실패 — 무시하고 DB 조회 진행: %s", e)
+
+    ctx = await repo.fetch(event, collect_dependency=collect_dependency)
+
+    if cache_enabled and ctx.get("source") != "unavailable":
+        try:
+            await redis_client.setex(
+                key,
+                noise_cfg.noise_context_cache_ttl_seconds,
+                json.dumps(ctx, ensure_ascii=False),
+            )
+        except Exception as e:
+            logger.debug("노이즈 컨텍스트 캐시 적재 실패 — 무시: %s", e)
+
+    return ctx
+
+
 async def enrich_history(
     event: AlarmEvent,
     alarm_cfg,  # noqa: ANN001 — AlarmConfig
@@ -182,8 +253,12 @@ async def alarm_context_enricher_node(
         - process_enrich_enabled=False / client 미주입 / 비대상 알람(디스크·네트워크) /
           해소 알람 / 미매핑 db_id / API 실패·타임아웃·비200 시 None (Plan 47-1).
 
-    리포지토리·클라이언트(history_repo / history_redis / process_client)는
+    리포지토리·클라이언트(history_repo / history_redis / process_client / noise_repo)는
     config["configurable"]로 주입한다. 미주입 시(테스트 API 경로 등) 해당 조회를 건너뛴다.
+
+    Plan 52: enable_noise_gate 활성 + noise_repo 주입 시에만 noise_context(중요도·유지보수·
+    알림정책)를 추가 수집한다. **게이트 비활성 시 반환 dict는 기존과 동일한 2키
+    ({history_stats, process_snapshot})를 유지**하여 회귀를 방지한다(noise_context 키 미포함).
     """
     event: AlarmEvent = state["alarm_event"]
     configurable = (config or {}).get("configurable", {})
@@ -194,6 +269,11 @@ async def alarm_context_enricher_node(
     repo = configurable.get("history_repo")
     redis_client = configurable.get("history_redis")
     process_client = configurable.get("process_client")
+    noise_repo = configurable.get("noise_repo")
+
+    # 게이트 활성 + noise_repo 주입 시에만 noise_context 수집(그 외 기존 2키 반환 유지).
+    gate_cfg = getattr(cfg, "noise_gate", None)
+    gate_on = bool(getattr(gate_cfg, "enable_noise_gate", False)) and noise_repo is not None
 
     async def _history() -> Optional[AlarmHistoryStats]:
         """이력 통계 수집 — 게이팅·실패 시 None (독립 degradation)."""
@@ -245,9 +325,50 @@ async def alarm_context_enricher_node(
             )
             return None
 
+    async def _noise_context() -> Optional[dict[str, Any]]:
+        """노이즈 컨텍스트 수집 — 게이트 비활성/repo 미주입 시 None, 실패 시 unavailable.
+
+        예외를 전파하지 않는다(보수적 처리). 수집 실패(unavailable)는 정책 계층이
+        보수적 PAGE로 처리하므로 안전하다(§6.3). 게이트 off면 호출되지 않는다.
+        """
+        if not gate_on:
+            return None
+        try:
+            return await enrich_noise_context(
+                event,
+                gate_cfg,
+                noise_repo,
+                redis_client,
+                # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
+                collect_dependency=bool(getattr(gate_cfg, "dependency_suppression", False)),
+            )
+        except Exception:
+            logger.exception(
+                "노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s", event.alarm_id
+            )
+            return _noise_unavailable()
+
+    # ── 게이트 비활성: 기존 2키 반환 경로 (회귀 0, 바이트 무변경) ──
+    if not gate_on:
+        try:
+            history_stats, process_snapshot = await asyncio.wait_for(
+                asyncio.gather(_history(), _processes()),
+                timeout=cfg.alarm.enrich_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "알람 컨텍스트 보강 타임아웃 (%ds) — 컨텍스트 없이 분석 진행: alarm_id=%s",
+                cfg.alarm.enrich_timeout_seconds,
+                event.alarm_id,
+            )
+            return {"history_stats": None, "process_snapshot": None}
+
+        return {"history_stats": history_stats, "process_snapshot": process_snapshot}
+
+    # ── 게이트 활성: noise_context 포함 3키 반환 (enrich_timeout 상한 내 동시 수집) ──
     try:
-        history_stats, process_snapshot = await asyncio.wait_for(
-            asyncio.gather(_history(), _processes()),
+        history_stats, process_snapshot, noise_context = await asyncio.wait_for(
+            asyncio.gather(_history(), _processes(), _noise_context()),
             timeout=cfg.alarm.enrich_timeout_seconds,
         )
     except asyncio.TimeoutError:
@@ -256,6 +377,15 @@ async def alarm_context_enricher_node(
             cfg.alarm.enrich_timeout_seconds,
             event.alarm_id,
         )
-        return {"history_stats": None, "process_snapshot": None}
+        # noise_context=None → 정책 계층이 보수적 PAGE로 처리(§6.3)
+        return {
+            "history_stats": None,
+            "process_snapshot": None,
+            "noise_context": None,
+        }
 
-    return {"history_stats": history_stats, "process_snapshot": process_snapshot}
+    return {
+        "history_stats": history_stats,
+        "process_snapshot": process_snapshot,
+        "noise_context": noise_context,
+    }

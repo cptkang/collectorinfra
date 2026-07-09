@@ -69,6 +69,57 @@ async def _ensure_auth_tables(pool) -> None:
         logger.warning("인증 테이블 DDL 실행 실패: %s", e)
 
 
+# D-049: incident 라이프사이클 테이블 (ddl/alarm_incidents.sql과 동일)
+_INCIDENT_DDL = """
+CREATE TABLE IF NOT EXISTS alarm_incidents (
+    id          BIGSERIAL PRIMARY KEY,
+    fingerprint VARCHAR(128) NOT NULL,
+    alarm_id    VARCHAR(64),
+    alarm_name  VARCHAR(255),
+    db_id       VARCHAR(64),
+    server_name VARCHAR(255),
+    severity    INTEGER,
+    priority    VARCHAR(20),
+    tier        VARCHAR(20),
+    status      VARCHAR(20) NOT NULL DEFAULT 'open',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    acked_at    TIMESTAMPTZ,
+    acked_by    VARCHAR(100),
+    resolved_at TIMESTAMPTZ,
+    resolution  VARCHAR(20)
+);
+"""
+
+
+async def _ensure_incident_tables(pool) -> None:
+    """incident 테이블/인덱스가 없으면 생성한다 (D-049 · _ensure_auth_tables 미러)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(_INCIDENT_DDL)
+        # 기존 테이블(IF NOT EXISTS로 컬럼 미추가)에 alarm_name을 멱등 보강한다 (D-049 delta).
+        # 신규 환경은 위 CREATE로, 기존 환경은 이 ALTER로 커버한다(graceful·auth 패턴 일관).
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE alarm_incidents "
+                "ADD COLUMN IF NOT EXISTS alarm_name VARCHAR(255)"
+            )
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_status "
+                "ON alarm_incidents(status)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_fp_open "
+                "ON alarm_incidents(fingerprint) WHERE status = 'open'"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_created_at "
+                "ON alarm_incidents(created_at DESC)"
+            )
+    except Exception as e:
+        logger.warning("incident 테이블 DDL 실행 실패: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     """앱 시작/종료 시 실행되는 라이프사이클 관리자.
@@ -157,6 +208,105 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
         )
 
+    # 알람 SSE Redis pub/sub 브리지 구독 (워커→UI 실시간 SSE — D-048.9 해소).
+    # 워커는 cross-process라 in-memory alarm_bus를 공유 못 하므로 Redis로 중계받는다.
+    # 게이트 활성 + NOISE_SSE_BRIDGE_ENABLED=true일 때만 기동(기본 off → E3 무변경, 회귀 0).
+    # Redis 연결 실패는 warning 후 폴백 — 서버 기동을 막지 않는다.
+    sse_bridge_task = None
+    sse_bridge_redis = None
+    sse_bridge_stop = None
+    if config.noise_gate.enable_noise_gate and config.noise_gate.sse_bridge_enabled:
+        try:
+            import asyncio as _asyncio
+            import redis.asyncio as _aioredis
+
+            from src.alarm.infrastructure.sse_bridge import run_sse_bridge_subscriber
+
+            sse_bridge_redis = _aioredis.from_url(
+                f"redis://{config.redis.host}:{config.redis.port}",
+                password=config.redis.password or None,
+                db=config.redis.db,
+            )
+            sse_bridge_stop = _asyncio.Event()
+            sse_bridge_task = _asyncio.create_task(
+                run_sse_bridge_subscriber(
+                    sse_bridge_redis,
+                    config.noise_gate.sse_bridge_channel,
+                    app.state.alarm_bus,
+                    stop_event=sse_bridge_stop,
+                )
+            )
+            logger.info(
+                "알람 SSE 브리지 구독 시작 (channel=%s)",
+                config.noise_gate.sse_bridge_channel,
+            )
+        except Exception as e:
+            logger.warning("알람 SSE 브리지 구독 시작 실패 (실시간 SSE 비활성): %s", e)
+
+    # ── D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소) ──
+    # incident_tracking_enabled=true일 때만 기동(기본 off → /alarm/metrics 기존 null 동작, 회귀 0).
+    # 전용 PG 풀(auth 독립, DSN 재사용) + 단일 라이터(Redis 구독 subscriber)를 기동한다.
+    # 어떤 단계가 실패해도 서버 기동을 막지 않는다(graceful — warning 후 트래커 비활성).
+    app.state.incident_store = None
+    app.state.incident_publisher = None
+    incident_pool = None
+    incident_redis = None
+    incident_sub_task = None
+    incident_sub_stop = None
+    if config.noise_gate.enable_noise_gate and config.noise_gate.incident_tracking_enabled:
+        incident_db_url = config.db_connection_string
+        try:
+            import asyncio as _asyncio
+            import asyncpg
+
+            from src.alarm.infrastructure.incident_repository import (
+                PostgresIncidentStore,
+            )
+
+            if not incident_db_url:
+                raise RuntimeError("db_connection_string 미설정 — incident 계측 비활성")
+
+            incident_pool = await asyncpg.create_pool(
+                incident_db_url, min_size=1, max_size=3
+            )
+            await _ensure_incident_tables(incident_pool)
+            app.state.incident_store = PostgresIncidentStore(incident_pool)
+
+            import redis.asyncio as _aioredis
+
+            from src.alarm.infrastructure.incident_events import (
+                RedisIncidentPublisher,
+                run_incident_event_subscriber,
+            )
+
+            incident_redis = _aioredis.from_url(
+                f"redis://{config.redis.host}:{config.redis.port}",
+                password=config.redis.password or None,
+                db=config.redis.db,
+            )
+            # API 경로(analyze-*)에서 PAGE 결정 시 open 발행에 재사용한다(같은 Redis 채널 → 단일 라이터).
+            app.state.incident_publisher = RedisIncidentPublisher(
+                incident_redis, config.noise_gate.incident_event_channel
+            )
+            incident_sub_stop = _asyncio.Event()
+            incident_sub_task = _asyncio.create_task(
+                run_incident_event_subscriber(
+                    incident_redis,
+                    config.noise_gate.incident_event_channel,
+                    app.state.incident_store,
+                    alarm_bus=app.state.alarm_bus,
+                    stop_event=incident_sub_stop,
+                )
+            )
+            logger.info(
+                "incident 계측 시작 (channel=%s)",
+                config.noise_gate.incident_event_channel,
+            )
+        except Exception as e:
+            logger.warning("incident 계측 시작 실패 (계측 비활성): %s", e)
+            app.state.incident_store = None
+            app.state.incident_publisher = None
+
     yield
 
     # 종료 시: 알람 워커 정리
@@ -165,6 +315,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         try:
             import asyncio as _asyncio
             await alarm_worker_task
+        except Exception:
+            pass
+
+    # 종료 시: SSE 브리지 구독 task·Redis 연결 정리
+    if sse_bridge_task:
+        if sse_bridge_stop is not None:
+            sse_bridge_stop.set()
+        sse_bridge_task.cancel()
+        try:
+            await sse_bridge_task
+        except Exception:
+            pass
+    if sse_bridge_redis is not None:
+        try:
+            await sse_bridge_redis.aclose()
+        except Exception:
+            pass
+
+    # 종료 시: incident 계측 구독 task·Redis 연결·전용 PG 풀 정리 (D-049)
+    if incident_sub_task:
+        if incident_sub_stop is not None:
+            incident_sub_stop.set()
+        incident_sub_task.cancel()
+        try:
+            await incident_sub_task
+        except Exception:
+            pass
+    if incident_redis is not None:
+        try:
+            await incident_redis.aclose()
+        except Exception:
+            pass
+    if incident_pool is not None:
+        try:
+            await incident_pool.close()
         except Exception:
             pass
 

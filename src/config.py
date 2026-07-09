@@ -386,6 +386,93 @@ class WorkbConfig(BaseSettings):
         return self.user_ids_csv
 
 
+class NoiseGateConfig(BaseSettings):
+    """알람 노이즈 캔슬링 게이트 설정 (Plan 52 §8.5).
+
+    AlarmConfig/WorkbConfig와 동일하게 AppConfig의 **형제 필드**로 분리한다.
+    AlarmConfig 안에 중첩하지 않는다(이중 중첩 시 env 로딩이 복잡해지고 충돌 위험).
+    접근 경로: cfg.noise_gate.* (env_prefix="NOISE_").
+
+    전 기능 기본 비활성(enable_noise_gate=False) — 활성 전에는 기존 알람 발송 경로가
+    바이트 단위로 무변경이어야 한다(회귀 0). E1에서 미사용인 필드(E2/E3)도 향후
+    자리예약으로 정의해 둔다.
+    """
+
+    enable_noise_gate: bool = False           # 전체 게이트 옵트인 (E1)
+    suppress_max_severity: int = 2            # 억제 허용 상한 (심각도 3은 항상 PAGE)
+    importance_value_map_csv: str = ""        # IMPORTANCE_ID 코드→라벨 매핑 CSV ("1=낮음,2=보통,3=높음"), 빈값=전부 보통
+    self_heal_window_seconds: int = 300       # 자가복구 상관 창 (E1)
+    debounce_seconds: int = 0                 # (E2) 상태 안정화 (0=미사용)
+    flap_high_threshold: float = 20.0         # (E2) 플래핑 시작 % (Nagios 기본)
+    flap_low_threshold: float = 5.0           # (E2) 플래핑 종료 %
+    flapping_enabled: bool = False            # (E2) 플래핑 억제 on/off (상태 진동 보류)
+    dependency_suppression: bool = False      # (E2) 의존성 억제 on/off
+    inhibition_enabled: bool = False          # (E2) 인히비션 on/off (상위 심각도 음소거)
+    inhibition_window_seconds: int = 300      # (E2) 상위 심각도 활성 간주 창
+    storm_grouping_enabled: bool = False      # (E2) 스톰 그룹핑 on/off (동일 서버 다발 억제)
+    storm_window_seconds: int = 60            # (E2) 스톰 사건창 (초)
+    storm_threshold: int = 5                  # (E2) 창 내 이 수 초과 시 스톰(대표 외 억제)
+    business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
+    repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
+    sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)
+    noise_context_timeout_seconds: float = 3.0
+    noise_context_cache_ttl_seconds: int = 300
+    meta_alert_suppress_ratio: float = 0.9    # (E3) 억제율 이 값 초과 시 메타경보
+    meta_alert_window_seconds: int = 3600     # (E3) 메타경보·운영지표 집계 창 (1h)
+    meta_alert_min_events: int = 1            # (E3) 창 내 이벤트 수가 이 값 미만이면 무수신 메타경보
+    enable_ai_severity_boost: bool = False    # (E3) AI 메시지 심각도 보강 (상향 전용)
+    ai_severity_escalate_only: bool = True    # (E3) True=상향만 (하향 억제 금지) — 안전 고정 권장
+    enable_llm_actionability: bool = False    # (E4) LLM 피드백 few-shot 액션가능성 판단
+    feedback_store_path: str = "logs/alarm_feedback.jsonl"   # (E4) 운영자 피드백 저장
+    feedback_store_enabled: bool = True                      # (E4) 피드백 적재 on/off
+    actionability_fewshot_count: int = 3                     # (E4) few-shot 예시 최대 개수
+    # ── E5: deepagents Advisory Enricher (agentic 보조 분석기, §8.5/§8.7, D-048.7) ──
+    # 전부 옵트인(기본 off) — enable_agentic_enricher=False면 E1~E4 배선·발송 판단 무변경.
+    # 판단은 결정적 notification_policy가 하고, enricher는 signals(승격 전용)만 보강한다.
+    enable_agentic_enricher: bool = False     # (E5) 보조 분석기 옵트인
+    agentic_enricher_fallback: str = "semantic_routing"  # (E5) vLLM 미서빙 시: "semantic_routing" | "deterministic_only"
+    agentic_enricher_timeout_seconds: float = 8.0  # (E5) enricher 전체 타임아웃(초, 초과 시 no-op)
+    agentic_enricher_max_tool_calls: int = 5  # (E5) 트랙 B ReAct 루프 도구 호출 상한
+    agentic_enricher_message_alarms_only: bool = True  # (E5) LogMonitor/보안/앱 로그 한정
+    resolved_to_dashboard: bool = False       # 독립 해소(severity 0)를 DASHBOARD로 표시할지 (E1)
+    decision_store_path: str = "logs/alarm_decisions.jsonl"
+    decision_store_enabled: bool = True
+    ticket_batch_queue_path: str = "logs/alarm_ticket_queue.jsonl"   # (E3) TICKET 일배치 요약 큐
+    ticket_batch_queue_enabled: bool = True   # (E3) TICKET 티어를 일배치 요약 큐에 적재할지
+    # ── E3 후속: 워커→UI 실시간 SSE Redis pub/sub 브리지 (D-048.9 한계 해소) ──
+    # 워커는 cross-process라 API의 in-memory alarm_bus를 공유 못 함 → Redis pub/sub로 중계.
+    # 기본 off면 워커 경로 티어 SSE는 로그 폴백(E3 무변경, 회귀 0). 스칼라라 .env JSON 회피.
+    sse_bridge_enabled: bool = False          # (E3 후속) 워커→UI 실시간 SSE 브리지 on/off
+    sse_bridge_channel: str = "alarm:sse"     # (E3 후속) SSE 브리지 Redis pub/sub 채널명
+    # ── D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소) ──
+    # 기본 off면 incident 트래커 미기동 → /alarm/metrics는 기존 null 동작 유지(회귀 0).
+    # 활성 시 워커는 incident 이벤트를 Redis로 발행, API 단일 라이터가 PG에 영속한다.
+    incident_tracking_enabled: bool = False   # (D-049) incident 계측 on/off
+    incident_event_channel: str = "alarm:incident"  # (D-049) incident 이벤트 Redis pub/sub 채널명
+
+    model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
+
+    @property
+    def importance_value_map(self) -> dict[str, str]:
+        """importance_value_map_csv → {코드: 라벨} 파싱. 잘못된 항목은 무시한다.
+
+        형식: "1=낮음,2=보통,3=높음" (CSV, '=' 구분). 빈 값이면 빈 dict.
+        decide_notification이 map_importance에 넘기는 매핑이며, 미매핑 코드는
+        정책 계층에서 '보통'으로 보수 처리된다(§6.3).
+        """
+        result: dict[str, str] = {}
+        for pair in self.importance_value_map_csv.split(","):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            code, _, label = pair.partition("=")
+            code = code.strip()
+            label = label.strip()
+            if code and label:
+                result[code] = label
+        return result
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -403,6 +490,7 @@ class AppConfig(BaseSettings):
     audit: AuditConfig = AuditConfig()
     alarm: AlarmConfig = AlarmConfig()
     workb: WorkbConfig = WorkbConfig()
+    noise_gate: NoiseGateConfig = NoiseGateConfig()  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 
