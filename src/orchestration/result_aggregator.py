@@ -45,7 +45,7 @@ async def result_aggregator(
         app_config: 앱 설정 (외부 주입, 없으면 내부 로드)
         synthesize: 복합 결과를 deterministic 이어붙이기(_merge_finalized) 대신 LLM
             1회로 단일 답변 합성(_synthesize_finalized)할지 여부. 딥 에이전트 경로
-            (D-048)에서만 True — 오케스트레이터가 동일 질문을 재시도(부분 성공→재조회)할
+            (D-062)에서만 True — 오케스트레이터가 동일 질문을 재시도(부분 성공→재조회)할
             때 collector에 1·2차 결과가 모두 쌓여 "없음→있음" 모순 이중 답변이 한
             말풍선에 섞이는 문제를 합성으로 해소한다. replanner 경로(D-005/D-043)는
             기존 deterministic 병합을 유지한다(False).
@@ -86,7 +86,7 @@ async def result_aggregator(
     db_promotion = _collect_db_promotion(tasks, task_results)
 
     # 합성 모드 + 복합 task일 때만 per-task 마감의 토큰 스트리밍을 억제한다.
-    # (최종 합성 1회에만 USER_RESPONSE_TAG를 부여하여 중간 답변 토큰 누출 방지 — D-048/D-009)
+    # (최종 합성 1회에만 USER_RESPONSE_TAG를 부여하여 중간 답변 토큰 누출 방지 — D-062/D-009)
     suppress_stream = synthesize and len(ordered_tasks) > 1
 
     # 각 task 결과를 최종화 (텍스트 응답 + 선택적 output_file)
@@ -101,7 +101,7 @@ async def result_aggregator(
             )
         )
 
-    # 복합 task + 합성 모드(딥 에이전트): LLM 1회로 단일 일관 답변 합성 (D-048)
+    # 복합 task + 합성 모드(딥 에이전트): LLM 1회로 단일 일관 답변 합성 (D-062)
     if synthesize and len(finalized) > 1:
         return _with_answer_history(
             {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion}
@@ -227,7 +227,7 @@ async def _finalize_task(
         llm: LLM 인스턴스
         app_config: 앱 설정
         stream_user_response: output_generator의 USER_RESPONSE_TAG 부여 여부.
-            합성 모드(D-048)에서 중간 per-task 토큰 누출을 막기 위해 False로 전달.
+            합성 모드(D-062)에서 중간 per-task 토큰 누출을 막기 위해 False로 전달.
 
     Returns:
         {"order", "agent", "text", "output_file", "output_file_name", "error"} dict
@@ -374,7 +374,7 @@ async def _synthesize_finalized(
     llm: BaseChatModel | None,
     app_config: AppConfig,
 ) -> dict:
-    """복합 task 결과를 LLM 1회 호출로 단일 일관 답변으로 합성한다 (D-048, 딥 에이전트 경로).
+    """복합 task 결과를 LLM 1회 호출로 단일 일관 답변으로 합성한다 (D-062, 딥 에이전트 경로).
 
     동일 질문 재시도로 인한 모순(없음→있음)·중복을 deterministic 이어붙이기(_merge_finalized)
     대신 LLM 합성으로 해소한다. 최종 합성만 USER_RESPONSE_TAG로 토큰 스트리밍(D-009)하며,

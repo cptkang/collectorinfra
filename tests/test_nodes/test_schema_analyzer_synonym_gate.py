@@ -1,4 +1,4 @@
-"""allowed_tables 유사어 동적 보완 게이트 검증 (D-051, Plan 52 §4.★).
+"""allowed_tables 유사어 동적 보완 게이트 검증 (D-051, Plan 57 §4.★).
 
 `_synonym_tables_matching_query()`가 등록된 컬럼 유사어 중 **이번 질의 용어와
 매칭된 것의 테이블만** 추리는지 검증한다. 게이트 부재 시 누적 유사어 전 테이블이

@@ -1,7 +1,7 @@
-# 53. 파일 업로드 양식 채우기 — 폴스타 DB2 스키마 오류 · 공동존 서버 식별자 NULL · Excel 산출물 누락 분석 및 개선
+# 58. 파일 업로드 양식 채우기 — 폴스타 DB2 스키마 오류 · 공동존 서버 식별자 NULL · Excel 산출물 누락 분석 및 개선
 
 > 작성일: 2026-07-01
-> 상위/관련 계획: `plans/19-excel-csv-llm-pipeline.md`, `plans/23-ui-progress-and-excel-fix.md`, `plans/35-excel-empty-data-fix.md`, `plans/52-polestar-b0-token-overflow-and-replan-misdiagnosis.md`
+> 상위/관련 계획: `plans/19-excel-csv-llm-pipeline.md`, `plans/23-ui-progress-and-excel-fix.md`, `plans/35-excel-empty-data-fix.md`, `plans/57-polestar-b0-token-overflow-and-replan-misdiagnosis.md`
 > 관련 결정: D-046(hostname graceful 폴백), D-050(EAV 피벗 HAVING — null은 데이터 부재가 아니라 SQL 오류일 수 있음), D-051(DB2 방언 FETCH FIRST), D-053(b0 db_id 라우팅·엔진별 방언·isolated 승격), D-047/2026-06-26(진단 메시지를 일반 문구로 덮지 말 것)
 > 신규 결정(본 계획에서 부여): **D-057**(멀티DB SQL 생성의 엔진·스키마 인지 — b0/DB2 스키마 한정), **D-058**(공동존 서버 식별자 NULL 대응 — `COALESCE(name, hostname)` + 생성 SQL 우선 진단), **D-059**(폼필 실패 시 침묵적 CSV 강등 금지 — 사유 노출)
 > ※ 번호 정정 규칙(Known Mistakes 2026-06-25): `grep -oE "D-0[0-9]{2}" docs/02_decision.md` 최댓값 **D-056** 확인 → 다음 빈 번호 D-057/D-058/D-059 부여. 구현 시 `docs/02_decision.md`에 정식 등재한다.
@@ -204,7 +204,7 @@ def _table(db_id, name, db_engine="postgresql"):
 
 **LLM 기반 일반 SQL 생성 경로(`multi_db_executor`/`query_generator`)에는 이 인지가 이식되지 않았다.** 즉 실시간 프로세스/알람 경로(고정 SQL)만 b0 방언이 적용되고, **양식 채우기(LLM 생성)는 미적용**. 이는 D-053(2026-06-30) 교훈의 재발이다 — *"한 경로만 검증하면 다른 엔진/다른 경로 회귀를 놓친다."*
 
-**추가 모순**: b0 프로필(`config/db_profiles/polestar_b0.yaml`)의 `query_examples`는 PostgreSQL식 `polestar.cmm_resource` 접두사를 쓰면서 동시에 DB2식 `FETCH FIRST n ROWS ONLY`를 쓴다. 방언이 **혼재**되어 있어 LLM에게 일관된 신호를 주지 못한다. (Plan 52 §1 task 3에서도 동일 `SDQ000.CMM_RESOURCE` 에러가 관측되었고 당시 "환각 테이블"로 기록되었으나, 실제로는 **무스키마 → CURRENT SCHEMA 해소 실패**가 정체다.)
+**추가 모순**: b0 프로필(`config/db_profiles/polestar_b0.yaml`)의 `query_examples`는 PostgreSQL식 `polestar.cmm_resource` 접두사를 쓰면서 동시에 DB2식 `FETCH FIRST n ROWS ONLY`를 쓴다. 방언이 **혼재**되어 있어 LLM에게 일관된 신호를 주지 못한다. (Plan 57 §1 task 3에서도 동일 `SDQ000.CMM_RESOURCE` 에러가 관측되었고 당시 "환각 테이블"로 기록되었으나, 실제로는 **무스키마 → CURRENT SCHEMA 해소 실패**가 정체다.)
 
 **미확정 핵심(반드시 라이브 확인)**: b0의 실제 폴스타 테이블이 **어느 DB2 스키마**에 있는가?
 - `SDQ000`(CURRENT SCHEMA = 연결 계정)에는 없음이 에러로 확정됨.

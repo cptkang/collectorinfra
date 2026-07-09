@@ -316,12 +316,12 @@ async def test_replanner_blocks_general_inference_followup(mock_config):
 
 
 # ──────────────────────────────────────────────
-# 5b. test_filter_futile_retries (D-049: 엔티티 확보 후 무의미 재시도 차단)
+# 5b. test_filter_futile_retries (D-063: 엔티티 확보 후 무의미 재시도 차단)
 # ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_replanner_blocks_futile_retry_with_supersedes(mock_config):
-    """선행이 >0행을 찾았는데 같은 의도를 supersedes로 재조회 → 차단 후 종료(D-049 규칙 a).
+    """선행이 >0행을 찾았는데 같은 의도를 supersedes로 재조회 → 차단 후 종료(D-063 규칙 a).
 
     "행은 찾았으나 일부 필드 null"을 LLM이 재조회로 메우려 해도, 누락 필드는 데이터에
     없는 것이므로 max_replan까지 헛돈다. 결정적으로 차단한다.
@@ -355,7 +355,7 @@ async def test_replanner_blocks_futile_retry_with_supersedes(mock_config):
 
 @pytest.mark.asyncio
 async def test_replanner_blocks_futile_retry_without_supersedes(mock_config):
-    """supersedes 누락(LLM 비준수)이어도 독립+같은 agent 재조회면 차단(D-049 규칙 b, 원인 B 견고).
+    """supersedes 누락(LLM 비준수)이어도 독립+같은 agent 재조회면 차단(D-063 규칙 b, 원인 B 견고).
 
     이것이 원인 B 회귀 방지의 핵심: LLM이 supersedes를 빠뜨려도 헛 재시도를 막는다.
     """

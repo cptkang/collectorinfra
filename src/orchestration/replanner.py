@@ -89,7 +89,7 @@ async def replanner(
         # 유효 신규 task가 없으면 보수적 종료
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
-    # 무의미 재시도 차단(D-049): 엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는
+    # 무의미 재시도 차단(D-063): 엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는
     # 후속을 제거한다. 행은 찾았으나 일부 요청 필드가 null인 것은 "데이터에 그 속성이
     # 없음"이지 쿼리 오류가 아니므로, 재조회해도 채워지지 않고 max_replan까지 헛돈다.
     new_tasks = _filter_futile_retries(
@@ -322,7 +322,7 @@ def _filter_futile_retries(
     existing: list[dict],
     task_results: dict[str, dict],
 ) -> list[dict]:
-    """엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는 무의미 재시도를 제거한다 (D-049).
+    """엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는 무의미 재시도를 제거한다 (D-063).
 
     `replanner`의 LLM은 "행은 찾았으나 일부 요청 필드가 null"인 결과를 "0건/불충분 → 재조회"
     예시에 잘못 적용해, 데이터에 애초에 없는 속성을 채우려고 max_replan까지 헛 재시도한다.

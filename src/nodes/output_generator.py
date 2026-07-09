@@ -75,7 +75,7 @@ async def _run_output_generator(
         app_config: 앱 설정 (외부 주입, 없으면 내부 로드)
         stream_user_response: 자연어 응답 LLM 호출에 USER_RESPONSE_TAG를 부여해
             토큰 단위 SSE 스트리밍(D-009)을 활성화할지 여부. 딥 에이전트 경로에서
-            여러 하위 결과를 별도 LLM으로 단일 합성하는 경우(D-048), 중간 per-task
+            여러 하위 결과를 별도 LLM으로 단일 합성하는 경우(D-062), 중간 per-task
             토큰이 새지 않도록 False로 호출하고 최종 합성에만 태그를 부여한다.
 
     Returns:
@@ -177,7 +177,7 @@ async def _generate_text_response(
         config: 앱 설정
         state: 에이전트 상태
         llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
-        stream_user_response: USER_RESPONSE_TAG 부여 여부 (D-048 합성 시 False).
+        stream_user_response: USER_RESPONSE_TAG 부여 여부 (D-062 합성 시 False).
 
     Returns:
         자연어 응답 텍스트
@@ -207,7 +207,7 @@ async def _generate_text_response(
 
     # 토큰 단위 SSE 스트리밍(D-009)을 위해 .astream()으로 호출하고,
     # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다. 단, 딥 에이전트 단일
-    # 합성(D-048)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
+    # 합성(D-062)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
     tags = [USER_RESPONSE_TAG] if stream_user_response else None
     return await astream_text(llm, messages, tags=tags)
 

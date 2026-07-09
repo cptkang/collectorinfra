@@ -1,8 +1,8 @@
-# 52. 폴스타 b0 자원조회 토큰 폭증 + 재계획 오진 분석 및 해결
+# 57. 폴스타 b0 자원조회 토큰 폭증 + 재계획 오진 분석 및 해결
 
 > 작성일: 2026-06-30
 > 상위/관련 계획: `plans/48-deepagents-intent-orchestration.md`, `plans/49-phase2-dynamic-replanning.md`, `plans/50-multiturn-context-and-control-plane-token.md`
-> 관련 결정: D-037(deepagents 이원 백엔드), D-042(제어 평면 예산·평면 분리), D-049(무의미 재시도 가드), D-050(EAV 피벗 HAVING)
+> 관련 결정: D-037(deepagents 이원 백엔드), D-042(제어 평면 예산·평면 분리), D-063(무의미 재시도 가드), D-050(EAV 피벗 HAVING)
 > 신규 결정(본 계획에서 부여): **D-051**(데이터 평면 토큰 예산 가드 — FabriX도 ~95K 입력 한도), **D-052**(재계획 인프라성 에러 가드 + b0 hostname 권위)
 > ※ 번호 정정 규칙(Known Mistakes 2026-06-25): `grep -roE "D-0[0-9]{2}"`로 변경 이력 표까지 확인한 결과 최댓값 D-050 → 다음 빈 번호 D-051/D-052 부여.
 
@@ -297,7 +297,7 @@ task 3이 생성한 `polestar.cmm_resource` / `cmm_resource_system` / `cmm_measu
 ## 7. 기록할 의사결정 (docs/02_decision.md 반영 예정)
 
 - **D-051. allowed_tables 유사어 확장 게이트(확정 근본) + 데이터 평면 토큰 예산 가드(보조)**: ① **확정 근본**(디버거 실측, §1.5) — `schema_analyzer`가 `allowed_tables`(b0=5개 화이트리스트)에 **등록된 모든 컬럼 유사어의 테이블을 무조건 추가**(`:756-762`)하고 Step2가 이를 전량 relevant로 보충(`:781-789`)하여, 유사어 누적과 함께 relevant이 수백 테이블로 부풀고 system_prompt가 104K로 95K 한도를 초과한다. → 유사어→`_allowed` 확장을 **이번 질의 용어 매칭분만**으로 게이트(또는 제거)하고 Step2 보충도 질의 관련분만으로 한정한다(시한폭탄형 회귀 가드 포함). ② **보조 방어** — Plan 50/D-042의 "데이터 평면=대용량" 전제는 실측과 다르며 FabriX(GptOss)도 입력 95,232 토큰 제한이므로, 데이터 평면 프롬프트에 `WORKER_MAX_INPUT_TOKENS` 가드 + 전체-폴백 제거(P1) + 노이즈 우선 제거(P0)를 보조로 둔다. ③ **부차** — DB2 introspection 앱 스키마 스코프(위생). D-042 전제 정정·보강. **(주의: POLESTAR=389 테이블 자체가 큰 것은 사실이나, 정상 경로에서는 allowed_tables 5개로 좁혀지므로 그 자체가 원인은 아니다 — 원인은 유사어 확장이 그 좁힘을 무력화한 것.)**
-- **D-052. 재계획 인프라성 에러 가드 + b0 hostname 권위**: replanner는 토큰 초과·연결 실패·undefined name 등 **인프라성 에러를 "결과 0건"으로 오분류하지 않으며**, 그런 task에 대해 "검색 범위 확대" 후속을 생성하지 않는다(범위 확대는 토큰 문제를 악화시킴). 또한 **polestar_b0는 VM 이름과 호스트네임이 동일**하므로 `field=hostname`을 `cmm_resource.hostname`으로 직접 사용하고 gp/yd식 VM명 재매핑을 적용하지 않는다. D-049(무의미 재시도) 확장, Known Mistakes 2026-06-10(gp/yd 재매핑)과 비충돌(대상 DB가 다름).
+- **D-052. 재계획 인프라성 에러 가드 + b0 hostname 권위**: replanner는 토큰 초과·연결 실패·undefined name 등 **인프라성 에러를 "결과 0건"으로 오분류하지 않으며**, 그런 task에 대해 "검색 범위 확대" 후속을 생성하지 않는다(범위 확대는 토큰 문제를 악화시킴). 또한 **polestar_b0는 VM 이름과 호스트네임이 동일**하므로 `field=hostname`을 `cmm_resource.hostname`으로 직접 사용하고 gp/yd식 VM명 재매핑을 적용하지 않는다. D-063(무의미 재시도) 확장, Known Mistakes 2026-06-10(gp/yd 재매핑)과 비충돌(대상 DB가 다름).
 
 ---
 

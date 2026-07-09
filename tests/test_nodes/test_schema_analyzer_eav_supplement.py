@@ -127,7 +127,7 @@ class TestSchemaAnalyzerSynonymsAllowedTables:
         # 1. State/DB 설정
         db_id = "polestar_test"
         sample_state["active_db_id"] = db_id
-        # D-051(Plan 52 §4.★): 유사어 동적 보완은 이번 질의 용어와 매칭될 때만 적용된다.
+        # D-051(Plan 57 §4.★): 유사어 동적 보완은 이번 질의 용어와 매칭될 때만 적용된다.
         # cmm_resource_system의 유사어 "시스템명"이 질의에 등장해야 allowed_tables에 보완된다.
         sample_state["parsed_requirements"] = {
             "query_targets": ["서버", "CPU"],

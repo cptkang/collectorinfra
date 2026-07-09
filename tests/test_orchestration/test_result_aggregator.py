@@ -273,7 +273,7 @@ async def test_result_aggregator_single_passthrough(mock_config):
 
 
 # ──────────────────────────────────────────────
-# test_synthesize (D-048: 딥 에이전트 경로 단일 LLM 합성)
+# test_synthesize (D-062: 딥 에이전트 경로 단일 LLM 합성)
 # ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -281,7 +281,7 @@ async def test_synthesize_merges_into_single_answer(mock_config):
     """synthesize=True + 복합 task → LLM 1회 합성으로 단일 답변(이어붙이기 아님)을 만든다.
 
     회귀 방지: 딥 에이전트가 동일 질문을 재시도하면 collector에 1·2차 결과가 모두 쌓여
-    "없음→있음" 모순 이중 답변이 한 말풍선에 이어붙는다(D-048). 합성으로 단일화한다.
+    "없음→있음" 모순 이중 답변이 한 말풍선에 이어붙는다(D-062). 합성으로 단일화한다.
     """
     tasks = [
         {"task_id": "tool_data_query_1", "agent": "general_inference", "sub_query": "q", "order": 1, "status": "completed"},
@@ -312,7 +312,7 @@ async def test_synthesize_merges_into_single_answer(mock_config):
 async def test_synthesize_suppresses_pertask_streaming(mock_config):
     """합성 모드에서 per-task output_generator는 USER_RESPONSE_TAG를 끄고 호출된다.
 
-    중간 per-task 토큰이 SSE로 새어 합성 전 답변이 보이는 것을 방지(D-048/D-009).
+    중간 per-task 토큰이 SSE로 새어 합성 전 답변이 보이는 것을 방지(D-062/D-009).
     """
     tasks = [
         {"task_id": "tool_data_query_1", "agent": "data_query", "sub_query": "q1", "order": 1, "status": "completed"},

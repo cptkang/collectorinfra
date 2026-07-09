@@ -74,7 +74,7 @@ def _bound_partial(compiled, node_name):
 
 
 def test_orchestration_result_aggregator_wired_with_synthesize(monkeypatch):
-    """다중 의도 오케스트레이션(replanner) 경로의 result_aggregator는 synthesize=True로 배선된다(D-048).
+    """다중 의도 오케스트레이션(replanner) 경로의 result_aggregator는 synthesize=True로 배선된다(D-062).
 
     회귀 방지: 폐쇄망(deepagents 미설치)에서 실제 활성 경로는 deep_agent가 아니라
     intent_planner→agent_orchestrator→replanner→result_aggregator이다. 이 경로의
@@ -235,7 +235,7 @@ async def test_run_deep_agent_step6_aggregates_via_fabrix(monkeypatch):
     # collector 원본 결과가 task_plan/task_results로 전달됨
     assert captured["task_plan"][0]["agent"] == "data_query"
     assert "tool_data_query_1" in captured["task_results"]
-    # 딥 에이전트 경로는 단일 합성 모드로 aggregator를 호출한다(D-048)
+    # 딥 에이전트 경로는 단일 합성 모드로 aggregator를 호출한다(D-062)
     assert captured["synthesize"] is True
 
 

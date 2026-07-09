@@ -259,7 +259,7 @@ async def _aggregate_with_fabrix(
 
     # synthesize=True: 오케스트레이터가 동일 질문을 재시도하면 collector에 1·2차 결과가
     # 모두 쌓인다. deterministic 이어붙이기는 "없음→있음" 모순 이중 답변을 한 말풍선에
-    # 남기므로, LLM 1회로 단일 일관 답변을 합성한다(D-048).
+    # 남기므로, LLM 1회로 단일 일관 답변을 합성한다(D-062).
     out = await result_aggregator(
         agg_state, llm=worker_llm, app_config=app_config, synthesize=True
     )
