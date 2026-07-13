@@ -3241,6 +3241,25 @@ K리전 공동존 **두 DB**를 포괄하는데:
   캐스트**(`AVG(CAST(s.avg_val AS DECIMAL(15,4)))`). `::numeric`은 DB2 문법 오류라 CAST 사용. 2026-07-01
   "b0 정수 표시(SQL 레벨 추정)" 유보 항목 해소. 저장은 동형 솔루션이라 동일(사용자 지적) — SQL 방언 차이.
 
+### 후속 3 (서로 다른 존을 지목하는 다중 hint가 한쪽만 조회 — 지역 배제의 전역 평가 결함)
+
+버그(2026-07-13): "은행 폴스타와 공동존 김포 폴스타의 모든 서버" 폼필에서 `input_parser`가
+`target_db_hints=["은행 폴스타", "공동존 김포 폴스타"]`로 **정확히 파싱**했으나 결과에 은행존(b0)만
+포함되고 공동존 김포(gp)가 누락. 원인: `_resolve_priority_db_ids`의 지역 배제 로직이 db_id별로
+**전체 hint 목록**을 훑어 "경쟁 지역이 하나라도 있으면 배제"했다. 그래서 gp는 "은행" hint(은행존 지목)에
+걸려 배제되고, b0는 "김포" hint(공동존 지목)에 걸려 배제 → priority가 **빔**. 빈 priority에서 폼필 DB가
+active 순서 폴백으로 b0만 선택됨. 단일 존 의도만 가정한 배제 로직이 **다중 존 다중 hint**에서 양쪽을 서로
+지워버린 것.
+
+수정: 지역 배제를 **hint 단위**로 평가(`_hint_excludes_db(hint, db_id)`). 각 db_id는 자신을 배제하지
+않는(=다른 존을 지목하지 않는) hint만 매칭 후보로 사용 → 각 hint가 지목한 DB만 선택되고 union.
+`["은행 폴스타", "공동존 김포 폴스타"]` → `[b0, gp]`. 배제 규칙 자체는 db_id→경쟁지역 테이블
+(`_DB_EXCLUDING_REGIONS`)로 집약(기존 if/elif 분기와 동일 의미). 단일 존 hint·제품명 단독 필터 동작은
+불변(기존 회귀 전부 유지). 이후 `_replicate_mapping_for_multi_location`이 [b0, gp]에 매핑 복제하여 둘 다 조회.
+회귀: `test_gongdongjon_routing.py::TestCrossZoneMultiHint`. 교훈: **"~와/과 …"로 여러 존을 나열하는 hint는
+서로를 배제하면 안 된다 — 배제는 전역이 아니라 hint 단위.** 파싱은 맞아도 라우팅 후처리가 상호 소거할 수 있으니
+다중 hint 케이스를 결과로 실측.
+
 ---
 
 ## D-066. 단일/멀티 DB SQL 생성 경로 동등화 (few-shot 예시·전체조회 LIMIT 공유)
@@ -3559,12 +3578,117 @@ LLM이 예시를 택함 → 월별 분해로 서버 중복 + LOGICALCORE/TotalSi
   직접 조립**해야 안정적. 기간처럼 런타임 값이 필요한 부분만 결정적 파서로 처리하고, 파싱 불가 시에도
   구조(서버당 1행)는 깨지지 않게 설계.
 
+### 결정 (4차 정정: 3차 결정적 빌더가 실 런타임에서 발동조차 안 됐음 — attr_rt 항상 빔)
+
+**증상**: "은행 폴스타와 공동존 김포 폴스타" 폼필에서 라우팅 수정(멀티 DB 활성화, D-065 후속2·후속3) 후
+b0(DB2)=`SQL0245N MAX 모호`, gp(PostgreSQL)=`aggregate functions are not allowed in GROUP BY`로 **둘 다** 실패.
+두 에러 모두 `build_multi_resource_pivot_sql`가 내는 형태가 아니라(그 SQL은 두 엔진 모두 유효 — 실측 검증)
+**LLM 폴백 SQL의 전형적 실수** → 3차 결정적 빌더가 발동하지 않았다는 뜻.
+
+**근본 원인**: 결정적 빌더 게이트 `use_multi_resource_pivot = bool(child_eav)`의 `child_eav`는
+`eav_attr_resource_types(schema_info)`(→`attr_rt`)에 의존하는데, 이 헬퍼가 `pattern["known_attributes"]`만
+읽고 각 항목을 `isinstance(attr, dict)`로 검사했다. 그러나 **실 런타임 로더 `_load_manual_profile`은
+known_attributes를 문자열 리스트로 평탄화**하고 원본 객체(`name`/`description`/resource_type 태그)를
+`known_attributes_detail`에 보존한다(schema_analyzer.py:501). → 런타임에서 `attr_rt`가 **항상 빔** →
+`child_eav=[]` → 결정적 빌더 **한 번도 발동 안 됨**(단일 `_try_build_form_fill_pivot_sql`·멀티 `_generate_sql`
+공통) → 항상 LLM 폴백. **단일 경로(schema_analyzer 노드)도 같은 로더를 쓰므로** 단일 b0 성공은 결정적
+빌더가 아니라 **LLM 폴백이 우연히 유효 SQL을 낸 것**. 멀티는 두 DB 모두 LLM이 잘못된 SQL 생성.
+
+**왜 테스트가 못 잡았나**: `test_multi_resource_pivot.py`가 `known_attributes`를 **dict shape로 직접** 먹여
+헬퍼가 통과했다. 실 런타임의 평탄화 shape(문자열+detail)를 재현하지 않아, 3차 이후 결정적 빌더가
+프로덕션에서 죽어 있는데도 스위트는 초록. (D-066 계열의 "mock 통과·런타임 실패" 재발.)
+
+- **수정**: `eav_attr_resource_types`가 `known_attributes_detail`을 **우선** 읽고, 없으면
+  `known_attributes`로 폴백(원시 dict 구조 메타 호환). 단일 출처 헬퍼라 단일·멀티 경로가 동시에 살아남.
+  이제 gp/b0/yd 모두 `attr_rt` 27건(LOGICALCORE→server.Cpus, TotalSize→server.Memory) → 결정적 빌더가
+  각 DB의 스키마·엔진 방언으로 완성 SQL을 조립 → 이종 엔진 [b0, gp]도 각자 유효 SQL 반환.
+- **회귀 테스트**: 실 런타임 shape(문자열+detail)와 실제 프로필 로드(`_load_manual_profile`) end-to-end
+  단언을 추가(`test_resource_type_map_reads_flattened_known_attributes_detail`,
+  `test_resource_type_map_from_real_manual_profiles`).
+- **교훈**: 결정적 게이트가 **의존하는 데이터의 실 런타임 shape를 반드시 실측**하라 — 로더가 구조를 변형
+  (평탄화)하면 mock 테스트가 통과해도 프로덕션에선 게이트가 죽는다. 부가 필드(`_detail`)를 만드는 변형
+  로더가 있으면, 그 필드를 읽는 소비자와 **양쪽 shape 호환**을 테스트로 고정.
+
+### 결정 (5차: 서버명/서버이름이 EAV Hostname으로 오매핑 — 결정적 교정 가드)
+
+4차로 결정적 빌더가 발동하자, 이제 `column_mapping`이 **글자 그대로** 렌더된다. 그런데 폼 `서버 이름`이
+`column_mapping["서버 이름"]="EAV:Hostname"`으로 매핑돼(생성 SQL:
+`MAX(CASE WHEN cc.name='Hostname' THEN cc.stringvalue_short END) AS "서버 이름"`), `서버 이름`·`호스트네임`
+**둘 다 hostname 값**으로 채워졌다. 프로필은 "'서버명/서버 이름'은 EAV Hostname이 아니라 등록명
+컬럼(cmm_resource.name)"이라 명시하고 EAV Hostname synonyms도 `["EAV호스트명"]`로 축소돼 있으나,
+**전역 유사어 `Hostname:[…,서버명,…]`가 미끼**가 되어 유사어 발견/LLM 추론 단계가 "서버 이름"을 Hostname에
+붙였다(2026-06-10 기록의 `서버명→HOSTNAME` 전역 오염과 동일 계열, 그때는 filter_conditions만 우회).
+
+- **인과**: 이 오매핑은 field_mapper 유사어/LLM 해소의 **기존·지속** 문제로, 4차(attr_rt 복원) 변경이 만든
+  것이 아니다. 다만 결정적 빌더 활성화로 **잠재 오류가 일관되게 노출**됐다(LLM 경로는 프로필 가이드로 가끔
+  마스킹). 올바른 방향은 LLM 마스킹 복원이 아니라 매핑을 결정적으로 교정.
+- **수정**: 공유 헬퍼 `correct_servername_hostname_mapping(column_mapping, entity_table)` — 필드가
+  서버명/서버이름/장비명/리소스명/등록명류(공백제거·소문자 정규화)인데 `EAV:Hostname`에 붙었으면
+  `<entity>.name`(예: cmm_resource.name)으로 교정. 단일(`_try_build_form_fill_pivot_sql`)·멀티
+  (`_generate_sql`) 두 경로가 분류 직전 호출(D-067 정신). `호스트네임` 등 호스트명 표면어는 name-term이
+  아니라 불변. 유사어/Redis 상태·LLM 변동과 무관한 결정적 가드(비결정 매핑을 결정적으로 교정 — D-055 계열).
+- **권장 후속(코드 아님)**: 전역 `global_synonyms.yaml`의 `HOSTNAME`/EAV `Hostname` words에서 `서버명`·`서버`
+  제거(per-DB D-061/D-066후속2를 전역에 미러) + Redis 유사어 재동기화. 가드가 있으므로 non-blocking.
+- 검증: `correct_servername_hostname_mapping` 단위(교정·호스트네임 불변·정규화·비Hostname 불변·entity 없음
+  no-op) + 피벗 SQL 렌더 단언(`서버 이름`→`c.name`, `호스트네임`→`c.hostname`, `cc.name='Hostname'` 부재),
+  회귀 신규 실패 0, arch exit 0.
+- **교훈**: **결정성은 잠재 매핑 오류를 노출**한다(LLM의 우발적 교정을 제거) — 노출된 오류는 되돌리지 말고
+  결정적 가드로 정면 교정. 프로필이 명시한 규칙(서버명=name)은 유사어 튜닝(Redis 의존·LLM 퍼지)보다
+  **코드 가드로 못박는 것**이 반복 실패를 끝낸다.
+
+### 결정 (6차: 재오염 자기강화 루프 차단 — 등록 가드 + 직접 컬럼 교정 확장)
+
+5차 가드는 폼필 **출력**만 교정했고, Redis 유사어 오염 자체는 남았다. 조사 결과 **자기강화(self-reinforcing)
+루프**가 확인됐다: (1) 전역/EAV 유사어에 `서버명→hostname`이 있음 → (2) field_mapper의 LLM 매핑이 "서버 이름"을
+hostname으로 매핑 → (3) `_register_llm_mappings_to_redis`/`_register_llm_synonym_discoveries_to_redis`/
+`apply_mapping_feedback_to_redis`가 그 매핑을 **사용자 확인 없이 Redis(전역+EAV+per-DB)에 자동 재등록** →
+(4) 오염 강화 → 다음 턴 더 확실히 오매핑. 그래서 per-DB만 청소해도 씨앗에서 재번진다. 또한 5차 교정은
+`EAV:Hostname`만 봐서 **직접 `*.hostname` 컬럼** 매핑(전역/per-DB 컬럼 유사어 경로)은 사각지대였다.
+
+- **수정 A (등록 가드, 재오염 원천 차단)**: 공용 판정 `is_servername_to_hostname(field, column)`으로,
+  서버명/서버이름류 → hostname(직접 컬럼 or EAV) 자동 등록을 **세 등록 함수 전부**에서 거부(skip+log).
+  잘못된 연관이 애초에 Redis에 안 쌓여 루프가 끊긴다. 정상 필드(호스트명→hostname, IP주소 등)는 그대로 등록.
+- **수정 B (교정 확장)**: `correct_servername_hostname_mapping`이 `EAV:Hostname`뿐 아니라 **bare 컬럼명이
+  hostname인 직접 컬럼**(`is_hostname_target`)도 `<entity>.name`으로 교정 → 폼필 출력이 EAV·직접 컬럼 양쪽 안전.
+- 판정 헬퍼(`is_servername_field`/`is_hostname_target`/`is_servername_to_hostname`)를 `query_gen_common`에
+  단일 출처화하여 등록 가드·교정이 동일 규칙을 공유(D-067 정신).
+- **효과**: ① Redis 재오염 안 됨(루프 원천 차단) ② 설령 어디서 오염돼도 폼필 출력은 교정 ③ Redis 일회성 청소로 끝.
+- **주의**: 기존 테스트 `test_register_llm_mappings_to_redis_normal`이 **오염 동작(서버명→HOSTNAME 등록)을
+  정답으로 단언**하고 있었다 → 정상 필드(호스트명)로 교체하고, 차단 회귀(`test_register_blocks_servername_to_hostname`)
+  신설. 검증: 등록 가드 mock 테스트 + 판정/교정 단위(직접 컬럼 포함) 신규, 회귀 신규 실패 0, arch exit 0.
+- **교훈**: LLM 자동등록이 **오염된 입력을 학습해 되쓰면 자기강화 루프**가 된다 — 출력 교정만으론 부족하고
+  **등록(쓰기) 지점에서 결정적으로 차단**해야 근본 종결. 테스트가 버그 동작을 정답으로 굳혀두지 않았는지도 점검.
+
+### 결정 (7차: 이종 엔진 CSV 칼럼 중복 + DB2 통계 스케일 제로필)
+
+이종 엔진 폼필(공동존 gp/yd + 은행존 b0) **CSV 다운로드**에서 두 잔여 관찰:
+
+1. **CSV 칼럼 중복(라틴 대소문자만 다름)**: `IP주소`/`ip주소`·`OS 종류`/`os 종류`·`CPU 평균`/`cpu 평균`처럼
+   중복 칼럼이 생기고 각 존이 자기 표기 칼럼에만 채워짐. **Excel은 정상**(자체 정규화 매칭으로 흡수).
+   원인: **DB2가 결과 칼럼의 라틴 문자를 소문자로 반환** → gp="IP주소" vs b0="ip주소". 순수 한글 칼럼
+   (서버 이름/메모리 용량 등)은 소문자화 대상이 없어 중복 안 됨(관찰과 정확히 일치). `_merge_results`가
+   각 DB 행을 키 그대로 append해 원본 병합(query_results)·그 CSV가 분리됐다. 수정: `_merge_results`가
+   칼럼명을 정규화(소문자·공백/언더스코어 제거) 기준 **canonical 이름(양식 필드 우선, 없으면 첫 등장 키)**으로
+   통일. Excel writer의 정규화 매칭 로직과 동형. 회귀: `test_multi_db_merge.py`.
+2. **DB2 통계 엑셀 제로필(6.51→6.51000000000000000000, CSV는 정상)**: gp는 같은 칼럼에서 정상이므로
+   템플릿 셀 포맷이 아니라 **값 타입** 문제. **DB2 `AVG(DECIMAL)`은 스케일을 크게 확장**(scale~18)해
+   `ROUND(x,2)`로 값은 2자리로 반올림돼도 **타입 스케일이 남아** trailing zero로 직렬화된다(D-066 후속5의
+   `_normalize_cell_value` Decimal→float로도 고스케일 Decimal은 float 변환돼도 원천은 SQL). 수정:
+   `_metric_select_line` DB2 분기를 `CAST(ROUND(AVG/MAX(...), 2) AS DECIMAL(15,2))`로 **스케일 2 고정**
+   (PostgreSQL은 `::numeric` 유지). `decimal_cast_example`도 동일 미러. 회귀: `test_db2_metric_scale_fixed_to_two`.
+- **교훈**: 멀티 엔진 결과 병합은 **엔진별 칼럼명 표기 차이(DB2 소문자화)**를 정규화해 통일해야 CSV/원본이
+  안 깨진다(Excel만 보고 정상으로 오판 금지). DB2 집계는 **스케일 확장**을 최종 CAST로 고정.
+
 ---
 
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-13 | D-068 7차 | **이종 엔진 CSV 칼럼 중복 + DB2 통계 스케일 제로필**: 공동존+은행존 폼필 CSV에서 (1) `IP주소`/`ip주소` 등 라틴 대소문자만 다른 **중복 칼럼**(각 존이 자기 표기에만 채움, Excel은 정상)—원인 **DB2가 결과 칼럼 라틴 문자를 소문자로 반환**, 순수 한글 칼럼은 무영향. 수정 `_merge_results`가 정규화 기준 canonical(양식 필드) 이름으로 통일. (2) **DB2 통계 엑셀 제로필**(6.51→6.51000…, CSV 정상, gp 같은 칼럼 정상=값 타입 문제)—원인 **DB2 `AVG(DECIMAL)` 스케일 확장**으로 ROUND(x,2)해도 타입 스케일 잔존. 수정 `_metric_select_line` DB2를 `CAST(ROUND(...,2) AS DECIMAL(15,2))`로 스케일 고정(PG는 ::numeric 유지). 교훈: 멀티 엔진 병합은 엔진별 칼럼 표기차(DB2 소문자화) 정규화 필수(Excel만 보고 오판 금지), DB2 집계 스케일은 최종 CAST 고정. 수정 `nodes/multi_db_executor.py`·`utils/query_gen_common.py`. 검증 `test_multi_db_merge.py`+`test_db2_metric_scale_fixed_to_two`, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 7차. |
+| 2026-07-13 | D-068 6차 | **재오염 자기강화 루프 차단(등록 가드) + 직접 컬럼 교정 확장**: 5차 가드는 폼필 출력만 교정, Redis 유사어 오염은 잔존. 루프 확인: 전역/EAV에 `서버명→hostname` 존재 → LLM이 "서버 이름"을 hostname 매핑 → `_register_llm_mappings_to_redis`/`_register_llm_synonym_discoveries_to_redis`/`apply_mapping_feedback_to_redis`가 **사용자 확인 없이 자동 재등록**(전역+EAV+per-DB) → 오염 강화 → 재오매핑(per-DB만 청소해도 씨앗에서 재번짐). 또 5차 교정은 `EAV:Hostname`만 봐 **직접 `*.hostname` 컬럼**은 사각지대. 수정: (A) 공용 판정 `is_servername_to_hostname`로 서버명류→hostname(컬럼/EAV) 자동 등록을 **세 등록 함수 전부**에서 거부(재오염 원천 차단), (B) `correct_servername_hostname_mapping`이 직접 hostname 컬럼(`is_hostname_target`)도 `<entity>.name`으로 교정. 판정 헬퍼는 `query_gen_common` 단일 출처. 기존 테스트가 오염 동작(서버명→HOSTNAME 등록)을 정답으로 단언 → 정상 필드로 교체+차단 회귀 신설. 교훈: LLM 자동등록이 오염 입력을 학습해 되쓰면 자기강화 루프 — 출력 교정만으론 부족, **쓰기 지점 결정적 차단** 필요. 수정 `utils/query_gen_common.py`·`document/field_mapper.py`. 검증 신규 단위+mock 등록 가드, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 6차. |
+| 2026-07-13 | D-068 5차 | **서버명/서버이름이 EAV Hostname으로 오매핑 → 서버 이름·호스트네임 둘 다 hostname**: 4차로 결정적 빌더가 발동하자 `column_mapping["서버 이름"]="EAV:Hostname"`이 글자 그대로 렌더(`cc.name='Hostname'`)돼 두 칼럼 모두 hostname 값. 원인: 프로필은 서버명=cmm_resource.name으로 명시하나 **전역 유사어 `Hostname:[…,서버명,…]`가 미끼**가 되어 유사어/LLM 해소가 "서버 이름"을 Hostname에 붙임(2026-06-10 `서버명→HOSTNAME` 전역 오염 동일 계열). 이 오매핑은 field_mapper의 기존·지속 문제(4차 변경이 만든 게 아님)이나 결정성이 잠재 오류를 노출. 수정: 결정적 가드 `correct_servername_hostname_mapping`(서버명/서버이름/장비명/리소스명/등록명류가 EAV:Hostname이면 `<entity>.name`으로 교정)을 단일·멀티 두 경로가 분류 직전 호출, 호스트명 표면어는 불변. 권장 후속: 전역 유사어 `HOSTNAME`/EAV `Hostname`에서 `서버명`·`서버` 제거+Redis 재동기화(가드로 non-blocking). 교훈: 결정성은 잠재 매핑 오류를 노출하니 되돌리지 말고 **프로필 명시 규칙을 코드 가드로 못박아** 유사어 튜닝(Redis/LLM 의존)의 반복 실패를 끝냄. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 신규 단위 6+피벗 렌더 단언, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 5차. |
+| 2026-07-13 | D-068 4차 | **3차 결정적 빌더가 실 런타임에서 발동조차 안 됐음**: "은행+공동존 김포" 폼필(라우팅 수정으로 멀티 활성화 후) b0=`MAX 모호`·gp=`GROUP BY에 집계`로 둘 다 실패 — 둘 다 `build_multi_resource_pivot_sql`가 아니라 **LLM 폴백 SQL**의 실수 → 결정적 빌더 미발동. 원인: 게이트 `child_eav`가 의존하는 `eav_attr_resource_types`가 `known_attributes`(항목=dict 가정)만 읽는데, 실 로더 `_load_manual_profile`은 이를 **문자열로 평탄화**하고 원본을 `known_attributes_detail`에 보존 → 런타임 `attr_rt` **항상 빔** → child_eav=[] → 결정적 빌더 **한 번도 안 돎**(단일·멀티 공통, 단일 b0 성공은 LLM 우연). 테스트는 dict shape만 먹여 통과(mock 통과·런타임 실패). 수정: `eav_attr_resource_types`가 `known_attributes_detail` 우선 읽고 없으면 known_attributes 폴백 → gp/b0/yd attr_rt 27건 복원, 결정적 빌더가 각 DB 방언으로 조립(이종 엔진 각자 유효 SQL). 회귀: 평탄화 shape+실 프로필 로드 end-to-end 단언 추가. 교훈: 결정적 게이트가 의존하는 데이터의 **실 런타임 shape 실측** 필수 — 변형 로더가 있으면 소비자와 양쪽 shape 호환을 테스트로 고정. 수정 `utils/query_gen_common.py`. 상세 `## D-068` 4차. |
 | 2026-07-13 | D-068 | **폼필 EAV 강제 SELECT의 resource_type 인지 다중 리소스 피벗**: 양식 `CPU 코어 수`(LOGICALCORE=server.Cpus)·`메모리 용량`(TotalSize=server.Memory)이 빈칸(공동존 멀티·여의도 단일 공통). 생성 SQL에 `MAX(CASE WHEN cc.name='LOGICALCORE' ...)` 피벗은 있으나 NULL. 원인: EAV 강제 블록(query_generator/multi_db_executor 복제)이 (1) resource_type 구분 없이 `cc.name='...'`만 생성, (2) 조인 힌트가 `value_joins`(Hostname/IPaddress=server.Server만) 기반이라 config를 **서버 행 resource_conf_id에만** 붙임 → 자식 리소스(server.Cpus/Memory) 속성이 영영 NULL. 프로필 query_example엔 올바른 멀티리소스 피벗이 있으나 강제 블록의 틀린 명시 지시가 예시를 이김(사용률 필드 강제 제외 D-066 후속3과 동일 계열). 수정: 공유 헬퍼 `eav_attr_resource_types`(설명 `[resource_type: …]` 파싱)+`build_multi_resource_pivot_block`(자식 EAV 있으면 resource_type 구분 CASE WHEN + `cc.configuration_id=c.resource_conf_id` 조인 + `GROUP BY COALESCE(platform_resource_id,id)` 결정적 생성, 브릿지 조인 금지 명시)을 두 경로가 호출(D-067 정신). 순수 server.Server EAV·비폼필은 기존 블록 유지(회귀 0). **2차 정정(GROUP BY 회귀 대응)**: 1차 config-전용 피벗을 넣자 공동존 재테스트에서 `column "r.name" must appear in the GROUP BY clause`+전체 빈칸 회귀 — 사용률 필드가 미매핑 경로로 **별도 metric 블록**(alias r/s)이 붙어 config 피벗(alias c, GROUP BY)과 alias·스코프 충돌. 프로필 정식 예시는 2-scope(metric 서브쿼리)지만 **단일 스코프로 합쳐도 config·metric 이중 조인이 AVG/MAX에 불변**이라 유효 → `build_multi_resource_pivot_block(metric_fields, db_engine)`로 사용률을 **같은 GROUP BY에 접어 넣고**(`ROUND(AVG/MAX(CASE WHEN c.resource_type=... AND s.definition_name='Utilization' THEN s.avg_val END)…)`+`LEFT JOIN cmm_metric_stat_m s ON s.resource_id=c.id`, 엔진별 소수캐스트), `classify_metric_field`로 골라 미매핑/metric 별도 블록에서 제외(상호배타 게이팅). 결과=identity+config+metric 하나의 GROUP-BY-valid 쿼리. **3차 정정(결정적 SQL 조립)**: 2차(통합 스켈레톤을 프롬프트 강제)도 공동존이 **서버 2~3중 중복(2만건)+config 빈칸** 재발 — 프롬프트 "제안"이 프로필 few-shot("사용률 리스트" 예시=월별 `GROUP BY stat_date`+config PHYSICALCORE만 담는 서브쿼리)과 경쟁해 LLM이 예시를 택함. → 폼필 다중리소스 쿼리(자식 EAV 포함)를 **코드가 runnable SQL로 직접 조립·LLM 우회**: `build_multi_resource_pivot_sql`(스키마 한정·엔진별 캐스트/LIMIT·`resolve_stat_month`로 s.stat_date 기간필터, 단일 GROUP BY=서버당 1행). 멀티 `_generate_sql`은 자식 EAV 감지 시 즉시 return, 단일 `_try_build_form_fill_pivot_sql`은 LLM 전 단락, 재시도 시만 LLM 폴백. **부수 수정**: `_build_user_prompt` 필터링 루프가 누적리스트 `parts`를 `parts=col.split('.')`로 덮어써 `## 사용자 질의`·`## 파싱된 요구사항`이 유실되던 기존 버그를 `col_parts`로 격리(멀티는 `user_parts`라 무해). 미해결: 증상 1(b0 OS 미SELECT)은 매핑 실패 가설 — field_mapper 로그 확인 대기. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 `test_multi_resource_pivot.py` 18건+단일/멀티 실측(서버당 1행·월 미포함·엔진별 SQL), 회귀 신규 실패 0, arch exit 0. 상세 `## D-068`. |
 | 2026-07-09 | D-067 | **재발 방지 드리프트 가드(테스트 전용)**: 같은 결함 반복은 regression이 아니라 **중복**(gp/yd/b0 near-duplicate 프로필 3벌=gp/yd는 567줄 중 실질 1줄 차이 + query_generator/multi_db_executor SQL생성 2벌) → 한 복사본만 패치해 나머지에 잔존(D-061 gp/yd 누락, D-066 경로 비대칭). 근본해소 A(프로필 상속)는 부담 커 보류, 저비용 가드 도입. **B**(`test_polestar_profile_consistency.py`): B-1 3프로필 공통 불변식(EAV Hostname 식별어 없음·name/hostname 분리·월별 metric 예시·환각패턴 없음·source=manual), B-2 gp/yd 등가성(주석 제외 실질차이 allowlist뿐). **C**(`test_query_gen_parity.py::TestCrossPathParity`): 두 경로가 동일 공유헬퍼 참조·예시 주입·LIMIT 대칭. 한계: "아는 결함 재발"만 감지(신규 유형은 불변식 추가 필요). 부정검증(누출·divergence 주입시 실패) 확인. 프로덕션 코드 미변경. 검증 B 16+C 3 통과, arch exit 0. 상세 `## D-067`. |
 | 2026-07-09 | D-066 | **단일/멀티 DB SQL 생성 경로 동등화(few-shot 예시·전체조회 LIMIT 공유)**: "공동존 전체 서버+월간 CPU/메모리 사용률" 폼필이 gp/yd로 매핑됐으나 환각 SQL(`cmm_metric_stat_h` 서버행 직접조인+`definition_name='CPUUtilization'`)로 data_insufficient·NULL·LIMIT 1000. 은행존(b0)은 정상. 근본원인=DB 개수가 경로를 가름(`is_multi_db=len(targets)>1`): 단일(b0)→`_run_single_db_pipeline`→query_generator(프로필 `query_examples` few-shot 주입+"전체" LIMIT 상향+풀 검증)로 올바른 `cmm_metric_stat_m` 피벗 생성; 멀티(gp+yd)→`multi_db_executor`(예시 미주입·default_limit 1000 고정·간이검증)라 field_mapper 가짜 컬럼 매핑을 그대로 따름. b0가 동작한 건 few-shot 예시가 가짜 매핑을 이겼기 때문(스키마 차이 아님). 수정(RC1+RC4): 공용 `src/utils/query_gen_common.py`(`build_query_examples_block`·`resolve_query_limit`)로 두 경로 단일 출처화 — query_generator 인라인 로직 대체(동작 동일), multi_db_executor `_generate_sql`이 예시 append+`effective_limit` 사용. RC2(field_mapper 사용률→가짜컬럼)·RC3(시간단위 _h/_d/_m)는 결과 관찰 후 판단(예시가 _m 기준이라 완화 기대). 수정 `utils/query_gen_common.py`(신규)·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 `test_query_gen_parity.py` 10건+query_generator 회귀 동일. 상세 `## D-066`. |

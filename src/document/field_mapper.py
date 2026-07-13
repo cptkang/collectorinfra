@@ -29,6 +29,7 @@ from src.prompts.field_mapper import (
     FIELD_MAPPER_SYNONYM_DISCOVERY_USER_PROMPT,
 )
 from src.utils.json_extract import extract_json_from_response
+from src.utils.query_gen_common import is_servername_to_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -822,6 +823,12 @@ async def _register_llm_synonym_discoveries_to_redis(
     eav_updated = False
 
     for field, matched_key, match_type in mapped_fields:
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, matched_key):
+            logger.info(
+                "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, matched_key
+            )
+            continue
         try:
             if match_type == "eav":
                 # EAV 매핑: eav_name_synonyms에 필드명 추가 + global에도 등록
@@ -1110,6 +1117,13 @@ async def _register_llm_mappings_to_redis(
         column = detail.get("column", "")
 
         if not field or not column:
+            continue
+
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, column):
+            logger.info(
+                "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, column
+            )
             continue
 
         try:
@@ -1713,6 +1727,13 @@ async def apply_mapping_feedback_to_redis(
         db_id = item.get("db_id")
 
         if not field or not column:
+            continue
+
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, column):
+            logger.info(
+                "유사어 피드백 등록 차단(서버명→hostname 오연관): %s -> %s", field, column
+            )
             continue
 
         try:

@@ -77,6 +77,39 @@ class TestGenericProductTokenDoesNotPullB0:
         ]
 
 
+class TestCrossZoneMultiHint:
+    """서로 다른 존을 지목하는 다중 hint가 각 DB를 모두 선택하는지 (D-065 후속2).
+
+    버그(2026-07-13): "은행 폴스타와 공동존 김포 폴스타의 모든 서버" 폼필에서
+    target_db_hints=["은행 폴스타", "공동존 김포 폴스타"]로 잘 파싱됐으나 결과에 은행존(b0)만
+    포함되고 공동존 김포(gp)가 누락. 원인: 지역 배제 로직이 전체 hint를 훑어, gp는 "은행" hint에
+    걸려 배제되고 b0는 "김포" hint에 걸려 배제 → priority가 비고 폴백으로 b0만 선택.
+    수정: 배제를 hint 단위로 평가.
+    """
+
+    def test_bank_plus_gongdongjon_gimpo_selects_both(self):
+        assert _resolve_priority_db_ids(
+            ["은행 폴스타", "공동존 김포 폴스타"], _ACTIVE
+        ) == ["polestar_b0", "polestar_cm_gp"]
+
+    def test_order_independent(self):
+        assert _resolve_priority_db_ids(
+            ["공동존 김포 폴스타", "은행 폴스타"], _ACTIVE
+        ) == ["polestar_b0", "polestar_cm_gp"]
+
+    def test_bank_plus_gongdongjon_yeouido_selects_both(self):
+        assert _resolve_priority_db_ids(
+            ["은행 폴스타", "공동존 여의도 폴스타"], _ACTIVE
+        ) == ["polestar_b0", "polestar_cm_yd"]
+
+    def test_bank_plus_bare_gongdongjon_selects_all_three(self):
+        assert _resolve_priority_db_ids(["은행", "공동존"], _ACTIVE) == [
+            "polestar_b0",
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+
 class TestMultiLocationReplication:
     """공동존(gp+yd 다중 priority)일 때 매핑이 전 priority DB에 복제돼 둘 다 조회되는지."""
 

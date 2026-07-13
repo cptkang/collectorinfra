@@ -30,6 +30,7 @@ from src.utils.query_gen_common import (
     build_multi_resource_pivot_sql,
     build_query_examples_block,
     classify_metric_field,
+    correct_servername_hostname_mapping,
     decimal_cast_example,
     eav_attr_resource_types,
     resolve_query_limit,
@@ -253,8 +254,9 @@ async def multi_db_executor(
                 execution_time_ms=0,
             ))
 
-    # 전체 병합 결과 생성
-    merged_results = _merge_results(db_results)
+    # 전체 병합 결과 생성 — 엔진별 칼럼명 차이(DB2 소문자화 등)를 양식 필드 기준으로 통일
+    _canonical_fields = list((state.get("column_mapping") or {}).keys())
+    merged_results = _merge_results(db_results, canonical_fields=_canonical_fields)
 
     return {
         "db_results": db_results,
@@ -487,6 +489,14 @@ async def _generate_sql(
                 else:
                     filtered_mapping[field] = col
             column_mapping = filtered_mapping
+
+        # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정
+        # (프로필 확정 규칙, 단일 경로 _try_build_form_fill_pivot_sql와 동등). db_mapping을
+        # 직접 변형하지 않도록 사본에 적용.
+        column_mapping = dict(column_mapping)
+        _sn_eav = _get_eav_pattern(schema_info)
+        if _sn_eav:
+            correct_servername_hostname_mapping(column_mapping, _sn_eav.get("entity_table", ""))
 
         # 정규 매핑과 EAV 매핑 분리
         regular_entries = [
@@ -765,21 +775,45 @@ def _extract_sql(content: str) -> str:
     return content.strip()
 
 
-def _merge_results(db_results: dict[str, list[dict]]) -> list[dict]:
-    """여러 DB의 결과를 하나의 리스트로 병합한다.
+def _merge_results(
+    db_results: dict[str, list[dict]],
+    canonical_fields: list[str] | None = None,
+) -> list[dict]:
+    """여러 DB의 결과를 하나의 리스트로 병합한다(각 행에 _source_db 태그).
 
-    각 행에 _source_db 필드를 추가하여 출처를 표시한다.
+    엔진별 결과 칼럼명 차이(특히 **DB2가 결과 칼럼의 라틴 문자를 소문자로 반환** → gp="IP주소"
+    vs b0="ip주소")로 원본 병합·CSV에서 칼럼이 중복 분리되는 것을 방지한다. 칼럼명을 정규화
+    (소문자·공백/언더스코어 제거) 기준으로 **canonical 이름(양식 필드 우선, 없으면 첫 등장 키)**으로
+    통일한다. Excel writer는 자체 정규화 매칭으로 흡수하지만, 원본 병합(query_results)·그 CSV
+    다운로드는 키를 그대로 써서 분리됐다(D-068 후속).
 
     Args:
         db_results: DB별 쿼리 결과 {db_id: rows}
+        canonical_fields: 양식 필드명 등 canonical 칼럼명 후보(정규화 매칭용, 선택)
 
     Returns:
-        병합된 결과 행 리스트
+        병합된 결과 행 리스트(칼럼명 통일)
     """
+    def _norm(s: object) -> str:
+        return str(s).lower().replace(" ", "").replace("_", "")
+
+    # canonical 후보: 양식 필드명 우선(같은 정규형이면 양식 표기를 대표로)
+    canon_by_norm: dict[str, str] = {}
+    for f in canonical_fields or []:
+        canon_by_norm.setdefault(_norm(f), f)
+
     merged: list[dict] = []
     for db_id, rows in db_results.items():
         for row in rows:
-            tagged_row = dict(row)
+            tagged_row: dict = {}
+            for key, value in row.items():
+                nk = _norm(key)
+                canon = canon_by_norm.get(nk)
+                if canon is None:
+                    # 양식 필드에 없으면 첫 등장 키를 대표로 고정 → 이후 동일 정규형은 이 표기로 통일
+                    canon = key
+                    canon_by_norm[nk] = key
+                tagged_row[canon] = value
             tagged_row["_source_db"] = db_id
             merged.append(tagged_row)
     return merged

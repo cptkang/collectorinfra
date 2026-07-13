@@ -13,7 +13,10 @@ from src.utils.query_gen_common import (
     build_multi_resource_pivot_block,
     build_multi_resource_pivot_sql,
     classify_metric_field,
+    correct_servername_hostname_mapping,
     eav_attr_resource_types,
+    is_hostname_target,
+    is_servername_to_hostname,
     resolve_stat_month,
 )
 
@@ -55,6 +58,152 @@ def test_resource_type_map_extracted_from_description():
 def test_resource_type_map_empty_when_no_meta():
     assert eav_attr_resource_types(None) == {}
     assert eav_attr_resource_types({}) == {}
+
+
+def test_resource_type_map_reads_flattened_known_attributes_detail():
+    """`_load_manual_profile`이 known_attributes를 문자열로 평탄화한 실 런타임 shape에서도
+    resource_type을 추출하는지(회귀). 원본 객체는 known_attributes_detail에 보존된다.
+
+    버그(2026-07-13): eav_attr_resource_types가 known_attributes(평탄화 후 문자열)만 읽어
+    실 런타임에서 attr_rt가 항상 비었고, 폼필 결정적 피벗이 발동하지 않아 LLM 폴백으로
+    떨어져 SQL 에러(단일/멀티 공통). 기존 단위 테스트는 dict shape만 먹여 이 결함을 못 잡음.
+    """
+    flattened = {
+        "_structure_meta": {
+            "patterns": [
+                {
+                    "type": "eav",
+                    # _load_manual_profile 변환 결과: 문자열 리스트 + 원본 detail 보존
+                    "known_attributes": ["OSType", "LOGICALCORE", "TotalSize"],
+                    "known_attributes_detail": [
+                        {"name": "OSType", "description": "운영체제 [resource_type: server.Server]"},
+                        {"name": "LOGICALCORE", "description": "논리코어 [resource_type: server.Cpus]"},
+                        {"name": "TotalSize", "description": "메모리 [resource_type: server.Memory]"},
+                    ],
+                }
+            ]
+        }
+    }
+    rt = eav_attr_resource_types(flattened)
+    assert rt["LOGICALCORE"] == "server.Cpus"
+    assert rt["TOTALSIZE"] == "server.Memory"
+
+
+class TestCorrectServernameHostnameMapping:
+    """서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 교정하는지 (D-068 후속).
+
+    버그(2026-07-13): 폼 '서버 이름'이 field_mapper에서 EAV:Hostname으로 매핑돼(전역 유사어
+    Hostname:[서버명] 미끼 + LLM 비결정) 생성 SQL이
+    `MAX(CASE WHEN cc.name='Hostname' THEN cc.stringvalue_short END) AS "서버 이름"` →
+    '서버 이름'·'호스트네임' 둘 다 hostname으로 채워짐. 프로필 확정 규칙(서버명=name)을 결정적 교정.
+    """
+
+    def test_servername_eav_hostname_corrected_to_name(self):
+        cm = {"서버 이름": "EAV:Hostname"}
+        correct_servername_hostname_mapping(cm, "cmm_resource")
+        assert cm["서버 이름"] == "cmm_resource.name"
+
+    def test_hostname_field_untouched(self):
+        cm = {"호스트네임": "EAV:Hostname", "호스트명": "cmm_resource.hostname"}
+        correct_servername_hostname_mapping(cm, "cmm_resource")
+        # 호스트명 표면어는 name-term이 아니므로 건드리지 않음
+        assert cm["호스트네임"] == "EAV:Hostname"
+        assert cm["호스트명"] == "cmm_resource.hostname"
+
+    def test_name_term_variants_and_normalization(self):
+        cm = {
+            "서버명": "EAV:Hostname",
+            "서버이름": "EAV:hostname",  # 대소문자 무관
+            "장비명": "EAV:Hostname",
+            "리소스명": "EAV:Hostname",
+        }
+        correct_servername_hostname_mapping(cm, "cmm_resource")
+        assert all(v == "cmm_resource.name" for v in cm.values())
+
+    def test_non_hostname_eav_untouched(self):
+        # 서버명이 다른 EAV 속성에 붙은 경우(비정상이지만)는 이 가드 범위 밖 — Hostname만 교정
+        cm = {"서버명": "EAV:SomethingElse", "CPU 코어 수": "EAV:LOGICALCORE"}
+        correct_servername_hostname_mapping(cm, "cmm_resource")
+        assert cm["서버명"] == "EAV:SomethingElse"
+        assert cm["CPU 코어 수"] == "EAV:LOGICALCORE"
+
+    def test_no_entity_table_noop(self):
+        cm = {"서버 이름": "EAV:Hostname"}
+        correct_servername_hostname_mapping(cm, "")
+        assert cm["서버 이름"] == "EAV:Hostname"
+
+    def test_direct_hostname_column_corrected(self):
+        """EAV뿐 아니라 직접 `*.hostname` 컬럼 매핑도 교정한다(가드 사각지대 제거, D-068 후속).
+
+        전역/per-DB 유사어가 서버명을 hostname 직접 컬럼에 붙이면 field_mapper가 EAV가 아닌
+        직접 컬럼으로 매핑할 수 있고, 이 경우 EAV 전용 가드로는 못 잡았다.
+        """
+        cm = {
+            "서버 이름": "polestar.cmm_resource.hostname",  # 스키마 접두사 포함 직접 컬럼
+            "서버명": "cmm_resource.hostname",
+            "호스트네임": "polestar.cmm_resource.hostname",  # 호스트명 표면어 → 유지
+        }
+        correct_servername_hostname_mapping(cm, "cmm_resource")
+        assert cm["서버 이름"] == "cmm_resource.name"
+        assert cm["서버명"] == "cmm_resource.name"
+        assert cm["호스트네임"] == "polestar.cmm_resource.hostname"
+
+
+class TestServernameHostnamePredicates:
+    """is_hostname_target / is_servername_to_hostname 판정 (등록 가드·교정 공용)."""
+
+    def test_is_hostname_target(self):
+        assert is_hostname_target("EAV:Hostname")
+        assert is_hostname_target("EAV:hostname")
+        assert is_hostname_target("cmm_resource.hostname")
+        assert is_hostname_target("polestar.cmm_resource.hostname")
+        assert is_hostname_target("polestar_b0:cmm_resource.HOSTNAME")
+        assert not is_hostname_target("cmm_resource.name")
+        assert not is_hostname_target("EAV:LOGICALCORE")
+        assert not is_hostname_target("")
+
+    def test_is_servername_to_hostname(self):
+        # 서버명류 → hostname : 차단/교정 대상
+        assert is_servername_to_hostname("서버 이름", "EAV:Hostname")
+        assert is_servername_to_hostname("서버명", "polestar.cmm_resource.hostname")
+        assert is_servername_to_hostname("장비명", "cmm_resource.hostname")
+        # 호스트명 표면어·정상 매핑 : 대상 아님
+        assert not is_servername_to_hostname("호스트네임", "EAV:Hostname")
+        assert not is_servername_to_hostname("서버 이름", "cmm_resource.name")
+        assert not is_servername_to_hostname("CPU 코어 수", "EAV:LOGICALCORE")
+
+
+def test_pivot_sql_servername_renders_name_not_hostname():
+    """교정 후 결정적 피벗 SQL에서 '서버 이름'이 c.name으로, '호스트네임'이 c.hostname으로 렌더."""
+    cm = {"서버 이름": "EAV:Hostname", "호스트네임": "cmm_resource.hostname"}
+    correct_servername_hostname_mapping(cm, "cmm_resource")
+    regular = [(f, c) for f, c in cm.items() if not c.startswith("EAV:")]
+    eav_pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+    sql = build_multi_resource_pivot_sql(
+        regular, [], [("CPU 코어 수", "LOGICALCORE", "server.Cpus")], eav_pattern,
+        db_engine="postgresql",
+    )
+    assert 'THEN c.name END) AS "서버 이름"' in sql
+    assert 'THEN c.hostname END) AS "호스트네임"' in sql
+    assert "cc.name='Hostname'" not in sql  # 서버 이름이 EAV Hostname으로 남지 않음
+
+
+def test_resource_type_map_from_real_manual_profiles():
+    """실제 폴스타 프로필(gp/b0/yd)을 _load_manual_profile로 로드했을 때 attr_rt가
+    채워지는지 — 실 런타임 경로 end-to-end 회귀(mock 아님)."""
+    from src.nodes.schema_analyzer import _load_manual_profile
+
+    for db_id in ("polestar_cm_gp", "polestar_b0", "polestar_cm_yd"):
+        prof = _load_manual_profile(db_id)
+        if prof is None:
+            continue  # 프로필 미존재 환경에서는 스킵
+        schema_info = {
+            "_structure_meta": {k: v for k, v in prof.items() if k != "source"}
+        }
+        attr_rt = eav_attr_resource_types(schema_info)
+        assert attr_rt, f"{db_id}: attr_rt가 비어 폼필 결정적 피벗이 발동하지 않음"
+        assert attr_rt.get("LOGICALCORE") == "server.Cpus"
+        assert attr_rt.get("TOTALSIZE") == "server.Memory"
 
 
 def test_child_resource_pivot_uses_correct_resource_type():
@@ -197,6 +346,20 @@ class TestDeterministicPivotSql:
         assert "CAST(s.avg_val AS DECIMAL(15,4))" in sql
         assert "::numeric" not in sql
         assert sql.rstrip().endswith("FETCH FIRST 100000 ROWS ONLY;")
+
+    def test_db2_metric_scale_fixed_to_two(self):
+        """DB2 사용률 집계는 최종 `CAST(... AS DECIMAL(15,2))`로 스케일 고정(엑셀 제로필 방지, D-068 후속).
+
+        DB2 `AVG(DECIMAL)`은 스케일을 크게 확장해 ROUND(x,2)로 값은 맞아도 타입 스케일이 남아
+        6.51000000000000000000처럼 직렬화된다. 외부 CAST로 scale 2 고정.
+        """
+        sql = self._sql(db_engine="db2", db_schema="POLESTAR")
+        assert "CAST(ROUND(AVG(" in sql
+        assert "AS DECIMAL(15,2)) AS" in sql
+        # PostgreSQL은 ::numeric 사용 — 외부 DECIMAL 캐스트 없음
+        pg = self._sql(db_engine="postgresql", db_schema="polestar")
+        assert "AS DECIMAL(15,2))" not in pg
+        assert "::numeric, 2)" in pg
 
     def test_stat_month_filter_applied(self):
         sql = self._sql(db_engine="postgresql", stat_month="202606")
