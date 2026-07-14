@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>로그인 - 인프라 데이터 조회 에이전트</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .auth-container {
@@ -139,9 +140,16 @@
         var errorEl = document.getElementById("loginError");
         var loginBtn = document.getElementById("loginBtn");
 
-        // 이미 로그인된 경우 메인으로 이동
+        // Plan 59-a §3: 로그인 후 복귀 경로(next). 오픈 리다이렉트 방지 — 같은 출처 상대경로("/…")만 허용.
+        function safeNext() {
+            var n = new URLSearchParams(window.location.search).get("next");
+            if (n && n.charAt(0) === "/" && n.charAt(1) !== "/") return n;
+            return "/";
+        }
+
+        // 이미 로그인된 경우 복귀 경로(또는 메인)로 이동
         if (localStorage.getItem("user_token")) {
-            window.location.href = "/";
+            window.location.href = safeNext();
             return;
         }
 
@@ -170,7 +178,7 @@
             .then(function(data) {
                 localStorage.setItem("user_token", data.access_token);
                 localStorage.setItem("user_info", JSON.stringify(data.user));
-                window.location.href = "/";
+                window.location.href = safeNext();
             })
             .catch(function(err) {
                 errorEl.textContent = err.message;

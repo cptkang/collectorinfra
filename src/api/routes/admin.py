@@ -14,7 +14,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from src.api.routes.admin_auth import require_admin
+from src.api.dependencies import require_admin_user
+from src.domain.user import UserRole, UserStatus
 from src.api.schemas import (
     UpdatePermissionsRequest,
     UpdateUserRequest,
@@ -297,7 +298,7 @@ def _update_dbhub_toml(
     response_model=EnvSettingsResponse,
 )
 async def get_settings(
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> EnvSettingsResponse:
     """환경변수 설정 목록을 조회한다.
 
@@ -334,7 +335,7 @@ async def get_settings(
 )
 async def update_settings(
     body: EnvUpdateRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> EnvUpdateResponse:
     """환경변수 설정을 수정한다.
 
@@ -378,7 +379,7 @@ async def update_settings(
     response_model=DbConfigResponse,
 )
 async def get_db_config(
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> DbConfigResponse:
     """DB 연결 설정을 조회한다.
 
@@ -410,7 +411,7 @@ async def get_db_config(
 )
 async def update_db_config(
     body: DbConfigUpdateRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> DbConfigUpdateResponse:
     """DB 연결 설정을 수정한다.
 
@@ -465,7 +466,7 @@ async def update_db_config(
 )
 async def test_db_connection(
     body: DbTestRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> DbTestResponse:
     """DB 연결을 테스트한다.
 
@@ -527,13 +528,31 @@ async def test_db_connection(
 # --- 엔드포인트: 사용자 관리 ---
 
 
+async def _ensure_not_last_active_admin(user_repo, target_user_id: str) -> None:
+    """대상 사용자를 강등/비활성화/삭제해도 활성 관리자가 최소 1명 남는지 확인한다.
+
+    통합 RBAC(D-069)에서 role==admin이 실제 어드민 접근을 열므로, 마지막 관리자를
+    잃으면 아무도 어드민 페이지에 못 들어가는 자기 잠금이 발생한다. 이를 차단한다.
+    """
+    users = await user_repo.list_all()
+    other_admins = [
+        u for u in users
+        if u.role == UserRole.ADMIN and u.is_active and u.user_id != target_user_id
+    ]
+    if not other_admins:
+        raise HTTPException(
+            status_code=409,
+            detail="최소 1명의 활성 관리자가 필요합니다. 마지막 관리자는 강등·비활성화·삭제할 수 없습니다.",
+        )
+
+
 @router.get(
     "/admin/users",
     response_model=list[UserInfoResponse],
 )
 async def list_users(
     request: Request,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> list[UserInfoResponse]:
     """사용자 목록을 조회한다.
 
@@ -556,6 +575,8 @@ async def list_users(
             role=u.role.value,
             department=u.department,
             allowed_db_ids=u.allowed_db_ids,
+            alarm_zones=u.alarm_zones,
+            is_protected=u.is_protected,
             status=u.status.value,
             last_login_at=u.last_login_at.isoformat() if u.last_login_at else None,
         )
@@ -571,7 +592,7 @@ async def update_user(
     request: Request,
     user_id: str,
     body: UpdateUserRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> UserInfoResponse:
     """사용자 정보를 수정한다 (역할/상태/부서 등).
 
@@ -591,25 +612,41 @@ async def update_user(
     if not user_repo:
         raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
 
-    from src.domain.user import UserRole, UserStatus
-
     user = await user_repo.get_by_user_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
+    # 보호 root 계정: 역할·상태는 변경 불가(부서·알림그룹 등 비권한 필드는 허용) — Plan 59-a §9
+    if user.is_protected and (body.role is not None or body.status is not None):
+        raise HTTPException(
+            status_code=403,
+            detail="보호된 root 계정의 역할·상태는 변경할 수 없습니다.",
+        )
+
     if body.username is not None:
         user.username = body.username
     if body.role is not None:
-        user.role = UserRole(body.role)
+        new_role = UserRole(body.role)
+        # 최소-1-admin 가드: 마지막 활성 관리자를 강등하지 못하게 한다(D-069)
+        if user.role == UserRole.ADMIN and new_role != UserRole.ADMIN:
+            await _ensure_not_last_active_admin(user_repo, user_id)
+        user.role = new_role
     if body.department is not None:
         user.department = body.department
+    if body.alarm_zones is not None:
+        from src.routing.zones import normalize_zones
+        user.alarm_zones = normalize_zones(body.alarm_zones)
     if body.status is not None:
-        user.status = UserStatus(body.status)
+        new_status = UserStatus(body.status)
+        # 관리자를 비활성/잠금으로 바꾸는 것도 접근 회수이므로 동일 가드
+        if user.role == UserRole.ADMIN and new_status != UserStatus.ACTIVE:
+            await _ensure_not_last_active_admin(user_repo, user_id)
+        user.status = new_status
         if body.status == "active":
             user.login_fail_count = 0
 
     await user_repo.update(user)
-    logger.info("관리자가 사용자 수정: %s (by %s)", user_id, _username)
+    logger.info("관리자가 사용자 수정: %s (by %s)", user_id, _admin.get("sub"))
 
     return UserInfoResponse(
         user_id=user.user_id,
@@ -617,6 +654,8 @@ async def update_user(
         role=user.role.value,
         department=user.department,
         allowed_db_ids=user.allowed_db_ids,
+        alarm_zones=user.alarm_zones,
+        is_protected=user.is_protected,
         status=user.status.value,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
     )
@@ -628,7 +667,7 @@ async def update_user(
 async def delete_user(
     request: Request,
     user_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """사용자를 삭제한다.
 
@@ -647,11 +686,20 @@ async def delete_user(
     if not user_repo:
         raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
 
-    if not await user_repo.exists(user_id):
+    target = await user_repo.get_by_user_id(user_id)
+    if not target:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
+    # 보호 root 계정은 삭제 불가(Plan 59-a §9)
+    if target.is_protected:
+        raise HTTPException(status_code=403, detail="보호된 root 계정은 삭제할 수 없습니다.")
+
+    # 최소-1-admin 가드: 마지막 활성 관리자는 삭제 불가(D-069)
+    if target.role == UserRole.ADMIN and target.is_active:
+        await _ensure_not_last_active_admin(user_repo, user_id)
+
     await user_repo.delete(user_id)
-    logger.info("관리자가 사용자 삭제: %s (by %s)", user_id, _username)
+    logger.info("관리자가 사용자 삭제: %s (by %s)", user_id, _admin.get("sub"))
 
     return {"message": f"사용자 '{user_id}'가 삭제되었습니다."}
 
@@ -662,7 +710,7 @@ async def delete_user(
 async def reset_user_password(
     request: Request,
     user_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """사용자 비밀번호를 초기화한다.
 
@@ -684,6 +732,13 @@ async def reset_user_password(
     if not user:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
+    # 보호 root 계정은 관리자 강제 PW초기화 불가(본인은 /auth/password로 변경) — Plan 59-a §9
+    if user.is_protected:
+        raise HTTPException(
+            status_code=403,
+            detail="보호된 root 계정은 비밀번호를 초기화할 수 없습니다.",
+        )
+
     import secrets
 
     from src.utils.password import hash_password
@@ -696,7 +751,7 @@ async def reset_user_password(
         user.status = UserStatus.ACTIVE
 
     await user_repo.update(user)
-    logger.info("관리자가 비밀번호 초기화: %s (by %s)", user_id, _username)
+    logger.info("관리자가 비밀번호 초기화: %s (by %s)", user_id, _admin.get("sub"))
 
     return {
         "message": f"사용자 '{user_id}'의 비밀번호가 초기화되었습니다.",
@@ -712,7 +767,7 @@ async def update_user_permissions(
     request: Request,
     user_id: str,
     body: UpdatePermissionsRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> UserInfoResponse:
     """사용자의 DB 접근 권한을 수정한다.
 
@@ -737,7 +792,7 @@ async def update_user_permissions(
     await user_repo.update(user)
     logger.info(
         "관리자가 사용자 권한 수정: %s -> allowed_db_ids=%s (by %s)",
-        user_id, body.allowed_db_ids, _username,
+        user_id, body.allowed_db_ids, _admin.get("sub"),
     )
 
     return UserInfoResponse(
@@ -759,7 +814,7 @@ async def get_audit_logs(
     user_id: Optional[str] = None,
     event_type: Optional[str] = None,
     limit: int = 100,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> list[dict]:
     """감사 로그를 조회한다.
 
@@ -802,7 +857,7 @@ async def get_audit_logs_paginated(
     keyword: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> AuditLogPageResponse:
     """확장된 감사 로그 조회 (페이지네이션, 필터).
 
@@ -867,7 +922,7 @@ async def get_audit_stats(
     request: Request,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """감사 통계를 반환한다.
 
@@ -900,7 +955,7 @@ async def get_user_activity(
     request: Request,
     user_id: str,
     limit: int = 100,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> list[dict]:
     """특정 사용자의 활동 이력을 반환한다.
 
@@ -934,7 +989,7 @@ async def get_user_activity(
 async def get_security_alerts(
     request: Request,
     limit: int = 100,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> list[dict]:
     """보안 경고 목록을 반환한다.
 
@@ -956,3 +1011,36 @@ async def get_security_alerts(
         return await audit_repo.query_logs(
             event_type="security_alert", limit=min(limit, 500),
         )
+
+
+@router.post(
+    "/admin/audit/cleanup",
+)
+async def cleanup_audit_logs(
+    request: Request,
+    retention_days: Optional[int] = None,
+    _admin: dict = Depends(require_admin_user),
+) -> dict:
+    """보관 기간이 지난 감사 로그를 즉시 삭제한다(Plan 59-a §11, 수동 트리거).
+
+    retention_days 미지정 시 설정값(AuditConfig.retention_days)을 사용한다.
+
+    Returns:
+        {"deleted": 삭제 건수, "retention_days": 적용 보관일수}
+    """
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if not audit_repo:
+        raise HTTPException(status_code=503, detail="감사 저장소를 사용할 수 없습니다.")
+
+    days = retention_days if retention_days is not None else request.app.state.config.audit.retention_days
+    if days is None or days <= 0:
+        raise HTTPException(status_code=400, detail="보관 일수는 1 이상이어야 합니다.")
+
+    try:
+        deleted = await audit_repo.cleanup_old_logs(days)
+    except Exception as e:
+        logger.error("감사 로그 정리 실패: %s", e)
+        raise HTTPException(status_code=500, detail="감사 로그 정리 중 오류가 발생했습니다.")
+
+    logger.info("관리자 감사 로그 정리: %s일 경과 %s건 삭제 (by %s)", days, deleted, _admin.get("sub"))
+    return {"deleted": deleted, "retention_days": days}

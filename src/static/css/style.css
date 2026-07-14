@@ -228,6 +228,41 @@ header nav {
        부드러운 이동은 "맨 아래로" 버튼 클릭 시에만 국소 적용한다. */
 }
 
+/* ─── §15: 초기 인증 게이트 (FOUC 방지) ─── */
+
+/* 인증 확정 전까지 앱 셸(header + chat-layout)을 숨긴다. app.js revealApp()가 해제. */
+body.auth-pending > header,
+body.auth-pending > .chat-layout {
+    visibility: hidden;
+}
+
+.auth-splash {
+    display: none;
+}
+
+body.auth-pending .auth-splash {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-deep);
+}
+
+.auth-splash-spinner {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 3px solid var(--surface-active, #24344f);
+    border-top-color: var(--accent);
+    animation: authSplashSpin 0.8s linear infinite;
+}
+
+@keyframes authSplashSpin {
+    to { transform: rotate(360deg); }
+}
+
 /* ─── Scroll-to-bottom Floating Button ─── */
 
 .scroll-to-bottom-btn {
@@ -286,9 +321,23 @@ header nav {
     border-color: var(--accent);
 }
 
+/* §16: 진행상황 패널 전용 "맨 아래로" 버튼 (패널 우하단 고정, 크기 축소) */
+.scroll-to-bottom-btn--panel {
+    bottom: 16px;
+    right: 16px;
+    width: 34px;
+    height: 34px;
+}
+
+/* 패널이 접히면 버튼도 숨긴다(§16.4) */
+.chat-layout.panel-collapsed .scroll-to-bottom-btn--panel {
+    display: none;
+}
+
 /* ─── Right Progress Panel ─── */
 
 .progress-panel {
+    position: relative;      /* 패널 전용 스크롤 버튼(absolute)의 기준 */
     display: flex;
     flex-direction: column;
     background: var(--bg-deep);
@@ -1044,6 +1093,107 @@ header nav {
     stroke-width: 2;
 }
 
+/* §14: 첨부 파일 카드 (말풍선 "위"에 분리, 카카오톡 스타일). 클릭 시 원본 양식 다운로드. */
+.message-file-card {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    margin-bottom: 6px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    text-align: left;
+    text-decoration: none;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+/* 사용자 메시지(우측 정렬)에서 카드가 우측에 붙도록 */
+.message--user .message-content .message-file-card {
+    text-align: left;
+}
+
+/* href가 아직 주입되지 않은(응답 대기) 상태에서는 클릭 커서를 기본으로 */
+.message-file-card[data-attachment-pending] {
+    cursor: default;
+}
+
+.message-file-card:hover:not([data-attachment-pending]) {
+    background: var(--surface-hover);
+    border-color: var(--border-accent);
+    box-shadow: 0 0 12px rgba(0, 230, 184, 0.15);
+}
+
+.message-file-card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
+    background: var(--accent-glow);
+    color: var(--accent);
+}
+
+.message-file-card-icon svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+}
+
+.message-file-card-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+}
+
+.message-file-card-name {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.message-file-card-size {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    color: var(--text-muted);
+}
+
+.message-file-card-download {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-left: 4px;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+}
+
+.message-file-card:hover:not([data-attachment-pending]) .message-file-card-download {
+    opacity: 1;
+    color: var(--accent);
+}
+
+.message-file-card-download svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+}
+
 /* ─── Message Meta (SQL, download, etc.) ─── */
 
 .message-meta {
@@ -1166,6 +1316,28 @@ header nav {
     gap: 8px;
     margin-top: 10px;
     flex-wrap: wrap;
+}
+
+/* §12: 응답 중단 안내 라인 (에이전트 말풍선 하단, 작은 회색 텍스트) */
+.message-interrupted-note {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    opacity: 0.85;
+}
+
+/* §13: 다운로드(엑셀/양식)·CSV 버튼 간격 래퍼 (mapping-report-actions와 동일 패턴) */
+.message-download-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+/* 래퍼 내부 버튼은 자체 margin-top 없이 gap으로만 정렬 (이중 여백 방지) */
+.message-download-actions .message-download {
+    margin-top: 0;
 }
 
 .message-download--csv {
@@ -1753,6 +1925,23 @@ header nav {
 .input-btn--send svg {
     width: 16px;
     height: 16px;
+}
+
+/* §11: 전송 버튼이 중단(Stop) 모드일 때 — 빨강 계열, 클릭 가능 유지 */
+.input-btn--send.input-btn--stop {
+    background: var(--error);
+    color: #fff;
+}
+
+.input-btn--send.input-btn--stop:hover {
+    background: #fb7185;
+    box-shadow: 0 0 16px rgba(244, 63, 94, 0.35);
+}
+
+.input-btn--send.input-btn--stop svg {
+    stroke: currentColor;
+    fill: currentColor;
+    stroke-width: 0;
 }
 
 /* Hint below input */

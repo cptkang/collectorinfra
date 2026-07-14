@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from src.api.dependencies import get_current_user, require_user
 from src.api.schemas import (
@@ -50,7 +50,8 @@ def _create_user_token(user_id: str, username: str, role: str, config) -> tuple[
         "iat": datetime.now(timezone.utc),
         "type": "user",
     }
-    token = jwt.encode(payload, config.admin.jwt_secret, algorithm="HS256")
+    # D-070: 사용자 토큰은 auth.jwt_secret으로 서명(운영자 시크릿과 분리)
+    token = jwt.encode(payload, config.auth.jwt_secret, algorithm="HS256")
     return token, expires_in
 
 
@@ -112,6 +113,7 @@ async def auth_status(
             role=current_user.get("role", "user"),
             department=current_user.get("department"),
             allowed_db_ids=current_user.get("allowed_db_ids"),
+            alarm_zones=current_user.get("alarm_zones"),
         )
     elif current_user and current_user.get("sub") == "anonymous" and not config.auth.enabled:
         user_info = UserInfoResponse(
@@ -205,6 +207,7 @@ async def register(
 async def login(
     request: Request,
     body: UserLoginRequest,
+    response: Response,
 ) -> UserLoginResponse:
     """사용자 로그인.
 
@@ -274,6 +277,18 @@ async def login(
         user.user_id, user.username, user.role.value, config
     )
 
+    # Plan 59 §17: 알림 SSE(EventSource)는 Authorization 헤더를 못 실으므로 HttpOnly 쿠키로도
+    # 토큰을 세팅한다. secure=False는 내부망 HTTP 배포 호환용(HTTPS 배포 시 True 권장).
+    response.set_cookie(
+        key="user_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=expires_in,
+        path="/",
+    )
+
     # 감사 로그
     await _log_audit_event(request, {
         "event_type": "login",
@@ -305,13 +320,15 @@ async def login(
 )
 async def logout(
     request: Request,
+    response: Response,
     current_user: dict = Depends(require_user),
 ) -> dict:
-    """로그아웃. 감사 로그를 기록한다.
+    """로그아웃. 감사 로그를 기록하고 SSE 인증 쿠키를 제거한다.
 
     Phase 1은 클라이언트 측 토큰 삭제 + DB 감사 로그 기록.
     향후 Redis 블랙리스트 확장 가능.
     """
+    response.delete_cookie(key="user_token", path="/")
     await _log_audit_event(request, {
         "event_type": "logout",
         "user_id": current_user.get("sub"),
@@ -336,6 +353,7 @@ async def get_me(
         role=current_user.get("role", "user"),
         department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        alarm_zones=current_user.get("alarm_zones"),
     )
 
 

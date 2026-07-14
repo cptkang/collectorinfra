@@ -92,6 +92,10 @@ def verify_admin_token(
     """
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"])
+        # 권한 상승 차단(Plan 59 §8.1 / D-026 원 의도 강제): 사용자 토큰(type="user")이
+        # 운영자 시크릿과 우연히 검증되더라도 admin 토큰이 아니면 거부한다.
+        if payload.get("type") != "admin":
+            raise HTTPException(status_code=401, detail="관리자 토큰이 아닙니다.")
         username: Optional[str] = payload.get("sub")
         if username is None:
             raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")

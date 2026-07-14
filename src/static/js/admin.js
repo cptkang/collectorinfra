@@ -7,14 +7,18 @@
 (function () {
     "use strict";
 
-    var token = localStorage.getItem("admin_token");
+    // 통합 RBAC(D-069): 사용자 로그인 토큰(role==admin)으로도 어드민 진입을 허용한다.
+    // break-glass 운영자 토큰(admin_token)이 있으면 우선, 없으면 사용자 토큰을 사용한다.
+    var token = localStorage.getItem("admin_token") || localStorage.getItem("user_token");
     var alertError = document.getElementById("alertError");
     var alertSuccess = document.getElementById("alertSuccess");
 
     // --- 인증 확인 ---
 
+    // Plan 59-a §3: 미인증 진입은 break-glass(/admin/login)가 아니라 정상 로그인(/login)으로 유도한다.
+    // /admin/login은 DB 사용자를 인증하지 않으므로(운영자 env 계정 전용) 일반/관리자 계정이 로그인 실패한다.
     if (!token) {
-        window.location.href = "/admin/login";
+        window.location.href = "/login?next=/admin";
         return;
     }
 
@@ -23,15 +27,25 @@
 
     async function verifyToken() {
         try {
-            var response = await apiRequest("GET", "/api/v1/admin/me");
+            // require_admin_user로 보호된 엔드포인트로 검증(운영자 토큰·role==admin 사용자 모두 통과)
+            var response = await apiRequest("GET", "/api/v1/admin/users");
+            if (response.status === 403) {
+                // 로그인은 됐으나 관리자 권한 없음(role==user) → 메인 화면으로
+                window.location.href = "/";
+                return;
+            }
             if (!response.ok) {
-                localStorage.removeItem("admin_token");
-                window.location.href = "/admin/login";
+                redirectUnauthenticated();
             }
         } catch (err) {
-            localStorage.removeItem("admin_token");
-            window.location.href = "/admin/login";
+            redirectUnauthenticated();
         }
+    }
+
+    function redirectUnauthenticated() {
+        // 미인증/만료 토큰 → 정상 로그인으로 유도(break-glass 아님)
+        localStorage.removeItem("admin_token");
+        window.location.href = "/login?next=/admin";
     }
 
     // --- 헬스 체크 ---
@@ -137,9 +151,21 @@
 
     // --- 로그아웃 ---
 
-    document.getElementById("logoutBtn").addEventListener("click", function () {
-        localStorage.removeItem("admin_token");
-        window.location.href = "/admin/login";
+    // Plan 59-a 후속: 대시보드 로그아웃은 **계정 전체 로그아웃**이어야 한다.
+    // - 일반(통합 RBAC) 세션: 서버 쿠키 정리(/auth/logout) + 로컬 토큰 제거 → 일반 로그인(/login).
+    // - break-glass 운영자 세션(admin_token): 운영자 로그인(/admin/login)으로 복귀.
+    document.getElementById("logoutBtn").addEventListener("click", async function () {
+        if (localStorage.getItem("admin_token")) {
+            localStorage.removeItem("admin_token");
+            window.location.href = "/admin/login";
+            return;
+        }
+        try {
+            await apiRequest("POST", "/api/v1/auth/logout");  // HttpOnly 쿠키 정리 + 감사 로그
+        } catch (e) { /* 무시 — 로컬 정리는 계속 진행 */ }
+        localStorage.removeItem("user_token");
+        localStorage.removeItem("user_info");
+        window.location.href = "/login";
     });
 
     // --- 환경변수 설정 ---
@@ -392,24 +418,55 @@
             usersBody.innerHTML = "";
 
             users.forEach(function(u) {
+                var uid = escapeHtml(u.user_id);
+                var prot = !!u.is_protected;                 // 보호 root 계정
+                var protAttr = prot ? " disabled" : "";
+                var isAdmin = u.role === "admin";
+                var zones = u.alarm_zones || [];
+                // 알림그룹: 관리자는 전 존 수신(체크 무의미), 보호 계정도 비활성
+                var zDis = (isAdmin || prot) ? " disabled" : "";
+                var zTitle = isAdmin ? ' title="관리자는 전 존 수신"' : (prot ? ' title="보호된 root 계정"' : "");
+
+                var inputStyle = 'width:100px;font-size:0.75rem;padding:2px 4px;' +
+                    'background:var(--bg-tertiary);color:var(--text-primary);' +
+                    'border:1px solid var(--border);border-radius:4px';
+
+                // 이름(표시명 username) 인라인 편집. 로그인 ID(user_id)는 불변이라 편집 대상 아님.
+                var nameCell =
+                    '<td><input type="text" class="name-input" data-uid="' + uid + '" value="' +
+                    escapeHtml(u.username) + '" style="' + inputStyle + '"></td>';
+
+                var deptCell =
+                    '<td><input type="text" class="dept-input" data-uid="' + uid + '" value="' +
+                    escapeHtml(u.department || "") + '" placeholder="-" style="' + inputStyle + '"></td>';
+
+                var zoneCell =
+                    '<td style="white-space:nowrap;font-size:0.72rem"' + zTitle + '>' +
+                        '<label style="margin-right:8px"><input type="checkbox" class="zone-chk" data-uid="' + uid +
+                            '" data-zone="gongjon"' + (zones.indexOf("gongjon") >= 0 ? " checked" : "") + zDis + '> 공동존</label>' +
+                        '<label><input type="checkbox" class="zone-chk" data-uid="' + uid +
+                            '" data-zone="bankjon"' + (zones.indexOf("bankjon") >= 0 ? " checked" : "") + zDis + '> 은행존</label>' +
+                    '</td>';
+
                 var tr = document.createElement("tr");
                 tr.innerHTML =
-                    "<td>" + escapeHtml(u.user_id) + "</td>" +
-                    "<td>" + escapeHtml(u.username) + "</td>" +
-                    "<td><select class='role-select' data-uid='" + escapeHtml(u.user_id) + "'>" +
+                    "<td>" + uid + (prot ? " 🔒" : "") + "</td>" +
+                    nameCell +
+                    '<td><select class="role-select" data-uid="' + uid + '"' + protAttr + ">" +
                         "<option value='user'" + (u.role === "user" ? " selected" : "") + ">user</option>" +
                         "<option value='admin'" + (u.role === "admin" ? " selected" : "") + ">admin</option>" +
                     "</select></td>" +
-                    "<td><select class='status-select' data-uid='" + escapeHtml(u.user_id) + "'>" +
+                    '<td><select class="status-select" data-uid="' + uid + '"' + protAttr + ">" +
                         "<option value='active'" + (u.status === "active" ? " selected" : "") + ">active</option>" +
                         "<option value='inactive'" + (u.status === "inactive" ? " selected" : "") + ">inactive</option>" +
                         "<option value='locked'" + (u.status === "locked" ? " selected" : "") + ">locked</option>" +
                     "</select></td>" +
-                    "<td>" + escapeHtml(u.department || "-") + "</td>" +
+                    deptCell +
+                    zoneCell +
                     "<td style='font-size:0.75rem'>" + (u.last_login_at ? u.last_login_at.substring(0, 19) : "-") + "</td>" +
                     "<td>" +
-                        "<button class='btn btn-secondary btn-sm reset-pw-btn' data-uid='" + escapeHtml(u.user_id) + "' style='font-size:0.7rem;padding:3px 8px;margin-right:4px'>PW초기화</button>" +
-                        "<button class='btn btn-secondary btn-sm delete-user-btn' data-uid='" + escapeHtml(u.user_id) + "' style='font-size:0.7rem;padding:3px 8px;color:#ef4444'>삭제</button>" +
+                        '<button class="btn btn-secondary btn-sm reset-pw-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;margin-right:4px"' + protAttr + ">PW초기화</button>" +
+                        '<button class="btn btn-secondary btn-sm delete-user-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;color:#ef4444"' + protAttr + ">삭제</button>" +
                     "</td>";
                 usersBody.appendChild(tr);
             });
@@ -420,6 +477,28 @@
             });
             usersBody.querySelectorAll(".status-select").forEach(function(sel) {
                 sel.addEventListener("change", function() { updateUser(sel.dataset.uid, {status: sel.value}); });
+            });
+            // 이름(username) 인라인 편집: 비우면(공백) 되돌림, 아니면 저장
+            usersBody.querySelectorAll(".name-input").forEach(function(inp) {
+                inp.addEventListener("change", function() {
+                    var v = inp.value.trim();
+                    if (!v) { loadUsers(); return; }   // username은 필수(min_length=1)
+                    updateUser(inp.dataset.uid, {username: v});
+                });
+            });
+            // 부서 인라인 편집(개선 4): 값 변경 시 저장
+            usersBody.querySelectorAll(".dept-input").forEach(function(inp) {
+                inp.addEventListener("change", function() { updateUser(inp.dataset.uid, {department: inp.value.trim()}); });
+            });
+            // 알림그룹 체크박스(개선 2): 해당 사용자의 체크 상태를 모아 alarm_zones로 저장(둘 다 해제=[])
+            usersBody.querySelectorAll(".zone-chk").forEach(function(chk) {
+                chk.addEventListener("change", function() {
+                    var uid = chk.dataset.uid;
+                    var sel = (window.CSS && CSS.escape) ? CSS.escape(uid) : uid.replace(/'/g, "\\'");
+                    var checked = usersBody.querySelectorAll(".zone-chk[data-uid='" + sel + "']:checked");
+                    var zones = Array.prototype.map.call(checked, function(c) { return c.dataset.zone; });
+                    updateUser(uid, {alarm_zones: zones});
+                });
             });
             usersBody.querySelectorAll(".reset-pw-btn").forEach(function(btn) {
                 btn.addEventListener("click", function() { resetPassword(btn.dataset.uid); });
@@ -508,6 +587,29 @@
     }
     if (searchLogsBtn) {
         searchLogsBtn.addEventListener("click", function() { currentPage = 1; loadAuditLogs(); });
+    }
+    // 개선 5: 보관 기간 지난 감사 로그 수동 정리
+    var cleanupLogsBtn = document.getElementById("cleanupLogsBtn");
+    if (cleanupLogsBtn) {
+        cleanupLogsBtn.addEventListener("click", async function() {
+            if (!window.confirm("보관 기간이 지난 감사 로그를 삭제합니다. 계속할까요?")) return;
+            cleanupLogsBtn.disabled = true;
+            try {
+                var res = await apiRequest("POST", "/api/v1/admin/audit/cleanup");
+                if (res.ok) {
+                    var d = await res.json();
+                    showSuccess((d.deleted || 0) + "건 삭제 (보관 " + d.retention_days + "일)");
+                    currentPage = 1; loadAuditLogs();
+                } else {
+                    var err = await res.json();
+                    showError(err.detail || "로그 정리 실패");
+                }
+            } catch (e) {
+                showError("로그 정리 중 오류");
+            } finally {
+                cleanupLogsBtn.disabled = false;
+            }
+        });
     }
     if (logsPrevBtn) {
         logsPrevBtn.addEventListener("click", function() {

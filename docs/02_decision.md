@@ -3681,10 +3681,198 @@ hostname으로 매핑 → (3) `_register_llm_mappings_to_redis`/`_register_llm_s
 
 ---
 
+## D-069. 어드민 접근 통합 RBAC (Plan 59 Part A · 방향 A)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (사용자 승인: 방향 A 1안) |
+| **관련 결정** | D-026(사용자 인증·시크릿 공유·type 구분 원의도), D-070(시크릿 분리), D-071(하드닝), D-072(존 RBAC가 재사용) |
+
+### 배경 / 문제
+
+두 개의 독립 인증 체계가 하나의 멘탈 모델로 봉합되지 않은 채 병존했다. (A) 어드민 진입에 별도
+운영자 계정 로그인이 또 필요했고, (B) 회원 리스트의 "어드민 권한 부여"가 무효했다 —
+`UserRole.ADMIN`이 정의만 있고 어떤 게이트도 열지 않는 **죽은 필드**였기 때문(소비처 0건).
+
+### 결정
+
+어드민 접근을 **DB `user.role == ADMIN`**으로 판정한다(통합 RBAC). 고정 운영자 계정은
+**break-glass seed 1개**로 축소한다.
+
+- 신규 `dependencies.require_admin_user` 통합 가드: ① 개발 모드(AUTH_ENABLED=false) 우회
+  (Plan 39 원칙) ② break-glass 운영자 토큰(type="admin", admin 시크릿) 허용(DB 장애 대비)
+  ③ 사용자 토큰 + DB 실시간 role==admin. `admin.py`(15개)·`schema_cache.py`(14개) 엔드포인트를
+  `require_admin`→`require_admin_user`로 교체.
+- 기동 시 활성 관리자 0명이면 env 크레덴셜로 seed admin을 멱등 생성(`server._seed_admin_user`).
+- **최소-1-admin 가드**: 마지막 활성 관리자의 강등·비활성화·삭제 차단(`_ensure_not_last_active_admin`).
+- 프론트: `role==admin`(또는 개발 모드)일 때만 어드민 진입 링크 노출, `admin.js`가 사용자 토큰으로
+  진입 허용(별도 admin_token 없을 때 폴백).
+
+### 근거 / 대안
+
+방향 B(운영자 계정 분리 유지)는 "권한 부여로 어드민 접근"이라는 사용자 기대를 충족 못 함. 방향 A는
+죽은 필드를 부활시켜 사용자 멘탈 모델과 일치. break-glass seed로 DB 장애 시 진입성도 보존(하이브리드).
+
+### 번호
+
+Plan 59는 작성 시점(2026-07-01, 최대 D-056) 기준 D-064를 제안했으나, 이후 폼필 작업이 D-060~D-068을
+소비(2026-07-09~13) → 충돌. 등재 직전 `## D-` 헤더+변경 이력 표+CLAUDE.md grep으로 최대 D-068 확인,
+**D-069** 부여(Known Mistakes 2026-06-25·2026-06-29 번호 규칙 준수).
+
+---
+
+## D-070. 운영자 토큰 type 검증 + 사용자/운영자 시크릿 분리 (권한 상승 차단)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (보안 즉시 수정, 방향 무관) |
+| **관련 결정** | D-026(시크릿 공유+type 구분 원의도가 미구현이었음), D-069 |
+
+### 배경 / 문제 [보안 결함]
+
+`verify_admin_token`이 토큰의 `sub`만 확인하고 **`type`·`role`을 검증하지 않았다.** 그런데 사용자
+토큰도 **동일 시크릿**(`config.admin.jwt_secret`)으로 서명되어(D-026이 "type으로 구분"한다고 결정했으나
+검증이 누락됨), **임의의 일반 사용자 JWT로 모든 `/admin/*`·`schema_cache` 운영자 API를 통과**할 수 있었다
+(`.env` 수정, DB 접속정보 변경, 사용자 삭제, 비밀번호 리셋 등). 프론트에 별도 로그인 폼이 있을 뿐 API
+계층이 이미 뚫려 있었다.
+
+### 결정
+
+- **① `type` 검증**: `verify_admin_token`이 `payload.get("type") != "admin"`이면 401(D-026 원의도 강제).
+  이 한 줄로 사용자 토큰 통과가 즉시 차단된다.
+- **② 시크릿 분리**: `AuthConfig.jwt_secret`(env `AUTH_JWT_SECRET`) 신설. 사용자 토큰은
+  `config.auth.jwt_secret`으로 서명(`_create_user_token`)·검증(`dependencies._verify_user_token`),
+  운영자 토큰은 `config.admin.jwt_secret` 유지 → 교차 서명 자체가 불가.
+- **마이그레이션**: 배포 시 기존 사용자 토큰 무효화(재로그인). 사용자 확인 결과 배포마다 재로그인 수용 →
+  한시적 이중 검증 미도입.
+
+### 근거
+
+①은 방향 선택과 무관한 P0 핫픽스. ②는 심층 방어(시크릿 분리로 교차 서명 원천 차단). 회귀 테스트
+`tests/test_api/test_admin_rbac.py`(사용자 토큰 401 / 운영자 토큰 200 / 시크릿 분리).
+
+---
+
+## D-071. 기본 크레덴셜·시크릿 하드닝 (운영 모드 기동 거부)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (사용자 승인: 강한 거부, JWT 시크릿 사전 기입 권장) |
+| **관련 결정** | D-070, Known Mistakes 2026-06-10(os.getenv가 .env/.encenv 미반영) |
+
+### 결정
+
+- `AdminConfig`의 기본 크레덴셜 `admin`/`admin123`을 **제거**(빈 문자열 기본값).
+- 운영 모드(AUTH_ENABLED=true)에서 크레덴셜·시크릿 미설정 시 **기동 거부**
+  (`server._validate_production_secrets`): `ADMIN_USERNAME`/`ADMIN_PASSWORD`,
+  `ADMIN_JWT_SECRET`, `AUTH_JWT_SECRET`가 모두 명시 설정되어야 한다.
+- 개발 모드는 현행 유지(jwt_secret 미설정 시 임시 랜덤 생성).
+
+### 구현 주의 (Known Mistakes 반영)
+
+`os.getenv`는 pydantic-settings의 `.env`/`.encenv` 로딩 값을 못 본다(2026-06-10). 따라서 "명시 설정
+여부"를 `AdminConfig`/`AuthConfig`의 **`PrivateAttr _jwt_secret_explicit`** 플래그(model_post_init에서
+자동 생성 전에 기록)와 pydantic 필드로 판정한다. `_validate_production_secrets`는 이 플래그·필드만 읽어
+파일 기반 설정도 정확히 인식한다.
+
+---
+
+## D-072. 알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (사용자 승인: 데이터 모델 1, SSE 인증 쿠키(B)) |
+| **관련 결정** | D-069(통합 RBAC 재사용), D-026(인증 불변 · 인가만 추가), D-053(존↔db_id 라우팅 교훈) |
+
+### 배경 / 문제
+
+알림 SSE 스트림(`/alarm/notifications/stream`)이 **인증 의존성 없이** 웹 접속자 전원에게 무차별
+브로드캐스트되고 있었다. 요구: 지역 스코프 역할(관리자=전 존, 공동존/은행존 운영자=해당 존만,
+일반=수신 안 함, **중복 할당 가능**).
+
+### 결정
+
+- **데이터 모델 1**: `UserRole`(어드민 게이트, D-069) 유지 + 별도 **`User.alarm_zones: list[str]`**
+  신규 필드(중복 할당=리스트, 빈 목록=일반). 모델 2(역할 리스트 일반화)는 Part A 소비처 광범위 변경으로
+  회귀 위험↑라 기각.
+- **존↔db_id 단일 출처**: `src/routing/zones.py`(`ZONE_GONGJON=[polestar_cm_gp, polestar_cm_yd]`,
+  `ZONE_BANKJON=[polestar_b0]`, `zone_to_db_ids`/`db_id_to_zone`/`normalize_zones`). 신규 존/DB는 여기만 갱신.
+- **쿠키 기반 SSE 인증**(사용자 선택 B): 로그인 시 JWT를 `HttpOnly` 쿠키(`user_token`)로도 세팅
+  (EventSource가 Authorization 헤더를 못 실음). `dependencies.resolve_stream_user`가 쿠키→헤더→쿼리
+  토큰 순으로 해소. `alarm_zones_for_user`가 존 집합 산출(admin·개발=전 존, 운영자=해당 존, 일반=∅).
+  존 집합이 비면 **403**, 아니면 `event_generator`가 `db_id_to_zone(event.db_id)`로 구독자 존만 통과.
+- **프론트**: 존 권한이 있는 사용자만 EventSource를 열고(권한 없으면 미구독=403 재연결 루프 차단),
+  헤더에 개인 **알림 수신 토글**(localStorage) 제공.
+- **SSO 보존**(필수 제약): 로그인/인증 흐름 불변, 역할/존은 인증 성공 후 인가 계층에만 추가.
+
+### 근거
+
+기존 `allowed_db_ids` 인프라(토큰 노출·DDL)와 동형이나, 조회 권한과 알림 존은 별개 축이라 전용 필드로
+분리. 구독자측 필터로 충분(트래픽 소규모)하며 alarm_bus 존 토픽화는 향후 옵션.
+
+### 번호
+
+등재 직전 grep 최대 D-071 확인 → **D-072** 부여. Plan 59 §20의 "후보 D-069~"를 따름.
+
+---
+
+## D-073. 보호 root 계정 + 감사 로그 로테이션 배선 + 어드민 진입 규약 정정 (Plan 59-a)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-15 |
+| **상태** | 확정 (사용자 승인) |
+| **관련 결정** | D-069(통합 RBAC·최소-1-admin 가드 보완), D-070(진입 규약), D-072(알림그룹 UI 완성) |
+
+### 배경 / 문제
+
+Plan 59-a 실테스트에서 세 가지가 드러났다. (1) **어드민 재로그인**: 미인증 상태로 `/admin`에 오면 admin.js가
+`/admin/login`(env 운영자 전용 break-glass)으로 유도 → DB 사용자(role==admin 포함)가 그 창구에서 로그인
+실패. (2) **잠김 위험**: 유일한 관리자가 자신을 강등·삭제하면 접속 가능한 관리자가 0명이 될 수 있음(최소-1-admin
+가드는 있으나 "상시 불변 root"라는 명시적 보장 부재). (3) **감사 로그 로테이션 미작동**: `AuditConfig.retention_days`
+설정과 `cleanup_old_logs()` 구현은 있으나 **호출부가 전역 0건** → 오래된 로그가 영영 삭제되지 않음.
+
+### 결정
+
+- **어드민 진입 규약(개선 1, D-069/D-070 완성)**: 정상 진입은 `/login` 단일 창구 → role==admin이면 ADMIN 버튼
+  → `/admin`. admin.js의 미인증 리다이렉트를 `/admin/login`→**`/login?next=/admin`**으로 교정, 403(비관리자)은
+  `/`로. `/admin/login`은 **링크 없는 break-glass 전용**(DB 장애 시 env 계정)으로만 유지. login.html은 `next`
+  복귀(오픈 리다이렉트 방지 — 같은 출처 상대경로만).
+- **보호 root 계정(개선 3)**: `User.is_protected: bool`(신규) + DDL `ALTER TABLE auth_users ADD COLUMN IF NOT
+  EXISTS is_protected BOOLEAN NOT NULL DEFAULT FALSE`(멱등). seed admin(`_seed_admin_user`)을 `is_protected=True`로
+  생성 → env 운영자 계정이 **일반 로그인 가능한 상시 root**가 된다. 백엔드 가드: 보호 계정의 **역할·상태 변경·
+  삭제·PW초기화 거부(403)**, **부서·알림그룹은 허용**(정책 교정 목적, 사용자 확정). 프론트: 해당 행 컨트롤 disabled
+  + 자물쇠 표시. (표식은 컬럼 방식 — username 변경에도 보호가 계정에 고정.)
+- **알림그룹 UI(개선 2, D-072 완성)**: 사용자 관리 테이블에 K리전(공동존)·K리전(은행존) 체크박스. 중복 가능,
+  둘 다 해제 시 `alarm_zones=[]` 명시 전송(=일반). 관리자 행은 전 존 수신이라 비활성.
+- **부서 편집(개선 4)**: 사용자 관리 부서 셀을 인라인 편집으로(백엔드는 기존 `UpdateUserRequest.department` 재사용).
+- **감사 로그 로테이션(개선 5)**: `retention_days`(기본 90, `AUDIT_RETENTION_DAYS`)를 기준으로 (A) 기동 시 1회
+  + (B) 하루 1회 주기 백그라운드 태스크 + (C) 수동 엔드포인트 `POST /admin/audit/cleanup`(어드민 버튼). `<=0`이면
+  비활성. DB 감사 로그 대상(JSONL 파일 로테이션은 추후).
+
+### 근거 / 대안
+
+보호 표식은 `is_protected` 컬럼(권장) vs `user_id==ADMIN_USERNAME` 매칭 중 **컬럼 방식** 채택 — 운영자 ID를
+바꿔도 보호가 계정에 남아 안정적. 진입 창구 이원화(`/admin/login`을 정상 경로로 노출)는 혼동·로그인 실패의
+원인이므로 단일 창구(`/login`)로 정리하고 break-glass는 비상용으로만 격리.
+
+### 번호
+
+등재 직전 `## D-` 헤더 + 변경 이력 표 + CLAUDE.md grep으로 최대 **D-072** 확인 → **D-073** 부여.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-15 | D-073 | **보호 root 계정 + 감사 로그 로테이션 + 어드민 진입 규약 정정 (Plan 59-a)**: 실테스트로 3결함 확정·수정. (1)**어드민 재로그인**: 미인증 `/admin` 진입이 `/admin/login`(env break-glass 전용, DB 사용자 인증 안 함)으로 유도돼 role==admin 계정도 로그인 실패 → admin.js 리다이렉트를 `/login?next=/admin`으로, 403은 `/`로 교정. `/admin/login`은 링크 없는 break-glass로만 유지. login.html `next` 복귀(오픈 리다이렉트 방지). (2)**보호 root**: `User.is_protected` 컬럼(+멱등 DDL) 신설, seed admin을 `is_protected=True`로 생성(env 계정=상시 일반 로그인 root). 역할/상태 변경·삭제·PW초기화 **403 차단**, 부서·알림그룹은 허용. 프론트 해당 행 disabled+자물쇠. (3)**감사 로테이션**: `cleanup_old_logs`가 호출부 0건이라 무효였음 → 기동 1회 + 하루 1회 태스크 + 수동 `POST /admin/audit/cleanup`(버튼), `AUDIT_RETENTION_DAYS`(기본90). +알림그룹 체크박스 UI(D-072 완성)·부서 인라인 편집. 수정 `domain/user.py`·`user_repository.py`·`api/server.py`·`schemas.py`·`routes/admin.py`·`routes/user_auth.py` 없음·`static/js/admin.js`·`static/login.html`·`admin/dashboard.html`·`.env.example`. 검증 `test_plan59a.py` 10건(보호 가드·seed·로테이션), 회귀 신규 실패 0(기존 6 test_routes=MagicMock 픽스처), arch exit 0. 상세 `## D-073`. |
+| 2026-07-14 | D-072 | **알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)**: 무인증 브로드캐스트하던 `/alarm/notifications/stream`을 지역 스코프로 인가(관리자=전존/공동존·은행존 운영자=해당존/일반=403, 중복 할당 가능). 데이터 모델 1: `User.alarm_zones: list[str]` 신규 필드(+DDL `ALTER TABLE ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]` 멱등·repo·to_auth_dict·schemas·admin update). 존↔db_id 단일 출처 `src/routing/zones.py`(gongjon=[gp,yd]/bankjon=[b0]). 쿠키 인증(사용자 선택 B): 로그인 시 HttpOnly `user_token` 쿠키 세팅(EventSource 헤더 제약), `resolve_stream_user`(쿠키→헤더→쿼리)+`alarm_zones_for_user`(admin·dev=전존)로 존 산출→빈 집합 403, `event_generator`가 `db_id_to_zone`로 구독자 존만 통과. 프론트: 권한자만 EventSource open(403 루프 차단)+수신 토글. SSO 보존(인증 불변·인가만 추가). 수정 `routing/zones.py`(신규)·`domain/user.py`·`user_repository.py`·`api/server.py`(DDL)·`dependencies.py`·`routes/alarm.py`·`routes/user_auth.py`(쿠키)·`routes/admin.py`·`schemas.py`·`static/js/app.js`·`index.html`. 검증 `test_alarm_zone_rbac.py` 16건(존 격리·중복=전존·일반 403·쿠키 인증), 회귀 신규 실패 0, arch exit 0. 상세 `## D-072`. |
+| 2026-07-14 | D-069~071 | **어드민 접근 통합 RBAC + 권한 상승 차단 + 크레덴셜 하드닝 (Plan 59 Part A)**: **D-070①(P0 보안)** `verify_admin_token`이 `type`·`role` 미검증 + 사용자/운영자 토큰 동일 시크릿 서명 → 일반 사용자 JWT로 모든 `/admin/*`·schema_cache 통과 가능(권한 상승). `type=="admin"` 검증 추가로 즉시 차단(D-026 원의도 강제). **D-070②** 사용자 토큰을 `AuthConfig.jwt_secret`(env `AUTH_JWT_SECRET`)로 분리 서명·검증(교차 서명 불가, 배포 시 재로그인 수용). **D-069(통합 RBAC·방향 A)** 어드민 접근=DB `role==admin` 판정, 신규 `require_admin_user` 가드(개발 우회+break-glass 운영자 토큰+role==admin)로 admin.py 15개·schema_cache.py 14개 교체, 죽은 `UserRole.ADMIN` 부활(증상 B 해소), 기동 시 seed admin 멱등 부트스트랩, 최소-1-admin 가드. 프론트 어드민 링크 role 게이팅+admin.js 사용자 토큰 폴백. **D-071(하드닝)** 기본 크레덴셜 admin/admin123 제거, 운영 모드 미설정 시 기동 거부(`_validate_production_secrets`, `os.getenv` 대신 `PrivateAttr _jwt_secret_explicit`로 판정 — 2026-06-10 교훈). 수정 `admin_auth.py`·`dependencies.py`·`config.py`·`routes/admin.py`·`schema_cache.py`·`routes/user_auth.py`·`server.py`·`static/js/{app,admin}.js`·`index.html`. 검증 `test_admin_rbac.py` 13건, 회귀 신규 실패 0(기존 6 test_routes 실패는 MagicMock 픽스처 pre-existing), arch exit 0. 번호: Plan 제안 D-064~066이 폼필 D-060~068에 선점됨 → 최대 grep 후 D-069~071 재부여. 상세 `## D-069`·`## D-070`·`## D-071`. |
 | 2026-07-13 | D-068 7차 | **이종 엔진 CSV 칼럼 중복 + DB2 통계 스케일 제로필**: 공동존+은행존 폼필 CSV에서 (1) `IP주소`/`ip주소` 등 라틴 대소문자만 다른 **중복 칼럼**(각 존이 자기 표기에만 채움, Excel은 정상)—원인 **DB2가 결과 칼럼 라틴 문자를 소문자로 반환**, 순수 한글 칼럼은 무영향. 수정 `_merge_results`가 정규화 기준 canonical(양식 필드) 이름으로 통일. (2) **DB2 통계 엑셀 제로필**(6.51→6.51000…, CSV 정상, gp 같은 칼럼 정상=값 타입 문제)—원인 **DB2 `AVG(DECIMAL)` 스케일 확장**으로 ROUND(x,2)해도 타입 스케일 잔존. 수정 `_metric_select_line` DB2를 `CAST(ROUND(...,2) AS DECIMAL(15,2))`로 스케일 고정(PG는 ::numeric 유지). 교훈: 멀티 엔진 병합은 엔진별 칼럼 표기차(DB2 소문자화) 정규화 필수(Excel만 보고 오판 금지), DB2 집계 스케일은 최종 CAST 고정. 수정 `nodes/multi_db_executor.py`·`utils/query_gen_common.py`. 검증 `test_multi_db_merge.py`+`test_db2_metric_scale_fixed_to_two`, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 7차. |
 | 2026-07-13 | D-068 6차 | **재오염 자기강화 루프 차단(등록 가드) + 직접 컬럼 교정 확장**: 5차 가드는 폼필 출력만 교정, Redis 유사어 오염은 잔존. 루프 확인: 전역/EAV에 `서버명→hostname` 존재 → LLM이 "서버 이름"을 hostname 매핑 → `_register_llm_mappings_to_redis`/`_register_llm_synonym_discoveries_to_redis`/`apply_mapping_feedback_to_redis`가 **사용자 확인 없이 자동 재등록**(전역+EAV+per-DB) → 오염 강화 → 재오매핑(per-DB만 청소해도 씨앗에서 재번짐). 또 5차 교정은 `EAV:Hostname`만 봐 **직접 `*.hostname` 컬럼**은 사각지대. 수정: (A) 공용 판정 `is_servername_to_hostname`로 서버명류→hostname(컬럼/EAV) 자동 등록을 **세 등록 함수 전부**에서 거부(재오염 원천 차단), (B) `correct_servername_hostname_mapping`이 직접 hostname 컬럼(`is_hostname_target`)도 `<entity>.name`으로 교정. 판정 헬퍼는 `query_gen_common` 단일 출처. 기존 테스트가 오염 동작(서버명→HOSTNAME 등록)을 정답으로 단언 → 정상 필드로 교체+차단 회귀 신설. 교훈: LLM 자동등록이 오염 입력을 학습해 되쓰면 자기강화 루프 — 출력 교정만으론 부족, **쓰기 지점 결정적 차단** 필요. 수정 `utils/query_gen_common.py`·`document/field_mapper.py`. 검증 신규 단위+mock 등록 가드, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 6차. |
 | 2026-07-13 | D-068 5차 | **서버명/서버이름이 EAV Hostname으로 오매핑 → 서버 이름·호스트네임 둘 다 hostname**: 4차로 결정적 빌더가 발동하자 `column_mapping["서버 이름"]="EAV:Hostname"`이 글자 그대로 렌더(`cc.name='Hostname'`)돼 두 칼럼 모두 hostname 값. 원인: 프로필은 서버명=cmm_resource.name으로 명시하나 **전역 유사어 `Hostname:[…,서버명,…]`가 미끼**가 되어 유사어/LLM 해소가 "서버 이름"을 Hostname에 붙임(2026-06-10 `서버명→HOSTNAME` 전역 오염 동일 계열). 이 오매핑은 field_mapper의 기존·지속 문제(4차 변경이 만든 게 아님)이나 결정성이 잠재 오류를 노출. 수정: 결정적 가드 `correct_servername_hostname_mapping`(서버명/서버이름/장비명/리소스명/등록명류가 EAV:Hostname이면 `<entity>.name`으로 교정)을 단일·멀티 두 경로가 분류 직전 호출, 호스트명 표면어는 불변. 권장 후속: 전역 유사어 `HOSTNAME`/EAV `Hostname`에서 `서버명`·`서버` 제거+Redis 재동기화(가드로 non-blocking). 교훈: 결정성은 잠재 매핑 오류를 노출하니 되돌리지 말고 **프로필 명시 규칙을 코드 가드로 못박아** 유사어 튜닝(Redis/LLM 의존)의 반복 실패를 끝냄. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 신규 단위 6+피벗 렌더 단언, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 5차. |
