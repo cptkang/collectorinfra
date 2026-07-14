@@ -1,0 +1,422 @@
+# Text-to-SQL EX 골드셋 — 공동존 김포 폴스타 (polestar_cm_gp, PostgreSQL)
+# Plan 61 / E1(D-072). 큐레이션 원칙은 README.md 참조.
+#
+# 1차 소스: config/db_profiles/polestar_cm_gp.yaml 의 query_examples (검증된 질문→SQL 쌍).
+# 대표성: coverage=outside(시맨틱 모델 커버리지 밖) 항목을 반드시 포함해 커버리지율 낙관 편향 방지.
+#
+# 항목 스키마:
+#   id                     : 고유 식별자 (파일 내 유일, gp-*)
+#   query                  : 자연어 질의 (한국어)
+#   db_id                  : 대상 DB 식별자
+#   gold_sql               : 정답 SQL (SELECT 전용)
+#   gold_result_signature  : (선택) {row_count, columns} 결과집합 시그니처
+#   gold_smq               : (선택) 트랙 C SMQ 정확도 측정용 기대 중간표현
+#   category               : server_config | performance | alarm | complex | unhandled
+#   coverage               : inside | outside  (시맨틱 모델 결정적 처리 가능 여부 예상값)
+#   notes                  : 큐레이션 메모
+
+items:
+  - id: gp-001
+    query: "호스트명, OS종류, 벤더를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        r.hostname,
+        cc_ostype.stringvalue_short AS os_type,
+        cc_vendor.stringvalue_short AS vendor
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop cc_ostype
+        ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
+      LEFT JOIN polestar.core_config_prop cc_vendor
+        ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
+      WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [hostname, os_type, vendor]
+    gold_smq:
+      pattern: A
+      resource_types: [server.Server]
+      dimensions: [Hostname, OSType, Vendor]
+      measures: []
+      filters:
+        - {field: resource_type, op: like, value: "platform.server%"}
+      time_grain: null
+    notes: "EAV 피벗 — resource_conf_id=configuration_id 조인. 서버설정 대표 질의."
+
+  - id: gp-002
+    query: "서버별 호스트명, IP, OS버전, 시리얼번호를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        r.hostname,
+        r.ipaddress,
+        cc_osver.stringvalue_short AS os_version,
+        cc_serial.stringvalue_short AS serial_number
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop cc_osver
+        ON r.resource_conf_id = cc_osver.configuration_id AND cc_osver.name = 'OSVerson'
+      LEFT JOIN polestar.core_config_prop cc_serial
+        ON r.resource_conf_id = cc_serial.configuration_id AND cc_serial.name = 'SerialNumber'
+      WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [hostname, ipaddress, os_version, serial_number]
+    notes: "EAV 속성 추가마다 LEFT JOIN 누적 패턴."
+
+  - id: gp-003
+    query: "서버 수를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT COUNT(*) AS server_count
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
+      LIMIT 1;
+    gold_result_signature:
+      row_count: 1
+      columns: [server_count]
+    notes: "EAV 조인 불필요한 단순 집계."
+
+  - id: gp-004
+    query: "서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+    db_id: polestar_cm_gp
+    category: complex
+    coverage: inside
+    gold_sql: |
+      SELECT
+          COALESCE(c.platform_resource_id, c.id) AS id,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
+      FROM polestar.cmm_resource c
+      LEFT JOIN polestar.core_config_prop cc
+            ON c.resource_conf_id = cc.configuration_id
+      WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id);
+    gold_result_signature:
+      row_count: null
+      columns: [id, server_name, hostname, ipaddress, serialnumber, cpu_model, logicalcore, mem_size]
+    gold_smq:
+      pattern: A
+      resource_types: [server.Server, server.Cpus, server.Memory]
+      dimensions: [hostname, ipaddress, SerialNumber, MODEL, LOGICALCORE, TotalSize]
+      measures: []
+      filters: []
+      time_grain: null
+    notes: "다중 resource_type EAV 피벗 — GROUP BY platform_resource_id (D-068 계열). 자식 리소스 속성 포함."
+
+  - id: gp-005
+    query: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, 호스트네임, CPU 모델, 메모리 용량을 조회해줘"
+    db_id: polestar_cm_gp
+    category: complex
+    coverage: inside
+    gold_sql: |
+      SELECT
+          COALESCE(c.platform_resource_id, c.id) AS id,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'    THEN cc.stringvalue_short END) AS ostype,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'  THEN cc.stringvalue_short END) AS osversion,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'     THEN cc.stringvalue_short END) AS cpu_model,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize' THEN cc.stringvalue_short END) AS mem_size
+      FROM polestar.cmm_resource c
+      LEFT JOIN polestar.core_config_prop cc
+            ON c.resource_conf_id = cc.configuration_id
+      WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id)
+      HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = 'cocm-hdkapp01';
+    gold_result_signature:
+      row_count: null
+      columns: [id, server_name, hostname, ipaddress, ostype, osversion, cpu_model, mem_size]
+    notes: "단일 서버 지목 + 자식 리소스 → 서버 식별은 HAVING(WHERE 금지, D-050). 슬롯값(cocm-hdkapp01) 예측이 SMQ 병목."
+
+  - id: gp-006
+    query: "비정상 서버 목록과 IP를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        COALESCE(r.name, r.hostname) AS server_name,
+        r.hostname AS os_hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND r.avail_status != 0
+        AND r.dtime IS NULL
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, os_hostname, ipaddress, avail_status]
+    notes: "avail_status != 0 = 비정상 (Known Mistakes 2026-06-10 규칙 13). 공동존은 서버명=r.name."
+
+  - id: gp-007
+    query: "장비명이 'SV-WEB-001'인 서버의 가용성 상태와 IP를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        COALESCE(r.name, r.hostname) AS server_name,
+        r.hostname AS os_hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND r.name = 'SV-WEB-001'
+        AND r.dtime IS NULL
+      LIMIT 10;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, os_hostname, ipaddress, avail_status]
+    notes: "장비명 필터는 r.name(hostname 아님, D-058)."
+
+  - id: gp-008
+    query: "호스트명이 svweb001인 서버의 CPU 리소스를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT child.id, child.name, child.resource_type
+      FROM polestar.cmm_resource parent
+      JOIN polestar.cmm_resource child
+        ON child.parent_resource_id = parent.id
+      WHERE parent.hostname = 'svweb001'
+        AND child.resource_type = 'server.Cpu'
+        AND child.dtime IS NULL
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [id, name, resource_type]
+    notes: "parent_resource_id 자기참조 계층 조인. 2026-07-14 정정: 프로필 예시의 플레이스홀더 '서버명'이 gold_sql에 잔존해 어떤 데이터로도 0건 → 픽스처 서버(SV-WEB-001, hostname svweb001)로 구체화하고 query도 서버를 지목하도록 함께 정정(EX 채점 변별력 확보)."
+
+  - id: gp-009
+    query: "서버들의 CPU, 메모리 용량 및 사용률 리스트를 조회해줘"
+    db_id: polestar_cm_gp
+    category: performance
+    coverage: inside
+    gold_sql: |
+      SELECT
+          svr.name AS pname,
+          svr.ipaddress AS ipaddress,
+          svr.hostname AS hostname,
+          TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
+          hi.physicalcore,
+          hi.mem_size,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS cpu_max,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS mem_max
+      FROM polestar.cmm_resource r
+      JOIN polestar.cmm_resource svr
+          ON svr.id = r.platform_resource_id
+         AND svr.resource_type = 'server.Server'
+      JOIN polestar.cmm_metric_stat_m s
+          ON r.id = s.resource_id
+      LEFT JOIN (
+          SELECT
+              COALESCE(c.platform_resource_id, c.id) AS id,
+              MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+              MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
+          FROM polestar.cmm_resource c
+          LEFT JOIN polestar.core_config_prop cc
+              ON c.resource_conf_id = cc.configuration_id
+          WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+            AND c.dtime IS NULL
+          GROUP BY COALESCE(c.platform_resource_id, c.id)
+      ) hi ON svr.ipaddress = hi.ipaddress
+      WHERE r.resource_type IN ('server.Cpus', 'server.Memory')
+        AND s.definition_name = 'Utilization'
+      GROUP BY svr.name, svr.ipaddress, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD'), hi.physicalcore, hi.mem_size
+      ORDER BY svr.hostname, stat_date
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [pname, ipaddress, hostname, stat_date, physicalcore, mem_size, cpu_avg, cpu_max, mem_avg, mem_max]
+    gold_smq:
+      pattern: B
+      resource_types: [server.Cpus, server.Memory]
+      dimensions: [name, ipaddress, hostname]
+      measures:
+        - {agg: avg, definition_name: Utilization, resource_type: server.Cpus}
+        - {agg: max, definition_name: Utilization, resource_type: server.Cpus}
+        - {agg: avg, definition_name: Utilization, resource_type: server.Memory}
+        - {agg: max, definition_name: Utilization, resource_type: server.Memory}
+      time_grain: month
+      filters: []
+    notes: "성능지표 measure(cmm_metric_stat_m) + EAV 하드웨어 서브쿼리 조인. 집계 전 ::numeric 캐스트(PG)."
+
+  - id: gp-010
+    query: "서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+    db_id: polestar_cm_gp
+    category: performance
+    coverage: inside
+    gold_sql: |
+      SELECT
+          svr.name AS pname,
+          svr.hostname AS hostname,
+          TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS fs_avg,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END)::numeric, 2) AS disks_io_avg
+      FROM polestar.cmm_resource r
+      JOIN polestar.cmm_resource svr
+          ON svr.id = r.platform_resource_id
+         AND svr.resource_type = 'server.Server'
+      JOIN polestar.cmm_metric_stat_m s
+          ON r.id = s.resource_id
+      WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
+        AND s.definition_name IN ('Utilization', 'MaxIORate')
+      GROUP BY svr.name, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD')
+      ORDER BY svr.hostname, stat_date
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [pname, hostname, stat_date, cpu_avg, mem_avg, fs_avg, disks_io_avg]
+    notes: "4개 resource_type × 2개 definition_name(Utilization/MaxIORate) 월간 피벗."
+
+  - id: gp-011
+    query: "장비명이 'SV-WEB-001'인 서버의 OS파라미터(커널 파라미터)를 조회해줘"
+    db_id: polestar_cm_gp
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT r.name AS server_name, r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
+      FROM polestar.cmm_resource r
+      JOIN polestar.core_config_prop cc ON r.resource_conf_id = cc.configuration_id
+      WHERE r.resource_type = 'server.Server'
+        AND r.name = 'SV-WEB-001'
+        AND cc.name = 'OSParameter'
+        AND r.dtime IS NULL;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, hostname, os_parameter]
+    notes: "OSParameter는 LOB → COALESCE(stringvalue, stringvalue_short) (Known Mistakes 2026-06-10)."
+
+  - id: gp-012
+    query: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
+    db_id: polestar_cm_gp
+    category: alarm
+    coverage: inside
+    gold_sql: |
+      SELECT
+          CA.ALARMSEVERITY AS severity,
+          TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS') AS occurred_at,
+          CR.NAME AS server_name,
+          CR.IPADDRESS AS ipaddress,
+          D.NAME AS event_name,
+          CA.CONDITIONLOGTEXT AS detail
+      FROM polestar.cmm_resource CR
+      JOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID = CR.ID
+      JOIN polestar.cmm_alarm_def D ON CA.DEFINITION_ID = D.ID
+      JOIN polestar.cmm_alarm_active A ON A.ALARM_ID = CA.ID
+      WHERE CR.DTIME IS NULL
+        AND CA.ALARMSEVERITY = 3
+      ORDER BY CA.CTIME DESC
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [severity, occurred_at, server_name, ipaddress, event_name, detail]
+    gold_smq:
+      pattern: C
+      entities: [CMM_ALARM, CMM_ALARM_DEF, CMM_ALARM_ACTIVE, CMM_RESOURCE]
+      dimensions: [ALARMSEVERITY, CTIME, NAME, IPADDRESS, CONDITIONLOGTEXT]
+      filters:
+        - {field: ALARMSEVERITY, op: eq, value: 3}
+      active_only: true
+    notes: "패턴 C 정규화 조인 — CA↔D↔ACTIVE, 활성 알람 severity=3. alarm_allowed_tables 준수."
+
+  - id: gp-013
+    query: "김포와 여의도 폴스타 서버의 평균 CPU 사용률을 비교해서 어느 쪽이 더 높은지 알려줘"
+    db_id: polestar_cm_gp
+    category: complex
+    coverage: outside
+    gold_sql: |
+      SELECT
+          'polestar_cm_gp' AS site,
+          ROUND(AVG(s.avg_val)::numeric, 2) AS cpu_avg
+      FROM polestar.cmm_resource r
+      JOIN polestar.cmm_metric_stat_m s ON r.id = s.resource_id
+      WHERE r.resource_type = 'server.Cpus'
+        AND s.definition_name = 'Utilization'
+      LIMIT 1;
+    gold_result_signature:
+      row_count: 1
+      columns: [site, cpu_avg]
+    notes: "커버리지 밖 — 두 DB 결과를 교차 비교·판정하는 것은 단일 SMQ로 표현 불가(멀티DB 취합+추론 필요). 골드 SQL은 gp 측 집계만."
+
+  - id: gp-014
+    query: "'DB-ORA-023' 서버와 유사한 사양(같은 CPU 코어수·메모리)을 가진 서버들을 찾아줘"
+    db_id: polestar_cm_gp
+    category: unhandled
+    coverage: outside
+    gold_sql: |
+      WITH spec AS (
+          SELECT
+              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE' THEN cc.stringvalue_short END) AS logicalcore,
+              MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short END) AS mem_size
+          FROM polestar.cmm_resource c
+          LEFT JOIN polestar.core_config_prop cc ON c.resource_conf_id = cc.configuration_id
+          WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+            AND c.dtime IS NULL
+          GROUP BY COALESCE(c.platform_resource_id, c.id)
+          HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = 'DB-ORA-023'
+      )
+      SELECT COALESCE(c.platform_resource_id, c.id) AS id,
+             MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name
+      FROM polestar.cmm_resource c
+      LEFT JOIN polestar.core_config_prop cc ON c.resource_conf_id = cc.configuration_id
+      CROSS JOIN spec
+      WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id), spec.logicalcore, spec.mem_size
+      HAVING MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE' THEN cc.stringvalue_short END) = spec.logicalcore
+         AND MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short END) = spec.mem_size
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [id, server_name]
+    notes: "커버리지 밖 — '유사한 사양' 의역·기준 정의가 결정적 SMQ 밖. 트랙 A 다중후보 폴백 대상. 재질문 유발 유형."
+
+  - id: gp-015
+    query: "최근 3개월간 장애 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
+    db_id: polestar_cm_gp
+    category: alarm
+    coverage: outside
+    gold_sql: |
+      SELECT
+          CR.NAME AS server_name,
+          CR.IPADDRESS AS ipaddress,
+          COUNT(*) AS alarm_count
+      FROM polestar.cmm_resource CR
+      JOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID = CR.ID
+      WHERE CR.DTIME IS NULL
+        AND CA.ALARMSEVERITY IN (2, 3)
+        AND CA.CTIME >= (CURRENT_DATE - INTERVAL '3 months')
+      GROUP BY CR.NAME, CR.IPADDRESS
+      ORDER BY alarm_count DESC
+      LIMIT 10;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, ipaddress, alarm_count]
+    notes: "커버리지 밖(현행) — 알람 이력 집계+기간창+랭킹 복합. 트랙 C 패턴 C 확장 후보이나 현 시맨틱 모델 커버리지 밖으로 표기."

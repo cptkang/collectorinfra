@@ -140,6 +140,44 @@ class QueryConfig(BaseSettings):
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
 
 
+class SynonymMatchConfig(BaseSettings):
+    """동의어 매칭 보강 설정 (Plan 61 트랙 B / D-075).
+
+    전 기능 기본 OFF — 활성 전에는 기존 정확일치 매칭 경로가 바이트 단위로
+    무변경이어야 한다(회귀 0). 접근 경로: cfg.synonym.* (env_prefix="SYNONYM_").
+    """
+
+    fuzzy_match: bool = False            # E5-1 유연 매칭(자모·편집거리·부분어) on/off
+    value_retrieval: bool = False        # E5-2 실측 값 검색·주입 on/off
+    semantic_match: bool = False         # E5-4 임베딩 의미 검색(보류 — 자리예약, 미구현)
+    match_confidence_min: float = 0.85   # 퍼지 매칭 신뢰도 임계(이하는 확정 매핑 아닌 후보 제시)
+    # E5-3: D-051 유사어 보완 테이블 상한(기존 schema_analyzer 모듈 상수 하드코딩을 config로 노출).
+    # 낮추면 토큰↓·리콜↓ — 고정 규칙이 아니라 E1 하네스로 튜닝하는 파라미터(Death of Schema Linking).
+    max_synonym_supplement_tables: int = 15
+
+    model_config = {"env_prefix": "SYNONYM_", "env_file": ".env", "extra": "ignore"}
+
+
+class Text2SQLConfig(BaseSettings):
+    """Text-to-SQL 결정적 조합 설정 (Plan 61 트랙 C / D-076).
+
+    전 기능 기본 OFF — 활성 전에는 기존 SQL 생성 경로가 바이트 단위로 무변경이어야
+    한다(회귀 0). 접근 경로: cfg.text2sql.* (env_prefix="TEXT2SQL_").
+
+    semantic_fallback 기본값은 계획 §5의 `candidate_then_human`이 아니라 `llm`이다 —
+    트랙 A(다중 후보 E2~E4)가 이번 범위에서 보류이므로, 커버리지 밖은 현행 LLM 자유생성
+    폴백으로 처리한다(계획 §6.3 "LLM 자유생성은 트랙 A 미착수 과도기 임시 폴백으로만 허용"과
+    정합). 트랙 A 착수 시 기본값을 candidate_then_human으로 전환한다.
+    """
+
+    semantic_compose: bool = False       # E6 결정적 조합 경로 전체 스위치
+    # 커버리지 밖 라우팅. 트랙 A 미구현 상태에서 candidate_then_human/human은 llm으로 강등된다.
+    semantic_fallback: Literal["candidate_then_human", "llm", "human"] = "llm"
+    fallback_confidence_min: float = 0.0  # 3단 폴백 2차 게이트(트랙 A 신뢰도 임계 — 자리예약)
+
+    model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
+
+
 class SecurityConfig(BaseSettings):
     """보안 관련 설정."""
 
@@ -480,6 +518,8 @@ class AppConfig(BaseSettings):
     orchestrator: OrchestratorConfig = OrchestratorConfig()
     dbhub: DBHubConfig = DBHubConfig()
     query: QueryConfig = QueryConfig()
+    synonym: SynonymMatchConfig = SynonymMatchConfig()   # Plan 61 트랙 B: 동의어 매칭 보강
+    text2sql: Text2SQLConfig = Text2SQLConfig()          # Plan 61 트랙 C: 결정적 SQL 조합
     security: SecurityConfig = SecurityConfig()
     server: ServerConfig = ServerConfig()
     admin: AdminConfig = AdminConfig()

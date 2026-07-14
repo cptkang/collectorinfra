@@ -302,8 +302,17 @@ async def perform_3step_mapping(
 
     # --- 2.5단계: Redis synonyms 규칙 매핑 ---
     if remaining and all_db_synonyms:
+        # E5-1: 동의어 유연 매칭 플래그를 config에서 읽어 폴백 여부를 결정한다(기본 OFF).
+        from src.config import load_config
+
+        _syn_cfg = load_config().synonym
         _apply_synonym_mapping(
-            remaining, all_db_synonyms, priority_db_ids, result
+            remaining,
+            all_db_synonyms,
+            priority_db_ids,
+            result,
+            fuzzy=_syn_cfg.fuzzy_match,
+            min_score=_syn_cfg.match_confidence_min,
         )
 
     # --- 2.8단계: LLM 유사어 발견 ---
@@ -485,16 +494,28 @@ def _apply_synonym_mapping(
     all_db_synonyms: dict[str, dict[str, list[str]]],
     priority_db_ids: list[str],
     result: MappingResult,
+    *,
+    fuzzy: bool = False,
+    min_score: float = 0.85,
 ) -> None:
     """Redis synonyms 기반 매핑을 수행한다.
 
     priority_db_ids를 먼저 검색하여 우선순위를 부여한다.
+
+    Plan 61 트랙 B(E5-1): ``fuzzy=True``이면 정확 동등 매칭(Pass 1/2)이 모두 실패한
+    잔여 필드에 대해 **유연 근사 매칭 폴백(Pass 3)**을 수행한다. 신뢰도가 ``min_score``
+    이상이면 확정 매핑(source="synonym")으로 채택하고, 미만이면 채택하지 않아 다운스트림
+    LLM 유사어 발견(2.8)·통합 추론(3) 경로가 그대로 ``pending_synonym_registrations``
+    승인 루프로 회부한다("임계 이하는 확정 아닌 후보 제시"의 결정적 실현). ``fuzzy=False``
+    (기본)이면 Pass 3은 실행되지 않아 기존 동작과 **바이트 단위 동일**하다(회귀 0).
 
     Args:
         remaining: 매핑되지 않은 필드 set
         all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
         priority_db_ids: 우선순위 DB 목록
         result: 매핑 결과 객체
+        fuzzy: 유연 근사 매칭 폴백 활성화 여부(플래그, 기본 OFF)
+        min_score: 유연 매칭 확정 신뢰도 임계(fuzzy=True일 때만 사용)
     """
     if priority_db_ids:
         ordered_db_ids = priority_db_ids
@@ -544,6 +565,77 @@ def _apply_synonym_mapping(
                 result.mapping_sources[field] = "synonym"
                 remaining.discard(field)
                 break
+
+    # Pass 3 (E5-1 유연 매칭 폴백): 플래그 ON일 때만, 정확 매칭이 실패한 잔여 필드에
+    # 유연 근사 매칭을 시도한다. 임계 이상만 확정 채택하고, 미만은 다운스트림 LLM 경로에
+    # 위임(후보 제시)한다. fuzzy=False면 이 블록은 진입하지 않아 회귀가 없다.
+    if fuzzy and remaining:
+        _apply_fuzzy_synonym_fallback(
+            remaining, all_db_synonyms, ordered_db_ids, result, min_score
+        )
+
+
+def _apply_fuzzy_synonym_fallback(
+    remaining: set[str],
+    all_db_synonyms: dict[str, dict[str, list[str]]],
+    ordered_db_ids: list[str],
+    result: MappingResult,
+    min_score: float,
+) -> None:
+    """유연 근사 매칭으로 잔여 필드를 매핑한다(E5-1, 확정 임계 이상만 채택).
+
+    각 DB의 컬럼 유사어 단어들과 필드명을 flex 매칭하여 최고 신뢰도 후보를 찾는다.
+    신뢰도가 min_score 이상이면 확정 매핑(source="synonym")으로 채택한다. 미만이면
+    채택하지 않아 이후 LLM 유사어 발견/추론 경로가 승인 루프로 회부한다.
+
+    Args:
+        remaining: 매핑되지 않은 필드 set
+        all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
+        ordered_db_ids: 우선순위 정렬된 DB 목록
+        result: 매핑 결과 객체
+        min_score: 확정 채택 최소 신뢰도
+    """
+    from src.utils.flex_match import flex_match_score
+    from src.utils.schema_utils import normalize_field_name
+
+    for field in list(remaining):
+        field_lower = normalize_field_name(field).lower()
+        if len(field_lower) < 2:
+            continue
+
+        best_db: Optional[str] = None
+        best_col: Optional[str] = None
+        best_score = 0.0
+
+        for db_id in ordered_db_ids:
+            synonyms = all_db_synonyms.get(db_id, {})
+            for col_key, words in synonyms.items():
+                # 등록 유사어 단어 + 컬럼명 자체를 후보로 삼는다.
+                candidates = list(words or [])
+                col_name = col_key.split(".", 1)[-1] if "." in col_key else col_key
+                candidates.append(col_name)
+                for cand in candidates:
+                    if not cand or len(str(cand)) < 2:
+                        continue
+                    score = flex_match_score(field_lower, str(cand))
+                    if score > best_score:
+                        best_score = score
+                        best_col = col_key
+                        best_db = db_id
+
+        if best_col and best_db and best_score >= min_score:
+            result.db_column_mapping.setdefault(best_db, {})[field] = best_col
+            result.mapping_sources[field] = "synonym"
+            remaining.discard(field)
+            logger.info(
+                "유연 매칭 확정: '%s' -> %s (db=%s, 신뢰도=%.2f)",
+                field, best_col, best_db, best_score,
+            )
+        elif best_col:
+            logger.debug(
+                "유연 매칭 임계 미달(후보 제시로 위임): '%s' ~ %s (신뢰도=%.2f < %.2f)",
+                field, best_col, best_score, min_score,
+            )
 
 
 def _synonym_match(

@@ -35,6 +35,7 @@ from src.utils.query_gen_common import (
     resolve_query_limit,
     resolve_stat_month,
 )
+from src.nodes.semantic_compiler import compile_from_nl
 from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
 
@@ -236,9 +237,29 @@ async def query_generator(
     deterministic_sql = None if is_retry else _try_build_form_fill_pivot_sql(
         state, limit_value, user_query
     )
+    # 트랙 C(D-076): 커버리지 내 정형 질의는 시맨틱 모델로 결정적 컴파일(LLM SQL 생성 우회).
+    # 폼필(deterministic_sql)·재시도가 아닐 때만 진입. 커버리지 밖이면 None → 아래 LLM 폴백(회귀 0).
+    # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
+    semantic_sql = None
+    if (not is_retry and not deterministic_sql
+            and not state.get("column_mapping")
+            and app_config.text2sql.semantic_compose):
+        value_index = (
+            state.get("column_value_index")
+            if app_config.synonym.value_retrieval else None
+        )
+        semantic_sql, _smq, _cov = await compile_from_nl(
+            llm, user_query, state.get("active_db_id") or "",
+            default_limit=limit_value,
+            stat_month=resolve_stat_month(user_query),
+            value_index=value_index,
+        )
     if deterministic_sql:
         sql = deterministic_sql
         logger.info("폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s", sql[:500])
+    elif semantic_sql:
+        sql = semantic_sql
+        logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", sql[:500])
     else:
         # 프롬프트 구성
         system_prompt = _build_system_prompt(

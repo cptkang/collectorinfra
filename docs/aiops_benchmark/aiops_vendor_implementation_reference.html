@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>벤더별 AIOps 기능 구현 레퍼런스 — collectorinfra 구현 기준</title>
+<style>
+:root{--ink:#1a2230;--mut:#5a6577;--line:#e2e6ee;--accent:#2563eb;--bg:#f7f9fc;--ours:#eafaf0;--oursb:#0f9d58}
+*{box-sizing:border-box}
+body{font-family:"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;color:var(--ink);line-height:1.6;max-width:1180px;margin:0 auto;padding:38px 30px 80px;background:#fff;font-size:15px}
+h1{font-size:24px;margin:0 0 4px} .sub{color:var(--mut);font-size:13.5px;margin-bottom:22px}
+h2{font-size:19px;margin:32px 0 6px;padding-bottom:6px;border-bottom:2px solid var(--ink)}
+.intro{color:#3a4453;font-size:13.5px;margin:6px 0 12px}
+table{border-collapse:collapse;width:100%;margin:8px 0 4px;font-size:12px}
+th,td{border:1px solid var(--line);padding:7px 9px;vertical-align:top;text-align:left}
+th{background:var(--bg);font-weight:700}
+tr.ours td{background:var(--ours)} tr.ours{border-left:3px solid var(--oursb)}
+.callout{background:var(--bg);border-left:4px solid var(--accent);padding:12px 16px;margin:16px 0;border-radius:0 6px 6px 0;font-size:14px}
+.legend{font-size:12px;color:var(--mut);margin:10px 0}
+.legend .box{display:inline-block;width:12px;height:12px;background:var(--ours);border-left:3px solid var(--oursb);vertical-align:middle;margin-right:4px}
+.foot{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);color:var(--mut);font-size:12px}
+</style></head><body>
+<h1>벤더별 AIOps 기능 구현 레퍼런스</h1>
+<div class="sub">Dynatrace · Datadog · Splunk ITSI · Moogsoft · BigPanda · New Relic가 각 기능을 실제로 어떻게 구현하는가 → collectorinfra 구현 기준 · AIOps 아키텍트 · 2026-07</div>
+
+<div class="callout">
+<b>이 문서의 용도.</b> 각 AIOps 기능을 선진 솔루션이 <b>어떤 메커니즘·알고리즘·전제조건으로 구현하는지</b> 벤더별로 나란히 정리한 <b>구현 기준(reference standard)</b>이다.
+각 기능 표의 <b>맨 아래 초록 행(▶ collectorinfra 기준)</b>이 이 벤더 구현들을 종합해 도출한 우리의 구현 방침이다.
+관통하는 설계 원칙은 <b>"결정적 계산(규칙·그래프·통계) + 보조적 LLM/ML"</b> — Dynatrace Davis의 deterministic 인과 엔진, 최신 연구(토폴로지 인지 RCA·arXiv 2606.20758)와 동일하며 collectorinfra의 D-035 원칙과 정합한다.
+</div>
+<div class="legend"><span class="box"></span> collectorinfra 구현 기준 행</div>
+
+<h2>1. 이상탐지</h2>
+<p class="intro">'정상'을 어떻게 정의하고 이탈을 어떻게 판단하는가. 선진사례는 예외 없이 <b>정적 임계값을 버리고 과거 분포·계절성 기반 동적 baseline</b>으로 이동했다.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>Dynatrace Davis</b></td><td>자동 적응형 baseline — 서비스/앱/배포별 기대 동작을 자동 학습, 참조 baseline 대비 이탈 탐지. 다차원(multidimensional) baseline</td><td>적응형 baseline + 결정적 이벤트 생성</td><td>에이전트 자동계측(OneAgent) 텔레메트리</td></tr>
+<tr><td><b>Datadog Watchdog</b></td><td>기대 동작 baseline을 자동 계산(설정 불필요). 시계열의 형태(shape)와 값(value) 모두 분석해 스파이크·딥·점진 드리프트 탐지. 로그는 정상 패턴 baseline 후 신규 텍스트·볼륨변화·에러 이상 탐지</td><td>ML anomaly/outlier/forecasting 조합</td><td>플랫폼 전반 메트릭·로그·트레이스(out-of-box)</td></tr>
+<tr><td><b>Splunk ITSI</b></td><td>적응형 임계값(adaptive thresholding) — KPI의 과거 분포에 ML 적용, 시간정책(요일·시간대)별 임계 산출. 야간 재계산으로 stale 방지. 계절성 KPI에 적합, 하드 플로어/실링 KPI엔 정적 임계 유지</td><td>표준편차·통계분포 기반 ML, 시간정책 버킷</td><td>KPI 과거 baseline(패턴 존재 필요)</td></tr>
+<tr><td><b>New Relic</b></td><td>Holt-Winters 지수평활로 계절성 학습, 예측구간 밖 관측 flag</td><td>Holt-Winters(3중 지수평활)</td><td>시계열 히스토리</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>현행 Plan 50 정적 z-score+지속성 → STL 분해 또는 Holt-Winters 동적 baseline으로 격상. 계절성(일간·주간) 반영. 폐쇄망이므로 statsmodels 등 로컬 라이브러리로 결정적 계산</td><td>STL/Holt-Winters(로컬), 잔차 z-score</td><td>cmm_metric_stat_h/d/m 시계열(보유)</td></tr>
+</table>
+<h2>2. 이벤트 상관·클러스터링</h2>
+<p class="intro">다중 알람을 어떻게 하나의 사건으로 묶는가. <b>필드 유사도(결정적)</b>와 <b>위상 기반 인과 그룹핑</b>의 두 계열로 나뉜다.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>Dynatrace Davis</b></td><td>동일 근본원인 이벤트를 하나의 problem으로 자동 통합 — 위상 그래프상 인과로 묶음(상관이 아닌 인과 기반 그룹핑)</td><td>Smartscape 그래프 + fault-tree</td><td>실시간 의존성 그래프(Smartscape)</td></tr>
+<tr><td><b>Datadog Watchdog</b></td><td>서비스 전반의 APM·인프라 이상을 자동 그룹핑해 이슈 범위 파악. 동일 근본원인 가능성 있는 관련 동작을 story에 함께 표시</td><td>엔티티 맵 기반 관련성 그룹핑</td><td>APM 트레이스 + 통합 태깅</td></tr>
+<tr><td><b>Splunk ITSI</b></td><td>Event Analytics가 ML로 이벤트를 episode로 클러스터링. Event iQ(2025) AI 상관. NEAP(Notable Event Aggregation Policy)로 규칙+ML 결합. 실시간 클러스터링으로 알람 스톰 감소</td><td>ML 클러스터링 + 사용자 규칙(NEAP)</td><td>notable events 스트림</td></tr>
+<tr><td><b>Moogsoft</b></td><td>Cookbook(결정적 클러스터링) — Recipe별 필드 유사도 임계로 알람을 Situation으로 군집. Tempus는 타임스탬프 유사도로 시간군집. Vertex Entropy 등 알고리즘 선택</td><td>Tanimoto/Jaccard 유사도, 시간군집</td><td>정규화된 알람 필드</td></tr>
+<tr><td><b>BigPanda</b></td><td>다중 도구 알림을 정규화 후 시간·위상·텍스트로 인시던트로 압축(Open Box ML)</td><td>클러스터링 + 태그 기반 압축</td><td>다중 소스 알림 정규화</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>현행 Plan 52 스톰 그룹핑(동일서버) 보유 → correlation_engine에 필드 Jaccard 유사도 + 시간창 군집 추가. 위상 상관은 토폴로지 그래프 확보 후. 결정적 규칙 우선(D-035)</td><td>Jaccard + 시간창(결정적), 이후 그래프</td><td>알람 필드 + (신규)토폴로지</td></tr>
+</table>
+<h2>3. 플래핑 억제</h2>
+<p class="intro">상태가 정상↔장애를 반복할 때 어떻게 억제하는가. 20년 검증된 <b>Nagios %-state-change</b>가 사실상 표준.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>Nagios(참조 표준)</b></td><td>최근 21개 상태전이를 보관, 최신 전이에 큰 가중(1.2→0.8) 적용해 %-state-change 계산. high/low 임계로 진입·해제 분리</td><td>가중 %-state-change, 히스테리시스</td><td>상태전이 이력 버퍼</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>Nagios 방식 그대로 인코딩(Plan 52 §3.7 설계됨). 상태전이 링버퍼 + 가중 변화율 + 히스테리시스 임계 파라미터화</td><td>가중 %change 링버퍼(결정적)</td><td>알람 상태전이 추적</td></tr>
+</table>
+<h2>4. RCA·인과추론</h2>
+<p class="intro">상관을 넘어 '왜'를 어떻게 도출하는가. 선도 솔루션·최신 연구 모두 <b>위상 그래프를 결정적으로 순회</b>하고 LLM은 설명만 맡긴다.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>Dynatrace Davis</b></td><td>결정론적(deterministic) 인과 엔진 — Smartscape 위상을 순회하며 fault-tree로 근본원인 도출. 상관이 아닌 인과. 재현가능·설명가능</td><td>결정적 그래프 순회 + fault-tree</td><td>실시간 위상 그래프 필수</td></tr>
+<tr><td><b>Datadog Watchdog RCA</b></td><td>앱·인프라를 매핑해 컴포넌트 상호작용 학습 → 이상 간 인과관계 식별. &#x27;심각 실패(critical failure, 첫 증상)&#x27;와 &#x27;근본원인&#x27;을 구분. 열화된 성능은 근본원인으로 분류 안 함</td><td>의존성 매핑 + 인과 체인 추적</td><td>APM 필수, 통합 태깅 권장</td></tr>
+<tr><td><b>Splunk ITSI</b></td><td>Service Insights가 서비스→인프라 매핑으로 문제·근본원인 식별. 의존성 기반 suppression</td><td>서비스 의존성 트리</td><td>서비스 트리 정의</td></tr>
+<tr><td><b>토폴로지 인지 RCA 연구(arXiv 2606.20758)</b></td><td>위상 그래프 BFS + 시간정렬로 근본원인을 결정적 도출, LLM은 사전계산 증거의 설명자로만</td><td>그래프 BFS(결정적)+LLM 설명</td><td>토폴로지 그래프 + 이벤트</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>현행 cascade(부모상태) 판정 → 토폴로지 그래프 확보 후 결정적 BFS 순회 RCA. LLM causal_reasoner는 계산된 증거만 받아 해석(Davis·해당 연구와 정합). 폐쇄망 tool-calling 비의존</td><td>그래프 BFS(결정적)+LLM 해석</td><td>(최우선)토폴로지 그래프</td></tr>
+</table>
+<h2>5. 변경 상관</h2>
+<p class="intro">장애의 최대 원인인 '변경'을 어떻게 연결하는가. 배포·구성 이벤트를 이상 타임라인에 오버레이한다.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>Dynatrace Davis</b></td><td>코드 배포·구성변경을 problem 타임라인에 상관. 결함 배포(faulty deployment) 자동 탐지</td><td>변경 이벤트 타임라인 상관</td><td>배포·구성 이벤트 피드</td></tr>
+<tr><td><b>Datadog Watchdog</b></td><td>결함 배포 탐지(Faulty Deployment Detection) — 배포를 근본원인으로 지목(예: address-service 배포→에러·지연)</td><td>배포 마커 + 이상 시점 상관</td><td>배포 이벤트 계측</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>현행 Plan 50 §4.5 Phase C(가용성 선조사)에만 존재 → CI/CD·변경관리 피드 연동을 앞당김. 이상 직전 변경을 타임라인 오버레이 최우선 후보로</td><td>변경 타임라인 오버레이</td><td>(신규)변경/CMDB 피드</td></tr>
+</table>
+<h2>6. 예측·선제탐지</h2>
+<p class="intro">장애 발생 전에 어떻게 경보하는가. baseline 예측(Holt-Winters)이 공통 엔진.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>New Relic</b></td><td>Holt-Winters로 최대 360 데이터포인트 예측, 임계 도달 전 예보 경보</td><td>Holt-Winters N스텝 예측</td><td>시계열 히스토리</td></tr>
+<tr><td><b>Splunk ITSI</b></td><td>Predictive Analytics — 서비스 헬스 스코어 예측으로 장애 선제 회피(MTTD 감소)</td><td>서비스 헬스 예측 모델</td><td>서비스 KPI 히스토리</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>이상탐지 baseline 확보 후 Holt-Winters 예측구간 기반 선제경보(로드맵 후반)</td><td>Holt-Winters 예측(로컬)</td><td>동적 baseline 선행</td></tr>
+</table>
+<h2>7. 자동복구·폐루프</h2>
+<p class="intro">탐지→진단→조치→검증을 어떻게 닫는가. <b>저위험 런북 + 신뢰도 게이트 + 감사</b>가 안전장치.</p>
+<table><tr><th style="width:16%">벤더/솔루션</th><th style="width:44%">구현 메커니즘 (상세)</th><th style="width:22%">알고리즘·자료구조</th><th style="width:18%">데이터·전제조건</th></tr>
+<tr><td><b>Dynatrace</b></td><td>승인형 agentic workflow — 탐지→진단 후 자동화 액션. 실행 프리뷰</td><td>Davis+워크플로 오케스트레이션</td><td>위상·문제 컨텍스트</td></tr>
+<tr><td><b>LogicMonitor+IBM+RedHat</b></td><td>Edwin AI(탐지·진단)+watsonx+Ansible(실행) 3계층 폐루프. 전 과정 감사·거버넌스</td><td>탐지·진단·실행 분리 + 거버넌스</td><td>런북 + 정책</td></tr>
+<tr class="ours"><td><b>▶ collectorinfra 기준</b></td><td>읽기전용(D-003)과 상충 → 거버넌스 결정 선행. 저위험 런북(재시작·캐시클리어)부터 + 승인 게이트 + Runbook-as-Code + 감사로그</td><td>런북-as-code + 승인 게이트</td><td>(정책 결정)+런북</td></tr>
+</table>
+
+<div class="callout">
+<b>구현 순서 결론.</b> 벤더 구현을 관통하는 전제조건은 <b>동적 baseline</b>(이상탐지·예측)과 <b>위상 그래프</b>(상관·RCA·변경)다.
+collectorinfra는 이미 <b>결정적+LLM 방법론과 노이즈 억제</b>를 갖췄으므로, 다음은
+<b>① 토폴로지 그래프 확보 → ② 변경/CMDB 피드 연동 → ③ 동적 baseline(STL/Holt-Winters)</b> 순.
+이 셋이 갖춰지면 결정적 BFS RCA와 예측이 위 표의 선진 구현 수준으로 열린다.
+</div>
+
+<div class="foot">
+근거(벤더 기술문서·공개 서술 기준, 내부 세부는 비공개일 수 있음):
+Dynatrace Davis/Intelligence Docs·RCA concepts(deterministic causation·Smartscape·fault-tree·problem 통합),
+Datadog Watchdog Docs·RCA·Explains 블로그(baseline 자동계산·critical failure vs root cause·faulty deployment·tag 기여도),
+Splunk ITSI Docs·블로그(adaptive thresholding·시간정책·야간 재계산·Event Analytics·Event iQ·NEAP·predictive),
+Moogsoft Clustering Algorithm Guide(Cookbook·Tempus·Tanimoto), New Relic Intelligent Alerting(Holt-Winters·360pt 예측),
+Nagios flap detection(%-state-change·21전이 가중), 토폴로지 인지 RCA(arXiv 2606.20758 — Separates Root-Cause Derivation from Root-Cause Explanation), LogicMonitor+IBM+RedHat 폐루프.
+collectorinfra 근거: plans/50·52, docs/02_decision.md(D-003·D-035·D-048). 수치·MTTR 등 도입효과는 별도 사례 브리프 참조(벤더 발표 기준·독립검증 아님).
+</div>
+</body></html>

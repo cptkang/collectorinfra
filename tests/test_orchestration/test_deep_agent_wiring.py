@@ -342,7 +342,7 @@ async def test_real_deepagents_collector_and_fabrix_step6(monkeypatch):
     # result_aggregator(FabriX) 스텁: collector 원본이 도달했는지 확인
     import importlib
     ra_mod = importlib.import_module("src.orchestration.result_aggregator")
-    async def _fake_agg(state, *, llm=None, app_config=None):
+    async def _fake_agg(state, *, llm=None, app_config=None, synthesize=False):
         s = state["task_results"][state["task_plan"][0]["task_id"]]["organized_data"]["summary"]
         return {"final_response": f"[FabriX] {s}", "current_node": "result_aggregator"}
     monkeypatch.setattr(ra_mod, "result_aggregator", _fake_agg)

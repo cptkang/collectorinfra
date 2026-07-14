@@ -1,0 +1,24 @@
+﻿기능영역,저자·약칭,제목,연도,피인용,게재처,DOI,방법론 요지,Plan 60 연결
+E1 중복·노이즈억제,Kidwai 2020,SIEM alert metadata aggregation (kill-chain 분류),2020,48,Computers & Security,10.1016/j.cose.2020.101817,kill-chain 단계 기반 알람 메타데이터 집계·분류,E1 재발생 집계 시 컨텍스트 분류 참고
+E1 중복·노이즈억제,Vaarandi 2022,Security Alert Flooding — domain-independent ML 집계,2022,36,ACM TOPS,10.1145/3510581,도메인 독립 알람 집계로 플러딩 완화,E1/E2 집계 정당성
+E2 이벤트상관,Jakobson 1993,Alarm correlation (기초),1993,261,IEEE Network,10.1109/65.244794,상관 개념·규칙기반 상관 정의(AIOps 상관의 기원),E2 상관 이론적 토대
+E2 이벤트상관,Fan 2018,Industrial Alarm Floods — itemset mining 빈발패턴,2018,86,IEEE TIE,10.1109/tie.2018.2795573,동적 알람 억제 + itemset mining으로 빈발 알람그룹 자동 발견,E2 크로스-호스트 군집을 데이터기반 패턴으로 확장(그룹 자동학습)
+E2 이벤트상관,Cheng 2016,Alarm flood sequence — local alignment 유사도,2016,77,Control Eng. Practice,10.1016/j.conengprac.2016.05.021,Smith-Waterman식 지역정렬로 알람 시퀀스 유사도,E2 Jaccard 대안/보완(순서 고려 유사도)
+E2 이벤트상관,Lucke 2019,Advances in alarm data analysis (online flood),2019,75,J. Process Control,10.1016/j.jprocont.2019.04.010,온라인 알람플러딩 분류·실시간 적용,E2 실시간 사건창 처리
+E3 이상탐지(계절),Xu 2018 (Donut),Seasonal KPI 비지도 이상탐지 (VAE),2018,769,WWW,10.1145/3178876.3185996,"VAE 재구성확률로 계절 KPI 이상탐지, F 0.75~0.9",E3 동적 baseline의 최신 대안(비지도)
+E3 이상탐지(계절),Szmit 2012,Modified Holt-Winters 네트워크 트래픽 이상탐지,2012,47,J. Comp. Networks,10.1155/2012/192913,Holt-Winters 3중지수평활 예측잔차 이상탐지,E3 제안 Holt-Winters 직접 근거
+E3 이상탐지(계절),Choi 2021,Deep Learning TS Anomaly — review·guidelines,2021,553,IEEE Access,10.1109/access.2021.3107975,시계열 이상탐지 딥러닝 리뷰·가이드라인,E3 방법 선택 근거(경량 우선)
+E3 이상탐지(계절),Kontaki 2023,ARIMA vs ML 시계열 예측 비교,2023,367,Future Internet,10.3390/fi15080255,고전통계(ARIMA) vs ML 예측 트레이드오프,E3 폐쇄망 경량 통계 선택 정당화
+E4 토폴로지·RCA,Wu 2020 (MicroRCA),Attributed graph 이상전파 RCA,2020,206,NOMS,10.1109/noms47738.2020.9110353,"속성 그래프로 서비스·머신 간 이상전파 모델링, precision 89%",E4 토폴로지 그래프 기반 RCA 직접 근거
+E4 토폴로지·RCA,Liu 2020 (MicroCause),Causality inference RCA(PCTS+TCORW),2020,147,IWQoS,10.1109/iwqos49365.2020.9213058,시계열 인과 경로+시간순 random walk로 근본원인,E4 상관→인과 단계 근거
+E4 토폴로지·RCA,Gan 2021 (MicroHECL),대규모 마이크로서비스 고효율 RCA,2021,153,ICSE-SEIP,10.1109/icse-seip52600.2021.00043,이상전파 체인 탐색으로 대규모 실시간 RCA,E4 그래프 순회 확장성
+E4 토폴로지·RCA,Li 2021,Trace 분석 기반 실용 RCA,2021,124,IWQoS,10.1109/iwqos52092.2021.9521340,트레이스 기반 근본원인 실무 지역화,E4 근거(트레이스 없을 때 의존성그래프 대안)
+예측·선제,Gao 2020,Cloud Task Failure Prediction (DL),2020,213,IEEE TSC,10.1109/tsc.2020.2993728,딥러닝 클라우드 작업 실패 예측,예측(Plan 55 로드맵) 근거
+예측·선제,Xu 2016,Hard Disk Failure Prediction (big data),2016,41,BigDataService,10.1109/bigdataservice.2016.10,SMART 지표 디스크 고장 예측,예측 선제탐지 근거
+이상탐지(로그),Zhang 2019 (LogRobust),Unstable log data 이상탐지,2019,680,ESEC/FSE,10.1145/3338906.3338931,로그 진화에 강건한 이상탐지,로그기반 신호(Plan 55 다중소스)
+이상탐지(로그),Meng 2019 (LogAnomaly),비지도 순차·정량 로그 이상탐지,2019,623,IJCAI,10.24963/ijcai.2019/658,템플릿2Vec 순차·정량 로그 이상,로그 신호 확장 근거
+이상탐지(로그),Du 2017 계열/He 2016,System Log Analysis for Anomaly Detection,2016,569,ISSRE,10.1109/issre.2016.21,로그 이상탐지 실증 비교,로그 파이프라인 근거
+AIOps 종합,Notaro 2021,AIOps Failure Management 서베이(100편),2021,102,ACM CSUR,10.1145/3483424,5개 카테고리·14 서브·개입시점 윈도우 분류,성숙도·로드맵 분류 프레임
+AIOps 종합,Dang 2019,AIOps: Real-World Challenges (MSFT),2019,202,ICSE-Companion,10.1109/icse-companion.2019.00023,산업 AIOps 과제·연구방향,AIOps 정의·방향 근거
+AIOps 종합,Lyu 2023,MLOps·AIOps 로드맵 공동연구,2023,61,ACM CSUR,10.1145/3625289,MLOps/AIOps 도전·기회·로드맵,도입 로드맵 근거
+AIOps 종합,Lyu 2021,AIOps 데이터 분할 영향 실증,2021,58,ACM TOSEM,10.1145/3447876,데이터 분할이 AIOps 모델 성능에 미치는 영향,데이터품질 전제 근거

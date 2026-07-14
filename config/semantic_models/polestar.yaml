@@ -1,0 +1,122 @@
+# 시맨틱 모델 — 로컬 개발 샌드박스 Polestar (polestar)
+# Plan 61 트랙 C / E6-1 / D-076 후속(2026-07-14): 로컬 검증 환경 편입.
+#
+# 목적: LLM이 SQL을 직접 쓰지 않고 검증된 dimension/measure/entity를 **선택(SMQ)**하면,
+#   semantic_compiler가 결정적으로 SQL을 조립한다(잘못된 조인·집계·미존재 컬럼 원천 차단).
+#
+# 원칙:
+#   - 로컬 도커 테스트 DB(polestar_pg, testdata/pg/init 픽스처)는 운영 폴스타(gp/yd/b0)와
+#     동일 스키마이므로 polestar_cm_gp.yaml을 복제해 작성했다(스키마 일치 실측 2026-07-14:
+#     core_config_prop·cmm_alarm/def/active·cmm_metric_stat_[h,d,m] 구조 동일).
+#   - db_engine / db_schema 는 여기 저장하지 않는다 — domain_config(get_domain_by_id)에서
+#     결정적으로 주입한다(D-066 후속6 단일 출처, 엔진/스키마 드리프트 방지).
+#   - 인라인 주석 금지 규칙은 .env 계열에만 해당(YAML은 무관).
+
+db_id: polestar
+
+# ── 패턴 A: 서버 설정 (EAV 피벗) ─────────────────────────────────────────────
+# 컴파일러는 dimension을 direct(cmm_resource 직접 컬럼) / eav(core_config_prop 속성)로 나눠
+# build_multi_resource_pivot_sql(D-068)에 넘긴다 — resource_type 구분 CASE WHEN + 단일 GROUP BY.
+# 주의: EAV 'Hostname'/'IPaddress'는 실측상 비어 있어 반드시 direct 컬럼(hostname/ipaddress)을
+#   쓴다(D-058/D-061). '서버명/장비명'은 cmm_resource.name(등록명)이며 hostname과 다르다.
+pattern_a:
+  eav:
+    entity_table: cmm_resource
+    config_table: core_config_prop
+    attribute_column: name
+    value_column: stringvalue_short
+    lob_value_column: stringvalue
+    direct_join:
+      entity_column: resource_conf_id
+      config_column: configuration_id
+  dimensions:
+    - {name: name,         source: direct, column: name,         resource_type: server.Server, aliases: [서버명, 장비명, 서버 이름, server_name]}
+    - {name: hostname,     source: direct, column: hostname,     resource_type: server.Server, aliases: [Hostname, 호스트명, 호스트네임]}
+    - {name: ipaddress,    source: direct, column: ipaddress,    resource_type: server.Server, aliases: [IPaddress, IP, IP주소]}
+    - {name: avail_status, source: direct, column: avail_status, resource_type: server.Server, aliases: [가용성, 가용성 상태, 상태]}
+    - {name: OSType,       source: eav, attribute: OSType,       resource_type: server.Server, aliases: [운영체제, OS종류, OS]}
+    - {name: OSVerson,     source: eav, attribute: OSVerson,     resource_type: server.Server, aliases: [OS버전, 운영체제버전]}
+    - {name: OSParameter,  source: eav, attribute: OSParameter,  resource_type: server.Server, lob: true, aliases: [OS파라미터, 커널 파라미터, 커널파라미터]}
+    - {name: PatchLevel,   source: eav, attribute: PatchLevel,   resource_type: server.Server, aliases: [패치레벨, 커널버전]}
+    - {name: Vendor,       source: eav, attribute: Vendor,       resource_type: server.Server, aliases: [벤더, 제조사]}
+    - {name: Model,        source: eav, attribute: Model,        resource_type: server.Server, aliases: [모델, 모델명]}
+    - {name: SerialNumber, source: eav, attribute: SerialNumber, resource_type: server.Server, aliases: [시리얼, 일련번호, 시리얼번호]}
+    - {name: GMT,          source: eav, attribute: GMT,          resource_type: server.Server, aliases: [시간대, 타임존]}
+    - {name: AgentID,      source: eav, attribute: AgentID,      resource_type: server.Server, aliases: [에이전트ID]}
+    - {name: AgentVersion, source: eav, attribute: AgentVersion, resource_type: server.Server, aliases: [에이전트버전]}
+    - {name: MODEL,        source: eav, attribute: MODEL,        resource_type: server.Cpus,   aliases: [CPU모델, CPU 모델, 프로세서]}
+    - {name: LOGICALCORE,  source: eav, attribute: LOGICALCORE,  resource_type: server.Cpus,   aliases: [논리코어, CPU코어수, 코어수, CPU 코어 수]}
+    - {name: PHYSICALCORE, source: eav, attribute: PHYSICALCORE, resource_type: server.Cpus,   aliases: [물리코어]}
+    - {name: PHYSICALCPU,  source: eav, attribute: PHYSICALCPU,  resource_type: server.Cpus,   aliases: [CPU소켓, 소켓수]}
+    - {name: SPEED,        source: eav, attribute: SPEED,        resource_type: server.Cpus,   aliases: [CPU속도, 클럭]}
+    - {name: TotalSize,    source: eav, attribute: TotalSize,    resource_type: server.Memory, aliases: [메모리, 메모리크기, 메모리용량, 메모리 용량]}
+  # 필터 가능한 필드(WHERE/HAVING). direct 컬럼은 서버 식별에 HAVING(집계 후, D-050) 사용.
+  filterable: [resource_type, name, hostname, ipaddress, avail_status]
+
+# ── 패턴 B: 성능 지표 (통계 measure) ─────────────────────────────────────────
+# cmm_metric_stat_[h,d,m] 통계 테이블에서 resource_type + definition_name 피벗으로 집계.
+# 컴파일러는 measure를 build_multi_resource_pivot_sql의 explicit_measures로 넘긴다(단일 GROUP BY).
+pattern_b:
+  metric_tables:
+    hour: cmm_metric_stat_h
+    day: cmm_metric_stat_d
+    month: cmm_metric_stat_m
+  default_time_grain: month
+  # measure만 선택되고 dimension이 비면 컴파일러가 결정적으로 주입할 서버 식별 dimension
+  # (SMQ 선택 누락 보정, D-076 후속 — pattern_a 카탈로그에 정의된 이름만 유효)
+  default_dimensions: [name, hostname]
+  value_columns:
+    avg: avg_val
+    max: max_val
+    min: min_val
+  measures:
+    - {resource_type: server.Cpus,        definition_name: Utilization, aliases: [CPU 사용률, CPU]}
+    - {resource_type: server.Memory,      definition_name: Utilization, aliases: [메모리 사용률, 메모리]}
+    - {resource_type: server.FileSystems, definition_name: Utilization, aliases: [파일시스템 사용률, 파일시스템]}
+    - {resource_type: server.Disks,       definition_name: MaxIORate,   aliases: [디스크 IO, 디스크 아이오]}
+
+# ── 패턴 C: 알람 (정규화 관계형 조인) ────────────────────────────────────────
+# 알람은 EAV가 아니라 CMM_ALARM(CA)↔CMM_ALARM_DEF(D)↔CMM_ALARM_ACTIVE(A)↔CMM_RESOURCE(CR) 조인.
+# 활성 알람은 A 조인 + severity IN (1,2,3), 이력은 A 미조인 + IN (0,1,2,3).
+# 조인 조건은 db_profiles query_examples/골드 SQL의 검증된 형태를 따른다.
+pattern_c:
+  entities:
+    CMM_RESOURCE:     {alias: CR}
+    CMM_ALARM:        {alias: CA}
+    CMM_ALARM_DEF:    {alias: D}
+    CMM_ALARM_ACTIVE: {alias: A}
+  base_table: {table: cmm_resource, alias: CR}
+  joins:
+    CMM_ALARM:     "JOIN {p}cmm_alarm CA ON CA.RESOURCE_ID = CR.ID"
+    CMM_ALARM_DEF: "JOIN {p}cmm_alarm_def D ON CA.DEFINITION_ID = D.ID"
+  active_join:     "JOIN {p}cmm_alarm_active A ON A.ALARM_ID = CA.ID"
+  dimensions:
+    ALARMSEVERITY:      CA.ALARMSEVERITY
+    CTIME:              CA.CTIME
+    NAME:               D.NAME
+    CONDITIONLOGTEXT:   CA.CONDITIONLOGTEXT
+    CURRENTALARMSTATUS: CA.CURRENTALARMSTATUS
+    server_name:        CR.NAME
+    IPADDRESS:          CR.IPADDRESS
+    HOSTNAME:           CR.HOSTNAME
+  severity_map:
+    심각: 3
+    critical: 3
+    경고: 2
+    warning: 2
+    주의: 1
+    info: 1
+    해소: 0
+    resolved: 0
+  base_where: ["CR.DTIME IS NULL"]
+  order_by: "CA.CTIME DESC"
+  allowed_tables:
+    - cmm_alarm
+    - cmm_alarm_def
+    - cmm_alarm_active
+    - cmm_resource
+    - cmm_alarm_def_noti
+    - cmm_alarm_def_noti_user
+    - cmm_alarm_def_noti_group
+    - cmm_alarm_def_noti_role
+    - cmm_alarm_def_noti_rmtype

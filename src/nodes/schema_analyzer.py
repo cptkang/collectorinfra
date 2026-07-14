@@ -25,6 +25,7 @@ from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
 from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
 from src.state import AgentState
+from src.utils.flex_match import best_flex_match
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ def _synonym_tables_matching_query(
     db_syns: dict[str, list[str]],
     match_text: str,
     cap: int = _MAX_SYNONYM_SUPPLEMENT_TABLES,
+    *,
+    fuzzy: bool = False,
+    min_score: float = 0.85,
 ) -> set[str]:
     """등록된 컬럼 유사어 중 이번 질의 용어와 매칭되는 것의 테이블만 추린다 (D-051).
 
@@ -46,10 +50,22 @@ def _synonym_tables_matching_query(
     > FabriX 한도 95K). 따라서 **이번 질의(원질의 + query_targets)에 실제 등장한 유사어**의
     테이블만 보완 대상으로 게이트하고 상한을 적용한다.
 
+    Plan 61 트랙 B(E5-1): ``fuzzy=True``이면 정확 부분어 포함(``s in match_text``)이
+    실패했을 때 질의 토큰과의 **유연 근사 매칭**(자모·편집거리·부분어)을 추가로 시도한다.
+    이로써 "메모리사용률"↔"메모리 사용률"류 표기 변형·오탈자를 잡는다. ``fuzzy=False``
+    (기본)이면 아래 루프는 기존 정확 부분어 매칭과 **바이트 단위로 동일**하다(회귀 0).
+
+    ``cap``의 기본값은 모듈 상수(15)이나, 호출부는 config
+    (``cfg.synonym.max_synonym_supplement_tables``)에서 상한을 읽어 넘긴다(E5-3):
+    낮추면 토큰↓·리콜↓이므로 EX 하네스로 튜닝하는 파라미터다
+    (과잉 가지치기 경계 — Death of Schema Linking, arXiv 2408.07702).
+
     Args:
         db_syns: {"table.column": [synonym, ...]} 형태의 등록 유사어
         match_text: 소문자화한 (원질의 + query_targets) 매칭 텍스트
-        cap: 보완 테이블 수 상한 (기본 _MAX_SYNONYM_SUPPLEMENT_TABLES)
+        cap: 보완 테이블 수 상한 (기본 _MAX_SYNONYM_SUPPLEMENT_TABLES=15)
+        fuzzy: 유연 근사 매칭 활성화 여부(플래그, 기본 OFF)
+        min_score: 유연 매칭 확정 신뢰도 임계(fuzzy=True일 때만 사용)
 
     Returns:
         질의와 매칭된 유사어가 속한 테이블명(소문자) 집합 (최대 cap개)
@@ -57,13 +73,30 @@ def _synonym_tables_matching_query(
     matched: set[str] = set()
     if not match_text or not db_syns:
         return matched
+
+    # 유연 매칭용 질의 토큰은 fuzzy=True일 때만 준비한다(OFF 경로 오버헤드 0).
+    query_tokens: list[str] = []
+    if fuzzy:
+        import re as _re
+
+        query_tokens = [
+            tok for tok in _re.split(r"[\s,/()\[\]{}]+", match_text) if len(tok) >= 2
+        ]
+
     for col_key, syns in db_syns.items():
         if "." not in col_key:
             continue
         # 빈 문자열 유사어는 항상 매칭(="" in text)되어 전 테이블 유입을 유발하므로 제외.
         # 1글자 유사어는 오매칭 위험이 커 길이 2 이상만 인정한다.
         for s in syns or []:
-            if s and len(s) >= 2 and s.lower() in match_text:
+            if not s or len(s) < 2:
+                continue
+            s_low = s.lower()
+            hit = s_low in match_text
+            if not hit and fuzzy and query_tokens:
+                cand, _score = best_flex_match(s_low, query_tokens, min_score)
+                hit = cand is not None
+            if hit:
                 matched.add(col_key.split(".", 1)[0].lower())
                 break
         if len(matched) >= cap:
@@ -807,7 +840,16 @@ async def schema_analyzer(
                         + " "
                         + " ".join(query_targets or [])
                     ).lower()
-                    _allowed |= _synonym_tables_matching_query(db_syns, _match_text)
+                    # E5-3: 보완 상한을 config에서 읽는다(모듈 상수 하드코딩 대체, 기본 15).
+                    # E5-1: fuzzy 플래그 ON 시 유연 근사 매칭 병행(기본 OFF → 정확 부분어만).
+                    _syn_cfg = app_config.synonym
+                    _allowed |= _synonym_tables_matching_query(
+                        db_syns,
+                        _match_text,
+                        cap=_syn_cfg.max_synonym_supplement_tables,
+                        fuzzy=_syn_cfg.fuzzy_match,
+                        min_score=_syn_cfg.match_confidence_min,
+                    )
                 except Exception as e:
                     logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
                 # ★ DEBUG[4]: 필터링 조건 확인

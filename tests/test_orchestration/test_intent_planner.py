@@ -172,6 +172,58 @@ async def test_process_intent_coerced_from_data_query(mock_config):
 
 
 @pytest.mark.asyncio
+async def test_alarm_intent_coerced_from_data_query(mock_config):
+    """알람/이벤트(event) 질의를 LLM이 data_query로 분류해도 alarm_query로 교정(D-076 후속3)."""
+    content = json.dumps(
+        {
+            "tasks": [
+                {
+                    "task_id": "t1",
+                    "agent": "data_query",  # LLM 보수적 오분류 (bare "event" 실측 사례)
+                    "sub_query": "최근 event가 발생한 서버와 서버별 이벤트 내용을 5건 보여줘.",
+                    "depends_on": [],
+                    "input_from": [],
+                    "order": 1,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    state = create_initial_state(user_query="최근 event가 발생한 서버와 서버별 이벤트 내용을 5건 보여줘.")
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert result["task_plan"][0]["agent"] == "alarm_query"
+
+
+@pytest.mark.asyncio
+async def test_non_alarm_query_stays_data_query(mock_config):
+    """알람 신호가 없는 일반 조회(CPU 사용률)는 data_query를 유지한다(과잉 교정 방지)."""
+    content = json.dumps(
+        {
+            "tasks": [
+                {
+                    "task_id": "t1",
+                    "agent": "data_query",
+                    "sub_query": "전체 서버의 CPU 사용률 현황을 알려줘",
+                    "depends_on": [],
+                    "input_from": [],
+                    "order": 1,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    state = create_initial_state(user_query="전체 서버의 CPU 사용률 현황을 알려줘")
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert result["task_plan"][0]["agent"] == "data_query"
+
+
+@pytest.mark.asyncio
 async def test_process_history_stays_data_query(mock_config):
     """'프로세스 이력' 등 과거/이력 신호가 있으면 data_query 유지(교정 제외)."""
     content = json.dumps(

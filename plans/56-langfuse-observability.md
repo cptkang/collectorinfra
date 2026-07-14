@@ -1,6 +1,6 @@
 # 56. LLM 관측성 확보 — Langfuse 통합 (LLM Observability with Langfuse)
 
-> 작성일: 2026-07-08
+> 작성일: 2026-07-08 (갱신: 2026-07-10 — deepagents 트랙 B LLM 호출 실측 검토 반영, §2.6/§4.6.1/§4.9)
 > **관련 Plan**: 49(deepagents 오케스트레이션), 50(멀티턴·제어 평면 토큰), 52(알람 노이즈 캔슬링), 55(멀티소스 관측 로드맵)
 > **관련 결정**: D-050 (신규 예정 — §9. **등재 직전 `## D-` 헤더와 「변경 이력」 표를 모두 grep하여 실제 최대 번호 재확인** 필수, Known Mistakes 2026-06-29 참조)
 > **상태**: 계획 (Phase L1~L4 미착수)
@@ -78,7 +78,7 @@
 | 〃 | `src/nodes/field_mapper.py:71`, `cache_management.py:48,144`, `multi_db_executor.py:109,471` | 필드매핑·캐시의도·멀티DB | `ainvoke` |
 | 라우팅 | `src/routing/semantic_router.py:62,280` | DB 라우팅 분류 | `ainvoke` |
 | orchestration | `intent_planner.py:97,275`, `replanner.py:62,156`, `result_aggregator.py:52`, `agent_orchestrator.py:56` | 의도 계획·재계획·집계 | `ainvoke` |
-| 〃 | `deep_agent.py:212` (`run_deep_agent`) | deepagents `CompiledStateGraph.ainvoke` — 내부에서 vLLM tool-calling + 도구 내 FabriX 워커 호출 | 중첩 그래프 |
+| 〃 | `deep_agent.py:219` (`run_deep_agent`) | deepagents `CompiledStateGraph.ainvoke` — 내부에서 vLLM tool-calling + 도구 내 FabriX 워커 호출 + 최종 합성 (**상세 §2.6**) | 중첩 그래프 |
 | alarm | `src/alarm/application/nodes/alarm_analyzer.py:236,294`, `agentic_enricher.py:92-98`, `src/alarm/infrastructure/noise_signal_tools.py:244-297` | 알람 분석·노이즈 보강 | `ainvoke` |
 | 문서/캐시 | `src/document/field_mapper.py:672,951,1224,1298`, `src/schema_cache/cache_manager.py:830,933`, `description_generator.py:84,154` | 템플릿 매핑·스키마 설명 생성 | `ainvoke` |
 
@@ -106,6 +106,24 @@
 
 - thread_id: 프론트(`static/app.js`) → 요청 body → `thread_config` (Plan 50에서 프론트 누락 수정 완료)
 - user_id: `AuthConfig` 기반 인증(`src/api/dependencies.py`) — 감사 로그에 이미 user_id 기록 중 → 같은 값을 Langfuse trace 속성으로 재사용
+
+### 2.6 deepagents(트랙 B) 경로 LLM 호출 상세 (2026-07-10 실측 추기)
+
+트랙 B는 메인 그래프의 `deep_agent` 단일 노드(`graph.py:358` — `partial(run_deep_agent, app_config=config, worker_llm=llm)`) 안에서 **3계층의 LLM 호출**이 중첩된다:
+
+| # | 계층 | 호출 지점 | LLM | config 전달 현황 |
+|---|------|----------|-----|------------------|
+| B-1 | 제어 평면 (tool-calling 루프) | `deep_agent.py:219` `agent.ainvoke({"messages": ...})` — deepagents `CompiledStateGraph` 내부에서 vLLM 호출 N회 반복 | `ChatOpenAI`(vLLM) 또는 Gemini | **config 미전달**. `run_deep_agent`는 파라미터명 `config`를 의도적으로 회피(`deep_agent.py:193` 주석 — LangGraph 가로채기 방지)하므로 **RunnableConfig를 받지도, 내부로 넘기지도 않음** |
+| B-2 | 데이터 평면 (도구 내부) | `deepagents_tools.py:153` `spec.handler(task, isolated, llm=spec.model or worker_llm, ...)` — handler는 기존 노드 함수를 직접 호출: `run_data_query_pipeline`(`classify_dbs`→단일/멀티 파이프라인→`result_organizer`), `run_general_inference`, `run_cache_management` 등 (`subagents.py:580~`) | FabriX(`KBGenAIChat`) 워커 | 노드 내부 `llm.ainvoke`/`astream_text` 모두 config 미전달 — contextvar 전파에 의존. 도구 코루틴은 deepagents 그래프의 도구 실행 노드 안에서 돌므로 **asyncio 컨텍스트 복사로 전파될 것으로 예상되나 실측 필요**(§4.4) |
+| B-3 | 최종 응답 합성 (D-062) | `deep_agent.py:263` `result_aggregator(agg_state, synthesize=True)` → per-task `_finalize_task`(복합 task 시 스트리밍 억제) + `_synthesize_finalized` → `astream_text(llm, messages, tags=[USER_RESPONSE_TAG])` (`result_aggregator.py:429`) | FabriX 워커 | `astream_text`(`src/llm.py`)가 **자체 config(`{"tags": tags}`)를 만들어 전달** — 부모 contextvar config(callbacks)와 병합되는지가 이 generation의 trace 귀속을 좌우(langchain-core `ensure_config`의 contextvar merge 동작 실측 필요) |
+
+부가 사실:
+
+- **orchestrator LLM은 요청마다 생성**: `run_deep_agent` → `build_deep_agent`(`deep_agent.py:121` `create_orchestrator_llm`) — 요청 스코프이므로 평면 태그 부착(§4.9)·핸들러 수명 관리에 유리. 기동 시 `_deep_agent_buildable`(`graph.py:271`)은 조립 시험만 하고 호출하지 않으므로 계측 무관
+- **`spec.model` per-agent 모델 슬롯**(`subagents.py:90`)은 현재 전부 None(Phase 7 예약) — 워커 단일. 추후 채워지면 generation의 모델명 구분이 자동으로 따라오는지 확인 필요
+- `vllm_healthy`(`deep_agent.py:24`)는 requests 기반 health check — LLM 아님, 계측 대상 아님
+- deepagents 조립 실패 폴백(`deep_agent.py:208~`)은 LLM 무호출 — trace에는 deep_agent span만 남고 generation 없음(정상)
+- **트랙 A**(`agent_orchestrator.py`, `enable_deepagent_orchestration` + 트랙 B 비활성 시)도 동일 handler(`SUBAGENT_REGISTRY`)를 그래프 노드에서 직접 디스패치하므로 B-2와 동일 검증으로 커버됨
 
 ---
 
@@ -286,7 +304,11 @@ thread_config = {
 
 1. 2노드 toy StateGraph + fake `BaseChatModel`로 `ainvoke(config={"callbacks":[수집용 핸들러]})` 실행 → 노드 내부 config 미전달 `llm.ainvoke`에서 `on_chat_model_start`가 핸들러에 도달하는지 확인
 2. 도달하지 않는 케이스(동기 `_generate`만 있는 클라이언트를 스레드 실행하는 경로 등)가 발견되면: 해당 노드 시그니처에 `config: RunnableConfig` 파라미터를 추가하고 `llm.ainvoke(messages, config=config)`로 명시 전달 (LangGraph는 노드 함수에 config를 주입해준다) — 이 경우에만 해당 노드 선별 수정
-3. `run_deep_agent`(중첩 CompiledStateGraph)도 동일 검증: `deep_agent.py:212`의 내부 `ainvoke`에 부모 config 전달 여부 확인, 미전파 시 명시 전달
+3. **deepagents(트랙 B) 3계층 검증** (§2.6 매핑, 실측 대상을 세분화):
+   - **(3a) B-1 제어 평면**: `deep_agent.py:219`의 `agent.ainvoke`(config 미전달)에서 deepagents 내부 vLLM 호출의 `on_chat_model_start`가 부모 핸들러에 도달하는지 — 중첩 CompiledStateGraph 경계의 contextvar 전파 확인
+   - **(3b) B-2 도구 내부**: deepagents 도구 실행 노드가 `StructuredTool` 코루틴을 실행할 때(별도 asyncio Task 생성 여부 포함) handler 내부 워커 LLM 호출 이벤트가 전파되는지
+   - **(3c) B-3 합성 경로**: `astream_text`가 만드는 부분 config(`{"tags": [...]}`)가 부모 contextvar config의 callbacks와 **병합**되는지 — langchain-core `ensure_config`가 contextvar를 base로 merge하는지 실측. 병합 안 되면 USER_RESPONSE_TAG generation들이 trace에서 전부 누락됨(deep_agent뿐 아니라 output_generator/general_inference도 동일 영향 — **전 경로 공통 게이트**)
+   - 미전파 확인 시 대응은 §4.9 참조
 
 검증 결과(전파 O/X 매트릭스)는 본 계획서에 추기하고 D-050 등재 시 근거로 첨부한다.
 
@@ -312,15 +334,33 @@ trace: "query" (session=thread_id, user=user_id, tags=[api,sync|stream])
    │  └─ generation: KBGenAIChat (의도 파싱 프롬프트/응답/토큰)
    ├─ span: query_generator          ← 재시도 시 반복 등장 = 루프 가시화
    │  └─ generation: ...
-   ├─ span: deep_agent               (트랙 B 시)
-   │  ├─ generation: ChatOpenAI(vLLM tool-calling — 제어 평면 토큰 측정, Plan 50 D-042 연계)
-   │  └─ span: tool:query_executor
-   │     └─ generation: KBGenAIChat(워커)
    └─ span: output_generator
       └─ generation: KBGenAIChat (astream — 최종 응답)
+
+trace: "query" — 트랙 B(deep_agent) 경로 (§2.6 실측 반영)
+└─ span: LangGraph
+   ├─ span: context_resolver / input_parser / field_mapper (전처리 공통)
+   └─ span: deep_agent
+      └─ span: deepagents CompiledStateGraph (중첩 그래프)
+         ├─ generation: ChatOpenAI(vLLM) [tags: control-plane]   ← tool-calling 루프 1회차
+         ├─ span: tool:query_infra_db (B-2)
+         │  ├─ generation: KBGenAIChat — classify_dbs [data-plane]
+         │  └─ span: 데이터 평면 파이프라인 (schema_analyzer→query_generator→…)
+         │     └─ generation: KBGenAIChat × 노드별 [data-plane]
+         ├─ generation: ChatOpenAI(vLLM) [control-plane]         ← 루프 2회차(재계획)
+         └─ …
+      └─ generation: KBGenAIChat — result_aggregator 합성 (B-3, USER_RESPONSE_TAG, D-062)
 ```
 
-노드명·태그(USER_RESPONSE_TAG 포함)는 콜백 이벤트에 이미 실려 있으므로 추가 계측 없이 위 계층이 형성된다.
+노드명·태그(USER_RESPONSE_TAG 포함)는 콜백 이벤트에 이미 실려 있으므로 추가 계측 없이 위 계층이 형성된다. 트랙 B에서 vLLM generation의 tool-calling 루프 반복 횟수와 control-plane 토큰 합계가 그대로 보이므로 **Plan 50 D-042(제어 평면 토큰 예산)의 정량 측정 수단**이 된다.
+
+### 4.6.1 제어/데이터 평면 태그 분리 (§4.9와 연동)
+
+deepagents 경로는 제어 평면(vLLM)과 데이터 평면(FabriX)의 토큰을 **분리 집계**해야 Plan 50의 예산 압박을 정량화할 수 있다. 모델명만으로도 구분 가능하나(vLLM 모델 vs FabriX 모델), 조회 편의를 위해 LLM 인스턴스 레벨 태그를 부착한다:
+
+- `create_orchestrator_llm()` 반환 인스턴스에 `tags=["control-plane"]`
+- `create_llm()` 반환 인스턴스에 `tags=["data-plane"]`
+- 방식: `BaseChatModel`(Runnable)의 `tags` 필드 또는 `.with_config(tags=[...])` — **어느 쪽이 Langfuse generation의 tags로 실리는지 실측 후 확정**(둘 다 안 실리면 metadata로 대체). `.with_config` 래핑 시 `type(llm) is KBGenAIChat` 같은 기존 타입 체크(`result_aggregator.py:424`)가 깨지지 않는지 확인 — 깨지면 생성자/필드 방식만 사용
 
 ### 4.7 민감 데이터 마스킹
 
@@ -337,6 +377,44 @@ Key Constraints("민감 데이터 마스킹") 준수를 위해 클라이언트 �
 - 서버 미가용: SDK가 내부 재시도 후 drop — 질의 처리 무영향 (성공 기준 5). L1에서 Langfuse 컨테이너 내린 상태로 `/query` 정상 동작 확인
 - 과부하 우려 시 `LANGFUSE_SAMPLE_RATE`로 표본화 (trace 단위 일관 샘플링)
 - 알람 워커는 상시 데몬 — handler/trace 객체를 알람 처리 단위로 생성·폐기하여 누적 방지 (Known Mistakes 2026-06-29 데몬 메모리 교훈: 장기 보관 dict/객체 금지)
+
+### 4.9 deepagents(트랙 B) 경로 계측 설계 (2026-07-10 추기)
+
+§2.6의 3계층(B-1/B-2/B-3)을 하나의 trace에 귀속시키기 위한 설계. §4.4-3 실측 결과에 따라 (2)는 조건부다.
+
+**(1) `run_deep_agent`에 RunnableConfig 수용 + 명시 전달 (기본 적용)**
+
+contextvar 전파가 실측에서 확인되더라도, 중첩 CompiledStateGraph 경계는 deepagents 내부 구현(0.6.10)에 의존하므로 **명시 전달을 기본으로 한다** (전파 실패 시 generation 전체가 조용히 누락되는 위험 대비):
+
+```python
+async def run_deep_agent(
+    state: dict,
+    *,
+    app_config: AppConfig,
+    worker_llm: Optional[BaseChatModel] = None,
+    config: Optional[RunnableConfig] = None,   # LangGraph가 주입 (키워드 전용이라 partial과 충돌 없음)
+) -> dict:
+    ...
+    result = await agent.ainvoke(
+        {"messages": [...]}, config=config      # 중첩 그래프에 부모 callbacks/metadata 전달
+    )
+```
+
+- 주의: 기존 주석(`deep_agent.py:193`)은 "파라미터명 config를 피한다"였으나 이는 **app_config를 config로 명명하지 않는다**는 뜻 — 계측을 위해서는 반대로 LangGraph의 config 주입을 **활용**한다. `partial(run_deep_agent, app_config=..., worker_llm=...)`(graph.py:358)은 키워드 바인딩이므로 config 파라미터 추가와 충돌하지 않음. **toy 그래프로 partial+config 주입 동작을 실측 후 적용**
+- `_aggregate_with_fabrix` → `result_aggregator`는 같은 노드 컨텍스트 안(await 체인)이므로 contextvar로 커버되나, (3c) 실측에서 병합이 안 되면 `result_aggregator(..., runnable_config=config)` 파라미터를 추가해 `astream_text`까지 내려보낸다 (트랙 A `agent_orchestrator`도 동일 패턴 적용)
+
+**(2) `astream_text` config 병합 보강 (조건부 — §4.4-3c 실측 결과에 따라)**
+
+`ensure_config`가 contextvar를 병합해주면 무수정. 병합이 안 되면 `astream_text(llm, messages, *, tags=None, config=None)`으로 확장하여 호출부가 부모 config를 넘길 수 있게 한다 — tags는 기존처럼 config에 merge (D-009 태그 필터 회귀 금지).
+
+**(3) trace 크기·비용 관리**
+
+- 도구 1회 호출마다 데이터 평면 파이프라인 전체(15+ 노드 span)가 붙는다 — 복합 질의(도구 3~4회 + 재계획 루프)는 trace 1건이 수십 span에 달함. self-hosted ClickHouse라 저장은 감당 가능하나, `LANGFUSE_SAMPLE_RATE` 하향의 1순위 후보 경로임을 운영 문서에 명시
+- deepagents 내부 span 이름은 deepagents가 정하는 노드명(agent/tools 등)을 그대로 쓴다 — 커스텀 rename은 하지 않음(유지비)
+
+**(4) 도구 결과 collector와의 관계**
+
+collector(원본 결과 수집, `deepagents_tools.py:159`)는 관측과 무관한 기존 응답 생성 경로 — Langfuse 도입으로 변경하지 않는다. 단 도구 span의 output에는 `_serialize_for_tool`의 **truncate된 텍스트**(제어 평면 노출본)가 실리므로, "vLLM이 실제로 본 것"이 그대로 기록된다는 점이 오히려 디버깅에 정확하다(원본은 최종 generation의 input으로 간접 확인 가능).
 
 ---
 
@@ -368,9 +446,10 @@ Key Constraints("민감 데이터 마스킹") 준수를 위해 클라이언트 �
 | # | 작업 | 검증 |
 |---|------|------|
 | 1 | 알람 워커 trace (§4.3-4) | 알람 1건 처리 → trace 확인, 데몬 메모리 안정 |
-| 2 | deep_agent 중첩 전파 (§4.4-3) | 트랙 B 경로 trace에 도구 span 포함 |
-| 3 | 마스킹 훅 (§4.7) | 단위 테스트: 민감 패턴 포함 입출력 → 마스킹 단언 (성공 기준 6) |
-| 4 | 서버 다운 내성 테스트 | 성공 기준 5 |
+| 2 | deep_agent 계측 (§4.9): `run_deep_agent` RunnableConfig 수용 + `agent.ainvoke(config=...)` 명시 전달, (조건부) `astream_text`/`result_aggregator` config 파라미터 확장 | 트랙 B trace에 B-1(vLLM 루프 generation)·B-2(도구 내부 워커 generation)·B-3(합성 generation)가 모두 한 trace로 귀속. D-062 합성 경로 USER_RESPONSE_TAG 스트리밍 회귀 없음 |
+| 3 | 제어/데이터 평면 태그 분리 (§4.6.1) | Langfuse에서 control-plane vs data-plane 토큰 분리 집계 확인 (Plan 50 D-042 정량화) |
+| 4 | 마스킹 훅 (§4.7) | 단위 테스트: 민감 패턴 포함 입출력 → 마스킹 단언 (성공 기준 6) |
+| 5 | 서버 다운 내성 테스트 | 성공 기준 5 |
 
 ### Phase L4 — 운영 정착
 
@@ -394,7 +473,10 @@ Key Constraints("민감 데이터 마스킹") 준수를 위해 클라이언트 �
 | `langfuse/docker-compose.yml` | **신규** | L1 |
 | `.env.example`, `pyproject.toml`, `requirements.txt` | 설정·의존성 | L1 |
 | `src/clients/fabrix_client.py`, `fabrix_kbgenai.py`, `ollama_client.py` | usage_metadata | L2 |
-| 알람 그래프 invoke 지점, `src/orchestration/deep_agent.py` | config 전달 | L3 |
+| `src/orchestration/deep_agent.py` | `run_deep_agent` RunnableConfig 수용 + 중첩 ainvoke 명시 전달 (§4.9-1) | L3 |
+| `src/llm.py` | 평면 태그 부착 (§4.6.1) + (조건부) `astream_text` config 파라미터 (§4.9-2) | L3 |
+| 알람 그래프 invoke 지점 | config 전달 | L3 |
+| (조건부) `src/orchestration/result_aggregator.py`, `agent_orchestrator.py` | config 하향 전달 — §4.4-3c 실측 결과에 따라 | L3 |
 | (조건부) 전파 안 되는 개별 노드 | config 명시 전달 | L1 실측 결과에 따라 |
 
 ---
@@ -405,9 +487,10 @@ Key Constraints("민감 데이터 마스킹") 준수를 위해 클라이언트 �
 2. **단위 — usage_metadata**: 클라이언트별 mock 응답 → 토큰 값 단언. usage 부재 응답 → 필드 없음(예외 없음)
 3. **단위 — 마스킹**: 민감 패턴 입출력 → 치환 확인
 4. **통합 — 콜백 전파**: fake LLM + 실제 `build_graph`로 `ainvoke(config={"callbacks":[수집 핸들러]})` → 주요 노드의 chat_model 이벤트 수집 단언 (Langfuse 서버 불필요 — 수집용 BaseCallbackHandler 사용)
-5. **회귀 — D-009 스트리밍**: callbacks 주입 상태에서 `astream_events`의 `on_chat_model_stream`+USER_RESPONSE_TAG 이벤트가 기존과 동일하게 발생하는지 단언 (기존 스트리밍 테스트에 callbacks 케이스 추가)
-6. **회귀 — 전체 스위트**: `LANGFUSE_ENABLED=false` 기본값으로 전체 통과. 테스트 픽스처에서 `LangfuseConfig(enabled=False)` **명시**하여 로컬 `.env` 누수 차단 (Known Mistakes 2026-06-17 — BaseSettings 테스트 누수)
-7. **수동 E2E**: 로컬 Langfuse 기동 → `/query/stream` 1회 → UI에서 성공 기준 1·2·3 확인, 스크린샷을 `docs/`에 보관
+5. **회귀 — D-009 스트리밍**: callbacks 주입 상태에서 `astream_events`의 `on_chat_model_stream`+USER_RESPONSE_TAG 이벤트가 기존과 동일하게 발생하는지 단언 (기존 스트리밍 테스트에 callbacks 케이스 추가). **deep_agent 경로 포함**: `result_aggregator(synthesize=True)`의 합성 generation 태그(D-062)도 동일 단언
+6. **통합 — deepagents 3계층 귀속 (§2.6/§4.9)**: fake 오케스트레이터(tool-calling 1회 후 종료하는 fake `BaseChatModel`) + fake 워커로 `run_deep_agent`를 callbacks 포함 config로 실행 → 수집 핸들러에 (a) 오케스트레이터 chat_model 이벤트 (b) 도구 내부 워커 이벤트 (c) 합성 경로 이벤트가 모두 도달하는지 단언 (deepagents 미설치 환경에서는 skip 마킹 — 기존 트랙 B 테스트의 skip 패턴 계승)
+7. **회귀 — 전체 스위트**: `LANGFUSE_ENABLED=false` 기본값으로 전체 통과. 테스트 픽스처에서 `LangfuseConfig(enabled=False)` **명시**하여 로컬 `.env` 누수 차단 (Known Mistakes 2026-06-17 — BaseSettings 테스트 누수)
+8. **수동 E2E**: 로컬 Langfuse 기동 → `/query/stream` 1회 → UI에서 성공 기준 1·2·3 확인, 스크린샷을 `docs/`에 보관. 트랙 B 활성 환경에서는 §4.6 deep_agent trace 계층도 함께 확인
 
 ---
 
@@ -427,6 +510,9 @@ Key Constraints("민감 데이터 마스킹") 준수를 위해 클라이언트 �
 | CallbackHandler 오버헤드로 SSE 지연 | UX 저하 | 배치 비동기 전송 + sample_rate 하향. L1에서 스트리밍 체감·소요 비교 |
 | Langfuse 서버 리소스(ClickHouse) 부담 | 인프라 비용 | sample_rate·retention 조정. 관측 스택은 서비스와 별도 호스트 배치 가능 |
 | langfuse v4 API 표면이 문서와 상이 | 구현 지연 | 모든 SDK 호출부는 `inspect.signature` 실측 후 확정(§4.1) — Known Mistakes 원칙 |
+| deepagents 중첩 그래프 경계에서 콜백 미전파 (0.6.10 내부 구현 의존) | 트랙 B generation 전체 누락 | §4.9-1 명시 전달을 기본 적용 — contextvar 전파에만 의존하지 않음. deepagents 버전 업 시 §4.4-3 재실측 |
+| `astream_text`의 부분 config가 부모 callbacks를 병합하지 못함 | USER_RESPONSE_TAG generation 누락 (deep_agent 합성 + output_generator 공통) | §4.4-3c 실측 게이트 — 미병합 시 §4.9-2 config 파라미터 확장 |
+| 트랙 B 복합 질의 trace가 과대 (도구별 파이프라인 전체 span) | 저장·UI 부담 | §4.9-3 — sample_rate 하향 1순위 경로로 운영 문서에 명시 |
 | 프롬프트 내 민감 데이터 저장 | 보안 | mask 훅 필수(L3), self-hosted라 데이터 외부 반출 없음 |
 
 ## 9. 의사결정 등재 (예정)

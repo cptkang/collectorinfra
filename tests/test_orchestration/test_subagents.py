@@ -291,6 +291,26 @@ def test_extract_identity_rows_no_key_keeps_all_columns():
     assert extracted[0] == {"cpu": 85.0, "mem": 70.0}
 
 
+def test_isolated_input_sets_routing_intent_from_task_agent():
+    """alarm_query task는 routing_intent=alarm_query로 격리 입력에 매핑된다(D-076 후속3).
+
+    orchestration 경로는 semantic_router를 타지 않아 routing_intent가 항상 None이었고,
+    alarm_query task도 allowed_tables 필터(알람 테이블 제외)·일반 템플릿으로 실행되던 결함 회귀 방지.
+    """
+    state = create_initial_state(user_query="최근 event가 발생한 서버")
+    alarm_task = {
+        "task_id": "t1", "agent": "alarm_query", "sub_query": "최근 event 조회",
+        "depends_on": [], "input_from": [], "order": 1,
+    }
+    data_task = {
+        "task_id": "t2", "agent": "data_query", "sub_query": "서버 목록",
+        "depends_on": [], "input_from": [], "order": 2,
+    }
+
+    assert _make_isolated_input(alarm_task, state, prior={})["routing_intent"] == "alarm_query"
+    assert _make_isolated_input(data_task, state, prior={})["routing_intent"] is None
+
+
 def test_make_isolated_input_injects_prior_rows_with_limit():
     """input_from + prior → base["prior_rows"]에 식별 키·행수 상한이 적용된다."""
     task = {

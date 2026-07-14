@@ -21,6 +21,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.nodes.semantic_compiler import compile_from_nl
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
@@ -187,6 +188,7 @@ async def multi_db_executor(
                         db_engine=db_engine,
                         db_id=db_id,
                         unmapped_fields=unmapped_fields,
+                        app_config=app_config,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -205,6 +207,7 @@ async def multi_db_executor(
                             db_engine=db_engine,
                             db_id=db_id,
                             unmapped_fields=unmapped_fields,
+                            app_config=app_config,
                         )
                         validation_error = _validate_sql_simple(sql, schema_info)
                         if validation_error:
@@ -349,6 +352,7 @@ async def _generate_sql(
     db_engine: str = "postgresql",
     db_id: str = "",
     unmapped_fields: list[str] | None = None,
+    app_config: AppConfig | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -362,10 +366,30 @@ async def _generate_sql(
         column_mapping: DB별 필드-컬럼 매핑 (field_mapper 결과, 선택)
         db_engine: DB 엔진 타입 ("postgresql", "db2" 등)
         db_id: DB 식별자 (스키마 한정 규칙 결정용, D-057)
+        app_config: 앱 설정 (트랙 C 시맨틱 조합 플래그 판정용, 없으면 로드)
 
     Returns:
         생성된 SQL 문자열
     """
+    # 트랙 C(D-076): 경로 C(멀티 DB) 명시 이식 — 커버리지 내 정형 NL 질의는 시맨틱 결정적 컴파일.
+    # 폼필(column_mapping)·재시도(error_context)가 아닐 때만 진입. 커버리지 밖이면 아래 LLM 경로(회귀 0).
+    if app_config is None:
+        app_config = load_config()
+    if (not error_context and not column_mapping
+            and app_config.text2sql.semantic_compose):
+        _uq = parsed_requirements.get("original_query", "") or ""
+        semantic_sql, _smq, _cov = await compile_from_nl(
+            llm, _uq, db_id,
+            default_limit=default_limit,
+            stat_month=resolve_stat_month(_uq),
+        )
+        if semantic_sql:
+            logger.info(
+                "DB '%s': 시맨틱 결정적 컴파일 SQL(LLM 우회, 경로 C): %s",
+                db_id, semantic_sql[:200],
+            )
+            return semantic_sql
+
     schema_text = _format_schema(schema_info)
 
     # 구조 분석 메타 기반 쿼리 가이드 (있으면 삽입)
