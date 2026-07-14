@@ -30,6 +30,7 @@ from src.state import AgentState, QueryAttempt
 from src.utils.query_gen_common import (
     build_multi_resource_pivot_sql,
     build_query_examples_block,
+    build_stat_month_block,
     classify_metric_field,
     decimal_cast_example,
     eav_attr_resource_types,
@@ -476,6 +477,15 @@ async def _generate_sql(
         f"## 사용자 질의\n{sub_query_context}",
         f"## 파싱된 요구사항\n```json\n{json.dumps(parsed_requirements, ensure_ascii=False, indent=2)}\n```",
     ]
+
+    # 기간 표현의 결정적 해석 주입 — 단일 DB 경로(query_generator)와 동일 규칙(D-076 후속4,
+    # D-066 단일 출처). 원문 질의 우선, 라우터가 만든 sub_query_context에만 표현이 남은 경우 폴백.
+    _sm_block = build_stat_month_block(
+        resolve_stat_month(parsed_requirements.get("original_query", "") or "")
+        or resolve_stat_month(sub_query_context)
+    )
+    if _sm_block:
+        user_parts.append(_sm_block)
 
     # column_mapping이 있으면 schema_info 기반 필터링 후 매핑 컬럼을 명시
     if column_mapping:

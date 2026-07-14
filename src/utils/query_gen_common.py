@@ -33,6 +33,37 @@ def resolve_stat_month(user_query: str | None, today: date | None = None) -> str
         return f"{ref.year}{ref.month:02d}"
     return None
 
+def build_stat_month_block(
+    stat_month: str | None, metric_table: str = "cmm_metric_stat_m"
+) -> str:
+    """질의 기간 표현의 결정적 해석(YYYYMM 단일 월)을 LLM 폴백 프롬프트에 강제하는 블록.
+
+    "지난 1개월/지난달" 질의에서 LLM이 시스템 템플릿의 일반 규칙("하드코딩 날짜 금지 —
+    CURRENT_DATE 동적 계산")을 따라 `BETWEEN 직전월 AND 이번달`처럼 진행 중인 달까지 포함하는
+    기간을 재계산하고 월별 GROUP BY로 서버를 중복 출력하는 실측 사례가 있었다(D-076 후속4).
+    코드가 이미 해석한 월(`resolve_stat_month`)을 등호 필터로 강제해 기간 해석을 결정화한다.
+    단일 DB(query_generator)·멀티 DB(multi_db_executor) 폴백 경로가 공유한다(D-066 단일 출처).
+
+    Args:
+        stat_month: resolve_stat_month 결과 YYYYMM 문자열 (None이면 기간 표현 없음 → 빈 문자열)
+        metric_table: 월별 통계 테이블명
+
+    Returns:
+        프롬프트에 덧붙일 섹션 텍스트(선행 개행 없음). stat_month가 없으면 "".
+    """
+    if not stat_month:
+        return ""
+    return (
+        "## 기간 조건 (시스템이 결정적으로 해석 — 최우선 준수)\n"
+        f"질의의 기간 표현은 이미 월 통계 기준으로 해석되었습니다. {metric_table} 조인에 반드시 "
+        f"`s.stat_date = '{stat_month}'` (단일 월 등호 필터)를 사용하세요.\n"
+        "- 이 지시는 '하드코딩 날짜 금지·CURRENT_DATE 동적 계산' 일반 규칙보다 **우선**합니다"
+        "(이 값은 시스템이 계산해 주입한 것으로 하드코딩이 아닙니다).\n"
+        "- BETWEEN·INTERVAL 재계산으로 진행 중인 달을 포함하지 마세요.\n"
+        "- 시간별(_h)/일별(_d) 테이블로 대체하지 마세요."
+    )
+
+
 # "전체/모든/모두" 조회는 기본 LIMIT(default_limit)로 절단하면 안 되므로 상향한다.
 _ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
 _ALL_QUERY_LIMIT: int = 100_000
