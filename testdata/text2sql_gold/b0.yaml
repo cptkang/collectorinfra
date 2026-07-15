@@ -1,0 +1,131 @@
+# Text-to-SQL EX 골드셋 — 은행존 폴스타 (polestar_b0, DB2 레거시)
+# Plan 61 / E1(D-072). DB2 방언: 스키마 접두사 POLESTAR. / 행 제한 FETCH FIRST n ROWS ONLY /
+#   소수 보존은 집계 전 CAST(... AS DECIMAL) (PostgreSQL ::numeric 금지 — Known Mistakes 2026-07-09).
+# 1차 소스: config/db_profiles/polestar_b0.yaml 의 query_examples.
+
+items:
+  - id: b0-001
+    query: "호스트명, OS종류, 벤더를 조회해줘"
+    db_id: polestar_b0
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        r.hostname,
+        cc_ostype.stringvalue_short AS os_type,
+        cc_vendor.stringvalue_short AS vendor
+      FROM POLESTAR.cmm_resource r
+      LEFT JOIN POLESTAR.core_config_prop cc_ostype
+        ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
+      LEFT JOIN POLESTAR.core_config_prop cc_vendor
+        ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
+      WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
+      FETCH FIRST 100 ROWS ONLY;
+    gold_result_signature:
+      row_count: null
+      columns: [hostname, os_type, vendor]
+    notes: "DB2 방언 — POLESTAR. 스키마 접두사 + FETCH FIRST. gp-001과 의미 동일, 방언만 상이(엔진별 검증)."
+
+  - id: b0-002
+    query: "서버 수를 조회해줘"
+    db_id: polestar_b0
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT COUNT(*) AS server_count
+      FROM POLESTAR.cmm_resource r
+      WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
+      FETCH FIRST 1 ROWS ONLY;
+    gold_result_signature:
+      row_count: 1
+      columns: [server_count]
+    notes: "DB2 단순 집계."
+
+  - id: b0-003
+    query: "서버별 서버이름, 호스트네임, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+    db_id: polestar_b0
+    category: complex
+    coverage: inside
+    gold_sql: |
+      SELECT
+          COALESCE(c.platform_resource_id, c.id) AS id,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name      END) AS server_name,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
+      FROM POLESTAR.cmm_resource c
+      LEFT JOIN POLESTAR.core_config_prop cc
+            ON c.resource_conf_id = cc.configuration_id
+      WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id);
+    gold_result_signature:
+      row_count: null
+      columns: [id, server_name, hostname, ipaddress, serialnumber, cpu_model, logicalcore, mem_size]
+    notes: "은행존: 서버이름=등록명(c.name), 호스트네임=c.hostname(직접 컬럼). 다중 resource_type 피벗."
+
+  - id: b0-004
+    query: "서버들의 CPU, 메모리 사용률 리스트를 조회해줘"
+    db_id: polestar_b0
+    category: performance
+    coverage: inside
+    gold_sql: |
+      SELECT
+          svr.name AS pname,
+          svr.hostname AS hostname,
+          s.stat_date,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS cpu_avg,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS mem_avg
+      FROM POLESTAR.cmm_resource r
+      JOIN POLESTAR.cmm_resource svr
+          ON svr.id = r.platform_resource_id
+         AND svr.resource_type = 'server.Server'
+      JOIN POLESTAR.cmm_metric_stat_m s
+          ON r.id = s.resource_id
+      WHERE r.resource_type IN ('server.Cpus', 'server.Memory')
+        AND s.definition_name = 'Utilization'
+      GROUP BY svr.name, svr.hostname, s.stat_date
+      ORDER BY svr.hostname
+      FETCH FIRST 100 ROWS ONLY;
+    gold_result_signature:
+      row_count: null
+      columns: [pname, hostname, stat_date, cpu_avg, mem_avg]
+    gold_smq:
+      pattern: B
+      resource_types: [server.Cpus, server.Memory]
+      dimensions: [name, hostname]
+      measures:
+        - {agg: avg, definition_name: Utilization, resource_type: server.Cpus}
+        - {agg: avg, definition_name: Utilization, resource_type: server.Memory}
+      time_grain: month
+      filters: []
+    notes: "DB2 소수 보존 — 집계 전 CAST(... AS DECIMAL(15,4)) (::numeric 금지, Known Mistakes 2026-07-09)."
+
+  - id: b0-005
+    query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+    db_id: polestar_b0
+    category: performance
+    coverage: outside
+    gold_sql: |
+      SELECT DISTINCT
+          svr.name AS server_name,
+          svr.hostname AS hostname
+      FROM POLESTAR.cmm_resource r
+      JOIN POLESTAR.cmm_resource svr
+          ON svr.id = r.platform_resource_id
+         AND svr.resource_type = 'server.Server'
+      JOIN POLESTAR.cmm_metric_stat_m s
+          ON r.id = s.resource_id
+      WHERE r.resource_type = 'server.Memory'
+        AND s.definition_name = 'Utilization'
+        AND s.max_val > 90
+      FETCH FIRST 100 ROWS ONLY;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, hostname]
+    notes: "커버리지 밖 — '이용률'(=사용률) 동의어 + '90% 초과' 리터럴 임계(E5-2 값 검색 의존). 미검증 리터럴은 커버리지 밖 처리."

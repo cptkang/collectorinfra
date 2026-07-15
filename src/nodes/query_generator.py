@@ -29,6 +29,7 @@ from src.utils.query_gen_common import (
     build_multi_resource_pivot_block,
     build_multi_resource_pivot_sql,
     build_query_examples_block,
+    build_stat_month_block,
     classify_metric_field,
     correct_servername_hostname_mapping,
     decimal_cast_example,
@@ -36,6 +37,7 @@ from src.utils.query_gen_common import (
     resolve_query_limit,
     resolve_stat_month,
 )
+from src.nodes.semantic_compiler import compile_from_nl
 from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
 
@@ -236,15 +238,37 @@ async def query_generator(
     # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
     user_query = state.get("user_query", "") or ""
     limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
+    # 기간 표현(지난 1개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
+    stat_month = resolve_stat_month(user_query)
 
     # 폼필 다중 리소스 피벗은 코드가 결정적으로 조립(LLM 우회). 재시도(에러 컨텍스트) 시엔
     # 결정적 SQL이 이미 실패했을 수 있으므로 LLM 폴백으로 에러를 반영해 수정한다.
     deterministic_sql = None if is_retry else _try_build_form_fill_pivot_sql(
         state, limit_value, user_query
     )
+    # 트랙 C(D-076): 커버리지 내 정형 질의는 시맨틱 모델로 결정적 컴파일(LLM SQL 생성 우회).
+    # 폼필(deterministic_sql)·재시도가 아닐 때만 진입. 커버리지 밖이면 None → 아래 LLM 폴백(회귀 0).
+    # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
+    semantic_sql = None
+    if (not is_retry and not deterministic_sql
+            and not state.get("column_mapping")
+            and app_config.text2sql.semantic_compose):
+        value_index = (
+            state.get("column_value_index")
+            if app_config.synonym.value_retrieval else None
+        )
+        semantic_sql, _smq, _cov = await compile_from_nl(
+            llm, user_query, state.get("active_db_id") or "",
+            default_limit=limit_value,
+            stat_month=stat_month,
+            value_index=value_index,
+        )
     if deterministic_sql:
         sql = deterministic_sql
         logger.info("폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s", sql[:500])
+    elif semantic_sql:
+        sql = semantic_sql
+        logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", sql[:500])
     else:
         # 프롬프트 구성
         system_prompt = _build_system_prompt(
@@ -270,6 +294,12 @@ async def query_generator(
             schema_info=state["schema_info"],
             db_engine=state.get("active_db_engine"),
         )
+        # 기간 표현이 있으면 결정적으로 해석된 단일 월(YYYYMM)을 강제한다 — 시스템 템플릿의
+        # "CURRENT_DATE 동적 계산" 일반 규칙을 LLM이 따르면 BETWEEN으로 진행 중인 달까지
+        # 포함하는 실측 오류가 있었다(D-076 후속4).
+        _sm_block = build_stat_month_block(stat_month)
+        if _sm_block:
+            user_prompt += "\n\n" + _sm_block
 
         # LLM 호출
         messages = [

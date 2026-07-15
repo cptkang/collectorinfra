@@ -1,6 +1,7 @@
 # 51. 장애분석 데이터 수집 및 진단 기법 (OS-Level Evidence Collection & Diagnostic Techniques)
 
 > 작성일: 2026-06-26
+> **상위 로드맵**: **Plan 62(AIOps 전체 역량 마스터 로드맵) — Phase P2(진단·RCA)**. 대응 벤치마크 역량 C1(데이터 수집·통합폭)·C4(RCA 증거 수집).
 > **상위/자매 계획**: `plans/50-fault-diagnosis-rca.md` (진단 서브그래프·오케스트레이션 아키텍처).
 > 본 계획은 그 중 **증거 수집(evidence_collector)** 과 **상관/인과 분석(correlation_engine·causal_reasoner)** 에
 > 들어갈 **데이터 소스·수집 방법·장애분석 기법**을 정립한다.

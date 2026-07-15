@@ -37,6 +37,42 @@ _PROCESS_HISTORY_KEYWORDS = (
     "일간", "주간", "월간", "동안", "history", "변화", "시점",
 )
 
+# alarm_query 결정적 가드 키워드 (D-076 후속3 — D-047 프로세스 교정과 동일 패턴).
+# 모니터링 문맥의 "이벤트(event)"는 알람을 뜻하나 LLM이 data_query로 보수 분류하는 실측 사례가
+# 있어(bare "event" 질의) 프롬프트 어휘만으로는 부족 — 결정적으로 교정한다.
+_ALARM_KEYWORDS = ("알람", "alert", "이벤트", "event", "경보")
+
+
+def has_alarm_signal(text: str) -> bool:
+    """질의에 알람/모니터링 이벤트 신호가 있는지 검사한다(결정적 교정 공용 헬퍼)."""
+    low = (text or "").lower()
+    return any(k in low for k in _ALARM_KEYWORDS)
+
+
+def _coerce_alarm_intent(tasks: list[dict]) -> list[dict]:
+    """알람/이벤트 조회인데 data_query로 분류된 task를 alarm_query로 교정한다.
+
+    alarm_query여야 알람 전용 템플릿과 alarm_allowed_tables가 활성화된다 —
+    data_query로 남으면 allowed_tables 필터가 알람 테이블을 제거해 환각/오답이 된다.
+
+    Args:
+        tasks: 분해된 task 목록(각 dict는 agent/sub_query 보유)
+
+    Returns:
+        교정이 적용된 동일 리스트(in-place 수정 후 반환)
+    """
+    for task in tasks:
+        if task.get("agent") != "data_query":
+            continue
+        if not has_alarm_signal(str(task.get("sub_query", ""))):
+            continue
+        task["agent"] = "alarm_query"
+        logger.info(
+            "intent_planner: 알람 조회 결정적 교정 — data_query→alarm_query (sub_query=%r)",
+            task.get("sub_query"),
+        )
+    return tasks
+
 
 def _coerce_process_intent(tasks: list[dict]) -> list[dict]:
     """현재/실시간 프로세스 조회인데 data_query로 분류된 task를 process_query로 교정한다.
@@ -122,7 +158,7 @@ async def intent_planner(
         llm, user_query, app_config, conversation_context=conversation_context
     )
     # 결정적 가드: 시간성 신호 없는 프로세스 조회는 실시간 API로 교정(D-041/D-046, 폴백 포함)
-    tasks = _coerce_process_intent(decomposed["tasks"])
+    tasks = _coerce_alarm_intent(_coerce_process_intent(decomposed["tasks"]))
     result: dict = {
         "task_plan": tasks,
         "is_composite": len(tasks) > 1,

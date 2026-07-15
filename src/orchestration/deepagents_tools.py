@@ -17,6 +17,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
 
 from src.config import AppConfig
+from src.orchestration.intent_planner import has_alarm_signal
 from src.orchestration.subagents import SUBAGENT_REGISTRY, _make_isolated_input
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,14 @@ async def _run_subagent_tool(
     Returns:
         직렬화된 결과 텍스트
     """
+    # LLM 오케스트레이터가 알람/이벤트(event) 질의를 data_query 도구로 보내는 오분류를
+    # 결정적으로 교정한다(D-076 후속3 — D-047 프로세스 교정과 동일 패턴. 도구 설명·지시문
+    # 어휘 보강만으로는 bare "event" 질의에서 재발). alarm_query여야 알람 템플릿·테이블이 열린다.
+    if agent_name == "data_query" and has_alarm_signal(sub_query):
+        logger.info(
+            "deepagents 도구 결정적 교정 — data_query→alarm_query (sub_query=%r)", sub_query
+        )
+        agent_name = "alarm_query"
     spec = SUBAGENT_REGISTRY.get(agent_name) or _fallback_spec()
     order = (len(collector) + 1) if collector is not None else 1
     task: dict[str, Any] = {

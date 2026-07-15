@@ -96,6 +96,28 @@ DB_DOMAINS: list[DBDomainConfig] = [
         db_engine="postgresql",
         db_schema="polestar",
     ),
+    # 로컬 개발 샌드박스(도커 polestar_pg, testdata/pg/init 픽스처). 운영 폴스타(gp/yd/b0)와
+    # 동일 스키마. 트랙 C(D-076) 로컬 검증을 위해 재등재(2026-07-14) — db_engine/db_schema
+    # 결정적 주입(D-066 후속6)과 시맨틱 모델 로드(config/semantic_models/polestar.yaml)에 필요.
+    # 운영 .env는 ACTIVE_DB_IDS에 polestar를 넣지 않으므로 라우팅에 영향 없음(활성 DB만 순회).
+    DBDomainConfig(
+        db_id="polestar",
+        display_name="로컬 개발 샌드박스 Polestar",
+        description=(
+            "로컬 개발/테스트용 Polestar 샌드박스 (도커 testdata 픽스처). "
+            "운영 폴스타와 동일 스키마 — 서버 물리 사양, 사용량 및 모니터링 데이터. "
+            "서버 사양(CPU, Core 수, Memory 크기, Disk 크기), "
+            "서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), "
+            "서버 정보(hostname, IP, gateway), "
+            "모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, "
+            "알람 심각도(0=해소/1=주의/2=경고/3=심각)"
+        ),
+        aliases=["polestar", "로컬 폴스타", "테스트 폴스타"],
+        env_connection_key="POLESTAR_CONNECTION",
+        env_type_key="POLESTAR_TYPE",
+        db_engine="postgresql",
+        db_schema="polestar",
+    ),
     DBDomainConfig(
         db_id="cloud_portal",
         display_name="Cloud Portal DB",

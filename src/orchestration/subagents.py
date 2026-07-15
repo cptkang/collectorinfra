@@ -494,6 +494,12 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
     # 실행에 필요한 컨텍스트 필드 (얕은 복사)
     base: dict[str, Any] = {
         "user_query": state.get("user_query", ""),
+        # orchestration 경로는 semantic_router를 타지 않아 routing_intent가 항상 None이었고,
+        # alarm_query task도 일반 템플릿 + allowed_tables(알람 테이블 제외 필터)로 실행되는
+        # 결함이 있었다(D-076 후속3). task agent에서 결정적으로 매핑해 그래프 경로와 대칭화한다
+        # — alarm_query여야 schema_analyzer가 alarm_allowed_tables를 노출하고
+        # query_generator가 알람 전용 템플릿을 쓴다.
+        "routing_intent": "alarm_query" if task.get("agent") == "alarm_query" else None,
         "parsed_requirements": state.get("parsed_requirements", {}),
         "conversation_context": state.get("conversation_context"),
         "thread_id": state.get("thread_id"),
@@ -771,7 +777,9 @@ async def run_data_query_pipeline(
 
 SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
     "data_query": SubAgentSpec(
-        "data_query", "인프라 DB(서버 사양·사용량·모니터링) 조회", run_data_query_pipeline
+        "data_query",
+        "인프라 DB(서버 사양·사용량·성능 통계) 조회 — 알람/이벤트(event) 조회는 alarm_query 담당",
+        run_data_query_pipeline,
     ),
     "process_query": SubAgentSpec(
         "process_query",
@@ -779,7 +787,9 @@ SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
         run_process_query,
     ),
     "alarm_query": SubAgentSpec(
-        "alarm_query", "알람/모니터링 이벤트 조회", run_data_query_pipeline
+        "alarm_query",
+        "알람/모니터링 이벤트(event) 조회 — 알람 현황·이력, event 발생 서버, alert, 경보",
+        run_data_query_pipeline,
     ),
     "cache_management": SubAgentSpec(
         "cache_management", "스키마 캐시·유사어 관리", run_cache_management

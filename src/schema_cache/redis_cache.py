@@ -1400,6 +1400,75 @@ class RedisSchemaCache:
             logger.warning("Redis 컬럼값 유사단어 로드 실패: %s", e)
             return {}
 
+    # === 값 검색 인덱스 (Plan 61 트랙 B / E5-2) ===
+    # distinct resource_type·EAV NAME 등 안정·유한 값집합을 실측 인덱싱해 캐시한다.
+    # 기존 ``synonyms:column_values``(연산자-값 맵 — AVAIL_STATUS 등)와 **의미가 달라**
+    # 그 키를 덮어쓰지 않고 DB별 전용 키를 신설한다(회귀 0).
+    # 유사어 Hash는 원래 TTL이 없으나, 값 인덱스는 CSV 캐시의 ``ex=`` 패턴 TTL을 신규
+    # 적용하고 fingerprint freshness(D-019)로 갱신 시점을 판단한다. 갱신은 읽기전용 SELECT
+    # DISTINCT로만 수행하므로 D-003(3중 읽기전용 방어)을 준수한다.
+
+    COLUMN_VALUE_INDEX_TTL = 86400  # 1일 (안정·유한 값집합)
+
+    async def save_column_value_index(
+        self,
+        db_id: str,
+        index: dict[str, list[str]],
+        ttl: int | None = None,
+    ) -> bool:
+        """DB별 컬럼 값 검색 인덱스를 TTL과 함께 Redis에 저장한다(E5-2).
+
+        Args:
+            db_id: DB 식별자
+            index: {인덱스 키: [distinct 값, ...]} 예: {"resource_type": [...], "eav_name": [...]}
+            ttl: 만료 초. None이면 COLUMN_VALUE_INDEX_TTL(1일).
+
+        Returns:
+            저장 성공 여부
+        """
+        if not self._connected or self._redis is None:
+            return False
+        try:
+            key = self._key(db_id, "column_value_index")
+            await self._redis.set(
+                key,
+                json.dumps(index, ensure_ascii=False),
+                ex=ttl if ttl is not None else self.COLUMN_VALUE_INDEX_TTL,
+            )
+            logger.info(
+                "값 검색 인덱스 저장: db_id=%s, keys=%d", db_id, len(index)
+            )
+            return True
+        except Exception as e:
+            logger.warning("값 검색 인덱스 저장 실패: %s", e)
+            return False
+
+    async def load_column_value_index(
+        self, db_id: str
+    ) -> Optional[dict[str, list[str]]]:
+        """DB별 컬럼 값 검색 인덱스를 Redis에서 로드한다(E5-2).
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            {인덱스 키: [distinct 값, ...]} 또는 None(미스/만료 시)
+        """
+        if not self._connected or self._redis is None:
+            return None
+        try:
+            key = self._key(db_id, "column_value_index")
+            raw = await self._redis.get(key)
+            if not raw:
+                return None
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return None
+        except Exception as e:
+            logger.warning("값 검색 인덱스 로드 실패: %s", e)
+            return None
+
     async def sync_known_attributes_to_eav_synonyms(
         self,
         known_attributes_detail: list[dict],

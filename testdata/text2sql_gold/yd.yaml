@@ -1,0 +1,162 @@
+# Text-to-SQL EX 골드셋 — 공동존 여의도 폴스타 (polestar_cm_yd, PostgreSQL)
+# Plan 61 / E1(D-072). 스키마는 gp와 동일(공동존)하나 데이터(여의도 서버)가 다르다.
+# 1차 소스: config/db_profiles/polestar_cm_yd.yaml 의 query_examples.
+
+items:
+  - id: yd-001
+    query: "호스트명, OS종류, 벤더를 조회해줘"
+    db_id: polestar_cm_yd
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        r.hostname,
+        cc_ostype.stringvalue_short AS os_type,
+        cc_vendor.stringvalue_short AS vendor
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop cc_ostype
+        ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
+      LEFT JOIN polestar.core_config_prop cc_vendor
+        ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
+      WHERE r.resource_type LIKE 'platform.server%'
+        AND r.dtime IS NULL
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [hostname, os_type, vendor]
+    gold_smq:
+      pattern: A
+      resource_types: [server.Server]
+      dimensions: [Hostname, OSType, Vendor]
+      measures: []
+      filters:
+        - {field: resource_type, op: like, value: "platform.server%"}
+      time_grain: null
+    notes: "공동존 동형 스키마 — gp-001과 동일 SQL 형태(데이터만 상이). 단일/멀티 경로 대칭 검증용."
+
+  - id: yd-002
+    query: "서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+    db_id: polestar_cm_yd
+    category: complex
+    coverage: inside
+    gold_sql: |
+      SELECT
+          COALESCE(c.platform_resource_id, c.id) AS id,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
+      FROM polestar.cmm_resource c
+      LEFT JOIN polestar.core_config_prop cc
+            ON c.resource_conf_id = cc.configuration_id
+      WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id);
+    gold_result_signature:
+      row_count: null
+      columns: [id, server_name, hostname, ipaddress, serialnumber, cpu_model, logicalcore, mem_size]
+    notes: "다중 resource_type EAV 피벗(D-068)."
+
+  - id: yd-003
+    query: "비정상 서버 목록과 IP를 조회해줘"
+    db_id: polestar_cm_yd
+    category: server_config
+    coverage: inside
+    gold_sql: |
+      SELECT
+        COALESCE(r.name, r.hostname) AS server_name,
+        r.hostname AS os_hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND r.avail_status != 0
+        AND r.dtime IS NULL
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, os_hostname, ipaddress, avail_status]
+    notes: "avail_status != 0 = 비정상."
+
+  - id: yd-004
+    query: "서버들의 CPU, 메모리 용량 및 사용률 리스트를 조회해줘"
+    db_id: polestar_cm_yd
+    category: performance
+    coverage: inside
+    gold_sql: |
+      SELECT
+          svr.name AS pname,
+          svr.hostname AS hostname,
+          TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg
+      FROM polestar.cmm_resource r
+      JOIN polestar.cmm_resource svr
+          ON svr.id = r.platform_resource_id
+         AND svr.resource_type = 'server.Server'
+      JOIN polestar.cmm_metric_stat_m s
+          ON r.id = s.resource_id
+      WHERE r.resource_type IN ('server.Cpus', 'server.Memory')
+        AND s.definition_name = 'Utilization'
+      GROUP BY svr.name, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD')
+      ORDER BY svr.hostname, stat_date
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [pname, hostname, stat_date, cpu_avg, mem_avg]
+    notes: "성능 measure 피벗 — 집계 전 ::numeric 캐스트(PG)."
+
+  - id: yd-005
+    query: "가동률이 낮은 서버 순으로 정렬해서 보여줘"
+    db_id: polestar_cm_yd
+    category: performance
+    coverage: outside
+    gold_sql: |
+      SELECT
+          svr.name AS server_name,
+          ROUND(AVG(s.avg_val)::numeric, 2) AS cpu_avg
+      FROM polestar.cmm_resource r
+      JOIN polestar.cmm_resource svr
+          ON svr.id = r.platform_resource_id
+         AND svr.resource_type = 'server.Server'
+      JOIN polestar.cmm_metric_stat_m s
+          ON r.id = s.resource_id
+      WHERE r.resource_type = 'server.Cpus'
+        AND s.definition_name = 'Utilization'
+      GROUP BY svr.name
+      ORDER BY cpu_avg ASC
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [server_name, cpu_avg]
+    notes: "커버리지 밖 — '가동률'은 '사용률'의 의역 동의어(E5-4 임베딩 대상). 정확/퍼지 사전에 부재 시 미매핑. 트랙 B 링킹 필요."
+
+  - id: yd-006
+    query: "경고 이상 알람의 담당자 그룹까지 포함해 이력을 조회해줘"
+    db_id: polestar_cm_yd
+    category: alarm
+    coverage: outside
+    gold_sql: |
+      SELECT
+          CA.ALARMSEVERITY AS severity,
+          TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS') AS occurred_at,
+          CR.NAME AS server_name,
+          D.NAME AS event_name,
+          G.NAME AS manager_group
+      FROM polestar.cmm_resource CR
+      JOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID = CR.ID
+      JOIN polestar.cmm_alarm_def D ON CA.DEFINITION_ID = D.ID
+      LEFT JOIN polestar.cmm_alarm_def_noti DN ON DN.DEFINITION_ID = D.MASTERDEFINITION_ID
+      LEFT JOIN polestar.cmm_alarm_def_noti_group NG ON NG.ALARMNOTIFICATION_ID = DN.ID
+      LEFT JOIN polestar.acc_user_group G ON G.ID = NG.TARGETGROUPS
+      WHERE CR.DTIME IS NULL
+        AND CA.ALARMSEVERITY IN (2, 3)
+      ORDER BY CA.CTIME DESC
+      LIMIT 100;
+    gold_result_signature:
+      row_count: null
+      columns: [severity, occurred_at, server_name, event_name, manager_group]
+    notes: "커버리지 밖 — 알림계열(noti_group→user_group) 다단 조인은 패턴 C 기본 조합 밖(담당자 조회 시에만). 트랙 A/사람검토 폴백. 2026-07-14 정정: noti_group 조인 컬럼을 실 스키마(alarmnotification_id/targetgroups)로 교정 — 종전 NG.NOTI_ID/NG.GROUP_ID는 스키마에 없는 컬럼이라 실행 불가였음."

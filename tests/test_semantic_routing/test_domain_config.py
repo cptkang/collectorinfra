@@ -14,13 +14,13 @@ class TestDBDomains:
     """DB_DOMAINS 정의 테스트."""
 
     def test_four_domains_defined(self):
-        """6개의 DB 도메인이 정의되어 있다 (레거시 polestar 제거)."""
-        assert len(DB_DOMAINS) == 6
+        """7개의 DB 도메인이 정의되어 있다 (로컬 샌드박스 polestar 재등재 — D-076 후속)."""
+        assert len(DB_DOMAINS) == 7
 
     def test_all_domain_ids(self):
         """모든 도메인 식별자가 올바르다."""
         ids = {d.db_id for d in DB_DOMAINS}
-        assert ids == {"polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "cloud_portal", "itsm", "itam"}
+        assert ids == {"polestar", "polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "cloud_portal", "itsm", "itam"}
 
     def test_no_keywords_field(self):
         """각 도메인에 keywords 필드가 없다 (v2에서 제거됨)."""
@@ -95,7 +95,8 @@ class TestGetAllDbIds:
     def test_returns_all_ids(self):
         """모든 DB 식별자를 반환한다."""
         ids = get_all_db_ids()
-        assert len(ids) == 6
+        assert len(ids) == 7
+        assert "polestar" in ids
         assert "polestar_b0" in ids
         assert "polestar_cm_yd" in ids
         assert "cloud_portal" in ids

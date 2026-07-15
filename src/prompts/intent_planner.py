@@ -31,7 +31,8 @@ INTENT_PLANNER_SYSTEM_TEMPLATE = """당신은 사용자의 인프라 질의를 �
 **반드시 아래 순서대로 검토하고, 먼저 해당하는 agent로 분류하세요.**
 
 1. **cache_management 우선**: 캐시, 유사어/유사 단어, 컬럼 설명, DB 설명, 스키마 관련 키워드가 있으면 → `cache_management`
-2. **alarm_query**: 알람, 모니터링, 임계값 초과, alert 관련이면 → `alarm_query`
+2. **alarm_query**: 알람, 모니터링, 임계값 초과, alert, 이벤트(event) 발생·이력 관련이면 → `alarm_query`
+   - 예: "최근 event가 발생한 서버", "이벤트 내용 보여줘" — 모니터링 문맥의 이벤트(event)는 알람을 뜻함
 3. **process_query**: 프로세스 조회는 **기본적으로** `process_query`(실시간 API)입니다.
    - 질의에 "프로세스"가 있고 "조회/리스트/목록/보여줘/확인" 등 조회 의도면 → `process_query`.
      "현재 프로세스", "실시간 프로세스", "지금 실행 중인 프로세스", "top 프로세스", "프로세스 리스트 조회",

@@ -12,6 +12,7 @@ from datetime import date
 from src.utils.query_gen_common import (
     build_multi_resource_pivot_block,
     build_multi_resource_pivot_sql,
+    build_stat_month_block,
     classify_metric_field,
     correct_servername_hostname_mapping,
     eav_attr_resource_types,
@@ -300,6 +301,28 @@ def test_resolve_stat_month():
     assert resolve_stat_month("이번달 통계", date(2026, 7, 13)) == "202607"
     # 기간 표현 없으면 None(전체 월 평균)
     assert resolve_stat_month("모든 서버 조회") is None
+    # "지난 1개월"(공백 포함) — 실측 질의 표현(D-076 후속4)
+    assert resolve_stat_month(
+        "CPU, 메모리 사용률을 지난 1개월 통계데이터로 확인", date(2026, 7, 14)
+    ) == "202606"
+
+
+def test_build_stat_month_block_forces_single_month_equality():
+    """기간 결정적 해석 블록 — 단일 월 등호 필터 강제 + 동적 재계산 금지(D-076 후속4).
+
+    LLM이 시스템 템플릿의 'CURRENT_DATE 동적 계산' 일반 규칙을 따라 BETWEEN으로 진행 중인
+    달까지 포함하던 실측 오류의 회귀 방지.
+    """
+    block = build_stat_month_block("202606")
+    assert "s.stat_date = '202606'" in block
+    assert "BETWEEN" in block  # 금지 안내 문구
+    assert "우선" in block  # 일반 규칙(하드코딩 금지)보다 우선함을 명시
+
+
+def test_build_stat_month_block_empty_without_period():
+    """기간 표현이 없으면(stat_month=None) 블록을 만들지 않는다(프롬프트 무변경)."""
+    assert build_stat_month_block(None) == ""
+    assert build_stat_month_block("") == ""
 
 
 class TestDeterministicPivotSql:

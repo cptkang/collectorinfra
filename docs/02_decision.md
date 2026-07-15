@@ -3870,6 +3870,153 @@ D-072~076(Plan 61)·D-077~081(Plan 60)을 선점·예약한 것을 확인, 팀�
 
 ---
 
+## D-072. Text-to-SQL EX 평가 하네스 (Plan 61 E1)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (구현 완료 — 순수 신규 파일·오프라인 배치, 런타임 경로 무변경) |
+| **관련 결정** | D-003(읽기전용 — 후보 실행 안전성), D-035(결정적 우선), D-051(토큰 스케일 가드), D-019(캐시 TTL) |
+
+### 배경 / 문제
+
+현행 쿼리 생성 품질을 **측정할 수단이 없다**. Plan 61의 세 트랙(A 다중 후보·B 동의어·C 결정적 조합)은
+모두 "개선을 데이터로 정당화"해야 하는데(§0.3 트랙 우선순위·§7 검증 기준), 그 선행 근거인 EX(Execution
+Accuracy = 결과집합 동치) 측정 하네스가 부재했다. 특히 트랙 C 착수 필요성(커버리지율)과 트랙 A 착수
+필요성(커버리지 밖 비율)은 이 하네스 없이는 추정에 그친다.
+
+### 결정
+
+- **`scripts/eval_text2sql.py`**: 골드셋을 배치 실행해 EX(결과집합 동치)·재시도·LLM 호출·지연을 리포트.
+  - **3경로 구동**(§7 경로 커버리지): `--path {graph,orchestration,multidb}` — 단일/멀티 DB 비대칭
+    회귀(D-066 계열)를 세 경로 각각에서 실측 가능.
+  - **A/B 축**: `--synonym-fuzzy`/`--value-retrieval`/`--candidate-count`/`--selection`/`--semantic-compose`
+    (미구현 축은 전방호환 env 세팅만). 유사어 on/off·후보수·선택전략·결정적 조합 on/off별 EX 비교.
+  - **접속 안전성**: `--dry-run`/`--mock`/실접속 graceful 스킵(DB 미접속 환경에서도 골드셋 검증·SQL 정적
+    검사 수행). 실행은 D-003 읽기전용 전제.
+- **골드셋 `testdata/text2sql_gold/`** (26건: gp 15·yd 6·b0 5). 항목 스키마: `(query, gold_sql,
+  gold_result_signature, gold_smq, category, coverage, notes)`. **대표성 원칙**: `coverage=outside`
+  (시맨틱 모델 밖·재질문 유발) 항목을 반드시 포함해 커버리지율 낙관 편향 방지.
+- **트랙 C 전용 축(2개)**: (1) **SMQ 생성 정확도** — `gold_smq`(pattern·resource_types·dimensions·
+  measures·filters·time_grain·active_only)를 컴파일 후 EX와 **분리** 측정(`smq_match`). (2) **커버리지율**
+  — `coverage=inside` 비율(`coverage_stats`) → dimension 카탈로그 확장·트랙 A 착수 우선순위의 데이터 근거.
+- **`tests/text2sql/test_ex_harness.py`**: 골드셋 스키마 검증·EX 채점 로직·SMQ 매칭 단위 테스트.
+
+### 근거 / 한계
+
+- EX는 SQL 문자열이 아니라 **결과집합 동치**로 채점(별칭·공백·컬럼순서 차이에 강건, Spider/BIRD EX 방식 차용).
+- 한계: 실 DB 접속 없이는 EX가 정적 검사로 강등된다(graceful 스킵). 골드셋 26건은 baseline 확보용 최소치로,
+  실사용 로그·실패 질의를 계속 편입해 대표성을 키운다.
+- **회귀 경계**: 순수 신규 파일(scripts/·testdata/·tests/)만 추가, `src/` 런타임 경로 **무변경**.
+
+---
+
+## D-075. 동의어 매칭 고도화 — 유연 매칭 + 값 검색 + 사전 위생 (Plan 61 트랙 B / E5)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 부분 구현 (E5-1 유연 매칭 완료 · E5-2 값검색 인프라 · E5-3 상한 config화 · E5-4 자리예약) |
+| **관련 결정** | D-012(LLM 발견→사람 승인 루프), D-035(결정적 룩업), D-051(유사어 토큰 스케일 가드), D-019(캐시 TTL·fingerprint) |
+
+### 배경 / 문제
+
+`docs/synonym_management_analysis.md`의 판정: 동의어 관리의 목적·거버넌스는 문헌 기준으로 **적정하므로
+유지**하되, 취약점은 세 축 — **매칭 정밀도(정확일치 한정)·값 검색 미흡·측정 부재**. "메모리 사용률"은
+잡지만 "메모리 이용률/점유율", "MEM 사용률", 오탈자는 놓치고(E5-1), WHERE 리터럴(`resource_type=
+'server.Server'`, EAV `NAME='Hostname'`)이 사전에 없으면 환각한다(E5-2, Plan 25 관찰).
+
+### 결정 (구현 완료분)
+
+- **E5-1 유연 매칭 — `src/utils/flex_match.py`(공유 유틸 신설)**: 폴백 계단 (1) 정확 동등(최우선·무변경)
+  → (2) 한글 자모 분해·NFC 정규화 → (3) 편집거리(Levenshtein) 근사 → (4) 토큰/부분어 포함. **빈문자열·
+  1글자 가드를 공유 유틸에 신설**(기존 가드는 schema_analyzer/synonym_usage에만 존재, `_synonym_match`엔
+  없었음). 각 매칭에 **신뢰도 점수** 부여, 임계 이하는 확정 매핑이 아닌 **후보 제시**.
+  - **적용 2지점**(§4-B 실측 — 매칭 지점이 5곳에 분산되어 있고 `_synonym_match`는 폼필 전용이라
+    여기만 고치면 텍스트 질의는 개선 안 됨): ① `field_mapper._synonym_match(fuzzy=...)`(폼필 경로 —
+    임계 이하는 `pending_synonym_registrations` 후보 회부), ② `schema_analyzer._synonym_tables_matching_query(fuzzy=...)`(텍스트 질의 경로).
+  - `SYNONYM_FUZZY_MATCH=false` 기본 OFF — OFF 시 기존 정확일치 경로 **바이트 무변경**.
+- **E5-2 값 검색 인프라 — `src/schema_cache/value_index.py`**: 안정·유한 값집합(distinct `resource_type`,
+  EAV `NAME`)을 읽기전용 `SELECT DISTINCT`(엔진별 방언 PG `LIMIT`/DB2 `FETCH FIRST`)로 인덱싱·검색
+  (`build_value_index`/`search_value_index`). `redis_cache.save/load_column_value_index`(기존
+  `synonyms:column_values`와 별도 키). **프롬프트 주입 소비 지점은 트랙 C(E6-2)에서 연결**(리터럴 검증
+  선행 조건). `SYNONYM_VALUE_RETRIEVAL=false` 기본 OFF.
+- **E5-3 사전 위생(부분)**: D-051 상한 15의 **config 노출**(`SYNONYM_MAX_SYNONYM_SUPPLEMENT_TABLES`,
+  `schema_analyzer`가 `cfg.synonym.max_synonym_supplement_tables`로 소비). 고정 규칙이 아니라 E1 하네스로
+  튜닝하는 파라미터(Death of Schema Linking 반영). **미구현**: 유사어 메타(등록출처·사용횟수·최종사용일·
+  신뢰도)·감쇠·충돌 우선순위.
+- **config**: `SynonymMatchConfig`(env_prefix `SYNONYM_`) 신설, `cfg.synonym.*`로 접근.
+
+### 미구현 / 후속
+
+- **E5-4 의미(임베딩) 검색**: `SYNONYM_SEMANTIC_MATCH` 플래그만 자리예약(주석에 "보류 — 미구현" 명시).
+  설계대로 E5-1 후 E1 잔여 미매칭율 측정 게이트 대기(§9-6 폐쇄망 확정 설계).
+- E5-2 소비 지점 연결·E5-3 잔여(메타·감쇠·충돌)는 트랙 C 착수 범위에서 진행.
+
+### 근거 / 한계
+
+- 저비용·무회귀(애플리케이션 계층·Redis/모델 교체 없음). 퍼지 과잉매칭은 신뢰도 임계·후보 제시로 방어
+  (D-012 승인 루프), IP-2(의미 검색)만 인프라 판단이라 측정 후 결정(과설계 방지).
+
+---
+
+## D-076. 시맨틱 모델 기반 결정적 SQL 조합 (Plan 61 트랙 C / E6)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 구현 (기본 OFF·옵트인, 커버리지 내 결정적 컴파일 + 커버리지 밖 현행 LLM 폴백) |
+| **관련 결정** | D-035(결정적=판단·LLM=보조 — 핵심 정합), D-067(단일 조립 엔진 — query_gen_common 재사용), D-068(다중리소스 피벗 자산), D-057(스키마 한정), D-003(읽기전용), D-072(EX 하네스), D-075(E5-2 값검색 의존) |
+
+### 배경 / 문제
+
+현행 쿼리 생성은 프로필 선언(`known_attributes`·`value_joins`·`query_examples`·Template A/B)을 LLM
+프롬프트에 텍스트로 주입해 **자유 모방**시킬 뿐이라, 전체 복사(과다 SELECT)·CASE-WHEN 누락(과소)·금지
+id 조인(Plan 33)·미존재 resource_type 생성(Plan 25)이 반복된다. 문헌(arXiv 2606.31041 SMQ+결정적
+컴파일러, 2604.25149 시맨틱 문서)은 "SQL을 쓰라"가 아니라 "검증된 dimension을 조합하라"로 **작업을
+재정의**하면 잘못된 조인·집계·미존재 컬럼이 원천 불가능해짐을 보인다. 폴스타는 이 기법의 선언적
+원재료를 이미 보유 — 빠진 것은 **결정적 조합 엔진 하나**.
+
+### 결정
+
+- **E6-1 시맨틱 모델(선언부 승격)**: `config/semantic_models/{db_id}.yaml` 신설(gp/yd/b0). 기존
+  `config/db_profiles/*.yaml`은 **불변**(무회귀), 그 known_attributes·value_joins·query_examples를
+  입력 소스로만 참조. 3패턴: A(서버설정 EAV 피벗)·B(성능지표 measure)·C(알람 정규화 조인).
+  **db_engine/db_schema는 모델에 저장하지 않고** `get_domain_by_id`에서 결정적 주입(D-066 후속6 단일 출처).
+- **E6-2 SMQ + 결정적 컴파일러 — `src/nodes/semantic_compiler.py`**: 폴스타판 SMQ(Pydantic —
+  pattern/resource_types/dimensions/measures/filters/time_grain/active_only/entities, gold_smq 계약 일치).
+  LLM은 자연어→SMQ(**컬럼 선택만**), 컴파일러가 SMQ→방언별 SQL. **패턴 A/B는 기존 결정적 조립 엔진
+  `build_multi_resource_pivot_sql`(D-068)을 재사용**(이중 조립 엔진 금지 — D-067) — `query_gen_common`을
+  후방호환으로 일반화(`explicit_measures` 인자 추가, 기존 폼필 콜러 **바이트 무변경** — pivot 테스트 13건
+  통과로 확인). 패턴 C(알람)는 CA↔D↔ACTIVE↔CR 정규화 조인 전용 조립(severity 규칙·active/이력 분기).
+  Model(server.Server)/MODEL(server.Cpus) 대소문자 충돌은 정확이름 우선 해소.
+- **E6-3 coverage_router(삽입 지점 원칙 §3)**: `compile_from_nl`을 **`query_generator` 진입부**에서
+  호출 → 그래프 경로(A)·orchestration 인라인(B) **자동 공유**, `multi_db_executor._generate_sql`(경로 C)에
+  **명시 이식**. 커버리지 밖(LOB·서버필터·기간필터·집계·미정의)은 None 반환 → **현행 LLM 자유생성 폴백**
+  (`semantic_fallback="llm"` — 트랙 A 미착수 과도기, 착수 시 candidate_then_human 전환). 이름은
+  `coverage_router`(기존 `src/routing/semantic_router.py` 의도 라우터와 충돌 회피).
+- **E5-2 값 검색 연결(D-075)**: 컴파일러 emit 리터럴은 전부 모델 정의값이라 구조적 환각 불가.
+  SMQ 필터가 모델 밖 실측값을 참조하면 `check_coverage`가 value_index로 검증하고 미검증이면 커버리지 밖.
+- **E6-4 골든 회귀 — `tests/text2sql/test_semantic_golden.py`**(34건): gold_smq 라운드트립(하네스
+  `smq_match`)·패턴별 구조·엔진 방언·커버리지 판정·결정성·NL→SMQ(mock LLM)·플래그 OFF 무진입.
+
+### 회귀 경계 / 검증
+
+- **기본 OFF**(`TEXT2SQL_SEMANTIC_COMPOSE=false`) → 진입 가드가 전부 False, 기존 SQL 생성 경로 무변경.
+  트랙 C 변경 격리 후 `test_nodes` 실패 diff 0(신규 회귀 없음 실측), Plan 61 테스트 153건 통과,
+  `query_gen_common` pivot 13건 바이트 보존, arch_check exit 0, 골드셋 스키마 위반 0.
+
+### 근거 / 한계
+
+- D-035와 가장 정합(결정적 조합). 커버리지 내 무환각·저비용(LLM 1회 선택 + 결정적 컴파일).
+- 한계(보수적 커버리지): 현재 커버리지 내 = dimension/measure 해소 + 필터 ⊆ {resource_type(A/B),
+  ALARMSEVERITY(C)}. HAVING 서버필터·동적 날짜·집계(상위 N)·LOB 속성은 폴백. 커버리지는 dimension
+  카탈로그를 사람 승인 루프(D-012)로 점진 확장한다. **SMQ 선택 오류**(문법상 정상·의미상 오답)는 남으며
+  E1 하네스의 SMQ 정확도 축으로 별도 측정(gold_smq 6건 입력, 낙관편향 방지 위해 outside 6건 포함).
+- 향후: 폼필 피벗 경로(D-068)를 semantic_compiler 패턴 A+B 복합으로 수렴, 트랙 A 착수 시 폴백 전환.
+
+---
+
 ## 변경 이력
 
 | 날짜 | 결정 ID | 변경 내용 |
@@ -3877,6 +4024,13 @@ D-072~076(Plan 61)·D-077~081(Plan 60)을 선점·예약한 것을 확인, 팀�
 | 2026-07-15 | D-083 | **보호 root 계정 + 감사 로그 로테이션 + 어드민 진입 규약 정정 (Plan 59-a)**: 실테스트로 3결함 확정·수정. (1)**어드민 재로그인**: 미인증 `/admin` 진입이 `/admin/login`(env break-glass 전용, DB 사용자 인증 안 함)으로 유도돼 role==admin 계정도 로그인 실패 → admin.js 리다이렉트를 `/login?next=/admin`으로, 403은 `/`로 교정. `/admin/login`은 링크 없는 break-glass로만 유지. login.html `next` 복귀(오픈 리다이렉트 방지). (2)**보호 root**: `User.is_protected` 컬럼(+멱등 DDL) 신설, seed admin을 `is_protected=True`로 생성(env 계정=상시 일반 로그인 root). 역할/상태 변경·삭제·PW초기화 **403 차단**, 부서·알림그룹은 허용. 프론트 해당 행 disabled+자물쇠. (3)**감사 로테이션**: `cleanup_old_logs`가 호출부 0건이라 무효였음 → 기동 1회 + 하루 1회 태스크 + 수동 `POST /admin/audit/cleanup`(버튼), `AUDIT_RETENTION_DAYS`(기본90). +알림그룹 체크박스 UI(D-082 완성)·부서 인라인 편집. 수정 `domain/user.py`·`user_repository.py`·`api/server.py`·`schemas.py`·`routes/admin.py`·`routes/user_auth.py` 없음·`static/js/admin.js`·`static/login.html`·`admin/dashboard.html`·`.env.example`. 검증 `test_plan59a.py` 10건(보호 가드·seed·로테이션), 회귀 신규 실패 0(기존 6 test_routes=MagicMock 픽스처), arch exit 0. 상세 `## D-083`(구 D-073 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
 | 2026-07-14 | D-082 | **알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)**: 무인증 브로드캐스트하던 `/alarm/notifications/stream`을 지역 스코프로 인가(관리자=전존/공동존·은행존 운영자=해당존/일반=403, 중복 할당 가능). 데이터 모델 1: `User.alarm_zones: list[str]` 신규 필드(+DDL `ALTER TABLE ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]` 멱등·repo·to_auth_dict·schemas·admin update). 존↔db_id 단일 출처 `src/routing/zones.py`(gongjon=[gp,yd]/bankjon=[b0]). 쿠키 인증(사용자 선택 B): 로그인 시 HttpOnly `user_token` 쿠키 세팅(EventSource 헤더 제약), `resolve_stream_user`(쿠키→헤더→쿼리)+`alarm_zones_for_user`(admin·dev=전존)로 존 산출→빈 집합 403, `event_generator`가 `db_id_to_zone`로 구독자 존만 통과. 프론트: 권한자만 EventSource open(403 루프 차단)+수신 토글. SSO 보존(인증 불변·인가만 추가). 수정 `routing/zones.py`(신규)·`domain/user.py`·`user_repository.py`·`api/server.py`(DDL)·`dependencies.py`·`routes/alarm.py`·`routes/user_auth.py`(쿠키)·`routes/admin.py`·`schemas.py`·`static/js/app.js`·`index.html`. 검증 `test_alarm_zone_rbac.py` 16건(존 격리·중복=전존·일반 403·쿠키 인증), 회귀 신규 실패 0, arch exit 0. 상세 `## D-082`(구 D-072 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
 | 2026-07-14 | D-069~071 | **어드민 접근 통합 RBAC + 권한 상승 차단 + 크레덴셜 하드닝 (Plan 59 Part A)**: **D-070①(P0 보안)** `verify_admin_token`이 `type`·`role` 미검증 + 사용자/운영자 토큰 동일 시크릿 서명 → 일반 사용자 JWT로 모든 `/admin/*`·schema_cache 통과 가능(권한 상승). `type=="admin"` 검증 추가로 즉시 차단(D-026 원의도 강제). **D-070②** 사용자 토큰을 `AuthConfig.jwt_secret`(env `AUTH_JWT_SECRET`)로 분리 서명·검증(교차 서명 불가, 배포 시 재로그인 수용). **D-069(통합 RBAC·방향 A)** 어드민 접근=DB `role==admin` 판정, 신규 `require_admin_user` 가드(개발 우회+break-glass 운영자 토큰+role==admin)로 admin.py 15개·schema_cache.py 14개 교체, 죽은 `UserRole.ADMIN` 부활(증상 B 해소), 기동 시 seed admin 멱등 부트스트랩, 최소-1-admin 가드. 프론트 어드민 링크 role 게이팅+admin.js 사용자 토큰 폴백. **D-071(하드닝)** 기본 크레덴셜 admin/admin123 제거, 운영 모드 미설정 시 기동 거부(`_validate_production_secrets`, `os.getenv` 대신 `PrivateAttr _jwt_secret_explicit`로 판정 — 2026-06-10 교훈). 수정 `admin_auth.py`·`dependencies.py`·`config.py`·`routes/admin.py`·`schema_cache.py`·`routes/user_auth.py`·`server.py`·`static/js/{app,admin}.js`·`index.html`. 검증 `test_admin_rbac.py` 13건, 회귀 신규 실패 0(기존 6 test_routes 실패는 MagicMock 픽스처 pre-existing), arch exit 0. 번호: Plan 제안 D-064~066이 폼필 D-060~068에 선점됨 → 최대 grep 후 D-069~071 재부여. 상세 `## D-069`·`## D-070`·`## D-071`. |
+| 2026-07-14 | D-076 | **(후속) 로컬 개발 샌드박스(db_id `polestar`) 트랙 C 검증 환경 편입**: "전체 서버의 CPU 사용률 현황" 질의 0건 진단(audit 실측) — 트랙 C 미진입(.env 플래그 부재) + 로컬 db_id `polestar`가 시맨틱 모델·DB_DOMAINS 미등재라 플래그를 켜도 `load_semantic_model(\"polestar\")=None`→LLM 폴백, 폴백은 범용 프롬프트(POLESTAR_DB_IDS 미설정)+프로필 부재로 `cmm_measurement`/`cpu_usage`/`server.Cpu` 환각 SQL(존재하되 빈 테이블이라 validator 통과 = silent wrong, 정확히 D-076이 겨냥한 유형). 조치(사용자 승인 방향 1): ① `.env`에 `TEXT2SQL_SEMANTIC_COMPOSE=true`(+`SEMANTIC_FALLBACK=llm`) ② `config/semantic_models/polestar.yaml` 신설(gp 복제 — 도커 테스트 DB 스키마 동일 실측: core_config_prop·알람 3테이블·metric_stat 3테이블) ③ `DB_DOMAINS`에 `polestar` 재등재(postgresql/db_schema=polestar, aliases 최소화 — 운영 .env는 비활성이라 라우팅 무영향, `_resolve_priority_db_ids`는 활성 DB만 순회). 검증: NL→SMQ→컴파일 E2E(실 gemini) 성공 — 패턴 B SMQ·커버리지 통과·스키마 한정 피벗 SQL 50행(사용률 값 4서버) 반환으로 0건 해소. 도메인 재등재로 구 테스트 3건 복구(+0 신규 실패), `test_domain_config` 7개 도메인으로 갱신. 잔여 관찰: LLM SMQ가 dimensions=[]로 서버 식별 컬럼 누락 가능(SMQ 선택 정확도 이슈 — Plan 61 §7 분리 측정 축) → 같은 날 후속2로 결정적 주입 구현(아래 행) |
+| 2026-07-14 | D-076 | **(후속4) LLM 폴백 경로의 기간(stat_month) 결정적 주입**: "CPU, 메모리 사용률을 지난 1개월 통계데이터로 확인하고 그중 80%이상" 질의(80% 임계 필터 → 설계상 트랙 C 커버리지 밖·LLM 폴백)에서 기간이 `s.stat_date BETWEEN 직전월 AND 이번달`로 생성 — **진행 중인 달(불완전 데이터) 포함** + 월별 GROUP BY 서버 중복(사용자에게 6월·7월 2행 노출, 정답은 직전 월 1행). 원인: 시스템 템플릿 일반 규칙("하드코딩 날짜 금지 — 항상 CURRENT_DATE 동적 계산")을 LLM이 충실히 따른 것 — 코드가 이미 결정적으로 해석하는 기간(`resolve_stat_month`: 지난 1개월/지난달=직전 월 단일)이 폴백 프롬프트에 전달되지 않았음. 조치(D-035 결정화): `query_gen_common.build_stat_month_block`(공용 — 등호 필터 `s.stat_date = 'YYYYMM'` 강제, 일반 규칙보다 우선 명시, BETWEEN/INTERVAL 재계산·_h/_d 대체 금지)을 **단일(query_generator)·멀티(multi_db_executor) 폴백 프롬프트 양쪽에 주입**(D-066 단일 출처 — 멀티는 original_query 우선, sub_query_context 폴백). 기간 표현 없으면(None) 블록 미생성=프롬프트 무변경. E2E 실측(격리 인스턴스): 동일 질의 → `s.stat_date = '202606'` 단일 월 SQL → **DB-ORA-023 1행(mem 82.6≥80, 6월만)** 정답 반환. 단위 테스트 3건 추가(블록 등호·우선 문구, None 무변경, "지난 1개월" 공백 표현 해석). 관련 스위트 368 passed |
+| 2026-07-14 | D-076 | **(후속3) 로컬 폴백 LLM 경로 복구 + 알람/이벤트 라우팅 결정화**: "최근 event가 발생한 서버" 질의가 환각 SQL(`vmm_event_log`를 `r.id=e.id`로 조인)로 0건 — 원인 3중: ① 로컬 `polestar`에 db_profile·전용 프롬프트 부재 → `db_profiles/polestar.yaml` 신설(gp 복제, "공동존 폴스타"→"폴스타(로컬 샌드박스)") + `.env`/`.env.example` `POLESTAR_DB_IDS`에 polestar 추가. 적용 후 allowed_tables 화이트리스트가 데이터 질의 스키마를 5개 핵심 테이블로 필터(환각 원천 차단 실측). ② **orchestration 경로(운영 기본)가 `routing_intent`를 isolated state에 미설정** — semantic_router(그래프 경로)만 설정해, alarm_query task도 일반 템플릿+allowed_tables(알람 테이블 제외)로 실행되는 경로 비대칭(D-066 계열) → `_make_isolated_input`이 task agent에서 결정적 매핑(alarm_query→routing_intent). ③ LLM 라우팅이 bare "event" 질의를 data_query로 오분류(도구 설명의 "모니터링"이 흡수) → **결정적 교정**(D-047 프로세스 교정과 동일 패턴): `intent_planner._coerce_alarm_intent` + deepagents `_run_subagent_tool` 교정(`has_alarm_signal` 공용, 키워드 알람/alert/이벤트/event/경보) + 도구 설명·오케스트레이터 지시문·intent/semantic_router 프롬프트 어휘 정비. E2E 실측(격리 인스턴스): 이벤트 질의가 `cmm_alarm↔cmm_alarm_def` 조인·CTIME DESC로 **알람 5건 정상 반환**, CPU 질의 트랙 C 50행 회귀 없음. 단위 테스트 3건 추가(_coerce_alarm_intent 교정·비알람 유지·routing_intent 매핑) + stale 목 1건 현행화(synthesize kwarg). 관련 스위트 313 passed |
+| 2026-07-14 | D-076 | **(후속2) 패턴 B 식별 dimension 결정적 주입 + 레거시 라우팅 테스트 현행화**: ① 실측상 LLM SMQ가 measure만 선택하고 `dimensions=[]`로 반환 → 컴파일 SQL에 서버 식별 컬럼이 없어 값만 나열(문법상 정상·의미상 불완전 — RYANSQL 슬롯 예측 약점 계열). 프롬프트 유도 대신 **결정적 보정**(D-035, D-047/D-055 계열 교훈): 시맨틱 모델 4종(gp/yd/b0/polestar) `pattern_b.default_dimensions: [name, hostname]` 선언 + `semantic_compiler._compile_ab`가 measure 있음·dimension 빈 SMQ에만 주입(명시 dimension은 존중, 카탈로그 해소 실패 항목은 스킵). 실 LLM E2E 재검증: dimensions=[] SMQ → name/hostname 주입 SQL → 도커 DB 4서버 사용률+서버명 정상 반환. 골든 2건 추가(주입·명시존중). ② 사전 존재 실패 테스트 9건 현행화(전부 stale — 내 변경 아님을 변경 전/후 실패 목록 diff로 확인): `_llm_classify`가 dict `{intent,databases}` 반환하는 현행 API로 단언 갱신(5건), `_build_router_prompt` subset 단언을 display_name 동적 대조로(1건), `MultiDBConfig()` 기본 생성의 `.env` ACTIVE_DB_IDS 누수를 명시 빈 값으로 차단(2건 — Known Mistakes 2026-06-17 교훈), get_db_info display_name 현행화(1건). 결과: 관련 스위트 **196 passed / 0 failed**, arch exit 0 |
+| 2026-07-14 | D-076 | **시맨틱 모델 기반 결정적 SQL 조합(Plan 61 트랙 C / E6)**: 현행은 프로필 선언을 LLM 프롬프트에 텍스트 주입해 자유 모방 → 전체복사·CASE-WHEN 누락·금지조인·미존재 resource_type 반복. 문헌(2606.31041 SMQ+결정적컴파일러) 정합으로 "SQL 작성"이 아니라 "검증된 dimension 조합"으로 작업 재정의 → 잘못된 조인·집계·미존재 컬럼 원천 차단. **E6-1**: `config/semantic_models/{gp,yd,b0}.yaml` 신설(db_profiles 불변·입력소스로만 참조, 패턴 A 서버설정/B 성능지표/C 알람 3패턴, db_engine/db_schema는 get_domain_by_id 주입 D-066후속6). **E6-2** `src/nodes/semantic_compiler.py`: SMQ Pydantic(gold_smq 계약 일치), LLM은 NL→SMQ(선택만)·컴파일러가 SMQ→방언SQL. 패턴 A/B는 **기존 `build_multi_resource_pivot_sql`(D-068) 재사용**(이중 엔진 금지 D-067 — `query_gen_common`에 `explicit_measures` 후방호환 추가, 폼필 콜러 바이트무변경 pivot 13건 통과), 패턴 C는 CA↔D↔ACTIVE↔CR 정규화조인+severity 규칙. Model(server.Server)/MODEL(server.Cpus) 대소문자충돌 정확이름 우선해소. **E6-3 coverage_router**(§3 삽입지점): `compile_from_nl`을 query_generator 진입부(경로 A·B 자동공유)+`multi_db_executor._generate_sql`(경로 C 명시이식), 커버리지 밖(LOB·서버필터·기간·집계·미정의)은 현행 LLM 폴백(`semantic_fallback=llm` 과도기). **E5-2 연결**(D-075): 컴파일러 emit 리터럴은 전부 모델 정의값이라 환각 불가, SMQ 필터 모델밖 값은 value_index 검증→미검증 시 커버리지 밖. **E6-4** `test_semantic_golden.py` 34건(gold_smq 라운드트립 `smq_match`·패턴구조·엔진방언·커버리지·결정성·mock LLM·플래그OFF). **기본 OFF**(`TEXT2SQL_SEMANTIC_COMPOSE=false`)—트랙C 격리 후 test_nodes 실패 diff 0(신규회귀 없음), Plan61 153건 통과, arch exit 0, 골드셋 위반 0. 한계: 커버리지 보수적(필터⊆{resource_type,ALARMSEVERITY}, HAVING/동적날짜/집계/LOB는 폴백)—D-012 승인루프로 점진확장. 상세 `## D-076`. ※ 번호: `## D-`+변경이력 grep(등재 최댓값 D-075, Plan61 예약 D-072~076 유효). |
+| 2026-07-14 | D-072 | **Text-to-SQL EX 평가 하네스(Plan 61 E1)**: 현행 쿼리 생성 품질을 측정할 수단 부재 → 세 트랙(A 다중후보·B 동의어·C 결정적조합)의 개선을 데이터로 정당화하는 선행 근거로 EX(Execution Accuracy=결과집합 동치) 하네스 신설. `scripts/eval_text2sql.py`: 3경로 구동(`--path graph/orchestration/multidb` — D-066 계열 단일/멀티 비대칭 실측), A/B 축(`--synonym-fuzzy`/`--value-retrieval`/`--candidate-count`/`--selection`/`--semantic-compose`, 미구현 축은 전방호환 env만), `--dry-run`/`--mock`/실접속 graceful 스킵(D-003 읽기전용). 골드셋 `testdata/text2sql_gold/` 26건(gp 15·yd 6·b0 5, `coverage` inside/outside·`gold_smq` 포함 — **대표성 원칙: outside(재질문 유발) 필수 포함**해 커버리지율 낙관 편향 방지). 트랙 C 전용 축 2개: SMQ 생성 정확도(`smq_match` — pattern·resource_types·dimensions·measures·filters·time_grain·active_only, 컴파일 후 EX와 분리 측정)·커버리지율(`coverage_stats`=inside 비율). 검증 `tests/text2sql/test_ex_harness.py`. **회귀 경계**: 순수 신규 파일(scripts/·testdata/·tests/), src/ 런타임 무변경. 상세 `## D-072`. ※ 번호: `## D-` 헤더+변경이력 표 둘 다 grep(등재 최댓값 D-068 실측) — D-069~071은 미예약 갭(Plan 60이 D-077~081로 이동), D-072~076은 Plan 61 예약분. |
+| 2026-07-14 | D-075 | **동의어 매칭 고도화(Plan 61 트랙 B / E5)**: `synonym_management_analysis.md` 판정 — 동의어 거버넌스(D-012 발견→승인·D-035 결정적 룩업)는 적정하므로 유지, 취약점은 매칭 정밀도(정확일치 한정)·값검색 미흡·측정 부재 3축. **E5-1 완료**: 공유 유틸 `src/utils/flex_match.py`(정확→자모·NFC→편집거리→부분어 계단 + 빈문자열/1글자 가드 신설 + 신뢰도 점수), 적용 **2지점**(§4-B 실측 — 매칭 5곳 분산, `_synonym_match`는 폼필 전용이라 여기만 고치면 텍스트 질의 개선 안 됨): ① `field_mapper._synonym_match(fuzzy=...)`(폼필 — 임계 이하 `pending_synonym_registrations` 후보 회부) ② `schema_analyzer._synonym_tables_matching_query(fuzzy=...)`(텍스트 질의). `SYNONYM_FUZZY_MATCH=false` 기본 OFF·OFF 시 정확일치 바이트 무변경. **E5-2 인프라만**: `src/schema_cache/value_index.py`(distinct 값 인덱스·엔진별 방언 PG LIMIT/DB2 FETCH FIRST·읽기전용 D-003)+`redis_cache.save/load_column_value_index`(별도 키) — **프롬프트 주입 소비지점은 트랙 C(E6-2)에서 연결**. `SYNONYM_VALUE_RETRIEVAL=false` OFF. **E5-3 부분**: D-051 상한 15 config화(`SYNONYM_MAX_SYNONYM_SUPPLEMENT_TABLES`, E1 튜닝 파라미터). **E5-4 자리예약**: `SYNONYM_SEMANTIC_MATCH`만(보류 — E5-1 후 잔여 미매칭율 측정 게이트). config `SynonymMatchConfig` 신설(env_prefix SYNONYM_). 검증 `test_flex_match.py`·`test_field_mapper_flex.py`·`test_schema_analyzer_synonym_flex.py`·`test_value_index.py`. 상세 `## D-075`. |
 | 2026-07-13 | D-068 7차 | **이종 엔진 CSV 칼럼 중복 + DB2 통계 스케일 제로필**: 공동존+은행존 폼필 CSV에서 (1) `IP주소`/`ip주소` 등 라틴 대소문자만 다른 **중복 칼럼**(각 존이 자기 표기에만 채움, Excel은 정상)—원인 **DB2가 결과 칼럼 라틴 문자를 소문자로 반환**, 순수 한글 칼럼은 무영향. 수정 `_merge_results`가 정규화 기준 canonical(양식 필드) 이름으로 통일. (2) **DB2 통계 엑셀 제로필**(6.51→6.51000…, CSV 정상, gp 같은 칼럼 정상=값 타입 문제)—원인 **DB2 `AVG(DECIMAL)` 스케일 확장**으로 ROUND(x,2)해도 타입 스케일 잔존. 수정 `_metric_select_line` DB2를 `CAST(ROUND(...,2) AS DECIMAL(15,2))`로 스케일 고정(PG는 ::numeric 유지). 교훈: 멀티 엔진 병합은 엔진별 칼럼 표기차(DB2 소문자화) 정규화 필수(Excel만 보고 오판 금지), DB2 집계 스케일은 최종 CAST 고정. 수정 `nodes/multi_db_executor.py`·`utils/query_gen_common.py`. 검증 `test_multi_db_merge.py`+`test_db2_metric_scale_fixed_to_two`, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 7차. |
 | 2026-07-13 | D-068 6차 | **재오염 자기강화 루프 차단(등록 가드) + 직접 컬럼 교정 확장**: 5차 가드는 폼필 출력만 교정, Redis 유사어 오염은 잔존. 루프 확인: 전역/EAV에 `서버명→hostname` 존재 → LLM이 "서버 이름"을 hostname 매핑 → `_register_llm_mappings_to_redis`/`_register_llm_synonym_discoveries_to_redis`/`apply_mapping_feedback_to_redis`가 **사용자 확인 없이 자동 재등록**(전역+EAV+per-DB) → 오염 강화 → 재오매핑(per-DB만 청소해도 씨앗에서 재번짐). 또 5차 교정은 `EAV:Hostname`만 봐 **직접 `*.hostname` 컬럼**은 사각지대. 수정: (A) 공용 판정 `is_servername_to_hostname`로 서버명류→hostname(컬럼/EAV) 자동 등록을 **세 등록 함수 전부**에서 거부(재오염 원천 차단), (B) `correct_servername_hostname_mapping`이 직접 hostname 컬럼(`is_hostname_target`)도 `<entity>.name`으로 교정. 판정 헬퍼는 `query_gen_common` 단일 출처. 기존 테스트가 오염 동작(서버명→HOSTNAME 등록)을 정답으로 단언 → 정상 필드로 교체+차단 회귀 신설. 교훈: LLM 자동등록이 오염 입력을 학습해 되쓰면 자기강화 루프 — 출력 교정만으론 부족, **쓰기 지점 결정적 차단** 필요. 수정 `utils/query_gen_common.py`·`document/field_mapper.py`. 검증 신규 단위+mock 등록 가드, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 6차. |
 | 2026-07-13 | D-068 5차 | **서버명/서버이름이 EAV Hostname으로 오매핑 → 서버 이름·호스트네임 둘 다 hostname**: 4차로 결정적 빌더가 발동하자 `column_mapping["서버 이름"]="EAV:Hostname"`이 글자 그대로 렌더(`cc.name='Hostname'`)돼 두 칼럼 모두 hostname 값. 원인: 프로필은 서버명=cmm_resource.name으로 명시하나 **전역 유사어 `Hostname:[…,서버명,…]`가 미끼**가 되어 유사어/LLM 해소가 "서버 이름"을 Hostname에 붙임(2026-06-10 `서버명→HOSTNAME` 전역 오염 동일 계열). 이 오매핑은 field_mapper의 기존·지속 문제(4차 변경이 만든 게 아님)이나 결정성이 잠재 오류를 노출. 수정: 결정적 가드 `correct_servername_hostname_mapping`(서버명/서버이름/장비명/리소스명/등록명류가 EAV:Hostname이면 `<entity>.name`으로 교정)을 단일·멀티 두 경로가 분류 직전 호출, 호스트명 표면어는 불변. 권장 후속: 전역 유사어 `HOSTNAME`/EAV `Hostname`에서 `서버명`·`서버` 제거+Redis 재동기화(가드로 non-blocking). 교훈: 결정성은 잠재 매핑 오류를 노출하니 되돌리지 말고 **프로필 명시 규칙을 코드 가드로 못박아** 유사어 튜닝(Redis/LLM 의존)의 반복 실패를 끝냄. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 신규 단위 6+피벗 렌더 단언, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 5차. |

@@ -33,6 +33,37 @@ def resolve_stat_month(user_query: str | None, today: date | None = None) -> str
         return f"{ref.year}{ref.month:02d}"
     return None
 
+def build_stat_month_block(
+    stat_month: str | None, metric_table: str = "cmm_metric_stat_m"
+) -> str:
+    """질의 기간 표현의 결정적 해석(YYYYMM 단일 월)을 LLM 폴백 프롬프트에 강제하는 블록.
+
+    "지난 1개월/지난달" 질의에서 LLM이 시스템 템플릿의 일반 규칙("하드코딩 날짜 금지 —
+    CURRENT_DATE 동적 계산")을 따라 `BETWEEN 직전월 AND 이번달`처럼 진행 중인 달까지 포함하는
+    기간을 재계산하고 월별 GROUP BY로 서버를 중복 출력하는 실측 사례가 있었다(D-076 후속4).
+    코드가 이미 해석한 월(`resolve_stat_month`)을 등호 필터로 강제해 기간 해석을 결정화한다.
+    단일 DB(query_generator)·멀티 DB(multi_db_executor) 폴백 경로가 공유한다(D-066 단일 출처).
+
+    Args:
+        stat_month: resolve_stat_month 결과 YYYYMM 문자열 (None이면 기간 표현 없음 → 빈 문자열)
+        metric_table: 월별 통계 테이블명
+
+    Returns:
+        프롬프트에 덧붙일 섹션 텍스트(선행 개행 없음). stat_month가 없으면 "".
+    """
+    if not stat_month:
+        return ""
+    return (
+        "## 기간 조건 (시스템이 결정적으로 해석 — 최우선 준수)\n"
+        f"질의의 기간 표현은 이미 월 통계 기준으로 해석되었습니다. {metric_table} 조인에 반드시 "
+        f"`s.stat_date = '{stat_month}'` (단일 월 등호 필터)를 사용하세요.\n"
+        "- 이 지시는 '하드코딩 날짜 금지·CURRENT_DATE 동적 계산' 일반 규칙보다 **우선**합니다"
+        "(이 값은 시스템이 계산해 주입한 것으로 하드코딩이 아닙니다).\n"
+        "- BETWEEN·INTERVAL 재계산으로 진행 중인 달을 포함하지 마세요.\n"
+        "- 시간별(_h)/일별(_d) 테이블로 대체하지 마세요."
+    )
+
+
 # "전체/모든/모두" 조회는 기본 LIMIT(default_limit)로 절단하면 안 되므로 상향한다.
 _ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
 _ALL_QUERY_LIMIT: int = 100_000
@@ -222,8 +253,19 @@ def correct_servername_hostname_mapping(
             column_mapping[field] = f"{entity_table}.name"
 
 
-def _metric_select_line(field: str, rt: str, agg_fn: str, val_col: str, db_engine: str | None) -> str:
-    """단일 사용률 필드의 SELECT 라인(엔진별 소수 보존 캐스트 포함)."""
+def _metric_select_line(
+    field: str,
+    rt: str,
+    agg_fn: str,
+    val_col: str,
+    db_engine: str | None,
+    definition_name: str = "Utilization",
+) -> str:
+    """단일 사용률/지표 필드의 SELECT 라인(엔진별 소수 보존 캐스트 포함).
+
+    definition_name 기본값은 'Utilization'(사용률)이며, 폼필 경로는 이 값만 쓴다. 시맨틱
+    컴파일러(트랙 C 패턴 B)는 'MaxIORate'(디스크 IO) 등 다른 지표도 지정할 수 있어 인자로 노출한다.
+    """
     if (db_engine or "").lower() == "db2":
         # DB2: 집계 함수 내부에서 DECIMAL 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
         # 또한 DB2 `AVG(DECIMAL)`은 스케일을 크게 확장(예: scale 18)하여 ROUND(x,2)로 값은 2자리로
@@ -232,11 +274,11 @@ def _metric_select_line(field: str, rt: str, agg_fn: str, val_col: str, db_engin
         inner = f"CAST(s.{val_col} AS DECIMAL(15,4))"
         return (
             f"  CAST(ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-            f"AND s.definition_name='Utilization' THEN {inner} END), 2) AS DECIMAL(15,2)) AS \"{field}\""
+            f"AND s.definition_name='{definition_name}' THEN {inner} END), 2) AS DECIMAL(15,2)) AS \"{field}\""
         )
     return (
         f"  ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-        f"AND s.definition_name='Utilization' THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
+        f"AND s.definition_name='{definition_name}' THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
     )
 
 
@@ -248,8 +290,15 @@ def _pivot_select_parts(
     attr_col: str,
     val_col: str,
     db_engine: str | None,
+    explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
 ) -> tuple[list[str], set[str], bool]:
-    """피벗 SELECT 라인 목록·필요 resource_type 집합·metric 유무를 계산한다(블록/SQL 공용)."""
+    """피벗 SELECT 라인 목록·필요 resource_type 집합·metric 유무를 계산한다(블록/SQL 공용).
+
+    metric_fields는 폼필 경로가 쓰는 한글 라벨(예: "CPU 평균")로, `classify_metric_field`로
+    (resource_type, 집계함수, 값컬럼)을 추론한다. explicit_measures는 시맨틱 컴파일러(트랙 C)가
+    쓰는 명시 지정으로, 라벨 분류에 의존하지 않고 (alias, resource_type, agg_fn, val_col,
+    definition_name)을 직접 전달한다(MaxIORate 등 Utilization 외 지표 지원). 둘 다 주면 합쳐 넣는다.
+    """
     lines: list[str] = []
     rtset: set[str] = {_SERVER_RESOURCE_TYPE}
     for field, col in regular_entries:
@@ -278,6 +327,10 @@ def _pivot_select_parts(
         rtset.add(rt)
         has_metric = True
         lines.append(_metric_select_line(field, rt, agg_fn, mval, db_engine))
+    for alias, rt, agg_fn, mval, defn in explicit_measures or []:
+        rtset.add(rt)
+        has_metric = True
+        lines.append(_metric_select_line(alias, rt, agg_fn, mval, db_engine, defn))
     return lines, rtset, has_metric
 
 
@@ -304,13 +357,15 @@ def build_multi_resource_pivot_sql(
     limit: int | None = None,
     stat_month: str | None = None,
     metric_table: str = "cmm_metric_stat_m",
+    explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
 ) -> str:
-    """폼필 다중 리소스 피벗을 **runnable SQL로 결정적 조립**한다(LLM 우회, D-068 2차).
+    """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**한다(LLM 우회, D-068 2차).
 
     프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot 예시(월별 GROUP BY 등)와 경쟁해
-    무시·변형(서버 중복·config 누락)한다. 이 well-defined 폼필 쿼리는 코드가 직접 조립하여
-    LLM 변동성을 제거한다. 조인 패턴은 프로필의 검증된 예시와 동일하되, 사용률까지 **단일
-    GROUP BY 스코프**에 합친다(config·metric 이중 조인은 집계값에 불변).
+    무시·변형(서버 중복·config 누락)한다. 이 well-defined 쿼리는 코드가 직접 조립하여 LLM
+    변동성을 제거한다. 조인 패턴은 프로필의 검증된 예시와 동일하되, 사용률까지 **단일 GROUP BY
+    스코프**에 합친다(config·metric 이중 조인은 집계값에 불변). 시맨틱 컴파일러(트랙 C, D-076)가
+    이 함수를 패턴 A(서버설정)+B(성능지표) 조립 엔진으로 **재사용**한다(이중 조립 엔진 금지 — D-067).
 
     Args:
         regular_entries/server_eav/child_eav/eav_pattern/metric_fields/db_engine: 피벗 구성요소
@@ -318,13 +373,16 @@ def build_multi_resource_pivot_sql(
         limit: 결과 상한(엔진별 LIMIT/FETCH FIRST). None이면 미적용.
         stat_month: 사용률 기간 필터 YYYYMM(예: '202506'). None이면 전체 월 평균.
         metric_table: 월별 통계 테이블명(폴스타 기본 cmm_metric_stat_m).
+        explicit_measures: 시맨틱 컴파일러용 명시 measure (alias, resource_type, agg_fn,
+            val_col, definition_name). metric_fields의 한글라벨 분류 대신 직접 지정(패턴 B).
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결).
     """
     entity, config, attr_col, val_col, ent_join, cfg_join = _eav_pattern_parts(eav_pattern)
     lines, rtset, has_metric = _pivot_select_parts(
-        regular_entries, server_eav, child_eav, metric_fields, attr_col, val_col, db_engine
+        regular_entries, server_eav, child_eav, metric_fields, attr_col, val_col, db_engine,
+        explicit_measures=explicit_measures,
     )
 
     def q(table: str) -> str:
@@ -333,9 +391,16 @@ def build_multi_resource_pivot_sql(
     metric_join = ""
     if has_metric:
         month_cond = f" AND s.stat_date = '{stat_month}'" if stat_month else ""
+        # 폼필 경로(metric_fields)는 Utilization만 쓰므로 단일 동등 필터를 유지(기존 출력 보존).
+        # 시맨틱 패턴 B가 여러 definition_name(Utilization+MaxIORate)을 쓰면 IN 필터로 확장한다.
+        defs = sorted({m[4] for m in (explicit_measures or [])}) or ["Utilization"]
+        if len(defs) == 1:
+            def_cond = f"s.definition_name = '{defs[0]}'"
+        else:
+            def_cond = "s.definition_name IN (" + ", ".join(f"'{d}'" for d in defs) + ")"
         metric_join = (
             f"\nLEFT JOIN {q(metric_table)} s ON s.resource_id = c.id "
-            f"AND s.definition_name = 'Utilization'{month_cond}"
+            f"AND {def_cond}{month_cond}"
         )
 
     rt_in = ", ".join(f"'{r}'" for r in sorted(rtset))
