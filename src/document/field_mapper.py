@@ -29,6 +29,7 @@ from src.prompts.field_mapper import (
     FIELD_MAPPER_SYNONYM_DISCOVERY_USER_PROMPT,
 )
 from src.utils.json_extract import extract_json_from_response
+from src.utils.query_gen_common import is_servername_to_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -610,6 +611,11 @@ def _apply_fuzzy_synonym_fallback(
         for db_id in ordered_db_ids:
             synonyms = all_db_synonyms.get(db_id, {})
             for col_key, words in synonyms.items():
+                # 서버명류 필드의 hostname 컬럼 근사 매칭 차단 — 전역/EAV 유사어의
+                # `Hostname: [서버명, ...]` 미끼가 fuzzy 경로로 재유입되는 오염 방지
+                # (D-068 5·6차 등록 가드와 동일 계열, 정확일치 경로와 동일 규칙).
+                if is_servername_to_hostname(field, col_key):
+                    continue
                 # 등록 유사어 단어 + 컬럼명 자체를 후보로 삼는다.
                 candidates = list(words or [])
                 col_name = col_key.split(".", 1)[-1] if "." in col_key else col_key
@@ -914,6 +920,12 @@ async def _register_llm_synonym_discoveries_to_redis(
     eav_updated = False
 
     for field, matched_key, match_type in mapped_fields:
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, matched_key):
+            logger.info(
+                "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, matched_key
+            )
+            continue
         try:
             if match_type == "eav":
                 # EAV 매핑: eav_name_synonyms에 필드명 추가 + global에도 등록
@@ -1202,6 +1214,13 @@ async def _register_llm_mappings_to_redis(
         column = detail.get("column", "")
 
         if not field or not column:
+            continue
+
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, column):
+            logger.info(
+                "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, column
+            )
             continue
 
         try:
@@ -1805,6 +1824,13 @@ async def apply_mapping_feedback_to_redis(
         db_id = item.get("db_id")
 
         if not field or not column:
+            continue
+
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, column):
+            logger.info(
+                "유사어 피드백 등록 차단(서버명→hostname 오연관): %s -> %s", field, column
+            )
             continue
 
         try:

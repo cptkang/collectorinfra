@@ -22,7 +22,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import require_user
+from src.api.dependencies import alarm_zones_for_user, require_user, resolve_stream_user
+from src.routing.zones import all_zones, db_id_to_zone
 from src.alarm.domain.alarm import (
     AlarmAnalysisResult,
     AlarmEvent,
@@ -905,8 +906,33 @@ async def analyze_alarm_test(
     ),
     tags=["alarm"],
 )
-async def alarm_notifications_stream(request: Request) -> StreamingResponse:
-    """분석된 알람 이벤트를 SSE로 브로드캐스트한다."""
+async def alarm_notifications_stream(
+    request: Request,
+    token: Optional[str] = None,
+) -> StreamingResponse:
+    """분석된 알람 이벤트를 구독자 존으로 필터링해 SSE로 전송한다(Plan 59 §17).
+
+    지역 스코프 RBAC: 관리자=전 존, 공동존/은행존 운영자=해당 존만, 일반=구독 거부(403).
+    인증은 쿠키(user_token) 우선(EventSource 헤더 제약), 쿼리 토큰은 내부망 폴백.
+    """
+    config = request.app.state.config
+    user = await resolve_stream_user(request, token)
+    if config.auth.enabled and user is None:
+        raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+
+    allowed_zones = alarm_zones_for_user(user, config.auth.enabled)
+    if not allowed_zones:
+        raise HTTPException(status_code=403, detail="알림 수신 권한이 없습니다.")
+
+    # 전 존 허용(관리자/개발 모드)이면 db_id 필터를 건너뛴다.
+    deliver_all = allowed_zones >= set(all_zones())
+
+    def _visible(event: dict) -> bool:
+        if deliver_all:
+            return True
+        zone = db_id_to_zone(event.get("db_id"))
+        return zone is not None and zone in allowed_zones
+
     bus = request.app.state.alarm_bus
     q = bus.subscribe()
 
@@ -917,6 +943,8 @@ async def alarm_notifications_stream(request: Request) -> StreamingResponse:
                     break
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=25.0)
+                    if not _visible(event):
+                        continue  # 구독자 존이 아닌 이벤트는 전송하지 않음
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
                     yield 'data: {"type":"ping"}\n\n'

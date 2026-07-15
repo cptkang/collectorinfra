@@ -32,6 +32,7 @@ from src.utils.query_gen_common import (
     build_stat_month_block,
     build_value_index_block,
     classify_metric_field,
+    correct_servername_hostname_mapping,
     decimal_cast_example,
     eav_attr_resource_types,
     resolve_query_limit,
@@ -154,6 +155,12 @@ def _try_build_form_fill_pivot_sql(
     if not column_mapping:
         return None
     schema_info = state.get("schema_info") or {}
+    eav_pattern = _get_eav_pattern(schema_info)
+    # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정(프로필 확정 규칙).
+    # state를 오염시키지 않도록 사본에 적용.
+    column_mapping = dict(column_mapping)
+    if eav_pattern:
+        correct_servername_hostname_mapping(column_mapping, eav_pattern.get("entity_table", ""))
     attr_rt = eav_attr_resource_types(schema_info)
     eav_entries = [
         (f, c[4:]) for f, c in column_mapping.items()
@@ -166,7 +173,6 @@ def _try_build_form_fill_pivot_sql(
     ]
     if not child_eav:
         return None
-    eav_pattern = _get_eav_pattern(schema_info)
     if not eav_pattern:
         return None
     server_eav = [

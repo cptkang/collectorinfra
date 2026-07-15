@@ -127,6 +127,8 @@ class UserInfoResponse(BaseModel):
     role: str
     department: Optional[str] = None
     allowed_db_ids: Optional[list[str]] = None
+    alarm_zones: Optional[list[str]] = None
+    is_protected: bool = False
     status: str = "active"
     last_login_at: Optional[str] = None
 
@@ -154,6 +156,10 @@ class UpdateUserRequest(BaseModel):
     role: Optional[str] = Field(None, pattern=r"^(user|admin)$")
     department: Optional[str] = None
     status: Optional[str] = Field(None, pattern=r"^(active|inactive|locked)$")
+    # Plan 59 §17: 알림 지역 스코프(중복 할당 가능). 예: ["gongjon","bankjon"]. []=수신 안 함.
+    alarm_zones: Optional[list[str]] = Field(
+        None, description="알림 수신 존 목록(gongjon/bankjon). 빈 목록=수신 안 함"
+    )
 
 
 class UpdatePermissionsRequest(BaseModel):

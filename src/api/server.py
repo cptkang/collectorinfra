@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS auth_users (
     status          VARCHAR(20) NOT NULL DEFAULT 'active',
     department      VARCHAR(100),
     allowed_db_ids  TEXT[],
+    alarm_zones     TEXT[],
+    is_protected    BOOLEAN NOT NULL DEFAULT FALSE,
     auth_method     VARCHAR(20) NOT NULL DEFAULT 'local',
     login_fail_count INTEGER NOT NULL DEFAULT 0,
     last_login_at   TIMESTAMPTZ,
@@ -54,6 +56,14 @@ async def _ensure_auth_tables(pool) -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute(_AUTH_DDL)
+        # 기존 설치(IF NOT EXISTS로 컬럼 미추가)에 신규 컬럼을 멱등 보강한다(Plan 59/59-a, incident 패턴 미러)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]"
+            )
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS is_protected BOOLEAN NOT NULL DEFAULT FALSE"
+            )
         # 인덱스는 IF NOT EXISTS로 별도 실행
         async with pool.acquire() as conn:
             await conn.execute(
@@ -67,6 +77,94 @@ async def _ensure_auth_tables(pool) -> None:
             )
     except Exception as e:
         logger.warning("인증 테이블 DDL 실행 실패: %s", e)
+
+
+def _validate_production_secrets(config) -> None:
+    """운영 모드(AUTH_ENABLED=true)에서 필수 크레덴셜·시크릿 미설정 시 기동을 거부한다(D-071).
+
+    os.getenv는 .env/.encenv 값을 못 보므로(Known Mistakes 2026-06-10) pydantic 필드와
+    _jwt_secret_explicit 플래그로 '명시적 설정' 여부를 판정한다. 개발 모드는 검사하지 않는다.
+    """
+    if not config.auth.enabled:
+        return
+    missing = []
+    if not config.admin.username or not config.admin.password:
+        missing.append("ADMIN_USERNAME/ADMIN_PASSWORD(관리자 부트스트랩 계정)")
+    if not config.admin._jwt_secret_explicit:
+        missing.append("ADMIN_JWT_SECRET(운영자 토큰 시크릿)")
+    if not config.auth._jwt_secret_explicit:
+        missing.append("AUTH_JWT_SECRET(사용자 토큰 시크릿)")
+    if missing:
+        raise RuntimeError(
+            "운영 모드(AUTH_ENABLED=true) 기동 거부 — 다음을 .env/.encenv에 설정하세요: "
+            + ", ".join(missing)
+        )
+
+
+async def _seed_admin_user(user_repo, config) -> None:
+    """활성 관리자가 0명이고 env 부트스트랩 크레덴셜이 있으면 seed admin을 1회 생성한다(멱등, §9.2).
+
+    통합 RBAC(D-069)에서는 어드민 접근이 DB role==admin으로 판정되므로, 최초 기동 시
+    관리자 한 명은 DB에 존재해야 한다. break-glass env 계정으로 그 씨앗을 심는다.
+    """
+    from src.domain.user import User, UserRole, UserStatus
+    from src.utils.password import hash_password
+
+    admin_cfg = config.admin
+    if not admin_cfg.username or not admin_cfg.password:
+        return  # 부트스트랩 계정 미설정 → seed 생략(개발 모드 등)
+    try:
+        users = await user_repo.list_all()
+    except Exception as e:
+        logger.warning("seed admin 확인 실패: %s", e)
+        return
+    if any(u.role == UserRole.ADMIN and u.is_active for u in users):
+        return  # 이미 활성 관리자 존재 → 멱등 생략
+    if await user_repo.exists(admin_cfg.username):
+        logger.info("seed admin: user_id=%s 이미 존재 → 생성 생략", admin_cfg.username)
+        return
+    seed = User(
+        user_id=admin_cfg.username,
+        username=admin_cfg.username,
+        hashed_password=hash_password(admin_cfg.password),
+        role=UserRole.ADMIN,
+        status=UserStatus.ACTIVE,
+        is_protected=True,  # 솔루션 상시 관리자 — 역할/상태 변경·PW초기화·삭제 불가(Plan 59-a §9)
+        auth_method="local",
+    )
+    try:
+        await user_repo.create(seed)
+        logger.info("seed admin 생성 완료: %s (활성 관리자 0명 → 부트스트랩)", admin_cfg.username)
+    except Exception as e:
+        logger.warning("seed admin 생성 실패: %s", e)
+
+
+async def _cleanup_audit_once(audit_repo, retention_days: int) -> None:
+    """보관 기간(retention_days)이 지난 감사 로그를 1회 삭제한다(Plan 59-a §11).
+
+    retention_days<=0이면 비활성(정리 안 함). 예외는 warning으로 삼켜 기동/루프를 막지 않는다.
+    """
+    if not audit_repo or retention_days is None or retention_days <= 0:
+        return
+    try:
+        deleted = await audit_repo.cleanup_old_logs(retention_days)
+        logger.info("감사 로그 로테이션: %s일 경과 %s건 삭제", retention_days, deleted)
+    except Exception as e:
+        logger.warning("감사 로그 로테이션 실패: %s", e)
+
+
+async def _run_audit_retention_loop(audit_repo, retention_days: int, interval_seconds: int = 86400) -> None:
+    """감사 로그 로테이션을 주기적으로(기본 하루 1회) 수행하는 백그라운드 루프(Plan 59-a §11)."""
+    import asyncio
+
+    if not audit_repo or retention_days is None or retention_days <= 0:
+        return
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            break
+        await _cleanup_audit_once(audit_repo, retention_days)
 
 
 # D-049: incident 라이프사이클 테이블 (ddl/alarm_incidents.sql과 동일)
@@ -137,6 +235,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     config = load_config()
     setup_logging(config.log_level)
 
+    # D-071: 운영 모드 필수 크레덴셜·시크릿 검증(미설정 시 기동 거부)
+    _validate_production_secrets(config)
+
     # SQL 파일 로거 초기화
     from src.utils.sql_file_logger import init_sql_file_logger
     init_sql_file_logger()
@@ -184,9 +285,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
             # DDL 자동 실행 (테이블이 없으면 생성)
             await _ensure_auth_tables(auth_pool)
+            # break-glass seed admin 부트스트랩(활성 관리자 0명 시, 멱등, §9.2)
+            await _seed_admin_user(app.state.user_repo, config)
+            # 감사 로그 로테이션(Plan 59-a §11): 기동 시 1회 정리
+            await _cleanup_audit_once(app.state.audit_repo, config.audit.retention_days)
             logger.info("인증 DB 초기화 완료")
         except Exception as e:
             logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
+
+    # 감사 로그 로테이션 주기 태스크(하루 1회). audit_repo가 있고 retention_days>0일 때만.
+    audit_retention_task = None
+    if getattr(app.state, "audit_repo", None) and config.audit.retention_days > 0:
+        import asyncio as _asyncio
+        audit_retention_task = _asyncio.create_task(
+            _run_audit_retention_loop(app.state.audit_repo, config.audit.retention_days)
+        )
+        logger.info("감사 로그 로테이션 주기 태스크 시작 (보관 %s일)", config.audit.retention_days)
 
     # Redis 연결 (스키마 캐시)
     if config.schema_cache.backend == "redis":
@@ -350,6 +464,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     if incident_pool is not None:
         try:
             await incident_pool.close()
+        except Exception:
+            pass
+
+    # 종료 시: 감사 로그 로테이션 주기 태스크 정리
+    if audit_retention_task:
+        audit_retention_task.cancel()
+        try:
+            await audit_retention_task
         except Exception:
             pass
 

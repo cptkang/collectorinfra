@@ -611,8 +611,10 @@ class TestMultiDbExecutorEavSeparation:
             },
         }
 
+        # "서버명"은 D-068 5차 가드(correct_servername_hostname_mapping)가 등록명(.name)으로
+        # 교정하는 name-term이므로, 호스트명 표면어("호스트네임")로 정규 매핑을 표현한다.
         column_mapping = {
-            "서버명": "CMM_RESOURCE.HOSTNAME",
+            "호스트네임": "CMM_RESOURCE.HOSTNAME",
             "제조사": "EAV:Vendor",
             "모델명": "EAV:Model",
         }
@@ -698,7 +700,7 @@ class TestMultiDbExecutorEavSeparation:
 
         # OTHER_TABLE의 컬럼이 매핑에 포함되어도 EAV 쿼리에서 제외되어야 함
         column_mapping = {
-            "서버명": "CMM_RESOURCE.HOSTNAME",
+            "호스트네임": "CMM_RESOURCE.HOSTNAME",
             "기타": "OTHER_TABLE.COL1",
             "제조사": "EAV:Vendor",
         }
