@@ -40,8 +40,8 @@ class PostgresUserRepository(UserRepository):
                 """
                 INSERT INTO auth_users
                     (user_id, username, hashed_password, role, status,
-                     department, allowed_db_ids, auth_method)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     department, allowed_db_ids, alarm_zones, is_protected, auth_method)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
                 user.user_id,
                 user.username,
@@ -50,6 +50,8 @@ class PostgresUserRepository(UserRepository):
                 user.status.value,
                 user.department,
                 user.allowed_db_ids,
+                user.alarm_zones,
+                user.is_protected,
                 user.auth_method,
             )
 
@@ -62,6 +64,7 @@ class PostgresUserRepository(UserRepository):
                     username = $2, role = $3, status = $4,
                     department = $5, allowed_db_ids = $6,
                     login_fail_count = $7, last_login_at = $8,
+                    alarm_zones = $9,
                     updated_at = NOW()
                 WHERE user_id = $1
                 """,
@@ -73,6 +76,7 @@ class PostgresUserRepository(UserRepository):
                 user.allowed_db_ids,
                 user.login_fail_count,
                 user.last_login_at,
+                user.alarm_zones,
             )
 
     async def list_all(self) -> list[User]:
@@ -109,6 +113,8 @@ class PostgresUserRepository(UserRepository):
             status=UserStatus(row["status"]),
             department=row["department"],
             allowed_db_ids=row["allowed_db_ids"],
+            alarm_zones=row.get("alarm_zones"),
+            is_protected=bool(row.get("is_protected")),
             auth_method=row["auth_method"],
             login_fail_count=row["login_fail_count"],
             last_login_at=row["last_login_at"],

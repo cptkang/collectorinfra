@@ -39,7 +39,8 @@ class TestRegisterLlmMappingsToRedis:
         cm = _make_cache_manager()
         details = [
             {
-                "field": "서버명",
+                # 호스트명(=호스트명 표면어)은 정상 매핑 — 서버명류가 아니라 가드에 안 걸림
+                "field": "호스트명",
                 "db_id": "polestar",
                 "column": "CMM_RESOURCE.HOSTNAME",
                 "matched_synonym": "hostname",
@@ -61,11 +62,31 @@ class TestRegisterLlmMappingsToRedis:
         # Plan 37: 비-EAV 매핑은 redis_cache.add_global_synonym()으로 글로벌에 등록
         assert cm._redis_cache.add_global_synonym.call_count == 2
         cm._redis_cache.add_global_synonym.assert_any_call(
-            "HOSTNAME", ["서버명"]
+            "HOSTNAME", ["호스트명"]
         )
         cm._redis_cache.add_global_synonym.assert_any_call(
             "IP_ADDRESS", ["IP주소"]
         )
+
+    @pytest.mark.asyncio
+    async def test_register_blocks_servername_to_hostname(self) -> None:
+        """서버명/서버이름류 → hostname(직접 컬럼·EAV)은 자동 등록이 차단된다(재오염 방지, D-068 후속).
+
+        전역/EAV 유사어 오염 → LLM이 서버명을 hostname으로 매핑 → 자동 재등록되는 자기강화
+        루프를 등록 지점에서 결정적으로 끊는다. 정상 필드(IP주소)는 그대로 등록된다.
+        """
+        cm = _make_cache_manager()
+        details = [
+            {"field": "서버 이름", "db_id": "polestar", "column": "CMM_RESOURCE.HOSTNAME"},  # 차단(직접)
+            {"field": "서버명", "db_id": "polestar", "column": "EAV:Hostname"},              # 차단(EAV)
+            {"field": "IP주소", "db_id": "polestar", "column": "CMM_RESOURCE.IP_ADDRESS"},    # 허용
+        ]
+
+        await _register_llm_mappings_to_redis(cm, details, eav_name_synonyms={})
+
+        # 서버명류→hostname은 등록 안 됨 → IP주소만 글로벌 등록, EAV 저장도 호출 안 됨
+        cm._redis_cache.add_global_synonym.assert_called_once_with("IP_ADDRESS", ["IP주소"])
+        cm._redis_cache.save_eav_name_synonyms.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_register_llm_mappings_to_redis_eav(self) -> None:

@@ -794,6 +794,11 @@ async def process_file_query(
         "output_file": result.get("output_file"),
         "mapping_report_md": result.get("mapping_report_md"),
         "query_results": result.get("query_results", []),
+        # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관한다.
+        # TODO(§14.5): _results_store는 인메모리 dict이므로 원본 바이트 누적 시 메모리가 커진다.
+        #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
+        "uploaded_file": file_bytes,
+        "uploaded_file_name": file.filename,
     })
 
     return QueryResponse(**response_data)
@@ -990,6 +995,11 @@ async def process_file_query_stream(
                                     "output_file": output.get("output_file"),
                                     "mapping_report_md": output.get("mapping_report_md"),
                                     "query_results": output.get("query_results") or _tracked_query_results,
+                                    # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
+                                    # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
+                                    #   TTL/공유 스토리지 도입 검토.
+                                    "uploaded_file": file_bytes,
+                                    "uploaded_file_name": file.filename,
                                 })
 
                                 yield _sse_event({
@@ -1047,6 +1057,10 @@ async def process_file_query_stream(
                 "output_file": result.get("output_file"),
                 "mapping_report_md": result.get("mapping_report_md"),
                 "query_results": result.get("query_results", []),
+                # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
+                # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
+                "uploaded_file": file_bytes,
+                "uploaded_file_name": file.filename,
             })
             yield _sse_event({
                 "type": "done",
@@ -1240,6 +1254,48 @@ async def download_file(query_id: str) -> StreamingResponse:
         if file_name.endswith(".xlsx")
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
+
+    return StreamingResponse(
+        io.BytesIO(file_bytes),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"'
+        },
+    )
+
+
+@router.get("/query/{query_id}/attachment")
+async def download_attachment(
+    query_id: str,
+    current_user: dict = Depends(require_user),
+) -> StreamingResponse:
+    """사용자가 업로드한 원본 양식 파일을 그대로 다운로드한다(§14).
+
+    첨부 파일 카드 클릭 시 호출된다. 생성 결과 파일(`/download`)이 아니라
+    업로드 원본(`uploaded_file`)을 서빙한다. 로그인 사용자로 접근을 제한한다.
+    (향후: 본인 소유 query_id로만 제한하는 소유자 확인 추가 검토 — §14.5)
+    """
+    if query_id not in _results_store:
+        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+
+    stored = _results_store[query_id]
+    file_bytes = stored.get("uploaded_file")
+    file_name = stored.get("uploaded_file_name") or "attachment"
+
+    if not file_bytes:
+        raise HTTPException(status_code=404, detail="원본 첨부 파일이 없습니다.")
+
+    ext = _get_file_extension(file_name)
+    if ext == "docx":
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    elif ext == "xlsx":
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        content_type = "application/octet-stream"
 
     return StreamingResponse(
         io.BytesIO(file_bytes),

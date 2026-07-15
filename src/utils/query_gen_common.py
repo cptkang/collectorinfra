@@ -96,9 +96,9 @@ def decimal_cast_example(db_engine: str | None) -> str:
     """
     if (db_engine or "").lower() == "db2":
         return (
-            "ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
+            "CAST(ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
             "AND s.definition_name = 'Utilization' "
-            'THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS "CPU 평균"'
+            'THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS DECIMAL(15,2)) AS "CPU 평균"'
         )
     return (
         "ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
@@ -175,7 +175,13 @@ def eav_attr_resource_types(schema_info: dict | None) -> dict[str, str]:
     for pattern in structure_meta.get("patterns", []):
         if pattern.get("type") != "eav":
             continue
-        for attr in pattern.get("known_attributes", []):
+        # `_load_manual_profile`은 known_attributes를 문자열 리스트로 평탄화하고 원본 객체
+        # (name/description/synonyms)를 known_attributes_detail에 보존한다. resource_type 태그는
+        # description에 있으므로 detail(객체 리스트)을 우선 읽는다. detail이 없으면(이미 dict인
+        # 원시 구조 메타) known_attributes를 사용한다. 이 폴백이 없으면 실 런타임(수동 프로필 로드)에서
+        # attr_rt가 항상 비어 폼필 결정적 피벗이 발동하지 않고 LLM 폴백으로 떨어진다(단일·멀티 공통).
+        attrs = pattern.get("known_attributes_detail") or pattern.get("known_attributes", [])
+        for attr in attrs:
             if not isinstance(attr, dict):
                 continue
             name = (attr.get("name") or "").strip()
@@ -184,6 +190,67 @@ def eav_attr_resource_types(schema_info: dict | None) -> dict[str, str]:
             if name and m:
                 out[name.upper()] = m.group(1).strip()
     return out
+
+
+# 서버 등록명(cmm_resource.name) 의미의 폼 필드 표면어(공백 제거·소문자 정규화 후 비교).
+# 프로필이 명시하듯 이 표현들은 EAV Hostname(=호스트명)이 아니라 등록명 컬럼이다.
+_SERVER_NAME_TERMS = frozenset({
+    "서버명", "서버이름", "장비명", "장비이름", "리소스명", "등록명",
+    "폴스타등록명", "장비식별명",
+})
+
+
+def _norm_name_term(text: str) -> str:
+    """폼 필드명을 공백 제거+소문자로 정규화한다('서버 이름'→'서버이름')."""
+    return "".join((text or "").split()).lower()
+
+
+def is_servername_field(field: str) -> bool:
+    """필드명이 서버 등록명(cmm_resource.name) 의미의 표면어인지 판정한다."""
+    return _norm_name_term(field) in _SERVER_NAME_TERMS
+
+
+def is_hostname_target(column: str) -> bool:
+    """매핑 대상 컬럼이 hostname(직접 컬럼 `*.hostname` 또는 EAV Hostname 속성)인지 판정한다.
+
+    - EAV 매핑: `EAV:Hostname`
+    - 직접 컬럼: `hostname` / `cmm_resource.hostname` / `polestar.cmm_resource.hostname` /
+      `db_id:table.hostname` 등 — 표기·스키마 접두사·db_id 접두사 무관하게 bare 컬럼명으로 판정.
+    """
+    if not isinstance(column, str) or not column:
+        return False
+    if column.startswith("EAV:"):
+        return column[4:].strip().lower() == "hostname"
+    return column.rsplit(".", 1)[-1].strip().lower() == "hostname"
+
+
+def is_servername_to_hostname(field: str, column: str) -> bool:
+    """서버명/서버이름류 필드가 hostname(컬럼 or EAV)으로 (오)매핑되는지 판정한다.
+
+    자동 유사어 등록 차단(재오염 방지)과 폼필 매핑 교정에서 공용으로 쓰는 결정적 판정.
+    '호스트네임' 등 호스트명 표면어는 name-term이 아니므로 False.
+    """
+    return is_servername_field(field) and is_hostname_target(column)
+
+
+def correct_servername_hostname_mapping(
+    column_mapping: dict, entity_table: str
+) -> None:
+    """서버명/서버이름류 폼 필드가 hostname으로 오매핑되면 등록명 컬럼으로 교정한다(in-place).
+
+    프로필(gp/yd/b0)이 명시적으로 규정하듯 '서버명/서버 이름'은 hostname(호스트명 값)이
+    아니라 등록명 컬럼(`<entity>.name`, 예: cmm_resource.name)이다. 그러나 전역/EAV 유사어의
+    `Hostname: [..., 서버명, ...]` 미끼 + 유사어/LLM 매핑의 비결정성으로 "서버 이름"이
+    **EAV Hostname 또는 직접 `*.hostname` 컬럼**에 붙어 두 칼럼(서버 이름·호스트네임)이 모두
+    hostname으로 채워지는 문제가 반복됐다. 프로필의 확정 규칙을 결정적 가드로 못박아,
+    유사어/Redis 상태·LLM 변동과 무관하게 교정한다. EAV·직접 컬럼 **두 경로 모두** 처리한다.
+    ('호스트네임' 등 호스트명 표면어는 name-term이 아니므로 건드리지 않는다.)
+    """
+    if not entity_table or not column_mapping:
+        return
+    for field, col in list(column_mapping.items()):
+        if is_servername_to_hostname(field, col):
+            column_mapping[field] = f"{entity_table}.name"
 
 
 def _metric_select_line(
@@ -201,10 +268,13 @@ def _metric_select_line(
     """
     if (db_engine or "").lower() == "db2":
         # DB2: 집계 함수 내부에서 DECIMAL 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
+        # 또한 DB2 `AVG(DECIMAL)`은 스케일을 크게 확장(예: scale 18)하여 ROUND(x,2)로 값은 2자리로
+        # 반올림돼도 **타입 스케일이 남아** 결과가 6.51000000000000000000처럼 trailing zero로 직렬화된다
+        # (엑셀 제로필). 최종을 `CAST(... AS DECIMAL(15,2))`로 감싸 스케일을 2로 고정한다(D-068 후속).
         inner = f"CAST(s.{val_col} AS DECIMAL(15,4))"
         return (
-            f"  ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-            f"AND s.definition_name='{definition_name}' THEN {inner} END), 2) AS \"{field}\""
+            f"  CAST(ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
+            f"AND s.definition_name='{definition_name}' THEN {inner} END), 2) AS DECIMAL(15,2)) AS \"{field}\""
         )
     return (
         f"  ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "

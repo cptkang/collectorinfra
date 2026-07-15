@@ -213,6 +213,16 @@ _REGION_HINT_TOKENS = ("공동존", "김포", "여의도", "은행", "레거시"
 _GENERIC_DB_TOKENS = ("폴스타", "polestar", "포탈", "portal")
 
 
+# db_id별로 그 DB를 "배제"하는 경쟁 지역 토큰. 어떤 hint가 이 토큰을 포함하면
+# 그 hint는 해당 db_id를 가리키지 않는다(다른 존을 지목).
+_DB_EXCLUDING_REGIONS: dict[str, tuple[str, ...]] = {
+    "polestar": ("여의도", "김포", "은행", "레거시"),
+    "polestar_cm_gp": ("여의도", "은행", "레거시"),
+    "polestar_cm_yd": ("김포", "은행", "레거시"),
+    "polestar_b0": ("여의도", "김포"),
+}
+
+
 def _is_generic_only_hint(hint: str) -> bool:
     """제품명(폴스타 등)만 있고 지역 변별 토큰이 없는 hint인지 판정한다."""
     low = hint.strip().lower()
@@ -221,11 +231,26 @@ def _is_generic_only_hint(hint: str) -> bool:
     return not any(r in low for r in _REGION_HINT_TOKENS)
 
 
+def _hint_excludes_db(hint: str, db_id_lower: str) -> bool:
+    """이 hint가 다른 존을 지목해 db_id를 배제하는지 판정한다(hint 단위)."""
+    regions = _DB_EXCLUDING_REGIONS.get(db_id_lower)
+    if not regions:
+        return False
+    return any(region in hint for region in regions)
+
+
 def _resolve_priority_db_ids(
     target_db_hints: list[str],
     active_db_ids: list[str],
 ) -> list[str]:
-    """target_db_hints의 DB명/별칭을 active_db_ids에 매핑하여 우선순위 DB ID 목록을 반환한다."""
+    """target_db_hints의 DB명/별칭을 active_db_ids에 매핑하여 우선순위 DB ID 목록을 반환한다.
+
+    지역 배제는 **hint 단위**로 평가한다. 여러 hint가 서로 다른 존을 지목하면
+    (예: ["은행 폴스타", "공동존 김포 폴스타"] → [b0, gp]) 각 hint가 자신이 지목한
+    DB만 선택하도록 하여, 한 hint의 경쟁 지역이 다른 hint가 지목한 DB를 배제하지
+    않게 한다(D-065 후속2 회귀). 배제를 전체 hint에 걸쳐 판정하면 양 DB가 모두
+    상대 hint의 지역 토큰에 걸려 빈 priority가 됐다.
+    """
     if not target_db_hints:
         return []
 
@@ -246,42 +271,15 @@ def _resolve_priority_db_ids(
     for db_id in active_db_ids:
         db_id_lower = db_id.lower()
 
-        # default polestar DB는 힌트에 특정 지역/존(여의도, 김포, 은행, 레거시)이 명시되어 있을 때 매칭에서 제외
-        if db_id_lower == "polestar":
-            has_specific_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["여의도", "김포", "은행", "레거시"]):
-                    has_specific_region = True
-                    break
-            if has_specific_region:
-                continue
-        elif db_id_lower == "polestar_cm_gp":
-            has_other_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["여의도", "은행", "레거시"]):
-                    has_other_region = True
-                    break
-            if has_other_region:
-                continue
-        elif db_id_lower == "polestar_cm_yd":
-            has_other_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["김포", "은행", "레거시"]):
-                    has_other_region = True
-                    break
-            if has_other_region:
-                continue
-        elif db_id_lower == "polestar_b0":
-            has_other_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["여의도", "김포"]):
-                    has_other_region = True
-                    break
-            if has_other_region:
-                continue
+        # 이 db_id를 배제하지 않는(=다른 존을 지목하지 않는) hint만 매칭 후보로 사용한다.
+        candidate_hints = [
+            h for h in normalized_hints if not _hint_excludes_db(h, db_id_lower)
+        ]
+        if not candidate_hints:
+            continue
 
         # 1. raw db_id와 직접 비교 (대소문자 무시)
-        if db_id_lower in normalized_hints:
+        if db_id_lower in candidate_hints:
             priority_set.add(db_id)
             continue
 
@@ -290,7 +288,7 @@ def _resolve_priority_db_ids(
         if domain_cfg:
             for alias in domain_cfg.aliases:
                 alias_lower = alias.strip().lower()
-                for hint in normalized_hints:
+                for hint in candidate_hints:
                     if hint == alias_lower or hint in alias_lower or alias_lower in hint:
                         priority_set.add(db_id)
                         break

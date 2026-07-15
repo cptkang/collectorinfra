@@ -3241,6 +3241,25 @@ K리전 공동존 **두 DB**를 포괄하는데:
   캐스트**(`AVG(CAST(s.avg_val AS DECIMAL(15,4)))`). `::numeric`은 DB2 문법 오류라 CAST 사용. 2026-07-01
   "b0 정수 표시(SQL 레벨 추정)" 유보 항목 해소. 저장은 동형 솔루션이라 동일(사용자 지적) — SQL 방언 차이.
 
+### 후속 3 (서로 다른 존을 지목하는 다중 hint가 한쪽만 조회 — 지역 배제의 전역 평가 결함)
+
+버그(2026-07-13): "은행 폴스타와 공동존 김포 폴스타의 모든 서버" 폼필에서 `input_parser`가
+`target_db_hints=["은행 폴스타", "공동존 김포 폴스타"]`로 **정확히 파싱**했으나 결과에 은행존(b0)만
+포함되고 공동존 김포(gp)가 누락. 원인: `_resolve_priority_db_ids`의 지역 배제 로직이 db_id별로
+**전체 hint 목록**을 훑어 "경쟁 지역이 하나라도 있으면 배제"했다. 그래서 gp는 "은행" hint(은행존 지목)에
+걸려 배제되고, b0는 "김포" hint(공동존 지목)에 걸려 배제 → priority가 **빔**. 빈 priority에서 폼필 DB가
+active 순서 폴백으로 b0만 선택됨. 단일 존 의도만 가정한 배제 로직이 **다중 존 다중 hint**에서 양쪽을 서로
+지워버린 것.
+
+수정: 지역 배제를 **hint 단위**로 평가(`_hint_excludes_db(hint, db_id)`). 각 db_id는 자신을 배제하지
+않는(=다른 존을 지목하지 않는) hint만 매칭 후보로 사용 → 각 hint가 지목한 DB만 선택되고 union.
+`["은행 폴스타", "공동존 김포 폴스타"]` → `[b0, gp]`. 배제 규칙 자체는 db_id→경쟁지역 테이블
+(`_DB_EXCLUDING_REGIONS`)로 집약(기존 if/elif 분기와 동일 의미). 단일 존 hint·제품명 단독 필터 동작은
+불변(기존 회귀 전부 유지). 이후 `_replicate_mapping_for_multi_location`이 [b0, gp]에 매핑 복제하여 둘 다 조회.
+회귀: `test_gongdongjon_routing.py::TestCrossZoneMultiHint`. 교훈: **"~와/과 …"로 여러 존을 나열하는 hint는
+서로를 배제하면 안 된다 — 배제는 전역이 아니라 hint 단위.** 파싱은 맞아도 라우팅 후처리가 상호 소거할 수 있으니
+다중 hint 케이스를 결과로 실측.
+
 ---
 
 ## D-066. 단일/멀티 DB SQL 생성 경로 동등화 (few-shot 예시·전체조회 LIMIT 공유)
@@ -3559,6 +3578,296 @@ LLM이 예시를 택함 → 월별 분해로 서버 중복 + LOGICALCORE/TotalSi
   직접 조립**해야 안정적. 기간처럼 런타임 값이 필요한 부분만 결정적 파서로 처리하고, 파싱 불가 시에도
   구조(서버당 1행)는 깨지지 않게 설계.
 
+### 결정 (4차 정정: 3차 결정적 빌더가 실 런타임에서 발동조차 안 됐음 — attr_rt 항상 빔)
+
+**증상**: "은행 폴스타와 공동존 김포 폴스타" 폼필에서 라우팅 수정(멀티 DB 활성화, D-065 후속2·후속3) 후
+b0(DB2)=`SQL0245N MAX 모호`, gp(PostgreSQL)=`aggregate functions are not allowed in GROUP BY`로 **둘 다** 실패.
+두 에러 모두 `build_multi_resource_pivot_sql`가 내는 형태가 아니라(그 SQL은 두 엔진 모두 유효 — 실측 검증)
+**LLM 폴백 SQL의 전형적 실수** → 3차 결정적 빌더가 발동하지 않았다는 뜻.
+
+**근본 원인**: 결정적 빌더 게이트 `use_multi_resource_pivot = bool(child_eav)`의 `child_eav`는
+`eav_attr_resource_types(schema_info)`(→`attr_rt`)에 의존하는데, 이 헬퍼가 `pattern["known_attributes"]`만
+읽고 각 항목을 `isinstance(attr, dict)`로 검사했다. 그러나 **실 런타임 로더 `_load_manual_profile`은
+known_attributes를 문자열 리스트로 평탄화**하고 원본 객체(`name`/`description`/resource_type 태그)를
+`known_attributes_detail`에 보존한다(schema_analyzer.py:501). → 런타임에서 `attr_rt`가 **항상 빔** →
+`child_eav=[]` → 결정적 빌더 **한 번도 발동 안 됨**(단일 `_try_build_form_fill_pivot_sql`·멀티 `_generate_sql`
+공통) → 항상 LLM 폴백. **단일 경로(schema_analyzer 노드)도 같은 로더를 쓰므로** 단일 b0 성공은 결정적
+빌더가 아니라 **LLM 폴백이 우연히 유효 SQL을 낸 것**. 멀티는 두 DB 모두 LLM이 잘못된 SQL 생성.
+
+**왜 테스트가 못 잡았나**: `test_multi_resource_pivot.py`가 `known_attributes`를 **dict shape로 직접** 먹여
+헬퍼가 통과했다. 실 런타임의 평탄화 shape(문자열+detail)를 재현하지 않아, 3차 이후 결정적 빌더가
+프로덕션에서 죽어 있는데도 스위트는 초록. (D-066 계열의 "mock 통과·런타임 실패" 재발.)
+
+- **수정**: `eav_attr_resource_types`가 `known_attributes_detail`을 **우선** 읽고, 없으면
+  `known_attributes`로 폴백(원시 dict 구조 메타 호환). 단일 출처 헬퍼라 단일·멀티 경로가 동시에 살아남.
+  이제 gp/b0/yd 모두 `attr_rt` 27건(LOGICALCORE→server.Cpus, TotalSize→server.Memory) → 결정적 빌더가
+  각 DB의 스키마·엔진 방언으로 완성 SQL을 조립 → 이종 엔진 [b0, gp]도 각자 유효 SQL 반환.
+- **회귀 테스트**: 실 런타임 shape(문자열+detail)와 실제 프로필 로드(`_load_manual_profile`) end-to-end
+  단언을 추가(`test_resource_type_map_reads_flattened_known_attributes_detail`,
+  `test_resource_type_map_from_real_manual_profiles`).
+- **교훈**: 결정적 게이트가 **의존하는 데이터의 실 런타임 shape를 반드시 실측**하라 — 로더가 구조를 변형
+  (평탄화)하면 mock 테스트가 통과해도 프로덕션에선 게이트가 죽는다. 부가 필드(`_detail`)를 만드는 변형
+  로더가 있으면, 그 필드를 읽는 소비자와 **양쪽 shape 호환**을 테스트로 고정.
+
+### 결정 (5차: 서버명/서버이름이 EAV Hostname으로 오매핑 — 결정적 교정 가드)
+
+4차로 결정적 빌더가 발동하자, 이제 `column_mapping`이 **글자 그대로** 렌더된다. 그런데 폼 `서버 이름`이
+`column_mapping["서버 이름"]="EAV:Hostname"`으로 매핑돼(생성 SQL:
+`MAX(CASE WHEN cc.name='Hostname' THEN cc.stringvalue_short END) AS "서버 이름"`), `서버 이름`·`호스트네임`
+**둘 다 hostname 값**으로 채워졌다. 프로필은 "'서버명/서버 이름'은 EAV Hostname이 아니라 등록명
+컬럼(cmm_resource.name)"이라 명시하고 EAV Hostname synonyms도 `["EAV호스트명"]`로 축소돼 있으나,
+**전역 유사어 `Hostname:[…,서버명,…]`가 미끼**가 되어 유사어 발견/LLM 추론 단계가 "서버 이름"을 Hostname에
+붙였다(2026-06-10 기록의 `서버명→HOSTNAME` 전역 오염과 동일 계열, 그때는 filter_conditions만 우회).
+
+- **인과**: 이 오매핑은 field_mapper 유사어/LLM 해소의 **기존·지속** 문제로, 4차(attr_rt 복원) 변경이 만든
+  것이 아니다. 다만 결정적 빌더 활성화로 **잠재 오류가 일관되게 노출**됐다(LLM 경로는 프로필 가이드로 가끔
+  마스킹). 올바른 방향은 LLM 마스킹 복원이 아니라 매핑을 결정적으로 교정.
+- **수정**: 공유 헬퍼 `correct_servername_hostname_mapping(column_mapping, entity_table)` — 필드가
+  서버명/서버이름/장비명/리소스명/등록명류(공백제거·소문자 정규화)인데 `EAV:Hostname`에 붙었으면
+  `<entity>.name`(예: cmm_resource.name)으로 교정. 단일(`_try_build_form_fill_pivot_sql`)·멀티
+  (`_generate_sql`) 두 경로가 분류 직전 호출(D-067 정신). `호스트네임` 등 호스트명 표면어는 name-term이
+  아니라 불변. 유사어/Redis 상태·LLM 변동과 무관한 결정적 가드(비결정 매핑을 결정적으로 교정 — D-055 계열).
+- **권장 후속(코드 아님)**: 전역 `global_synonyms.yaml`의 `HOSTNAME`/EAV `Hostname` words에서 `서버명`·`서버`
+  제거(per-DB D-061/D-066후속2를 전역에 미러) + Redis 유사어 재동기화. 가드가 있으므로 non-blocking.
+- 검증: `correct_servername_hostname_mapping` 단위(교정·호스트네임 불변·정규화·비Hostname 불변·entity 없음
+  no-op) + 피벗 SQL 렌더 단언(`서버 이름`→`c.name`, `호스트네임`→`c.hostname`, `cc.name='Hostname'` 부재),
+  회귀 신규 실패 0, arch exit 0.
+- **교훈**: **결정성은 잠재 매핑 오류를 노출**한다(LLM의 우발적 교정을 제거) — 노출된 오류는 되돌리지 말고
+  결정적 가드로 정면 교정. 프로필이 명시한 규칙(서버명=name)은 유사어 튜닝(Redis 의존·LLM 퍼지)보다
+  **코드 가드로 못박는 것**이 반복 실패를 끝낸다.
+
+### 결정 (6차: 재오염 자기강화 루프 차단 — 등록 가드 + 직접 컬럼 교정 확장)
+
+5차 가드는 폼필 **출력**만 교정했고, Redis 유사어 오염 자체는 남았다. 조사 결과 **자기강화(self-reinforcing)
+루프**가 확인됐다: (1) 전역/EAV 유사어에 `서버명→hostname`이 있음 → (2) field_mapper의 LLM 매핑이 "서버 이름"을
+hostname으로 매핑 → (3) `_register_llm_mappings_to_redis`/`_register_llm_synonym_discoveries_to_redis`/
+`apply_mapping_feedback_to_redis`가 그 매핑을 **사용자 확인 없이 Redis(전역+EAV+per-DB)에 자동 재등록** →
+(4) 오염 강화 → 다음 턴 더 확실히 오매핑. 그래서 per-DB만 청소해도 씨앗에서 재번진다. 또한 5차 교정은
+`EAV:Hostname`만 봐서 **직접 `*.hostname` 컬럼** 매핑(전역/per-DB 컬럼 유사어 경로)은 사각지대였다.
+
+- **수정 A (등록 가드, 재오염 원천 차단)**: 공용 판정 `is_servername_to_hostname(field, column)`으로,
+  서버명/서버이름류 → hostname(직접 컬럼 or EAV) 자동 등록을 **세 등록 함수 전부**에서 거부(skip+log).
+  잘못된 연관이 애초에 Redis에 안 쌓여 루프가 끊긴다. 정상 필드(호스트명→hostname, IP주소 등)는 그대로 등록.
+- **수정 B (교정 확장)**: `correct_servername_hostname_mapping`이 `EAV:Hostname`뿐 아니라 **bare 컬럼명이
+  hostname인 직접 컬럼**(`is_hostname_target`)도 `<entity>.name`으로 교정 → 폼필 출력이 EAV·직접 컬럼 양쪽 안전.
+- 판정 헬퍼(`is_servername_field`/`is_hostname_target`/`is_servername_to_hostname`)를 `query_gen_common`에
+  단일 출처화하여 등록 가드·교정이 동일 규칙을 공유(D-067 정신).
+- **효과**: ① Redis 재오염 안 됨(루프 원천 차단) ② 설령 어디서 오염돼도 폼필 출력은 교정 ③ Redis 일회성 청소로 끝.
+- **주의**: 기존 테스트 `test_register_llm_mappings_to_redis_normal`이 **오염 동작(서버명→HOSTNAME 등록)을
+  정답으로 단언**하고 있었다 → 정상 필드(호스트명)로 교체하고, 차단 회귀(`test_register_blocks_servername_to_hostname`)
+  신설. 검증: 등록 가드 mock 테스트 + 판정/교정 단위(직접 컬럼 포함) 신규, 회귀 신규 실패 0, arch exit 0.
+- **교훈**: LLM 자동등록이 **오염된 입력을 학습해 되쓰면 자기강화 루프**가 된다 — 출력 교정만으론 부족하고
+  **등록(쓰기) 지점에서 결정적으로 차단**해야 근본 종결. 테스트가 버그 동작을 정답으로 굳혀두지 않았는지도 점검.
+
+### 결정 (7차: 이종 엔진 CSV 칼럼 중복 + DB2 통계 스케일 제로필)
+
+이종 엔진 폼필(공동존 gp/yd + 은행존 b0) **CSV 다운로드**에서 두 잔여 관찰:
+
+1. **CSV 칼럼 중복(라틴 대소문자만 다름)**: `IP주소`/`ip주소`·`OS 종류`/`os 종류`·`CPU 평균`/`cpu 평균`처럼
+   중복 칼럼이 생기고 각 존이 자기 표기 칼럼에만 채워짐. **Excel은 정상**(자체 정규화 매칭으로 흡수).
+   원인: **DB2가 결과 칼럼의 라틴 문자를 소문자로 반환** → gp="IP주소" vs b0="ip주소". 순수 한글 칼럼
+   (서버 이름/메모리 용량 등)은 소문자화 대상이 없어 중복 안 됨(관찰과 정확히 일치). `_merge_results`가
+   각 DB 행을 키 그대로 append해 원본 병합(query_results)·그 CSV가 분리됐다. 수정: `_merge_results`가
+   칼럼명을 정규화(소문자·공백/언더스코어 제거) 기준 **canonical 이름(양식 필드 우선, 없으면 첫 등장 키)**으로
+   통일. Excel writer의 정규화 매칭 로직과 동형. 회귀: `test_multi_db_merge.py`.
+2. **DB2 통계 엑셀 제로필(6.51→6.51000000000000000000, CSV는 정상)**: gp는 같은 칼럼에서 정상이므로
+   템플릿 셀 포맷이 아니라 **값 타입** 문제. **DB2 `AVG(DECIMAL)`은 스케일을 크게 확장**(scale~18)해
+   `ROUND(x,2)`로 값은 2자리로 반올림돼도 **타입 스케일이 남아** trailing zero로 직렬화된다(D-066 후속5의
+   `_normalize_cell_value` Decimal→float로도 고스케일 Decimal은 float 변환돼도 원천은 SQL). 수정:
+   `_metric_select_line` DB2 분기를 `CAST(ROUND(AVG/MAX(...), 2) AS DECIMAL(15,2))`로 **스케일 2 고정**
+   (PostgreSQL은 `::numeric` 유지). `decimal_cast_example`도 동일 미러. 회귀: `test_db2_metric_scale_fixed_to_two`.
+- **교훈**: 멀티 엔진 결과 병합은 **엔진별 칼럼명 표기 차이(DB2 소문자화)**를 정규화해 통일해야 CSV/원본이
+  안 깨진다(Excel만 보고 정상으로 오판 금지). DB2 집계는 **스케일 확장**을 최종 CAST로 고정.
+
+---
+
+## D-069. 어드민 접근 통합 RBAC (Plan 59 Part A · 방향 A)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (사용자 승인: 방향 A 1안) |
+| **관련 결정** | D-026(사용자 인증·시크릿 공유·type 구분 원의도), D-070(시크릿 분리), D-071(하드닝), D-082(존 RBAC가 재사용) |
+
+### 배경 / 문제
+
+두 개의 독립 인증 체계가 하나의 멘탈 모델로 봉합되지 않은 채 병존했다. (A) 어드민 진입에 별도
+운영자 계정 로그인이 또 필요했고, (B) 회원 리스트의 "어드민 권한 부여"가 무효했다 —
+`UserRole.ADMIN`이 정의만 있고 어떤 게이트도 열지 않는 **죽은 필드**였기 때문(소비처 0건).
+
+### 결정
+
+어드민 접근을 **DB `user.role == ADMIN`**으로 판정한다(통합 RBAC). 고정 운영자 계정은
+**break-glass seed 1개**로 축소한다.
+
+- 신규 `dependencies.require_admin_user` 통합 가드: ① 개발 모드(AUTH_ENABLED=false) 우회
+  (Plan 39 원칙) ② break-glass 운영자 토큰(type="admin", admin 시크릿) 허용(DB 장애 대비)
+  ③ 사용자 토큰 + DB 실시간 role==admin. `admin.py`(15개)·`schema_cache.py`(14개) 엔드포인트를
+  `require_admin`→`require_admin_user`로 교체.
+- 기동 시 활성 관리자 0명이면 env 크레덴셜로 seed admin을 멱등 생성(`server._seed_admin_user`).
+- **최소-1-admin 가드**: 마지막 활성 관리자의 강등·비활성화·삭제 차단(`_ensure_not_last_active_admin`).
+- 프론트: `role==admin`(또는 개발 모드)일 때만 어드민 진입 링크 노출, `admin.js`가 사용자 토큰으로
+  진입 허용(별도 admin_token 없을 때 폴백).
+
+### 근거 / 대안
+
+방향 B(운영자 계정 분리 유지)는 "권한 부여로 어드민 접근"이라는 사용자 기대를 충족 못 함. 방향 A는
+죽은 필드를 부활시켜 사용자 멘탈 모델과 일치. break-glass seed로 DB 장애 시 진입성도 보존(하이브리드).
+
+### 번호
+
+Plan 59는 작성 시점(2026-07-01, 최대 D-056) 기준 D-064를 제안했으나, 이후 폼필 작업이 D-060~D-068을
+소비(2026-07-09~13) → 충돌. 등재 직전 `## D-` 헤더+변경 이력 표+CLAUDE.md grep으로 최대 D-068 확인,
+**D-069** 부여(Known Mistakes 2026-06-25·2026-06-29 번호 규칙 준수).
+
+---
+
+## D-070. 운영자 토큰 type 검증 + 사용자/운영자 시크릿 분리 (권한 상승 차단)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (보안 즉시 수정, 방향 무관) |
+| **관련 결정** | D-026(시크릿 공유+type 구분 원의도가 미구현이었음), D-069 |
+
+### 배경 / 문제 [보안 결함]
+
+`verify_admin_token`이 토큰의 `sub`만 확인하고 **`type`·`role`을 검증하지 않았다.** 그런데 사용자
+토큰도 **동일 시크릿**(`config.admin.jwt_secret`)으로 서명되어(D-026이 "type으로 구분"한다고 결정했으나
+검증이 누락됨), **임의의 일반 사용자 JWT로 모든 `/admin/*`·`schema_cache` 운영자 API를 통과**할 수 있었다
+(`.env` 수정, DB 접속정보 변경, 사용자 삭제, 비밀번호 리셋 등). 프론트에 별도 로그인 폼이 있을 뿐 API
+계층이 이미 뚫려 있었다.
+
+### 결정
+
+- **① `type` 검증**: `verify_admin_token`이 `payload.get("type") != "admin"`이면 401(D-026 원의도 강제).
+  이 한 줄로 사용자 토큰 통과가 즉시 차단된다.
+- **② 시크릿 분리**: `AuthConfig.jwt_secret`(env `AUTH_JWT_SECRET`) 신설. 사용자 토큰은
+  `config.auth.jwt_secret`으로 서명(`_create_user_token`)·검증(`dependencies._verify_user_token`),
+  운영자 토큰은 `config.admin.jwt_secret` 유지 → 교차 서명 자체가 불가.
+- **마이그레이션**: 배포 시 기존 사용자 토큰 무효화(재로그인). 사용자 확인 결과 배포마다 재로그인 수용 →
+  한시적 이중 검증 미도입.
+
+### 근거
+
+①은 방향 선택과 무관한 P0 핫픽스. ②는 심층 방어(시크릿 분리로 교차 서명 원천 차단). 회귀 테스트
+`tests/test_api/test_admin_rbac.py`(사용자 토큰 401 / 운영자 토큰 200 / 시크릿 분리).
+
+---
+
+## D-071. 기본 크레덴셜·시크릿 하드닝 (운영 모드 기동 거부)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (사용자 승인: 강한 거부, JWT 시크릿 사전 기입 권장) |
+| **관련 결정** | D-070, Known Mistakes 2026-06-10(os.getenv가 .env/.encenv 미반영) |
+
+### 결정
+
+- `AdminConfig`의 기본 크레덴셜 `admin`/`admin123`을 **제거**(빈 문자열 기본값).
+- 운영 모드(AUTH_ENABLED=true)에서 크레덴셜·시크릿 미설정 시 **기동 거부**
+  (`server._validate_production_secrets`): `ADMIN_USERNAME`/`ADMIN_PASSWORD`,
+  `ADMIN_JWT_SECRET`, `AUTH_JWT_SECRET`가 모두 명시 설정되어야 한다.
+- 개발 모드는 현행 유지(jwt_secret 미설정 시 임시 랜덤 생성).
+
+### 구현 주의 (Known Mistakes 반영)
+
+`os.getenv`는 pydantic-settings의 `.env`/`.encenv` 로딩 값을 못 본다(2026-06-10). 따라서 "명시 설정
+여부"를 `AdminConfig`/`AuthConfig`의 **`PrivateAttr _jwt_secret_explicit`** 플래그(model_post_init에서
+자동 생성 전에 기록)와 pydantic 필드로 판정한다. `_validate_production_secrets`는 이 플래그·필드만 읽어
+파일 기반 설정도 정확히 인식한다.
+
+---
+
+## D-082. 알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-14 |
+| **상태** | 확정 (사용자 승인: 데이터 모델 1, SSE 인증 쿠키(B)) |
+| **관련 결정** | D-069(통합 RBAC 재사용), D-026(인증 불변 · 인가만 추가), D-053(존↔db_id 라우팅 교훈) |
+
+### 배경 / 문제
+
+알림 SSE 스트림(`/alarm/notifications/stream`)이 **인증 의존성 없이** 웹 접속자 전원에게 무차별
+브로드캐스트되고 있었다. 요구: 지역 스코프 역할(관리자=전 존, 공동존/은행존 운영자=해당 존만,
+일반=수신 안 함, **중복 할당 가능**).
+
+### 결정
+
+- **데이터 모델 1**: `UserRole`(어드민 게이트, D-069) 유지 + 별도 **`User.alarm_zones: list[str]`**
+  신규 필드(중복 할당=리스트, 빈 목록=일반). 모델 2(역할 리스트 일반화)는 Part A 소비처 광범위 변경으로
+  회귀 위험↑라 기각.
+- **존↔db_id 단일 출처**: `src/routing/zones.py`(`ZONE_GONGJON=[polestar_cm_gp, polestar_cm_yd]`,
+  `ZONE_BANKJON=[polestar_b0]`, `zone_to_db_ids`/`db_id_to_zone`/`normalize_zones`). 신규 존/DB는 여기만 갱신.
+- **쿠키 기반 SSE 인증**(사용자 선택 B): 로그인 시 JWT를 `HttpOnly` 쿠키(`user_token`)로도 세팅
+  (EventSource가 Authorization 헤더를 못 실음). `dependencies.resolve_stream_user`가 쿠키→헤더→쿼리
+  토큰 순으로 해소. `alarm_zones_for_user`가 존 집합 산출(admin·개발=전 존, 운영자=해당 존, 일반=∅).
+  존 집합이 비면 **403**, 아니면 `event_generator`가 `db_id_to_zone(event.db_id)`로 구독자 존만 통과.
+- **프론트**: 존 권한이 있는 사용자만 EventSource를 열고(권한 없으면 미구독=403 재연결 루프 차단),
+  헤더에 개인 **알림 수신 토글**(localStorage) 제공.
+- **SSO 보존**(필수 제약): 로그인/인증 흐름 불변, 역할/존은 인증 성공 후 인가 계층에만 추가.
+
+### 근거
+
+기존 `allowed_db_ids` 인프라(토큰 노출·DDL)와 동형이나, 조회 권한과 알림 존은 별개 축이라 전용 필드로
+분리. 구독자측 필터로 충분(트래픽 소규모)하며 alarm_bus 존 토픽화는 향후 옵션.
+
+### 번호
+
+최초 등재(2026-07-14) 시 grep 최대 D-071 확인 → D-072 부여(Plan 59 §20의 "후보 D-069~"를 따름).
+**2026-07-15 재배정: D-072 → D-082** — multiintent 병합 준비 중 팀장 브랜치(origin/multiintent)가
+D-072~076(Plan 61)·D-077~081(Plan 60)을 선점·예약한 것을 확인, 팀장 우선 원칙에 따라 다음 빈 번호 D-082로 이동.
+
+---
+
+## D-083. 보호 root 계정 + 감사 로그 로테이션 배선 + 어드민 진입 규약 정정 (Plan 59-a)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-15 |
+| **상태** | 확정 (사용자 승인) |
+| **관련 결정** | D-069(통합 RBAC·최소-1-admin 가드 보완), D-070(진입 규약), D-082(알림그룹 UI 완성) |
+
+### 배경 / 문제
+
+Plan 59-a 실테스트에서 세 가지가 드러났다. (1) **어드민 재로그인**: 미인증 상태로 `/admin`에 오면 admin.js가
+`/admin/login`(env 운영자 전용 break-glass)으로 유도 → DB 사용자(role==admin 포함)가 그 창구에서 로그인
+실패. (2) **잠김 위험**: 유일한 관리자가 자신을 강등·삭제하면 접속 가능한 관리자가 0명이 될 수 있음(최소-1-admin
+가드는 있으나 "상시 불변 root"라는 명시적 보장 부재). (3) **감사 로그 로테이션 미작동**: `AuditConfig.retention_days`
+설정과 `cleanup_old_logs()` 구현은 있으나 **호출부가 전역 0건** → 오래된 로그가 영영 삭제되지 않음.
+
+### 결정
+
+- **어드민 진입 규약(개선 1, D-069/D-070 완성)**: 정상 진입은 `/login` 단일 창구 → role==admin이면 ADMIN 버튼
+  → `/admin`. admin.js의 미인증 리다이렉트를 `/admin/login`→**`/login?next=/admin`**으로 교정, 403(비관리자)은
+  `/`로. `/admin/login`은 **링크 없는 break-glass 전용**(DB 장애 시 env 계정)으로만 유지. login.html은 `next`
+  복귀(오픈 리다이렉트 방지 — 같은 출처 상대경로만).
+- **보호 root 계정(개선 3)**: `User.is_protected: bool`(신규) + DDL `ALTER TABLE auth_users ADD COLUMN IF NOT
+  EXISTS is_protected BOOLEAN NOT NULL DEFAULT FALSE`(멱등). seed admin(`_seed_admin_user`)을 `is_protected=True`로
+  생성 → env 운영자 계정이 **일반 로그인 가능한 상시 root**가 된다. 백엔드 가드: 보호 계정의 **역할·상태 변경·
+  삭제·PW초기화 거부(403)**, **부서·알림그룹은 허용**(정책 교정 목적, 사용자 확정). 프론트: 해당 행 컨트롤 disabled
+  + 자물쇠 표시. (표식은 컬럼 방식 — username 변경에도 보호가 계정에 고정.)
+- **알림그룹 UI(개선 2, D-082 완성)**: 사용자 관리 테이블에 K리전(공동존)·K리전(은행존) 체크박스. 중복 가능,
+  둘 다 해제 시 `alarm_zones=[]` 명시 전송(=일반). 관리자 행은 전 존 수신이라 비활성.
+- **부서 편집(개선 4)**: 사용자 관리 부서 셀을 인라인 편집으로(백엔드는 기존 `UpdateUserRequest.department` 재사용).
+- **감사 로그 로테이션(개선 5)**: `retention_days`(기본 90, `AUDIT_RETENTION_DAYS`)를 기준으로 (A) 기동 시 1회
+  + (B) 하루 1회 주기 백그라운드 태스크 + (C) 수동 엔드포인트 `POST /admin/audit/cleanup`(어드민 버튼). `<=0`이면
+  비활성. DB 감사 로그 대상(JSONL 파일 로테이션은 추후).
+
+### 근거 / 대안
+
+보호 표식은 `is_protected` 컬럼(권장) vs `user_id==ADMIN_USERNAME` 매칭 중 **컬럼 방식** 채택 — 운영자 ID를
+바꿔도 보호가 계정에 남아 안정적. 진입 창구 이원화(`/admin/login`을 정상 경로로 노출)는 혼동·로그인 실패의
+원인이므로 단일 창구(`/login`)로 정리하고 break-glass는 비상용으로만 격리.
+
+### 번호
+
+최초 등재(2026-07-15) 시 `## D-` 헤더 + 변경 이력 표 + CLAUDE.md grep으로 최대 D-072 확인 → D-073 부여.
+**2026-07-15 재배정: D-073 → D-083** — multiintent 병합 준비 중 팀장 브랜치(origin/multiintent)가
+D-072~076(Plan 61)·D-077~081(Plan 60)을 선점·예약한 것을 확인, 팀장 우선 원칙에 따라 다음 빈 번호 D-083으로 이동.
+
 ---
 
 ## D-072. Text-to-SQL EX 평가 하네스 (Plan 61 E1)
@@ -3712,6 +4021,9 @@ id 조인(Plan 33)·미존재 resource_type 생성(Plan 25)이 반복된다. 문
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-15 | D-083 | **보호 root 계정 + 감사 로그 로테이션 + 어드민 진입 규약 정정 (Plan 59-a)**: 실테스트로 3결함 확정·수정. (1)**어드민 재로그인**: 미인증 `/admin` 진입이 `/admin/login`(env break-glass 전용, DB 사용자 인증 안 함)으로 유도돼 role==admin 계정도 로그인 실패 → admin.js 리다이렉트를 `/login?next=/admin`으로, 403은 `/`로 교정. `/admin/login`은 링크 없는 break-glass로만 유지. login.html `next` 복귀(오픈 리다이렉트 방지). (2)**보호 root**: `User.is_protected` 컬럼(+멱등 DDL) 신설, seed admin을 `is_protected=True`로 생성(env 계정=상시 일반 로그인 root). 역할/상태 변경·삭제·PW초기화 **403 차단**, 부서·알림그룹은 허용. 프론트 해당 행 disabled+자물쇠. (3)**감사 로테이션**: `cleanup_old_logs`가 호출부 0건이라 무효였음 → 기동 1회 + 하루 1회 태스크 + 수동 `POST /admin/audit/cleanup`(버튼), `AUDIT_RETENTION_DAYS`(기본90). +알림그룹 체크박스 UI(D-082 완성)·부서 인라인 편집. 수정 `domain/user.py`·`user_repository.py`·`api/server.py`·`schemas.py`·`routes/admin.py`·`routes/user_auth.py` 없음·`static/js/admin.js`·`static/login.html`·`admin/dashboard.html`·`.env.example`. 검증 `test_plan59a.py` 10건(보호 가드·seed·로테이션), 회귀 신규 실패 0(기존 6 test_routes=MagicMock 픽스처), arch exit 0. 상세 `## D-083`(구 D-073 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
+| 2026-07-14 | D-082 | **알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)**: 무인증 브로드캐스트하던 `/alarm/notifications/stream`을 지역 스코프로 인가(관리자=전존/공동존·은행존 운영자=해당존/일반=403, 중복 할당 가능). 데이터 모델 1: `User.alarm_zones: list[str]` 신규 필드(+DDL `ALTER TABLE ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]` 멱등·repo·to_auth_dict·schemas·admin update). 존↔db_id 단일 출처 `src/routing/zones.py`(gongjon=[gp,yd]/bankjon=[b0]). 쿠키 인증(사용자 선택 B): 로그인 시 HttpOnly `user_token` 쿠키 세팅(EventSource 헤더 제약), `resolve_stream_user`(쿠키→헤더→쿼리)+`alarm_zones_for_user`(admin·dev=전존)로 존 산출→빈 집합 403, `event_generator`가 `db_id_to_zone`로 구독자 존만 통과. 프론트: 권한자만 EventSource open(403 루프 차단)+수신 토글. SSO 보존(인증 불변·인가만 추가). 수정 `routing/zones.py`(신규)·`domain/user.py`·`user_repository.py`·`api/server.py`(DDL)·`dependencies.py`·`routes/alarm.py`·`routes/user_auth.py`(쿠키)·`routes/admin.py`·`schemas.py`·`static/js/app.js`·`index.html`. 검증 `test_alarm_zone_rbac.py` 16건(존 격리·중복=전존·일반 403·쿠키 인증), 회귀 신규 실패 0, arch exit 0. 상세 `## D-082`(구 D-072 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
+| 2026-07-14 | D-069~071 | **어드민 접근 통합 RBAC + 권한 상승 차단 + 크레덴셜 하드닝 (Plan 59 Part A)**: **D-070①(P0 보안)** `verify_admin_token`이 `type`·`role` 미검증 + 사용자/운영자 토큰 동일 시크릿 서명 → 일반 사용자 JWT로 모든 `/admin/*`·schema_cache 통과 가능(권한 상승). `type=="admin"` 검증 추가로 즉시 차단(D-026 원의도 강제). **D-070②** 사용자 토큰을 `AuthConfig.jwt_secret`(env `AUTH_JWT_SECRET`)로 분리 서명·검증(교차 서명 불가, 배포 시 재로그인 수용). **D-069(통합 RBAC·방향 A)** 어드민 접근=DB `role==admin` 판정, 신규 `require_admin_user` 가드(개발 우회+break-glass 운영자 토큰+role==admin)로 admin.py 15개·schema_cache.py 14개 교체, 죽은 `UserRole.ADMIN` 부활(증상 B 해소), 기동 시 seed admin 멱등 부트스트랩, 최소-1-admin 가드. 프론트 어드민 링크 role 게이팅+admin.js 사용자 토큰 폴백. **D-071(하드닝)** 기본 크레덴셜 admin/admin123 제거, 운영 모드 미설정 시 기동 거부(`_validate_production_secrets`, `os.getenv` 대신 `PrivateAttr _jwt_secret_explicit`로 판정 — 2026-06-10 교훈). 수정 `admin_auth.py`·`dependencies.py`·`config.py`·`routes/admin.py`·`schema_cache.py`·`routes/user_auth.py`·`server.py`·`static/js/{app,admin}.js`·`index.html`. 검증 `test_admin_rbac.py` 13건, 회귀 신규 실패 0(기존 6 test_routes 실패는 MagicMock 픽스처 pre-existing), arch exit 0. 번호: Plan 제안 D-064~066이 폼필 D-060~068에 선점됨 → 최대 grep 후 D-069~071 재부여. 상세 `## D-069`·`## D-070`·`## D-071`. |
 | 2026-07-14 | D-076 | **(후속) 로컬 개발 샌드박스(db_id `polestar`) 트랙 C 검증 환경 편입**: "전체 서버의 CPU 사용률 현황" 질의 0건 진단(audit 실측) — 트랙 C 미진입(.env 플래그 부재) + 로컬 db_id `polestar`가 시맨틱 모델·DB_DOMAINS 미등재라 플래그를 켜도 `load_semantic_model(\"polestar\")=None`→LLM 폴백, 폴백은 범용 프롬프트(POLESTAR_DB_IDS 미설정)+프로필 부재로 `cmm_measurement`/`cpu_usage`/`server.Cpu` 환각 SQL(존재하되 빈 테이블이라 validator 통과 = silent wrong, 정확히 D-076이 겨냥한 유형). 조치(사용자 승인 방향 1): ① `.env`에 `TEXT2SQL_SEMANTIC_COMPOSE=true`(+`SEMANTIC_FALLBACK=llm`) ② `config/semantic_models/polestar.yaml` 신설(gp 복제 — 도커 테스트 DB 스키마 동일 실측: core_config_prop·알람 3테이블·metric_stat 3테이블) ③ `DB_DOMAINS`에 `polestar` 재등재(postgresql/db_schema=polestar, aliases 최소화 — 운영 .env는 비활성이라 라우팅 무영향, `_resolve_priority_db_ids`는 활성 DB만 순회). 검증: NL→SMQ→컴파일 E2E(실 gemini) 성공 — 패턴 B SMQ·커버리지 통과·스키마 한정 피벗 SQL 50행(사용률 값 4서버) 반환으로 0건 해소. 도메인 재등재로 구 테스트 3건 복구(+0 신규 실패), `test_domain_config` 7개 도메인으로 갱신. 잔여 관찰: LLM SMQ가 dimensions=[]로 서버 식별 컬럼 누락 가능(SMQ 선택 정확도 이슈 — Plan 61 §7 분리 측정 축) → 같은 날 후속2로 결정적 주입 구현(아래 행) |
 | 2026-07-14 | D-076 | **(후속4) LLM 폴백 경로의 기간(stat_month) 결정적 주입**: "CPU, 메모리 사용률을 지난 1개월 통계데이터로 확인하고 그중 80%이상" 질의(80% 임계 필터 → 설계상 트랙 C 커버리지 밖·LLM 폴백)에서 기간이 `s.stat_date BETWEEN 직전월 AND 이번달`로 생성 — **진행 중인 달(불완전 데이터) 포함** + 월별 GROUP BY 서버 중복(사용자에게 6월·7월 2행 노출, 정답은 직전 월 1행). 원인: 시스템 템플릿 일반 규칙("하드코딩 날짜 금지 — 항상 CURRENT_DATE 동적 계산")을 LLM이 충실히 따른 것 — 코드가 이미 결정적으로 해석하는 기간(`resolve_stat_month`: 지난 1개월/지난달=직전 월 단일)이 폴백 프롬프트에 전달되지 않았음. 조치(D-035 결정화): `query_gen_common.build_stat_month_block`(공용 — 등호 필터 `s.stat_date = 'YYYYMM'` 강제, 일반 규칙보다 우선 명시, BETWEEN/INTERVAL 재계산·_h/_d 대체 금지)을 **단일(query_generator)·멀티(multi_db_executor) 폴백 프롬프트 양쪽에 주입**(D-066 단일 출처 — 멀티는 original_query 우선, sub_query_context 폴백). 기간 표현 없으면(None) 블록 미생성=프롬프트 무변경. E2E 실측(격리 인스턴스): 동일 질의 → `s.stat_date = '202606'` 단일 월 SQL → **DB-ORA-023 1행(mem 82.6≥80, 6월만)** 정답 반환. 단위 테스트 3건 추가(블록 등호·우선 문구, None 무변경, "지난 1개월" 공백 표현 해석). 관련 스위트 368 passed |
 | 2026-07-14 | D-076 | **(후속3) 로컬 폴백 LLM 경로 복구 + 알람/이벤트 라우팅 결정화**: "최근 event가 발생한 서버" 질의가 환각 SQL(`vmm_event_log`를 `r.id=e.id`로 조인)로 0건 — 원인 3중: ① 로컬 `polestar`에 db_profile·전용 프롬프트 부재 → `db_profiles/polestar.yaml` 신설(gp 복제, "공동존 폴스타"→"폴스타(로컬 샌드박스)") + `.env`/`.env.example` `POLESTAR_DB_IDS`에 polestar 추가. 적용 후 allowed_tables 화이트리스트가 데이터 질의 스키마를 5개 핵심 테이블로 필터(환각 원천 차단 실측). ② **orchestration 경로(운영 기본)가 `routing_intent`를 isolated state에 미설정** — semantic_router(그래프 경로)만 설정해, alarm_query task도 일반 템플릿+allowed_tables(알람 테이블 제외)로 실행되는 경로 비대칭(D-066 계열) → `_make_isolated_input`이 task agent에서 결정적 매핑(alarm_query→routing_intent). ③ LLM 라우팅이 bare "event" 질의를 data_query로 오분류(도구 설명의 "모니터링"이 흡수) → **결정적 교정**(D-047 프로세스 교정과 동일 패턴): `intent_planner._coerce_alarm_intent` + deepagents `_run_subagent_tool` 교정(`has_alarm_signal` 공용, 키워드 알람/alert/이벤트/event/경보) + 도구 설명·오케스트레이터 지시문·intent/semantic_router 프롬프트 어휘 정비. E2E 실측(격리 인스턴스): 이벤트 질의가 `cmm_alarm↔cmm_alarm_def` 조인·CTIME DESC로 **알람 5건 정상 반환**, CPU 질의 트랙 C 50행 회귀 없음. 단위 테스트 3건 추가(_coerce_alarm_intent 교정·비알람 유지·routing_intent 매핑) + stale 목 1건 현행화(synthesize kwarg). 관련 스위트 313 passed |
@@ -3719,6 +4031,10 @@ id 조인(Plan 33)·미존재 resource_type 생성(Plan 25)이 반복된다. 문
 | 2026-07-14 | D-076 | **시맨틱 모델 기반 결정적 SQL 조합(Plan 61 트랙 C / E6)**: 현행은 프로필 선언을 LLM 프롬프트에 텍스트 주입해 자유 모방 → 전체복사·CASE-WHEN 누락·금지조인·미존재 resource_type 반복. 문헌(2606.31041 SMQ+결정적컴파일러) 정합으로 "SQL 작성"이 아니라 "검증된 dimension 조합"으로 작업 재정의 → 잘못된 조인·집계·미존재 컬럼 원천 차단. **E6-1**: `config/semantic_models/{gp,yd,b0}.yaml` 신설(db_profiles 불변·입력소스로만 참조, 패턴 A 서버설정/B 성능지표/C 알람 3패턴, db_engine/db_schema는 get_domain_by_id 주입 D-066후속6). **E6-2** `src/nodes/semantic_compiler.py`: SMQ Pydantic(gold_smq 계약 일치), LLM은 NL→SMQ(선택만)·컴파일러가 SMQ→방언SQL. 패턴 A/B는 **기존 `build_multi_resource_pivot_sql`(D-068) 재사용**(이중 엔진 금지 D-067 — `query_gen_common`에 `explicit_measures` 후방호환 추가, 폼필 콜러 바이트무변경 pivot 13건 통과), 패턴 C는 CA↔D↔ACTIVE↔CR 정규화조인+severity 규칙. Model(server.Server)/MODEL(server.Cpus) 대소문자충돌 정확이름 우선해소. **E6-3 coverage_router**(§3 삽입지점): `compile_from_nl`을 query_generator 진입부(경로 A·B 자동공유)+`multi_db_executor._generate_sql`(경로 C 명시이식), 커버리지 밖(LOB·서버필터·기간·집계·미정의)은 현행 LLM 폴백(`semantic_fallback=llm` 과도기). **E5-2 연결**(D-075): 컴파일러 emit 리터럴은 전부 모델 정의값이라 환각 불가, SMQ 필터 모델밖 값은 value_index 검증→미검증 시 커버리지 밖. **E6-4** `test_semantic_golden.py` 34건(gold_smq 라운드트립 `smq_match`·패턴구조·엔진방언·커버리지·결정성·mock LLM·플래그OFF). **기본 OFF**(`TEXT2SQL_SEMANTIC_COMPOSE=false`)—트랙C 격리 후 test_nodes 실패 diff 0(신규회귀 없음), Plan61 153건 통과, arch exit 0, 골드셋 위반 0. 한계: 커버리지 보수적(필터⊆{resource_type,ALARMSEVERITY}, HAVING/동적날짜/집계/LOB는 폴백)—D-012 승인루프로 점진확장. 상세 `## D-076`. ※ 번호: `## D-`+변경이력 grep(등재 최댓값 D-075, Plan61 예약 D-072~076 유효). |
 | 2026-07-14 | D-072 | **Text-to-SQL EX 평가 하네스(Plan 61 E1)**: 현행 쿼리 생성 품질을 측정할 수단 부재 → 세 트랙(A 다중후보·B 동의어·C 결정적조합)의 개선을 데이터로 정당화하는 선행 근거로 EX(Execution Accuracy=결과집합 동치) 하네스 신설. `scripts/eval_text2sql.py`: 3경로 구동(`--path graph/orchestration/multidb` — D-066 계열 단일/멀티 비대칭 실측), A/B 축(`--synonym-fuzzy`/`--value-retrieval`/`--candidate-count`/`--selection`/`--semantic-compose`, 미구현 축은 전방호환 env만), `--dry-run`/`--mock`/실접속 graceful 스킵(D-003 읽기전용). 골드셋 `testdata/text2sql_gold/` 26건(gp 15·yd 6·b0 5, `coverage` inside/outside·`gold_smq` 포함 — **대표성 원칙: outside(재질문 유발) 필수 포함**해 커버리지율 낙관 편향 방지). 트랙 C 전용 축 2개: SMQ 생성 정확도(`smq_match` — pattern·resource_types·dimensions·measures·filters·time_grain·active_only, 컴파일 후 EX와 분리 측정)·커버리지율(`coverage_stats`=inside 비율). 검증 `tests/text2sql/test_ex_harness.py`. **회귀 경계**: 순수 신규 파일(scripts/·testdata/·tests/), src/ 런타임 무변경. 상세 `## D-072`. ※ 번호: `## D-` 헤더+변경이력 표 둘 다 grep(등재 최댓값 D-068 실측) — D-069~071은 미예약 갭(Plan 60이 D-077~081로 이동), D-072~076은 Plan 61 예약분. |
 | 2026-07-14 | D-075 | **동의어 매칭 고도화(Plan 61 트랙 B / E5)**: `synonym_management_analysis.md` 판정 — 동의어 거버넌스(D-012 발견→승인·D-035 결정적 룩업)는 적정하므로 유지, 취약점은 매칭 정밀도(정확일치 한정)·값검색 미흡·측정 부재 3축. **E5-1 완료**: 공유 유틸 `src/utils/flex_match.py`(정확→자모·NFC→편집거리→부분어 계단 + 빈문자열/1글자 가드 신설 + 신뢰도 점수), 적용 **2지점**(§4-B 실측 — 매칭 5곳 분산, `_synonym_match`는 폼필 전용이라 여기만 고치면 텍스트 질의 개선 안 됨): ① `field_mapper._synonym_match(fuzzy=...)`(폼필 — 임계 이하 `pending_synonym_registrations` 후보 회부) ② `schema_analyzer._synonym_tables_matching_query(fuzzy=...)`(텍스트 질의). `SYNONYM_FUZZY_MATCH=false` 기본 OFF·OFF 시 정확일치 바이트 무변경. **E5-2 인프라만**: `src/schema_cache/value_index.py`(distinct 값 인덱스·엔진별 방언 PG LIMIT/DB2 FETCH FIRST·읽기전용 D-003)+`redis_cache.save/load_column_value_index`(별도 키) — **프롬프트 주입 소비지점은 트랙 C(E6-2)에서 연결**. `SYNONYM_VALUE_RETRIEVAL=false` OFF. **E5-3 부분**: D-051 상한 15 config화(`SYNONYM_MAX_SYNONYM_SUPPLEMENT_TABLES`, E1 튜닝 파라미터). **E5-4 자리예약**: `SYNONYM_SEMANTIC_MATCH`만(보류 — E5-1 후 잔여 미매칭율 측정 게이트). config `SynonymMatchConfig` 신설(env_prefix SYNONYM_). 검증 `test_flex_match.py`·`test_field_mapper_flex.py`·`test_schema_analyzer_synonym_flex.py`·`test_value_index.py`. 상세 `## D-075`. |
+| 2026-07-13 | D-068 7차 | **이종 엔진 CSV 칼럼 중복 + DB2 통계 스케일 제로필**: 공동존+은행존 폼필 CSV에서 (1) `IP주소`/`ip주소` 등 라틴 대소문자만 다른 **중복 칼럼**(각 존이 자기 표기에만 채움, Excel은 정상)—원인 **DB2가 결과 칼럼 라틴 문자를 소문자로 반환**, 순수 한글 칼럼은 무영향. 수정 `_merge_results`가 정규화 기준 canonical(양식 필드) 이름으로 통일. (2) **DB2 통계 엑셀 제로필**(6.51→6.51000…, CSV 정상, gp 같은 칼럼 정상=값 타입 문제)—원인 **DB2 `AVG(DECIMAL)` 스케일 확장**으로 ROUND(x,2)해도 타입 스케일 잔존. 수정 `_metric_select_line` DB2를 `CAST(ROUND(...,2) AS DECIMAL(15,2))`로 스케일 고정(PG는 ::numeric 유지). 교훈: 멀티 엔진 병합은 엔진별 칼럼 표기차(DB2 소문자화) 정규화 필수(Excel만 보고 오판 금지), DB2 집계 스케일은 최종 CAST 고정. 수정 `nodes/multi_db_executor.py`·`utils/query_gen_common.py`. 검증 `test_multi_db_merge.py`+`test_db2_metric_scale_fixed_to_two`, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 7차. |
+| 2026-07-13 | D-068 6차 | **재오염 자기강화 루프 차단(등록 가드) + 직접 컬럼 교정 확장**: 5차 가드는 폼필 출력만 교정, Redis 유사어 오염은 잔존. 루프 확인: 전역/EAV에 `서버명→hostname` 존재 → LLM이 "서버 이름"을 hostname 매핑 → `_register_llm_mappings_to_redis`/`_register_llm_synonym_discoveries_to_redis`/`apply_mapping_feedback_to_redis`가 **사용자 확인 없이 자동 재등록**(전역+EAV+per-DB) → 오염 강화 → 재오매핑(per-DB만 청소해도 씨앗에서 재번짐). 또 5차 교정은 `EAV:Hostname`만 봐 **직접 `*.hostname` 컬럼**은 사각지대. 수정: (A) 공용 판정 `is_servername_to_hostname`로 서버명류→hostname(컬럼/EAV) 자동 등록을 **세 등록 함수 전부**에서 거부(재오염 원천 차단), (B) `correct_servername_hostname_mapping`이 직접 hostname 컬럼(`is_hostname_target`)도 `<entity>.name`으로 교정. 판정 헬퍼는 `query_gen_common` 단일 출처. 기존 테스트가 오염 동작(서버명→HOSTNAME 등록)을 정답으로 단언 → 정상 필드로 교체+차단 회귀 신설. 교훈: LLM 자동등록이 오염 입력을 학습해 되쓰면 자기강화 루프 — 출력 교정만으론 부족, **쓰기 지점 결정적 차단** 필요. 수정 `utils/query_gen_common.py`·`document/field_mapper.py`. 검증 신규 단위+mock 등록 가드, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 6차. |
+| 2026-07-13 | D-068 5차 | **서버명/서버이름이 EAV Hostname으로 오매핑 → 서버 이름·호스트네임 둘 다 hostname**: 4차로 결정적 빌더가 발동하자 `column_mapping["서버 이름"]="EAV:Hostname"`이 글자 그대로 렌더(`cc.name='Hostname'`)돼 두 칼럼 모두 hostname 값. 원인: 프로필은 서버명=cmm_resource.name으로 명시하나 **전역 유사어 `Hostname:[…,서버명,…]`가 미끼**가 되어 유사어/LLM 해소가 "서버 이름"을 Hostname에 붙임(2026-06-10 `서버명→HOSTNAME` 전역 오염 동일 계열). 이 오매핑은 field_mapper의 기존·지속 문제(4차 변경이 만든 게 아님)이나 결정성이 잠재 오류를 노출. 수정: 결정적 가드 `correct_servername_hostname_mapping`(서버명/서버이름/장비명/리소스명/등록명류가 EAV:Hostname이면 `<entity>.name`으로 교정)을 단일·멀티 두 경로가 분류 직전 호출, 호스트명 표면어는 불변. 권장 후속: 전역 유사어 `HOSTNAME`/EAV `Hostname`에서 `서버명`·`서버` 제거+Redis 재동기화(가드로 non-blocking). 교훈: 결정성은 잠재 매핑 오류를 노출하니 되돌리지 말고 **프로필 명시 규칙을 코드 가드로 못박아** 유사어 튜닝(Redis/LLM 의존)의 반복 실패를 끝냄. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 신규 단위 6+피벗 렌더 단언, 회귀 신규 실패 0, arch exit 0. 상세 `## D-068` 5차. |
+| 2026-07-13 | D-068 4차 | **3차 결정적 빌더가 실 런타임에서 발동조차 안 됐음**: "은행+공동존 김포" 폼필(라우팅 수정으로 멀티 활성화 후) b0=`MAX 모호`·gp=`GROUP BY에 집계`로 둘 다 실패 — 둘 다 `build_multi_resource_pivot_sql`가 아니라 **LLM 폴백 SQL**의 실수 → 결정적 빌더 미발동. 원인: 게이트 `child_eav`가 의존하는 `eav_attr_resource_types`가 `known_attributes`(항목=dict 가정)만 읽는데, 실 로더 `_load_manual_profile`은 이를 **문자열로 평탄화**하고 원본을 `known_attributes_detail`에 보존 → 런타임 `attr_rt` **항상 빔** → child_eav=[] → 결정적 빌더 **한 번도 안 돎**(단일·멀티 공통, 단일 b0 성공은 LLM 우연). 테스트는 dict shape만 먹여 통과(mock 통과·런타임 실패). 수정: `eav_attr_resource_types`가 `known_attributes_detail` 우선 읽고 없으면 known_attributes 폴백 → gp/b0/yd attr_rt 27건 복원, 결정적 빌더가 각 DB 방언으로 조립(이종 엔진 각자 유효 SQL). 회귀: 평탄화 shape+실 프로필 로드 end-to-end 단언 추가. 교훈: 결정적 게이트가 의존하는 데이터의 **실 런타임 shape 실측** 필수 — 변형 로더가 있으면 소비자와 양쪽 shape 호환을 테스트로 고정. 수정 `utils/query_gen_common.py`. 상세 `## D-068` 4차. |
 | 2026-07-13 | D-068 | **폼필 EAV 강제 SELECT의 resource_type 인지 다중 리소스 피벗**: 양식 `CPU 코어 수`(LOGICALCORE=server.Cpus)·`메모리 용량`(TotalSize=server.Memory)이 빈칸(공동존 멀티·여의도 단일 공통). 생성 SQL에 `MAX(CASE WHEN cc.name='LOGICALCORE' ...)` 피벗은 있으나 NULL. 원인: EAV 강제 블록(query_generator/multi_db_executor 복제)이 (1) resource_type 구분 없이 `cc.name='...'`만 생성, (2) 조인 힌트가 `value_joins`(Hostname/IPaddress=server.Server만) 기반이라 config를 **서버 행 resource_conf_id에만** 붙임 → 자식 리소스(server.Cpus/Memory) 속성이 영영 NULL. 프로필 query_example엔 올바른 멀티리소스 피벗이 있으나 강제 블록의 틀린 명시 지시가 예시를 이김(사용률 필드 강제 제외 D-066 후속3과 동일 계열). 수정: 공유 헬퍼 `eav_attr_resource_types`(설명 `[resource_type: …]` 파싱)+`build_multi_resource_pivot_block`(자식 EAV 있으면 resource_type 구분 CASE WHEN + `cc.configuration_id=c.resource_conf_id` 조인 + `GROUP BY COALESCE(platform_resource_id,id)` 결정적 생성, 브릿지 조인 금지 명시)을 두 경로가 호출(D-067 정신). 순수 server.Server EAV·비폼필은 기존 블록 유지(회귀 0). **2차 정정(GROUP BY 회귀 대응)**: 1차 config-전용 피벗을 넣자 공동존 재테스트에서 `column "r.name" must appear in the GROUP BY clause`+전체 빈칸 회귀 — 사용률 필드가 미매핑 경로로 **별도 metric 블록**(alias r/s)이 붙어 config 피벗(alias c, GROUP BY)과 alias·스코프 충돌. 프로필 정식 예시는 2-scope(metric 서브쿼리)지만 **단일 스코프로 합쳐도 config·metric 이중 조인이 AVG/MAX에 불변**이라 유효 → `build_multi_resource_pivot_block(metric_fields, db_engine)`로 사용률을 **같은 GROUP BY에 접어 넣고**(`ROUND(AVG/MAX(CASE WHEN c.resource_type=... AND s.definition_name='Utilization' THEN s.avg_val END)…)`+`LEFT JOIN cmm_metric_stat_m s ON s.resource_id=c.id`, 엔진별 소수캐스트), `classify_metric_field`로 골라 미매핑/metric 별도 블록에서 제외(상호배타 게이팅). 결과=identity+config+metric 하나의 GROUP-BY-valid 쿼리. **3차 정정(결정적 SQL 조립)**: 2차(통합 스켈레톤을 프롬프트 강제)도 공동존이 **서버 2~3중 중복(2만건)+config 빈칸** 재발 — 프롬프트 "제안"이 프로필 few-shot("사용률 리스트" 예시=월별 `GROUP BY stat_date`+config PHYSICALCORE만 담는 서브쿼리)과 경쟁해 LLM이 예시를 택함. → 폼필 다중리소스 쿼리(자식 EAV 포함)를 **코드가 runnable SQL로 직접 조립·LLM 우회**: `build_multi_resource_pivot_sql`(스키마 한정·엔진별 캐스트/LIMIT·`resolve_stat_month`로 s.stat_date 기간필터, 단일 GROUP BY=서버당 1행). 멀티 `_generate_sql`은 자식 EAV 감지 시 즉시 return, 단일 `_try_build_form_fill_pivot_sql`은 LLM 전 단락, 재시도 시만 LLM 폴백. **부수 수정**: `_build_user_prompt` 필터링 루프가 누적리스트 `parts`를 `parts=col.split('.')`로 덮어써 `## 사용자 질의`·`## 파싱된 요구사항`이 유실되던 기존 버그를 `col_parts`로 격리(멀티는 `user_parts`라 무해). 미해결: 증상 1(b0 OS 미SELECT)은 매핑 실패 가설 — field_mapper 로그 확인 대기. 수정 `utils/query_gen_common.py`·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 `test_multi_resource_pivot.py` 18건+단일/멀티 실측(서버당 1행·월 미포함·엔진별 SQL), 회귀 신규 실패 0, arch exit 0. 상세 `## D-068`. |
 | 2026-07-09 | D-067 | **재발 방지 드리프트 가드(테스트 전용)**: 같은 결함 반복은 regression이 아니라 **중복**(gp/yd/b0 near-duplicate 프로필 3벌=gp/yd는 567줄 중 실질 1줄 차이 + query_generator/multi_db_executor SQL생성 2벌) → 한 복사본만 패치해 나머지에 잔존(D-061 gp/yd 누락, D-066 경로 비대칭). 근본해소 A(프로필 상속)는 부담 커 보류, 저비용 가드 도입. **B**(`test_polestar_profile_consistency.py`): B-1 3프로필 공통 불변식(EAV Hostname 식별어 없음·name/hostname 분리·월별 metric 예시·환각패턴 없음·source=manual), B-2 gp/yd 등가성(주석 제외 실질차이 allowlist뿐). **C**(`test_query_gen_parity.py::TestCrossPathParity`): 두 경로가 동일 공유헬퍼 참조·예시 주입·LIMIT 대칭. 한계: "아는 결함 재발"만 감지(신규 유형은 불변식 추가 필요). 부정검증(누출·divergence 주입시 실패) 확인. 프로덕션 코드 미변경. 검증 B 16+C 3 통과, arch exit 0. 상세 `## D-067`. |
 | 2026-07-09 | D-066 | **단일/멀티 DB SQL 생성 경로 동등화(few-shot 예시·전체조회 LIMIT 공유)**: "공동존 전체 서버+월간 CPU/메모리 사용률" 폼필이 gp/yd로 매핑됐으나 환각 SQL(`cmm_metric_stat_h` 서버행 직접조인+`definition_name='CPUUtilization'`)로 data_insufficient·NULL·LIMIT 1000. 은행존(b0)은 정상. 근본원인=DB 개수가 경로를 가름(`is_multi_db=len(targets)>1`): 단일(b0)→`_run_single_db_pipeline`→query_generator(프로필 `query_examples` few-shot 주입+"전체" LIMIT 상향+풀 검증)로 올바른 `cmm_metric_stat_m` 피벗 생성; 멀티(gp+yd)→`multi_db_executor`(예시 미주입·default_limit 1000 고정·간이검증)라 field_mapper 가짜 컬럼 매핑을 그대로 따름. b0가 동작한 건 few-shot 예시가 가짜 매핑을 이겼기 때문(스키마 차이 아님). 수정(RC1+RC4): 공용 `src/utils/query_gen_common.py`(`build_query_examples_block`·`resolve_query_limit`)로 두 경로 단일 출처화 — query_generator 인라인 로직 대체(동작 동일), multi_db_executor `_generate_sql`이 예시 append+`effective_limit` 사용. RC2(field_mapper 사용률→가짜컬럼)·RC3(시간단위 _h/_d/_m)는 결과 관찰 후 판단(예시가 _m 기준이라 완화 기대). 수정 `utils/query_gen_common.py`(신규)·`nodes/query_generator.py`·`nodes/multi_db_executor.py`. 검증 `test_query_gen_parity.py` 10건+query_generator 회귀 동일. 상세 `## D-066`. |

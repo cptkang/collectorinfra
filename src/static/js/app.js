@@ -22,10 +22,12 @@
     var sendBtn = document.getElementById("sendBtn");
     var hintButtons = document.querySelectorAll(".chat-welcome-hint");
     var progressPanel = document.getElementById("progressPanel");
+    var progressPanelBody = document.getElementById("progressPanelBody");
     var progressPipeline = document.getElementById("progressPipeline");
     var progressEmpty = document.getElementById("progressEmpty");
     var panelToggle = document.getElementById("panelToggle");
     var scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
+    var progressScrollBtn = document.getElementById("progressScrollBtn");
 
     // ─── Auth Helpers ───
 
@@ -43,6 +45,12 @@
         localStorage.removeItem("user_token");
         localStorage.removeItem("user_info");
         window.location.href = "/login";
+    }
+
+    // §15: 인증 확정 전까지 앱 셸을 숨겨(FOUC 방지) 두었다가, 인증 성공/개발모드일 때만 노출한다.
+    // 미인증이면 redirectToLogin()으로 넘어가므로 노출 없이 리다이렉트된다.
+    function revealApp() {
+        document.body.classList.remove("auth-pending");
     }
 
     function checkAuthOnLoad() {
@@ -63,6 +71,8 @@
                     redirectToLogin();
                     return;
                 }
+                // 인증 확정(유효 사용자 또는 개발모드) — 앱 셸 노출(FOUC 방지 게이트 해제)
+                revealApp();
                 // 사용자 정보 표시
                 var userInfo = data.user;
                 var userArea = document.getElementById("userInfoArea");
@@ -71,6 +81,15 @@
                     var nameEl = document.getElementById("userDisplayName");
                     if (nameEl) nameEl.textContent = userInfo.username || userInfo.user_id;
                 }
+                // 통합 RBAC(D-069): role==admin 사용자에게만 어드민 진입 링크 노출.
+                // 개발 모드(auth 비활성, anonymous)에서는 항상 노출해 진입성을 보존한다.
+                var adminLink = document.getElementById("adminEntryLink");
+                if (adminLink && userInfo &&
+                    (userInfo.role === "admin" || !data.auth_enabled)) {
+                    adminLink.style.display = "inline-block";
+                }
+                // Plan 59 §17: 알림 존 권한을 확정한 뒤 구독을 시작한다(권한 없으면 미구독).
+                initAlarmSubscription(userInfo, data.auth_enabled);
                 // 로그아웃 버튼
                 var logoutBtn = document.getElementById("userLogoutBtn");
                 if (logoutBtn && data.auth_enabled) {
@@ -89,6 +108,8 @@
             })
             .catch(function() {
                 // 인증 상태 확인 실패 시 무시 (AUTH_ENABLED=false 기본)
+                // 서버 미응답 등으로 상태를 못 받아도 앱은 노출한다(무한 스플래시 방지).
+                revealApp();
             });
     }
 
@@ -201,6 +222,14 @@
     var stickToBottom = true;          // 맨 아래 고정 여부
     var hasNewContent = false;         // 고정 해제 상태에서 미확인 신규 출력 존재 여부(버튼 강조용)
     var BOTTOM_THRESHOLD_PX = 24;      // 이 거리 이내면 "맨 아래"로 간주(테스트 후 조정 가능)
+
+    // 진행상황 패널 전용 스크롤 상태 (대화창 전역 상태와 분리 — §16)
+    var progressStickToBottom = true;  // 패널 맨 아래 고정 여부
+    var progressHasNewContent = false; // 패널 고정 해제 상태에서 미확인 신규 출력 존재 여부
+
+    // ─── Response Abort (Stop 버튼) State ───
+    var currentAbortController = null; // 진행 중 스트리밍 fetch의 AbortController
+    var currentReader = null;          // 진행 중 SSE reader (중단 시 best-effort cancel)
 
     // ─── Streaming Render State (비파괴 렌더 + rAF 코얼레싱) ───
     var _streamAccumulated = "";       // 현재 스트리밍 메시지의 누적 마크다운(렌더 입력)
@@ -334,6 +363,8 @@
     // Panel toggle
     panelToggle.addEventListener("click", function () {
         document.querySelector(".chat-layout").classList.toggle("panel-collapsed");
+        // 접힘/펼침 시 패널 스크롤 버튼 표시 상태 갱신(§16.4)
+        updateProgressScrollBtn();
     });
 
     // 채팅 스크롤: 맨 아래 고정(stick-to-bottom) 상태 추적 + 플로팅 버튼 토글
@@ -346,6 +377,21 @@
     if (scrollToBottomBtn) {
         scrollToBottomBtn.addEventListener("click", function () {
             scrollToBottom(true);   // smooth 이동 + stickToBottom=true 복귀
+        });
+    }
+
+    // 진행상황 패널 스크롤: 대화창과 동일한 스티키-팔로잉 (§16, 패널 전용 상태 사용)
+    if (progressPanelBody) {
+        progressPanelBody.addEventListener("scroll", function () {
+            progressStickToBottom = isNearBottom(progressPanelBody);
+            if (progressStickToBottom) progressHasNewContent = false;
+            updateProgressScrollBtn();
+        }, { passive: true });
+    }
+
+    if (progressScrollBtn) {
+        progressScrollBtn.addEventListener("click", function () {
+            scrollProgressToBottom(true);   // smooth 이동 + progressStickToBottom=true 복귀
         });
     }
 
@@ -478,8 +524,42 @@
 
     // ─── Send Message ───
 
+    // §11: 전송 버튼을 전송(paper-plane) ↔ 정지(■)로 토글한다.
+    // 정지 모드에서도 클릭을 받아야 하므로 disabled로 두지 않는다.
+    function setSendButtonMode(mode) {
+        if (mode === "stop") {
+            sendBtn.classList.add("input-btn--stop");
+            sendBtn.disabled = false;
+            sendBtn.title = "응답 중단";
+            sendBtn.setAttribute("aria-label", "응답 중단");
+            sendBtn.innerHTML =
+                '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>';
+        } else {
+            sendBtn.classList.remove("input-btn--stop");
+            sendBtn.disabled = false;
+            sendBtn.title = "전송 (Enter)";
+            sendBtn.setAttribute("aria-label", "전송");
+            sendBtn.innerHTML =
+                '<svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>';
+        }
+    }
+
+    // §11: 진행 중 스트리밍 응답을 중단한다(클라이언트 abort → 서버 취소 전파).
+    function stopStreaming() {
+        if (currentAbortController) {
+            try { currentAbortController.abort(); } catch (_e) {}
+        }
+        if (currentReader) {
+            try { currentReader.cancel(); } catch (_e) {}
+        }
+    }
+
     function handleSend() {
-        if (isProcessing) return;
+        // 진행 중이면 전송 대신 중단 동작(스트리밍 경로 한정).
+        if (isProcessing) {
+            stopStreaming();
+            return;
+        }
 
         var query = promptEl.value.trim();
         if (!query) {
@@ -532,20 +612,51 @@
 
         var avatarHtml = '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>';
 
-        var fileHtml = "";
+        // §14: 첨부 파일은 메신저(카카오톡)처럼 말풍선 "위"의 별도 카드로 분리한다.
+        // 전송 직후엔 query_id가 없으므로 href를 비워두고(data-attachment-pending로 마킹)
+        // 응답 수신 후 attachDownloadToLastFileCard()가 원본 다운로드 링크를 사후 주입한다.
+        var fileCardHtml = "";
         if (msg.file) {
-            fileHtml = '<div class="message-file-badge"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' + escapeHtml(msg.file.name) + '</div>';
+            var sizeHtml = (msg.file.size != null)
+                ? '<span class="message-file-card-size">' + escapeHtml(formatFileSize(msg.file.size)) + '</span>'
+                : '';
+            fileCardHtml =
+                '<a class="message-file-card" data-attachment-pending="1" title="원본 양식 다운로드">' +
+                    '<span class="message-file-card-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>' +
+                    '<span class="message-file-card-info">' +
+                        '<span class="message-file-card-name">' + escapeHtml(msg.file.name) + '</span>' +
+                        sizeHtml +
+                    '</span>' +
+                    '<span class="message-file-card-download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>' +
+                '</a>';
+        }
+
+        // 텍스트가 비어 있으면(파일만 첨부) 빈 말풍선을 렌더하지 않는다.
+        var bubbleHtml = "";
+        if (msg.content && msg.content.trim()) {
+            bubbleHtml = '<div class="message-bubble">' + escapeHtml(msg.content) + '</div>';
         }
 
         el.innerHTML =
             avatarHtml +
             '<div class="message-content">' +
-                '<div class="message-bubble">' + escapeHtml(msg.content) + fileHtml + '</div>' +
+                fileCardHtml +
+                bubbleHtml +
                 '<div class="message-time">' + formatTime(msg.time) + '</div>' +
             '</div>';
 
         chatMessages.appendChild(el);
         scrollToBottom();
+    }
+
+    // §14: 파일 질의 응답 수신 후, 가장 최근의 미확정 파일 카드에 원본 다운로드 링크를 주입한다.
+    function attachDownloadToLastFileCard(queryId) {
+        if (!queryId) return;
+        var cards = document.querySelectorAll(".message-file-card[data-attachment-pending]");
+        if (!cards.length) return;
+        var card = cards[cards.length - 1];
+        card.setAttribute("href", "/api/v1/query/" + encodeURIComponent(queryId) + "/attachment");
+        card.removeAttribute("data-attachment-pending");
     }
 
     // ─── Render Processing Indicator ───
@@ -707,6 +818,12 @@
                 '</div>';
         }
 
+        // §13: 다운로드(엑셀/양식)·CSV 버튼을 간격 래퍼로 묶어 오클릭·답답함을 줄인다.
+        var downloadActionsHtml = "";
+        if (downloadHtml || csvHtml) {
+            downloadActionsHtml = '<div class="message-download-actions">' + downloadHtml + csvHtml + '</div>';
+        }
+
         el.innerHTML =
             avatarHtml +
             '<div class="message-content">' +
@@ -714,8 +831,7 @@
                     '<div class="response-text">' + renderMarkdown(responseText) + '</div>' +
                     metaHtml +
                     sqlHtml +
-                    downloadHtml +
-                    csvHtml +
+                    downloadActionsHtml +
                     reportHtml +
                 '</div>' +
                 '<div class="message-time">' + formatTime(new Date()) + '</div>' +
@@ -753,11 +869,49 @@
         return el;
     }
 
+    // §12: 응답 중단 시 에이전트(왼쪽) 말풍선 하단에 회색 안내 라인을 표시한다.
+    // 부분 텍스트가 있으면 그 아래에, 스트리밍 버블이 없으면(토큰 0개) 안내만 단독 표시한다.
+    function markStreamInterrupted() {
+        // 타이핑 커서 제거
+        var cursor = document.getElementById("streamingCursor");
+        if (cursor) cursor.remove();
+
+        var noteHtml = '<div class="message-interrupted-note">⏹ 응답이 중단되었습니다</div>';
+        var streamingMsg = document.getElementById("streamingMessage");
+        var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
+
+        if (bubble) {
+            if (!bubble.querySelector(".message-interrupted-note")) {
+                bubble.insertAdjacentHTML("beforeend", noteHtml);
+            }
+            // 후속 스트림과의 ID 충돌 방지 (finalize와 동일하게 정리)
+            streamingMsg.removeAttribute("id");
+            ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql"].forEach(function (id) {
+                var e2 = document.getElementById(id);
+                if (e2) e2.removeAttribute("id");
+            });
+        } else {
+            // 스트리밍 버블이 아직 없는 상태(초기 fetch 중 중단) → 안내만 단독 표시
+            removeProcessingMessage();
+            var avatarHtml = '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>';
+            var el = document.createElement("div");
+            el.className = "message message--agent";
+            el.innerHTML =
+                avatarHtml +
+                '<div class="message-content">' +
+                    '<div class="message-bubble">' + noteHtml + '</div>' +
+                '</div>';
+            chatMessages.appendChild(el);
+        }
+        scrollToBottomIfSticky();
+    }
+
     // ─── SSE Streaming Query ───
 
     async function executeStreamingQuery(query) {
         isProcessing = true;
-        sendBtn.disabled = true;
+        currentAbortController = new AbortController();
+        setSendButtonMode("stop");
 
         // Show processing first
         renderProcessingMessage();
@@ -775,6 +929,7 @@
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
                 body: JSON.stringify(streamBody),
+                signal: currentAbortController.signal,
             });
 
             if (response.status === 404 || response.status === 405) {
@@ -812,6 +967,7 @@
             createStreamingMessage();
 
             var reader = response.body.getReader();
+            currentReader = reader;
             var decoder = new TextDecoder();
             var buffer = "";
             var accumulatedText = "";
@@ -882,16 +1038,23 @@
             });
 
         } catch (err) {
-            removeProcessingMessage();
-            // Network error - fallback to regular query
-            if (err.name === "TypeError" || err.message.includes("fetch")) {
-                await executeFallbackQuery(query);
+            // 사용자가 중단(Stop)한 경우는 오류가 아니라 정상 종료로 처리한다(§12).
+            if (err.name === "AbortError") {
+                markStreamInterrupted();
             } else {
-                showError("서버와의 통신에 실패했습니다: " + err.message);
+                removeProcessingMessage();
+                // Network error - fallback to regular query
+                if (err.name === "TypeError" || err.message.includes("fetch")) {
+                    await executeFallbackQuery(query);
+                } else {
+                    showError("서버와의 통신에 실패했습니다: " + err.message);
+                }
             }
         } finally {
             isProcessing = false;
-            sendBtn.disabled = false;
+            currentAbortController = null;
+            currentReader = null;
+            setSendButtonMode("send");
         }
     }
 
@@ -940,31 +1103,29 @@
                 '</div>';
         }
 
-        // Add download button
+        // Add download + CSV buttons (§13: 간격 확보를 위해 .message-download-actions 래퍼로 묶어 삽입)
+        var streamDownloadHtml = "";
         if (meta.has_file && meta.query_id) {
-            var streamingMsg = document.getElementById("streamingMessage");
-            var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
-            if (bubble) {
-                var downloadHtml =
-                    '<a class="message-download" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download">' +
-                        '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
-                        escapeHtml(meta.file_name || "파일") + ' 다운로드' +
-                    '</a>';
-                bubble.insertAdjacentHTML("beforeend", downloadHtml);
-            }
+            streamDownloadHtml =
+                '<a class="message-download" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download">' +
+                    '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+                    escapeHtml(meta.file_name || "파일") + ' 다운로드' +
+                '</a>';
         }
-
-        // Add CSV download button
+        var streamCsvHtml = "";
         if (meta.row_count > 0 && meta.query_id) {
-            var streamingMsgCsv = document.getElementById("streamingMessage");
-            var bubbleCsv = streamingMsgCsv ? streamingMsgCsv.querySelector(".message-bubble") : null;
-            if (bubbleCsv) {
-                var csvHtml =
-                    '<a class="message-download message-download--csv" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download-csv">' +
-                        '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
-                        'CSV 다운로드 (' + meta.row_count + '건)' +
-                    '</a>';
-                bubbleCsv.insertAdjacentHTML("beforeend", csvHtml);
+            streamCsvHtml =
+                '<a class="message-download message-download--csv" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download-csv">' +
+                    '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+                    'CSV 다운로드 (' + meta.row_count + '건)' +
+                '</a>';
+        }
+        if (streamDownloadHtml || streamCsvHtml) {
+            var streamingMsgDl = document.getElementById("streamingMessage");
+            var bubbleDl = streamingMsgDl ? streamingMsgDl.querySelector(".message-bubble") : null;
+            if (bubbleDl) {
+                bubbleDl.insertAdjacentHTML("beforeend",
+                    '<div class="message-download-actions">' + streamDownloadHtml + streamCsvHtml + '</div>');
             }
         }
 
@@ -1042,7 +1203,8 @@
 
     async function executeFileQuery(query, file) {
         isProcessing = true;
-        sendBtn.disabled = true;
+        currentAbortController = new AbortController();
+        setSendButtonMode("stop");
 
         renderProcessingMessage();
         resetProgressPanel();
@@ -1060,6 +1222,7 @@
                 method: "POST",
                 headers: getAuthHeaders(),
                 body: formData,
+                signal: currentAbortController.signal,
             });
 
             if (response.status === 404 || response.status === 405) {
@@ -1083,6 +1246,7 @@
                 var jsonData = await response.json();
                 renderAgentMessage(jsonData);
                 showPostHocProgress(jsonData);
+                attachDownloadToLastFileCard(jsonData.query_id);
                 currentThreadId = jsonData.thread_id || currentThreadId;
                 messages.push({ role: "agent", data: jsonData, time: new Date() });
                 return;
@@ -1093,6 +1257,7 @@
             createStreamingMessage();
 
             var reader = response.body.getReader();
+            currentReader = reader;
             var decoder = new TextDecoder();
             var buffer = "";
             var accumulatedText = "";
@@ -1140,6 +1305,7 @@
             var finalText = (typeof metaData.response === "string" && metaData.response.length > 0)
                 ? metaData.response : accumulatedText;
             finalizeStreamingMessage(finalText, metaData);
+            attachDownloadToLastFileCard(metaData.query_id);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1156,11 +1322,18 @@
             });
 
         } catch (err) {
-            removeProcessingMessage();
-            showError("서버와의 통신에 실패했습니다: " + err.message);
+            // 사용자가 중단(Stop)한 경우는 오류가 아니라 정상 종료로 처리한다(§12).
+            if (err.name === "AbortError") {
+                markStreamInterrupted();
+            } else {
+                removeProcessingMessage();
+                showError("서버와의 통신에 실패했습니다: " + err.message);
+            }
         } finally {
             isProcessing = false;
-            sendBtn.disabled = false;
+            currentAbortController = null;
+            currentReader = null;
+            setSendButtonMode("send");
         }
     }
 
@@ -1184,6 +1357,7 @@
             }
             renderAgentMessage(data);
             showPostHocProgress(data);
+            attachDownloadToLastFileCard(data.query_id);
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
         } catch (err) {
@@ -1312,17 +1486,32 @@
         });
     }
 
-    function isNearBottom() {
-        var gap = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
+    // §16: 컨테이너 파라미터화 — 대화창/진행상황 패널이 동일 로직을 공유한다.
+    function isNearBottom(el) {
+        var container = el || chatMessages;
+        var gap = container.scrollHeight - container.scrollTop - container.clientHeight;
         return gap <= BOTTOM_THRESHOLD_PX;
     }
 
+    function scrollElToBottom(el, smooth) {
+        if (!el) return;
+        if (smooth) {
+            el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        } else {
+            el.scrollTop = el.scrollHeight;
+        }
+    }
+
+    function updateScrollBtn(btn, el, hasNew) {
+        if (!btn || !el) return;
+        var show = !isNearBottom(el);
+        btn.classList.toggle("is-visible", show);
+        btn.classList.toggle("has-new", show && hasNew);
+    }
+
     function updateScrollToBottomBtn() {
-        if (!scrollToBottomBtn) return;
-        var show = !isNearBottom();
-        scrollToBottomBtn.classList.toggle("is-visible", show);
         // 버튼이 보이고 미확인 신규 출력이 있을 때만 강조
-        scrollToBottomBtn.classList.toggle("has-new", show && hasNewContent);
+        updateScrollBtn(scrollToBottomBtn, chatMessages, hasNewContent);
     }
 
     // 무조건 맨 아래로 (사용자 본인 질의 등 명시적 의도)
@@ -1348,6 +1537,41 @@
         }
         requestAnimationFrame(function () {
             chatMessages.scrollTop = chatMessages.scrollHeight;  // 즉시(비smooth)
+        });
+    }
+
+    // ─── Progress Panel Scroll (§16: 대화창과 동일한 스티키-팔로잉) ───
+
+    function isPanelCollapsed() {
+        var layout = document.querySelector(".chat-layout");
+        return layout ? layout.classList.contains("panel-collapsed") : false;
+    }
+
+    function updateProgressScrollBtn() {
+        updateScrollBtn(progressScrollBtn, progressPanelBody, progressHasNewContent);
+    }
+
+    // 패널을 무조건 맨 아래로 (버튼 클릭 등 명시적 의도)
+    function scrollProgressToBottom(smooth) {
+        if (!progressPanelBody) return;
+        requestAnimationFrame(function () {
+            scrollElToBottom(progressPanelBody, smooth);
+            progressStickToBottom = true;
+            progressHasNewContent = false;
+            updateProgressScrollBtn();
+        });
+    }
+
+    // 고정 상태일 때만 패널을 따라 내려감 (진행 스텝 append 전용). 접힘 상태면 무시(§16.4).
+    function scrollProgressToBottomIfSticky() {
+        if (!progressPanelBody || isPanelCollapsed()) return;
+        if (!progressStickToBottom) {
+            progressHasNewContent = true;   // 미확인 신규 출력 → 버튼 강조 대상
+            updateProgressScrollBtn();
+            return;
+        }
+        requestAnimationFrame(function () {
+            progressPanelBody.scrollTop = progressPanelBody.scrollHeight;  // 즉시(비smooth)
         });
     }
 
@@ -1434,6 +1658,10 @@
     function resetProgressPanel() {
         progressPipeline.innerHTML = "";
         progressEmpty.style.display = "none";
+        // 새 질의 시작 시 패널 팔로잉 상태 초기화(§16)
+        progressStickToBottom = true;
+        progressHasNewContent = false;
+        updateProgressScrollBtn();
     }
 
     function showProgressEmpty() {
@@ -1503,7 +1731,7 @@
             '<div class="pipeline-step-body"></div>';
 
         progressPipeline.appendChild(stepEl);
-        progressPipeline.scrollTop = progressPipeline.scrollHeight;
+        scrollProgressToBottomIfSticky();
     }
 
     function handleNodeComplete(event) {
@@ -1538,6 +1766,9 @@
             // Auto-expand step
             stepEl.classList.add("expanded");
         }
+
+        // 본문 확장으로 높이가 늘어난 뒤 패널을 팔로잉(§16)
+        scrollProgressToBottomIfSticky();
     }
 
     function renderNodeData(node, data) {
@@ -2179,8 +2410,18 @@
         });
     }
 
+    // Plan 59 §17: 알림 지역 스코프. 수신 권한(존)이 있는 사용자만 구독하고,
+    // 개인 수신 토글(localStorage)로 켜고 끌 수 있다. 권한 없으면 EventSource를 아예 열지 않아
+    // 백엔드 403 재연결 루프를 방지한다(이중 방어). 인증은 HttpOnly 쿠키가 자동 전송된다.
+    var alarmCanReceive = false;
+    var alarmStreamSource = null;
+    var alarmReceiveEnabled = (localStorage.getItem("alarm_receive_enabled") !== "0");  // 기본 on
+
     function connectAlarmStream() {
+        if (!alarmCanReceive || !alarmReceiveEnabled) return;
+        if (alarmStreamSource) return;  // 중복 연결 방지
         var es = new EventSource("/api/v1/alarm/notifications/stream");
+        alarmStreamSource = es;
         es.onmessage = function (e) {
             try {
                 var data = JSON.parse(e.data);
@@ -2191,10 +2432,43 @@
         };
         es.onerror = function () {
             es.close();
-            setTimeout(connectAlarmStream, 5000);
+            alarmStreamSource = null;
+            // 권한/토글이 유효할 때만 재연결(권한 회수·토글 off 시 루프 중단)
+            if (alarmCanReceive && alarmReceiveEnabled) {
+                setTimeout(connectAlarmStream, 5000);
+            }
         };
     }
 
-    connectAlarmStream();
+    function disconnectAlarmStream() {
+        if (alarmStreamSource) {
+            alarmStreamSource.close();
+            alarmStreamSource = null;
+        }
+    }
+
+    function setupAlarmToggle() {
+        var wrap = document.getElementById("alarmToggleWrap");
+        var cb = document.getElementById("alarmReceiveToggle");
+        if (!wrap || !cb) return;
+        if (!alarmCanReceive) { wrap.style.display = "none"; return; }
+        wrap.style.display = "inline-flex";
+        cb.checked = alarmReceiveEnabled;
+        cb.addEventListener("change", function () {
+            alarmReceiveEnabled = cb.checked;
+            localStorage.setItem("alarm_receive_enabled", cb.checked ? "1" : "0");
+            if (cb.checked) connectAlarmStream();
+            else disconnectAlarmStream();
+        });
+    }
+
+    // 구독 시작은 checkAuthOnLoad가 존 권한을 확정한 뒤 initAlarmSubscription()으로 트리거한다.
+    function initAlarmSubscription(userInfo, authEnabled) {
+        alarmCanReceive = (!authEnabled) ||
+            !!(userInfo && (userInfo.role === "admin" ||
+                (userInfo.alarm_zones && userInfo.alarm_zones.length > 0)));
+        setupAlarmToggle();
+        if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
+    }
 
 })();

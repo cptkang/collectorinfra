@@ -19,10 +19,12 @@ LLM_API_KEY=
 LLM_FABRIX_API_KEY=
 LLM_FABRIX_CLIENT_KEY=
 
-# 운영자 비밀번호 (운영 환경에서는 반드시 변경)
-ADMIN_PASSWORD=admin123
-# JWT 시크릿 (비어있으면 서버 시작 시 자동 생성, 운영 시 고정값 권장: openssl rand -hex 32)
+# 운영자 비밀번호 (기본값 없음 — 운영 모드 AUTH_ENABLED=true 시 필수, 미설정이면 기동 거부)
+ADMIN_PASSWORD=
+# 운영자 토큰 JWT 시크릿 (운영 모드 필수). 생성: openssl rand -hex 32  또는  python -c "import secrets;print(secrets.token_hex(32))"
 ADMIN_JWT_SECRET=
+# 사용자 토큰 JWT 시크릿 (운영 모드 필수, ADMIN_JWT_SECRET과 반드시 다른 값 — 시크릿 분리로 권한 상승 차단)
+AUTH_JWT_SECRET=
 
 # Redis 비밀번호
 REDIS_PASSWORD=

@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from src.api.routes.admin_auth import require_admin
+from src.api.dependencies import require_admin_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -101,7 +101,7 @@ class SynonymGenerateResponse(BaseModel):
 )
 async def generate_cache(
     body: CacheGenerateRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> CacheGenerateResponse:
     """스키마 캐시를 생성/갱신한다.
 
@@ -169,7 +169,7 @@ async def generate_cache(
 )
 async def generate_descriptions(
     body: CacheGenerateRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> CacheGenerateResponse:
     """컬럼 설명을 (재)생성한다.
 
@@ -217,7 +217,7 @@ async def generate_descriptions(
     response_model=CacheStatusResponse,
 )
 async def get_cache_status(
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> CacheStatusResponse:
     """전체 캐시 상태를 조회한다.
 
@@ -259,7 +259,7 @@ async def get_cache_status(
 )
 async def get_cache_detail(
     db_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """특정 DB 캐시 상세를 조회한다.
 
@@ -302,7 +302,7 @@ async def get_cache_detail(
 @router.delete("/admin/schema-cache/{db_id}")
 async def delete_cache(
     db_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """특정 DB 캐시를 삭제한다.
 
@@ -329,7 +329,7 @@ async def delete_cache(
 
 @router.delete("/admin/schema-cache")
 async def delete_all_caches(
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """전체 캐시를 삭제한다.
 
@@ -379,7 +379,7 @@ class DBDescriptionGenerateResponse(BaseModel):
     response_model=DBDescriptionListResponse,
 )
 async def get_db_descriptions(
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> DBDescriptionListResponse:
     """모든 DB 설명을 조회한다.
 
@@ -404,7 +404,7 @@ async def get_db_descriptions(
 )
 async def get_db_description(
     db_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """특정 DB의 설명을 조회한다.
 
@@ -437,7 +437,7 @@ async def get_db_description(
 async def set_db_description(
     db_id: str,
     body: DBDescriptionSetRequest,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """특정 DB의 설명을 수동 설정한다.
 
@@ -470,7 +470,7 @@ async def set_db_description(
 )
 async def delete_db_description(
     db_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """특정 DB의 설명을 삭제한다.
 
@@ -497,7 +497,7 @@ async def delete_db_description(
 )
 async def generate_db_descriptions(
     body: CacheGenerateRequest | None = None,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> DBDescriptionGenerateResponse:
     """LLM으로 DB 설명을 자동 생성한다.
 
@@ -553,7 +553,7 @@ async def generate_db_descriptions(
 )
 async def get_synonyms(
     db_id: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> SynonymListResponse:
     """유사 단어 목록을 조회한다.
 
@@ -581,7 +581,7 @@ async def get_synonyms(
 async def generate_synonyms(
     db_id: str,
     body: SynonymGenerateRequest | None = None,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> SynonymGenerateResponse:
     """LLM으로 유사 단어를 자동 생성한다.
 
@@ -611,7 +611,7 @@ async def generate_synonyms(
 async def delete_column_synonyms(
     db_id: str,
     column: str,
-    _username: str = Depends(require_admin),
+    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """특정 컬럼의 유사 단어를 삭제한다.
 

@@ -10,7 +10,7 @@ import logging
 from functools import lru_cache
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, PrivateAttr
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -214,19 +214,29 @@ class ServerConfig(BaseSettings):
 
 
 class AdminConfig(BaseSettings):
-    """운영자 인증 설정."""
+    """운영자 인증 설정.
 
-    username: str = "admin"
-    password: str = "admin123"
+    D-071 하드닝: 기본 크레덴셜(admin/admin123)을 제거했다. 미설정 시 값이 비며,
+    운영 모드(AUTH_ENABLED=true)에서는 기동 시 거부된다(server._validate_production_secrets).
+    개발 모드에서는 jwt_secret이 비면 임시 랜덤 생성한다(재시작 간 불연속 감수).
+    """
+
+    username: str = ""
+    password: str = ""
     jwt_secret: str = ""
     jwt_expire_hours: int = 24
+
+    # jwt_secret이 .env/OS env에서 명시적으로 주입됐는지 여부(자동 생성과 구분).
+    # os.getenv는 .env/.encenv 값을 못 봐(Known Mistakes 2026-06-10) 이 플래그로 판정한다.
+    _jwt_secret_explicit: bool = PrivateAttr(default=False)
 
     model_config = {"env_prefix": "ADMIN_", "env_file": [".env", ".encenv"], "extra": "ignore"}
 
     def model_post_init(self, __context: object) -> None:
-        """JWT 시크릿이 비어있으면 자동 생성한다."""
+        """JWT 시크릿이 비어있으면(개발 모드) 자동 생성한다."""
         import secrets
 
+        self._jwt_secret_explicit = bool(self.jwt_secret)
         if not self.jwt_secret:
             self.jwt_secret = secrets.token_hex(32)
 
@@ -236,17 +246,31 @@ class AuthConfig(BaseSettings):
 
     AUTH_ENABLED=false (기본값): 개발 단계에서 인증 없이 모든 기능 동작.
     AUTH_ENABLED=true: 사용자 로그인 필수.
+
+    D-070 시크릿 분리: 사용자 토큰은 admin.jwt_secret이 아닌 auth.jwt_secret으로 서명·검증한다
+    (운영자/사용자 토큰 교차 서명 차단).
     """
 
     enabled: bool = False
     auth_db_url: str = ""
+    jwt_secret: str = ""
     jwt_expire_hours: int = 8
     max_login_attempts: int = 5
     lockout_minutes: int = 30
     password_min_length: int = 8
     default_allowed_db_ids: str = ""
 
+    _jwt_secret_explicit: bool = PrivateAttr(default=False)
+
     model_config = {"env_prefix": "AUTH_", "env_file": [".env", ".encenv"], "extra": "ignore"}
+
+    def model_post_init(self, __context: object) -> None:
+        """JWT 시크릿이 비어있으면(개발 모드) 자동 생성한다."""
+        import secrets
+
+        self._jwt_secret_explicit = bool(self.jwt_secret)
+        if not self.jwt_secret:
+            self.jwt_secret = secrets.token_hex(32)
 
 
 class MultiDBConfig(BaseSettings):
