@@ -1,7 +1,7 @@
 # 59-a. 역할 기반 어드민 접근 정정 + 알림그룹 UI + 보호 root 계정 + 부서 편집 + 감사 로그 로테이션
 
 > 본 문서는 **Plan 59의 후속 정정·완성 문서**다. Plan 59가 백엔드에 깐 통합 RBAC(D-069)와 지역 스코프
-> 알림 RBAC(D-072)를 사용자 관점의 최종 동작으로 확정하고, 비어 있는 어드민 UI를 채우며, 운영에 필요한
+> 알림 RBAC(D-082)를 사용자 관점의 최종 동작으로 확정하고, 비어 있는 어드민 UI를 채우며, 운영에 필요한
 > 안전장치(보호 root 계정·감사 로그 로테이션)를 추가한다.
 >
 > - **개선 1 — 역할 기반 어드민 접근 [정정]**: `role==admin`이면 재로그인 없이 대시보드, `role==user`면
@@ -13,7 +13,7 @@
 >
 > 작성일: 2026-07-14
 > 상위/관련 계획: `plans/59-admin-rbac-and-chat-ux-improvements.md`
-> 관련 결정: **D-069**(어드민 통합 RBAC), **D-072**(지역 스코프 알림 RBAC). 본 문서는 이 둘의 UI/UX 완성 +
+> 관련 결정: **D-069**(어드민 통합 RBAC), **D-082**(지역 스코프 알림 RBAC). 본 문서는 이 둘의 UI/UX 완성 +
 > 운영 안전장치이며 신규 D-번호는 §12에서 판단한다.
 
 ---
@@ -23,7 +23,7 @@
 | 개선 | 백엔드 | 프론트/UI | 상태 | 본 문서에서 할 일 |
 |---|---|---|---|---|
 | **1** 역할 기반 진입 | ✅ D-069 (`require_admin_user`) | ⚠️ **미인증 시 `/admin/login`(break-glass)로 잘못 유도** | **미작동(정정 필요)** | admin.js 리다이렉트 대상을 `/login`으로 수정 + 진입 규약 확정 |
-| **2** 알림그룹 체크박스 | ✅ D-072 (`alarm_zones`·API·SSE) | ❌ 미구현 | 신규 UI | dashboard.html/admin.js 체크박스 |
+| **2** 알림그룹 체크박스 | ✅ D-082 (`alarm_zones`·API·SSE) | ❌ 미구현 | 신규 UI | dashboard.html/admin.js 체크박스 |
 | **3** 보호 root 계정 | 부분(`_seed_admin_user`) | ❌ | 신규 | `is_protected` + 수정/삭제/PW초기화 차단(백+프론트) |
 | **4** 부서 편집 | ✅ (`UpdateUserRequest.department`) | ❌ 표시 전용 | 신규 UI | admin.js 인라인 편집 |
 | **5** 감사 로그 로테이션 | ⚠️ `cleanup_old_logs` **존재하나 호출부 없음** | — | 배선 필요 | 기동 시 + 주기 실행(설정 기반) |
@@ -111,11 +111,11 @@
 | **K리전(공동존)** | `gongjon` | 김포 `polestar_cm_gp` + 여의도 `polestar_cm_yd` |
 | **K리전(은행존)** | `bankjon` | `polestar_b0` |
 
-- 중복 체크 가능. **둘 다 미체크 = 일반(수신 안 함)**. 관리자(role==admin)는 알림그룹 무관 **전 존 수신**(D-072).
+- 중복 체크 가능. **둘 다 미체크 = 일반(수신 안 함)**. 관리자(role==admin)는 알림그룹 무관 **전 존 수신**(D-082).
 
 ## 6. 현재 구조(사실) — 백엔드만 있고 UI 없음
 
-Plan 59 D-072가 이미 구현: `User.alarm_zones`·`to_auth_dict`·`user_repository`(+DDL `ALTER TABLE ... alarm_zones
+Plan 59 D-082가 이미 구현: `User.alarm_zones`·`to_auth_dict`·`user_repository`(+DDL `ALTER TABLE ... alarm_zones
 TEXT[]`)·`PUT /admin/users/{id}`의 `alarm_zones`(`normalize_zones`)·`routing/zones.py`·SSE 필터. **미구현: 어드민
 사용자 관리 테이블의 체크박스 UI**(`dashboard.html:131-144` 컬럼, `admin.js:402-423` 렌더).
 
@@ -154,7 +154,7 @@ TEXT[]`)·`PUT /admin/users/{id}`의 `alarm_zones`(`normalize_zones`)·`routing/
 - `admin.py`는 `if body.alarm_zones is not None:`라 **`[]`도 저장**(둘 다 해제=일반). ✅ 프론트는 생략 없이 `[]` 전송.
 - `normalize_zones()`가 정의된 존만 통과. ✅ 응답에 `alarm_zones` 노출(재렌더용). ✅
 
-## 8. 알림그룹 → 수신 매트릭스(D-072와 일치)
+## 8. 알림그룹 → 수신 매트릭스(D-082와 일치)
 
 | 상태 | alarm_zones | 어드민 접근 | 알림 수신 |
 |---|---|---|---|
@@ -244,9 +244,9 @@ TEXT[]`)·`PUT /admin/users/{id}`의 `alarm_zones`(`normalize_zones`)·`routing/
 
 ## 12. 결정(D-번호) · 등재
 
-- 개선 1(리다이렉트 정정)·2·4는 D-069/D-072의 **UI/UX 완성** → 신규 D 불필요, 해당 changelog에 후속 기록.
-- **개선 3(보호 root)·5(감사 로테이션)**는 정책·스키마 변경이라 **D-073으로 등재 완료(2026-07-15)** —
-  보호 root 계정 + 감사 로그 로테이션 배선 + 어드민 진입 규약 정정. (`docs/02_decision.md` `## D-073`.)
+- 개선 1(리다이렉트 정정)·2·4는 D-069/D-082의 **UI/UX 완성** → 신규 D 불필요, 해당 changelog에 후속 기록.
+- **개선 3(보호 root)·5(감사 로테이션)**는 정책·스키마 변경이라 **D-083으로 등재 완료(2026-07-15)** —
+  보호 root 계정 + 감사 로그 로테이션 배선 + 어드민 진입 규약 정정. (`docs/02_decision.md` `## D-083`.)
 - **구현 완료(2026-07-15)**: 개선 1~5 전부. 회귀 `tests/test_api/test_plan59a.py` 10건 통과, arch exit 0,
   신규 실패 0(기존 6 test_routes=MagicMock 픽스처 이슈).
 - CLAUDE.md Known Mistakes 후보: (a) "`/admin/login`은 env break-glass 전용 — DB 사용자는 `/login`으로.
@@ -262,11 +262,11 @@ TEXT[]`)·`PUT /admin/users/{id}`의 `alarm_zones`(`normalize_zones`)·`routing/
 3. **[개선 2]** dashboard.html 컬럼 + admin.js 알림그룹 체크박스(§7).
 4. **[개선 4]** admin.js 부서 인라인 편집(§10).
 5. **[개선 5]** lifespan 기동 정리(A) + 주기 태스크(B) [+ 수동 엔드포인트(C)] + `.env.example` 문서화.
-6. **[등재]** D-073 등재 + Known Mistakes + 회귀 테스트(보호 계정 가드·존 저장·감사 정리).
+6. **[등재]** D-083 등재 + Known Mistakes + 회귀 테스트(보호 계정 가드·존 저장·감사 정리).
 
 ## 14-B. 테스트 피드백 후속 정정 (구현 완료 2026-07-15)
 
-실환경 테스트에서 확인된 3건. 신규 D-번호 없음(D-069/D-072/D-073 UI 마무리).
+실환경 테스트에서 확인된 3건. 신규 D-번호 없음(D-069/D-082/D-083 UI 마무리).
 
 1. **어드민 로그아웃이 계정을 로그아웃하지 않음**: `admin.js` `logoutBtn`이 `admin_token`만 지우고
    `/admin/login`으로 보냈다 → 통합 RBAC 사용자(`user_token`)는 세션이 살아있고 break-glass 화면이 떠
