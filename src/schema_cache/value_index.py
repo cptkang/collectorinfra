@@ -9,9 +9,9 @@ WHERE 리터럴(``resource_type='server.Server'``, EAV ``NAME='Hostname'`` 등)�
 갱신은 ``SELECT DISTINCT`` 읽기전용만 수행 → D-003(3중 읽기전용 방어) 준수.
 활성화는 ``cfg.synonym.value_retrieval`` 플래그로 제어하며, OFF 시 호출부가 미진입한다.
 
-주의(범위): 검색 결과를 SQL 생성 프롬프트에 **주입**하는 소비 지점은 다중 후보 생성
-(트랙 A / E2)에 속하며 본 트랙 B 범위 밖이다. 본 모듈은 인덱스 구축·저장·검색 인프라만
-제공하고, 실제 프롬프트 주입은 트랙 A 착수 시 연결한다.
+런타임 주입(Plan 61 §12.3-3): ``load_or_build_value_index``가 schema_analyzer에서
+state(``column_value_index``)로 인덱스를 적재하고, 검색 결과를 SQL 생성/다중 후보 프롬프트
+(트랙 A / E2)에 주입한다(``src/utils/query_gen_common.py::build_value_index_block``).
 """
 
 from __future__ import annotations
@@ -127,6 +127,72 @@ async def build_value_index(
         except Exception as e:
             logger.warning("값 인덱스 구축 실패 (key=%s): %s", key, e)
             continue
+    return index
+
+
+def derive_value_specs(structure_meta: dict | None, engine: str) -> list[dict]:
+    """구조 메타의 EAV 패턴에서 값 인덱싱 대상 spec을 도출한다(E5-2).
+
+    EAV config 테이블의 속성명 컬럼(예: ``core_config_prop.name``)을 인덱싱해 EAV
+    ``NAME`` 리터럴 환각(Plan 25 유형)을 차단한다. 도출 실패/부재 시 빈 리스트.
+
+    Returns:
+        [{"key": "table.column", "table": ..., "column": ..., "engine": ...}, ...]
+    """
+    specs: list[dict] = []
+    seen: set[str] = set()
+    for p in (structure_meta or {}).get("patterns", []):
+        if p.get("type") != "eav":
+            continue
+        config_table = p.get("config_table")
+        attr_col = p.get("attribute_column")
+        if not config_table or not attr_col:
+            continue
+        key = f"{config_table}.{attr_col}"
+        if key in seen:
+            continue
+        seen.add(key)
+        specs.append({"key": key, "table": config_table, "column": attr_col, "engine": engine})
+    return specs
+
+
+async def load_or_build_value_index(
+    db_id: str,
+    structure_meta: dict | None,
+    client: Any,
+    engine: str,
+    redis_cache: Any = None,
+) -> dict[str, list[str]]:
+    """값 인덱스를 런타임에 적재한다(load 우선, 없으면 best-effort build+save).
+
+    E5-2 런타임 주입(§12.3-3): 캐시(Redis)에 인덱스가 있으면 그대로 사용하고, 없으면
+    구조 메타에서 spec을 도출해 읽기전용으로 1회 구축 후 저장한다. 모든 단계는 실패를
+    격리해 빈/부분 인덱스를 반환한다(회귀·부작용 없음, D-003).
+
+    Returns:
+        {인덱스 키: [distinct 값, ...]} — 실패 시 빈 dict.
+    """
+    if redis_cache is not None:
+        try:
+            cached = await redis_cache.load_column_value_index(db_id)
+            if cached:
+                return cached
+        except Exception as e:  # noqa: BLE001
+            logger.warning("값 인덱스 로드 실패(build 시도): %s", e)
+
+    specs = derive_value_specs(structure_meta, engine)
+    if not specs or client is None:
+        return {}
+    try:
+        index = await build_value_index(client, specs)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("값 인덱스 구축 실패: %s", e)
+        return {}
+    if index and redis_cache is not None:
+        try:
+            await redis_cache.save_column_value_index(db_id, index)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("값 인덱스 저장 실패(무시): %s", e)
     return index
 
 

@@ -51,7 +51,7 @@ VALUES
 -- ----------------------------------------------------------------------------
 -- 2. 자식 리소스 (platform_resource_id/parent_resource_id → 서버)
 --    server.Cpus/Memory: EAV 사양 + 성능통계 피벗 (gp-005/009/014, b0-004/005, yd-004/005)
---    server.FileSystems/Disks: 월간 통계 (gp-010)
+--    server.FileSystems/Disks: 월간 통계 (gp-010), Disks는 TotalSize EAV도 보유(SYN-E-02)
 --    server.Cpu: 개별 CPU 코어 (gp-008 parent_resource_id 조인)
 -- ----------------------------------------------------------------------------
 INSERT INTO polestar.cmm_resource
@@ -74,11 +74,11 @@ VALUES
   ('PlatformResource', 9640002, 112, 1, 1, 0, 'FileSystems', NULL, NULL, 0, 'P61_FS_9610002', 'server.FileSystems', NULL, 9610002, 9610002, 1767200000000, NULL),
   ('PlatformResource', 9640003, 112, 1, 1, 0, 'FileSystems', NULL, NULL, 0, 'P61_FS_9610003', 'server.FileSystems', NULL, 9610003, 9610003, 1767200000000, NULL),
   ('PlatformResource', 9640004, 112, 1, 1, 0, 'FileSystems', NULL, NULL, 0, 'P61_FS_9610004', 'server.FileSystems', NULL, 9610004, 9610004, 1767200000000, NULL),
-  -- server.Disks
-  ('PlatformResource', 9650001, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610001', 'server.Disks', NULL, 9610001, 9610001, 1767200000000, NULL),
-  ('PlatformResource', 9650002, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610002', 'server.Disks', NULL, 9610002, 9610002, 1767200000000, NULL),
-  ('PlatformResource', 9650003, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610003', 'server.Disks', NULL, 9610003, 9610003, 1767200000000, NULL),
-  ('PlatformResource', 9650004, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610004', 'server.Disks', NULL, 9610004, 9610004, 1767200000000, NULL),
+  -- server.Disks (TotalSize conf 보유 — synonym_test_cases SYN-E-02 디스크 용량 정렬)
+  ('PlatformResource', 9650001, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610001', 'server.Disks', 9651001, 9610001, 9610001, 1767200000000, NULL),
+  ('PlatformResource', 9650002, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610002', 'server.Disks', 9651002, 9610002, 9610002, 1767200000000, NULL),
+  ('PlatformResource', 9650003, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610003', 'server.Disks', 9651003, 9610003, 9610003, 1767200000000, NULL),
+  ('PlatformResource', 9650004, 112, 1, 1, 0, 'Disks', NULL, NULL, 0, 'P61_DISKS_9610004', 'server.Disks', 9651004, 9610004, 9610004, 1767200000000, NULL),
   -- server.Cpu (개별 코어 — gp-008)
   ('PlatformResource', 9660001, 112, 1, 1, 0, 'CPU0', NULL, NULL, 0, 'P61_CPU0_9610001', 'server.Cpu', NULL, 9610001, 9610001, 1767200000000, NULL),
   ('PlatformResource', 9660002, 112, 1, 1, 0, 'CPU1', NULL, NULL, 0, 'P61_CPU1_9610001', 'server.Cpu', NULL, 9610001, 9610001, 1767200000000, NULL);
@@ -147,7 +147,14 @@ VALUES
   ('SIMPLE', 200100061, 454, 9631001, 'TotalSize', '32768', NULL),
   ('SIMPLE', 200100062, 454, 9631002, 'TotalSize', '65536', NULL),
   ('SIMPLE', 200100063, 454, 9631003, 'TotalSize', '65536', NULL),
-  ('SIMPLE', 200100064, 454, 9631004, 'TotalSize', '16384', NULL);
+  ('SIMPLE', 200100064, 454, 9631004, 'TotalSize', '16384', NULL),
+  -- Disks conf: TotalSize (MB) — synonym_test_cases SYN-E-02 "디스크 용량이 큰 서버" 정렬 변별용.
+  -- 서버별 상이값 + 동일 자릿수(문자열 정렬 == 숫자 정렬)로 캐스트 유무와 무관하게 순서 안정:
+  --   DB-ORA-023(4TB) > SV-BATCH-009(3TB) > cocm-hdkapp01(2TB) > SV-WEB-001(1TB)
+  ('SIMPLE', 200100071, 454, 9651001, 'TotalSize', '1048576', NULL),
+  ('SIMPLE', 200100072, 454, 9651002, 'TotalSize', '4194304', NULL),
+  ('SIMPLE', 200100073, 454, 9651003, 'TotalSize', '2097152', NULL),
+  ('SIMPLE', 200100074, 454, 9651004, 'TotalSize', '3145728', NULL);
 
 -- ----------------------------------------------------------------------------
 -- 4. 월간 성능통계 (cmm_metric_stat_m)

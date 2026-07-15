@@ -118,6 +118,64 @@ def extract_synonym_usage(
     return {"mappings": mappings, "unregistered": _dedupe(unregistered)}
 
 
+def collect_synonym_usage_events(usage: dict | None) -> list[dict]:
+    """extract_synonym_usage 결과에서 실제 사용된 유사어 사용 이벤트를 추출한다.
+
+    E5-3 사용횟수/최종사용일 추적(redis increment_synonym_usage)의 입력이다.
+    각 이벤트는 사전 key와 그 매핑에서 사용자 용어와 매칭된 유사어 단어 목록을 담는다.
+    (계층: utils — Redis I/O는 호출부 infrastructure 계층에서 수행한다.)
+
+    Args:
+        usage: extract_synonym_usage 반환 dict ({"mappings": [...], ...})
+
+    Returns:
+        [{"type": str, "key": str, "words": [사용된 유사어, ...]}, ...]
+        매칭된 유사어 단어가 하나 이상인 매핑만 포함한다.
+    """
+    if not usage:
+        return []
+
+    events: list[dict] = []
+    for mapping in usage.get("mappings", []):
+        terms = mapping.get("matched_user_terms") or []
+        if not terms:
+            continue
+        words = _matched_synonym_words(mapping.get("synonyms") or [], terms)
+        if words:
+            events.append(
+                {
+                    "type": mapping.get("type"),
+                    "key": mapping.get("key"),
+                    "words": words,
+                }
+            )
+    return events
+
+
+def _matched_synonym_words(
+    synonyms: list[str],
+    terms: list[str],
+) -> list[str]:
+    """사용자 용어(terms)와 정규화 기준으로 매칭되는 유사어 단어를 반환한다.
+
+    _match_user_terms와 동일한 정규화·포함 규칙을 사용하되, 매칭된 쪽이
+    사용자 용어가 아니라 유사어 단어라는 점만 다르다.
+    """
+    norm_terms = [_normalize(t) for t in terms]
+    norm_terms = [t for t in norm_terms if len(t) >= 2]
+
+    result: list[str] = []
+    for s in synonyms:
+        c = _normalize(s)
+        if len(c) < 2:
+            continue
+        for t in norm_terms:
+            if c == t or c in t or t in c:
+                result.append(s)
+                break
+    return result
+
+
 def _build_mapping(
     mapping_type: str,
     key: str,

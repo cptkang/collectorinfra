@@ -42,10 +42,9 @@ items:
       resource_types: [server.Server]
       dimensions: [Hostname, OSType, Vendor]
       measures: []
-      filters:
-        - {field: resource_type, op: like, value: "platform.server%"}
+      filters: []
       time_grain: null
-    notes: "EAV 피벗 — resource_conf_id=configuration_id 조인. 서버설정 대표 질의."
+    notes: "EAV 피벗 — resource_conf_id=configuration_id 조인. 서버설정 대표 질의. gold_sql(platform.server%)과 gold_smq(server.Server)는 페어 정렬 픽스처(08_plan61)로 동치 — 이전의 platform.server% 필터는 시맨틱 모델이 표현 불가한 모순이라 제거(B4)."
 
   - id: gp-002
     query: "서버별 호스트명, IP, OS버전, 시리얼번호를 조회해줘"

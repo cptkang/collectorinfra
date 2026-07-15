@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import sqlparse
 from langchain_core.language_models import BaseChatModel
@@ -21,6 +21,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
@@ -137,6 +138,7 @@ async def multi_db_executor(
     db_schemas: dict[str, dict] = {}
     db_errors: dict[str, str] = {}
     all_attempts: list[QueryAttempt] = list(state.get("query_attempts", []))
+    mc_candidates: list[dict] = []  # 트랙 A 다중 후보(경로 C, DB별 태깅) — 관측/감사용
 
     # 동일 스키마(엔진+스키마명) DB는 SQL을 한 번만 생성해 재사용한다(D-066 후속6).
     # 공동존(gp/yd)은 스키마가 동일해 같은 SQL이 양쪽에서 동작하는데, DB별 독립 LLM 호출은
@@ -182,6 +184,13 @@ async def multi_db_executor(
                         "DB '%s': 동일 스키마%s SQL 재사용 (alias 일관성)", db_id, schema_key
                     )
                 else:
+                    async def _mc_execute(_sql: str) -> dict:
+                        try:
+                            _r = await client.execute_sql(_sql)
+                            return {"rows": _r.rows, "error": None}
+                        except Exception as _e:  # noqa: BLE001
+                            return {"rows": None, "error": str(_e)}
+
                     sql = await _generate_sql(
                         llm, parsed_requirements, schema_info,
                         sub_context, effective_limit,
@@ -190,6 +199,8 @@ async def multi_db_executor(
                         db_id=db_id,
                         unmapped_fields=unmapped_fields,
                         app_config=app_config,
+                        execute=_mc_execute,
+                        candidate_sink=mc_candidates,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -266,6 +277,7 @@ async def multi_db_executor(
         "db_errors": db_errors,
         "query_results": merged_results,
         "query_attempts": all_attempts,
+        "sql_candidates": mc_candidates or None,
         "current_node": "multi_db_executor",
         "error_message": None if db_results else "모든 DB 쿼리가 실패했습니다.",
     }
@@ -354,6 +366,8 @@ async def _generate_sql(
     db_id: str = "",
     unmapped_fields: list[str] | None = None,
     app_config: AppConfig | None = None,
+    execute: Callable[[str], Awaitable[dict]] | None = None,
+    candidate_sink: list[dict] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -683,12 +697,51 @@ async def _generate_sql(
             f"## 이전 에러\n{error_context}\n위 에러를 수정한 새로운 SQL을 생성하세요."
         )
 
+    user_prompt = "\n\n".join(user_parts)
+
+    # 트랙 A(E2~E4): 멀티 DB 경로(C) 명시 이식 — NL 질의(폼필·재시도 아님)에만 다중 후보.
+    # execute(읽기전용 실행 클로저)·_validate_sql_simple을 주입해 경로 비대칭 차단(§2.1 / D-066).
+    if app_config is None:
+        app_config = load_config()
+    t2 = app_config.text2sql
+    use_multi = (
+        t2.multi_candidate and execute is not None
+        and not error_context and not column_mapping
+        and (not t2.complexity_gate
+             or classify_complexity(
+                 user_query=parsed_requirements.get("original_query", "") or sub_query_context,
+                 parsed_requirements=parsed_requirements, schema_info=schema_info,
+             ) == "complex")
+    )
+    if use_multi:
+        from src.nodes.candidate_selector import run_candidate_pipeline
+
+        async def _validate(sql: str):
+            return _validate_sql_simple(sql, schema_info)
+
+        selection = await run_candidate_pipeline(
+            llm, system_prompt, user_prompt,
+            count=t2.candidate_count, strategies=t2.candidate_strategies,
+            selection=t2.selection, is_kbgenai=isinstance(llm, KBGenAIChat),
+            extract_sql=_extract_sql, validate=_validate, execute=execute,
+            user_query=parsed_requirements.get("original_query", "") or sub_query_context,
+        )
+        if selection.get("sql"):
+            if candidate_sink is not None:
+                for c in selection.get("sql_candidates") or []:
+                    candidate_sink.append({**c, "db_id": db_id})
+            logger.info(
+                "DB '%s' 다중 후보 선택: method=%s conf=%.2f",
+                db_id, selection.get("method"), selection.get("confidence", 0.0),
+            )
+            return selection["sql"]
+
     messages: list[BaseMessage] = [
         SystemMessage(content=system_prompt)
     ]
     if isinstance(llm, KBGenAIChat):
         messages.append(AIMessage(content=""))
-    messages.append(HumanMessage(content="\n\n".join(user_parts)))
+    messages.append(HumanMessage(content=user_prompt))
 
     response = await llm.ainvoke(messages)
     return _extract_sql(response.content)

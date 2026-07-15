@@ -1116,6 +1116,29 @@ async def schema_analyzer(
                 except Exception as e:
                     logger.warning("글로벌 유사단어 자동 로드 실패: %s", e)
 
+            # E5-2 값 검색 인덱스 런타임 적재 (Plan 61 §12.3-3, D-075). value_retrieval OFF면
+            # 미진입(state에 None → 주입 no-op, 회귀 0). load 우선·없으면 best-effort build.
+            column_value_index: dict | None = None
+            if app_config.synonym.value_retrieval:
+                try:
+                    from src.routing.domain_config import get_domain_by_id
+                    from src.schema_cache.value_index import load_or_build_value_index
+
+                    _engine = ""
+                    _dom = get_domain_by_id(db_id) if db_id else None
+                    if _dom is not None:
+                        _engine = getattr(_dom, "db_engine", "") or ""
+                    _redis = (
+                        cache_mgr._redis_cache
+                        if cache_mgr and cache_mgr.redis_available else None
+                    )
+                    column_value_index = await load_or_build_value_index(
+                        db_id or "", schema_dict.get("_structure_meta"),
+                        client, _engine, redis_cache=_redis,
+                    )
+                except Exception as e:  # noqa: BLE001 — 값 인덱스 실패는 무시(회귀 0)
+                    logger.warning("값 인덱스 적재 실패(무시): %s", e)
+
             return {
                 "relevant_tables": relevant,
                 "schema_info": schema_dict,
@@ -1123,6 +1146,7 @@ async def schema_analyzer(
                 "column_synonyms": synonyms,
                 "resource_type_synonyms": resource_type_synonyms,
                 "eav_name_synonyms": eav_name_synonyms,
+                "column_value_index": column_value_index,
                 "schema_cache_source": cache_source,
                 "current_node": "schema_analyzer",
                 "error_message": None,

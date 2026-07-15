@@ -154,6 +154,11 @@ class SynonymMatchConfig(BaseSettings):
     # E5-3: D-051 유사어 보완 테이블 상한(기존 schema_analyzer 모듈 상수 하드코딩을 config로 노출).
     # 낮추면 토큰↓·리콜↓ — 고정 규칙이 아니라 E1 하네스로 튜닝하는 파라미터(Death of Schema Linking).
     max_synonym_supplement_tables: int = 15
+    # E5-3 사전 위생·거버넌스(D-075): 유사어 메타(등록출처·사용횟수·최종사용일·신뢰도) 추적 +
+    # 동일 용어 다중 컬럼 충돌 우선순위 규칙. 기본 OFF — 활성 전 유사어 저장/매칭 경로 무변경(회귀 0).
+    governance: bool = False
+    # 장기 미사용 감쇠/정리 임계(일). governance ON + 명시적 prune 호출 시에만 적용.
+    decay_days: int = 180
 
     model_config = {"env_prefix": "SYNONYM_", "env_file": ".env", "extra": "ignore"}
 
@@ -164,16 +169,26 @@ class Text2SQLConfig(BaseSettings):
     전 기능 기본 OFF — 활성 전에는 기존 SQL 생성 경로가 바이트 단위로 무변경이어야
     한다(회귀 0). 접근 경로: cfg.text2sql.* (env_prefix="TEXT2SQL_").
 
-    semantic_fallback 기본값은 계획 §5의 `candidate_then_human`이 아니라 `llm`이다 —
-    트랙 A(다중 후보 E2~E4)가 이번 범위에서 보류이므로, 커버리지 밖은 현행 LLM 자유생성
-    폴백으로 처리한다(계획 §6.3 "LLM 자유생성은 트랙 A 미착수 과도기 임시 폴백으로만 허용"과
-    정합). 트랙 A 착수 시 기본값을 candidate_then_human으로 전환한다.
+    트랙 A(다중 후보 E2~E4) 착수(Plan 61 D-073/D-074)로 semantic_fallback 기본값을
+    `candidate_then_human`으로 전환했다(계획 §5·§9-9). multi_candidate가 OFF이면
+    candidate_then_human/human은 현행 LLM 자유생성으로 우아하게 강등한다(회귀 0 — 커버리지
+    밖 라우팅은 semantic_compose가 ON일 때만 발동하므로 기본 OFF 상태 경로는 무변경).
     """
 
     semantic_compose: bool = False       # E6 결정적 조합 경로 전체 스위치
-    # 커버리지 밖 라우팅. 트랙 A 미구현 상태에서 candidate_then_human/human은 llm으로 강등된다.
-    semantic_fallback: Literal["candidate_then_human", "llm", "human"] = "llm"
-    fallback_confidence_min: float = 0.0  # 3단 폴백 2차 게이트(트랙 A 신뢰도 임계 — 자리예약)
+    # 커버리지 밖 라우팅(3단 폴백, §9-9). multi_candidate OFF이면 candidate_then_human/human은
+    # 현행 LLM 자유생성으로 강등(회귀 0).
+    semantic_fallback: Literal["candidate_then_human", "llm", "human"] = "candidate_then_human"
+    fallback_confidence_min: float = 0.0  # 3단 폴백 2차 게이트(트랙 A 선택 신뢰도 임계, 미달 시 사람검토 강등)
+
+    # === 트랙 A: 다중 후보 생성·선택 (E2~E4, D-073/D-074) — 기본 OFF, 옵트인 증분 ===
+    multi_candidate: bool = False        # E2/E4 다중 후보 경로 전체 스위치
+    candidate_count: int = 3             # 후보 수 N (비용 무제한 §9-4 — E1로 이득 곡선 측정 후 상향)
+    # 다양화 방식. multi_prompt(현행/divide&conquer/실행계획 CoT — §9-2 사용자 결정) | temperature(보조)
+    candidate_strategies: Literal["temperature", "multi_prompt"] = "multi_prompt"
+    complexity_gate: bool = False        # E3 복잡 질의만 다중 후보(품질 목적 — 비용 컷 아님 §9-4)
+    # E4 선택 전략. hybrid(결과일관성 1차 + LLM 쌍대비교 병용 — §9-3) | consistency | llm
+    selection: Literal["consistency", "llm", "hybrid"] = "hybrid"
 
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
@@ -514,23 +529,26 @@ class NoiseGateConfig(BaseSettings):
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
-    llm: LLMConfig = LLMConfig()
-    orchestrator: OrchestratorConfig = OrchestratorConfig()
-    dbhub: DBHubConfig = DBHubConfig()
-    query: QueryConfig = QueryConfig()
-    synonym: SynonymMatchConfig = SynonymMatchConfig()   # Plan 61 트랙 B: 동의어 매칭 보강
-    text2sql: Text2SQLConfig = Text2SQLConfig()          # Plan 61 트랙 C: 결정적 SQL 조합
-    security: SecurityConfig = SecurityConfig()
-    server: ServerConfig = ServerConfig()
-    admin: AdminConfig = AdminConfig()
-    auth: AuthConfig = AuthConfig()
-    multi_db: MultiDBConfig = MultiDBConfig()
-    redis: RedisConfig = RedisConfig()
-    schema_cache: SchemaCacheConfig = SchemaCacheConfig()
-    audit: AuditConfig = AuditConfig()
-    alarm: AlarmConfig = AlarmConfig()
-    workb: WorkbConfig = WorkbConfig()
-    noise_gate: NoiseGateConfig = NoiseGateConfig()  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
+    # nested config는 반드시 default_factory로 선언한다 — 인스턴스 기본값(`= LLMConfig()`)은
+    # 클래스 정의(모듈 임포트) 시점의 env로 고정되어, 이후 os.environ 변경 +
+    # load_config.cache_clear() 재로드가 반영되지 않는다(2026-07-15 E1 하네스 A/B 무효화 실측).
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
+    dbhub: DBHubConfig = Field(default_factory=DBHubConfig)
+    query: QueryConfig = Field(default_factory=QueryConfig)
+    synonym: SynonymMatchConfig = Field(default_factory=SynonymMatchConfig)   # Plan 61 트랙 B: 동의어 매칭 보강
+    text2sql: Text2SQLConfig = Field(default_factory=Text2SQLConfig)          # Plan 61 트랙 C: 결정적 SQL 조합
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    admin: AdminConfig = Field(default_factory=AdminConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    multi_db: MultiDBConfig = Field(default_factory=MultiDBConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
+    schema_cache: SchemaCacheConfig = Field(default_factory=SchemaCacheConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
+    alarm: AlarmConfig = Field(default_factory=AlarmConfig)
+    workb: WorkbConfig = Field(default_factory=WorkbConfig)
+    noise_gate: NoiseGateConfig = Field(default_factory=NoiseGateConfig)  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

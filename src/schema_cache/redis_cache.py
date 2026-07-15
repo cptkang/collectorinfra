@@ -111,6 +111,47 @@ class RedisSchemaCache:
         """Redis 키를 생성한다."""
         return f"schema:{db_id}:{suffix}"
 
+    @staticmethod
+    def _db_id_from_key(key: str) -> str:
+        """``schema:{db_id}:{suffix}`` 형식 키에서 db_id를 추출한다."""
+        parts = key.split(":")
+        return parts[1] if len(parts) >= 3 else key
+
+    def _governance_enabled(self) -> bool:
+        """E5-3 사전 위생·거버넌스 마스터 스위치 상태를 반환한다 (D-075).
+
+        기본 OFF. OFF일 때 유사어 메타(사용횟수·최종사용일·신뢰도) 저장/증가·정리
+        로직은 완전 no-op이며, 기존 저장 구조가 바이트 단위로 무변경이어야 한다.
+        접근 경로: ``load_config().synonym.governance``.
+        """
+        try:
+            from src.config import load_config
+
+            return bool(load_config().synonym.governance)
+        except Exception:
+            return False
+
+    def _ensure_meta(self, entry: dict, now: float) -> None:
+        """유사어 항목(dict)에 word별 메타를 병기한다 (governance ON 전용).
+
+        ``entry["words"]``의 각 단어에 메타가 없으면 생성하고, 현재 단어에
+        해당하는 메타만 유지하여 삭제된 단어의 고아 메타 누적을 방지한다.
+        메타 구조: ``{word: {usage_count:int, last_used_ts:float, confidence:float}}``.
+        """
+        words = entry.get("words", []) or []
+        meta = entry.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        for w in words:
+            if not isinstance(meta.get(w), dict):
+                meta[w] = {
+                    "usage_count": 0,
+                    "last_used_ts": float(now),
+                    "confidence": 0.0,
+                }
+        # 현재 단어에 해당하는 메타만 유지 (고아 메타 제거 — 키 만료 sweep 일관성)
+        entry["meta"] = {w: meta[w] for w in words if w in meta}
+
     # === 기본 CRUD ===
 
     async def save_schema(
@@ -558,11 +599,18 @@ class RedisSchemaCache:
 
         try:
             key = self._key(db_id, "synonyms")
+            # governance ON일 때만 word별 메타를 병기한다 (OFF 시 바이트 무변경).
+            governance = self._governance_enabled()
+            now = time.time() if governance else None
             mapping = {}
             for col, value in synonyms.items():
                 if isinstance(value, dict) and "words" in value:
                     # 이미 source 태깅된 형태
-                    mapping[col] = json.dumps(value, ensure_ascii=False)
+                    entry = value
+                    if governance:
+                        entry = dict(value)
+                        self._ensure_meta(entry, now)
+                    mapping[col] = json.dumps(entry, ensure_ascii=False)
                 else:
                     # list[str] 형태 -> source 태깅 변환
                     words = value if isinstance(value, list) else list(value)
@@ -570,6 +618,8 @@ class RedisSchemaCache:
                         "words": words,
                         "sources": {w: source for w in words},
                     }
+                    if governance:
+                        self._ensure_meta(tagged, now)
                     mapping[col] = json.dumps(tagged, ensure_ascii=False)
             if mapping:
                 await self._redis.hset(key, mapping=mapping)
@@ -673,11 +723,14 @@ class RedisSchemaCache:
             key = self._key(db_id, "synonyms")
             existing_raw = await self._redis.hget(key, column)
 
+            existing_meta: dict = {}
             if existing_raw:
                 parsed = json.loads(existing_raw)
                 if isinstance(parsed, dict) and "words" in parsed:
                     existing_words = parsed["words"]
                     existing_sources = parsed.get("sources", {})
+                    if isinstance(parsed.get("meta"), dict):
+                        existing_meta = dict(parsed["meta"])
                 elif isinstance(parsed, list):
                     existing_words = parsed
                     existing_sources = {w: "llm" for w in parsed}
@@ -699,6 +752,10 @@ class RedisSchemaCache:
                 "words": merged_words,
                 "sources": existing_sources,
             }
+            # governance ON일 때만 메타를 병기한다 (OFF 시 바이트 무변경).
+            if self._governance_enabled():
+                tagged["meta"] = existing_meta
+                self._ensure_meta(tagged, time.time())
             await self._redis.hset(
                 key, column, json.dumps(tagged, ensure_ascii=False)
             )
@@ -733,9 +790,12 @@ class RedisSchemaCache:
                 return True
 
             parsed = json.loads(existing_raw)
+            existing_meta: dict | None = None
             if isinstance(parsed, dict) and "words" in parsed:
                 existing_words = parsed["words"]
                 existing_sources = parsed.get("sources", {})
+                if isinstance(parsed.get("meta"), dict):
+                    existing_meta = parsed["meta"]
             elif isinstance(parsed, list):
                 existing_words = parsed
                 existing_sources = {}
@@ -750,6 +810,13 @@ class RedisSchemaCache:
 
             if updated_words:
                 tagged = {"words": updated_words, "sources": updated_sources}
+                # 메타가 있으면 잔존 단어분만 유지 (고아 메타 제거).
+                if existing_meta is not None:
+                    tagged["meta"] = {
+                        w: existing_meta[w]
+                        for w in updated_words
+                        if w in existing_meta
+                    }
                 await self._redis.hset(
                     key, column, json.dumps(tagged, ensure_ascii=False)
                 )
@@ -759,6 +826,245 @@ class RedisSchemaCache:
         except Exception as e:
             logger.error("Redis 유사 단어 삭제 실패: %s", e)
             return False
+
+    # === 유사어 메타데이터 (E5-3 사전 위생·거버넌스 / D-075) ===
+
+    async def load_synonym_meta(
+        self, db_id: str
+    ) -> dict[str, dict[str, dict]]:
+        """DB별 유사어 메타(사용횟수·최종사용일·신뢰도·출처)를 로드한다.
+
+        메타 없는(레거시) 컬럼/단어는 제외된다. source는 sources 태그에서 병합한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            {table.column: {word: {usage_count, last_used_ts, confidence, source}}}
+        """
+        if not self._connected or self._redis is None:
+            return {}
+
+        try:
+            raw = await self._redis.hgetall(self._key(db_id, "synonyms"))
+            result: dict[str, dict[str, dict]] = {}
+            for col, data in raw.items():
+                parsed = json.loads(data)
+                if not isinstance(parsed, dict):
+                    continue
+                meta = parsed.get("meta")
+                if not isinstance(meta, dict) or not meta:
+                    continue
+                sources = parsed.get("sources")
+                sources = sources if isinstance(sources, dict) else {}
+                col_meta: dict[str, dict] = {}
+                for word, m in meta.items():
+                    if not isinstance(m, dict):
+                        continue
+                    col_meta[word] = {
+                        "usage_count": int(m.get("usage_count") or 0),
+                        "last_used_ts": m.get("last_used_ts"),
+                        "confidence": float(m.get("confidence") or 0.0),
+                        "source": sources.get(word, "llm"),
+                    }
+                if col_meta:
+                    result[col] = col_meta
+            return result
+        except Exception as e:
+            logger.warning("Redis 유사어 메타 로드 실패: %s", e)
+            return {}
+
+    async def increment_synonym_usage(
+        self,
+        db_id: str,
+        column: str,
+        words: list[str],
+        *,
+        now: float | None = None,
+        confidence: float | None = None,
+    ) -> bool:
+        """유사어 사용횟수를 증가시키고 최종 사용시각을 갱신한다.
+
+        governance=False이면 완전 no-op(False 반환). 컬럼에 등록된 단어에 한해
+        메타를 생성/증가하며, confidence가 주어지면 해당 값으로 갱신한다.
+
+        Args:
+            db_id: DB 식별자
+            column: "table.column" 형식
+            words: 사용된 유사어 단어 목록
+            now: 기준 시각(epoch초). 미지정 시 현재 시각.
+            confidence: 갱신할 신뢰도(0.0~1.0). 미지정 시 기존값 보존.
+
+        Returns:
+            갱신 성공 여부 (no-op·미변경 시 False)
+        """
+        if not self._governance_enabled():
+            return False
+        if not self._connected or self._redis is None:
+            return False
+        if not words:
+            return False
+
+        try:
+            key = self._key(db_id, "synonyms")
+            existing_raw = await self._redis.hget(key, column)
+            if not existing_raw:
+                return False
+
+            parsed = json.loads(existing_raw)
+            if isinstance(parsed, dict) and "words" in parsed:
+                entry = parsed
+            elif isinstance(parsed, list):
+                entry = {"words": parsed, "sources": {w: "llm" for w in parsed}}
+            else:
+                return False
+
+            entry_words = entry.get("words", []) or []
+            meta = entry.get("meta")
+            if not isinstance(meta, dict):
+                meta = {}
+            ts = float(now) if now is not None else time.time()
+
+            touched = False
+            for w in words:
+                if w not in entry_words:
+                    continue  # 등록되지 않은 단어는 추적하지 않음
+                m = meta.get(w)
+                if not isinstance(m, dict):
+                    m = {"usage_count": 0, "last_used_ts": ts, "confidence": 0.0}
+                m["usage_count"] = int(m.get("usage_count") or 0) + 1
+                m["last_used_ts"] = ts
+                if confidence is not None:
+                    m["confidence"] = float(confidence)
+                meta[w] = m
+                touched = True
+
+            if not touched:
+                return False
+
+            # 현재 단어분 메타만 유지 (고아 메타 제거)
+            entry["meta"] = {w: meta[w] for w in entry_words if w in meta}
+            await self._redis.hset(
+                key, column, json.dumps(entry, ensure_ascii=False)
+            )
+            return True
+        except Exception as e:
+            logger.error("Redis 유사어 사용 추적 실패: %s", e)
+            return False
+
+    async def prune_stale_synonyms(
+        self,
+        *,
+        decay_days: int,
+        now: float | None = None,
+        db_id: str | None = None,
+    ) -> dict:
+        """장기 미사용 llm-발견 유사어를 정리한다 (E5-3 감쇠/정리).
+
+        규칙:
+        - last_used_ts가 (now - decay_days*86400)보다 **오래된**(strictly older)
+          유사어만 제거 대상 (정확히 임계 경계값은 보존).
+        - source가 "operator"인 유사어는 보존(운영자 등록).
+        - 메타가 없는(레거시) 컬럼/단어는 보존(정리 대상 아님).
+
+        governance=False이면 완전 no-op. 명시적 호출 시에만 동작한다
+        (자동 스케줄 배선은 범위 밖). db_id 미지정 시 전체 DB synonyms를 스캔한다.
+
+        Args:
+            decay_days: 감쇠 임계(일)
+            now: 기준 시각(epoch초). 미지정 시 현재 시각.
+            db_id: 특정 DB만 정리. None이면 schema:*:synonyms 전체 스캔.
+
+        Returns:
+            {"removed": [{"db_id", "column", "words"}], "removed_count": int,
+             "columns_pruned": int}
+        """
+        empty = {"removed": [], "removed_count": 0, "columns_pruned": 0}
+        if not self._governance_enabled():
+            return empty
+        if not self._connected or self._redis is None:
+            return empty
+
+        ts = float(now) if now is not None else time.time()
+        threshold = ts - float(decay_days) * 86400.0
+
+        try:
+            if db_id is not None:
+                keys = [self._key(db_id, "synonyms")]
+            else:
+                keys = []
+                async for k in self._redis.scan_iter(match="schema:*:synonyms"):
+                    keys.append(k)
+
+            removed: list[dict] = []
+            removed_count = 0
+            columns_pruned = 0
+
+            for key in keys:
+                key_db_id = self._db_id_from_key(key)
+                raw = await self._redis.hgetall(key)
+                for col, data in (raw or {}).items():
+                    parsed = json.loads(data)
+                    if not isinstance(parsed, dict) or "words" not in parsed:
+                        continue
+                    meta = parsed.get("meta")
+                    if not isinstance(meta, dict) or not meta:
+                        continue  # 메타 없는 레거시 컬럼 전체 보존
+                    sources = parsed.get("sources")
+                    sources = sources if isinstance(sources, dict) else {}
+                    words = parsed.get("words", []) or []
+
+                    to_remove: list[str] = []
+                    for w in words:
+                        m = meta.get(w)
+                        if not isinstance(m, dict):
+                            continue  # 메타 없는 단어 보존(레거시)
+                        last = m.get("last_used_ts")
+                        if last is None:
+                            continue  # 타임스탬프 없으면 보존
+                        if sources.get(w, "llm") == "operator":
+                            continue  # 운영자 등록 보존
+                        if float(last) < threshold:
+                            to_remove.append(w)
+
+                    if not to_remove:
+                        continue
+
+                    remove_set = set(to_remove)
+                    updated_words = [w for w in words if w not in remove_set]
+                    updated_sources = {
+                        k: v for k, v in sources.items() if k not in remove_set
+                    }
+                    updated_meta = {
+                        w: meta[w] for w in updated_words if w in meta
+                    }
+
+                    if updated_words:
+                        entry = {
+                            "words": updated_words,
+                            "sources": updated_sources,
+                            "meta": updated_meta,
+                        }
+                        await self._redis.hset(
+                            key, col, json.dumps(entry, ensure_ascii=False)
+                        )
+                    else:
+                        await self._redis.hdel(key, col)
+
+                    removed.append(
+                        {"db_id": key_db_id, "column": col, "words": to_remove}
+                    )
+                    removed_count += len(to_remove)
+                    columns_pruned += 1
+
+            return {
+                "removed": removed,
+                "removed_count": removed_count,
+                "columns_pruned": columns_pruned,
+            }
+        except Exception as e:
+            logger.error("Redis 유사어 정리 실패: %s", e)
+            return empty
 
     # === 글로벌 유사단어 사전 ===
 

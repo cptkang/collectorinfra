@@ -30,12 +30,14 @@ from src.utils.query_gen_common import (
     build_multi_resource_pivot_sql,
     build_query_examples_block,
     build_stat_month_block,
+    build_value_index_block,
     classify_metric_field,
     decimal_cast_example,
     eav_attr_resource_types,
     resolve_query_limit,
     resolve_stat_month,
 )
+from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
@@ -244,6 +246,7 @@ async def query_generator(
     # 폼필(deterministic_sql)·재시도가 아닐 때만 진입. 커버리지 밖이면 None → 아래 LLM 폴백(회귀 0).
     # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
     semantic_sql = None
+    coverage_outside = False  # 트랙 C ON인데 커버리지 밖 → 트랙 A 폴백 대상 여부(3단 폴백)
     if (not is_retry and not deterministic_sql
             and not state.get("column_mapping")
             and app_config.text2sql.semantic_compose):
@@ -257,6 +260,13 @@ async def query_generator(
             stat_month=stat_month,
             value_index=value_index,
         )
+        coverage_outside = semantic_sql is None
+
+    # 트랙 A 산출물(기본 None — 단일 경로·결정적 경로는 무변경)
+    sql_candidates: list[dict] | None = None
+    text2sql_fallback: dict | None = None
+    extra_return: dict = {}
+
     if deterministic_sql:
         sql = deterministic_sql
         logger.info("폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s", sql[:500])
@@ -295,19 +305,57 @@ async def query_generator(
         if _sm_block:
             user_prompt += "\n\n" + _sm_block
 
-        # LLM 호출
-        messages = [
-            SystemMessage(content=system_prompt),
-            # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
-            HumanMessage(content=user_prompt),
-        ]
-        # Remove any None entries (no effect for other LLMs)
-        messages = [m for m in messages if m is not None]
-        response = await llm.ainvoke(messages)
+        # E5-2 값 검색 리터럴 주입 — value_retrieval ON + 인덱스 매칭 시만(회귀 0).
+        _vi_block = _build_value_index_injection(state, user_query, app_config)
+        if _vi_block:
+            user_prompt += _vi_block
 
-        # SQL 추출
-        sql = _extract_sql_from_response(response.content)
+        # 트랙 A(E2~E4): 다중 후보 생성·선택. 재시도(에러 컨텍스트)에는 미진입(현행 단일 수정 경로).
+        use_multi = (
+            app_config.text2sql.multi_candidate and not is_retry
+            and (not app_config.text2sql.complexity_gate
+                 or classify_complexity(
+                     user_query, state.get("parsed_requirements"),
+                     state.get("schema_info"),
+                 ) == "complex")
+        )
+        if use_multi:
+            selection = await _run_multi_candidate_single_db(
+                state, llm, app_config, system_prompt, user_prompt, user_query,
+            )
+            sql = selection["sql"]
+            sql_candidates = selection.get("sql_candidates")
+            text2sql_fallback = _decide_fallback_tier(
+                coverage_outside, app_config, selection,
+            )
+            if text2sql_fallback and text2sql_fallback.get("tier") == "human_review":
+                # 저신뢰 → 사람 검토 회부(HITL은 기존 approval_gate 재사용; 미활성 시 정보 필드로만).
+                extra_return["awaiting_approval"] = True
+                extra_return["approval_context"] = {
+                    "type": "text2sql_low_confidence",
+                    "sql": sql,
+                    "confidence": text2sql_fallback.get("confidence"),
+                    "reason": text2sql_fallback.get("reason"),
+                }
+            logger.info(
+                "다중 후보 선택: method=%s conf=%.2f (%d 후보)",
+                selection.get("method"), selection.get("confidence", 0.0),
+                len(sql_candidates or []),
+            )
+        else:
+            # LLM 호출 (현행 단일 경로 — 바이트 무변경)
+            messages = [
+                SystemMessage(content=system_prompt),
+                # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
+                AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+                HumanMessage(content=user_prompt),
+            ]
+            # Remove any None entries (no effect for other LLMs)
+            messages = [m for m in messages if m is not None]
+            response = await llm.ainvoke(messages)
+
+            # SQL 추출
+            sql = _extract_sql_from_response(response.content)
 
     logger.info(f"SQL 생성 완료 (retry={retry_count}): {sql[:1000]}...")
 
@@ -336,11 +384,129 @@ async def query_generator(
 
     return {
         "generated_sql": sql,
+        "sql_candidates": sql_candidates,
+        "text2sql_fallback": text2sql_fallback,
         "synonym_usage": synonym_usage,
         "retry_count": retry_count,
         "error_message": None,  # 에러 메시지 초기화
         "current_node": "query_generator",
+        **extra_return,
     }
+
+
+def _query_keywords(user_query: str) -> list[str]:
+    """값 인덱스 검색용 질의 토큰(2글자 이상)을 추출한다."""
+    tokens = re.split(r"[\s,./()\[\]{}'\"`~!@#$%^&*=+:;?<>|\\-]+", user_query or "")
+    return [t for t in tokens if len(t) >= 2]
+
+
+def _build_value_index_injection(
+    state: AgentState, user_query: str, app_config: AppConfig
+) -> str:
+    """E5-2 값 검색 리터럴 주입 블록을 만든다(value_retrieval OFF·미매칭 시 빈 문자열)."""
+    if not app_config.synonym.value_retrieval:
+        return ""
+    index = state.get("column_value_index")
+    if not index:
+        return ""
+    from src.schema_cache.value_index import search_value_index
+
+    matched = search_value_index(
+        index, _query_keywords(user_query),
+        fuzzy=app_config.synonym.fuzzy_match,
+        min_score=app_config.synonym.match_confidence_min,
+    )
+    return build_value_index_block(matched)
+
+
+async def _run_multi_candidate_single_db(
+    state: AgentState,
+    llm: BaseChatModel,
+    app_config: AppConfig,
+    system_prompt: str,
+    user_prompt: str,
+    user_query: str,
+) -> dict:
+    """단일 DB 경로(A/B)의 다중 후보 생성·선택(E2~E4).
+
+    경로별 validator(query_validator)·executor(get_db_client.execute_sql)를 주입해
+    selector가 경로 비대칭 없이 동작한다(§2.1 / D-066 계열).
+    """
+    from src.db import get_db_client
+    from src.dbhub.models import QueryExecutionError, QueryTimeoutError
+    from src.nodes.candidate_generator import generate_candidates
+    from src.nodes.candidate_selector import run_candidate_pipeline
+    from src.nodes.query_validator import query_validator
+
+    t2 = app_config.text2sql
+    is_kbgenai = isinstance(llm, KBGenAIChat)
+    db_id = state.get("active_db_id")
+
+    async def _validate(sql: str):
+        vstate = {**state, "generated_sql": sql, "error_message": None}
+        try:
+            vr = await query_validator(vstate, app_config=app_config)
+        except Exception as e:  # noqa: BLE001
+            return f"validator 예외: {e}"
+        res = (vr or {}).get("validation_result") or {}
+        return None if res.get("passed") else (res.get("reason") or "검증 실패")
+
+    client_db_id = db_id if db_id and db_id not in ("_default", "default") else None
+    try:
+        async with get_db_client(app_config, db_id=client_db_id) as client:
+            async def _execute(sql: str) -> dict:
+                try:
+                    result = await client.execute_sql(sql)
+                    return {"rows": result.rows, "error": None}
+                except (QueryExecutionError, QueryTimeoutError) as e:
+                    return {"rows": None, "error": str(e)}
+                except Exception as e:  # noqa: BLE001
+                    return {"rows": None, "error": str(e)}
+
+            return await run_candidate_pipeline(
+                llm, system_prompt, user_prompt,
+                count=t2.candidate_count, strategies=t2.candidate_strategies,
+                selection=t2.selection, is_kbgenai=is_kbgenai,
+                extract_sql=_extract_sql_from_response,
+                validate=_validate, execute=_execute, user_query=user_query,
+            )
+    except Exception as e:  # noqa: BLE001 — DB 연결 실패: 생성만 수행하고 첫 후보 반환
+        logger.warning("다중 후보 실행 컨텍스트 실패, 생성만 수행: %s", e)
+        candidates = await generate_candidates(
+            llm, system_prompt, user_prompt,
+            count=t2.candidate_count, strategies=t2.candidate_strategies,
+            is_kbgenai=is_kbgenai, extract_sql=_extract_sql_from_response,
+        )
+        first = candidates[0] if candidates else {"sql": "", "strategy": None, "confidence": 0.0}
+        return {"sql": first["sql"], "strategy": first.get("strategy"), "confidence": 0.0,
+                "all_failed": True, "method": "no_db", "audit": {"error": str(e)},
+                "sql_candidates": candidates}
+
+
+def _decide_fallback_tier(
+    coverage_outside: bool, app_config: AppConfig, selection: dict
+) -> dict | None:
+    """트랙 C 커버리지 밖 3단 폴백의 티어를 판정한다(E6-3).
+
+    커버리지 내(컴파일)·트랙 C 미사용·과도기 llm 폴백이면 None(게이트 무관).
+    candidate_then_human: 전 후보 실패 또는 신뢰도<임계면 human_review, 아니면 auto.
+    human: 항상 human_review.
+    """
+    t2 = app_config.text2sql
+    if not coverage_outside or t2.semantic_fallback == "llm":
+        return None
+    conf = float(selection.get("confidence", 0.0))
+    all_failed = bool(selection.get("all_failed"))
+    below = all_failed or conf < t2.fallback_confidence_min
+    if t2.semantic_fallback == "human" or (
+        t2.semantic_fallback == "candidate_then_human" and below
+    ):
+        reason = ("전 후보 실행 실패" if all_failed
+                  else f"선택 신뢰도 {conf:.2f} < 임계 {t2.fallback_confidence_min:.2f}")
+        return {"tier": "human_review", "confidence": conf,
+                "method": selection.get("method"), "reason": reason}
+    return {"tier": "auto", "confidence": conf, "method": selection.get("method"),
+            "reason": "트랙 A 선택 신뢰도 임계 통과"}
 
 
 def _build_system_prompt(

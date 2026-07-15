@@ -3602,13 +3602,72 @@ Accuracy = 결과집합 동치) 측정 하네스가 부재했다. 특히 트랙 
 
 ---
 
+## D-073. 다중 후보 생성 — 복잡도 조건부 (Plan 61 트랙 A / E2·E3)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-15 |
+| **상태** | 확정 (구현 완료 — 기본 OFF `TEXT2SQL_MULTI_CANDIDATE=false`, 회귀 0) |
+| **관련 결정** | D-074(실행기반 선택 — 짝), D-076(트랙 C 우선·커버리지 밖에 적용), D-066(단일/멀티 경로 동등화), D-035(결정적 우선) |
+
+### 배경 / 문제
+
+현행 쿼리 생성기의 구조적 한계는 **"한 번에 SQL 하나만 생성하고, 실행에러가 나야만 재시도한다"**는 단일-후보·에러기반-재시도 구조다(§1). E1 하네스 측정 결과 **커버리지 밖 비율 23.1%**(6/26, 트랙 C 결정적 컴파일로 못 푸는 질의)로, 이 구간에 통계적 2차 방어선이 정당화된다(§9-1 사용자 기결정 + 측정 근거).
+
+### 결정
+
+- **`src/nodes/candidate_generator.py`** 신설. 문헌(CHASE-SQL·XiYan-SQL §0.2-1) 근거로 후보 이득은 "많음"이 아니라 **"다양성"**에서 온다 → **multi_prompt 우선**(§9-2): (a)base 현행 템플릿, (b)divide-and-conquer(CTE 분해), (c)실행계획 CoT. `src/prompts/candidate_strategies.py`에 전략 suffix 정의(base 프롬프트에 **추가 지시만** 덧붙여 스키마·유사어·방언 근거 불변). `temperature`는 보조 다양화(best-effort `.bind` — provider 미지원 시 무시).
+- **E3 복잡도 게이트**(`classify_complexity`, 결정적 규칙): 다중 query_target·집계/순위/범위비교 키워드·EAV 다중속성 → complex. `TEXT2SQL_COMPLEXITY_GATE=on`이면 complex만 다중 후보(단순 질의 비용 억제 — 품질 목적, 비용 컷 아님 §9-4). OFF면 전 질의 다중 후보.
+- **삽입 지점 원칙(§3 / D-066 계열)**: 그래프 엣지가 아니라 `query_generator` 함수 내부(경로 A·B 자동 공유) + `multi_db_executor._generate_sql`(경로 C 명시 이식). `src/orchestration/subagents.py` **무변경**.
+- 상태: `AgentState.sql_candidates`([{sql,strategy,confidence}]) 추가. 기존 `generated_sql`은 선택 결과로 유지(하위호환).
+- 플래그: `TEXT2SQL_MULTI_CANDIDATE`(off)·`TEXT2SQL_CANDIDATE_COUNT`(3)·`TEXT2SQL_CANDIDATE_STRATEGIES`(multi_prompt)·`TEXT2SQL_COMPLEXITY_GATE`(off) — `Text2SQLConfig` 노출.
+
+### 근거 / 한계
+
+- **회귀 경계**: OFF 기본, OFF 시 단일 LLM 호출 1회로 기존 경로 바이트 무변경(테스트 실측: `test_query_generator_multi_candidate::test_multi_candidate_off_single_path` — LLM 1회·`sql_candidates=None`). 재시도(에러 컨텍스트)에는 미진입(현행 단일 수정 경로).
+- 한계: temperature 다양화는 provider 지원 의존. 경로 C의 `sql_candidates`는 DB별 태깅 관측용(멀티 DB 병합 뷰라 대표 선택은 DB별 독립).
+
+---
+
+## D-074. 실행기반 후보 선택 — 규칙필터→결과일관성 투표→LLM 선택 폴백 (Plan 61 트랙 A / E4)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-15 |
+| **상태** | 확정 (구현 완료 — 기본 OFF, 회귀 0) |
+| **관련 결정** | D-073(다중 후보 생성 — 짝), D-003(읽기전용 — 후보 실행 안전성), D-035(결정적 우선·LLM 폴백 한정), D-066(경로 비대칭 차단) |
+
+### 배경 / 문제
+
+다중 후보(D-073)를 만들어도 **어느 후보가 정답인지 고르는 선택기**가 없으면 이득이 없다. 문헌(§0.2-2)은 단순 self-consistency 투표보다 견고한 선택기가 낫다고 보고하나, 폐쇄망·파인튜닝 부재 제약상 **결정적 결과일관성 투표를 1차, LLM 쌍대비교를 폴백**으로 둔다(§9-3 hybrid 사용자 결정).
+
+### 결정
+
+- **`src/nodes/candidate_selector.py`** 신설. 선택 파이프라인(D-035 결정적 우선):
+  1. **규칙 사전필터** — 경로별 validator를 **주입**받아 후보별 적용(통과분만 잔류; 전부 탈락 시 필터 없이 실행이 강한 판별자).
+  2. **읽기전용 실행** — 잔류 후보를 실행(D-003 부작용 없음). 실행 예외는 실패 후보로 격리 기록.
+  3. **결과 일관성 투표** — 결과집합 시그니처(순서 무관·부동소수 안정·행수 상한)로 그룹화, 최다 그룹 선택. 신뢰도 = 승자 그룹 크기 / 성공 후보 수.
+  4. **동수/전패 폴백** — 결과 그룹이 갈리면 `hybrid`/`llm`에서 각 그룹 대표로 **LLM 쌍대비교** 심판(실패·파싱불가 시 결과일관성 폴백). **전 후보 실행 실패** 시 `all_failed=True` → 호출부가 기존 에러기반 재시도로 강등.
+- **경로 독립성(§2.1 / D-066)**: `validate`·`execute`를 **주입**받아 경로 (A/B)단일 DB(query_validator/get_db_client.execute_sql)·(C)멀티 DB(_validate_sql_simple/execute_sql) 비대칭을 원천 차단. selector는 db·config를 직접 import하지 않는 순수 선택 로직. 합성 헬퍼 `run_candidate_pipeline`이 생성(D-073)+선택을 두 경로에 공유.
+- **감사**: 선택 근거(후보별 규칙/실행 결과·투표수·최종 method)를 `audit`로 반환·로깅.
+- **3단 폴백 신뢰도 게이트(E6-3)**: 트랙 C 커버리지 밖에서 `semantic_fallback=candidate_then_human`이면 (1차)다중 후보→(2차)신뢰도 게이트(`TEXT2SQL_FALLBACK_CONFIDENCE_MIN`, 미달·전패 시 human_review)→(3차)사람 검토 회부(기존 `approval_gate` HITL 재사용, 미활성 시 `text2sql_fallback` 정보 필드). `semantic_fallback` 기본값 `llm`→`candidate_then_human` 전환(multi_candidate OFF이면 llm으로 우아하게 강등 — 회귀 0). 플래그 `TEXT2SQL_SELECTION`(hybrid).
+
+### 근거 / 한계
+
+- **회귀 경계**: OFF 기본, 후보 1개면 즉시 반환(=현행). `fallback_confidence_min=0.0` 기본에서 human_review는 **전 후보 실패 시에만** 발동(트랙 A 신뢰). 검증: `test_candidate_pipeline.py`(17)·`test_query_generator_multi_candidate.py`(9).
+- 한계(§6): 후보가 전부 실행실패·동수일 때 LLM 판정 품질이 병목(폐쇄망·파인튜닝 부재). 경로 C의 3단 폴백 HITL은 그래프 고유라 orchestration/multidb에선 정보 필드로만(우아한 강등). E5-2 값 인덱스 프롬프트 주입은 경로 A/B(schema_analyzer 적재)에 우선 배선, 경로 C 주입은 후속.
+
+---
+
 ## D-075. 동의어 매칭 고도화 — 유연 매칭 + 값 검색 + 사전 위생 (Plan 61 트랙 B / E5)
 
 | 항목 | 내용 |
 |------|------|
-| **결정일** | 2026-07-14 |
-| **상태** | 부분 구현 (E5-1 유연 매칭 완료 · E5-2 값검색 인프라 · E5-3 상한 config화 · E5-4 자리예약) |
-| **관련 결정** | D-012(LLM 발견→사람 승인 루프), D-035(결정적 룩업), D-051(유사어 토큰 스케일 가드), D-019(캐시 TTL·fingerprint) |
+| **결정일** | 2026-07-14 (E5-3 거버넌스·E5-2 런타임 주입 보강: 2026-07-15) |
+| **상태** | 대부분 구현 (E5-1 유연 매칭 · E5-2 값검색 인프라+런타임 적재 · E5-3 상한 config화+거버넌스 · E5-4만 자리예약) |
+| **관련 결정** | D-012(LLM 발견→사람 승인 루프), D-035(결정적 룩업), D-051(유사어 토큰 스케일 가드), D-019(캐시 TTL·fingerprint), D-073/D-074(값 검색 프롬프트 주입 소비) |
+
+> **2026-07-15 보강**: (1) **E5-3 거버넌스 구현** — 유사어 메타(등록출처·사용횟수·최종사용일·신뢰도)를 Redis 저장 구조에 확장(`{words,sources,meta}` — 하위호환), `increment_synonym_usage`·`prune_stale_synonyms`(operator 보존·메타 없는 레거시 보존·strictly-older 경계) 추가, 동일 용어 다중 컬럼 충돌 우선순위는 순수 랭킹 로직 `src/utils/synonym_governance.py`(operator>usage_count>confidence>컬럼사전순, utils 계층·redis 무의존). 마스터 스위치 `SYNONYM_GOVERNANCE=false` 기본 OFF=저장 바이트 무변경. (2) **E5-2 런타임 적재** — `value_index.load_or_build_value_index`(load 우선·없으면 spec 도출 후 읽기전용 build+save)를 `schema_analyzer`가 `value_retrieval` ON일 때 `state.column_value_index`로 적재, `query_gen_common.build_value_index_block`로 검증 리터럴을 생성 프롬프트에 주입(경로 A/B). `value_retrieval=false` 기본 OFF 시 미진입(회귀 0).
 
 ### 배경 / 문제
 
@@ -3712,6 +3771,9 @@ id 조인(Plan 33)·미존재 resource_type 생성(Plan 25)이 반복된다. 문
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-15 | D-073 | **다중 후보 생성(Plan 61 트랙 A / E2·E3)**: E1 하네스 측정 커버리지 밖 23.1%(6/26) + §9-1 사용자 기결정으로 착수. `src/nodes/candidate_generator.py`(multi_prompt 우선 — base/분할정복/실행계획 CoT, `src/prompts/candidate_strategies.py` 전략 suffix; temperature 보조 best-effort bind)·E3 결정적 `classify_complexity`(다중 target·집계/순위/범위·EAV 다중속성→complex). 삽입 지점 원칙(§3/D-066): `query_generator` 함수 내부(경로 A·B 자동공유)+`multi_db_executor._generate_sql`(경로 C 명시이식), `orchestration/subagents.py` 무변경. `AgentState.sql_candidates` 추가. 플래그 `TEXT2SQL_MULTI_CANDIDATE`(off)·`CANDIDATE_COUNT`(3)·`CANDIDATE_STRATEGIES`(multi_prompt)·`COMPLEXITY_GATE`(off). **기본 OFF·회귀 0**(OFF 시 LLM 1회 단일 경로 바이트무변경 실측). 상세 `## D-073`. ※ 번호: `## D-`+변경이력 grep(등재 최댓값 D-076, D-073/074는 Plan 61 예약 미등재분 — 충돌 없음). |
+| 2026-07-15 | D-074 | **실행기반 후보 선택(Plan 61 트랙 A / E4)**: `src/nodes/candidate_selector.py` — ①규칙 사전필터(validator 주입)→②읽기전용 실행(D-003)→③결과일관성 투표(시그니처 순서무관·부동소수 안정·행수 상한)→④동수 시 hybrid LLM 쌍대비교 폴백, 전패 시 `all_failed`로 에러 재시도 강등. **경로 독립성(§2.1/D-066)**: validate·execute 주입으로 단일/멀티 비대칭 차단(selector는 db·config 미import). `run_candidate_pipeline` 합성 헬퍼가 생성+선택을 두 경로 공유. **3단 폴백(E6-3)**: `semantic_fallback` 기본값 `llm`→`candidate_then_human` 전환(multi_candidate OFF이면 llm 강등=회귀0), 신뢰도 게이트 `TEXT2SQL_FALLBACK_CONFIDENCE_MIN`(0.0=전패 시에만 human_review) + 사람검토는 기존 `approval_gate` HITL 재사용·`text2sql_fallback` 정보필드. 플래그 `TEXT2SQL_SELECTION`(hybrid). 검증: `test_candidate_pipeline.py`(17)·`test_query_generator_multi_candidate.py`(9). arch exit 0·기본 OFF 회귀 0. 상세 `## D-074`. |
+| 2026-07-15 | D-075 | **(보강) E5-3 거버넌스 + E5-2 런타임 적재**: E5-3 유사어 메타(등록출처·사용횟수·최종사용일·신뢰도) Redis 구조 확장(`{words,sources,meta}` 하위호환)·`increment_synonym_usage`·`prune_stale_synonyms`(operator·레거시 보존·strictly-older 경계)·충돌 우선순위 순수 랭킹 `src/utils/synonym_governance.py`(utils 계층·redis 무의존). 마스터 `SYNONYM_GOVERNANCE=false` OFF=저장 무변경. E5-2 `value_index.load_or_build_value_index`(load 우선·spec 도출 build+save)를 `schema_analyzer`가 `value_retrieval` ON 시 `state.column_value_index` 적재→`query_gen_common.build_value_index_block`로 생성 프롬프트 주입(경로 A/B). 검증 `test_synonym_governance.py`(12)·`test_synonym_metadata.py`(7). 기본 OFF 회귀 0. 상세 `## D-075` 2026-07-15 보강. |
 | 2026-07-14 | D-076 | **(후속) 로컬 개발 샌드박스(db_id `polestar`) 트랙 C 검증 환경 편입**: "전체 서버의 CPU 사용률 현황" 질의 0건 진단(audit 실측) — 트랙 C 미진입(.env 플래그 부재) + 로컬 db_id `polestar`가 시맨틱 모델·DB_DOMAINS 미등재라 플래그를 켜도 `load_semantic_model(\"polestar\")=None`→LLM 폴백, 폴백은 범용 프롬프트(POLESTAR_DB_IDS 미설정)+프로필 부재로 `cmm_measurement`/`cpu_usage`/`server.Cpu` 환각 SQL(존재하되 빈 테이블이라 validator 통과 = silent wrong, 정확히 D-076이 겨냥한 유형). 조치(사용자 승인 방향 1): ① `.env`에 `TEXT2SQL_SEMANTIC_COMPOSE=true`(+`SEMANTIC_FALLBACK=llm`) ② `config/semantic_models/polestar.yaml` 신설(gp 복제 — 도커 테스트 DB 스키마 동일 실측: core_config_prop·알람 3테이블·metric_stat 3테이블) ③ `DB_DOMAINS`에 `polestar` 재등재(postgresql/db_schema=polestar, aliases 최소화 — 운영 .env는 비활성이라 라우팅 무영향, `_resolve_priority_db_ids`는 활성 DB만 순회). 검증: NL→SMQ→컴파일 E2E(실 gemini) 성공 — 패턴 B SMQ·커버리지 통과·스키마 한정 피벗 SQL 50행(사용률 값 4서버) 반환으로 0건 해소. 도메인 재등재로 구 테스트 3건 복구(+0 신규 실패), `test_domain_config` 7개 도메인으로 갱신. 잔여 관찰: LLM SMQ가 dimensions=[]로 서버 식별 컬럼 누락 가능(SMQ 선택 정확도 이슈 — Plan 61 §7 분리 측정 축) → 같은 날 후속2로 결정적 주입 구현(아래 행) |
 | 2026-07-14 | D-076 | **(후속4) LLM 폴백 경로의 기간(stat_month) 결정적 주입**: "CPU, 메모리 사용률을 지난 1개월 통계데이터로 확인하고 그중 80%이상" 질의(80% 임계 필터 → 설계상 트랙 C 커버리지 밖·LLM 폴백)에서 기간이 `s.stat_date BETWEEN 직전월 AND 이번달`로 생성 — **진행 중인 달(불완전 데이터) 포함** + 월별 GROUP BY 서버 중복(사용자에게 6월·7월 2행 노출, 정답은 직전 월 1행). 원인: 시스템 템플릿 일반 규칙("하드코딩 날짜 금지 — 항상 CURRENT_DATE 동적 계산")을 LLM이 충실히 따른 것 — 코드가 이미 결정적으로 해석하는 기간(`resolve_stat_month`: 지난 1개월/지난달=직전 월 단일)이 폴백 프롬프트에 전달되지 않았음. 조치(D-035 결정화): `query_gen_common.build_stat_month_block`(공용 — 등호 필터 `s.stat_date = 'YYYYMM'` 강제, 일반 규칙보다 우선 명시, BETWEEN/INTERVAL 재계산·_h/_d 대체 금지)을 **단일(query_generator)·멀티(multi_db_executor) 폴백 프롬프트 양쪽에 주입**(D-066 단일 출처 — 멀티는 original_query 우선, sub_query_context 폴백). 기간 표현 없으면(None) 블록 미생성=프롬프트 무변경. E2E 실측(격리 인스턴스): 동일 질의 → `s.stat_date = '202606'` 단일 월 SQL → **DB-ORA-023 1행(mem 82.6≥80, 6월만)** 정답 반환. 단위 테스트 3건 추가(블록 등호·우선 문구, None 무변경, "지난 1개월" 공백 표현 해석). 관련 스위트 368 passed |
 | 2026-07-14 | D-076 | **(후속3) 로컬 폴백 LLM 경로 복구 + 알람/이벤트 라우팅 결정화**: "최근 event가 발생한 서버" 질의가 환각 SQL(`vmm_event_log`를 `r.id=e.id`로 조인)로 0건 — 원인 3중: ① 로컬 `polestar`에 db_profile·전용 프롬프트 부재 → `db_profiles/polestar.yaml` 신설(gp 복제, "공동존 폴스타"→"폴스타(로컬 샌드박스)") + `.env`/`.env.example` `POLESTAR_DB_IDS`에 polestar 추가. 적용 후 allowed_tables 화이트리스트가 데이터 질의 스키마를 5개 핵심 테이블로 필터(환각 원천 차단 실측). ② **orchestration 경로(운영 기본)가 `routing_intent`를 isolated state에 미설정** — semantic_router(그래프 경로)만 설정해, alarm_query task도 일반 템플릿+allowed_tables(알람 테이블 제외)로 실행되는 경로 비대칭(D-066 계열) → `_make_isolated_input`이 task agent에서 결정적 매핑(alarm_query→routing_intent). ③ LLM 라우팅이 bare "event" 질의를 data_query로 오분류(도구 설명의 "모니터링"이 흡수) → **결정적 교정**(D-047 프로세스 교정과 동일 패턴): `intent_planner._coerce_alarm_intent` + deepagents `_run_subagent_tool` 교정(`has_alarm_signal` 공용, 키워드 알람/alert/이벤트/event/경보) + 도구 설명·오케스트레이터 지시문·intent/semantic_router 프롬프트 어휘 정비. E2E 실측(격리 인스턴스): 이벤트 질의가 `cmm_alarm↔cmm_alarm_def` 조인·CTIME DESC로 **알람 5건 정상 반환**, CPU 질의 트랙 C 50행 회귀 없음. 단위 테스트 3건 추가(_coerce_alarm_intent 교정·비알람 유지·routing_intent 매핑) + stale 목 1건 현행화(synthesize kwarg). 관련 스위트 313 passed |

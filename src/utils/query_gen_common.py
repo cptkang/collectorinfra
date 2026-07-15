@@ -445,3 +445,31 @@ def build_query_examples_block(structure_meta: dict | None) -> str:
             block += f"\n설명: {explanation}"
         block += "\n"
     return block
+
+
+def build_value_index_block(matched: dict[str, list[str]] | None) -> str:
+    """E5-2 값 검색 매칭 리터럴을 프롬프트 주입 블록으로 만든다(없으면 빈 문자열).
+
+    질의 키워드로 검증된 **실측 리터럴**(예: `resource_type='server.Server'`,
+    EAV `NAME='Hostname'`)만 제시하여 WHERE 리터럴 환각(Plan 25 유형)을 차단한다.
+    단일/멀티 DB 경로가 동일 블록을 사용하도록 단일 출처화한다.
+
+    Args:
+        matched: {인덱스 키: [매칭 리터럴, ...]} (search_value_index 결과)
+
+    Returns:
+        프롬프트에 덧붙일 검증 리터럴 블록(없으면 "")
+    """
+    if not matched:
+        return ""
+    lines = [
+        "\n\n## 검증된 값 리터럴 (WHERE 절에 이 실측 값만 사용)",
+        "아래는 질의와 관련해 DB에서 실측 확인된 값입니다. WHERE 절 리터럴은 반드시 "
+        "이 목록의 값만 사용하고, 목록에 없는 값을 임의로 지어내지 마세요.",
+    ]
+    for key, values in matched.items():
+        if not values:
+            continue
+        vals = ", ".join(f"'{v}'" for v in values)
+        lines.append(f"- {key}: {vals}")
+    return "\n".join(lines) if len(lines) > 2 else ""

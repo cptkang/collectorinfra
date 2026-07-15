@@ -577,19 +577,30 @@ class PipelinePredictor:
             }
 
             async def _run() -> dict:
+                if self.path in ("orchestration", "multidb"):
+                    # 운영 경로(B)(C)는 input_parser 이후 state를 받으므로 동일하게 선행 실행
+                    # (parsed_requirements 부재 시 KeyError — 실측 경로 상태 조립 재현).
+                    from src.nodes.input_parser import input_parser  # type: ignore
+
+                    parsed = await input_parser(state, llm=llm, app_config=cfg)
+                    state.update(parsed or {})
                 if self.path == "orchestration":
                     from src.orchestration.subagents import _run_single_db_pipeline  # type: ignore
 
-                    return await _run_single_db_pipeline(state, llm, cfg)
+                    result = await _run_single_db_pipeline(state, llm, cfg)
+                    return {**state, **(result or {})}
                 if self.path == "multidb":
                     from src.nodes.multi_db_executor import multi_db_executor  # type: ignore
 
-                    return await multi_db_executor(state, llm=llm, app_config=cfg)
-                # graph
+                    result = await multi_db_executor(state, llm=llm, app_config=cfg)
+                    return {**state, **(result or {})}
+                # graph — 체크포인터가 thread_id를 요구하므로 항목별 고유 값 전달
                 from src.graph import build_graph  # type: ignore
 
                 graph = build_graph(cfg)
-                return await graph.ainvoke(state)
+                return await graph.ainvoke(
+                    state, config={"configurable": {"thread_id": f"eval-{item.id}"}}
+                )
 
             t0 = time.perf_counter()
             out = asyncio.run(_run())
@@ -947,6 +958,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             base_flags = {"selection": "consistency"}
         else:
             var_flags = {**var_flags, args.ab: True}
+            # baseline은 축 플래그를 명시적으로 OFF 세팅해야 한다 — 빈 dict로 두면
+            # env/.env에 켜져 있는 값(예: 로컬 TEXT2SQL_SEMANTIC_COMPOSE=true)이
+            # 그대로 남아 baseline도 variant와 동일 조건으로 실행된다(2026-07-15 실측).
+            base_flags = {args.ab: False}
         predictor = _make_predictor(args, pass_outside_when={args.ab})
         base = run_batch(items, predictor, executor, label=f"baseline({args.ab}=off)", flags=base_flags,
                          float_tol=args.float_tol, apply_flags=not args.mock)
