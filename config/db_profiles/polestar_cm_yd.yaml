@@ -433,12 +433,12 @@ query_examples:
           TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
           hi.physicalcore,
           hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS mem_max
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN s.min_val END)::numeric, 2) AS cpu_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS cpu_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric, 2) AS cpu_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN s.min_val END)::numeric, 2) AS mem_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS mem_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric, 2) AS mem_max
       FROM polestar.cmm_resource r
       JOIN polestar.cmm_resource svr
           ON svr.id = r.platform_resource_id
@@ -477,15 +477,15 @@ query_examples:
           TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
           hi.physicalcore,
           hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS mem_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS fs_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS fs_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS fs_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN s.min_val END)::numeric, 2) AS cpu_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS cpu_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric, 2) AS cpu_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN s.min_val END)::numeric, 2) AS mem_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS mem_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric, 2) AS mem_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN s.min_val END)::numeric, 2) AS fs_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS fs_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric, 2) AS fs_max,
           ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.min_val END)::numeric, 2) AS disks_io_min,
           ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END)::numeric, 2) AS disks_io_avg,
           ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.max_val END)::numeric, 2) AS disks_io_max

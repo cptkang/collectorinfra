@@ -265,8 +265,8 @@ def test_metric_fields_folded_into_single_pivot():
     )
     # 사용률은 같은 c/s 조인으로 집계 (별도 스코프 아님)
     assert "LEFT JOIN cmm_metric_stat_m s ON s.resource_id = c.id" in block
-    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' THEN s.avg_val END)::numeric" in block
-    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' THEN s.max_val END)::numeric" in block
+    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric" in block
+    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric" in block
     # 단일 GROUP BY, 맨 컬럼 금지 명시
     assert block.count("GROUP BY COALESCE(c.platform_resource_id, c.id)") == 1
     assert "집계 밖의 맨 컬럼" in block
@@ -279,7 +279,9 @@ def test_metric_fields_folded_into_single_pivot():
         assert stripped.startswith(("MAX(", "ROUND(AVG(", "ROUND(MAX(", "ROUND(MIN(")), stripped
 
 
-def test_db2_metric_uses_decimal_cast():
+def test_db2_metric_uses_double_cast():
+    """DB2 집계 전 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 쓰레기 값(실측
+    5.5e13)에서 SQL0413N 변환 오버플로로 쿼리가 죽는다(D-086)."""
     pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
     block = build_multi_resource_pivot_block(
         regular_entries=[],
@@ -289,7 +291,8 @@ def test_db2_metric_uses_decimal_cast():
         metric_fields=["CPU 평균"],
         db_engine="db2",
     )
-    assert "CAST(s.avg_val AS DECIMAL(15,4))" in block
+    assert "CAST(s.avg_val AS DOUBLE)" in block
+    assert "DECIMAL(15,4)" not in block
     assert "::numeric" not in block
 
 
@@ -395,23 +398,45 @@ class TestDeterministicPivotSql:
     def test_schema_prefix_and_fetch_db2(self):
         sql = self._sql(db_engine="db2", db_schema="POLESTAR", limit=100000)
         assert "FROM POLESTAR.cmm_resource c" in sql
-        assert "CAST(s.avg_val AS DECIMAL(15,4))" in sql
+        assert "CAST(s.avg_val AS DOUBLE)" in sql
         assert "::numeric" not in sql
         assert sql.rstrip().endswith("FETCH FIRST 100000 ROWS ONLY;")
 
     def test_db2_metric_scale_fixed_to_two(self):
-        """DB2 사용률 집계는 최종 `CAST(... AS DECIMAL(15,2))`로 스케일 고정(엑셀 제로필 방지, D-068 후속).
+        """DB2 사용률 집계는 최종 `CAST(... AS DECIMAL(31,2))`로 스케일 고정(엑셀 제로필 방지, D-068 후속).
 
-        DB2 `AVG(DECIMAL)`은 스케일을 크게 확장해 ROUND(x,2)로 값은 맞아도 타입 스케일이 남아
-        6.51000000000000000000처럼 직렬화된다. 외부 CAST로 scale 2 고정.
+        DB2 집계는 스케일을 크게 확장해 ROUND(x,2)로 값은 맞아도 타입 스케일이 남아
+        6.51000000000000000000처럼 직렬화된다. 외부 CAST로 scale 2 고정(정밀도는 15→31 확장, D-086).
         """
         sql = self._sql(db_engine="db2", db_schema="POLESTAR")
         assert "CAST(ROUND(AVG(" in sql
-        assert "AS DECIMAL(15,2)) AS" in sql
+        assert "AS DECIMAL(31,2)) AS" in sql
         # PostgreSQL은 ::numeric 사용 — 외부 DECIMAL 캐스트 없음
         pg = self._sql(db_engine="postgresql", db_schema="polestar")
-        assert "AS DECIMAL(15,2))" not in pg
+        assert "AS DECIMAL(31,2))" not in pg
         assert "::numeric, 2)" in pg
+
+    def test_utilization_value_guard_applied(self):
+        """Utilization 값 타당성 게이트(D-086) — 범위 밖 쓰레기(실측 max=5.5e13·avg=1.2e9·음수)를
+        필드 단위로 집계에서 제외. 상한은 100이 아닌 1000(gp/yd 만재 피크가 100.1까지 기록됨)."""
+        for engine in ("postgresql", "db2"):
+            sql = self._sql(db_engine=engine)
+            # 필드별 val_col에 각각 적용(avg는 avg_val, max는 max_val)
+            assert "AND s.avg_val BETWEEN 0 AND 1000 THEN" in sql
+            assert "AND s.max_val BETWEEN 0 AND 1000 THEN" in sql
+
+    def test_non_utilization_measure_not_guarded(self):
+        """MaxIORate 등 Utilization 외 지표에는 0~1000 게이트를 걸지 않는다(의미 없음)."""
+        pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+        sql = build_multi_resource_pivot_sql(
+            regular_entries=[], server_eav=[], child_eav=[],
+            eav_pattern=pattern, db_engine="db2", db_schema="POLESTAR",
+            explicit_measures=[("디스크 IO 평균", "server.Disks", "AVG", "avg_val", "MaxIORate")],
+        )
+        assert "s.definition_name IN " in sql or "s.definition_name = 'MaxIORate'" in sql
+        assert "BETWEEN 0 AND 1000" not in sql
+        # 크래시 면역(DOUBLE)은 게이트 없는 지표에도 적용
+        assert "CAST(s.avg_val AS DOUBLE)" in sql
 
     def test_stat_month_filter_applied(self):
         sql = self._sql(db_engine="postgresql", stat_month="202606")

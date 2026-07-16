@@ -123,8 +123,8 @@ def test_pattern_b_measures_pivot():
     })
     sql = compile_smq(smq, "polestar_cm_gp", m)
     assert "LEFT JOIN polestar.cmm_metric_stat_m s" in sql
-    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' THEN s.avg_val END)::numeric" in sql
-    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' THEN s.max_val END)::numeric" in sql
+    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric" in sql
+    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric" in sql
 
 
 def test_pattern_b_injects_default_identity_dimensions_when_empty():
@@ -225,7 +225,7 @@ def test_db2_dialect_decimal_and_fetch_first():
     })
     sql = compile_smq(smq, "polestar_b0", m)
     assert "POLESTAR.cmm_resource" in sql          # 대문자 스키마(D-057)
-    assert "CAST(s.avg_val AS DECIMAL(15,4))" in sql
+    assert "CAST(s.avg_val AS DOUBLE)" in sql      # 고정 정밀도 DECIMAL은 SQL0413N 위험(D-086)
     assert "::numeric" not in sql
     assert sql.rstrip().endswith("FETCH FIRST 100 ROWS ONLY;")
 

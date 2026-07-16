@@ -3930,6 +3930,62 @@ D-072~076(Plan 61)·D-077~081(Plan 60)을 선점·예약한 것을 확인, 팀�
 
 ---
 
+## D-086. 사용률 집계의 크래시 면역(DOUBLE 캐스트) + 값 타당성 게이트 (SQL0413N 수정)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-16 |
+| **상태** | 확정 (실측 버그 수정 — 폐쇄망 3단계 데이터 실측으로 경계값 확정) |
+| **관련 결정** | D-085(N개월 범위 — 이 버그의 노출 계기), D-065 후속2/D-068 7차(DB2 DECIMAL 캐스트 도입), D-066(경로 단일 출처), D-003(읽기전용 — 원천 데이터 수정 불가) |
+
+### 배경 / 문제
+
+실측(2026-07-16, 폐쇄망): D-085로 "지난 6개월" 범위가 동작하자 b0(DB2) 폼필이
+`SQL0413N Overflow occurred during numeric data type conversion`으로 실패(3개월은 정상 —
+데이터 의존). 원인 확정 경로: 코드상 숫자 변환은 `_metric_select_line`의 행 캐스트
+`CAST(s.avg_val/max_val AS DECIMAL(15,4))`(상한 ~1e11)와 집계 캐스트 `DECIMAL(15,2)` 둘뿐이고,
+후자는 전자가 성공하면 수학적으로 오버플로 불가 → 행 캐스트로 특정. 폐쇄망 실측으로
+`(resource_id=37339, stat_date=202601, avg_val=1.2e9, max_val=5.5e13)` 쓰레기 행 1건 확인.
+
+경계값 실측(3단계): ① b0 전수 — 범위 밖은 위 1행 + **음수 21행**(server.Memory)뿐, 100~1만
+대역 0건. ② gp/yd — CPU `max_val`만 100 초과 gp 226건(0.4%)·yd 145건(0.9%), avg 초과 0.
+③ 대역 정밀 — 전부 **100.0000…1~100.1**(만재 피크의 부동소수 슬롭·미세 초과, 여러 서버·여러 월
+분산) → **상한 100은 정상 만재 기록을 자른다**(보고서에서 가장 의미 있는 값). 실측상 100.1과
+5.5e13 사이에 값이 전무.
+
+### 결정
+
+- **크래시 면역**: DB2 행 캐스트를 `DOUBLE`로(변환 범위 ~1e308 — SQL0413N 원리적 불가, 게이트
+  없는 지표까지 심층 방어). 집계 캐스트는 `DECIMAL(31,2)`(스케일 2 고정은 유지 — D-068 7차
+  엑셀 제로필 방지 보존, 정밀도만 확장).
+- **값 타당성 게이트**: `UTILIZATION_VALID_RANGE = (0, 1000)` — metric CASE 조건에
+  `AND s.<val_col> BETWEEN 0 AND 1000`을 **필드별 val_col에 각각** 추가(avg만 오염된 행도 max는
+  살리는 식의 필드 단위 제외). **definition_name='Utilization'일 때만** 적용(MaxIORate 등엔
+  0~1000 의미 없음 — `_utilization_guard`가 게이팅). 상한 1000 근거: 실측 만재 피크(≤100.1)
+  통과 + 쓰레기(≥1.2e9) 차단, 그 사이 값 전무라 어떤 경계든 현 데이터 동작 동일.
+- **적용 지점**: `_metric_select_line`(단일 출처 — 폼필 단일/멀티·시맨틱 패턴 B 자동 공유) +
+  `decimal_cast_example`(LLM 폴백 안내) + **db_profiles 4종(gp/yd/b0/polestar) few-shot 예시
+  각 15곳**(b0 예시는 동일 DECIMAL(15,4) 캐스트라 LLM 텍스트 질의 경로도 같은 데이터에서
+  동일 크래시 — 결정적 경로만 고치면 D-066 계열 재발).
+- **PostgreSQL에도 게이트 대칭 적용**: gp/yd는 `::numeric`이라 크래시는 없지만 값 오염은 동일
+  가능(실측 음수·쓰레기는 b0에서만 확인됐으나 방어 일관성). 크래시 캐스트 변경은 DB2만.
+
+### 근거 / 대안 / 한계 (트레이드오프 명시)
+
+- **침묵 배제 수용**: 걸러진 행은 결과에 표시되지 않음(침묵적 폴백 금지 원칙과 긴장) — 보완으로
+  원천 행(37339, 202601 + 음수 21행)을 DBA에 통보해 수집기 이상 확인(에이전트는 D-003 읽기전용).
+  게이트는 증상 차단이지 데이터 수정이 아님.
+- **NULL 의미 확장**: 빈 셀 원인에 "전 데이터가 유효 범위 밖" 추가(기존: 데이터 없음/SQL 오류
+  D-050). 빈 셀 진단 시 오귀인 주의.
+- **미검증 잔여**: b0 음수 21행의 정체(센티널 -1 추정)는 표본 미확인 — 하한 0이 어차피 차단하므로
+  게이트 설계엔 영향 없음. gp/yd에 100.1 초과~1000 이하 실값이 미래에 생기면 통과(의도 — 여유분).
+- 검증: pivot 33건 + semantic golden + parity 등 관련 스위트 224 passed(실패 1건은 pre-existing
+  `test_null_mappings_excluded`, HEAD 동일 실패 — D-085 검증 시 확인). 신규 회귀 테스트:
+  게이트 필드별 적용(양 엔진)·MaxIORate 미게이트+DOUBLE 면역·DECIMAL(31,2) 스케일.
+  b0 6개월 시나리오 end-to-end 조립 실측(BETWEEN '202601' AND '202606' + 게이트 + DOUBLE 확인).
+
+---
+
 ## D-085. 기간 표현 "지난 N개월"의 결정적 범위 해석 (폼필 기간 필터 침묵 누락 수정)
 
 | 항목 | 내용 |
@@ -4179,6 +4235,7 @@ id 조인(Plan 33)·미존재 resource_type 생성(Plan 25)이 반복된다. 문
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-16 | D-086 | **사용률 집계 크래시 면역 + 값 타당성 게이트 (DB2 SQL0413N 수정)**: D-085(6개월 범위)가 노출한 b0 크래시 — 행 캐스트 `CAST(s.max_val AS DECIMAL(15,4))`(상한 1e11)가 쓰레기 행(실측 resource 37339: max_val=5.5e13)에서 변환 오버플로. 수정: DB2 행 캐스트→`DOUBLE`(SQL0413N 원리적 불가)·집계 캐스트→`DECIMAL(31,2)`(스케일 2 유지), Utilization 한정 값 게이트 `BETWEEN 0 AND 1000`(필드별 val_col — b0 음수 21행도 차단). **상한 1000의 근거는 3단계 폐쇄망 실측**: gp/yd 만재 피크가 100.0000…1~100.1로 기록돼(부동소수 슬롭) 상한 100은 정상 만재 기록을 자름, 100.1~5.5e13 사이 값 전무. 적용: `_metric_select_line`+`decimal_cast_example`+db_profiles 4종 few-shot 각 15곳(b0 예시도 동일 크래시 패턴 — LLM 텍스트 경로 포함). MaxIORate 등은 게이트 제외(DOUBLE 면역만). 잔여: 원천 쓰레기 행 DBA 통보 권고(D-003 읽기전용). 회귀 224 passed. 상세 `## D-086` |
 | 2026-07-16 | D-085 | **"지난 N개월" 결정적 범위 해석 — 폼필 기간 필터 침묵 누락 수정**: 폼필 결정적 피벗(D-068 3차)에서 "지난 3개월간 통계" 질의의 기간 필터가 통째로 누락(파서 `resolve_stat_month`가 지난달/이번달만 인식 + 단일 월 반환형이라 범위 표현 불가 → None → 전체 월 평균으로 침묵 오답, 텍스트 LLM 경로는 정상이던 비대칭). `resolve_stat_month_range`로 대체(반환 `(시작,끝)` YYYYMM 범위, "지난/최근/과거 N개월" 정규식, 진행 중인 달 제외 D-076 후속4 유지, N=1=지난달 호환), 렌더러(`build_multi_resource_pivot_sql`·`build_stat_month_block`)는 단일=등호/범위=BETWEEN 겸용(`StatMonth` 타입·`_normalize_stat_month`), 단일(query_generator)·멀티(multi_db_executor)·시맨틱(compile_smq) 3경로 동시 갱신(D-066 단일 출처). 회귀: 실측 질의 그대로 `('202604','202606')`·BETWEEN 렌더 등 pivot 30건 + 관련 스위트 158 passed. 상세 `## D-085` |
 | 2026-07-15 | D-083 | **보호 root 계정 + 감사 로그 로테이션 + 어드민 진입 규약 정정 (Plan 59-a)**: 실테스트로 3결함 확정·수정. (1)**어드민 재로그인**: 미인증 `/admin` 진입이 `/admin/login`(env break-glass 전용, DB 사용자 인증 안 함)으로 유도돼 role==admin 계정도 로그인 실패 → admin.js 리다이렉트를 `/login?next=/admin`으로, 403은 `/`로 교정. `/admin/login`은 링크 없는 break-glass로만 유지. login.html `next` 복귀(오픈 리다이렉트 방지). (2)**보호 root**: `User.is_protected` 컬럼(+멱등 DDL) 신설, seed admin을 `is_protected=True`로 생성(env 계정=상시 일반 로그인 root). 역할/상태 변경·삭제·PW초기화 **403 차단**, 부서·알림그룹은 허용. 프론트 해당 행 disabled+자물쇠. (3)**감사 로테이션**: `cleanup_old_logs`가 호출부 0건이라 무효였음 → 기동 1회 + 하루 1회 태스크 + 수동 `POST /admin/audit/cleanup`(버튼), `AUDIT_RETENTION_DAYS`(기본90). +알림그룹 체크박스 UI(D-082 완성)·부서 인라인 편집. 수정 `domain/user.py`·`user_repository.py`·`api/server.py`·`schemas.py`·`routes/admin.py`·`routes/user_auth.py` 없음·`static/js/admin.js`·`static/login.html`·`admin/dashboard.html`·`.env.example`. 검증 `test_plan59a.py` 10건(보호 가드·seed·로테이션), 회귀 신규 실패 0(기존 6 test_routes=MagicMock 픽스처), arch exit 0. 상세 `## D-083`(구 D-073 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
 | 2026-07-14 | D-082 | **알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)**: 무인증 브로드캐스트하던 `/alarm/notifications/stream`을 지역 스코프로 인가(관리자=전존/공동존·은행존 운영자=해당존/일반=403, 중복 할당 가능). 데이터 모델 1: `User.alarm_zones: list[str]` 신규 필드(+DDL `ALTER TABLE ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]` 멱등·repo·to_auth_dict·schemas·admin update). 존↔db_id 단일 출처 `src/routing/zones.py`(gongjon=[gp,yd]/bankjon=[b0]). 쿠키 인증(사용자 선택 B): 로그인 시 HttpOnly `user_token` 쿠키 세팅(EventSource 헤더 제약), `resolve_stream_user`(쿠키→헤더→쿼리)+`alarm_zones_for_user`(admin·dev=전존)로 존 산출→빈 집합 403, `event_generator`가 `db_id_to_zone`로 구독자 존만 통과. 프론트: 권한자만 EventSource open(403 루프 차단)+수신 토글. SSO 보존(인증 불변·인가만 추가). 수정 `routing/zones.py`(신규)·`domain/user.py`·`user_repository.py`·`api/server.py`(DDL)·`dependencies.py`·`routes/alarm.py`·`routes/user_auth.py`(쿠키)·`routes/admin.py`·`schemas.py`·`static/js/app.js`·`index.html`. 검증 `test_alarm_zone_rbac.py` 16건(존 격리·중복=전존·일반 403·쿠키 인증), 회귀 신규 실패 0, arch exit 0. 상세 `## D-082`(구 D-072 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |

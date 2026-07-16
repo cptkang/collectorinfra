@@ -125,22 +125,40 @@ def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
     return default_limit
 
 
+# Utilization(사용률 %) 값의 타당성 게이트 범위(D-086). 실측(gp/yd): 만재 피크가 부동소수
+# 슬롭·미세 초과로 100.0000…1~100.1까지 기록되므로 상한 100은 정상 만재 기록을 잘라낸다 —
+# 여유를 둔 1000 채택(실측상 100.1과 쓰레기 5.5e13 사이에 값이 없어 그 사이 어떤 경계든 동작 동일).
+# 하한 0은 b0 실측 음수(센티널 추정) 21행 차단. Utilization 외 지표(MaxIORate 등)엔 적용 금지
+# (0~1000 의미가 없음 — `_metric_select_line`이 definition_name으로 게이팅).
+UTILIZATION_VALID_RANGE: tuple[int, int] = (0, 1000)
+
+
+def _utilization_guard(val_col: str, definition_name: str) -> str:
+    """Utilization일 때만 값 타당성 게이트 조건(` AND s.<col> BETWEEN 0 AND 1000`)을 반환한다."""
+    if definition_name != "Utilization":
+        return ""
+    lo, hi = UTILIZATION_VALID_RANGE
+    return f" AND s.{val_col} BETWEEN {lo} AND {hi}"
+
+
 def decimal_cast_example(db_engine: str | None) -> str:
     """엔진별 '소수 보존 사용률 집계' 예시 SQL 스니펫을 반환한다(미매핑 alias 안내용).
 
     PostgreSQL은 `AVG(...)::numeric`으로 소수를 보존하지만, DB2는 `AVG()`가 정수 컬럼을 정수로
-    집계하므로 **집계 전** `CAST(... AS DECIMAL)`이 필요하다(`::numeric`은 DB2 문법 오류). 미매핑
-    필드(사용률)를 한글 헤더로 alias하라는 안내에 엔진에 맞는 예시를 넣어 소수점 소실을 막는다.
+    집계하므로 **집계 전** 캐스트가 필요하다(`::numeric`은 DB2 문법 오류). 캐스트는 DOUBLE —
+    고정 정밀도 DECIMAL(15,4)는 범위 밖 쓰레기 값(실측 5.5e13)에서 SQL0413N 변환 오버플로로
+    쿼리 전체가 죽는다(D-086). 값 타당성 게이트(BETWEEN)도 예시에 포함해 LLM 경로도 오염을 거른다.
     """
+    guard = _utilization_guard("avg_val", "Utilization")
     if (db_engine or "").lower() == "db2":
         return (
             "CAST(ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
-            "AND s.definition_name = 'Utilization' "
-            'THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS DECIMAL(15,2)) AS "CPU 평균"'
+            f"AND s.definition_name = 'Utilization'{guard} "
+            'THEN CAST(s.avg_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS "CPU 평균"'
         )
     return (
         "ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
-        "AND s.definition_name = 'Utilization' "
+        f"AND s.definition_name = 'Utilization'{guard} "
         'THEN s.avg_val END)::numeric, 2) AS "CPU 평균"'
     )
 
@@ -303,20 +321,29 @@ def _metric_select_line(
 
     definition_name 기본값은 'Utilization'(사용률)이며, 폼필 경로는 이 값만 쓴다. 시맨틱
     컴파일러(트랙 C 패턴 B)는 'MaxIORate'(디스크 IO) 등 다른 지표도 지정할 수 있어 인자로 노출한다.
+
+    Utilization에는 값 타당성 게이트(BETWEEN 0 AND 1000)를 CASE 조건에 넣어, 범위 밖 쓰레기
+    행(실측 avg=1.2e9/max=5.5e13, 음수)을 필드 단위로 집계에서 제외한다(D-086). 게이트는
+    definition_name='Utilization'일 때만 — MaxIORate 등엔 0~1000 의미가 없다.
     """
+    guard = _utilization_guard(val_col, definition_name)
     if (db_engine or "").lower() == "db2":
-        # DB2: 집계 함수 내부에서 DECIMAL 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
-        # 또한 DB2 `AVG(DECIMAL)`은 스케일을 크게 확장(예: scale 18)하여 ROUND(x,2)로 값은 2자리로
+        # DB2: 집계 함수 내부에서 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
+        # 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 값(실측 5.5e13 ≥ 1e11)에서
+        # SQL0413N 변환 오버플로로 쿼리 전체가 죽는다(D-086; DOUBLE은 ~1e308이라 변환 오버플로
+        # 원리적 불가 — 게이트 없는 지표(MaxIORate)까지 덮는 심층 방어).
+        # 또한 DB2 집계는 스케일을 크게 확장(예: scale 18)하여 ROUND(x,2)로 값은 2자리로
         # 반올림돼도 **타입 스케일이 남아** 결과가 6.51000000000000000000처럼 trailing zero로 직렬화된다
-        # (엑셀 제로필). 최종을 `CAST(... AS DECIMAL(15,2))`로 감싸 스케일을 2로 고정한다(D-068 후속).
-        inner = f"CAST(s.{val_col} AS DECIMAL(15,4))"
+        # (엑셀 제로필). 최종을 `CAST(... AS DECIMAL(31,2))`로 감싸 스케일을 2로 고정한다(D-068 후속;
+        # 정밀도는 15→31로 확장해 대형 정상값(IO rate 등)의 최종 캐스트 오버플로 여지 제거 — D-086).
+        inner = f"CAST(s.{val_col} AS DOUBLE)"
         return (
             f"  CAST(ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-            f"AND s.definition_name='{definition_name}' THEN {inner} END), 2) AS DECIMAL(15,2)) AS \"{field}\""
+            f"AND s.definition_name='{definition_name}'{guard} THEN {inner} END), 2) AS DECIMAL(31,2)) AS \"{field}\""
         )
     return (
         f"  ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-        f"AND s.definition_name='{definition_name}' THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
+        f"AND s.definition_name='{definition_name}'{guard} THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
     )
 
 
