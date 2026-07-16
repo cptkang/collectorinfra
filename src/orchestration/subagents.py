@@ -24,7 +24,9 @@ from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
 from src.nodes.cache_management import cache_management
+from src.nodes.field_mapper import resolve_priority_db_ids
 from src.nodes.general_inference import general_inference
+from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
@@ -256,6 +258,83 @@ def _inject_demonstrative_hostname(isolated: dict) -> dict:
         hostname,
     )
     return new_parsed
+
+
+def _strip_location_terms(text: str) -> str:
+    """질의 텍스트에서 위치/제품명 토큰을 제거한다(핀 대체 target의 정제 질의용).
+
+    classify_dbs의 sub_query_context(위치 제거 정제 질의)가 없는 합성 target에 원문을
+    그대로 넣으면 위치어가 SQL WHERE로 누출될 수 있어(과거 GROUP_PATH ILIKE '김포' 사례),
+    위치·제품명 토큰만 결정적으로 걷어낸다. 긴 토큰부터 제거해 부분 잔재("은행존"→"존")를 막는다.
+    """
+    stripped = text or ""
+    tokens = sorted(
+        (*LOCATION_HINT_TERMS, "폴스타", "polestar"), key=len, reverse=True
+    )
+    for token in tokens:
+        stripped = stripped.replace(token, " ")
+    return " ".join(stripped.split())
+
+
+def _apply_turn_hint_pinning(
+    targets: list[dict],
+    isolated: dict,
+    sub_query: str,
+    active_db_ids: list[str],
+) -> tuple[list[dict], bool]:
+    """이번 턴 원문 위치 힌트(target_db_hints)로 대상 DB 집합을 결정적으로 고정한다.
+
+    DB 선택 우선순위 "① 이번 턴 명시 위치 > ② db_ids 고정 > ③ 승계 > ④ fan-out"에서
+    ①의 판정이 종래 LLM 산출물(sub_query→classify_dbs)에 의존해, LLM이 직전 턴 위치를
+    병합해 sub_query를 오염시키면("은행존 알람"→"김포 은행 공동존…") 오라우팅됐다
+    (2026-07-16 실측). input_parser가 이번 턴 **원문**에서 결정적으로 추출한
+    parsed_requirements.target_db_hints를 폼필과 동일한 해소 로직(resolve_priority_db_ids,
+    D-065 계열)으로 DB 집합에 고정한다. classify_dbs 결과는 sub_query_context(위치 제거
+    정제 질의) 재사용을 위해 유지하고 **DB 집합 결정권만** 이 함수가 갖는다.
+
+    적용 게이트(모두 충족):
+    - 단일 task 계획(is_composite 아님) — 전역 힌트는 task별 위치가 다른 복합 계획에 부정확.
+    - 힌트가 활성 DB로 1개 이상 해소됨.
+
+    Args:
+        targets: classify_dbs가 반환한 후보 목록
+        isolated: subagent 격리 입력(parsed_requirements/is_composite 포함)
+        sub_query: 이번 task 질의(합성 target의 정제 질의 원료)
+        active_db_ids: 활성 DB 목록
+
+    Returns:
+        (적용된 targets, 핀 적용 여부)
+    """
+    if isolated.get("is_composite"):
+        return targets, False
+    parsed = isolated.get("parsed_requirements") or {}
+    hints = parsed.get("target_db_hints") or []
+    if not isinstance(hints, list) or not hints:
+        return targets, False
+    pinned = resolve_priority_db_ids([str(h) for h in hints], active_db_ids)
+    if not pinned:
+        return targets, False
+
+    by_id = {t.get("db_id"): t for t in targets if isinstance(t, dict)}
+    final: list[dict] = []
+    for db_id in pinned:
+        existing = by_id.get(db_id)
+        if existing:
+            final.append(existing)  # classify의 sub_query_context 재사용
+        else:
+            final.append({
+                "db_id": db_id,
+                "relevance_score": 1.0,
+                "sub_query_context": _strip_location_terms(sub_query),
+                "user_specified": True,
+                "reason": "이번 턴 원문 위치/DB 힌트 결정적 해소(target_db_hints)",
+            })
+    dropped = [i for i in by_id if i not in set(pinned)]
+    logger.info(
+        "이번 턴 위치 힌트 결정적 DB 고정: hints=%s → %s (classify 제외분=%s)",
+        hints, pinned, dropped or "없음",
+    )
+    return final, True
 
 
 def _apply_db_succession(
@@ -523,6 +602,9 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "llm_inference_details": state.get("llm_inference_details"),
         "pending_synonym_registrations": state.get("pending_synonym_registrations"),
         "pending_synonym_reuse": state.get("pending_synonym_reuse"),
+        # 이번 턴 원문 위치 힌트의 결정적 DB 고정(_apply_turn_hint_pinning)은 전역 힌트를
+        # 쓰므로 단일 task 계획에서만 안전 — 복합 여부를 게이트 신호로 전달한다.
+        "is_composite": bool(state.get("is_composite")),
     }
 
     # 노드 KeyError 방지용 기본값 (대형 누적분은 빈 값으로 초기화)
@@ -676,16 +758,23 @@ async def run_data_query_pipeline(
     #    classify_dbs 후, 이번 턴에 새 위치/DB 신호가 없으면 직전 턴 DB를 승계한다(③, M2).
     raw_targets = task.get("db_ids")
     db_succeeded = False
+    db_pinned = False
     if raw_targets:
         targets = _normalize_targets(raw_targets, sub_query)
     else:
         targets = await classify_dbs(llm, sub_query, app_config)
-        targets, db_succeeded = _apply_db_succession(
-            targets,
-            sub_query,
-            isolated.get("conversation_context"),
-            app_config.multi_db.get_active_db_ids(),
+        # ① 이번 턴 원문 위치 힌트가 해소되면 DB 집합을 결정적으로 고정한다
+        #    (LLM 분해/분류가 직전 턴 위치를 병합해도 원문 힌트가 이긴다 — 2026-07-16).
+        targets, db_pinned = _apply_turn_hint_pinning(
+            targets, isolated, sub_query, app_config.multi_db.get_active_db_ids()
         )
+        if not db_pinned:
+            targets, db_succeeded = _apply_db_succession(
+                targets,
+                sub_query,
+                isolated.get("conversation_context"),
+                app_config.multi_db.get_active_db_ids(),
+            )
 
     if not targets:
         # 방어적 폴백 (classify_dbs가 항상 1개 이상 반환하지만 안전 차원)
@@ -750,6 +839,13 @@ async def run_data_query_pipeline(
             "succeeded": True,
             "db_ids": result["target_db_ids"],
             "note": "이전 턴 DB 승계(멀티턴)",
+        }
+    if db_pinned:
+        # 관찰성: 원문 위치 힌트로 DB가 결정적으로 고정됐음을 task 결과에 남긴다(오라우팅 진단용).
+        result["db_hint_pinning"] = {
+            "pinned": True,
+            "db_ids": result["target_db_ids"],
+            "note": "이번 턴 위치 힌트 결정적 DB 고정",
         }
     gen_sql = s.get("generated_sql")
     if not gen_sql:

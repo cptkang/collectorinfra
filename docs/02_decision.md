@@ -3168,6 +3168,29 @@ D-043(supersedes)은 이 모순을 막기 위한 기존 장치이나, (a) `_run_
   `src/nodes/field_mapper.py`(`_CLEARED_MAPPING_FIELDS`, 스킵 2경로).
 - 검증: `tests/test_multiturn/test_form_state_reset.py`(6건), `test_field_mapper_node.py` 갱신.
 
+### 후속 (SSE 경로 누락 — "텍스트 경로 2곳" 중 1곳만 실제 적용됐던 비대칭)
+
+버그(2026-07-16 실테스트): 폼필 턴들 뒤의 **파일 없는 텍스트 질의**("은행과 공동존 여의도 서버
+최근 1개월 알람 리스트")가 옛 양식의 서버 정보 조회(t1)를 재실행 — b0에서 SQL0413N(overflow)
+발생, replanner가 알람 조회를 추가(t2)했으나 최종 출력은 옛 양식 엑셀/CSV(알람 미포함).
+D-064 증상 그대로 재현.
+
+원인: 위 "수정" 항목이 텍스트 경로 2곳이라 기록했으나, **실제 커밋(59311bb)은
+`/query`(비스트리밍)에만 `create_followup_input`을 적용**하고 SSE(`/query/stream`) 후속 턴은
+`{user_query, messages}`만 보내는 원형 그대로였다. 프론트 텍스트 질의는 SSE 경로를 타므로
+실사용에서 D-064가 사실상 미수정 상태 — 문서가 적용 범위를 사실과 다르게 기록해 후속 검증도
+막았다. field_mapper 자기정리는 정상이나, **트리거(uploaded_file)가 살아 있으면 input_parser가
+template을 되살리므로** 노드 정리만으로는 못 막는다(D-064 본문 설계 그대로).
+
+수정: 입력 상태 조립을 `_build_turn_input_state(body, thread_id, checkpoint_state, current_user)`
+**단일 헬퍼로 추출**해 두 라우트가 공유(첫 턴=create_initial_state, 후속=create_followup_input,
+승인=approval delta). 인라인 재구현 회귀는 소스 단언 테스트가 차단. 검증:
+`test_form_state_reset.py::TestTurnInputStateSingleSource`(4건 — 후속 턴 트리거 초기화·승인 delta·
+첫 턴 초기화·양 라우트 헬퍼 공유). 교훈: **"N곳 수정"이라 기록/계획했으면 N곳 모두를 diff로
+실측 확인**(한 경로만 적용된 비대칭은 D-057/D-066과 동일 계열 — 같은 로직이 두 곳에 인라인으로
+있으면 언젠가 한쪽만 고쳐진다 → 단일 출처로 추출이 정답). b0 SQL0413N은 누수된 옛 질의의
+부수 증상 — 누수 차단 후 정당한 폼필에서 재현되는지 별도 관찰.
+
 ---
 
 ## D-065. 바(bare) "공동존" 위치의 DB 라우팅 (gp+yd)
@@ -3703,6 +3726,19 @@ hostname으로 매핑 → (3) `_register_llm_mappings_to_redis`/`_register_llm_s
 - **교훈**: 멀티 엔진 결과 병합은 **엔진별 칼럼명 표기 차이(DB2 소문자화)**를 정규화해 통일해야 CSV/원본이
   안 깨진다(Excel만 보고 정상으로 오판 금지). DB2 집계는 **스케일 확장**을 최종 CAST로 고정.
 
+### 결정 (8차: DB2 통계값이 엑셀에 텍스트로 저장 — 문자열 도착 비대칭)
+
+실테스트(2026-07-16) 관찰: 은행존(b0) 통계값(CPU/메모리 평균·최고)이 **엑셀에 텍스트로 저장**됨
+(공동존 gp/yd는 숫자로 정상 인식). 원인: DB2 경로는 DECIMAL 통계값이 **문자열("6.51")로 도착**하는
+반면 PostgreSQL은 숫자로 도착하는 엔진 비대칭 — `_normalize_cell_value`는 `Decimal`만 숫자로
+변환했고 문자열은 그대로 셀에 써서 openpyxl이 텍스트로 저장.
+
+수정: `excel_writer._normalize_cell_value(value, numeric_hint=)` — **사용률 통계 필드로 판정된
+헤더 열에 한해**(단일 출처 `classify_metric_field` 재사용, D-068 계열) 순수 숫자형 문자열
+(`^-?\d+(\.\d+)?$`)을 int/float로 변환. 무차별 문자열→숫자 변환은 OS 버전("7.9")·IP 등 진짜
+텍스트 필드를 오변환하므로 **필드 의미로 게이트**한다. 회귀:
+`test_excel_writer.py::TestNumericStringNormalization`.
+
 ---
 
 ## D-069. 어드민 접근 통합 RBAC (Plan 59 Part A · 방향 A)
@@ -3894,6 +3930,104 @@ D-072~076(Plan 61)·D-077~081(Plan 60)을 선점·예약한 것을 확인, 팀�
 
 ---
 
+## D-085. 기간 표현 "지난 N개월"의 결정적 범위 해석 (폼필 기간 필터 침묵 누락 수정)
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-16 |
+| **상태** | 확정 (실측 버그 수정 — 사용자 폐쇄망 실측으로 발견) |
+| **관련 결정** | D-068 3차(결정적 피벗 SQL 조립), D-076 후속4(기간 결정적 주입·진행 중인 달 제외), D-066(단일/멀티 경로 단일 출처) |
+
+### 배경 / 문제
+
+실측(2026-07-16, 폐쇄망): 폼필 질의 "공동존 김포 … CPU, 메모리 사용률은 **지난 3개월간** 통계
+자료를 사용하시오"에서 생성 SQL의 metric 조인이 `LEFT JOIN polestar.cmm_metric_stat_m s ON
+s.resource_id = c.id AND s.definition_name = 'Utilization'`으로 **기간 필터 없이** 실행됨 —
+결과값이 지난 3개월이 아닌 **전체 보관 기간의 월 통계 평균/최대**로 채워짐(침묵적 오답).
+같은 기간 표현의 텍스트 질의(LLM 경로)는 `BETWEEN TO_CHAR(CURRENT_DATE - INTERVAL ...)`로 정상.
+
+원인: 결정적 기간 파서 `resolve_stat_month`가 (1) 인식 신호가 "지난달/전월/지난 1개월/이번달/
+당월"뿐이라 "지난 N개월"을 매칭하지 못하고, (2) 반환형이 단일 월 `YYYYMM` 문자열이라 **범위를
+표현할 수 없는 설계 한계**. 파싱 실패(None) 시 결정적 빌더가 기간 조건을 생략(전체 월 평균)하고
+조용히 진행(D-068 3차의 "파싱 실패에도 구조는 안 깨지게"가 기간 누락을 침묵시킴).
+
+### 결정
+
+- **`resolve_stat_month` → `resolve_stat_month_range`로 대체**(rename — 잔존 호출부는 import
+  에러로 강제 검출): 반환형을 `(시작 YYYYMM, 끝 YYYYMM)` 범위 튜플로 변경. "지난/최근/과거
+  N개월"(정규식, 공백 변형 허용)은 **직전 완결 월부터 과거 N개월**(진행 중인 달 제외 — D-076
+  후속4 원칙 유지), 기존 단일 월 신호는 `(m, m)`으로 호환(N=1 == 지난달).
+- **렌더러는 단일/범위 겸용**: `build_multi_resource_pivot_sql`·`build_stat_month_block`이
+  `StatMonth = str | tuple[str, str] | None`을 받아 `(m, m)`·문자열은 등호, 범위는
+  `s.stat_date BETWEEN '시작' AND '끝'`으로 렌더(`_normalize_stat_month` 정규화).
+- **세 소비 경로 동시 갱신**(D-066 단일 출처): 단일 DB `query_generator`(결정적 피벗 + 트랙 C
+  `compile_from_nl` + LLM 폴백 블록), 멀티 DB `multi_db_executor`(동일 3지점), 시맨틱 컴파일러
+  `compile_smq`(타입 확장 — 패턴 B 기간 필터가 범위 지원).
+
+### 근거 / 대안 / 한계
+
+- LLM 폴백은 이미 "지난 3개월"을 처리하나 결정적 경로(폼필)는 파서가 유일한 기간 해석 지점 —
+  파서 확장이 근본 수정. 대안(폼필만 LLM 폴백으로 강등)은 D-068 3차가 결정화한 이유(서버 중복·
+  config 누락 변동성)를 되살리므로 기각.
+- 한계: "지난 반년"·"작년"·한글 수사("세 달") 등은 미인식(None → 전체 월 평균, 종전과 동일).
+  필요 시 신호 추가로 점진 확장. LLM 폴백 프롬프트 블록은 범위여도 재계산 금지 문구 유지.
+- 검증: `test_multi_resource_pivot.py` 30건 통과(신규: 실측 질의 그대로 "지난 3개월간" →
+  `('202604','202606')`·BETWEEN 렌더·연초 롤오버·N=1 호환·GROUP BY 단일 유지). 관련 스위트
+  (query_generator/multi_db/semantic) 158 passed, 실패 1건은 HEAD에서도 실패하는 기존 건
+  (`test_query_generator_mapping.py::test_null_mappings_excluded` — 본 변경 무관).
+
+---
+
+## D-084. 이번 턴 원문 위치 힌트의 결정적 DB 고정 + 맥락 주입 오염원 차단
+
+| 항목 | 내용 |
+|------|------|
+| **결정일** | 2026-07-16 |
+| **상태** | 확정 (사용자 승인 — 효용 비교분석 후 2a+2b 동시 적용) |
+| **관련 결정** | D-065(위치→DB alias 해소), D-053/M2(DB 승계), D-055(지시어 해소), D-047/D-076 후속3(결정적 의도 교정) |
+
+### 배경 / 문제
+
+실측(2026-07-16): 폼필(은행존+김포) 턴 다음의 텍스트 질의 "지난 하루동안 **은행존**에서 발생한
+모든 알람"이 intent_planner LLM 분해에서 직전 턴 위치와 병합돼 sub_query가 "**김포 은행 공동존**에서
+…"로 오염 → `classify_dbs`(LLM)가 gp 선택(은행존 b0 누락, **침묵적 오답**). 직후 "은행 폴스타"로
+바꾸면 성공 — 표현에 민감한 비결정성.
+
+두 겹의 결함: (L1) `_build_context_block`이 직전 위치/DB를 **무조건** 주입하고 방어는 프롬프트
+규칙("명시 위치 최우선, 승계 금지")뿐 — LLM이 미준수. (L2) DB 선택 우선순위 "① 이번 턴 명시 위치"의
+판정 재료가 원문이 아니라 **LLM 산출물(sub_query)** — input_parser가 원문에서 결정적으로 추출한
+`target_db_hints`는 폼필 경로만 소비하고 텍스트 경로는 미사용(경로 비대칭).
+
+### 결정 (2a + 2b — 결정적 2겹 방어)
+
+- **2a (오염원 차단)**: `_build_context_block(ctx, user_query)` — 이번 턴 원문에 위치 표면어
+  (`LOCATION_HINT_TERMS`, input_parser 단일 출처 공개 별칭)가 있으면 직전 위치/DB 줄을 **주입하지
+  않음**(대신 "이번 질의의 위치만 사용" 지시). 입력에 없는 위치는 병합 자체가 불가 — 구조적 차단.
+  직전 서버 엔티티·요약 줄은 유지(D-055 지시어 해소 보존). 위치 미명시 후속 턴은 종전 동작(승계 회귀 0).
+- **2b (결정적 DB 고정)**: `run_data_query_pipeline`의 DB 선택에서 **단일 task 계획 + 힌트 해소
+  성공** 시 `_apply_turn_hint_pinning` — `parsed_requirements.target_db_hints`를 폼필과 동일 로직
+  (`resolve_priority_db_ids` 공개 별칭, D-065 계열)으로 해소해 DB 집합을 고정. `classify_dbs`는 계속
+  호출해 위치 제거 정제 질의(sub_query_context)를 재사용하고 **DB 집합 결정권만** 결정적 로직이 가짐.
+  합성 target에는 `_strip_location_terms`로 위치어 제거 질의 주입(WHERE 누출 방지). 핀 적용 시
+  승계(`_apply_db_succession`)는 생략(① > ③), task 결과에 `db_hint_pinning` 관찰성 노출.
+
+### 근거 / 대안 / 한계
+
+- 미적용 대비 효용: 침묵적 오답(잘못된 존의 데이터가 요청한 존의 얼굴로 반환) 재발 차단 + 폼필/텍스트
+  경로의 위치 해소 일관화(같은 단어→같은 DB). 프롬프트 규칙 강화 단독안은 기각 — D-047/D-055/D-065에서
+  반복 확인된 대로 LLM 규칙 준수는 비결정적.
+- **한계(수용)**: ① 복합 계획은 2b 미적용(전역 힌트가 task별 위치와 불일치 가능) — 2a가 오염을
+  차단하고 classify가 깨끗한 sub_query로 동작. ② "은행" 표면어가 위치가 아닌 의미로 쓰인 질의(서버명 등)의
+  오탐 핀 가능 — 폼필 경로에 이미 존재하던 규칙의 확장이라 일관성은 유지, 필요 시 어절 경계 보강.
+  ③ 위치+DB지시어 혼용("은행존이랑 아까 그 DB도")은 직전 DB 줄이 빠져 해소 불가(드묾).
+- 관찰: `allowed_db_ids`(사용자별 DB RBAC)는 classify 경로에도 미배선 — DB RBAC 도입 시 분류·핀
+  두 지점 모두 필터 필요.
+- 검증: `tests/test_orchestration/test_turn_hint_pinning.py`(버그 재현·정제질의 재사용·교차존 보충·
+  복합 게이트·2a 게이트·하위호환). 기존 멀티턴/승계/라우팅 스위트 322건 통과. **최종 확인은 실환경
+  재테스트 필수**(LLM 규칙 위반은 mock으로 재현 불가).
+
+---
+
 ## D-072. Text-to-SQL EX 평가 하네스 (Plan 61 E1)
 
 | 항목 | 내용 |
@@ -4045,6 +4179,7 @@ id 조인(Plan 33)·미존재 resource_type 생성(Plan 25)이 반복된다. 문
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-16 | D-085 | **"지난 N개월" 결정적 범위 해석 — 폼필 기간 필터 침묵 누락 수정**: 폼필 결정적 피벗(D-068 3차)에서 "지난 3개월간 통계" 질의의 기간 필터가 통째로 누락(파서 `resolve_stat_month`가 지난달/이번달만 인식 + 단일 월 반환형이라 범위 표현 불가 → None → 전체 월 평균으로 침묵 오답, 텍스트 LLM 경로는 정상이던 비대칭). `resolve_stat_month_range`로 대체(반환 `(시작,끝)` YYYYMM 범위, "지난/최근/과거 N개월" 정규식, 진행 중인 달 제외 D-076 후속4 유지, N=1=지난달 호환), 렌더러(`build_multi_resource_pivot_sql`·`build_stat_month_block`)는 단일=등호/범위=BETWEEN 겸용(`StatMonth` 타입·`_normalize_stat_month`), 단일(query_generator)·멀티(multi_db_executor)·시맨틱(compile_smq) 3경로 동시 갱신(D-066 단일 출처). 회귀: 실측 질의 그대로 `('202604','202606')`·BETWEEN 렌더 등 pivot 30건 + 관련 스위트 158 passed. 상세 `## D-085` |
 | 2026-07-15 | D-083 | **보호 root 계정 + 감사 로그 로테이션 + 어드민 진입 규약 정정 (Plan 59-a)**: 실테스트로 3결함 확정·수정. (1)**어드민 재로그인**: 미인증 `/admin` 진입이 `/admin/login`(env break-glass 전용, DB 사용자 인증 안 함)으로 유도돼 role==admin 계정도 로그인 실패 → admin.js 리다이렉트를 `/login?next=/admin`으로, 403은 `/`로 교정. `/admin/login`은 링크 없는 break-glass로만 유지. login.html `next` 복귀(오픈 리다이렉트 방지). (2)**보호 root**: `User.is_protected` 컬럼(+멱등 DDL) 신설, seed admin을 `is_protected=True`로 생성(env 계정=상시 일반 로그인 root). 역할/상태 변경·삭제·PW초기화 **403 차단**, 부서·알림그룹은 허용. 프론트 해당 행 disabled+자물쇠. (3)**감사 로테이션**: `cleanup_old_logs`가 호출부 0건이라 무효였음 → 기동 1회 + 하루 1회 태스크 + 수동 `POST /admin/audit/cleanup`(버튼), `AUDIT_RETENTION_DAYS`(기본90). +알림그룹 체크박스 UI(D-082 완성)·부서 인라인 편집. 수정 `domain/user.py`·`user_repository.py`·`api/server.py`·`schemas.py`·`routes/admin.py`·`routes/user_auth.py` 없음·`static/js/admin.js`·`static/login.html`·`admin/dashboard.html`·`.env.example`. 검증 `test_plan59a.py` 10건(보호 가드·seed·로테이션), 회귀 신규 실패 0(기존 6 test_routes=MagicMock 픽스처), arch exit 0. 상세 `## D-083`(구 D-073 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
 | 2026-07-14 | D-082 | **알림 지역 스코프 RBAC + 쿠키 SSE 인증 + 존 필터 (Plan 59 Part C)**: 무인증 브로드캐스트하던 `/alarm/notifications/stream`을 지역 스코프로 인가(관리자=전존/공동존·은행존 운영자=해당존/일반=403, 중복 할당 가능). 데이터 모델 1: `User.alarm_zones: list[str]` 신규 필드(+DDL `ALTER TABLE ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]` 멱등·repo·to_auth_dict·schemas·admin update). 존↔db_id 단일 출처 `src/routing/zones.py`(gongjon=[gp,yd]/bankjon=[b0]). 쿠키 인증(사용자 선택 B): 로그인 시 HttpOnly `user_token` 쿠키 세팅(EventSource 헤더 제약), `resolve_stream_user`(쿠키→헤더→쿼리)+`alarm_zones_for_user`(admin·dev=전존)로 존 산출→빈 집합 403, `event_generator`가 `db_id_to_zone`로 구독자 존만 통과. 프론트: 권한자만 EventSource open(403 루프 차단)+수신 토글. SSO 보존(인증 불변·인가만 추가). 수정 `routing/zones.py`(신규)·`domain/user.py`·`user_repository.py`·`api/server.py`(DDL)·`dependencies.py`·`routes/alarm.py`·`routes/user_auth.py`(쿠키)·`routes/admin.py`·`schemas.py`·`static/js/app.js`·`index.html`. 검증 `test_alarm_zone_rbac.py` 16건(존 격리·중복=전존·일반 403·쿠키 인증), 회귀 신규 실패 0, arch exit 0. 상세 `## D-082`(구 D-072 — 팀장 브랜치 Plan 61 예약과 충돌해 재배정). |
 | 2026-07-14 | D-069~071 | **어드민 접근 통합 RBAC + 권한 상승 차단 + 크레덴셜 하드닝 (Plan 59 Part A)**: **D-070①(P0 보안)** `verify_admin_token`이 `type`·`role` 미검증 + 사용자/운영자 토큰 동일 시크릿 서명 → 일반 사용자 JWT로 모든 `/admin/*`·schema_cache 통과 가능(권한 상승). `type=="admin"` 검증 추가로 즉시 차단(D-026 원의도 강제). **D-070②** 사용자 토큰을 `AuthConfig.jwt_secret`(env `AUTH_JWT_SECRET`)로 분리 서명·검증(교차 서명 불가, 배포 시 재로그인 수용). **D-069(통합 RBAC·방향 A)** 어드민 접근=DB `role==admin` 판정, 신규 `require_admin_user` 가드(개발 우회+break-glass 운영자 토큰+role==admin)로 admin.py 15개·schema_cache.py 14개 교체, 죽은 `UserRole.ADMIN` 부활(증상 B 해소), 기동 시 seed admin 멱등 부트스트랩, 최소-1-admin 가드. 프론트 어드민 링크 role 게이팅+admin.js 사용자 토큰 폴백. **D-071(하드닝)** 기본 크레덴셜 admin/admin123 제거, 운영 모드 미설정 시 기동 거부(`_validate_production_secrets`, `os.getenv` 대신 `PrivateAttr _jwt_secret_explicit`로 판정 — 2026-06-10 교훈). 수정 `admin_auth.py`·`dependencies.py`·`config.py`·`routes/admin.py`·`schema_cache.py`·`routes/user_auth.py`·`server.py`·`static/js/{app,admin}.js`·`index.html`. 검증 `test_admin_rbac.py` 13건, 회귀 신규 실패 0(기존 6 test_routes 실패는 MagicMock 픽스처 pre-existing), arch exit 0. 번호: Plan 제안 D-064~066이 폼필 D-060~068에 선점됨 → 최대 grep 후 D-069~071 재부여. 상세 `## D-069`·`## D-070`·`## D-071`. |

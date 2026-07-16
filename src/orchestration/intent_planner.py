@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.prompts.intent_planner import INTENT_PLANNER_SYSTEM_TEMPLATE
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
@@ -205,15 +206,24 @@ def _single_task_plan(
     }
 
 
-def _build_context_block(conversation_context: Optional[dict]) -> str:
+def _build_context_block(
+    conversation_context: Optional[dict], user_query: str = ""
+) -> str:
     """후속 턴 분해용 압축 맥락 블록을 만든다 (Plan 50 M1/M3, B3).
 
     첫 턴(맥락 없음)이거나 turn_count<=1이면 빈 문자열을 반환한다.
     원시 메시지 히스토리는 절대 넣지 않고, context_resolver가 보존한 압축 신호
     (previous_location/previous_db_ids/previous_entities/요약)만 1블록으로 주입한다.
 
+    이번 턴 원문에 위치 표면어(은행존/공동존/김포 등)가 명시돼 있으면 **직전 위치/DB
+    줄을 주입하지 않는다** — "명시 위치 최우선, 승계 금지" 프롬프트 규칙을 LLM이 어기고
+    직전 위치와 병합해 sub_query를 오염시킨 실측 사례(2026-07-16: "은행존 알람"이
+    "김포 은행 공동존…"으로 재작성돼 gp 오라우팅)가 있어, 입력에서 오염원 자체를
+    제거해 결정적으로 차단한다. 직전 서버 엔티티·요약 줄은 유지(D-055 지시어 해소 보존).
+
     Args:
         conversation_context: context_resolver가 채운 맥락 dict (없으면 None)
+        user_query: 이번 턴 사용자 원문(위치 명시 게이트 판정용)
 
     Returns:
         HumanMessage 앞에 붙일 압축 맥락 블록 텍스트(없으면 "")
@@ -222,6 +232,10 @@ def _build_context_block(conversation_context: Optional[dict]) -> str:
         return ""
     if conversation_context.get("turn_count", 0) <= 1:
         return ""
+
+    has_explicit_location = any(
+        term in (user_query or "") for term in LOCATION_HINT_TERMS
+    )
 
     location = conversation_context.get("previous_location") or ""
     db_ids = conversation_context.get("previous_db_ids") or []
@@ -242,10 +256,17 @@ def _build_context_block(conversation_context: Optional[dict]) -> str:
             entity_strs.append(token)
     entity_line = ", ".join(entity_strs) if entity_strs else "(없음)"
 
-    lines = [
-        "## 이전 대화 맥락 (후속 턴 분해 시 활용)",
-        f"- 직전 대상 위치/환경: {location or '(미상)'}",
-        f"- 직전 대상 DB 후보: {', '.join(db_ids) if db_ids else '(미상)'}",
+    lines = ["## 이전 대화 맥락 (후속 턴 분해 시 활용)"]
+    if has_explicit_location:
+        # 이번 턴에 위치가 명시됨 — 직전 위치/DB를 아예 제공하지 않아 병합 오염을 차단한다.
+        lines.append(
+            "- 이번 질의에 위치가 명시되어 직전 위치/DB는 제공하지 않는다. "
+            "**이번 질의에 적힌 위치만** sub_query에 사용하라(다른 위치를 추가하지 말 것)."
+        )
+    else:
+        lines.append(f"- 직전 대상 위치/환경: {location or '(미상)'}")
+        lines.append(f"- 직전 대상 DB 후보: {', '.join(db_ids) if db_ids else '(미상)'}")
+    lines += [
         f"- 직전 대상 서버/장비: {entity_line}",
         f"- 직전 작업 요약: {summary or '(없음)'}",
         "",
@@ -297,7 +318,7 @@ async def _llm_decompose(
         "clarification_needed": None,
     }
 
-    context_block = _build_context_block(conversation_context)
+    context_block = _build_context_block(conversation_context, user_query)
     human_content = f"{context_block}{user_query}" if context_block else user_query
 
     try:

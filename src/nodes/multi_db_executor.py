@@ -36,7 +36,7 @@ from src.utils.query_gen_common import (
     decimal_cast_example,
     eav_attr_resource_types,
     resolve_query_limit,
-    resolve_stat_month,
+    resolve_stat_month_range,
 )
 from src.utils.schema_utils import build_excluded_join_map
 
@@ -384,7 +384,7 @@ async def _generate_sql(
         semantic_sql, _smq, _cov = await compile_from_nl(
             llm, _uq, db_id,
             default_limit=default_limit,
-            stat_month=resolve_stat_month(_uq),
+            stat_month=resolve_stat_month_range(_uq),
         )
         if semantic_sql:
             logger.info(
@@ -483,8 +483,8 @@ async def _generate_sql(
     # 기간 표현의 결정적 해석 주입 — 단일 DB 경로(query_generator)와 동일 규칙(D-076 후속4,
     # D-066 단일 출처). 원문 질의 우선, 라우터가 만든 sub_query_context에만 표현이 남은 경우 폴백.
     _sm_block = build_stat_month_block(
-        resolve_stat_month(parsed_requirements.get("original_query", "") or "")
-        or resolve_stat_month(sub_query_context)
+        resolve_stat_month_range(parsed_requirements.get("original_query", "") or "")
+        or resolve_stat_month_range(sub_query_context)
     )
     if _sm_block:
         user_parts.append(_sm_block)
@@ -590,7 +590,7 @@ async def _generate_sql(
             # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
             domain_cfg = get_domain_by_id(db_id)
             db_schema = domain_cfg.db_schema if domain_cfg else ""
-            stat_month = resolve_stat_month(parsed_requirements.get("original_query", ""))
+            stat_month = resolve_stat_month_range(parsed_requirements.get("original_query", ""))
             deterministic_sql = build_multi_resource_pivot_sql(
                 regular_entries, server_eav, child_eav, eav_pattern_mr,
                 metric_fields=pivot_metric_fields, db_engine=db_engine,
@@ -598,7 +598,8 @@ async def _generate_sql(
             )
             logger.info(
                 "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, month=%s",
-                db_id, len(child_eav), len(pivot_metric_fields), stat_month or "전체",
+                db_id, len(child_eav), len(pivot_metric_fields),
+                "~".join(stat_month) if stat_month else "전체",
             )
             return deterministic_sql
 

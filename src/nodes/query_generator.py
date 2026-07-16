@@ -35,7 +35,7 @@ from src.utils.query_gen_common import (
     decimal_cast_example,
     eav_attr_resource_types,
     resolve_query_limit,
-    resolve_stat_month,
+    resolve_stat_month_range,
 )
 from src.nodes.semantic_compiler import compile_from_nl
 from src.utils.schema_utils import build_excluded_join_map
@@ -194,7 +194,7 @@ def _try_build_form_fill_pivot_sql(
         db_engine=state.get("active_db_engine"),
         db_schema=db_schema,
         limit=limit_value,
-        stat_month=resolve_stat_month(user_query),
+        stat_month=resolve_stat_month_range(user_query),
     )
 
 
@@ -238,8 +238,8 @@ async def query_generator(
     # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
     user_query = state.get("user_query", "") or ""
     limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
-    # 기간 표현(지난 1개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
-    stat_month = resolve_stat_month(user_query)
+    # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
+    stat_month = resolve_stat_month_range(user_query)
 
     # 폼필 다중 리소스 피벗은 코드가 결정적으로 조립(LLM 우회). 재시도(에러 컨텍스트) 시엔
     # 결정적 SQL이 이미 실패했을 수 있으므로 LLM 폴백으로 에러를 반영해 수정한다.

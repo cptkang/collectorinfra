@@ -33,7 +33,11 @@ from pydantic import BaseModel, Field
 
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
-from src.utils.query_gen_common import build_multi_resource_pivot_sql, resolve_query_limit
+from src.utils.query_gen_common import (
+    StatMonth,
+    build_multi_resource_pivot_sql,
+    resolve_query_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +311,7 @@ def compile_smq(
     *,
     user_query: str = "",
     default_limit: int = 100,
-    stat_month: Optional[str] = None,
+    stat_month: StatMonth = None,
 ) -> str:
     """SMQ를 방언별 SQL로 결정적 컴파일한다(패턴 A/B는 기존 엔진 재사용, C는 알람 조립).
 
@@ -317,7 +321,7 @@ def compile_smq(
         model: 시맨틱 모델(없으면 로드)
         user_query: 원문 질의("전체/모든" LIMIT 상향 판단용)
         default_limit: 기본 LIMIT
-        stat_month: 성능지표 기간 필터 YYYYMM(패턴 B)
+        stat_month: 성능지표 기간 필터 — 단일 월 YYYYMM 또는 (시작, 끝) 범위(패턴 B, D-085)
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결)
@@ -345,7 +349,7 @@ def _compile_ab(
     db_engine: str,
     db_schema: str,
     limit: int,
-    stat_month: Optional[str],
+    stat_month: StatMonth,
 ) -> str:
     """패턴 A(서버설정)+B(성능지표)를 build_multi_resource_pivot_sql로 조립한다(D-067 재사용).
 
@@ -468,7 +472,7 @@ def try_semantic_compile(
     *,
     user_query: str = "",
     default_limit: int = 100,
-    stat_month: Optional[str] = None,
+    stat_month: StatMonth = None,
     value_index: Optional[dict[str, list[str]]] = None,
 ) -> tuple[Optional[str], CoverageResult]:
     """커버리지 판정 후 내부면 컴파일 SQL을, 밖이면 None과 사유를 반환한다.
@@ -559,7 +563,7 @@ async def compile_from_nl(
     db_id: str,
     *,
     default_limit: int = 100,
-    stat_month: Optional[str] = None,
+    stat_month: StatMonth = None,
     value_index: Optional[dict[str, list[str]]] = None,
 ) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
     """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.

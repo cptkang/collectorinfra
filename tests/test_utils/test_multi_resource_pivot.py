@@ -18,7 +18,7 @@ from src.utils.query_gen_common import (
     eav_attr_resource_types,
     is_hostname_target,
     is_servername_to_hostname,
-    resolve_stat_month,
+    resolve_stat_month_range,
 )
 
 _SCHEMA_INFO = {
@@ -293,18 +293,38 @@ def test_db2_metric_uses_decimal_cast():
     assert "::numeric" not in block
 
 
-def test_resolve_stat_month():
-    # 지난달: 월 롤백 + 연말→연초 롤오버
-    assert resolve_stat_month("지난달 1개월 통계", date(2026, 7, 13)) == "202606"
-    assert resolve_stat_month("지난달 통계", date(2026, 1, 5)) == "202512"
+def test_resolve_stat_month_range():
+    # 지난달: 월 롤백 + 연말→연초 롤오버 — 단일 월은 (m, m) 범위
+    assert resolve_stat_month_range("지난달 1개월 통계", date(2026, 7, 13)) == ("202606", "202606")
+    assert resolve_stat_month_range("지난달 통계", date(2026, 1, 5)) == ("202512", "202512")
     # 당월
-    assert resolve_stat_month("이번달 통계", date(2026, 7, 13)) == "202607"
+    assert resolve_stat_month_range("이번달 통계", date(2026, 7, 13)) == ("202607", "202607")
     # 기간 표현 없으면 None(전체 월 평균)
-    assert resolve_stat_month("모든 서버 조회") is None
+    assert resolve_stat_month_range("모든 서버 조회") is None
     # "지난 1개월"(공백 포함) — 실측 질의 표현(D-076 후속4)
-    assert resolve_stat_month(
+    assert resolve_stat_month_range(
         "CPU, 메모리 사용률을 지난 1개월 통계데이터로 확인", date(2026, 7, 14)
-    ) == "202606"
+    ) == ("202606", "202606")
+
+
+def test_resolve_stat_month_range_n_months():
+    """"지난 N개월" 범위 해석(D-085) — 폼필에서 기간이 침묵 누락되던 실측 버그의 회귀 방지.
+
+    "지난 3개월간 통계 자료를 사용하시오" 질의가 결정적 빌더에서 stat_month=None으로
+    떨어져 전체 월 평균이 조회되던 문제. 진행 중인 달은 제외(D-076 후속4 원칙).
+    """
+    # 실측 질의 표현 그대로 — 직전 완결 월부터 3개월
+    assert resolve_stat_month_range(
+        "CPU, 메모리 사용률은 지난 3개월간 통계 자료를 사용하시오.", date(2026, 7, 16)
+    ) == ("202604", "202606")
+    # 연초 롤오버
+    assert resolve_stat_month_range("지난 3개월 통계", date(2026, 2, 10)) == ("202511", "202601")
+    # "최근 N개월" 표현 + 12개월
+    assert resolve_stat_month_range("최근 12개월 사용률", date(2026, 7, 16)) == ("202507", "202606")
+    # N=1은 지난달과 동일(호환)
+    assert resolve_stat_month_range("지난 1개월", date(2026, 7, 16)) == ("202606", "202606")
+    # 붙여쓰기("지난 3개월간"의 "개 월" 공백 변형 포함)
+    assert resolve_stat_month_range("지난3개월 데이터", date(2026, 7, 16)) == ("202604", "202606")
 
 
 def test_build_stat_month_block_forces_single_month_equality():
@@ -323,6 +343,15 @@ def test_build_stat_month_block_empty_without_period():
     """기간 표현이 없으면(stat_month=None) 블록을 만들지 않는다(프롬프트 무변경)."""
     assert build_stat_month_block(None) == ""
     assert build_stat_month_block("") == ""
+
+
+def test_build_stat_month_block_range_uses_between():
+    """N개월 범위는 BETWEEN 필터를 강제한다(D-085). 단일 월 튜플은 등호 유지."""
+    block = build_stat_month_block(("202604", "202606"))
+    assert "s.stat_date BETWEEN '202604' AND '202606'" in block
+    assert "우선" in block
+    # (m, m) 튜플은 단일 월 등호로 접힘
+    assert "s.stat_date = '202606'" in build_stat_month_block(("202606", "202606"))
 
 
 class TestDeterministicPivotSql:
@@ -390,6 +419,16 @@ class TestDeterministicPivotSql:
         # 미지정이면 월 필터 없음
         sql2 = self._sql(db_engine="postgresql", stat_month=None)
         assert "s.stat_date" not in sql2
+
+    def test_stat_month_range_filter_applied(self):
+        """N개월 범위(D-085) — "지난 3개월" 폼필에서 기간 필터가 침묵 누락되던 회귀 방지."""
+        sql = self._sql(db_engine="postgresql", stat_month=("202604", "202606"))
+        assert "AND s.stat_date BETWEEN '202604' AND '202606'" in sql
+        # 범위여도 서버당 1행 구조(단일 GROUP BY)는 불변
+        assert sql.count("GROUP BY") == 1
+        # (m, m) 튜플은 단일 월 등호로 접힘
+        sql2 = self._sql(db_engine="postgresql", stat_month=("202606", "202606"))
+        assert "s.stat_date = '202606'" in sql2
 
     def test_all_select_lines_aggregated(self):
         """모든 SELECT 컬럼이 집계 → GROUP BY 위반(r.name 등) 원천 차단."""

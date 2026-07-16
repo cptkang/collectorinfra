@@ -30,11 +30,14 @@
                     <button id="userLogoutBtn" class="btn btn-secondary"
                         style="display: none; font-size: 0.75rem; padding: 5px 10px;">Logout</button>
                 </span>
-                <!-- §17: 알림 수신 토글(권한 있는 사용자에게만 노출, 개인 표시 설정) -->
-                <label id="alarmToggleWrap"
-                    style="display: none; align-items: center; gap: 4px; font-size: 0.75rem; color: var(--text-secondary, #aaa); cursor: pointer;">
-                    <input type="checkbox" id="alarmReceiveToggle"> 알림 수신
-                </label>
+                <!-- §17: 알림 수신 토글(권한 있는 사용자에게만 노출, 개인 표시 설정).
+                     호버 시 수신 가능한 알림 존 리스트를 툴팁으로 표시(status-badge-wrapper 패턴 재사용). -->
+                <span id="alarmToggleWrap" class="alarm-toggle-wrapper" style="display: none;">
+                    <label class="alarm-toggle">
+                        <input type="checkbox" id="alarmReceiveToggle"> 알림 수신
+                    </label>
+                    <div class="status-tooltip" id="alarmZonesTooltip"></div>
+                </span>
                 <a id="adminEntryLink" href="/admin" class="btn btn-secondary"
                     style="display: none; font-size: 0.8125rem; padding: 7px 14px;">Admin</a>
             </nav>

@@ -16,50 +16,88 @@ _PREV_MONTH_SIGNALS: tuple[str, ...] = (
     "지난달 1개월", "last month", "previous month",
 )
 _CUR_MONTH_SIGNALS: tuple[str, ...] = ("이번달", "이번 달", "당월", "금월", "this month", "current month")
+# "지난/최근/과거 N개월(간)" — 직전 완결 월부터 N개월 범위(진행 중인 달 제외, D-076 후속4 원칙 유지)
+_N_MONTHS_RE = re.compile(r"(?:지난|최근|과거|last)\s*(\d{1,2})\s*(?:개\s*월|months?)")
+
+# 기간 필터 표현: 단일 월 "YYYYMM" 또는 (시작월, 끝월) 범위. None이면 기간 표현 없음.
+StatMonth = str | tuple[str, str] | None
 
 
-def resolve_stat_month(user_query: str | None, today: date | None = None) -> str | None:
-    """질의의 기간 표현을 사용률 통계 월(YYYYMM 문자열)로 해석한다(없으면 None).
+def _month_shift(ref: date, delta: int) -> str:
+    """ref 기준 delta개월 이동한 월을 YYYYMM 문자열로 반환한다(delta<0이면 과거)."""
+    total = ref.year * 12 + (ref.month - 1) + delta
+    return f"{total // 12}{total % 12 + 1:02d}"
 
-    "지난달"/"전월"/"지난 1개월" → 직전 월, "이번달"/"당월" → 당월. 그 외에는 None(전체 월 평균).
-    폼필 SQL을 코드가 결정적으로 조립할 때 `s.stat_date` 필터에 사용한다.
+
+def resolve_stat_month_range(
+    user_query: str | None, today: date | None = None
+) -> tuple[str, str] | None:
+    """질의의 기간 표현을 사용률 통계 월 범위 (시작 YYYYMM, 끝 YYYYMM)로 해석한다(없으면 None).
+
+    "지난/최근 N개월" → 직전 완결 월부터 과거 N개월 범위(진행 중인 달 제외),
+    "지난달"/"전월" → 직전 월 단일, "이번달"/"당월" → 당월 단일. 그 외에는 None(전체 월 평균).
+    폼필 SQL을 코드가 결정적으로 조립할 때 `s.stat_date` 필터에 사용한다(D-085).
+    N=1이면 "지난달"과 동일한 (직전월, 직전월)이라 종전 동작과 호환된다.
     """
     text = user_query or ""
     ref = today or date.today()
+    m = _N_MONTHS_RE.search(text)
+    if m and int(m.group(1)) >= 1:
+        n = int(m.group(1))
+        return (_month_shift(ref, -n), _month_shift(ref, -1))
     if any(sig in text for sig in _PREV_MONTH_SIGNALS):
-        year, month = (ref.year - 1, 12) if ref.month == 1 else (ref.year, ref.month - 1)
-        return f"{year}{month:02d}"
+        prev = _month_shift(ref, -1)
+        return (prev, prev)
     if any(sig in text for sig in _CUR_MONTH_SIGNALS):
-        return f"{ref.year}{ref.month:02d}"
+        cur = _month_shift(ref, 0)
+        return (cur, cur)
     return None
 
+
+def _normalize_stat_month(stat_month: StatMonth) -> tuple[str, str] | None:
+    """stat_month 인자(단일 월 문자열 또는 범위 튜플)를 (시작, 끝) 범위로 정규화한다."""
+    if not stat_month:
+        return None
+    if isinstance(stat_month, str):
+        return (stat_month, stat_month)
+    start, end = stat_month
+    return (start, end)
+
 def build_stat_month_block(
-    stat_month: str | None, metric_table: str = "cmm_metric_stat_m"
+    stat_month: StatMonth = None, metric_table: str = "cmm_metric_stat_m"
 ) -> str:
     """질의 기간 표현의 결정적 해석(YYYYMM 단일 월)을 LLM 폴백 프롬프트에 강제하는 블록.
 
     "지난 1개월/지난달" 질의에서 LLM이 시스템 템플릿의 일반 규칙("하드코딩 날짜 금지 —
     CURRENT_DATE 동적 계산")을 따라 `BETWEEN 직전월 AND 이번달`처럼 진행 중인 달까지 포함하는
     기간을 재계산하고 월별 GROUP BY로 서버를 중복 출력하는 실측 사례가 있었다(D-076 후속4).
-    코드가 이미 해석한 월(`resolve_stat_month`)을 등호 필터로 강제해 기간 해석을 결정화한다.
+    코드가 이미 해석한 월/범위(`resolve_stat_month_range`)를 등호·BETWEEN 필터로 강제해
+    기간 해석을 결정화한다(N개월 범위는 D-085).
     단일 DB(query_generator)·멀티 DB(multi_db_executor) 폴백 경로가 공유한다(D-066 단일 출처).
 
     Args:
-        stat_month: resolve_stat_month 결과 YYYYMM 문자열 (None이면 기간 표현 없음 → 빈 문자열)
+        stat_month: resolve_stat_month_range 결과 (시작, 끝) 범위 또는 단일 월 YYYYMM 문자열
+            (None이면 기간 표현 없음 → 빈 문자열)
         metric_table: 월별 통계 테이블명
 
     Returns:
         프롬프트에 덧붙일 섹션 텍스트(선행 개행 없음). stat_month가 없으면 "".
     """
-    if not stat_month:
+    rng = _normalize_stat_month(stat_month)
+    if not rng:
         return ""
+    start, end = rng
+    if start == end:
+        filter_line = f"`s.stat_date = '{start}'` (단일 월 등호 필터)"
+    else:
+        filter_line = f"`s.stat_date BETWEEN '{start}' AND '{end}'` (완결 월 범위 필터)"
     return (
         "## 기간 조건 (시스템이 결정적으로 해석 — 최우선 준수)\n"
         f"질의의 기간 표현은 이미 월 통계 기준으로 해석되었습니다. {metric_table} 조인에 반드시 "
-        f"`s.stat_date = '{stat_month}'` (단일 월 등호 필터)를 사용하세요.\n"
+        f"{filter_line}를 사용하세요.\n"
         "- 이 지시는 '하드코딩 날짜 금지·CURRENT_DATE 동적 계산' 일반 규칙보다 **우선**합니다"
         "(이 값은 시스템이 계산해 주입한 것으로 하드코딩이 아닙니다).\n"
-        "- BETWEEN·INTERVAL 재계산으로 진행 중인 달을 포함하지 마세요.\n"
+        "- BETWEEN·INTERVAL 재계산으로 진행 중인 달을 포함하지 마세요(위 값 그대로 사용).\n"
         "- 시간별(_h)/일별(_d) 테이블로 대체하지 마세요."
     )
 
@@ -355,7 +393,7 @@ def build_multi_resource_pivot_sql(
     db_engine: str | None = None,
     db_schema: str | None = None,
     limit: int | None = None,
-    stat_month: str | None = None,
+    stat_month: StatMonth = None,
     metric_table: str = "cmm_metric_stat_m",
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
 ) -> str:
@@ -371,7 +409,8 @@ def build_multi_resource_pivot_sql(
         regular_entries/server_eav/child_eav/eav_pattern/metric_fields/db_engine: 피벗 구성요소
         db_schema: 스키마 한정자(polestar 등, DB2는 대문자 POLESTAR — D-057). 비면 무한정.
         limit: 결과 상한(엔진별 LIMIT/FETCH FIRST). None이면 미적용.
-        stat_month: 사용률 기간 필터 YYYYMM(예: '202506'). None이면 전체 월 평균.
+        stat_month: 사용률 기간 필터 — 단일 월 YYYYMM(예: '202506') 또는 (시작, 끝) 범위
+            (예: ('202504', '202506') → BETWEEN, D-085). None이면 전체 월 평균.
         metric_table: 월별 통계 테이블명(폴스타 기본 cmm_metric_stat_m).
         explicit_measures: 시맨틱 컴파일러용 명시 measure (alias, resource_type, agg_fn,
             val_col, definition_name). metric_fields의 한글라벨 분류 대신 직접 지정(패턴 B).
@@ -390,7 +429,13 @@ def build_multi_resource_pivot_sql(
 
     metric_join = ""
     if has_metric:
-        month_cond = f" AND s.stat_date = '{stat_month}'" if stat_month else ""
+        month_rng = _normalize_stat_month(stat_month)
+        if not month_rng:
+            month_cond = ""
+        elif month_rng[0] == month_rng[1]:
+            month_cond = f" AND s.stat_date = '{month_rng[0]}'"
+        else:
+            month_cond = f" AND s.stat_date BETWEEN '{month_rng[0]}' AND '{month_rng[1]}'"
         # 폼필 경로(metric_fields)는 Utilization만 쓰므로 단일 동등 필터를 유지(기존 출력 보존).
         # 시맨틱 패턴 B가 여러 definition_name(Utilization+MaxIORate)을 쓰면 IN 필터로 확장한다.
         defs = sorted({m[4] for m in (explicit_measures or [])}) or ["Utilization"]
@@ -454,8 +499,9 @@ def build_multi_resource_pivot_block(
         )
         metric_note = (
             "\n- 사용률(CPU/메모리 평균·최고)은 위 `s` 조인으로 같은 GROUP BY에서 집계했습니다. "
-            "기간 조건(예: '지난달 1개월')은 **s.stat_date**(YYYYMM 문자열)에 적용하세요"
-            f"(예: AND s.stat_date = '지난달YYYYMM'). 통계 테이블은 반드시 월별 {metric_table}만 "
+            "기간 조건(예: '지난달 1개월', '지난 3개월')은 **s.stat_date**(YYYYMM 문자열)에 적용하세요"
+            "(단일 월: AND s.stat_date = '지난달YYYYMM' / N개월: AND s.stat_date BETWEEN '시작YYYYMM' "
+            f"AND '직전월YYYYMM' — 진행 중인 달 제외). 통계 테이블은 반드시 월별 {metric_table}만 "
             "사용하고 _h/_d는 쓰지 마세요."
         )
 
