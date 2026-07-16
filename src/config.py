@@ -149,7 +149,22 @@ class SynonymMatchConfig(BaseSettings):
 
     fuzzy_match: bool = False            # E5-1 유연 매칭(자모·편집거리·부분어) on/off
     value_retrieval: bool = False        # E5-2 실측 값 검색·주입 on/off
-    semantic_match: bool = False         # E5-4 임베딩 의미 검색(보류 — 자리예약, 미구현)
+    # E5-4 임베딩 의미 검색(D-084): 정확→퍼지(E5-1)→임베딩 계단의 마지막 단. ON이어도
+    # 백엔드 요건(아래) 미충족·의존성(pip install .[semantic]) 미반입이면 경고 1회 후 무매칭.
+    semantic_match: bool = False
+    # 임베딩 백엔드: local(기본 — sentence-transformers 모델 인프로세스 CPU 상주) |
+    # vllm(별도 vLLM 서버에 임베딩 모델을 로딩해 OpenAI 호환 /v1/embeddings로 호출)
+    semantic_backend: Literal["local", "vllm"] = "local"
+    # local 백엔드: 오프라인 반입한 sentence-transformers 다국어 모델 경로. 빈 값 = 미가용.
+    semantic_model_path: str = ""
+    # vllm 백엔드: vLLM /v1 엔드포인트(예: http://vllm-host:8000/v1)와 서빙 임베딩 모델명.
+    # 둘 중 하나라도 빈 값이면 미가용.
+    semantic_vllm_base_url: str = ""
+    semantic_vllm_model: str = ""
+    # vllm 백엔드 SSL 인증서 검증(D-060 계열 — 사설 인증서 vLLM 대응 시 false)
+    semantic_vllm_verify_ssl: bool = True
+    # 임베딩 코사인 확정 임계(미만은 확정 매핑 아닌 후보 제시/LLM 위임)
+    semantic_confidence_min: float = 0.65
     match_confidence_min: float = 0.85   # 퍼지 매칭 신뢰도 임계(이하는 확정 매핑 아닌 후보 제시)
     # E5-3: D-051 유사어 보완 테이블 상한(기존 schema_analyzer 모듈 상수 하드코딩을 config로 노출).
     # 낮추면 토큰↓·리콜↓ — 고정 규칙이 아니라 E1 하네스로 튜닝하는 파라미터(Death of Schema Linking).

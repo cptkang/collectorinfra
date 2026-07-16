@@ -138,6 +138,10 @@ async def query_validator(
     if forbidden_join_errors:
         errors.extend(forbidden_join_errors)
 
+    # 6.7. LEFT JOIN 강등(outer 조인 테이블 필터의 WHERE 배치) 감지 (error → 재시도 유도, D-085)
+    demotion_errors = _check_left_join_where_demotion(sql)
+    errors.extend(demotion_errors)
+
     # 7. LIMIT 절 존재 여부
     db_engine = state.get("active_db_engine") or "postgresql"
     user_query = state.get("user_query", "") or ""
@@ -637,6 +641,88 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
                         f"사유: {exc_reason}"
                     )
 
+    return errors
+
+
+def _check_left_join_where_demotion(sql: str) -> list[str]:
+    """LEFT JOIN 테이블의 컬럼이 WHERE 절에서 필터로 사용된 패턴(조인 강등)을 감지한다.
+
+    LEFT JOIN된 테이블의 컬럼에 비교 필터를 WHERE에 두면 미매칭 행(NULL)이
+    모두 탈락하여 LEFT JOIN이 INNER JOIN으로 강등된다. 피벗 패턴에서는
+    메트릭이 없는 server.Server 행이 제거되어 서버명이 NULL로 나오는
+    결함이 된다(2026-07-16 SYN-H-02 실측, D-085).
+
+    보수적 판정(오탐 최소화)을 위해 다음은 감지 대상에서 제외한다:
+    - IS NULL / IS NOT NULL 검사 (anti-join 등 정당한 패턴)
+    - COALESCE() 등 함수 인자로 감싼 컬럼 참조 (NULL 처리 명시로 간주)
+    - 서브쿼리 내부 (파렌 마스킹으로 전체 제외 — LEFT JOIN (SELECT ...) 포함)
+
+    Args:
+        sql: SQL 쿼리 문자열
+
+    Returns:
+        에러 메시지 목록. 강등 패턴이 없으면 빈 리스트.
+    """
+    # 주석·문자열 리터럴 제거 후 괄호 내부를 반복 마스킹하여
+    # 서브쿼리·함수 인자·IN 리스트를 감지 대상에서 제외한다.
+    # 마커는 괄호 비포함(종료 보장) + 비단어 문자(식별자·별칭 오인 방지)여야 한다.
+    masked = sqlparse.format(sql, strip_comments=True)
+    masked = re.sub(r"'[^']*'", "''", masked)
+    prev = None
+    while prev != masked:
+        prev = masked
+        masked = re.sub(r"\([^()]*\)", " ~ ", masked)
+
+    _ident = r"[\w]+(?:\.[\w]+)?"
+
+    # LEFT [OUTER] JOIN 대상 수집: 참조명(별칭 또는 bare 테이블명) → 테이블명
+    left_join_refs: dict[str, str] = {}
+    for m in re.finditer(
+        rf"\bLEFT\s+(?:OUTER\s+)?JOIN\s+({_ident})(?:\s+AS\s+(\w+)|\s+(\w+))?",
+        masked,
+        re.IGNORECASE,
+    ):
+        table, alias_as, alias_bare = m.group(1), m.group(2), m.group(3)
+        alias = alias_as or alias_bare
+        if alias and alias.upper() == "ON":
+            alias = None
+        ref = alias or table.rsplit(".", 1)[-1]
+        left_join_refs[ref.lower()] = table
+    if not left_join_refs:
+        return []
+
+    # 최상위 WHERE 절 추출 (서브쿼리 WHERE는 마스킹으로 이미 제거됨)
+    where_clauses = re.findall(
+        r"\bWHERE\b(.*?)(?=\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b"
+        r"|\bOFFSET\b|\bFETCH\b|\bUNION\b|\bINTERSECT\b|\bEXCEPT\b|;|$)",
+        masked,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not where_clauses:
+        return []
+
+    # 비교 필터 연산자 (IS NULL/IS NOT NULL은 매칭되지 않아 자연 제외)
+    _op = r"(?:!=|<>|>=|<=|=|>|<|\bNOT\s+I?LIKE\b|\bI?LIKE\b|\bNOT\s+IN\b|\bIN\b|\bBETWEEN\b)"
+
+    offending: dict[str, set[str]] = {}
+    for clause in where_clauses:
+        for m in re.finditer(rf"\b(\w+)\.(\w+)\s*{_op}", clause, re.IGNORECASE):
+            ref, col = m.group(1).lower(), m.group(2)
+            if ref in left_join_refs:
+                offending.setdefault(ref, set()).add(col)
+
+    errors: list[str] = []
+    for ref in sorted(offending):
+        cols = ", ".join(sorted(offending[ref]))
+        errors.append(
+            f"LEFT JOIN 강등 감지: LEFT JOIN 테이블 '{left_join_refs[ref]}'(참조명 '{ref}')의 "
+            f"컬럼({cols})이 WHERE 절에서 필터로 사용되었습니다. "
+            "outer 조인 테이블의 필터가 WHERE에 있으면 미매칭 행이 모두 제거되어 LEFT JOIN이 "
+            "INNER JOIN으로 강등되고, 피벗 패턴에서는 기준 행(예: server.Server의 서버명)이 탈락해 "
+            "서버명 등이 NULL로 나옵니다. 해당 조건을 그 LEFT JOIN의 ON 절로 이동하세요. "
+            "행 자체를 걸러내려는 의도라면 LEFT JOIN 대신 JOIN(INNER)을 사용하세요. "
+            "(IS NULL / IS NOT NULL 검사는 WHERE에 두어도 됩니다)"
+        )
     return errors
 
 

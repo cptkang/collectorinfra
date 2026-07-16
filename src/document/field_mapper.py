@@ -303,7 +303,8 @@ async def perform_3step_mapping(
 
     # --- 2.5단계: Redis synonyms 규칙 매핑 ---
     if remaining and all_db_synonyms:
-        # E5-1: 동의어 유연 매칭 플래그를 config에서 읽어 폴백 여부를 결정한다(기본 OFF).
+        # E5-1(퍼지)·E5-4(임베딩) 폴백 플래그를 config에서 읽어 계단 활성 여부를 결정한다
+        # (둘 다 기본 OFF — 정확→퍼지→임베딩 계단, D-075/D-084).
         from src.config import load_config
 
         _syn_cfg = load_config().synonym
@@ -314,6 +315,8 @@ async def perform_3step_mapping(
             result,
             fuzzy=_syn_cfg.fuzzy_match,
             min_score=_syn_cfg.match_confidence_min,
+            semantic=_syn_cfg.semantic_match,
+            semantic_min=_syn_cfg.semantic_confidence_min,
         )
 
     # --- 2.8단계: LLM 유사어 발견 ---
@@ -498,6 +501,8 @@ def _apply_synonym_mapping(
     *,
     fuzzy: bool = False,
     min_score: float = 0.85,
+    semantic: bool = False,
+    semantic_min: float = 0.65,
 ) -> None:
     """Redis synonyms 기반 매핑을 수행한다.
 
@@ -510,6 +515,11 @@ def _apply_synonym_mapping(
     승인 루프로 회부한다("임계 이하는 확정 아닌 후보 제시"의 결정적 실현). ``fuzzy=False``
     (기본)이면 Pass 3은 실행되지 않아 기존 동작과 **바이트 단위 동일**하다(회귀 0).
 
+    Plan 61 트랙 B(E5-4, D-084): ``semantic=True``이면 정확·퍼지 계단이 모두 실패한
+    잔여 필드에 **임베딩 의미 매칭 폴백(Pass 4)**을 계단 마지막 단으로 수행한다.
+    코사인이 ``semantic_min`` 이상이면 확정 채택, 미만이면 동일하게 LLM 경로에 위임한다.
+    ``semantic=False``(기본)이면 Pass 4는 실행되지 않는다(회귀 0).
+
     Args:
         remaining: 매핑되지 않은 필드 set
         all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
@@ -517,6 +527,8 @@ def _apply_synonym_mapping(
         result: 매핑 결과 객체
         fuzzy: 유연 근사 매칭 폴백 활성화 여부(플래그, 기본 OFF)
         min_score: 유연 매칭 확정 신뢰도 임계(fuzzy=True일 때만 사용)
+        semantic: 임베딩 의미 매칭 폴백 활성화 여부(플래그, 기본 OFF)
+        semantic_min: 임베딩 코사인 확정 임계(semantic=True일 때만 사용)
     """
     if priority_db_ids:
         ordered_db_ids = priority_db_ids
@@ -546,6 +558,10 @@ def _apply_synonym_mapping(
                 result.mapping_sources[field] = "synonym"
                 remaining.discard(field)
                 matched = True
+                logger.info(
+                    "[동의어] 정확 매칭 확정(핵심 테이블): '%s' -> %s (db=%s)",
+                    field, matched_column, db_id,
+                )
                 break
 
         if matched:
@@ -565,6 +581,10 @@ def _apply_synonym_mapping(
                 result.db_column_mapping.setdefault(db_id, {})[field] = matched_column
                 result.mapping_sources[field] = "synonym"
                 remaining.discard(field)
+                logger.info(
+                    "[동의어] 정확 매칭 확정(서브 테이블): '%s' -> %s (db=%s)",
+                    field, matched_column, db_id,
+                )
                 break
 
     # Pass 3 (E5-1 유연 매칭 폴백): 플래그 ON일 때만, 정확 매칭이 실패한 잔여 필드에
@@ -573,6 +593,14 @@ def _apply_synonym_mapping(
     if fuzzy and remaining:
         _apply_fuzzy_synonym_fallback(
             remaining, all_db_synonyms, ordered_db_ids, result, min_score
+        )
+
+    # Pass 4 (E5-4 임베딩 의미 매칭 폴백, D-084): 정확·퍼지 계단이 모두 실패한 잔여
+    # 필드에 임베딩 의미 매칭을 마지막 보루로 시도한다. 임계 이상만 확정 채택하고,
+    # 미만은 다운스트림 LLM 경로에 위임(후보 제시)한다. semantic=False면 미진입(회귀 0).
+    if semantic and remaining:
+        _apply_semantic_synonym_fallback(
+            remaining, all_db_synonyms, ordered_db_ids, result, semantic_min
         )
 
 
@@ -634,12 +662,84 @@ def _apply_fuzzy_synonym_fallback(
             result.mapping_sources[field] = "synonym"
             remaining.discard(field)
             logger.info(
-                "유연 매칭 확정: '%s' -> %s (db=%s, 신뢰도=%.2f)",
+                "[동의어] 유연(퍼지) 매칭 확정: '%s' -> %s (db=%s, 신뢰도=%.2f)",
                 field, best_col, best_db, best_score,
             )
         elif best_col:
-            logger.debug(
-                "유연 매칭 임계 미달(후보 제시로 위임): '%s' ~ %s (신뢰도=%.2f < %.2f)",
+            logger.info(
+                "[동의어] 유연(퍼지) 매칭 임계 미달(후보 제시로 위임): "
+                "'%s' ~ %s (신뢰도=%.2f < %.2f)",
+                field, best_col, best_score, min_score,
+            )
+
+
+def _apply_semantic_synonym_fallback(
+    remaining: set[str],
+    all_db_synonyms: dict[str, dict[str, list[str]]],
+    ordered_db_ids: list[str],
+    result: MappingResult,
+    min_score: float,
+) -> None:
+    """임베딩 의미 매칭으로 잔여 필드를 매핑한다(E5-4, 확정 임계 이상만 채택).
+
+    각 DB의 컬럼 유사어 단어들과 필드명을 임베딩 코사인으로 비교해 최고 신뢰도
+    후보를 찾는다. min_score 이상이면 확정 매핑(source="synonym")으로 채택하고,
+    미만이면 채택하지 않아 이후 LLM 유사어 발견/추론 경로가 승인 루프로 회부한다.
+    모델·의존성 미가용 시 semantic_match_candidates가 빈 리스트를 반환해 아무
+    것도 채택하지 않는다(미가용 사유는 모듈에서 경고 1회 가시화).
+
+    Args:
+        remaining: 매핑되지 않은 필드 set
+        all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
+        ordered_db_ids: 우선순위 정렬된 DB 목록
+        result: 매핑 결과 객체
+        min_score: 확정 채택 최소 코사인 유사도
+    """
+    from src.schema_cache.synonym_semantic import semantic_match_candidates
+    from src.utils.schema_utils import normalize_field_name
+
+    for field in list(remaining):
+        field_lower = normalize_field_name(field).lower()
+        if len(field_lower) < 2:
+            continue
+
+        best_db: Optional[str] = None
+        best_col: Optional[str] = None
+        best_score = 0.0
+
+        for db_id in ordered_db_ids:
+            synonyms = all_db_synonyms.get(db_id, {})
+            candidate_map: dict[str, list[str]] = {}
+            for col_key, words in synonyms.items():
+                # 서버명류 필드의 hostname 컬럼 근사 매칭 차단 — flex 폴백(Pass 3)과
+                # 동일 가드(D-068 계열). 임베딩 유사도로도 재유입되지 않게 원천 제외.
+                if is_servername_to_hostname(field, col_key):
+                    continue
+                # 등록 유사어 단어 + 컬럼명 자체를 후보로 삼는다(Pass 3과 동일 규칙).
+                candidates = [str(w) for w in (words or []) if w and len(str(w)) >= 2]
+                col_name = col_key.split(".", 1)[-1] if "." in col_key else col_key
+                if col_name and len(col_name) >= 2:
+                    candidates.append(col_name)
+                if candidates:
+                    candidate_map[col_key] = candidates
+
+            ranked = semantic_match_candidates(field_lower, candidate_map)
+            if ranked and ranked[0][1] > best_score:
+                best_col, best_score = ranked[0]
+                best_db = db_id
+
+        if best_col and best_db and best_score >= min_score:
+            result.db_column_mapping.setdefault(best_db, {})[field] = best_col
+            result.mapping_sources[field] = "synonym"
+            remaining.discard(field)
+            logger.info(
+                "[동의어] 의미(임베딩) 매칭 확정: '%s' -> %s (db=%s, 신뢰도=%.2f)",
+                field, best_col, best_db, best_score,
+            )
+        elif best_col:
+            logger.info(
+                "[동의어] 의미(임베딩) 매칭 임계 미달(후보 제시로 위임): "
+                "'%s' ~ %s (신뢰도=%.2f < %.2f)",
                 field, best_col, best_score, min_score,
             )
 
@@ -717,21 +817,28 @@ def _apply_eav_synonym_mapping(
                         combined_words.append(gw)
 
             matched = False
+            matched_word = None
             for word in combined_words:
                 word_norm = normalize_field_name(word).lower()
                 if word_norm == field_norm or word_norm.replace(" ", "") == field_no_space:
                     matched = True
+                    matched_word = word
                     break
             # EAV 속성명 자체도 매칭 시도
             if not matched:
                 eav_norm = normalize_field_name(eav_name).lower()
                 if eav_norm == field_norm or eav_norm.replace(" ", "") == field_no_space:
                     matched = True
+                    matched_word = eav_name
             if matched:
                 eav_key = f"EAV:{eav_name}"
                 result.db_column_mapping.setdefault(eav_db_id, {})[field] = eav_key
                 result.mapping_sources[field] = "eav_synonym"
                 remaining.discard(field)
+                logger.info(
+                    "[동의어] EAV 유사어 매칭 확정: '%s' -> %s (단어='%s', db=%s)",
+                    field, eav_key, matched_word, eav_db_id,
+                )
                 break
 
 

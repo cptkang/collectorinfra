@@ -32,6 +32,7 @@ QUERY_GENERATOR_SYSTEM_TEMPLATE = """당신은 인프라 DB에 대한 SQL 쿼리
 9. 양식-DB 매핑이 제공된 경우, 매핑된 모든 컬럼을 SELECT에 포함하고 "테이블명.컬럼명" 형태의 alias를 부여하세요. 예: SELECT s.hostname AS "servers.hostname"
 10. 여러 테이블의 컬럼이 매핑된 경우, 적절한 JOIN을 사용하세요.
 11. **스키마에 "-- JOIN 금지" 주석이 붙은 컬럼은 절대 JOIN 조건(ON 절)에 사용하지 마세요.** 해당 컬럼은 운영 DB에서 NULL이거나 의미가 다른 ID입니다. 구조 가이드에 명시된 값 기반 조인 패턴만 사용하세요.
+12. **LEFT JOIN 테이블에 대한 필터 조건은 WHERE가 아니라 해당 JOIN의 ON 절에 배치합니다.** LEFT JOIN된 테이블의 컬럼을 WHERE에서 필터링하면(예: `LEFT JOIN stat s ON r.id = s.resource_id ... WHERE s.stat_date = '202606'`) 미매칭 행이 모두 제거되어 LEFT JOIN이 INNER JOIN으로 강등되고, 피벗 패턴에서는 기준 행이 탈락해 이름 등 기준 컬럼이 NULL로 나옵니다. 올바른 형태: `LEFT JOIN stat s ON r.id = s.resource_id AND s.stat_date = '202606'`. 행 자체를 걸러내려는 의도라면 LEFT JOIN 대신 JOIN(INNER)을 사용합니다. (`IS NULL` / `IS NOT NULL` 검사는 WHERE에 두어도 됩니다)
 
 ## 출력 형식
 
@@ -259,6 +260,7 @@ HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '조�
 8. 양식-DB 매핑이 제공된 경우, 매핑된 모든 컬럼을 SELECT에 포함하고 "테이블명.컬럼명" 형태의 alias를 부여한다.
 9. 설정 정보 조회 시: cmm_resource.resource_conf_id = core_config_prop.configuration_id 를 JOIN 조건으로 사용한다.
 10. 성능 지표 조회 시: cmm_resource.id = cmm_metric_stat_[h,d,m].resource_id 를 JOIN 조건으로 사용한다.
+11. **LEFT JOIN 테이블에 대한 필터 조건은 WHERE가 아니라 해당 JOIN의 ON 절에 배치한다.** LEFT JOIN된 테이블의 컬럼을 WHERE에서 필터링하면(예: `LEFT JOIN polestar.cmm_metric_stat_m s ON c.id = s.resource_id ... WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606'`) 미매칭 행이 모두 제거되어 LEFT JOIN이 INNER JOIN으로 강등된다. 피벗 패턴에서는 메트릭 행이 없는 server.Server 행이 GROUP BY 전에 탈락해 **서버명이 NULL**로 나온다(설정+성능 혼합 조회의 전형적 결함). 올바른 형태: `LEFT JOIN polestar.cmm_metric_stat_m s ON c.id = s.resource_id AND s.definition_name = 'Utilization' AND s.stat_date = '202606'` 후 임계 조건은 HAVING의 집계 CASE WHEN으로 적용한다. 행 자체를 걸러내려는 의도라면 LEFT JOIN 대신 JOIN(INNER)을 사용한다. (`IS NULL` / `IS NOT NULL` 검사는 WHERE에 두어도 된다)
 
 ## 출력 형식
 

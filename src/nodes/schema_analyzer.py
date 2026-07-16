@@ -40,6 +40,8 @@ def _synonym_tables_matching_query(
     *,
     fuzzy: bool = False,
     min_score: float = 0.85,
+    semantic: bool = False,
+    semantic_min: float = 0.65,
 ) -> set[str]:
     """등록된 컬럼 유사어 중 이번 질의 용어와 매칭되는 것의 테이블만 추린다 (D-051).
 
@@ -54,6 +56,11 @@ def _synonym_tables_matching_query(
     실패했을 때 질의 토큰과의 **유연 근사 매칭**(자모·편집거리·부분어)을 추가로 시도한다.
     이로써 "메모리사용률"↔"메모리 사용률"류 표기 변형·오탈자를 잡는다. ``fuzzy=False``
     (기본)이면 아래 루프는 기존 정확 부분어 매칭과 **바이트 단위로 동일**하다(회귀 0).
+
+    Plan 61 트랙 B(E5-4, D-084): ``semantic=True``이면 정확·퍼지 계단이 모두 놓친
+    유사어를 **임베딩 의미 검색**(계단 마지막 단)으로 보완한다. "가동률"↔"이용률"류
+    의역·동의개념을 잡는다. 모델 미가용 시 경고 1회 후 무매칭(모듈에서 가시화).
+    ``semantic=False``(기본)이면 임베딩 모듈을 임포트조차 하지 않는다(회귀 0).
 
     ``cap``의 기본값은 모듈 상수(15)이나, 호출부는 config
     (``cfg.synonym.max_synonym_supplement_tables``)에서 상한을 읽어 넘긴다(E5-3):
@@ -74,9 +81,13 @@ def _synonym_tables_matching_query(
     if not match_text or not db_syns:
         return matched
 
-    # 유연 매칭용 질의 토큰은 fuzzy=True일 때만 준비한다(OFF 경로 오버헤드 0).
+    # 계측(E5-계측): 매칭 단계·근거를 수집해 종료 시 "[동의어]" 태그로 콘솔 로깅.
+    # 테스트 시 pytest --log-cli-level=INFO 로 동의어 사용 적절성을 육안 검증한다.
+    hit_details: list[str] = []
+
+    # 유연·의미 매칭용 질의 토큰은 fuzzy/semantic ON일 때만 준비한다(OFF 경로 오버헤드 0).
     query_tokens: list[str] = []
-    if fuzzy:
+    if fuzzy or semantic:
         import re as _re
 
         query_tokens = [
@@ -93,17 +104,45 @@ def _synonym_tables_matching_query(
                 continue
             s_low = s.lower()
             hit = s_low in match_text
+            detail = f"'{s}'→{col_key}(정확)"
             if not hit and fuzzy and query_tokens:
                 cand, _score = best_flex_match(s_low, query_tokens, min_score)
                 hit = cand is not None
+                if hit:
+                    detail = f"'{s}'→{col_key}(퍼지, 토큰='{cand}', 신뢰도={_score:.2f})"
             if hit:
                 matched.add(col_key.split(".", 1)[0].lower())
+                hit_details.append(detail)
                 break
         if len(matched) >= cap:
             logger.warning(
                 "유사어 기반 allowed_tables 보완 상한(%d) 도달, 이후 생략", cap
             )
             break
+
+    # E5-4 (D-084): 정확·퍼지 계단이 놓친 유사어를 임베딩 의미 검색으로 마지막 보완한다.
+    # semantic=False(기본)면 진입하지 않아 기존 경로 바이트 무변경(회귀 0).
+    if semantic and query_tokens and len(matched) < cap:
+        from src.schema_cache.synonym_semantic import semantic_tables_matching_query
+
+        for table in sorted(
+            semantic_tables_matching_query(db_syns, query_tokens, semantic_min)
+        ):
+            if table in matched:
+                continue
+            if len(matched) >= cap:
+                logger.warning(
+                    "유사어 기반 allowed_tables 보완 상한(%d) 도달, 이후 생략", cap
+                )
+                break
+            matched.add(table)
+            hit_details.append(f"→{table}(임베딩)")
+
+    if hit_details:
+        logger.info(
+            "[동의어] 질의 테이블 보완 매칭 %d건: %s",
+            len(hit_details), "; ".join(hit_details),
+        )
     return matched
 
 
@@ -842,6 +881,7 @@ async def schema_analyzer(
                     ).lower()
                     # E5-3: 보완 상한을 config에서 읽는다(모듈 상수 하드코딩 대체, 기본 15).
                     # E5-1: fuzzy 플래그 ON 시 유연 근사 매칭 병행(기본 OFF → 정확 부분어만).
+                    # E5-4: semantic 플래그 ON 시 임베딩 의미 검색을 계단 마지막 단으로 병행(D-084).
                     _syn_cfg = app_config.synonym
                     _allowed |= _synonym_tables_matching_query(
                         db_syns,
@@ -849,6 +889,8 @@ async def schema_analyzer(
                         cap=_syn_cfg.max_synonym_supplement_tables,
                         fuzzy=_syn_cfg.fuzzy_match,
                         min_score=_syn_cfg.match_confidence_min,
+                        semantic=_syn_cfg.semantic_match,
+                        semantic_min=_syn_cfg.semantic_confidence_min,
                     )
                 except Exception as e:
                     logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)

@@ -22,6 +22,7 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.candidate_generator import classify_complexity
+from src.nodes.query_validator import _check_left_join_where_demotion
 from src.nodes.semantic_compiler import compile_from_nl
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
@@ -783,6 +784,11 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     for kw in dangerous:
         if re.search(rf"\b{kw}\b", sql, re.IGNORECASE):
             return f"금지 키워드 포함: {kw}"
+
+    # LEFT JOIN 강등(WHERE 필터) 감지 — 단일 경로(query_validator 6.7)와 대칭 (D-085)
+    demotion_errors = _check_left_join_where_demotion(sql)
+    if demotion_errors:
+        return demotion_errors[0]
 
     # LIMIT 없으면 추가
     if not re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):

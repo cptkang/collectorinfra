@@ -56,6 +56,13 @@ deepagents = [
 postgres-checkpoint = [
     "langgraph-checkpoint-postgres",
 ]
+# E5-4 임베딩 의미 검색 (D-084 / Plan 61 트랙 B): 폐쇄망 오프라인 반입 모델 CPU 상주 (opt-in).
+# 활성화는 SYNONYM_SEMANTIC_MATCH=true + 백엔드 요건(SYNONYM_SEMANTIC_BACKEND 참조) 설정 필요.
+# vllm 백엔드(별도 vLLM 서버 /v1/embeddings)만 쓸 경우 sentence-transformers 없이 numpy만 필수.
+semantic = [
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.24.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

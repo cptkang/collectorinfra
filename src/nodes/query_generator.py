@@ -385,6 +385,28 @@ async def query_generator(
             or [],
             attribute_columns=attr_cols or None,
         )
+        # 계측(E5-계측): 최종 SQL에 실제 반영된 동의어를 "[동의어]" 태그로 콘솔 로깅.
+        # 매칭 시점 로그(schema_analyzer/field_mapper)와 짝을 이뤄, 매칭된 동의어가
+        # 생성 SQL까지 적절히 쓰였는지 테스트 중 육안 검증할 수 있다.
+        if synonym_usage.get("mappings"):
+            _details = "; ".join(
+                f"{m.get('key')}(질의어: "
+                f"{', '.join(m.get('matched_user_terms') or []) or '매칭 없음'})"
+                for m in synonym_usage["mappings"]
+            )
+            logger.info(
+                "[동의어] 최종 SQL 반영 %d건: %s",
+                len(synonym_usage["mappings"]), _details,
+            )
+        if synonym_usage.get("unregistered"):
+            logger.info(
+                "[동의어] 사전 미등록 리터럴 %d건(LLM 직접 추론 — 적절성 점검 대상): %s",
+                len(synonym_usage["unregistered"]),
+                "; ".join(
+                    f"{u['type']}:'{u['literal']}'"
+                    for u in synonym_usage["unregistered"]
+                ),
+            )
     except Exception as e:
         logger.warning("유사어 사용 역조회 실패: %s", e)
 

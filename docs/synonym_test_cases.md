@@ -1,10 +1,10 @@
 # Synonym 테스트 케이스 — 로컬 샌드박스 수동 검증
 
 > 대상 DB: `polestar` (docker `polestar_pg`, localhost:5434 / infradb / 스키마 `polestar`)
-> 대상 계층: 프로필 EAV synonym · column_synonyms · 유연(flex) 매칭(D-075) · 등록 흐름(D-012) · 오매칭 방어 · **시드 사전(그룹 F)** · **시드×거버넌스(그룹 G)**
+> 대상 계층: 프로필 EAV synonym · column_synonyms · 유연(flex) 매칭(D-075) · 등록 흐름(D-012) · 오매칭 방어 · **시드 사전(그룹 F)** · **시드×거버넌스(그룹 G)** · **크로스도메인 복합 쿼리(그룹 H)**
 > 관련: `docs/synonym_management_analysis.md`, Plan 61 트랙 B, `config/db_profiles/polestar.yaml`,
 > `docs/synonym_seed_migration_guide.md`(시드 절차), `docs/plan61_bugfix_plan.md`(B2 config·B4 페어링)
-> 작성일: 2026-07-15 · 갱신: 2026-07-15 — 그룹 F·G 신설(시드 시스템), 픽스처 08 전제·Redis 키 형식 반영
+> 작성일: 2026-07-15 · 갱신: 2026-07-16 — **전 그룹 프롬프트를 복합 쿼리(다중 조건·집계·정렬·TOP-N·조인) 골격으로 상향**, 그룹 H(크로스도메인) 신설. 기대값은 라이브 샌드박스 실측(2026-07-16) 기준
 
 ## 사전 조건
 
@@ -22,6 +22,9 @@
   "전체 서버" 질의에서 같은 hostname이 2행 나오면 resource_type 미한정 SQL(회귀가 아니라 생성 품질 문제로 분류)
 - **시드 로드 상태 확인(그룹 F·G 전제)**: `docker exec collectorinfra-redis redis-cli HLEN schema:polestar:synonyms` → **75 이상**.
   미달이면 `python scripts/synonym_seeds.py load --db polestar` 선행(합집합 병합 — 기존 등록분 무손실)
+- **복합 쿼리 판정 공통 원칙**: 프롬프트가 유사어 매핑 + SQL 골격(조건·집계·정렬·조인)을 동시에 검증하므로,
+  실패 시 ①유사어 미매핑(잘못된 칼럼/테이블)인지 ②매핑은 맞았으나 SQL 골격 오류(조건 누락, 정렬 방향, 조인 누락)인지 **원인을 분리 기록**할 것.
+  hostapo01/02는 구세대 텍스트 EAV 값(`16.0`, `62.1 GB`, `977.3 GB`)이라 수치 캐스트·정렬 결과가 비결정적 — 수치 조건/정렬 케이스에서는 **판정 대상에서 제외**(포함·제외·오류 모두 회귀 아님)
 
 ## 결과 확인 방법
 
@@ -36,40 +39,42 @@
 
 ## 그룹 A — 프로필 EAV synonym (known_attributes, 정확일치)
 
-플래그 무관, 기본 상태에서 모두 통과해야 하는 기준선.
+플래그 무관, 기본 상태에서 모두 통과해야 하는 기준선. 2026-07-16부터 단순 단건 조회가 아니라 **복수 서버 IN·다속성 동시 피벗·수치 조건·정렬**을 포함한 복합 골격으로 검증한다.
 
 | ID | 프롬프트 | 검증 포인트 | 기대 결과 | 판정 |
 |----|---------|-----------|----------|:---:|
-| SYN-A-01 | `DB-ORA-023 서버의 커널 파라미터를 보여줘` | "커널 파라미터"→`OSParameter`. LOB이므로 `stringvalue` 사용(`stringvalue_short`면 빈 값 회귀). `is_lob=1` 조건이 SQL에 있으면 실패(Known Mistakes 2026-06-10) | `kernel.shmmax = 137438953472` 등 커널 설정 텍스트 | ☐ |
-| SYN-A-02 | `SV-WEB-001 서버의 sysctl 설정을 알려줘` | 영문 동의어 "sysctl"→`OSParameter` | `kernel.shmmax = 68719476736` 등 | ☐ |
-| SYN-A-03 | `전체 서버의 제조사와 일련번호를 조회해줘` | "제조사"→`Vendor`, "일련번호"→`SerialNumber` | Dell/IBM/HPE/Dell Inc., KR2023ORA0023·KR2024WEB0001·DFZLCM2 등 | ☐ |
-| SYN-A-04 | `hostapo01 서버의 타임존을 알려줘` | "타임존"→`GMT` | `GMT+09:00` | ☐ |
-| SYN-A-05 | `전체 서버의 논리코어 수와 메모리 용량을 보여줘` | "논리코어"→`LOGICALCORE`(server.Cpus), "메모리 용량"→`TotalSize`(server.Memory). **자식 리소스 EAV 피벗(D-068)** — resource_type 구분 CASE WHEN + `platform_resource_id` GROUP BY. 값이 NULL이면 server.Server 행에만 조인한 회귀 | 서버당 1행, 코어 수·메모리 용량 모두 채워짐 | ☐ |
+| SYN-A-01 | `DB-ORA-023과 SV-WEB-001 두 서버의 커널 파라미터를 비교해서 보여줘` | "커널 파라미터"→`OSParameter` + **복수 서버 IN 조건**. LOB이므로 `stringvalue` 사용(`stringvalue_short`면 빈 값 회귀). `is_lob=1` 조건이 SQL에 있으면 실패(Known Mistakes 2026-06-10) | 2행 — DB-ORA-023: `kernel.shmmax = 137438953472` 등, SV-WEB-001: `kernel.shmmax = 68719476736` 등 | ☐ |
+| SYN-A-02 | `SV-WEB-001 서버의 sysctl 설정에서 vm.swappiness 값이 얼마인지 알려줘` | 영문 동의어 "sysctl"→`OSParameter` + **LOB 텍스트 내 특정 키 추출**(SQL LIKE 또는 결과 후처리 — 어느 쪽이든 최종 답이 맞으면 통과) | `vm.swappiness = 10` | ☐ |
+| SYN-A-03 | `SV-WEB-001, DB-ORA-023, cocm-hdkapp01 세 서버의 제조사, 일련번호, 모델명을 표로 보여줘` | "제조사"→`Vendor`, "일련번호"→`SerialNumber`, "모델명"→`MODEL` — **3개 서버 IN × 3개 속성 동시 피벗** | SV-WEB-001: HPE/KR2024WEB0001/ProLiant DL380 Gen10 · DB-ORA-023: Dell/KR2023ORA0023/PowerEdge R750 · cocm-hdkapp01: HPE/KR2024APP0001/ProLiant DL360 Gen10 | ☐ |
+| SYN-A-04 | `hostapo01과 hostapo02의 타임존과 제조사를 함께 보여줘` | "타임존"→`GMT`, "제조사"→`Vendor` — **복수 서버 × 복수 속성 동시 매핑** | 2행 모두 `GMT+09:00` / `Dell Inc.` | ☐ |
+| SYN-A-05 | `논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘` | "논리코어"→`LOGICALCORE`(server.Cpus), "메모리 용량"→`TotalSize`(server.Memory). **자식 리소스 EAV 피벗(D-068) + EAV 값 수치 조건 + 정렬**. 값이 NULL이면 server.Server 행에만 조인한 회귀 | DB-ORA-023(16/65536)·cocm-hdkapp01(16/65536) → SV-WEB-001(8/32768) 순. SV-BATCH-009(4코어)는 **제외**돼야 함. hostapo01/02(`16.0`/`62.1 GB`)는 판정 제외 | ☐ |
 
 ## 그룹 B — column_synonyms: name vs hostname 구분 (D-061 계열)
 
 샌드박스는 `name`(DB-ORA-023)과 `hostname`(dbora023)이 다르게 적재되어 있어 구분 검증 가능.
+정확일치 단건에서 **LIKE 패턴·칼럼 간 비교**로 상향 — 어느 칼럼을 선택했는지가 결과 건수로 그대로 드러난다.
 
 | ID | 프롬프트 | 검증 포인트 | 기대 결과 | 판정 |
 |----|---------|-----------|----------|:---:|
-| SYN-B-01 | `장비명이 DB-ORA-023인 서버의 정보를 알려줘` | SQL이 `c.name = 'DB-ORA-023'` (hostname으로 가면 0건) | 1건 조회됨 | ☐ |
-| SYN-B-02 | `호스트네임이 dbora023인 서버를 찾아줘` | SQL이 `hostname = 'dbora023'` (name으로 가면 0건) | 1건 조회됨 | ☐ |
-| SYN-B-03 | `전체 서버의 서버 이름과 호스트명을 나란히 보여줘` | "서버 이름"→`name`, "호스트명"→`hostname` 분리 매핑 | 두 컬럼 값이 다른 행(DB-ORA-023/dbora023 등) 확인 | ☐ |
+| SYN-B-01 | `장비명이 SV-로 시작하는 서버의 장비명과 IP 주소를 보여줘` | "장비명"→`name` + **LIKE 전방일치**. SQL이 `c.name LIKE 'SV-%'` (hostname으로 가면 svweb001·svbatch009는 패턴 불일치로 0건) | 2건 — SV-WEB-001(10.61.0.1), SV-BATCH-009(10.61.0.4) | ☐ |
+| SYN-B-02 | `호스트네임에 batch가 포함된 서버의 장비명과 IP를 찾아줘` | "호스트네임"→`hostname` + **LIKE 부분일치**. SQL이 `hostname LIKE '%batch%'` (name 칼럼 + 대소문자 구분 LIKE면 'SV-BATCH-009'가 매칭되지 않아 0건) | 1건 — SV-BATCH-009 / 10.61.0.4 | ☐ |
+| SYN-B-03 | `서버 이름과 호스트명이 서로 다른 서버 목록을 보여줘` | "서버 이름"→`name`, "호스트명"→`hostname` 분리 매핑 + **칼럼 간 비교 조건**(`name <> hostname`) | 5건(hostname 단위) — DB-ORA-023, SV-WEB-001, SV-BATCH-009, hostapo01, hostapo02 | ☐ |
 
 ## 그룹 C — 유연(flex) 매칭 (Plan 61 트랙 B, D-075)
 
 **플래그 절차**: ① 기본 상태(OFF)에서 아래 4건 실행 → 기준선 기록. ② `.env`에 `SYNONYM_FUZZY_MATCH=true` 추가(인라인 주석 금지 — 주석은 별도 줄) 후 서버 재시작. ③ 동일 4건 재실행 → 전후 비교.
 프롬프트의 표현은 모두 **사전 미등록 변형**이므로 OFF에서는 매핑 실패/부정확, ON에서는 정확 매핑이 기대 동작.
+**미등록 변형 단어("파라메터"·"시리얼 넘버"·"메모리 사이즈"·"하이퍼 스레딩")는 flex 검증의 핵심이므로 프롬프트 개편 후에도 그대로 유지** — 쿼리 골격(IN·정렬·LIMIT·다속성)만 복합화했다.
 
-**전제 확인(시드 로드 후)**: 그룹 F의 시드 로드가 아래 4건 표현을 등재하지 않았는지 확인 — "파라메터"·"시리얼 넘버"·"메모리 사이즈"·"하이퍼 스레딩"이 사전에 있으면 정확일치로 통과해 버려 flex 검증이 무효(2026-07-15 시드 기준 4건 모두 미등재 확인됨).
+**전제 확인(시드 로드 후)**: 그룹 F의 시드 로드가 위 4건 표현을 등재하지 않았는지 확인 — 사전에 있으면 정확일치로 통과해 버려 flex 검증이 무효(2026-07-15 시드 기준 4건 모두 미등재 확인됨).
 **판정 주의**: ON 전환 후에도 OFF와 완전 동일하면 플래그 미반영 — nested config 임포트 고정 회귀(B2, `docs/plan61_bugfix_plan.md`) 의심. 반영은 반드시 **서버 재시작**으로(프로세스 내 env 플립은 측정 무효 이력 있음).
 
 | ID | 프롬프트 | 미등록 변형 → 매칭 단계 | ON 기대 결과 | OFF 판정 | ON 판정 |
 |----|---------|----------------------|-------------|:---:|:---:|
-| SYN-C-01 | `DB-ORA-023의 커널 파라메터를 보여줘` | "파라메터"(오타) → 자모 편집거리 | `OSParameter` 조회(SYN-A-01과 동일 결과) | ☐ | ☐ |
-| SYN-C-02 | `전체 서버의 시리얼 넘버를 알려줘` | "시리얼 넘버" → "시리얼" 부분어 포함(0.85~0.95) | `SerialNumber` 조회(SYN-A-03과 동일) | ☐ | ☐ |
-| SYN-C-03 | `전체 서버의 메모리 사이즈를 조회해줘` | "메모리 사이즈" → "메모리크기/메모리용량" 근사 | `TotalSize`(server.Memory) 조회 | ☐ | ☐ |
-| SYN-C-04 | `hostapo01의 하이퍼 스레딩 설정을 알려줘` | "하이퍼 스레딩" → 구분자 제거 동등(0.97, 등록형 "하이퍼스레딩"). HYPERTHREADING 데이터는 hostapo01/02에만 존재(SV-WEB-001 등 P61 서버엔 없음) | `HYPERTHREADING` = `on` | ☐ | ☐ |
+| SYN-C-01 | `DB-ORA-023과 SV-WEB-001의 커널 파라메터를 비교해서 보여줘` | "파라메터"(오타) → 자모 편집거리. **복수 서버 IN** 골격 | `OSParameter` 2행(SYN-A-01과 동일 결과) | ☐ | ☐ |
+| SYN-C-02 | `전체 서버의 시리얼 넘버를 제조사와 함께 보여줘` | "시리얼 넘버" → "시리얼" 부분어 포함(0.85~0.95). **미등록 변형("시리얼 넘버") + 등록어("제조사") 혼합 매핑** — 한쪽만 매핑되는 비대칭 확인 | `SerialNumber`+`Vendor` 동시 조회(SYN-A-03 서버들 값 포함) | ☐ | ☐ |
+| SYN-C-03 | `메모리 사이즈가 큰 순서로 상위 3대 서버를 보여줘` | "메모리 사이즈" → "메모리크기/메모리용량" 근사. **정렬 + LIMIT(TOP-N)** 골격 | `TotalSize`(server.Memory) 내림차순 — DB-ORA-023(65536)·cocm-hdkapp01(65536) → SV-WEB-001(32768). hostapo01/02(`62.1 GB` 텍스트)는 판정 제외 | ☐ | ☐ |
+| SYN-C-04 | `hostapo01과 hostapo02의 하이퍼 스레딩 설정을 비교해줘` | "하이퍼 스레딩" → 구분자 제거 동등(0.97, 등록형 "하이퍼스레딩"). **복수 서버 IN**. HYPERTHREADING 데이터는 hostapo01/02에만 존재(SV-WEB-001 등 P61 서버엔 없음) | 2행 모두 `HYPERTHREADING` = `on` | ☐ | ☐ |
 
 ## 그룹 D — 등록 흐름 (pending_synonym_registrations, D-012) — 멀티턴 시나리오
 
@@ -80,7 +85,7 @@
 2. 응답에 LLM 추론 매핑이 **등록 후보 목록**으로 제시되는지 확인 → ☐
 3. 후속 턴에 `전체 등록` 응답 → Redis 반영 메시지 확인 → ☐
    (부분 등록 변형: `1번만 등록` / 거부 변형: `건너뛰기`)
-4. 등록한 표현으로 **텍스트 질의** 재실행(예: `전체 서버의 장비 S/N 번호를 알려줘`) → 이번엔 synonym 정확일치로 매핑되는지 확인 → ☐
+4. 등록한 표현으로 **복합 텍스트 질의** 재실행(예: `장비 S/N 번호가 KR로 시작하는 서버를 제조사와 함께 보여줘`) → synonym 정확일치 매핑 + LIKE 조건·다속성 골격이 함께 동작하는지 확인 → ☐
 5. Redis 확인(선택): `docker exec collectorinfra-redis redis-cli HGET schema:polestar:synonyms "<매핑된 schema.table.column>"`
    (키는 `schema:{db_id}:synonyms` 형식 — `polestar:synonyms`가 아님)
 
@@ -88,13 +93,13 @@
 
 ## 그룹 E — 오매칭 방어 (부정 케이스)
 
-synonym이 있어서 오히려 잘못 갈 수 있는 함정 검증.
+synonym이 있어서 오히려 잘못 갈 수 있는 함정 검증. **함정 + 복합 골격(기간 필터·TOP-N·단위 변환·조인)** 동시 검증으로 상향.
 
 | ID | 프롬프트 | 함정 | 기대 동작 | 판정 |
 |----|---------|-----|----------|:---:|
-| SYN-E-01 | `전체 서버의 CPU 사용률을 알려줘` | "CPU"가 `LOGICALCORE` synonym에 포함 | 코어 수(EAV)가 아닌 **사용률 metric**(`cmm_metric_stat_m`, Utilization) 경로로 조회. 트랙 C(semantic compiler) 활성 시 결정적 피벗 SQL | ☐ |
-| SYN-E-02 | `디스크 용량이 큰 서버를 알려줘` | "디스크용량"이 `TotalSize` synonym에 있으나 TotalSize는 server.Memory/server.Disks 양쪽 속성 | `server.Disks`의 TotalSize 기준 정렬(메모리 용량으로 정렬되면 실패). P61 서버 기대 순서: DB-ORA-023(4194304) > SV-BATCH-009(3145728) > cocm-hdkapp01(2097152) > SV-WEB-001(1048576). 주의: hostapo01/02는 구세대 텍스트값(`977.3 GB`)이라 문자열 정렬 시 최상단에 끼거나 숫자 캐스트 시 오류/제외될 수 있음(판정에서 제외하고 P61 4대 순서만 확인) | ☐ |
-| SYN-E-03 | `가용성 상태가 정상이 아닌 서버를 알려줘` | avail_status 값 매핑(규칙 13) | `avail_status != 0` (특정 값 `= 1` 매핑이면 실패) | ☐ |
+| SYN-E-01 | `2026년 6월 서버별 CPU 사용률 평균이 높은 상위 3대를 보여줘` | "CPU"가 `LOGICALCORE` synonym에 포함 | 코어 수(EAV)가 아닌 **사용률 metric**(`cmm_metric_stat_m`, Utilization, server.Cpus) 경로 + `stat_date='202606'` + 내림차순 + TOP-3. 기대 순서: **DB-ORA-023(72.1) > cocm-hdkapp01(48.9) > SV-WEB-001(42.8)** (4위 SV-BATCH-009 18.3은 잘려야 함). 트랙 C(semantic compiler) 활성 시 결정적 피벗 SQL | ☐ |
+| SYN-E-02 | `디스크 용량이 2TB 이상인 서버를 용량이 큰 순서로 보여줘` | "디스크용량"이 `TotalSize` synonym에 있으나 TotalSize는 server.Memory/server.Disks 양쪽 속성 | `server.Disks`의 TotalSize 기준 + **단위 변환(2TB=2097152MB) 수치 조건** + 정렬. 기대: DB-ORA-023(4194304) > SV-BATCH-009(3145728) > cocm-hdkapp01(2097152), SV-WEB-001(1048576)은 제외. 메모리 TotalSize로 가면(최대 65536) 0건 — 즉시 실패 판정. hostapo01/02(`977.3 GB` 텍스트)는 판정 제외 | ☐ |
+| SYN-E-03 | `가용성 상태가 정상이 아닌 서버의 서버명과 제조사를 보여줘` | avail_status 값 매핑(규칙 13) + EAV 조인 결합 | `avail_status != 0` (특정 값 `= 1` 매핑이면 실패 — svbatch009는 2라 누락됨). 기대 8건: SV-BATCH-009(IBM), svr-app-03(HPE), svr-bat-02(VMware, Inc.), svr-db-04(Dell Inc.), svr-was-03(HPE), svr-was-07(Dell Inc.), svr-web-05(VMware, Inc.), svr-web-08(HPE) | ☐ |
 
 ---
 
@@ -102,6 +107,7 @@ synonym이 있어서 오히려 잘못 갈 수 있는 함정 검증.
 
 시맨틱 모델→시드 파일→Redis 시딩(`scripts/synonym_seeds.py`, `docs/synonym_seed_migration_guide.md`)으로 **시딩 전 사전에 없던 성능지표·알람 어휘**가 등재됐는지 검증.
 시드 히트는 **정확일치 경로**이므로 **전 플래그 OFF(기본 상태)에서 실행** — 그룹 C와 달리 fuzzy 불필요. 시딩 전 이 계열이 질의 수준 미매칭 38.5%의 주원인이었음(시딩 후 0%).
+프롬프트는 **기간 필터·임계 조건·조인·TOP-1** 복합 골격으로 상향 — 시드 어휘 매핑과 SQL 골격을 동시 검증한다.
 
 **사전 절차**: 사전 조건의 시드 로드 확인(HLEN ≥ 75). 원천-생성물 정합(드리프트) 검사:
 ```bash
@@ -111,10 +117,10 @@ python scripts/synonym_seeds.py derive --db all && git diff --exit-code config/s
 
 | ID | 프롬프트 | 검증 포인트 | 기대 결과 | 판정 |
 |----|---------|-----------|----------|:---:|
-| SYN-F-01 | `전체 서버의 메모리 사용률을 알려줘` | "메모리 사용률"→`cmm_metric_stat_*.avg_val`(시드 패턴 B). 시딩 전엔 metric 어휘 부재로 E5-1 게이트 미스 | metric 경로(Utilization, server.Memory) 조회 — EAV `TotalSize`(용량)로 가면 실패. 처리 현황에 metric 테이블 표시 | ☐ |
-| SYN-F-02 | `심각 알람이 몇 건인지 알려줘` | "심각"→`cmm_alarm.alarmseverity` + column_values `심각=3`(시드 패턴 C) | SQL `alarmseverity = 3`, **4건**. `= 1` 등 다른 리터럴이면 column_values 미주입/환각 | ☐ |
-| SYN-F-03 | `경고 알람 목록을 보여줘` | "경고"→`alarmseverity = 2` | **3건** | ☐ |
-| SYN-F-04 | `디스크 아이오가 높은 서버를 알려줘` | 표기 변형 "디스크 아이오"가 시드에 **직접 등재** — fuzzy OFF에서도 정확일치 | 디스크 IO metric(`MaxIORate`) 경로 조회, 0건 아님 | ☐ |
+| SYN-F-01 | `2026년 6월에 메모리 사용률이 90%를 넘은 적이 있는 서버를 알려줘` | "메모리 사용률"→`cmm_metric_stat_*`(시드 패턴 B) + **"넘은 적이 있는"→`max_val` 선택 + 임계 조건 + 월 필터**. EAV `TotalSize`(용량)로 가면 실패. `avg_val > 90`으로 가면 0건(최고 82.6) — max/avg 칼럼 선택까지 판정 | **DB-ORA-023 1건**(202606 max_val 95.2). 처리 현황에 metric 테이블 표시 | ☐ |
+| SYN-F-02 | `2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘` | "심각"→`cmm_alarm.alarmseverity` + column_values `심각=3`(시드 패턴 C) + **ctime 날짜 범위 결합** | SQL `alarmseverity = 3` + 7월 범위 → **2건**(7/10, 7/13). `= 1` 등 다른 리터럴이면 column_values 미주입/환각. 날짜 조건 누락 시 4건으로 초과 | ☐ |
+| SYN-F-03 | `경고 알람 목록을 발생 서버명과 함께 최신순으로 보여줘` | "경고"→`alarmseverity = 2` + **cmm_resource 조인 + ctime 내림차순** | 서버명 조인 시 2건: DB-ORA-023(2026-06-25) → SV-BATCH-009(2026-06-05) 순. LEFT JOIN이면 3건(더미 1건은 서버명 NULL) — 2·3건 모두 허용, `alarmseverity = 2` 리터럴과 정렬 방향이 판정 기준 | ☐ |
+| SYN-F-04 | `2026년 6월 디스크 아이오가 가장 높았던 서버의 제조사와 일련번호를 알려줘` | 표기 변형 "디스크 아이오"가 시드에 **직접 등재** — fuzzy OFF에서도 정확일치. **metric TOP-1 → EAV 속성 크로스도메인 조인** | 디스크 IO metric(`MaxIORate`, 202606) 최고 서버 = **DB-ORA-023** → 제조사 `Dell`, 일련번호 `KR2023ORA0023` | ☐ |
 | SYN-F-05 | (프롬프트 아님) `python scripts/synonym_seeds.py load --db polestar` **재실행** | 멱등성·무손실(합집합 병합) | HLEN 불변, 기존 단어 소실 없음 | ☐ |
 
 ## 그룹 G — 시드×거버넌스 연동 (E5-3, source=operator 보호)
@@ -159,6 +165,20 @@ python scripts/synonym_seeds.py export --db polestar -o /tmp/polestar_export.yam
 # 판정: 파일에 db_id: polestar + column_synonyms/eav_names/column_values 섹션 존재
 ```
 주의: export본으로 git의 derive 생성물(`config/synonym_seeds/`)을 **덮어쓰지 말 것**(가이드 §3.3). 판정 ☐
+
+---
+
+## 그룹 H — 크로스도메인 복합 쿼리 (2026-07-16 신규)
+
+단일 도메인 케이스로는 잡히지 않는 **알람×서버×EAV×metric 결합** 검증. 유사어 매핑(심각/제조사/메모리 용량/CPU 사용률/논리코어 — 전부 시드·프로필 등재어)이 전제이므로 **전 플래그 OFF(기본 상태)에서 실행**.
+개별 유사어는 그룹 A/F에서 이미 검증되므로, 여기서는 **조인 경로와 집계 스코프**가 판정의 중심이다.
+
+| ID | 프롬프트 | 검증 포인트 | 기대 결과 | 판정 |
+|----|---------|-----------|----------|:---:|
+| SYN-H-01 | `심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘` | **알람(column_values 심각=3) → cmm_resource → 자식 EAV 피벗** 3도메인 조인. 알람 4건 중 1건(더미)은 resource 미존재 — 서버 결과에 나타나면 안 됨 | 3건: SV-WEB-001(HPE/32768), DB-ORA-023(Dell/65536), SV-BATCH-009(IBM/16384) | ☐ |
+| SYN-H-02 | `2026년 6월 CPU 사용률 평균이 40%를 넘은 서버의 서버명과 논리코어 수를 보여줘` | **metric 조건(cmm_metric_stat_m, avg_val>40, 202606) → EAV(LOGICALCORE) 역방향 결합** — E-01 함정의 양방향 버전: 같은 질의 안에서 "CPU 사용률"은 metric, "논리코어"는 EAV로 분리 매핑돼야 함. 2026-07-16 실측 회귀: LEFT JOIN한 metric 필터를 WHERE에 둬 서버명 전체 NULL(LEFT JOIN 강등) → validator 6.7 가드+프롬프트 규칙 추가(D-085). 서버명 NULL 재발 시 D-085 가드 미작동 회귀로 분류 | 3건: DB-ORA-023(16), cocm-hdkapp01(16), SV-WEB-001(8). SV-BATCH-009(18.3%)는 제외 | ☐ |
+| SYN-H-03 | `제조사별 서버 대수를 집계해서 많은 순으로 보여줘` | **EAV 값 GROUP BY + 모집단 페어링(B4) 함정** — resource_type 미한정이면 두 장부가 함께 잡혀 전 그룹이 정확히 2배(34/32/22/2/2)로 나옴 | VMware, Inc. 17 > HPE 16 > Dell Inc. 11 > Dell 1 = IBM 1 (합 46 — Vendor 미보유 4대 제외). 2배 값이면 resource_type 미한정 실패 | ☐ |
+| SYN-H-04 | `현재 활성 상태인 심각 알람이 있는 서버들의 2026년 7월 CPU 사용률을 보여줘` | **알람 상태 필터(ACTIVE + 심각=3) × metric 결합**. `cmm_alarm_active` 또는 `cmm_alarm.currentalarmstatus='ACTIVE'` 어느 경로든 동일 집합 | 2건: SV-WEB-001(202607 avg 38.5), SV-BATCH-009(202607 avg 16.9). CLEARED인 DB-ORA-023이 포함되면 상태 필터 누락 | ☐ |
 
 ---
 
