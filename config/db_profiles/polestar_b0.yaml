@@ -257,12 +257,17 @@ query_guide: |
   [날짜/시간 및 통계 테이블(cmm_metric_stat_[h,d,m]) 분기 처리]
   사용자가 요청하는 시간 단위에 따라 알맞은 통계 테이블을 조회합니다.
   - 시간 단위 ("현재", "실시간", "최근 N시간") → `cmm_metric_stat_h` 테이블 조인 (stat_date 형식: YYYYMMDDHH, 예: '2026052214')
-    * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')
+    * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - 1 HOUR, 'YYYYMMDDHH24')
   - 일 단위 ("오늘", "어제", "최근 N일", "특정 일자") → `cmm_metric_stat_d` 테이블 조인 (stat_date 형식: YYYYMMDD, 예: '20260522')
-    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
+    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - 1 DAY, 'YYYYMMDD')
   - 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 테이블 조인 (stat_date 형식: YYYYMM, 예: '202605')
-    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
-  주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 MAX(stat_date) 서브쿼리 또는 CURRENT_DATE 기반의 동적 계산을 사용합니다.
+    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - 1 MONTH, 'YYYYMM')
+  주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 CURRENT_DATE 기반의 동적 계산을 사용합니다.
+  통계 기간 미지정/"지난달"/"최근" 시 기본 관행은 직전월(s.stat_date = TO_CHAR(CURRENT_DATE - 1 MONTH, 'YYYYMM'))입니다.
+  (SELECT MAX(stat_date) ...) 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지 — "이번 달" 명시 요청 시에만 현재 월을 사용합니다.
+  단, "~한 적이 있는"(임계 초과/발생 이력의 존재 여부) 질의는 특정 월로 한정하지 말고 전 보관 기간을 검색합니다.
+  이때 반드시 보관 기간이 가장 긴 cmm_metric_stat_m(월간)을 사용합니다 — _d/_h는 보관 기간이 짧아 과거 이력이 누락됩니다(월간 max_val이 피크를 보존).
+  임계 비교(예: > 90)에는 쓰레기 값 오탐 방지를 위해 상한 게이트를 함께 적용합니다(예: AND s.max_val <= 1000).
 
   [계층 구조]
   cmm_resource.resource_type으로 리소스 종류를 구분합니다:
@@ -290,7 +295,7 @@ query_examples:
         ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
       LEFT JOIN POLESTAR.core_config_prop cc_vendor
         ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
-      WHERE r.resource_type LIKE 'platform.server%'
+      WHERE r.resource_type = 'server.Server'
         AND r.dtime IS NULL
       FETCH FIRST 100 ROWS ONLY;
     explanation: "resource_conf_id = configuration_id 조인으로 서버의 EAV 속성을 조회"
@@ -307,7 +312,7 @@ query_examples:
         ON r.resource_conf_id = cc_osver.configuration_id AND cc_osver.name = 'OSVerson'
       LEFT JOIN POLESTAR.core_config_prop cc_serial
         ON r.resource_conf_id = cc_serial.configuration_id AND cc_serial.name = 'SerialNumber'
-      WHERE r.resource_type LIKE 'platform.server%'
+      WHERE r.resource_type = 'server.Server'
         AND r.dtime IS NULL
       FETCH FIRST 100 ROWS ONLY;
     explanation: "resource_conf_id로 EAV 속성을 추가할 때마다 LEFT JOIN을 추가하는 패턴"
@@ -316,7 +321,7 @@ query_examples:
     sql: |
       SELECT COUNT(*) AS server_count
       FROM POLESTAR.cmm_resource r
-      WHERE r.resource_type LIKE 'platform.server%'
+      WHERE r.resource_type = 'server.Server'
         AND r.dtime IS NULL
       FETCH FIRST 1 ROWS ONLY;
     explanation: "EAV 조인이 필요 없는 단순 집계 — cmm_resource만 사용"
@@ -333,7 +338,7 @@ query_examples:
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
-          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCPU'  THEN cc.stringvalue_short END) AS coresocket,
           MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'       THEN cc.stringvalue_short END) AS ostype,
@@ -361,49 +366,33 @@ query_examples:
       FETCH FIRST 100 ROWS ONLY;
     explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인"
 
-  - question: "서버들의 CPU, 메모리 용량 및 사용률 리스트를 조회해줘"
+  - question: "서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘"
     sql: |
       SELECT
-          svr.name AS pname,
-          svr.ipaddress AS ipaddress,
-          svr.hostname AS hostname,
-          DATE(s.stat_date || '01') AS stat_date,
-          hi.physicalcore,
-          hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN CAST(s.min_val AS DOUBLE) END), 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN CAST(s.min_val AS DOUBLE) END), 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS mem_max
-      FROM POLESTAR.cmm_resource r
-      JOIN POLESTAR.cmm_resource svr
-          ON svr.id = r.platform_resource_id
-         AND svr.resource_type = 'server.Server'
-      JOIN POLESTAR.cmm_metric_stat_m s
-          ON r.id = s.resource_id
-      LEFT JOIN (
-          SELECT
-              COALESCE(c.platform_resource_id, c.id) AS id,
-              MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
-              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
-              MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
-          FROM POLESTAR.cmm_resource c
-          LEFT JOIN POLESTAR.core_config_prop cc
-              ON c.resource_conf_id = cc.configuration_id
-          WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
-            AND c.dtime IS NULL
-          GROUP BY COALESCE(c.platform_resource_id, c.id)
-      ) hi ON svr.ipaddress = hi.ipaddress
-      WHERE r.resource_type IN ('server.Cpus', 'server.Memory')
-        AND s.definition_name = 'Utilization'
-      GROUP BY svr.name, svr.ipaddress, svr.hostname, DATE(s.stat_date || '01'), hi.physicalcore, hi.mem_size
-      ORDER BY svr.hostname, stat_date
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS pname,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE' THEN cc.stringvalue_short END) AS logicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short END) AS mem_size,
+          CAST(ROUND(AVG(CASE WHEN c.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS cpu_avg,
+          CAST(ROUND(MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS cpu_max,
+          CAST(ROUND(AVG(CASE WHEN c.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS mem_avg,
+          CAST(ROUND(MAX(CASE WHEN c.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS mem_max
+      FROM POLESTAR.cmm_resource c
+      LEFT JOIN POLESTAR.core_config_prop cc
+            ON cc.configuration_id = c.resource_conf_id
+      LEFT JOIN POLESTAR.cmm_metric_stat_m s
+            ON s.resource_id = c.id
+           AND s.definition_name = 'Utilization'
+           AND s.stat_date = TO_CHAR(CURRENT_DATE - 1 MONTH, 'YYYYMM')
+      WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id)
       FETCH FIRST 100 ROWS ONLY;
     explanation: |
-      성능 지표 조회 — cmm_metric_stat_m에서 CPU/메모리 사용률을 조회.
-      cmm_resource r(서브 리소스) → cmm_resource svr(서버) → cmm_metric_stat_m s(통계) 3방향 조인.
-      하드웨어 설정(코어수, 메모리용량)은 서브쿼리 hi에서 EAV 피벗으로 조회 후 ipaddress로 조인.
+      용량+사용률 리스트 — 서버당 1행 피벗(D-068 정본). 통계는 cmm_resource 기준 LEFT JOIN이라
+      통계 없는 서버도 누락되지 않는다(INNER JOIN이면 통계 없는 서버가 조용히 빠진다).
+      DB2 소수 보존 — 집계 전 CAST DOUBLE, 최종 DECIMAL(31,2) 스케일 고정(D-086).
+      기간 미지정/"지난달"은 직전월(CURRENT_DATE - 1 MONTH). 월별 추이 명시 요청 시에만
+      아래 월간 통계 예시처럼 stat_date로 분해한다.
 
   - question: "서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
     sql: |
@@ -412,7 +401,7 @@ query_examples:
           svr.ipaddress AS ipaddress,
           svr.hostname AS hostname,
           DATE(s.stat_date || '01') AS stat_date,
-          hi.physicalcore,
+          hi.logicalcore,
           hi.mem_size,
           ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN CAST(s.min_val AS DOUBLE) END), 2) AS cpu_min,
           ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS cpu_avg,
@@ -436,7 +425,7 @@ query_examples:
           SELECT
               COALESCE(c.platform_resource_id, c.id) AS id,
               MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
-              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
               MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
           FROM POLESTAR.cmm_resource c
           LEFT JOIN POLESTAR.core_config_prop cc
@@ -447,7 +436,7 @@ query_examples:
       ) hi ON svr.ipaddress = hi.ipaddress
       WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
         AND s.definition_name IN ('Utilization', 'MaxIORate')
-      GROUP BY svr.name, svr.ipaddress, svr.hostname, DATE(s.stat_date || '01'), hi.physicalcore, hi.mem_size
+      GROUP BY svr.name, svr.ipaddress, svr.hostname, DATE(s.stat_date || '01'), hi.logicalcore, hi.mem_size
       ORDER BY svr.hostname, stat_date
       FETCH FIRST 100 ROWS ONLY;
     explanation: |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Text-to-SQL EX(Execution Accuracy) 평가 하네스 — Plan 61 / E1(D-072).
+"""Text-to-SQL EX(Execution Accuracy) 평가 하네스 - Plan 61 / E1(D-072).
 
 폴스타 자연어→SQL 파이프라인의 품질을 **결과집합 동치(EX)** 로 배치 채점하는 오프라인 CLI.
 순수 신규 파일이며 런타임 경로(src/)를 변경하지 않는다(오프라인 배치 도구).
@@ -7,7 +7,7 @@
 핵심 기능
 ---------
 - 골드셋 로드/검증: `testdata/text2sql_gold/*.yaml`
-- EX 채점(`execution_match`): Spider/BIRD 방식 참조 — 정렬 무관 멀티셋, 컬럼순서·별칭 무관, 부동소수 tolerance
+- EX 채점(`execution_match`): Spider/BIRD 방식 참조 - 정렬 무관 멀티셋, 컬럼순서·별칭 무관, 부동소수 tolerance
 - 3경로 구동(§7 경로 커버리지): `--path {graph,orchestration,multidb}`
 - A/B 축: `--synonym-fuzzy`, `--value-retrieval`, `--candidate-count`, `--selection`, `--semantic-compose`
   (os.environ 플래그 세팅 + `load_config.cache_clear()`로 파이프라인 토글)
@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import math
@@ -49,14 +50,14 @@ COVERAGES = ("inside", "outside")
 PATHS = ("graph", "orchestration", "multidb")
 SELECTIONS = ("consistency", "llm", "hybrid")
 
-# 골드셋 SQL 안전성(SELECT 전용) 검사용 금지 키워드 — 문장 선두/독립 토큰만 위반으로 본다.
+# 골드셋 SQL 안전성(SELECT 전용) 검사용 금지 키워드 - 문장 선두/독립 토큰만 위반으로 본다.
 _FORBIDDEN_STMT = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|merge|grant|revoke|"
     r"replace|call|exec|execute)\b"
 )
 
 # A/B 축 → 파이프라인 플래그 키 / 환경변수 매핑.
-# 환경변수는 (config.py가 해당 플래그를 아직 노출하지 않아도) 무해하게 세팅된다 — 전방호환.
+# 환경변수는 (config.py가 해당 플래그를 아직 노출하지 않아도) 무해하게 세팅된다 - 전방호환.
 FLAG_ENV: dict[str, str] = {
     "multi_candidate": "TEXT2SQL_MULTI_CANDIDATE",
     "candidate_count": "TEXT2SQL_CANDIDATE_COUNT",
@@ -88,6 +89,14 @@ class GoldItem:
     gold_smq: Optional[dict] = None
     notes: str = ""
     source_file: str = ""
+    # 채점 모드: strict(결과집합 완전 동치, 기본) | subset(골드 컬럼 값이 pred의 부분집합이면
+    # 통과 - 알람 뷰처럼 파이프라인이 표준 컬럼+α를 내는 것이 정상인 항목에 선언)
+    scoring: str = "strict"
+    # 의도된 FAIL 사유(빈 값=일반 채점). 알려진 파이프라인 결함을 감시하는 항목에 선언 -
+    # FAIL이 정상 상태이며 골드를 pred에 맞추면 안 된다는 표식(사용자 원칙 2026-07-21:
+    # "의도한 false-negative라면 굳이 PASS로 맞출 필요 없음"). PASS로 전환되면 결함이
+    # 수정된 것이므로 리포트가 해제 검토를 안내한다. 집계에는 일반 FAIL과 동일하게 계상.
+    known_fail: str = ""
 
 
 @dataclass
@@ -123,6 +132,17 @@ class ItemResult:
     latency_ms: float
     pred_sql: Optional[str]
     error: Optional[str]
+    # FAIL 진단용(폐쇄망에서 원인 특정) - 골드/예측 결과의 행수·컬럼수
+    gold_row_count: Optional[int] = None
+    pred_row_count: Optional[int] = None
+    gold_col_count: Optional[int] = None
+    pred_col_count: Optional[int] = None
+    # 보조 지표: 컬럼 스코프 무시 값 일치(EX-subset) - strict FAIL이어도 값은 맞는지
+    ex_subset_pass: Optional[bool] = None
+    # FAIL 진단: pred에서 값 일치 상대를 못 찾은 골드 컬럼명(행수 불일치면 None)
+    subset_unmatched_cols: Optional[list] = None
+    # 의도된 FAIL 사유(골드 known_fail 전사) - FAIL이 정상 상태인 감시 항목 표식
+    known_fail: str = ""
 
 
 @dataclass
@@ -147,7 +167,7 @@ def load_goldset(gold_dir: str | Path, db_filter: Optional[str] = None) -> list[
 
     Args:
         gold_dir: 골드셋 디렉터리 경로.
-        db_filter: 'gp'|'yd'|'b0'|'all'|None — 특정 파일만 로드(파일명 접두).
+        db_filter: 'gp'|'yd'|'b0'|'all'|None - 특정 파일만 로드(파일명 접두).
 
     Returns:
         GoldItem 목록.
@@ -173,6 +193,8 @@ def load_goldset(gold_dir: str | Path, db_filter: Optional[str] = None) -> list[
                     gold_smq=raw.get("gold_smq"),
                     notes=raw.get("notes", ""),
                     source_file=yaml_path.name,
+                    scoring=raw.get("scoring", "strict"),
+                    known_fail=str(raw.get("known_fail", "") or ""),
                 )
             )
     return items
@@ -236,11 +258,13 @@ def validate_goldset(items: list[GoldItem]) -> list[str]:
             errors.append(f"[{where}] category 값 오류: {item.category!r} (허용: {CATEGORIES})")
         if item.coverage not in COVERAGES:
             errors.append(f"[{where}] coverage 값 오류: {item.coverage!r} (허용: {COVERAGES})")
+        if item.scoring not in ("strict", "subset"):
+            errors.append(f"[{where}] scoring 값 오류: {item.scoring!r} (허용: strict|subset)")
     return errors
 
 
 # ──────────────────────────────────────────────
-# EX 채점 (순수 함수) — Spider/BIRD 결과집합 동치 참조
+# EX 채점 (순수 함수) - Spider/BIRD 결과집합 동치 참조
 # ──────────────────────────────────────────────
 
 def _float_decimals(tol: float) -> int:
@@ -301,8 +325,8 @@ def execution_match(
     """두 결과집합이 동치인지 판정한다(EX 채점).
 
     Spider/BIRD 하네스 방식 참조:
-    - 정렬 무관 멀티셋 비교(order_sensitive=False, 기본) — ORDER BY 무시
-    - 컬럼 순서·별칭 무관(ignore_column_order=True, 기본) — 행 내 값 정렬로 흡수
+    - 정렬 무관 멀티셋 비교(order_sensitive=False, 기본) - ORDER BY 무시
+    - 컬럼 순서·별칭 무관(ignore_column_order=True, 기본) - 행 내 값 정렬로 흡수
     - 부동소수 tolerance(float_tol)
 
     Args:
@@ -325,8 +349,73 @@ def execution_match(
     return Counter(g) == Counter(p)
 
 
+def _labeled_col_counters(rows: list, decimals: int) -> tuple[list[str], list[Counter]]:
+    """행 목록을 (컬럼 라벨, 컬럼별 값 멀티셋 Counter) 쌍으로 변환한다(dict 행은 키, tuple 행은 col{i})."""
+    first = rows[0]
+    if isinstance(first, dict):
+        keys = list(first.keys())
+        return keys, [
+            Counter(_norm_cell((r or {}).get(k), decimals) for r in rows) for k in keys
+        ]
+    width = len(first) if isinstance(first, (list, tuple)) else 1
+
+    def _cell(row: Any, i: int) -> Any:
+        return row[i] if isinstance(row, (list, tuple)) else row
+
+    labels = [f"col{i}" for i in range(width)]
+    return labels, [
+        Counter(_norm_cell(_cell(r, i), decimals) for r in rows) for i in range(width)
+    ]
+
+
+def column_subset_unmatched(
+    gold_rows: Optional[list],
+    pred_rows: Optional[list],
+    *,
+    float_tol: float = 1e-6,
+) -> Optional[list[str]]:
+    """subset 판정에서 pred에 값 멀티셋 일치 상대가 없는 골드 컬럼명 목록을 반환한다(FAIL 진단).
+
+    행수가 다르거나 결과가 없으면 None(컬럼 단위 진단 무의미 - 행수부터 원인).
+    빈 리스트 = 전 골드 컬럼이 pred에서 값 일치 상대를 찾음(subset 통과).
+    골드 중복 컬럼(예: 알람 뷰의 장비명=리소스명, 값 동일)이 같은 pred 컬럼에 대응하는 것을
+    허용한다 - 값 멀티셋이 같으면 재사용해도 의미상 동치(폐쇄망 실측 2026-07-21 yd-006:
+    1:1 강제 시 pred가 이름 컬럼을 하나만 내면 값이 다 맞아도 subset 실패).
+    """
+    if gold_rows is None or pred_rows is None or len(gold_rows) != len(pred_rows):
+        return None
+    if not gold_rows:
+        return []
+    decimals = _float_decimals(float_tol)
+    g_labels, g_cols = _labeled_col_counters(gold_rows, decimals)
+    _, p_cols = _labeled_col_counters(pred_rows, decimals)
+    return [
+        label for label, gc in zip(g_labels, g_cols)
+        if not any(pc == gc for pc in p_cols)
+    ]
+
+
+def column_subset_match(
+    gold_rows: Optional[list],
+    pred_rows: Optional[list],
+    *,
+    float_tol: float = 1e-6,
+) -> bool:
+    """골드의 각 컬럼이 pred 컬럼들의 부분집합으로 값 일치하는지 판정한다(보조 지표 EX-subset).
+
+    실측(2026-07-20 yd): 파이프라인이 질의 밖 컬럼을 추가하고 그 수도 실행마다 흔들려
+    (7↔8, 12↔13) strict EX가 컬럼 스코프에서 전멸 - 값 정확성과 스코프 규율을 분리 측정한다.
+    판정: 행수 동일 + 골드의 각 컬럼 값 멀티셋이 pred의 어떤 컬럼 값 멀티셋과 일치(골드
+    중복 컬럼은 같은 pred 컬럼 재사용 허용). 행 단위 정합의 컬럼 단위 근사이나 실데이터
+    오탐 확률은 무시 가능. strict EX를 대체하지 않는 보조 지표이며, ``scoring: subset``
+    선언 항목에서만 통과 기준으로 승격된다.
+    """
+    unmatched = column_subset_unmatched(gold_rows, pred_rows, float_tol=float_tol)
+    return unmatched is not None and not unmatched
+
+
 # ──────────────────────────────────────────────
-# SMQ 생성 정확도 (트랙 C 훅) — 골드 SMQ가 있을 때만 채점
+# SMQ 생성 정확도 (트랙 C 훅) - 골드 SMQ가 있을 때만 채점
 # ──────────────────────────────────────────────
 
 def _smq_norm_list(value: Any) -> frozenset:
@@ -415,7 +504,7 @@ def _canon_sql(sql: str) -> str:
 
 
 class MockExecutor:
-    """결정적 mock 실행기 — 동일 SQL은 동일 결과행, 다른 SQL은 (대개) 다른 결과행.
+    """결정적 mock 실행기 - 동일 SQL은 동일 결과행, 다른 SQL은 (대개) 다른 결과행.
 
     실제 DB 없이 EX 채점 로직을 구동하기 위한 주입형 실행기.
     fail_sql_substrings에 포함된 토큰이 SQL에 있으면 실행 실패(None)를 흉내낸다.
@@ -484,7 +573,7 @@ class MockPredictor:
 
 
 class UnavailablePredictor:
-    """실제 파이프라인 접속 불가 시의 안전 예측기 — 항상 스킵을 반환한다."""
+    """실제 파이프라인 접속 불가 시의 안전 예측기 - 항상 스킵을 반환한다."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -505,6 +594,75 @@ def _add_repo_root_to_path() -> None:
         sys.path.insert(0, root)
 
 
+_EVAL_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+# MCP SSE 세션 종료 소음 시그니처 - anyio cancel scope는 태스크 경계를 넘는 정리를 허용하지
+# 않아, 세션 잔여 태스크가 GC/shutdown에서 정리될 때 아래 문구의 비치명 예외를 루프 핸들러로
+# 흘린다(채점 결과에는 무영향 - 항목 작업은 이미 완료/스킵 기록됨). 그 외 예외는 기본 처리.
+_MCP_TEARDOWN_SIGNATURES = (
+    "cancel scope",
+    "unhandled errors in a TaskGroup",
+    "GeneratorExit",
+)
+
+
+def _mute_mcp_teardown_noise(loop: Any, ctx: dict) -> None:
+    """MCP SSE 세션 종료 소음만 억제하는 루프 예외 핸들러(그 외는 기본 핸들러 위임)."""
+    texts = [str(ctx.get("message", ""))]
+    stack = [ctx.get("exception")]
+    while stack:
+        exc = stack.pop()
+        if exc is None:
+            continue
+        texts.append(f"{type(exc).__name__}: {exc}")
+        stack.extend(list(getattr(exc, "exceptions", []) or []))
+    blob = " | ".join(texts)
+    if any(sig in blob for sig in _MCP_TEARDOWN_SIGNATURES):
+        return
+    loop.default_exception_handler(ctx)
+
+
+def _run_async(coro: Any) -> Any:
+    """배치 전체가 하나의 이벤트 루프를 공유해 코루틴을 실행한다.
+
+    항목별 `asyncio.run()` 금지 - MCP SSE 세션(anyio cancel scope)은 이벤트 루프 종료 시
+    잔존 태스크가 다른 태스크에서 강제 취소되며 `RuntimeError: Attempted to exit cancel
+    scope in a different task ...`를 뿜는다(폐쇄망 실측 2026-07-16). 항목마다 루프를
+    만들고 닫으면(예측 1 + 골드/생성 SQL 실행 2 = 항목당 루프 3개) 이 종료 경로가 계속
+    반복된다. 서비스 런타임(단일 uvicorn 루프)과 동형인 **단일 공유 루프**로 실행한다.
+    """
+    global _EVAL_LOOP
+    if _EVAL_LOOP is None or _EVAL_LOOP.is_closed():
+        _EVAL_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_EVAL_LOOP)
+        _EVAL_LOOP.set_exception_handler(_mute_mcp_teardown_noise)
+    return _EVAL_LOOP.run_until_complete(coro)
+
+
+def _close_eval_loop() -> None:
+    """공유 루프를 조용히 정리한다(배치 종료 시 1회 - 잔존 SSE 태스크 소음 억제)."""
+    global _EVAL_LOOP
+    loop = _EVAL_LOOP
+    _EVAL_LOOP = None
+    if loop is None or loop.is_closed():
+        return
+    try:
+        loop.set_exception_handler(lambda _l, _ctx: None)
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    except Exception:
+        pass
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+
 class RealExecutor:
     """DBHub/DB 클라이언트를 통한 실제 SQL 실행기(best-effort).
 
@@ -513,9 +671,11 @@ class RealExecutor:
 
     def __init__(self) -> None:
         self._available: Optional[bool] = None
+        self.last_error: Optional[str] = None
 
     def execute(self, sql: str, db_id: str) -> Optional[list]:
-        """SQL을 실제 DB에서 실행한다. 실패/미가용이면 None."""
+        """SQL을 실제 DB에서 실행한다. 실패/미가용이면 None(사유는 last_error에 보존)."""
+        self.last_error = None
         try:
             _add_repo_root_to_path()
             import asyncio
@@ -540,8 +700,9 @@ class RealExecutor:
                         if asyncio.iscoroutine(maybe):
                             await maybe
 
-            return asyncio.run(_run())
-        except Exception:
+            return _run_async(_run())
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
             return None
 
 
@@ -577,6 +738,23 @@ class PipelinePredictor:
             }
 
             async def _run() -> dict:
+                # graph 외 경로는 상류 전처리(input_parser)를 재현해 parsed_requirements를
+                # 채운다 - 운영에서는 오케스트레이터가 채워주는 키를 query_generator가
+                # `state["parsed_requirements"]`로 직접 인덱싱하므로, 생략 시 전 항목이
+                # KeyError로 스킵된다(폐쇄망 실측 2026-07-16). graph 경로는 그래프 내부에서
+                # input_parser가 실행되므로 불필요.
+                if self.path != "graph":
+                    from src.nodes.input_parser import input_parser  # type: ignore
+
+                    state.update(await input_parser(state, llm=llm, app_config=cfg))
+                    # 상류 재현 2: 운영 orchestration은 알람 질의에 routing_intent를 결정적으로
+                    # 세팅한다(D-076 후속3 `_make_isolated_input`/`has_alarm_signal`). 이를 건너뛰면
+                    # allowed_tables가 알람 테이블을 제외해 LLM이 "알람 테이블이 없다"는 자연어로
+                    # 응답 - yd-006 검증 소진의 실제 원인(폐쇄망 실측 2026-07-20).
+                    from src.orchestration.intent_planner import has_alarm_signal  # type: ignore
+
+                    if has_alarm_signal(item.query):
+                        state["routing_intent"] = "alarm_query"
                 if self.path == "orchestration":
                     from src.orchestration.subagents import _run_single_db_pipeline  # type: ignore
 
@@ -592,8 +770,19 @@ class PipelinePredictor:
                 return await graph.ainvoke(state)
 
             t0 = time.perf_counter()
-            out = asyncio.run(_run())
+            out = _run_async(_run())
             latency = (time.perf_counter() - t0) * 1000.0
+            # 파이프라인이 검증 실패(재시도 소진)로 끝났으면 그 SQL을 실행하지 않고 사유를
+            # 그대로 노출한다 - 실패 SQL을 실행하면 DB 구문 오류가 사유를 덮어써 validator
+            # 가드(D-087 등) 발동 여부를 원격에서 구분할 수 없다(폐쇄망 실측 2026-07-20).
+            vr = out.get("validation_result") if isinstance(out, dict) else None
+            if isinstance(vr, dict) and vr.get("passed") is False:
+                reason = out.get("error_message") or vr.get("reason") or "검증 실패"
+                return PredictionResult(
+                    sql=None, skipped=True,
+                    error=f"파이프라인 검증 실패(재시도 소진): {reason}",
+                    retries=int(out.get("retry_count", 0) or 0),
+                )
             sql = self._extract_sql(out)
             if not sql:
                 return PredictionResult(sql=None, skipped=True, error="생성 SQL 추출 실패")
@@ -692,16 +881,40 @@ def run_batch(
         ex_scored = False
         ex_pass: Optional[bool] = None
         skip_reason: Optional[str] = None
+        g_n = p_n = g_c = p_c = None
+        ex_subset: Optional[bool] = None
+        unmatched_cols: Optional[list] = None
         if pred.skipped or not pred.sql:
             skip_reason = pred.error or "예측 미가용"
         else:
             gold_rows = executor.execute(item.gold_sql, item.db_id)
-            pred_rows = executor.execute(pred.sql, item.db_id)
-            if gold_rows is None or pred_rows is None:
-                skip_reason = "실행 미가용(DB 미접속)"
+            gold_err = getattr(executor, "last_error", None)
+            pred_rows = executor.execute(pred.sql, item.db_id) if gold_rows is not None else None
+            pred_err = getattr(executor, "last_error", None)
+            if gold_rows is None:
+                # 골드 실패는 파이프라인 문제가 아니라 골드셋 결함 후보 - 구분해 표기
+                skip_reason = f"골드 SQL 실행 실패(골드셋 결함 가능): {gold_err or '미접속'}"
+            elif pred_rows is None:
+                skip_reason = f"생성 SQL 실행 실패: {pred_err or '미접속'}"
             else:
                 ex_scored = True
                 ex_pass = execution_match(gold_rows, pred_rows, float_tol=float_tol)
+                if ex_pass:
+                    ex_subset = True
+                else:
+                    unmatched_cols = column_subset_unmatched(
+                        gold_rows, pred_rows, float_tol=float_tol
+                    )
+                    ex_subset = unmatched_cols is not None and not unmatched_cols
+                # scoring: subset 항목은 값 부분집합 일치를 통과로 인정한다(알람 뷰처럼
+                # 파이프라인이 표준 컬럼+α를 내는 것이 정상인 유형 - 컬럼 수가 실행마다
+                # 흔들려(9->10) strict로는 영원히 쫓아갈 수 없음, 폐쇄망 실측 2026-07-20)
+                if not ex_pass and item.scoring == "subset" and ex_subset:
+                    ex_pass = True
+                # FAIL 진단 재료(폐쇄망) - 행수·첫 행 컬럼수
+                g_n, p_n = len(gold_rows), len(pred_rows)
+                g_c = len(gold_rows[0]) if gold_rows else 0
+                p_c = len(pred_rows[0]) if pred_rows else 0
         smq_scored = bool(item.gold_smq and pred.smq)
         smq_pass = smq_match(item.gold_smq, pred.smq) if smq_scored else None
         report.items.append(
@@ -721,6 +934,13 @@ def run_batch(
                 latency_ms=pred.latency_ms,
                 pred_sql=pred.sql,
                 error=pred.error,
+                gold_row_count=g_n,
+                pred_row_count=p_n,
+                gold_col_count=g_c,
+                pred_col_count=p_c,
+                ex_subset_pass=ex_subset,
+                subset_unmatched_cols=unmatched_cols,
+                known_fail=item.known_fail,
             )
         )
     return report
@@ -743,6 +963,7 @@ def aggregate(report: BatchReport) -> dict:
             if r.ex_pass:
                 cell["pass"] += 1
 
+    subset_passed = [r for r in scored if r.ex_pass or r.ex_subset_pass]
     return {
         "label": report.label,
         "total": n,
@@ -750,6 +971,8 @@ def aggregate(report: BatchReport) -> dict:
         "ex_pass": len(passed),
         "ex_skipped": n - len(scored),
         "ex_rate": (len(passed) / len(scored)) if scored else None,
+        "ex_subset_pass": len(subset_passed),
+        "ex_subset_rate": (len(subset_passed) / len(scored)) if scored else None,
         "avg_retries": round(mean([r.retries for r in items]), 3) if items else 0.0,
         "total_llm_calls": sum(r.llm_calls for r in items),
         "avg_llm_calls": round(mean([r.llm_calls for r in items]), 3) if items else 0.0,
@@ -759,6 +982,21 @@ def aggregate(report: BatchReport) -> dict:
         "smq_pass": len(smq_pass),
         "smq_rate": (len(smq_pass) / len(smq_scored)) if smq_scored else None,
         "by_category": by_category,
+        # 항목별 상세 - 폐쇄망에서 `--json > out.json`으로 저장해 현지에서 FAIL을 진단한다
+        "items": [
+            {
+                "id": r.id,
+                "status": "PASS" if r.ex_pass else ("SKIP" if not r.ex_scored else "FAIL"),
+                "skip_reason": r.ex_skip_reason,
+                "rows_gold": r.gold_row_count,
+                "rows_pred": r.pred_row_count,
+                "cols_gold": r.gold_col_count,
+                "cols_pred": r.pred_col_count,
+                "ex_subset_pass": r.ex_subset_pass,
+                "pred_sql": r.pred_sql,
+            }
+            for r in items
+        ],
     }
 
 
@@ -812,6 +1050,10 @@ def print_report(report: BatchReport, verbose: bool = False) -> None:
     print(f"\n=== EX 리포트: {agg['label']} ===\n")
     print(f"  총 {agg['total']}건 | EX 채점 {agg['ex_scored']} | 통과 {agg['ex_pass']} | 스킵 {agg['ex_skipped']}")
     print(f"  EX 정확도: {_fmt_rate(agg['ex_rate'])}")
+    print(
+        f"  EX-subset(컬럼 스코프 무시, 보조): {agg['ex_subset_pass']}/{agg['ex_scored']}"
+        f" ({_fmt_rate(agg['ex_subset_rate'])}) - strict FAIL 중 값은 일치하는 항목 포함"
+    )
     print(f"  SMQ 정확도: {_fmt_rate(agg['smq_rate'])} (채점 {agg['smq_scored']}건)")
     print(
         f"  비용(모니터링): 평균 재시도 {agg['avg_retries']} | 총 LLM 호출 {agg['total_llm_calls']} "
@@ -827,14 +1069,70 @@ def print_report(report: BatchReport, verbose: bool = False) -> None:
         for r in report.items:
             status = "PASS" if r.ex_pass else ("SKIP" if not r.ex_scored else "FAIL")
             extra = f" ({r.ex_skip_reason})" if r.ex_skip_reason else ""
+            if r.known_fail and status == "FAIL":
+                status = "FAIL:의도"
             print(f"    [{status}] {r.id:<8} {r.coverage:<7} {r.category:<14}{extra}")
+            if r.known_fail and r.ex_pass:
+                print(
+                    f"        [주의] 의도된 FAIL 항목이 PASS - 감시하던 결함"
+                    f"({r.known_fail})이 수정된 것. 골드 known_fail 해제를 검토하라."
+                )
+            if status == "FAIL:의도":
+                print(f"        의도된 FAIL(골드를 pred에 맞추지 말 것): {r.known_fail}")
+            if status.startswith("FAIL"):
+                # 진단: 행수/컬럼수 불일치 유형을 즉시 판별(폐쇄망 - 로그 반출 불가 전제)
+                hint = " <- 골드 0행(골드셋 결함 후보, --check-gold로 정비)" if r.gold_row_count == 0 else ""
+                if r.ex_subset_pass:
+                    hint += " [값일치·컬럼스코프만 과잉]"
+                print(
+                    f"        rows(gold/pred)={r.gold_row_count}/{r.pred_row_count} "
+                    f"cols(gold/pred)={r.gold_col_count}/{r.pred_col_count}{hint}"
+                )
+                if r.subset_unmatched_cols:
+                    print(
+                        "        subset 미일치 골드컬럼: "
+                        + ", ".join(str(c) for c in r.subset_unmatched_cols)
+                    )
+                if r.pred_sql:
+                    one_line = " ".join(r.pred_sql.split())
+                    print(f"        pred_sql: {one_line[:400]}")
     print()
+
+
+def dump_sqls(path: str, reports: list[BatchReport]) -> None:
+    """항목별 생성 SQL 전문과 진단 수치를 텍스트 파일로 저장한다(폐쇄망 현지 열람용).
+
+    verbose 콘솔 출력은 400자 절단이라 WHERE/JOIN 등 후반부가 안 보인다(실측 요청
+    2026-07-20). 파일은 UTF-8로 저장하며 반출하지 않고 현지에서 열람하는 용도.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        for rep in reports:
+            f.write(f"===== {rep.label} =====\n")
+            for r in rep.items:
+                status = "PASS" if r.ex_pass else ("SKIP" if not r.ex_scored else "FAIL")
+                f.write(
+                    f"\n--- {r.id} [{status}] rows(gold/pred)={r.gold_row_count}/{r.pred_row_count} "
+                    f"cols(gold/pred)={r.gold_col_count}/{r.pred_col_count}"
+                    f"{' [값일치-스코프만]' if (r.ex_subset_pass and not r.ex_pass) else ''}\n"
+                )
+                if r.ex_skip_reason:
+                    f.write(f"[skip] {r.ex_skip_reason}\n")
+                if r.known_fail:
+                    f.write(f"[known_fail] {r.known_fail}\n")
+                if r.subset_unmatched_cols:
+                    f.write(
+                        "[subset 미일치 골드컬럼] "
+                        + ", ".join(str(c) for c in r.subset_unmatched_cols) + "\n"
+                    )
+                f.write("[pred_sql]\n")
+                f.write((r.pred_sql or "(없음)").strip() + "\n")
+    print(f"  [저장] 생성 SQL 전문: {path}")
 
 
 def print_ab_report(ab: dict) -> None:
     """A/B 비교 표를 출력한다."""
     a, b = ab["baseline"], ab["variant"]
-    print(f"\n=== A/B 비교 — 축: {ab['axis']} ===\n")
+    print(f"\n=== A/B 비교 - 축: {ab['axis']} ===\n")
     header = f"  {'지표':<22}{'baseline':>14}{'variant':>14}"
     print(header)
     print("  " + "-" * (22 + 28))
@@ -892,11 +1190,21 @@ def _make_executor(args: argparse.Namespace) -> Executor:
 
 def main(argv: Optional[list[str]] = None) -> int:
     """CLI 진입점."""
+    # cp949 콘솔에서 인코딩 불가 문자(em-dash, non-breaking hyphen 등 - LLM 출력이 에러
+    # 메시지에 섞여 들어옴)로 배치가 죽지 않도록 출력 스트림을 치환 모드로 전환한다.
+    # 개별 문자열 정리는 끝이 없음(실측: — -> 수정 -> ‑ 재발, 2026-07-20).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(description="Text-to-SQL EX 평가 하네스 (Plan 61 / E1)")
     parser.add_argument("--gold-dir", default=str(_default_gold_dir()), help="골드셋 디렉터리")
     parser.add_argument("--db", default="all", help="대상 DB 파일(gp|yd|b0|all)")
     parser.add_argument("--path", choices=PATHS, default="orchestration", help="실행 경로")
     parser.add_argument("--dry-run", action="store_true", help="파이프라인 미실행, 골드셋 검증·통계만")
+    parser.add_argument("--check-gold", action="store_true",
+                        help="골드 SQL만 실 DB에서 전건 실행해 골드셋 자체를 검증(0행/실행실패=결함 후보)")
     parser.add_argument("--mock", action="store_true", help="주입형 mock 예측기/실행기로 구동")
     parser.add_argument("--synonym-fuzzy", action="store_true", help="E5-1 유연 매칭 토글")
     parser.add_argument("--value-retrieval", action="store_true", help="E5-2 값 검색 토글")
@@ -907,7 +1215,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--float-tol", type=float, default=1e-6, help="EX 부동소수 tolerance")
     parser.add_argument("--json", action="store_true", help="JSON 출력")
     parser.add_argument("--verbose", "-v", action="store_true", help="항목별 상세 출력")
+    parser.add_argument("--log-level", default=None,
+                        help="파이프라인 내부 로그 레벨(INFO 등) - '시맨틱 결정적 컴파일' 발동 여부 등은 INFO에만 찍힘")
+    parser.add_argument("--sql-dump", default=None, metavar="PATH",
+                        help="항목별 생성 SQL 전문을 텍스트 파일로 저장(폐쇄망 현지 진단용 - verbose의 400자 절단 없이 전문)")
     args = parser.parse_args(argv)
+
+    if args.log_level:
+        import logging as _logging
+        _logging.basicConfig(
+            level=getattr(_logging, args.log_level.upper(), _logging.INFO),
+            format="%(levelname)s %(name)s: %(message)s",
+        )
 
     items = load_goldset(args.gold_dir, db_filter=args.db)
     if not items:
@@ -926,12 +1245,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 골드셋 검증(실행 모드에서도 선행)
     errors = validate_goldset(items)
     if errors:
-        print(f"[오류] 골드셋 검증 실패 {len(errors)}건 — 실행 중단:", file=sys.stderr)
+        print(f"[오류] 골드셋 검증 실패 {len(errors)}건 - 실행 중단:", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
         return 2
 
     executor = _make_executor(args)
+
+    # 골드셋 실측 검증: 골드 SQL만 실행해 0행·실행실패를 결함 후보로 리포트.
+    # 폐쇄망 실측(2026-07-20)에서 골드가 실 DB 기준 0행/LIMIT 절단으로 판명 - EX 0%의
+    # 주원인이 골드셋 결함일 때 파이프라인 진단보다 먼저 이 모드로 골드를 정비한다.
+    if args.check_gold:
+        print(f"\n=== 골드셋 실측 검증 ({len(items)}건) ===\n")
+        bad = 0
+        for item in items:
+            rows = executor.execute(item.gold_sql, item.db_id)
+            if rows is None:
+                err = str(getattr(executor, "last_error", None) or "미접속")
+                print(f"  [ERR ] {item.id:<8} 실행 실패: {err[:250]}")
+                bad += 1
+            elif not rows:
+                print(f"  [ZERO] {item.id:<8} 0행 - 실 데이터와 불일치(결함 후보)")
+                bad += 1
+            else:
+                cols = len(rows[0]) if not isinstance(rows[0], (int, float, str)) else 1
+                print(f"  [OK  ] {item.id:<8} rows={len(rows)} cols={cols}")
+        print(f"\n  결함 후보 {bad}건 / {len(items)}건\n")
+        return 1 if bad else 0
 
     # A/B 모드
     if args.ab:
@@ -947,6 +1287,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             base_flags = {"selection": "consistency"}
         else:
             var_flags = {**var_flags, args.ab: True}
+            # baseline은 축을 **명시적으로 off** - 비우면 프로세스/.env의 기존 플래그를
+            # 상속해 baseline=variant가 될 수 있다(폐쇄망 .env에 TEXT2SQL_SEMANTIC_COMPOSE
+            # =true가 있으면 A/B가 무의미해지는 실측 결함 2026-07-20).
+            base_flags = {args.ab: False}
         predictor = _make_predictor(args, pass_outside_when={args.ab})
         base = run_batch(items, predictor, executor, label=f"baseline({args.ab}=off)", flags=base_flags,
                          float_tol=args.float_tol, apply_flags=not args.mock)
@@ -957,6 +1301,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps(ab, ensure_ascii=False, indent=2))
         else:
             print_ab_report(ab)
+            if args.verbose:
+                # A/B에서도 항목별 진단(rows/cols/pred_sql)을 노출 - variant(결정적 컴파일)의
+                # FAIL 원인 특정에 필수(폐쇄망 실측 2026-07-20: 요약만으로는 원인 불가지)
+                print_report(base, verbose=True)
+                print_report(var, verbose=True)
+        if args.sql_dump:
+            dump_sqls(args.sql_dump, [base, var])
         return 0
 
     # 단일 실행
@@ -973,9 +1324,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print_report(report, verbose=args.verbose)
         skipped = sum(1 for r in report.items if not r.ex_scored)
         if skipped and not args.mock:
-            print(f"  [알림] {skipped}건 EX 스킵 — 실제 DB/LLM 미접속(폐쇄망/CI)일 수 있습니다.\n")
+            print(f"  [알림] {skipped}건 EX 스킵 - 실제 DB/LLM 미접속(폐쇄망/CI)일 수 있습니다.\n")
+    if args.sql_dump:
+        dump_sqls(args.sql_dump, [report])
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        _close_eval_loop()

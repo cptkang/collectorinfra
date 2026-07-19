@@ -69,7 +69,12 @@ Task: 사용자의 요청을 분석하여, 아래에 정의된 [Query Template]�
   * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
 - 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 조인 (stat_date 형식: YYYYMM, 예: '202605')
   * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
-주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 MAX(stat_date) 서브쿼리 또는 CURRENT_DATE 기반의 동적 계산을 사용한다.
+주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 CURRENT_DATE 기반의 동적 계산을 사용한다.
+통계 기간 미지정/"지난달"/"최근" 시 기본 관행은 **직전월**(s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM'))이다.
+`(SELECT MAX(stat_date) ...)` 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지 — "이번 달"을 명시 요청한 경우에만 현재 월을 사용한다.
+단, "~한 적이 있는"(임계 초과/발생 이력의 존재 여부) 질의는 특정 월로 한정하지 말고 전 보관 기간을 검색한다.
+이때 반드시 보관 기간이 가장 긴 `cmm_metric_stat_m`(월간)을 사용한다 — _d/_h는 보관 기간이 짧아 과거 이력이 누락된다(월간 max_val이 피크를 보존).
+임계 비교(예: > 90)에는 쓰레기 값 오탐 방지를 위해 상한 게이트를 함께 적용한다(예: AND s.max_val <= 1000).
 
 ---
 
@@ -132,7 +137,7 @@ SELECT
     svr.ipaddress AS ipaddress,
     svr.hostname AS hostname,
     TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
-    hi.physicalcore,
+    hi.logicalcore,
     hi.mem_size,
     ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS cpu_min,
     ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
@@ -156,7 +161,7 @@ LEFT JOIN (
     SELECT
         COALESCE(c.platform_resource_id, c.id) AS id,
         MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
-        MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+        MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
         MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
     FROM polestar.cmm_resource c
     LEFT JOIN polestar.core_config_prop cc
@@ -167,13 +172,15 @@ LEFT JOIN (
 ) hi ON svr.ipaddress = hi.ipaddress
 WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
   AND s.definition_name IN ('Utilization', 'MaxIORate')
-  AND s.stat_date = (SELECT MAX(stat_date) FROM polestar.cmm_metric_stat_m)
-GROUP BY svr.name, svr.ipaddress, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD'), hi.physicalcore, hi.mem_size
+  AND s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
+GROUP BY svr.name, svr.ipaddress, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD'), hi.logicalcore, hi.mem_size
 ORDER BY svr.hostname
 LIMIT {default_limit};
 ```
 
 사용자가 특정 지표만 요청한 경우(예: CPU와 메모리만), 해당 resource_type의 CASE WHEN 절만 포함하고 나머지는 제거한다.
+CPU 코어수/용량은 LOGICALCORE(논리 코어)를 사용한다 — 가상화(VM) 위주 운영 관행. PHYSICALCORE는 사용자가 '물리 코어'를 명시 요청한 경우에만 사용한다.
+"리스트/현황" 질의(월별 추이를 명시하지 않은 경우)는 **서버당 1행**으로 집계한다 — stat_date를 SELECT/GROUP BY에 넣지 말고, cmm_resource 기준 **LEFT JOIN**으로 통계 테이블을 붙여 통계 없는 서버도 누락되지 않게 한다(INNER JOIN이면 통계 없는 서버가 조용히 빠진다). 월별 추이를 명시 요청한 경우에만 위 예시처럼 stat_date로 분해한다.
 시간 범위 필터 및 테이블 적용 방법:
 - "현재", "실시간" 명시 → `cmm_metric_stat_h` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')`
 - "오늘" 명시 → `cmm_metric_stat_d` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')`
@@ -304,6 +311,9 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
                                    PLATFORM_RESOURCE_ID, SERVICE_RESOURCE_ID, DTIME
 - CMM_ALARM_DEF (D): 알람 정의 — NAME(이벤트명), MASTERDEFINITION_ID
 - CMM_ALARM_ACTIVE: 현재 활성 알람 필터 (ALARM_ID 컬럼으로 CMM_ALARM과 조인)
+⚠ cmm_metric_stat_[h,d,m] 등 성능 통계 테이블은 알람 조회 스키마에 **존재하지 않는다** — 절대 참조 금지.
+  "장애 알람 건수"·"알람이 가장 많이 발생한 상위 N 서버"는 CMM_ALARM을 COUNT로 집계한다(Template C-4,
+  ORDER BY 건수 DESC + LIMIT N).
 - CMM_ALARM_DEF_NOTI (DN): 알림 정의 (담당자/그룹/역할 조회 시에만 추가)
 - CMM_ALARM_DEF_NOTI_USER (DNU): 알림 사용자
 - CMM_ALARM_DEF_NOTI_GROUP (DNG): 알림 그룹

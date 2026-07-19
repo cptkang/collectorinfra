@@ -106,11 +106,18 @@ def build_stat_month_block(
 _ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
 _ALL_QUERY_LIMIT: int = 100_000
 
+# 명시 건수 표현("100건", "상위 10개") — "건"은 레코드 수 전용 조사라 안전. 단독 "개"는
+# "개월"·"4개인 서버" 등 수량 한정과 혼동되므로 "상위 N(개)" 꼴에서만 인정한다.
+_EXPLICIT_COUNT_RE = re.compile(r"(\d{1,6})\s*건")
+_TOP_N_RE = re.compile(r"상위\s*(\d{1,6})")
+
 
 def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
-    """"전체/모든/모두" 조회면 LIMIT를 상향하고, 아니면 기본값을 반환한다.
+    """질의의 명시 건수("100건"/"상위 10")를 최우선 반영하고, "전체/모든/모두"면 상향, 아니면 기본값.
 
     단일 DB 경로(query_generator)와 동일한 규칙을 멀티 DB 경로에도 적용하기 위한 공용 함수.
+    실측(2026-07-21 yd-006): "…100건 조회해줘"가 기본 LIMIT(1000)로 나가 골드(100행)와 행수
+    불일치 — 명시 건수는 결정적으로 파싱한다.
 
     Args:
         user_query: 사용자 원문 질의
@@ -120,9 +127,40 @@ def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
         적용할 LIMIT 값
     """
     text = user_query or ""
+    m = _EXPLICIT_COUNT_RE.search(text) or _TOP_N_RE.search(text)
+    if m:
+        n = int(m.group(1))
+        if n > 0:
+            return min(n, _ALL_QUERY_LIMIT)
     if any(k in text for k in _ALL_QUERY_KEYWORDS):
         return _ALL_QUERY_LIMIT
     return default_limit
+
+
+def missing_dtime_filter(sql: str) -> bool:
+    """cmm_resource를 조회하면서 dtime IS NULL(삭제 리소스 제외) 필터가 전무한지 판정한다.
+
+    폐쇄망 실측(2026-07-21 b0-005): LLM 폴백 SQL이 dtime 필터를 통째로 누락해 삭제된 서버
+    약 99대가 결과에 섞임(rows 475 vs 골드 376). 규약상 cmm_resource 조회에는 최소 1회
+    `dtime IS NULL`이 필요하다. 별칭(테이블 인스턴스) 단위 강제는 알람 표준 뷰의 부모 서버
+    LEFT JOIN(SVR)·계층 조인(C2~C10)처럼 무필터가 정당한 사용에 오탐하므로, "SQL 전체에
+    한 번도 없음"만 결정적으로 차단한다. 주석·문자열 리터럴 안의 표기는 제외하고 검사한다.
+    단일(query_validator)·멀티(_validate_sql_simple) 검증 경로가 공유한다(D-066).
+    """
+    body = re.sub(r"--[^\n]*", " ", sql or "")
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    body = re.sub(r"'(?:[^']|'')*'", " ", body)
+    if not re.search(r"\bcmm_resource\b", body, re.IGNORECASE):
+        return False
+    return not re.search(r"\bdtime\s+is\s+(?:not\s+)?null\b", body, re.IGNORECASE)
+
+
+# cmm_resource 조회에 dtime 필터가 없을 때 재생성을 유도하는 검증 실패 메시지(ASCII 구두점 —
+# 평가 하네스 스킵 사유로 cp949 콘솔 출력 가능, Known Mistakes 2026-07-16).
+MISSING_DTIME_ERROR = (
+    "cmm_resource 조회에 dtime IS NULL(삭제 리소스 제외) 필터가 없습니다 - "
+    "삭제된 서버/리소스가 결과에 섞입니다. WHERE에 dtime IS NULL 조건을 추가해 다시 작성하세요."
+)
 
 
 # Utilization(사용률 %) 값의 타당성 게이트 범위(D-086). 실측(gp/yd): 만재 피크가 부동소수

@@ -718,12 +718,13 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     if not sql or not sql.strip():
         return "빈 SQL"
 
-    # SELECT 문 확인
+    # SELECT 문 확인 — CTE(WITH ... SELECT)도 읽기 전용이므로 허용(2026-07-21 gp-014,
+    # 단일 경로 _get_statement_type과 동일 규칙). DML은 아래 위험 키워드 검사가 차단.
     sql_upper = sql.strip().upper()
-    if not sql_upper.startswith("SELECT") and not sql_upper.startswith("--"):
+    if not sql_upper.startswith(("SELECT", "WITH")) and not sql_upper.startswith("--"):
         # 주석으로 시작할 수 있으므로 주석 제거 후 확인
         cleaned = re.sub(r"--[^\n]*\n", "", sql).strip().upper()
-        if not cleaned.startswith("SELECT"):
+        if not cleaned.startswith(("SELECT", "WITH")):
             return "SELECT 문이 아닙니다."
 
     # 위험 키워드 확인
@@ -731,6 +732,25 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     for kw in dangerous:
         if re.search(rf"\b{kw}\b", sql, re.IGNORECASE):
             return f"금지 키워드 포함: {kw}"
+
+    # 따옴표 밖 자연어(한글) 토큰 잔존 검출 — 단일 경로(query_validator)와 동일 가드를
+    # 멀티 경로에도 공유(D-066 경로 비대칭 방지, D-087). 검출 시 재시도 루프가 재생성 유도.
+    from src.nodes.query_validator import _find_bare_hangul_tokens
+
+    bare_hangul = _find_bare_hangul_tokens(sql)
+    if bare_hangul:
+        shown = ", ".join(sorted(set(bare_hangul))[:5])
+        return (
+            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
+            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
+        )
+
+    # cmm_resource 조회 시 dtime IS NULL 부재 검출 — 단일 경로(query_validator 4.6)와 공유
+    # (D-066 경로 비대칭 방지). 폐쇄망 실측 2026-07-21 b0-005: 필터 누락 시 삭제 서버 혼입.
+    from src.utils.query_gen_common import MISSING_DTIME_ERROR, missing_dtime_filter
+
+    if missing_dtime_filter(sql):
+        return MISSING_DTIME_ERROR
 
     # LIMIT 없으면 추가
     if not re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):

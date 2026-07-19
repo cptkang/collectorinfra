@@ -542,8 +542,13 @@ class AppConfig(BaseSettings):
     orchestrator: OrchestratorConfig = OrchestratorConfig()
     dbhub: DBHubConfig = DBHubConfig()
     query: QueryConfig = QueryConfig()
-    synonym: SynonymMatchConfig = SynonymMatchConfig()   # Plan 61 트랙 B: 동의어 매칭 보강
-    text2sql: Text2SQLConfig = Text2SQLConfig()          # Plan 61 트랙 C: 결정적 SQL 조합
+    # Plan 61 트랙 B/C 서브 설정은 default_factory로 선언 — 클래스 기본값 인스턴스
+    # (`Text2SQLConfig()`)는 **임포트 시점에 한 번** env를 읽고 고정되어, 이후
+    # os.environ 변경(+load_config.cache_clear)이 반영되지 않는다. 평가 하네스의
+    # A/B 축(TEXT2SQL_*/SYNONYM_*) 토글이 이 때문에 무효였음(폐쇄망 실측 2026-07-20).
+    # 운영 서비스는 기동 시 1회 로드라 동작 무변경.
+    synonym: SynonymMatchConfig = Field(default_factory=SynonymMatchConfig)   # Plan 61 트랙 B: 동의어 매칭 보강
+    text2sql: Text2SQLConfig = Field(default_factory=Text2SQLConfig)          # Plan 61 트랙 C: 결정적 SQL 조합
     security: SecurityConfig = SecurityConfig()
     server: ServerConfig = ServerConfig()
     admin: AdminConfig = AdminConfig()

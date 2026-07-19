@@ -128,10 +128,12 @@ def test_pattern_b_measures_pivot():
 
 
 def test_pattern_b_injects_default_identity_dimensions_when_empty():
-    """measure만 있고 dimension이 비면 서버 식별 dimension(name/hostname)을 결정적으로 주입한다.
+    """measure만 있고 dimension이 비면 서버 식별 dimension(name)을 결정적으로 주입한다.
 
     실측상 LLM SMQ가 dimensions=[]로 값만 나열하는 선택 누락을 범한다(Plan 61 §7 SMQ 정확도 축).
     프롬프트 유도가 아니라 모델 pattern_b.default_dimensions 기반 코드 보정이다(D-035, D-076 후속).
+    주입은 최소 식별자(name)만 — hostname까지 주입하면 질의 미명시 컬럼이 끼어
+    컬럼 스코프 규약 위반(2026-07-21 b0-004 골드 5컬럼 정합).
     """
     m = load_semantic_model("polestar_cm_gp")
     smq = SMQ.from_dict({
@@ -141,7 +143,107 @@ def test_pattern_b_injects_default_identity_dimensions_when_empty():
     })
     sql = compile_smq(smq, "polestar_cm_gp", m)
     assert 'THEN c.name END) AS "name"' in sql
-    assert 'THEN c.hostname END) AS "hostname"' in sql
+    assert 'AS "hostname"' not in sql
+
+
+def test_pattern_b_injects_identity_when_only_attribute_dimensions():
+    """속성(용량) dimension만 고르고 식별 dimension이 없으면 name을 주입한다.
+
+    실측(2026-07-21 yd-004): LLM SMQ가 [LOGICALCORE, TotalSize]+사용률 measure만 선택해
+    서버 이름 없는 사용률 리스트가 나옴 — dimension이 완전히 빈 경우만 보정하던 기존
+    게이트의 사각지대. 식별 direct 컬럼(name/hostname/ipaddress)이 하나도 없으면 주입한다.
+    """
+    m = load_semantic_model("polestar_cm_gp")
+    smq = SMQ.from_dict({
+        "pattern": "B", "dimensions": ["LOGICALCORE", "TotalSize"],
+        "measures": [
+            {"agg": "avg", "definition_name": "Utilization", "resource_type": "server.Cpus"},
+            {"agg": "max", "definition_name": "Utilization", "resource_type": "server.Cpus"},
+        ],
+        "time_grain": "month",
+    })
+    sql = compile_smq(smq, "polestar_cm_gp", m)
+    assert 'THEN c.name END) AS "name"' in sql
+    assert "cc.name='LOGICALCORE'" in sql
+    assert "cc.name='TotalSize'" in sql
+    assert 'AS "hostname"' not in sql
+
+
+def test_monthly_breakdown_regex_gate():
+    """월별 분해("월간/월별") 질의는 패턴 B 컴파일에서 결정적으로 제외한다(D-087 후속2).
+
+    실측(2026-07-21 gp-010): 프롬프트 단서만으로는 LLM이 "서버별 월간 통계"를 패턴 B로
+    과포획(월별 4725행 → 서버당 1행 1820행 붕괴, 보강 후에도 재발) → 코드 게이트.
+    "N개월간"의 '월간'은 기간 표현이므로 매칭하지 않는다(부정 후방탐색).
+    """
+    from src.nodes.semantic_compiler import _MONTHLY_BREAKDOWN_RE
+
+    assert _MONTHLY_BREAKDOWN_RE.search("지난 3개월간 전체 서버별 월간 CPU 성능 통계를 조회해줘")
+    assert _MONTHLY_BREAKDOWN_RE.search("서버별 월별 사용률 추이를 보여줘")
+    # 기간 표현만 있는 질의는 컴파일 유지(과차단 금지)
+    assert not _MONTHLY_BREAKDOWN_RE.search("서버들의 사용률 리스트. 지난달 1개월 통계 기준으로.")
+    assert not _MONTHLY_BREAKDOWN_RE.search("최근 6개월간 평균 사용률 리스트를 조회해줘")
+
+
+def test_normalize_smq_drops_physicalcore_without_physical_hint():
+    """LOGICALCORE·PHYSICALCORE 동시 선택 시 질의에 '물리' 신호가 없으면 PHYSICALCORE 제거.
+
+    실측(2026-07-21 yd-004): "CPU 용량"에 LLM이 둘 다 선택 — 운영 관행(VM 위주)은
+    LOGICALCORE. 프롬프트 유도가 아니라 결정적 교정 가드(D-076 후속).
+    """
+    from src.nodes.semantic_compiler import normalize_smq
+
+    smq = SMQ.from_dict({
+        "pattern": "B", "dimensions": ["LOGICALCORE", "PHYSICALCORE", "TotalSize"],
+        "measures": [{"agg": "avg", "definition_name": "Utilization", "resource_type": "server.Cpus"}],
+    })
+    out = normalize_smq(smq, "서버들의 CPU, 메모리 용량 및 사용률 리스트를 조회해줘")
+    assert out.dimensions == ["LOGICALCORE", "TotalSize"]
+    # '물리' 명시 시 선택 존중(불변)
+    kept = normalize_smq(smq, "서버들의 물리 코어 수와 논리 코어 수를 조회해줘")
+    assert kept.dimensions == ["LOGICALCORE", "PHYSICALCORE", "TotalSize"]
+    # PHYSICALCORE 단독 선택 + '물리' 미명시 → LOGICALCORE로 치환
+    # (실측 2026-07-21 gp-009 회귀: 같은 질의에서 단독 선택으로도 흔들림)
+    only_phys = SMQ.from_dict({"pattern": "A", "dimensions": ["PHYSICALCORE", "TotalSize"]})
+    swapped = normalize_smq(only_phys, "서버들의 CPU, 메모리 용량 리스트를 조회해줘")
+    assert swapped.dimensions == ["LOGICALCORE", "TotalSize"]
+    # '물리' 명시 시 단독 선택도 불변
+    assert normalize_smq(only_phys, "물리 코어 수를 조회해줘").dimensions == ["PHYSICALCORE", "TotalSize"]
+
+
+def test_normalize_smq_injects_omitted_capacity_dimensions():
+    """질의가 명시한 용량 차원을 SMQ가 통째로 누락하면 결정적으로 주입한다.
+
+    실측(2026-07-21 gp-009 2차 회귀): 같은 질의("CPU, 메모리 용량 및 사용률")에서 SMQ 선택이
+    동시선택→단독선택→미선택으로 흔들림 — 치환 가드로도 미선택 케이스는 못 잡아 주입 가드 신설.
+    """
+    from src.nodes.semantic_compiler import normalize_smq
+
+    q = "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+    # CPU 용량 차원 누락 → LOGICALCORE 주입
+    smq = SMQ.from_dict({
+        "pattern": "B", "dimensions": ["TotalSize"],
+        "measures": [{"agg": "avg", "definition_name": "Utilization", "resource_type": "server.Cpus"}],
+    })
+    assert normalize_smq(smq, q).dimensions == ["TotalSize", "LOGICALCORE"]
+    # 둘 다 누락 → 둘 다 주입
+    empty = SMQ.from_dict({
+        "pattern": "B", "dimensions": [],
+        "measures": [{"agg": "avg", "definition_name": "Utilization", "resource_type": "server.Cpus"}],
+    })
+    assert set(normalize_smq(empty, q).dimensions) == {"LOGICALCORE", "TotalSize"}
+    # 이미 있으면 불변(중복 주입 금지)
+    full = SMQ.from_dict({"pattern": "B", "dimensions": ["LOGICALCORE", "TotalSize"]})
+    assert normalize_smq(full, q).dimensions == ["LOGICALCORE", "TotalSize"]
+    # 용량을 묻지 않는 질의는 주입하지 않음(사용률만)
+    usage_only = SMQ.from_dict({
+        "pattern": "B", "dimensions": [],
+        "measures": [{"agg": "avg", "definition_name": "Utilization", "resource_type": "server.Cpus"}],
+    })
+    assert normalize_smq(usage_only, "서버들의 CPU, 메모리 사용률(평균·최대) 리스트를 조회해줘").dimensions == []
+    # 알람(패턴 C)은 무관 — 불변
+    alarm = SMQ.from_dict({"pattern": "C", "dimensions": []})
+    assert normalize_smq(alarm, "CPU 용량 알람").dimensions == []
 
 
 def test_pattern_b_explicit_dimensions_not_overridden_by_default():
@@ -210,6 +312,45 @@ def test_pattern_c_history_no_active_join_default_severity():
     sql = compile_smq(smq, "polestar_cm_gp", m)
     assert "cmm_alarm_active" not in sql
     assert "CA.ALARMSEVERITY IN (0, 1, 2, 3)" in sql
+
+
+def test_pattern_c_empty_dimensions_compile_standard_view():
+    """컬럼 미명시 알람 질의(빈 dimensions)는 제품 표준 알람 뷰를 결정적으로 조립한다.
+
+    실측(2026-07-21 yd-006): LLM 폴백이 장비 식별을 CR직접/부모조인 형태로 실행마다 오가는
+    플립플롭 — 표준 뷰(등급 텍스트·TO_CHAR 발생시간·부모서버 SVR 기준 장비명/IP/호스트명·
+    리소스명·이벤트·상세·알람ID)를 default_dimensions로 결정화(D-076 후속7).
+    """
+    m = load_semantic_model("polestar_cm_gp")
+    smq = SMQ.from_dict({
+        "pattern": "C", "entities": ["CMM_ALARM", "CMM_ALARM_DEF", "CMM_RESOURCE"],
+        "dimensions": [],
+        "filters": [{"field": "ALARMSEVERITY", "op": "in", "value": [2, 3]}],
+        "active_only": False,
+    })
+    sql = compile_smq(smq, "polestar_cm_gp", m)
+    assert "THEN '심각'" in sql and "THEN '경고'" in sql          # 등급 텍스트
+    assert "TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS')" in sql   # 발생시간 포맷
+    assert "LEFT JOIN polestar.cmm_resource SVR" in sql          # 부모 서버 조인
+    assert "SVR.NAME AS server_name" in sql
+    assert "SVR.IPADDRESS AS ipaddress" in sql
+    assert "SVR.HOSTNAME AS hostname" in sql
+    assert "CR.NAME AS resource_name" in sql                     # 알람 자원명은 CR
+    assert "CA.ID AS alarm_id" in sql
+    assert "ORDER BY CA.CTIME DESC, CA.ID DESC" in sql           # 경계 동률 tiebreak
+    assert "CA.ALARMSEVERITY IN (2, 3)" in sql
+
+
+def test_pattern_c_explicit_dimensions_skip_default_view():
+    """특정 컬럼을 명시 선택하면 표준 뷰를 주입하지 않는다(요청 항목만)."""
+    m = load_semantic_model("polestar_cm_gp")
+    smq = SMQ.from_dict({
+        "pattern": "C", "entities": ["CMM_ALARM", "CMM_RESOURCE"],
+        "dimensions": ["ALARMSEVERITY", "CTIME"], "active_only": True,
+    })
+    sql = compile_smq(smq, "polestar_cm_gp", m)
+    assert "alarm_id" not in sql
+    assert "severity_grade" not in sql
 
 
 # ──────────────────────────────────────────────
