@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import patch
 
 from src.nodes.query_validator import (
+    _extract_cte_names,
     _extract_table_names,
     _get_statement_type,
     _validate_columns,
@@ -122,6 +123,52 @@ class TestComplexSafeQueries:
             mock_config.return_value.query.default_limit = 1000
             result = await query_validator(base_state)
         assert result["validation_result"]["passed"] is True
+
+    def test_extract_cte_names_with_leading_comment(self):
+        """선두 주석이 있어도 CTE 이름을 추출한다 (D-087 회귀).
+
+        생성 규칙이 SQL 선두에 `-- 설명` 주석을 강제하므로, 원본 기준
+        `^WITH` 앵커는 주석 달린 CTE 쿼리에서 항상 실패했다
+        (2026-07-18 SYN-I-03 확장 실측 — CTE가 '존재하지 않는 테이블'로
+        오판되어 재시도 3회 소진 후 빈 응답 강등).
+        """
+        sql = (
+            "-- 월 평균 임계 초과 개월 수 집계\n"
+            "WITH monthly AS (\n"
+            "    SELECT server_id, usage_pct FROM cpu_metrics\n"
+            "),\n"
+            "over_months AS (\n"
+            "    -- 내부 주석\n"
+            "    SELECT server_id, COUNT(*) AS cnt FROM monthly\n"
+            "    WHERE usage_pct > 40 GROUP BY server_id HAVING COUNT(*) >= 2\n"
+            ")\n"
+            "SELECT * FROM over_months LIMIT 10"
+        )
+        assert _extract_cte_names(sql) == {"monthly", "over_months"}
+
+    @pytest.mark.asyncio
+    async def test_cte_query_with_leading_comment_passes(self, base_state):
+        """선두 주석 + CTE 2단 집계 쿼리가 통과한다 (D-087 회귀)."""
+        base_state["generated_sql"] = (
+            "-- 임계 초과 개월 수와 사용률을 함께 조회\n"
+            "WITH monthly AS (\n"
+            "    SELECT s.id AS server_id, c.usage_pct\n"
+            "    FROM servers s JOIN cpu_metrics c ON s.id = c.server_id\n"
+            "),\n"
+            "over_months AS (\n"
+            "    SELECT server_id, COUNT(*) AS cnt FROM monthly\n"
+            "    WHERE usage_pct > 40 GROUP BY server_id HAVING COUNT(*) >= 2\n"
+            ")\n"
+            "SELECT m.server_id, o.cnt\n"
+            "FROM monthly m JOIN over_months o ON m.server_id = o.server_id\n"
+            "LIMIT 10"
+        )
+        with patch("src.nodes.query_validator.load_config") as mock_config:
+            mock_config.return_value.query.default_limit = 1000
+            result = await query_validator(base_state)
+        assert result["validation_result"]["passed"] is True, (
+            result["validation_result"]["reason"]
+        )
 
 
 class TestTableColumnValidation:

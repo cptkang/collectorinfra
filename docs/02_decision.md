@@ -5,8 +5,8 @@
 
 - 각 결정의 상세 배경·코드 예시·대안 비교·재현 로그 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브, 이후 갱신하지 않음) 참조.
 - **신규 결정은 이 파일에만** 아래 압축 형식(결정일/상태/결정/근거/구현/주의/관련)으로 추가한다.
-- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-085 → 다음 D-086).
-- 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번).
+- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-087 → 다음 D-088).
+- 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번), **D-088~D-091(Plan 63 폴스타 과적합 분리 예약 — 착수 시 등재)**.
 
 ---
 
@@ -593,6 +593,22 @@
 - **주의**: 자동 재작성(WHERE→ON 이동)은 하지 않음 — sqlparse는 토크나이저라 OR/괄호 결합 시 의미 보존 재배치가 불안전, 감지+교정 지침 재생성(6.6 금지 조인과 동일 기법)으로 통일. LEFT JOIN 서브쿼리(`LEFT JOIN (SELECT ...) x`)는 마스킹으로 감지 대상 제외(보수적 범위).
 - **관련**: D-066(경로 대칭), D-068(피벗 패턴), D-022(validator 감지 선례), Known Mistakes "LLM 비결정성 대응"
 
+## D-086. 선행 task 결과 스코프 결정적 주입 — 알람 선별→지표 조회 크로스도메인 (SYN-H-04 회귀)
+- **결정일**: 2026-07-18 | **상태**: 확정 (구현 완료)
+- **배경**: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률"(SYN-H-04 변형) 실측 — intent_planner가 alarm_query(t1)→data_query(t2)로 분해했으나 **데이터 의존 주입(prior_rows)이 `_make_isolated_input`에서 생성만 되고 소비처 전무(죽은 배선)**. t2는 전역 parsed_requirements의 알람 조건을 재표현하려다 성능 템플릿 테이블 화이트리스트에 막혀 `resource_type='alarm.Alarm'`·`resource_key LIKE '%CRITICAL%'` 환각 SQL 생성 → 0건, CPU 사용률 미조회(Known Mistakes "구현이 있어도 호출부 배선까지 grep" 계열).
+- **결정**: 5중 수리 — ①**prior_rows 소비 배선**: 공용 `build_prior_rows_block`(query_gen_common)이 선행 결과 식별값을 `IN` 스코프 강제 블록으로 렌더(hostname 우선·name 폴백 — D-061 계열, 값 상한 100·따옴표 이스케이프), query_generator(단일)와 `multi_db_executor._generate_sql`(멀티, `prior_block` 파라미터)에 **대칭 주입**(D-066). 블록이 "선별 조건(알람 등) 재표현 금지"를 명시. ②prior_rows 존재 시 **트랙 C 결정적 컴파일 우회**(SMQ는 선행 결과 한정 표현 불가 — 양 경로 동일 조건). ③`_coerce_alarm_intent`가 **input_from 보유 task는 미교정**(의존 task의 알람 어휘는 선별 잔재 — alarm_query로 뒤집으면 지표 조회 소실). ④성능 템플릿 Strict Constraint 5 — **알람을 cmm_resource(resource_type/resource_key)로 표현 금지**(환각 차단), 스코프 블록 없으면 조건 생략+SQL 주석. ⑤intent_planner 예시 3-1 — 알람 선별+성능 지표 질의는 alarm_query→data_query(input_from) 2-task 분해 명시(결과가 알람 목록인 질의는 단일 유지).
+- **주의**: 식별 컬럼이 없는 prior_rows는 블록 미주입(④가 후방 방어). `alarm_allowed_tables`에 metric 테이블은 추가하지 않음 — 알람 템플릿 단독의 지표 조회는 계속 불가하며 **분해가 정답 경로**(단일 task로 뭉치면 CPU 미조회 재현 가능, 예시 3-1이 방지선).
+- **검증**: `tests/test_orchestration/test_prior_rows_scope.py`(13건 — 헬퍼 단위·단일/멀티 주입 대칭·컴파일 우회·교정 가드), 기존 orchestration·query_gen 스위트 234건 무회귀.
+- **관련**: D-066(경로 대칭), D-061(name≠hostname), D-076 후속3(알람 결정적 교정), D-085(SQL 환각 가드 계열), D-005(부분 실패 허용)
+
+## D-087. validator CTE 인식의 주석 비대칭 수정 (2단 집계 쿼리 오거부, SYN-I-03 확장 회귀)
+- **결정일**: 2026-07-18 | **상태**: 확정 (구현 완료)
+- **배경**: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버…cpu/메모리 평균·최고 사용률 함께"(SYN-I-03 확장) 실측 — LLM은 올바른 CTE 2단 집계(`WITH MonthlyStats…, FilteredMonths…`)를 생성했으나 validator가 CTE를 "존재하지 않는 테이블"로 오거부, 재시도 3회 전부 같은 사유로 소진 → 빈 "데이터 없음" 응답 강등(executed_sql 공백).
+- **원인**: `_extract_cte_names`의 `^\s*WITH` 앵커가 **원본 SQL** 기준 — 생성 규칙 7이 SQL 선두에 `-- 설명` 주석을 강제하므로 주석 달린 CTE 쿼리에서 항상 실패. 반면 테이블 추출(`_extract_table_names`)은 **주석 제거 후** 수행해 CTE 참조가 테이블로 수집됨(동일 산출물에 대한 전처리 비대칭 → 한쪽만 성립하는 입력에서 구조적 오판).
+- **결정**: `_extract_cte_names`도 `sqlparse.format(strip_comments=True)` 후 앵커 검사·이름 추출(테이블 추출과 전처리 일원화). 검증: `test_query_validator_extended.py`에 선두 주석+CTE 회귀 2건 추가(추출 단위·validator 통과), 전 validator 스위트 77건 통과. 수정 후 인프로세스 E2E — attempt 0에서 검증 통과·실행 2행(DB-ORA-023 3개월 70.5/80.1/88.9 · cocm-hdkapp01 3개월 47.2/63.1/73.1, 최신월 기준).
+- **주의**: 같은 산출물을 여러 검사기가 볼 때 **전처리(주석·리터럴 제거)는 반드시 동일 파이프로** — 비대칭이면 "규칙이 강제한 정상 출력"(선두 주석)이 곧 실패 조건이 된다. 재시도 3회가 **같은 사유로 반복**되면 LLM 품질이 아니라 결정적 게이트 자체를 의심할 것.
+- **관련**: D-085(validator 가드 계열), D-022(validator 감지 선례), Known Mistakes "0건/실패 진단은 게이트별 로그로 끊긴 지점부터"
+
 ---
 
 ## 변경 이력
@@ -601,6 +617,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-18 | D-087 | **validator CTE 인식 주석 비대칭 수정** — `_extract_cte_names`가 선두 주석 시 `^WITH` 앵커 실패로 CTE를 미존재 테이블로 오거부(2단 집계 쿼리 전멸) → 주석 제거 후 판정으로 테이블 추출과 전처리 일원화. |
+| 2026-07-18 | D-086 | **선행 task 결과 스코프 결정적 주입(크로스도메인 알람→지표)** — 죽은 prior_rows 배선 복구(`build_prior_rows_block` 단일/멀티 대칭), 트랙 C 우회, `_coerce_alarm_intent` input_from 가드, 성능 템플릿 알람 환각 금지, planner 예시 3-1. |
 | 2026-07-16 | D-085 | **LEFT JOIN 강등(WHERE 필터) 결정적 가드 + 생성 규칙** — SYN-H-02 실측 회귀(서버명 전체 NULL) 대응. validator 6.7 `_check_left_join_where_demotion`(error→재시도)·`_validate_sql_simple` 대칭 배선·프롬프트 규칙 2개 템플릿 추가. |
 | 2026-07-16 | D-084 | **E5-4 임베딩 의미 검색 구현(Plan 61 트랙 B)** — 정확→퍼지→임베딩 계단 마지막 단 `synonym_semantic.py`(numpy 코사인·LRU 캐시), 백엔드 local(sentence-transformers CPU 상주, 기본)/vllm(별도 서버 `/v1/embeddings`), E5-1과 동일 2지점 대칭 주입, 기본 OFF·회귀 0. |
 | 2026-07-16 | 전체 | **문서 압축본 전환** — 전 결정(D-001~D-083)·변경 이력을 압축 형식으로 재작성. 전문은 `docs/02_decision_full.md` 아카이브. |

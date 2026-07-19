@@ -147,6 +147,26 @@ INTENT_PLANNER_SYSTEM_TEMPLATE = """당신은 사용자의 인프라 질의를 �
 }}
 ```
 
+### 예시 3-1 (복합 작업 — 알람 선별 → 성능/설정 지표 조회)
+
+입력: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
+출력:
+```json
+{{
+    "clarification_needed": null,
+    "tasks": [
+        {{"task_id": "t1", "agent": "alarm_query", "sub_query": "현재 활성 상태인 심각 알람이 발생한 서버 목록 조회",
+         "depends_on": [], "input_from": [], "order": 1}},
+        {{"task_id": "t2", "agent": "data_query", "sub_query": "선행 결과의 서버들에 대해 최근 1개월 CPU 사용률 조회",
+         "depends_on": ["t1"], "input_from": ["t1"], "order": 2}}
+    ]
+}}
+```
+
+**알람 조건으로 서버를 선별한 뒤 그 서버들의 성능/설정 지표를 조회하는 질의는 반드시 위처럼 2개 task로 분해하세요**
+(alarm_query 하나로 묶으면 성능 지표를 조회할 수 없고, data_query 하나로 묶으면 알람 조건을 표현할 수 없습니다).
+반대로 결과 자체가 알람 목록인 질의(예: "CPU 사용률 임계 초과 알람 목록")는 alarm_query 단일 task입니다.
+
 ### 예시 4 (위치 → DB 식별 신호 보존)
 
 입력: "여의도 개발 폴스타에서 CPU 사용률 높은 서버 보여줘"

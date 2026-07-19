@@ -1,10 +1,11 @@
 # Synonym 테스트 케이스 — 로컬 샌드박스 수동 검증
 
 > 대상 DB: `polestar` (docker `polestar_pg`, localhost:5434 / infradb / 스키마 `polestar`)
-> 대상 계층: 프로필 EAV synonym · column_synonyms · 유연(flex) 매칭(D-075) · 등록 흐름(D-012) · 오매칭 방어 · **시드 사전(그룹 F)** · **시드×거버넌스(그룹 G)** · **크로스도메인 복합 쿼리(그룹 H)**
+> 대상 계층: 프로필 EAV synonym · column_synonyms · 유연(flex) 매칭(D-075) · 등록 흐름(D-012) · 오매칭 방어 · **시드 사전(그룹 F)** · **시드×거버넌스(그룹 G)** · **크로스도메인 복합 쿼리(그룹 H)** · **고난도 SQL 골격(그룹 I)**
 > 관련: `docs/synonym_management_analysis.md`, Plan 61 트랙 B, `config/db_profiles/polestar.yaml`,
 > `docs/synonym_seed_migration_guide.md`(시드 절차), `docs/plan61_bugfix_plan.md`(B2 config·B4 페어링)
 > 작성일: 2026-07-15 · 갱신: 2026-07-16 — **전 그룹 프롬프트를 복합 쿼리(다중 조건·집계·정렬·TOP-N·조인) 골격으로 상향**, 그룹 H(크로스도메인) 신설. 기대값은 라이브 샌드박스 실측(2026-07-16) 기준
+> 갱신: 2026-07-18 — 그룹 I(고난도 SQL 골격: 다중 metric 피벗·셀프조인·HAVING·안티조인·스칼라 서브쿼리·다단 체인) 신설. 기대값은 라이브 샌드박스 실측(2026-07-18) 기준
 
 ## 사전 조건
 
@@ -178,7 +179,28 @@ python scripts/synonym_seeds.py export --db polestar -o /tmp/polestar_export.yam
 | SYN-H-01 | `심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘` | **알람(column_values 심각=3) → cmm_resource → 자식 EAV 피벗** 3도메인 조인. 알람 4건 중 1건(더미)은 resource 미존재 — 서버 결과에 나타나면 안 됨 | 3건: SV-WEB-001(HPE/32768), DB-ORA-023(Dell/65536), SV-BATCH-009(IBM/16384) | ☐ |
 | SYN-H-02 | `2026년 6월 CPU 사용률 평균이 40%를 넘은 서버의 서버명과 논리코어 수를 보여줘` | **metric 조건(cmm_metric_stat_m, avg_val>40, 202606) → EAV(LOGICALCORE) 역방향 결합** — E-01 함정의 양방향 버전: 같은 질의 안에서 "CPU 사용률"은 metric, "논리코어"는 EAV로 분리 매핑돼야 함. 2026-07-16 실측 회귀: LEFT JOIN한 metric 필터를 WHERE에 둬 서버명 전체 NULL(LEFT JOIN 강등) → validator 6.7 가드+프롬프트 규칙 추가(D-085). 서버명 NULL 재발 시 D-085 가드 미작동 회귀로 분류 | 3건: DB-ORA-023(16), cocm-hdkapp01(16), SV-WEB-001(8). SV-BATCH-009(18.3%)는 제외 | ☐ |
 | SYN-H-03 | `제조사별 서버 대수를 집계해서 많은 순으로 보여줘` | **EAV 값 GROUP BY + 모집단 페어링(B4) 함정** — resource_type 미한정이면 두 장부가 함께 잡혀 전 그룹이 정확히 2배(34/32/22/2/2)로 나옴 | VMware, Inc. 17 > HPE 16 > Dell Inc. 11 > Dell 1 = IBM 1 (합 46 — Vendor 미보유 4대 제외). 2배 값이면 resource_type 미한정 실패 | ☐ |
-| SYN-H-04 | `현재 활성 상태인 심각 알람이 있는 서버들의 2026년 7월 CPU 사용률을 보여줘` | **알람 상태 필터(ACTIVE + 심각=3) × metric 결합**. `cmm_alarm_active` 또는 `cmm_alarm.currentalarmstatus='ACTIVE'` 어느 경로든 동일 집합 | 2건: SV-WEB-001(202607 avg 38.5), SV-BATCH-009(202607 avg 16.9). CLEARED인 DB-ORA-023이 포함되면 상태 필터 누락 | ☐ |
+| SYN-H-04 | `현재 활성 상태인 심각 알람이 있는 서버들의 2026년 7월 CPU 사용률을 보여줘` | **알람 상태 필터(ACTIVE + 심각=3) × metric 결합**. 멀티인텐트 분해 시 t1(alarm_query, 서버 선별)→t2(data_query, 지표) + **prior_rows 스코프 주입**(D-086)이 정답 경로 — t2 SQL에 `name IN ('SV-WEB-001','SV-BATCH-009')`가 있고 알람 테이블/환각 조건이 없어야 함. 2026-07-18 실측 회귀: prior_rows 죽은 배선으로 t2가 `resource_type='alarm.Alarm'` 환각 → 0건(CPU 미조회). 재발 시 t2 SQL의 IN 스코프 유무부터 확인 | 2건: SV-WEB-001(202607 avg 38.5), SV-BATCH-009(202607 avg 16.9). CLEARED인 DB-ORA-023이 포함되면 상태 필터 누락. **변형** `…최근 1개월 CPU 사용률…`(실행일 2026-07 기준 202606): SV-WEB-001 42.8, SV-BATCH-009 18.3 | ☐ |
+
+---
+
+## 그룹 I — 고난도 SQL 골격 복합 쿼리 (2026-07-18 신규)
+
+유사어 어휘는 **전부 기존 등재어**(CPU 사용률/메모리 사용률/논리코어/제조사/일련번호/심각 — 그룹 A·F·H에서 매핑 검증 완료)만 사용하고,
+여기서는 **SQL 골격의 난도**(동일 테이블 다중 참조, 기간 셀프조인, HAVING, NOT EXISTS 안티조인, 스칼라 서브쿼리, 4단 도메인 체인, 2단 집계)를 올려 검증한다.
+**전 플래그 OFF(기본 상태)에서 실행.** 실패 시 사전 조건의 공통 원칙대로 ①유사어 미매핑 ②골격 오류를 분리 기록할 것 — 이 그룹은 ②가 판정의 중심이다.
+
+CPU 사용률 월별 기준값(202605/202606/202607, avg_val): DB-ORA-023 68.4/72.1/70.5 · cocm-hdkapp01 45.6/48.9/47.2 · SV-WEB-001 35.2/42.8/38.5 · SV-BATCH-009 15.8/18.3/16.9
+
+| ID | 프롬프트 | 검증 포인트 | 기대 결과 | 판정 |
+|----|---------|-----------|----------|:---:|
+| SYN-I-01 | `2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 보여줘` | **동일 metric 테이블(Utilization) 2회 참조 — 자식 리소스 타입(server.Cpus/server.Memory) 분리 피벗**. 202606에는 server.FileSystems Utilization도 존재하므로 resource_type 미한정이면 세 값이 합산 평균으로 뭉개짐 | 4행: DB-ORA-023(72.1/82.6) > cocm-hdkapp01(48.9/64.3) > SV-WEB-001(42.8/58.7) > SV-BATCH-009(18.3/40.7). DB-ORA-023이 75.4 등 제3의 값이면 FileSystems 혼입 실패 | ☐ |
+| SYN-I-02 | `2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘` | **동일 테이블 기간 셀프조인(또는 stat_date 조건부 집계) + 산술 + TOP-1** — 두 stat_date를 한 쿼리에서 결합 | SV-WEB-001, +7.6%p(35.2→42.8, 소수 반올림 허용). DB-ORA-023(+4.3)이면 메모리 사용률 오매핑, 상승폭이 전부 음수면 6→7월 기간 오독 | ☐ |
+| SYN-I-03 | `월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘` | **WHERE(행 조건 avg_val>40) + GROUP BY + HAVING(그룹 조건 count≥2) 2단 필터** | 2건: DB-ORA-023(3개월)·cocm-hdkapp01(3개월). SV-WEB-001(202606 한 달만 42.8)이 포함되면 HAVING 누락 | ☐ |
+| SYN-I-03b | `월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘. cpu 월 평균 사용률, 메모리 월 평균 사용률, cpu 최고 사용률을 같이 보여줘.` | I-03 + **다중 metric 동반 출력 → CTE(WITH) 2단 집계 유도**. 2026-07-18 실측 회귀: LLM은 올바른 CTE SQL을 생성했으나 validator `_extract_cte_names`가 선두 주석(`-- 설명`) 때문에 `^WITH` 앵커 실패 → CTE를 미존재 테이블로 오거부, 3회 소진 후 "데이터 없음" 강등(executed_sql 공백) → 주석 제거 후 판정으로 수정(D-087). 재발 시 audit에 user_request만 있고 query_execution이 없는지부터 확인 | 2건: DB-ORA-023(3개월)·cocm-hdkapp01(3개월) + 사용률 3종. 동반 값은 생성 SQL의 해석에 따라 최신월(70.5/80.1/88.9 · 47.2/63.1/73.1) 또는 전월 평균(70.3/80.3/91.6 · 47.2/63.1/75.4) — 두 해석 모두 허용, 개월 수 2건이 판정 핵심 | ☐ |
+| SYN-I-04 | `논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘` | **EAV 수치 조건 + NOT EXISTS 안티조인**(알람 부재 증명, 조인 키 `cmm_alarm.resource_id` = 서버 id). 더미 알람(resource_id 1~5)은 실서버 미매핑이라 무영향 | 1건: cocm-hdkapp01(16코어). DB-ORA-023·SV-WEB-001이 나오면 EXISTS 방향 반전, svr-* 서버가 나오면 platform 장부 미한정(B4 — platform 쪽 LOGICALCORE는 `8.0` 등 텍스트로 34대 존재). hostapo01/02 판정 제외 | ☐ |
+| SYN-I-05 | `2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘` | **스칼라 서브쿼리 임계(전체 평균 45.5 — 데이터에서 도출)** — 리터럴 임계 환각 방지 | 2건: DB-ORA-023(72.1)·cocm-hdkapp01(48.9). SV-WEB-001 포함 3건이면 임계를 40 안팎으로 환각, 1건이면 50 이상으로 환각 | ☐ |
+| SYN-I-06 | `현재 활성 상태인 심각 알람이 있는 서버 중 2026년 6월 CPU 사용률 평균이 가장 높았던 서버의 제조사와 일련번호를 알려줘` | **알람 상태 필터(ACTIVE+심각=3) → 서버 스코프 → metric TOP-1 → EAV 속성 4단 체인**(H-04 스코프에 TOP-1·EAV 확장). 전체 TOP-1(DB-ORA-023)과 스코프 내 TOP-1(SV-WEB-001)이 다르므로 스코프 누락이 결과로 즉시 드러남 | SV-WEB-001(42.8) → HPE / KR2024WEB0001. DB-ORA-023/Dell이면 알람 스코프(ACTIVE 또는 심각=3) 누락, SV-BATCH-009(18.3)면 정렬 방향 반전 | ☐ |
+| SYN-I-07 | `제조사별 2026년 6월 CPU 사용률 평균을 높은 순으로 보여줘` | **EAV 값 GROUP BY × metric 집계 2단(서버→제조사)** — H-03(대수 집계)의 metric 결합판 | 3행: Dell 72.1 > HPE 45.9(42.8·48.9의 평균) > IBM 18.3. HPE 서버 2대가 개별 행으로 나오면 GROUP BY 미작동. metric 없는 제조사(VMware, Inc./Dell Inc. 등)의 NULL 행은 LEFT JOIN 여부에 따른 차이로 허용 — 값 있는 3개 벤더의 순서·값이 판정 기준 | ☐ |
 
 ---
 

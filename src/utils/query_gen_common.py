@@ -543,3 +543,84 @@ def build_value_index_block(matched: dict[str, list[str]] | None) -> str:
         vals = ", ".join(f"'{v}'" for v in values)
         lines.append(f"- {key}: {vals}")
     return "\n".join(lines) if len(lines) > 2 else ""
+
+
+# 선행 task 결과(prior_rows) 서버 스코프 강제 (orchestration 데이터 의존 패턴 ②, D-086)
+# hostname 힌트를 name 힌트보다 먼저 검사한다 — "hostname"은 "name"을 부분 문자열로 포함.
+_PRIOR_HOSTNAME_HINTS: tuple[str, ...] = ("hostname", "host_name")
+_PRIOR_NAME_HINTS: tuple[str, ...] = ("server_name", "name")
+_MAX_PRIOR_SCOPE_VALUES: int = 100
+
+
+def _collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
+    """prior_rows에서 서버 식별 컬럼 종류와 값 목록을 추출한다.
+
+    hostname류 컬럼이 하나라도 있으면 hostname을 우선하고, 없으면 name류를 쓴다
+    (폴스타는 name≠hostname — D-061 계열, 컬럼 종류를 섞으면 0건 위험).
+
+    Args:
+        prior_rows: {task_id: [식별 키 행, ...]}
+
+    Returns:
+        ("hostname" | "name" | "", 중복 제거된 값 목록[상한 적용])
+    """
+    hostnames: list[str] = []
+    names: list[str] = []
+    seen_h: set[str] = set()
+    seen_n: set[str] = set()
+    for rows in (prior_rows or {}).values():
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            for col, val in row.items():
+                if val is None or str(val).strip() == "":
+                    continue
+                col_l = str(col).lower()
+                text = str(val).strip()
+                if any(h in col_l for h in _PRIOR_HOSTNAME_HINTS):
+                    if text not in seen_h:
+                        seen_h.add(text)
+                        hostnames.append(text)
+                elif any(n in col_l for n in _PRIOR_NAME_HINTS):
+                    if text not in seen_n:
+                        seen_n.add(text)
+                        names.append(text)
+    if hostnames:
+        return "hostname", hostnames[:_MAX_PRIOR_SCOPE_VALUES]
+    if names:
+        return "name", names[:_MAX_PRIOR_SCOPE_VALUES]
+    return "", []
+
+
+def build_prior_rows_block(prior_rows: dict | None) -> str:
+    """선행 task 결과 서버 목록을 SQL 스코프 강제 블록으로 렌더링한다(없으면 빈 문자열).
+
+    orchestration 데이터 의존(input_from) 경로에서 선행 task가 선별한 서버들로
+    이번 SQL의 대상을 결정적으로 한정한다. 선별 조건(알람 상태·심각도 등)을 LLM이
+    재표현하다 환각(존재하지 않는 resource_type='alarm.Alarm' 등)으로 0건이 되는
+    것을 차단한다(D-086). 단일/멀티 DB 경로가 동일 블록을 사용한다(D-066).
+
+    Args:
+        prior_rows: {task_id: [식별 키 행, ...]} (subagents._make_isolated_input 산출)
+
+    Returns:
+        프롬프트에 덧붙일 스코프 강제 블록(유효한 식별 값이 없으면 "")
+    """
+    if not prior_rows:
+        return ""
+    col, values = _collect_prior_identity_values(prior_rows)
+    if not values:
+        return ""
+    quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in values)
+    return (
+        "## 선행 작업 결과 서버 스코프 (필수 준수)\n"
+        "이번 조회 대상은 선행 작업에서 이미 선별된 아래 서버들로 **한정**합니다.\n"
+        f"- 대상 서버 ({col} 컬럼 기준): {quoted}\n"
+        "규칙:\n"
+        f"1. SQL에 서버 한정 조건 `{col} IN ({quoted})` 을 반드시 포함하세요 "
+        "(서버 엔터티 행 기준. GROUP BY 피벗 쿼리면 기존 규칙대로 HAVING의 집계 CASE WHEN으로 적용).\n"
+        "2. 서버를 선별했던 조건(알람 발생·심각도·활성 상태 등)은 선행 작업에서 이미 처리 완료되었습니다 — "
+        "알람/이벤트 관련 테이블·컬럼·조건을 이 SQL에서 다시 표현하지 마세요. "
+        "특히 cmm_resource의 resource_type/resource_key에는 알람·CRITICAL 같은 값이 존재하지 않습니다(환각 금지).\n"
+        "3. 위 목록 외의 서버가 결과에 포함되어서는 안 됩니다."
+    )

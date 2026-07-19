@@ -28,6 +28,7 @@ from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
     build_multi_resource_pivot_block,
     build_multi_resource_pivot_sql,
+    build_prior_rows_block,
     build_query_examples_block,
     build_stat_month_block,
     build_value_index_block,
@@ -253,8 +254,11 @@ async def query_generator(
     # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
     semantic_sql = None
     coverage_outside = False  # 트랙 C ON인데 커버리지 밖 → 트랙 A 폴백 대상 여부(3단 폴백)
+    # prior_rows(선행 task 결과 스코프)가 있으면 결정적 컴파일 우회 — SMQ는 선행 결과
+    # 서버 한정을 표현할 수 없어 스코프가 무시된 SQL이 나온다(D-086).
     if (not is_retry and not deterministic_sql
             and not state.get("column_mapping")
+            and not state.get("prior_rows")
             and app_config.text2sql.semantic_compose):
         value_index = (
             state.get("column_value_index")
@@ -315,6 +319,13 @@ async def query_generator(
         _vi_block = _build_value_index_injection(state, user_query, app_config)
         if _vi_block:
             user_prompt += _vi_block
+
+        # 선행 task 결과 서버 스코프 강제 — orchestration 데이터 의존(input_from) 경로(D-086).
+        # prior_rows는 생성만 되고 소비처가 없던 죽은 배선이었다(2026-07-18 실측: 의존 task가
+        # 알람 조건을 재표현하다 resource_type='alarm.Alarm' 환각으로 0건).
+        _pr_block = build_prior_rows_block(state.get("prior_rows"))
+        if _pr_block:
+            user_prompt += "\n\n" + _pr_block
 
         # 트랙 A(E2~E4): 다중 후보 생성·선택. 재시도(에러 컨텍스트)에는 미진입(현행 단일 수정 경로).
         use_multi = (

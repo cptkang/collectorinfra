@@ -235,6 +235,11 @@ def _get_statement_type(sql: str) -> str:
 def _extract_cte_names(sql: str) -> set[str]:
     """WITH 절에서 CTE(Common Table Expression) 이름을 추출한다.
 
+    테이블 추출(_extract_table_names)과 동일하게 **주석 제거 후** 판정한다 —
+    생성 규칙이 SQL 선두에 `-- 설명` 주석을 강제하므로, 원본 기준 `^WITH` 앵커는
+    주석 달린 CTE 쿼리에서 항상 실패해 CTE가 "존재하지 않는 테이블"로 오판되는
+    회귀가 있었다(2026-07-18 SYN-I-03 확장 실측, D-087).
+
     Args:
         sql: SQL 쿼리 문자열
 
@@ -242,14 +247,15 @@ def _extract_cte_names(sql: str) -> set[str]:
         CTE 이름 집합
     """
     cte_names: set[str] = set()
-    if not re.search(r"^\s*WITH\b", sql, re.IGNORECASE):
+    sql_clean = sqlparse.format(sql, strip_comments=True)
+    if not re.search(r"^\s*WITH\b", sql_clean, re.IGNORECASE):
         return cte_names
     # "name AS (" 패턴에서 이름 추출
     _skip_keywords = frozenset({
         "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "RECURSIVE",
         "NOT", "CAST", "TREAT", "EXTRACT", "TRIM", "SUBSTRING",
     })
-    for m in re.finditer(r"\b(\w+)\s+AS\s*\(", sql, re.IGNORECASE):
+    for m in re.finditer(r"\b(\w+)\s+AS\s*\(", sql_clean, re.IGNORECASE):
         name = m.group(1)
         if name.upper() not in _skip_keywords:
             cte_names.add(name)

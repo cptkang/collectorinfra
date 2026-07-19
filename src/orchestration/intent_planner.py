@@ -64,6 +64,11 @@ def _coerce_alarm_intent(tasks: list[dict]) -> list[dict]:
     for task in tasks:
         if task.get("agent") != "data_query":
             continue
+        if task.get("input_from"):
+            # 데이터 의존 task의 알람 어휘는 선행 task의 선별 조건 잔재("심각 알람이 있는
+            # 서버들의 CPU 사용률")이지 알람 재조회 의도가 아니다 — alarm_query로 뒤집으면
+            # 알람 템플릿(성능 지표 불가)로 가서 지표 조회가 사라진다(D-086).
+            continue
         if not has_alarm_signal(str(task.get("sub_query", ""))):
             continue
         task["agent"] = "alarm_query"

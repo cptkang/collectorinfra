@@ -31,6 +31,7 @@ from src.security.audit_logger import log_query_execution
 from src.state import AgentState, QueryAttempt
 from src.utils.query_gen_common import (
     build_multi_resource_pivot_sql,
+    build_prior_rows_block,
     build_query_examples_block,
     build_stat_month_block,
     classify_metric_field,
@@ -148,6 +149,9 @@ async def multi_db_executor(
     # 첫 DB의 검증된 SQL을 같은 스키마의 나머지 DB에 재사용해 컬럼명을 일관되게 만든다.
     _sql_by_schema: dict[tuple, str] = {}
 
+    # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066)
+    prior_block = build_prior_rows_block(state.get("prior_rows"))
+
     for target in targets:
         db_id = target["db_id"]
         sub_context = target.get("sub_query_context", state["user_query"])
@@ -203,6 +207,7 @@ async def multi_db_executor(
                         app_config=app_config,
                         execute=_mc_execute,
                         candidate_sink=mc_candidates,
+                        prior_block=prior_block,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -222,6 +227,7 @@ async def multi_db_executor(
                             db_id=db_id,
                             unmapped_fields=unmapped_fields,
                             app_config=app_config,
+                            prior_block=prior_block,
                         )
                         validation_error = _validate_sql_simple(sql, schema_info)
                         if validation_error:
@@ -371,6 +377,7 @@ async def _generate_sql(
     app_config: AppConfig | None = None,
     execute: Callable[[str], Awaitable[dict]] | None = None,
     candidate_sink: list[dict] | None = None,
+    prior_block: str | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -393,7 +400,9 @@ async def _generate_sql(
     # 폼필(column_mapping)·재시도(error_context)가 아닐 때만 진입. 커버리지 밖이면 아래 LLM 경로(회귀 0).
     if app_config is None:
         app_config = load_config()
-    if (not error_context and not column_mapping
+    # prior_block(선행 task 결과 스코프)이 있으면 결정적 컴파일 우회 — SMQ는 선행 결과
+    # 서버 한정을 표현할 수 없다(D-086, 단일 경로와 동일 조건).
+    if (not error_context and not column_mapping and not prior_block
             and app_config.text2sql.semantic_compose):
         _uq = parsed_requirements.get("original_query", "") or ""
         semantic_sql, _smq, _cov = await compile_from_nl(
@@ -503,6 +512,10 @@ async def _generate_sql(
     )
     if _sm_block:
         user_parts.append(_sm_block)
+
+    # 선행 task 결과 서버 스코프 강제 — 단일 DB 경로(query_generator)와 동일 블록(D-086/D-066)
+    if prior_block:
+        user_parts.append(prior_block)
 
     # column_mapping이 있으면 schema_info 기반 필터링 후 매핑 컬럼을 명시
     if column_mapping:
