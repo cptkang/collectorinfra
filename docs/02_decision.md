@@ -5,8 +5,8 @@
 
 - 각 결정의 상세 배경·코드 예시·대안 비교·재현 로그 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브, 이후 갱신하지 않음) 참조.
 - **신규 결정은 이 파일에만** 아래 압축 형식(결정일/상태/결정/근거/구현/주의/관련)으로 추가한다.
-- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-089 → 다음 D-090).
-- 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번), **D-090~D-091(Plan 63 폴스타 과적합 분리 잔여 트랙 예약 — 착수 시 등재: D-090 어휘 매핑 LLM 전환, D-091 범용성 회귀 하네스)**.
+- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-091 → 다음 D-092). ※D-090은 Plan 63 P3(어휘 매핑 LLM 전환) 예약으로 아직 미등재 — P3 착수 시 등재(D-091이 P4-2/3로 먼저 등재됨: P4-2 하네스가 P3 검증 기반이라 순서 교차).
+- 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번), **D-090(Plan 63 P3 어휘 매핑 LLM 전환 예약 — 착수 시 등재)**.
 
 ---
 
@@ -629,6 +629,14 @@
 - **검증**: `tests/test_db_adapters.py`(7 — 부트스트랩 등록·owns 디스패치·템플릿/validator 훅·소비처 배선 실측), 이동-불변 임포트 경로 갱신 3개 테스트파일, 서브셋 604 통과 무회귀(사전 실패 6 동일)·전체 pytest 무회귀, overfit_check schema-literal **136→111(템플릿)→79(조립기)**, 기준선 71→44 토큰 재생성(감소량=P2 지표), arch_check --ci error 0. pivot SQL 생성 동치(스모크).
 - **관련**: D-088(3계층 원칙·overfit_check 가드), D-066(단일/멀티 대칭), D-086(죽은 배선 방지), D-068(폼필 결정적 조립 — pivot 클러스터 이동 대상), D-004(라우팅 레지스트리 선례)
 
+## D-091. 모의 비폴스타 DB 범용성 회귀 하네스 (Plan 63 트랙 P4-2·P4-3)
+- **결정일**: 2026-07-20 | **상태**: 확정 (P4-2 하네스 구현·P4-3 체크리스트 반영)
+- **결정**: 폴스타 격리(P2) 이후 **제2 모니터링 솔루션 DB가 공통 경로만으로 동작**함을 회귀로 고정. 프로필·시맨틱 모델이 없는 모의 DB(`generic_mon`)를 픽스처로 두고, 라이브 LLM 없이 프롬프트/디스패치 수준에서 ①공통 시스템 템플릿 사용(폴스타 전용 템플릿 미발동) ②주입 블록·프롬프트에 폴스타 스키마 리터럴 무오염 ③폴스타 어댑터 미발동(`get_adapter`=None)을 검증한다. 실 SQL 실행 E2E는 `RUN_E2E=1` 옵트인.
+- **구현**: `testdata/generic_mon/schema.json`(평탄 3테이블 servers/metrics/alerts — EAV 없음, cmm_ 접두 없음, server.Server 없음, 프로필/모델 없음). `tests/test_generic_path/`(conftest 픽스처 + `test_universality.py` — 어댑터 미발동 2·공통 템플릿 3·주입 블록 무오염 1·E2E 옵트인 1). **하네스가 검출한 잔여 P1급 누수 1건 수정**: 공통 `QUERY_GENERATOR_SYSTEM_TEMPLATE` 규칙12(D-085 LEFT JOIN) 예시의 폴스타 컬럼 `stat_date`·`s.resource_id`를 범용 예시(`metrics`/`m.ref_id`/`m.period`)로 중립화(게이트 없는 공통 템플릿의 실주입 리터럴이라 P1 원칙 적용).
+- **P4-3 체크리스트 갱신**: 신규 DB 편입 체크리스트에 "⑤프로필/시맨틱 모델 작성(선택) — 없으면 공통 LLM 경로로 동작"을 추가(`docs/18_known_mistakes.md`). ※`collectorinfra/CLAUDE.md`의 체크리스트 한 줄 요약(①~④)은 에이전트가 CLAUDE.md를 편집하지 않는 원칙상 미수정 — 사용자/`/revise-claude-md`로 ⑤ 반영 권장.
+- **주의**: 하네스는 LLM 없이 검증 가능한 계층(프롬프트 선택·디스패치·주입 블록)만 결정적으로 고정한다. 무선언 DB의 LLM 어휘 매핑 폴백(P3/D-090) 동작 자체의 검증은 이 픽스처를 기반으로 P3에서 수행한다. overfit_check 기준선은 P4-2 잔여 누수 수정 반영해 재생성(schema-literal 79→78).
+- **관련**: D-088(공용 DB-agnostic 원칙·overfit 가드), D-089(어댑터 분리 — 어댑터 미발동 검증), D-090(무선언 DB LLM 폴백 — 이 하네스로 검증), D-020(스키마 자동 발견 채널 유지)
+
 ---
 
 ## 변경 이력
@@ -637,6 +645,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-20 | D-091 | **모의 비폴스타 DB 범용성 회귀 하네스 (Plan 63 P4-2·P4-3)** — `testdata/generic_mon/`(평탄 3테이블, 프로필·모델 없음)+`tests/test_generic_path/`(공통 템플릿 사용·폴스타 리터럴 무오염·어댑터 미발동 검증, E2E 옵트인). 하네스가 검출한 공통 템플릿 D-085 예시의 `stat_date` 잔여 누수 중립화. 편입 체크리스트에 ⑤프로필/모델(선택) 추가. |
 | 2026-07-20 | D-089 | **폴스타 DB 어댑터 분리 (Plan 63 P2)** — `src/db_adapters/polestar/` 어댑터 계층+레지스트리 디스패치. Stage 1: POLESTAR 템플릿 2종·`_check_routing_filter_misuse` 이동+`get_adapter().system_template/validator_checks` 배선. Stage 2: pivot 조립기 클러스터(build_multi_resource_pivot_sql 등) 이동. 동작 불변, 호출부 3곳 어댑터 직접 임포트. servername/hostname 가드는 infra 호출로 utils 잔류. overfit schema-literal 136→79, 기준선 71→44. |
 | 2026-07-20 | D-088 | **공용 계층 DB-agnostic 원칙 + 공용 주입 블록 일반화 + 과적합 가드 (Plan 63 P1·P4-1)** — build_prior_rows_block cmm_resource 문장 제거·일반화, build_stat_month_block 폴스타 게이트(단일/멀티 대칭), 공용 템플릿 스키마 접두사 예시 중립화, D-085 메시지 중립화. `scripts/overfit_check.py`(schema-literal/routing-vocab 분리·기준선 71토큰·--ci 게이트)+스킬 등록. 폴스타 동작 불변. |
 | 2026-07-18 | D-087 | **validator CTE 인식 주석 비대칭 수정** — `_extract_cte_names`가 선두 주석 시 `^WITH` 앵커 실패로 CTE를 미존재 테이블로 오거부(2단 집계 쿼리 전멸) → 주석 제거 후 판정으로 테이블 추출과 전처리 일원화. |

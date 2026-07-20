@@ -53,9 +53,6 @@
       "cmm_resource",
       "cmm_resource_hostname"
     ],
-    "src/prompts/query_generator.py": [
-      "stat_date"
-    ],
     "src/utils/column_matcher.py": [
       "cmm_resource",
       "cmm_resource_hostname"
