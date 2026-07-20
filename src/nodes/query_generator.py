@@ -23,18 +23,21 @@ from src.db_adapters import get_adapter
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
-    build_multi_resource_pivot_block,
-    build_multi_resource_pivot_sql,
     build_prior_rows_block,
     build_query_examples_block,
     build_stat_month_block,
     build_value_index_block,
-    classify_metric_field,
     correct_servername_hostname_mapping,
-    decimal_cast_example,
-    eav_attr_resource_types,
     resolve_query_limit,
     resolve_stat_month,
+)
+# 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
+from src.db_adapters.polestar.assembler import (
+    build_multi_resource_pivot_block,
+    build_multi_resource_pivot_sql,
+    classify_metric_field,
+    decimal_cast_example,
+    eav_attr_resource_types,
 )
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl

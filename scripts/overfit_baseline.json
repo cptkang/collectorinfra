@@ -54,26 +54,7 @@
       "cmm_resource_hostname"
     ],
     "src/prompts/query_generator.py": [
-      "cmm_metric_stat_",
-      "cmm_metric_stat_d",
-      "cmm_metric_stat_h",
-      "cmm_metric_stat_m",
-      "cmm_resource",
-      "configuration_id",
-      "core_config_prop",
-      "platform_resource_id",
-      "polestar.cmm_metric_stat_d",
-      "polestar.cmm_metric_stat_m",
-      "polestar.cmm_resource",
-      "polestar.core_config_prop",
-      "resource_conf_id",
-      "server.Cpus",
-      "server.Disks",
-      "server.FileSystems",
-      "server.Memory",
-      "server.Server",
-      "stat_date",
-      "stringvalue_short"
+      "stat_date"
     ],
     "src/utils/column_matcher.py": [
       "cmm_resource",
@@ -82,17 +63,9 @@
     "src/utils/query_gen_common.py": [
       "cmm_metric_stat_m",
       "cmm_resource",
-      "configuration_id",
-      "core_config_prop",
-      "platform_resource_id",
       "polestar.cmm_resource",
-      "resource_conf_id",
-      "server.Cpus",
-      "server.Disks",
-      "server.Memory",
       "server.Server",
-      "stat_date",
-      "stringvalue_short"
+      "stat_date"
     ],
     "src/utils/schema_utils.py": [
       "cmm_resource",

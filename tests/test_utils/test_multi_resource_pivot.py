@@ -10,15 +10,18 @@ from __future__ import annotations
 from datetime import date
 
 from src.utils.query_gen_common import (
-    build_multi_resource_pivot_block,
-    build_multi_resource_pivot_sql,
     build_stat_month_block,
-    classify_metric_field,
     correct_servername_hostname_mapping,
-    eav_attr_resource_types,
     is_hostname_target,
     is_servername_to_hostname,
     resolve_stat_month,
+)
+# 폴스타 EAV/피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — 이동-불변.
+from src.db_adapters.polestar.assembler import (
+    build_multi_resource_pivot_block,
+    build_multi_resource_pivot_sql,
+    classify_metric_field,
+    eav_attr_resource_types,
 )
 
 _SCHEMA_INFO = {

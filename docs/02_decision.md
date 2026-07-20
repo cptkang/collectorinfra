@@ -620,12 +620,13 @@
 - **관련**: D-089(어댑터 분리), D-090(어휘 매핑 LLM 전환·프로필 선언), D-091(범용성 회귀 하네스), D-086(prior_rows 배선·대칭 보존), D-066(단일/멀티 대칭), D-035(결정=판단·LLM=보조), D-020(폴스타 하드코딩 제거 선례)
 
 ## D-089. 폴스타 DB 어댑터 분리 — 동작 불변 이동 + 레지스트리 디스패치 (Plan 63 트랙 P2)
-- **결정일**: 2026-07-20 | **상태**: 진행 중 (Stage 1 완료 — 템플릿·라우팅 validator 이동; Stage 2 조립기 이동 예정)
+- **결정일**: 2026-07-20 | **상태**: 확정 (P2 구현 완료 — Stage 1 템플릿·validator, Stage 2 pivot 조립기 이동)
 - **결정**: 공용 계층에 상주하던 폴스타 특화 로직을 `src/db_adapters/polestar/` 어댑터 계층(arch_check `src.db_adapters`=application)으로 **물리 격리**. 공용 코어는 어댑터 존재를 모르고, 어댑터가 임포트 시 레지스트리(`src/db_adapters/__init__.py`)에 등록하며, 코어는 `get_adapter(db_id, polestar_db_ids)`로 담당 어댑터를 조회해 훅을 호출한다. **동작 불변(move-only)** — POLESTAR_DB_IDS 게이트를 어댑터 `owns()`로 이동, 폴스타는 동일 신호로 동일 동작.
 - **어댑터 인터페이스(최소 — 실배선 훅만, 과설계 금지 Plan 63 §9)**: `owns(db_id, polestar_db_ids)`(레지스트리 디스패치)·`system_template(routing_intent)`(전용 프롬프트)·`validator_checks()`(전용 SQL 검증). 조립기(pivot)는 훅이 아니라 어댑터 모듈 직접 임포트(application→application). 알람 코어/schema_table_policy 훅은 P3-4에서 프로필 선언과 함께 추가(schema_analyzer 얽힘 — dead hook 방지).
 - **구현(Stage 1)**: ①`POLESTAR_QUERY/ALARM_GENERATOR_SYSTEM_TEMPLATE` 2종(계획서 "3종"은 공용 포함 오기 — 실제 2종)을 `src/prompts/query_generator.py`→`src/db_adapters/polestar/prompts.py` 순수 이동, `query_generator._build_system_prompt`가 `get_adapter(...).system_template(intent)`로 디스패치(직접 임포트 제거). ②`_check_routing_filter_misuse`(GROUP_PATH·폴스타 LIKE 오용)를 `query_validator.py`→`src/db_adapters/polestar/validators.py` 이동, 공용 validator가 `adapter.validator_checks()` 순회 실행(전 DB 무조건 실행→폴스타 게이트, 토큰 부재 DB엔 무동작이라 동작 불변, L4 해소). ③부트스트랩(`db_adapters.__init__`이 `polestar` 임포트→`register()`)으로 죽은 레지스트리 방지(D-086 계열). 어댑터로 이동한 심볼은 각 이동-불변, 계층 방향 준수(어댑터=application, 소비처 노드=application → arch_check WARN 허용, error 0).
 - **계층 제약(실측)**: servername/hostname 가드(`is_servername_*`·`correct_servername_hostname_mapping`)는 infrastructure(field_mapper·synonym_semantic)도 호출 → application 어댑터로 이동 불가, **utils 잔류**(폴스타 지식은 P3-3에서 프로필 identity_rules로). pivot 조립기 클러스터는 호출부 전부 application(query_generator·multi_db_executor·semantic_compiler)이라 이동 가능(Stage 2).
-- **검증(Stage 1)**: `tests/test_db_adapters.py`(7 — 부트스트랩 등록·owns 디스패치·템플릿/validator 훅·소비처 배선 실측), `test_query_generator_polestar_prompt.py` 임포트 경로 갱신(이동-불변), 서브셋 610 통과 무회귀(사전 실패 6 동일), overfit_check schema-literal 136→111(템플릿 25 감소), arch_check --ci error 0.
+- **구현(Stage 2 — pivot 조립기 이동)**: `decimal_cast_example`·`classify_metric_field`·`eav_attr_resource_types`·`build_multi_resource_pivot_sql`·`build_multi_resource_pivot_block`(+내부 `_metric_select_line`·`_pivot_select_parts`·`_eav_pattern_parts`·`_SERVER_RESOURCE_TYPE`·`_METRIC_NOUN_RT`·`_RESOURCE_TYPE_RE`)를 `query_gen_common.py`→`src/db_adapters/polestar/assembler.py` 순수 이동(D-068 결정적 조립 자산 불변). 호출부 3곳(query_generator·multi_db_executor·semantic_compiler)이 어댑터에서 직접 임포트(application→application). query_gen_common의 orphan `import re` 제거(내 변경이 유발). 테스트 임포트 경로 갱신(test_multi_resource_pivot·test_query_gen_parity — 이동-불변).
+- **검증**: `tests/test_db_adapters.py`(7 — 부트스트랩 등록·owns 디스패치·템플릿/validator 훅·소비처 배선 실측), 이동-불변 임포트 경로 갱신 3개 테스트파일, 서브셋 604 통과 무회귀(사전 실패 6 동일)·전체 pytest 무회귀, overfit_check schema-literal **136→111(템플릿)→79(조립기)**, 기준선 71→44 토큰 재생성(감소량=P2 지표), arch_check --ci error 0. pivot SQL 생성 동치(스모크).
 - **관련**: D-088(3계층 원칙·overfit_check 가드), D-066(단일/멀티 대칭), D-086(죽은 배선 방지), D-068(폼필 결정적 조립 — pivot 클러스터 이동 대상), D-004(라우팅 레지스트리 선례)
 
 ---
@@ -636,7 +637,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
-| 2026-07-20 | D-089 | **폴스타 DB 어댑터 분리 (Plan 63 P2, 진행 중)** — `src/db_adapters/polestar/` 어댑터 계층+레지스트리 디스패치. Stage 1: POLESTAR 템플릿 2종·`_check_routing_filter_misuse` 이동(동작 불변), `get_adapter().system_template/validator_checks` 배선, 부트스트랩 등록(죽은 배선 방지). servername/hostname 가드는 infra 호출로 utils 잔류. overfit schema-literal 136→111. |
+| 2026-07-20 | D-089 | **폴스타 DB 어댑터 분리 (Plan 63 P2)** — `src/db_adapters/polestar/` 어댑터 계층+레지스트리 디스패치. Stage 1: POLESTAR 템플릿 2종·`_check_routing_filter_misuse` 이동+`get_adapter().system_template/validator_checks` 배선. Stage 2: pivot 조립기 클러스터(build_multi_resource_pivot_sql 등) 이동. 동작 불변, 호출부 3곳 어댑터 직접 임포트. servername/hostname 가드는 infra 호출로 utils 잔류. overfit schema-literal 136→79, 기준선 71→44. |
 | 2026-07-20 | D-088 | **공용 계층 DB-agnostic 원칙 + 공용 주입 블록 일반화 + 과적합 가드 (Plan 63 P1·P4-1)** — build_prior_rows_block cmm_resource 문장 제거·일반화, build_stat_month_block 폴스타 게이트(단일/멀티 대칭), 공용 템플릿 스키마 접두사 예시 중립화, D-085 메시지 중립화. `scripts/overfit_check.py`(schema-literal/routing-vocab 분리·기준선 71토큰·--ci 게이트)+스킬 등록. 폴스타 동작 불변. |
 | 2026-07-18 | D-087 | **validator CTE 인식 주석 비대칭 수정** — `_extract_cte_names`가 선두 주석 시 `^WITH` 앵커 실패로 CTE를 미존재 테이블로 오거부(2단 집계 쿼리 전멸) → 주석 제거 후 판정으로 테이블 추출과 전처리 일원화. |
 | 2026-07-18 | D-086 | **선행 task 결과 스코프 결정적 주입(크로스도메인 알람→지표)** — 죽은 prior_rows 배선 복구(`build_prior_rows_block` 단일/멀티 대칭), 트랙 C 우회, `_coerce_alarm_intent` input_from 가드, 성능 템플릿 알람 환각 금지, planner 예시 3-1. |

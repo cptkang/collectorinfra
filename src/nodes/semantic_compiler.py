@@ -33,7 +33,9 @@ from pydantic import BaseModel, Field
 
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
-from src.utils.query_gen_common import build_multi_resource_pivot_sql, resolve_query_limit
+from src.utils.query_gen_common import resolve_query_limit
+# 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
+from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
 
 logger = logging.getLogger(__name__)
 

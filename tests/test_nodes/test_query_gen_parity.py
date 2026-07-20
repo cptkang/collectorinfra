@@ -370,7 +370,7 @@ class TestCrossPathParity:
 
     def test_decimal_cast_example_engine_aware(self):
         """엔진별 소수 캐스트 예시 — PostgreSQL은 ::numeric, DB2는 CAST DECIMAL."""
-        from src.utils.query_gen_common import decimal_cast_example
+        from src.db_adapters.polestar.assembler import decimal_cast_example
 
         assert "::numeric" in decimal_cast_example("postgresql")
         assert "DECIMAL" in decimal_cast_example("db2")
