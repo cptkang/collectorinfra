@@ -70,6 +70,7 @@ def _mock_config() -> MagicMock:
     cfg.query.default_limit = 1000
     cfg.text2sql.semantic_compose = False
     cfg.text2sql.multi_candidate = False
+    cfg.text2sql.generic_llm_mapping = False  # P3(D-090) 기본 OFF — 범용 기간 힌트 미주입
     cfg.synonym.value_retrieval = False
     cfg.get_polestar_db_ids.return_value = None
     return cfg

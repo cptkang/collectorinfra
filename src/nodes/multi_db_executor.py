@@ -30,6 +30,7 @@ from src.routing.domain_config import get_domain_by_id
 from src.security.audit_logger import log_query_execution
 from src.state import AgentState, QueryAttempt
 from src.utils.query_gen_common import (
+    build_generic_period_hint,
     build_prior_rows_block,
     build_query_examples_block,
     build_stat_month_block,
@@ -512,12 +513,18 @@ async def _generate_sql(
     # 폴스타 월 통계 테이블 규약 특화 블록이라 폴스타 DB에만 주입한다(L2 일반화, 단일 경로와 대칭
     # P1-3/D-088). 프로필 부재 DB는 미주입 — 일반 기간 규칙만 남는다. 프로필 선언 전환은 P3(D-090).
     _stat_block_db = db_id in ((app_config.get_polestar_db_ids() if app_config else None) or set())
-    _sm_block = build_stat_month_block(
+    _stat_month = (
         resolve_stat_month(parsed_requirements.get("original_query", "") or "")
         or resolve_stat_month(sub_query_context)
-    ) if _stat_block_db else ""
+    )
+    _sm_block = build_stat_month_block(_stat_month) if _stat_block_db else ""
     if _sm_block:
         user_parts.append(_sm_block)
+    # 무선언 DB: GENERIC_LLM_MAPPING 옵트인 시 범용 기간 힌트(폴스타 리터럴 없음, 단일 경로와 대칭 P3/D-090).
+    elif app_config and app_config.text2sql.generic_llm_mapping:
+        _gp_block = build_generic_period_hint(_stat_month)
+        if _gp_block:
+            user_parts.append(_gp_block)
 
     # 선행 task 결과 서버 스코프 강제 — 단일 DB 경로(query_generator)와 동일 블록(D-086/D-066)
     if prior_block:

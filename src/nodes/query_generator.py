@@ -23,6 +23,7 @@ from src.db_adapters import get_adapter
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
+    build_generic_period_hint,
     build_prior_rows_block,
     build_query_examples_block,
     build_stat_month_block,
@@ -320,6 +321,12 @@ async def query_generator(
         _sm_block = build_stat_month_block(stat_month) if _stat_block_db else ""
         if _sm_block:
             user_prompt += "\n\n" + _sm_block
+        # 무선언(프로필 없음) DB: GENERIC_LLM_MAPPING 옵트인 시 범용 기간 힌트(폴스타 리터럴 없음).
+        # 선언 우선 — 폴스타(_stat_block_db)는 위 결정적 블록을 쓰므로 이 경로에 들어오지 않는다(P3/D-090).
+        elif app_config.text2sql.generic_llm_mapping:
+            _gp_block = build_generic_period_hint(stat_month)
+            if _gp_block:
+                user_prompt += "\n\n" + _gp_block
 
         # E5-2 값 검색 리터럴 주입 — value_retrieval ON + 인덱스 매칭 시만(회귀 0).
         _vi_block = _build_value_index_injection(state, user_query, app_config)

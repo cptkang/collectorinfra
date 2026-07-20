@@ -205,6 +205,13 @@ class Text2SQLConfig(BaseSettings):
     # E4 선택 전략. hybrid(결과일관성 1차 + LLM 쌍대비교 병용 — §9-3) | consistency | llm
     selection: Literal["consistency", "llm", "hybrid"] = "hybrid"
 
+    # === Plan 63 P3(D-090): 무선언(프로필/시맨틱 모델 없음) DB의 LLM 어휘 매핑 폴백 ===
+    # 폴스타 등 프로필 보유 DB는 선언 우선(어댑터/프로필)으로 동작 불변. 프로필이 없는 DB는
+    # 공통 LLM 경로가 SQL을 직접 생성한다(P4-2 검증). 이 플래그가 ON이면 무선언 DB의 기간
+    # 표현에 **범용 기간 해석 힌트**(스키마의 시간 컬럼으로 매핑 — 폴스타 리터럴 없음)를 추가
+    # 주입한다. 기본 OFF = 추가 주입 없음(호출 증가 0, 현행 동작 무변경).
+    generic_llm_mapping: bool = False
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 
