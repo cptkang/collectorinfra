@@ -14,6 +14,7 @@ import sqlparse
 import structlog
 
 from src.config import AppConfig, load_config
+from src.db_adapters import get_adapter
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.state import AgentState
 
@@ -166,9 +167,12 @@ async def query_validator(
     perf_warnings = _check_performance_risks(sql, schema_info)
     warnings.extend(perf_warnings)
 
-    # 9. 라우팅 필터 오용 탐지
-    routing_errors = _check_routing_filter_misuse(sql)
-    errors.extend(routing_errors)
+    # 9. DB 어댑터 전용 검증(폴스타 라우팅 필터 오용 등) — 담당 어댑터가 있으면 훅 실행
+    #    (기존 _check_routing_filter_misuse를 폴스타 어댑터로 이동, Plan 63 P2/D-089).
+    adapter = get_adapter(state.get("active_db_id"), app_config.get_polestar_db_ids() or None)
+    if adapter is not None:
+        for _check in adapter.validator_checks():
+            errors.extend(_check(sql))
 
     # 결과 결정
     if errors:
@@ -808,48 +812,3 @@ def _check_performance_risks(
         )
 
     return warnings
-
-
-def _check_routing_filter_misuse(sql: str) -> list[str]:
-    """라우팅 정보를 WHERE 조건에 사용한 패턴을 탐지한다.
-
-    GROUP_PATH는 CMM_RESOURCE의 내부 계층 경로로, Polestar/위치 식별에 사용하면
-    항상 0건 조회 또는 SQL 에러가 발생한다.
-    Polestar 이름·위치명은 DB 라우팅 단계에서 이미 처리되므로 SQL에 포함되어선 안 된다.
-
-    Args:
-        sql: SQL 쿼리
-
-    Returns:
-        에러 메시지 목록
-    """
-    errors: list[str] = []
-
-    # GROUP_PATH를 WHERE/AND/OR 조건에 사용한 패턴 (SELECT alias이므로 WHERE에서 사용 불가)
-    if re.search(r"\bGROUP_PATH\s*(?:I?LIKE|=|!=|<>)", sql, re.IGNORECASE):
-        errors.append(
-            "GROUP_PATH은 SELECT 절의 계산된 별칭(alias)으로 WHERE 조건에서 사용할 수 없습니다. "
-            "Polestar/위치 식별 정보는 DB 라우팅 단계에서 이미 처리되었습니다."
-        )
-
-    # Polestar 이름을 LIKE/ILIKE 필터로 사용하는 패턴 탐지
-    routing_columns = [
-        r"RESOURCE_NAME",
-        r"CR\.NAME",
-        r"A\.RESOURCE_NAME",
-        r"AR\.RESOURCE_NAME",
-    ]
-    polestar_keywords = ["폴스타", "polestar"]
-    for col_pat in routing_columns:
-        for keyword in polestar_keywords:
-            if re.search(
-                rf"\b{col_pat}\s+I?LIKE\s+'%{keyword}%'",
-                sql,
-                re.IGNORECASE,
-            ):
-                errors.append(
-                    f"라우팅 식별자 '{keyword}'를 WHERE 필터로 사용하면 0건 조회됩니다. "
-                    "Polestar 이름은 DB 라우팅 단계에서 처리되므로 SQL 조건에 포함하지 마세요."
-                )
-
-    return errors

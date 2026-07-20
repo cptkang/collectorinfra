@@ -7,7 +7,8 @@ LLM 호출 없이 프롬프트 문자열 생성만 테스트한다.
 import pytest
 
 from src.nodes.query_generator import _build_system_prompt
-from src.prompts.query_generator import POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+# 폴스타 전용 템플릿은 db_adapters/polestar로 이동(Plan 63 P2, D-089) — 이동-불변.
+from src.db_adapters.polestar.prompts import POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
 
 
 # ---------------------------------------------------------------------------

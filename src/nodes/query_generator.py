@@ -18,11 +18,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
-from src.prompts.query_generator import (
-    POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE,
-    POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE,
-    QUERY_GENERATOR_SYSTEM_TEMPLATE,
-)
+from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
+from src.db_adapters import get_adapter
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
@@ -605,14 +602,13 @@ def _build_system_prompt(
     db_engine = active_db_engine or "postgresql"
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
-    # Polestar 전용 프롬프트 선택: .env의 POLESTAR_DB_IDS에 active_db_id가 포함되면 전용 템플릿 사용
-    # routing_intent == "alarm_query"인 경우 알람 전용 템플릿 사용
-    if polestar_db_ids and active_db_id in polestar_db_ids:
-        if routing_intent == "alarm_query":
-            template = POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE
-        else:
-            template = POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
-    else:
+    # DB 어댑터 디스패치: 담당 어댑터(폴스타)가 있으면 의도별 전용 템플릿, 없으면 공통 템플릿.
+    # POLESTAR_DB_IDS 게이트는 어댑터 owns()로 이동(Plan 63 P2/D-089, 동작 불변).
+    adapter = get_adapter(active_db_id, polestar_db_ids)
+    template = None
+    if adapter is not None:
+        template = adapter.system_template(routing_intent)
+    if template is None:
         template = QUERY_GENERATOR_SYSTEM_TEMPLATE
 
     return template.format(

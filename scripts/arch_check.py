@@ -65,6 +65,7 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.infrastructure.user_repository":  "infrastructure",
     "src.infrastructure.audit_repository": "infrastructure",
     "src.nodes":                     "application",
+    "src.db_adapters":               "application",
     "src.orchestration":             "orchestration",
     "src.graph":                     "orchestration",
     "src.api":                       "interface",
