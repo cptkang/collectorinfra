@@ -609,13 +609,14 @@
 - **주의**: 같은 산출물을 여러 검사기가 볼 때 **전처리(주석·리터럴 제거)는 반드시 동일 파이프로** — 비대칭이면 "규칙이 강제한 정상 출력"(선두 주석)이 곧 실패 조건이 된다. 재시도 3회가 **같은 사유로 반복**되면 LLM 품질이 아니라 결정적 게이트 자체를 의심할 것.
 - **관련**: D-085(validator 가드 계열), D-022(validator 감지 선례), Known Mistakes "0건/실패 진단은 게이트별 로그로 끊긴 지점부터"
 
-## D-088. 공용 계층 DB-agnostic 원칙 + 공용 주입 블록 일반화 (Plan 63 트랙 P1)
-- **결정일**: 2026-07-20 | **상태**: 확정 (P1 구현 완료 — 재발 방지 가드는 P4-1/overfit_check로 상설)
+## D-088. 공용 계층 DB-agnostic 원칙 + 공용 주입 블록 일반화 + 과적합 재발 방지 가드 (Plan 63 트랙 P1·P4-1)
+- **결정일**: 2026-07-20 | **상태**: 확정 (P1·P4-1 구현 완료)
 - **배경**: 2026-07-18 과적합 검토 실측(Plan 63 §1) — 폴스타 격리 채널(POLESTAR 템플릿 게이트·db_profiles·semantic_models)은 지켜지나 **공용 계층(`query_gen_common`·`query_generator`·`multi_db_executor`·공용 `prompts`)에 폴스타 스키마 리터럴이 누수**. `ACTIVE_DB_IDS=polestar` 단독이라 현재 실동작 문제는 없으나, 등록된 비폴스타 DB(cloud_portal·itsm·itam) 활성화 시 오지시 주입·기능 무력화로 드러난다.
 - **결정**: 3계층 구조 확립 — [1]공용 코어는 DB-agnostic(스키마 리터럴 금지, overfit_check가 강제), [2]선언적 지식 채널(db_profiles/semantic_models)이 DB별 어휘·구조·규칙 단일 출처, [3]DB 어댑터가 코드 필요한 특화 로직만(P2/D-089). LLM vs 결정적 판단 기준(D-035 정합): "지식(무엇이 어디에)"은 하드코딩 제거, "정합성 방어(무엇이 틀렸는가)"는 결정적 가드 유지.
 - **구현(P1 — 공용 주입 블록 즉시 일반화)**: ①`build_prior_rows_block`(query_gen_common)에서 `cmm_resource의 resource_type/resource_key` 문장 제거 → 일반 원칙("대상 DB에 없는 테이블/컬럼/값으로 선별 조건 지어내기 금지, 환각 금지")으로 교체. 폴스타 알람 환각의 구체 차단은 폴스타 성능 템플릿 Strict Constraint 5(D-086 ④)가 독립 보존. `{col} IN` 문구를 "선행 결과 식별 컬럼 → 대상 DB 식별 컬럼 적용"으로 완화(식별 컬럼 heuristic 유지, 프로필 identity_columns 우선화는 P3/D-090). ②`build_stat_month_block`(cmm_metric_stat_m·stat_date 규약) 호출을 **폴스타 게이트**(폴스타 시스템 템플릿과 동일 신호 `active_db_id/db_id ∈ polestar_db_ids`)로 한정 — 단일(`query_generator.py`)·멀티(`multi_db_executor.py`) 대칭(D-066). 프로필 부재 DB는 미주입(시스템 템플릿 일반 기간 규칙만). 프로필 time_grain 선언 기반 전환은 P3/D-090. ③공용 `QUERY_GENERATOR_SYSTEM_TEMPLATE` 규칙2 스키마 접두사 예시 `polestar.cmm_resource` → 형식 예시 `<스키마>.<테이블>` 중립화(게이트 없는 공용 템플릿의 유일한 실주입 리터럴). ④D-085 LEFT JOIN 강등 메시지 예시 `server.Server의 서버명` → `피벗 기준 엔터티 행` 중립화.
 - **§8 사용자 확인 항목 채택안(사용자 "진행" 포괄 승인)**: 어댑터 위치 `src/db_adapters/polestar/`, P3 무선언 DB LLM 폴백 `GENERIC_LLM_MAPPING` 옵트인(기본 OFF — 기본 동작 호출 증가 0), generic_mon 픽스처는 최소 3테이블 평탄 스키마(프로필·모델 없음), P2 전용 템플릿 3종 이동 포함(커밋 세분화), 라우팅·인스턴스 어휘(§1.3)는 스코프 아웃(overfit_check routing-vocab 분리 집계·화이트리스트만).
-- **주의**: 폴스타 동작 불변이 판정 기준 — 폴스타는 게이트/템플릿 신호가 그대로라 EX 동치. `build_stat_month_block` 함수 본문의 폴스타 기본값(cmm_metric_stat_m·stat_date)은 P1에서 게이트만 추가하고 리터럴 자체는 P3(D-090)에서 시맨틱 모델 선언으로 이관 — P4-1 overfit_check 화이트리스트에 "P3 소거 예정"으로 등재. 검증: `test_prior_rows_scope.py`(16 — 블록 일반화·stat 블록 게이트 대칭 3건 신설), 서브셋 594 통과 무회귀, text2sql 골든/하네스 109 통과.
+- **구현(P4-1 — 과적합 재발 방지 가드)**: `scripts/overfit_check.py` 신설 — 공용 계층(`src/utils`·`src/nodes`·`src/orchestration`·공용 `src/prompts`, 어댑터 `src/db_adapters` 제외)을 tokenize로 스캔(주석 제외)해 schema-literal(cmm_/server.*/stat_date/core_config_prop/stringvalue*/resource_conf_id/platform_resource_id/configuration_id/polestar.*)과 routing-vocab(§1.3 위치·별칭 어휘)를 **카테고리 분리 집계**. schema-literal은 기준선(`scripts/overfit_baseline.json` — `(파일,토큰)` 단위 화이트리스트, P1 시점 71토큰/13파일)과 대조해 **신규 유입 시 `--ci` exit 1**. routing-vocab은 스코프 아웃(가시화만). P2/P3가 리터럴 소거하며 `--update-baseline`으로 재생성해 감소(감소량=트랙 지표). 스킬 `.claude/skills/overfit-check.md` 등록. 검증 `tests/test_overfit_check.py`(6 — 카테고리 분리·기준선 대비 신규 0·가드 형해화 방지).
+- **주의**: 폴스타 동작 불변이 판정 기준 — 폴스타는 게이트/템플릿 신호가 그대로라 EX 동치. `build_stat_month_block` 함수 본문의 폴스타 기본값(cmm_metric_stat_m·stat_date)은 P1에서 게이트만 추가하고 리터럴 자체는 P3(D-090)에서 시맨틱 모델 선언으로 이관 — overfit_check 기준선에 잔존(P2/P3 소거 예정). 검증: `test_prior_rows_scope.py`(16 — 블록 일반화·stat 블록 게이트 대칭 3건 신설), 전체 pytest 무회귀(클린 cee7cdf vs post-P1 FAILED/ERROR 집합 동일 49F/5E 전부 환경 의존 사전 실패, +3 신규 통과), text2sql 골든/하네스 109 통과, EX 하네스 3경로 DB/LLM 미접속으로 각 26 skip(오프라인 동치는 골든으로 확인).
 - **관련**: D-089(어댑터 분리), D-090(어휘 매핑 LLM 전환·프로필 선언), D-091(범용성 회귀 하네스), D-086(prior_rows 배선·대칭 보존), D-066(단일/멀티 대칭), D-035(결정=판단·LLM=보조), D-020(폴스타 하드코딩 제거 선례)
 
 ---
@@ -626,7 +627,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
-| 2026-07-20 | D-088 | **공용 계층 DB-agnostic 원칙 + 공용 주입 블록 일반화 (Plan 63 P1)** — build_prior_rows_block cmm_resource 문장 제거·일반화, build_stat_month_block 폴스타 게이트(단일/멀티 대칭), 공용 템플릿 스키마 접두사 예시 중립화(polestar.cmm_resource→형식 예시), D-085 메시지 예시 중립화. 폴스타 동작 불변. |
+| 2026-07-20 | D-088 | **공용 계층 DB-agnostic 원칙 + 공용 주입 블록 일반화 + 과적합 가드 (Plan 63 P1·P4-1)** — build_prior_rows_block cmm_resource 문장 제거·일반화, build_stat_month_block 폴스타 게이트(단일/멀티 대칭), 공용 템플릿 스키마 접두사 예시 중립화, D-085 메시지 중립화. `scripts/overfit_check.py`(schema-literal/routing-vocab 분리·기준선 71토큰·--ci 게이트)+스킬 등록. 폴스타 동작 불변. |
 | 2026-07-18 | D-087 | **validator CTE 인식 주석 비대칭 수정** — `_extract_cte_names`가 선두 주석 시 `^WITH` 앵커 실패로 CTE를 미존재 테이블로 오거부(2단 집계 쿼리 전멸) → 주석 제거 후 판정으로 테이블 추출과 전처리 일원화. |
 | 2026-07-18 | D-086 | **선행 task 결과 스코프 결정적 주입(크로스도메인 알람→지표)** — 죽은 prior_rows 배선 복구(`build_prior_rows_block` 단일/멀티 대칭), 트랙 C 우회, `_coerce_alarm_intent` input_from 가드, 성능 템플릿 알람 환각 금지, planner 예시 3-1. |
 | 2026-07-16 | D-085 | **LEFT JOIN 강등(WHERE 필터) 결정적 가드 + 생성 규칙** — SYN-H-02 실측 회귀(서버명 전체 NULL) 대응. validator 6.7 `_check_left_join_where_demotion`(error→재시도)·`_validate_sql_simple` 대칭 배선·프롬프트 규칙 2개 템플릿 추가. |
