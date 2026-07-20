@@ -243,6 +243,12 @@ async def query_generator(
     limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
     # 기간 표현(지난 1개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
     stat_month = resolve_stat_month(user_query)
+    # 통계 테이블 강제 블록(build_stat_month_block)은 폴스타 월 통계 테이블(cmm_metric_stat_m)
+    # 규약에 특화된 지시라, 그 테이블을 선언한 DB에만 주입한다(L2 일반화, P1-3/D-088). 현재는
+    # 폴스타가 유일한 선언 DB이므로 폴스타 게이트(폴스타 시스템 템플릿과 동일 신호)로 판정하고,
+    # 프로필 time_grain 선언 기반 전환은 P3(D-090). 프로필 부재 DB는 미주입 — 시스템 템플릿의
+    # 일반 기간 규칙(CURRENT_DATE 동적 계산)만 남아 LLM이 스키마의 시간 컬럼으로 해석한다.
+    _stat_block_db = state.get("active_db_id") in (app_config.get_polestar_db_ids() or set())
 
     # 폼필 다중 리소스 피벗은 코드가 결정적으로 조립(LLM 우회). 재시도(에러 컨텍스트) 시엔
     # 결정적 SQL이 이미 실패했을 수 있으므로 LLM 폴백으로 에러를 반영해 수정한다.
@@ -311,7 +317,7 @@ async def query_generator(
         # 기간 표현이 있으면 결정적으로 해석된 단일 월(YYYYMM)을 강제한다 — 시스템 템플릿의
         # "CURRENT_DATE 동적 계산" 일반 규칙을 LLM이 따르면 BETWEEN으로 진행 중인 달까지
         # 포함하는 실측 오류가 있었다(D-076 후속4).
-        _sm_block = build_stat_month_block(stat_month)
+        _sm_block = build_stat_month_block(stat_month) if _stat_block_db else ""
         if _sm_block:
             user_prompt += "\n\n" + _sm_block
 

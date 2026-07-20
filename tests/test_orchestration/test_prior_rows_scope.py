@@ -170,6 +170,55 @@ class TestMultiDbPathInjection:
         assert "선행 작업 결과 서버 스코프" not in llm.captured[-1].content
 
 
+class TestInjectionBlockGeneralization:
+    """P1(D-088): 공용 주입 블록에 특정 DB 스키마 리터럴이 없고, 폴스타 통계 블록은
+    폴스타 DB에만 주입되는지 검증(프로필 부재 DB 오지시 주입 차단, L1/L2 일반화)."""
+
+    def test_prior_rows_block_has_no_schema_literal(self):
+        """build_prior_rows_block에는 특정 DB 테이블 리터럴(cmm_/server.)이 없어야 한다."""
+        block = build_prior_rows_block(PRIOR_ROWS)
+        assert "cmm_" not in block
+        assert "server." not in block
+        # 일반 환각 금지 원칙은 유지
+        assert "환각 금지" in block
+
+    @pytest.mark.asyncio
+    async def test_stat_block_injected_for_polestar(self, sample_state):
+        """폴스타 DB + 기간 표현이면 통계 테이블 강제 블록이 주입된다(동작 보존)."""
+        sample_state["user_query"] = "지난달 CPU 사용률이 높은 서버 목록"
+        sample_state["active_db_id"] = "polestar"
+        cfg = _mock_config()
+        cfg.get_polestar_db_ids.return_value = {"polestar"}
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = MagicMock(
+            content="```sql\nSELECT hostname FROM servers LIMIT 10;\n```"
+        )
+
+        await query_generator(sample_state, llm=mock_llm, app_config=cfg)
+
+        human_content = mock_llm.ainvoke.call_args[0][0][-1].content
+        assert "기간 조건" in human_content
+
+    @pytest.mark.asyncio
+    async def test_stat_block_not_injected_for_non_polestar(self, sample_state):
+        """프로필 부재(비폴스타) DB는 기간 표현이 있어도 폴스타 통계 블록 미주입 —
+        cmm_metric_stat_m 오지시가 타 DB 프롬프트에 새지 않는다(L2)."""
+        sample_state["user_query"] = "지난달 CPU 사용률이 높은 서버 목록"
+        sample_state["active_db_id"] = "generic_mon"
+        cfg = _mock_config()
+        cfg.get_polestar_db_ids.return_value = {"polestar"}
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = MagicMock(
+            content="```sql\nSELECT hostname FROM servers LIMIT 10;\n```"
+        )
+
+        await query_generator(sample_state, llm=mock_llm, app_config=cfg)
+
+        human_content = mock_llm.ainvoke.call_args[0][0][-1].content
+        assert "기간 조건" not in human_content
+        assert "cmm_metric_stat_m" not in human_content
+
+
 class TestCoerceAlarmIntentDependencyGuard:
     """데이터 의존(input_from) task는 알람 어휘가 남아도 alarm_query로 뒤집지 않는다."""
 

@@ -506,10 +506,13 @@ async def _generate_sql(
 
     # 기간 표현의 결정적 해석 주입 — 단일 DB 경로(query_generator)와 동일 규칙(D-076 후속4,
     # D-066 단일 출처). 원문 질의 우선, 라우터가 만든 sub_query_context에만 표현이 남은 경우 폴백.
+    # 폴스타 월 통계 테이블 규약 특화 블록이라 폴스타 DB에만 주입한다(L2 일반화, 단일 경로와 대칭
+    # P1-3/D-088). 프로필 부재 DB는 미주입 — 일반 기간 규칙만 남는다. 프로필 선언 전환은 P3(D-090).
+    _stat_block_db = db_id in ((app_config.get_polestar_db_ids() if app_config else None) or set())
     _sm_block = build_stat_month_block(
         resolve_stat_month(parsed_requirements.get("original_query", "") or "")
         or resolve_stat_month(sub_query_context)
-    )
+    ) if _stat_block_db else ""
     if _sm_block:
         user_parts.append(_sm_block)
 

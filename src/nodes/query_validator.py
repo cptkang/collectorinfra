@@ -724,8 +724,8 @@ def _check_left_join_where_demotion(sql: str) -> list[str]:
             f"LEFT JOIN 강등 감지: LEFT JOIN 테이블 '{left_join_refs[ref]}'(참조명 '{ref}')의 "
             f"컬럼({cols})이 WHERE 절에서 필터로 사용되었습니다. "
             "outer 조인 테이블의 필터가 WHERE에 있으면 미매칭 행이 모두 제거되어 LEFT JOIN이 "
-            "INNER JOIN으로 강등되고, 피벗 패턴에서는 기준 행(예: server.Server의 서버명)이 탈락해 "
-            "서버명 등이 NULL로 나옵니다. 해당 조건을 그 LEFT JOIN의 ON 절로 이동하세요. "
+            "INNER JOIN으로 강등되고, 피벗 패턴에서는 기준 행(예: 피벗 기준 엔터티 행)이 탈락해 "
+            "해당 컬럼이 NULL로 나옵니다. 해당 조건을 그 LEFT JOIN의 ON 절로 이동하세요. "
             "행 자체를 걸러내려는 의도라면 LEFT JOIN 대신 JOIN(INNER)을 사용하세요. "
             "(IS NULL / IS NOT NULL 검사는 WHERE에 두어도 됩니다)"
         )
