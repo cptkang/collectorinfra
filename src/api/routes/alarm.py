@@ -475,8 +475,10 @@ async def _resolve_process_snapshot(
                 select_top_processes,
             )
 
+            # Plan 60 E6: classify_alarm_kind가 disk/network 등도 판정하나, 이 테스트 경로
+            # process_snapshot("영향 프로세스" 표)은 현행처럼 cpu/memory만 대상으로 유지한다.
             kind = classify_alarm_kind(event)
-            if kind is None:
+            if kind not in ("cpu", "memory"):
                 return None
             top, total = select_top_processes(
                 simulated_processes, kind, config.alarm.process_top_n

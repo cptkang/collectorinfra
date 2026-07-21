@@ -18,9 +18,15 @@ from typing import Any, Optional
 
 from src.alarm.domain.alarm import AlarmEvent, ProcessInfo
 
-# 알람 종류 판정 키워드 (대소문자 무시 — Plan 47-1 §5.2)
+# 알람 종류 판정 키워드 (대소문자 무시 — Plan 47-1 §5.2, Plan 60 E6 §16.2 확장)
+# 판정 순서: cpu → memory(기존, 비트 동일) → disk → network → process → log.
+# cpu/memory를 최우선으로 검사해 기존 판정 결과를 보존한다(신규 키워드가 끼어들지 않음).
 _CPU_KEYWORDS = ("cpu",)
 _MEMORY_KEYWORDS = ("memory", "메모리", "mem")
+_DISK_KEYWORDS = ("disk", "디스크", "volume", "filesystem", "inode")
+_NETWORK_KEYWORDS = ("network", "net", "traffic", "네트워크", "bandwidth")
+_PROCESS_KEYWORDS = ("process", "프로세스", "daemon", "service down", "프로세스다운")
+_LOG_KEYWORDS = ("log", "logmonitor", "로그")
 
 # 민감정보 마스킹 패턴 — 키(=password 등)는 보존하고 값만 *** 로 치환한다.
 # 키워드 다음의 구분자([=: ] 또는 공백) 이후 비공백 토큰을 값으로 본다.
@@ -42,20 +48,37 @@ _MASK = "***"
 
 
 def classify_alarm_kind(event: AlarmEvent) -> Optional[str]:
-    """알람이 CPU/메모리인지 판정한다. 아니면 None (Plan 47-1 §5.2).
+    """알람 종류를 판정한다 (Plan 47-1 §5.2 + Plan 60 E6 §16.2).
 
-    판정 키워드(대소문자 무시) — resource_type / alarm_name 에서 검색:
-        - cpu:    'cpu'
-        - memory: 'memory' | '메모리' | 'mem'
+    판정 키워드(대소문자 무시) — resource_type / alarm_name 에서 검색.
+    **판정 순서**(cpu/memory 우선 → 나머지) — cpu/memory 판정은 기존과 비트 동일:
+        1. cpu:     'cpu'
+        2. memory:  'memory' | '메모리' | 'mem'
+        3. disk:    'disk' | '디스크' | 'volume' | 'filesystem' | 'inode'
+        4. network: 'network' | 'net' | 'traffic' | '네트워크' | 'bandwidth'
+        5. process: 'process' | '프로세스' | 'daemon' | 'service down' | '프로세스다운'
+        6. log:     'log' | 'logmonitor' | '로그'
+
+    disk/network/process/log는 Plan 60 E6의 메시지 기반 보강(enrichment) 대상이다.
+    기존 정렬 로직(select_top_processes·_sort_metric)은 cpu/memory만 특화 정렬하므로,
+    신규 kind는 정렬 기본=cpu로 취급된다(프로세스 표는 host-wide 참고용으로 여전히 유효).
 
     Returns:
-        "cpu" | "memory" | None (디스크/네트워크 등 비대상)
+        "cpu" | "memory" | "disk" | "network" | "process" | "log" | None (비대상)
     """
     haystack = f"{event.resource_type} {event.alarm_name}".lower()
     if any(kw in haystack for kw in _CPU_KEYWORDS):
         return "cpu"
     if any(kw in haystack for kw in _MEMORY_KEYWORDS):
         return "memory"
+    if any(kw in haystack for kw in _DISK_KEYWORDS):
+        return "disk"
+    if any(kw in haystack for kw in _NETWORK_KEYWORDS):
+        return "network"
+    if any(kw in haystack for kw in _PROCESS_KEYWORDS):
+        return "process"
+    if any(kw in haystack for kw in _LOG_KEYWORDS):
+        return "log"
     return None
 
 

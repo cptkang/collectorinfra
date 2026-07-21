@@ -221,6 +221,8 @@ class TestDecisionRouting:
             "severity", "ai_severity", "effective_severity", "importance",
             "maintenance", "parent_avail_status", "pattern", "is_routine",
             "noti_policy", "flapping", "self_heal", "storm", "llm_actionability",
+            # Plan 60 Wave A 일괄 확장(§10): E4 다홉 연쇄 + E2 상관 자리예약.
+            "cascaded", "root_resource", "correlated",
         }
         assert set(d.signals.keys()) == expected
         assert d.signals["importance"] == "높음"

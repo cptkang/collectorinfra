@@ -84,6 +84,7 @@ def build_resource_signal_sql(db_id: str, server_name: str) -> str:
     - DTIME IS NULL — 삭제된 리소스 제외
     - RESOURCE_CONF_ID JOIN 미포함 (D-022)
     - LIMIT 1 — 단일 서버행만 필요
+    - SVR.ID(resource_id) — Plan 60 E4 노드 식별용(다홉 조상 BFS 시작점). 동일 쿼리·하위호환.
     """
     server_match = _SERVER_MATCH_BY_DB_ID.get(db_id, _DEFAULT_SERVER_MATCH).format(
         server_name=_sql_literal(server_name),
@@ -91,6 +92,7 @@ def build_resource_signal_sql(db_id: str, server_name: str) -> str:
     t_resource = _table(db_id, "cmm_resource")
     return (
         "SELECT\n"
+        "    SVR.ID AS resource_id,\n"
         "    SVR.IMPORTANCE_ID AS importance_id,\n"
         "    SVR.IS_MAINTENANCE AS maintenance\n"
         f"FROM {t_resource} SVR\n"
@@ -262,15 +264,65 @@ def _parse_parent_avail_status(rows: list[dict[str, Any]]) -> Optional[int]:
         return None
 
 
+def _parse_resource_id(rows: list[dict[str, Any]]) -> Optional[str]:
+    """서버 본체의 리소스 ID(SVR.ID)를 파싱한다 (Plan 60 E4 다홉 조상 BFS 시작점).
+
+    행이 없거나 값이 비면 None(다홉 미산출·1홉 폴백). 예외는 None으로 강등.
+    """
+    try:
+        if not rows:
+            return None
+        value = _row_value(rows[0], "resource_id")
+        if value is None or value == "":
+            return None
+        return str(value)
+    except Exception:  # noqa: BLE001 — graceful degradation
+        logger.debug("리소스 ID 파싱 실패 — None 처리", exc_info=True)
+        return None
+
+
+# ── noise_ctx 동결 계약 키 단일 출처(§7.2) ─────────────────────────
+# 세 구성점(_unavailable·정상 fetch dict·enricher)이 이 목록을 공유해 키 불일치를
+# 원천 차단한다. Redis 캐시(alarm:noisectx:*)로 직렬화 왕복하므로 계약이 안정해야 한다.
+# root_notified는 **동적**이라 여기 포함하지 않는다 — enricher가 캐시 이후 신선 산출한다
+# (§6.2 하이브리드). 게이트는 noise_ctx.get()으로 소비하므로 구버전 캐시(신규 키 부재)와
+# 하위호환된다.
+_NOISE_CTX_KEYS: tuple[str, ...] = (
+    "importance_id",
+    "maintenance",
+    "noti_policy",
+    "parent_avail_status",      # 1홉 의존성(하위호환 유지)
+    "cascaded",                 # (E4) 다홉 조상 비정상 여부(bool). 미수집/비PostgreSQL이면 None
+    "root_resource",            # (E4) 최상위 비정상 조상 리소스 ID
+    "root_resource_name",       # (E4) root 리소스 NAME — enricher의 root_notified 산출용
+)
+
+
+def _empty_noise_ctx() -> dict[str, Any]:
+    """계약 키를 전부 None으로 채운 dict(source 제외)를 반환한다(§7.2 단일 출처)."""
+    return {k: None for k in _NOISE_CTX_KEYS}
+
+
 def _unavailable() -> dict[str, Any]:
     """신호 수집 불가 시 반환하는 동결 dict (모든 신호 None, source='unavailable')."""
-    return {
-        "importance_id": None,
-        "maintenance": None,
-        "noti_policy": None,
-        "parent_avail_status": None,  # 의존성 미수집/연결 실패 — None(보수적)
-        "source": "unavailable",
-    }
+    ctx = _empty_noise_ctx()
+    ctx["source"] = "unavailable"
+    return ctx
+
+
+def _is_postgres_dialect(db_id: str) -> bool:
+    """db_id의 엔진이 PostgreSQL인지 판정한다 (Plan 60 E4 — b0(DB2) 다홉 제외).
+
+    domain_config의 db_engine을 단일 출처로 사용한다(D-057 계승). 미등록 db_id·판정 실패는
+    보수적으로 False(다홉 미시도 → 1홉 폴백)로 처리한다. E4 1차 범위 = gp/yd/로컬(PostgreSQL).
+    """
+    try:
+        from src.routing.domain_config import get_domain_by_id
+
+        domain = get_domain_by_id(db_id)
+        return bool(domain is not None and domain.db_engine == "postgresql")
+    except Exception:  # noqa: BLE001 — 판정 실패는 보수적 False(1홉 폴백)
+        return False
 
 
 class PolestarNoiseContextRepository:
@@ -285,28 +337,91 @@ class PolestarNoiseContextRepository:
         """
         self._registry = registry
         self._alarm_cfg = alarm_cfg
+        # (Plan 60 E4) 다홉 토폴로지 로더 — db_id별 정적 엣지 그래프를 캐시(이벤트 간 유지).
+        # 지연 생성(첫 다홉 조회 시)으로 multi_hop off 경로에 부담을 주지 않는다.
+        self._topology_loader = None
 
     def is_db_registered(self, db_id: str) -> bool:
         """event.db_id가 DB 레지스트리에 등록되어 있는지 확인한다."""
         return bool(self._registry.is_registered(db_id))
 
+    async def _compute_multi_hop_cascade(
+        self,
+        client,  # noqa: ANN001 — DBClient (execute_sql)
+        db_id: str,
+        resource_id: Optional[str],
+        *,
+        topology_max_hops: int,
+        topology_cache_ttl_seconds: int,
+    ) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+        """다홉 조상 연쇄를 산출한다 (E4, §6.2). (cascaded, root_resource, root_resource_name).
+
+        정적 엣지 그래프(캐시) 로드 → 이벤트 리소스의 조상 BFS(홉 상한) → 조상 ID들의
+        비정상 상태(AVAIL_STATUS≠0) 신선 조회 → is_cascaded/find_root/name_of 산출.
+        리소스 ID 미해소·그래프 로드 실패·상태 조회 실패는 (None, None, None)(1홉 폴백).
+        """
+        if resource_id is None:
+            return None, None, None
+        if self._topology_loader is None:
+            from src.alarm.infrastructure.topology_loader import TopologyLoader
+
+            self._topology_loader = TopologyLoader()
+        graph = await self._topology_loader.load_graph(
+            client,
+            db_id,
+            cache_ttl_seconds=topology_cache_ttl_seconds,
+            max_hops=topology_max_hops,
+        )
+        if graph is None:
+            return None, None, None
+        ancestors = graph.ancestors(resource_id, max_hops=topology_max_hops)
+        state = await self._topology_loader.fetch_ancestor_state(
+            client, db_id, ancestors
+        )
+        if state is None:
+            return None, None, None
+        abnormal, anc_names = state
+        cascaded = graph.is_cascaded(resource_id, abnormal)
+        root = graph.find_root(resource_id, abnormal)
+        # root 이름: 조상 신선 조회 맵 우선(부모 없는 root 보강) → 엣지 그래프 name_of 폴백.
+        root_name = None
+        if root is not None:
+            root_name = anc_names.get(root) or graph.name_of(root)
+        return cascaded, root, root_name
+
     async def fetch(
-        self, event: AlarmEvent, *, collect_dependency: bool = False
+        self,
+        event: AlarmEvent,
+        *,
+        collect_dependency: bool = False,
+        multi_hop: bool = False,
+        topology_max_hops: int = 5,
+        topology_cache_ttl_seconds: int = 86400,
     ) -> dict[str, Any]:
-        """노이즈 컨텍스트를 수집하여 동결 dict로 반환한다 (Plan 52 §8.2 계약).
+        """노이즈 컨텍스트를 수집하여 동결 dict로 반환한다 (Plan 52 §8.2 + Plan 60 E4 계약).
 
         Args:
             event: 알람 이벤트(db_id/server_name/alarm_name 사용).
             collect_dependency: True면 의존성/부모 상태(E2, §3.6)를 **별도 SQL**로 수집한다.
                 기본 False(E1 동작 동결) — 의존성 SQL을 실행하지 않고
                 `parent_avail_status=None`을 반환한다.
+            multi_hop: True면 다홉 토폴로지 연쇄(E4, §6.2)를 산출한다 — 조상 BFS + 조상
+                비정상 상태 신선 조회로 `cascaded`/`root_resource`/`root_resource_name`을
+                채운다. 기본 False면 미산출(None → 게이트 1홉 폴백). **PostgreSQL(gp/yd)만
+                시도**하며 b0(DB2)/비PostgreSQL·조회 실패는 None(1홉 폴백·보수적).
+            topology_max_hops: 다홉 BFS 홉 상한(비용/순환 가드).
+            topology_cache_ttl_seconds: 정적 엣지 그래프 캐시 TTL(변경 드묾 — 장기).
 
-        반환 dict (동결):
+        반환 dict (동결 계약 = `_NOISE_CTX_KEYS` + source):
             {"importance_id": int|str|None,   # 원값 그대로
              "maintenance": bool|None,
              "noti_policy": "notify"|None,     # 보수적 — "suppress" 미반환
-             "parent_avail_status": int|None,  # 부모 AVAIL_STATUS(E2). 기본 off면 항상 None
+             "parent_avail_status": int|None,  # 부모 AVAIL_STATUS(E2·1홉). off면 None
+             "cascaded": bool|None,            # (E4) 다홉 조상 비정상 여부. 미산출이면 None
+             "root_resource": str|None,        # (E4) 최상위 비정상 조상 리소스 ID
+             "root_resource_name": str|None,   # (E4) root 리소스 NAME(root_notified 산출용)
              "source": "polestar_db"|"unavailable"}
+             (root_notified는 enricher가 캐시 이후 신선 산출 — 이 dict에는 미포함)
 
         graceful degradation:
             - 미등록 db_id → 즉시 source="unavailable" (DB 미접근).
@@ -328,6 +443,10 @@ class PolestarNoiseContextRepository:
         resource_rows: list[dict[str, Any]] = []
         noti_rows: list[dict[str, Any]] = []
         dependency_rows: list[dict[str, Any]] = []
+        # (Plan 60 E4) 다홉 산출값 — 미산출(1홉 폴백)이면 None 유지.
+        cascaded: Optional[bool] = None
+        root_resource: Optional[str] = None
+        root_resource_name: Optional[str] = None
         got_any = False
         try:
             async with self._registry.get_client(event.db_id) as client:
@@ -371,6 +490,28 @@ class PolestarNoiseContextRepository:
                             "노이즈 컨텍스트 dependency 조회 실패 — db_id=%s alarm_id=%s: %s",
                             event.db_id, event.alarm_id, exc,
                         )
+                # 다홉 토폴로지 연쇄(E4, §6.2)는 **게이팅(multi_hop)** 뒤에서만, PostgreSQL
+                # (gp/yd)일 때만, 그리고 **독립된 별도 try/except**로 산출한다 — 다홉 조회
+                # 실패가 타 신호를 손실시키지 않고 미산출(None → 게이트 1홉 폴백)로 강등된다.
+                if multi_hop and _is_postgres_dialect(event.db_id):
+                    try:
+                        cascaded, root_resource, root_resource_name = (
+                            await self._compute_multi_hop_cascade(
+                                client,
+                                event.db_id,
+                                _parse_resource_id(resource_rows),
+                                topology_max_hops=topology_max_hops,
+                                topology_cache_ttl_seconds=topology_cache_ttl_seconds,
+                            )
+                        )
+                        got_any = True
+                    except Exception as exc:  # noqa: BLE001 — 다홉만 실패, 타 신호 보존
+                        logger.warning(
+                            "노이즈 컨텍스트 다홉 연쇄 산출 실패 — 1홉 폴백: "
+                            "db_id=%s alarm_id=%s: %s",
+                            event.db_id, event.alarm_id, exc,
+                        )
+                        cascaded = root_resource = root_resource_name = None
         except Exception as exc:  # noqa: BLE001 — 연결 자체 실패는 unavailable
             logger.warning(
                 "노이즈 컨텍스트 연결 실패 — db_id=%s alarm_id=%s: %s",
@@ -381,14 +522,18 @@ class PolestarNoiseContextRepository:
         # 연결은 됐으나 모든 조회 실패 → 신호 없음 → 보수적 unavailable
         if not got_any:
             return _unavailable()
-        context = {
-            "importance_id": _parse_importance(resource_rows),
-            "maintenance": _parse_maintenance(resource_rows),
-            "noti_policy": _parse_noti_policy(noti_rows),
-            # collect_dependency=False면 dependency_rows=[] → None(E1 동작 동결).
-            "parent_avail_status": _parse_parent_avail_status(dependency_rows),
-            "source": "polestar_db",
-        }
+        # 동결 계약 단일 출처(_NOISE_CTX_KEYS)로 dict를 구성한 뒤 신호를 채운다(§7.2).
+        context = _empty_noise_ctx()
+        context["importance_id"] = _parse_importance(resource_rows)
+        context["maintenance"] = _parse_maintenance(resource_rows)
+        context["noti_policy"] = _parse_noti_policy(noti_rows)
+        # collect_dependency=False면 dependency_rows=[] → None(E1 동작 동결).
+        context["parent_avail_status"] = _parse_parent_avail_status(dependency_rows)
+        # (E4) 다홉 산출값 — multi_hop off·비PostgreSQL·실패면 None(1홉 폴백).
+        context["cascaded"] = cascaded
+        context["root_resource"] = root_resource
+        context["root_resource_name"] = root_resource_name
+        context["source"] = "polestar_db"
         logger.debug(
             "노이즈 컨텍스트 조회 완료: db_id=%s server=%s alarm=%s ctx=%r",
             event.db_id,

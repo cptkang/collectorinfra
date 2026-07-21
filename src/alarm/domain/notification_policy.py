@@ -112,6 +112,7 @@ def decide_notification(
     inhibited: bool = False,
     flapping: bool = False,
     storm: bool = False,
+    correlated: bool = False,
 ) -> NotificationDecision:
     """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정) + E2 의존성/인히비션/플래핑/스톰 단계.
 
@@ -122,8 +123,17 @@ def decide_notification(
         flapping_enabled(기본 False·E2), storm_grouping_enabled(기본 False·E2),
         enable_llm_actionability(기본 False·E4).
 
-    noise_ctx 계약: {importance_id, maintenance, noti_policy, parent_avail_status, source}
+    noise_ctx 계약: {importance_id, maintenance, noti_policy, parent_avail_status,
+        cascaded, root_resource, root_resource_name(=E4), root_notified(=E4 enricher 산출), source}
     수집 실패(None 또는 source=="unavailable") 시 보수화 후 effective_severity>=1이면 PAGE.
+
+    E4 다홉 하이브리드(step6.4, §6.2 — multi_hop_cascade_enabled·dependency_suppression AND):
+        - dependency_suppression + noise_ctx["cascaded"](다홉 조상 비정상)일 때:
+          root_notified=True(근본원인 노드 통보됨) → SUPPRESS(정밀 억제),
+          root_notified=False(근본원인 미통보) → DASHBOARD 강등(재현율 우선 하이브리드).
+        - cascaded 미제공(1홉 모드·수집 실패)이면 현행 parent_avail_status 판정으로 폴백(무변경).
+        - 이 모듈은 topology 그래프를 import하지 않고 noise_ctx의 bool/id만 소비한다(순수성).
+        - correlated(E2 자리예약·기본 False): 현재 로직 없음, signals 스냅샷에만 반영(E2가 배선).
 
     E2 추가(모두 플래그 뒤 — 기본값 False면 E1 동작 무변경):
         - dependency_suppression + parent_avail_status≠0(비정상) → SUPPRESS(연쇄 노이즈, §3.6).
@@ -212,6 +222,11 @@ def decide_notification(
             "storm": bool(storm),
             # E4: LLM 액션가능성 자문(actionable|noise|None). enable off면 None(무시).
             "llm_actionability": llm_actionability,
+            # Plan 60 E4: 다홉 연쇄 신호(미산출·1홉 모드면 None).
+            "cascaded": (noise_ctx.get("cascaded") if noise_ctx else None),
+            "root_resource": (noise_ctx.get("root_resource") if noise_ctx else None),
+            # Plan 60 E2 자리예약: 크로스-호스트 상관(현재 로직 없음·휴면, E2가 배선).
+            "correlated": bool(correlated),
         }
 
     def _decision(tier: str, reason: str) -> NotificationDecision:
@@ -243,10 +258,21 @@ def decide_notification(
     if maintenance:
         return _decision(TIER_SUPPRESS, "유지보수 모드 — 신규 발송 억제(감사 기록)")
 
-    # ── step 6.4(E2): 의존성 억제 — 부모 리소스 비정상 시 자식 연쇄 노이즈(§3.6) ──
-    # parent_avail_status: 0=정상, ≠0=비정상, None=미수집·매핑없음·stale(보수적 비억제·R-3).
+    # ── step 6.4(E2·E4): 의존성 억제 — 조상 비정상 시 자식 연쇄 노이즈(§3.6·§6.2) ──
     # dependency_suppression=False(기본)면 단계 자체를 평가하지 않아 E1 무변경.
     if dependency_suppression:
+        # E4 다홉 하이브리드(§6.2): cascaded(다홉 조상 비정상)면 root 통보 여부로 억제 강도 분기.
+        # cascaded 미제공(1홉 모드·수집 실패)이면 아래 현행 parent_avail_status 판정으로 폴백.
+        if noise_ctx and noise_ctx.get("cascaded"):
+            if noise_ctx.get("root_notified"):
+                return _decision(
+                    TIER_SUPPRESS, "의존성 억제(다홉) — 근본원인 노드 통보됨"
+                )
+            return _decision(
+                TIER_DASHBOARD,
+                "의존성 연쇄(다홉) — 근본원인 미통보, 대시보드 강등",
+            )
+        # 1홉 폴백(현행 무변경): parent_avail_status 0=정상, ≠0=비정상, None=미수집(보수적 비억제·R-3).
         parent_avail_status = noise_ctx.get("parent_avail_status") if noise_ctx else None
         if parent_avail_status is not None and parent_avail_status != 0:
             return _decision(

@@ -22,3 +22,9 @@ AIOps 종합,Notaro 2021,AIOps Failure Management 서베이(100편),2021,102,ACM
 AIOps 종합,Dang 2019,AIOps: Real-World Challenges (MSFT),2019,202,ICSE-Companion,10.1109/icse-companion.2019.00023,산업 AIOps 과제·연구방향,AIOps 정의·방향 근거
 AIOps 종합,Lyu 2023,MLOps·AIOps 로드맵 공동연구,2023,61,ACM CSUR,10.1145/3625289,MLOps/AIOps 도전·기회·로드맵,도입 로드맵 근거
 AIOps 종합,Lyu 2021,AIOps 데이터 분할 영향 실증,2021,58,ACM TOSEM,10.1145/3447876,데이터 분할이 AIOps 모델 성능에 미치는 영향,데이터품질 전제 근거
+LLM 활용(하이브리드),Kuang 2024 (COLA),Knowledge-aware Alert Aggregation — Hybrid,2024,-,ICSE-SEIP,arXiv:2403.06485,"결정적 상관마이닝(시공간 통계)+불확실쌍만 LLM 추론(SOP·ICL) 하이브리드, F1 0.901~0.930",§15.2 D-035 하이브리드 직접근거·L-1 경계쌍 LLM 판정
+LLM 활용(집계),Zhang 2024 (Electronics 4425),Leveraging LLMs for Efficient Alert Aggregation in AIOps,2024,-,Electronics 13(22):4425,10.3390/electronics13224425,2단계 집계·의미유사도+통계 결합(희소·의미 알람에 LLM 가치),§15.2·L-1 희소/의미 알람 LLM 가치
+LLM 활용(토폴로지),Ghosh 2024 (DiLink),Dependency Aware Incident Linking in Large Cloud Systems,2024,-,arXiv(Microsoft),arXiv:2403.18639,"텍스트 임베딩+서비스 의존성그래프 Orthogonal Procrustes 정합, F1 0.96·610서비스 배포",§15.2·L-4 E4 토폴로지+텍스트 융합
+LLM 활용(요약),Jin 2023 (Oasis),Assess and Summarize: Improve Outage Understanding with LLMs,2023,-,ESEC/FSE,10.1145/3611643.3613891,파인튜닝 GPT-3.x 영향평가+인간가독 요약·MS 3년+ 실운영,§15.2·L-5 브리핑(Plan 64 §6)
+LLM 활용(한계),SOC-LLM 2026,Possibilities and limitations of LLMs for alert classification/prioritisation in SOCs,2026,-,Expert Systems w/ Applications,S0957417426021032,LLM 초기 triage 보조는 가능하나 프라이오리티화(최종 심각도·우선순위)는 신뢰불가,§15.4 D-035 경계 직접근거(최종판정 위임금지)
+LLM 활용(dedup),GPTrace 2025,Effective Crash Deduplication Using LLM Embeddings,2025,-,arXiv,arXiv:2512.01609,LLM 임베딩+HDBSCAN 군집으로 크래시 스택트레이스 중복제거,§15.3 L-2 의미적 근접중복(도메인 차이 유의)

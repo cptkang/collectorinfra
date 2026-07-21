@@ -210,6 +210,10 @@ class TestSignalsSchema:
         "self_heal",
         "storm",
         "llm_actionability",
+        # Plan 60 Wave A 일괄 확장(§10): E4 다홉 연쇄 + E2 상관 자리예약.
+        "cascaded",
+        "root_resource",
+        "correlated",
     }
 
     def test_all_keys_present(self):

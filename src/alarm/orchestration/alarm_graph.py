@@ -27,6 +27,7 @@ from src.alarm.domain.alarm import (
     AlarmAnalysisResult,
     AlarmEvent,
     AlarmHistoryStats,
+    MessageEnrichment,
     ProcessSnapshot,
 )
 from src.alarm.domain.notification_policy import NotificationDecision
@@ -47,6 +48,8 @@ class AlarmState(TypedDict):
     inhibited: bool                                     # 워커가 시드한 인히비션 매칭 여부 (E2)
     flapping: bool                                      # 워커가 시드한 플래핑 매칭 여부 (E2)
     storm: bool                                         # 워커가 시드한 스톰 매칭 여부 (E2)
+    recurrence: Optional[dict]                          # Plan 60 E1: 재통보 시 직전 창 재발 메타(대표 알람 표기용)
+    enrichment: Optional[MessageEnrichment]             # Plan 60 E6: kind별 L1 보강 블록(message_enrichment_enabled 시에만 채워짐)
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001
@@ -79,6 +82,7 @@ def build_alarm_graph(config=None):  # noqa: ANN001
     history_enabled = True
     gate_enabled = False
     enricher_enabled = False
+    message_enrichment = False
     if config is not None:
         history_enabled = bool(config.alarm.history_enabled)
         noise_gate = getattr(config, "noise_gate", None)
@@ -87,9 +91,14 @@ def build_alarm_graph(config=None):  # noqa: ANN001
         enricher_enabled = gate_enabled and bool(
             getattr(noise_gate, "enable_agentic_enricher", False)
         )
+        # (Plan 60 E6) 메시지 기반 L1 보강은 context_enricher가 수집원이다(옵트인).
+        message_enrichment = bool(
+            getattr(noise_gate, "message_enrichment_enabled", False)
+        )
 
-    # 게이트 활성 시 enricher 강제 포함(noise_context 수집원이므로 끌 수 없음).
-    include_enricher = history_enabled or gate_enabled
+    # context_enricher는 history/게이트/E6 보강 중 하나라도 필요하면 포함한다(수집원).
+    # 게이트 활성 시엔 noise_context 수집원이라 끌 수 없다. 전부 off면 미포함(회귀 0).
+    include_enricher = history_enabled or gate_enabled or message_enrichment
 
     builder = StateGraph(AlarmState)
     builder.add_node("alarm_analyzer", alarm_analyzer_node)

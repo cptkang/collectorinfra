@@ -123,6 +123,26 @@ class ProcessSnapshot:
 
 
 @dataclass
+class MessageEnrichment:
+    """메시지 기반 L1 컨텍스트 보강 블록 (Plan 60 E6 §16).
+
+    통보 대상(생존) 알람의 kind별 L1 컨텍스트를 통보 본문에 **별도 첨부**하기 위한
+    서술 블록이다. cpu/memory는 기존 ProcessSnapshot("영향 프로세스" 표)로 처리하므로
+    이 블록은 disk/network/process/log 에만 생성된다(§16.2).
+
+    - title/signals: enrichment_profile(순수 도메인)이 kind로 산출한 사람이 읽는 요지.
+    - snapshot: 데이터 소스가 확정된 kind(disk/network)에 한해 host-wide 프로세스
+      스냅샷을 참고로 첨부한다(list_by_hostname 재사용, 신규 SQL 없음). 소스 미확정
+      kind(process/log) 또는 수집 실패 시 None(요지 제목만 첨부 — graceful).
+    """
+
+    kind: str                              # "disk" | "network" | "process" | "log"
+    title: str                             # 프로파일 요지 제목 (사람이 읽는 한국어)
+    signals: tuple[str, ...]               # 서술하는 L1 신호 라벨
+    snapshot: Optional["ProcessSnapshot"] = None   # host-wide 참고 스냅샷 (disk/network)
+
+
+@dataclass
 class AlarmAnalysisResult:
     """LLM 알람 분석 결과 및 채널별 발송 내역."""
 

@@ -33,13 +33,43 @@ class TestClassifyAlarmKind:
         ev = make_event(resource_type="server.Memory", alarm_name="mem usage high")
         assert classify_alarm_kind(ev) == "memory"
 
-    def test_disk_returns_none(self):
+    # ── Plan 60 E6: kind 확장 (disk/network/process/log 신규 판정) ──
+    def test_disk_kind(self):
         ev = make_event(resource_type="server.Disks", alarm_name="디스크 사용률 임계 초과")
+        assert classify_alarm_kind(ev) == "disk"
+
+    def test_disk_english_filesystem(self):
+        ev = make_event(resource_type="server.Disks", alarm_name="filesystem usage high")
+        assert classify_alarm_kind(ev) == "disk"
+
+    def test_network_kind(self):
+        ev = make_event(resource_type="network.NMSNode", alarm_name="트래픽 임계 초과")
+        assert classify_alarm_kind(ev) == "network"
+
+    def test_network_bandwidth(self):
+        ev = make_event(resource_type="server.Server", alarm_name="bandwidth 초과")
+        assert classify_alarm_kind(ev) == "network"
+
+    def test_process_kind(self):
+        ev = make_event(resource_type="server.Server", alarm_name="프로세스다운 감지")
+        assert classify_alarm_kind(ev) == "process"
+
+    def test_process_service_down(self):
+        ev = make_event(resource_type="server.Server", alarm_name="service down")
+        assert classify_alarm_kind(ev) == "process"
+
+    def test_log_kind(self):
+        ev = make_event(resource_type="server.LogMonitor", alarm_name="에러 로그 감지")
+        assert classify_alarm_kind(ev) == "log"
+
+    def test_unmatched_returns_none(self):
+        ev = make_event(resource_type="server.Foo", alarm_name="알 수 없는 이벤트")
         assert classify_alarm_kind(ev) is None
 
-    def test_network_returns_none(self):
-        ev = make_event(resource_type="network.NMSNode", alarm_name="트래픽 임계 초과")
-        assert classify_alarm_kind(ev) is None
+    def test_cpu_priority_over_others(self):
+        # cpu/memory 우선 판정 — disk 키워드가 있어도 cpu가 먼저 매칭(순서 보존)
+        ev = make_event(resource_type="server.Cpus", alarm_name="disk io wait 로 인한 CPU 상승")
+        assert classify_alarm_kind(ev) == "cpu"
 
     def test_case_insensitive(self):
         ev = make_event(resource_type="SERVER.CPUS", alarm_name="LOAD")

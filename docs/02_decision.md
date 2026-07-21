@@ -5,7 +5,7 @@
 
 - 각 결정의 상세 배경·코드 예시·대안 비교·재현 로그 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브, 이후 갱신하지 않음) 참조.
 - **신규 결정은 이 파일에만** 아래 압축 형식(결정일/상태/결정/근거/구현/주의/관련)으로 추가한다.
-- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-091 → 다음 D-092). ※Plan 63(P1~P4)로 D-088~D-091 전부 등재 완료(P4-2/3=D-091이 P3=D-090보다 먼저 등재됨: 순서 교차, 팀장 승인).
+- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-108 → 다음 D-109). ※Plan 63(P1~P4)로 D-088~D-091 전부 등재 완료(P4-2/3=D-091이 P3=D-090보다 먼저 등재됨: 순서 교차, 팀장 승인). ※**D-101~D-105는 예약(미등재)** — Plan 64 §14(D-101~103)·Plan 60 §14.4(D-104)·§16 L3단계(D-105). **Plan 60 Wave A(E1·E4·E6)는 예약블록 위 D-106~D-108로 재부여**(초안 D-077~081은 결번 — §8 "등재 직전 번호 재확인" 규칙 적용, 팀장 확정).
 - 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번).
 
 ---
@@ -727,6 +727,36 @@
 - **대안(기각)**: 단일 통합 SQL(알람 JOIN 지표) — 교차 조인 복잡·일반화 어려움(사용자도 A 선택). 표시 프롬프트만 강제 — 데이터 미수집(알람명) 항목은 못 채우거나 환각.
 - **관련**: D-099(결정적 조립 — 순위 LIMIT·스코프 상보), D-095(선행 스코프 추출 — 오염 수정), D-062(합성 폴백 — 병합 불가 시), D-047(query_results 승격)
 
+## D-106. Plan 60 E1 — 재발생 dedup 관측성 강화 (count/last_seen 집계 + 감사)
+- **결정일**: 2026-07-21 | **상태**: 확정 (구현 완료 · Plan 60 Wave A)
+- **배경(실측)**: 재발생 dedup은 기구현이나, 억제된 재발이 그래프 진입 **이전**에 종료돼 decision_store 감사 사각지대(§3.1). 억제 count도 대표 알람·감사에 미노출("억제≠삭제" 실질 사각).
+- **결정**: `_gate_dedup`를 `{first_seen,last_notified,last_seen,count}` dict화. **TTL 비교는 last_notified 기준(고정창 — 슬라이딩 창 변질=지속 재발 알람 영구 미재통보 회귀 방지)**, 만료 sweep은 last_seen(재발 레코드 count 보존). `_is_duplicate_fingerprint`는 `(is_dup, meta)` tuple 반환. 억제 시 `record_recurrence`(type="recurrence") 감사 적재(recurrence_audit_every_n 샘플링), 재통보 시 직전 창 count를 그래프 state `recurrence`로 전달해 대표 알람에 "직전 Nh C회 재발 후 재통보" 1줄 표기. `aggregate()`는 `type` 보유(비-decision) 레코드 일반 제외로 리팩토링. recurrence는 signals 동결 스키마 **밖** decision_store 최상위 필드.
+- **근거**: Moogsoft/BigPanda 재발생 count 집계. 억제 판정(TTL·심각도 분기)은 현행과 **비트 동일**(집계만 추가) — 기존 dedup 테스트 그대로 통과.
+- **구현**: `alarm_worker.py`(_gate_dedup·_is_duplicate_fingerprint·_record_recurrence·graph state), `decision_store.py`(record_recurrence·aggregate 일반화·record recurrence 인자), `alarm_graph.py`(AlarmState.recurrence), `notification_gate.py`·`alarm_notifier.py`, `config.py`(recurrence_audit_every_n). 검증: `test_recurrence_dedup.py`·`test_sev3_repeat_interval.py`(회귀).
+- **주의**: 옵트인 플래그 불필요(게이트 off면 경로 미진입 — 회귀 0). in-memory 상태는 재기동 시 자연 초기화(관측성 신호 — 영속화 비범위).
+- **관련**: D-048(게이트 4-티어), D-049(record_resolution 전례), Plan 60 §3. (계획 초안 D-077은 결번 확정 → D-106 재부여, §8 규칙.)
+
+## D-107. Plan 60 E4 — 토폴로지 의존성 그래프 + 다홉 하이브리드 억제 (B-1·B-5 확정)
+- **결정일**: 2026-07-21 | **상태**: 확정 (구현 완료 · Plan 60 Wave A)
+- **배경(실측)**: 현행 의존성 억제는 부모 1홉(parent_avail_status)만 판정 — 다홉 조부모→손자 연쇄 미탐지. 그래프 없이는 크로스-호스트 위상 상관(E2)·Plan 50 결정적 RCA 불가(공용 병목 자산).
+- **사용자 확정**: **B-1=(a) AVAIL_DEPEND 단독**(CMDB 병합은 커버리지 부족 실증 시 확장·현 비범위). **B-5=하이브리드**(root 통보 확인 시 SUPPRESS, 미확인 시 DASHBOARD 강등 — 재현율 우선).
+- **결정**: 신규 domain `topology.py`(DependencyGraph — BFS 조상·방문집합 순환방어·홉상한, is_cascaded/find_root/name_of, **stdlib only**) + 인프라 `topology_loader.py`(정적 엣지 장기캐시 topology_cache_ttl_seconds + 동적 AVAIL_STATUS IN 조회, 홉 상한 유계). 게이트 step6.4 확장: `cascaded`면 root_notified→SUPPRESS/미통보→DASHBOARD, `cascaded` 미제공(1홉·수집실패)→현행 parent_avail_status 폴백. **root_notified는 enricher가 캐시 이후** worker `_active_firings`(configurable 참조 전달)로 신선 산출(동적 — 캐시 금지). 정책 모듈은 topology **import 금지**(noise_ctx bool/id만 소비 — 순수성). 1차 범위=gp/yd(PostgreSQL, db_engine 판정 D-057), b0(DB2)→1홉 폴백→비억제. signals 동결 스키마 **Wave A 일괄 확장**(cascaded·root_resource·correlated[E2 휴면 예약]) + `decide_notification(correlated=False)` 휴면 인자.
+- **근거**: Davis Smartscape·MicroRCA(속성 그래프). 다홉은 `dependency_suppression AND multi_hop_cascade_enabled`(상위 모드). Plan 50 RCA의 최우선 선행자산.
+- **구현**: `topology.py`·`topology_loader.py` 신설, `notification_policy.py`(step6.4·_signals·correlated 인자), `polestar_noise_context.py`(SVR.ID·`_NOISE_CTX_KEYS` 단일 출처·다홉 산출), `alarm_context_enricher.py`(root_notified), `alarm_worker.py`(active_firings 참조 전달), `config.py`(multi_hop_cascade_enabled·topology_cache_ttl_seconds·topology_max_hops). 검증: `test_topology.py`·`test_topology_loader.py`·`test_multi_hop_cascade.py`·`test_dependency_suppress.py`(1홉 회귀).
+- **주의(실측 정정)**: 엣지 로더 SQL(엣지 보유 행만)은 부모 없는 root의 NAME이 누락 → 조상 IN 조회에 NAME 보강(없으면 root_notified 항상 False 오작동). 심각도3 step3 단락 불변(cascaded여도 PAGE). multi_hop off면 게이트 비트 동일(회귀 0).
+- **관련**: D-048, D-057(엔진 방언 판정), Plan 50(RCA 선행자산), Plan 60 §6. (초안 D-080 결번 → D-107 재부여.)
+
+## D-108. Plan 60 E6 — 통보 컨텍스트 보강 L1 선구현 (Plan 64 §4.8의 L1 단계)
+- **결정일**: 2026-07-21 | **상태**: 확정 (L1 구현 완료 · Plan 60 Wave A / L3는 Plan 64 §4.8 후속)
+- **배경(실측)**: 사용자 요건("어느 프로세스가 원인인지 통보")은 CPU/메모리에 한해 이미 end-to-end 기구현(Plan 47-1: enrich_processes→ProcessSnapshot→notifier 표). §16은 신규 구축이 아니라 **범위 확장**.
+- **결정**: `classify_alarm_kind` cpu|memory → +disk/network/process/log(순수·키워드). 신규 domain `enrichment_profile.py`(kind→L1 프로파일 요지·csv 오버라이드, 순수 stdlib). notifier `_process_table_html`을 kind별 보강 블록으로 일반화(cpu/memory 표 **비트동일**). disk/network는 host-wide 프로세스 스냅샷 참고 첨부(신규 SQL 0), **process/log는 데이터 소스 미확정→요지 제목만**(graceful — 확인 안 된 SQL/테이블 미생성). 메시지형 자유텍스트 LLM 분류는 결정적 프로파일로 대체(서술 전용·D-035 — 신규 LLM 접점 과침습 회피, 후속). post-gate·라우팅 **불변**(첨부만). 옵트인 message_enrichment_enabled(기본 off) — 기존 process_enrich_enabled(CPU/메모리) 경로 비트동일.
+- **근거**: 노이즈 캔슬링 두 축(억제+보강)의 보강 L1. **단일 결정 2단계** — L1=Plan 60 §16(즉시·블로커 없음), L3(top/pidstat/journalctl·추이)=Plan 64 §4.8(D-102·B-1 후).
+- **구현**: `process_rank.py`(classify_alarm_kind), `enrichment_profile.py` 신설, `alarm.py`(MessageEnrichment), `alarm_context_enricher.py`(build_message_enrichment), `alarm_notifier.py`(kind별 블록), `alarm_graph.py`(AlarmState.enrichment), `alarm_worker.py`·`config.py`(message_enrichment_enabled·enrichment_min_tier·enrichment_l1_timeout_seconds·enrichment_profile_map_csv), `api/routes/alarm.py`. 검증: `test_enrichment_profile.py`·`test_message_enrichment.py`·`test_alarm_process_rank.py`.
+- **주의(실측)**: classify_alarm_kind 확장이 disk 등을 반환하므로 `enrich_processes`·API 경로에 **cpu/memory 전용 가드 필수**(없으면 disk 알람이 프로세스 조회 유발 → 기존 보강 게이팅 회귀). message off면 통보 비트동일.
+- **관련**: Plan 47-1(프로세스 보강 전례), Plan 64 §4.8(L3 단계), D-003(읽기전용), D-035, Plan 60 §16. (초안 D-105 → D-101~105 예약블록 충돌로 D-108 재부여, §8 규칙.)
+
+> **Plan 60 Wave B/C 방향 확정(미구현 — 착수 시 D-109+ 재부여)**: **B-6(E2 크로스-호스트 상관 스코프)=db_id(존) 경계 내 상관**(존 간 gp↔yd는 공통 원인 실증 후 확장). **B-2(E5 변경 피드 소스)=폴스타 변경이력 선조사**(외부 CI/CMDB 연동·수동 등록은 후속). B-3(E3 이상탐지)=순수 Python Holt-Winters로 기해소. B-7(로컬 임베딩 반입·L-2/L-4)·B-8(게이트 경계 probe·Plan 64 D-102 선행)은 이번 범위 밖.
+
 ---
 
 ## 변경 이력
@@ -735,6 +765,9 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-21 | D-108 | **Plan 60 E6 통보 컨텍스트 보강 L1 선구현 (Wave A)** — classify_alarm_kind cpu\|memory→+disk/network/process/log, 신규 domain `enrichment_profile.py`, notifier kind별 보강 블록 일반화(cpu/memory 표 비트동일), disk/network=host-wide 스냅샷 참고·process/log=요지만(graceful·신규 SQL 0), 메시지형 LLM 분류는 결정적 프로파일 대체(서술 전용·후속). 옵트인 message_enrichment_enabled(기본 off·회귀 0)·cpu/memory 전용 가드. L3는 Plan 64 §4.8. 초안 D-105→예약충돌로 D-108 재부여. |
+| 2026-07-21 | D-107 | **Plan 60 E4 토폴로지 그래프 + 다홉 하이브리드 억제 (Wave A · B-1·B-5 확정)** — 신규 domain `topology.py`(stdlib)+인프라 `topology_loader.py`(정적 엣지 장기캐시+동적 AVAIL_STATUS IN 조회). 게이트 step6.4: cascaded면 root_notified→SUPPRESS/미통보→DASHBOARD, 미제공→1홉 폴백. root_notified는 enricher가 worker `_active_firings`로 신선 산출. 정책 모듈 topology import 금지. 1차=gp/yd(PostgreSQL), b0→1홉 폴백. signals Wave A 일괄 확장(cascaded·root_resource·correlated). B-1=AVAIL_DEPEND 단독·B-5=하이브리드. 초안 D-080 결번→D-107. |
+| 2026-07-21 | D-106 | **Plan 60 E1 재발생 dedup 관측성 강화 (Wave A)** — `_gate_dedup` dict화({first_seen,last_notified,last_seen,count}), TTL 비교=last_notified 고정창(슬라이딩 변질 회귀 방지)·만료 sweep=last_seen, `_is_duplicate_fingerprint`(is_dup,meta) tuple, `record_recurrence`(type=recurrence) 감사·aggregate 비-decision 일반 제외, 재통보 시 대표 알람 재발 표기. 억제 판정 비트동일. 옵트인 불필요(게이트 off면 미진입). 초안 D-077 결번→D-106. |
 | 2026-07-21 | D-100 | **질의 전 항목 결과 표시 — 하위조회 컨텍스트 확장 + 서버 키 병합** — 알람 조회가 서버명·알람명·심각도를 결정적 포함(`_compile_c`), `result_aggregator`가 여러 하위 조회를 공통 서버 키로 병합(행수 최소 base 스코프, 대표 1행), output_generator 전체 컬럼 표시 강제, 최상급 순위 LIMIT 1. 부작용(알람명이 선행 스코프 오염)은 `is_server_identity_col` 엄격 판정으로 차단. 라이브: 서버명·알람명·심각도·제조사·일련번호·CPU평균 한 행 표시. |
 | 2026-07-20 | D-099 | **선행 스코프+메트릭 순위 질의 결정적 조립 편입** — 가드 5종에도 6번째 변종(모순 alias 조건 → 항상 NULL → NULLS FIRST로 임의 서버 1위, 재시도 예산 소진) 발생 → 울타리 확장 대신 트랙 C 컴파일러(D-076)로 편입. 조립기에 server_scope(HAVING)·order_by(NULLS LAST) 추가, prior_rows 우회 해제, SMQ 커버리지 진입 보정(식별 필터 제거+스코프 노트), `resolve_stat_month` 절대 월 해석. 보완 가드 2종(모순 조건·NULLS LAST)은 폴백 방어로 유지. 라이브 정답 도달. |
 | 2026-07-20 | D-098 | **폴스타 피벗 통계 조인 결함 2종 결정적 검출** — ①통계를 server.Server 고정 alias id에 조인(통계는 자식 리소스에만 붙음 → NULL 정렬로 임의 서버 1위 오답) ②다중 타입 피벗에 통계 INNER JOIN(server.Server 행 그룹 탈락 → 침묵 0건). 어댑터 validator 2종 추가, 라이브에서 ② 차단→재생성→정답. 동일 형태 결함 4종 누적 — 추가 관찰 시 결정적 조립(D-076) 재검토. |

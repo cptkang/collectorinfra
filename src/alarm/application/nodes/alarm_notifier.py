@@ -23,8 +23,14 @@ from langchain_core.runnables import RunnableConfig
 
 from typing import Optional
 
-from src.alarm.domain.alarm import AlarmAnalysisResult, ProcessSnapshot
+from src.alarm.domain.alarm import (
+    AlarmAnalysisResult,
+    MessageEnrichment,
+    ProcessSnapshot,
+)
+from src.alarm.domain.enrichment_profile import build_summary
 from src.alarm.domain.notification_policy import (
+    _TIER_RANK,
     TIER_DASHBOARD,
     TIER_PAGE,
     TIER_SUPPRESS,
@@ -48,20 +54,12 @@ def _pattern_badge(result: AlarmAnalysisResult) -> str:
     return f"[{result.pattern_type}]"
 
 
-def _process_table_html(snapshot: ProcessSnapshot) -> str:
-    """영향 프로세스 텍스트 표(HTML) — workb 본문용 (Plan 47-1 §5.6).
+def _process_rows_html(top: list) -> str:
+    """프로세스 행(HTML)을 조립한다 — 프로세스 표·보강 블록 공용 (Plan 47-1 §5.6 · E6).
 
     수치는 결정적으로 선별된 값, args는 마스킹된 값만 사용한다.
     """
-    if not snapshot.top:
-        return ""
-    metric = "메모리" if snapshot.alarm_kind == "memory" else "CPU"
-    captured = (
-        f" ({snapshot.captured_at:%Y-%m-%d %H:%M:%S} 기준)"
-        if snapshot.captured_at is not None
-        else ""
-    )
-    rows = "".join(
+    return "".join(
         f"<tr><td>{i}. {p.name} (pid {p.pid})</td>"
         f"<td>CPU {p.p100cpu:.1f}% · 메모리 {p.pmem:.1f}%</td></tr>"
         # 실행 파라미터(args, 마스킹됨) — 행 아래 전체폭 보조 줄 (서비스 추적용)
@@ -71,8 +69,25 @@ def _process_table_html(snapshot: ProcessSnapshot) -> str:
             if p.args
             else ""
         )
-        for i, p in enumerate(snapshot.top, start=1)
+        for i, p in enumerate(top, start=1)
     )
+
+
+def _process_table_html(snapshot: ProcessSnapshot) -> str:
+    """영향 프로세스 텍스트 표(HTML) — workb 본문용 (Plan 47-1 §5.6).
+
+    수치는 결정적으로 선별된 값, args는 마스킹된 값만 사용한다. cpu/memory 알람의
+    기존 출력을 비트 동일하게 유지한다(Plan 60 E6는 이 표를 변경하지 않는다).
+    """
+    if not snapshot.top:
+        return ""
+    metric = "메모리" if snapshot.alarm_kind == "memory" else "CPU"
+    captured = (
+        f" ({snapshot.captured_at:%Y-%m-%d %H:%M:%S} 기준)"
+        if snapshot.captured_at is not None
+        else ""
+    )
+    rows = _process_rows_html(snapshot.top)
     return (
         f"<br><br><b>영향 프로세스 — {metric} 상위 "
         f"(전체 {snapshot.total_count}개{captured})</b>"
@@ -80,11 +95,68 @@ def _process_table_html(snapshot: ProcessSnapshot) -> str:
     )
 
 
+def _enrichment_block_html(enrichment: MessageEnrichment) -> str:
+    """kind별 보강 컨텍스트 블록(HTML) — workb 본문용 (Plan 60 E6 §16.3).
+
+    cpu/memory는 기존 프로세스 표로 처리하므로 이 블록은 disk/network/process/log만
+    받는다. 프로파일 요지 제목(build_summary)을 첨부하고, 수집된 host-wide 스냅샷이
+    있으면(disk/network) 참고 프로세스 표를 덧붙인다(스냅샷 args는 이미 마스킹됨).
+    `signals` §8.2 동결 스키마 **밖** 별도 첨부다(E1 recurrence 방식).
+    """
+    summary = build_summary(enrichment.title, enrichment.signals)
+    block = f"<br><br><b>보강 컨텍스트 — {enrichment.title}</b><br>{summary}"
+    snap = enrichment.snapshot
+    if snap is not None and snap.top:
+        captured = (
+            f" ({snap.captured_at:%Y-%m-%d %H:%M:%S} 기준)"
+            if snap.captured_at is not None
+            else ""
+        )
+        rows = _process_rows_html(snap.top)
+        block += (
+            f"<br>호스트 프로세스 상위 (전체 {snap.total_count}개{captured})"
+            f"<table>{rows}</table>"
+        )
+    return block
+
+
+def _enrichment_to_attach(
+    enrichment: Optional[MessageEnrichment],
+    decision,  # noqa: ANN001 — NotificationDecision | None
+    enrichment_min_tier: str,
+) -> Optional[MessageEnrichment]:
+    """티어 게이트를 적용해 첨부할 보강 블록을 결정한다 (Plan 60 E6 §16.3).
+
+    통보 결정 티어가 enrichment_min_tier(기본 PAGE) 이상일 때만 첨부한다(라우팅 불변 —
+    첨부만). decision이 None(게이트 off)이면 본문 생성 자체가 발송 경로이므로 첨부한다.
+    보강 블록이 없거나 티어 미달이면 None(첨부 생략).
+    """
+    if enrichment is None:
+        return None
+    min_rank = _TIER_RANK.get((enrichment_min_tier or TIER_PAGE).lower(), _TIER_RANK[TIER_PAGE])
+    if decision is not None:
+        if _TIER_RANK.get(decision.tier, _TIER_RANK[TIER_PAGE]) < min_rank:
+            return None
+    return enrichment
+
+
 def build_workb_body(
     result: AlarmAnalysisResult,
     process_snapshot: Optional[ProcessSnapshot] = None,
+    recurrence: Optional[dict] = None,
+    repeat_interval_seconds: int = 14400,
+    enrichment: Optional[MessageEnrichment] = None,
 ) -> str:
-    """WorkB 쪽지 본문을 HTML 형식으로 생성한다."""
+    """WorkB 쪽지 본문을 HTML 형식으로 생성한다.
+
+    recurrence(Plan 60 E1): 재통보 시 직전 창 재발 메타(count 등)가 있고 count>1이면
+    "직전 {N}h {count}회 재발 후 재통보" 1줄을 첨부한다(대표 알람 표기). 첨부만 —
+    라우팅·발송 판단은 불변이다.
+
+    enrichment(Plan 60 E6): message_enrichment_enabled·티어 게이트를 통과한 신규 kind
+    (disk/network/process/log) 보강 블록이 있으면 별도 첨부한다. None(기본)이면 본문은
+    비트 동일 — cpu/memory 통보는 기존 프로세스 표만 유지된다.
+    """
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
     severity_html = f'<span style="color:{color};font-weight:bold">{result.severity_label}</span>'
@@ -107,11 +179,22 @@ def build_workb_body(
     # — 패턴 분석보다 먼저 출력: "무엇이 문제인가 → 얼마나 잦은가" 순이 자연스러움
     if process_snapshot is not None:
         body += _process_table_html(process_snapshot)
+    # Plan 60 E6: kind별 보강 컨텍스트 블록(disk/network/process/log) — 프로세스 표와
+    # 동일 위치. cpu/memory는 enrichment=None이라 이 블록이 없어 기존 통보와 비트 동일.
+    if enrichment is not None:
+        body += _enrichment_block_html(enrichment)
     # Plan 47: 패턴 분석 섹션 (pattern_type=""이면 생략)
     if result.pattern_type:
         body += (
             f"<br><br><b>패턴 분석</b><br>"
             f"{_pattern_badge(result)} {result.pattern_analysis}"
+        )
+    # Plan 60 E1: 재발생 이력 (직전 창에서 억제된 재발 횟수 — count>1일 때만)
+    if recurrence and recurrence.get("count", 0) > 1:
+        window_h = repeat_interval_seconds // 3600
+        body += (
+            f"<br><br><b>재발생 이력</b><br>"
+            f"직전 {window_h}h {recurrence['count']}회 재발 후 재통보"
         )
     return body
 
@@ -134,6 +217,10 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
 
     cfg = config["configurable"]["app_config"]
     process_snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
+    # (Plan 60 E1) 재통보 시 직전 창 재발 메타 + 재통보 창(getattr 가드).
+    recurrence: Optional[dict] = state.get("recurrence")
+    gate_cfg = getattr(cfg, "noise_gate", None)
+    repeat_interval_seconds = getattr(gate_cfg, "repeat_interval_seconds", 14400)
 
     # ── Plan 52: 4-티어 라우팅 (게이트 활성 시에만 decision 존재) ──
     # decision is None(게이트 off) → 아래 기존 발송 경로 그대로(무변경).
@@ -160,10 +247,28 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
         )
         await _publish_incident_open(result, decision, incident_publisher)
 
+    # ── Plan 60 E6: 메시지 기반 L1 보강 블록 첨부(옵트인·티어 게이트) ──
+    # message_enrichment_enabled + 통보 티어 ≥ enrichment_min_tier일 때만 첨부(라우팅 불변).
+    # gate_cfg 없거나 message off면 None → 통보 본문 비트 동일(회귀 0). E1 recurrence 방식.
+    enrichment: Optional[MessageEnrichment] = None
+    if getattr(gate_cfg, "message_enrichment_enabled", False):
+        enrichment = _enrichment_to_attach(
+            state.get("enrichment"),
+            decision,
+            getattr(gate_cfg, "enrichment_min_tier", TIER_PAGE),
+        )
+
     for channel in result.notification_channels:
         try:
             if channel == "workb":
-                await _send_workb(cfg.workb, result, process_snapshot)
+                await _send_workb(
+                    cfg.workb,
+                    result,
+                    process_snapshot,
+                    recurrence=recurrence,
+                    repeat_interval_seconds=repeat_interval_seconds,
+                    enrichment=enrichment,
+                )
             elif channel == "webhook":
                 await _send_webhook(cfg.alarm, result, process_snapshot)
             else:
@@ -365,6 +470,10 @@ async def _send_workb(
     workb_cfg,
     result: AlarmAnalysisResult,
     process_snapshot: Optional[ProcessSnapshot] = None,
+    *,
+    recurrence: Optional[dict] = None,
+    repeat_interval_seconds: int = 14400,
+    enrichment: Optional[MessageEnrichment] = None,
 ) -> None:
     """worKB 사내메신저 쪽지 발송.
 
@@ -375,13 +484,22 @@ async def _send_workb(
         workb_cfg: WorkbConfig 인스턴스
         result: 알람 분석 결과
         process_snapshot: 영향 프로세스 스냅샷 (Plan 47-1, None이면 표 생략)
+        recurrence: 재통보 시 직전 창 재발 메타 (Plan 60 E1, None이면 표기 생략)
+        repeat_interval_seconds: 재통보 창(초) — 재발생 이력 표기 시간 산출용
+        enrichment: kind별 L1 보강 블록 (Plan 60 E6, None이면 첨부 생략)
     """
     if not workb_cfg.base_url:
         raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")
 
     ev = result.alarm_event
     msg_title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
-    msg_body = build_workb_body(result, process_snapshot)
+    msg_body = build_workb_body(
+        result,
+        process_snapshot,
+        recurrence=recurrence,
+        repeat_interval_seconds=repeat_interval_seconds,
+        enrichment=enrichment,
+    )
     payload = {
         "systemDiv": workb_cfg.system_div,
         "msgTitle": msg_title,

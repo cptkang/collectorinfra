@@ -27,17 +27,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from src.alarm.domain.alarm import AlarmEvent, AlarmHistoryStats, ProcessSnapshot
+from src.alarm.domain.alarm import (
+    AlarmEvent,
+    AlarmHistoryStats,
+    MessageEnrichment,
+    ProcessSnapshot,
+)
 from src.alarm.domain.alarm_pattern import (
     compute_history_stats,
     history_entries_from_dicts,
     history_entries_to_dicts,
 )
+from src.alarm.domain.enrichment_profile import (
+    parse_profile_map_csv,
+    resolve_profile,
+)
 from src.alarm.domain.process_rank import classify_alarm_kind, select_top_processes
+from src.alarm.infrastructure.polestar_noise_context import _unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +67,39 @@ def _noise_unavailable() -> dict[str, Any]:
     """노이즈 컨텍스트 수집 불가 시 보수 dict (모든 신호 None, source='unavailable').
 
     정책 계층(decide_notification)이 source=='unavailable'을 보수적 PAGE로 처리한다(§6.3).
+    계약 키는 polestar_noise_context._unavailable(_NOISE_CTX_KEYS 단일 출처, §7.2)에
+    위임하여 세 구성점(여기·repo._unavailable·정상 fetch)이 키 불일치 없이 공유한다.
     """
-    return {
-        "importance_id": None,
-        "maintenance": None,
-        "noti_policy": None,
-        "parent_avail_status": None,
-        "source": "unavailable",
-    }
+    return _unavailable()
+
+
+def _compute_root_notified(
+    event: AlarmEvent,
+    ctx: dict[str, Any],
+    active_firings: Optional[dict],
+    inhibition_window_seconds: int,
+    *,
+    now: Optional[float] = None,
+) -> bool:
+    """근본원인(root) 노드가 최근 통보됐는지 산출한다 (Plan 60 E4 하이브리드, §6.2).
+
+    root 리소스명(`ctx["root_resource_name"]`)으로 워커 인히비션 상태 `active_firings`
+    (스코프 키 `f"{db_id}|{server_name}"` → (severity, ts, alarm_key))를 조회해, root
+    스코프가 inhibition_window_seconds 내 활성이면 True(=root 통보됨). active_firings
+    미주입·root명 부재·창 만료면 False(보수적 — 게이트가 DASHBOARD 강등).
+    """
+    root_name = ctx.get("root_resource_name")
+    if not root_name or not active_firings:
+        return False
+    rec = active_firings.get(f"{event.db_id}|{root_name}")
+    if rec is None:
+        return False
+    try:
+        _sev, ts, _key = rec
+    except (TypeError, ValueError):
+        return False
+    clock = time.time() if now is None else now
+    return (clock - ts) <= inhibition_window_seconds
 
 
 async def enrich_noise_context(
@@ -73,8 +109,10 @@ async def enrich_noise_context(
     redis_client=None,  # noqa: ANN001 — redis.asyncio.Redis | None
     *,
     collect_dependency: bool = False,
+    multi_hop: bool = False,
+    active_firings: Optional[dict] = None,
 ) -> dict[str, Any]:
-    """캐시 확인 → 폴스타 노이즈 컨텍스트 고정 SQL 조회 → 캐시 적재 (Plan 52 §8.3).
+    """캐시 확인 → 폴스타 노이즈 컨텍스트 고정 SQL 조회 → 캐시 적재 (Plan 52 §8.3 + Plan 60 E4).
 
     Redis 캐시는 폴스타 DB 부하 보호용 순수 최적화 — 캐시 실패는 무시하고 DB 조회한다.
     캐시 TTL은 noise_context_cache_ttl_seconds(0이면 캐시 비활성)를 사용한다.
@@ -84,14 +122,19 @@ async def enrich_noise_context(
     collect_dependency(E2, §3.6): True면 repo.fetch가 의존성/부모 상태 SQL을 추가 실행해
     parent_avail_status를 채운다. False(기본·E1)면 의존성 SQL 미실행(parent_avail_status=None).
 
+    multi_hop(E4, §6.2): True면 repo.fetch가 다홉 조상 연쇄(cascaded/root_resource/
+    root_resource_name)를 추가 산출한다. 그 후 **캐시 이후**(정적-ish 값은 캐시, root_notified는
+    동적이라 미캐시) `root_notified`를 active_firings로 신선 산출해 ctx에 채운다.
+
     Returns:
-        {"importance_id","maintenance","noti_policy","parent_avail_status","source"}
+        _NOISE_CTX_KEYS + source (+ multi_hop 시 root_notified).
     """
     cache_enabled = (
         redis_client is not None and noise_cfg.noise_context_cache_ttl_seconds > 0
     )
     key = _noise_cache_key(event)
 
+    ctx: Optional[dict[str, Any]] = None
     if cache_enabled:
         try:
             raw = await redis_client.get(key)
@@ -99,21 +142,41 @@ async def enrich_noise_context(
                 ctx = json.loads(raw)
                 # 캐시 히트 — 정책상 정상취급("unavailable"만 특별 처리되므로 "cache"는 정상)
                 ctx["source"] = "cache"
-                return ctx
         except Exception as e:
             logger.debug("노이즈 컨텍스트 캐시 조회 실패 — 무시하고 DB 조회 진행: %s", e)
+            ctx = None
 
-    ctx = await repo.fetch(event, collect_dependency=collect_dependency)
+    if ctx is None:
+        ctx = await repo.fetch(
+            event,
+            collect_dependency=collect_dependency,
+            multi_hop=multi_hop,
+            topology_max_hops=getattr(noise_cfg, "topology_max_hops", 5),
+            topology_cache_ttl_seconds=getattr(
+                noise_cfg, "topology_cache_ttl_seconds", 86400
+            ),
+        )
 
-    if cache_enabled and ctx.get("source") != "unavailable":
-        try:
-            await redis_client.setex(
-                key,
-                noise_cfg.noise_context_cache_ttl_seconds,
-                json.dumps(ctx, ensure_ascii=False),
-            )
-        except Exception as e:
-            logger.debug("노이즈 컨텍스트 캐시 적재 실패 — 무시: %s", e)
+        if cache_enabled and ctx.get("source") != "unavailable":
+            try:
+                await redis_client.setex(
+                    key,
+                    noise_cfg.noise_context_cache_ttl_seconds,
+                    json.dumps(ctx, ensure_ascii=False),
+                )
+            except Exception as e:
+                logger.debug("노이즈 컨텍스트 캐시 적재 실패 — 무시: %s", e)
+
+    # root_notified는 **캐시 이후** 동적 산출(캐시하지 않음 — 자연히 신선, §6.2).
+    # multi_hop off면 미산출(게이트가 1홉 폴백이라 무의미). 캐시 왕복 dict는 root_notified가
+    # 없으므로 여기서 항상 신선 계산해 덮어쓴다.
+    if multi_hop:
+        ctx["root_notified"] = _compute_root_notified(
+            event,
+            ctx,
+            active_firings,
+            int(getattr(noise_cfg, "inhibition_window_seconds", 300)),
+        )
 
     return ctx
 
@@ -205,8 +268,11 @@ async def enrich_processes(
     if event.is_clear:
         return None
 
+    # Plan 60 E6: classify_alarm_kind가 disk/network 등도 판정하게 확장됐으나, 이 함수
+    # (process_enrich_enabled 경로)는 **현행처럼 cpu/memory만** 프로세스 조회한다(비트 동일).
+    # 신규 kind의 host-wide 참고 스냅샷은 build_message_enrichment(message_enrichment_enabled)가 담당.
     kind = classify_alarm_kind(event)
-    if kind is None:
+    if kind not in ("cpu", "memory"):
         logger.debug(
             "프로세스 조회 건너뜀 — CPU/메모리 알람 아님: alarm_id=%s type=%s",
             event.alarm_id,
@@ -234,6 +300,93 @@ async def enrich_processes(
         top=top,
         total_count=total,
         source_host=event.hostname,
+    )
+
+
+async def _collect_host_snapshot(
+    event: AlarmEvent,
+    kind: str,
+    alarm_cfg,  # noqa: ANN001 — AlarmConfig
+    process_client,  # noqa: ANN001 — PolestarProcessApiClient | None
+    timeout_seconds: float,
+) -> Optional[ProcessSnapshot]:
+    """disk/network 보강용 host-wide 프로세스 스냅샷을 수집한다 (Plan 60 E6 §16.3).
+
+    기존 `list_by_hostname`(폴스타 REST GET, 읽기전용)만 재사용한다 — **신규 SQL 없음**.
+    정렬은 select_top_processes의 기본(cpu)으로 host-wide 상위 N을 참고 첨부한다
+    (신규 kind는 특화 정렬 대상이 아니므로 cpu 기준, §16.1). 게이팅·실패 시 None(graceful).
+    """
+    if process_client is None or event.is_clear:
+        return None
+    if process_client.get_base_url(event.db_id) is None:
+        return None
+    result = await asyncio.wait_for(
+        process_client.list_by_hostname(event.db_id, event.hostname),
+        timeout=timeout_seconds,
+    )
+    if result is None:
+        return None
+    top, total = select_top_processes(result.processes, kind, alarm_cfg.process_top_n)
+    return ProcessSnapshot(
+        alarm_kind=kind,
+        captured_at=result.captured_at,
+        top=top,
+        total_count=total,
+        source_host=event.hostname,
+    )
+
+
+async def build_message_enrichment(
+    event: AlarmEvent,
+    alarm_cfg,  # noqa: ANN001 — AlarmConfig
+    noise_cfg,  # noqa: ANN001 — NoiseGateConfig
+    process_client,  # noqa: ANN001 — PolestarProcessApiClient | None
+) -> Optional[MessageEnrichment]:
+    """kind별 L1 보강 블록을 조립한다 (Plan 60 E6 §16.3 — message_enrichment_enabled 뒤).
+
+    cpu/memory는 기존 ProcessSnapshot("영향 프로세스" 표)로 이미 처리되므로 여기서는
+    None을 반환한다(중복 첨부 방지). 신규 kind(disk/network/process/log)만 프로파일 요지를
+    조립하고, 데이터 소스가 확정된 disk/network에 한해 host-wide 프로세스 스냅샷을 참고 첨부한다.
+
+    소스 미확정 kind(process/log)는 요지 제목만 첨부(snapshot=None) — 관제 L1 데이터 소스가
+    계획서에 정밀 정의되지 않아 확인 안 된 신규 SQL을 만들지 않는다(graceful, §16.3 제약).
+
+    Returns:
+        MessageEnrichment(disk/network/process/log) 또는 None(cpu/memory·비대상 kind·해소).
+    """
+    if event.is_clear:
+        return None
+    kind = classify_alarm_kind(event)
+    if kind is None or kind in ("cpu", "memory"):
+        return None
+    profile = resolve_profile(
+        kind, parse_profile_map_csv(getattr(noise_cfg, "enrichment_profile_map_csv", ""))
+    )
+    if profile is None:
+        return None
+
+    snapshot: Optional[ProcessSnapshot] = None
+    # 데이터 소스 확정 kind(disk/network)만 host-wide 프로세스 스냅샷 참고 첨부.
+    # 자체 try/except — 수집 실패가 요지 첨부(통보)를 막지 않는다(§16.3, 기존 gather 패턴).
+    if profile.has_l1_data and kind in ("disk", "network"):
+        timeout = float(getattr(noise_cfg, "enrichment_l1_timeout_seconds", 3.0))
+        try:
+            snapshot = await _collect_host_snapshot(
+                event, kind, alarm_cfg, process_client, timeout
+            )
+        except Exception:
+            logger.warning(
+                "E6 host-wide 스냅샷 수집 실패 — 요지만 첨부: alarm_id=%s kind=%s",
+                event.alarm_id,
+                kind,
+            )
+            snapshot = None
+
+    return MessageEnrichment(
+        kind=kind,
+        title=profile.title,
+        signals=profile.signals,
+        snapshot=snapshot,
     )
 
 
@@ -270,6 +423,8 @@ async def alarm_context_enricher_node(
     redis_client = configurable.get("history_redis")
     process_client = configurable.get("process_client")
     noise_repo = configurable.get("noise_repo")
+    # (Plan 60 E4) 워커 인히비션 상태(참조 전달·읽기전용) — root_notified 산출용. 미주입 시 None.
+    active_firings = configurable.get("active_firings")
 
     # 게이트 활성 + noise_repo 주입 시에만 noise_context 수집(그 외 기존 2키 반환 유지).
     gate_cfg = getattr(cfg, "noise_gate", None)
@@ -333,14 +488,19 @@ async def alarm_context_enricher_node(
         """
         if not gate_on:
             return None
+        # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
+        dep = bool(getattr(gate_cfg, "dependency_suppression", False))
+        # E4 §6.2: 다홉은 의존성 억제의 상위 모드 — dependency_suppression AND multi_hop_cascade_enabled.
+        multi_hop = dep and bool(getattr(gate_cfg, "multi_hop_cascade_enabled", False))
         try:
             return await enrich_noise_context(
                 event,
                 gate_cfg,
                 noise_repo,
                 redis_client,
-                # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
-                collect_dependency=bool(getattr(gate_cfg, "dependency_suppression", False)),
+                collect_dependency=dep,
+                multi_hop=multi_hop,
+                active_firings=active_firings,
             )
         except Exception:
             logger.exception(
@@ -348,28 +508,36 @@ async def alarm_context_enricher_node(
             )
             return _noise_unavailable()
 
-    # ── 게이트 비활성: 기존 2키 반환 경로 (회귀 0, 바이트 무변경) ──
-    if not gate_on:
+    # (Plan 60 E6) message_enrichment_enabled 뒤에서만 신규 kind 보강 수집(기본 off → 회귀 0).
+    message_on = bool(getattr(gate_cfg, "message_enrichment_enabled", False))
+
+    async def _message_enrichment() -> Optional[MessageEnrichment]:
+        """메시지 기반 L1 보강 조립 — 실패 시 None (독립 degradation, E6 §16.3)."""
         try:
-            history_stats, process_snapshot = await asyncio.wait_for(
-                asyncio.gather(_history(), _processes()),
-                timeout=cfg.alarm.enrich_timeout_seconds,
+            return await build_message_enrichment(
+                event, cfg.alarm, gate_cfg, process_client
             )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "알람 컨텍스트 보강 타임아웃 (%ds) — 컨텍스트 없이 분석 진행: alarm_id=%s",
-                cfg.alarm.enrich_timeout_seconds,
-                event.alarm_id,
+        except Exception:
+            logger.exception(
+                "메시지 보강 조립 실패 — 보강 없이 진행: alarm_id=%s", event.alarm_id
             )
-            return {"history_stats": None, "process_snapshot": None}
+            return None
 
-        return {"history_stats": history_stats, "process_snapshot": process_snapshot}
+    # 수집 태스크·반환 키를 동적 구성한다. gate off·message off면 키셋은 기존 2키
+    # ({history_stats, process_snapshot})로 **비트 동일**(회귀 0). gate_on → noise_context,
+    # message_on → enrichment 키를 추가한다. gather 순서·값은 기존과 동일하다.
+    tasks = [_history(), _processes()]
+    keys = ["history_stats", "process_snapshot"]
+    if gate_on:
+        tasks.append(_noise_context())
+        keys.append("noise_context")
+    if message_on:
+        tasks.append(_message_enrichment())
+        keys.append("enrichment")
 
-    # ── 게이트 활성: noise_context 포함 3키 반환 (enrich_timeout 상한 내 동시 수집) ──
     try:
-        history_stats, process_snapshot, noise_context = await asyncio.wait_for(
-            asyncio.gather(_history(), _processes(), _noise_context()),
-            timeout=cfg.alarm.enrich_timeout_seconds,
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks), timeout=cfg.alarm.enrich_timeout_seconds
         )
     except asyncio.TimeoutError:
         logger.warning(
@@ -377,15 +545,7 @@ async def alarm_context_enricher_node(
             cfg.alarm.enrich_timeout_seconds,
             event.alarm_id,
         )
-        # noise_context=None → 정책 계층이 보수적 PAGE로 처리(§6.3)
-        return {
-            "history_stats": None,
-            "process_snapshot": None,
-            "noise_context": None,
-        }
+        # 각 키 None — noise_context=None은 정책 계층이 보수적 PAGE로 처리(§6.3).
+        return {k: None for k in keys}
 
-    return {
-        "history_stats": history_stats,
-        "process_snapshot": process_snapshot,
-        "noise_context": noise_context,
-    }
+    return dict(zip(keys, results))

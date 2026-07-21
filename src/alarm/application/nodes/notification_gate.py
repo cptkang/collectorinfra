@@ -68,7 +68,12 @@ async def notification_gate_node(
     store = configurable.get("decision_store")
     if store is not None:
         try:
-            store.record(decision, alarm_id=event.alarm_id)
+            # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
+            store.record(
+                decision,
+                alarm_id=event.alarm_id,
+                recurrence=state.get("recurrence"),
+            )
         except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
             logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
 

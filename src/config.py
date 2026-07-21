@@ -428,6 +428,13 @@ class AlarmConfig(BaseSettings):
     process_top_n: int = 5                     # 표시할 상위 프로세스 수
     # 인증·TLS 설정 없음 — 내부 시스템 http, 비로그인 조회 (Plan 47-1 §9)
 
+    # Prometheus(node_exporter 메트릭) 조회 — 프로세스 API와 동일 db_id→base_url CSV 패턴.
+    # node_exporter는 직접 조회하지 않고 앞단 Prometheus HTTP Query API를 read-only GET (D-003).
+    # Plan 60 E3 baseline / Plan 64 §4.5 / docs/aiops_benchmark/l3_host_collection_mechanism.md.
+    prometheus_enabled: bool = False           # 옵트인 — 비활성 시 조회 경로 미진입(회귀 0)
+    prometheus_base_urls_csv: str = ""         # "db_id=http://prom:9090,..." (미설정 시 전부 None)
+    prometheus_timeout_seconds: int = 3        # 추가 외부 호출 — 이력보다 짧게(프로세스 API와 동일)
+
     model_config = {"env_prefix": "ALARM_", "env_file": ".env", "extra": "ignore"}
 
     def get_notification_channels(self) -> list[str]:
@@ -441,6 +448,21 @@ class AlarmConfig(BaseSettings):
         잘못된 항목(= 미포함)은 무시한다.
         """
         for pair in self.process_api_base_urls_csv.split(","):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            key, _, url = pair.partition("=")
+            if key.strip() == db_id:
+                return url.strip() or None
+        return None
+
+    def get_prometheus_base_url(self, db_id: str) -> Optional[str]:
+        """db_id(존)에 매핑된 Prometheus base_url을 반환한다 (없으면 None).
+
+        매핑 형식: "db_id1=http://prom1:9090,db_id2=http://prom2:9090" (CSV, '=' 구분).
+        get_process_api_base_url와 동일 규칙 — 존별 Prometheus 분리를 지원한다.
+        """
+        for pair in self.prometheus_base_urls_csv.split(","):
             pair = pair.strip()
             if not pair or "=" not in pair:
                 continue
@@ -506,6 +528,12 @@ class NoiseGateConfig(BaseSettings):
     flap_low_threshold: float = 5.0           # (E2) 플래핑 종료 %
     flapping_enabled: bool = False            # (E2) 플래핑 억제 on/off (상태 진동 보류)
     dependency_suppression: bool = False      # (E2) 의존성 억제 on/off
+    # ── Plan 60 E4: 토폴로지 의존성 그래프 다홉 연쇄 억제 (D-080) ──
+    # dependency_suppression과 AND — 다홉은 의존성 억제의 상위 모드(둘 다 True여야 다홉 조회 유발).
+    # off(기본)면 게이트·enricher·repo 경로 비트 동일(회귀 0). gp/yd(PostgreSQL)만 지원, b0(DB2)는 1홉 폴백.
+    multi_hop_cascade_enabled: bool = False   # (E4) 다홉 연쇄 억제 on/off
+    topology_cache_ttl_seconds: int = 86400   # (E4) 정적 엣지 그래프 캐시 TTL(24h — 변경 드묾)
+    topology_max_hops: int = 5                # (E4) BFS 홉 상한(순환 방어 이중 안전 겸 비용 가드)
     inhibition_enabled: bool = False          # (E2) 인히비션 on/off (상위 심각도 음소거)
     inhibition_window_seconds: int = 300      # (E2) 상위 심각도 활성 간주 창
     storm_grouping_enabled: bool = False      # (E2) 스톰 그룹핑 on/off (동일 서버 다발 억제)
@@ -514,6 +542,7 @@ class NoiseGateConfig(BaseSettings):
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
     sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)
+    recurrence_audit_every_n: int = 1         # (Plan 60 E1) 재발생 억제 감사 적재 샘플링(1=매번, count%N==0만 적재)
     noise_context_timeout_seconds: float = 3.0
     noise_context_cache_ttl_seconds: int = 300
     meta_alert_suppress_ratio: float = 0.9    # (E3) 억제율 이 값 초과 시 메타경보
@@ -548,6 +577,13 @@ class NoiseGateConfig(BaseSettings):
     # 활성 시 워커는 incident 이벤트를 Redis로 발행, API 단일 라이터가 PG에 영속한다.
     incident_tracking_enabled: bool = False   # (D-049) incident 계측 on/off
     incident_event_channel: str = "alarm:incident"  # (D-049) incident 이벤트 Redis pub/sub 채널명
+    # ── Plan 60 E6: 통보 컨텍스트 보강 — 메시지 기반 L1 조회·첨부 (D-105, Plan 64 §4.8 공유) ──
+    # 기본 off면 신규 kind(disk/network/process/log) 보강 미수집·미첨부 → 통보 비트동일(회귀 0).
+    # 기존 process_enrich_enabled(CPU/메모리) 경로와 독립 — cpu/메모리 표는 불변.
+    message_enrichment_enabled: bool = False  # (E6) 메시지 기반 L1 보강 첨부 옵트인
+    enrichment_min_tier: str = "PAGE"         # (E6) 이 티어 이상 통보 결정 시에만 보강 첨부
+    enrichment_l1_timeout_seconds: float = 3.0  # (E6) L1 추가 조회(host-wide 프로세스) 상한
+    enrichment_profile_map_csv: str = ""      # (E6) kind→요지 제목 오버라이드 ("disk=...,log=...")
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

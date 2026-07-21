@@ -122,7 +122,7 @@ def _decision(tier: str) -> NotificationDecision:
 def _patch_senders(monkeypatch) -> list[str]:
     calls: list[str] = []
 
-    async def fake_workb(cfg, result, snap=None):  # noqa: ANN001
+    async def fake_workb(cfg, result, snap=None, **kwargs):  # noqa: ANN001
         calls.append("workb")
 
     async def fake_webhook(cfg, result, snap=None):  # noqa: ANN001

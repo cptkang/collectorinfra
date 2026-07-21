@@ -73,7 +73,7 @@ class TestNotifierWithoutDecision:
     async def test_sends_all_channels_when_decision_absent(self, monkeypatch):
         calls: list[str] = []
 
-        async def fake_workb(cfg, result, snap=None):
+        async def fake_workb(cfg, result, snap=None, **kwargs):
             calls.append("workb")
 
         async def fake_webhook(cfg, result, snap=None):
@@ -100,7 +100,7 @@ class TestNotifierWithoutDecision:
         # decision=None 분기도 발송 경로(보수적)임을 명시적으로 확인
         calls: list[str] = []
 
-        async def fake_workb(cfg, result, snap=None):
+        async def fake_workb(cfg, result, snap=None, **kwargs):
             calls.append("workb")
 
         monkeypatch.setattr(notifier_mod, "_send_workb", fake_workb)

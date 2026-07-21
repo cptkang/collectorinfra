@@ -63,8 +63,12 @@ class AlarmWorker:
         # (D-049) 직전 self-heal 매칭 소요시간(초) — _update_firing_registry가 설정,
         # _process가 decision_store.record_resolution 기록에 사용(매칭 없으면 None).
         self._last_self_heal_duration: Optional[float] = None
-        # 핑거프린트 dedup(재발생 억제, §6.1) — alarm_id dedup과 별개 경로.
-        self._gate_dedup: dict[str, float] = {}
+        # 핑거프린트 dedup(재발생 억제, §6.1 · Plan 60 E1) — alarm_id dedup과 별개 경로.
+        # 레코드 = {first_seen, last_notified, last_seen, count}.
+        #   판정 필드 last_notified = 마지막 *통보* 시각(중복 판정 시 갱신 안 함 → 고정창).
+        #   정리 필드 last_seen     = 마지막 *목격* 시각(중복마다 갱신 → 만료 sweep 기준).
+        # 둘의 의미가 다름에 주의(§3.3): last_seen으로 TTL 비교하면 슬라이딩 창 회귀 발생.
+        self._gate_dedup: dict[str, dict] = {}
         # 자가복구 상관용 발생 레지스트리(§3.7): fingerprint → (발생시각, severity).
         self._firing_registry: dict[str, tuple[float, int]] = {}
         # 인히비션(§3.4·E2): 스코프(db_id|server) → (최고심각도, 발생시각, 알람키).
@@ -360,6 +364,8 @@ class AlarmWorker:
             inhibited = False
             flapping = False
             storm = False
+            # (Plan 60 E1) 재통보 시 직전 창 재발 메타 — 대표 알람 표기용 그래프 state.
+            recurrence_prev: Optional[dict] = None
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
@@ -369,16 +375,24 @@ class AlarmWorker:
                 # 핑거프린트 dedup(재발생 억제, §6.1). 해소 이벤트(severity 0)는
                 # 자가복구 상관을 위해 dedup에서 제외하여 게이트까지 전달한다.
                 # 심각도3은 sev3_repeat_interval_seconds(기본=공통)로 재통보 간격 분리(§6.1).
-                if not event.is_clear and self._is_duplicate_fingerprint(
-                    fingerprint, now, event.severity
-                ):
-                    logger.debug(
-                        "중복(재발생) 알람 무시: fingerprint=%s alarm_id=%s",
-                        fingerprint,
-                        event.alarm_id,
+                # (Plan 60 E1) 억제 시 count 집계 감사(record_recurrence), 재통보 시
+                # 직전 창 재발 메타(prev)를 그래프 state로 전달(대표 알람 표기).
+                if not event.is_clear:
+                    is_dup, rec_meta = self._is_duplicate_fingerprint(
+                        fingerprint, now, event.severity
                     )
-                    await ack_message(r, stream_key, group, msg_id)
-                    return
+                    if is_dup:
+                        logger.debug(
+                            "중복(재발생) 알람 무시: fingerprint=%s alarm_id=%s count=%s",
+                            fingerprint,
+                            event.alarm_id,
+                            rec_meta.get("count") if rec_meta else None,
+                        )
+                        self._record_recurrence(fingerprint, event, rec_meta)
+                        await ack_message(r, stream_key, group, msg_id)
+                        return
+                    # 비중복(재통보) — 직전 창 재발 메타가 있으면 대표 알람 표기용으로 보관.
+                    recurrence_prev = rec_meta
 
                 # min_severity 역할 분리(§4.8): severity 0(해소)·3은 절대 드롭 금지.
                 # 1 <= severity < min_severity 인 경우만 드롭(강등·억제는 게이트가 수행).
@@ -461,6 +475,10 @@ class AlarmWorker:
                     "inhibited": inhibited,
                     "flapping": flapping,
                     "storm": storm,
+                    # (Plan 60 E1) 재통보 시 직전 창 재발 메타(없으면 None).
+                    "recurrence": recurrence_prev,
+                    # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
+                    "enrichment": None,
                 },
                 config={
                     "configurable": {
@@ -482,6 +500,9 @@ class AlarmWorker:
                         # (D-049) incident open 발행기 — notifier가 PAGE 결정 시 사용.
                         # off/Redis 부재 시 None → notifier는 발행 스킵(회귀 0).
                         "incident_publisher": self._incident_publisher,
+                        # (Plan 60 E4) 인히비션 활성 상태 참조 전달(읽기전용) — enricher가
+                        # root_notified(다홉 하이브리드) 산출에 소비. 신규 저장소 불필요.
+                        "active_firings": self._active_firings,
                     }
                 },
             )
@@ -542,12 +563,17 @@ class AlarmWorker:
 
     def _is_duplicate_fingerprint(
         self, fingerprint: str, now: float, severity: int
-    ) -> bool:
-        """게이트 활성 시 핑거프린트 기반 재발생 dedup (Plan 52 §6.1).
+    ) -> tuple[bool, Optional[dict]]:
+        """게이트 활성 시 핑거프린트 기반 재발생 dedup + count 집계 (Plan 52 §6.1 · Plan 60 E1).
 
         동일 핑거프린트(db_id+server+alarm_name+resource)가 재통보 간격(TTL) 내에
-        이미 처리되었으면 True를 반환한다(재통보 억제). 만료 항목은 함께 정리한다.
-        alarm_id dedup(_is_duplicate)과 완전히 별개 경로다(self._gate_dedup 사용).
+        이미 처리되었으면 (True, 재발생 메타)를 반환한다(재통보 억제). 만료 항목은
+        함께 정리한다. alarm_id dedup(_is_duplicate)과 완전히 별개 경로다(_gate_dedup).
+
+        **억제 판정 로직(TTL·심각도 분기)은 현행과 비트 동일**하다 — 집계(count/first_seen/
+        last_seen)만 추가했다. TTL 비교 기준은 반드시 `last_notified`(마지막 *통보* 시각,
+        중복 판정 시 갱신하지 않음 → 고정창 유지)다. `last_seen`(중복마다 갱신)으로 비교하면
+        슬라이딩 창으로 변질되어 지속 재발 알람이 영원히 재통보되지 않는 회귀가 발생한다(§3.3).
 
         TTL은 심각도별로 분리한다(§6.1):
             - severity==3 → sev3_repeat_interval_seconds (미해결 sev3 재통보 단축용)
@@ -562,7 +588,10 @@ class AlarmWorker:
             severity: 알람 심각도 (TTL 분기용)
 
         Returns:
-            True이면 재발생 중복(처리 건너뜀), False이면 신규 처리
+            (is_dup, meta) 튜플.
+            - is_dup=True(재발생 중복): meta=현재 창의 집계 스냅샷(count 포함).
+            - is_dup=False(신규/재통보): meta=리셋 직전 창 메타(직전 창 count>1일 때만,
+              그 외 None). 대표 알람 "직전 재발 후 재통보" 표기용.
         """
         repeat_ttl = self._config.noise_gate.repeat_interval_seconds
         if severity == 3:
@@ -574,14 +603,57 @@ class AlarmWorker:
             )
         else:
             ttl = repeat_ttl
-        last = self._gate_dedup.get(fingerprint)
-        if last is not None and now - last < ttl:
-            return True
-        self._gate_dedup[fingerprint] = now
-        expired = [k for k, v in self._gate_dedup.items() if now - v >= ttl]
+        rec = self._gate_dedup.get(fingerprint)
+        # 억제 판정 — 반드시 last_notified(통보 시각) 기준(고정창). 갱신하지 않는다.
+        if rec is not None and now - rec["last_notified"] < ttl:
+            # 억제(중복) — 통보 시각은 고정, 집계(count)·정리(last_seen)만 갱신.
+            rec["count"] += 1
+            rec["last_seen"] = now
+            return True, dict(rec)
+        # 신규(비중복, TTL 만료 후 재통보 포함) — 리셋 직전 창 메타를 prev로 캡처.
+        # prev는 직전 창 count>1(억제 이력 있음)일 때만 의미 있다(대표 알람 표기용).
+        prev: Optional[dict] = None
+        if rec is not None and rec["count"] > 1:
+            prev = dict(rec)
+        self._gate_dedup[fingerprint] = {
+            "first_seen": now,
+            "last_notified": now,
+            "last_seen": now,
+            "count": 1,
+        }
+        # 만료 sweep은 last_seen 기준(연속 재발 레코드의 count 보존) — 현행(통보시각 기준)보다
+        # 레코드 수명이 길어지는 메모리 의미 변화(§3.3). 판정(last_notified)과 정리(last_seen) 상이.
+        expired = [
+            k for k, v in self._gate_dedup.items() if now - v["last_seen"] >= ttl
+        ]
         for k in expired:
             del self._gate_dedup[k]
-        return False
+        return False, prev
+
+    def _record_recurrence(
+        self, fingerprint: str, event: AlarmEvent, rec_meta: Optional[dict]
+    ) -> None:
+        """재발생 억제를 decision_store에 감사 적재한다 (Plan 60 E1 · graceful).
+
+        억제된 재발생은 그래프에 진입하지 않아 gate 감사 사각지대였다(§3.1). 워커가 직접
+        type="recurrence" 레코드를 적재해 "억제≠삭제"를 강화한다. decision_store 미주입
+        (게이트 off/생성 실패)이거나 메타가 없으면 스킵한다(회귀 0). recurrence_audit_every_n
+        샘플링으로 적재 빈도를 조절한다(기본 1=매번, count % N == 0일 때만).
+        """
+        if self._decision_store is None or rec_meta is None:
+            return
+        every_n = getattr(self._config.noise_gate, "recurrence_audit_every_n", 1)
+        if every_n < 1:
+            every_n = 1
+        count = rec_meta.get("count", 0)
+        if count % every_n != 0:
+            return
+        self._decision_store.record_recurrence(
+            fingerprint=fingerprint,
+            count=count,
+            first_seen_ts=rec_meta.get("first_seen"),
+            alarm_id=event.alarm_id,
+        )
 
     def _update_firing_registry(
         self, event: AlarmEvent, fingerprint: str, now: float

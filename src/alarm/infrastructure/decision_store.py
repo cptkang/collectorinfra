@@ -44,6 +44,7 @@ class DecisionStore:
         *,
         alarm_id: str = "",
         ts: Optional[datetime] = None,
+        recurrence: Optional[dict] = None,
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -51,6 +52,10 @@ class DecisionStore:
         DASHBOARD/SUPPRESS 결정도 반드시 기록한다(억제 ≠ 삭제).
         디렉토리는 자동 생성하며, 기록 실패 시 logger.warning 후 무시(발송 차단 금지).
         enabled=False면 no-op.
+
+        recurrence(Plan 60 E1): 재통보 시 직전 창 재발 메타(count/first_seen 등)를
+        받으면 **최상위 `recurrence` 필드**로 기록한다(NotificationDecision.signals
+        동결 스키마는 훼손하지 않는다, §3.3). None이면 키를 넣지 않아 현행과 동일하다.
         """
         if not self.enabled:
             return
@@ -64,6 +69,8 @@ class DecisionStore:
             "fingerprint": decision.fingerprint,
             "signals": decision.signals,
         }
+        if recurrence is not None:
+            record["recurrence"] = recurrence
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
@@ -107,6 +114,44 @@ class DecisionStore:
                 fh.write(line + "\n")
         except OSError as exc:
             logger.warning("자가복구 소요시간 기록 실패(무시): %s", exc)
+
+    def record_recurrence(
+        self,
+        *,
+        fingerprint: str,
+        count: int,
+        first_seen_ts: Optional[float] = None,
+        alarm_id: str = "",
+        ts: Optional[datetime] = None,
+    ) -> None:
+        """재발생 억제 카운트를 JSONL 한 줄로 append 한다 (Plan 60 E1).
+
+        `type="recurrence"` 레코드로 적재하여 발송 판단(decision)·resolution 레코드와
+        구분한다(record_resolution 전례 동일). 억제된 재발생은 그래프에 진입하지 않아
+        gate 감사 사각지대였다(§3.1) — 워커가 직접 이 메서드로 "억제≠삭제"를 강화한다.
+        `aggregate()`는 `type` 필드 보유 레코드를 by_tier/total에서 제외하므로 기존
+        티어 집계는 불변이다.
+
+        기록 실패는 warning 후 무시(발송 차단 금지). enabled=False면 no-op.
+        """
+        if not self.enabled:
+            return
+        when = ts or datetime.now(timezone.utc)
+        record = {
+            "type": "recurrence",
+            "fingerprint": fingerprint,
+            "count": count,
+            "first_seen_ts": first_seen_ts,
+            "alarm_id": alarm_id,
+            "ts": when.isoformat(),
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, ensure_ascii=False)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError as exc:
+            logger.warning("재발생 카운트 기록 실패(무시): %s", exc)
 
     @staticmethod
     def _empty_aggregate() -> dict:
@@ -163,12 +208,15 @@ class DecisionStore:
                         continue  # 손상된 줄은 건너뜀
                     if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
                         continue
-                    # (D-049) resolution 레코드는 by_tier/total 집계에서 제외하고
-                    # auto_recovery_mttr 산출에만 사용한다(기존 키·동작 불변).
-                    if rec.get("type") == "resolution":
-                        dur = rec.get("duration_seconds")
-                        if isinstance(dur, (int, float)):
-                            resolution_durations.append(float(dur))
+                    # (D-049 · Plan 60 E1) 비-decision 레코드(`type` 필드 보유)는
+                    # by_tier/total 집계에서 일반 제외한다(향후 레코드 타입 추가에도 안전).
+                    # resolution은 duration 수집 후, 그 외(recurrence 등)는 그냥 제외한다.
+                    rec_type = rec.get("type")
+                    if rec_type:
+                        if rec_type == "resolution":
+                            dur = rec.get("duration_seconds")
+                            if isinstance(dur, (int, float)):
+                                resolution_durations.append(float(dur))
                         continue
                     tier = rec.get("tier", "")
                     by_tier[tier] = by_tier.get(tier, 0) + 1

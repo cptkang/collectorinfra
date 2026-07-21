@@ -147,7 +147,7 @@ class _RecordingStore:
     def __init__(self) -> None:
         self.records: list[tuple[Any, Optional[str]]] = []
 
-    def record(self, decision, alarm_id=None) -> None:  # noqa: ANN001
+    def record(self, decision, alarm_id=None, recurrence=None) -> None:  # noqa: ANN001
         self.records.append((decision, alarm_id))
 
 
