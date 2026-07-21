@@ -31,8 +31,11 @@ from src.graph import build_graph
 import src.graph as graph_module
 import src.orchestration.deep_agent as deep_agent_module
 from src.orchestration.deep_agent import (
+    _build_incomplete_notice,
+    _ended_prematurely,
     _extract_ambient_state,
     _extract_final_response,
+    _pending_todos,
     run_deep_agent,
 )
 
@@ -379,3 +382,439 @@ def test_real_build_deep_agent_uses_system_prompt(monkeypatch):
     agent = build_deep_agent(cfg, worker_llm=_FakeToolLLM(messages=iter([])))
     # 컴파일된 LangGraph 에이전트(ainvoke 보유)가 반환된다
     assert hasattr(agent, "ainvoke")
+
+
+# ──────────────────────────────────────────────
+# 조기 종료(빈 AI 응답) 감지 · 미실행 작업 안내 (D-092)
+# ──────────────────────────────────────────────
+
+def test_ended_prematurely_empty_ai_true():
+    """마지막 AI 메시지가 무내용·무도구호출이면 조기 종료로 판정한다.
+
+    실측(2026-07-20): 오케스트레이터가 도구 결과 수신 후 output_tokens=0의 빈
+    AIMessage를 반환 → 루프 종료 → 남은 하위 작업(CPU 평균·제조사/일련번호) 미실행.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    result = {"messages": [HumanMessage(content="질의"), AIMessage(content="")]}
+    assert _ended_prematurely(result) is True
+
+
+def test_ended_prematurely_with_text_false():
+    """마지막 AI 메시지에 텍스트가 있으면 정상 종결이다."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    result = {"messages": [HumanMessage(content="질의"), AIMessage(content="답변입니다")]}
+    assert _ended_prematurely(result) is False
+
+
+def test_ended_prematurely_dict_messages_false():
+    """dict 형태 메시지(content 보유)도 정상 종결로 판정한다(기존 폴백 경로 불변)."""
+    result = {"messages": [{"role": "user", "content": "질의"},
+                           {"role": "assistant", "content": "최종 응답"}]}
+    assert _ended_prematurely(result) is False
+
+
+def test_pending_todos_filters_completed():
+    """미완료(pending/in_progress) todo만 추출한다."""
+    result = {"todos": [
+        {"content": "알람 서버 확인", "status": "completed"},
+        {"content": "6월 CPU 평균 최고 서버 조회", "status": "pending"},
+        {"content": "제조사·일련번호 조회", "status": "in_progress"},
+    ]}
+    assert _pending_todos(result) == ["6월 CPU 평균 최고 서버 조회", "제조사·일련번호 조회"]
+
+
+def test_build_incomplete_notice_lists_executed_and_pending():
+    """안내문에 수행된 조회(sub_query)와 미실행 작업(todo)이 명시된다."""
+    collector = [
+        ({"task_id": "tool_alarm_query_1", "agent": "alarm_query",
+          "sub_query": "활성 심각 알람 서버 목록 조회"}, {}),
+    ]
+    notice = _build_incomplete_notice(collector, ["6월 CPU 평균 최고 서버 조회"])
+
+    assert "활성 심각 알람 서버 목록 조회" in notice
+    assert "6월 CPU 평균 최고 서버 조회" in notice
+    assert "부분 결과" in notice
+
+
+def test_build_incomplete_notice_generic_without_todos():
+    """미완료 todo가 없으면(계획 미작성) 나머지 항목 미수행을 일반 문구로 알린다."""
+    collector = [
+        ({"task_id": "tool_alarm_query_1", "agent": "alarm_query",
+          "sub_query": "알람 서버 목록 조회"}, {}),
+    ]
+    notice = _build_incomplete_notice(collector, [])
+
+    assert "알람 서버 목록 조회" in notice
+    assert "나머지 항목은 수행되지 않았습니다" in notice
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_premature_end_passes_incomplete_notice(monkeypatch):
+    """빈 AI 응답으로 조기 종료되면 미실행 안내문이 aggregator 입력 state에 실린다(D-092)."""
+    import importlib
+    from langchain_core.messages import AIMessage
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            self._collector.append((
+                {"task_id": "tool_alarm_query_1", "agent": "alarm_query", "order": 1,
+                 "status": "completed", "sub_query": "활성 심각 알람 서버 목록 조회"},
+                {"organized_data": {"summary": "2건",
+                                    "rows": [{"server_name": "SV-WEB-001"}],
+                                    "is_sufficient": True}},
+            ))
+            return {
+                "messages": [AIMessage(content="")],  # 빈 응답 — 조기 종료
+                "todos": [
+                    {"content": "완료된 준비 단계", "status": "completed"},
+                    {"content": "6월 CPU 평균 최고 서버 조회", "status": "pending"},
+                ],
+            }
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "부분 결과", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    out = await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert out["current_node"] == "deep_agent"
+    notice = captured["state"]["orchestration_incomplete_notice"]
+    assert "활성 심각 알람 서버 목록 조회" in notice   # 수행된 조회 명시
+    assert "6월 CPU 평균 최고 서버 조회" in notice     # 미실행 작업 명시
+    assert "완료된 준비 단계" not in notice            # 완료 todo는 미실행 목록에서 제외
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_normal_end_no_notice(monkeypatch):
+    """정상 종결(마지막 AI 텍스트 존재) 시 안내문을 싣지 않는다(기존 동작 불변)."""
+    import importlib
+    from langchain_core.messages import AIMessage
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            self._collector.append((
+                {"task_id": "tool_data_query_1", "agent": "data_query", "order": 1,
+                 "status": "completed", "sub_query": "서버 목록"},
+                {"organized_data": {"summary": "3대", "rows": [{"hostname": "web-01"}],
+                                    "is_sufficient": True}},
+            ))
+            return {"messages": [AIMessage(content="조회를 완료했습니다")]}
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "완전한 답", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    await run_deep_agent({"user_query": "서버 목록 조회"}, app_config=cfg)
+
+    assert "orchestration_incomplete_notice" not in captured["state"]
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_premature_no_tools_explicit_failure(monkeypatch):
+    """도구 0회 + 빈 응답이면 사용자 질의 에코 대신 명시적 실패 안내를 반환한다(D-092).
+
+    회귀 방지: _extract_final_response는 비어 있지 않은 마지막 메시지를 역순 탐색하므로
+    이 케이스에서 사용자 질의(HumanMessage)를 최종 응답으로 에코하는 잠복 결함이 있었다.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            return {"messages": [HumanMessage(content="복합 질의"), AIMessage(content="")]}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        return _FakeAgent()
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+
+    cfg = _build_config(package=True, semantic=False)
+    out = await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert out["current_node"] == "deep_agent"
+    assert "수행된 조회가 없습니다" in out["final_response"]
+    assert out["final_response"] != "복합 질의"
+
+
+# ──────────────────────────────────────────────
+# 빈 응답 1회 재개 (D-093)
+# ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_resumes_once_after_empty_response(monkeypatch):
+    """1차가 빈 응답으로 끝나면 이력+재개 지시로 1회 재호출해 남은 작업을 이어간다(D-093).
+
+    재개가 성공(2차에서 후속 도구 실행 + 텍스트 종결)하면 조기 종료 안내문 없이
+    1·2차 도구 결과가 모두 aggregator로 전달되어야 한다.
+    """
+    import importlib
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from src.orchestration.deep_agent import _RESUME_NUDGE
+
+    calls = {"n": 0, "payloads": []}
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            calls["n"] += 1
+            calls["payloads"].append(payload)
+            if calls["n"] == 1:
+                self._collector.append((
+                    {"task_id": "tool_alarm_query_1", "agent": "alarm_query", "order": 1,
+                     "status": "completed", "sub_query": "활성 심각 알람 서버 목록 조회"},
+                    {"organized_data": {"summary": "2건",
+                                        "rows": [{"server_name": "SV-WEB-001"}],
+                                        "is_sufficient": True}},
+                ))
+                return {"messages": [
+                    HumanMessage(content="복합 질의"),
+                    AIMessage(content="", tool_calls=[
+                        {"name": "query_alarm", "args": {"sub_query": "알람"}, "id": "c1",
+                         "type": "tool_call"}]),
+                    ToolMessage(content="2건", tool_call_id="c1"),
+                    AIMessage(content=""),  # 빈 응답 — 조기 종료
+                ]}
+            # 2차(재개): 후속 도구 실행 + 정상 텍스트 종결
+            self._collector.append((
+                {"task_id": "tool_data_query_2", "agent": "data_query", "order": 2,
+                 "status": "completed", "sub_query": "제조사·일련번호 조회"},
+                {"organized_data": {"summary": "1건",
+                                    "rows": [{"Vendor": "HPE", "SerialNumber": "KR2024"}],
+                                    "is_sufficient": True}},
+            ))
+            return {"messages": [AIMessage(content="조회를 완료했습니다")]}
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "완전한 답", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    out = await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert calls["n"] == 2
+    # 재개 페이로드: 말미의 빈 AI 메시지는 제거되고 재개 지시(user 턴)가 덧붙는다
+    resume_msgs = calls["payloads"][1]["messages"]
+    assert resume_msgs[-1]["content"] == _RESUME_NUDGE
+    assert not any(
+        isinstance(m, AIMessage) and not (m.content or "").strip() and not m.tool_calls
+        for m in resume_msgs
+    )
+    # 재개 성공 → 조기 종료 안내문 없음, 1·2차 도구 결과 모두 전달
+    assert "orchestration_incomplete_notice" not in captured["state"]
+    assert set(captured["state"]["task_results"]) == {"tool_alarm_query_1", "tool_data_query_2"}
+    assert out["current_node"] == "deep_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_resume_stops_without_progress(monkeypatch):
+    """진전 없는 재개(빈 응답 반복 + 도구 실행 증가 없음)는 즉시 중단한다(무한루프 방지)."""
+    import importlib
+    from langchain_core.messages import AIMessage
+
+    calls = {"n": 0}
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                self._collector.append((
+                    {"task_id": "tool_alarm_query_1", "agent": "alarm_query", "order": 1,
+                     "status": "completed", "sub_query": "알람 서버 목록 조회"},
+                    {"organized_data": {"summary": "2건", "rows": [{"server_name": "s1"}],
+                                        "is_sufficient": True}},
+                ))
+            return {"messages": [AIMessage(content="")]}  # 이후 도구 실행 없이 빈 응답만 반복
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "부분 결과", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert calls["n"] == 2  # 1차 + 재개 1회(진전 없음) 후 중단 — 상한(3)까지 소진하지 않음
+    assert "orchestration_incomplete_notice" in captured["state"]
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_resume_repeats_while_progressing(monkeypatch):
+    """재개마다 도구 실행이 늘면(진전) 상한 내에서 반복 재개해 체인을 완주한다(D-093).
+
+    실측(2026-07-20 라이브): flash-lite가 매 도구 결과 후마다 빈 응답을 반환 —
+    3단계 체인은 재개 1회로 부족하고, 진전 게이트 반복으로 최종 답변까지 도달해야 한다.
+    """
+    import importlib
+    from langchain_core.messages import AIMessage
+
+    calls = {"n": 0}
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            calls["n"] += 1
+            if calls["n"] <= 2:  # 1차·재개1: 도구 1건씩 실행 후 빈 응답
+                self._collector.append((
+                    {"task_id": f"tool_t{calls['n']}", "agent": "data_query",
+                     "order": calls["n"], "status": "completed", "sub_query": f"조회 {calls['n']}"},
+                    {"organized_data": {"summary": "1건", "rows": [{"v": calls["n"]}],
+                                        "is_sufficient": True}},
+                ))
+                return {"messages": [AIMessage(content="")]}
+            # 재개2: 정상 텍스트 종결
+            return {"messages": [AIMessage(content="조회를 완료했습니다")]}
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "완전한 답", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert calls["n"] == 3  # 1차 + 재개 2회로 완주
+    assert "orchestration_incomplete_notice" not in captured["state"]
+    assert set(captured["state"]["task_results"]) == {"tool_t1", "tool_t2"}
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_resume_hard_cap(monkeypatch):
+    """진전이 계속돼도 재개 상한(_MAX_RESUME_ATTEMPTS)을 넘기지 않는다."""
+    import importlib
+    from langchain_core.messages import AIMessage
+
+    from src.orchestration.deep_agent import _MAX_RESUME_ATTEMPTS
+
+    calls = {"n": 0}
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            calls["n"] += 1
+            # 매 호출 도구 1건 실행(진전) + 빈 응답 반복
+            self._collector.append((
+                {"task_id": f"tool_t{calls['n']}", "agent": "data_query",
+                 "order": calls["n"], "status": "completed", "sub_query": f"조회 {calls['n']}"},
+                {"organized_data": {"summary": "1건", "rows": [{"v": calls["n"]}],
+                                    "is_sufficient": True}},
+            ))
+            return {"messages": [AIMessage(content="")]}
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "부분 결과", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert calls["n"] == 1 + _MAX_RESUME_ATTEMPTS
+    assert "orchestration_incomplete_notice" in captured["state"]
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_resume_failure_falls_back_to_first_result(monkeypatch):
+    """재개 호출 자체가 실패(예외)하면 1차 결과 + 조기 종료 안내문으로 안전 강등한다."""
+    import importlib
+    from langchain_core.messages import AIMessage
+
+    calls = {"n": 0}
+
+    class _FakeAgent:
+        async def ainvoke(self, payload):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                self._collector.append((
+                    {"task_id": "tool_alarm_query_1", "agent": "alarm_query", "order": 1,
+                     "status": "completed", "sub_query": "알람 서버 목록 조회"},
+                    {"organized_data": {"summary": "2건", "rows": [{"server_name": "s1"}],
+                                        "is_sufficient": True}},
+                ))
+                return {"messages": [AIMessage(content="")]}
+            raise RuntimeError("orchestrator unavailable")
+
+    captured = {}
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        agent = _FakeAgent()
+        agent._collector = collector
+        return agent
+
+    async def _fake_aggregator(state, *, llm=None, app_config=None, synthesize=False):
+        captured["state"] = state
+        return {"final_response": "부분 결과", "current_node": "result_aggregator"}
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+    ra_mod = importlib.import_module("src.orchestration.result_aggregator")
+    monkeypatch.setattr(ra_mod, "result_aggregator", _fake_aggregator)
+
+    cfg = _build_config(package=True, semantic=False)
+    out = await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert calls["n"] == 2
+    assert "orchestration_incomplete_notice" in captured["state"]
+    assert out["current_node"] == "deep_agent"

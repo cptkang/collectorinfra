@@ -101,11 +101,21 @@ async def result_aggregator(
             )
         )
 
-    # 복합 task + 합성 모드(딥 에이전트): LLM 1회로 단일 일관 답변 합성 (D-062)
+    # 복합 task + 합성 모드(딥 에이전트): 먼저 공통 서버 키로 결정적 병합을 시도한다(D-100).
+    # 여러 하위 조회(알람 선별·지표·설정)가 같은 서버 식별 컬럼을 공유하면, 질의에 언급된
+    # 모든 항목(알람명·심각도·CPU평균·제조사·일련번호 등)을 한 표로 합쳐 노출한다.
+    # 공통 키가 없으면(도메인 이질) LLM 1회 합성으로 폴백한다(D-062).
     if synthesize and len(finalized) > 1:
-        return _with_answer_history(
-            {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion}
-        )
+        merged_rows = _merge_task_results_by_identity(ordered_tasks, task_results)
+        if merged_rows:
+            out = await _finalize_merged_rows(merged_rows, state, llm, app_config)
+            return _with_answer_history(_apply_incomplete_notice(
+                {**out, **db_promotion}, state,
+            ))
+        return _with_answer_history(_apply_incomplete_notice(
+            {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion},
+            state,
+        ))
 
     # 단일 task: 그대로 최종화
     if len(finalized) == 1:
@@ -120,10 +130,195 @@ async def result_aggregator(
             out["output_file"] = f["output_file"]
             out["output_file_name"] = f.get("output_file_name")
         out.update(db_promotion)
-        return _with_answer_history(out)
+        return _with_answer_history(_apply_incomplete_notice(out, state))
 
     # 복합 task: order 순으로 묶어 통합
-    return _with_answer_history({**_merge_finalized(finalized), **db_promotion})
+    return _with_answer_history(
+        _apply_incomplete_notice({**_merge_finalized(finalized), **db_promotion}, state)
+    )
+
+
+# 서버 식별 컬럼 후보(병합 키 탐지 우선순위). server_name을 canonical로 선호한다.
+_IDENTITY_COL_HINTS = ("server_name", "hostname", "host_name", "서버명", "name")
+
+
+def _extract_result_rows(res: dict) -> list[dict]:
+    """task 결과에서 행 리스트를 추출한다(organized_data.rows 우선, query_results 폴백)."""
+    organized = res.get("organized_data") or {}
+    rows = organized.get("rows")
+    if rows is None:
+        rows = res.get("query_results")
+    return rows if isinstance(rows, list) else []
+
+
+def _find_identity_col(rows: list[dict]) -> Optional[str]:
+    """행에서 서버 식별 컬럼명을 찾는다(없으면 None). 힌트 우선순위대로 탐색한다."""
+    if not rows or not isinstance(rows[0], dict):
+        return None
+    cols = list(rows[0].keys())
+    for hint in _IDENTITY_COL_HINTS:
+        for c in cols:
+            if str(c).lower() == hint:
+                return c
+    for hint in _IDENTITY_COL_HINTS:
+        for c in cols:
+            if hint in str(c).lower():
+                return c
+    return None
+
+
+def _merge_task_results_by_identity(
+    ordered_tasks: list[dict], task_results: dict[str, dict]
+) -> Optional[list[dict]]:
+    """여러 하위 조회 결과를 공통 서버 식별 키로 병합해 단일 행 목록을 만든다(D-100).
+
+    각 조회(알람 선별·지표·설정 등)가 서버 식별 컬럼(server_name/hostname/name)을 공유하면
+    그 값을 canonical 키로 outer join하여, 질의에 언급된 모든 항목을 한 행에 모은다.
+    병합 조건: 행이 있는 조회가 2개 이상이고, 그 각각에서 식별 컬럼을 찾을 수 있을 것.
+    하나라도 식별 컬럼이 없으면(도메인 이질·집계 스칼라 등) None을 반환해 LLM 합성으로 폴백한다.
+
+    기준(base) 서버 집합: 행수가 가장 적은 조회(가장 좁게 스코프된 결과 — 예: "가장 높은
+    서버" 순위 1건)의 서버 키만 최종 표에 남긴다. 이렇게 해야 "심각 알람 서버 중 CPU 최고
+    서버의 제조사"에서 알람 선별 결과 전체(2서버)가 아니라 최종 대상(1서버)만 나온다.
+    행수가 같으면(각 서버 1행씩) 선행 조회를 기준으로 삼는다(선별 기준 우선).
+
+    카디널리티: 서버 키당 1행(대표)으로 접는다 — 한 조회가 서버당 여러 행(예: 서버당 알람
+    다건)이면 먼저 채워진 값을 유지하고 로그로 알린다(침묵 절단 방지). 컬럼 순서는 조회·행
+    등장 순서를 보존하며, 모든 식별 컬럼은 canonical 컬럼 하나로 흡수한다(name/server_name 중복 제거).
+
+    Args:
+        ordered_tasks: order 순으로 정렬된 task 목록
+        task_results: {task_id: 정규화된 결과}
+
+    Returns:
+        병합된 행 목록(canonical 식별 컬럼 우선). 병합 불가 시 None.
+    """
+    sources: list[tuple[list[dict], str]] = []
+    for t in ordered_tasks:
+        rows = _extract_result_rows(task_results.get(t.get("task_id"), {}))
+        if not rows:
+            continue
+        idc = _find_identity_col(rows)
+        if idc is None:
+            return None  # 식별 컬럼 없는 조회가 있으면 결정적 병합 불가 → 합성 폴백
+        sources.append((rows, idc))
+    if len(sources) < 2:
+        return None
+
+    id_cols = {idc for _, idc in sources}
+    canonical = "server_name" if "server_name" in id_cols else sources[0][1]
+
+    merged: dict[str, dict] = {}
+    col_order: list[str] = [canonical]
+    dropped = 0
+    for rows, idc in sources:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw_key = row.get(idc)
+            key = str(raw_key).strip().lower() if raw_key is not None else ""
+            if not key:
+                continue
+            slot = merged.setdefault(key, {canonical: raw_key})
+            for col, val in row.items():
+                if col in id_cols:  # 모든 식별 컬럼은 canonical로 흡수(중복 제거)
+                    continue
+                existing = slot.get(col)
+                if col not in slot or existing in (None, ""):
+                    slot[col] = val
+                elif val not in (None, "", existing):
+                    dropped += 1  # 서버당 다건 — 대표값 유지, 흡수 안 된 값 카운트
+                if col not in col_order:
+                    col_order.append(col)
+    if not merged:
+        return None
+
+    # 기준 서버 집합: 행수가 가장 적은 조회(가장 좁게 스코프됨)의 키만 남긴다.
+    # tie(각 1행)면 min이 첫 인덱스=선행 조회를 고른다(선별 기준 우선).
+    base_rows, base_idc = min(sources, key=lambda s: len(s[0]))
+    base_keys = {
+        str(r.get(base_idc)).strip().lower()
+        for r in base_rows
+        if isinstance(r, dict) and r.get(base_idc) is not None
+    }
+    scoped = {k: v for k, v in merged.items() if k in base_keys}
+    if scoped:
+        merged = scoped
+
+    if dropped:
+        logger.info(
+            "result_aggregator 병합: 서버당 다건으로 %d개 값이 대표행에 흡수되지 않음(대표 유지)",
+            dropped,
+        )
+    return [{c: slot.get(c) for c in col_order} for slot in merged.values()]
+
+
+async def _finalize_merged_rows(
+    merged_rows: list[dict],
+    state: AgentState,
+    llm: BaseChatModel,
+    app_config: AppConfig,
+) -> dict:
+    """병합된 통합 행을 단일 output_generator로 최종 표/자연어 응답으로 만든다(D-100).
+
+    Args:
+        merged_rows: _merge_task_results_by_identity 산출 통합 행
+        state: 전체 에이전트 상태(원본 질의)
+        llm: LLM 인스턴스
+        app_config: 앱 설정
+
+    Returns:
+        final_response/query_results/current_node를 포함한 State 갱신 dict
+    """
+    organized = {
+        "summary": f"총 {len(merged_rows)}건의 통합 결과입니다.",
+        "rows": merged_rows,
+        "column_mapping": None,
+        "resolved_mapping": None,
+        "is_sufficient": True,
+        "sheet_mappings": None,
+    }
+    # 통합 표는 전체 질의에 대한 답이므로 original_query를 전체 질의로 둔다(sub-task 스코프 아님).
+    merge_task = {"sub_query": state.get("user_query", ""), "agent": "data_query"}
+    out_state = _build_output_state(
+        state, merge_task, {"organized_data": organized, "query_results": merged_rows}
+    )
+    # _build_output_state가 original_query를 sub_query(=전체 질의)로 세팅 — 그대로 사용.
+    try:
+        out = await output_generator(out_state, llm=llm, app_config=app_config)
+        text = out.get("final_response", "")
+    except Exception as e:  # noqa: BLE001 — 표 생성 실패는 로그 후 최소 안내
+        logger.error("result_aggregator 병합 표 생성 실패: %s", e)
+        text = f"통합 결과 {len(merged_rows)}건을 정리하는 중 오류가 발생했습니다: {e}"
+    return {
+        "final_response": text,
+        "current_node": "result_aggregator",
+        "query_results": merged_rows,
+    }
+
+
+def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
+    """오케스트레이션 조기 종료 안내문을 최종 응답 말미에 덧붙인다 (D-092).
+
+    deep_agent가 오케스트레이터 루프의 조기 종료(빈 AI 응답)를 감지하면 수행된 조회와
+    미실행 작업 안내문을 state["orchestration_incomplete_notice"]로 전달한다. LLM 합성
+    결과에 의존하지 않고 결정적으로 덧붙여, 일부 하위 작업만 수행된 부분 결과가 완전한
+    답처럼 보이는 것을 차단한다(침묵적 강등 금지). 안내문이 없으면 원본 그대로 반환한다.
+
+    Args:
+        result: result_aggregator가 반환할 State 갱신 dict
+        state: 현재 에이전트 상태 (안내문 보유 여부 확인용)
+
+    Returns:
+        안내문이 덧붙은 dict (안내문 없으면 원본 그대로)
+    """
+    notice = (state.get("orchestration_incomplete_notice") or "").strip()
+    if not notice:
+        return result
+    body = (result.get("final_response") or "").strip()
+    out = dict(result)
+    out["final_response"] = f"{body}\n\n---\n{notice}" if body else notice
+    return out
 
 
 def _with_answer_history(result: dict) -> dict:
@@ -298,9 +493,17 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
     Returns:
         output_generator 입력 state dict
     """
+    # per-task 최종화 스코프(D-092): output_generator의 응답 프롬프트는
+    # parsed_requirements["original_query"]를 "사용자 질의"로 사용한다. 전체 질의를
+    # 그대로 두면 하위 task 결과(예: 알람 서버 목록)만으로 전체 질문(예: CPU 최고
+    # 서버의 제조사·일련번호)에 답한 듯 서술하는 환각이 생긴다 — sub_query로 좁힌다.
+    sub_query = task.get("sub_query") or state.get("user_query", "")
+    parsed = dict(state.get("parsed_requirements", {}) or {})
+    if sub_query:
+        parsed["original_query"] = sub_query
     return {
-        "user_query": task.get("sub_query", state.get("user_query", "")),
-        "parsed_requirements": state.get("parsed_requirements", {}),
+        "user_query": sub_query,
+        "parsed_requirements": parsed,
         "organized_data": res.get("organized_data"),
         "query_results": res.get("query_results", []),
         "template_structure": state.get("template_structure"),

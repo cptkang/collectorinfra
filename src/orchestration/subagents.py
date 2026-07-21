@@ -43,6 +43,7 @@ from src.orchestration.process_query import (
 )
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
+from src.utils.query_gen_common import is_server_identity_col
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ _MAX_PRIOR_ROWS = 100
 # general_inference가 재차 [-10:]로 자르므로 상한은 보수적으로만 둔다.
 _MAX_HISTORY_MESSAGES = 10
 # 식별 키 컬럼 추출 우선순위 (보수적: 식별성 높은 컬럼 우선)
-_IDENTITY_KEY_HINTS = ("hostname", "host_name", "name", "server_name", "id")
+# 서버 식별 컬럼 판정은 query_gen_common.is_server_identity_col로 공용화(D-100).
 # 이번 턴 질의에서 "새 위치/DB 신호"로 인정할 키워드 (M2 — DB 승계 차단 조건).
 # 사용자가 이번 턴에 아래 신호를 명시하면 직전 DB를 승계하지 않고 분류 결과를 따른다.
 _LOCATION_DB_SIGNALS = (
@@ -437,11 +438,10 @@ def _extract_identity_rows(rows: list[dict]) -> list[dict]:
     if not isinstance(first, dict):
         return limited
 
-    # 식별 키 컬럼 식별 (보수적: 컬럼명에 힌트 포함 여부)
-    key_cols = [
-        col for col in first.keys()
-        if any(hint in str(col).lower() for hint in _IDENTITY_KEY_HINTS)
-    ]
+    # 식별 키 컬럼 식별 — 서버 식별 컬럼만 엄격 선택(alarm_name 등 비서버 컬럼 배제 — D-100).
+    # 선행 조회가 서버명 외 컬럼(알람명·심각도 등)도 반환하면서 "name" 부분매칭이 alarm_name을
+    # 서버 식별로 오수집해 후속 스코프 HAVING이 오염됐다(실측).
+    key_cols = [col for col in first.keys() if is_server_identity_col(col)]
 
     if not key_cols:
         # 식별 키 없으면 전체 컬럼 유지 (행수 상한만)
@@ -475,6 +475,28 @@ def _history_for_agent(task: dict, state: dict) -> list:
     return list(msgs[-_MAX_HISTORY_MESSAGES:])
 
 
+def _scope_parsed_requirements(state: dict, task: dict) -> dict:
+    """parsed_requirements를 sub-task 스코프로 좁힌 사본을 만든다 (D-094).
+
+    original_query만 task의 sub_query로 교체한다(사본 — 원본 state 비오염).
+    time_range/query_targets 등 구조화 필드는 전체 질의 파싱값을 그대로 유지한다
+    (SQL 생성 프롬프트의 보조 맥락 — 예: 기간 202606). 단일 task(sub_query==전체
+    질의)면 실질 변화가 없다.
+
+    Args:
+        state: 전체 에이전트 상태
+        task: 현재 TaskSpec
+
+    Returns:
+        스코프 적용된 parsed_requirements 사본
+    """
+    parsed = dict(state.get("parsed_requirements", {}) or {})
+    sub_query = task.get("sub_query")
+    if sub_query:
+        parsed["original_query"] = sub_query
+    return parsed
+
+
 def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
     """subagent에 전달할 필터된 얇은 컨텍스트를 만든다 (SubAgent S3 부분 격리).
 
@@ -500,7 +522,12 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # — alarm_query여야 schema_analyzer가 alarm_allowed_tables를 노출하고
         # query_generator가 알람 전용 템플릿을 쓴다.
         "routing_intent": "alarm_query" if task.get("agent") == "alarm_query" else None,
-        "parsed_requirements": state.get("parsed_requirements", {}),
+        # sub-task 스코프(D-094, D-092 ③의 생성측 대칭): query_generator._build_user_prompt는
+        # "## 사용자 질의"로 parsed_requirements["original_query"]를 사용한다. 전체 질의를
+        # 그대로 두면 sub_query에 담긴 제약(선행 결과로 해석된 서버명 IN (...) 등)이 아니라
+        # 전체 질문에 대한 SQL을 생성하고, data_query는 알람 테이블 접근이 없어 "알람 서버 중"
+        # 같은 조건을 침묵 탈락시킨다(2026-07-20 라이브 실측 — 전 서버 기준 오답).
+        "parsed_requirements": _scope_parsed_requirements(state, task),
         "conversation_context": state.get("conversation_context"),
         "thread_id": state.get("thread_id"),
         "user_id": state.get("user_id"),

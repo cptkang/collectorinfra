@@ -114,11 +114,40 @@ def test_isolated_input_filters_large_fields():
     assert isolated["db_results"] == {}
     assert isolated["messages"] == []
     assert isolated["retry_count"] == 0
-    # 필요 필드는 전달됨
+    # 필요 필드는 전달됨 (original_query는 sub-task 스코프로 교체 — D-094)
     assert isolated["user_id"] == "kim"
-    assert isolated["parsed_requirements"] == {"query_targets": ["서버"]}
+    assert isolated["parsed_requirements"] == {
+        "query_targets": ["서버"], "original_query": "서브 질의",
+    }
     # 전체 AgentState가 아니라 필터된 dict (원본 5000행이 들어가지 않음)
     assert len(isolated["query_results"]) == 0
+
+
+def test_isolated_input_scopes_original_query_to_sub_query():
+    """parsed_requirements["original_query"]는 전체 질의가 아니라 task sub_query로 좁힌다(D-094).
+
+    회귀 방지(2026-07-20 라이브 실측): 전체 질의가 SQL 생성 프롬프트의 "## 사용자 질의"로
+    새면 sub_query의 제약(선행 결과 서버명 한정)이 아니라 전체 질문에 대한 SQL이 생성되고,
+    data_query는 알람 테이블 접근이 없어 "알람 서버 중" 조건이 침묵 탈락한다(전 서버 오답).
+    """
+    full_q = "심각 알람 서버 중 6월 CPU 최고 서버의 제조사와 일련번호"
+    state = create_initial_state(user_query=full_q)
+    state["parsed_requirements"] = {
+        "original_query": full_q,
+        "time_range": {"start": "2026-06"},
+        "query_targets": ["서버"],
+    }
+    task = {"task_id": "t2", "agent": "data_query",
+            "sub_query": 'SV-WEB-001, SV-BATCH-009 서버의 제조사와 일련번호 조회',
+            "depends_on": [], "input_from": [], "order": 2}
+
+    isolated = _make_isolated_input(task, state, prior={})
+
+    assert isolated["parsed_requirements"]["original_query"] == task["sub_query"]
+    # 구조화 필드(기간 등)는 보조 맥락으로 유지
+    assert isolated["parsed_requirements"]["time_range"] == {"start": "2026-06"}
+    # 원본 state는 비오염
+    assert state["parsed_requirements"]["original_query"] == full_q
 
 
 def test_isolated_input_propagates_form_fill_fields():

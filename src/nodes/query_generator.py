@@ -23,6 +23,7 @@ from src.db_adapters import get_adapter
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
+    _collect_prior_identity_values,
     build_generic_period_hint,
     build_prior_rows_block,
     build_query_examples_block,
@@ -144,6 +145,27 @@ def _format_structure_guide(
     return guide
 
 
+def _prior_server_scope(state: AgentState) -> Optional[tuple[str, list[str]]]:
+    """선행 task 결과(prior_rows)에서 결정적 서버 스코프를 뽑는다 (D-099).
+
+    시맨틱 컴파일러에 넘겨 HAVING 집계 필터로 강제한다 — 프롬프트 지시(build_prior_rows_block)에
+    의존하면 LLM이 WHERE 배치·모순 alias 등 변종을 생성해 침묵 0건/오답이 반복된다(D-096·D-098).
+
+    Args:
+        state: 현재 에이전트 상태
+
+    Returns:
+        (식별컬럼, 값목록) 또는 None(선행 스코프 없음)
+    """
+    prior_rows = state.get("prior_rows")
+    if not prior_rows:
+        return None
+    col, values = _collect_prior_identity_values(prior_rows)
+    if not col or not values:
+        return None
+    return col, values
+
+
 def _try_build_form_fill_pivot_sql(
     state: AgentState, limit_value: int, user_query: str
 ) -> Optional[str]:
@@ -261,11 +283,12 @@ async def query_generator(
     # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
     semantic_sql = None
     coverage_outside = False  # 트랙 C ON인데 커버리지 밖 → 트랙 A 폴백 대상 여부(3단 폴백)
-    # prior_rows(선행 task 결과 스코프)가 있으면 결정적 컴파일 우회 — SMQ는 선행 결과
-    # 서버 한정을 표현할 수 없어 스코프가 무시된 SQL이 나온다(D-086).
+    # prior_rows(선행 task 결과 스코프)는 컴파일러에 server_scope로 결정적 전달한다(D-099).
+    # 과거에는 SMQ가 스코프를 표현하지 못해 우회했으나(D-086), 이제 조립기가 HAVING으로
+    # 강제하므로 이 형태(선행 스코프 + 메트릭 순위 + EAV 속성)도 결정적 조립 대상이다.
+    prior_scope = _prior_server_scope(state)
     if (not is_retry and not deterministic_sql
             and not state.get("column_mapping")
-            and not state.get("prior_rows")
             and app_config.text2sql.semantic_compose):
         value_index = (
             state.get("column_value_index")
@@ -276,6 +299,7 @@ async def query_generator(
             default_limit=limit_value,
             stat_month=stat_month,
             value_index=value_index,
+            server_scope=prior_scope,
         )
         coverage_outside = semantic_sql is None
 

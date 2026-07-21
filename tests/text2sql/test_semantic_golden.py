@@ -373,3 +373,210 @@ async def test_compile_from_nl_llm_error_falls_back():
             raise RuntimeError("boom")
     sql, smq, cov = await compile_from_nl(_BoomLLM(), "질의", "polestar_cm_gp")
     assert sql is None and smq is None    # LLM 실패는 폴백(회귀 0)
+
+
+# ──────────────────────────────────────────────
+# 선행 스코프 + 순위 결정적 조립 (D-099)
+# ──────────────────────────────────────────────
+
+def _scoped_smq():
+    """사용자 실측 질의(알람 서버 중 6월 CPU 최고 서버의 제조사·일련번호)의 SMQ."""
+    return SMQ.from_dict({
+        "pattern": "B",
+        "dimensions": ["Vendor", "SerialNumber"],
+        "measures": [{"agg": "avg", "definition_name": "Utilization",
+                      "resource_type": "server.Cpus"}],
+        "time_grain": "month",
+    })
+
+
+def test_server_scope_compiles_to_having():
+    """선행 결과 서버 스코프가 HAVING 집계 필터로 결정적 조립된다(D-099)."""
+    m = load_semantic_model("polestar")
+    sql = compile_smq(
+        _scoped_smq(), "polestar", m, stat_month="202606",
+        server_scope=("name", ["SV-WEB-001", "SV-BATCH-009"]),
+    )
+    assert "HAVING MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) IN " in sql
+    assert "'SV-WEB-001', 'SV-BATCH-009'" in sql
+    # WHERE에 서버명 필터가 새면 자식 리소스 행이 탈락한다(D-096)
+    where_seg = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "SV-WEB-001" not in where_seg
+
+
+def test_server_scope_forces_identity_dimension_in_select():
+    """스코프가 있으면 식별 컬럼을 SELECT에 결정적으로 포함한다(D-097 — 같은 행 식별)."""
+    m = load_semantic_model("polestar")
+    sql = compile_smq(
+        _scoped_smq(), "polestar", m, stat_month="202606",
+        server_scope=("name", ["SV-WEB-001"]),
+    )
+    assert 'THEN c.name END) AS "name"' in sql
+    # 요청 속성도 함께 한 행에 나온다
+    assert "cc.name='Vendor'" in sql
+    assert "cc.name='SerialNumber'" in sql
+
+
+def test_ranking_query_orders_by_measure_nulls_last():
+    """최상급 질의는 measure alias로 정렬하고 NULLS LAST를 부여한다(D-098/D-099)."""
+    m = load_semantic_model("polestar")
+    sql = compile_smq(
+        _scoped_smq(), "polestar", m,
+        user_query="2026년 6월 CPU 사용률 평균이 가장 높은 서버의 제조사와 일련번호",
+        stat_month="202606",
+        server_scope=("name", ["SV-WEB-001", "SV-BATCH-009"]),
+    )
+    assert 'ORDER BY "cpus_avg" DESC NULLS LAST' in sql
+
+
+def test_lowest_ranking_orders_ascending():
+    """'가장 낮은' 질의는 오름차순으로 정렬한다."""
+    m = load_semantic_model("polestar")
+    sql = compile_smq(
+        _scoped_smq(), "polestar", m,
+        user_query="CPU 사용률 평균이 가장 낮은 서버",
+        stat_month="202606",
+    )
+    assert 'ORDER BY "cpus_avg" ASC NULLS LAST' in sql
+
+
+def test_no_ranking_marker_no_order_by():
+    """최상급 어휘가 없으면 정렬을 추가하지 않는다(기존 동작 불변)."""
+    m = load_semantic_model("polestar")
+    sql = compile_smq(
+        _scoped_smq(), "polestar", m,
+        user_query="서버별 6월 CPU 사용률 평균",
+        stat_month="202606",
+    )
+    assert "ORDER BY" not in sql
+
+
+def test_compiled_scoped_ranking_sql_passes_polestar_validators():
+    """결정적 조립 SQL이 폴스타 어댑터 검증 5종을 모두 통과한다(자기정합 회귀 가드)."""
+    from src.db_adapters import get_adapter
+
+    m = load_semantic_model("polestar")
+    sql = compile_smq(
+        _scoped_smq(), "polestar", m,
+        user_query="2026년 6월 CPU 사용률 평균이 가장 높은 서버의 제조사와 일련번호",
+        stat_month="202606",
+        server_scope=("name", ["SV-WEB-001", "SV-BATCH-009"]),
+    )
+    adapter = get_adapter("polestar", {"polestar"})
+    errors = [e for check in adapter.validator_checks() for e in check(sql)]
+    assert errors == [], errors
+
+
+@pytest.mark.asyncio
+async def test_scope_strips_identity_filters_to_enter_coverage(monkeypatch):
+    """선행 스코프가 있으면 SMQ의 서버 식별 필터를 제거해 결정적 조립이 발동한다 (D-099).
+
+    회귀 방지(2026-07-20 라이브 실측): 오케스트레이터 sub_query에 서버 목록이 실려 LLM SMQ가
+    name 필터를 방출 → 패턴 A/B 안전 필터(resource_type뿐) 밖으로 밀려 커버리지 실패 →
+    결정적 조립이 발동하지 못하고 LLM 폴백으로 떨어졌다. 스코프가 더 신뢰도 높은 출처다.
+    """
+    from types import SimpleNamespace
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=(
+                '{"pattern": "B", "dimensions": ["Vendor", "SerialNumber"], '
+                '"measures": [{"agg": "avg", "definition_name": "Utilization", '
+                '"resource_type": "server.Cpus"}], '
+                '"filters": [{"field": "name", "op": "in", '
+                '"value": ["SV-WEB-001", "SV-BATCH-009"]}], "time_grain": "month"}'
+            ))
+
+    sql, smq, cov = await compile_from_nl(
+        _FakeLLM(),
+        "2026년 6월 CPU 사용률 평균이 가장 높은 서버의 제조사와 일련번호 조회",
+        "polestar",
+        stat_month="202606",
+        server_scope=("name", ["SV-WEB-001", "SV-BATCH-009"]),
+    )
+
+    assert cov is not None and cov.covered, cov.reason if cov else "cov None"
+    assert sql is not None
+    assert "HAVING MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) IN " in sql
+    assert 'ORDER BY "cpus_avg" DESC NULLS LAST' in sql
+    # 원본 SMQ의 필터는 제거되어 커버리지 내로 들어온다
+    assert smq.filters == []
+
+
+@pytest.mark.asyncio
+async def test_no_scope_keeps_identity_filter_outside_coverage():
+    """스코프가 없으면 서버 식별 필터는 기존대로 커버리지 밖(LLM 폴백)이다."""
+    from types import SimpleNamespace
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=(
+                '{"pattern": "A", "dimensions": ["Vendor"], '
+                '"filters": [{"field": "name", "op": "eq", "value": "SV-WEB-001"}]}'
+            ))
+
+    sql, _smq, cov = await compile_from_nl(
+        _FakeLLM(), "SV-WEB-001 서버의 제조사", "polestar",
+    )
+    assert sql is None
+    assert cov is not None and not cov.covered
+
+
+# ──────────────────────────────────────────────
+# 알람 조회 컨텍스트 컬럼 + 최상급 LIMIT 1 (D-100)
+# ──────────────────────────────────────────────
+
+def test_alarm_query_includes_context_columns():
+    """알람 조회(패턴 C)는 서버명만 요청해도 알람명·심각도를 결정적으로 포함한다(D-100)."""
+    m = load_semantic_model("polestar")
+    smq = SMQ.from_dict({
+        "pattern": "C", "entities": ["CMM_RESOURCE"],
+        "dimensions": ["server_name"],
+        "filters": [{"field": "ALARMSEVERITY", "op": "eq", "value": 3}],
+        "active_only": True,
+    })
+    sql = compile_smq(smq, "polestar", m)
+    assert "CR.NAME AS server_name" in sql
+    assert "D.NAME AS alarm_name" in sql
+    assert "CA.ALARMSEVERITY AS severity" in sql
+
+
+def test_alarm_query_no_duplicate_when_requested():
+    """요청 dimension이 컨텍스트와 겹쳐도 중복 SELECT하지 않는다."""
+    m = load_semantic_model("polestar")
+    smq = SMQ.from_dict({
+        "pattern": "C", "entities": ["CMM_RESOURCE"],
+        "dimensions": ["NAME", "ALARMSEVERITY", "server_name", "IPADDRESS"],
+        "active_only": True,
+    })
+    sql = compile_smq(smq, "polestar", m)
+    assert sql.count("D.NAME AS alarm_name") == 1
+    assert sql.count("CA.ALARMSEVERITY AS severity") == 1
+    # 추가 요청 dimension(IP)은 뒤에 포함
+    assert "CR.IPADDRESS AS ipaddress" in sql
+
+
+def test_ranking_query_limits_to_one():
+    """최상급 순위 질의는 결정적 조립에서 상위 1건으로 제한한다(D-100)."""
+    m = load_semantic_model("polestar")
+    smq = _scoped_smq()
+    sql = compile_smq(
+        smq, "polestar", m,
+        user_query="2026년 6월 CPU 사용률 평균이 가장 높은 서버의 제조사와 일련번호",
+        stat_month="202606",
+        server_scope=("name", ["SV-WEB-001", "SV-BATCH-009"]),
+    )
+    assert sql.rstrip().endswith("LIMIT 1;")
+
+
+def test_non_ranking_keeps_default_limit():
+    """최상급 어휘가 없으면 기본 LIMIT를 유지한다(순위 아님)."""
+    m = load_semantic_model("polestar")
+    smq = _scoped_smq()
+    sql = compile_smq(
+        smq, "polestar", m,
+        user_query="서버별 6월 CPU 사용률 평균과 제조사",
+        default_limit=1000, stat_month="202606",
+    )
+    assert "LIMIT 1000" in sql
+    assert "LIMIT 1;" not in sql

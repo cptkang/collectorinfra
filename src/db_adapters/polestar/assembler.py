@@ -219,6 +219,8 @@ def build_multi_resource_pivot_sql(
     stat_month: str | None = None,
     metric_table: str = "cmm_metric_stat_m",
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    server_scope: tuple[str, list[str]] | None = None,
+    order_by: tuple[str, str] | None = None,
 ) -> str:
     """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**한다(LLM 우회, D-068 2차).
 
@@ -236,6 +238,10 @@ def build_multi_resource_pivot_sql(
         metric_table: 월별 통계 테이블명(폴스타 기본 cmm_metric_stat_m).
         explicit_measures: 시맨틱 컴파일러용 명시 measure (alias, resource_type, agg_fn,
             val_col, definition_name). metric_fields의 한글라벨 분류 대신 직접 지정(패턴 B).
+        server_scope: 선행 결과 서버 한정 (식별컬럼, 값목록) — HAVING의 집계 CASE WHEN으로
+            적용한다(WHERE에 두면 자식 리소스 행이 탈락해 0건 — D-096). None이면 미적용.
+        order_by: 순위 정렬 (SELECT alias, "DESC"|"ASC"). NULL이 1위를 차지하지 않도록
+            NULLS LAST를 항상 부여한다(D-098 — PostgreSQL DESC 기본은 NULLS FIRST).
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결).
@@ -276,6 +282,19 @@ def build_multi_resource_pivot_sql(
         "  AND c.dtime IS NULL\n"
         "GROUP BY COALESCE(c.platform_resource_id, c.id)"
     )
+    if server_scope:
+        scope_col, scope_values = server_scope
+        if scope_values:
+            quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in scope_values)
+            sql += (
+                f"\nHAVING MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
+                f"THEN c.{scope_col} END) IN ({quoted})"
+            )
+    if order_by:
+        alias, direction = order_by
+        dir_kw = "DESC" if str(direction).upper() != "ASC" else "ASC"
+        # NULLS LAST 필수: 값이 없는 서버가 정렬 선두를 차지해 임의 서버가 1위로 뽑히는 것을 방지(D-098).
+        sql += f'\nORDER BY "{alias}" {dir_kw} NULLS LAST'
     if limit:
         if (db_engine or "").lower() == "db2":
             sql += f"\nFETCH FIRST {limit} ROWS ONLY"

@@ -12,7 +12,15 @@ from src.db_adapters.polestar.prompts import (
     POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE,
     POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE,
 )
-from src.db_adapters.polestar.validators import check_routing_filter_misuse
+from src.db_adapters.polestar.validators import (
+    check_contradictory_alias_resource_type,
+    check_routing_filter_misuse,
+    check_metric_join_on_server_entity,
+    check_pivot_metric_inner_join,
+    check_ranking_order_by_nulls_last,
+    check_scope_filter_where_demotion,
+    check_scoped_pivot_missing_server_identity,
+)
 
 
 class PolestarAdapter:
@@ -34,5 +42,13 @@ class PolestarAdapter:
         return POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
 
     def validator_checks(self) -> list[Callable[[str], list[str]]]:
-        """폴스타 전용 SQL 검증 함수 목록(라우팅 필터 오용 탐지)."""
-        return [check_routing_filter_misuse]
+        """폴스타 전용 SQL 검증 함수 목록(라우팅 필터 오용·피벗 스코프 WHERE 강등 탐지)."""
+        return [
+            check_routing_filter_misuse,
+            check_scope_filter_where_demotion,
+            check_scoped_pivot_missing_server_identity,
+            check_metric_join_on_server_entity,
+            check_pivot_metric_inner_join,
+            check_contradictory_alias_resource_type,
+            check_ranking_order_by_nulls_last,
+        ]

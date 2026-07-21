@@ -18,9 +18,30 @@ from langchain_core.tools import StructuredTool
 
 from src.config import AppConfig
 from src.orchestration.intent_planner import has_alarm_signal
-from src.orchestration.subagents import SUBAGENT_REGISTRY, _make_isolated_input
+from src.orchestration.subagents import (
+    SUBAGENT_REGISTRY,
+    _extract_identity_rows,
+    _make_isolated_input,
+)
 
 logger = logging.getLogger(__name__)
+
+# ── 선행 결과 스코프 주입 게이트 (D-095 — 결정적) ──
+# deepagents 경로는 planner의 input_from이 없어 선행 결과 전파가 오케스트레이터의
+# sub_query 작성 품질에 의존했다(D-094 잔여). 아래 게이트로 D-086 prior_rows 주입을 배선한다.
+# 전역 범위 명시 어휘 — 있으면 선행 스코프를 주입하지 않는다(독립 전역 조회 보호).
+_GLOBAL_SCOPE_MARKERS = ("전체", "모든", "전 서버")
+# 선행 결과 참조/선별 어휘 — 있으면 주입.
+_PRIOR_REF_MARKERS = (
+    "해당", "그 서버", "이 서버", "위 서버", "이들", "앞서", "선행", "선별", "조회된",
+    "중에서", "these", "among",
+)
+# 순위/최상급 어휘 — 복합 질의의 후속 조회에서 "선별 집합 내 순위" 신호
+# (2026-07-20 라이브 오답 실측: "6월 CPU 최고 서버 조회"가 전 서버 기준 SQL로 생성).
+_RANKING_MARKERS = (
+    "가장", "최고", "최대", "최소", "최상위", "상위", "하위",
+    "highest", "lowest", "top",
+)
 
 # 도구 반환 시 포함할 최대 행 수 (토큰 폭증 방지 — R-B6/R-12와 동일 취지)
 _MAX_TOOL_ROWS = 50
@@ -109,6 +130,72 @@ def _serialize_for_tool(result: Any, app_config: Optional[AppConfig] = None) -> 
     return _truncate(json.dumps(payload, ensure_ascii=False, default=str), limit)
 
 
+def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]:
+    """후속 조회 task에 주입할 선행 결과 의존(input_from/prior)을 결정한다 (D-095).
+
+    결정적 게이트 중 하나라도 충족하면 선행 조회 결과를 D-086 prior_rows 경로로 주입해
+    SQL 대상 스코프를 강제한다:
+    - G1 값 일치: sub_query에 선행 결과의 식별 값(서버명 등)이 등장 — SQL 재생성 시
+      필터 탈락 방지(강화 주입).
+    - G2 참조/선별 어휘: "해당/그 서버/앞서/선별…" — 선행 결과 참조 신호.
+    - G3 순위/최상급 어휘: "가장/최고/상위…" — 복합 질의에서 선행 선별 집합 내 순위
+      산정 신호.
+    단, sub_query가 전역 범위를 명시(_GLOBAL_SCOPE_MARKERS)하면 주입하지 않는다.
+
+    Args:
+        sub_query: 현재 도구의 자연어 지시
+        collector: 지금까지 실행된 [(task, result), ...]
+
+    Returns:
+        (input_from task_id 목록, {task_id: 원본 결과}) — 게이트 미충족 시 ([], {})
+    """
+    low = (sub_query or "").lower()
+    if any(m in low for m in _GLOBAL_SCOPE_MARKERS):
+        return [], {}
+
+    # 선행 후보: 조회형 agent의 성공 결과 중 행이 있는 것만
+    candidates: list[tuple[dict, dict, list]] = []
+    for t, res in collector:
+        if t.get("agent") not in ("data_query", "alarm_query"):
+            continue
+        if not isinstance(res, dict) or res.get("error"):
+            continue
+        organized = res.get("organized_data") or {}
+        rows = organized.get("rows") or res.get("query_results") or []
+        if rows:
+            candidates.append((t, res, rows))
+    if not candidates:
+        return [], {}
+
+    ref_hit = any(m in low for m in _PRIOR_REF_MARKERS)
+    rank_hit = any(m in low for m in _RANKING_MARKERS)
+    value_hit = False
+    if not (ref_hit or rank_hit):
+        for _, _, rows in candidates:
+            for row in _extract_identity_rows(rows):
+                if not isinstance(row, dict):
+                    continue
+                if any(
+                    isinstance(v, str) and len(v) >= 3 and v.lower() in low
+                    for v in row.values()
+                ):
+                    value_hit = True
+                    break
+            if value_hit:
+                break
+    if not (ref_hit or rank_hit or value_hit):
+        return [], {}
+
+    input_from: list[str] = []
+    prior: dict = {}
+    for t, res, _ in candidates:
+        tid = t.get("task_id")
+        if tid and tid not in prior:
+            input_from.append(tid)
+            prior[tid] = res
+    return input_from, prior
+
+
 async def _run_subagent_tool(
     agent_name: str,
     sub_query: str,
@@ -148,16 +235,26 @@ async def _run_subagent_tool(
         agent_name = "alarm_query"
     spec = SUBAGENT_REGISTRY.get(agent_name) or _fallback_spec()
     order = (len(collector) + 1) if collector is not None else 1
+    # 선행 결과 스코프 결정적 주입(D-095): 게이트 충족 시 D-086 prior_rows 경로 배선.
+    input_from: list[str] = []
+    prior: dict[str, Any] = {}
+    if collector and agent_name in ("data_query", "alarm_query"):
+        input_from, prior = _dependency_scope(sub_query, collector)
+        if input_from:
+            logger.info(
+                "deepagents 도구 선행 스코프 주입(D-095): input_from=%s (sub_query=%r)",
+                input_from, sub_query,
+            )
     task: dict[str, Any] = {
         "task_id": f"tool_{agent_name}_{order}",
         "agent": agent_name,
         "sub_query": sub_query,
         "depends_on": [],
-        "input_from": [],
+        "input_from": input_from,
         "order": order,
         "status": "pending",
     }
-    isolated = _make_isolated_input(task, ambient_state, prior={})
+    isolated = _make_isolated_input(task, ambient_state, prior=prior)
     isolated["user_query"] = sub_query
     result = await spec.handler(
         task, isolated, llm=spec.model or worker_llm, app_config=app_config

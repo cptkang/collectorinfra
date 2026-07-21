@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 import sys
 
 from src.orchestration.result_aggregator import (
+    _apply_incomplete_notice,
+    _build_output_state,
     _collect_superseded,
     _finalize_task,
     _merge_finalized,
@@ -481,3 +483,211 @@ async def test_result_aggregator_promotes_db_id_for_multiturn(mock_config):
     from src.nodes.context_resolver import _extract_previous_db_ids
     assert _extract_previous_db_ids({"target_databases": out["target_databases"],
                                      "active_db_id": out["active_db_id"]}) == ["polestar_b0"]
+
+
+# ──────────────────────────────────────────────
+# 조기 종료 안내 · per-task 최종화 스코프 (D-092)
+# ──────────────────────────────────────────────
+
+def test_build_output_state_scopes_original_query_to_sub_query():
+    """per-task 최종화 입력의 original_query는 전체 질의가 아니라 sub_query로 좁힌다(D-092).
+
+    회귀 방지(2026-07-20 실측): 전체 질의 original_query가 새면 output_generator가
+    하위 task 결과(알람 서버 목록 2행)만으로 전체 질문에 답한 듯 서술한다
+    ("2026년 6월 CPU 사용률 평균이 가장 높았던 서버는 SV-WEB-001입니다" 환각).
+    """
+    state = create_initial_state(
+        user_query="심각 알람 서버 중 6월 CPU 최고 서버의 제조사와 일련번호"
+    )
+    state["parsed_requirements"] = {
+        "original_query": state["user_query"],
+        "output_format": "text",
+    }
+    task = {"task_id": "t1", "agent": "alarm_query",
+            "sub_query": "활성 심각 알람 서버 목록 조회", "order": 1}
+
+    out = _build_output_state(state, task, {"organized_data": {"rows": []}})
+
+    assert out["user_query"] == "활성 심각 알람 서버 목록 조회"
+    assert out["parsed_requirements"]["original_query"] == "활성 심각 알람 서버 목록 조회"
+    # 나머지 파싱 필드(output_format 등)는 유지
+    assert out["parsed_requirements"]["output_format"] == "text"
+    # 원본 state의 parsed_requirements는 변형하지 않는다(공유 dict 오염 방지)
+    assert state["parsed_requirements"]["original_query"] == state["user_query"]
+
+
+def test_build_output_state_falls_back_to_user_query_without_sub_query():
+    """sub_query가 없으면 기존대로 전체 user_query를 사용한다(단일 task 경로 동작 불변)."""
+    state = create_initial_state(user_query="전체 서버 조회")
+    state["parsed_requirements"] = {"original_query": "전체 서버 조회"}
+    task = {"task_id": "t1", "agent": "data_query", "order": 1}
+
+    out = _build_output_state(state, task, {})
+
+    assert out["user_query"] == "전체 서버 조회"
+    assert out["parsed_requirements"]["original_query"] == "전체 서버 조회"
+
+
+def test_apply_incomplete_notice_noop_without_flag():
+    """안내문이 없으면(정상 완료·replanner 경로) 결과를 그대로 반환한다."""
+    out = _apply_incomplete_notice({"final_response": "본문"}, {})
+    assert out["final_response"] == "본문"
+
+
+def test_apply_incomplete_notice_appends_to_body():
+    """안내문이 있으면 본문 말미에 구분선과 함께 덧붙인다."""
+    notice = "⚠️ 내부 처리가 중간에 중단되어 요청의 일부만 수행되었습니다."
+    out = _apply_incomplete_notice(
+        {"final_response": "알람 서버 2대입니다"},
+        {"orchestration_incomplete_notice": notice},
+    )
+    assert out["final_response"].startswith("알람 서버 2대입니다")
+    assert notice in out["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_result_aggregator_appends_incomplete_notice(mock_config):
+    """orchestration_incomplete_notice가 있으면 최종 응답 말미에 결정적으로 덧붙는다(D-092).
+
+    딥 에이전트 경로에서 오케스트레이터 루프가 빈 응답으로 조기 종료되면(예: 알람
+    조회만 수행되고 CPU 평균·제조사/일련번호 조회 미실행) 부분 결과임을 명시해야 한다.
+    """
+    notice = (
+        "⚠️ 내부 처리가 중간에 중단되어 요청의 일부만 수행되었습니다.\n"
+        "수행된 조회:\n- 활성 심각 알람 서버 목록 조회\n"
+        "질문의 나머지 항목은 수행되지 않았습니다."
+    )
+    state = create_initial_state(user_query="심각 알람 서버 중 6월 CPU 최고 서버의 제조사와 일련번호")
+    state["task_plan"] = [
+        {"task_id": "t1", "agent": "alarm_query",
+         "sub_query": "활성 심각 알람 서버 목록 조회", "order": 1, "status": "completed"},
+    ]
+    state["task_results"] = {
+        "t1": {"organized_data": {"summary": "2건",
+                                  "rows": [{"server_name": "SV-WEB-001"}],
+                                  "is_sufficient": True}}
+    }
+    state["orchestration_incomplete_notice"] = notice
+
+    with patch.object(
+        agg_mod, "output_generator",
+        new=AsyncMock(return_value={"final_response": "알람 서버 2대입니다",
+                                    "output_file": None, "output_file_name": None}),
+    ):
+        out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    assert out["final_response"].startswith("알람 서버 2대입니다")
+    assert "수행되지 않았습니다" in out["final_response"]
+    assert "활성 심각 알람 서버 목록 조회" in out["final_response"]
+    # 답변 이력(messages)에도 안내문 포함 응답이 기록된다(다음 턴 근거 정합)
+    assert "수행되지 않았습니다" in out["messages"][0].content
+
+
+# ──────────────────────────────────────────────
+# 프롬프트 항목 전체 병합 표시 (D-100)
+# ──────────────────────────────────────────────
+
+from src.orchestration.result_aggregator import (
+    _find_identity_col,
+    _merge_task_results_by_identity,
+)
+
+
+def _rows_task(tid, order, rows):
+    return {"task_id": tid, "order": order}, {"organized_data": {"rows": rows}}
+
+
+def test_find_identity_col_prefers_server_name():
+    """식별 컬럼 탐지는 server_name을 우선하고 alarm_name은 고르지 않는다."""
+    assert _find_identity_col([{"server_name": "s1", "alarm_name": "a", "severity": 3}]) == "server_name"
+    assert _find_identity_col([{"name": "s1", "Vendor": "HPE"}]) == "name"
+    assert _find_identity_col([{"count": 5}]) is None
+
+
+def test_merge_scopes_to_smallest_source_ranking():
+    """순위 1건 조회(base)의 서버만 남긴다 — '가장 높은 서버'가 대상 전체로 번지지 않음(D-100)."""
+    alarm_rows = [
+        {"server_name": "SV-WEB-001", "alarm_name": "CPU 임계", "severity": 3},
+        {"server_name": "SV-BATCH-009", "alarm_name": "메모리 임계", "severity": 3},
+    ]
+    cpu_rows = [{"name": "SV-WEB-001", "Vendor": "HPE", "SerialNumber": "KR2024", "cpus_avg": 42.8}]
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    results = {
+        "t1": {"organized_data": {"rows": alarm_rows}},
+        "t2": {"organized_data": {"rows": cpu_rows}},
+    }
+    merged = _merge_task_results_by_identity(tasks, results)
+    assert len(merged) == 1
+    row = merged[0]
+    # 질의에 언급된 모든 항목이 한 행에
+    assert row["server_name"] == "SV-WEB-001"
+    assert row["alarm_name"] == "CPU 임계"
+    assert row["severity"] == 3
+    assert row["Vendor"] == "HPE"
+    assert row["SerialNumber"] == "KR2024"
+    assert row["cpus_avg"] == 42.8
+    # name/server_name 식별 컬럼 중복 없음
+    assert "name" not in row
+
+
+def test_merge_two_servers_when_equal_cardinality():
+    """동수 조회(각 2행)는 선별 서버 전체를 유지한다."""
+    alarm = [{"server_name": "A", "severity": 3}, {"server_name": "B", "severity": 2}]
+    cpu = [{"server_name": "A", "cpus_avg": 40}, {"server_name": "B", "cpus_avg": 20}]
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    merged = _merge_task_results_by_identity(
+        tasks, {"t1": {"organized_data": {"rows": alarm}}, "t2": {"organized_data": {"rows": cpu}}}
+    )
+    assert len(merged) == 2
+    by_key = {r["server_name"]: r for r in merged}
+    assert by_key["A"]["cpus_avg"] == 40 and by_key["A"]["severity"] == 3
+    assert by_key["B"]["cpus_avg"] == 20 and by_key["B"]["severity"] == 2
+
+
+def test_merge_none_when_no_common_identity():
+    """식별 컬럼 없는 조회가 있으면 병합 취소(None) → LLM 합성 폴백."""
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    results = {
+        "t1": {"organized_data": {"rows": [{"total_count": 5}]}},
+        "t2": {"organized_data": {"rows": [{"server_name": "A", "Vendor": "HPE"}]}},
+    }
+    assert _merge_task_results_by_identity(tasks, results) is None
+
+
+def test_merge_none_when_single_source():
+    """행 있는 조회가 1개뿐이면 병합 대상 아님(None)."""
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    results = {
+        "t1": {"organized_data": {"rows": [{"server_name": "A", "Vendor": "HPE"}]}},
+        "t2": {"organized_data": {"rows": []}},
+    }
+    assert _merge_task_results_by_identity(tasks, results) is None
+
+
+@pytest.mark.asyncio
+async def test_result_aggregator_merges_and_shows_all_items(mock_config):
+    """딥에이전트 복합 결과를 서버 키로 병합해 단일 표(모든 항목)로 최종화한다(D-100)."""
+    tasks = [
+        {"task_id": "t1", "agent": "alarm_query", "sub_query": "알람", "order": 1, "status": "completed"},
+        {"task_id": "t2", "agent": "data_query", "sub_query": "CPU", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="심각 알람 서버 중 6월 CPU 최고 서버의 제조사와 일련번호")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"organized_data": {"rows": [{"server_name": "SV-WEB-001", "alarm_name": "CPU 임계", "severity": 3}], "is_sufficient": True}},
+        "t2": {"organized_data": {"rows": [{"name": "SV-WEB-001", "Vendor": "HPE", "SerialNumber": "KR2024", "cpus_avg": 42.8}], "is_sufficient": True}},
+    }
+
+    captured = {}
+    async def fake_og(s, **kw):
+        captured["rows"] = (s.get("organized_data") or {}).get("rows")
+        return {"final_response": "표", "output_file": None, "output_file_name": None}
+
+    with patch.object(agg_mod, "output_generator", new=fake_og):
+        out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config, synthesize=True)
+
+    # 병합된 단일 행이 output_generator로 전달됨(6개 항목 전부)
+    assert len(captured["rows"]) == 1
+    assert set(captured["rows"][0]) == {"server_name", "alarm_name", "severity", "Vendor", "SerialNumber", "cpus_avg"}
+    # 병합 rows가 top-level query_results로 승격
+    assert out["query_results"] == captured["rows"]

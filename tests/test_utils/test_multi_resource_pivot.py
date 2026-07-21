@@ -401,3 +401,58 @@ class TestDeterministicPivotSql:
         for line in body.strip().splitlines():
             stripped = line.strip().rstrip(",")
             assert stripped.startswith(("MAX(", "ROUND(AVG(", "ROUND(MAX(", "ROUND(MIN(")), stripped
+
+
+class TestResolveStatMonthAbsolute:
+    """절대 월 표현 해석 (D-099).
+
+    회귀 방지(2026-07-20 라이브 실측): "2026년 6월"이 None을 반환해 결정적 조립 SQL에
+    stat_date 필터가 빠지고 전 기간 평균으로 순위가 뒤집혔다.
+    """
+
+    def test_korean_absolute_month(self):
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month("2026년 6월 CPU 사용률 평균이 가장 높은 서버") == "202606"
+
+    def test_hyphen_and_slash_forms(self):
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month("2026-06 CPU 평균") == "202606"
+        assert resolve_stat_month("2026/6 CPU 평균") == "202606"
+
+    def test_absolute_takes_priority_over_relative(self):
+        """절대 표현이 상대 표현보다 우선한다(더 명시적)."""
+        from datetime import date
+
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month(
+            "지난달 대비 2026년 3월 CPU", today=date(2026, 7, 20)
+        ) == "202603"
+
+    def test_relative_still_works(self):
+        """기존 상대 표현 해석은 불변(회귀 0)."""
+        from datetime import date
+
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month("지난달 CPU 평균", today=date(2026, 7, 20)) == "202606"
+        assert resolve_stat_month("이번달 CPU", today=date(2026, 7, 20)) == "202607"
+
+    def test_month_count_expression_not_matched(self):
+        """'지난 3개월' 같은 개월 수 표현은 절대 월로 오인하지 않는다."""
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month("지난 3개월 CPU 추이") is None
+
+    def test_invalid_month_ignored(self):
+        """13월 등 범위 밖 값은 무시한다."""
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month("2026년 13월 데이터") is None
+
+    def test_no_period_expression(self):
+        from src.utils.query_gen_common import resolve_stat_month
+
+        assert resolve_stat_month("CPU 사용률 현황") is None

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 _PREV_MONTH_SIGNALS: tuple[str, ...] = (
@@ -15,6 +16,9 @@ _PREV_MONTH_SIGNALS: tuple[str, ...] = (
     "지난달 1개월", "last month", "previous month",
 )
 _CUR_MONTH_SIGNALS: tuple[str, ...] = ("이번달", "이번 달", "당월", "금월", "this month", "current month")
+# 절대 월 표현: "2026년 6월" / "2026-06" / "2026/6" (상대 표현보다 우선 — 더 명시적).
+# '개월'(지난 3개월)은 매칭되지 않는다(년 접두 + 월 종결 요구).
+_ABS_MONTH_RE = re.compile(r"(\d{4})\s*(?:년\s*|[-/])\s*(\d{1,2})\s*월?")
 
 
 def resolve_stat_month(user_query: str | None, today: date | None = None) -> str | None:
@@ -25,6 +29,14 @@ def resolve_stat_month(user_query: str | None, today: date | None = None) -> str
     """
     text = user_query or ""
     ref = today or date.today()
+    # 절대 월 표현이 있으면 최우선(가장 명시적) — 없으면 기존 상대 표현 해석으로 내려간다.
+    # 과거에는 절대 월이 None을 반환해 결정적 조립 SQL에 기간 필터가 빠지고 전 기간 평균으로
+    # 순위가 뒤집혔다(2026-07-20 라이브 실측 — D-099).
+    abs_m = _ABS_MONTH_RE.search(text)
+    if abs_m:
+        year, month = int(abs_m.group(1)), int(abs_m.group(2))
+        if 1 <= month <= 12:
+            return f"{year}{month:02d}"
     if any(sig in text for sig in _PREV_MONTH_SIGNALS):
         year, month = (ref.year - 1, 12) if ref.month == 1 else (ref.year, ref.month - 1)
         return f"{year}{month:02d}"
@@ -236,6 +248,36 @@ _PRIOR_HOSTNAME_HINTS: tuple[str, ...] = ("hostname", "host_name")
 _PRIOR_NAME_HINTS: tuple[str, ...] = ("server_name", "name")
 _MAX_PRIOR_SCOPE_VALUES: int = 100
 
+# 서버 식별 컬럼 판정(D-100): 정확 매칭 집합 + server/host/os 계열 *_name/_id만 인정한다.
+# 선행 조회가 서버명 외 컬럼(alarm_name/definition_name/severity 등)도 반환하게 되면서,
+# "name" 부분매칭이 alarm_name을 서버 식별값으로 오수집해 스코프 HAVING이 오염됐다(실측).
+_SERVER_ID_EXACT: frozenset[str] = frozenset(
+    {"server_name", "hostname", "host_name", "os_hostname", "name", "id", "server_id"}
+)
+_SERVER_ID_PREFIXES: tuple[str, ...] = ("server", "host", "os")
+
+
+def is_server_identity_col(col: str) -> bool:
+    """컬럼명이 서버 식별 컬럼(병합 키·선행 스코프 키 후보)인지 엄격 판정한다 (D-100).
+
+    정확 매칭(server_name/hostname/name/id 등)이거나 server/host/os로 시작하는 *_name/_id만
+    서버 식별로 인정한다. alarm_name·definition_name·severity 등 비서버 컬럼은 제외한다.
+
+    Args:
+        col: 컬럼명
+
+    Returns:
+        서버 식별 컬럼이면 True
+    """
+    cl = str(col).strip().lower()
+    if cl in _SERVER_ID_EXACT:
+        return True
+    if (cl.endswith("_name") or cl.endswith("_id")) and any(
+        cl.startswith(p) for p in _SERVER_ID_PREFIXES
+    ):
+        return True
+    return False
+
 
 def _collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
     """prior_rows에서 서버 식별 컬럼 종류와 값 목록을 추출한다.
@@ -260,13 +302,15 @@ def _collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
             for col, val in row.items():
                 if val is None or str(val).strip() == "":
                     continue
+                if not is_server_identity_col(col):
+                    continue  # 서버 식별 컬럼만 스코프 키로 인정(alarm_name 등 오염 차단 — D-100)
                 col_l = str(col).lower()
                 text = str(val).strip()
                 if any(h in col_l for h in _PRIOR_HOSTNAME_HINTS):
                     if text not in seen_h:
                         seen_h.add(text)
                         hostnames.append(text)
-                elif any(n in col_l for n in _PRIOR_NAME_HINTS):
+                else:
                     if text not in seen_n:
                         seen_n.add(text)
                         names.append(text)
@@ -309,5 +353,7 @@ def build_prior_rows_block(prior_rows: dict | None) -> str:
         "2. 서버를 선별했던 조건(알람 발생·심각도·활성 상태 등)은 선행 작업에서 이미 처리 완료되었습니다 — "
         "선별에 사용한 테이블·컬럼·조건(알람/이벤트 등)을 이 SQL에서 다시 표현하지 마세요. "
         "대상 DB에 존재하지 않는 테이블/컬럼/값으로 선별 조건을 지어내지 마세요(환각 금지).\n"
-        "3. 위 목록 외의 서버가 결과에 포함되어서는 안 됩니다."
+        "3. 위 목록 외의 서버가 결과에 포함되어서는 안 됩니다.\n"
+        "4. 결과의 각 행이 어느 서버의 값인지 알 수 있도록 서버 식별 컬럼(예: server_name)을 "
+        "SELECT에 반드시 포함하세요 (GROUP BY 피벗 쿼리면 집계 CASE WHEN으로 포함)."
     )

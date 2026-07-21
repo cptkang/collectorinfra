@@ -266,6 +266,16 @@ def _build_response_prompt(
         ),
     ]
 
+    # 표에 모든 컬럼을 빠짐없이 포함하도록 컬럼 목록을 명시한다(D-100) — LLM이 질의 문구에
+    # 이끌려 일부 컬럼만 표시하는 것을 방지(실측: "제조사와 일련번호" 질의에서 서버명·알람명 누락).
+    columns = list(display_rows[0].keys()) if display_rows and isinstance(display_rows[0], dict) else []
+    if columns:
+        parts.append(
+            "## 표시 규칙\n"
+            f"아래 {len(columns)}개 컬럼을 **모두** 표에 포함하세요(하나도 생략 금지): "
+            + ", ".join(columns)
+        )
+
     return "\n\n".join(parts)
 
 

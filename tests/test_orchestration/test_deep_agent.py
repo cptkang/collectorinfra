@@ -306,3 +306,135 @@ def test_build_deep_agent_without_package_raises(mock_config):
     mock_config.orchestrator = OrchestratorConfig(base_url="http://vllm:8000/v1")
     with pytest.raises(RuntimeError, match="deepagents"):
         build_deep_agent(mock_config)
+
+
+# ──────────────────────────────────────────────
+# 선행 결과 스코프 결정적 주입 (D-095)
+# ──────────────────────────────────────────────
+
+def _alarm_collector():
+    """알람 조회가 선행된 collector 픽스처."""
+    return [(
+        {"task_id": "tool_alarm_query_1", "agent": "alarm_query", "order": 1,
+         "status": "completed", "sub_query": "활성 심각 알람 서버 목록 조회"},
+        {"organized_data": {"summary": "2건",
+                            "rows": [{"server_name": "SV-WEB-001"},
+                                     {"server_name": "SV-BATCH-009"}],
+                            "is_sufficient": True}},
+    )]
+
+
+def test_dependency_scope_ranking_marker_injects():
+    """순위/최상급 어휘(G3)가 있으면 선행 결과를 주입한다.
+
+    회귀 방지(2026-07-20 라이브): "6월 CPU 최고 서버 조회" sub_query가 알람 서버
+    한정 없이 전 서버 기준 SQL로 생성돼 알람 무관 서버가 답으로 나왔다.
+    """
+    from src.orchestration.deepagents_tools import _dependency_scope
+
+    input_from, prior = _dependency_scope(
+        "2026년 6월 CPU 사용률 평균이 가장 높았던 서버 조회", _alarm_collector()
+    )
+    assert input_from == ["tool_alarm_query_1"]
+    assert "tool_alarm_query_1" in prior
+
+
+def test_dependency_scope_value_match_injects():
+    """sub_query에 선행 결과 식별 값이 등장하면(G1) 주입한다(SQL 재생성 필터 탈락 방지)."""
+    from src.orchestration.deepagents_tools import _dependency_scope
+
+    input_from, _ = _dependency_scope(
+        "SV-WEB-001, SV-BATCH-009 서버의 제조사와 일련번호 조회", _alarm_collector()
+    )
+    assert input_from == ["tool_alarm_query_1"]
+
+
+def test_dependency_scope_reference_marker_injects():
+    """참조/선별 어휘(G2 — "해당 서버")가 있으면 주입한다."""
+    from src.orchestration.deepagents_tools import _dependency_scope
+
+    input_from, _ = _dependency_scope("해당 서버들의 디스크 사용량 조회", _alarm_collector())
+    assert input_from == ["tool_alarm_query_1"]
+
+
+def test_dependency_scope_global_marker_blocks():
+    """전역 범위 명시("전체 서버")면 순위 어휘가 있어도 주입하지 않는다(독립 조회 보호)."""
+    from src.orchestration.deepagents_tools import _dependency_scope
+
+    input_from, prior = _dependency_scope(
+        "전체 서버 중 CPU 사용률이 가장 높은 서버 조회", _alarm_collector()
+    )
+    assert input_from == []
+    assert prior == {}
+
+
+def test_dependency_scope_no_signal_no_injection():
+    """게이트 신호가 없는 독립 조회는 주입하지 않는다."""
+    from src.orchestration.deepagents_tools import _dependency_scope
+
+    input_from, prior = _dependency_scope("디스크 사용량 현황 조회", _alarm_collector())
+    assert input_from == []
+    assert prior == {}
+
+
+def test_dependency_scope_skips_failed_and_rowless_prior():
+    """실패했거나 행이 없는 선행 결과는 주입 후보에서 제외한다."""
+    from src.orchestration.deepagents_tools import _dependency_scope
+
+    collector = [
+        ({"task_id": "t1", "agent": "alarm_query", "sub_query": "알람"}, {"error": "실패"}),
+        ({"task_id": "t2", "agent": "data_query", "sub_query": "조회"},
+         {"organized_data": {"summary": "0건", "rows": []}}),
+    ]
+    input_from, prior = _dependency_scope("가장 높은 서버 조회", collector)
+    assert input_from == []
+    assert prior == {}
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_tool_injects_prior_rows(mock_config, monkeypatch):
+    """게이트 충족 시 handler의 isolated 입력에 prior_rows(식별 키 행)가 실린다(D-095)."""
+    captured = {}
+
+    async def fake_handler(task, isolated, *, llm, app_config):
+        captured["input_from"] = task.get("input_from")
+        captured["prior_rows"] = isolated.get("prior_rows")
+        return {"organized_data": {"summary": "1건", "rows": [{"v": 1}]}}
+
+    monkeypatch.setitem(
+        SUBAGENT_REGISTRY, "data_query",
+        SubAgentSpec("data_query", "인프라 DB 조회", fake_handler),
+    )
+    collector = _alarm_collector()
+    await _run_subagent_tool(
+        "data_query", "2026년 6월 CPU 사용률 평균이 가장 높았던 서버 조회",
+        worker_llm=None, app_config=mock_config, ambient_state={}, collector=collector,
+    )
+    assert captured["input_from"] == ["tool_alarm_query_1"]
+    assert captured["prior_rows"] == {
+        "tool_alarm_query_1": [{"server_name": "SV-WEB-001"},
+                               {"server_name": "SV-BATCH-009"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_tool_no_injection_without_signal(mock_config, monkeypatch):
+    """게이트 미충족이면 기존과 동일하게 prior_rows 없이 실행된다(기존 동작 불변)."""
+    captured = {}
+
+    async def fake_handler(task, isolated, *, llm, app_config):
+        captured["input_from"] = task.get("input_from")
+        captured["prior_rows"] = isolated.get("prior_rows")
+        return {"organized_data": {"summary": "1건", "rows": [{"v": 1}]}}
+
+    monkeypatch.setitem(
+        SUBAGENT_REGISTRY, "data_query",
+        SubAgentSpec("data_query", "인프라 DB 조회", fake_handler),
+    )
+    await _run_subagent_tool(
+        "data_query", "디스크 사용량 현황 조회",
+        worker_llm=None, app_config=mock_config, ambient_state={},
+        collector=_alarm_collector(),
+    )
+    assert captured["input_from"] == []
+    assert captured["prior_rows"] is None

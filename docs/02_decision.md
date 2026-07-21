@@ -645,6 +645,88 @@
 - **주의**: 하네스는 LLM 없이 검증 가능한 계층(프롬프트 선택·디스패치·주입 블록)만 결정적으로 고정한다. 무선언 DB의 LLM 어휘 매핑 폴백(P3/D-090) 동작 자체의 검증은 이 픽스처를 기반으로 P3에서 수행한다. overfit_check 기준선은 P4-2 잔여 누수 수정 반영해 재생성(schema-literal 79→78).
 - **관련**: D-088(공용 DB-agnostic 원칙·overfit 가드), D-089(어댑터 분리 — 어댑터 미발동 검증), D-090(무선언 DB LLM 폴백 — 이 하네스로 검증), D-020(스키마 자동 발견 채널 유지)
 
+## D-092. 딥 에이전트 조기 종료 감지 + 미실행 하위 작업 명시 (부분 결과 은폐 차단)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료)
+- **배경(실측)**: 복합 질의("활성 심각 알람 서버 중 6월 CPU 평균 최고 서버의 제조사·일련번호")에서 오케스트레이터 LLM(gemini-2.5-flash-lite)이 1단계 도구(query_alarm) 결과 수신 후 **빈 AIMessage(output_tokens=0, 무도구호출)** 를 간헐 반환 → deepagents 루프가 "도구 호출 없음=완료"로 종료 → 잔여 하위 작업(CPU 평균·제조사/일련번호 조회) 미실행. 이때 per-task 최종화의 output_generator가 **전체 질의 `parsed_requirements["original_query"]`** 를 응답 프롬프트의 "사용자 질의"로 사용해, 알람 서버 2행만으로 "6월 CPU 최고 서버는 SV-WEB-001" 식으로 전체 질문에 답한 듯 서술(환각) — 실패가 은폐됨(침묵적 강등 금지 위반). 오케스트레이터 모델·재시도 가드는 이번 결정 범위에서 제외(사용자 지시 — 모델 유지, 은폐 차단만 수행).
+- **결정**: ①**조기 종료 결정적 감지** — `run_deep_agent`가 마지막 AI 메시지의 무내용·무도구호출 종결(`_ended_prematurely`)을 감지하면, 수행된 조회(collector task sub_query)와 미실행 작업(deepagents 미완료 todo, 없으면 일반 문구)을 담은 안내문(`_build_incomplete_notice`)을 생성해 `orchestration_incomplete_notice`로 aggregator에 전달. ②**결정적 안내 부착** — `result_aggregator._apply_incomplete_notice`가 3개 반환 경로(합성/단일/병합) 공통으로 최종 응답 말미에 LLM 비의존으로 덧붙임(답변 이력에도 포함). ③**per-task 최종화 스코프** — `_build_output_state`가 `parsed_requirements["original_query"]`를 해당 task `sub_query`로 좁혀(사본, 원본 비오염) 하위 결과만으로 전체 질문에 답한 듯한 서술을 차단. ④도구 0회+빈 응답 시 `_extract_final_response`의 사용자 질의 에코(잠복 결함) 대신 "수행된 조회가 없습니다" 명시 실패 안내.
+- **구현**: `src/orchestration/deep_agent.py`(`_ended_prematurely`/`_pending_todos`/`_build_incomplete_notice`/`_aggregate_with_fabrix(incomplete_notice=)`), `src/orchestration/result_aggregator.py`(`_apply_incomplete_notice`, `_build_output_state` 스코프). 검증 `tests/test_orchestration/test_deep_agent_wiring.py`(조기 종료 판정 3·안내문 2·노드 동작 3), `tests/test_orchestration/test_result_aggregator.py`(스코프 2·부착 3).
+- **대안(기각)**: 오케스트레이터 빈 응답 재시도/모델 상향 — 사용자 결정으로 모델 유지, 재시도 가드는 별도 후속 판단(→ 이후 사용자 지시로 D-093에서 재개 가드 시행). LLM 합성 프롬프트에 미확인 항목 안내 위임 — LLM 비결정성에 정합성을 의존하게 되어 결정적 부착으로 대체.
+- **관련**: D-062(딥 에이전트 단일 합성 — 안내문은 합성 결과 뒤에 결정적 부착), D-005(부분 실패 안내), D-059/D-046(침묵적 강등 금지 계열), D-086(알람→지표 크로스도메인 복합 질의), D-093(조기 종료 재개 가드)
+
+## D-093. 딥 에이전트 빈 응답 조기 종료의 진전 게이트 재개 (모델 유지)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 검증)
+- **배경(실측)**: D-092 진단의 원인 측 — flash-lite 오케스트레이터가 복합 질의("알람 서버 중 6월 CPU 최고 서버의 제조사·일련번호")에서 **매 도구 결과 수신 후마다** output_tokens=0 빈 응답을 반환(라이브 재현 3/3 → 재개 도입 후에도 각 라운드 반복 확인). 사용자 결정: 모델은 유지하고 재개 가드로 대응.
+- **결정**: `run_deep_agent`가 조기 종료(`_ended_prematurely`) 감지 시 **직전 이력에서 말미 빈 AI 메시지를 제거하고 재개 지시(user 턴, `_RESUME_NUDGE`)를 덧붙여 같은 에이전트를 재호출**한다. 재개는 **진전 게이트 반복**: 재개마다 도구 실행(collector)이 늘어나는 동안 상한(`_MAX_RESUME_ATTEMPTS`=3) 내 반복하고, 진전 없는 빈 응답 반복은 즉시 중단(무한루프 방지). 재개 호출 예외는 직전 결과로 안전 강등(→ D-092 안내 경로). 상한 소진 후에도 미완이면 D-092 안내문이 부착된다.
+- **라이브 검증(2026-07-20)**: 재개 도입 전 도구 1건(알람만) → 도입 후 재개 1~3회로 도구 2~4건 실행, 제조사·일련번호 SQL 실제 실행·값 반환 확인. flash-lite는 데이터가 다 모여도 최종 텍스트를 직접 쓰지 않는 경우가 있어(빈 응답 지속) 최종 답변은 기존 collector→result_aggregator 합성이 담당(D-062와 정합).
+- **구현**: `src/orchestration/deep_agent.py`(`_MAX_RESUME_ATTEMPTS`/`_RESUME_NUDGE`/`_is_empty_ai_message`/`_resume_after_empty_response` + run_deep_agent 재개 루프). 검증 `tests/test_orchestration/test_deep_agent_wiring.py`(재개 성공·진전 없음 즉시 중단·진전 반복 완주·상한·예외 폴백).
+- **대안(기각)**: 무조건 N회 재시도 — 진전 없는 반복 호출 낭비. LangGraph 체크포인터 기반 재개 — deepagents 호출부는 무체크포인터 설계라 이력 재주입이 더 단순·동형.
+- **관련**: D-092(조기 종료 안내 — 재개 실패 시 최종 방어), D-094(재개로 드러난 생성측 스코프 결함), D-062(최종 응답은 collector 합성)
+
+## D-094. sub-task SQL 생성의 original_query 스코프 (D-092 ③의 생성측 대칭)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 검증)
+- **배경(실측)**: D-093 라이브 검증에서 발견 — `query_generator._build_user_prompt`는 "## 사용자 질의"로 `parsed_requirements["original_query"]`를 사용하는데, orchestration 경로의 `_make_isolated_input`이 **전체 질의의 parsed_requirements를 그대로 전달**해 sub_query의 제약(선행 결과로 해석된 `서버명 IN ('SV-WEB-001','SV-BATCH-009')`)이 아닌 **전체 질문에 대한 SQL**이 생성됐다. data_query는 알람 테이블 접근이 없어(D-076) "알람 서버 중" 조건이 침묵 탈락 → 전 서버 기준 오답(Dell/KR2023ORA0023 — 알람 무관 서버) 반환.
+- **결정**: `_make_isolated_input`이 `parsed_requirements` **사본**의 `original_query`만 task `sub_query`로 교체(`_scope_parsed_requirements`). time_range 등 구조화 필드는 보조 맥락으로 유지. 단일 task(sub_query==전체 질의)는 실질 불변. 단일/멀티 DB 경로 모두 이 지점 하나로 대칭 적용(known mistakes 대칭 원칙).
+- **라이브 검증(2026-07-20)**: 적용 후 동일 질의에서 제조사·일련번호 SQL에 `HAVING … IN ('SV-WEB-001','SV-BATCH-009')` 필터가 정확히 생성·1차 검증 통과, 두 서버의 Vendor/SerialNumber(HPE/KR2024WEB0001, IBM/null) 반환.
+- **잔여 한계(정직)**: 재개 라운드에서 **오케스트레이터가 쓰는 sub_query 자체**가 선행 제약을 누락하는 경우(예: "6월 CPU 최고 서버 조회"를 알람 서버 한정 없이 발행)는 본 결정의 범위 밖 — deepagents 경로는 D-086 prior_rows 결정적 주입이 배선되지 않아(`_run_subagent_tool`이 `prior={}` 전달) 선행 결과 전파를 오케스트레이터의 sub_query 작성 품질에 의존한다. 후속 과제로 기록.
+- **구현**: `src/orchestration/subagents.py`(`_scope_parsed_requirements`). 검증 `tests/test_orchestration/test_subagents.py`(스코프·비오염·구조화 필드 유지).
+- **관련**: D-092(최종화측 스코프 — 동일 결함 클래스), D-086(선행 결과 결정적 주입 — deepagents 미배선 잔여), D-076(data_query 알람 테이블 격리)
+
+## D-095. deepagents 경로 선행 결과 스코프 결정적 주입 (D-086 배선 대칭)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 검증 — 대상 질의 정답 도달)
+- **배경**: D-094 잔여 — deepagents 경로는 planner의 input_from이 없어 `_run_subagent_tool`이 `prior={}`로 호출, D-086 prior_rows 스코프 강제가 미배선. 선행 선별(알람 서버 목록)의 후속 조회 전파가 오케스트레이터의 sub_query 작성 품질에 의존했고, 라이브에서 "6월 CPU 최고 서버 조회"가 전 서버 기준 SQL로 생성돼 알람 무관 서버가 답으로 나왔다.
+- **결정**: `_dependency_scope`(deepagents_tools)가 **결정적 게이트**로 선행 조회 결과(성공·행 보유·data/alarm_query)를 후속 task의 input_from/prior로 주입 → 기존 `_make_isolated_input`→`build_prior_rows_block` 경로(D-086)로 SQL IN 스코프 강제. 게이트: **G1** sub_query에 선행 식별 값 등장(재생성 필터 탈락 방지 강화) / **G2** 참조·선별 어휘("해당/그 서버/앞서/선별…") / **G3** 순위·최상급 어휘("가장/최고/상위…"). 단 전역 명시("전체/모든/전 서버")면 미주입(독립 전역 조회 보호). 오케스트레이터 지시문에도 "후속 sub_query에 선별 식별자 명시" 규칙·예시 추가(G1 적중률 향상 — 보조, 정합성은 게이트가 보장).
+- **라이브 검증(2026-07-20, 대상 질의 2런)**: 주입 로그 확인, SQL에 `IN ('SV-WEB-001','SV-BATCH-009')` 스코프 강제. 2런 차에서 정답 도달 — "HPE / KR2024WEB0001"(실측 ground truth 일치: 6월 CPU 평균 SV-WEB-001 42.8% > SV-BATCH-009 18.3%).
+- **잔여 한계(정직)**: 폴스타 부모-자식(server.Server/server.Cpus) 피벗에서 스코프 필터를 HAVING 집계가 아닌 **WHERE 동일 alias에 넣는 형태 변동**이 관찰됨(1런 차 — 자식 리소스 name="Cpus"라 메트릭 행 전멸 → 0건 오답, validator 통과형). 2런 차는 validator의 LEFT JOIN 강등 검출이 재생성을 유도해 HAVING 패턴으로 교정됨. → **D-096에서 결정적 검출 시행**(폴스타 어댑터 validator_checks).
+- **구현**: `src/orchestration/deepagents_tools.py`(`_dependency_scope`/게이트 상수/`_run_subagent_tool` 배선), `src/prompts/orchestrator.py`(식별자 명시 규칙). 검증 `tests/test_orchestration/test_deep_agent.py`(게이트 6 + 주입 통합 2).
+- **대안(기각)**: 무조건 전체 주입 — 독립 복합 의도("알람 현황과 전체 CPU 현황 각각")에서 전역 조회를 오염. LLM에게 input_from 판단 위임 — 비결정성 재의존(본 결함의 원인 구조).
+- **관련**: D-086(prior_rows 스코프 강제 — 본 결정이 deepagents에 배선), D-094(생성측 original_query 스코프 — 상보), D-093(재개 가드 — 후속 도구 호출 자체를 복원), D-088(공용 블록 DB-agnostic 유지)
+
+## D-096. 폴스타 피벗 스코프 필터 WHERE 강등 결정적 검출 (어댑터 validator)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 검증 — 오답 형태 차단→재생성→정답)
+- **배경(실측)**: D-095 잔여 — 폴스타 부모-자식 피벗(한 alias로 `resource_type IN ('server.Server','server.Cpus')` 접기 + `GROUP BY COALESCE(platform_resource_id, id)`)에서 서버명 스코프 필터를 **WHERE의 동일 alias**에 거는 형태 변동. 자식 리소스 행(name='Cpus')이 전부 탈락해 메트릭 집계가 **침묵히 0건**("데이터 없음" 오답)이 되며, 기존 validator를 통과하는 형태였다(2026-07-20 라이브 1런 차 실측).
+- **결정**: 폴스타 어댑터 `validator_checks`에 `check_scope_filter_where_demotion` 추가 — 주석 제거(sqlparse, D-087 규약) 후, ①`alias.resource_type IN (...)`에 리터럴 2개 이상(다중 레벨 접기)인 alias를 수집하고 ②그 alias의 `name/hostname`(COALESCE 형 포함) 필터가 **WHERE 구간**(GROUP BY/HAVING 이전)에 있으면 오류로 거부한다. 오류 메시지에 교정 형태(HAVING 집계 CASE WHEN 예시 또는 alias 분리)를 명시해 재생성을 유도한다. HAVING의 정상 집계 필터·단일 resource_type alias·서버/자식 분리 조인은 비검출. D-089 어댑터 디스패치로 폴스타에서만 발동(공용 계층 DB-agnostic 유지 — D-088).
+- **라이브 검증(2026-07-20)**: 대상 질의에서 attempt 0이 정확히 이 형태를 생성 → 신규 체크가 거부 → attempt 2에서 HAVING 패턴으로 재생성 → 1건 정답(HPE/KR2024WEB0001, ground truth 일치). 이전 런에서 validator를 통과해 0건 오답을 냈던 형태가 결정적으로 차단됨을 확인.
+- **구현**: `src/db_adapters/polestar/validators.py`(`check_scope_filter_where_demotion`), `adapter.py` validator_checks 등록. 검증 `tests/test_db_adapters.py::TestScopeFilterWhereDemotion`(실측 오답/정답 SQL 픽스처 — 검출 2·비검출 4·배선 1).
+- **대안(기각)**: 이 쿼리 형태의 결정적 조립(D-076 트랙) — 유효하나 조립기 신설 비용 대비 validator 거부→재생성으로 충분함을 라이브로 확인(형태 변동이 재생성에서 자기 교정됨). 공용 validator에 배치 — 폴스타 스키마 지식(resource_type/name 계층)이라 어댑터 소속이 원칙(D-088/D-089).
+- **관련**: D-095(잔여 한계 해소), D-087(주석 제거 후 판정 규약), D-089(어댑터 validator_checks 훅), D-085(LEFT JOIN 강등 검출 — 동일 계열의 침묵 0건 방지)
+
+## D-097. 스코프된 피벗 조회의 서버 식별 컬럼 SELECT 포함 강제 (같은 행 식별)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 검증)
+- **배경(실측)**: 사용자 재테스트에서 "서버명과 제조사·일련번호가 같은 행에 나오지 않음" — 선행 스코프(HAVING name IN) 피벗 SQL의 SELECT가 manufacturer/serial_number만 조회(생성 변동 — 일부 런은 server_name 포함). 결과 행이 어느 서버의 값인지 식별 불가.
+- **결정**: 이중 방어 — ①**공용 스코프 블록 규칙 4**(`build_prior_rows_block`): "각 행이 어느 서버의 값인지 알 수 있도록 서버 식별 컬럼을 SELECT에 반드시 포함(피벗이면 집계 CASE WHEN)" — DB-agnostic 문구(D-088 준수, overfit 기준선 무유입 확인). ②**폴스타 어댑터 validator** `check_scoped_pivot_missing_server_identity`: HAVING에 서버 식별(name/hostname) 스코프 필터가 있는데 SELECT에 cmm_resource alias의 식별 컬럼이 없으면 거부(교정 예시 포함). HAVING 스코프 없는 전체 피벗(폼필 조립기 SQL — HAVING 미방출 실측)은 미검사(오검출 방지). EAV alias(cc.name='Vendor')는 식별로 오인하지 않음.
+- **라이브 검증**: 규칙 4 적용 후 첫 attempt부터 SELECT에 server_name 포함, 최종 행 `{server_name, manufacturer, serial_number, cpu_usage_avg}` 한 행 반환.
+- **구현**: `src/utils/query_gen_common.py`(규칙 4), `src/db_adapters/polestar/validators.py`, `adapter.py`. 검증 `tests/test_db_adapters.py::TestScopedPivotMissingServerIdentity`(5).
+- **관련**: D-095(스코프 주입 — 본 결함의 발현 문맥), D-096(피벗 형태 결함 검출 계열), D-088(공용 블록 DB-agnostic)
+
+## D-098. 폴스타 피벗 성능 통계 조인 결함 2종 결정적 검출 (서버 엔터티 바인딩·INNER 강등)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 검증 — 오답 형태 차단→재생성→정답)
+- **배경(실측, D-097 라이브 검증 연쇄에서 발견)**: 통계 조인의 형태 변동 2종이 각각 침묵 오답을 유발. **①서버 엔터티 바인딩**: `cmm_metric_stat_m`을 `server.Server`로 고정된 alias의 id에 조인 — 통계는 자식 리소스(Cpus/Memory/Disks/FileSystems)에만 붙음(DB 실측) → 집계 전부 NULL → `ORDER BY … DESC`(PostgreSQL 기본 NULLS FIRST)로 **임의 서버가 1위 선택**(SV-BATCH-009 오답 실측). **②INNER 강등**: 다중 타입 피벗 alias에 통계를 INNER JOIN — 통계 없는 server.Server 행이 그룹 탈락 → HAVING 서버 필터 전부 NULL → **침묵 0건**("데이터 없음" 오답 실측).
+- **결정**: 폴스타 어댑터 validator 2종 추가 — `check_metric_join_on_server_entity`(①: 통계 조인 상대 alias의 resource_type 제약이 {'server.Server'}뿐이면 거부. 제약 수집은 FROM~GROUP BY 구간 한정 — SELECT의 CASE WHEN 비교는 조인 제약이 아님), `check_pivot_metric_inner_join`(②: resource_type 2종 이상 + server.Server 포함 alias에 비-LEFT 통계 조인이면 거부, LEFT+ON 교정 지시. WHERE 조건 강등은 기존 D-085 검출이 담당). 둘 다 교정 형태 명시로 재생성 유도.
+- **라이브 검증**: ②형태 attempt 0 생성 → 신규 체크 거부 → attempt 1 LEFT+ON 재생성 → 1행 정답(`SV-WEB-001 / HPE / KR2024WEB0001 / 42.8%` — ground truth 일치).
+- **주의(누적 관찰 — 정직)**: 동일 질의 형태("선행 스코프 + 자식 리소스 메트릭 순위 + EAV 속성")에서 형태 변동 결함이 4종 누적 검출됨(D-096 WHERE 강등, D-097 식별 누락, D-098 ①②). validator 울타리로 정답 수렴을 실증했으나, 변동이 추가 관찰되면 이 형태는 결정적 조립(D-076 트랙) 편입을 재검토한다(Known Mistakes "반복 실패 형태는 결정적 조립" 원칙).
+- **구현**: `src/db_adapters/polestar/validators.py`, `adapter.py`(validator_checks 5종). 검증 `tests/test_db_adapters.py::TestMetricJoinOnServerEntity`(5)·`TestPivotMetricInnerJoin`(4).
+- **관련**: D-096/D-097(피벗 형태 결함 검출 계열), D-085(LEFT JOIN WHERE 강등 — ②의 상보), D-087(주석 제거 규약), D-076(결정적 조립 — 누적 시 편입 후보 → D-099에서 편입)
+
+## D-099. 선행 스코프 + 메트릭 순위 질의의 결정적 조립 편입 (validator 울타리 → 조립)
+- **결정일**: 2026-07-20 | **상태**: 확정 (구현 완료 · 라이브 정답 도달)
+- **배경(실측)**: D-096~D-098로 가드를 5종 쌓았음에도 **6번째 변종**이 발생 — LLM이 `LEFT JOIN cmm_resource r … r.resource_type='server.Server'`로 고정한 alias를 집계에서 `CASE WHEN r.resource_type='server.Cpus'`로 검사(모순 조건 → 항상 NULL) + `ORDER BY … DESC`의 PostgreSQL 기본 NULLS FIRST가 겹쳐 **임의 서버(SV-BATCH-009)가 1위**로 반환. 이때 `retry_attempt=3`으로 **재시도 예산(QUERY_MAX_RETRY_COUNT=3)이 소진**돼 마지막 시도가 그대로 실행됐다. 프로젝트 원칙(CLAUDE.md "반복 실패하는 쿼리 형태는 결정적 조립 대상", D-035)에 따라 울타리 확장이 아니라 조립 편입으로 전환한다.
+- **결정**: 이 형태("선행 스코프 + 자식 리소스 메트릭 순위 + EAV 속성")를 **기존 트랙 C 컴파일러(D-076)로 편입**한다(새 엔진 신설 금지 — D-067). ①조립기 `build_multi_resource_pivot_sql`에 `server_scope`(→ HAVING 집계 CASE WHEN, WHERE 배치 원천 차단)·`order_by`(→ `ORDER BY "<alias>" DESC **NULLS LAST**`) 추가. ②`compile_smq`/`_compile_ab`/`compile_from_nl`에 스코프 전달 + `_resolve_ranking`(최상급 어휘→measure alias 정렬). ③스코프가 있으면 식별 dimension을 SELECT에 결정적 포함(D-097 자동 충족). ④`query_generator`가 `prior_rows`를 `_prior_server_scope`로 전달 — **기존 우회(D-086) 해제**. ⑤커버리지 진입 보정: 스코프가 있으면 SMQ의 서버 식별 필터를 제거(중복·커버리지 밖 사유 해소)하고, SMQ 프롬프트에 스코프 노트를 주입해 "특정 서버 지목·정렬 상위"를 이유로 `pattern:none`을 반환하지 않게 한다(실측 재현 후 수정). ⑥`resolve_stat_month`가 **절대 월("2026년 6월"/"2026-06")** 을 해석하도록 확장 — 미해석 시 조립 SQL에 기간 필터가 빠져 전 기간 평균으로 순위가 뒤집혔다(실측).
+- **보완 가드(LLM 폴백 경로용)**: `check_contradictory_alias_resource_type`(고정 alias를 다른 resource_type으로 검사 = 영원히 거짓), `check_ranking_order_by_nulls_last`(집계 DESC + 행 제한인데 NULLS LAST 없음). 조립이 발동하지 않는 잔여 질의를 방어한다.
+- **라이브 검증(2026-07-20)**: 결정적 조립 발동(`시맨틱 결정적 컴파일 SQL(LLM 우회)`), SQL에 `stat_date='202606'`·`HAVING … IN ('SV-WEB-001','SV-BATCH-009')`·`ORDER BY "cpus_avg" DESC NULLS LAST` 전부 포함, 최종 응답 **"SV-WEB-001 / HPE / KR2024WEB0001 / 42.8%"** 단일 행 — DB ground truth 일치. 조립 SQL이 폴스타 validator 7종을 자체 통과함을 테스트로 고정(자기정합 가드).
+- **구현**: `src/db_adapters/polestar/assembler.py`(scope/order_by), `src/nodes/semantic_compiler.py`(전달·`_resolve_ranking`·필터 제거·식별 dimension 보장), `src/prompts/semantic_compiler.py`(`SEMANTIC_SMQ_SCOPE_NOTE`), `src/nodes/query_generator.py`(`_prior_server_scope`·우회 해제), `src/utils/query_gen_common.py`(절대 월·스코프 블록 규칙 4), `src/db_adapters/polestar/validators.py`(가드 2종). 검증: `tests/text2sql/test_semantic_golden.py`(스코프·순위·커버리지 진입 8), `tests/test_db_adapters.py`(조립·가드 12), `tests/test_utils/test_multi_resource_pivot.py`(절대 월 7), `tests/test_orchestration/test_prior_rows_scope.py`(우회→전달로 갱신).
+- **기존 테스트 갱신(정직)**: `test_prior_rows_bypasses_semantic_compile`은 **우회 동작을 정답으로 굳힌** 테스트라 `test_prior_rows_passed_to_semantic_compile_as_scope`로 교체(Known Mistakes "기존 테스트가 버그를 정답으로 굳혔는지 점검").
+- **관련**: D-076(트랙 C 컴파일러 — 본 결정이 형태 편입), D-067(단일 조립 엔진 재사용), D-086(선행 스코프 프롬프트 블록 — 우회 해제), D-096~D-098(울타리 가드 — 폴백 경로 방어로 유지), D-035(결정=코드·LLM=지식)
+
+## D-100. 질의에 언급된 모든 항목의 결과 표시 — 하위 조회 컨텍스트 확장 + 서버 키 병합
+- **결정일**: 2026-07-21 | **상태**: 확정 (구현 완료 · 라이브 정답 도달)
+- **배경(실측)**: "심각 알람 서버 중 6월 CPU 최고 서버의 제조사·일련번호" 최종 표에 서버명·제조사·일련번호·CPU평균은 나오나 **알람명·심각도가 누락**. 원인 — 오케스트레이터가 질의를 2단계로 쪼개며 ①알람 조회가 서버명만 SELECT(알람명·심각도 소실) ②최종 표는 마지막(CPU) 조회만 노출. 사용자 요구: 질의에 언급된 모든 개념을 한 표에 표시(모든 프롬프트 일반화). 선택된 방식 = 하위조회 확장 + 표시 계층 병합(접근 A).
+- **결정**: ①**알람 조회 컨텍스트 확장**(`_compile_c`): 패턴 C는 서버명만 요청돼도 선별 근거(서버명·알람명 `D.NAME`·심각도 `ALARMSEVERITY`)를 결정적으로 앞에 포함. 표시·병합 친화 alias(server_name/alarm_name/severity). 카탈로그 정의 dimension만 써 환각 불가. ②**서버 키 결정적 병합**(`result_aggregator._merge_task_results_by_identity`): 딥에이전트 합성 모드에서 여러 하위 조회가 공통 서버 식별 컬럼을 공유하면 canonical 키(server_name 선호)로 outer join → 통합 표. 기준(base) = 행수 최소 조회(가장 좁게 스코프됨)의 서버만 남겨 "가장 높은 서버"가 대상 전체로 번지지 않게 함(tie면 선행=선별 기준). 서버당 1행(대표), 다건은 로그. 공통 키 없으면 LLM 합성 폴백(D-062). 병합 성공 시 단일 `output_generator`로 표/자연어 생성. ③**전체 컬럼 표시 강제**(`output_generator`): 시스템 프롬프트 규칙 3 + `_build_response_prompt` 컬럼 목록 명시 — LLM이 질의 문구("제조사와 일련번호")에 이끌려 컬럼을 임의 생략하지 못하게 함(실측: 6컬럼 병합 rows에서 3컬럼만 표시). ④**최상급 순위 LIMIT 1**(`_compile_ab`): order_by(최상급)면 결정적 조립 limit=1 — default_limit(1000)로 전체 반환 시 병합 대상이 순위 1건이 아니라 선별 전체가 됨(실측 2건).
+- **부작용 수정(회귀 차단)**: 알람 조회가 알람명도 반환하면서 D-095 선행 스코프 추출이 "name" 부분매칭으로 `alarm_name`을 서버 식별값으로 오수집 → CPU HAVING이 `IN ('SV-WEB-001','CPU 사용률 임계 초과',…)`로 오염(실측). **서버 식별 컬럼 엄격 판정**(`is_server_identity_col`) 공용 함수 신설 — 정확 매칭 + server/host/os 계열 *_name/_id만 인정, alarm_name/definition_name/severity 배제. `_collect_prior_identity_values`·`_extract_identity_rows` 두 추출 지점에 적용.
+- **라이브 검증(2026-07-21)**: 알람 조회 `server_name·alarm_name·severity` 반환, CPU 조회 `LIMIT 1`(HAVING 오염 없음), 병합 1행 6컬럼, 최종 표 **| 서버명 | 알람명 | 심각도 | 제조사 | 일련번호 | CPU 사용률 평균 | / | SV-WEB-001 | CPU 사용률 임계 초과 | 3 | HPE | KR2024WEB0001 | 42.8 |** — 질의 전 항목 한 행 표시.
+- **구현**: `src/nodes/semantic_compiler.py`(`_compile_c` 컨텍스트·`_compile_ab` limit), `src/orchestration/result_aggregator.py`(`_merge_task_results_by_identity`·`_finalize_merged_rows`·`_find_identity_col`), `src/nodes/output_generator.py`+`src/prompts/output_generator.py`(전체 컬럼), `src/utils/query_gen_common.py`(`is_server_identity_col`)·`src/orchestration/subagents.py`(적용). 검증: `tests/test_orchestration/test_result_aggregator.py`(병합 6), `tests/text2sql/test_semantic_golden.py`(컨텍스트·LIMIT 4).
+- **대안(기각)**: 단일 통합 SQL(알람 JOIN 지표) — 교차 조인 복잡·일반화 어려움(사용자도 A 선택). 표시 프롬프트만 강제 — 데이터 미수집(알람명) 항목은 못 채우거나 환각.
+- **관련**: D-099(결정적 조립 — 순위 LIMIT·스코프 상보), D-095(선행 스코프 추출 — 오염 수정), D-062(합성 폴백 — 병합 불가 시), D-047(query_results 승격)
+
 ---
 
 ## 변경 이력
@@ -653,6 +735,15 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-21 | D-100 | **질의 전 항목 결과 표시 — 하위조회 컨텍스트 확장 + 서버 키 병합** — 알람 조회가 서버명·알람명·심각도를 결정적 포함(`_compile_c`), `result_aggregator`가 여러 하위 조회를 공통 서버 키로 병합(행수 최소 base 스코프, 대표 1행), output_generator 전체 컬럼 표시 강제, 최상급 순위 LIMIT 1. 부작용(알람명이 선행 스코프 오염)은 `is_server_identity_col` 엄격 판정으로 차단. 라이브: 서버명·알람명·심각도·제조사·일련번호·CPU평균 한 행 표시. |
+| 2026-07-20 | D-099 | **선행 스코프+메트릭 순위 질의 결정적 조립 편입** — 가드 5종에도 6번째 변종(모순 alias 조건 → 항상 NULL → NULLS FIRST로 임의 서버 1위, 재시도 예산 소진) 발생 → 울타리 확장 대신 트랙 C 컴파일러(D-076)로 편입. 조립기에 server_scope(HAVING)·order_by(NULLS LAST) 추가, prior_rows 우회 해제, SMQ 커버리지 진입 보정(식별 필터 제거+스코프 노트), `resolve_stat_month` 절대 월 해석. 보완 가드 2종(모순 조건·NULLS LAST)은 폴백 방어로 유지. 라이브 정답 도달. |
+| 2026-07-20 | D-098 | **폴스타 피벗 통계 조인 결함 2종 결정적 검출** — ①통계를 server.Server 고정 alias id에 조인(통계는 자식 리소스에만 붙음 → NULL 정렬로 임의 서버 1위 오답) ②다중 타입 피벗에 통계 INNER JOIN(server.Server 행 그룹 탈락 → 침묵 0건). 어댑터 validator 2종 추가, 라이브에서 ② 차단→재생성→정답. 동일 형태 결함 4종 누적 — 추가 관찰 시 결정적 조립(D-076) 재검토. |
+| 2026-07-20 | D-097 | **스코프된 피벗 조회 서버 식별 컬럼 SELECT 강제** — "서버명과 제조사·일련번호가 같은 행에 안 나옴" 해소. 공용 스코프 블록 규칙 4(식별 컬럼 포함) + 어댑터 validator(HAVING 스코프 있는데 SELECT에 식별 없으면 거부). 폼필 조립기 형태는 미검사(오검출 방지). 라이브: 한 행에 server_name+manufacturer+serial_number 반환. |
+| 2026-07-20 | D-096 | **폴스타 피벗 스코프 필터 WHERE 강등 결정적 검출** — 어댑터 validator에 `check_scope_filter_where_demotion` 추가: 다중 resource_type 피벗 alias의 name/hostname 필터가 WHERE에 있으면 거부(자식 리소스 행 탈락 → 침묵 0건 오답 형태). 교정 예시(HAVING 집계) 포함 메시지로 재생성 유도. 라이브: attempt 0 오답 형태 차단 → 재생성 → 정답 도달. |
+| 2026-07-20 | D-095 | **deepagents 선행 결과 스코프 결정적 주입** — `_dependency_scope` 게이트(G1 값 일치/G2 참조 어휘/G3 순위 어휘, 전역 명시 시 제외)로 collector의 선행 조회 결과를 input_from/prior로 주입해 D-086 IN 스코프 강제를 deepagents에 배선. 오케스트레이터 지시문에 식별자 명시 규칙 추가. 라이브 정답 도달(HPE/KR2024WEB0001, ground truth 일치). 폴스타 피벗 스코프 필터의 WHERE 강등 변동은 후속 과제. |
+| 2026-07-20 | D-094 | **sub-task SQL 생성 original_query 스코프** — `_make_isolated_input`이 parsed_requirements 사본의 original_query를 task sub_query로 교체. 전체 질의 유출로 sub_query 제약(서버명 한정)이 SQL에서 침묵 탈락하던 결함 수정(라이브 검증: IN 필터 정확 생성, 알람 서버 Vendor/SerialNumber 반환). 오케스트레이터 sub_query 자체의 제약 누락(deepagents prior_rows 미배선)은 후속 과제. |
+| 2026-07-20 | D-093 | **딥 에이전트 빈 응답 조기 종료의 진전 게이트 재개** — 조기 종료 감지 시 말미 빈 AI 제거 + 재개 지시로 재호출, 도구 실행이 늘어나는 동안 최대 3회(진전 없으면 즉시 중단, 예외는 D-092 안내로 강등). flash-lite 모델 유지(사용자 결정). 라이브: 도구 1건→2~4건, 제조사·일련번호 SQL 실행 도달. |
+| 2026-07-20 | D-092 | **딥 에이전트 조기 종료 감지 + 미실행 하위 작업 명시** — 오케스트레이터 빈 응답(무내용·무도구호출) 종결을 결정적 감지, 수행된 조회·미실행 작업(미완료 todo)을 최종 응답 말미에 결정적 부착. per-task 최종화의 original_query를 sub_query로 스코프해 부분 결과의 전체 질문 답변 위장(환각) 차단. 도구 0회+빈 응답 시 질의 에코 대신 명시 실패 안내. 모델·재시도 가드는 범위 외(사용자 결정). |
 | 2026-07-20 | D-090 | **공용 경로 어휘 매핑 LLM 전환 (Plan 63 P3)** — 메트릭 어휘 격리는 P2로 달성(어댑터), 무선언 DB는 공통 LLM 경로(P4-2 검증). `GENERIC_LLM_MAPPING`(기본 OFF) 옵트인 시 무선언 DB에 범용 기간 힌트(`build_generic_period_hint`, 폴스타 리터럴 없음) 주입, 폴스타는 결정적 블록 유지(선언 우선 EX 동치). LLM 자동등록 차단 유지(D-068 6차). 잔여 리터럴은 폴스타 게이트로 비누수(후속 프로필 이관 스코핑). |
 | 2026-07-20 | D-091 | **모의 비폴스타 DB 범용성 회귀 하네스 (Plan 63 P4-2·P4-3)** — `testdata/generic_mon/`(평탄 3테이블, 프로필·모델 없음)+`tests/test_generic_path/`(공통 템플릿 사용·폴스타 리터럴 무오염·어댑터 미발동 검증, E2E 옵트인). 하네스가 검출한 공통 템플릿 D-085 예시의 `stat_date` 잔여 누수 중립화. 편입 체크리스트에 ⑤프로필/모델(선택) 추가. |
 | 2026-07-20 | D-089 | **폴스타 DB 어댑터 분리 (Plan 63 P2)** — `src/db_adapters/polestar/` 어댑터 계층+레지스트리 디스패치. Stage 1: POLESTAR 템플릿 2종·`_check_routing_filter_misuse` 이동+`get_adapter().system_template/validator_checks` 배선. Stage 2: pivot 조립기 클러스터(build_multi_resource_pivot_sql 등) 이동. 동작 불변, 호출부 3곳 어댑터 직접 임포트. servername/hostname 가드는 infra 호출로 utils 잔류. overfit schema-literal 136→79, 기준선 71→44. |

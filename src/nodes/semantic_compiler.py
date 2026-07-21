@@ -310,6 +310,7 @@ def compile_smq(
     user_query: str = "",
     default_limit: int = 100,
     stat_month: Optional[str] = None,
+    server_scope: Optional[tuple[str, list[str]]] = None,
 ) -> str:
     """SMQ를 방언별 SQL로 결정적 컴파일한다(패턴 A/B는 기존 엔진 재사용, C는 알람 조립).
 
@@ -320,6 +321,8 @@ def compile_smq(
         user_query: 원문 질의("전체/모든" LIMIT 상향 판단용)
         default_limit: 기본 LIMIT
         stat_month: 성능지표 기간 필터 YYYYMM(패턴 B)
+        server_scope: 선행 task 결과 서버 한정 (식별컬럼, 값목록) — 패턴 A/B에 HAVING으로
+            결정적 적용(D-099). None이면 미적용.
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결)
@@ -335,7 +338,10 @@ def compile_smq(
     limit = resolve_query_limit(user_query, default_limit)
 
     if smq.pattern in ("A", "B"):
-        return _compile_ab(smq, model, db_engine, db_schema, limit, stat_month)
+        return _compile_ab(
+            smq, model, db_engine, db_schema, limit, stat_month,
+            server_scope=server_scope, user_query=user_query,
+        )
     if smq.pattern == "C":
         return _compile_c(smq, model, db_id, limit)
     raise ValueError(f"미지원 패턴: {smq.pattern}")
@@ -348,6 +354,9 @@ def _compile_ab(
     db_schema: str,
     limit: int,
     stat_month: Optional[str],
+    *,
+    server_scope: Optional[tuple[str, list[str]]] = None,
+    user_query: str = "",
 ) -> str:
     """패턴 A(서버설정)+B(성능지표)를 build_multi_resource_pivot_sql로 조립한다(D-067 재사용).
 
@@ -368,6 +377,16 @@ def _compile_ab(
             d for d in (pattern_b.get("default_dimensions") or [])
             if _resolve_dim(str(d), dim_index) is not None
         ]
+    # 선행 스코프가 있으면 그 식별 컬럼(name/hostname)을 SELECT에 결정적으로 포함한다 —
+    # 없으면 결과 행이 어느 서버의 값인지 알 수 없다(D-097).
+    if server_scope and server_scope[1]:
+        scope_col = server_scope[0]
+        if not any(
+            (_resolve_dim(str(d), dim_index) or {}).get("column") == scope_col
+            for d in dimensions
+        ):
+            if _resolve_dim(scope_col, dim_index) is not None:
+                dimensions = [scope_col] + dimensions
 
     regular_entries: list[tuple[str, str]] = []
     server_eav: list[tuple[str, str]] = []
@@ -397,12 +416,62 @@ def _compile_ab(
     grain = smq.time_grain or pattern_b.get("default_time_grain", "month")
     metric_table = metric_tables.get(grain, "cmm_metric_stat_m")
 
+    # 순위 질의("가장 높은/최고")면 measure alias로 정렬한다(NULLS LAST는 조립기가 부여 — D-098).
+    order_by = _resolve_ranking(user_query, explicit_measures)
+    # 최상급 순위("가장 높은/낮은")는 상위 1건만 — 결정적 조립이 default_limit로 전체를 반환하면
+    # 병합 시 "가장 높은 서버"가 아닌 대상 전체가 남는다(D-100 실측: 2건 반환).
+    if order_by:
+        limit = 1
+
     return build_multi_resource_pivot_sql(
         regular_entries, server_eav, child_eav, eav_pattern,
         db_engine=db_engine, db_schema=db_schema, limit=limit,
         stat_month=stat_month, metric_table=metric_table,
         explicit_measures=explicit_measures or None,
+        server_scope=server_scope,
+        order_by=order_by,
     )
+
+
+# 순위(최상급) 어휘 — 방향별. 결정적 정렬 판단용(D-099).
+_RANK_DESC_MARKERS = ("가장 높", "가장 많", "최고", "최대", "제일 높", "highest", "top")
+_RANK_ASC_MARKERS = ("가장 낮", "가장 적", "최저", "최소", "제일 낮", "lowest")
+
+
+def _resolve_ranking(
+    user_query: str,
+    explicit_measures: list[tuple[str, str, str, str, str]],
+) -> Optional[tuple[str, str]]:
+    """질의의 최상급 어휘로 정렬 대상(measure alias)과 방향을 결정한다 (D-099).
+
+    measure가 없으면(순위 기준 없음) None. 최상급 어휘가 없어도 None(기존 무정렬 유지).
+
+    Args:
+        user_query: 원문 질의
+        explicit_measures: (alias, resource_type, agg_fn, val_col, definition_name) 목록
+
+    Returns:
+        (alias, "DESC"|"ASC") 또는 None
+    """
+    if not explicit_measures:
+        return None
+    low = (user_query or "").lower()
+    if any(m in low for m in _RANK_DESC_MARKERS):
+        return explicit_measures[0][0], "DESC"
+    if any(m in low for m in _RANK_ASC_MARKERS):
+        return explicit_measures[0][0], "ASC"
+    return None
+
+
+# 알람 조회에 항상 포함할 선별 근거 dimension (카탈로그 키, D-100).
+# 서버 식별(병합 키) + 알람명 + 심각도 — "심각 알람이 있는 서버" 선별 조건을 결과에 표시.
+_ALARM_CONTEXT_DIMS = ("server_name", "NAME", "ALARMSEVERITY")
+# 표시·병합 친화 alias (기본 lower() 대신 명시). server_name은 병합 canonical 키와 일치.
+_ALARM_DIM_ALIAS = {
+    "SERVER_NAME": "server_name",
+    "NAME": "alarm_name",
+    "ALARMSEVERITY": "severity",
+}
 
 
 def _compile_c(smq: SMQ, model: dict, db_id: str, limit: int) -> str:
@@ -417,8 +486,25 @@ def _compile_c(smq: SMQ, model: dict, db_id: str, limit: int) -> str:
     dim_map = {k.upper(): v for k, v in (pattern_c.get("dimensions") or {}).items()}
     engine = (get_domain_by_id(db_id).db_engine if get_domain_by_id(db_id) else "postgresql")
 
-    # SELECT — 요청 dimension만 조립(요청 항목만, Template 전체 복사 회피)
-    select_lines = [f"  {dim_map[str(d).upper()]} AS {str(d).lower()}" for d in smq.dimensions]
+    # SELECT — 알람 선별 근거(서버명·알람명·심각도)를 결정적으로 앞에 포함하고, 그 뒤 요청
+    # dimension을 잇는다(D-100). "심각 알람이 있는 서버" 같은 선별 조건이 최종 결과 표에
+    # 함께 나타나도록 하기 위함 — 오케스트레이터가 sub_query를 "서버 목록 조회"로 좁혀
+    # dimensions=[server_name]만 골라도 알람명·심각도가 소실되지 않는다. 카탈로그에 정의된
+    # dimension만 사용하므로 환각 불가. alias는 표시·병합 친화적으로 명시 지정한다.
+    base_context = [d for d in _ALARM_CONTEXT_DIMS if d.upper() in dim_map]
+    base_keys = {d.upper() for d in base_context}
+    ordered_dims = base_context + [
+        str(d) for d in smq.dimensions if str(d).upper() not in base_keys
+    ]
+    select_lines: list[str] = []
+    seen_dims: set[str] = set()
+    for d in ordered_dims:
+        key = str(d).upper()
+        if key not in dim_map or key in seen_dims:
+            continue
+        seen_dims.add(key)
+        alias = _ALARM_DIM_ALIAS.get(key, str(d).lower())
+        select_lines.append(f"  {dim_map[key]} AS {alias}")
     if not select_lines:
         select_lines = ["  CA.ALARMSEVERITY AS severity", "  CA.CTIME AS ctime"]
 
@@ -485,6 +571,7 @@ def try_semantic_compile(
     sql = compile_smq(
         smq, db_id, model, user_query=user_query,
         default_limit=default_limit, stat_month=stat_month,
+        server_scope=server_scope,
     )
     return sql, cov
 
@@ -563,6 +650,7 @@ async def compile_from_nl(
     default_limit: int = 100,
     stat_month: Optional[str] = None,
     value_index: Optional[dict[str, list[str]]] = None,
+    server_scope: Optional[tuple[str, list[str]]] = None,
 ) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
     """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.
 
@@ -573,6 +661,7 @@ async def compile_from_nl(
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
     from src.prompts.semantic_compiler import (
+        SEMANTIC_SMQ_SCOPE_NOTE,
         SEMANTIC_SMQ_SYSTEM_TEMPLATE,
         SEMANTIC_SMQ_USER_TEMPLATE,
     )
@@ -583,6 +672,10 @@ async def compile_from_nl(
 
     system = SEMANTIC_SMQ_SYSTEM_TEMPLATE.format(catalog=render_catalog(model))
     user = SEMANTIC_SMQ_USER_TEMPLATE.format(user_query=user_query)
+    # 선행 스코프가 있으면 "특정 서버 지목·정렬 상위" 커버리지 밖 조건을 해제한다(D-099) —
+    # 이 둘은 컴파일러가 결정적으로 처리하므로 그것을 이유로 none을 받으면 조립이 무산된다.
+    if server_scope and server_scope[1]:
+        user += SEMANTIC_SMQ_SCOPE_NOTE
     messages = [SystemMessage(content=system)]
     # KBGenAIChat 등은 SystemMessage 다음 AIMessage 순서를 요구 — 클래스명으로 감지(선택 의존).
     if type(llm).__name__ == "KBGenAIChat":
@@ -599,6 +692,19 @@ async def compile_from_nl(
     if smq is None:
         return None, None, None
 
+    # 선행 스코프가 결정적으로 주어지면 SMQ의 서버 식별 필터는 중복이다. 그대로 두면
+    # 커버리지 밖(패턴 A/B 안전 필터는 resource_type뿐)으로 밀려 결정적 조립이 발동하지
+    # 못하고 LLM 폴백으로 떨어진다 — 스코프가 더 신뢰도 높은 출처이므로 제거한다(D-099).
+    if server_scope and server_scope[1]:
+        identity_fields = {"name", "hostname", str(server_scope[0]).lower()}
+        kept = [f for f in smq.filters if str(f.field).lower() not in identity_fields]
+        if len(kept) != len(smq.filters):
+            logger.info(
+                "선행 스코프 우선 — SMQ 서버 식별 필터 %d건 제거(결정적 HAVING으로 대체)",
+                len(smq.filters) - len(kept),
+            )
+            smq = smq.model_copy(update={"filters": kept})
+
     cov = check_coverage(smq, model, value_index=value_index)
     if not cov.covered:
         logger.info("시맨틱 커버리지 밖(폴백): %s", cov.reason)
@@ -606,6 +712,7 @@ async def compile_from_nl(
     sql = compile_smq(
         smq, db_id, model, user_query=user_query,
         default_limit=default_limit, stat_month=stat_month,
+        server_scope=server_scope,
     )
     logger.info("시맨틱 결정적 컴파일 성공(패턴 %s): %s", smq.pattern, sql[:200])
     return sql, smq, cov

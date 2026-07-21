@@ -106,8 +106,16 @@ class TestSingleDbPathInjection:
         assert "선행 작업 결과 서버 스코프" not in human_content
 
     @pytest.mark.asyncio
-    async def test_prior_rows_bypasses_semantic_compile(self, sample_state, monkeypatch):
-        """SMQ는 선행 결과 한정을 표현할 수 없으므로 트랙 C를 우회해야 한다."""
+    async def test_prior_rows_passed_to_semantic_compile_as_scope(
+        self, sample_state, monkeypatch
+    ):
+        """선행 결과 한정을 트랙 C에 server_scope로 결정적 전달한다 (D-099).
+
+        과거에는 SMQ가 스코프를 표현하지 못해 트랙 C를 우회했으나(D-086), 조립기가 HAVING으로
+        스코프를 강제하게 되어(D-099) 이 형태도 결정적 조립 대상이다. 프롬프트 지시에만
+        의존하면 LLM이 WHERE 배치·모순 alias 변종을 만들어 침묵 0건/오답이 반복된다
+        (D-096·D-098 실측).
+        """
         sample_state["prior_rows"] = PRIOR_ROWS
         cfg = _mock_config()
         cfg.text2sql.semantic_compose = True
@@ -126,7 +134,9 @@ class TestSingleDbPathInjection:
 
         await query_generator(sample_state, llm=mock_llm, app_config=cfg)
 
-        compile_mock.assert_not_called()
+        compile_mock.assert_called_once()
+        scope = compile_mock.call_args.kwargs["server_scope"]
+        assert scope == ("name", ["SV-WEB-001", "SV-BATCH-009"])
 
 
 class _FakeLLM:
