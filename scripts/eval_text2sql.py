@@ -595,9 +595,14 @@ class PipelinePredictor:
                     result = await multi_db_executor(state, llm=llm, app_config=cfg)
                     return {**state, **(result or {})}
                 # graph — 체크포인터가 thread_id를 요구하므로 항목별 고유 값 전달
+                from langgraph.checkpoint.memory import InMemorySaver  # type: ignore
+
                 from src.graph import build_graph  # type: ignore
 
-                graph = build_graph(cfg)
+                # 기본 체크포인터(동기 SqliteSaver)는 ainvoke 미지원(NotImplementedError로
+                # 전 항목 침묵 skip). 평가는 항목별 고유 thread_id의 1회성 실행이라
+                # 인메모리 체크포인터로 충분하다 — 주입으로 async 비호환만 우회.
+                graph = build_graph(cfg, checkpointer=InMemorySaver())
                 return await graph.ainvoke(
                     state, config={"configurable": {"thread_id": f"eval-{item.id}"}}
                 )
@@ -710,6 +715,12 @@ def run_batch(
             pred_rows = executor.execute(pred.sql, item.db_id)
             if gold_rows is None or pred_rows is None:
                 skip_reason = "실행 미가용(DB 미접속)"
+            elif not gold_rows and (item.gold_result_signature or {}).get("row_count") != 0:
+                # 골드 SQL이 0행이면 데이터 미적재이지 정답 일치가 아니다. 빈 멀티셋끼리는
+                # execution_match가 항상 True라 **전 항목 위양성 통과**로 집계된다(2026-07-20
+                # 실측: 데이터 없는 환경에서 orchestration 26/26 "통과"). 0행을 정당하게
+                # 기대하는 항목만 signature.row_count=0으로 명시해 채점한다.
+                skip_reason = "골드 결과 0행 — 데이터 미적재 의심(빈 결과 동치 위양성 방지)"
             else:
                 ex_scored = True
                 ex_pass = execution_match(gold_rows, pred_rows, float_tol=float_tol)
