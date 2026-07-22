@@ -440,13 +440,14 @@
                     '<td><input type="text" class="dept-input" data-uid="' + uid + '" value="' +
                     escapeHtml(u.department || "") + '" placeholder="-" style="' + inputStyle + '"></td>';
 
+                // 수평 배치 + 체크박스·텍스트 수직 중앙 정렬은 .zone-chk-group(style.css)이 담당
                 var zoneCell =
-                    '<td style="white-space:nowrap;font-size:0.72rem"' + zTitle + '>' +
-                        '<label style="margin-right:8px"><input type="checkbox" class="zone-chk" data-uid="' + uid +
+                    '<td' + zTitle + '><div class="zone-chk-group">' +
+                        '<label><input type="checkbox" class="zone-chk" data-uid="' + uid +
                             '" data-zone="gongjon"' + (zones.indexOf("gongjon") >= 0 ? " checked" : "") + zDis + '> 공동존</label>' +
                         '<label><input type="checkbox" class="zone-chk" data-uid="' + uid +
                             '" data-zone="bankjon"' + (zones.indexOf("bankjon") >= 0 ? " checked" : "") + zDis + '> 은행존</label>' +
-                    '</td>';
+                    '</div></td>';
 
                 var tr = document.createElement("tr");
                 tr.innerHTML =

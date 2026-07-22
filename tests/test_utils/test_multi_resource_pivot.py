@@ -14,7 +14,7 @@ from src.utils.query_gen_common import (
     correct_servername_hostname_mapping,
     is_hostname_target,
     is_servername_to_hostname,
-    resolve_stat_month,
+    resolve_stat_month_range,
 )
 # 폴스타 EAV/피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — 이동-불변.
 from src.db_adapters.polestar.assembler import (
@@ -268,8 +268,8 @@ def test_metric_fields_folded_into_single_pivot():
     )
     # 사용률은 같은 c/s 조인으로 집계 (별도 스코프 아님)
     assert "LEFT JOIN cmm_metric_stat_m s ON s.resource_id = c.id" in block
-    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' THEN s.avg_val END)::numeric" in block
-    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' THEN s.max_val END)::numeric" in block
+    assert "AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric" in block
+    assert "MAX(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric" in block
     # 단일 GROUP BY, 맨 컬럼 금지 명시
     assert block.count("GROUP BY COALESCE(c.platform_resource_id, c.id)") == 1
     assert "집계 밖의 맨 컬럼" in block
@@ -282,7 +282,9 @@ def test_metric_fields_folded_into_single_pivot():
         assert stripped.startswith(("MAX(", "ROUND(AVG(", "ROUND(MAX(", "ROUND(MIN(")), stripped
 
 
-def test_db2_metric_uses_decimal_cast():
+def test_db2_metric_uses_double_cast():
+    """DB2 집계 전 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 쓰레기 값(실측
+    5.5e13)에서 SQL0413N 변환 오버플로로 쿼리가 죽는다(D-086)."""
     pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
     block = build_multi_resource_pivot_block(
         regular_entries=[],
@@ -292,22 +294,43 @@ def test_db2_metric_uses_decimal_cast():
         metric_fields=["CPU 평균"],
         db_engine="db2",
     )
-    assert "CAST(s.avg_val AS DECIMAL(15,4))" in block
+    assert "CAST(s.avg_val AS DOUBLE)" in block
+    assert "DECIMAL(15,4)" not in block
     assert "::numeric" not in block
 
 
-def test_resolve_stat_month():
-    # 지난달: 월 롤백 + 연말→연초 롤오버
-    assert resolve_stat_month("지난달 1개월 통계", date(2026, 7, 13)) == "202606"
-    assert resolve_stat_month("지난달 통계", date(2026, 1, 5)) == "202512"
+def test_resolve_stat_month_range():
+    # 지난달: 월 롤백 + 연말→연초 롤오버 — 단일 월은 (m, m) 범위
+    assert resolve_stat_month_range("지난달 1개월 통계", date(2026, 7, 13)) == ("202606", "202606")
+    assert resolve_stat_month_range("지난달 통계", date(2026, 1, 5)) == ("202512", "202512")
     # 당월
-    assert resolve_stat_month("이번달 통계", date(2026, 7, 13)) == "202607"
+    assert resolve_stat_month_range("이번달 통계", date(2026, 7, 13)) == ("202607", "202607")
     # 기간 표현 없으면 None(전체 월 평균)
-    assert resolve_stat_month("모든 서버 조회") is None
+    assert resolve_stat_month_range("모든 서버 조회") is None
     # "지난 1개월"(공백 포함) — 실측 질의 표현(D-076 후속4)
-    assert resolve_stat_month(
+    assert resolve_stat_month_range(
         "CPU, 메모리 사용률을 지난 1개월 통계데이터로 확인", date(2026, 7, 14)
-    ) == "202606"
+    ) == ("202606", "202606")
+
+
+def test_resolve_stat_month_range_n_months():
+    """"지난 N개월" 범위 해석(D-085) — 폼필에서 기간이 침묵 누락되던 실측 버그의 회귀 방지.
+
+    "지난 3개월간 통계 자료를 사용하시오" 질의가 결정적 빌더에서 stat_month=None으로
+    떨어져 전체 월 평균이 조회되던 문제. 진행 중인 달은 제외(D-076 후속4 원칙).
+    """
+    # 실측 질의 표현 그대로 — 직전 완결 월부터 3개월
+    assert resolve_stat_month_range(
+        "CPU, 메모리 사용률은 지난 3개월간 통계 자료를 사용하시오.", date(2026, 7, 16)
+    ) == ("202604", "202606")
+    # 연초 롤오버
+    assert resolve_stat_month_range("지난 3개월 통계", date(2026, 2, 10)) == ("202511", "202601")
+    # "최근 N개월" 표현 + 12개월
+    assert resolve_stat_month_range("최근 12개월 사용률", date(2026, 7, 16)) == ("202507", "202606")
+    # N=1은 지난달과 동일(호환)
+    assert resolve_stat_month_range("지난 1개월", date(2026, 7, 16)) == ("202606", "202606")
+    # 붙여쓰기("지난 3개월간"의 "개 월" 공백 변형 포함)
+    assert resolve_stat_month_range("지난3개월 데이터", date(2026, 7, 16)) == ("202604", "202606")
 
 
 def test_build_stat_month_block_forces_single_month_equality():
@@ -326,6 +349,15 @@ def test_build_stat_month_block_empty_without_period():
     """기간 표현이 없으면(stat_month=None) 블록을 만들지 않는다(프롬프트 무변경)."""
     assert build_stat_month_block(None) == ""
     assert build_stat_month_block("") == ""
+
+
+def test_build_stat_month_block_range_uses_between():
+    """N개월 범위는 BETWEEN 필터를 강제한다(D-085). 단일 월 튜플은 등호 유지."""
+    block = build_stat_month_block(("202604", "202606"))
+    assert "s.stat_date BETWEEN '202604' AND '202606'" in block
+    assert "우선" in block
+    # (m, m) 튜플은 단일 월 등호로 접힘
+    assert "s.stat_date = '202606'" in build_stat_month_block(("202606", "202606"))
 
 
 class TestDeterministicPivotSql:
@@ -369,23 +401,45 @@ class TestDeterministicPivotSql:
     def test_schema_prefix_and_fetch_db2(self):
         sql = self._sql(db_engine="db2", db_schema="POLESTAR", limit=100000)
         assert "FROM POLESTAR.cmm_resource c" in sql
-        assert "CAST(s.avg_val AS DECIMAL(15,4))" in sql
+        assert "CAST(s.avg_val AS DOUBLE)" in sql
         assert "::numeric" not in sql
         assert sql.rstrip().endswith("FETCH FIRST 100000 ROWS ONLY;")
 
     def test_db2_metric_scale_fixed_to_two(self):
-        """DB2 사용률 집계는 최종 `CAST(... AS DECIMAL(15,2))`로 스케일 고정(엑셀 제로필 방지, D-068 후속).
+        """DB2 사용률 집계는 최종 `CAST(... AS DECIMAL(31,2))`로 스케일 고정(엑셀 제로필 방지, D-068 후속).
 
-        DB2 `AVG(DECIMAL)`은 스케일을 크게 확장해 ROUND(x,2)로 값은 맞아도 타입 스케일이 남아
-        6.51000000000000000000처럼 직렬화된다. 외부 CAST로 scale 2 고정.
+        DB2 집계는 스케일을 크게 확장해 ROUND(x,2)로 값은 맞아도 타입 스케일이 남아
+        6.51000000000000000000처럼 직렬화된다. 외부 CAST로 scale 2 고정(정밀도는 15→31 확장, D-086).
         """
         sql = self._sql(db_engine="db2", db_schema="POLESTAR")
         assert "CAST(ROUND(AVG(" in sql
-        assert "AS DECIMAL(15,2)) AS" in sql
+        assert "AS DECIMAL(31,2)) AS" in sql
         # PostgreSQL은 ::numeric 사용 — 외부 DECIMAL 캐스트 없음
         pg = self._sql(db_engine="postgresql", db_schema="polestar")
-        assert "AS DECIMAL(15,2))" not in pg
+        assert "AS DECIMAL(31,2))" not in pg
         assert "::numeric, 2)" in pg
+
+    def test_utilization_value_guard_applied(self):
+        """Utilization 값 타당성 게이트(D-086) — 범위 밖 쓰레기(실측 max=5.5e13·avg=1.2e9·음수)를
+        필드 단위로 집계에서 제외. 상한은 100이 아닌 1000(gp/yd 만재 피크가 100.1까지 기록됨)."""
+        for engine in ("postgresql", "db2"):
+            sql = self._sql(db_engine=engine)
+            # 필드별 val_col에 각각 적용(avg는 avg_val, max는 max_val)
+            assert "AND s.avg_val BETWEEN 0 AND 1000 THEN" in sql
+            assert "AND s.max_val BETWEEN 0 AND 1000 THEN" in sql
+
+    def test_non_utilization_measure_not_guarded(self):
+        """MaxIORate 등 Utilization 외 지표에는 0~1000 게이트를 걸지 않는다(의미 없음)."""
+        pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+        sql = build_multi_resource_pivot_sql(
+            regular_entries=[], server_eav=[], child_eav=[],
+            eav_pattern=pattern, db_engine="db2", db_schema="POLESTAR",
+            explicit_measures=[("디스크 IO 평균", "server.Disks", "AVG", "avg_val", "MaxIORate")],
+        )
+        assert "s.definition_name IN " in sql or "s.definition_name = 'MaxIORate'" in sql
+        assert "BETWEEN 0 AND 1000" not in sql
+        # 크래시 면역(DOUBLE)은 게이트 없는 지표에도 적용
+        assert "CAST(s.avg_val AS DOUBLE)" in sql
 
     def test_stat_month_filter_applied(self):
         sql = self._sql(db_engine="postgresql", stat_month="202606")
@@ -393,6 +447,16 @@ class TestDeterministicPivotSql:
         # 미지정이면 월 필터 없음
         sql2 = self._sql(db_engine="postgresql", stat_month=None)
         assert "s.stat_date" not in sql2
+
+    def test_stat_month_range_filter_applied(self):
+        """N개월 범위(D-085) — "지난 3개월" 폼필에서 기간 필터가 침묵 누락되던 회귀 방지."""
+        sql = self._sql(db_engine="postgresql", stat_month=("202604", "202606"))
+        assert "AND s.stat_date BETWEEN '202604' AND '202606'" in sql
+        # 범위여도 서버당 1행 구조(단일 GROUP BY)는 불변
+        assert sql.count("GROUP BY") == 1
+        # (m, m) 튜플은 단일 월 등호로 접힘
+        sql2 = self._sql(db_engine="postgresql", stat_month=("202606", "202606"))
+        assert "s.stat_date = '202606'" in sql2
 
     def test_all_select_lines_aggregated(self):
         """모든 SELECT 컬럼이 집계 → GROUP BY 위반(r.name 등) 원천 차단."""
@@ -404,55 +468,66 @@ class TestDeterministicPivotSql:
 
 
 class TestResolveStatMonthAbsolute:
-    """절대 월 표현 해석 (D-099).
+    """절대 월 표현 해석 (D-099). 반환형은 D-102(구 UX D-085) 병합으로 (시작, 끝) 범위 튜플.
 
     회귀 방지(2026-07-20 라이브 실측): "2026년 6월"이 None을 반환해 결정적 조립 SQL에
-    stat_date 필터가 빠지고 전 기간 평균으로 순위가 뒤집혔다.
+    stat_date 필터가 빠지고 전 기간 평균으로 순위가 뒤집혔다. 절대 월은 단일 월이므로 (m, m).
     """
 
     def test_korean_absolute_month(self):
-        from src.utils.query_gen_common import resolve_stat_month
+        from src.utils.query_gen_common import resolve_stat_month_range
 
-        assert resolve_stat_month("2026년 6월 CPU 사용률 평균이 가장 높은 서버") == "202606"
+        assert resolve_stat_month_range(
+            "2026년 6월 CPU 사용률 평균이 가장 높은 서버"
+        ) == ("202606", "202606")
 
     def test_hyphen_and_slash_forms(self):
-        from src.utils.query_gen_common import resolve_stat_month
+        from src.utils.query_gen_common import resolve_stat_month_range
 
-        assert resolve_stat_month("2026-06 CPU 평균") == "202606"
-        assert resolve_stat_month("2026/6 CPU 평균") == "202606"
+        assert resolve_stat_month_range("2026-06 CPU 평균") == ("202606", "202606")
+        assert resolve_stat_month_range("2026/6 CPU 평균") == ("202606", "202606")
 
     def test_absolute_takes_priority_over_relative(self):
         """절대 표현이 상대 표현보다 우선한다(더 명시적)."""
         from datetime import date
 
-        from src.utils.query_gen_common import resolve_stat_month
+        from src.utils.query_gen_common import resolve_stat_month_range
 
-        assert resolve_stat_month(
+        assert resolve_stat_month_range(
             "지난달 대비 2026년 3월 CPU", today=date(2026, 7, 20)
-        ) == "202603"
+        ) == ("202603", "202603")
 
     def test_relative_still_works(self):
         """기존 상대 표현 해석은 불변(회귀 0)."""
         from datetime import date
 
-        from src.utils.query_gen_common import resolve_stat_month
+        from src.utils.query_gen_common import resolve_stat_month_range
 
-        assert resolve_stat_month("지난달 CPU 평균", today=date(2026, 7, 20)) == "202606"
-        assert resolve_stat_month("이번달 CPU", today=date(2026, 7, 20)) == "202607"
+        assert resolve_stat_month_range(
+            "지난달 CPU 평균", today=date(2026, 7, 20)
+        ) == ("202606", "202606")
+        assert resolve_stat_month_range(
+            "이번달 CPU", today=date(2026, 7, 20)
+        ) == ("202607", "202607")
 
-    def test_month_count_expression_not_matched(self):
-        """'지난 3개월' 같은 개월 수 표현은 절대 월로 오인하지 않는다."""
-        from src.utils.query_gen_common import resolve_stat_month
+    def test_month_count_expression_is_range_not_absolute(self):
+        """'지난 3개월'은 절대 단일 월로 오인하지 않고 N개월 범위로 해석한다(D-102)."""
+        from datetime import date
 
-        assert resolve_stat_month("지난 3개월 CPU 추이") is None
+        from src.utils.query_gen_common import resolve_stat_month_range
+
+        # 7월 기준 직전 완결 3개월 = 4~6월 → (시작 202604, 끝 202606)
+        assert resolve_stat_month_range(
+            "지난 3개월 CPU 추이", today=date(2026, 7, 20)
+        ) == ("202604", "202606")
 
     def test_invalid_month_ignored(self):
         """13월 등 범위 밖 값은 무시한다."""
-        from src.utils.query_gen_common import resolve_stat_month
+        from src.utils.query_gen_common import resolve_stat_month_range
 
-        assert resolve_stat_month("2026년 13월 데이터") is None
+        assert resolve_stat_month_range("2026년 13월 데이터") is None
 
     def test_no_period_expression(self):
-        from src.utils.query_gen_common import resolve_stat_month
+        from src.utils.query_gen_common import resolve_stat_month_range
 
-        assert resolve_stat_month("CPU 사용률 현황") is None
+        assert resolve_stat_month_range("CPU 사용률 현황") is None

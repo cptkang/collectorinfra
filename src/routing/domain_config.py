@@ -48,7 +48,9 @@ DB_DOMAINS: list[DBDomainConfig] = [
             "알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), "
             "알람 담당자(ACKUSERNAME), 알람 대상 장비(CMM_RESOURCE)"
         ),
-        aliases=["polestar_b0", "은행 폴스타", "레거시 폴스타"],
+        # "은행존"/"은행존 폴스타"는 "은행 폴스타"와 부분매칭되지 않아(존이 붙은 별도 토큰)
+        # 단독 표면어로 등재해야 한다(D-065 교훈: gp/yd "공동존"과 동일 패턴, 2026-07-16 b0 미전파 수정).
+        aliases=["polestar_b0", "은행 폴스타", "레거시 폴스타", "은행", "은행존", "은행존 폴스타"],
         env_connection_key="POLESTAR_B0_CONNECTION",
         env_type_key="POLESTAR_B0_TYPE",
         db_engine="db2",

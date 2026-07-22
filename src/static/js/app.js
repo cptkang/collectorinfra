@@ -2462,12 +2462,45 @@
         });
     }
 
+    // 존 코드 → 표시명 (백엔드 routing/zones.py의 존 코드와 대응; 표시 라벨만 프론트 소유)
+    var ALARM_ZONE_LABELS = {
+        gongjon: "공동존 (김포 · 여의도)",
+        bankjon: "은행존 (은행 레거시)"
+    };
+
+    // 호버 툴팁: 이 사용자가 수신 가능한 알림 존 리스트를 표시한다.
+    function renderAlarmZonesTooltip(userInfo, authEnabled) {
+        var tip = document.getElementById("alarmZonesTooltip");
+        if (!tip) return;
+        var zones;
+        var note = "";
+        if (!authEnabled || (userInfo && userInfo.role === "admin")) {
+            zones = Object.keys(ALARM_ZONE_LABELS);   // 관리자/인증 비활성 → 전 존 수신
+            if (userInfo && userInfo.role === "admin") note = "관리자는 전체 존의 알림을 수신합니다";
+        } else {
+            zones = (userInfo && userInfo.alarm_zones) || [];
+        }
+        if (!zones.length) { tip.innerHTML = ""; return; }
+        var html = '<div class="status-tooltip-title">수신 가능한 알림</div>';
+        zones.forEach(function (z) {
+            html += '<div class="status-tooltip-item">' +
+                '<span class="status-tooltip-dot status-tooltip-dot--online"></span>' +
+                escapeHtml(ALARM_ZONE_LABELS[z] || z) +
+                '</div>';
+        });
+        if (note) {
+            html += '<div class="status-tooltip-item">' + escapeHtml(note) + '</div>';
+        }
+        tip.innerHTML = html;
+    }
+
     // 구독 시작은 checkAuthOnLoad가 존 권한을 확정한 뒤 initAlarmSubscription()으로 트리거한다.
     function initAlarmSubscription(userInfo, authEnabled) {
         alarmCanReceive = (!authEnabled) ||
             !!(userInfo && (userInfo.role === "admin" ||
                 (userInfo.alarm_zones && userInfo.alarm_zones.length > 0)));
         setupAlarmToggle();
+        renderAlarmZonesTooltip(userInfo, authEnabled);
         if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
     }
 

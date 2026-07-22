@@ -61,9 +61,10 @@ pattern_b:
     day: cmm_metric_stat_d
     month: cmm_metric_stat_m
   default_time_grain: month
-  # measure만 선택되고 dimension이 비면 컴파일러가 결정적으로 주입할 서버 식별 dimension
-  # (SMQ 선택 누락 보정, D-076 후속 — pattern_a 카탈로그에 정의된 이름만 유효)
-  default_dimensions: [name, hostname]
+  # measure가 있는데 서버 식별 dimension이 없으면 컴파일러가 결정적으로 주입할 식별 dimension
+  # (SMQ 선택 누락 보정, D-076 후속 — pattern_a 카탈로그에 정의된 이름만 유효).
+  # 최소 식별자(name)만 — hostname까지 주입하면 질의 미명시 컬럼이 끼어 컬럼 스코프 규약 위반.
+  default_dimensions: [name]
   value_columns:
     avg: avg_val
     max: max_val
@@ -86,18 +87,30 @@ pattern_c:
     CMM_ALARM_ACTIVE: {alias: A}
   base_table: {table: cmm_resource, alias: CR}
   joins:
-    CMM_ALARM:     "JOIN {p}cmm_alarm CA ON CA.RESOURCE_ID = CR.ID"
-    CMM_ALARM_DEF: "JOIN {p}cmm_alarm_def D ON CA.DEFINITION_ID = D.ID"
+    CMM_ALARM:        "JOIN {p}cmm_alarm CA ON CA.RESOURCE_ID = CR.ID"
+    CMM_ALARM_DEF:    "JOIN {p}cmm_alarm_def D ON CA.DEFINITION_ID = D.ID"
+    CMM_RESOURCE_SVR: "LEFT JOIN {p}cmm_resource SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.SERVICE_RESOURCE_ID, CR.ID)"
   active_join:     "JOIN {p}cmm_alarm_active A ON A.ALARM_ID = CA.ID"
+  # 장비명/IP/호스트명은 알람 발생 자원(CR)이 아니라 **부모 서버(SVR)** 기준 — 제품 템플릿
+  # C-1/C-2 정본(하위 자원 알람 행은 CR 직접 컬럼이 빔, 2026-07-21 yd-006 실측). 알람 자원명은
+  # resource_name(CR.NAME)으로 별도 제공.
   dimensions:
     ALARMSEVERITY:      CA.ALARMSEVERITY
     CTIME:              CA.CTIME
     NAME:               D.NAME
     CONDITIONLOGTEXT:   CA.CONDITIONLOGTEXT
     CURRENTALARMSTATUS: CA.CURRENTALARMSTATUS
-    server_name:        CR.NAME
-    IPADDRESS:          CR.IPADDRESS
-    HOSTNAME:           CR.HOSTNAME
+    server_name:        SVR.NAME
+    resource_name:      CR.NAME
+    IPADDRESS:          SVR.IPADDRESS
+    HOSTNAME:           SVR.HOSTNAME
+    severity_grade:     "CASE WHEN CA.ALARMSEVERITY = 3 THEN '심각' WHEN CA.ALARMSEVERITY = 2 THEN '경고' WHEN CA.ALARMSEVERITY = 1 THEN '주의' WHEN CA.ALARMSEVERITY = 0 THEN '해소' ELSE '기타' END"
+    occurred_at:        "TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS')"
+    ALARM_ID:           CA.ID
+  # 알람 질의가 컬럼을 명시하지 않으면(SMQ dimensions 빈 배열) 제품 표준 알람 뷰(9컬럼)를
+  # 결정적으로 조립한다 — LLM 폴백이 CR직접/부모조인 형태를 실행마다 오가는 플립플롭 차단
+  # (2026-07-21 yd-006 실측).
+  default_dimensions: [severity_grade, occurred_at, server_name, IPADDRESS, HOSTNAME, resource_name, NAME, CONDITIONLOGTEXT, ALARM_ID]
   severity_map:
     심각: 3
     critical: 3
@@ -108,7 +121,7 @@ pattern_c:
     해소: 0
     resolved: 0
   base_where: ["CR.DTIME IS NULL"]
-  order_by: "CA.CTIME DESC"
+  order_by: "CA.CTIME DESC, CA.ID DESC"
   allowed_tables:
     - cmm_alarm
     - cmm_alarm_def

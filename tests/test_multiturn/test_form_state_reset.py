@@ -44,6 +44,71 @@ class TestCreateFollowupInput:
         assert "pending_synonym_reuse" not in delta
 
 
+class TestTurnInputStateSingleSource:
+    """텍스트 라우트(/query·/query/stream)의 입력 상태 조립 단일 출처 검증 (D-064 후속).
+
+    버그(2026-07-16): D-064의 create_followup_input이 /query(비스트리밍)에만 적용되고
+    SSE(/query/stream) 후속 턴은 {user_query, messages}만 보내, 직전 폼업로드 턴의
+    uploaded_file이 체크포인터로 복원 → 파일 없는 텍스트 질의(알람 조회)가 옛 양식을
+    재파싱해 옛 폼필 조회를 재실행함. 수정: _build_turn_input_state 단일 헬퍼를 두
+    라우트가 공유.
+    """
+
+    def _body(self, query="은행과 공동존 여의도 서버 최근 1개월 알람 리스트"):
+        from src.api.schemas import QueryRequest
+        return QueryRequest(query=query, thread_id="t-1")
+
+    def test_followup_turn_clears_form_triggers(self):
+        """후속 턴(승인 아님)은 create_followup_input과 동일하게 폼필 트리거를 비운다."""
+        from src.api.routes.query import _build_turn_input_state
+
+        state = _build_turn_input_state(
+            self._body(), "t-1", checkpoint_state={"user_query": "이전 질의"}, current_user={}
+        )
+        assert state["uploaded_file"] is None
+        assert state["file_type"] is None
+        assert state["csv_sheet_data"] is None
+        assert state["user_query"].startswith("은행과 공동존 여의도")
+
+    def test_approval_turn_passes_action(self):
+        """승인 대기 턴은 approval delta를 전달한다(폼필 상태 초기화 없음 — 같은 질의 계속)."""
+        from src.api.routes.query import _build_turn_input_state
+
+        state = _build_turn_input_state(
+            self._body("승인"), "t-1",
+            checkpoint_state={"awaiting_approval": True}, current_user={},
+        )
+        assert "approval_action" in state
+        assert "uploaded_file" not in state
+
+    def test_first_turn_uses_initial_state(self):
+        """체크포인트 없으면 create_initial_state 전체 초기화."""
+        from src.api.routes.query import _build_turn_input_state
+
+        state = _build_turn_input_state(
+            self._body(), "t-1", checkpoint_state=None,
+            current_user={"sub": "u1", "department": "d1", "allowed_db_ids": None},
+        )
+        assert state["thread_id"] == "t-1"
+        assert state["user_id"] == "u1"
+        assert state["uploaded_file"] is None
+
+    def test_both_text_routes_share_the_helper(self):
+        """/query와 /query/stream 핸들러가 모두 단일 헬퍼를 호출한다(비대칭 재발 방지).
+
+        인라인 재구현으로 회귀하면 이 테스트가 잡는다. 헬퍼를 대체하는 리팩터링 시
+        두 라우트가 동일 조립을 공유하는지 확인 후 이 단언을 갱신할 것.
+        """
+        import inspect
+        from src.api.routes import query as query_routes
+
+        for handler in (query_routes.process_query, query_routes.process_query_stream):
+            src = inspect.getsource(handler)
+            assert "_build_turn_input_state" in src, (
+                f"{handler.__name__} 가 입력 상태 조립 단일 헬퍼를 사용하지 않음"
+            )
+
+
 class TestFieldMapperSkipClearsMapping:
     """template이 없으면 field_mapper가 잔존 매핑 산출물을 비우는지 검증."""
 

@@ -36,7 +36,7 @@ from src.utils.query_gen_common import (
     build_stat_month_block,
     correct_servername_hostname_mapping,
     resolve_query_limit,
-    resolve_stat_month,
+    resolve_stat_month_range,
 )
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 from src.db_adapters.polestar.assembler import (
@@ -412,7 +412,7 @@ async def _generate_sql(
         semantic_sql, _smq, _cov = await compile_from_nl(
             llm, _uq, db_id,
             default_limit=default_limit,
-            stat_month=resolve_stat_month(_uq),
+            stat_month=resolve_stat_month_range(_uq),
         )
         if semantic_sql:
             logger.info(
@@ -514,8 +514,8 @@ async def _generate_sql(
     # P1-3/D-088). 프로필 부재 DB는 미주입 — 일반 기간 규칙만 남는다. 프로필 선언 전환은 P3(D-090).
     _stat_block_db = db_id in ((app_config.get_polestar_db_ids() if app_config else None) or set())
     _stat_month = (
-        resolve_stat_month(parsed_requirements.get("original_query", "") or "")
-        or resolve_stat_month(sub_query_context)
+        resolve_stat_month_range(parsed_requirements.get("original_query", "") or "")
+        or resolve_stat_month_range(sub_query_context)
     )
     _sm_block = build_stat_month_block(_stat_month) if _stat_block_db else ""
     if _sm_block:
@@ -631,7 +631,7 @@ async def _generate_sql(
             # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
             domain_cfg = get_domain_by_id(db_id)
             db_schema = domain_cfg.db_schema if domain_cfg else ""
-            stat_month = resolve_stat_month(parsed_requirements.get("original_query", ""))
+            stat_month = resolve_stat_month_range(parsed_requirements.get("original_query", ""))
             deterministic_sql = build_multi_resource_pivot_sql(
                 regular_entries, server_eav, child_eav, eav_pattern_mr,
                 metric_fields=pivot_metric_fields, db_engine=db_engine,
@@ -639,7 +639,8 @@ async def _generate_sql(
             )
             logger.info(
                 "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, month=%s",
-                db_id, len(child_eav), len(pivot_metric_fields), stat_month or "전체",
+                db_id, len(child_eav), len(pivot_metric_fields),
+                "~".join(stat_month) if stat_month else "전체",
             )
             return deterministic_sql
 
@@ -797,12 +798,13 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     if not sql or not sql.strip():
         return "빈 SQL"
 
-    # SELECT 문 확인
+    # SELECT 문 확인 — CTE(WITH ... SELECT)도 읽기 전용이므로 허용(2026-07-21 gp-014,
+    # 단일 경로 _get_statement_type과 동일 규칙). DML은 아래 위험 키워드 검사가 차단.
     sql_upper = sql.strip().upper()
-    if not sql_upper.startswith("SELECT") and not sql_upper.startswith("--"):
+    if not sql_upper.startswith(("SELECT", "WITH")) and not sql_upper.startswith("--"):
         # 주석으로 시작할 수 있으므로 주석 제거 후 확인
         cleaned = re.sub(r"--[^\n]*\n", "", sql).strip().upper()
-        if not cleaned.startswith("SELECT"):
+        if not cleaned.startswith(("SELECT", "WITH")):
             return "SELECT 문이 아닙니다."
 
     # 위험 키워드 확인
@@ -815,6 +817,25 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     demotion_errors = _check_left_join_where_demotion(sql)
     if demotion_errors:
         return demotion_errors[0]
+
+    # 따옴표 밖 자연어(한글) 토큰 잔존 검출 — 단일 경로(query_validator)와 동일 가드를
+    # 멀티 경로에도 공유(D-066 경로 비대칭 방지, D-104). 검출 시 재시도 루프가 재생성 유도.
+    from src.nodes.query_validator import _find_bare_hangul_tokens
+
+    bare_hangul = _find_bare_hangul_tokens(sql)
+    if bare_hangul:
+        shown = ", ".join(sorted(set(bare_hangul))[:5])
+        return (
+            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
+            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
+        )
+
+    # cmm_resource 조회 시 dtime IS NULL 부재 검출 — 단일 경로(query_validator 4.6)와 공유
+    # (D-066 경로 비대칭 방지). 폐쇄망 실측 2026-07-21 b0-005: 필터 누락 시 삭제 서버 혼입.
+    from src.utils.query_gen_common import MISSING_DTIME_ERROR, missing_dtime_filter
+
+    if missing_dtime_filter(sql):
+        return MISSING_DTIME_ERROR
 
     # LIMIT 없으면 추가
     if not re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):

@@ -23,6 +23,7 @@ def gp_schema_info() -> dict:
                 "columns": [
                     {"name": "id", "type": "integer", "nullable": False, "primary_key": True, "foreign_key": False, "references": None},
                     {"name": "platform_resource_id", "type": "varchar(255)", "nullable": True, "primary_key": False, "foreign_key": False, "references": None},
+                    {"name": "dtime", "type": "timestamp", "nullable": True, "primary_key": False, "foreign_key": False, "references": None},
                     {"name": "name", "type": "varchar(255)", "nullable": False, "primary_key": False, "foreign_key": False, "references": None},
                     {"name": "resource_type", "type": "varchar(100)", "nullable": False, "primary_key": False, "foreign_key": False, "references": None},
                 ],
@@ -48,6 +49,7 @@ def yd_schema_info() -> dict:
                 "columns": [
                     {"name": "id", "type": "integer", "nullable": False, "primary_key": True, "foreign_key": False, "references": None},
                     {"name": "platform_resource_id", "type": "varchar(255)", "nullable": True, "primary_key": False, "foreign_key": False, "references": None},
+                    {"name": "dtime", "type": "timestamp", "nullable": True, "primary_key": False, "foreign_key": False, "references": None},
                     {"name": "name", "type": "varchar(255)", "nullable": False, "primary_key": False, "foreign_key": False, "references": None},
                     {"name": "resource_type", "type": "varchar(100)", "nullable": False, "primary_key": False, "foreign_key": False, "references": None},
                 ],
@@ -76,7 +78,7 @@ async def test_gp_schema_validator_fallback(gp_schema_info):
         "  MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname' THEN cc.stringvalue_short END) AS hostname "
         "FROM polestar.cmm_resource c "
         "JOIN polestar.core_config_prop cc ON c.id = cc.configuration_id "
-        "WHERE c.resource_type = 'server.Server' "
+        "WHERE c.resource_type = 'server.Server' AND c.dtime IS NULL "
         "GROUP BY COALESCE(c.platform_resource_id, c.id) "
         "LIMIT 100;"
     )
@@ -101,7 +103,7 @@ async def test_yd_schema_validator_fallback(yd_schema_info):
         "  MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname' THEN cc.stringvalue_short END) AS hostname "
         "FROM polestar.cmm_resource c "
         "JOIN polestar.core_config_prop cc ON c.id = cc.configuration_id "
-        "WHERE c.resource_type = 'server.Server' "
+        "WHERE c.resource_type = 'server.Server' AND c.dtime IS NULL "
         "GROUP BY COALESCE(c.platform_resource_id, c.id) "
         "LIMIT 100;"
     )
@@ -141,6 +143,7 @@ def dotless_schema_info() -> dict:
                 "columns": [
                     {"name": "id", "type": "integer", "nullable": False, "primary_key": True, "foreign_key": False, "references": None},
                     {"name": "platform_resource_id", "type": "varchar(255)", "nullable": True, "primary_key": False, "foreign_key": False, "references": None},
+                    {"name": "dtime", "type": "timestamp", "nullable": True, "primary_key": False, "foreign_key": False, "references": None},
                     {"name": "name", "type": "varchar(255)", "nullable": False, "primary_key": False, "foreign_key": False, "references": None},
                     {"name": "resource_type", "type": "varchar(100)", "nullable": False, "primary_key": False, "foreign_key": False, "references": None},
                 ],
@@ -168,7 +171,7 @@ async def test_dotless_schema_fallback(dotless_schema_info):
         "  MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname' THEN cc.stringvalue_short END) AS hostname "
         "FROM polestar.cmm_resource c "
         "JOIN polestar.core_config_prop cc ON c.id = cc.configuration_id "
-        "WHERE c.resource_type = 'server.Server' "
+        "WHERE c.resource_type = 'server.Server' AND c.dtime IS NULL "
         "GROUP BY COALESCE(c.platform_resource_id, c.id) "
         "LIMIT 100;"
     )
@@ -188,7 +191,7 @@ async def test_all_query_skips_limit_addition(dotless_schema_info):
     state["schema_info"] = dotless_schema_info
     # LIMIT 절이 없는 쿼리
     state["generated_sql"] = (
-        "SELECT c.id FROM cmm_resource c"
+        "SELECT c.id FROM cmm_resource c WHERE c.dtime IS NULL"
     )
 
     with patch("src.nodes.query_validator.load_config") as mock_config:
