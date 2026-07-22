@@ -15,13 +15,25 @@ test_message_enrichment 가 담당한다. 본 파일은 "전부 off = 무변경"
 
 from __future__ import annotations
 
+import json
+from contextlib import asynccontextmanager
+from datetime import datetime
 from types import SimpleNamespace
 
+from src.alarm.application.alarm_worker import AlarmWorker
+from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
+from src.alarm.application.nodes.alarm_context_enricher import (
+    alarm_context_enricher_node,
+)
 from src.alarm.application.nodes.alarm_notifier import build_workb_body
+from src.alarm.domain.alarm import AlarmEvent
 from src.alarm.domain.notification_policy import (
     TIER_PAGE,
     TIER_SUPPRESS,
     decide_notification,
+)
+from src.alarm.infrastructure.polestar_noise_context import (
+    PolestarNoiseContextRepository,
 )
 from src.alarm.orchestration.alarm_graph import build_alarm_graph
 
@@ -69,8 +81,9 @@ class TestPolicyWaveAOffEqualsCurrent:
         d = decide_notification(_event(2), None, None, _ctx(parent=0), cfg)
         assert d.tier == TIER_PAGE  # 부모 정상 → 억제 없음, 매트릭스(높음+sev2=PAGE)
 
-    def test_correlated_arg_is_dormant(self):
-        # E2 step7.5 미구현 — correlated=True를 넘겨도 tier/reason/priority 불변(휴면).
+    def test_correlated_arg_ignored_when_flag_off(self):
+        # E2 step7.5 구현됨 — 단 cross_host_correlation_enabled 미설정(off·기본)이면
+        # correlated=True를 넘겨도 tier/reason/priority 불변(플래그 게이팅·회귀 0).
         cfg = _cfg()
         base = decide_notification(_event(2), None, None, _ctx(None), cfg)
         with_corr = decide_notification(
@@ -150,6 +163,193 @@ class TestGraphNodesUnchangedByWaveA:
         nodes_off = set(build_alarm_graph(_gcfg()).get_graph().nodes.keys())
         nodes_on = set(build_alarm_graph(_gcfg(
             dependency_suppression=True, multi_hop_cascade_enabled=True,
-            message_enrichment_enabled=True,
+            message_enrichment_enabled=True, change_correlation_enabled=True,
         )).get_graph().nodes.keys())
         assert nodes_off == nodes_on
+
+
+# ─────────────────────────────────────────────────────────────
+# E. 워커 — E2 상관이 off(기본)면 detection 미수행·_detect_storm 비트동일
+# ─────────────────────────────────────────────────────────────
+def _sev(is_clear: bool = False, server: str = "srv-1",
+         db_id: str = "db1") -> SimpleNamespace:
+    return SimpleNamespace(is_clear=is_clear, db_id=db_id, server_name=server)
+
+
+class TestWorkerCorrelationOffIndependent:
+    def test_detect_storm_bit_identical_and_correlation_state_untouched(self):
+        # _process는 cross_host_correlation_enabled일 때만 _detect_correlated_storm을
+        # 호출한다 — off면 상관 상태(_correlation_clusters)가 비어 있고 storm 판정은 불변.
+        cfg = SimpleNamespace(noise_gate=SimpleNamespace(
+            storm_threshold=3, storm_window_seconds=60,
+        ))
+        w = AlarmWorker(cfg)
+        results = [w._detect_storm(_sev(), now=1000.0) for _ in range(5)]
+        assert results == [False, False, False, True, True]  # 기존 스톰 경계 불변
+        # storm 경로는 상관 상태를 건드리지 않는다(독립 dict) → detection 미수행 = 빈 dict.
+        assert w._correlation_clusters == {}
+
+
+# ─────────────────────────────────────────────────────────────
+# F. E3 동적 baseline — dynamic_baseline_enabled=False면 무변경(회귀 0)
+# ─────────────────────────────────────────────────────────────
+def _full_event() -> AlarmEvent:
+    return AlarmEvent(
+        db_id="polestar_cm_gp", server_name="srv-1", hostname="h1",
+        ip_address="10.0.0.1", resource_ancestry="/S/srv/Cpus", alarm_id="A-1",
+        severity=1, alarm_status="NOT_ACK", resource_type="server.Cpus",
+        resource_name="cpu0", alarm_name="CPU Utilization", alarm_time=datetime(2026, 7, 22),
+        conditions=">90", condition_log="95", is_clear=False,
+    )
+
+
+class _FakeNoiseRepo:
+    def is_db_registered(self, db_id):
+        return True
+
+    async def fetch(self, event, **kw):
+        return {
+            "importance_id": "HIGH", "maintenance": False, "noti_policy": None,
+            "parent_avail_status": None, "cascaded": None, "root_resource": None,
+            "root_resource_name": None, "source": "polestar_db",
+        }
+
+
+class _SpyBaseline:
+    def __init__(self):
+        self.called = 0
+
+    async def compute_severity(self, event, noise_cfg, redis_client=None):
+        self.called += 1
+        return 3
+
+
+def _enricher_cfg(*, dynamic: bool) -> SimpleNamespace:
+    alarm = SimpleNamespace(history_enabled=False, enrich_timeout_seconds=5)
+    noise_gate = SimpleNamespace(
+        enable_noise_gate=True, dependency_suppression=False,
+        multi_hop_cascade_enabled=False, message_enrichment_enabled=False,
+        dynamic_baseline_enabled=dynamic, noise_context_cache_ttl_seconds=0,
+    )
+    return SimpleNamespace(alarm=alarm, noise_gate=noise_gate)
+
+
+class TestEnricherAnomalyKeyOff:
+    async def test_key_absent_and_adapter_not_called_when_off(self):
+        # dynamic_baseline_enabled=False → 이상탐지 태스크·키 미추가(키셋 불변), 어댑터 미호출.
+        spy = _SpyBaseline()
+        config = {"configurable": {
+            "app_config": _enricher_cfg(dynamic=False), "noise_repo": _FakeNoiseRepo(),
+            "metric_baseline": spy, "history_repo": None, "process_client": None,
+            "history_redis": None,
+        }}
+        out = await alarm_context_enricher_node({"alarm_event": _full_event()}, config)
+        assert "anomaly_severity" not in out  # 키셋 불변(회귀 0)
+        assert set(out.keys()) == {"history_stats", "process_snapshot", "noise_context"}
+        assert spy.called == 0
+
+    async def test_key_present_when_on(self):
+        # 양성 대조: dynamic_baseline_enabled=True면 키 추가·어댑터 호출·값 반영.
+        spy = _SpyBaseline()
+        config = {"configurable": {
+            "app_config": _enricher_cfg(dynamic=True), "noise_repo": _FakeNoiseRepo(),
+            "metric_baseline": spy, "history_repo": None, "process_client": None,
+            "history_redis": None,
+        }}
+        out = await alarm_context_enricher_node({"alarm_event": _full_event()}, config)
+        assert out["anomaly_severity"] == 3
+        assert spy.called == 1
+
+
+class _StubLLM:
+    async def ainvoke(self, messages, *args, **kwargs):
+        return SimpleNamespace(content=json.dumps({
+            "severity_label": "주의", "summary": "s", "probable_cause": "c",
+            "recommended_action": "a", "pattern_type": "",
+        }, ensure_ascii=False))
+
+
+class TestAnalyzerAnomalyOff:
+    async def test_ai_severity_unchanged_when_dynamic_off(self, monkeypatch):
+        # dynamic_baseline_enabled=False면 주입 anomaly_severity가 있어도 ai_message_severity 무변경.
+        monkeypatch.setattr(
+            "src.alarm.application.nodes.alarm_analyzer.create_llm",
+            lambda cfg, **kw: _StubLLM(),
+        )
+        cfg = SimpleNamespace(
+            alarm=SimpleNamespace(get_notification_channels=lambda: ["workb"]),
+            noise_gate=SimpleNamespace(
+                enable_ai_severity_boost=True, dynamic_baseline_enabled=False,
+                enable_llm_actionability=False,
+            ),
+        )
+        state = {"alarm_event": _full_event(), "history_stats": None,
+                 "process_snapshot": None, "analysis_result": None, "error": None,
+                 "anomaly_severity": 3}
+        out = await alarm_analyzer_node(state, {"configurable": {"app_config": cfg}})
+        assert out["analysis_result"].ai_message_severity is None  # 무변경(회귀 0)
+
+
+# ─────────────────────────────────────────────────────────────
+# G. E5 변경 상관 — change_correlation off면 변경 조회 미수행·게이트 비트동일
+# ─────────────────────────────────────────────────────────────
+class TestPolicyChangeCorrelationOff:
+    def test_change_nearby_off_bit_identical(self):
+        # change_nearby None(off) → 승격 없음. change_nearby 키 부재/None 모두 baseline과 동일.
+        cfg = _cfg()
+        baseline = decide_notification(_event(2), None, None, _ctx(None), cfg)
+        with_none = decide_notification(
+            _event(2), None, None, _ctx(None, change_nearby=None), cfg
+        )
+        assert with_none.tier == baseline.tier == TIER_PAGE  # 높음+sev2=PAGE(승격 무관)
+        assert with_none.reason == baseline.reason
+        assert with_none.priority == baseline.priority
+        assert "변경 근접" not in baseline.reason
+
+    def test_change_nearby_not_in_signals_schema(self):
+        # §7.2: change_nearby는 signals 동결 스키마에 넣지 않는다(스냅샷 전수 갱신 불필요).
+        d = decide_notification(_event(2), None, None, _ctx(None), _cfg())
+        assert "change_nearby" not in d.signals
+        assert "change_candidates" not in d.signals
+
+
+class _RecordingClient:
+    def __init__(self):
+        self.executed_sqls: list[str] = []
+
+    async def execute_sql(self, sql):
+        self.executed_sqls.append(sql)
+        return SimpleNamespace(rows=[], row_count=0)
+
+
+class _RecordingRegistry:
+    def __init__(self, client):
+        self._client = client
+
+    def is_registered(self, db_id):
+        return True
+
+    @asynccontextmanager
+    async def get_client(self, db_id):
+        yield self._client
+
+
+def _alarm_event() -> AlarmEvent:
+    return AlarmEvent(
+        db_id="polestar_cm_gp", server_name="srv-1", hostname="h1", ip_address="10.0.0.1",
+        resource_ancestry="/svr", alarm_id="A1", severity=2, alarm_status="NOT_ACK",
+        resource_type="server.Server", resource_name="r1", alarm_name="CPU",
+        alarm_time=datetime(2026, 7, 22, 10, 0, 0), conditions="", condition_log="",
+    )
+
+
+class TestRepoChangeCorrelationOff:
+    async def test_no_change_sql_when_disabled(self):
+        # change_correlation=False → 변경이력 SQL 미실행, change_nearby/change_candidates None.
+        client = _RecordingClient()
+        repo = PolestarNoiseContextRepository(_RecordingRegistry(client), None)
+        ctx = await repo.fetch(_alarm_event(), change_correlation=False)
+        joined = "\n".join(client.executed_sqls)
+        assert "cmm_resource_lifecycle_history" not in joined  # 변경 조회 미수행
+        assert ctx["change_nearby"] is None
+        assert ctx["change_candidates"] is None

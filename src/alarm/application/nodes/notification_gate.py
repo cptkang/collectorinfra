@@ -63,6 +63,7 @@ async def notification_gate_node(
         inhibited=bool(state.get("inhibited", False)),
         flapping=bool(state.get("flapping", False)),
         storm=bool(state.get("storm", False)),
+        correlated=bool(state.get("correlated", False)),
     )
 
     store = configurable.get("decision_store")

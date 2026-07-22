@@ -25,8 +25,14 @@ from typing import Optional
 import redis.asyncio as aioredis
 
 from src.alarm.domain.alarm import AlarmEvent
+from src.alarm.domain.correlation import (
+    ClusterState,
+    match_cluster,
+    signature_tokens,
+)
 from src.alarm.domain.flapping import MAX_STATES, flap_percent, update_flap_state
 from src.alarm.domain.notification_policy import compute_fingerprint
+from src.alarm.domain.severity_signatures import scan_signature_severity
 from src.alarm.infrastructure.redis_queue import (
     ack_message,
     ensure_consumer_group,
@@ -55,6 +61,8 @@ class AlarmWorker:
         self._redis = None
         # ── Plan 52: 노이즈 게이트 (enable_noise_gate 활성 시에만 사용) ──
         self._noise_repo = None
+        # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — dynamic_baseline_enabled 시에만 생성.
+        self._metric_baseline = None
         self._decision_store = None
         self._ticket_queue = None  # (E3) TICKET 티어 일배치 요약 큐
         self._feedback_store = None  # (E4) 운영자 피드백 few-shot 저장소
@@ -82,6 +90,10 @@ class AlarmWorker:
         self._flap_last_seen: dict[str, float] = {}
         # 스톰(§3.8·E2): 스코프(db_id|server) → 사건창 발생 타임스탬프 deque.
         self._storm_window: dict[str, deque] = {}
+        # 크로스-호스트 상관(Plan 60 E2·§4): db_id(존) 스코프 → 활성 클러스터 리스트.
+        # 존 경계는 넘지 않는다(§8 B-6). 만료 sweep(last_ts window 밖 제거·빈 스코프 키 삭제)
+        # + 버퍼 상한(correlation_buffer_max)으로 메모리 가드(§10, 형제 상태 정리 루프와 일관).
+        self._correlation_clusters: dict[str, list[ClusterState]] = {}
 
     def _build_history_repo(self):  # noqa: ANN202
         """이력 조회 리포지토리를 생성한다 (Plan 47).
@@ -141,6 +153,29 @@ class AlarmWorker:
             )
         except Exception:
             logger.exception("노이즈 컨텍스트 리포지토리 생성 실패 — 보수적(수집 없이) 진행")
+            return None
+
+    def _build_metric_baseline(self):  # noqa: ANN202
+        """동적 baseline 이상탐지 어댑터를 생성한다 (Plan 60 E3 · D-079).
+
+        enable_noise_gate=False 또는 dynamic_baseline_enabled=False이면 None을 반환한다 —
+        이상탐지만 생략되고(anomaly_severity 미산출) 분석·발송은 정상 진행된다(회귀 0·graceful).
+        """
+        if not self._config.noise_gate.enable_noise_gate:
+            return None
+        if not getattr(self._config.noise_gate, "dynamic_baseline_enabled", False):
+            return None
+        try:
+            from src.alarm.infrastructure.polestar_metric_baseline import (
+                PolestarMetricBaselineAdapter,
+            )
+            from src.routing.db_registry import DBRegistry
+
+            return PolestarMetricBaselineAdapter(
+                DBRegistry(self._config), self._config.alarm
+            )
+        except Exception:
+            logger.exception("메트릭 baseline 어댑터 생성 실패 — 이상탐지 없이 진행")
             return None
 
     def _build_decision_store(self):  # noqa: ANN202
@@ -274,6 +309,7 @@ class AlarmWorker:
         self._history_repo = self._build_history_repo()
         self._process_client = self._build_process_client()
         self._noise_repo = self._build_noise_repo()
+        self._metric_baseline = self._build_metric_baseline()
         self._decision_store = self._build_decision_store()
         self._ticket_queue = self._build_ticket_queue()
         self._feedback_store = self._build_feedback_store()
@@ -364,6 +400,7 @@ class AlarmWorker:
             inhibited = False
             flapping = False
             storm = False
+            correlated = False  # (Plan 60 E2) 크로스-호스트 상관 매칭 여부
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타 — 대표 알람 표기용 그래프 state.
             recurrence_prev: Optional[dict] = None
 
@@ -438,6 +475,14 @@ class AlarmWorker:
                 # 스코프(db_id|server) 사건창 내 발생 다발 시 대표 외 storm=True.
                 if getattr(self._config.noise_gate, "storm_grouping_enabled", False):
                     storm = self._detect_storm(event, now)
+
+                # 크로스-호스트 상관 시드(§4·E2) — cross_host_correlation_enabled일 때만
+                # 탐지(아니면 미수행 → detection 스킵·회귀 0). storm(동일 서버)과 독립 병존.
+                # db_id(존) 스코프에서 온라인 그리디 군집, 대표 외 멤버부터 correlated=True.
+                if getattr(
+                    self._config.noise_gate, "cross_host_correlation_enabled", False
+                ):
+                    correlated = self._detect_correlated_storm(event, now)
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -475,10 +520,14 @@ class AlarmWorker:
                     "inhibited": inhibited,
                     "flapping": flapping,
                     "storm": storm,
+                    # (Plan 60 E2) 크로스-호스트 상관 매칭 여부(off/미매칭이면 False).
+                    "correlated": correlated,
                     # (Plan 60 E1) 재통보 시 직전 창 재발 메타(없으면 None).
                     "recurrence": recurrence_prev,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
                     "enrichment": None,
+                    # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).
+                    "anomaly_severity": None,
                 },
                 config={
                     "configurable": {
@@ -487,6 +536,9 @@ class AlarmWorker:
                         "history_redis": self._redis,
                         "process_client": self._process_client,
                         "noise_repo": self._noise_repo,
+                        # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — off/미생성 시 None →
+                        # enricher는 이상탐지 태스크 미추가(anomaly_severity 미산출·회귀 0).
+                        "metric_baseline": self._metric_baseline,
                         "decision_store": self._decision_store,
                         # (E3) TICKET 일배치 큐 — 워커는 cross-process라 alarm_bus는 미주입.
                         # 큐 적재는 동작하고, 티어 SSE는 sse_publisher(Redis 브리지)로 중계한다.
@@ -831,3 +883,107 @@ class AlarmWorker:
         if not win:
             del self._storm_window[scope]
         return len(win) > threshold
+
+    def _sweep_correlation_clusters(self, now: float, window_sec: int) -> None:
+        """만료된 상관 클러스터를 제거하고 빈 스코프 키를 정리한다 (Plan 60 E2·§10).
+
+        전 스코프(db_id 존)를 순회하여 last_ts가 window_sec 밖인 클러스터를 제거하고,
+        클러스터가 모두 사라진 스코프 키를 dict에서 삭제한다. 스코프 수는 존 개수로
+        자연 유한하므로 전수 순회가 저렴하며, 형제 상태(_flap_last_seen·_gate_dedup)의
+        전-키 정리 루프와 일관되게 조용한 존의 클러스터도 만료시킨다(단조 증가 방지).
+        """
+        empty_scopes = [
+            scope
+            for scope, clusters in self._correlation_clusters.items()
+            if not self._prune_expired(clusters, now, window_sec)
+        ]
+        for scope in empty_scopes:
+            del self._correlation_clusters[scope]
+
+    @staticmethod
+    def _prune_expired(
+        clusters: list[ClusterState], now: float, window_sec: int
+    ) -> list[ClusterState]:
+        """window_sec 밖 클러스터를 in-place 제거하고 남은 리스트를 반환한다."""
+        clusters[:] = [c for c in clusters if now - c.last_ts <= window_sec]
+        return clusters
+
+    def _detect_correlated_storm(self, event: AlarmEvent, now: float) -> bool:
+        """크로스-호스트 상관(§4·E2): db_id(존) 스코프 온라인 그리디 군집을 탐지한다.
+
+        서버 경계를 넘어 필드 유사도(Jaccard)·시간 근접으로 사건을 군집한다. 첫 도착
+        이벤트가 클러스터 **대표**(통보)이고, 이후 유사 이벤트가 correlation_min_cluster_size
+        번째 멤버부터 억제(correlated=True)된다(소급 선출 없음 — 앞선 판정 불변).
+
+        절차:
+            - 해소(is_clear) 이벤트는 군집/카운트에서 제외한다(_detect_storm 동일).
+            - ① 만료 sweep: last_ts가 correlation_window_seconds 밖인 클러스터를 전 스코프에서
+              제거하고 빈 스코프 키를 삭제한다(§10 — 키 만료 sweep 의무).
+            - ② 버퍼 상한: 스코프의 활성 클러스터가 correlation_buffer_max 이상이면 oldest
+              (first_ts 최소)부터 제거해 append 여지를 확보하고 warning을 남긴다(침묵 금지).
+            - sig_label은 워커가 domain scan_signature_severity(event.condition_log)로 사전
+              산출한다(정책 순수성 — correlation.py는 값만 소비). signature_tokens는 server_name을
+              제외한 정규화 토큰을 만든다.
+            - match_cluster로 최고 유사도 클러스터를 찾는다(동점 시 first_ts 오름차순). 매칭되면
+              member_count+1·last_ts=now 후 member_count>=min_cluster_size를 반환한다. 미매칭이면
+              대표(첫 도착) 클러스터를 append하고 False(통보)를 반환한다.
+
+        cross_host_correlation_enabled일 때만 호출된다(_process 게이트 경로) — off면 미수행(회귀 0).
+
+        Returns:
+            correlated 여부(대표 이후 min_cluster_size번째 멤버부터 True).
+        """
+        if event.is_clear:
+            return False
+
+        cfg = self._config.noise_gate
+        window_sec = cfg.correlation_window_seconds
+
+        # ① 만료 sweep — 전 스코프의 window 밖 클러스터 제거 + 빈 스코프 키 삭제.
+        self._sweep_correlation_clusters(now, window_sec)
+
+        scope = event.db_id  # db_id(존) 스코프 — 존 경계는 넘지 않는다(§8 B-6).
+        clusters = self._correlation_clusters.get(scope)
+        if clusters is None:
+            clusters = []
+            self._correlation_clusters[scope] = clusters
+
+        # ② 버퍼 상한 — 초과 시 oldest(first_ts 최소)부터 제거 + warning(침묵 금지).
+        buffer_max = cfg.correlation_buffer_max
+        if len(clusters) >= buffer_max:
+            clusters.sort(key=lambda c: c.first_ts)
+            overflow = len(clusters) - buffer_max + 1  # append 여지 1건 확보
+            del clusters[:overflow]
+            logger.warning(
+                "상관 버퍼 상한 초과 — oldest %d건 제거: scope=%s max=%s",
+                overflow,
+                scope,
+                buffer_max,
+            )
+
+        # sig_label은 domain 순수함수로 사전 산출(policy 순수성 — infra 미의존).
+        hit = scan_signature_severity(getattr(event, "condition_log", "") or "")
+        sig_label = hit[1] if hit else ""
+        tokens = signature_tokens(event.alarm_name, event.resource_type, sig_label)
+
+        idx = match_cluster(
+            clusters, tokens, sim_threshold=cfg.correlation_sim_threshold
+        )
+        if idx is not None:
+            c = clusters[idx]
+            c.member_count += 1
+            c.last_ts = now
+            correlated = c.member_count >= cfg.correlation_min_cluster_size
+            if correlated:
+                logger.debug(
+                    "크로스-호스트 상관 억제: scope=%s 대표=%s member=%s",
+                    scope,
+                    c.representative_fp,
+                    c.member_count,
+                )
+            return correlated
+        # 첫 도착 = 대표 → 통보(소급 선출 없음).
+        clusters.append(
+            ClusterState(compute_fingerprint(event), tokens, now, now)
+        )
+        return False

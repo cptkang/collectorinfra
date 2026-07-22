@@ -124,8 +124,13 @@ def decide_notification(
         enable_llm_actionability(기본 False·E4).
 
     noise_ctx 계약: {importance_id, maintenance, noti_policy, parent_avail_status,
-        cascaded, root_resource, root_resource_name(=E4), root_notified(=E4 enricher 산출), source}
+        cascaded, root_resource, root_resource_name(=E4), root_notified(=E4 enricher 산출),
+        change_nearby, change_candidates(=E5), source}
     수집 실패(None 또는 source=="unavailable") 시 보수화 후 effective_severity>=1이면 PAGE.
+
+    E5 추가(step 9 보조 조정 — §7.2): noise_ctx["change_nearby"]가 True면 promote에
+        "변경 근접(원인성)"을 추가한다(**억제 아님·승격만** — 원인성 판단·PAGE 근거 보강,
+        재현율 우선). change_correlation off·미근접이면 무영향. change 모듈 import 없이 bool만 소비.
 
     E4 다홉 하이브리드(step6.4, §6.2 — multi_hop_cascade_enabled·dependency_suppression AND):
         - dependency_suppression + noise_ctx["cascaded"](다홉 조상 비정상)일 때:
@@ -133,7 +138,13 @@ def decide_notification(
           root_notified=False(근본원인 미통보) → DASHBOARD 강등(재현율 우선 하이브리드).
         - cascaded 미제공(1홉 모드·수집 실패)이면 현행 parent_avail_status 판정으로 폴백(무변경).
         - 이 모듈은 topology 그래프를 import하지 않고 noise_ctx의 bool/id만 소비한다(순수성).
-        - correlated(E2 자리예약·기본 False): 현재 로직 없음, signals 스냅샷에만 반영(E2가 배선).
+
+    E2 크로스-호스트 상관(step7.5 — cross_host_correlation_enabled 뒤, 기본 False면 무변경):
+        - correlated(인자)는 워커가 온라인 그리디 군집(correlation.py)으로 산출해 전달한다.
+          cross_host_correlation_enabled + correlated → SUPPRESS(사유 "크로스-호스트 상관 —
+          클러스터 대표 외 억제"). storm(동일 서버)과 사유·경로를 구분한다(감사 오도 방지).
+        - step7(스톰) 다음·step8(매트릭스) 이전에 위치하므로 심각도3은 step3에서 이미 단락되어
+          도달하지 않는다(군집돼도 각각 PAGE, 불변). 이 모듈은 correlation.py를 import하지 않는다.
 
     E2 추가(모두 플래그 뒤 — 기본값 False면 E1 동작 무변경):
         - dependency_suppression + parent_avail_status≠0(비정상) → SUPPRESS(연쇄 노이즈, §3.6).
@@ -160,6 +171,9 @@ def decide_notification(
     inhibition_enabled = bool(getattr(config, "inhibition_enabled", False))
     flapping_enabled = bool(getattr(config, "flapping_enabled", False))
     storm_grouping_enabled = bool(getattr(config, "storm_grouping_enabled", False))
+    cross_host_correlation_enabled = bool(
+        getattr(config, "cross_host_correlation_enabled", False)
+    )
 
     # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
     # 실효심각도 = max(폴스타 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
@@ -225,7 +239,7 @@ def decide_notification(
             # Plan 60 E4: 다홉 연쇄 신호(미산출·1홉 모드면 None).
             "cascaded": (noise_ctx.get("cascaded") if noise_ctx else None),
             "root_resource": (noise_ctx.get("root_resource") if noise_ctx else None),
-            # Plan 60 E2 자리예약: 크로스-호스트 상관(현재 로직 없음·휴면, E2가 배선).
+            # Plan 60 E2: 크로스-호스트 상관(워커 산출·step7.5 소비). off면 항상 False.
             "correlated": bool(correlated),
         }
 
@@ -306,6 +320,16 @@ def decide_notification(
             TIER_SUPPRESS, "스톰 — 동일 서버 다발, 대표 1건만 통보"
         )
 
+    # ── step 7.5(E2): 크로스-호스트 상관 — 클러스터 대표 외 억제(§4.2) ──
+    # correlated는 워커가 온라인 그리디 군집(correlation.py)으로 산출하여 인자로 전달.
+    # cross_host_correlation_enabled=False(기본)면 평가하지 않아 회귀 0. 심각도3은 step3에서
+    # 이미 단락되어 이 단계에 도달하지 않는다(군집돼도 각각 PAGE, 불변). storm(동일 서버 다발)과
+    # 사유를 구분한다 — storm 경로 재사용 시 "동일 서버 다발" 사유가 감사를 오도하기 때문.
+    if cross_host_correlation_enabled and correlated:
+        return _decision(
+            TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제"
+        )
+
     # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
     base_tier = _matrix_tier(effective_severity, importance)
 
@@ -327,6 +351,11 @@ def decide_notification(
         promote.append("LLM 액션가능성(피드백)")
     if llm_actionability == "noise" and effective_severity <= suppress_max_severity:
         demote.append("LLM 노이즈 판단(피드백)")
+    # Plan 60 E5(§7.2): 변경 근접 알람은 **억제가 아니라 승격** — 원인성 판단·PAGE 근거 보강
+    # (재현율 우선). change_correlation off·미근접이면 change_nearby 키 부재/None → 무영향(회귀 0).
+    # 이 모듈은 change 모듈을 import하지 않고 noise_ctx의 bool만 소비한다(순수성).
+    if noise_ctx and noise_ctx.get("change_nearby"):
+        promote.append("변경 근접(원인성)")
 
     tier = base_tier
     adjust_note = ""

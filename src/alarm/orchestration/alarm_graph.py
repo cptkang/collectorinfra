@@ -48,8 +48,10 @@ class AlarmState(TypedDict):
     inhibited: bool                                     # 워커가 시드한 인히비션 매칭 여부 (E2)
     flapping: bool                                      # 워커가 시드한 플래핑 매칭 여부 (E2)
     storm: bool                                         # 워커가 시드한 스톰 매칭 여부 (E2)
+    correlated: bool                                    # Plan 60 E2: 워커가 시드한 크로스-호스트 상관 매칭 여부
     recurrence: Optional[dict]                          # Plan 60 E1: 재통보 시 직전 창 재발 메타(대표 알람 표기용)
     enrichment: Optional[MessageEnrichment]             # Plan 60 E6: kind별 L1 보강 블록(message_enrichment_enabled 시에만 채워짐)
+    anomaly_severity: Optional[int]                     # Plan 60 E3: enricher가 산출한 동적 baseline 이상 상향 후보(dynamic_baseline_enabled 시에만 채워짐)
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001

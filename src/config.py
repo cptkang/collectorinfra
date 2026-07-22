@@ -539,6 +539,15 @@ class NoiseGateConfig(BaseSettings):
     storm_grouping_enabled: bool = False      # (E2) 스톰 그룹핑 on/off (동일 서버 다발 억제)
     storm_window_seconds: int = 60            # (E2) 스톰 사건창 (초)
     storm_threshold: int = 5                  # (E2) 창 내 이 수 초과 시 스톰(대표 외 억제)
+    # ── Plan 60 E2: 크로스-호스트 이벤트 상관 (D-078) — db_id(존) 경계 내 상관(§8 B-6) ──
+    # 존 간(gp↔yd) 상관은 금지(공통 원인 실증 후 확장). storm(동일 서버)과 독립 병존 플래그.
+    # off(기본)면 detection 미수행 → _detect_storm 비트 동일·게이트 무변경(회귀 0).
+    cross_host_correlation_enabled: bool = False  # (E2) 크로스-호스트 상관 on/off
+    correlation_sim_threshold: float = 0.5    # (E2) Jaccard 필드유사도 임계(이상이면 동일 클러스터)
+    correlation_window_seconds: int = 120     # (E2) 상관 사건창(초) — 밖 클러스터 만료 sweep
+    correlation_min_cluster_size: int = 2     # (E2) 대표 포함 이 수 이상 멤버부터 억제 개시
+    correlation_buffer_max: int = 1000        # (E2) 스코프별 활성 클러스터 상한(메모리 가드)
+    correlation_field_weights_csv: str = ""   # (E2) 필드 가중(예약 — 위상 가중은 E4 이후 단계적)
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
     sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)
@@ -550,6 +559,14 @@ class NoiseGateConfig(BaseSettings):
     meta_alert_min_events: int = 1            # (E3) 창 내 이벤트 수가 이 값 미만이면 무수신 메타경보
     enable_ai_severity_boost: bool = False    # (E3) AI 메시지 심각도 보강 (상향 전용)
     ai_severity_escalate_only: bool = True    # (E3) True=상향만 (하향 억제 금지) — 안전 고정 권장
+    # ── Plan 60 E3: 동적 baseline 이상탐지 (D-079) — 순수 Python Holt-Winters(stdlib only) ──
+    # baseline 이탈(잔차 z-score)을 ai_message_severity **상향 후보**로 공급한다(게이트 무변경).
+    # 기존 enable_ai_severity_boost와 **AND 조건**(둘 다 True여야 analyzer 후처리가 상향 반영).
+    # off(기본)면 enricher gather 태스크·키셋 불변·analyzer 무변경(회귀 0). CPU·메모리만 1차 범위.
+    dynamic_baseline_enabled: bool = False    # (E3) 동적 baseline 이상탐지 on/off
+    anomaly_z_high: float = 3.0               # (E3) 잔차 z-score 상향 임계(이상이면 상향 후보)
+    anomaly_min_periods: int = 3              # (E3) 적합 최소 주기 수(미만이면 계산 skip→None)
+    anomaly_baseline_cache_ttl_seconds: int = 3600  # (E3) baseline 파라미터 Redis 캐시 TTL
     enable_llm_actionability: bool = False    # (E4) LLM 피드백 few-shot 액션가능성 판단
     feedback_store_path: str = "logs/alarm_feedback.jsonl"   # (E4) 운영자 피드백 저장
     feedback_store_enabled: bool = True                      # (E4) 피드백 적재 on/off
@@ -584,6 +601,12 @@ class NoiseGateConfig(BaseSettings):
     enrichment_min_tier: str = "PAGE"         # (E6) 이 티어 이상 통보 결정 시에만 보강 첨부
     enrichment_l1_timeout_seconds: float = 3.0  # (E6) L1 추가 조회(host-wide 프로세스) 상한
     enrichment_profile_map_csv: str = ""      # (E6) kind→요지 제목 오버라이드 ("disk=...,log=...")
+    # ── Plan 60 E5: 변경/구성 이벤트 상관 (D-081 초안 → 착수 시 D-109 재부여) ──
+    # 기본 off면 변경 피드 조회·오버레이 미수행 → noise_ctx 신규 키 None·게이트 step9 비트동일(회귀 0).
+    # 억제가 아니라 승격 — 변경 근접 알람은 promote 신호로만 추가된다(원인성 판단·재현율 우선, §7.2).
+    # 1차 소스 = 폴스타 cmm_resource_lifecycle_history(읽기전용, gp/yd PostgreSQL). b0(DB2)는 미조회.
+    change_correlation_enabled: bool = False  # (E5) 변경 상관 on/off (변경 피드 조회·오버레이)
+    change_window_seconds: int = 3600         # (E5) 알람 직전 이 창(초) 내 변경만 원인 후보로 오버레이
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

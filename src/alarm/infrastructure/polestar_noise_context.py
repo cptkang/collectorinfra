@@ -36,6 +36,7 @@ Phase E2 수집 범위 (Plan 52 §3.6 — `collect_dependency=True` 게이팅, �
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 from typing import Any, Optional
 
 from src.alarm.domain.alarm import AlarmEvent
@@ -295,6 +296,8 @@ _NOISE_CTX_KEYS: tuple[str, ...] = (
     "cascaded",                 # (E4) 다홉 조상 비정상 여부(bool). 미수집/비PostgreSQL이면 None
     "root_resource",            # (E4) 최상위 비정상 조상 리소스 ID
     "root_resource_name",       # (E4) root 리소스 NAME — enricher의 root_notified 산출용
+    "change_nearby",            # (E5) 알람 직전 창에 변경 근접 여부(bool). 미산출/off면 None
+    "change_candidates",        # (E5) 근접 변경 후보 리스트(dict, 감사·원인성 표기용). 미산출/off면 None
 )
 
 
@@ -340,6 +343,8 @@ class PolestarNoiseContextRepository:
         # (Plan 60 E4) 다홉 토폴로지 로더 — db_id별 정적 엣지 그래프를 캐시(이벤트 간 유지).
         # 지연 생성(첫 다홉 조회 시)으로 multi_hop off 경로에 부담을 주지 않는다.
         self._topology_loader = None
+        # (Plan 60 E5) 변경 피드 어댑터(무상태) — 지연 생성(첫 변경 상관 조회 시).
+        self._change_feed = None
 
     def is_db_registered(self, db_id: str) -> bool:
         """event.db_id가 DB 레지스트리에 등록되어 있는지 확인한다."""
@@ -389,6 +394,58 @@ class PolestarNoiseContextRepository:
             root_name = anc_names.get(root) or graph.name_of(root)
         return cascaded, root, root_name
 
+    async def _compute_change_correlation(
+        self,
+        client,  # noqa: ANN001 — DBClient (execute_sql)
+        event: AlarmEvent,
+        resource_id: Optional[str],
+        *,
+        change_window_seconds: int,
+    ) -> tuple[Optional[bool], Optional[list]]:
+        """변경 근접 상관을 산출한다 (E5, §7.2). (change_nearby, change_candidates).
+
+        변경 피드(cmm_resource_lifecycle_history)에서 알람 직전 창의 변경을 조회하고,
+        영향 리소스(resource_id)로 오버레이 매칭해 원인 후보를 만든다. **억제가 아니라
+        승격 신호**다(게이트 step9 promote). 피드 부재·조회 실패·빈 결과 → (False, [])
+        (변경 없음). 조회 자체가 예외로 실패하면 호출부 try/except가 (None, None)로 강등한다.
+
+        기준 시각(reference_epoch)은 알람 발생 시각(`event.alarm_time`)의 epoch다. dev 더미는
+        event_time 단위가 미확정이라 실 오버레이가 나오지 않는다(graceful — 빈 후보).
+        alarm_time이 naive datetime이면 timestamp()가 로컬 tz를 가정한다(실운영 편입 시
+        폴스타 timestamp 단위·tz 관례로 재확인 — change_feed 주석 참조).
+        """
+        from src.alarm.domain.change_correlation import overlay_changes
+
+        if self._change_feed is None:
+            from src.alarm.infrastructure.change_feed import ChangeFeed
+
+            self._change_feed = ChangeFeed()
+
+        try:
+            reference_epoch = int(event.alarm_time.timestamp())
+        except (AttributeError, ValueError, OSError):
+            # alarm_time 부재·변환 불가 → 변경 상관 스킵(원인성 미보강, 보수적).
+            return False, []
+
+        # 영향 리소스 스코프: E4용으로 파싱된 SVR.ID를 재사용(있으면 그 리소스로 스코프).
+        resource_ids = [resource_id] if resource_id else None
+        changes = await self._change_feed.fetch_recent_changes(
+            client,
+            event.db_id,
+            change_window_seconds,
+            reference_epoch=reference_epoch,
+            resource_ids=resource_ids,
+        )
+        affected = {str(resource_id)} if resource_id else None
+        candidates = overlay_changes(
+            (reference_epoch - max(int(change_window_seconds), 0), reference_epoch),
+            changes,
+            affected_resource_ids=affected,
+        )
+        # noise_ctx는 Redis로 직렬화 왕복하므로 후보는 plain dict로 저장한다(JSON 직렬화 가능).
+        change_candidates = [asdict(c) for c in candidates]
+        return bool(candidates), change_candidates
+
     async def fetch(
         self,
         event: AlarmEvent,
@@ -397,6 +454,8 @@ class PolestarNoiseContextRepository:
         multi_hop: bool = False,
         topology_max_hops: int = 5,
         topology_cache_ttl_seconds: int = 86400,
+        change_correlation: bool = False,
+        change_window_seconds: int = 3600,
     ) -> dict[str, Any]:
         """노이즈 컨텍스트를 수집하여 동결 dict로 반환한다 (Plan 52 §8.2 + Plan 60 E4 계약).
 
@@ -411,6 +470,10 @@ class PolestarNoiseContextRepository:
                 시도**하며 b0(DB2)/비PostgreSQL·조회 실패는 None(1홉 폴백·보수적).
             topology_max_hops: 다홉 BFS 홉 상한(비용/순환 가드).
             topology_cache_ttl_seconds: 정적 엣지 그래프 캐시 TTL(변경 드묾 — 장기).
+            change_correlation: True면 변경 피드(E5, §7.2)를 조회·오버레이해 change_nearby/
+                change_candidates를 채운다. 기본 False면 미산출(None). **PostgreSQL(gp/yd)만
+                시도**하며 b0(DB2)/비PostgreSQL·조회 실패는 None(미보강·보수적).
+            change_window_seconds: 알람 직전 이 창(초) 내 변경만 오버레이한다(E5).
 
         반환 dict (동결 계약 = `_NOISE_CTX_KEYS` + source):
             {"importance_id": int|str|None,   # 원값 그대로
@@ -420,6 +483,8 @@ class PolestarNoiseContextRepository:
              "cascaded": bool|None,            # (E4) 다홉 조상 비정상 여부. 미산출이면 None
              "root_resource": str|None,        # (E4) 최상위 비정상 조상 리소스 ID
              "root_resource_name": str|None,   # (E4) root 리소스 NAME(root_notified 산출용)
+             "change_nearby": bool|None,       # (E5) 변경 근접 여부. off/미산출이면 None
+             "change_candidates": list|None,   # (E5) 근접 변경 후보(dict 리스트). off/미산출이면 None
              "source": "polestar_db"|"unavailable"}
              (root_notified는 enricher가 캐시 이후 신선 산출 — 이 dict에는 미포함)
 
@@ -447,6 +512,9 @@ class PolestarNoiseContextRepository:
         cascaded: Optional[bool] = None
         root_resource: Optional[str] = None
         root_resource_name: Optional[str] = None
+        # (Plan 60 E5) 변경 상관 산출값 — 미산출(off·비PostgreSQL·실패)이면 None 유지.
+        change_nearby: Optional[bool] = None
+        change_candidates: Optional[list] = None
         got_any = False
         try:
             async with self._registry.get_client(event.db_id) as client:
@@ -512,6 +580,27 @@ class PolestarNoiseContextRepository:
                             event.db_id, event.alarm_id, exc,
                         )
                         cascaded = root_resource = root_resource_name = None
+                # 변경 상관(E5, §7.2)은 **게이팅(change_correlation)** 뒤에서만, PostgreSQL
+                # (gp/yd)일 때만, 그리고 **독립된 별도 try/except**로 산출한다 — 변경 피드 조회
+                # 실패가 타 신호를 손실시키지 않고 미산출(None → 게이트 미보강)로 강등된다.
+                if change_correlation and _is_postgres_dialect(event.db_id):
+                    try:
+                        change_nearby, change_candidates = (
+                            await self._compute_change_correlation(
+                                client,
+                                event,
+                                _parse_resource_id(resource_rows),
+                                change_window_seconds=change_window_seconds,
+                            )
+                        )
+                        got_any = True
+                    except Exception as exc:  # noqa: BLE001 — 변경 상관만 실패, 타 신호 보존
+                        logger.warning(
+                            "노이즈 컨텍스트 변경 상관 산출 실패 — 미보강: "
+                            "db_id=%s alarm_id=%s: %s",
+                            event.db_id, event.alarm_id, exc,
+                        )
+                        change_nearby = change_candidates = None
         except Exception as exc:  # noqa: BLE001 — 연결 자체 실패는 unavailable
             logger.warning(
                 "노이즈 컨텍스트 연결 실패 — db_id=%s alarm_id=%s: %s",
@@ -533,6 +622,9 @@ class PolestarNoiseContextRepository:
         context["cascaded"] = cascaded
         context["root_resource"] = root_resource
         context["root_resource_name"] = root_resource_name
+        # (E5) 변경 상관 산출값 — change_correlation off·비PostgreSQL·실패면 None(미보강).
+        context["change_nearby"] = change_nearby
+        context["change_candidates"] = change_candidates
         context["source"] = "polestar_db"
         logger.debug(
             "노이즈 컨텍스트 조회 완료: db_id=%s server=%s alarm=%s ctx=%r",

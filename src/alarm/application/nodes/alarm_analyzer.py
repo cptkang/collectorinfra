@@ -332,6 +332,22 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         result.ai_message_severity = ai_sev
         result.ai_severity_reason = ai_reason
 
+        # Plan 60 E3: 동적 baseline 이상탐지 상향 후처리(결정적·LLM 무관, §5.2 확정 설계).
+        # enricher가 산출한 anomaly_severity(baseline z-score 상향 후보)를 **상향 전용** 가드로
+        # ai_message_severity에 병합한다. dynamic_baseline_enabled AND enable_ai_severity_boost
+        # (AND 조건) + 후보>event.severity + 후보>기존 ai일 때만 반영 → agentic_enricher·기존
+        # sig/llm 보강과 공존해도 셋 다 "후보>기존" 상향 전용이라 결과는 max와 동일(게이트 무변경).
+        anomaly_sev = state.get("anomaly_severity")
+        if (
+            anomaly_sev is not None
+            and getattr(cfg.noise_gate, "dynamic_baseline_enabled", False)
+            and cfg.noise_gate.enable_ai_severity_boost
+            and anomaly_sev > event.severity
+            and anomaly_sev > (result.ai_message_severity or 0)
+        ):
+            result.ai_message_severity = anomaly_sev
+            result.ai_severity_reason = "동적 baseline 이상탐지 (z-score 상향)"
+
         # Plan 52 E4: LLM 액션가능성 재파싱(추가 호출 없이 기존 응답 재파싱) — 게이트 활성 시에만.
         # enable off면 필드가 기본 None/""로 남아 정책 계층(step 9)이 무시한다(이중 안전·회귀 0).
         if gate is not None and getattr(gate, "enable_llm_actionability", False):

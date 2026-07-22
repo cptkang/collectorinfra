@@ -110,6 +110,7 @@ async def enrich_noise_context(
     *,
     collect_dependency: bool = False,
     multi_hop: bool = False,
+    change_correlation: bool = False,
     active_firings: Optional[dict] = None,
 ) -> dict[str, Any]:
     """캐시 확인 → 폴스타 노이즈 컨텍스트 고정 SQL 조회 → 캐시 적재 (Plan 52 §8.3 + Plan 60 E4).
@@ -125,6 +126,9 @@ async def enrich_noise_context(
     multi_hop(E4, §6.2): True면 repo.fetch가 다홉 조상 연쇄(cascaded/root_resource/
     root_resource_name)를 추가 산출한다. 그 후 **캐시 이후**(정적-ish 값은 캐시, root_notified는
     동적이라 미캐시) `root_notified`를 active_firings로 신선 산출해 ctx에 채운다.
+
+    change_correlation(E5, §7.2): True면 repo.fetch가 변경 피드를 조회·오버레이해
+    change_nearby/change_candidates를 추가 산출한다(promote 전용 신호 — 노후 캐시 수용).
 
     Returns:
         _NOISE_CTX_KEYS + source (+ multi_hop 시 root_notified).
@@ -155,6 +159,8 @@ async def enrich_noise_context(
             topology_cache_ttl_seconds=getattr(
                 noise_cfg, "topology_cache_ttl_seconds", 86400
             ),
+            change_correlation=change_correlation,
+            change_window_seconds=getattr(noise_cfg, "change_window_seconds", 3600),
         )
 
         if cache_enabled and ctx.get("source") != "unavailable":
@@ -425,6 +431,9 @@ async def alarm_context_enricher_node(
     noise_repo = configurable.get("noise_repo")
     # (Plan 60 E4) 워커 인히비션 상태(참조 전달·읽기전용) — root_notified 산출용. 미주입 시 None.
     active_firings = configurable.get("active_firings")
+    # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — dynamic_baseline_enabled 시 워커가 주입.
+    # 미주입/off면 이상탐지 태스크·키 미추가(anomaly_severity 산출 없음·회귀 0).
+    metric_baseline = configurable.get("metric_baseline")
 
     # 게이트 활성 + noise_repo 주입 시에만 noise_context 수집(그 외 기존 2키 반환 유지).
     gate_cfg = getattr(cfg, "noise_gate", None)
@@ -492,6 +501,8 @@ async def alarm_context_enricher_node(
         dep = bool(getattr(gate_cfg, "dependency_suppression", False))
         # E4 §6.2: 다홉은 의존성 억제의 상위 모드 — dependency_suppression AND multi_hop_cascade_enabled.
         multi_hop = dep and bool(getattr(gate_cfg, "multi_hop_cascade_enabled", False))
+        # E5 §7.2: 변경 상관은 독립 옵트인(기본 off → 변경 피드 미조회·noise_ctx 키 None, 회귀 0).
+        change_corr = bool(getattr(gate_cfg, "change_correlation_enabled", False))
         try:
             return await enrich_noise_context(
                 event,
@@ -500,6 +511,7 @@ async def alarm_context_enricher_node(
                 redis_client,
                 collect_dependency=dep,
                 multi_hop=multi_hop,
+                change_correlation=change_corr,
                 active_firings=active_firings,
             )
         except Exception:
@@ -523,6 +535,28 @@ async def alarm_context_enricher_node(
             )
             return None
 
+    # (Plan 60 E3) gate_on AND dynamic_baseline_enabled일 때만 이상탐지 태스크·키 추가
+    # (off면 키셋 불변·회귀 0 — E6 _message_enrichment 패턴과 동일). anomaly_severity만 산출.
+    dynamic_baseline_on = gate_on and bool(
+        getattr(gate_cfg, "dynamic_baseline_enabled", False)
+    )
+
+    async def _anomaly_baseline() -> Optional[int]:
+        """동적 baseline 이상탐지 — 상향 후보 심각도 산출, 실패 시 None (독립 degradation, E3 §5.2).
+
+        어댑터 미주입(테스트 API 경로 등) 시 None. 게이팅(kind 화이트리스트·해소·미등록 db_id)과
+        시계열 조회·적합·캐시는 어댑터가 담당한다. 자체 try/except로 실패가 분석을 막지 않는다.
+        """
+        if metric_baseline is None:
+            return None
+        try:
+            return await metric_baseline.compute_severity(event, gate_cfg, redis_client)
+        except Exception:
+            logger.exception(
+                "동적 baseline 이상탐지 실패 — 상향 없이 진행: alarm_id=%s", event.alarm_id
+            )
+            return None
+
     # 수집 태스크·반환 키를 동적 구성한다. gate off·message off면 키셋은 기존 2키
     # ({history_stats, process_snapshot})로 **비트 동일**(회귀 0). gate_on → noise_context,
     # message_on → enrichment 키를 추가한다. gather 순서·값은 기존과 동일하다.
@@ -534,6 +568,9 @@ async def alarm_context_enricher_node(
     if message_on:
         tasks.append(_message_enrichment())
         keys.append("enrichment")
+    if dynamic_baseline_on:
+        tasks.append(_anomaly_baseline())
+        keys.append("anomaly_severity")
 
     try:
         results = await asyncio.wait_for(
