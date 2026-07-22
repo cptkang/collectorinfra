@@ -31,7 +31,7 @@ from src.utils.query_gen_common import (
     build_value_index_block,
     correct_servername_hostname_mapping,
     resolve_query_limit,
-    resolve_stat_month,
+    resolve_stat_month_range,
 )
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 from src.db_adapters.polestar.assembler import (
@@ -220,7 +220,7 @@ def _try_build_form_fill_pivot_sql(
         db_engine=state.get("active_db_engine"),
         db_schema=db_schema,
         limit=limit_value,
-        stat_month=resolve_stat_month(user_query),
+        stat_month=resolve_stat_month_range(user_query),
     )
 
 
@@ -264,8 +264,8 @@ async def query_generator(
     # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
     user_query = state.get("user_query", "") or ""
     limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
-    # 기간 표현(지난 1개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
-    stat_month = resolve_stat_month(user_query)
+    # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
+    stat_month = resolve_stat_month_range(user_query)
     # 통계 테이블 강제 블록(build_stat_month_block)은 폴스타 월 통계 테이블(cmm_metric_stat_m)
     # 규약에 특화된 지시라, 그 테이블을 선언한 DB에만 주입한다(L2 일반화, P1-3/D-088). 현재는
     # 폴스타가 유일한 선언 DB이므로 폴스타 게이트(폴스타 시스템 템플릿과 동일 신호)로 판정하고,

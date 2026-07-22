@@ -299,6 +299,11 @@ def _resolve_priority_db_ids(
     return [db_id for db_id in active_db_ids if db_id in priority_set]
 
 
+# 결정적 위치→DB 해소 단일 출처 공개 별칭 — 폼필(field_mapper)과 텍스트 경로
+# (subagents._apply_turn_hint_pinning)가 같은 로직을 공유한다(경로별 사본 금지).
+resolve_priority_db_ids = _resolve_priority_db_ids
+
+
 def _load_local_yaml_fallback(
     active_db_ids: list[str],
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, list[str]], dict[str, list[str]]]:

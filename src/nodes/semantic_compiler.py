@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
-from src.utils.query_gen_common import resolve_query_limit
+from src.utils.query_gen_common import StatMonth, resolve_query_limit
 # 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
 from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
 
@@ -167,6 +168,22 @@ def _resolve_dim(token: str, index: tuple[dict[str, dict], dict[str, dict]]) -> 
     if token in by_name:
         return by_name[token]
     return by_alias.get(str(token).lower())
+
+
+# 서버 식별 dimension으로 인정하는 direct 컬럼 — 이 중 하나가 SELECT에 있어야 리스트 행을
+# 사람이 식별할 수 있다(avail_status 등 direct라도 식별자가 아닌 컬럼은 제외).
+_IDENTITY_COLUMNS = {"name", "hostname", "ipaddress"}
+
+
+def _has_identity_dim(
+    dimensions: list, index: tuple[dict[str, dict], dict[str, dict]]
+) -> bool:
+    """선택된 dimension 중 서버 식별 direct 컬럼이 있는지 판정한다."""
+    for d in dimensions:
+        entry = _resolve_dim(str(d), index)
+        if entry and entry.get("source") == "direct" and entry.get("column") in _IDENTITY_COLUMNS:
+            return True
+    return False
 
 
 def _measure_combos(pattern_b: dict) -> set[tuple[str, str]]:
@@ -309,7 +326,7 @@ def compile_smq(
     *,
     user_query: str = "",
     default_limit: int = 100,
-    stat_month: Optional[str] = None,
+    stat_month: StatMonth = None,
     server_scope: Optional[tuple[str, list[str]]] = None,
 ) -> str:
     """SMQ를 방언별 SQL로 결정적 컴파일한다(패턴 A/B는 기존 엔진 재사용, C는 알람 조립).
@@ -320,7 +337,7 @@ def compile_smq(
         model: 시맨틱 모델(없으면 로드)
         user_query: 원문 질의("전체/모든" LIMIT 상향 판단용)
         default_limit: 기본 LIMIT
-        stat_month: 성능지표 기간 필터 YYYYMM(패턴 B)
+        stat_month: 성능지표 기간 필터 — 단일 월 YYYYMM 또는 (시작, 끝) 범위(패턴 B, D-102)
         server_scope: 선행 task 결과 서버 한정 (식별컬럼, 값목록) — 패턴 A/B에 HAVING으로
             결정적 적용(D-099). None이면 미적용.
 
@@ -353,7 +370,7 @@ def _compile_ab(
     db_engine: str,
     db_schema: str,
     limit: int,
-    stat_month: Optional[str],
+    stat_month: StatMonth,
     *,
     server_scope: Optional[tuple[str, list[str]]] = None,
     user_query: str = "",
@@ -368,15 +385,22 @@ def _compile_ab(
     eav_pattern = pattern_a.get("eav") or {}
     dim_index = _dimension_index(pattern_a)
 
-    # measure만 선택되고 dimension이 비면 결과 행을 식별할 컬럼(서버명 등)이 없어 값만 나열된다
-    # — 실측상 LLM SMQ가 자주 범하는 선택 누락(Plan 61 §7 SMQ 정확도 축). 프롬프트 유도 대신
-    # 모델 pattern_b.default_dimensions를 결정적으로 주입한다(D-035, D-076 후속).
+    # measure가 있는데 서버 식별 dimension(name/hostname/ipaddress direct 컬럼)이 하나도 없으면
+    # 결과 행을 식별할 수 없다 — 실측상 LLM SMQ가 자주 범하는 선택 누락으로, dimension이 완전히
+    # 빈 경우뿐 아니라 속성(용량 등)만 고른 경우에도 발생한다(2026-07-21 yd-004: 서버명 없는
+    # 사용률 리스트). 프롬프트 유도 대신 모델 pattern_b.default_dimensions를 결정적으로
+    # 앞에 주입한다(D-035, D-076 후속).
     dimensions = list(smq.dimensions)
-    if smq.measures and not dimensions:
-        dimensions = [
+    if smq.measures and not _has_identity_dim(dimensions, dim_index):
+        chosen = {
+            e["name"] for d in dimensions
+            if (e := _resolve_dim(str(d), dim_index)) is not None
+        }
+        defaults = [
             d for d in (pattern_b.get("default_dimensions") or [])
-            if _resolve_dim(str(d), dim_index) is not None
+            if (e := _resolve_dim(str(d), dim_index)) is not None and e["name"] not in chosen
         ]
+        dimensions = defaults + dimensions
     # 선행 스코프가 있으면 그 식별 컬럼(name/hostname)을 SELECT에 결정적으로 포함한다 —
     # 없으면 결과 행이 어느 서버의 값인지 알 수 없다(D-097).
     if server_scope and server_scope[1]:
@@ -556,7 +580,7 @@ def try_semantic_compile(
     *,
     user_query: str = "",
     default_limit: int = 100,
-    stat_month: Optional[str] = None,
+    stat_month: StatMonth = None,
     value_index: Optional[dict[str, list[str]]] = None,
 ) -> tuple[Optional[str], CoverageResult]:
     """커버리지 판정 후 내부면 컴파일 SQL을, 밖이면 None과 사유를 반환한다.
@@ -614,6 +638,54 @@ def render_catalog(model: dict) -> str:
     return "\n".join(lines)
 
 
+# "월별/월간" 분해 질의 검출 — "3개월간"의 '월간'은 기간 표현이므로 제외(부정 후방탐색).
+_MONTHLY_BREAKDOWN_RE = re.compile(r"월별|(?<!개)월간")
+
+_PHYSICAL_HINTS = ("물리", "physical")
+
+# 질의의 용량 표현 검출 — SMQ가 명시 요청 차원을 누락하는 비결정 보정용(2026-07-21 gp-009).
+# "CPU 용량"/"CPU코어수" 직접형 + "CPU, 메모리 용량" 열거형(용량이 CPU에도 걸림)을 커버.
+_CPU_CAPACITY_RE = re.compile(r"CPU\s*(?:용량|코어)|CPU\s*[,·와과및]\s*메모리\s*용량", re.IGNORECASE)
+_MEM_CAPACITY_RE = re.compile(r"메모리\s*(?:용량|크기)")
+
+
+def normalize_smq(smq: SMQ, user_query: str) -> SMQ:
+    """LLM SMQ 선택의 알려진 비결정 오류를 결정적으로 교정한다(D-076 후속).
+
+    실측(2026-07-21 yd-004): "CPU 용량"에 LOGICALCORE·PHYSICALCORE를 동시 선택. 실측
+    (2026-07-21 gp-009 회귀): 같은 질의에서 PHYSICALCORE **단독** 선택으로도 흔들림 —
+    운영 관행은 VM 위주라 CPU 용량/코어수=LOGICALCORE. 질의가 '물리'를 명시하지 않으면
+    PHYSICALCORE를 제거(동시 선택 시)하거나 LOGICALCORE로 치환(단독 선택 시)한다.
+    '물리' 신호가 있으면 선택을 존중해 불변.
+    """
+    names = {str(d).upper() for d in smq.dimensions}
+    if "PHYSICALCORE" in names:
+        q = (user_query or "").lower()
+        if not any(h in q for h in _PHYSICAL_HINTS):
+            if "LOGICALCORE" in names:
+                dims = [d for d in smq.dimensions if str(d).upper() != "PHYSICALCORE"]
+            else:
+                dims = [
+                    "LOGICALCORE" if str(d).upper() == "PHYSICALCORE" else d
+                    for d in smq.dimensions
+                ]
+            smq = smq.model_copy(update={"dimensions": dims})
+            names = {str(d).upper() for d in dims}
+
+    # 명시 요청 용량 차원 누락 보정 — 질의가 "CPU/메모리 용량"을 명시했는데 SMQ가 해당
+    # dimension을 통째로 빠뜨리는 비결정(실측 2026-07-21 gp-009 2차 회귀: 같은 질의에서
+    # 동시선택→단독선택→미선택으로 흔들림). 패턴 C(알람)는 무관하므로 A/B만.
+    if smq.pattern in ("A", "B"):
+        added: list[str] = []
+        if _CPU_CAPACITY_RE.search(user_query or "") and not names & {"LOGICALCORE", "PHYSICALCORE"}:
+            added.append("LOGICALCORE")
+        if _MEM_CAPACITY_RE.search(user_query or "") and "TOTALSIZE" not in names:
+            added.append("TotalSize")
+        if added:
+            smq = smq.model_copy(update={"dimensions": list(smq.dimensions) + added})
+    return smq
+
+
 def parse_smq_response(content: str) -> Optional[SMQ]:
     """LLM 응답에서 SMQ JSON을 파싱한다(코드펜스 허용). 밖/파싱실패는 None."""
     import json
@@ -648,7 +720,7 @@ async def compile_from_nl(
     db_id: str,
     *,
     default_limit: int = 100,
-    stat_month: Optional[str] = None,
+    stat_month: StatMonth = None,
     value_index: Optional[dict[str, list[str]]] = None,
     server_scope: Optional[tuple[str, list[str]]] = None,
 ) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
@@ -691,6 +763,18 @@ async def compile_from_nl(
     smq = parse_smq_response(getattr(response, "content", "") or "")
     if smq is None:
         return None, None, None
+    smq = normalize_smq(smq, user_query)
+
+    # 월별 행 분해("월간/월별 통계·추이") 질의는 컴파일러(서버당 1행 집계 고정)로 표현 불가 —
+    # 프롬프트 단서만으로는 LLM이 패턴 B로 과포획함(실측 2026-07-21 gp-010: 월별 4725행이
+    # 서버당 1행 1820행으로 붕괴, 프롬프트 보강 후에도 재발) → 결정적 게이트로 폴백 강제.
+    if smq.pattern == "B" and _MONTHLY_BREAKDOWN_RE.search(user_query or ""):
+        cov = CoverageResult(
+            covered=False,
+            reason="월별 분해(월간/월별) 질의는 컴파일 미지원 - LLM 폴백",
+        )
+        logger.info("시맨틱 커버리지 밖(폴백): %s", cov.reason)
+        return None, smq, cov
 
     # 선행 스코프가 결정적으로 주어지면 SMQ의 서버 식별 필터는 중복이다. 그대로 두면
     # 커버리지 밖(패턴 A/B 안전 필터는 resource_type뿐)으로 밀려 결정적 조립이 발동하지

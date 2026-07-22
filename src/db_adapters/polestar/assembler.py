@@ -9,23 +9,32 @@ from __future__ import annotations
 
 import re
 
+# 기간 범위/값 타당성 게이트는 공용 코어(utils)에서 가져온다(application→config/utils 허용).
+from src.utils.query_gen_common import (
+    StatMonth,
+    _normalize_stat_month,
+    _utilization_guard,
+)
+
 
 def decimal_cast_example(db_engine: str | None) -> str:
     """엔진별 '소수 보존 사용률 집계' 예시 SQL 스니펫을 반환한다(미매핑 alias 안내용).
 
     PostgreSQL은 `AVG(...)::numeric`으로 소수를 보존하지만, DB2는 `AVG()`가 정수 컬럼을 정수로
-    집계하므로 **집계 전** `CAST(... AS DECIMAL)`이 필요하다(`::numeric`은 DB2 문법 오류). 미매핑
-    필드(사용률)를 한글 헤더로 alias하라는 안내에 엔진에 맞는 예시를 넣어 소수점 소실을 막는다.
+    집계하므로 **집계 전** 캐스트가 필요하다(`::numeric`은 DB2 문법 오류). 캐스트는 DOUBLE —
+    고정 정밀도 DECIMAL(15,4)는 범위 밖 쓰레기 값(실측 5.5e13)에서 SQL0413N 변환 오버플로로
+    쿼리 전체가 죽는다(D-103). 값 타당성 게이트(BETWEEN)도 예시에 포함해 LLM 경로도 오염을 거른다.
     """
+    guard = _utilization_guard("avg_val", "Utilization")
     if (db_engine or "").lower() == "db2":
         return (
             "CAST(ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
-            "AND s.definition_name = 'Utilization' "
-            'THEN CAST(s.avg_val AS DECIMAL(15,4)) END), 2) AS DECIMAL(15,2)) AS "CPU 평균"'
+            f"AND s.definition_name = 'Utilization'{guard} "
+            'THEN CAST(s.avg_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS "CPU 평균"'
         )
     return (
         "ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
-        "AND s.definition_name = 'Utilization' "
+        f"AND s.definition_name = 'Utilization'{guard} "
         'THEN s.avg_val END)::numeric, 2) AS "CPU 평균"'
     )
 
@@ -34,8 +43,8 @@ _RESOURCE_TYPE_RE = re.compile(r"\[resource_type:\s*([^\]/\s]+)")
 _SERVER_RESOURCE_TYPE = "server.Server"
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).
-# 폼필 사용률 필드(CPU 평균/최고, 메모리 평균/최고)는 cmm_metric_stat_m 피벗으로만 얻으며
-# field_mapper가 미매핑(None)으로 넘긴다(D-066 후속3). 이를 통합 피벗 스켈레톤에 접어 넣는다.
+# 폴스타 resource_type(server.*) 리터럴을 담으므로 어댑터 계층에 둔다(공용 계층 과적합 가드
+# D-088 준수 — 문서 계층은 스키마-무관 `is_metric_field_name`을 쓴다, 2026-07-22 머지 정리).
 _METRIC_NOUN_RT: tuple[tuple[str, str], ...] = (
     ("cpu", "server.Cpus"),
     ("메모리", "server.Memory"),
@@ -126,20 +135,29 @@ def _metric_select_line(
 
     definition_name 기본값은 'Utilization'(사용률)이며, 폼필 경로는 이 값만 쓴다. 시맨틱
     컴파일러(트랙 C 패턴 B)는 'MaxIORate'(디스크 IO) 등 다른 지표도 지정할 수 있어 인자로 노출한다.
+
+    Utilization에는 값 타당성 게이트(BETWEEN 0 AND 1000)를 CASE 조건에 넣어, 범위 밖 쓰레기
+    행(실측 avg=1.2e9/max=5.5e13, 음수)을 필드 단위로 집계에서 제외한다(D-103). 게이트는
+    definition_name='Utilization'일 때만 — MaxIORate 등엔 0~1000 의미가 없다.
     """
+    guard = _utilization_guard(val_col, definition_name)
     if (db_engine or "").lower() == "db2":
-        # DB2: 집계 함수 내부에서 DECIMAL 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
-        # 또한 DB2 `AVG(DECIMAL)`은 스케일을 크게 확장(예: scale 18)하여 ROUND(x,2)로 값은 2자리로
+        # DB2: 집계 함수 내부에서 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
+        # 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 값(실측 5.5e13 ≥ 1e11)에서
+        # SQL0413N 변환 오버플로로 쿼리 전체가 죽는다(D-103; DOUBLE은 ~1e308이라 변환 오버플로
+        # 원리적 불가 — 게이트 없는 지표(MaxIORate)까지 덮는 심층 방어).
+        # 또한 DB2 집계는 스케일을 크게 확장(예: scale 18)하여 ROUND(x,2)로 값은 2자리로
         # 반올림돼도 **타입 스케일이 남아** 결과가 6.51000000000000000000처럼 trailing zero로 직렬화된다
-        # (엑셀 제로필). 최종을 `CAST(... AS DECIMAL(15,2))`로 감싸 스케일을 2로 고정한다(D-068 후속).
-        inner = f"CAST(s.{val_col} AS DECIMAL(15,4))"
+        # (엑셀 제로필). 최종을 `CAST(... AS DECIMAL(31,2))`로 감싸 스케일을 2로 고정한다(D-068 후속;
+        # 정밀도는 15→31로 확장해 대형 정상값(IO rate 등)의 최종 캐스트 오버플로 여지 제거 — D-103).
+        inner = f"CAST(s.{val_col} AS DOUBLE)"
         return (
             f"  CAST(ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-            f"AND s.definition_name='{definition_name}' THEN {inner} END), 2) AS DECIMAL(15,2)) AS \"{field}\""
+            f"AND s.definition_name='{definition_name}'{guard} THEN {inner} END), 2) AS DECIMAL(31,2)) AS \"{field}\""
         )
     return (
         f"  ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-        f"AND s.definition_name='{definition_name}' THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
+        f"AND s.definition_name='{definition_name}'{guard} THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
     )
 
 
@@ -216,7 +234,7 @@ def build_multi_resource_pivot_sql(
     db_engine: str | None = None,
     db_schema: str | None = None,
     limit: int | None = None,
-    stat_month: str | None = None,
+    stat_month: StatMonth = None,
     metric_table: str = "cmm_metric_stat_m",
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
     server_scope: tuple[str, list[str]] | None = None,
@@ -234,7 +252,8 @@ def build_multi_resource_pivot_sql(
         regular_entries/server_eav/child_eav/eav_pattern/metric_fields/db_engine: 피벗 구성요소
         db_schema: 스키마 한정자(polestar 등, DB2는 대문자 POLESTAR — D-057). 비면 무한정.
         limit: 결과 상한(엔진별 LIMIT/FETCH FIRST). None이면 미적용.
-        stat_month: 사용률 기간 필터 YYYYMM(예: '202506'). None이면 전체 월 평균.
+        stat_month: 사용률 기간 필터 — 단일 월 YYYYMM(예: '202506') 또는 (시작, 끝) 범위
+            (예: ('202504', '202506') → BETWEEN, D-102). None이면 전체 월 평균.
         metric_table: 월별 통계 테이블명(폴스타 기본 cmm_metric_stat_m).
         explicit_measures: 시맨틱 컴파일러용 명시 measure (alias, resource_type, agg_fn,
             val_col, definition_name). metric_fields의 한글라벨 분류 대신 직접 지정(패턴 B).
@@ -257,7 +276,13 @@ def build_multi_resource_pivot_sql(
 
     metric_join = ""
     if has_metric:
-        month_cond = f" AND s.stat_date = '{stat_month}'" if stat_month else ""
+        month_rng = _normalize_stat_month(stat_month)
+        if not month_rng:
+            month_cond = ""
+        elif month_rng[0] == month_rng[1]:
+            month_cond = f" AND s.stat_date = '{month_rng[0]}'"
+        else:
+            month_cond = f" AND s.stat_date BETWEEN '{month_rng[0]}' AND '{month_rng[1]}'"
         # 폼필 경로(metric_fields)는 Utilization만 쓰므로 단일 동등 필터를 유지(기존 출력 보존).
         # 시맨틱 패턴 B가 여러 definition_name(Utilization+MaxIORate)을 쓰면 IN 필터로 확장한다.
         defs = sorted({m[4] for m in (explicit_measures or [])}) or ["Utilization"]
@@ -334,8 +359,9 @@ def build_multi_resource_pivot_block(
         )
         metric_note = (
             "\n- 사용률(CPU/메모리 평균·최고)은 위 `s` 조인으로 같은 GROUP BY에서 집계했습니다. "
-            "기간 조건(예: '지난달 1개월')은 **s.stat_date**(YYYYMM 문자열)에 적용하세요"
-            f"(예: AND s.stat_date = '지난달YYYYMM'). 통계 테이블은 반드시 월별 {metric_table}만 "
+            "기간 조건(예: '지난달 1개월', '지난 3개월')은 **s.stat_date**(YYYYMM 문자열)에 적용하세요"
+            "(단일 월: AND s.stat_date = '지난달YYYYMM' / N개월: AND s.stat_date BETWEEN '시작YYYYMM' "
+            f"AND '직전월YYYYMM' — 진행 중인 달 제외). 통계 테이블은 반드시 월별 {metric_table}만 "
             "사용하고 _h/_d는 쓰지 마세요."
         )
 

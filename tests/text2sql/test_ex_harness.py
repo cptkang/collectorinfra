@@ -87,6 +87,46 @@ class TestExecutionMatch:
 
 
 # ──────────────────────────────────────────────
+# column_subset_match / column_subset_unmatched — EX-subset 보조 지표
+# ──────────────────────────────────────────────
+
+class TestColumnSubset:
+    def test_subset_with_extra_pred_columns(self):
+        g = [{"name": "a", "v": 1}, {"name": "b", "v": 2}]
+        p = [{"n": "a", "x": 1, "extra": 9}, {"n": "b", "x": 2, "extra": 8}]
+        assert H.column_subset_match(g, p) is True
+        assert H.column_subset_unmatched(g, p) == []
+
+    def test_duplicate_gold_columns_may_reuse_pred_column(self):
+        """골드 중복 컬럼(알람 뷰 장비명=리소스명)은 같은 pred 컬럼 재사용을 허용한다.
+
+        실측(2026-07-21 yd-006): 1:1 강제 시 pred가 이름 컬럼을 하나만 내면
+        값이 전부 맞아도 subset 실패 — 값 멀티셋이 같으면 의미상 동치.
+        """
+        g = [{"server_name": "a", "resource_name": "a", "sev": 2},
+             {"server_name": "b", "resource_name": "b", "sev": 3}]
+        p = [{"name": "a", "sev": 2, "extra": 1},
+             {"name": "b", "sev": 3, "extra": 2}]
+        assert H.column_subset_match(g, p) is True
+
+    def test_unmatched_reports_gold_column_names(self):
+        g = [{"name": "a", "detail": "d1"}, {"name": "b", "detail": "d2"}]
+        p = [{"n": "a", "other": "x"}, {"n": "b", "other": "y"}]
+        assert H.column_subset_match(g, p) is False
+        assert H.column_subset_unmatched(g, p) == ["detail"]
+
+    def test_row_count_mismatch_returns_none(self):
+        g = [{"a": 1}, {"a": 2}]
+        p = [{"a": 1}]
+        assert H.column_subset_match(g, p) is False
+        assert H.column_subset_unmatched(g, p) is None
+
+    def test_empty_results_match(self):
+        assert H.column_subset_match([], []) is True
+        assert H.column_subset_unmatched([], []) == []
+
+
+# ──────────────────────────────────────────────
 # is_select_only — 안전장치
 # ──────────────────────────────────────────────
 

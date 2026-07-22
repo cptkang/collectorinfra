@@ -1093,9 +1093,12 @@ body.auth-pending .auth-splash {
     stroke-width: 2;
 }
 
-/* §14: 첨부 파일 카드 (말풍선 "위"에 분리, 카카오톡 스타일). 클릭 시 원본 양식 다운로드. */
+/* §14: 첨부 파일 카드 (말풍선 "위"에 분리, 카카오톡 스타일). 클릭 시 원본 양식 다운로드.
+   inline-flex를 쓰면 짧은 말풍선(inline-block)과 같은 인라인 줄에 수평으로 나란히 붙으므로,
+   블록 레벨 flex + fit-content로 항상 말풍선 "위" 별도 줄을 차지하게 한다. */
 .message-file-card {
-    display: inline-flex;
+    display: flex;
+    width: fit-content;
     align-items: center;
     gap: 10px;
     max-width: 100%;
@@ -1111,8 +1114,9 @@ body.auth-pending .auth-splash {
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
-/* 사용자 메시지(우측 정렬)에서 카드가 우측에 붙도록 */
+/* 사용자 메시지(우측 정렬)에서 카드가 우측에 붙도록 — 블록 레벨이라 text-align이 아닌 margin으로 정렬 */
 .message--user .message-content .message-file-card {
+    margin-left: auto;
     text-align: left;
 }
 
@@ -2913,6 +2917,82 @@ select:focus {
 
 .status-tooltip-dot--offline {
     background: var(--error, #f43f5e);
+}
+
+/* ─── §17 알림 수신 토글 (내비게이션 바) ───
+   체크박스 기본 마진/baseline 정렬이 이웃(ONLINE 배지·Logout·Admin 버튼)과 수직 중심을
+   어긋나게 하므로, flex 중앙 정렬 + margin 제거 + 이웃 버튼과 동일한 칩 형태로 통일한다. */
+.alarm-toggle-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.alarm-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.alarm-toggle:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--text-muted);
+}
+
+.alarm-toggle input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+/* 호버 시 수신 가능한 알림 존 리스트 툴팁(status-badge-wrapper와 동일 패턴) */
+.alarm-toggle-wrapper:hover .status-tooltip:not(:empty) {
+    display: block;
+}
+
+.status-tooltip-title {
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* ─── 어드민 사용자 관리: 알림그룹(존) 체크박스 그룹 ───
+   수평으로 펼치고 체크박스·텍스트를 수직 중앙 정렬한다. */
+.zone-chk-group {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    white-space: nowrap;
+    font-size: 0.72rem;
+}
+
+.zone-chk-group label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+}
+
+.zone-chk-group input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.zone-chk-group input[type="checkbox"]:disabled,
+.zone-chk-group label:has(input:disabled) {
+    cursor: default;
 }
 
 /* ─── DB Warning Banner ─── */

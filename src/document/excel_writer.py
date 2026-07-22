@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import io
 import logging
+import re
 from typing import Any, Optional
 
 from openpyxl import load_workbook
@@ -16,15 +17,25 @@ from openpyxl.cell.cell import Cell
 from openpyxl.styles import Alignment, Border, Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
+from src.utils.query_gen_common import is_metric_field_name
+
 logger = logging.getLogger(__name__)
 
+# 부호·소수점만 허용하는 순수 숫자 문자열(IP "10.1.2.3"·버전 "6.5.1"·빈 문자열은 불일치)
+_NUMERIC_STR_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
-def _normalize_cell_value(value: Any) -> Any:
+
+def _normalize_cell_value(value: Any, *, numeric_hint: bool = False) -> Any:
     """Excel 셀 값을 정규화한다.
 
     DB 드라이버가 반환하는 `Decimal`은 스케일(예: 1.5500)을 보존해 openpyxl이 직렬화 시
     trailing zero가 남을 수 있다(엑셀에 1.55000000000 형태로 표시). `float`로 변환해
-    불필요한 0을 제거한다. 숫자가 아니면 원본 그대로 반환한다.
+    불필요한 0을 제거한다.
+
+    numeric_hint=True(사용률 통계 필드)면 숫자형 **문자열**도 숫자로 변환한다 — DB2(b0)
+    경로는 DECIMAL 통계값이 문자열("6.51")로 도착해 엑셀에 텍스트로 저장되는 반면
+    PostgreSQL(gp/yd)은 숫자로 도착하는 엔진 비대칭이 있다. OS 버전("7.9")·IP 같은
+    진짜 텍스트 필드의 오변환을 막기 위해 통계 필드로 판정된 컬럼에만 적용한다.
     """
     try:
         from decimal import Decimal
@@ -32,6 +43,9 @@ def _normalize_cell_value(value: Any) -> Any:
         if isinstance(value, Decimal):
             f = float(value)
             # 정수값(1.00)은 int로 — 불필요한 소수점 제거
+            return int(f) if f.is_integer() else f
+        if numeric_hint and isinstance(value, str) and _NUMERIC_STR_RE.match(value.strip()):
+            f = float(value.strip())
             return int(f) if f.is_integer() else f
     except Exception:
         pass
@@ -151,6 +165,8 @@ def _fill_sheet(
     # column_mapping에 None인 필드는 필드명 자체를 조회 키로 사용한다.
     # 이는 query_generator가 한글 필드명을 SQL alias로 사용했을 때 자동으로 매칭된다.
     col_assignments: list[tuple[int, str]] = []
+    # 사용률 통계 헤더(예: "CPU 평균") 열 — 문자열로 도착한 숫자도 숫자로 변환할 대상(DB2 비대칭)
+    numeric_hint_cols: set[int] = set()
     for hc in header_cells:
         col_idx = hc["col"]
         header_name = hc["value"]
@@ -160,6 +176,10 @@ def _fill_sheet(
         elif header_name in column_mapping:
             # column_mapping에는 있지만 None인 경우: 필드명 자체로 시도
             col_assignments.append((col_idx, header_name))
+        else:
+            continue
+        if is_metric_field_name(str(header_name)):
+            numeric_hint_cols.add(col_idx)
 
     # Phase 3: 상세 로깅
     logger.debug(
@@ -213,7 +233,9 @@ def _fill_sheet(
             # None 값 처리: 매핑된 컬럼에 값이 없으면 원본 셀 값 유지
             if value is None:
                 continue
-            cell.value = _normalize_cell_value(value)
+            cell.value = _normalize_cell_value(
+                value, numeric_hint=(col_idx in numeric_hint_cols)
+            )
             filled_count += 1
 
             # 서식 적용

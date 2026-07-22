@@ -196,3 +196,72 @@ class TestFillExcelTemplate:
                 {},
                 [],
             )
+
+
+class TestNumericStringNormalization:
+    """DB2(b0) 경로에서 문자열로 도착한 통계값의 숫자 변환 (2026-07-16).
+
+    버그: 은행존(DB2) 사용률 통계(CPU/메모리 평균·최고)가 DECIMAL→문자열("6.51")로 도착해
+    엑셀에 텍스트로 저장됨(gp/yd PostgreSQL은 숫자로 도착해 정상 — 엔진 비대칭).
+    수정: 사용률 통계 필드(classify_metric_field 판정)에 한해 숫자형 문자열을 숫자로 변환.
+    OS 버전("7.9")·IP 같은 진짜 텍스트 필드는 변환하지 않는다.
+    """
+
+    def test_metric_string_value_becomes_number(self):
+        """통계 헤더의 문자열 "6.51"은 float 6.51로 저장된다."""
+        template_bytes = _create_template_bytes(["서버 이름", "CPU 평균", "메모리 최고"])
+        template_structure = parse_excel_template(template_bytes)
+        # 사용률 필드는 field_mapper가 미매핑(None)으로 넘긴다(D-066 후속3)
+        column_mapping = {"서버 이름": "cmm_resource.name", "CPU 평균": None, "메모리 최고": None}
+        rows = [{"name": "srv-01", "CPU 평균": "6.51", "메모리 최고": "85"}]
+
+        result_bytes, _ = fill_excel_template(
+            template_bytes, template_structure, column_mapping, rows
+        )
+
+        wb = load_workbook(io.BytesIO(result_bytes))
+        ws = wb.active
+        assert ws.cell(row=2, column=2).value == 6.51
+        assert isinstance(ws.cell(row=2, column=2).value, float)
+        # 정수형 문자열은 int로
+        assert ws.cell(row=2, column=3).value == 85
+        assert isinstance(ws.cell(row=2, column=3).value, int)
+        wb.close()
+
+    def test_non_metric_string_stays_text(self):
+        """OS 버전 같은 비통계 필드의 숫자형 문자열("7.9")은 텍스트 유지."""
+        template_bytes = _create_template_bytes(["서버 이름", "OS 버전", "IP주소"])
+        template_structure = parse_excel_template(template_bytes)
+        column_mapping = {
+            "서버 이름": "cmm_resource.name",
+            "OS 버전": "OSVerson",
+            "IP주소": "cmm_resource.ipaddress",
+        }
+        rows = [{"name": "srv-01", "OSVerson": "7.9", "ipaddress": "10.1.2.3"}]
+
+        result_bytes, _ = fill_excel_template(
+            template_bytes, template_structure, column_mapping, rows
+        )
+
+        wb = load_workbook(io.BytesIO(result_bytes))
+        ws = wb.active
+        assert ws.cell(row=2, column=2).value == "7.9"
+        assert isinstance(ws.cell(row=2, column=2).value, str)
+        assert ws.cell(row=2, column=3).value == "10.1.2.3"
+        wb.close()
+
+    def test_non_numeric_string_in_metric_field_stays_text(self):
+        """통계 헤더라도 숫자로 파싱 불가한 값("N/A")은 원본 유지."""
+        template_bytes = _create_template_bytes(["서버 이름", "CPU 평균"])
+        template_structure = parse_excel_template(template_bytes)
+        column_mapping = {"서버 이름": "cmm_resource.name", "CPU 평균": None}
+        rows = [{"name": "srv-01", "CPU 평균": "N/A"}]
+
+        result_bytes, _ = fill_excel_template(
+            template_bytes, template_structure, column_mapping, rows
+        )
+
+        wb = load_workbook(io.BytesIO(result_bytes))
+        ws = wb.active
+        assert ws.cell(row=2, column=2).value == "N/A"
+        wb.close()

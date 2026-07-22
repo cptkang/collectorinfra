@@ -185,11 +185,14 @@ class TestMultiDbPathSymmetry:
         """교정본(ON 절 배치)은 멀티 DB 간이 검증기를 통과한다."""
         from src.nodes.multi_db_executor import _validate_sql_simple
 
+        # dtime IS NULL 포함 — 구 UX dtime 가드(D-104 계열, cmm_resource 조회 삭제서버 제외)가
+        # 멀티 경로에도 병합돼(2026-07-22), 이를 누락하면 그 가드에 걸린다. 본 테스트 의도는
+        # LEFT JOIN ON-절 배치 교정본이 통과함을 확인하는 것이므로 dtime 조건을 함께 둔다.
         sql = """
         SELECT r.name FROM polestar.cmm_resource r
         LEFT JOIN polestar.cmm_metric_stat_m s
             ON r.id = s.resource_id AND s.stat_date = '202606'
-        WHERE r.resource_type = 'server.Server'
+        WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL
         LIMIT 100;
         """
         assert _validate_sql_simple(sql, {"tables": {}}) is None

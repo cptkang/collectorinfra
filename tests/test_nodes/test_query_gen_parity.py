@@ -33,6 +33,23 @@ class TestResolveQueryLimit:
     def test_normal_query_keeps_default(self, query):
         assert resolve_query_limit(query, 1000) == 1000
 
+    @pytest.mark.parametrize("query,want", [
+        ("경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘", 100),
+        ("알람 50건만 보여줘", 50),
+        ("장애가 많은 상위 10개 서버를 알려줘", 10),
+        ("전체 서버 중 200건", 200),          # 명시 건수가 '전체' 상향보다 우선
+    ])
+    def test_explicit_count_overrides(self, query, want):
+        """명시 건수("N건"/"상위 N")는 결정적으로 LIMIT에 반영한다(2026-07-21 yd-006 실측).
+
+        단독 "N개"는 "개월"·"코어 4개인 서버" 등 수량 한정과 혼동되므로 인정하지 않는다
+        (위 test_normal_query_keeps_default의 "서버 10개" 케이스가 그 경계를 고정).
+        """
+        assert resolve_query_limit(query, 1000) == want
+
+    def test_month_expression_not_mistaken_for_count(self):
+        assert resolve_query_limit("지난 3개월간 통계를 조회해줘", 1000) == 1000
+
 
 class TestBuildQueryExamplesBlock:
     """프로필 query_examples → few-shot 블록."""

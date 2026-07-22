@@ -110,6 +110,46 @@ class TestCrossZoneMultiHint:
         ]
 
 
+class TestBankZoneSurfaceForms:
+    """"은행존" 계열 표면어가 b0로 해소되는지 (D-065 후속4, 2026-07-16).
+
+    버그: "은행존과 공동존 김포 폴스타 …" / "공동존 여의도와 은행 …" 폼필에서 공동존 DB만
+    선택되고 b0 누락. LLM(규칙 10)이 "은행존"/"은행존 폴스타" 형태로 hint를 내는데, b0
+    aliases에는 "은행 폴스타"뿐이라 "은행존"(존이 붙은 토큰)이 어느 alias와도 부분매칭 안 됨.
+    _ensure_location_hints도 "은행"이 "은행존" 문자열에 이미 포함돼 bare "은행"을 보강 안 함.
+    수정: b0 aliases에 "은행"/"은행존"/"은행존 폴스타" 단독 등재(gp/yd "공동존" D-065와 동일 패턴).
+    """
+
+    def test_bare_bank_zone_maps_to_b0(self):
+        assert _resolve_priority_db_ids(["은행존"], _ACTIVE) == ["polestar_b0"]
+
+    def test_bank_zone_polestar_maps_to_b0(self):
+        assert _resolve_priority_db_ids(["은행존 폴스타"], _ACTIVE) == ["polestar_b0"]
+
+    def test_bank_zone_plus_gongdongjon_gimpo_selects_both(self):
+        """테스트 1 재현: '은행존과 공동존 김포 폴스타의 모든 서버' → b0+gp."""
+        assert _resolve_priority_db_ids(["은행존", "공동존 김포 폴스타"], _ACTIVE) == [
+            "polestar_b0",
+            "polestar_cm_gp",
+        ]
+
+    def test_gongdongjon_yeouido_plus_bank_zone_selects_both(self):
+        """테스트 2 재현: '공동존 여의도와 은행의 모든 서버' → yd+b0."""
+        assert _resolve_priority_db_ids(["공동존 여의도", "은행존"], _ACTIVE) == [
+            "polestar_b0",
+            "polestar_cm_yd",
+        ]
+
+    def test_polestar_compound_forms_select_both(self):
+        assert _resolve_priority_db_ids(
+            ["공동존 여의도 폴스타", "은행존 폴스타"], _ACTIVE
+        ) == ["polestar_b0", "polestar_cm_yd"]
+
+    def test_bank_zone_does_not_pull_gongdongjon(self):
+        """"은행존" 단독은 gp/yd를 끌어들이지 않는다."""
+        assert _resolve_priority_db_ids(["은행존"], _ACTIVE) == ["polestar_b0"]
+
+
 class TestMultiLocationReplication:
     """공동존(gp+yd 다중 priority)일 때 매핑이 전 priority DB에 복제돼 둘 다 조회되는지."""
 

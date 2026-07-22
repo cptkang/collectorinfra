@@ -17,6 +17,7 @@ from src.config import AppConfig, load_config
 from src.db_adapters import get_adapter
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.state import AgentState
+from src.utils.query_gen_common import MISSING_DTIME_ERROR, missing_dtime_filter
 
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
@@ -99,6 +100,28 @@ async def query_validator(
             sql=sql[:200],
             user_id=state.get("user_id"),
         )
+
+    # 4.5. 따옴표 밖 자연어(한글) 토큰 잔존 검출 — LLM이 "해당"/"현재" 같은 자연어 조각을
+    # SQL 구조 영역에 남기면 DB 구문 오류로 실행이 실패한다(폐쇄망 실측 2026-07-20, 2회
+    # 재현·토큰 가변 — 프롬프트로는 못 막는 비결정 오류라 결정적 가드로 재생성을 유도, D-104).
+    # 따옴표 안 한글(별칭 "CPU 평균", 리터럴 '서울')은 정당하므로 제외한다.
+    bare_hangul = _find_bare_hangul_tokens(sql)
+    if bare_hangul:
+        shown = ", ".join(sorted(set(bare_hangul))[:5])
+        # 메시지는 ASCII 구두점만 사용 - 이 문자열은 평가 하네스 스킵 사유로 cp949 콘솔에
+        # 출력될 수 있음(em-dash는 UnicodeEncodeError, Known Mistakes 2026-07-16)
+        errors.append(
+            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
+            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
+        )
+
+    # 4.6. cmm_resource 조회 시 dtime IS NULL(삭제 리소스 제외) 필터 부재 검출 — LLM이
+    # 필수 필터를 통째로 누락하면 삭제된 서버가 결과에 섞인다(폐쇄망 실측 2026-07-21
+    # b0-005: +99대). 프롬프트 규칙만으로는 비결정적으로 재발하므로 결정적 가드로 재생성을
+    # 유도한다(D-104 계열). 알람 뷰의 부모 조인 등 일부 별칭 무필터는 정당하므로
+    # "SQL 전체에 한 번도 없음"만 차단한다.
+    if missing_dtime_filter(sql):
+        errors.append(MISSING_DTIME_ERROR)
 
     # 5. 참조 테이블 존재 여부 (대소문자 무시 + bare name fallback)
     referenced_tables = _extract_table_names(sql)
@@ -200,6 +223,29 @@ async def query_validator(
     }
 
 
+_HANGUL_RE = re.compile(r"[가-힣]+")
+
+
+def _find_bare_hangul_tokens(sql: str) -> list[str]:
+    """문자열 리터럴·따옴표 식별자·주석을 제거한 뒤 남는 한글 토큰을 찾는다(D-104).
+
+    LLM 생성 SQL에 자연어 조각(지시어 "해당", "현재" 등)이 구조 영역에 잔존하면 DB가
+    구문 오류를 낸다. 따옴표 안 한글(별칭 `"CPU 평균"`, 리터럴 `'서울'`)은 정당한 사용이라
+    제거 후 검사한다. 문자열 리터럴은 표준 SQL의 `''` 이스케이프를 허용한다.
+
+    Args:
+        sql: 검사할 SQL 문자열
+
+    Returns:
+        구조 영역에 남은 한글 토큰 목록(없으면 빈 리스트)
+    """
+    body = re.sub(r"--[^\n]*", " ", sql or "")
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    body = re.sub(r"'(?:[^']|'')*'", " ", body)  # 문자열 리터럴 ('' 이스케이프 포함)
+    body = re.sub(r'"[^"]*"', " ", body)  # 따옴표 식별자(별칭)
+    return _HANGUL_RE.findall(body)
+
+
 def _build_failure_result(errors: list[str]) -> dict:
     """검증 실패 결과를 구성한다.
 
@@ -224,6 +270,11 @@ def _build_failure_result(errors: list[str]) -> dict:
 def _get_statement_type(sql: str) -> str:
     """SQL 문의 타입을 판별한다.
 
+    sqlparse는 CTE(`WITH ... SELECT`)의 get_type()을 UNKNOWN으로 반환한다(실측 2026-07-21
+    gp-014: 정당한 읽기 전용 CTE 쿼리가 "SELECT 문만 허용" 검증에 원천 거부돼 재시도 소진).
+    UNKNOWN이면 주석 제거 후 WITH로 시작하고 DML/DDL 키워드가 없는 경우 SELECT로 재분류한다
+    (data-modifying CTE는 키워드 검사로 계속 차단).
+
     Args:
         sql: SQL 쿼리
 
@@ -231,13 +282,25 @@ def _get_statement_type(sql: str) -> str:
         SQL 문 타입 문자열 (SELECT, INSERT, UNKNOWN 등)
     """
     parsed = sqlparse.parse(sql)
-    if parsed:
-        return parsed[0].get_type() or "UNKNOWN"
-    return "UNKNOWN"
+    stype = (parsed[0].get_type() or "UNKNOWN") if parsed else "UNKNOWN"
+    if stype == "UNKNOWN":
+        body = re.sub(r"--[^\n]*", " ", sql or "")
+        body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S).strip()
+        if re.match(r"^WITH\b", body, re.IGNORECASE) and not re.search(
+            r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b",
+            body, re.IGNORECASE,
+        ):
+            return "SELECT"
+    return stype
 
 
 def _extract_cte_names(sql: str) -> set[str]:
-    """WITH 절에서 CTE(Common Table Expression) 이름을 추출한다.
+    """CTE 이름과 파생 테이블 별칭을 추출한다(가상 테이블 — 존재 검증 제외 대상).
+
+    실측(2026-07-21 gp-014): ① SQL이 주석(`-- ...`)으로 시작하면 `^\\s*WITH` 앵커가 실패해
+    CTE 이름(server_specs)이 실존 테이블 검증에 걸림 → 주석 제거 후 판정. ② 파생 테이블
+    별칭(`(SELECT ...) ref`)도 가상 이름이므로 함께 제외한다(닫는 괄호 뒤 식별자는 문법상
+    항상 별칭 — 실존 테이블명이 그 위치에 올 수 없음).
 
     테이블 추출(_extract_table_names)과 동일하게 **주석 제거 후** 판정한다 —
     생성 규칙이 SQL 선두에 `-- 설명` 주석을 강제하므로, 원본 기준 `^WITH` 앵커는
@@ -248,20 +311,32 @@ def _extract_cte_names(sql: str) -> set[str]:
         sql: SQL 쿼리 문자열
 
     Returns:
-        CTE 이름 집합
+        CTE·파생 테이블 별칭 이름 집합
     """
     cte_names: set[str] = set()
-    sql_clean = sqlparse.format(sql, strip_comments=True)
-    if not re.search(r"^\s*WITH\b", sql_clean, re.IGNORECASE):
-        return cte_names
-    # "name AS (" 패턴에서 이름 추출
+    body = re.sub(r"--[^\n]*", " ", sql or "")
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
     _skip_keywords = frozenset({
         "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "RECURSIVE",
         "NOT", "CAST", "TREAT", "EXTRACT", "TRIM", "SUBSTRING",
     })
-    for m in re.finditer(r"\b(\w+)\s+AS\s*\(", sql_clean, re.IGNORECASE):
+    if re.search(r"^\s*WITH\b", body, re.IGNORECASE):
+        # "name AS (" 패턴에서 CTE 이름 추출
+        for m in re.finditer(r"\b(\w+)\s+AS\s*\(", body, re.IGNORECASE):
+            name = m.group(1)
+            if name.upper() not in _skip_keywords:
+                cte_names.add(name)
+    # 파생 테이블 별칭: ") alias" / ") AS alias" — 뒤따르는 SQL 키워드는 별칭이 아님
+    _keywords_after_paren = frozenset({
+        "ON", "WHERE", "GROUP", "ORDER", "LIMIT", "FETCH", "OFFSET", "HAVING",
+        "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS", "FULL",
+        "UNION", "INTERSECT", "EXCEPT", "AND", "OR", "AS", "SELECT", "FROM",
+        "WHEN", "THEN", "ELSE", "END", "IN", "NOT", "IS", "BETWEEN", "LIKE",
+        "EXISTS", "DESC", "ASC", "OVER", "FILTER",
+    })
+    for m in re.finditer(r"\)\s*(?:AS\s+)?([A-Za-z_]\w*)", body, re.IGNORECASE):
         name = m.group(1)
-        if name.upper() not in _skip_keywords:
+        if name.upper() not in _keywords_after_paren:
             cte_names.add(name)
     return cte_names
 

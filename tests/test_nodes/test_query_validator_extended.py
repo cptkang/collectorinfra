@@ -144,7 +144,10 @@ class TestComplexSafeQueries:
             ")\n"
             "SELECT * FROM over_months LIMIT 10"
         )
-        assert _extract_cte_names(sql) == {"monthly", "over_months"}
+        # CTE 이름(monthly·over_months)은 반드시 추출한다. 파생 테이블 별칭 추출(구 UX 병합,
+        # gp-014)이 `COUNT(*) AS cnt` 같은 함수 별칭도 부수적으로 포함할 수 있으나 무해
+        # (제외 집합은 테이블 존재 검증에만 쓰이고 컬럼 별칭은 테이블 위치에 오지 않음).
+        assert {"monthly", "over_months"} <= _extract_cte_names(sql)
 
     @pytest.mark.asyncio
     async def test_cte_query_with_leading_comment_passes(self, base_state):

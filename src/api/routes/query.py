@@ -301,6 +301,42 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
     return None
 
 
+def _build_turn_input_state(
+    body: QueryRequest,
+    thread_id: str,
+    checkpoint_state: dict | None,
+    current_user: dict,
+) -> dict:
+    """턴 유형(첫/후속/승인)에 따른 그래프 입력 상태를 조립한다 — 텍스트 라우트 단일 출처.
+
+    /query(비스트리밍)와 /query/stream(SSE)이 이 로직을 각자 인라인으로 들고 있다가,
+    D-064 폼필 상태 초기화(create_followup_input)가 /query에만 적용되고 SSE 경로에는
+    누락되는 비대칭이 발생했다(2026-07-16: 직전 폼업로드 턴의 uploaded_file이 체크포인터로
+    복원돼 옛 양식이 재파싱됨). 두 라우트가 반드시 이 헬퍼를 공유하여 재발을 차단한다.
+    """
+    if checkpoint_state is not None:
+        # 후속 턴: delta input만 전달
+        if checkpoint_state.get("awaiting_approval"):
+            # SQL 승인 대기 중
+            action, modified_sql = _parse_approval(body.query)
+            return {
+                "user_query": body.query,
+                "messages": [HumanMessage(content=body.query)],
+                "approval_action": action,
+                "approval_modified_sql": modified_sql if action == "modify" else None,
+            }
+        # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
+        return create_followup_input(body.query)
+    # 첫 턴: 전체 초기화
+    return create_initial_state(
+        user_query=body.query,
+        thread_id=thread_id,
+        user_id=current_user.get("sub"),
+        user_department=current_user.get("department"),
+        allowed_db_ids=current_user.get("allowed_db_ids"),
+    )
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -333,29 +369,7 @@ async def process_query(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    if checkpoint_state is not None:
-        # 후속 턴: delta input만 전달
-        if checkpoint_state.get("awaiting_approval"):
-            # SQL 승인 대기 중
-            action, modified_sql = _parse_approval(body.query)
-            input_state = {
-                "user_query": body.query,
-                "messages": [HumanMessage(content=body.query)],
-                "approval_action": action,
-                "approval_modified_sql": modified_sql if action == "modify" else None,
-            }
-        else:
-            # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
-            input_state = create_followup_input(body.query)
-    else:
-        # 첫 턴: 전체 초기화
-        input_state = create_initial_state(
-            user_query=body.query,
-            thread_id=thread_id,
-            user_id=current_user.get("sub"),
-            user_department=current_user.get("department"),
-            allowed_db_ids=current_user.get("allowed_db_ids"),
-        )
+    input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
 
     try:
         result = await asyncio.wait_for(
@@ -428,28 +442,8 @@ async def process_query_stream(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    if checkpoint_state is not None:
-        if checkpoint_state.get("awaiting_approval"):
-            action, modified_sql = _parse_approval(body.query)
-            input_state = {
-                "user_query": body.query,
-                "messages": [HumanMessage(content=body.query)],
-                "approval_action": action,
-                "approval_modified_sql": modified_sql if action == "modify" else None,
-            }
-        else:
-            input_state = {
-                "user_query": body.query,
-                "messages": [HumanMessage(content=body.query)],
-            }
-    else:
-        input_state = create_initial_state(
-            user_query=body.query,
-            thread_id=thread_id,
-            user_id=current_user.get("sub"),
-            user_department=current_user.get("department"),
-            allowed_db_ids=current_user.get("allowed_db_ids"),
-        )
+    # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
+    input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """SSE 이벤트를 생성하는 비동기 제너레이터."""
