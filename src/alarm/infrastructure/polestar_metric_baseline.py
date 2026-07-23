@@ -162,6 +162,21 @@ class PolestarMetricBaselineAdapter:
         observed = series[-1]
         baseline = series[:-1]
 
+        # STL 2차 강화(Plan 60 E3 · D-113, opt-in): robust STL로 계절 피크 오탐↓. 전체 series
+        # (관측 포함)를 분해해 잔차 z-score만 얻고, 심각도 매핑은 domain severity_from_anomaly로
+        # (상향 전용 계약 불변·캐시 미사용). statsmodels 미설치·fit 실패·데이터부족·σ0이면 None →
+        # 아래 순수 Python HW 경로(캐시·holdout)로 graceful 폴백(침묵 강등 아님 — helper가 로그).
+        if getattr(noise_cfg, "anomaly_stl_enabled", False):
+            from src.alarm.infrastructure.metric_stl import stl_anomaly_score
+
+            stl_score = stl_anomaly_score(series, period, min_periods=min_periods)
+            if stl_score is not None:
+                return severity_from_anomaly(stl_score, z_high)
+            logger.debug(
+                "STL 이상탐지 폴백 — HW로 진행: alarm_id=%s",
+                getattr(event, "alarm_id", "?"),
+            )
+
         cache_key = f"alarm:baseline:{event.db_id}:{event.server_name}:{kind}"
         cached = await self._load_baseline(redis_client, cache_key, period)
         if cached is not None:

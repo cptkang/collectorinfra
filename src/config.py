@@ -573,6 +573,17 @@ class NoiseGateConfig(BaseSettings):
     anomaly_z_high: float = 3.0               # (E3) 잔차 z-score 상향 임계(이상이면 상향 후보)
     anomaly_min_periods: int = 3              # (E3) 적합 최소 주기 수(미만이면 계산 skip→None)
     anomaly_baseline_cache_ttl_seconds: int = 3600  # (E3) baseline 파라미터 Redis 캐시 TTL
+    anomaly_stl_enabled: bool = False         # (E3 2차) STL 분해 이상탐지, statsmodels optional·폴백 HW
+    # ── Plan 60 B-7 로컬 임베딩(§15.3 L-2/L-4) — §15.4 D-035 경계: 주석 전용·판정 불변·폐쇄망 local-only ──
+    # 임베딩은 관측성·주석·설명 전용이며 결정적 게이트 판정(SUPPRESS/PAGE)·억제 지문(compute_fingerprint)을
+    # 절대 바꾸지 않는다. 전부 옵트인(기본 off). embedding_model_path는 폐쇄망 오프라인 반입 모델의 로컬
+    # 디렉토리 경로여야 하며(미설정·비디렉토리=hub 이름→inert·런타임 다운로드 금지), 미가용 시 호출부는
+    # 임베딩 주석을 건너뛰고 기존 경로가 비트 동일하게 동작한다(회귀 0).
+    semantic_dedup_annotation_enabled: bool = False   # (B-7 L-2) 의미적 근접중복 주석 on/off
+    topology_text_fusion_enabled: bool = False        # (B-7 L-4) 토폴로지+텍스트 융합 주석 on/off
+    embedding_model_path: str = ""            # (B-7) 로컬 모델 디렉토리(미설정/비디렉토리→inert·다운로드 금지)
+    embedding_similarity_threshold: float = 0.87  # (B-7 L-2·D-114) 근접중복 주석 임계 — 확정 모델 multilingual-e5-small 실측 분포(이질 max 0.852 < 0.87 < 근접 min 0.893) 기준. 모델 교체 시 재튜닝(bge-m3는 ~0.65).
+    embedding_timeout_seconds: float = 2.0    # (B-7) 임베딩 hot-path 예산(초)
     enable_llm_actionability: bool = False    # (E4) LLM 피드백 few-shot 액션가능성 판단
     feedback_store_path: str = "logs/alarm_feedback.jsonl"   # (E4) 운영자 피드백 저장
     feedback_store_enabled: bool = True                      # (E4) 피드백 적재 on/off

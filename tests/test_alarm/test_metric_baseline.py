@@ -177,6 +177,54 @@ class TestEscalation:
         assert "server.Memory" in reg._client.last_sql
 
 
+class TestStlRouting:
+    """STL 2차 강화 라우팅 (Plan 60 E3 · D-113) — 어댑터가 stl_anomaly_score를 우회/폴백."""
+
+    async def test_stl_score_used_when_enabled(self, monkeypatch):
+        # anomaly_stl_enabled=True + STL score 반환 → STL 경로(HW·캐시 우회). score 3.5 → severity 2
+        # (HW 경로였다면 스파이크 150으로 severity 3 → 결과 2는 STL 경로임을 증명).
+        monkeypatch.setattr(
+            "src.alarm.infrastructure.metric_stl.stl_anomaly_score",
+            lambda series, period, *, min_periods=3: 3.5,
+        )
+        reg = _FakeRegistry(_spike_rows())
+        adapter = PolestarMetricBaselineAdapter(reg, SimpleNamespace())
+        sev = await adapter.compute_severity(
+            make_event(), make_cfg(anomaly_stl_enabled=True), redis_client=None
+        )
+        assert sev == 2
+
+    async def test_hw_fallback_when_stl_returns_none(self, monkeypatch):
+        # anomaly_stl_enabled=True지만 STL None(미설치·fit실패 등) → HW 폴백 → 스파이크로 severity 3.
+        monkeypatch.setattr(
+            "src.alarm.infrastructure.metric_stl.stl_anomaly_score",
+            lambda series, period, *, min_periods=3: None,
+        )
+        reg = _FakeRegistry(_spike_rows())
+        adapter = PolestarMetricBaselineAdapter(reg, SimpleNamespace())
+        sev = await adapter.compute_severity(
+            make_event(), make_cfg(anomaly_stl_enabled=True), redis_client=None
+        )
+        assert sev == 3
+
+    async def test_stl_not_invoked_when_disabled(self, monkeypatch):
+        # anomaly_stl_enabled 미설정(off) → STL 헬퍼 미진입, HW 경로 비트동일(회귀 0).
+        calls = {"n": 0}
+
+        def _spy(series, period, *, min_periods=3):
+            calls["n"] += 1
+            return 3.5
+
+        monkeypatch.setattr(
+            "src.alarm.infrastructure.metric_stl.stl_anomaly_score", _spy
+        )
+        reg = _FakeRegistry(_spike_rows())
+        adapter = PolestarMetricBaselineAdapter(reg, SimpleNamespace())
+        sev = await adapter.compute_severity(make_event(), make_cfg(), redis_client=None)
+        assert calls["n"] == 0
+        assert sev == 3
+
+
 class TestSql:
     def test_read_only_single_select(self):
         sql = build_metric_series_sql(

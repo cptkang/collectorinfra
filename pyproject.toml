@@ -59,9 +59,17 @@ postgres-checkpoint = [
 # E5-4 임베딩 의미 검색 (D-084 / Plan 61 트랙 B): 폐쇄망 오프라인 반입 모델 CPU 상주 (opt-in).
 # 활성화는 SYNONYM_SEMANTIC_MATCH=true + 백엔드 요건(SYNONYM_SEMANTIC_BACKEND 참조) 설정 필요.
 # vllm 백엔드(별도 vLLM 서버 /v1/embeddings)만 쓸 경우 sentence-transformers 없이 numpy만 필수.
+# Plan 60 B-7 알람 임베딩(§15.3 L-2/L-4, AlarmEmbeddingProvider)도 **이 그룹으로 커버**된다 —
+# 동일 sentence-transformers·numpy만 lazy 의존하므로 신규 optional 그룹 불요(중복 방지).
+# torch는 sentence-transformers가 끌어온다. 필수 dependencies 편입 금지(폐쇄망 wheel 반입).
 semantic = [
     "sentence-transformers>=2.2.0",
     "numpy>=1.24.0",
+]
+# E3 2차(D-113): STL 분해 이상탐지 (opt-in). 미설치 시 순수 Python HW로 graceful 폴백.
+# 폐쇄망은 wheel 반입·보안 협의 필요(운영 반영 전 행정 절차).
+stl = [
+    "statsmodels>=0.14",
 ]
 dev = [
     "pytest>=8.0",
