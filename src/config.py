@@ -548,6 +548,12 @@ class NoiseGateConfig(BaseSettings):
     correlation_min_cluster_size: int = 2     # (E2) 대표 포함 이 수 이상 멤버부터 억제 개시
     correlation_buffer_max: int = 1000        # (E2) 스코프별 활성 클러스터 상한(메모리 가드)
     correlation_field_weights_csv: str = ""   # (E2) 필드 가중(예약 — 위상 가중은 E4 이후 단계적)
+    # ── Plan 60 E2 위상 가중(E4 토폴로지 인접성) — 옵트인 하위 플래그 ──
+    # cross_host_correlation_enabled의 하위 정밀화. off(기본)면 adjacent 미주입·topo_weight=0.0
+    # → match_cluster 점수가 현행 필드 Jaccard와 **비트동일**(회귀 0). on이면 워커가 event.db_id로
+    # 그래프를 로드해 인접 클러스터에 보너스 주입(존 내 매칭 정밀화). correlation.py는 topology 미의존.
+    correlation_topology_weight_enabled: bool = False  # (E2) 위상 가중 on/off
+    correlation_topology_weight: float = 0.2  # (E2) 인접 토폴로지 노드 유사도 보너스 크기
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
     sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)

@@ -45,6 +45,7 @@ class DecisionStore:
         alarm_id: str = "",
         ts: Optional[datetime] = None,
         recurrence: Optional[dict] = None,
+        correlation_meta: Optional[dict] = None,
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -56,6 +57,11 @@ class DecisionStore:
         recurrence(Plan 60 E1): 재통보 시 직전 창 재발 메타(count/first_seen 등)를
         받으면 **최상위 `recurrence` 필드**로 기록한다(NotificationDecision.signals
         동결 스키마는 훼손하지 않는다, §3.3). None이면 키를 넣지 않아 현행과 동일하다.
+
+        correlation_meta(Plan 60 E2): 크로스-호스트 상관 억제(correlated=True) 시 대표
+        식별자·멤버 순번·유사도(`{representative_fp, member_seq, similarity}`)를 받으면
+        **최상위 `correlation_meta` 필드**로 기록한다(recurrence와 동일 패턴 — signals 동결
+        스키마 미훼손, §10). None이면 키를 넣지 않아 기존 스냅샷과 동일하다.
         """
         if not self.enabled:
             return
@@ -71,6 +77,8 @@ class DecisionStore:
         }
         if recurrence is not None:
             record["recurrence"] = recurrence
+        if correlation_meta is not None:
+            record["correlation_meta"] = correlation_meta
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)

@@ -5,7 +5,7 @@
 
 - 각 결정의 상세 배경·코드 예시·대안 비교·재현 로그 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브, 이후 갱신하지 않음) 참조.
 - **신규 결정은 이 파일에만** 아래 압축 형식(결정일/상태/결정/근거/구현/주의/관련)으로 추가한다.
-- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-111 → 다음 D-112). ※Plan 63(P1~P4)로 D-088~D-091 전부 등재 완료(P4-2/3=D-091이 P3=D-090보다 먼저 등재됨: 순서 교차, 팀장 승인). ※**D-101~D-104는 ux_improvement 병합이 등재**(구 D-084~087 재부여, 변경 이력 표 — 2026-07-22) → **Plan 64 §14(D-101~103)·Plan 60 §14.4(D-104)의 종전 예약과 충돌**하므로 그 계획들은 착수 시 다음 빈 번호로 재부여 필요. **D-105만 예약 유지**(Plan 60 §16 L3단계). **Plan 60 Wave A(E1·E4·E6)=D-106~108·Wave B(E2·E3)=D-109~110·Wave C(E5)=D-111**(초안 D-077~081은 결번 — §8 "등재 직전 번호 재확인" 규칙, 팀장 확정).
+- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-112 → 다음 D-113). ※Plan 63(P1~P4)로 D-088~D-091 전부 등재 완료(P4-2/3=D-091이 P3=D-090보다 먼저 등재됨: 순서 교차, 팀장 승인). ※**D-101~D-104는 ux_improvement 병합이 등재**(구 D-084~087 재부여, 변경 이력 표 — 2026-07-22) → **Plan 64 §14(D-101~103)·Plan 60 §14.4(D-104)의 종전 예약과 충돌**하므로 그 계획들은 착수 시 다음 빈 번호로 재부여 필요. **D-105만 예약 유지**(Plan 60 §16 L3단계). **Plan 60 Wave A(E1·E4·E6)=D-106~108·Wave B(E2·E3)=D-109~110·Wave C(E5)=D-111**(초안 D-077~081은 결번 — §8 "등재 직전 번호 재확인" 규칙, 팀장 확정).
 - 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번).
 
 ---
@@ -785,7 +785,18 @@
 - **주의(복구 이력)**: 본 결정 등재 직전 사용자 GitHub Desktop 원격 병합(ux_improvement)이 미커밋 Wave B를 스태시로 대피시킴 — 팀리드가 스태시 복원→E5 재적용→전체 재검증(634 passed·arch_check 0)으로 무손실 복구(변경 이력 참조).
 - **관련**: D-048(게이트), Plan 50 RCA(원인 후보 전달), Plan 64(변경 상관 확장), D-003(읽기전용), Plan 60 §7·§13.1. (초안 D-081 결번 → D-111 재부여.)
 
-> **Plan 60 Wave A·B·C 구현 완료**: Wave A(E1·E4·E6=D-106~108)·Wave B(E2·E3=D-109~110)·Wave C(E5=D-111). E5 후속(보조 변경소스 union·외부 CI/CMDB·변경 실행/롤백)·E2 위상 가중·L-2/L-4 로컬 임베딩(B-7)·게이트 경계 probe(B-8·Plan 64 D-102 선행)는 범위 밖.
+## D-112. Plan 60 E2 정밀화 — 상관 클러스터 메타 감사 + 위상 가중 (D-109 후속 완결)
+- **결정일**: 2026-07-23 | **상태**: 확정 (구현 완료 · 사용자 인터뷰 확정)
+- **배경**: E2(D-109)는 필드 Jaccard 온라인 군집으로 1차 구현하고 **①클러스터 메타 감사 ②위상 가중(E4 토폴로지)** 을 "후속"으로 유예했다(D-109·D-111 노트). 사용자 인터뷰로 두 건을 **지금 착수**로 확정(E3 주간 계절성은 2차 보류).
+- **결정 ①(클러스터 메타 감사)**: 상관 SUPPRESS 시 대표 식별자·멤버 순번·유사도를 decision_store 감사에 노출. `match_cluster`가 `(idx, best_score)` 반환, 워커 `_detect_correlated_storm`이 `(correlated, meta)` 반환(메타=`{representative_fp, member_seq, similarity}`, 억제 시만). graph state `correlation_meta` → `notification_gate` → `decision_store.record(correlation_meta=...)`가 **최상위 별도 필드**로 기록(**signals 동결 스키마 밖** — E1 recurrence 전례). None이면 키 미포함(기존 스냅샷 무훼손).
+- **결정 ②(위상 가중)**: E4 `DependencyGraph` 인접성을 상관 유사도에 가중. 신규 `id_of(name)`·`is_related(a,b,max_hops)`(topology.py·domain). `match_cluster(..., adjacent: list[bool]|None, topo_weight)` — 인접 클러스터에 `topo_weight`(기본 0.2) 보너스. **correlation.py는 topology 미import** — 워커가 그래프로 adjacent bool 리스트 산출·주입(정책 순수성·§10 워커-주입). 워커는 그래프를 자체 캐시(`_topology_graph_cache`·hot-path 클라이언트 open 회피, 실패=음성 TTL)로 로드해 sync detection에 주입. **옵트인** `correlation_topology_weight_enabled`(기본 off)→off면 Jaccard 비트동일(회귀 0). **B-6 불변**(db_id 존 스코프 내 인접성만).
+- **Known Mistakes #1 재확인(실측)**: `id_of(server_name)`는 엣지 로더(`build_edges_sql WHERE AVAIL_DEPEND IS NOT NULL`)의 **자식 행 NAME만** 해소 → 순수 root 서버(엣지 없음)는 name 부재→id_of None→adjacent False→**위상 보너스 미발동·필드 Jaccard로 정상 군집**. **정확성 버그 아닌 우아한 열화**로 확인(E4 enricher의 IN 조회 name 보강은 워커 경로 미적용 — root만 폴백, 대다수 비-root는 정상 커버). 워커 경로 root name 보강은 FI 후보.
+- **근거**: MicroRCA(속성 그래프 인접성). 억제 판정 결과는 현행과 동일(메타·보너스만 추가). 프로젝트 관례상 신규 옵트인 플래그 2개·시그니처 변경 2건·감사 스키마 확장이라 D-109 갱신이 아닌 별도 채번(감사 추적성).
+- **구현**: `correlation.py`(match_cluster 튜플·adjacent·ClusterState.representative_node), `topology.py`(id_of·is_related·_ids_by_name), `alarm_worker.py`(_detect_correlated_storm 튜플·_load_topology_graph 캐시·adjacent 산출), `alarm_graph.py`(AlarmState.correlation_meta), `notification_gate.py`·`decision_store.py`(correlation_meta 최상위 필드), `config.py`(correlation_topology_weight_enabled·correlation_topology_weight). 검증: `test_cross_host_correlation.py`·`test_topology.py`·`test_plan60_flags_off_regression.py`·`test_noise_gate_graph_integration.py`(감사 대역 kwarg 수정). **665 passed·arch_check 0**.
+- **부수 수정(회귀 차단)**: `test_noise_gate_graph_integration.py`의 `_RecordingStore.record` 대역이 신규 correlation_meta kwarg 미수용 시 TypeError를 gate try/except가 삼켜 **감사 누락**되던 2건 수정(대역에 kwarg 추가).
+- **관련**: D-109(E2 본체·이 정밀화가 "위상 가중 후속" 유예 해소), D-107(E4 DependencyGraph 자산 재사용), D-049(record 별도 필드 전례), Plan 60 §4.2·§13.1. (초안 결번 없음 — D-112 신규.)
+
+> **Plan 60 Wave A·B·C + E2 정밀화 구현 완료**: Wave A(E1·E4·E6=D-106~108)·Wave B(E2·E3=D-109~110)·Wave C(E5=D-111)·E2 정밀화(클러스터 메타 감사+위상 가중=D-112). E5 후속(보조 변경소스 union·외부 CI/CMDB·변경 실행/롤백)·E3 주간 계절성(168h·2차)·E2 워커 root name 보강·L-2/L-4 로컬 임베딩(B-7)·게이트 경계 probe(B-8·Plan 64 D-102 선행)는 범위 밖.
 
 ---
 
@@ -795,6 +806,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-23 | D-112 | **Plan 60 E2 정밀화 — 상관 클러스터 메타 감사 + 위상 가중 (D-109 후속 완결)** — 사용자 인터뷰 확정 2건. ①메타 감사: `match_cluster`→`(idx,score)`·`_detect_correlated_storm`→`(correlated,meta)`, decision_store `correlation_meta` **최상위 필드**(대표 지문·member_seq·유사도·signals 밖·recurrence 전례). ②위상 가중: E4 `DependencyGraph.id_of`/`is_related` 추가, `match_cluster(adjacent,topo_weight)` 인접 클러스터 보너스, correlation.py는 topology 미import(워커-주입·§10), 워커 그래프 자체 캐시, 옵트인 `correlation_topology_weight_enabled`(기본 off·회귀 0), B-6 존 경계 불변. **Known Mistakes #1 실측**: id_of는 엣지 보유(자식) 서버만 해소·root는 name 부재→보너스 미발동·Jaccard 폴백(버그 아닌 우아한 열화). 부수: gate 감사 대역 kwarg 누락(TypeError 삼킴→감사 누락) 2건 수정. 665 passed·arch 0. |
 | 2026-07-22 | D-111 | **Plan 60 E5 변경/구성 이벤트 상관 (Wave C · B-2 폴스타 변경이력)** — 선조사(폴스타 DB 실측): `cmm_resource_lifecycle_history`(resource_id·event_time·lifecycle_type·description) 등 변경이력 테이블 실재·적합(dev 데이터는 합성 placeholder). 신규 infra `change_feed.py`(fetch_recent_changes·읽기전용·graceful)+domain `change_correlation.py`(overlay_changes·순수). `_NOISE_CTX_KEYS`에 change_nearby/change_candidates, 게이트 step9 promote("변경 근접(원인성)"·**억제 아님·승격만**·change 모듈 미import). signals 미확장. off→변경조회 미수행·비트동일. 1차=cmm_resource_lifecycle_history만. **복구 이력**: ux_improvement 병합이 미커밋 Wave B를 스태시 대피→복원·E5 재적용·재검증(634 passed) 무손실. 초안 D-081 결번→D-111. |
 | 2026-07-22 | D-110 | **Plan 60 E3 동적 baseline 이상탐지 (Wave B · B-3 순수 Python HW)** — 신규 domain `anomaly.py`(math/statistics만·additive Holt-Winters)+infra `polestar_metric_baseline.py`(cmm_metric_stat_h 읽기전용·Redis 캐시). 배선: 계산=enricher gather 5번째 코루틴→AlarmState.anomaly_severity, 반영=analyzer 후처리 상향 가드(dynamic_baseline_enabled AND enable_ai_severity_boost·상향 전용). **게이트 무변경**(ai_message_severity 슬롯 공급). classify_alarm_kind 화이트리스트(`kind in METRIC_SOURCE_BY_KIND`)로 1차 CPU/메모리만. prometheus_client 미배선(§5.2=cmm_metric_stat). 초안 D-079 결번→D-110. |
 | 2026-07-22 | D-109 | **Plan 60 E2 크로스-호스트 상관 (Wave B · B-6 존 경계)** — 신규 domain `correlation.py`(stdlib·signature_tokens[server 제외]·jaccard·match_cluster[동점 first_ts]). 워커 `_detect_correlated_storm`(온라인 그리디·첫 도착=대표·db_id 존 스코프·min_cluster_size번째부터 억제·버퍼 sweep+상한)·`_detect_storm`과 독립 병존. 게이트 step7.5(cross_host_correlation_enabled and correlated→SUPPRESS·storm 사유와 구분). sig_label은 domain scan_signature_severity(정책 순수성). E2 1차=필드 Jaccard만(위상 가중 후속). off→_detect_storm 비트동일. 초안 D-078 결번→D-109. |

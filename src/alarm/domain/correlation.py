@@ -83,6 +83,10 @@ class ClusterState:
     first_ts: float             # 클러스터 최초 생성 시각(대표 도착) — 동점 tie-break 기준
     last_ts: float              # 마지막 매칭 멤버 시각 — 만료 sweep 기준
     member_count: int = 1       # 대표 포함 누적 멤버 수
+    # (Plan 60 E2 위상 가중) 대표의 resource_id — 워커가 클러스터 생성 시
+    # graph.id_of(event.server_name)로 해소해 저장한다(None 가능 — 엣지 미보유 root 등).
+    # 위상 인접성(is_related) 계산의 비교 대상. domain은 topology를 import하지 않고 값만 보관.
+    representative_node: str | None = None
 
 
 def match_cluster(
@@ -90,24 +94,41 @@ def match_cluster(
     tokens: frozenset[str],
     *,
     sim_threshold: float,
-) -> int | None:
-    """대표 토큰과 Jaccard 최고점 클러스터의 인덱스를 반환한다(임계 미만이면 None).
+    adjacent: list[bool] | None = None,
+    topo_weight: float = 0.0,
+) -> tuple[int | None, float]:
+    """대표 토큰과 최고점 클러스터의 (인덱스, 최종 유사도)를 반환한다(임계 미만이면 (None, 0.0)).
+
+    각 클러스터 i의 점수 = `jaccard(cluster.tokens, tokens)`이며, `adjacent`가 주어지고
+    `adjacent[i]`가 True면 **위상 인접 보너스** `topo_weight`를 더한다(E4 토폴로지 인접성 —
+    존 내 매칭 정밀화). 임계 비교·동점 규칙은 **보너스 반영 후 점수**로 적용하므로, 인접
+    토폴로지 노드면 필드 Jaccard가 임계에 약간 못 미쳐도 군집될 수 있다(위상 가중의 목적).
 
     결정성: 최고 점수를 택하되, **동점 시 first_ts 오름차순**(더 이른 대표)을 우선하고,
     그마저 동일하면 리스트 인덱스 오름차순(먼저 발견된 것)을 유지한다. 동일 입력 → 동일 출력.
+
+    이 모듈은 topology를 import하지 않는다 — `adjacent`(bool 리스트)를 워커가 주입한다
+    (정책 순수성·§10 워커-주입 패턴). `adjacent=None`·`topo_weight=0.0`(기본)이면 현행 필드
+    Jaccard 판정과 **비트동일**(회귀 0).
 
     Args:
         clusters: 현재 활성 클러스터 리스트.
         tokens: 신규 이벤트의 정규화 토큰.
         sim_threshold: 이 값 이상이어야 동일 클러스터로 인정(미만이면 후보 제외).
+        adjacent: clusters와 병렬인 위상 인접 여부 bool 리스트(None이면 보너스 없음).
+        topo_weight: adjacent[i]가 True인 클러스터에 더할 유사도 보너스(기본 0.0).
 
     Returns:
-        매칭된 클러스터 인덱스, 임계 이상 후보가 없으면 None.
+        (매칭된 클러스터 인덱스, 최종 유사도) 튜플. 임계 이상 후보가 없으면 (None, 0.0).
+        반환 유사도는 보너스 반영 후 값이다(감사 메타 노출용).
     """
     best_key: tuple[float, float] | None = None
     best_idx: int | None = None
+    best_score: float = 0.0
     for i, cluster in enumerate(clusters):
         score = jaccard(cluster.tokens, tokens)
+        if adjacent is not None and i < len(adjacent) and adjacent[i]:
+            score += topo_weight  # 인접 토폴로지 노드 가중(E4 인접성 반영)
         if score < sim_threshold:
             continue
         # (점수 내림차순, first_ts 오름차순) — first_ts는 부호 반전해 최대화 비교로 통일.
@@ -115,4 +136,5 @@ def match_cluster(
         if best_key is None or key > best_key:
             best_key = key
             best_idx = i
-    return best_idx
+            best_score = score
+    return best_idx, best_score

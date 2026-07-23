@@ -130,3 +130,86 @@ class TestNameOf:
         g = DependencyGraph({10: [20]}, names={10: "web-01"})
         assert g.name_of(10) == "web-01"
         assert g.name_of("10") == "web-01"
+
+
+# ─────────────────────────────────────────────────────────────
+# Plan 60 E2 위상 가중 — id_of(name→id 역조회)·is_related(같은 의존 서브트리)
+# ─────────────────────────────────────────────────────────────
+class TestIdOf:
+    def test_reverse_lookup(self):
+        g = DependencyGraph(
+            {"r1": ["r2"]}, names={"r1": "web-01", "r2": "db-01"}
+        )
+        assert g.id_of("web-01") == "r1"
+        assert g.id_of("db-01") == "r2"
+
+    def test_missing_name_none(self):
+        # 이름 부재(엣지 미보유 root 등) → None(우아한 열화·보너스 미발동).
+        g = DependencyGraph({"r1": ["r2"]}, names={"r1": "web-01"})
+        assert g.id_of("db-01") is None   # r2는 name 맵에 없음
+        assert g.id_of("ghost") is None
+        assert g.id_of(None) is None
+
+    def test_roundtrip_with_name_of(self):
+        g = DependencyGraph({"r1": ["r2"]}, names={"r1": "web-01"})
+        rid = g.id_of("web-01")
+        assert rid is not None
+        assert g.name_of(rid) == "web-01"
+
+    def test_collision_deterministic_min_id(self):
+        # 동일 이름 충돌 → 정렬 최소 id를 결정적으로 채택.
+        g = DependencyGraph(
+            {"r2": ["p"], "r1": ["p"]}, names={"r2": "dup", "r1": "dup"}
+        )
+        assert g.id_of("dup") == "r1"
+
+    def test_known_mistake_1_root_no_name_graceful(self):
+        # Known Mistakes #1: 엣지 로더는 엣지(부모 의존) 보유 행만 name에 담는다 →
+        # 부모 없는 root 서버는 name 부재 → id_of None → 위상 보너스 미발동(우아한 열화).
+        # child r_child는 부모 dep 보유(name 有), root p는 엣지 미보유(name 無)로 모사.
+        g = DependencyGraph({"r_child": ["p"]}, names={"r_child": "child-01"})
+        assert g.id_of("child-01") == "r_child"   # 엣지 보유 → 해소됨
+        assert g.id_of("root-01") is None          # 엣지 미보유 root → None(graceful)
+
+
+class TestIsRelated:
+    def test_ancestor_relation_true(self):
+        # leaf → m1 → root. leaf와 root는 한쪽이 다른쪽 조상 → 관련.
+        g = DependencyGraph({"leaf": ["m1"], "m1": ["root"]})
+        assert g.is_related("leaf", "root", max_hops=5) is True
+        assert g.is_related("root", "leaf", max_hops=5) is True  # 대칭
+
+    def test_common_ancestor_siblings_true(self):
+        # a, b가 같은 부모 p에 의존(형제) → 공통 조상 보유 → 관련.
+        g = DependencyGraph({"a": ["p"], "b": ["p"]})
+        assert g.is_related("a", "b", max_hops=5) is True
+
+    def test_unrelated_false(self):
+        # 서로 다른 독립 서브트리 → 관련 없음.
+        g = DependencyGraph({"a": ["pa"], "b": ["pb"]})
+        assert g.is_related("a", "b", max_hops=5) is False
+
+    def test_self_is_false(self):
+        # 자기 자신은 False(대표는 다른 호스트이므로 무의미).
+        g = DependencyGraph({"a": ["p"]})
+        assert g.is_related("a", "a", max_hops=5) is False
+
+    def test_hop_limit_excludes_distant_common_ancestor(self):
+        # 공통 조상이 홉 상한 밖이면 미관련(비용/폭주 가드).
+        # a → a1 → a2 → root, b → b1 → b2 → root (공통 조상 root는 3홉).
+        g = DependencyGraph({
+            "a": ["a1"], "a1": ["a2"], "a2": ["root"],
+            "b": ["b1"], "b1": ["b2"], "b2": ["root"],
+        })
+        assert g.is_related("a", "b", max_hops=3) is True   # root가 3홉 내
+        assert g.is_related("a", "b", max_hops=2) is False  # root가 홉 밖
+
+    def test_cycle_defense(self):
+        # 순환 그래프도 무한루프 없이 판정(ancestors 방문집합 재사용).
+        g = DependencyGraph({"a": ["b"], "b": ["a"]})
+        assert g.is_related("a", "b", max_hops=100) is True
+
+    def test_deterministic(self):
+        g = DependencyGraph({"a": ["p"], "b": ["p"]})
+        first = g.is_related("a", "b", max_hops=5)
+        assert first == g.is_related("a", "b", max_hops=5)

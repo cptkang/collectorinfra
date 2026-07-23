@@ -20,9 +20,12 @@ import logging
 import time
 from collections import deque
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import redis.asyncio as aioredis
+
+if TYPE_CHECKING:
+    from src.alarm.domain.topology import DependencyGraph
 
 from src.alarm.domain.alarm import AlarmEvent
 from src.alarm.domain.correlation import (
@@ -43,6 +46,9 @@ from src.alarm.orchestration.alarm_graph import build_alarm_graph
 logger = logging.getLogger(__name__)
 
 _CONSUMER_NAME = "worker-1"
+
+# 위상 가중 그래프 로드 실패 시 음성 캐시 TTL(초) — 재시도 허용하되 hot-path 폭주 방지.
+_TOPOLOGY_NEGATIVE_TTL_SECONDS = 60
 
 
 class AlarmWorker:
@@ -94,6 +100,10 @@ class AlarmWorker:
         # 존 경계는 넘지 않는다(§8 B-6). 만료 sweep(last_ts window 밖 제거·빈 스코프 키 삭제)
         # + 버퍼 상한(correlation_buffer_max)으로 메모리 가드(§10, 형제 상태 정리 루프와 일관).
         self._correlation_clusters: dict[str, list[ClusterState]] = {}
+        # 위상 가중 그래프 캐시(Plan 60 E2 위상 가중): db_id → (만료 epoch, DependencyGraph|None).
+        # correlation_topology_weight_enabled일 때만 사용. hot-path 클라이언트 open을 회피하기 위해
+        # cold/만료 시에만 로드하고, 실패(None)도 짧은 음성 TTL로 캐시해 재시도를 허용한다(폭주 방지).
+        self._topology_graph_cache: dict[str, tuple[float, Optional[DependencyGraph]]] = {}
 
     def _build_history_repo(self):  # noqa: ANN202
         """이력 조회 리포지토리를 생성한다 (Plan 47).
@@ -401,6 +411,8 @@ class AlarmWorker:
             flapping = False
             storm = False
             correlated = False  # (Plan 60 E2) 크로스-호스트 상관 매칭 여부
+            # (Plan 60 E2) 상관 억제 시 클러스터 메타(대표 지문·멤버 순번·유사도) — 억제일 때만.
+            correlation_meta: Optional[dict] = None
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타 — 대표 알람 표기용 그래프 state.
             recurrence_prev: Optional[dict] = None
 
@@ -479,10 +491,21 @@ class AlarmWorker:
                 # 크로스-호스트 상관 시드(§4·E2) — cross_host_correlation_enabled일 때만
                 # 탐지(아니면 미수행 → detection 스킵·회귀 0). storm(동일 서버)과 독립 병존.
                 # db_id(존) 스코프에서 온라인 그리디 군집, 대표 외 멤버부터 correlated=True.
+                # 위상 가중(correlation_topology_weight_enabled)일 때만 그래프를 async 로드해
+                # sync detection에 주입한다(워커 캐시로 hot-path 클라이언트 open 회피).
                 if getattr(
                     self._config.noise_gate, "cross_host_correlation_enabled", False
                 ):
-                    correlated = self._detect_correlated_storm(event, now)
+                    topo_graph = None
+                    if getattr(
+                        self._config.noise_gate,
+                        "correlation_topology_weight_enabled",
+                        False,
+                    ):
+                        topo_graph = await self._load_topology_graph(event.db_id, now)
+                    correlated, correlation_meta = self._detect_correlated_storm(
+                        event, now, graph=topo_graph
+                    )
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -522,6 +545,8 @@ class AlarmWorker:
                     "storm": storm,
                     # (Plan 60 E2) 크로스-호스트 상관 매칭 여부(off/미매칭이면 False).
                     "correlated": correlated,
+                    # (Plan 60 E2) 상관 억제 시 클러스터 메타(비상관/미억제면 None).
+                    "correlation_meta": correlation_meta,
                     # (Plan 60 E1) 재통보 시 직전 창 재발 메타(없으면 None).
                     "recurrence": recurrence_prev,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
@@ -908,7 +933,66 @@ class AlarmWorker:
         clusters[:] = [c for c in clusters if now - c.last_ts <= window_sec]
         return clusters
 
-    def _detect_correlated_storm(self, event: AlarmEvent, now: float) -> bool:
+    async def _load_topology_graph(
+        self, db_id: str, now: float
+    ) -> Optional[DependencyGraph]:
+        """위상 가중용 정적 의존 그래프를 로드한다(워커 캐시 — hot-path 클라이언트 open 회피).
+
+        correlation_topology_weight_enabled일 때만 _process(async)가 호출한다. cold/만료
+        시에만 registry 클라이언트를 열어 TopologyLoader().load_graph로 로드하고, db_id별로
+        (만료 epoch, graph)를 캐시한다. 실패(미등록·비PostgreSQL·조회 실패)는 None을 짧은
+        음성 TTL(_TOPOLOGY_NEGATIVE_TTL_SECONDS)로 캐시해 재시도를 허용하되 hot-path 폭주를
+        막는다(graceful — 보너스 없이 Jaccard로 진행).
+
+        registry 접근은 _build_metric_baseline 패턴(DBRegistry(self._config))을 재사용한다.
+        그래프는 event.db_id(존)로 로드하므로 인접성도 존 내에서만 계산된다(B-6 불변).
+
+        Args:
+            db_id: 대상 폴스타 DB(존).
+            now: 캐시 만료 판정 기준 시각(time.time()).
+
+        Returns:
+            DependencyGraph 또는 None(실패·미지원).
+        """
+        cached = self._topology_graph_cache.get(db_id)
+        if cached is not None and now < cached[0]:
+            return cached[1]
+
+        cfg = self._config.noise_gate
+        ttl = getattr(cfg, "topology_cache_ttl_seconds", 86400)
+        max_hops = getattr(cfg, "topology_max_hops", 5)
+        graph: Optional[DependencyGraph] = None
+        try:
+            from src.alarm.infrastructure.topology_loader import TopologyLoader
+            from src.routing.db_registry import DBRegistry
+
+            registry = DBRegistry(self._config)
+            if registry.is_registered(db_id):
+                async with registry.get_client(db_id) as client:
+                    graph = await TopologyLoader().load_graph(
+                        client,
+                        db_id,
+                        cache_ttl_seconds=ttl,
+                        max_hops=max_hops,
+                    )
+        except Exception:
+            logger.exception(
+                "위상 가중 그래프 로드 실패 — 보너스 없이 진행: db_id=%s", db_id
+            )
+            graph = None
+
+        # 성공=장기 TTL, 실패(None)=짧은 음성 TTL(재시도 허용·폭주 방지).
+        expiry = now + (ttl if graph is not None else _TOPOLOGY_NEGATIVE_TTL_SECONDS)
+        self._topology_graph_cache[db_id] = (expiry, graph)
+        return graph
+
+    def _detect_correlated_storm(
+        self,
+        event: AlarmEvent,
+        now: float,
+        *,
+        graph: Optional[DependencyGraph] = None,
+    ) -> tuple[bool, Optional[dict]]:
         """크로스-호스트 상관(§4·E2): db_id(존) 스코프 온라인 그리디 군집을 탐지한다.
 
         서버 경계를 넘어 필드 유사도(Jaccard)·시간 근접으로 사건을 군집한다. 첫 도착
@@ -924,17 +1008,28 @@ class AlarmWorker:
             - sig_label은 워커가 domain scan_signature_severity(event.condition_log)로 사전
               산출한다(정책 순수성 — correlation.py는 값만 소비). signature_tokens는 server_name을
               제외한 정규화 토큰을 만든다.
-            - match_cluster로 최고 유사도 클러스터를 찾는다(동점 시 first_ts 오름차순). 매칭되면
-              member_count+1·last_ts=now 후 member_count>=min_cluster_size를 반환한다. 미매칭이면
-              대표(첫 도착) 클러스터를 append하고 False(통보)를 반환한다.
+            - **위상 가중(E4 인접성)**: graph가 주어지고 event_node(=graph.id_of(server_name))
+              해소에 성공하면, 각 클러스터의 대표 노드와의 is_related(max_hops)로 adjacent bool
+              리스트를 산출해 match_cluster에 주입한다(인접 클러스터에 보너스). graph 미주어짐/
+              이름 해소 실패(엣지 미보유 root 등) → adjacent=None(보너스 없음·Jaccard 폴백·graceful).
+            - match_cluster로 최고 유사도 클러스터를 찾는다(보너스 반영 후 점수, 동점 시 first_ts
+              오름차순). 매칭되면 member_count+1·last_ts=now 후 member_count>=min_cluster_size면
+              억제하고 **클러스터 메타**(대표 지문·멤버 순번·유사도)를 반환한다. 미매칭이면 대표
+              (첫 도착) 클러스터를 append(대표 노드 저장)하고 (False, None)을 반환한다.
 
         cross_host_correlation_enabled일 때만 호출된다(_process 게이트 경로) — off면 미수행(회귀 0).
 
+        Args:
+            event: 알람 이벤트.
+            now: 현재 시각(time.time()).
+            graph: 위상 가중용 DependencyGraph(위상 가중 off·로드 실패면 None → Jaccard 폴백).
+
         Returns:
-            correlated 여부(대표 이후 min_cluster_size번째 멤버부터 True).
+            (correlated, cluster_meta) 튜플. 억제(correlated=True)일 때만 메타
+            (`{representative_fp, member_seq, similarity}`)를 싣고, 그 외에는 (…, None).
         """
         if event.is_clear:
-            return False
+            return False, None
 
         cfg = self._config.noise_gate
         window_sec = cfg.correlation_window_seconds
@@ -966,8 +1061,31 @@ class AlarmWorker:
         sig_label = hit[1] if hit else ""
         tokens = signature_tokens(event.alarm_name, event.resource_type, sig_label)
 
-        idx = match_cluster(
-            clusters, tokens, sim_threshold=cfg.correlation_sim_threshold
+        # 위상 가중(E4 인접성) — graph·event_node 해소 성공 시에만 adjacent 산출(그 외 None).
+        topo_enabled = getattr(cfg, "correlation_topology_weight_enabled", False)
+        topo_weight = (
+            getattr(cfg, "correlation_topology_weight", 0.0) if topo_enabled else 0.0
+        )
+        event_node = graph.id_of(event.server_name) if graph is not None else None
+        adjacent: Optional[list[bool]] = None
+        if graph is not None and event_node is not None:
+            max_hops = getattr(cfg, "topology_max_hops", 5)
+            adjacent = [
+                bool(
+                    c.representative_node
+                    and graph.is_related(
+                        event_node, c.representative_node, max_hops=max_hops
+                    )
+                )
+                for c in clusters
+            ]
+
+        idx, score = match_cluster(
+            clusters,
+            tokens,
+            sim_threshold=cfg.correlation_sim_threshold,
+            adjacent=adjacent,
+            topo_weight=topo_weight,
         )
         if idx is not None:
             c = clusters[idx]
@@ -976,14 +1094,29 @@ class AlarmWorker:
             correlated = c.member_count >= cfg.correlation_min_cluster_size
             if correlated:
                 logger.debug(
-                    "크로스-호스트 상관 억제: scope=%s 대표=%s member=%s",
+                    "크로스-호스트 상관 억제: scope=%s 대표=%s member=%s sim=%.4f",
                     scope,
                     c.representative_fp,
                     c.member_count,
+                    score,
                 )
-            return correlated
-        # 첫 도착 = 대표 → 통보(소급 선출 없음).
+                # 감사 메타(decision_store 최상위 필드) — signals 동결 스키마 미훼손(§10,
+                # E1 recurrence 전례). similarity는 위상 보너스 반영 후 최종 점수다.
+                meta = {
+                    "representative_fp": c.representative_fp,
+                    "member_seq": c.member_count,
+                    "similarity": round(score, 4),
+                }
+                return True, meta
+            return False, None
+        # 첫 도착 = 대표 → 통보(소급 선출 없음). 대표 노드(resource_id)를 해소해 저장.
         clusters.append(
-            ClusterState(compute_fingerprint(event), tokens, now, now)
+            ClusterState(
+                compute_fingerprint(event),
+                tokens,
+                now,
+                now,
+                representative_node=event_node,
+            )
         )
-        return False
+        return False, None

@@ -80,6 +80,11 @@ class DependencyGraph:
         self._names: dict[str, str] = {
             _norm_id(k): str(v) for k, v in (names or {}).items() if v is not None
         }
+        # 이름→id 역맵(id_of용). 동일 이름 충돌 시 정렬 최소 id를 채택해 결정성을 보장한다.
+        # (엣지 미보유 root는 엣지 로더 name 맵에 부재 → 역맵에도 없음 → id_of None·graceful.)
+        self._ids_by_name: dict[str, str] = {}
+        for rid, nm in sorted(self._names.items()):
+            self._ids_by_name.setdefault(nm, rid)
         self._max_hops = int(max_hops)
 
     def ancestors(self, node_id, *, max_hops: int) -> list[str]:  # noqa: ANN001
@@ -163,3 +168,51 @@ class DependencyGraph:
     def name_of(self, node_id):  # noqa: ANN001, ANN201
         """리소스 ID → NAME 역조회(root_notified 산출용). 미등록이면 None."""
         return self._names.get(_norm_id(node_id))
+
+    def id_of(self, name):  # noqa: ANN001, ANN201
+        """NAME → 리소스 ID 역조회(E2 위상 가중 노드 해소용). 미등록이면 None.
+
+        `name_of`의 역방향이다. **엣지 로더는 엣지(부모 의존) 보유 행만 담으므로**, 부모
+        의존이 없는 root 서버는 name 맵(따라서 역맵)에 부재하여 None을 반환한다 — 이는
+        정확성 버그가 아니라 **우아한 열화**다(root는 위상 보너스를 못 받되 필드 Jaccard로
+        정상 군집). 동일 이름 충돌은 생성 시 정렬 최소 id로 결정적 해소한다.
+
+        Args:
+            name: 조회할 리소스 이름(예: 폴스타 등록 서버명 = event.server_name).
+
+        Returns:
+            매칭 리소스 ID(문자열), 미등록이면 None.
+        """
+        if name is None:
+            return None
+        return self._ids_by_name.get(str(name))
+
+    def is_related(self, a, b, *, max_hops: int) -> bool:  # noqa: ANN001
+        """a·b가 같은 가용성 의존 서브트리에 속하는지 판정한다(E2 위상 인접성).
+
+        판정 기준(둘 중 하나라도 충족하면 True):
+            - 한쪽이 다른쪽의 조상(max_hops 내) — 직접 의존 계보.
+            - max_hops 내 **공통 조상**을 보유 — 같은 상위 자원에 함께 의존(형제/사촌).
+
+        `ancestors`(방문 집합·홉 상한)로 순환/폭주를 방어한다. 자기 자신(a==b)은 False —
+        상관 대표는 다른 호스트이므로 자기 인접은 무의미하다(§ 위상 가중).
+
+        Args:
+            a: 리소스 ID(신규 이벤트 노드).
+            b: 리소스 ID(클러스터 대표 노드).
+            max_hops: 조상 BFS 홉 상한(순환/비용 가드).
+
+        Returns:
+            같은 의존 서브트리면 True, 아니면 False.
+        """
+        na = _norm_id(a)
+        nb = _norm_id(b)
+        if na == nb:
+            return False
+        anc_a = set(self.ancestors(na, max_hops=max_hops))
+        anc_b = set(self.ancestors(nb, max_hops=max_hops))
+        # 한쪽이 다른쪽의 조상(직접 계보).
+        if nb in anc_a or na in anc_b:
+            return True
+        # max_hops 내 공통 조상 보유(형제/사촌 — 같은 상위 자원 의존).
+        return bool(anc_a & anc_b)

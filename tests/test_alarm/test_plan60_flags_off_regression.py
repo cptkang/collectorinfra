@@ -191,6 +191,64 @@ class TestWorkerCorrelationOffIndependent:
 
 
 # ─────────────────────────────────────────────────────────────
+# E-bis. E2 위상 가중 off — adjacent 미주입·match_cluster 점수 Jaccard 비트동일
+# ─────────────────────────────────────────────────────────────
+def _corr_cfg(*, topo: bool) -> SimpleNamespace:
+    return SimpleNamespace(noise_gate=SimpleNamespace(
+        correlation_window_seconds=120, correlation_sim_threshold=0.5,
+        correlation_min_cluster_size=2, correlation_buffer_max=1000,
+        correlation_topology_weight_enabled=topo, correlation_topology_weight=0.2,
+        topology_max_hops=5,
+    ))
+
+
+def _corr_ev(server: str = "A", rtype: str = "p") -> SimpleNamespace:
+    return SimpleNamespace(
+        is_clear=False, db_id="db1", server_name=server, hostname=server,
+        alarm_name="x", resource_type=rtype, resource_name="r", condition_log="",
+    )
+
+
+class TestTopologyWeightOffRegression:
+    def test_match_cluster_score_bit_identical_jaccard_only(self):
+        # 위상 가중 off(adjacent=None·topo_weight=0.0)이면 match_cluster가 현행 Jaccard와 비트동일.
+        from src.alarm.domain.correlation import ClusterState, jaccard, match_cluster
+
+        clusters = [ClusterState("fp", frozenset({"a", "b"}), 10.0, 10.0)]
+        toks = frozenset({"a", "c"})
+        idx, score = match_cluster(clusters, toks, sim_threshold=0.5)
+        # 기본 인자(adjacent 미주입) == 명시 off 인자 == 순수 Jaccard.
+        assert (idx, score) == match_cluster(
+            clusters, toks, sim_threshold=0.5, adjacent=None, topo_weight=0.0
+        )
+        assert score == 0.0 and idx is None  # jaccard 1/3 < 0.5 → 미매칭
+        # 임계 이상 케이스도 순수 Jaccard 점수와 동일.
+        idx2, score2 = match_cluster(clusters, frozenset({"a", "b"}), sim_threshold=0.5)
+        assert idx2 == 0 and score2 == jaccard(frozenset({"a", "b"}), frozenset({"a", "b"}))
+
+    def test_worker_topology_off_no_bonus_bit_identical(self):
+        # correlation_topology_weight_enabled=False → graph를 넘겨도 topo_weight=0.0 →
+        # 임계 미달 쌍(1/3<0.5)은 비군집(Jaccard 판정과 동일). correlation_meta는 None.
+        from src.alarm.domain.topology import DependencyGraph
+
+        w = AlarmWorker(_corr_cfg(topo=False))
+        g = DependencyGraph({"idA": ["p"], "idB": ["p"]}, names={"idA": "A", "idB": "B"})
+        c1, m1 = w._detect_correlated_storm(_corr_ev("A", "p"), 1000.0, graph=g)
+        c2, m2 = w._detect_correlated_storm(_corr_ev("B", "q"), 1001.0, graph=g)
+        assert (c1, m1) == (False, None)
+        assert (c2, m2) == (False, None)   # 보너스 없음 → 미군집·메타 없음
+
+    def test_correlation_meta_only_when_correlated(self):
+        # correlation_meta는 correlated=True(억제)일 때만 채워지고, 그 외에는 None.
+        w = AlarmWorker(_corr_cfg(topo=False))
+        # 동일 시그니처 → 대표(None) + 억제 멤버(meta).
+        c1, m1 = w._detect_correlated_storm(_corr_ev("A", "p"), 1000.0)
+        c2, m2 = w._detect_correlated_storm(_corr_ev("B", "p"), 1001.0)
+        assert (c1, m1) == (False, None)   # 대표 → 메타 없음
+        assert c2 is True and m2 is not None and m2["member_seq"] == 2
+
+
+# ─────────────────────────────────────────────────────────────
 # F. E3 동적 baseline — dynamic_baseline_enabled=False면 무변경(회귀 0)
 # ─────────────────────────────────────────────────────────────
 def _full_event() -> AlarmEvent:
