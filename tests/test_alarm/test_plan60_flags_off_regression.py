@@ -349,6 +349,65 @@ class TestAnalyzerAnomalyOff:
 
 
 # ─────────────────────────────────────────────────────────────
+# F-2. E3 2차 STL — anomaly_stl_enabled=False면 STL 헬퍼 미호출·HW 경로 비트동일 (D-113)
+# ─────────────────────────────────────────────────────────────
+class _StlFakeClient:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute_sql(self, sql):
+        return SimpleNamespace(rows=self._rows)
+
+
+class _StlFakeRegistry:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def is_registered(self, db_id):
+        return True
+
+    @asynccontextmanager
+    async def get_client(self, db_id):
+        yield _StlFakeClient(self._rows)
+
+
+def _spike_rows_desc() -> list[dict]:
+    """스파이크(최신 150) 시계열을 DESC(최신 우선) 행으로 — HW 경로 시 severity 3."""
+    total = 5 * 24 + 1
+    asc = [(90.0 if i % 24 == 3 else 20.0) + (i % 5 - 2) * 0.3 for i in range(total - 1)]
+    asc.append(150.0)
+    return [{"stat_date": str(i), "avg_val": v} for i, v in enumerate(reversed(asc))]
+
+
+class TestStlOffRegression:
+    async def test_stl_helper_not_called_and_hw_path_when_off(self, monkeypatch):
+        # anomaly_stl_enabled=False → STL 헬퍼 미진입(호출 0), HW 경로가 스파이크로 severity 3.
+        from src.alarm.infrastructure.polestar_metric_baseline import (
+            PolestarMetricBaselineAdapter,
+        )
+
+        calls = {"n": 0}
+
+        def _spy(series, period, *, min_periods=3):
+            calls["n"] += 1
+            return 2  # STL 경로였다면 severity 2가 나옴(대조)
+
+        monkeypatch.setattr(
+            "src.alarm.infrastructure.metric_stl.stl_anomaly_score", _spy
+        )
+        reg = _StlFakeRegistry(_spike_rows_desc())
+        adapter = PolestarMetricBaselineAdapter(reg, SimpleNamespace())
+        cfg = SimpleNamespace(
+            anomaly_z_high=3.0, anomaly_min_periods=3,
+            anomaly_baseline_cache_ttl_seconds=0, noise_context_timeout_seconds=3.0,
+            anomaly_stl_enabled=False,
+        )
+        sev = await adapter.compute_severity(_full_event(), cfg, redis_client=None)
+        assert calls["n"] == 0  # 플래그 off → STL 미호출
+        assert sev == 3         # HW 경로 비트동일
+
+
+# ─────────────────────────────────────────────────────────────
 # G. E5 변경 상관 — change_correlation off면 변경 조회 미수행·게이트 비트동일
 # ─────────────────────────────────────────────────────────────
 class TestPolicyChangeCorrelationOff:
@@ -411,3 +470,102 @@ class TestRepoChangeCorrelationOff:
         assert "cmm_resource_lifecycle_history" not in joined  # 변경 조회 미수행
         assert ctx["change_nearby"] is None
         assert ctx["change_candidates"] is None
+
+
+# ─────────────────────────────────────────────────────────────
+# H. B-7 임베딩 주석 — 두 플래그 off면 provider 미주입·주석 경로 미진입·감사 키 부재(회귀 0)
+# ─────────────────────────────────────────────────────────────
+class TestEmbeddingProviderOptIn:
+    def test_provider_none_when_both_flags_off(self):
+        # semantic_dedup_annotation_enabled·topology_text_fusion_enabled 둘 다 off → provider 미생성.
+        cfg = SimpleNamespace(noise_gate=SimpleNamespace(
+            semantic_dedup_annotation_enabled=False,
+            topology_text_fusion_enabled=False,
+        ))
+        assert AlarmWorker(cfg)._build_embedding_provider() is None
+
+    def test_provider_built_when_l2_on(self):
+        # 한쪽(L-2)만 켜도 provider 생성(모델 경로 미설정 → inert이지만 객체는 존재).
+        cfg = SimpleNamespace(noise_gate=SimpleNamespace(
+            semantic_dedup_annotation_enabled=True,
+            topology_text_fusion_enabled=False,
+            embedding_model_path="", embedding_timeout_seconds=2.0,
+        ))
+        provider = AlarmWorker(cfg)._build_embedding_provider()
+        assert provider is not None
+        assert provider.is_available() is False  # 경로 미설정 → inert(주석 미생성·graceful)
+
+    def test_annotate_noop_when_provider_off(self):
+        # provider 미주입이면 워커 주석 산출이 None·recent_texts 무변경(주석 경로 미진입).
+        w = AlarmWorker(SimpleNamespace(noise_gate=SimpleNamespace(
+            embedding_similarity_threshold=0.85, repeat_interval_seconds=14400,
+        )))
+        ev = SimpleNamespace(db_id="db1", alarm_name="CPU", resource_type="server.Cpus",
+                             condition_log="95", is_clear=False)
+        assert w._annotate_semantic_dedup(ev, "fp", 1000.0) is None
+        assert w._recent_event_texts == {}
+
+
+class TestDecisionStoreAnnotationKeysAbsentWhenOff:
+    async def test_no_semantic_annotation_key_when_none(self, tmp_path):
+        # semantic_annotation=None(off/inert) → decision_store 레코드에 키 부재(비트동일).
+        from src.alarm.infrastructure.decision_store import DecisionStore
+        from src.alarm.application.nodes.notification_gate import (
+            notification_gate_node,
+        )
+
+        p = tmp_path / "d.jsonl"
+        store = DecisionStore(str(p))
+        state = {
+            "alarm_event": _full_event(),
+            "history_stats": None,
+            "analysis_result": SimpleNamespace(pattern_type="", is_routine=None),
+            "error": None,
+            "noise_context": {
+                "importance_id": None, "maintenance": False, "noti_policy": None,
+                "parent_avail_status": None, "source": "polestar_db",
+            },
+            "self_heal": False,
+            "semantic_annotation": None,   # off/inert 경로
+        }
+        cfg = SimpleNamespace(noise_gate=SimpleNamespace(
+            enable_noise_gate=True, suppress_max_severity=2,
+            importance_value_map={}, resolved_to_dashboard=False,
+        ))
+        await notification_gate_node(
+            state, {"configurable": {"app_config": cfg, "decision_store": store}}
+        )
+        rec = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
+        assert "semantic_annotation" not in rec        # L-2 키 부재
+        assert "root_text_similarity" not in rec        # L-4 키(감사엔 미기록)
+
+
+class TestEnricherL4KeyAbsentWhenProviderNone:
+    async def test_no_root_text_similarity_when_provider_none(self):
+        # embedding_provider=None(off) → root_text_similarity 키 미첨부(하위호환·회귀 0).
+        from src.alarm.application.nodes.alarm_context_enricher import (
+            enrich_noise_context,
+        )
+
+        class _Repo:
+            async def fetch(self, event, **kw):
+                return {
+                    "importance_id": None, "maintenance": False, "noti_policy": None,
+                    "parent_avail_status": None, "cascaded": True, "root_resource": "R",
+                    "root_resource_name": "db-01", "source": "polestar_db",
+                }
+
+        ev = SimpleNamespace(
+            alarm_name="CPU", resource_type="server.Cpus", condition_log="95",
+            db_id="db1", server_name="srv-1",
+        )
+        cfg = SimpleNamespace(
+            noise_context_cache_ttl_seconds=0, inhibition_window_seconds=300,
+            topology_max_hops=5, topology_cache_ttl_seconds=86400,
+            change_window_seconds=3600, topology_text_fusion_enabled=True,
+        )
+        ctx = await enrich_noise_context(
+            ev, cfg, _Repo(), None, collect_dependency=True, multi_hop=True,
+            embedding_provider=None,
+        )
+        assert "root_text_similarity" not in ctx

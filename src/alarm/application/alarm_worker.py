@@ -50,6 +50,10 @@ _CONSUMER_NAME = "worker-1"
 # 위상 가중 그래프 로드 실패 시 음성 캐시 TTL(초) — 재시도 허용하되 hot-path 폭주 방지.
 _TOPOLOGY_NEGATIVE_TTL_SECONDS = 60
 
+# (Plan 60 B-7 L-2) db_id 스코프별 최근 이벤트 텍스트 deque 상한 — 근접중복 후보 비교 대상
+# 개수(maxlen). 스코프별 in-memory 성장 차단(Known Mistakes 키·값 bound). 만료 sweep과 병행.
+_RECENT_TEXTS_MAX_PER_SCOPE = 50
+
 
 class AlarmWorker:
     """Redis Stream에서 알람을 소비하여 분석 그래프를 실행한다."""
@@ -104,6 +108,16 @@ class AlarmWorker:
         # correlation_topology_weight_enabled일 때만 사용. hot-path 클라이언트 open을 회피하기 위해
         # cold/만료 시에만 로드하고, 실패(None)도 짧은 음성 TTL로 캐시해 재시도를 허용한다(폭주 방지).
         self._topology_graph_cache: dict[str, tuple[float, Optional[DependencyGraph]]] = {}
+        # (Plan 60 B-7 L-2 · §15.4 D-035 경계) 의미적 근접중복 **후보 주석**용 로컬 임베딩 provider.
+        # semantic_dedup_annotation_enabled·topology_text_fusion_enabled 모두 off면 None(주석 경로
+        # 미진입·configurable 미주입 → 워커/enricher 비트동일·회귀 0). 주석은 감사 전용이며
+        # 결정적 게이트 판정(SUPPRESS/PAGE)·억제 지문(compute_fingerprint)을 절대 바꾸지 않는다.
+        self._embedding_provider = None
+        # (Plan 60 B-7 L-2) db_id 스코프 → 최근 (fingerprint, text, ts) deque. 신규(비-fingerprint-
+        # dup) 이벤트가 이전의 **다른 지문·유사 텍스트** 이벤트와 근접중복인지 판단할 후보 풀이다.
+        # 상한(maxlen=_RECENT_TEXTS_MAX_PER_SCOPE)·만료 sweep(repeat_interval_seconds 밖 popleft·빈
+        # 스코프 키 삭제)으로 메모리 가드. provider 미주입(off/inert)이면 항상 비어 회귀 0.
+        self._recent_event_texts: dict[str, deque] = {}
 
     def _build_history_repo(self):  # noqa: ANN202
         """이력 조회 리포지토리를 생성한다 (Plan 47).
@@ -186,6 +200,39 @@ class AlarmWorker:
             )
         except Exception:
             logger.exception("메트릭 baseline 어댑터 생성 실패 — 이상탐지 없이 진행")
+            return None
+
+    def _build_embedding_provider(self):  # noqa: ANN202
+        """알람 로컬 임베딩 provider를 생성한다 (Plan 60 B-7 L-2/L-4 · §15.4 D-035 경계 · 주석 전용).
+
+        semantic_dedup_annotation_enabled(L-2)·topology_text_fusion_enabled(L-4)가 **모두
+        False**면 None을 반환한다(주석 경로 미진입·configurable 미주입 → 워커/enricher 비트동일·
+        회귀 0). 하나라도 활성이면 로컬 모델 경로로 provider를 생성한다 — 모델 미가용(미설치·경로
+        부재·로드 실패)이면 provider가 inert(모든 조회 None)이라 앱을 크래시시키지 않는다(graceful).
+
+        임베딩 출력은 감사·주석 필드에만 실리며 결정적 게이트 판정·억제 지문·상관 군집을 절대
+        바꾸지 않는다(§15.4 D-035 불변식). _build_metric_baseline과 동일한 옵트인·graceful 패턴.
+        """
+        gate = getattr(self._config, "noise_gate", None)
+        if gate is None:
+            return None
+        l2 = bool(getattr(gate, "semantic_dedup_annotation_enabled", False))
+        l4 = bool(getattr(gate, "topology_text_fusion_enabled", False))
+        if not (l2 or l4):
+            return None
+        try:
+            from src.alarm.infrastructure.embedding_provider import (
+                AlarmEmbeddingProvider,
+            )
+
+            return AlarmEmbeddingProvider(
+                getattr(gate, "embedding_model_path", ""),
+                timeout_seconds=float(
+                    getattr(gate, "embedding_timeout_seconds", 2.0)
+                ),
+            )
+        except Exception:
+            logger.exception("알람 임베딩 provider 생성 실패 — 임베딩 주석 없이 진행")
             return None
 
     def _build_decision_store(self):  # noqa: ANN202
@@ -320,6 +367,8 @@ class AlarmWorker:
         self._process_client = self._build_process_client()
         self._noise_repo = self._build_noise_repo()
         self._metric_baseline = self._build_metric_baseline()
+        # (Plan 60 B-7 L-2/L-4) 로컬 임베딩 provider — 두 주석 플래그 모두 off면 None(회귀 0).
+        self._embedding_provider = self._build_embedding_provider()
         self._decision_store = self._build_decision_store()
         self._ticket_queue = self._build_ticket_queue()
         self._feedback_store = self._build_feedback_store()
@@ -415,6 +464,9 @@ class AlarmWorker:
             correlation_meta: Optional[dict] = None
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타 — 대표 알람 표기용 그래프 state.
             recurrence_prev: Optional[dict] = None
+            # (Plan 60 B-7 L-2) 의미적 근접중복 후보 주석 — provider 가용 시에만 산출(감사 전용).
+            # off/inert면 None → decision_store에 키 미포함(회귀 0). 티어·억제 판정과 무관.
+            semantic_annotation: Optional[dict] = None
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
@@ -506,6 +558,15 @@ class AlarmWorker:
                     correlated, correlation_meta = self._detect_correlated_storm(
                         event, now, graph=topo_graph
                     )
+
+                # (Plan 60 B-7 L-2 · §15.4 D-035) 의미적 근접중복 후보 주석 — 게이트를 통과해
+                # 그래프로 진행하는 비해소 이벤트에 대해 provider 가용 시에만 산출(감사 전용).
+                # provider 미주입(off/inert)이면 내부에서 즉시 skip(비용 0). 결정적 dedup 판정·
+                # 억제 지문·티어 판정은 이 호출과 무관하게 위에서 이미 확정됐다(주석은 병렬 관측).
+                if not event.is_clear:
+                    semantic_annotation = self._annotate_semantic_dedup(
+                        event, fingerprint, now
+                    )
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -549,6 +610,8 @@ class AlarmWorker:
                     "correlation_meta": correlation_meta,
                     # (Plan 60 E1) 재통보 시 직전 창 재발 메타(없으면 None).
                     "recurrence": recurrence_prev,
+                    # (Plan 60 B-7 L-2) 의미적 근접중복 후보 주석(감사 전용·판정 무관, off/inert면 None).
+                    "semantic_annotation": semantic_annotation,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
                     "enrichment": None,
                     # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).
@@ -580,6 +643,11 @@ class AlarmWorker:
                         # (Plan 60 E4) 인히비션 활성 상태 참조 전달(읽기전용) — enricher가
                         # root_notified(다홉 하이브리드) 산출에 소비. 신규 저장소 불필요.
                         "active_firings": self._active_firings,
+                        # (Plan 60 B-7 L-4) 로컬 임베딩 provider — topology_text_fusion_enabled 시
+                        # enricher가 root 리소스 NAME과 알람 텍스트 유사도(root_text_similarity)를
+                        # 산출하는 데 소비(감사 전용). off/두 플래그 off면 None → enricher 미주입·
+                        # 주석 경로 미진입(회귀 0). repo는 provider를 직접 생성하지 않는다(워커 주입).
+                        "embedding_provider": self._embedding_provider,
                     }
                 },
             )
@@ -731,6 +799,98 @@ class AlarmWorker:
             first_seen_ts=rec_meta.get("first_seen"),
             alarm_id=event.alarm_id,
         )
+
+    def _annotate_semantic_dedup(
+        self, event: AlarmEvent, fingerprint: str, now: float
+    ) -> Optional[dict]:
+        """의미적 근접중복 **후보 주석**을 산출한다 (Plan 60 B-7 L-2 · §15.4 D-035 경계).
+
+        SHA1 지문이 다르지만 의미적으로 유사한(메시지 표현만 다른) 재발을 로컬 임베딩 유사도로
+        감지해 "재발 count 병합 후보(검토용)" 주석을 만든다(GPTrace 패턴). **결정적 dedup 판정
+        (compute_fingerprint)은 불변** — 이 주석은 판정에 영향을 주지 않는 병렬 관측이며 감사·설명
+        전용이다(억제/티어 판정과 무관, D-035 불변식).
+
+        동작(옵트인·hot-path 저비용):
+            - provider 미주입(두 플래그 off/생성 실패)·inert(모델 미가용)이면 즉시 None 반환하고
+              최근 텍스트 상태도 건드리지 않는다(비용 0·회귀 0).
+            - 현재 이벤트 텍스트(build_event_text)와 db_id 스코프의 최근 이벤트 텍스트들 중 최고
+              유사 후보를 provider.most_similar로 찾고, 유사도가 임계(embedding_similarity_threshold)
+              이상이고 매칭 후보의 지문이 **다르면** 주석 dict를 만든다.
+            - 판정 후 현재 (fingerprint, text, ts)를 스코프 deque에 추가하고, 만료 항목 popleft·빈
+              스코프 키 삭제로 sweep한다(상한은 deque maxlen).
+
+        Args:
+            event: 현재(비-fingerprint-dup, 비해소) 알람 이벤트.
+            fingerprint: compute_fingerprint(event) 결과(현재 이벤트 지문).
+            now: 현재 시각(time.time()).
+
+        Returns:
+            근접중복 후보 주석 dict `{"semantic_near_dup": {matched_fp, similarity, hint}}`
+            또는 조건 미충족 시 None(임계 미만·동일 지문·후보 없음·provider 미가용).
+        """
+        provider = self._embedding_provider
+        # provider 미주입(off/생성 실패) 또는 inert(모델 미가용) → 즉시 skip(비용 0, 상태 무변경).
+        if provider is None or not provider.is_available():
+            return None
+
+        from src.alarm.infrastructure.embedding_provider import build_event_text
+
+        current_text = build_event_text(
+            event.alarm_name, event.resource_type, event.condition_log
+        )
+        if not current_text:
+            return None
+
+        scope = event.db_id or ""
+        # 근접중복 판정 창(TTL) — 재발 dedup과 동일한 재통보 간격을 재사용(그 창 밖 텍스트는
+        # 근접중복 후보 의미가 없음). getattr 가드로 경량 설정(테스트)도 안전.
+        ttl = float(getattr(self._config.noise_gate, "repeat_interval_seconds", 14400))
+
+        annotation: Optional[dict] = None
+        dq = self._recent_event_texts.get(scope)
+        if dq:
+            # 만료·현재와 동일 텍스트가 아닌 후보만 비교 대상으로 스냅샷(원본 인덱스 정렬 유지).
+            entries = [e for e in dq if now - e[2] < ttl]
+            if entries:
+                best = provider.most_similar(
+                    current_text, [text for _fp, text, _ts in entries]
+                )
+                if best is not None:
+                    best_idx, score = best
+                    matched_fp, _matched_text, _matched_ts = entries[best_idx]
+                    threshold = float(
+                        getattr(
+                            self._config.noise_gate,
+                            "embedding_similarity_threshold",
+                            0.87,
+                        )
+                    )
+                    # 임계 이상 + **다른 지문**일 때만 후보 주석(동일 지문은 결정적 dedup이 처리).
+                    if score >= threshold and matched_fp != fingerprint:
+                        annotation = {
+                            "semantic_near_dup": {
+                                "matched_fp": matched_fp,
+                                "similarity": round(score, 4),
+                                "hint": "의미적 근접중복 — 재발 count 병합 후보(검토용)",
+                            }
+                        }
+
+        # 현재 이벤트를 최근 텍스트에 추가(자기 자신과 매칭 방지를 위해 판정 후 추가).
+        if dq is None:
+            dq = deque(maxlen=_RECENT_TEXTS_MAX_PER_SCOPE)
+            self._recent_event_texts[scope] = dq
+        dq.append((fingerprint, current_text, now))
+
+        # 만료 sweep — 전 스코프의 좌측(오래된) 만료 항목 popleft + 빈 스코프 키 삭제(형제 상태
+        # _flap_last_seen·_gate_dedup 정리 루프와 일관, Known Mistakes 키 만료 sweep 의무).
+        for other in self._recent_event_texts.values():
+            while other and now - other[0][2] >= ttl:
+                other.popleft()
+        empty = [k for k, d in self._recent_event_texts.items() if not d]
+        for k in empty:
+            del self._recent_event_texts[k]
+
+        return annotation
 
     def _update_firing_registry(
         self, event: AlarmEvent, fingerprint: str, now: float

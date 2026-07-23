@@ -46,6 +46,7 @@ class DecisionStore:
         ts: Optional[datetime] = None,
         recurrence: Optional[dict] = None,
         correlation_meta: Optional[dict] = None,
+        semantic_annotation: Optional[dict] = None,
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -62,6 +63,13 @@ class DecisionStore:
         식별자·멤버 순번·유사도(`{representative_fp, member_seq, similarity}`)를 받으면
         **최상위 `correlation_meta` 필드**로 기록한다(recurrence와 동일 패턴 — signals 동결
         스키마 미훼손, §10). None이면 키를 넣지 않아 기존 스냅샷과 동일하다.
+
+        semantic_annotation(Plan 60 B-7 L-2 · §15.4 D-035 경계): 의미적 근접중복 **후보 주석**
+        (`{semantic_near_dup: {matched_fp, similarity, hint}}`)를 받으면 **최상위
+        `semantic_annotation` 필드**로 기록한다(recurrence/correlation_meta와 동일 패턴 —
+        signals 동결 스키마 미훼손). **임베딩은 감사·관측 전용**이며 tier/reason/priority·
+        지문은 이 값과 무관하다(주석은 결정 산출 뒤 병렬 기록). None이면 키를 넣지 않아 기존
+        스냅샷과 비트 동일하다(옵트인 off·provider inert 시 회귀 0).
         """
         if not self.enabled:
             return
@@ -79,6 +87,8 @@ class DecisionStore:
             record["recurrence"] = recurrence
         if correlation_meta is not None:
             record["correlation_meta"] = correlation_meta
+        if semantic_annotation is not None:
+            record["semantic_annotation"] = semantic_annotation
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)

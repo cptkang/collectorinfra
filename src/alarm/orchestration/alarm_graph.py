@@ -51,6 +51,7 @@ class AlarmState(TypedDict):
     correlated: bool                                    # Plan 60 E2: 워커가 시드한 크로스-호스트 상관 매칭 여부
     correlation_meta: Optional[dict]                    # Plan 60 E2: 상관 억제 시 클러스터 메타(대표 지문·멤버 순번·유사도) — correlated일 때만 채워짐
     recurrence: Optional[dict]                          # Plan 60 E1: 재통보 시 직전 창 재발 메타(대표 알람 표기용)
+    semantic_annotation: Optional[dict]                 # Plan 60 B-7 L-2: 의미적 근접중복 후보 주석(감사 전용·판정 무관, semantic_dedup_annotation_enabled+provider 가용 시에만)
     enrichment: Optional[MessageEnrichment]             # Plan 60 E6: kind별 L1 보강 블록(message_enrichment_enabled 시에만 채워짐)
     anomaly_severity: Optional[int]                     # Plan 60 E3: enricher가 산출한 동적 baseline 이상 상향 후보(dynamic_baseline_enabled 시에만 채워짐)
 

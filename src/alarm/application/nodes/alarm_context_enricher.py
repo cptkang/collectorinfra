@@ -48,6 +48,7 @@ from src.alarm.domain.enrichment_profile import (
     resolve_profile,
 )
 from src.alarm.domain.process_rank import classify_alarm_kind, select_top_processes
+from src.alarm.infrastructure.embedding_provider import build_event_text
 from src.alarm.infrastructure.polestar_noise_context import _unavailable
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,40 @@ def _compute_root_notified(
     return (clock - ts) <= inhibition_window_seconds
 
 
+def _annotate_root_text_similarity(
+    event: AlarmEvent,
+    ctx: dict[str, Any],
+    noise_cfg,  # noqa: ANN001 — NoiseGateConfig
+    embedding_provider,  # noqa: ANN001 — AlarmEmbeddingProvider | None
+) -> None:
+    """토폴로지+텍스트 융합 주석(root_text_similarity)을 ctx에 in-place 첨부한다 (B-7 L-4 · §15.4 D-035).
+
+    E4 다홉 cascade가 산출한 root 리소스 NAME(`ctx["root_resource_name"]`)과 현재 알람 텍스트
+    사이 코사인 유사도(0~1)를 로컬 임베딩으로 산출해 **root 귀속 신뢰도 설명 보강**으로 첨부한다
+    (DiLink식 토폴로지+텍스트 융합). **cascaded/root_notified 판정은 불변** — 이 주석은 관측
+    필드일 뿐 게이트 판정(SUPPRESS/DASHBOARD)에 영향을 주지 않는다(D-035 불변식).
+
+    하위호환·회귀 0(옵트인·graceful):
+        - topology_text_fusion_enabled off·provider 미주입(None)·root_resource 부재·유사도 None
+          (provider inert/빈 텍스트) 중 하나라도 해당하면 **키를 첨부하지 않는다**(현행 비트동일).
+        - 정책 모듈은 이 키를 참조하지 않는다(신규 noise_ctx 관측 필드일 뿐).
+    """
+    if embedding_provider is None:
+        return
+    if not bool(getattr(noise_cfg, "topology_text_fusion_enabled", False)):
+        return
+    # root_resource(연쇄 근본원인 ID)가 실제로 존재할 때만 — cascaded=False면 root는 None이라 skip.
+    if not ctx.get("root_resource") or not ctx.get("root_resource_name"):
+        return
+    alarm_text = build_event_text(
+        event.alarm_name, event.resource_type, event.condition_log
+    )
+    sim = embedding_provider.similarity(alarm_text, ctx["root_resource_name"])
+    if sim is None:  # provider inert 또는 빈 텍스트 → 미첨부(하위호환)
+        return
+    ctx["root_text_similarity"] = round(sim, 4)
+
+
 async def enrich_noise_context(
     event: AlarmEvent,
     noise_cfg,  # noqa: ANN001 — NoiseGateConfig
@@ -112,6 +147,7 @@ async def enrich_noise_context(
     multi_hop: bool = False,
     change_correlation: bool = False,
     active_firings: Optional[dict] = None,
+    embedding_provider=None,  # noqa: ANN001 — AlarmEmbeddingProvider | None (B-7 L-4)
 ) -> dict[str, Any]:
     """캐시 확인 → 폴스타 노이즈 컨텍스트 고정 SQL 조회 → 캐시 적재 (Plan 52 §8.3 + Plan 60 E4).
 
@@ -130,8 +166,12 @@ async def enrich_noise_context(
     change_correlation(E5, §7.2): True면 repo.fetch가 변경 피드를 조회·오버레이해
     change_nearby/change_candidates를 추가 산출한다(promote 전용 신호 — 노후 캐시 수용).
 
+    embedding_provider(B-7 L-4, §15.4 D-035): topology_text_fusion_enabled + provider 가용 +
+    root_resource 존재 시, **캐시 이후** root 리소스 NAME과 알람 텍스트 유사도(root_text_similarity)를
+    산출해 ctx에 첨부한다(root 귀속 신뢰도 **설명 보강** 주석 — 판정 불변). None/off/inert면 미첨부.
+
     Returns:
-        _NOISE_CTX_KEYS + source (+ multi_hop 시 root_notified).
+        _NOISE_CTX_KEYS + source (+ multi_hop 시 root_notified) (+ L-4 시 root_text_similarity).
     """
     cache_enabled = (
         redis_client is not None and noise_cfg.noise_context_cache_ttl_seconds > 0
@@ -183,6 +223,9 @@ async def enrich_noise_context(
             active_firings,
             int(getattr(noise_cfg, "inhibition_window_seconds", 300)),
         )
+        # (B-7 L-4) root 귀속 신뢰도 설명 보강 주석 — root(연쇄 근본원인)가 산출된 다홉 경로에서만
+        # 의미 있으므로 여기서 산출한다. off/provider 미주입/inert/root 부재면 미첨부(회귀 0).
+        _annotate_root_text_similarity(event, ctx, noise_cfg, embedding_provider)
 
     return ctx
 
@@ -434,6 +477,9 @@ async def alarm_context_enricher_node(
     # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — dynamic_baseline_enabled 시 워커가 주입.
     # 미주입/off면 이상탐지 태스크·키 미추가(anomaly_severity 산출 없음·회귀 0).
     metric_baseline = configurable.get("metric_baseline")
+    # (Plan 60 B-7 L-4) 로컬 임베딩 provider(주석 전용) — topology_text_fusion_enabled 시 워커가
+    # 주입. 미주입/off/inert면 root_text_similarity 미첨부(회귀 0). repo는 provider를 생성하지 않는다.
+    embedding_provider = configurable.get("embedding_provider")
 
     # 게이트 활성 + noise_repo 주입 시에만 noise_context 수집(그 외 기존 2키 반환 유지).
     gate_cfg = getattr(cfg, "noise_gate", None)
@@ -513,6 +559,7 @@ async def alarm_context_enricher_node(
                 multi_hop=multi_hop,
                 change_correlation=change_corr,
                 active_firings=active_firings,
+                embedding_provider=embedding_provider,
             )
         except Exception:
             logger.exception(

@@ -148,8 +148,10 @@ class _RecordingStore:
         self.records: list[tuple[Any, Optional[str]]] = []
 
     def record(  # noqa: ANN001
-        self, decision, alarm_id=None, recurrence=None, correlation_meta=None
+        self, decision, alarm_id=None, recurrence=None, correlation_meta=None,
+        semantic_annotation=None,
     ) -> None:
+        # 프로덕션 DecisionStore.record 시그니처를 대역이 그대로 미러링한다(B-7 L-2 감사 필드 추가).
         self.records.append((decision, alarm_id))
 
 

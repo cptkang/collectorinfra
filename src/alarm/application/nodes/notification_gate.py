@@ -71,11 +71,15 @@ async def notification_gate_node(
         try:
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
             # (Plan 60 E2) 상관 억제 시 클러스터 메타를 최상위 correlation_meta 필드로 첨부.
+            # (Plan 60 B-7 L-2 · §15.4 D-035) 의미적 근접중복 후보 주석을 최상위
+            # semantic_annotation 필드로 첨부 — **감사·관측 전용**이며 위 decision(tier/reason/
+            # priority)은 이 값과 무관하게 이미 산출됐다(주석은 판정에 영향 0). off/None이면 미첨부.
             store.record(
                 decision,
                 alarm_id=event.alarm_id,
                 recurrence=state.get("recurrence"),
                 correlation_meta=state.get("correlation_meta"),
+                semantic_annotation=state.get("semantic_annotation"),
             )
         except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
             logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
