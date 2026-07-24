@@ -20,6 +20,7 @@ from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.db_adapters import get_adapter
+from src.security.pii_filter import is_scrub_samples_enabled, scrub_pii
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
@@ -264,6 +265,7 @@ async def query_generator(
     # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
     user_query = state.get("user_query", "") or ""
     limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
+    logger.info("[TEMP-DIAG plan65] resolve_query_limit(single): input=%r -> limit=%d", user_query, limit_value)  # 실구현 시 제거
     # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
     stat_month = resolve_stat_month_range(user_query)
     # 통계 테이블 강제 블록(build_stat_month_block)은 폴스타 월 통계 테이블(cmm_metric_stat_m)
@@ -1001,6 +1003,8 @@ def _format_schema_for_prompt(
         samples = table_data.get("sample_data", [])
         if samples:
             preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
+            if is_scrub_samples_enabled():
+                preview = scrub_pii(preview)  # 라이브 샘플 PII → FabriX 필터 오탐 차단 예방
             lines.append(f"  샘플 데이터 ({len(samples)}건):\n{preview}")
         lines.append("")
 

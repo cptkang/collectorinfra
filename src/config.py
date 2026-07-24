@@ -235,6 +235,21 @@ class SecurityConfig(BaseSettings):
     mask_ip: bool = False
     mask_email: bool = False
 
+    # FabriX 개인정보(PII) 필터 차단 감지 로깅 on/off (SECURITY_PII_FILTER_LOG_ENABLED).
+    # ON이면 FabriX가 프롬프트/응답을 PII로 차단할 때 어떤 유형·어떤 텍스트(마스킹)·filter_log_id를
+    # 경고 1건으로 남긴다. 판정 규칙 변경은 src/security/pii_filter.py의 PII_RULES에서 한다
+    # (근거: docs/pii_filtering_rules.md). 기본 ON(차단 원인 가시화용, 차단 시에만 발화).
+    pii_filter_log_enabled: bool = True
+    # 감지된 문자열을 로그에 **원문 그대로** 남길지 (SECURITY_PII_FILTER_LOG_UNMASK).
+    # 기본 False = 마스킹(형태만 노출). True로 켜면 오탐(타임스탬프 등) 판정을 위해 실제 값을
+    # 그대로 로그에 남긴다 — 로그에 실 개인정보가 남을 수 있으니 진단 시에만 한시적으로 켠다.
+    pii_filter_log_unmask: bool = False
+    # 프롬프트 주입 전 샘플 데이터(라이브 DB 행)의 PII를 마스킹 스크럽할지 (SECURITY_PII_SCRUB_SAMPLES).
+    # 기본 True. schema 샘플(SELECT * ... LIMIT N)에 섞인 이메일·연락처·타임스탬프 등이
+    # FabriX 개인정보 필터에 오탐 차단되는 것을 예방한다. 형식 보존 마스킹이라 컬럼·형식 추론
+    # 신호는 유지된다(pii_filter.scrub_pii). False면 원문 그대로 주입(현행 동작).
+    pii_scrub_samples: bool = True
+
     model_config = {"env_prefix": "SECURITY_", "env_file": ".env", "extra": "ignore"}
 
 

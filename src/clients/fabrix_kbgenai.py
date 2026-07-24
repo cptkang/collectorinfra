@@ -5,6 +5,7 @@ NWAgent의 llm_chat_connector.py를 기반으로 collectorinfra에 맞게 적용
 """
 
 import json
+import logging
 
 import httpx
 import requests
@@ -25,6 +26,8 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
+from src.security.pii_filter import is_filter_blocked, log_filter_block_if_any
+
 LLAMA_JUNK_TOKENS = [
     "<|eot_id|>",
     "<|end_header_id|>",
@@ -33,6 +36,8 @@ LLAMA_JUNK_TOKENS = [
 ]
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+logger = logging.getLogger(__name__)
 
 
 class KBGenAIChat(BaseChatModel):
@@ -76,6 +81,12 @@ class KBGenAIChat(BaseChatModel):
             "Content-Type": "application/json",
         }
 
+    def _prompt_text(self, messages: List[BaseMessage]) -> str:
+        """전송 프롬프트를 로컬 PII 스캔용 단일 문자열로 재구성한다."""
+        payload = self._get_payload(messages)
+        contents = "\n".join(str(c) for c in payload.get("contents", []))
+        return f"{payload.get('systemPrompt', '')}\n{contents}"
+
     def _get_payload(
         self, messages: List[BaseMessage], is_stream: bool = False
     ) -> dict:
@@ -112,6 +123,9 @@ class KBGenAIChat(BaseChatModel):
         )
         response.raise_for_status()
         result = response.json()
+        log_filter_block_if_any(
+            logger, result=result, prompt=self._prompt_text(messages), where="_generate"
+        )
 
         if result.get("status") != "SUCCESS":
             raise ValueError(f"API returned error status: {result.get('status')}")
@@ -136,6 +150,9 @@ class KBGenAIChat(BaseChatModel):
             )
             response.raise_for_status()
             result = response.json()
+            log_filter_block_if_any(
+                logger, result=result, prompt=self._prompt_text(messages), where="_agenerate"
+            )
 
             if result.get("status") != "SUCCESS":
                 raise ValueError(
@@ -164,6 +181,7 @@ class KBGenAIChat(BaseChatModel):
         )
         response.raise_for_status()
 
+        blocked_logged = False
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
@@ -176,6 +194,11 @@ class KBGenAIChat(BaseChatModel):
                 line_json = json.loads(line)
                 content = line_json.get("content", "")
                 event_status = line_json.get("event_status", "")
+                if not blocked_logged and is_filter_blocked(line_json, line):
+                    blocked_logged = log_filter_block_if_any(
+                        logger, result=line_json, raw_text=line,
+                        prompt=self._prompt_text(messages), where="_stream",
+                    )
 
                 if event_status in ["STATUS", "SYNC", "FINISH"]:
                     continue
@@ -208,6 +231,7 @@ class KBGenAIChat(BaseChatModel):
             ) as response:
                 response.raise_for_status()
 
+                blocked_logged = False
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -220,6 +244,11 @@ class KBGenAIChat(BaseChatModel):
                         line_json = json.loads(line)
                         content = line_json.get("content", "")
                         event_status = line_json.get("event_status", "")
+                        if not blocked_logged and is_filter_blocked(line_json, line):
+                            blocked_logged = log_filter_block_if_any(
+                                logger, result=line_json, raw_text=line,
+                                prompt=self._prompt_text(messages), where="_astream",
+                            )
 
                         if event_status in ["STATUS", "SYNC", "FINISH"]:
                             continue

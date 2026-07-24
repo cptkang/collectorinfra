@@ -28,6 +28,7 @@ from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
 from src.security.audit_logger import log_query_execution
+from src.security.pii_filter import is_scrub_samples_enabled, scrub_pii
 from src.state import AgentState, QueryAttempt
 from src.utils.query_gen_common import (
     build_generic_period_hint,
@@ -135,6 +136,7 @@ async def multi_db_executor(
     effective_limit = resolve_query_limit(
         state.get("user_query", ""), app_config.query.default_limit
     )
+    logger.info("[TEMP-DIAG plan65] resolve_query_limit(multi): input=%r -> limit=%d", state.get("user_query", ""), effective_limit)  # 실구현 시 제거
     # 미매핑 필드(사용률 지표 등, column_mapping=None) — SQL이 한글 헤더로 alias하도록 전달한다.
     # db_column_mapping[db_id]에는 미매핑 필드가 없으므로 통합 column_mapping에서 추출한다(D-066 후속3).
     unmapped_fields = [
@@ -877,6 +879,8 @@ def _format_schema(schema_info: dict) -> str:
         samples = table_data.get("sample_data", [])
         if samples:
             preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
+            if is_scrub_samples_enabled():
+                preview = scrub_pii(preview)  # 라이브 샘플 PII → FabriX 필터 오탐 차단 예방
             lines.append(f"  sample: {preview}")
         lines.append("")
 
