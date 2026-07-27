@@ -28,6 +28,12 @@ class ServerConfig:
     port: int = 9099
     transport: str = "sse"
     log_level: str = "info"
+    # execute_sql 저수준 도구 노출 여부 (기본 비노출 — 계획 §3/§6, D-022/D-028).
+    # 고수준 도구는 SQL을 받지 않으므로 항상 안전하다. raw SQL 실행이 필요한 탐색적
+    # 조사·본체 NL→SQL 파이프라인 배치에서만 config.toml/환경변수로 True 옵트인한다.
+    expose_execute_sql: bool = False
+    # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
+    process_api_base_url: str = ""
 
 
 @dataclass
@@ -144,6 +150,8 @@ def _load_toml(path: Path) -> AppServerConfig:
         port=server_data.get("port", 9099),
         transport=server_data.get("transport", "sse"),
         log_level=server_data.get("log_level", "info"),
+        expose_execute_sql=server_data.get("expose_execute_sql", False),
+        process_api_base_url=server_data.get("process_api_base_url", ""),
     )
 
     # 소스 설정
@@ -180,12 +188,22 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "SERVER_PORT": ("port", int),
         "SERVER_TRANSPORT": ("transport", str),
         "SERVER_LOG_LEVEL": ("log_level", str),
+        "PROCESS_API_BASE_URL": ("process_api_base_url", str),
     }
     for env_key, (attr, cast) in _env_overrides.items():
         env_val = os.environ.get(env_key, "")
         if env_val:
             setattr(config.server, attr, cast(env_val))
             logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # expose_execute_sql은 불리언이라 별도 파싱 ("1"/"true"/"yes"/"on" → True)
+    expose_env = os.environ.get("EXPOSE_EXECUTE_SQL", "")
+    if expose_env:
+        config.server.expose_execute_sql = expose_env.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        logger.debug("환경변수 오버라이드: EXPOSE_EXECUTE_SQL = %s",
+                     config.server.expose_execute_sql)
 
     # 소스별 연결 문자열 오버라이드
     for source in config.sources:

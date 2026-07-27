@@ -5,7 +5,12 @@
 
 import pytest
 
-from mcp_server.security import ReadOnlyViolationError, validate_readonly
+from mcp_server.security import (
+    PolestarDomainViolationError,
+    ReadOnlyViolationError,
+    validate_polestar_domain,
+    validate_readonly,
+)
 
 
 class TestValidateReadonly:
@@ -120,3 +125,64 @@ class TestValidateReadonly:
         with pytest.raises(ReadOnlyViolationError) as exc_info:
             validate_readonly("CALL some_procedure()")
         assert "금지된 키워드" in str(exc_info.value)
+
+
+class TestValidatePolestarDomain:
+    """validate_polestar_domain 도메인 deny 테스트 (§6, D-022/D-028)."""
+
+    def test_resource_conf_join_blocked(self):
+        """RESOURCE_CONF_ID = CONFIGURATION_ID 조인은 차단된다 (D-022)."""
+        with pytest.raises(PolestarDomainViolationError) as exc_info:
+            validate_polestar_domain(
+                "SELECT 1 FROM cmm_resource r "
+                "JOIN core_config_prop p ON r.resource_conf_id = p.configuration_id"
+            )
+        assert "RESOURCE_CONF_ID" in str(exc_info.value)
+
+    def test_resource_conf_join_reverse_blocked(self):
+        """CONFIGURATION_ID = RESOURCE_CONF_ID 역방향 조인도 차단된다."""
+        with pytest.raises(PolestarDomainViolationError):
+            validate_polestar_domain(
+                "SELECT 1 FROM a WHERE p.configuration_id = r.RESOURCE_CONF_ID"
+            )
+
+    def test_cmm_vendor_blocked(self):
+        """cmm_vendor lookup 참조는 차단된다 (D-028)."""
+        with pytest.raises(PolestarDomainViolationError) as exc_info:
+            validate_polestar_domain("SELECT * FROM cmm_vendor")
+        assert "CMM_VENDOR" in str(exc_info.value)
+
+    def test_cmm_os_blocked(self):
+        """cmm_os lookup 참조는 차단된다 (D-028)."""
+        with pytest.raises(PolestarDomainViolationError):
+            validate_polestar_domain("SELECT * FROM cmm_resource r JOIN cmm_os o ON r.x = o.id")
+
+    def test_cmm_os_param_blocked(self):
+        """cmm_os_param lookup 참조는 차단된다 (D-028)."""
+        with pytest.raises(PolestarDomainViolationError):
+            validate_polestar_domain("SELECT * FROM cmm_os_param")
+
+    def test_legit_hostname_bridge_passes(self):
+        """올바른 hostname 브릿지 조인은 통과한다 (D-022 준수)."""
+        validate_polestar_domain(
+            "SELECT p.name, p.stringvalue_short "
+            "FROM core_config_prop p_host "
+            "JOIN core_config_prop p ON p.configuration_id = p_host.configuration_id "
+            "WHERE p_host.name = 'Hostname'"
+        )
+
+    def test_plain_resource_query_passes(self):
+        """cmm_resource 단순 조회는 통과한다."""
+        validate_polestar_domain("SELECT NAME, AVAIL_STATUS FROM cmm_resource")
+
+    def test_forbidden_table_in_literal_not_blocked(self):
+        """문자열 리터럴 내의 금지 테이블명은 오탐하지 않는다."""
+        validate_polestar_domain("SELECT * FROM cmm_resource WHERE name = 'cmm_vendor'")
+
+    def test_forbidden_table_in_comment_not_blocked(self):
+        """주석 내의 금지 테이블명은 오탐하지 않는다."""
+        validate_polestar_domain("SELECT * FROM cmm_resource /* not cmm_os_param */")
+
+    def test_empty_sql_no_raise(self):
+        """빈 SQL은 도메인 검증에서 예외 없이 통과한다(읽기전용에서 별도 차단)."""
+        validate_polestar_domain("")

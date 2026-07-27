@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server.config import AppServerConfig, load_config
 from mcp_server.db import DBPoolManager
+from mcp_server.polestar_tools import register_polestar_tools
 from mcp_server.tools import register_tools
 
 logger = logging.getLogger(__name__)
@@ -55,11 +56,13 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
         port=config.server.port,
         lifespan=lifespan,
     )
-    register_tools(mcp)
+    register_tools(mcp, expose_execute_sql=config.server.expose_execute_sql)
+    register_polestar_tools(mcp)
 
     logger.info(
-        "MCP 서버 생성: name=%s, transport=%s",
+        "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s",
         config.server.name,
         config.server.transport,
+        config.server.expose_execute_sql,
     )
     return mcp

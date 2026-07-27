@@ -18,7 +18,12 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_server.db import DBPoolManager
-from mcp_server.security import ReadOnlyViolationError, validate_readonly
+from mcp_server.security import (
+    PolestarDomainViolationError,
+    ReadOnlyViolationError,
+    validate_polestar_domain,
+    validate_readonly,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +39,15 @@ def _get_source_config(ctx: Context, source: str) -> Any:
     return pool_manager.get_source_config(source)
 
 
-def register_tools(mcp: FastMCP) -> None:
-    """MCP 서버에 도구를 등록한다."""
+def register_tools(mcp: FastMCP, expose_execute_sql: bool = False) -> None:
+    """MCP 서버에 저수준 도구를 등록한다.
+
+    Args:
+        mcp: FastMCP 서버 인스턴스.
+        expose_execute_sql: raw SQL 실행 도구(execute_sql) 노출 여부(기본 비노출 —
+            계획 §3/§6). True일 때만 execute_sql을 등록하며, 이때 읽기 전용 검증에
+            더해 폴스타 도메인 deny(D-022/D-028)를 추가로 적용한다.
+    """
 
     @mcp.tool()
     async def search_objects(
@@ -77,7 +89,6 @@ def register_tools(mcp: FastMCP) -> None:
             logger.error("search_objects 실패 (%s): %s", source, e)
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
-    @mcp.tool()
     async def execute_sql(
         source: str,
         sql: str,
@@ -106,6 +117,16 @@ def register_tools(mcp: FastMCP) -> None:
                     {"error": f"읽기 전용 위반: {e.reason}"},
                     ensure_ascii=False,
                 )
+
+        # 폴스타 도메인 deny (execute_sql 옵트인 노출 시에만 도달 — §6, D-022/D-028)
+        try:
+            validate_polestar_domain(sql)
+        except PolestarDomainViolationError as e:
+            logger.warning("폴스타 도메인 위반 (%s): %s", source, e.reason)
+            return json.dumps(
+                {"error": f"폴스타 도메인 위반: {e.reason}"},
+                ensure_ascii=False,
+            )
 
         start_time = time.time()
         try:
@@ -279,6 +300,14 @@ def register_tools(mcp: FastMCP) -> None:
 
         logger.info("list_sources: %d개 활성 소스", len(sources_list))
         return json.dumps(sources_list, ensure_ascii=False)
+
+    # execute_sql은 옵트인 시에만 노출한다(기본 비노출 — 계획 §3/§6).
+    # 노출 시 위 execute_sql은 validate_readonly + validate_polestar_domain을 함께 적용한다.
+    if expose_execute_sql:
+        mcp.tool()(execute_sql)
+        logger.info("execute_sql 도구 노출됨 (expose_execute_sql=True) — 도메인 deny 적용")
+    else:
+        logger.info("execute_sql 도구 비노출 (기본) — 고수준 도구 사용")
 
 
 # --- PostgreSQL 스키마 조회 SQL ---

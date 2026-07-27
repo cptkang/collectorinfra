@@ -192,3 +192,39 @@ type = "postgresql"
         config = load_config(tmp_path / "nonexistent.toml")
         assert config.server.name == "dbhub-server"
         assert len(config.sources) == 0
+
+
+class TestExposeExecuteSql:
+    """expose_execute_sql / process_api_base_url 설정 테스트 (계획 §3/§6)."""
+
+    def test_default_hidden(self):
+        """기본값은 비노출(False)이다 — 계획 §3 준수."""
+        assert ServerConfig().expose_execute_sql is False
+
+    def test_toml_opt_in(self, tmp_path):
+        """TOML에서 expose_execute_sql = true로 옵트인할 수 있다."""
+        toml_content = """
+[server]
+name = "expose-test"
+expose_execute_sql = true
+process_api_base_url = "http://proc.local:8080"
+"""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(toml_content)
+        config = _load_toml(config_file)
+        assert config.server.expose_execute_sql is True
+        assert config.server.process_api_base_url == "http://proc.local:8080"
+
+    def test_env_override_expose(self, monkeypatch):
+        """EXPOSE_EXECUTE_SQL 환경변수로 노출 여부를 오버라이드한다."""
+        monkeypatch.setenv("EXPOSE_EXECUTE_SQL", "true")
+        config = AppServerConfig(server=ServerConfig(expose_execute_sql=False))
+        _apply_env_overrides(config)
+        assert config.server.expose_execute_sql is True
+
+    def test_env_override_process_api_url(self, monkeypatch):
+        """PROCESS_API_BASE_URL 환경변수로 프로세스 API URL을 오버라이드한다."""
+        monkeypatch.setenv("PROCESS_API_BASE_URL", "http://env-proc:9000")
+        config = AppServerConfig(server=ServerConfig())
+        _apply_env_overrides(config)
+        assert config.server.process_api_base_url == "http://env-proc:9000"
