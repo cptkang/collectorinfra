@@ -37,6 +37,22 @@ class ServerConfig:
 
 
 @dataclass
+class PrometheusConfig:
+    """Prometheus 접속 설정 (mcp_server 전용 — 소비자 미보유, Plan 06 §3 · D-119).
+
+    ``url``·``auth_header``는 서버 설정에만 존재한다(sre_agent 미보유 — 접근 경계
+    일원화). ``query_timeout``은 원시 패스스루를 포함한 모든 PromQL HTTP 호출에
+    서버가 강제하는 쿼리 timeout(초)이다. ``expose_raw_promql``은 원시 PromQL
+    패스스루 도구의 노출 여부로 기본 비노출이다(execute_sql 전례).
+    """
+
+    url: str = ""
+    auth_header: str = ""
+    query_timeout: int = 30
+    expose_raw_promql: bool = False
+
+
+@dataclass
 class SourceConfig:
     """데이터소스 설정."""
 
@@ -56,6 +72,7 @@ class AppServerConfig:
 
     server: ServerConfig = field(default_factory=ServerConfig)
     sources: list[SourceConfig] = field(default_factory=list)
+    prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
 
 
 def load_config(config_path: str | Path | None = None) -> AppServerConfig:
@@ -169,7 +186,16 @@ def _load_toml(path: Path) -> AppServerConfig:
         )
         sources.append(src)
 
-    return AppServerConfig(server=server, sources=sources)
+    # Prometheus 설정 (PromQL 도구 — Plan 06 §3 · D-119)
+    prom_data = data.get("prometheus", {})
+    prometheus = PrometheusConfig(
+        url=prom_data.get("url", ""),
+        auth_header=prom_data.get("auth_header", ""),
+        query_timeout=prom_data.get("query_timeout", 30),
+        expose_raw_promql=prom_data.get("expose_raw_promql", False),
+    )
+
+    return AppServerConfig(server=server, sources=sources, prometheus=prometheus)
 
 
 def _apply_env_overrides(config: AppServerConfig) -> None:
@@ -204,6 +230,27 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         )
         logger.debug("환경변수 오버라이드: EXPOSE_EXECUTE_SQL = %s",
                      config.server.expose_execute_sql)
+
+    # Prometheus 설정 오버라이드 (문자열/정수 — Plan 06 §3 · D-119)
+    _prom_overrides = {
+        "PROMETHEUS_URL": ("url", str),
+        "PROMETHEUS_AUTH_HEADER": ("auth_header", str),
+        "PROMETHEUS_QUERY_TIMEOUT": ("query_timeout", int),
+    }
+    for env_key, (attr, cast) in _prom_overrides.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(config.prometheus, attr, cast(env_val))
+            logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # expose_raw_promql도 불리언이라 별도 파싱
+    raw_env = os.environ.get("EXPOSE_RAW_PROMQL", "")
+    if raw_env:
+        config.prometheus.expose_raw_promql = raw_env.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        logger.debug("환경변수 오버라이드: EXPOSE_RAW_PROMQL = %s",
+                     config.prometheus.expose_raw_promql)
 
     # 소스별 연결 문자열 오버라이드
     for source in config.sources:

@@ -13,6 +13,22 @@ expose_execute_sql = true
 process_api_base_url = ""
 
 # ============================================================
+# Prometheus (PromQL 도구 — Plan 06 §3 · D-119)
+# ============================================================
+# url·auth_header는 보안상 .env로 오버라이드 (PROMETHEUS_URL·PROMETHEUS_AUTH_HEADER).
+# 미설정 시 고수준 PromQL 도구는 명시적 오류를 반환한다(침묵 폴백 금지).
+[prometheus]
+url = ""
+# 인증 헤더 전체 값 (예: "Bearer <token>"). 비면 인증 헤더를 붙이지 않는다.
+auth_header = ""
+# 서버가 강제하는 쿼리 timeout(초) — 원시 패스스루 포함 모든 PromQL HTTP 호출에 적용.
+query_timeout = 30
+# 원시 PromQL 패스스루(instant/range/labels/metadata/series) 노출 여부.
+# 기본 false — 고수준 hostname 앵커 도구만. 탐색적 조사 배치에서만 true 옵트인.
+# 값은 mcp_server/.env의 EXPOSE_RAW_PROMQL로 오버라이드 가능.
+expose_raw_promql = false
+
+# ============================================================
 # 데이터소스 정의
 # ============================================================
 # 여기서 정의한 name 값이 MCP 프로토콜의 source 식별자로 사용된다.

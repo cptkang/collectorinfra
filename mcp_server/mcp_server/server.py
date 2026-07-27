@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_server.config import AppServerConfig, load_config
 from mcp_server.db import DBPoolManager
 from mcp_server.polestar_tools import register_polestar_tools
+from mcp_server.promql_tools import register_promql_tools
 from mcp_server.tools import register_tools
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,15 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
     )
     register_tools(mcp, expose_execute_sql=config.server.expose_execute_sql)
     register_polestar_tools(mcp)
+    register_promql_tools(
+        mcp, expose_raw_promql=config.prometheus.expose_raw_promql
+    )
 
     logger.info(
-        "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s",
+        "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s, raw_promql노출=%s",
         config.server.name,
         config.server.transport,
         config.server.expose_execute_sql,
+        config.prometheus.expose_raw_promql,
     )
     return mcp
