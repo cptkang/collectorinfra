@@ -50,6 +50,26 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "sre_agent.settings":             "config",
     "sre_agent.toolset_profiles":     "config",
     "sre_agent.diagnosis":            "application",
+    # Plan 05 조사 서비스 골격 (Wave 2-C) — interface·application·entry 등록.
+    "src.sre_agent.application":                    "application",
+    "src.sre_agent.application.investigation_jobs": "application",
+    "src.sre_agent.interface":                      "interface",
+    "src.sre_agent.interface.mcp_service":          "interface",
+    "src.sre_agent.run_service":                    "entry",
+    "sre_agent.application":                        "application",
+    "sre_agent.application.investigation_jobs":     "application",
+    "sre_agent.interface":                          "interface",
+    "sre_agent.interface.mcp_service":              "interface",
+    "sre_agent.run_service":                        "entry",
+    # Plan 02 Wave 2-D — dispatcher·briefing=application, severity_signatures=domain(순수).
+    "src.sre_agent.domain":                              "domain",
+    "src.sre_agent.domain.severity_signatures":          "domain",
+    "src.sre_agent.application.investigation_dispatcher": "application",
+    "src.sre_agent.application.briefing_builder":         "application",
+    "sre_agent.domain":                                  "domain",
+    "sre_agent.domain.severity_signatures":              "domain",
+    "sre_agent.application.investigation_dispatcher":    "application",
+    "sre_agent.application.briefing_builder":            "application",
 }
 
 # ──────────────────────────────────────────────
