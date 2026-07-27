@@ -7,7 +7,45 @@
 > **신규 결정(본 계획에서 부여, 착수 시 등재)**: **D-101**(노이즈 게이트 PAGE→자동 조사 오케스트레이션 트리거·중요도 2차 판정 상향 전용), **D-102**(L3 실호스트 읽기전용 진단 수집기 + 보안통제), **D-103**(조치 권고 폐루프 거버넌스 — renice/kill 등은 human-gated 권고만).
 > ※ 번호 규칙(Known Mistakes 2026-06-25·06-29): `grep -roE "D-[0-9]{3}" docs/ plans/` 현재 등재 최댓값 **D-100**(D-100 헤더·변경이력 등재 완료), plans/ 예약 최댓값 D-091. 본 계획은 그 위 연속 빈 블록 **D-101~D-103** 부여. 구현·등재 직전 `## D-` 헤더와 「변경 이력」 표를 모두 재확인해 충돌 시 다음 빈 번호로 재조정한다.
 > ※ 본 계획은 **운영 호스트 접근(L3)** 과 **조치 권고**를 포함한다 — D-003과 충돌하는 영역이므로, §7(보안통제)·§8(거버넌스)·§12(블로커)의 결정을 **사용자·보안팀 확인 후** 착수한다(CLAUDE.md 의사결정 규칙).
-> **상태**: 계획 (미구현). 사용자 확정(2026-07-21): ①산출물=Plan 60 훅 + 신규 Plan 64, ②조사 범위=**L3 실호스트 명령까지 즉시 대상**(→ §7 보안결정 선행), ③조치=**권고만·운영자 승인**(D-003 유지).
+> **상태**: 계획 (미구현). 사용자 확정(2026-07-21): ①산출물=Plan 60 훅 + 신규 Plan 64, ②조사 범위=**L3 실호스트 명령까지 즉시 대상**(→ §7 보안결정 선행), ③조치=**권고만·운영자 승인**(D-003 유지). **통합 재편(2026-07-24 · D-118)**: 조사 실행 본체(ReAct 조사 루프·severity_judge·브리핑 조립·조치 권고 생성)는 **`sre_agent/` 독립 패키지(HolmesGPT — `plans/sre-agent/02`)가 담당**하며, 본 계획의 `investigation_graph` 자체 구현(§3)은 **대체됨**. 본 계획의 잔존 유효 범위 = 요구·조사 절차 사양(§1·§4)·거버넌스(§8)·**collectorinfra 측 소비 배선** — 섹션별 상태와 재편 Wave는 **§0** 참조.
+
+---
+
+## 0. 통합 재편 (2026-07-24 · D-118) — 조사 실행의 `sre_agent/` 위임과 잔존 범위
+
+SREAgent 통합(D-118, `plans/sre-agent/` 이관)으로 본 계획의 조사 실행 본체는 **HolmesGPT 기반 `sre_agent/` 독립 패키지**가 담당한다. sre-agent/02는 본 계획을 이식하며 "고정 LangGraph 파이프라인 → HolmesGPT ReAct + 결정적 후처리"로 재설계했고(그쪽 §2 — 원본이 §9.1에서 벤치마킹한 HolmesGPT를 SDK로 직접 채택), 노출 계약은 sre-agent/05(submit/poll·`contract_version`)가 기준 문서다. **본 계획의 조사 파이프라인을 collectorinfra에서 재구현하지 않는다**(중복 구현 금지).
+
+### 0.1 섹션별 상태 매핑
+
+| 섹션 | 상태 | 승계·잔존 |
+|---|---|---|
+| §1 요구·원칙 | **유효** | 요구 정의 원본 — sre-agent/02 §1~§2가 계승(D-035 경계 동일) |
+| §2 기존 자산 재사용 | 부분 유효 | 폴스타 데이터 채널은 sre-agent/04(`mcp_server` 고수준 도구 8종)로 수렴. `alarm_notifier`·`decision_store` 재사용 행은 §0.2 배선에서 유효 |
+| §3 investigation_graph·트리거 | **대체됨** | 조사 루프=sre-agent/02 §3(DiagnosisAgent + 결정적 dispatcher). 트리거 소비=Plan 60 §14 훅 → `sre_investigate_alarm`(sre-agent/05 §3). "Plan 50 §8.2 push 훅 재사용" 배선은 폐기. §3.4 노이즈 상속 원리는 sre-agent/02 §4에 계승 |
+| §4 조사 절차·명령 카탈로그·§4.7 폴스타 API | **사양 원본(유효)** | 트리아지 절차·USE 매핑·폴스타 API 채널은 sre-agent/02 §5.3(조사 지침)·sre-agent/04 §4.2(도구 명세)의 원천. §4.8 L1 보강=Plan 60 §16 E6(기구현)·L3 심화=`sre_agent` 조사 브리핑 첨부로 대체 |
+| §5 severity_judge | **이관** | sre-agent/02 §6(결정적·escalate-only — 동일 시그니처 표, `sre_agent/` 패키지 구현). collectorinfra는 poll 결과의 `verdict`를 소비해 후속 통보 승격만(§0.2 CW-C) |
+| §6 브리핑 | **이관** | sre-agent/02 §7(6요소·인용 검증). collectorinfra는 브리핑 JSON 수신→`alarm_notifier` 첨부(§0.2 CW-A — §6.2 채널 재사용은 유효) |
+| §7 L3·보안통제 | **이원화(유효)** | 게이트 목적 L3=Plan 60 §18 E8(폴스타 에이전트 확장 — collectorinfra 측·D-117 확정). 조사(원격) L3=sre-agent/06(Prometheus + 폴스타 MCP 2축·SSH 미채택). §7.2 허용목록·통제 사양은 E8 수집기와 `sre_agent` 로컬 `vm_profile`의 공통 기준으로 유효 |
+| §8 조치 권고 거버넌스 | **유효(관할 유지)** | 권고 생성은 sre-agent/02 §9(human-gated 동일·실행 경로 미탑재). 자동 조치 거버넌스(§8.3 B-3=D-003 예외)는 본 계획이 계속 관할 |
+| §9 문헌 | 유효 | 공용 근거(sre-agent/02 §2가 인용) |
+| §10~§14 Wave·블로커·테스트·산출물 | **재편** | §0.2·§0.3으로 대체(원문은 참조용) |
+
+### 0.2 collectorinfra 측 잔여 작업 (재편 Wave)
+
+| Wave | 내용 | 선행 |
+|---|---|---|
+| **CW-A** | 게이트 훅 배선 — `notification_gate` PAGE 시 비차단 emit → MCP 클라이언트(기존 `DBHubClient` 패턴·SSE·Bearer)로 `sre_investigate_alarm` submit(페이로드=Plan 60 §14.2 보유값의 `contract_version: "1"` 직렬화 — sre-agent/05 §4) → 후속 poll(`sre_get_investigation`) → 브리핑을 `alarm_notifier` 통보 첨부 + `decision_store` 감사. 옵트인 `investigation_trigger_enabled`(기본 off·비활성 시 회귀 0) | sre-agent Plan 04 M-B → 02 W-A/W-B → 05 서비스 기동 |
+| **CW-B** | pull 위임 — deepagents `fault_diagnosis` 의도에서 `sre_diagnose` 위임(동일 submit/poll — sre-agent/05 §7) | 〃 |
+| **CW-C** | 후속 통보 승격 — poll 결과 `verdict.escalate`(ImportanceVerdict) 시 **escalate-only** 후속 통보 승격(§5.1 계약 유지 — 게이트 판정 소급 변경 없음) | CW-A |
+
+- **테스트(재편)**: CW-A 계약 테스트(페이로드 필수 필드 결측 시 `rejected`·`duplicate` 재submit 비중복·조사 서비스 다운 시 게이트 무영향 graceful), `investigation_trigger_enabled=False` 회귀 0, 브리핑 첨부 렌더. 조사 파이프라인 자체 테스트(§13의 조사·병목·중요도·브리핑 행)는 `sre_agent/` 패키지 소관(sre-agent/02 §12).
+- **산출물(재편)**: §14의 신규 모듈 중 `investigation_graph.py`·`severity_judge.py`·`briefing_deliverer.py`·`remediation_recommender.py`는 **생성하지 않는다**. collectorinfra 신규 = `sre_agent` MCP 클라이언트(`src/alarm/infrastructure/` — DBHubClient 패턴)·게이트 훅 emit·notifier 브리핑 첨부·config 플래그. `host_diagnostic_collector.py`(폴스타 에이전트 어댑터)는 게이트 목적으로 Plan 60 §18 소관.
+
+### 0.3 블로커·결정 번호 재편
+
+- **B-1(L3 보안)**: 게이트 목적은 **D-117로 해소**(폴스타 에이전트 확장 — Plan 60 §18.1). 조사(원격)는 sre-agent/06(SREAgent D-019 인용 — Prometheus + 폴스타 MCP 2축·SSH 미채택)으로 종결.
+- **B-2(권고)·B-3(자동화 거버넌스)**: 유지 — B-3(D-003 예외)는 여전히 최대 블로커(sre-agent/02 §9도 동일하게 실행 경로 미탑재를 테스트로 고정).
+- **예약 D-101~103**: ux_improvement 병합이 D-101~104를 이미 점유(02_decision.md §8)해 어차피 재부여 대상이었다. 재편 후 — D-101(트리거·오케스트레이션)은 **CW-A 배선 결정으로 축소 등재**, D-102는 D-117이 대체, D-103(권고 거버넌스)은 sre-agent/02의 권고 결정(구 SREAgent D-011 예약)과 합쳐 착수 시 등재. 전부 collectorinfra 채번 규칙(`## D-` 헤더+「변경 이력」 grep 최댓값+1)으로 부여.
 
 ---
 
@@ -79,6 +117,8 @@ Plan 62 §5.2가 "Plan 64 — 자동 복구·폐루프(거버넌스 우선)"를 
 ---
 
 ## 3. 아키텍처 — 자동 조사 오케스트레이션
+
+> **대체됨(2026-07-24 · D-118)**: 본 § 자체 구현(LangGraph `investigation_graph`)은 착수하지 않는다 — 조사 루프는 sre-agent/02 §3(HolmesGPT DiagnosisAgent + 결정적 dispatcher)이 담당하고, 트리거는 §0.2 CW-A(`sre_investigate_alarm` MCP submit/poll)로 배선한다. 아래 원문은 요구·데이터 흐름 참조용으로 유지한다.
 
 ### 3.1 investigation_graph (Plan 50 diagnosis_graph 확장)
 
@@ -265,9 +305,66 @@ Brendan Gregg **USE 방법론**으로 자원별 결정적 분류(Plan 51 §3.1·
 
 **결정·선행**: **D-105**(이벤트 메시지 분석 기반 타깃 컨텍스트 보강 — 결정적 프로파일 매핑 + LLM 분류 보조, 통보 강화). 착수 시 등재(실측 최댓값 D-104→D-105, 등재 직전 재확인). **구현 단계 분리 — L1 선구현 = Plan 60 §16**(CPU/메모리 프로세스 첨부는 Plan 47-1로 기구현 → kind 확장·메시지 타깃팅을 Plan 60이 블로커 없이 우선 구현), **본 §4.8 = L3 심화**(D-102·B-1(§7) 선행). 단일 결정·2단계. 문헌 근거 §9.9.
 
+### 4.8.6 워크드 예제 — "메모리 사용률 90%" 알람 end-to-end (조회→분석→판단→전달·중복제거)
+
+> **신규(2026-07-24)**. 사용자 예시("메모리 90% 알람 시 `ps`로 상위 메모리 프로세스 확인·`vmstat`로 메모리 사용량 확인 → 이 알람의 심각도·중요도·영향도 판단 → 추가정보 전달 또는 중복제거")를 §4.3(메모리 USE)·§4.4(top 프로세스)·§5(중요도 2차)·§6(브리핑)·Plan 60(§16 E6 L1·§14.4 역방향 훅·E1 dedup) 자산으로 꿴 **구체 실행 플로우**. 트리거 = 게이트가 `메모리 사용률 [90% (>90%)]`을 통보 결정(tier ≥ `enrichment_min_tier`)한 직후의 **post-gate 비차단 훅**(§4.8.3). 아래 5단계는 **동일 1회 수집을 세 판단(정보전달·심각도·중복제거)이 공유**한다.
+
+**① 조회 (collect) — 어떤 명령어로** (전부 읽기전용·§7 허용목록·마스킹·타임아웃):
+
+| 계층 | 명령어 / 호출 | 얻는 값 |
+|---|---|---|
+| **L1(우선·설치 0)** | 폴스타 프로세스 API `list_by_hostname(db_id, hostname)` → `select_top_processes(kind=memory)` | top **RSS** 프로세스 상위N(pid·명령·%MEM·마스킹) — **Plan 60 E6 기구현** |
+| **L1** | `cmm_metric_stat_h` 메모리 시계열(`build_metric_series_sql`) → E3 Holt-Winters baseline | 90%의 **계절 정상 대비 이탈 배수·추이**(급상승/지속) |
+| **L3(§7 보안게이트 통과 시)** | `free -h` · `cat /proc/meminfo` | **MemAvailable**(실가용)·SwapFree·Committed_AS·**Slab** |
+| **L3** | `vmstat 1 3` | **si/so**(스왑 in/out — >0이면 스왑 발생=포화)·페이지 스캔 |
+| **L3** | `ps aux --sort=-%mem \| head` · `pidstat -r 1` | top RSS pid·VmRSS·증가율(L1 단면 정밀화) |
+| **L3** | `dmesg \| grep -i "out of memory"` · `journalctl -k` | **OOM Killer** 발생 pid·시각(고갈 **확정** 신호) |
+| **L3(선택)** | `slabtop` · `cat /proc/slabinfo` | 커널 슬랩 누수(사용자 프로세스 아닌 고갈) |
+
+- **핵심**: "어느 프로세스가 메모리를 많이 쓰는가"는 **L1 top RSS로 즉시 답이 나온다**(폴스타 API — `ps` 불요·설치 0). L3(`ps`/`vmstat`/`dmesg`)는 **스왑·OOM·슬랩·정밀 추이**를 더해 "포화인가 고갈인가, 추정인가 확정인가"를 가른다. L3 미가용(§7 보안결정 전)이면 L1만으로 진행(보수적).
+
+**② 분석 (analyze) — 어떻게 해석** (결정적 규칙·LLM 아님·§4.3·§5.2):
+- **고갈 vs 여유**: `MemAvailable` 낮음 = **실제 고갈**(MemFree 아님 — 회수가능 캐시 제외한 실가용).
+- **포화 실증**: `vmstat si/so > 0` = 스왑 발생(메모리 압박 확증).
+- **확정 신호**: `dmesg OOM Killed <pid>` = 고갈 **확정**(최상위 증거).
+- **원인 귀속**: top RSS 프로세스 identity + VmRSS 추이. 슬랩 증가면 **커널 누수**(프로세스 아님).
+- **추이·지속성**: baseline(E3) 대비 이탈 배수·연속 K구간 지속 여부 — 순간 스파이크 후 회복이면 자기복구.
+
+**③ 판단 (judge) — 심각도·중요도·영향도** (escalate-only·§5):
+- **심각도(severity)**: OOM 발생 → **강 상향**(§5.2), si/so 지속 → 중, 단발 스파이크 자기복구 → 상향 안 함. **`max()` 상향 전용**(폴스타 severity 하향 금지·E3 계약·게이트 소급 변경 없음).
+- **중요도(importance)**: 폴스타 `IMPORTANCE_ID`(L1) + top 프로세스가 핵심 서비스인지 + **E4 토폴로지 하위 의존 서비스** 존재 여부.
+- **영향도(impact)**: 스왑/OOM으로 **서비스 재시작·다운** 발생 여부(`journalctl` restart 카운트) → 사용자 체감 영향 등급.
+- 전부 **결정적 신호가 판정**하고 LLM은 종합·신뢰도(high/medium/low)·근거 인용만(D-035). 증거 불충분·L3 부재 시 **상향 보류 + "증거 불충분" 명시**(오탐 상향 억제).
+
+**④ 추가정보 전달 (deliver) — 무엇을 어떻게** (§6 글래스박스·인용 의무):
+```
+[중요도] 심각(신뢰도 high) — 게이트 PAGE + 조사 상향(OOM 확정)
+[요약]  web-01(gp) 메모리 고갈 → java(pid 12345, RSS 6.2G/%MEM 78) OOM 종료
+[근거]  free MemAvailable 210MB · vmstat si/so 0→1200 · dmesg "Killed 12345 (java)"
+[영향]  java.service 3회 재시작 후 다운(journalctl)
+[병목]  메모리(USE: 포화=si/so↑, 고갈=OOM) — CPU/IO 정상
+[권고]  ①(승인 후)힙 상향 재기동 ②누수 점검(RSS 지속증가)  ※실행은 운영자 승인(§8)
+[한계]  프로세스는 조사 시점 단면. 슬랩 분해는 L3 미수집.
+```
+모든 항목에 출처 인용 → 운영자 30초 검증(§6.1·Plan 51 §3.8).
+
+**⑤ 중복제거 (dedup) — 측정 기반 상태변화 감지 (escalate-only·§14.4 역방향)**:
+
+**Plan 60 E1 지문 dedup**은 "같은 `server·alarm_name·resource`"면 재통보를 억제한다(빠름·게이트 <10s, `compute_fingerprint`). 그러나 동일한 "메모리 90%" 재발이라도 **측정 증거가 물질적으로 악화**됐다면 단순 중복이 아니라 **상태변화**다 — 이를 escalate-only로 가른다:
+
+- **상태지문 보존**: 보강이 얻은 `{top_rss_pid, oom_flag, swap_active, mem_available_bucket}`을 재발 메타(E1 `record_recurrence` / E7-a `annotation`, Plan 60 §17.3 하베스팅 패턴)에 보존한다.
+- **재발 시 대조(escalate-only)**: 다음 동일-지문 재발이 억제될 때 상태지문을 대조 —
+  - **동일·완화**(같은 top pid·OOM 없음·swap 여전 이하) → **진짜 중복 → 억제 유지**(재통보 0·소음 억제 지속).
+  - **악화**(90%→OOM 발생, top pid 변경, swap 0→발생, MemAvailable 버킷 하락) → **상태변화 → escalate**(억제 예외·재통보/승격 + 갱신 브리핑).
+- **불변 제약(§14.4 계승)**: post-gate·비차단 → 게이트 1차 dedup을 **소급 변경하지 않는다**. **escalate-only** — 중복을 *더* 억제하지 않고 **악화 시에만** 통과(완화·동일은 절대 재통보 안 함 = 재현율·소음억제 양립). L3 부재 시 **L1 top RSS pid 지문만으로** 보수 대조(≥1 신호 악화만 escalate). 가벼운 상태지문 대조는 §14.4 캐시 `gate:probe:{db_id}:{server}` 재사용(재수집 0).
+
+> **세 판단의 공유**: **"어느 프로세스가 많이 쓰나"(정보전달)=L1 top RSS 즉시**, **"포화·고갈·확정인가"(심각도)=L3 vmstat/dmesg 정밀**, **"이 재발이 새 상황인가"(중복제거)=측정 상태지문 대조 escalate-only** — 셋 다 **동일 1회 수집·캐시를 공유**한다(중복 조회 0). ⑤는 §14.4(D-104 경계 probe)의 **dedup 확장**이며 Plan 60 §14.4·E1과 짝을 이룬다 — 착수는 **L3 보안결정(D-102·B-1) 선행**(미해소 시 L1 상태지문만으로 동작).
+
 ---
 
 ## 5. 중요도 2차 판정 (Importance/Severity Judgment) — `severity_judge`
+
+> **이관(2026-07-24 · D-118)**: 구현은 sre-agent/02 §6(`sre_agent/` 패키지·결정적 후처리)이 담당 — §5.2 시그니처 표·escalate-only 계약 동일. collectorinfra는 poll 결과의 `verdict`(ImportanceVerdict)를 소비해 후속 통보 승격만 한다(§0.2 CW-C). 원격 배치에서 dmesg/journal 원문 시그니처는 Prometheus 카운터로 대체(sre-agent/02 §6)하되, Plan 60 §18 E8 채널이 `mcp_server` 도구로 노출되면 원문 시그니처도 가용해진다(sre-agent/04 §4.2 후보).
 
 ### 5.1 목적과 게이트 1차 판정과의 관계
 
@@ -298,6 +395,8 @@ Brendan Gregg **USE 방법론**으로 자원별 결정적 분류(Plan 51 §3.1·
 ---
 
 ## 6. 운영자 브리핑 (Delivery) — `briefing_deliverer`
+
+> **이관(2026-07-24 · D-118)**: 브리핑 생성·인용 검증은 sre-agent/02 §7이 담당(6요소 스키마 동일). collectorinfra는 `sre_get_investigation`이 반환하는 구조화 브리핑 JSON을 `alarm_notifier`/`notification_bus`로 전달·첨부한다(§0.2 CW-A — §6.2 채널 재사용·decision_store 감사는 유효).
 
 ### 6.1 구조화 브리핑 포맷 (glass-box)
 
@@ -336,6 +435,10 @@ Brendan Gregg **USE 방법론**으로 자원별 결정적 분류(Plan 51 §3.1·
 ## 7. L3 실호스트 읽기전용 조사 + 보안통제 (D-102) [선행 보안결정]
 
 > 사용자 확정: **L3 실호스트 명령까지 즉시 대상**. 단 L3는 **운영 호스트 접근**이라 D-003·보안정책 결정이 선행 게이트다(Plan 53 Wave-4 = 로드맵 최대 블로커). 본 §은 Plan 51 §5.3·§9의 통제를 **그대로 채택**한다.
+>
+> **보안결정 확정(2026-07-24 · Plan 60 §18·D-117)**: 노이즈 게이트 목적(통보 보강·측정 dedup·경계 상향)의 L3 사용에 대해 사용자 인터뷰로 **접근=A(폴스타 에이전트 확장·§7.1)·허용목록=§7.2 전체 USE·통제=최소권한 read-only·권고만**이 확정됐다. 따라서 **B-1·D-102는 이 방향으로 해소**되며, §7 수집기(`host_diagnostic_collector.py`·폴스타 에이전트 어댑터)는 **Plan 60 §18 E8이 게이트 배선으로 먼저 활성화**한다(게이트 목적·escalate-only·kind 스코프).
+>
+> **통합 갱신(2026-07-24 · D-118)**: "전면 조사" 담당이 `sre_agent/` 패키지로 위임됨에 따라, 조사(원격) L3 데이터 경로는 **sre-agent/06(Prometheus + 폴스타 MCP 2축·SSH 미채택)** 이 확정 경로다. §7.2 허용목록·통제 사양은 ①Plan 60 §18 E8 수집기(폴스타 에이전트 확장 — collectorinfra 측)와 ②`sre_agent` 로컬 배치 `vm_profile` bash의 공통 기준으로 유효하다. E8 채널을 `mcp_server` 고수준 도구(예: `polestar_host_snapshot`)로 노출하면 `sre_agent` 조사도 동일 채널로 호스트 스냅샷·로그 원문을 소비할 수 있다(sre-agent/04 §4.2 후보 — E8 착수 시 결정).
 
 ### 7.1 접근 방식 3옵션 (Plan 51 §5.3 — 보안결정 B-1)
 
@@ -366,6 +469,8 @@ Brendan Gregg **USE 방법론**으로 자원별 결정적 분류(Plan 51 §3.1·
 ---
 
 ## 8. 조치 권고 폐루프 거버넌스 (D-103) — `remediation_recommender`
+
+> **통합 갱신(2026-07-24 · D-118)**: 권고 생성(`remediation_recommender`)은 sre-agent/02 §9가 담당(human-gated·실행 경로 미탑재를 테스트로 고정 — 동일 원칙). 본 §의 거버넌스(§8.3 자동 조치 선행 결정·B-3)는 collectorinfra 관할로 유지된다.
 
 ### 8.1 범위 (사용자 확정: 권고만·운영자 승인)
 
@@ -470,6 +575,8 @@ Plan 62 §5.2·§12 B-3: 자동 실행은 **D-003 예외** 결정 없이는 착�
 
 ## 10. 구현 순서 (Wave) 및 의존성
 
+> **재편(2026-07-24 · D-118)**: 아래 Wave A~D는 `sre_agent/` 위임 전 원문이다. 실행 순서는 **§0.2 CW-A~CW-C(collectorinfra 측) + sre-agent README 권장 착수 순서(Plan 04 M-B → 02 W-A + 06 R-A/R-B → 05 → 02 W-B/W-C)** 를 따른다.
+
 ```
 [선행] Plan 60 §14 트리거 훅 + Plan 50 diagnosis_graph(증거수집·상관·인과)·Plan 51 L1 수집
    │
@@ -510,6 +617,8 @@ Plan 62 §5.2·§12 B-3: 자동 실행은 **D-003 예외** 결정 없이는 착�
 
 ## 12. 선행 블로커·결정 (사용자·보안팀 확인 필요)
 
+> **재편(2026-07-24 · D-118)**: B-1은 게이트 목적 한정 D-117로 해소, 조사(원격)는 sre-agent/06으로 종결. B-2·B-3은 유지 — §0.3 참조.
+
 | 블로커 | 내용 | 선택지·권고 |
 |---|---|---|
 | **B-1 (L3)** | L3 호스트 접근 보안정책 (Plan 53 Wave-4·본 §7) | (A) 폴스타 에이전트 확장〔권고 1순위〕 / (C) 로그 전송 / (B) 허용목록 read-only SSH 수집기〔통제·승인 하 최후수단〕. **사용자가 L3 즉시 대상으로 확정 → B-1을 착수 게이트로 우선 결정.** |
@@ -549,6 +658,8 @@ Plan 62 §5.2·§12 B-3: 자동 실행은 **D-003 예외** 결정 없이는 착�
 
 | 날짜 | 변경 | 사유 |
 |---|---|---|
+| 2026-07-24 | **§0 통합 재편 신설 — 조사 실행의 `sre_agent/` 위임 (D-118)** | SREAgent 통합(D-118·`plans/sre-agent/` 이관)에 따라 본 계획의 조사 실행 본체를 sre-agent/02(HolmesGPT ReAct + 결정적 후처리)로 위임. §3 investigation_graph 자체 구현 **대체**·§5(severity_judge)/§6(브리핑)/§8(권고 생성) 생성부 **이관**·§7 L3 **이원화**(게이트 목적=Plan 60 §18 E8 폴스타 에이전트 확장 / 조사 원격=sre-agent/06 Prometheus+폴스타 MCP 2축)·§10~§14 **재편**(CW-A 게이트 훅→`sre_investigate_alarm` submit/poll·브리핑 통보 첨부, CW-B pull `sre_diagnose` 위임, CW-C escalate-only 후속 승격). 예약 D-101~103 재편(§0.3 — ux_improvement 점유로 재부여 대상이었음). 섹션별 상태 매핑 §0.1. E8 채널의 `mcp_server` 도구 노출 후보(`polestar_host_snapshot`) 기록. |
+| 2026-07-24 | **§4.8.6 워크드 예제 신설 — "메모리 90%" end-to-end(조회→분석→판단→전달·중복제거)** | 사용자 예시("메모리 90% 알람 시 `ps`로 상위 메모리 프로세스·`vmstat`로 사용량 확인 → 심각도·중요도·영향도 판단 → 추가정보 전달 또는 중복제거를 구체 계획으로"). §4.3(메모리 USE)·§4.4(top 프로세스)·§5(severity_judge)·§6(브리핑)·Plan 60(§16 E6 L1·§14.4 역방향·E1 dedup) 자산을 **5단계 구체 플로우로 통합**: ①조회(L1 폴스타 top RSS[ps 불요]·E3 baseline / L3 `free`·`/proc/meminfo`·`vmstat si/so`·`ps aux --sort=-%mem`·`pidstat -r`·`dmesg OOM`·`slabtop`) ②분석(MemAvailable 고갈·si/so 포화·OOM 확정·슬랩 누수, 결정적) ③판단(심각도=escalate-only·OOM 강상향/중요도=IMPORTANCE_ID+E4/영향도=서비스 재시작) ④전달(§6 브리핑 인용의무) ⑤**중복제거=측정 기반 상태변화 감지**(상태지문 `{top_rss_pid,oom_flag,swap_active,mem_available_bucket}` 보존→재발 대조: 동일·완화→억제 유지 / 악화→escalate, **§14.4 dedup 확장·escalate-only·게이트 소급 변경 없음**). **세 판단이 동일 1회 수집·캐시 공유**. 경계: `ps`/`vmstat` 직접 실행은 L3(D-102·B-1 선행), L1 top RSS·E1 dedup·§14.4 훅은 Plan 60. Plan 60 §16.4에 상호참조 추가. |
 | 2026-07-21 | Plan 64 최초 작성 | 사용자 요구("이벤트 발생 시 OS 현황(top/uptime·병목·격리·로그) 자동 조사→중요도 판단→운영자 브리핑, 장애 대응 자동화")를 Plan 62 §5.2 예약 슬롯으로 구체화. Plan 50(진단 파이프라인)·51(수집·기법·보안)·60 §14(게이트 트리거) 재사용 위에 **오케스트레이션·중요도 2차 판정·브리핑·조치권고** 계층만 신설. 사용자 확정 반영: 산출물=Plan 60 훅+Plan 64 / 조사 범위=L3 즉시 대상(→§7 보안결정 B-1 선행) / 조치=권고만·운영자 승인(D-003 유지). D-101~103 부여(등재 전 번호 재확인). 문헌 근거(§9): RCACopilot 2단계(Micro-F1 0.766)·Roy 환각 4~6%vs검색49%·HolmesGPT read-only/조치분리·Grafana Sift 결정적 check·Cleric read-only+인간승인·에어갭 로그우선화(토큰43%↓)·USE/Netflix 60초/SRE. 전체 조사 dossier를 `docs/aiops_benchmark/incident_investigation_literature.md`로 저장(6영역·검증상태·근거강도)하고 §9에 통합. 아키텍처 긴장(호스트 라이브 상태=read-only 실행계층 필요)을 §9.8·D-102 근거로 반영. |
 | 2026-07-21 | **§4.7 폴스타 Elasticsearch API 연동 신설** | 사용자 정보("폴스타 ES API로 프로세스 정보 등 조회 가능")를 반영. ES를 DBHub(SQL)·Prometheus(PromQL)에 이은 **세 번째 read-only 조회 채널**로 편입 — **이미 설치된 폴스타 데이터(옵션 A·신규 설치 0)**. **§4.7 신설**: `_search`+Query DSL(@timestamp range·aggs 추이·top_hits) 메커니즘, `polestar_es_client.py`(DBHub/prometheus_client 패턴 복제), read-only 허용목록(`_search`류만·인덱싱/`_bulk`/delete 금지), 벤더 실측 필요항목(엔드포인트·인덱스·스키마·보존기간·로그 인덱싱 여부). **§2 재사용 자산·§4.3(과거 프로세스 추이)·§4.4(로그 원문 조건부)·§4.5 커버리지** 갱신 — **Plan 51이 "폴스타 미보유→신규수집"으로 표시한 과거 프로세스 추이 갭을 신규 설치 없이 해소**, 채널3(신규 설치) 잔여가 per-process 정밀 하나로 축소. ES `_search`는 POST이나 쿼리라 D-003 정합(읽기 허용목록 강제). 벤더 스키마는 추정 금지·표본 실측(CLAUDE.md). **(보완)** ES 조회 대상에 **CPU/메모리 실시간 사용률**(Util% 현재값 — cmm_metric_stat h/d/m 집계 지연 없음) 명시 추가(§2·§4.1·§4.2·§4.5·§4.7). 소스 관계 명확화: 실시간 사용률은 cmm_metric_stat(집계·지연)/폴스타 ES(실시간·신규설치0)/node_exporter(실시간+분해·Prometheus 필요) 3중 중복 — **ES로 Prometheus 미배포 존에서도 ①② 실시간 판정 가능**, node_exporter는 us/sy/wa 분해 필요 시만 보강. |
 | 2026-07-21 | **소스 우선순위 확정: 기본 폴스타/ES · 폴백 node_exporter** | 사용자 지시("기본은 폴스타·ES 기준으로 작성, node_exporter는 폴백"). §4.1·§4.2·§4.5·§4.7의 소스 우선순위를 **기본=폴스타(DB·REST·ES)·폴백=node_exporter**로 재정렬 — 폴스타는 벤더 검증 채널이자 프로세스·로그·실시간 사용률 통합 제공(1순위 조회), node_exporter는 USE **분해**(us/sy/wa/steal)·host 카운터 등 폴스타 미제공 신호에만 폴백. §4.5 표를 **기본/폴백 2열**로 재구성. "벤더 검증 채널 재사용 > 별도 스택 의존"(Plan 51 §9) 정합. mechanism doc §4A도 동기 갱신. |

@@ -40,4 +40,4 @@ venv/
 .venv/
 env/
 temp/
-.kiro
+.kiromultilingual-e5-small/

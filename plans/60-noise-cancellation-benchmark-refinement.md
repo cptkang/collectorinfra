@@ -7,7 +7,7 @@
 > **신규 결정(본 계획에서 부여, 착수 시 등재)**: **D-077**(재발생 dedup 억제 count 관측성 보강), **D-078**(크로스-호스트 이벤트 상관 — 결정적 Jaccard+시간창), **D-079**(동적 baseline 이상탐지 — STL/Holt-Winters 로컬), **D-080**(토폴로지 의존성 그래프 자료구조 — 노이즈·RCA 공용 선행자산), **D-081**(변경/구성 이벤트 상관 피드)
 > ※ 번호 규칙(Known Mistakes 2026-06-25·06-29): `grep -roE "D-0[0-9]{2}" docs/ plans/` 현재 등재 최댓값 **D-068**(D-067·068 등재 완료)·예약 최댓값 **D-076**(Plan 61이 D-072~076 예약). 본 계획은 그 위 연속 빈 블록 **D-077~D-081** 부여(초안의 D-067~071은 D-067·068 충돌로 재조정, §13 변경이력). 구현·등재 직전 `## D-` 헤더와 「변경 이력」 표를 모두 재확인해 충돌 시 다음 빈 번호로 재조정하고 사유를 본문에 명시한다.
 > ※ 본 계획은 **신규 데이터 수집(변경 피드)·신규 자료구조(토폴로지 그래프)**를 포함한다. §8 결정 선택지 중 방향을 **사용자 확인 후** 착수한다(CLAUDE.md 의사결정 규칙).
-> **상태**: **Wave A(E6·E1·E4) 구현 완료 (2026-07-21) — 사용자 §8 게이트 확정(B-1=AVAIL_DEPEND 단독·B-2=폴스타 이력·B-5=하이브리드·B-6=존 경계) 후 착수. 등재 D-106(E1)·D-107(E4)·D-108(E6)** (초안 D-077~081 결번, D-101~105 예약충돌로 D-106~108 재부여 — §13 변경이력·02_decision.md §8 규칙). **Wave B(E2·E3) 구현 완료 (2026-07-22) — 등재 D-109(E2)·D-110(E3). Wave C(E5) 1차 구현 완료 (2026-07-22) — 등재 D-111. **E1~E6 전 항목 구현 완료.** E1~E5는 **회귀 없는 옵트인 증분**으로 설계됨. §2~§7은 현행 코드(`notification_policy`·`alarm_worker`·`alarm_context_enricher`·`config.py`) **실측 기반**으로 대상 함수·라인·변경 diff·신규 플래그·회귀 경계를 명시한다. 2026-07-13 심층 코드 검토의 개선 제안(P1~P6, `docs/plan60_improvement_proposals.md`)을 **확정 설계로 반영 완료** — 남은 사용자 확인은 §8(B-1·B-2·B-5·B-6)뿐이다(B-3은 순수 Python HW 확정으로 해소). **2026-07-21: §14 자동 조사 트리거 훅 신설** — "이벤트 발생 시 OS 현황 자동 조사→중요도 정밀 판정→운영자 브리핑"은 게이트 밖 오케스트레이션으로 분리해 신규 **Plan 64**가 구현하며, Plan 60은 트리거 계약만 정의한다. **2026-07-21: §15 LLM·AI 활용 방안 신설** — 흩어져 있던 LLM 접점(심각도 상향·actionable 분류·브리핑)을 실측으로 명확화하고, LLM/AI를 노이즈 캔슬링에 활용하는 방안을 최신 문헌(COLA·DiLink·Oasis·SOC 한계연구)으로 근거화하며 D-035 경계를 재확정한다. **2026-07-21: §14.4 역방향 Option A 신설(D-104)** — 조사에 쓰는 L3 호스트 실측 부하를 게이트의 **경계 케이스(고중요·sev2·TICKET)에만 선택적 probe**로 되먹여 상향 전용 tie-break(전 알람 사전수집 회피·Plan 64 L3 보안결정 D-102/B-1 선행). **2026-07-21: §16 E6 통보 컨텍스트 보강 신설(D-105)** — 사용자 요건("메시지 분석→필요정보 조회→운영자 전달")의 L1 부분을 Plan 60에서 우선 구현. **CPU/메모리 프로세스 첨부는 Plan 47-1로 이미 기구현** → kind 확장·메시지 타깃팅을 L1(블로커 없음)로 넓히고, L3 심화는 Plan 64 §4.8.
+> **상태**: **Wave A(E6·E1·E4) 구현 완료 (2026-07-21) — 사용자 §8 게이트 확정(B-1=AVAIL_DEPEND 단독·B-2=폴스타 이력·B-5=하이브리드·B-6=존 경계) 후 착수. 등재 D-106(E1)·D-107(E4)·D-108(E6)** (초안 D-077~081 결번, D-101~105 예약충돌로 D-106~108 재부여 — §13 변경이력·02_decision.md §8 규칙). **Wave B(E2·E3) 구현 완료 (2026-07-22) — 등재 D-109(E2)·D-110(E3). Wave C(E5) 1차 구현 완료 (2026-07-22) — 등재 D-111. **E1~E6 전 항목 구현 완료.** E1~E5는 **회귀 없는 옵트인 증분**으로 설계됨. §2~§7은 현행 코드(`notification_policy`·`alarm_worker`·`alarm_context_enricher`·`config.py`) **실측 기반**으로 대상 함수·라인·변경 diff·신규 플래그·회귀 경계를 명시한다. 2026-07-13 심층 코드 검토의 개선 제안(P1~P6, `docs/plan60_improvement_proposals.md`)을 **확정 설계로 반영 완료** — 남은 사용자 확인은 §8(B-1·B-2·B-5·B-6)뿐이다(B-3은 순수 Python HW 확정으로 해소). **2026-07-21: §14 자동 조사 트리거 훅 신설** — "이벤트 발생 시 OS 현황 자동 조사→중요도 정밀 판정→운영자 브리핑"은 게이트 밖 오케스트레이션으로 분리해 신규 **Plan 64**가 구현하며, Plan 60은 트리거 계약만 정의한다. **2026-07-21: §15 LLM·AI 활용 방안 신설** — 흩어져 있던 LLM 접점(심각도 상향·actionable 분류·브리핑)을 실측으로 명확화하고, LLM/AI를 노이즈 캔슬링에 활용하는 방안을 최신 문헌(COLA·DiLink·Oasis·SOC 한계연구)으로 근거화하며 D-035 경계를 재확정한다. **2026-07-21: §14.4 역방향 Option A 신설(D-104)** — 조사에 쓰는 L3 호스트 실측 부하를 게이트의 **경계 케이스(고중요·sev2·TICKET)에만 선택적 probe**로 되먹여 상향 전용 tie-break(전 알람 사전수집 회피·Plan 64 L3 보안결정 D-102/B-1 선행). **2026-07-21: §16 E6 통보 컨텍스트 보강 신설(D-105)** — 사용자 요건("메시지 분석→필요정보 조회→운영자 전달")의 L1 부분을 Plan 60에서 우선 구현. **CPU/메모리 프로세스 첨부는 Plan 47-1로 이미 기구현** → kind 확장·메시지 타깃팅을 L1(블로커 없음)로 넓히고, L3 심화는 Plan 64 §4.8. **2026-07-23: §17 E7 신설(D-116 등재 완료·B-9 확정·미구현)** — Plan 65 실측 ITSM 사례(S1~S8)를 E1~E6에 대조해 도출한 텍스트·주석 신호 보완(E7-a 주석 하베스팅·E7-b 비알람 사전분류·E7-c 파서 견고성·E7-d 사이트 상관/chattering 정합). 문헌 근거 §17.8. **B-9 = 코로보레이션 게이팅 확정(사용자 승인)·D-116 등재(`docs/02_decision.md`)** — D-번호·정책 확정, 코드 착수 대기. **2026-07-24: SREAgent 통합 정합화(D-118)** — §14 훅의 위임처를 Plan 64 `investigation_graph`에서 **`sre_agent/` 조사 서비스**(sre-agent/02·05 — `sre_investigate_alarm` submit/poll·`contract_version: "1"`)로 갱신, §18 E8의 공용 자산 소재(severity_judge·briefing=`sre_agent` 패키지 소재·MCP로 소비 / 게이트 배선·L3 수집기=collectorinfra 자산)와 통보 보강의 주경로·폴백 관계(§18.4 용도1)를 재정의. 게이트 판정 로직·E1~E8 설계 무변경.
 
 ---
 
@@ -380,6 +380,7 @@ if dependency_suppression and noise_ctx.get("cascaded"):
 | **B-6 (E2)** | 크로스-호스트 상관 스코프 | **권고: db_id(존) 경계 내 상관** — 존 간(gp↔yd) 상관은 공통 원인(네트워크 등) 실증 후 확장 |
 | **B-7 (§15)** | LLM/AI 확장의 로컬 임베딩 모델 반입 | L-1(경계쌍 LLM 판정)·L-3(심각도 상향)은 **기존 `alarm_analyzer` LLM만으로 즉시 가능**(신규 모델 반입 불요) / L-2(의미 근접중복)·L-4(토폴로지+텍스트 융합)는 **폐쇄망 로컬 임베딩 모델 반입·검증** 필요(B-3 statsmodels와 동류 — 사용자·보안팀 확인 후 2차) — **✅ 사용자 확정·구현 완료(D-114, 2026-07-23): L-2+L-4 임베딩 주석(§15.4 D-035 주석 전용·옵트인 기본 off). 운영 활성화는 보안팀 반입 협의(`docs/plan60_embedding_import_security_review.md`) 완료 선행.** |
 | **B-8 (§14.4)** | 게이트 경계 케이스 호스트 probe(Option A·D-104) | **선행: Plan 64 D-102·B-1(L3 호스트 접근 보안결정)** — 미해소 시 probe inert. 추가 확인: ①경계 predicate 범위(고중요·sev2·TICKET) ②동기 probe 지연 예산(≤2s·캐시·소수 subset) 승인. read-only(uptime)·상향 전용 |
+| **B-9 (§17 E7-a)** | 계획-무해 주석 기반 억제의 재현율 정책 | ✅ **확정(2026-07-23 사용자 승인) — 코로보레이션 게이팅**: 주석(`예정된 작업`·`서비스 영향 없음`) 단독으로는 억제강화 금지, E2 동시-다발 클러스터·E5 `change_nearby`·`resolution` 동시 충족 시에만 DASHBOARD 강등(SUPPRESS 아님·E4 하이브리드 정합). 주석 하베스팅(신호 보존·감사)·비알람 필터(E7-b)·파서 견고성(E7-c)은 블로커 없이 착수 가능. **D-116 등재 완료**(`docs/02_decision.md`) |
 
 > CLAUDE.md 의사결정 규칙: 방향 확정 전 구현 착수 금지. 본 §8을 사용자와 합의 후 D-077~081을 `docs/02_decision.md`에 등재하며 번호 재확인.
 
@@ -515,17 +516,19 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 
 - **발화 지점**: `notification_gate` 노드가 최종 `NotificationDecision`을 산출한 직후. `tier == PAGE`(또는 config `investigation_trigger_min_tier`)일 때 조사 트리거를 **비동기 emit**한다. 게이트의 반환·라우팅 경로는 무변경(트리거는 부수효과, 실패해도 게이트 판정에 영향 없음).
 - **전달 페이로드**: 이미 게이트가 보유한 값만 재사용 — `AlarmEvent`(대상 서버/hostname·db_id·resource·심각도), `NotificationDecision`(tier·reason·signals·fingerprint), E1 `recurrence`·E2 클러스터 메타·E4 `root_resource`/`cascaded`. 신규 수집 없음(조사 자체는 Plan 64가 수행).
-- **재사용 배선**: Plan 50 §8.2가 정의한 push 진단 훅(`diagnosis_graph`의 `trigger="push"`, `source_alarm=event`)에 그대로 연결한다. 즉 Plan 60의 훅 = "게이트 PAGE 결정을 Plan 50 push 트리거로 잇는 1줄 배선" + Plan 64가 그 위에 L3 조사·브리핑·조치권고를 얹는다.
+- **재사용 배선(통합 갱신 2026-07-24 · D-118)**: 훅의 위임처는 **`sre_agent/` 조사 서비스**다 — 게이트 PAGE 결정을 기존 `DBHubClient` 패턴의 MCP 클라이언트로 `sre_investigate_alarm`(submit, `contract_version: "1"` 페이로드 — sre-agent/05 §3~§4)에 비차단 전달하고, 후속 poll(`sre_get_investigation`)로 브리핑을 받아 통보에 첨부한다(Plan 64 §0.2 CW-A). 종전의 "Plan 50 §8.2 push 훅(`diagnosis_graph`) 연결" 배선은 Plan 64 `investigation_graph` 대체와 함께 폐기. 페이로드는 위 "전달 페이로드"의 게이트 보유값을 그대로 직렬화하면 된다(변환 계층 불필요 — sre-agent/05 §4).
 - **중복 억제 연동**: E1 재발생 dedup으로 억제된 재발 알람은 게이트 그래프에 진입하지 않으므로(§3.1) 트리거되지 않는다 — 동일 사건 반복 조사 폭주 자동 방지. E2 크로스-호스트 클러스터는 **대표 1건만** PAGE되므로 조사도 대표 1건만 발화(연쇄 자식은 억제 → 조사 안 함) = 조사 대상의 노이즈 캔슬링이 자연 상속된다.
 
 ### 14.3 경계 (Plan 60에 넣지 않는 것)
 
-- L1(DB/API) + **L3(실호스트 읽기전용 명령 top/journalctl/dmesg)** 수집, LLM 브리핑 합성, 중요도 2차 판정, **이벤트 메시지 분석 기반 타깃 컨텍스트 보강(생존 통보 강화 — 억제와 보강은 노이즈 캔슬링의 두 축, Plan 64 §4.8)**, `renice`/`kill` **조치 권고**(실행은 운영자 승인 — D-003 유지)는 **전부 Plan 64 범위**다. Plan 60은 조사 로직을 포함하지 않는다(게이트 순수성·읽기전용·<10s 예산 보존).
+- L1(DB/API) + **L3(실호스트 읽기전용 명령 top/journalctl/dmesg)** 수집, LLM 브리핑 합성, 중요도 2차 판정, **이벤트 메시지 분석 기반 타깃 컨텍스트 보강(생존 통보 강화 — 억제와 보강은 노이즈 캔슬링의 두 축, Plan 64 §4.8)**, `renice`/`kill` **조치 권고**(실행은 운영자 승인 — D-003 유지)는 **전부 게이트 밖**이다 — **조사 실행 본체는 `sre_agent/` 조사 서비스(sre-agent/02, D-118)가 담당**하고, Plan 64는 collectorinfra 측 소비 배선·거버넌스로 재편됐다(Plan 64 §0). Plan 60은 조사 로직을 포함하지 않는다(게이트 순수성·읽기전용·<10s 예산 보존). ※예외: 게이트 목적 L3(경계 probe·측정 dedup·결정적 요지 첨부)는 §18 E8이 게이트 배선으로 담당.
 - **옵트인**: `investigation_trigger_enabled: bool=False`(`NoiseGateConfig`). 비활성 시 게이트 경로 비트동일(회귀 0). 활성 시에도 트리거는 비차단이라 게이트 지연에 무영향.
-- **결정**: 트리거 훅·조사 오케스트레이션·L3 보안통제·조치권고 거버넌스는 **Plan 64의 D-101~D-103**으로 등재한다(본 계획의 D-077~081과 분리 — Plan 60은 게이트, Plan 64는 조사·대응).
+- **결정(통합 갱신 2026-07-24 · D-118)**: 트리거 훅 배선·조치권고 거버넌스는 **Plan 64 §0.3의 재편 번호**로 등재한다(종전 예약 D-101~103은 ux_improvement 병합 점유로 재부여 대상, L3 보안통제는 D-117로 해소). 조사 서비스 자체의 결정은 sre-agent 계획(02·04·05·06) 착수 시 collectorinfra 채번 규칙으로 등재한다(폴더 README 번호 체계 주의).
 
 ### 14.4 역방향 — 조사 L3 데이터의 게이트 경계 케이스 선택적 활용 (Option A · D-104) [Plan 64 L3 보안결정 선행]
 
+> **갱신(2026-07-24 · §18 E8·D-117)**: 본 §의 경계 probe는 당초 `uptime`(loadavg)만·Plan 64 L3 보안결정(D-102/B-1) 선행 대기였으나, **보안 인터뷰 확정(§18.1)으로 kind별 USE 프로파일(free/vmstat/mpstat 등)로 확장**되고 접근경로(폴스타 에이전트 확장)·통제(최소권한 read-only)가 확정됐다. 상세는 **§18 E8**. 아래 14.4.x는 그 경계 probe의 원 설계(escalate-only·유계·캐시)로 유효하다.
+>
 > **신규(2026-07-21)**. §14.1~14.3이 "게이트 → 조사"(정방향 훅)라면, 본 §은 **역방향** — 조사에 쓰는 **L3 호스트 실측 데이터를 게이트의 경계 케이스 판정에 선택적으로 되먹여** 중요도 정확도를 높인다. 핵심 제약: **전 알람이 아니라 판정이 흔들리는 소수 경계 케이스에만**, **상향 전용(escalate-only)**, **경량·캐시·바운드**. §15.3 **L-1(COLA식 하이브리드 — 비싼 신호를 불확실 경계 케이스에만)** 와 동일 원리를 L3 호스트 데이터에 적용한 것이다.
 
 **왜 필요한가(직관)**: 게이트가 쓰는 L1 신호(중요도 등급·의존성)는 중요도의 **프록시**이고, 호스트 실측 부하는 **그라운드 트루스**에 가깝다. "메타상 고중요 서버인데 라우팅은 TICKET에 떨어진" 경계 케이스에서, 실제 OS가 과부하면 **PAGE로 상향**하는 것이 정확하다. 다만 이를 **모든 알람에 하면 닭-달걀·지연 예산 파괴**(§14.1)이므로, **경계 케이스에만 초경량 probe**로 tie-break한다.
@@ -653,7 +656,8 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 
 - **읽기전용**(L1 SELECT·REST GET)·D-003 정합. `mask_args`(기존) 마스킹 계승. 조치(renice/kill)는 범위 밖(권고도 Plan 64 §8).
 - **옵트인·회귀 0**: 기존 `process_enrich_enabled`(CPU/메모리) 경로 무변경 + 신규 kind는 `message_enrichment_enabled`(기본 off) 뒤. 비활성 시 통보 비트동일. LLM 분류 실패→결정적 프로파일 폴백.
-- **경계**: L3(top 실시간·pidstat·us/sy/wa 분해·journalctl/dmesg 원문)·프로세스 시계열 추이는 **Plan 64 §4.8**(D-102·B-1 후). Plan 60 §16 = **현재 단면 + 관제 L1 + (E3 시)DB 추이**까지.
+- **경계(2026-07-24 개정 — §18 E8·D-117)**: §16 L1(현재 단면·관제 L1·E3 DB 추이)에 더해, **L3(`ps`·`vmstat`·`top`·pidstat·journalctl/dmesg)는 §18 E8이 Plan 60에 편입**(폴스타 에이전트 확장·§7.2 read-only·보안 인터뷰 확정). 당초 "L3=Plan 64 범위 밖"에서 개정됨. 전면 RCA·조치 거버넌스는 Plan 64.
+- **워크드 예제(메모리 90%) — 조회→분석→판단→전달·중복제거**: `ps`/`vmstat`/`dmesg`로 상위 메모리 프로세스·스왑·OOM을 조회해 심각도·중요도·영향도를 판단하고 추가정보 전달 또는 **측정 기반 상태변화 dedup**(escalate-only)까지의 구체 플로우는 **Plan 64 §4.8.6**에 정리(공용 수집기·severity_judge·브리핑). Plan 60은 **§18 E8**로 이 L3 조사를 게이트 목적(보강·측정 dedup·경계 상향)에 배선하고 **① L1 top RSS 첨부(E6·기구현) ② E1 지문 dedup ③ §14.4 경계 probe**와 통합한다.
 
 ### 16.5 설정·결정·수용 기준
 
@@ -664,7 +668,265 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 
 ---
 
-## 17. 변경 이력
+## 17. E7 — 실측 ITSM 알람 사례 기반 텍스트·주석 신호 보완 (D-116) [계획]
+
+> **신규(2026-07-23)**. 사용자 지시: "Plan 65의 실측 alert 사례(§2.4 ITSM 알림 13샘플)를 기준으로 Plan 60을 보완하라." Plan 65가 정리한 **실운영 알람의 형식·노이즈 패턴**(S1~S8)을 현행 게이트(E1~E6)에 대조한 결과, **핵심 노이즈 신호의 상당수가 구조화 필드·DB가 아니라 「알람 텍스트」와 「운영자 주석」에 담겨 있음**이 드러났다. 본 §은 그 갭을 **문헌 근거로 보완**한다. 설계 원칙(§1.3)은 불변 — 결정적 규칙=판단·LLM=주석/보조, 재현율 우선, 옵트인·읽기전용·회귀 0.
+
+### 17.1 문제 — 신호가 텍스트·주석에 있다 (Plan 65 §2.4 실측)
+
+현행 E1~E6의 신호원(실측): 구조화 severity(step1), DB 컨텍스트(중요도·유지보수·의존성·변경이력), 워커 산출 억제신호(flap·storm·self-heal·cascade). **알람 텍스트는 LLM 심각도 상향(conditionLog)·B-7 임베딩에만 부수적으로 쓰인다.** 그러나 실측 샘플은 다음을 **텍스트로만** 전달한다:
+
+- **운영자 주석 재발신**(S3): `szaaso01 파일시스템 사용률 [95 %]` 최초 통보 후, 7분 뒤 동일 본문 + `=> 담당자 ○○○ 통화. 확인 후 연락`, 37분 뒤 동일 본문 + `=> … 서비스 영향 없음.` — **표현만 다른 재발신**.
+- **계획작업 사유**(S4): 6대 동시 IPL DOWN에 `예정된 IPL 작업으로 발생` / `계획정지 관련 작업으로 서비스 이상없음` 주석 — 유지보수 신호가 **DB 플래그가 아닌 주석 텍스트**.
+- **상위 원인**(S5): `세종대 전기 작업으로 14:00까지 네트워크 다운` — 근본원인이 **통보 텍스트**에 있고, 사이트명(`세종대`)이 상관 축.
+- **비알람 혼재**(S8): `내부Cloud ○○○님의 Cloud PC 사양변경 승인바랍니다.` — **알람이 아닌 승인요청**이 동일 경로로 유입. `SAE … UPS 출력 전압`(설비, 호스트 접두 없음)·`kfexdb02_DSFEXA02 … Oracle Down!`(DB 인스턴스, 이질 포맷)도 혼재.
+
+**결정적 실측 발견**: `compute_fingerprint`는 `SHA1(db_id·server·alarm_name·resource_name)`로 **주석 텍스트(conditionLog·description)를 포함하지 않는다**(`notification_policy.py` L51~64, 실측). 따라서 S3/S4/S6의 주석 재발신은 **같은 지문 → E1 dedup에 억제**되는데(TTL 4h, `repeat_interval_seconds=14400`), 억제 경로는 그래프 진입 **이전**(`alarm_worker.py` L481~494)에 ACK·return한다. **즉 재발신이 실어 온 운영자 주석(계획작업·해소상태 신호)은 아무도 추출하지 못한 채 폐기된다** — "억제≠삭제" 원칙이 **텍스트 신호에 대해 깨진 사각지대**다. E5(변경상관)는 `cmm_resource_lifecycle_history` **DB만** 읽어(`change_feed.py` 실측) 이 텍스트 신호를 보지 못한다.
+
+### 17.2 실측 사례 → 현행 커버 매핑
+
+| # | 실측 패턴 | 현행 커버 | 갭 | 보완 |
+|---|---|---|---|---|
+| S1 | DOWN→UP 순단(15분/3분) | flapping·self_heal | ISA-18.2 chattering 유형 미분류 | E7-d(정합·감사) |
+| S2 | 파일시스템 임계 | E6 disk 보강(D-108) | — (커버) | — |
+| S3 | 운영자 주석 재발신 | E1 dedup(억제) + B-7 주석 | **주석 신호 폐기**(그래프 진입 전 ACK) | **E7-a(핵심)** |
+| S4 | IPL 일괄 DOWN + 계획작업 주석 | E2 상관(대표 1건) | **계획-무해 주석이 억제로 이어지지 않음**(E5는 DB만) | **E7-a** |
+| S5 | 상위 원인→하위 연쇄, 사이트 그룹 | E4 cascade(AVAIL_DEPEND) | **사이트/네트워크 장비 상관 축 부재**·원인 텍스트 미활용 | E7-d(E2 사이트 차원) |
+| S6 | 반복 재발 | E1 recurrence(D-106) | ISA-18.2 repeating 정합 | E7-d |
+| S7 | DOWN+재기동 지표 동반(상이 알람) | 지문에 alarm_name 포함 → 독립 판정 | — (음성 대조군 통과) | — |
+| S8 | 비알람·이질 포맷 혼재 | 없음(모두 알람 가정) | **비알람 사전필터 부재·파서 견고성** | **E7-b·E7-c** |
+
+→ 보완 대상은 **S3·S4(주석 신호), S5(사이트 상관), S8(비알람·포맷)** 4계열. S2·S7은 이미 커버.
+
+> **사례별 "무엇을 수집해 dedup 처리하고, 무엇을 추가 조회하는지" 상세는 §17.10** (S1~S8 × 수집 소스·dedup 메커니즘·컨텍스트 조회·판정·감사).
+
+### 17.3 E7-a — 주석 신호 하베스팅 [핵심] (억제≠삭제의 텍스트 확장)
+
+**설계**: dedup 억제(재발신) 시 **ACK 이전에 주석 신호를 추출**해 원 인시던트 컨텍스트에 반영한다. **재발신은 여전히 억제(재통보 없음)하되, 그것이 실어 온 신호는 보존**한다 — "노이즈는 억제, 신호는 하베스트".
+
+- **신규 domain 순수함수** `src/alarm/domain/annotation_signal.py::extract_annotation_signal(text) -> AnnotationSignal`(stdlib·정규식·결정적):
+  - `planned_work`: `예정된 작업|계획정지|IPL|점검|작업 예정|정기 점검` 등 계획작업 마커.
+  - `resolution`: `서비스 영향 없음|이상\s*없음|정상 확인|복구 완료` 등 해소·무영향 마커.
+  - `operator_ack`: `=>\s*담당자|통화|확인 후 연락` 등 운영자 접수 마커.
+  - 마커 부재 시 빈 신호(하위호환) — LLM 의존 없음(결정적 1차).
+- **워커 연동**(`alarm_worker.py` dedup 분기 L481~494): `is_dup`일 때 ACK 직전 `sig = extract_annotation_signal(event.condition_log or event.description)`. 신호가 있으면 `_record_recurrence`를 **주석 필드 확장**(`annotation={planned_work,resolution,operator_ack}`)으로 적재 → 원 인시던트가 "계획작업/해소/운영자-ack" 컨텍스트를 재통보 없이 획득. decision_store `record_recurrence`에 `annotation: Optional[dict]=None` 최상위 필드 추가(E1 패턴·signals 동결 스키마 밖).
+- **계획-무해 주석의 억제 강화(하이브리드·재현율 우선)**: `planned_work` **AND** (`resolution` 또는 E2 동시-다발 클러스터 소속 또는 E5 `change_nearby`)가 **동시 충족**될 때만 후속 동종 알람을 **DASHBOARD 강등**(SUPPRESS 아님 — E4 하이브리드와 동일 보수화). 주석 단독(코로보레이션 없음)이면 **강등 없이 주석만** 첨부. → 텍스트 오탐이 실장애를 억제하지 못하도록 **코로보레이션 게이팅**(단독 텍스트로는 절대 억제 강화 금지).
+- **해소 주석의 처리**: `resolution` 마커는 `is_clear`(sev0)와 **동일 취급하지 않는다**(폴스타 SSOT 훼손 금지) — 인시던트 컨텍스트에 "운영자 무영향 판단" 주석으로만 첨부하고, 자동 클로즈는 하지 않는다(운영자 승인 경로 유지, D-003).
+- **불변 계약**: 주석은 **재통보를 되살리거나 새 억제를 만들지 않는다**(계획-무해 강등은 위 코로보레이션 게이팅 하에서만). LLM은 주석 분류 보조(annotate-only)로만 개입, 최종 라우팅 불변(D-035).
+
+### 17.4 E7-b — 비알람/비실행가능 사전 분류 (S8)
+
+**문제**: `Cloud PC 사양변경 승인바랍니다`(승인요청)가 알람과 동일 경로로 유입돼 severity로 티어링된다 — 현행은 **모든 페이로드를 알람으로 가정**한다.
+
+**설계**(결정적 1차·LLM annotate-only·재현율 우선):
+- **신규 domain 순수함수** `is_operational_alarm(event) -> bool`(stdlib): 알람 마커(`가용성|사용률|임계|DOWN|Down|장애|초과|미만|경고`) 부재 **AND** 비알람 마커(`승인|요청|바랍니다|안내|공지|문의`) 존재 시 `False`. **애매하면 True**(알람으로 간주 — 재현율 우선, 비알람 오분류가 실알람을 삼키지 않도록).
+- **게이트 연동**: `is_operational_alarm=False`면 신규 step0.5(step1 이전)에서 `SUPPRESS`(사유: "비운영 알람 — 승인/안내성 메시지") + decision_store 감사(억제≠삭제). **심각도3 단락(step3)보다 앞이지만**, 비알람은 애초에 severity 신뢰 불가하므로 마커 기반 판정을 우선(단, `non_alarm_filter_enabled` 옵트인·기본 off → 회귀 0).
+- LLM 보조: `alarm_analyzer` LLM이 "이 메시지는 운영 알람인가?"를 보조 판정하되, **결정적 `is_operational_alarm=True`를 뒤집어 억제하지 못한다**(억제는 결정적 마커가 확정, LLM은 강등 후보 제시만·SOC 한계연구 정합).
+
+### 17.5 E7-c — 이질 포맷 파서 견고성 + 사이트 토큰 추출 (S8·S5)
+
+**문제**: `<장비ID>.<도메인>\|\|(장애) <사이트명>`(네트워크), `SAE … UPS`(설비·호스트 접두 없음), `..._DSFEXA02 … Oracle Down!`(DB 인스턴스) 등 **호스트 접두 없는 이질 포맷**이 `_build_alarm_event_from_payload`(실측)의 필드 매핑을 비우거나 오매핑할 수 있다.
+
+**설계**(견고성·판정 무변경):
+- `_build_alarm_event_from_payload`가 알려진 포맷 파싱 실패 시 **침묵 드롭·크래시 금지** — best-effort 필드 채움 + 미식별 시 **보수적 PAGE**(재현율 우선·§1.3 #2). 알려진 포맷의 파싱 결과는 **비트동일**(기존 경로 무변경, 신규 폴백만 추가).
+- **사이트 토큰 추출**: 네트워크 장비 포맷(`\|\|(장애) <사이트명>`)·`resource_ancestry`에서 사이트/위치 토큰을 파싱해 `event`의 파생 속성(또는 `noise_ctx["site"]`)으로 노출 → E7-d(E2 사이트 상관)의 입력.
+- 옵트인 `format_tolerant_parsing_enabled: bool=False`(기본 off → 현행 파서 비트동일). 문헌: 로그 템플릿 추출(Drain)·이질 로그 처리.
+
+### 17.6 E7-d — E2 사이트/위치 상관 차원 + E1 chattering 정합 (S5·S1·S6)
+
+- **E2 사이트 상관**(S5): 현행 `correlation.signature_tokens`는 `alarm_name·resource_type·signature_label`만 토큰화(server 제외). **사이트/위치 토큰을 선택적 가중 차원으로 추가**(E4 위상 가중 `correlation_topology_weight_enabled`와 동일 패턴 — 워커가 사이트 토큰을 산출해 인자 주입, domain은 값만 소비·순수성 유지). 동일 사이트(`세종대`) 다발이 서버 의존그래프(AVAIL_DEPEND)에 없는 네트워크 장비여도 군집된다. 옵트인 `correlation_site_dimension_enabled: bool=False`·**존 경계(B-6) 불변**. 문헌: 다차원 상관(시간+위상+텍스트+위치).
+- **E1 ISA-18.2 chattering 정합**(S1·S6): S1(DOWN→UP 순단=fleeting)·S6(복구 후 재발=repeating)을 **ISA-18.2 chattering 분류로 감사 라벨링**. 현행 flapping(Nagios %-state)+self_heal+E1 dedup이 이미 억제하므로 **판정 로직은 무변경**, `record_recurrence` 감사에 chattering 유형(`fleeting|repeating`) 라벨만 첨부(관측성). 문헌: ISA-18.2/EEMUA 191.
+
+### 17.7 설계 원칙·회귀 통제 (§1.3·§10 계승)
+
+- **결정적=판단·LLM=주석**: E7-a 주석 추출·E7-b 비알람 판정은 **결정적 키워드/정규식 1차**, LLM은 annotate-only 보조(최종 억제·라우팅 위임 금지·D-035·SOC 한계연구).
+- **재현율 우선**: 텍스트 단독으로 억제 강화 금지 — E7-a 계획-무해 강등은 **코로보레이션 게이팅**(E2/E5/resolution 동시), E7-b 비알람은 **애매 시 알람 간주**, E7-c 미식별 포맷은 **보수적 PAGE**.
+- **억제≠삭제**: E7-a 하베스팅·E7-b 비알람 억제 모두 decision_store 감사(주석·사유 기록).
+- **옵트인·회귀 0**: 신규 플래그 전부 기본 off → 현행 경로 비트동일. `test_plan60_flags_off_regression.py`에 E7 섹션 추가.
+- **정책 모듈 순수성**: `notification_policy.py`는 annotation_signal 모듈을 import하지 않음 — 워커가 신호 산출해 인자/noise_ctx 주입(현행 패턴).
+- **폐쇄망**: 신규 domain 모듈 stdlib-only(정규식). LLM은 기존 `alarm_analyzer`만 재사용(신규 모델 반입 없음 → B-7류 블로커 없음).
+
+### 17.8 문헌 근거 (Academic & Industry Grounding)
+
+- **ISA-18.2 / EEMUA 191**(알람관리 표준): chattering/fleeting/repeating 정의·shelving/suppression 상태(Shelved·OOS·SBD)·합리화(cause/consequence/corrective action 문서화)·알람율 지표(steady-state <6/hr). → **운영자 주석 = 수동 shelving·합리화**의 텍스트화(E7-a), chattering 정합(E7-d), 노이즈 KPI 근거. ([ISA-18.2](https://www.yokogawa.com/us/library/resources/media-publications/implementing-alarm-management-per-the-ansi-isa-182-standard-control-engineering/), [EEMUA 191/exida](https://www.exida.com/Alarm-Management/Resources))
+- **NLP 알람 텍스트 마이닝**(Drain 로그 템플릿·BERT·NER로 비정형 알람에서 의미 추출·자동 우선순위화). → E7-a 주석 추출·E7-c 포맷 견고성. ([NLP for Log Analysis & Alert Prioritization](https://www.researchgate.net/publication/397738546_Using_Natural_Language_Processing_for_Log_Analysis_and_Automated_Alert_Prioritization))
+- **LLM 인시던트 리포트 구조화 추출**(상태 마커·해소 정보 추출, ICPE 2025·EuroSys 2024). → E7-a 주석의 LLM annotate-only 분류 근거. ([LLM Structured Extraction from Cloud Incident Reports](https://dl.acm.org/doi/10.1145/3777911.3801103))
+- **산업 알람 플러드 연관규칙 마이닝**(alarm flood 예측·co-activation+persistent-state 상관, Control Eng. Practice 2023). → S4/S5 동시-다발(계획작업·연쇄) 인식 근거. ([Association Rule Mining for Alarm Floods](https://www.sciencedirect.com/science/article/abs/pii/S0967066123001867))
+- **결정적 지문 + 조합 해싱 온라인 알람플러드 분류**(spatio-temporal 관계를 고정길이 식별자로 인코딩, Chem. Eng. Res. Des. 2025). → 현행 `compute_fingerprint`·E2 결정적 접근 정합, 텍스트-무관 지문의 한계 확인. ([Deterministic Fingerprinting w/ Combinatorial Hashing](https://www.sciencedirect.com/science/article/abs/pii/S0263876225006252))
+- **SOC 비실행가능 알람 필터링**(비-actionable 자동 억제·FP 40~70% 감축·애널리스트 피드백 학습). → E7-b 비알람 사전필터 근거. ([Automated FP Filtering](https://arxiv.org/pdf/2208.12729), [SOC FP Suppression](https://www.conifers.ai/glossary/false-positive-suppression/))
+- **유지보수 창 인지 억제**(Moogsoft maintenance windows — 계획작업 필드로 상관·필터). → E7-a 계획작업 억제의 산업 구현 근거. ([Moogsoft Maintenance Windows](https://docs.moogsoft.com/moogsoft-cloud/en/maintenance-windows-overview.html))
+- **알람 상관 고려 유사도 개선**(alarm correlation 반영 시퀀스 유사도, Control Eng. Practice 2024). → E7-d 다차원(사이트) 상관 근거. ([Improved Similarity w/ Alarm Correlations](https://www.sciencedirect.com/science/article/abs/pii/S0959152424001355))
+
+**검증 상태·한계**(§13.3 방침 계승): ISA-18.2/EEMUA·Moogsoft는 표준/벤더 1차 자료, 산업 알람플러드 문헌은 **공정제어(석유화학·발전) 맥락**이라 IT 인프라와 신호 특성 차이 유의(적용 시 도메인 갭). LLM 추출·SOC 필터링 문헌은 검색 스니펫·초록 기준(본문 독립검증 아님). 효과 수치는 인용만. 근거표는 착수 시 `docs/aiops_benchmark/noise_cancellation_literature.csv`에 E7 6편 추가.
+
+### 17.9 결정·블로커·Wave·수용 기준
+
+- **결정 D-116** ✅ **등재 완료(2026-07-23)·구현 완료(2026-07-27 · Plan 66 Wave 1-B)** — 실측 ITSM 사례 기반 텍스트·주석 신호 보완(억제≠삭제의 텍스트 확장). **구현**: `annotation_signal.py`(순수)·E7-a 하베스팅/코로보레이션 게이팅(notification_policy step7.7 DASHBOARD 강등)·E7-b `is_operational_alarm`(step0.5)·E7-c graceful 폴백/site 토큰·E7-d 사이트 상관 차원/chattering(`repeating`) 감사. 플래그 5종 전부 기본 off. `tests/test_alarm` 688→**716 passed**(+28)·0 failed·flags-off 비트동일·`arch_check` exit 0·정책 모듈 순수성. 팀장 승인: 보수적 severity 폴백(severity 3 fabricate 회피)·`fleeting` 라벨 보류(self-heal 경로 위험·감사 전용 XS).
+- **블로커 B-9** ✅ **해소·확정(2026-07-23 사용자 승인) — 코로보레이션 게이팅**: 주석 단독 억제강화 금지, E2 클러스터·E5 `change_nearby`·`resolution` 동시 충족 시에만 DASHBOARD 강등(§17.3 반영). E7-a·b·c는 착수 가능.
+- **Wave**: E7-a(핵심·S~M·독립) → E7-b(S·독립) → E7-c(S·E7-d 선행) → E7-d(사이트=M·E4 재사용, chattering=XS·감사만). E7-a·E7-b는 블로커 없이 착수 가능(E7-a는 B-9 정책 확인 후 억제강화 부분만 게이팅).
+- **신규 산출물**: domain `annotation_signal.py`(순수) + `notification_policy.is_operational_alarm`(순수) + `correlation.signature_tokens` 사이트 차원 확장; 워커 dedup 분기 하베스팅·site 토큰 산출; `decision_store.record_recurrence` `annotation` 필드·`record` non-alarm 감사; `_build_alarm_event_from_payload` graceful 폴백; config 신규 플래그(`annotation_harvest_enabled`·`annotation_planned_suppress`·`non_alarm_filter_enabled`·`format_tolerant_parsing_enabled`·`correlation_site_dimension_enabled`, 전부 기본 off).
+- **수용 기준**: ① S3 재발신 주석(`서비스 영향 없음` 등)이 원 인시던트 컨텍스트·decision_store에 하베스트됨(재통보 0). ② S4 계획작업 주석 + 코로보레이션(E2/E5) 시에만 후속 강등, 주석 단독은 강등 없음. ③ S8 비알람(승인요청) SUPPRESS·감사, 애매 케이스는 알람 유지. ④ S8 이질 포맷 미식별 시 보수적 PAGE(드롭·크래시 0). ⑤ S5 동일 사이트 네트워크 다발 군집(옵트인). ⑥ 전 플래그 off 시 현행 비트동일(회귀 0)·`arch_check --ci` 0·심각도3 단락 불변.
+
+### 17.10 사례별(S1~S8) 신호 수집·dedup·컨텍스트 조회 상세 (E1~E7 종합)
+
+> 각 실측 사례에서 **① 무엇을 수집하는가**(수집 소스 3분류) → **② 어떻게 dedup(중복) 처리하는가** → **③ 어떤 추가 컨텍스트를 조회하는가** → **④ 판정·감사**를 실측 배선 기준으로 정리한다. dedup과 컨텍스트 보강은 노이즈 캔슬링의 두 축이며, 사례별로 관여하는 E-기능이 다르다.
+
+**수집 소스 3분류 (전 사례 공통 참조)** — 실측 배선:
+
+- **A. 이벤트 payload**(폴스타 TCP 단일행 JSON, §2.2): `alarmId`·`severity`·`alarmStatus`·`serverName`/`hostname`/`ipAddress`·`dbId`·`resourceType`/`resourceName`/`resourceAncestry`·`alarmName`/`conditions`/`conditionLog`·`alarmTime`. **추가 SQL 없이** 이벤트 자체로 확보.
+- **B. 워커 산출 신호**(순수함수 + in-memory 상태, `decide_notification` 인자·DB 조회 없음): `fingerprint`(E1, `compute_fingerprint`=`db_id·server·alarm_name·resource_name`), `self_heal`(발생/해소 매칭), `inhibited`(동일서버 상위심각도), `flapping`(Nagios %-state), `storm`(동일서버 다발), `correlated`(E2 크로스-호스트 군집), `recurrence` 메타(E1 count/first_seen), `semantic_annotation`(B-7 L-2 임베딩 근접중복 주석), `site` 토큰(E7-c/d).
+- **C. enricher DB/REST 조회 신호**(읽기전용·graceful·`noise_ctx`/`analysis`/state): `importance_id`·`maintenance`·`noti_policy`·`parent_avail_status`(1홉), `cascaded`·`root_resource`·`root_resource_name`·`root_notified`(E4 다홉), `change_nearby`·`change_candidates`(E5 `cmm_resource_lifecycle_history`), `anomaly_severity`(E3 `cmm_metric_stat_h` baseline), `process_snapshot`(E6 cpu/mem `list_by_hostname`)·`enrichment`(E6 disk/net/proc/log host-wide L1), `root_text_similarity`(B-7 L-4), **주석 하베스트**(E7-a `extract_annotation_signal`, DB 아님·텍스트 파싱).
+
+> **심각도 주의**: Plan 65 §2.4는 severity를 **가정**(가용성 DOWN=2·UP=0·사용률 임계=1·설비경고 중 단락테스트용만 3)했다 — 착수 시 게이트 매트릭스와 대조 확정. 아래 판정은 그 가정 기준이며 심각도3은 항상 단락 PAGE(step3 불변).
+
+**S1 — 가용성 DOWN→UP 순단** (nspist02 가용성 `[DOWN, 2회 연속]` → 15분 후 `[UP]`)
+- **수집**: A(serverName·alarmName=가용성·conditionLog·severity) + B(fingerprint, self_heal 상관 시드).
+- **dedup**: DOWN=최초 비중복(통보). **UP(is_clear·sev0)은 dedup 제외** — 해소는 자가복구 상관 위해 게이트까지 전달(`alarm_worker` L476~477). `_update_firing_registry`가 DOWN↔UP 매칭 → `self_heal=True` → step4 SUPPRESS(자가복구 상관). **E7-d**: DOWN→UP 15분 = ISA-18.2 **fleeting** 감사 라벨.
+- **컨텍스트 조회**: C(importance·maintenance·noti_policy·parent_avail_status). E3 baseline은 **비메트릭(가용성)이라 skip**(kind=None). E6 보강 대상 아님.
+- **판정·감사**: DOWN=매트릭스 티어, UP=자가복구 SUPPRESS + `record_resolution`(duration) + fleeting 라벨.
+
+**S2 — 파일시스템 임계** (fnosaso1 파일시스템 사용률 `[95%]`, ecrapo13 `/fsapp [90%, 2회 연속]`)
+- **수집**: A(alarmName=파일시스템 사용률·**resourceName=마운트경로 `/fsapp`**·conditionLog·severity≈1) + B(fingerprint).
+- **dedup**: fingerprint에 `resource_name=/fsapp` 포함 → **동일 마운트 반복만 E1 dedup**(다른 마운트는 독립). kind=disk.
+- **컨텍스트 조회**: C(importance·maintenance·noti_policy) + **E6 disk 보강**(`build_message_enrichment` host-wide 디스크 용량 스냅샷·관제 L1·D-108). E3 baseline은 1차 화이트리스트(cpu/mem)에 disk 미포함 → skip(D-110·향후 확장).
+- **판정·감사**: 매트릭스(sev1×중요도). `min_severity` 미달 시 드롭 가능(§4.8).
+
+**S3 — 운영자 주석 재발신** [E7-a 핵심] (szaaso01 파일시스템 사용률 `[95%]` → 7분 후 동일본문 `+ => 담당자 통화` → 37분 후 동일본문 `+ 서비스 영향 없음`)
+- **수집**: A(동일 serverName·alarmName·resourceName, **conditionLog만 주석으로 상이**) + B(fingerprint, **주석 하베스트 E7-a**).
+- **dedup**: **fingerprint는 주석 텍스트 미포함** → 재발신 2건 모두 **동일 지문 → E1 dedup 억제**(TTL 4h 내). **B-7 L-2**(옵트인)는 임베딩으로도 근접중복 감지 가능하나 결정적 지문이 선행 처리. **E7-a**: 억제 ACK **이전** `extract_annotation_signal(conditionLog)` → 7분건=`operator_ack`·37분건=`resolution` 마커 추출 → `record_recurrence(annotation=…)`로 **원 인시던트에 첨부**(재통보 0).
+- **컨텍스트 조회**: `resolution` 주석 = "운영자 무영향 판단"을 원 인시던트 컨텍스트에 첨부. **`is_clear`(sev0) 취급 금지**(폴스타 SSOT 보존)·자동 클로즈 없음(D-003).
+- **판정·감사**: 최초=매트릭스, 재발신=SUPPRESS(dedup) + `type=recurrence`(count) + `annotation`(operator_ack/resolution) 감사.
+
+**S4 — IPL 일괄 DOWN + 계획작업 주석** [E2 + E5 + E7-a·B-9] (staapos1/2·stadbos1/2·stadboc1/2 6대 동시 가용성 DOWN + `예정된 IPL 작업으로 발생`)
+- **수집**: A(**서버 6개 상이**·동일 alarmName=가용성·동시각 alarmTime·주석) + B(fingerprint[서버별 상이], **correlated E2**, 주석 하베스트) + C(**change_nearby E5**).
+- **dedup/상관**: fingerprint 서버별 상이 → **E1 dedup 안 됨**. **E2 크로스-호스트 상관**: `signature_tokens`(가용성·resourceType, **server 제외**) Jaccard≈1.0 → db_id 존 스코프 온라인 그리디 군집 → 대표 1건, 나머지 `correlated=True` SUPPRESS(step7.5) + `correlation_meta` 감사.
+- **컨텍스트 조회**: **E5** `fetch_recent_changes`(`cmm_resource_lifecycle_history`)로 IPL 등록 시 `change_candidates`. **E7-a** `planned_work` 마커(`예정된 IPL 작업`) 추출.
+- **판정·감사(B-9 코로보레이션 게이팅)**: `planned_work` **AND** (E2 클러스터 소속 **OR** `change_nearby`) 동시 충족 → **대표 건도 DASHBOARD 강등**(계획-무해·SUPPRESS 아님). 주석 단독(코로보레이션 없음)이면 강등 없이 첨부만. 감사=`correlation_meta`+`change_candidates`+`annotation`.
+
+**S5 — 상위 원인→하위 연쇄, 사이트 그룹** [E4 + E7-c/d + L-4] (S8530JUM-4331-1.sotori.com`||(장애) 세종대` + K8530JUM-4331-2 동시 → 하위 장비 다발, 원인 `세종대 전기 작업으로 네트워크 다운`)
+- **수집**: A(**네트워크 장비 포맷** `<장비ID>.<도메인>||(장애) <사이트명>`·resourceAncestry) + B(**site 토큰 E7-c** `세종대`) + C(**cascaded/root E4**, **root_text_similarity L-4**).
+- **dedup/상관**: **E4 cascade** — 상위(네트워크) 비정상 → 하위 `cascaded=True` → root 통보 시 SUPPRESS / 미통보 시 DASHBOARD(하이브리드). 단 **네트워크 장비가 AVAIL_DEPEND 서버 의존그래프에 없으면 폴백** → **E7-d 사이트 상관**(사이트 토큰 `세종대`를 E2 상관 차원으로·옵트인)으로 동일 사이트 다발 군집. **L-4**: root NAME↔알람 텍스트(전기작업) 유사도 주석(판정 불변).
+- **컨텍스트 조회**: C(E4 `root_resource`·`root_resource_name`·`root_notified`), 원인 텍스트(전기작업)는 root 알람 컨텍스트로.
+- **판정·감사**: 하위=cascade SUPPRESS/DASHBOARD, root=PAGE(증상보다 원인). 감사=`cascaded`·`root_resource`·(옵트인)site·`root_text_similarity`.
+
+**S6 — 반복 재발** [E1] (stafxo01(FAX#1) 가용성 `[DOWN]` 20:30 → 재발신 20:37 → 재발 20:45)
+- **수집**: A(동일 serverName·alarmName·resource) + B(fingerprint, recurrence 메타).
+- **dedup**: fingerprint 동일 → 20:37·20:45 모두 **TTL(4h) 내 E1 dedup 억제**. `_is_duplicate_fingerprint` count 증가·`last_seen` 갱신(판정은 `last_notified` 고정창). **E7-d**: 복구 후 재발 = ISA-18.2 **repeating** 감사 라벨.
+- **컨텍스트 조회**: C(importance·maintenance). 재통보 시(TTL 만료 후) 대표 알람에 "직전 {window} {count}회 재발" 표기.
+- **판정·감사**: 최초=매트릭스, 재발=SUPPRESS + `type=recurrence`(count) + repeating 라벨.
+
+**S7 — DOWN+재기동 지표 동반(상이 알람)** [음성 대조군] (nipdbr36 가용성 `[DOWN]` + 동시각 nipdbr36 서버 기동 지속시간 `[7 sec]`)
+- **수집**: A(**동일 serverName·상이 alarmName** 가용성 vs 서버 기동 지속시간) + B(fingerprint 2개).
+- **dedup**: **fingerprint에 `alarm_name` 포함** → 두 알람 **상이 지문 → 각각 독립 판정**(2건째가 dedup SUPPRESS 되지 **않아야** 함 = 대조군 통과). `distinct-pair` 시나리오로 오탐 방지 회귀 고정.
+- **컨텍스트 조회**: 각각 C(importance·maintenance). (재기동 지표는 DOWN의 **방증**이나 상호강화 신호는 현재 미모델링 — FI 후보로만 언급, 본 계획 비범위.)
+- **판정·감사**: 각각 독립 매트릭스(dedup 오탐 0 검증).
+
+**S8 — 비알람·이질 포맷 혼재** [E7-b·E7-c] ((a) `SAE 0011649 … UPS 출력 전압 하한 경고`·(b) `kfexdb02_DSFEXA02 … Oracle Down!`·(c) `내부Cloud … Cloud PC 사양변경 승인바랍니다`)
+- **수집**: A(호스트 접두 없음·이질 포맷) + B(**is_operational_alarm E7-b**, **파서 폴백 E7-c**).
+- **dedup/사전판정**: **(c) E7-b 비알람 사전분류** — `is_operational_alarm=False`(알람 마커 부재 + `승인|바랍니다`) → 신규 **step0.5 SUPPRESS**·감사(**애매하면 알람 간주**=재현율 우선). **(a)(b) E7-c 파서 견고성** — 호스트 접두 없음/이질 포맷 → graceful 폴백·best-effort 필드·**미식별 시 보수적 PAGE**(드롭·크래시 0).
+- **컨텍스트 조회**: (a)(b)는 severity 단락 테스트용(설비경고 중 단락테스트 대상만 sev3→PAGE). (c)는 억제라 **컨텍스트 조회 없음**(호스트 접근 낭비 금지).
+- **판정·감사**: (c)=SUPPRESS(비운영 알람 사유·감사), (a)(b)=severity 기준(미식별 시 보수적 PAGE).
+
+**종합 — 사례별 관여 기능·dedup 축·컨텍스트 축 요약**:
+
+| 사례 | 주 dedup 메커니즘 | 주 컨텍스트 조회 | 관여 기능 |
+|---|---|---|---|
+| S1 | self_heal 상관(해소 dedup 제외) | 중요도·유지보수·의존성 | E7-d(fleeting) |
+| S2 | E1 지문(마운트 단위) | **E6 disk 보강** | E6 |
+| S3 | **E1 지문(주석 무관)** | **E7-a 주석 하베스트** | **E7-a**·B-7 L-2 |
+| S4 | **E2 크로스-호스트 상관** | **E5 변경이력 + E7-a 주석** | **E2·E5·E7-a(B-9)** |
+| S5 | **E4 다홉 cascade**(폴백 시 E7-d 사이트) | E4 topology·L-4 텍스트 | **E4·E7-c/d·L-4** |
+| S6 | **E1 지문(재발 count)** | 중요도·유지보수 | E1·E7-d(repeating) |
+| S7 | 없음(상이 지문·독립) | 각 알람 중요도 | 음성 대조군 |
+| S8 | **E7-b 비알람 사전분류** | 없음(억제)/severity | **E7-b·E7-c** |
+
+### 17.11 보강 정보 수집 메커니즘 — 명령어·함수·경로 상세 (실측 배선)
+
+> §17.10의 각 컨텍스트 신호를 **구체적으로 어떤 명령어·함수로 수집하는가**를 실측 배선 기준으로 명세한다. Plan 60은 **L1 읽기전용**이므로 수집 수단은 세 가지뿐이다:
+> 1. **DBHub `execute_sql`**(SQL SELECT 단일문) — `DBRegistry.get_client(db_id).execute_sql(sql)`. **바인딩 미지원**이라 외부 입력은 `_sql_literal()` 이스케이프(인젝션 방지). 전 SQL은 `SELECT`만·DML/DDL 금지·`RESOURCE_CONF_ID` JOIN 미포함(D-022).
+> 2. **폴스타 REST GET**(httpx `AsyncClient`, 읽기전용) — 프로세스 실시간 조회.
+> 3. **로컬 연산**(조회 없음) — 텍스트 정규식 파싱·로컬 임베딩(오프라인).
+>
+> **범위 경계(2026-07-24 개정 — §18 E8·D-117)**: 당초 `top`·`uptime`·`journalctl`·`dmesg` 등 OS 명령(L3)은 Plan 60 범위 밖이었으나, **사용자 지시·보안 인터뷰 확정으로 L3를 Plan 60에 편입**했다(§18). 본 §17.11의 SQL/REST/텍스트 수집(L1)에 더해, **폴스타 에이전트 확장을 통한 read-only L3 조사**(`host_diagnostic_collector.py` 공유·§7.2 허용목록·escalate-only)를 §18 E8이 담당한다. 전면 RCA·조치 거버넌스는 Plan 64.
+
+**보강 신호별 수집 명령어·함수 매트릭스**:
+
+| 보강 신호 | 수단 | 조립 함수 → 실행 → 파싱 함수 | 소스·주요 컬럼(실측) | 타임아웃·캐시·graceful |
+|---|---|---|---|---|
+| 중요도·유지보수 | SQL | `build_resource_signal_sql` → `execute_sql` → `_parse_importance`/`_parse_maintenance` | `cmm_resource SVR` — `IMPORTANCE_ID`·`IS_MAINTENANCE`·`ID`(E4 노드), `WHERE DTIME IS NULL AND RESOURCE_TYPE='server.Server' AND {server_match} LIMIT 1` | `noise_context_timeout_seconds`(3s)·noisectx 캐시 `alarm:noisectx:*`(300s)·실패→`source="unavailable"`→보수 PAGE |
+| 알림정책 | SQL | `build_noti_policy_sql` → `execute_sql` → `_parse_noti_policy` | `cmm_alarm_def D JOIN cmm_alarm_def_noti DN ON DN.DEFINITION_ID=D.MASTERDEFINITION_ID`, `COUNT(*) WHERE D.NAME={alarm_name}` — 행 부재는 None(보수적) | 〃(동일 gather·캐시) |
+| 1홉 의존성(부모 상태) | SQL | `build_dependency_sql` → `execute_sql` → `_parse_parent_avail_status` | `cmm_resource` self-join(`AVAIL_DEPEND_RESOURCE_ID`) → 부모 `AVAIL_STATUS`(0=정상·≠0=비정상) | `collect_dependency=True`서만·NULL이면 부모 None→비억제(보수) |
+| 다홉 토폴로지(E4 cascaded·root) | SQL×2 | `build_edges_sql`(정적 엣지) + `build_ancestor_status_sql`(동적 상태) → `execute_sql` → `DependencyGraph.is_cascaded`/`find_root` | `cmm_resource` — 엣지: `ID·NAME·AVAIL_DEPEND_RESOURCE_ID(_2) WHERE DTIME IS NULL AND AVAIL_DEPEND_RESOURCE_ID IS NOT NULL` / 상태: `WHERE ID IN (조상들) AND DTIME IS NULL` | 엣지=`topology_cache_ttl_seconds`(86400 장기캐시)·상태=매 이벤트(홉상한 `topology_max_hops=5`)·b0→None→1홉 폴백 |
+| 변경이력(E5 change_nearby) | SQL | `build_recent_changes_sql` → `ChangeFeed.fetch_recent_changes(window)` → `overlay_changes` | `cmm_resource_lifecycle_history` — `resource_id·event_time·lifecycle_type·description WHERE event_time ∈ 창` | 피드 부재/실패→빈 리스트(graceful)·off→미조회 |
+| 동적 baseline(E3 anomaly_severity) | SQL | `build_metric_series_sql` → `PolestarMetricBaselineAdapter` → `holt_winters_fit`/`anomaly_score`(+STL `stl_anomaly_score`) | `cmm_metric_stat_h s JOIN cmm_resource`(server.Cpus/Memory 자식) — `avg_val` 시계열 | Redis `alarm:baseline:{db_id}:{server}:{kind}`(3600s)·히스토리<3주기→None·`kind∈{cpu,memory}`만 |
+| 프로세스 스냅샷(E6 cpu/mem) | REST | `enrich_processes` → `PolestarProcessApiClient.list_by_hostname(db_id,hostname)` → `select_top_processes`(마스킹·상위N) | `GET {base_url}/rest/server/process/listByhostname?hostname={quote}` — 응답 `date`+`data.list` | `process_api_timeout_seconds`·비200/오류→None(이력 없이 진행)·`base_url` 미매핑→skip |
+| kind별 메시지 보강(E6 disk/net/proc/log) | REST 재사용/요지 | `build_message_enrichment` → `resolve_profile` (+disk/net만 `_collect_host_snapshot`=`list_by_hostname` host-wide) | disk/network=host-wide 프로세스 스냅샷 참고 / process·log=프로파일 **요지 제목만**(신규 SQL 0) | `enrichment_l1_timeout_seconds`(3s)·수집 실패→요지만 첨부·cpu/mem→None(중복 방지) |
+| 의미 근접중복·root텍스트(B-7 L-2/L-4) | 로컬 임베딩 | `AlarmEmbeddingProvider.encode`/`most_similar`(워커·enricher) | 이벤트 텍스트(`build_event_text`) vs 최근 텍스트/`root_resource_name` — **로컬 오프라인 모델**(multilingual-e5-small) | 옵트인·provider inert(모델 미가용)→None·**주석 전용**(판정 불변) |
+| 주석 신호(E7-a) | 텍스트 파싱 | `extract_annotation_signal(conditionLog\|description)`(정규식·domain 순수) | `event.condition_log`/`description` — `planned_work`·`resolution`·`operator_ack` 마커 | **조회 없음**(payload 텍스트만)·`record_recurrence(annotation=…)` 감사 |
+| 비알람 판정(E7-b) | 텍스트 파싱 | `is_operational_alarm(event)`(domain 순수) | `event.alarm_name`/`conditionLog` — 알람 마커 부재+비알람 마커 존재 | **조회 없음**·애매→알람 간주(재현율) |
+| 사이트 토큰(E7-c/d) | 텍스트 파싱 | `_build_alarm_event_from_payload` 폴백 + 사이트 파서 → `signature_tokens` 차원 | `\|\|(장애) <사이트명>`·`resource_ancestry` | **조회 없음**·옵트인 |
+
+**핵심 명령어 상세 (SQL 스켈레톤·실측)**:
+
+- **중요도/유지보수** — `SELECT SVR.ID AS resource_id, SVR.IMPORTANCE_ID AS importance_id, SVR.IS_MAINTENANCE AS maintenance FROM polestar.cmm_resource SVR WHERE SVR.DTIME IS NULL AND SVR.RESOURCE_TYPE='server.Server' AND {server_match} LIMIT 1` (gp/yd=`SVR.NAME` 매칭·대문자 POLESTAR 스키마 한정·엔진 방언 D-053/D-057).
+- **다홉 엣지(장기캐시)** — `SELECT ID, NAME, AVAIL_DEPEND_RESOURCE_ID, AVAIL_DEPEND_RESOURCE_ID_2 FROM polestar.cmm_resource WHERE DTIME IS NULL AND AVAIL_DEPEND_RESOURCE_ID IS NOT NULL` → `DependencyGraph` 구성 → **다홉 조상 상태만** `... WHERE ID IN (조상ID들) AND DTIME IS NULL`로 신선 조회(행 수=홉 상한 유계).
+- **프로세스 REST** — `GET {get_process_api_base_url(db_id)}/rest/server/process/listByhostname?hostname={urllib.quote(hostname)}` → 응답 `{date, data:{list:[…]}}` → `select_top_processes`(민감정보 `mask_args` 마스킹·metric 상위 N).
+
+**E7 보강의 수집 특성(신규 조회 0)**: E7-a(주석)·E7-b(비알람)·E7-c/d(사이트·포맷)는 **모두 이벤트 payload에 이미 실려 온 텍스트(`conditionLog`·`alarm_name`·`resource_ancestry`)를 로컬 정규식으로 파싱**한다 — **신규 SQL·REST·OS 명령이 전혀 없다**. 따라서 E7은 지연 예산·폐쇄망·보안결정에 무관하며 즉시 착수 가능(§17.9 Wave). 반면 컨텍스트 조회(중요도·의존성·변경·baseline)와 E6 보강(프로세스)은 위 SQL/REST 명령을 타고, 전부 **읽기전용·타임아웃·캐시·graceful**(실패해도 통보 차단 없음) 규약을 따른다.
+
+**공통 안전 규약(전 수집 수단)**: ① 읽기전용(SELECT/GET만)·D-003 정합. ② DBHub 바인딩 미지원 → 외부 입력은 `_sql_literal`/`urllib.quote` 이스케이프. ③ 각 수집은 **개별 try/except**로 부분 실패 격리(한 신호 실패가 통보·타 신호를 막지 않음 — 기존 `asyncio.gather` 패턴). ④ 민감정보(`process.args` 등)는 `mask_args` 마스킹. ⑤ 엔진 방언 분기(PostgreSQL `LIMIT`·대문자 `POLESTAR` 스키마, b0=DB2는 `FETCH FIRST`·라틴 소문자화·미지원 시 폴백, D-053/D-057).
+
+---
+
+## 18. E8 — L3 실호스트 조사 통합: 통보 보강·측정 기반 dedup·경계 상향 (D-117) [계획]
+
+> **신규(2026-07-24)**. 사용자 지시: "Plan 60에 **L3 단계 기능을 추가해서라도** 처리하라. 보안 관련 결정은 인터뷰로 진행하라." 인터뷰(2026-07-24) 확정으로 **D-104(경계 `uptime` probe만)·§16.4·§17.11의 「L3 = Plan 60 범위 밖」 경계를 개정**하여, L3 실호스트 read-only 조사를 **노이즈 게이트 목적**(통보 보강·측정 기반 dedup·경계 상향)으로 Plan 60에 편입한다. **전면 RCA·인과추론·조치 거버넌스는 여전히 Plan 64**(공용 L3 수집기·severity_judge·브리핑 재사용, 중복 구현 금지).
+
+### 18.1 인터뷰 확정 보안 결정 (2026-07-24)
+
+| 항목 | 확정 | 근거 |
+|---|---|---|
+| **접근 경로(B-1)** | **A. 폴스타 에이전트 확장** | 폴스타가 이미 호스트에 둔 에이전트에 read-only 스냅샷 노출 → **신규 접근경로 0·검증 채널 재사용**(Plan 64 §7.1·Plan 51 §9). SSH 신규 수집기(B)·로그 파이프라인(C) 미채택 |
+| **실행 모델** | **둘 다** | 게이트 동기 경계 probe(§14.4 확장) + PAGE post-gate 비차단 보강(§4.8.6식). 경계 tie-break와 생존 통보 보강을 함께 |
+| **허용목록** | **§7.2 전체 USE 프로파일**(kind 스코프) | CPU/mem/IO/disk/net read-only 전체 채택. 단 매 조사는 알람 kind별 프로파일만 실행(전량 실행 아님) |
+| **통제** | **최소권한 read-only·권고만** | D-003 유지·변경명령 물리 제외·자격증명 수집기측 분리·전 수집 감사+마스킹 |
+
+### 18.2 L3 수집기 — 폴스타 에이전트 확장 (읽기전용·Plan 64 §7 통제 채택)
+
+- **접근**: 폴스타 에이전트에 read-only 진단 스냅샷을 정의·노출하고, 결과는 **폴스타 REST/ES 채널**(§16 `list_by_hostname` 전례)로 조회한다 — **SSH·신규 접근경로 없음**. 폴스타 에이전트가 특정 명령을 미노출하면 그 신호만 skip→L1 폴백(graceful). 비-Linux 호스트 skip.
+- **허용목록(§7.2 채택·read-only)**: `uptime`·`top -b -n1`·`vmstat 1 3`·`mpstat -P ALL 1`·`pidstat 1`·`iostat -xz 1`·`free -m`·`df -h/-i`·`ss -s`·`sar`·`journalctl -p err --since`·`dmesg`·`cat /proc/{loadavg,meminfo}`·`ps aux --sort=-%mem`/`--sort=-%cpu`·`systemctl show -p NRestarts <unit>`. 임의 명령·셸 메타문자·쓰기 인자 정규식 차단.
+- **변경명령 물리 제외**: `renice`·`kill`·`dmesg -C/-c`·sysctl 쓰기·`systemctl restart` 등은 **수집기에 부재**(조치는 Plan 64 §8 권고 경로만·운영자 실행·D-003).
+- **최소권한·자격증명·감사**: 진단 전용 비-root·명령별 sudoers 한정·자격증명은 폴스타 채널측 전용(에이전트는 핸들만). 전 L3 수집을 대상·명령·시각·결과크기로 감사, args·`/proc/PID/environ` 비밀정보 마스킹 후에만 LLM·저장. `nice/ionice`·`timeout` 래핑·동시성 상한.
+
+### 18.3 실행 모델 (둘 다 — 게이트 예산 보존 + 생존 통보 보강)
+
+- **(a) 게이트 동기 경계 probe (§14.4 D-104 확장)**: 잠정 판정이 **고중요·sev2·경계(TICKET/DASHBOARD)** 인 소수에만 **kind별 초경량 L3 프로파일**(메모리=`free`+`vmstat`, CPU=`vmstat`+`mpstat`)을 동기 실행 → **escalate-only tie-break**. 하드 타임아웃(`gate_l3_probe_timeout_seconds`≤2s)·캐시(`gate:probe:{db_id}:{server}`)·소수 subset. 실패/정상→판정 유지(하향 없음). D-104가 `uptime`만이던 것을 **kind별 USE 프로파일로 확장**(여전히 경계 케이스 유계·escalate-only).
+- **(b) post-gate 비차단 보강 (전 PAGE)**: 통보 결정(PAGE) 후 fire-and-forget으로 **kind별 L3 전체 프로파일** 조사 → §18.4의 세 용도. **게이트 <10s 예산 무영향**(비차단·재발생 dedup·클러스터 대표 상속 → 조사도 대표 1건).
+
+### 18.4 세 가지 용도 (동일 1회 수집·캐시 공유)
+
+1. **통보 보강(deliver)**: kind별 USE 분석(§4.8.6 ②③)→결정적 요지 첨부(top 프로세스·병목·OOM·추이·근거 인용). 포맷은 6요소 브리핑 스키마(sre-agent/02 §7, 구 Plan 64 §6)와 정합. **정밀 조사 브리핑은 §14 훅의 `sre_agent` 조사가 담당**하며, 본 용도는 ①조사 완료 전 1차 통보의 즉시 첨부 ②`investigation_trigger_enabled` off·조사 서비스 미가용·타임아웃 시의 **결정적 폴백**이다(D-118 통합 갱신). 예: 메모리 90%→`ps`/`vmstat`/`dmesg`로 top RSS·스왑·OOM 첨부(§4.8.6 ④).
+2. **측정 기반 dedup**: 상태지문 `{top_rss_pid, oom_flag, swap_active, sat_bucket}` 보존→재발 대조. **동일·완화→억제 유지**, **악화→escalate**(§4.8.6 ⑤·escalate-only·게이트 소급 변경 없음). E1 지문 dedup을 측정 증거로 정밀화.
+3. **경계 상향(judge)**: (a) 경계 probe 부하/포화 이상→1단계 승격(§14.4 `_priority`). severity_judge 결정적 신호(OOM=강 상향 등, **Plan 64 §5.2 재사용**·escalate-only).
+
+### 18.5 설계 원칙·회귀·안전 (§1.3·§10·D-003 계승)
+
+- **읽기전용·조치 분리**: §7.2 허용목록·변경명령 물리 제외·D-003 유지·조치는 Plan 64 §8 권고만(자동 실행 없음).
+- **escalate-only·불변식**: L3는 억제를 되돌리거나 새로 억제하지 않는다·하향 없음·심각도3 단락·유지보수 억제 불침범(§14.4·§5 계승).
+- **결정적=판단·LLM=서술**: USE 병목·상향은 결정적 신호가 판정, LLM은 종합·신뢰도·인용만(D-035). 증거 불충분·L3 부재→상향 보류·한계 명시.
+- **옵트인·회귀 0**: `l3_enrichment_enabled`·`gate_l3_probe_enabled`(기본 off)→비활성 시 L1/텍스트 경로 비트동일. L3 부재/미노출→L1 폴백(보수적).
+- **폐쇄망**: 폴스타 에이전트 채널만(외부 SaaS·신규 SSH 없음). 전 L3 수집 감사+마스킹.
+
+### 18.6 산출물·설정·결정·수용 기준
+
+- **공용 자산(통합 갱신 2026-07-24 · D-118)**: severity_judge·briefing의 구현 소재가 `sre_agent/` 패키지(sre-agent/02 §6·§7)로 바뀌었고 **collectorinfra는 이를 import할 수 없다**(패키지 경계 원칙 — 통신은 MCP뿐). 따라서 ①정밀 2차 판정·정밀 브리핑은 §14 훅의 조사 결과(`verdict`·`briefing`)를 poll로 **소비**하고, ②E8의 게이트 배선(§14.4 probe kind 확장·post-gate 결정적 요지 첨부·측정 dedup 상태지문·L3 수집기 `host_diagnostic_collector.py`=폴스타 에이전트 어댑터)은 **collectorinfra 측 자산**으로 구현한다(구 Plan 64 §5.2 시그니처 표는 사양 공유·코드는 각자). E8 수집 채널을 `mcp_server` 고수준 도구(예: `polestar_host_snapshot`)로 노출하면 `sre_agent` 조사도 동일 채널로 호스트 스냅샷·로그 원문을 소비한다(sre-agent/04 §4.2 후보 — E8 착수 시 결정).
+- **설정**(`NoiseGateConfig` 신규·전부 기본 off/보수): `l3_enrichment_enabled`·`gate_l3_probe_enabled`·`gate_l3_probe_timeout_seconds`(2.0)·`l3_profile_map_csv`(kind→프로파일)·`l3_host_access_mode`(폴스타 에이전트 재사용)·`l3_audit_enabled`.
+- **결정 D-117**(L3 실호스트 조사 Plan 60 편입 — 폴스타 에이전트 확장·§7.2 read-only·escalate-only 보강/dedup/경계 상향). 인터뷰(§18.1)로 **D-104를 kind별 프로파일로 확장·D-102/B-1(Plan 64 L3 보안)을 A안·최소권한 read-only로 확정**. 등재 최댓값 D-116→**D-117**(D-115는 Plan 65 예약·등재 직전 재확인). 상태: 계획(미구현)·**보안통제·방향 확정**.
+- **수용 기준**: ① 메모리 90% 알람에 kind별 L3 보강 브리핑 첨부(폴스타 에이전트 경유·§4.8.6 워크드). ② 측정 상태변화(90%→OOM 등) 시 escalate-only dedup 예외·완화·동일은 재통보 0. ③ 경계 케이스 probe 상향(고중요·sev2). ④ 변경명령 수집기 부재·허용목록 외 차단·마스킹·감사 테스트 고정. ⑤ 전 플래그 off 시 비트동일(회귀 0)·L3 부재→L1 폴백·심각도3 단락 불변·`arch_check --ci` 0.
+
+---
+
+## 19. 변경 이력
 
 | 날짜 | 변경 | 사유 |
 |------|------|------|
@@ -687,3 +949,8 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 | 2026-07-23 | **E3 2차 강화 STL 분해 구현 완료 + D-113 등재** | 사용자 지시(후속 강화 중 STL 도입). §5.2 "2차 강화·인프라 헬퍼"대로 신규 infra `metric_stl.py::stl_anomaly_score`(robust STL 분해·`resid[-1]/pstdev(resid)` z-score·**statsmodels lazy import**·미설치/fit실패/데이터부족/σ≤_SIGMA_EPS→None+로그). `compute_severity`가 `anomaly_stl_enabled`일 때만 STL 시도→성공 시 domain `severity_from_anomaly` 매핑(**escalate-only 계약 불변**), 실패→**순수 Python HW graceful 폴백**(사유 로그·침묵 강등 금지). **domain anomaly.py stdlib-only 불변**. 옵트인 기본 off→HW 비트동일(회귀 0). statsmodels는 `pyproject [project.optional-dependencies].stl`만(필수 편입 금지). **실측 정정**: STL Loess는 상수열에서도 부동소수 잔차(σ≈4.6e-14)→`_SIGMA_EPS=1e-9` 가드(순수 HW는 σ=0). **회귀 0 검증**: `tests/test_alarm/` **677 passed**·`arch_check --ci` 0·`test_metric_stl.py`(importorskip)·`test_metric_stl_absence.py`(미설치 graceful 실증)·flags-off STL off 섹션. **운영 반영엔 statsmodels 폐쇄망 반입·보안 협의(행정 절차) 별도 필요** — 기본 off라 반입 전까지 운영 비트동일. 주간 계절성(168h)은 별도 후속(미착수). |
 | 2026-07-23 | **B-7 로컬 임베딩 주석 L-2+L-4 구현 완료 + D-114 등재** | 사용자 인터뷰 확정(L-2+L-4 동시). §15.4 D-035 경계 절대 준수 — **임베딩은 주석·관측 전용, 결정적 게이트 판단·억제 지문·상관 군집·다홉 억제 불변**. 신규 infra `embedding_provider.py::AlarmEmbeddingProvider`(DI·lazy·**로컬 디렉토리 전용 로드**·isdir+`HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`+`local_files_only`·런타임 다운로드 금지·inert graceful+경고 1회·LRU·synonym_semantic D-084 패턴 재사용). **L-2**(워커): 신규 non-dup 이벤트 의미적 근접중복→`semantic_near_dup` 주석(decision_store 최상위 필드·재발 count 병합 후보)·`_recent_event_texts` 스코프 deque(상한·만료 sweep)·**결정적 dedup 불변**. **L-4**(enricher): root NAME↔알람 텍스트 유사도→`noise_ctx["root_text_similarity"]` 주석·**cascaded/root 판정 불변**. 옵트인 `semantic_dedup_annotation_enabled`·`topology_text_fusion_enabled`(기본 off→provider 미생성·비트동일). sentence-transformers는 optional `semantic` 그룹(필수 편입 금지). **D-035 준수 검증**: domain 임베딩 참조 0·decide_notification 인자 없음·주석 유무 티어 비트동일 단언·자동 등록 쓰기 없음. **실측**(HF hub 차단 환경): 캐시 다국어 bge-m3로 provider end-to-end 검증(로컬 로드 다운로드 0·한/영 근접중복 0.84 vs 이질 0.52)·영어전용 all-MiniLM 판별 약함(0.57 vs 0.46)→다국어 필요 실증. 권고 후보 e5-small은 오프라인 미가용→반입 후 재검증. **회귀 0 검증**: `tests/test_alarm/` **713 passed**·`arch_check --ci` 0·flags-off B-7 섹션. **운영 활성화엔 statsmodels와 동종 폐쇄망 반입·보안 협의(행정 절차) 선행** — 협의 문서 `docs/plan60_embedding_import_security_review.md`(모델·패키지 버전고정·해시·라이선스·오프라인 근거·safetensors 우선/pickle 회피·배포 절차) 작성. |
 | 2026-07-23 | **B-7 임베딩 모델 확정 — multilingual-e5-small (D-114 정밀화)** | 사용자 HF 접근 승인·e5-small 진행 지시. 앞서 "HF hub 차단"은 세션 `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` 잔재였음이 재실측(curl 200) 확인. **e5-small 로컬 다운로드(dev 1회·466MB·safetensors·pickle 없음·SHA256 `7a77d5da…`·MIT)·오프라인 로컬 로드 검증**(런타임 다운로드 금지 설계 불변). 판별 실측(근접 6쌍·이질 6쌍): **완전 분리(+0.041)**·단 마진이 bge-m3(+0.145)의 1/3.5로 좁음 → 기본 임계 0.85 부적정(이질 max 0.852) → **임계 0.87 재튜닝**(config·worker·test 갱신). e5 `query:` prefix 실익 미미(+0.041→0.045)라 미반영(단순성·문서화). **옵트인 실모델 테스트** `test_embedding_provider_realmodel.py`(`E5_MODEL_PATH` 설정 시 실행·미설정 스킵) 신설. **트레이드오프(사용자 판단)**: e5-small 유효하나 좁은 마진 — 운영 실데이터 오탐 시 bge-m3(마진 3.5배·2.3GB) 교체 여지. security 문서 §2(아티팩트·해시)·§5(분포·임계)·§8(미결 해소) 갱신. **713 passed·실모델 옵트인 4 skipped·arch 0**. D-114 정밀화(신규 채번 없음). |
+| 2026-07-24 | **§18 E8 신설 — L3 실호스트 조사 Plan 60 편입 (D-117 · 계획) + 경계 개정** | 사용자 지시("Plan 60에 L3 단계 기능을 추가해서라도 처리하라. 보안 결정은 인터뷰로"). **보안 인터뷰(2026-07-24) 확정**: ①접근=폴스타 에이전트 확장(신규 접근경로 0·B-1 A안) ②실행=둘 다(게이트 동기 경계 probe §14.4 확장 + PAGE post-gate 비차단 보강) ③허용목록=§7.2 전체 USE 프로파일(kind 스코프) ④통제=최소권한 read-only·권고만(D-003 유지·변경명령 물리 제외·감사+마스킹). **D-104(경계 uptime probe만)·§16.4·§17.11의 「L3=Plan 60 범위 밖」 경계를 개정**하여 L3를 노이즈 게이트 목적(통보 보강·측정 기반 dedup·경계 상향)으로 편입. 공용 자산 재사용(Plan 64 §7 수집기·§5 severity_judge·§6 브리핑·중복 구현 금지), Plan 60 신규=게이트 배선. escalate-only·옵트인 기본 off·회귀 0·심각도3 단락 불변. **결정 D-117**(등재 최댓값 D-116→D-117·D-115 Plan 65 예약·인터뷰로 D-102/B-1 확정). §18 신설·기존 §18 변경이력→§19. §14.4·§16.4·§17.11 경계 갱신. 전면 RCA·조치 거버넌스는 Plan 64 유지. |
+| 2026-07-24 | **§17.11 보강 정보 수집 메커니즘 — 명령어·함수·경로 상세 추가** | 사용자 지시("보강 정보를 어떤 명령어·기능으로 어떻게 수집할지 구체화"). 실측 배선 기준으로 수집 수단 3종(DBHub `execute_sql` SQL SELECT·폴스타 REST httpx GET·로컬 텍스트/임베딩)을 명세하고, 보강 신호별 매트릭스(조립함수→실행→파싱함수·소스 테이블/컬럼·타임아웃/캐시/graceful) 작성. 핵심 SQL 스켈레톤 실측: 중요도(`build_resource_signal_sql`=cmm_resource IMPORTANCE_ID/IS_MAINTENANCE/ID)·다홉(`build_edges_sql`+`build_ancestor_status_sql`)·프로세스 REST(`list_by_hostname`=`/rest/server/process/listByhostname?hostname=`). **범위 경계 명시**: top/uptime/journalctl 등 OS 명령은 Plan 60 범위 밖(=Plan 64 L3·D-102). **E7 보강은 신규 조회 0**(payload 텍스트 정규식 파싱만). 공통 안전(읽기전용·`_sql_literal`/`urllib.quote` 이스케이프·개별 try/except·마스킹·엔진 방언). |
+| 2026-07-24 | **§17.10 사례별(S1~S8) 신호 수집·dedup·컨텍스트 조회 상세 추가** | 사용자 지시("Plan 65 사례별로 어떤 정보를 수집해 dedup 처리·추가 컨텍스트 조회할지 상세 정리"). 실측 배선 기준으로 **수집 소스 3분류**(A 이벤트 payload·B 워커 산출 신호[fingerprint·self_heal·inhibited·flapping·storm·correlated·recurrence·semantic_annotation·site]·C enricher DB/REST 조회[importance·maintenance·noti_policy·parent_avail·cascaded·root·change·anomaly·process/enrichment·root_text_similarity·주석 하베스트])를 명세하고, S1~S8 각각 ①수집 ②dedup 메커니즘·결과 ③추가 컨텍스트 조회 ④판정·감사를 상세화(종합 요약표 포함). 실측 근거: `compute_fingerprint`=db_id·server·alarm_name·resource_name(주석 제외), `_NOISE_CTX_KEYS` 9키. §17.2에 전방 포인터 추가. |
+| 2026-07-24 | **SREAgent 통합 정합화 — §14 훅 위임처·§18 공용 자산 갱신 (D-118)** | SREAgent 통합(D-118·`plans/sre-agent/` 이관)에 따라 ①§14.2 재사용 배선을 "Plan 50 §8.2 push 훅(`diagnosis_graph`)"에서 **`sre_agent/` 조사 서비스 MCP 계약**(`sre_investigate_alarm` submit/poll·`contract_version: "1"` — sre-agent/05 §3~§4·Plan 64 §0.2 CW-A)으로 교체(페이로드는 게이트 보유값 직렬화 — 변환 계층 불필요), ②§14.3 경계·결정 번호를 Plan 64 §0 재편과 정합화(조사 실행=`sre_agent`·D-101~103 재편·D-102→D-117 해소), ③§18.4 용도1(통보 보강)을 "정밀 브리핑=`sre_agent` 조사 주경로 / E8 결정적 요지 첨부=즉시 첨부·폴백"으로 재정의, ④§18.6 공용 자산을 "severity_judge·briefing=`sre_agent` 소재(import 불가·MCP 소비) / 게이트 배선·L3 수집기=collectorinfra 자산"으로 갱신, E8 채널의 `mcp_server` 도구 노출 후보(`polestar_host_snapshot` — sre-agent/04 §4.2) 기록. 게이트 판정 로직·E1~E8 설계 무변경(문서 정합화만). |
+| 2026-07-23 | **§17 E7 신설 — Plan 65 실측 ITSM 사례 기반 텍스트·주석 신호 보완 (D-116 · 계획)** | 사용자 지시("Plan 65의 alert 사례를 기준으로 Plan 60을 보완, 문헌 검색으로 충실히"). Plan 65 §2.4 실측 13샘플(S1~S8)을 E1~E6에 대조(§17.2 매핑)한 결과 **핵심 노이즈 신호가 구조화 필드·DB가 아니라 알람 텍스트·운영자 주석에 있음**을 실측 확인. **결정적 발견**: `compute_fingerprint`가 주석 텍스트 미포함(실측 L51~64) → S3/S4/S6 주석 재발신은 E1 dedup에 억제되나 그 주석(계획작업·해소 신호)이 그래프 진입 전 ACK로 폐기 = "억제≠삭제"의 텍스트 사각지대. 보완 4계열: **E7-a**(주석 하베스팅 — 억제하되 신호 보존, 계획-무해는 코로보레이션 게이팅 하 강등)·**E7-b**(비알람/비실행가능 사전 분류, S8 승인요청)·**E7-c**(이질 포맷 파서 견고성+사이트 토큰, S8/S5)·**E7-d**(E2 사이트 상관 차원 S5 + E1 ISA-18.2 chattering 정합 S1/S6). 전부 결정적 1차·LLM annotate-only·재현율 우선(텍스트 단독 억제강화 금지)·옵트인 기본 off·읽기전용·신규 모델 반입 없음. 문헌(§17.8): ISA-18.2/EEMUA 191(shelving·chattering·합리화)·NLP 알람 텍스트마이닝(Drain/BERT)·LLM 인시던트 구조화 추출(ICPE 2025·EuroSys 2024)·산업 알람플러드 연관규칙(Control Eng. Practice 2023)·결정적 지문+조합해싱(2025)·SOC 비-actionable 필터링(arXiv 2208.12729)·Moogsoft 유지보수창. **결정 D-116 등재 완료**(등재 최댓값 D-114·예약 D-115[Plan 65]→D-116·`docs/02_decision.md`)·**블로커 B-9 확정**(계획-무해 억제 = 코로보레이션 게이팅, 2026-07-23 사용자 승인). §17 신설·기존 §17 변경이력→§18. **상태: 계획(미구현) — D-번호·정책 확정, 코드 착수 대기.** |
