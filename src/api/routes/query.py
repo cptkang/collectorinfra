@@ -26,6 +26,11 @@ from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
 from src.state import create_followup_input, create_initial_state
+from src.utils.query_gen_common import is_full_scan_query, resolve_query_limit
+
+# 폼필(파일 업로드) 기본 LIMIT — 전량 채움이 기본(_ALL_QUERY_LIMIT와 동일 값).
+# 실행 상한은 db 클라이언트 max_rows(10,000)가 안전망(D-066 후속7 계열).
+_FORM_FILL_DEFAULT_LIMIT = 100_000
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -124,6 +129,10 @@ def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dic
         }
         res = results.get(t.get("task_id")) if isinstance(results, dict) else None
         if isinstance(res, dict):
+            # 실행 경로 표식(Plan 66): realtime_api면 처리 현황 라벨을 "실시간 API 조회"로
+            # 표시한다 — data_query 고정 라벨("DB 조회")이 실제 경로와 다르게 보이는 문제.
+            if res.get("source"):
+                item["source"] = res.get("source")
             sql = res.get("generated_sql")
             if sql:
                 item["generated_sql"] = sql
@@ -326,15 +335,126 @@ def _build_turn_input_state(
                 "approval_modified_sql": modified_sql if action == "modify" else None,
             }
         # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
-        return create_followup_input(body.query)
+        # selected_db_ids(존 선택)는 요청 스코프 — 이번 턴 값 또는 None으로 매 턴 재공급.
+        return create_followup_input(
+            _substitute_zone_placeholder(body.query, body.selected_db_ids),
+            selected_db_ids=body.selected_db_ids,
+        )
     # 첫 턴: 전체 초기화
     return create_initial_state(
-        user_query=body.query,
+        user_query=_substitute_zone_placeholder(body.query, body.selected_db_ids),
         thread_id=thread_id,
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        selected_db_ids=body.selected_db_ids,
     )
+
+
+# ── 존 모호성 역질문 (Plan 65 §4 — clarification 배선) ─────────────────────────
+# 결정적 게이트(D-035): LLM(clarification_needed) 방출에 의존하지 않는다.
+# 발동 = (존 단위 대량 조회 의도 — is_full_scan_query, LIMIT 상향 게이트와 동일 판정 공유)
+# AND (존 식별 불가), 또는 "ㅇㅇ존" 리터럴(버튼 프리필 무수정 전송 — 항상 모호).
+# 후속 턴은 직전 존 승계가 우선이므로 비발동(§4.2), 단 "ㅇㅇ존" 리터럴은 턴과 무관하게
+# 발동. selected_db_ids가 이미 오면 비발동(재개 턴).
+_ZONE_PLACEHOLDER = "ㅇㅇ존"
+# 선택지 입도는 DB 라우팅 입도와 일치(§4.4 확정 — 체크박스 3개 단독, 단축 버튼 없음).
+_ZONE_OPTIONS: tuple[dict, ...] = (
+    {"db_id": "polestar_b0", "label": "은행존"},
+    {"db_id": "polestar_cm_gp", "label": "공동존 김포"},
+    {"db_id": "polestar_cm_yd", "label": "공동존 여의도"},
+)
+
+
+_ZONE_LABEL_BY_ID: dict[str, str] = {o["db_id"]: o["label"] for o in _ZONE_OPTIONS}
+
+
+def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) -> str:
+    """존 선택 재개 턴에서 'ㅇㅇ존' 플레이스홀더를 선택 존 라벨로 치환한다.
+
+    결정적 문자열 치환(LLM 재해석 아님 — 라우팅은 selected_db_ids가 이미 고정).
+    치환하지 않으면 sub_query·처리 현황·응답 서술에 'ㅇㅇ존'이 그대로 남는다
+    (2026-07-24 폐쇄망 실측: 데이터는 정상인데 화면 표기가 전부 'ㅇㅇ존').
+    """
+    if not selected_db_ids or _ZONE_PLACEHOLDER not in (query or ""):
+        return query
+    labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
+    return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
+
+
+def _file_zone_clarification_or_none(
+    query: str, selected_db_ids: list[str] | None, config
+) -> dict | None:
+    """파일(폼필) 경로 존 역질문 (Plan 65 §4 확장, 2026-07-24 실측 요구).
+
+    폼필은 본질적으로 존 단위 대량 조회이므로, 텍스트 경로와 달리 "모든/전체" 표면어
+    조건 없이 **위치어 미해소면 발동**한다(미발동 시 임의 존(b0 등)으로 오라우팅되는
+    실측 사례). has_file=True로 표기해 프론트가 보관한 파일과 함께 재전송하게 한다.
+    """
+    if selected_db_ids:
+        return None  # 선택 재개 턴
+    q = query or ""
+    if _ZONE_PLACEHOLDER not in q:
+        from src.nodes.input_parser import LOCATION_HINT_TERMS
+        if any(t in q for t in LOCATION_HINT_TERMS):
+            return None  # 위치어 해소 — D-065 결정적 보강이 처리
+    active = set(config.multi_db.get_active_db_ids() or [])
+    options = [o for o in _ZONE_OPTIONS if not active or o["db_id"] in active]
+    if not options:
+        return None
+    return {
+        "kind": "zone_select",
+        "question": (
+            "양식을 채울 대상 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
+            "(복수 선택 가능 — 전체는 모두 선택)"
+        ),
+        "options": options,
+        "original_query": q,
+        "multi": True,
+        "has_file": True,
+    }
+
+
+def _parse_selected_db_ids_form(raw: str | None) -> list[str] | None:
+    """multipart Form의 selected_db_ids(CSV)를 목록으로 변환한다."""
+    if not raw:
+        return None
+    ids = [s.strip() for s in raw.split(",") if s.strip()]
+    return ids or None
+
+
+def _zone_clarification_or_none(
+    body: QueryRequest, checkpoint_state: dict | None, config
+) -> dict | None:
+    """존 선택 역질문이 필요하면 clarification 컨텍스트를, 아니면 None을 반환한다."""
+    if body.selected_db_ids:
+        return None  # 선택 재개 턴 — 게이트 통과
+    query = body.query or ""
+    placeholder = _ZONE_PLACEHOLDER in query
+    if not placeholder:
+        if checkpoint_state is not None:
+            return None  # 후속 턴: previous_entities/DB 승계 우선(§4.2 비발동)
+        if not is_full_scan_query(query) or "서버" not in query:
+            return None  # 존 단위 대량 조회 의도 아님 — 과잉 역질문 방지
+        # 위치 표면어가 하나라도 해소되면 비발동 (D-065 결정적 보강이 처리)
+        from src.nodes.input_parser import LOCATION_HINT_TERMS
+        if any(t in query for t in LOCATION_HINT_TERMS):
+            return None
+    # 비활성 DB는 선택지에서 제외
+    active = set(config.multi_db.get_active_db_ids() or [])
+    options = [o for o in _ZONE_OPTIONS if not active or o["db_id"] in active]
+    if not options:
+        return None  # 폴스타 전부 비활성 — 기존 폴백 유지
+    return {
+        "kind": "zone_select",
+        "question": (
+            "조회할 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
+            "(복수 선택 가능 — 전체 조회는 모두 선택)"
+        ),
+        "options": options,
+        "original_query": query,
+        "multi": True,
+    }
 
 
 @router.post(
@@ -368,6 +488,17 @@ async def process_query(
 
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
+
+    # Plan 65 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
+    clarification = _zone_clarification_or_none(body, checkpoint_state, config)
+    if clarification:
+        return QueryResponse(
+            query_id=query_id,
+            status="clarification",
+            response=clarification["question"],
+            thread_id=thread_id,
+            clarification=clarification,
+        )
 
     input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
 
@@ -441,6 +572,27 @@ async def process_query_stream(
 
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
+
+    # Plan 65 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
+    clarification = _zone_clarification_or_none(body, checkpoint_state, config)
+    if clarification:
+        async def clarification_generator() -> AsyncGenerator[str, None]:
+            yield _sse_event({
+                "type": "done",
+                "response": clarification["question"],
+                "query_id": query_id,
+                "thread_id": thread_id,
+                "clarification": clarification,
+            })
+        return StreamingResponse(
+            clarification_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
     input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
@@ -698,6 +850,7 @@ async def process_file_query(
     query: str = Form(..., min_length=1, max_length=2000),
     file: UploadFile = File(...),
     thread_id: Optional[str] = Form(None),
+    selected_db_ids: Optional[str] = Form(None),
     current_user: dict = Depends(require_user),
 ) -> QueryResponse:
     """양식 파일과 함께 질의를 처리한다."""
@@ -707,6 +860,20 @@ async def process_file_query(
         raise HTTPException(
             status_code=400,
             detail=f"지원하지 않는 파일 형식입니다: .{file_ext}. .xlsx 또는 .docx만 지원합니다.",
+        )
+
+    # 1.5 존 역질문 게이트 (Plan 65 §4 파일 경로 확장) — 무거운 처리 전에 조기 반환
+    selected_list = _parse_selected_db_ids_form(selected_db_ids)
+    clarification = _file_zone_clarification_or_none(
+        query, selected_list, request.app.state.config
+    )
+    if clarification:
+        return QueryResponse(
+            query_id=str(uuid.uuid4()),
+            status="clarification",
+            response=clarification["question"],
+            thread_id=thread_id,
+            clarification=clarification,
         )
 
     # 2. 파일 크기 검증 (최대 10MB)
@@ -740,7 +907,7 @@ async def process_file_query(
     actual_thread_id = thread_id or query_id
 
     initial_state = create_initial_state(
-        user_query=query,
+        user_query=_substitute_zone_placeholder(query, selected_list),
         uploaded_file=file_bytes,
         file_type=file_ext,
         thread_id=actual_thread_id,
@@ -748,6 +915,10 @@ async def process_file_query(
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        selected_db_ids=selected_list,
+        # 폼필은 전량 채움이 기본 — 기본 LIMIT(1000) 절단 방지(실측: 지시문에 "모든"이
+        # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
+        resolved_limit=resolve_query_limit(query, _FORM_FILL_DEFAULT_LIMIT),
     )
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
@@ -811,6 +982,7 @@ async def process_file_query_stream(
     query: str = Form(..., min_length=1, max_length=2000),
     file: UploadFile = File(...),
     thread_id: Optional[str] = Form(None),
+    selected_db_ids: Optional[str] = Form(None),
     current_user: dict = Depends(require_user),
 ) -> StreamingResponse:
     """파일 업로드와 함께 SSE 스트리밍 방식으로 질의를 처리한다."""
@@ -820,6 +992,31 @@ async def process_file_query_stream(
         return JSONResponse(
             status_code=400,
             content={"detail": f"지원하지 않는 파일 형식: .{file_ext}"},
+        )
+
+    # 존 역질문 게이트 (Plan 65 §4 파일 경로 확장) — /query/file과 대칭
+    selected_list = _parse_selected_db_ids_form(selected_db_ids)
+    clarification = _file_zone_clarification_or_none(
+        query, selected_list, request.app.state.config
+    )
+    if clarification:
+        _clar_qid = str(uuid.uuid4())
+        async def file_clarification_generator() -> AsyncGenerator[str, None]:
+            yield _sse_event({
+                "type": "done",
+                "response": clarification["question"],
+                "query_id": _clar_qid,
+                "thread_id": thread_id,
+                "clarification": clarification,
+            })
+        return StreamingResponse(
+            file_clarification_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     file_bytes = await file.read()
@@ -848,7 +1045,7 @@ async def process_file_query_stream(
     actual_thread_id = thread_id or query_id
 
     initial_state = create_initial_state(
-        user_query=query,
+        user_query=_substitute_zone_placeholder(query, selected_list),
         uploaded_file=file_bytes,
         file_type=file_ext,
         thread_id=actual_thread_id,
@@ -856,6 +1053,10 @@ async def process_file_query_stream(
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        selected_db_ids=selected_list,
+        # 폼필은 전량 채움이 기본 — 기본 LIMIT(1000) 절단 방지(실측: 지시문에 "모든"이
+        # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
+        resolved_limit=resolve_query_limit(query, _FORM_FILL_DEFAULT_LIMIT),
     )
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}

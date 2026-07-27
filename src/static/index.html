@@ -62,10 +62,14 @@
                     <h2>Infrastructure Query Agent</h2>
                     <p>자연어로 인프라 데이터를 조회하세요. 서버 현황, CPU/메모리/디스크 사용률, 네트워크 트래픽 등을 질의할 수 있습니다.</p>
                     <div class="chat-welcome-hints">
-                        <button class="chat-welcome-hint" data-query="전체 서버의 CPU 사용률 현황을 알려줘">CPU 사용률 현황</button>
-                        <button class="chat-welcome-hint" data-query="메모리 사용률이 80% 이상인 서버 목록">고사용 메모리 서버</button>
-                        <button class="chat-welcome-hint" data-query="파일시스템 사용량 상위 10개 서버">파일시스템 사용량 TOP 10</button>
-                        <button class="chat-welcome-hint" data-query="최근 24시간 네트워크 트래픽 추이">네트워크 트래픽 추이</button>
+                        <!-- Plan 65 §2: 버튼 개편. "ㅇㅇ존"은 사용자가 존으로 수정 후 전송하는 프리필
+                             (무수정 전송 시 현재는 전 존 폴백 — §4 역질문 배선 시 존 선택 UI로 연결).
+                             첫 버튼 "실시간" 표면어는 §1 라우팅 게이트 B안 확정 문구(실시간 API 경로 예약). -->
+                        <button class="chat-welcome-hint" data-query="ㅇㅇ존의 모든 서버들에 대해 실시간 CPU 사용률을 조회해줘">CPU 사용률 현황</button>
+                        <button class="chat-welcome-hint" data-query="ㅇㅇ존의 모든 서버들 중에서 지난달 1개월 통계 기준 메모리 사용률 평균이 80%를 초과하는 서버 리스트를 출력해줘">고사용 메모리 서버</button>
+                        <!-- 월보 추출 2종: 기획 중 — data-query 없이 disabled로 오전송 원천 차단 (Plan 65 §2.2) -->
+                        <button class="chat-welcome-hint chat-welcome-hint--disabled" disabled title="기획 중">은행존 월보 데이터 추출</button>
+                        <button class="chat-welcome-hint chat-welcome-hint--disabled" disabled title="기획 중">공동존 월보 데이터 추출</button>
                         <button class="chat-welcome-hint chat-welcome-hint--help" data-query="이 에이전트의 사용법과 현재 지원 가능한 소스, 조회 가능한 데이터를 알려줘" data-help="1">❓ 사용법</button>
                     </div>
                 </div>

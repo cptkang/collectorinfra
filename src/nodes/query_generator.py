@@ -31,6 +31,8 @@ from src.utils.query_gen_common import (
     build_stat_month_block,
     build_value_index_block,
     correct_servername_hostname_mapping,
+    enforce_all_query_limit,
+    resolve_effective_limit,
     resolve_query_limit,
     resolve_stat_month_range,
 )
@@ -262,10 +264,11 @@ async def query_generator(
     # 멀티턴 맥락에서 이전 SQL 참조
     conversation_context = state.get("conversation_context")
 
-    # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
+    # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066).
+    # 오케스트레이션 경로는 user_query가 sub_query_context(정제 질의)로 교체돼 "모든"이
+    # 탈락할 수 있으므로, 승격된 원문 기준 resolved_limit을 우선한다(Plan 65 §3).
     user_query = state.get("user_query", "") or ""
-    limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
-    logger.info("[TEMP-DIAG plan65] resolve_query_limit(single): input=%r -> limit=%d", user_query, limit_value)  # 실구현 시 제거
+    limit_value = resolve_effective_limit(state, user_query, app_config.query.default_limit)
     # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
     stat_month = resolve_stat_month_range(user_query)
     # 통계 테이블 강제 블록(build_stat_month_block)은 폴스타 월 통계 테이블(cmm_metric_stat_m)
@@ -412,6 +415,10 @@ async def query_generator(
 
             # SQL 추출
             sql = _extract_sql_from_response(response.content)
+
+    # "모든/전체" 상향인데 LLM이 프로필 few-shot 예시의 말미 캡(FETCH FIRST 100 등)을
+    # 모방한 경우 결정적 교정 — 2026-07-24 b0 실측(Plan 65 §5.1 항목 6, D-066 후속8).
+    sql = enforce_all_query_limit(sql, limit_value, app_config.query.default_limit)
 
     logger.info(f"SQL 생성 완료 (retry={retry_count}): {sql[:1000]}...")
 

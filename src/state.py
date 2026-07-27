@@ -95,6 +95,11 @@ class AgentState(TypedDict):
     retry_count: int                         # 재시도 횟수 (최대 3)
     error_message: Optional[str]             # 에러 메시지 (재시도 시 참조)
     current_node: str                        # 현재 실행 중인 노드
+    # 원문 기준 LIMIT 확정값 (Plan 65 §3 / D-066 후속). 오케스트레이션이 user_query를
+    # sub_query/sub_query_context로 교체하기 전에 원문으로 계산해 승격한다 — 문자열 훼손과
+    # 무관하게 보존. None이면 소비부(resolve_effective_limit)가 user_query로 폴백 계산.
+    # 요청 스코프 값이므로 매 턴 초기화(create_initial_state/create_followup_input).
+    resolved_limit: Optional[int]
 
     # === 실행 이력 ===
     query_attempts: list[QueryAttempt]       # SQL 시도 이력 (디버깅/감사용)
@@ -128,6 +133,10 @@ class AgentState(TypedDict):
     db_errors: dict[str, str]                # DB별 에러 메시지 {db_id: error_msg}
     is_multi_db: bool                        # 멀티 DB 쿼리 여부
     user_specified_db: Optional[str]         # 사용자가 직접 지정한 DB (없으면 None)
+    # 존 역질문(Plan 65 §4)에서 사용자가 체크박스로 선택한 DB 목록. LLM 재해석 없이
+    # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
+    # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
+    selected_db_ids: Optional[list[str]]
 
     # === [Phase 3] 멀티턴 대화 ===
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
@@ -180,7 +189,9 @@ class AgentState(TypedDict):
     replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
 
 
-def create_followup_input(user_query: str) -> dict:
+def create_followup_input(
+    user_query: str, selected_db_ids: Optional[list[str]] = None
+) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
     멀티턴에서 체크포인터는 이전 턴 State 전체를 복원하고, 텍스트 경로는 델타 키만
@@ -209,6 +220,12 @@ def create_followup_input(user_query: str) -> dict:
         "uploaded_file": None,
         "file_type": None,
         "csv_sheet_data": None,
+        # 원문 기준 LIMIT 확정값은 요청 스코프 — 직전 턴 값이 승계되지 않도록 명시 초기화
+        # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 65 §3).
+        "resolved_limit": None,
+        # 존 선택(Plan 65 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
+        # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
+        "selected_db_ids": selected_db_ids,
     }
 
 
@@ -223,6 +240,8 @@ def create_initial_state(
     allowed_db_ids: Optional[list[str]] = None,
     request_id: Optional[str] = None,
     client_ip: Optional[str] = None,
+    selected_db_ids: Optional[list[str]] = None,
+    resolved_limit: Optional[int] = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -282,6 +301,9 @@ def create_initial_state(
         retry_count=0,
         error_message=None,
         current_node="",
+        # 라우트가 원문 기준으로 승격한 LIMIT 확정값(D-066 후속7). 파일(폼필) 경로는
+        # 전량 채움이 기본이라 라우트가 상향값을 명시 전달한다(Plan 66 후속 — 폼필 1000 절단).
+        resolved_limit=resolved_limit,
         query_attempts=[],
         active_db_engine=None,
         routing_intent=None,
@@ -292,6 +314,7 @@ def create_initial_state(
         db_errors={},
         is_multi_db=False,
         user_specified_db=None,
+        selected_db_ids=selected_db_ids,
         # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,

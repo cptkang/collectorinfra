@@ -98,6 +98,33 @@ async def semantic_router(
                 "current_node": "semantic_router",
             }
 
+    # [우선순위 2.5] 존 역질문에서 사용자가 체크박스로 확정한 DB 목록 (Plan 65 §4).
+    # UI 선택은 어떤 추론보다 우선 — mapped_db_ids 선례와 동형으로 LLM 라우팅을 스킵해
+    # 결정적으로 고정한다(자연어 재조합 금지: sub_query_context=원문 유지).
+    selected_db_ids = state.get("selected_db_ids")
+    if selected_db_ids:
+        selected = [d for d in selected_db_ids if not active_db_ids or d in active_db_ids]
+        if selected:
+            logger.info("시멘틱 라우팅: 사용자 존 선택 고정, LLM 라우팅 스킵. DB=%s", selected)
+            targets = [
+                {
+                    "db_id": db_id,
+                    "relevance_score": 1.0,
+                    "sub_query_context": user_query,
+                    "user_specified": True,
+                    "reason": "존 선택 역질문에서 사용자가 확정한 DB",
+                }
+                for db_id in selected
+            ]
+            return {
+                "target_databases": targets,
+                "is_multi_db": len(targets) > 1,
+                "active_db_id": targets[0]["db_id"],
+                "user_specified_db": targets[0]["db_id"] if len(targets) == 1 else None,
+                "routing_intent": "data_query",
+                "current_node": "semantic_router",
+            }
+
     # [우선순위 3] field_mapper에서 이미 대상 DB를 결정한 경우 (양식 업로드 시)
     mapped_db_ids = state.get("mapped_db_ids")
     if mapped_db_ids:

@@ -5,7 +5,7 @@
 
 - 각 결정의 상세 배경·코드 예시·대안 비교·재현 로그 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브, 이후 갱신하지 않음) 참조.
 - **신규 결정은 이 파일에만** 아래 압축 형식(결정일/상태/결정/근거/구현/주의/관련)으로 추가한다.
-- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-108 → 다음 D-109). ※Plan 63(P1~P4)로 D-088~D-091 전부 등재 완료(P4-2/3=D-091이 P3=D-090보다 먼저 등재됨: 순서 교차, 팀장 승인). ※**D-101~D-105는 예약(미등재)** — Plan 64 §14(D-101~103)·Plan 60 §14.4(D-104)·§16 L3단계(D-105). **Plan 60 Wave A(E1·E4·E6)는 예약블록 위 D-106~D-108로 재부여**(초안 D-077~081은 결번 — §8 "등재 직전 번호 재확인" 규칙 적용, 팀장 확정).
+- **D-번호 채번**: `## D-` 헤더와 하단 「변경 이력」 표를 **모두 grep**하여 실제 최댓값+1 부여 (현재 최대 D-110 → 다음 D-111). ※Plan 63(P1~P4)로 D-088~D-091 전부 등재 완료(P4-2/3=D-091이 P3=D-090보다 먼저 등재됨: 순서 교차, 팀장 승인). ※**D-101~D-105는 예약(미등재)** — Plan 64 §14(D-101~103)·Plan 60 §14.4(D-104)·§16 L3단계(D-105). **Plan 60 Wave A(E1·E4·E6)는 예약블록 위 D-106~D-108로 재부여**(초안 D-077~081은 결번 — §8 "등재 직전 번호 재확인" 규칙 적용, 팀장 확정).
 - 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번).
 
 ---
@@ -474,7 +474,9 @@
 - **결정**: 두 경로가 동일 출처 쓰도록 공용 헬퍼 `src/utils/query_gen_common.py` 신설 — `build_query_examples_block(structure_meta)`(프로필 query_examples를 few-shot 블록으로, 단일/멀티 공유), `resolve_query_limit(user_query, default_limit)`("전체/모든/모두"→100000 상향, 두 경로 적용).
 - **근거**: 공동존 CPU/메모리 사용률 폼필이 `data_insufficient`+환각 조인(`cmm_metric_stat_h` 직접조인·`definition_name='CPUUtilization'`). b0(단일)는 정상. 원인: 단일 DB는 query_generator 풀 파이프라인(few-shot 예시 주입)이라 field_mapper 가짜 매핑을 이기지만, 멀티 DB `multi_db_executor`는 query_examples 미주입·default_limit 고정한 축소 재구현이라 가짜 매핑을 그대로 따름.
 - **구현**: `src/utils/query_gen_common.py`(신규), `query_generator.py`, `multi_db_executor.py`.
-- **주의**: "주입 코드 추가"만으론 부족 — 주입 대상 데이터가 그 경로에 실제 존재하는지 실측. 새 프롬프트 필드 추가 시 양 경로에서 실제 프롬프트 문자열에 실렸는지 확인.
+- **후속7 (2026-07-24, Plan 65 §3)**: resolve_query_limit이 양 경로에 있어도 **입력 문자열 자체가 훼손되면 무력** — 오케스트레이션 단일 DB 경로가 user_query를 sub_query_context(위치어 제거+문장 압축 정제)로 교체해 "모든" 탈락, LIMIT 1000 절단 실측(은행존 1,328대 누락). 수정: 원문 기준 limit을 `resolved_limit`으로 state 승격(`subagents._make_isolated_input`, 교체 전 시점) + 소비부 공용 `resolve_effective_limit`(승격값 우선, 폴백=기존 계산). 요청 스코프 — `create_initial_state`/`create_followup_input`이 매 턴 None 초기화.
+- **후속8 (2026-07-24)**: state 승격(후속7)만으론 부족한 두 번째 탈락 지점 실측 — LLM이 **프로필 few-shot 예시 말미 캡(FETCH FIRST 100)** 을 지시 limit 대신 모방(비결정적). `enforce_all_query_limit`으로 "모든/전체" 상향 시 생성 SQL 말미의 일반 캡(100·기본값)만 결정적 교정(서브쿼리 최신값 패턴·의도적 TOP-N 보존). 단일·멀티 LLM 반환점 4곳 적용.
+- **주의**: "주입 코드 추가"만으론 부족 — 주입 대상 데이터가 그 경로에 실제 존재하는지 실측. 새 프롬프트 필드 추가 시 양 경로에서 실제 프롬프트 문자열에 실렸는지 확인. limit 등 원문 파생 신호는 문자열 재전달이 아니라 state 필드로 운반하고(후속7), LLM 출력 말미 캡은 결정적으로 교정할 것(후속8) — 프롬프트 지시는 few-shot 예시와의 경쟁에서 비결정적으로 진다.
 - **후속**: (RC1 무효 근본) `build_query_examples_block`의 structure_meta가 멀티 DB 경로에선 항상 None — `_analyze_schema`가 `get_schema_or_fetch`(테이블 스키마만)만 호출, `_structure_meta`(query_guide/examples)는 별도 캐시 키라 미부착(단일 DB의 schema_analyzer 노드에만 있음). 수정: `_analyze_schema`가 `_load_manual_profile`→`get_structure_meta` 폴백으로 명시 부착. (후속2) RC2b: gp/yd EAV Hostname synonyms가 아직 `["EAV호스트명","서버명","호스트네임"]`(D-061이 b0만 고침) → `["EAV호스트명"]`로 축소. RC2: `## 양식-DB 매핑(반드시 SELECT 포함)`이 field_mapper의 지어낸 `cmm_metric_stat_h.cpu_avg_val` 강제 → `_generate_sql`이 `cmm_metric_stat` 매핑을 강제 블록에서 제외하고 예시 피벗(_m) 안내로 전환(사용률=EAV/피벗형이라 field→column 강제 불가). (후속3) 요청 무한 hang: field_mapper가 사용률 필드 매핑 시도 → step 3 LLM hang. Fix A: `perform_3step_mapping`이 사용률 필드(`_is_metric_usage_field`, `_schema_uses_metric_stat_pivot`일 때만)를 remaining에서 제외해 미매핑→예시 위임. Fix B: SSE 루프(`astream_events`)에 전체 타임아웃 부재 → 수동 iterator+`asyncio.wait_for(anext, timeout)`. (후속4) Fix A로 metric 필드 미매핑→excel 헤더 매칭 끊김. 미매핑 필드는 헤더명 그대로 alias(`AS "CPU 평균"`) 지시를 multi_db_executor에 이식, 소수 캐스트는 `decimal_cast_example(db_engine)`로 엔진별(PG `::numeric`/DB2 `CAST DECIMAL`). (후속5) DB별 독립 LLM 호출로 식별 필드 alias 비결정적 → "결과 alias는 양식 필드명(한글 헤더) 그대로, 임의 영문 금지". excel `_normalize_cell_value`로 Decimal→float. (후속6) 프롬프트 튜닝 한계 → 결정적 구조 3종: ① 동일 스키마 멀티 DB는 첫 검증 SQL 재사용(`_sql_by_schema`, 키=(engine,schema)), ② `active_db_engine`을 `get_domain_by_id(db_id).db_engine`로 실제 주입(지금껏 None이라 b0를 PG로 취급), ③ excel 매칭 표기 정규화(소문자+공백/언더스코어 제거).
 - **관련**: D-057, D-050, D-058
 
@@ -755,7 +757,24 @@
 - **주의(실측)**: classify_alarm_kind 확장이 disk 등을 반환하므로 `enrich_processes`·API 경로에 **cpu/memory 전용 가드 필수**(없으면 disk 알람이 프로세스 조회 유발 → 기존 보강 게이팅 회귀). message off면 통보 비트동일.
 - **관련**: Plan 47-1(프로세스 보강 전례), Plan 64 §4.8(L3 단계), D-003(읽기전용), D-035, Plan 60 §16. (초안 D-105 → D-101~105 예약블록 충돌로 D-108 재부여, §8 규칙.)
 
-> **Plan 60 Wave B/C 방향 확정(미구현 — 착수 시 D-109+ 재부여)**: **B-6(E2 크로스-호스트 상관 스코프)=db_id(존) 경계 내 상관**(존 간 gp↔yd는 공통 원인 실증 후 확장). **B-2(E5 변경 피드 소스)=폴스타 변경이력 선조사**(외부 CI/CMDB 연동·수동 등록은 후속). B-3(E3 이상탐지)=순수 Python Holt-Winters로 기해소. B-7(로컬 임베딩 반입·L-2/L-4)·B-8(게이트 경계 probe·Plan 64 D-102 선행)은 이번 범위 밖.
+## D-109. 존 모호 시 역질문(clarification) 배선 + selected_db_ids 결정적 라우팅 고정 (Plan 65 §4)
+- **결정일**: 2026-07-24 | **상태**: 확정 (구현 완료 — UI 최종안 사용자 확정: 체크박스 3개 단독)
+- **결정**: 존 미지정 대량 조회("모든/전체 서버" + 위치 표면어 미해소) 또는 "ㅇㅇ존" 리터럴(버튼 프리필 무수정 전송) 시, 파이프라인 실행 **전에** 라우트가 결정적 게이트로 존 선택 역질문을 반환한다(`status="clarification"`, 서버측 보류 상태 없음 — stateless). UI는 체크박스 3개(은행존 b0/공동존 김포 gp/공동존 여의도 yd, DB 라우팅 입도)+확인 버튼을 렌더하고, 선택 결과를 **자연어 재조합 없이 `selected_db_ids`(구조화 필드)** 로 원문과 함께 재전송한다. 백엔드는 mapped_db_ids 선례 동형으로 semantic_router(그래프)·intent_planner(오케스트레이션)에서 LLM 라우팅/분해를 스킵하고 targets를 고정한다.
+- **근거**: LLM 재해석이 개입하면 오라우팅("은행존 알람"→"김포 은행 공동존…" 2026-07-16 실측). 발동 게이트를 결정적으로 좁혀(후속 턴 승계 우선·서버 표면어 필수) 과잉 역질문을 방지. 미답 새 질의 시 프론트가 보류 블록 비활성(자기정리).
+- **구현**: `api/routes/query.py`(`_zone_clarification_or_none` + /query·/query/stream 대칭 조기 반환), `api/schemas.py`(QueryRequest.selected_db_ids·QueryResponse.clarification), `state.py`(selected_db_ids — 요청 스코프 매 턴 재공급), `routing/semantic_router.py`(우선순위 2.5 고정 블록), `orchestration/intent_planner.py`(②.5 pre-check), `orchestration/subagents.py`(격리 전파+raw_targets 폴백), `static/js/app.js`·`css/style.css`(zone-clarify UI). 검증: `tests/test_orchestration/test_zone_selection.py`(12).
+- **주의**: 게이트는 폴스타 존 선택 전용 표면어 판정 — 존 무관/서버명 지목/후속 턴은 기존 폴백(전 존 조사) 유지. 항목 7(비-SQL 안내문 침묵 강등 노출)은 후속.
+- **후속1 (2026-07-24, 파일 경로 확장)**: 파일 업로드(폼필)는 게이트 미적용이었으나 실측(존 미지정 폼필이 임의로 b0 라우팅 + LIMIT 1000 절단)으로 확장 — 폼필은 본질적으로 존 단위 대량 조회라 **위치어 미해소면 "모든" 표면어 없이 발동**(`_file_zone_clarification_or_none`, has_file=True). 프론트는 파일 참조를 보관(`lastUploadedFile`)했다가 선택 확정 시 FormData(selected_db_ids CSV)로 재전송. 동시에 **폼필 기본 LIMIT을 전량 채움(100,000)으로 상향**(`resolved_limit=resolve_query_limit(query, 100_000)` — 명시 건수는 우선) → 지시문에 "모든"이 없어도 1,000행 절단 없음.
+- **관련**: D-035, D-065, Plan 65 §4, Plan 50-multiturn.
+
+## D-110. 실시간 CPU/메모리 사용률 데이터 평면 — 폴스타 measurement API (Plan 66)
+- **결정일**: 2026-07-24 | **상태**: 확정 (구현 완료 — **옵트인 기본 OFF** `POLESTAR_REST_REALTIME_USAGE_ENABLED=false`, 회귀 0)
+- **결정**: "실시간/현재/지금" 명시 + CPU/메모리 지표어 + 기간 표현 부재(**B안**, 사용자 확정)일 때만, data_query가 SQL 파이프라인 대신 2단계 하이브리드를 탄다: ①존별 서버 목록 SQL(결정적 조립 — LLM 우회) ②measurement API(2안 `GET /rest/v1/dashboard/measurement`, `timeSelector=recent&count=1`, 200대/콜 청크·병렬+전체 타임아웃 가드) ③병합(요청 ID 대조 "미수집"·time 15분 초과 "수집 지연"·KST 수집 시각 표기). 게이트 판정은 **원문 기준 승격**(realtime_usage_intent — D-066 후속7 원리). 실패 시 기존 SQL 경로 폴백(침묵 금지, 부분 실패는 summary 명시). API 호출도 감사로깅.
+- **근거**: Plan 65 §1 확정 실측(200대 yd 814ms·gp 2,460ms → 전용 타임아웃 10s, b0=`http://10.37.16.51:9010` 포트 주의). "현황" 단독 비트리거 — 오분기 비용 비대칭(통계 질의가 순간 스냅샷으로 답하는 사고가 더 치명적).
+- **구현**: `config.py`(PolestarRestConfig — 프로세스 API CSV와 분리 유지, 통합 rename은 후속), `clients/polestar_measurement.py`, `nodes/realtime_usage.py`, `utils/query_gen_common.py`(is_realtime_usage_query), `orchestration/subagents.py`(data_query 분기·의도 승격). 검증: `tests/test_nodes/test_realtime_usage.py`(17 — 확정 응답 shape 고정).
+- **주의**: 지원 지표는 CPU(Utilization/server.Cpus)·MEM(UsedPercent/server.Memory)뿐 — 디스크 등은 DB 경로 유지. 그래프 직행(비오케스트레이션) 경로는 미배선(활성 런타임=트랙 A) — 필요 시 후속.
+- **관련**: D-003(읽기전용 GET), D-035, D-066 후속7·8, Plan 47-1(인프라 원형), Plan 65 §1, Plan 66.
+
+> **Plan 60 Wave B/C 방향 확정(미구현 — 착수 시 D-111+ 재부여)**: **B-6(E2 크로스-호스트 상관 스코프)=db_id(존) 경계 내 상관**(존 간 gp↔yd는 공통 원인 실증 후 확장). **B-2(E5 변경 피드 소스)=폴스타 변경이력 선조사**(외부 CI/CMDB 연동·수동 등록은 후속). B-3(E3 이상탐지)=순수 Python Holt-Winters로 기해소. B-7(로컬 임베딩 반입·L-2/L-4)·B-8(게이트 경계 probe·Plan 64 D-102 선행)은 이번 범위 밖.
 
 ---
 
@@ -765,6 +784,11 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-24 | D-066/D-109 | **대량 조회 표면어 확장 — "서버별/서버 별/서버들/각 서버"** — 실측: "2026년 6월 서버별 CPU·메모리 사용률 평균…" 질의가 "모든" 부재로 ①존 역질문 비발동(침묵 전 존 폴백) ②기본 LIMIT 1000 절단. `_ALL_QUERY_KEYWORDS` 확장 + `is_full_scan_query` 공용 헬퍼로 LIMIT 상향 게이트와 존 역질문 게이트가 **동일 판정 공유**(한쪽만 넓히는 비대칭 방지). 명시 건수 우선 규칙 불변. 실측 질의 회귀 고정. |
+| 2026-07-24 | D-109 | **존 역질문 배선 + selected_db_ids 결정적 고정 (Plan 65 §4)** — 존 미지정 대량 조회·"ㅇㅇ존" 리터럴 시 라우트가 결정적 게이트로 체크박스 역질문(stateless). 선택은 자연어 재조합 없이 구조화 필드로 재전송 → semantic_router·intent_planner가 mapped_db_ids 선례 동형으로 LLM 우회 고정. UI=체크박스 3개 단독(사용자 확정). 테스트 12종. |
+| 2026-07-24 | D-110 | **실시간 사용률 데이터 평면 (Plan 66, 옵트인 기본 OFF)** — B안 게이트(실시간/현재/지금 + 기간 부재, 원문 기준 승격) → ①서버 목록 결정적 SQL ②measurement API(200대/콜 청크·병렬·전용 타임아웃 10s, b0 포트 9010) ③병합(미수집·수집 지연 KST 표기). 실패 시 SQL 폴백(침묵 금지)·감사로깅. 테스트 17종(확정 shape 고정). |
+| 2026-07-24 | D-066 | **후속8: few-shot 말미 캡 모방 결정적 교정 (Plan 65 §5.1 항목 6)** — 후속7 검증 중 실측: "은행존 모든 서버 CPU 사용률"이 resolved_limit 100,000 지시에도 SQL은 `FETCH FIRST 100`(2,328대 중 100행). 원인=프로필 few-shot 예시(config/db_profiles/*.yaml) 말미의 관례 캡(FETCH FIRST 100/LIMIT 100)을 LLM이 모방 — 지시 vs 예시 경쟁은 비결정적(OS 질의는 지시를 따름). 수정: `enforce_all_query_limit`(query_gen_common) — "모든/전체" 상향 시에만, SQL **말미**의 일반 캡(100·기본값)만 교정(서브쿼리 FETCH FIRST 1·의도적 TOP-N 보존). 단일·멀티(LLM/후보 선택) 4개 반환점 적용. 테스트 7종(TestEnforceAllQueryLimit). |
+| 2026-07-24 | D-066 | **후속7: 원문 기준 resolved_limit top-level 승격 (Plan 65 §3)** — 실측 확정: 오케스트레이션 단일 DB 경로가 user_query를 semantic_router 정제 질의(sub_query_context)로 교체하며 "모든" 등 수량 한정어 탈락 → LIMIT 1000 절단(은행존 2,328대 중 1,328대·김포 1,820대 중 820대 누락, 멀티 경로는 sub_query 유지로 미발현 — 단일/멀티 구조적 비대칭). limit 신호를 문자열이 아닌 state로 운반: `_make_isolated_input`이 교체 전 원문으로 계산해 `resolved_limit` 승격(트랙 A·deep_agent 공용 관문), 소비부는 공용 `resolve_effective_limit`(단일·멀티 동일 객체, D-067 패리티 가드). 요청 스코프라 매 턴 초기화. semantic_router 프롬프트 수정은 기각(정제 목적과 경쟁하는 negative instruction — few-shot과 충돌). 회귀 테스트 7종(`test_query_gen_parity.py` TestResolvedLimitPromotion, 실측 질의 고정). |
 | 2026-07-22 | D-101~104 | **ux_improvement 브랜치 병합(골든셋 실데이터 수렴)** — 번호 충돌로 구 D-084~087을 D-101~104로 재부여(팀장 번호 우선). D-101(이번 턴 원문 위치 힌트 결정적 DB 고정+맥락 오염 차단, 구 D-084), D-102(지난 N개월 범위 해석 `resolve_stat_month_range`, 구 D-085), D-103(사용률 집계 크래시 면역 DOUBLE+값 게이트 SQL0413N, 구 D-086), D-104(생성 SQL 한글 토큰 잔존 validator 차단, 구 D-087). 폴스타 조립기/프롬프트는 어댑터 계층(D-089)으로 이식, `_compile_c` 알람 SELECT는 D-100 채택. 코드 주석 D-번호도 매핑 갱신. |
 | 2026-07-21 | D-108 | **Plan 60 E6 통보 컨텍스트 보강 L1 선구현 (Wave A)** — classify_alarm_kind cpu\|memory→+disk/network/process/log, 신규 domain `enrichment_profile.py`, notifier kind별 보강 블록 일반화(cpu/memory 표 비트동일), disk/network=host-wide 스냅샷 참고·process/log=요지만(graceful·신규 SQL 0), 메시지형 LLM 분류는 결정적 프로파일 대체(서술 전용·후속). 옵트인 message_enrichment_enabled(기본 off·회귀 0)·cpu/memory 전용 가드. L3는 Plan 64 §4.8. 초안 D-105→예약충돌로 D-108 재부여. |
 | 2026-07-21 | D-107 | **Plan 60 E4 토폴로지 그래프 + 다홉 하이브리드 억제 (Wave A · B-1·B-5 확정)** — 신규 domain `topology.py`(stdlib)+인프라 `topology_loader.py`(정적 엣지 장기캐시+동적 AVAIL_STATUS IN 조회). 게이트 step6.4: cascaded면 root_notified→SUPPRESS/미통보→DASHBOARD, 미제공→1홉 폴백. root_notified는 enricher가 worker `_active_firings`로 신선 산출. 정책 모듈 topology import 금지. 1차=gp/yd(PostgreSQL), b0→1홉 폴백. signals Wave A 일괄 확장(cascaded·root_resource·correlated). B-1=AVAIL_DEPEND 단독·B-5=하이브리드. 초안 D-080 결번→D-107. |

@@ -36,6 +36,8 @@ from src.utils.query_gen_common import (
     build_query_examples_block,
     build_stat_month_block,
     correct_servername_hostname_mapping,
+    enforce_all_query_limit,
+    resolve_effective_limit,
     resolve_query_limit,
     resolve_stat_month_range,
 )
@@ -133,10 +135,10 @@ async def multi_db_executor(
     parsed_requirements = state.get("parsed_requirements", {})
 
     # "전체/모든" 조회는 LIMIT를 상향해 1000건 절단을 방지한다 — 단일 DB 경로와 동등화(RC4/D-066).
-    effective_limit = resolve_query_limit(
-        state.get("user_query", ""), app_config.query.default_limit
+    # 승격된 원문 기준 resolved_limit 우선 — 단일 경로와 동일 규칙(Plan 65 §3).
+    effective_limit = resolve_effective_limit(
+        state, state.get("user_query", ""), app_config.query.default_limit
     )
-    logger.info("[TEMP-DIAG plan65] resolve_query_limit(multi): input=%r -> limit=%d", state.get("user_query", ""), effective_limit)  # 실구현 시 제거
     # 미매핑 필드(사용률 지표 등, column_mapping=None) — SQL이 한글 헤더로 alias하도록 전달한다.
     # db_column_mapping[db_id]에는 미매핑 필드가 없으므로 통합 column_mapping에서 추출한다(D-066 후속3).
     unmapped_fields = [
@@ -774,7 +776,10 @@ async def _generate_sql(
                 "DB '%s' 다중 후보 선택: method=%s conf=%.2f",
                 db_id, selection.get("method"), selection.get("confidence", 0.0),
             )
-            return selection["sql"]
+            # few-shot 말미 캡 모방 교정 — 단일 경로와 동일 가드(D-066 후속8)
+            return enforce_all_query_limit(
+                selection["sql"], default_limit, app_config.query.default_limit
+            )
 
     messages: list[BaseMessage] = [
         SystemMessage(content=system_prompt)
@@ -784,7 +789,11 @@ async def _generate_sql(
     messages.append(HumanMessage(content=user_prompt))
 
     response = await llm.ainvoke(messages)
-    return _extract_sql(response.content)
+    # few-shot 말미 캡 모방 교정 — 이 함수의 default_limit 인자는 호출부(multi_db_executor)가
+    # 이미 resolve_effective_limit로 확정한 값이다(변수명만 default).
+    return enforce_all_query_limit(
+        _extract_sql(response.content), default_limit, app_config.query.default_limit
+    )
 
 
 def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:

@@ -134,8 +134,24 @@ def build_generic_period_hint(stat_month: str | None) -> str:
 
 
 # "전체/모든/모두" 조회는 기본 LIMIT(default_limit)로 절단하면 안 되므로 상향한다.
-_ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
+# 2026-07-24 실측 확장: "서버별 CPU/메모리 사용률 평균을 … 보여줘"처럼 **"모든" 없이도
+# 전 서버 나열을 의도하는 표면어**("서버별"/"서버들"/"각 서버")가 기본 LIMIT(1000)에
+# 절단되고 존 역질문 게이트도 비발동(침묵 전 존 폴백)했다 — 두 게이트가 공유하는 이
+# 집합을 실사용 표현으로 확장한다. 명시 건수("100건"/"상위 N")는 여전히 우선.
+_ALL_QUERY_KEYWORDS: tuple[str, ...] = (
+    "모든", "전체", "모두", "서버별", "서버 별", "서버들", "각 서버",
+)
 _ALL_QUERY_LIMIT: int = 100_000
+
+
+def is_full_scan_query(user_query: str | None) -> bool:
+    """질의가 전량 나열 의도(대량 조회 표면어 포함)인지 결정적으로 판정한다.
+
+    resolve_query_limit의 LIMIT 상향과 존 역질문 게이트(Plan 65 §4)가 같은 판정을
+    공유한다 — 한쪽만 넓히는 비대칭 방지(D-066 계열).
+    """
+    text = user_query or ""
+    return any(k in text for k in _ALL_QUERY_KEYWORDS)
 
 # 명시 건수 표현("100건", "상위 10개") — "건"은 레코드 수 전용 조사라 안전. 단독 "개"는
 # "개월"·"4개인 서버" 등 수량 한정과 혼동되므로 "상위 N(개)" 꼴에서만 인정한다.
@@ -166,6 +182,107 @@ def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
     if any(k in text for k in _ALL_QUERY_KEYWORDS):
         return _ALL_QUERY_LIMIT
     return default_limit
+
+
+def resolve_effective_limit(state: dict, user_query: str | None, default_limit: int) -> int:
+    """state에 승격된 원문 기준 limit(resolved_limit)을 우선하고, 없으면 표면어로 계산한다.
+
+    폐쇄망 실측(2026-07-24, Plan 65 §3): 오케스트레이션 단일 DB 경로는 user_query를
+    semantic_router 정제 질의(sub_query_context)로 교체하는데, 이 정제(문장 압축)가
+    "모든" 등 수량 한정어까지 탈락시켜 resolve_query_limit이 기본 1,000으로 떨어졌다
+    (은행존 2,328대 중 1,328대 절단 — 멀티 경로는 sub_query 유지로 미발현, 구조적 비대칭).
+    limit 신호는 문자열이 아니라 state(resolved_limit)로 운반해 상류의 어떤 문자열
+    훼손과도 무관하게 보존한다. 단일/멀티 두 소비 경로가 이 함수를 공유한다(D-066).
+
+    Args:
+        state: 에이전트 상태 (resolved_limit이 승격돼 있으면 그 값을 신뢰)
+        user_query: 폴백 계산용 질의 문자열 (그래프 직행 경로에선 원문)
+        default_limit: 일반 조회 기본 LIMIT
+
+    Returns:
+        적용할 LIMIT 값
+    """
+    promoted = state.get("resolved_limit")
+    if isinstance(promoted, int) and promoted > 0:
+        return promoted
+    return resolve_query_limit(user_query, default_limit)
+
+
+# ── 실시간 사용률 라우팅 게이트 (Plan 66 / Plan 65 §1, B안 확정 2026-07-24) ──
+# LLM 의도 분류에 의존하지 않는 결정적 게이트(D-035). B안: "실시간/현재/지금" 명시 +
+# CPU/메모리 지표어 + 기간 표현 부재일 때만 실시간 API 경로. "현황" 단독은 비트리거
+# (실무 한국어에서 "현황"은 목록/정리 광의 — 기존 DB 질의 습관과 충돌 방지).
+_REALTIME_TERMS: tuple[str, ...] = ("실시간", "현재", "지금")
+_REALTIME_METRIC_TERMS: tuple[str, ...] = ("cpu", "씨피유", "메모리", "mem")
+# 기간/추이 표현이 하나라도 있으면 통계 경로 우선(혼합 질의 오분기 방지 — "지난달 실시간 …").
+_PERIOD_TERMS: tuple[str, ...] = ("지난", "개월", "월별", "추이", "통계", "기간", "부터", "까지")
+
+
+def is_realtime_usage_query(user_query: str | None) -> bool:
+    """질의가 실시간 CPU/메모리 사용률 조회(API 경로) 대상인지 결정적으로 판정한다.
+
+    B안(Plan 65 §5.1 항목 1 확정): "실시간/현재/지금" 명시 시에만 — 오분기 비용이
+    비대칭(통계 질의가 순간 스냅샷으로 답하는 사고 > 실시간 질의가 몇 분 낡은 DB 값)이라
+    좁게 시작한다. 판정은 **원문 기준**이어야 한다(sub_query 재작성으로 표면어가 탈락할
+    수 있음 — D-066 후속7과 동일 원리).
+    """
+    text = (user_query or "").lower()
+    if not text:
+        return False
+    if not any(t in text for t in _REALTIME_TERMS):
+        return False
+    if not any(t in text for t in _REALTIME_METRIC_TERMS):
+        return False
+    if any(t in text for t in _PERIOD_TERMS):
+        return False
+    if resolve_stat_month_range(text) is not None:
+        return False
+    return True
+
+
+# 프로필 few-shot 예시(config/db_profiles/*.yaml)가 말미에 일반 캡(FETCH FIRST 100 /
+# LIMIT 100)을 달고 있어, LLM이 프롬프트의 LIMIT 지시 대신 예시 캡을 모방하는 사례가
+# 실측됐다(2026-07-24: b0 "모든 서버 CPU 사용률" — 지시 limit 100,000인데 SQL은
+# FETCH FIRST 100 → 2,328대 중 100행). 지시 vs few-shot 경쟁은 비결정적(OS 질의는
+# 지시를 따름)이라 프롬프트 강화로는 부족 — 결정적 후처리로 교정한다(Known Mistakes).
+_TRAILING_LIMIT_RE = re.compile(
+    r"(?is)(LIMIT\s+(\d+)|FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+ONLY)(\s*;)?\s*$"
+)
+_GENERIC_EXAMPLE_CAP = 100  # 프로필 query_examples 말미의 관례적 캡
+
+
+def enforce_all_query_limit(sql: str, effective_limit: int, config_default_limit: int) -> str:
+    """"모든/전체" 상향 질의의 생성 SQL 말미가 일반 캡이면 상향값으로 결정적 교정한다.
+
+    좁은 가드만 적용한다(오교정 방지):
+    - effective_limit이 "모든/전체" 상향값(_ALL_QUERY_LIMIT)일 때만 발동 — 명시 건수·기본
+      질의는 건드리지 않는다.
+    - SQL **말미**의 LIMIT/FETCH FIRST 절만 대상 — 서브쿼리의 `FETCH FIRST 1 ROW ONLY`
+      (최신값 조회 패턴)는 보존된다.
+    - 말미 값이 일반 캡(예시 관례 100, 설정 기본 LIMIT)일 때만 교체 — `LIMIT 1`(최상위 1건)
+      같은 의도적 TOP-N은 캡 집합 밖이라 보존된다.
+
+    Args:
+        sql: LLM이 생성한 SQL
+        effective_limit: resolve_effective_limit 결과 (원문 기준 확정 LIMIT)
+        config_default_limit: 설정상 기본 LIMIT (일반 캡 판정용)
+
+    Returns:
+        교정된(또는 원본 그대로의) SQL
+    """
+    if not sql or effective_limit != _ALL_QUERY_LIMIT:
+        return sql
+    m = _TRAILING_LIMIT_RE.search(sql)
+    if not m:
+        return sql
+    n = int(m.group(2) or m.group(3))
+    if n == effective_limit or n not in {_GENERIC_EXAMPLE_CAP, config_default_limit}:
+        return sql
+    clause = (
+        f"LIMIT {effective_limit}" if m.group(2)
+        else f"FETCH FIRST {effective_limit} ROWS ONLY"
+    )
+    return sql[: m.start(1)] + clause + (m.group(4) or "")
 
 
 # 헤더/필드명이 사용률 지표(명사+집계어)인지 **표면어로만** 판정한다 — DB 스키마 리터럴

@@ -31,6 +31,7 @@ from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import query_validator
+from src.nodes.realtime_usage import realtime_usage_lookup
 from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
@@ -45,7 +46,11 @@ from src.orchestration.process_query import (
 )
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
-from src.utils.query_gen_common import is_server_identity_col
+from src.utils.query_gen_common import (
+    is_realtime_usage_query,
+    is_server_identity_col,
+    resolve_query_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -595,6 +600,14 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
     # 실행에 필요한 컨텍스트 필드 (얕은 복사)
     base: dict[str, Any] = {
         "user_query": state.get("user_query", ""),
+        # 원문 기준 LIMIT 확정값 승격(Plan 65 §3 / D-066 후속): 호출부가 user_query를
+        # sub_query(planner 재작성)로, 단일 DB 파이프라인이 다시 sub_query_context
+        # (semantic_router 정제 — "모든" 등 수량 한정어까지 압축 탈락)로 교체해도,
+        # 이 시점의 state.user_query(원문)로 계산한 limit이 state 필드로 살아남는다.
+        # 실측(2026-07-24): 이 승격 부재로 은행존 "모든" 질의가 LIMIT 1000 절단(2,328→1,000).
+        "resolved_limit": state.get("resolved_limit") or resolve_query_limit(
+            state.get("user_query", ""), load_config().query.default_limit
+        ),
         # orchestration 경로는 semantic_router를 타지 않아 routing_intent가 항상 None이었고,
         # alarm_query task도 일반 템플릿 + allowed_tables(알람 테이블 제외 필터)로 실행되는
         # 결함이 있었다(D-076 후속3). task agent에서 결정적으로 매핑해 그래프 경로와 대칭화한다
@@ -622,6 +635,13 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "target_sheets": state.get("target_sheets"),
         "file_type": state.get("file_type"),
         "csv_sheet_data": state.get("csv_sheet_data"),
+        # 존 선택 고정(Plan 65 §4): intent_planner pre-check가 못 덮는 복합 계획의
+        # 개별 task까지 run_data_query_pipeline에서 결정적 고정하도록 전파.
+        "selected_db_ids": state.get("selected_db_ids"),
+        # 실시간 사용률 의도(Plan 66, B안 게이트)는 **원문 기준**으로 판정해 승격 —
+        # sub_query/sub_query_context 재작성으로 "실시간" 표면어가 탈락해도 유지
+        # (resolved_limit과 동일 원리, D-066 후속7).
+        "realtime_usage_intent": is_realtime_usage_query(state.get("user_query", "")),
         "mapped_db_ids": state.get("mapped_db_ids"),
         "db_column_mapping": state.get("db_column_mapping"),
         "column_mapping": state.get("column_mapping"),
@@ -783,7 +803,9 @@ async def run_data_query_pipeline(
 
     # 1) DB 선택 — db_ids 고정(②mapped_db_ids)이 있으면 우선, 없으면 classify_dbs.
     #    classify_dbs 후, 이번 턴에 새 위치/DB 신호가 없으면 직전 턴 DB를 승계한다(③, M2).
-    raw_targets = task.get("db_ids")
+    #    selected_db_ids(존 선택 역질문, Plan 65 §4)는 복합 계획의 개별 task에도 적용되도록
+    #    task.db_ids 다음 순위로 결합 — LLM 분류(classify_dbs)를 우회한다.
+    raw_targets = task.get("db_ids") or isolated.get("selected_db_ids")
     db_succeeded = False
     db_pinned = False
     if raw_targets:
@@ -812,6 +834,41 @@ async def run_data_query_pipeline(
             "user_specified": False,
             "reason": "대상 DB 미식별 폴백",
         }]
+
+    # Plan 66: 실시간 사용률 분기 (옵트인 기본 OFF, B안 게이트 — 원문 기준 승격 신호).
+    # 대상이 전부 폴스타이고 measurement 조회가 성공하면 SQL 파이프라인을 건너뛴다.
+    # 실패(None)면 아래 기존 경로로 폴백(침묵 금지 — 사유는 노드가 로그·summary에 남김).
+    if (app_config.polestar_rest.realtime_usage_enabled
+            and isolated.get("realtime_usage_intent")):
+        _polestar_ids = app_config.get_polestar_db_ids() or set()
+        _target_ids = [t["db_id"] for t in targets]
+        if _target_ids and all(d in _polestar_ids for d in _target_ids):
+            rt = await realtime_usage_lookup(
+                _target_ids,
+                isolated.get("user_query", "") or sub_query,
+                app_config,
+                user_id=isolated.get("user_id"),
+                thread_id=isolated.get("thread_id"),
+            )
+            if rt is not None:
+                return {
+                    **rt,
+                    "target_databases": targets,
+                    "is_multi_db": len(targets) > 1,
+                    "active_db_id": targets[0]["db_id"],
+                }
+            logger.info("realtime_usage 폴백 — 기존 SQL 파이프라인으로 진행")
+        else:
+            logger.info(
+                "realtime_usage 스킵: 대상에 비폴스타 DB 포함 — SQL 경로 (targets=%s)",
+                [t["db_id"] for t in targets],
+            )
+    elif isolated.get("realtime_usage_intent"):
+        # 의도는 감지됐는데 플래그 OFF — 침묵 스킵이면 폐쇄망에서 "왜 SQL로 갔는지"
+        # 진단 불가(2026-07-24 실측: 활성화 누락과 게이트 미발동을 구분 못 함).
+        logger.info(
+            "realtime_usage 의도 감지 — 플래그 OFF(POLESTAR_REST_REALTIME_USAGE_ENABLED=false), SQL 경로로 처리"
+        )
 
     is_multi_db = len(targets) > 1
     # 단일 DB: 라우팅 신호(위치/DB명)가 제거된 정제 질의(sub_query_context)를 SQL 생성 입력으로 사용한다.

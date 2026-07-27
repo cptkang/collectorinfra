@@ -152,6 +152,17 @@ async def intent_planner(
         logger.info("intent_planner: 유사어 등록 요청 감지, synonym_registration 단일 task")
         return _single_task_plan("synonym_registration", user_query)
 
+    # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 65 §4) — LLM 분해를 건너뛰어
+    # 자연어 재조합 없이 결정적 고정(mapped_db_ids 선례 동형). task.db_ids는 하류
+    # run_data_query_pipeline이 classify_dbs를 우회하는 기존 배관을 그대로 탄다.
+    selected_db_ids = state.get("selected_db_ids")
+    if selected_db_ids:
+        logger.info(
+            "intent_planner: selected_db_ids 감지, data_query 단일 task (존 선택 고정=%s)",
+            selected_db_ids,
+        )
+        return _single_task_plan("data_query", user_query, db_ids=list(selected_db_ids))
+
     # ③ field_mapper가 이미 대상 DB를 결정한 경우 (양식 업로드 시)
     mapped_db_ids = state.get("mapped_db_ids")
     if mapped_db_ids:
