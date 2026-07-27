@@ -1142,8 +1142,22 @@ def _parse_raw_message(message: str) -> dict:
     return json.loads(message.strip())
 
 
-def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
-    """Redis Stream 페이로드(또는 파싱된 폴스타 JSON)를 AlarmEvent로 변환한다."""
+# (Plan 60 E7-c §17.5) 이질 포맷에서 severity 미식별 시 보수적 폴백값 — 비-해소(드롭 방지).
+_E7C_CONSERVATIVE_SEVERITY = 2
+
+
+def _build_alarm_event_from_payload(
+    payload: dict, *, format_tolerant: bool = False
+) -> AlarmEvent:
+    """Redis Stream 페이로드(또는 파싱된 폴스타 JSON)를 AlarmEvent로 변환한다.
+
+    (Plan 60 E7-c §17.5) format_tolerant=True면 이질 포맷(호스트 접두 없음·네트워크 장비·설비)
+    에 대해 graceful 폴백을 적용한다 — 침묵 드롭·크래시 금지: severity 누락/비정수는 보수적
+    비-해소 값으로 폴백(is_clear 오분류→드롭 방지)하고, 네트워크 장비 포맷("||(장애) <사이트명>")
+    에서 사이트 토큰을 추출해 raw_payload 사본에 `_site_token`으로 노출한다(원본 payload 불변).
+    format_tolerant=False(기본)면 **현행과 비트동일**(누락 severity→0, 비정수→ValueError 전파).
+    알려진 포맷(정상 severity)의 파싱 결과는 두 경로에서 동일하다(신규 폴백만 추가).
+    """
     from datetime import datetime as _dt
 
     alarm_time_str = payload.get("alarmTime", "")
@@ -1153,9 +1167,32 @@ def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
         alarm_time = _dt.now()
 
     alarm_status = payload.get("alarmStatus", "")
-    severity = int(payload.get("severity", 0))
+    if format_tolerant:
+        raw_sev = payload.get("severity", None)
+        try:
+            severity = (
+                int(raw_sev)
+                if raw_sev is not None
+                else _E7C_CONSERVATIVE_SEVERITY  # 누락 → 보수적(드롭 방지)
+            )
+        except (ValueError, TypeError):
+            severity = _E7C_CONSERVATIVE_SEVERITY  # 비정수 → 보수적(크래시 방지)
+    else:
+        severity = int(payload.get("severity", 0))  # 현행 동작(비트동일)
     # is_clear는 severity == 0 단독 기준 — alarmStatus는 ACK 상태로 무관 (Plan 47 §9)
     is_clear = severity == 0
+
+    raw_payload = payload
+    if format_tolerant:
+        # (E7-c) 사이트 토큰 추출(네트워크 장비 포맷) — 원본 payload를 변형하지 않도록 사본에 노출.
+        from src.alarm.domain.correlation import extract_site_token
+
+        site = extract_site_token(
+            str(payload.get("serverName", "") or ""),
+            str(payload.get("resourceName", "") or ""),
+        )
+        if site:
+            raw_payload = {**payload, "_site_token": site}
 
     return AlarmEvent(
         db_id=payload.get("dbId", ""),
@@ -1173,7 +1210,7 @@ def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
         conditions=payload.get("conditions", ""),
         condition_log=payload.get("conditionLog", ""),
         is_clear=is_clear,
-        raw_payload=payload,
+        raw_payload=raw_payload,
     )
 
 
@@ -1213,7 +1250,13 @@ async def analyze_alarm_raw(
         )
 
     # 2. AlarmEvent 구성 (AlarmWorker._process()와 동일)
-    event = _build_alarm_event_from_payload(payload)
+    # (Plan 60 E7-c) format_tolerant_parsing_enabled면 이질 포맷 graceful 폴백(off면 비트동일).
+    event = _build_alarm_event_from_payload(
+        payload,
+        format_tolerant=bool(
+            getattr(getattr(config, "noise_gate", None), "format_tolerant_parsing_enabled", False)
+        ),
+    )
 
     # 3. 사용할 채널 결정
     channels: list[str] = (

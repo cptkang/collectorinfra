@@ -22,6 +22,36 @@ from dataclasses import dataclass
 # [\W_]는 그 외 + 언더스코어이므로 "server.Cpus"·"OOM 강제종료" 모두 자연 분해된다.
 _TOKEN_SPLIT = re.compile(r"[\W_]+", re.UNICODE)
 
+# (Plan 60 E7-c/d §17.5·17.6) 네트워크 장비 포맷의 사이트명 추출:
+# "<장비ID>.<도메인>||(장애) <사이트명>" 에서 '(장애)' 이후 사이트 토큰을 뽑는다.
+# 예: "S8530JUM-4331-1.sotori.com||(장애) 세종대" → "세종대".
+_SITE_MARKER = re.compile(r"\|\|\s*\([^)]*\)\s*(?P<site>[^|]+?)\s*$")
+
+
+def extract_site_token(server_name: str = "", resource_name: str = "") -> str:
+    """네트워크 장비 포맷에서 사이트/위치 토큰을 추출한다 (Plan 60 E7-c/d · §17.5·17.6).
+
+    server_name/resource_name의 "<장비ID>.<도메인>||(장애) <사이트명>" 마커에서 '(...)' 이후
+    사이트 토큰을 뽑는다(S5 실측 포맷). 마커가 없으면 빈 문자열을 반환한다(하위호환·무영향 —
+    일반 서버 알람은 사이트 토큰이 없어 E2 상관에 무영향). 결정적(정규식·stdlib-only)·무부작용.
+    워커가 이 값을 signature_tokens의 extra로 주입해 E2 상관에 사이트 차원을 더한다
+    (correlation_site_dimension_enabled 시에만).
+
+    Args:
+        server_name: 서버/장비 식별 문자열(네트워크 장비 포맷 가능).
+        resource_name: 자원 이름(네트워크 장비 포맷 가능).
+
+    Returns:
+        추출된 사이트 토큰(공백 제거). 마커 미식별 시 빈 문자열.
+    """
+    for source in (server_name, resource_name):
+        m = _SITE_MARKER.search(str(source or ""))
+        if m:
+            site = m.group("site").strip()
+            if site:
+                return site
+    return ""
+
 
 def signature_tokens(
     alarm_name: str,

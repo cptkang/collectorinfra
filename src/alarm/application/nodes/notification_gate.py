@@ -64,6 +64,8 @@ async def notification_gate_node(
         flapping=bool(state.get("flapping", False)),
         storm=bool(state.get("storm", False)),
         correlated=bool(state.get("correlated", False)),
+        # (Plan 60 E7-a) 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호(off/없으면 None).
+        annotation=state.get("annotation"),
     )
 
     store = configurable.get("decision_store")

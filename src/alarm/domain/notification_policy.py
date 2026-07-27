@@ -15,7 +15,16 @@ event/history_stats/analysis/config는 덕 타이핑으로 소비하며 타입�
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
+
+# ── E7-b 비알람 사전분류 마커(§17.4, 결정적·재현율 우선) ──────────────────
+# 알람 마커: 운영 알람이면 통상 아래 중 하나를 텍스트에 담는다.
+_ALARM_MARKERS = re.compile(
+    r"가용성|사용률|임계|초과|미만|경고|장애|Down|DOWN|down|Fail|fail|Error|error|Critical"
+)
+# 비알람 마커: 승인/안내/공지성 메시지(알람 마커 부재 시에만 억제 근거).
+_NON_ALARM_MARKERS = re.compile(r"승인|요청|바랍니다|안내|공지|문의")
 
 # ── 4-티어 상수 ─────────────────────────────────────────────
 TIER_PAGE = "page"
@@ -62,6 +71,39 @@ def compute_fingerprint(event) -> str:
     resource_name = str(getattr(event, "resource_name", "") or "")
     raw = "\x1f".join([db_id, server, alarm_name, resource_name])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def is_operational_alarm(event) -> bool:
+    """이벤트가 운영 알람인지 결정적 마커로 판정한다 (Plan 60 E7-b · §17.4).
+
+    알람 마커(가용성/사용률/임계/DOWN/장애/경고 등)가 **부재**하고 비알람 마커(승인/요청/
+    바랍니다/안내/공지/문의)가 **존재**할 때만 False(비알람)로 판정한다. 그 외에는 True —
+    **애매하면 알람 간주**(재현율 우선, 비알람 오분류가 실알람을 삼키지 않도록). 결정적 규칙이며
+    LLM은 이 판정을 뒤집어 억제하지 못한다(억제는 결정적 마커가 확정, D-035·SOC 한계연구 정합).
+
+    event의 자유 텍스트 필드(alarm_name·condition_log·conditions·resource_name·resource_type)를
+    덕 타이핑으로 소비하며 stdlib(정규식)만 사용한다. 표준 라이브러리만 의존한다(§17.7 domain 순수성).
+
+    Args:
+        event: 알람 이벤트(alarm_name/condition_log/conditions/resource_name/resource_type 속성).
+
+    Returns:
+        운영 알람으로 판정되면 True, 비알람(승인/안내성)이면 False.
+    """
+    parts = [
+        str(getattr(event, "alarm_name", "") or ""),
+        str(getattr(event, "condition_log", "") or ""),
+        str(getattr(event, "conditions", "") or ""),
+        str(getattr(event, "resource_name", "") or ""),
+        str(getattr(event, "resource_type", "") or ""),
+        str(getattr(event, "description", "") or ""),
+    ]
+    text = " ".join(parts)
+    has_alarm_marker = bool(_ALARM_MARKERS.search(text))
+    has_non_alarm_marker = bool(_NON_ALARM_MARKERS.search(text))
+    if not has_alarm_marker and has_non_alarm_marker:
+        return False
+    return True  # 애매하면 알람(재현율 우선)
 
 
 def map_importance(importance_id, importance_value_map: dict[str, str]) -> str:
@@ -113,6 +155,7 @@ def decide_notification(
     flapping: bool = False,
     storm: bool = False,
     correlated: bool = False,
+    annotation: dict | None = None,
 ) -> NotificationDecision:
     """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정) + E2 의존성/인히비션/플래핑/스톰 단계.
 
@@ -163,6 +206,17 @@ def decide_notification(
           effective_severity<=suppress_max_severity 가드, is_routine demote와 동일). 승격우선
           기계가 promote 공존 시 noise demote를 무시한다. 1단계 이내 이동·SUPPRESS 하한은 불변.
         - signals["llm_actionability"]에 소비값을 스냅샷한다(enable off면 None).
+
+    E7 추가(Plan 60 §17 — 전부 옵트인·기본 off면 비트동일):
+        - (E7-b, step0.5) non_alarm_filter_enabled + is_operational_alarm(event)=False →
+          SUPPRESS("비운영 알람"). 심각도3 단락(step3)보다 앞이다(§17.4 — 비알람은 severity
+          신뢰 불가). is_operational_alarm은 domain 순수함수(마커 기반·애매하면 알람).
+        - (E7-a·B-9, step7.7) annotation_planned_suppress + annotation.planned_work AND
+          (annotation.resolution OR correlated OR noise_ctx.change_nearby) → DASHBOARD 강등
+          (SUPPRESS 아님·코로보레이션 게이팅). 주석 단독은 강등 없이 통상 매트릭스로 진행.
+          annotation(dict|None)은 워커가 extract_annotation_signal로 산출해 주입한다 — 이 모듈은
+          annotation_signal을 import하지 않고 값만 소비한다(정책 순수성·§17.7). signals 동결
+          스키마는 확장하지 않는다(change_nearby 전례 — 감사는 reason·record_recurrence가 담당).
     """
     suppress_max_severity = int(getattr(config, "suppress_max_severity", 2))
     importance_value_map = getattr(config, "importance_value_map", {}) or {}
@@ -173,6 +227,11 @@ def decide_notification(
     storm_grouping_enabled = bool(getattr(config, "storm_grouping_enabled", False))
     cross_host_correlation_enabled = bool(
         getattr(config, "cross_host_correlation_enabled", False)
+    )
+    # (Plan 60 E7) 옵트인 — 기본 off면 아래 신규 단계를 평가하지 않아 비트동일(회귀 0).
+    non_alarm_filter_enabled = bool(getattr(config, "non_alarm_filter_enabled", False))
+    annotation_planned_suppress = bool(
+        getattr(config, "annotation_planned_suppress", False)
     )
 
     # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
@@ -252,6 +311,15 @@ def decide_notification(
             fingerprint=compute_fingerprint(event),
         )
 
+    # ── step 0.5(E7-b): 비알람 사전분류 — 승인/안내성 메시지 억제(§17.4) ──
+    # non_alarm_filter_enabled=False(기본)면 평가하지 않아 심각도3 단락(step3) 포함 비트동일(회귀 0).
+    # 활성 시 심각도3 단락보다 앞이지만 — 비알람은 severity 신뢰 불가하므로 마커 판정을 우선한다
+    # (§17.4). is_operational_alarm은 알람 마커 부재+비알람 마커 존재일 때만 False(애매하면 알람).
+    if non_alarm_filter_enabled and not is_operational_alarm(event):
+        return _decision(
+            TIER_SUPPRESS, "비운영 알람 — 승인/안내성 메시지(마커 기반 사전 억제)"
+        )
+
     # ── step 3: 심각도 3 → 즉시 PAGE(단락, 억제 금지 D-035) ──
     if effective_severity == 3:
         return _decision(TIER_PAGE, "심각도3 — 항상 통보(억제 단계 미경유)")
@@ -329,6 +397,24 @@ def decide_notification(
         return _decision(
             TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제"
         )
+
+    # ── step 7.7(E7-a·B-9): 계획-무해 주석 코로보레이션 게이팅 DASHBOARD 강등(§17.3) ──
+    # 텍스트 단독으로는 절대 억제강화 금지 — planned_work **AND** (resolution 또는 E2 클러스터
+    # 소속(correlated) 또는 E5 change_nearby)가 동시 충족될 때만 DASHBOARD 강등(SUPPRESS 아님·
+    # E4 하이브리드 정합). 주석 단독(코로보레이션 없음)이면 강등하지 않고 통상 매트릭스로 진행(첨부만).
+    # annotation_planned_suppress=False(기본)면 평가하지 않아 비트동일(회귀 0). 심각도3은 step3에서
+    # 이미 단락되어 이 단계에 도달하지 않는다(불변). SUPPRESS는 위 단계가 우선(더 강한 억제 보존).
+    if annotation_planned_suppress and annotation and annotation.get("planned_work"):
+        corroborated = (
+            bool(annotation.get("resolution"))
+            or bool(correlated)
+            or bool(noise_ctx and noise_ctx.get("change_nearby"))
+        )
+        if corroborated:
+            return _decision(
+                TIER_DASHBOARD,
+                "계획-무해 주석(코로보레이션) — 대시보드 강등(계획작업+해소/상관/변경근접)",
+            )
 
     # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
     base_tier = _matrix_tier(effective_severity, importance)

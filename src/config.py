@@ -624,6 +624,26 @@ class NoiseGateConfig(BaseSettings):
     # 1차 소스 = 폴스타 cmm_resource_lifecycle_history(읽기전용, gp/yd PostgreSQL). b0(DB2)는 미조회.
     change_correlation_enabled: bool = False  # (E5) 변경 상관 on/off (변경 피드 조회·오버레이)
     change_window_seconds: int = 3600         # (E5) 알람 직전 이 창(초) 내 변경만 원인 후보로 오버레이
+    # ── Plan 60 E7: 실측 ITSM 사례 기반 텍스트·주석 신호 보완 (D-116, §17) ──
+    # 전부 옵트인(기본 off) → off면 현행 게이트·워커·파서 비트동일(회귀 0). 결정적 1차·LLM
+    # annotate-only(기존 alarm_analyzer 재사용·신규 모델 반입 없음)·읽기전용·심각도3 단락 불변.
+    # E7-a 주석 하베스팅(§17.3): dedup 억제 시 ACK 이전에 계획작업/해소/운영자접수 주석을 추출해
+    #   record_recurrence(annotation=…) 최상위 필드로 원 인시던트에 보존(재통보 0·억제≠삭제 텍스트 확장).
+    annotation_harvest_enabled: bool = False  # (E7-a) 주석 하베스팅 on/off (재발신 억제 시 주석 추출·감사)
+    # E7-a 코로보레이션 게이팅(B-9): planned_work AND (resolution OR E2 클러스터 소속 OR E5 change_nearby)
+    #   동시 충족 시에만 후속 동종 알람 DASHBOARD 강등(SUPPRESS 아님·E4 하이브리드 정합). 주석 단독은
+    #   강등 없이 첨부만 — 텍스트 단독으로 억제강화 금지(재현율 우선). annotation_harvest_enabled와 독립.
+    annotation_planned_suppress: bool = False  # (E7-a) 계획-무해 주석 DASHBOARD 강등 on/off (코로보레이션 게이팅)
+    # E7-b 비알람 사전분류(§17.4): 알람 마커 부재 + 비알람 마커(승인/요청/바랍니다 등) 존재 시 SUPPRESS.
+    #   애매하면 알람 간주(재현율 우선). 게이트 step0.5(step1 이전)에서 결정적 마커로 판정·감사.
+    non_alarm_filter_enabled: bool = False    # (E7-b) 비알람(승인/안내성) 사전 억제 on/off
+    # E7-c 파서 견고성(§17.5): 이질 포맷(호스트 접두 없음·네트워크 장비) graceful 폴백 — 침묵 드롭·크래시
+    #   금지, 미식별 severity는 보수적 처리(드롭 방지). 알려진 포맷 파싱 결과는 비트동일(신규 폴백만 추가).
+    format_tolerant_parsing_enabled: bool = False  # (E7-c) 이질 포맷 graceful 폴백 파싱 on/off
+    # E7-d 사이트 상관 차원(§17.6): correlation.signature_tokens에 사이트/위치 토큰을 가중 차원으로 추가
+    #   (워커가 site 토큰 산출·주입, domain은 값만 소비·순수성 유지). 존 경계(B-6) 불변. off면 extra=""로
+    #   현행 필드 Jaccard와 비트동일. chattering(fleeting/repeating) 감사 라벨은 annotation_harvest_enabled 하.
+    correlation_site_dimension_enabled: bool = False  # (E7-d) E2 사이트/위치 상관 차원 on/off
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

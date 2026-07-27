@@ -569,3 +569,302 @@ class TestEnricherL4KeyAbsentWhenProviderNone:
             embedding_provider=None,
         )
         assert "root_text_similarity" not in ctx
+
+
+# ═════════════════════════════════════════════════════════════
+# Plan 60 E7 (D-116) — 실측 ITSM 사례 기반 텍스트·주석 신호 보완.
+# 신규 5플래그(annotation_harvest_enabled·annotation_planned_suppress·non_alarm_filter_enabled·
+# format_tolerant_parsing_enabled·correlation_site_dimension_enabled) 전부 off면 비트동일(회귀 0).
+# off/on 대조로 §17.9 수용 기준 ①~⑥을 고정한다.
+# ═════════════════════════════════════════════════════════════
+from src.alarm.domain.annotation_signal import extract_annotation_signal  # noqa: E402
+from src.alarm.domain.correlation import extract_site_token  # noqa: E402
+from src.alarm.domain.notification_policy import (  # noqa: E402
+    TIER_DASHBOARD,
+    is_operational_alarm,
+)
+
+
+# ── I. E7-a annotation_signal 도메인 순수함수(결정적 추출) ──
+class TestE7aAnnotationSignalDomain:
+    def test_s3_operator_ack_and_resolution_markers(self):
+        # S3 재발신: '=> 담당자 통화'(operator_ack) / '서비스 영향 없음'(resolution).
+        s1 = extract_annotation_signal("szaaso01 사용률 [95%] => 담당자 홍길동 통화. 확인 후 연락")
+        assert s1.operator_ack is True and s1.planned_work is False
+        s2 = extract_annotation_signal("szaaso01 사용률 [95%] => 확인 결과 서비스 영향 없음.")
+        assert s2.resolution is True
+
+    def test_s4_planned_work_markers(self):
+        # S4: '예정된 IPL 작업으로 발생'(planned_work) / '계획정지 … 서비스 이상없음'.
+        s1 = extract_annotation_signal("staapos1 가용성 DOWN — 예정된 IPL 작업으로 발생")
+        assert s1.planned_work is True
+        s2 = extract_annotation_signal("계획정지 관련 작업으로 서비스 이상없음")
+        assert s2.planned_work is True and s2.resolution is True
+
+    def test_empty_signal_when_no_markers(self):
+        # 마커 부재 → 빈 신호(하위호환). None·빈 문자열도 안전.
+        assert extract_annotation_signal("").has_signal() is False
+        assert extract_annotation_signal(None).has_signal() is False  # type: ignore[arg-type]
+        assert extract_annotation_signal("cpu usage 95 percent").has_signal() is False
+
+
+# ── J. E7-b is_operational_alarm + 게이트 step0.5(비알람 사전분류) ──
+class TestE7bNonAlarmFilter:
+    def test_is_operational_alarm_marker_judgement(self):
+        # 비알람(승인요청): 알람 마커 부재 + 비알람 마커 존재 → False.
+        non = SimpleNamespace(alarm_name="내부Cloud Cloud PC 사양변경 승인바랍니다",
+                              condition_log="", conditions="", resource_name="", resource_type="")
+        assert is_operational_alarm(non) is False
+        # 실알람(사용률): 알람 마커 존재 → True. 애매(마커 둘 다 없음) → True(재현율 우선).
+        real = SimpleNamespace(alarm_name="파일시스템 사용률", condition_log="[95%]",
+                              conditions="", resource_name="/data", resource_type="")
+        assert is_operational_alarm(real) is True
+        amb = SimpleNamespace(alarm_name="foo", condition_log="bar",
+                             conditions="", resource_name="", resource_type="")
+        assert is_operational_alarm(amb) is True
+
+    def test_filter_off_bit_identical(self):
+        # non_alarm_filter_enabled off(기본) → 비알람 이벤트도 현행 매트릭스 판정(비트동일).
+        non = _event(2)
+        non.alarm_name = "Cloud PC 사양변경 승인바랍니다"
+        base = decide_notification(non, None, None, _ctx(None), _cfg())
+        assert base.tier == TIER_PAGE  # 높음+sev2=PAGE(마커 필터 미적용)
+
+    def test_filter_on_suppresses_non_alarm(self):
+        # on + 비알람 → step0.5 SUPPRESS(사유 감사). 실알람은 억제 안 됨.
+        cfg = _cfg(non_alarm_filter_enabled=True)
+        non = _event(2)
+        non.alarm_name = "Cloud PC 사양변경 승인바랍니다"
+        d = decide_notification(non, None, None, _ctx(None), cfg)
+        assert d.tier == TIER_SUPPRESS and "비운영 알람" in d.reason
+        real = _event(2)
+        real.alarm_name = "파일시스템 사용률 임계 초과"
+        assert decide_notification(real, None, None, _ctx(None), cfg).tier == TIER_PAGE
+
+    def test_severity3_short_circuit_unchanged_when_filter_off(self):
+        # 필터 off → 심각도3 단락 불변(현행 비트동일).
+        d = decide_notification(_event(3), None, None, _ctx(None), _cfg())
+        assert d.tier == TIER_PAGE and "심각도3" in d.reason
+
+
+# ── K. E7-a 코로보레이션 게이팅 DASHBOARD 강등(decide_notification annotation) ──
+def _planned(**kw) -> dict:
+    base = {"planned_work": False, "resolution": False, "operator_ack": False}
+    base.update(kw)
+    return base
+
+
+class TestE7aCorroborationDemotion:
+    def test_annotation_ignored_when_flag_off(self):
+        # annotation_planned_suppress off(기본) → annotation을 넘겨도 tier/reason/priority 불변.
+        cfg = _cfg()
+        base = decide_notification(_event(2), None, None, _ctx(None), cfg)
+        withann = decide_notification(
+            _event(2), None, None, _ctx(None), cfg,
+            annotation=_planned(planned_work=True, resolution=True),
+        )
+        assert (withann.tier, withann.reason, withann.priority) == (
+            base.tier, base.reason, base.priority
+        )
+
+    def test_planned_plus_resolution_demotes_to_dashboard(self):
+        # on + planned_work + resolution → DASHBOARD 강등(PAGE 아님).
+        cfg = _cfg(annotation_planned_suppress=True)
+        d = decide_notification(
+            _event(2), None, None, _ctx(None), cfg,
+            annotation=_planned(planned_work=True, resolution=True),
+        )
+        assert d.tier == TIER_DASHBOARD and "계획-무해" in d.reason
+
+    def test_planned_plus_change_nearby_demotes(self):
+        # on + planned_work + E5 change_nearby(코로보레이션) → DASHBOARD.
+        cfg = _cfg(annotation_planned_suppress=True)
+        d = decide_notification(
+            _event(2), None, None, _ctx(None, change_nearby=True), cfg,
+            annotation=_planned(planned_work=True),
+        )
+        assert d.tier == TIER_DASHBOARD
+
+    def test_planned_plus_correlated_demotes(self):
+        # on + planned_work + E2 클러스터 소속(correlated) → DASHBOARD.
+        cfg = _cfg(annotation_planned_suppress=True)
+        d = decide_notification(
+            _event(2), None, None, _ctx(None), cfg,
+            annotation=_planned(planned_work=True), correlated=True,
+        )
+        assert d.tier == TIER_DASHBOARD
+
+    def test_planned_alone_no_corroboration_not_demoted(self):
+        # on + planned_work 단독(코로보레이션 없음) → 강등 없이 매트릭스(PAGE) — 텍스트 단독 억제 금지.
+        cfg = _cfg(annotation_planned_suppress=True)
+        d = decide_notification(
+            _event(2), None, None, _ctx(None), cfg,
+            annotation=_planned(planned_work=True),
+        )
+        assert d.tier == TIER_PAGE
+
+    def test_severity3_not_demoted_by_annotation(self):
+        # 심각도3은 step3에서 단락 → planned+corroboration이어도 PAGE(불변).
+        cfg = _cfg(annotation_planned_suppress=True)
+        d = decide_notification(
+            _event(3), None, None, _ctx(None, change_nearby=True), cfg,
+            annotation=_planned(planned_work=True, resolution=True),
+        )
+        assert d.tier == TIER_PAGE and "심각도3" in d.reason
+
+    def test_annotation_not_in_signals_schema(self):
+        # annotation은 signals 동결 스키마에 넣지 않는다(change_nearby 전례).
+        cfg = _cfg(annotation_planned_suppress=True)
+        d = decide_notification(
+            _event(2), None, None, _ctx(None), cfg,
+            annotation=_planned(planned_work=True, resolution=True),
+        )
+        assert "annotation" not in d.signals
+        assert "planned_work" not in d.signals
+
+
+# ── K-bis. E7-a 워커 하베스팅(record_recurrence annotation·chattering) ──
+class _RecCaptureStore:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def record_recurrence(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def _harvest_event() -> AlarmEvent:
+    ev = _full_event()
+    ev.condition_log = "szaaso01 사용률 [95%] => 확인 결과 서비스 영향 없음."
+    return ev
+
+
+class TestE7aWorkerHarvesting:
+    def test_no_annotation_kwarg_when_harvest_off(self):
+        # annotation_harvest_enabled off(기본) → record_recurrence 호출에 annotation kwarg 부재(비트동일).
+        w = AlarmWorker(SimpleNamespace(noise_gate=SimpleNamespace(
+            recurrence_audit_every_n=1, annotation_harvest_enabled=False,
+        )))
+        w._decision_store = _RecCaptureStore()
+        w._record_recurrence("fp", _harvest_event(), {"count": 2, "first_seen": 1.0})
+        assert "annotation" not in w._decision_store.calls[0]
+
+    def test_harvest_on_attaches_resolution_and_chattering(self):
+        # on + resolution 주석 → annotation.resolution=True·chattering='repeating' 적재(재통보 0=append만).
+        w = AlarmWorker(SimpleNamespace(noise_gate=SimpleNamespace(
+            recurrence_audit_every_n=1, annotation_harvest_enabled=True,
+        )))
+        w._decision_store = _RecCaptureStore()
+        w._record_recurrence("fp", _harvest_event(), {"count": 2, "first_seen": 1.0})
+        ann = w._decision_store.calls[0]["annotation"]
+        assert ann["resolution"] is True and ann["chattering"] == "repeating"
+
+
+# ── L. E7-c 파서 견고성(_build_alarm_event_from_payload graceful 폴백) ──
+def _payload(**over) -> dict:
+    base = {"dbId": "db1", "serverName": "srv-1", "alarmId": "A-1",
+            "severity": 2, "alarmName": "CPU", "resourceName": "r1"}
+    base.update(over)
+    return base
+
+
+class TestE7cParserRobustness:
+    def test_known_format_bit_identical_off_vs_on(self):
+        # 정상 severity 페이로드 → format_tolerant off/on 파싱 결과 비트동일(신규 폴백만 추가).
+        from src.api.routes.alarm import _build_alarm_event_from_payload
+
+        p = _payload(severity=2)
+        off = _build_alarm_event_from_payload(p, format_tolerant=False)
+        on = _build_alarm_event_from_payload(p, format_tolerant=True)
+        assert (off.severity, off.is_clear) == (on.severity, on.is_clear) == (2, False)
+
+    def test_missing_severity_off_current_behavior(self):
+        # off(기본) + severity 누락 → 현행 동작(0 → is_clear=True).
+        from src.api.routes.alarm import _build_alarm_event_from_payload
+
+        p = _payload()
+        del p["severity"]
+        ev = _build_alarm_event_from_payload(p, format_tolerant=False)
+        assert ev.severity == 0 and ev.is_clear is True
+
+    def test_noninteger_severity_off_raises(self):
+        # off + 비정수 severity → 현행처럼 ValueError 전파(크래시 동작 보존·비트동일).
+        import pytest
+
+        from src.api.routes.alarm import _build_alarm_event_from_payload
+
+        with pytest.raises(ValueError):
+            _build_alarm_event_from_payload(_payload(severity="abc"), format_tolerant=False)
+
+    def test_noninteger_severity_tolerant_conservative(self):
+        # on + 비정수 severity → 크래시 금지, 보수적 비-해소(드롭 방지).
+        from src.api.routes.alarm import _build_alarm_event_from_payload
+
+        ev = _build_alarm_event_from_payload(_payload(severity="abc"), format_tolerant=True)
+        assert ev.severity == 2 and ev.is_clear is False
+
+    def test_missing_severity_tolerant_not_dropped(self):
+        # on + severity 누락 → 보수적 비-해소(is_clear=False → 드롭 방지).
+        from src.api.routes.alarm import _build_alarm_event_from_payload
+
+        p = _payload()
+        del p["severity"]
+        ev = _build_alarm_event_from_payload(p, format_tolerant=True)
+        assert ev.is_clear is False and ev.severity == 2
+
+    def test_site_token_exposed_when_tolerant(self):
+        # on + 네트워크 장비 포맷 → raw_payload 사본에 _site_token 노출(원본 payload 불변).
+        from src.api.routes.alarm import _build_alarm_event_from_payload
+
+        p = _payload(serverName="S8530JUM-4331-1.sotori.com||(장애) 세종대")
+        ev = _build_alarm_event_from_payload(p, format_tolerant=True)
+        assert ev.raw_payload.get("_site_token") == "세종대"
+        assert "_site_token" not in p  # 원본 불변
+
+
+# ── M. E7-d 사이트 상관 차원(extract_site_token + signature_tokens extra) ──
+class TestE7dSiteDimension:
+    def test_extract_site_token_network_format(self):
+        assert extract_site_token("S8530JUM-4331-1.sotori.com||(장애) 세종대") == "세종대"
+        assert extract_site_token("", "K8530JUM-4331-2||(경고) 부산대") == "부산대"
+
+    def test_extract_site_token_empty_for_plain_server(self):
+        # 일반 서버 알람(마커 없음) → 빈 토큰(E2 상관 무영향·off와 동일 효과).
+        assert extract_site_token("srv-1", "r1") == ""
+
+    def test_signature_tokens_extra_off_bit_identical(self):
+        # extra="" (site off) → 현행 signature_tokens와 비트동일.
+        from src.alarm.domain.correlation import signature_tokens
+
+        base = signature_tokens("가용성", "network.Device", "")
+        assert signature_tokens("가용성", "network.Device", "", extra="") == base
+
+    def test_signature_tokens_site_extra_adds_dimension(self):
+        # extra=사이트토큰(site on) → 사이트 토큰이 상관 차원으로 추가된다.
+        from src.alarm.domain.correlation import signature_tokens
+
+        toks = signature_tokens("가용성", "network.Device", "", extra="세종대")
+        assert "세종대" in toks
+        assert "세종대" not in signature_tokens("가용성", "network.Device", "")
+
+    def test_worker_site_dimension_off_bit_identical(self):
+        # correlation_site_dimension_enabled off → 워커가 extra 미주입 → 현행 상관 판정 비트동일.
+        w = AlarmWorker(_corr_cfg(topo=False))
+        c1, m1 = w._detect_correlated_storm(_corr_ev("A", "p"), 1000.0)
+        c2, m2 = w._detect_correlated_storm(_corr_ev("B", "p"), 1001.0)
+        assert (c1, m1) == (False, None)
+        assert c2 is True and m2 is not None  # 사이트 차원 없이도 alarm_name+rtype로 군집(현행)
+
+
+# ── N. E7 전 플래그 off 교차 회귀(비트동일) ──
+class TestE7AllFlagsOffBitIdentical:
+    def test_decide_notification_bit_identical_all_e7_off(self):
+        # 5플래그 전부 off(미설정=getattr False) → 대표 케이스 tier/reason/priority 불변.
+        base = decide_notification(_event(2), None, None, _ctx(None), _cfg())
+        alloff = _cfg(
+            non_alarm_filter_enabled=False, annotation_planned_suppress=False,
+        )
+        d = decide_notification(
+            _event(2), None, None, _ctx(None), alloff,
+            annotation=_planned(planned_work=True, resolution=True),
+        )
+        assert (d.tier, d.reason, d.priority) == (base.tier, base.reason, base.priority)

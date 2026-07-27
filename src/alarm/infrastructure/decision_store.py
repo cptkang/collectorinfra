@@ -141,14 +141,20 @@ class DecisionStore:
         first_seen_ts: Optional[float] = None,
         alarm_id: str = "",
         ts: Optional[datetime] = None,
+        annotation: Optional[dict] = None,
     ) -> None:
-        """재발생 억제 카운트를 JSONL 한 줄로 append 한다 (Plan 60 E1).
+        """재발생 억제 카운트를 JSONL 한 줄로 append 한다 (Plan 60 E1 · E7-a).
 
         `type="recurrence"` 레코드로 적재하여 발송 판단(decision)·resolution 레코드와
         구분한다(record_resolution 전례 동일). 억제된 재발생은 그래프에 진입하지 않아
         gate 감사 사각지대였다(§3.1) — 워커가 직접 이 메서드로 "억제≠삭제"를 강화한다.
         `aggregate()`는 `type` 필드 보유 레코드를 by_tier/total에서 제외하므로 기존
         티어 집계는 불변이다.
+
+        (Plan 60 E7-a §17.3) `annotation`(dict|None)이 주어지면 계획작업/해소/운영자접수
+        주석 신호를 최상위 필드로 첨부한다 — 재발신이 억제로 폐기되던 텍스트 신호를 원
+        인시던트 컨텍스트에 보존한다("억제≠삭제"의 텍스트 확장·재통보 0). annotation=None
+        (기본·플래그 off)이면 키를 추가하지 않아 기존 레코드와 **비트동일**(회귀 0).
 
         기록 실패는 warning 후 무시(발송 차단 금지). enabled=False면 no-op.
         """
@@ -163,6 +169,9 @@ class DecisionStore:
             "alarm_id": alarm_id,
             "ts": when.isoformat(),
         }
+        if annotation is not None:
+            # E7-a 주석 하베스트 — off/미하베스트면 키 미포함(비트동일).
+            record["annotation"] = annotation
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)

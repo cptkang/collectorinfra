@@ -28,8 +28,10 @@ if TYPE_CHECKING:
     from src.alarm.domain.topology import DependencyGraph
 
 from src.alarm.domain.alarm import AlarmEvent
+from src.alarm.domain.annotation_signal import extract_annotation_signal
 from src.alarm.domain.correlation import (
     ClusterState,
+    extract_site_token,
     match_cluster,
     signature_tokens,
 )
@@ -467,6 +469,10 @@ class AlarmWorker:
             # (Plan 60 B-7 L-2) 의미적 근접중복 후보 주석 — provider 가용 시에만 산출(감사 전용).
             # off/inert면 None → decision_store에 키 미포함(회귀 0). 티어·억제 판정과 무관.
             semantic_annotation: Optional[dict] = None
+            # (Plan 60 E7-a) 계획-무해 코로보레이션 게이팅용 주석 신호 — 게이트로 진행하는
+            # 비해소·비중복 이벤트에 대해 annotation_planned_suppress 시에만 산출(§17.3).
+            # off/마커 없으면 None → decide_notification이 평가 안 함(회귀 0).
+            annotation_signal_dict: Optional[dict] = None
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
@@ -567,6 +573,21 @@ class AlarmWorker:
                     semantic_annotation = self._annotate_semantic_dedup(
                         event, fingerprint, now
                     )
+                    # (Plan 60 E7-a §17.3) 코로보레이션 게이팅용 주석 신호를 산출해 게이트로
+                    # 주입한다. annotation_planned_suppress off면 미산출(None → 게이트 무평가·
+                    # 비트동일). 결정적 추출(정규식)이며 판정은 게이트가 코로보레이션과 함께 내린다.
+                    if getattr(
+                        self._config.noise_gate,
+                        "annotation_planned_suppress",
+                        False,
+                    ):
+                        sig = extract_annotation_signal(
+                            getattr(event, "condition_log", "")
+                            or getattr(event, "description", "")
+                            or ""
+                        )
+                        if sig.has_signal():
+                            annotation_signal_dict = sig.to_dict()
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -612,6 +633,8 @@ class AlarmWorker:
                     "recurrence": recurrence_prev,
                     # (Plan 60 B-7 L-2) 의미적 근접중복 후보 주석(감사 전용·판정 무관, off/inert면 None).
                     "semantic_annotation": semantic_annotation,
+                    # (Plan 60 E7-a) 계획-무해 코로보레이션 게이팅용 주석 신호(off/마커 없으면 None).
+                    "annotation": annotation_signal_dict,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
                     "enrichment": None,
                     # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).
@@ -778,12 +801,18 @@ class AlarmWorker:
     def _record_recurrence(
         self, fingerprint: str, event: AlarmEvent, rec_meta: Optional[dict]
     ) -> None:
-        """재발생 억제를 decision_store에 감사 적재한다 (Plan 60 E1 · graceful).
+        """재발생 억제를 decision_store에 감사 적재한다 (Plan 60 E1 · E7-a · graceful).
 
         억제된 재발생은 그래프에 진입하지 않아 gate 감사 사각지대였다(§3.1). 워커가 직접
         type="recurrence" 레코드를 적재해 "억제≠삭제"를 강화한다. decision_store 미주입
         (게이트 off/생성 실패)이거나 메타가 없으면 스킵한다(회귀 0). recurrence_audit_every_n
         샘플링으로 적재 빈도를 조절한다(기본 1=매번, count % N == 0일 때만).
+
+        (Plan 60 E7-a §17.3) annotation_harvest_enabled면 ACK 이전에 event 텍스트에서
+        계획작업/해소/운영자접수 주석을 결정적으로 추출(extract_annotation_signal)해
+        annotation 필드로 적재한다 — 재발신이 실어 온 텍스트 신호를 재통보 없이 원 인시던트에
+        보존한다. (§17.6 E7-d) 재발 억제는 ISA-18.2 'repeating' chattering으로 감사 라벨링한다
+        (판정 무변경·관측성). 두 확장 모두 annotation_harvest_enabled=False면 미적용(비트동일).
         """
         if self._decision_store is None or rec_meta is None:
             return
@@ -793,12 +822,25 @@ class AlarmWorker:
         count = rec_meta.get("count", 0)
         if count % every_n != 0:
             return
-        self._decision_store.record_recurrence(
-            fingerprint=fingerprint,
-            count=count,
-            first_seen_ts=rec_meta.get("first_seen"),
-            alarm_id=event.alarm_id,
-        )
+        # (E7-a·E7-d) 주석 하베스팅 + chattering 라벨. annotation_harvest_enabled=False(기본)면
+        # 아래 kwargs에 annotation을 넣지 않아 record_recurrence 호출이 현행과 **비트동일**(회귀 0).
+        kwargs: dict = {
+            "fingerprint": fingerprint,
+            "count": count,
+            "first_seen_ts": rec_meta.get("first_seen"),
+            "alarm_id": event.alarm_id,
+        }
+        if getattr(self._config.noise_gate, "annotation_harvest_enabled", False):
+            sig = extract_annotation_signal(
+                getattr(event, "condition_log", "")
+                or getattr(event, "description", "")
+                or ""
+            )
+            harvested = sig.to_dict() if sig.has_signal() else {}
+            # ISA-18.2 repeating(복구 후 재발) 감사 라벨(§17.6) — 판정 무변경·관측성만.
+            harvested["chattering"] = "repeating"
+            kwargs["annotation"] = harvested
+        self._decision_store.record_recurrence(**kwargs)
 
     def _annotate_semantic_dedup(
         self, event: AlarmEvent, fingerprint: str, now: float
@@ -1219,7 +1261,18 @@ class AlarmWorker:
         # sig_label은 domain 순수함수로 사전 산출(policy 순수성 — infra 미의존).
         hit = scan_signature_severity(getattr(event, "condition_log", "") or "")
         sig_label = hit[1] if hit else ""
-        tokens = signature_tokens(event.alarm_name, event.resource_type, sig_label)
+        # (Plan 60 E7-d §17.6) 사이트/위치 토큰을 선택적 가중 차원으로 주입 — 워커가 domain 순수
+        # 헬퍼로 산출해 signature_tokens의 extra로 넘긴다(correlation.py는 값만 소비·순수성 유지).
+        # off(기본)면 extra="" → 현행 필드 Jaccard와 비트동일(회귀 0). 존 경계(B-6)는 scope로 불변.
+        site_extra = ""
+        if getattr(cfg, "correlation_site_dimension_enabled", False):
+            site_extra = extract_site_token(
+                getattr(event, "server_name", "") or "",
+                getattr(event, "resource_name", "") or "",
+            )
+        tokens = signature_tokens(
+            event.alarm_name, event.resource_type, sig_label, extra=site_extra
+        )
 
         # 위상 가중(E4 인접성) — graph·event_node 해소 성공 시에만 adjacent 산출(그 외 None).
         topo_enabled = getattr(cfg, "correlation_topology_weight_enabled", False)
