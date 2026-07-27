@@ -1,0 +1,26 @@
+[project]
+name = "sre-agent"
+version = "0.1.0"
+description = "HolmesGPT 기반 장애 진단 에이전트 (collectorinfra 독립 패키지, D-118)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "holmesgpt>=0.36.0",
+    "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sre_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
