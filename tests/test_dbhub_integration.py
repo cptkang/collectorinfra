@@ -153,7 +153,9 @@ def mcp_tools() -> dict[str, Any]:
         return decorator
 
     mock_mcp.tool = capture_tool
-    register_tools(mock_mcp)
+    # execute_sql은 D-122(2-A)로 기본 비노출(expose_execute_sql=False) — 이 통합 테스트는
+    # execute_sql 흐름을 검증하므로 배치 config.toml(true)과 동일하게 명시 opt-in한다.
+    register_tools(mock_mcp, expose_execute_sql=True)
     return tools
 
 

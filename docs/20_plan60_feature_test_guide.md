@@ -304,12 +304,25 @@ python scripts/mock_polestar_events.py
 | 9 | cascade (E4) | 상위→하위 자원 연쇄 | signals.cascaded=true | `NOISE_MULTI_HOP_CASCADE_ENABLED`+`DEPENDENCY_SUPPRESSION`+토폴로지 픽스처 |
 | 10 | change-corr (E5) | 변경이력 근접 알람 | change 근접 오버레이(승격) | `NOISE_CHANGE_CORRELATION_ENABLED`+변경이력 픽스처 |
 | 11 | semantic-dup (B-7) | 표현만 다른 유사 텍스트 쌍 | semantic_annotation(판정 불변) | `NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED`+로컬 모델(§19) |
-| 12 | invest-trigger | sev3 PAGE→자동 조사 submit | **R8 미구현으로 보류** | (스텁 — submit 배선 미구현) |
+| 12 | invest-trigger | sev3 PAGE→자동 조사 submit | PAGE + 조사 submit **accepted/duplicate** | `NOISE_INVESTIGATION_TRIGGER_ENABLED` + sre_agent 조사 서비스(RUN_E2E=1 완주) |
 | 13 | non-alarm (E7-b) | 승인/안내성 비알람 단건(`…Cloud PC 사양변경 승인바랍니다`) | SUPPRESS(비운영 — step0.5) | `NOISE_NON_ALARM_FILTER_ENABLED` |
 | 14 | net-site-cascade (E7-c/d) | 동일 사이트 네트워크 장비 2대(`<장비ID>.<도메인>\|\|(장애) 세종대`) | site 토큰(`세종대`) 추출 + E2 상관 차원 | `NOISE_FORMAT_TOLERANT_PARSING_ENABLED`+`NOISE_CORRELATION_SITE_DIMENSION_ENABLED` |
 
-- **[12] invest-trigger는 스텁**이다: 메뉴 항목·이벤트 정의만 제공하고, 선택 시 주입 없이 "R8
-  미구현 보류" 사유를 출력한다(submit 확인은 게이트 훅→`sre_investigate_alarm` 배선 구현 후 활성화).
+- **[12] invest-trigger는 활성화**되었다(Plan 66 R9): S8 변형 sev3 단건(PAGE 단락 확정)을 주입하면
+  `notification_gate` 직후 `investigation_trigger` 노드(Plan 64 CW-A)가 `sre_investigate_alarm`을
+  submit→poll하고, 그 결과를 `decision_store.record_investigation`이 `logs/alarm_decisions.jsonl`에
+  `type="investigation"` 레코드(`investigation_id`·`status`·`verdict`)로 감사한다. 도구의 판정기는 이
+  investigation 감사 레코드를 조회해 **accepted**(신규 `investigation_id`) / **duplicate**(기존 id
+  재사용 — dispatcher/JobStore dedup) / **submit 실패**(`investigation_id` 없음 — 서비스 미기동 graceful)를
+  `[조사 N]` 줄로 표시한다. `investigation_id`는 uuid4 hex이므로 **재사용이 곧 dedup 확정 신호**다
+  (동일 시나리오 연속 주입 시 2회째가 기존 id를 재사용하면 duplicate로 표기).
+  - **전제**: `NOISE_INVESTIGATION_TRIGGER_ENABLED=true`(플래그 off면 주입 없이 사유 출력·중단) +
+    sre_agent 조사 서비스(`investigation_service_url`, 기본 `localhost:9098/sse`) 기동. 선택 시 조사 서비스
+    도달성을 `[조사 서비스] ✔/✘`로 사전 표기한다(비차단 — **미도달이어도 게이트 PAGE 판정·통보는 정상
+    완료되고 트리거만 graceful 실패**해 "submit 실패(사유)"로 표기).
+  - **RUN_E2E 경계**: 기본은 submit 응답·`investigation_id`·accepted/duplicate 확인까지다(스텁 서비스·LLM
+    키 부재로도 검증 가능 — poll 최종 status는 `stub`). 실 HolmesGPT 조사 완주·브리핑 수신 대조는 LLM
+    비용이 발생하므로 `RUN_E2E=1` 옵트인에서만 한다.
 - **[9]·[10]은 토폴로지(AVAIL_DEPEND)·변경이력(cmm_resource_lifecycle_history) 픽스처가 필요**하다.
   현 도커 픽스처(`06_plan52_noise_fixtures.sql`)에는 두 데이터가 없어 cascaded/change_nearby가
   관측되지 않을 수 있다(플래그는 사전 점검되나 픽스처는 후속 — Plan 65 §7 G-3).
@@ -334,6 +347,8 @@ python scripts/mock_polestar_events.py
 
 - 결정 레코드(`tier` 보유): 기대 tier와 대조(✔/✘).
 - 재발 레코드(`type=recurrence`): dedup 억제로 판정하고 `count`를 표시.
+- 조사 레코드(`type=investigation`, [12]): `investigation_id` 재사용 여부로 accepted/duplicate를,
+  `investigation_id` 없음이면 submit 실패(graceful)를 표시(`status`는 poll 최종 상태 stub/done/down 등).
 - Plan 60 감사 필드 표시: 최상위 `recurrence`(E1)·`correlation_meta`(E2)·`semantic_annotation`(B-7),
   `signals.cascaded`/`root_resource`(E4)·`correlated`(E2).
 
