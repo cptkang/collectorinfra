@@ -693,4 +693,35 @@ class TestDockerPrometheusIntegration:
             out = await pq.run_metric_instant(cfg_t1, host, "mock_oom_kills_total")
             assert json.loads(out)["data"]["result"][0]["value"][1] == "3"
 
+            # ── 7) 실 uname 경로(§5-1 · D-126) — target-vm node_exporter node_uname_info ──
+            # 고수준 도구가 {nodename="host"}로 조립 → 실 node_exporter 시리즈 매칭.
+            # 실측 확정: 스크레이프 static nodename과 node_uname_info 노출 nodename이 충돌
+            # (동일값)해 honor_labels=false 기본에서 노출 측이 exported_nodename으로 밀린다 —
+            # 즉 **실 uname 값은 exported_nodename**에 실리고, nodename은 스크레이프 static.
+            # mock_exporter와 달리 실 uname 필드(sysname/machine/release)가 있어 실 계측 증명.
+            out = await capture.tools["prom_metric_instant"](
+                hostname=host, metric="node_uname_info", ctx=ctx
+            )
+            d = json.loads(out)
+            assert "error" not in d, f"node_uname_info 미도달: {d}"
+            assert d["result_count"] >= 1
+            labels = d["data"]["result"][0]["metric"]
+            assert labels["job"] == "node"  # target-vm 스크레이프 잡
+            # 서버측 nodename 조립이 실 타깃 시리즈를 매칭(스크레이프 static nodename)
+            assert labels["nodename"] == host
+            # 실 uname 값은 exported_nodename(라벨 충돌 rename·실측) — nodename과 동일값
+            assert labels["exported_nodename"] == host
+            # 실 node_exporter uname 필드(mock 계열엔 없음) → 실 계측 경로 증명
+            assert labels["sysname"] == "Linux"
+            assert labels.get("machine")
+            assert labels.get("release")
+
+            # ── 8) 실 계측 메트릭 존재 단언(값은 비결정 → 존재만·mock만 값 단언 원칙) ──
+            out = await capture.tools["prom_metric_instant"](
+                hostname=host, metric="node_cpu_seconds_total", ctx=ctx
+            )
+            d = json.loads(out)
+            assert "error" not in d, f"node_cpu_seconds_total 미도달: {d}"
+            assert d["result_count"] >= 1  # 실 CPU 시리즈 존재(값 단언 금지 — 비결정)
+
         asyncio.run(_call())
