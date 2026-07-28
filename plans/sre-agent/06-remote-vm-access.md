@@ -120,13 +120,14 @@ Prometheus 라벨(`instance`=ip:port 관례)과 폴스타 식별자(`server_name
 
 | 서비스 | 이미지(안) | 포트(안) | 역할 |
 |---|---|---|---|
-| prometheus | prom/prometheus | 9090 | 스크레이프·PromQL HTTP API — `mcp_server` PromQL 도구와 내장 toolset(A/B 품질 게이트) **양쪽의 공통 대상** |
+| prometheus | prom/prometheus | **9190(재배치)**·컨테이너 내부 9090 | 스크레이프·PromQL HTTP API — `mcp_server` PromQL 도구와 내장 toolset(A/B 품질 게이트) **양쪽의 공통 대상**. 호스트 9090은 langfuse-minio 점유로 9190 재배치(실측 2026-07-28) |
 | node_exporter | prom/node-exporter | **9101(재배치)** | 실 계측 파형 검증(카운터·게이지 실동작) — 기본 9100은 collectorinfra 알람 수신 포트(폴스타 push)와 충돌하므로 재배치 |
 | mock_exporter | 정적 `/metrics` 서빙(경량 http) | 9102 | **결정적 단언용** 합성 메트릭 — 고정 값·"CPU 급증" 파형을 사전 정의해 §7 시나리오를 값 단언 가능하게 재현(실 계측은 비결정적이라 단언 부적합) |
 | (병행) postgres | `testdata/pg` 기존 | 5432 | 폴스타 스키마 서브셋 — 교차 검증의 폴스타 축 |
 
 - **스크레이프·라벨 규약(§5 검증 겸용)**: prometheus.yml에서 두 익스포터에 relabel로 `nodename` 라벨을 부여하되, **값은 PG 픽스처 `cmm_resource`의 server_name과 동일**(예: `web-01`)하게 맞춘다 — §5-0 서버측 조립과 §2 소스 교차 검증 규칙이 픽스처에서 실제로 동작·단언된다.
 - **소비 지점**: ① `mcp_server` PromQL 도구 통합 테스트(nodename 조립 → 실 쿼리 → 값 단언[mock_exporter]·원시 옵트인·timeout 강제·감사 로그) ② RemoteMCPToolset 발견·호출 e2e(R-B) ③ D-119 품질 게이트 A/B(같은 픽스처를 내장 toolset과 `mcp_server` 도구가 공유 — 조건 동일성 보장) ④ Gemini e2e(D-120 — 픽스처 메트릭은 로컬 컨테이너 계측·합성 값이므로 "목업·픽스처만 외부 송신" 데이터 통제와 정합).
+- **기동·검증 완료(2026-07-28)**: prometheus 9190·node_exporter 9101·mock_exporter 9102 기동, 스크레이프 타깃 2종 `up` 실측. 결정적 단언값 `mock_cpu_usage_percent{nodename="svr-web-01",mode="user"}=97.5`/`system=1.5`·`mock_memory_used_bytes=8589934592`·`mock_oom_kills_total=3`, nodename=PG 픽스처 server_name(`svr-web-01`) 정렬. **①(PromQL 도구 실 HTTP e2e)·PG 고수준 도구 실 e2e는 `RUN_DOCKER_IT=1` 실행으로 통과**(`TestDockerPrometheusIntegration`·`TestDockerIntegration` — 서버측 nodename 조립·값 단언·원시 옵트인·timeout·PG LIMIT 방언·cmm_resource 1581행). **③ A/B 품질 게이트·④ Gemini e2e는 GEMINI_API_KEY 대기(LLM 필요)**.
 - **운용 관례**: Docker 미기동 시 해당 테스트 skip(기존 PG 픽스처 관례), 실 LLM e2e는 `RUN_E2E=1` 옵트인 유지. compose 세부(이미지 태그·mock 메트릭 목록·기동 스크립트)는 착수 시 확정.
 
 수용 기준:

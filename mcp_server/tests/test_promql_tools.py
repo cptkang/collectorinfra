@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import os
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -557,21 +559,138 @@ class TestRawOptInGating:
 
 
 # =====================================================================
-# Docker Prometheus 통합 (§8.1 — 옵트인, 미기동 시 skip·사유 명시)
+# Docker Prometheus 통합 (§8.1 — 옵트인 RUN_DOCKER_IT=1, 미기동 시 skip·사유 명시)
 # =====================================================================
+#
+# 실 Prometheus 픽스처(§8.1 prometheus+node_exporter+mock_exporter, 컨테이너 내부 9090
+# → 호스트 9190)를 대상으로 고수준 도구를 실 호출해, 서버측 nodename 조립(§5-0)이 실
+# PromQL로 나가 mock_exporter 결정적 값을 반환함을 단언한다. 연결 정보(URL)는 env 주입
+# (하드코딩 금지)·기본값은 문서화된 픽스처 값. 단언값(97.5·1.5·8589934592·3)은 픽스처
+# 결정값이므로 하드코딩이 정상(그게 검증 대상). 읽기 전용(D-003) — 읽기 HTTP만.
+
+
+def _prom_url() -> str:
+    """env 주입 Prometheus URL을 반환한다(기본값=문서화된 픽스처 http://localhost:9190)."""
+    return os.environ.get("DOCKER_IT_PROM_URL", "http://localhost:9190")
+
+
+# nodename(=PG 픽스처 server_name)도 env 주입 — 기본값 svr-web-01(§8.1 정렬).
+_PROM_HOSTNAME = os.environ.get("DOCKER_IT_PROM_NODENAME", "svr-web-01")
+
+
+class _CaptureMCP:
+    """@mcp.tool() 등록 함수를 이름→함수로 포획하는 최소 스텁(실 도구 클로저 실호출용).
+
+    register_promql_tools가 등록하는 실 도구 클로저(prom_metric_instant 등)를 포획해,
+    fake ctx로 실 호출한다(_prom_config ctx 배선 + run_* 실 HTTP 전 구간을 e2e로 탄다).
+    """
+
+    def __init__(self) -> None:
+        self.tools: dict[str, Any] = {}
+
+    def tool(self, *args: Any, **kwargs: Any):
+        def deco(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+
+        return deco
+
+
+def _prom_ctx(cfg: "PrometheusConfig") -> SimpleNamespace:
+    """PrometheusConfig를 담은 최소 Context 대역을 만든다(promql_tools._prom_config 참조 경로)."""
+    return SimpleNamespace(
+        request_context=SimpleNamespace(
+            lifespan_context={"config": AppServerConfig(prometheus=cfg)}
+        )
+    )
 
 
 @pytest.mark.skipif(
     os.environ.get("RUN_DOCKER_IT") != "1",
     reason=(
         "Docker Prometheus 픽스처 미기동 — RUN_DOCKER_IT=1로 옵트인 시에만 실행"
-        "(§8.1 prometheus+node_exporter+mock_exporter, nodename=PG 픽스처 server_name). "
-        "픽스처 생성·A/B 품질 게이트는 R-B Docker 부분으로 보류."
+        "(§8.1 prometheus+node_exporter+mock_exporter, nodename=PG 픽스처 server_name)."
     ),
 )
 class TestDockerPrometheusIntegration:
-    """로컬 Docker Prometheus 픽스처 대상 실 HTTP end-to-end(옵트인)."""
+    """로컬 Docker Prometheus 픽스처 대상 실 HTTP end-to-end(옵트인, RUN_DOCKER_IT=1).
 
-    def test_placeholder(self):
-        """픽스처 기동 후 실 PromQL 조회·값 단언 지점(현재 미기동으로 기본 skip)."""
-        pytest.skip("Docker Prometheus 픽스처 기동 필요 — R-D 실 연동 검증에서 다룸")
+    고수준 서버측 nodename 조립·다중 시리즈·원시 옵트인·range·timeout 강제를 실 HTTP로
+    단언한다(값은 mock_exporter 결정값).
+    """
+
+    def test_promql_prometheus_e2e(self):
+        """실 Prometheus 픽스처로 고수준/원시 도구를 실 호출해 조립·값·timeout을 단언한다."""
+        cfg = PrometheusConfig(
+            url=_prom_url(),
+            query_timeout=int(os.environ.get("DOCKER_IT_PROM_TIMEOUT", "10")),
+        )
+        host = _PROM_HOSTNAME
+        # 실 도구 클로저 포획(고수준 2종 + 원시 옵트인 5종)
+        capture = _CaptureMCP()
+        pq.register_promql_tools(capture, expose_raw_promql=True)
+        ctx = _prom_ctx(cfg)
+
+        async def _call():
+            # ── 1) 고수준 instant — 서버가 {nodename="host"}를 조립해 실 쿼리 → 메모리 값 ──
+            out = await capture.tools["prom_metric_instant"](
+                hostname=host, metric="mock_memory_used_bytes", ctx=ctx
+            )
+            d = json.loads(out)
+            assert "error" not in d, f"Prometheus 픽스처 미도달: {d}"
+            assert d["source_kind"] == "prometheus"
+            assert d["endpoint"] == "/api/v1/query"
+            # 서버측 결정적 조립(§5-0) — LLM이 라벨을 다루지 않음
+            assert d["query"] == f'mock_memory_used_bytes{{nodename="{host}"}}'
+            assert d["data"]["result"][0]["value"][1] == "8589934592"
+
+            # ── 2) CPU 다중 시리즈(mode 라벨) — user=97.5 · system=1.5 ──
+            out = await capture.tools["prom_metric_instant"](
+                hostname=host, metric="mock_cpu_usage_percent", ctx=ctx
+            )
+            d = json.loads(out)
+            by_mode = {
+                s["metric"]["mode"]: s["value"][1] for s in d["data"]["result"]
+            }
+            assert by_mode == {"user": "97.5", "system": "1.5"}
+
+            # ── 3) OOM 카운터 = 3 ──
+            out = await capture.tools["prom_metric_instant"](
+                hostname=host, metric="mock_oom_kills_total", ctx=ctx
+            )
+            d = json.loads(out)
+            assert d["data"]["result"][0]["value"][1] == "3"
+
+            # ── 4) 고수준 range — query_range 엔드포인트 · matrix ──
+            out = await capture.tools["prom_metric_range"](
+                hostname=host,
+                metric="mock_memory_used_bytes",
+                window="5m",
+                step="60s",
+                ctx=ctx,
+            )
+            d = json.loads(out)
+            assert d["endpoint"] == "/api/v1/query_range"
+            assert d["data"]["resultType"] == "matrix"
+            assert d["result_count"] >= 1
+
+            # ── 5) 원시 옵트인 경로 — expose_raw_promql=True로 prom_query 등록·실 쿼리 1건 ──
+            assert "prom_query" in capture.tools  # 옵트인 게이트 통과(등록됨)
+            out = await capture.tools["prom_query"](
+                query=f'mock_oom_kills_total{{nodename="{host}"}}', ctx=ctx
+            )
+            d = json.loads(out)
+            assert d["data"]["result"][0]["value"][1] == "3"
+
+            # ── 6) timeout 서버 강제 — 짧은 timeout이 실 HTTP 클라이언트에 반영·동작 ──
+            cfg_t1 = PrometheusConfig(url=_prom_url(), query_timeout=1)
+            client = pq.make_client(cfg_t1)
+            try:
+                assert client.timeout.read == 1.0  # 소비자 우회 불가(서버 강제)
+            finally:
+                await client.aclose()
+            # 짧은 timeout에서도 정상 쿼리가 동작함을 실 HTTP로 확인
+            out = await pq.run_metric_instant(cfg_t1, host, "mock_oom_kills_total")
+            assert json.loads(out)["data"]["result"][0]["value"][1] == "3"
+
+        asyncio.run(_call())

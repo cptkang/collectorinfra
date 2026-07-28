@@ -4,12 +4,24 @@
 DB 연결 없이 단위 테스트한다. Docker PG 실연결 end-to-end는 별도(옵트인)로 gate한다.
 """
 
+import asyncio
+import json
 import os
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 try:
     from mcp_server import polestar_tools as pt
+    from mcp_server.config import (
+        AppServerConfig,
+        PrometheusConfig,
+        ServerConfig,
+        SourceConfig,
+    )
+    from mcp_server.db import DBPoolManager
+    from mcp_server.server import create_server
     HAS_MCP = True
 except ImportError:
     HAS_MCP = False
@@ -406,8 +418,89 @@ class TestReturnContract:
 
 
 # =====================================================================
-# Docker PG 통합 (옵트인 — 미기동 시 skip, 사유 명시)
+# Docker PG 통합 (옵트인 — RUN_DOCKER_IT=1, 미기동 시 skip·사유 명시)
 # =====================================================================
+#
+# 실 폴스타 PG 픽스처(Plan 04 §5 · sre-agent/06 §8.1)를 대상으로 고수준 도구를
+# **실 호출**해 반환 계약({rows, source_kind, engine})·PG 방언(polestar. 스키마·LIMIT)·
+# 픽스처 데이터(cmm_resource 1581행·svr-web-01·SV-WEB-001 상태)를 단언한다.
+# 연결 정보는 env 주입(하드코딩 금지)하며, 기본값은 문서화된 폴스타 픽스처 값
+# (localhost:5434/infradb, 소스명 polestar). 단언값(1581·8 등)은 픽스처 결정값이므로
+# 하드코딩이 정상이다(그게 검증 대상). 읽기 전용(D-003) — SELECT만.
+
+
+def _pg_dsn() -> str:
+    """env 주입 연결 정보로 PG DSN을 조립한다(기본값=문서화된 폴스타 픽스처)."""
+    host = os.environ.get("DOCKER_IT_PG_HOST", "localhost")
+    port = os.environ.get("DOCKER_IT_PG_PORT", "5434")
+    db = os.environ.get("DOCKER_IT_PG_DB", "infradb")
+    user = os.environ.get("DOCKER_IT_PG_USER", "polestar_user")
+    password = os.environ.get("DOCKER_IT_PG_PASSWORD", "polestar_pass_2024")
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+
+
+# 소스명(db_id)도 env 주입 — 기본값 polestar(Plan 04 §5).
+_PG_SOURCE = os.environ.get("DOCKER_IT_PG_SOURCE", "polestar")
+
+
+class _CaptureMCP:
+    """@mcp.tool() 등록 함수를 이름→함수로 포획하는 최소 스텁.
+
+    register_polestar_tools가 등록하는 실 도구 클로저를 포획해, fake ctx로 실 호출한다
+    (도구 클로저의 _resolve_engine·build_*_sql·pool.execute·_ok 계약 전 구간을 e2e로 탄다).
+    """
+
+    def __init__(self) -> None:
+        self.tools: dict[str, Any] = {}
+
+    def tool(self, *args: Any, **kwargs: Any):
+        def deco(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+
+        return deco
+
+
+def _fake_ctx(pool: "DBPoolManager", config: "AppServerConfig") -> SimpleNamespace:
+    """lifespan_context(pool_manager·config)만 담은 최소 Context 대역을 만든다.
+
+    도구 클로저는 ctx.request_context.lifespan_context["pool_manager"]/["config"]만
+    참조하므로(polestar_tools._pool/_config), 이 최소 대역으로 실 호출이 가능하다.
+    """
+    return SimpleNamespace(
+        request_context=SimpleNamespace(
+            lifespan_context={"pool_manager": pool, "config": config}
+        )
+    )
+
+
+def _run_pg(call):
+    """폴스타 PG 픽스처에 연결한 pool·실 도구 클로저·ctx로 call(pool, tools, ctx)을 실행한다.
+
+    픽스처 미도달 시 침묵 skip이 아니라 명확한 사유로 실패시킨다(RUN_DOCKER_IT 옵트인 —
+    Known Mistakes: 침묵 skip 금지). asyncpg 드라이버 부재 시 initialize가 연결에 실패해
+    health_check가 False가 되어 동일 경로로 사유가 노출된다.
+    """
+
+    async def _do():
+        src = SourceConfig(name=_PG_SOURCE, type="postgresql", connection=_pg_dsn())
+        pool = DBPoolManager([src])
+        await pool.initialize()
+        if not await pool.health_check(_PG_SOURCE):
+            raise RuntimeError(
+                f"PG 픽스처 미도달 — dsn={_pg_dsn()} 확인 "
+                "(RUN_DOCKER_IT=1 · Docker 기동 · asyncpg 드라이버)"
+            )
+        config = AppServerConfig(sources=[src])
+        capture = _CaptureMCP()
+        pt.register_polestar_tools(capture)
+        ctx = _fake_ctx(pool, config)
+        try:
+            return await call(pool, capture.tools, ctx)
+        finally:
+            await pool.close_all()
+
+    return asyncio.run(_do())
 
 
 @pytest.mark.skipif(
@@ -415,8 +508,97 @@ class TestReturnContract:
     reason="Docker PG 미기동 — RUN_DOCKER_IT=1로 옵트인 시에만 실행(폴스타 스키마 서브셋 픽스처 필요)",
 )
 class TestDockerIntegration:
-    """로컬 Docker PG 픽스처 대상 고수준 도구 end-to-end(옵트인)."""
+    """로컬 Docker PG 픽스처 대상 고수준 도구 end-to-end(옵트인, RUN_DOCKER_IT=1).
 
-    def test_placeholder(self):
-        """Docker 픽스처 기동 후 실연결 검증 지점(현재 미기동으로 기본 skip)."""
-        pytest.skip("Docker PG 픽스처 기동 필요 — M-D 실 DB 런타임 검증에서 다룸")
+    M-D '실 DB 런타임 검증(PG)' 부채 일부 해소 — 반환 계약·PG 방언·픽스처 데이터를
+    실 연결로 단언한다(DB2 런타임 검증은 계속 보류).
+    """
+
+    def test_polestar_high_level_tools_pg_e2e(self):
+        """실 PG 픽스처로 고수준 도구를 실 호출해 계약·방언·데이터·발견 표면을 단언한다."""
+
+        async def _call(pool, tools, ctx):
+            # ── 1) cmm_resource 적재 · polestar. 소문자 스키마 · 읽기전용 SELECT ──
+            #     (DBPoolManager.execute 실경로 — 도구가 쓰는 것과 동일)
+            cnt = await pool.execute(
+                _PG_SOURCE, "SELECT count(*) AS n FROM polestar.cmm_resource"
+            )
+            assert cnt[0]["n"] == 1581
+
+            # ── 2) svr-web-01 존재(Prometheus nodename 정렬) · 컬럼 단언 ──
+            web = await pool.execute(
+                _PG_SOURCE,
+                "SELECT id, name, resource_type FROM polestar.cmm_resource "
+                "WHERE name = 'svr-web-01' ORDER BY id",
+            )
+            assert {r["name"] for r in web} == {"svr-web-01"}
+            # server.Server 리소스가 존재(=Prometheus nodename 라벨과 정렬되는 서버 행)
+            assert "server.Server" in {r["resource_type"] for r in web}
+
+            # ── 3) 고수준 도구 실 호출 — 반환 계약 {rows, source_kind, engine} + 행수/컬럼 ──
+            #     build_resource_status_sql의 polestar. 스키마·LIMIT 방언이 실 PG에서 실행됨
+            out = await tools["polestar_resource_status"](
+                source=_PG_SOURCE, server_name="SV-WEB-001", ctx=ctx
+            )
+            data = json.loads(out)
+            assert data["source_kind"] == "polestar_db"
+            assert data["engine"] == "postgresql"
+            assert data["source"] == _PG_SOURCE
+            assert data["row_count"] == len(data["rows"]) == 8
+            assert set(data["rows"][0]) == {
+                "resource_id",
+                "resource_name",
+                "resource_type",
+                "avail_status",
+                "importance_id",
+                "is_maintenance",
+            }
+            assert any(r["resource_name"] == "SV-WEB-001" for r in data["rows"])
+
+            # ── 4) PG LIMIT 방언 실동작 — 작은 LIMIT이 실제로 결과를 절단 ──
+            limited = await pool.execute(
+                _PG_SOURCE,
+                pt.build_resource_status_sql(
+                    False, "hostapo01 (빅데이터 까페 WAS#1)", 5
+                ),
+            )
+            assert len(limited) == 5  # 48행 서브리소스 중 LIMIT 5로 절단
+
+            # ── 5) 오류 계약 — 미등록 소스는 예외 비전파 {error} ──
+            err = json.loads(
+                await tools["polestar_resource_status"](
+                    source="__nonexistent__", server_name="x", ctx=ctx
+                )
+            )
+            assert "error" in err and "알 수 없는 소스" in err["error"]
+
+            # ── 6) MCP 도구 자동 발견 표면(RemoteMCPToolset가 광고받는 목록) ──
+            #     실 holmes RemoteMCPToolset 발견 e2e는 sre_agent/tests(holmes 별도 venv)
+            #     범위이므로, 여기선 픽스처 config로 create_server를 실 조립해 MCP
+            #     list_tools 발견 표면(프로토콜 광고 = 발견 대상)을 단언한다.
+            server = create_server(
+                AppServerConfig(
+                    server=ServerConfig(name="fixture-mcp"),
+                    sources=[
+                        SourceConfig(
+                            name=_PG_SOURCE,
+                            type="postgresql",
+                            connection=_pg_dsn(),
+                        )
+                    ],
+                    prometheus=PrometheusConfig(
+                        url="http://fixture-prom", expose_raw_promql=True
+                    ),
+                )
+            )
+            discovered = {t.name for t in await server.list_tools()}
+            for expected in (
+                "polestar_resource_status",
+                "polestar_metric_trend",
+                "prom_metric_instant",
+                "prom_metric_range",
+                "prom_query",  # 원시 옵트인 노출됨
+            ):
+                assert expected in discovered
+
+        _run_pg(_call)
