@@ -17,7 +17,7 @@ def make_settings(gemini_api_key=None, **overrides) -> AgentSettings:
         "model": "test/model",
         "api_key": None,
         "max_steps": 3,
-        "investigation_llm_model": "gemini/gemini-2.0-flash",
+        "investigation_llm_model": "gemini/gemini-3.5-flash",
         "gemini_api_key": gemini_api_key,
         "service_bearer_token": None,
     }

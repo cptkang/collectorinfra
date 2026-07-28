@@ -1,11 +1,16 @@
 """에이전트 설정 — .env 로딩은 pydantic-settings 필드로만 판정한다 (os.getenv 금지)."""
 
-from pydantic import SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AgentSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # env_file은 CWD 기준 (".env", ".encenv") — 레포 루트에서 기동하면 collectorinfra
+    # 보안파일(.encenv)의 키를 그대로 재사용하고, 패키지 분리 후에는 자체 .env/.encenv가
+    # 같은 규약으로 동작한다. populate_by_name=True는 테스트의 필드명 kwarg 생성 보장.
+    model_config = SettingsConfigDict(
+        env_file=(".env", ".encenv"), populate_by_name=True, extra="ignore"
+    )
 
     model: str = "anthropic/claude-sonnet-5"
     api_key: SecretStr | None = None
@@ -21,12 +26,18 @@ class AgentSettings(BaseSettings):
     polestar_mcp_token: SecretStr | None = None
 
     # 개발·테스트 LLM — Gemini API (D-120). 운영 LLM(model)과 분리한다.
-    # 기본값은 D-021 준수(gemini-2.5-*는 2026-06-17 deprecated·사용 금지 → 권장 기본
-    # gemini-2.0-flash 채택)이며, litellm 1.89.0 실측으로 tool-calling(function-calling)
-    # 지원을 확인했다(supports_function_calling=True). gemini_api_key는 SecretStr | None
-    # 으로 pydantic 필드로만 판정한다(env: GEMINI_API_KEY, 미설정 시 None → 스모크·e2e 보류).
-    investigation_llm_model: str = "gemini/gemini-2.0-flash"
-    gemini_api_key: SecretStr | None = None
+    # 기본값 gemini-3.5-flash — 2026-07-28 ListModels 실측 채택: D-021 권장이던
+    # gemini-2.0-flash는 서버측 퇴역(404 실측), gemini-2.5-*는 D-021 사용 금지,
+    # gemini-3.1-pro는 preview만 존재. 3.5-flash는 실 API tool-calling 왕복 검증 완료
+    # (문서 권장치가 아니라 가용 목록 실측으로 확정할 것). gemini_api_key는 SecretStr | None
+    # 으로 pydantic 필드로만 판정한다(env: GEMINI_API_KEY 또는 LLM_GEMINI_API_KEY —
+    # 후자는 collectorinfra .encenv 보안파일 규약(LLM_ prefix) 재사용, 미설정 시 None →
+    # 스모크·e2e 보류).
+    investigation_llm_model: str = "gemini/gemini-3.5-flash"
+    gemini_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "LLM_GEMINI_API_KEY"),
+    )
 
     # 조사 서비스(interface/mcp_service) 정적 Bearer 토큰 (Plan 05 §5-인증).
     # None이면 무인증(로컬/개발). SecretStr로 pydantic 필드로만 판정한다

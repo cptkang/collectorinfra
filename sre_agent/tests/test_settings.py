@@ -11,7 +11,7 @@ def make_settings(**overrides) -> AgentSettings:
         "model": "test/model",
         "api_key": None,
         "max_steps": 3,
-        "investigation_llm_model": "gemini/gemini-2.0-flash",
+        "investigation_llm_model": "gemini/gemini-3.5-flash",
         "gemini_api_key": None,
     }
     return AgentSettings(_env_file=None, **{**defaults, **overrides})
@@ -22,9 +22,9 @@ def test_default_investigation_llm_model(monkeypatch):
     monkeypatch.delenv("INVESTIGATION_LLM_MODEL", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     s = AgentSettings(_env_file=None, gemini_api_key=None)
-    # 기본값은 D-021 준수(gemini-2.5-* 사용 금지 → 권장 gemini-2.0-flash),
+    # 기본값은 gemini-3.5-flash(2026-07-28 ListModels 실측 — 2.0-flash 퇴역·2.5-* 금지),
     # litellm 1.89.0 실측으로 tool-calling(function-calling)을 지원하는 gemini 모델.
-    assert s.investigation_llm_model == "gemini/gemini-2.0-flash"
+    assert s.investigation_llm_model == "gemini/gemini-3.5-flash"
 
 
 def test_gemini_api_key_is_secretstr():
