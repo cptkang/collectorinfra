@@ -42,7 +42,7 @@
 | R10 | 원격 합류(폴스타 MCP·hostname 규약 실측) + remediation_recommender | sre-agent/06 R-C/R-D, 02 W-C | 미구현 |
 | R11 | E8 L3 게이트 배선(폴스타 에이전트 채널·경계 probe kind 확장·post-gate 요지 첨부·측정 dedup) | Plan 60 §18 | 미구현 · D-117 등재·보안 확정 |
 | R12 | (후보) `polestar_host_snapshot` 도구 노출 — E8 채널의 조사 개방 | sre-agent/04 §4.2 후보 | E8(R11) 후 결정 |
-| R13 | 전송 인증(Bearer) + 실 폴스타 DB 런타임 검증(PG·DB2) | sre-agent/04 M-D | 미구현 · 15번 검증 부채 승계 |
+| R13 | 전송 인증(Bearer) + 실 폴스타 DB 런타임 검증(**PostgreSQL 한정 — D-126**) | sre-agent/04 M-D | **완료**(D-125 Bearer·PG e2e — DB2는 방언 단위 테스트 유지·실 인스턴스 확보 시 별도) |
 | R14 | Text-to-SQL 잔여(경로 C 값 인덱스·커버리지 확장·실 DB EX 측정·프로필 예시 정비) | Plan 61 §12.3-7/8 | 실 DB 접속 환경 필요 |
 | R15 | Plan 63 후속(EX 라이브 재측정·라우팅 어휘 단일 출처화 별도 계획) | Plan 63 §1.3·상태 | 데이터 적재 시 |
 | R16 | **HolmesGPT Gemini 테스트 경로**: `AgentSettings` LLM 필드 + 스모크 하네스 `smoke_llm.py`(litellm tool-calling 왕복·`DiagnosisAgent` ask 1회) + 데이터 통제(목업·픽스처만) | sre-agent/02 §10.1 | 미구현 · **D-120 등재** |
@@ -136,7 +136,7 @@
 | **3-A** | **R8 CW-A**: `notification_gate` PAGE 시 비차단 emit → `sre_agent` MCP 클라이언트(`src/alarm/infrastructure/`, DBHubClient 패턴) submit → poll → 브리핑 `alarm_notifier` 첨부 + `decision_store` 감사. `investigation_trigger_enabled`(기본 off). **트리거 배선 결정 등재**(구 D-101 대체분 — 채번 규칙) | Plan 64 §0.2·Plan 60 §14 | S~M |
 | 3-B ∥ | **R8 CW-B**: deepagents `fault_diagnosis` 의도 → `sre_diagnose` 위임 · **CW-C**: `verdict.escalate` 시 escalate-only 후속 통보 승격 | Plan 64 §0.2 | S |
 | 3-C | **R9**: Plan 65 §4.3 `invest-trigger` 시나리오(메뉴 [12]) — submit 응답·`duplicate` dedup 확인, 실 HolmesGPT 완주는 `RUN_E2E=1` | Plan 65 §4.3 | S |
-| 3-D | **R13**: MCP 전송 인증(Bearer — mcp_server·조사 서비스 양쪽) + **실 폴스타 DB 런타임 검증(PG·DB2 각 1회 이상)** — plans/15 승계 검증 부채, mock 통과를 완료로 치지 않는다 | sre-agent/04 M-D | S~M |
+| 3-D | **R13**: MCP 전송 인증(Bearer — mcp_server·조사 서비스 양쪽) + **실 폴스타 DB 런타임 검증(D-126: PostgreSQL 한정 — 완료)** — plans/15 승계 검증 부채, mock 통과를 완료로 치지 않는다 | sre-agent/04 M-D | S~M |
 
 > **Phase 3 완료 = 최소 완결 가치(MVP)**: "PAGE 1건 → 자동 조사 1회 → 인용 있는 브리핑이 통보에 첨부" 흐름이 목업으로 재현 가능.
 

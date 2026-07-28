@@ -121,7 +121,7 @@ Prometheus 라벨(`instance`=ip:port 관례)과 폴스타 식별자(`server_name
 | 서비스 | 이미지(안) | 포트(안) | 역할 |
 |---|---|---|---|
 | prometheus | prom/prometheus | **9190(재배치)**·컨테이너 내부 9090 | 스크레이프·PromQL HTTP API — `mcp_server` PromQL 도구와 내장 toolset(A/B 품질 게이트) **양쪽의 공통 대상**. 호스트 9090은 langfuse-minio 점유로 9190 재배치(실측 2026-07-28) |
-| node_exporter | prom/node-exporter | **9101(재배치)** | 실 계측 파형 검증(카운터·게이지 실동작) — 기본 9100은 collectorinfra 알람 수신 포트(폴스타 push)와 충돌하므로 재배치 |
+| target-vm | **(D-126 승격)** ubuntu 24.04 + node_exporter v1.8.1 설치형(`target-vm/Dockerfile`·빌드 시 반입)·`hostname: svr-web-01` | **9101(재배치)** | VM 유사 대상 인프라 — 실 계측 파형 + **`node_uname_info` 실 uname 경로(§5-1 수집 표준화 검증)**. 기본 9100은 collectorinfra 알람 수신 포트(폴스타 push)와 충돌하므로 재배치 |
 | mock_exporter | 정적 `/metrics` 서빙(경량 http) | 9102 | **결정적 단언용** 합성 메트릭 — 고정 값·"CPU 급증" 파형을 사전 정의해 §7 시나리오를 값 단언 가능하게 재현(실 계측은 비결정적이라 단언 부적합) |
 | (병행) postgres | `testdata/pg` 기존 | 5432 | 폴스타 스키마 서브셋 — 교차 검증의 폴스타 축 |
 

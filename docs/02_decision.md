@@ -900,6 +900,13 @@
 - **잔여·보류**: 실 폴스타 DB 런타임 검증(PG·DB2·M-D)은 Docker/실인스턴스 부재로 보류(RUN_DOCKER_IT/실인스턴스 옵트인). mTLS 승격은 협의 후.
 - **관련**: D-014(자체 MCP 서버)·D-122(고수준 도구·execute_sql 정책)·D-119(관측 경계)·D-123/D-124(조사 서비스·배선)·D-003, sre-agent/04 §6-4/§9 M-D·05 §5·Plan 66 R13/3-D.
 
+## D-126. 실 DB 런타임 검증 스코프 PostgreSQL 한정 + Prometheus 픽스처 target-vm 승격 (node_exporter 설치형)
+- **결정일**: 2026-07-28 | **상태**: 확정 (픽스처 승격·검증 완료) | **번호**: 등재 최댓값 D-125 → **D-126**(등재 직전 재확인 완료).
+- **배경**: 사용자 지시("DB 검증은 DB2가 아닌 PostgreSQL로 진행하고, Prometheus는 도커에 인프라를 생성하고 node_exporter를 설치하여 테스트할 수 있는 환경을 구성하라"). DB2 실 검증은 로컬 픽스처 부재(ibm-db·이미지 제약)로 무기한 보류 상태였고, Prometheus 픽스처는 단독 node-exporter 컨테이너라 §5-1 수집 측 표준화(실 uname 경로)를 검증할 수 없었다.
+- **결정**: ① M-D/R13의 실 DB 런타임 검증 수용 기준을 "PG·DB2 각 1회"에서 **PostgreSQL 1회 이상으로 한정** — PG는 Docker 픽스처 e2e로 기완료(a58e9b0). DB2 방언 경로(FETCH FIRST·집계 전 CAST·대문자 스키마·칼럼 소문자화)는 단위 테스트로 유지하고, DB2 실 검증은 실 b0 인스턴스 접근 확보 시 별도 항목으로 재개(운영 투입 전 필수 여부는 그 시점 재결정). ② Prometheus 픽스처를 **VM 유사 대상 인프라로 승격**: `testdata/prometheus/target-vm/`(ubuntu 24.04 베이스에 node_exporter v1.8.1을 빌드 시 반입·설치, compose `hostname: svr-web-01`)이 기존 단독 node-exporter 컨테이너를 대체 — `node_uname_info{nodename="svr-web-01"}` **실 uname 경로**가 가용해져 sre-agent/06 §5-1이 픽스처에서 실측 검증 가능(0차 static 라벨과 병존).
+- **실측**: 빌드·재기동 후 스크레이프 타깃 2종(node·mock) up, `node_uname_info` nodename=svr-web-01(실 uname), `RUN_DOCKER_IT=1` e2e 2 passed 무회귀.
+- **관련**: D-119(서버측 nodename 조립 — 0차 방어)·D-122(M-D 검증 부채)·D-125(전송 인증). 반영: sre-agent/04 §9 수용 기준 ⑤·06 §8.1·plans/66 R13/3-D.
+
 ---
 
 ## 변경 이력
@@ -908,6 +915,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-28 | D-126 | **실 DB 검증 PostgreSQL 한정 + Prometheus 픽스처 target-vm 승격** — 사용자 지시. ①M-D/R13 실 DB 수용 기준 PG·DB2 각 1회→**PG 1회 이상**(PG는 a58e9b0 기완료·DB2 방언은 단위 테스트 유지·실 검증은 b0 인스턴스 확보 시 별도) ②Prometheus 픽스처에 VM 유사 인프라 `target-vm`(ubuntu 24.04+node_exporter v1.8.1 빌드 반입 설치·hostname=svr-web-01) 생성 — 단독 node-exporter 컨테이너 대체, `node_uname_info` 실 uname 경로로 §5-1 수집 표준화 검증 가능(0차 static 라벨과 병존). 실측: 타깃 2종 up·`RUN_DOCKER_IT=1` e2e 2 passed 무회귀. 반영: sre-agent/04 §9⑤·06 §8.1·plans/66 R13/3-D. 최댓값 D-125→D-126. |
 | 2026-07-28 | D-119·D-122 | **(검증) Docker 픽스처 실 e2e — PromQL·PG 고수준 도구 (Plan 66)** — Prometheus(9190·§8.1)·PG(5434·`cmm_resource` 1581행) 픽스처 기동 후 `TestDockerPrometheusIntegration`·`TestDockerIntegration` placeholder를 **실 단언 e2e로 교체**. PromQL: 서버측 `{nodename="svr-web-01"}` 조립→mock 결정값(memory 8589934592·cpu 97.5/1.5·oom 3)·원시 옵트인·timeout 강제. PG: 실 asyncpg 연결·반환 계약·PG LIMIT 방언·`polestar.` 스키마·svr-web-01. `RUN_DOCKER_IT=1` **2 passed**·기본 스위트 166/2 무회귀(연결 정보 env 주입·하드코딩 금지). **D-122 M-D PG 부채 일부 해소**(DB2 보류)·**D-119 PromQL 실 HTTP 검증**(A/B 품질 게이트는 GEMINI_API_KEY 대기). sre-agent/06 §8.1 포트 9190 반영. 신규 D-번호 없음(D-119/D-122 검증). |
 | 2026-07-28 | D-125 | **MCP 전송 인증 정적 Bearer (구현 완료·Plan 66 Wave 3-D·sre-agent/04 M-D)** — mcp_server(`ServerConfig.bearer_token`·Starlette 미들웨어·`sse_app()`+uvicorn)·sre_agent(2-C `StaticBearerAuthMiddleware` 재사용)·클라이언트 헤더(dbhub `_auth_headers`·sre_agent_client 기구현). 토큰 미설정→무인증 통과(비트동일·회귀 0)·설정→불일치 401·일치 통과. mcp_server/tests 155→166·sre_agent 140·test_alarm 756 무회귀·arch 양쪽 0. 부수: `test_dbhub_integration.py` 15건(D-122 expose_execute_sql 미포착 회귀·HEAD 기실패) 픽스처 opt-in 교정→57 passed(known_mistakes 등재). 실 DB 검증(M-D) Docker 보류. SREAgent D-015 인용. 최댓값 D-124→D-125. |
 | 2026-07-28 | D-124 | **(확장) 게이트→조사 배선 CW-B/CW-C 구현 (Plan 66 Wave 3-B)** — CW-B: `SreAgentClient.diagnose`(sre_diagnose·poll 재사용)+신규 intent `fault_diagnosis`(D-004 3곳 대칭·`fault_diagnosis_enabled` on 시만)+종단 노드. CW-C: `investigation_trigger`가 poll verdict.escalate 소비→`fault_escalation_enabled` on 시 escalate-only 후속 통보 승격(`notification_decision` 소급 변경·하향 없음). 옵트인 기본 off. test_alarm 740→756·router/graph 146→152·arch 0·sre_agent import 0·flags-off 비트동일. 사전존재 실패(test_api 6·test_multiturn 1[.env active_db_ids]) 3-A/3-B 무관 실측. |

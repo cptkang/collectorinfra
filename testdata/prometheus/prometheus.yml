@@ -6,9 +6,11 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
+  # target-vm(우분투+node_exporter 설치·hostname=svr-web-01) — static 라벨(0차 결정적)에
+  # 더해 node_uname_info{nodename}이 실 uname으로 svr-web-01을 보고한다(§5-1 실측 경로).
   - job_name: node
     static_configs:
-      - targets: ["node-exporter:9100"]
+      - targets: ["target-vm:9100"]
         labels:
           nodename: svr-web-01
 
