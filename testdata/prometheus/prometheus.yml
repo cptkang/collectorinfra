@@ -1,0 +1,19 @@
+# §8.1 스크레이프·라벨 규약 — nodename 값은 PG 픽스처 polestar.cmm_resource의
+# server_name(svr-web-01)과 동일하게 정렬해 D-119 서버측 {nodename=…} 조립과
+# 소스 교차 검증(§2)이 픽스처에서 실제로 단언 가능하게 한다.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          nodename: svr-web-01
+
+  - job_name: mock
+    static_configs:
+      - targets: ["mock-exporter:80"]
+        labels:
+          nodename: svr-web-01

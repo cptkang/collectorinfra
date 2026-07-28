@@ -1,0 +1,10 @@
+# HELP mock_cpu_usage_percent 결정적 단언용 CPU 사용률(고정값 — CPU 급증 시나리오 재현)
+# TYPE mock_cpu_usage_percent gauge
+mock_cpu_usage_percent{mode="user"} 97.5
+mock_cpu_usage_percent{mode="system"} 1.5
+# HELP mock_memory_used_bytes 결정적 단언용 메모리 사용량(고정값)
+# TYPE mock_memory_used_bytes gauge
+mock_memory_used_bytes 8589934592
+# HELP mock_oom_kills_total 결정적 단언용 OOM 카운터(고정값 — severity_judge 시그니처 대응)
+# TYPE mock_oom_kills_total counter
+mock_oom_kills_total 3

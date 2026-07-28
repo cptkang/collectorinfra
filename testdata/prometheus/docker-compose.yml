@@ -1,0 +1,31 @@
+# Plan 66 / sre-agent/06 §8.1 — Docker Prometheus 테스트 픽스처
+# 소비: mcp_server PromQL 도구 통합(RUN_DOCKER_IT=1)·RemoteMCPToolset e2e·D-119 A/B 품질 게이트
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: fixture_prometheus
+    # 호스트 9090은 langfuse-minio가 점유 — 9190으로 재배치(컨테이너 내부는 9090 유지)
+    ports:
+      - "9190:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - node-exporter
+      - mock-exporter
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    container_name: fixture_node_exporter
+    # 호스트 9100은 collectorinfra 알람 수신 포트(폴스타 push)와 충돌 — 9101로 재배치(§8.1)
+    ports:
+      - "9101:9100"
+
+  mock-exporter:
+    # 결정적 단언용 정적 /metrics 서빙 — 실 계측(node_exporter)은 값이 비결정적이라 단언 부적합
+    image: nginx:1.27-alpine
+    container_name: fixture_mock_exporter
+    ports:
+      - "9102:80"
+    volumes:
+      - ./mock_exporter/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./mock_exporter/metrics.txt:/data/metrics.txt:ro
