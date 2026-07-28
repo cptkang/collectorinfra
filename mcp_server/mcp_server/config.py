@@ -34,6 +34,11 @@ class ServerConfig:
     expose_execute_sql: bool = False
     # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
     process_api_base_url: str = ""
+    # 전송 구간 정적 Bearer 토큰 (Plan 04 §6-4, D-015). 빈 값이면 무인증 통과
+    # (로컬/개발 — 네트워크 격리 전제). 설정 시 모든 HTTP 요청에
+    # `Authorization: Bearer <token>` 헤더를 요구하고 불일치 시 401을 반환한다.
+    # env: MCP_BEARER_TOKEN (또는 config.toml [server].bearer_token).
+    bearer_token: str = ""
 
 
 @dataclass
@@ -169,6 +174,7 @@ def _load_toml(path: Path) -> AppServerConfig:
         log_level=server_data.get("log_level", "info"),
         expose_execute_sql=server_data.get("expose_execute_sql", False),
         process_api_base_url=server_data.get("process_api_base_url", ""),
+        bearer_token=server_data.get("bearer_token", ""),
     )
 
     # 소스 설정
@@ -215,6 +221,7 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "SERVER_TRANSPORT": ("transport", str),
         "SERVER_LOG_LEVEL": ("log_level", str),
         "PROCESS_API_BASE_URL": ("process_api_base_url", str),
+        "MCP_BEARER_TOKEN": ("bearer_token", str),
     }
     for env_key, (attr, cast) in _env_overrides.items():
         env_val = os.environ.get(env_key, "")

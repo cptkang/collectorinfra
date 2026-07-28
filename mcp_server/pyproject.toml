@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.29.0",       # PostgreSQL async 드라이버
     "ibm-db>=3.2.0",         # DB2 드라이버 (동기, asyncio.to_thread로 래핑)
     "sqlparse>=0.5.0",       # SQL 파싱 (읽기 전용 검증)
+    "uvicorn",               # SSE ASGI 앱 서빙 (전송 인증 미들웨어 조립 — Plan 04 §6-4)
 ]
 
 [project.optional-dependencies]

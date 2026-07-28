@@ -60,10 +60,25 @@ class DBHubClient:
             )
         self._config = dbhub_config
         self._query_config = query_config or QueryConfig()
+        # 전송 인증(Plan 04 §6-4·D-015): 설정 토큰이 있으면 SSE 연결에 Bearer 헤더를
+        # 첨부한다. 빈 값이면 None → 무헤더(서버 무인증 통과 전제 → 기존 동작 비트동일).
+        self._bearer_token: Optional[str] = (
+            getattr(dbhub_config, "bearer_token", "") or None
+        )
         self._mcp_session: Optional[Any] = None
         self._connected: bool = False
         self._sse_context: Optional[Any] = None
         self._session_context: Optional[Any] = None
+
+    def _auth_headers(self) -> Optional[dict[str, str]]:
+        """Bearer 인증 헤더를 구성한다(토큰 없으면 None — 무헤더).
+
+        Returns:
+            토큰이 설정된 경우 `{"Authorization": "Bearer <token>"}`, 없으면 None.
+        """
+        if not self._bearer_token:
+            return None
+        return {"Authorization": f"Bearer {self._bearer_token}"}
 
     async def connect(self) -> None:
         """MCP 서버에 SSE transport로 연결한다.
@@ -75,8 +90,10 @@ class DBHubClient:
             from mcp import ClientSession
             from mcp.client.sse import sse_client
 
-            # SSE 클라이언트로 원격 MCP 서버에 연결
-            self._sse_context = sse_client(url=self._config.server_url)
+            # SSE 클라이언트로 원격 MCP 서버에 연결(Bearer 헤더는 설정 토큰이 있을 때만 첨부).
+            self._sse_context = sse_client(
+                url=self._config.server_url, headers=self._auth_headers()
+            )
             sse_transport = await self._sse_context.__aenter__()
             read_stream, write_stream = sse_transport
 
