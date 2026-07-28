@@ -16,6 +16,7 @@ vLLM 인프라 없이 **Gemini 네이티브 tool-calling**으로 agentic 경로(
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -43,8 +44,12 @@ _REAL = AppConfig()
 _KEY = _REAL.orchestrator.api_key or _REAL.llm.gemini_api_key
 _MODEL = _REAL.llm.gemini_model or "gemini-2.5-flash-lite"
 
+# (D-127) 실 Gemini 호출은 과금 발생 — 키 존재만으로 실행 금지, 사용자 승인(RUN_E2E=1) 필수.
+# 종전 "키 있으면 실행" 게이팅은 키가 .encenv에 상존하는 환경에서 기본 스위트가 무단 과금
+# 호출을 하게 만들었다(known_mistakes 2026-07-28).
 pytestmark = pytest.mark.skipif(
-    not _KEY, reason="gemini API 키 미설정 — Gemini 트랙 B live 테스트 skip(CI 안전)"
+    not (os.environ.get("RUN_E2E") == "1" and _KEY),
+    reason="실 Gemini 호출은 사용자 승인 필수(D-127) — RUN_E2E=1 + 키 설정 시에만 실행",
 )
 
 # OOM 로그 → 결정적 시그니처 스캐너가 severity=3 후보를 산출(상향 대상).

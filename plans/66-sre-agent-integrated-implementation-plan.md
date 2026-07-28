@@ -179,7 +179,7 @@ Phase 5  R14(실DB) ∥ R15 ∥ P0-1 활성화     (전 구간 병렬 가능)
 1. 단계 완료마다: 전체 pytest 무회귀(현 기준선 `tests/test_alarm/` 713 passed 등) + `python scripts/arch_check.py --ci` exit 0 + (공용 계층 변경 시) `scripts/overfit_check.py --ci`.
 2. 신규 플래그는 전부 기본 off — flags-off 비트동일 테스트(`test_plan60_flags_off_regression.py` 계열)에 섹션 추가.
 3. `sre_agent/`·`mcp_server` 변경 시: 경계 테스트(양방향 import 0)·`sre_agent/scripts/arch_check.py` 자체 게이트.
-4. e2e(실 LLM·실 DB·playwright)는 `RUN_E2E=1` 옵트인 — 기본 스위트에 편입 금지.
+4. e2e(실 LLM·실 DB·playwright)는 `RUN_E2E=1` 옵트인 — 기본 스위트에 편입 금지. **(D-127) 실 LLM(Gemini 등 과금 API) 호출은 사용자 사전 승인 필수** — `RUN_E2E=1` 설정 자체를 승인 후에만 수행, 키 존재만으로 실행되는 게이팅 금지.
 5. 결정 등재·계획 갱신: 각 Wave 완료 시 `docs/02_decision.md` 등재(채번 규칙) + 해당 계획 변경 이력 갱신(본 계획 §8에도 반영).
 
 ## 6. 결정 채번 계획 (착수 시 등재 대기 목록)

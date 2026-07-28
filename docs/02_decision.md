@@ -907,6 +907,13 @@
 - **실측**: 빌드·재기동 후 스크레이프 타깃 2종(node·mock) up, `node_uname_info` nodename=svr-web-01(실 uname), `RUN_DOCKER_IT=1` e2e 2 passed 무회귀.
 - **관련**: D-119(서버측 nodename 조립 — 0차 방어)·D-122(M-D 검증 부채)·D-125(전송 인증). 반영: sre-agent/04 §9 수용 기준 ⑤·06 §8.1·plans/66 R13/3-D.
 
+## D-127. 과금 외부 API(Gemini) 호출 승인 게이트 — 무단 호출 금지
+- **결정일**: 2026-07-28 | **상태**: 확정 (게이트 구현 완료) | **번호**: 등재 최댓값 D-126 → **D-127**(등재 직전 재확인 완료).
+- **배경**: 사용자 지시("테스트 실행 시 Gemini API를 사용자 지시 없이 무단으로 호출하지 말 것 — 비용 발생, 무조건 사전 승인"). 실측: `tests/test_alarm/test_agentic_enricher_gemini_live.py`가 **키 존재만으로 기본 스위트에서 실 호출**되는 게이팅(skipif not _KEY)이었고 — 키가 `.encenv`에 상존하는 환경에서는 전체 pytest 실행마다 무단 과금 호출이 발생하는 구조 — D-120 스모크도 키만으로 실행 가능했다.
+- **결정**: ① 과금 외부 API 실 호출(테스트·스모크·e2e·수동 스크립트)은 **사용자 명시 승인 후에만** — 실행 건마다 승인, 포괄 승인 없음. ② **코드 게이트(결정적 차단)**: 실 호출 경로는 전부 `RUN_E2E=1` 옵트인 뒤에 둔다 — 키 존재 게이팅 금지. live 테스트 pytestmark에 `RUN_E2E=1` 조건 추가, `smoke_llm.py`에 미승인 시 "보류(사용자 승인 필요)" 출력 후 종료 가드. ③ `RUN_E2E=1` 설정·실행은 승인 행위 — 에이전트는 승인 없이 설정하지 않는다(CLAUDE.md 핵심 원칙 등재). ④ 승인된 호출도 비용 감사(tokens/cost — D-123 dispatcher) 기록 유지.
+- **검증**: 기본 스위트에서 live 테스트 3건 skip(사유에 D-127 명시)·스모크 미승인 실행 시 보류 종료(exit 0·실 호출 0) 실측.
+- **관련**: D-120(테스트 LLM — 데이터 통제에 비용 통제 추가)·D-021(키 분리 보관)·D-123(비용 감사). 반영: CLAUDE.md·sre-agent/02 §10.1·plans/66 §5.
+
 ---
 
 ## 변경 이력
@@ -915,6 +922,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-28 | D-127 | **과금 외부 API(Gemini) 호출 승인 게이트** — 사용자 지시("테스트 시 Gemini 무단 호출 금지·무조건 사전 승인"). 실 호출은 건마다 사용자 승인 필수(포괄 승인 없음), 실 호출 경로 전부 `RUN_E2E=1` 옵트인 뒤(**키 존재 게이팅 금지** — agentic_enricher live 테스트가 키만으로 기본 스위트에서 실 호출되던 문제 실측·차단), smoke_llm 미승인 시 보류 종료 가드, RUN_E2E 설정=승인 행위(CLAUDE.md 등재). 검증: live 3건 skip·스모크 보류·실 호출 0 실측. 등재 최댓값 D-126→D-127. |
 | 2026-07-28 | D-120 | **(갱신) Gemini 키 배선 실측 교정 + 기본 모델 gemini-3.5-flash 확정** — 키는 기설정(`.encenv` `LLM_GEMINI_API_KEY`·D-021 분리 보관)이었으나 sre_agent가 `GEMINI_API_KEY`+`.env`만 읽어 "미설정" 오판 → `AgentSettings` env_file `(".env",".encenv")`·`AliasChoices("GEMINI_API_KEY","LLM_GEMINI_API_KEY")` 확장(비밀 단일 보관 유지·복제 없음·CWD 기준이라 분리 후에도 동형). 모델: D-021 권장 gemini-2.0-flash **서버 퇴역 404 실측**·gemini-3.1-pro는 preview만 존재 → **ListModels 실측으로 gemini-3.5-flash 채택**(known_mistakes 등재 — 문서 권장치+가용 실측+실 왕복 3중 확인 원칙). 스모크 완주: [1/2] litellm tool-calling 실 왕복 OK(**HolmesGPT 성립 조건 첫 실 API 검증 — §7-1 판단 근거**)·[2/2] DiagnosisAgent.ask OK. sre_agent 140 passed 무회귀. |
 | 2026-07-28 | D-126 | **실 DB 검증 PostgreSQL 한정 + Prometheus 픽스처 target-vm 승격** — 사용자 지시. ①M-D/R13 실 DB 수용 기준 PG·DB2 각 1회→**PG 1회 이상**(PG는 a58e9b0 기완료·DB2 방언은 단위 테스트 유지·실 검증은 b0 인스턴스 확보 시 별도) ②Prometheus 픽스처에 VM 유사 인프라 `target-vm`(ubuntu 24.04+node_exporter v1.8.1 빌드 반입 설치·hostname=svr-web-01) 생성 — 단독 node-exporter 컨테이너 대체, `node_uname_info` 실 uname 경로로 §5-1 수집 표준화 검증 가능(0차 static 라벨과 병존). 실측: 타깃 2종 up·`RUN_DOCKER_IT=1` e2e 2 passed 무회귀. 반영: sre-agent/04 §9⑤·06 §8.1·plans/66 R13/3-D. 최댓값 D-125→D-126. |
 | 2026-07-28 | D-119·D-122 | **(검증) Docker 픽스처 실 e2e — PromQL·PG 고수준 도구 (Plan 66)** — Prometheus(9190·§8.1)·PG(5434·`cmm_resource` 1581행) 픽스처 기동 후 `TestDockerPrometheusIntegration`·`TestDockerIntegration` placeholder를 **실 단언 e2e로 교체**. PromQL: 서버측 `{nodename="svr-web-01"}` 조립→mock 결정값(memory 8589934592·cpu 97.5/1.5·oom 3)·원시 옵트인·timeout 강제. PG: 실 asyncpg 연결·반환 계약·PG LIMIT 방언·`polestar.` 스키마·svr-web-01. `RUN_DOCKER_IT=1` **2 passed**·기본 스위트 166/2 무회귀(연결 정보 env 주입·하드코딩 금지). **D-122 M-D PG 부채 일부 해소**(DB2 보류)·**D-119 PromQL 실 HTTP 검증**(A/B 품질 게이트는 GEMINI_API_KEY 대기). sre-agent/06 §8.1 포트 9190 반영. 신규 D-번호 없음(D-119/D-122 검증). |

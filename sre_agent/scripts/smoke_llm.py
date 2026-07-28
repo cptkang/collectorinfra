@@ -15,6 +15,7 @@ GEMINI_API_KEY 미설정 시(pydantic 필드 gemini_api_key 로만 판정 — os
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -95,6 +96,13 @@ def main(settings: AgentSettings | None = None) -> int:
     settings = settings or AgentSettings()
     print("=== sre_agent Gemini 스모크 하네스 (D-120) ===")
     print(f"  investigation_llm_model = {settings.investigation_llm_model}")
+
+    # (D-127) 실 Gemini 호출은 과금 발생 — 사용자 승인(RUN_E2E=1) 없이는 실행하지 않는다.
+    if os.environ.get("RUN_E2E") != "1":
+        approval_msg = "보류(사용자 승인 필요 — D-127: RUN_E2E=1 설정 후 재실행)"
+        print(f"[1/2] litellm tool-calling 왕복 — {approval_msg}")
+        print(f"[2/2] DiagnosisAgent.ask       — {approval_msg}")
+        return 0
 
     if not key_present(settings):
         print(f"[1/2] litellm tool-calling 왕복 — {HELD_MSG}")

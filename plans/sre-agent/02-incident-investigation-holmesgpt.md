@@ -160,6 +160,7 @@ HolmesGPT의 서술(`result`)과 severity_judge 판정을 6요소 스키마로 �
   1. litellm 단독 tool-calling 왕복 — 함수 호출 1회를 강제하고 호출명·인자 파싱을 확인(HolmesGPT 성립 조건인 tool-calling 자체의 검증).
   2. `DiagnosisAgent` `ask` 1회 — 로컬 mock MCP 픽스처(Plan 04 로컬 PG 픽스처) 대상, 도구 자동 발견→호출→서술 완주 확인.
 - **용도**: ①tool-calling 성립 검증(§7-1 운영 LLM 판단의 실측 근거 축적) ②D-119 품질 게이트(A/B)의 실행 LLM ③W-A~W-C 개발 루프.
+- **호출 승인(절대 제약 · D-127)**: 실 Gemini 호출은 **사용자 명시 승인 후에만**(건마다 승인·포괄 승인 없음). 실 호출 경로는 전부 `RUN_E2E=1` 옵트인 뒤 — **키 존재만으로 실행되는 게이팅 금지**, 스모크도 미승인 시 보류 종료 가드.
 - **데이터 통제(절대 제약)**: Gemini API는 외부 SaaS — **개발·테스트 전용, 운영 투입 금지**. 외부 송신 입력은 **목업(Plan 65)·로컬 Docker 픽스처 데이터만**, 실 운영(폴스타) 데이터 송신 금지. 결정적 차단: 테스트 환경 `mcp_server` config에는 픽스처 소스만 등록(운영 connection 미설정 → 빈 값 소스 자동 비활성 규약 재사용 — 물리적으로 실 데이터 접근 불가).
 - 비용 가드는 §4와 동일(`LLMResult.total_tokens/total_cost` 감사 기록·`investigation_hourly_budget`).
 
