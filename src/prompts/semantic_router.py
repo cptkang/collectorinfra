@@ -321,3 +321,41 @@ JSON에 "intent" 필드를 포함하세요:
 
 반드시 유효한 JSON만 출력하세요.
 """
+
+
+# ── Plan 64 CW-B: 장애 진단 pull 위임 의도 (fault_diagnosis) ──
+# fault_diagnosis_enabled=True일 때만 위 기본 프롬프트 뒤에 이 섹션을 덧붙인다.
+# 옵트인 off면 이 섹션이 붙지 않아 프롬프트가 비트동일 → LLM이 fault_diagnosis를 절대
+# 산출하지 않는다(라우팅 회귀 0). 범위를 좁게 못 박아 일반 데이터 조회(data_query)를
+# 잠식하지 않게 한다(Known Mistakes: negative instruction은 범위를 좁게 유지).
+SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION = """
+
+## 장애 진단 의도 (fault_diagnosis) — 최우선 검토
+
+사용자가 특정 서버/장비의 **장애 원인 분석·진단**을 명시적으로 요청하면 intent를
+"fault_diagnosis"로 설정하세요. 이는 단순 데이터 조회(data_query)가 아니라 "왜 이런 문제가
+발생했는가"를 진단·해석해 달라는 요청입니다.
+
+fault_diagnosis로 분류할 질의 패턴(장애·이상 상황 + 원인/진단 동사):
+- "○○ 서버 원인 분석해줘", "○○ 장애 진단해줘", "○○ 왜 죽었어?", "○○ 왜 느려?"
+- "이 서버 문제 원인 좀 봐줘", "장애 원인 파악해줘", "무슨 일이 있었는지 분석해줘"
+- "해당 서버 이상 원인 진단", "RCA 해줘", "근본 원인 분석"
+
+판단 규칙:
+- 대상 DB(폴스타 인스턴스)를 식별할 수 있으면 위 data_query와 동일하게 databases에 포함하세요
+  (진단 대상 스코프 힌트). 식별 불가하면 databases는 빈 배열([])로 두어도 됩니다.
+- **단순 수치 조회는 fault_diagnosis가 아닙니다**: "CPU 사용률 보여줘", "메모리 얼마야?",
+  "서버 목록", "알람 현황"은 각각 data_query/alarm_query입니다. "원인·진단·왜"가 없는
+  단순 조회는 fault_diagnosis로 분류하지 마세요.
+- 알람 목록/이력 조회는 alarm_query이고, 그 알람의 **원인 진단** 요청이면 fault_diagnosis입니다.
+
+예시:
+입력: "web-01 서버 장애 원인 분석해줘"
+출력: {{"intent": "fault_diagnosis", "databases": [{{"db_id": "polestar_b0", "relevance_score": 0.9, "reason": "web-01 장애 원인 진단 대상", "sub_query_context": "web-01 장애 원인 진단", "user_specified": false}}]}}
+
+입력: "여의도 폴스타 db-02 왜 느린지 진단해줘"
+출력: {{"intent": "fault_diagnosis", "databases": [{{"db_id": "polestar_cm_yd", "relevance_score": 1.0, "reason": "사용자가 여의도 폴스타 지정, db-02 성능 저하 원인 진단", "sub_query_context": "db-02 성능 저하 원인 진단", "user_specified": true}}]}}
+
+입력: "web-01 CPU 사용률 보여줘"  (← 단순 조회 → data_query)
+출력: {{"intent": "data_query", "databases": [...]}}
+"""

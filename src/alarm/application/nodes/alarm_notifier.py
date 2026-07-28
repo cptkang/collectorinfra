@@ -120,6 +120,66 @@ def _enrichment_block_html(enrichment: MessageEnrichment) -> str:
     return block
 
 
+def _investigation_briefing_html(briefing: dict) -> str:
+    """sre_agent 조사 브리핑 블록(HTML) — workb 본문용 (Plan 64 CW-A · sre-agent/05 §3).
+
+    브리핑 JSON은 sre_agent가 반환한 구조화 dict다. 스텁(조사 서비스 미가용·LLM 키 부재)이면
+    `{"stub": True, "message": ...}`, 실 조사면 6요소 구조(sre-agent/02 §7 — timeline/bottleneck/
+    cause/evidence/recommendation/limitation 등)다. CW-A는 수신한 브리핑을 **안전하게 첨부**만
+    한다(6요소 렌더 심화·인용 검증은 조사 서비스/후속 Wave 소관). 모든 텍스트는 escape한다.
+    """
+    header = "<br><br><b>조사 브리핑 (자동 조사)</b>"
+    if briefing.get("stub"):
+        msg = html.escape(str(briefing.get("message", "조사 미실행(스텁)")))
+        return f"{header}<br>{msg}"
+    lines: list[str] = []
+    # 알려진 6요소(있을 때만·순서 고정) + 그 외 스칼라 필드(정렬)로 안전하게 나열한다.
+    ordered = ["timeline", "bottleneck", "cause", "evidence", "recommendation", "limitation"]
+    labels = {
+        "timeline": "타임라인", "bottleneck": "병목", "cause": "원인",
+        "evidence": "근거", "recommendation": "권고", "limitation": "한계",
+    }
+    seen: set[str] = set()
+    for key in ordered:
+        val = briefing.get(key)
+        if val:
+            seen.add(key)
+            lines.append(f"<b>{labels[key]}:</b> {html.escape(str(val))}")
+    for key in sorted(briefing.keys()):
+        if key in seen or key in ("stub", "elements") or briefing.get(key) in (None, "", [], {}):
+            continue
+        if isinstance(briefing[key], (str, int, float, bool)):
+            lines.append(f"<b>{html.escape(str(key))}:</b> {html.escape(str(briefing[key]))}")
+    body = "<br>".join(lines) if lines else html.escape(str(briefing))
+    return f"{header}<br>{body}"
+
+
+def _investigation_escalation_html(escalation: dict) -> str:
+    """escalate-only 후속 통보 승격 안내 블록(HTML) — workb 본문용 (Plan 64 CW-C · §5.1).
+
+    자동 조사의 구조화 verdict가 상향(escalate)을 지시할 때만 첨부된다(fault_escalation_enabled +
+    verdict.escalate). **게이트 판정(tier/routing/decision)은 소급 변경·하향하지 않고**, 상향
+    신호를 안내로만 노출한다(역방향 계약 — 상향만). 모든 텍스트는 escape한다.
+    """
+    header = "<br><br><b>[중요도 상향] 자동 조사 결과</b>"
+    lines = ["자동 조사에서 중요도 상향 신호가 확인되었습니다(게이트 통보 판정은 유지)."]
+    level = escalation.get("level")
+    if level:
+        lines.append(f"<b>상향 레벨:</b> {html.escape(str(level))}")
+    confidence = escalation.get("confidence")
+    if confidence:
+        lines.append(f"<b>신뢰도:</b> {html.escape(str(confidence))}")
+    signals = escalation.get("signals")
+    if signals:
+        sig_text = (
+            ", ".join(str(s) for s in signals)
+            if isinstance(signals, (list, tuple))
+            else str(signals)
+        )
+        lines.append(f"<b>근거 신호:</b> {html.escape(sig_text)}")
+    return f"{header}<br>" + "<br>".join(lines)
+
+
 def _enrichment_to_attach(
     enrichment: Optional[MessageEnrichment],
     decision,  # noqa: ANN001 — NotificationDecision | None
@@ -146,6 +206,8 @@ def build_workb_body(
     recurrence: Optional[dict] = None,
     repeat_interval_seconds: int = 14400,
     enrichment: Optional[MessageEnrichment] = None,
+    investigation_briefing: Optional[dict] = None,
+    investigation_escalation: Optional[dict] = None,
 ) -> str:
     """WorkB 쪽지 본문을 HTML 형식으로 생성한다.
 
@@ -156,6 +218,14 @@ def build_workb_body(
     enrichment(Plan 60 E6): message_enrichment_enabled·티어 게이트를 통과한 신규 kind
     (disk/network/process/log) 보강 블록이 있으면 별도 첨부한다. None(기본)이면 본문은
     비트 동일 — cpu/memory 통보는 기존 프로세스 표만 유지된다.
+
+    investigation_briefing(Plan 64 CW-A): investigation_trigger_enabled 하에서 sre_agent 조사
+    서비스가 반환한 브리핑 dict가 있으면 별도 첨부한다. None(기본·off·트리거 미발화·서비스
+    미가용)이면 본문은 비트 동일(회귀 0).
+
+    investigation_escalation(Plan 64 CW-C): fault_escalation_enabled + poll verdict.escalate 하에서
+    escalate-only 상향 안내 데이터가 있으면 별도 첨부한다(게이트 판정 소급 변경 없음·상향만).
+    None(기본·off·미escalate)이면 본문은 비트 동일(회귀 0).
     """
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
@@ -196,6 +266,12 @@ def build_workb_body(
             f"<br><br><b>재발생 이력</b><br>"
             f"직전 {window_h}h {recurrence['count']}회 재발 후 재통보"
         )
+    # Plan 64 CW-A: 자동 조사 브리핑 (investigation_briefing=None이면 미첨부 → 본문 비트 동일)
+    if investigation_briefing is not None:
+        body += _investigation_briefing_html(investigation_briefing)
+    # Plan 64 CW-C: escalate-only 중요도 상향 안내 (investigation_escalation=None이면 미첨부 → 비트 동일)
+    if investigation_escalation is not None:
+        body += _investigation_escalation_html(investigation_escalation)
     return body
 
 
@@ -258,6 +334,14 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             getattr(gate_cfg, "enrichment_min_tier", TIER_PAGE),
         )
 
+    # ── Plan 64 CW-A: 자동 조사 브리핑 첨부(investigation_trigger 노드가 state에 실음) ──
+    # 트리거 off/미발화/서비스 미가용이면 None → 통보 본문 비트 동일(회귀 0).
+    investigation_briefing: Optional[dict] = state.get("investigation_briefing")
+
+    # ── Plan 64 CW-C: escalate-only 중요도 상향 안내 첨부(investigation_trigger가 verdict.escalate 시 실음) ──
+    # fault_escalation off/미escalate면 None → 통보 본문 비트 동일(회귀 0)·게이트 판정 소급 변경 없음.
+    investigation_escalation: Optional[dict] = state.get("investigation_escalation")
+
     for channel in result.notification_channels:
         try:
             if channel == "workb":
@@ -268,6 +352,8 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
                     recurrence=recurrence,
                     repeat_interval_seconds=repeat_interval_seconds,
                     enrichment=enrichment,
+                    investigation_briefing=investigation_briefing,
+                    investigation_escalation=investigation_escalation,
                 )
             elif channel == "webhook":
                 await _send_webhook(cfg.alarm, result, process_snapshot)
@@ -474,6 +560,8 @@ async def _send_workb(
     recurrence: Optional[dict] = None,
     repeat_interval_seconds: int = 14400,
     enrichment: Optional[MessageEnrichment] = None,
+    investigation_briefing: Optional[dict] = None,
+    investigation_escalation: Optional[dict] = None,
 ) -> None:
     """worKB 사내메신저 쪽지 발송.
 
@@ -487,6 +575,8 @@ async def _send_workb(
         recurrence: 재통보 시 직전 창 재발 메타 (Plan 60 E1, None이면 표기 생략)
         repeat_interval_seconds: 재통보 창(초) — 재발생 이력 표기 시간 산출용
         enrichment: kind별 L1 보강 블록 (Plan 60 E6, None이면 첨부 생략)
+        investigation_briefing: sre_agent 조사 브리핑 (Plan 64 CW-A, None이면 첨부 생략)
+        investigation_escalation: escalate-only 상향 안내 (Plan 64 CW-C, None이면 첨부 생략)
     """
     if not workb_cfg.base_url:
         raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")
@@ -499,6 +589,8 @@ async def _send_workb(
         recurrence=recurrence,
         repeat_interval_seconds=repeat_interval_seconds,
         enrichment=enrichment,
+        investigation_briefing=investigation_briefing,
+        investigation_escalation=investigation_escalation,
     )
     payload = {
         "systemDiv": workb_cfg.system_div,

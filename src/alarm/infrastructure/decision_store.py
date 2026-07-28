@@ -180,6 +180,47 @@ class DecisionStore:
         except OSError as exc:
             logger.warning("재발생 카운트 기록 실패(무시): %s", exc)
 
+    def record_investigation(
+        self,
+        *,
+        alarm_id: str = "",
+        fingerprint: str = "",
+        investigation_id: Optional[str] = None,
+        status: str = "",
+        verdict: Optional[str] = None,
+        ts: Optional[datetime] = None,
+    ) -> None:
+        """자동 조사 트리거 결과를 JSONL 한 줄로 append 한다 (Plan 64 CW-A · graceful).
+
+        `type="investigation"` 레코드로 적재하여 발송 판단(decision)·resolution·recurrence
+        레코드와 구분한다(record_recurrence 전례 동일). 게이트 PAGE 결정 직후 sre_agent 조사
+        서비스에 submit→poll한 결과(investigation_id·최종 status·verdict)를 감사에 남긴다.
+        `aggregate()`는 `type` 필드 보유 레코드를 by_tier/total에서 제외하므로 기존 티어 집계는
+        불변이다(회귀 0).
+
+        조사 서비스 다운/타임아웃/거부 시에도 status(down/timeout/rejected 등)를 정직하게
+        기록한다(침묵 폴백 금지). 기록 실패는 warning 후 무시(발송 차단 금지). enabled=False면 no-op.
+        """
+        if not self.enabled:
+            return
+        when = ts or datetime.now(timezone.utc)
+        record = {
+            "type": "investigation",
+            "alarm_id": alarm_id,
+            "fingerprint": fingerprint,
+            "investigation_id": investigation_id,
+            "status": status,
+            "verdict": verdict,
+            "ts": when.isoformat(),
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, ensure_ascii=False)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError as exc:
+            logger.warning("조사 트리거 감사 기록 실패(무시): %s", exc)
+
     @staticmethod
     def _empty_aggregate() -> dict:
         """집계 결과의 빈 형태(전 키 포함)를 반환한다(E3 확장 — 키 스키마 일관성)."""

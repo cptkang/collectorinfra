@@ -249,6 +249,80 @@ class TestTopologyWeightOffRegression:
 
 
 # ─────────────────────────────────────────────────────────────
+# F. Plan 64 CW-A — 자동 조사 트리거 off면 게이트·통보·감사 비트동일
+# ─────────────────────────────────────────────────────────────
+class TestInvestigationTriggerOffRegression:
+    def test_graph_node_set_identical_when_trigger_off(self):
+        # investigation_trigger_enabled 미설정(off)이면 그래프 노드집합은 게이트-only와 동일.
+        nodes_off = set(build_alarm_graph(_gcfg()).get_graph().nodes.keys())
+        nodes_explicit_off = set(build_alarm_graph(
+            _gcfg(investigation_trigger_enabled=False)
+        ).get_graph().nodes.keys())
+        assert nodes_off == nodes_explicit_off
+        assert "investigation_trigger" not in nodes_off
+
+    def test_notifier_body_bit_identical_when_briefing_none(self):
+        # investigation_briefing=None(off·트리거 미발화)이면 통보 본문 비트 동일.
+        result = _analysis()
+        default_body = build_workb_body(result)
+        explicit_none = build_workb_body(result, investigation_briefing=None)
+        assert default_body == explicit_none
+        assert "조사 브리핑" not in default_body
+
+    async def test_trigger_node_no_op_when_flag_off(self):
+        # 방어적 진입부 재확인 — off면 노드가 클라이언트를 만지지 않고 빈 dict 반환.
+        from src.alarm.application.nodes.investigation_trigger import (
+            investigation_trigger_node,
+        )
+        from src.alarm.domain.notification_policy import NotificationDecision
+
+        calls = {"n": 0}
+
+        class _Spy:
+            async def connect(self):
+                calls["n"] += 1
+
+            async def submit(self, payload):
+                calls["n"] += 1
+                return {}
+
+        state = {
+            "alarm_event": SimpleNamespace(alarm_id="A", server_name="s", hostname="h",
+                                           severity=2, db_id="d", alarm_name="n",
+                                           resource_type="t", resource_name="r",
+                                           conditions="", condition_log="", alarm_time=None),
+            "notification_decision": NotificationDecision(
+                tier=TIER_PAGE, reason="r", priority=3, signals={}, fingerprint="fp"
+            ),
+            "recurrence": None, "correlation_meta": None,
+        }
+        cfg = {"configurable": {
+            "app_config": SimpleNamespace(noise_gate=SimpleNamespace(
+                investigation_trigger_enabled=False
+            )),
+            "sre_agent_client": _Spy(),
+            "decision_store": None,
+        }}
+        out = await investigation_trigger_node(state, cfg)
+        assert out == {} and calls["n"] == 0  # 클라이언트 미접촉(회귀 0)
+
+    def test_decision_store_tier_aggregate_unaffected_by_investigation_record(self, tmp_path):
+        # record_investigation 추가가 기존 티어 집계를 바꾸지 않는다(type 필드 제외).
+        from src.alarm.infrastructure.decision_store import DecisionStore
+        from src.alarm.domain.notification_policy import NotificationDecision
+
+        store = DecisionStore(str(tmp_path / "d.jsonl"), enabled=True)
+        d = NotificationDecision(tier=TIER_PAGE, reason="r", priority=3,
+                                 signals={}, fingerprint="fp")
+        store.record(d, alarm_id="A")
+        before = store.aggregate()
+        store.record_investigation(alarm_id="A", status="done", investigation_id="i1")
+        after = store.aggregate()
+        assert before["total"] == after["total"] == 1
+        assert before["by_tier"] == after["by_tier"]
+
+
+# ─────────────────────────────────────────────────────────────
 # F. E3 동적 baseline — dynamic_baseline_enabled=False면 무변경(회귀 0)
 # ─────────────────────────────────────────────────────────────
 def _full_event() -> AlarmEvent:

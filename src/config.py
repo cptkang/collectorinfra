@@ -10,7 +10,7 @@ import logging
 from functools import lru_cache
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, Field, PrivateAttr
+from pydantic import AliasChoices, Field, PrivateAttr, SecretStr
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,7 @@ class DBHubConfig(BaseSettings):
     server_url: str = "http://localhost:9099/sse"   # MCP 서버 SSE 엔드포인트
     source_name: str = ""                              # 기본 쿼리 대상 소스 (DBHUB_SOURCE_NAME으로 설정)
     mcp_call_timeout: int = 60                       # MCP 호출 전체 대기시간 (초)
+    bearer_token: str = ""                           # 전송 인증 Bearer 토큰 (DBHUB_BEARER_TOKEN, 빈 값이면 무헤더 — 서버 무인증 전제)
 
     model_config = {"env_prefix": "DBHUB_", "env_file": ".env", "extra": "ignore"}
 
@@ -644,6 +645,35 @@ class NoiseGateConfig(BaseSettings):
     #   (워커가 site 토큰 산출·주입, domain은 값만 소비·순수성 유지). 존 경계(B-6) 불변. off면 extra=""로
     #   현행 필드 Jaccard와 비트동일. chattering(fleeting/repeating) 감사 라벨은 annotation_harvest_enabled 하.
     correlation_site_dimension_enabled: bool = False  # (E7-d) E2 사이트/위치 상관 차원 on/off
+    # ── Plan 64 CW-A: 자동 조사 트리거 훅 (D-118 · sre_agent MCP submit/poll · Plan 60 §14.2) ──
+    # 게이트가 tier ≥ investigation_trigger_min_tier(기본 PAGE)로 결정한 직후, notification_gate와
+    # 분리된 트리거 노드가 sre_agent 조사 서비스에 비차단 submit → poll(전체 타임아웃 내) → 브리핑을
+    # 통보에 첨부 + decision_store 감사한다. 게이트 판정·라우팅은 무변경(별도 노드·전체 타임아웃 가드).
+    # 기본 off면 트리거 노드 미배선 → 게이트·통보 경로 비트동일(회귀 0)·브리핑 미생성. 서비스 다운/
+    # 타임아웃/거부는 graceful 실패(통보·판정 정상 완료·사유 구조화 감사, 침묵 금지). 조사는 읽기전용·
+    # 조치 없음(D-003) — 브리핑 수신·첨부만.
+    investigation_trigger_enabled: bool = False   # (CW-A) 자동 조사 트리거 옵트인
+    investigation_trigger_min_tier: str = "PAGE"  # (CW-A) 이 티어 이상 결정 시에만 트리거(enrichment_min_tier와 동일 규칙)
+    investigation_service_url: str = "http://localhost:9098/sse"  # (CW-A) sre_agent 조사 서비스 MCP SSE 엔드포인트
+    investigation_service_token: SecretStr = SecretStr("")  # (CW-A) 정적 Bearer 토큰(없으면 무헤더 — 3-D에서 강제)
+    investigation_mcp_call_timeout_seconds: float = 10.0   # (CW-A) submit/poll 개별 호출 타임아웃(초)
+    investigation_poll_interval_seconds: float = 1.0       # (CW-A) poll 재조회 간격(초)
+    investigation_total_timeout_seconds: float = 45.0      # (CW-A) 전체(submit+poll) 타임아웃 가드(per-call 아님·§3.2)
+    # ── Plan 64 CW-B: pull 위임 (deepagents/시멘틱 라우팅 fault_diagnosis 의도 → sre_diagnose) ──
+    # 사용자가 "○○ 서버 원인 분석해줘"류로 장애 진단을 요청하면(pull), 시멘틱 라우터가
+    # fault_diagnosis 의도로 분류하고 신규 노드가 sre_agent에 sre_diagnose(question, server?, host?,
+    # db?)를 위임 → poll(전체 타임아웃 내) → 자연어 진단 응답을 반환한다(sre-agent/05 §3·§7).
+    # 연결 설정은 CW-A의 investigation_service_url/token/타임아웃을 재사용한다(단일 서비스).
+    # 기본 off면 라우터 프롬프트에 fault_diagnosis 미노출·노드 미배선 → 라우팅 비트동일(회귀 0).
+    # 서비스 다운/타임아웃/거부는 graceful — 침묵 폴백 없이 사유를 담은 자연어 응답을 돌려준다(D-003 읽기전용).
+    fault_diagnosis_enabled: bool = False   # (CW-B) 장애 진단 pull 위임 옵트인
+    # ── Plan 64 CW-C: escalate-only 후속 통보 승격 (poll verdict.escalate 소비) ──
+    # investigation_trigger의 poll 결과 구조화 verdict(ImportanceVerdict: level/confidence/escalate/
+    # signals — sre-agent/02 §6)에서 escalate=True면, 통보에 "중요도 상향(자동 조사)" 안내 블록을
+    # 첨부(승격)한다. **escalate-only** — 게이트 판정(tier/routing/decision)은 소급 변경·하향하지
+    # 않고 상향 신호만 안내한다(Plan 64 §5.1 역방향 계약). 기본 off면 escalation 미생성 → 통보
+    # 본문 비트동일(회귀 0). investigation_trigger_enabled가 켜져 poll이 돌 때만 verdict가 존재한다.
+    fault_escalation_enabled: bool = False  # (CW-C) escalate-only 후속 통보 승격 옵트인
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

@@ -21,7 +21,10 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 from src.config import AppConfig, load_config
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.llm import create_llm
-from src.prompts.semantic_router import SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE
+from src.prompts.semantic_router import (
+    SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION,
+    SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE,
+)
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
@@ -156,10 +159,18 @@ async def semantic_router(
     except Exception as e:
         logger.debug("DB 설명 로드 실패 (라우팅 계속): %s", e)
 
+    # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. off면 프롬프트에 fault_diagnosis 미노출 +
+    # 아래 강등으로 라우팅 비트동일(회귀 0). noise_gate 속성 부재(경량 config)도 안전 처리.
+    fault_dx_on = bool(
+        getattr(getattr(app_config, "noise_gate", None), "fault_diagnosis_enabled", False)
+    )
+
     # LLM 기반 분류 (사용자 직접 지정 감지 포함)
     try:
         llm_results = await _llm_classify(
-            llm, user_query, active_domains, db_descriptions=db_descriptions
+            llm, user_query, active_domains,
+            db_descriptions=db_descriptions,
+            fault_diagnosis_enabled=fault_dx_on,
         )
     except Exception as e:
         logger.error("LLM 라우팅 분류 실패: %s", e)
@@ -180,6 +191,12 @@ async def semantic_router(
         # _llm_classify가 dict를 반환한 경우 (intent 포함)
         intent = llm_results.get("intent", "data_query")
         llm_results = llm_results.get("databases", [])
+
+    # (Plan 64 CW-B) 옵트인 off인데 LLM이 fault_diagnosis를 산출했다면(할루시네이션 방어)
+    # data_query로 강등한다 — off 경로에서 fault_diagnosis 노드는 미배선이라 라우팅 파손을 막는다.
+    if intent == "fault_diagnosis" and not fault_dx_on:
+        logger.debug("fault_diagnosis 비활성 — data_query로 강등(라우팅 비트동일)")
+        intent = "data_query"
 
     if intent == "cache_management":
         logger.info("시멘틱 라우팅: 캐시 관리 의도 감지")
@@ -256,6 +273,7 @@ async def _llm_classify(
     domains: list[DBDomainConfig],
     *,
     db_descriptions: dict[str, str] | None = None,
+    fault_diagnosis_enabled: bool = False,
 ) -> list[dict]:
     """LLM을 사용하여 질의의 대상 DB를 분류한다.
 
@@ -266,11 +284,17 @@ async def _llm_classify(
         query: 사용자 질의
         domains: 활성 DB 도메인 목록
         db_descriptions: Redis 캐시에서 로드한 DB 설명 (선택)
+        fault_diagnosis_enabled: 장애 진단 pull 위임 옵트인 (CW-B). True일 때만
+            프롬프트에 fault_diagnosis 의도 섹션을 노출한다(off면 비트동일).
 
     Returns:
         분류 결과 목록
     """
-    system_prompt = _build_router_prompt(domains, db_descriptions=db_descriptions)
+    system_prompt = _build_router_prompt(
+        domains,
+        db_descriptions=db_descriptions,
+        fault_diagnosis_enabled=fault_diagnosis_enabled,
+    )
 
     messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
     if isinstance(llm, KBGenAIChat):
@@ -311,6 +335,7 @@ def _build_router_prompt(
     domains: list[DBDomainConfig],
     *,
     db_descriptions: dict[str, str] | None = None,
+    fault_diagnosis_enabled: bool = False,
 ) -> str:
     """활성 도메인 기반으로 라우팅 프롬프트를 동적 생성한다.
 
@@ -320,6 +345,8 @@ def _build_router_prompt(
     Args:
         domains: 활성 DB 도메인 목록
         db_descriptions: Redis 캐시에서 로드한 DB 설명 매핑 (선택)
+        fault_diagnosis_enabled: True일 때만 fault_diagnosis 의도 섹션을 덧붙인다 (CW-B).
+            off면 프롬프트가 기존과 비트동일하여 LLM이 fault_diagnosis를 산출하지 않는다.
 
     Returns:
         완성된 시스템 프롬프트 문자열
@@ -338,6 +365,10 @@ def _build_router_prompt(
             entry += f"\n   - 상세: {cached_desc}"
         db_desc_list.append(entry)
     db_list = "\n\n".join(db_desc_list)
-    return SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE.format(db_list=db_list)
+    prompt = SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE.format(db_list=db_list)
+    # (Plan 64 CW-B) 옵트인 on일 때만 fault_diagnosis 의도 섹션을 덧붙인다(off면 비트동일).
+    if fault_diagnosis_enabled:
+        prompt += SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION.format()
+    return prompt
 
 

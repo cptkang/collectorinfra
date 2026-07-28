@@ -20,6 +20,7 @@ from src.llm import create_llm
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
 from src.nodes.context_resolver import context_resolver
+from src.nodes.fault_diagnosis import fault_diagnosis as fault_diagnosis_node
 from src.nodes.general_inference import general_inference as general_inference_node
 from src.nodes.field_mapper import field_mapper
 from src.nodes.input_parser import input_parser
@@ -119,6 +120,9 @@ _INTENT_ROUTE_MAP: dict[str, str] = {
     "cache_management": "cache_management",
     "synonym_registration": "synonym_registrar",
     "general_inference": "general_inference",
+    # (Plan 64 CW-B · D-004 대칭) 장애 진단 pull 위임. fault_diagnosis_enabled off면
+    # 라우터가 이 의도를 산출하지 않아(프롬프트 미노출+강등) 이 항목은 도달 불가(비트동일).
+    "fault_diagnosis": "fault_diagnosis",
 }
 
 
@@ -330,6 +334,12 @@ def build_graph(config: AppConfig, checkpointer=None):
         )
         use_deep_agent = False
 
+    # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. 시멘틱 라우팅 경로에서만·플래그 on일 때만
+    # fault_diagnosis 노드를 배선한다. off면 노드·엣지 미배선 → 라우팅 비트동일(회귀 0).
+    fault_dx_enabled = bool(
+        getattr(getattr(config, "noise_gate", None), "fault_diagnosis_enabled", False)
+    )
+
     graph = StateGraph(AgentState)
 
     # --- 노드 등록 ---
@@ -411,6 +421,12 @@ def build_graph(config: AppConfig, checkpointer=None):
             "general_inference",
             partial(general_inference_node, llm=llm, app_config=config),
         )
+        # (Plan 64 CW-B · D-004 대칭 2/3) 장애 진단 pull 위임 노드 (옵트인 on일 때만).
+        if fault_dx_enabled:
+            graph.add_node(
+                "fault_diagnosis",
+                partial(fault_diagnosis_node, app_config=config),
+            )
 
     graph.add_node(
         "schema_analyzer",
@@ -484,16 +500,22 @@ def build_graph(config: AppConfig, checkpointer=None):
         # field_mapper -> semantic_router -> 조건부
         graph.add_edge("field_mapper", "semantic_router")
 
+        # (Plan 64 CW-B · D-004 대칭 3/3) fault_diagnosis 노드 배선 시에만 라우팅 대상에 추가.
+        # off면 대상 dict에 미포함 → route_after_semantic_router가 이 값을 반환하지 않는다
+        # (라우터가 fault_diagnosis 의도를 산출하지 않으므로 도달 불가). 비트동일(회귀 0).
+        _router_targets = {
+            "schema_analyzer": "schema_analyzer",
+            "multi_db_executor": "multi_db_executor",
+            "cache_management": "cache_management",
+            "synonym_registrar": "synonym_registrar",
+            "general_inference": "general_inference",
+        }
+        if fault_dx_enabled:
+            _router_targets["fault_diagnosis"] = "fault_diagnosis"
         graph.add_conditional_edges(
             "semantic_router",
             route_after_semantic_router,
-            {
-                "schema_analyzer": "schema_analyzer",
-                "multi_db_executor": "multi_db_executor",
-                "cache_management": "cache_management",
-                "synonym_registrar": "synonym_registrar",
-                "general_inference": "general_inference",
-            },
+            _router_targets,
         )
 
         # 멀티 DB 경로
@@ -508,6 +530,10 @@ def build_graph(config: AppConfig, checkpointer=None):
 
         # 일반 추론 경로
         graph.add_edge("general_inference", END)
+
+        # (Plan 64 CW-B) 장애 진단 경로 (옵트인 on일 때만 노드가 존재)
+        if fault_dx_enabled:
+            graph.add_edge("fault_diagnosis", END)
     else:
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")

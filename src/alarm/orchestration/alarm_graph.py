@@ -55,6 +55,8 @@ class AlarmState(TypedDict):
     annotation: Optional[dict]                          # Plan 60 E7-a: 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호(annotation_planned_suppress 시에만·off/없으면 None)
     enrichment: Optional[MessageEnrichment]             # Plan 60 E6: kind별 L1 보강 블록(message_enrichment_enabled 시에만 채워짐)
     anomaly_severity: Optional[int]                     # Plan 60 E3: enricher가 산출한 동적 baseline 이상 상향 후보(dynamic_baseline_enabled 시에만 채워짐)
+    investigation_briefing: Optional[dict]              # Plan 64 CW-A: sre_agent 조사 서비스 브리핑(investigation_trigger_enabled 시에만 채워짐·notifier가 통보 첨부)
+    investigation_escalation: Optional[dict]            # Plan 64 CW-C: escalate-only 후속 통보 승격 데이터(fault_escalation_enabled + verdict.escalate 시에만 채워짐·notifier가 상향 안내 첨부·게이트 판정 소급 변경 없음)
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001
@@ -88,6 +90,7 @@ def build_alarm_graph(config=None):  # noqa: ANN001
     gate_enabled = False
     enricher_enabled = False
     message_enrichment = False
+    investigation_enabled = False
     if config is not None:
         history_enabled = bool(config.alarm.history_enabled)
         noise_gate = getattr(config, "noise_gate", None)
@@ -99,6 +102,11 @@ def build_alarm_graph(config=None):  # noqa: ANN001
         # (Plan 60 E6) 메시지 기반 L1 보강은 context_enricher가 수집원이다(옵트인).
         message_enrichment = bool(
             getattr(noise_gate, "message_enrichment_enabled", False)
+        )
+        # (Plan 64 CW-A) 자동 조사 트리거는 게이트 활성 + investigation_trigger_enabled일 때만
+        # gate 다음·notifier 이전에 삽입한다. off(기본)면 미배선 → 노드집합·경로 비트동일(회귀 0).
+        investigation_enabled = gate_enabled and bool(
+            getattr(noise_gate, "investigation_trigger_enabled", False)
         )
 
     # context_enricher는 history/게이트/E6 보강 중 하나라도 필요하면 포함한다(수집원).
@@ -139,7 +147,18 @@ def build_alarm_graph(config=None):  # noqa: ANN001
             builder.add_edge("agentic_enricher", "notification_gate")
         else:
             builder.add_edge("alarm_analyzer", "notification_gate")
-        builder.add_edge("notification_gate", "alarm_notifier")
+        if investigation_enabled:
+            # (Plan 64 CW-A) gate → investigation_trigger → notifier 삽입.
+            # 지연 import — 트리거 활성 시에만 로드한다.
+            from src.alarm.application.nodes.investigation_trigger import (
+                investigation_trigger_node,
+            )
+
+            builder.add_node("investigation_trigger", investigation_trigger_node)
+            builder.add_edge("notification_gate", "investigation_trigger")
+            builder.add_edge("investigation_trigger", "alarm_notifier")
+        else:
+            builder.add_edge("notification_gate", "alarm_notifier")
     else:
         builder.add_edge("alarm_analyzer", "alarm_notifier")
 

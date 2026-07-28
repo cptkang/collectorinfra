@@ -80,6 +80,7 @@ class AlarmWorker:
         self._feedback_store = None  # (E4) 운영자 피드백 few-shot 저장소
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
+        self._sre_agent_client = None  # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트
         # (D-049) 직전 self-heal 매칭 소요시간(초) — _update_firing_registry가 설정,
         # _process가 decision_store.record_resolution 기록에 사용(매칭 없으면 None).
         self._last_self_heal_duration: Optional[float] = None
@@ -345,6 +346,41 @@ class AlarmWorker:
             logger.exception("incident 발행기 생성 실패 — incident 계측 없이 진행")
             return None
 
+    def _build_sre_agent_client(self):  # noqa: ANN202
+        """sre_agent 조사 서비스 MCP 클라이언트를 생성한다 (Plan 64 CW-A · _build_* 미러).
+
+        enable_noise_gate=False·investigation_trigger_enabled=False·생성 실패 시 None을 반환한다 —
+        트리거 노드는 클라이언트 미주입 시 no-op(브리핑 미생성)이라 게이트 통보·판정은 정상
+        진행된다(회귀 0·graceful). sre_agent 패키지는 import하지 않고 MCP(SSE)로만 통신한다.
+        """
+        if not self._config.noise_gate.enable_noise_gate:
+            return None
+        if not getattr(
+            self._config.noise_gate, "investigation_trigger_enabled", False
+        ):
+            return None
+        try:
+            from src.alarm.infrastructure.sre_agent_client import SreAgentClient
+
+            ng = self._config.noise_gate
+            token = getattr(ng, "investigation_service_token", None)
+            # SecretStr(.get_secret_value) 또는 평문 문자열(테스트 SimpleNamespace) 모두 수용.
+            token_val = (
+                token.get_secret_value()
+                if hasattr(token, "get_secret_value")
+                else (token or "")
+            )
+            return SreAgentClient(
+                server_url=ng.investigation_service_url,
+                bearer_token=token_val or None,
+                mcp_call_timeout=float(
+                    getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0)
+                ),
+            )
+        except Exception:
+            logger.exception("sre_agent 조사 클라이언트 생성 실패 — 조사 트리거 없이 진행")
+            return None
+
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
 
@@ -377,6 +413,8 @@ class AlarmWorker:
         self._redis = r
         self._sse_publisher = self._build_sse_publisher()
         self._incident_publisher = self._build_incident_publisher()
+        # (Plan 64 CW-A) sre_agent 조사 서비스 클라이언트 — off/미배선이면 None(회귀 0).
+        self._sre_agent_client = self._build_sre_agent_client()
         dedup: dict[str, float] = {}
 
         logger.info(
@@ -639,6 +677,8 @@ class AlarmWorker:
                     "enrichment": None,
                     # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).
                     "anomaly_severity": None,
+                    # (Plan 64 CW-A) sre_agent 조사 브리핑(트리거 노드가 채움, off면 None).
+                    "investigation_briefing": None,
                 },
                 config={
                     "configurable": {
@@ -671,6 +711,10 @@ class AlarmWorker:
                         # 산출하는 데 소비(감사 전용). off/두 플래그 off면 None → enricher 미주입·
                         # 주석 경로 미진입(회귀 0). repo는 provider를 직접 생성하지 않는다(워커 주입).
                         "embedding_provider": self._embedding_provider,
+                        # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트 — off/미배선 시 None →
+                        # investigation_trigger 노드는 no-op(브리핑 미생성·회귀 0). 노드가 connect/
+                        # submit/poll/disconnect를 전체 타임아웃 가드 안에서 관리한다.
+                        "sre_agent_client": self._sre_agent_client,
                     }
                 },
             )
