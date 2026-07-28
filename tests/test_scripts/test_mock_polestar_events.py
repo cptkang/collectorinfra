@@ -127,11 +127,22 @@ def test_catalog_categories():
     assert counts == {"basic": 6, "plan60": 5, "sre": 1, "plan60e7": 2}
 
 
-def test_invest_trigger_is_stub_with_reason():
-    """invest-trigger는 R8 미구현 스텁이며 보류 사유를 보유한다(submit 코드 없음)."""
+def test_invest_trigger_activated():
+    """invest-trigger([12])는 Plan 66 R9로 활성화된다 — 스텁 해제·조사 트리거 관측 스텝."""
     scen = mpe.SCENARIOS_BY_NAME["invest-trigger"]
-    assert scen.stub is True
-    assert "R8" in scen.stub_reason
+    assert scen.stub is False  # 스텁 해제
+    assert scen.number == 12 and scen.category == "sre"
+    # 트리거 플래그를 선언하고 조사 서비스 도달성 점검을 요구한다.
+    assert scen.required_flags == (
+        ("investigation_trigger_enabled", "NOISE_INVESTIGATION_TRIGGER_ENABLED"),
+    )
+    assert scen.requires_investigation_service is True
+    # 단건(sev3 PAGE)이며 조사 트리거 감사 레코드 조회를 기대한다.
+    steps = scen.build("r", "d")
+    assert len(steps) == 1
+    assert steps[0].payload["severity"] == mpe.SEV_FACILITY_PAGE
+    assert steps[0].expect_tiers == frozenset({mpe.TIER_PAGE})
+    assert steps[0].expect_investigation is True
 
 
 def test_plan60_scenarios_declare_required_flags():
@@ -217,6 +228,8 @@ def _fake_config(**overrides):
         change_correlation_enabled=False,
         semantic_dedup_annotation_enabled=False,
         embedding_model_path="",
+        investigation_trigger_enabled=False,
+        investigation_service_url="http://localhost:9098/sse",
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -266,13 +279,19 @@ def test_precondition_semantic_dup_requires_model_dir():
     assert any("EMBEDDING_MODEL_PATH" in r for r in reasons)
 
 
-def test_precondition_stub_always_deferred():
-    """invest-trigger(stub)는 항상 미충족으로 보류 사유를 반환한다."""
-    ok, reasons = mpe.check_preconditions(
+def test_precondition_invest_trigger_requires_flag():
+    """invest-trigger는 investigation_trigger_enabled off면 미충족, on이면 충족(§4.3)."""
+    off_ok, off_reasons = mpe.check_preconditions(
         mpe.SCENARIOS_BY_NAME["invest-trigger"], _fake_config()
     )
-    assert ok is False
-    assert reasons == [mpe.SCENARIOS_BY_NAME["invest-trigger"].stub_reason]
+    assert off_ok is False
+    assert any("INVESTIGATION_TRIGGER_ENABLED" in r for r in off_reasons)
+
+    on_ok, _ = mpe.check_preconditions(
+        mpe.SCENARIOS_BY_NAME["invest-trigger"],
+        _fake_config(investigation_trigger_enabled=True),
+    )
+    assert on_ok is True
 
 
 def test_precondition_none_config():
@@ -344,6 +363,129 @@ def test_format_audit_empty():
     assert "없음" in out
 
 
+# ─── 자동 조사 트리거 판정 ([12] invest-trigger · §4.3 · Plan 66 R9) ────────────
+
+def _investigation_rec(alarm_id="MOCK-r-1", investigation_id="inv-abc", status="stub"):
+    """decision_store.record_investigation이 남기는 investigation 감사 레코드(실측 필드)."""
+    return {
+        "type": "investigation",
+        "alarm_id": alarm_id,
+        "fingerprint": "fp1",
+        "investigation_id": investigation_id,
+        "status": status,
+        "verdict": None,
+        "ts": "2026-07-28T00:00:00+00:00",
+    }
+
+
+def test_classify_investigation_accepted():
+    """신규 investigation_id면 accepted(신규 조사)로 분류한다."""
+    state, detail = mpe.classify_investigation(_investigation_rec(), set())
+    assert state is True
+    assert "accepted" in detail
+    assert "inv-abc" in detail
+
+
+def test_classify_investigation_duplicate():
+    """이미 관측한 investigation_id면 duplicate(기존 id 재사용 dedup)로 분류한다."""
+    seen = {"inv-abc"}
+    state, detail = mpe.classify_investigation(_investigation_rec(), seen)
+    assert state is True
+    assert "duplicate" in detail
+    assert "inv-abc" in detail
+
+
+def test_classify_investigation_submit_failure_graceful():
+    """investigation_id 없음(서비스 미기동 graceful)은 submit 실패로 표기하되 크래시 아님."""
+    rec = _investigation_rec(investigation_id=None, status="down")
+    state, detail = mpe.classify_investigation(rec, set())
+    assert state is None  # 미확정(?) — 게이트 판정은 정상
+    assert "submit 실패" in detail
+    assert "down" in detail
+
+
+def test_classify_investigation_no_record():
+    """레코드 미관측(None)은 트리거 미배선/타임아웃으로 안내(침묵 실패 아님)."""
+    state, detail = mpe.classify_investigation(None, set())
+    assert state is None
+    assert "미관측" in detail
+
+
+def test_wait_for_investigation_skips_decision_record(tmp_path):
+    """wait_for_investigation은 결정 레코드를 건너뛰고 type=investigation 레코드만 반환한다."""
+    import json
+
+    log = tmp_path / "decisions.jsonl"
+    # 게이트 결정 레코드(tier=page)가 먼저, investigation 레코드가 뒤에 append된다.
+    log.write_text(
+        json.dumps({"alarm_id": "MOCK-r-1", "tier": "page"}, ensure_ascii=False) + "\n"
+        + json.dumps(_investigation_rec("MOCK-r-1", "inv-xyz", "stub"), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    judge = mpe.Judge(str(log), poll_interval=0.05)
+    rec = judge.wait_for_investigation("MOCK-r-1", offset=0, timeout=1.0)
+    assert rec is not None
+    assert rec["type"] == "investigation"
+    assert rec["investigation_id"] == "inv-xyz"
+
+
+def test_wait_for_investigation_timeout_returns_none(tmp_path):
+    """investigation 레코드 부재(트리거 미배선) 시 None(미관측)을 반환한다."""
+    log = tmp_path / "decisions.jsonl"
+    log.write_text("", encoding="utf-8")
+    judge = mpe.Judge(str(log), poll_interval=0.05)
+    assert judge.wait_for_investigation("MOCK-r-1", offset=0, timeout=0.2) is None
+
+
+def test_known_investigation_ids_seeds_from_log(tmp_path):
+    """기존 로그의 investigation_id를 시드 집합으로 수집한다(연속 주입 duplicate 감지용)."""
+    import json
+
+    log = tmp_path / "decisions.jsonl"
+    log.write_text(
+        json.dumps({"alarm_id": "a", "tier": "page"}, ensure_ascii=False) + "\n"
+        + json.dumps(_investigation_rec("a", "inv-1", "stub"), ensure_ascii=False) + "\n"
+        + json.dumps(_investigation_rec("b", "inv-2", "done"), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    judge = mpe.Judge(str(log))
+    assert judge.known_investigation_ids() == {"inv-1", "inv-2"}
+
+
+def test_known_investigation_ids_empty_when_no_log(tmp_path):
+    """로그 부재 시 빈 시드 집합을 반환한다."""
+    judge = mpe.Judge(str(tmp_path / "absent.jsonl"))
+    assert judge.known_investigation_ids() == set()
+
+
+# ─── 조사 서비스 도달성 점검 (비차단 정보 · §4.3) ──────────────────────────────
+
+def test_parse_service_hostport():
+    """SSE URL에서 host/port를 파싱한다(도달성 프로브용)."""
+    assert mpe.parse_service_hostport("http://localhost:9098/sse") == ("localhost", 9098)
+    assert mpe.parse_service_hostport("https://svc.example/sse") == ("svc.example", 443)
+    assert mpe.parse_service_hostport("not a url") is None
+
+
+def test_check_investigation_service_down_is_graceful():
+    """조사 서비스 미도달은 (False, 사유)로 표기하되 크래시하지 않는다(비차단)."""
+    cfg = _fake_config(
+        investigation_service_url=f"http://127.0.0.1:{_closed_port()}/sse"
+    )
+    ok, detail = mpe.check_investigation_service(cfg, timeout=1.0)
+    assert ok is False
+    assert "미도달" in detail
+    assert "게이트 PAGE 판정·통보는 정상" in detail
+
+
+def test_check_investigation_service_no_url():
+    """조사 서비스 URL 미설정 시 사유를 명시한다(침묵 실패 금지)."""
+    cfg = _fake_config(investigation_service_url="")
+    ok, detail = mpe.check_investigation_service(cfg)
+    assert ok is False
+    assert "미설정" in detail
+
+
 # ─── 크래시 방지: 서버 부재 시 graceful 실패 (verification #4) ──────────────────
 
 def _closed_port() -> int:
@@ -369,10 +511,56 @@ def test_dispatch_graceful_when_server_down(tmp_path, capsys):
     assert "전송 실패" in out
 
 
+def test_dispatch_invest_trigger_graceful_all_down(tmp_path, capsys):
+    """[12] invest-trigger: 플래그 on이어도 서버/조사 서비스 미기동 시 크래시 없이 사유 출력.
+
+    전제(플래그) 충족 → 조사 서비스 도달성 사전 표기(미도달) → 전송 graceful 실패까지
+    침묵 없이 진행한다(§4.3 비차단 계약·verification #4)."""
+    sender = mpe.TcpSender("127.0.0.1", _closed_port(), timeout=1.0)
+    judge = mpe.Judge(str(tmp_path / "decisions.jsonl"))
+    ctx = mpe.RunContext(
+        sender=sender, judge=judge,
+        noise_config=_fake_config(
+            investigation_trigger_enabled=True,
+            investigation_service_url=f"http://127.0.0.1:{_closed_port()}/sse",
+        ),
+        db_id="polestar_pg", timeout=1.0, wait_enabled=True,
+    )
+    mpe.dispatch_scenario(mpe.SCENARIOS_BY_NAME["invest-trigger"], ctx)
+    out = capsys.readouterr().out
+    assert "조사 서비스" in out  # 도달성 사전 표기(비차단)
+    assert "전송 실패" in out    # 전송 graceful 실패
+
+
+def test_dispatch_invest_trigger_flag_off_not_injected(tmp_path, capsys):
+    """[12] invest-trigger: 플래그 off면 주입하지 않고 사유를 출력한다(verification #4)."""
+    sender = mpe.TcpSender("127.0.0.1", _closed_port(), timeout=1.0)
+    judge = mpe.Judge(str(tmp_path / "decisions.jsonl"))
+    ctx = mpe.RunContext(
+        sender=sender, judge=judge, noise_config=_fake_config(),  # 트리거 플래그 off(기본)
+        db_id="polestar_pg", timeout=1.0, wait_enabled=True,
+    )
+    mpe.dispatch_scenario(mpe.SCENARIOS_BY_NAME["invest-trigger"], ctx)
+    out = capsys.readouterr().out
+    assert "전제 미충족" in out
+    assert "INVESTIGATION_TRIGGER_ENABLED" in out
+    assert "전송 실패" not in out  # 주입하지 않았다
+
+
 # ─── e2e 옵트인 (서버 필요 — RUN_E2E=1) ────────────────────────────────────────
 
 @pytest.mark.skipif(os.getenv("RUN_E2E") != "1", reason="RUN_E2E=1 옵트인(서버 필요)")
 def test_send_dup_suppress_e2e():
     """--send dup-suppress가 실제 서버 경로로 주입·판정까지 완주한다(옵트인)."""
     rc = mpe.main(["--send", "dup-suppress"])
+    assert rc == 0
+
+
+@pytest.mark.skipif(os.getenv("RUN_E2E") != "1", reason="RUN_E2E=1 옵트인(서버+조사 서비스 필요)")
+def test_send_invest_trigger_e2e():
+    """--send invest-trigger가 게이트 PAGE→조사 submit 경로를 크래시 없이 완주한다(옵트인).
+
+    플래그 off면 전제 미충족 사유 출력 후 graceful(rc=0), 플래그 on+서비스 기동이면 submit
+    accepted/duplicate 확인까지 완주(rc=0). 실 HolmesGPT 완주는 별도 RUN_E2E 환경에서 대조."""
+    rc = mpe.main(["--send", "invest-trigger"])
     assert rc == 0

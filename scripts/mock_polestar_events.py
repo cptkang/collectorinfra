@@ -141,6 +141,7 @@ class Step:
     expect_recurrence: bool = False                  # dedup 억제(type=recurrence) 기대
     expect_no_dedup: bool = False                    # 독립 판정(dedup 아님) 기대 — 음성 대조군
     show_audit: bool = False                         # Plan 60 감사 필드 표시 여부
+    expect_investigation: bool = False               # 자동 조사 트리거 감사 레코드 조회 기대(§4.3)
 
     @property
     def alarm_id(self) -> str:
@@ -160,8 +161,9 @@ class Scenario:
     build: Callable[[str, str], list]                # (run_id, db_id) -> list[Step]
     required_flags: tuple = ()                        # ((config_attr, env_key), ...)
     requires_model: bool = False                     # 로컬 임베딩 모델 필요(B-7)
+    requires_investigation_service: bool = False     # sre_agent 조사 서비스 도달성 점검(§4.3)
     flag_note: str = ""                              # 메뉴의 ⚑ 플래그 표기
-    stub: bool = False                               # 미구현 보류(invest-trigger)
+    stub: bool = False                               # 미구현 보류(현재 미사용 — 확장 여지)
     stub_reason: str = ""
 
 
@@ -366,11 +368,19 @@ def _build_semantic_dup(run_id: str, db_id: str) -> list:
 
 
 def _build_invest_trigger(run_id: str, db_id: str) -> list:
-    """[12] invest-trigger (§4.3) — sev3 PAGE 단건(자동 조사 트리거 대상 이벤트 정의).
+    """[12] invest-trigger (§4.3 · Plan 66 R9) — sev3 PAGE 단건 → 게이트 훅 자동 조사 submit.
 
-    ※ submit 배선은 R8(게이트 훅 → sre_investigate_alarm submit) 미구현으로 **스텁**이다.
-    본 시나리오는 이벤트 정의·메뉴 항목까지만 제공하며, 선택 시 주입하지 않고 보류 사유를
-    출력한다(실제 submit 호출 코드 없음 — Plan 65 §4.3 델타·과업 지시).
+    S8 변형 설비 UPS 경고 severity 3 단건(PAGE 단락 확정)을 주입하면, notification_gate 직후
+    investigation_trigger 노드(Plan 64 CW-A, 3-A 배선)가 `sre_investigate_alarm`을 submit→poll하고
+    그 결과(investigation_id·최종 status·verdict)를 decision_store.record_investigation으로
+    `logs/alarm_decisions.jsonl`에 `type="investigation"` 레코드로 감사한다(실측: decision_store
+    §183·investigation_trigger_node §112). 판정기는 이 investigation 감사 레코드를 조회해
+    accepted(신규 investigation_id) / duplicate(기존 id 재사용·dispatcher dedup) / submit 실패
+    (investigation_id 없음 — 서비스 미기동 graceful)를 표시한다(classify_investigation).
+
+    ※ 기본(스텁 서비스·LLM 키 부재)은 submit 수용·investigation_id 확인까지 검증한다. 실 HolmesGPT
+    조사 완주·브리핑 수신 대조는 LLM 비용이 발생하므로 RUN_E2E=1 옵트인에서만 한다(Plan 65 §4.3).
+    조사 서비스 미기동이어도 게이트 판정·통보는 정상 완료되고 트리거만 graceful 실패한다(비차단 계약).
     """
     return [
         Step(make_payload(db_id=db_id, server_name="SAE 0011649", severity=SEV_FACILITY_PAGE,
@@ -378,7 +388,8 @@ def _build_invest_trigger(run_id: str, db_id: str) -> list:
                           resource_name="자본시장추진부 UPS", conditions="< 하한 임계치",
                           condition_log="[출력 전압 하한 경고 임계치 미만]",
                           alarm_id=mock_alarm_id(run_id, 1)),
-             label="sev3 PAGE(조사 트리거 대상)", expect_tiers=frozenset({TIER_PAGE})),
+             label="sev3 PAGE(조사 트리거)", expect_tiers=frozenset({TIER_PAGE}),
+             expect_investigation=True),
     ]
 
 
@@ -482,15 +493,12 @@ SCENARIOS: tuple = (
                               "NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED"),),
              requires_model=True,
              flag_note="⚑ NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED + 로컬 모델(docs/19)"),
-    Scenario(12, "invest-trigger", "sev3 PAGE→자동 조사 submit", "PAGE + submit(보류)",
+    Scenario(12, "invest-trigger", "sev3 PAGE→자동 조사 submit", "PAGE + submit accepted/duplicate",
              "sre", _build_invest_trigger,
-             flag_note="⚑ INVESTIGATION_TRIGGER_ENABLED + sre_agent 서비스 (R8 미구현)",
-             stub=True,
-             stub_reason=(
-                 "R8(게이트 훅 → sre_investigate_alarm submit 배선) 미구현으로 보류. "
-                 "메뉴 항목·이벤트 정의만 제공하며 submit 확인은 R8 구현 후 활성화된다 "
-                 "(Plan 65 §4.3 · plans/sre-agent/05 §3)."
-             )),
+             required_flags=(("investigation_trigger_enabled",
+                              "NOISE_INVESTIGATION_TRIGGER_ENABLED"),),
+             requires_investigation_service=True,
+             flag_note="⚑ NOISE_INVESTIGATION_TRIGGER_ENABLED + sre_agent 조사 서비스(RUN_E2E=1 완주)"),
     Scenario(13, "non-alarm", "승인/안내성 비알람 (E7-b)", "SUPPRESS(비운영)",
              "plan60e7", _build_non_alarm,
              required_flags=(("non_alarm_filter_enabled",
@@ -623,6 +631,63 @@ class Judge:
             time.sleep(self.poll_interval)
         return None
 
+    def wait_for_investigation(
+        self, alarm_id: str, offset: int, timeout: float
+    ) -> Optional[dict]:
+        """offset 이후 JSONL에서 `type="investigation"`·alarm_id 일치 레코드를 대기한다(§4.3).
+
+        investigation_trigger 노드(Plan 64 CW-A)가 record_investigation으로 남긴 조사 감사
+        레코드(type="investigation"·investigation_id·status·verdict)를 조회한다. 이 레코드는
+        게이트 결정 레코드(tier)보다 뒤에 append되므로, 결정 레코드를 건너뛰고 investigation
+        레코드만 매칭한다. 미검출 시 None(트리거 노드 미배선·클라이언트 미주입·타임아웃 —
+        침묵 실패 아님, 게이트 PAGE 판정 자체는 정상).
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.path.exists():
+                with self.path.open(encoding="utf-8") as fh:
+                    fh.seek(offset)
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if rec.get("type") == "investigation" and rec.get("alarm_id") == alarm_id:
+                            return rec
+            time.sleep(self.poll_interval)
+        return None
+
+    def known_investigation_ids(self) -> set:
+        """기존 로그의 investigation 레코드 investigation_id 집합을 반환한다(dedup 시드).
+
+        별도 프로세스(`--send`)로 동일 시나리오를 연속 주입해도 2회째 duplicate(기존 id 재사용)를
+        감지하도록, 세션 시작 시 로그에 이미 존재하는 investigation_id를 '관측됨'으로 시드한다
+        (investigation_id는 uuid4 hex이므로 재사용은 dispatcher/JobStore dedup의 확정 신호다).
+        """
+        ids: set = set()
+        if not self.path.exists():
+            return ids
+        try:
+            with self.path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if rec.get("type") == "investigation":
+                        inv_id = rec.get("investigation_id")
+                        if inv_id:
+                            ids.add(inv_id)
+        except OSError:
+            return ids
+        return ids
+
 
 # ─── 판정 로직 (기대치 대조 · 감사 필드 표시) ──────────────────────────────────
 
@@ -668,6 +733,73 @@ def format_audit(rec: dict) -> str:
         if val not in (None, False):
             parts.append(f"signals.{key}={val}")
     return "  ".join(parts) if parts else "(Plan 60 감사 필드 없음 — 플래그/픽스처 확인)"
+
+
+def classify_investigation(rec: Optional[dict], seen_ids: set) -> tuple:
+    """조사 트리거 감사 레코드를 accepted/duplicate/실패로 분류한다 → (state, detail) (§4.3).
+
+    게이트 훅(investigation_trigger_node)이 남기는 investigation 레코드의 `status`는 poll 최종
+    상태(stub/done/down/timeout 등)이므로, submit의 accepted/duplicate는 **investigation_id 재사용
+    여부**로 판정한다(duplicate = dispatcher/JobStore가 기존 조사 id를 재반환 — sre-agent/05 §3).
+
+    state: True(✔ 트리거 관측) / None(? 미관측·submit 실패 — 침묵 실패 아님, 게이트 판정은 정상).
+        - rec None: 트리거 레코드 미관측(노드 미배선/클라이언트 미주입/타임아웃).
+        - investigation_id 없음: submit 실패(서비스 미기동 graceful) — status를 사유로 노출.
+        - investigation_id ∈ seen_ids: duplicate(기존 id 재사용 dedup).
+        - 그 외: accepted(신규 조사).
+    """
+    if rec is None:
+        return None, (
+            "조사 트리거 레코드 미관측 — 트리거 노드 미배선/클라이언트 미주입 가능"
+            "(게이트 PAGE 판정·통보는 정상)"
+        )
+    inv_id = rec.get("investigation_id")
+    status = rec.get("status")
+    if not inv_id:
+        return None, (
+            f"submit 실패(status={status}) — 조사 서비스 미기동 graceful, "
+            "게이트 PAGE 판정·통보는 정상 완료"
+        )
+    if inv_id in seen_ids:
+        return True, f"duplicate — 기존 investigation_id 재사용(dedup) id={inv_id} status={status}"
+    return True, f"accepted — 신규 조사 id={inv_id} status={status}"
+
+
+def parse_service_hostport(url: str) -> Optional[tuple]:
+    """SSE URL에서 (host, port)를 파싱한다(조사 서비스 도달성 TCP 프로브용). 실패 시 None."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except (ValueError, TypeError):
+        return None
+    if not parsed.hostname:
+        return None
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.hostname, port
+
+
+def check_investigation_service(noise_config, timeout: float = 2.0) -> tuple:  # noqa: ANN001
+    """조사 서비스 URL(investigation_service_url)의 TCP 도달성을 점검한다 → (ok, detail).
+
+    비차단 정보용 — 미도달이어도 게이트 PAGE 판정·통보는 정상 완료되고 트리거만 graceful
+    실패한다(§4.3 비차단 계약). 그 사유를 명시해 침묵 실패를 막는다(Known Mistakes).
+    """
+    url = getattr(noise_config, "investigation_service_url", "") or ""
+    if not url:
+        return False, "investigation_service_url 미설정 — 조사 서비스 URL 확인(.env)"
+    hostport = parse_service_hostport(url)
+    if hostport is None:
+        return False, f"조사 서비스 URL 파싱 실패: {url}"
+    host, port = hostport
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, f"조사 서비스 {host}:{port} 도달"
+    except OSError as exc:
+        return False, (
+            f"조사 서비스 {host}:{port} 미도달 ({exc}) — 트리거는 graceful 실패, "
+            "게이트 PAGE 판정·통보는 정상"
+        )
 
 
 # ─── 전제 조건 점검 (플래그·모델 · §4.2) ───────────────────────────────────────
@@ -721,6 +853,7 @@ class RunContext:
     db_id: str
     timeout: float
     wait_enabled: bool = True
+    seen_investigation_ids: set = field(default_factory=set)  # 세션 내 관측 investigation_id(dedup 판정)
 
 
 def dispatch_scenario(scenario: Scenario, ctx: RunContext) -> None:
@@ -731,6 +864,11 @@ def dispatch_scenario(scenario: Scenario, ctx: RunContext) -> None:
         for reason in reasons:
             print(f"  · {reason}")
         return
+
+    # 조사 서비스 도달성 사전 표기(비차단 — 미도달이어도 게이트는 정상, 트리거만 graceful 실패).
+    if scenario.requires_investigation_service and ctx.noise_config is not None:
+        svc_ok, svc_detail = check_investigation_service(ctx.noise_config)
+        print(f"  [조사 서비스] {'✔' if svc_ok else '✘'} {svc_detail}")
 
     run_id = uuid.uuid4().hex[:8]
     steps = scenario.build(run_id, ctx.db_id)
@@ -754,6 +892,19 @@ def dispatch_scenario(scenario: Scenario, ctx: RunContext) -> None:
             print(f"  [판정 {idx}] {mark} {detail}")
             if step.show_audit and rec is not None:
                 print(f"           {format_audit(rec)}")
+            if step.expect_investigation:
+                # 게이트 훅(investigation_trigger 노드)이 남긴 investigation 감사 레코드 조회 →
+                # accepted(신규 id)/duplicate(기존 id 재사용)/submit 실패(id 없음·graceful) 표기.
+                inv_rec = ctx.judge.wait_for_investigation(
+                    step.alarm_id, offset, per_step_timeout
+                )
+                inv_state, inv_detail = classify_investigation(
+                    inv_rec, ctx.seen_investigation_ids
+                )
+                inv_mark = {True: "✔", False: "✘", None: "?"}[inv_state]
+                print(f"  [조사 {idx}] {inv_mark} {inv_detail}")
+                if inv_rec is not None and inv_rec.get("investigation_id"):
+                    ctx.seen_investigation_ids.add(inv_rec["investigation_id"])
         if step.interval_after > 0 and idx < len(steps):
             time.sleep(step.interval_after)
 
@@ -768,7 +919,7 @@ def _category_label(category: str) -> str:
     return {
         "basic": "─ 기본 (Plan 52 게이트) ───────────────────────",
         "plan60": "─ Plan 60 (플래그 필요 — off면 선택 시 안내) ──",
-        "sre": "─ SRE-Agent 연동 (§4.3 — R8 미구현 보류) ─────",
+        "sre": "─ SRE-Agent 연동 (§4.3 — 자동 조사 트리거) ─────",
         "plan60e7": "─ Plan 60 E7 (실측 텍스트·사이트 — 플래그 필요) ─",
     }.get(category, category)
 
@@ -892,6 +1043,8 @@ def main(argv: Optional[list] = None) -> int:
     ctx = RunContext(
         sender=sender, judge=judge, noise_config=noise_config,
         db_id=args.db_id, timeout=args.timeout, wait_enabled=True,
+        # 기존 로그의 investigation_id를 시드 → 별도 프로세스 연속 주입에서도 duplicate 감지(§4.3).
+        seen_investigation_ids=judge.known_investigation_ids(),
     )
 
     if args.send:
