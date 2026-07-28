@@ -24,12 +24,24 @@ def test_key_present_judged_by_field():
     assert smoke_llm.key_present(_with_key_settings()) is True
 
 
-def test_main_graceful_when_key_absent(capsys):
-    # 키 부재 시 실 API 호출 없이 exit 0 + '보류' 문구를 명확히 출력해야 한다.
+def test_main_graceful_when_key_absent(capsys, monkeypatch):
+    # (D-127) 실 Gemini 호출은 RUN_E2E=1 승인 게이트 뒤에 있다 — 이 게이트를 통과시킨 뒤
+    # 키 부재 경로(실 API 호출 없이 exit 0 + HELD_MSG)를 검증한다. RUN_E2E=1이라도
+    # 키가 없으면 API를 호출하지 않고 HELD_MSG로 graceful 종료해야 한다.
+    monkeypatch.setenv("RUN_E2E", "1")
     rc = smoke_llm.main(settings=_no_key_settings())
     assert rc == 0
     out = capsys.readouterr().out
     assert smoke_llm.HELD_MSG in out
+
+
+def test_main_holds_without_run_e2e_approval(capsys, monkeypatch):
+    # (D-127) RUN_E2E 미승인 시 키 유무와 무관하게 실 API를 호출하지 않고 승인 요구로 보류.
+    monkeypatch.delenv("RUN_E2E", raising=False)
+    rc = smoke_llm.main(settings=_no_key_settings())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "D-127" in out and "RUN_E2E=1" in out
 
 
 def test_smoke_tool_definition_single_function():

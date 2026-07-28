@@ -23,6 +23,7 @@ from sre_agent.application.investigation_dispatcher import InvestigationDispatch
 from sre_agent.application.investigation_jobs import CONTRACT_VERSION, JobStore
 from sre_agent.diagnosis import DiagnosisAgent, DiagnosisResult
 from sre_agent.settings import AgentSettings
+from sre_agent.toolset_profiles import remote_vm_profile
 
 logger = logging.getLogger(__name__)
 
@@ -79,21 +80,53 @@ def _job_to_question(job) -> str:
         return job.question
     event = (getattr(job, "payload", None) or {}).get("event") or {}
     server = event.get("serverName") or event.get("hostname") or "대상 서버"
-    return f"{server} 장애 원인을 조사하고 트리아지하라(부하→병목→원인 격리→로그). 모든 주장에 도구 출력을 인용하라."
+    # 결론 유도(수렴 가드): 트리아지 순서는 유지하되 핵심 지표 위주로 간결히 조사하고
+    # 충분한 근거가 모이면 즉시 결론을 내도록 지시한다(불필요한 반복 조회가 step을 소진해
+    # 미완주로 빠지는 것을 방지 — 실측 기반).
+    return (
+        f"{server} 장애 원인을 조사하고 트리아지하라(부하→병목→원인 격리→로그). "
+        f"핵심 지표(CPU·메모리·디스크·네트워크) 위주로 **간결히** 조사하고, 충분한 근거가 "
+        f"모이면 **즉시 결론**을 내라(동일 지표 반복 조회 금지). 모든 주장에 도구 출력을 인용하라."
+    )
+
+
+def _build_mcp_servers(settings: AgentSettings) -> dict[str, dict] | None:
+    """AgentSettings 폴스타 MCP 접속 설정을 holmes Config.mcp_servers 형식으로 조립한다.
+
+    URL 미설정이면 None(로컬 vm_profile 경로 유지). 토큰(SecretStr) 설정 시 Bearer 헤더
+    첨부(D-125). 관측 데이터 접근 경계는 mcp_server 하나로 일원화(D-119) — 폴스타 SQL
+    고수준 도구·PromQL 도구가 이 한 엔드포인트에서 자동 발견된다(RemoteMCPToolset).
+    """
+    url = settings.polestar_mcp_url
+    if not url:
+        return None
+    config: dict = {"mode": "sse", "url": url, "health_check_tool": "list_sources"}
+    tok = settings.polestar_mcp_token
+    if tok is not None and tok.get_secret_value():
+        config["headers"] = {"Authorization": f"Bearer {tok.get_secret_value()}"}
+    return {"polestar": {"config": config}}
 
 
 def _default_diagnose_fn(settings: AgentSettings):
     """실 조사 함수(DiagnosisAgent)를 지연 생성해 반환한다 — dispatcher.diagnose_fn 주입용.
 
     LLM 키가 있을 때만 dispatcher가 호출하므로 agent는 최초 호출 시점에 1회 생성한다
-    (create_service 시점의 holmes prerequisite 검사·비용 회피).
+    (create_service 시점의 holmes prerequisite 검사·비용 회피). **원격 프로파일 배선**:
+    `remote_vm_profile()`(로컬 셸 미확장·Prometheus 내장 toolset 비활성) + 폴스타 MCP를
+    `mcp_servers`로 등록해 조사가 mcp_server 고수준 도구(폴스타 SQL·PromQL)를 소비한다
+    (D-119). mcp_server는 조사 배치에서 execute_sql·raw_promql을 비노출로 두어야
+    LLM이 raw SQL/PromQL 방언 오류로 step을 소진하지 않는다(D-122 — 배치 config 규약).
     """
     holder: dict[str, DiagnosisAgent] = {}
 
     def _diagnose(job) -> DiagnosisResult:
         agent = holder.get("agent")
         if agent is None:
-            agent = DiagnosisAgent(settings)
+            agent = DiagnosisAgent(
+                settings,
+                toolsets=remote_vm_profile(),
+                mcp_servers=_build_mcp_servers(settings),
+            )
             holder["agent"] = agent
         return agent.ask(_job_to_question(job))
 

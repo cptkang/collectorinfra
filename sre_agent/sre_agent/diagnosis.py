@@ -80,6 +80,10 @@ class DiagnosisResult:
     tool_outputs: list[ToolCallRecord] = field(default_factory=list)
     total_tokens: int = 0
     total_cost: float = 0.0
+    # step 상한 도달 등으로 조사가 결론에 이르지 못한 미완주 여부(Plan 02 §12-④).
+    # True면 후처리(briefing/severity_judge)가 "가설/한계"로 표기하고, escalate 신호로
+    # 취급하지 않는다(재현율 우선 — 미완주가 상향 근거가 되면 오탐 폭주).
+    incomplete: bool = False
 
 
 class DiagnosisAgent:
@@ -124,14 +128,34 @@ class DiagnosisAgent:
         return self._llm
 
     def ask(self, question: str, system_prompt_additions: str | None = None) -> DiagnosisResult:
-        """자연어 질문으로 장애 진단을 수행한다."""
+        """자연어 질문으로 장애 진단을 수행한다.
+
+        holmes는 max_steps 상한 도달 시 전용 클래스 없이 plain `Exception("Too many LLM
+        calls - exceeded max_steps: i/N")`을 던진다(실측). 하드 실패로 전파하지 않고
+        **구조화 미완주 결과**(`incomplete=True`)로 graceful 반환한다 — Plan 02 §12-④
+        (침묵 실패 금지·부분/사유 전달). 결정적 가드: 상한 자체는 escalate 신호가 아니다.
+        그 외 예외는 그대로 전파(진짜 오류는 dispatcher가 failed로 확정).
+        """
         messages = build_initial_ask_messages(
             initial_user_prompt=question,
             file_paths=None,
             tool_executor=self.llm.tool_executor,
             system_prompt_additions=system_prompt_additions,
         )
-        result = self.llm.call(messages)
+        try:
+            result = self.llm.call(messages)
+        except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception
+            msg = str(exc)
+            if "max_steps" in msg or "Too many LLM calls" in msg:
+                return DiagnosisResult(
+                    answer=(
+                        f"[미완주] 조사가 step 상한({self.settings.max_steps})에 도달해 "
+                        f"결론을 도출하지 못했습니다({msg}). 수집된 근거가 불충분하므로 "
+                        f"가설/한계로 취급합니다."
+                    ),
+                    incomplete=True,
+                )
+            raise
         return DiagnosisResult(
             answer=result.result or "",
             tool_calls=[tc.description for tc in (result.tool_calls or [])],

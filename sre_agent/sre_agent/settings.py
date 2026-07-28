@@ -14,7 +14,11 @@ class AgentSettings(BaseSettings):
 
     model: str = "anthropic/claude-sonnet-5"
     api_key: SecretStr | None = None
-    max_steps: int = 10
+    # 결정적 가드(실측): 다중 메트릭 실 조사는 10 step으로 `Too many LLM calls -
+    # exceeded max_steps`로 미완주(포커스 질의는 20에서 완주, 브로드 트리아지는 30도 초과).
+    # 마진으로 40 — 상한 도달 시 DiagnosisAgent.ask가 구조화 미완주로 graceful 반환하고
+    # (하드 실패 금지·Plan 02 §12-④), dispatcher 전체 타임아웃(300s)이 하드 백스톱.
+    max_steps: int = 40
 
     # 폴스타 MCP 접속 설정 (Plan 06 §94 · D-119). mcp_server(Plan 04)가 노출하는
     # SSE 엔드포인트로, DiagnosisAgent(mcp_servers=...)에 등록해 소비한다.
