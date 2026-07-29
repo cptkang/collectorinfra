@@ -166,7 +166,7 @@ async def test_run_deep_agent_no_tool_calls_uses_last_message(monkeypatch):
     captured = {}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             captured["payload"] = payload
             return {"messages": [{"role": "user", "content": "질의"},
                                  {"role": "assistant", "content": "최종 응답입니다"}]}
@@ -198,7 +198,7 @@ async def test_run_deep_agent_step6_aggregates_via_fabrix(monkeypatch):
     captured = {}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             # 도구 실행을 시뮬레이션: collector에 원본 결과 적재
             self._collector.append(
                 ({"task_id": "tool_data_query_1", "agent": "data_query", "order": 1,
@@ -457,7 +457,7 @@ async def test_run_deep_agent_premature_end_passes_incomplete_notice(monkeypatch
     from langchain_core.messages import AIMessage
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             self._collector.append((
                 {"task_id": "tool_alarm_query_1", "agent": "alarm_query", "order": 1,
                  "status": "completed", "sub_query": "활성 심각 알람 서버 목록 조회"},
@@ -505,7 +505,7 @@ async def test_run_deep_agent_normal_end_no_notice(monkeypatch):
     from langchain_core.messages import AIMessage
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             self._collector.append((
                 {"task_id": "tool_data_query_1", "agent": "data_query", "order": 1,
                  "status": "completed", "sub_query": "서버 목록"},
@@ -545,7 +545,7 @@ async def test_run_deep_agent_premature_no_tools_explicit_failure(monkeypatch):
     from langchain_core.messages import AIMessage, HumanMessage
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             return {"messages": [HumanMessage(content="복합 질의"), AIMessage(content="")]}
 
     def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
@@ -580,7 +580,7 @@ async def test_run_deep_agent_resumes_once_after_empty_response(monkeypatch):
     calls = {"n": 0, "payloads": []}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             calls["n"] += 1
             calls["payloads"].append(payload)
             if calls["n"] == 1:
@@ -650,7 +650,7 @@ async def test_run_deep_agent_resume_stops_without_progress(monkeypatch):
     calls = {"n": 0}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 self._collector.append((
@@ -684,6 +684,36 @@ async def test_run_deep_agent_resume_stops_without_progress(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_deep_agent_passes_recursion_limit(monkeypatch):
+    """1차·재개 호출 모두 설정된 recursion_limit을 명시 전달한다 (Plan 67 Phase 0 ③).
+
+    미지정 시 LangGraph 기본값 25에 암묵 의존하므로, 설정값이 실제로 실려야 한다.
+    """
+    from langchain_core.messages import AIMessage
+
+    configs: list = []
+
+    class _FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            configs.append(config)
+            return {"messages": [AIMessage(content="")]}  # 빈 응답 → 재개 경로까지 태운다
+
+    def _fake_build(config, *, worker_llm=None, ambient_state=None, collector=None):
+        return _FakeAgent()
+
+    monkeypatch.setattr(deep_agent_module, "build_deep_agent", _fake_build)
+
+    cfg = _build_config(package=True, semantic=False)
+    cfg.orchestrator = OrchestratorConfig(
+        _env_file=None, provider="vllm", base_url="http://vllm:8000/v1", recursion_limit=40
+    )
+    await run_deep_agent({"user_query": "복합 질의"}, app_config=cfg)
+
+    assert len(configs) >= 2  # 1차 + 재개 1회 이상
+    assert all(c == {"recursion_limit": 40} for c in configs)
+
+
+@pytest.mark.asyncio
 async def test_run_deep_agent_resume_repeats_while_progressing(monkeypatch):
     """재개마다 도구 실행이 늘면(진전) 상한 내에서 반복 재개해 체인을 완주한다(D-093).
 
@@ -696,7 +726,7 @@ async def test_run_deep_agent_resume_repeats_while_progressing(monkeypatch):
     calls = {"n": 0}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             calls["n"] += 1
             if calls["n"] <= 2:  # 1차·재개1: 도구 1건씩 실행 후 빈 응답
                 self._collector.append((
@@ -743,7 +773,7 @@ async def test_run_deep_agent_resume_hard_cap(monkeypatch):
     calls = {"n": 0}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             calls["n"] += 1
             # 매 호출 도구 1건 실행(진전) + 빈 응답 반복
             self._collector.append((
@@ -785,7 +815,7 @@ async def test_run_deep_agent_resume_failure_falls_back_to_first_result(monkeypa
     calls = {"n": 0}
 
     class _FakeAgent:
-        async def ainvoke(self, payload):
+        async def ainvoke(self, payload, config=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 self._collector.append((

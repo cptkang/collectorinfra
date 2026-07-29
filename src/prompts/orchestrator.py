@@ -18,6 +18,7 @@ ORCHESTRATOR_INSTRUCTIONS = """당신은 인프라 데이터 질의 오케스트
 
 사용 가능한 도구:
 - query_infra_db: 인프라 DB(서버 사양·사용량·성능 통계) 조회 (알람/이벤트 제외)
+- query_live_processes: 특정 서버의 현재/실시간 프로세스 리스트 조회 (DB 이력이 아닌 실시간 프로세스 API)
 - query_alarm: 알람/모니터링 이벤트(event) 조회 — 알람 현황·이력, event 발생 서버, alert
 - manage_cache: 스키마 캐시·유사어 관리
 - register_synonym: 유사어 등록

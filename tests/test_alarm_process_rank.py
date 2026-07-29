@@ -213,18 +213,31 @@ class TestSelectTopProcesses:
 
 class TestGetProcessApiBaseUrl:
     def _cfg(self, **kw):
-        return AlarmConfig(**kw)
+        # `.env` 누수 차단 — 기본값·명시 CSV만으로 판정한다.
+        return AlarmConfig(_env_file=None, **kw)
 
-    def test_gp_mapping(self):
-        cfg = self._cfg()
-        assert cfg.get_process_api_base_url("polestar_cm_gp") == "http://polestar.kbonecloud.com"
+    def test_default_has_no_hardcoded_host(self):
+        """기본값은 공란 — 운영 호스트를 코드에 두지 않는다 (Plan 67 Phase 0 ⑪).
 
-    def test_yd_mapping(self):
+        매핑은 `.env`의 ALARM_PROCESS_API_BASE_URLS_CSV로만 주입한다.
+        """
         cfg = self._cfg()
-        assert cfg.get_process_api_base_url("polestar_cm_yd") == "http://yd-polestar.kbonecloud.com"
+        assert cfg.process_api_base_urls_csv == ""
+        assert cfg.get_process_api_base_url("polestar_cm_gp") is None
+
+    def test_env_supplied_mapping(self):
+        """`.env`로 주입한 db_id별 매핑이 그대로 조회된다."""
+        cfg = self._cfg(
+            process_api_base_urls_csv=(
+                "polestar_cm_gp=http://gp.example.internal,"
+                "polestar_cm_yd=http://yd.example.internal"
+            )
+        )
+        assert cfg.get_process_api_base_url("polestar_cm_gp") == "http://gp.example.internal"
+        assert cfg.get_process_api_base_url("polestar_cm_yd") == "http://yd.example.internal"
 
     def test_unmapped_db_id_returns_none(self):
-        cfg = self._cfg()
+        cfg = self._cfg(process_api_base_urls_csv="polestar_cm_gp=http://gp.example.internal")
         assert cfg.get_process_api_base_url("polestar") is None
         assert cfg.get_process_api_base_url("polestar_b0") is None
 

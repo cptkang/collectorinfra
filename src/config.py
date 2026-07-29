@@ -81,21 +81,31 @@ class OrchestratorConfig(BaseSettings):
     # 폐쇄망 환경에서 False로 두면 health check·tool-calling 요청의 SSL 검증을 건너뛴다.
     # 미설정 시 True(안전 기본값) — `.env`에 ORCHESTRATOR_VERIFY_SSL=false로 비활성화.
     verify_ssl: bool = True
+    # 제어 평면 그래프 순회 상한(LangGraph recursion_limit). 미지정 시 LangGraph 기본값 25에
+    # 암묵 의존하므로 명시 노브로 노출한다(Plan 67 Phase 0 ③ — 기본값은 동작 불변).
+    # 도구 호출 단계가 많은 복합 질의에서 GraphRecursionError가 나면 .env로 상향한다.
+    recursion_limit: int = 25
 
     # ── Plan 50 / D-040 (B6): 제어 평면 컨텍스트 예산 노브 ──
     # 모델 교체(예: 9B → 대형) 시 코드 수정 없이 .env(ORCHESTRATOR_*)만 조정하면 예산이 확장된다.
     # 단순 int/float이므로 .env JSON 파싱 이슈 없음(Known Mistakes 2026-03-23).
+    # ※ 미소비(미배선) 주의 — 이 블록에서 실제로 읽히는 값은 max_tool_result_tokens 하나뿐이다
+    #   (deepagents_tools._max_chars). 나머지 3개는 소비 지점이 없다(Plan 67 Phase 0 ⑦ 실측).
+    #   삭제하지 않고 유지한다 — 설정 웹UI 카탈로그가 "미소비" 필드로 노출하는 대상이기 때문
+    #   (settings_catalog.UNCONSUMED_KEYS / D-129, 2026-07-29 확정). 단 max_history_turns는
+    #   아직 그 목록에 없어 UI가 "소비 중"으로 표시한다(카탈로그 누락 — 별건).
+    #   배선하거나 삭제할 때는 카탈로그 등재도 함께 갱신한다.
     # 제어 평면 입력 토큰 안전 상한. 서버 max_model_len(=16384 상향 진행) − 출력 여유(~4000) = 12000.
     # 초과 예상 시 트리밍/요약/강등(B2) 트리거. 모델 교체 시 서버 max_model_len 상향과 함께 올린다.
-    max_input_tokens: int = 12000
+    max_input_tokens: int = 12000        # 미소비
     # 상한 대비 트리밍 시작 임계 비율(80% 도달 시 오래된 도구 결과 쌍을 요약). 보통 유지.
-    context_budget_ratio: float = 0.8
+    context_budget_ratio: float = 0.8    # 미소비
     # 제어 평면으로 반환하는 도구 결과 1건 요약 상한(B1). 원본은 collector에만 보관한다.
     # 모델 교체로 컨텍스트가 커지면 상향 가능.
     max_tool_result_tokens: int = 2000
     # 제어 평면에 유지할 멀티턴 압축 맥락 턴 수(B3). 데이터 평면 MAX_HISTORY_TURNS=10과 별도.
     # 모델 교체로 컨텍스트가 커지면 상향 가능.
-    max_history_turns: int = 6
+    max_history_turns: int = 6           # 미소비
 
     # ── Plan 50 / D-040 (B7): Qwen 계열 no-think(추론 비활성) 모드 ──
     # 제어 평면 추론 모드. Qwen 계열은 false(no-think) 권장 — 추론 토큰으로 인한 한계 압박과
@@ -407,6 +417,9 @@ class AlarmConfig(BaseSettings):
     # Generic Webhook 채널 설정 (비어있으면 webhook 채널 자동 무시)
     webhook_url: str = ""
     webhook_timeout_seconds: int = 10
+    # 알람 분석 테스트 API(POST /alarm/test)에서 db_id를 생략했을 때 쓸 기본 인스턴스
+    # 식별자. 라우트에 상수로 박혀 있던 값을 설정으로 옮긴 것이다(Plan 67 Phase 0 ⑫).
+    default_test_db_id: str = "polestar_b0"
 
     # ── Plan 47: 폴스타 DB 이력 기반 패턴 분석 ──
     history_enabled: bool = True              # 이력 조회 + 패턴 분석 활성화
@@ -421,10 +434,10 @@ class AlarmConfig(BaseSettings):
     process_enrich_enabled: bool = True
     # db_id=base_url 매핑 (CSV — .env JSON 회피, notification_channels_csv 패턴과 동일).
     # 내부망 시스템이라 scheme는 http:// (TLS 없음). 인증 불필요 (Plan 47-1 §2/§9).
-    process_api_base_urls_csv: str = (
-        "polestar_cm_gp=http://polestar.kbonecloud.com,"
-        "polestar_cm_yd=http://yd-polestar.kbonecloud.com"
-    )
+    # 운영 호스트는 코드에 두지 않는다 — `.env`의 ALARM_PROCESS_API_BASE_URLS_CSV로만 주입한다
+    # (폴스타 편향 검토 §2-4 / Plan 67 Phase 0 ⑪). 미설정이면 base_url 조회가 None이라
+    # 프로세스 보강이 대상 db_id에서 비활성된다.
+    process_api_base_urls_csv: str = ""
     process_api_timeout_seconds: int = 3      # 추가 외부 호출 — 이력보다 짧게
     process_top_n: int = 5                     # 표시할 상위 프로세스 수
     # 인증·TLS 설정 없음 — 내부 시스템 http, 비로그인 조회 (Plan 47-1 §9)

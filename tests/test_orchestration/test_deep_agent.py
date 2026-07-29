@@ -201,6 +201,24 @@ def test_select_backend_gemini_available(mock_config):
 # build_tools
 # ──────────────────────────────────────────────
 
+def test_orchestrator_instructions_list_every_exposed_tool():
+    """프롬프트의 "사용 가능한 도구" 목록이 실제 노출 도구 전부를 담아야 한다.
+
+    누락되면 오케스트레이터가 그 도구의 존재를 모른 채 다른 도구로 대체하거나 지어낸다
+    (query_live_processes 누락 실측 — Plan 67 Phase 0 ②).
+    """
+    from src.prompts.orchestrator import ORCHESTRATOR_INSTRUCTIONS
+
+    exposed = {_TOOL_NAMES.get(name, name) for name in SUBAGENT_REGISTRY}
+    missing = sorted(t for t in exposed if f"- {t}:" not in ORCHESTRATOR_INSTRUCTIONS)
+    assert missing == [], f"프롬프트 도구 목록 누락: {missing}"
+
+
+def test_orchestrator_config_recursion_limit_default():
+    """recursion_limit 기본값은 LangGraph 기본값과 동일한 25 (동작 불변)."""
+    assert OrchestratorConfig(_env_file=None).recursion_limit == 25
+
+
 def test_build_tools_exposes_five_named_tools(mock_config):
     """SUBAGENT_REGISTRY 5개가 약속된 도구 이름으로 노출된다."""
     tools = build_tools(worker_llm=None, app_config=mock_config)

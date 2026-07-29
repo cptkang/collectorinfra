@@ -221,7 +221,11 @@ async def run_deep_agent(
             "current_node": "deep_agent",
         }
 
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": user_query}]})
+    # 순회 상한을 LangGraph 기본값(25) 암묵 의존이 아니라 설정으로 명시한다(Plan 67 Phase 0 ③).
+    invoke_config = {"recursion_limit": app_config.orchestrator.recursion_limit}
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": user_query}]}, config=invoke_config
+    )
 
     # 조기 종료 감지(D-092): 오케스트레이터가 빈 응답(무내용·무도구호출)으로 루프를 끝내면
     # 남은 하위 작업이 실행되지 않은 것 — 진전이 있는 동안 재개를 반복 시도하고(D-093),
@@ -238,7 +242,7 @@ async def run_deep_agent(
             "deep_agent: 오케스트레이터 빈 응답 조기 종료 감지 → 재개 %d/%d (D-093)",
             attempts, _MAX_RESUME_ATTEMPTS,
         )
-        result = await _resume_after_empty_response(agent, result)
+        result = await _resume_after_empty_response(agent, result, config=invoke_config)
         incomplete = _ended_prematurely(result)
         logger.info(
             "deep_agent: 재개 %d회 후 조기 종료=%s (도구 실행 누적 %d건)",
@@ -343,7 +347,9 @@ _RESUME_NUDGE = (
 )
 
 
-async def _resume_after_empty_response(agent: Any, result: dict) -> Any:
+async def _resume_after_empty_response(
+    agent: Any, result: dict, *, config: Optional[dict] = None
+) -> Any:
     """빈 응답으로 끝난 오케스트레이터 루프를 재개한다 (D-093, 호출부가 횟수 제어).
 
     직전 실행의 메시지 이력에서 말미의 빈 AI 메시지를 제거하고(모델이 빈 assistant 턴을
@@ -354,6 +360,7 @@ async def _resume_after_empty_response(agent: Any, result: dict) -> Any:
     Args:
         agent: build_deep_agent가 조립한 컴파일된 에이전트
         result: 직전 agent.ainvoke 반환값 (조기 종료 상태)
+        config: 1차 호출과 동일한 실행 설정(recursion_limit 등) — 재개도 같은 상한을 적용한다.
 
     Returns:
         재개 호출의 반환값 (실패 시 직전 result 그대로)
@@ -363,7 +370,7 @@ async def _resume_after_empty_response(agent: Any, result: dict) -> Any:
         messages.pop()
     messages.append({"role": "user", "content": _RESUME_NUDGE})
     try:
-        return await agent.ainvoke({"messages": messages})
+        return await agent.ainvoke({"messages": messages}, config=config)
     except Exception as e:  # noqa: BLE001 — 재개 실패는 1차 결과 + 안내문(D-092)으로 강등
         logger.error("deep_agent 재개 호출 실패 → 1차 결과로 진행: %s", e)
         return result

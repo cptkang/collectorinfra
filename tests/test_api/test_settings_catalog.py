@@ -116,7 +116,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 224
+    assert len(items) == 226
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
@@ -133,11 +133,15 @@ async def test_t1_schema_warns_when_env_file_missing(monkeypatch, tmp_path):
 
 
 def test_t2_group_and_field_counts():
-    """그룹 17개 + top-level 15필드 = 224필드."""
+    """그룹 17개 + top-level 15필드 = 226필드.
+
+    D-129 등재 시점 224 → ORCHESTRATOR_RECURSION_LIMIT 추가(Plan 67 Phase 0 ③)로 225
+    → ALARM_DEFAULT_TEST_DB_ID 추가(Plan 67 Phase 0 ⑫)로 226.
+    """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 18  # 17 그룹 + 전역
-    assert len(index) == 224
+    assert len(index) == 226
     assert len([s for s in index.values() if s.group_key == "general"]) == 15
 
 

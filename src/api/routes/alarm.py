@@ -39,6 +39,16 @@ router = APIRouter()
 
 # ─── Request / Response 스키마 ───────────────────────────────────────────────
 
+def _default_test_db_id() -> str:
+    """알람 테스트 요청의 db_id 기본값을 설정에서 읽는다.
+
+    임포트 시점이 아니라 요청마다 평가되므로 `.env` 변경 후 캐시 무효화가 그대로 반영된다.
+    """
+    from src.config import load_config
+
+    return load_config().alarm.default_test_db_id
+
+
 class AlarmTestRequest(BaseModel):
     """알람 분석 테스트 요청.
 
@@ -46,7 +56,10 @@ class AlarmTestRequest(BaseModel):
     """
 
     # ── 폴스타 알람 필드 (AlarmEvent와 1:1 대응) ──
-    db_id: str = Field(default="polestar_b0", description="dbId — 폴스타 인스턴스 식별자 (상수 직접 기입)")
+    db_id: str = Field(
+        default_factory=_default_test_db_id,
+        description="dbId — 인스턴스 식별자 (생략 시 ALARM_DEFAULT_TEST_DB_ID 설정값)",
+    )
     server_name: str = Field(default="", description="${platformName} — 폴스타 등록 서버명")
     hostname: str = Field(default="", description="${hostname} — 호스트네임")
     ip_address: str = Field(default="", description="${ipAddress} — IP 주소")
