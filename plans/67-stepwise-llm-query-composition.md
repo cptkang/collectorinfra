@@ -6,7 +6,7 @@
 > **선행/근거 문서**: `docs/deterministic_sql_composition_review.md`(컬럼 조합 기법 근거), `docs/text2sql_quality_research.md`(분해식 생성 §2.1·복잡도 분기 R6), `plans/61-text2sql-candidate-selection.md`(트랙 C·E1 실측), `plans/48·49`(deepagents 오케스트레이션), `plans/63-polestar-overfit-decoupling.md`(3계층 원칙)
 > **관련 결정**: D-076(SMQ 결정적 조합 — 본 계획의 확장 대상), D-067·D-099(이중 조립 엔진 금지·기존 컴파일러로 편입), D-037(deepagents 오케스트레이션 — semantic_router 삭제 금지), D-035(결정적=판단·LLM=보조), D-004(키워드 라우팅 재도입 금지), D-088~D-091(공용 계층 DB-agnostic·어댑터 레지스트리), D-066(단일/멀티 경로 대칭), D-092~D-095·D-100(deepagents 운영 결함 가드), D-127(과금 API 건별 승인)
 > **신규 결정**: **D-130 등재 완료**(HITL 승인 fail-closed — Phase 0-3 ⑧, 2026-07-29). 예약(착수 시 등재): **D-128**(단계적 컬럼 도출 루프 — 트랙 S) · **D-131**(SQL 지식 정본 일원화 + DB 레지스트리 — 트랙 R) · **D-132**(alarm 주석 분류 LLM 전환 — D-035 domain 경계 예외) · **D-133**(표현·명칭 표준화 트랙 N). ※ v7까지의 예약(R=D-129·alarm=D-130·N=D-131)은 **Plan 68의 D-129 등재로 순차 재부여**(2026-07-29 실측 — 안내 라인 `docs/02_decision.md` 갱신 완료). ※ 채번 주의: `docs/02_decision.md:8`의 안내 라인("최대 D-118")은 **stale** — `grep -n "^## D-"` 실측 최댓값 **D-127** 기준. 등재 시 안내 라인도 함께 갱신할 것. 결번(D-052, D-078~081 등)·예약(D-105, D-115) 재사용 금지, 등재 직전 재확인.
-> **상태**: **확정·진행 중(2026-07-29)** — ①확장/대체 **확장 확정**(인터뷰), **Phase 0-3 결함 수정 14건 완료**(⑦은 D-129 충돌로 삭제 대신 주석 명시로 종결 — v8 참조) + graph.py `route_after_approval` fail-closed 보강 + D-130 등재. 잔여 게이트: Gemini 스모크(0-1, 착수 직전 재문의)·DB 적재(0-2, 사용자 측 준비).
+> **상태**: **Phase 0·R1·R2·N2·S1 완료(2026-07-30)** — 트랙 커밋 4건 + D-131(트랙 R)·D-133(트랙 N2) 등재. 전체 스위트 기준선 대조 **실패 집합 완전 동일(회귀 0)**, 골든 171·리허설 2종·게이트 전부 그린. **다음 단계 = S2**(단계적 컬럼 도출 루프 — R1 카탈로그·S1 tools 준비 완료, D-128 착수 시 등재). 잔여 게이트: DB 적재(0-2, 사용자 측 — S3 평가 전까지), Redis 기동 후 질의 이력 실 적재(`scripts/query_history_seed.py load`).
 > **개정 이력**:
 > - v1(2026-07-29) — 최초 작성. 단계적 컬럼 도출 루프 중심, 경직성 해소는 §3.2 병행 항목으로만 언급(①지식 복제는 semantic_models 자동 생성만, ②신규 DB 편입 축소 미포함).
 > - v2(2026-07-29) — **사용자 지시로 경직성 해소를 정식 트랙 R로 승격**: ①지식 4중 복제 정본 일원화(904L 프롬프트·db_profiles 포함), ②신규 DB 편입 9곳+→≤2곳 축소 + 위치 키워드 튜플 6곳 사본 단일화, ③한글 정규식 이관, ④가드 계측·축소를 명시 범위·성공 기준으로 편입. 계획을 트랙 S(단계적 도출)·트랙 R(경직성 해소) 2트랙으로 재구성, D-129 예약 추가.
@@ -15,6 +15,8 @@
 > - v5(2026-07-29) — **SMQ 유연성 분석(§2.5 신설, 사용자 요청)**: IR 표현력 한계 8가지 실측(count/sum 부재·GROUP BY 고정·필터 안전장 1개(코드-YAML 불일치)·order_by/limit IR 부재·op 제약·패턴 결합 불가·파생 불가·카탈로그 닫힘). 판정 = **방식은 적절(닫힌 IR+폴백 구조), 부족한 것은 IR 완성도** — 미커버 다수가 비정형이 아니라 "IR이 못 담는 정형 수요"(런타임 커버 34.6%의 구조 원인). **SMQ IR 확장 5건(S-IR1~5)을 트랙 S에 편입**, Phase S3-1 구체화. 확장 한계선(SQL 재발명 금지 가드) 명시.
 > - v6(2026-07-29) — **표현·명칭 표준화 문헌 조사(`docs/standardization_literature_review.md`) + 사용자 인터뷰로 트랙 N 신설(D-131 예약)**: 채택 = **N2 질의 이력 검색**(성공 확정 질의-SQL 쌍 인덱싱 — 문헌 최대 효과 +40.2pt) + **N4 계층 taxonomy**(평면 동의어의 precision 붕괴 완화 — 핵심 용어부터 단계화). **미채택** = N1 임베딩 후보 생성기 재배치·N3 동의어 공급원 교체(추후 재검토 가능). 임베딩 모델은 **측정(IP-4) 선행 후 결정**(인터뷰 확정) — N2 초기 구현은 어휘·퍼지 검색으로 시작하고 임베딩 승격은 측정 후 판단. R1은 시맨틱 레이어 실증(+17~23%p, "선언 1곳 소비 N곳" 상용 5종 일치)으로 근거 보강.
 > - v7(2026-07-29) — **폴스타 편향 검토(`docs/polestar_bias_review.md`) 반영 + 최종 인터뷰 4건 확정**: ①**확장 확정**(§0.3-1 게이트 해소 — §2.4·§2.5 분석 지지), ②편향 9건 **전부 편입**(스키마 리터럴 4건 R2 합류·운영 리터럴/mcp_server 게이트 4건 Phase 0 결함 ⑪~⑭·alarm domain 1건 R3-(v) 인접), ③**overfit_check 검사 범위 확대를 R2 완료 조건으로 편입**(사각지대 9건이 어떤 게이트에도 미검출이었음), ④**Phase 0 결함 수정부터 착수**(LLM 호출 없는 코드 작업 — Gemini 스모크·DB 적재는 별도).
+> - v10(2026-07-30) — **R1·R2·N2·S1 전 트랙 완료·등재**: implementer 4개 병렬(중간에 impl-r2 네트워크 중단 — 잔여 1줄(tools overfit 편입)·최종 검증은 팀 리드 통합 패스가 마무리). 검증 = 전체 스위트 HEAD 기준선 대조 실패 집합 완전 동일(43건 사전 존재분, 신규 0/해소 0). **범위 조정 기록**: ①R1-5(db_profiles 오버레이 YAML 분할) 보류 — gp↔yd 3줄 차이로 실익 부족, 병합 함수·테스트만 확보 ②semantic_models YAML은 폴백 사본+synonym_seeds 원천으로 유지(삭제 금지) ③Template A 빈 EAV 예제 드리프트는 R1이 교정 완료, 단 `polestar_b0.yaml:456` 동종 예제는 **b0 실측 후 판단**(D-058/D-061은 gp 실측 — 무단 수정 금지) ④프롬프트 잔여 블록(diff≠0) 옵트인 전환은 후속 ⑤N2 대칭 주입(멀티·인라인·deepagents 경로)은 S2 공유 헬퍼에서 ⑥PolestarAdapter `classify_metric_field` 위임 훅 추가(S1 후속, source="adapter" 전환). D-131·D-133 등재(D-128·D-132 예약 유지).
+> - v9(2026-07-29) — **Phase S1(tools 계층) 복원**: v2 재구성 때 v1 Phase 1의 2·3항(fine-grained tools·validate_sql 추출)이 Phase 목록에서 누락됐던 것을 발견, S2 선행 작업으로 §5에 복원하고 R1·R2·N2와 병행 착수.
 > - v8(2026-07-29) — **Phase 0-3 완료 + D-번호 재부여**: implementer 3개 병렬로 결함 14건 처리 완료(회귀 0 — worktree HEAD 대조 실측 2회). 특이사항: ⑧은 prefix 매칭 제거까지 포함해 fail-closed로 구현(+`GET /admin/settings`의 `DB_CONNECTION_STRING` 평문 노출 **추가 발견·수정**, graph.py `route_after_approval`도 fail-closed 보강) → **D-130 등재**. **⑦은 삭제 보류로 종결** — Plan 68(D-129, 설정 카탈로그)이 해당 필드를 "미소비 뱃지 UI 노출·삭제는 별건"으로 등재하여 충돌(CLAUDE.md 충돌 시 임의 진행 금지) → 미소비 사실 주석 명시로 대체, 삭제는 Plan 68 소관과 함께 별도 판단. **예약 재부여**: Plan 68의 D-129 등재로 R=D-131·alarm=D-132·N=D-133 순차 이동(§7·관련 문서 참조 갱신). 부수: 설정 카탈로그 224→226필드(D-129 부기), `.env.example`의 `polestar_b0` process URL 미반영 차이 발견(사용자 확인 필요 — Phase 0-1 항목 아님).
 
 ---
@@ -330,7 +332,7 @@ config/db_registry.yaml (단일 등록점, 신규)
 
 | # | 항목 | 판정 기준 |
 |---|---|---|
-| 0-1 | **Gemini(gemini-3.5-flash) + langchain tool-calling 스모크** — 자체 루프 방식이므로 deepagents built-in tool 없이 `bind_tools` 다회 호출만 검증. (선택) deepagents 경로 스모크는 별도 승인 | 5회 연속 tool 호출 시퀀스 완주. **사용자 승인 후 `RUN_E2E=1`** |
+| 0-1 | **Gemini(gemini-3.5-flash) + langchain tool-calling 스모크** — 자체 루프 방식이므로 deepagents built-in tool 없이 `bind_tools` 다회 호출만 검증. (선택) deepagents 경로 스모크는 별도 승인 | **✅ PASS (2026-07-29, 건별 승인 후 RUN_E2E=1 실행)** — tool 호출 5회(lookup×4+add×1) 3라운드 완주, 4.7s, 최종 한국어 응답 정상. `create_llm(provider_override="gemini")`+`bind_tools` 경로 실측 |
 | 0-2 | EX 하네스 DB 적재 확인(§0.3-3) | gold SQL 실행이 0행이 아님 |
 | 0-3 | 결함 수정(분석 중 발견): ①`semantic_compiler.py:598` `try_semantic_compile`의 `server_scope` NameError(호출부 0건 죽은 코드 — 삭제 또는 파라미터 추가) ②`prompts/orchestrator.py` `query_live_processes` 누락 ③`deep_agent.py:224/366` `recursion_limit` 미지정 ④`state.py`에 `prior_rows` TypedDict 미선언(4곳 사용 중) ⑤`cache_manager.get_schema_or_fetch` 타입힌트 4-튜플 vs 실제 5-튜플 ⑥`redis_cache.invalidate()`가 `column_value_index` 키 미삭제 ⑦`OrchestratorConfig` 미참조 필드 3개 정리 ⑧**`api/routes/query.py:71-100` `_parse_approval` fail-open — 기본값 `approve`라 오탐 시 미승인 SQL 실행**(보안 관련, `reject`/재질의로 반전) ⑨`api/routes/admin.py:246` DB 접속 문자열 파싱이 비밀번호를 평문 캡처(마스킹/폐기 처리) ⑩`utils/json_extract.py` 존재에도 JSON 추출 정규식 6곳 인라인 복제 — 공용화(SQL 코드블록 추출 2벌 통합 포함, D-066 대칭 주의) ⑪`config.py:424-426` 운영 호스트 URL 기본값 하드코딩 — 공란화+`.env` 전용(편향 검토 §2-4) ⑫`api/routes/alarm.py:49` `db_id` 기본값 `"polestar_b0"` 고정 — 설정화(§2-5) ⑬`mcp_server/security.py` `validate_polestar_domain()` DB 무관 무조건 적용 — 프로필/플래그 게이트(§2-6, 현행 동작 보존 기본값) ⑭`mcp_server/server.py:122` `register_polestar_tools` 무게이트 등록 — 설정 게이트(§2-7) | 기존 테스트 그린 + 항목별 단위 테스트 |
 
@@ -357,6 +359,15 @@ config/db_registry.yaml (단일 등록점, 신규)
 2. **IP-4 적중률 계측 부착**(`docs/synonym_management_analysis.md` 선행 권고): 동의어·이력 검색 적중률 로그 → 임베딩 승격(모델 선정 포함) 판단 근거 확보.
 3. **N4 계층 taxonomy**(R1 완료 후): R1 카탈로그 스키마에 `parent` 필드 추가, measure 4종·최빈 dimension부터 계층화. 상위어 단독 질의는 모호성 명시(되묻기/전체 제시).
 - **검증**: N2 — 폴백 경로 few-shot 적중률·EX 전후. N4 — 상위어 모호성 시나리오 테스트. 둘 다 기본 OFF 옵트인.
+
+### Phase S1 — fine-grained tools 계층 (S2 선행 — §4.2·4.3의 구현, v9에서 복원)
+
+> v2 재구성 때 v1 Phase 1의 2·3항(tools 계층·validate_sql 추출)이 Phase 목록에서 누락된 것을 2026-07-29 발견·복원. R1과 병행 가능(카탈로그 의존 tool은 주입 가능하게 설계).
+
+1. `src/tools/`(신규 패키지): §4.2 표의 fine-grained tool 정의 — `search_catalog`(카탈로그 주입식 — R1 완료 전엔 기존 semantic model `render_catalog` 기반), `lookup_synonym`(정확→퍼지→임베딩 계단, 임베딩은 현행 OFF 존중), `search_value_index`, `check_smq_coverage`, `resolve_time_range`, `get_table_schema`/`get_sample_data`(DB Protocol 경유), `classify_metric_field`(어댑터 레지스트리 경유 — 코어는 폴스타 무지, D-089). LangChain `@tool` 래퍼 포함(S2 `bind_tools` 소재). 공용 계층 DB-agnostic(D-088) — overfit_check 통과 필수.
+2. `validate_sql(sql, schema_info, engine)` 순수 함수 추출(§4.3): `query_validator` 노드에서 상태 결합 없는 검증 코어를 분리, 노드는 추출 함수를 호출(동작 불변 — 기존 validator 테스트 그린으로 검증). tool `validate_sql_draft`로 노출.
+3. `scripts/arch_check.py` 계층 맵에 `src/tools/` 등록(기존 계층 규칙 준수 — 의존 방향: tools는 utils·schema_cache·db 계층을 참조 가능, nodes·orchestration은 tools 참조 가능).
+- **검증**: 기존 validator·text2sql 테스트 그린(동작 불변) + tool별 단위 테스트 + `overfit_check --ci`·`arch_check --ci`.
 
 ### Phase S2 — 단계적 컬럼 도출 루프 (트랙 S 본체, R1 카탈로그 의존)
 
