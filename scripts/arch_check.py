@@ -66,6 +66,9 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.infrastructure.audit_repository": "infrastructure",
     "src.nodes":                     "application",
     "src.db_adapters":               "application",
+    # fine-grained 도구 계층(Plan 67 S1) — 노드·어댑터의 순수 함수를 재노출하므로
+    # db_adapters와 같은 application. 소비처(nodes·orchestration)에서 참조한다.
+    "src.tools":                     "application",
     "src.orchestration":             "orchestration",
     "src.graph":                     "orchestration",
     "src.api":                       "interface",

@@ -2,13 +2,18 @@
 
 생성된 SQL의 문법, 안전성, 성능을 사전 검증한다.
 LLM에 의존하지 않고 규칙 기반으로 검증한다.
+
+검증 코어는 상태(AgentState) 결합이 없는 순수 함수 ``validate_sql``로 분리되어 있다
+(Plan 67 Phase S1-2). 노드는 state에서 인자를 뽑아 코어를 호출하고 감사 로그·State 변환만
+담당하며, 단계적 도출 루프의 사전 검증 도구(``src.tools.validation``)도 같은 코어를 쓴다.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional, Sequence
 
 import sqlparse
 import structlog
@@ -21,6 +26,187 @@ from src.utils.query_gen_common import MISSING_DTIME_ERROR, missing_dtime_filter
 
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
+
+
+@dataclass
+class SQLValidationOutcome:
+    """상태 비결합 SQL 검증 결과.
+
+    Attributes:
+        errors: 재생성을 유도해야 하는 검증 실패 사유(하나라도 있으면 불합격)
+        warnings: 통과하되 사용자/로그에 남길 경고
+        auto_fixed_sql: 행 제한 절 자동 보정본(보정하지 않았으면 None)
+        forbidden_keywords: 감지된 금지 키워드(감사 로그용)
+        injection_count: 감지된 인젝션 패턴 수(감사 로그용)
+    """
+
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    auto_fixed_sql: Optional[str] = None
+    forbidden_keywords: list[str] = field(default_factory=list)
+    injection_count: int = 0
+
+    @property
+    def passed(self) -> bool:
+        """검증 통과 여부."""
+        return not self.errors
+
+
+def validate_sql(
+    sql: str,
+    schema_info: dict,
+    *,
+    db_engine: str = "postgresql",
+    user_query: str = "",
+    default_limit: int = 100,
+    adapter_checks: Sequence[Callable[[str], list[str]]] = (),
+) -> SQLValidationOutcome:
+    """생성된 SQL을 규칙 기반으로 검증한다(상태·설정 비결합 코어).
+
+    ``query_validator`` 노드의 검증 본문을 그대로 옮긴 순수 함수다. 검사 순서·메시지·
+    자동 보정 동작은 노드 시절과 동일하며(동작 불변), DB 특화 검증은 호출부가 주입한
+    ``adapter_checks``로만 수행한다(공용 코어는 DB를 모른다 — D-088/D-089).
+
+    Args:
+        sql: 검증 대상 SQL
+        schema_info: 스키마 정보(tables·_structure_meta 포함)
+        db_engine: DB 엔진 타입("postgresql"·"db2" 등 — 행 제한 절 방언 결정)
+        user_query: 사용자 원문 질의("모든/전체" 조회면 LIMIT 자동 추가 생략)
+        default_limit: 행 제한 절 자동 추가 시 사용할 기본값
+        adapter_checks: DB 어댑터 전용 검증 함수들(SQL → 오류 메시지 목록)
+
+    Returns:
+        SQLValidationOutcome — 오류·경고·자동 보정 SQL·감사 신호
+    """
+    guard = SQLGuard()
+    errors: list[str] = []
+    warnings: list[str] = []
+    auto_fixed_sql: Optional[str] = None
+    forbidden: list[str] = []
+    injection_count = 0
+
+    # 1. SQL 파싱 가능 여부
+    try:
+        parsed = sqlparse.parse(sql)
+        if not parsed:
+            errors.append("SQL을 파싱할 수 없습니다.")
+    except Exception as e:
+        errors.append(f"SQL 파싱 에러: {str(e)}")
+        return SQLValidationOutcome(errors=errors)
+
+    # 2. SELECT 문 여부 확인
+    statement_type = _get_statement_type(sql)
+    if statement_type != "SELECT":
+        errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")
+
+    # 3. 금지 키워드 확인
+    forbidden = guard.detect_forbidden_keywords(sql, FORBIDDEN_SQL_KEYWORDS)
+    if forbidden:
+        errors.append(f"금지된 키워드가 포함되어 있습니다: {', '.join(forbidden)}")
+
+    # 4. SQL 인젝션 패턴 탐지
+    injections = guard.detect_injection_patterns(sql, INJECTION_PATTERNS)
+    injection_count = len(injections)
+    if injections:
+        errors.append(
+            f"SQL 인젝션 위험 패턴이 감지되었습니다: {injection_count}건"
+        )
+
+    # 4.5. 따옴표 밖 자연어(한글) 토큰 잔존 검출 — LLM이 "해당"/"현재" 같은 자연어 조각을
+    # SQL 구조 영역에 남기면 DB 구문 오류로 실행이 실패한다(폐쇄망 실측 2026-07-20, 2회
+    # 재현·토큰 가변 — 프롬프트로는 못 막는 비결정 오류라 결정적 가드로 재생성을 유도, D-104).
+    # 따옴표 안 한글(별칭 "CPU 평균", 리터럴 '서울')은 정당하므로 제외한다.
+    bare_hangul = _find_bare_hangul_tokens(sql)
+    if bare_hangul:
+        shown = ", ".join(sorted(set(bare_hangul))[:5])
+        # 메시지는 ASCII 구두점만 사용 - 이 문자열은 평가 하네스 스킵 사유로 cp949 콘솔에
+        # 출력될 수 있음(em-dash는 UnicodeEncodeError, Known Mistakes 2026-07-16)
+        errors.append(
+            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
+            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
+        )
+
+    # 4.6. 삭제 리소스 제외 필터(dtime IS NULL) 부재 검출 — LLM이 필수 필터를 통째로
+    # 누락하면 삭제된 서버가 결과에 섞인다(폐쇄망 실측 2026-07-21 b0-005: +99대).
+    # 프롬프트 규칙만으로는 비결정적으로 재발하므로 결정적 가드로 재생성을 유도한다(D-104 계열).
+    # 알람 뷰의 부모 조인 등 일부 별칭 무필터는 정당하므로 "SQL 전체에 한 번도 없음"만 차단한다.
+    if missing_dtime_filter(sql):
+        errors.append(MISSING_DTIME_ERROR)
+
+    # 5. 참조 테이블 존재 여부 (대소문자 무시 + bare name fallback)
+    referenced_tables = _extract_table_names(sql)
+    # CTE는 가상 테이블이므로 검증 대상에서 제외
+    cte_names = _extract_cte_names(sql)
+    cte_names_lower = {c.lower() for c in cte_names}
+    referenced_tables = {
+        t for t in referenced_tables if t.lower() not in cte_names_lower
+    }
+    available_tables = set(schema_info.get("tables", {}).keys())
+    available_tables_lower = {t.lower() for t in available_tables}
+    # bare name → schema.table fallback 매핑 구축
+    bare_to_qualified: dict[str, str] = {}
+    for t in available_tables:
+        bare = t.rsplit(".", 1)[-1].lower()
+        bare_to_qualified[bare] = t
+    unknown_tables = set()
+    for t in referenced_tables:
+        if t.lower() not in available_tables_lower:
+            bare_t = t.rsplit(".", 1)[-1].lower()
+            if bare_t not in bare_to_qualified:
+                unknown_tables.add(t)
+    if unknown_tables and available_tables:
+        errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
+
+    # 6. 참조 컬럼 존재 여부
+    if not unknown_tables and available_tables:
+        column_errors = _validate_columns(sql, schema_info, referenced_tables)
+        errors.extend(column_errors)
+
+    # 6.5. 금지 JOIN 컬럼 사용 감지 (warning)
+    excluded_join_warnings = _check_excluded_join_columns(sql, schema_info)
+    warnings.extend(excluded_join_warnings)
+
+    # 6.6. EAV 프로필 기반 금지 조인 패턴 감지 (error → 재시도 유도)
+    forbidden_join_errors = _validate_forbidden_joins(sql, schema_info)
+    if forbidden_join_errors:
+        errors.extend(forbidden_join_errors)
+
+    # 6.7. LEFT JOIN 강등(outer 조인 테이블 필터의 WHERE 배치) 감지 (error → 재시도 유도, D-085)
+    demotion_errors = _check_left_join_where_demotion(sql)
+    errors.extend(demotion_errors)
+
+    # 7. LIMIT 절 존재 여부
+    is_all_query = any(k in (user_query or "") for k in ("모든", "전체", "모두"))
+    if not _has_limit_clause(sql):
+        if is_all_query:
+            # 모든/전체 결과 조회 질의의 경우 LIMIT 자동 추가 생략
+            logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
+        else:
+            auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
+            if db_engine == "db2":
+                warnings.append(
+                    f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
+                )
+            else:
+                warnings.append(
+                    f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
+                )
+
+    # 8. 성능 위험 패턴
+    perf_warnings = _check_performance_risks(sql, schema_info)
+    warnings.extend(perf_warnings)
+
+    # 9. DB 어댑터 전용 검증(라우팅 필터 오용 등) — 호출부가 주입한 훅만 실행
+    for _check in adapter_checks:
+        errors.extend(_check(sql))
+
+    return SQLValidationOutcome(
+        errors=errors,
+        warnings=warnings,
+        auto_fixed_sql=auto_fixed_sql,
+        forbidden_keywords=forbidden,
+        injection_count=injection_count,
+    )
 
 
 async def query_validator(
@@ -56,158 +242,49 @@ async def query_validator(
     if app_config is None:
         app_config = load_config()
 
-    guard = SQLGuard()
-    errors: list[str] = []
-    warnings: list[str] = []
-    auto_fixed_sql: Optional[str] = None
+    # DB 어댑터 전용 검증(폴스타 라우팅 필터 오용 등) — 담당 어댑터가 있으면 훅을 주입
+    # (기존 _check_routing_filter_misuse를 폴스타 어댑터로 이동, Plan 63 P2/D-089).
+    adapter = get_adapter(state.get("active_db_id"), app_config.get_polestar_db_ids() or None)
+    adapter_checks = adapter.validator_checks() if adapter is not None else []
 
-    # 1. SQL 파싱 가능 여부
-    try:
-        parsed = sqlparse.parse(sql)
-        if not parsed:
-            errors.append("SQL을 파싱할 수 없습니다.")
-    except Exception as e:
-        errors.append(f"SQL 파싱 에러: {str(e)}")
-        return _build_failure_result(errors)
+    outcome = validate_sql(
+        sql,
+        schema_info,
+        db_engine=state.get("active_db_engine") or "postgresql",
+        user_query=state.get("user_query", "") or "",
+        default_limit=app_config.query.default_limit,
+        adapter_checks=adapter_checks,
+    )
 
-    # 2. SELECT 문 여부 확인
-    statement_type = _get_statement_type(sql)
-    if statement_type != "SELECT":
-        errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")
-
-    # 3. 금지 키워드 확인
-    forbidden = guard.detect_forbidden_keywords(sql, FORBIDDEN_SQL_KEYWORDS)
-    if forbidden:
-        errors.append(f"금지된 키워드가 포함되어 있습니다: {', '.join(forbidden)}")
+    if outcome.forbidden_keywords:
         _audit_logger.warning(
             "security_alert",
             alert_type="forbidden_sql",
-            forbidden_keywords=forbidden,
+            forbidden_keywords=outcome.forbidden_keywords,
             sql=sql[:200],
             user_id=state.get("user_id"),
         )
-
-    # 4. SQL 인젝션 패턴 탐지
-    injections = guard.detect_injection_patterns(sql, INJECTION_PATTERNS)
-    if injections:
-        errors.append(
-            f"SQL 인젝션 위험 패턴이 감지되었습니다: {len(injections)}건"
-        )
+    if outcome.injection_count:
         _audit_logger.warning(
             "security_alert",
             alert_type="sql_injection_attempt",
-            pattern_count=len(injections),
+            pattern_count=outcome.injection_count,
             sql=sql[:200],
             user_id=state.get("user_id"),
         )
 
-    # 4.5. 따옴표 밖 자연어(한글) 토큰 잔존 검출 — LLM이 "해당"/"현재" 같은 자연어 조각을
-    # SQL 구조 영역에 남기면 DB 구문 오류로 실행이 실패한다(폐쇄망 실측 2026-07-20, 2회
-    # 재현·토큰 가변 — 프롬프트로는 못 막는 비결정 오류라 결정적 가드로 재생성을 유도, D-104).
-    # 따옴표 안 한글(별칭 "CPU 평균", 리터럴 '서울')은 정당하므로 제외한다.
-    bare_hangul = _find_bare_hangul_tokens(sql)
-    if bare_hangul:
-        shown = ", ".join(sorted(set(bare_hangul))[:5])
-        # 메시지는 ASCII 구두점만 사용 - 이 문자열은 평가 하네스 스킵 사유로 cp949 콘솔에
-        # 출력될 수 있음(em-dash는 UnicodeEncodeError, Known Mistakes 2026-07-16)
-        errors.append(
-            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
-            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
-        )
-
-    # 4.6. cmm_resource 조회 시 dtime IS NULL(삭제 리소스 제외) 필터 부재 검출 — LLM이
-    # 필수 필터를 통째로 누락하면 삭제된 서버가 결과에 섞인다(폐쇄망 실측 2026-07-21
-    # b0-005: +99대). 프롬프트 규칙만으로는 비결정적으로 재발하므로 결정적 가드로 재생성을
-    # 유도한다(D-104 계열). 알람 뷰의 부모 조인 등 일부 별칭 무필터는 정당하므로
-    # "SQL 전체에 한 번도 없음"만 차단한다.
-    if missing_dtime_filter(sql):
-        errors.append(MISSING_DTIME_ERROR)
-
-    # 5. 참조 테이블 존재 여부 (대소문자 무시 + bare name fallback)
-    referenced_tables = _extract_table_names(sql)
-    # CTE는 가상 테이블이므로 검증 대상에서 제외
-    cte_names = _extract_cte_names(sql)
-    cte_names_lower = {c.lower() for c in cte_names}
-    referenced_tables = {
-        t for t in referenced_tables if t.lower() not in cte_names_lower
-    }
-    available_tables = set(schema_info.get("tables", {}).keys())
-    available_tables_lower = {t.lower() for t in available_tables}
-    # bare name → schema.table fallback 매핑 구축
-    # 예: "cmm_resource" → "polestar.cmm_resource"
-    bare_to_qualified: dict[str, str] = {}
-    for t in available_tables:
-        bare = t.rsplit(".", 1)[-1].lower()
-        bare_to_qualified[bare] = t
-    unknown_tables = set()
-    for t in referenced_tables:
-        if t.lower() not in available_tables_lower:
-            bare_t = t.rsplit(".", 1)[-1].lower()
-            if bare_t not in bare_to_qualified:
-                unknown_tables.add(t)
-    if unknown_tables and available_tables:
-        errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
-
-    # 6. 참조 컬럼 존재 여부
-    if not unknown_tables and available_tables:
-        column_errors = _validate_columns(sql, schema_info, referenced_tables)
-        errors.extend(column_errors)
-
-    # 6.5. 금지 JOIN 컬럼 사용 감지 (warning)
-    excluded_join_warnings = _check_excluded_join_columns(sql, schema_info)
-    warnings.extend(excluded_join_warnings)
-
-    # 6.6. EAV 프로필 기반 금지 조인 패턴 감지 (error → 재시도 유도)
-    forbidden_join_errors = _validate_forbidden_joins(sql, schema_info)
-    if forbidden_join_errors:
-        errors.extend(forbidden_join_errors)
-
-    # 6.7. LEFT JOIN 강등(outer 조인 테이블 필터의 WHERE 배치) 감지 (error → 재시도 유도, D-085)
-    demotion_errors = _check_left_join_where_demotion(sql)
-    errors.extend(demotion_errors)
-
-    # 7. LIMIT 절 존재 여부
-    db_engine = state.get("active_db_engine") or "postgresql"
-    user_query = state.get("user_query", "") or ""
-    is_all_query = any(k in user_query for k in ("모든", "전체", "모두"))
-    if not _has_limit_clause(sql):
-        if is_all_query:
-            # 모든/전체 결과 조회 질의의 경우 LIMIT 자동 추가 생략
-            logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
-        else:
-            default_limit = app_config.query.default_limit
-            auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
-            if db_engine == "db2":
-                warnings.append(
-                    f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
-                )
-            else:
-                warnings.append(
-                    f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
-                )
-
-    # 8. 성능 위험 패턴
-    perf_warnings = _check_performance_risks(sql, schema_info)
-    warnings.extend(perf_warnings)
-
-    # 9. DB 어댑터 전용 검증(폴스타 라우팅 필터 오용 등) — 담당 어댑터가 있으면 훅 실행
-    #    (기존 _check_routing_filter_misuse를 폴스타 어댑터로 이동, Plan 63 P2/D-089).
-    adapter = get_adapter(state.get("active_db_id"), app_config.get_polestar_db_ids() or None)
-    if adapter is not None:
-        for _check in adapter.validator_checks():
-            errors.extend(_check(sql))
-
     # 결과 결정
-    if errors:
-        logger.warning(f"SQL 검증 실패: {errors}")
-        return _build_failure_result(errors)
+    if outcome.errors:
+        logger.warning(f"SQL 검증 실패: {outcome.errors}")
+        return _build_failure_result(outcome.errors)
 
     # 자동 보정된 SQL 적용
+    auto_fixed_sql = outcome.auto_fixed_sql
     final_sql = auto_fixed_sql if auto_fixed_sql else sql
 
     reason_parts = ["검증 통과"]
-    if warnings:
-        reason_parts.append(f"경고: {'; '.join(warnings)}")
+    if outcome.warnings:
+        reason_parts.append(f"경고: {'; '.join(outcome.warnings)}")
 
     logger.info(f"SQL 검증 통과: {final_sql[:100]}...")
 
