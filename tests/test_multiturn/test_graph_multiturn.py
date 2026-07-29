@@ -58,6 +58,22 @@ class TestRouteAfterApproval:
 
         assert route_after_approval(state) == "query_validator"
 
+    def test_none_action_routes_to_end_fail_closed(self):
+        from langgraph.graph import END
+
+        state = create_initial_state(user_query="test")
+        state["approval_action"] = None
+
+        assert route_after_approval(state) == END
+
+    def test_unknown_action_routes_to_end_fail_closed(self):
+        from langgraph.graph import END
+
+        state = create_initial_state(user_query="test")
+        state["approval_action"] = "maybe"
+
+        assert route_after_approval(state) == END
+
 
 class TestRouteAfterValidationWithApproval:
     """SQL 승인 활성화 시 validator 이후 라우팅 검증."""

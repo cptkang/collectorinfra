@@ -77,16 +77,16 @@ def route_after_validation_with_approval(state: AgentState) -> str:
 def route_after_approval(state: AgentState) -> str:
     """approval_gate 이후 라우팅을 결정한다.
 
-    - reject: 종료
+    - approve: query_executor로 진행
     - modify: query_validator로 재검증
-    - approve (또는 기타): query_executor로 진행
+    - 그 외(reject·None·미지 값): 종료 — 명시 승인 없이는 SQL을 실행하지 않는다(fail-closed, D-130)
     """
     action = state.get("approval_action")
-    if action == "reject":
-        return END
+    if action == "approve":
+        return "query_executor"
     if action == "modify":
         return "query_validator"
-    return "query_executor"
+    return END
 
 
 def route_after_execution(state: AgentState) -> str:

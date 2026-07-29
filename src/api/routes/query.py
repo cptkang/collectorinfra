@@ -68,8 +68,30 @@ async def _get_checkpoint_state(graph, thread_config: dict) -> dict | None:
     return None
 
 
+# 승인·거부 표현. 이 표현 하나만으로 이루어진 입력일 때만 의도가 확정된다.
+_APPROVE_WORDS = ("실행", "approve", "승인", "확인", "네", "yes", "ㅇㅇ", "ok")
+_REJECT_WORDS = ("취소", "reject", "거부", "아니", "no", "cancel")
+
+# 승인·거부 표현 뒤에 붙어도 의미가 바뀌지 않는 어미·문장부호만 허용한다.
+# 이 꼬리에 해당하지 않는 말이 이어지면("확인해보고 알려줘") 의도 불명으로 본다.
+_INTENT_TAIL = (
+    r"(?:\s*(?:해|하)?\s*"
+    r"(?:줘|주세요|주십시오|세요|요|합니다|하겠습니다|할게요|할게|please)?)?"
+    r"[\s.!?~,]*$"
+)
+
+
+def _matches_intent(text: str, words: tuple[str, ...]) -> bool:
+    """입력이 승인·거부 표현 하나로만 이루어졌는지 판정한다(어미·문장부호는 허용)."""
+    return any(re.match(re.escape(w) + _INTENT_TAIL, text) for w in words)
+
+
 def _parse_approval(query: str) -> tuple[str, str]:
     """사용자 입력에서 승인 의도를 파싱한다.
+
+    **fail-closed**: 명확한 승인 표현이 아니면 승인하지 않는다. 과거에는 기본값이
+    "approve"이고 승인어를 prefix로 매칭해, "확인해보고 알려줘" 같은 입력이 승인으로
+    오탐되어 사용자가 승인하지 않은 SQL이 실행됐다.
 
     Args:
         query: 사용자 입력
@@ -81,24 +103,19 @@ def _parse_approval(query: str) -> tuple[str, str]:
     """
     q = query.strip().lower()
 
-    # 승인 패턴
-    approve_patterns = ["실행", "approve", "승인", "확인", "네", "yes", "ㅇㅇ", "ok"]
-    for p in approve_patterns:
-        if q == p or q.startswith(p):
-            return ("approve", "")
+    if _matches_intent(q, _APPROVE_WORDS):
+        return ("approve", "")
 
-    # 거부 패턴
-    reject_patterns = ["취소", "reject", "거부", "아니", "no", "cancel"]
-    for p in reject_patterns:
-        if q == p or q.startswith(p):
-            return ("reject", "")
+    if _matches_intent(q, _REJECT_WORDS):
+        return ("reject", "")
 
     # SQL이 포함된 경우 modify로 판단
     if re.search(r"\bSELECT\b", query, re.IGNORECASE):
         return ("modify", query.strip())
 
-    # 기본: 승인
-    return ("approve", "")
+    # 의도 불명 — 실행하지 않는다(미승인 SQL 실행 방지)
+    logger.warning("승인 의도를 확정하지 못해 실행을 취소한다: %r", query.strip()[:80])
+    return ("reject", "")
 
 
 def _count_human_messages(messages: list) -> int:
