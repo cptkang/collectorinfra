@@ -5,6 +5,7 @@
 """
 
 import ipaddress
+import json
 import os
 import socket
 
@@ -144,6 +145,51 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # ty
     terminalreporter.write_sep("=", "D-127 외부 접속 차단", red=True)
     for nodeid, host, port in _BLOCKED_ATTEMPTS:
         terminalreporter.write_line(f"  {host}:{port}  <- {nodeid}")
+
+
+class ColumnCoverageStubLLM:
+    """`_llm_check_column_coverage` 프롬프트에 결정적으로 응답하는 stub LLM.
+
+    실 LLM이 하던 의미 매칭(정확 일치 + `table.column` ↔ `column` 폴백)을 그대로
+    재현한다. 프롬프트에 실린 매핑 컬럼·결과 키를 읽어 답을 만들기 때문에, 노드가
+    잘못된 값을 프롬프트에 넣으면 매칭 수가 달라져 테스트가 깨진다(응답 고정 mock과
+    달리 프롬프트 페이로드까지 검증된다).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], list[str], list[str]]] = []
+
+    @staticmethod
+    def _extract_json_arrays(prompt: str) -> tuple[list[str], list[str]]:
+        arrays = []
+        for line in prompt.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                arrays.append(json.loads(stripped))
+        if len(arrays) != 2:
+            raise AssertionError(f"프롬프트에서 배열 2개를 찾지 못했습니다: {prompt!r}")
+        return arrays[0], arrays[1]
+
+    @staticmethod
+    def _matches(column: str, result_keys: list[str]) -> bool:
+        if column in result_keys:
+            return True
+        bare = column.split(".")[-1]
+        return any(bare == key.split(".")[-1] for key in result_keys)
+
+    async def ainvoke(self, messages):  # noqa: ANN001 - langchain 메시지 목록
+        from langchain_core.messages import AIMessage
+
+        mapped_cols, result_keys = self._extract_json_arrays(messages[-1].content)
+        matched = [col for col in mapped_cols if self._matches(col, result_keys)]
+        self.calls.append((mapped_cols, result_keys, matched))
+        return AIMessage(content=json.dumps(matched, ensure_ascii=False))
+
+
+@pytest.fixture
+def column_coverage_llm() -> ColumnCoverageStubLLM:
+    """컬럼 커버리지 판단용 stub LLM (외부 호출 없이 실 응답 shape 재현)."""
+    return ColumnCoverageStubLLM()
 
 
 @pytest.fixture

@@ -176,6 +176,23 @@ async def _mock_db_context(client):
     yield client
 
 
+def _patch_description_llm():
+    """스키마 캐시 미스 시 자동 실행되는 컬럼 설명 생성의 LLM 획득을 대체한다.
+
+    `cache_manager`는 노드에 주입된 app_config가 아니라 자체 `load_config()`로
+    설정을 재독한 뒤 `create_llm`을 호출한다(실 `.env`의 provider 사용 = 외부 호출).
+    이 경로는 아래 테스트들의 단언 대상이 아니므로 빈 JSON을 돌려주는 stub으로 막는다.
+
+    `cache_manager`가 함수 안에서 `from src.llm import create_llm`으로 늦게 가져오므로
+    패치 대상은 소비 모듈이 아니라 **정의 모듈**(`src.llm`)이어야 한다.
+    """
+    stub = AsyncMock()
+    message = MagicMock()
+    message.content = "{}"  # extract_json_from_response가 파싱하는 실제 응답 형태
+    stub.ainvoke = AsyncMock(return_value=message)
+    return patch("src.llm.create_llm", return_value=stub)
+
+
 CPU_QUERY_ROWS = [
     {"hostname": "web-01", "ip_address": "10.0.0.1", "usage_pct": 85.3},
     {"hostname": "web-02", "ip_address": "10.0.0.2", "usage_pct": 92.1},
@@ -218,7 +235,6 @@ class TestHappyPath:
         assert state["parsed_requirements"]["original_query"] == state["user_query"]
 
     @pytest.mark.asyncio
-    @pytest.mark.live_llm
     async def test_step2_schema_analyzer(self):
         """Step 2: DB 스키마를 조회하여 관련 테이블을 식별한다."""
         _schema_cache.invalidate()
@@ -240,7 +256,8 @@ class TestHappyPath:
         mock_llm = _make_mock_llm(schema_llm_responses)
 
         with patch("src.nodes.schema_analyzer.get_db_client", return_value=_mock_db_context(mock_client)):
-            result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
+            with _patch_description_llm():
+                result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
         state.update(result)
 
         assert state["current_node"] == "schema_analyzer"
@@ -673,7 +690,6 @@ class TestEmptyResultFlow:
     """조건에 맞는 데이터가 0건일 때의 파이프라인 흐름."""
 
     @pytest.mark.asyncio
-    @pytest.mark.live_llm
     async def test_empty_result_full_flow(self):
         """전체 파이프라인을 거쳐 결과 0건 → 안내 응답 생성."""
         _schema_cache.invalidate()
@@ -706,7 +722,8 @@ class TestEmptyResultFlow:
         state.update(result)
 
         with patch("src.nodes.schema_analyzer.get_db_client", return_value=_mock_db_context(mock_client)):
-            result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
+            with _patch_description_llm():
+                result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
         state.update(result)
 
         result = await query_generator(state, llm=mock_llm, app_config=cfg)

@@ -920,8 +920,7 @@ class TestResultOrganizerMappingIntegration:
         assert organized["column_mapping"] is not None
 
     @pytest.mark.asyncio
-    @pytest.mark.live_llm
-    async def test_data_sufficiency_check_with_mapping(self):
+    async def test_data_sufficiency_check_with_mapping(self, column_coverage_llm):
         """column_mapping 기반 충분성 검사가 동작한다."""
         from src.nodes.result_organizer import _check_data_sufficiency
 
@@ -934,9 +933,13 @@ class TestResultOrganizerMappingIntegration:
         }
 
         is_sufficient = await _check_data_sufficiency(
-            results, parsed, template, column_mapping=column_mapping
+            results, parsed, template, column_mapping=column_mapping,
+            llm=column_coverage_llm,
         )
         assert is_sufficient is True
+        assert column_coverage_llm.calls[-1][2] == [
+            "servers.hostname", "cpu_metrics.usage_pct",
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.live_llm

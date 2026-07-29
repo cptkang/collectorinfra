@@ -11,8 +11,7 @@ class TestCheckDataSufficiencyWithMapping:
     """column_mapping 기반 충분성 검사 테스트."""
 
     @pytest.mark.asyncio
-    @pytest.mark.live_llm
-    async def test_sufficient_with_alias_keys(self):
+    async def test_sufficient_with_alias_keys(self, column_coverage_llm):
         """결과 키가 table.column 형식이면 충분."""
         results = [
             {
@@ -27,11 +26,15 @@ class TestCheckDataSufficiencyWithMapping:
             "CPU 사용률": "cpu_metrics.usage_pct",
         }
 
-        assert await _check_data_sufficiency(results, {}, None, column_mapping=mapping)
+        assert await _check_data_sufficiency(
+            results, {}, None, column_mapping=mapping, llm=column_coverage_llm,
+        )
+        assert column_coverage_llm.calls[-1][2] == [
+            "servers.hostname", "servers.ip_address", "cpu_metrics.usage_pct",
+        ]
 
     @pytest.mark.asyncio
-    @pytest.mark.live_llm
-    async def test_sufficient_with_column_only_keys(self):
+    async def test_sufficient_with_column_only_keys(self, column_coverage_llm):
         """결과 키가 column 형식만이어도 충분 (table.column -> column 폴백)."""
         results = [
             {
@@ -44,7 +47,11 @@ class TestCheckDataSufficiencyWithMapping:
             "IP주소": "servers.ip_address",
         }
 
-        assert await _check_data_sufficiency(results, {}, None, column_mapping=mapping)
+        assert await _check_data_sufficiency(
+            results, {}, None, column_mapping=mapping, llm=column_coverage_llm,
+        )
+        # 결과 키가 bare 컬럼명이어도 table.column 매핑이 폴백 매칭된다
+        assert column_coverage_llm.calls[-1][2] == ["servers.hostname", "servers.ip_address"]
 
     @pytest.mark.asyncio
     async def test_insufficient_data(self):
