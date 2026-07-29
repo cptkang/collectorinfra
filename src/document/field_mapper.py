@@ -56,22 +56,73 @@ def _is_metric_usage_field(field: str) -> bool:
     return any(term in low for term in _METRIC_USAGE_AGG_TERMS)
 
 
-def _schema_uses_metric_stat_pivot(
-    all_db_synonyms: dict[str, dict[str, list[str]]] | None,
-    all_db_descriptions: dict[str, dict[str, str]] | None,
-) -> bool:
-    """스키마가 cmm_metric_stat 피벗 구조를 쓰는지 판정한다(사용률 필드 스킵 게이트).
+async def _load_structure_declarations(
+    cache_manager: Any,
+    db_ids: list[str],
+) -> dict[str, dict]:
+    """대상 DB의 구조 선언(structure_meta)을 조회한다(실패는 DB별로 격리).
 
-    사용률이 **직접 컬럼**(예: cpu_metrics.usage_pct)인 스키마에서는 사용률 필드가 정상 매핑
-    대상이므로 스킵하면 안 된다. cmm_metric_stat_[h,d,m] 피벗 스키마(폴스타)일 때만 스킵한다.
-    synonyms/descriptions 키에 cmm_metric_stat 컬럼이 있으면 피벗 스키마로 간주한다.
+    구조 선언은 `config/db_profiles/{db_id}.yaml`(수동 프로필)이 정본이고 캐시가 사본이라
+    캐시 매니저가 캐시→프로필 순으로 해소한다. 조회 실패·미선언 DB는 결과에서 빠진다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스(없으면 빈 결과)
+        db_ids: 조회할 DB 식별자 목록
+
+    Returns:
+        {db_id: structure_meta} — 선언이 있는 DB만 포함
     """
-    for source in (all_db_synonyms, all_db_descriptions):
-        for db_map in (source or {}).values():
-            for key in db_map or {}:
-                if "cmm_metric_stat" in str(key).lower():
-                    return True
-    return False
+    metas: dict[str, dict] = {}
+    if cache_manager is None:
+        return metas
+    getter = getattr(cache_manager, "get_structure_meta_or_profile", None)
+    if getter is None:
+        return metas
+    for db_id in db_ids:
+        try:
+            meta = await getter(db_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("구조 선언 조회 실패 (db=%s): %s", db_id, e)
+            continue
+        if isinstance(meta, dict) and meta:
+            metas[db_id] = meta
+    return metas
+
+
+def _structure_patterns(structure_metas: dict[str, dict] | None) -> list[dict]:
+    """구조 선언들에서 patterns 항목을 평탄화해 반환한다."""
+    patterns: list[dict] = []
+    for meta in (structure_metas or {}).values():
+        raw = meta.get("patterns") if isinstance(meta, dict) else None
+        if not isinstance(raw, (list, tuple)):
+            continue
+        patterns.extend(p for p in raw if isinstance(p, dict))
+    return patterns
+
+
+def _core_entity_tables(structure_metas: dict[str, dict] | None) -> set[str]:
+    """구조 선언의 EAV 패턴에서 핵심 엔터티 테이블명을 도출한다.
+
+    엔터티 테이블(속성이 매달리는 주 테이블)의 컬럼을 서브 테이블보다 먼저 매칭하기
+    위한 우선순위 집합이다. 선언이 없으면 빈 집합 — 이 경우 우선순위 구분 없이 전체
+    테이블을 한 번에 매칭한다(DB-agnostic, D-088).
+    """
+    return {
+        str(p["entity_table"]).lower()
+        for p in _structure_patterns(structure_metas)
+        if p.get("entity_table")
+    }
+
+
+def _schema_uses_eav_metric_pivot(structure_metas: dict[str, dict] | None) -> bool:
+    """스키마가 EAV 피벗 구조인지 판정한다(사용률 필드 스킵 게이트).
+
+    사용률이 **직접 컬럼**(예: cpu_metrics.usage_pct)인 스키마에서는 사용률 필드가 정상
+    매핑 대상이므로 스킵하면 안 된다. 지표를 속성 행으로 저장하는 EAV 피벗 스키마일 때만
+    스킵한다. 판정 근거는 구조 선언의 `patterns[].type == "eav"`이며, 특정 DB의 테이블명
+    리터럴에 의존하지 않는다(value_index.derive_value_specs와 동일 판정 방식).
+    """
+    return any(p.get("type") == "eav" for p in _structure_patterns(structure_metas))
 
 
 # === 3-Step Mapping Results ===
@@ -269,13 +320,25 @@ async def perform_3step_mapping(
     remaining = set(field_names)
     llm_inference_details: list[dict] = []
 
+    # 대상 DB의 구조 선언(patterns)을 1회 조회해 아래 두 판정의 근거로 쓴다(편향 검토 §2-2·3).
+    # 특정 DB의 테이블명 리터럴 대신 선언을 읽어 판정한다(D-088 공용 계층 DB-agnostic).
+    structure_metas = await _load_structure_declarations(
+        cache_manager,
+        list(dict.fromkeys([
+            *priority_db_ids,
+            *(active_db_ids or []),
+            *all_db_synonyms,
+            *(all_db_descriptions or {}),
+        ])),
+    )
+
     # 사용률 지표 필드는 매핑 대상에서 제외한다(D-066 후속/RC2). 피벗 파생이라 단일 컬럼 매핑이
     # 불가능하며, 매핑 시도가 존재하지 않는 컬럼 환각·step3 LLM 호출 hang을 유발한다. 미매핑(None)으로
-    # 두면 뒤에서 column_mapping에 None으로 채워져 SQL 생성의 쿼리 예시(cmm_metric_stat_m 피벗)로 위임된다.
+    # 두면 뒤에서 column_mapping에 None으로 채워져 SQL 생성의 쿼리 예시(지표 피벗)로 위임된다.
     # 단, 사용률이 직접 컬럼인 스키마(cpu_metrics.usage_pct 등)에서는 정상 매핑 대상이므로 스킵 금지 —
-    # cmm_metric_stat 피벗 스키마(폴스타)일 때만 스킵한다.
+    # EAV 피벗 구조로 선언된 스키마일 때만 스킵한다.
     metric_usage_fields: set[str] = set()
-    if _schema_uses_metric_stat_pivot(all_db_synonyms, all_db_descriptions):
+    if _schema_uses_eav_metric_pivot(structure_metas):
         metric_usage_fields = {f for f in remaining if _is_metric_usage_field(f)}
     if metric_usage_fields:
         remaining -= metric_usage_fields
@@ -317,6 +380,7 @@ async def perform_3step_mapping(
             min_score=_syn_cfg.match_confidence_min,
             semantic=_syn_cfg.semantic_match,
             semantic_min=_syn_cfg.semantic_confidence_min,
+            core_tables=_core_entity_tables(structure_metas),
         )
 
     # --- 2.8단계: LLM 유사어 발견 ---
@@ -503,6 +567,7 @@ def _apply_synonym_mapping(
     min_score: float = 0.85,
     semantic: bool = False,
     semantic_min: float = 0.65,
+    core_tables: set[str] | None = None,
 ) -> None:
     """Redis synonyms 기반 매핑을 수행한다.
 
@@ -529,6 +594,9 @@ def _apply_synonym_mapping(
         min_score: 유연 매칭 확정 신뢰도 임계(fuzzy=True일 때만 사용)
         semantic: 임베딩 의미 매칭 폴백 활성화 여부(플래그, 기본 OFF)
         semantic_min: 임베딩 코사인 확정 임계(semantic=True일 때만 사용)
+        core_tables: 먼저 매칭할 핵심 엔터티 테이블명(소문자). 구조 선언에서 도출하며
+            (`_core_entity_tables`), 비어 있으면 우선순위 구분 없이 전체 테이블을
+            한 번에 매칭한다(Pass 1이 공집합이 되어 Pass 2가 전부 담당).
     """
     if priority_db_ids:
         ordered_db_ids = priority_db_ids
@@ -537,7 +605,7 @@ def _apply_synonym_mapping(
 
     from src.utils.schema_utils import normalize_field_name
 
-    CORE_TABLES = {"cmm_resource"}
+    CORE_TABLES = core_tables or set()
 
     for field in list(remaining):
         field_lower = normalize_field_name(field).lower()

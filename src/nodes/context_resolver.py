@@ -17,6 +17,7 @@ import logging
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig
+from src.routing.registry import get_registry
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,10 @@ _MAX_ENTITY_ROWS = 20
 _IDENTITY_KEY_HINTS = ("hostname", "host_name", "name", "server_name", "ip", "id")
 # filter_conditions 중 식별 키로 인정할 field 명.
 _IDENTITY_FILTER_FIELDS = ("hostname", "host_name", "name", "server_name", "ip", "ip_address")
-# 폴스타 위치/환경 키워드 (DB 식별 신호 승계용). 원문/힌트에서 표면 추출(LLM 미사용).
-_LOCATION_KEYWORDS = ("김포", "여의도", "은행", "공동존", "운영", "개발", "스테이징")
+# 위치/환경 키워드 (DB 식별 신호 승계용). 원문/힌트에서 표면 추출(LLM 미사용).
+# 정본은 `config/db_registry.yaml`(locations + environment_terms) — Plan 67 R2, 사본 금지.
+# D-004 경계: 승계 신호 추출 전용이며 라우팅 의도 분류에 쓰지 않는다.
+_LOCATION_KEYWORDS = get_registry().location_signal_terms()
 
 
 async def context_resolver(

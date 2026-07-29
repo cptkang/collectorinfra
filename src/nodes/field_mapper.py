@@ -18,6 +18,7 @@ from src.config import AppConfig, load_config
 from src.document.field_mapper import extract_field_names, perform_3step_mapping
 from src.llm import create_llm
 from src.routing.domain_config import get_domain_by_id
+from src.routing.registry import get_registry
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -206,21 +207,18 @@ def _get_active_db_ids(app_config: AppConfig) -> list[str]:
         return []
 
 
-# 지역/존 변별 토큰 — 이게 hint에 있으면 특정 폴스타 DB(gp/yd/b0)를 가리킨다.
-_REGION_HINT_TOKENS = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
-# 제품명 단독 토큰 — 모든 폴스타 DB에 공통이라 지역 변별력이 없다. 지역 토큰과 함께 있으면
+# 지역/존 변별 토큰 — 이게 hint에 있으면 특정 DB를 가리킨다.
+# 아래 3개 표는 전부 `config/db_registry.yaml` 파생이다(Plan 67 R2 — 모듈별 사본 금지).
+# D-004 경계: 라우팅 의도 분류가 아니라 사용자 명시 힌트의 결정적 해소에만 쓴다.
+_REGION_HINT_TOKENS = get_registry().location_terms()
+# 제품명 단독 토큰 — 같은 제품군 DB에 공통이라 지역 변별력이 없다. 지역 토큰과 함께 있으면
 # priority 확대(예: "폴스타"가 "은행 폴스타"에 부분매칭돼 b0를 끌어들임)를 유발하므로 제거 대상.
-_GENERIC_DB_TOKENS = ("폴스타", "polestar", "포탈", "portal")
+_GENERIC_DB_TOKENS = get_registry().product_terms()
 
 
-# db_id별로 그 DB를 "배제"하는 경쟁 지역 토큰. 어떤 hint가 이 토큰을 포함하면
-# 그 hint는 해당 db_id를 가리키지 않는다(다른 존을 지목).
-_DB_EXCLUDING_REGIONS: dict[str, tuple[str, ...]] = {
-    "polestar": ("여의도", "김포", "은행", "레거시"),
-    "polestar_cm_gp": ("여의도", "은행", "레거시"),
-    "polestar_cm_yd": ("김포", "은행", "레거시"),
-    "polestar_b0": ("여의도", "김포"),
-}
+# db_id별로 그 DB를 "배제"하는 경쟁 지역 토큰(같은 제품군의 다른 DB를 배타 지목하는 표면어).
+# 어떤 hint가 이 토큰을 포함하면 그 hint는 해당 db_id를 가리키지 않는다(다른 존을 지목).
+_DB_EXCLUDING_REGIONS: dict[str, tuple[str, ...]] = get_registry().excluding_region_terms()
 
 
 def _is_generic_only_hint(hint: str) -> bool:

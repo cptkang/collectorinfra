@@ -6,6 +6,12 @@
 v2 변경: 키워드 분류 제거, LLM 전용 라우팅.
 사용자 직접 DB 지정, 멀티 DB sub_query_context 분리 규칙 추가.
 동적 템플릿으로 변경 (활성 도메인 목록을 런타임에 주입).
+
+v3 변경(Plan 67 R2): DB 나열(`{db_list}`)에 더해 위치/존 어휘(`{location_vocab}`)와
+위치→DB 예시(`{location_db_examples}`)도 레지스트리(`config/db_registry.yaml`) 파생
+렌더로 주입한다. 신규 DB 편입 시 이 프롬프트는 수정 대상이 아니다.
+※ 아래 few-shot JSON 예시의 db_id는 예시 자체가 LLM 출력 형식을 고정하는 재료라
+   렌더 대상이 아니다(어휘 나열만 파생).
 """
 
 SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE = """당신은 인프라 관련 질의를 분석하여 적절한 데이터베이스를 선택하는 전문가입니다.
@@ -35,7 +41,7 @@ SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE = """당신은 인프라 관련 질의를
 이 경우 각 DB별로 조회해야 할 내용을 sub_query_context에 분리하여 기술하세요.
 
 **중요: sub_query_context에는 순수한 데이터 조회 의도만 기술하세요.**
-DB를 식별하기 위해 사용된 위치/환경/존 정보(여의도, 김포, 은행, 공동존, 개발, 운영 등)는
+DB를 식별하기 위해 사용된 위치/환경/존 정보({location_vocab} 등)는
 sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 사용되며,
 실제 SQL 쿼리 조건으로 변환되어서는 안 됩니다.
 
@@ -89,7 +95,7 @@ sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 �
 
 사용자가 알람 현황, 알람 이력, 임계값 초과 등 모니터링 이벤트 정보를 요청하는 경우:
 - intent를 "alarm_query"로 설정하고 해당 polestar DB를 선택합니다.
-- 지역/환경이 명시된 경우: "김포 알람" → polestar_cm_gp, "여의도 알람" → polestar_cm_yd
+- 지역/환경이 명시된 경우: {location_db_examples}
 
 alarm_query로 분류할 질의 패턴:
 - 알람 목록: "현재 발생 중인 알람", "알람 목록", "alert 현황", "알람 조회"

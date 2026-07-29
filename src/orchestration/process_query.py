@@ -34,6 +34,7 @@ from langchain_core.language_models import BaseChatModel
 from src.alarm.domain.process_rank import select_top_processes
 from src.alarm.infrastructure.polestar_process_api import PolestarProcessApiClient
 from src.config import AppConfig
+from src.routing.registry import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +51,11 @@ _HOST_FIELDS = (
 _DEMONSTRATIVE_PREFIXES = ("해당", "그", "이", "저", "위", "방금", "앞서", "직전", "이전")
 # 지시어 뒤에 붙는 일반 명사 (식별자 아님).
 _DEMONSTRATIVE_NOUNS = ("서버", "장비", "호스트명", "호스트", "인스턴스", "노드", "머신", "시스템")
-# 위치 → 폴스타 db_id 매핑 신호. 첫 턴(task.db_ids/previous_db_ids 공백)에 질의 텍스트로
-# db_id를 재도출하는 결정적 폴백. 은행 레거시(b0)는 "은행"/"레거시" 신호로 식별한다
-# (도메인 alias: "은행 폴스타"/"레거시 폴스타", display_name "은행 레거시 및 K리전(은행존)").
-_LOCATION_DB_HINTS: dict[str, tuple[str, ...]] = {
-    "polestar_cm_gp": ("김포",),
-    "polestar_cm_yd": ("여의도",),
-    "polestar_b0": ("은행", "레거시", "은행존"),
-}
+# 위치 → db_id 매핑 신호. 첫 턴(task.db_ids/previous_db_ids 공백)에 질의 텍스트로
+# db_id를 재도출하는 결정적 폴백. 단일 DB를 **배타적으로** 지목하는 위치 표면어만 담긴다
+# (여러 DB를 포괄하는 존 표면어 "공동존"은 대상 DB를 좁히지 못하므로 제외).
+# 정본은 `config/db_registry.yaml`의 locations 선언 — Plan 67 R2, 사본 금지.
+_LOCATION_DB_HINTS: dict[str, tuple[str, ...]] = get_registry().location_db_hints()
 
 
 def _infer_alarm_kind(sub_query: str) -> str:

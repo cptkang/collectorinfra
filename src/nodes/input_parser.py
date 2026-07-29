@@ -20,6 +20,7 @@ from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
     INPUT_PARSER_SYSTEM_PROMPT,
 )
+from src.routing.registry import get_registry
 from src.schema_cache.cache_manager import get_cache_manager
 from src.security.audit_logger import log_user_request
 from src.state import AgentState
@@ -27,12 +28,14 @@ from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
-# 폴스타 위치/환경 표면어 — target_db_hints 결정적 보강용(D-065).
+# 위치/환경 표면어 — target_db_hints 결정적 보강용(D-065).
 # LLM(규칙 10)이 "공동존"처럼 예시에 없는 위치어를 target_db_hints로 안 뽑는 경우가 있어,
 # 원문에 이 표면어가 있으면 결정적으로 target_db_hints에 보강한다. DB 해소는 하지 않고
 # 표면어만 넘겨(field_mapper._resolve_priority_db_ids / semantic_router가 alias로 해소),
 # "공동존 김포"처럼 더 구체적 표현이 이미 힌트에 있으면 중복 추가하지 않는다.
-_LOCATION_HINT_TERMS: tuple[str, ...] = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+# 정본은 `config/db_registry.yaml`의 locations 선언이다(Plan 67 R2 — 사본 금지).
+# D-004 경계: 이 표면어는 라우팅 의도 분류에 쓰지 않는다(사용자 명시 힌트 보강 전용).
+_LOCATION_HINT_TERMS: tuple[str, ...] = get_registry().location_terms()
 
 # 위치 표면어 단일 출처 공개 별칭 — intent_planner(맥락 주입 게이트)·subagents(결정적 DB 고정)가
 # 동일 목록을 공유한다(모듈별 사본 금지, D-053 존 라우팅 교훈).

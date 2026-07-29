@@ -26,6 +26,7 @@ from src.prompts.semantic_router import (
     SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE,
 )
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
+from src.routing.registry import get_registry
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
 
@@ -331,6 +332,26 @@ async def _llm_classify(
     return {"intent": intent, "databases": results}
 
 
+def _render_location_vocab() -> str:
+    """라우팅 프롬프트에 넣을 위치/환경 어휘 나열을 레지스트리에서 렌더한다(Plan 67 R2).
+
+    sub_query_context에 위치어를 넣지 말라는 규칙이 참조하는 어휘 목록이며, 신규 DB
+    편입 시 자동 반영되도록 프롬프트에 사본을 두지 않는다.
+    """
+    return ", ".join(get_registry().location_signal_terms())
+
+
+def _render_location_db_examples() -> str:
+    """"<위치> 알람" → db_id 예시를 레지스트리에서 렌더한다(DB당 대표 표면어 1개)."""
+    hints = get_registry().location_db_hints()
+    parts = [
+        f'"{terms[0]} 알람" → {db_id}'
+        for db_id, terms in hints.items()
+        if terms
+    ]
+    return ", ".join(parts)
+
+
 def _build_router_prompt(
     domains: list[DBDomainConfig],
     *,
@@ -365,7 +386,11 @@ def _build_router_prompt(
             entry += f"\n   - 상세: {cached_desc}"
         db_desc_list.append(entry)
     db_list = "\n\n".join(db_desc_list)
-    prompt = SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE.format(db_list=db_list)
+    prompt = SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE.format(
+        db_list=db_list,
+        location_vocab=_render_location_vocab(),
+        location_db_examples=_render_location_db_examples(),
+    )
     # (Plan 64 CW-B) 옵트인 on일 때만 fault_diagnosis 의도 섹션을 덧붙인다(off면 비트동일).
     if fault_diagnosis_enabled:
         prompt += SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION.format()

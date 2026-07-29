@@ -64,19 +64,15 @@ def _clean_words(words: list[Any]) -> list[str]:
 
 
 def _schema_prefix(db_id: str) -> str:
-    """db_id의 스키마 접두사를 결정한다(도메인 config 단일 출처, D-057).
+    """db_id의 스키마 접두사를 결정한다(레지스트리 단일 출처, D-057).
 
-    도메인 미등재 시 폴스타 계열 기본값으로 폴백한다(b0=DB2 대문자).
+    정본은 `config/db_registry.yaml`의 `db_schema`이며, 미등재 DB는 무스키마("")로
+    둔다. 과거에는 db_id 접미사(`…b0`)로 폴스타 스키마를 추측하는 휴리스틱 폴백이
+    있었으나, 레지스트리 단일화로 제거했다(편향 검토 §2-8 / Plan 67 R2).
     """
-    try:
-        from src.routing.db_schema import get_schema_prefix
+    from src.routing.db_schema import get_schema_prefix
 
-        prefix = get_schema_prefix(db_id)
-        if prefix:
-            return prefix
-    except Exception:
-        pass
-    return "POLESTAR." if db_id.endswith("b0") else "polestar."
+    return get_schema_prefix(db_id)
 
 
 def _sha256(path: Path) -> str:

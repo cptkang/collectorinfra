@@ -1,6 +1,22 @@
 {
-  "_note": "Plan 63 P4-1 기준선(schema-literal 잔존분). 신규 (파일,토큰) 유입은 overfit_check --ci 실패. P2(어댑터 이동)·P3(선언 전환)가 소거하며 --update-baseline으로 재생성(감소가 트랙 완료 지표). routing-vocab(§1.3)은 본 계획 스코프 아웃이라 게이트/기준선 비대상.",
+  "_note": "과적합 가드 기준선(게이트 대상 잔존분). 신규 (파일,토큰) 유입은 overfit_check --ci 실패. 리터럴을 어댑터/프로필/레지스트리로 소거하며 --update-baseline으로 재생성(감소가 트랙 지표). routing-vocab(§1.3)은 스코프 아웃이라 게이트/기준선 비대상. 카테고리: schema_literal(무엇이 어디에) / ops_literal(운영 도메인·엔드포인트).",
   "schema_literal": {
+    "mcp_server/mcp_server/security.py": [
+      "cmm_os",
+      "cmm_os_param",
+      "cmm_vendor",
+      "core_config_prop"
+    ],
+    "src/alarm/domain/anomaly.py": [
+      "server.Cpus",
+      "server.Memory"
+    ],
+    "src/alarm/domain/correlation.py": [
+      "server.Cpus"
+    ],
+    "src/alarm/domain/topology.py": [
+      "cmm_resource"
+    ],
     "src/nodes/field_mapper.py": [
       "cmm_resource"
     ],
@@ -53,6 +69,13 @@
       "cmm_resource",
       "cmm_resource_hostname"
     ],
+    "src/schema_cache/redis_cache.py": [
+      "server.Cpu"
+    ],
+    "src/schema_cache/value_index.py": [
+      "core_config_prop",
+      "server.Server"
+    ],
     "src/utils/column_matcher.py": [
       "cmm_resource",
       "cmm_resource_hostname"
@@ -68,5 +91,6 @@
       "cmm_resource",
       "resource_conf_id"
     ]
-  }
+  },
+  "ops_literal": {}
 }

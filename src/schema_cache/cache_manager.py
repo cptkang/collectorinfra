@@ -1043,6 +1043,73 @@ class SchemaCacheManager:
             logger.debug("DB 프로필 column_synonyms 로드 실패 (%s): %s", db_id, e)
             return {}
 
+    def _load_profile_structure(self, db_id: str) -> Optional[dict]:
+        """`config/db_profiles/{db_id}.yaml`(수동 프로필)을 구조 선언으로 읽는다.
+
+        schema_analyzer가 이 파일을 structure_meta의 1차 출처로 삼으므로(수동 프로필
+        우선), 캐시가 아직 비어 있는 시점에도 동일 선언을 읽을 수 있는 폴백 경로다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            구조 선언 딕셔너리(메타데이터 `source` 키 제외) 또는 None
+        """
+        try:
+            import yaml
+            from pathlib import Path
+            profile_path = Path(f"config/db_profiles/{db_id}.yaml")
+            if not profile_path.exists():
+                return None
+            with open(profile_path, encoding="utf-8") as f:
+                profile_data = yaml.safe_load(f)
+            if not isinstance(profile_data, dict):
+                return None
+            return {k: v for k, v in profile_data.items() if k != "source"}
+        except Exception as e:  # noqa: BLE001
+            logger.debug("로컬 DB 프로필 '%s' 로드 실패: %s", db_id, e)
+            return None
+
+    async def get_structure_meta_or_profile(self, db_id: str) -> Optional[dict]:
+        """구조 선언을 캐시에서 조회하고, 없으면 수동 프로필로 폴백한다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            구조 선언 딕셔너리 또는 None(선언 없음)
+        """
+        try:
+            meta = await self.get_structure_meta(db_id)
+            if isinstance(meta, dict) and meta:
+                return meta
+        except Exception as e:  # noqa: BLE001
+            logger.debug("구조 메타 조회 실패 (%s): %s", db_id, e)
+        return self._load_profile_structure(db_id)
+
+    async def _resolve_allowed_tables(self, db_id: str) -> list[str]:
+        """DB의 허용 테이블 목록을 선언에서 해소한다(가상 스키마 구축용).
+
+        출처는 구조 선언(캐시된 structure_meta → `config/db_profiles/{db_id}.yaml`)의
+        `allowed_tables`다. 선언이 없으면 **빈 목록**을 반환해 특정 DB의 테이블명을
+        미지의 DB에 가정하지 않는다(D-088 공용 계층 DB-agnostic).
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            허용 테이블명 목록(선언 부재 시 빈 목록)
+        """
+        meta = await self.get_structure_meta_or_profile(db_id)
+        tables = meta.get("allowed_tables") if isinstance(meta, dict) else None
+        if isinstance(tables, (list, tuple)) and tables:
+            return [str(t) for t in tables]
+
+        logger.debug(
+            "허용 테이블 선언이 없어 가상 스키마를 만들지 않습니다 (db_id=%s)", db_id
+        )
+        return []
+
     async def load_synonyms_with_global_fallback(
         self,
         db_id: str,
@@ -1087,19 +1154,12 @@ class SchemaCacheManager:
                         if matched_words is not None:
                             result[col_key] = matched_words
         else:
-            # schema_dict가 None인 경우: db_profiles/{db_id}.yaml 의 allowed_tables를 읽어 가상 스키마 구축
-            import yaml
-            from pathlib import Path
-            profile_path = Path(f"config/db_profiles/{db_id}.yaml")
-            allowed_tables = ["cmm_resource"]
-            if profile_path.exists():
-                try:
-                    with open(profile_path, encoding="utf-8") as f:
-                        profile_data = yaml.safe_load(f)
-                    if isinstance(profile_data, dict):
-                        allowed_tables = profile_data.get("allowed_tables", ["cmm_resource"])
-                except Exception as e:
-                    logger.debug("로컬 DB 프로필 '%s' 로드 실패: %s", db_id, e)
+            # schema_dict가 None인 경우: 선언된 허용 테이블 목록으로 가상 스키마를 구축한다.
+            # 출처는 db_profiles/{db_id}.yaml → structure_meta(캐시) 순이며, 둘 다 없으면
+            # **가상 스키마를 만들지 않는다**. 과거에는 폴스타 테이블(cmm_resource)을 기본값으로
+            # 가정했는데, 캐시 계층은 DB-agnostic이어야 하므로(D-088) 특정 DB의 테이블명을
+            # 미지의 DB에 투영하지 않는다(편향 검토 §2-1).
+            allowed_tables = await self._resolve_allowed_tables(db_id)
 
             for table in allowed_tables:
                 for g_key, g_words in global_synonyms.items():

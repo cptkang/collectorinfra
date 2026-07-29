@@ -20,9 +20,20 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.routing.domain_config import get_domain_by_id
+from src.routing.registry import get_registry
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+def _location_vocab() -> str:
+    """안내 프롬프트에 노출할 위치 표면어 나열을 레지스트리에서 렌더한다(Plan 67 R2).
+
+    신규 DB 편입 시 위치 어휘가 자동 반영되도록 사본을 두지 않는다. 뒤따르는 예시
+    문장은 위치↔환경 조합(예: "김포 운영"/"여의도 개발")까지 담아야 하는데 레지스트리가
+    그 짝을 모델링하지 않으므로 예시는 그대로 둔다.
+    """
+    return "/".join(get_registry().location_terms())
 
 _SYSTEM_PROMPT = (
     "당신은 인프라 관리 시스템의 AI 어시스턴트입니다. "
@@ -175,7 +186,7 @@ def _build_system_prompt(state: AgentState, app_config: AppConfig) -> str:
         "- 사용자가 사용법·기능·조회 가능 범위·지원 소스를 물으면, 위 목록에 근거해 "
         "현재 지원 소스와 조회 유형을 자연스럽게 소개하세요. 목록에 없는 소스나 기능은 "
         "있다고 답하지 마세요.\n"
-        "- **예시 질의를 제시할 때 위치(김포/여의도/은행 등)는 데이터가 '등록된 소스'"
+        f"- **예시 질의를 제시할 때 위치({_location_vocab()} 등)는 데이터가 '등록된 소스'"
         "(폴스타 인스턴스)를 가리킵니다.** 위치를 서버 이름의 일부처럼 붙이지 말고, "
         "소스를 지목하는 형태로 표현하세요. "
         "(권장: \"여의도 폴스타에 등록된 서버의 …\", \"김포 운영 폴스타의 …\", \"여의도의 …\" / "

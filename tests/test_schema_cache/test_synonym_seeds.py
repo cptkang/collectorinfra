@@ -80,17 +80,20 @@ class TestDerive:
         data = yaml.safe_load(out.read_text(encoding="utf-8"))
 
         cols = data["column_synonyms"]
+        # 스키마 접두사는 레지스트리(config/db_registry.yaml)의 db_schema가 단일 출처다.
+        # 미등록 db_id("testdb")는 무스키마 — 과거의 db_id 접미사 휴리스틱 폴백은 제거됐다
+        # (Plan 67 R2 / 편향 검토 §2-8).
         # direct dim → cmm_resource.{column}, 1글자 "x" 제외
-        assert cols["polestar.cmm_resource.hostname"] == ["호스트네임", "호스트명"]
+        assert cols["cmm_resource.hostname"] == ["호스트네임", "호스트명"]
         # eav dim → core_config_prop.name 게이트 키
-        assert "운영체제" in cols["polestar.core_config_prop.name"]
+        assert "운영체제" in cols["core_config_prop.name"]
         # 패턴 B → 각 metric 테이블 avg 컬럼 키에 measure aliases 합본
         for tbl in ("cmm_metric_stat_h", "cmm_metric_stat_m"):
-            assert set(cols[f"polestar.{tbl}.avg_val"]) == {
+            assert set(cols[f"{tbl}.avg_val"]) == {
                 "CPU 사용률", "메모리 사용률", "메모리"
             }
         # 패턴 C → severity 단어·column_values 승격
-        assert set(cols["polestar.cmm_alarm.alarmseverity"]) == {"심각", "경고"}
+        assert set(cols["cmm_alarm.alarmseverity"]) == {"심각", "경고"}
         assert data["column_values"]["cmm_alarm.alarmseverity"]["심각"] == {
             "op": "=", "value": 3
         }
@@ -107,6 +110,14 @@ class TestDerive:
 
     def test_missing_model_returns_none(self, seeds_mod):
         assert seeds_mod.derive_seed("nope") is None
+
+    def test_schema_prefix_comes_from_registry(self, seeds_mod):
+        """스키마 접두사는 레지스트리 db_schema 단일 출처 — 미등록 DB는 무스키마."""
+        assert seeds_mod._schema_prefix("polestar_cm_gp") == "polestar."
+        assert seeds_mod._schema_prefix("polestar_b0") == "POLESTAR."
+        # db_id 접미사("…b0")로 스키마를 추측하던 휴리스틱은 제거됐다.
+        assert seeds_mod._schema_prefix("acme_b0") == ""
+        assert seeds_mod._schema_prefix("unregistered") == ""
 
 
 @pytest.fixture

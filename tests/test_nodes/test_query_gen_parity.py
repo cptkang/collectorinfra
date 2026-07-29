@@ -223,23 +223,34 @@ class TestMetricUsageFieldSkip:
         assert _is_metric_usage_field(field) is expected
 
     async def test_metric_only_fields_skip_llm_on_pivot_schema(self):
-        """cmm_metric_stat 피벗 스키마 + 사용률 필드만 → LLM 호출 없이 미매핑(예시 위임)."""
+        """EAV 피벗 스키마 선언 + 사용률 필드만 → LLM 호출 없이 미매핑(예시 위임).
+
+        피벗 판정 근거는 구조 선언(`patterns[].type == "eav"`)이다 — 특정 DB의
+        테이블명 리터럴이 아니다(Plan 67 R2 / D-088).
+        """
         from unittest.mock import AsyncMock
 
         from src.document.field_mapper import perform_3step_mapping
 
         llm = AsyncMock()
+        cache_manager = AsyncMock()
+        cache_manager.get_structure_meta_or_profile = AsyncMock(return_value={
+            "patterns": [
+                {"type": "eav", "entity_table": "cmm_resource",
+                 "config_table": "core_config_prop", "attribute_column": "name"}
+            ]
+        })
         result, _ = await perform_3step_mapping(
             llm=llm,
             field_names=["CPU 평균", "메모리 최고"],
             field_mapping_hints=[],
             all_db_synonyms={},
-            # 피벗 스키마 신호: cmm_metric_stat 컬럼 존재
             all_db_descriptions={
                 "polestar_cm_gp": {"cmm_metric_stat_m.avg_val": "기간 평균값"}
             },
             priority_db_ids=["polestar_cm_gp"],
             eav_name_synonyms={},
+            cache_manager=cache_manager,
             active_db_ids=["polestar_cm_gp"],
             global_synonyms={},
         )

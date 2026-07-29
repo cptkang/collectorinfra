@@ -44,6 +44,7 @@ from src.orchestration.process_query import (
     run_process_query,
 )
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
+from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.utils.query_gen_common import is_server_identity_col
 
@@ -60,10 +61,9 @@ _MAX_HISTORY_MESSAGES = 10
 # 서버 식별 컬럼 판정은 query_gen_common.is_server_identity_col로 공용화(D-100).
 # 이번 턴 질의에서 "새 위치/DB 신호"로 인정할 키워드 (M2 — DB 승계 차단 조건).
 # 사용자가 이번 턴에 아래 신호를 명시하면 직전 DB를 승계하지 않고 분류 결과를 따른다.
-_LOCATION_DB_SIGNALS = (
-    "김포", "여의도", "은행", "공동존", "운영", "개발", "스테이징",
-    "polestar", "폴스타", "cloud_portal", "클라우드", "itsm", "itam",
-)
+# 정본은 `config/db_registry.yaml`(locations + environment_terms + 제품/DB signal_terms)
+# — Plan 67 R2, 사본 금지. D-004 경계: 의도 분류가 아니라 승계 차단 판정에만 쓴다.
+_LOCATION_DB_SIGNALS = get_registry().new_db_signal_terms()
 
 
 # ──────────────────────────────────────────────
