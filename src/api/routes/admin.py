@@ -21,6 +21,7 @@ from src.api.settings_catalog import (
     build_catalog,
     dry_run_updates,
     field_index,
+    mask_value,
     validate_updates,
 )
 from src.domain.user import UserRole, UserStatus
@@ -170,6 +171,20 @@ def _is_sensitive_key(key: str) -> bool:
     """키가 민감한 설정인지 확인한다."""
     upper_key = key.upper()
     return any(kw in upper_key for kw in _SENSITIVE_KEYWORDS)
+
+
+def _has_url_credentials(value: str) -> bool:
+    """값이 `scheme://user:password@host` 형태로 비밀번호를 품고 있는지 판정한다.
+
+    `DB_CONNECTION_STRING`처럼 키 이름에 민감 키워드가 없어도 값에 비밀번호가 들어 있는
+    설정을 마스킹 대상으로 잡기 위한 판정이다(자격증명은 authority 구간에만 존재).
+    """
+    if "://" not in value:
+        return False
+    authority = value.partition("://")[2].split("/", 1)[0]
+    if "@" not in authority:
+        return False
+    return ":" in authority.rpartition("@")[0]
 
 
 def _read_env_file() -> dict[str, str]:
@@ -396,11 +411,14 @@ def _parse_connection_string(conn_str: str) -> dict[str, str]:
 
     예: postgresql://user:pass@host:5432/dbname
 
+    비밀번호는 평문으로 돌려주지 않는다. 파싱 결과는 화면 표시용이며 평문 비밀번호를
+    응답·로그로 흘릴 이유가 없으므로, 비밀번호가 있으면 마스킹 값만 채운다.
+
     Args:
         conn_str: 연결 문자열
 
     Returns:
-        파싱된 딕셔너리
+        파싱된 딕셔너리 (password는 마스킹 값 또는 빈 문자열)
     """
     result = {
         "db_type": "",
@@ -419,7 +437,7 @@ def _parse_connection_string(conn_str: str) -> dict[str, str]:
     if match:
         result["db_type"] = match.group(1)
         result["username"] = match.group(2)
-        result["password"] = match.group(3)
+        result["password"] = _MASK_VALUE if match.group(3) else ""
         result["host"] = match.group(4)
         result["port"] = match.group(5)
         result["database"] = match.group(6)
@@ -489,11 +507,12 @@ async def get_settings(
     settings_list = []
 
     for key, value in raw_settings.items():
-        is_sensitive = _is_sensitive_key(key)
+        # 키 이름이 민감하지 않아도 값에 접속 비밀번호가 들어 있으면 마스킹한다.
+        is_sensitive = _is_sensitive_key(key) or _has_url_credentials(value)
         settings_list.append(
             EnvSetting(
                 key=key,
-                value=_MASK_VALUE if is_sensitive else value,
+                value=mask_value(key, value) if is_sensitive else value,
                 is_sensitive=is_sensitive,
             )
         )
@@ -779,11 +798,6 @@ async def test_db_connection(
     Returns:
         연결 테스트 결과
     """
-    conn_str = (
-        f"{body.db_type}://{body.username}:{body.password}"
-        f"@{body.host}:{body.port}/{body.database}"
-    )
-
     try:
         if body.db_type == "postgresql":
             import asyncpg
