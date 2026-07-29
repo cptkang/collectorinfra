@@ -29,9 +29,10 @@ class TestCheckDataSufficiencyWithMapping:
         assert await _check_data_sufficiency(
             results, {}, None, column_mapping=mapping, llm=column_coverage_llm,
         )
-        assert column_coverage_llm.calls[-1][2] == [
-            "servers.hostname", "servers.ip_address", "cpu_metrics.usage_pct",
-        ]
+        if column_coverage_llm is not None:
+            assert column_coverage_llm.calls[-1][2] == [
+                "servers.hostname", "servers.ip_address", "cpu_metrics.usage_pct",
+            ]
 
     @pytest.mark.asyncio
     async def test_sufficient_with_column_only_keys(self, column_coverage_llm):
@@ -50,8 +51,9 @@ class TestCheckDataSufficiencyWithMapping:
         assert await _check_data_sufficiency(
             results, {}, None, column_mapping=mapping, llm=column_coverage_llm,
         )
-        # 결과 키가 bare 컬럼명이어도 table.column 매핑이 폴백 매칭된다
-        assert column_coverage_llm.calls[-1][2] == ["servers.hostname", "servers.ip_address"]
+        # 결과 키가 bare 컬럼명이어도 table.column 매핑이 폴백 매칭된다 (스텁 모드 한정 단언)
+        if column_coverage_llm is not None:
+            assert column_coverage_llm.calls[-1][2] == ["servers.hostname", "servers.ip_address"]
 
     @pytest.mark.asyncio
     async def test_insufficient_data(self):

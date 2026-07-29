@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.conftest import RUN_E2E
 
 from src.config import (
     AppConfig,
@@ -176,21 +178,40 @@ async def _mock_db_context(client):
     yield client
 
 
-def _patch_description_llm():
+def _patch_description_llm(run_e2e: bool | None = None):
     """스키마 캐시 미스 시 자동 실행되는 컬럼 설명 생성의 LLM 획득을 대체한다.
 
     `cache_manager`는 노드에 주입된 app_config가 아니라 자체 `load_config()`로
     설정을 재독한 뒤 `create_llm`을 호출한다(실 `.env`의 provider 사용 = 외부 호출).
     이 경로는 아래 테스트들의 단언 대상이 아니므로 빈 JSON을 돌려주는 stub으로 막는다.
 
+    이중 모드(D-127 · 사용자 확정 2026-07-29): 자동 실행(기본 스위트)만 stub으로
+    대체하고, 사용자 승인 실행(RUN_E2E=1)은 패치 없이 실 LLM 경로를 그대로 태운다.
+
     `cache_manager`가 함수 안에서 `from src.llm import create_llm`으로 늦게 가져오므로
     패치 대상은 소비 모듈이 아니라 **정의 모듈**(`src.llm`)이어야 한다.
     """
+    if run_e2e is None:
+        run_e2e = RUN_E2E
+    if run_e2e:
+        return nullcontext()
     stub = AsyncMock()
     message = MagicMock()
     message.content = "{}"  # extract_json_from_response가 파싱하는 실제 응답 형태
     stub.ainvoke = AsyncMock(return_value=message)
     return patch("src.llm.create_llm", return_value=stub)
+
+
+def test_patch_description_llm_dual_mode():
+    """이중 모드 배선: 자동 실행은 create_llm을 패치, 승인(RUN_E2E=1) 실행은 실 경로 유지."""
+    import src.llm as llm_module
+
+    original = llm_module.create_llm
+    with _patch_description_llm(run_e2e=True):
+        assert llm_module.create_llm is original
+    with _patch_description_llm(run_e2e=False):
+        assert llm_module.create_llm is not original
+    assert llm_module.create_llm is original
 
 
 CPU_QUERY_ROWS = [

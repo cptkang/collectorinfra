@@ -186,10 +186,19 @@ class ColumnCoverageStubLLM:
         return AIMessage(content=json.dumps(matched, ensure_ascii=False))
 
 
+def coverage_llm_for_mode(run_e2e: bool) -> ColumnCoverageStubLLM | None:
+    """컬럼 커버리지 LLM 이중 모드 선택 (D-127 · 사용자 확정 2026-07-29).
+
+    자동 실행(기본 스위트)은 스텁, 사용자 승인 실행(RUN_E2E=1)은 None을 반환한다 —
+    None이면 소비 코드(_check_data_sufficiency)가 내부 경로로 실 LLM을 획득한다.
+    """
+    return None if run_e2e else ColumnCoverageStubLLM()
+
+
 @pytest.fixture
-def column_coverage_llm() -> ColumnCoverageStubLLM:
-    """컬럼 커버리지 판단용 stub LLM (외부 호출 없이 실 응답 shape 재현)."""
-    return ColumnCoverageStubLLM()
+def column_coverage_llm() -> ColumnCoverageStubLLM | None:
+    """컬럼 커버리지 판단 LLM(이중 모드) — 스텁 페이로드 단언은 `is not None` 가드 후 수행."""
+    return coverage_llm_for_mode(RUN_E2E)
 
 
 @pytest.fixture

@@ -94,3 +94,11 @@ def test_unix_socket_address_is_ignored():
 
     assert _target_addresses("/tmp/some.sock") == []
     assert _target_addresses(("127.0.0.1", 6379)) == ["127.0.0.1"]
+
+
+def test_coverage_llm_dual_mode_selection():
+    """이중 모드 선택(D-127): 자동 실행=스텁, 승인(RUN_E2E=1)=None(실 LLM 내부 획득)."""
+    from tests.conftest import ColumnCoverageStubLLM, coverage_llm_for_mode
+
+    assert isinstance(coverage_llm_for_mode(False), ColumnCoverageStubLLM)
+    assert coverage_llm_for_mode(True) is None

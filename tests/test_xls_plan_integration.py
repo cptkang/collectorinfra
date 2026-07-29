@@ -937,14 +937,14 @@ class TestResultOrganizerMappingIntegration:
             llm=column_coverage_llm,
         )
         assert is_sufficient is True
-        assert column_coverage_llm.calls[-1][2] == [
-            "servers.hostname", "cpu_metrics.usage_pct",
-        ]
+        if column_coverage_llm is not None:
+            assert column_coverage_llm.calls[-1][2] == [
+                "servers.hostname", "cpu_metrics.usage_pct",
+            ]
 
     @pytest.mark.asyncio
-    @pytest.mark.live_llm
-    async def test_data_insufficiency_detected(self):
-        """매핑된 컬럼이 결과에 없으면 불충분으로 판단한다."""
+    async def test_data_insufficiency_detected(self, column_coverage_llm):
+        """매핑된 컬럼이 결과에 없으면 불충분으로 판단한다 (자동=스텁 / RUN_E2E=1 승인=실 LLM)."""
         from src.nodes.result_organizer import _check_data_sufficiency
 
         results = [{"unrelated_col": "value"}]
@@ -958,10 +958,13 @@ class TestResultOrganizerMappingIntegration:
         }
 
         is_sufficient = await _check_data_sufficiency(
-            results, parsed, template, column_mapping=column_mapping
+            results, parsed, template, column_mapping=column_mapping,
+            llm=column_coverage_llm,
         )
         # 매핑된 4개 컬럼 중 0개가 결과에 있음 → 불충분
         assert is_sufficient is False
+        if column_coverage_llm is not None:
+            assert column_coverage_llm.calls[-1][2] == []
 
 
 # ============================================================
