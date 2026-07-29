@@ -1444,6 +1444,7 @@ class RedisSchemaCache:
                     "synonyms",
                     "fingerprint_checked_at",
                     "structure_meta",
+                    "column_value_index",
                 )
             ]
             await self._redis.delete(*keys)

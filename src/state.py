@@ -173,6 +173,7 @@ class AgentState(TypedDict):
     task_plan: list[dict]            # intent_planner 결과 (TaskSpec 목록; 각 항목에 status)
     task_results: dict[str, dict]    # {task_id: {organized_data, query_results, source, error, ...}}
     is_composite: bool               # task 2개 이상 여부
+    prior_rows: Optional[dict[str, list[dict]]]  # 선행 task 결과 식별 행 {task_id: [행, ...]} (input_from 주입, D-086)
 
     # === [Plan 49] 동적 재계획 ===
     replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)

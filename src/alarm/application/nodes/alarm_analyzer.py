@@ -25,9 +25,7 @@ LLM 응답 형식 (JSON):
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -44,6 +42,7 @@ from src.alarm.prompts.alarm_analyzer import (
     ALARM_ANALYZER_USER_TEMPLATE,
 )
 from src.llm import create_llm
+from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -91,24 +90,10 @@ def _extract_json(text: str) -> dict:
     마크다운 코드 블록(```json ... ```)으로 감싸진 경우와
     일반 텍스트에 JSON이 포함된 경우를 모두 처리한다.
     """
-    # 1) 마크다운 코드 블록 안의 JSON 추출
-    code_block = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if code_block:
-        return json.loads(code_block.group(1))
-
-    # 2) 직접 파싱 (순수 JSON 응답)
-    stripped = text.strip()
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-
-    # 3) 텍스트에서 첫 번째 { ... } 블록 추출
-    brace_match = re.search(r"\{.*\}", stripped, re.DOTALL)
-    if brace_match:
-        return json.loads(brace_match.group(0))
-
-    raise ValueError(f"LLM 응답에서 JSON을 찾을 수 없습니다: {text[:200]!r}")
+    parsed = extract_json_from_response(text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"LLM 응답에서 JSON을 찾을 수 없습니다: {text[:200]!r}")
+    return parsed
 
 
 def _render_history_section(

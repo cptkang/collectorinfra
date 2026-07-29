@@ -26,6 +26,7 @@ from src.llm import create_llm
 from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
+from src.utils.json_extract import strip_code_fence
 
 logger = logging.getLogger(__name__)
 
@@ -248,13 +249,9 @@ def _parse_llm_json(raw_text: str) -> Any:
         ValueError: JSON 파싱 실패 시
     """
     import json
-    import re
 
-    text = raw_text.strip()
     # ```json ... ``` 또는 ``` ... ``` 블록 제거
-    md_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
-    if md_match:
-        text = md_match.group(1).strip()
+    text = strip_code_fence(raw_text)
 
     try:
         return json.loads(text)

@@ -470,3 +470,36 @@ def build_prior_rows_block(prior_rows: dict | None) -> str:
         "4. 결과의 각 행이 어느 서버의 값인지 알 수 있도록 서버 식별 컬럼(예: server_name)을 "
         "SELECT에 반드시 포함하세요 (GROUP BY 피벗 쿼리면 집계 CASE WHEN으로 포함)."
     )
+
+
+def extract_sql_from_response(content: str) -> str:
+    """LLM 응답에서 SQL 쿼리를 추출한다.
+
+    단일 DB 경로(query_generator)와 멀티 DB 경로(multi_db_executor)가 동일 추출
+    규칙을 쓰도록 단일 출처로 공유한다(D-066).
+
+    Args:
+        content: LLM 응답 텍스트
+
+    Returns:
+        추출된 SQL 문자열
+    """
+    # ```sql ... ``` 패턴
+    sql_match = re.search(r"```sql\s*(.*?)\s*```", content, re.DOTALL)
+    if sql_match:
+        return sql_match.group(1).strip()
+
+    # ``` ... ``` 패턴 (SELECT로 시작)
+    code_match = re.search(
+        r"```\s*(SELECT.*?)\s*```", content, re.DOTALL | re.IGNORECASE
+    )
+    if code_match:
+        return code_match.group(1).strip()
+
+    # SELECT로 시작하는 텍스트 직접 추출
+    select_match = re.search(r"(SELECT\s+.*?;)", content, re.DOTALL | re.IGNORECASE)
+    if select_match:
+        return select_match.group(1).strip()
+
+    # 전체 내용 반환 (최후 수단)
+    return content.strip()

@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any, Awaitable, Callable, Optional
+
+from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +101,10 @@ async def _llm_pairwise_choice(
         logger.warning("후보 선택 LLM 판정 실패(결과일관성 폴백): %s", e)
         return None
 
-    content = getattr(response, "content", "") or ""
-    m = re.search(r"\{.*\}", content, re.S)
-    if not m:
+    data = extract_json_from_response(getattr(response, "content", "") or "")
+    if not isinstance(data, dict):
         return None
     try:
-        data = json.loads(m.group(0))
         choice = int(data.get("choice"))
     except (ValueError, TypeError):
         return None

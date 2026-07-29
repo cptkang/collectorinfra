@@ -27,6 +27,10 @@ from src.schema_cache.fingerprint import (
 )
 from src.schema_cache.persistent_cache import PersistentSchemaCache
 from src.schema_cache.redis_cache import RedisSchemaCache
+from src.utils.json_extract import (
+    extract_json_array_from_response,
+    extract_json_from_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -824,24 +828,12 @@ class SchemaCacheManager:
         )
 
         try:
-            import json as json_mod
-            import re
-
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             content = response.content
 
-            # JSON 추출
-            json_match = re.search(
-                r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL
-            )
-            if json_match:
-                parsed = json_mod.loads(json_match.group(1))
-            else:
-                brace_match = re.search(r"\{.*\}", content, re.DOTALL)
-                if brace_match:
-                    parsed = json_mod.loads(brace_match.group())
-                else:
-                    parsed = json_mod.loads(content)
+            parsed = extract_json_from_response(content)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"JSON 딕셔너리 없음: {content[:200]!r}")
 
             words = parsed.get("words", [])
             description = parsed.get("description", "")
@@ -927,23 +919,12 @@ class SchemaCacheManager:
         )
 
         try:
-            import json as json_mod
-            import re
-
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             content = response.content
 
-            json_match = re.search(
-                r"```(?:json)?\s*(\[.*?\])\s*```", content, re.DOTALL
-            )
-            if json_match:
-                similar_list = json_mod.loads(json_match.group(1))
-            else:
-                bracket_match = re.search(r"\[.*\]", content, re.DOTALL)
-                if bracket_match:
-                    similar_list = json_mod.loads(bracket_match.group())
-                else:
-                    similar_list = json_mod.loads(content)
+            similar_list = extract_json_array_from_response(content)
+            if not isinstance(similar_list, list):
+                raise ValueError(f"JSON 배열 없음: {content[:200]!r}")
 
             # 결과에 글로벌 사전 데이터 보강
             results = []
@@ -1168,7 +1149,7 @@ class SchemaCacheManager:
         self,
         client: Any,
         db_id: str,
-    ) -> tuple[dict, bool, dict[str, str], dict[str, list[str]]]:
+    ) -> tuple[dict, bool, str, dict[str, str], dict[str, list[str]]]:
         """3단계 캐시를 거쳐 스키마를 조회한다. 캐시 미스 시 DB에서 직접 조회.
 
         조회 순서:
@@ -1182,9 +1163,10 @@ class SchemaCacheManager:
             db_id: DB 식별자
 
         Returns:
-            (schema_dict, cache_hit, descriptions, synonyms) 튜플
+            (schema_dict, cache_hit, cache_source, descriptions, synonyms) 튜플
             - schema_dict: 스키마 딕셔너리
             - cache_hit: 캐시에서 로드했으면 True (save 불필요)
+            - cache_source: 조회 출처 ("메모리" | "Redis" | "DB 직접 조회")
             - descriptions: {table.column: description}
             - synonyms: {table.column: [synonym, ...]}
         """

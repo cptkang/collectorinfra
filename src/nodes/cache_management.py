@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -19,6 +17,7 @@ from src.llm import create_llm
 from src.prompts.cache_management import CACHE_MANAGEMENT_PARSE_PROMPT
 from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
+from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -143,21 +142,9 @@ async def _parse_cache_intent(
     prompt = CACHE_MANAGEMENT_PARSE_PROMPT.format(user_query=user_query)
     response = await llm.ainvoke([HumanMessage(content=prompt)])
 
-    # JSON 추출
-    content = response.content
-    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    brace_match = re.search(r"\{.*\}", content, re.DOTALL)
-    if brace_match:
-        try:
-            return json.loads(brace_match.group())
-        except json.JSONDecodeError:
-            pass
+    parsed = extract_json_from_response(response.content)
+    if isinstance(parsed, dict):
+        return parsed
 
     # 파싱 실패 시 기본값
     return {"action": "status", "db_id": None}

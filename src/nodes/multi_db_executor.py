@@ -35,6 +35,7 @@ from src.utils.query_gen_common import (
     build_query_examples_block,
     build_stat_month_block,
     correct_servername_hostname_mapping,
+    extract_sql_from_response,
     resolve_query_limit,
     resolve_stat_month_range,
 )
@@ -761,7 +762,7 @@ async def _generate_sql(
             llm, system_prompt, user_prompt,
             count=t2.candidate_count, strategies=t2.candidate_strategies,
             selection=t2.selection, is_kbgenai=isinstance(llm, KBGenAIChat),
-            extract_sql=_extract_sql, validate=_validate, execute=execute,
+            extract_sql=extract_sql_from_response, validate=_validate, execute=execute,
             user_query=parsed_requirements.get("original_query", "") or sub_query_context,
         )
         if selection.get("sql"):
@@ -782,7 +783,7 @@ async def _generate_sql(
     messages.append(HumanMessage(content=user_prompt))
 
     response = await llm.ainvoke(messages)
-    return _extract_sql(response.content)
+    return extract_sql_from_response(response.content)
 
 
 def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
@@ -887,32 +888,6 @@ def _format_schema(schema_info: dict) -> str:
             lines.append(f"  {rel['from']} -> {rel['to']}")
 
     return "\n".join(lines)
-
-
-def _extract_sql(content: str) -> str:
-    """LLM 응답에서 SQL을 추출한다.
-
-    Args:
-        content: LLM 응답 텍스트
-
-    Returns:
-        추출된 SQL 문자열
-    """
-    sql_match = re.search(r"```sql\s*(.*?)\s*```", content, re.DOTALL)
-    if sql_match:
-        return sql_match.group(1).strip()
-
-    code_match = re.search(
-        r"```\s*(SELECT.*?)\s*```", content, re.DOTALL | re.IGNORECASE
-    )
-    if code_match:
-        return code_match.group(1).strip()
-
-    select_match = re.search(r"(SELECT\s+.*?;)", content, re.DOTALL | re.IGNORECASE)
-    if select_match:
-        return select_match.group(1).strip()
-
-    return content.strip()
 
 
 def _merge_results(

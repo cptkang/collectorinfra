@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
+from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import StatMonth, resolve_query_limit
 # 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
 from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
@@ -571,36 +572,6 @@ def _compile_c(smq: SMQ, model: dict, db_id: str, limit: int) -> str:
 
 
 # ──────────────────────────────────────────────
-# 진입 헬퍼 (coverage_router에서 호출)
-# ──────────────────────────────────────────────
-
-def try_semantic_compile(
-    smq: SMQ,
-    db_id: str,
-    *,
-    user_query: str = "",
-    default_limit: int = 100,
-    stat_month: StatMonth = None,
-    value_index: Optional[dict[str, list[str]]] = None,
-) -> tuple[Optional[str], CoverageResult]:
-    """커버리지 판정 후 내부면 컴파일 SQL을, 밖이면 None과 사유를 반환한다.
-
-    coverage_router가 이 헬퍼를 호출해 (SQL 또는 None, CoverageResult)을 받는다.
-    커버리지 밖(None)이면 호출부가 현행 폴백(LLM 자유생성)으로 진행한다.
-    """
-    model = load_semantic_model(db_id)
-    cov = check_coverage(smq, model or {}, value_index=value_index)
-    if not cov.covered:
-        return None, cov
-    sql = compile_smq(
-        smq, db_id, model, user_query=user_query,
-        default_limit=default_limit, stat_month=stat_month,
-        server_scope=server_scope,
-    )
-    return sql, cov
-
-
-# ──────────────────────────────────────────────
 # 자연어 → SMQ (LLM 선택) + coverage_router 진입점
 # ──────────────────────────────────────────────
 
@@ -688,21 +659,7 @@ def normalize_smq(smq: SMQ, user_query: str) -> SMQ:
 
 def parse_smq_response(content: str) -> Optional[SMQ]:
     """LLM 응답에서 SMQ JSON을 파싱한다(코드펜스 허용). 밖/파싱실패는 None."""
-    import json
-    import re
-
-    text = (content or "").strip()
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    if m:
-        text = m.group(1)
-    else:
-        m2 = re.search(r"\{.*\}", text, re.S)
-        if m2:
-            text = m2.group(0)
-    try:
-        data = json.loads(text)
-    except (ValueError, TypeError):
-        return None
+    data = extract_json_from_response((content or "").strip())
     if not isinstance(data, dict):
         return None
     if str(data.get("pattern", "")).upper() not in ("A", "B", "C"):

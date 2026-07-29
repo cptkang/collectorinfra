@@ -11,10 +11,10 @@ from langchain_core.messages import SystemMessage
 from src.nodes.query_generator import (
     _build_system_prompt,
     _build_user_prompt,
-    _extract_sql_from_response,
     _format_schema_for_prompt,
     query_generator,
 )
+from src.utils.query_gen_common import extract_sql_from_response
 from src.state import create_initial_state
 
 
@@ -24,26 +24,26 @@ class TestExtractSqlFromResponse:
     def test_sql_code_block(self):
         """```sql ... ``` 패턴에서 SQL을 추출한다."""
         content = "```sql\nSELECT * FROM servers LIMIT 10;\n```"
-        result = _extract_sql_from_response(content)
+        result = extract_sql_from_response(content)
         assert result.startswith("SELECT")
         assert "LIMIT 10" in result
 
     def test_generic_code_block_with_select(self):
         """``` ... ``` 패턴(SELECT 시작)에서 SQL을 추출한다."""
         content = "```\nSELECT hostname FROM servers LIMIT 5;\n```"
-        result = _extract_sql_from_response(content)
+        result = extract_sql_from_response(content)
         assert "hostname" in result
 
     def test_plain_select(self):
         """코드 블록 없는 SELECT 문을 추출한다."""
         content = "Here is the query: SELECT id FROM servers LIMIT 10;"
-        result = _extract_sql_from_response(content)
+        result = extract_sql_from_response(content)
         assert "SELECT" in result
 
     def test_fallback_returns_full_content(self):
         """SQL을 추출할 수 없으면 전체 내용을 반환한다."""
         content = "I cannot generate SQL"
-        result = _extract_sql_from_response(content)
+        result = extract_sql_from_response(content)
         assert result == "I cannot generate SQL"
 
 

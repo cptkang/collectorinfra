@@ -30,6 +30,7 @@ from src.utils.query_gen_common import (
     build_stat_month_block,
     build_value_index_block,
     correct_servername_hostname_mapping,
+    extract_sql_from_response,
     resolve_query_limit,
     resolve_stat_month_range,
 )
@@ -409,7 +410,7 @@ async def query_generator(
             response = await llm.ainvoke(messages)
 
             # SQL 추출
-            sql = _extract_sql_from_response(response.content)
+            sql = extract_sql_from_response(response.content)
 
     logger.info(f"SQL 생성 완료 (retry={retry_count}): {sql[:1000]}...")
 
@@ -543,7 +544,7 @@ async def _run_multi_candidate_single_db(
                 llm, system_prompt, user_prompt,
                 count=t2.candidate_count, strategies=t2.candidate_strategies,
                 selection=t2.selection, is_kbgenai=is_kbgenai,
-                extract_sql=_extract_sql_from_response,
+                extract_sql=extract_sql_from_response,
                 validate=_validate, execute=_execute, user_query=user_query,
             )
     except Exception as e:  # noqa: BLE001 — DB 연결 실패: 생성만 수행하고 첫 후보 반환
@@ -551,7 +552,7 @@ async def _run_multi_candidate_single_db(
         candidates = await generate_candidates(
             llm, system_prompt, user_prompt,
             count=t2.candidate_count, strategies=t2.candidate_strategies,
-            is_kbgenai=is_kbgenai, extract_sql=_extract_sql_from_response,
+            is_kbgenai=is_kbgenai, extract_sql=extract_sql_from_response,
         )
         first = candidates[0] if candidates else {"sql": "", "strategy": None, "confidence": 0.0}
         return {"sql": first["sql"], "strategy": first.get("strategy"), "confidence": 0.0,
@@ -1028,35 +1029,5 @@ def _format_schema_for_prompt(
             lines.append(f"  {rel['from']} -> {rel['to']}")
 
     return "\n".join(lines)
-
-
-def _extract_sql_from_response(content: str) -> str:
-    """LLM 응답에서 SQL 쿼리를 추출한다.
-
-    Args:
-        content: LLM 응답 텍스트
-
-    Returns:
-        추출된 SQL 문자열
-    """
-    # ```sql ... ``` 패턴
-    sql_match = re.search(r"```sql\s*(.*?)\s*```", content, re.DOTALL)
-    if sql_match:
-        return sql_match.group(1).strip()
-
-    # ``` ... ``` 패턴 (SELECT로 시작)
-    code_match = re.search(
-        r"```\s*(SELECT.*?)\s*```", content, re.DOTALL | re.IGNORECASE
-    )
-    if code_match:
-        return code_match.group(1).strip()
-
-    # SELECT로 시작하는 텍스트 직접 추출
-    select_match = re.search(r"(SELECT\s+.*?;)", content, re.DOTALL | re.IGNORECASE)
-    if select_match:
-        return select_match.group(1).strip()
-
-    # 전체 내용 반환 (최후 수단)
-    return content.strip()
 
 
