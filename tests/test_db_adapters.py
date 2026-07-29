@@ -34,10 +34,11 @@ class TestRegistryBootstrap:
 
 class TestAdapterHooks:
     def test_system_template_by_intent(self):
+        """의도별 템플릿 분기. 데이터 조회 템플릿은 지식 정본에서 렌더된다(Plan 67 R1-2)."""
         adapter = get_adapter("polestar", {"polestar"})
         assert adapter.system_template("alarm_query") is POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE
-        assert adapter.system_template("data_query") is POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
-        assert adapter.system_template(None) is POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        assert adapter.system_template("data_query") == POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        assert adapter.system_template(None) == POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
 
     def test_validator_checks_detect_routing_misuse(self):
         adapter = get_adapter("polestar", {"polestar"})
@@ -47,6 +48,21 @@ class TestAdapterHooks:
         assert any(check(bad_sql) for check in checks)
         good_sql = "SELECT name FROM t WHERE avail_status = 0 LIMIT 10"
         assert not any(check(good_sql) for check in checks)
+
+    def test_classify_metric_field_hook_delegates_to_assembler(self):
+        """src/tools/metrics.py optional 훅 계약 — 어댑터가 assembler 분류를 노출한다(Plan 67 S1 후속)."""
+        from src.db_adapters.polestar.assembler import classify_metric_field as assembler_classify
+        from src.tools.metrics import classify_metric_field as tool_classify
+
+        adapter = get_adapter("polestar", {"polestar"})
+        sample = "CPU 사용률(평균)"
+        expected = assembler_classify(sample)
+        assert expected is not None
+        assert adapter.classify_metric_field(sample) == expected
+
+        result = tool_classify(sample, db_id="polestar", adapter_db_ids={"polestar"})
+        assert result["source"] == "adapter"
+        assert (result["resource_type"], result["agg_function"], result["value_column"]) == expected
 
 
 class TestConsumerWiring:

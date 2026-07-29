@@ -122,22 +122,52 @@ _MODEL_CACHE: dict[str, Optional[dict]] = {}
 
 
 def load_semantic_model(db_id: str, *, use_cache: bool = True) -> Optional[dict]:
-    """``config/semantic_models/{db_id}.yaml``을 로드한다(없으면 None).
+    """시맨틱 모델(dimension/measure 카탈로그)을 지식 정본에서 만들어 반환한다(없으면 None).
 
-    db_profiles와 동일한 로딩 패턴. db_engine/db_schema는 모델에 없고 domain_config에서 주입한다.
+    원천 우선순위(Plan 67 R1 — 지식 정본 일원화):
+        1. **정본**: 구조 선언 ``config/db_profiles/{db_id}.yaml`` + 큐레이션
+           ``config/knowledge/{db_id}/catalog.yaml`` → ``build_catalog``로 생성.
+           큐레이션이 없는 DB는 카탈로그를 만들지 않는다(선별되지 않은 컬럼이 결정적 조립
+           대상으로 새어 들어가는 것을 막는다).
+        2. **사본 폴백**: 기존 ``config/semantic_models/{db_id}.yaml``. 정본 생성 실패 시에만 쓴다.
+
+    두 원천의 산출물이 동등함은 ``scripts/catalog_diff.py``가 실측한다(전환 시점 차이 0).
+    db_engine/db_schema는 모델에 없고 domain_config에서 주입한다(D-066 후속6 단일 출처).
     """
     if use_cache and db_id in _MODEL_CACHE:
         return _MODEL_CACHE[db_id]
-    path = os.path.join("config", "semantic_models", f"{db_id}.yaml")
+
+    from src.schema_cache.catalog_builder import (
+        build_catalog,
+        load_knowledge_overrides,
+        load_structure_profile,
+    )
+
     model: Optional[dict] = None
-    if os.path.exists(path):
-        try:
-            import yaml
-            with open(path, "r", encoding="utf-8") as f:
-                model = yaml.safe_load(f)
-        except Exception as e:  # noqa: BLE001 — 로드 실패는 커버리지 밖으로 graceful 강등
-            logger.warning("시맨틱 모델 로드 실패 (%s): %s", path, e)
-            model = None
+    overrides = load_knowledge_overrides(db_id)
+    if overrides:
+        structure = load_structure_profile(overrides.get("structure_from") or db_id)
+        if structure:
+            model = build_catalog(structure, db_id=db_id, overrides=overrides)
+            logger.debug("시맨틱 모델 원천=지식 정본 (db_id=%s)", db_id)
+
+    if model is None:
+        path = os.path.join("config", "semantic_models", f"{db_id}.yaml")
+        if os.path.exists(path):
+            try:
+                import yaml
+                with open(path, "r", encoding="utf-8") as f:
+                    model = yaml.safe_load(f)
+                # 정본에서 생성하지 못하고 사본으로 강등된 상태 — 침묵 폴백 금지(사유 가시화).
+                logger.warning(
+                    "시맨틱 모델을 지식 정본에서 생성하지 못해 사본으로 강등 (db_id=%s, 사본=%s) "
+                    "— config/db_profiles·config/knowledge 확인 필요",
+                    db_id, path,
+                )
+            except Exception as e:  # noqa: BLE001 — 로드 실패는 커버리지 밖으로 graceful 강등
+                logger.warning("시맨틱 모델 로드 실패 (%s): %s", path, e)
+                model = None
+
     if use_cache:
         _MODEL_CACHE[db_id] = model
     return model

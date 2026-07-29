@@ -62,92 +62,121 @@ patterns:
     known_attributes:
       # --- server.Server / platform.server 속성 ---
       - name: OSType
+        resource_type: server.Server
         description: "운영체제 종류 (예: Linux, Windows) [resource_type: server.Server]"
         synonyms: ["운영체제", "OS종류", "OS 타입", "OS"]
       - name: OSVerson
+        resource_type: server.Server
         description: "운영체제 버전 (주의: Polestar 제품 오탈자 반영) [resource_type: server.Server]"
         synonyms: ["OS버전", "운영체제버전"]
       - name: OSParameter
+        resource_type: server.Server
+        lob: true
         description: "OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용) [resource_type: server.Server]"
         synonyms: ["OS파라미터", "OS 파라미터", "OS설정", "OS 설정", "커널", "커널 파라미터", "커널파라미터", "시스템 파라미터", "커널 설정", "커널 설정값", "sysctl"]
       - name: PatchLevel
+        resource_type: server.Server
         description: "OS 패치 레벨 / 커널 버전 [resource_type: server.Server]"
         synonyms: ["패치레벨", "커널버전", "패치"]
       - name: Vendor
+        resource_type: server.Server
         description: "서버 제조사 (예: Dell, HP) [resource_type: server.Server]"
         synonyms: ["벤더", "제조사", "제조업체"]
       - name: Model
+        resource_type: server.Server
         description: "서버 모델명 [resource_type: server.Server]"
         synonyms: ["모델", "장비모델", "모델명"]
       - name: SerialNumber
+        resource_type: server.Server
         description: "시리얼 번호 [resource_type: server.Server]"
         synonyms: ["시리얼", "S/N", "일련번호", "시리얼번호"]
       - name: Hostname
+        resource_type: server.Server
         description: "호스트명 (EAV). '서버명'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지 [resource_type: server.Server]"
         synonyms: ["EAV호스트명"]
       - name: IPaddress
+        resource_type: server.Server
         description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값) [resource_type: server.Server]"
         synonyms: ["EAV IP", "IP"]
       - name: GMT
+        resource_type: server.Server
         description: "시간대 (GMT offset) [resource_type: server.Server]"
         synonyms: ["시간대", "타임존"]
       - name: AgentID
+        resource_type: server.Server
         description: "모니터링 에이전트 ID [resource_type: server.Server]"
         synonyms: ["에이전트ID", "에이전트", "Agent"]
       - name: AgentVersion
+        resource_type: server.Server
         description: "에이전트 버전 [resource_type: server.Server]"
         synonyms: ["에이전트버전", "Agent버전"]
       - name: InstallPath
+        resource_type: server.Server
         description: "에이전트 설치 경로 [resource_type: server.Server]"
         synonyms: ["설치경로", "설치 경로"]
       # --- server.Cpus 속성 (resource_type = 'server.Cpus') ---
       - name: MODEL
+        resource_type: server.Cpus
         description: "CPU 모델명 (예: Intel Xeon Gold 6248R) [resource_type: server.Cpus]"
         synonyms: ["CPU모델", "CPU 모델", "프로세서", "프로세서모델", "CPU_MODEL"]
       - name: LOGICALCORE
+        resource_type: server.Cpus
         description: "논리 CPU 코어 수 (하이퍼스레딩 포함) [resource_type: server.Cpus]"
         synonyms: ["논리코어", "논리 코어", "CPU", "CPU코어", "코어수", "코어"]
       - name: PHYSICALCORE
+        resource_type: server.Cpus
         description: "물리 CPU 코어 수 [resource_type: server.Cpus]"
         synonyms: ["물리코어", "물리 코어", "물리CPU"]
       - name: PHYSICALCPU
+        resource_type: server.Cpus
         description: "물리 CPU 소켓 수 [resource_type: server.Cpus]"
         synonyms: ["CPU소켓", "소켓", "소켓수", "CORESOCKET"]
       - name: SPEED
+        resource_type: server.Cpus
         description: "CPU 클럭 속도 MHz (예: 2100.0) [resource_type: server.Cpus]"
         synonyms: ["CPU속도", "클럭", "클럭속도", "CPU클럭"]
       - name: HYPERTHREADING
+        resource_type: server.Cpus
         description: "하이퍼스레딩 활성 여부 (on/off) [resource_type: server.Cpus]"
         synonyms: ["하이퍼스레딩", "HT"]
       # --- server.Memory 속성 (resource_type = 'server.Memory') ---
       - name: TotalSize
+        resource_type: server.Memory
         description: "총 물리 메모리 크기 (예: 62.1 GB) [resource_type: server.Memory] / 전체 디스크 용량 [resource_type: server.Disks]"
         synonyms: ["메모리", "MEMORY", "메모리크기", "총메모리", "메모리용량", "MEM", "디스크용량", "디스크크기"]
       # --- server.VirtualMemory 속성 (resource_type = 'server.VirtualMemory') ---
       - name: SwapTotalSize
+        resource_type: server.VirtualMemory
         description: "Swap 메모리 총 크기 (예: 3.9 GB) [resource_type: server.VirtualMemory]"
         synonyms: ["스왑", "스왑메모리", "SWAP", "스왑크기"]
       # --- server.Disks 속성 (resource_type = 'server.Disks') ---
       - name: DiskCount
+        resource_type: server.Disks
         description: "디스크 수 [resource_type: server.Disks]"
         synonyms: ["디스크수", "디스크개수", "디스크 수"]
       # --- server.NetworkInterface 속성 (resource_type = 'server.NetworkInterface') ---
       - name: IP
+        resource_type: server.NetworkInterface
         description: "네트워크 인터페이스 IP 주소 [resource_type: server.NetworkInterface]"
         synonyms: ["NIC IP", "인터페이스IP"]
       - name: MAC
+        resource_type: server.NetworkInterface
         description: "MAC 주소 (예: b4:96:91:0e:bd:a6) [resource_type: server.NetworkInterface]"
         synonyms: ["MAC주소", "맥주소", "MACAddress"]
       - name: BANDW
+        resource_type: server.NetworkInterface
         description: "대역폭 (예: 10 Gb) [resource_type: server.NetworkInterface]"
         synonyms: ["대역폭", "bandwidth", "네트워크속도"]
       - name: MTU
+        resource_type: server.NetworkInterface
         description: "MTU 크기 (예: 1500.0) [resource_type: server.NetworkInterface]"
         synonyms: ["MTU"]
       - name: NETMASK
+        resource_type: server.NetworkInterface
         description: "서브넷 마스크 (예: 255.255.255.0) [resource_type: server.NetworkInterface]"
         synonyms: ["서브넷", "넷마스크", "서브넷마스크"]
       - name: STATUS
+        resource_type: server.NetworkInterface
         description: "인터페이스 상태 (UP/DOWN) [resource_type: server.NetworkInterface]"
         synonyms: ["NIC상태", "인터페이스상태"]
 

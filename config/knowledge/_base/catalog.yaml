@@ -1,0 +1,144 @@
+# 카탈로그 큐레이션 정본 — 폴스타 계열 공통 (Plan 67 R1)
+#
+# 이 파일에는 **구조 정본(config/db_profiles/{db_id}.yaml = structure_meta)에서 파생할 수 없는
+# 운영 판단만** 둔다. 속성 목록·한국어 유사어·EAV 조인 구성·알람 허용 테이블은 전부 프로필에서
+# 파생되므로 여기 복제하지 않는다(복제하면 R1이 없애려는 4중 사본이 그대로 부활한다).
+#
+# 별칭 규칙: 카탈로그 별칭 = 프로필 synonyms/column_synonyms.words - alias_deny + alias_extra.
+#   → 프로필에 유사어 1건을 추가하면 카탈로그에 **자동 반영**된다(정본 1곳 수정 원칙).
+#   → alias_deny는 "유사어 사전에는 두되 결정적 조립 카탈로그에는 넣지 않는다"는 판단이다
+#     (모호·과포괄 표면어를 결정적 선택지에서 제외 — 예 "CPU"는 코어수와 사용률 양쪽을 가리킨다).
+# alias_deny는 gp/yd/b0 3개 프로필의 합집합이다(없는 항목은 무시되므로 db별 분기 불필요).
+
+pattern_a:
+  # 엔티티 직접 컬럼이 속한 resource_type(EAV 자식 리소스와 구분).
+  entity_resource_type: server.Server
+
+  # 엔티티 직접 컬럼 dimension — 어느 컬럼을 카탈로그에 노출할지는 운영 판단이라 여기 선언한다.
+  # 별칭은 프로필 column_synonyms에서 파생한다(ipaddress/avail_status는 유사어 미등록 → alias_extra).
+  direct_dimensions:
+    - {name: name,         column: name}
+    - {name: hostname,     column: hostname}
+    - {name: ipaddress,    column: ipaddress}
+    - {name: avail_status, column: avail_status}
+
+  attributes:
+    # 카탈로그에서 제외할 EAV 속성.
+    #   Hostname/IPaddress : 실측상 값이 비어 있어 direct 컬럼을 써야 한다(D-058/D-061)
+    #   그 외              : 결정적 조립 수요가 실측되지 않은 속성(수요 확인 시 이 목록에서 제거)
+    exclude:
+      - Hostname
+      - IPaddress
+      - InstallPath
+      - HYPERTHREADING
+      - SwapTotalSize
+      - DiskCount
+      - IP
+      - MAC
+      - BANDW
+      - MTU
+      - NETMASK
+      - STATUS
+
+  alias_deny:
+    name: ["서버이름", "장비 이름", "장비이름", "리소스명", "장비 식별명", "등록명", "폴스타 등록명"]
+    hostname: ["호스트 이름", "hostname", "OS호스트명"]
+    OSType: ["OS 타입"]
+    OSParameter: ["OS 파라미터", "OS설정", "OS 설정", "커널", "시스템 파라미터", "커널 설정", "커널 설정값", "sysctl"]
+    PatchLevel: ["패치"]
+    Vendor: ["제조업체"]
+    Model: ["장비모델"]
+    SerialNumber: ["S/N"]
+    AgentID: ["에이전트", "Agent"]
+    AgentVersion: ["Agent버전"]
+    MODEL: ["프로세서모델", "CPU_MODEL"]
+    LOGICALCORE: ["논리 코어", "CPU", "CPU코어", "코어"]
+    PHYSICALCORE: ["물리 코어", "물리CPU"]
+    PHYSICALCPU: ["소켓", "CORESOCKET"]
+    SPEED: ["클럭속도", "CPU클럭"]
+    TotalSize: ["MEMORY", "총메모리", "MEM", "디스크용량", "디스크크기"]
+
+  alias_extra:
+    name: [server_name]
+    hostname: [Hostname]
+    ipaddress: [IPaddress, IP, IP주소]
+    avail_status: ["가용성", "가용성 상태", "상태"]
+    LOGICALCORE: ["CPU코어수", "CPU 코어 수"]
+    TotalSize: ["메모리 용량"]
+
+  # 필터 가능한 필드(WHERE/HAVING). direct 컬럼은 서버 식별에 HAVING(집계 후, D-050) 사용.
+  filterable: [resource_type, name, hostname, ipaddress, avail_status]
+
+# ── 패턴 B: 성능 지표 (통계 measure) ─────────────────────────────────────────
+# 통계 테이블·지표 조합은 structure_meta에 구조화 표현이 없어 큐레이션으로 둔다.
+# 컴파일러는 measure를 build_multi_resource_pivot_sql의 explicit_measures로 넘긴다(단일 GROUP BY).
+pattern_b:
+  metric_tables:
+    hour: cmm_metric_stat_h
+    day: cmm_metric_stat_d
+    month: cmm_metric_stat_m
+  default_time_grain: month
+  # measure가 있는데 서버 식별 dimension이 없으면 컴파일러가 결정적으로 주입할 식별 dimension
+  # (SMQ 선택 누락 보정, D-076 후속 — pattern_a 카탈로그에 정의된 이름만 유효).
+  # 최소 식별자(name)만 — hostname까지 주입하면 질의 미명시 컬럼이 끼어 컬럼 스코프 규약 위반.
+  default_dimensions: [name]
+  value_columns:
+    avg: avg_val
+    max: max_val
+    min: min_val
+  measures:
+    - {resource_type: server.Cpus,        definition_name: Utilization, aliases: [CPU 사용률, CPU]}
+    - {resource_type: server.Memory,      definition_name: Utilization, aliases: [메모리 사용률, 메모리]}
+    - {resource_type: server.FileSystems, definition_name: Utilization, aliases: [파일시스템 사용률, 파일시스템]}
+    - {resource_type: server.Disks,       definition_name: MaxIORate,   aliases: [디스크 IO, 디스크 아이오]}
+
+# ── 패턴 C: 알람 (정규화 관계형 조인) ────────────────────────────────────────
+# 알람은 EAV가 아니라 CMM_ALARM(CA)↔CMM_ALARM_DEF(D)↔CMM_ALARM_ACTIVE(A)↔CMM_RESOURCE(CR) 조인.
+# 활성 알람은 A 조인 + severity IN (1,2,3), 이력은 A 미조인 + IN (0,1,2,3).
+# 조인 조건은 db_profiles query_examples/골드 SQL의 검증된 형태를 따른다.
+# allowed_tables는 프로필 alarm_allowed_tables에서 파생하고, 조회 대상이 아닌 권한 테이블만 뺀다.
+pattern_c:
+  entities:
+    CMM_RESOURCE:     {alias: CR}
+    CMM_ALARM:        {alias: CA}
+    CMM_ALARM_DEF:    {alias: D}
+    CMM_ALARM_ACTIVE: {alias: A}
+  base_table: {table: cmm_resource, alias: CR}
+  joins:
+    CMM_ALARM:        "JOIN {p}cmm_alarm CA ON CA.RESOURCE_ID = CR.ID"
+    CMM_ALARM_DEF:    "JOIN {p}cmm_alarm_def D ON CA.DEFINITION_ID = D.ID"
+    CMM_RESOURCE_SVR: "LEFT JOIN {p}cmm_resource SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.SERVICE_RESOURCE_ID, CR.ID)"
+  active_join:     "JOIN {p}cmm_alarm_active A ON A.ALARM_ID = CA.ID"
+  # 장비명/IP/호스트명은 알람 발생 자원(CR)이 아니라 **부모 서버(SVR)** 기준 — 제품 템플릿
+  # C-1/C-2 정본(하위 자원 알람 행은 CR 직접 컬럼이 빔, 2026-07-21 yd-006 실측). 알람 자원명은
+  # resource_name(CR.NAME)으로 별도 제공.
+  dimensions:
+    ALARMSEVERITY:      CA.ALARMSEVERITY
+    CTIME:              CA.CTIME
+    NAME:               D.NAME
+    CONDITIONLOGTEXT:   CA.CONDITIONLOGTEXT
+    CURRENTALARMSTATUS: CA.CURRENTALARMSTATUS
+    server_name:        SVR.NAME
+    resource_name:      CR.NAME
+    IPADDRESS:          SVR.IPADDRESS
+    HOSTNAME:           SVR.HOSTNAME
+    severity_grade:     "CASE WHEN CA.ALARMSEVERITY = 3 THEN '심각' WHEN CA.ALARMSEVERITY = 2 THEN '경고' WHEN CA.ALARMSEVERITY = 1 THEN '주의' WHEN CA.ALARMSEVERITY = 0 THEN '해소' ELSE '기타' END"
+    occurred_at:        "TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS')"
+    ALARM_ID:           CA.ID
+  # 알람 질의가 컬럼을 명시하지 않으면(SMQ dimensions 빈 배열) 제품 표준 알람 뷰(9컬럼)를
+  # 결정적으로 조립한다 — LLM 폴백이 CR직접/부모조인 형태를 실행마다 오가는 플립플롭 차단
+  # (2026-07-21 yd-006 실측).
+  default_dimensions: [severity_grade, occurred_at, server_name, IPADDRESS, HOSTNAME, resource_name, NAME, CONDITIONLOGTEXT, ALARM_ID]
+  severity_map:
+    심각: 3
+    critical: 3
+    경고: 2
+    warning: 2
+    주의: 1
+    info: 1
+    해소: 0
+    resolved: 0
+  base_where: ["CR.DTIME IS NULL"]
+  order_by: "CA.CTIME DESC, CA.ID DESC"
+  # 알람 조회 대상이 아닌 권한/역할 테이블은 카탈로그 허용 목록에서 제외한다.
+  allowed_tables_deny: [acc_acl_resource_manager_type, acc_role, acc_user_group]

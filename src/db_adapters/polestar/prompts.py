@@ -2,9 +2,29 @@
 
 prompts/query_generator.py의 공용 템플릿에서 분리 이동한 폴스타 전용 템플릿(동작 불변).
 POLESTAR_DB_IDS 게이트로 선택되며, query_generator가 어댑터 system_template 훅으로 조회한다.
+
+Plan 67 R1 — 지식 정본 렌더: 카탈로그(`config/knowledge`)와 중복되는 지표 목록 블록은 상수에
+박아두지 않고 정본에서 렌더한다(`render_system_template`). 상수
+``POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE``은 렌더 실패 시 쓰는 폴백이며 현행 텍스트와 동일하다
+— 정본과 어긋나면 ``scripts/prompt_render_diff.py``와 드리프트 테스트가 잡는다.
 """
 
-POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인프라 모니터링 DB 쿼리 생성 전문가이다.
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+_METRIC_CATALOG_MARKER = "[[metric_catalog]]"
+
+# 렌더 실패(카탈로그 파일 부재) 시 쓰는 폴백 — 정본과 동일해야 하며 드리프트 테스트가 단언한다.
+_METRIC_CATALOG_FALLBACK = """- 'server.Cpus' + definition_name = 'Utilization' → CPU 사용률
+- 'server.Memory' + definition_name = 'Utilization' → 메모리 사용률
+- 'server.FileSystems' + definition_name = 'Utilization' → 파일시스템 사용률
+- 'server.Disks' + definition_name = 'MaxIORate' → 디스크 IO"""
+
+_SYSTEM_TEMPLATE_SKELETON = """Role: 당신은 POLESTAR 인프라 모니터링 DB 쿼리 생성 전문가이다.
 지시사항: 주어진 스키마 규칙을 엄격히 준수하여 SQL을 작성하라. 제공되지 않은 테이블, 컬럼, 내장 함수를 임의로 추측하거나 생성(Hallucination)하는 것을 엄격히 금지한다. 사용자의 요청이 모호하거나 스키마 범위를 벗어나는 경우, 쿼리를 생성하지 말고 추가 맥락을 요청하라.
 
 Task: 사용자의 요청을 분석하여, 아래에 정의된 [Query Template]에서 적합한 패턴을 선택하고 그 구조를 엄격하게 복제하여 SQL을 생성한다.
@@ -42,8 +62,10 @@ Task: 사용자의 요청을 분석하여, 아래에 정의된 [Query Template]�
 SELECT
     COALESCE(c.platform_resource_id, c.id) AS id,
     MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname'      THEN cc.stringvalue_short END) AS hostname,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+    -- 호스트명·IP는 EAV(cc.name='Hostname'/'IPaddress')가 아니라 반드시 직접 컬럼을 쓴다
+    -- (해당 EAV 속성은 실측상 비어 있어 EAV로 읽으면 NULL이 된다 — D-058/D-061).
+    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,
+    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
     MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
@@ -80,10 +102,7 @@ CPU 사용률, 메모리 사용률, 파일시스템 사용률, 디스크 IO 등 
 - min_val, avg_val, max_val: 기간 내 최소/평균/최대값
 
 resource_type 별 조회 가능한 지표:
-- 'server.Cpus' + definition_name = 'Utilization' → CPU 사용률
-- 'server.Memory' + definition_name = 'Utilization' → 메모리 사용률
-- 'server.FileSystems' + definition_name = 'Utilization' → 파일시스템 사용률
-- 'server.Disks' + definition_name = 'MaxIORate' → 디스크 IO
+[[metric_catalog]]
 
 ```sql
 -- 서버 성능 지표 조회 (월간 통계)
@@ -115,7 +134,7 @@ JOIN polestar.cmm_metric_stat_m s
 LEFT JOIN (
     SELECT
         COALESCE(c.platform_resource_id, c.id) AS id,
-        MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+        MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
         MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
         MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
     FROM polestar.cmm_resource c
@@ -239,6 +258,11 @@ ORDER BY ...
 LIMIT ... ;  -- 또는 FETCH FIRST ... ROWS ONLY (DB2)
 ```
 """
+
+# 폴백 렌더(카탈로그 미가용 시). 현행 프롬프트 텍스트와 바이트 동일하다.
+POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE = _SYSTEM_TEMPLATE_SKELETON.replace(
+    _METRIC_CATALOG_MARKER, _METRIC_CATALOG_FALLBACK
+)
 
 POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인프라 모니터링 DB의 알람(Alert) 쿼리 생성 전문가이다.
 지시사항: 주어진 스키마와 아래 규칙을 엄격히 준수하여 알람 조회 SQL을 작성하라.
@@ -902,3 +926,74 @@ LIMIT N;
 
 {schema}
 """
+
+
+# ──────────────────────────────────────────────
+# 정본 렌더 (Plan 67 R1-2)
+# ──────────────────────────────────────────────
+
+_rendered_cache: Optional[str] = None
+
+
+def render_metric_catalog_block(catalog: dict) -> str:
+    """카탈로그 패턴 B measure를 프롬프트의 '조회 가능한 지표' 블록으로 렌더한다.
+
+    한 줄 형식: ``- '{resource_type}' + definition_name = '{definition_name}' → {대표 별칭}``.
+    대표 별칭은 measure aliases의 첫 항목(가장 구체적인 표현)이다.
+
+    Args:
+        catalog: ``build_catalog`` 산출 카탈로그(pattern_b.measures 필요)
+
+    Returns:
+        렌더된 블록. measure가 없으면 빈 문자열.
+    """
+    lines = []
+    for measure in (catalog.get("pattern_b") or {}).get("measures") or []:
+        aliases = measure.get("aliases") or []
+        if not (measure.get("resource_type") and measure.get("definition_name") and aliases):
+            continue
+        lines.append(
+            f"- '{measure['resource_type']}' + definition_name = "
+            f"'{measure['definition_name']}' → {aliases[0]}"
+        )
+    return "\n".join(lines)
+
+
+def render_system_template(catalog: Optional[dict] = None) -> str:
+    """지식 정본에서 렌더한 데이터 조회 시스템 프롬프트를 반환한다(결과 캐시).
+
+    카탈로그 미주입 시 큐레이션 정본(`config/knowledge/_base`)만으로 렌더한다 — 패턴 B measure는
+    구조 메타가 아니라 큐레이션에 있으므로 db_id 없이 렌더 가능하다. 카탈로그를 못 읽으면
+    **사유를 로그로 남기고** 폴백 상수를 그대로 쓴다(침묵 강등 금지).
+
+    Args:
+        catalog: 렌더에 쓸 카탈로그. None이면 정본에서 로드한다.
+
+    Returns:
+        렌더된 시스템 프롬프트 템플릿 문자열
+    """
+    global _rendered_cache
+    if catalog is None and _rendered_cache is not None:
+        return _rendered_cache
+
+    block = ""
+    if catalog is None:
+        from src.schema_cache.catalog_builder import build_catalog, load_knowledge_overrides
+
+        overrides = load_knowledge_overrides("_base")
+        if overrides:
+            block = render_metric_catalog_block(build_catalog(None, overrides=overrides))
+        if not block:
+            logger.warning(
+                "지표 카탈로그 정본을 읽지 못해 폴백 상수를 사용한다 "
+                "(config/knowledge/_base/catalog.yaml 확인 필요)"
+            )
+    else:
+        block = render_metric_catalog_block(catalog)
+
+    rendered = _SYSTEM_TEMPLATE_SKELETON.replace(
+        _METRIC_CATALOG_MARKER, block or _METRIC_CATALOG_FALLBACK
+    )
+    if catalog is None:
+        _rendered_cache = rendered
+    return rendered

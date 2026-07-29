@@ -1,6 +1,11 @@
 # 시맨틱 모델 — 공동존 김포 폴스타 (polestar_cm_gp)
 # Plan 61 트랙 C / E6-1 / D-076.
 #
+# ⚠ Plan 67 R1 이후 이 파일은 **폴백 사본**이다 — 런타임(load_semantic_model)은
+#   config/db_profiles/{db_id}.yaml(구조 정본) + config/knowledge/{db_id}/catalog.yaml(큐레이션)에서
+#   카탈로그를 생성해 쓰고, 여기는 그 생성이 실패할 때만 읽힌다.
+#   지식을 고칠 때는 이 파일이 아니라 위 두 정본을 고칠 것. 동등성은 scripts/catalog_diff.py가 검사한다.
+#
 # 목적: LLM이 SQL을 직접 쓰지 않고 검증된 dimension/measure/entity를 **선택(SMQ)**하면,
 #   semantic_compiler가 결정적으로 SQL을 조립한다(잘못된 조인·집계·미존재 컬럼 원천 차단).
 #

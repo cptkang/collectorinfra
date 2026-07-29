@@ -7,14 +7,14 @@ multi_db_executor·semantic_compiler(모두 application).
 
 from __future__ import annotations
 
-import re
-
 # 기간 범위/값 타당성 게이트는 공용 코어(utils)에서 가져온다(application→config/utils 허용).
 from src.utils.query_gen_common import (
     StatMonth,
     _normalize_stat_month,
     _utilization_guard,
 )
+# EAV 속성 메타 추출은 카탈로그 계층에 위임한다(application→infrastructure 허용).
+from src.schema_cache.catalog_builder import attribute_resource_types
 
 
 def decimal_cast_example(db_engine: str | None) -> str:
@@ -39,7 +39,6 @@ def decimal_cast_example(db_engine: str | None) -> str:
     )
 
 
-_RESOURCE_TYPE_RE = re.compile(r"\[resource_type:\s*([^\]/\s]+)")
 _SERVER_RESOURCE_TYPE = "server.Server"
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).
@@ -81,16 +80,15 @@ def classify_metric_field(field: str) -> tuple[str, str, str] | None:
 
 
 def eav_attr_resource_types(schema_info: dict | None) -> dict[str, str]:
-    """EAV known_attributes 설명에서 `속성명(대문자) → resource_type` 맵을 추출한다.
+    """EAV 속성의 `속성명(대문자) → resource_type` 맵을 구조 정본에서 얻는다.
 
-    프로필 known_attributes의 description 끝에 `[resource_type: server.Cpus]` 형식으로
-    각 속성이 어느 리소스 행에 붙는지 표기돼 있다(예: LOGICALCORE→server.Cpus,
-    TotalSize→server.Memory). CPU 코어 수·메모리 용량 같은 자식 리소스 속성은
-    server.Server 행이 아니라 자식 행(platform_resource_id로 연결)에 있으므로,
-    강제 SELECT 블록이 올바른 resource_type 구분 피벗을 생성하도록 이 맵을 사용한다.
+    CPU 코어 수·메모리 용량 같은 자식 리소스 속성은 server.Server 행이 아니라 자식 행
+    (platform_resource_id로 연결)에 있으므로, 강제 SELECT 블록이 올바른 resource_type 구분
+    피벗을 생성하도록 이 맵을 사용한다(예: LOGICALCORE→server.Cpus, TotalSize→server.Memory).
 
-    TotalSize처럼 설명에 복수 resource_type이 있으면 **첫 번째**만 사용한다
-    (양식 '메모리 용량'은 server.Memory가 정답).
+    추출은 카탈로그 계층(`schema_cache.catalog_builder`)에 위임한다 — 프로필의 구조화 키
+    `resource_type`을 읽고, 미이관 프로필·구캐시에서만 description의 `[resource_type: X]`
+    표기를 폴백 파싱한다(Plan 67 R1-4: 주석 파싱 → 구조화 필드).
 
     Args:
         schema_info: `_structure_meta`를 포함할 수 있는 스키마 정보 딕셔너리
@@ -98,30 +96,9 @@ def eav_attr_resource_types(schema_info: dict | None) -> dict[str, str]:
     Returns:
         {속성명 대문자: resource_type} 맵. 정보가 없으면 빈 딕셔너리.
     """
-    out: dict[str, str] = {}
     if not schema_info:
-        return out
-    structure_meta = schema_info.get("_structure_meta")
-    if not structure_meta:
-        return out
-    for pattern in structure_meta.get("patterns", []):
-        if pattern.get("type") != "eav":
-            continue
-        # `_load_manual_profile`은 known_attributes를 문자열 리스트로 평탄화하고 원본 객체
-        # (name/description/synonyms)를 known_attributes_detail에 보존한다. resource_type 태그는
-        # description에 있으므로 detail(객체 리스트)을 우선 읽는다. detail이 없으면(이미 dict인
-        # 원시 구조 메타) known_attributes를 사용한다. 이 폴백이 없으면 실 런타임(수동 프로필 로드)에서
-        # attr_rt가 항상 비어 폼필 결정적 피벗이 발동하지 않고 LLM 폴백으로 떨어진다(단일·멀티 공통).
-        attrs = pattern.get("known_attributes_detail") or pattern.get("known_attributes", [])
-        for attr in attrs:
-            if not isinstance(attr, dict):
-                continue
-            name = (attr.get("name") or "").strip()
-            desc = attr.get("description") or ""
-            m = _RESOURCE_TYPE_RE.search(desc)
-            if name and m:
-                out[name.upper()] = m.group(1).strip()
-    return out
+        return {}
+    return attribute_resource_types(schema_info.get("_structure_meta"))
 
 def _metric_select_line(
     field: str,
