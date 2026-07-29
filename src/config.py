@@ -223,6 +223,15 @@ class Text2SQLConfig(BaseSettings):
     # 주입한다. 기본 OFF = 추가 주입 없음(호출 증가 0, 현행 동작 무변경).
     generic_llm_mapping: bool = False
 
+    # === Plan 67 트랙 N / N2(D-133): 질의 이력 검색 기반 few-shot 동적 선택 ===
+    # ON이면 폴백(LLM 1방) 프롬프트의 고정 few-shot(프로필 query_examples) 대신 검증된
+    # 질의-SQL 이력에서 유사도 상위 예시를 골라 주입한다. 기본 OFF = 프롬프트 바이트 무변경.
+    query_history_fewshot: bool = False
+    query_history_top_k: int = 3           # 주입할 상위 예시 수(토큰 증가 상한)
+    # 어휘·퍼지 유사도 확정 임계(미만은 무적중 → 기존 고정 few-shot 유지). 임베딩 승격은
+    # IP-4 계측 후 별도 판단(계획서 §3.3-N2 "측정 선행").
+    query_history_min_score: float = 0.35
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

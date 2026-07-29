@@ -54,6 +54,7 @@ def _format_structure_guide(
     structure_meta: dict,
     resource_type_synonyms: dict[str, list[str]] | None = None,
     eav_name_synonyms: dict[str, list[str]] | None = None,
+    query_history_examples: list[dict] | None = None,
 ) -> str:
     """구조 분석 메타데이터에서 쿼리 가이드를 포맷한다.
 
@@ -64,6 +65,8 @@ def _format_structure_guide(
         structure_meta: schema_info["_structure_meta"] 딕셔너리
         resource_type_synonyms: RESOURCE_TYPE 유사단어 매핑 (선택)
         eav_name_synonyms: EAV NAME 유사단어 매핑 (선택)
+        query_history_examples: 질의 이력에서 선택된 few-shot 예시 (선택, N2).
+            주어지면 프로필 고정 예시 대신 이 예시로 블록을 만든다.
 
     Returns:
         포맷된 가이드 텍스트
@@ -141,7 +144,14 @@ def _format_structure_guide(
 
     # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지.
     # 멀티 DB 경로(multi_db_executor)와 동일 출처를 쓰도록 공용 헬퍼로 분리(D-066).
-    guide += build_query_examples_block(structure_meta)
+    # N2(D-133): 이력 검색이 유사 예시를 골라오면 고정 예시 대신 그것을 쓴다. 블록 포맷은
+    # 동일 헬퍼를 통과시켜 유지하고, 미적중·플래그 OFF면 아래 고정 경로가 그대로 남는다.
+    if query_history_examples:
+        guide += build_query_examples_block(
+            {"query_examples": query_history_examples}
+        )
+    else:
+        guide += build_query_examples_block(structure_meta)
 
     return guide
 
@@ -316,6 +326,12 @@ async def query_generator(
         sql = semantic_sql
         logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", sql[:500])
     else:
+        # N2(D-133): 폴백 프롬프트의 few-shot을 검증된 질의 이력에서 동적 선택한다.
+        # 플래그 OFF·무적중이면 None → 기존 고정 few-shot 경로(바이트 무변경).
+        history_examples = await _select_query_history_examples(
+            state, user_query, app_config,
+        )
+
         # 프롬프트 구성
         system_prompt = _build_system_prompt(
             schema_info=state["schema_info"],
@@ -328,6 +344,7 @@ async def query_generator(
             polestar_db_ids=app_config.get_polestar_db_ids() or None,
             active_db_engine=state.get("active_db_engine"),
             routing_intent=state.get("routing_intent"),
+            query_history_examples=history_examples,
         )
 
         user_prompt = _build_user_prompt(
@@ -477,6 +494,55 @@ def _query_keywords(user_query: str) -> list[str]:
     return [t for t in tokens if len(t) >= 2]
 
 
+async def _select_query_history_examples(
+    state: AgentState, user_query: str, app_config: AppConfig
+) -> list[dict] | None:
+    """검증된 질의 이력에서 few-shot 예시를 선택한다 (Plan 67 N2 / D-133).
+
+    ``TEXT2SQL_QUERY_HISTORY_FEWSHOT``이 OFF이면 즉시 None을 돌려 검색·Redis 접근을
+    아예 하지 않는다(플래그 OFF 시 프롬프트·호출 모두 무변경). 검색 실패나 임계 미달도
+    None으로 강등해 프로필 고정 few-shot을 유지한다 — 다만 사유는 로그로 남긴다
+    (침묵 폴백 금지).
+
+    Args:
+        state: 현재 에이전트 상태
+        user_query: 사용자 자연어 질의
+        app_config: 앱 설정
+
+    Returns:
+        few-shot 예시 목록(question/sql) 또는 None(고정 예시 유지)
+    """
+    t2 = app_config.text2sql
+    if not t2.query_history_fewshot:
+        return None
+    db_id = state.get("active_db_id") or ""
+    if not db_id:
+        return None
+
+    from src.schema_cache.query_history import (
+        record_adoption,
+        search_query_history,
+        to_query_examples,
+    )
+
+    try:
+        results = await search_query_history(
+            db_id,
+            user_query,
+            top_k=t2.query_history_top_k,
+            min_score=t2.query_history_min_score,
+        )
+    except Exception as e:  # noqa: BLE001 — 이력 검색 실패가 SQL 생성을 막지 않는다
+        logger.warning("질의 이력 검색 실패(고정 few-shot 유지): %s", e)
+        return None
+
+    examples = to_query_examples(results)
+    if not examples:
+        return None
+    record_adoption(db_id, len(examples))
+    return examples
+
+
 def _build_value_index_injection(
     state: AgentState, user_query: str, app_config: AppConfig
 ) -> str:
@@ -597,6 +663,7 @@ def _build_system_prompt(
     polestar_db_ids: set[str] | None = None,
     active_db_engine: str | None = None,
     routing_intent: str | None = None,
+    query_history_examples: list[dict] | None = None,
 ) -> str:
     """시스템 프롬프트를 구성한다.
 
@@ -611,6 +678,7 @@ def _build_system_prompt(
         polestar_db_ids: Polestar 전용 프롬프트 적용 DB ID 집합 (선택, .env 설정)
         active_db_engine: 대상 DB 엔진 타입 (선택, 예: "db2", "postgresql")
         routing_intent: 시멘틱 라우터가 분류한 의도 (선택, 예: "alarm_query", "data_query")
+        query_history_examples: 질의 이력 few-shot 예시 (선택, N2 — 없으면 고정 예시)
 
     Returns:
         시스템 프롬프트 문자열
@@ -631,6 +699,7 @@ def _build_system_prompt(
             structure_meta,
             resource_type_synonyms=resource_type_synonyms,
             eav_name_synonyms=eav_name_synonyms,
+            query_history_examples=query_history_examples,
         )
 
     # DB 엔진 힌트
