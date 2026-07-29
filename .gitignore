@@ -2,6 +2,9 @@
 .env
 .encenv
 alarm_server/alarm_server.env
+# 웹UI 설정 저장 시 생성되는 백업·임시 파일 (.env와 동일한 값을 담는다)
+.env.bak
+.env.tmp
 
 # Python
 __pycache__/

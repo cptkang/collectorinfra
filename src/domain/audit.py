@@ -34,6 +34,7 @@ class AuditEvent(str, Enum):
     # 관리
     ADMIN_ACTION = "admin_action"
     CACHE_OPERATION = "cache_operation"
+    SETTINGS_UPDATE = "settings_update"
 
     # 보안
     SECURITY_ALERT = "security_alert"

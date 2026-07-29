@@ -15,6 +15,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_admin_user
+from src.api.settings_catalog import (
+    FieldError,
+    SettingsSchemaResponse,
+    build_catalog,
+    dry_run_updates,
+    field_index,
+    validate_updates,
+)
 from src.domain.user import UserRole, UserStatus
 from src.api.schemas import (
     UpdatePermissionsRequest,
@@ -63,7 +71,10 @@ class EnvUpdateRequest(BaseModel):
     """환경변수 설정 수정 요청."""
 
     settings: dict[str, str] = Field(
-        ..., description="수정할 설정값 (키: 값)"
+        default_factory=dict, description="수정할 설정값 (키: 값)"
+    )
+    reset_keys: list[str] = Field(
+        default_factory=list, description="기본값으로 되돌릴 키 (.env에서 줄 제거)"
     )
 
 
@@ -72,6 +83,12 @@ class EnvUpdateResponse(BaseModel):
 
     updated_keys: list[str]
     message: str
+    reset_keys: list[str] = Field(default_factory=list)
+    requires_restart_keys: list[str] = Field(default_factory=list)
+    applied_immediately_keys: list[str] = Field(default_factory=list)
+    ignored_keys: list[str] = Field(
+        default_factory=list, description="마스킹 값 수신으로 무시한 키(원값 보존)"
+    )
 
 
 class DbConfigResponse(BaseModel):
@@ -219,6 +236,161 @@ def _write_env_file(settings: dict[str, str]) -> None:
         f.writelines(new_lines)
 
 
+def _field_error(key: str, message: str) -> FieldError:
+    """필드 단위 검증 실패 항목을 만든다."""
+    return FieldError(key=key, message=message)
+
+
+def _error_detail(errors: list[FieldError]) -> dict:
+    """검증 실패 목록을 HTTP 400 detail로 변환한다(필드별 사유 노출)."""
+    return {
+        "message": "설정 검증에 실패했습니다.",
+        "errors": [{"key": e.key, "message": e.message} for e in errors],
+    }
+
+
+def _compose_env_content(
+    updates: dict[str, str],
+    reset_keys: set[str],
+) -> str:
+    """`.env` 새 내용을 만든다 (주석·순서 보존 + 중복 키 정리 + reset 줄 제거).
+
+    중복 등재된 키는 **첫 줄 위치에 마지막 유효값**을 남기고 이후 줄을 제거한다
+    (`_read_env_file`이 마지막 값을 채택하므로 실효값이 바뀌지 않는다).
+
+    Args:
+        updates: 새로 기록할 키-값
+        reset_keys: 파일에서 제거할 키(기본값 복귀)
+
+    Returns:
+        새 파일 전체 내용
+    """
+    existing_lines: list[str] = []
+    if _ENV_FILE.exists():
+        with open(_ENV_FILE, encoding="utf-8") as f:
+            existing_lines = f.readlines()
+
+    resolved = _read_env_file()  # 중복 키는 마지막 값이 실효값
+    occurrences: dict[str, int] = {}
+    for line in existing_lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            occurrences[key] = occurrences.get(key, 0) + 1
+
+    new_lines: list[str] = []
+    written: set[str] = set()
+    for line in existing_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            new_lines.append(line)
+            continue
+
+        key = stripped.split("=", 1)[0].strip()
+        if key in reset_keys:
+            continue
+        if key in written:
+            continue  # 중복 등재 — 첫 줄에 이미 기록했다
+        written.add(key)
+
+        if key in updates:
+            new_lines.append(f"{key}={updates[key]}\n")
+        elif occurrences.get(key, 0) > 1:
+            new_lines.append(f"{key}={resolved.get(key, '')}\n")
+        else:
+            new_lines.append(line)
+
+    if new_lines and not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
+
+    for key, value in updates.items():
+        if key not in written:
+            new_lines.append(f"{key}={value}\n")
+
+    return "".join(new_lines)
+
+
+def _atomic_write_env(content: str) -> None:
+    """백업 → 임시 파일 → 원자 교체로 `.env`를 저장한다(실패 시 롤백).
+
+    Args:
+        content: 새 파일 전체 내용
+
+    Raises:
+        OSError: 파일 기록 실패 시(롤백 후 재전파)
+    """
+    original: Optional[str] = None
+    if _ENV_FILE.exists():
+        original = _ENV_FILE.read_text(encoding="utf-8")
+        backup = _ENV_FILE.parent / (_ENV_FILE.name + ".bak")
+        backup.write_text(original, encoding="utf-8")
+
+    tmp_file = _ENV_FILE.parent / (_ENV_FILE.name + ".tmp")
+    try:
+        tmp_file.write_text(content, encoding="utf-8")
+        os.replace(tmp_file, _ENV_FILE)
+    except Exception:
+        if original is not None:
+            _ENV_FILE.write_text(original, encoding="utf-8")  # 롤백
+        tmp_file.unlink(missing_ok=True)
+        raise
+
+
+async def _log_settings_update(
+    request: Request,
+    admin_id: Optional[str],
+    changes: dict[str, dict[str, Optional[str]]],
+    sensitive_keys: list[str],
+    reset_keys: list[str],
+) -> bool:
+    """설정 변경을 감사 로그에 기록한다.
+
+    비민감 키는 이전값→새값 쌍을, 민감/시크릿 키는 **키 이름만** 남긴다.
+
+    Returns:
+        기록 성공 여부(둘 다 미구성이면 False — 호출부가 응답에 명시한다)
+    """
+    from src.domain.audit import AuditEvent, AuditLogEntry
+
+    extra = {
+        "changes": changes,
+        "sensitive_keys": sensitive_keys,
+        "reset_keys": reset_keys,
+    }
+    entry = AuditLogEntry(
+        event=AuditEvent.SETTINGS_UPDATE.value,
+        user_id=admin_id,
+        client_ip=getattr(request.state, "client_ip", None),
+        request_id=getattr(request.state, "request_id", None),
+        success=True,
+        extra=extra,
+    )
+
+    audit_service = getattr(request.app.state, "audit_service", None)
+    if audit_service:
+        try:
+            await audit_service.log(entry)
+            return True
+        except Exception as e:
+            logger.error("설정 변경 감사 기록 실패, 폴백: %s", e)
+
+    audit_repo = getattr(request.app.state, "audit_repo", None)
+    if audit_repo:
+        try:
+            await audit_repo.log_event({
+                "event_type": AuditEvent.SETTINGS_UPDATE.value,
+                "user_id": admin_id,
+                "ip_address": getattr(request.state, "client_ip", None),
+                "detail": extra,
+            })
+            return True
+        except Exception as e:
+            logger.error("설정 변경 감사 기록 실패: %s", e)
+
+    logger.warning("감사 저장소가 없어 설정 변경을 기록하지 못했습니다: %s", sorted(changes))
+    return False
+
+
 def _parse_connection_string(conn_str: str) -> dict[str, str]:
     """연결 문자열을 파싱한다.
 
@@ -302,6 +474,9 @@ async def get_settings(
 ) -> EnvSettingsResponse:
     """환경변수 설정 목록을 조회한다.
 
+    DEPRECATED: `.env`에 실존하는 키만 평면 목록으로 돌려준다(카탈로그·타입·반영 시점 메타 없음).
+    운영자 UI는 `GET /admin/settings/schema`로 전환했으며, 이 엔드포인트는 하위호환용으로만 유지한다.
+
     민감한 설정값은 마스킹 처리된다.
 
     Args:
@@ -329,46 +504,171 @@ async def get_settings(
     )
 
 
+@router.get(
+    "/admin/settings/schema",
+    response_model=SettingsSchemaResponse,
+)
+async def get_settings_schema(
+    _admin: dict = Depends(require_admin_user),
+) -> SettingsSchemaResponse:
+    """설정 카탈로그(그룹·타입·메타)와 현재값을 조회한다 (Plan 68 / D-129).
+
+    카탈로그는 `AppConfig` 인트로스펙션으로 생성되므로 config.py에 필드를 추가하면
+    코드 수정 없이 UI에 편입된다. 시크릿은 값 없이 "설정됨/미설정" 상태만 반환한다.
+
+    Returns:
+        그룹별 설정 스키마
+    """
+    from src.config import AppConfig
+
+    warnings: list[str] = []
+    config: Optional[AppConfig] = None
+    try:
+        # lru_cache(load_config)를 우회한 fresh 인스턴스 — OS env/.encenv가 반영된 실효값
+        config = AppConfig()
+    except Exception as e:
+        logger.error("실효값 계산 실패: %s", e)
+        warnings.append(f"현재 적용 중인 값을 계산하지 못했습니다: {e}")
+
+    if not _ENV_FILE.exists():
+        warnings.append(f".env 파일이 없습니다({_ENV_FILE}). 저장 시 새로 생성됩니다.")
+
+    if Path.cwd().resolve() != _PROJECT_ROOT:
+        warnings.append(
+            f"서버 작업 디렉토리({Path.cwd()})가 프로젝트 루트({_PROJECT_ROOT})와 다릅니다 — "
+            "웹UI가 수정하는 .env와 애플리케이션이 읽는 .env가 다를 수 있습니다."
+        )
+
+    return build_catalog(
+        file_values=_read_env_file(),
+        config=config,
+        os_environ=dict(os.environ),
+        env_file_path=str(_ENV_FILE),
+        warnings=warnings,
+    )
+
+
 @router.put(
     "/admin/settings",
     response_model=EnvUpdateResponse,
 )
 async def update_settings(
+    request: Request,
     body: EnvUpdateRequest,
     _admin: dict = Depends(require_admin_user),
 ) -> EnvUpdateResponse:
-    """환경변수 설정을 수정한다.
+    """환경변수 설정을 수정한다 (Plan 68 §3.2).
 
-    수정된 값은 .env 파일에 저장된다.
+    처리 순서: 시크릿 차단 → 미지 키 거부 → 마스킹 값 무시 → sanitize → 타입 검증 →
+    그룹 단위 pydantic dry-run → 백업·원자 교체(실패 시 롤백) → 캐시 무효화 → 감사 로그.
 
     Args:
-        body: 수정할 설정값
-        _username: 인증된 관리자 (의존성 주입)
+        request: FastAPI Request
+        body: 수정할 설정값과 초기화 키
+        _admin: 인증된 관리자 (의존성 주입)
 
     Returns:
-        수정 결과
+        수정 결과 (재시작 필요 키·즉시 반영 키 포함)
 
     Raises:
-        HTTPException: 설정 저장 실패 시
+        HTTPException: 검증 실패(400) 또는 저장 실패(500)
     """
-    if not body.settings:
+    index = field_index()
+    updates = dict(body.settings or {})
+    reset_keys = list(dict.fromkeys(body.reset_keys or []))
+
+    if not updates and not reset_keys:
         raise HTTPException(status_code=400, detail="수정할 설정이 없습니다.")
 
-    try:
-        _write_env_file(body.settings)
-        # load_config 캐시 무효화
-        from src.config import load_config
-        load_config.cache_clear()
+    before = _read_env_file()
 
-        logger.info(f"환경변수 설정 수정: {list(body.settings.keys())}")
+    # 3. 마스킹 값 수신 → 해당 키 무시(서버측 원값 보존 가드)
+    ignored_keys = [
+        key for key, value in updates.items()
+        if (spec := index.get(key)) is not None
+        and spec.is_sensitive
+        and isinstance(value, str)
+        and _MASK_VALUE in value
+    ]
+    for key in ignored_keys:
+        updates.pop(key)
 
+    # 1·2·4·5. 시크릿 차단 / 미지 키 / sanitize / 타입 검증
+    errors = list(validate_updates(updates))
+    for key in reset_keys:
+        spec = index.get(key)
+        if spec is None:
+            errors.append(_field_error(key, "카탈로그에 없는 설정 키입니다. 초기화할 수 없습니다."))
+        elif spec.is_secret:
+            errors.append(_field_error(key, ".encenv에서 관리하는 시크릿은 웹UI에서 변경할 수 없습니다."))
+        elif key in updates:
+            errors.append(_field_error(key, "같은 키를 수정과 초기화에 동시에 지정할 수 없습니다."))
+    if errors:
+        raise HTTPException(status_code=400, detail=_error_detail(errors))
+
+    if not updates and not reset_keys:
         return EnvUpdateResponse(
-            updated_keys=list(body.settings.keys()),
-            message=f"{len(body.settings)}개 설정이 업데이트되었습니다.",
+            updated_keys=[],
+            message="변경된 설정이 없습니다(마스킹 값은 무시됩니다).",
+            ignored_keys=ignored_keys,
         )
+
+    # 6. 그룹 단위 dry-run — 저장 후 상태로 실제 pydantic 모델을 재구성해 본다
+    merged = {**before, **updates}
+    for key in reset_keys:
+        merged.pop(key, None)
+    dry_run_errors = dry_run_updates(merged, list(updates) + reset_keys)
+    if dry_run_errors:
+        raise HTTPException(status_code=400, detail=_error_detail(dry_run_errors))
+
+    # 7. 백업 → 임시 파일 → 원자 교체 (실패 시 롤백)
+    try:
+        _atomic_write_env(_compose_env_content(updates, set(reset_keys)))
     except Exception as e:
-        logger.error(f"설정 저장 실패: {e}")
+        logger.error("설정 저장 실패: %s", e)
         raise HTTPException(status_code=500, detail=f"설정 저장에 실패했습니다: {str(e)}")
+
+    # 8. load_config 캐시 무효화 (즉시 반영 경로용 — 대부분의 설정은 재시작이 필요하다)
+    from src.config import load_config
+    load_config.cache_clear()
+
+    # 9. 감사 로그 — 비민감 키는 old→new 쌍, 민감/시크릿 키는 키 이름만
+    changes: dict[str, dict[str, Optional[str]]] = {}
+    sensitive_keys: list[str] = []
+    for key, value in updates.items():
+        spec = index.get(key)
+        if spec is not None and spec.is_sensitive:
+            sensitive_keys.append(key)
+        else:
+            changes[key] = {"old": before.get(key), "new": value}
+    audit_ok = await _log_settings_update(
+        request, _admin.get("sub"), changes, sensitive_keys, reset_keys,
+    )
+
+    changed_keys = list(updates) + reset_keys
+    requires_restart_keys = [
+        key for key in changed_keys
+        if (spec := index.get(key)) is None or spec.requires_restart
+    ]
+    applied_immediately_keys = [key for key in changed_keys if key not in requires_restart_keys]
+
+    logger.info(
+        "환경변수 설정 수정: updated=%s reset=%s (by %s)",
+        list(updates), reset_keys, _admin.get("sub"),
+    )
+
+    message = f"{len(changed_keys)}개 설정이 저장되었습니다."
+    if not audit_ok:
+        message += " (감사 기록 불가 — 감사 저장소 미구성)"
+
+    return EnvUpdateResponse(
+        updated_keys=list(updates),
+        reset_keys=reset_keys,
+        requires_restart_keys=requires_restart_keys,
+        applied_immediately_keys=applied_immediately_keys,
+        ignored_keys=ignored_keys,
+        message=message,
+    )
 
 
 # --- 엔드포인트: DB 연결 설정 ---

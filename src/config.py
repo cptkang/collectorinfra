@@ -729,7 +729,10 @@ class AppConfig(BaseSettings):
     db_connection_string: str = ""
 
     # 시멘틱 라우팅 활성화 여부
-    enable_semantic_routing: bool = False
+    # None(미입력) = 멀티 DB 환경이면 자동 활성화, 단일/레거시면 비활성
+    # True/False = 명시적 강제(.env·OS env 모두 반영). 종전 os.getenv 판정은 `.env`의 false를
+    # 무시해 ACTIVE_DB_IDS가 있으면 강제 활성화되는 버그가 있었다(Known Mistakes 2026-06-10).
+    enable_semantic_routing: bool | None = None
 
     # deepagents 기반 의도 분해 오케스트레이션 활성화 여부 (Plan 48 / D-037)
     # None(미입력) = 멀티 DB 환경이면 신규 경로를 기본 활성화(신규 경로가 기본 동작), 단일/레거시면 비활성
@@ -775,14 +778,11 @@ class AppConfig(BaseSettings):
 
     def model_post_init(self, __context: object) -> None:
         """시멘틱 라우팅 및 오케스트레이션 활성화를 자동 판단한다."""
-        import os
-
-        env_val = os.getenv("ENABLE_SEMANTIC_ROUTING", "")
-        if env_val.lower() in ("true", "1", "yes"):
-            self.enable_semantic_routing = True
-        elif not env_val and self.multi_db.get_active_db_ids():
-            # 멀티 DB 연결이 하나라도 설정되어 있으면 자동 활성화
-            self.enable_semantic_routing = True
+        # 플래그 미입력(None)이면 멀티 DB 연결이 하나라도 설정된 경우 자동 활성화한다.
+        # 명시적 true/false는 pydantic-settings가 .env·OS env에서 필드로 직접 읽어 존중한다
+        # (enable_deepagent_orchestration과 동일 방식 — os.getenv 미사용).
+        if self.enable_semantic_routing is None:
+            self.enable_semantic_routing = bool(self.multi_db.get_active_db_ids())
 
         # Plan 48 / D-037: 플래그 미입력(None)이면 멀티 DB 환경에서 신규 오케스트레이션 경로를
         # 기본 활성화한다(신규 경로가 기본 동작). 명시적 true/false는 pydantic-settings가 .env·OS env에서

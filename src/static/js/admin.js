@@ -117,7 +117,13 @@
         if (body) {
             options.body = JSON.stringify(body);
         }
-        return fetch(url, options);
+        // 토큰은 페이지 진입 시 1회만 캡처하므로, 만료 시 무안내 실패하지 않도록 401을 여기서 처리한다.
+        return fetch(url, options).then(function (response) {
+            if (response.status === 401) {
+                redirectUnauthenticated();
+            }
+            return response;
+        });
     }
 
     function showError(message) {
@@ -146,6 +152,10 @@
                 c.classList.remove("active");
             });
             document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+
+            if (tab.dataset.tab === "settings") {
+                ensureSettingsLoaded();  // 최초 1회만 로드 — 미저장 편집을 보존한다
+            }
         });
     });
 
@@ -168,99 +178,789 @@
         window.location.href = "/login";
     });
 
-    // --- 환경변수 설정 ---
+    // --- 환경변수 설정 (Plan 68: 카탈로그 기반 아코디언) ---
+    //
+    // 모든 렌더링은 createElement/textContent로 수행한다(innerHTML 금지 —
+    // escapeHtml이 작은따옴표를 이스케이프하지 않아 한국어 설명에서 위험하다).
 
-    var settingsData = [];
+    var settingsGroups = [];      // 서버 카탈로그(그룹 배열)
+    var settingsItems = {};       // env_key -> 설정 항목
+    var settingsEdits = {};       // env_key -> {reset: true} | {value: "..."}
+    var settingsRows = {};        // env_key -> {row, state, error}
+    var groupExpanded = {};       // group_key -> 펼침 여부
+    var settingsLoaded = false;
+    var settingsAllExpanded = false;
 
-    loadSettings();
+    ensureSettingsLoaded();  // 설정 탭이 기본 활성 상태다
+
+    function ensureSettingsLoaded() {
+        if (settingsLoaded) return;
+        settingsLoaded = true;
+        loadSettings();
+    }
 
     async function loadSettings() {
         try {
-            var response = await apiRequest("GET", "/api/v1/admin/settings");
+            var response = await apiRequest("GET", "/api/v1/admin/settings/schema");
             var data = await response.json();
 
             if (!response.ok) {
-                showError(data.detail || "설정을 불러오는 데 실패했습니다.");
+                settingsLoaded = false;
+                showError(errorMessage(data, "설정을 불러오는 데 실패했습니다."));
                 return;
             }
 
-            settingsData = data.settings;
-            renderSettings(settingsData);
+            settingsGroups = data.groups || [];
+            settingsItems = {};
+            settingsEdits = {};
+            settingsGroups.forEach(function (group) {
+                (group.settings || []).forEach(function (item) {
+                    settingsItems[item.env_key] = item;
+                });
+            });
+
+            renderWarnings(data.warnings || [], data.env_file_path);
+            renderSettings();
         } catch (err) {
+            settingsLoaded = false;
             showError("서버와의 통신에 실패했습니다.");
         }
     }
 
-    function renderSettings(settings) {
-        var tbody = document.getElementById("settingsBody");
-        tbody.innerHTML = "";
-
-        settings.forEach(function (setting) {
-            var tr = document.createElement("tr");
-
-            var tdKey = document.createElement("td");
-            tdKey.textContent = setting.key;
-            tr.appendChild(tdKey);
-
-            var tdValue = document.createElement("td");
-            var input = document.createElement("input");
-            input.type = setting.is_sensitive ? "password" : "text";
-            input.className = "value-input";
-            input.value = setting.is_sensitive ? "" : setting.value;
-            input.placeholder = setting.is_sensitive ? "(변경하려면 새 값 입력)" : "";
-            input.dataset.key = setting.key;
-            input.dataset.sensitive = setting.is_sensitive;
-            input.dataset.original = setting.value;
-            tdValue.appendChild(input);
-            tr.appendChild(tdValue);
-
-            tbody.appendChild(tr);
-        });
-
-        document.getElementById("settingsLoading").classList.remove("active");
-        document.getElementById("settingsTable").style.display = "table";
+    function errorMessage(data, fallback) {
+        var detail = data && data.detail;
+        if (!detail) return fallback;
+        if (typeof detail === "string") return detail;
+        if (detail.message) return detail.message;
+        if (Array.isArray(detail)) {
+            return detail.map(function (e) { return e.msg || e.message || ""; })
+                .filter(Boolean).join(" / ") || fallback;
+        }
+        return fallback;
     }
 
-    document.getElementById("saveSettingsBtn").addEventListener("click", async function () {
-        var inputs = document.querySelectorAll(".value-input");
-        var updates = {};
+    function fieldErrors(data) {
+        var detail = data && data.detail;
+        if (detail && Array.isArray(detail.errors)) return detail.errors;
+        return [];
+    }
 
-        inputs.forEach(function (input) {
-            var key = input.dataset.key;
-            var isSensitive = input.dataset.sensitive === "true";
-            var value = input.value;
+    function renderWarnings(warnings, envFilePath) {
+        var banner = document.getElementById("settingsWarnings");
+        banner.textContent = "";
+        if (!warnings.length) {
+            banner.style.display = "none";
+            return;
+        }
+        warnings.forEach(function (text) {
+            var line = document.createElement("div");
+            line.textContent = "⚠ " + text;
+            banner.appendChild(line);
+        });
+        if (envFilePath) {
+            var path = document.createElement("div");
+            path.className = "settings-banner-path";
+            path.textContent = "대상 파일: " + envFilePath;
+            banner.appendChild(path);
+        }
+        banner.style.display = "block";
+    }
 
-            // 민감 값: 비어있으면 변경하지 않음
-            if (isSensitive && !value) return;
+    // --- 값 접근 ---
 
-            // 비민감 값: 변경된 경우만
-            if (!isSensitive && value === input.dataset.original) return;
+    function currentValue(item) {
+        var edit = settingsEdits[item.env_key];
+        if (edit) return edit.reset ? null : edit.value;
+        return item.file_value === undefined ? null : item.file_value;
+    }
 
-            updates[key] = value;
+    function isDirty(item) {
+        return Object.prototype.hasOwnProperty.call(settingsEdits, item.env_key);
+    }
+
+    function setValue(key, value) {
+        var item = settingsItems[key];
+        if (!item) return;
+        var original = item.file_value === undefined ? null : item.file_value;
+
+        if (value === null) {
+            // 기본값으로 되돌리기 = .env에서 줄 제거
+            if (original === null) delete settingsEdits[key];
+            else settingsEdits[key] = { reset: true };
+        } else if (value === original) {
+            delete settingsEdits[key];
+        } else {
+            settingsEdits[key] = { value: value };
+        }
+        refreshRow(key);
+        refreshGroupCounts();
+    }
+
+    function dirtyCount() {
+        return Object.keys(settingsEdits).length;
+    }
+
+    // --- 렌더링 ---
+
+    function renderSettings() {
+        var container = document.getElementById("settingsAccordion");
+        container.textContent = "";
+        settingsRows = {};
+
+        var query = document.getElementById("settingsSearch").value.trim().toLowerCase();
+        var filter = document.getElementById("settingsFilter").value;
+        var showUnconsumed = document.getElementById("showUnconsumed").checked;
+        var narrowed = query !== "" || filter !== "all";
+        var shown = 0;
+
+        settingsGroups.forEach(function (group) {
+            var items = (group.settings || []).filter(function (item) {
+                return matchesFilters(item, query, filter, showUnconsumed);
+            });
+            if (!items.length) return;
+            shown += items.length;
+            container.appendChild(buildGroup(group, items, narrowed));
         });
 
-        if (Object.keys(updates).length === 0) {
-            showError("변경된 설정이 없습니다.");
+        if (!shown) {
+            var empty = document.createElement("p");
+            empty.className = "settings-empty";
+            empty.textContent = "조건에 맞는 설정이 없습니다.";
+            container.appendChild(empty);
+        }
+
+        updateCount(shown);
+        refreshGroupCounts();
+        document.getElementById("settingsLoading").classList.remove("active");
+    }
+
+    function matchesFilters(item, query, filter, showUnconsumed) {
+        if (!item.consumed && !showUnconsumed && !isDirty(item)) return false;
+
+        if (query) {
+            var haystack = (item.env_key + " " + (item.description || "")).toLowerCase();
+            if (haystack.indexOf(query) === -1) return false;
+        }
+
+        if (filter === "changed") return isDirty(item);
+        if (filter === "restart") return item.requires_restart && !item.is_secret;
+        if (filter === "non-default") {
+            var value = currentValue(item);
+            return value !== null && value !== undefined;
+        }
+        return true;
+    }
+
+    function updateCount(shown) {
+        var total = Object.keys(settingsItems).length;
+        var label = document.getElementById("settingsCount");
+        var dirty = dirtyCount();
+        label.textContent = shown + " / " + total + "개 표시"
+            + (dirty ? " · 미저장 " + dirty + "건" : "");
+    }
+
+    function buildGroup(group, items, forceExpand) {
+        var section = document.createElement("section");
+        section.className = "settings-group";
+        var expanded = forceExpand || groupExpanded[group.group_key] === true;
+        if (expanded) section.classList.add("expanded");
+
+        var header = document.createElement("button");
+        header.type = "button";
+        header.className = "settings-group-header";
+
+        var title = document.createElement("span");
+        title.className = "settings-group-title";
+        title.textContent = group.title;
+        header.appendChild(title);
+
+        var count = document.createElement("span");
+        count.className = "settings-group-count";
+        count.textContent = items.length + "개";
+        header.appendChild(count);
+
+        var dirtyBadge = document.createElement("span");
+        dirtyBadge.className = "badge badge--dirty";
+        dirtyBadge.dataset.groupKey = group.group_key;
+        header.appendChild(dirtyBadge);
+
+        var chevron = document.createElement("span");
+        chevron.className = "settings-group-chevron";
+        chevron.textContent = "▾";
+        header.appendChild(chevron);
+
+        header.addEventListener("click", function () {
+            var nowExpanded = !section.classList.contains("expanded");
+            section.classList.toggle("expanded", nowExpanded);
+            groupExpanded[group.group_key] = nowExpanded;
+        });
+        section.appendChild(header);
+
+        var body = document.createElement("div");
+        body.className = "settings-group-body";
+        var lastSection = null;
+        items.forEach(function (item) {
+            if (item.section && item.section !== lastSection) {
+                var subtitle = document.createElement("div");
+                subtitle.className = "settings-subsection";
+                subtitle.textContent = item.section;
+                body.appendChild(subtitle);
+                lastSection = item.section;
+            }
+            body.appendChild(buildRow(item));
+        });
+        section.appendChild(body);
+
+        return section;
+    }
+
+    function buildRow(item) {
+        var row = document.createElement("div");
+        row.className = "setting-row";
+
+        // 좌: 키 + 뱃지 + 설명
+        var label = document.createElement("div");
+        label.className = "setting-label";
+
+        var keyLine = document.createElement("div");
+        keyLine.className = "setting-key";
+        var key = document.createElement("code");
+        key.textContent = item.env_key;
+        keyLine.appendChild(key);
+        buildBadges(item).forEach(function (badge) { keyLine.appendChild(badge); });
+        label.appendChild(keyLine);
+
+        if (item.description) {
+            var description = document.createElement("div");
+            description.className = "setting-description";
+            description.textContent = item.description;
+            label.appendChild(description);
+        }
+        row.appendChild(label);
+
+        // 중: 위젯
+        var widget = document.createElement("div");
+        widget.className = "setting-widget";
+        widget.appendChild(buildWidget(item));
+        row.appendChild(widget);
+
+        // 우: 상태 + 기본값 복귀
+        var state = document.createElement("div");
+        state.className = "setting-state";
+        row.appendChild(state);
+
+        var error = document.createElement("div");
+        error.className = "setting-error";
+        row.appendChild(error);
+
+        settingsRows[item.env_key] = { row: row, state: state, error: error };
+        refreshRow(item.env_key);
+        return row;
+    }
+
+    function buildBadges(item) {
+        var badges = [];
+        if (item.is_secret) {
+            badges.push(makeBadge("🔒 .encenv 관리", "badge--secret",
+                ".encenv에서 관리하는 시크릿입니다. .env 수정은 반영되지 않습니다."));
+        } else if (item.requires_restart) {
+            badges.push(makeBadge("재시작", "badge--restart", "저장 후 서버 재시작이 필요합니다."));
+        } else {
+            badges.push(makeBadge("즉시 반영", "badge--immediate", "저장 후 다음 요청부터 반영됩니다."));
+        }
+        if (!item.consumed) {
+            badges.push(makeBadge("미소비", "badge--unconsumed",
+                "현재 코드가 이 설정을 읽지 않습니다."));
+        }
+        if (item.override === "os") {
+            badges.push(makeBadge("OS 오버라이드", "badge--override",
+                "OS 환경변수가 .env 값을 덮어씁니다 — 저장해도 반영되지 않습니다."));
+        } else if (item.override === "encenv") {
+            badges.push(makeBadge(".encenv 우선", "badge--override",
+                ".encenv 값이 .env를 덮어씁니다 — 저장해도 반영되지 않습니다."));
+        }
+        return badges;
+    }
+
+    function makeBadge(text, className, title) {
+        var badge = document.createElement("span");
+        badge.className = "badge " + className;
+        badge.textContent = text;
+        if (title) badge.title = title;
+        return badge;
+    }
+
+    function refreshRow(key) {
+        var nodes = settingsRows[key];
+        var item = settingsItems[key];
+        if (!nodes || !item) return;
+
+        var dirty = isDirty(item);
+        nodes.row.classList.toggle("setting-row--dirty", dirty);
+        nodes.error.textContent = "";
+        nodes.row.classList.remove("setting-row--error");
+        nodes.state.textContent = "";
+
+        if (item.is_secret) {
+            var secretState = document.createElement("span");
+            secretState.className = "setting-state-text";
+            secretState.textContent = item.is_set ? "설정됨" : "미설정";
+            nodes.state.appendChild(secretState);
             return;
         }
 
+        var value = currentValue(item);
+        var stateText = document.createElement("span");
+        stateText.className = "setting-state-text";
+        if (dirty) {
+            stateText.textContent = "변경됨(미저장)";
+            stateText.classList.add("setting-state-text--dirty");
+        } else if (value === null || value === undefined) {
+            stateText.textContent = "기본값 사용 중";
+        } else {
+            stateText.textContent = "";
+        }
+        nodes.state.appendChild(stateText);
+
+        if (value !== null && value !== undefined) {
+            var resetBtn = document.createElement("button");
+            resetBtn.type = "button";
+            resetBtn.className = "setting-reset";
+            resetBtn.textContent = "기본값으로";
+            resetBtn.title = item.default === null
+                ? "이 설정을 .env에서 제거합니다(미설정)."
+                : "기본값(" + item.default + ")으로 되돌립니다.";
+            resetBtn.addEventListener("click", function () {
+                setValue(key, null);
+                rerenderWidget(key);
+            });
+            nodes.state.appendChild(resetBtn);
+        }
+    }
+
+    function rerenderWidget(key) {
+        var nodes = settingsRows[key];
+        var item = settingsItems[key];
+        if (!nodes || !item) return;
+        var widget = nodes.row.querySelector(".setting-widget");
+        widget.textContent = "";
+        widget.appendChild(buildWidget(item));
+    }
+
+    function refreshGroupCounts() {
+        var perGroup = {};
+        Object.keys(settingsEdits).forEach(function (key) {
+            var item = settingsItems[key];
+            if (!item) return;
+            perGroup[item.group_key] = (perGroup[item.group_key] || 0) + 1;
+        });
+        document.querySelectorAll(".badge--dirty").forEach(function (badge) {
+            var n = perGroup[badge.dataset.groupKey] || 0;
+            badge.textContent = n ? "변경 " + n : "";
+            badge.style.display = n ? "" : "none";
+        });
+        updateCount(document.querySelectorAll(".setting-row").length);
+    }
+
+    // --- 타입별 위젯 ---
+
+    function buildWidget(item) {
+        if (item.is_secret) return buildSecretWidget(item);
+        if (item.type === "bool") return buildToggle(item);
+        if (item.type === "tristate") return buildSegments(item, ["auto", "true", "false"]);
+        if (item.type === "enum") {
+            var choices = item.enum_choices || [];
+            if (!item.optional && choices.length <= 4) return buildSegments(item, choices);
+            return buildSelect(item, choices);
+        }
+        if (item.type === "int" || item.type === "float") return buildNumber(item);
+        if (item.type === "json_list" || item.type === "csv") return buildTagEditor(item);
+        return buildText(item);
+    }
+
+    function buildSecretWidget(item) {
+        var wrap = document.createElement("div");
+        wrap.className = "setting-secret";
+        var text = document.createElement("span");
+        text.textContent = item.is_set
+            ? "설정됨 — .encenv에서 관리합니다."
+            : "미설정 — .encenv에 값을 넣어야 합니다.";
+        wrap.appendChild(text);
+        return wrap;
+    }
+
+    function buildToggle(item) {
+        var value = currentValue(item);
+        var on = (value === null || value === undefined ? item.default : value) === "true";
+
+        var toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "toggle-switch" + (on ? " on" : "");
+        toggle.setAttribute("aria-pressed", on ? "true" : "false");
+        var knob = document.createElement("span");
+        knob.className = "toggle-knob";
+        toggle.appendChild(knob);
+
+        toggle.addEventListener("click", function () {
+            var next = toggle.classList.contains("on") ? "false" : "true";
+            toggle.classList.toggle("on", next === "true");
+            toggle.setAttribute("aria-pressed", next);
+            setValue(item.env_key, next);
+        });
+        return toggle;
+    }
+
+    function buildSegments(item, choices) {
+        var value = currentValue(item);
+        var selected = value === null || value === undefined
+            ? (item.type === "tristate" ? "auto" : item.default)
+            : value;
+
+        var group = document.createElement("div");
+        group.className = "segment-group";
+        choices.forEach(function (choice) {
+            var option = document.createElement("button");
+            option.type = "button";
+            option.className = "segment-option" + (choice === selected ? " selected" : "");
+            option.textContent = choice === "auto" ? "auto(미설정)" : choice;
+            option.addEventListener("click", function () {
+                group.querySelectorAll(".segment-option").forEach(function (o) {
+                    o.classList.remove("selected");
+                });
+                option.classList.add("selected");
+                setValue(item.env_key, choice === "auto" ? null : choice);
+            });
+            group.appendChild(option);
+        });
+        return group;
+    }
+
+    function buildSelect(item, choices) {
+        var value = currentValue(item);
+        var select = document.createElement("select");
+        select.className = "setting-input setting-select";
+
+        if (item.optional) {
+            var unset = document.createElement("option");
+            unset.value = "";
+            unset.textContent = "(미설정)";
+            select.appendChild(unset);
+        }
+        choices.forEach(function (choice) {
+            var option = document.createElement("option");
+            option.value = choice;
+            option.textContent = choice;
+            select.appendChild(option);
+        });
+        select.value = value === null || value === undefined
+            ? (item.optional ? "" : (item.default || "")) : value;
+
+        select.addEventListener("change", function () {
+            setValue(item.env_key, select.value === "" ? null : select.value);
+        });
+        return select;
+    }
+
+    function buildNumber(item) {
+        var value = currentValue(item);
+        var input = document.createElement("input");
+        input.type = "number";
+        input.className = "setting-input";
+        if (item.type === "float") input.step = "any";
+        input.value = value === null || value === undefined ? "" : value;
+        input.placeholder = item.default === null ? "(미설정)" : item.default;
+        input.addEventListener("input", function () {
+            setValue(item.env_key, input.value === "" ? null : input.value.trim());
+        });
+        return input;
+    }
+
+    function buildText(item) {
+        var value = currentValue(item);
+        var input = document.createElement("input");
+        input.type = "text";
+        input.className = "setting-input";
+        input.value = value === null || value === undefined ? "" : value;
+        input.placeholder = item.default === null || item.default === ""
+            ? "(미설정)" : item.default;
+        input.autocomplete = "off";
+        input.addEventListener("input", function () {
+            setValue(item.env_key, input.value === "" && item.file_value === null
+                ? null : input.value);
+        });
+        return input;
+    }
+
+    function parseListValue(item, value) {
+        if (value === null || value === undefined || value === "") return [];
+        if (item.type === "json_list") {
+            try {
+                var parsed = JSON.parse(value);
+                return Array.isArray(parsed) ? parsed.map(String) : [];
+            } catch (err) {
+                return [];
+            }
+        }
+        return value.split(",").map(function (part) { return part.trim(); })
+            .filter(function (part) { return part !== ""; });
+    }
+
+    function serializeListValue(item, values) {
+        if (item.type === "json_list") return JSON.stringify(values);
+        return values.join(",");
+    }
+
+    function buildTagEditor(item) {
+        var values = parseListValue(item, currentValue(item));
+
+        var editor = document.createElement("div");
+        editor.className = "tag-editor";
+
+        function commit() {
+            setValue(item.env_key, values.length || item.file_value !== null
+                ? serializeListValue(item, values) : null);
+        }
+
+        function renderChips(focusInput) {
+            editor.textContent = "";
+            values.forEach(function (value, position) {
+                var chip = document.createElement("span");
+                chip.className = "tag-chip";
+                var text = document.createElement("span");
+                text.textContent = value;
+                chip.appendChild(text);
+
+                var remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "tag-chip-remove";
+                remove.textContent = "×";
+                remove.title = "제거";
+                remove.addEventListener("click", function () {
+                    values.splice(position, 1);
+                    renderChips(true);
+                    commit();
+                });
+                chip.appendChild(remove);
+                editor.appendChild(chip);
+            });
+            editor.appendChild(input);
+            if (focusInput) input.focus();
+        }
+
+        var input = document.createElement("input");
+        input.type = "text";
+        input.className = "tag-input";
+        input.placeholder = values.length ? "추가…" : (item.default || "값 입력 후 Enter");
+        input.autocomplete = "off";
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" || event.key === ",") {
+                event.preventDefault();
+                var text = input.value.trim();
+                if (!text) return;
+                values.push(text);
+                input.value = "";
+                renderChips(true);
+                commit();
+            } else if (event.key === "Backspace" && input.value === "" && values.length) {
+                values.pop();
+                renderChips(true);
+                commit();
+            }
+        });
+        input.addEventListener("blur", function () {
+            var text = input.value.trim();
+            if (!text) return;
+            values.push(text);
+            input.value = "";
+            renderChips(false);
+            commit();
+        });
+
+        renderChips(false);
+        return editor;
+    }
+
+    // --- 필터·툴바 ---
+
+    document.getElementById("settingsSearch").addEventListener("input", renderSettings);
+    document.getElementById("settingsFilter").addEventListener("change", renderSettings);
+    document.getElementById("showUnconsumed").addEventListener("change", renderSettings);
+
+    document.getElementById("toggleAllGroupsBtn").addEventListener("click", function () {
+        settingsAllExpanded = !settingsAllExpanded;
+        settingsGroups.forEach(function (group) {
+            groupExpanded[group.group_key] = settingsAllExpanded;
+        });
+        this.textContent = settingsAllExpanded ? "모두 접기" : "모두 펼치기";
+        renderSettings();
+    });
+
+    // --- 저장 (diff 확인 → PUT) ---
+
+    function collectChanges() {
+        var settings = {};
+        var resetKeys = [];
+        var rows = [];
+
+        Object.keys(settingsEdits).forEach(function (key) {
+            var item = settingsItems[key];
+            if (!item) return;
+            var edit = settingsEdits[key];
+            var to = edit.reset ? null : edit.value;
+            if (edit.reset) resetKeys.push(key);
+            else settings[key] = edit.value;
+            rows.push({
+                key: key,
+                from: item.file_value,
+                to: to,
+                restart: item.requires_restart,
+                fallback: item.default,
+            });
+        });
+
+        return { settings: settings, reset_keys: resetKeys, rows: rows };
+    }
+
+    var pendingChanges = null;
+
+    document.getElementById("saveSettingsBtn").addEventListener("click", function () {
+        var changes = collectChanges();
+        if (!changes.rows.length) {
+            showError("변경된 설정이 없습니다.");
+            return;
+        }
+        pendingChanges = changes;
+        openDiffModal(changes);
+    });
+
+    function openDiffModal(changes) {
+        var body = document.getElementById("settingsDiffBody");
+        body.textContent = "";
+
+        changes.rows.forEach(function (change) {
+            var entry = document.createElement("div");
+            entry.className = "diff-entry";
+
+            var head = document.createElement("div");
+            head.className = "diff-key";
+            var code = document.createElement("code");
+            code.textContent = change.key;
+            head.appendChild(code);
+            if (change.restart) {
+                head.appendChild(makeBadge("재시작", "badge--restart"));
+            }
+            entry.appendChild(head);
+
+            var before = document.createElement("div");
+            before.className = "diff-line diff-line--old";
+            before.textContent = change.from === null || change.from === undefined
+                ? "(기본값 사용 중)" : change.from;
+            entry.appendChild(before);
+
+            var after = document.createElement("div");
+            after.className = "diff-line diff-line--new";
+            after.textContent = change.to === null
+                ? "(기본값으로 되돌림" + (change.fallback === null ? "" : ": " + change.fallback) + ")"
+                : change.to;
+            entry.appendChild(after);
+
+            body.appendChild(entry);
+        });
+
+        document.getElementById("settingsDiffModal").style.display = "flex";
+    }
+
+    function closeDiffModal() {
+        document.getElementById("settingsDiffModal").style.display = "none";
+    }
+
+    document.getElementById("diffCancelBtn").addEventListener("click", closeDiffModal);
+    document.getElementById("settingsDiffModal").addEventListener("click", function (event) {
+        if (event.target === this) closeDiffModal();
+    });
+
+    document.getElementById("diffConfirmBtn").addEventListener("click", async function () {
+        if (!pendingChanges) return;
+        var confirmBtn = this;
+        confirmBtn.disabled = true;
+
         try {
             var response = await apiRequest("PUT", "/api/v1/admin/settings", {
-                settings: updates,
+                settings: pendingChanges.settings,
+                reset_keys: pendingChanges.reset_keys,
             });
             var data = await response.json();
 
             if (!response.ok) {
-                showError(data.detail || "저장에 실패했습니다.");
+                closeDiffModal();
+                showValidationErrors(data);
                 return;
             }
 
+            closeDiffModal();
             showSuccess(data.message);
-            loadSettings(); // 새로고침
+            showRestartBanner(data);
+            pendingChanges = null;
+            settingsEdits = {};
+            await loadSettings();
         } catch (err) {
             showError("서버와의 통신에 실패했습니다.");
+        } finally {
+            confirmBtn.disabled = false;
         }
     });
+
+    function showValidationErrors(data) {
+        var errors = fieldErrors(data);
+        showError(errorMessage(data, "저장에 실패했습니다."));
+        if (!errors.length) return;
+
+        // 오류 행이 필터·접힘으로 가려지지 않도록 조건을 초기화하고 해당 그룹을 펼친다
+        document.getElementById("settingsSearch").value = "";
+        document.getElementById("settingsFilter").value = "all";
+        document.getElementById("showUnconsumed").checked = true;
+        errors.forEach(function (error) {
+            var item = settingsItems[error.key];
+            if (item) groupExpanded[item.group_key] = true;
+        });
+        renderSettings();
+
+        errors.forEach(function (error) {
+            var nodes = settingsRows[error.key];
+            if (!nodes) return;
+            nodes.row.classList.add("setting-row--error");
+            nodes.error.textContent = error.message;
+        });
+    }
+
+    function showRestartBanner(data) {
+        var banner = document.getElementById("restartBanner");
+        banner.textContent = "";
+        var restartKeys = data.requires_restart_keys || [];
+        var immediateKeys = data.applied_immediately_keys || [];
+        var ignoredKeys = data.ignored_keys || [];
+
+        if (!restartKeys.length && !immediateKeys.length && !ignoredKeys.length) {
+            banner.style.display = "none";
+            return;
+        }
+        if (restartKeys.length) {
+            var restartLine = document.createElement("div");
+            restartLine.textContent = "다음 항목은 서버 재시작 후 반영됩니다: " + restartKeys.join(", ");
+            banner.appendChild(restartLine);
+        }
+        if (immediateKeys.length) {
+            var immediateLine = document.createElement("div");
+            immediateLine.textContent = "다음 항목은 다음 요청부터 반영됩니다: " + immediateKeys.join(", ");
+            banner.appendChild(immediateLine);
+        }
+        if (ignoredKeys.length) {
+            var ignoredLine = document.createElement("div");
+            ignoredLine.textContent = "마스킹 값이 그대로 전송되어 무시했습니다(원값 보존): " + ignoredKeys.join(", ");
+            banner.appendChild(ignoredLine);
+        }
+        banner.style.display = "block";
+    }
 
     // --- DB 연결 설정 ---
 
