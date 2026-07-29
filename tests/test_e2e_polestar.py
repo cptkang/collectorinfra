@@ -394,6 +394,7 @@ def _assert_results_not_empty(state: AgentState):
     )
 
 
+@pytest.mark.live_llm
 class TestNLQServerList:
     """E2E-1: '서버 목록을 보여줘' → CMM_RESOURCE 조회."""
 
@@ -414,6 +415,7 @@ class TestNLQServerList:
         _assert_results_not_empty(state)
 
 
+@pytest.mark.live_llm
 class TestNLQCpuCores:
     """E2E-2: 'svr-db-01의 CPU 코어 수를 알려줘'."""
 
@@ -435,6 +437,7 @@ class TestNLQCpuCores:
         )
 
 
+@pytest.mark.live_llm
 class TestNLQFileSystem:
     """E2E-3: '파일시스템 사용 현황'."""
 
@@ -449,6 +452,7 @@ class TestNLQFileSystem:
         assert has_fs, f"FileSystem 관련 조건 없음.\nSQL: {sql}"
 
 
+@pytest.mark.live_llm
 class TestNLQAgentVersion:
     """E2E-4: '에이전트 버전 정보' → CORE_CONFIG_PROP EAV 조회."""
 
@@ -464,6 +468,7 @@ class TestNLQAgentVersion:
         )
 
 
+@pytest.mark.live_llm
 class TestNLQOSTypeCount:
     """E2E-5: '운영체제 종류별 서버 수' → EAV 집계."""
 
@@ -480,6 +485,7 @@ class TestNLQOSTypeCount:
         assert "GROUP BY" in sql_upper, f"GROUP BY 없음.\nSQL: {sql}"
 
 
+@pytest.mark.live_llm
 class TestNLQNetworkInterface:
     """E2E-6: '네트워크 인터페이스 목록'."""
 
@@ -495,6 +501,7 @@ class TestNLQNetworkInterface:
         )
 
 
+@pytest.mark.live_llm
 class TestNLQVendor:
     """E2E-7: '서버 제조사 정보' → EAV 유사단어 매핑."""
 
@@ -510,6 +517,7 @@ class TestNLQVendor:
         )
 
 
+@pytest.mark.live_llm
 class TestNLQAbnormalServers:
     """E2E-8: '비정상 상태인 서버 목록'."""
 
@@ -525,6 +533,7 @@ class TestNLQAbnormalServers:
         assert "1" in sql, f"비정상 값(1) 없음.\nSQL: {sql}"
 
 
+@pytest.mark.live_llm
 class TestNLQWASProcessMonitor:
     """E2E-9: 'WAS 서버의 프로세스 모니터 현황'."""
 
@@ -545,6 +554,7 @@ class TestNLQWASProcessMonitor:
         )
 
 
+@pytest.mark.live_llm
 class TestNLQHbaPort:
     """E2E-10: 'DB 서버의 HBA 포트 상태'."""
 

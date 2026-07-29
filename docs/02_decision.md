@@ -912,6 +912,7 @@
 - **배경**: 사용자 지시("테스트 실행 시 Gemini API를 사용자 지시 없이 무단으로 호출하지 말 것 — 비용 발생, 무조건 사전 승인"). 실측: `tests/test_alarm/test_agentic_enricher_gemini_live.py`가 **키 존재만으로 기본 스위트에서 실 호출**되는 게이팅(skipif not _KEY)이었고 — 키가 `.encenv`에 상존하는 환경에서는 전체 pytest 실행마다 무단 과금 호출이 발생하는 구조 — D-120 스모크도 키만으로 실행 가능했다.
 - **결정**: ① 과금 외부 API 실 호출(테스트·스모크·e2e·수동 스크립트)은 **사용자 명시 승인 후에만** — 실행 건마다 승인, 포괄 승인 없음. ② **코드 게이트(결정적 차단)**: 실 호출 경로는 전부 `RUN_E2E=1` 옵트인 뒤에 둔다 — 키 존재 게이팅 금지. live 테스트 pytestmark에 `RUN_E2E=1` 조건 추가, `smoke_llm.py`에 미승인 시 "보류(사용자 승인 필요)" 출력 후 종료 가드. ③ `RUN_E2E=1` 설정·실행은 승인 행위 — 에이전트는 승인 없이 설정하지 않는다(CLAUDE.md 핵심 원칙 등재). ④ 승인된 호출도 비용 감사(tokens/cost — D-123 dispatcher) 기록 유지.
 - **검증**: 기본 스위트에서 live 테스트 3건 skip(사유에 D-127 명시)·스모크 미승인 실행 시 보류 종료(exit 0·실 호출 0) 실측.
+- **구현 보강(2026-07-29)**: 최초 조치가 파일 1개(`test_agentic_enricher_gemini_live.py`)만 게이팅해 **기본 스위트 17건이 실 Gemini를 계속 호출**하던 것을 실측 발견 → ① 17건(`test_e2e_polestar.py` NLQ 10·`test_pipeline.py` 3·`test_nodes/test_result_organizer_mapping.py` 2·`test_xls_plan_integration.py` 2)에 `@pytest.mark.live_llm` 부여(RUN_E2E 미설정 시 skip) ② `tests/conftest.py`에 **전역 소켓 가드** 설치 — RUN_E2E 미설정 시 공인 IP 접속을 `connect` 이전에 차단(패킷 미발신)하고 어느 테스트가 어디로 나가려 했는지 명시해 실패시킨다(사설·루프백 허용, RUN_E2E=1이면 미설치). 개별 게이팅 누락이 곧 무단 호출이 되는 구조를 이중 방어로 대체.
 - **관련**: D-120(테스트 LLM — 데이터 통제에 비용 통제 추가)·D-021(키 분리 보관)·D-123(비용 감사). 반영: CLAUDE.md·sre-agent/02 §10.1·plans/66 §5.
 
 ## D-129. 설정 웹UI 카탈로그 SSOT = pydantic 인트로스펙션 (시크릿 편집 차단 + "재시작 필요" 기본 반영 정책)

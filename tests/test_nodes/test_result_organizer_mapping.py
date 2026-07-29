@@ -11,6 +11,7 @@ class TestCheckDataSufficiencyWithMapping:
     """column_mapping 기반 충분성 검사 테스트."""
 
     @pytest.mark.asyncio
+    @pytest.mark.live_llm
     async def test_sufficient_with_alias_keys(self):
         """결과 키가 table.column 형식이면 충분."""
         results = [
@@ -29,6 +30,7 @@ class TestCheckDataSufficiencyWithMapping:
         assert await _check_data_sufficiency(results, {}, None, column_mapping=mapping)
 
     @pytest.mark.asyncio
+    @pytest.mark.live_llm
     async def test_sufficient_with_column_only_keys(self):
         """결과 키가 column 형식만이어도 충분 (table.column -> column 폴백)."""
         results = [

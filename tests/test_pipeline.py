@@ -218,6 +218,7 @@ class TestHappyPath:
         assert state["parsed_requirements"]["original_query"] == state["user_query"]
 
     @pytest.mark.asyncio
+    @pytest.mark.live_llm
     async def test_step2_schema_analyzer(self):
         """Step 2: DB 스키마를 조회하여 관련 테이블을 식별한다."""
         _schema_cache.invalidate()
@@ -382,6 +383,7 @@ class TestHappyPath:
         assert state["error_message"] is None
 
     @pytest.mark.asyncio
+    @pytest.mark.live_llm
     async def test_full_pipeline_end_to_end(self):
         """전체 7단계를 하나의 State로 순차 실행하여 E2E를 검증한다."""
         _schema_cache.invalidate()
@@ -671,6 +673,7 @@ class TestEmptyResultFlow:
     """조건에 맞는 데이터가 0건일 때의 파이프라인 흐름."""
 
     @pytest.mark.asyncio
+    @pytest.mark.live_llm
     async def test_empty_result_full_flow(self):
         """전체 파이프라인을 거쳐 결과 0건 → 안내 응답 생성."""
         _schema_cache.invalidate()
