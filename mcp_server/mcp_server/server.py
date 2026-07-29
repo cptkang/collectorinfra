@@ -118,17 +118,28 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
         port=config.server.port,
         lifespan=lifespan,
     )
-    register_tools(mcp, expose_execute_sql=config.server.expose_execute_sql)
-    register_polestar_tools(mcp)
+    register_tools(
+        mcp,
+        expose_execute_sql=config.server.expose_execute_sql,
+        polestar_domain_guard=config.server.polestar_domain_guard,
+    )
+    # 폴스타 고수준 도구는 폴스타 소스를 서빙하는 배치에서만 필요하다(기본 등록 — 현행 동작 보존).
+    if config.server.expose_polestar_tools:
+        register_polestar_tools(mcp)
+    else:
+        logger.info("폴스타 고수준 도구 비노출 (expose_polestar_tools=False)")
     register_promql_tools(
         mcp, expose_raw_promql=config.prometheus.expose_raw_promql
     )
 
     logger.info(
-        "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s, raw_promql노출=%s",
+        "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s, raw_promql노출=%s, "
+        "폴스타도구노출=%s, 폴스타도메인가드=%s",
         config.server.name,
         config.server.transport,
         config.server.expose_execute_sql,
         config.prometheus.expose_raw_promql,
+        config.server.expose_polestar_tools,
+        config.server.polestar_domain_guard,
     )
     return mcp

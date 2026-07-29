@@ -32,6 +32,15 @@ class ServerConfig:
     # 고수준 도구는 SQL을 받지 않으므로 항상 안전하다. raw SQL 실행이 필요한 탐색적
     # 조사·본체 NL→SQL 파이프라인 배치에서만 config.toml/환경변수로 True 옵트인한다.
     expose_execute_sql: bool = False
+    # 폴스타 도메인 deny(D-022/D-028)를 execute_sql에 적용할지 여부 (기본 True — 현행 동작 보존).
+    # 이 검증은 폴스타 스키마 전제라 폴스타가 아닌 소스에는 무의미하다. 폴스타 소스를
+    # 서빙하지 않는 배치에서만 config.toml/환경변수로 False 옵트아웃한다.
+    # env: POLESTAR_DOMAIN_GUARD.
+    polestar_domain_guard: bool = True
+    # 폴스타 고수준 도구 8종 등록 여부 (기본 True — 현행 동작 보존).
+    # 폴스타 소스가 없는 배치에서는 False로 두어 도구 표면을 줄인다(expose_execute_sql·
+    # expose_raw_promql과 동일한 게이트 패턴). env: EXPOSE_POLESTAR_TOOLS.
+    expose_polestar_tools: bool = True
     # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
     process_api_base_url: str = ""
     # 전송 구간 정적 Bearer 토큰 (Plan 04 §6-4, D-015). 빈 값이면 무인증 통과
@@ -173,6 +182,8 @@ def _load_toml(path: Path) -> AppServerConfig:
         transport=server_data.get("transport", "sse"),
         log_level=server_data.get("log_level", "info"),
         expose_execute_sql=server_data.get("expose_execute_sql", False),
+        polestar_domain_guard=server_data.get("polestar_domain_guard", True),
+        expose_polestar_tools=server_data.get("expose_polestar_tools", True),
         process_api_base_url=server_data.get("process_api_base_url", ""),
         bearer_token=server_data.get("bearer_token", ""),
     )
@@ -237,6 +248,22 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         )
         logger.debug("환경변수 오버라이드: EXPOSE_EXECUTE_SQL = %s",
                      config.server.expose_execute_sql)
+
+    # 폴스타 게이트 2종도 불리언 — 기본 True라 "false"로 옵트아웃하는 방향으로 쓰인다.
+    _polestar_flags = {
+        "POLESTAR_DOMAIN_GUARD": "polestar_domain_guard",
+        "EXPOSE_POLESTAR_TOOLS": "expose_polestar_tools",
+    }
+    for env_key, attr in _polestar_flags.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(
+                config.server,
+                attr,
+                env_val.strip().lower() in ("1", "true", "yes", "on"),
+            )
+            logger.debug("환경변수 오버라이드: %s = %s", env_key,
+                         getattr(config.server, attr))
 
     # Prometheus 설정 오버라이드 (문자열/정수 — Plan 06 §3 · D-119)
     _prom_overrides = {

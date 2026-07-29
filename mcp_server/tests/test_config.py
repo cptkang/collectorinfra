@@ -228,3 +228,57 @@ process_api_base_url = "http://proc.local:8080"
         config = AppServerConfig(server=ServerConfig())
         _apply_env_overrides(config)
         assert config.server.process_api_base_url == "http://env-proc:9000"
+
+
+class TestPolestarGates:
+    """폴스타 게이트 2종 설정 테스트 (Plan 67 Phase 0 ⑬/⑭).
+
+    둘 다 기본 True — 현행 동작을 보존하고, 폴스타를 서빙하지 않는 배치만 옵트아웃한다.
+    """
+
+    def test_defaults_preserve_current_behavior(self):
+        """기본값은 켜짐(True)이다 — 게이트 도입으로 동작이 바뀌지 않는다."""
+        assert ServerConfig().polestar_domain_guard is True
+        assert ServerConfig().expose_polestar_tools is True
+
+    def test_toml_opt_out(self, tmp_path):
+        """TOML에서 false로 옵트아웃할 수 있다."""
+        toml_content = """
+[server]
+name = "gate-test"
+polestar_domain_guard = false
+expose_polestar_tools = false
+"""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(toml_content)
+        config = _load_toml(config_file)
+        assert config.server.polestar_domain_guard is False
+        assert config.server.expose_polestar_tools is False
+
+    def test_toml_omitted_keeps_default(self, tmp_path):
+        """TOML에 키가 없으면 기본값(True)을 유지한다."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[server]\nname = "gate-default"\n')
+        config = _load_toml(config_file)
+        assert config.server.polestar_domain_guard is True
+        assert config.server.expose_polestar_tools is True
+
+    def test_env_override_off(self, monkeypatch):
+        """POLESTAR_DOMAIN_GUARD / EXPOSE_POLESTAR_TOOLS 환경변수로 끌 수 있다."""
+        monkeypatch.setenv("POLESTAR_DOMAIN_GUARD", "false")
+        monkeypatch.setenv("EXPOSE_POLESTAR_TOOLS", "false")
+        config = AppServerConfig(server=ServerConfig())
+        _apply_env_overrides(config)
+        assert config.server.polestar_domain_guard is False
+        assert config.server.expose_polestar_tools is False
+
+    def test_env_override_on(self, monkeypatch):
+        """환경변수 true는 TOML의 false를 다시 켠다."""
+        monkeypatch.setenv("POLESTAR_DOMAIN_GUARD", "true")
+        monkeypatch.setenv("EXPOSE_POLESTAR_TOOLS", "1")
+        config = AppServerConfig(
+            server=ServerConfig(polestar_domain_guard=False, expose_polestar_tools=False)
+        )
+        _apply_env_overrides(config)
+        assert config.server.polestar_domain_guard is True
+        assert config.server.expose_polestar_tools is True

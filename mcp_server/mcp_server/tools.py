@@ -39,7 +39,11 @@ def _get_source_config(ctx: Context, source: str) -> Any:
     return pool_manager.get_source_config(source)
 
 
-def register_tools(mcp: FastMCP, expose_execute_sql: bool = False) -> None:
+def register_tools(
+    mcp: FastMCP,
+    expose_execute_sql: bool = False,
+    polestar_domain_guard: bool = True,
+) -> None:
     """MCP 서버에 저수준 도구를 등록한다.
 
     Args:
@@ -47,6 +51,9 @@ def register_tools(mcp: FastMCP, expose_execute_sql: bool = False) -> None:
         expose_execute_sql: raw SQL 실행 도구(execute_sql) 노출 여부(기본 비노출 —
             계획 §3/§6). True일 때만 execute_sql을 등록하며, 이때 읽기 전용 검증에
             더해 폴스타 도메인 deny(D-022/D-028)를 추가로 적용한다.
+        polestar_domain_guard: 폴스타 도메인 deny 적용 여부(기본 True — 현행 동작 보존).
+            이 검증은 폴스타 스키마를 전제하므로 폴스타 소스를 서빙하지 않는 배치에서는
+            False로 옵트아웃한다. 읽기 전용 검증은 이 플래그와 무관하게 항상 적용된다.
     """
 
     @mcp.tool()
@@ -118,15 +125,17 @@ def register_tools(mcp: FastMCP, expose_execute_sql: bool = False) -> None:
                     ensure_ascii=False,
                 )
 
-        # 폴스타 도메인 deny (execute_sql 옵트인 노출 시에만 도달 — §6, D-022/D-028)
-        try:
-            validate_polestar_domain(sql)
-        except PolestarDomainViolationError as e:
-            logger.warning("폴스타 도메인 위반 (%s): %s", source, e.reason)
-            return json.dumps(
-                {"error": f"폴스타 도메인 위반: {e.reason}"},
-                ensure_ascii=False,
-            )
+        # 폴스타 도메인 deny (execute_sql 옵트인 노출 시에만 도달 — §6, D-022/D-028).
+        # 폴스타 스키마 전제 검증이므로 폴스타 미서빙 배치는 게이트로 끌 수 있다(기본 켜짐).
+        if polestar_domain_guard:
+            try:
+                validate_polestar_domain(sql)
+            except PolestarDomainViolationError as e:
+                logger.warning("폴스타 도메인 위반 (%s): %s", source, e.reason)
+                return json.dumps(
+                    {"error": f"폴스타 도메인 위반: {e.reason}"},
+                    ensure_ascii=False,
+                )
 
         start_time = time.time()
         try:
@@ -305,7 +314,10 @@ def register_tools(mcp: FastMCP, expose_execute_sql: bool = False) -> None:
     # 노출 시 위 execute_sql은 validate_readonly + validate_polestar_domain을 함께 적용한다.
     if expose_execute_sql:
         mcp.tool()(execute_sql)
-        logger.info("execute_sql 도구 노출됨 (expose_execute_sql=True) — 도메인 deny 적용")
+        logger.info(
+            "execute_sql 도구 노출됨 (expose_execute_sql=True) — 폴스타 도메인 deny=%s",
+            polestar_domain_guard,
+        )
     else:
         logger.info("execute_sql 도구 비노출 (기본) — 고수준 도구 사용")
 
