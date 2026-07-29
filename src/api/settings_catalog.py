@@ -717,6 +717,21 @@ def _secret_is_set(config: Optional[AppConfig], spec: FieldSpec,
     return False
 
 
+def _cluster_by_section(items: list[SettingSchemaItem]) -> list[SettingSchemaItem]:
+    """같은 구획(section)의 항목을 연속 배치한다(구획 최초 등장 순서·구획 내 정의 순서 유지).
+
+    config.py 필드 정의 순서는 구획을 오가며 섞여 있어(예: 노이즈 게이트 E2 억제 사이에
+    Plan 60 E4 토폴로지가 끼어듦) 그대로 노출하면 UI에 같은 구획 소제목이 반복
+    표시된다(실측: 노이즈 게이트 소제목 21회 / 고유 구획 16개). 안정 정렬이라
+    무구획(None) 항목 묶음과 각 구획 내부의 상대 순서는 정의 순서 그대로다.
+    """
+    order: dict[Optional[str], int] = {}
+    for item in items:
+        if item.section not in order:
+            order[item.section] = len(order)
+    return sorted(items, key=lambda item: order[item.section])
+
+
 def build_catalog(
     file_values: dict[str, str],
     config: Optional[AppConfig],
@@ -787,7 +802,7 @@ def build_catalog(
         SettingGroupSchema(
             group_key=group_key,
             title=GROUP_TITLES.get(group_key, group_key),
-            settings=grouped[group_key],
+            settings=_cluster_by_section(grouped[group_key]),
         )
         for group_key in GROUP_ORDER
         if grouped.get(group_key)
