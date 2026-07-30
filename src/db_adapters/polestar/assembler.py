@@ -7,13 +7,18 @@ multi_db_executor·semantic_compiler(모두 application).
 
 from __future__ import annotations
 
+import logging
 import re
+from dataclasses import dataclass, field as dc_field
+from datetime import date
 
 # 기간 범위/값 타당성 게이트는 공용 코어(utils)에서 가져온다(application→config/utils 허용).
 from src.utils.query_gen_common import (
     StatMonth,
     _normalize_stat_month,
     _utilization_guard,
+    drop_entries_missing_columns,
+    resolve_stat_month_range,
 )
 
 
@@ -38,6 +43,8 @@ def decimal_cast_example(db_engine: str | None) -> str:
         'THEN s.avg_val END)::numeric, 2) AS "CPU 평균"'
     )
 
+
+logger = logging.getLogger(__name__)
 
 _RESOURCE_TYPE_RE = re.compile(r"\[resource_type:\s*([^\]/\s]+)")
 _SERVER_RESOURCE_TYPE = "server.Server"
@@ -78,6 +85,382 @@ def classify_metric_field(field: str) -> tuple[str, str, str] | None:
     if agg is None:
         return None
     return rt, agg[0], agg[1]
+
+
+# ── 월 시리즈(가로 6개월 등) 양식 인식기 (D-113/D-115, plans/67 §2.3) ─────────────
+#
+# 2단 병합 헤더 결합(D-112)이 만든 복합 필드명 "그룹라벨|서브"에서
+# "사용률+집계어 그룹 | M+k(또는 절대월) 서브" **구조 패턴**만 인식한다.
+# 기관명·시트제목·칼럼순서 하드코딩 금지(과적합 가드 — plans/67 §8 R3의 경계 지표).
+# 판정 불가 시 None을 반환해 기존 경로로 폴백한다(오동작이 아니라 미발동으로 실패).
+
+# 리소스 판정용 문맥 명사(양식 제목·질의에서 탐색). _METRIC_NOUN_RT에 관용 표현 추가.
+_CONTEXT_NOUN_RT: tuple[tuple[str, str], ...] = _METRIC_NOUN_RT + (
+    ("주기억장치", "server.Memory"),
+)
+
+# peak 판정을 평균보다 먼저 — "Peak시 사용률"류에 '평균'이 공존할 일은 없으나 순서 명시.
+_MONTH_GROUP_AGG: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("peak", "피크", "최고", "최대"), "max_val", "peak"),
+    (("평균", "avg"), "avg_val", "avg"),
+)
+
+_REL_MONTH_RE = re.compile(r"^m(?:\s*\+\s*(\d{1,2}))?$", re.IGNORECASE)
+_ABS_YM_RE = re.compile(r"^(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*월?$")
+_ABS_M_ONLY_RE = re.compile(r"^(\d{1,2})\s*월$")
+
+# PostgreSQL 식별자 63바이트 한도 — 초과 alias는 조용히 잘려 월 서픽스가 소실·충돌하므로
+# 그 양식은 인식 대상에서 제외한다(폴백). DB2는 128바이트라 PG 기준이 보수적 상한.
+_MAX_ALIAS_BYTES = 62
+
+
+def _ym_add(yyyymm: str, delta: int) -> str:
+    """YYYYMM에 delta개월을 더한다."""
+    y, m = int(yyyymm[:4]), int(yyyymm[4:6])
+    total = y * 12 + (m - 1) + delta
+    return f"{total // 12}{total % 12 + 1:02d}"
+
+
+def _last_complete_month(today: date | None = None) -> str:
+    """실행일 기준 마지막 완결 월(=지난달)을 YYYYMM으로 반환한다(Q3 확정 기본값)."""
+    ref = today or date.today()
+    return _ym_add(f"{ref.year}{ref.month:02d}", -1)
+
+
+@dataclass(frozen=True)
+class MonthSeries:
+    """월 시리즈 양식 인식 결과.
+
+    measures의 alias는 **복합 필드명 그대로**다 — 기존 결정적 피벗이 SELECT alias로
+    양식 필드명을 써서 결과 행 키 = 양식 헤더가 되는 아키텍처(writer 필드명 매칭,
+    resolved_mapping Layer 1)에 그대로 얹힌다(매핑 상태 갱신 불요).
+    """
+
+    measures: list[tuple[str, str, str, str]]  # (alias=필드명, resource_type, val_col, YYYYMM)
+    fields: list[str] = dc_field(default_factory=list)  # 인식된 복합 필드명 목록
+    anchor: tuple[str, str] = ("", "")  # (M, M+max) — 응답 명시용(§2.4)
+    resource_type: str = ""
+    month_by_field: dict[str, str] = dc_field(default_factory=dict)  # 표시용 {필드명: YYYYMM}
+
+
+def _parse_month_sub(sub: str) -> tuple[str, int | str] | None:
+    """서브 헤더를 ('rel', k) 또는 ('abs', 'YYYYMM'|'MM')로 해석한다(아니면 None)."""
+    s = sub.strip()
+    m = _REL_MONTH_RE.match(s)
+    if m:
+        return ("rel", int(m.group(1) or 0))
+    m = _ABS_YM_RE.match(s)
+    if m:
+        month = int(m.group(2))
+        if 1 <= month <= 12:
+            return ("abs", f"{int(m.group(1))}{month:02d}")
+        return None
+    m = _ABS_M_ONLY_RE.match(s)
+    if m:
+        month = int(m.group(1))
+        if 1 <= month <= 12:
+            return ("abs", f"{month:02d}")  # 연도 미상 — 앵커 해석 시 보정
+        return None
+    return None
+
+
+def recognize_month_series(
+    column_mapping: dict[str, str | None] | None,
+    context_text: str = "",
+    user_query: str = "",
+    today: date | None = None,
+) -> MonthSeries | None:
+    """복합 필드명에서 월 시리즈(사용률 가로 전개) 패턴을 결정적으로 인식한다(D-113).
+
+    인식 조건(모두 충족해야 발동 — 미충족 시 None 폴백):
+    - 미매핑(None 또는 cmm_metric_stat 오매핑) 필드명이 "그룹|서브" 구조이고,
+      그룹에 '사용률'과 집계어(평균/peak류)가 있으며 서브가 M+k 또는 절대월
+    - 리소스 명사(cpu/메모리/주기억장치/디스크)가 context_text(양식 제목 등)·user_query·
+      필드명 어디선가 발견됨 (없으면 판정 불가 → 폴백)
+    - 상대(M+k)·절대월 표기가 한 양식에 혼재하지 않음
+    - alias(=필드명) UTF-8 길이가 PG 식별자 한도 이내
+
+    기준월(Q3 확정): 사용자 질의에 기간이 있으면 그 **끝 월**이 M+max_k,
+    없으면 실행일 기준 지난달(마지막 완결 월)이 M+max_k.
+
+    Args:
+        column_mapping: field_mapper 산출 {필드명: 컬럼 또는 None}
+        context_text: 양식 제목(title_text)·파일명 등 리소스 판정 문맥
+        user_query: 사용자 질의(기간 해석용)
+        today: 기준일(테스트 주입용, None이면 오늘)
+
+    Returns:
+        MonthSeries 또는 None(패턴 아님 — 기존 경로 유지)
+    """
+    if not column_mapping:
+        return None
+
+    parsed: list[tuple[str, str, tuple[str, int | str]]] = []  # (field, val_col, sub해석)
+    for fname, col in column_mapping.items():
+        if col is not None and "cmm_metric_stat" not in str(col).lower():
+            continue
+        if "|" not in fname:
+            continue
+        group, _, sub = fname.rpartition("|")
+        low = group.lower()
+        if "사용률" not in low:
+            continue
+        agg = next(
+            (vc for terms, vc, _sfx in _MONTH_GROUP_AGG if any(t in low for t in terms)),
+            None,
+        )
+        if agg is None:
+            continue
+        sub_parsed = _parse_month_sub(sub)
+        if sub_parsed is None:
+            continue
+        if len(fname.encode("utf-8")) > _MAX_ALIAS_BYTES:
+            # alias 잘림 → 월 서픽스 소실·충돌 위험. 양식 전체 폴백.
+            logger.info(
+                "월 시리즈 미발동(D-113): 필드명 %d바이트 > %d(PG 식별자 한도) — %r",
+                len(fname.encode("utf-8")), _MAX_ALIAS_BYTES, fname[:40],
+            )
+            return None
+        parsed.append((fname, agg, sub_parsed))
+
+    if not parsed:
+        # 침묵 금지(Known Mistakes): 후보에 근접한 필드가 있으면 사유를 남긴다.
+        near = [f for f in column_mapping if "|" in f and "사용률" in f]
+        if near:
+            logger.info(
+                "월 시리즈 미발동(D-113): '그룹|서브' 사용률 필드 %d개가 있으나 "
+                "집계어/서브(M+k·절대월) 패턴 불충족 — 예: %r",
+                len(near), near[0],
+            )
+        return None
+
+    kinds = {p[2][0] for p in parsed}
+    if len(kinds) != 1:
+        logger.info(
+            "월 시리즈 미발동(D-113): 상대(M+k)·절대월 표기 혼재 %d필드 — 결정적 해석 불가",
+            len(parsed),
+        )
+        return None  # 상대·절대 혼재 — 결정적 해석 불가
+
+    # 리소스 판정: 문맥(제목 우선) → 질의 → 필드명 순으로 명사 탐색
+    search_text = " ".join(
+        t for t in (context_text, user_query, " ".join(column_mapping.keys())) if t
+    ).lower()
+    rt = next((r for noun, r in _CONTEXT_NOUN_RT if noun in search_text), None)
+    if rt is None:
+        logger.info(
+            "월 시리즈 미발동(D-113): 월 필드 %d개 인식했으나 리소스 명사(cpu/메모리/"
+            "주기억장치/디스크)를 문맥에서 못 찾음 — context_text=%r, user_query=%r",
+            len(parsed), (context_text or "")[:80], (user_query or "")[:80],
+        )
+        return None
+
+    last_month = _last_complete_month(today)
+    month_by_field: dict[str, str] = {}
+    if kinds == {"rel"}:
+        ks = [p[2][1] for p in parsed]
+        max_k = max(ks)  # type: ignore[type-var]
+        rng = resolve_stat_month_range(user_query, today)
+        anchor_end = rng[1] if rng else last_month
+        base = _ym_add(anchor_end, -int(max_k))
+        for fname, _vc, (_kind, k) in parsed:
+            month_by_field[fname] = _ym_add(base, int(k))
+    else:
+        for fname, _vc, (_kind, val) in parsed:
+            ym = str(val)
+            if len(ym) == 2:  # 연도 미상(N월) — 마지막 완결 월 이하의 가장 최근 발생으로 보정
+                candidate = f"{last_month[:4]}{ym}"
+                if candidate > last_month:
+                    candidate = _ym_add(candidate, -12)
+                ym = candidate
+            month_by_field[fname] = ym
+
+    measures = [
+        (fname, rt, vc, month_by_field[fname]) for fname, vc, _sub in parsed
+    ]
+    months_sorted = sorted(month_by_field.values())
+    return MonthSeries(
+        measures=measures,
+        fields=[p[0] for p in parsed],
+        anchor=(months_sorted[0], months_sorted[-1]),
+        resource_type=rt,
+        month_by_field=month_by_field,
+    )
+
+
+# 폴스타 entity(cmm_resource)의 검증된 직접 컬럼 — 스키마에 칼럼 목록이 없어 검증
+# 불가할 때 결정적 피벗에 허용하는 안전 화이트리스트(어댑터 지식, D-089 계층).
+_ENTITY_SAFE_DIRECT_COLUMNS = frozenset({"id", "name", "hostname", "ipaddress", "description"})
+
+
+def filter_pivot_regular_entries(
+    regular_entries: list[tuple[str, str]],
+    schema_info: dict | None,
+    entity_table: str,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """결정적 피벗의 직접 컬럼 항목을 스키마 실측 + 안전 화이트리스트로 거른다.
+
+    1차: **entity 외 테이블의 직접 칼럼 제외** — 조립기는 regular 항목의 테이블명을 떼고
+    entity 별칭 `c.`에 붙이므로, 다른 테이블의 유효 매핑(라이브 실측 2026-07-30:
+    `구분→cmm_resource_type.category` — category는 그 테이블에 **실존**해 칼럼 검증을
+    전부 통과)이 `c.category`로 재작성되어 쿼리 전체가 죽는다. 피벗의 직접 칼럼은
+    entity 테이블 소속만 유효하다.
+    2차: `drop_entries_missing_columns` — 스키마에 칼럼 목록이 있으면 부재 칼럼 제외.
+    3차: entity 테이블인데 스키마에 칼럼 목록이 **없어 검증 불가**하면(폐쇄망 캐시 스키마가
+    요약형인 경우) 안전 화이트리스트 외 칼럼을 제외한다(환각 칼럼 차단).
+
+    Returns:
+        (유지 항목, 제외 항목) — 제외는 호출부가 경고 로그로 가시화한다.
+    """
+    ent0 = (entity_table or "").lower()
+    on_entity: list[tuple[str, str]] = []
+    dropped_foreign: list[tuple[str, str]] = []
+    for field, col in regular_entries:
+        parts = str(col).split(".")
+        # 테이블 한정이 있고 entity가 아니면 제외("db.table.column" 3단계는 가운데가 테이블)
+        if len(parts) >= 2 and parts[-2].lower() != ent0:
+            dropped_foreign.append((field, col))
+        else:
+            on_entity.append((field, col))
+    kept0, dropped = drop_entries_missing_columns(on_entity, schema_info)
+    dropped = dropped_foreign + dropped
+    verifiable: set[str] = set()
+    for tname, tinfo in ((schema_info or {}).get("tables") or {}).items():
+        has_cols = any(
+            (c.get("name") if isinstance(c, dict) else c)
+            for c in (tinfo or {}).get("columns", [])
+        )
+        if has_cols:
+            verifiable.add(tname.lower())
+            if "." in tname:
+                verifiable.add(tname.rsplit(".", 1)[-1].lower())
+    ent = (entity_table or "").lower()
+    kept: list[tuple[str, str]] = []
+    for field, col in kept0:
+        parts = str(col).split(".")
+        if (
+            len(parts) >= 2
+            and parts[-2].lower() == ent
+            and ent not in verifiable
+            and parts[-1].lower() not in _ENTITY_SAFE_DIRECT_COLUMNS
+        ):
+            dropped.append((field, col))
+        else:
+            kept.append((field, col))
+    return kept, dropped
+
+
+def build_month_series_block(month_series: MonthSeries | None) -> str:
+    """LLM 폴백 프롬프트용 월 리터럴 강제 블록(D-113 폴백 안전망).
+
+    결정적 조립이 스킵되는 경로(재시도 턴 등)에서 LLM이 `CURRENT_DATE - k MONTH`류
+    동적 계산으로 월 방향을 뒤집는 실측 사례(2026-07-29: M=지난달·M+5=6개월 전 역순)가
+    있어, 인식기가 확정한 필드↔YYYYMM 매핑을 리터럴로 강제한다.
+    """
+    if not month_series:
+        return ""
+    lines = "\n".join(
+        f'- "{fname}" ← s.stat_date = \'{ym}\''
+        for fname, ym in month_series.month_by_field.items()
+    )
+    return (
+        "## 월별 칼럼 매핑 강제 (아래 리터럴 월을 그대로 사용 — CURRENT_DATE 동적 계산 금지)\n"
+        f"{lines}\n"
+        "각 필드는 위 월의 값만 담아야 하며, alias는 왼쪽 필드명 그대로 사용하세요."
+    )
+
+
+def apply_remark_server_name_rule(
+    column_mapping: dict[str, str | None],
+    entity_table: str,
+) -> dict[str, str]:
+    """'비고' 필드를 서버 등록명(cmm_resource.name)으로 채우는 요청 스코프 규칙(D-115).
+
+    사용자 확정(2026-07-28): 공동존·은행존 모두 폴스타 UI 정합성 확인에 등록명이 필요
+    (등록명에 업무 등 정보성 텍스트 포함). field_mapper가 다른 매핑(예: b0 비고→description)을
+    만들었어도 이 규칙이 우선한다(D-114 "임의 기재 금지"의 사용자 지정 예외).
+
+    Returns:
+        {비고 필드명: "<entity>.name"} 갱신분(비고 필드 없으면 빈 dict).
+    """
+    updates: dict[str, str] = {}
+    for fname in column_mapping:
+        if fname.strip() == "비고":
+            updates[fname] = f"{entity_table}.name"
+    return updates
+
+
+def find_vendor_model_concat(
+    schema_info: dict | None,
+    column_mapping: dict[str, str | None],
+) -> list[tuple[str, str, str]]:
+    """'제조사(모델명)'류 필드를 서버 Vendor+Model 결합으로 채우는 요청 스코프 규칙(D-115).
+
+    라이브 실측(2026-07-28): LLM/field_mapper는 이 필드를 Vendor 또는 Model **한쪽**으로만
+    매핑해 반쪽 값이 채워졌다. 프로필의 server.Server 태그 속성에서 Vendor·Model의
+    **정확한 대소문자 이름**을 찾아(주의: server.Cpus에도 VENDOR/MODEL이 있어
+    `eav_attr_resource_types`의 upper 키는 충돌함) 결합 대상으로 지정한다.
+    둘 다 프로필에 없으면 발동하지 않는다(프로필 게이트).
+
+    Returns:
+        [(필드명, Vendor속성명, Model속성명)] — 조립기 concat_eav 인자로 전달.
+    """
+    vendor_attr = model_attr = None
+    for pattern in ((schema_info or {}).get("_structure_meta") or {}).get("patterns", []):
+        if pattern.get("type") != "eav":
+            continue
+        attrs = pattern.get("known_attributes_detail") or pattern.get("known_attributes", [])
+        for attr in attrs:
+            if not isinstance(attr, dict):
+                continue
+            name = (attr.get("name") or "").strip()
+            m = _RESOURCE_TYPE_RE.search(attr.get("description") or "")
+            if not name or not m or m.group(1).strip() != _SERVER_RESOURCE_TYPE:
+                continue
+            if name.upper() == "VENDOR":
+                vendor_attr = name
+            elif name.upper() == "MODEL":
+                model_attr = name
+    if not vendor_attr or not model_attr:
+        return []
+    out: list[tuple[str, str, str]] = []
+    for fname in column_mapping:
+        low = fname.lower().replace(" ", "")
+        if "제조사" in low and "모델" in low:
+            out.append((fname, vendor_attr, model_attr))
+    return out
+
+
+def apply_capacity_scope_rule(
+    column_mapping: dict[str, str | None],
+    attr_rt: dict[str, str],
+    resource_type: str,
+) -> dict[str, str | None]:
+    """'처리능력' 필드의 요청 스코프 규칙 — GB+메모리 문맥만 용량 매핑, 그 외는 강제 공란.
+
+    Q1 확정(2026-07-27): 유사어 등록 없이 **단위 (GB) + 메모리 문맥 + 프로필에 TotalSize
+    존재**의 3중 문맥으로만 용량(EAV TotalSize)을 매핑한다(D-115 — 전역 오염 차단).
+
+    그 외 처리능력 필드(예: CPU 양식 '(TPMC)')는 **강제 None** — 라이브 실측(2026-07-28
+    4차): field_mapper의 학습/캐시 매핑('처리능력'→TotalSize)이 CPU 양식에 유입되어
+    TPMC 칼럼에 메모리 용량이 채워졌다. 미지원 단위는 매핑이 있어도 결정적으로 차단해
+    공란을 보장한다(D-114 임의 기재 금지).
+
+    Returns:
+        {필드명: "EAV:TotalSize" 또는 None} 갱신분. 호출부가 로컬 매핑(None→파티션 제외)과
+        state 매핑(writer 조회 경로) 양쪽에 merge한다.
+    """
+    updates: dict[str, str | None] = {}
+    gb_ok = resource_type == "server.Memory" and "TOTALSIZE" in attr_rt
+    for fname in column_mapping:
+        low = fname.lower().replace(" ", "")
+        if "처리능력" not in low:
+            continue
+        if gb_ok and "(gb)" in low:
+            updates[fname] = "EAV:TotalSize"
+        else:
+            updates[fname] = None
+    return updates
 
 
 def eav_attr_resource_types(schema_info: dict | None) -> dict[str, str]:
@@ -130,17 +513,24 @@ def _metric_select_line(
     val_col: str,
     db_engine: str | None,
     definition_name: str = "Utilization",
+    stat_date: str | None = None,
 ) -> str:
     """단일 사용률/지표 필드의 SELECT 라인(엔진별 소수 보존 캐스트 포함).
 
     definition_name 기본값은 'Utilization'(사용률)이며, 폼필 경로는 이 값만 쓴다. 시맨틱
     컴파일러(트랙 C 패턴 B)는 'MaxIORate'(디스크 IO) 등 다른 지표도 지정할 수 있어 인자로 노출한다.
 
+    stat_date를 주면 CASE 조건에 `AND s.stat_date='YYYYMM'`을 넣어 **특정 월의 값만** 뽑는다
+    (월별 가로 피벗 — D-113). 이때 월 통계 테이블은 (resource, definition, 월)당 1행이므로
+    집계는 행 복제(config×metric 이중 조인) 제거용 MAX면 충분하며 GROUP BY는 불변이다.
+
     Utilization에는 값 타당성 게이트(BETWEEN 0 AND 1000)를 CASE 조건에 넣어, 범위 밖 쓰레기
     행(실측 avg=1.2e9/max=5.5e13, 음수)을 필드 단위로 집계에서 제외한다(D-103). 게이트는
     definition_name='Utilization'일 때만 — MaxIORate 등엔 0~1000 의미가 없다.
     """
     guard = _utilization_guard(val_col, definition_name)
+    if stat_date:
+        guard = f" AND s.stat_date='{stat_date}'{guard}"
     if (db_engine or "").lower() == "db2":
         # DB2: 집계 함수 내부에서 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
         # 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 값(실측 5.5e13 ≥ 1e11)에서
@@ -170,6 +560,8 @@ def _pivot_select_parts(
     val_col: str,
     db_engine: str | None,
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    month_measures: list[tuple[str, str, str, str]] | None = None,
+    concat_eav: list[tuple[str, str, str]] | None = None,
 ) -> tuple[list[str], set[str], bool]:
     """피벗 SELECT 라인 목록·필요 resource_type 집합·metric 유무를 계산한다(블록/SQL 공용).
 
@@ -177,6 +569,12 @@ def _pivot_select_parts(
     (resource_type, 집계함수, 값컬럼)을 추론한다. explicit_measures는 시맨틱 컴파일러(트랙 C)가
     쓰는 명시 지정으로, 라벨 분류에 의존하지 않고 (alias, resource_type, agg_fn, val_col,
     definition_name)을 직접 전달한다(MaxIORate 등 Utilization 외 지표 지원). 둘 다 주면 합쳐 넣는다.
+
+    month_measures는 월별 가로 피벗(D-113) 명시 지정 — (alias, resource_type, 값컬럼,
+    YYYYMM) 항목당 해당 월의 값을 뽑는 SELECT 라인 1개를 만든다(집계는 MAX 고정 — 월 통계는
+    월당 1행이라 값 선택이며, stat_date는 GROUP BY에 넣지 않아 서버당 1행 불변식 유지).
+    alias는 호출부(결정적 인식기)가 부여하며 DB2 결과 칼럼 소문자화 대응을 위해 라틴 소문자를
+    권장한다(예: cpu_m0_avg).
     """
     lines: list[str] = []
     rtset: set[str] = {_SERVER_RESOURCE_TYPE}
@@ -197,6 +595,21 @@ def _pivot_select_parts(
             f"  MAX(CASE WHEN c.resource_type='{rt}' "
             f"AND cc.{attr_col}='{attr}' THEN cc.{val_col} END) AS \"{field}\""
         )
+    # 두 서버 EAV 속성 결합 — "Vendor(Model)" 형태(D-115 제조사(모델명) 규칙).
+    # `||`·CASE·NULLIF는 PostgreSQL/DB2 공통 문법. 둘 다 NULL이면 NULL(공란 유지).
+    for field, attr_a, attr_b in concat_eav or []:
+        a = (
+            f"MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
+            f"AND cc.{attr_col}='{attr_a}' THEN cc.{val_col} END)"
+        )
+        b = (
+            f"MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
+            f"AND cc.{attr_col}='{attr_b}' THEN cc.{val_col} END)"
+        )
+        lines.append(
+            f"  NULLIF(COALESCE({a}, '') || CASE WHEN {b} IS NOT NULL "
+            f"THEN '(' || {b} || ')' ELSE '' END, '') AS \"{field}\""
+        )
     has_metric = False
     for field in metric_fields or []:
         cls = classify_metric_field(field)
@@ -210,6 +623,14 @@ def _pivot_select_parts(
         rtset.add(rt)
         has_metric = True
         lines.append(_metric_select_line(alias, rt, agg_fn, mval, db_engine, defn))
+    for alias, rt, mval, month in month_measures or []:
+        if not re.fullmatch(r"\d{6}", month):
+            raise ValueError(f"month_measures 월 형식 오류(YYYYMM 아님): {month!r}")
+        rtset.add(rt)
+        has_metric = True
+        lines.append(
+            _metric_select_line(alias, rt, "MAX", mval, db_engine, stat_date=month)
+        )
     return lines, rtset, has_metric
 
 
@@ -237,6 +658,8 @@ def build_multi_resource_pivot_sql(
     stat_month: StatMonth = None,
     metric_table: str = "cmm_metric_stat_m",
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    month_measures: list[tuple[str, str, str, str]] | None = None,
+    concat_eav: list[tuple[str, str, str]] | None = None,
     server_scope: tuple[str, list[str]] | None = None,
     order_by: tuple[str, str] | None = None,
 ) -> str:
@@ -257,6 +680,10 @@ def build_multi_resource_pivot_sql(
         metric_table: 월별 통계 테이블명(폴스타 기본 cmm_metric_stat_m).
         explicit_measures: 시맨틱 컴파일러용 명시 measure (alias, resource_type, agg_fn,
             val_col, definition_name). metric_fields의 한글라벨 분류 대신 직접 지정(패턴 B).
+        month_measures: 월별 가로 피벗 measure (alias, resource_type, val_col, YYYYMM) —
+            항목당 해당 월 값 1칼럼(D-113, 금감원 M~M+5 양식 등). stat_date는 SELECT의
+            CASE 피벗으로만 쓰고 GROUP BY는 불변(서버당 1행 계약 유지). 조인 월 필터는
+            항목들의 (최소, 최대) 월 범위로 자동 산출하며 stat_month보다 우선한다.
         server_scope: 선행 결과 서버 한정 (식별컬럼, 값목록) — HAVING의 집계 CASE WHEN으로
             적용한다(WHERE에 두면 자식 리소스 행이 탈락해 0건 — D-096). None이면 미적용.
         order_by: 순위 정렬 (SELECT alias, "DESC"|"ASC"). NULL이 1위를 차지하지 않도록
@@ -268,7 +695,8 @@ def build_multi_resource_pivot_sql(
     entity, config, attr_col, val_col, ent_join, cfg_join = _eav_pattern_parts(eav_pattern)
     lines, rtset, has_metric = _pivot_select_parts(
         regular_entries, server_eav, child_eav, metric_fields, attr_col, val_col, db_engine,
-        explicit_measures=explicit_measures,
+        explicit_measures=explicit_measures, month_measures=month_measures,
+        concat_eav=concat_eav,
     )
 
     def q(table: str) -> str:
@@ -276,7 +704,13 @@ def build_multi_resource_pivot_sql(
 
     metric_join = ""
     if has_metric:
-        month_rng = _normalize_stat_month(stat_month)
+        if month_measures:
+            # 월별 가로 피벗: 조인 필터는 measure들의 월 범위로 산출(진행 중 달 등
+            # 범위 밖 행을 조인에서 제외 — SELECT의 stat_date CASE 피벗과 이중 안전).
+            months = sorted({m[3] for m in month_measures})
+            month_rng = (months[0], months[-1])
+        else:
+            month_rng = _normalize_stat_month(stat_month)
         if not month_rng:
             month_cond = ""
         elif month_rng[0] == month_rng[1]:

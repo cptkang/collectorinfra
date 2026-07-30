@@ -113,6 +113,11 @@ async def _run_output_generator(
                 app_config, state, llm=llm, stream_user_response=stream_user_response
             )
             text_response = _append_inferred_mapping_info(text_response, state)
+            # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-114) — 감사자료 오기재·침묵 공란 방지.
+            # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
+            text_response = _append_form_fill_notes(
+                text_response, state, fill_stats=file_result.get("fill_stats")
+            )
 
             # Excel 데이터 0건 채움 경고 메시지 추가
             total_filled = file_result.get("total_filled")
@@ -250,8 +255,13 @@ def _build_response_prompt(
     Returns:
         구성된 프롬프트 문자열
     """
-    # 결과가 많으면 상위 20건만 프롬프트에 포함
-    display_rows = rows[:20]
+    # 결과가 많으면 상위 20건만 프롬프트에 포함.
+    # 복합 필드명(그룹|서브, D-112)의 '|'는 Markdown 표 구분자와 충돌해 응답 표가
+    # 깨진다(라이브 실측: 칼럼 분해·순서 뒤죽박죽) — 표시용 키로 결정적 치환.
+    display_rows = [
+        {_display_field_name(str(k)): v for k, v in r.items()} if isinstance(r, dict) else r
+        for r in rows[:20]
+    ]
     truncated = len(rows) > 20
 
     parts = [
@@ -277,6 +287,76 @@ def _build_response_prompt(
         )
 
     return "\n\n".join(parts)
+
+
+def _format_ym(yyyymm: str) -> str:
+    """YYYYMM을 'YYYY년 M월'로 표기한다."""
+    if len(yyyymm) != 6 or not yyyymm.isdigit():
+        return yyyymm
+    return f"{yyyymm[:4]}년 {int(yyyymm[4:6])}월"
+
+
+def _append_form_fill_notes(
+    response: str,
+    state: AgentState,
+    fill_stats: dict[str, int] | None = None,
+) -> str:
+    """폼필 응답에 기준월 매핑(§2.4)과 미작성 항목 사유(D-114)를 덧붙인다.
+
+    - 기준월: 월 시리즈(M~M+5) 양식은 M이 어느 달인지 양식에 없으므로 실제 사용 월을
+      응답에 반드시 명시한다(감사자료 오기재 방지 — plans/67 R4). 양식 원본(비고 열 등)에는
+      기재하지 않는다(Q3 확정).
+    - 미작성 사유: **writer의 실제 채움 통계(fill_stats)** 기준으로 0건 채워진 칼럼만
+      나열한다(침묵 공란 금지 — D-059의 필드 단위 확장). 라이브 실측(2026-07-28): 매핑
+      None이어도 행 키=필드명 폴백으로 채워지는 칼럼이 있어 매핑 기준 판정은 오보를 냈다.
+      fill_stats가 없으면(docx 등) 종전 매핑 기준으로 폴백한다.
+    - 월 시리즈 필드가 전부 0건이면 사유 목록 대신 "생성 SQL 확인" 안내를 낸다
+      (D-050 — null/공란은 데이터 부재가 아니라 SQL 문제일 수 있음).
+    """
+    anchor = state.get("form_month_anchor") or {}
+    month_fields = set(anchor.get("fields") or [])
+
+    parts: list[str] = []
+    if anchor.get("start") and anchor.get("end"):
+        parts.append(
+            "**[기준월 안내]** 월별 사용률 칼럼은 "
+            f"{_format_ym(anchor['start'])}부터 {_format_ym(anchor['end'])}까지 "
+            "(M=첫 달, 별도 지정이 없으면 실행일 기준 지난달이 마지막 칼럼) 데이터로 채웠습니다. "
+            "다른 기준월이 필요하면 \"기준월 3월\"처럼 지정해 다시 요청해주세요."
+        )
+
+    if fill_stats:
+        unfilled = [
+            f for f, cnt in fill_stats.items()
+            if cnt == 0 and f not in month_fields
+        ]
+        observed_month = [f for f in month_fields if f in fill_stats]
+        if observed_month and all(fill_stats[f] == 0 for f in observed_month):
+            parts.append(
+                "**[확인 필요]** 월별 사용률 칼럼이 전부 채워지지 않았습니다. 데이터 부재가 "
+                "아니라 조회 SQL 문제일 수 있으니 처리현황의 생성 SQL을 확인해주세요."
+            )
+    else:
+        column_mapping = state.get("column_mapping") or {}
+        unfilled = [
+            f for f, c in column_mapping.items()
+            if c is None and f not in month_fields
+        ]
+    if unfilled:
+        shown = "\n".join(f"  - {_display_field_name(f)}" for f in unfilled)
+        parts.append(
+            "**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 "
+            f"비워두었습니다(임의 기재 금지):\n{shown}"
+        )
+
+    if not parts:
+        return response
+    return response + "\n\n---\n" + "\n\n".join(parts)
+
+
+def _display_field_name(field: str) -> str:
+    """복합 필드명(그룹|서브)을 사용자 표시용 'A > B'로 변환한다(내부 키는 '|' 유지)."""
+    return field.replace("|", " > ")
 
 
 def _append_inferred_mapping_info(response: str, state: AgentState) -> str:
@@ -444,6 +524,7 @@ def _generate_document_file(
             sheet_mappings = organized.get("sheet_mappings")
             target_sheets = state.get("target_sheets")
 
+            fill_stats: dict[str, int] = {}
             file_bytes, total_filled = fill_excel_template(
                 file_data=uploaded_file,
                 template_structure=template,
@@ -451,6 +532,7 @@ def _generate_document_file(
                 rows=rows,
                 sheet_mappings=sheet_mappings,
                 target_sheets=target_sheets,
+                fill_stats=fill_stats,
             )
 
             if total_filled == 0 and rows:
@@ -466,6 +548,7 @@ def _generate_document_file(
                 "file_bytes": file_bytes,
                 "file_name": f"result_{timestamp}.xlsx",
                 "total_filled": total_filled,
+                "fill_stats": fill_stats,
             }
 
         elif output_format == "docx":

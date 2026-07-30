@@ -35,14 +35,21 @@ from src.utils.query_gen_common import (
     resolve_effective_limit,
     resolve_query_limit,
     resolve_stat_month_range,
+    template_context_text,
 )
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 from src.db_adapters.polestar.assembler import (
+    apply_capacity_scope_rule,
+    apply_remark_server_name_rule,
+    build_month_series_block,
     build_multi_resource_pivot_block,
     build_multi_resource_pivot_sql,
     classify_metric_field,
     decimal_cast_example,
     eav_attr_resource_types,
+    filter_pivot_regular_entries,
+    find_vendor_model_concat,
+    recognize_month_series,
 )
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
@@ -171,12 +178,17 @@ def _prior_server_scope(state: AgentState) -> Optional[tuple[str, list[str]]]:
 
 def _try_build_form_fill_pivot_sql(
     state: AgentState, limit_value: int, user_query: str
-) -> Optional[str]:
-    """폼필에 자식 리소스 EAV(CPU 코어 수/메모리 용량 등)가 있으면 결정적 피벗 SQL을 조립한다.
+) -> Optional[dict]:
+    """폼필 결정적 피벗 SQL 조립 — 자식 리소스 EAV 또는 월 시리즈(M~M+5) 양식(D-068/D-113).
 
     프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
     (서버 중복·config 누락)한다. well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을 우회한다
     (D-068 2차). 해당 케이스가 아니면 None(LLM 경로 유지).
+
+    Returns:
+        {"sql": str, "month_anchor": dict|None, "mapping_updates": dict} 또는 None.
+        month_anchor는 M~M+max 실제 월(응답 명시 §2.4)·인식 필드 목록(D-114 사유 제외용),
+        mapping_updates는 요청 스코프 규칙(처리능력 GB 등)의 매핑 갱신분(state 반영용).
     """
     column_mapping = state.get("column_mapping")
     if not column_mapping:
@@ -189,16 +201,50 @@ def _try_build_form_fill_pivot_sql(
     if eav_pattern:
         correct_servername_hostname_mapping(column_mapping, eav_pattern.get("entity_table", ""))
     attr_rt = eav_attr_resource_types(schema_info)
+
+    # 월 시리즈(가로 6개월 등) 인식 + 요청 스코프 규칙(D-113/D-115). 인식 실패는 폴백(무발동).
+    month_series = recognize_month_series(
+        column_mapping,
+        context_text=template_context_text(state.get("template_structure")),
+        user_query=user_query,
+    )
+    mapping_updates: dict[str, Optional[str]] = {}
+    if month_series:
+        _cap = apply_capacity_scope_rule(
+            column_mapping, attr_rt, month_series.resource_type
+        )
+        _remark = apply_remark_server_name_rule(
+            column_mapping,
+            (eav_pattern or {}).get("entity_table", "cmm_resource"),
+        )
+        column_mapping.update(_cap)
+        column_mapping.update(_remark)  # SQL은 등록명 SELECT — 비고 규칙(사용자 확정)
+        mapping_updates.update(_cap)
+        # 월 시리즈·비고 필드는 state 매핑을 **강제 None**으로 갱신한다 — writer가 필드명
+        # (=SELECT alias=행 키)으로 조회하게 하기 위함. 라이브 실측(2026-07-28 3차):
+        # field_mapper가 월 필드 전부를 같은 칼럼(cmm_metric_stat_m.avg_val)으로 매핑해
+        # 두면 writer 역매핑(N:1의 마지막 필드)이 6칼럼에 동일값(M+5)을 복제한다.
+        mapping_updates.update({f: None for f in month_series.fields})
+        mapping_updates.update({f: None for f in _remark})
+
+    # 제조사(모델명)류는 Vendor+Model 결합으로 채운다(D-115 — 라이브 실측: 한쪽만 매핑돼
+    # 반쪽 값). 결합 대상 필드는 단독 EAV/직접 컬럼 파티션에서 제외(중복 alias 방지).
+    concat_eav = find_vendor_model_concat(schema_info, column_mapping)
+    concat_fields = {c[0] for c in concat_eav}
+    if month_series and concat_fields:
+        # 결합 필드도 행 키=필드명 조회 강제(잔존 EAV:Vendor류 매핑의 오조회 방지)
+        mapping_updates.update({f: None for f in concat_fields})
+
     eav_entries = [
         (f, c[4:]) for f, c in column_mapping.items()
-        if c and c.startswith("EAV:")
+        if c and c.startswith("EAV:") and f not in concat_fields
     ]
     child_eav = [
         (f, a, attr_rt[a.upper()])
         for f, a in eav_entries
         if a.upper() in attr_rt and attr_rt[a.upper()] != "server.Server"
     ]
-    if not child_eav:
+    if not child_eav and not month_series:
         return None
     if not eav_pattern:
         return None
@@ -210,21 +256,58 @@ def _try_build_form_fill_pivot_sql(
     regular_entries = [
         (f, c) for f, c in column_mapping.items()
         if c and not c.startswith("EAV:") and "cmm_metric_stat" not in c.lower()
+        and f not in concat_fields
     ]
+    # 환각 매핑 칼럼(스키마에 없는 칼럼)이 결정적 SELECT에 유입되면 쿼리 전체가 죽는다
+    # (라이브 실측: 구분→cmm_resource.category). 스키마 검증 + 검증 불가 시 entity
+    # 안전 화이트리스트로 결정적 차단(FIX-5/FIX-13).
+    regular_entries, _dropped = filter_pivot_regular_entries(
+        regular_entries, schema_info, eav_pattern.get("entity_table", "cmm_resource")
+    )
+    if _dropped:
+        logger.warning(
+            "폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외(환각 매핑 차단) — %s",
+            len(_dropped), _dropped,
+        )
+    # 월 피벗인데 서버 식별 컬럼이 하나도 없으면 행 대조가 불가능 — 결정적 식별 컬럼 주입
+    # (alias는 양식 헤더와 무충돌인 라틴명 — writer가 무시하고 병합·진단에만 쓰임).
+    if month_series and not regular_entries and not server_eav and not concat_eav:
+        entity = eav_pattern.get("entity_table", "cmm_resource")
+        regular_entries = [
+            ("server_name", f"{entity}.name"), ("hostname", f"{entity}.hostname"),
+        ]
+    month_fields = set(month_series.fields) if month_series else set()
     metric_fields = [
         f for f, c in column_mapping.items()
-        if c is None and classify_metric_field(f)
+        if c is None and f not in month_fields and f not in concat_fields
+        and classify_metric_field(f)
     ]
     domain = get_domain_by_id(state.get("active_db_id") or "")
     db_schema = domain.db_schema if domain else ""
-    return build_multi_resource_pivot_sql(
+    sql = build_multi_resource_pivot_sql(
         regular_entries, server_eav, child_eav, eav_pattern,
         metric_fields=metric_fields,
         db_engine=state.get("active_db_engine"),
         db_schema=db_schema,
         limit=limit_value,
         stat_month=resolve_stat_month_range(user_query),
+        month_measures=month_series.measures if month_series else None,
+        concat_eav=concat_eav or None,
     )
+    month_anchor = None
+    if month_series:
+        month_anchor = {
+            "start": month_series.anchor[0],
+            "end": month_series.anchor[1],
+            "resource_type": month_series.resource_type,
+            "fields": month_series.fields,
+        }
+        logger.info(
+            "폼필 월 시리즈 인식(D-113): rt=%s, 기간=%s~%s, 필드=%d개",
+            month_series.resource_type, month_series.anchor[0],
+            month_series.anchor[1], len(month_series.fields),
+        )
+    return {"sql": sql, "month_anchor": month_anchor, "mapping_updates": mapping_updates}
 
 
 async def query_generator(
@@ -280,9 +363,17 @@ async def query_generator(
 
     # 폼필 다중 리소스 피벗은 코드가 결정적으로 조립(LLM 우회). 재시도(에러 컨텍스트) 시엔
     # 결정적 SQL이 이미 실패했을 수 있으므로 LLM 폴백으로 에러를 반영해 수정한다.
-    deterministic_sql = None if is_retry else _try_build_form_fill_pivot_sql(
+    _form_fill = None if is_retry else _try_build_form_fill_pivot_sql(
         state, limit_value, user_query
     )
+    deterministic_sql = _form_fill["sql"] if _form_fill else None
+    if is_retry and state.get("template_structure"):
+        # 침묵 금지: 폼필 턴에서 결정적 조립이 재시도 사유로 스킵되어 LLM 폴백이
+        # 양식을 처리하는 시점을 로그로 가시화(라이브 실측: 이 경로가 월 방향 뒤집힘의 근원).
+        logger.info(
+            "폼필 결정적 조립 스킵 — 재시도 턴(error=%s). LLM 폴백이 양식 처리",
+            str(state.get("error_message") or "")[:120],
+        )
     # 트랙 C(D-076): 커버리지 내 정형 질의는 시맨틱 모델로 결정적 컴파일(LLM SQL 생성 우회).
     # 폼필(deterministic_sql)·재시도가 아닐 때만 진입. 커버리지 밖이면 None → 아래 LLM 폴백(회귀 0).
     # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
@@ -316,6 +407,16 @@ async def query_generator(
     if deterministic_sql:
         sql = deterministic_sql
         logger.info("폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s", sql[:500])
+        # 월 시리즈 앵커·요청 스코프 매핑 갱신분을 state에 반영(D-113/D-115).
+        # 앵커는 output_generator가 기준월을 응답에 명시(§2.4)하고 인식 필드를
+        # 미작성 사유(D-114)에서 제외하는 데 쓴다.
+        if _form_fill and _form_fill.get("month_anchor"):
+            extra_return["form_month_anchor"] = _form_fill["month_anchor"]
+        if _form_fill and _form_fill.get("mapping_updates"):
+            extra_return["column_mapping"] = {
+                **(state.get("column_mapping") or {}),
+                **_form_fill["mapping_updates"],
+            }
     elif semantic_sql:
         sql = semantic_sql
         logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", sql[:500])
@@ -350,6 +451,15 @@ async def query_generator(
         _sm_block = build_stat_month_block(stat_month) if _stat_block_db else ""
         if _sm_block:
             user_prompt += "\n\n" + _sm_block
+        # 폼필 월 시리즈 양식이 LLM 폴백으로 흐르는 경우(재시도 턴 등) — 인식기가 확정한
+        # 필드↔YYYYMM 리터럴을 강제해 CURRENT_DATE 역방향 계산(월 뒤집힘 실측)을 차단.
+        _ms_block = build_month_series_block(recognize_month_series(
+            state.get("column_mapping") or {},
+            context_text=template_context_text(state.get("template_structure")),
+            user_query=user_query,
+        )) if state.get("template_structure") else ""
+        if _ms_block:
+            user_prompt += "\n\n" + _ms_block
         # 무선언(프로필 없음) DB: GENERIC_LLM_MAPPING 옵트인 시 범용 기간 힌트(폴스타 리터럴 없음).
         # 선언 우선 — 폴스타(_stat_block_db)는 위 결정적 블록을 쓰므로 이 경로에 들어오지 않는다(P3/D-090).
         elif app_config.text2sql.generic_llm_mapping:

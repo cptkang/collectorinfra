@@ -291,8 +291,8 @@ def enforce_all_query_limit(sql: str, effective_limit: int, config_default_limit
 # resource_type/집계함수/값컬럼 매핑이 필요한 결정적 조립은 어댑터의 `classify_metric_field`
 # (폴스타 특화 리터럴 포함, db_adapters — 가드 스캔 제외)를 쓴다. infra→application 역방향
 # 금지 때문에 문서 계층은 이 스키마-무관 헬퍼만 참조한다(2026-07-22 머지 정리).
-_METRIC_NOUN_TERMS: tuple[str, ...] = ("cpu", "메모리", "mem", "디스크", "disk")
-_METRIC_AGG_TERMS: tuple[str, ...] = ("평균", "최고", "최대", "최소", "avg", "max", "min")
+_METRIC_NOUN_TERMS: tuple[str, ...] = ("cpu", "메모리", "mem", "디스크", "disk", "사용률")
+_METRIC_AGG_TERMS: tuple[str, ...] = ("평균", "최고", "최대", "최소", "avg", "max", "min", "peak", "피크")
 
 
 def is_metric_field_name(field: str) -> bool:
@@ -339,6 +339,67 @@ MISSING_DTIME_ERROR = (
 # 하한 0은 b0 실측 음수(센티널 추정) 21행 차단. Utilization 외 지표(MaxIORate 등)엔 적용 금지
 # (0~1000 의미가 없음 — `_metric_select_line`이 definition_name으로 게이팅).
 UTILIZATION_VALID_RANGE: tuple[int, int] = (0, 1000)
+
+
+def drop_entries_missing_columns(
+    entries: list[tuple[str, str]],
+    schema_info: dict | None,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """(필드, "table.column") 항목 중 스키마에 없는 칼럼을 걸러낸다(결정적 조립 유입 차단).
+
+    라이브 실측(2026-07-28 gp+yd): field_mapper의 환각 매핑(구분→cmm_resource.category)이
+    결정적 피벗 SELECT에 그대로 들어가 `column c.category does not exist`로 쿼리 전체가
+    죽었다(멀티 경로의 기존 필터는 **테이블 존재만** 검사). 스키마에 칼럼 목록이 있는
+    테이블에 한해 칼럼 부재 항목을 제외한다 — 칼럼 정보가 없으면 제외하지 않는다(오탐 방지).
+    비교는 대소문자 무시(DB2 대문자 칼럼).
+
+    Returns:
+        (유지 항목, 제외 항목) — 제외 항목은 호출부가 로그로 가시화한다(침묵 금지).
+    """
+    tables = (schema_info or {}).get("tables") or {}
+    cols_by_table: dict[str, set[str]] = {}
+    for tname, tinfo in tables.items():
+        # 실 런타임 스키마 shape 가변성 대응: 칼럼이 dict({"name":...}) 또는 문자열일 수 있음
+        cols = set()
+        for c in (tinfo or {}).get("columns", []):
+            name = c.get("name") if isinstance(c, dict) else c
+            if name:
+                cols.add(str(name).lower())
+        if not cols:
+            continue
+        cols_by_table[tname.lower()] = cols
+        if "." in tname:
+            cols_by_table.setdefault(tname.rsplit(".", 1)[-1].lower(), cols)
+
+    kept: list[tuple[str, str]] = []
+    dropped: list[tuple[str, str]] = []
+    for field, col in entries:
+        parts = str(col).split(".")
+        if len(parts) < 2:
+            kept.append((field, col))
+            continue
+        table, column = parts[-2].lower(), parts[-1].lower()
+        known = cols_by_table.get(table)
+        if known is not None and column not in known:
+            dropped.append((field, col))
+        else:
+            kept.append((field, col))
+    return kept, dropped
+
+
+def template_context_text(template_structure: dict | None) -> str:
+    """양식 구조에서 문맥 텍스트(시트 제목 title_text·시트명)를 모은다.
+
+    월 시리즈 인식기(D-113)의 리소스 판정 등 양식 종류 판별에 쓴다. 단일(query_generator)·
+    멀티(multi_db_executor) 경로가 공유한다(대칭 — Known Mistakes 단일/멀티 비대칭 방지).
+    """
+    parts: list[str] = []
+    for sheet in (template_structure or {}).get("sheets", []) or []:
+        for key in ("title_text", "name"):
+            val = sheet.get(key)
+            if val:
+                parts.append(str(val))
+    return " ".join(parts)
 
 
 def _utilization_guard(val_col: str, definition_name: str) -> str:

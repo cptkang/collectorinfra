@@ -214,3 +214,42 @@ class TestEnsureLocationHints:
         parsed = {"target_db_hints": []}
         out = _ensure_location_hints(parsed, "은행 전체 서버 스펙")
         assert "은행" in out["target_db_hints"]
+
+
+class TestMultiRegionSingleHint:
+    """복수 지역이 한 hint에 든 경우의 상호 배제 전멸 방지 (2026-07-29 라이브 실측 FIX-14).
+
+    버그: "공동존 김포/여의도 서버에 대해 양식 채워라" → LLM이 hint를 ["공동존 김포/여의도"]
+    한 덩어리로 추출 → hint 단위 배제에서 gp는 '여의도'에, yd는 '김포'에, b0는 둘 다에
+    걸려 전 DB 배제 → 빈 priority → 폴백이 은행존(b0)으로 오판. 지역별 분해로 교정.
+    """
+
+    def test_slash_joined_regions_resolve_to_gp_and_yd(self):
+        assert _resolve_priority_db_ids(["공동존 김포/여의도"], _ACTIVE) == [
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+    def test_slash_joined_without_gongdongjon(self):
+        assert _resolve_priority_db_ids(["김포/여의도"], _ACTIVE) == [
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+    def test_conjunction_joined_regions(self):
+        assert _resolve_priority_db_ids(["김포와 여의도"], _ACTIVE) == [
+            "polestar_cm_gp",
+            "polestar_cm_yd",
+        ]
+
+    def test_region_with_bank_in_one_hint(self):
+        """'은행존과 김포' 같은 조합도 각 존으로 분해된다."""
+        assert _resolve_priority_db_ids(["은행존과 김포"], _ACTIVE) == [
+            "polestar_b0",
+            "polestar_cm_gp",
+        ]
+
+    def test_single_region_hint_unchanged(self):
+        """지역이 하나뿐인 hint는 분해 없이 기존 동작 유지."""
+        assert _resolve_priority_db_ids(["공동존 김포"], _ACTIVE) == ["polestar_cm_gp"]
+        assert _resolve_priority_db_ids(["은행"], _ACTIVE) == ["polestar_b0"]

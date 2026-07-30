@@ -60,6 +60,7 @@ def fill_excel_template(
     *,
     sheet_mappings: list[dict[str, Any]] | None = None,
     target_sheets: list[str] | None = None,
+    fill_stats: dict[str, int] | None = None,
 ) -> tuple[bytes, int]:
     """Excel 양식에 조회 결과를 채워넣는다.
 
@@ -75,6 +76,9 @@ def fill_excel_template(
         rows: 조회 결과 행 목록 (단일 시트용)
         sheet_mappings: 시트별 매핑 결과 목록 (멀티시트용, 선택)
         target_sheets: 대상 시트명 목록 (None이면 전체 시트)
+        fill_stats: 필드(헤더)별 실제 채움 셀 수를 담아 돌려줄 out-param(선택) —
+            D-114 미작성 사유는 매핑 유무가 아니라 **실제 채움 결과**로 판정한다
+            (라이브 실측 2026-07-28: 매핑 None이어도 행 키=필드명 폴백으로 채워짐)
 
     Returns:
         (데이터가 채워진 Excel 파일 바이너리, 채워진 데이터 건수) 튜플
@@ -119,7 +123,9 @@ def fill_excel_template(
         sheet_rows = per_sheet_rows.get(sheet_name, rows)
 
         if sheet_col_mapping:
-            sheet_filled = _fill_sheet(ws, sheet_info, sheet_col_mapping, sheet_rows)
+            sheet_filled = _fill_sheet(
+                ws, sheet_info, sheet_col_mapping, sheet_rows, fill_stats=fill_stats
+            )
             total_filled += sheet_filled
         else:
             logger.debug("시트 '%s': 매핑 정보가 없어 스킵", sheet_name)
@@ -145,6 +151,7 @@ def _fill_sheet(
     sheet_info: dict[str, Any],
     column_mapping: dict[str, Optional[str]],
     rows: list[dict[str, Any]],
+    fill_stats: dict[str, int] | None = None,
 ) -> int:
     """단일 시트에 데이터를 채운다.
 
@@ -167,15 +174,26 @@ def _fill_sheet(
     col_assignments: list[tuple[int, str]] = []
     # 사용률 통계 헤더(예: "CPU 평균") 열 — 문자열로 도착한 숫자도 숫자로 변환할 대상(DB2 비대칭)
     numeric_hint_cols: set[int] = set()
+    # 필드명 폴백(alias=필드명) 열 — 엄격 조회만 허용(유사 매칭 금지)
+    strict_cols: set[int] = set()
+    # 필드별 실제 채움 통계(D-114) — 헤더 전체를 0으로 초기화(미채움 필드도 관측)
+    header_by_col: dict[int, str] = {}
     for hc in header_cells:
         col_idx = hc["col"]
         header_name = hc["value"]
+        header_by_col[col_idx] = str(header_name)
+        if fill_stats is not None:
+            fill_stats.setdefault(str(header_name), 0)
         mapped = column_mapping.get(header_name)
         if mapped:
             col_assignments.append((col_idx, mapped))
         elif header_name in column_mapping:
-            # column_mapping에는 있지만 None인 경우: 필드명 자체로 시도
+            # column_mapping에는 있지만 None인 경우: 필드명 자체로 시도.
+            # 이 경로는 SELECT alias=필드명(결정적)이므로 유사 매칭이 불필요·위험하다 —
+            # 엄격 조회 대상으로 표시한다(라이브 실측: NULL 월 키가 행에서 빠지면
+            # 근사 매칭이 "…|M"을 "…|M+5" 키에 오매칭해 이웃 월 값을 복제).
             col_assignments.append((col_idx, header_name))
+            strict_cols.add(col_idx)
         else:
             continue
         if is_metric_field_name(str(header_name)):
@@ -226,8 +244,13 @@ def _fill_sheet(
             if cell_coord in formula_cells_set:
                 continue  # 수식 셀은 건너뜀
 
-            # DB 컬럼에서 값 추출 (table.column -> column)
-            value = _get_value_from_row(data_row, db_column, reverse_mapping)
+            # DB 컬럼에서 값 추출 (table.column -> column).
+            # 필드명 폴백 열은 엄격 조회 — 결정적 alias에 오타 허용은 불필요하고,
+            # 근사 매칭은 월 서픽스(…|M vs …|M+5)를 무시해 이웃 칼럼 값을 복제한다.
+            if col_idx in strict_cols:
+                value = _get_value_by_field_name(data_row, db_column)
+            else:
+                value = _get_value_from_row(data_row, db_column, reverse_mapping)
 
             cell = ws.cell(row=target_row, column=col_idx)
             # None 값 처리: 매핑된 컬럼에 값이 없으면 원본 셀 값 유지
@@ -237,6 +260,8 @@ def _fill_sheet(
                 value, numeric_hint=(col_idx in numeric_hint_cols)
             )
             filled_count += 1
+            if fill_stats is not None and col_idx in header_by_col:
+                fill_stats[header_by_col[col_idx]] += 1
 
             # 서식 적용
             if col_idx in style_cache:
@@ -297,6 +322,23 @@ def _apply_style(cell: Cell, style: dict[str, Any]) -> None:
         cell.alignment = style["alignment"]
     if style.get("number_format"):
         cell.number_format = style["number_format"]
+
+
+def _get_value_by_field_name(data_row: dict[str, Any], field: str) -> Any:
+    """필드명(=SELECT alias) 기준 **엄격** 조회 — 정확 일치와 정규화(소문자·공백 제거)
+    동등만 허용한다(DB2의 라틴 소문자화 흡수용).
+
+    결정적 조립 경로의 alias는 필드명 그대로라 오타 허용이 필요 없고, 근사(편집 거리)
+    매칭은 NULL이라 행에서 빠진 월 키("…|M")를 이웃 키("…|M+5")에 오매칭해 값을
+    복제하는 실측 회귀(2026-07-28 라이브 4차)가 있어 금지한다.
+    """
+    if field in data_row:
+        return data_row[field]
+    norm = str(field).lower().replace(" ", "")
+    for key, value in data_row.items():
+        if str(key).lower().replace(" ", "") == norm:
+            return value
+    return None
 
 
 def _get_value_from_row(

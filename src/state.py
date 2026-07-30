@@ -112,6 +112,10 @@ class AgentState(TypedDict):
     pending_synonym_registrations: Optional[list[dict]]      # 유사어 등록 대기 [{index, field, column, db_id}]
     llm_inference_details: Optional[list[dict]]              # LLM 추론 매핑 상세 [{field, db_id, column, matched_synonym, confidence, reason}]
     mapping_report_md: Optional[str]                         # 매핑 보고서 Markdown 텍스트
+    # 폼필 월 시리즈(M~M+5) 인식 결과(D-113) — {start, end: YYYYMM, resource_type, fields}.
+    # output_generator가 기준월을 응답에 명시하고 인식 필드를 미작성 사유(D-114)에서 제외.
+    # 요청 스코프 값 — 매 턴 초기화.
+    form_month_anchor: Optional[dict]
 
     # === 유사단어 재활용 대기 ===
     pending_synonym_reuse: Optional[dict]
@@ -223,6 +227,9 @@ def create_followup_input(
         # 원문 기준 LIMIT 확정값은 요청 스코프 — 직전 턴 값이 승계되지 않도록 명시 초기화
         # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 65 §3).
         "resolved_limit": None,
+        # 폼필 월 시리즈 앵커(D-113)도 요청 스코프 — 직전 폼필 턴 값이 텍스트 턴 응답에
+        # 기준월 안내로 잔존하지 않도록 명시 초기화(field_mapper 산출물이 아니라 자기정리 필요).
+        "form_month_anchor": None,
         # 존 선택(Plan 65 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
         # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
         "selected_db_ids": selected_db_ids,
@@ -278,6 +285,7 @@ def create_initial_state(
         pending_synonym_registrations=None,
         llm_inference_details=None,
         mapping_report_md=None,
+        form_month_anchor=None,
         pending_synonym_reuse=None,
         column_descriptions={},
         column_synonyms={},

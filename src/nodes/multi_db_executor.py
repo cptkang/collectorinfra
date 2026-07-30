@@ -40,13 +40,20 @@ from src.utils.query_gen_common import (
     resolve_effective_limit,
     resolve_query_limit,
     resolve_stat_month_range,
+    template_context_text,
 )
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 from src.db_adapters.polestar.assembler import (
+    apply_capacity_scope_rule,
+    apply_remark_server_name_rule,
+    build_month_series_block,
     build_multi_resource_pivot_sql,
     classify_metric_field,
     decimal_cast_example,
     eav_attr_resource_types,
+    filter_pivot_regular_entries,
+    find_vendor_model_concat,
+    recognize_month_series,
 )
 from src.utils.schema_utils import build_excluded_join_map
 
@@ -160,6 +167,10 @@ async def multi_db_executor(
     # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066)
     prior_block = build_prior_rows_block(state.get("prior_rows"))
 
+    # 폼필 월 시리즈(D-113) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
+    form_context = template_context_text(state.get("template_structure"))
+    form_fill_out: dict = {}
+
     for target in targets:
         db_id = target["db_id"]
         sub_context = target.get("sub_query_context", state["user_query"])
@@ -216,6 +227,8 @@ async def multi_db_executor(
                         execute=_mc_execute,
                         candidate_sink=mc_candidates,
                         prior_block=prior_block,
+                        form_context_text=form_context,
+                        form_fill_out=form_fill_out,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -236,6 +249,8 @@ async def multi_db_executor(
                             unmapped_fields=unmapped_fields,
                             app_config=app_config,
                             prior_block=prior_block,
+                            form_context_text=form_context,
+                            form_fill_out=form_fill_out,
                         )
                         validation_error = _validate_sql_simple(sql, schema_info)
                         if validation_error:
@@ -288,7 +303,7 @@ async def multi_db_executor(
     _canonical_fields = list((state.get("column_mapping") or {}).keys())
     merged_results = _merge_results(db_results, canonical_fields=_canonical_fields)
 
-    return {
+    result: dict = {
         "db_results": db_results,
         "db_schemas": db_schemas,
         "db_errors": db_errors,
@@ -298,6 +313,15 @@ async def multi_db_executor(
         "current_node": "multi_db_executor",
         "error_message": None if db_results else "모든 DB 쿼리가 실패했습니다.",
     }
+    # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-113/D-115 — 단일 경로와 대칭).
+    if form_fill_out.get("month_anchor"):
+        result["form_month_anchor"] = form_fill_out["month_anchor"]
+    if form_fill_out.get("mapping_updates"):
+        result["column_mapping"] = {
+            **(state.get("column_mapping") or {}),
+            **form_fill_out["mapping_updates"],
+        }
+    return result
 
 
 async def _analyze_schema(
@@ -386,6 +410,8 @@ async def _generate_sql(
     execute: Callable[[str], Awaitable[dict]] | None = None,
     candidate_sink: list[dict] | None = None,
     prior_block: str | None = None,
+    form_context_text: str = "",
+    form_fill_out: dict | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -400,6 +426,9 @@ async def _generate_sql(
         db_engine: DB 엔진 타입 ("postgresql", "db2" 등)
         db_id: DB 식별자 (스키마 한정 규칙 결정용, D-057)
         app_config: 앱 설정 (트랙 C 시맨틱 조합 플래그 판정용, 없으면 로드)
+        form_context_text: 양식 문맥 텍스트(시트 제목 등) — 월 시리즈 인식(D-113)용
+        form_fill_out: 폼필 산출 out-param(선택) — 월 앵커·스코프 매핑 갱신분을 담아
+            노드가 state 델타로 반영한다("month_anchor"/"mapping_updates" 키)
 
     Returns:
         생성된 SQL 문자열
@@ -534,8 +563,11 @@ async def _generate_sql(
     if prior_block:
         user_parts.append(prior_block)
 
-    # column_mapping이 있으면 schema_info 기반 필터링 후 매핑 컬럼을 명시
-    if column_mapping:
+    # column_mapping이 있으면 schema_info 기반 필터링 후 매핑 컬럼을 명시.
+    # 미매핑 필드만 있어도(per-DB 매핑이 비어도) 월 시리즈 인식은 발동해야 하므로
+    # unmapped_fields도 진입 조건에 포함한다(라이브 실측 2026-07-28 — FIX-1).
+    if column_mapping or unmapped_fields:
+        column_mapping = column_mapping or {}
         # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링
         if schema_info:
             tables_in_schema = set(schema_info.get("tables", {}).keys())
@@ -577,6 +609,53 @@ async def _generate_sql(
         if _sn_eav:
             correct_servername_hostname_mapping(column_mapping, _sn_eav.get("entity_table", ""))
 
+        # 월 시리즈(M~M+5 가로 전개) 인식 + 요청 스코프 규칙(D-113/D-115) — 단일 경로와 대칭.
+        # 멀티 경로는 미매핑 필드가 unmapped_fields로 분리 전달되므로 합쳐서 인식한다.
+        _recog_mapping: dict[str, str | None] = {
+            f: None for f in (unmapped_fields or [])
+        }
+        _recog_mapping.update(column_mapping)
+        month_series = recognize_month_series(
+            _recog_mapping,
+            context_text=form_context_text,
+            user_query=parsed_requirements.get("original_query", "") or "",
+        )
+        if month_series:
+            _attr_rt_scope = eav_attr_resource_types(schema_info)
+            _scope_updates = apply_capacity_scope_rule(
+                _recog_mapping, _attr_rt_scope, month_series.resource_type
+            )
+            _remark_updates = apply_remark_server_name_rule(
+                _recog_mapping,
+                (_sn_eav or {}).get("entity_table", "cmm_resource"),
+            )
+            column_mapping.update(_scope_updates)
+            column_mapping.update(_remark_updates)  # SQL은 등록명 SELECT(비고 규칙)
+            if form_fill_out is not None:
+                form_fill_out["month_anchor"] = {
+                    "start": month_series.anchor[0],
+                    "end": month_series.anchor[1],
+                    "resource_type": month_series.resource_type,
+                    "fields": month_series.fields,
+                }
+                _mu = form_fill_out.setdefault("mapping_updates", {})
+                _mu.update(_scope_updates)
+                # 월 시리즈·비고 필드는 state 매핑 강제 None — writer가 필드명(=행 키)으로
+                # 조회(라이브 실측: N:1 metric 매핑 → 역매핑이 6칼럼 동일값 복제). 단일 대칭.
+                _mu.update({f: None for f in month_series.fields})
+                _mu.update({f: None for f in _remark_updates})
+
+        # 제조사(모델명)류 Vendor+Model 결합 규칙(D-115) — 단일 경로와 대칭.
+        # 결합 필드 제외는 결정적 피벗 발동 시에만 적용한다(LLM 폴백 프롬프트의
+        # 매핑 블록에서 필드가 사라지는 회귀 방지).
+        concat_eav = find_vendor_model_concat(schema_info, _recog_mapping)
+        concat_fields = {c[0] for c in concat_eav}
+        if month_series and concat_fields and form_fill_out is not None:
+            # 결합 필드도 행 키=필드명 조회 강제(잔존 EAV:Vendor류 매핑의 오조회 방지)
+            form_fill_out.setdefault("mapping_updates", {}).update(
+                {f: None for f in concat_fields}
+            )
+
         # 정규 매핑과 EAV 매핑 분리
         regular_entries = [
             (field, col) for field, col in column_mapping.items()
@@ -616,20 +695,66 @@ async def _generate_sql(
             for field, attr in eav_entries
             if attr.upper() in attr_rt and attr_rt[attr.upper()] != "server.Server"
         ]
-        use_multi_resource_pivot = bool(child_eav)
+        # 결정적 SQL이 검증에 실패해 재생성(error_context)하는 경우 같은 SQL을 다시
+        # 조립하면 동일 실패가 반복되므로 LLM 폴백으로 넘긴다(단일 경로 is_retry와 대칭).
+        use_multi_resource_pivot = (
+            bool(child_eav) or bool(month_series)
+        ) and not error_context
+        if month_series and error_context:
+            logger.info(
+                "DB '%s': 폼필 결정적 조립 스킵 — 재생성 턴(error=%s). LLM 폴백이 양식 처리",
+                db_id, str(error_context)[:120],
+            )
+        if month_series and not use_multi_resource_pivot:
+            # LLM 폴백에도 인식기가 확정한 월 리터럴을 강제(월 방향 뒤집힘 실측 차단)
+            _msb = build_month_series_block(month_series)
+            if _msb:
+                user_parts.append(_msb)
         if use_multi_resource_pivot:
+            # 결합 대상 필드는 단독 파티션에서 제외(중복 alias 방지 — 피벗 발동 시에만)
+            regular_entries = [
+                e for e in regular_entries if e[0] not in concat_fields
+            ]
+            # 환각 매핑 칼럼(스키마 부재)의 결정적 SELECT 유입 차단(FIX-5/FIX-13 —
+            # 라이브 실측 gp+yd: 구분→cmm_resource.category → column does not exist로
+            # 전체 실패. 캐시 스키마가 요약형이라 검증 불가하면 entity 안전 화이트리스트 적용).
+            regular_entries, _dropped = filter_pivot_regular_entries(
+                regular_entries, schema_info,
+                (_sn_eav or {}).get("entity_table", "cmm_resource"),
+            )
+            if _dropped:
+                logger.warning(
+                    "DB '%s' 폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외 — %s",
+                    db_id, len(_dropped), _dropped,
+                )
+            child_eav = [e for e in child_eav if e[0] not in concat_fields]
             server_eav = [
                 (field, attr)
                 for field, attr in eav_entries
-                if attr.upper() not in attr_rt or attr_rt[attr.upper()] == "server.Server"
+                if (attr.upper() not in attr_rt or attr_rt[attr.upper()] == "server.Server")
+                and field not in concat_fields
             ]
             # 사용률 통계 필드는 통합 피벗에 접어 넣는다(미매핑 경로 + metric 컬럼 매핑 경로).
-            _um = list(unmapped_fields or [])
+            # 월 시리즈·결합 규칙 필드는 각자 담당 파티션이 있으므로 제외(중복 SELECT 방지).
+            _month_fields = set(month_series.fields) if month_series else set()
+            _um = [
+                f for f in (unmapped_fields or [])
+                if f not in _month_fields and f not in concat_fields
+            ]
             pivot_metric_fields = [f for f in _um if classify_metric_field(f)]
             pivot_metric_fields += [
-                field for field, _ in metric_entries if classify_metric_field(field)
+                field for field, _ in metric_entries
+                if field not in _month_fields and classify_metric_field(field)
             ]
             eav_pattern_mr = _get_eav_pattern(schema_info) or {}
+            # 월 피벗인데 서버 식별 컬럼이 전무하면(per-DB 매핑 공백) 결정적 식별 컬럼 주입
+            # — alias는 양식 헤더와 무충돌 라틴명(병합·진단용). 단일 경로와 대칭.
+            if month_series and not regular_entries and not server_eav and not concat_eav:
+                _entity = eav_pattern_mr.get("entity_table", "cmm_resource")
+                regular_entries = [
+                    ("server_name", f"{_entity}.name"),
+                    ("hostname", f"{_entity}.hostname"),
+                ]
             # 프롬프트로 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
             # (서버 중복·config 누락)한다. 이 well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을
             # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
@@ -640,11 +765,16 @@ async def _generate_sql(
                 regular_entries, server_eav, child_eav, eav_pattern_mr,
                 metric_fields=pivot_metric_fields, db_engine=db_engine,
                 db_schema=db_schema, limit=default_limit, stat_month=stat_month,
+                month_measures=month_series.measures if month_series else None,
+                concat_eav=concat_eav or None,
             )
             logger.info(
-                "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, month=%s",
+                "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, "
+                "month=%s, 월시리즈=%d, regular=%s, concat=%s",
                 db_id, len(child_eav), len(pivot_metric_fields),
                 "~".join(stat_month) if stat_month else "전체",
+                len(month_series.fields) if month_series else 0,
+                regular_entries, [c[0] for c in concat_eav],
             )
             return deterministic_sql
 
