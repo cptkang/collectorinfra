@@ -213,7 +213,7 @@ def build_stat_month_block(
     )
 
 
-def build_generic_period_hint(stat_month: str | None) -> str:
+def build_generic_period_hint(stat_month: StatMonth) -> str:
     """무선언(프로필 없음) DB용 범용 기간 해석 힌트 — 특정 DB 스키마 리터럴 없음(Plan 63 P3, D-090).
 
     프로필/시맨틱 모델이 없는 DB는 통계 테이블명·기간 컬럼이 선언돼 있지 않다. 특정 DB의 통계 테이블·
@@ -221,11 +221,14 @@ def build_generic_period_hint(stat_month: str | None) -> str:
     알려주고 **대상 스키마에 실제 존재하는 시간/날짜 컬럼**으로 매핑하도록 LLM에 위임한다(테이블/컬럼 지어내기 금지).
     `GENERIC_LLM_MAPPING` 옵트인(기본 OFF)일 때만 주입한다.
     """
-    if not stat_month:
+    rng = _normalize_stat_month(stat_month)
+    if not rng:
         return ""
+    start, end = rng
+    period = f"'{start}'" if start == end else f"'{start}'~'{end}'"
     return (
         "## 기간 조건 해석 (참고)\n"
-        f"질의의 기간 표현은 월(YYYYMM) '{stat_month}'로 해석되었습니다. 대상 스키마에 **실제 존재하는**"
+        f"질의의 기간 표현은 월(YYYYMM) {period}로 해석되었습니다. 대상 스키마에 **실제 존재하는**"
         " 시간/날짜 컬럼에 이 월을 필터로 적용하세요.\n"
         "- 스키마에 없는 테이블/컬럼을 지어내지 마세요(환각 금지).\n"
         "- 진행 중인 달을 포함하는 BETWEEN·INTERVAL 재계산으로 서버가 중복되지 않게 하세요."
