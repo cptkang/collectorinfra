@@ -897,18 +897,54 @@ def _check_left_join_where_demotion(sql: str) -> list[str]:
     return errors
 
 
+def _strip_parenthesized(sql: str) -> str:
+    """괄호(서브쿼리 등) 내부를 제거해 최상위 레벨 텍스트만 남긴다.
+
+    문자열 리터럴('...') 속 괄호는 깊이 계산에서 제외한다 — 리터럴의 홑괄호가
+    깊이를 어긋나게 하면 외곽 LIMIT을 못 보고 이중 LIMIT을 붙일 수 있다.
+    """
+    out: list[str] = []
+    depth = 0
+    in_str = False
+    for ch in sql:
+        if in_str:
+            if ch == "'":
+                in_str = False
+            if depth == 0:
+                out.append(ch)
+            continue
+        if ch == "'":
+            in_str = True
+            if depth == 0:
+                out.append(ch)
+            continue
+        if ch == "(":
+            depth += 1
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            continue
+        if depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
 def _has_limit_clause(sql: str) -> bool:
-    """LIMIT 절이 있는지 확인한다.
+    """최상위 레벨에 행 제한 절(LIMIT/FETCH FIRST)이 있는지 확인한다.
+
+    서브쿼리 내부 LIMIT에 오매칭되면 외곽 자동 보정이 억제되어 무제한 반환이
+    가능했다(Plan 69 P0-⑦) — 괄호 내부를 제거한 최상위 텍스트만 검사한다.
 
     Args:
         sql: SQL 쿼리
 
     Returns:
-        LIMIT 절 존재 여부
+        최상위 행 제한 절 존재 여부
     """
+    top_level = _strip_parenthesized(sql)
     return bool(
-        re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE)
-        or re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS?\s+ONLY\b", sql, re.IGNORECASE)
+        re.search(r"\bLIMIT\s+\d+", top_level, re.IGNORECASE)
+        or re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS?\s+ONLY\b", top_level, re.IGNORECASE)
     )
 
 

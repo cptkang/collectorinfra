@@ -129,6 +129,30 @@ class TestHasLimitClause:
     def test_case_insensitive(self):
         assert _has_limit_clause("SELECT * FROM servers limit 50") is True
 
+    def test_subquery_limit_does_not_count_as_outer(self):
+        """서브쿼리 내부 LIMIT은 외곽 행 제한이 아니다 (Plan 69 P0-⑦).
+
+        서브쿼리 LIMIT에 오매칭되면 외곽 LIMIT 자동 보정이 억제되어
+        무제한 반환이 가능했다(행 제한 제약 우회 구멍).
+        """
+        sql = (
+            "SELECT s.hostname FROM servers s "
+            "WHERE s.id IN (SELECT server_id FROM cpu_stats ORDER BY v DESC LIMIT 10)"
+        )
+        assert _has_limit_clause(sql) is False
+
+    def test_subquery_and_outer_limit(self):
+        sql = (
+            "SELECT s.hostname FROM servers s "
+            "WHERE s.id IN (SELECT server_id FROM cpu_stats LIMIT 10) LIMIT 100"
+        )
+        assert _has_limit_clause(sql) is True
+
+    def test_paren_inside_string_literal_does_not_break_detection(self):
+        """문자열 리터럴 속 괄호가 최상위 판정을 깨지 않는다."""
+        sql = "SELECT * FROM servers WHERE note = '(draft' LIMIT 50"
+        assert _has_limit_clause(sql) is True
+
 
 class TestAddLimitClause:
     """LIMIT 절 자동 추가 검증."""
