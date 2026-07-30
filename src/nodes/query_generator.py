@@ -82,8 +82,9 @@ def _format_structure_guide(
         if p.get("type") == "eav"
     ]
 
-    # EAV 패턴이 있고 query_guide가 존재하면, 조인 규칙 지침을 앞에 삽입
-    if eav_patterns and guide:
+    # EAV 패턴이 있으면 조인 규칙 지침을 앞에 삽입 — guide가 빈 프로필에서도 금지
+    # 규칙 자체는 유효하다(빈 guide 시 규칙이 통째로 빠지던 결함 수정, Plan 69 P0-③).
+    if eav_patterns:
         eav_join_rule = (
             "## EAV 테이블 조인 규칙\n"
             "EAV 구조의 entity 테이블과 config 테이블을 조인할 때 "
