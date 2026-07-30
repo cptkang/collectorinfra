@@ -8,7 +8,14 @@
                    ``alarm_allowed_tables``
     큐레이션   : ``config/knowledge/{db_id}/catalog.yaml``
                  — 구조에서 파생 불가능한 운영 판단만(수록 대상 선별, 별칭 가감 delta,
-                   패턴 B measure, 패턴 C 조인). 구조 정본과 **겹치는 데이터는 두지 않는다.**
+                   패턴 B measure, 패턴 C 조인, 계층 taxonomy). 구조 정본과 **겹치는 데이터는
+                   두지 않는다.**
+
+계층 taxonomy(Plan 67 N4 / D-133): 큐레이션 ``taxonomy``에 상위어→하위 항목을 선언하면
+생성기가 각 항목에 ``parent``를 스탬프하고 정규화된 ``taxonomy`` 블록을 카탈로그에 싣는다.
+평면 동의어의 precision 붕괴(상위어가 하위어 하나로 정확 매칭되는 사고) 완화용이며,
+**핵심 용어부터 단계화**한다 — 전면 조화는 ontology drift 부채가 된다
+(``docs/standardization_literature_review.md`` §3.6-⑤·§3.7).
 
 별칭은 프로필 유사어에서 파생하고 큐레이션은 ``alias_deny``/``alias_extra`` **delta로만** 적용한다
 (전체 치환이면 "프로필에 별칭 1건 추가 → 카탈로그 자동 반영"이 깨져 R1 목표가 무효가 된다).
@@ -296,6 +303,111 @@ def _build_pattern_c(structure_meta: dict, overrides: dict) -> dict:
     return pattern_c
 
 
+# ──────────────────────────────────────────────
+# 계층 taxonomy (Plan 67 N4 / D-133)
+# ──────────────────────────────────────────────
+
+def measure_key(resource_type: Any, definition_name: Any) -> str:
+    """measure 참조 키 ``resource_type/definition_name``를 만든다(taxonomy 선언 표기와 동일)."""
+    return f"{resource_type}/{definition_name}"
+
+
+def _taxonomy_children_dims(
+    names: list, term: str, dim_by_name: dict[str, dict]
+) -> list[str]:
+    """선언된 하위 dimension을 카탈로그 실재분으로 걸러 parent를 스탬프한다."""
+    out: list[str] = []
+    for raw in names or []:
+        entry = dim_by_name.get(str(raw))
+        if entry is None:
+            # db별 exclude로 수록되지 않은 속성 — 상위어에서 조용히 뺀다(선언은 공통 정본).
+            logger.debug("taxonomy 하위 dimension 미수록으로 제외: %s ⊃ %s", term, raw)
+            continue
+        existing = entry.get("parent")
+        if existing and existing != term:
+            # 부모는 하나만 둔다(첫 선언 우선) — 다중 부모는 계층이 아니라 그래프가 된다.
+            logger.warning(
+                "taxonomy 하위 항목 중복 부모 — 첫 선언 유지: %s (기존 %s, 신규 %s)",
+                raw, existing, term,
+            )
+            continue
+        entry["parent"] = term
+        out.append(str(entry.get("name")))
+    return out
+
+
+def _taxonomy_children_measures(
+    refs: list, term: str, measure_by_key: dict[str, dict]
+) -> list[dict]:
+    """선언된 하위 measure를 카탈로그 실재분으로 걸러 parent를 스탬프한다."""
+    out: list[dict] = []
+    for raw in refs or []:
+        entry = measure_by_key.get(str(raw))
+        if entry is None:
+            logger.debug("taxonomy 하위 measure 미수록으로 제외: %s ⊃ %s", term, raw)
+            continue
+        existing = entry.get("parent")
+        if existing and existing != term:
+            logger.warning(
+                "taxonomy 하위 항목 중복 부모 — 첫 선언 유지: %s (기존 %s, 신규 %s)",
+                raw, existing, term,
+            )
+            continue
+        entry["parent"] = term
+        out.append({
+            "resource_type": entry.get("resource_type"),
+            "definition_name": entry.get("definition_name"),
+        })
+    return out
+
+
+def _apply_taxonomy(catalog: dict, overrides: dict) -> None:
+    """상위어 선언을 카탈로그에 반영한다 — 항목별 ``parent`` 스탬프 + ``taxonomy`` 블록 생성.
+
+    상위어 자체는 선택지가 아니다(카탈로그 항목이 아니라 어휘) — 하위 항목을 가리키는
+    이름일 뿐이다. 하위가 하나도 수록되지 않은 상위어는 블록에서 제외한다(빈 상위어로
+    모호성 판정이 헛돌지 않게).
+
+    Args:
+        catalog: 생성 중인 카탈로그(제자리 수정)
+        overrides: 큐레이션 오버라이드(``taxonomy`` 선언 원천)
+    """
+    declared = overrides.get("taxonomy")
+    if not isinstance(declared, dict) or not declared:
+        return
+
+    dims = (catalog.get("pattern_a") or {}).get("dimensions") or []
+    dim_by_name = {str(d.get("name")): d for d in dims if d.get("name")}
+    measures = (catalog.get("pattern_b") or {}).get("measures") or []
+    measure_by_key = {
+        measure_key(m.get("resource_type"), m.get("definition_name")): m
+        for m in measures if isinstance(m, dict)
+    }
+
+    taxonomy: dict[str, dict] = {}
+    for term, node in declared.items():
+        if not isinstance(node, dict):
+            continue
+        child_dims = _taxonomy_children_dims(
+            node.get("dimensions") or [], str(term), dim_by_name)
+        child_measures = _taxonomy_children_measures(
+            node.get("measures") or [], str(term), measure_by_key)
+        if not child_dims and not child_measures:
+            continue
+        block: dict[str, Any] = {}
+        aliases = [str(a) for a in (node.get("aliases") or [])]
+        if aliases:
+            block["aliases"] = aliases
+        if child_dims:
+            block["dimensions"] = child_dims
+        if child_measures:
+            block["measures"] = child_measures
+        taxonomy[str(term)] = block
+
+    if taxonomy:
+        catalog["taxonomy"] = taxonomy
+
+
 def build_catalog(
     structure_meta: Optional[dict],
     *,
@@ -315,7 +427,8 @@ def build_catalog(
         overrides: ``load_knowledge_overrides`` 결과(큐레이션 delta·패턴 B/C 정의)
 
     Returns:
-        ``{db_id, pattern_a, pattern_b, pattern_c}`` 카탈로그. 원천이 없으면 해당 패턴은 생략된다.
+        ``{db_id, pattern_a, pattern_b, pattern_c, taxonomy}`` 카탈로그. 원천이 없으면 해당
+        패턴은 생략된다(``taxonomy``는 선언이 있을 때만).
     """
     meta = structure_meta or {}
     over = overrides or {}
@@ -327,8 +440,16 @@ def build_catalog(
     if pattern_a:
         catalog["pattern_a"] = pattern_a
     if over.get("pattern_b"):
-        catalog["pattern_b"] = dict(over["pattern_b"])
+        pattern_b = dict(over["pattern_b"])
+        # measure dict는 사본으로 싣는다 — taxonomy parent 스탬프가 오버라이드 원본을
+        # 오염시키지 않게(오버라이드는 호출자가 재사용할 수 있는 입력이다).
+        if pattern_b.get("measures"):
+            pattern_b["measures"] = [
+                dict(m) if isinstance(m, dict) else m for m in pattern_b["measures"]
+            ]
+        catalog["pattern_b"] = pattern_b
     pattern_c = _build_pattern_c(meta, over)
     if pattern_c:
         catalog["pattern_c"] = pattern_c
+    _apply_taxonomy(catalog, over)
     return catalog

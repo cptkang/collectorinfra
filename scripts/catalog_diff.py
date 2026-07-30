@@ -15,11 +15,16 @@
     - dimension의 ``aliases``는 **집합 비교**한다. 별칭은 dimension 인덱스에서 전부 같은
       dimension을 가리키므로(``_dimension_index``) dimension 내부 순서에는 의미가 없다.
       반면 dimension **목록 순서**는 별칭 충돌 시 선착순 해소에 영향을 주므로 순서까지 비교한다.
+    - **N4(계층 taxonomy) 추가분은 대조에서 제외**한다(``ADDITIVE_KEYS``). 비교 대상인
+      ``config/semantic_models/*.yaml``은 R1 전환 시점에 동결된 폴백 사본이라 N4 이후의
+      정본 확장을 담지 않는다 — 사본을 따라 갱신하면 R1이 없애려던 사본 동기화가 부활한다.
+      제외분은 리포트에 명시 출력하고(침묵 무시 금지), 그 밖의 차이는 그대로 검출한다.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -38,6 +43,11 @@ from src.schema_cache.catalog_builder import (  # noqa: E402
 SEMANTIC_DIR = REPO_ROOT / "config" / "semantic_models"
 PROFILE_DIR = REPO_ROOT / "config" / "db_profiles"
 KNOWLEDGE_DIR = REPO_ROOT / "config" / "knowledge"
+
+
+# 동결 사본에 없는 정본 확장(N4/D-133) — 대조에서 제외하는 키. 항목별 상위어 스탬프와
+# 상위어→하위 항목 블록 둘 다 additive이며, 없어도 기존 소비 코드는 동일하게 동작한다.
+ADDITIVE_KEYS = ("taxonomy(상위어 블록)", "dimension/measure의 parent(상위어 스탬프)")
 
 
 def _load_yaml(path: Path) -> Optional[dict]:
@@ -113,14 +123,32 @@ def build_for(db_id: str) -> tuple[Optional[dict], Optional[str]]:
     return build_catalog(profile, db_id=db_id, overrides=overrides), None
 
 
+def strip_additive(catalog: dict) -> dict:
+    """N4 추가분(taxonomy 블록·항목별 parent)을 떼어낸 대조용 사본을 만든다.
+
+    동결 사본(``config/semantic_models``)에는 없는 정본 확장이므로 대조 기준에서 제외한다
+    (모듈 docstring 사유). 원본은 건드리지 않는다.
+    """
+    out = copy.deepcopy(catalog or {})
+    out.pop("taxonomy", None)
+    for dim in (out.get("pattern_a") or {}).get("dimensions") or []:
+        if isinstance(dim, dict):
+            dim.pop("parent", None)
+    for measure in (out.get("pattern_b") or {}).get("measures") or []:
+        if isinstance(measure, dict):
+            measure.pop("parent", None)
+    return out
+
+
 def diff_db(db_id: str) -> tuple[list[str], Optional[str]]:
-    """생성 카탈로그와 시맨틱 모델의 차이 목록을 만든다."""
+    """생성 카탈로그와 시맨틱 모델의 차이 목록을 만든다(N4 추가분 제외)."""
     expected = _load_yaml(SEMANTIC_DIR / f"{db_id}.yaml")
     if expected is None:
         return [], f"시맨틱 모델 없음: config/semantic_models/{db_id}.yaml"
     generated, err = build_for(db_id)
     if err:
         return [], err
+    generated = strip_additive(generated)
 
     diffs: list[str] = []
     for key in sorted(set(generated) | set(expected)):
@@ -174,6 +202,7 @@ def main() -> int:
         print("=" * 70)
         print("카탈로그 동등성 diff (생성 카탈로그 vs config/semantic_models)")
         print("=" * 70)
+        print("대조 제외(동결 사본에 없는 정본 확장): " + " / ".join(ADDITIVE_KEYS))
         for db_id, result in results.items():
             if result["error"]:
                 print(f"\n[{db_id}] 검사 불가 — {result['error']}")

@@ -76,6 +76,9 @@ def _cfg(*, stepwise: bool) -> MagicMock:
     cfg.text2sql.stepwise_max_rounds = 4
     cfg.text2sql.stepwise_max_tool_calls = 8
     cfg.text2sql.stepwise_timeout_seconds = 10.0
+    # MagicMock 속성은 자동 생성되어 truthy하다 — 상위어 확장(N4)이 이 경로에서 조용히
+    # 켜지지 않도록 명시 OFF로 못 박는다.
+    cfg.text2sql.hypernym_ambiguity = False
     return cfg
 
 

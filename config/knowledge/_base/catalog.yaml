@@ -92,6 +92,33 @@ pattern_b:
     - {resource_type: server.FileSystems, definition_name: Utilization, aliases: [파일시스템 사용률, 파일시스템]}
     - {resource_type: server.Disks,       definition_name: MaxIORate,   aliases: [디스크 IO, 디스크 아이오]}
 
+# ── 계층 taxonomy: 상위어(hypernym) → 하위 항목 (Plan 67 N4 / D-133) ─────────
+# 평면 동의어 사전은 상위어가 하위어 하나로 정확 매칭되는 사고를 막지 못한다
+# ("메모리 사용률"↔"디스크 사용률" 오연결 계열 — docs/standardization_literature_review.md §3.6-⑤).
+# 여기 선언한 상위어는 **카탈로그 선택지가 아니라 어휘**다 — 하위 항목에 parent가 스탬프되고,
+# 상위어만 언급한 질의는 옵트인(TEXT2SQL_HYPERNYM_AMBIGUITY) 시 하위 전부로 확장된다.
+#
+# 범위 원칙(ontology drift 경고 §3.7 — "업데이트 못 하는 메타데이터는 부채"):
+#   **핵심 용어만** 단계화하고 전면 조화는 하지 않는다. 아래 3건은 실측 근거가 있는 것만이다.
+#   - 사용률: 자원 종류를 빼면 어느 지표인지 결정 불가(measure 3종 공통 접미어)
+#   - 코어  : 논리/물리 흔들림이 실측된 쌍(semantic_compiler.normalize_smq PHYSICALCORE 가드)
+#   - 모델  : Model(장비)/MODEL(CPU) 대소문자만 다른 동명 쌍(_dimension_index 주석의 실측 충돌)
+#   디스크 IO(server.Disks/MaxIORate)는 사용률이 아니라 상위어 없이 둔다 — 억지 상위어를
+#   만들면(예 "성능") 계층만 깊어지고 판정 이득이 없다.
+# 하위 항목은 카탈로그에 실재하는 것만 반영된다(db별 exclude로 빠진 속성은 자동 제외).
+taxonomy:
+  사용률:
+    # 상위어 표면 변형은 여기 둔다 — 하위 항목 aliases에 넣으면 다시 평면 사전이 된다.
+    aliases: [이용률]
+    measures:
+      - server.Cpus/Utilization
+      - server.Memory/Utilization
+      - server.FileSystems/Utilization
+  코어:
+    dimensions: [LOGICALCORE, PHYSICALCORE]
+  모델:
+    dimensions: [Model, MODEL]
+
 # ── 패턴 C: 알람 (정규화 관계형 조인) ────────────────────────────────────────
 # 알람은 EAV가 아니라 CMM_ALARM(CA)↔CMM_ALARM_DEF(D)↔CMM_ALARM_ACTIVE(A)↔CMM_RESOURCE(CR) 조인.
 # 활성 알람은 A 조인 + severity IN (1,2,3), 이력은 A 미조인 + IN (0,1,2,3).

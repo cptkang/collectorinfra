@@ -24,11 +24,14 @@ KIND_ALARM_DIMENSION = "alarm_dimension"
 def catalog_entries(model: dict) -> list[dict]:
     """시맨틱 모델의 선택 가능 항목을 평탄한 목록으로 만든다.
 
+    항목에 상위어(``parent``)가 선언돼 있으면 함께 싣는다(N4/D-133) — 검색이 상위어를
+    하위 항목의 정확 일치로 오인하지 않도록 채점에서 쓰고, 호출부가 계층을 볼 수 있게 한다.
+
     Args:
         model: 시맨틱 모델 dict(pattern_a/pattern_b/pattern_c)
 
     Returns:
-        [{kind, name, resource_type, aliases, unsupported}] 목록(모델이 없으면 빈 목록)
+        [{kind, name, resource_type, aliases, unsupported, parent?}] 목록(모델이 없으면 빈 목록)
     """
     if not model:
         return []
@@ -39,27 +42,33 @@ def catalog_entries(model: dict) -> list[dict]:
         name = dim.get("name")
         if not name:
             continue
-        entries.append({
+        entry = {
             "kind": KIND_DIMENSION,
             "name": name,
             "resource_type": dim.get("resource_type"),
             "aliases": [str(a) for a in (dim.get("aliases") or [])],
             # LOB 속성은 컴파일러가 조립할 수 없어 커버리지 밖으로 떨어진다.
             "unsupported": bool(dim.get("lob")),
-        })
+        }
+        if dim.get("parent"):
+            entry["parent"] = str(dim["parent"])
+        entries.append(entry)
 
     pattern_b = model.get("pattern_b") or {}
     for measure in pattern_b.get("measures") or []:
         name = measure.get("definition_name")
         if not name:
             continue
-        entries.append({
+        entry = {
             "kind": KIND_MEASURE,
             "name": name,
             "resource_type": measure.get("resource_type"),
             "aliases": [str(a) for a in (measure.get("aliases") or [])],
             "unsupported": False,
-        })
+        }
+        if measure.get("parent"):
+            entry["parent"] = str(measure["parent"])
+        entries.append(entry)
 
     pattern_c = model.get("pattern_c") or {}
     for name in (pattern_c.get("entities") or {}):
@@ -76,12 +85,20 @@ def catalog_entries(model: dict) -> list[dict]:
 
 
 def _entry_score(term: str, entry: dict) -> float:
-    """용어와 카탈로그 항목(이름·별칭)의 최고 매칭 점수를 구한다(정확 → 부분어 → 퍼지)."""
+    """용어와 카탈로그 항목(이름·별칭)의 최고 매칭 점수를 구한다(정확 → 부분어 → 퍼지).
+
+    항목의 상위어(``parent``)와 같은 표면어는 정확 일치로 인정하지 않는다 — 상위어는 형제
+    전부를 가리키므로 하나만 1.0으로 끌어올리면 나머지가 후보에서 밀린다(N4/D-133). 부분어
+    점수는 그대로 남아 형제들이 **동일 점수로 함께** 후보에 오른다.
+    """
     term_low = term.lower()
+    parent_low = str(entry.get("parent") or "").strip().lower()
     best = 0.0
     for candidate in [str(entry.get("name") or "")] + list(entry.get("aliases") or []):
         cand_low = candidate.lower()
         if not cand_low:
+            continue
+        if parent_low and cand_low == parent_low:
             continue
         if cand_low == term_low:
             return 1.0

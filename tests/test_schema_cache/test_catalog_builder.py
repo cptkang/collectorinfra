@@ -284,6 +284,102 @@ def test_uncurated_db_gets_no_catalog(monkeypatch):
     assert semantic_compiler.load_semantic_model("nonexistent_db", use_cache=False) is None
 
 
+# ──────────────────────────────────────────────
+# 6. 계층 taxonomy — parent 스탬프 + 정규화 블록 (Plan 67 N4 / D-133)
+# ──────────────────────────────────────────────
+
+SYNTHETIC_TAXONOMY = {
+    "taxonomy": {
+        "용량류": {
+            "aliases": ["사이즈"],
+            "dimensions": ["Capacity", "Legacy", "없는속성"],
+        },
+        "지표": {"measures": ["asset.Storage/IORate"]},
+        "빈상위어": {"dimensions": ["없는속성"]},
+    }
+}
+
+
+def _build_with_taxonomy(extra: dict | None = None) -> dict:
+    overrides = deep_merge(SYNTHETIC_OVERRIDES, deep_merge(SYNTHETIC_TAXONOMY, extra or {}))
+    return build_catalog(SYNTHETIC_META, db_id="synthetic", overrides=overrides)
+
+
+class TestTaxonomy:
+    """상위어 선언이 항목 parent와 taxonomy 블록으로 반영된다."""
+
+    def test_parent_stamped_on_dimension_and_measure(self):
+        catalog = _build_with_taxonomy()
+        dims = {d["name"]: d for d in catalog["pattern_a"]["dimensions"]}
+        assert dims["Capacity"]["parent"] == "용량류"
+        assert "parent" not in dims["Firmware"]        # 선언되지 않은 항목은 무부모
+        assert catalog["pattern_b"]["measures"][0]["parent"] == "지표"
+
+    def test_block_lists_only_catalog_children(self):
+        """수록되지 않은 하위(exclude·오타)는 블록에서 빠진다 — db별 exclude 차이 흡수."""
+        taxonomy = _build_with_taxonomy()["taxonomy"]
+        assert taxonomy["용량류"]["dimensions"] == ["Capacity"]  # Legacy는 exclude, 없는속성은 오타
+        assert taxonomy["용량류"]["aliases"] == ["사이즈"]
+        assert taxonomy["지표"]["measures"] == [
+            {"resource_type": "asset.Storage", "definition_name": "IORate"}
+        ]
+
+    def test_hypernym_without_any_child_is_dropped(self):
+        assert "빈상위어" not in _build_with_taxonomy()["taxonomy"]
+
+    def test_first_parent_wins_on_duplicate_declaration(self):
+        """하위 항목의 부모는 하나만 둔다(다중 부모는 계층이 아니라 그래프)."""
+        catalog = _build_with_taxonomy({"taxonomy": {"두번째": {"dimensions": ["Capacity"]}}})
+        dims = {d["name"]: d for d in catalog["pattern_a"]["dimensions"]}
+        assert dims["Capacity"]["parent"] == "용량류"
+        assert "두번째" not in catalog["taxonomy"]
+
+    def test_no_declaration_means_no_taxonomy_key(self):
+        assert "taxonomy" not in _build_synthetic()
+
+    def test_overrides_input_is_not_mutated_by_stamping(self):
+        """parent 스탬프가 호출자의 오버라이드 dict를 오염시키지 않는다."""
+        overrides = deep_merge(SYNTHETIC_OVERRIDES, SYNTHETIC_TAXONOMY)
+        build_catalog(SYNTHETIC_META, db_id="synthetic", overrides=overrides)
+        assert "parent" not in overrides["pattern_b"]["measures"][0]
+
+    def test_real_catalog_stages_core_terms_only(self):
+        """실 카탈로그: 핵심 용어만 계층화됐다(전면 조화 금지 — ontology drift 경고)."""
+        overrides = load_knowledge_overrides("polestar_cm_gp", knowledge_dir=str(KNOWLEDGE_DIR))
+        profile = yaml.safe_load(
+            (PROFILE_DIR / "polestar_cm_gp.yaml").read_text(encoding="utf-8"))
+        catalog = build_catalog(profile, db_id="polestar_cm_gp", overrides=overrides)
+        taxonomy = catalog["taxonomy"]
+        assert set(taxonomy) == {"사용률", "코어", "모델"}
+        assert taxonomy["코어"]["dimensions"] == ["LOGICALCORE", "PHYSICALCORE"]
+        assert taxonomy["모델"]["dimensions"] == ["Model", "MODEL"]
+        # 사용률 하위는 Utilization 3종뿐 — 디스크 IO(MaxIORate)는 사용률이 아니라 무부모.
+        assert [m["resource_type"] for m in taxonomy["사용률"]["measures"]] == [
+            "server.Cpus", "server.Memory", "server.FileSystems"
+        ]
+        by_key = {
+            (m["resource_type"], m["definition_name"]): m
+            for m in catalog["pattern_b"]["measures"]
+        }
+        assert by_key[("server.Disks", "MaxIORate")].get("parent") is None
+
+    def test_catalog_diff_excludes_additive_taxonomy(self):
+        """동결 사본 대조에서 N4 추가분만 제외된다(다른 필드는 그대로 검출)."""
+        from scripts.catalog_diff import build_for, strip_additive
+
+        generated, err = build_for("polestar_cm_gp")
+        assert err is None
+        stripped = strip_additive(generated)
+        assert "taxonomy" in generated and "taxonomy" not in stripped
+        assert all(
+            "parent" not in d for d in stripped["pattern_a"]["dimensions"]
+        )
+        assert all("parent" not in m for m in stripped["pattern_b"]["measures"])
+        # 제외는 additive 키에만 적용된다 — 별칭이 달라지면 여전히 차이로 잡힌다.
+        stripped["pattern_a"]["dimensions"][0]["aliases"] = ["변조"]
+        assert stripped != strip_additive(generated)
+
+
 def test_profile_overlay_merge_mechanism():
     """db_profiles 오버레이(공통 베이스 + db별 diff) 병합 기제 — YAML 분할은 보류(Plan 67 R1-5).
 

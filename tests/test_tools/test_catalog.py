@@ -54,6 +54,38 @@ class TestSearchCatalog:
         assert len(search_catalog("OS", semantic_model, limit=1, min_score=0.1)) == 1
 
 
+class TestTaxonomyAwareSearch:
+    """상위어(parent) 선언이 검색 채점에 반영된다 (Plan 67 N4 / D-133)."""
+
+    @staticmethod
+    def _with_taxonomy(model: dict) -> dict:
+        """하위 둘이 상위어 표면어를 공유하는 카탈로그(전형적 precision 붕괴 조건)."""
+        model = {k: (list(v) if isinstance(v, list) else v) for k, v in model.items()}
+        model["pattern_a"] = {"dimensions": [
+            {"name": "MemSize", "parent": "메모리", "aliases": ["메모리", "메모리크기"]},
+            {"name": "MemFree", "parent": "메모리", "aliases": ["여유메모리"]},
+        ]}
+        return model
+
+    def test_parent_surfaced_in_entries(self, semantic_model):
+        model = self._with_taxonomy(semantic_model)
+        entries = {e["name"]: e for e in catalog_entries(model)}
+        assert entries["MemSize"]["parent"] == "메모리"
+        # 상위어가 없는 항목은 키 자체가 없다(기존 항목 형태 유지).
+        assert "parent" not in entries["Utilization"]
+
+    def test_parent_term_does_not_win_exact_match(self, semantic_model):
+        """상위어로 검색하면 형제가 동일 점수로 함께 오른다(하나만 1.0으로 앞서지 않는다)."""
+        hits = search_catalog("메모리", self._with_taxonomy(semantic_model))
+        names = [h["name"] for h in hits]
+        assert {"MemSize", "MemFree"} <= set(names)
+        assert max(h["score"] for h in hits) < 1.0
+
+    def test_child_own_alias_still_exact(self, semantic_model):
+        hits = search_catalog("메모리크기", self._with_taxonomy(semantic_model))
+        assert hits[0]["name"] == "MemSize" and hits[0]["score"] == 1.0
+
+
 class TestCheckSmqCoverage:
     def test_covered_selection(self, semantic_model):
         result = check_smq_coverage(
