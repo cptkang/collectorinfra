@@ -108,3 +108,17 @@ class TestOrganizedData:
         }
         assert data["is_sufficient"] is True
         assert len(data["rows"]) == 1
+
+
+class TestPriorRowsInitialization:
+    """prior_rows 명시 초기화 검증 (Plan 69 P0-⑥).
+
+    prior_rows는 요청 스코프 상태(선행 task 결과, D-086)인데 create_initial_state의
+    초기화 목록에서 빠져 있어, 체크포인터 델타 병합 시 이전 턴 값이 새 요청으로
+    승계될 수 있었다(Known Mistakes "요청 스코프 상태 명시 초기화").
+    """
+
+    def test_prior_rows_explicitly_initialized(self):
+        state = create_initial_state(user_query="test")
+        assert "prior_rows" in state
+        assert state["prior_rows"] is None

@@ -342,6 +342,7 @@ def create_initial_state(
         task_plan=[],
         task_results={},
         is_composite=False,
+        prior_rows=None,  # 요청 스코프 — 명시 초기화로 이전 턴 승계 차단 (Plan 69 P0-⑥)
         # Plan 49: 동적 재계획
         replan_count=0,
         needs_replan=False,
