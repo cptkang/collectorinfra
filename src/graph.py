@@ -48,7 +48,7 @@ from src.state import AgentState
 logger = logging.getLogger(__name__)
 
 
-def route_after_validation(state: AgentState) -> str:
+def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅을 결정한다.
 
     - 검증 통과: query_executor (또는 approval_gate)로 진행
@@ -57,19 +57,19 @@ def route_after_validation(state: AgentState) -> str:
     """
     if state["validation_result"]["passed"]:
         return "query_executor"
-    if state["retry_count"] >= 3:
+    if state["retry_count"] >= max_retry:
         return "error_response"
     return "query_generator"
 
 
-def route_after_validation_with_approval(state: AgentState) -> str:
+def route_after_validation_with_approval(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅 (SQL 승인 활성화 시).
 
     검증 통과 시 approval_gate로 보낸다.
     """
     if state["validation_result"]["passed"]:
         return "approval_gate"
-    if state["retry_count"] >= 3:
+    if state["retry_count"] >= max_retry:
         return "error_response"
     return "query_generator"
 
@@ -89,7 +89,7 @@ def route_after_approval(state: AgentState) -> str:
     return END
 
 
-def route_after_execution(state: AgentState) -> str:
+def route_after_execution(state: AgentState, max_retry: int = 3) -> str:
     """query_executor 이후 라우팅을 결정한다.
 
     - 정상 실행: result_organizer로 진행
@@ -97,13 +97,13 @@ def route_after_execution(state: AgentState) -> str:
     - 실행 에러 + 재시도 초과: error_response로 종료
     """
     if state.get("error_message"):
-        if state["retry_count"] >= 3:
+        if state["retry_count"] >= max_retry:
             return "error_response"
         return "query_generator"
     return "result_organizer"
 
 
-def route_after_organization(state: AgentState) -> str:
+def route_after_organization(state: AgentState, max_retry: int = 3) -> str:
     """result_organizer 이후 라우팅을 결정한다.
 
     - 데이터 충분: output_generator로 진행
@@ -111,7 +111,7 @@ def route_after_organization(state: AgentState) -> str:
     - 데이터 부족 + 재시도 초과: 있는 데이터로 output_generator 진행
     """
     if not state["organized_data"]["is_sufficient"]:
-        if state["retry_count"] < 3:
+        if state["retry_count"] < max_retry:
             return "query_generator"
     return "output_generator"
 
@@ -565,7 +565,7 @@ def build_graph(config: AppConfig, checkpointer=None):
         # SQL 승인 활성화: validator -> approval_gate -> executor
         graph.add_conditional_edges(
             "query_validator",
-            route_after_validation_with_approval,
+            partial(route_after_validation_with_approval, max_retry=config.query.max_retry_count),
             {
                 "approval_gate": "approval_gate",
                 "query_generator": "query_generator",
@@ -584,7 +584,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     else:
         graph.add_conditional_edges(
             "query_validator",
-            route_after_validation,
+            partial(route_after_validation, max_retry=config.query.max_retry_count),
             {
                 "query_executor": "query_executor",
                 "query_generator": "query_generator",
@@ -595,7 +595,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     # query_executor 이후: 조건부 라우팅
     graph.add_conditional_edges(
         "query_executor",
-        route_after_execution,
+        partial(route_after_execution, max_retry=config.query.max_retry_count),
         {
             "result_organizer": "result_organizer",
             "query_generator": "query_generator",
@@ -606,7 +606,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     # result_organizer 이후: 조건부 라우팅
     graph.add_conditional_edges(
         "result_organizer",
-        route_after_organization,
+        partial(route_after_organization, max_retry=config.query.max_retry_count),
         {
             "output_generator": "output_generator",
             "query_generator": "query_generator",

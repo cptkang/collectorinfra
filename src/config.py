@@ -141,7 +141,7 @@ class QueryConfig(BaseSettings):
     클라이언트는 재시도 횟수와 SQL 생성 기본 LIMIT만 관리한다.
     """
 
-    max_retry_count: int = 3   # MCP 호출 재시도 횟수
+    max_retry_count: int = 3   # SQL 재생성 재시도 예산 (검증·실행·충분성 회귀 공용, D-099)
     default_limit: int = 1000  # SQL 생성 시 기본 LIMIT
 
     # 데이터 충분성 검사 임계값 (0.0 ~ 1.0)

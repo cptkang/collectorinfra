@@ -68,7 +68,7 @@ async def result_organizer(
         app_config=app_config,
     )
 
-    if not is_sufficient and state.get("retry_count", 0) < 3:
+    if not is_sufficient and state.get("retry_count", 0) < app_config.query.max_retry_count:
         logger.info("데이터 부족으로 재시도 요청")
         return {
             "organized_data": OrganizedData(

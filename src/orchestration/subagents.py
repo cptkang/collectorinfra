@@ -455,6 +455,8 @@ async def _run_single_db_pipeline(
         파이프라인 실행으로 갱신된 state 필드 dict
     """
     state = dict(s)
+    # SQL 재생성 재시도 예산 — config 단일 출처 (D-099, Plan 69 P0-⑧)
+    _max_retry = app_config.query.max_retry_count if app_config else 3
 
     # 1) 스키마 분석 (1회)
     state.update(await schema_analyzer(state, llm=llm, app_config=app_config))
@@ -469,7 +471,7 @@ async def _run_single_db_pipeline(
         # 3) 검증
         state.update(await query_validator(state, app_config=app_config))
         if not state["validation_result"]["passed"]:
-            if state.get("retry_count", 0) >= 3:
+            if state.get("retry_count", 0) >= _max_retry:
                 # 검증 실패 + 재시도 초과 → 에러 종료
                 if not state.get("error_message"):
                     state["error_message"] = state["validation_result"].get(
@@ -482,7 +484,7 @@ async def _run_single_db_pipeline(
         # 4) 실행
         state.update(await query_executor(state, app_config=app_config))
         if state.get("error_message"):
-            if state.get("retry_count", 0) >= 3:
+            if state.get("retry_count", 0) >= _max_retry:
                 break
             # 실행 에러 + 재시도 가능 → query_generator 회귀
             continue
