@@ -411,30 +411,32 @@ class DBHubClient:
             logger.warning("FK 관계 조회 실패, 빈 목록 반환")
             return []
 
+    @staticmethod
+    def _result_text(raw_result: Any) -> str:
+        """MCP 도구 결과의 content를 평문 텍스트로 합친다."""
+        content = raw_result
+        if hasattr(raw_result, "content"):
+            content = raw_result.content
+
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if hasattr(item, "text"):
+                    text_parts.append(item.text)
+                else:
+                    text_parts.append(str(item))
+            return "\n".join(text_parts)
+        if isinstance(content, str):
+            return content
+        return str(content)
+
     def _parse_json_result(self, raw_result: Any) -> dict:
         """MCP 도구 결과를 JSON dict로 파싱한다."""
         if raw_result is None:
             return {}
 
         try:
-            content = raw_result
-            if hasattr(raw_result, "content"):
-                content = raw_result.content
-
-            if isinstance(content, list):
-                text_parts = []
-                for item in content:
-                    if hasattr(item, "text"):
-                        text_parts.append(item.text)
-                    else:
-                        text_parts.append(str(item))
-                text = "\n".join(text_parts)
-            elif isinstance(content, str):
-                text = content
-            else:
-                text = str(content)
-
-            return json.loads(text)
+            return json.loads(self._result_text(raw_result))
         except (json.JSONDecodeError, AttributeError, TypeError):
             return {}
 
@@ -548,6 +550,14 @@ class DBHubClient:
         """
         if raw_result is None:
             return QueryResult(columns=[], rows=[], row_count=0)
+
+        # MCP 도구 오류(isError)는 content가 JSON이 아닌 오류 문자열이라, 아래 파싱
+        # 폴백을 타면 빈 결과(0행)로 침묵 강등된다 — 실측: 미등록 소스의 "알 수 없는
+        # 소스" ValueError가 0행으로 위장돼 골드셋 검증이 오판됨(2026-07-30). 명시 예외로.
+        if getattr(raw_result, "isError", False) is True:
+            raise QueryExecutionError(
+                self._result_text(raw_result) or "MCP 도구 오류(상세 없음)"
+            )
 
         try:
             parsed = self._parse_json_result(raw_result)

@@ -1399,3 +1399,49 @@ class TestEndToEndFlow:
             dbhub_client._parse_query_result(mock_result)
 
         assert "읽기 전용 위반" in str(exc_info.value)
+
+
+class TestToolErrorNotSilent:
+    """MCP 도구 오류(isError)가 빈 결과(0행)로 침묵 강등되지 않는다 (2026-07-30 실측 결함).
+
+    미등록 소스의 "알 수 없는 소스" ValueError가 isError 결과로 오는데, 오류 문자열은
+    JSON이 아니라 파싱 폴백이 빈 QueryResult를 돌려줘 골드셋 검증이 0행으로 오판됐다.
+    """
+
+    @pytest.fixture
+    def dbhub_client(self) -> DBHubClient:
+        from src.config import DBHubConfig
+
+        return DBHubClient(DBHubConfig(server_url="http://localhost:9099/sse"))
+
+    def test_is_error_result_raises(self, dbhub_client: DBHubClient) -> None:
+        mock_text_content = MagicMock()
+        mock_text_content.text = "Error executing tool execute_sql: 알 수 없는 소스: polestar_cm_gp."
+        mock_result = MagicMock()
+        mock_result.content = [mock_text_content]
+        mock_result.isError = True
+
+        with pytest.raises(QueryExecutionError) as exc_info:
+            dbhub_client._parse_query_result(mock_result)
+
+        assert "알 수 없는 소스" in str(exc_info.value)
+
+    def test_is_error_without_text_raises_with_placeholder(self, dbhub_client: DBHubClient) -> None:
+        mock_result = MagicMock()
+        mock_result.content = []
+        mock_result.isError = True
+
+        with pytest.raises(QueryExecutionError) as exc_info:
+            dbhub_client._parse_query_result(mock_result)
+
+        assert "상세 없음" in str(exc_info.value)
+
+    def test_non_error_result_unaffected(self, dbhub_client: DBHubClient) -> None:
+        mock_text_content = MagicMock()
+        mock_text_content.text = json.dumps({"columns": ["a"], "rows": [{"a": 1}]})
+        mock_result = MagicMock()
+        mock_result.content = [mock_text_content]
+        mock_result.isError = False
+
+        result = dbhub_client._parse_query_result(mock_result)
+        assert result.row_count == 1
