@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -640,25 +641,15 @@ async def _run_multi_candidate_single_db(
         return None if res.get("passed") else (res.get("reason") or "검증 실패")
 
     client_db_id = db_id if db_id and db_id not in ("_default", "default") else None
+    # DB 연결 실패와 파이프라인 자체 실패를 분리한다 — 종전에는 파이프라인(LLM 호출·
+    # 선택 로직) 예외까지 바깥 except가 삼켜 "no_db"로 위장됐다 (Plan 69 P0-②).
+    stack = AsyncExitStack()
     try:
-        async with get_db_client(app_config, db_id=client_db_id) as client:
-            async def _execute(sql: str) -> dict:
-                try:
-                    result = await client.execute_sql(sql)
-                    return {"rows": result.rows, "error": None}
-                except (QueryExecutionError, QueryTimeoutError) as e:
-                    return {"rows": None, "error": str(e)}
-                except Exception as e:  # noqa: BLE001
-                    return {"rows": None, "error": str(e)}
-
-            return await run_candidate_pipeline(
-                llm, system_prompt, user_prompt,
-                count=t2.candidate_count, strategies=t2.candidate_strategies,
-                selection=t2.selection, is_kbgenai=is_kbgenai,
-                extract_sql=extract_sql_from_response,
-                validate=_validate, execute=_execute, user_query=user_query,
-            )
+        client = await stack.enter_async_context(
+            get_db_client(app_config, db_id=client_db_id)
+        )
     except Exception as e:  # noqa: BLE001 — DB 연결 실패: 생성만 수행하고 첫 후보 반환
+        await stack.aclose()
         logger.warning("다중 후보 실행 컨텍스트 실패, 생성만 수행: %s", e)
         candidates = await generate_candidates(
             llm, system_prompt, user_prompt,
@@ -669,6 +660,31 @@ async def _run_multi_candidate_single_db(
         return {"sql": first["sql"], "strategy": first.get("strategy"), "confidence": 0.0,
                 "all_failed": True, "method": "no_db", "audit": {"error": str(e)},
                 "sql_candidates": candidates}
+
+    try:
+        async def _execute(sql: str) -> dict:
+            try:
+                result = await client.execute_sql(sql)
+                return {"rows": result.rows, "error": None}
+            except (QueryExecutionError, QueryTimeoutError) as e:
+                return {"rows": None, "error": str(e)}
+            except Exception as e:  # noqa: BLE001
+                return {"rows": None, "error": str(e)}
+
+        return await run_candidate_pipeline(
+            llm, system_prompt, user_prompt,
+            count=t2.candidate_count, strategies=t2.candidate_strategies,
+            selection=t2.selection, is_kbgenai=is_kbgenai,
+            extract_sql=extract_sql_from_response,
+            validate=_validate, execute=_execute, user_query=user_query,
+        )
+    except Exception as e:  # noqa: BLE001 — 파이프라인 실패: 사유 가시화, 재생성은 재시도 루프에 위임
+        logger.exception("다중 후보 파이프라인 실패: %s", e)
+        return {"sql": "", "strategy": None, "confidence": 0.0,
+                "all_failed": True, "method": "pipeline_error",
+                "audit": {"error": str(e)}, "sql_candidates": None}
+    finally:
+        await stack.aclose()
 
 
 def _decide_fallback_tier(

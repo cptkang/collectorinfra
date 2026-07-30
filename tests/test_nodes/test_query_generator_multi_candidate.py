@@ -164,3 +164,57 @@ async def test_complexity_gate_suppresses_simple():
     assert result["generated_sql"] == "SELECT 7"
     assert result["sql_candidates"] is None
     assert llm.calls == 1
+
+
+class TestPipelineErrorNotMislabeledAsNoDb:
+    """파이프라인 자체 예외의 no_db 위장 방지 (Plan 69 P0-②)."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_exception_returns_pipeline_error(self):
+        """run_candidate_pipeline 예외는 'no_db'가 아니라 'pipeline_error'로 반환된다."""
+        from src.nodes.query_generator import _run_multi_candidate_single_db
+
+        @asynccontextmanager
+        async def _ok_client(*args, **kwargs):
+            client = MagicMock()
+            client.execute_sql = AsyncMock()
+            yield client
+
+        gen_mock = AsyncMock()
+        with patch("src.db.get_db_client", _ok_client), \
+             patch("src.nodes.candidate_selector.run_candidate_pipeline",
+                   AsyncMock(side_effect=RuntimeError("selector boom"))), \
+             patch("src.nodes.candidate_generator.generate_candidates", gen_mock):
+            result = await _run_multi_candidate_single_db(
+                _state(), MagicMock(), _cfg(multi_candidate=True),
+                "sys", "user", "질의",
+            )
+
+        assert result["method"] == "pipeline_error"
+        assert result["all_failed"] is True
+        assert "selector boom" in result["audit"]["error"]
+        gen_mock.assert_not_awaited()  # no_db 경로(재생성)로 흐르지 않는다
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_still_no_db(self):
+        """DB 연결 실패는 종전대로 no_db + 생성만 수행 폴백이다(동작 보존)."""
+        from src.nodes.query_generator import _run_multi_candidate_single_db
+
+        @asynccontextmanager
+        async def _bad_client(*args, **kwargs):
+            raise ConnectionError("refused")
+            yield  # pragma: no cover
+
+        gen_mock = AsyncMock(return_value=[
+            {"sql": "SELECT 1", "strategy": "s", "confidence": 0.5},
+        ])
+        with patch("src.db.get_db_client", _bad_client), \
+             patch("src.nodes.candidate_generator.generate_candidates", gen_mock):
+            result = await _run_multi_candidate_single_db(
+                _state(), MagicMock(), _cfg(multi_candidate=True),
+                "sys", "user", "질의",
+            )
+
+        assert result["method"] == "no_db"
+        assert result["sql"] == "SELECT 1"
+        gen_mock.assert_awaited_once()
