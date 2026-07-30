@@ -169,6 +169,9 @@ async def multi_db_executor(
     for target in targets:
         db_id = target["db_id"]
         sub_context = target.get("sub_query_context", state["user_query"])
+        # 실패 경로에서도 attempt·감사에 SQL·경과를 보존하기 위한 루프 스코프 (Plan 69 P0-⑤)
+        sql = ""
+        exec_start: float | None = None
 
         if not registry.is_registered(db_id):
             db_errors[db_id] = f"DB '{db_id}'이(가) 레지스트리에 등록되지 않았습니다."
@@ -252,9 +255,9 @@ async def multi_db_executor(
                     _sql_by_schema[schema_key] = sql
 
                 # 4. SQL 실행
-                start_time = time.time()
+                exec_start = time.time()
                 result = await client.execute_sql(sql)
-                elapsed_ms = (time.time() - start_time) * 1000
+                elapsed_ms = (time.time() - exec_start) * 1000
 
                 db_results[db_id] = result.rows
                 all_attempts.append(QueryAttempt(
@@ -283,13 +286,23 @@ async def multi_db_executor(
             db_errors[db_id] = error_msg
             logger.error(error_msg)
 
+            # 실패 SQL·경과 보존 + 감사 기록 — 단일 경로(4경로 전부 감사)와 대칭 (Plan 69 P0-⑤)
+            failed_elapsed = (time.time() - exec_start) * 1000 if exec_start else 0
             all_attempts.append(QueryAttempt(
-                sql="",
+                sql=sql,
                 success=False,
                 error=str(e),
                 row_count=0,
-                execution_time_ms=0,
+                execution_time_ms=round(failed_elapsed, 2),
             ))
+            await log_query_execution(
+                sql=sql,
+                row_count=0,
+                execution_time_ms=failed_elapsed,
+                success=False,
+                error=str(e),
+                retry_attempt=0,
+            )
 
     # 전체 병합 결과 생성 — 엔진별 칼럼명 차이(DB2 소문자화 등)를 양식 필드 기준으로 통일
     _canonical_fields = list((state.get("column_mapping") or {}).keys())
