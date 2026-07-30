@@ -234,7 +234,15 @@ def _try_build_form_fill_pivot_sql(
         db_engine=state.get("active_db_engine"),
         db_schema=db_schema,
         limit=limit_value,
-        stat_month=resolve_stat_month_range(user_query),
+        # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경). 제외하면
+        # "지난 반년 + 양식 첨부"처럼 표면어가 미매칭인 질의에서 stat_date 필터가 통째로 빠져
+        # 전 기간 평균으로 침묵 왜곡된다(D-099 계열). LIMIT은 이미 노드의 단일 값(limit_value)을
+        # 물려받아 폴백이 적용되므로 기간만 제외하면 오히려 비대칭이다.
+        # 멀티 경로 `multi_db_executor._generate_sql`의 폼필 피벗도 동형(D-066).
+        stat_month=resolve_stat_month_range(
+            user_query,
+            parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+        ),
     )
 
 
@@ -277,9 +285,18 @@ async def query_generator(
 
     # 모든/전체 조회 쿼리인 경우 LIMIT 값을 높여 1000건 제한 우회 (멀티 DB 경로와 공용, D-066)
     user_query = state.get("user_query", "") or ""
-    limit_value = resolve_query_limit(user_query, app_config.query.default_limit)
+    # 표면어 정규식이 미매칭일 때만 input_parser LLM 산출물(time_range/limit)로 2단 폴백한다
+    # (Plan 67 R3-(i)). 종전에는 이 두 값이 계산만 되고 SQL 경로에서 소비되지 않아 "지난 반년"·
+    # "100개만" 류가 침묵 소실됐다. 정규식이 매칭되면 폴백은 발동하지 않는다(동작 불변).
+    _parsed_req = state.get("parsed_requirements") or {}
+    limit_value = resolve_query_limit(
+        user_query, app_config.query.default_limit,
+        parsed_limit=_parsed_req.get("limit"),
+    )
     # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
-    stat_month = resolve_stat_month_range(user_query)
+    stat_month = resolve_stat_month_range(
+        user_query, parsed_time_range=_parsed_req.get("time_range")
+    )
     # 통계 테이블 강제 블록(build_stat_month_block)은 폴스타 월 통계 테이블(cmm_metric_stat_m)
     # 규약에 특화된 지시라, 그 테이블을 선언한 DB에만 주입한다(L2 일반화, P1-3/D-088). 현재는
     # 폴스타가 유일한 선언 DB이므로 폴스타 게이트(폴스타 시스템 템플릿과 동일 신호)로 판정하고,

@@ -148,6 +148,11 @@ class QueryConfig(BaseSettings):
     sufficiency_required_threshold: float = 0.7   # hint/synonym 매핑
     sufficiency_optional_threshold: float = 0.5   # llm_inferred 매핑
 
+    # 모호한 사용자 의사 표현(유사어 등록·SQL 실행 승인)을 LLM으로 분류(Plan 67 R3-(ii), 기본 OFF).
+    # OFF에서도 결정적 판정은 그대로 동작하고, 확정 불가 입력은 재질의(등록)·거부(승인 fail-closed,
+    # D-130)로 처리된다 — ON은 그 확정 불가분만 LLM 1콜로 회복한다.
+    intent_llm_assist: bool = False
+
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
 
 

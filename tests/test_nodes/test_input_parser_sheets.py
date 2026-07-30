@@ -65,3 +65,36 @@ class TestExtractTargetSheets:
         assert result is not None
         assert "서버현황" in result
         assert "CPU 메트릭" in result
+
+
+class TestRegexFallbackFalsePositives:
+    """정규식 폴백 오탐 차단 (Plan 67 R3-(ii) / A10).
+
+    LLM `target_sheets`가 1순위이고, 정규식은 "시트" 키워드가 따옴표에 인접할 때만 인정한다.
+    종전 두 번째 패턴은 `시트`가 선택이어서 따옴표+조사 표현을 시트명으로 오탐했다.
+    """
+
+    def test_quoted_region_with_particle_is_not_a_sheet(self):
+        """"'서울'의 서버" 같은 따옴표 지역명은 시트명이 아니다."""
+        assert _extract_target_sheets({}, "'서울'의 서버 목록 조회해줘") is None
+        assert _extract_target_sheets({}, "'김포'에 있는 서버 알려줘") is None
+        assert _extract_target_sheets({}, "'공동존'만 조회해줘") is None
+
+    def test_sheet_keyword_inside_quotes_still_matched(self):
+        """따옴표 안에 '시트'가 포함된 형태는 그대로 인정한다."""
+        assert _extract_target_sheets({}, "'요약시트'만 채워줘") == ["요약시트"]
+
+    def test_llm_result_takes_priority_over_regex(self):
+        """LLM 산출물이 있으면 정규식 폴백을 타지 않는다."""
+        parsed = {"target_sheets": ["요약"]}
+        assert _extract_target_sheets(parsed, "'서버현황' 시트만 채워줘") == ["요약"]
+
+    def test_llm_result_is_sanitized(self):
+        """LLM 산출물의 공백·비문자열·중복은 정리한다."""
+        parsed = {"target_sheets": [" 요약 ", 3, None, "요약", "CPU"]}
+        assert _extract_target_sheets(parsed, "질의") == ["요약", "CPU"]
+
+    def test_llm_result_all_invalid_falls_back_to_regex(self):
+        """LLM 산출물이 전부 무효면 정규식 폴백으로 내려간다."""
+        parsed = {"target_sheets": [None, "  "]}
+        assert _extract_target_sheets(parsed, "'서버현황' 시트만 채워줘") == ["서버현황"]

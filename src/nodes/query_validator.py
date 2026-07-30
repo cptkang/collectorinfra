@@ -22,7 +22,11 @@ from src.config import AppConfig, load_config
 from src.db_adapters import get_adapter
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.state import AgentState
-from src.utils.query_gen_common import MISSING_DTIME_ERROR, missing_dtime_filter
+from src.utils.query_gen_common import (
+    MISSING_DTIME_ERROR,
+    has_all_scope_keyword,
+    missing_dtime_filter,
+)
 
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
@@ -176,7 +180,9 @@ def validate_sql(
     errors.extend(demotion_errors)
 
     # 7. LIMIT 절 존재 여부
-    is_all_query = any(k in (user_query or "") for k in ("모든", "전체", "모두"))
+    # LIMIT 상향(resolve_query_limit)과 동일한 경계 판정을 공유한다 — 종전 인라인 부분문자열
+    # 튜플은 "전체적으로 …"를 전체 조회로 오탐해 LIMIT 자동 추가를 건너뛰었다(Plan 67 R3-(iii)).
+    is_all_query = has_all_scope_keyword(user_query)
     if not _has_limit_clause(sql):
         if is_all_query:
             # 모든/전체 결과 조회 질의의 경우 LIMIT 자동 추가 생략

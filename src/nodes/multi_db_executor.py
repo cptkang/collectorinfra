@@ -136,8 +136,11 @@ async def multi_db_executor(
     parsed_requirements = state.get("parsed_requirements", {})
 
     # "전체/모든" 조회는 LIMIT를 상향해 1000건 절단을 방지한다 — 단일 DB 경로와 동등화(RC4/D-066).
+    # 표면어가 미매칭이면 input_parser LLM 산출물(limit)로 2단 폴백한다(Plan 67 R3-(i),
+    # 단일 경로 query_generator와 동일 규칙 — 한쪽만 폴백하는 비대칭 금지).
     effective_limit = resolve_query_limit(
-        state.get("user_query", ""), app_config.query.default_limit
+        state.get("user_query", ""), app_config.query.default_limit,
+        parsed_limit=parsed_requirements.get("limit"),
     )
     # 미매핑 필드(사용률 지표 등, column_mapping=None) — SQL이 한글 헤더로 alias하도록 전달한다.
     # db_column_mapping[db_id]에는 미매핑 필드가 없으므로 통합 column_mapping에서 추출한다(D-066 후속3).
@@ -499,7 +502,10 @@ async def _generate_sql(
         semantic_sql, _smq, _cov = await compile_from_nl(
             llm, _uq, db_id,
             default_limit=default_limit,
-            stat_month=resolve_stat_month_range(_uq),
+            # 표면어 미매칭 시 LLM 기간 산출물로 2단 폴백 — 단일 경로와 동일 규칙(R3-(i)/D-066)
+            stat_month=resolve_stat_month_range(
+                _uq, parsed_time_range=parsed_requirements.get("time_range")
+            ),
             app_config=app_config,
             stepwise_deps=await _build_stepwise_deps(
                 schema_info, app_config, db_engine, db_id, default_limit,
@@ -617,9 +623,13 @@ async def _generate_sql(
     # 폴스타 월 통계 테이블 규약 특화 블록이라 폴스타 DB에만 주입한다(L2 일반화, 단일 경로와 대칭
     # P1-3/D-088). 프로필 부재 DB는 미주입 — 일반 기간 규칙만 남는다. 프로필 선언 전환은 P3(D-090).
     _stat_block_db = db_id in ((app_config.get_polestar_db_ids() if app_config else None) or set())
+    # 폴백 순서: 원문 표면어 → sub_query_context 표면어 → LLM 기간 산출물(R3-(i)).
+    # 폴백 인자는 마지막 호출에만 준다 — 앞 단계가 매칭되면 or 단축으로 폴백이 발동하지 않는다.
     _stat_month = (
         resolve_stat_month_range(parsed_requirements.get("original_query", "") or "")
-        or resolve_stat_month_range(sub_query_context)
+        or resolve_stat_month_range(
+            sub_query_context, parsed_time_range=parsed_requirements.get("time_range")
+        )
     )
     _sm_block = build_stat_month_block(_stat_month) if _stat_block_db else ""
     if _sm_block:
@@ -735,7 +745,13 @@ async def _generate_sql(
             # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
             domain_cfg = get_domain_by_id(db_id)
             db_schema = domain_cfg.db_schema if domain_cfg else ""
-            stat_month = resolve_stat_month_range(parsed_requirements.get("original_query", ""))
+            # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경) — 표면어
+            # 미매칭 시 stat_date 필터가 빠져 전 기간 평균으로 침묵 왜곡되는 것을 막는다.
+            # 단일 경로 `query_generator._try_build_form_fill_pivot_sql`와 동형(D-066).
+            stat_month = resolve_stat_month_range(
+                parsed_requirements.get("original_query", ""),
+                parsed_time_range=parsed_requirements.get("time_range"),
+            )
             deterministic_sql = build_multi_resource_pivot_sql(
                 regular_entries, server_eav, child_eav, eav_pattern_mr,
                 metric_fields=pivot_metric_fields, db_engine=db_engine,

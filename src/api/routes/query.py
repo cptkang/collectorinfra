@@ -86,20 +86,29 @@ def _matches_intent(text: str, words: tuple[str, ...]) -> bool:
     return any(re.match(re.escape(w) + _INTENT_TAIL, text) for w in words)
 
 
-def _parse_approval(query: str) -> tuple[str, str]:
-    """사용자 입력에서 승인 의도를 파싱한다.
+# LLM 승인 판정을 인정하기 위해 원문에 최소 1개 있어야 하는 **결정적 보강 신호**(R3-(ii)).
+# LLM의 approve 하나만으로는 실행하지 않는다 — 승인 어휘가 전무한 입력(예: "결과를 엑셀로
+# 정리해줘")은 LLM이 approve를 환각해도 실행되지 않는다. 승인 의사 표현의 변형("네 실행해주세요
+# 감사합니다"·"그대로 진행해줘")은 이 신호를 갖고 있어 회복 대상은 그대로 남는다.
+# "해줘"류 범용 어미는 넣지 않는다(비승인 지시문까지 보강 통과시킴).
+_APPROVAL_CORROBORATION_TOKENS: tuple[str, ...] = (
+    "실행", "진행", "승인", "허가", "확인", "네", "예", "좋아", "맞아", "그대로", "ㅇㅇ",
+    "approve", "yes", "ok", "go",
+)
+
+
+def _has_approval_token(query: str) -> bool:
+    """원문에 승인 어휘가 하나라도 있는지 판정한다(LLM 승인 판정의 결정적 보강 조건)."""
+    text = (query or "").lower()
+    return any(token in text for token in _APPROVAL_CORROBORATION_TOKENS)
+
+
+def _deterministic_approval(query: str) -> tuple[str, str] | None:
+    """승인 의도를 결정적으로 확정한다(확정 불가면 None).
 
     **fail-closed**: 명확한 승인 표현이 아니면 승인하지 않는다. 과거에는 기본값이
     "approve"이고 승인어를 prefix로 매칭해, "확인해보고 알려줘" 같은 입력이 승인으로
-    오탐되어 사용자가 승인하지 않은 SQL이 실행됐다.
-
-    Args:
-        query: 사용자 입력
-
-    Returns:
-        (action, modified_sql) 튜플
-        - action: "approve" | "reject" | "modify"
-        - modified_sql: modify 시 수정된 SQL
+    오탐되어 사용자가 승인하지 않은 SQL이 실행됐다(D-130).
     """
     q = query.strip().lower()
 
@@ -113,9 +122,119 @@ def _parse_approval(query: str) -> tuple[str, str]:
     if re.search(r"\bSELECT\b", query, re.IGNORECASE):
         return ("modify", query.strip())
 
+    return None
+
+
+def _parse_approval(query: str) -> tuple[str, str]:
+    """사용자 입력에서 승인 의도를 파싱한다(결정적 판정 전용 — fail-closed).
+
+    Args:
+        query: 사용자 입력
+
+    Returns:
+        (action, modified_sql) 튜플
+        - action: "approve" | "reject" | "modify"
+        - modified_sql: modify 시 수정된 SQL
+    """
+    resolved = _deterministic_approval(query)
+    if resolved is not None:
+        return resolved
+
     # 의도 불명 — 실행하지 않는다(미승인 SQL 실행 방지)
     logger.warning("승인 의도를 확정하지 못해 실행을 취소한다: %r", query.strip()[:80])
     return ("reject", "")
+
+
+def _log_approval_decision(
+    action: str, query: str, *, basis: str, confidence: float | None = None, note: str = ""
+) -> None:
+    """승인 판정 근거를 감사 가능한 단일 라인으로 남긴다(결정적/LLM·확신도·보강 신호).
+
+    승인은 사용자가 보지 못한 SQL을 실행시키는 게이트라, 어떤 근거로 통과·차단됐는지 사후에
+    추적할 수 있어야 한다(D-011·D-130). approve만 INFO, 나머지는 WARNING으로 남긴다.
+    """
+    conf = "-" if confidence is None else f"{confidence:.2f}"
+    line = "[승인판정] action=%s basis=%s confidence=%s%s query=%r"
+    args = (action, basis, conf, f" note={note}" if note else "", query.strip()[:80])
+    if action == "approve":
+        logger.info(line, *args)
+    else:
+        logger.warning(line, *args)
+
+
+async def resolve_approval_action(query: str, config) -> tuple[str, str]:
+    """승인 의도를 결정적 판정 1순위 + (옵트인) LLM 보조로 해소한다 (Plan 67 R3-(ii) / A12).
+
+    결정적 판정이 확정한 입력은 LLM을 거치지 않는다(동작 불변). 확정 불가일 때만 LLM 분류를
+    시도하며, **fail-closed는 불변**이다(D-130). LLM 승인은 두 조건을 **모두** 만족해야 인정한다:
+    ①확신도 ≥ `APPROVAL_MIN_CONFIDENCE`(코드 상수) ②원문에 결정적 승인 어휘 존재
+    (`_has_approval_token`) — LLM 판정 하나만으로는 실행하지 않는다.
+    `QUERY_INTENT_LLM_ASSIST`가 꺼져 있거나 LLM 호출이 실패하면 종전 결정적 판정 결과(거부)를
+    그대로 쓴다. 모든 경로가 판정 근거를 로그로 남긴다.
+
+    Args:
+        query: 사용자 입력
+        config: 앱 설정(`request.app.state.config`)
+
+    Returns:
+        (action, modified_sql) 튜플
+    """
+    resolved = _deterministic_approval(query)
+    if resolved is not None:
+        _log_approval_decision(resolved[0], query, basis="deterministic")
+        return resolved
+
+    if not getattr(getattr(config, "query", None), "intent_llm_assist", False):
+        _log_approval_decision(
+            "reject", query, basis="deterministic", note="의도불명·LLM보조_OFF"
+        )
+        return ("reject", "")
+
+    classified: tuple[str, float] | None = None
+    try:
+        from src.llm import create_llm
+        from src.routing.intent_confirm import classify_approval_intent
+
+        classified = await classify_approval_intent(create_llm(config), query)
+    except Exception as e:
+        logger.warning("승인 의사 LLM 분류 실패 — 거부 유지(fail-closed): %s", e)
+
+    if classified is None:
+        _log_approval_decision("reject", query, basis="llm", note="판정불가")
+        return ("reject", "")
+
+    intent, confidence = classified
+    if intent == "approve":
+        # LLM 단독 승인 금지 — 결정적 보강 신호가 없으면 실행하지 않는다.
+        if not _has_approval_token(query):
+            _log_approval_decision(
+                "reject", query, basis="llm", confidence=confidence,
+                note="승인어휘_부재(LLM_단독_승인_불허)",
+            )
+            return ("reject", "")
+        _log_approval_decision(
+            "approve", query, basis="llm", confidence=confidence, note="승인어휘_확인"
+        )
+        return ("approve", "")
+
+    if intent == "modify":
+        _log_approval_decision("modify", query, basis="llm", confidence=confidence)
+        return ("modify", query.strip())
+
+    _log_approval_decision("reject", query, basis="llm", confidence=confidence)
+    return ("reject", "")
+
+
+async def _resolve_turn_approval(
+    body: QueryRequest, checkpoint_state: dict | None, config
+) -> tuple[str, str] | None:
+    """승인 대기 턴이면 승인 의사를 해소해 반환한다(그 외 턴은 None).
+
+    두 텍스트 라우트가 공유한다 — 한쪽만 LLM 보조를 받는 비대칭을 만들지 않는다(D-066).
+    """
+    if not checkpoint_state or not checkpoint_state.get("awaiting_approval"):
+        return None
+    return await resolve_approval_action(body.query, config)
 
 
 def _count_human_messages(messages: list) -> int:
@@ -323,6 +442,8 @@ def _build_turn_input_state(
     thread_id: str,
     checkpoint_state: dict | None,
     current_user: dict,
+    *,
+    approval: tuple[str, str] | None = None,
 ) -> dict:
     """턴 유형(첫/후속/승인)에 따른 그래프 입력 상태를 조립한다 — 텍스트 라우트 단일 출처.
 
@@ -330,12 +451,16 @@ def _build_turn_input_state(
     D-064 폼필 상태 초기화(create_followup_input)가 /query에만 적용되고 SSE 경로에는
     누락되는 비대칭이 발생했다(2026-07-16: 직전 폼업로드 턴의 uploaded_file이 체크포인터로
     복원돼 옛 양식이 재파싱됨). 두 라우트가 반드시 이 헬퍼를 공유하여 재발을 차단한다.
+
+    Args:
+        approval: 라우트가 미리 해소한 (action, modified_sql). 승인 의사 LLM 보조(R3-(ii))는
+            async라 이 동기 헬퍼 밖에서 해소해 주입한다. 미지정이면 결정적 판정만 수행한다.
     """
     if checkpoint_state is not None:
         # 후속 턴: delta input만 전달
         if checkpoint_state.get("awaiting_approval"):
             # SQL 승인 대기 중
-            action, modified_sql = _parse_approval(body.query)
+            action, modified_sql = approval or _parse_approval(body.query)
             return {
                 "user_query": body.query,
                 "messages": [HumanMessage(content=body.query)],
@@ -386,7 +511,12 @@ async def process_query(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
+    # 승인 의사 해소는 async(LLM 보조 옵트인)라 동기 조립 헬퍼 밖에서 수행한다 — 두 텍스트
+    # 라우트가 동일하게 호출해야 한다(SSE만 빠지는 비대칭 재발 방지, D-066).
+    approval = await _resolve_turn_approval(body, checkpoint_state, config)
+    input_state = _build_turn_input_state(
+        body, thread_id, checkpoint_state, current_user, approval=approval
+    )
 
     try:
         result = await asyncio.wait_for(
@@ -460,7 +590,10 @@ async def process_query_stream(
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
     # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
-    input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
+    approval = await _resolve_turn_approval(body, checkpoint_state, config)
+    input_state = _build_turn_input_state(
+        body, thread_id, checkpoint_state, current_user, approval=approval
+    )
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """SSE 이벤트를 생성하는 비동기 제너레이터."""

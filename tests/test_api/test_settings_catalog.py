@@ -116,7 +116,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 233
+    assert len(items) == 234
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
@@ -133,18 +133,19 @@ async def test_t1_schema_warns_when_env_file_missing(monkeypatch, tmp_path):
 
 
 def test_t2_group_and_field_counts():
-    """그룹 17개 + top-level 15필드 = 233필드.
+    """그룹 17개 + top-level 15필드 = 234필드.
 
     D-129 등재 시점 224 → ORCHESTRATOR_RECURSION_LIMIT 추가(Plan 67 Phase 0 ③)로 225
     → ALARM_DEFAULT_TEST_DB_ID 추가(Plan 67 Phase 0 ⑫)로 226
     → TEXT2SQL_QUERY_HISTORY_{FEWSHOT,TOP_K,MIN_SCORE} 추가(Plan 67 Phase N/N2)로 229
     → TEXT2SQL_STEPWISE_{DERIVATION,MAX_ROUNDS,MAX_TOOL_CALLS,TIMEOUT_SECONDS} 추가
-      (Plan 67 Phase S2 / D-128)로 233.
+      (Plan 67 Phase S2 / D-128)로 233
+    → QUERY_INTENT_LLM_ASSIST 추가(Plan 67 Phase S3 / R3-(ii))로 234.
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 18  # 17 그룹 + 전역
-    assert len(index) == 233
+    assert len(index) == 234
     assert len([s for s in index.values() if s.group_key == "general"]) == 15
 
 
@@ -512,11 +513,11 @@ def test_t6_requires_restart_matches_immediate_list():
 
 
 def test_t6_unconsumed_fields_flagged():
-    """미소비 필드 16개는 consumed=False로 구분된다."""
+    """미소비 필드 20개는 consumed=False로 구분된다(§6.2 재실측으로 4건 추가)."""
     index = field_index()
     unconsumed = {key for key, spec in index.items() if not spec.consumed}
     assert unconsumed == set(UNCONSUMED_KEYS)
-    assert len(unconsumed) == 16
+    assert len(unconsumed) == 20
 
 
 def test_t6_semantic_routing_is_tristate():
@@ -572,16 +573,37 @@ def test_semantic_routing_reads_env_file_false(monkeypatch, tmp_path):
     assert config.enable_semantic_routing is False
 
 
-async def test_t6_response_splits_restart_and_immediate(monkeypatch, tmp_path):
-    """저장 응답이 재시작 필요 키와 즉시 반영 키를 분리해 알린다."""
+async def test_t6_response_splits_restart_reload_immediate(monkeypatch, tmp_path):
+    """저장 응답이 재시작 필요/리로드 반영/즉시 반영 키를 3분류로 알린다(§6 Phase 4)."""
     _use_env_file(monkeypatch, tmp_path, "")
     response = await update_settings(
         _request(),
         EnvUpdateRequest(settings={
-            "LLM_MODEL": "x",                 # 재시작 필요
+            "ALARM_ENABLED": "true",          # 재시작 필요 (워커 기동 캡처)
+            "LLM_MODEL": "x",                 # 리로드 반영 (그래프 재빌드)
             "SYNONYM_FUZZY_MATCH": "true",    # 즉시 반영
         }),
         _ADMIN,
     )
-    assert response.requires_restart_keys == ["LLM_MODEL"]
+    assert response.requires_restart_keys == ["ALARM_ENABLED"]
+    assert response.reload_keys == ["LLM_MODEL"]
     assert response.applied_immediately_keys == ["SYNONYM_FUZZY_MATCH"]
+
+
+def test_t6_apply_mode_partitions_catalog():
+    """apply_mode 3분류가 IMMEDIATE/RELOADABLE 상수와 정확히 일치한다(§6.2 확정표)."""
+    from src.api.settings_catalog import RELOADABLE_KEYS
+
+    index = field_index()
+    assert {k for k, s in index.items() if s.apply_mode == "immediate"} == set(IMMEDIATE_KEYS)
+    assert {k for k, s in index.items() if s.apply_mode == "reload"} == set(RELOADABLE_KEYS)
+    # 리로드 키는 시크릿을 포함하지 않는다(시크릿은 웹UI 편집 차단 대상)
+    assert not any(index[k].is_secret for k in RELOADABLE_KEYS)
+    # 대표 키 스팟 체크 — 소비 지점 재실측(§6.2) 근거
+    assert index["LLM_MODEL"].apply_mode == "reload"            # 그래프 재빌드
+    assert index["SYNONYM_SEMANTIC_BACKEND"].apply_mode == "reload"  # 임베더 리셋
+    assert index["ALARM_ENABLED"].apply_mode == "restart"       # 워커 기동 캡처
+    assert index["API_CORS_ORIGINS"].apply_mode == "restart"    # 앱 생성 시 고정
+    assert index["SYNONYM_FUZZY_MATCH"].apply_mode == "immediate"
+    # requires_restart 하위호환: immediate만 False (기존 T6 의미 유지)
+    assert index["LLM_MODEL"].requires_restart is True

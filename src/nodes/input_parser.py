@@ -444,8 +444,11 @@ def _extract_target_sheets(
 ) -> Optional[list[str]]:
     """파싱 결과 또는 사용자 질의에서 대상 시트명을 추출한다.
 
-    LLM 파싱 결과의 target_sheets를 우선 사용하고,
-    없으면 정규식으로 사용자 질의에서 시트명을 추출한다.
+    **LLM 파싱 결과(`target_sheets`)가 1순위**다. 시트 지목 표현은 변형이 무한하고(따옴표 없는
+    "요약 시트만" 등) 산출물이 SQL 직접 입력이 아니라 재질의로 회복 가능하므로 해석은 LLM에 맡기고,
+    정규식은 **최후 폴백**으로만 둔다(Plan 67 R3-(ii) · `docs/regex_llm_conversion_review.md` A10).
+    폴백 정규식은 "시트" 키워드가 따옴표에 인접할 때만 인정한다 — 종전 두 번째 패턴은 `시트`가
+    선택이라 조사가 붙은 따옴표 표현("'서울'의 서버")까지 시트명으로 오탐했다.
 
     Args:
         parsed: LLM 파싱 결과
@@ -454,17 +457,26 @@ def _extract_target_sheets(
     Returns:
         시트명 목록 또는 None (전체 시트 대상)
     """
-    # 1. LLM 파싱 결과에서 추출
+    # 1. LLM 파싱 결과 우선 — 문자열만 남기고 공백 정리·중복 제거(형식 오류분은 폴백으로 내려간다)
     llm_sheets = parsed.get("target_sheets")
-    if llm_sheets and isinstance(llm_sheets, list) and len(llm_sheets) > 0:
-        return llm_sheets
+    if isinstance(llm_sheets, list):
+        cleaned: list[str] = []
+        for item in llm_sheets:
+            if not isinstance(item, str):
+                continue
+            name = item.strip()
+            if name and name not in cleaned:
+                cleaned.append(name)
+        if cleaned:
+            return cleaned
 
-    # 2. 정규식 폴백: 따옴표로 감싼 시트명 + "시트" 키워드
+    # 2. 정규식 최후 폴백: 따옴표로 감싼 시트명 — "시트" 키워드가 따옴표 밖/안에 있어야 인정
     patterns = [
         # '시트명' 시트, "시트명" 시트
         r"""['"\u2018\u2019\u201c\u201d]([^'"\u2018\u2019\u201c\u201d]+)['"\u2018\u2019\u201c\u201d]\s*시트""",
-        # XX시트만, XX시트에
-        r"""['"\u2018\u2019\u201c\u201d]([^'"\u2018\u2019\u201c\u201d]+)['"\u2018\u2019\u201c\u201d]\s*(?:시트)?\s*(?:만|에|를|의)""",
+        # '시트명시트'만, '시트명시트'에 — 따옴표 **안**에 '시트'가 포함된 형태만 인정한다
+        # (종전에는 `(?:시트)?`가 선택이어서 "'서울'의 …" 같은 지역명+조사를 시트로 오탐).
+        r"""['"\u2018\u2019\u201c\u201d]([^'"\u2018\u2019\u201c\u201d]*시트)['"\u2018\u2019\u201c\u201d]\s*(?:만|에|를|의)""",
     ]
     sheets: list[str] = []
     for pattern in patterns:

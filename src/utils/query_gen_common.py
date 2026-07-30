@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
+
+logger = logging.getLogger(__name__)
 
 _PREV_MONTH_SIGNALS: tuple[str, ...] = (
     "지난달", "지난 달", "전월", "저번달", "저번 달", "지난1개월", "지난 1개월",
@@ -26,6 +29,86 @@ _N_MONTHS_RE = re.compile(r"(?:지난|최근|과거|last)\s*(\d{1,2})\s*(?:개\s
 StatMonth = str | tuple[str, str] | None
 
 
+# ──────────────────────────────────────────────
+# 표면어 해석 폴백 계측 (Plan 67 R3 — 정규식 미커버율 실측 재료)
+# ──────────────────────────────────────────────
+
+#: 이름 → 누적 발동 횟수. 정규식 1순위가 미매칭이라 LLM 산출물(parsed_requirements) 폴백이
+#: 발동한 횟수와, 스코프 표면어 경계 판정이 오탐을 걸러낸 횟수를 계측한다. utils 계층은
+#: `nodes.semantic_compiler.note_guard`를 참조할 수 없어(역방향 금지) 같은 로그 스타일의
+#: 독립 카운터를 둔다. **계측만** 하고 정규식은 제거하지 않는다(검토 §4.3 되돌림 이력).
+_FALLBACK_COUNTERS: dict[str, int] = {}
+
+FALLBACK_TIME_RANGE_LLM = "interpret.time_range_llm_fallback"  # 기간 표현 미매칭 → LLM 산출물 채택
+FALLBACK_LIMIT_LLM = "interpret.limit_llm_fallback"            # 건수 표현 미매칭 → LLM 산출물 채택
+FALLBACK_ALL_SCOPE_REJECT = "interpret.all_scope_boundary_reject"  # 전체 스코프 표면어 오탐 차단
+
+
+def note_fallback(name: str, detail: str = "") -> None:
+    """표면어 해석 폴백·경계 판정의 발동을 계측한다(R3/R4 — 미커버율 비교 재료).
+
+    Args:
+        name: 폴백 식별자(``FALLBACK_*`` 상수)
+        detail: 로그에 남길 부가 사유(선택)
+    """
+    _FALLBACK_COUNTERS[name] = _FALLBACK_COUNTERS.get(name, 0) + 1
+    logger.info(
+        "[가드계측] %s 발동(누적 %d)%s",
+        name, _FALLBACK_COUNTERS[name], f" — {detail}" if detail else "",
+    )
+
+
+def fallback_counters() -> dict[str, int]:
+    """폴백 발동 누적 카운터의 사본을 반환한다."""
+    return dict(_FALLBACK_COUNTERS)
+
+
+def reset_fallback_counters() -> None:
+    """폴백 발동 카운터를 초기화한다(계측 구간 분리·테스트용)."""
+    _FALLBACK_COUNTERS.clear()
+
+
+def _months_from_parsed_time_range(
+    parsed_time_range: dict | None, ref: date
+) -> tuple[str, str] | None:
+    """input_parser LLM 산출물 ``time_range``를 통계 월 범위로 환산한다(R3 2단 폴백).
+
+    shape는 `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}`(둘 다 ISO 8601, 미지정 시 None)로
+    `src/prompts/input_parser.py`가 규정하고 `input_parser`가 `parsed_requirements`에 세팅한다.
+    한쪽만 있으면 그 달 단일 범위로 본다.
+
+    끝 월은 **직전 완결 월까지로 절단**한다 — 진행 중인 달의 월 통계는 미완결이고, LLM이
+    진행 중인 달까지 포함하는 기간을 재계산해 서버가 중복·왜곡됐던 실측(D-076 후속4)이
+    폴백 경로로 되살아나는 것을 막는다. 시작 월이 당월이면(당월만 요구) 절단하지 않는다.
+    """
+    if not isinstance(parsed_time_range, dict):
+        return None
+    start_ym = _iso_to_month(parsed_time_range.get("start"))
+    end_ym = _iso_to_month(parsed_time_range.get("end"))
+    if not start_ym and not end_ym:
+        return None
+    start_ym = start_ym or end_ym
+    end_ym = end_ym or start_ym
+    if start_ym > end_ym:
+        start_ym, end_ym = end_ym, start_ym
+    last_closed = _month_shift(ref, -1)
+    end_ym = max(min(end_ym, last_closed), start_ym)
+    return (start_ym, end_ym)
+
+
+def _iso_to_month(value: object) -> str | None:
+    """ISO 8601 날짜/월 문자열("2026-06-15"·"2026-06")을 YYYYMM으로 바꾼다(형식 불일치 시 None)."""
+    if not isinstance(value, str):
+        return None
+    m = re.match(r"\s*(\d{4})-(\d{1,2})", value)
+    if not m:
+        return None
+    month = int(m.group(2))
+    if not 1 <= month <= 12:
+        return None
+    return f"{m.group(1)}{month:02d}"
+
+
 def _month_shift(ref: date, delta: int) -> str:
     """ref 기준 delta개월 이동한 월을 YYYYMM 문자열로 반환한다(delta<0이면 과거)."""
     total = ref.year * 12 + (ref.month - 1) + delta
@@ -33,7 +116,10 @@ def _month_shift(ref: date, delta: int) -> str:
 
 
 def resolve_stat_month_range(
-    user_query: str | None, today: date | None = None
+    user_query: str | None,
+    today: date | None = None,
+    *,
+    parsed_time_range: dict | None = None,
 ) -> tuple[str, str] | None:
     """질의의 기간 표현을 사용률 통계 월 범위 (시작 YYYYMM, 끝 YYYYMM)로 해석한다(없으면 None).
 
@@ -41,6 +127,14 @@ def resolve_stat_month_range(
     "지난달"/"전월" → 직전 월 단일, "이번달"/"당월" → 당월 단일. 그 외에는 None(전체 월 평균).
     폼필 SQL을 코드가 결정적으로 조립할 때 `s.stat_date` 필터에 사용한다(D-102).
     N=1이면 "지난달"과 동일한 (직전월, 직전월)이라 종전 동작과 호환된다.
+
+    Args:
+        user_query: 사용자 원문 질의
+        today: 상대 표현의 기준일(기본 오늘)
+        parsed_time_range: `parsed_requirements["time_range"]`(input_parser LLM 산출물).
+            **정규식이 미매칭일 때만** 2단 폴백으로 사용한다 — "지난 반년"·"작년 6월"처럼
+            정규식이 못 잡는 표현이 침묵 소실(전 기간 평균)되던 것을 회복한다(Plan 67 R3-(i),
+            `docs/regex_llm_conversion_review.md` §4.4). 미지정(None)이면 종전 동작 그대로.
     """
     text = user_query or ""
     ref = today or date.today()
@@ -63,6 +157,11 @@ def resolve_stat_month_range(
     if any(sig in text for sig in _CUR_MONTH_SIGNALS):
         cur = _month_shift(ref, 0)
         return (cur, cur)
+    # 2단 폴백(R3-(i)): 정규식 전건 미매칭 → 이미 계산돼 있던 LLM 기간 산출물을 채택한다.
+    llm_range = _months_from_parsed_time_range(parsed_time_range, ref)
+    if llm_range:
+        note_fallback(FALLBACK_TIME_RANGE_LLM, f"{parsed_time_range} → {llm_range}")
+        return llm_range
     return None
 
 
@@ -137,13 +236,48 @@ def build_generic_period_hint(stat_month: str | None) -> str:
 _ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
 _ALL_QUERY_LIMIT: int = 100_000
 
+# 스코프 표면어 뒤에 붙으면 낱말의 품사가 바뀌어 "전체 조회" 의미가 아닌 파생 접미사.
+# "**전체**적으로 CPU 높은 서버"가 LIMIT 100000으로 상향되던 오탐(검토 §4.2 A6) 차단용.
+# 조사(전체를/전체의)·합성(전체서버)은 정상 스코프 지시라 그대로 인정한다 — 표면어 자체를
+# 제거하지 않고 경계만 좁힌다(Plan 67 R3-(iii): 제거 금지, R4 계측 대상 유지).
+_ALL_SCOPE_DERIV_SUFFIXES: tuple[str, ...] = ("적", "화")
+
+
+def has_all_scope_keyword(text: str | None) -> bool:
+    """질의가 "전체/모든/모두" 스코프 지시를 담고 있는지 조사·파생 경계까지 보고 판정한다.
+
+    LIMIT 상향(`resolve_query_limit`)과 LIMIT 자동 추가 스킵(`query_validator`)이 같은
+    판정을 공유하도록 단일 출처로 둔다(종전에는 두 곳이 각자 부분문자열 매칭 튜플을 들고 있었다).
+
+    Args:
+        text: 사용자 원문 질의
+
+    Returns:
+        전체 스코프 지시가 있으면 True
+    """
+    body = text or ""
+    for kw in _ALL_QUERY_KEYWORDS:
+        start = body.find(kw)
+        while start != -1:
+            tail = body[start + len(kw):]
+            if not tail.startswith(_ALL_SCOPE_DERIV_SUFFIXES):
+                return True
+            note_fallback(FALLBACK_ALL_SCOPE_REJECT, f"{kw}{tail[:2]}")
+            start = body.find(kw, start + 1)
+    return False
+
 # 명시 건수 표현("100건", "상위 10개") — "건"은 레코드 수 전용 조사라 안전. 단독 "개"는
 # "개월"·"4개인 서버" 등 수량 한정과 혼동되므로 "상위 N(개)" 꼴에서만 인정한다.
 _EXPLICIT_COUNT_RE = re.compile(r"(\d{1,6})\s*건")
 _TOP_N_RE = re.compile(r"상위\s*(\d{1,6})")
 
 
-def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
+def resolve_query_limit(
+    user_query: str | None,
+    default_limit: int,
+    *,
+    parsed_limit: object = None,
+) -> int:
     """질의의 명시 건수("100건"/"상위 10")를 최우선 반영하고, "전체/모든/모두"면 상향, 아니면 기본값.
 
     단일 DB 경로(query_generator)와 동일한 규칙을 멀티 DB 경로에도 적용하기 위한 공용 함수.
@@ -153,6 +287,10 @@ def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
     Args:
         user_query: 사용자 원문 질의
         default_limit: 일반 조회 기본 LIMIT
+        parsed_limit: `parsed_requirements["limit"]`(input_parser LLM 산출물). **결정적 판정이
+            전부 미매칭일 때만** 2단 폴백으로 사용한다 — "100개만"·"백 건"·"10줄"처럼 정규식이
+            못 잡는 표현이 기본 LIMIT으로 흐르던 것을 회복한다(Plan 67 R3-(i)).
+            미지정(None)이면 종전 동작 그대로.
 
     Returns:
         적용할 LIMIT 값
@@ -163,9 +301,16 @@ def resolve_query_limit(user_query: str | None, default_limit: int) -> int:
         n = int(m.group(1))
         if n > 0:
             return min(n, _ALL_QUERY_LIMIT)
-    if any(k in text for k in _ALL_QUERY_KEYWORDS):
+    if has_all_scope_keyword(text):
         return _ALL_QUERY_LIMIT
-    return default_limit
+    # 2단 폴백(R3-(i)): 표면어 미매칭 → 이미 계산돼 있던 LLM 건수 산출물을 채택한다.
+    if isinstance(parsed_limit, bool) or not isinstance(parsed_limit, int):
+        return default_limit
+    if parsed_limit <= 0:
+        return default_limit
+    limit = min(parsed_limit, _ALL_QUERY_LIMIT)
+    note_fallback(FALLBACK_LIMIT_LLM, f"limit={limit}")
+    return limit
 
 
 # 헤더/필드명이 사용률 지표(명사+집계어)인지 **표면어로만** 판정한다 — DB 스키마 리터럴

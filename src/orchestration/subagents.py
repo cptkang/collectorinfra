@@ -728,13 +728,14 @@ async def run_synonym_registration(
     Args:
         task: 현재 TaskSpec
         isolated: 필터된 입력 컨텍스트
-        llm: LLM 인스턴스 (synonym_registrar는 사용 안 함)
+        llm: LLM 인스턴스. `QUERY_INTENT_LLM_ASSIST`가 켜져 있고 등록 의사가 결정적으로
+            확정되지 않은 경우에만 노드가 사용한다(미전달 시 노드가 자체 생성 — Plan 67 R3-(ii)).
         app_config: 앱 설정
 
     Returns:
         synonym_registrar 노드의 반환 dict
     """
-    return await synonym_registrar(isolated, app_config=app_config)
+    return await synonym_registrar(isolated, llm=llm, app_config=app_config)
 
 
 async def run_general_inference(
