@@ -7,6 +7,11 @@ Plan 67 R1 — 지식 정본 렌더: 카탈로그(`config/knowledge`)와 중복�
 박아두지 않고 정본에서 렌더한다(`render_system_template`). 상수
 ``POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE``은 렌더 실패 시 쓰는 폴백이며 현행 텍스트와 동일하다
 — 정본과 어긋나면 ``scripts/prompt_render_diff.py``와 드리프트 테스트가 잡는다.
+
+Plan 67 R1 잔여(2026-07-30) — 잔여 블록(Template A/B SQL 예제·알람 템플릿의 심각도 매핑·조인)도
+정본 렌더로 전환하되, 렌더 결과가 현행 문구와 **바이트 동일하지 않은 블록이 섞여 있어**
+옵트인 플래그 ``TEXT2SQL_PROMPT_KNOWLEDGE_RENDER`` 뒤에 둔다(기본 OFF = 현행 문자열 바이트 동일).
+블록별 ON/OFF 차이와 사유는 ``scripts/prompt_render_diff.py --blocks``가 전건 리포트한다.
 """
 
 from __future__ import annotations
@@ -16,13 +21,104 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────
+# 렌더 마커 — 스켈레톤에서 정본 파생 지식이 들어갈 자리
+#
+# ``[[...]]`` 표기를 쓰는 이유: 프롬프트는 이후 query_generator가 ``.format()``으로
+# ``{schema}``·``{default_limit}`` 등을 채우므로 중괄호 자리표시자를 새로 늘릴 수 없다.
+# ──────────────────────────────────────────────
+
 _METRIC_CATALOG_MARKER = "[[metric_catalog]]"
+
+# 옵트인 마커(플래그 ON에서만 정본 렌더 — OFF는 아래 폴백 리터럴로 바이트 동일 유지).
+_M_METRIC_VALUE_COLUMNS = "[[metric_value_columns]]"
+_M_METRIC_DEFINITION_NOTE = "[[metric_definition_note]]"
+_M_METRIC_CASE_LINES = "[[metric_case_lines]]"
+_M_EAV_ATTRIBUTE_LINES = "[[eav_attribute_lines]]"
+_M_EAV_RESOURCE_TYPES = "[[eav_resource_types]]"
+_M_EAV_JOIN_CONDITION = "[[eav_join_condition]]"
+_M_HI_IPADDRESS_LINE = "[[hi_ipaddress_line]]"
+_M_HI_ATTRIBUTE_LINES = "[[hi_attribute_lines]]"
+_M_HI_JOIN_CONDITION = "[[hi_join_condition]]"
+_M_SEVERITY_CASE_12 = "[[severity_case_lines_12]]"
+_M_SEVERITY_CASE_8 = "[[severity_case_lines_8]]"
+_M_SEVERITY_CASE_4 = "[[severity_case_lines_4]]"
+_M_ALARM_JOINS_8 = "[[alarm_joins_8]]"
+_M_ALARM_JOINS_4 = "[[alarm_joins_4]]"
+_M_ALARM_JOINS_0 = "[[alarm_joins_0]]"
+_M_ALARM_ACTIVE_JOIN = "[[alarm_active_join]]"
 
 # 렌더 실패(카탈로그 파일 부재) 시 쓰는 폴백 — 정본과 동일해야 하며 드리프트 테스트가 단언한다.
 _METRIC_CATALOG_FALLBACK = """- 'server.Cpus' + definition_name = 'Utilization' → CPU 사용률
 - 'server.Memory' + definition_name = 'Utilization' → 메모리 사용률
 - 'server.FileSystems' + definition_name = 'Utilization' → 파일시스템 사용률
 - 'server.Disks' + definition_name = 'MaxIORate' → 디스크 IO"""
+
+# 옵트인 마커의 현행(플래그 OFF) 리터럴 — 이 값들로 치환한 결과가 전환 전 프롬프트와 바이트
+# 동일해야 한다(sha256 회귀 테스트가 단언). ON에서는 정본 렌더 결과로 대체된다.
+_FALLBACK_BLOCKS: dict[str, str] = {
+    _M_METRIC_VALUE_COLUMNS: "min_val, avg_val, max_val",
+    _M_METRIC_DEFINITION_NOTE: (
+        "'Utilization' = CPU/메모리/파일시스템 사용률, 'MaxIORate' = 디스크 IO"
+    ),
+    _M_METRIC_CASE_LINES: """    ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS cpu_min,
+    ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
+    ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS cpu_max,
+    ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS mem_min,
+    ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg,
+    ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS mem_max,
+    ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS fs_min,
+    ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS fs_avg,
+    ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS fs_max,
+    ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.min_val END)::numeric, 2) AS disks_io_min,
+    ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END)::numeric, 2) AS disks_io_avg,
+    ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.max_val END)::numeric, 2) AS disks_io_max""",
+    _M_EAV_ATTRIBUTE_LINES: """    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
+    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCPU'  THEN cc.stringvalue_short END) AS coresocket,
+    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size,
+    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'       THEN cc.stringvalue_short END) AS ostype,
+    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'     THEN cc.stringvalue_short END) AS osversion,
+    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'PatchLevel'   THEN cc.stringvalue_short END) AS os_patchlevel""",
+    _M_EAV_RESOURCE_TYPES: "'server.Server', 'server.Cpus', 'server.Memory'",
+    _M_EAV_JOIN_CONDITION: "c.resource_conf_id = cc.configuration_id",
+    # 줄 전체(앞 개행 포함)를 마커로 둔다 — hi 조인 키 교정 시 이 줄이 사라져야 하므로.
+    _M_HI_IPADDRESS_LINE: (
+        "\n        MAX(CASE WHEN c.resource_type = 'server.Server' "
+        "THEN c.ipaddress END) AS ipaddress,"
+    ),
+    _M_HI_ATTRIBUTE_LINES: """        MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
+        MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size""",
+    _M_HI_JOIN_CONDITION: "svr.ipaddress = hi.ipaddress",
+    _M_SEVERITY_CASE_12: """            CASE
+                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
+                WHEN CA.ALARMSEVERITY = 1 THEN '주의'
+                WHEN CA.ALARMSEVERITY = 2 THEN '경고'
+                WHEN CA.ALARMSEVERITY = 3 THEN '심각'
+                ELSE ''""",
+    _M_SEVERITY_CASE_8: """        CASE
+            WHEN CA.ALARMSEVERITY = 0 THEN '해소'
+            WHEN CA.ALARMSEVERITY = 1 THEN '주의'
+            WHEN CA.ALARMSEVERITY = 2 THEN '경고'
+            WHEN CA.ALARMSEVERITY = 3 THEN '심각'
+            ELSE ''""",
+    _M_SEVERITY_CASE_4: """    CASE
+        WHEN CA.ALARMSEVERITY = 0 THEN '해소'
+        WHEN CA.ALARMSEVERITY = 1 THEN '주의'
+        WHEN CA.ALARMSEVERITY = 2 THEN '경고'
+        WHEN CA.ALARMSEVERITY = 3 THEN '심각'
+        ELSE ''""",
+    _M_ALARM_JOINS_8: """        JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
+        JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID""",
+    _M_ALARM_JOINS_4: """    JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
+    JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID""",
+    _M_ALARM_JOINS_0: """JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
+JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID""",
+    _M_ALARM_ACTIVE_JOIN: "JOIN CMM_ALARM_ACTIVE A ON A.ALARM_ID = CA.ID",
+}
 
 _SYSTEM_TEMPLATE_SKELETON = """Role: 당신은 POLESTAR 인프라 모니터링 DB 쿼리 생성 전문가이다.
 지시사항: 주어진 스키마 규칙을 엄격히 준수하여 SQL을 작성하라. 제공되지 않은 테이블, 컬럼, 내장 함수를 임의로 추측하거나 생성(Hallucination)하는 것을 엄격히 금지한다. 사용자의 요청이 모호하거나 스키마 범위를 벗어나는 경우, 쿼리를 생성하지 말고 추가 맥락을 요청하라.
@@ -66,20 +162,11 @@ SELECT
     -- (해당 EAV 속성은 실측상 비어 있어 EAV로 읽으면 NULL이 된다 — D-058/D-061).
     MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,
     MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCPU'  THEN cc.stringvalue_short END) AS coresocket,
-    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'       THEN cc.stringvalue_short END) AS ostype,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'     THEN cc.stringvalue_short END) AS osversion,
-    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'PatchLevel'   THEN cc.stringvalue_short END) AS os_patchlevel
+[[eav_attribute_lines]]
 FROM polestar.cmm_resource c
 LEFT JOIN polestar.core_config_prop cc
-       ON c.resource_conf_id = cc.configuration_id
-WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+       ON [[eav_join_condition]]
+WHERE c.resource_type IN ([[eav_resource_types]])
   AND c.dtime IS NULL
 GROUP BY COALESCE(c.platform_resource_id, c.id);
 -- DB2에서는 COALESCE() 대신 NVL()을 사용한다.
@@ -97,9 +184,9 @@ CPU 사용률, 메모리 사용률, 파일시스템 사용률, 디스크 IO 등 
 
 통계 테이블 주요 컬럼:
 - resource_id: cmm_resource.id 와 조인
-- definition_name: 지표 종류 ('Utilization' = CPU/메모리/파일시스템 사용률, 'MaxIORate' = 디스크 IO)
+- definition_name: 지표 종류 ([[metric_definition_note]])
 - stat_date: 통계 기준 월 (YYYYMM 형식 문자열, 예: '202601')
-- min_val, avg_val, max_val: 기간 내 최소/평균/최대값
+- [[metric_value_columns]]: 기간 내 최소/평균/최대값
 
 resource_type 별 조회 가능한 지표:
 [[metric_catalog]]
@@ -113,18 +200,7 @@ SELECT
     TO_DATE(s.stat_date || '01', 'YYYYMMDD') AS stat_date,
     hi.logicalcore,
     hi.mem_size,
-    ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS cpu_min,
-    ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS cpu_avg,
-    ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS cpu_max,
-    ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS mem_min,
-    ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS mem_avg,
-    ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS mem_max,
-    ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.min_val END)::numeric, 2) AS fs_min,
-    ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.avg_val END)::numeric, 2) AS fs_avg,
-    ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.max_val END)::numeric, 2) AS fs_max,
-    ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.min_val END)::numeric, 2) AS disks_io_min,
-    ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END)::numeric, 2) AS disks_io_avg,
-    ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.max_val END)::numeric, 2) AS disks_io_max
+[[metric_case_lines]]
 FROM polestar.cmm_resource r
 JOIN polestar.cmm_resource svr
     ON svr.id = r.platform_resource_id
@@ -133,17 +209,15 @@ JOIN polestar.cmm_metric_stat_m s
     ON r.id = s.resource_id
 LEFT JOIN (
     SELECT
-        COALESCE(c.platform_resource_id, c.id) AS id,
-        MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
-        MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
-        MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
+        COALESCE(c.platform_resource_id, c.id) AS id,[[hi_ipaddress_line]]
+[[hi_attribute_lines]]
     FROM polestar.cmm_resource c
     LEFT JOIN polestar.core_config_prop cc
-        ON c.resource_conf_id = cc.configuration_id
-    WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+        ON [[eav_join_condition]]
+    WHERE c.resource_type IN ([[eav_resource_types]])
       AND c.dtime IS NULL
     GROUP BY COALESCE(c.platform_resource_id, c.id)
-) hi ON svr.ipaddress = hi.ipaddress
+) hi ON [[hi_join_condition]]
 WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
   AND s.definition_name IN ('Utilization', 'MaxIORate')
   AND s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
@@ -200,7 +274,7 @@ WHERE r.resource_type = 'server.Server'
 GROUP BY 피벗 패턴(Template A):
 ```sql
 -- WHERE 절에 직접 추가 (server.Server 행 기준)
-WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+WHERE c.resource_type IN ([[eav_resource_types]])
   AND c.dtime IS NULL
 GROUP BY COALESCE(c.platform_resource_id, c.id)
 HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.avail_status END) != 0
@@ -218,7 +292,7 @@ MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.avail_status END) AS avai
 CPU·메모리가 NULL**이 된다(OS/IP/호스트명만 나오고 CPU/메모리가 빈 값으로 보이는 전형적 증상).
 서버 식별 조건은 **집계 후 server.Server 행 기준의 HAVING**으로 적용한다(avail_status와 동일 기법):
 ```sql
-WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+WHERE c.resource_type IN ([[eav_resource_types]])
   AND c.dtime IS NULL
 GROUP BY COALESCE(c.platform_resource_id, c.id)
 HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '조회할_장비명'
@@ -259,12 +333,7 @@ LIMIT ... ;  -- 또는 FETCH FIRST ... ROWS ONLY (DB2)
 ```
 """
 
-# 폴백 렌더(카탈로그 미가용 시). 현행 프롬프트 텍스트와 바이트 동일하다.
-POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE = _SYSTEM_TEMPLATE_SKELETON.replace(
-    _METRIC_CATALOG_MARKER, _METRIC_CATALOG_FALLBACK
-)
-
-POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = """Role: 당신은 POLESTAR 인프라 모니터링 DB의 알람(Alert) 쿼리 생성 전문가이다.
+_ALARM_TEMPLATE_SKELETON = """Role: 당신은 POLESTAR 인프라 모니터링 DB의 알람(Alert) 쿼리 생성 전문가이다.
 지시사항: 주어진 스키마와 아래 규칙을 엄격히 준수하여 알람 조회 SQL을 작성하라.
 스키마에 없는 테이블·컬럼을 임의로 추측하거나 생성(Hallucination)하는 것을 엄격히 금지한다.
 
@@ -342,7 +411,7 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
 
 [현재 활성 알람 vs 알람 이력 분기]
 - "현재 알람", "발생 중인 알람" → innermost 서브쿼리에 CMM_ALARM_ACTIVE JOIN 반드시 포함
-  JOIN CMM_ALARM_ACTIVE A ON A.ALARM_ID = CA.ID
+  [[alarm_active_join]]
 - "알람 이력", "지난 N일/월 알람", "특정 기간 알람" → CMM_ALARM_ACTIVE JOIN 제외, 외부 WHERE에 기간 조건만 적용
 
 [심각도 0(해소)과 활성/이력 분기]
@@ -463,12 +532,7 @@ FROM (
         C.PARENT_RESOURCE_ID
     FROM (
         SELECT
-            CASE
-                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
-                WHEN CA.ALARMSEVERITY = 1 THEN '주의'
-                WHEN CA.ALARMSEVERITY = 2 THEN '경고'
-                WHEN CA.ALARMSEVERITY = 3 THEN '심각'
-                ELSE ''
+[[severity_case_lines_12]]
             END AS ALARMSEVERITY,
             CA.CTIME,
             CR.NAME AS RESOURCE_NAME,
@@ -481,9 +545,8 @@ FROM (
             CR.HOSTNAME,
             CR.PARENT_RESOURCE_ID
         FROM CMM_RESOURCE CR
-        JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
-        JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
-        JOIN CMM_ALARM_ACTIVE A ON A.ALARM_ID = CA.ID  -- 현재 활성 알람만 (이력 조회 시 이 행 제거)
+[[alarm_joins_8]]
+        [[alarm_active_join]]  -- 현재 활성 알람만 (이력 조회 시 이 행 제거)
         WHERE CR.DTIME IS NULL
           AND CA.ALARMSEVERITY IN (1, 2, 3)  -- 활성 알람: ALARM_ACTIVE JOIN이 0 자동 제외하므로 1~3 유지
           -- 리소스 타입 필터 예시 (서버+하위 자원 포함): AND CR.RESOURCE_TYPE LIKE 'server.%'
@@ -553,12 +616,7 @@ FROM (
         C.PARENT_RESOURCE_ID
     FROM (
         SELECT
-            CASE
-                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
-                WHEN CA.ALARMSEVERITY = 1 THEN '주의'
-                WHEN CA.ALARMSEVERITY = 2 THEN '경고'
-                WHEN CA.ALARMSEVERITY = 3 THEN '심각'
-                ELSE ''
+[[severity_case_lines_12]]
             END AS ALARMSEVERITY,
             CA.CTIME,
             CR.NAME AS RESOURCE_NAME,
@@ -572,8 +630,7 @@ FROM (
             CR.HOSTNAME,
             CR.PARENT_RESOURCE_ID
         FROM CMM_RESOURCE CR
-        JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
-        JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
+[[alarm_joins_8]]
         -- CMM_ALARM_ACTIVE JOIN 없음 (이력 조회)
         WHERE CR.DTIME IS NULL
           AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
@@ -642,12 +699,7 @@ FROM (
         C.PARENT_RESOURCE_ID
     FROM (
         SELECT
-            CASE
-                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
-                WHEN CA.ALARMSEVERITY = 1 THEN '주의'
-                WHEN CA.ALARMSEVERITY = 2 THEN '경고'
-                WHEN CA.ALARMSEVERITY = 3 THEN '심각'
-                ELSE ''
+[[severity_case_lines_12]]
             END AS ALARMSEVERITY,
             CA.CTIME,
             CR.NAME AS RESOURCE_NAME,
@@ -661,8 +713,7 @@ FROM (
             CR.HOSTNAME,
             CR.PARENT_RESOURCE_ID
         FROM CMM_RESOURCE CR
-        JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
-        JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
+[[alarm_joins_8]]
         WHERE CR.DTIME IS NULL
           AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
           AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 서버 본체 + 하위 자원 포함
@@ -711,12 +762,7 @@ SELECT
     MAX(A.CTIME) AS "최근_발생시각"
 FROM (
     SELECT
-        CASE
-            WHEN CA.ALARMSEVERITY = 0 THEN '해소'
-            WHEN CA.ALARMSEVERITY = 1 THEN '주의'
-            WHEN CA.ALARMSEVERITY = 2 THEN '경고'
-            WHEN CA.ALARMSEVERITY = 3 THEN '심각'
-            ELSE ''
+[[severity_case_lines_8]]
         END AS ALARMSEVERITY,
         CA.CTIME,
         COALESCE(
@@ -724,8 +770,7 @@ FROM (
             COALESCE(CR.SERVICE_RESOURCE_ID, CR.ID)
         ) AS ID
     FROM CMM_RESOURCE CR
-    JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
-    JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
+[[alarm_joins_4]]
     WHERE CR.DTIME IS NULL
       AND CA.ALARMSEVERITY IN (0, 1, 2, 3)  -- 0=해소 포함 (이력 조회)
       -- 서버 관련 전체 집계 예시: AND CR.RESOURCE_TYPE LIKE 'server.%'  -- 하위 자원(CPU/메모리/디스크) 포함
@@ -776,12 +821,7 @@ FROM (
         C.PARENT_RESOURCE_ID
     FROM (
         SELECT
-            CASE
-                WHEN CA.ALARMSEVERITY = 0 THEN '해소'
-                WHEN CA.ALARMSEVERITY = 1 THEN '주의'
-                WHEN CA.ALARMSEVERITY = 2 THEN '경고'
-                WHEN CA.ALARMSEVERITY = 3 THEN '심각'
-                ELSE ''
+[[severity_case_lines_12]]
             END AS ALARMSEVERITY,
             CA.CTIME,
             CR.NAME AS RESOURCE_NAME,
@@ -794,8 +834,7 @@ FROM (
             CR.HOSTNAME,
             CR.PARENT_RESOURCE_ID
         FROM CMM_RESOURCE CR
-        JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
-        JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
+[[alarm_joins_8]]
         -- CMM_ALARM_ACTIVE JOIN 없음 (이력 조회)
         -- RESOURCE_TYPE 조건 없음 (전체 장비)
         WHERE CR.DTIME IS NULL
@@ -846,12 +885,7 @@ GROUP_PATH: "...>C2>GP>SVR.NAME>CR.NAME(하위자원일 때만)"
 
 ```sql
 SELECT
-    CASE
-        WHEN CA.ALARMSEVERITY = 0 THEN '해소'
-        WHEN CA.ALARMSEVERITY = 1 THEN '주의'
-        WHEN CA.ALARMSEVERITY = 2 THEN '경고'
-        WHEN CA.ALARMSEVERITY = 3 THEN '심각'
-        ELSE ''
+[[severity_case_lines_4]]
     END AS "등급",
     TO_CHAR(CA.CTIME, 'YYYY-MM-DD HH24:MI:SS') AS "발생시간",
     SVR.NAME AS "장비명",
@@ -869,8 +903,7 @@ SELECT
     D.NAME AS "이벤트",
     UPPER(CA.CONDITIONLOGTEXT) AS "상세내용"
 FROM CMM_RESOURCE CR
-JOIN CMM_ALARM CA ON CA.RESOURCE_ID = CR.ID
-JOIN CMM_ALARM_DEF D ON CA.DEFINITION_ID = D.ID
+[[alarm_joins_0]]
 JOIN CMM_RESOURCE SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)
                        AND SVR.RESOURCE_TYPE = 'server.Server'
                        AND SVR.DTIME IS NULL
@@ -929,11 +962,44 @@ LIMIT N;
 
 
 # ──────────────────────────────────────────────
-# 정본 렌더 (Plan 67 R1-2)
+# 정본 렌더 (Plan 67 R1-2 / R1 잔여)
 # ──────────────────────────────────────────────
 
-_rendered_cache: Optional[str] = None
+#: (템플릿, 플래그) → 렌더 결과 캐시. 카탈로그를 주입받은 호출은 캐시하지 않는다.
+_rendered_cache: dict[tuple[str, bool], str] = {}
 
+#: 설정에서 읽는 옵트인 플래그의 필드명(env: ``TEXT2SQL_PROMPT_KNOWLEDGE_RENDER``).
+_KNOWLEDGE_RENDER_FIELD = "prompt_knowledge_render"
+
+#: Template A 피벗 예제가 노출하는 EAV 속성과 **출력 별칭**. 별칭은 프롬프트 표현이므로 여기
+#: 두고, 속성의 존재·resource_type·값 컬럼은 정본(카탈로그)에서 읽는다. 정본에서 빠진 속성은
+#: 예제에서도 자동으로 사라진다(D-058/D-061 형 드리프트 재발 차단).
+_PIVOT_ATTRIBUTE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("Model", "model"),
+    ("SerialNumber", "serialnumber"),
+    ("MODEL", "cpu_model"),
+    ("LOGICALCORE", "logicalcore"),
+    ("PHYSICALCORE", "physicalcore"),
+    ("PHYSICALCPU", "coresocket"),
+    ("TotalSize", "mem_size"),
+    ("OSType", "ostype"),
+    ("OSVerson", "osversion"),
+    ("PatchLevel", "os_patchlevel"),
+)
+
+#: Template B의 `hi`(설정 피벗) 서브쿼리가 노출하는 속성과 출력 별칭.
+_HI_ATTRIBUTE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("LOGICALCORE", "logicalcore"),
+    ("TotalSize", "mem_size"),
+)
+
+#: measure 별 출력 컬럼 접두사(표현). 미등록 resource_type은 타입 접미사를 소문자로 쓴다.
+_MEASURE_ALIAS_PREFIX: dict[str, str] = {
+    "server.Cpus": "cpu",
+    "server.Memory": "mem",
+    "server.FileSystems": "fs",
+    "server.Disks": "disks_io",
+}
 
 def render_metric_catalog_block(catalog: dict) -> str:
     """카탈로그 패턴 B measure를 프롬프트의 '조회 가능한 지표' 블록으로 렌더한다.
@@ -959,41 +1025,375 @@ def render_metric_catalog_block(catalog: dict) -> str:
     return "\n".join(lines)
 
 
-def render_system_template(catalog: Optional[dict] = None) -> str:
+def render_metric_case_lines(catalog: dict) -> str:
+    """Template B의 measure 집계 CASE WHEN 줄을 정본에서 렌더한다.
+
+    measure(resource_type·definition_name)와 값 컬럼(min/avg/max)은 정본에서 읽고, 출력 컬럼
+    접두사만 프롬프트 표현(`_MEASURE_ALIAS_PREFIX`)을 쓴다.
+
+    Args:
+        catalog: pattern_b(measures·value_columns) 보유 카탈로그
+
+    Returns:
+        렌더된 줄 블록. measure나 값 컬럼이 없으면 빈 문자열.
+    """
+    pattern_b = catalog.get("pattern_b") or {}
+    measures = [
+        m for m in pattern_b.get("measures") or []
+        if m.get("resource_type") and m.get("definition_name")
+    ]
+    value_columns = pattern_b.get("value_columns") or {}
+    if not measures or not all(value_columns.get(k) for k in ("min", "avg", "max")):
+        return ""
+
+    rt_width = max(len(f"'{m['resource_type']}'") for m in measures)
+    dn_width = max(len(f"'{m['definition_name']}'") for m in measures)
+
+    lines: list[str] = []
+    for measure in measures:
+        resource_type = measure["resource_type"]
+        prefix = _MEASURE_ALIAS_PREFIX.get(
+            resource_type, resource_type.rsplit(".", 1)[-1].lower())
+        rt_literal = f"'{resource_type}'".ljust(rt_width)
+        dn_literal = f"'{measure['definition_name']}'".ljust(dn_width)
+        for agg, stat in (("MIN", "min"), ("AVG", "avg"), ("MAX", "max")):
+            lines.append(
+                f"    ROUND({agg}(CASE WHEN r.resource_type = {rt_literal} "
+                f"AND s.definition_name = {dn_literal} "
+                f"THEN s.{value_columns[stat]} END)::numeric, 2) AS {prefix}_{stat},"
+            )
+    return "\n".join(lines).rstrip(",")
+
+
+def render_metric_definition_note(catalog: dict) -> str:
+    """definition_name 별 지표 의미 설명을 정본 measure에서 렌더한다."""
+    grouped: dict[str, list[str]] = {}
+    for measure in (catalog.get("pattern_b") or {}).get("measures") or []:
+        aliases = measure.get("aliases") or []
+        if not (measure.get("definition_name") and aliases):
+            continue
+        grouped.setdefault(measure["definition_name"], []).append(aliases[0])
+    if not grouped:
+        return ""
+    return ", ".join(f"'{name}' = {'/'.join(labels)}" for name, labels in grouped.items())
+
+
+def render_metric_value_columns(catalog: dict) -> str:
+    """통계 값 컬럼 목록(최소·평균·최대)을 정본에서 렌더한다."""
+    value_columns = (catalog.get("pattern_b") or {}).get("value_columns") or {}
+    columns = [value_columns.get(k) for k in ("min", "avg", "max")]
+    return ", ".join(columns) if all(columns) else ""
+
+
+def _eav_dimensions(catalog: dict) -> dict[str, dict]:
+    """카탈로그 EAV dimension을 속성명(대소문자 구분) 키 맵으로 만든다."""
+    return {
+        dim["name"]: dim
+        for dim in (catalog.get("pattern_a") or {}).get("dimensions") or []
+        if dim.get("source") == "eav" and dim.get("name")
+    }
+
+
+def _eav_alignment(catalog: dict) -> tuple[int, int]:
+    """EAV 피벗 예제의 resource_type·속성 리터럴 정렬 폭(표현 — 예제 전 블록 공통)."""
+    dims = _eav_dimensions(catalog)
+    specs = list(_PIVOT_ATTRIBUTE_ALIASES) + list(_HI_ATTRIBUTE_ALIASES)
+    present = [dims[attr] for attr, _ in specs if attr in dims]
+    if not present:
+        return (0, 0)
+    return (
+        max(len(f"'{d.get('resource_type', '')}'") for d in present),
+        max(len(f"'{d['name']}'") for d in present),
+    )
+
+
+def render_eav_attribute_lines(
+    catalog: dict,
+    specs: tuple[tuple[str, str], ...],
+    *,
+    indent: int,
+    widths: tuple[int, int],
+) -> str:
+    """EAV 피벗 SELECT 줄을 정본에서 렌더한다(정본에 없는 속성은 생략).
+
+    Args:
+        catalog: pattern_a(eav·dimensions) 보유 카탈로그
+        specs: (속성명, 출력 별칭) 순서쌍 — 예제가 노출할 속성과 표현
+        indent: 줄 들여쓰기 칸 수
+        widths: (resource_type 리터럴 폭, 속성 리터럴 폭) 정렬 폭
+
+    Returns:
+        렌더된 줄 블록. EAV 구성이나 속성이 없으면 빈 문자열.
+    """
+    eav = (catalog.get("pattern_a") or {}).get("eav") or {}
+    attribute_column, value_column = eav.get("attribute_column"), eav.get("value_column")
+    dims = _eav_dimensions(catalog)
+    if not (attribute_column and value_column):
+        return ""
+
+    rt_width, attr_width = widths
+    pad = " " * indent
+    lines: list[str] = []
+    for attribute, alias in specs:
+        dim = dims.get(attribute)
+        if not dim or not dim.get("resource_type"):
+            continue
+        rt_literal = f"'{dim['resource_type']}'".ljust(rt_width)
+        attr_literal = f"'{attribute}'".ljust(attr_width)
+        lines.append(
+            f"{pad}MAX(CASE WHEN c.resource_type = {rt_literal} "
+            f"AND cc.{attribute_column} = {attr_literal} "
+            f"THEN cc.{value_column} END) AS {alias},"
+        )
+    return "\n".join(lines).rstrip(",")
+
+
+def render_eav_resource_types(catalog: dict) -> str:
+    """EAV 피벗이 접는 resource_type 목록을 정본에서 렌더한다.
+
+    Template A 예제가 노출하는 속성들의 resource_type 합집합 + 엔티티 타입(서버 행)이다.
+    피벗 WHERE의 `IN (...)` 안에 그대로 들어간다.
+    """
+    pattern_a = catalog.get("pattern_a") or {}
+    dims = _eav_dimensions(catalog)
+    entity_types = [
+        dim.get("resource_type") for dim in pattern_a.get("dimensions") or []
+        if dim.get("source") == "direct" and dim.get("resource_type")
+    ]
+    ordered: list[str] = []
+    for resource_type in entity_types[:1] + [
+        dims[attr].get("resource_type") for attr, _ in _PIVOT_ATTRIBUTE_ALIASES if attr in dims
+    ]:
+        if resource_type and resource_type not in ordered:
+            ordered.append(resource_type)
+    return ", ".join(f"'{rt}'" for rt in ordered)
+
+
+def render_eav_join_condition(catalog: dict) -> str:
+    """엔티티↔설정 테이블 조인 조건을 정본에서 렌더한다."""
+    join = ((catalog.get("pattern_a") or {}).get("eav") or {}).get("direct_join") or {}
+    entity_column, config_column = join.get("entity_column"), join.get("config_column")
+    if not (entity_column and config_column):
+        return ""
+    return f"c.{entity_column} = cc.{config_column}"
+
+
+def _severity_grades(catalog: dict) -> list[tuple[int, str]]:
+    """심각도 값 → 대표(첫) 등급 표기 목록을 값 오름차순으로 만든다."""
+    severity_map = (catalog.get("pattern_c") or {}).get("severity_map") or {}
+    grades: dict[int, str] = {}
+    for label, value in severity_map.items():
+        if isinstance(value, int) and value not in grades:
+            grades[value] = str(label)
+    return sorted(grades.items())
+
+
+def render_severity_case_lines(catalog: dict, *, indent: int) -> str:
+    """알람 예제의 등급 CASE WHEN 블록(CASE ~ ELSE)을 정본에서 렌더한다."""
+    grades = _severity_grades(catalog)
+    if not grades:
+        return ""
+    pad, inner = " " * indent, " " * (indent + 4)
+    lines = [f"{pad}CASE"]
+    lines += [f"{inner}WHEN CA.ALARMSEVERITY = {value} THEN '{label}'" for value, label in grades]
+    lines.append(f"{inner}ELSE ''")
+    return "\n".join(lines)
+
+
+def _example_join(statement: str) -> str:
+    """카탈로그 조인 구문을 예제 표기로 바꾼다(스키마 접두사 없는 대문자)."""
+    return statement.replace("{p}", "").upper()
+
+
+def render_alarm_join_lines(catalog: dict, *, indent: int) -> str:
+    """알람 코어 조인(알람·알람정의) 줄을 정본에서 렌더한다."""
+    joins = (catalog.get("pattern_c") or {}).get("joins") or {}
+    statements = [joins.get("CMM_ALARM"), joins.get("CMM_ALARM_DEF")]
+    if not all(statements):
+        return ""
+    return "\n".join(" " * indent + _example_join(s) for s in statements)
+
+
+def render_alarm_active_join(catalog: dict) -> str:
+    """활성 알람 조인 구문을 정본에서 렌더한다."""
+    active_join = (catalog.get("pattern_c") or {}).get("active_join")
+    return _example_join(active_join) if active_join else ""
+
+
+def _load_base_catalog() -> Optional[dict]:
+    """큐레이션 정본(`config/knowledge/_base`)만으로 카탈로그를 만든다(없으면 None).
+
+    패턴 B measure·패턴 C 알람 정의는 구조 메타가 아니라 큐레이션에 있으므로 db_id 없이 렌더할
+    수 있다. 반면 **패턴 A(EAV 구성·속성)는 구조 정본(db_profiles)** 이 필요해 이 경로에서는
+    비어 있고, 해당 블록은 폴백 리터럴을 유지한다.
+    """
+    from src.schema_cache.catalog_builder import build_catalog, load_knowledge_overrides
+
+    overrides = load_knowledge_overrides("_base")
+    if not overrides:
+        logger.warning(
+            "지식 카탈로그 정본을 읽지 못해 폴백 상수를 사용한다 "
+            "(config/knowledge/_base/catalog.yaml 확인 필요)"
+        )
+        return None
+    return build_catalog(None, overrides=overrides)
+
+
+def knowledge_render_enabled() -> bool:
+    """옵트인 플래그(`TEXT2SQL_PROMPT_KNOWLEDGE_RENDER`) 상태를 설정에서 읽는다.
+
+    pydantic 설정 필드로만 판정한다 — `.env`는 `os.environ`에 주입되지 않으므로 `os.getenv`로는
+    `.env` 전용 설정을 볼 수 없다(Known Mistakes 2026-06-10). 필드가 아직 배선되지 않은
+    상태에서는 OFF(현행 문자열 유지)이며, 그때는 명시 인자로만 ON할 수 있다.
+    """
+    try:
+        from src.config import load_config
+
+        text2sql = load_config().text2sql
+    except Exception as e:  # noqa: BLE001 — 설정 로드 실패는 OFF로 강등(사유 로그)
+        logger.warning("프롬프트 지식 렌더 플래그를 읽지 못해 OFF로 유지한다: %s", e)
+        return False
+    if not hasattr(text2sql, _KNOWLEDGE_RENDER_FIELD):
+        logger.debug(
+            "설정에 %s 필드가 없어 프롬프트 지식 렌더는 OFF다(명시 인자로만 ON 가능)",
+            _KNOWLEDGE_RENDER_FIELD,
+        )
+        return False
+    return bool(getattr(text2sql, _KNOWLEDGE_RENDER_FIELD))
+
+
+def knowledge_blocks(
+    catalog: Optional[dict] = None, *, knowledge_render: bool = True
+) -> dict[str, str]:
+    """마커 → 치환값 맵을 만든다(플래그 OFF면 전부 현행 리터럴).
+
+    정본에서 렌더하지 못한 블록은 리터럴을 유지한다(침묵 붕괴 금지). ``hi`` 서브쿼리 조인 키
+    교정은 카탈로그가 아니라 **예제 결함 교정**이므로 카탈로그 없이도 ON에서 적용된다.
+
+    Args:
+        catalog: 렌더에 쓸 카탈로그. None이면 큐레이션 정본에서 만든다.
+        knowledge_render: 옵트인 플래그 상태
+
+    Returns:
+        마커 → 치환 문자열 맵(`_FALLBACK_BLOCKS`의 모든 키를 포함)
+    """
+    blocks = dict(_FALLBACK_BLOCKS)
+    if not knowledge_render:
+        return blocks
+
+    # 값 컬럼(ipaddress) 조인 → 서버 식별자(id) 조인 교정. 조인에만 쓰였던 hi.ipaddress는
+    # 교정과 함께 사라진다(Plan 67 v10-⑦ — 값 컬럼은 NULL·중복 가능해 조인 키로 취약).
+    blocks[_M_HI_JOIN_CONDITION] = "svr.id = hi.id"
+    blocks[_M_HI_IPADDRESS_LINE] = ""
+
+    if catalog is None:
+        catalog = _load_base_catalog()
+    if not catalog:
+        return blocks
+
+    widths = _eav_alignment(catalog)
+    rendered = {
+        _M_METRIC_VALUE_COLUMNS: render_metric_value_columns(catalog),
+        _M_METRIC_DEFINITION_NOTE: render_metric_definition_note(catalog),
+        _M_METRIC_CASE_LINES: render_metric_case_lines(catalog),
+        _M_EAV_ATTRIBUTE_LINES: render_eav_attribute_lines(
+            catalog, _PIVOT_ATTRIBUTE_ALIASES, indent=4, widths=widths),
+        _M_EAV_RESOURCE_TYPES: render_eav_resource_types(catalog),
+        _M_EAV_JOIN_CONDITION: render_eav_join_condition(catalog),
+        _M_HI_ATTRIBUTE_LINES: render_eav_attribute_lines(
+            catalog, _HI_ATTRIBUTE_ALIASES, indent=8, widths=widths),
+        _M_SEVERITY_CASE_12: render_severity_case_lines(catalog, indent=12),
+        _M_SEVERITY_CASE_8: render_severity_case_lines(catalog, indent=8),
+        _M_SEVERITY_CASE_4: render_severity_case_lines(catalog, indent=4),
+        _M_ALARM_JOINS_8: render_alarm_join_lines(catalog, indent=8),
+        _M_ALARM_JOINS_4: render_alarm_join_lines(catalog, indent=4),
+        _M_ALARM_JOINS_0: render_alarm_join_lines(catalog, indent=0),
+        _M_ALARM_ACTIVE_JOIN: render_alarm_active_join(catalog),
+    }
+    blocks.update({marker: value for marker, value in rendered.items() if value})
+    return blocks
+
+
+def _apply_blocks(skeleton: str, blocks: dict[str, str]) -> str:
+    """스켈레톤의 마커를 치환값으로 바꾼다."""
+    for marker, value in blocks.items():
+        skeleton = skeleton.replace(marker, value)
+    return skeleton
+
+
+def render_system_template(
+    catalog: Optional[dict] = None, *, knowledge_render: Optional[bool] = None
+) -> str:
     """지식 정본에서 렌더한 데이터 조회 시스템 프롬프트를 반환한다(결과 캐시).
 
-    카탈로그 미주입 시 큐레이션 정본(`config/knowledge/_base`)만으로 렌더한다 — 패턴 B measure는
-    구조 메타가 아니라 큐레이션에 있으므로 db_id 없이 렌더 가능하다. 카탈로그를 못 읽으면
-    **사유를 로그로 남기고** 폴백 상수를 그대로 쓴다(침묵 강등 금지).
+    지표 목록 블록은 플래그와 무관하게 항상 정본에서 렌더한다(R1-2에서 바이트 동일 실증분).
+    그 외 잔여 블록(Template A/B SQL 예제)은 옵트인 플래그가 ON일 때만 정본 렌더로 바뀐다.
+    카탈로그를 못 읽으면 **사유를 로그로 남기고** 폴백 리터럴을 쓴다(침묵 강등 금지).
 
     Args:
         catalog: 렌더에 쓸 카탈로그. None이면 정본에서 로드한다.
+        knowledge_render: 옵트인 플래그 강제값. None이면 설정에서 읽는다.
 
     Returns:
         렌더된 시스템 프롬프트 템플릿 문자열
     """
-    global _rendered_cache
-    if catalog is None and _rendered_cache is not None:
-        return _rendered_cache
+    render_on = knowledge_render_enabled() if knowledge_render is None else knowledge_render
+    cache_key = ("data", render_on)
+    if catalog is None and cache_key in _rendered_cache:
+        return _rendered_cache[cache_key]
 
-    block = ""
+    resolved = catalog if catalog is not None else _load_base_catalog()
+    metric_block = render_metric_catalog_block(resolved) if resolved else ""
+    if not metric_block:
+        logger.warning(
+            "지표 카탈로그 정본을 읽지 못해 폴백 상수를 사용한다 "
+            "(config/knowledge/_base/catalog.yaml 확인 필요)"
+        )
+
+    blocks = knowledge_blocks(resolved, knowledge_render=render_on)
+    blocks[_METRIC_CATALOG_MARKER] = metric_block or _METRIC_CATALOG_FALLBACK
+    rendered = _apply_blocks(_SYSTEM_TEMPLATE_SKELETON, blocks)
     if catalog is None:
-        from src.schema_cache.catalog_builder import build_catalog, load_knowledge_overrides
+        _rendered_cache[cache_key] = rendered
+    return rendered
 
-        overrides = load_knowledge_overrides("_base")
-        if overrides:
-            block = render_metric_catalog_block(build_catalog(None, overrides=overrides))
-        if not block:
-            logger.warning(
-                "지표 카탈로그 정본을 읽지 못해 폴백 상수를 사용한다 "
-                "(config/knowledge/_base/catalog.yaml 확인 필요)"
-            )
-    else:
-        block = render_metric_catalog_block(catalog)
 
-    rendered = _SYSTEM_TEMPLATE_SKELETON.replace(
-        _METRIC_CATALOG_MARKER, block or _METRIC_CATALOG_FALLBACK
+def render_alarm_system_template(
+    catalog: Optional[dict] = None, *, knowledge_render: Optional[bool] = None
+) -> str:
+    """지식 정본에서 렌더한 알람 조회 시스템 프롬프트를 반환한다(결과 캐시).
+
+    플래그 OFF면 현행 상수를 그대로 반환한다(바이트 동일).
+
+    Args:
+        catalog: 렌더에 쓸 카탈로그. None이면 정본에서 로드한다.
+        knowledge_render: 옵트인 플래그 강제값. None이면 설정에서 읽는다.
+
+    Returns:
+        렌더된 알람 시스템 프롬프트 템플릿 문자열
+    """
+    render_on = knowledge_render_enabled() if knowledge_render is None else knowledge_render
+    if not render_on and catalog is None:
+        return POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE
+
+    cache_key = ("alarm", render_on)
+    if catalog is None and cache_key in _rendered_cache:
+        return _rendered_cache[cache_key]
+
+    rendered = _apply_blocks(
+        _ALARM_TEMPLATE_SKELETON, knowledge_blocks(catalog, knowledge_render=render_on)
     )
     if catalog is None:
-        _rendered_cache = rendered
+        _rendered_cache[cache_key] = rendered
     return rendered
+
+
+# 폴백 렌더(정본 미가용·플래그 OFF). 전환 전 프롬프트 텍스트와 바이트 동일하다.
+POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE = _apply_blocks(
+    _SYSTEM_TEMPLATE_SKELETON,
+    {_METRIC_CATALOG_MARKER: _METRIC_CATALOG_FALLBACK, **_FALLBACK_BLOCKS},
+)
+
+POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE = _apply_blocks(
+    _ALARM_TEMPLATE_SKELETON, _FALLBACK_BLOCKS
+)

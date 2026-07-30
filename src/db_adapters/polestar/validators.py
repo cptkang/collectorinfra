@@ -387,6 +387,58 @@ def check_ranking_order_by_nulls_last(sql: str) -> list[str]:
     ]
 
 
+# 파생 테이블(서브쿼리) 조인: `) alias ON <조건>` — 조건은 다음 절 키워드 전까지
+_DERIVED_JOIN_RE = re.compile(
+    r"\)\s*(\w+)\s+ON\s+(.*?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bHAVING\b|"
+    r"\bORDER\s+BY\b|\bLIMIT\b|\bFETCH\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+# 값 컬럼(식별자가 아닌 업무 값) — 조인 키로 쓰면 NULL·중복·다중값에 취약하다.
+_VALUE_JOIN_COLUMNS = ("ipaddress", "hostname", "name")
+
+
+def check_value_column_join(sql: str) -> list[str]:
+    """파생 테이블(설정 피벗 서브쿼리)을 값 컬럼으로 조인한 패턴을 탐지한다.
+
+    폴스타 설정 피벗 서브쿼리는 `COALESCE(platform_resource_id, id) AS id`로 **서버 식별자**를
+    노출한다. 그런데 이 서브쿼리를 `ON svr.ipaddress = hi.ipaddress`처럼 값 컬럼으로 조인하면
+    ①값이 비면 조인이 전부 깨져 CPU 코어수·메모리 용량이 NULL이 되고(D-058/D-061 계열 —
+    EAV로 읽던 시절 실측된 경로) ②IP·호스트명이 중복·다중(NIC 복수)이면 행이 뻥튀기된다.
+    식별자 조인(`ON svr.id = hi.id`)이 가능한데 값 컬럼을 쓴 경우만 지적한다(서브쿼리가 id를
+    노출하지 않으면 값 조인이 유일한 수단이므로 대상 아님). 주석 제거 후 판정한다(D-087 규약).
+
+    Args:
+        sql: SQL 쿼리
+
+    Returns:
+        에러 메시지 목록 (위반 조인당 1건)
+    """
+    text = sqlparse.format(sql, strip_comments=True)
+
+    errors: list[str] = []
+    for m in _DERIVED_JOIN_RE.finditer(text):
+        alias, condition = m.group(1), m.group(2)
+        a = re.escape(alias)
+        # 서브쿼리가 식별자 컬럼(AS id)을 노출하는가 — 노출하지 않으면 값 조인이 불가피
+        if not re.search(r"\bAS\s+id\b", text[: m.start()], re.IGNORECASE):
+            continue
+        for column in _VALUE_JOIN_COLUMNS:
+            c = re.escape(column)
+            if re.search(
+                rf"\b\w+\.{c}\s*=\s*{a}\.\w+|\b{a}\.{c}\s*=\s*\w+\.\w+",
+                condition, re.IGNORECASE,
+            ):
+                errors.append(
+                    f"파생 테이블 '{alias}'을 값 컬럼({column})으로 조인했습니다. 값 컬럼은 "
+                    "비어 있거나 중복될 수 있어(IP 미등록·다중 NIC·호스트명 중복) 조인이 조용히 "
+                    f"0건이 되거나 행이 중복됩니다. 서브쿼리가 노출하는 식별자로 조인하세요 "
+                    f"(예: ON svr.id = {alias}.id — {alias}.id는 "
+                    "COALESCE(platform_resource_id, id)로 서버 식별자입니다)."
+                )
+                break
+    return errors
+
+
 def check_scope_filter_where_demotion(sql: str) -> list[str]:
     """다중 resource_type 피벗 alias의 서버 식별 필터가 WHERE에 있는 패턴을 탐지한다 (D-096).
 

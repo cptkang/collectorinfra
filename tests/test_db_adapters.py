@@ -40,6 +40,21 @@ class TestAdapterHooks:
         assert adapter.system_template("data_query") == POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
         assert adapter.system_template(None) == POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
 
+    def test_system_template_follows_knowledge_render_flag(self, monkeypatch):
+        """잔여 블록 렌더 플래그가 어댑터 훅까지 배선돼 있다(Plan 67 R1 잔여, 기본 OFF).
+
+        알람 템플릿은 전 블록이 정본과 바이트 일치해 ON에서도 동일하고(무해 전환), 데이터
+        템플릿만 `hi` 조인 키 교정·지표 설명 표기 때문에 달라진다.
+        """
+        from src.db_adapters.polestar import prompts as polestar_prompts
+
+        adapter = get_adapter("polestar", {"polestar"})
+        monkeypatch.setattr(polestar_prompts, "_rendered_cache", {})
+        monkeypatch.setattr(polestar_prompts, "knowledge_render_enabled", lambda: True)
+        assert adapter.system_template("alarm_query") == POLESTAR_ALARM_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        assert adapter.system_template("data_query") != POLESTAR_QUERY_GENERATOR_SYSTEM_TEMPLATE
+        assert ") hi ON svr.id = hi.id" in adapter.system_template("data_query")
+
     def test_validator_checks_detect_routing_misuse(self):
         adapter = get_adapter("polestar", {"polestar"})
         checks = adapter.validator_checks()
