@@ -3681,6 +3681,11 @@ select:focus {
     color: var(--success);
 }
 
+.badge--reload {
+    border-color: rgba(167, 139, 250, 0.4);
+    color: #a78bfa;
+}
+
 .badge--unconsumed {
     border-color: rgba(245, 158, 11, 0.4);
     color: var(--warning);

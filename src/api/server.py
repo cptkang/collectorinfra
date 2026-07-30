@@ -247,6 +247,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     checkpointer = await _create_checkpointer_async(config)
     app.state.graph = build_graph(config, checkpointer=checkpointer)
     app.state.config = config
+    # 설정 리로드(POST /admin/settings/reload) 시 그래프 재빌드에 재사용한다(Plan 68 §6).
+    app.state.checkpointer = checkpointer
     logger.info("에이전트 그래프 빌드 완료")
 
     from src.alarm.infrastructure.notification_bus import AlarmNotificationBus

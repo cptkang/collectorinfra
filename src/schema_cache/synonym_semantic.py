@@ -47,13 +47,23 @@ _embedder_failed = False     # 로드 실패 확정 플래그(경고 1회 후 �
 _embed_cache: "OrderedDict[str, Any]" = OrderedDict()  # 정규화 텍스트 -> 단위 벡터
 
 
-def _reset_state_for_tests() -> None:
-    """모듈 전역 상태를 초기화한다(테스트 격리 전용)."""
+def reset_embedder_state() -> None:
+    """모듈 전역 임베더 래치·임베딩 캐시를 초기화한다(설정 리로드·테스트 격리용).
+
+    다음 사용 시점에 fresh ``load_config()`` 기준으로 임베더를 다시 로드하므로,
+    `SYNONYM_SEMANTIC_BACKEND`/`SYNONYM_SEMANTIC_MODEL_PATH` 계열 변경이
+    재시작 없이 반영된다(Plan 68 §6 Phase 4).
+    """
     global _embedder, _embedder_failed
     with _lock:
         _embedder = None
         _embedder_failed = False
         _embed_cache.clear()
+
+
+def _reset_state_for_tests() -> None:
+    """모듈 전역 상태를 초기화한다(테스트 격리 전용 별칭)."""
+    reset_embedder_state()
 
 
 def _normalize(s: str) -> str:

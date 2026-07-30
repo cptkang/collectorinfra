@@ -19,6 +19,7 @@ from src.api.settings_catalog import (
     FieldError,
     SettingsSchemaResponse,
     build_catalog,
+    diff_effective_keys,
     dry_run_updates,
     field_index,
     mask_value,
@@ -85,11 +86,31 @@ class EnvUpdateResponse(BaseModel):
     updated_keys: list[str]
     message: str
     reset_keys: list[str] = Field(default_factory=list)
-    requires_restart_keys: list[str] = Field(default_factory=list)
+    requires_restart_keys: list[str] = Field(
+        default_factory=list, description="재시작해야만 반영되는 키(apply_mode=restart)"
+    )
+    reload_keys: list[str] = Field(
+        default_factory=list, description="'설정 리로드' 실행 시 반영되는 키(apply_mode=reload)"
+    )
     applied_immediately_keys: list[str] = Field(default_factory=list)
     ignored_keys: list[str] = Field(
         default_factory=list, description="마스킹 값 수신으로 무시한 키(원값 보존)"
     )
+
+
+class SettingsReloadResponse(BaseModel):
+    """설정 리로드(`POST /admin/settings/reload`) 응답."""
+
+    reloaded: bool
+    changed_keys: list[str] = Field(
+        default_factory=list, description="리로드로 실효값이 바뀐 키(값은 노출하지 않음)"
+    )
+    restart_only_keys: list[str] = Field(
+        default_factory=list,
+        description="실효값은 바뀌었으나 소비처가 기동 캡처라 재시작해야 반영되는 키",
+    )
+    graph_rebuilt: bool = False
+    message: str
 
 
 class DbConfigResponse(BaseModel):
@@ -351,29 +372,21 @@ def _atomic_write_env(content: str) -> None:
         raise
 
 
-async def _log_settings_update(
+async def _log_settings_event(
     request: Request,
     admin_id: Optional[str],
-    changes: dict[str, dict[str, Optional[str]]],
-    sensitive_keys: list[str],
-    reset_keys: list[str],
+    event_value: str,
+    extra: dict,
 ) -> bool:
-    """설정 변경을 감사 로그에 기록한다.
-
-    비민감 키는 이전값→새값 쌍을, 민감/시크릿 키는 **키 이름만** 남긴다.
+    """설정 변경/리로드를 감사 로그에 기록한다.
 
     Returns:
         기록 성공 여부(둘 다 미구성이면 False — 호출부가 응답에 명시한다)
     """
-    from src.domain.audit import AuditEvent, AuditLogEntry
+    from src.domain.audit import AuditLogEntry
 
-    extra = {
-        "changes": changes,
-        "sensitive_keys": sensitive_keys,
-        "reset_keys": reset_keys,
-    }
     entry = AuditLogEntry(
-        event=AuditEvent.SETTINGS_UPDATE.value,
+        event=event_value,
         user_id=admin_id,
         client_ip=getattr(request.state, "client_ip", None),
         request_id=getattr(request.state, "request_id", None),
@@ -387,23 +400,48 @@ async def _log_settings_update(
             await audit_service.log(entry)
             return True
         except Exception as e:
-            logger.error("설정 변경 감사 기록 실패, 폴백: %s", e)
+            logger.error("설정 감사 기록 실패, 폴백: %s", e)
 
     audit_repo = getattr(request.app.state, "audit_repo", None)
     if audit_repo:
         try:
             await audit_repo.log_event({
-                "event_type": AuditEvent.SETTINGS_UPDATE.value,
+                "event_type": event_value,
                 "user_id": admin_id,
                 "ip_address": getattr(request.state, "client_ip", None),
                 "detail": extra,
             })
             return True
         except Exception as e:
-            logger.error("설정 변경 감사 기록 실패: %s", e)
+            logger.error("설정 감사 기록 실패: %s", e)
 
-    logger.warning("감사 저장소가 없어 설정 변경을 기록하지 못했습니다: %s", sorted(changes))
+    logger.warning("감사 저장소가 없어 설정 이벤트를 기록하지 못했습니다: %s", event_value)
     return False
+
+
+async def _log_settings_update(
+    request: Request,
+    admin_id: Optional[str],
+    changes: dict[str, dict[str, Optional[str]]],
+    sensitive_keys: list[str],
+    reset_keys: list[str],
+) -> bool:
+    """설정 변경을 감사 로그에 기록한다.
+
+    비민감 키는 이전값→새값 쌍을, 민감/시크릿 키는 **키 이름만** 남긴다.
+    """
+    from src.domain.audit import AuditEvent
+
+    return await _log_settings_event(
+        request,
+        admin_id,
+        AuditEvent.SETTINGS_UPDATE.value,
+        {
+            "changes": changes,
+            "sensitive_keys": sensitive_keys,
+            "reset_keys": reset_keys,
+        },
+    )
 
 
 def _parse_connection_string(conn_str: str) -> dict[str, str]:
@@ -587,7 +625,7 @@ async def update_settings(
         _admin: 인증된 관리자 (의존성 주입)
 
     Returns:
-        수정 결과 (재시작 필요 키·즉시 반영 키 포함)
+        수정 결과 (재시작 필요 키·리로드 반영 키·즉시 반영 키 3분류 포함)
 
     Raises:
         HTTPException: 검증 실패(400) 또는 저장 실패(500)
@@ -667,9 +705,16 @@ async def update_settings(
     changed_keys = list(updates) + reset_keys
     requires_restart_keys = [
         key for key in changed_keys
-        if (spec := index.get(key)) is None or spec.requires_restart
+        if (spec := index.get(key)) is None or spec.apply_mode == "restart"
     ]
-    applied_immediately_keys = [key for key in changed_keys if key not in requires_restart_keys]
+    reload_keys = [
+        key for key in changed_keys
+        if (spec := index.get(key)) is not None and spec.apply_mode == "reload"
+    ]
+    applied_immediately_keys = [
+        key for key in changed_keys
+        if key not in requires_restart_keys and key not in reload_keys
+    ]
 
     logger.info(
         "환경변수 설정 수정: updated=%s reset=%s (by %s)",
@@ -684,8 +729,182 @@ async def update_settings(
         updated_keys=list(updates),
         reset_keys=reset_keys,
         requires_restart_keys=requires_restart_keys,
+        reload_keys=reload_keys,
         applied_immediately_keys=applied_immediately_keys,
         ignored_keys=ignored_keys,
+        message=message,
+    )
+
+
+@router.post(
+    "/admin/settings/reload",
+    response_model=SettingsReloadResponse,
+)
+async def reload_settings(
+    request: Request,
+    _admin: dict = Depends(require_admin_user),
+) -> SettingsReloadResponse:
+    """저장된 설정을 서버 재시작 없이 반영한다 (Plan 68 §6 Phase 4).
+
+    처리 순서:
+    1. fresh `AppConfig` 로드(실패 시 400 — 기존 상태 유지)
+    2. 실효값 diff(키 이름만 — 값 미노출)
+    3. 로그 레벨 변경 시 `setup_logging` 재적용
+    4. 그래프 재빌드(기동 시 체크포인터 재사용 — 대화 이력 보존, 실패 시 500·기존 유지)
+    5. 스키마 캐시·임베더 싱글톤 리셋(+ redis 백엔드면 재연결)
+    6. `app.state.graph`/`app.state.config` 원자 교체 — 처리 중 요청은 옛 객체로 완주
+    7. 감사 로그(SETTINGS_RELOAD)
+
+    빌드 시점 외부 호출은 deepagents 경로 활성 시 vLLM `/models` health GET 1회뿐
+    (로컬·비과금 — D-127 저촉 없음). AlarmWorker 등 기동 캡처 소비처는 반영되지 않으며
+    해당 키는 `restart_only_keys`로 응답에 명시한다.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from src.config import load_config
+    from src.graph import build_graph
+    from src.security.audit_logger import setup_logging
+
+    old_config = request.app.state.config
+    index = field_index()
+
+    load_config.cache_clear()
+    try:
+        fresh = load_config()
+    except Exception as e:
+        logger.error("설정 리로드 실패(설정 로드 불가) — 기존 설정 유지: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"설정 로드에 실패했습니다 — 기존 설정이 유지됩니다: {e}",
+        )
+
+    # 개발 모드(JWT 시크릿 미설정)에서는 AppConfig 재생성이 시크릿을 재추첨해 기존 발급
+    # 토큰이 전량 무효화된다(리로드 직후 운영자 세션 즉시 로그아웃). 명시 설정이 아니면
+    # 실행 중이던 시크릿을 승계한다(운영 모드는 .encenv 고정이라 영향 없음).
+    if not fresh.admin._jwt_secret_explicit and old_config.admin.jwt_secret:
+        fresh.admin.jwt_secret = old_config.admin.jwt_secret
+    if not fresh.auth._jwt_secret_explicit and old_config.auth.jwt_secret:
+        fresh.auth.jwt_secret = old_config.auth.jwt_secret
+
+    # 기동 시 필수 크레덴셜 게이트(D-071)를 리로드 시점에도 동일하게 강제한다 —
+    # 게이트를 통과하지 못하는 설정이 재시작 없이 실서비스에 적용되는 것을 차단.
+    from src.api.server import _validate_production_secrets
+
+    try:
+        _validate_production_secrets(fresh)
+    except RuntimeError as e:
+        logger.error("설정 리로드 거부(운영 게이트) — 기존 설정 유지: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"운영 모드 필수 설정 검증에 실패했습니다 — 기존 설정이 유지됩니다: {e}",
+        )
+
+    changed_keys = diff_effective_keys(old_config, fresh)
+    restart_only_keys = [
+        key for key in changed_keys
+        if (spec := index.get(key)) is not None and spec.apply_mode == "restart"
+    ]
+
+    if old_config.log_level != fresh.log_level:
+        setup_logging(fresh.log_level)
+
+    # 그래프 재빌드 — 동기 빌드이므로 스레드풀에서 실행(이벤트 루프 블로킹 방지).
+    # 체크포인터를 넘기지 않으면 build_graph가 동기 SqliteSaver를 새로 만들므로 반드시 재사용한다.
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    if checkpointer is None:
+        checkpointer = getattr(request.app.state.graph, "checkpointer", None)
+    try:
+        new_graph = await run_in_threadpool(
+            build_graph, fresh, checkpointer=checkpointer
+        )
+    except Exception as e:
+        logger.error("설정 리로드 중 그래프 재빌드 실패 — 기존 그래프·설정 유지: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"그래프 재빌드에 실패했습니다 — 기존 설정이 유지됩니다: {e}",
+        )
+
+    # 싱글톤 리셋 — 옛 redis 연결은 닫고(자원 누수 방지), 다음 접근부터 fresh 설정으로 재생성.
+    from src.schema_cache import cache_manager as cache_manager_module
+    from src.schema_cache import query_history as query_history_module
+    from src.schema_cache.synonym_semantic import reset_embedder_state
+
+    old_manager = cache_manager_module._cache_manager
+    if old_manager is not None:
+        try:
+            await old_manager.disconnect()
+        except Exception as e:
+            logger.warning("리로드 중 기존 스키마 캐시 연결 종료 실패(계속 진행): %s", e)
+    cache_manager_module.reset_cache_manager()
+
+    old_history_store = query_history_module._store
+    if old_history_store is not None:
+        try:
+            await old_history_store.disconnect()
+        except Exception as e:
+            logger.warning("리로드 중 기존 질의 이력 연결 종료 실패(계속 진행): %s", e)
+    query_history_module.reset_query_history_store()
+
+    reset_embedder_state()
+
+    # 원자 교체(참조 대입) — 이 시점 이후의 요청부터 새 설정·그래프를 본다.
+    request.app.state.graph = new_graph
+    request.app.state.config = fresh
+
+    # lifespan과 동일하게 redis 백엔드는 즉시 연결을 확인한다(실패 시 파일 캐시 폴백).
+    if fresh.schema_cache.backend == "redis":
+        try:
+            await cache_manager_module.get_cache_manager(fresh).ensure_redis_connected()
+        except Exception as e:
+            logger.warning("리로드 후 Redis 스키마 캐시 연결 실패 (파일 캐시 폴백): %s", e)
+
+    from src.domain.audit import AuditEvent
+
+    audit_ok = await _log_settings_event(
+        request,
+        _admin.get("sub"),
+        AuditEvent.SETTINGS_RELOAD.value,
+        {
+            "changed_keys": changed_keys,
+            "restart_only_keys": restart_only_keys,
+            "graph_rebuilt": True,
+        },
+    )
+
+    logger.info(
+        "설정 리로드 완료: 변경 %d건(재시작 필요 %d건) (by %s)",
+        len(changed_keys), len(restart_only_keys), _admin.get("sub"),
+    )
+
+    applied = len(changed_keys) - len(restart_only_keys)
+    if not changed_keys:
+        message = "설정을 리로드했습니다 — 실효값 변경은 없습니다."
+    elif restart_only_keys:
+        message = (
+            f"설정을 리로드했습니다 — {applied}건 반영, "
+            f"{len(restart_only_keys)}건은 서버 재시작이 필요합니다."
+        )
+    else:
+        message = f"설정을 리로드했습니다 — {applied}건이 반영되었습니다."
+    # 알람 워커는 기동 캡처 config로 동작한다(§6.2 비대칭) — 워커가 함께 소비하는
+    # 키가 바뀐 경우 질의 경로만 반영됐음을 명시한다(침묵 금지).
+    worker_shared_changed = [
+        key for key in changed_keys
+        if key.startswith(("LLM_", "DBHUB_")) or key == "ACTIVE_DB_IDS"
+    ]
+    if fresh.alarm.enabled and worker_shared_changed:
+        message += (
+            " 알람 워커는 재시작 전까지 이전 LLM/DB 설정으로 동작합니다: "
+            + ", ".join(worker_shared_changed)
+        )
+    if not audit_ok:
+        message += " (감사 기록 불가 — 감사 저장소 미구성)"
+
+    return SettingsReloadResponse(
+        reloaded=True,
+        changed_keys=changed_keys,
+        restart_only_keys=restart_only_keys,
+        graph_rebuilt=True,
         message=message,
     )
 

@@ -128,23 +128,18 @@ class TestValidateReadonly:
 
 
 class TestValidatePolestarDomain:
-    """validate_polestar_domain 도메인 deny 테스트 (§6, D-022/D-028)."""
+    """validate_polestar_domain 도메인 deny 테스트 (§6, D-028)."""
 
-    def test_resource_conf_join_blocked(self):
-        """RESOURCE_CONF_ID = CONFIGURATION_ID 조인은 차단된다 (D-022)."""
-        with pytest.raises(PolestarDomainViolationError) as exc_info:
-            validate_polestar_domain(
-                "SELECT 1 FROM cmm_resource r "
-                "JOIN core_config_prop p ON r.resource_conf_id = p.configuration_id"
-            )
-        assert "RESOURCE_CONF_ID" in str(exc_info.value)
+    def test_resource_conf_join_allowed(self):
+        """RESOURCE_CONF_ID = CONFIGURATION_ID 조인은 허용된다.
 
-    def test_resource_conf_join_reverse_blocked(self):
-        """CONFIGURATION_ID = RESOURCE_CONF_ID 역방향 조인도 차단된다."""
-        with pytest.raises(PolestarDomainViolationError):
-            validate_polestar_domain(
-                "SELECT 1 FROM a WHERE p.configuration_id = r.RESOURCE_CONF_ID"
-            )
+        구 D-022 금지 규칙은 2026-07-30 제거 — 현행 정본(D-076 direct_join·골드셋·
+        조립기)이 전부 이 조인을 사용하며 실측이 동작을 실증(D-022 재검토).
+        """
+        validate_polestar_domain(
+            "SELECT 1 FROM cmm_resource r "
+            "JOIN core_config_prop p ON r.resource_conf_id = p.configuration_id"
+        )
 
     def test_cmm_vendor_blocked(self):
         """cmm_vendor lookup 참조는 차단된다 (D-028)."""

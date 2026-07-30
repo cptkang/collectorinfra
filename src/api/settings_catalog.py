@@ -8,8 +8,10 @@
 - env 키 = `validation_alias.choices[0]`이 있으면 그 값, 없으면 `env_prefix + 필드명.upper()`
 - 시크릿(`SecretStr`·`.encenv` 관리 키)은 **웹UI 편집 차단** — `.env` 수정이 기능적으로 무효이기
   때문이다(우선순위: OS env > `.encenv` > `.env` > 코드 기본값, Plan 68 §1.2).
-- 반영 시점(`requires_restart`)은 소비 지점 분석 확정표(§1.3)를 상수로 내장한다. 미분류 신규
-  필드는 보수적으로 "재시작 필요"로 취급한다.
+- 반영 시점(`requires_restart`·`apply_mode`)은 소비 지점 분석 확정표(§1.3·§6.2)를 상수로
+  내장한다. 미분류 신규 필드는 보수적으로 "재시작 필요"로 취급한다.
+- `apply_mode` 3분류(Plan 68 §6 Phase 4): `immediate`(저장 후 다음 요청부터) /
+  `reload`(저장 후 `POST /admin/settings/reload`로 반영) / `restart`(재시작 유일).
 """
 
 from __future__ import annotations
@@ -197,6 +199,109 @@ IMMEDIATE_KEYS: frozenset[str] = frozenset({
     "SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS",   # (c) cache_manager.py
 })
 
+#: 저장 후 **설정 리로드**(`POST /admin/settings/reload` — app.state.config 교체 + 그래프
+#: 재빌드 + 스키마 캐시·질의 이력·임베더 싱글톤 리셋 + 로그 레벨 재적용 + 운영 게이트 재실행)로
+#: 재시작 없이 반영되는 필드(Plan 68 §6 Phase 4 / §6.2 소비 지점 재실측 2026-07-30).
+#: IMMEDIATE_KEYS·RELOADABLE_KEYS 어느 쪽에도 없는 필드는 재시작 필요(보수적 기본) —
+#: 소비처가 기동 캡처(AlarmWorker·SSE 브리지·감사 태스크·CORS·uvicorn·체크포인터·인증 풀)를
+#: 포함하면 등재하지 않았다.
+#: ※ 비대칭 예외: LLM_*·DBHUB_*·ACTIVE_DB_IDS는 알람 워커(기동 캡처 config)가 함께 소비한다 —
+#: 질의/API 경로는 리로드로 반영되지만 알람 워커 경로는 재시작까지 이전 값이다(리로드 응답이
+#: 해당 변경 시 경고를 명시한다).
+RELOADABLE_KEYS: frozenset[str] = frozenset({
+    # --- top-level: 그래프 토폴로지·빌드 시점 판독 (그래프 재빌드로 반영) ---
+    "ENABLE_SEMANTIC_ROUTING",
+    "ENABLE_DEEPAGENT_ORCHESTRATION",
+    "ENABLE_DEEPAGENTS_PACKAGE",
+    "MAX_REPLAN",
+    "WORKER_PROVIDER_OVERRIDE",
+    "POLESTAR_DB_IDS",
+    "ENABLE_SQL_APPROVAL",
+    "ENABLE_STRUCTURE_APPROVAL",
+    "ACTIVE_DB_IDS",            # ※알람 비대칭
+    "LOG_LEVEL",                # 리로드가 setup_logging을 재호출
+    # --- server: 라우트 요청 시점 판독 (state.config 교체로 반영) ---
+    "API_QUERY_TIMEOUT",
+    "API_FILE_QUERY_TIMEOUT",
+    # --- admin/auth: 라우트·의존성 요청 시점 판독. AUTH_ENABLED는 리로드가 운영
+    #     게이트(_validate_production_secrets)를 재실행하므로 fail-closed 유지 ---
+    "ADMIN_JWT_EXPIRE_HOURS",
+    "AUTH_ENABLED",
+    "AUTH_JWT_EXPIRE_HOURS",
+    "AUTH_MAX_LOGIN_ATTEMPTS",
+    "AUTH_LOCKOUT_MINUTES",
+    "AUTH_PASSWORD_MIN_LENGTH",
+    # --- llm: 빌드 시 create_llm (시크릿 키 제외) ※알람 비대칭 ---
+    "LLM_PROVIDER",
+    "LLM_MODEL",
+    "LLM_OLLAMA_BASE_URL",
+    "LLM_OLLAMA_TIMEOUT",
+    "LLM_GEMINI_MODEL",
+    "LLM_FABRIX_BASE_URL",
+    "LLM_FABRIX_CHAT_MODEL",
+    # --- orchestrator: 빌드 시 create_orchestrator_llm·deep_agent 조립 ---
+    "ORCHESTRATOR_PROVIDER",
+    "ORCHESTRATOR_BASE_URL",
+    "ORCHESTRATOR_MODEL",
+    "ORCHESTRATOR_TIMEOUT",
+    "ORCHESTRATOR_HEALTH_TIMEOUT",
+    "ORCHESTRATOR_VERIFY_SSL",
+    "ORCHESTRATOR_RECURSION_LIMIT",
+    "ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS",
+    "ORCHESTRATOR_ENABLE_THINKING",
+    # --- dbhub: 노드가 매 호출 클라이언트 생성(전역 캐시 없음 실측) ※알람 비대칭 ---
+    "DBHUB_SERVER_URL",
+    "DBHUB_SOURCE_NAME",
+    "DBHUB_MCP_CALL_TIMEOUT",
+    # --- query/text2sql/security/synonym: 노드 partial 주입 (그래프 재빌드로 반영) ---
+    "QUERY_DEFAULT_LIMIT",
+    "QUERY_SUFFICIENCY_REQUIRED_THRESHOLD",
+    "TEXT2SQL_SEMANTIC_COMPOSE",
+    "TEXT2SQL_SEMANTIC_FALLBACK",
+    "TEXT2SQL_FALLBACK_CONFIDENCE_MIN",
+    "TEXT2SQL_MULTI_CANDIDATE",
+    "TEXT2SQL_CANDIDATE_COUNT",
+    "TEXT2SQL_CANDIDATE_STRATEGIES",
+    "TEXT2SQL_COMPLEXITY_GATE",
+    "TEXT2SQL_SELECTION",
+    "TEXT2SQL_GENERIC_LLM_MAPPING",
+    "TEXT2SQL_QUERY_HISTORY_FEWSHOT",
+    "TEXT2SQL_QUERY_HISTORY_TOP_K",
+    "TEXT2SQL_QUERY_HISTORY_MIN_SCORE",
+    "TEXT2SQL_STEPWISE_DERIVATION",
+    "TEXT2SQL_STEPWISE_MAX_ROUNDS",
+    "TEXT2SQL_STEPWISE_MAX_TOOL_CALLS",
+    "TEXT2SQL_STEPWISE_TIMEOUT_SECONDS",
+    "TEXT2SQL_HYPERNYM_AMBIGUITY",
+    "SECURITY_SENSITIVE_COLUMNS",
+    "SECURITY_MASK_PATTERN",
+    "SECURITY_MASK_IP",
+    "SECURITY_MASK_EMAIL",
+    "SYNONYM_VALUE_RETRIEVAL",
+    "SYNONYM_MAX_SYNONYM_SUPPLEMENT_TABLES",
+    # --- synonym 임베더 래치: reset_embedder_state()로 반영 ---
+    "SYNONYM_SEMANTIC_BACKEND",
+    "SYNONYM_SEMANTIC_MODEL_PATH",
+    "SYNONYM_SEMANTIC_VLLM_BASE_URL",
+    "SYNONYM_SEMANTIC_VLLM_MODEL",
+    "SYNONYM_SEMANTIC_VLLM_VERIFY_SSL",
+    # --- schema_cache 싱글톤: reset_cache_manager()로 반영 ---
+    "SCHEMA_CACHE_BACKEND",
+    "SCHEMA_CACHE_CACHE_DIR",
+    "SCHEMA_CACHE_ENABLED",
+    "SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS",
+    # --- redis: 소비처가 두 싱글톤(스키마 캐시·질의 이력)뿐인 필드만 ---
+    "REDIS_SSL",
+    "REDIS_SOCKET_TIMEOUT",
+    # --- alarm/noise_gate: 라우트 전용 판독 필드만 (워커 소비 필드는 전부 재시작) ---
+    "ALARM_DEFAULT_TEST_DB_ID",
+    "NOISE_META_ALERT_SUPPRESS_RATIO",
+    "NOISE_META_ALERT_WINDOW_SECONDS",
+    "NOISE_META_ALERT_MIN_EVENTS",
+    "NOISE_FORMAT_TOLERANT_PARSING_ENABLED",
+    "NOISE_FAULT_DIAGNOSIS_ENABLED",  # 그래프 빌드 시점 게이팅 — 워커 미소비 실측
+})
+
 #: config에 정의됐지만 현재 코드가 읽지 않는 필드(Plan 68 §1.5-4). UI 기본 숨김 + "미소비" 뱃지.
 UNCONSUMED_KEYS: frozenset[str] = frozenset({
     "ORCHESTRATOR_MAX_INPUT_TOKENS",
@@ -215,6 +320,11 @@ UNCONSUMED_KEYS: frozenset[str] = frozenset({
     "NOISE_AI_SEVERITY_ESCALATE_ONLY",
     "CONVERSATION_MAX_TURNS",
     "CONVERSATION_TTL_HOURS",
+    # --- §6.2 소비 지점 재실측(2026-07-30)로 확인된 추가 미소비 ---
+    "ORCHESTRATOR_MAX_HISTORY_TURNS",       # context_resolver.py:26 주석 참조뿐 (D-129 부기 확인 건)
+    "SYNONYM_DECAY_DAYS",                   # redis_cache.py:958 인자만 존재 — config에서 넘기는 호출부 없음
+    "ALARM_PROMETHEUS_BASE_URLS_CSV",       # PrometheusClient가 src/에서 미생성 (테스트에서만 생성)
+    "ALARM_PROMETHEUS_TIMEOUT_SECONDS",     # 동상
 })
 
 #: `str` 타입이지만 허용값이 config.py 주석에 명시된 필드 — enum 위젯으로 노출한다(부록 A의 `※`).
@@ -274,6 +384,7 @@ class SettingSchemaItem(BaseModel):
     is_sensitive: bool = False
     is_set: bool = False                   # 시크릿의 "설정됨/미설정" 표시용
     requires_restart: bool = True
+    apply_mode: str = "restart"            # immediate | reload | restart
     consumed: bool = True
     description: Optional[str] = None
 
@@ -308,6 +419,7 @@ class FieldSpec:
     is_secret: bool
     is_sensitive: bool
     requires_restart: bool
+    apply_mode: str  # immediate | reload | restart
     consumed: bool
     section: Optional[str]
     description: Optional[str]
@@ -431,6 +543,12 @@ def field_index() -> dict[str, FieldSpec]:
         )
         field_type, choices, optional = _detect_type(env_key, field_name, annotation, is_secret)
         default = None if is_secret else serialize_value(field_type, field.default)
+        if env_key in IMMEDIATE_KEYS:
+            apply_mode = "immediate"
+        elif env_key in RELOADABLE_KEYS:
+            apply_mode = "reload"
+        else:
+            apply_mode = "restart"
         index[env_key] = FieldSpec(
             env_key=env_key,
             group_key=group_key,
@@ -442,6 +560,7 @@ def field_index() -> dict[str, FieldSpec]:
             is_secret=is_secret,
             is_sensitive=is_secret or env_key in SENSITIVE_VALUE_KEYS,
             requires_restart=env_key not in IMMEDIATE_KEYS,
+            apply_mode=apply_mode,
             consumed=env_key not in UNCONSUMED_KEYS,
             section=SECTION_BY_KEY.get(env_key),
             description=DESCRIPTION_OVERRIDES.get(env_key) or descriptions.get(env_key),
@@ -697,6 +816,23 @@ def _effective_value(config: AppConfig, spec: FieldSpec) -> Optional[str]:
     return serialize_value(spec.type, raw)
 
 
+def diff_effective_keys(old: AppConfig, new: AppConfig) -> list[str]:
+    """두 설정 인스턴스의 실효값이 다른 env 키 목록을 반환한다(리로드 diff용).
+
+    시크릿은 값 직렬화 자체를 피하기 위해 비교에서 제외한다. 반환은 **키 이름만** —
+    값은 응답·감사 어디에도 싣지 않는다(Plan 68 §6 Phase 4).
+    """
+    changed: list[str] = []
+    for key, spec in field_index().items():
+        if spec.is_secret:
+            continue
+        if not _values_equivalent(
+            spec, _effective_value(old, spec), _effective_value(new, spec)
+        ):
+            changed.append(key)
+    return changed
+
+
 def _secret_is_set(config: Optional[AppConfig], spec: FieldSpec,
                    file_values: dict[str, str], os_environ: dict[str, str]) -> bool:
     """시크릿이 어디서든 실제로 설정돼 있는지 판정한다(값은 노출하지 않는다)."""
@@ -794,6 +930,7 @@ def build_catalog(
             is_set=_secret_is_set(config, spec, file_values, os_environ) if spec.is_secret
             else bool(file_value),
             requires_restart=spec.requires_restart,
+            apply_mode=spec.apply_mode,
             consumed=spec.consumed,
             description=spec.description,
         ))

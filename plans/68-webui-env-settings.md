@@ -1,6 +1,6 @@
 # 68. 설정 웹UI 전면 개편 계획 (v2 — 설정 코드 정밀 분석 반영)
 
-> 작성일: 2026-07-29 (v1) / **v2 갱신: 2026-07-29 — 설정 소비 지점 전수 분석·관리자 UI 스택 분석·pydantic 인트로스펙션 실측 반영**
+> 작성일: 2026-07-29 (v1) / **v2 갱신: 2026-07-29 — 설정 소비 지점 전수 분석·관리자 UI 스택 분석·pydantic 인트로스펙션 실측 반영** / **v2.1 갱신: 2026-07-30 — §6 Phase 4(즉시 반영 확대) 재론 분석 등재(사용자 재론 요청 — 실측: D-127 리스크 해소·단계별 방안·구조상 불가 목록 확정)** / **v2.2 갱신: 2026-07-30 — §6 Phase 4 구현 완료(§6.2 구현 기록·소비 지점 3에이전트 전수 재실측·apply_mode 3분류 확정표, D-135 등재)**
 > **성격**: 구현 계획(implementation-ready). 요청 취지 — ".env, .env.example의 모든 옵션을 웹UI에서 설정" + "설정 관련 코드를 면밀히 분석하여 설정 웹UI가 작성될 수 있도록 계획 작성"
 > **대상 기능**: `src/api/routes/admin.py`, `src/static/admin/dashboard.html`, `src/static/js/admin.js`, `src/static/css/style.css`, `src/config.py`(카탈로그 원천), `src/domain/audit.py`(감사 이벤트)
 > **관련 결정**: D-127(과금 외부 API 건별 승인), D-070(운영자/사용자 시크릿 분리), D-071(기본 크레덴셜 제거), D-035(결정적=판단·LLM=보조)
@@ -286,7 +286,7 @@ def validate_updates(updates: dict[str, str]) -> list[FieldError]  # 3단 검증
 
 ---
 
-## 6. Phase 4 — 즉시 반영 범위 확대 [**게이트 5 확정: 1차 범위 제외** — 운영 불편 실증 시 별도 계획으로 재론]
+## 6. Phase 4 — 즉시 반영 범위 확대 [게이트 5: 1차 제외 → **2026-07-30 사용자 재론 지시로 구현 완료(§6.2 / D-135)**]
 
 현 구조에서 재시작 없이 반영을 넓히려면(소비 지점 분석 권고):
 
@@ -295,6 +295,51 @@ def validate_updates(updates: dict[str, str]) -> list[FieldError]  # 3단 검증
 3. `reset_cache_manager()`(현재 prod 호출부 0건)·`synonym_semantic._reset_state_for_tests()` 연동 — schema_cache/redis 반영.
 
 **리스크**: 처리 중 요청과의 원자성(교체 시점 경합), 재빌드 중 LLM/오케스트레이터 health 호출 발생 가능(과금 게이트 D-127 검토 필요), AlarmWorker·CORS·uvicorn host/port는 **구조상 불가**(재시작 유일). 범위가 별도 계획 규모이므로 본 계획에서는 엔드포인트 자리만 예약하고 기본 미구현.
+
+### 6.1 재론 분석 (2026-07-30 실측 — 사용자 재론 요청 접수)
+
+사용자 요청("admin 설정 화면 대부분이 재시작 표기 — 재시작 없이 반영 확대 가능 여부 확인") = 게이트 5의 "운영 불편 실증" 재론 트리거. 아래는 코드 재실측 결과이며, **게이트 5 결정(1차 제외) 자체는 유지** — 구현 착수는 사용자 승인 시 별도 진행.
+
+**현황 재확인 (v2 분석과 코드 일치 검증 완료)**
+
+- 즉시 반영은 `IMMEDIATE_KEYS` 7키뿐(`settings_catalog.py:190` — `DBHUB_BEARER_TOKEN`, synonym 매칭 4종, `SYNONYM_GOVERNANCE`, `SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS`). 나머지 전부 `requires_restart=True`(`:444`).
+- 고정 캡처 3곳 재검증: ① `server.py:249` `app.state.config` 고정(라우트 계열 — dependencies/query/alarm/user_auth/admin_auth/admin/health, `request.app.state.config` 소비 25곳) ② `server.py:248` `build_graph(config)` → `graph.py:302~` 노드 전량 partial 주입 ③ 워커·싱글톤(`server.py:320` `AlarmWorker(config)`, SSE 브리지 `:332~`, 감사 로테이션 `:300`, `cache_manager.py:1737` 싱글톤, synonym 임베더 영구 래치).
+
+**단계별 방안 (v2 §6 1~3항의 실측 보강)**
+
+| 단계 | 내용 | 반영 확대 범위 | 실측 보강 |
+|---|---|---|---|
+| 1 | `cache_clear()` → fresh `AppConfig()` → `app.state.config` 재대입 + `setup_logging(log_level)` 재호출 | 라우트가 읽는 설정 전반(auth/admin 인증 정책·감사 판정·alarm 라우트·쿼리 정책) + 로그 레벨 | 참조 교체는 원자적, in-flight 요청은 잡아둔 옛 config로 완주 — v2가 우려한 경합 리스크는 낮음(효과 대비 위험 최소 → **우선 착수 권장**) |
+| 2 | `build_graph(fresh_config)` → `app.state.graph` 교체(체크포인터 재사용) | llm·orchestrator·text2sql·synonym·query·multi_db·security 등 노드 계열 | **D-127 리스크 해소(실측)**: 빌드 시점 외부 호출은 deepagents 경로 활성 시 vLLM `/models` health GET 1회뿐(`deep_agent.py:44` — 로컬·비과금), gemini 오케스트레이터는 키 유무 판정만(`:66`), `create_llm`은 클라이언트 객체 생성만 — **과금 API 호출 0**. 그래프 참조 교체도 원자적, 진행 중 질의는 옛 그래프로 완주 |
+| 3 | `reset_cache_manager()`(`cache_manager.py:1758`, prod 호출부 0건 유지 확인) + 임베더 래치 리셋 연동 | schema_cache `backend`/`cache_dir` 계열, synonym `semantic_backend`/`semantic_model_path` 계열 | 리셋 후 다음 접근 시 모델·캐시 재로드 비용 발생(1회성 지연) |
+
+**UI 파급**: 배지·저장 배너 모두 카탈로그 `requires_restart` 메타에서 자동 파생(`settings_catalog.py:444`, `admin.js:467,850,949`) → 서버 측 키 분류 확장만으로 화면 자동 갱신. 단 리로드 도입 시 "재시작 필요/리로드 시 반영/즉시 반영" **3분류**로 메타 확장 검토(현행 2분류 boolean).
+
+**구조상 재시작 유일 (확정 목록)**
+
+- uvicorn host/port/workers(`main.py` 기동 인자), CORS origins(`server.py:529` 앱 생성 시 고정)
+- AlarmWorker·SSE 브리지·감사 로테이션 태스크가 캡처한 설정(alarm·noise_gate 대부분) — 태스크 cancel 후 재기동으로 가능은 하나 처리 중 알람 유실 리스크 → 별도 판단
+- 체크포인터 종류·경로, 인증 DB 풀(`auth_db_url` — 풀 재생성 필요)
+- OS env/`.encenv` 오버라이드 키(리로드해도 `.env` 값 무시 — 기존 오버라이드 뱃지로 이미 표시)
+- 별도 프로세스(`alarm_server`/`mcp_server`) — 본 계획 범위 외 유지
+
+**잔여 확인**: 필드 단위 최종 분류(리로드 반영 vs 재시작)는 §8 R3식 소비 지점 실측을 착수 시 1회 재수행해 확정. reload 트리거 방식(저장 시 자동 vs 명시 "반영" 버튼 — 게이트 2 "재시작 버튼 제외"와는 별개 사안)은 착수 게이트로 사용자 확정 필요. → **§6.2에서 해소(2026-07-30)**.
+
+### 6.2 구현 기록 (2026-07-30 — 사용자 지시 "미구현 부분 구현", D-135)
+
+**소비 지점 전수 재실측(§6.1 잔여 확인 이행).** 3개 병렬 탐색 에이전트로 226필드의 소비 지점을 file:line 단위 재매핑 — ①라우트·서버 골격(top-level/server/admin/auth/audit/redis) ②알람·워커 계열(alarm/noise_gate/workb) ③그래프·파이프라인 계열(llm/orchestrator/text2sql/query/security/synonym/multi_db/dbhub/schema_cache). 판정 규칙: 소비처가 기동 캡처(W — AlarmWorker·SSE 브리지·감사 태스크/서비스·CORS·uvicorn·체크포인터·인증 풀)를 하나라도 포함하면 restart(보수 기본), 요청 시점(R)·그래프 스코프(G)·리셋 가능 싱글톤(S)만이면 reload. 결과: **immediate 7 / reload 78 / restart 148** (`settings_catalog.py`의 `RELOADABLE_KEYS` 확정표가 SSOT — 주석에 그룹별 근거 명기).
+
+**구현 확정 사항.**
+
+1. **`POST /admin/settings/reload`** (admin.py) — 처리 순서: `cache_clear()` → fresh `AppConfig`(실패 400·기존 유지) → **JWT 자동생성 시크릿 승계**(`_jwt_secret_explicit` 아닐 때만 — 개발 모드 리로드가 전 토큰을 무효화해 운영자 세션이 즉시 로그아웃되는 함정 차단, 운영 모드는 `.encenv` 고정이라 무영향) → **운영 게이트 `_validate_production_secrets` 재실행**(D-071 fail-closed — 이 재실행 덕에 `AUTH_ENABLED`를 reload로 강등 가능) → 로그 레벨 변경 시 `setup_logging` 재적용(`LOG_LEVEL` reload 승격 근거) → **그래프 재빌드**(`app.state.checkpointer` 재사용 — server.py가 lifespan에서 보관하도록 1줄 추가, 스레드풀 실행, 실패 500·기존 유지) → **싱글톤 리셋 3종**(스키마 캐시는 disconnect 후 `reset_cache_manager()` — 실측 지적 "리셋만 하면 Redis 연결 누수" 반영, 질의 이력 `reset_query_history_store()`, 임베더 `reset_embedder_state()` — `_reset_state_for_tests`를 공개 함수로 개명) → `app.state.graph`/`config` **원자 교체**(처리 중 요청은 옛 객체로 완주) → redis 백엔드면 lifespan과 동일하게 즉시 재연결 확인 → `SETTINGS_RELOAD` 감사(**키 이름만**, 값 미기록) + 대시보드 감사 필터 옵션 추가.
+2. **응답 계약**: `changed_keys`(실효값 diff — `diff_effective_keys`, 시크릿 제외·값 미노출)·`restart_only_keys`(바뀌었지만 기동 캡처 소비라 재시작 필요)·`graph_rebuilt`·`message`. 저장(`PUT`) 응답도 3분류로 확장 — `reload_keys` 신설, `requires_restart_keys`는 restart 전용으로 의미 축소.
+3. **알람 워커 비대칭(양 에이전트 판정 상충의 해소)**: `LLM_*`·`DBHUB_*`·`ACTIVE_DB_IDS`는 질의 그래프(G — 재빌드로 반영)와 알람 워커(W — 캡처본 유지)가 공동 소비. 엄격 W-규칙이면 restart지만 §6이 정의한 리로드 효과 범위(질의 경로)를 기준으로 **reload로 분류**하고, 워커 활성+해당 키 변경 시 응답 메시지에 미반영 키를 명시(침묵 금지). **워커 재기동은 계속 범위 외**(처리 중 알람 유실·노이즈 게이트 in-memory 상태(플래핑·스톰·중복 억제) 초기화 리스크 — 별도 판단 유지).
+4. **UI**: `apply_mode` 기반 "리로드" 뱃지(구버전 캐시 대비 `requires_restart` 폴백)·필터 옵션 "리로드 반영"·툴바 [설정 리로드] 버튼(미저장 변경 존재 시 거부)·저장 배너 3분류·diff 모달 뱃지. **트리거 방식 확정: 명시 버튼**(저장 시 자동 리로드 아님 — 매 저장마다 그래프 재빌드 방지 + 운영자가 반영 시점 통제). 캐시 버스팅 v 갱신.
+5. **카탈로그 메타**: `FieldSpec`/`SettingSchemaItem`에 `apply_mode` 추가, `requires_restart`는 하위호환 유지(= not immediate — 기존 T6 의미 보존). **미소비 4건 추가 등재(16→20)**: `ORCHESTRATOR_MAX_HISTORY_TURNS`(D-129 부기 확인 건 해소)·`SYNONYM_DECAY_DAYS`·`ALARM_PROMETHEUS_BASE_URLS_CSV`·`ALARM_PROMETHEUS_TIMEOUT_SECONDS`(에이전트 판정을 워드 경계 grep으로 재검증 후 반영).
+
+**검증.** 신규 `tests/test_api/test_settings_reload.py` 10건(교체·no-op diff·restart_only 보고·로드/빌드 실패 시 기존 상태 유지·게이트 거부·시크릿 승계·로그레벨 조건부 재적용·감사 키만 기록·워커 비대칭 경고 유/무) + 카탈로그 46건(3분류 파티션 일치·리로드 키 시크릿 0·스팟 체크·미소비 20). 실패 4건은 클린 HEAD worktree 동일 재현(기존 실패 — 회귀 0), `arch_check --ci` 0, **외부 호출 0**(재빌드 시 vLLM health GET은 deepagents 활성 시 1회·로컬 비과금 — D-127 저촉 없음 실측).
+
+**잔여 주의(운영 가이드).** ① `ENABLE_SQL_APPROVAL`/`ENABLE_STRUCTURE_APPROVAL` 변경 리로드는 `interrupt_before` 구성이 바뀌어 승인 대기 중 스레드가 재개 불능이 될 수 있다 — 승인 대기가 없는 시점에 리로드 권장. ② OS env/`.encenv` 오버라이드 키는 리로드로도 불변(오버라이드 뱃지가 이미 경고). ③ YAML 파생 전역 캐시(`semantic_compiler._MODEL_CACHE`·위치 힌트 모듈 전역 `_LOCATION_DB_HINTS` 계열)는 env 리로드 범위 밖 — YAML 변경은 재시작 유일(별건). ④ `AUTH_ENABLED` 리로드 활성화 시 seed admin 부트스트랩은 미실행 — break-glass env 로그인은 요청 시점 판정이라 가능.
 
 ---
 
@@ -311,6 +356,14 @@ def validate_updates(updates: dict[str, str]) -> list[FieldError]  # 3단 검증
 | 2 | `src/static/css/style.css` | §4.4 신규 클래스 |
 | 3 | `docs/02_decision.md`, `.env.example`, `.env` | D-129 등재·안내·중복 키 정리 |
 | 3 | `src/config.py` | `enable_semantic_routing` `bool\|None` 교정 (게이트 4 확정) |
+| 4 | `src/api/routes/admin.py` | `POST /admin/settings/reload`·응답 3분류(`reload_keys`)·감사 헬퍼 일반화 |
+| 4 | `src/api/settings_catalog.py` | `RELOADABLE_KEYS` 확정표·`apply_mode`·`diff_effective_keys`·미소비 +4 |
+| 4 | `src/api/server.py` | `app.state.checkpointer` 보관(재빌드 재사용) |
+| 4 | `src/schema_cache/synonym_semantic.py` | `reset_embedder_state` 공개화 |
+| 4 | `src/domain/audit.py` | `SETTINGS_RELOAD` 이벤트 추가 |
+| 4 | UI 3종 + `dashboard.html` 감사 필터 | 리로드 뱃지·필터·버튼·배너 3분류·캐시 버스팅 |
+| 4 | `tests/test_api/test_settings_reload.py` (신규) | 리로드 10건 |
+| 4 | `docs/02_decision.md` | D-135 등재 |
 
 ## 8. 실측 잔여 항목 (착수 후 우선 해소)
 

@@ -35,12 +35,8 @@ POLESTAR_FORBIDDEN_TABLES: frozenset[str] = frozenset({
     "CMM_OS_PARAM", # D-028: os_param_id lookup 금지
 })
 
-# RESOURCE_CONF_ID = CONFIGURATION_ID 조인(D-022 금지) — 양방향·테이블 한정자 허용.
-_RESOURCE_CONF_JOIN_RE = re.compile(
-    r"\b(?:[A-Z_][A-Z0-9_]*\.)?RESOURCE_CONF_ID\s*=\s*(?:[A-Z_][A-Z0-9_]*\.)?CONFIGURATION_ID\b"
-    r"|\b(?:[A-Z_][A-Z0-9_]*\.)?CONFIGURATION_ID\s*=\s*(?:[A-Z_][A-Z0-9_]*\.)?RESOURCE_CONF_ID\b",
-    re.IGNORECASE,
-)
+# (구) RESOURCE_CONF_ID=CONFIGURATION_ID 조인 금지 정규식은 2026-07-30 제거 —
+# 현행 정본이 사용하는 정상 조인을 전건 차단하던 stale 규칙(D-022 재검토 참조).
 
 
 class ReadOnlyViolationError(Exception):
@@ -115,14 +111,18 @@ def validate_readonly(sql: str) -> None:
 
 
 def validate_polestar_domain(sql: str) -> None:
-    """폴스타 도메인 금지 패턴을 검증한다(D-022/D-028). 위반 시 예외를 발생시킨다.
+    """폴스타 도메인 금지 패턴을 검증한다(D-028). 위반 시 예외를 발생시킨다.
 
     `execute_sql`을 옵트인(`expose_execute_sql=true`)으로 노출할 때만 추가로 적용한다.
     고수준 도구는 SQL을 받지 않으므로(값 인자만) 이 검증 대상이 아니다.
 
     검증 항목:
-    1. `RESOURCE_CONF_ID` = `CONFIGURATION_ID` 조인 (D-022 — hostname 브릿지 조인만 허용)
-    2. `cmm_vendor`/`cmm_os`/`cmm_os_param` lookup 테이블 참조 (D-028 — EAV 속성 사용)
+    1. `cmm_vendor`/`cmm_os`/`cmm_os_param` lookup 테이블 참조 (D-028 — EAV 속성 사용)
+
+    ※ RESOURCE_CONF_ID=CONFIGURATION_ID 조인 금지(구 D-022) 규칙은 2026-07-30 제거 —
+    현행 정본(D-076 시맨틱 모델 direct_join·골드셋·조립기)이 전부 이 조인을 사용하고
+    실측(로컬 픽스처 2,202행 매칭·b0 폼필 라이브 완주·D-058/D-061)이 동작을 실증해,
+    규칙을 유지하면 정상 SQL이 전건 차단된다(D-022 재검토 — docs/02_decision.md).
 
     Args:
         sql: 검증할 SQL 문자열
@@ -136,14 +136,7 @@ def validate_polestar_domain(sql: str) -> None:
     # 주석 제거 + 문자열 리터럴 마스킹 (리터럴 내 테이블명 오탐 방지)
     sql_clean = _clean_sql(sql)
 
-    # 1. RESOURCE_CONF_ID = CONFIGURATION_ID 조인 (D-022)
-    if _RESOURCE_CONF_JOIN_RE.search(sql_clean):
-        raise PolestarDomainViolationError(
-            "RESOURCE_CONF_ID = CONFIGURATION_ID 조인 금지 (D-022 — hostname 브릿지 조인 사용)",
-            sql,
-        )
-
-    # 2. 금지 lookup 테이블 참조 (D-028) — 단어 경계 매칭
+    # 금지 lookup 테이블 참조 (D-028) — 단어 경계 매칭
     tokens = set(re.findall(r"\b([A-Z_][A-Z0-9_]*)\b", sql_clean.upper()))
     forbidden = tokens & POLESTAR_FORBIDDEN_TABLES
     if forbidden:

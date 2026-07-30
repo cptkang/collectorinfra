@@ -343,7 +343,8 @@
         }
 
         if (filter === "changed") return isDirty(item);
-        if (filter === "restart") return item.requires_restart && !item.is_secret;
+        if (filter === "restart") return applyMode(item) === "restart" && !item.is_secret;
+        if (filter === "reload") return applyMode(item) === "reload" && !item.is_secret;
         if (filter === "non-default") {
             var value = currentValue(item);
             return value !== null && value !== undefined;
@@ -458,13 +459,22 @@
         return row;
     }
 
+    function applyMode(item) {
+        // 서버가 apply_mode를 항상 내려주지만, 구버전 응답 캐시에 대비해 requires_restart로 폴백한다.
+        return item.apply_mode || (item.requires_restart ? "restart" : "immediate");
+    }
+
     function buildBadges(item) {
         var badges = [];
+        var mode = applyMode(item);
         if (item.is_secret) {
             badges.push(makeBadge("🔒 .encenv 관리", "badge--secret",
                 ".encenv에서 관리하는 시크릿입니다. .env 수정은 반영되지 않습니다."));
-        } else if (item.requires_restart) {
+        } else if (mode === "restart") {
             badges.push(makeBadge("재시작", "badge--restart", "저장 후 서버 재시작이 필요합니다."));
+        } else if (mode === "reload") {
+            badges.push(makeBadge("리로드", "badge--reload",
+                "저장 후 [설정 리로드] 버튼(또는 서버 재시작)으로 반영됩니다."));
         } else {
             badges.push(makeBadge("즉시 반영", "badge--immediate", "저장 후 다음 요청부터 반영됩니다."));
         }
@@ -813,7 +823,7 @@
                 key: key,
                 from: item.file_value,
                 to: to,
-                restart: item.requires_restart,
+                mode: applyMode(item),
                 fallback: item.default,
             });
         });
@@ -846,8 +856,10 @@
             var code = document.createElement("code");
             code.textContent = change.key;
             head.appendChild(code);
-            if (change.restart) {
+            if (change.mode === "restart") {
                 head.appendChild(makeBadge("재시작", "badge--restart"));
+            } else if (change.mode === "reload") {
+                head.appendChild(makeBadge("리로드", "badge--reload"));
             }
             entry.appendChild(head);
 
@@ -937,10 +949,11 @@
         var banner = document.getElementById("restartBanner");
         banner.textContent = "";
         var restartKeys = data.requires_restart_keys || [];
+        var reloadKeys = data.reload_keys || [];
         var immediateKeys = data.applied_immediately_keys || [];
         var ignoredKeys = data.ignored_keys || [];
 
-        if (!restartKeys.length && !immediateKeys.length && !ignoredKeys.length) {
+        if (!restartKeys.length && !reloadKeys.length && !immediateKeys.length && !ignoredKeys.length) {
             banner.style.display = "none";
             return;
         }
@@ -948,6 +961,11 @@
             var restartLine = document.createElement("div");
             restartLine.textContent = "다음 항목은 서버 재시작 후 반영됩니다: " + restartKeys.join(", ");
             banner.appendChild(restartLine);
+        }
+        if (reloadKeys.length) {
+            var reloadLine = document.createElement("div");
+            reloadLine.textContent = "다음 항목은 [설정 리로드] 버튼으로 반영할 수 있습니다: " + reloadKeys.join(", ");
+            banner.appendChild(reloadLine);
         }
         if (immediateKeys.length) {
             var immediateLine = document.createElement("div");
@@ -959,6 +977,49 @@
             ignoredLine.textContent = "마스킹 값이 그대로 전송되어 무시했습니다(원값 보존): " + ignoredKeys.join(", ");
             banner.appendChild(ignoredLine);
         }
+        banner.style.display = "block";
+    }
+
+    // --- 설정 리로드 (Plan 68 §6 Phase 4) ---
+
+    document.getElementById("reloadSettingsBtn").addEventListener("click", async function () {
+        if (dirtyCount()) {
+            showError("저장되지 않은 변경이 있습니다 — 먼저 저장한 뒤 리로드하세요.");
+            return;
+        }
+        var reloadBtn = this;
+        reloadBtn.disabled = true;
+        reloadBtn.textContent = "리로드 중…";
+
+        try {
+            var response = await apiRequest("POST", "/api/v1/admin/settings/reload");
+            var data = await response.json();
+            if (!response.ok) {
+                showError(errorMessage(data, "설정 리로드에 실패했습니다."));
+                return;
+            }
+            showSuccess(data.message);
+            showReloadResultBanner(data);
+            await loadSettings();
+        } catch (err) {
+            showError("서버와의 통신에 실패했습니다.");
+        } finally {
+            reloadBtn.disabled = false;
+            reloadBtn.textContent = "설정 리로드";
+        }
+    });
+
+    function showReloadResultBanner(data) {
+        var banner = document.getElementById("restartBanner");
+        banner.textContent = "";
+        var restartKeys = data.restart_only_keys || [];
+        if (!restartKeys.length) {
+            banner.style.display = "none";
+            return;
+        }
+        var line = document.createElement("div");
+        line.textContent = "다음 항목은 서버 재시작 후 반영됩니다: " + restartKeys.join(", ");
+        banner.appendChild(line);
         banner.style.display = "block";
     }
 
