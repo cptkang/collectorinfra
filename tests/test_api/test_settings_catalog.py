@@ -116,7 +116,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 234
+    assert len(items) == 241
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
@@ -140,12 +140,16 @@ def test_t2_group_and_field_counts():
     → TEXT2SQL_QUERY_HISTORY_{FEWSHOT,TOP_K,MIN_SCORE} 추가(Plan 67 Phase N/N2)로 229
     → TEXT2SQL_STEPWISE_{DERIVATION,MAX_ROUNDS,MAX_TOOL_CALLS,TIMEOUT_SECONDS} 추가
       (Plan 67 Phase S2 / D-128)로 233
-    → QUERY_INTENT_LLM_ASSIST 추가(Plan 67 Phase S3 / R3-(ii))로 234.
+    → QUERY_INTENT_LLM_ASSIST 추가(Plan 67 Phase S3 / R3-(ii))로 234
+    → TEXT2SQL_HYPERNYM_AMBIGUITY 추가(Plan 67 트랙 N4 / D-133)로 235
+    → NOISE_ANNOTATION_LLM_{CLASSIFICATION_ENABLED,TIMEOUT_SECONDS,CACHE_MAX,CACHE_TTL_SECONDS}
+      + NOISE_ANOMALY_METRIC_SOURCE_MAP_CSV 추가(Plan 67 R3-(v) / D-132)로 240
+    → TEXT2SQL_PROMPT_KNOWLEDGE_RENDER 추가(Plan 67 R1 잔여 / D-131)로 241.
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 18  # 17 그룹 + 전역
-    assert len(index) == 234
+    assert len(index) == 241
     assert len([s for s in index.values() if s.group_key == "general"]) == 15
 
 

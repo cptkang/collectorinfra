@@ -248,6 +248,20 @@ class Text2SQLConfig(BaseSettings):
     # (Known Mistakes "장시간 실행 경로는 전체 타임아웃 가드 필수").
     stepwise_timeout_seconds: float = 60.0
 
+    # === Plan 67 트랙 N / N4(D-133): 계층 taxonomy 상위어 모호성 처리 ===
+    # ON이면 상위어만 언급한 질의("사용률 보여줘")에서 SMQ가 하위 하나로 좁혀졌을 때 나머지
+    # 형제를 결정적으로 채운다(전체 제시 — 조용한 오답 방지). 하위어를 명시한 질의는 판정에서
+    # 걸러져 동작 불변이고, 기본 OFF면 확장 자체가 없다(회귀 0). 상위어 선언은 카탈로그 정본
+    # (config/knowledge/{db_id}/catalog.yaml의 taxonomy)에 있다.
+    hypernym_ambiguity: bool = False
+
+    # === Plan 67 R1 잔여(D-131): 폴스타 프롬프트 잔여 블록 정본 렌더 ===
+    # ON이면 SQL 예제의 EAV 속성·지표·알람 조인·등급 CASE를 카탈로그 정본에서 렌더하고,
+    # `hi` 설정 피벗 서브쿼리 조인 키를 값 컬럼(ipaddress) → 서버 식별자(id)로 교정한다
+    # (같은 게이트로 값 컬럼 조인 validator도 등록 — 예제와 검증은 함께 움직인다).
+    # 기본 OFF = 프롬프트 sha256 무변경·validator 7종 유지(회귀 0).
+    prompt_knowledge_render: bool = False
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -613,6 +627,11 @@ class NoiseGateConfig(BaseSettings):
     anomaly_min_periods: int = 3              # (E3) 적합 최소 주기 수(미만이면 계산 skip→None)
     anomaly_baseline_cache_ttl_seconds: int = 3600  # (E3) baseline 파라미터 Redis 캐시 TTL
     anomaly_stl_enabled: bool = False         # (E3 2차) STL 분해 이상탐지, statsmodels optional·폴백 HW
+    # (Plan 67 R3-(v) 인접·편향 검토 §2-9) 알람 kind→메트릭 소스 매핑 오버라이드.
+    # 형식 "kind=resource_type:definition_name,…" (예 "cpu=server.Cpus:Utilization").
+    # 빈값(기본)이면 어댑터 기본 매핑을 사용한다 — 벤더 스키마 상수는 domain이 아니라
+    # 어댑터/설정에 둔다(domain 계층 벤더 중립화). 스칼라라 .env JSON 회피(CSV 관례 답습).
+    anomaly_metric_source_map_csv: str = ""   # (R3-v) kind→(resource_type:definition_name) 오버라이드
     # ── Plan 60 B-7 로컬 임베딩(§15.3 L-2/L-4) — §15.4 D-035 경계: 주석 전용·판정 불변·폐쇄망 local-only ──
     # 임베딩은 관측성·주석·설명 전용이며 결정적 게이트 판정(SUPPRESS/PAGE)·억제 지문(compute_fingerprint)을
     # 절대 바꾸지 않는다. 전부 옵트인(기본 off). embedding_model_path는 폐쇄망 오프라인 반입 모델의 로컬
@@ -673,6 +692,16 @@ class NoiseGateConfig(BaseSettings):
     #   동시 충족 시에만 후속 동종 알람 DASHBOARD 강등(SUPPRESS 아님·E4 하이브리드 정합). 주석 단독은
     #   강등 없이 첨부만 — 텍스트 단독으로 억제강화 금지(재현율 우선). annotation_harvest_enabled와 독립.
     annotation_planned_suppress: bool = False  # (E7-a) 계획-무해 주석 DASHBOARD 강등 on/off (코로보레이션 게이팅)
+    # ── Plan 67 R3-(v) · D-132: 운영자 주석 3분류를 LLM으로 전환 (기본 OFF) ──
+    # 운영자 손글 한국어는 정규식 어휘를 벗어난다("이상무"·"문제없음" 미매칭). 분류기는
+    # application 계층(annotation_classifier.py)에 있고 domain은 라벨 enum만 소비한다(D-035 예외).
+    # **알람 유입량만큼 LLM 호출이 발생**하므로 기본 OFF — ON 전환은 과금 판단이 필요한
+    # 운영 결정이다(D-127). OFF면 워커는 기존 정규식 추출을 그대로 호출한다(비트동일·회귀 0).
+    # 실패·타임아웃·파싱불가는 정규식 분류로 강등하고 사유를 로그로 남긴다(침묵 강등 금지).
+    annotation_llm_classification_enabled: bool = False  # (R3-v) 주석 LLM 분류 on/off
+    annotation_llm_timeout_seconds: float = 3.0   # (R3-v) 분류 1건 타임아웃(초, 초과 시 정규식 강등)
+    annotation_llm_cache_max: int = 500           # (R3-v) 주석 해시 캐시 항목 상한(메모리 가드)
+    annotation_llm_cache_ttl_seconds: int = 3600  # (R3-v) 캐시 항목 TTL(초, 만료 sweep 기준)
     # E7-b 비알람 사전분류(§17.4): 알람 마커 부재 + 비알람 마커(승인/요청/바랍니다 등) 존재 시 SUPPRESS.
     #   애매하면 알람 간주(재현율 우선). 게이트 step0.5(step1 이전)에서 결정적 마커로 판정·감사.
     non_alarm_filter_enabled: bool = False    # (E7-b) 비알람(승인/안내성) 사전 억제 on/off

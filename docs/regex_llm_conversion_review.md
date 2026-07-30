@@ -116,7 +116,7 @@ A1~A9의 LLM 재위임은 D-068/D-076/D-099의 실측 근거를 무효화하며 
 
 | 파일 | 입력 실체 | 판정 |
 |---|---|---|
-| `alarm/domain/annotation_signal.py:25-34` | `condition_log`/`description` — **운영자 손글 한국어** ("예정된 작업"·"이상 없음" 등). "작업예정입니다"·"이상무"·"문제없음" 전부 미매칭 | 자연어 취약성 A급. 단 모듈 헤더(L12-15)가 "domain 계층 — LLM 미개입(D-035 경계)" 명시 → 전환은 **아키텍처 결정 변경 필요, 사용자 결정 사항** |
+| `alarm/domain/annotation_signal.py:25-34` | `condition_log`/`description` — **운영자 손글 한국어** ("예정된 작업"·"이상 없음" 등). "이상무"·"문제없음" 미매칭 (※2026-07-30 실측 정정: "작업예정입니다"는 `작업\s*예정`에 매칭됨 — D-132 구현 시 확인) | 자연어 취약성 A급. 단 모듈 헤더(L12-15)가 "domain 계층 — LLM 미개입(D-035 경계)" 명시 → 전환은 **아키텍처 결정 변경 필요, 사용자 결정 사항** |
 | `alarm/domain/notification_policy.py` | 기계+사람 혼합 | "애매하면 알람"(재현율 우선, `:106`)으로 누락 안전 방향 확보 — 유지 |
 | `alarm/domain/correlation.py` | 순수 기계 생성(alarm_name·고정 포맷) | 유지 |
 | `alarm/domain/process_rank.py` | 프로세스 args(기계) — 실체는 D 마스킹 | 유지 |
