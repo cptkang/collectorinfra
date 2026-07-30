@@ -381,7 +381,7 @@ async def _decompose(llm: Any, user_query: str, progress: _Progress) -> list[dic
         return []
     progress.llm_calls += 1
 
-    data = extract_json_from_response(getattr(response, "content", "") or "")
+    data = extract_json_from_response(_message_text(response))
     if not isinstance(data, dict):
         logger.info("[단계적도출] 요구 분해 응답에서 JSON을 찾지 못함(원문으로 진행)")
         return []
@@ -425,10 +425,24 @@ async def _invoke_tool(tools_by_name: dict[str, Any], call: dict) -> str:
     )
 
 
+def _message_text(response: Any) -> str:
+    """AI 메시지 content를 텍스트로 정규화한다.
+
+    실 모델(Gemini 등)은 content를 콘텐츠 블록 리스트로 반환할 수 있다 — str 가정 시
+    정규식 파서가 TypeError로 죽는다(2026-07-30 라이브 스모크 실측, 목은 str만 반환해 미검출).
+    deep_agent._message_text와 동일 관행(지점별 정규화).
+    """
+    content = getattr(response, "content", "") or ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return ""
+
+
 def _consume_final(response: Any, progress: _Progress) -> None:
     """도구 호출 없는 응답을 최종 산출물로 해석해 progress에 반영한다."""
-    content = getattr(response, "content", "") or ""
-    data = extract_json_from_response(content)
+    data = extract_json_from_response(_message_text(response))
     if not isinstance(data, dict):
         progress.stopped_reason = STOP_PARSE_ERROR
         progress.unresolved.append({
