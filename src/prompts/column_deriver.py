@@ -53,13 +53,27 @@ DERIVE_SYSTEM_TEMPLATE = """Role: 당신은 인프라 DB의 **시맨틱 쿼리 �
 [SMQ 형식 — 카탈로그의 정확한 이름만 사용]
 - 패턴 A(서버 설정) / B(성능 지표):
   {{"pattern": "A"|"B", "resource_types": [...], "dimensions": [...],
-    "measures": [{{"agg": "avg"|"max"|"min", "definition_name": "...", "resource_type": "..."}}],
+    "measures": [{{"agg": "avg"|"max"|"min"|"count"|"sum", "definition_name": "...", "resource_type": "..."}}],
     "time_grain": "hour"|"day"|"month"|null,
-    "filters": [{{"field": "resource_type", "op": "like", "value": "..."}}]}}
+    "filters": [{{"field": "name"|"hostname"|"ipaddress"|"avail_status"|"resource_type"|"<measure의 resource_type>",
+                 "op": "eq"|"ne"|"in"|"like"|"gte"|"lte", "value": ...}}]}}
 - 패턴 C(알람):
   {{"pattern": "C", "entities": [...], "dimensions": [...],
     "filters": [{{"field": "ALARMSEVERITY", "op": "eq"|"in", "value": 3|[1,2,3]}}],
     "active_only": true|false}}
+
+[형태·정렬·기간 지정 (해당될 때만 넣는다 — 없으면 필드를 아예 빼라)]
+- "전체를 통틀은 단일 값"·"총 개수": `"global_aggregate": true` (이때 dimensions는 비워라).
+  대상이 서버 수·알람 건수면 `"entity_count": true`(패턴 C는 global_aggregate 없이 켠다 —
+  dimensions에 서버명을 넣으면 서버별 건수가 된다).
+- "월별/일별 추이·통계"처럼 기간마다 행이 나와야 하면: `"time_breakdown": true`
+  (이때 dimensions는 서버 식별 컬럼(name/hostname/ipaddress)만 — 속성 컬럼은 함께 못 쓴다).
+- 정렬·상한: `"order_by": {{"field": "<measure의 resource_type 또는 dimension 이름>",
+  "direction": "desc"|"asc"}}`, `"limit": <정수>`. `resolve_limit` 결과를 그대로 쓴다.
+- 기간: `"time_range": ["YYYYMM"]` 또는 `["시작YYYYMM", "끝YYYYMM"]`.
+  **기간을 filters에 넣지 마라** — 기간은 time_range 전용이다. 값은 `resolve_time_range` 결과를 쓴다.
+- 측정치 임계("사용률 80% 이상")는 filters의 field에 그 measure의 resource_type을 그대로 쓰고
+  op를 gte/lte/eq/ne로 준다(값은 지표 단위 그대로).
 
 [최종 출력 형식 — 순수 JSON 하나만, 코드펜스/설명 금지]
 {{"smq": <위 SMQ 객체 또는 null>,

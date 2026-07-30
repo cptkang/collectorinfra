@@ -59,6 +59,7 @@ class SmqDerivation(TypedDict):
     elapsed_ms: float
     stopped_reason: str             # completed | max_rounds | max_tool_calls | timeout | ...
     covered: Optional[bool]         # 누적 SMQ의 커버리지 판정 결과(미판정 None)
+    guards: dict[str, int]          # 이 질의에서 발동한 교정 가드 {이름: 횟수} (Plan 67 R4)
 
 
 class QueryAttempt(TypedDict):

@@ -389,8 +389,10 @@ def test_db2_alarm_fetch_first():
 @pytest.mark.parametrize("smq_dict,expect_reason_kw", [
     ({"pattern": "A", "dimensions": ["OSParameter"]}, "LOB"),
     ({"pattern": "A", "dimensions": ["존재하지않는속성"]}, "미정의 dimension"),
+    # EAV 속성 필터는 여전히 밖 — 피벗 후 HAVING 대상이 아니라 값 컬럼 조건이다.
+    # (서버 식별 direct 컬럼 필터는 S-IR4로 커버리지 내로 편입됐다 — 아래 전용 테스트 참조)
     ({"pattern": "A", "dimensions": ["name"],
-      "filters": [{"field": "name", "op": "eq", "value": "SV1"}]}, "미지원 필터"),
+      "filters": [{"field": "OSType", "op": "eq", "value": "Linux"}]}, "미지원 필터"),
     ({"pattern": "B", "dimensions": ["name"],
       "measures": [{"agg": "avg", "definition_name": "Nope", "resource_type": "server.Cpus"}]}, "미정의 measure"),
     ({"pattern": "C", "entities": ["CMM_ALARM"], "dimensions": ["NAME"],
@@ -645,8 +647,14 @@ async def test_scope_strips_identity_filters_to_enter_coverage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_scope_keeps_identity_filter_outside_coverage():
-    """스코프가 없으면 서버 식별 필터는 기존대로 커버리지 밖(LLM 폴백)이다."""
+async def test_no_scope_identity_filter_compiles_to_having():
+    """스코프 없이 서버 식별 필터만 있어도 HAVING으로 결정적 조립된다 (Plan 67 S-IR4).
+
+    변경 이력: 종전에는 이 형태가 커버리지 밖(LLM 폴백)이었다 — 코드 안전장이 resource_type
+    1개뿐이라 카탈로그 `filterable` 선언 5필드와 어긋났고, 그것이 "선언 커버리지 76.9% vs
+    런타임 판정 34.6%" 격차의 구조적 원인이었다(계획서 §2.5 한계 3). 조립 형태는 골드
+    gp-005가 검증한 HAVING MAX(CASE …)와 동일하다(WHERE 금지 — D-050/D-096).
+    """
     from types import SimpleNamespace
 
     class _FakeLLM:
@@ -659,8 +667,15 @@ async def test_no_scope_keeps_identity_filter_outside_coverage():
     sql, _smq, cov = await compile_from_nl(
         _FakeLLM(), "SV-WEB-001 서버의 제조사", "polestar",
     )
-    assert sql is None
-    assert cov is not None and not cov.covered
+    assert cov is not None and cov.covered, cov.reason if cov else "cov None"
+    assert sql is not None
+    assert (
+        "HAVING MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) "
+        "= 'SV-WEB-001'" in sql
+    )
+    # 서버 식별 조건이 WHERE로 새면 자식 리소스 행이 GROUP BY 전에 탈락한다(D-096).
+    where_seg = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "SV-WEB-001" not in where_seg
 
 
 # ──────────────────────────────────────────────

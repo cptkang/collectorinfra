@@ -40,6 +40,25 @@ def decimal_cast_example(db_engine: str | None) -> str:
 
 
 _SERVER_RESOURCE_TYPE = "server.Server"
+# 통계 기간 컬럼(YYYYMM/YYYYMMDD 문자열) — 기간 필터와 시계열 행 분해가 같은 컬럼을 쓴다.
+_STAT_COLUMN = "stat_date"
+# 시계열 행 분해에서 식별 컬럼을 가져오는 부모 서버 조인 alias.
+_PARENT_ALIAS = "svr"
+
+
+def _sql_literal(value: object) -> str:
+    """필터 값을 SQL 리터럴로 만든다(문자열은 따옴표 이스케이프, 리스트는 IN 목록).
+
+    시맨틱 컴파일러가 넘기는 값은 값 인덱스로 실증되거나 카탈로그가 정의한 것이지만,
+    작은따옴표 이스케이프는 여기서 일괄 처리한다(조립 지점 단일화).
+    """
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple, set)):
+        return "(" + ", ".join(_sql_literal(v) for v in value) + ")"
+    return "'" + str(value).replace("'", "''") + "'"
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).
 # 폴스타 resource_type(server.*) 리터럴을 담으므로 어댑터 계층에 둔다(공용 계층 과적합 가드
@@ -112,6 +131,22 @@ def _metric_select_line(
 
     definition_name 기본값은 'Utilization'(사용률)이며, 폼필 경로는 이 값만 쓴다. 시맨틱
     컴파일러(트랙 C 패턴 B)는 'MaxIORate'(디스크 IO) 등 다른 지표도 지정할 수 있어 인자로 노출한다.
+    """
+    return f'  {_metric_agg_expr(rt, agg_fn, val_col, db_engine, definition_name)} AS "{field}"'
+
+
+def _metric_agg_expr(
+    rt: str,
+    agg_fn: str,
+    val_col: str,
+    db_engine: str | None,
+    definition_name: str = "Utilization",
+) -> str:
+    """단일 지표의 집계 표현식(alias 없음)을 만든다 — SELECT와 HAVING이 같은 식을 공유한다.
+
+    HAVING은 SELECT alias를 참조할 수 없어(PostgreSQL·DB2 공통) 임계 조건도 같은 집계식을
+    다시 써야 한다(Plan 67 S-IR4 측정치 임계). 두 곳이 어긋나면 임계가 다른 값에 걸리므로
+    표현식 조립은 이 함수 하나로 일원화한다.
 
     Utilization에는 값 타당성 게이트(BETWEEN 0 AND 1000)를 CASE 조건에 넣어, 범위 밖 쓰레기
     행(실측 avg=1.2e9/max=5.5e13, 음수)을 필드 단위로 집계에서 제외한다(D-103). 게이트는
@@ -129,12 +164,12 @@ def _metric_select_line(
         # 정밀도는 15→31로 확장해 대형 정상값(IO rate 등)의 최종 캐스트 오버플로 여지 제거 — D-103).
         inner = f"CAST(s.{val_col} AS DOUBLE)"
         return (
-            f"  CAST(ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-            f"AND s.definition_name='{definition_name}'{guard} THEN {inner} END), 2) AS DECIMAL(31,2)) AS \"{field}\""
+            f"CAST(ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
+            f"AND s.definition_name='{definition_name}'{guard} THEN {inner} END), 2) AS DECIMAL(31,2))"
         )
     return (
-        f"  ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
-        f"AND s.definition_name='{definition_name}'{guard} THEN s.{val_col} END)::numeric, 2) AS \"{field}\""
+        f"ROUND({agg_fn}(CASE WHEN c.resource_type='{rt}' "
+        f"AND s.definition_name='{definition_name}'{guard} THEN s.{val_col} END)::numeric, 2)"
     )
 
 
@@ -147,6 +182,8 @@ def _pivot_select_parts(
     val_col: str,
     db_engine: str | None,
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    *,
+    parent_alias: str | None = None,
 ) -> tuple[list[str], set[str], bool]:
     """피벗 SELECT 라인 목록·필요 resource_type 집합·metric 유무를 계산한다(블록/SQL 공용).
 
@@ -154,11 +191,18 @@ def _pivot_select_parts(
     (resource_type, 집계함수, 값컬럼)을 추론한다. explicit_measures는 시맨틱 컴파일러(트랙 C)가
     쓰는 명시 지정으로, 라벨 분류에 의존하지 않고 (alias, resource_type, agg_fn, val_col,
     definition_name)을 직접 전달한다(MaxIORate 등 Utilization 외 지표 지원). 둘 다 주면 합쳐 넣는다.
+
+    parent_alias가 주어지면 엔티티 직접 컬럼을 `MAX(<alias>.<컬럼>)`로 뽑는다 — 시계열 행
+    분해(Plan 67 S-IR2)는 GROUP BY에 통계 기간이 들어가 서버 행(server.Server)과 통계 행이
+    다른 그룹으로 갈리므로, 식별 컬럼을 부모 서버 조인에서 가져와야 NULL이 되지 않는다.
     """
     lines: list[str] = []
     rtset: set[str] = {_SERVER_RESOURCE_TYPE}
     for field, col in regular_entries:
         bare = col.split(".")[-1]
+        if parent_alias:
+            lines.append(f'  MAX({parent_alias}.{bare}) AS "{field}"')
+            continue
         lines.append(
             f"  MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
             f'THEN c.{bare} END) AS "{field}"'
@@ -216,6 +260,11 @@ def build_multi_resource_pivot_sql(
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
     server_scope: tuple[str, list[str]] | None = None,
     order_by: tuple[str, str] | None = None,
+    time_breakdown: bool = False,
+    global_aggregate: bool = False,
+    entity_count_alias: str | None = None,
+    direct_having: list[tuple[str, str, object]] | None = None,
+    measure_having: list[tuple[str, str, object]] | None = None,
 ) -> str:
     """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**한다(LLM 우회, D-068 2차).
 
@@ -238,6 +287,17 @@ def build_multi_resource_pivot_sql(
             적용한다(WHERE에 두면 자식 리소스 행이 탈락해 0건 — D-096). None이면 미적용.
         order_by: 순위 정렬 (SELECT alias, "DESC"|"ASC"). NULL이 1위를 차지하지 않도록
             NULLS LAST를 항상 부여한다(D-098 — PostgreSQL DESC 기본은 NULLS FIRST).
+        time_breakdown: 통계 기간(월/일)별 행 분해(Plan 67 S-IR2). 통계 기간 컬럼을 SELECT·
+            GROUP BY에 추가하고, 식별 컬럼은 부모 서버 조인에서 가져온다.
+        global_aggregate: 전역 단일 행 집계(Plan 67 S-IR1) — GROUP BY를 생략한다. EAV 속성이
+            없으면 config 조인도 빼는데, 전역 집계에서는 config 행 증식 배수가 서버마다 달라
+            가중 평균이 왜곡되기 때문이다(서버별 GROUP BY에서는 배수가 그룹 내 상수라 불변).
+        entity_count_alias: 엔티티(서버) 수 집계 컬럼 alias. 주면 COUNT(DISTINCT 그룹키)를 SELECT에
+            추가한다(Plan 67 S-IR1).
+        direct_having: 엔티티 직접 컬럼 조건 [(컬럼, SQL 연산자, 값)] — 서버 식별 필터를 집계 후
+            HAVING으로 적용한다(WHERE는 자식 행을 탈락시킴 — D-096).
+        measure_having: 측정치 임계 조건 [(measure alias, SQL 연산자, 값)] — SELECT와 동일한
+            집계식을 HAVING에 재사용한다(Plan 67 S-IR4).
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결).
@@ -246,7 +306,19 @@ def build_multi_resource_pivot_sql(
     lines, rtset, has_metric = _pivot_select_parts(
         regular_entries, server_eav, child_eav, metric_fields, attr_col, val_col, db_engine,
         explicit_measures=explicit_measures,
+        parent_alias=_PARENT_ALIAS if time_breakdown else None,
     )
+    if time_breakdown:
+        # 기간 컬럼은 dimension 뒤·measure 앞(시계열 표의 통상 배치).
+        lines.insert(
+            len(regular_entries) + len(server_eav) + len(child_eav),
+            f'  s.{_STAT_COLUMN} AS "{_STAT_COLUMN}"',
+        )
+    if entity_count_alias:
+        lines.append(
+            f"  COUNT(DISTINCT COALESCE(c.platform_resource_id, c.id)) "
+            f'AS "{entity_count_alias}"'
+        )
 
     def q(table: str) -> str:
         return f"{db_schema}.{table}" if db_schema else table
@@ -274,24 +346,60 @@ def build_multi_resource_pivot_sql(
 
     rt_in = ", ".join(f"'{r}'" for r in sorted(rtset))
     select_block = ",\n".join(lines)
+    config_join = f"\nLEFT JOIN {q(config)} cc ON cc.{cfg_join} = c.{ent_join}"
+    if (global_aggregate or time_breakdown) and not (server_eav or child_eav):
+        # EAV 속성을 안 뽑는 전역/시계열 집계에서는 config 조인이 행만 증식시킨다 — 증식 배수가
+        # 그룹마다 달라 평균을 왜곡하므로 조인을 빼는 것이 정확하다.
+        config_join = ""
+    parent_join = ""
+    if time_breakdown:
+        parent_join = (
+            f"\nLEFT JOIN {q(entity)} {_PARENT_ALIAS} "
+            f"ON {_PARENT_ALIAS}.id = COALESCE(c.platform_resource_id, c.id)"
+            f" AND {_PARENT_ALIAS}.resource_type = '{_SERVER_RESOURCE_TYPE}'"
+            f" AND {_PARENT_ALIAS}.dtime IS NULL"
+        )
     sql = (
         "SELECT\n"
         f"{select_block}\n"
-        f"FROM {q(entity)} c\n"
-        f"LEFT JOIN {q(config)} cc ON cc.{cfg_join} = c.{ent_join}"
-        f"{metric_join}\n"
+        f"FROM {q(entity)} c"
+        f"{config_join}"
+        f"{metric_join}"
+        f"{parent_join}\n"
         f"WHERE c.resource_type IN ({rt_in})\n"
-        "  AND c.dtime IS NULL\n"
-        "GROUP BY COALESCE(c.platform_resource_id, c.id)"
+        "  AND c.dtime IS NULL"
     )
+    if time_breakdown and has_metric:
+        # 통계가 없는 서버 행(server.Server)은 기간이 NULL인 잉여 그룹을 만든다 — 시계열에서 제외.
+        sql += f"\n  AND s.{_STAT_COLUMN} IS NOT NULL"
+    if not global_aggregate:
+        sql += "\nGROUP BY COALESCE(c.platform_resource_id, c.id)"
+        if time_breakdown:
+            sql += f", s.{_STAT_COLUMN}"
+    having_parts: list[str] = []
     if server_scope:
         scope_col, scope_values = server_scope
         if scope_values:
             quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in scope_values)
-            sql += (
-                f"\nHAVING MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
+            having_parts.append(
+                f"MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
                 f"THEN c.{scope_col} END) IN ({quoted})"
             )
+    for col, op, value in direct_having or []:
+        having_parts.append(
+            f"MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
+            f"THEN c.{col} END) {op} {_sql_literal(value)}"
+        )
+    measure_exprs = {
+        m[0]: _metric_agg_expr(m[1], m[2], m[3], db_engine, m[4])
+        for m in (explicit_measures or [])
+    }
+    for alias, op, value in measure_having or []:
+        expr = measure_exprs.get(alias)
+        if expr:
+            having_parts.append(f"{expr} {op} {_sql_literal(value)}")
+    if having_parts:
+        sql += "\nHAVING " + "\n  AND ".join(having_parts)
     if order_by:
         alias, direction = order_by
         dir_kw = "DESC" if str(direction).upper() != "ASC" else "ASC"

@@ -213,6 +213,8 @@ async def derive_smq(
         "elapsed_ms": round(elapsed_ms, 1),
         "stopped_reason": progress.stopped_reason,
         "covered": None,
+        # 커버리지·컴파일 단계에서 발동한 교정 가드가 여기에 귀속 기록된다(R4 — 호출부가 채운다).
+        "guards": {},
     }
     # 관측(S3 평가 재료): 경로·라운드·tool 호출·미해결·소요 시간을 한 줄로 남긴다.
     logger.info(
