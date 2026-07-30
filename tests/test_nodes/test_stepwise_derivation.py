@@ -315,7 +315,8 @@ def derive_recorder(monkeypatch):
     """derive_smq 호출을 기록하는 결정적 대역(경로 라벨·db_id·도구 재료 관측)."""
     calls: list[dict] = []
 
-    async def _fake_derive(llm, user_query, db_id, model, *, deps=None, limits=None):
+    async def _fake_derive(llm, user_query, db_id, model, *, deps=None, limits=None,
+                           scope_note=""):
         calls.append({
             "path": getattr(deps, "path", None),
             "db_id": db_id,
@@ -323,6 +324,7 @@ def derive_recorder(monkeypatch):
             "has_synonyms": bool(getattr(deps, "synonyms", None)),
             "max_rounds": getattr(limits, "max_rounds", None),
             "timeout": getattr(limits, "timeout_seconds", None),
+            "scope_note": scope_note,
         })
         return {**_DERIVED_RECORD, "path": getattr(deps, "path", ""), "db_id": db_id}
 
@@ -549,3 +551,32 @@ async def test_multi_db_path_keeps_fixed_fewshot_when_flag_off(monkeypatch):
     )
 
     assert "프로필 고정 예시" in llm.calls[0][0].content
+
+
+async def test_stepwise_receives_server_scope_note(monkeypatch):
+    """선행 스코프가 stepwise 도출 프롬프트 노트로 전달된다 (Plan 69 P0-⑩, D-099 ⑤ 대칭)."""
+    from src.nodes import semantic_compiler as sc
+
+    captured: dict = {}
+
+    async def _fake_derive(llm, user_query, db_id, model, *, deps=None, limits=None,
+                           scope_note=""):
+        captured["scope_note"] = scope_note
+        return {"smq": None, "unresolved": [{"field": "*", "reason": "stub"}]}
+
+    monkeypatch.setattr(cd, "derive_smq", _fake_derive)
+
+    # 스코프 있음 → 노트 주입
+    await sc._select_smq_stepwise(
+        _CapturingLLM(), _QUERY, _DB_ID, {"pattern_b": {}}, _cfg(stepwise=True),
+        None, None, server_scope=("hostname", ["h1", "h2"]),
+    )
+    assert "선행 스코프" in captured["scope_note"]
+    assert "{{" not in captured["scope_note"]  # format 완료(이중 중괄호 잔존 금지)
+
+    # 스코프 없음 → 빈 노트(프롬프트 바이트 불변)
+    await sc._select_smq_stepwise(
+        _CapturingLLM(), _QUERY, _DB_ID, {"pattern_b": {}}, _cfg(stepwise=True),
+        None, None,
+    )
+    assert captured["scope_note"] == ""

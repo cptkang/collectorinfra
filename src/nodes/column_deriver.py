@@ -152,6 +152,7 @@ async def derive_smq(
     *,
     deps: Optional[StepwiseDeps] = None,
     limits: Optional[StepwiseLimits] = None,
+    scope_note: str = "",
 ) -> dict:
     """단계적 컬럼 도출 루프를 실행하고 관측 레코드를 반환한다.
 
@@ -166,6 +167,8 @@ async def derive_smq(
         model: 시맨틱 모델(카탈로그)
         deps: 경로별 도구 주입 재료
         limits: 루프 상한(없으면 기본값)
+        scope_note: 선행 스코프 예외 블록(D-099 ⑤) — 있으면 도출 프롬프트에 덧붙인다.
+            빈 문자열이면 프롬프트 바이트 불변(1방 경로의 SCOPE_NOTE 주입과 대칭, Plan 69 P0-⑩)
 
     Returns:
         ``state.SmqDerivation`` 형태 dict — smq가 None이거나 unresolved가 비지 않으면
@@ -178,7 +181,8 @@ async def derive_smq(
 
     try:
         await asyncio.wait_for(
-            _run_loop(llm, user_query, db_id, model, deps, limits, progress),
+            _run_loop(llm, user_query, db_id, model, deps, limits, progress,
+                      scope_note=scope_note),
             timeout=limits.timeout_seconds,
         )
     except asyncio.TimeoutError:
@@ -243,6 +247,7 @@ async def _run_loop(
     deps: StepwiseDeps,
     limits: StepwiseLimits,
     progress: _Progress,
+    scope_note: str = "",
 ) -> None:
     """[1]요구 분해 + [2]도구 루프를 수행하고 결과를 progress에 누적한다."""
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -286,7 +291,7 @@ async def _run_loop(
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=DERIVE_USER_TEMPLATE.format(
         user_query=user_query, fields=_render_fields(decomposed),
-    )))
+    ) + scope_note))
 
     finalize_sent = False
     while progress.rounds < limits.max_rounds:

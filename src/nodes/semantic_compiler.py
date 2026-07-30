@@ -1635,6 +1635,7 @@ async def _select_smq_stepwise(
     app_config: "AppConfig",
     stepwise_deps: Optional["StepwiseDeps"],
     derivation_sink: Optional[list[dict]],
+    server_scope: Optional[tuple[str, list[str]]] = None,
 ) -> tuple[Optional[SMQ], Optional[CoverageResult]]:
     """단계적 컬럼 도출 루프(S2/D-128)로 SMQ를 도출한다.
 
@@ -1655,12 +1656,19 @@ async def _select_smq_stepwise(
         (smq, cov) — smq가 None이면 cov.reason이 폴백 사유다.
     """
     from src.nodes.column_deriver import StepwiseDeps, StepwiseLimits, derive_smq
+    from src.prompts.semantic_compiler import SEMANTIC_SMQ_SCOPE_NOTE
 
     deps = stepwise_deps if stepwise_deps is not None else StepwiseDeps()
+    # 선행 스코프 예외 블록 — 1방 경로의 SCOPE_NOTE 주입과 대칭(D-099 ⑤, Plan 69 P0-⑩).
+    # 스코프가 없으면 빈 문자열이라 도출 프롬프트 바이트 불변.
+    scope_note = (
+        SEMANTIC_SMQ_SCOPE_NOTE.format() if server_scope and server_scope[1] else ""
+    )
     record = await derive_smq(
         llm, user_query, db_id, model,
         deps=deps,
         limits=StepwiseLimits.from_config(app_config.text2sql),
+        scope_note=scope_note,
     )
     if derivation_sink is not None:
         derivation_sink.append(record)
@@ -1763,6 +1771,7 @@ async def compile_from_nl(
     if _stepwise_enabled(app_config):
         smq, derive_cov = await _select_smq_stepwise(
             llm, user_query, db_id, model, app_config, stepwise_deps, derivation_sink,
+            server_scope=server_scope,
         )
         if smq is None:
             return None, None, derive_cov
