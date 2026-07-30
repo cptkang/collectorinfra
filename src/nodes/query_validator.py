@@ -299,6 +299,9 @@ async def query_validator(
             "passed": True,
             "reason": ". ".join(reason_parts),
             "auto_fixed_sql": auto_fixed_sql,
+            # 경고를 구조화 노출 — reason 문자열에만 접혀 감사 로그로 전달 불가능하던
+            # 결함 수정 (Plan 69 P0-④, executor가 validation_warnings로 전달)
+            "warnings": list(outcome.warnings),
         },
         "generated_sql": final_sql,
         "error_message": None,

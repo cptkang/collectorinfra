@@ -43,6 +43,8 @@ async def query_executor(
         app_config = load_config()
     sql = state["generated_sql"]
     existing_attempts: list[QueryAttempt] = list(state.get("query_attempts", []))
+    # 검증 경고를 감사 로그로 전달 (Plan 69 P0-④)
+    validation_warnings = (state.get("validation_result") or {}).get("warnings") or None
 
     start_time = time.time()
 
@@ -72,6 +74,7 @@ async def query_executor(
             user_id=state.get("user_id"),
             thread_id=state.get("thread_id"),
             source_name=state.get("active_db_id"),
+            validation_warnings=validation_warnings,
         )
 
         logger.info(
@@ -111,6 +114,7 @@ async def query_executor(
             user_id=state.get("user_id"),
             thread_id=state.get("thread_id"),
             source_name=state.get("active_db_id"),
+            validation_warnings=validation_warnings,
         )
 
         return {
@@ -143,6 +147,7 @@ async def query_executor(
             user_id=state.get("user_id"),
             thread_id=state.get("thread_id"),
             source_name=state.get("active_db_id"),
+            validation_warnings=validation_warnings,
         )
 
         return {
@@ -175,6 +180,7 @@ async def query_executor(
             user_id=state.get("user_id"),
             thread_id=state.get("thread_id"),
             source_name=state.get("active_db_id"),
+            validation_warnings=validation_warnings,
         )
 
         return {
