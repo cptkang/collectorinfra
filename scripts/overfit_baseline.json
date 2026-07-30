@@ -7,10 +7,6 @@
       "cmm_vendor",
       "core_config_prop"
     ],
-    "src/alarm/domain/anomaly.py": [
-      "server.Cpus",
-      "server.Memory"
-    ],
     "src/alarm/domain/correlation.py": [
       "server.Cpus"
     ],

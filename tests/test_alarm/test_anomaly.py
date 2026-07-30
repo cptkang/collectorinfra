@@ -11,11 +11,14 @@ from __future__ import annotations
 import statistics
 
 from src.alarm.domain.anomaly import (
-    METRIC_SOURCE_BY_KIND,
     anomaly_score,
     holt_winters_fit,
     residual_sigma,
     severity_from_anomaly,
+)
+from src.alarm.infrastructure.polestar_metric_baseline import (
+    DEFAULT_METRIC_SOURCE_BY_KIND,
+    parse_metric_source_map,
 )
 
 PERIOD = 24
@@ -119,9 +122,36 @@ class TestSeverityFromAnomaly:
 
 
 class TestMetricSourceMap:
-    def test_only_cpu_memory_mapped(self):
+    """kind→메트릭 소스 매핑은 어댑터/설정 소관 (Plan 67 R3-(v) 인접 · 편향 검토 §2-9).
+
+    domain(anomaly.py)은 벤더 스키마 매핑을 알지 않는다 — 상수는 어댑터 기본값으로 이동했고
+    다른 스키마는 설정 CSV/생성자 주입으로 대체한다.
+    """
+
+    def test_domain_has_no_vendor_mapping(self):
+        import src.alarm.domain.anomaly as anomaly_module
+
+        assert not hasattr(anomaly_module, "METRIC_SOURCE_BY_KIND")
+
+    def test_only_cpu_memory_mapped_by_default(self):
         # 1차 범위 = CPU·메모리만. disk/network/log는 매핑 부재(어댑터 화이트리스트에서 skip).
-        assert METRIC_SOURCE_BY_KIND == {
+        assert DEFAULT_METRIC_SOURCE_BY_KIND == {
             "cpu": ("server.Cpus", "Utilization"),
             "memory": ("server.Memory", "Utilization"),
         }
+
+    def test_csv_override_parsed(self):
+        parsed = parse_metric_source_map(
+            "cpu=host.CPU:Usage, memory = host.Mem : Usage "
+        )
+        assert parsed == {
+            "cpu": ("host.CPU", "Usage"),
+            "memory": ("host.Mem", "Usage"),
+        }
+
+    def test_blank_or_invalid_csv_falls_back_to_default(self):
+        # 미설정·형식 위반은 None → 호출부가 기본 매핑 사용(설정 오타로 전면 비활성 방지).
+        assert parse_metric_source_map("") is None
+        assert parse_metric_source_map("   ") is None
+        assert parse_metric_source_map("cpu-server.Cpus-Utilization") is None
+        assert parse_metric_source_map("cpu=server.Cpus") is None

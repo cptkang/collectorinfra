@@ -7,10 +7,12 @@ Holt-Winters(domain `anomaly.py`)로 적합하고, baseline 파라미터(HW 상�
 (순수 최적화 — enrich 캐시 전례, §5.2).
 
 알람→메트릭 게이팅(Known Mistakes 2026-06-29 E2 필수 준수, §5.2):
-    `process_rank.classify_alarm_kind`를 재사용하되 **반드시 `kind in METRIC_SOURCE_BY_KIND`
+    `process_rank.classify_alarm_kind`를 재사용하되 **반드시 매핑(`self._metric_source_map`)
     화이트리스트로 게이팅**한다(`kind is not None` 금지 — E6가 disk/network/process/log도
     반환하므로 의미가 변질된다). 매핑 부재 kind(disk/network/log 등)·kind None·해소 이벤트는
-    계산 skip→None(상향 없음).
+    계산 skip→None(상향 없음). 매핑은 `DEFAULT_METRIC_SOURCE_BY_KIND`(폴스타 실측 기본) 또는
+    설정 `anomaly_metric_source_map_csv`/생성자 주입값이다(Plan 67 R3-(v) 인접 — domain
+    벤더 중립화).
 
 안전 제약:
     - 읽기 전용 SELECT 단일문만. DML/DDL 금지. 외부 입력(server_name)은 `_sql_literal`로 이스케이프.
@@ -30,7 +32,6 @@ import logging
 from typing import Any, Optional
 
 from src.alarm.domain.anomaly import (
-    METRIC_SOURCE_BY_KIND,
     HWState,
     anomaly_score,
     holt_winters_fit,
@@ -48,10 +49,65 @@ from src.alarm.infrastructure.polestar_noise_context import (
 
 logger = logging.getLogger(__name__)
 
+# 알람 kind → (resource_type, definition_name) 결정 매핑표 (§5.2 게이팅).
+# **실측 확정(2026-07-22)**: cmm_metric_stat_h/d/m는 `resource_type`(server.Cpus/server.Memory)
+# + `definition_name='Utilization'` + `avg_val` 피벗으로 사용률을 담는다
+# (src/db_adapters/polestar/assembler.py·semantic_compiler.py 실측 — 계획 예시값과 일치).
+# 1차 범위 = CPU·메모리만. disk/network/log 등 매핑 부재 kind는 화이트리스트에서 skip.
+# (Plan 67 R3-(v) 인접 · 편향 검토 §2-9) 이 상수는 폴스타 스키마 지식이므로 domain(anomaly.py)이
+# 아니라 이 어댑터에 둔다. 다른 벤더·스키마는 설정(anomaly_metric_source_map_csv) 또는 생성자
+# 주입으로 대체한다 — domain은 매핑을 알지 않는다.
+DEFAULT_METRIC_SOURCE_BY_KIND: dict[str, tuple[str, str]] = {
+    "cpu": ("server.Cpus", "Utilization"),
+    "memory": ("server.Memory", "Utilization"),
+}
+
 # 시간별(_h) 데이터의 계절 주기 = 일간 24h. 주간(168h) 계절은 정확도 요구 확인 시 2차 강화.
 _SEASONAL_PERIOD_HOURS = 24
 # 조회 히스토리 상한(주기 수) = min_periods + 버퍼. 계절 추정 안정성과 조회 비용의 절충.
 _HISTORY_BUFFER_PERIODS = 4
+
+
+def parse_metric_source_map(csv: str) -> Optional[dict[str, tuple[str, str]]]:
+    """설정 CSV를 kind → (resource_type, definition_name) 매핑으로 파싱한다.
+
+    형식: `"kind=resource_type:definition_name,…"`
+    (예: `"cpu=server.Cpus:Utilization,memory=server.Memory:Utilization"`).
+
+    빈 문자열·전부 형식 위반이면 None을 반환해 호출부가 어댑터 기본 매핑을 쓰게 한다
+    (설정 오타로 이상탐지가 조용히 전면 비활성되는 것을 막는다). 형식 위반 항목만 있는
+    경우는 경고를 남긴다.
+
+    Args:
+        csv: `anomaly_metric_source_map_csv` 설정값.
+
+    Returns:
+        파싱된 매핑 또는 None(미설정·전부 무효 → 기본 매핑 사용).
+    """
+    if not csv or not csv.strip():
+        return None
+    mapping: dict[str, tuple[str, str]] = {}
+    for item in csv.split(","):
+        entry = item.strip()
+        if not entry:
+            continue
+        kind, sep, source = entry.partition("=")
+        resource_type, colon, definition_name = source.partition(":")
+        if not (sep and colon and kind.strip() and resource_type.strip()):
+            logger.warning(
+                "anomaly_metric_source_map_csv 항목 형식 위반 — 무시: %r", entry
+            )
+            continue
+        mapping[kind.strip().lower()] = (
+            resource_type.strip(),
+            definition_name.strip(),
+        )
+    if not mapping:
+        logger.warning(
+            "anomaly_metric_source_map_csv 유효 항목 없음 — 기본 매핑으로 진행: %r", csv
+        )
+        return None
+    return mapping
 
 
 def build_metric_series_sql(
@@ -99,15 +155,27 @@ class PolestarMetricBaselineAdapter:
     실패는 무시하고 매번 적합한다(순수 최적화).
     """
 
-    def __init__(self, registry, alarm_cfg) -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        registry,  # noqa: ANN001
+        alarm_cfg,  # noqa: ANN001
+        *,
+        metric_source_map: Optional[dict[str, tuple[str, str]]] = None,
+    ) -> None:
         """어댑터를 초기화한다.
 
         Args:
             registry: DBRegistry (get_client/is_registered 사용).
             alarm_cfg: AlarmConfig (인터페이스 일관성용 — 본 어댑터 SQL은 미사용).
+            metric_source_map: 알람 kind → (resource_type, definition_name) 매핑 오버라이드
+                (Plan 67 R3-(v) 인접). 미지정이면 `DEFAULT_METRIC_SOURCE_BY_KIND`를 쓴다.
+                이 매핑이 화이트리스트 역할을 겸한다 — 부재 kind는 계산 skip(§5.2).
         """
         self._registry = registry
         self._alarm_cfg = alarm_cfg
+        self._metric_source_map = dict(
+            metric_source_map or DEFAULT_METRIC_SOURCE_BY_KIND
+        )
 
     def is_db_registered(self, db_id: str) -> bool:
         """event.db_id가 DB 레지스트리에 등록되어 있는지 확인한다."""
@@ -132,12 +200,12 @@ class PolestarMetricBaselineAdapter:
             return None
         kind = classify_alarm_kind(event)
         # ★ 반드시 화이트리스트 게이팅 — kind is not None 금지(E6 disk/network/log 변질 방지).
-        if kind not in METRIC_SOURCE_BY_KIND:
+        if kind not in self._metric_source_map:
             return None
         if not self.is_db_registered(event.db_id):
             return None
 
-        resource_type, definition_name = METRIC_SOURCE_BY_KIND[kind]
+        resource_type, definition_name = self._metric_source_map[kind]
         z_high = float(getattr(noise_cfg, "anomaly_z_high", 3.0))
         min_periods = int(getattr(noise_cfg, "anomaly_min_periods", 3))
         cache_ttl = int(getattr(noise_cfg, "anomaly_baseline_cache_ttl_seconds", 3600))

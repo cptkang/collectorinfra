@@ -11,6 +11,12 @@ Holt-Winters를 직접 구현한다(statsmodels/STL 반입 금지). STL은 정�
 조회·적합 오케스트레이션·캐시는 인프라 어댑터(polestar_metric_baseline.py)가 담당하고,
 여기서는 값만 소비하는 결정적 순수 함수만 제공한다(현행 flapping/correlation 패턴과 동일).
 
+**벤더 중립화(Plan 67 R3-(v) 인접 · 편향 검토 §2-9)**: 알람 kind → (resource_type,
+definition_name) 매핑표(구 `METRIC_SOURCE_BY_KIND`)는 특정 벤더(폴스타) 스키마 상수라
+domain에서 제거하고 **어댑터 기본값 + 설정(`anomaly_metric_source_map_csv`) 주입**으로
+옮겼다 — `src/alarm/infrastructure/polestar_metric_baseline.py` 참조. 이 모듈의 함수는
+어떤 메트릭에서 왔는지 모르는 순수 수치 계산만 수행한다.
+
 핵심 계약:
     - `severity_from_anomaly`는 **상향 전용**(z>hi → 상향 후보 심각도, 그 외 None). 게이트는
       analyzer 후처리가 `max()` 의미(후보>기존)로만 반영하므로 폴스타 심각도를 낮추지 않는다.
@@ -22,16 +28,6 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass, field
-
-# 알람 kind → (resource_type, definition_name) 결정 매핑표 (§5.2 게이팅).
-# **실측 확정(2026-07-22)**: cmm_metric_stat_h/d/m는 `resource_type`(server.Cpus/server.Memory)
-# + `definition_name='Utilization'` + `avg_val` 피벗으로 사용률을 담는다
-# (src/db_adapters/polestar/assembler.py·semantic_compiler.py 실측 — 계획 예시값과 일치).
-# 1차 범위 = CPU·메모리만. disk/network/log 등 매핑 부재 kind는 어댑터 화이트리스트에서 skip.
-METRIC_SOURCE_BY_KIND: dict[str, tuple[str, str]] = {
-    "cpu": ("server.Cpus", "Utilization"),
-    "memory": ("server.Memory", "Utilization"),
-}
 
 # 고정 평활 계수(결정적) — level/trend/seasonal 각 지수평활 가중.
 _ALPHA = 0.3   # level

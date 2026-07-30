@@ -28,7 +28,10 @@ if TYPE_CHECKING:
     from src.alarm.domain.topology import DependencyGraph
 
 from src.alarm.domain.alarm import AlarmEvent
-from src.alarm.domain.annotation_signal import extract_annotation_signal
+from src.alarm.domain.annotation_signal import (
+    AnnotationSignal,
+    extract_annotation_signal,
+)
 from src.alarm.domain.correlation import (
     ClusterState,
     extract_site_token,
@@ -81,6 +84,9 @@ class AlarmWorker:
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
         self._sre_agent_client = None  # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트
+        # (Plan 67 R3-(v) · D-132) 운영자 주석 LLM 분류기 — annotation_llm_classification_enabled
+        # 활성 시에만 생성. None이면 주석 신호는 기존 정규식 추출로 산출된다(비트동일·회귀 0).
+        self._annotation_classifier = None
         # (D-049) 직전 self-heal 매칭 소요시간(초) — _update_firing_registry가 설정,
         # _process가 decision_store.record_resolution 기록에 사용(매칭 없으면 None).
         self._last_self_heal_duration: Optional[float] = None
@@ -195,11 +201,20 @@ class AlarmWorker:
         try:
             from src.alarm.infrastructure.polestar_metric_baseline import (
                 PolestarMetricBaselineAdapter,
+                parse_metric_source_map,
             )
             from src.routing.db_registry import DBRegistry
 
+            # (Plan 67 R3-(v) 인접) kind→메트릭 소스 매핑을 설정에서 주입한다(미설정 시 None →
+            # 어댑터 기본 매핑). 벤더 스키마 상수는 domain이 아니라 설정·어댑터에 둔다.
             return PolestarMetricBaselineAdapter(
-                DBRegistry(self._config), self._config.alarm
+                DBRegistry(self._config),
+                self._config.alarm,
+                metric_source_map=parse_metric_source_map(
+                    getattr(
+                        self._config.noise_gate, "anomaly_metric_source_map_csv", ""
+                    )
+                ),
             )
         except Exception:
             logger.exception("메트릭 baseline 어댑터 생성 실패 — 이상탐지 없이 진행")
@@ -381,6 +396,45 @@ class AlarmWorker:
             logger.exception("sre_agent 조사 클라이언트 생성 실패 — 조사 트리거 없이 진행")
             return None
 
+    def _build_annotation_classifier(self):  # noqa: ANN202
+        """운영자 주석 LLM 분류기를 생성한다 (Plan 67 R3-(v) · D-132 · _build_* 미러).
+
+        enable_noise_gate=False 또는 annotation_llm_classification_enabled=False(기본)이면
+        None을 반환한다 — 주석 신호는 기존 정규식 추출로 산출되어 현행과 비트동일하다(회귀 0).
+        생성 실패도 None으로 흡수한다(정규식 분류로 진행). LLM 인스턴스 자체는 분류기가 첫
+        분류 시점에 지연 획득하므로 여기서 과금 호출이 발생하지 않는다.
+        """
+        gate = getattr(self._config, "noise_gate", None)
+        if gate is None or not getattr(gate, "enable_noise_gate", False):
+            return None
+        if not getattr(gate, "annotation_llm_classification_enabled", False):
+            return None
+        try:
+            from src.alarm.application.annotation_classifier import (
+                AnnotationClassifier,
+            )
+
+            return AnnotationClassifier(self._config)
+        except Exception:
+            logger.exception("주석 LLM 분류기 생성 실패 — 정규식 주석 분류로 진행")
+            return None
+
+    async def _annotation_signal(self, event: AlarmEvent) -> AnnotationSignal:
+        """이벤트 텍스트에서 주석 신호(계획작업/해소/운영자인지)를 산출한다 (D-132).
+
+        분류기 미주입(플래그 OFF·생성 실패)이면 기존 결정적 정규식 추출을 그대로 호출한다.
+        분류기가 있으면 LLM 분류를 쓰고, 분류기 내부에서 타임아웃·실패 시 정규식으로 강등한다
+        (사유 로그) — 이 메서드는 어느 경로에서도 예외를 올리지 않는다.
+        """
+        text = (
+            getattr(event, "condition_log", "")
+            or getattr(event, "description", "")
+            or ""
+        )
+        if self._annotation_classifier is None:
+            return extract_annotation_signal(text)
+        return await self._annotation_classifier.classify(text)
+
     async def run(self) -> None:
         """알람 소비 루프를 실행한다.
 
@@ -415,6 +469,8 @@ class AlarmWorker:
         self._incident_publisher = self._build_incident_publisher()
         # (Plan 64 CW-A) sre_agent 조사 서비스 클라이언트 — off/미배선이면 None(회귀 0).
         self._sre_agent_client = self._build_sre_agent_client()
+        # (Plan 67 R3-(v) · D-132) 주석 LLM 분류기 — 플래그 off(기본)면 None → 정규식 경로.
+        self._annotation_classifier = self._build_annotation_classifier()
         dedup: dict[str, float] = {}
 
         logger.info(
@@ -533,7 +589,22 @@ class AlarmWorker:
                             event.alarm_id,
                             rec_meta.get("count") if rec_meta else None,
                         )
-                        self._record_recurrence(fingerprint, event, rec_meta)
+                        # (D-132) 하베스팅 활성 + LLM 분류기 주입 시에만 async 분류를 선행해
+                        # sync 적재 경로에 값으로 넘긴다. 분류기 미주입이면 signal=None →
+                        # _record_recurrence가 기존 정규식 추출을 수행한다(비트동일).
+                        harvest_signal = None
+                        if (
+                            self._annotation_classifier is not None
+                            and getattr(
+                                self._config.noise_gate,
+                                "annotation_harvest_enabled",
+                                False,
+                            )
+                        ):
+                            harvest_signal = await self._annotation_signal(event)
+                        self._record_recurrence(
+                            fingerprint, event, rec_meta, signal=harvest_signal
+                        )
                         await ack_message(r, stream_key, group, msg_id)
                         return
                     # 비중복(재통보) — 직전 창 재발 메타가 있으면 대표 알람 표기용으로 보관.
@@ -613,17 +684,15 @@ class AlarmWorker:
                     )
                     # (Plan 60 E7-a §17.3) 코로보레이션 게이팅용 주석 신호를 산출해 게이트로
                     # 주입한다. annotation_planned_suppress off면 미산출(None → 게이트 무평가·
-                    # 비트동일). 결정적 추출(정규식)이며 판정은 게이트가 코로보레이션과 함께 내린다.
+                    # 비트동일). 판정은 게이트가 코로보레이션과 함께 내린다. (D-132) 분류 수단은
+                    # 정규식(기본) 또는 LLM 분류기(옵트인·실패 시 정규식 강등)이며, 게이트가 받는
+                    # 신호 형태(3개 bool dict)는 어느 경로에서도 동일하다.
                     if getattr(
                         self._config.noise_gate,
                         "annotation_planned_suppress",
                         False,
                     ):
-                        sig = extract_annotation_signal(
-                            getattr(event, "condition_log", "")
-                            or getattr(event, "description", "")
-                            or ""
-                        )
+                        sig = await self._annotation_signal(event)
                         if sig.has_signal():
                             annotation_signal_dict = sig.to_dict()
             else:
@@ -843,7 +912,12 @@ class AlarmWorker:
         return False, prev
 
     def _record_recurrence(
-        self, fingerprint: str, event: AlarmEvent, rec_meta: Optional[dict]
+        self,
+        fingerprint: str,
+        event: AlarmEvent,
+        rec_meta: Optional[dict],
+        *,
+        signal: Optional[AnnotationSignal] = None,
     ) -> None:
         """재발생 억제를 decision_store에 감사 적재한다 (Plan 60 E1 · E7-a · graceful).
 
@@ -857,6 +931,10 @@ class AlarmWorker:
         annotation 필드로 적재한다 — 재발신이 실어 온 텍스트 신호를 재통보 없이 원 인시던트에
         보존한다. (§17.6 E7-d) 재발 억제는 ISA-18.2 'repeating' chattering으로 감사 라벨링한다
         (판정 무변경·관측성). 두 확장 모두 annotation_harvest_enabled=False면 미적용(비트동일).
+
+        (Plan 67 R3-(v) · D-132) 호출부가 `signal=`로 이미 산출한 신호를 넘기면 그 값을 쓴다
+        (LLM 분류는 async라 sync인 이 메서드에서 수행할 수 없다). 미지정이면 기존대로 정규식
+        추출을 수행한다 — 분류기 미주입 경로·직접 호출과 비트동일.
         """
         if self._decision_store is None or rec_meta is None:
             return
@@ -875,11 +953,13 @@ class AlarmWorker:
             "alarm_id": event.alarm_id,
         }
         if getattr(self._config.noise_gate, "annotation_harvest_enabled", False):
-            sig = extract_annotation_signal(
-                getattr(event, "condition_log", "")
-                or getattr(event, "description", "")
-                or ""
-            )
+            sig = signal
+            if sig is None:
+                sig = extract_annotation_signal(
+                    getattr(event, "condition_log", "")
+                    or getattr(event, "description", "")
+                    or ""
+                )
             harvested = sig.to_dict() if sig.has_signal() else {}
             # ISA-18.2 repeating(복구 후 재발) 감사 라벨(§17.6) — 판정 무변경·관측성만.
             harvested["chattering"] = "repeating"

@@ -4,6 +4,13 @@
 마커를 정규식으로 추출한다. 결정적(정규식·stdlib-only)이며 LLM에 의존하지 않는다.
 마커가 없으면 빈 신호(하위호환)를 반환한다.
 
+**(Plan 67 R3-(v) · D-132) LLM 분류 전환**: 운영자 손글 한국어는 정규식 어휘를 벗어난다
+("이상무"·"문제없음" 등 미매칭). LLM 분류는 **application 계층**
+(`src/alarm/application/annotation_classifier.py`)이 수행하고, 이 모듈은 그 결과를
+`AnnotationLabel` enum으로 받아 `signal_from_labels`로 신호를 조립한다 — domain에 LLM
+의존을 넣지 않는다(D-035 경계 유지). `extract_annotation_signal`은 삭제하지 않고 분류
+실패·타임아웃 시의 **강등 폴백**이자 플래그 OFF 기본 경로로 남는다.
+
 **억제≠삭제의 텍스트 확장(§17.3)**: `compute_fingerprint`는 주석 텍스트를 포함하지 않으므로
 (notification_policy.py L51~64) 운영자 주석 재발신은 같은 지문으로 E1 dedup에 억제되고,
 억제는 그래프 진입 이전에 ACK된다 — 그 결과 재발신이 실어 온 계획작업·해소 신호가 폐기된다.
@@ -18,7 +25,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 
 # ── 마커 정규식(§17.3, 결정적·재현율 우선) ────────────────────────────────
 # 계획작업 마커: 예정된 작업/계획정지/IPL/점검/작업 예정/정기 점검 등.
@@ -32,6 +41,19 @@ _RESOLUTION = re.compile(
 )
 # 운영자 접수 마커: '=> 담당자'/통화/확인 후 연락 등.
 _OPERATOR_ACK = re.compile(r"=>\s*담당자|통화|확인\s*후\s*연락")
+
+
+class AnnotationLabel(str, Enum):
+    """주석 분류 라벨 (Plan 67 R3-(v) · D-132 — 3분류 고정).
+
+    application 계층 분류기(LLM)와 domain 사이의 계약이다. 값은 `AnnotationSignal` 필드명과
+    동일해 감사 dict 키와 일치한다. **신규 라벨을 추가하지 않는다** — 게이트(코로보레이션·
+    하베스팅)가 소비하는 신호 집합이 3종으로 고정되어 있다(§17.3).
+    """
+
+    PLANNED_WORK = "planned_work"
+    RESOLUTION = "resolution"
+    OPERATOR_ACK = "operator_ack"
 
 
 @dataclass(frozen=True)
@@ -78,4 +100,25 @@ def extract_annotation_signal(text: str) -> AnnotationSignal:
         planned_work=bool(_PLANNED_WORK.search(t)),
         resolution=bool(_RESOLUTION.search(t)),
         operator_ack=bool(_OPERATOR_ACK.search(t)),
+    )
+
+
+def signal_from_labels(labels: Iterable[AnnotationLabel]) -> AnnotationSignal:
+    """분류 라벨 집합을 AnnotationSignal로 조립한다 (Plan 67 R3-(v) · D-132).
+
+    domain은 분류 **결과(enum)만** 소비하며 분류 수단(정규식/LLM)을 알지 않는다. 빈 집합은
+    빈 신호(마커 없음)와 같다. `AnnotationLabel`이 아닌 항목은 무시한다 — 분류기 환각·
+    프로토콜 오차가 domain 불변식을 깨지 못하게 한다(모르는 라벨은 신호 없음과 동일 취급).
+
+    Args:
+        labels: 분류기가 판정한 라벨들(중복·순서 무관).
+
+    Returns:
+        해당 라벨만 True인 AnnotationSignal.
+    """
+    known = {label for label in labels if isinstance(label, AnnotationLabel)}
+    return AnnotationSignal(
+        planned_work=AnnotationLabel.PLANNED_WORK in known,
+        resolution=AnnotationLabel.RESOLUTION in known,
+        operator_ack=AnnotationLabel.OPERATOR_ACK in known,
     )
