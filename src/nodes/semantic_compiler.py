@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,10 @@ from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import StatMonth, resolve_query_limit
 # 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
 from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
+
+if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 진입 분기 안에서 지연 수행한다.
+    from src.config import AppConfig
+    from src.nodes.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
@@ -701,21 +705,24 @@ def parse_smq_response(content: str) -> Optional[SMQ]:
         return None
 
 
-async def compile_from_nl(
+async def _select_smq_one_shot(
     llm: Any,
     user_query: str,
-    db_id: str,
-    *,
-    default_limit: int = 100,
-    stat_month: StatMonth = None,
-    value_index: Optional[dict[str, list[str]]] = None,
-    server_scope: Optional[tuple[str, list[str]]] = None,
-) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
-    """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.
+    model: dict,
+    server_scope: Optional[tuple[str, list[str]]],
+) -> Optional[SMQ]:
+    """현행 1방 SMQ 선택 — 카탈로그를 프롬프트에 실어 LLM 1회 호출로 선택받는다.
 
-    반환:
-        (sql, smq, cov) — sql이 있으면 커버리지 내 결정적 조립 성공(LLM SQL 생성 우회).
-        sql이 None이면 커버리지 밖/파싱실패 → 호출부가 현행 폴백(LLM 자유생성)으로 진행.
+    프롬프트·메시지 구성은 무변경이다(플래그 OFF 경로의 바이트 동일성 근거).
+
+    Args:
+        llm: LLM 인스턴스
+        user_query: 사용자 원문 질의
+        model: 시맨틱 모델(카탈로그)
+        server_scope: 선행 task 결과 서버 스코프(있으면 예외 블록 주입, D-099)
+
+    Returns:
+        파싱된 SMQ, 또는 None(LLM 실패·커버리지 밖 신호·파싱 실패)
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -724,10 +731,6 @@ async def compile_from_nl(
         SEMANTIC_SMQ_SYSTEM_TEMPLATE,
         SEMANTIC_SMQ_USER_TEMPLATE,
     )
-
-    model = load_semantic_model(db_id)
-    if not model:
-        return None, None, None
 
     system = SEMANTIC_SMQ_SYSTEM_TEMPLATE.format(catalog=render_catalog(model))
     user = SEMANTIC_SMQ_USER_TEMPLATE.format(user_query=user_query)
@@ -745,11 +748,152 @@ async def compile_from_nl(
         response = await llm.ainvoke(messages)
     except Exception as e:  # noqa: BLE001 — LLM 실패는 폴백으로 강등(회귀 0)
         logger.warning("NL→SMQ 생성 실패(폴백): %s", e)
+        return None
+
+    return parse_smq_response(getattr(response, "content", "") or "")
+
+
+def _stepwise_enabled(app_config: Optional["AppConfig"]) -> bool:
+    """단계적 도출 루프(S2/D-128) 진입 여부를 판정한다.
+
+    ``app_config``가 없으면 **OFF**로 본다 — 설정을 여기서 로드하면 호출마다 ``.env``를
+    다시 읽게 되고(load_config는 싱글톤이 아니다) 테스트가 환경에 좌우된다. 실 경로
+    (query_generator·multi_db_executor)는 항상 설정을 넘긴다.
+    """
+    text2sql = getattr(app_config, "text2sql", None)
+    return bool(getattr(text2sql, "stepwise_derivation", False))
+
+
+async def _select_smq_stepwise(
+    llm: Any,
+    user_query: str,
+    db_id: str,
+    model: dict,
+    app_config: "AppConfig",
+    stepwise_deps: Optional["StepwiseDeps"],
+    derivation_sink: Optional[list[dict]],
+) -> tuple[Optional[SMQ], Optional[CoverageResult]]:
+    """단계적 컬럼 도출 루프(S2/D-128)로 SMQ를 도출한다.
+
+    루프 산출물은 기존 ``SMQ.from_dict`` 경로로 통과시켜 검증한다(새 검증 경로 신설 금지 —
+    D-067). 미해결 필드가 남거나 도출 실패면 **사유를 담은 CoverageResult**를 돌려 호출부가
+    3단 폴백으로 넘기게 한다(침묵 폴백 금지).
+
+    Args:
+        llm: tool-calling 가능한 LLM
+        user_query: 사용자 원문 질의
+        db_id: 대상 DB 식별자
+        model: 시맨틱 모델(카탈로그)
+        app_config: 앱 설정(상한 산출용)
+        stepwise_deps: 경로별 도구 주입 재료(StepwiseDeps 또는 None)
+        derivation_sink: 관측 레코드 적재 리스트(state 노출용, 선택)
+
+    Returns:
+        (smq, cov) — smq가 None이면 cov.reason이 폴백 사유다.
+    """
+    from src.nodes.column_deriver import StepwiseDeps, StepwiseLimits, derive_smq
+
+    deps = stepwise_deps if stepwise_deps is not None else StepwiseDeps()
+    record = await derive_smq(
+        llm, user_query, db_id, model,
+        deps=deps,
+        limits=StepwiseLimits.from_config(app_config.text2sql),
+    )
+    if derivation_sink is not None:
+        derivation_sink.append(record)
+
+    unresolved = record.get("unresolved") or []
+    raw_smq = record.get("smq")
+    if unresolved or not isinstance(raw_smq, dict):
+        reason = _derivation_failure_reason(record)
+        logger.info("단계적 도출 미완(폴백): %s", reason)
+        return None, CoverageResult(covered=False, reason=reason)
+
+    try:
+        smq = SMQ.from_dict(raw_smq)
+    except Exception as e:  # noqa: BLE001 — 스키마 불일치는 사유와 함께 폴백
+        reason = f"단계적 도출 SMQ 형식 오류: {e}"
+        logger.info("%s", reason)
+        record["stopped_reason"] = "schema_error"
+        return None, CoverageResult(covered=False, reason=reason)
+    logger.info(
+        "단계적 도출 SMQ 확정(패턴 %s, 라운드 %s, tool %s)",
+        smq.pattern, record.get("rounds"), record.get("tool_calls"),
+    )
+    return smq, None
+
+
+def _stamp_coverage(derivation_sink: Optional[list[dict]], covered: Optional[bool]) -> None:
+    """직전 도출 레코드에 커버리지 판정 결과를 기록한다(관측 — 1방 경로는 sink 없음)."""
+    if derivation_sink:
+        derivation_sink[-1]["covered"] = covered
+
+
+def _derivation_failure_reason(record: dict) -> str:
+    """도출 실패·미해결을 사용자·감사 노출용 단일 사유 문자열로 만든다."""
+    parts = [f"단계적 도출 미완({record.get('stopped_reason')})"]
+    unresolved = record.get("unresolved") or []
+    if unresolved:
+        parts.append(
+            "미해결: " + "; ".join(
+                f"{u.get('field')}({u.get('reason')})" for u in unresolved[:5]
+            )
+        )
+    elif not record.get("smq"):
+        parts.append("SMQ 미도출")
+    return " — ".join(parts)
+
+
+async def compile_from_nl(
+    llm: Any,
+    user_query: str,
+    db_id: str,
+    *,
+    default_limit: int = 100,
+    stat_month: StatMonth = None,
+    value_index: Optional[dict[str, list[str]]] = None,
+    server_scope: Optional[tuple[str, list[str]]] = None,
+    app_config: Optional["AppConfig"] = None,
+    stepwise_deps: Optional["StepwiseDeps"] = None,
+    derivation_sink: Optional[list[dict]] = None,
+) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
+    """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.
+
+    SMQ 선택 방식만 두 갈래다 — 기본은 현행 1방 선택이고, ``TEXT2SQL_STEPWISE_DERIVATION``이
+    ON이면 도구 기반 단계적 도출 루프(S2/D-128)가 SMQ를 만든다. **커버리지 판정·컴파일은
+    어느 쪽이든 동일한 결정적 경로**를 통과한다(D-076·D-067). SQL 생성 4경로가 모두 이
+    함수를 지나므로 여기가 대칭 주입 지점이다(D-066).
+
+    Args:
+        llm: LLM 인스턴스
+        user_query: 사용자 원문 질의
+        db_id: 대상 DB 식별자
+        default_limit: 기본 LIMIT
+        stat_month: 결정적으로 해석된 통계 월(범위)
+        value_index: E5-2 값 인덱스(있으면 필터 리터럴 실측 검증)
+        server_scope: 선행 task 결과 서버 스코프(D-099)
+        app_config: 앱 설정 — 단계적 도출 플래그·상한 판정용(없으면 1방 경로)
+        stepwise_deps: 경로별 도구 주입 재료(``column_deriver.StepwiseDeps``)
+        derivation_sink: 단계적 도출 관측 레코드 적재 리스트(state 노출용)
+
+    반환:
+        (sql, smq, cov) — sql이 있으면 커버리지 내 결정적 조립 성공(LLM SQL 생성 우회).
+        sql이 None이면 커버리지 밖/파싱실패 → 호출부가 현행 폴백(LLM 자유생성)으로 진행.
+    """
+    model = load_semantic_model(db_id)
+    if not model:
         return None, None, None
 
-    smq = parse_smq_response(getattr(response, "content", "") or "")
-    if smq is None:
-        return None, None, None
+    if _stepwise_enabled(app_config):
+        smq, derive_cov = await _select_smq_stepwise(
+            llm, user_query, db_id, model, app_config, stepwise_deps, derivation_sink,
+        )
+        if smq is None:
+            return None, None, derive_cov
+    else:
+        smq = await _select_smq_one_shot(llm, user_query, model, server_scope)
+        if smq is None:
+            return None, None, None
     smq = normalize_smq(smq, user_query)
 
     # 월별 행 분해("월간/월별 통계·추이") 질의는 컴파일러(서버당 1행 집계 고정)로 표현 불가 —
@@ -761,6 +905,7 @@ async def compile_from_nl(
             reason="월별 분해(월간/월별) 질의는 컴파일 미지원 - LLM 폴백",
         )
         logger.info("시맨틱 커버리지 밖(폴백): %s", cov.reason)
+        _stamp_coverage(derivation_sink, False)
         return None, smq, cov
 
     # 선행 스코프가 결정적으로 주어지면 SMQ의 서버 식별 필터는 중복이다. 그대로 두면
@@ -777,6 +922,7 @@ async def compile_from_nl(
             smq = smq.model_copy(update={"filters": kept})
 
     cov = check_coverage(smq, model, value_index=value_index)
+    _stamp_coverage(derivation_sink, cov.covered)
     if not cov.covered:
         logger.info("시맨틱 커버리지 밖(폴백): %s", cov.reason)
         return None, smq, cov

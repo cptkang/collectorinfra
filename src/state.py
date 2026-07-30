@@ -40,6 +40,27 @@ class OrganizedData(TypedDict):
     sheet_mappings: Optional[list[SheetMappingResult]]
 
 
+class SmqDerivation(TypedDict):
+    """단계적 컬럼 도출 루프 1회 실행 기록 (Plan 67 S2 / D-128).
+
+    감사·평가(S3 토큰·지연 상한 판정)와 미해결 사유 노출에 쓰는 관측 레코드다.
+    루프가 실제로 발동한 경로마다 1건 누적되며(단일 1건 / 멀티 DB는 DB별), 플래그 OFF나
+    미발동이면 ``AgentState.smq_derivation``이 None으로 남는다.
+    """
+
+    path: str                       # 발동 경로 라벨 ("single" | "multi_db")
+    db_id: str
+    smq: Optional[dict]             # 루프가 누적한 SMQ(도출 실패 시 None)
+    fields: list[dict]              # [{field, role, selection, evidence, confidence}]
+    unresolved: list[dict]          # [{field, reason}] — 미해결 필드의 구조화 사유
+    rounds: int                     # tool-calling 라운드 수
+    tool_calls: int                 # 누적 tool 호출 수
+    llm_calls: int                  # 누적 LLM 호출 수(요구 분해 포함)
+    elapsed_ms: float
+    stopped_reason: str             # completed | max_rounds | max_tool_calls | timeout | ...
+    covered: Optional[bool]         # 누적 SMQ의 커버리지 판정 결과(미판정 None)
+
+
 class QueryAttempt(TypedDict):
     """개별 SQL 실행 시도 기록.
 
@@ -83,6 +104,7 @@ class AgentState(TypedDict):
     generated_sql: str                       # 현재 SQL 쿼리 (다중 후보 경로에서는 선택 결과)
     sql_candidates: Optional[list[dict]]     # 트랙 A(E2) 다중 후보 [{sql, strategy, confidence}]; 단일 경로는 None
     text2sql_fallback: Optional[dict]        # 트랙 A 3단 폴백 결과 {tier, confidence, method, reason}; 미진입 None
+    smq_derivation: Optional[list[SmqDerivation]]  # 트랙 S(S2/D-128) 단계적 도출 기록; 미발동 None
     column_value_index: Optional[dict[str, list[str]]]  # E5-2 실측 값 인덱스 런타임 주입 {column: [값,...]}
     synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
     validation_result: ValidationResult      # 검증 결과
@@ -268,6 +290,7 @@ def create_initial_state(
         generated_sql="",
         sql_candidates=None,
         text2sql_fallback=None,
+        smq_derivation=None,
         column_value_index=None,
         synonym_usage=None,
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},

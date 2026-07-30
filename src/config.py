@@ -232,6 +232,17 @@ class Text2SQLConfig(BaseSettings):
     # IP-4 계측 후 별도 판단(계획서 §3.3-N2 "측정 선행").
     query_history_min_score: float = 0.35
 
+    # === Plan 67 트랙 S / S2(D-128): 단계적 컬럼 도출 루프 ===
+    # ON이면 NL→SMQ를 1방 선택 대신 도구 기반 다회 탐색 루프로 도출한다(요구 분해 → 필드별
+    # 카탈로그·유사어·값 확인 → SMQ 누적). 커버리지 판정·SQL 조립은 결정적 유지(D-076·D-067).
+    # 기본 OFF = 기존 1방 경로 바이트 무변경.
+    stepwise_derivation: bool = False
+    stepwise_max_rounds: int = 6            # tool-calling 라운드 상한(무한 루프 차단)
+    stepwise_max_tool_calls: int = 24       # 누적 tool 호출 상한(토큰 폭증 차단)
+    # 루프 전체 타임아웃(초). per-call 타임아웃만으로는 다회 왕복을 막지 못한다
+    # (Known Mistakes "장시간 실행 경로는 전체 타임아웃 가드 필수").
+    stepwise_timeout_seconds: float = 60.0
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

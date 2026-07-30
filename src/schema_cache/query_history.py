@@ -526,6 +526,52 @@ async def search_query_history(
     return results
 
 
+async def select_fewshot_examples(
+    db_id: str,
+    user_query: str,
+    *,
+    enabled: bool,
+    top_k: int,
+    min_score: float,
+    store: QueryHistoryStore | None = None,
+) -> list[dict] | None:
+    """폴백 프롬프트에 주입할 few-shot 예시를 이력에서 고른다(SQL 생성 경로 공용).
+
+    단일 DB 경로(`query_generator`)와 멀티 DB 경로(`multi_db_executor._generate_sql`)가
+    같은 함수를 쓰도록 여기에 둔다 — 한쪽만 배선하는 비대칭이 반복 실수의 1순위였다(D-066).
+
+    ``enabled``가 False이거나 db_id가 없으면 검색·Redis 접근을 아예 하지 않는다(플래그 OFF
+    시 프롬프트·호출 모두 무변경). 검색 실패·임계 미달은 None으로 강등해 프로필 고정
+    few-shot을 유지하되 사유는 로그로 남긴다(침묵 폴백 금지).
+
+    Args:
+        db_id: DB 식별자
+        user_query: 사용자 자연어 질의
+        enabled: ``TEXT2SQL_QUERY_HISTORY_FEWSHOT`` 플래그
+        top_k: 주입 상한
+        min_score: 채택 최소 유사도
+        store: 저장소(테스트 주입용, 선택)
+
+    Returns:
+        ``[{"question", "sql"}, ...]`` 또는 None(고정 예시 유지)
+    """
+    if not enabled or not db_id:
+        return None
+    try:
+        results = await search_query_history(
+            db_id, user_query, top_k=top_k, min_score=min_score, store=store,
+        )
+    except Exception as e:  # noqa: BLE001 — 이력 검색 실패가 SQL 생성을 막지 않는다
+        logger.warning("질의 이력 검색 실패(고정 few-shot 유지): %s", e)
+        return None
+
+    examples = to_query_examples(results)
+    if not examples:
+        return None
+    record_adoption(db_id, len(examples))
+    return examples
+
+
 def to_query_examples(results: Iterable[dict]) -> list[dict]:
     """검색 결과를 few-shot 예시 블록 입력(question/sql) 형태로 변환한다.
 
@@ -674,6 +720,7 @@ __all__ = [
     "reset_search_metrics",
     "search_metrics_snapshot",
     "search_query_history",
+    "select_fewshot_examples",
     "to_query_examples",
     "tokenize_query",
 ]

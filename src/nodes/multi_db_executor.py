@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 import sqlparse
 from langchain_core.language_models import BaseChatModel
@@ -47,6 +47,9 @@ from src.db_adapters.polestar.assembler import (
     eav_attr_resource_types,
 )
 from src.utils.schema_utils import build_excluded_join_map
+
+if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
+    from src.nodes.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +150,9 @@ async def multi_db_executor(
     db_errors: dict[str, str] = {}
     all_attempts: list[QueryAttempt] = list(state.get("query_attempts", []))
     mc_candidates: list[dict] = []  # 트랙 A 다중 후보(경로 C, DB별 태깅) — 관측/감사용
+    # 트랙 S(S2/D-128) 단계적 도출 기록(DB별) — 단일 경로(query_generator)와 동일 형태로
+    # state에 실어 감사·평가 재료를 대칭 확보한다(D-066). 루프 미발동이면 빈 리스트 → None.
+    mc_derivations: list[dict] = []
 
     # 동일 스키마(엔진+스키마명) DB는 SQL을 한 번만 생성해 재사용한다(D-066 후속6).
     # 공동존(gp/yd)은 스키마가 동일해 같은 SQL이 양쪽에서 동작하는데, DB별 독립 LLM 호출은
@@ -213,6 +219,7 @@ async def multi_db_executor(
                         execute=_mc_execute,
                         candidate_sink=mc_candidates,
                         prior_block=prior_block,
+                        derivation_sink=mc_derivations,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -292,6 +299,7 @@ async def multi_db_executor(
         "query_results": merged_results,
         "query_attempts": all_attempts,
         "sql_candidates": mc_candidates or None,
+        "smq_derivation": mc_derivations or None,
         "current_node": "multi_db_executor",
         "error_message": None if db_results else "모든 DB 쿼리가 실패했습니다.",
     }
@@ -368,6 +376,82 @@ async def _analyze_schema(
     return schema_dict
 
 
+async def _build_stepwise_deps(
+    schema_info: dict,
+    app_config: AppConfig,
+    db_engine: str,
+    db_id: str,
+    default_limit: int,
+) -> Optional["StepwiseDeps"]:
+    """멀티 DB 경로(경로 C)의 단계적 도출 도구 재료를 만든다 (S2/D-128).
+
+    플래그 OFF면 None(도구 조립 자체 없음). 단일 경로(`query_generator._build_stepwise_deps`)와
+    같은 형태를 만들며, 경로 라벨만 다르다 — 발동 여부를 로그·레코드에서 구분하기 위함이다.
+    단일 경로는 state에 실린 유사어를 쓰지만 멀티 DB 경로는 state에 없으므로 캐시에서 읽는다
+    — 그래야 두 경로의 **도구 목록**이 같아진다(재료 비대칭 방지, D-066).
+
+    Args:
+        schema_info: 해당 DB 스키마 정보
+        app_config: 앱 설정
+        db_engine: DB 엔진 타입
+        db_id: DB 식별자
+        default_limit: 기본 행 제한
+
+    Returns:
+        ``column_deriver.StepwiseDeps`` 또는 None(플래그 OFF)
+    """
+    if not app_config.text2sql.stepwise_derivation:
+        return None
+    from src.nodes.column_deriver import StepwiseDeps
+
+    synonyms: dict[str, list[str]] = {}
+    try:
+        from src.schema_cache.cache_manager import get_cache_manager
+
+        synonyms = await get_cache_manager(app_config).get_synonyms(db_id) or {}
+    except Exception as e:  # noqa: BLE001 — 사전 부재는 도구 1종 제외로 강등(사유 로그)
+        logger.warning(
+            "DB '%s': 단계적 도출 유사어 로드 실패(lookup_synonym 도구 제외): %s", db_id, e
+        )
+
+    return StepwiseDeps(
+        path="multi_db",
+        synonyms=synonyms,
+        schema_info=schema_info or {},
+        db_engine=db_engine or "postgresql",
+        adapter_db_ids=app_config.get_polestar_db_ids() or None,
+        default_limit=default_limit,
+        synonym_min_score=app_config.synonym.match_confidence_min,
+        value_fuzzy=app_config.synonym.fuzzy_match,
+    )
+
+
+async def _select_query_history_examples(
+    db_id: str, user_query: str, app_config: AppConfig | None
+) -> list[dict] | None:
+    """멀티 DB 경로의 이력 few-shot 선택 — 단일 경로와 동일한 공용 헬퍼를 호출한다 (N2/D-133).
+
+    Args:
+        db_id: DB 식별자
+        user_query: 검색에 쓸 자연어 질의(원문 우선, 없으면 sub_query_context)
+        app_config: 앱 설정(없으면 미적용)
+
+    Returns:
+        few-shot 예시 목록 또는 None(고정 예시 유지)
+    """
+    if app_config is None:
+        return None
+    from src.schema_cache.query_history import select_fewshot_examples
+
+    t2 = app_config.text2sql
+    return await select_fewshot_examples(
+        db_id, user_query,
+        enabled=t2.query_history_fewshot,
+        top_k=t2.query_history_top_k,
+        min_score=t2.query_history_min_score,
+    )
+
+
 async def _generate_sql(
     llm: BaseChatModel,
     parsed_requirements: dict,
@@ -383,6 +467,7 @@ async def _generate_sql(
     execute: Callable[[str], Awaitable[dict]] | None = None,
     candidate_sink: list[dict] | None = None,
     prior_block: str | None = None,
+    derivation_sink: list[dict] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -397,6 +482,7 @@ async def _generate_sql(
         db_engine: DB 엔진 타입 ("postgresql", "db2" 등)
         db_id: DB 식별자 (스키마 한정 규칙 결정용, D-057)
         app_config: 앱 설정 (트랙 C 시맨틱 조합 플래그 판정용, 없으면 로드)
+        derivation_sink: 트랙 S 단계적 도출 관측 레코드 적재 리스트 (선택, S2/D-128)
 
     Returns:
         생성된 SQL 문자열
@@ -414,6 +500,11 @@ async def _generate_sql(
             llm, _uq, db_id,
             default_limit=default_limit,
             stat_month=resolve_stat_month_range(_uq),
+            app_config=app_config,
+            stepwise_deps=await _build_stepwise_deps(
+                schema_info, app_config, db_engine, db_id, default_limit,
+            ),
+            derivation_sink=derivation_sink,
         )
         if semantic_sql:
             logger.info(
@@ -471,7 +562,19 @@ async def _generate_sql(
 
     # 프로필 few-shot 쿼리 예시 주입 — 단일 DB 경로(query_generator)와 동등화(RC1/D-066).
     # 예시 부재로 멀티 DB 폼필이 조인 환각(존재하지 않는 컬럼)을 내던 문제 차단.
-    structure_guide += build_query_examples_block(structure_meta)
+    # N2(D-133): 이력 검색이 유사 예시를 골라오면 고정 예시 대신 그것을 쓴다 — 단일 경로와
+    # 같은 공용 헬퍼·같은 블록 포맷을 통과한다. 플래그 OFF·무적중이면 고정 경로 그대로(회귀 0).
+    _history_examples = await _select_query_history_examples(
+        db_id,
+        parsed_requirements.get("original_query", "") or sub_query_context,
+        app_config,
+    )
+    if _history_examples:
+        structure_guide += build_query_examples_block(
+            {"query_examples": _history_examples}
+        )
+    else:
+        structure_guide += build_query_examples_block(structure_meta)
 
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 

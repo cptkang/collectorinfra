@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -46,6 +46,9 @@ from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
+
+if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
+    from src.nodes.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +297,9 @@ async def query_generator(
     # 삽입 지점 원칙(§3): query_generator 함수 내부 → 그래프 경로(A)·orchestration 인라인(B) 자동 공유.
     semantic_sql = None
     coverage_outside = False  # 트랙 C ON인데 커버리지 밖 → 트랙 A 폴백 대상 여부(3단 폴백)
+    # 트랙 S(S2/D-128) 단계적 도출 관측 레코드 — 루프 미발동이면 빈 리스트로 남아 None을 반환한다
+    # (요청 스코프 상태 자기정리 — 노드 스킵 경로가 직전 턴 값을 물려주지 않게).
+    derivation_records: list[dict] = []
     # prior_rows(선행 task 결과 스코프)는 컴파일러에 server_scope로 결정적 전달한다(D-099).
     # 과거에는 SMQ가 스코프를 표현하지 못해 우회했으나(D-086), 이제 조립기가 HAVING으로
     # 강제하므로 이 형태(선행 스코프 + 메트릭 순위 + EAV 속성)도 결정적 조립 대상이다.
@@ -311,6 +317,9 @@ async def query_generator(
             stat_month=stat_month,
             value_index=value_index,
             server_scope=prior_scope,
+            app_config=app_config,
+            stepwise_deps=_build_stepwise_deps(state, app_config, limit_value),
+            derivation_sink=derivation_records,
         )
         coverage_outside = semantic_sql is None
 
@@ -480,12 +489,50 @@ async def query_generator(
         "generated_sql": sql,
         "sql_candidates": sql_candidates,
         "text2sql_fallback": text2sql_fallback,
+        "smq_derivation": derivation_records or None,
         "synonym_usage": synonym_usage,
         "retry_count": retry_count,
         "error_message": None,  # 에러 메시지 초기화
         "current_node": "query_generator",
         **extra_return,
     }
+
+
+def _build_stepwise_deps(
+    state: AgentState, app_config: AppConfig, limit_value: int
+) -> Optional["StepwiseDeps"]:
+    """단일 경로(그래프·orchestration 인라인·deepagents)의 단계적 도출 도구 재료를 만든다.
+
+    플래그 OFF면 None을 돌려 도구·컨텍스트 조립 자체를 하지 않는다(회귀 0). ON이면 state가
+    가진 유사어·값 인덱스·스키마·엔진을 그대로 주입한다 — 멀티 DB 경로(`_generate_sql`)도
+    같은 형태를 만들어 넘기므로 경로 간 재료 비대칭이 없다(D-066).
+
+    Args:
+        state: 현재 에이전트 상태
+        app_config: 앱 설정
+        limit_value: 결정적으로 해석된 기본 행 제한
+
+    Returns:
+        ``column_deriver.StepwiseDeps`` 또는 None(플래그 OFF)
+    """
+    if not app_config.text2sql.stepwise_derivation:
+        return None
+    from src.nodes.column_deriver import StepwiseDeps
+
+    return StepwiseDeps(
+        path="single",
+        synonyms=state.get("column_synonyms") or {},
+        value_index=(
+            state.get("column_value_index")
+            if app_config.synonym.value_retrieval else None
+        ),
+        schema_info=state.get("schema_info") or {},
+        db_engine=state.get("active_db_engine") or "postgresql",
+        adapter_db_ids=app_config.get_polestar_db_ids() or None,
+        default_limit=limit_value,
+        synonym_min_score=app_config.synonym.match_confidence_min,
+        value_fuzzy=app_config.synonym.fuzzy_match,
+    )
 
 
 def _query_keywords(user_query: str) -> list[str]:
@@ -499,10 +546,9 @@ async def _select_query_history_examples(
 ) -> list[dict] | None:
     """검증된 질의 이력에서 few-shot 예시를 선택한다 (Plan 67 N2 / D-133).
 
-    ``TEXT2SQL_QUERY_HISTORY_FEWSHOT``이 OFF이면 즉시 None을 돌려 검색·Redis 접근을
-    아예 하지 않는다(플래그 OFF 시 프롬프트·호출 모두 무변경). 검색 실패나 임계 미달도
-    None으로 강등해 프로필 고정 few-shot을 유지한다 — 다만 사유는 로그로 남긴다
-    (침묵 폴백 금지).
+    실제 선택은 공용 헬퍼(``query_history.select_fewshot_examples``)가 수행한다 — 멀티 DB
+    경로(`multi_db_executor._generate_sql`)가 같은 함수를 쓰므로 경로 간 비대칭이 없다(D-066).
+    이 함수는 state에서 db_id를 뽑아 넘기는 얇은 어댑터다.
 
     Args:
         state: 현재 에이전트 상태
@@ -512,35 +558,16 @@ async def _select_query_history_examples(
     Returns:
         few-shot 예시 목록(question/sql) 또는 None(고정 예시 유지)
     """
+    from src.schema_cache.query_history import select_fewshot_examples
+
     t2 = app_config.text2sql
-    if not t2.query_history_fewshot:
-        return None
-    db_id = state.get("active_db_id") or ""
-    if not db_id:
-        return None
-
-    from src.schema_cache.query_history import (
-        record_adoption,
-        search_query_history,
-        to_query_examples,
+    return await select_fewshot_examples(
+        state.get("active_db_id") or "",
+        user_query,
+        enabled=t2.query_history_fewshot,
+        top_k=t2.query_history_top_k,
+        min_score=t2.query_history_min_score,
     )
-
-    try:
-        results = await search_query_history(
-            db_id,
-            user_query,
-            top_k=t2.query_history_top_k,
-            min_score=t2.query_history_min_score,
-        )
-    except Exception as e:  # noqa: BLE001 — 이력 검색 실패가 SQL 생성을 막지 않는다
-        logger.warning("질의 이력 검색 실패(고정 few-shot 유지): %s", e)
-        return None
-
-    examples = to_query_examples(results)
-    if not examples:
-        return None
-    record_adoption(db_id, len(examples))
-    return examples
 
 
 def _build_value_index_injection(
