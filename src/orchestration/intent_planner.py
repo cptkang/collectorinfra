@@ -43,6 +43,19 @@ _PROCESS_HISTORY_KEYWORDS = (
 # 있어(bare "event" 질의) 프롬프트 어휘만으로는 부족 — 결정적으로 교정한다.
 _ALARM_KEYWORDS = ("알람", "alert", "이벤트", "event", "경보")
 
+# 폼필 요청 감지 키워드 (Plan 68 D-117 — 파일 없는 "양식 채워줘" 안내용).
+# 양식 명사 + 채움 동사가 함께 있어야 발동한다(오발동 최소).
+_FORM_NOUN_KEYWORDS = ("양식", "서식", "템플릿")
+_FORM_FILL_VERB_KEYWORDS = ("채우", "채워", "기입", "작성")
+# 사용자에게 그대로 노출되는 고정 안내문 — LLM을 통과시키지 않는다(라이브 실측
+# 2026-07-30: general_inference LLM 호출 실패 시 일반 오류 문구로 강등됨).
+_FORM_FILL_NO_FILE_GUIDANCE = (
+    "양식 파일이 첨부되지 않아 양식 채우기를 진행할 수 없습니다.\n\n"
+    "Excel(.xlsx) 양식 파일을 첨부한 뒤 다시 요청해 주세요. 파일이 첨부되면 "
+    "양식 헤더를 분석해 수집 중인 항목을 자동으로 채우고, 채울 수 없는 항목은 "
+    "사유와 함께 안내해 드립니다."
+)
+
 
 def has_alarm_signal(text: str) -> bool:
     """질의에 알람/모니터링 이벤트 신호가 있는지 검사한다(결정적 교정 공용 헬퍼)."""
@@ -168,6 +181,25 @@ async def intent_planner(
     if mapped_db_ids:
         logger.info("intent_planner: mapped_db_ids 감지, data_query 단일 task (DB 고정=%s)", mapped_db_ids)
         return _single_task_plan("data_query", user_query, db_ids=mapped_db_ids)
+
+    # ③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 68 D-117).
+    # 양식 채우기는 의미상 단일 파이프라인 작업 — LLM 복합 분해가 서버정보/월지표를
+    # 별도 task로 쪼개면 결과 병합이 2배 행이 된다(라이브 실측 2026-07-30 B0).
+    # mapped_db_ids 미성립 턴(③ 미발동)도 결정적으로 단일화한다.
+    if state.get("template_structure"):
+        logger.info("intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-117)")
+        return _single_task_plan("data_query", user_query)
+
+    # ③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 68 D-117).
+    # template_structure 없이 "양식 채워줘"류가 LLM 분해로 가면 data_query가 존재하지
+    # 않는 양식을 환각 처리한다(라이브 실측 2026-07-30 7차). 고정 안내문은 LLM을
+    # 통과시키지 않고 direct_response로 결정적 반환한다(LLM 실패 시 일반 오류 강등 방지).
+    if (any(k in user_query for k in _FORM_NOUN_KEYWORDS)
+            and any(k in user_query for k in _FORM_FILL_VERB_KEYWORDS)):
+        logger.info("intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-117)")
+        plan = _single_task_plan("general_inference", user_query)
+        plan["task_plan"][0]["direct_response"] = _FORM_FILL_NO_FILE_GUIDANCE
+        return plan
 
     # [계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1).
     conversation_context = state.get("conversation_context")

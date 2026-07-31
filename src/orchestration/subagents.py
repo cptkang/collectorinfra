@@ -646,6 +646,10 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "db_column_mapping": state.get("db_column_mapping"),
         "column_mapping": state.get("column_mapping"),
         "mapping_sources": state.get("mapping_sources"),
+        # HITL 폼필 답변(D-118, FIX-19): 라우트가 복원한 답변이 이 격리 경계를 통과해야
+        # multi_db_executor/query_generator의 오버라이드 적용에 도달한다(라이브 실측
+        # 2026-07-31: 누락 시 답변이 유실돼 동일 미해결 → 역질문 패널 무한 반복).
+        "form_fill_answers": state.get("form_fill_answers"),
         "llm_inference_details": state.get("llm_inference_details"),
         "pending_synonym_registrations": state.get("pending_synonym_registrations"),
         "pending_synonym_reuse": state.get("pending_synonym_reuse"),
@@ -775,6 +779,17 @@ async def run_general_inference(
     Returns:
         general_inference 노드의 반환 dict
     """
+    # 결정적 고정 안내(D-117 — 파일 없는 폼필 등)는 LLM을 통과시키지 않는다.
+    # 라이브 실측(2026-07-30): 고정 안내를 LLM 재서술시키다 호출 실패 → 일반 오류
+    # 문구("죄송합니다…")로 강등. 고정문은 그대로 반환한다(침묵 강등 금지).
+    direct = task.get("direct_response")
+    if direct:
+        logger.info("general_inference: direct_response 고정 안내 반환(D-117, LLM 미호출)")
+        return {
+            "final_response": direct,
+            "routing_intent": "general_inference",
+            "current_node": "general_inference",
+        }
     return await general_inference(isolated, llm=llm, app_config=app_config)
 
 
@@ -911,6 +926,17 @@ async def run_data_query_pipeline(
     }
     if s.get("error_message"):
         result["error"] = s["error_message"]
+
+    # 폼필 산출물 승격(D-113/D-118): orchestration에서 output_generator는 파이프라인
+    # 내부 state(s)가 아니라 result_aggregator의 _build_output_state 입력을 받으므로,
+    # 기준월 앵커·역질문 후보·답변 적용 내역·직접입력 상수를 task 결과로 실어 전달한다
+    # (미승격 시 기준월 안내·역질문이 그래프 경로에서만 동작하는 비대칭 — Known Mistakes).
+    for _fk in (
+        "form_month_anchor", "form_fill_candidates",
+        "form_fill_overrides", "form_fill_literals",
+    ):
+        if s.get(_fk):
+            result[_fk] = s[_fk]
 
     # 관찰성(처리 현황): orchestration에서는 query_generator가 그래프 노드가 아니라
     # 함수 호출이어서 생성 SQL이 SSE node_complete로 노출되지 않는다. task 결과에

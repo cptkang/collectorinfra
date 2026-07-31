@@ -800,6 +800,25 @@
 - **과적합 경계 지표(위반 시 중단·재설계)**: ①인식기에 기관명·시트제목 리터럴 ②칼럼 순서/위치 가정 ③전역 유사어에 양식 어휘 등록 ④양식별 분기 3건 이상 누적(→ `config/form_profiles/` 격리 검토 트리거, plans/67 §4.2).
 - **관련**: plans/67 §4·§5, Plan 63(과적합 분리), Known Mistakes(유사어 자동 등록 오염 루프).
 
+## D-116. 폼필 결정적 계약화 — 게이트 확장 + llm_inferred 매핑 채움 금지 (Plan 68 Phase 1)
+- **결정일**: 2026-07-30 | **상태**: 구현 완료 (폐쇄망 게이트 1 실측 대기)
+- **결정**: ①결정적 피벗 발동 조건을 "자식 EAV or 월 시리즈"에서 **"양식 업로드(template_structure) + eav_pattern 존재"**로 확장 — 양식 채우기는 월 시리즈·자식 EAV가 없어도 항상 결정적 조립(단일 `_try_build_form_fill_pivot_sql`·멀티 `use_multi_resource_pivot` 대칭). 매핑 전무 시 식별 컬럼(server_name/hostname) 주입으로 빈 SELECT 방지, eav_pattern 부재 DB(비폴스타)는 현행 LLM 경로 유지. ②폼필 턴에서 `mapping_sources`가 `llm_inferred`인 매핑은 조립 SELECT에서 제외(값 None화 + state 매핑 강제 None — writer 엄격 조회로 공란 보장). 단 집계어 명시 사용률류는 필드명 기반 결정적 피벗으로 회수(매핑 값만 폐기). 유사어·힌트 출처와 확정 규칙(D-115)만 채움 허용.
+- **근거**: 라이브 실측(2026-07-30) — 단순 양식(서버 이름·IP·OS·코어·메모리)이 CM 2개 DB에서 LLM 폴백으로 떨어져 `column "r.name" must appear in the GROUP BY clause` 전멸(조립기는 별칭 c+전 SELECT 집계+GROUP BY COALESCE라 구조적으로 불가능한 에러 — `r`은 폴백 프롬프트 예시 별칭). 경로 선택이 per-DB LLM 매핑·캐시 상태에 종속된 것이 "양식마다 새 에러"의 근본 원인. llm_inferred 침묵 채움은 TPMC 오염·acl_id·도입일자 epoch류 오답의 공통 출처 — 오답 대신 공란+사유(D-114, Phase 2에서 역질문으로 승격).
+- **트레이드오프(의도)**: 새 양식 첫 런의 공란 증가(LLM의 비재현적 "어쩌다 채움" 폐기) — 감사자료는 평균 품질이 아니라 재현성이 요구사항.
+- **관련**: plans/68 §2.1, D-067/D-068(단일 조립 엔진·LLM 우회 — 연장), D-113, D-114, D-115.
+
+## D-117. 폼필 오케스트레이션 단일 태스크 고정 + 파일 없는 폼필 안내 (Plan 68 Phase 1)
+- **결정일**: 2026-07-30 | **상태**: 구현 완료 (폐쇄망 게이트 1 실측 대기)
+- **결정**: intent_planner 계층 A에 결정적 pre-check 2종 추가 — ③.5 `template_structure` 존재 시 LLM 복합 분해를 우회하고 `data_query` 단일 task 고정(③ mapped_db_ids가 있으면 그쪽이 선행해 db_ids 승계). ③.6 양식 명사(양식/서식/템플릿)+채움 동사(채우/채워/기입/작성) 공존인데 template_structure 부재면 `general_inference` 안내 task로 단락(파일 첨부 요청 — LLM 분해 미진입).
+- **근거**: 라이브 실측(2026-07-30 B0) — LLM 분해가 폼필을 서버정보/월지표 2개 task로 쪼개 병합 결과 2배 행(비결정 재발 가능). 파일 없는 "양식 채워줘"는 data_query가 존재하지 않는 양식을 환각 처리(7차 실측).
+- **관련**: plans/68 §2.2, D-109(결정적 pre-check 선례), Plan 48(intent_planner 계층 구조).
+
+## D-118. 멀티턴 HITL 폼필 — 미해결 필드 역질문 + 구조화 답변 오버라이드 (Plan 68 Phase 2)
+- **결정일**: 2026-07-31 | **상태**: 구현 완료 (폐쇄망 게이트 2 실측 대기; 확인 이력 영속화는 Phase 3 잔여)
+- **결정**: ①**미해결 수집** — 폼필 런 후 실제 채움 0건 필드(월 시리즈·직접입력·사용자 지정 공란 제외)를 `output_generator._build_form_fill_hitl`이 수집. 전 필드 0건이면 데이터/SQL 문제이므로 역질문하지 않음(D-050). ②**역질문 패널** — 응답에 `form_fill_clarification`(fields + 스키마 실측 후보 `build_form_fill_candidates`: entity 칼럼+EAV 속성 한글 라벨) 첨부, 프론트가 필드별 위젯(공란 유지/DB 항목 드롭다운/직접 입력) 렌더 후 **`form_fill_answers` 구조화 필드로 재전송**(D-109 selected_db_ids 동형 — 자연어 재조합·LLM 파싱 0). ③**답변 턴** — 라우트가 `pending_form_fill`(멀티턴 보존, pending_synonym_registrations 동형)에서 원본 파일 복원 → 재파싱 → `resolve_form_fill_answers`가 존재성 검증(어휘=blank/column/eav/literal — 조립기 능력의 부분집합 C5, 월 시리즈 필드 보호) → 통과분만 오버라이드 최우선 적용(사용자>규칙>자동), literal은 writer 상수 기입(`literal_values`), 탈락은 사유와 함께 응답 노출+재역질문. ④**자기정리** — 미해결 0이면 pending=None, 새 파일 업로드 턴은 교체, 답변 관련 키는 요청 스코프(매 턴 초기화). ⑤(부수 결함 수정) orchestration 경로에서 `form_month_anchor`가 output_generator에 전달되지 않던 비대칭을 res 승격(`run_data_query_pipeline`→`_build_output_state`)으로 교정.
+- **근거**: 사용자 검토(2026-07-30) — 수작성 form_profiles는 관리 비현실적, 매칭 실패는 사용자에게 되묻는 방식 채택. llm_inferred 채움 금지(D-116)로 생기는 공란의 해소 수단이며, 구조화 패널이라 파싱 오해석 리스크 원천 제거.
+- **관련**: plans/68 §11, D-109(역질문 배선 선례), D-114(사유 노출 확장), D-116/D-117, Known Mistakes(요청 스코프 명시 초기화).
+
 ---
 
 ## 변경 이력
@@ -808,6 +827,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-07-31 | D-118 | **멀티턴 HITL 폼필 (Plan 68 Phase 2)** — 미해결 필드(채움 0건−월·직접입력·사용자 공란) 역질문 패널(form_fill_clarification + 스키마 실측 후보) → form_fill_answers 구조화 재전송(LLM 파싱 0) → pending_form_fill 원본 파일 복원·재파싱 → resolve_form_fill_answers 존재성 검증(blank/column/eav/literal, 월 필드 보호) → 오버라이드 최우선 적용·literal writer 상수·탈락 사유 노출. 자기정리(미해결 0→None, 새 업로드→교체). 부수: orchestration의 form_month_anchor 미전달 비대칭 교정(res 승격). 게이트 1 통과(2026-07-31, Phase 1.1 FIX-A/B/C 포함) 후속. 테스트 11건 추가. |
+| 2026-07-30 | D-116~D-117 | **폼필 결정적 계약화 (Plan 68 Phase 1)** — D-116(게이트 확장: 양식 업로드+eav_pattern이면 월시리즈·자식EAV 없어도 결정적 피벗, 단일/멀티 대칭 + llm_inferred 매핑 채움 금지·집계어 명시 사용률만 필드명 기반 회수. 근거: 단순 양식 GROUP BY 에러 라이브 실측 — 경로 선택의 per-DB LLM 매핑 종속이 근본 원인), D-117(intent_planner ③.5 폼필 단일 task 고정 — B0 2배 행 실측, ③.6 파일 없는 폼필 안내 단락). D-118(HITL 폼필+확인 이력)은 Phase 2·3 예약. 테스트 68건(신규 12건 포함) 통과. |
 | 2026-07-28 | D-112~D-115 | **금감원 취합자료 양식 폼필 지원 (Plan 67 Phase 1~3)** — D-112(2행 병합 헤더 블록 결합, 세로 병합 필수 게이트 — 취합 예시2 오결합 실측으로 초안 가로 병합 증거 폐기), D-113(월 시리즈 M~M+5 결정적 조립 `month_measures`+인식기 `recognize_month_series`, 게이트 2 폐쇄망 yd/b0 실측 통과, 기준월=질의 끝 월 또는 지난달·응답 명시), D-114(도메인 밖 필드 공란+필드 단위 사유 노출), D-115(양식 특화 매핑 요청 스코프 격리 — 전역 유사어 등록 금지, 과적합 경계 지표 명문화). 단일/멀티 경로 대칭 배선. D-111은 Plan 60 Wave B 예약 유지. |
 | 2026-07-24 | D-066/D-109 | **대량 조회 표면어 확장 — "서버별/서버 별/서버들/각 서버"** — 실측: "2026년 6월 서버별 CPU·메모리 사용률 평균…" 질의가 "모든" 부재로 ①존 역질문 비발동(침묵 전 존 폴백) ②기본 LIMIT 1000 절단. `_ALL_QUERY_KEYWORDS` 확장 + `is_full_scan_query` 공용 헬퍼로 LIMIT 상향 게이트와 존 역질문 게이트가 **동일 판정 공유**(한쪽만 넓히는 비대칭 방지). 명시 건수 우선 규칙 불변. 실측 질의 회귀 고정. |
 | 2026-07-24 | D-109 | **존 역질문 배선 + selected_db_ids 결정적 고정 (Plan 65 §4)** — 존 미지정 대량 조회·"ㅇㅇ존" 리터럴 시 라우트가 결정적 게이트로 체크박스 역질문(stateless). 선택은 자연어 재조합 없이 구조화 필드로 재전송 → semantic_router·intent_planner가 mapped_db_ids 선례 동형으로 LLM 우회 고정. UI=체크박스 3개 단독(사용자 확정). 테스트 12종. |

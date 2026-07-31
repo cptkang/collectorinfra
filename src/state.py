@@ -117,6 +117,26 @@ class AgentState(TypedDict):
     # 요청 스코프 값 — 매 턴 초기화.
     form_month_anchor: Optional[dict]
 
+    # === 멀티턴 HITL 폼필 (Plan 68 Phase 2, D-118) ===
+    # 역질문 답변(요청 스코프 — route가 이번 턴 값 주입, followup에서 매 턴 초기화).
+    # {field: {"action": "blank"|"column"|"eav"|"literal", "value": str|None}}
+    form_fill_answers: Optional[dict[str, dict]]
+    # 검증 통과 오버라이드(요청 스코프, query_generator/multi 산출) — 사유 노출용.
+    # {field: {"action":..., "value":..., "applied": bool, "reason": str|None}}
+    form_fill_overrides: Optional[dict[str, dict]]
+    # 직접 입력 상수(요청 스코프) — writer가 전 데이터 행 동일값 기입. {field: value}
+    form_fill_literals: Optional[dict[str, str]]
+    # 역질문 드롭다운 후보(요청 스코프, 스키마 실측 산출) — [{value, label, kind}]
+    form_fill_candidates: Optional[list[dict]]
+    # 역질문 대기 상태(멀티턴 보존 — pending_synonym_registrations 동형).
+    # {uploaded_file: bytes, file_type: str, original_query: str,
+    #  unresolved: [필드명, ...], candidates: [...]}
+    # 정리: ①답변 적용 후 미해결 0 ②새 파일 업로드 턴(교체). output_generator가 관리.
+    pending_form_fill: Optional[dict]
+    # 역질문 페이로드(요청 스코프) — API 응답이 프론트 패널 렌더에 사용.
+    # {"question": str, "fields": [{"name", "reason"}], "candidates": [...]}
+    form_fill_clarification: Optional[dict]
+
     # === 유사단어 재활용 대기 ===
     pending_synonym_reuse: Optional[dict]
     # {
@@ -233,6 +253,14 @@ def create_followup_input(
         # 존 선택(Plan 65 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
         # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
         "selected_db_ids": selected_db_ids,
+        # HITL 폼필(D-118) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
+        # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
+        # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
+        "form_fill_answers": None,
+        "form_fill_overrides": None,
+        "form_fill_literals": None,
+        "form_fill_candidates": None,
+        "form_fill_clarification": None,
     }
 
 
@@ -286,6 +314,14 @@ def create_initial_state(
         llm_inference_details=None,
         mapping_report_md=None,
         form_month_anchor=None,
+        # HITL 폼필(D-118): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
+        # (새 파일 업로드 턴은 output_generator가 새 미해결로 교체).
+        form_fill_answers=None,
+        form_fill_overrides=None,
+        form_fill_literals=None,
+        form_fill_candidates=None,
+        form_fill_clarification=None,
+        pending_form_fill=None,
         pending_synonym_reuse=None,
         column_descriptions={},
         column_synonyms={},

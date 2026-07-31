@@ -61,6 +61,7 @@ def fill_excel_template(
     sheet_mappings: list[dict[str, Any]] | None = None,
     target_sheets: list[str] | None = None,
     fill_stats: dict[str, int] | None = None,
+    literal_values: dict[str, str] | None = None,
 ) -> tuple[bytes, int]:
     """Excel 양식에 조회 결과를 채워넣는다.
 
@@ -79,6 +80,8 @@ def fill_excel_template(
         fill_stats: 필드(헤더)별 실제 채움 셀 수를 담아 돌려줄 out-param(선택) —
             D-114 미작성 사유는 매핑 유무가 아니라 **실제 채움 결과**로 판정한다
             (라이브 실측 2026-07-28: 매핑 None이어도 행 키=필드명 폴백으로 채워짐)
+        literal_values: 사용자 직접 입력 상수(D-118 역질문 답변) — {필드명: 값}.
+            해당 헤더 열의 모든 데이터 행에 동일값을 기입한다(행 조회 무관, 매핑보다 우선)
 
     Returns:
         (데이터가 채워진 Excel 파일 바이너리, 채워진 데이터 건수) 튜플
@@ -124,7 +127,8 @@ def fill_excel_template(
 
         if sheet_col_mapping:
             sheet_filled = _fill_sheet(
-                ws, sheet_info, sheet_col_mapping, sheet_rows, fill_stats=fill_stats
+                ws, sheet_info, sheet_col_mapping, sheet_rows,
+                fill_stats=fill_stats, literal_values=literal_values,
             )
             total_filled += sheet_filled
         else:
@@ -152,6 +156,7 @@ def _fill_sheet(
     column_mapping: dict[str, Optional[str]],
     rows: list[dict[str, Any]],
     fill_stats: dict[str, int] | None = None,
+    literal_values: dict[str, str] | None = None,
 ) -> int:
     """단일 시트에 데이터를 채운다.
 
@@ -178,12 +183,18 @@ def _fill_sheet(
     strict_cols: set[int] = set()
     # 필드별 실제 채움 통계(D-114) — 헤더 전체를 0으로 초기화(미채움 필드도 관측)
     header_by_col: dict[int, str] = {}
+    # 사용자 직접 입력 상수 열(D-118) — 행 조회를 거치지 않고 전 데이터 행 동일값 기입
+    literal_cols: dict[int, str] = {}
     for hc in header_cells:
         col_idx = hc["col"]
         header_name = hc["value"]
         header_by_col[col_idx] = str(header_name)
         if fill_stats is not None:
             fill_stats.setdefault(str(header_name), 0)
+        if literal_values and str(header_name) in literal_values:
+            # 사용자 답변이 매핑보다 우선 — 일반 배정에서 제외
+            literal_cols[col_idx] = literal_values[str(header_name)]
+            continue
         mapped = column_mapping.get(header_name)
         if mapped:
             col_assignments.append((col_idx, mapped))
@@ -209,7 +220,7 @@ def _fill_sheet(
         len(rows),
     )
 
-    if not col_assignments:
+    if not col_assignments and not literal_cols:
         logger.warning("시트 '%s': 매핑된 컬럼이 없어 데이터 채우기 스킵", ws.title)
         return 0
 
@@ -232,7 +243,9 @@ def _fill_sheet(
     reverse_mapping = {v: k for k, v in column_mapping.items() if v}
 
     # 서식 참조용: 데이터 시작 행의 기존 셀 스타일 수집
-    style_cache = _collect_row_styles(ws, data_start_row, [ca[0] for ca in col_assignments])
+    style_cache = _collect_row_styles(
+        ws, data_start_row, [ca[0] for ca in col_assignments] + list(literal_cols)
+    )
 
     # 데이터 채우기
     filled_count = 0
@@ -264,6 +277,18 @@ def _fill_sheet(
                 fill_stats[header_by_col[col_idx]] += 1
 
             # 서식 적용
+            if col_idx in style_cache:
+                _apply_style(cell, style_cache[col_idx])
+
+        # 사용자 직접 입력 상수(D-118) — 수식 셀 제외, 전 행 동일값 기입
+        for col_idx, lit in literal_cols.items():
+            cell = ws.cell(row=target_row, column=col_idx)
+            if cell.coordinate in formula_cells_set:
+                continue
+            cell.value = lit
+            filled_count += 1
+            if fill_stats is not None and col_idx in header_by_col:
+                fill_stats[header_by_col[col_idx]] += 1
             if col_idx in style_cache:
                 _apply_style(cell, style_cache[col_idx])
 

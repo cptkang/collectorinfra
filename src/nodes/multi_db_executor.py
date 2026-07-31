@@ -46,6 +46,7 @@ from src.utils.query_gen_common import (
 from src.db_adapters.polestar.assembler import (
     apply_capacity_scope_rule,
     apply_remark_server_name_rule,
+    build_form_fill_candidates,
     build_month_series_block,
     build_multi_resource_pivot_sql,
     classify_metric_field,
@@ -54,6 +55,7 @@ from src.db_adapters.polestar.assembler import (
     filter_pivot_regular_entries,
     find_vendor_model_concat,
     recognize_month_series,
+    resolve_form_fill_answers,
 )
 from src.utils.schema_utils import build_excluded_join_map
 
@@ -169,6 +171,11 @@ async def multi_db_executor(
 
     # 폼필 월 시리즈(D-113) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
     form_context = template_context_text(state.get("template_structure"))
+    # D-116: 양식 업로드 자체가 결정적 조립 발동 조건(문맥 텍스트 유무와 무관한 명시 신호).
+    form_intent = bool(state.get("template_structure"))
+    mapping_sources = state.get("mapping_sources") or {}
+    # D-118: 역질문 답변(라우트 주입, 요청 스코프) — 오버라이드 최우선 적용
+    form_fill_answers = state.get("form_fill_answers")
     form_fill_out: dict = {}
 
     for target in targets:
@@ -229,6 +236,9 @@ async def multi_db_executor(
                         prior_block=prior_block,
                         form_context_text=form_context,
                         form_fill_out=form_fill_out,
+                        form_intent=form_intent,
+                        mapping_sources=mapping_sources,
+                        form_fill_answers=form_fill_answers,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -251,6 +261,9 @@ async def multi_db_executor(
                             prior_block=prior_block,
                             form_context_text=form_context,
                             form_fill_out=form_fill_out,
+                            form_intent=form_intent,
+                            mapping_sources=mapping_sources,
+                            form_fill_answers=form_fill_answers,
                         )
                         validation_error = _validate_sql_simple(sql, schema_info)
                         if validation_error:
@@ -321,6 +334,13 @@ async def multi_db_executor(
             **(state.get("column_mapping") or {}),
             **form_fill_out["mapping_updates"],
         }
+    # HITL 폼필 산출물(D-118) — output_generator가 역질문 페이로드·사유·상수 기입에 사용.
+    if form_fill_out.get("candidates"):
+        result["form_fill_candidates"] = form_fill_out["candidates"]
+    if form_fill_out.get("overrides"):
+        result["form_fill_overrides"] = form_fill_out["overrides"]
+    if form_fill_out.get("literals"):
+        result["form_fill_literals"] = form_fill_out["literals"]
     return result
 
 
@@ -412,6 +432,9 @@ async def _generate_sql(
     prior_block: str | None = None,
     form_context_text: str = "",
     form_fill_out: dict | None = None,
+    form_intent: bool = False,
+    mapping_sources: dict[str, str] | None = None,
+    form_fill_answers: dict[str, dict] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -429,6 +452,10 @@ async def _generate_sql(
         form_context_text: 양식 문맥 텍스트(시트 제목 등) — 월 시리즈 인식(D-113)용
         form_fill_out: 폼필 산출 out-param(선택) — 월 앵커·스코프 매핑 갱신분을 담아
             노드가 state 델타로 반영한다("month_anchor"/"mapping_updates" 키)
+        form_intent: 양식 업로드(template_structure) 턴 여부 — 참이면 월 시리즈·자식
+            EAV 없이도 결정적 피벗을 발동한다(D-116, eav_pattern 존재 DB 한정)
+        mapping_sources: 필드별 매핑 출처(hint/synonym/llm_inferred) — 폼필에서
+            llm_inferred 매핑을 채움에서 제외(D-116, 침묵 오염 차단)
 
     Returns:
         생성된 SQL 문자열
@@ -440,7 +467,7 @@ async def _generate_sql(
     # prior_block(선행 task 결과 스코프)이 있으면 결정적 컴파일 우회 — SMQ는 선행 결과
     # 서버 한정을 표현할 수 없다(D-086, 단일 경로와 동일 조건).
     if (not error_context and not column_mapping and not prior_block
-            and app_config.text2sql.semantic_compose):
+            and not form_intent and app_config.text2sql.semantic_compose):
         _uq = parsed_requirements.get("original_query", "") or ""
         semantic_sql, _smq, _cov = await compile_from_nl(
             llm, _uq, db_id,
@@ -566,7 +593,8 @@ async def _generate_sql(
     # column_mapping이 있으면 schema_info 기반 필터링 후 매핑 컬럼을 명시.
     # 미매핑 필드만 있어도(per-DB 매핑이 비어도) 월 시리즈 인식은 발동해야 하므로
     # unmapped_fields도 진입 조건에 포함한다(라이브 실측 2026-07-28 — FIX-1).
-    if column_mapping or unmapped_fields:
+    # 양식 업로드 턴은 매핑 유무와 무관하게 진입한다(D-116).
+    if column_mapping or unmapped_fields or form_intent:
         column_mapping = column_mapping or {}
         # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링
         if schema_info:
@@ -608,6 +636,31 @@ async def _generate_sql(
         _sn_eav = _get_eav_pattern(schema_info)
         if _sn_eav:
             correct_servername_hostname_mapping(column_mapping, _sn_eav.get("entity_table", ""))
+
+        # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-116, 단일 경로와 대칭) —
+        # 라이브 오염(TPMC·acl_id·epoch류)의 공통 출처. 결정적 피벗이 확실한 조건
+        # (form_intent + eav_pattern + 비재시도)에서만 강등한다(비EAV DB의 LLM 경로는
+        # 현행 유지). 키는 유지 — 인식기·결합 규칙이 필드명을 본다. 사용률류 필드는
+        # 아래 pivot_metric_fields가 필드명 기반으로 결정적 재해석하므로 손실 없음.
+        _dropped_inferred: list[str] = []
+        if form_intent and _sn_eav and not error_context:
+            _srcs = mapping_sources or {}
+            _dropped_inferred = [
+                f for f, c in column_mapping.items()
+                if c and _srcs.get(f) == "llm_inferred"
+            ]
+            for f in _dropped_inferred:
+                column_mapping[f] = None
+            if _dropped_inferred:
+                logger.info(
+                    "DB '%s' 폼필 llm_inferred 매핑 %d건 채움 제외(D-116, 역질문 후보): %s",
+                    db_id, len(_dropped_inferred), _dropped_inferred,
+                )
+                if form_fill_out is not None:
+                    # writer가 낡은 매핑으로 역조회하지 않도록 state 매핑 강제 None
+                    form_fill_out.setdefault("mapping_updates", {}).update(
+                        {f: None for f in _dropped_inferred}
+                    )
 
         # 월 시리즈(M~M+5 가로 전개) 인식 + 요청 스코프 규칙(D-113/D-115) — 단일 경로와 대칭.
         # 멀티 경로는 미매핑 필드가 unmapped_fields로 분리 전달되므로 합쳐서 인식한다.
@@ -656,6 +709,37 @@ async def _generate_sql(
                 {f: None for f in concat_fields}
             )
 
+        # 사용자 답변 오버라이드(D-118) — 우선순위 최상위(사용자 > 규칙 > 자동 매핑).
+        # 단일 경로(_try_build_form_fill_pivot_sql)와 대칭. 검증 탈락은 사유와 함께
+        # form_fill_out으로 승격돼 응답에 노출된다.
+        _applied_ov: set[str] = set()
+        if form_fill_answers and form_intent and _sn_eav and not error_context:
+            _protected = set(month_series.fields) if month_series else set()
+            _ov_out, _ov_map, _ov_lit = resolve_form_fill_answers(
+                form_fill_answers, schema_info, _sn_eav, protected_fields=_protected,
+            )
+            _applied_ov = {f for f, o in _ov_out.items() if o.get("applied")}
+            if _applied_ov:
+                logger.info("DB '%s' 폼필 답변 오버라이드 적용(D-118): %s", db_id, sorted(_applied_ov))
+            _ov_rejected = [(f, o.get("reason")) for f, o in _ov_out.items() if not o.get("applied")]
+            if _ov_rejected:
+                logger.info("DB '%s' 폼필 답변 오버라이드 거부(D-118): %s", db_id, _ov_rejected)
+            column_mapping.update(_ov_map)
+            _ov_fields = set(_ov_map.keys()) | set(_ov_lit.keys())
+            concat_eav = [c for c in concat_eav if c[0] not in _ov_fields]
+            concat_fields = {c[0] for c in concat_eav}
+            if form_fill_out is not None:
+                form_fill_out.setdefault("mapping_updates", {}).update(_ov_map)
+                form_fill_out.setdefault("overrides", {}).update(_ov_out)
+                if _ov_lit:
+                    form_fill_out.setdefault("literals", {}).update(_ov_lit)
+
+        # D-118: 역질문 드롭다운 후보(스키마 실측, 첫 EAV DB 기준 — 폴스타 계열 동일 스키마)
+        if form_intent and _sn_eav and form_fill_out is not None:
+            form_fill_out.setdefault(
+                "candidates", build_form_fill_candidates(schema_info, _sn_eav)
+            )
+
         # 정규 매핑과 EAV 매핑 분리
         regular_entries = [
             (field, col) for field, col in column_mapping.items()
@@ -697,13 +781,19 @@ async def _generate_sql(
         ]
         # 결정적 SQL이 검증에 실패해 재생성(error_context)하는 경우 같은 SQL을 다시
         # 조립하면 동일 실패가 반복되므로 LLM 폴백으로 넘긴다(단일 경로 is_retry와 대칭).
+        # D-116: 양식 업로드(form_intent)는 eav_pattern 존재 DB에서 항상 결정적 조립.
         use_multi_resource_pivot = (
-            bool(child_eav) or bool(month_series)
+            bool(child_eav) or bool(month_series) or (form_intent and bool(_sn_eav))
         ) and not error_context
-        if month_series and error_context:
+        if (month_series or form_intent) and error_context:
             logger.info(
                 "DB '%s': 폼필 결정적 조립 스킵 — 재생성 턴(error=%s). LLM 폴백이 양식 처리",
                 db_id, str(error_context)[:120],
+            )
+        if form_intent and use_multi_resource_pivot and not child_eav and not month_series:
+            logger.info(
+                "DB '%s': 폼필 결정적 계약 경로(D-116) — 월시리즈·자식EAV 없음, 게이트 확장으로 조립",
+                db_id,
             )
         if month_series and not use_multi_resource_pivot:
             # LLM 폴백에도 인식기가 확정한 월 리터럴을 강제(월 방향 뒤집힘 실측 차단)
@@ -746,10 +836,19 @@ async def _generate_sql(
                 field for field, _ in metric_entries
                 if field not in _month_fields and classify_metric_field(field)
             ]
+            # llm_inferred 강등 필드 중 사용률류는 필드명 기반 결정적 피벗으로 회수(D-116) —
+            # 매핑 값은 버리되 채움 능력은 유지(전역 unmapped_fields에 없어 _um이 못 받는 몫).
+            pivot_metric_fields += [
+                f for f in _dropped_inferred
+                if f not in _month_fields and f not in concat_fields
+                and f not in pivot_metric_fields and classify_metric_field(f)
+            ]
+            # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-118)
+            pivot_metric_fields = [f for f in pivot_metric_fields if f not in _applied_ov]
             eav_pattern_mr = _get_eav_pattern(schema_info) or {}
-            # 월 피벗인데 서버 식별 컬럼이 전무하면(per-DB 매핑 공백) 결정적 식별 컬럼 주입
+            # 월 피벗/폼필인데 서버 식별 컬럼이 전무하면(per-DB 매핑 공백) 결정적 식별 컬럼 주입
             # — alias는 양식 헤더와 무충돌 라틴명(병합·진단용). 단일 경로와 대칭.
-            if month_series and not regular_entries and not server_eav and not concat_eav:
+            if (month_series or form_intent) and not regular_entries and not server_eav and not concat_eav:
                 _entity = eav_pattern_mr.get("entity_table", "cmm_resource")
                 regular_entries = [
                     ("server_name", f"{_entity}.name"),

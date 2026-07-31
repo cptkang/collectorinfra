@@ -15,7 +15,8 @@ from src.state import create_initial_state
 
 _SCHEMA = {
     "tables": json.loads(
-        (Path(__file__).resolve().parents[2] / "testdata" / "generic_mon" / "schema.json").read_text()
+        # encoding 명시 필수 — Windows 기본 cp949로 UTF-8 JSON을 읽으면 컬렉션 전체가 중단된다
+        (Path(__file__).resolve().parents[2] / "testdata" / "generic_mon" / "schema.json").read_text(encoding="utf-8")
     )["tables"]
 }
 POLESTAR_IDS = {"polestar_cm_gp"}

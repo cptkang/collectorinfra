@@ -280,11 +280,282 @@ class TestSinglePathWiring:
         assert "c.resource_type='server.Memory' AND s.definition_name" in sql
 
     def test_non_form_query_unchanged(self):
-        """월 시리즈도 자식 EAV도 없으면 기존과 동일하게 None(LLM 경로 유지)."""
+        """양식 업로드가 아니면(월 시리즈·자식 EAV도 없음) 기존과 동일하게 None(LLM 경로 유지)."""
         from src.nodes.query_generator import _try_build_form_fill_pivot_sql
 
         state = self._state({"서버명": "cmm_resource.name"}, "서버 목록")
+        state["template_structure"] = None  # 파일 없는 일반 질의
         assert _try_build_form_fill_pivot_sql(state, 1000, "서버 목록 조회") is None
+
+
+class TestD116FormIntentGate:
+    """D-116 게이트 확장 — 양식 업로드는 월 시리즈·자식 EAV 없어도 항상 결정적 조립.
+
+    라이브 실측(2026-07-30): 단순 양식(서버 이름·IP·OS·코어·메모리)이 CM DB들에서 LLM
+    폴백으로 떨어져 `column "r.name" must appear in the GROUP BY clause`로 전멸.
+    결정적 조립기는 별칭 c + 전 SELECT 집계 + GROUP BY COALESCE라 구조적으로 불가능한
+    에러 — 경로 선택이 per-DB LLM 매핑에 종속된 것이 근본 원인이며 게이트로 고정한다.
+    """
+
+    def _state(self, mapping: dict, schema_info: dict | None = None) -> dict:
+        return {
+            "column_mapping": mapping,
+            "schema_info": _EAV_META if schema_info is None else schema_info,
+            "template_structure": {"sheets": [{"title_text": "서버 목록", "name": "Sheet1"}]},
+            "active_db_engine": "postgresql",
+            "active_db_id": "",
+        }
+
+    def test_regular_only_form_builds_pivot(self):
+        """직접 칼럼 매핑만 있는 양식(월·자식 EAV 없음) → 결정적 피벗(기존엔 None→LLM)."""
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = self._state({
+            "서버 이름": "cmm_resource.name",
+            "IP 주소": "cmm_resource.ipaddress",
+        })
+        result = _try_build_form_fill_pivot_sql(state, 1000, "서버 목록 양식 채워줘")
+        assert result is not None
+        sql = result["sql"]
+        assert 'AS "서버 이름"' in sql and 'AS "IP 주소"' in sql
+        # 서버당 1행 계약 — GROUP BY 에러류가 구조적으로 불가능한 형태
+        assert "GROUP BY COALESCE(c.platform_resource_id, c.id)" in sql
+        assert "FROM cmm_resource c" in sql
+        assert " r." not in sql  # LLM 폴백 예시 별칭 부재 증명
+
+    def test_form_without_eav_pattern_returns_none(self):
+        """eav_pattern 부재 DB(비폴스타)는 form_intent여도 발동하지 않는다(현행 LLM 경로)."""
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = self._state({"서버 이름": "cmm_resource.name"}, schema_info={})
+        assert _try_build_form_fill_pivot_sql(state, 1000, "양식 채워줘") is None
+
+    def test_form_all_unmapped_injects_identity(self):
+        """매핑이 전무해도 폼필이면 식별 컬럼 주입으로 결정적 조립(빈 SELECT 방지)."""
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = self._state({"구분": None, "용도": None})
+        result = _try_build_form_fill_pivot_sql(state, 1000, "양식 채워줘")
+        assert result is not None
+        assert 'AS "server_name"' in result["sql"]
+        assert 'AS "hostname"' in result["sql"]
+
+    def test_simple_form_fixture_end_to_end(self):
+        """단순 양식(라이브 실측 케이스) 파서→매핑→조립 e2e — 5필드 전부 결정적 SELECT."""
+        import io
+
+        from openpyxl import Workbook
+
+        from src.document.excel_parser import parse_excel_template
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "서버현황"
+        ws.append(["서버 이름", "IP 주소", "OS 버전", "CPU 코어 수", "메모리 용량"])
+        ws.append(["", "", "", "", ""])
+        buf = io.BytesIO()
+        wb.save(buf)
+        template = parse_excel_template(buf.getvalue())
+        assert template["sheets"], "단일 헤더 양식 파싱 실패"
+
+        meta = {
+            "_structure_meta": {
+                "patterns": [{
+                    "type": "eav",
+                    "entity_table": "cmm_resource",
+                    "config_table": "core_config_prop",
+                    "attribute_column": "name",
+                    "value_column": "stringvalue_short",
+                    "direct_join": {
+                        "entity_column": "resource_conf_id",
+                        "config_column": "configuration_id",
+                    },
+                    "known_attributes": [
+                        {"name": "OSVerson", "description": "OS 버전 [resource_type: server.Server]"},
+                        {"name": "LOGICALCORE", "description": "논리 코어 [resource_type: server.Cpus]"},
+                        {"name": "TotalSize", "description": "메모리 용량 [resource_type: server.Memory]"},
+                    ],
+                }]
+            }
+        }
+        state = {
+            "column_mapping": {
+                "서버 이름": "cmm_resource.name",
+                "IP 주소": "cmm_resource.ipaddress",
+                "OS 버전": "EAV:OSVerson",
+                "CPU 코어 수": "EAV:LOGICALCORE",
+                "메모리 용량": "EAV:TotalSize",
+            },
+            "schema_info": meta,
+            "template_structure": template,
+            "active_db_engine": "postgresql",
+            "active_db_id": "",
+        }
+        result = _try_build_form_fill_pivot_sql(state, 1000, "서버 양식 채워줘")
+        assert result is not None
+        sql = result["sql"]
+        for field in ["서버 이름", "IP 주소", "OS 버전", "CPU 코어 수", "메모리 용량"]:
+            assert f'AS "{field}"' in sql
+        assert "'server.Cpus'" in sql and "'server.Memory'" in sql
+        assert "GROUP BY COALESCE(c.platform_resource_id, c.id)" in sql
+
+    async def test_multi_path_form_intent_symmetric(self):
+        """멀티 경로 대칭 — form_intent + eav_pattern이면 LLM에 도달하지 않는다."""
+        from src.nodes.multi_db_executor import _generate_sql
+
+        sql = await _generate_sql(
+            llm=None,  # 결정적 경로 — LLM에 도달하면 안 된다
+            parsed_requirements={"original_query": "서버 목록 양식 채워줘"},
+            schema_info={
+                "tables": {"cmm_resource": {"columns": [
+                    {"name": "name", "type": "text"},
+                    {"name": "ipaddress", "type": "text"},
+                    {"name": "hostname", "type": "text"},
+                ]}},
+                **_EAV_META,
+            },
+            sub_query_context="서버 목록 양식 채우기",
+            default_limit=1000,
+            column_mapping={"서버 이름": "cmm_resource.name", "IP 주소": "cmm_resource.ipaddress"},
+            db_engine="postgresql",
+            db_id="",
+            unmapped_fields=[],
+            app_config=SimpleNamespace(
+                text2sql=SimpleNamespace(semantic_compose=False, generic_llm_mapping=False),
+                get_polestar_db_ids=lambda: set(),
+            ),
+            form_context_text="서버 목록",
+            form_fill_out={},
+            form_intent=True,
+            mapping_sources={},
+        )
+        assert 'AS "서버 이름"' in sql and 'AS "IP 주소"' in sql
+        assert "GROUP BY COALESCE(c.platform_resource_id, c.id)" in sql
+        assert " r." not in sql
+
+
+class TestLlmInferredDemotion:
+    """D-116 — 폼필에서 llm_inferred 매핑 채움 금지(침묵 오염 → 공란+역질문 후보)."""
+
+    def _state(self, mapping: dict, sources: dict) -> dict:
+        return {
+            "column_mapping": mapping,
+            "mapping_sources": sources,
+            "schema_info": _EAV_META,
+            "template_structure": {"sheets": [{"title_text": "서버 목록", "name": "Sheet1"}]},
+            "active_db_engine": "postgresql",
+            "active_db_id": "",
+        }
+
+    def test_inferred_dropped_synonym_kept(self):
+        """llm_inferred는 제외(화이트리스트 통과 칼럼이어도), synonym 출처는 채움 유지."""
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = self._state(
+            {"서버 이름": "cmm_resource.name", "도입일자": "cmm_resource.description"},
+            {"서버 이름": "synonym", "도입일자": "llm_inferred"},
+        )
+        result = _try_build_form_fill_pivot_sql(state, 1000, "양식 채워줘")
+        assert result is not None
+        sql = result["sql"]
+        assert 'AS "서버 이름"' in sql
+        assert "도입일자" not in sql  # 라이브 실측: epoch 원값 오염의 원천 차단
+        # writer 역조회 차단 — state 매핑 강제 None(엄격 필드명 조회 → 공란)
+        assert result["mapping_updates"]["도입일자"] is None
+
+    def test_inferred_metric_field_recovered_by_name(self):
+        """llm_inferred 사용률류(집계어 명시)는 매핑 값을 버리되 필드명 기반 피벗으로 회수.
+
+        집계어 없는 bare '사용률'은 평균/피크가 모호해 회수하지 않는다(공란+역질문 후보 —
+        classify_metric_field의 보수 계약).
+        """
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = self._state(
+            {
+                "서버 이름": "cmm_resource.name",
+                "CPU 평균 사용률": "cmm_metric_stat_m.avg_val",
+                "CPU 사용률": "cmm_metric_stat_m.avg_val",
+            },
+            {
+                "서버 이름": "synonym",
+                "CPU 평균 사용률": "llm_inferred",
+                "CPU 사용률": "llm_inferred",
+            },
+        )
+        result = _try_build_form_fill_pivot_sql(state, 1000, "양식 채워줘")
+        assert result is not None
+        sql = result["sql"]
+        assert 'AS "CPU 평균 사용률"' in sql  # 집계어 명시 → 결정적 회수
+        assert "'Utilization'" in sql
+        assert 'AS "CPU 사용률"' not in sql  # 집계 모호 → 공란(역질문 후보)
+        assert result["mapping_updates"]["CPU 사용률"] is None
+
+    def test_no_form_intent_no_demotion(self):
+        """양식 턴이 아니면 강등하지 않는다(일반 질의 경로 무영향)."""
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = self._state(
+            {"코어수": "EAV:LOGICALCORE"},
+            {"코어수": "llm_inferred"},
+        )
+        state["template_structure"] = None
+        state["schema_info"] = {
+            "_structure_meta": {"patterns": [{
+                "type": "eav",
+                "entity_table": "cmm_resource",
+                "config_table": "core_config_prop",
+                "attribute_column": "name",
+                "value_column": "stringvalue_short",
+                "direct_join": {
+                    "entity_column": "resource_conf_id",
+                    "config_column": "configuration_id",
+                },
+                "known_attributes": [
+                    {"name": "LOGICALCORE", "description": "논리 코어 [resource_type: server.Cpus]"},
+                ],
+            }]}
+        }
+        result = _try_build_form_fill_pivot_sql(state, 1000, "코어수 조회")
+        # 자식 EAV 존재 → 기존 게이트로 조립되며, 비폼필이라 llm_inferred도 유지
+        assert result is not None
+        assert "cc.name='LOGICALCORE'" in result["sql"]
+
+    async def test_multi_path_demotion_symmetric(self):
+        """멀티 경로 대칭 — 강등 + form_fill_out.mapping_updates 강제 None."""
+        from src.nodes.multi_db_executor import _generate_sql
+
+        form_fill_out: dict = {}
+        sql = await _generate_sql(
+            llm=None,
+            parsed_requirements={"original_query": "서버 목록 양식 채워줘"},
+            schema_info={
+                "tables": {"cmm_resource": {"columns": [
+                    {"name": "name", "type": "text"},
+                    {"name": "description", "type": "text"},
+                    {"name": "hostname", "type": "text"},
+                ]}},
+                **_EAV_META,
+            },
+            sub_query_context="서버 목록 양식 채우기",
+            default_limit=1000,
+            column_mapping={"서버 이름": "cmm_resource.name", "도입일자": "cmm_resource.description"},
+            db_engine="postgresql",
+            db_id="",
+            unmapped_fields=[],
+            app_config=SimpleNamespace(
+                text2sql=SimpleNamespace(semantic_compose=False, generic_llm_mapping=False),
+                get_polestar_db_ids=lambda: set(),
+            ),
+            form_context_text="서버 목록",
+            form_fill_out=form_fill_out,
+            form_intent=True,
+            mapping_sources={"서버 이름": "synonym", "도입일자": "llm_inferred"},
+        )
+        assert 'AS "서버 이름"' in sql
+        assert "도입일자" not in sql
+        assert form_fill_out["mapping_updates"]["도입일자"] is None
 
 
 class TestMultiPathWiring:
@@ -579,6 +850,28 @@ class TestInsufficiencyLoopSuppression:
         assert result.get("error_message") != "data_insufficient"
         assert result["organized_data"]["is_sufficient"] is not False
 
+    async def test_form_turn_without_month_anchor_also_suppressed(self, monkeypatch):
+        """월 시리즈 없는 폼필 턴(서버목록류)도 억제 — 라이브 실측(2026-07-30 3존):
+        의도적 공란이 부족 판정 → 재시도 턴이 결정적 조립을 스킵 → LLM 폴백이 계약을 덮음."""
+        import importlib
+
+        ro = importlib.import_module("src.nodes.result_organizer")
+
+        async def _always_insufficient(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(ro, "_check_data_sufficiency", _always_insufficient)
+        state = {
+            "query_results": [{"서버 이름": "web-01", "IP 주소": "10.0.0.1"}],
+            "parsed_requirements": {"output_format": "xlsx"},
+            "template_structure": {"sheets": [{"name": "Sheet1"}]},
+            "column_mapping": {"서버 이름": "cmm_resource.name"},
+            "retry_count": 0,
+        }
+        result = await ro.result_organizer(state)
+        assert result.get("error_message") != "data_insufficient"
+        assert result["organized_data"]["is_sufficient"] is not False
+
     async def test_without_anchor_retry_still_requested(self, monkeypatch):
         import importlib
 
@@ -626,6 +919,21 @@ class TestWriterMappingForceNull:
             sub = "M" if k == 0 else f"M+{k}"
             assert result["mapping_updates"][f"{_AVG}|{sub}"] is None
             assert result["mapping_updates"][f"{_PEAK}|{sub}"] is None
+
+
+class TestInferredMappingDisplayNoneSafety:
+    """오케스트레이션 경로에서 column_mapping이 None 값으로 실려도 크래시 없어야 한다
+    (라이브 실측 2026-07-30 B0 CPU: 'NoneType' object has no attribute 'get' 후보)."""
+
+    def test_none_column_mapping_does_not_crash(self):
+        from src.nodes.output_generator import _append_inferred_mapping_info
+
+        state = {
+            "mapping_sources": {"구분": "llm_inferred"},
+            "column_mapping": None,
+            "db_column_mapping": None,
+        }
+        assert _append_inferred_mapping_info("응답", state) == "응답"
 
 
 class TestResponseTableMarkdownSafety:
@@ -810,3 +1118,257 @@ class TestForeignTableRegularEntryDropped:
         result = _try_build_form_fill_pivot_sql(state, 100_000, "2026년 6월 기준")
         assert "category" not in result["sql"]
         assert 'AS "호스트명"' in result["sql"]
+
+
+class TestFormFillHitl:
+    """Plan 68 Phase 2 (D-118) — 역질문 답변 검증·적용·후보·미해결 수집·writer 상수."""
+
+    _META = _EAV_META
+    _SCHEMA = {
+        "tables": {"cmm_resource": {"columns": [
+            {"name": "name", "type": "text"},
+            {"name": "hostname", "type": "text"},
+            {"name": "description", "type": "text"},
+        ]}},
+        **_EAV_META,
+    }
+
+    def _eav_pattern(self):
+        return self._META["_structure_meta"]["patterns"][0]
+
+    # ── resolve_form_fill_answers (검증기) ──
+
+    def test_answers_validated_and_partitioned(self):
+        from src.db_adapters.polestar.assembler import resolve_form_fill_answers
+
+        answers = {
+            "구분": {"action": "blank", "value": None},
+            "도입일자": {"action": "column", "value": "description"},
+            "제조사": {"action": "eav", "value": "Vendor"},
+            "용도": {"action": "literal", "value": "웹서버"},
+            "설치장소": {"action": "column", "value": "no_such_column"},   # 존재성 실패
+            "빈값": {"action": "literal", "value": ""},                    # 값 없음
+            "이상한것": {"action": "wormhole", "value": "x"},              # 미지 액션
+        }
+        ov, mu, lit = resolve_form_fill_answers(answers, self._SCHEMA, self._eav_pattern())
+        assert ov["구분"]["applied"] and mu["구분"] is None
+        assert ov["도입일자"]["applied"] and mu["도입일자"] == "cmm_resource.description"
+        assert ov["제조사"]["applied"] and mu["제조사"] == "EAV:Vendor"
+        assert ov["용도"]["applied"] and lit == {"용도": "웹서버"} and mu["용도"] is None
+        assert not ov["설치장소"]["applied"] and "존재성" in ov["설치장소"]["reason"]
+        assert not ov["빈값"]["applied"]
+        assert not ov["이상한것"]["applied"]
+        assert "설치장소" not in mu and "빈값" not in lit
+
+    def test_protected_month_fields_rejected(self):
+        from src.db_adapters.polestar.assembler import resolve_form_fill_answers
+
+        ov, mu, _ = resolve_form_fill_answers(
+            {f"{_AVG}|M": {"action": "blank", "value": None}},
+            self._SCHEMA, self._eav_pattern(),
+            protected_fields={f"{_AVG}|M"},
+        )
+        assert not ov[f"{_AVG}|M"]["applied"]
+        assert mu == {}
+
+    # ── build_form_fill_candidates (후보) ──
+
+    def test_candidates_from_schema_and_profile(self):
+        from src.db_adapters.polestar.assembler import build_form_fill_candidates
+
+        cands = build_form_fill_candidates(self._SCHEMA, self._eav_pattern())
+        values = {c["value"] for c in cands}
+        assert "column:description" in values
+        assert "eav:Vendor" in values and "eav:TotalSize" in values
+        vendor = next(c for c in cands if c["value"] == "eav:Vendor")
+        assert "제조사" in vendor["label"]  # known_attributes 설명이 한글 라벨로
+
+    def test_candidates_whitelist_when_no_schema_columns(self):
+        from src.db_adapters.polestar.assembler import build_form_fill_candidates
+
+        cands = build_form_fill_candidates(self._META, self._eav_pattern())
+        values = {c["value"] for c in cands}
+        assert "column:hostname" in values and "column:name" in values  # 안전 화이트리스트
+
+    # ── 단일 경로 오버라이드 적용 ──
+
+    def test_single_path_applies_answers(self):
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = {
+            "column_mapping": {"서버 이름": "cmm_resource.name", "도입일자": None, "구분": None},
+            "schema_info": self._SCHEMA,
+            "template_structure": {"sheets": [{"title_text": "서버 목록", "name": "Sheet1"}]},
+            "active_db_engine": "postgresql",
+            "active_db_id": "",
+            "form_fill_answers": {
+                "도입일자": {"action": "column", "value": "description"},
+                "구분": {"action": "literal", "value": "운영"},
+            },
+        }
+        result = _try_build_form_fill_pivot_sql(state, 1000, "양식 채워줘")
+        assert result is not None
+        sql = result["sql"]
+        assert 'THEN c.description END) AS "도입일자"' in sql
+        assert "구분" not in sql  # literal은 SQL 제외 — writer 상수 기입
+        assert result["literals"] == {"구분": "운영"}
+        assert result["overrides"]["도입일자"]["applied"]
+        assert result["mapping_updates"]["도입일자"] == "cmm_resource.description"
+        assert result["candidates"], "후보 목록이 함께 산출되어야 한다"
+
+    async def test_multi_path_applies_answers_symmetric(self):
+        from src.nodes.multi_db_executor import _generate_sql
+
+        form_fill_out: dict = {}
+        sql = await _generate_sql(
+            llm=None,
+            parsed_requirements={"original_query": "[양식 미해결 항목 답변]"},
+            schema_info=self._SCHEMA,
+            sub_query_context="양식 재채움",
+            default_limit=1000,
+            column_mapping={"서버 이름": "cmm_resource.name"},
+            db_engine="postgresql",
+            db_id="",
+            unmapped_fields=["도입일자"],
+            app_config=SimpleNamespace(
+                text2sql=SimpleNamespace(semantic_compose=False, generic_llm_mapping=False),
+                get_polestar_db_ids=lambda: set(),
+            ),
+            form_context_text="서버 목록",
+            form_fill_out=form_fill_out,
+            form_intent=True,
+            mapping_sources={"서버 이름": "synonym"},
+            form_fill_answers={"도입일자": {"action": "column", "value": "description"}},
+        )
+        assert 'THEN c.description END) AS "도입일자"' in sql
+        assert form_fill_out["overrides"]["도입일자"]["applied"]
+        assert form_fill_out["mapping_updates"]["도입일자"] == "cmm_resource.description"
+        assert form_fill_out["candidates"]
+
+    # ── writer 직접 입력 상수 ──
+
+    def test_writer_fills_literal_values(self):
+        import io
+
+        from openpyxl import Workbook, load_workbook
+
+        from src.document.excel_parser import parse_excel_template
+        from src.document.excel_writer import fill_excel_template
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "서버현황"
+        ws.append(["서버 이름", "용도"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        template = parse_excel_template(buf.getvalue())
+
+        fill_stats: dict = {}
+        out_bytes, filled = fill_excel_template(
+            file_data=buf.getvalue(),
+            template_structure=template,
+            column_mapping={"서버 이름": None, "용도": None},
+            rows=[{"서버 이름": "web-01"}, {"서버 이름": "web-02"}],
+            fill_stats=fill_stats,
+            literal_values={"용도": "웹서버"},
+        )
+        out_ws = load_workbook(io.BytesIO(out_bytes)).active
+        assert out_ws.cell(row=2, column=2).value == "웹서버"
+        assert out_ws.cell(row=3, column=2).value == "웹서버"
+        assert fill_stats["용도"] == 2
+        assert fill_stats["서버 이름"] == 2
+
+    # ── 미해결 수집 → 역질문 페이로드/대기 상태 ──
+
+    def test_hitl_payload_from_fill_stats(self):
+        from src.nodes.output_generator import _build_form_fill_hitl
+
+        state = {
+            "template_structure": {"sheets": [{"name": "Sheet1"}]},
+            "uploaded_file": b"xlsx-bytes",
+            "file_type": "xlsx",
+            "parsed_requirements": {"original_query": "양식 채워줘", "output_format": "xlsx"},
+            "form_month_anchor": {"fields": [f"{_AVG}|M"]},
+            "form_fill_literals": {"용도": "웹서버"},
+            "form_fill_overrides": {"구분": {"action": "blank", "applied": True}},
+            "form_fill_candidates": [{"value": "column:name", "label": "cmm_resource.name", "kind": "column"}],
+        }
+        fill_stats = {
+            "서버 이름": 5, f"{_AVG}|M": 0, "용도": 5,
+            "구분": 0, "도입일자": 0,
+        }
+        clar, pending = _build_form_fill_hitl(state, fill_stats)
+        assert clar is not None and pending is not None
+        names = {f["name"] for f in clar["fields"]}
+        # 월 시리즈·직접입력·사용자 지정 공란은 역질문 제외
+        assert names == {"도입일자"}
+        assert clar["candidates"]
+        assert pending["uploaded_file"] == b"xlsx-bytes"
+        assert pending["file_type"] == "xlsx"
+        assert pending["unresolved"] == ["도입일자"]
+
+    def test_hitl_none_when_all_zero_or_resolved(self):
+        from src.nodes.output_generator import _build_form_fill_hitl
+
+        state = {"template_structure": {"sheets": []}, "parsed_requirements": {}}
+        # 전 필드 0건 = 데이터/SQL 문제 — 역질문하지 않는다(D-050)
+        assert _build_form_fill_hitl(state, {"a": 0, "b": 0}) == (None, None)
+        # 미해결 없음 — pending 자기정리 대상
+        assert _build_form_fill_hitl(state, {"a": 3, "b": 1}) == (None, None)
+
+    # ── 라우트: 답변 턴 delta 조립 ──
+
+    def test_route_restores_pending_file_on_answer_turn(self):
+        from src.api.routes.query import _build_turn_input_state
+        from src.api.schemas import QueryRequest
+
+        body = QueryRequest(
+            query="[양식 미해결 항목 답변]",
+            form_fill_answers={"도입일자": {"action": "blank", "value": None}},
+        )
+        checkpoint = {
+            "pending_form_fill": {
+                "uploaded_file": b"xlsx-bytes",
+                "file_type": "xlsx",
+                "original_query": "양식 채워줘",
+                "unresolved": ["도입일자"],
+            }
+        }
+        delta = _build_turn_input_state(body, "t1", checkpoint, {"sub": "u1"})
+        assert delta["uploaded_file"] == b"xlsx-bytes"
+        assert delta["file_type"] == "xlsx"
+        assert delta["form_fill_answers"] == {"도입일자": {"action": "blank", "value": None}}
+        # 요청 스코프 초기화 계약(D-064)은 유지된 delta 위에 복원되어야 한다
+        assert delta["form_fill_overrides"] is None
+        # FIX-17: 파이프라인 입력은 원 질의로 복원(위치 힌트 유실 → priority 공백 →
+        # 전 DB 유사어 프롬프트 413 + 오라우팅 라이브 실측) + 폼필 LIMIT 복원
+        assert delta["user_query"] == "양식 채워줘"
+        assert delta["resolved_limit"] == 100_000
+
+    def test_route_ignores_answers_without_pending(self):
+        from src.api.routes.query import _build_turn_input_state
+        from src.api.schemas import QueryRequest
+
+        body = QueryRequest(
+            query="서버 목록 조회",
+            form_fill_answers={"도입일자": {"action": "blank", "value": None}},
+        )
+        delta = _build_turn_input_state(body, "t1", {"pending_form_fill": None}, {"sub": "u1"})
+        assert delta.get("uploaded_file") is None
+        assert delta.get("form_fill_answers") is None
+
+    def test_isolated_input_carries_form_fill_answers(self):
+        """FIX-19: 오케스트레이션 격리 경계(_make_isolated_input)가 답변을 통과시켜야
+        오버라이드가 파이프라인에 도달한다(누락 시 역질문 무한 반복 — 라이브 실측)."""
+        from src.orchestration.subagents import _make_isolated_input
+
+        answers = {"도입일자": {"action": "column", "value": "ctime"}}
+        state = {
+            "user_query": "여의도 센터의 서버들에 대해 양식을 채우시오",
+            "parsed_requirements": {"original_query": "여의도 센터의 서버들에 대해 양식을 채우시오"},
+            "template_structure": {"sheets": []},
+            "form_fill_answers": answers,
+        }
+        task = {"task_id": "t1", "agent": "data_query", "sub_query": "양식 채우기"}
+        isolated = _make_isolated_input(task, state, {})
+        assert isolated["form_fill_answers"] == answers

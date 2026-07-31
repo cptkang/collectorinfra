@@ -334,6 +334,40 @@ def _build_turn_input_state(
                 "approval_action": action,
                 "approval_modified_sql": modified_sql if action == "modify" else None,
             }
+        # HITL 폼필 답변 턴(Plan 68 §11, D-118): 구조화 답변 + pending의 원본 파일 복원.
+        # input_parser가 template을 재파싱(③.5 단일 task 고정)하고 결정적 조립이 답변을
+        # 오버라이드(존재성 검증)로 적용한다. LLM 파싱 없음.
+        pending_ff = checkpoint_state.get("pending_form_fill")
+        if body.form_fill_answers:
+            if pending_ff and pending_ff.get("uploaded_file"):
+                delta = create_followup_input(
+                    body.query or "[양식 미해결 항목 답변]",
+                    selected_db_ids=body.selected_db_ids,
+                )
+                delta["uploaded_file"] = pending_ff.get("uploaded_file")
+                delta["file_type"] = pending_ff.get("file_type")
+                delta["form_fill_answers"] = body.form_fill_answers
+                # FIX-17(라이브 실측 2026-07-31): 파이프라인 입력은 **원 질의**로 복원한다.
+                # 답변 턴 고정 문구에는 위치 힌트(여의도 등)가 없어 priority_db_ids가
+                # 비고 → 전 DB 유사어·설명이 LLM 프롬프트에 실려 413(FabriX 95K 한도)
+                # + 타 DB(B0) 배회. 1차 런과 동일 입력이어야 동일 라우팅·매핑이 재현된다.
+                original_q = pending_ff.get("original_query")
+                if original_q:
+                    delta["user_query"] = original_q
+                # 폼필은 전량 채움이 기본 — 파일 경로와 동일 LIMIT(텍스트 경로 기본
+                # 1,000 절단 방지, D-066 후속7 계열)
+                delta["resolved_limit"] = _FORM_FILL_DEFAULT_LIMIT
+                logger.info(
+                    "폼필 답변 턴(D-118): %d개 필드 답변 수신, 원본 파일·원 질의 복원"
+                    "(file_type=%s, query=%r)",
+                    len(body.form_fill_answers), pending_ff.get("file_type"),
+                    (original_q or "")[:50],
+                )
+                return delta
+            # pending 없이 답변만 도착 — 침묵 무시 대신 로그 후 일반 질의로 처리
+            logger.warning(
+                "form_fill_answers 수신했으나 pending_form_fill 부재 — 일반 질의로 처리"
+            )
         # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
         # selected_db_ids(존 선택)는 요청 스코프 — 이번 턴 값 또는 None으로 매 턴 재공급.
         return create_followup_input(
@@ -502,10 +536,18 @@ async def process_query(
 
     input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
 
+    # FIX-18: 폼필 답변 턴은 양식 재채움 전체 파이프라인(파일 런과 동일 부하)이므로
+    # 텍스트 타임아웃이 아니라 파일 타임아웃을 적용한다(라이브 실측 2026-07-31:
+    # 답변 턴 조기 타임아웃 — 폼필 런 소요가 query_timeout을 상회).
+    effective_timeout = (
+        config.server.file_query_timeout
+        if input_state.get("form_fill_answers") else config.server.query_timeout
+    )
+
     try:
         result = await asyncio.wait_for(
             graph.ainvoke(input_state, thread_config),
-            timeout=config.server.query_timeout,
+            timeout=effective_timeout,
         )
     except asyncio.TimeoutError:
         raise HTTPException(
@@ -539,6 +581,8 @@ async def process_query(
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
         "has_mapping_report": result.get("mapping_report_md") is not None,
+        # HITL 폼필(D-118): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
+        "form_fill_clarification": result.get("form_fill_clarification"),
     }
     _store_result(query_id, {
         **response_data,
@@ -597,6 +641,12 @@ async def process_query_stream(
     # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
     input_state = _build_turn_input_state(body, thread_id, checkpoint_state, current_user)
 
+    # FIX-18: 폼필 답변 턴은 파일 런과 동일 부하 — 파일 타임아웃 적용(/query와 대칭)
+    effective_timeout = (
+        config.server.file_query_timeout
+        if input_state.get("form_fill_answers") else config.server.query_timeout
+    )
+
     async def event_generator() -> AsyncGenerator[str, None]:
         """SSE 이벤트를 생성하는 비동기 제너레이터."""
         start_time = time.time()
@@ -621,7 +671,7 @@ async def process_query_stream(
                         try:
                             event = await asyncio.wait_for(
                                 _event_iter.__anext__(),
-                                timeout=config.server.query_timeout,
+                                timeout=effective_timeout,
                             )
                         except StopAsyncIteration:
                             break
@@ -730,6 +780,8 @@ async def process_query_stream(
                                     "processing_time_ms": elapsed_ms,
                                     "turn_count": turn_count,
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
+                                    # HITL 폼필(D-118): 역질문 패널 컨텍스트
+                                    "form_fill_clarification": output.get("form_fill_clarification"),
                                 }
                                 _store_result(query_id, {
                                     **response_data,
@@ -751,6 +803,7 @@ async def process_query_stream(
                                     "awaiting_approval": output.get("awaiting_approval", False),
                                     "turn_count": turn_count,
                                     "has_mapping_report": response_data.get("has_mapping_report", False),
+                                    "form_fill_clarification": response_data.get("form_fill_clarification"),
                                 })
                                 return
 
@@ -763,7 +816,7 @@ async def process_query_stream(
             # Fallback: ainvoke
             result = await asyncio.wait_for(
                 graph.ainvoke(input_state, thread_config),
-                timeout=config.server.query_timeout,
+                timeout=effective_timeout,
             )
 
             elapsed_ms = (time.time() - start_time) * 1000
@@ -792,6 +845,8 @@ async def process_query_stream(
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,
                 "has_mapping_report": result.get("mapping_report_md") is not None,
+                # HITL 폼필(D-118): 역질문 패널 컨텍스트
+                "form_fill_clarification": result.get("form_fill_clarification"),
             }
             _store_result(query_id, {
                 **response_data,
@@ -812,6 +867,7 @@ async def process_query_stream(
                 "file_name": response_data.get("file_name"),
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
+                "form_fill_clarification": response_data.get("form_fill_clarification"),
             })
 
         except asyncio.TimeoutError:
@@ -953,6 +1009,8 @@ async def process_file_query(
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
         "has_mapping_report": result.get("mapping_report_md") is not None,
+        # HITL 폼필(D-118): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
+        "form_fill_clarification": result.get("form_fill_clarification"),
     }
     _store_result(query_id, {
         **response_data,
@@ -1184,6 +1242,8 @@ async def process_file_query_stream(
                                     "processing_time_ms": elapsed_ms,
                                     "turn_count": turn_count,
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
+                                    # HITL 폼필(D-118): 역질문 패널 컨텍스트
+                                    "form_fill_clarification": output.get("form_fill_clarification"),
                                 }
                                 _store_result(query_id, {
                                     **response_data,
@@ -1210,6 +1270,7 @@ async def process_file_query_stream(
                                     "awaiting_approval": False,
                                     "turn_count": turn_count,
                                     "has_mapping_report": response_data.get("has_mapping_report", False),
+                                    "form_fill_clarification": response_data.get("form_fill_clarification"),
                                 })
                                 return
 
@@ -1246,6 +1307,8 @@ async def process_file_query_stream(
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,
                 "has_mapping_report": result.get("mapping_report_md") is not None,
+                # HITL 폼필(D-118): 역질문 패널 컨텍스트
+                "form_fill_clarification": result.get("form_fill_clarification"),
             }
             _store_result(query_id, {
                 **response_data,
@@ -1269,6 +1332,7 @@ async def process_file_query_stream(
                 "file_name": response_data.get("file_name"),
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
+                "form_fill_clarification": response_data.get("form_fill_clarification"),
             })
 
         except asyncio.TimeoutError:

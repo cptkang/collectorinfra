@@ -350,6 +350,121 @@ def filter_pivot_regular_entries(
     return kept, dropped
 
 
+def build_form_fill_candidates(
+    schema_info: dict | None,
+    eav_pattern: dict | None,
+) -> list[dict]:
+    """역질문 드롭다운 후보를 스키마 실측으로 산출한다(D-118 — LLM 불개입).
+
+    후보 = entity 테이블 직접 칼럼(스키마에 칼럼 목록이 있으면 실측, 없으면 안전
+    화이트리스트) + EAV known_attributes(설명을 한글 라벨로 병기). 조립기가 실을 수
+    있는 것만 후보가 된다(엔진/지식 분리 — 후보에 있으면 반드시 조립 가능).
+
+    Returns:
+        [{"value": "column:name"|"eav:Vendor", "label": 표시명, "kind": "column"|"eav"}]
+    """
+    entity = (eav_pattern or {}).get("entity_table", "cmm_resource")
+    out: list[dict] = []
+    cols: list[str] = []
+    for tname, tinfo in ((schema_info or {}).get("tables") or {}).items():
+        bare = tname.rsplit(".", 1)[-1].lower()
+        if bare != entity.lower():
+            continue
+        cols = [
+            (c.get("name") if isinstance(c, dict) else str(c))
+            for c in (tinfo or {}).get("columns", [])
+        ]
+        break
+    if not cols:
+        cols = sorted(_ENTITY_SAFE_DIRECT_COLUMNS)
+    for col in cols:
+        if not col:
+            continue
+        out.append({"value": f"column:{col}", "label": f"{entity}.{col}", "kind": "column"})
+    for pattern in ((schema_info or {}).get("_structure_meta") or {}).get("patterns", []):
+        if pattern.get("type") != "eav":
+            continue
+        attrs = pattern.get("known_attributes_detail") or pattern.get("known_attributes", [])
+        for attr in attrs:
+            if not isinstance(attr, dict):
+                continue
+            name = (attr.get("name") or "").strip()
+            if not name:
+                continue
+            desc = (attr.get("description") or "").split("[resource_type:")[0].strip()
+            label = f"{name}" + (f" — {desc}" if desc else "")
+            out.append({"value": f"eav:{name}", "label": label, "kind": "eav"})
+    return out
+
+
+def resolve_form_fill_answers(
+    answers: dict[str, dict] | None,
+    schema_info: dict | None,
+    eav_pattern: dict | None,
+    *,
+    protected_fields: set[str] | None = None,
+) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
+    """역질문 답변을 존재성 검증 후 오버라이드로 확정한다(D-118 — 사용자 층 최우선).
+
+    액션 어휘는 조립기 기존 능력의 부분집합(C5): blank / column(entity 직접 칼럼) /
+    eav(server EAV 속성) / literal(writer 상수 기입). 검증 탈락은 침묵 없이 사유를
+    남긴다(applied=False + reason — 응답 노출·재역질문).
+
+    Args:
+        answers: {field: {"action": str, "value": str|None}} (라우트가 주입한 구조화 답변)
+        protected_fields: 답변으로 덮을 수 없는 필드(월 시리즈 등 구조 채움 영역)
+
+    Returns:
+        (overrides, mapping_updates, literals)
+        - overrides: {field: {action, value, applied, reason}} — 사유 노출용 전량
+        - mapping_updates: {field: "entity.col"|"EAV:Attr"|None} — 매핑 주입분(blank 포함)
+        - literals: {field: value} — writer 상수 기입분
+    """
+    overrides: dict[str, dict] = {}
+    mapping_updates: dict[str, str | None] = {}
+    literals: dict[str, str] = {}
+    if not answers:
+        return overrides, mapping_updates, literals
+    entity = (eav_pattern or {}).get("entity_table", "cmm_resource")
+    protected = protected_fields or set()
+    valid = {c["value"] for c in build_form_fill_candidates(schema_info, eav_pattern)}
+
+    for field, ans in answers.items():
+        if not isinstance(ans, dict):
+            continue
+        action = str(ans.get("action") or "").strip().lower()
+        value = ans.get("value")
+        entry = {"action": action, "value": value, "applied": False, "reason": None}
+        overrides[field] = entry
+        if field in protected:
+            entry["reason"] = "월 시리즈 등 구조 채움 필드는 답변으로 변경할 수 없습니다"
+            continue
+        if action == "blank":
+            mapping_updates[field] = None
+            entry["applied"] = True
+        elif action == "literal":
+            if value is None or str(value) == "":
+                entry["reason"] = "직접 입력 값이 비어 있습니다"
+                continue
+            literals[field] = str(value)
+            mapping_updates[field] = None  # SQL 제외 — writer가 상수 기입
+            entry["applied"] = True
+        elif action in ("column", "eav"):
+            token = f"{action}:{value}"
+            if not value or token not in valid:
+                entry["reason"] = (
+                    f"'{value}'은(는) 조회 가능한 항목이 아닙니다(존재성 검증 실패)"
+                )
+                continue
+            mapping_updates[field] = (
+                f"{entity}.{value}" if action == "column" else f"EAV:{value}"
+            )
+            entry["applied"] = True
+        else:
+            entry["reason"] = f"알 수 없는 답변 유형: {action or '(없음)'}"
+    return overrides, mapping_updates, literals
+
+
 def build_month_series_block(month_series: MonthSeries | None) -> str:
     """LLM 폴백 프롬프트용 월 리터럴 강제 블록(D-113 폴백 안전망).
 

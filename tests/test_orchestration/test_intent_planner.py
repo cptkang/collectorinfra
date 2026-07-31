@@ -315,3 +315,82 @@ async def test_pre_route_pending_mapped_db_ids(mock_config):
     assert t["status"] == "pending"
     assert result["is_composite"] is False
     llm.ainvoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_route_template_structure_single_task(mock_config):
+    """(d) ③.5 양식 업로드(template_structure) → data_query 단일 task 고정, LLM 미호출.
+
+    라이브 실측(2026-07-30 B0): LLM 분해가 폼필을 서버정보/월지표 2개 task로 쪼개
+    병합 결과가 2배 행이 됐다(D-117).
+    """
+    llm = AsyncMock()
+    state = create_initial_state(user_query="양식 채워줘")
+    state["template_structure"] = {"sheets": [{"name": "Sheet1"}]}
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert len(result["task_plan"]) == 1
+    assert result["task_plan"][0]["agent"] == "data_query"
+    assert result["is_composite"] is False
+    llm.ainvoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_route_form_fill_without_file_guidance(mock_config):
+    """(e) ③.6 파일 없는 '양식 채워줘' → general_inference 안내 단락, LLM 미호출.
+
+    template_structure 없이 LLM 분해로 가면 data_query가 존재하지 않는 양식을
+    환각 처리한다(라이브 실측 2026-07-30 7차, D-117).
+    """
+    llm = AsyncMock()
+    state = create_initial_state(user_query="금감원 양식 채워줘")
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert len(result["task_plan"]) == 1
+    t = result["task_plan"][0]
+    assert t["agent"] == "general_inference"
+    # 고정 안내문은 LLM을 통과시키지 않고 direct_response로 결정적 반환
+    # (라이브 실측 2026-07-30: LLM 재서술 경유 시 호출 실패 → 일반 오류 문구 강등)
+    assert "첨부" in t["direct_response"]
+    llm.ainvoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_response_skips_llm():
+    """direct_response가 있는 task는 general_inference LLM을 호출하지 않는다(D-117)."""
+    from src.orchestration.subagents import run_general_inference
+
+    task = {"task_id": "t1", "agent": "general_inference", "direct_response": "양식 파일을 첨부해 주세요."}
+    result = await run_general_inference(task, {}, llm=None, app_config=None)
+
+    assert result["final_response"] == "양식 파일을 첨부해 주세요."
+    assert result["routing_intent"] == "general_inference"
+
+
+@pytest.mark.asyncio
+async def test_form_noun_without_fill_verb_goes_llm(mock_config):
+    """양식 명사만으로는 단락하지 않는다(채움 동사 필요) — LLM 분해 유지(오발동 방지)."""
+    content = json.dumps(
+        {
+            "tasks": [
+                {
+                    "task_id": "t1",
+                    "agent": "data_query",
+                    "sub_query": "양식 관련 서버 조회",
+                    "depends_on": [],
+                    "input_from": [],
+                    "order": 1,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    state = create_initial_state(user_query="양식 관련 서버 조회")
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert result["task_plan"][0]["agent"] == "data_query"
+    llm.ainvoke.assert_awaited_once()

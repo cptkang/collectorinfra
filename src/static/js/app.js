@@ -926,7 +926,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -946,6 +946,10 @@
             // Plan 65 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
+            }
+            // Plan 68 D-118: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
+            if (formFillAnswers) {
+                streamBody.form_fill_answers = formFillAnswers;
             }
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
@@ -1044,6 +1048,8 @@
 
             // Finalize streaming message
             finalizeStreamingMessage(finalText, metaData);
+            // Plan 68 D-118: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
+            appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1253,6 +1259,89 @@
             box.classList.add("zone-clarify--done");
             box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
         });
+        document.querySelectorAll(".form-fill-clarify:not(.zone-clarify--done)").forEach(function (box) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
+        });
+    }
+
+    // ─── Form Fill HITL Panel (Plan 68 §11, D-118) ───
+    // 폼필 미해결 필드 역질문 — 필드별 처리 방법(공란/DB 항목/직접 입력)을 위젯으로
+    // 지정해 form_fill_answers(구조화 필드)로 재전송한다. 자연어 재조합·LLM 파싱 없음
+    // (서버는 존재성 검증만 수행). 존 역질문(selected_db_ids)과 동형 패턴.
+    function renderFormFillPanel(bubble, ctx) {
+        var fields = (ctx && ctx.fields) || [];
+        if (!fields.length) return;
+        var candidates = ctx.candidates || [];
+        var boxId = "formFill-" + Date.now();
+        var candOptions = candidates.map(function (c) {
+            return '<option value="' + escapeHtml(c.value) + '">' + escapeHtml(c.label) + '</option>';
+        }).join("");
+        var rowsHtml = fields.map(function (f) {
+            var name = escapeHtml(f.name);
+            var label = escapeHtml(f.label || f.name);
+            return '<div class="form-fill-row" data-field="' + name + '" style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap;">' +
+                '<div class="form-fill-label" style="min-width:160px;font-weight:600;">' + label + '</div>' +
+                '<select class="form-fill-action">' +
+                    '<option value="blank">공란 유지</option>' +
+                    '<option value="db">DB 항목 선택</option>' +
+                    '<option value="literal">직접 입력</option>' +
+                '</select>' +
+                '<select class="form-fill-candidate" style="display:none;max-width:280px;">' + candOptions + '</select>' +
+                '<input type="text" class="form-fill-literal" style="display:none;" placeholder="채울 값 입력">' +
+            '</div>';
+        }).join("");
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify form-fill-clarify" id="' + boxId + '">' +
+                '<div class="form-fill-title" style="margin-bottom:6px;">' +
+                    escapeHtml(ctx.question || "채우지 못한 항목의 처리 방법을 지정해 주세요.") +
+                '</div>' +
+                rowsHtml +
+                '<button class="zone-clarify-confirm form-fill-confirm">선택한 방법으로 다시 채우기</button>' +
+            '</div>');
+        var box = document.getElementById(boxId);
+        box.querySelectorAll(".form-fill-row").forEach(function (row) {
+            var action = row.querySelector(".form-fill-action");
+            action.addEventListener("change", function () {
+                row.querySelector(".form-fill-candidate").style.display = action.value === "db" ? "" : "none";
+                row.querySelector(".form-fill-literal").style.display = action.value === "literal" ? "" : "none";
+            });
+        });
+        box.querySelector(".form-fill-confirm").addEventListener("click", function () {
+            var answers = {}, summary = [];
+            box.querySelectorAll(".form-fill-row").forEach(function (row) {
+                var field = row.getAttribute("data-field");
+                var action = row.querySelector(".form-fill-action").value;
+                if (action === "db") {
+                    var v = row.querySelector(".form-fill-candidate").value || "";
+                    var sep = v.indexOf(":");
+                    // value="column:name" | "eav:Vendor" → {action: kind, value: 항목명}
+                    answers[field] = { action: v.substring(0, sep), value: v.substring(sep + 1) };
+                    summary.push(field + "=DB 항목(" + v.substring(sep + 1) + ")");
+                } else if (action === "literal") {
+                    var lit = row.querySelector(".form-fill-literal").value;
+                    answers[field] = { action: "literal", value: lit };
+                    summary.push(field + "=직접 입력('" + lit + "')");
+                } else {
+                    answers[field] = { action: "blank", value: null };
+                    summary.push(field + "=공란 유지");
+                }
+            });
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
+            // 선택 요약을 사용자 메시지로 에코(이력 가독성) — 처리 자체는 구조화 필드가 결정
+            var echoMsg = { role: "user", content: "양식 답변: " + summary.join(", "), time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery("[양식 미해결 항목 답변]", null, answers);
+        });
+    }
+
+    function appendFormFillPanelToLastBubble(ctx) {
+        if (!ctx) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderFormFillPanel(last, ctx);
     }
 
     // ─── Fallback (non-streaming) Query ───
@@ -1292,6 +1381,8 @@
 
             // Plan 65 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
             appendZoneClarificationToLastBubble(data.clarification);
+            // Plan 68 D-118: 폼필 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(data.form_fill_clarification);
 
         } catch (err) {
             removeProcessingMessage();
@@ -1414,6 +1505,8 @@
                 ? metaData.response : accumulatedText;
             finalizeStreamingMessage(finalText, metaData);
             attachDownloadToLastFileCard(metaData.query_id);
+            // Plan 68 D-118: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1469,6 +1562,8 @@
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
             appendZoneClarificationToLastBubble(data.clarification);
+            // Plan 68 D-118: 폼필 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(data.form_fill_clarification);
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);

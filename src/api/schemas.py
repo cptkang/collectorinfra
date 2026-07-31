@@ -44,6 +44,15 @@ class QueryRequest(BaseModel):
         default=None,
         description="존 선택 역질문 응답 — 조회 대상 DB 식별자 목록 (결정적 라우팅 고정)",
     )
+    # Plan 68 §11 (D-118): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
+    # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
+    form_fill_answers: Optional[dict[str, dict]] = Field(
+        default=None,
+        description=(
+            "폼필 역질문 답변 {필드명: {action: blank|column|eav|literal, value}} "
+            "(pending_form_fill 대기 중인 thread에서만 유효)"
+        ),
+    )
 
 
 # --- 응답 모델 ---
@@ -84,6 +93,11 @@ class QueryResponse(BaseModel):
     # {kind, question, options: [{db_id, label}], original_query, multi}
     clarification: Optional[dict] = Field(
         default=None, description="역질문 컨텍스트 (존 선택 등)"
+    )
+    # Plan 68 §11 (D-118): 폼필 미해결 필드 역질문 — 결과와 함께 첨부(사후 패널).
+    # {question, fields: [{name, label}], candidates: [{value, label, kind}]}
+    form_fill_clarification: Optional[dict] = Field(
+        default=None, description="폼필 미해결 필드 역질문 패널 컨텍스트"
     )
 
 

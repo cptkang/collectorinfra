@@ -131,13 +131,28 @@ async def _run_output_generator(
                     + text_response
                 )
 
-            return {
+            result: dict = {
                 "final_response": text_response,
                 "output_file": file_result["file_bytes"],
                 "output_file_name": file_result["file_name"],
                 "current_node": "output_generator",
                 "error_message": None,
             }
+            # HITL 폼필(D-118): 미해결 필드 역질문 페이로드 + 대기 상태.
+            # 미해결 0이면 pending=None으로 자기정리(답변 적용 완료 턴 포함).
+            if state.get("template_structure"):
+                clarification, pending = _build_form_fill_hitl(
+                    state, file_result.get("fill_stats")
+                )
+                result["pending_form_fill"] = pending
+                if clarification:
+                    result["form_fill_clarification"] = clarification
+                    logger.info(
+                        "폼필 역질문 발행(D-118): 미해결 %d건 — %s",
+                        len(clarification["fields"]),
+                        [f["name"] for f in clarification["fields"]][:10],
+                    )
+            return result
         else:
             # 파일 생성 실패: 사유를 사용자에게 노출하고 텍스트/CSV로 폴백 (D-059 — 침묵적 강등 금지)
             reason = (file_result or {}).get("reason") or "알 수 없는 이유로 양식을 채우지 못했습니다."
@@ -342,6 +357,32 @@ def _append_form_fill_notes(
             f for f, c in column_mapping.items()
             if c is None and f not in month_fields
         ]
+    # 사용자 답변 적용/거부 내역(D-118) — 침묵 반영·침묵 무시 금지
+    overrides = state.get("form_fill_overrides") or {}
+    if overrides:
+        _act_label = {
+            "blank": "공란 유지",
+            "column": "DB 항목 지정",
+            "eav": "DB 항목 지정",
+            "literal": "직접 입력",
+        }
+        ov_lines: list[str] = []
+        user_blank_fields: set[str] = set()
+        for f, o in overrides.items():
+            label = _display_field_name(f)
+            if o.get("applied"):
+                act = _act_label.get(o.get("action"), str(o.get("action")))
+                val = o.get("value")
+                suffix = f"('{val}')" if val not in (None, "") else ""
+                ov_lines.append(f"  - {label}: {act}{suffix} 적용")
+                if o.get("action") == "blank":
+                    user_blank_fields.add(f)
+            else:
+                ov_lines.append(f"  - {label}: 반영 불가 — {o.get('reason')}")
+        parts.append("**[사용자 답변 적용 내역]**\n" + "\n".join(ov_lines))
+        # 사용자 지정 공란은 미작성 사유 목록에서 제외(중복 안내 방지)
+        unfilled = [f for f in unfilled if f not in user_blank_fields]
+
     if unfilled:
         shown = "\n".join(f"  - {_display_field_name(f)}" for f in unfilled)
         parts.append(
@@ -352,6 +393,59 @@ def _append_form_fill_notes(
     if not parts:
         return response
     return response + "\n\n---\n" + "\n\n".join(parts)
+
+
+def _build_form_fill_hitl(
+    state: AgentState,
+    fill_stats: dict[str, int] | None,
+) -> tuple[Optional[dict], Optional[dict]]:
+    """미해결 필드를 역질문 페이로드와 멀티턴 대기 상태로 구성한다(D-118).
+
+    미해결 = 실제 채움 0건 필드 − 월 시리즈 필드 − 직접 입력 상수 − 사용자 지정 공란.
+    전 필드 0건(식별 칼럼 포함)이면 매핑이 아니라 데이터·SQL 문제이므로 역질문하지
+    않는다(D-050 — 잘못된 질문으로 오진 유도 금지).
+
+    Returns:
+        (clarification | None, pending | None) — 미해결 없으면 (None, None)이며
+        호출부가 pending_form_fill=None 델타로 자기정리한다.
+    """
+    if not fill_stats:
+        return None, None
+    if not any(cnt > 0 for cnt in fill_stats.values()):
+        return None, None
+    anchor = state.get("form_month_anchor") or {}
+    month_fields = set(anchor.get("fields") or [])
+    literals = state.get("form_fill_literals") or {}
+    overrides = state.get("form_fill_overrides") or {}
+    user_blanks = {
+        f for f, o in overrides.items()
+        if o.get("applied") and o.get("action") == "blank"
+    }
+    unresolved = [
+        f for f, cnt in fill_stats.items()
+        if cnt == 0 and f not in month_fields
+        and f not in literals and f not in user_blanks
+    ]
+    if not unresolved:
+        return None, None
+    candidates = state.get("form_fill_candidates") or []
+    clarification = {
+        "question": (
+            f"채우지 못한 항목이 {len(unresolved)}건 있습니다. "
+            "각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요."
+        ),
+        "fields": [{"name": f, "label": _display_field_name(f)} for f in unresolved],
+        "candidates": candidates,
+    }
+    pending = {
+        "uploaded_file": state.get("uploaded_file"),
+        "file_type": state.get("file_type")
+        or state.get("parsed_requirements", {}).get("output_format"),
+        "original_query": state.get("parsed_requirements", {}).get("original_query")
+        or state.get("user_query", ""),
+        "unresolved": unresolved,
+    }
+    return clarification, pending
 
 
 def _display_field_name(field: str) -> str:
@@ -376,8 +470,10 @@ def _append_inferred_mapping_info(response: str, state: AgentState) -> str:
     if not mapping_sources:
         return response
 
-    column_mapping = state.get("column_mapping", {})
-    db_column_mapping = state.get("db_column_mapping", {})
+    # 키가 None 값으로 실려 오면 .get(key, {})는 None을 반환한다 — or-폴백 필수
+    # (오케스트레이션 _build_output_state가 state 값을 그대로 복사).
+    column_mapping = state.get("column_mapping") or {}
+    db_column_mapping = state.get("db_column_mapping") or {}
 
     # LLM 추론 매핑만 수집
     inferred_items: list[tuple[str, str, str]] = []  # (field, column, db_id)
@@ -533,6 +629,8 @@ def _generate_document_file(
                 sheet_mappings=sheet_mappings,
                 target_sheets=target_sheets,
                 fill_stats=fill_stats,
+                # 사용자 직접 입력 상수(D-118 역질문 답변) — 전 데이터 행 동일값
+                literal_values=state.get("form_fill_literals"),
             )
 
             if total_filled == 0 and rows:
