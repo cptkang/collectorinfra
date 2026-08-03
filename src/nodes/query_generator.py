@@ -55,6 +55,7 @@ from src.db_adapters.polestar.assembler import (
 )
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
+from src.schema_cache.form_memory import load_form_memory_answers
 from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
 
@@ -326,6 +327,10 @@ def _try_build_form_fill_pivot_sql(
             "폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외(환각 매핑 차단) — %s",
             len(_dropped), _dropped,
         )
+        # 불변식(FIX-25): SQL SELECT에서 제외된 필드는 state 매핑도 None — 낡은 매핑이
+        # 남으면 writer의 유연 조회(부분 매칭 등)가 무관한 행 키(예: 'IP')로 오채움한다
+        # (라이브 실측: 비고=IP값. 월/결합/llm_inferred 강제 None과 동일 패턴).
+        mapping_updates.update({f: None for f, _c in _dropped})
     # 월 피벗/폼필인데 서버 식별 컬럼이 하나도 없으면 행 대조가 불가능 — 결정적 식별 컬럼 주입
     # (alias는 양식 헤더와 무충돌인 라틴명 — writer가 무시하고 병합·진단에만 쓰임).
     if (month_series or form_intent) and not regular_entries and not server_eav and not concat_eav:
@@ -427,6 +432,21 @@ async def query_generator(
     # 프로필 time_grain 선언 기반 전환은 P3(D-090). 프로필 부재 DB는 미주입 — 시스템 템플릿의
     # 일반 기간 규칙(CURRENT_DATE 동적 계산)만 남아 LLM이 스키마의 시간 컬럼으로 해석한다.
     _stat_block_db = state.get("active_db_id") in (app_config.get_polestar_db_ids() or set())
+
+    # 폼필 확인 이력(D-118 Phase 3) — 시그니처 이력을 답변 형식으로 로드해 이번 턴
+    # 답변 아래에 병합(이번 턴 답이 이김: {**memory, **answers}). 적용 시 sliding TTL
+    # 연장. Redis 불가·TTL 0이면 빈 dict(현행 동일 — C4).
+    if state.get("template_structure") and not is_retry:
+        _sig, _mem_answers, _ = await load_form_memory_answers(
+            state.get("template_structure"), app_config
+        )
+        if _mem_answers:
+            state = {
+                **state,
+                "form_fill_answers": {
+                    **_mem_answers, **(state.get("form_fill_answers") or {}),
+                },
+            }
 
     # 폼필 다중 리소스 피벗은 코드가 결정적으로 조립(LLM 우회). 재시도(에러 컨텍스트) 시엔
     # 결정적 SQL이 이미 실패했을 수 있으므로 LLM 폴백으로 에러를 반영해 수정한다.

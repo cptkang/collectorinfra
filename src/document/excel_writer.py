@@ -470,11 +470,16 @@ def _get_value_from_row(
                     )
                     return value
 
-    # 5. 부분 매칭 (substring) 폴백
+    # 5. 부분 매칭 (substring) 폴백 — 최소 길이 3 가드(FIX-25).
+    # 라이브 실측(2026-08-03): 행 키 "IP"(2글자)가 'descr**ip**tion'·'**ip**address' 등
+    # 거의 모든 매핑 문자열의 부분 문자열이라, SQL에서 제외된 필드(비고 등)까지 IP 값이
+    # 채워졌다. 짧은 토큰은 부분 매칭을 금지한다(정상 IP 채움은 4단계 역매핑이 담당).
     lower_col_base = (
         db_column.split(".", 1)[-1].lower() if "." in db_column else lower_col
     )
     for key, value in data_row.items():
+        if len(key) < 3 or len(lower_col_base) < 3:
+            continue
         if lower_col_base in key.lower() or key.lower() in lower_col_base:
             logger.debug("부분 매칭 성공: '%s' <-> '%s'", db_column, key)
             return value

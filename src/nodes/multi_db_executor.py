@@ -57,6 +57,7 @@ from src.db_adapters.polestar.assembler import (
     recognize_month_series,
     resolve_form_fill_answers,
 )
+from src.schema_cache.form_memory import load_form_memory_answers
 from src.utils.schema_utils import build_excluded_join_map
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,13 @@ async def multi_db_executor(
     mapping_sources = state.get("mapping_sources") or {}
     # D-118: 역질문 답변(라우트 주입, 요청 스코프) — 오버라이드 최우선 적용
     form_fill_answers = state.get("form_fill_answers")
+    # 폼필 확인 이력(Phase 3) — 이번 턴 답변 아래에 병합(이번 턴이 이김). 단일 경로 대칭.
+    if form_intent:
+        _sig, _mem_answers, _ = await load_form_memory_answers(
+            state.get("template_structure"), app_config
+        )
+        if _mem_answers:
+            form_fill_answers = {**_mem_answers, **(form_fill_answers or {})}
     form_fill_out: dict = {}
 
     for target in targets:
@@ -817,6 +825,12 @@ async def _generate_sql(
                     "DB '%s' 폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외 — %s",
                     db_id, len(_dropped), _dropped,
                 )
+                # 불변식(FIX-25): SQL 제외 필드는 state 매핑도 None — writer 부분 매칭
+                # 오채움 차단(비고=IP값 라이브 실측). 단일 경로와 대칭.
+                if form_fill_out is not None:
+                    form_fill_out.setdefault("mapping_updates", {}).update(
+                        {f: None for f, _c in _dropped}
+                    )
             child_eav = [e for e in child_eav if e[0] not in concat_fields]
             server_eav = [
                 (field, attr)

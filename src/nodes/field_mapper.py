@@ -80,6 +80,19 @@ async def field_mapper(
             **_CLEARED_MAPPING_FIELDS,
         }
 
+    # 폼필 확인 이력 조회·삭제 턴(D-118, FIX-24): intent_planner ②.7이 결정적으로
+    # 단락하므로 매핑 산출물이 전부 불필요하다. 여기서 전체 매핑을 수행하면 —
+    # 이력 명령 질의에는 위치어가 없어 priority_db_ids가 비고 → 전 DB 유사어가 LLM
+    # 프롬프트에 실려 413(FabriX 95K) 재시도로 수십 초 낭비(라이브 실측 2026-08-03).
+    from src.utils.query_gen_common import is_form_memory_command
+
+    if is_form_memory_command(state.get("user_query", "")):
+        logger.info("field_mapper: 폼필 확인 이력 명령 감지 — 매핑 스킵(FIX-24, LLM 미호출)")
+        return {
+            "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
+        }
+
     if app_config is None:
         app_config = load_config()
     if llm is None:

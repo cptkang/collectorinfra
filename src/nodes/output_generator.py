@@ -17,6 +17,7 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
+from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,36 @@ async def _run_output_generator(
                 "current_node": "output_generator",
                 "error_message": None,
             }
+            # 확인 이력 저장(D-118 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
+            # 답변(origin=answer)만. LLM 산출물·이력 재적용분은 저장하지 않는다(C3).
+            if state.get("form_fill_remember"):
+                _remember = {
+                    f: {"action": o.get("action"), "value": o.get("value")}
+                    for f, o in (state.get("form_fill_overrides") or {}).items()
+                    if o.get("applied") and o.get("origin") != "memory"
+                }
+                if _remember:
+                    _saved = await save_form_memory_entries(
+                        state.get("template_structure"), _remember,
+                        state.get("parsed_requirements", {}).get("original_query", "")
+                        or state.get("user_query", ""),
+                        app_config,
+                    )
+                    _ttl_days = getattr(app_config.query, "form_memory_ttl_days", 0)
+                    if _saved:
+                        result["final_response"] += (
+                            f"\n\n**[기억 저장]** '{_saved}'에 {len(_remember)}개 항목을 "
+                            f"기억했습니다 (유효 {_ttl_days}일, 사용할 때마다 연장). "
+                            "다음부터 이 양식에 자동 반영됩니다."
+                        )
+                    else:
+                        # 침묵 강등 금지 — 저장 실패(기능 OFF·Redis 불가)를 명시
+                        result["final_response"] += (
+                            "\n\n**[기억 저장 안 됨]** 저장소를 사용할 수 없거나 기억 기능이 "
+                            "꺼져 있어(form_memory_ttl_days=0) 이번 답변은 이번 실행에만 "
+                            "적용되었습니다."
+                        )
+
             # HITL 폼필(D-118): 미해결 필드 역질문 페이로드 + 대기 상태.
             # 미해결 0이면 pending=None으로 자기정리(답변 적용 완료 턴 포함).
             if state.get("template_structure"):
@@ -357,7 +388,8 @@ def _append_form_fill_notes(
             f for f, c in column_mapping.items()
             if c is None and f not in month_fields
         ]
-    # 사용자 답변 적용/거부 내역(D-118) — 침묵 반영·침묵 무시 금지
+    # 사용자 답변/확인 이력 적용·거부 내역(D-118) — 침묵 반영·침묵 무시 금지.
+    # origin으로 분리 표시: answer=이번 턴 패널 답변, memory=확인 이력(Phase 3).
     overrides = state.get("form_fill_overrides") or {}
     if overrides:
         _act_label = {
@@ -366,7 +398,8 @@ def _append_form_fill_notes(
             "eav": "DB 항목 지정",
             "literal": "직접 입력",
         }
-        ov_lines: list[str] = []
+        ans_lines: list[str] = []
+        mem_lines: list[str] = []
         user_blank_fields: set[str] = set()
         for f, o in overrides.items():
             label = _display_field_name(f)
@@ -374,12 +407,19 @@ def _append_form_fill_notes(
                 act = _act_label.get(o.get("action"), str(o.get("action")))
                 val = o.get("value")
                 suffix = f"('{val}')" if val not in (None, "") else ""
-                ov_lines.append(f"  - {label}: {act}{suffix} 적용")
+                line = f"  - {label}: {act}{suffix} 적용"
                 if o.get("action") == "blank":
                     user_blank_fields.add(f)
             else:
-                ov_lines.append(f"  - {label}: 반영 불가 — {o.get('reason')}")
-        parts.append("**[사용자 답변 적용 내역]**\n" + "\n".join(ov_lines))
+                line = f"  - {label}: 반영 불가 — {o.get('reason')}"
+            (mem_lines if o.get("origin") == "memory" else ans_lines).append(line)
+        if ans_lines:
+            parts.append("**[사용자 답변 적용 내역]**\n" + "\n".join(ans_lines))
+        if mem_lines:
+            parts.append(
+                "**[확인 이력 적용]** (이전에 기억한 답 — 변경하려면 \"필드명 기억 삭제\"라고 요청)\n"
+                + "\n".join(mem_lines)
+            )
         # 사용자 지정 공란은 미작성 사유 목록에서 제외(중복 안내 방지)
         unfilled = [f for f in unfilled if f not in user_blank_fields]
 

@@ -2,7 +2,9 @@
 
 - 작성일: 2026-07-30 (v2 개정: 사용자 검토 의견 반영 — form_profiles YAML 철회,
   유사어·HITL 중심 재설계)
-- 상태: **초안 v2 (사용자 검토 대기)**
+- 상태: **종결(2026-08-03, §13·D-119)** — Phase 1~3 구현·라이브 게이트 전체 통과.
+  Phase 4는 D-119로 축소 확정(재분류, 이관·제거 철회), Phase 2b/층3은 수요 실증 시
+  재개. 잔존 백로그는 §13 참조
 - 선행: Plan 67 (결정적 엔진 3존 그린 완료), Plan 65/D-109 (존 역질문 배선),
   Plan 63 (과적합 분리), D-067/D-068, D-112~D-115
 - 신규 결정 예정: D-116 (폼필 결정적 계약화 + LLM 추론 매핑의 채움 금지),
@@ -608,3 +610,230 @@ ipaddress류 학습 유사어가 등록돼 있는지(과거 LLM 등록 흐름의
   전수 점검** 없이는 같은 유실이 반복된다(이번 라운드에서 3연속 실증).
 - 재배포: `src/orchestration/subagents.py` 1개. 확인 grep:
   `grep -n "FIX-19" src/orchestration/subagents.py` (1건).
+
+### Phase 2 게이트 2 — 5차 실측 (2026-07-31): **통과**
+
+패널 입력 → [사용자 답변 적용 내역] 응답 표시 → **엑셀 반영 확인**(도입일자=DB 항목,
+솔루션명·추가인증=직접 입력, 나머지 공란 유지). FIX-16~19 누적으로 HITL 사슬
+전 구간(생성→done 이벤트→패널→구조화 재전송→pending 복원→격리 통과→검증→
+오버라이드 적용→writer 상수→사유 노출) 라이브 실증. **Phase 2 완료.**
+
+잔여(후속 Phase): ①Phase 3 확인 이력("이 답을 기억" 영속화·롤백 3경로) ②Phase 2b
+질의 내 즉시 지시(잘못 채워진 필드 교정 — '비고'=ipaddress류) ③Phase 4 규칙 4종
+페이드아웃 ④아티팩트 대기: 생성 SQL의 `AS "비고"` SELECT 대상(출처 확정용).
+
+### §2.4 개정 (2026-07-31, 사용자 검토 반영): 확인 이력 = TTL 단기 캐시
+
+- **오버피팅 재검토**: 메커니즘 자체는 계약(C1~C6) 안 — 양식별 코드 0줄, 쓰기 게이트=
+  사용자 확인, 시그니처 스코프 격리. 단 **무기한 축적은 상태 부패·관리 부채**(양식
+  개정 후 stale 이력, 미사용 누적, 운영자가 파악 못 하는 상태)를 만든다 — 사용자
+  직감이 유효한 지점. "관리 대상이 아니라 사용 이력의 캐시"라는 원래 주장이 참이
+  되려면 캐시답게 **만료**가 있어야 한다.
+- **영속화 실체 확정**: 파일 저장 아님. **Redis 키 + TTL(EXPIRE)** 단독 — 로컬 YAML
+  폴백 철회(자체 만료 로직이 필요해져 복잡도만 증가. Redis 유실 시 복구 비용=패널
+  재답변 1회라 수용). 기존 스키마 캐시·유사어와 동일 인프라, 신규 없음.
+- **TTL 정책**: 기본 **7일 sliding**(적용 시 TTL 리셋 — 사용이 곧 재확인). `.env`
+  설정값(form_fill_memory_ttl_days)으로 조정, 0=기능 OFF. 비대칭 근거: 만료 비용
+  (재질문 1회 ≈ 1분) ≪ 부패 지속 비용(감사자료 오기재). 주간 반복 업무는 sliding으로
+  유지되고, 분기 주기(금감원류)는 만료 후 1회 재답변 — 수용.
+- **범위 축소(오버피팅 우려 정합)**: Phase 3 = 층1(자동 노출·저장 확인) + 층2(파일
+  첨부 조회) + 개별/양식 단위 삭제 + 도움말. 층3(전역 목록·번호 조작)·사용자 별명은
+  후순위 보류(TTL 단기 캐시에 과한 관리 UI). last_used 하우스키핑·운영 정리 경로는
+  TTL이 대체(구현 단순화).
+
+---
+
+## 12. Phase 3 구현 이력 (2026-07-31 — 확인 이력 = TTL 단기 캐시)
+
+### 구현 내용 (§2.4 개정 반영)
+
+- **저장소**: Redis 단독 `formfill:memory:{signature}` + **TTL sliding**(기본 7일,
+  `QUERY_FORM_MEMORY_TTL_DAYS`, 0=기능 OFF). 파일 폴백 없음. 적용 시 TTL 연장 +
+  use_count 증가("사용이 곧 재확인"). 저장 형식: display_name(시트 제목 우선)·
+  original_query·created_at·use_count·fields{field: {action, value, confirmed_at}}.
+- **시그니처**: `form_signature`(schema_utils) — 헤더 필드 집합만(NFC+공백 제거+
+  소문자) 정렬 해시. 값 선입력·띄어쓰기 교정·파일명 변경에 불변.
+- **적용**: 단일(query_generator)·멀티(multi_db_executor) 대칭 — 이력을 답변 형식
+  (origin="memory")으로 로드해 이번 턴 답변 **아래**에 병합(`{**memory, **answers}`
+  — 사용자 층 최상위 유지). 존재성 검증은 매 적용 시 재수행(스키마 변경 시 자동
+  무해화 — 거부 사유 노출).
+- **저장 게이트(C3)**: 패널 "이 답을 기억" 체크(옵트인) → `form_fill_remember` →
+  output_generator가 **적용된 answer-origin 오버라이드만** 저장(memory 재적용분·
+  검증 탈락분·LLM 산출물 제외). 저장/실패 모두 응답 명시([기억 저장]/[기억 저장 안 됨]).
+- **사유 분리**: [사용자 답변 적용 내역](origin=answer) vs [확인 이력 적용]
+  (origin=memory, "변경: 필드명 기억 삭제" 안내 병기).
+- **조회·삭제(층2)**: intent_planner ③.45 — 파일 첨부 + "기억" 명사 + 조회/삭제
+  동사 → 결정적 direct_response(LLM 미호출, ③.5보다 선행). 필드 특정=질의 내 필드명
+  결정적 매칭(특정 실패 시 삭제하지 않고 현황 안내 — 침묵 오삭제 방지), 전체 삭제는
+  "전부/전체/모두" 명시 필요 + 삭제 내용 전문 표시(저비용 복구).
+- **도움말**: general_inference [지원 가능한 조회 유형]에 양식 채우기·기억 관리 등재.
+
+### 배포 파일 (14개)
+
+config.py / utils/schema_utils.py / schema_cache/redis_cache.py /
+**schema_cache/form_memory.py(신규)** / db_adapters/polestar/assembler.py /
+nodes/query_generator.py / nodes/multi_db_executor.py / nodes/output_generator.py /
+nodes/general_inference.py / orchestration/intent_planner.py /
+orchestration/result_aggregator.py / api/schemas.py / api/routes/query.py /
+static/js/app.js / state.py
+
+**배포 확인 grep**: `grep -rln "form_memory" src/ | wc -l`(9+),
+`grep -n "form_fill_remember" src/api/schemas.py`(1건),
+`grep -c "이 답을 기억" src/static/js/app.js`(1건).
+
+### 검증
+
+폼필·intent_planner 테스트 98건 통과(신규 16건: 시그니처 불변성 3, 저장소 계약 4
+— save/load/touch·병합·삭제·TTL 0 OFF, 사유 분리·저장 게이트 3, 조회/삭제 라우팅 5,
+경계 1). arch_check 0. form_fill_remember 경계 체크리스트 전수 점검(docs/18 방지책
+적용 — 채널·초기화 2곳·_build_output_state·프론트; 격리/res 승격/done은 비대상 확인).
+
+### 게이트 3 재검증 시나리오
+
+①서버 양식 + 패널 답변 + **"이 답을 기억" 체크** → 응답에 `[기억 저장] '…'에 N개
+항목…(유효 7일)` (로그: `폼필 확인 이력 저장(D-118)`) ②**같은 양식 재업로드** →
+패널 없이(또는 축소되어) 자동 반영 + `[확인 이력 적용]` 표시 (로그: `폼필 확인
+이력 적용(D-118) … TTL 7일 연장`) ③파일 첨부 + "이 양식에 기억된 답 보여줘" →
+목록 표시(채우기 미실행) ④"도입일자 기억 삭제" → 삭제 확인 + 다음 런에 도입일자
+재질문 ⑤기억 없이(체크 안 함) 답변 → 다음 런에 다시 질문(저장 안 됨 확인)
+⑥CPU/메모리 양식 결과 불변.
+
+### Phase 3 게이트 3 — 1차 실측 (2026-08-03) 및 FIX-20
+
+- **통과**: ①기억 저장 ②같은 양식 재업로드 자동 반영 ⑥TTL sliding(3일 전 저장분
+  재사용 시 TTL 초기화 실측 — sliding 계약 라이브 검증).
+- **실패**: ③이력 조회("이 양식에 기억된 답 보여줘")가 **파일 경로 존 역질문**
+  ("대상 존을 선택해 주세요")에 가로채임 — 이력 조회·삭제는 DB 조회가 없어 존이
+  불필요한데 pre-flight가 그래프(③.45) 앞에서 발동(④⑤는 ③ 의존으로 미검).
+- **수정(FIX-20)**: 판정 단일 출처 `is_form_memory_command`(intent_planner — ③.45
+  게이트와 동일 키워드)를 `_file_zone_clarification_or_none`이 선행 확인해 기억
+  명령이면 존 역질문 스킵. 테스트 1건(스킵/비스킵 양방향).
+- 재배포: `src/api/routes/query.py` + `src/orchestration/intent_planner.py` 2개.
+  확인 grep: `grep -n "is_form_memory_command" src/api/routes/query.py` (1건).
+
+### FIX-20 사이드이펙트 분석 (2026-08-03, 사용자 요청)
+
+| # | 검토 항목 | 판정 |
+|---|---|---|
+| S1 | **'(주)기억장치' 오매칭** — 메모리 관용 명사(인식기 문맥 명사)가 '기억'+'보여'에 부분 매칭 → 정상 폼필("주기억장치 사용현황 보여줘")이 존 역질문 스킵+③.45 이력 조회로 오탈취 | **실제 결함 — 즉시 교정**: `_memory_query_normalized`("기억장치" 제거 후 매칭)를 판정·③.45 양쪽(단일 출처)에 적용, 테스트 2건 |
+| S2 | 복합 명령("기억 삭제하고 다시 채워줘") — 이력 처리만 수행되고 채우기는 미실행 | 수용(문서화): ③.45가 ③.5보다 선행하는 설계 자체의 성질(FIX-20 무관). 채우기는 다음 턴 — direct_response가 후속 행동 안내 포함 |
+| S3 | 이력 명령이 키워드에 안 걸리는 표현("기억한 거 뭐야") | 과소 매칭은 안전측 — 존 역질문이 기존대로 발동(불필요한 질문 1회 UX 저하일 뿐, 존 선택 후 ③.45가 처리) |
+| S4 | 텍스트 경로(파일 없는 이력 명령) | FIX-20 무관(파일 경로 함수만 수정). 파일 없는 이력 조회는 층3 보류 상태의 기존 공백 |
+| S5 | 손상 파일 + 이력 명령(template 파싱 실패 → ③.45 미발동 → LLM 분해 배회) | 기존에도 존 역질문 후 같은 경로 — FIX-20이 악화시키지 않음. 희귀 케이스, 미조치 |
+| S6 | 존 역질문 기존 계약(Plan 65 12종) | 무영향 — 이력 키워드 없는 질의는 조기 반환 미발동. test_zone_selection 전체 통과 재확인 |
+| S7 | 계층 방향(api→orchestration import) | 허용 방향(orchestration이 안쪽), arch_check 0 |
+
+### Phase 3 게이트 3 — 2차 실측 (2026-08-03) 및 FIX-21
+
+- **실패**: "기억된 답 보여줘/저장된 값을 알려줘"가 이력 조회로 가지 못하고 **B0
+  채움/조회를 시도**(1번 런은 그 과정에서 FabriX security filter API 오류 동반 —
+  잘못된 경로에서 발생한 부수 증상, FIX-21로 경로 자체가 사라짐. 정상 채움에서
+  재발하면 별도 추적).
+- **원인(코드 확정)**: ③.45를 ③(mapped_db_ids) **뒤에** 배치 — 업로드 턴은
+  field_mapper가 항상 mapped_db_ids를 세팅하므로 ③이 data_query 단일 task로 조기
+  반환, 이력 명령이 영영 도달 불가. 테스트가 못 잡은 이유 = 테스트 state에
+  mapped_db_ids 부재(라이브 업로드 턴과 불일치).
+- **수정(FIX-21)**: 이력 명령 판정을 ②.7로 이동(②.5 selected_db_ids·③보다 선행 —
+  이력 명령은 DB 라우팅 자체가 불필요). 테스트 state에 mapped_db_ids+selected_db_ids
+  선행 상태를 넣어 우선순위를 계약으로 고정(오케스트레이션 전체 317건 통과).
+- 재배포: `src/orchestration/intent_planner.py` 1개.
+  확인 grep: `grep -n "FIX-21" src/orchestration/intent_planner.py` (1건).
+
+### Phase 3 게이트 3 — 3차 실측 (2026-08-03) 및 FIX-22
+
+- **진전**: FIX-21로 이력 조회 경로 진입 성공(일반 안내 task 실행 확인).
+- **실패**: **replanner(재계획)**가 direct_response 결과를 LLM 재평가에 넘겨 "기억된
+  답 7건이 존재하나 실제 내용이 제공되지 않았다"고 오판 → 후속 DB 조회(B0) task
+  생성 → 채우기 회귀. (기존 R-A4 가드는 general_inference 중복 재답변만 차단 —
+  data_query 후속은 통과.)
+- **수정(FIX-22)**: 전 task가 결정적 direct_response면 replanner가 LLM 재평가 없이
+  종료(최종 응답 계약 — 파일 없는 안내 ③.6도 동일 혜택, LLM 호출 1회 절약).
+  테스트 1건(재평가 미호출 단언), 오케스트레이션 318건 통과.
+- 재배포: `src/orchestration/replanner.py` 1개.
+  확인 grep: `grep -n "FIX-22" src/orchestration/replanner.py` (1건).
+
+### Phase 3 게이트 3 — 4차 실측 (2026-08-03) 및 FIX-23
+
+- **관찰**: ①조회는 동작(말투 매뉴얼체 지적 → 존댓말 문장형으로 개선) ②"구분 기억
+  삭제"가 성공 안내를 냈으나 **Redis 항목 잔존**(사용자 RedisInsight 실측) ③재조회
+  시 '구분' 재표시 ④채우기에서 재적용.
+- **원인(정황 확정)**: 삭제 턴은 **파일 재첨부 없이** 전송됨(1·3번만 "양식 업로드
+  후") — template 부재로 ②.7 미발동 → LLM 분해 → general_inference가 "삭제했다"고
+  **환각 성공 안내**. 실제 삭제는 실행된 적 없음. 최악의 실패 형태(침묵 no-op +
+  거짓 확인).
+- **수정(FIX-23)**: ①`last_form_signature`(멀티턴 보존 state) — 모든 양식 턴(②.5/③/
+  ③.5/②.7)이 시그니처를 보존해, 파일 없는 "기억 보여줘/삭제"가 **직전 양식을
+  결정적으로 특정** ②시그니처도 없으면 LLM으로 새지 않고 결정적 안내(환각 차단)
+  ③form_memory에 signature 직접 지정 로드/삭제 ④필드 삭제 저장-백 실패를 성공으로
+  보고하지 않음(반환값 검사) ⑤조회 응답 존댓말 개선.
+- 테스트 5건 추가(무파일 삭제=직전 시그니처 실행·컨텍스트 유지, 무시그니처=안내,
+  채우기 턴 시그니처 보존, 저장-백 실패=0건 보고, 문구), 368건 통과·arch_check 0.
+- 재배포 3개: `src/orchestration/intent_planner.py`, `src/schema_cache/form_memory.py`,
+  `src/state.py`. 확인 grep: `grep -n "last_form_signature" src/state.py` (2건+).
+
+### Phase 3 게이트 3 — 5차 실측 (2026-08-03): **재검증 시나리오 전체 정상** + FIX-24
+
+- **게이트 3 핵심 시나리오 전부 통과**(저장·자동 재사용·TTL sliding·조회·삭제·
+  무저장 재질문 — 사용자 확인). 잔여 관찰 2건:
+- **FIX-24(낭비 실행)**: 이력 조회 턴 로그에 field_mapper의 전 DB 유사어 LLM 발견
+  413 재시도 — 그래프 순서상 field_mapper가 intent_planner(②.7 단락)보다 먼저 전체
+  매핑을 수행하는데 그 산출물은 전부 버려짐 + 이력 질의는 위치어가 없어 priority
+  공백→413. 수정: 판정 함수를 utils.query_gen_common으로 이동(단일 출처, 계층
+  정방향)하고 field_mapper가 이력 명령 턴이면 매핑 스킵(LLM 미호출). 최종 동작은
+  이전에도 정상이었고(단락 로그 확인) 이번 수정은 지연·토큰 낭비 제거.
+- **비고 자동 채움(미해결 지속)**: 출처 미확정 매핑이 SQL에 실림 — 아티팩트(생성
+  SQL의 `AS "비고"` SELECT 대상) 확보 시 데이터 정리로 즉시 중단 가능(비고가
+  미해결로 떨어져 패널 관리 대상化). 구조 해법은 Phase 2b(질의 내 즉시 지시).
+- 재배포 3개: `src/utils/query_gen_common.py`, `src/orchestration/intent_planner.py`,
+  `src/nodes/field_mapper.py`. 확인 grep: `grep -n "FIX-24" src/nodes/field_mapper.py`.
+
+### '비고' 자동 채움 근본 원인 확정 및 교정 (2026-08-03, FIX-25)
+
+- **아티팩트(사용자)**: 서버 양식 런의 SQL에 `AS "비고"` 없음 + CSV 4칼럼뿐(서버명·
+  IP·OS(버전정보)·제조사(모델명)) — 그런데 Excel 비고는 IP값으로 채워짐.
+- **재현·확정(로컬)**: writer `_get_value_from_row` 5단계(부분 문자열 폴백)가 행 키
+  "IP"(2글자)를 매핑 문자열에 포함 매칭 — 'descr**ip**tion'·'**ip**address'·
+  'IPAM_INFO.DESCR**IP**TION' 전부 적중. 비고의 낡은 매핑이 무엇이든(FIX-15가 SQL
+  에서 제외해도 state 매핑 잔존) IP 값이 채워짐 — 존·런 무관 재현되던 이유.
+- **교정(FIX-25, 2겹)**: ①불변식 — FIX-15가 SQL에서 제외한 필드는 state 매핑도
+  강제 None(월/결합/llm_inferred와 동일 패턴; 단일/멀티 대칭) → 비고가 공란+미해결로
+  떨어져 **패널 관리 대상**이 됨(사용자 요구 "칼럼으로써 관리" 충족: 패널에서
+  공란/직접 입력/DB 항목+기억 지정 가능) ②방어 — writer 부분 매칭에 최소 길이 3
+  가드(2글자 키 오매칭 원천 차단; 정상 IP 채움은 4단계 역매핑으로 성립함을 테스트로
+  고정).
+- 테스트 3건(오매칭 후보 전수 차단·정상 IP 역매핑 생존·제외 필드 매핑 None 불변식),
+  461건 통과(document 계열 회귀 0).
+- 재배포 3개: `src/document/excel_writer.py`, `src/nodes/query_generator.py`,
+  `src/nodes/multi_db_executor.py`. 확인 grep: `grep -n "FIX-25"
+  src/document/excel_writer.py` (1건).
+
+---
+
+## 13. Plan 68 종결 (2026-08-03, D-119)
+
+### B1~B3 최종 처리 (사용자 승인)
+
+- **B1(Phase 4) 축소 확정**: 이관·제거 **철회** — 규칙 4종을 도메인 일반 규칙로
+  재분류(D-119). 근거: ①TTL 캐시는 부정 규칙(처리능력 강제 공란)의 이관처 불가
+  (만료=보호 소실) ②4종 모두 기관·양식 리터럴이 아닌 필드명 의미론 ③실질 목표
+  (새 양식=코드 0줄)는 게이트 3에서 실증 완료. 동결 계약(C1)은 유지.
+- **B2(질의 내 즉시 지시)**: 보류 — 수요 실증 시 착수(비고 건 해소로 긴급성 소멸,
+  대체 경로 = 기억 삭제→패널 재지정 2턴).
+- **B3(자연어 답변 폴백)**: 보류 유지(웹 UI 단일 운영).
+
+### 최종 상태 요약
+
+- **구현 완료·라이브 검증**: D-116(경로 결정화+llm_inferred 채움 금지),
+  D-117(단일 task+파일 없는 안내), D-118(HITL 역질문+구조화 답변+TTL 확인 이력+
+  조회/삭제), 안정화 FIX-16~25.
+- **우려 대조**: "양식마다 코드·에러 증가" → 역전(새 양식 코드 0줄 실증, 에러→계약된
+  공란/질문, 지식은 사용자 확인 기반 자동 축적·자동 만료). DeepAgent 회귀 의사결정
+  게이트의 판정 재료 확보(§7).
+- **잔존 백로그**(Plan 68 밖):
+  1. **field_mapper의 LLM 매핑 즉시 Redis 등록 경로** — 오염 자기강화 잔여
+     (비고→description류의 원 출처 추정). 폼필은 D-116/FIX-25로 무해화됐으나 일반
+     질의 영향은 별도 검토 대상.
+  2. 안내성 문구 스트리밍 통일성(low).
+  3. FabriX security filter 오류 — 정상 런 재발 시 추적.
+  4. 서브 테이블 유사어 정리(선택), Word/3단 헤더(비범위 유지), CM_YD ">" 라우팅
+     (재현 불가 종결 보류).

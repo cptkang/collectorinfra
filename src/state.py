@@ -136,6 +136,12 @@ class AgentState(TypedDict):
     # 역질문 페이로드(요청 스코프) — API 응답이 프론트 패널 렌더에 사용.
     # {"question": str, "fields": [{"name", "reason"}], "candidates": [...]}
     form_fill_clarification: Optional[dict]
+    # 기억 옵트인(요청 스코프, Phase 3) — 답변 턴에서만 라우트가 주입.
+    form_fill_remember: Optional[bool]
+    # 직전 양식 시그니처(멀티턴 보존, FIX-23) — 파일 재첨부 없는 "기억 보여줘/삭제"가
+    # 직전 양식을 가리키게 한다. 양식 턴(②.7 조회·③.5 채우기)마다 갱신(최신 승리),
+    # followup에서 비우지 않는다(pending_* 계열).
+    last_form_signature: Optional[str]
 
     # === 유사단어 재활용 대기 ===
     pending_synonym_reuse: Optional[dict]
@@ -261,6 +267,7 @@ def create_followup_input(
         "form_fill_literals": None,
         "form_fill_candidates": None,
         "form_fill_clarification": None,
+        "form_fill_remember": None,
     }
 
 
@@ -321,6 +328,8 @@ def create_initial_state(
         form_fill_literals=None,
         form_fill_candidates=None,
         form_fill_clarification=None,
+        form_fill_remember=None,
+        last_form_signature=None,
         pending_form_fill=None,
         pending_synonym_reuse=None,
         column_descriptions={},

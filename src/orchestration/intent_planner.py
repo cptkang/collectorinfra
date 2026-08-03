@@ -47,6 +47,19 @@ _ALARM_KEYWORDS = ("알람", "alert", "이벤트", "event", "경보")
 # 양식 명사 + 채움 동사가 함께 있어야 발동한다(오발동 최소).
 _FORM_NOUN_KEYWORDS = ("양식", "서식", "템플릿")
 _FORM_FILL_VERB_KEYWORDS = ("채우", "채워", "기입", "작성")
+
+# 폼필 확인 이력 명령 판정(D-118) — 단일 출처는 utils.query_gen_common으로 이동
+# (nodes.field_mapper가 계층 역방향 없이 공유하기 위함, FIX-24). 기존 임포터
+# (api.routes.query 등)를 위해 이 모듈에서 재수출한다.
+from src.utils.query_gen_common import (  # noqa: E402
+    FORM_MEMORY_ALL_KEYWORDS as _FORM_MEMORY_ALL_KEYWORDS,
+    FORM_MEMORY_DELETE_KEYWORDS as _FORM_MEMORY_DELETE_KEYWORDS,
+    FORM_MEMORY_NOUN_KEYWORDS as _FORM_MEMORY_NOUN_KEYWORDS,
+    FORM_MEMORY_VIEW_KEYWORDS as _FORM_MEMORY_VIEW_KEYWORDS,
+    is_form_memory_command,
+    memory_query_normalized as _memory_query_normalized,
+)
+
 # 사용자에게 그대로 노출되는 고정 안내문 — LLM을 통과시키지 않는다(라이브 실측
 # 2026-07-30: general_inference LLM 호출 실패 시 일반 오류 문구로 강등됨).
 _FORM_FILL_NO_FILE_GUIDANCE = (
@@ -165,6 +178,41 @@ async def intent_planner(
         logger.info("intent_planner: 유사어 등록 요청 감지, synonym_registration 단일 task")
         return _single_task_plan("synonym_registration", user_query)
 
+    # ②.7 폼필 확인 이력 조회·삭제 (Plan 68 Phase 3, D-118 — FIX-21).
+    # 반드시 ②.5(selected_db_ids)·③(mapped_db_ids)보다 먼저 판정해야 한다 —
+    # 양식 업로드 턴은 field_mapper가 항상 mapped_db_ids를 세팅하므로 ③이 조기
+    # 반환하면 이력 명령이 채우기(data_query)로 오탈취된다(라이브 실측
+    # 2026-08-03: "기억된 답 보여줘"가 B0 채움 시도로 흘러감). 이력 명령은 DB
+    # 라우팅 자체가 불필요 — 결정적 처리(LLM 미호출), direct_response 반환.
+    # FIX-23: 파일 재첨부 없는 이력 명령도 직전 양식 시그니처(last_form_signature)로
+    # 결정적 처리한다 — 커버리지 밖으로 새면 LLM이 "삭제했다"고 **환각 성공 안내**를
+    # 하고 실제 삭제는 일어나지 않는다(라이브 실측 2026-08-03: Redis 항목 잔존).
+    # 둘 다 없으면 안내 direct_response(환각 차단).
+    _mq = _memory_query_normalized(user_query)  # '(주)기억장치' 오매칭 차단(FIX-20)
+    if is_form_memory_command(user_query):
+        if app_config is None:
+            app_config = load_config()
+        from src.utils.schema_utils import form_signature
+
+        _template = state.get("template_structure")
+        _sig = form_signature(_template) or state.get("last_form_signature")
+        if not _sig:
+            text = (
+                "기억된 답을 조회·삭제하려면 대상 양식이 필요합니다. 양식 파일을 "
+                "첨부해 다시 요청해 주세요. (같은 세션에서 방금 다룬 양식이 있으면 "
+                "파일 없이도 처리됩니다.)"
+            )
+        elif any(k in _mq for k in _FORM_MEMORY_DELETE_KEYWORDS):
+            text = await _form_memory_delete_response(state, user_query, app_config, _sig)
+        else:
+            text = await _form_memory_view_response(state, app_config, _sig)
+        logger.info("intent_planner: 폼필 확인 이력 조회/삭제 단락(D-118)")
+        plan = _single_task_plan("general_inference", user_query)
+        plan["task_plan"][0]["direct_response"] = text
+        if _sig:
+            plan["last_form_signature"] = _sig  # 직전 양식 컨텍스트 갱신(멀티턴 보존)
+        return plan
+
     # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 65 §4) — LLM 분해를 건너뛰어
     # 자연어 재조합 없이 결정적 고정(mapped_db_ids 선례 동형). task.db_ids는 하류
     # run_data_query_pipeline이 classify_dbs를 우회하는 기존 배관을 그대로 탄다.
@@ -174,13 +222,18 @@ async def intent_planner(
             "intent_planner: selected_db_ids 감지, data_query 단일 task (존 선택 고정=%s)",
             selected_db_ids,
         )
-        return _single_task_plan("data_query", user_query, db_ids=list(selected_db_ids))
+        return _with_form_signature(
+            _single_task_plan("data_query", user_query, db_ids=list(selected_db_ids)),
+            state,
+        )
 
     # ③ field_mapper가 이미 대상 DB를 결정한 경우 (양식 업로드 시)
     mapped_db_ids = state.get("mapped_db_ids")
     if mapped_db_ids:
         logger.info("intent_planner: mapped_db_ids 감지, data_query 단일 task (DB 고정=%s)", mapped_db_ids)
-        return _single_task_plan("data_query", user_query, db_ids=mapped_db_ids)
+        return _with_form_signature(
+            _single_task_plan("data_query", user_query, db_ids=mapped_db_ids), state,
+        )
 
     # ③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 68 D-117).
     # 양식 채우기는 의미상 단일 파이프라인 작업 — LLM 복합 분해가 서버정보/월지표를
@@ -188,7 +241,7 @@ async def intent_planner(
     # mapped_db_ids 미성립 턴(③ 미발동)도 결정적으로 단일화한다.
     if state.get("template_structure"):
         logger.info("intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-117)")
-        return _single_task_plan("data_query", user_query)
+        return _with_form_signature(_single_task_plan("data_query", user_query), state)
 
     # ③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 68 D-117).
     # template_structure 없이 "양식 채워줘"류가 LLM 분해로 가면 data_query가 존재하지
@@ -218,6 +271,107 @@ async def intent_planner(
     if clarification:
         result["clarification_needed"] = clarification
     return result
+
+
+async def _form_memory_view_response(
+    state: AgentState, app_config: AppConfig, signature: str | None = None
+) -> str:
+    """첨부 양식의 확인 이력을 조회 전용(TTL 미연장)으로 표시한다(D-118 Phase 3)."""
+    from src.schema_cache.form_memory import load_form_memory_answers
+
+    _sig, answers, meta = await load_form_memory_answers(
+        state.get("template_structure"), app_config, touch=False, signature=signature,
+    )
+    if not answers or not meta:
+        return (
+            "이 양식에 기억된 답이 없습니다. 양식을 채운 뒤 미해결 항목 패널에서 "
+            "'이 답을 기억'을 선택하면 저장됩니다(일정 기간 후 자동 만료)."
+        )
+    _act = {"blank": "공란 유지", "column": "DB 항목", "eav": "DB 항목", "literal": "직접 입력"}
+    lines = []
+    for field, ans in answers.items():
+        label = field.replace("|", " > ")
+        act = _act.get(ans.get("action"), str(ans.get("action")))
+        val = ans.get("value")
+        suffix = f"({val})" if val not in (None, "") else ""
+        lines.append(f"- {label}: {act}{suffix}")
+    return (
+        f"'{meta.get('display_name', '이 양식')}' 양식에 기억된 답이 {len(answers)}건 "
+        f"있습니다 (저장 {str(meta.get('created_at', ''))[:10]}, "
+        f"{meta.get('use_count', 0)}회 사용).\n\n"
+        + "\n".join(lines)
+        + "\n\n특정 항목을 삭제하려면 \"<필드명> 기억 삭제\", 전체를 삭제하려면 "
+        "\"기억 전부 삭제\"라고 요청해 주세요. 이 답들은 같은 양식을 채울 때 "
+        "자동으로 반영됩니다."
+    )
+
+
+async def _form_memory_delete_response(
+    state: AgentState, user_query: str, app_config: AppConfig,
+    signature: str | None = None,
+) -> str:
+    """첨부 양식의 확인 이력을 삭제한다 — 필드명 언급분만, '전부'류면 전체(D-118 Phase 3).
+
+    필드 특정은 결정적 매칭(질의에 필드명 등장 여부)이며, 특정 실패 시 삭제하지 않고
+    현황+지정 방법을 안내한다(침묵 오삭제 방지). 전체 삭제 응답에는 삭제된 내용
+    전문을 표시한다(잘못 지웠을 때 재답변으로 저비용 복구).
+    """
+    from src.schema_cache.form_memory import (
+        delete_form_memory_entries,
+        load_form_memory_answers,
+    )
+
+    _sig, answers, _meta = await load_form_memory_answers(
+        state.get("template_structure"), app_config, touch=False, signature=signature,
+    )
+    if not answers:
+        return "이 양식에 기억된 답이 없어 삭제할 항목이 없습니다."
+    q_norm = user_query.replace(" ", "")
+    matched = [
+        f for f in answers
+        if f.replace(" ", "") in q_norm
+        or f.split("|")[-1].replace(" ", "") in q_norm  # 복합명은 서브 라벨로도 매칭
+    ]
+    if any(k in user_query for k in _FORM_MEMORY_ALL_KEYWORDS) and not matched:
+        removed, display = await delete_form_memory_entries(
+            state.get("template_structure"), app_config, None, signature=signature,
+        )
+        detail = "\n".join(f"- {f.replace('|', ' > ')}" for f in answers)
+        return (
+            f"'{display or '이 양식'}'의 기억 {removed}건을 모두 삭제했습니다:\n{detail}\n\n"
+            "다시 기억시키려면 양식 채우기 후 패널에서 답변하고 '이 답을 기억'을 선택하세요."
+        )
+    if not matched:
+        listing = ", ".join(f.replace("|", " > ") for f in answers)
+        return (
+            f"삭제할 항목을 특정하지 못했습니다. 현재 기억된 답: {listing}\n"
+            "특정 항목: \"<필드명> 기억 삭제\" / 전체: \"기억 전부 삭제\"라고 요청해주세요."
+        )
+    removed, display = await delete_form_memory_entries(
+        state.get("template_structure"), app_config, matched, signature=signature,
+    )
+    shown = ", ".join(f.replace("|", " > ") for f in matched)
+    return (
+        f"'{display or '이 양식'}'에서 {shown}의 기억 {removed}건을 삭제했습니다. "
+        "해당 항목은 다음 채우기에서 다시 질문됩니다."
+    )
+
+
+def _with_form_signature(plan: dict, state: AgentState) -> dict:
+    """양식 턴이면 last_form_signature를 계획에 실어 체크포인터에 보존한다(FIX-23).
+
+    파일 재첨부 없는 "기억 보여줘/삭제"가 직전 양식을 가리키게 하는 멀티턴 컨텍스트.
+    업로드 턴은 ②.5(존 재개)·③(mapped_db_ids)·③.5 어느 분기로든 반환될 수 있으므로
+    세 분기 공통으로 적용한다.
+    """
+    template = state.get("template_structure")
+    if template:
+        from src.utils.schema_utils import form_signature
+
+        sig = form_signature(template)
+        if sig:
+            plan["last_form_signature"] = sig
+    return plan
 
 
 def _single_task_plan(

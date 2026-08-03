@@ -71,6 +71,15 @@ async def replanner(
         logger.info("replanner: 재계획 상한(%d) 도달, 현재 결과로 종료", app_config.max_replan)
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
+    # 결정적 direct_response(고정 안내·확인 이력 조회/삭제 등)는 정의상 **최종 응답** —
+    # LLM 재평가에 넘기면 "내용이 제공되지 않았다"로 오판해 데이터 조회 후속(B0 등)을
+    # 만들어 이력 조회가 채우기로 회귀한다(라이브 실측 2026-08-03, FIX-22).
+    # 전 task가 direct_response면 재계획 없이 종료(LLM 호출 자체를 생략).
+    _tasks_now = state.get("task_plan", [])
+    if _tasks_now and all(t.get("direct_response") for t in _tasks_now):
+        logger.info("replanner: 전 task가 결정적 direct_response — 재계획 스킵(D-117/D-118)")
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
     decision = await _llm_evaluate(
         llm,
         state.get("user_query", ""),

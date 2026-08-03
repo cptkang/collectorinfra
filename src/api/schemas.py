@@ -53,6 +53,12 @@ class QueryRequest(BaseModel):
             "(pending_form_fill 대기 중인 thread에서만 유효)"
         ),
     )
+    # Phase 3 (D-118): 답변을 양식 시그니처 스코프의 확인 이력에 저장할지(옵트인).
+    # TTL sliding(QueryConfig.form_memory_ttl_days) — 무기한 저장 없음.
+    form_fill_remember: bool = Field(
+        default=False,
+        description="폼필 답변을 이 양식에 기억(TTL sliding, 옵트인)",
+    )
 
 
 # --- 응답 모델 ---

@@ -926,7 +926,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -950,6 +950,10 @@
             // Plan 68 D-118: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
             if (formFillAnswers) {
                 streamBody.form_fill_answers = formFillAnswers;
+                // Phase 3: 기억 옵트인(양식 시그니처 스코프, TTL sliding)
+                if (formFillRemember) {
+                    streamBody.form_fill_remember = true;
+                }
             }
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
@@ -1297,6 +1301,10 @@
                     escapeHtml(ctx.question || "채우지 못한 항목의 처리 방법을 지정해 주세요.") +
                 '</div>' +
                 rowsHtml +
+                '<label class="form-fill-remember-label" style="display:block;margin:6px 0;">' +
+                    '<input type="checkbox" class="form-fill-remember"> ' +
+                    '이 답을 기억 — 같은 양식에 자동 반영 (일정 기간 후 자동 만료, 사용 시 연장)' +
+                '</label>' +
                 '<button class="zone-clarify-confirm form-fill-confirm">선택한 방법으로 다시 채우기</button>' +
             '</div>');
         var box = document.getElementById(boxId);
@@ -1327,13 +1335,16 @@
                     summary.push(field + "=공란 유지");
                 }
             });
+            var rememberEl = box.querySelector(".form-fill-remember");
+            var remember = !!(rememberEl && rememberEl.checked);
             box.classList.add("zone-clarify--done");
             box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
             // 선택 요약을 사용자 메시지로 에코(이력 가독성) — 처리 자체는 구조화 필드가 결정
-            var echoMsg = { role: "user", content: "양식 답변: " + summary.join(", "), time: new Date(), file: null };
+            var echoText = "양식 답변: " + summary.join(", ") + (remember ? " (기억)" : "");
+            var echoMsg = { role: "user", content: echoText, time: new Date(), file: null };
             messages.push(echoMsg);
             renderUserMessage(echoMsg);
-            executeStreamingQuery("[양식 미해결 항목 답변]", null, answers);
+            executeStreamingQuery("[양식 미해결 항목 답변]", null, answers, remember);
         });
     }
 

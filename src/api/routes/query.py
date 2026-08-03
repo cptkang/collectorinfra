@@ -354,6 +354,8 @@ def _build_turn_input_state(
                 original_q = pending_ff.get("original_query")
                 if original_q:
                     delta["user_query"] = original_q
+                # Phase 3(D-118): 기억 옵트인 — 검증 통과 답변만 output_generator가 저장
+                delta["form_fill_remember"] = bool(body.form_fill_remember)
                 # 폼필은 전량 채움이 기본 — 파일 경로와 동일 LIMIT(텍스트 경로 기본
                 # 1,000 절단 방지, D-066 후속7 계열)
                 delta["resolved_limit"] = _FORM_FILL_DEFAULT_LIMIT
@@ -428,6 +430,11 @@ def _file_zone_clarification_or_none(
     if selected_db_ids:
         return None  # 선택 재개 턴
     q = query or ""
+    # FIX-20(라이브 실측 2026-08-03): 확인 이력 조회·삭제는 DB 조회가 없어 존 선택이
+    # 불필요 — 존 역질문이 가로채면 ③.45(결정적 단락)에 도달하지 못한다.
+    from src.orchestration.intent_planner import is_form_memory_command
+    if is_form_memory_command(q):
+        return None
     if _ZONE_PLACEHOLDER not in q:
         from src.nodes.input_parser import LOCATION_HINT_TERMS
         if any(t in q for t in LOCATION_HINT_TERMS):

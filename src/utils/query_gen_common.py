@@ -648,3 +648,37 @@ def build_prior_rows_block(prior_rows: dict | None) -> str:
         "4. 결과의 각 행이 어느 서버의 값인지 알 수 있도록 서버 식별 컬럼(예: server_name)을 "
         "SELECT에 반드시 포함하세요 (GROUP BY 피벗 쿼리면 집계 CASE WHEN으로 포함)."
     )
+
+
+# ── 폼필 확인 이력 명령 판정 (Plan 68 Phase 3, D-118 — 단일 출처) ────────────────
+# intent_planner(②.7 단락)·query.py(존 역질문 스킵, FIX-20)·field_mapper(매핑 스킵,
+# FIX-24)가 공유한다. "기억" 계열 명사 필수 — 일반 조회와 충돌 차단.
+FORM_MEMORY_NOUN_KEYWORDS = ("기억", "저장된 답", "저장된 값", "확인 이력")
+FORM_MEMORY_VIEW_KEYWORDS = ("보여", "조회", "알려")
+FORM_MEMORY_DELETE_KEYWORDS = ("삭제", "지워", "잊어", "다시 물어")
+FORM_MEMORY_ALL_KEYWORDS = ("전부", "전체", "모두", "모든")
+
+
+def memory_query_normalized(text: str) -> str:
+    """'기억' 키워드 매칭 전 정규화 — 하드웨어 명사 '(주)기억장치'를 제거한다.
+
+    "주기억장치 사용현황 보여줘"(메모리 양식의 관용 표현)가 '기억'+'보여'로 이력
+    명령에 오매칭되면 정상 폼필이 이력 조회로 오탈취된다(FIX-20 사이드이펙트 교정).
+    """
+    return (text or "").replace("기억장치", "")
+
+
+def is_form_memory_command(text: str) -> bool:
+    """폼필 확인 이력 조회·삭제 명령 여부.
+
+    이 명령은 DB 조회·매핑이 전부 불필요하다 — 존 역질문 스킵(FIX-20)·field_mapper
+    매핑 스킵(FIX-24)·intent_planner 결정적 단락(②.7)의 공통 게이트.
+    """
+    q = memory_query_normalized(text)
+    return (
+        any(k in q for k in FORM_MEMORY_NOUN_KEYWORDS)
+        and (
+            any(k in q for k in FORM_MEMORY_VIEW_KEYWORDS)
+            or any(k in q for k in FORM_MEMORY_DELETE_KEYWORDS)
+        )
+    )

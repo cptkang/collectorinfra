@@ -1372,3 +1372,525 @@ class TestFormFillHitl:
         task = {"task_id": "t1", "agent": "data_query", "sub_query": "양식 채우기"}
         isolated = _make_isolated_input(task, state, {})
         assert isolated["form_fill_answers"] == answers
+
+
+class _FakeRedis:
+    """form_memory 계약 테스트용 인메모리 Redis 대역(TTL은 기록만)."""
+
+    def __init__(self):
+        self.store: dict = {}
+        self.ttls: dict = {}
+
+    async def load_form_memory(self, signature):
+        return self.store.get(signature)
+
+    async def save_form_memory(self, signature, data, ttl_seconds):
+        self.store[signature] = data
+        self.ttls[signature] = ttl_seconds
+        return True
+
+    async def delete_form_memory(self, signature):
+        self.ttls.pop(signature, None)
+        return self.store.pop(signature, None) is not None
+
+    async def touch_form_memory(self, signature, ttl_seconds):
+        self.ttls[signature] = ttl_seconds
+
+
+def _tpl(headers, title=""):
+    return {"sheets": [{"name": "Sheet1", "headers": headers, "title_text": title}]}
+
+
+_CFG7 = SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7))
+_CFG0 = SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=0))
+
+
+class TestFormSignature:
+    """양식 시그니처(D-118 Phase 3) — 헤더 집합만, 정규화 불변."""
+
+    def test_whitespace_and_case_invariant(self):
+        from src.utils.schema_utils import form_signature
+
+        a = form_signature(_tpl(["IP 주소", "서버명"]))
+        b = form_signature(_tpl(["IP주소", "서버명 "]))
+        assert a is not None and a == b
+
+    def test_title_and_sheet_name_ignored(self):
+        from src.utils.schema_utils import form_signature
+
+        a = form_signature(_tpl(["서버명"], title="금감원 제출용"))
+        b = form_signature({"sheets": [{"name": "다른시트", "headers": ["서버명"], "title_text": ""}]})
+        assert a == b
+
+    def test_different_fields_differ_and_empty_none(self):
+        from src.utils.schema_utils import form_signature
+
+        assert form_signature(_tpl(["서버명"])) != form_signature(_tpl(["서버명", "IP"]))
+        assert form_signature(_tpl([])) is None
+        assert form_signature(None) is None
+
+
+class TestFormMemoryStore:
+    """확인 이력 저장소 계약 — TTL sliding·병합·삭제·기능 OFF."""
+
+    def _patch(self, monkeypatch, fake):
+        import src.schema_cache.form_memory as fm
+
+        async def _fake_get_redis(app_config):
+            return fake
+
+        monkeypatch.setattr(fm, "_get_redis", _fake_get_redis)
+        return fm
+
+    async def test_save_load_touch_cycle(self, monkeypatch):
+        fake = _FakeRedis()
+        fm = self._patch(monkeypatch, fake)
+        tpl = _tpl(["서버명", "도입일자"], title="서버 목록")
+
+        display = await fm.save_form_memory_entries(
+            tpl, {"도입일자": {"action": "column", "value": "ctime"}},
+            "여의도 서버 양식 채워줘", _CFG7,
+        )
+        assert display == "서버 목록"
+        sig = list(fake.store)[0]
+        assert fake.ttls[sig] == 7 * 86400
+
+        sig2, answers, meta = await fm.load_form_memory_answers(tpl, _CFG7)
+        assert sig2 == sig
+        assert answers == {"도입일자": {"action": "column", "value": "ctime", "origin": "memory"}}
+        # sliding: 적용 시 use_count 증가 + TTL 재설정
+        assert fake.store[sig]["use_count"] == 1
+
+    async def test_merge_keeps_existing_fields(self, monkeypatch):
+        fake = _FakeRedis()
+        fm = self._patch(monkeypatch, fake)
+        tpl = _tpl(["a", "b"])
+        await fm.save_form_memory_entries(tpl, {"a": {"action": "blank", "value": None}}, "q", _CFG7)
+        await fm.save_form_memory_entries(tpl, {"b": {"action": "literal", "value": "x"}}, "q", _CFG7)
+        sig = list(fake.store)[0]
+        assert set(fake.store[sig]["fields"]) == {"a", "b"}
+
+    async def test_delete_field_and_all(self, monkeypatch):
+        fake = _FakeRedis()
+        fm = self._patch(monkeypatch, fake)
+        tpl = _tpl(["a", "b"])
+        await fm.save_form_memory_entries(
+            tpl,
+            {"a": {"action": "blank", "value": None}, "b": {"action": "literal", "value": "x"}},
+            "q", _CFG7,
+        )
+        removed, _ = await fm.delete_form_memory_entries(tpl, _CFG7, ["a"])
+        assert removed == 1
+        sig = list(fake.store)[0]
+        assert set(fake.store[sig]["fields"]) == {"b"}
+        removed, _ = await fm.delete_form_memory_entries(tpl, _CFG7, None)
+        assert removed == 1 and not fake.store
+
+    async def test_ttl_zero_disables_all(self, monkeypatch):
+        fake = _FakeRedis()
+        fm = self._patch(monkeypatch, fake)
+        tpl = _tpl(["a"])
+        assert await fm.save_form_memory_entries(tpl, {"a": {"action": "blank", "value": None}}, "q", _CFG0) is None
+        _, answers, _ = await fm.load_form_memory_answers(tpl, _CFG0)
+        assert answers == {} and not fake.store
+
+
+class TestFormMemoryNotesAndSaveGate:
+    """origin 분리 표시 + 저장 게이트(옵트인·적용·answer-origin만, C3)."""
+
+    def test_notes_split_by_origin(self):
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        state = {
+            "form_fill_overrides": {
+                "도입일자": {"action": "column", "value": "ctime", "applied": True, "origin": "answer"},
+                "용도": {"action": "literal", "value": "웹서버", "applied": True, "origin": "memory"},
+            },
+        }
+        out = _append_form_fill_notes("응답", state, fill_stats={"도입일자": 3, "용도": 3})
+        assert "[사용자 답변 적용 내역]" in out and "도입일자" in out
+        assert "[확인 이력 적용]" in out and "용도" in out
+        assert "기억 삭제" in out  # 변경 방법 안내
+
+    async def test_save_gate_only_applied_answer_origin(self, monkeypatch):
+        import importlib
+
+        og = importlib.import_module("src.nodes.output_generator")
+
+        captured: dict = {}
+
+        async def _fake_save(template, entries, original_query, app_config):
+            captured["entries"] = entries
+            return "서버 목록"
+
+        async def _fake_text(*a, **k):
+            return "본문"
+
+        def _fake_doc(state, fmt):
+            return {"file_bytes": b"x", "file_name": "r.xlsx", "total_filled": 3,
+                    "fill_stats": {"서버명": 3}}
+
+        monkeypatch.setattr(og, "save_form_memory_entries", _fake_save)
+        monkeypatch.setattr(og, "_generate_text_response", _fake_text)
+        monkeypatch.setattr(og, "_generate_document_file", _fake_doc)
+        state = {
+            "organized_data": {"rows": [{"서버명": "w1"}], "column_mapping": None,
+                               "resolved_mapping": None, "is_sufficient": True,
+                               "summary": "", "sheet_mappings": None},
+            "parsed_requirements": {"output_format": "xlsx", "original_query": "양식 채워줘"},
+            "template_structure": _tpl(["서버명"]),
+            "uploaded_file": b"xlsx",
+            "form_fill_remember": True,
+            "form_fill_overrides": {
+                "도입일자": {"action": "column", "value": "ctime", "applied": True, "origin": "answer"},
+                "용도": {"action": "literal", "value": "웹서버", "applied": True, "origin": "memory"},
+                "구분": {"action": "column", "value": "없는칼럼", "applied": False, "origin": "answer"},
+            },
+        }
+        cfg = SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7))
+        result = await og.output_generator(state, llm=object(), app_config=cfg)
+        # 적용된 answer-origin만 저장 — memory 재적용분·검증 탈락분 제외(C3)
+        assert set(captured["entries"]) == {"도입일자"}
+        assert "[기억 저장]" in result["final_response"]
+
+    async def test_no_save_without_opt_in(self, monkeypatch):
+        import importlib
+
+        og = importlib.import_module("src.nodes.output_generator")
+
+        called: list = []
+
+        async def _fake_save(*a, **k):
+            called.append(1)
+            return "x"
+
+        async def _fake_text(*a, **k):
+            return "본문"
+
+        def _fake_doc(state, fmt):
+            return {"file_bytes": b"x", "file_name": "r.xlsx", "total_filled": 1,
+                    "fill_stats": {"서버명": 1}}
+
+        monkeypatch.setattr(og, "save_form_memory_entries", _fake_save)
+        monkeypatch.setattr(og, "_generate_text_response", _fake_text)
+        monkeypatch.setattr(og, "_generate_document_file", _fake_doc)
+        state = {
+            "organized_data": {"rows": [{"서버명": "w1"}], "column_mapping": None,
+                               "resolved_mapping": None, "is_sufficient": True,
+                               "summary": "", "sheet_mappings": None},
+            "parsed_requirements": {"output_format": "xlsx"},
+            "template_structure": _tpl(["서버명"]),
+            "uploaded_file": b"xlsx",
+            "form_fill_overrides": {
+                "도입일자": {"action": "column", "value": "ctime", "applied": True, "origin": "answer"},
+            },
+        }
+        cfg = SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7))
+        await og.output_generator(state, llm=object(), app_config=cfg)
+        assert not called
+
+
+class TestFormMemoryCommands:
+    """③.45 조회·삭제 pre-check — 결정적 단락(LLM 미호출), direct_response."""
+
+    def _state(self):
+        return {
+            "user_query": "",
+            "template_structure": _tpl(["서버명", "도입일자"], title="서버 목록"),
+            # FIX-21 계약: 업로드 턴은 field_mapper가 mapped_db_ids를 항상 세팅한다 —
+            # 이력 명령(②.7)이 ③(mapped_db_ids)·②.5(selected_db_ids)보다 선행해야
+            # 채우기로 오탈취되지 않는다(라이브 실측 2026-08-03: B0 채움 시도).
+            "mapped_db_ids": ["polestar_b0"],
+            "selected_db_ids": ["polestar_cm_yd"],
+        }
+
+    async def _run(self, monkeypatch, query, answers, deleted_capture=None):
+        import src.schema_cache.form_memory as fm
+        from src.orchestration.intent_planner import intent_planner
+
+        async def _fake_load(template, app_config, touch=True, signature=None):
+            meta = {"display_name": "서버 목록", "created_at": "2026-07-31T10:00:00",
+                    "use_count": 2} if answers else None
+            return "sig", dict(answers), meta
+
+        async def _fake_delete(template, app_config, field_names=None, signature=None):
+            if deleted_capture is not None:
+                deleted_capture.append(field_names)
+            n = len(field_names) if field_names else len(answers)
+            return n, "서버 목록"
+
+        monkeypatch.setattr(fm, "load_form_memory_answers", _fake_load)
+        monkeypatch.setattr(fm, "delete_form_memory_entries", _fake_delete)
+        state = self._state()
+        state["user_query"] = query
+        from unittest.mock import AsyncMock
+
+        llm = AsyncMock()
+        result = await intent_planner(
+            state, llm=llm,
+            app_config=SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7)),
+        )
+        llm.ainvoke.assert_not_called()
+        return result["task_plan"][0]
+
+    async def test_view_shows_entries(self, monkeypatch):
+        t = await self._run(
+            monkeypatch, "이 양식에 기억된 답 보여줘",
+            {"도입일자": {"action": "column", "value": "ctime", "origin": "memory"}},
+        )
+        assert t["agent"] == "general_inference"
+        assert "도입일자" in t["direct_response"]
+        assert "기억된 답이 1건 있습니다" in t["direct_response"]
+
+    async def test_delete_specific_field(self, monkeypatch):
+        captured: list = []
+        t = await self._run(
+            monkeypatch, "도입일자 기억 삭제해줘",
+            {"도입일자": {"action": "column", "value": "ctime", "origin": "memory"},
+             "용도": {"action": "literal", "value": "웹서버", "origin": "memory"}},
+            deleted_capture=captured,
+        )
+        assert captured == [["도입일자"]]
+        assert "삭제했습니다" in t["direct_response"]
+
+    async def test_delete_all_requires_all_keyword(self, monkeypatch):
+        captured: list = []
+        t = await self._run(
+            monkeypatch, "이 양식 기억 전부 삭제해줘",
+            {"도입일자": {"action": "column", "value": "ctime", "origin": "memory"}},
+            deleted_capture=captured,
+        )
+        assert captured == [None]
+        assert "모두 삭제" in t["direct_response"]
+
+    async def test_delete_unmatched_does_not_delete(self, monkeypatch):
+        captured: list = []
+        t = await self._run(
+            monkeypatch, "그거 기억 지워줘",
+            {"도입일자": {"action": "column", "value": "ctime", "origin": "memory"}},
+            deleted_capture=captured,
+        )
+        assert captured == []  # 특정 실패 — 침묵 오삭제 금지
+        assert "특정하지 못했습니다" in t["direct_response"]
+
+    async def test_view_empty_memory_guides(self, monkeypatch):
+        t = await self._run(monkeypatch, "이 양식 기억 보여줘", {})
+        assert "기억된 답이 없습니다" in t["direct_response"]
+
+    def test_memory_command_skips_file_zone_clarification(self):
+        """FIX-20: 이력 조회·삭제는 DB 조회가 없어 파일 경로 존 역질문을 스킵해야
+        ③.45에 도달한다(라이브 실측 2026-08-03: 존 역질문이 조회를 가로챔)."""
+        from src.api.routes.query import _file_zone_clarification_or_none
+        from src.orchestration.intent_planner import is_form_memory_command
+
+        assert is_form_memory_command("이 양식에 기억된 답 보여줘")
+        assert is_form_memory_command("도입일자 기억 삭제해줘")
+        assert not is_form_memory_command("여의도 서버들에 대해 양식을 채우시오")
+
+        cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
+        assert _file_zone_clarification_or_none("이 양식에 기억된 답 보여줘", None, cfg) is None
+        assert _file_zone_clarification_or_none("기억 전부 삭제", None, cfg) is None
+        # 일반 폼필(존 미지정)은 기존대로 역질문 발동
+        assert _file_zone_clarification_or_none("양식 채워줘", None, cfg) is not None
+
+    def test_memory_device_term_not_hijacked(self):
+        """'(주)기억장치'(메모리 관용 명사)는 이력 명령이 아니다 — 정상 폼필이
+        존 역질문 스킵·이력 조회로 오탈취되지 않아야 한다(FIX-20 사이드이펙트 교정)."""
+        from src.api.routes.query import _file_zone_clarification_or_none
+        from src.orchestration.intent_planner import is_form_memory_command
+
+        assert not is_form_memory_command("이 양식으로 주기억장치 사용현황 보여줘")
+        assert not is_form_memory_command("기억장치 사용률 조회")
+        # 진짜 이력 명령은 여전히 판정
+        assert is_form_memory_command("주기억장치 양식에 기억된 답 보여줘")
+
+        cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
+        # 주기억장치 폼필(존 미지정)은 존 역질문이 정상 발동해야 한다
+        assert _file_zone_clarification_or_none(
+            "이 양식으로 주기억장치 사용현황 보여줘", None, cfg
+        ) is not None
+
+    async def test_replanner_skips_direct_response_tasks(self):
+        """FIX-22: 결정적 direct_response(이력 조회 등)는 최종 응답 — replanner LLM
+        재평가가 '내용 미제공' 오판으로 DB 조회 후속을 만들면 채우기로 회귀한다
+        (라이브 실측 2026-08-03)."""
+        from unittest.mock import AsyncMock
+
+        from src.orchestration.replanner import replanner
+
+        llm = AsyncMock()
+        state = {
+            "user_query": "이 양식에 기억된 답 보여줘",
+            "replan_count": 0,
+            "task_plan": [{
+                "task_id": "t1", "agent": "general_inference",
+                "sub_query": "이 양식에 기억된 답 보여줘",
+                "direct_response": "'서버 목록'에 기억된 답 7건 ...",
+                "status": "completed",
+            }],
+            "task_results": {"t1": {"final_response": "'서버 목록'에 기억된 답 7건 ..."}},
+        }
+        result = await replanner(
+            state, llm=llm,
+            app_config=SimpleNamespace(max_replan=2),
+        )
+        assert result["needs_replan"] is False
+        llm.ainvoke.assert_not_called()
+
+    async def test_no_file_delete_uses_last_form_signature(self, monkeypatch):
+        """FIX-23: 파일 재첨부 없는 삭제가 직전 양식 시그니처로 실제 실행되어야 한다
+        (라이브 실측 2026-08-03: 커버리지 밖 → LLM 환각 '삭제했다' + Redis 잔존)."""
+        import src.schema_cache.form_memory as fm
+        from unittest.mock import AsyncMock
+
+        from src.orchestration.intent_planner import intent_planner
+
+        captured: list = []
+
+        async def _fake_load(template, app_config, touch=True, signature=None):
+            return signature, {"구분": {"action": "literal", "value": "K리전(공동존)", "origin": "memory"}}, \
+                {"display_name": "서버 목록", "created_at": "2026-07-31", "use_count": 1}
+
+        async def _fake_delete(template, app_config, field_names=None, signature=None):
+            captured.append((signature, field_names))
+            return 1, "서버 목록"
+
+        monkeypatch.setattr(fm, "load_form_memory_answers", _fake_load)
+        monkeypatch.setattr(fm, "delete_form_memory_entries", _fake_delete)
+        llm = AsyncMock()
+        state = {
+            "user_query": "구분 기억 삭제",
+            "template_structure": None,           # 파일 재첨부 없음
+            "last_form_signature": "sig-prev",    # 직전 양식 턴이 보존
+        }
+        result = await intent_planner(
+            state, llm=llm,
+            app_config=SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7)),
+        )
+        llm.ainvoke.assert_not_called()
+        assert captured == [("sig-prev", ["구분"])]
+        assert "삭제했습니다" in result["task_plan"][0]["direct_response"]
+        assert result["last_form_signature"] == "sig-prev"  # 컨텍스트 유지
+
+    async def test_no_file_no_signature_guides_instead_of_hallucinating(self):
+        """FIX-23: 시그니처도 없으면 LLM으로 새지 않고 결정적 안내(환각 성공 차단)."""
+        from unittest.mock import AsyncMock
+
+        from src.orchestration.intent_planner import intent_planner
+
+        llm = AsyncMock()
+        state = {"user_query": "구분 기억 삭제", "template_structure": None}
+        result = await intent_planner(
+            state, llm=llm,
+            app_config=SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7)),
+        )
+        llm.ainvoke.assert_not_called()
+        assert "양식 파일을" in result["task_plan"][0]["direct_response"]
+
+    async def test_fill_turn_preserves_signature(self):
+        """FIX-23: 채우기 턴(③ mapped_db_ids 경유 포함)이 last_form_signature를 보존한다."""
+        from unittest.mock import AsyncMock
+
+        from src.orchestration.intent_planner import intent_planner
+        from src.utils.schema_utils import form_signature
+
+        tpl = _tpl(["서버명", "도입일자"], title="서버 목록")
+        llm = AsyncMock()
+        state = {
+            "user_query": "여의도 서버들에 대해 양식을 채우시오",
+            "template_structure": tpl,
+            "mapped_db_ids": ["polestar_cm_yd"],
+        }
+        result = await intent_planner(
+            state, llm=llm,
+            app_config=SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=7)),
+        )
+        llm.ainvoke.assert_not_called()
+        assert result["task_plan"][0]["agent"] == "data_query"
+        assert result["last_form_signature"] == form_signature(tpl)
+
+    async def test_delete_save_back_failure_reports_zero(self, monkeypatch):
+        """FIX-23: 필드 삭제 저장-백 실패는 '삭제 성공'으로 보고되면 안 된다."""
+        import src.schema_cache.form_memory as fm
+
+        class _FailSaveRedis(_FakeRedis):
+            async def save_form_memory(self, signature, data, ttl_seconds):
+                return False  # 저장 실패
+
+        fake = _FailSaveRedis()
+        fake.store["s1"] = {"display_name": "d", "fields": {
+            "a": {"action": "blank", "value": None},
+            "b": {"action": "blank", "value": None},
+        }}
+
+        async def _fake_get_redis(app_config):
+            return fake
+
+        monkeypatch.setattr(fm, "_get_redis", _fake_get_redis)
+        removed, _ = await fm.delete_form_memory_entries(
+            None, _CFG7, ["a"], signature="s1",
+        )
+        assert removed == 0
+
+    async def test_field_mapper_skips_memory_command_turn(self):
+        """FIX-24: 이력 명령 턴은 field_mapper 매핑 자체를 스킵 — 위치어 없는 질의의
+        전 DB 유사어 LLM 발견(413 재시도 수십 초)이 낭비 실행되던 라이브 실측 교정."""
+        from src.nodes.field_mapper import field_mapper
+
+        state = {
+            "user_query": "이 양식에 저장된 값들을 보여줘",
+            "template_structure": _tpl(["서버명", "도입일자"]),
+            "parsed_requirements": {},
+        }
+        # llm=None: 스킵 경로는 LLM 생성 전에 반환해야 한다(도달 시 create_llm 시도로 실패)
+        result = await field_mapper(state, llm=None, app_config=None)
+        assert result["current_node"] == "field_mapper"
+        assert result.get("column_mapping") is None
+        assert result.get("mapped_db_ids") is None
+
+
+class TestWriterShortKeySubstringGuard:
+    """FIX-25 — 비고=IP값 근본 원인 재현·차단 (라이브 실측 2026-08-03 아티팩트 기반).
+
+    SQL에 AS "비고"가 없고 CSV도 4칼럼뿐인데 Excel 비고가 IP로 채워졌다 — writer의
+    부분 매칭 폴백이 행 키 "IP"(2글자)를 'descr**ip**tion'·'**ip**address' 등 거의
+    모든 매핑 문자열에 매칭한 것."""
+
+    _ROW = {"서버명": "web-01", "IP": "10.0.0.1",
+            "OS(버전정보)": "RHEL8", "제조사(모델명)": "Dell(R740)"}
+
+    def test_short_key_never_substring_matched(self):
+        from src.document.excel_writer import _get_value_from_row
+
+        # 낡은 비고 매핑 후보 전부 — 어느 것도 'IP' 키에 오매칭되면 안 된다
+        for col in ("polestar.lvw_logical_link_topology.description",
+                    "cmm_resource.ipaddress", "description", "IPAM_INFO.DESCRIPTION"):
+            assert _get_value_from_row(dict(self._ROW), col, None) is None, col
+
+    def test_legit_ip_fill_survives_via_reverse_mapping(self):
+        from src.document.excel_writer import _get_value_from_row
+
+        reverse = {"cmm_resource.ipaddress": "IP"}
+        assert _get_value_from_row(dict(self._ROW), "cmm_resource.ipaddress", reverse) == "10.0.0.1"
+
+    def test_dropped_fields_force_mapping_none_single(self):
+        """FIX-15 제외 필드는 state 매핑도 None(불변식) — writer 오채움 원천 차단."""
+        from src.nodes.query_generator import _try_build_form_fill_pivot_sql
+
+        state = {
+            "column_mapping": {
+                "서버명": "cmm_resource.name",
+                "비고": "polestar.lvw_logical_link_topology.description",  # 타 테이블 → 제외
+            },
+            "schema_info": {
+                "tables": {"cmm_resource": {"columns": [{"name": "name", "type": "text"}]}},
+                **_EAV_META,
+            },
+            "template_structure": {"sheets": [{"title_text": "서버 목록", "name": "Sheet1"}]},
+            "active_db_engine": "postgresql",
+            "active_db_id": "",
+        }
+        result = _try_build_form_fill_pivot_sql(state, 1000, "양식 채워줘")
+        assert result is not None
+        assert "비고" not in result["sql"]
+        assert result["mapping_updates"]["비고"] is None

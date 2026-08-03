@@ -434,7 +434,12 @@ def resolve_form_fill_answers(
             continue
         action = str(ans.get("action") or "").strip().lower()
         value = ans.get("value")
-        entry = {"action": action, "value": value, "applied": False, "reason": None}
+        # origin: "answer"(이번 턴 패널 답변) | "memory"(확인 이력, Phase 3) —
+        # 응답 사유 표시([사용자 답변 적용] vs [확인 이력 적용])와 저장 게이트가 구분한다.
+        entry = {
+            "action": action, "value": value, "applied": False, "reason": None,
+            "origin": ans.get("origin", "answer"),
+        }
         overrides[field] = entry
         if field in protected:
             entry["reason"] = "월 시리즈 등 구조 채움 필드는 답변으로 변경할 수 없습니다"

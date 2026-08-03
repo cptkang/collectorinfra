@@ -137,6 +137,10 @@ class QueryConfig(BaseSettings):
     sufficiency_required_threshold: float = 0.7   # hint/synonym 매핑
     sufficiency_optional_threshold: float = 0.5   # llm_inferred 매핑
 
+    # 폼필 확인 이력(D-118 Phase 3) TTL — sliding(적용 시 연장). 0이면 기능 OFF.
+    # 짧은 기본값이 안전측: 만료 비용(패널 재답변 1회) ≪ 부패 지속 비용(감사자료 오기재).
+    form_memory_ttl_days: int = 7
+
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
 
 

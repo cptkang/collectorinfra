@@ -540,6 +540,7 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "form_fill_overrides": res.get("form_fill_overrides"),
         "form_fill_literals": res.get("form_fill_literals"),
         "form_fill_answers": state.get("form_fill_answers"),
+        "form_fill_remember": state.get("form_fill_remember"),
         "pending_form_fill": state.get("pending_form_fill"),
         "final_response": "",
         "output_file": None,

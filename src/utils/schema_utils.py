@@ -46,3 +46,29 @@ def normalize_field_name(name: str) -> str:
     name = re.sub(r"[\r\n\t]+", " ", name)
     name = re.sub(r" {2,}", " ", name)
     return name.strip()
+
+
+def form_signature(template_structure: dict | None) -> str | None:
+    """양식 시그니처를 계산한다 (Plan 68 §2.4, D-118 확인 이력 키).
+
+    **헤더 필드명 집합만** 사용한다 — 데이터 행·파일명·시트명 불포함(값 선입력·파일명
+    변경에 불변). 정규화: NFC + 공백/개행 전부 제거 + 소문자화 → 정렬 집합 해시.
+    "IP 주소"와 "IP주소", 띄어쓰기 교정본이 같은 시그니처가 된다.
+
+    Returns:
+        16자리 sha256 hex 접두 또는 None(헤더 없음 — 이력 비대상).
+    """
+    import hashlib
+
+    fields: set[str] = set()
+    for sheet in (template_structure or {}).get("sheets", []):
+        for header in sheet.get("headers", []) or []:
+            if header is None:
+                continue
+            norm = normalize_field_name(str(header)).replace(" ", "").lower()
+            if norm:
+                fields.add(norm)
+    if not fields:
+        return None
+    joined = "\x1f".join(sorted(fields))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
