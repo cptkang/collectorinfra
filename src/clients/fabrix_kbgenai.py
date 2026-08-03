@@ -123,6 +123,8 @@ class KBGenAIChat(BaseChatModel):
         )
         response.raise_for_status()
         result = response.json()
+        if not isinstance(result, dict):
+            raise ValueError(f"API returned non-dict response: {result!r}")
         log_filter_block_if_any(
             logger, result=result, prompt=self._prompt_text(messages), where="_generate"
         )
@@ -150,6 +152,8 @@ class KBGenAIChat(BaseChatModel):
             )
             response.raise_for_status()
             result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError(f"API returned non-dict response: {result!r}")
             log_filter_block_if_any(
                 logger, result=result, prompt=self._prompt_text(messages), where="_agenerate"
             )
@@ -192,8 +196,13 @@ class KBGenAIChat(BaseChatModel):
 
             try:
                 line_json = json.loads(line)
-                content = line_json.get("content", "")
-                event_status = line_json.get("event_status", "")
+                # FabriX는 `data: null` 등 non-dict 라인을 보낼 수 있다 — json.loads는
+                # 성공하므로 JSONDecodeError로 걸러지지 않는다(2026-08-03 라이브 실측:
+                # None.get AttributeError가 최종 응답 생성을 통째로 실패시킴).
+                if not isinstance(line_json, dict):
+                    continue
+                content = line_json.get("content") or ""
+                event_status = line_json.get("event_status") or ""
                 if not blocked_logged and is_filter_blocked(line_json, line):
                     blocked_logged = log_filter_block_if_any(
                         logger, result=line_json, raw_text=line,
@@ -242,8 +251,13 @@ class KBGenAIChat(BaseChatModel):
 
                     try:
                         line_json = json.loads(line)
-                        content = line_json.get("content", "")
-                        event_status = line_json.get("event_status", "")
+                        # FabriX는 `data: null` 등 non-dict 라인을 보낼 수 있다 — json.loads는
+                        # 성공하므로 JSONDecodeError로 걸러지지 않는다(2026-08-03 라이브 실측:
+                        # None.get AttributeError가 최종 응답 생성을 통째로 실패시킴).
+                        if not isinstance(line_json, dict):
+                            continue
+                        content = line_json.get("content") or ""
+                        event_status = line_json.get("event_status") or ""
                         if not blocked_logged and is_filter_blocked(line_json, line):
                             blocked_logged = log_filter_block_if_any(
                                 logger, result=line_json, raw_text=line,
