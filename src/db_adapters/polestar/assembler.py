@@ -502,48 +502,6 @@ def build_semantic_pivot_sql(
     )
 
 
-def build_multi_resource_pivot_sql(
-    regular_entries: list[tuple[str, str]],
-    server_eav: list[tuple[str, str]],
-    child_eav: list[tuple[str, str, str]],
-    eav_pattern: dict,
-    metric_fields: list[str] | None = None,
-    db_engine: str | None = None,
-    db_schema: str | None = None,
-    limit: int | None = None,
-    stat_month: StatMonth = None,
-    metric_table: str = _DEFAULT_METRIC_TABLE,
-    explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
-    server_scope: tuple[str, list[str]] | None = None,
-    order_by: tuple[str, str] | None = None,
-    time_breakdown: bool = False,
-    global_aggregate: bool = False,
-    entity_count_alias: str | None = None,
-    direct_having: list[tuple[str, str, object]] | None = None,
-    measure_having: list[tuple[str, str, object]] | None = None,
-) -> str:
-    """겸용 진입점 — 하위호환 유지용 wrapper (Plan 69 P5-3).
-
-    신규 호출부는 경로별 진입 함수(``build_form_fill_pivot_sql``·``build_semantic_pivot_sql``)를
-    쓴다. 이 이름은 종전 시그니처를 그대로 받아 코어로 위임한다.
-    """
-    return _build_pivot_sql(
-        regular_entries, server_eav, child_eav, eav_pattern,
-        metric_fields=metric_fields,
-        db_engine=db_engine,
-        db_schema=db_schema,
-        limit=limit,
-        stat_month=stat_month,
-        metric_table=metric_table,
-        explicit_measures=explicit_measures,
-        server_scope=server_scope,
-        order_by=order_by,
-        time_breakdown=time_breakdown,
-        global_aggregate=global_aggregate,
-        entity_count_alias=entity_count_alias,
-        direct_having=direct_having,
-        measure_having=measure_having,
-    )
 
 
 def build_multi_resource_pivot_block(
@@ -553,12 +511,12 @@ def build_multi_resource_pivot_block(
     eav_pattern: dict,
     metric_fields: list[str] | None = None,
     db_engine: str | None = None,
-    metric_table: str = "cmm_metric_stat_m",
+    metric_table: str = _DEFAULT_METRIC_TABLE,
 ) -> str:
     """서버 + 자식 리소스(server.Cpus/Memory) 속성 + 사용률 통계를 **한 쿼리**로 피벗하는 결정적 지침.
 
     LLM 프롬프트용 텍스트 버전(결정적 SQL 조립이 불가한 경로의 폴백). 실제 폼필 멀티 경로는
-    `build_multi_resource_pivot_sql`로 SQL을 직접 조립한다(D-068 2차). 자식 리소스 속성이 하나라도
+    `build_form_fill_pivot_sql`로 SQL을 직접 조립한다(D-068 2차). 자식 리소스 속성이 하나라도
     있을 때만 호출한다.
     """
     entity, config, attr_col, val_col, ent_join, cfg_join = _eav_pattern_parts(eav_pattern)

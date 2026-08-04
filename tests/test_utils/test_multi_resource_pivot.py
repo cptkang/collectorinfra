@@ -18,8 +18,9 @@ from src.utils.query_gen_common import (
 )
 # 폴스타 EAV/피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — 이동-불변.
 from src.db_adapters.polestar.assembler import (
+    build_form_fill_pivot_sql,
     build_multi_resource_pivot_block,
-    build_multi_resource_pivot_sql,
+    build_semantic_pivot_sql,
     classify_metric_field,
     eav_attr_resource_types,
 )
@@ -183,7 +184,7 @@ def test_pivot_sql_servername_renders_name_not_hostname():
     correct_servername_hostname_mapping(cm, "cmm_resource")
     regular = [(f, c) for f, c in cm.items() if not c.startswith("EAV:")]
     eav_pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
-    sql = build_multi_resource_pivot_sql(
+    sql = build_form_fill_pivot_sql(
         regular, [], [("CPU 코어 수", "LOGICALCORE", "server.Cpus")], eav_pattern,
         db_engine="postgresql",
     )
@@ -375,7 +376,7 @@ class TestDeterministicPivotSql:
             eav_pattern=self._PATTERN, metric_fields=self._MF,
         )
         base.update(kw)
-        return build_multi_resource_pivot_sql(**base)
+        return build_form_fill_pivot_sql(**base)
 
     def test_single_group_by_no_duplication(self):
         """서버당 1행 — GROUP BY는 platform_resource_id 하나뿐(월별 중복 없음)."""
@@ -431,7 +432,7 @@ class TestDeterministicPivotSql:
     def test_non_utilization_measure_not_guarded(self):
         """MaxIORate 등 Utilization 외 지표에는 0~1000 게이트를 걸지 않는다(의미 없음)."""
         pattern = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
-        sql = build_multi_resource_pivot_sql(
+        sql = build_semantic_pivot_sql(
             regular_entries=[], server_eav=[], child_eav=[],
             eav_pattern=pattern, db_engine="db2", db_schema="POLESTAR",
             explicit_measures=[("디스크 IO 평균", "server.Disks", "AVG", "avg_val", "MaxIORate")],

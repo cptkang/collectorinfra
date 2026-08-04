@@ -12,7 +12,7 @@ LLM이 SQL을 직접 쓰지 않고 검증된 dimension/measure/entity를 **선�
       ``get_domain_by_id``에서 결정적으로 주입한다(D-066 후속6 단일 출처).
     - ``check_coverage(smq, model, value_index)``: 질의가 시맨틱 모델로 결정적 처리 가능한지 판정.
     - ``compile_smq(smq, db_id)``: SMQ → 방언별 SQL. 패턴 A(서버설정)+B(성능지표)는 기존 결정적
-      조립 엔진 ``build_multi_resource_pivot_sql``(D-068)을 **재사용**한다(이중 조립 엔진 금지 —
+      조립 엔진 ``build_semantic_pivot_sql``(D-068)을 **재사용**한다(이중 조립 엔진 금지 —
       D-067 단일 출처). 패턴 C(알람)는 정규화 조인 전용 조립.
 
 리터럴 정확성(E5-2 연결): 컴파일러가 emit하는 리터럴(resource_type·EAV 속성명·severity)은 전부

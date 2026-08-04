@@ -119,7 +119,7 @@ def build_metric_series_sql(
 ) -> str:
     """서버의 시간별 사용률 시계열(avg_val) 조회 SQL을 조립한다(읽기 전용 SELECT 단일문).
 
-    조인 체인(실측 — assembler.py `build_multi_resource_pivot_sql`):
+    조인 체인(실측 — assembler.py `_build_pivot_sql`):
         server.Server(svr, NAME=server_name) ─ platform_resource_id ─ 자식 리소스(child,
         server.Cpus/server.Memory) ─ cmm_metric_stat_h(s, s.resource_id = child.id,
         definition_name='Utilization'). `stat_date`는 YYYYMMDDHH 시간 키(가장 최근 우선).
