@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from typing import Any, Optional
@@ -196,6 +197,43 @@ def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]
     return input_from, prior
 
 
+def _normalize_sub_query(sub_query: str) -> str:
+    """sub_query를 메모 키용으로 정규화한다(strip + 연속 공백 단일화)."""
+    return " ".join((sub_query or "").split())
+
+
+def _find_memoized_result(
+    agent_name: str, sub_query: str, collector: list
+) -> Optional[dict]:
+    """collector에서 같은 (agent, 정규화 sub_query)의 선행 **성공** 결과를 찾는다.
+
+    deep agent 재개 루프(D-093)에서 오케스트레이터가 같은 조회를 다시 호출하면 워커
+    파이프라인(LLM 2~8회)이 통째로 재실행된다(사고 턴 실측 — 턴 내 메모이제이션).
+    collector는 요청(그래프 실행) 스코프 구조이므로 별도 전역 상태 없이 메모 저장소로
+    재사용한다(동시 요청 오염 없음). 실패(error/failed) 결과는 재시도가 정당하므로 메모
+    대상에서 제외한다.
+
+    Args:
+        agent_name: (결정적 교정 후의) subagent 식별자
+        sub_query: 현재 도구 호출의 자연어 지시
+        collector: 지금까지 실행된 [(task, result), ...]
+
+    Returns:
+        재사용할 선행 성공 결과 (없으면 None)
+    """
+    norm = _normalize_sub_query(sub_query)
+    if not norm:
+        return None
+    for task, result in collector:
+        if task.get("agent") != agent_name or task.get("status") != "completed":
+            continue
+        if isinstance(result, dict) and result.get("error"):
+            continue
+        if _normalize_sub_query(task.get("sub_query", "")) == norm:
+            return result
+    return None
+
+
 async def _run_subagent_tool(
     agent_name: str,
     sub_query: str,
@@ -233,6 +271,31 @@ async def _run_subagent_tool(
             "deepagents 도구 결정적 교정 — data_query→alarm_query (sub_query=%r)", sub_query
         )
         agent_name = "alarm_query"
+    # 턴 내 동일 sub_query 메모이제이션: 재개 루프(D-093)에서 같은 (agent, 정규화 sub_query)
+    # 재호출 시 워커 파이프라인 재실행을 생략하고 선행 성공 결과를 재사용한다. 복사본을
+    # 적재·반환해 하류(집계·합성)의 변형이 원본을 오염시키지 않게 하고, 메모 히트도
+    # collector에 정상 적재하므로 D-062 사후 합성 경로는 기존과 동일하게 동작한다.
+    if collector:
+        memo = _find_memoized_result(agent_name, sub_query, collector)
+        if memo is not None:
+            logger.info(
+                "[LLM계측] sub_query 메모 히트 — 파이프라인 재실행 생략: %s", sub_query
+            )
+            reused = copy.deepcopy(memo)
+            memo_order = len(collector) + 1
+            collector.append((
+                {
+                    "task_id": f"tool_{agent_name}_{memo_order}",
+                    "agent": agent_name,
+                    "sub_query": sub_query,
+                    "depends_on": [],
+                    "input_from": [],
+                    "order": memo_order,
+                    "status": "completed",
+                },
+                reused,
+            ))
+            return _serialize_for_tool(reused, app_config)
     spec = SUBAGENT_REGISTRY.get(agent_name) or _fallback_spec()
     order = (len(collector) + 1) if collector is not None else 1
     # 선행 결과 스코프 결정적 주입(D-095): 게이트 충족 시 D-086 prior_rows 경로 배선.
