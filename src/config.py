@@ -268,6 +268,13 @@ class Text2SQLConfig(BaseSettings):
     # 거부 사유는 로그로 계측 — 위양성 실측 후 기본 전환은 별도 판단(계획서 §0.3-4).
     multi_full_validation: bool = False
 
+    # === Plan 69 P3-2: 단일/멀티 경로 대칭 (기본 OFF 옵트인) ===
+    # ON이면 한쪽 경로에만 있던 주입을 반대편에도 넣는다 — (a) 멀티 어댑터 시스템 템플릿
+    # (b) 단일 스키마 한정 규칙(D-057) (c) 멀티 값 인덱스·폼필 피벗 블록 (d) 멀티 선행
+    # 스코프 결정적 전달(D-099). 갭별 발동은 "[경로대칭] (x)" 로그로 실측한다.
+    # 기본 OFF = 양 경로 프롬프트 바이트 무변경(계획서 §0.3-3).
+    path_parity: bool = False
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

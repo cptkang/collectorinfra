@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Optional
 
@@ -24,16 +23,34 @@ from src.db_adapters import get_adapter
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
-    collect_prior_identity_values as _collect_prior_identity_values,
     build_generic_period_hint,
     build_prior_rows_block,
-    build_query_examples_block,
     build_stat_month_block,
-    build_value_index_block,
     correct_servername_hostname_mapping,
     extract_sql_from_response,
     resolve_query_limit,
     resolve_stat_month_range,
+)
+# 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
+# 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
+from src.nodes.prompt_blocks import (
+    EAV_JOIN_RULE_BLOCK,
+    build_eav_pivot_block,
+    build_forbidden_join_block,
+    build_query_examples,
+    build_schema_prefix_rule,
+    build_stepwise_deps,
+    build_value_index_injection,
+    build_value_joins_block,
+    eav_patterns_of,
+    filter_mapping_by_schema,
+    first_eav_pattern,
+    format_schema_text,
+    path_parity_enabled,
+    prior_server_scope,
+    select_history_fewshot,
+    split_eav_by_resource_type,
+    split_mapping_entries,
 )
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 from src.db_adapters.polestar.assembler import (
@@ -45,13 +62,20 @@ from src.db_adapters.polestar.assembler import (
 )
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
-from src.utils.schema_utils import build_excluded_join_map
 from src.utils.synonym_usage import extract_synonym_usage
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
     from src.nodes.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
+
+# 공유 빌더에 주입하는 DB 특화 리터럴 — 공용 빌더(prompt_blocks)로 옮기지 않고 호출부인
+# 이 파일에 남긴다(D-088: 공용 계층 DB-agnostic, overfit_check 기준선은 파일 단위).
+_ENTITY_RESOURCE_TYPE = "server.Server"     # 엔티티(서버) 자신의 resource_type
+_EAV_HOST_ATTRIBUTE = "Hostname"            # 브릿지 조인 예시의 엔티티 식별 속성
+_EAV_LINK_COLUMN = "configuration_id"       # config 행끼리 잇는 컬럼
+_SCHEMA_EXAMPLE_TABLE = "cmm_resource"      # 스키마 한정 규칙 예시 테이블
+_FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 예시
 
 
 def _format_structure_guide(
@@ -78,22 +102,12 @@ def _format_structure_guide(
     guide = structure_meta.get("query_guide", "")
 
     # EAV 패턴 존재 여부 확인
-    eav_patterns = [
-        p for p in structure_meta.get("patterns", [])
-        if p.get("type") == "eav"
-    ]
+    eav_patterns = eav_patterns_of(structure_meta)
 
     # EAV 패턴이 있으면 조인 규칙 지침을 앞에 삽입 — guide가 빈 프로필에서도 금지
     # 규칙 자체는 유효하다(빈 guide 시 규칙이 통째로 빠지던 결함 수정, Plan 69 P0-③).
     if eav_patterns:
-        eav_join_rule = (
-            "## EAV 테이블 조인 규칙\n"
-            "EAV 구조의 entity 테이블과 config 테이블을 조인할 때 "
-            "id 컬럼으로 직접 조인하지 마세요.\n"
-            "두 테이블의 ID 체계가 다릅니다. "
-            "반드시 아래 지침의 JOIN SQL 패턴을 그대로 사용하세요.\n\n"
-        )
-        guide = eav_join_rule + guide
+        guide = EAV_JOIN_RULE_BLOCK + guide
 
     # RESOURCE_TYPE 유사단어 추가
     if resource_type_synonyms:
@@ -109,22 +123,7 @@ def _format_structure_guide(
 
     # EAV 패턴의 value_joins 정보를 쿼리 가이드에 추가
     for eav_p in eav_patterns:
-        value_joins = eav_p.get("value_joins", [])
-        if value_joins:
-            entity_table = eav_p.get("entity_table", "entity_table")
-            config_table = eav_p.get("config_table", "config_table")
-            attr_col = eav_p.get("attribute_column", "NAME")
-            guide += "\n\n[값 기반 조인 (value-based join)]"
-            guide += (
-                f"\n{config_table}과 {entity_table} 간 FK가 없습니다. "
-                "다음 값 대응 관계를 조인에 활용하세요:"
-            )
-            for vj in value_joins:
-                guide += (
-                    f"\n- {config_table}.{attr_col}='{vj['eav_attribute']}'인 행의 "
-                    f"{vj['eav_value_column']} 값은 "
-                    f"{entity_table}.{vj['entity_column']}과 동일한 값입니다."
-                )
+        guide += build_value_joins_block(eav_p)
 
     # 샘플 데이터 정보
     samples = structure_meta.get("samples", {})
@@ -136,27 +135,14 @@ def _format_structure_guide(
                     guide += f"  - {row}\n"
 
     # 금지 JOIN 컬럼 경고
-    for pattern in structure_meta.get("patterns", []):
-        excluded = pattern.get("excluded_join_columns", [])
-        if excluded:
-            guide += "\n\n[금지 JOIN 컬럼]"
-            guide += "\n다음 컬럼은 JOIN ON 절에서 절대 사용하지 마세요:"
-            for excl in excluded:
-                guide += (
-                    f"\n- {excl.get('table', '?')}.{excl.get('column', '?')}: "
-                    f"{excl.get('reason', 'JOIN 불가')}"
-                )
+    guide += build_forbidden_join_block(
+        structure_meta.get("patterns", []), style="section"
+    )
 
     # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지.
     # 멀티 DB 경로(multi_db_executor)와 동일 출처를 쓰도록 공용 헬퍼로 분리(D-066).
-    # N2(D-133): 이력 검색이 유사 예시를 골라오면 고정 예시 대신 그것을 쓴다. 블록 포맷은
-    # 동일 헬퍼를 통과시켜 유지하고, 미적중·플래그 OFF면 아래 고정 경로가 그대로 남는다.
-    if query_history_examples:
-        guide += build_query_examples_block(
-            {"query_examples": query_history_examples}
-        )
-    else:
-        guide += build_query_examples_block(structure_meta)
+    # N2(D-133): 이력 검색이 유사 예시를 골라오면 고정 예시 대신 그것을 쓴다.
+    guide += build_query_examples(structure_meta, query_history_examples)
 
     return guide
 
@@ -173,13 +159,7 @@ def _prior_server_scope(state: AgentState) -> Optional[tuple[str, list[str]]]:
     Returns:
         (식별컬럼, 값목록) 또는 None(선행 스코프 없음)
     """
-    prior_rows = state.get("prior_rows")
-    if not prior_rows:
-        return None
-    col, values = _collect_prior_identity_values(prior_rows)
-    if not col or not values:
-        return None
-    return col, values
+    return prior_server_scope(state.get("prior_rows"))
 
 
 def _try_build_form_fill_pivot_sql(
@@ -202,23 +182,14 @@ def _try_build_form_fill_pivot_sql(
     if eav_pattern:
         correct_servername_hostname_mapping(column_mapping, eav_pattern.get("entity_table", ""))
     attr_rt = eav_attr_resource_types(schema_info)
-    eav_entries = [
-        (f, c[4:]) for f, c in column_mapping.items()
-        if c and c.startswith("EAV:")
-    ]
-    child_eav = [
-        (f, a, attr_rt[a.upper()])
-        for f, a in eav_entries
-        if a.upper() in attr_rt and attr_rt[a.upper()] != "server.Server"
-    ]
+    _, eav_entries = split_mapping_entries(column_mapping)
+    child_eav, server_eav = split_eav_by_resource_type(
+        eav_entries, attr_rt, entity_resource_type=_ENTITY_RESOURCE_TYPE
+    )
     if not child_eav:
         return None
     if not eav_pattern:
         return None
-    server_eav = [
-        (f, a) for f, a in eav_entries
-        if a.upper() not in attr_rt or attr_rt[a.upper()] == "server.Server"
-    ]
     # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(미매핑으로 접힘)
     regular_entries = [
         (f, c) for f, c in column_mapping.items()
@@ -373,6 +344,7 @@ async def query_generator(
             active_db_engine=state.get("active_db_engine"),
             routing_intent=state.get("routing_intent"),
             query_history_examples=history_examples,
+            path_parity=path_parity_enabled(app_config),
         )
 
         user_prompt = _build_user_prompt(
@@ -534,11 +506,8 @@ def _build_stepwise_deps(
     Returns:
         ``column_deriver.StepwiseDeps`` 또는 None(플래그 OFF)
     """
-    if not app_config.text2sql.stepwise_derivation:
-        return None
-    from src.nodes.column_deriver import StepwiseDeps
-
-    return StepwiseDeps(
+    return build_stepwise_deps(
+        app_config,
         path="single",
         synonyms=state.get("column_synonyms") or {},
         value_index=(
@@ -547,17 +516,8 @@ def _build_stepwise_deps(
         ),
         schema_info=state.get("schema_info") or {},
         db_engine=state.get("active_db_engine") or "postgresql",
-        adapter_db_ids=app_config.get_polestar_db_ids() or None,
         default_limit=limit_value,
-        synonym_min_score=app_config.synonym.match_confidence_min,
-        value_fuzzy=app_config.synonym.fuzzy_match,
     )
-
-
-def _query_keywords(user_query: str) -> list[str]:
-    """값 인덱스 검색용 질의 토큰(2글자 이상)을 추출한다."""
-    tokens = re.split(r"[\s,./()\[\]{}'\"`~!@#$%^&*=+:;?<>|\\-]+", user_query or "")
-    return [t for t in tokens if len(t) >= 2]
 
 
 async def _select_query_history_examples(
@@ -577,15 +537,8 @@ async def _select_query_history_examples(
     Returns:
         few-shot 예시 목록(question/sql) 또는 None(고정 예시 유지)
     """
-    from src.schema_cache.query_history import select_fewshot_examples
-
-    t2 = app_config.text2sql
-    return await select_fewshot_examples(
-        state.get("active_db_id") or "",
-        user_query,
-        enabled=t2.query_history_fewshot,
-        top_k=t2.query_history_top_k,
-        min_score=t2.query_history_min_score,
+    return await select_history_fewshot(
+        state.get("active_db_id") or "", user_query, app_config
     )
 
 
@@ -593,19 +546,9 @@ def _build_value_index_injection(
     state: AgentState, user_query: str, app_config: AppConfig
 ) -> str:
     """E5-2 값 검색 리터럴 주입 블록을 만든다(value_retrieval OFF·미매칭 시 빈 문자열)."""
-    if not app_config.synonym.value_retrieval:
-        return ""
-    index = state.get("column_value_index")
-    if not index:
-        return ""
-    from src.schema_cache.value_index import search_value_index
-
-    matched = search_value_index(
-        index, _query_keywords(user_query),
-        fuzzy=app_config.synonym.fuzzy_match,
-        min_score=app_config.synonym.match_confidence_min,
+    return build_value_index_injection(
+        state.get("column_value_index"), user_query, app_config
     )
-    return build_value_index_block(matched)
 
 
 async def _run_multi_candidate_single_db(
@@ -725,6 +668,7 @@ def _build_system_prompt(
     active_db_engine: str | None = None,
     routing_intent: str | None = None,
     query_history_examples: list[dict] | None = None,
+    path_parity: bool = False,
 ) -> str:
     """시스템 프롬프트를 구성한다.
 
@@ -740,6 +684,7 @@ def _build_system_prompt(
         active_db_engine: 대상 DB 엔진 타입 (선택, 예: "db2", "postgresql")
         routing_intent: 시멘틱 라우터가 분류한 의도 (선택, 예: "alarm_query", "data_query")
         query_history_examples: 질의 이력 few-shot 예시 (선택, N2 — 없으면 고정 예시)
+        path_parity: 경로 대칭 옵트인 (ON이면 멀티 전용이던 스키마 한정 규칙을 주입)
 
     Returns:
         시스템 프롬프트 문자열
@@ -770,6 +715,23 @@ def _build_system_prompt(
     db_engine = active_db_engine or "postgresql"
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
+    # 경로 대칭 (b): 스키마 한정 규칙(D-057)은 종전 멀티 전용이었다. 옵트인 ON이면 단일에도
+    # 멀티와 같은 문구를 주입한다 — DB2 단일 조회에서 무스키마 참조가 연결 계정 CURRENT
+    # SCHEMA로 잘못 해소되는 것을 막는다(Plan 69 P3-2). OFF면 프롬프트 바이트 불변.
+    if path_parity:
+        from src.routing.db_schema import get_schema_prefix
+
+        _prefix = get_schema_prefix(active_db_id) if active_db_id else ""
+        db_engine_hint += build_schema_prefix_rule(
+            _prefix,
+            example_table=_SCHEMA_EXAMPLE_TABLE,
+            foreign_prefix_example=_FOREIGN_SCHEMA_PREFIX,
+        )
+        logger.info(
+            "[경로대칭] (b) 스키마 한정 규칙 주입(db=%s, prefix=%s)",
+            active_db_id, _prefix or "(무스키마)",
+        )
+
     # DB 어댑터 디스패치: 담당 어댑터(폴스타)가 있으면 의도별 전용 템플릿, 없으면 공통 템플릿.
     # POLESTAR_DB_IDS 게이트는 어댑터 owns()로 이동(Plan 63 P2/D-089, 동작 불변).
     adapter = get_adapter(active_db_id, polestar_db_ids)
@@ -796,15 +758,7 @@ def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
     Returns:
         EAV 패턴 딕셔너리 또는 None
     """
-    if not schema_info:
-        return None
-    structure_meta = schema_info.get("_structure_meta")
-    if not structure_meta:
-        return None
-    for pattern in structure_meta.get("patterns", []):
-        if pattern.get("type") == "eav":
-            return pattern
-    return None
+    return first_eav_pattern(schema_info)
 
 
 def _build_user_prompt(
@@ -863,57 +817,15 @@ def _build_user_prompt(
     # 양식-DB 매핑 (field_mapper에서 생성된 column_mapping 우선)
     if column_mapping:
         # 수정 A: schema_info 기반 column_mapping 필터링
-        if schema_info:
-            tables_in_schema = set(schema_info.get("tables", {}).keys())
-            # schema_info 키가 "schema.table" 형식일 수 있으므로 마지막 부분도 매칭 대상에 추가
-            # 예: "polestar.cmm_resource" → "cmm_resource"도 매칭
-            tables_lower = set()
-            for t in tables_in_schema:
-                tables_lower.add(t.lower())
-                # "schema.table" → "table" 부분도 추가
-                if "." in t:
-                    tables_lower.add(t.rsplit(".", 1)[-1].lower())
-
-            filtered_mapping: dict[str, Optional[str]] = {}
-            for field, col in column_mapping.items():
-                if col and not col.startswith("EAV:"):
-                    # "db_id:table.column" → "table.column" (콜론 접두사 제거)
-                    effective_col = col.split(":", 1)[-1] if ":" in col else col
-                    # 주의: 누적 리스트 `parts`를 덮어쓰지 않도록 별도 변수 사용.
-                    # (과거 `parts = split(...)`가 프롬프트 누적 리스트를 클로버링해
-                    #  '## 사용자 질의'·'## 파싱된 요구사항' 섹션이 유실됐음)
-                    col_parts = effective_col.split(".")
-                    # "db_id.table.column" (3단계) → table = col_parts[-2]
-                    # "table.column" (2단계) → table = col_parts[0]
-                    if len(col_parts) >= 3:
-                        table_part = col_parts[-2]
-                        col = f"{col_parts[-2]}.{col_parts[-1]}"
-                    elif len(col_parts) == 2:
-                        table_part = col_parts[0]
-                    else:
-                        table_part = ""
-
-                    if table_part.lower() in tables_lower:
-                        filtered_mapping[field] = col
-                    else:
-                        logger.warning(
-                            "column_mapping 필터링: '%s' -> '%s' (테이블 '%s' 미존재, schema_tables=%s)",
-                            field, col, table_part, list(tables_in_schema)[:5],
-                        )
-                else:
-                    filtered_mapping[field] = col
-            column_mapping = filtered_mapping
+        column_mapping = filter_mapping_by_schema(
+            column_mapping, schema_info,
+            log_label="column_mapping 필터링",
+            log_schema_tables=True,
+            strip_db_prefix=True,
+        )
 
         # 정규 매핑과 EAV 매핑 분리
-        regular_entries = [
-            (field, col) for field, col in column_mapping.items()
-            if col and not col.startswith("EAV:")
-        ]
-        eav_entries = [
-            (field, col[4:])  # "EAV:" 접두사 제거
-            for field, col in column_mapping.items()
-            if col and col.startswith("EAV:")
-        ]
+        regular_entries, eav_entries = split_mapping_entries(column_mapping)
 
         # EAV config 테이블과 entity 테이블이 다를 수 있으므로
         # 정규 컬럼 필터링을 제거하고 LLM이 schema_info를 보고 적절한 JOIN을 결정하도록 함.
@@ -924,18 +836,11 @@ def _build_user_prompt(
         # 자식 리소스(server.Cpus/Memory 등) EAV 속성이 섞이면 서버 행 브릿지 조인으로는
         # NULL이 되므로, resource_type 구분 다중 리소스 피벗 블록으로 대체한다(D-068).
         attr_rt = eav_attr_resource_types(schema_info)
-        child_eav = [
-            (field, attr, attr_rt[attr.upper()])
-            for field, attr in eav_entries
-            if attr.upper() in attr_rt and attr_rt[attr.upper()] != "server.Server"
-        ]
+        child_eav, server_eav = split_eav_by_resource_type(
+            eav_entries, attr_rt, entity_resource_type=_ENTITY_RESOURCE_TYPE
+        )
         use_multi_resource_pivot = bool(child_eav)
         if use_multi_resource_pivot:
-            server_eav = [
-                (field, attr)
-                for field, attr in eav_entries
-                if attr.upper() not in attr_rt or attr_rt[attr.upper()] == "server.Server"
-            ]
             eav_pattern = _get_eav_pattern(schema_info) or {}
             # 사용률 통계 필드는 통합 피벗에 접어 넣고 미매핑 목록에서 뺀다(블록 충돌·GROUP BY 위반 방지).
             metric_unmapped = [f for f in unmapped_fields if classify_metric_field(f)]
@@ -975,42 +880,15 @@ def _build_user_prompt(
             )
 
         if eav_entries and not use_multi_resource_pivot:
-            # _structure_meta에서 EAV 패턴 정보를 동적 추출
-            eav_pattern = _get_eav_pattern(schema_info)
-            config_table = eav_pattern.get("config_table", "config_table") if eav_pattern else "config_table"
-            attr_col = eav_pattern.get("attribute_column", "NAME") if eav_pattern else "NAME"
-            val_col = eav_pattern.get("value_column", "VALUE") if eav_pattern else "VALUE"
-            eav_lines = "\n".join(
-                f'- "{field}" → EAV 속성 "{attr}" ({config_table}.{attr_col} = \'{attr}\' → {val_col})'
-                for field, attr in eav_entries
-            )
-            # value_joins를 우선 사용하고, 없을 때만 join_condition 폴백
-            join_hint = ""
-            if eav_pattern and eav_pattern.get("value_joins"):
-                vjs = eav_pattern["value_joins"]
-                entity_table = eav_pattern.get("entity_table", "entity_table")
-                vj_lines = []
-                for vj in vjs:
-                    vj_lines.append(
-                        f"  {config_table}.{attr_col}='{vj['eav_attribute']}' -> "
-                        f"{vj['eav_value_column']} = {entity_table}.{vj['entity_column']}"
-                    )
-                join_hint = (
-                    "\n주의: 두 테이블 간 FK가 없으므로 값 기반 브릿지 조인을 사용하세요:\n"
-                    + "\n".join(vj_lines)
-                    + "\n예: LEFT JOIN {ct} p_host ON p_host.{ac}='Hostname' AND p_host.{vc} = r.hostname"
-                    "\n     LEFT JOIN {ct} p_attr ON p_attr.configuration_id = p_host.configuration_id AND p_attr.{ac} = '속성명'"
-                ).format(ct=config_table, ac=attr_col, vc=val_col)
-            else:
-                join_cond = eav_pattern.get("join_condition", "") if eav_pattern else ""
-                if join_cond:
-                    join_hint = f"\n조인 조건: {join_cond}"
+            # _structure_meta에서 EAV 패턴 정보를 동적 추출. alias 지시는 단일 경로 규약
+            # (테이블.컬럼 형식)이라 한글 alias 강제는 하지 않는다(§0.3-3 (e) 의도된 차이).
             parts.append(
-                f"## EAV 피벗 매핑 (반드시 CASE WHEN 피벗으로 변환)\n{eav_lines}\n\n"
-                f"위 EAV 속성은 {config_table} 테이블에서 피벗 쿼리로 추출해야 합니다:\n"
-                f"  MAX(CASE WHEN p.{attr_col} = '속성명' THEN p.{val_col} END) AS alias"
-                f"{join_hint}\n"
-                "반드시 GROUP BY를 포함하세요."
+                build_eav_pivot_block(
+                    eav_entries, _get_eav_pattern(schema_info),
+                    hangul_alias=False,
+                    host_attribute=_EAV_HOST_ATTRIBUTE,
+                    link_column=_EAV_LINK_COLUMN,
+                )
             )
         # 미매핑 필드 별도 안내 — 위에서 계산·필터링한 unmapped_fields 사용(사용률은 통합 피벗에 접혀 제외됨).
         if unmapped_fields:
@@ -1068,75 +946,17 @@ def _format_schema_for_prompt(
     Returns:
         사람이 읽기 쉬운 스키마 텍스트
     """
-    descriptions = column_descriptions or {}
-    synonyms = column_synonyms or {}
-
-    # excluded_join_columns 추출: {(table_lower, column_lower): reason}
-    excluded_join_map = build_excluded_join_map(schema_info)
-
-    lines: list[str] = []
-    tables = schema_info.get("tables", {})
-
-    for table_name, table_data in tables.items():
-        # table_name에서 스키마 접두사 제거한 bare name 추출
-        bare_table = table_name.rsplit(".", 1)[-1].lower()
-        columns_desc: list[str] = []
-        for col in table_data.get("columns", []):
-            col_key = f"{table_name}.{col['name']}"
-            col_str = f"  - {col['name']}: {col['type']}"
-            if col.get("primary_key"):
-                col_str += " [PK]"
-            if col.get("foreign_key"):
-                col_str += f" [FK -> {col.get('references', '?')}]"
-            if not col.get("nullable", True):
-                col_str += " NOT NULL"
-            # JOIN 금지 컬럼 주석 추가
-            col_lower = col["name"].lower()
-            excluded_reason = excluded_join_map.get((bare_table, col_lower))
-            if excluded_reason:
-                col_str += f" -- JOIN 금지({excluded_reason})"
-            # 컬럼 설명 추가
-            desc = descriptions.get(col_key)
-            if desc:
-                col_str += f" -- {desc}"
-            # 유사 단어 추가
-            syns = synonyms.get(col_key)
-            if syns:
-                col_str += f" [유사: {', '.join(syns[:5])}]"
-            columns_desc.append(col_str)
-        lines.append(f"### {table_name}")
-        lines.extend(columns_desc)
-
-        # 샘플 데이터 (있으면, 3건까지 표시)
-        samples = table_data.get("sample_data", [])
-        if samples:
-            preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
-            lines.append(f"  샘플 데이터 ({len(samples)}건):\n{preview}")
-        lines.append("")
-
-    # resource_type_values 참조 정보
-    if resource_type_synonyms:
-        lines.append("")
-        lines.append("### 참조: RESOURCE_TYPE 값과 한국어 표현")
-        lines.append("아래 값들은 RESOURCE_TYPE 컬럼에 저장되는 값입니다. 사용자가 한국어로 질의할 때 아래 매핑을 참고하세요.")
-        for rt_value, words in sorted(resource_type_synonyms.items()):
-            lines.append(f"  - {rt_value} = {', '.join(words)}")
-
-    # eav_name_values 참조 정보
-    if eav_name_synonyms:
-        lines.append("")
-        lines.append("### 참조: EAV 설정 항목명과 한국어 표현")
-        lines.append("아래는 EAV 테이블의 속성명 컬럼에 저장되는 설정 항목명입니다. 사용자가 한국어로 질의할 때 아래 매핑을 참고하세요.")
-        for eav_name, words in sorted(eav_name_synonyms.items()):
-            lines.append(f"  - {eav_name} = {', '.join(words)}")
-
-    # FK 관계
-    rels = schema_info.get("relationships", [])
-    if rels:
-        lines.append("### 테이블 관계 (FK)")
-        for rel in rels:
-            lines.append(f"  {rel['from']} -> {rel['to']}")
-
-    return "\n".join(lines)
+    # 멀티 경로(_format_schema)와 같은 빌더를 쓰되, 단일 경로는 상세판 옵션으로 호출한다
+    # (설명·유사어·NOT NULL·참조 섹션 수록, 문구 차이 보존 — Plan 69 P3-1).
+    return format_schema_text(
+        schema_info,
+        column_descriptions=column_descriptions,
+        column_synonyms=column_synonyms,
+        resource_type_synonyms=resource_type_synonyms,
+        eav_name_synonyms=eav_name_synonyms,
+        include_not_null=True,
+        sample_style="labeled",
+        relationships_header="### 테이블 관계 (FK)",
+    )
 
 

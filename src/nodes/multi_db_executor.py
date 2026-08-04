@@ -32,26 +32,54 @@ from src.state import AgentState, QueryAttempt
 from src.utils.query_gen_common import (
     build_generic_period_hint,
     build_prior_rows_block,
-    build_query_examples_block,
     build_stat_month_block,
     correct_servername_hostname_mapping,
     extract_sql_from_response,
     resolve_query_limit,
     resolve_stat_month_range,
 )
+# 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
+# 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
+from src.nodes.prompt_blocks import (
+    EAV_JOIN_RULE_BLOCK,
+    build_eav_pivot_block,
+    build_forbidden_join_block,
+    build_query_examples,
+    build_schema_prefix_rule,
+    build_stepwise_deps,
+    build_value_index_injection,
+    build_value_joins_block,
+    eav_patterns_of,
+    filter_mapping_by_schema,
+    first_eav_pattern,
+    format_schema_text,
+    path_parity_enabled,
+    prior_server_scope,
+    select_history_fewshot,
+    split_eav_by_resource_type,
+    split_mapping_entries,
+)
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 from src.db_adapters.polestar.assembler import (
+    build_multi_resource_pivot_block,
     build_multi_resource_pivot_sql,
     classify_metric_field,
     decimal_cast_example,
     eav_attr_resource_types,
 )
-from src.utils.schema_utils import build_excluded_join_map
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
     from src.nodes.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
+
+# 공유 빌더에 주입하는 DB 특화 리터럴 — 공용 빌더(prompt_blocks)로 옮기지 않고 호출부인
+# 이 파일에 남긴다(D-088: 공용 계층 DB-agnostic, overfit_check 기준선은 파일 단위).
+_ENTITY_RESOURCE_TYPE = "server.Server"     # 엔티티(서버) 자신의 resource_type
+_EAV_HOST_ATTRIBUTE = "Hostname"            # 브릿지 조인 예시의 엔티티 식별 속성
+_EAV_LINK_COLUMN = "configuration_id"       # config 행끼리 잇는 컬럼
+_SCHEMA_EXAMPLE_TABLE = "cmm_resource"      # 스키마 한정 규칙 예시 테이블
+_FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 예시
 
 
 def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
@@ -63,15 +91,7 @@ def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
     Returns:
         EAV 패턴 딕셔너리 또는 None
     """
-    if not schema_info:
-        return None
-    structure_meta = schema_info.get("_structure_meta")
-    if not structure_meta:
-        return None
-    for pattern in structure_meta.get("patterns", []):
-        if pattern.get("type") == "eav":
-            return pattern
-    return None
+    return first_eav_pattern(schema_info)
 
 
 async def multi_db_executor(
@@ -139,8 +159,11 @@ async def multi_db_executor(
     # 첫 DB의 검증된 SQL을 같은 스키마의 나머지 DB에 재사용해 컬럼명을 일관되게 만든다.
     _sql_by_schema: dict[tuple, str] = {}
 
-    # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066)
+    # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066).
+    # prior_scope(결정적 컴파일 전달용)·value_index는 경로 대칭 ON일 때만 소비된다(P3-2).
     prior_block = build_prior_rows_block(state.get("prior_rows"))
+    prior_scope = prior_server_scope(state.get("prior_rows"))
+    value_index = state.get("column_value_index")
 
     for target in targets:
         db_id = target["db_id"]
@@ -202,6 +225,8 @@ async def multi_db_executor(
                         candidate_sink=mc_candidates,
                         prior_block=prior_block,
                         derivation_sink=mc_derivations,
+                        prior_scope=prior_scope,
+                        value_index=value_index,
                     )
 
                     # 3. SQL 검증 (간이)
@@ -225,6 +250,8 @@ async def multi_db_executor(
                             unmapped_fields=unmapped_fields,
                             app_config=app_config,
                             prior_block=prior_block,
+                            prior_scope=prior_scope,
+                            value_index=value_index,
                         )
                         validation_error = _validate_sql(
                             sql, schema_info, db_id=db_id, db_engine=db_engine,
@@ -406,7 +433,6 @@ async def _build_stepwise_deps(
     """
     if not app_config.text2sql.stepwise_derivation:
         return None
-    from src.nodes.column_deriver import StepwiseDeps
 
     synonyms: dict[str, list[str]] = {}
     try:
@@ -418,15 +444,13 @@ async def _build_stepwise_deps(
             "DB '%s': 단계적 도출 유사어 로드 실패(lookup_synonym 도구 제외): %s", db_id, e
         )
 
-    return StepwiseDeps(
+    return build_stepwise_deps(
+        app_config,
         path="multi_db",
         synonyms=synonyms,
-        schema_info=schema_info or {},
-        db_engine=db_engine or "postgresql",
-        adapter_db_ids=app_config.get_polestar_db_ids() or None,
+        schema_info=schema_info,
+        db_engine=db_engine,
         default_limit=default_limit,
-        synonym_min_score=app_config.synonym.match_confidence_min,
-        value_fuzzy=app_config.synonym.fuzzy_match,
     )
 
 
@@ -443,17 +467,7 @@ async def _select_query_history_examples(
     Returns:
         few-shot 예시 목록 또는 None(고정 예시 유지)
     """
-    if app_config is None:
-        return None
-    from src.schema_cache.query_history import select_fewshot_examples
-
-    t2 = app_config.text2sql
-    return await select_fewshot_examples(
-        db_id, user_query,
-        enabled=t2.query_history_fewshot,
-        top_k=t2.query_history_top_k,
-        min_score=t2.query_history_min_score,
-    )
+    return await select_history_fewshot(db_id, user_query, app_config)
 
 
 async def _generate_sql(
@@ -472,6 +486,8 @@ async def _generate_sql(
     candidate_sink: list[dict] | None = None,
     prior_block: str | None = None,
     derivation_sink: list[dict] | None = None,
+    prior_scope: tuple[str, list[str]] | None = None,
+    value_index: dict[str, list[str]] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -487,6 +503,8 @@ async def _generate_sql(
         db_id: DB 식별자 (스키마 한정 규칙 결정용, D-057)
         app_config: 앱 설정 (트랙 C 시맨틱 조합 플래그 판정용, 없으면 로드)
         derivation_sink: 트랙 S 단계적 도출 관측 레코드 적재 리스트 (선택, S2/D-128)
+        prior_scope: 선행 task 결과 서버 스코프 (경로 대칭 ON일 때만 소비, P3-2 (d))
+        value_index: 컬럼 값 인덱스 (경로 대칭 ON일 때만 소비, P3-2 (c))
 
     Returns:
         생성된 SQL 문자열
@@ -495,9 +513,17 @@ async def _generate_sql(
     # 폼필(column_mapping)·재시도(error_context)가 아닐 때만 진입. 커버리지 밖이면 아래 LLM 경로(회귀 0).
     if app_config is None:
         app_config = load_config()
-    # prior_block(선행 task 결과 스코프)이 있으면 결정적 컴파일 우회 — SMQ는 선행 결과
-    # 서버 한정을 표현할 수 없다(D-086, 단일 경로와 동일 조건).
-    if (not error_context and not column_mapping and not prior_block
+    _parity = path_parity_enabled(app_config)
+    # 경로 대칭 (d): 종전에는 prior_block(선행 task 결과 스코프)이 있으면 결정적 컴파일을
+    # 통째로 우회했다 — SMQ가 선행 스코프를 표현하지 못하던 시절의 잔재(D-086)다. 이제
+    # 조립기가 HAVING으로 강제하므로 단일 경로처럼 server_scope로 결정적 전달한다(D-099 대칭).
+    _skip_for_prior = bool(prior_block) and not _parity
+    if _parity and prior_block:
+        logger.info(
+            "[경로대칭] (d) 선행 스코프 결정적 전달(db=%s, scope=%s)",
+            db_id, (prior_scope[0] if prior_scope else "없음"),
+        )
+    if (not error_context and not column_mapping and not _skip_for_prior
             and app_config.text2sql.semantic_compose):
         _uq = parsed_requirements.get("original_query", "") or ""
         semantic_sql, _smq, _cov = await compile_from_nl(
@@ -507,6 +533,7 @@ async def _generate_sql(
             stat_month=resolve_stat_month_range(
                 _uq, parsed_time_range=parsed_requirements.get("time_range")
             ),
+            server_scope=prior_scope if _parity else None,
             app_config=app_config,
             stepwise_deps=await _build_stepwise_deps(
                 schema_info, app_config, db_engine, db_id, default_limit,
@@ -522,50 +549,20 @@ async def _generate_sql(
 
     schema_text = _format_schema(schema_info)
 
-    # 구조 분석 메타 기반 쿼리 가이드 (있으면 삽입)
+    # 구조 분석 메타 기반 쿼리 가이드 (있으면 삽입) — 단일 경로(_format_structure_guide)와
+    # 같은 빌더를 쓰되, 조립 순서·조건은 현행 그대로 둔다(Plan 69 P3-1 동작 불변).
     structure_meta = schema_info.get("_structure_meta")
     structure_guide = ""
     if structure_meta:
         structure_guide = structure_meta.get("query_guide", "")
-        # EAV 패턴의 value_joins 정보를 구조 가이드에 추가
-        eav_patterns = [
-            p for p in structure_meta.get("patterns", [])
-            if p.get("type") == "eav"
-        ]
+        eav_patterns = eav_patterns_of(structure_meta)
         # EAV 패턴이 있고 query_guide가 존재하면, 조인 규칙 지침을 앞에 삽입
         if eav_patterns and structure_guide:
-            eav_join_rule = (
-                "## EAV 테이블 조인 규칙\n"
-                "EAV 구조의 entity 테이블과 config 테이블을 조인할 때 "
-                "id 컬럼으로 직접 조인하지 마세요.\n"
-                "두 테이블의 ID 체계가 다릅니다. "
-                "반드시 아래 지침의 JOIN SQL 패턴을 그대로 사용하세요.\n\n"
-            )
-            structure_guide = eav_join_rule + structure_guide
+            structure_guide = EAV_JOIN_RULE_BLOCK + structure_guide
         for eav_p in eav_patterns:
-            value_joins = eav_p.get("value_joins", [])
-            if value_joins:
-                entity_table = eav_p.get("entity_table", "entity_table")
-                config_table = eav_p.get("config_table", "config_table")
-                attr_col = eav_p.get("attribute_column", "NAME")
-                structure_guide += "\n\n[값 기반 조인 (value-based join)]"
-                structure_guide += (
-                    f"\n{config_table}과 {entity_table} 간 FK가 없습니다. "
-                    "다음 값 대응 관계를 조인에 활용하세요:"
-                )
-                for vj in value_joins:
-                    structure_guide += (
-                        f"\n- {config_table}.{attr_col}='{vj['eav_attribute']}'인 행의 "
-                        f"{vj['eav_value_column']} 값은 "
-                        f"{entity_table}.{vj['entity_column']}과 동일한 값입니다."
-                    )
-
-            # 금지 JOIN 컬럼 경고 추가
-            for excl in eav_p.get("excluded_join_columns", []):
-                structure_guide += (
-                    f"\n[금지] {excl.get('table', '?')}.{excl.get('column', '?')}는 "
-                    f"JOIN ON 절에서 사용할 수 없습니다: {excl.get('reason', 'JOIN 불가')}"
-                )
+            # EAV 패턴의 value_joins 정보 + 금지 JOIN 컬럼 경고를 구조 가이드에 추가
+            structure_guide += build_value_joins_block(eav_p)
+            structure_guide += build_forbidden_join_block([eav_p], style="inline")
 
     # 프로필 few-shot 쿼리 예시 주입 — 단일 DB 경로(query_generator)와 동등화(RC1/D-066).
     # 예시 부재로 멀티 DB 폼필이 조인 환각(존재하지 않는 컬럼)을 내던 문제 차단.
@@ -576,38 +573,42 @@ async def _generate_sql(
         parsed_requirements.get("original_query", "") or sub_query_context,
         app_config,
     )
-    if _history_examples:
-        structure_guide += build_query_examples_block(
-            {"query_examples": _history_examples}
-        )
-    else:
-        structure_guide += build_query_examples_block(structure_meta)
+    structure_guide += build_query_examples(structure_meta, _history_examples)
 
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
     # D-057: 스키마 한정 규칙을 결정적으로 주입한다.
-    # LLM이 임의로 스키마(예: PostgreSQL식 `polestar.`)를 붙이거나, DB2에서 무스키마로 두어
-    # 연결 계정 CURRENT SCHEMA(예: SDQ000)로 잘못 해소되는 것을 방지한다.
+    # LLM이 임의로 스키마를 붙이거나, DB2에서 무스키마로 두어 연결 계정
+    # CURRENT SCHEMA(예: SDQ000)로 잘못 해소되는 것을 방지한다.
     from src.routing.db_schema import get_schema_prefix
 
-    schema_prefix = get_schema_prefix(db_id) if db_id else ""
-    if schema_prefix:
-        db_engine_hint += (
-            f"\n[스키마 한정 규칙] 이 DB의 모든 테이블은 반드시 접두사 `{schema_prefix}`를 붙여 "
-            f"`{schema_prefix}테이블명` 형식으로 참조하세요 (예: {schema_prefix}cmm_resource). "
-            f"다른 스키마명을 임의로 붙이지 마세요."
-        )
-    else:
-        db_engine_hint += (
-            "\n[스키마 한정 규칙] 이 DB의 테이블은 **스키마 접두사 없이(무스키마)** 참조하세요 "
-            "(예: cmm_resource). `polestar.` 등 임의의 스키마 접두사를 붙이지 마세요."
-        )
+    db_engine_hint += build_schema_prefix_rule(
+        get_schema_prefix(db_id) if db_id else "",
+        example_table=_SCHEMA_EXAMPLE_TABLE,
+        foreign_prefix_example=_FOREIGN_SCHEMA_PREFIX,
+    )
     if db_engine == "db2":
         db_engine_hint += (
             "\n[DB2 방언] 행 수 제한은 `LIMIT` 대신 `FETCH FIRST n ROWS ONLY`를 사용하세요."
         )
 
-    system_prompt = QUERY_GENERATOR_SYSTEM_TEMPLATE.format(
+    # 경로 대칭 (a): 담당 어댑터(폴스타)가 있으면 단일 경로(`_build_system_prompt`)와 같은
+    # 진입점으로 전용 시스템 템플릿을 쓴다 — 종전 멀티는 공통 템플릿 고정이라 폴스타 DB를
+    # 멀티로 조회하면 전용 지식이 통째로 빠졌다(D-066 원형 결함과 동형). 렌더 2모드(마커
+    # 원문/정본)는 어댑터가 내부 처리하므로 여기서 재구현하지 않는다(Plan 69 P3-2).
+    template = QUERY_GENERATOR_SYSTEM_TEMPLATE
+    if path_parity_enabled(app_config):
+        from src.db_adapters import get_adapter
+
+        _adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
+        _adapter_template = (
+            _adapter.system_template(routing_intent=None) if _adapter is not None else None
+        )
+        if _adapter_template is not None:
+            template = _adapter_template
+            logger.info("[경로대칭] (a) 어댑터 템플릿 적용(db=%s)", db_id)
+
+    system_prompt = template.format(
         schema=schema_text,
         default_limit=default_limit,
         structure_guide=structure_guide,
@@ -641,6 +642,18 @@ async def _generate_sql(
         if _gp_block:
             user_parts.append(_gp_block)
 
+    # 경로 대칭 (c): E5-2 값 검색 리터럴 주입 — 종전 단일 전용이라 멀티는 WHERE 리터럴을
+    # 검증 없이 환각했다(D-128이 "멀티 value_index 미전달"로 별건 기록한 건의 수용).
+    if _parity:
+        _vi_block = build_value_index_injection(
+            value_index,
+            parsed_requirements.get("original_query", "") or sub_query_context,
+            app_config,
+        )
+        if _vi_block:
+            user_parts.append(_vi_block)
+            logger.info("[경로대칭] (c) 값 인덱스 리터럴 블록 주입(db=%s)", db_id)
+
     # 선행 task 결과 서버 스코프 강제 — 단일 DB 경로(query_generator)와 동일 블록(D-086/D-066)
     if prior_block:
         user_parts.append(prior_block)
@@ -648,37 +661,10 @@ async def _generate_sql(
     # column_mapping이 있으면 schema_info 기반 필터링 후 매핑 컬럼을 명시
     if column_mapping:
         # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링
-        if schema_info:
-            tables_in_schema = set(schema_info.get("tables", {}).keys())
-            tables_lower = set()
-            for t in tables_in_schema:
-                tables_lower.add(t.lower())
-                # "schema.table" → "table" 부분도 매칭 대상에 추가
-                if "." in t:
-                    tables_lower.add(t.rsplit(".", 1)[-1].lower())
-            filtered_mapping: dict[str, str | None] = {}
-            for field, col in column_mapping.items():
-                if col and not col.startswith("EAV:"):
-                    parts = col.split(".")
-                    # "db_id.table.column" (3단계) → table = parts[-2], 값을 table.column으로 정규화
-                    # "table.column" (2단계) → table = parts[0]
-                    if len(parts) >= 3:
-                        table_part = parts[-2]
-                        col = f"{parts[-2]}.{parts[-1]}"
-                    elif len(parts) == 2:
-                        table_part = parts[0]
-                    else:
-                        table_part = ""
-                    if table_part.lower() in tables_lower:
-                        filtered_mapping[field] = col
-                    else:
-                        logger.warning(
-                            "multi_db column_mapping 필터링: '%s' -> '%s' (테이블 '%s' 미존재)",
-                            field, col, table_part,
-                        )
-                else:
-                    filtered_mapping[field] = col
-            column_mapping = filtered_mapping
+        column_mapping = filter_mapping_by_schema(
+            column_mapping, schema_info,
+            log_label="multi_db column_mapping 필터링",
+        )
 
         # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정
         # (프로필 확정 규칙, 단일 경로 _try_build_form_fill_pivot_sql와 동등). db_mapping을
@@ -689,15 +675,7 @@ async def _generate_sql(
             correct_servername_hostname_mapping(column_mapping, _sn_eav.get("entity_table", ""))
 
         # 정규 매핑과 EAV 매핑 분리
-        regular_entries = [
-            (field, col) for field, col in column_mapping.items()
-            if col and not col.startswith("EAV:")
-        ]
-        eav_entries = [
-            (field, col[4:])  # "EAV:" 접두사 제거
-            for field, col in column_mapping.items()
-            if col and col.startswith("EAV:")
-        ]
+        regular_entries, eav_entries = split_mapping_entries(column_mapping)
 
         # 성능 지표(사용률) 매핑은 강제 SELECT에서 제외한다(D-066 후속/RC2).
         # CPU/메모리 사용률(평균/최고)은 cmm_metric_stat_[h,d,m]에서 resource_type +
@@ -722,18 +700,11 @@ async def _generate_sql(
         # NULL이 되므로, resource_type 구분 다중 리소스 피벗 블록으로 대체한다(D-068).
         # 단일 DB 경로(query_generator)와 동일 로직 — 공유 헬퍼 사용.
         attr_rt = eav_attr_resource_types(schema_info)
-        child_eav = [
-            (field, attr, attr_rt[attr.upper()])
-            for field, attr in eav_entries
-            if attr.upper() in attr_rt and attr_rt[attr.upper()] != "server.Server"
-        ]
+        child_eav, server_eav = split_eav_by_resource_type(
+            eav_entries, attr_rt, entity_resource_type=_ENTITY_RESOURCE_TYPE
+        )
         use_multi_resource_pivot = bool(child_eav)
         if use_multi_resource_pivot:
-            server_eav = [
-                (field, attr)
-                for field, attr in eav_entries
-                if attr.upper() not in attr_rt or attr_rt[attr.upper()] == "server.Server"
-            ]
             # 사용률 통계 필드는 통합 피벗에 접어 넣는다(미매핑 경로 + metric 컬럼 매핑 경로).
             _um = list(unmapped_fields or [])
             pivot_metric_fields = [f for f in _um if classify_metric_field(f)]
@@ -741,29 +712,46 @@ async def _generate_sql(
                 field for field, _ in metric_entries if classify_metric_field(field)
             ]
             eav_pattern_mr = _get_eav_pattern(schema_info) or {}
-            # 프롬프트로 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
-            # (서버 중복·config 누락)한다. 이 well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을
-            # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
-            domain_cfg = get_domain_by_id(db_id)
-            db_schema = domain_cfg.db_schema if domain_cfg else ""
-            # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경) — 표면어
-            # 미매칭 시 stat_date 필터가 빠져 전 기간 평균으로 침묵 왜곡되는 것을 막는다.
-            # 단일 경로 `query_generator._try_build_form_fill_pivot_sql`와 동형(D-066).
-            stat_month = resolve_stat_month_range(
-                parsed_requirements.get("original_query", ""),
-                parsed_time_range=parsed_requirements.get("time_range"),
-            )
-            deterministic_sql = build_multi_resource_pivot_sql(
-                regular_entries, server_eav, child_eav, eav_pattern_mr,
-                metric_fields=pivot_metric_fields, db_engine=db_engine,
-                db_schema=db_schema, limit=default_limit, stat_month=stat_month,
-            )
-            logger.info(
-                "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, month=%s",
-                db_id, len(child_eav), len(pivot_metric_fields),
-                "~".join(stat_month) if stat_month else "전체",
-            )
-            return deterministic_sql
+            if error_context and path_parity_enabled(app_config):
+                # 경로 대칭 (c): 재시도(결정적 SQL이 이미 실패)면 단일 경로처럼 LLM 폴백에
+                # 피벗 지침 블록을 주고 에러를 반영하게 한다 — 종전 멀티는 재시도에도 같은
+                # 결정적 SQL을 되돌려줘 에러 컨텍스트가 무시됐다(Plan 69 P3-2).
+                # 사용률 필드는 피벗 블록에 접히므로 미매핑 목록에서 뺀다(블록 충돌 방지).
+                unmapped_fields = [f for f in _um if not classify_metric_field(f)]
+                user_parts.append(
+                    build_multi_resource_pivot_block(
+                        regular_entries, server_eav, child_eav, eav_pattern_mr,
+                        metric_fields=pivot_metric_fields, db_engine=db_engine,
+                    )
+                )
+                logger.info(
+                    "[경로대칭] (c) 폼필 피벗 프롬프트 블록 주입(db=%s, 재시도 — 결정적 조립 우회)",
+                    db_id,
+                )
+            else:
+                # 프롬프트로 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
+                # (서버 중복·config 누락)한다. 이 well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을
+                # 우회한다(D-068 2차 정정) — LLM 변동성 원천 제거.
+                domain_cfg = get_domain_by_id(db_id)
+                db_schema = domain_cfg.db_schema if domain_cfg else ""
+                # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경) — 표면어
+                # 미매칭 시 stat_date 필터가 빠져 전 기간 평균으로 침묵 왜곡되는 것을 막는다.
+                # 단일 경로 `query_generator._try_build_form_fill_pivot_sql`와 동형(D-066).
+                stat_month = resolve_stat_month_range(
+                    parsed_requirements.get("original_query", ""),
+                    parsed_time_range=parsed_requirements.get("time_range"),
+                )
+                deterministic_sql = build_multi_resource_pivot_sql(
+                    regular_entries, server_eav, child_eav, eav_pattern_mr,
+                    metric_fields=pivot_metric_fields, db_engine=db_engine,
+                    db_schema=db_schema, limit=default_limit, stat_month=stat_month,
+                )
+                logger.info(
+                    "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, month=%s",
+                    db_id, len(child_eav), len(pivot_metric_fields),
+                    "~".join(stat_month) if stat_month else "전체",
+                )
+                return deterministic_sql
 
         if regular_entries and not use_multi_resource_pivot:
             mapping_lines = "\n".join(
@@ -793,44 +781,15 @@ async def _generate_sql(
             )
 
         if eav_entries and not use_multi_resource_pivot:
-            # _structure_meta에서 EAV 패턴 정보를 동적 추출
-            eav_pattern = _get_eav_pattern(schema_info)
-            config_table = eav_pattern.get("config_table", "config_table") if eav_pattern else "config_table"
-            attr_col = eav_pattern.get("attribute_column", "NAME") if eav_pattern else "NAME"
-            val_col = eav_pattern.get("value_column", "VALUE") if eav_pattern else "VALUE"
-            eav_lines = "\n".join(
-                f'- "{field}" \u2192 EAV 속성 "{attr}" ({config_table}.{attr_col} = \'{attr}\' \u2192 {val_col})'
-                for field, attr in eav_entries
-            )
-            # value_joins를 우선 사용하고, 없을 때만 join_condition 폴백
-            join_hint = ""
-            if eav_pattern and eav_pattern.get("value_joins"):
-                vjs = eav_pattern["value_joins"]
-                entity_table = eav_pattern.get("entity_table", "entity_table")
-                vj_lines = []
-                for vj in vjs:
-                    vj_lines.append(
-                        f"  {config_table}.{attr_col}='{vj['eav_attribute']}' -> "
-                        f"{vj['eav_value_column']} = {entity_table}.{vj['entity_column']}"
-                    )
-                join_hint = (
-                    "\n주의: 두 테이블 간 FK가 없으므로 값 기반 브릿지 조인을 사용하세요:\n"
-                    + "\n".join(vj_lines)
-                    + f"\n예: LEFT JOIN {config_table} p_host ON p_host.{attr_col}='Hostname' AND p_host.{val_col} = r.hostname"
-                    f"\n     LEFT JOIN {config_table} p_attr ON p_attr.configuration_id = p_host.configuration_id AND p_attr.{attr_col} = '속성명'"
-                )
-            else:
-                join_cond = eav_pattern.get("join_condition", "") if eav_pattern else ""
-                if join_cond:
-                    join_hint = f"\n조인 조건: {join_cond}"
+            # _structure_meta에서 EAV 패턴 정보를 동적 추출. 멀티는 폼필 헤더 매칭 때문에
+            # 결과 alias를 한글 양식 필드명으로 강제한다(§0.3-3 (e) 의도된 차이 — 통일 금지).
             user_parts.append(
-                f"## EAV 피벗 매핑 (반드시 CASE WHEN 피벗으로 변환)\n{eav_lines}\n\n"
-                f"위 EAV 속성은 {config_table} 테이블에서 피벗 쿼리로 추출해야 합니다.\n"
-                "**결과 alias는 반드시 양식 필드명(왼쪽 한글, 따옴표 포함) 그대로** 하세요"
-                "(임의 영문 alias 금지 — 결과 컬럼명이 양식 헤더와 일치해야 채워집니다):\n"
-                f"  MAX(CASE WHEN p.{attr_col} = '속성명' THEN p.{val_col} END) AS \"양식필드명\""
-                f"{join_hint}\n"
-                "반드시 GROUP BY를 포함하세요."
+                build_eav_pivot_block(
+                    eav_entries, _get_eav_pattern(schema_info),
+                    hangul_alias=True,
+                    host_attribute=_EAV_HOST_ATTRIBUTE,
+                    link_column=_EAV_LINK_COLUMN,
+                )
             )
 
     # 미매핑 필드(column_mapping=None) — 반드시 한글 필드명 그대로 alias (D-066 후속3/폼필 채우기).
@@ -1011,39 +970,9 @@ def _format_schema(schema_info: dict) -> str:
     Returns:
         스키마 텍스트
     """
-    # excluded_join_columns 추출
-    excluded_join_map = build_excluded_join_map(schema_info)
-
-    lines: list[str] = []
-    for table_name, table_data in schema_info.get("tables", {}).items():
-        bare_table = table_name.rsplit(".", 1)[-1].lower()
-        lines.append(f"### {table_name}")
-        for col in table_data.get("columns", []):
-            col_str = f"  - {col['name']}: {col['type']}"
-            if col.get("primary_key"):
-                col_str += " [PK]"
-            if col.get("foreign_key"):
-                col_str += f" [FK -> {col.get('references', '?')}]"
-            # JOIN 금지 컬럼 주석 추가
-            col_lower = col["name"].lower()
-            excluded_reason = excluded_join_map.get((bare_table, col_lower))
-            if excluded_reason:
-                col_str += f" -- JOIN 금지({excluded_reason})"
-            lines.append(col_str)
-
-        samples = table_data.get("sample_data", [])
-        if samples:
-            preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
-            lines.append(f"  sample: {preview}")
-        lines.append("")
-
-    rels = schema_info.get("relationships", [])
-    if rels:
-        lines.append("### FK Relationships")
-        for rel in rels:
-            lines.append(f"  {rel['from']} -> {rel['to']}")
-
-    return "\n".join(lines)
+    # 단일 경로(_format_schema_for_prompt)와 같은 빌더를 쓰되, 멀티는 축약판 옵션으로
+    # 호출한다(설명·유사어·NOT NULL·참조 섹션 미수록 — 문구 차이 보존, Plan 69 P3-1).
+    return format_schema_text(schema_info)
 
 
 def _merge_results(

@@ -341,8 +341,50 @@ class TestCrossPathParity:
         # 패키지 __init__ 재노출이 submodule 이름을 가릴 수 있어 importlib로 실제 모듈 획득.
         qg = importlib.import_module("src.nodes.query_generator")
         mdb = importlib.import_module("src.nodes.multi_db_executor")
-        assert qg.build_query_examples_block is mdb.build_query_examples_block
+        # few-shot 예시 주입은 P3-1에서 `build_query_examples`(이력/고정 선택 포함)로 통합됐다.
+        assert qg.build_query_examples is mdb.build_query_examples
         assert qg.resolve_query_limit is mdb.resolve_query_limit
+
+    def test_both_paths_use_shared_prompt_builders(self):
+        """P3-1 공유 빌더를 두 경로가 같은 객체로 참조한다(복붙 재분기 차단).
+
+        준-동일 블록(§1.2)을 다시 각자 구현하면 한쪽만 고치는 비대칭이 재발한다. 문구
+        차이는 빌더 **인자**로만 남아야 하므로, 함수 객체 동일성으로 못 박는다.
+        """
+        import importlib
+
+        qg = importlib.import_module("src.nodes.query_generator")
+        mdb = importlib.import_module("src.nodes.multi_db_executor")
+        shared = importlib.import_module("src.nodes.prompt_blocks")
+
+        for name in (
+            "build_value_joins_block",       # EAV value_joins 가이드
+            "build_forbidden_join_block",    # 금지 JOIN 경고(style 파라미터로 문구 보존)
+            "build_eav_pivot_block",         # EAV 피벗 매핑 블록(hangul_alias 파라미터)
+            "filter_mapping_by_schema",      # column_mapping 스키마 필터링
+            "split_mapping_entries",         # 정규/EAV 매핑 분리
+            "split_eav_by_resource_type",    # child_eav/피벗 판정
+            "format_schema_text",            # 스키마 텍스트화(옵션으로 상세/축약)
+            "select_history_fewshot",        # 이력 few-shot 어댑터
+            "build_stepwise_deps",           # stepwise 재료 조립
+            "build_schema_prefix_rule",      # 스키마 한정 규칙(P3-2 (b))
+        ):
+            assert getattr(qg, name) is getattr(shared, name), name
+            assert getattr(mdb, name) is getattr(shared, name), name
+
+    def test_polestar_literals_stay_at_call_sites(self):
+        """공유 빌더 모듈에는 폴스타 스키마 리터럴이 없다(D-088 / overfit 기준선 유지).
+
+        빌더는 리터럴을 인자로 주입받고, 리터럴은 overfit 기준선에 등재된 호출부 파일에
+        잔존해야 한다. 공용 모듈로 새어 나가면 비폴스타 DB에서 오지시가 주입된다.
+        """
+        from pathlib import Path
+
+        import src.nodes.prompt_blocks as shared
+
+        source = Path(shared.__file__).read_text(encoding="utf-8")
+        for literal in ("server.Server", "cmm_", "configuration_id", "core_config_prop"):
+            assert literal not in source, f"공용 빌더에 DB 리터럴 누수: {literal}"
 
     def test_query_generator_guide_injects_examples(self):
         """단일 DB 경로(_format_structure_guide)도 예시를 가이드에 주입하는지."""

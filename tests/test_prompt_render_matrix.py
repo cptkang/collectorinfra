@@ -144,6 +144,7 @@ def _cfg() -> MagicMock:
     cfg.text2sql.query_history_fewshot = False
     cfg.text2sql.stepwise_derivation = False
     cfg.text2sql.hypernym_ambiguity = False
+    cfg.text2sql.path_parity = False
     return cfg
 
 
