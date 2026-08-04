@@ -47,6 +47,9 @@ _STAT_COLUMN = "stat_date"
 # 시계열 행 분해에서 식별 컬럼을 가져오는 부모 서버 조인 alias.
 _PARENT_ALIAS = "svr"
 
+#: 월별 통계 테이블 기본값 — 진입 함수 2개와 조립 코어가 공유한다(기본값 드리프트 차단).
+_DEFAULT_METRIC_TABLE = "cmm_metric_stat_m"
+
 
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).
@@ -235,7 +238,7 @@ def _eav_pattern_parts(eav_pattern: dict) -> tuple[str, str, str, str, str, str]
     return entity, config, attr_col, val_col, ent_join, cfg_join
 
 
-def build_multi_resource_pivot_sql(
+def _build_pivot_sql(
     regular_entries: list[tuple[str, str]],
     server_eav: list[tuple[str, str]],
     child_eav: list[tuple[str, str, str]],
@@ -245,7 +248,7 @@ def build_multi_resource_pivot_sql(
     db_schema: str | None = None,
     limit: int | None = None,
     stat_month: StatMonth = None,
-    metric_table: str = "cmm_metric_stat_m",
+    metric_table: str = _DEFAULT_METRIC_TABLE,
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
     server_scope: tuple[str, list[str]] | None = None,
     order_by: tuple[str, str] | None = None,
@@ -255,7 +258,11 @@ def build_multi_resource_pivot_sql(
     direct_having: list[tuple[str, str, object]] | None = None,
     measure_having: list[tuple[str, str, object]] | None = None,
 ) -> str:
-    """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**한다(LLM 우회, D-068 2차).
+    """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**하는 공유 코어다.
+
+    두 경로가 쓰는 파라미터의 합집합을 받는 **private 코어**로, 호출은 경로별 진입 함수
+    (``build_form_fill_pivot_sql``·``build_semantic_pivot_sql``)를 통한다 — 경로마다 무의미한
+    파라미터가 시그니처에 섞이는 것을 막으면서 조립 엔진은 하나로 유지한다(D-067 단일 출처).
 
     프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot 예시(월별 GROUP BY 등)와 경쟁해
     무시·변형(서버 중복·config 누락)한다. 이 well-defined 쿼리는 코드가 직접 조립하여 LLM
@@ -397,6 +404,140 @@ def build_multi_resource_pivot_sql(
     if limit:
         sql += "\n" + row_limit_clause(db_engine, limit)
     return sql + ";"
+
+
+def build_form_fill_pivot_sql(
+    regular_entries: list[tuple[str, str]],
+    server_eav: list[tuple[str, str]],
+    child_eav: list[tuple[str, str, str]],
+    eav_pattern: dict,
+    *,
+    metric_fields: list[str] | None = None,
+    db_engine: str | None = None,
+    db_schema: str | None = None,
+    limit: int | None = None,
+    stat_month: StatMonth = None,
+    metric_table: str = _DEFAULT_METRIC_TABLE,
+) -> str:
+    """폼필(양식 채우기) 경로의 다중 리소스 피벗 SQL을 조립한다.
+
+    측정치는 양식 헤더의 한글 라벨(``metric_fields``)을 ``classify_metric_field``로 분류해
+    도출한다 — 시맨틱 경로의 명시 measure·정렬·HAVING 계열 파라미터는 이 경로에 해당하지
+    않으므로 시그니처에서 뺐다.
+
+    Args:
+        regular_entries/server_eav/child_eav/eav_pattern: 피벗 구성요소
+        metric_fields: 사용률 지표로 분류된 양식 헤더 라벨 목록
+        db_engine/db_schema/limit/stat_month/metric_table: ``_build_pivot_sql``과 동일
+
+    Returns:
+        실행 가능한 SQL 문자열(세미콜론 종결).
+    """
+    return _build_pivot_sql(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        metric_fields=metric_fields,
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=limit,
+        stat_month=stat_month,
+        metric_table=metric_table,
+    )
+
+
+def build_semantic_pivot_sql(
+    regular_entries: list[tuple[str, str]],
+    server_eav: list[tuple[str, str]],
+    child_eav: list[tuple[str, str, str]],
+    eav_pattern: dict,
+    *,
+    explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    db_engine: str | None = None,
+    db_schema: str | None = None,
+    limit: int | None = None,
+    stat_month: StatMonth = None,
+    metric_table: str = _DEFAULT_METRIC_TABLE,
+    server_scope: tuple[str, list[str]] | None = None,
+    order_by: tuple[str, str] | None = None,
+    time_breakdown: bool = False,
+    global_aggregate: bool = False,
+    entity_count_alias: str | None = None,
+    direct_having: list[tuple[str, str, object]] | None = None,
+    measure_having: list[tuple[str, str, object]] | None = None,
+) -> str:
+    """시맨틱 컴파일러(트랙 C, D-076) 경로의 다중 리소스 피벗 SQL을 조립한다.
+
+    측정치는 시맨틱 모델이 검증한 명시 measure(``explicit_measures``)로 받는다 — 한글 라벨
+    분류(``metric_fields``)는 이 경로에 해당하지 않으므로 시그니처에서 뺐다. 정렬·상한·형태
+    확장(S-IR1~5)과 HAVING 계열은 이 경로 전용이다.
+
+    Args:
+        regular_entries/server_eav/child_eav/eav_pattern: 피벗 구성요소
+        explicit_measures: (alias, resource_type, agg_fn, val_col, definition_name) 목록
+        나머지: ``_build_pivot_sql``과 동일
+
+    Returns:
+        실행 가능한 SQL 문자열(세미콜론 종결).
+    """
+    return _build_pivot_sql(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=limit,
+        stat_month=stat_month,
+        metric_table=metric_table,
+        explicit_measures=explicit_measures,
+        server_scope=server_scope,
+        order_by=order_by,
+        time_breakdown=time_breakdown,
+        global_aggregate=global_aggregate,
+        entity_count_alias=entity_count_alias,
+        direct_having=direct_having,
+        measure_having=measure_having,
+    )
+
+
+def build_multi_resource_pivot_sql(
+    regular_entries: list[tuple[str, str]],
+    server_eav: list[tuple[str, str]],
+    child_eav: list[tuple[str, str, str]],
+    eav_pattern: dict,
+    metric_fields: list[str] | None = None,
+    db_engine: str | None = None,
+    db_schema: str | None = None,
+    limit: int | None = None,
+    stat_month: StatMonth = None,
+    metric_table: str = _DEFAULT_METRIC_TABLE,
+    explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    server_scope: tuple[str, list[str]] | None = None,
+    order_by: tuple[str, str] | None = None,
+    time_breakdown: bool = False,
+    global_aggregate: bool = False,
+    entity_count_alias: str | None = None,
+    direct_having: list[tuple[str, str, object]] | None = None,
+    measure_having: list[tuple[str, str, object]] | None = None,
+) -> str:
+    """겸용 진입점 — 하위호환 유지용 wrapper (Plan 69 P5-3).
+
+    신규 호출부는 경로별 진입 함수(``build_form_fill_pivot_sql``·``build_semantic_pivot_sql``)를
+    쓴다. 이 이름은 종전 시그니처를 그대로 받아 코어로 위임한다.
+    """
+    return _build_pivot_sql(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        metric_fields=metric_fields,
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=limit,
+        stat_month=stat_month,
+        metric_table=metric_table,
+        explicit_measures=explicit_measures,
+        server_scope=server_scope,
+        order_by=order_by,
+        time_breakdown=time_breakdown,
+        global_aggregate=global_aggregate,
+        entity_count_alias=entity_count_alias,
+        direct_having=direct_having,
+        measure_having=measure_having,
+    )
 
 
 def build_multi_resource_pivot_block(

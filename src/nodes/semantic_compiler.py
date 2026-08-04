@@ -46,7 +46,7 @@ from src.utils.query_gen_common import (
     resolve_stat_month_range,
 )
 # 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
-from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
+from src.db_adapters.polestar.assembler import build_semantic_pivot_sql
 # IR·커버리지 판정·카탈로그 렌더·가드 계측은 `src.semantic`으로 이동했다(Plan 69 P5-1 — nodes↔
 # tools 순환 해소). 이 모듈이 쓰는 것과 하위호환 재노출분을 함께 임포트하고 `__all__`로 공표한다.
 from src.semantic import (
@@ -298,32 +298,20 @@ def _stat_month_from_ir(time_range: list[str]) -> StatMonth:
     return (min(months), max(months))
 
 
-def _compile_ab(
+def _resolve_ab_dimensions(
     smq: SMQ,
-    model: dict,
-    db_engine: str,
-    db_schema: str,
-    limit: int,
-    stat_month: StatMonth,
-    *,
-    server_scope: Optional[tuple[str, list[str]]] = None,
-    user_query: str = "",
-) -> str:
-    """패턴 A(서버설정)+B(성능지표)를 build_multi_resource_pivot_sql로 조립한다(D-067 재사용).
+    pattern_b: dict,
+    dim_index: tuple[dict, dict],
+    server_scope: Optional[tuple[str, list[str]]],
+) -> list[str]:
+    """패턴 A/B의 SELECT dimension 목록을 결정적으로 확정한다(식별 컬럼 보정 포함).
 
-    dimension을 direct(cmm_resource 컬럼)/server_eav/child_eav로 나누고, measure를
-    explicit_measures로 넘긴다 — resource_type 구분 CASE WHEN + 단일 GROUP BY(서버당 1행).
+    measure가 있는데 서버 식별 dimension(name/hostname/ipaddress direct 컬럼)이 하나도 없으면
+    결과 행을 식별할 수 없다 — 실측상 LLM SMQ가 자주 범하는 선택 누락으로, dimension이 완전히
+    빈 경우뿐 아니라 속성(용량 등)만 고른 경우에도 발생한다(2026-07-21 yd-004: 서버명 없는
+    사용률 리스트). 프롬프트 유도 대신 모델 pattern_b.default_dimensions를 결정적으로
+    앞에 주입한다(D-035, D-076 후속).
     """
-    pattern_a = model.get("pattern_a") or {}
-    pattern_b = model.get("pattern_b") or {}
-    eav_pattern = pattern_a.get("eav") or {}
-    dim_index = _dimension_index(pattern_a)
-
-    # measure가 있는데 서버 식별 dimension(name/hostname/ipaddress direct 컬럼)이 하나도 없으면
-    # 결과 행을 식별할 수 없다 — 실측상 LLM SMQ가 자주 범하는 선택 누락으로, dimension이 완전히
-    # 빈 경우뿐 아니라 속성(용량 등)만 고른 경우에도 발생한다(2026-07-21 yd-004: 서버명 없는
-    # 사용률 리스트). 프롬프트 유도 대신 모델 pattern_b.default_dimensions를 결정적으로
-    # 앞에 주입한다(D-035, D-076 후속).
     dimensions = list(smq.dimensions)
     # 전역 집계(S-IR1)는 식별 컬럼 자체가 없어야 단일 값이 나오므로 주입 대상이 아니다.
     if smq.measures and not smq.global_aggregate and not _has_identity_dim(dimensions, dim_index):
@@ -346,6 +334,31 @@ def _compile_ab(
         ):
             if _resolve_dim(scope_col, dim_index) is not None:
                 dimensions = [scope_col] + dimensions
+    return dimensions
+
+
+def _compile_ab(
+    smq: SMQ,
+    model: dict,
+    db_engine: str,
+    db_schema: str,
+    limit: int,
+    stat_month: StatMonth,
+    *,
+    server_scope: Optional[tuple[str, list[str]]] = None,
+    user_query: str = "",
+) -> str:
+    """패턴 A(서버설정)+B(성능지표)를 build_multi_resource_pivot_sql로 조립한다(D-067 재사용).
+
+    dimension을 direct(cmm_resource 컬럼)/server_eav/child_eav로 나누고, measure를
+    explicit_measures로 넘긴다 — resource_type 구분 CASE WHEN + 단일 GROUP BY(서버당 1행).
+    """
+    pattern_a = model.get("pattern_a") or {}
+    pattern_b = model.get("pattern_b") or {}
+    eav_pattern = pattern_a.get("eav") or {}
+    dim_index = _dimension_index(pattern_a)
+
+    dimensions = _resolve_ab_dimensions(smq, pattern_b, dim_index, server_scope)
 
     regular_entries: list[tuple[str, str]] = []
     server_eav: list[tuple[str, str]] = []
@@ -391,7 +404,7 @@ def _compile_ab(
 
     direct_having, measure_having = _compile_filters_ab(smq, model, dim_index)
 
-    return build_multi_resource_pivot_sql(
+    return build_semantic_pivot_sql(
         regular_entries, server_eav, child_eav, eav_pattern,
         db_engine=db_engine, db_schema=db_schema, limit=limit,
         stat_month=stat_month, metric_table=metric_table,
@@ -483,6 +496,31 @@ def _is_superlative(user_query: str) -> bool:
 _ALARM_CONTEXT_DIMS = ("server_name", "NAME", "ALARMSEVERITY")
 
 
+def _alarm_where_parts(
+    smq: SMQ, pattern_c: dict, dim_map: dict[str, str]
+) -> list[str]:
+    """패턴 C(알람)의 WHERE 조건들을 만든다 — 모델 기본 조건 + 심각도 + IR 기간 창.
+
+    심각도 리터럴은 ``int()`` 캐스팅으로만 조립한다(주입 차단) — 활성 알람은 1~3,
+    이력 포함은 0~3이 기본이고 명시 필터가 있으면 그 값을 쓴다.
+    """
+    where_parts = list(pattern_c.get("base_where") or [])
+    sev_filter = next((f for f in smq.filters if f.field == "ALARMSEVERITY"), None)
+    if sev_filter is not None:
+        if sev_filter.op == "in" and isinstance(sev_filter.value, (list, tuple)):
+            vals = ", ".join(str(int(v)) for v in sev_filter.value)
+            where_parts.append(f"CA.ALARMSEVERITY IN ({vals})")
+        else:
+            where_parts.append(f"CA.ALARMSEVERITY = {int(sev_filter.value)}")
+    elif smq.active_only:
+        where_parts.append("CA.ALARMSEVERITY IN (1, 2, 3)")
+    else:
+        where_parts.append("CA.ALARMSEVERITY IN (0, 1, 2, 3)")
+    # 기간은 IR time_range로 승격된 것만 결정적 창으로 적용한다(S-IR4/5).
+    where_parts.extend(_alarm_time_where(smq.time_range, dim_map))
+    return where_parts
+
+
 def _compile_c(
     smq: SMQ, model: dict, db_id: str, limit: int, *, db_engine: str = ""
 ) -> str:
@@ -544,20 +582,7 @@ def _compile_c(
     if smq.active_only and pattern_c.get("active_join"):
         join_lines.append(pattern_c["active_join"].format(p=prefix))
 
-    where_parts = list(pattern_c.get("base_where") or [])
-    sev_filter = next((f for f in smq.filters if f.field == "ALARMSEVERITY"), None)
-    if sev_filter is not None:
-        if sev_filter.op == "in" and isinstance(sev_filter.value, (list, tuple)):
-            vals = ", ".join(str(int(v)) for v in sev_filter.value)
-            where_parts.append(f"CA.ALARMSEVERITY IN ({vals})")
-        else:
-            where_parts.append(f"CA.ALARMSEVERITY = {int(sev_filter.value)}")
-    elif smq.active_only:
-        where_parts.append("CA.ALARMSEVERITY IN (1, 2, 3)")
-    else:
-        where_parts.append("CA.ALARMSEVERITY IN (0, 1, 2, 3)")
-    # 기간은 IR time_range로 승격된 것만 결정적 창으로 적용한다(S-IR4/5).
-    where_parts.extend(_alarm_time_where(smq.time_range, dim_map))
+    where_parts = _alarm_where_parts(smq, pattern_c, dim_map)
 
     sql = "SELECT\n" + ",\n".join(select_lines) + "\n" + from_clause
     if join_lines:
@@ -983,6 +1008,49 @@ def _derivation_failure_reason(record: dict) -> str:
     return " — ".join(parts)
 
 
+def _monthly_breakdown_blocked(smq: SMQ, user_query: str) -> bool:
+    """월별 분해 질의인데 ``time_breakdown`` 승격에 실패해 컴파일 불가인지 판정한다.
+
+    normalize가 표면어를 IR로 승격하지만(S-IR2), 승격 조건에 걸리지 않는 형태(measure 없는
+    패턴 B 등)는 여전히 조립 불가라 폴백을 강제한다 — 게이트는 남기고 발동만 계측한다(R4).
+    """
+    return bool(
+        smq.pattern == "B"
+        and not smq.time_breakdown
+        and _MONTHLY_BREAKDOWN_RE.search(user_query or "")
+    )
+
+
+def _apply_server_scope_priority(
+    smq: SMQ, server_scope: Optional[tuple[str, list[str]]]
+) -> SMQ:
+    """선행 스코프가 있으면 그와 충돌하는 SMQ 선택을 걷어낸다 (D-099).
+
+    선행 스코프가 결정적으로 주어지면 SMQ의 서버 식별 필터는 중복이다. 그대로 두면
+    커버리지 밖(패턴 A/B 안전 필터는 resource_type뿐)으로 밀려 결정적 조립이 발동하지
+    못하고 LLM 폴백으로 떨어진다 — 스코프가 더 신뢰도 높은 출처이므로 제거한다.
+    """
+    if not (server_scope and server_scope[1]):
+        return smq
+    identity_fields = {"name", "hostname", str(server_scope[0]).lower()}
+    kept = [f for f in smq.filters if str(f.field).lower() not in identity_fields]
+    if len(kept) != len(smq.filters):
+        note_guard(
+            GUARD_SCOPE_FILTER_STRIP, f"{len(smq.filters) - len(kept)}건",
+        )
+        logger.info(
+            "선행 스코프 우선 — SMQ 서버 식별 필터 %d건 제거(결정적 HAVING으로 대체)",
+            len(smq.filters) - len(kept),
+        )
+        smq = smq.model_copy(update={"filters": kept})
+    if smq.global_aggregate:
+        # 스코프는 "이 서버들"이라는 결정적 한정이므로 전역 단일 값 집계와 양립하지
+        # 않는다(HAVING이 전역 집계 1행을 지워 결과가 비어버린다) — 스코프를 우선한다.
+        note_guard(GUARD_SCOPE_GLOBAL_DROP)
+        smq = smq.model_copy(update={"global_aggregate": False, "entity_count": False})
+    return smq
+
+
 async def compile_from_nl(
     llm: Any,
     user_query: str,
@@ -1043,11 +1111,7 @@ async def compile_from_nl(
     # 월별 행 분해("월간/월별 통계·추이") 질의는 normalize가 time_breakdown으로 승격한다
     # (S-IR2). 승격 조건에 걸리지 않는 형태(measure 없는 패턴 B 등)는 여전히 컴파일 불가라
     # 폴백을 강제한다 — 게이트는 남기고 발동만 계측한다(R4).
-    if (
-        smq.pattern == "B"
-        and not smq.time_breakdown
-        and _MONTHLY_BREAKDOWN_RE.search(user_query or "")
-    ):
+    if _monthly_breakdown_blocked(smq, user_query):
         cov = CoverageResult(
             covered=False,
             reason="월별 분해(월간/월별) 질의는 컴파일 미지원 - LLM 폴백",
@@ -1058,26 +1122,7 @@ async def compile_from_nl(
         _stamp_guards(derivation_sink, _guard_delta(guards_before))
         return None, smq, cov
 
-    # 선행 스코프가 결정적으로 주어지면 SMQ의 서버 식별 필터는 중복이다. 그대로 두면
-    # 커버리지 밖(패턴 A/B 안전 필터는 resource_type뿐)으로 밀려 결정적 조립이 발동하지
-    # 못하고 LLM 폴백으로 떨어진다 — 스코프가 더 신뢰도 높은 출처이므로 제거한다(D-099).
-    if server_scope and server_scope[1]:
-        identity_fields = {"name", "hostname", str(server_scope[0]).lower()}
-        kept = [f for f in smq.filters if str(f.field).lower() not in identity_fields]
-        if len(kept) != len(smq.filters):
-            note_guard(
-                GUARD_SCOPE_FILTER_STRIP, f"{len(smq.filters) - len(kept)}건",
-            )
-            logger.info(
-                "선행 스코프 우선 — SMQ 서버 식별 필터 %d건 제거(결정적 HAVING으로 대체)",
-                len(smq.filters) - len(kept),
-            )
-            smq = smq.model_copy(update={"filters": kept})
-        if smq.global_aggregate:
-            # 스코프는 "이 서버들"이라는 결정적 한정이므로 전역 단일 값 집계와 양립하지
-            # 않는다(HAVING이 전역 집계 1행을 지워 결과가 비어버린다) — 스코프를 우선한다.
-            note_guard(GUARD_SCOPE_GLOBAL_DROP)
-            smq = smq.model_copy(update={"global_aggregate": False, "entity_count": False})
+    smq = _apply_server_scope_priority(smq, server_scope)
 
     cov = check_coverage(smq, model, value_index=value_index)
     _stamp_coverage(derivation_sink, cov.covered)
