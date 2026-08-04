@@ -424,6 +424,59 @@ def build_eav_pivot_block(
     )
 
 
+def build_unmapped_fields_block(
+    unmapped_fields: list[str],
+    *,
+    cast_example: str,
+    metric_table: str,
+    metric_pivot_keys: str,
+    hangul_alias: bool = False,
+) -> str:
+    """자동 매핑에 실패한 양식 필드를 스키마에서 직접 조회하도록 지시하는 블록을 만든다.
+
+    단일·멀티가 각자 구현하던 블록을 하나로 합쳤다(U-1). 문구는 승인된 멀티안을 쓴다 —
+    ②참고 대상은 few-shot 예시(조인 환각 억제), ③alias 지시는 "왜"를 붙인 형태(준수율),
+    ⑤지표 안내는 테이블·피벗 키를 명시한 자립형이다. 종전 단일 문구의 ``Template B``는
+    폴스타 어댑터 템플릿에만 정의된 미정의 참조였고, 시간·일 테이블 열거는 오선택을 유발했다.
+
+    ``hangul_alias``는 경로별 alias 지시 차이만 남긴 분기다(§0.3-3 (e) 의도된 차이) —
+    멀티는 여러 DB 결과를 한 양식으로 병합하므로 결과 컬럼명이 양식 헤더와 정확히 일치해야
+    ``excel_writer``가 채운다.
+
+    Args:
+        unmapped_fields: 자동 매핑에 실패한 양식 필드명 목록
+        cast_example: 엔진별 소수 보존 집계 예시 — 호출부 주입(D-088)
+        metric_table: 사용률 통계 테이블명 — 호출부 주입(D-088)
+        metric_pivot_keys: 피벗 키 표현(구분 컬럼·정의명·값 컬럼) — 호출부 주입(D-088)
+        hangul_alias: 결과 alias를 한글 양식 필드명으로 강제할지 여부
+
+    Returns:
+        사용자 프롬프트에 덧붙일 미매핑 필드 안내 블록
+    """
+    metric_hint = (
+        f"CPU/메모리 사용률(평균/최고) 등 성능 지표는 위 쿼리 예시의 {metric_table} 피벗"
+        f"({metric_pivot_keys})을 그대로 "
+    )
+    if hangul_alias:
+        metric_hint += (
+            "따르되, **결과 alias는 아래 한글 필드명으로** 하세요(임의 영문명 금지):"
+        )
+    else:
+        metric_hint += "따르세요:"
+
+    field_lines = "\n".join(f'- "{f}"' for f in unmapped_fields)
+    return (
+        "## 자동 매핑 실패 필드 (스키마에서 직접 조회 필요)\n"
+        "아래 양식 필드들은 자동 매핑에 실패했습니다. 스키마와 **위 쿼리 예시**를 참고하여 "
+        "적절한 DB 컬럼 또는 계산식으로 반드시 SELECT에 포함하세요.\n"
+        "**중요**: 각 필드명을 그대로(따옴표 포함) SQL alias로 사용하세요 — 결과 컬럼명이 "
+        "양식 헤더와 정확히 일치해야 값이 채워집니다.\n"
+        f"예: {cast_example}\n"
+        f"{metric_hint}\n"
+        f"{field_lines}"
+    )
+
+
 # ──────────────────────────────────────────────
 # 스키마 텍스트화
 # ──────────────────────────────────────────────

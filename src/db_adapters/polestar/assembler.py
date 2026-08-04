@@ -50,6 +50,12 @@ _PARENT_ALIAS = "svr"
 #: 월별 통계 테이블 기본값 — 진입 함수 2개와 조립 코어가 공유한다(기본값 드리프트 차단).
 _DEFAULT_METRIC_TABLE = "cmm_metric_stat_m"
 
+#: 미매핑 필드 안내(`build_unmapped_fields_block`)에 실을 사용률 피벗 지시 재료.
+#: 공용 계층(nodes)이 이 스키마 리터럴을 직접 들고 있지 않도록 어댑터가 제공한다 —
+#: `decimal_cast_example`과 같은 성격의 프롬프트 문구 재료다(D-088/D-089).
+METRIC_PIVOT_TABLE = _DEFAULT_METRIC_TABLE
+METRIC_PIVOT_KEYS = "resource_type + definition_name='Utilization', avg_val/max_val"
+
 
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).

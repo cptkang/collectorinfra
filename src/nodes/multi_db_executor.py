@@ -48,6 +48,7 @@ from src.nodes.prompt_blocks import (
     build_query_examples,
     build_schema_prefix_rule,
     build_stepwise_deps,
+    build_unmapped_fields_block,
     build_value_index_injection,
     build_value_joins_block,
     eav_patterns_of,
@@ -65,6 +66,8 @@ from src.nodes.prompt_blocks import (
 # 두 번째 어댑터가 생기기 전까지 금지(Plan 63 §9) — 훅이 있는 `classify_metric_field`만
 # 레지스트리 경유로 옮겼다(단일 경로 query_generator와 대칭).
 from src.db_adapters.polestar.assembler import (
+    METRIC_PIVOT_KEYS,
+    METRIC_PIVOT_TABLE,
     build_form_fill_pivot_sql,
     build_multi_resource_pivot_block,
     decimal_cast_example,
@@ -1113,23 +1116,17 @@ async def _generate_sql(
 
 
 def _unmapped_fields_section(unmapped_fields: list[str], db_engine: str) -> str:
-    """자동 매핑에 실패한 양식 필드의 직접 조회 안내 섹션(한글 alias 강제).
+    """자동 매핑에 실패한 양식 필드의 직접 조회 안내 섹션(한글 alias 강제, U-1 공유 빌더).
 
     사용률 지표는 field_mapper가 의도적으로 미매핑하므로, 결과 컬럼명이 양식 헤더와
     일치해야 excel_writer가 채운다(D-066 후속3/폼필 채우기).
     """
-    field_lines = "\n".join(f'- "{f}"' for f in unmapped_fields)
-    return (
-        "## 자동 매핑 실패 필드 (스키마에서 직접 조회 필요)\n"
-        "아래 양식 필드들은 자동 매핑에 실패했습니다. 스키마와 **위 쿼리 예시**를 참고하여 "
-        "적절한 DB 컬럼 또는 계산식으로 반드시 SELECT에 포함하세요.\n"
-        "**중요**: 각 필드명을 그대로(따옴표 포함) SQL alias로 사용하세요 — 결과 컬럼명이 "
-        "양식 헤더와 정확히 일치해야 값이 채워집니다.\n"
-        f"예: {decimal_cast_example(db_engine)}\n"
-        "CPU/메모리 사용률(평균/최고) 등 성능 지표는 위 쿼리 예시의 cmm_metric_stat_m 피벗"
-        "(resource_type + definition_name='Utilization', avg_val/max_val)을 그대로 따르되, "
-        "**결과 alias는 아래 한글 필드명으로** 하세요(임의 영문명 금지):\n"
-        f"{field_lines}"
+    return build_unmapped_fields_block(
+        unmapped_fields,
+        cast_example=decimal_cast_example(db_engine),
+        metric_table=METRIC_PIVOT_TABLE,
+        metric_pivot_keys=METRIC_PIVOT_KEYS,
+        hangul_alias=True,
     )
 
 

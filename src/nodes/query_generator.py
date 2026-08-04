@@ -41,6 +41,7 @@ from src.nodes.prompt_blocks import (
     build_query_examples,
     build_schema_prefix_rule,
     build_stepwise_deps,
+    build_unmapped_fields_block,
     build_value_index_injection,
     build_value_joins_block,
     eav_patterns_of,
@@ -58,6 +59,8 @@ from src.nodes.prompt_blocks import (
 # 대응하는 훅이 없어 직접 임포트로 남긴다. 새 훅 신설은 두 번째 어댑터가 생기기 전까지 금지
 # (Plan 63 §9 어댑터 과설계 금지) — 훅이 있는 `classify_metric_field`만 레지스트리 경유로 옮겼다.
 from src.db_adapters.polestar.assembler import (
+    METRIC_PIVOT_KEYS,
+    METRIC_PIVOT_TABLE,
     build_form_fill_pivot_sql,
     build_multi_resource_pivot_block,
     decimal_cast_example,
@@ -1028,16 +1031,12 @@ def _mapping_instruction_section(regular_entries: list[tuple[str, str]]) -> str:
 def _unmapped_fields_section(
     unmapped_fields: list[str], db_engine: Optional[str]
 ) -> str:
-    """자동 매핑에 실패한 양식 필드의 직접 조회 안내 섹션을 만든다."""
-    return (
-        "## 자동 매핑 실패 필드 (스키마에서 직접 조회 필요)\n"
-        "아래 양식 필드들은 자동 매핑에 실패했습니다. "
-        "스키마와 사용자 질의를 참고하여 적절한 DB 컬럼 또는 계산식으로 반드시 SELECT에 포함하세요.\n"
-        "**중요**: 각 필드명을 그대로 SQL alias로 사용하세요 (따옴표 포함).\n"
-        f"예: {decimal_cast_example(db_engine)}\n"
-        "CPU/메모리/디스크 사용률·통계 관련 필드는 cmm_metric_stat_[h,d,m] 테이블을 활용하고, "
-        "Template B 패턴을 따르세요:\n"
-        + "\n".join(f'- "{f}"' for f in unmapped_fields)
+    """자동 매핑에 실패한 양식 필드의 직접 조회 안내 섹션을 만든다(U-1 공유 빌더)."""
+    return build_unmapped_fields_block(
+        unmapped_fields,
+        cast_example=decimal_cast_example(db_engine),
+        metric_table=METRIC_PIVOT_TABLE,
+        metric_pivot_keys=METRIC_PIVOT_KEYS,
     )
 
 
