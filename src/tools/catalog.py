@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from src.nodes.semantic_compiler import SMQ, check_coverage
+from src.semantic import SMQ, check_coverage
 from src.utils.flex_match import flex_match_score
 
 # 카탈로그 항목 종류 — 시맨틱 모델의 패턴별 선택지.

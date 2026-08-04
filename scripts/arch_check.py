@@ -66,6 +66,9 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.infrastructure.audit_repository": "infrastructure",
     "src.nodes":                     "application",
     "src.db_adapters":               "application",
+    # 시맨틱 IR·커버리지 판정 계층(Plan 69 P5-1) — nodes에서 분리해 tools가 nodes를 거치지
+    # 않고 참조하게 한 조각. nodes·tools와 동일 계층.
+    "src.semantic":                  "application",
     # fine-grained 도구 계층(Plan 67 S1) — 노드·어댑터의 순수 함수를 재노출하므로
     # db_adapters와 같은 application. 소비처(nodes·orchestration)에서 참조한다.
     "src.tools":                     "application",

@@ -19,7 +19,7 @@ from typing import Any, Optional
 from langchain_core.tools import BaseTool, tool
 
 from src.db.interface import DBClient
-from src.nodes.semantic_compiler import render_catalog
+from src.semantic import render_catalog
 from src.tools.catalog import check_smq_coverage, search_catalog
 from src.tools.interpretation import resolve_limit, resolve_time_range
 from src.tools.lexicon import SemanticFn, lookup_synonym, search_value_index

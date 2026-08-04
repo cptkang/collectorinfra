@@ -19,6 +19,11 @@ LLM이 SQL을 직접 쓰지 않고 검증된 dimension/measure/entity를 **선�
 **시맨틱 모델이 정의한 검증된 값**이라 구조적으로 환각이 불가능하다. SMQ 필터가 모델 밖의 실측
 값을 참조하면 ``check_coverage``가 값 인덱스(E5-2)로 검증하고, 미검증이면 커버리지 밖으로 돌린다.
 
+IR 모델(``SMQ``)·커버리지 판정·카탈로그 렌더·가드 계측은 ``src.semantic`` 패키지에 있다
+(Plan 69 P5-1 — ``src.tools``가 nodes를 거쳐 참조하던 순환을 끊기 위한 분리). 이 모듈은
+그 이름들을 전부 재노출하므로 기존 임포트 경로(``from src.nodes.semantic_compiler import
+SMQ`` 등)는 무수정으로 동작한다.
+
 계층: application(nodes) — utils.query_gen_common·routing.db_schema/domain_config·config 참조.
 활성화: ``cfg.text2sql.semantic_compose`` 플래그(기본 OFF). OFF 시 호출부가 미진입한다.
 """
@@ -28,9 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Any, Literal, Optional
-
-from pydantic import BaseModel, Field, field_validator
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.utils.llm_compat import is_kbgenai
 from src.routing.db_schema import get_schema_prefix
@@ -44,6 +47,84 @@ from src.utils.query_gen_common import (
 )
 # 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
 from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
+# IR·커버리지 판정·카탈로그 렌더·가드 계측은 `src.semantic`으로 이동했다(Plan 69 P5-1 — nodes↔
+# tools 순환 해소). 이 모듈이 쓰는 것과 하위호환 재노출분을 함께 임포트하고 `__all__`로 공표한다.
+from src.semantic import (
+    CoverageResult,
+    GUARD_BREAKDOWN_PROMOTE,
+    GUARD_CAPACITY_INJECT,
+    GUARD_HYPERNYM_EXPAND,
+    GUARD_IR_LIMIT,
+    GUARD_IR_ORDER_BY,
+    GUARD_IR_TIME_RANGE,
+    GUARD_MONTHLY_GATE,
+    GUARD_PHYSICALCORE_DROP,
+    GUARD_PHYSICALCORE_SWAP,
+    GUARD_RANKING_SURFACE,
+    GUARD_RESOURCE_TYPE_FILTER_IGNORED,
+    GUARD_SCOPE_FILTER_STRIP,
+    GUARD_SCOPE_GLOBAL_DROP,
+    GUARD_TIME_FILTER_PROMOTE,
+    GUARD_TIME_RANGE_OVERRIDE,
+    SMQ,
+    SMQFilter,
+    SMQMeasure,
+    SMQOrderBy,
+    check_coverage,
+    guard_counters,
+    note_guard,
+    render_catalog,
+    reset_guard_counters,
+)
+# 패키지 공개 API가 아닌 내부 헬퍼는 각 하위 모듈에서 직접 가져온다(어디로 갔는지 그대로 보인다).
+from src.semantic.coverage import (
+    _ALARM_DIM_ALIAS,
+    _IDENTITY_COLUMNS,
+    _PATTERN_AB_SAFE_FILTER_FIELDS,
+    _PATTERN_C_SAFE_FILTER_FIELDS,
+    _classify_filter_ab,
+    _contested_parent_aliases,
+    _coverage_ab,
+    _coverage_c,
+    _dimension_index,
+    _entity_resource_type,
+    _filter_reason_ab,
+    _has_identity_dim,
+    _ir_common_reason,
+    _measure_by_ref,
+    _measure_combos,
+    _order_direction,
+    _resolve_dim,
+    _resolve_ir_order_by_ab,
+    _resolve_ir_order_by_c,
+    _safe_filter_fields_ab,
+    _shape_reason_ab,
+    _validate_literals,
+)
+from src.semantic.guards import _GUARD_COUNTERS, _guard_delta
+from src.semantic.ir import (
+    _AGG_FN,
+    _ALARM_COUNT_ALIAS,
+    _FILTER_SQL_OPS,
+    _MAX_IR_LIMIT,
+    _MEASURE_FILTER_OPS,
+    _ORDER_DIRECTION_KEYS,
+    _ORDER_FIELD_KEYS,
+    _YYYYMM_RE,
+    _coerce_order_by,
+)
+from src.semantic.taxonomy import (
+    _child_dim_entries,
+    _child_discriminators,
+    _child_measure_specs,
+    _expand_hypernym_ambiguity,
+    _hypernym_surfaces,
+    _mentions_any,
+    _missing_child_dims,
+    _missing_child_measures,
+    _squash,
+    _taxonomy,
+)
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 진입 분기 안에서 지연 수행한다.
     from src.config import AppConfig
@@ -51,231 +132,42 @@ if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 진입 분�
 
 logger = logging.getLogger(__name__)
 
-# 집계 함수 — count/sum은 Plan 67 S-IR1 확장(전역 집계·건수 수요). 값 컬럼은 모델
-# pattern_b.value_columns에 avg/max/min만 있으므로 count/sum은 기본 값 컬럼으로 떨어진다.
-_AGG_FN = {"avg": "AVG", "max": "MAX", "min": "MIN", "count": "COUNT", "sum": "SUM"}
-
-# SMQ 필터 op → SQL 연산자. IR 수준 지식이라 컴파일러가 매핑하고, 리터럴 조립은 조립기가 한다.
-_FILTER_SQL_OPS = {"eq": "=", "ne": "<>", "gte": ">=", "lte": "<=", "like": "LIKE", "in": "IN"}
-# 측정치 임계(HAVING)로 표현 가능한 op — 집계값 비교이므로 like/in은 제외한다.
-_MEASURE_FILTER_OPS = {"eq", "ne", "gte", "lte"}
-# IR limit 허용 상한 — resolve_query_limit의 "전체" 상향값과 같은 자리수로 맞춘다(과대 요청 차단).
-_MAX_IR_LIMIT = 100_000
-# 패턴 C 건수 집계 alias (S-IR5).
-_ALARM_COUNT_ALIAS = "alarm_count"
-# IR 기간 값 형식(YYYYMM) — 통계 기간 컬럼과 알람 기간 창이 공유한다. 월 범위(01~12)까지
-# 검증한다: '999999' 같은 값이 통과하면 알람 기간 창이 잘못된 날짜 리터럴로 조립된다.
-_YYYYMM_RE = re.compile(r"\d{4}(?:0[1-9]|1[0-2])")
-
-
-# ──────────────────────────────────────────────
-# 교정 가드·게이트 발동 계측 (Plan 67 R4)
-# ──────────────────────────────────────────────
-
-#: 이름 → 누적 발동 횟수. LLM 비결정 교정 가드와 표면어 폴백이 실제로 얼마나 발동하는지
-#: 계측해 stepwise ON/OFF 발동률을 비교하는 재료다(계획서 §3.2-R4). **계측만** 하고 가드는
-#: 삭제하지 않는다 — 발동 0이 실증된 것부터 단계 축소한다.
-_GUARD_COUNTERS: dict[str, int] = {}
-
-GUARD_PHYSICALCORE_DROP = "normalize.physicalcore_drop"       # 동시 선택 시 PHYSICALCORE 제거
-GUARD_PHYSICALCORE_SWAP = "normalize.physicalcore_swap"       # 단독 선택 시 LOGICALCORE 치환
-GUARD_CAPACITY_INJECT = "normalize.capacity_inject"           # 명시 용량 차원 누락 보정
-GUARD_TIME_FILTER_PROMOTE = "normalize.time_filter_promote"   # 기간 표현 필터 → time_range 승격
-GUARD_TIME_RANGE_OVERRIDE = "normalize.time_range_override"   # LLM 기간값을 결정적 해석으로 교정
-GUARD_BREAKDOWN_PROMOTE = "normalize.breakdown_promote"       # 월별 표면어 → time_breakdown 승격
-GUARD_MONTHLY_GATE = "gate.monthly_breakdown_fallback"        # 월별 폴백 게이트(승격 불가 시)
-GUARD_RANKING_SURFACE = "ranking.surface_fallback"            # 표면어 기반 정렬 결정(IR 부재 폴백)
-GUARD_SCOPE_FILTER_STRIP = "scope.identity_filter_strip"      # 선행 스코프 우선 — SMQ 식별 필터 제거
-GUARD_SCOPE_GLOBAL_DROP = "scope.global_aggregate_drop"       # 선행 스코프 우선 — 전역 집계 해제
-GUARD_RESOURCE_TYPE_FILTER_IGNORED = "compile.resource_type_filter_ignored"
-GUARD_IR_ORDER_BY = "ir.order_by"                             # IR 정렬 사용(표면어 미의존)
-GUARD_IR_LIMIT = "ir.limit"                                   # IR 상한 사용
-GUARD_IR_TIME_RANGE = "ir.time_range"                         # IR 기간 사용(호출부 미지정 시)
-GUARD_HYPERNYM_EXPAND = "taxonomy.hypernym_expand"            # 상위어 단독 질의 → 하위 전부 제시
-
-
-def note_guard(name: str, detail: str = "") -> None:
-    """교정 가드·폴백 게이트의 발동을 계측한다(R4 — 발동률 비교 재료).
-
-    Args:
-        name: 가드 식별자(``GUARD_*`` 상수)
-        detail: 로그에 남길 부가 사유(선택)
-    """
-    _GUARD_COUNTERS[name] = _GUARD_COUNTERS.get(name, 0) + 1
-    logger.info(
-        "[가드계측] %s 발동(누적 %d)%s",
-        name, _GUARD_COUNTERS[name], f" — {detail}" if detail else "",
-    )
-
-
-def guard_counters() -> dict[str, int]:
-    """가드 발동 누적 카운터의 사본을 반환한다."""
-    return dict(_GUARD_COUNTERS)
-
-
-def reset_guard_counters() -> None:
-    """가드 발동 카운터를 초기화한다(계측 구간 분리·테스트용)."""
-    _GUARD_COUNTERS.clear()
-
-
-def _guard_delta(before: dict[str, int]) -> dict[str, int]:
-    """스냅샷 이후 발동한 가드만 골라 {이름: 증분}으로 만든다(질의 단위 귀속)."""
-    return {
-        name: count - before.get(name, 0)
-        for name, count in _GUARD_COUNTERS.items()
-        if count - before.get(name, 0) > 0
-    }
-
-
-# ──────────────────────────────────────────────
-# SMQ 중간표현 (gold_smq 계약과 일치)
-# ──────────────────────────────────────────────
-
-class SMQMeasure(BaseModel):
-    """성능지표 measure (패턴 B). gold_smq measure dict와 동일 필드."""
-
-    agg: str                        # avg | max | min | count | sum (count/sum은 S-IR1 확장)
-    definition_name: str            # Utilization | MaxIORate
-    resource_type: str              # server.Cpus 등
-
-    @field_validator("agg")
-    @classmethod
-    def _normalize_agg(cls, value: str) -> str:
-        """집계 표기의 대소문자·공백 흔들림을 결정적으로 흡수한다.
-
-        LLM이 ``"AVG"``·``"COUNT"``로 내면 커버리지 판정(``agg not in _AGG_FN``, 대소문자
-        구분)이 "미지원 집계"로 돌려 정확한 선택이 통째로 폴백됐다. 표기만 정규화하고
-        **유효값 검증은 그대로** 커버리지 판정에 남긴다(미지원 집계는 여전히 폴백).
-        definition_name·resource_type은 카탈로그의 정확한 이름이어야 하므로(Model vs MODEL)
-        정규화 대상이 아니다.
-        """
-        return str(value).strip().lower()
-
-    def as_dict(self) -> dict:
-        return {"agg": self.agg, "definition_name": self.definition_name,
-                "resource_type": self.resource_type}
-
-    @property
-    def alias(self) -> str:
-        """SELECT/ORDER BY/HAVING이 공유하는 measure alias(기존 조립 규칙과 동일)."""
-        return f"{self.resource_type.split('.')[-1].lower()}_{self.agg.lower()}"
-
-
-class SMQOrderBy(BaseModel):
-    """정렬 지정 (Plan 67 S-IR3) — 표면어(`_RANK_*_MARKERS`) 대신 IR로 받는다.
-
-    ``field``는 measure alias(예: cpus_avg)·measure resource_type(server.Cpus)·dimension
-    이름 중 하나이며, 컴파일러가 카탈로그·선택된 measure로 해소한다(해소 불가는 커버리지 밖).
-    """
-
-    field: str
-    direction: str = "desc"         # asc | desc
-
-    def as_dict(self) -> dict:
-        return {"field": self.field, "direction": self.direction}
-
-
-#: LLM이 order_by 대상 키를 흔들어 쓰는 표기들(field 외). 값 자체는 카탈로그로 검증되므로
-#: 키 표기 차이만 결정적으로 흡수한다 — 흡수하지 못하면 정렬 지정이 통째로 폴백으로 새 나간다.
-_ORDER_FIELD_KEYS = ("field", "measure", "column", "alias", "name")
-_ORDER_DIRECTION_KEYS = ("direction", "dir", "order", "sort")
-
-
-def _coerce_order_by(value: Any) -> Optional[SMQOrderBy]:
-    """LLM/골드 산출물의 order_by 표기를 ``SMQOrderBy``로 정규화한다(불가하면 None)."""
-    if value is None or isinstance(value, SMQOrderBy):
-        return value
-    if isinstance(value, str):
-        return SMQOrderBy(field=value)
-    if not isinstance(value, dict):
-        return None
-    field = next((str(value[k]) for k in _ORDER_FIELD_KEYS if value.get(k)), "")
-    if not field:
-        return None
-    direction = next(
-        (str(value[k]) for k in _ORDER_DIRECTION_KEYS if value.get(k)), "desc"
-    )
-    return SMQOrderBy(field=field, direction=direction)
-
-
-class SMQFilter(BaseModel):
-    """WHERE/HAVING 필터 (field, op, value). gold_smq filter dict와 동일 필드."""
-
-    field: str
-    op: str                         # eq | ne | in | like | gte | lte
-    value: Any
-
-    def as_dict(self) -> dict:
-        return {"field": self.field, "op": self.op, "value": self.value}
-
-
-class SMQ(BaseModel):
-    """폴스타판 Semantic Model Query — LLM이 선택하고 컴파일러가 결정적으로 조립한다."""
-
-    pattern: Literal["A", "B", "C"]
-    resource_types: list[str] = Field(default_factory=list)
-    entities: list[str] = Field(default_factory=list)          # 패턴 C
-    dimensions: list[str] = Field(default_factory=list)
-    measures: list[SMQMeasure] = Field(default_factory=list)
-    filters: list[SMQFilter] = Field(default_factory=list)
-    time_grain: Optional[str] = None                            # hour | day | month | None
-    active_only: bool = False                                   # 패턴 C
-
-    # === Plan 67 S3 IR 확장 (S-IR1~5) ===
-    # 신 필드가 없는 SMQ(gold_smq·1방 선택 산출물)는 기존 경로와 완전히 동일하게 컴파일된다.
-    global_aggregate: bool = False       # S-IR1 전역 단일 행 집계(GROUP BY 생략)
-    entity_count: bool = False           # S-IR1/5 엔티티 수 집계(서버 수·알람 건수)
-    time_breakdown: bool = False         # S-IR2 통계 기간별 행 분해(월별/일별)
-    order_by: Optional[SMQOrderBy] = None                       # S-IR3
-    limit: Optional[int] = None                                 # S-IR3
-    time_range: Optional[list[str]] = None                      # S-IR4 기간 [YYYYMM] | [시작, 끝]
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "SMQ":
-        """gold_smq/LLM 산출 dict에서 SMQ를 만든다(measures/filters는 dict 리스트).
-
-        신 필드(S-IR 확장)가 없는 dict도 그대로 수용한다 — gold_smq 계약 호환 유지.
-        """
-        d = dict(data or {})
-        d["measures"] = [SMQMeasure(**m) if isinstance(m, dict) else m
-                         for m in d.get("measures", []) or []]
-        d["filters"] = [SMQFilter(**f) if isinstance(f, dict) else f
-                        for f in d.get("filters", []) or []]
-        if "order_by" in d:
-            d["order_by"] = _coerce_order_by(d.get("order_by"))
-        if isinstance(d.get("time_range"), str):
-            d["time_range"] = [d["time_range"]]
-        return cls(**d)
-
-    def to_match_dict(self) -> dict:
-        """E1 하네스 ``smq_match``가 채점하는 dict 표현(순서 무관 비교 대상).
-
-        확장 필드도 함께 실어 라운드트립(``from_dict(to_match_dict())``)을 보존한다 —
-        ``smq_match``는 채점 키만 비교하므로 골드 SMQ와의 대조에는 영향이 없다.
-        """
-        return {
-            "pattern": self.pattern,
-            "resource_types": list(self.resource_types),
-            "entities": list(self.entities),
-            "dimensions": list(self.dimensions),
-            "measures": [m.as_dict() for m in self.measures],
-            "filters": [f.as_dict() for f in self.filters],
-            "time_grain": self.time_grain,
-            "active_only": self.active_only,
-            "global_aggregate": self.global_aggregate,
-            "entity_count": self.entity_count,
-            "time_breakdown": self.time_breakdown,
-            "order_by": self.order_by.as_dict() if self.order_by else None,
-            "limit": self.limit,
-            "time_range": list(self.time_range) if self.time_range else None,
-        }
-
-
-class CoverageResult(BaseModel):
-    """커버리지 판정 결과 — 내부(covered=True)면 컴파일, 밖이면 reason과 함께 폴백."""
-
-    covered: bool
-    reason: str = ""
+#: 이 모듈이 계속 노출하는 이름 — 자체 API + `src.semantic` 이동분의 하위호환 재노출이다.
+#: (Plan 69 P5-1. 신규 코드는 이동분을 `src.semantic`에서 직접 임포트할 것.)
+__all__ = [
+    # 이 모듈의 자체 API
+    "load_semantic_model", "compile_smq", "compile_from_nl", "normalize_smq",
+    "parse_smq_response",
+    # src.semantic.ir
+    "SMQ", "SMQFilter", "SMQMeasure", "SMQOrderBy", "CoverageResult",
+    "_AGG_FN", "_ALARM_COUNT_ALIAS", "_FILTER_SQL_OPS", "_MAX_IR_LIMIT",
+    "_MEASURE_FILTER_OPS", "_ORDER_DIRECTION_KEYS", "_ORDER_FIELD_KEYS",
+    "_YYYYMM_RE", "_coerce_order_by",
+    # src.semantic.guards
+    "note_guard", "guard_counters", "reset_guard_counters", "_GUARD_COUNTERS",
+    "_guard_delta",
+    "GUARD_BREAKDOWN_PROMOTE", "GUARD_CAPACITY_INJECT", "GUARD_HYPERNYM_EXPAND",
+    "GUARD_IR_LIMIT", "GUARD_IR_ORDER_BY", "GUARD_IR_TIME_RANGE",
+    "GUARD_MONTHLY_GATE", "GUARD_PHYSICALCORE_DROP", "GUARD_PHYSICALCORE_SWAP",
+    "GUARD_RANKING_SURFACE", "GUARD_RESOURCE_TYPE_FILTER_IGNORED",
+    "GUARD_SCOPE_FILTER_STRIP", "GUARD_SCOPE_GLOBAL_DROP",
+    "GUARD_TIME_FILTER_PROMOTE", "GUARD_TIME_RANGE_OVERRIDE",
+    # src.semantic.coverage
+    "check_coverage", "_ALARM_DIM_ALIAS", "_IDENTITY_COLUMNS",
+    "_PATTERN_AB_SAFE_FILTER_FIELDS", "_PATTERN_C_SAFE_FILTER_FIELDS",
+    "_classify_filter_ab", "_contested_parent_aliases", "_coverage_ab",
+    "_coverage_c", "_dimension_index", "_entity_resource_type",
+    "_filter_reason_ab", "_has_identity_dim", "_ir_common_reason",
+    "_measure_by_ref", "_measure_combos", "_order_direction", "_resolve_dim",
+    "_resolve_ir_order_by_ab", "_resolve_ir_order_by_c",
+    "_safe_filter_fields_ab", "_shape_reason_ab", "_validate_literals",
+    # src.semantic.catalog_render
+    "render_catalog",
+    # src.semantic.taxonomy
+    "_child_dim_entries", "_child_discriminators", "_child_measure_specs",
+    "_expand_hypernym_ambiguity", "_hypernym_surfaces", "_mentions_any",
+    "_missing_child_dims", "_missing_child_measures", "_squash", "_taxonomy",
+]
 
 
 # ──────────────────────────────────────────────
@@ -335,341 +227,6 @@ def load_semantic_model(db_id: str, *, use_cache: bool = True) -> Optional[dict]
     if use_cache:
         _MODEL_CACHE[db_id] = model
     return model
-
-
-def _dimension_index(pattern_a: dict) -> tuple[dict[str, dict], dict[str, dict]]:
-    """패턴 A dimension 인덱스를 (정확이름, 소문자별칭) 두 맵으로 만든다.
-
-    ``Model``(server.Server)과 ``MODEL``(server.Cpus)처럼 대소문자만 다른 속성이 공존하므로,
-    소문자 단일 인덱스로 합치면 충돌한다. SMQ dimension 토큰은 카탈로그의 정확한 이름을 쓰므로
-    **정확이름(대소문자 구분) 우선** 매칭하고, 소문자 별칭 맵은 관용 폴백으로만 쓴다.
-
-    계층 taxonomy(N4/D-133): **형제 둘 이상이 부모(상위어) 이름을 자기 별칭으로 주장하면 그
-    별칭을 등록하지 않는다.** 선착순(``setdefault``)으로 하나가 조용히 이기면 평면 동의어
-    사전의 precision 붕괴가 그대로 재현되기 때문이다 — 등록하지 않으면 상위어 토큰이 모호한
-    채로 남아 모호성 처리(``_expand_hypernym_ambiguity``)나 커버리지 사유로 드러난다.
-    주장하는 형제가 하나뿐이면 큐레이션이 그 하나로 결속한 것으로 보고 유지한다(결속 해제는
-    기존 ``alias_deny`` 수단 — 현행 카탈로그는 이 경우뿐이라 규칙 발동 0건).
-    """
-    dims = pattern_a.get("dimensions", []) or []
-    contested = _contested_parent_aliases(dims)
-    by_name: dict[str, dict] = {}
-    by_alias: dict[str, dict] = {}
-    for dim in dims:
-        name = dim.get("name")
-        if not name:
-            continue
-        parent = str(dim.get("parent") or "").strip().lower()
-        by_name[name] = dim
-        by_alias.setdefault(name.lower(), dim)
-        for alias in dim.get("aliases", []) or []:
-            if parent in contested and str(alias).strip().lower() == parent:
-                continue
-            by_alias.setdefault(alias.lower(), dim)
-    return by_name, by_alias
-
-
-def _contested_parent_aliases(dimensions: list) -> set[str]:
-    """둘 이상의 형제가 자기 별칭으로 주장하는 상위어 이름 집합(소문자)."""
-    claims: dict[str, int] = {}
-    for dim in dimensions:
-        parent = str(dim.get("parent") or "").strip().lower()
-        if not parent:
-            continue
-        if any(str(a).strip().lower() == parent for a in dim.get("aliases") or []):
-            claims[parent] = claims.get(parent, 0) + 1
-    return {parent for parent, count in claims.items() if count > 1}
-
-
-def _resolve_dim(token: str, index: tuple[dict[str, dict], dict[str, dict]]) -> Optional[dict]:
-    """dimension 토큰을 정확이름(대소문자 구분) → 소문자 별칭 순으로 해소한다."""
-    by_name, by_alias = index
-    if token in by_name:
-        return by_name[token]
-    return by_alias.get(str(token).lower())
-
-
-# 서버 식별 dimension으로 인정하는 direct 컬럼 — 이 중 하나가 SELECT에 있어야 리스트 행을
-# 사람이 식별할 수 있다(avail_status 등 direct라도 식별자가 아닌 컬럼은 제외).
-_IDENTITY_COLUMNS = {"name", "hostname", "ipaddress"}
-
-
-def _has_identity_dim(
-    dimensions: list, index: tuple[dict[str, dict], dict[str, dict]]
-) -> bool:
-    """선택된 dimension 중 서버 식별 direct 컬럼이 있는지 판정한다."""
-    for d in dimensions:
-        entry = _resolve_dim(str(d), index)
-        if entry and entry.get("source") == "direct" and entry.get("column") in _IDENTITY_COLUMNS:
-            return True
-    return False
-
-
-def _measure_combos(pattern_b: dict) -> set[tuple[str, str]]:
-    """패턴 B에서 허용된 (resource_type, definition_name) 조합 집합."""
-    return {
-        (m.get("resource_type"), m.get("definition_name"))
-        for m in pattern_b.get("measures", []) or []
-    }
-
-
-# ──────────────────────────────────────────────
-# 커버리지 판정 (E6-3 결정적 판정 + E5-2 리터럴 검증)
-# ──────────────────────────────────────────────
-
-# 패턴 A/B에서 컴파일러가 안전하게 처리 가능한 필터(그 외는 커버리지 밖 — HAVING/동적날짜 등 미지원).
-_PATTERN_AB_SAFE_FILTER_FIELDS = {"resource_type"}
-# 패턴 C에서 처리 가능한 필터.
-_PATTERN_C_SAFE_FILTER_FIELDS = {"ALARMSEVERITY"}
-
-
-def check_coverage(
-    smq: SMQ,
-    model: dict,
-    *,
-    value_index: Optional[dict[str, list[str]]] = None,
-) -> CoverageResult:
-    """SMQ가 시맨틱 모델로 결정적 처리 가능한지 판정한다.
-
-    보수적 판정(과설계 방지) — 커버리지 내는 컴파일러가 **정확히** 조립할 수 있는 형태로만 한정하고,
-    나머지(HAVING 서버필터·동적 날짜·집계 over 알람·LOB 속성)는 밖으로 돌려 폴백(현행 LLM)에 맡긴다.
-    커버리지는 dimension 카탈로그를 사람 승인 루프(D-012)로 점진 확장한다.
-
-    Args:
-        smq: 판정 대상 SMQ
-        model: 시맨틱 모델 dict
-        value_index: E5-2 값 인덱스(있으면 필터 리터럴을 실측 검증)
-
-    Returns:
-        CoverageResult(covered, reason)
-    """
-    if not model:
-        return CoverageResult(covered=False, reason="시맨틱 모델 없음")
-
-    if smq.pattern in ("A", "B"):
-        return _coverage_ab(smq, model, value_index)
-    if smq.pattern == "C":
-        return _coverage_c(smq, model, value_index)
-    return CoverageResult(covered=False, reason=f"미지원 패턴: {smq.pattern}")
-
-
-def _coverage_ab(smq: SMQ, model: dict, value_index: Optional[dict]) -> CoverageResult:
-    pattern_a = model.get("pattern_a") or {}
-    dim_index = _dimension_index(pattern_a)
-    for dim in smq.dimensions:
-        entry = _resolve_dim(str(dim), dim_index)
-        if entry is None:
-            return CoverageResult(covered=False, reason=f"미정의 dimension: {dim}")
-        if entry.get("lob"):
-            # LOB 속성(OSParameter)은 COALESCE(stringvalue, stringvalue_short)가 필요해
-            # 단일 val_col 피벗으로 표현 불가 — 폴백에 위임(Known Mistakes 2026-06-10).
-            return CoverageResult(covered=False, reason=f"LOB dimension 미지원: {dim}")
-    combos = _measure_combos(model.get("pattern_b") or {})
-    for m in smq.measures:
-        if (m.resource_type, m.definition_name) not in combos:
-            return CoverageResult(
-                covered=False,
-                reason=f"미정의 measure: {m.resource_type}/{m.definition_name}",
-            )
-        if m.agg not in _AGG_FN:
-            return CoverageResult(covered=False, reason=f"미지원 집계: {m.agg}")
-    for f in smq.filters:
-        reason = _filter_reason_ab(f, smq, model, dim_index)
-        if reason:
-            return CoverageResult(covered=False, reason=reason)
-    shape = _shape_reason_ab(smq, model, dim_index)
-    if shape:
-        return CoverageResult(covered=False, reason=shape)
-    lit = _validate_literals(smq, model, value_index)
-    if lit:
-        return CoverageResult(covered=False, reason=lit)
-    if not smq.dimensions and not smq.measures and not smq.entity_count:
-        return CoverageResult(covered=False, reason="dimension/measure 없음")
-    ir = _ir_common_reason(smq, lambda: _resolve_ir_order_by_ab(smq, dim_index))
-    if ir:
-        return CoverageResult(covered=False, reason=ir)
-    return CoverageResult(covered=True)
-
-
-def _safe_filter_fields_ab(model: dict) -> set[str]:
-    """패턴 A/B에서 필터로 허용할 필드 집합 — 카탈로그 ``filterable`` 선언을 정본으로 쓴다.
-
-    S-IR4: 코드 상수 1개(resource_type)와 YAML 선언 5개의 불일치가 "선언 커버리지 76.9% vs
-    런타임 판정 34.6%" 격차의 구조적 원인이었다(계획서 §2.5 한계 3). 선언을 정본으로 삼되,
-    선언이 없는 모델은 기존 상수로 폴백한다. 선언돼 있어도 **컴파일러가 실제로 조립할 수
-    있는 형태**(direct 컬럼 + 지원 op)만 통과한다 — 통과시키고 조립에서 빠뜨리면 조건 없는
-    SQL이 나가므로, 조립 불가는 반드시 커버리지 밖이다.
-    """
-    declared = {str(f) for f in ((model.get("pattern_a") or {}).get("filterable") or [])}
-    return (declared | _PATTERN_AB_SAFE_FILTER_FIELDS) if declared else set(
-        _PATTERN_AB_SAFE_FILTER_FIELDS
-    )
-
-
-def _filter_reason_ab(
-    f: SMQFilter, smq: SMQ, model: dict, dim_index: tuple[dict, dict]
-) -> Optional[str]:
-    """패턴 A/B 필터 1건이 조립 불가인 사유를 돌려준다(조립 가능하면 None)."""
-    kind = _classify_filter_ab(f, smq, model, dim_index)
-    if kind:
-        return None
-    if _measure_by_ref(smq, f.field) is not None:
-        return f"미지원 측정치 임계 op(집계 비교만 가능): {f.field} {f.op}"
-    if f.field in _safe_filter_fields_ab(model):
-        return f"미지원 필터 형태(direct 컬럼·지원 op만): {f.field} {f.op}"
-    return f"미지원 필터(서버필터/동적조건은 폴백): {f.field}"
-
-
-def _classify_filter_ab(
-    f: SMQFilter, smq: SMQ, model: dict, dim_index: tuple[dict, dict]
-) -> str:
-    """필터를 컴파일 가능한 종류로 분류한다 — resource_type|measure|direct, 불가하면 빈 문자열."""
-    if f.field == "resource_type":
-        # 대상 resource_type은 dimension·measure 선택에서 결정적으로 도출되므로 조립에 쓰지
-        # 않는다(기존 동작 유지 — 조립 시 무시 사실을 계측·로그로 가시화한다).
-        return "resource_type"
-    if _measure_by_ref(smq, f.field) is not None:
-        return "measure" if str(f.op).lower() in _MEASURE_FILTER_OPS else ""
-    if f.field not in _safe_filter_fields_ab(model):
-        return ""
-    entry = _resolve_dim(str(f.field), dim_index)
-    if entry is None or entry.get("source") != "direct":
-        # EAV 속성 필터는 피벗 후 HAVING 대상이 아니라 값 컬럼 조건이라 폴백에 위임.
-        return ""
-    op = str(f.op).lower()
-    if op not in _FILTER_SQL_OPS:
-        return ""
-    if op == "in" and not isinstance(f.value, (list, tuple)):
-        return ""
-    if op != "in" and isinstance(f.value, (list, tuple, dict)):
-        return ""
-    return "direct"
-
-
-def _measure_by_ref(smq: SMQ, ref: str) -> Optional[SMQMeasure]:
-    """참조 문자열(measure alias 또는 resource_type)로 선택된 measure를 찾는다."""
-    token = str(ref or "").strip().lower()
-    if not token:
-        return None
-    for m in smq.measures:
-        if token in (m.alias.lower(), m.resource_type.lower()):
-            return m
-    return None
-
-
-def _shape_reason_ab(smq: SMQ, model: dict, dim_index: tuple[dict, dict]) -> Optional[str]:
-    """S-IR1/2 형태 확장(전역 집계·기간별 분해)의 조립 가능 조건을 판정한다."""
-    if smq.global_aggregate:
-        if smq.time_breakdown:
-            return "전역 집계와 기간별 분해는 동시 지원 불가"
-        if smq.dimensions:
-            return "전역 집계는 dimension 불가(단일 값 집계)"
-        if not smq.measures and not smq.entity_count:
-            return "전역 집계에 집계 대상(measure/entity_count) 없음"
-    elif smq.entity_count:
-        return "엔티티 수 집계는 전역 집계(global_aggregate)에서만 지원"
-    if smq.entity_count:
-        # 세는 대상은 엔티티(서버) 행뿐이다 — 자식 리소스 수를 요청했는데 엔티티 수를 돌려주면
-        # 조용한 오답이 된다.
-        entity_rt = _entity_resource_type(model.get("pattern_a") or {})
-        others = [
-            rt for rt in smq.resource_types
-            if entity_rt and str(rt).lower() != entity_rt.lower()
-        ]
-        if others:
-            return f"엔티티 외 리소스 수 집계 미지원: {', '.join(map(str, others))}"
-    if smq.time_range and not smq.measures:
-        # 기간을 적용할 통계 조인이 없으면 조건이 사라진다 — 기간 질의는 폴백에 맡긴다.
-        return "기간 조건을 적용할 measure 없음(설정 조회에 기간 미지원)"
-    if smq.time_breakdown:
-        if not smq.measures:
-            return "기간별 행 분해는 measure 필요(통계 기간 기준 분해)"
-        for dim in smq.dimensions:
-            entry = _resolve_dim(str(dim), dim_index)
-            if entry is None or entry.get("source") != "direct":
-                # 기간이 GROUP BY에 들어가면 EAV 속성 행이 다른 그룹으로 갈려 NULL이 된다.
-                return f"기간별 분해는 EAV 속성 dimension 미지원: {dim}"
-    return None
-
-
-def _ir_common_reason(smq: SMQ, resolve_order) -> Optional[str]:
-    """패턴 공통 IR 확장(order_by·limit·time_range)의 형식·해소 가능성을 판정한다."""
-    if smq.limit is not None and not (0 < int(smq.limit) <= _MAX_IR_LIMIT):
-        return f"IR limit 범위 밖(1~{_MAX_IR_LIMIT}): {smq.limit}"
-    if smq.time_range is not None:
-        if not smq.time_range or len(smq.time_range) > 2:
-            return f"IR time_range 형식 오류(YYYYMM 1~2개): {smq.time_range}"
-        for ym in smq.time_range:
-            if not _YYYYMM_RE.fullmatch(str(ym)):
-                return f"IR time_range 형식 오류(YYYYMM 아님): {ym}"
-    if smq.order_by is not None:
-        if str(smq.order_by.direction).lower() not in ("asc", "desc"):
-            return f"IR order_by 방향 미지원: {smq.order_by.direction}"
-        if resolve_order() is None:
-            return f"IR order_by 대상 미해소(카탈로그·선택 밖): {smq.order_by.field}"
-    return None
-
-
-def _coverage_c(smq: SMQ, model: dict, value_index: Optional[dict]) -> CoverageResult:
-    pattern_c = model.get("pattern_c") or {}
-    known_entities = {e.upper() for e in (pattern_c.get("entities") or {}).keys()}
-    for ent in smq.entities:
-        if str(ent).upper() not in known_entities:
-            return CoverageResult(covered=False, reason=f"미정의 알람 엔터티: {ent}")
-    dim_map = {k.upper(): v for k, v in (pattern_c.get("dimensions") or {}).items()}
-    for dim in smq.dimensions:
-        if str(dim).upper() not in dim_map:
-            return CoverageResult(covered=False, reason=f"미정의 알람 dimension: {dim}")
-    for f in smq.filters:
-        if f.field not in _PATTERN_C_SAFE_FILTER_FIELDS:
-            # 기간은 IR time_range로 승격된 것만 처리한다(원시 CTIME 조건은 폴백).
-            return CoverageResult(
-                covered=False,
-                reason=f"미지원 알람 필터(기간/집계는 폴백): {f.field}",
-            )
-    if smq.global_aggregate or smq.time_breakdown:
-        return CoverageResult(
-            covered=False, reason="알람은 전역 집계·기간별 분해 형태 미지원",
-        )
-    if smq.time_range and "CTIME" not in dim_map:
-        # 시각 컬럼 표현이 카탈로그에 없으면 기간 조건을 조립할 수 없다(조건 누락 SQL 금지).
-        return CoverageResult(
-            covered=False, reason="알람 기간 조건 조립 불가(카탈로그에 CTIME 없음)",
-        )
-    ir = _ir_common_reason(smq, lambda: _resolve_ir_order_by_c(smq, dim_map))
-    if ir:
-        return CoverageResult(covered=False, reason=ir)
-    return CoverageResult(covered=True)
-
-
-def _validate_literals(
-    smq: SMQ, model: dict, value_index: Optional[dict]
-) -> Optional[str]:
-    """E5-2 값 검색 연결 — 필터 리터럴이 실측 값집합에 존재하는지 검증한다(있을 때만).
-
-    컴파일러가 emit하는 리터럴은 전부 시맨틱 모델 정의값이라 구조적 환각은 불가능하지만,
-    SMQ 필터가 특정 실측 값(예: resource_type='server.Xyz')을 참조하면 value_index로 검증해
-    미검증 값은 커버리지 밖으로 돌린다(리터럴 환각(Plan 25 유형)의 컴파일러 우회 방지).
-    value_index가 없으면(플래그 OFF) 검증을 건너뛴다.
-
-    Returns:
-        검증 실패 사유 문자열, 통과 시 None.
-    """
-    if not value_index:
-        return None
-    for f in smq.filters:
-        if f.op in ("like",):
-            continue
-        # 값 인덱스가 그 필드를 실제로 수집했을 때만 검증한다("가용 시" 게이트 — 미수집 필드를
-        # 미검증으로 몰면 정상 필터가 전부 폴백으로 새 나간다).
-        candidates = value_index.get(f.field) or []
-        if not candidates:
-            continue
-        values = f.value if isinstance(f.value, (list, tuple)) else [f.value]
-        for val in values:
-            if isinstance(val, str) and val not in candidates:
-                return f"미검증 리터럴(value_index 부재): {f.field}={val}"
-    return None
 
 
 # ──────────────────────────────────────────────
@@ -849,25 +406,6 @@ def _compile_ab(
     )
 
 
-def _entity_resource_type(pattern_a: dict) -> str:
-    """카탈로그가 말하는 엔티티(서버) resource_type을 얻는다(없으면 빈 문자열).
-
-    선언(``entity_resource_type``)이 우선이고, 없는 카탈로그는 direct dimension에 찍힌
-    resource_type에서 읽는다 — 컴파일러에 엔티티 이름을 하드코딩하지 않기 위함(D-088).
-    """
-    rt = str(pattern_a.get("entity_resource_type") or "")
-    if rt:
-        return rt
-    return next(
-        (
-            str(d.get("resource_type") or "")
-            for d in (pattern_a.get("dimensions") or [])
-            if d.get("source") == "direct" and d.get("resource_type")
-        ),
-        "",
-    )
-
-
 def _entity_count_alias(pattern_a: dict) -> str:
     """엔티티 수 집계 컬럼 alias를 엔티티 resource_type에서 만든다(예: server.Server → server_count)."""
     short = _entity_resource_type(pattern_a).split(".")[-1].lower()
@@ -940,65 +478,9 @@ def _is_superlative(user_query: str) -> bool:
     return any(m in low for m in _RANK_DESC_MARKERS + _RANK_ASC_MARKERS)
 
 
-def _order_direction(order_by: SMQOrderBy) -> str:
-    """IR 정렬 방향을 SQL 키워드로 바꾼다(기본 DESC)."""
-    return "ASC" if str(order_by.direction).lower() == "asc" else "DESC"
-
-
-def _resolve_ir_order_by_ab(
-    smq: SMQ, dim_index: tuple[dict, dict]
-) -> Optional[tuple[str, str]]:
-    """패턴 A/B의 IR order_by를 (SELECT alias, 방향)으로 해소한다 (S-IR3).
-
-    해소 순서는 measure(alias·resource_type) → dimension 카탈로그 이름이다. 어느 것과도
-    맞지 않으면 None — 커버리지 판정이 이를 밖으로 돌린다(임의 컬럼 정렬 금지).
-    엔티티 수 집계는 전역 단일 행이라 정렬 대상이 아니다.
-    """
-    if smq.order_by is None:
-        return None
-    direction = _order_direction(smq.order_by)
-    field = str(smq.order_by.field).strip()
-    measure = _measure_by_ref(smq, field)
-    if measure is not None:
-        return measure.alias, direction
-    entry = _resolve_dim(field, dim_index)
-    if entry is not None:
-        return entry["name"], direction
-    return None
-
-
-def _resolve_ir_order_by_c(
-    smq: SMQ, dim_map: dict[str, str]
-) -> Optional[tuple[str, str]]:
-    """패턴 C의 IR order_by를 (SELECT alias, 방향)으로 해소한다 (S-IR5).
-
-    건수 집계 alias와 카탈로그 알람 dimension(그 SELECT alias)만 허용한다.
-    """
-    if smq.order_by is None:
-        return None
-    direction = _order_direction(smq.order_by)
-    field = str(smq.order_by.field).strip()
-    if smq.entity_count and field.lower() == _ALARM_COUNT_ALIAS:
-        return _ALARM_COUNT_ALIAS, direction
-    key = field.upper()
-    if key in dim_map:
-        return _ALARM_DIM_ALIAS.get(key, field.lower()), direction
-    # SELECT alias(예: server_name)로 지정한 경우도 받아들인다.
-    for dim_key in dim_map:
-        if _ALARM_DIM_ALIAS.get(dim_key, dim_key.lower()) == field.lower():
-            return _ALARM_DIM_ALIAS.get(dim_key, dim_key.lower()), direction
-    return None
-
-
 # 알람 조회에 항상 포함할 선별 근거 dimension (카탈로그 키, D-100).
 # 서버 식별(병합 키) + 알람명 + 심각도 — "심각 알람이 있는 서버" 선별 조건을 결과에 표시.
 _ALARM_CONTEXT_DIMS = ("server_name", "NAME", "ALARMSEVERITY")
-# 표시·병합 친화 alias (기본 lower() 대신 명시). server_name은 병합 canonical 키와 일치.
-_ALARM_DIM_ALIAS = {
-    "SERVER_NAME": "server_name",
-    "NAME": "alarm_name",
-    "ALARMSEVERITY": "severity",
-}
 
 
 def _compile_c(
@@ -1145,45 +627,6 @@ def _next_month(ym: str) -> str:
 # 자연어 → SMQ (LLM 선택) + coverage_router 진입점
 # ──────────────────────────────────────────────
 
-def render_catalog(model: dict) -> str:
-    """시맨틱 모델을 NL→SMQ 프롬프트용 카탈로그 텍스트로 렌더한다(선택 가능 항목만 제시)."""
-    lines: list[str] = []
-    pattern_a = model.get("pattern_a") or {}
-    dims = pattern_a.get("dimensions") or []
-    if dims:
-        lines.append("■ 패턴 A 서버설정 dimensions (name — resource_type — 별칭):")
-        for d in dims:
-            aliases = ", ".join(d.get("aliases", []) or [])
-            lob = " (LOB — 미지원)" if d.get("lob") else ""
-            lines.append(f"  - {d.get('name')} [{d.get('resource_type')}]{lob}"
-                         + (f" ← {aliases}" if aliases else ""))
-        # S-IR4: 선언된 filterable을 노출해야 LLM이 서버명·가용성 필터를 커버리지 안으로 낸다
-        filterable = pattern_a.get("filterable") or []
-        if filterable:
-            lines.append("  필터 가능 필드(filterable): " + ", ".join(map(str, filterable)))
-    pattern_b = model.get("pattern_b") or {}
-    measures = pattern_b.get("measures") or []
-    if measures:
-        lines.append("■ 패턴 B 성능지표 measures (resource_type/definition_name — 별칭):")
-        for m in measures:
-            aliases = ", ".join(m.get("aliases", []) or [])
-            lines.append(f"  - {m.get('resource_type')} / {m.get('definition_name')}"
-                         + (f" ← {aliases}" if aliases else ""))
-        grains = ", ".join((pattern_b.get("metric_tables") or {}).keys())
-        lines.append(f"  time_grain 옵션: {grains} (기본 month)")
-        # 지원 집계를 _AGG_FN에서 파생 — S-IR1 확장(count/sum)이 안내에서 빠지는
-        # 하드코딩 드리프트 재발 차단 (Plan 69 P0-⑨)
-        lines.append("  집계(agg): " + ", ".join(_AGG_FN))
-    pattern_c = model.get("pattern_c") or {}
-    ents = pattern_c.get("entities") or {}
-    if ents:
-        lines.append("■ 패턴 C 알람 엔터티: " + ", ".join(ents.keys()))
-        cdims = pattern_c.get("dimensions") or {}
-        lines.append("  알람 dimensions: " + ", ".join(cdims.keys()))
-        sev = pattern_c.get("severity_map") or {}
-        lines.append("  severity: " + ", ".join(f"{k}={v}" for k, v in sev.items()))
-    return "\n".join(lines)
-
 
 # "월별/월간" 분해 질의 검출 — "3개월간"의 '월간'은 기간 표현이므로 제외(부정 후방탐색).
 _MONTHLY_BREAKDOWN_RE = re.compile(r"월별|(?<!개)월간")
@@ -1204,198 +647,6 @@ _TIME_FILTER_FIELDS = {
     "stat_month", "time_range", "ctime", "occurred_at",
     "기간", "월", "날짜",
 }
-
-
-# ──────────────────────────────────────────────
-# 계층 taxonomy — 상위어 단독 질의의 모호성 처리 (Plan 67 N4 / D-133)
-# ──────────────────────────────────────────────
-
-def _taxonomy(model: Optional[dict]) -> dict:
-    """카탈로그의 상위어 블록을 얻는다(선언·정본 생성이 없으면 빈 dict)."""
-    tax = (model or {}).get("taxonomy")
-    return tax if isinstance(tax, dict) else {}
-
-
-def _hypernym_surfaces(term: str, node: dict) -> list[str]:
-    """상위어 자신과 그 표면 변형(taxonomy aliases) 목록."""
-    return [str(term)] + [str(a) for a in (node.get("aliases") or [])]
-
-
-def _squash(text: str) -> str:
-    """비교용 정규화 — 소문자화 + 공백 제거.
-
-    카탈로그 별칭은 띄어쓰기 변형을 다 담지 않는다(오히려 ``alias_deny``로 걷어낸다 — "물리
-    코어"는 빠져 있고 "물리코어"만 남는다). 질의의 띄어쓰기는 자유로우므로 공백을 접어야
-    "물리 코어"가 하위어 명시로 인식된다(미접으면 상위어 단독으로 오판해 확장이 튄다).
-    """
-    return re.sub(r"\s+", "", (text or "").lower())
-
-
-def _mentions_any(query_squashed: str, terms: list[str]) -> bool:
-    """질의에 주어진 표면어 중 하나라도 나타나는지 본다(한국어는 어절 경계가 없어 부분 문자열)."""
-    return any(squashed in query_squashed for t in terms if (squashed := _squash(t)))
-
-
-def _child_dim_entries(node: dict, dim_index: tuple[dict, dict]) -> list[dict]:
-    """상위어의 하위 dimension 카탈로그 항목들(수록분만)."""
-    return [
-        entry for name in (node.get("dimensions") or [])
-        if (entry := _resolve_dim(str(name), dim_index)) is not None
-    ]
-
-
-def _child_measure_specs(node: dict, model: dict) -> list[dict]:
-    """상위어의 하위 measure 카탈로그 정의들(수록분만, 카탈로그 순서)."""
-    wanted = {
-        (str(c.get("resource_type")), str(c.get("definition_name")))
-        for c in (node.get("measures") or []) if isinstance(c, dict)
-    }
-    return [
-        m for m in ((model.get("pattern_b") or {}).get("measures") or [])
-        if isinstance(m, dict)
-        and (str(m.get("resource_type")), str(m.get("definition_name"))) in wanted
-    ]
-
-
-def _child_discriminators(
-    term: str, node: dict, model: dict, dim_index: tuple[dict, dict]
-) -> list[str]:
-    """하위 항목을 구분하는 표면어(이름·별칭) 목록 — 상위어 표면어 자신은 제외한다.
-
-    질의에 이 중 하나라도 있으면 사용자가 어느 하위어인지 이미 지목한 것이므로 모호하지
-    않다(**하위어 명시 질의 동작 불변**의 판정 근거).
-    """
-    surfaces = {_squash(s) for s in _hypernym_surfaces(term, node)}
-    out: list[str] = []
-    for entry in _child_dim_entries(node, dim_index):
-        out.append(str(entry.get("name") or ""))
-        out.extend(str(a) for a in (entry.get("aliases") or []))
-    for spec in _child_measure_specs(node, model):
-        out.append(str(spec.get("definition_name") or ""))
-        out.append(str(spec.get("resource_type") or ""))
-        out.extend(str(a) for a in (spec.get("aliases") or []))
-    return [t for t in out if t and _squash(t) not in surfaces]
-
-
-def _missing_child_dims(
-    smq: SMQ, node: dict, dim_index: tuple[dict, dict]
-) -> list[str]:
-    """선택된 하위 dimension의 빠진 형제들을 찾는다(하나도 안 골랐으면 빈 목록).
-
-    상위어의 하위를 **하나라도** 골랐을 때만 나머지를 채운다 — 그 선택이 곧 "LLM이 모호한
-    표면어를 임의의 한 갈래로 좁혔다"는 신호다. 하나도 안 골랐으면 다른 읽기(예 상위어가
-    측정치를 가리킴)이므로 손대지 않는다.
-    """
-    children = _child_dim_entries(node, dim_index)
-    if not children:
-        return []
-    selected = {
-        entry["name"] for d in smq.dimensions
-        if (entry := _resolve_dim(str(d), dim_index)) is not None
-    }
-    child_names = [str(e.get("name")) for e in children]
-    if not (selected & set(child_names)):
-        return []
-    return [
-        str(e.get("name")) for e in children
-        # LOB 속성은 컴파일 불가라 채우면 질의 전체가 커버리지 밖으로 밀린다.
-        if str(e.get("name")) not in selected and not e.get("lob")
-    ]
-
-
-def _missing_child_measures(smq: SMQ, node: dict, model: dict) -> list[SMQMeasure]:
-    """선택된 하위 measure의 빠진 형제들을 만든다(집계는 선택된 형제와 동일하게).
-
-    "CPU 사용률 평균·최대"를 골랐다면 형제도 평균·최대로 채운다 — 집계가 달라지면 같은
-    표에 뜻이 다른 컬럼이 섞인다.
-    """
-    children = _child_measure_specs(node, model)
-    if not children:
-        return []
-    child_keys = {
-        (str(m.get("resource_type")), str(m.get("definition_name"))) for m in children
-    }
-    selected = [
-        m for m in smq.measures if (m.resource_type, m.definition_name) in child_keys
-    ]
-    if not selected:
-        return []
-    aggs: list[str] = []
-    for m in selected:
-        if m.agg not in aggs:
-            aggs.append(m.agg)
-    chosen = {(m.resource_type, m.definition_name, m.agg) for m in smq.measures}
-    out: list[SMQMeasure] = []
-    for spec in children:
-        rt = str(spec.get("resource_type"))
-        dn = str(spec.get("definition_name"))
-        for agg in aggs:
-            if (rt, dn, agg) in chosen:
-                continue
-            out.append(SMQMeasure(agg=agg, definition_name=dn, resource_type=rt))
-    return out
-
-
-def _expand_hypernym_ambiguity(
-    smq: SMQ, user_query: str, model: Optional[dict]
-) -> SMQ:
-    """상위어만 언급한 질의를 하위 항목 전부로 확장한다 (N4/D-133, 옵트인).
-
-    "사용률 보여줘"처럼 상위어 단독 언급이면 어느 자원의 지표인지 결정 불가인데, 1방 선택은
-    하위 하나를 임의로 골라 **조용한 오답**이 된다. 하위 전부를 제시해 모호성을 결과에
-    드러낸다(계획서 §3.3-N4의 "전체 제시"). 하위어를 명시한 질의는 판정에서 걸러져 **동작
-    불변**이다.
-
-    되묻기(covered=False + 후보 나열) 대신 전체 제시를 택한 근거: ``compile_from_nl``의
-    커버리지 사유는 호출부(``query_generator``)가 소비하지 않아(폴백 진입 여부만 본다)
-    사용자에게 도달하지 않고, 결정적 컴파일(구조 환각 0)을 버리고 LLM 자유생성으로
-    떨어뜨리게 된다. 확장 발동은 가드 카운터로 계측해 감사·평가에 남긴다.
-
-    확장은 기존 교정 가드보다 **먼저** 돌린다 — PHYSICALCORE 선택 교정처럼 실측 운영 관행이
-    확립된 가드가 최종 중재자가 되게 한다(예 "코어" 확장 후 '물리' 신호가 없으면 가드가
-    PHYSICALCORE를 다시 뺀다).
-    """
-    taxonomy = _taxonomy(model)
-    if not taxonomy or smq.pattern not in ("A", "B"):
-        return smq
-    query_squashed = _squash(user_query)
-    dim_index = _dimension_index((model or {}).get("pattern_a") or {})
-    # dimension 확장 금지 형태 — 전역 집계는 단일 값(dimension 불가), 기간별 분해는 EAV 속성
-    # dimension 불가라, 채우면 질의 전체가 커버리지 밖으로 밀린다.
-    dims_allowed = not smq.global_aggregate and not smq.time_breakdown
-
-    added_dims: list[str] = []
-    added_measures: list[SMQMeasure] = []
-    fired: list[str] = []
-    for term, node in taxonomy.items():
-        if not isinstance(node, dict):
-            continue
-        if not _mentions_any(query_squashed, _hypernym_surfaces(str(term), node)):
-            continue
-        if _mentions_any(
-            query_squashed, _child_discriminators(str(term), node, model or {}, dim_index)
-        ):
-            continue
-        new_dims = _missing_child_dims(smq, node, dim_index) if dims_allowed else []
-        new_measures = _missing_child_measures(smq, node, model or {})
-        if not new_dims and not new_measures:
-            continue
-        added_dims.extend(d for d in new_dims if d not in added_dims)
-        added_measures.extend(new_measures)
-        fired.append(
-            f"{term} ⊃ "
-            + ", ".join(new_dims + [f"{m.resource_type}/{m.agg}" for m in new_measures])
-        )
-
-    if not added_dims and not added_measures:
-        return smq
-    note_guard(GUARD_HYPERNYM_EXPAND, "; ".join(fired))
-    update: dict[str, Any] = {}
-    if added_dims:
-        update["dimensions"] = list(smq.dimensions) + added_dims
-    if added_measures:
-        update["measures"] = list(smq.measures) + added_measures
-    return smq.model_copy(update=update)
 
 
 def normalize_smq(
