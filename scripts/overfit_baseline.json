@@ -29,15 +29,9 @@
     ],
     "src/nodes/query_generator.py": [
       "cmm_metric_stat",
-      "cmm_metric_stat_",
       "cmm_resource",
       "configuration_id",
       "server.Server"
-    ],
-    "src/nodes/query_validator.py": [
-      "configuration_id",
-      "server.Server",
-      "stringvalue_short"
     ],
     "src/nodes/schema_analyzer.py": [
       "cmm_alarm",
@@ -77,6 +71,11 @@
     ],
     "src/semantic/ir.py": [
       "server.Cpus"
+    ],
+    "src/sql_validation.py": [
+      "configuration_id",
+      "server.Server",
+      "stringvalue_short"
     ],
     "src/utils/column_matcher.py": [
       "cmm_resource",

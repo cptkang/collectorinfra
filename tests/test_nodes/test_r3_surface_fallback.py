@@ -162,20 +162,24 @@ class TestAllScopeKeywordBoundary:
 
 
 class TestValidatorSharesBoundaryJudgement:
-    """query_validator의 LIMIT 자동 추가 스킵 판정이 공용 헬퍼를 쓴다(§6 인라인 튜플 제거)."""
+    """검증 코어의 LIMIT 자동 추가 스킵 판정이 공용 헬퍼를 쓴다(§6 인라인 튜플 제거).
+
+    코어는 Plan 69 후속 2단계에서 `src.nodes.query_validator` → `src.sql_validation`으로
+    이동했다(도구 계층의 nodes 역참조 해소). 판정 주체가 코어이므로 단언 대상도 코어다.
+    """
 
     def test_validator_imports_shared_helper(self):
         import importlib
 
-        qv = importlib.import_module("src.nodes.query_validator")
-        assert qv.has_all_scope_keyword is has_all_scope_keyword
+        core = importlib.import_module("src.sql_validation")
+        assert core.has_all_scope_keyword is has_all_scope_keyword
 
     def test_no_inline_keyword_tuple_left(self):
         import inspect
         import importlib
 
-        qv = importlib.import_module("src.nodes.query_validator")
-        src = inspect.getsource(qv)
+        core = importlib.import_module("src.sql_validation")
+        src = inspect.getsource(core)
         assert '("모든", "전체", "모두")' not in src
 
 

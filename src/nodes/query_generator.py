@@ -68,6 +68,9 @@ from src.db_adapters.polestar.assembler import (
 )
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
+# 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
+# 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
+from src.tools.metrics import classify_metric_field
 from src.utils.synonym_usage import extract_synonym_usage
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
@@ -182,10 +185,6 @@ def _try_build_form_fill_pivot_sql(
     Args:
         adapter_db_ids: 어댑터 담당 db_id 집합 — 지표 필드 분류를 레지스트리로 디스패치한다.
     """
-    # nodes→tools는 함수 지역 임포트로 둔다 — 모듈 수준이면 tools.validation의 nodes 참조와
-    # 맞물려 패키지 순환이 되살아난다(P5-1이 없앤 것). column_deriver의 tools 참조와 같은 방식.
-    from src.tools.metrics import classify_metric_field
-
     column_mapping = state.get("column_mapping")
     if not column_mapping:
         return None
@@ -936,9 +935,6 @@ def _mapping_prompt_sections(
     Returns:
         프롬프트에 이어 붙일 섹션 문자열 목록(해당 없으면 빈 목록)
     """
-    # nodes→tools는 함수 지역 임포트 — 모듈 수준이면 패키지 순환이 되살아난다(P5-1 참조).
-    from src.tools.metrics import classify_metric_field
-
     parts: list[str] = []
     # 수정 A: schema_info 기반 column_mapping 필터링
     column_mapping = filter_mapping_by_schema(

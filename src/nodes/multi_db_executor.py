@@ -73,6 +73,9 @@ from src.db_adapters.polestar.assembler import (
     decimal_cast_example,
     eav_attr_resource_types,
 )
+# 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
+# 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
+from src.tools.metrics import classify_metric_field
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
     from src.nodes.column_deriver import StepwiseDeps
@@ -804,9 +807,6 @@ def _metric_field_predicate(
 
     담당 어댑터의 분류 훅이 없으면 스키마 무관 표면어 판정으로 강등된다(D-088/D-089).
     """
-    # nodes→tools는 함수 지역 임포트 — 모듈 수준이면 패키지 순환이 되살아난다(P5-1 참조).
-    from src.tools.metrics import classify_metric_field
-
     adapter_db_ids = (app_config.get_polestar_db_ids() if app_config else None) or None
 
     def _is_metric(field: str) -> bool:

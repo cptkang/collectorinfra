@@ -62,6 +62,9 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     "src/tools",
     # P5-1(Plan 69)로 semantic_compiler에서 분리된 IR 계층 — 이동 전과 동일하게 감시
     "src/semantic",
+    # Plan 69 후속 2단계로 query_validator에서 분리된 SQL 검증 코어(단일 파일) —
+    # 이동 전과 동일하게 감시(리터럴의 어댑터 이관은 별건 D-088 작업)
+    "src/sql_validation.py",
 )
 # DB 어댑터·전용 도구(격리 계층)는 특화 리터럴 허용 — 스캔 제외.
 EXCLUDE_DIRS: tuple[str, ...] = (
@@ -139,6 +142,9 @@ def _iter_target_files() -> list[Path]:
     for d in PUBLIC_LAYER_DIRS:
         base = PROJECT_ROOT / d
         if not base.exists():
+            continue
+        if base.is_file():
+            files.append(base)
             continue
         for py in sorted(base.rglob("*.py")):
             rel = py.relative_to(PROJECT_ROOT).as_posix()

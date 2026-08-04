@@ -1,8 +1,8 @@
 """SQL 초안 사전 검증 도구 (Plan 67 Phase S1 §4.3).
 
-단계적 도출 루프가 조립 중인 SQL을 실행 전에 점검할 수 있게, ``query_validator`` 노드에서
-분리한 검증 코어(``validate_sql``)를 도구 형태로 노출한다. 검사 항목·메시지는 노드 경로와
-동일하며, DB 특화 검증은 어댑터 레지스트리에서 조회한 훅으로만 수행한다(D-089).
+단계적 도출 루프가 조립 중인 SQL을 실행 전에 점검할 수 있게, 검증 코어(``validate_sql``)를
+도구 형태로 노출한다. 검사 항목·메시지는 ``query_validator`` 노드 경로와 동일하며(같은 코어를
+공유한다 — D-067), DB 특화 검증은 어댑터 레지스트리에서 조회한 훅으로만 수행한다(D-089).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 from src.db_adapters import get_adapter
-from src.nodes.query_validator import validate_sql
+from src.sql_validation import validate_sql
 
 
 def validate_sql_draft(
