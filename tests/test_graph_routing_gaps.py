@@ -129,3 +129,21 @@ class TestRouteAfterOrchestratorAndReplanner:
     @pytest.mark.parametrize("needs_replan", [False, None])
     def test_replanner_aggregates_when_done(self, needs_replan):
         assert route_after_replanner(_state(needs_replan=needs_replan)) == "result_aggregator"
+
+
+class TestSchemaAnalyzerRouteNoneContext:
+    """awaiting_approval 참 + approval_context None 조합의 방어 (Plan 69 P0-⑪).
+
+    create_initial_state는 approval_context를 None으로 두므로, 컨텍스트 없이 승인
+    대기 플래그만 세워진 상태에서 `.get(key, {})`가 None을 반환해 AttributeError로
+    죽던 결함의 재발 방지(P1 안전망 작성 중 발견 — 당시 결함을 굳히지 않고 보류).
+    """
+
+    def test_awaiting_approval_with_none_context_routes_to_generator(self):
+        from src.graph import route_after_schema_analyzer
+        from src.state import create_initial_state
+
+        state = create_initial_state(user_query="test")
+        state["awaiting_approval"] = True
+        assert state["approval_context"] is None
+        assert route_after_schema_analyzer(state) == "query_generator"
