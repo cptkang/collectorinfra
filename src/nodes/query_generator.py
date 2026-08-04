@@ -804,30 +804,6 @@ def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
     return None
 
 
-def _extract_eav_tables(schema_info: Optional[dict]) -> set[str]:
-    """_structure_meta에서 EAV 패턴의 관련 테이블명을 추출한다.
-
-    Args:
-        schema_info: 스키마 정보 딕셔너리 (선택)
-
-    Returns:
-        EAV 패턴과 관련된 테이블명 집합 (소문자)
-    """
-    if not schema_info:
-        return set()
-    structure_meta = schema_info.get("_structure_meta")
-    if not structure_meta:
-        return set()
-    tables: set[str] = set()
-    for pattern in structure_meta.get("patterns", []):
-        if pattern.get("type") == "eav":
-            for key in ("entity_table", "config_table", "table"):
-                val = pattern.get(key)
-                if val:
-                    tables.add(val.lower())
-    return tables
-
-
 def _build_user_prompt(
     parsed_requirements: dict,
     template_structure: Optional[dict],

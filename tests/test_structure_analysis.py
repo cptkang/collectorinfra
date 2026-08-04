@@ -14,7 +14,6 @@ import pytest
 from src.nodes.query_generator import (
     _build_system_prompt,
     _build_user_prompt,
-    _extract_eav_tables,
     _format_structure_guide,
     _get_eav_pattern,
 )
@@ -499,37 +498,7 @@ class TestParseLlmJson:
 
 
 # ---------------------------------------------------------------------------
-# 12. _extract_eav_tables 동적 추출 테스트
-# ---------------------------------------------------------------------------
 
-class TestExtractEavTables:
-    """_extract_eav_tables 동적 추출 테스트."""
-
-    def test_extract_eav_tables(self):
-        schema = {
-            "_structure_meta": {
-                "patterns": [
-                    {"type": "eav", "entity_table": "ENTITY", "config_table": "CONFIG"}
-                ]
-            }
-        }
-        result = _extract_eav_tables(schema)
-        assert "entity" in result
-        assert "config" in result
-
-    def test_no_structure_meta(self):
-        assert _extract_eav_tables({"tables": {}}) == set()
-
-    def test_no_eav_pattern(self):
-        schema = {
-            "_structure_meta": {
-                "patterns": [{"type": "hierarchy", "table": "T"}]
-            }
-        }
-        assert _extract_eav_tables(schema) == set()
-
-
-# ---------------------------------------------------------------------------
 # 13. _get_eav_pattern 첫 EAV 패턴 추출 테스트
 # ---------------------------------------------------------------------------
 

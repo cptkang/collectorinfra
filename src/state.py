@@ -185,7 +185,7 @@ class AgentState(TypedDict):
     # === 감사 로깅 ===
     request_id: Optional[str]                # 요청 추적 ID
     client_ip: Optional[str]                 # 클라이언트 IP
-    accessed_tables: list[str]               # 실제 접근한 테이블 목록
+    accessed_tables: list[str]               # 실제 접근한 테이블 목록 (미소비 — 쓰기 없음, Plan 69 §1.6. 삭제는 별건)
 
     # === 출력 ===
     final_response: str                      # 자연어 응답
