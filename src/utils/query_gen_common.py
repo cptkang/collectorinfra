@@ -237,7 +237,8 @@ def build_generic_period_hint(stat_month: StatMonth) -> str:
 
 # "전체/모든/모두" 조회는 기본 LIMIT(default_limit)로 절단하면 안 되므로 상향한다.
 _ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
-_ALL_QUERY_LIMIT: int = 100_000
+_ALL_QUERY_LIMIT: int = 10_000  # spec.md '최대 반환 행 수 10,000행' 정합(Plan 69 §0.3-5 —
+# 감사 이력 5,372건 실측 최대 1,000행, 초과 실적 0 확인 후 하향. 2026-08-04)
 
 # 스코프 표면어 뒤에 붙으면 낱말의 품사가 바뀌어 "전체 조회" 의미가 아닌 파생 접미사.
 # "**전체**적으로 CPU 높은 서버"가 LIMIT 100000으로 상향되던 오탐(검토 §4.2 A6) 차단용.

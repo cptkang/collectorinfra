@@ -27,7 +27,7 @@ class TestResolveQueryLimit:
         ["공동존의 전체 서버들에 대하여", "모든 서버 조회", "서버 모두 보여줘"],
     )
     def test_all_query_raises_limit(self, query):
-        assert resolve_query_limit(query, 1000) == 100_000
+        assert resolve_query_limit(query, 1000) == 10_000
 
     @pytest.mark.parametrize("query", ["CPU 높은 서버 10개", "", None])
     def test_normal_query_keeps_default(self, query):
@@ -112,7 +112,7 @@ class TestMultiDbExecutorInjectsExamples:
             {},
             schema_info,
             "공동존 전체 서버 사용률",
-            100_000,
+            10_000,
             db_engine="postgresql",
             db_id="polestar_cm_gp",
         )
@@ -129,7 +129,7 @@ class TestMultiDbExecutorInjectsExamples:
             "_structure_meta": {"query_guide": "가이드", "query_examples": []},
         }
         await _generate_sql(
-            llm, {}, schema_info, "공동존 전체 서버 사용률", 100_000,
+            llm, {}, schema_info, "공동존 전체 서버 사용률", 10_000,
             db_engine="postgresql", db_id="polestar_cm_gp",
             unmapped_fields=["CPU 평균", "메모리 최고"],
         )
@@ -190,7 +190,7 @@ class TestMetricMappingDeferredToExamples:
             "메모리 평균": "cmm_metric_stat_h.mem_avg_val",
         }
         await _generate_sql(
-            llm, {}, schema_info, "공동존 전체 서버 월간 사용률", 100_000,
+            llm, {}, schema_info, "공동존 전체 서버 월간 사용률", 10_000,
             column_mapping=column_mapping,
             db_engine="postgresql", db_id="polestar_cm_gp",
         )
@@ -365,7 +365,7 @@ class TestCrossPathParity:
 
     def test_all_query_limit_symmetric(self):
         """'전체' 조회 LIMIT 상향이 두 경로 공통 함수로 동일 적용."""
-        assert resolve_query_limit("전체 서버", 1000) == 100_000
+        assert resolve_query_limit("전체 서버", 1000) == 10_000
         assert resolve_query_limit("서버 10개", 1000) == 1000
 
     async def test_both_paths_emit_unmapped_field_alias_instruction(self):

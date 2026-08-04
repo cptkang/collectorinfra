@@ -109,7 +109,7 @@ class TestQueryLimitLLMFallback:
         [
             ("알람 100건 조회해줘", 100),
             ("상위 10개 서버", 10),
-            ("전체 서버 조회", 100_000),
+            ("전체 서버 조회", 10_000),
         ],
     )
     def test_deterministic_match_ignores_llm_value(self, query, want):
@@ -124,7 +124,7 @@ class TestQueryLimitLLMFallback:
 
     def test_llm_limit_is_capped(self):
         """LLM 산출 상한도 전체 조회 상한을 넘지 않는다."""
-        assert resolve_query_limit("아주 많이", 1000, parsed_limit=10_000_000) == 100_000
+        assert resolve_query_limit("아주 많이", 1000, parsed_limit=10_000_000) == 10_000
 
     @pytest.mark.parametrize("bad", [None, 0, -5, True, "10", 1.5])
     def test_malformed_llm_limit_falls_back_to_default(self, bad):
