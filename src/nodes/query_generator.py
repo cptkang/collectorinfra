@@ -764,6 +764,9 @@ def _build_system_prompt(
         )
 
     # DB 엔진 힌트
+    if not active_db_engine:
+        # 그래프 경로 상시 폴백 실측용 로그 — 결정적 주입 전환 판단 재료 (Plan 69 P4-4)
+        logger.info("[엔진폴백] active_db_engine 미설정 — postgresql 가정(프롬프트 힌트)")
     db_engine = active_db_engine or "postgresql"
     db_engine_hint = f"현재 대상 DB 엔진: **{db_engine.upper()}** — 이 엔진의 SQL 문법을 사용하세요."
 
