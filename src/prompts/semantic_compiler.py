@@ -21,7 +21,7 @@ SQL을 쓰지 마라 — 무엇을 조회할지 **선택**만 한다. 카탈로�
   {{"pattern": "A"|"B",
     "resource_types": [...],
     "dimensions": [카탈로그의 dimension name 그대로],
-    "measures": [{{"agg": "avg"|"max"|"min", "definition_name": "...", "resource_type": "..."}}],
+    "measures": [{{"agg": "avg"|"max"|"min"|"count"|"sum", "definition_name": "...", "resource_type": "..."}}],
     "time_grain": "hour"|"day"|"month"|null,
     "filters": [{{"field": "resource_type", "op": "like", "value": "..."}}]}}
 - 패턴 C(알람):
@@ -30,22 +30,39 @@ SQL을 쓰지 마라 — 무엇을 조회할지 **선택**만 한다. 카탈로�
     "dimensions": [알람 dimension],
     "filters": [{{"field": "ALARMSEVERITY", "op": "eq"|"in", "value": 3|[1,2,3]}}],
     "active_only": true|false}}
+- 선택 확장 필드(해당할 때만 추가):
+  "global_aggregate": true — 전 서버 통틀어 단일 값 집계("전체 평균" 등, 이때 dimensions는 [])
+  "entity_count": true — 개수 집계(패턴 A/B는 global_aggregate와 함께 "서버 수",
+      패턴 C는 단독으로 서버별 알람 건수)
+  "time_breakdown": true — "월별/월간 통계"·"추이"처럼 기간 단위로 행을 나눠 달라는 질의(measure 필요)
+  "order_by": {{"field": "정렬 기준 measure의 resource_type 또는 dimension name", "direction": "asc"|"desc"}} — 정렬
+  "limit": N — "상위/하위 N개"의 N
+  "time_range": ["YYYYMM"] 또는 ["YYYYMM", "YYYYMM"] — "2026년 6월" 같은 **절대 월** 지정만
+
+[filters에 쓸 수 있는 것]
+- 카탈로그의 "필터 가능 필드(filterable)" 목록에 있는 필드(서버명/호스트명/IP/가용성 등):
+  op는 eq|ne|in|like.
+- 측정치 임계("사용률 80% 이상"): field에 선택한 measure의 resource_type, op는 gte|lte|eq|ne.
+- 그 외 필드는 필터로 지어내지 마라 — 해당 질의는 `{{"pattern": "none"}}`.
 
 [커버리지 밖 — 반드시 다음을 지켜라]
 아래 중 하나라도 해당하면 시맨틱 조합으로 표현할 수 없으므로 **정확히 `{{"pattern": "none"}}`만 출력**하라
 (억지로 맞추지 마라 — 그 경우 별도 경로가 처리한다):
-- 특정 서버 지목(장비명/호스트명이 특정 값)·가용성 등 개별 행 필터가 필요
-- 특정 날짜/시각 구간 필터·상위 N개 랭킹·개수 집계(COUNT)·정렬 상위 등 동적/집계 질의
-- "유사한 사양", 두 DB 비교 등 의역·교차 판단
-- 카탈로그에 없는 속성/지표
+- 월 미만 정밀도의 시각 구간 필터(특정 일자/시각 범위 — 절대 월(time_range)은 커버리지 안)
+- "유사한 사양", 두 DB 비교, 전월 대비 증감 등 의역·교차·파생 판단
+- 카탈로그에 없는 속성/지표, filterable 밖 필드의 개별 행 필터
+- 알람(패턴 C)의 전역 집계·월별 분해
 
 [커버리지 안 — 다음은 절대 "none"으로 돌리지 마라]
-- 성능 통계의 "지난달/최근 N개월/이번 달" 등 **월 단위 기간** — 기간은 시스템이 자동 주입하므로
+- 성능 통계의 "지난달/최근 N개월/이번 달" 등 **상대 기간** — 기간은 시스템이 자동 주입하므로
   패턴 B로 변환하라(time_grain="month", 기간을 filters에 넣지 마라). 예: "사용률은 지난달 1개월
-  통계 기준으로" → 패턴 B(기간 무시하고 변환).
-  ※ 단, "월간/월별 통계"·"추이"처럼 **월 단위로 행을 나눠** 보여달라는 질의(예: "서버별 월간 성능
-  통계")는 커버리지 밖("none")이다 — 컴파일러는 기간 전체를 서버당 1행으로 집계만 지원한다.
+  통계 기준으로" → 패턴 B(기간 무시하고 변환). 절대 월 지정만 time_range에 담는다.
+- "서버별 월간/월별 통계"·"추이" — time_breakdown=true로 변환하라(행 분해는 컴파일러가 처리).
+- "서버 수"·"몇 대" — global_aggregate=true + entity_count=true.
+- "상위/하위 N개"·"가장 높은/낮은" 랭킹 — order_by + limit으로 변환하라.
+- 특정 서버 지목(서버명/호스트명이 특정 값) — filterable 필드 필터로 변환하라.
 - 알람의 "최근 발생 순 N건" 목록 — 기본 정렬(발생시간 역순)+건수 제한으로 처리되므로 패턴 C로 변환하라.
+- 서버별 알람 건수/최다 알람 서버 — 패턴 C + entity_count=true(+ 랭킹이면 order_by·limit).
 
 [규칙]
 - dimension/measure/entity는 반드시 카탈로그의 **정확한 이름**을 사용(별칭 아님).

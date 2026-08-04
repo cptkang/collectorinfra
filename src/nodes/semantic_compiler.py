@@ -1158,6 +1158,10 @@ def render_catalog(model: dict) -> str:
             lob = " (LOB — 미지원)" if d.get("lob") else ""
             lines.append(f"  - {d.get('name')} [{d.get('resource_type')}]{lob}"
                          + (f" ← {aliases}" if aliases else ""))
+        # S-IR4: 선언된 filterable을 노출해야 LLM이 서버명·가용성 필터를 커버리지 안으로 낸다
+        filterable = pattern_a.get("filterable") or []
+        if filterable:
+            lines.append("  필터 가능 필드(filterable): " + ", ".join(map(str, filterable)))
     pattern_b = model.get("pattern_b") or {}
     measures = pattern_b.get("measures") or []
     if measures:
@@ -1168,7 +1172,9 @@ def render_catalog(model: dict) -> str:
                          + (f" ← {aliases}" if aliases else ""))
         grains = ", ".join((pattern_b.get("metric_tables") or {}).keys())
         lines.append(f"  time_grain 옵션: {grains} (기본 month)")
-        lines.append("  집계(agg): avg, max, min")
+        # 지원 집계를 _AGG_FN에서 파생 — S-IR1 확장(count/sum)이 안내에서 빠지는
+        # 하드코딩 드리프트 재발 차단 (Plan 69 P0-⑨)
+        lines.append("  집계(agg): " + ", ".join(_AGG_FN))
     pattern_c = model.get("pattern_c") or {}
     ents = pattern_c.get("entities") or {}
     if ents:
