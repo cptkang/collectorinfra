@@ -152,7 +152,8 @@
 - **주의**: 권장 모델 `gemini-2.0-flash`(기본)·`gemini-3.1-pro`. `gemini-2.5-*`는 2026-06-17 deprecated 예정이므로 사용 금지. 팩토리 패턴 유지(노드는 `create_llm()` 단일 진입점). Gemini는 외부 네트워크 필요(폐쇄망 불가).
 
 ## D-022. RESOURCE_CONF_ID JOIN 금지 + hostname 브릿지 조인 필수화
-- **결정일**: 2026-03-26 | **상태**: 확정 | **이전 결정**: D-016 수정(EAV 조인 교정), D-020 보강
+- **결정일**: 2026-03-26 | **상태**: **부분 재검토(2026-08-04)** — mcp 가드 전면 금지 규칙 제거(2026-07-30), 본체 방어는 유지 | **이전 결정**: D-016 수정(EAV 조인 교정), D-020 보강
+- **재검토(2026-07-30 사용자 인터뷰 승인, 2026-08-04 등재)**: mcp_server 가드의 `RESOURCE_CONF_ID=CONFIGURATION_ID` 조인 정규식 deny를 제거(f15ac46 — `validate_polestar_domain`은 D-028 lookup 테이블 deny만 유지). 근거(실측): 현행 정본(D-076 시맨틱 모델 direct_join·골드셋·조립기)이 전부 이 조인을 사용하며, 로컬 픽스처 2,202행 조인 매칭·b0 폼필 라이브 완주·D-058/D-061 전제가 동작을 실증 — 규칙 유지 시 정상 SQL이 전건 차단됨. 본 결정의 원 근거("두 컬럼 직접 매핑 없음", 2026-03 운영 DB 분석)는 현행 스키마 실측과 배치. 본체 3중 방어(YAML `excluded_join_columns`·프롬프트 규칙·`_check_excluded_join_columns` warning)는 현행 유지 — 정본 direct_join과의 정합 전면 재평가는 후속 과제.
 - **결정**: `CMM_RESOURCE.RESOURCE_CONF_ID`를 `CORE_CONFIG_PROP.CONFIGURATION_ID` JOIN 조건으로 사용 금지. CMM_RESOURCE↔CORE_CONFIG_PROP 조인은 반드시 hostname 기반 값 브릿지 조인(value_joins)으로만 수행.
 - **근거**: 운영 DB 분석 결과 두 컬럼이 직접 매핑되지 않고 FK도 없음. resource_conf_id 조인은 잘못된 결과 반환.
 - **구현**: 올바른 패턴 — `core_config_prop p_host ON p_host.name='Hostname' AND p_host.stringvalue_short=r.hostname` 후 `p_x.configuration_id=p_host.configuration_id AND p_x.name='<속성>'`. query_generator/multi_db_executor가 `value_joins`를 `join_condition`보다 우선. Plan 33 보강(3중 방어): (1) YAML query_guide 금지 문구+`excluded_join_columns`, (2) 프롬프트 규칙 10+"-- JOIN 금지" 주석, (3) query_validator `_check_excluded_join_columns()` warning. `src/utils/schema_utils.py::build_excluded_join_map()` 공용 유틸.
@@ -1002,6 +1003,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-08-04 | D-022(재검토) | **mcp 가드 RESOURCE_CONF_ID=CONFIGURATION_ID 조인 전면 금지 규칙 제거 등재** — 2026-07-30 사용자 인터뷰 승인·제거 커밋 f15ac46(`mcp_server/security.py`·`test_security.py`, `test_resource_conf_join_allowed`로 교체). 실측 근거: 현행 정본(D-076 direct_join·골드셋·조립기) 전부 이 조인 사용, 로컬 픽스처 2,202행 매칭·b0 폼필 라이브 완주 — stale 규칙이 check-gold 정상 SQL 전건 차단하던 문제 해소(동반 수정: DBHubClient MCP isError 침묵 삼킴 제거). 본체 3중 방어는 유지, direct_join 정합 전면 재평가는 후속. 신규 D-번호 없음(D-022 재검토). |
 | 2026-08-04 | D-134(갱신) | **Plan 69 문구 통일 건별 인터뷰·적용 완결** — 채택 6건: W-1(금지 JOIN section)·W-3(NOT NULL)·W-4(샘플 한국어 표기)·W-7(로그 schema_tables 부기)·S-1(strip_db_prefix 통일) = fbb2ca4, U-1(자동 매핑 실패 블록 공유 빌더 통합·'Template B' 미정의 참조 해소) = 2413753. **W-5 반려**(FK 헤더 현행 유지). 멀티 스냅샷 system 2키만 갱신·U-1은 멀티 바이트 불변(12키 무갱신), 전 단계 기준선 대조 회귀 0. |
 | 2026-08-04 | D-134 | **Plan 69 쿼리 생성 구조 리팩토링 구현 완료 등재(예약분 회수)** — P0 실결함 11건, P1 안전망(sha256 스냅샷 12키), P2 유틸 단일화(sql_dialect·llm_compat·LIMIT 10,000 spec 정합), P3 공유 빌더 13종+`TEXT2SQL_PATH_PARITY`(기본 OFF), P4 실행·검증·감사 대칭+`TEXT2SQL_MULTI_FULL_VALIDATION`(기본 OFF), P5 semantic 계층 분리(순환 소멸)·거대 함수 분해(80줄 초과 10→4)·피벗 진입점 분리·어댑터 임포트 정리. 전 커밋 동작 불변 게이트 4종 그린(회귀 0·바이트 보존)·외부 호출 0(D-127). 잔여: 문구 통일 7건 사용자 건별 승인 대기·피벗 wrapper 테스트 4곳 후속. |
 | 2026-07-30 | D-132·D-133(갱신) | **Plan 67 잔여 3웨이브 구현 완료** — D-132: alarm 주석 LLM 분류(application 계층·enum 소비·키워드 강등 폴백·기본 OFF — ON은 과금 별도 승인, anomaly 폴스타 상수 주입 이관). D-133 갱신: N4 taxonomy 완료(parent 3건 — 사용률·코어·모델, 상위어 전체 제시+가드 계측, 기본 OFF `TEXT2SQL_HYPERNYM_AMBIGUITY`). R1 잔여: 프롬프트 16블록 마커화(13블록 정본 렌더 바이트 일치 실증), hi 조인 키 교정+`check_value_column_join` validator 신설(예제와 동일 플래그 `TEXT2SQL_PROMPT_KNOWLEDGE_RENDER` 기본 OFF — 즉시 적용은 프로필 3파일 few-shot 동반 교정+b0 실측 전제 보류). 설정 카탈로그 241필드 정합. 전 웨이브 격리 대조 회귀 0. |
