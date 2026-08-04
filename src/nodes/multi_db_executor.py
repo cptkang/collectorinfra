@@ -556,8 +556,9 @@ async def _generate_sql(
     if structure_meta:
         structure_guide = structure_meta.get("query_guide", "")
         eav_patterns = eav_patterns_of(structure_meta)
-        # EAV 패턴이 있고 query_guide가 존재하면, 조인 규칙 지침을 앞에 삽입
-        if eav_patterns and structure_guide:
+        # EAV 패턴이 있으면 조인 규칙을 앞에 삽입 — guide가 빈 프로필에서도 금지 규칙은
+        # 유효하다(P0-③의 멀티 대칭, Plan 69 W-8. 폴스타 guide는 비어 있지 않아 바이트 불변).
+        if eav_patterns:
             structure_guide = EAV_JOIN_RULE_BLOCK + structure_guide
         for eav_p in eav_patterns:
             # EAV 패턴의 value_joins 정보 + 금지 JOIN 컬럼 경고를 구조 가이드에 추가

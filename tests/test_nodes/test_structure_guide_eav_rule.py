@@ -39,3 +39,24 @@ class TestEavJoinRuleRendering:
         """EAV 패턴이 없으면 규칙을 삽입하지 않는다(기존 동작 보존)."""
         out = _format_structure_guide({"query_guide": "본문", "patterns": []})
         assert "EAV 테이블 조인 규칙" not in out
+
+
+class TestEavJoinRuleMultiPathSymmetry:
+    """멀티 경로의 EAV 조인 규칙 렌더 대칭 (Plan 69 W-8 — P0-③의 멀티 완결).
+
+    P0-③이 단일 경로만 고쳐, 멀티는 query_guide 빈 프로필에서 조인 금지 규칙이
+    통째로 빠지는 동일 결함이 잔존했다(문구 diff 리포트 실측). 폴스타 guide는
+    비어 있지 않아 이 수정의 폴스타 경로 바이트는 불변이다.
+    """
+
+    def test_multi_path_renders_rule_with_empty_guide(self):
+        import re
+
+        from src.nodes import multi_db_executor as mdb
+
+        src = open(mdb.__file__, encoding="utf-8").read()
+        # 조건이 guide 존재에 묶여 있지 않음을 소스 레벨로 고정(빌드 함수가 노드 내부라
+        # 전체 노드 목 없이 렌더를 떼기 어려움 — 조건식 자체를 단언)
+        assert re.search(r"if eav_patterns:\n\s+structure_guide = EAV_JOIN_RULE_BLOCK", src), \
+            "멀티 경로 EAV 규칙이 guide 존재에 게이트되면 안 된다(W-8)"
+        assert "if eav_patterns and structure_guide:" not in src
