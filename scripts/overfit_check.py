@@ -60,6 +60,8 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     "src/alarm/domain",
     "mcp_server/mcp_server",
     "src/tools",
+    # P5-1(Plan 69)로 semantic_compiler에서 분리된 IR 계층 — 이동 전과 동일하게 감시
+    "src/semantic",
 )
 # DB 어댑터·전용 도구(격리 계층)는 특화 리터럴 허용 — 스캔 제외.
 EXCLUDE_DIRS: tuple[str, ...] = (
