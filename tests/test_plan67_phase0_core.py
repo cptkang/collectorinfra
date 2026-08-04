@@ -202,6 +202,51 @@ class TestJsonExtractVariants:
         assert strip_code_fence('  {"a": 1}  ') == '{"a": 1}'
 
 
+class TestContentBlockListCoercion:
+    """실 모델(Gemini 3.x thinking 계열)의 콘텐츠 블록 리스트 content 정규화.
+
+    2026-08-04 E1 라이브 실측: content가 list로 오면 정규식 파서가
+    TypeError("expected string or bytes-like object, got 'list'")로 죽었다.
+    """
+
+    _BLOCKS = [
+        {"type": "thinking", "thinking": "무시할 사고 블록"},
+        {"type": "text", "text": '```json\n{"query_type": "조회"}\n```'},
+    ]
+
+    def test_json_from_block_list(self):
+        from src.utils.json_extract import extract_json_from_response
+
+        assert extract_json_from_response(self._BLOCKS) == {"query_type": "조회"}
+
+    def test_json_array_from_block_list(self):
+        from src.utils.json_extract import extract_json_array_from_response
+
+        blocks = [{"type": "text", "text": "[1, 2]"}]
+        assert extract_json_array_from_response(blocks) == [1, 2]
+
+    def test_strip_code_fence_from_block_list(self):
+        from src.utils.json_extract import strip_code_fence
+
+        assert strip_code_fence(self._BLOCKS) == '{"query_type": "조회"}'
+
+    def test_sql_from_block_list(self):
+        from src.utils.query_gen_common import extract_sql_from_response
+
+        blocks = [
+            {"type": "thinking", "thinking": "사고"},
+            {"type": "text", "text": "```sql\nSELECT 1\n```"},
+        ]
+        assert extract_sql_from_response(blocks) == "SELECT 1"
+
+    def test_str_items_and_str_passthrough(self):
+        from src.utils.json_extract import coerce_content_text
+
+        assert coerce_content_text(['{"a"', ": 1}"]) == '{"a": 1}'
+        assert coerce_content_text('{"a": 1}') == '{"a": 1}'
+        assert coerce_content_text(None) == ""
+
+
 class TestCallSitesUseSharedExtractor:
     """인라인 복제 정규식이 재유입되지 않도록 소스를 검사한다."""
 

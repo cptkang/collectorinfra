@@ -12,6 +12,8 @@ import logging
 import re
 from datetime import date
 
+from src.utils.json_extract import coerce_content_text
+
 logger = logging.getLogger(__name__)
 
 _PREV_MONTH_SIGNALS: tuple[str, ...] = (
@@ -621,18 +623,20 @@ def build_prior_rows_block(prior_rows: dict | None) -> str:
     )
 
 
-def extract_sql_from_response(content: str) -> str:
+def extract_sql_from_response(content: str | list) -> str:
     """LLM 응답에서 SQL 쿼리를 추출한다.
 
     단일 DB 경로(query_generator)와 멀티 DB 경로(multi_db_executor)가 동일 추출
     규칙을 쓰도록 단일 출처로 공유한다(D-066).
 
     Args:
-        content: LLM 응답 텍스트
+        content: LLM 응답 텍스트(실 모델의 콘텐츠 블록 리스트 허용 — json_extract와 대칭)
 
     Returns:
         추출된 SQL 문자열
     """
+    content = coerce_content_text(content)
+
     # ```sql ... ``` 패턴
     sql_match = re.search(r"```sql\s*(.*?)\s*```", content, re.DOTALL)
     if sql_match:
