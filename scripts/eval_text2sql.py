@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -40,6 +41,8 @@ from statistics import mean
 from typing import Any, Optional, Protocol
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
 # 상수
@@ -594,6 +597,25 @@ def _add_repo_root_to_path() -> None:
         sys.path.insert(0, root)
 
 
+def _load_eval_config() -> Any:
+    """load_config() 후 EVAL_GEMINI_API_KEY(설정 시)로 Gemini API 키를 오버라이드한다.
+
+    평가 배치의 대량 LLM 트래픽을 운영 키와 분리한다(평가·스모크 트래픽 키 분리).
+    미설정 시 기존 동작 그대로(하위호환). load_config는 lru_cache라 같은 객체가
+    재반환되므로 키가 이미 오버라이드돼 있으면 로그가 반복되지 않는다
+    (set_pipeline_flags의 cache_clear 후에는 새 객체에 재적용된다).
+    """
+    _add_repo_root_to_path()
+    from src.config import load_config
+
+    cfg = load_config()
+    eval_key = os.getenv("EVAL_GEMINI_API_KEY")
+    if eval_key and cfg.llm.gemini_api_key != eval_key:
+        cfg.llm.gemini_api_key = eval_key
+        logger.info("[평가분리] EVAL_GEMINI_API_KEY 사용")
+    return cfg
+
+
 _EVAL_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 # MCP SSE 세션 종료 소음 시그니처 - anyio cancel scope는 태스크 경계를 넘는 정리를 허용하지
@@ -680,10 +702,9 @@ class RealExecutor:
             _add_repo_root_to_path()
             import asyncio
 
-            from src.config import load_config
             from src.dbhub.client import DBHubClient  # type: ignore
 
-            cfg = load_config()
+            cfg = _load_eval_config()
             # 대상 DB를 source_name으로 지정한 설정 사본으로 클라이언트를 만든다.
             dbhub_cfg = cfg.dbhub.model_copy(update={"source_name": db_id})
 
@@ -725,10 +746,9 @@ class PipelinePredictor:
             import asyncio
             import time
 
-            from src.config import load_config
             from src.llm import create_llm  # type: ignore
 
-            cfg = load_config()
+            cfg = _load_eval_config()
             llm = create_llm(cfg)
             state = {
                 "user_query": item.query,

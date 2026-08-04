@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -45,6 +47,23 @@ from src.prompts.input_parser import INPUT_PARSER_SYSTEM_PROMPT
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.state import create_initial_state
+
+logger = logging.getLogger(__name__)
+
+
+def _load_eval_config():
+    """load_config() 후 EVAL_GEMINI_API_KEY(설정 시)로 Gemini API 키를 오버라이드한다.
+
+    스모크 배치의 대량 LLM 트래픽을 운영 키와 분리한다(평가·스모크 트래픽 키 분리).
+    미설정 시 기존 동작 그대로(하위호환). load_config는 lru_cache라 같은 객체가
+    재반환되므로 키가 이미 오버라이드돼 있으면 로그가 반복되지 않는다.
+    """
+    config = load_config()
+    eval_key = os.getenv("EVAL_GEMINI_API_KEY")
+    if eval_key and config.llm.gemini_api_key != eval_key:
+        config.llm.gemini_api_key = eval_key
+        logger.info("[평가분리] EVAL_GEMINI_API_KEY 사용")
+    return config
 
 
 # ──────────────────────────────────────────────
@@ -108,7 +127,7 @@ async def run_pipeline(user_query: str, step_by_step: bool = False) -> dict:
     Returns:
         최종 AgentState
     """
-    config = load_config()
+    config = _load_eval_config()
     llm = create_llm(config)
     state = create_initial_state(user_query=user_query)
 
@@ -340,7 +359,7 @@ TEST_SCENARIOS = [
 
 async def run_all_scenarios(step_by_step: bool = False) -> None:
     """전체 테스트 시나리오를 실행한다."""
-    config = load_config()
+    config = _load_eval_config()
     print(f"{BOLD}파이프라인 통합 테스트{RESET}")
     print(f"  LLM: {config.llm.provider} / {config.llm.model}")
     print(f"  DB: {config.db_backend} / {config.db_connection_string[:50]}...")
