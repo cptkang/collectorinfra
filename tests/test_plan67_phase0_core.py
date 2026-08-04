@@ -246,6 +246,21 @@ class TestContentBlockListCoercion:
         assert coerce_content_text('{"a": 1}') == '{"a": 1}'
         assert coerce_content_text(None) == ""
 
+    def test_parse_smq_response_block_list(self):
+        """E1 baseline 전건 SKIP 재현 회귀 — 유틸 앞 사전 str 가공이 있으면
+        'list' object has no attribute 'strip'로 죽는다(semantic_compiler:830)."""
+        from src.nodes.semantic_compiler import parse_smq_response
+
+        blocks = [
+            {"type": "thinking", "thinking": "사고"},
+            {
+                "type": "text",
+                "text": '{"pattern": "A", "dimensions": [], "measures": []}',
+            },
+        ]
+        smq = parse_smq_response(blocks)
+        assert smq is not None and smq.pattern == "A"
+
 
 class TestCallSitesUseSharedExtractor:
     """인라인 복제 정규식이 재유입되지 않도록 소스를 검사한다."""

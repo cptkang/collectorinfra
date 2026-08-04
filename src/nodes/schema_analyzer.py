@@ -26,7 +26,7 @@ from src.llm import create_llm
 from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
-from src.utils.json_extract import strip_code_fence
+from src.utils.json_extract import coerce_content_text, strip_code_fence
 
 logger = logging.getLogger(__name__)
 
@@ -1280,7 +1280,7 @@ async def _llm_select_relevant_tables(
 """
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        selected = [t.strip() for t in response.content.split(",")]
+        selected = [t.strip() for t in coerce_content_text(response.content).split(",")]
         valid_tables = set(all_tables)
         result = sorted(t for t in selected if t in valid_tables)
         if result:

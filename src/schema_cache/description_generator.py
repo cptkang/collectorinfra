@@ -19,7 +19,7 @@ from src.prompts.schema_description import (
     SCHEMA_DESCRIPTION_SYSTEM_PROMPT,
     SCHEMA_DESCRIPTION_USER_TEMPLATE,
 )
-from src.utils.json_extract import extract_json_from_response
+from src.utils.json_extract import coerce_content_text, extract_json_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class DescriptionGenerator:
             ])
 
             # LLM 응답에서 설명 텍스트 추출 (JSON이 아닌 순수 텍스트)
-            description = response.content.strip()
+            description = coerce_content_text(response.content).strip()
             # 따옴표로 감싸진 경우 제거
             if description.startswith('"') and description.endswith('"'):
                 description = description[1:-1]

@@ -825,9 +825,13 @@ def _promote_time_breakdown(smq: SMQ, user_query: str) -> SMQ:
     return smq.model_copy(update={"time_breakdown": True})
 
 
-def parse_smq_response(content: str) -> Optional[SMQ]:
-    """LLM 응답에서 SMQ JSON을 파싱한다(코드펜스 허용). 밖/파싱실패는 None."""
-    data = extract_json_from_response((content or "").strip())
+def parse_smq_response(content: str | list) -> Optional[SMQ]:
+    """LLM 응답에서 SMQ JSON을 파싱한다(코드펜스 허용). 밖/파싱실패는 None.
+
+    사전 str 가공 금지 — content가 블록 리스트(실 Gemini thinking 계열)일 수 있어
+    정규화는 extract_json_from_response 진입부에 맡긴다(2026-08-04 E1 실측).
+    """
+    data = extract_json_from_response(content)
     if not isinstance(data, dict):
         return None
     if str(data.get("pattern", "")).upper() not in ("A", "B", "C"):

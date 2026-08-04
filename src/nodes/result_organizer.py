@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 
+from src.utils.json_extract import coerce_content_text
 from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.llm import create_llm
@@ -240,7 +241,7 @@ async def _resolve_unmatched_via_llm(
         # Remove any None entries (no effect for other LLMs)
         messages = [m for m in messages if m is not None]
         response = await llm.ainvoke(messages)
-        content = response.content.strip()
+        content = coerce_content_text(response.content).strip()
 
         # JSON 블록 추출
         if "```json" in content:
@@ -391,7 +392,7 @@ async def _llm_check_column_coverage(
         # Remove any None entries (no effect for other LLMs)
         messages = [m for m in messages if m is not None]
         response = await llm.ainvoke(messages)
-        content = response.content.strip()
+        content = coerce_content_text(response.content).strip()
 
         if "```json" in content:
             content = content.split("```json", 1)[1].split("```", 1)[0].strip()
