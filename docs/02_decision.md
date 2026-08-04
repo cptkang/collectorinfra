@@ -969,11 +969,12 @@
 
 ## D-134. 쿼리 생성 구조 리팩토링 — 동작 불변 게이트 기반 P0~P5 (Plan 69 구현 완료)
 
-- **결정일**: 2026-08-04 | **상태**: 확정 (구현 완료 · 문구 통일 7건은 사용자 건별 승인 대기) | **번호**: plans/69 예약분 회수 — 등재 직전 `## D-` 헤더·「변경 이력」 표 재확인(등재 최댓값 D-136, D-134 결번 해소).
+- **결정일**: 2026-08-04 | **상태**: 확정 (구현 완료 · 문구 통일 건별 인터뷰·적용 완결 2026-08-04 — 채택 6건 적용, W-5 반려) | **번호**: plans/69 예약분 회수 — 등재 직전 `## D-` 헤더·「변경 이력」 표 재확인(등재 최댓값 D-136, D-134 결번 해소).
 - **배경**: 쿼리 생성 영역(query_generator·multi_db_executor·query_validator·semantic_compiler·assembler)이 기능 트랙(Plan 67) 누적으로 거대 함수·경로 비대칭·중복 조립이 심화. 전면 재설계 대신 **동작 불변을 게이트로 실증하는 단계적 구조 리팩토링**을 채택(plans/69 v1~v5).
 - **결정**: ① **동작 불변 게이트 4종을 커밋 단위로 강제** — 프롬프트 sha256 스냅샷 12키(단일/멀티×기본/지식렌더/재시도/prior_rows 매트릭스) 무갱신, 영역 스위트 실패 집합 기준선(사전 실패 6건) 대조, arch/overfit `--ci`, 폼필·시맨틱 골든 바이트 보존. ② **P0 실결함 수정 우선**(11건 — 기간 힌트 정규화, 멀티 실패 감사·SQL 보존, validation_warnings 감사 전달, LIMIT 최상위 판정, 재시도 예산 배선, SMQ 프롬프트-코드 정합 등). ③ **공용 유틸 신설**: `src/utils/sql_dialect.py`(is_db2·row_limit_clause·sql_literal)·`src/utils/llm_compat.py`(is_kbgenai) — 방언·모델 분기 단일 출처화. `_ALL_QUERY_LIMIT` 100,000→10,000(spec.md 정합·감사 실측 최대 1,000행). ④ **프롬프트 조립 공유 빌더 13종**(`src/nodes/prompt_blocks.py`) — 단일/멀티 경로가 같은 빌더를 소비(D-066 구조화), 경로 차이는 옵트인 검증 플래그 `TEXT2SQL_PATH_PARITY`(기본 OFF)로 계측. 멀티 전체 검증도 `TEXT2SQL_MULTI_FULL_VALIDATION`(기본 OFF) 옵트인. ⑤ **semantic 계층 분리**(`src/semantic/` — ir·coverage·catalog_render·guards·taxonomy): nodes↔tools 패키지 순환 소멸, semantic_compiler 1844→1095줄. ⑥ **거대 함수 분해**(80줄 초과 10→4, 잔존 4건은 프롬프트 조립 순서 응집 사유 명시)·**피벗 진입점 분리**(`_build_pivot_sql` 코어 + form_fill 10파라미터/semantic 17파라미터, 종전 18파라미터 시그니처는 하위호환 wrapper)·**어댑터 직접 임포트 정리**(classify_metric_field 레지스트리 경유 5곳, 잔존 4건은 훅 표면 미커버 사유 주석 — Plan 63 §9 신설 금지 준수).
 - **검증**: 전 커밋 게이트 그린(회귀 0 — 실패 집합 기준선 완전 일치), gold_smq 18건 SQL 바이트 동일, 폼필 골든 13건 바이트 보존, 격리 worktree 대조. 외부 호출 0(D-127).
-- **잔여**: 문구 통일 체크리스트(`docs/plan69_p3_wording_diff.md` W-1·W-3·W-4·W-5·W-7·U-1·S-1 — 멀티 프롬프트 바이트 변경 수반, 사용자 건별 승인 후 적용), 피벗 wrapper 소비 테스트 4곳 신 진입점 전환, tools/validation→nodes 단방향 임포트 해소.
+- **문구 통일 완결(2026-08-04 사용자 건별 인터뷰)**: 채택 6건 적용 — 1단계 W-1·W-3·W-4·W-7·S-1(fbb2ca4 — 멀티 system 2키만 스냅샷 갱신, 단일 8키·멀티 human 2키 무갱신으로 무영향 실증) + 2단계 U-1(2413753 — `build_unmapped_fields_block(hangul_alias=)` 통합, 멀티 바이트 완전 불변·단일은 폼필 미매핑 경로만 변경, 'Template B' 미정의 참조 해소, 폴스타 리터럴은 어댑터 상수 조달로 공용 계층 순감). **W-5 반려**(FK 헤더 `### FK Relationships` 현행 유지). W-2 의도된 차이 유지·W-6 별건 분리.
+- **잔여**: 피벗 wrapper 소비 테스트 4곳 신 진입점 전환, tools/validation→nodes 단방향 임포트 해소, W-6(멀티 유사어·설명 재료 조달 — 별건).
 - **관련**: D-066(경로 대칭)·D-067(이중 조립 금지)·D-088(공용 계층 DB-agnostic)·D-089(어댑터 레지스트리)·D-127·plans/69·`docs/plan69_p3_wording_diff.md`.
 
 ## D-135. 설정 리로드 — 재시작 없는 반영 확대 (Plan 68 §6 Phase 4 구현·apply_mode 3분류)
@@ -1001,6 +1002,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-08-04 | D-134(갱신) | **Plan 69 문구 통일 건별 인터뷰·적용 완결** — 채택 6건: W-1(금지 JOIN section)·W-3(NOT NULL)·W-4(샘플 한국어 표기)·W-7(로그 schema_tables 부기)·S-1(strip_db_prefix 통일) = fbb2ca4, U-1(자동 매핑 실패 블록 공유 빌더 통합·'Template B' 미정의 참조 해소) = 2413753. **W-5 반려**(FK 헤더 현행 유지). 멀티 스냅샷 system 2키만 갱신·U-1은 멀티 바이트 불변(12키 무갱신), 전 단계 기준선 대조 회귀 0. |
 | 2026-08-04 | D-134 | **Plan 69 쿼리 생성 구조 리팩토링 구현 완료 등재(예약분 회수)** — P0 실결함 11건, P1 안전망(sha256 스냅샷 12키), P2 유틸 단일화(sql_dialect·llm_compat·LIMIT 10,000 spec 정합), P3 공유 빌더 13종+`TEXT2SQL_PATH_PARITY`(기본 OFF), P4 실행·검증·감사 대칭+`TEXT2SQL_MULTI_FULL_VALIDATION`(기본 OFF), P5 semantic 계층 분리(순환 소멸)·거대 함수 분해(80줄 초과 10→4)·피벗 진입점 분리·어댑터 임포트 정리. 전 커밋 동작 불변 게이트 4종 그린(회귀 0·바이트 보존)·외부 호출 0(D-127). 잔여: 문구 통일 7건 사용자 건별 승인 대기·피벗 wrapper 테스트 4곳 후속. |
 | 2026-07-30 | D-132·D-133(갱신) | **Plan 67 잔여 3웨이브 구현 완료** — D-132: alarm 주석 LLM 분류(application 계층·enum 소비·키워드 강등 폴백·기본 OFF — ON은 과금 별도 승인, anomaly 폴스타 상수 주입 이관). D-133 갱신: N4 taxonomy 완료(parent 3건 — 사용률·코어·모델, 상위어 전체 제시+가드 계측, 기본 OFF `TEXT2SQL_HYPERNYM_AMBIGUITY`). R1 잔여: 프롬프트 16블록 마커화(13블록 정본 렌더 바이트 일치 실증), hi 조인 키 교정+`check_value_column_join` validator 신설(예제와 동일 플래그 `TEXT2SQL_PROMPT_KNOWLEDGE_RENDER` 기본 OFF — 즉시 적용은 프로필 3파일 few-shot 동반 교정+b0 실측 전제 보류). 설정 카탈로그 241필드 정합. 전 웨이브 격리 대조 회귀 0. |
 | 2026-07-30 | D-136 | **Plan 67 R3 — 표면어 해석 선별 전환 구현 완료 등재** — A1~A6 2단 폴백(정규식 1순위+폐기되던 LLM 산출물 폴백·신규 호출 0·완결 월 절단·단일/멀티/폼필 대칭 — 폼필 포함은 실측 정정 후 결정 변경), LLM 보조 3곳 옵트인(시트명·등록 의사 재질의 전환·승인 의사 2중 키+감사 로그, 전부 결정적 폴백·fail-closed 불변), "전체(적으로)" 오탐 완화. QUERY_INTENT_LLM_ASSIST 기본 False(ON 전환 별도 결정). 격리 대조 회귀 0·신규 46건+. 최댓값 D-135→**D-136**(D-134는 plans/69 예약 존중). |
