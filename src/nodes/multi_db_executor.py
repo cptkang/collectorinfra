@@ -18,11 +18,11 @@ import sqlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
-from src.clients.fabrix_kbgenai import KBGenAIChat
+from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.candidate_generator import classify_complexity
-from src.nodes.query_validator import _check_left_join_where_demotion
+from src.nodes.query_validator import check_left_join_where_demotion as _check_left_join_where_demotion
 from src.nodes.semantic_compiler import compile_from_nl
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
@@ -869,7 +869,7 @@ async def _generate_sql(
         selection = await run_candidate_pipeline(
             llm, system_prompt, user_prompt,
             count=t2.candidate_count, strategies=t2.candidate_strategies,
-            selection=t2.selection, is_kbgenai=isinstance(llm, KBGenAIChat),
+            selection=t2.selection, is_kbgenai=is_kbgenai(llm),
             extract_sql=extract_sql_from_response, validate=_validate, execute=execute,
             user_query=parsed_requirements.get("original_query", "") or sub_query_context,
         )
@@ -886,7 +886,7 @@ async def _generate_sql(
     messages: list[BaseMessage] = [
         SystemMessage(content=system_prompt)
     ]
-    if isinstance(llm, KBGenAIChat):
+    if is_kbgenai(llm):
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=user_prompt))
 
@@ -929,7 +929,7 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
 
     # 따옴표 밖 자연어(한글) 토큰 잔존 검출 — 단일 경로(query_validator)와 동일 가드를
     # 멀티 경로에도 공유(D-066 경로 비대칭 방지, D-104). 검출 시 재시도 루프가 재생성 유도.
-    from src.nodes.query_validator import _find_bare_hangul_tokens
+    from src.nodes.query_validator import find_bare_hangul_tokens as _find_bare_hangul_tokens
 
     bare_hangul = _find_bare_hangul_tokens(sql)
     if bare_hangul:

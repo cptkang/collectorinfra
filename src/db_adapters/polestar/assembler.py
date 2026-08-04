@@ -12,8 +12,8 @@ from src.utils.sql_dialect import is_db2, row_limit_clause
 from src.utils.sql_dialect import sql_literal as _sql_literal  # 이동(Plan 69 P2) — 동작 불변
 from src.utils.query_gen_common import (
     StatMonth,
-    _normalize_stat_month,
-    _utilization_guard,
+    normalize_stat_month as _normalize_stat_month,
+    utilization_guard as _utilization_guard,
 )
 # EAV 속성 메타 추출은 카탈로그 계층에 위임한다(application→infrastructure 허용).
 from src.schema_cache.catalog_builder import attribute_resource_types

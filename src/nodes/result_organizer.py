@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 
-from src.clients.fabrix_kbgenai import KBGenAIChat
+from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.security.data_masker import DataMasker
@@ -234,7 +234,7 @@ async def _resolve_unmatched_via_llm(
         messages = [
             SystemMessage(content=COLUMN_RESOLVER_SYSTEM_PROMPT),
             # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+            AIMessage(content="") if is_kbgenai(llm) else None,
             HumanMessage(content=user_prompt),
         ]
         # Remove any None entries (no effect for other LLMs)
@@ -385,7 +385,7 @@ async def _llm_check_column_coverage(
         messages = [
             SystemMessage(content=system_prompt),
             # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+            AIMessage(content="") if is_kbgenai(llm) else None,
             HumanMessage(content=user_prompt),
         ]
         # Remove any None entries (no effect for other LLMs)

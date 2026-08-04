@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from src.clients.fabrix_kbgenai import KBGenAIChat
+from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
@@ -24,7 +24,7 @@ from src.db_adapters import get_adapter
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
-    _collect_prior_identity_values,
+    collect_prior_identity_values as _collect_prior_identity_values,
     build_generic_period_hint,
     build_prior_rows_block,
     build_query_examples_block,
@@ -447,7 +447,7 @@ async def query_generator(
             messages = [
                 SystemMessage(content=system_prompt),
                 # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-                AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+                AIMessage(content="") if is_kbgenai(llm) else None,
                 HumanMessage(content=user_prompt),
             ]
             # Remove any None entries (no effect for other LLMs)
@@ -628,7 +628,7 @@ async def _run_multi_candidate_single_db(
     from src.nodes.query_validator import query_validator
 
     t2 = app_config.text2sql
-    is_kbgenai = isinstance(llm, KBGenAIChat)
+    is_kbgenai_llm = is_kbgenai(llm)
     db_id = state.get("active_db_id")
 
     async def _validate(sql: str):
@@ -654,7 +654,7 @@ async def _run_multi_candidate_single_db(
         candidates = await generate_candidates(
             llm, system_prompt, user_prompt,
             count=t2.candidate_count, strategies=t2.candidate_strategies,
-            is_kbgenai=is_kbgenai, extract_sql=extract_sql_from_response,
+            is_kbgenai=is_kbgenai_llm, extract_sql=extract_sql_from_response,
         )
         first = candidates[0] if candidates else {"sql": "", "strategy": None, "confidence": 0.0}
         return {"sql": first["sql"], "strategy": first.get("strategy"), "confidence": 0.0,
@@ -674,7 +674,7 @@ async def _run_multi_candidate_single_db(
         return await run_candidate_pipeline(
             llm, system_prompt, user_prompt,
             count=t2.candidate_count, strategies=t2.candidate_strategies,
-            selection=t2.selection, is_kbgenai=is_kbgenai,
+            selection=t2.selection, is_kbgenai=is_kbgenai_llm,
             extract_sql=extract_sql_from_response,
             validate=_validate, execute=_execute, user_query=user_query,
         )

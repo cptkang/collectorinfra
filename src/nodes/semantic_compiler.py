@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from src.utils.llm_compat import is_kbgenai
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
 from src.utils.json_extract import extract_json_from_response
@@ -1597,7 +1598,7 @@ async def _select_smq_one_shot(
         user += SEMANTIC_SMQ_SCOPE_NOTE
     messages = [SystemMessage(content=system)]
     # KBGenAIChat 등은 SystemMessage 다음 AIMessage 순서를 요구 — 클래스명으로 감지(선택 의존).
-    if type(llm).__name__ == "KBGenAIChat":
+    if is_kbgenai(llm):
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=user))
 

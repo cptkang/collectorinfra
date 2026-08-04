@@ -313,7 +313,7 @@ async def query_validator(
 _HANGUL_RE = re.compile(r"[가-힣]+")
 
 
-def _find_bare_hangul_tokens(sql: str) -> list[str]:
+def find_bare_hangul_tokens(sql: str) -> list[str]:
     """문자열 리터럴·따옴표 식별자·주석을 제거한 뒤 남는 한글 토큰을 찾는다(D-104).
 
     LLM 생성 SQL에 자연어 조각(지시어 "해당", "현재" 등)이 구조 영역에 잔존하면 DB가
@@ -816,7 +816,7 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
     return errors
 
 
-def _check_left_join_where_demotion(sql: str) -> list[str]:
+def check_left_join_where_demotion(sql: str) -> list[str]:
     """LEFT JOIN 테이블의 컬럼이 WHERE 절에서 필터로 사용된 패턴(조인 강등)을 감지한다.
 
     LEFT JOIN된 테이블의 컬럼에 비교 필터를 WHERE에 두면 미매칭 행(NULL)이
@@ -1008,3 +1008,8 @@ def _check_performance_risks(
         )
 
     return warnings
+
+
+# 하위호환 별칭 — 교차 임포트 공개화(Plan 69 P2). 신규 코드는 공개명을 쓴다.
+_check_left_join_where_demotion = check_left_join_where_demotion
+_find_bare_hangul_tokens = find_bare_hangul_tokens
