@@ -791,7 +791,9 @@ async def _build_multi_system_prompt(
             logger.info("[경로대칭] (a) 어댑터 템플릿 적용(db=%s)", db_id)
 
     return template.format(
-        schema=_format_schema(schema_info),
+        schema=_format_schema(
+            schema_info, await _load_schema_prompt_materials(db_id, app_config)
+        ),
         default_limit=default_limit,
         structure_guide=await _build_multi_structure_guide(
             schema_info, parsed_requirements, sub_query_context, db_id, app_config,
@@ -1328,22 +1330,89 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     return None
 
 
-def _format_schema(schema_info: dict) -> str:
+async def _load_schema_prompt_materials(
+    db_id: str, app_config: AppConfig | None
+) -> dict[str, dict]:
+    """스키마 텍스트에 실을 DB별 재료(설명·유사어)를 캐시에서 조회한다 (W-6).
+
+    단일 경로는 ``state``에 실린 값을 쓰지만 멀티 경로는 state에 갖고 있지 않아 그동안 이
+    섹션들이 통째로 빠져 있었다. 단계적 도출 재료 조립(``_build_stepwise_deps``)이 쓰는
+    것과 **같은 cache_manager 경로**로 읽어 단일 경로와 대칭을 맞춘다(D-066).
+
+    재료마다 **독립 try**로 감싼다 — 하나가 실패해도 나머지는 실려야 한다(부분 반환 보장).
+    전부 비면 ``format_schema_text``가 해당 섹션을 렌더하지 않아 현행 프롬프트 바이트가
+    그대로 유지된다.
+
+    Returns:
+        {column_descriptions, column_synonyms, resource_type_synonyms, eav_name_synonyms}
+        — 조회 실패·미가용 항목은 빈 dict.
+    """
+    materials: dict[str, dict] = {
+        "column_descriptions": {},
+        "column_synonyms": {},
+        "resource_type_synonyms": {},
+        "eav_name_synonyms": {},
+    }
+    if app_config is None or not db_id:
+        return materials
+    try:
+        from src.schema_cache.cache_manager import get_cache_manager
+
+        cache_mgr = get_cache_manager(app_config)
+    except Exception as e:  # noqa: BLE001 — 캐시 미가용은 섹션 생략으로 강등(사유 로그)
+        logger.warning("DB '%s': 스키마 재료 캐시 획득 실패(설명·유사어 섹션 생략): %s", db_id, e)
+        return materials
+
+    try:
+        materials["column_descriptions"] = await cache_mgr.get_descriptions(db_id) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DB '%s': 컬럼 설명 로드 실패(설명 주석 생략): %s", db_id, e)
+    try:
+        materials["column_synonyms"] = await cache_mgr.get_synonyms(db_id) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DB '%s': 컬럼 유사어 로드 실패(유사어 주석 생략): %s", db_id, e)
+
+    # resource_type·EAV 속성명 유사어는 DB별이 아니라 전역 사전이고 Redis에만 있다 —
+    # 단일 경로(schema_analyzer)와 동일한 접근 경로를 쓴다(재료 비대칭 방지).
+    if not getattr(cache_mgr, "redis_available", False):
+        return materials
+    try:
+        materials["resource_type_synonyms"] = (
+            await cache_mgr._redis_cache.load_resource_type_synonyms() or {}
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DB '%s': resource_type 유사어 로드 실패(참조 섹션 생략): %s", db_id, e)
+    try:
+        materials["eav_name_synonyms"] = (
+            await cache_mgr._redis_cache.load_eav_name_synonyms() or {}
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DB '%s': EAV 속성명 유사어 로드 실패(참조 섹션 생략): %s", db_id, e)
+    return materials
+
+
+def _format_schema(schema_info: dict, materials: dict[str, dict] | None = None) -> str:
     """스키마 정보를 프롬프트용 텍스트로 변환한다.
 
     Args:
         schema_info: 스키마 딕셔너리
+        materials: ``_load_schema_prompt_materials`` 산출 재료(없으면 축약 렌더)
 
     Returns:
         스키마 텍스트
     """
+    mat = materials or {}
     # 단일 경로(_format_schema_for_prompt)와 같은 빌더를 쓴다. NOT NULL 표기(W-3)와 건수
     # 포함 한국어 샘플 표기(W-4)는 단일 문구로 통일했다 — NOT NULL은 LLM이 조인 방향·널
     # 처리를 판단하는 재료이고, 샘플 건수는 대표성 판단 재료라 멀티만 빠질 근거가 없다.
-    # 설명·유사어·참조 섹션은 멀티가 재료(state)를 갖고 있지 않아 여전히 미수록이다(W-6 별건).
-    # FK 헤더는 현행 영문 유지(W-5 반려 — relationships_header 기본값).
+    # 설명·유사어·참조 섹션은 캐시에서 조달한 재료가 있을 때만 실린다(W-6) — 재료가 비면
+    # 종전과 동일한 축약 렌더다. FK 헤더는 현행 영문 유지(W-5 반려 — 기본값).
     return format_schema_text(
         schema_info,
+        column_descriptions=mat.get("column_descriptions"),
+        column_synonyms=mat.get("column_synonyms"),
+        resource_type_synonyms=mat.get("resource_type_synonyms"),
+        eav_name_synonyms=mat.get("eav_name_synonyms"),
         include_not_null=True,
         sample_style="labeled",
     )

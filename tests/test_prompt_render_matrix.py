@@ -185,6 +185,18 @@ def _texts(llm: _CapturingLLM) -> dict[str, str]:
     return {"system": llm.messages[0].content, "human": llm.messages[1].content}
 
 
+class _EmptyCache:
+    """재료가 없는 캐시 매니저 대역 — 스냅샷의 "재료 부재" 기준선을 환경 비의존으로 고정한다."""
+
+    redis_available = False
+
+    async def get_descriptions(self, db_id):
+        return {}
+
+    async def get_synonyms(self, db_id):
+        return {}
+
+
 async def _collect_prompts(monkeypatch) -> dict[str, dict[str, str]]:
     """시나리오별 프롬프트 본문을 채록한다."""
     prompts: dict[str, dict[str, str]] = {}
@@ -224,6 +236,13 @@ async def _collect_prompts(monkeypatch) -> dict[str, dict[str, str]]:
 
     # 멀티 경로: 스키마 접두사는 레지스트리 파일 대신 고정값(환경 비의존)
     monkeypatch.setattr("src.routing.db_schema.get_schema_prefix", lambda db_id: "polestar.")
+    # 멀티 스키마 텍스트 재료(W-6)는 캐시 매니저 **싱글톤** 상태에 좌우된다 — 앞선 테스트가
+    # 먼저 싱글톤을 만들면 실 캐시의 설명·유사어가 섞여 스냅샷이 순서 의존으로 흔들린다.
+    # 스냅샷이 고정하는 것은 "재료 부재" 기준선이므로 빈 캐시로 못 박는다(재료가 실린
+    # 렌더의 증가량은 별도 실측 대상).
+    monkeypatch.setattr(
+        "src.schema_cache.cache_manager.get_cache_manager", lambda cfg=None: _EmptyCache()
+    )
 
     # (d) 멀티 경로 일반 질의
     llm = _CapturingLLM()
