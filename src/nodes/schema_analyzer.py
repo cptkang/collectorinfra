@@ -279,7 +279,7 @@ async def _analyze_db_structure(
 
     schema_text = _format_schema_for_analysis(schema_dict)
     prompt = STRUCTURE_ANALYSIS_PROMPT + "\n\n## DB 스키마\n\n" + schema_text
-    logger.info("LLM 프롬프트 %s",prompt)
+    logger.debug("LLM 프롬프트 %s",prompt)
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         result = _parse_llm_json(response.content)
@@ -834,7 +834,7 @@ async def schema_analyzer(
                 await _get_schema_with_cache(client, db_id, app_config)
             )
             # ★ DEBUG[1]: 캐시에서 로드된 전체 테이블 확인
-            logger.warning("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
+            logger.debug("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
 
             # 2. LLM 기반 관련 테이블 선택
             relevant = await _llm_select_relevant_tables(
@@ -845,7 +845,7 @@ async def schema_analyzer(
                 routing_intent=state.get("routing_intent"),
             )
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
-            logger.warning("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
+            logger.debug("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
             # 2-1. EAV 동반 테이블 자동 보충
             relevant = _supplement_eav_tables(

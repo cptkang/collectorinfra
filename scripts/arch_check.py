@@ -52,6 +52,8 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.utils.column_matcher":      "utils",
     "src.utils.password":            "utils",
     "src.prompts":                   "prompts",
+    # LLM 호출 계측 등 순수 관측 유틸(외부 패키지 + stdlib만 의존) — 모든 계층이 참조 가능
+    "src.observability":             "utils",
     "src.llm":                       "infrastructure",
     "src.clients":                   "infrastructure",
     "src.db":                        "infrastructure",
