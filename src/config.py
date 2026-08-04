@@ -262,6 +262,19 @@ class Text2SQLConfig(BaseSettings):
     # 기본 OFF = 프롬프트 sha256 무변경·validator 7종 유지(회귀 0).
     prompt_knowledge_render: bool = False
 
+    # === Plan 69 P4-3: 멀티 DB 경로 검증 강화 (기본 OFF 옵트인) ===
+    # ON이면 멀티 DB 경로가 간이 검증(_validate_sql_simple) 대신 단일 경로와 같은
+    # full validator(테이블·컬럼 존재, EAV 금지 조인, 어댑터 훅 포함)를 소비한다.
+    # 거부 사유는 로그로 계측 — 위양성 실측 후 기본 전환은 별도 판단(계획서 §0.3-4).
+    multi_full_validation: bool = False
+
+    # === Plan 69 P3-2: 단일/멀티 경로 대칭 (기본 OFF 옵트인) ===
+    # ON이면 한쪽 경로에만 있던 주입을 반대편에도 넣는다 — (a) 멀티 어댑터 시스템 템플릿
+    # (b) 단일 스키마 한정 규칙(D-057) (c) 멀티 값 인덱스·폼필 피벗 블록 (d) 멀티 선행
+    # 스코프 결정적 전달(D-099). 갭별 발동은 "[경로대칭] (x)" 로그로 실측한다.
+    # 기본 OFF = 양 경로 프롬프트 바이트 무변경(계획서 §0.3-3).
+    path_parity: bool = False
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

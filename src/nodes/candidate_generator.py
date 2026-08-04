@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Callable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 

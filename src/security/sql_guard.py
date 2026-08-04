@@ -114,6 +114,8 @@ class SQLGuard:
                 detected.append(pattern)
         return detected
 
+    # src 런타임 소비처 없음(테스트 전용 — Plan 69 §1.6). 단 멀티문장 검사는 이
+    # 메서드에만 있어 삭제하지 않는다 — 검증 경로(validate_sql) 편입은 P4 검토 대상.
     def is_safe_select(self, sql: str) -> tuple[bool, str]:
         """SQL이 안전한 SELECT 문인지 종합 검사한다.
 

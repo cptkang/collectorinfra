@@ -13,7 +13,7 @@ from typing import Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from src.clients.fabrix_kbgenai import KBGenAIChat
+from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.input_parser import (
@@ -208,7 +208,7 @@ async def _parse_natural_language(
     messages = [
         SystemMessage(content=system_prompt),
         # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-        AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+        AIMessage(content="") if is_kbgenai(llm) else None,
         HumanMessage(content=user_query),
     ]
     # Remove any None entries (no effect for other LLMs)
@@ -310,7 +310,7 @@ async def _parse_natural_language_with_csv(
 
     messages = [
         SystemMessage(content=system_prompt),
-        AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+        AIMessage(content="") if is_kbgenai(llm) else None,
         HumanMessage(content=user_query),
     ]
 

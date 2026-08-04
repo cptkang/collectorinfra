@@ -17,7 +17,11 @@ _SQL = "SELECT hostname FROM servers LIMIT 100"
 
 
 def _fake_config():
-    return SimpleNamespace(query=SimpleNamespace(default_limit=100))
+    return SimpleNamespace(
+        query=SimpleNamespace(default_limit=100),
+        text2sql=SimpleNamespace(multi_full_validation=False),
+        get_polestar_db_ids=lambda: set(),
+    )
 
 
 class _FailingClientCtx:

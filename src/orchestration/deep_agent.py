@@ -16,6 +16,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
 from src.config import AppConfig
+from src.observability.llm_call_counter import record_tool_use
 from src.orchestration.deepagents_tools import build_tools
 from src.prompts.orchestrator import ORCHESTRATOR_INSTRUCTIONS
 
@@ -252,6 +253,10 @@ async def run_deep_agent(
             logger.warning("deep_agent: 재개가 진전 없이 빈 응답 반복 → 재개 중단")
             break
 
+    # LLM 호출 계측(관측 전용): 오케스트레이터가 사용한 도구명을 기록한다.
+    # deepagents 내장 task(서브에이전트 위임) 첫 사용 경보가 여기서 발동한다.
+    _record_tool_calls(result)
+
     # step6: 수집된 원본 도구 결과를 FabriX result_aggregator로 재정리한다.
     if collector:
         notice = (
@@ -374,6 +379,27 @@ async def _resume_after_empty_response(
     except Exception as e:  # noqa: BLE001 — 재개 실패는 1차 결과 + 안내문(D-092)으로 강등
         logger.error("deep_agent 재개 호출 실패 → 1차 결과로 진행: %s", e)
         return result
+
+
+def _record_tool_calls(result: Any) -> None:
+    """결과 메시지의 AIMessage.tool_calls 도구명을 계측기에 기록한다 (관측 전용).
+
+    최종 result의 메시지 이력을 1회만 순회하므로 재개(D-093) 반복에 의한 이중
+    기록이 없다. 계측 컨텍스트(start_request)가 없으면 record_tool_use가 no-op.
+
+    Args:
+        result: agent.ainvoke 반환값
+    """
+    if not isinstance(result, dict):
+        return
+    for msg in result.get("messages") or []:
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls is None and isinstance(msg, dict):
+            tool_calls = msg.get("tool_calls")
+        for tc in tool_calls or []:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            if name:
+                record_tool_use(str(name))
 
 
 def _pending_todos(result: Any) -> list[str]:

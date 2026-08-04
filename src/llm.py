@@ -12,6 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
 from src.config import AppConfig
+from src.observability.llm_call_counter import get_handler
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,8 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
         "model": config.orchestrator.model,
         "temperature": 0.0,
         "timeout": config.orchestrator.timeout,
+        # LLM 호출 수 계측 (관측 전용) — 생성자 콜백은 인스턴스의 모든 invoke에 적용
+        "callbacks": [get_handler()],
     }
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
@@ -198,6 +201,7 @@ def _create_orchestrator_gemini(config: AppConfig) -> BaseChatModel:
         model=model,
         google_api_key=api_key,
         temperature=0.0,
+        callbacks=[get_handler()],
     )
 
 
@@ -216,6 +220,7 @@ def _create_ollama(config: AppConfig) -> BaseChatModel:
         api_key=config.llm.ollama_api_key or None,
         timeout=config.llm.ollama_timeout,
         temperature=0.0,
+        callbacks=[get_handler()],
     )
 
 
@@ -237,6 +242,7 @@ def _create_gemini(config: AppConfig) -> BaseChatModel:
         model=model,
         google_api_key=api_key,
         temperature=0.0,
+        callbacks=[get_handler()],
     )
 
 
@@ -271,6 +277,7 @@ def _create_fabrix(config: AppConfig) -> BaseChatModel:
             asset_id=model,
             kb_id="User",
             system_prompt="",
+            callbacks=[get_handler()],
         )
 
     # OpenAI 호환 모드
@@ -282,4 +289,5 @@ def _create_fabrix(config: AppConfig) -> BaseChatModel:
         chat_model=model,
         api_key=config.llm.fabrix_api_key,
         temperature=0.0,
+        callbacks=[get_handler()],
     )

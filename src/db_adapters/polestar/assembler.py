@@ -8,10 +8,12 @@ multi_db_executor·semantic_compiler(모두 application).
 from __future__ import annotations
 
 # 기간 범위/값 타당성 게이트는 공용 코어(utils)에서 가져온다(application→config/utils 허용).
+from src.utils.sql_dialect import is_db2, row_limit_clause
+from src.utils.sql_dialect import sql_literal as _sql_literal  # 이동(Plan 69 P2) — 동작 불변
 from src.utils.query_gen_common import (
     StatMonth,
-    _normalize_stat_month,
-    _utilization_guard,
+    normalize_stat_month as _normalize_stat_month,
+    utilization_guard as _utilization_guard,
 )
 # EAV 속성 메타 추출은 카탈로그 계층에 위임한다(application→infrastructure 허용).
 from src.schema_cache.catalog_builder import attribute_resource_types
@@ -26,7 +28,7 @@ def decimal_cast_example(db_engine: str | None) -> str:
     쿼리 전체가 죽는다(D-103). 값 타당성 게이트(BETWEEN)도 예시에 포함해 LLM 경로도 오염을 거른다.
     """
     guard = _utilization_guard("avg_val", "Utilization")
-    if (db_engine or "").lower() == "db2":
+    if is_db2(db_engine):
         return (
             "CAST(ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
             f"AND s.definition_name = 'Utilization'{guard} "
@@ -45,20 +47,16 @@ _STAT_COLUMN = "stat_date"
 # 시계열 행 분해에서 식별 컬럼을 가져오는 부모 서버 조인 alias.
 _PARENT_ALIAS = "svr"
 
+#: 월별 통계 테이블 기본값 — 진입 함수 2개와 조립 코어가 공유한다(기본값 드리프트 차단).
+_DEFAULT_METRIC_TABLE = "cmm_metric_stat_m"
 
-def _sql_literal(value: object) -> str:
-    """필터 값을 SQL 리터럴로 만든다(문자열은 따옴표 이스케이프, 리스트는 IN 목록).
+#: 미매핑 필드 안내(`build_unmapped_fields_block`)에 실을 사용률 피벗 지시 재료.
+#: 공용 계층(nodes)이 이 스키마 리터럴을 직접 들고 있지 않도록 어댑터가 제공한다 —
+#: `decimal_cast_example`과 같은 성격의 프롬프트 문구 재료다(D-088/D-089).
+METRIC_PIVOT_TABLE = _DEFAULT_METRIC_TABLE
+METRIC_PIVOT_KEYS = "resource_type + definition_name='Utilization', avg_val/max_val"
 
-    시맨틱 컴파일러가 넘기는 값은 값 인덱스로 실증되거나 카탈로그가 정의한 것이지만,
-    작은따옴표 이스케이프는 여기서 일괄 처리한다(조립 지점 단일화).
-    """
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, (list, tuple, set)):
-        return "(" + ", ".join(_sql_literal(v) for v in value) + ")"
-    return "'" + str(value).replace("'", "''") + "'"
+
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).
 # 폴스타 resource_type(server.*) 리터럴을 담으므로 어댑터 계층에 둔다(공용 계층 과적합 가드
@@ -153,7 +151,7 @@ def _metric_agg_expr(
     definition_name='Utilization'일 때만 — MaxIORate 등엔 0~1000 의미가 없다.
     """
     guard = _utilization_guard(val_col, definition_name)
-    if (db_engine or "").lower() == "db2":
+    if is_db2(db_engine):
         # DB2: 집계 함수 내부에서 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
         # 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 값(실측 5.5e13 ≥ 1e11)에서
         # SQL0413N 변환 오버플로로 쿼리 전체가 죽는다(D-103; DOUBLE은 ~1e308이라 변환 오버플로
@@ -246,7 +244,7 @@ def _eav_pattern_parts(eav_pattern: dict) -> tuple[str, str, str, str, str, str]
     return entity, config, attr_col, val_col, ent_join, cfg_join
 
 
-def build_multi_resource_pivot_sql(
+def _build_pivot_sql(
     regular_entries: list[tuple[str, str]],
     server_eav: list[tuple[str, str]],
     child_eav: list[tuple[str, str, str]],
@@ -256,7 +254,7 @@ def build_multi_resource_pivot_sql(
     db_schema: str | None = None,
     limit: int | None = None,
     stat_month: StatMonth = None,
-    metric_table: str = "cmm_metric_stat_m",
+    metric_table: str = _DEFAULT_METRIC_TABLE,
     explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
     server_scope: tuple[str, list[str]] | None = None,
     order_by: tuple[str, str] | None = None,
@@ -266,7 +264,11 @@ def build_multi_resource_pivot_sql(
     direct_having: list[tuple[str, str, object]] | None = None,
     measure_having: list[tuple[str, str, object]] | None = None,
 ) -> str:
-    """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**한다(LLM 우회, D-068 2차).
+    """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**하는 공유 코어다.
+
+    두 경로가 쓰는 파라미터의 합집합을 받는 **private 코어**로, 호출은 경로별 진입 함수
+    (``build_form_fill_pivot_sql``·``build_semantic_pivot_sql``)를 통한다 — 경로마다 무의미한
+    파라미터가 시그니처에 섞이는 것을 막으면서 조립 엔진은 하나로 유지한다(D-067 단일 출처).
 
     프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot 예시(월별 GROUP BY 등)와 경쟁해
     무시·변형(서버 중복·config 누락)한다. 이 well-defined 쿼리는 코드가 직접 조립하여 LLM
@@ -406,11 +408,100 @@ def build_multi_resource_pivot_sql(
         # NULLS LAST 필수: 값이 없는 서버가 정렬 선두를 차지해 임의 서버가 1위로 뽑히는 것을 방지(D-098).
         sql += f'\nORDER BY "{alias}" {dir_kw} NULLS LAST'
     if limit:
-        if (db_engine or "").lower() == "db2":
-            sql += f"\nFETCH FIRST {limit} ROWS ONLY"
-        else:
-            sql += f"\nLIMIT {limit}"
+        sql += "\n" + row_limit_clause(db_engine, limit)
     return sql + ";"
+
+
+def build_form_fill_pivot_sql(
+    regular_entries: list[tuple[str, str]],
+    server_eav: list[tuple[str, str]],
+    child_eav: list[tuple[str, str, str]],
+    eav_pattern: dict,
+    *,
+    metric_fields: list[str] | None = None,
+    db_engine: str | None = None,
+    db_schema: str | None = None,
+    limit: int | None = None,
+    stat_month: StatMonth = None,
+    metric_table: str = _DEFAULT_METRIC_TABLE,
+) -> str:
+    """폼필(양식 채우기) 경로의 다중 리소스 피벗 SQL을 조립한다.
+
+    측정치는 양식 헤더의 한글 라벨(``metric_fields``)을 ``classify_metric_field``로 분류해
+    도출한다 — 시맨틱 경로의 명시 measure·정렬·HAVING 계열 파라미터는 이 경로에 해당하지
+    않으므로 시그니처에서 뺐다.
+
+    Args:
+        regular_entries/server_eav/child_eav/eav_pattern: 피벗 구성요소
+        metric_fields: 사용률 지표로 분류된 양식 헤더 라벨 목록
+        db_engine/db_schema/limit/stat_month/metric_table: ``_build_pivot_sql``과 동일
+
+    Returns:
+        실행 가능한 SQL 문자열(세미콜론 종결).
+    """
+    return _build_pivot_sql(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        metric_fields=metric_fields,
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=limit,
+        stat_month=stat_month,
+        metric_table=metric_table,
+    )
+
+
+def build_semantic_pivot_sql(
+    regular_entries: list[tuple[str, str]],
+    server_eav: list[tuple[str, str]],
+    child_eav: list[tuple[str, str, str]],
+    eav_pattern: dict,
+    *,
+    explicit_measures: list[tuple[str, str, str, str, str]] | None = None,
+    db_engine: str | None = None,
+    db_schema: str | None = None,
+    limit: int | None = None,
+    stat_month: StatMonth = None,
+    metric_table: str = _DEFAULT_METRIC_TABLE,
+    server_scope: tuple[str, list[str]] | None = None,
+    order_by: tuple[str, str] | None = None,
+    time_breakdown: bool = False,
+    global_aggregate: bool = False,
+    entity_count_alias: str | None = None,
+    direct_having: list[tuple[str, str, object]] | None = None,
+    measure_having: list[tuple[str, str, object]] | None = None,
+) -> str:
+    """시맨틱 컴파일러(트랙 C, D-076) 경로의 다중 리소스 피벗 SQL을 조립한다.
+
+    측정치는 시맨틱 모델이 검증한 명시 measure(``explicit_measures``)로 받는다 — 한글 라벨
+    분류(``metric_fields``)는 이 경로에 해당하지 않으므로 시그니처에서 뺐다. 정렬·상한·형태
+    확장(S-IR1~5)과 HAVING 계열은 이 경로 전용이다.
+
+    Args:
+        regular_entries/server_eav/child_eav/eav_pattern: 피벗 구성요소
+        explicit_measures: (alias, resource_type, agg_fn, val_col, definition_name) 목록
+        나머지: ``_build_pivot_sql``과 동일
+
+    Returns:
+        실행 가능한 SQL 문자열(세미콜론 종결).
+    """
+    return _build_pivot_sql(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=limit,
+        stat_month=stat_month,
+        metric_table=metric_table,
+        explicit_measures=explicit_measures,
+        server_scope=server_scope,
+        order_by=order_by,
+        time_breakdown=time_breakdown,
+        global_aggregate=global_aggregate,
+        entity_count_alias=entity_count_alias,
+        direct_having=direct_having,
+        measure_having=measure_having,
+    )
+
+
 
 
 def build_multi_resource_pivot_block(
@@ -420,12 +511,12 @@ def build_multi_resource_pivot_block(
     eav_pattern: dict,
     metric_fields: list[str] | None = None,
     db_engine: str | None = None,
-    metric_table: str = "cmm_metric_stat_m",
+    metric_table: str = _DEFAULT_METRIC_TABLE,
 ) -> str:
     """서버 + 자식 리소스(server.Cpus/Memory) 속성 + 사용률 통계를 **한 쿼리**로 피벗하는 결정적 지침.
 
     LLM 프롬프트용 텍스트 버전(결정적 SQL 조립이 불가한 경로의 폴백). 실제 폼필 멀티 경로는
-    `build_multi_resource_pivot_sql`로 SQL을 직접 조립한다(D-068 2차). 자식 리소스 속성이 하나라도
+    `build_form_fill_pivot_sql`로 SQL을 직접 조립한다(D-068 2차). 자식 리소스 속성이 하나라도
     있을 때만 호출한다.
     """
     entity, config, attr_col, val_col, ent_join, cfg_join = _eav_pattern_parts(eav_pattern)

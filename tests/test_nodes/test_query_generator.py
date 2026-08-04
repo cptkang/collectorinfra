@@ -105,11 +105,11 @@ class TestQueryGeneratorNode:
 
     @pytest.mark.asyncio
     async def test_query_generator_is_all_query_sets_large_limit(self, sample_state):
-        """'모든', '전체', '모두' 키워드가 들어간 경우 default_limit이 100000으로 설정된다."""
+        """'모든', '전체', '모두' 키워드면 default_limit이 10000(spec 상한)으로 상향된다."""
         sample_state["user_query"] = "모든 서버들의 정보를 조회하시오"
         mock_llm = AsyncMock()
         mock_llm.ainvoke.return_value = MagicMock(
-            content="```sql\nSELECT * FROM servers LIMIT 100000;\n```"
+            content="```sql\nSELECT * FROM servers LIMIT 10000;\n```"
         )
         mock_config = MagicMock()
         mock_config.query.default_limit = 1000
@@ -117,10 +117,10 @@ class TestQueryGeneratorNode:
 
         result = await query_generator(sample_state, llm=mock_llm, app_config=mock_config)
 
-        # ainvoke가 호출되었을 때, 첫 번째 메시지(SystemMessage)의 내용에 100000이 포함되어 있는지 확인
+        # ainvoke가 호출되었을 때, 첫 번째 메시지(SystemMessage)의 내용에 10000이 포함되어 있는지 확인
         call_args = mock_llm.ainvoke.call_args[0][0]
         system_message = next(msg for msg in call_args if isinstance(msg, SystemMessage))
-        assert "100000" in system_message.content
+        assert "10000" in system_message.content
         assert "LIMIT 1000\n" not in system_message.content
         assert "LIMIT 1000;" not in system_message.content
         assert "LIMIT 1000 " not in system_message.content

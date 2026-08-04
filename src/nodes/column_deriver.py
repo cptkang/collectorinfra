@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.utils.llm_compat import is_kbgenai
 from src.utils.json_extract import extract_json_from_response
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 루프 실행 시점에 지연 수행한다.
@@ -285,7 +286,7 @@ async def _run_loop(
     deadline = time.monotonic() + limits.timeout_seconds
     messages: list[Any] = [SystemMessage(content=DERIVE_SYSTEM_TEMPLATE)]
     # KBGenAIChat 등은 SystemMessage 다음 AIMessage 순서를 요구(compile_from_nl과 동일 규약).
-    if type(llm).__name__ == "KBGenAIChat":
+    if is_kbgenai(llm):
         from langchain_core.messages import AIMessage
 
         messages.append(AIMessage(content=""))
@@ -373,7 +374,7 @@ async def _decompose(llm: Any, user_query: str, progress: _Progress) -> list[dic
     )
 
     messages: list[Any] = [SystemMessage(content=DECOMPOSE_SYSTEM_TEMPLATE)]
-    if type(llm).__name__ == "KBGenAIChat":
+    if is_kbgenai(llm):
         from langchain_core.messages import AIMessage
 
         messages.append(AIMessage(content=""))

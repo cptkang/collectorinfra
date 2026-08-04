@@ -216,10 +216,13 @@ class TestCreateGeminiValidation:
             from src.llm import _create_gemini
             result = _create_gemini(config)
 
+        from src.observability.llm_call_counter import get_handler
+
         mock_cls.assert_called_once_with(
             model="gemini-2.0-flash",
             google_api_key="valid-key",
             temperature=0.0,
+            callbacks=[get_handler()],
                     )
         assert result is mock_cls.return_value
 

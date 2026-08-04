@@ -598,9 +598,9 @@ class TestPivotScopeAndRanking:
     }
 
     def _build(self, **kwargs):
-        from src.db_adapters.polestar.assembler import build_multi_resource_pivot_sql
+        from src.db_adapters.polestar.assembler import build_semantic_pivot_sql
 
-        return build_multi_resource_pivot_sql(
+        return build_semantic_pivot_sql(
             [("server_name", "cmm_resource.name")],
             [("manufacturer", "Vendor"), ("serial_number", "SerialNumber")],
             [], self.EAV,

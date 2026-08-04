@@ -165,7 +165,7 @@ def resolve_stat_month_range(
     return None
 
 
-def _normalize_stat_month(stat_month: StatMonth) -> tuple[str, str] | None:
+def normalize_stat_month(stat_month: StatMonth) -> tuple[str, str] | None:
     """stat_month 인자(단일 월 문자열 또는 범위 튜플)를 (시작, 끝) 범위로 정규화한다."""
     if not stat_month:
         return None
@@ -237,7 +237,8 @@ def build_generic_period_hint(stat_month: StatMonth) -> str:
 
 # "전체/모든/모두" 조회는 기본 LIMIT(default_limit)로 절단하면 안 되므로 상향한다.
 _ALL_QUERY_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
-_ALL_QUERY_LIMIT: int = 100_000
+_ALL_QUERY_LIMIT: int = 10_000  # spec.md '최대 반환 행 수 10,000행' 정합(Plan 69 §0.3-5 —
+# 감사 이력 5,372건 실측 최대 1,000행, 초과 실적 0 확인 후 하향. 2026-08-04)
 
 # 스코프 표면어 뒤에 붙으면 낱말의 품사가 바뀌어 "전체 조회" 의미가 아닌 파생 접미사.
 # "**전체**적으로 CPU 높은 서버"가 LIMIT 100000으로 상향되던 오탐(검토 §4.2 A6) 차단용.
@@ -372,7 +373,7 @@ MISSING_DTIME_ERROR = (
 UTILIZATION_VALID_RANGE: tuple[int, int] = (0, 1000)
 
 
-def _utilization_guard(val_col: str, definition_name: str) -> str:
+def utilization_guard(val_col: str, definition_name: str) -> str:
     """Utilization일 때만 값 타당성 게이트 조건(` AND s.<col> BETWEEN 0 AND 1000`)을 반환한다."""
     if definition_name != "Utilization":
         return ""
@@ -540,7 +541,7 @@ def is_server_identity_col(col: str) -> bool:
     return False
 
 
-def _collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
+def collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
     """prior_rows에서 서버 식별 컬럼 종류와 값 목록을 추출한다.
 
     hostname류 컬럼이 하나라도 있으면 hostname을 우선하고, 없으면 name류를 쓴다
@@ -651,3 +652,9 @@ def extract_sql_from_response(content: str) -> str:
 
     # 전체 내용 반환 (최후 수단)
     return content.strip()
+
+
+# 하위호환 별칭 — 교차 임포트 공개화(Plan 69 P2). 신규 코드는 공개명을 쓴다.
+_normalize_stat_month = normalize_stat_month
+_utilization_guard = utilization_guard
+_collect_prior_identity_values = collect_prior_identity_values

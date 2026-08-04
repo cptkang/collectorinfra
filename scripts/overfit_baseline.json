@@ -51,9 +51,7 @@
     "src/nodes/semantic_compiler.py": [
       "cmm_metric_stat_m",
       "cmm_resource",
-      "server.Cpus",
-      "server.Server",
-      "server.Xyz"
+      "server.Server"
     ],
     "src/orchestration/intent_planner.py": [
       "cmm_resource"
@@ -71,6 +69,14 @@
     "src/schema_cache/value_index.py": [
       "core_config_prop",
       "server.Server"
+    ],
+    "src/semantic/coverage.py": [
+      "server.Cpus",
+      "server.Server",
+      "server.Xyz"
+    ],
+    "src/semantic/ir.py": [
+      "server.Cpus"
     ],
     "src/utils/column_matcher.py": [
       "cmm_resource",

@@ -52,6 +52,8 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.utils.column_matcher":      "utils",
     "src.utils.password":            "utils",
     "src.prompts":                   "prompts",
+    # LLM 호출 계측 등 순수 관측 유틸(외부 패키지 + stdlib만 의존) — 모든 계층이 참조 가능
+    "src.observability":             "utils",
     "src.llm":                       "infrastructure",
     "src.clients":                   "infrastructure",
     "src.db":                        "infrastructure",
@@ -66,6 +68,9 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.infrastructure.audit_repository": "infrastructure",
     "src.nodes":                     "application",
     "src.db_adapters":               "application",
+    # 시맨틱 IR·커버리지 판정 계층(Plan 69 P5-1) — nodes에서 분리해 tools가 nodes를 거치지
+    # 않고 참조하게 한 조각. nodes·tools와 동일 계층.
+    "src.semantic":                  "application",
     # fine-grained 도구 계층(Plan 67 S1) — 노드·어댑터의 순수 함수를 재노출하므로
     # db_adapters와 같은 application. 소비처(nodes·orchestration)에서 참조한다.
     "src.tools":                     "application",

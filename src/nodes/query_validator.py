@@ -20,6 +20,7 @@ import structlog
 
 from src.config import AppConfig, load_config
 from src.db_adapters import get_adapter
+from src.utils.sql_dialect import is_db2, row_limit_clause
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.state import AgentState
 from src.utils.query_gen_common import (
@@ -99,7 +100,7 @@ def validate_sql(
         return SQLValidationOutcome(errors=errors)
 
     # 2. SELECT 문 여부 확인
-    statement_type = _get_statement_type(sql)
+    statement_type = _get_statement_type(sql, parsed=parsed)  # 파스 재사용(Plan 69 P4-5)
     if statement_type != "SELECT":
         errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")
 
@@ -138,7 +139,7 @@ def validate_sql(
         errors.append(MISSING_DTIME_ERROR)
 
     # 5. 참조 테이블 존재 여부 (대소문자 무시 + bare name fallback)
-    referenced_tables = _extract_table_names(sql)
+    referenced_tables = _extract_table_names(sql)  # 이후 검사와 공유(1회 추출)
     # CTE는 가상 테이블이므로 검증 대상에서 제외
     cte_names = _extract_cte_names(sql)
     cte_names_lower = {c.lower() for c in cte_names}
@@ -189,7 +190,7 @@ def validate_sql(
             logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
         else:
             auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
-            if db_engine == "db2":
+            if is_db2(db_engine):
                 warnings.append(
                     f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
                 )
@@ -199,7 +200,7 @@ def validate_sql(
                 )
 
     # 8. 성능 위험 패턴
-    perf_warnings = _check_performance_risks(sql, schema_info)
+    perf_warnings = _check_performance_risks(sql, schema_info, tables=referenced_tables)
     warnings.extend(perf_warnings)
 
     # 9. DB 어댑터 전용 검증(라우팅 필터 오용 등) — 호출부가 주입한 훅만 실행
@@ -256,7 +257,7 @@ async def query_validator(
     outcome = validate_sql(
         sql,
         schema_info,
-        db_engine=state.get("active_db_engine") or "postgresql",
+        db_engine=_engine_or_fallback(state),
         user_query=state.get("user_query", "") or "",
         default_limit=app_config.query.default_limit,
         adapter_checks=adapter_checks,
@@ -312,7 +313,7 @@ async def query_validator(
 _HANGUL_RE = re.compile(r"[가-힣]+")
 
 
-def _find_bare_hangul_tokens(sql: str) -> list[str]:
+def find_bare_hangul_tokens(sql: str) -> list[str]:
     """문자열 리터럴·따옴표 식별자·주석을 제거한 뒤 남는 한글 토큰을 찾는다(D-104).
 
     LLM 생성 SQL에 자연어 조각(지시어 "해당", "현재" 등)이 구조 영역에 잔존하면 DB가
@@ -330,6 +331,25 @@ def _find_bare_hangul_tokens(sql: str) -> list[str]:
     body = re.sub(r"'(?:[^']|'')*'", " ", body)  # 문자열 리터럴 ('' 이스케이프 포함)
     body = re.sub(r'"[^"]*"', " ", body)  # 따옴표 식별자(별칭)
     return _HANGUL_RE.findall(body)
+
+
+
+def _engine_or_fallback(state: AgentState) -> str:
+    """active_db_engine 또는 postgresql 폴백 — 폴백 발동을 계측한다 (Plan 69 P4-4).
+
+    그래프 경로는 active_db_engine 쓰기 지점이 없어 항상 폴백으로 동작해 왔다(계획서
+    §1.3 실측). DB2 DB가 이 경로로 흐르면 잘못된 방언이 된다 — 결정적 주입 전환은
+    이 로그의 라이브 실측(발동 시 db_id) 후 별도 판단한다.
+    """
+    engine = state.get("active_db_engine")
+    if engine:
+        return engine
+    if state.get("active_db_id"):
+        logger.info(
+            "[엔진폴백] active_db_engine 미설정(db=%s) — postgresql 가정",
+            state.get("active_db_id"),
+        )
+    return "postgresql"
 
 
 def _build_failure_result(errors: list[str]) -> dict:
@@ -353,7 +373,7 @@ def _build_failure_result(errors: list[str]) -> dict:
     }
 
 
-def _get_statement_type(sql: str) -> str:
+def _get_statement_type(sql: str, parsed: object | None = None) -> str:
     """SQL 문의 타입을 판별한다.
 
     sqlparse는 CTE(`WITH ... SELECT`)의 get_type()을 UNKNOWN으로 반환한다(실측 2026-07-21
@@ -367,7 +387,8 @@ def _get_statement_type(sql: str) -> str:
     Returns:
         SQL 문 타입 문자열 (SELECT, INSERT, UNKNOWN 등)
     """
-    parsed = sqlparse.parse(sql)
+    if parsed is None:
+        parsed = sqlparse.parse(sql)
     stype = (parsed[0].get_type() or "UNKNOWN") if parsed else "UNKNOWN"
     if stype == "UNKNOWN":
         body = re.sub(r"--[^\n]*", " ", sql or "")
@@ -815,7 +836,7 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
     return errors
 
 
-def _check_left_join_where_demotion(sql: str) -> list[str]:
+def check_left_join_where_demotion(sql: str) -> list[str]:
     """LEFT JOIN 테이블의 컬럼이 WHERE 절에서 필터로 사용된 패턴(조인 강등)을 감지한다.
 
     LEFT JOIN된 테이블의 컬럼에 비교 필터를 WHERE에 두면 미매칭 행(NULL)이
@@ -964,14 +985,14 @@ def _add_limit_clause(sql: str, limit: int, db_engine: str = "postgresql") -> st
         행 제한 절이 추가된 SQL
     """
     sql = sql.rstrip().rstrip(";")
-    if db_engine == "db2":
-        return f"{sql}\nFETCH FIRST {limit} ROWS ONLY;"
-    return f"{sql}\nLIMIT {limit};"
+    return f"{sql}\n{row_limit_clause(db_engine, limit)};"
 
 
 def _check_performance_risks(
     sql: str,
     schema_info: dict,
+    *,
+    tables: set[str] | None = None,
 ) -> list[str]:
     """성능 위험 패턴을 탐지한다.
 
@@ -986,7 +1007,7 @@ def _check_performance_risks(
 
     # SELECT * 패턴 (대형 테이블에서)
     if re.search(r"SELECT\s+\*", sql, re.IGNORECASE):
-        tables = _extract_table_names(sql)
+        tables = tables if tables is not None else _extract_table_names(sql)
         for table in tables:
             table_data = schema_info.get("tables", {}).get(table, {})
             row_count = table_data.get("row_count_estimate", 0)
@@ -1002,10 +1023,15 @@ def _check_performance_risks(
         )
 
     # 카테시안 곱 가능성 (JOIN 조건 없는 다중 테이블)
-    tables = _extract_table_names(sql)
+    tables = tables if tables is not None else _extract_table_names(sql)
     if len(tables) > 1 and not re.search(r"\bON\b", sql, re.IGNORECASE):
         warnings.append(
             "다중 테이블 참조에 JOIN 조건(ON)이 없습니다. 카테시안 곱 주의."
         )
 
     return warnings
+
+
+# 하위호환 별칭 — 교차 임포트 공개화(Plan 69 P2). 신규 코드는 공개명을 쓴다.
+_check_left_join_where_demotion = check_left_join_where_demotion
+_find_bare_hangul_tokens = find_bare_hangul_tokens

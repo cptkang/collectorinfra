@@ -170,7 +170,9 @@ def route_after_schema_analyzer(state: AgentState) -> str:
     - 그 외: query_generator로 진행
     """
     if state.get("awaiting_approval"):
-        ctx = state.get("approval_context", {})
+        # 키가 있고 값이 None이면 .get(key, {})는 None을 돌려준다 — create_initial_state가
+        # approval_context=None으로 두므로 or-폴백이 없으면 AttributeError (Plan 69 P0-⑪).
+        ctx = state.get("approval_context") or {}
         if ctx.get("type") == "structure_analysis":
             return "structure_approval_gate"
     return "query_generator"

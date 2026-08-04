@@ -17,6 +17,8 @@ state(``column_value_index``)로 인덱스를 적재하고, 검색 결과를 SQL
 from __future__ import annotations
 
 import logging
+
+from src.utils.sql_dialect import row_limit_clause
 from typing import Any, Optional
 
 from src.utils.flex_match import flex_match_score
@@ -49,11 +51,8 @@ def build_distinct_values_sql(
     Returns:
         읽기전용 SELECT DISTINCT SQL 문자열
     """
-    eng = (engine or "").lower()
     base = f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL"
-    if "db2" in eng:
-        return f"{base} FETCH FIRST {limit} ROWS ONLY"
-    return f"{base} LIMIT {limit}"
+    return f"{base} {row_limit_clause(engine, limit)}"
 
 
 def _extract_value(row: Any) -> Optional[str]:
