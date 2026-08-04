@@ -249,7 +249,10 @@ async def multi_db_executor(
                     row_count=result.row_count,
                     execution_time_ms=elapsed_ms,
                     success=True,
-                    retry_attempt=0,
+                    retry_attempt=state.get("retry_count", 0),
+                    user_id=state.get("user_id"),
+                    thread_id=state.get("thread_id"),
+                    source_name=db_id,
                 )
 
                 logger.info(
@@ -277,7 +280,10 @@ async def multi_db_executor(
                 execution_time_ms=failed_elapsed,
                 success=False,
                 error=str(e),
-                retry_attempt=0,
+                retry_attempt=state.get("retry_count", 0),
+                user_id=state.get("user_id"),
+                thread_id=state.get("thread_id"),
+                source_name=db_id,
             )
 
     # 전체 병합 결과 생성 — 엔진별 칼럼명 차이(DB2 소문자화 등)를 양식 필드 기준으로 통일
