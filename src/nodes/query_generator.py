@@ -138,9 +138,7 @@ def _format_structure_guide(
                     guide += f"  - {row}\n"
 
     # 금지 JOIN 컬럼 경고
-    guide += build_forbidden_join_block(
-        structure_meta.get("patterns", []), style="section"
-    )
+    guide += build_forbidden_join_block(structure_meta.get("patterns", []))
 
     # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지.
     # 멀티 DB 경로(multi_db_executor)와 동일 출처를 쓰도록 공용 헬퍼로 분리(D-066).

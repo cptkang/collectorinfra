@@ -718,9 +718,12 @@ async def _build_multi_structure_guide(
         if eav_patterns:
             structure_guide = EAV_JOIN_RULE_BLOCK + structure_guide
         for eav_p in eav_patterns:
-            # EAV 패턴의 value_joins 정보 + 금지 JOIN 컬럼 경고를 구조 가이드에 추가
+            # EAV 패턴의 value_joins 정보 + 금지 JOIN 컬럼 경고를 구조 가이드에 추가.
+            # 금지 JOIN 경고는 단일 경로와 같은 section 문구를 쓴다(W-1 채택) — 소제목+불릿이
+            # 독립 규칙 블록으로 읽혀, 구조 가이드 본문에 섞이던 종전 inline 한 줄보다 지시
+            # 준수에 유리하다. 금지 컬럼이 여러 건일수록 차이가 커진다.
             structure_guide += build_value_joins_block(eav_p)
-            structure_guide += build_forbidden_join_block([eav_p], style="inline")
+            structure_guide += build_forbidden_join_block([eav_p])
 
     # 프로필 few-shot 쿼리 예시 주입 — 단일 DB 경로(query_generator)와 동등화(RC1/D-066).
     # 예시 부재로 멀티 DB 폼필이 조인 환각(존재하지 않는 컬럼)을 내던 문제 차단.
@@ -930,10 +933,14 @@ def _split_mapping_for_prompt(
     Returns:
         (정규 매핑, EAV 매핑, 성능지표 매핑)
     """
-    # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링
+    # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링.
+    # 로그에 대조 테이블 목록을 부기해 0건 원인 추적을 돕고(W-7 — 경로 구분 접두는 유지),
+    # `db_id:` 접두 표기도 단일 경로처럼 떼고 판정한다(S-1 — 외부 힌트 유입 시 침묵 폐기 방지).
     column_mapping = filter_mapping_by_schema(
         column_mapping, schema_info,
         log_label="multi_db column_mapping 필터링",
+        log_schema_tables=True,
+        strip_db_prefix=True,
     )
 
     # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정
@@ -1333,9 +1340,16 @@ def _format_schema(schema_info: dict) -> str:
     Returns:
         스키마 텍스트
     """
-    # 단일 경로(_format_schema_for_prompt)와 같은 빌더를 쓰되, 멀티는 축약판 옵션으로
-    # 호출한다(설명·유사어·NOT NULL·참조 섹션 미수록 — 문구 차이 보존, Plan 69 P3-1).
-    return format_schema_text(schema_info)
+    # 단일 경로(_format_schema_for_prompt)와 같은 빌더를 쓴다. NOT NULL 표기(W-3)와 건수
+    # 포함 한국어 샘플 표기(W-4)는 단일 문구로 통일했다 — NOT NULL은 LLM이 조인 방향·널
+    # 처리를 판단하는 재료이고, 샘플 건수는 대표성 판단 재료라 멀티만 빠질 근거가 없다.
+    # 설명·유사어·참조 섹션은 멀티가 재료(state)를 갖고 있지 않아 여전히 미수록이다(W-6 별건).
+    # FK 헤더는 현행 영문 유지(W-5 반려 — relationships_header 기본값).
+    return format_schema_text(
+        schema_info,
+        include_not_null=True,
+        sample_style="labeled",
+    )
 
 
 def _merge_results(

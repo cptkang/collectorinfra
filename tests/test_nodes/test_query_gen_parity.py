@@ -359,7 +359,7 @@ class TestCrossPathParity:
 
         for name in (
             "build_value_joins_block",       # EAV value_joins 가이드
-            "build_forbidden_join_block",    # 금지 JOIN 경고(style 파라미터로 문구 보존)
+            "build_forbidden_join_block",    # 금지 JOIN 경고(W-1로 양 경로 문구 통일)
             "build_eav_pivot_block",         # EAV 피벗 매핑 블록(hangul_alias 파라미터)
             "filter_mapping_by_schema",      # column_mapping 스키마 필터링
             "split_mapping_entries",         # 정규/EAV 매핑 분리

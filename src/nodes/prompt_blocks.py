@@ -114,18 +114,14 @@ def build_value_joins_block(eav_pattern: dict) -> str:
     return block
 
 
-def build_forbidden_join_block(
-    patterns: list[dict], *, style: Literal["section", "inline"]
-) -> str:
+def build_forbidden_join_block(patterns: list[dict]) -> str:
     """JOIN ON 절에서 쓰면 안 되는 컬럼 경고를 만든다(없으면 빈 문자열).
 
-    경로별 문구 차이를 ``style``로 보존한다(§0.3-2 2단계 통일 대상):
-    - ``section``(단일): 소제목 + 불릿 목록
-    - ``inline``(멀티): 패턴별 한 줄 경고
+    소제목 + 불릿 목록 형태로, 단일·멀티가 같은 문구를 쓴다(W-1 채택 — 종전 멀티의
+    inline 한 줄 문구는 소비처가 사라져 분기와 함께 제거했다).
 
     Args:
         patterns: 검사할 패턴 목록(단일은 전체 패턴, 멀티는 EAV 패턴 1건씩)
-        style: 문구 스타일
 
     Returns:
         구조 가이드에 덧붙일 경고 블록
@@ -135,20 +131,13 @@ def build_forbidden_join_block(
         excluded = pattern.get("excluded_join_columns", [])
         if not excluded:
             continue
-        if style == "section":
-            block += "\n\n[금지 JOIN 컬럼]"
-            block += "\n다음 컬럼은 JOIN ON 절에서 절대 사용하지 마세요:"
-            for excl in excluded:
-                block += (
-                    f"\n- {excl.get('table', '?')}.{excl.get('column', '?')}: "
-                    f"{excl.get('reason', 'JOIN 불가')}"
-                )
-        else:
-            for excl in excluded:
-                block += (
-                    f"\n[금지] {excl.get('table', '?')}.{excl.get('column', '?')}는 "
-                    f"JOIN ON 절에서 사용할 수 없습니다: {excl.get('reason', 'JOIN 불가')}"
-                )
+        block += "\n\n[금지 JOIN 컬럼]"
+        block += "\n다음 컬럼은 JOIN ON 절에서 절대 사용하지 마세요:"
+        for excl in excluded:
+            block += (
+                f"\n- {excl.get('table', '?')}.{excl.get('column', '?')}: "
+                f"{excl.get('reason', 'JOIN 불가')}"
+            )
     return block
 
 
