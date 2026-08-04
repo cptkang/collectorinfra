@@ -58,9 +58,12 @@ from src.db_adapters.polestar.assembler import (
     resolve_form_fill_answers,
 )
 from src.schema_cache.form_memory import load_form_memory_answers
-from src.utils.schema_utils import build_excluded_join_map
+from src.utils.schema_utils import build_excluded_join_map, safe_sample_preview
 
 logger = logging.getLogger(__name__)
+
+# 캐시 스키마 샘플 백필 시 턴당 최대 조회 테이블 수(순차 MCP 왕복 상한)
+_SAMPLE_BACKFILL_MAX = 50
 
 
 def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
@@ -384,15 +387,26 @@ async def _analyze_schema(
         await cache_mgr.get_schema_or_fetch(client, db_id)
     )
 
-    # 샘플 데이터 수집 (캐시에서 로드한 경우 샘플이 없을 수 있으므로 보충)
-    for table_name in list(schema_dict.get("tables", {}).keys()):
+    # 샘플 데이터 수집 (캐시에서 로드한 경우 샘플이 없을 수 있으므로 보충).
+    # 상한 필수: 스코프 미필터 스키마(b0 408테이블 실측)는 무상한 순차 백필이
+    # 턴마다 수백 회 MCP 왕복을 만든다. 초과분은 로그로 가시화(침묵 캡 금지).
+    _missing = [
+        t for t, d in schema_dict.get("tables", {}).items()
+        if not d.get("sample_data")
+    ]
+    for table_name in _missing[:_SAMPLE_BACKFILL_MAX]:
         table_data = schema_dict["tables"][table_name]
-        if not table_data.get("sample_data"):
-            try:
-                samples = await client.get_sample_data(table_name, limit=3)
-                table_data["sample_data"] = samples
-            except Exception:
-                pass
+        try:
+            samples = await client.get_sample_data(table_name, limit=3)
+            table_data["sample_data"] = samples
+        except Exception:
+            pass
+    if len(_missing) > _SAMPLE_BACKFILL_MAX:
+        logger.info(
+            "샘플 백필 상한 적용 (db_id=%s): %d/%d 테이블만 보충 — 스코프 미필터 "
+            "스키마 방호",
+            db_id, _SAMPLE_BACKFILL_MAX, len(_missing),
+        )
 
     # 구조 메타(query_guide/query_examples/patterns) 부착 — 단일 DB(schema_analyzer 노드)와 동등화(D-066).
     # get_schema_or_fetch는 테이블 스키마만 반환하고 _structure_meta는 별도 캐시 키로 관리돼 여기에
@@ -489,8 +503,6 @@ async def _generate_sql(
             )
             return semantic_sql
 
-    schema_text = _format_schema(schema_info)
-
     # 구조 분석 메타 기반 쿼리 가이드 (있으면 삽입)
     structure_meta = schema_info.get("_structure_meta")
     structure_guide = ""
@@ -563,13 +575,6 @@ async def _generate_sql(
         db_engine_hint += (
             "\n[DB2 방언] 행 수 제한은 `LIMIT` 대신 `FETCH FIRST n ROWS ONLY`를 사용하세요."
         )
-
-    system_prompt = QUERY_GENERATOR_SYSTEM_TEMPLATE.format(
-        schema=schema_text,
-        default_limit=default_limit,
-        structure_guide=structure_guide,
-        db_engine_hint=db_engine_hint,
-    )
 
     user_parts = [
         f"## 사용자 질의\n{sub_query_context}",
@@ -982,6 +987,20 @@ async def _generate_sql(
             f"## 이전 에러\n{error_context}\n위 에러를 수정한 새로운 SQL을 생성하세요."
         )
 
+    # 스키마 텍스트·시스템 프롬프트는 LLM 경로에서만 구성한다(지연 구성).
+    # 결정적 조립(위 use_multi_resource_pivot return)이 발동하는 폼필 턴이 스코프
+    # 미필터 스키마(b0 408테이블+샘플)의 직렬화+PII 스크럽 비용을 내지 않도록 —
+    # eager 구성은 이벤트 루프를 동기 점유해 서버 전체가 멈췄다(2026-08-04 py-spy
+    # 실측: scrub_pii/_format_schema에서 active+gil 고정). 단일 경로
+    # (query_generator._build_system_prompt는 LLM 폴백 else에서만 호출)와 대칭.
+    schema_text = _format_schema(schema_info)
+    system_prompt = QUERY_GENERATOR_SYSTEM_TEMPLATE.format(
+        schema=schema_text,
+        default_limit=default_limit,
+        structure_guide=structure_guide,
+        db_engine_hint=db_engine_hint,
+    )
+
     user_prompt = "\n\n".join(user_parts)
 
     # 트랙 A(E2~E4): 멀티 DB 경로(C) 명시 이식 — NL 질의(폼필·재시도 아님)에만 다중 후보.
@@ -1130,7 +1149,8 @@ def _format_schema(schema_info: dict) -> str:
 
         samples = table_data.get("sample_data", [])
         if samples:
-            preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
+            # 크기 상한 프리뷰(값 200자·테이블당 2,000자) — 절단이 스크럽 비용을 bound
+            preview = safe_sample_preview(samples)
             if is_scrub_samples_enabled():
                 preview = scrub_pii(preview)  # 라이브 샘플 PII → FabriX 필터 오탐 차단 예방
             lines.append(f"  sample: {preview}")

@@ -6,8 +6,49 @@ application 계층(nodes/)에서 공용으로 사용한다.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
+
+# 샘플 프리뷰 상한 — DB2 CLOB성 설정값(수 MB 단일 라인)이 무제한으로 프롬프트에
+# 직렬화되면 PII 스크럽(라인×규칙 정규식)이 이벤트 루프를 수 시간 동기 점유한다
+# (2026-08-04 py-spy 실측: b0 408테이블 샘플 → scrub_pii active+gil 고정, 서버 전체
+# 동결). 값·테이블 단위로 절단해 스크럽·프롬프트 비용을 결정적으로 bound한다.
+SAMPLE_VALUE_MAX_CHARS = 200
+SAMPLE_PREVIEW_MAX_CHARS = 2000
+
+
+def safe_sample_preview(samples: list, max_rows: int = 3) -> str:
+    """샘플 행들을 크기 상한이 보장된 JSON 프리뷰 텍스트로 직렬화한다.
+
+    긴 문자열 값은 SAMPLE_VALUE_MAX_CHARS로, 전체 프리뷰는
+    SAMPLE_PREVIEW_MAX_CHARS로 절단한다(절단 시 표식을 남겨 침묵 축소를 피한다).
+
+    Args:
+        samples: 샘플 행 목록(dict 행 권장, 그 외 타입은 그대로 직렬화)
+        max_rows: 직렬화할 최대 행 수
+
+    Returns:
+        프롬프트 삽입용 JSON 프리뷰 문자열
+    """
+    def _cap(value):  # noqa: ANN001 — JSON 값(str/num/bool/None/중첩)
+        if isinstance(value, str) and len(value) > SAMPLE_VALUE_MAX_CHARS:
+            return value[:SAMPLE_VALUE_MAX_CHARS] + "…(절단)"
+        return value
+
+    rows = []
+    for row in samples[:max_rows]:
+        if isinstance(row, dict):
+            rows.append({k: _cap(v) for k, v in row.items()})
+        else:
+            rows.append(_cap(row))
+    try:
+        preview = json.dumps(rows, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError):
+        preview = str(rows)
+    if len(preview) > SAMPLE_PREVIEW_MAX_CHARS:
+        preview = preview[:SAMPLE_PREVIEW_MAX_CHARS] + "\n…(샘플 절단)"
+    return preview
 
 
 def build_excluded_join_map(schema_info: dict) -> dict[tuple[str, str], str]:

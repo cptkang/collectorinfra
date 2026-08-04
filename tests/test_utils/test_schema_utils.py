@@ -125,3 +125,44 @@ def test_build_excluded_join_map_skips_empty_table_or_column():
     result = build_excluded_join_map(schema_info)
     assert len(result) == 1
     assert ("t2", "c2") in result
+
+
+# ── safe_sample_preview (2026-08-04: b0 CLOB 샘플 → scrub_pii 동결 방호) ──
+
+from src.utils.schema_utils import (  # noqa: E402
+    SAMPLE_PREVIEW_MAX_CHARS,
+    SAMPLE_VALUE_MAX_CHARS,
+    safe_sample_preview,
+)
+
+
+def test_safe_sample_preview_passes_small_samples_unchanged():
+    """상한 이하 샘플은 값 손실 없이 JSON으로 직렬화된다."""
+    rows = [{"hostname": "web01", "cpu": 4}, {"hostname": "web02", "cpu": 8}]
+    preview = safe_sample_preview(rows)
+    assert "web01" in preview and "web02" in preview
+    assert "절단" not in preview
+
+
+def test_safe_sample_preview_caps_long_values():
+    """CLOB성 긴 값은 SAMPLE_VALUE_MAX_CHARS로 절단되고 표식이 남는다."""
+    rows = [{"stringvalue_long": "x" * 100_000}]
+    preview = safe_sample_preview(rows)
+    assert "…(절단)" in preview
+    assert len(preview) <= SAMPLE_PREVIEW_MAX_CHARS + 50
+
+
+def test_safe_sample_preview_caps_total_size():
+    """칼럼이 많아 총량이 넘치면 전체 프리뷰도 상한으로 절단된다."""
+    rows = [{f"col{i}": "v" * SAMPLE_VALUE_MAX_CHARS for i in range(100)}]
+    preview = safe_sample_preview(rows)
+    assert len(preview) <= SAMPLE_PREVIEW_MAX_CHARS + 50
+    assert "…(샘플 절단)" in preview
+
+
+def test_safe_sample_preview_limits_rows_and_tolerates_non_dict():
+    """max_rows 초과 행은 버리고, dict가 아닌 행도 직렬화를 깨지 않는다."""
+    rows = [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 4}, "raw-string", None]
+    preview = safe_sample_preview(rows, max_rows=3)
+    assert '"a": 3' in preview
+    assert '"a": 4' not in preview

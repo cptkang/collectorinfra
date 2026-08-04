@@ -56,7 +56,7 @@ from src.db_adapters.polestar.assembler import (
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 from src.schema_cache.form_memory import load_form_memory_answers
-from src.utils.schema_utils import build_excluded_join_map
+from src.utils.schema_utils import build_excluded_join_map, safe_sample_preview
 from src.utils.synonym_usage import extract_synonym_usage
 
 logger = logging.getLogger(__name__)
@@ -1214,7 +1214,9 @@ def _format_schema_for_prompt(
         # 샘플 데이터 (있으면, 3건까지 표시)
         samples = table_data.get("sample_data", [])
         if samples:
-            preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
+            # 크기 상한 프리뷰(값 200자·테이블당 2,000자) — 절단이 스크럽 비용을 bound
+            # (멀티 경로와 대칭, 2026-08-04 b0 샘플 스크럽 동결 실측)
+            preview = safe_sample_preview(samples)
             if is_scrub_samples_enabled():
                 preview = scrub_pii(preview)  # 라이브 샘플 PII → FabriX 필터 오탐 차단 예방
             lines.append(f"  샘플 데이터 ({len(samples)}건):\n{preview}")
