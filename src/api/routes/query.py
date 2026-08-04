@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
+from src.observability.llm_call_counter import finish_request, start_request
 from src.state import create_followup_input, create_initial_state
 
 logger = logging.getLogger(__name__)
@@ -508,62 +509,67 @@ async def process_query(
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 
-    # 체크포인트에서 이전 State 확인
-    checkpoint_state = await _get_checkpoint_state(graph, thread_config)
-
-    # 승인 의사 해소는 async(LLM 보조 옵트인)라 동기 조립 헬퍼 밖에서 수행한다 — 두 텍스트
-    # 라우트가 동일하게 호출해야 한다(SSE만 빠지는 비대칭 재발 방지, D-066).
-    approval = await _resolve_turn_approval(body, checkpoint_state, config)
-    input_state = _build_turn_input_state(
-        body, thread_id, checkpoint_state, current_user, approval=approval
-    )
-
+    # 요청당 LLM 호출 계측 (권고 ① — 관측 전용, finally에서 요약 로그 1줄)
+    start_request(getattr(request.state, "request_id", None) or query_id)
     try:
-        result = await asyncio.wait_for(
-            graph.ainvoke(input_state, thread_config),
-            timeout=config.server.query_timeout,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-        )
-    except Exception as e:
-        logger.error(f"그래프 실행 에러: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"처리 중 오류가 발생했습니다: {str(e)}",
+        # 체크포인트에서 이전 State 확인
+        checkpoint_state = await _get_checkpoint_state(graph, thread_config)
+
+        # 승인 의사 해소는 async(LLM 보조 옵트인)라 동기 조립 헬퍼 밖에서 수행한다 — 두 텍스트
+        # 라우트가 동일하게 호출해야 한다(SSE만 빠지는 비대칭 재발 방지, D-066).
+        approval = await _resolve_turn_approval(body, checkpoint_state, config)
+        input_state = _build_turn_input_state(
+            body, thread_id, checkpoint_state, current_user, approval=approval
         )
 
-    elapsed_ms = (time.time() - start_time) * 1000
+        try:
+            result = await asyncio.wait_for(
+                graph.ainvoke(input_state, thread_config),
+                timeout=config.server.query_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+            )
+        except Exception as e:
+            logger.error(f"그래프 실행 에러: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"처리 중 오류가 발생했습니다: {str(e)}",
+            )
 
-    # 응답 구성
-    status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
-    turn_count = _count_human_messages(result.get("messages", []))
+        elapsed_ms = (time.time() - start_time) * 1000
 
-    response_data = {
-        "query_id": query_id,
-        "status": status,
-        "response": result.get("final_response", ""),
-        "thread_id": thread_id,
-        "awaiting_approval": result.get("awaiting_approval", False),
-        "approval_context": result.get("approval_context"),
-        "has_file": result.get("output_file") is not None,
-        "file_name": result.get("output_file_name"),
-        "executed_sql": result.get("generated_sql"),
-        "row_count": len(result.get("query_results", [])),
-        "processing_time_ms": elapsed_ms,
-        "turn_count": turn_count,
-        "has_mapping_report": result.get("mapping_report_md") is not None,
-    }
-    _store_result(query_id, {
-        **response_data,
-        "output_file": result.get("output_file"),
-        "mapping_report_md": result.get("mapping_report_md"),
-        "query_results": result.get("query_results", []),
-    })
+        # 응답 구성
+        status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
+        turn_count = _count_human_messages(result.get("messages", []))
 
-    return QueryResponse(**response_data)
+        response_data = {
+            "query_id": query_id,
+            "status": status,
+            "response": result.get("final_response", ""),
+            "thread_id": thread_id,
+            "awaiting_approval": result.get("awaiting_approval", False),
+            "approval_context": result.get("approval_context"),
+            "has_file": result.get("output_file") is not None,
+            "file_name": result.get("output_file_name"),
+            "executed_sql": result.get("generated_sql"),
+            "row_count": len(result.get("query_results", [])),
+            "processing_time_ms": elapsed_ms,
+            "turn_count": turn_count,
+            "has_mapping_report": result.get("mapping_report_md") is not None,
+        }
+        _store_result(query_id, {
+            **response_data,
+            "output_file": result.get("output_file"),
+            "mapping_report_md": result.get("mapping_report_md"),
+            "query_results": result.get("query_results", []),
+        })
+
+        return QueryResponse(**response_data)
+    finally:
+        finish_request()
 
 
 @router.post(
@@ -603,7 +609,12 @@ async def process_query_stream(
         _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
+        # 1차 astream_events 실행이 END까지 완주했는지 — 폴백에서 체크포인트 상태
+        # 회수가 안전한지 판별하는 조건(완주 전 상태는 직전 턴 응답일 수 있음).
+        _stream_completed = False
 
+        # 요청당 LLM 호출 계측 (권고 ① — 관측 전용, finally에서 요약 로그 1줄)
+        start_request(getattr(request.state, "request_id", None) or query_id)
         try:
             if hasattr(graph, "astream_events"):
                 try:
@@ -622,6 +633,7 @@ async def process_query_stream(
                                 timeout=config.server.query_timeout,
                             )
                         except StopAsyncIteration:
+                            _stream_completed = True
                             break
                         except asyncio.TimeoutError:
                             yield _sse_event({
@@ -758,11 +770,24 @@ async def process_query_stream(
                 except (AttributeError, TypeError, NotImplementedError):
                     pass
 
-            # Fallback: ainvoke
-            result = await asyncio.wait_for(
-                graph.ainvoke(input_state, thread_config),
-                timeout=config.server.query_timeout,
-            )
+            # Fallback: 1차 스트림이 END까지 완주했다면 결과가 이미 체크포인터에
+            # 저장돼 있으므로, 그래프 전체 재실행(ainvoke) 대신 저장된 최종 상태에서
+            # 응답을 회수한다(권고 ③ — LLM 0회). 완주하지 못한 경우(astream_events
+            # 미지원·중도 실패)나 상태에 final_response가 없으면 종전 그대로
+            # ainvoke로 폴백한다(동작 불변).
+            result = None
+            if _stream_completed:
+                _saved_state = await _get_checkpoint_state(graph, thread_config)
+                if _saved_state and _saved_state.get("final_response"):
+                    logger.info(
+                        "[LLM계측] SSE 폴백 — 체크포인트 상태 회수로 재실행 생략"
+                    )
+                    result = _saved_state
+            if result is None:
+                result = await asyncio.wait_for(
+                    graph.ainvoke(input_state, thread_config),
+                    timeout=config.server.query_timeout,
+                )
 
             elapsed_ms = (time.time() - start_time) * 1000
 
@@ -823,6 +848,8 @@ async def process_query_stream(
                 "type": "error",
                 "message": f"처리 중 오류가 발생했습니다: {str(e)}",
             })
+        finally:
+            finish_request()
 
     return StreamingResponse(
         event_generator(),
@@ -902,50 +929,55 @@ async def process_file_query(
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
 
-    # 5. 그래프 실행
+    # 요청당 LLM 호출 계측 (권고 ① — 관측 전용, finally에서 요약 로그 1줄)
+    start_request(getattr(request.state, "request_id", None) or query_id)
     try:
-        result = await asyncio.wait_for(
-            graph.ainvoke(initial_state, thread_config),
-            timeout=config.server.file_query_timeout,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
-    except Exception as e:
-        logger.error(f"파일 질의 처리 에러: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"처리 중 오류가 발생했습니다: {str(e)}",
-        )
+        # 5. 그래프 실행
+        try:
+            result = await asyncio.wait_for(
+                graph.ainvoke(initial_state, thread_config),
+                timeout=config.server.file_query_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
+        except Exception as e:
+            logger.error(f"파일 질의 처리 에러: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"처리 중 오류가 발생했습니다: {str(e)}",
+            )
 
-    elapsed_ms = (time.time() - start_time) * 1000
-    turn_count = _count_human_messages(result.get("messages", []))
+        elapsed_ms = (time.time() - start_time) * 1000
+        turn_count = _count_human_messages(result.get("messages", []))
 
-    response_data = {
-        "query_id": query_id,
-        "status": "completed",
-        "response": result.get("final_response", ""),
-        "thread_id": actual_thread_id,
-        "has_file": result.get("output_file") is not None,
-        "file_name": result.get("output_file_name"),
-        "executed_sql": result.get("generated_sql"),
-        "row_count": len(result.get("query_results", [])),
-        "processing_time_ms": elapsed_ms,
-        "turn_count": turn_count,
-        "has_mapping_report": result.get("mapping_report_md") is not None,
-    }
-    _store_result(query_id, {
-        **response_data,
-        "output_file": result.get("output_file"),
-        "mapping_report_md": result.get("mapping_report_md"),
-        "query_results": result.get("query_results", []),
-        # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관한다.
-        # TODO(§14.5): _results_store는 인메모리 dict이므로 원본 바이트 누적 시 메모리가 커진다.
-        #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
-        "uploaded_file": file_bytes,
-        "uploaded_file_name": file.filename,
-    })
+        response_data = {
+            "query_id": query_id,
+            "status": "completed",
+            "response": result.get("final_response", ""),
+            "thread_id": actual_thread_id,
+            "has_file": result.get("output_file") is not None,
+            "file_name": result.get("output_file_name"),
+            "executed_sql": result.get("generated_sql"),
+            "row_count": len(result.get("query_results", [])),
+            "processing_time_ms": elapsed_ms,
+            "turn_count": turn_count,
+            "has_mapping_report": result.get("mapping_report_md") is not None,
+        }
+        _store_result(query_id, {
+            **response_data,
+            "output_file": result.get("output_file"),
+            "mapping_report_md": result.get("mapping_report_md"),
+            "query_results": result.get("query_results", []),
+            # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관한다.
+            # TODO(§14.5): _results_store는 인메모리 dict이므로 원본 바이트 누적 시 메모리가 커진다.
+            #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
+            "uploaded_file": file_bytes,
+            "uploaded_file_name": file.filename,
+        })
 
-    return QueryResponse(**response_data)
+        return QueryResponse(**response_data)
+    finally:
+        finish_request()
 
 
 def _get_file_extension(filename: str | None) -> str:
@@ -1017,7 +1049,12 @@ async def process_file_query_stream(
         _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
+        # 1차 astream_events 실행이 END까지 완주했는지 — 폴백에서 체크포인트 상태
+        # 회수가 안전한지 판별하는 조건(완주 전 상태는 직전 턴 응답일 수 있음).
+        _stream_completed = False
 
+        # 요청당 LLM 호출 계측 (권고 ① — 관측 전용, finally에서 요약 로그 1줄)
+        start_request(getattr(request.state, "request_id", None) or query_id)
         try:
             if hasattr(graph, "astream_events"):
                 try:
@@ -1035,6 +1072,7 @@ async def process_file_query_stream(
                                 timeout=config.server.file_query_timeout,
                             )
                         except StopAsyncIteration:
+                            _stream_completed = True
                             break
                         except asyncio.TimeoutError:
                             yield _sse_event({
@@ -1168,11 +1206,24 @@ async def process_file_query_stream(
                 except (AttributeError, TypeError, NotImplementedError):
                     pass
 
-            # Fallback: ainvoke
-            result = await asyncio.wait_for(
-                graph.ainvoke(initial_state, thread_config),
-                timeout=config.server.file_query_timeout,
-            )
+            # Fallback: 1차 스트림이 END까지 완주했다면 결과가 이미 체크포인터에
+            # 저장돼 있으므로, 그래프 전체 재실행(ainvoke) 대신 저장된 최종 상태에서
+            # 응답을 회수한다(권고 ③ — LLM 0회). 완주하지 못한 경우(astream_events
+            # 미지원·중도 실패)나 상태에 final_response가 없으면 종전 그대로
+            # ainvoke로 폴백한다(동작 불변).
+            result = None
+            if _stream_completed:
+                _saved_state = await _get_checkpoint_state(graph, thread_config)
+                if _saved_state and _saved_state.get("final_response"):
+                    logger.info(
+                        "[LLM계측] SSE 폴백 — 체크포인트 상태 회수로 재실행 생략"
+                    )
+                    result = _saved_state
+            if result is None:
+                result = await asyncio.wait_for(
+                    graph.ainvoke(initial_state, thread_config),
+                    timeout=config.server.file_query_timeout,
+                )
             elapsed_ms = (time.time() - start_time) * 1000
             final_response = result.get("final_response", "")
             yield _sse_event({"type": "token", "content": final_response})
@@ -1231,6 +1282,8 @@ async def process_file_query_stream(
                 "type": "error",
                 "message": f"처리 중 오류가 발생했습니다: {str(e)}",
             })
+        finally:
+            finish_request()
 
     return StreamingResponse(
         event_generator(),
