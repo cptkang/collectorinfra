@@ -20,6 +20,7 @@ import structlog
 
 from src.config import AppConfig, load_config
 from src.db_adapters import get_adapter
+from src.utils.sql_dialect import is_db2, row_limit_clause
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.state import AgentState
 from src.utils.query_gen_common import (
@@ -189,7 +190,7 @@ def validate_sql(
             logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
         else:
             auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
-            if db_engine == "db2":
+            if is_db2(db_engine):
                 warnings.append(
                     f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
                 )
@@ -964,9 +965,7 @@ def _add_limit_clause(sql: str, limit: int, db_engine: str = "postgresql") -> st
         행 제한 절이 추가된 SQL
     """
     sql = sql.rstrip().rstrip(";")
-    if db_engine == "db2":
-        return f"{sql}\nFETCH FIRST {limit} ROWS ONLY;"
-    return f"{sql}\nLIMIT {limit};"
+    return f"{sql}\n{row_limit_clause(db_engine, limit)};"
 
 
 def _check_performance_risks(

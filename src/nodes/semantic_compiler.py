@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
 from src.utils.json_extract import extract_json_from_response
+from src.utils.sql_dialect import row_limit_clause
 from src.utils.query_gen_common import (
     StatMonth,
     resolve_query_limit,
@@ -1085,10 +1086,7 @@ def _compile_c(
     if order_by:
         sql += f"\nORDER BY {order_by}"
     if limit:
-        if (engine or "").lower() == "db2":
-            sql += f"\nFETCH FIRST {limit} ROWS ONLY"
-        else:
-            sql += f"\nLIMIT {limit}"
+        sql += "\n" + row_limit_clause(engine, limit)
     return sql + ";"
 
 

@@ -8,6 +8,8 @@ multi_db_executor·semantic_compiler(모두 application).
 from __future__ import annotations
 
 # 기간 범위/값 타당성 게이트는 공용 코어(utils)에서 가져온다(application→config/utils 허용).
+from src.utils.sql_dialect import is_db2, row_limit_clause
+from src.utils.sql_dialect import sql_literal as _sql_literal  # 이동(Plan 69 P2) — 동작 불변
 from src.utils.query_gen_common import (
     StatMonth,
     _normalize_stat_month,
@@ -26,7 +28,7 @@ def decimal_cast_example(db_engine: str | None) -> str:
     쿼리 전체가 죽는다(D-103). 값 타당성 게이트(BETWEEN)도 예시에 포함해 LLM 경로도 오염을 거른다.
     """
     guard = _utilization_guard("avg_val", "Utilization")
-    if (db_engine or "").lower() == "db2":
+    if is_db2(db_engine):
         return (
             "CAST(ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus' "
             f"AND s.definition_name = 'Utilization'{guard} "
@@ -46,19 +48,6 @@ _STAT_COLUMN = "stat_date"
 _PARENT_ALIAS = "svr"
 
 
-def _sql_literal(value: object) -> str:
-    """필터 값을 SQL 리터럴로 만든다(문자열은 따옴표 이스케이프, 리스트는 IN 목록).
-
-    시맨틱 컴파일러가 넘기는 값은 값 인덱스로 실증되거나 카탈로그가 정의한 것이지만,
-    작은따옴표 이스케이프는 여기서 일괄 처리한다(조립 지점 단일화).
-    """
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, (list, tuple, set)):
-        return "(" + ", ".join(_sql_literal(v) for v in value) + ")"
-    return "'" + str(value).replace("'", "''") + "'"
 
 # 사용률 통계(metric) 필드 분류 — 명사→resource_type, 집계어→(집계함수, 값컬럼).
 # 폴스타 resource_type(server.*) 리터럴을 담으므로 어댑터 계층에 둔다(공용 계층 과적합 가드
@@ -153,7 +142,7 @@ def _metric_agg_expr(
     definition_name='Utilization'일 때만 — MaxIORate 등엔 0~1000 의미가 없다.
     """
     guard = _utilization_guard(val_col, definition_name)
-    if (db_engine or "").lower() == "db2":
+    if is_db2(db_engine):
         # DB2: 집계 함수 내부에서 캐스트(정수 truncate 방지). ::numeric은 문법 오류.
         # 캐스트는 DOUBLE — 고정 정밀도 DECIMAL(15,4)는 범위 밖 값(실측 5.5e13 ≥ 1e11)에서
         # SQL0413N 변환 오버플로로 쿼리 전체가 죽는다(D-103; DOUBLE은 ~1e308이라 변환 오버플로
@@ -406,10 +395,7 @@ def build_multi_resource_pivot_sql(
         # NULLS LAST 필수: 값이 없는 서버가 정렬 선두를 차지해 임의 서버가 1위로 뽑히는 것을 방지(D-098).
         sql += f'\nORDER BY "{alias}" {dir_kw} NULLS LAST'
     if limit:
-        if (db_engine or "").lower() == "db2":
-            sql += f"\nFETCH FIRST {limit} ROWS ONLY"
-        else:
-            sql += f"\nLIMIT {limit}"
+        sql += "\n" + row_limit_clause(db_engine, limit)
     return sql + ";"
 
 
