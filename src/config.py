@@ -262,6 +262,12 @@ class Text2SQLConfig(BaseSettings):
     # 기본 OFF = 프롬프트 sha256 무변경·validator 7종 유지(회귀 0).
     prompt_knowledge_render: bool = False
 
+    # === Plan 69 P4-3: 멀티 DB 경로 검증 강화 (기본 OFF 옵트인) ===
+    # ON이면 멀티 DB 경로가 간이 검증(_validate_sql_simple) 대신 단일 경로와 같은
+    # full validator(테이블·컬럼 존재, EAV 금지 조인, 어댑터 훅 포함)를 소비한다.
+    # 거부 사유는 로그로 계측 — 위양성 실측 후 기본 전환은 별도 판단(계획서 §0.3-4).
+    multi_full_validation: bool = False
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

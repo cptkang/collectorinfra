@@ -148,7 +148,7 @@ class TestAllScopeKeywordBoundary:
         assert has_all_scope_keyword(query) is False
 
     def test_false_positive_no_longer_raises_limit(self):
-        """"전체적으로 CPU 높은 서버"가 LIMIT 100000으로 상향되지 않는다."""
+        """"전체적으로 CPU 높은 서버"가 LIMIT 상한(10000)으로 상향되지 않는다."""
         assert resolve_query_limit("전체적으로 CPU 높은 서버", 1000) == 1000
 
     def test_rejection_is_instrumented(self):

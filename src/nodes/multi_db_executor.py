@@ -205,7 +205,10 @@ async def multi_db_executor(
                     )
 
                     # 3. SQL 검증 (간이)
-                    validation_error = _validate_sql_simple(sql, schema_info)
+                    validation_error = _validate_sql(
+                        sql, schema_info, db_id=db_id, db_engine=db_engine,
+                        user_query=state.get("user_query", ""), app_config=app_config,
+                    )
                     if validation_error:
                         # 1회 재시도
                         logger.warning(
@@ -223,7 +226,10 @@ async def multi_db_executor(
                             app_config=app_config,
                             prior_block=prior_block,
                         )
-                        validation_error = _validate_sql_simple(sql, schema_info)
+                        validation_error = _validate_sql(
+                            sql, schema_info, db_id=db_id, db_engine=db_engine,
+                            user_query=state.get("user_query", ""), app_config=app_config,
+                        )
                         if validation_error:
                             db_errors[db_id] = f"SQL 검증 실패: {validation_error}"
                             continue
@@ -870,7 +876,10 @@ async def _generate_sql(
         from src.nodes.candidate_selector import run_candidate_pipeline
 
         async def _validate(sql: str):
-            return _validate_sql_simple(sql, schema_info)
+            return _validate_sql(
+                sql, schema_info, db_id=db_id, db_engine=db_engine,
+                user_query=sub_query_context, app_config=app_config,
+            )
 
         selection = await run_candidate_pipeline(
             llm, system_prompt, user_prompt,
@@ -898,6 +907,44 @@ async def _generate_sql(
 
     response = await llm.ainvoke(messages)
     return extract_sql_from_response(response.content)
+
+
+def _validate_sql(
+    sql: str,
+    schema_info: dict,
+    *,
+    db_id: str = "",
+    db_engine: str = "postgresql",
+    user_query: str = "",
+    app_config: Optional[AppConfig] = None,
+) -> Optional[str]:
+    """멀티 DB 경로 검증 심 (Plan 69 P4-3).
+
+    기본은 종전 간이 검증(동작 불변). ``TEXT2SQL_MULTI_FULL_VALIDATION`` ON이면 단일
+    경로와 같은 full validator(테이블·컬럼 존재, EAV 금지 조인, 어댑터 훅)를 소비한다 —
+    같은 폴스타 DB가 단일 조회에선 차단되고 멀티 조회에선 통과하던 방어 비대칭의 해소.
+    거부 사유는 로그로 계측한다(위양성 실측 → 기본 전환 별도 판단, §0.3-4).
+    """
+    if not getattr(
+        getattr(app_config, "text2sql", None), "multi_full_validation", False
+    ):
+        return _validate_sql_simple(sql, schema_info)
+    from src.db_adapters import get_adapter
+    from src.nodes.query_validator import validate_sql
+
+    adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
+    adapter_checks = adapter.validator_checks() if adapter is not None else []
+    outcome = validate_sql(
+        sql, schema_info,
+        db_engine=db_engine, user_query=user_query,
+        default_limit=app_config.query.default_limit,
+        adapter_checks=adapter_checks,
+    )
+    if outcome.errors:
+        reason = "; ".join(outcome.errors[:5])
+        logger.info("[멀티검증강화] 거부(db=%s): %s", db_id, reason)
+        return reason
+    return None
 
 
 def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
