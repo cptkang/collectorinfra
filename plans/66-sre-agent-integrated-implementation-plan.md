@@ -59,7 +59,7 @@
 | Phase | 상태 | 비고 |
 |---|---|---|
 | Phase 0 | 부분 | P0-2는 개발 환경 확보 완료(`sre_agent/.venv` — holmesgpt 0.36.0·litellm 1.89.0 실측; 폐쇄망 반입 행정은 별도 잔여). P0-1(반입 행정)·P0-3(실 Prometheus 실측)·P0-4(벤더 협의) 대기 |
-| Phase 1 | **완료** (2026-07-27) | 1-A(D-121)·1-B(D-116)·1-C 교차 검증 21건(`tests/test_scripts/test_e7_mock_crossvalidation.py`) |
+| Phase 1 | **완료** (2026-07-27) | 1-A(D-121)·1-B(D-116)·1-C 교차 검증 21건(`noise_gate/tests/test_e7_mock_crossvalidation.py` — D-139 이관 후 경로) |
 | Phase 2 | **완료** (2026-07-27~28) | 2-0(D-120)·2-A(D-122)·2-B(D-118)·2-B′(D-119)·2-C/2-D(D-123). 잔여 1건: D-119 A/B 품질 게이트 실측(과금 승인 D-127 필요) |
 | Phase 3 | **완료 = MVP** (2026-07-28) + **정련 완료**(3-E · 2026-08-05) | 3-A/3-B(D-124)·3-C(R9)·3-D(D-125·D-126). **MVP 실 완주 실증**: 실 Gemini(3.5-flash) 조사 완주 161s·promql 감사 37건·서버측 `{nodename}` 조립 실동작·한국어 인용 브리핑(1331abf). **3-E**(D-137): 그 161초가 곧 통보 지연이던 구조를 즉시통보+후속 브리핑 옵트인으로 해소 |
 | Phase 4 | 부분 착수 | **remediation_recommender 완료**(4-A 일부 · **D-138**). 잔여: R10 원격 실연동(P0-3 선행)·R11 E8(P0-4 선행)·R12(R11 후 결정) |
@@ -69,7 +69,9 @@
 
 > 잔여 6건은 전부 **코드 외 선행조건**(과금 승인·인프라 실측·벤더 협의·환경/데이터·운영 결정)에 묶여 있다 — 현 환경에서 코드로 진행 가능한 잔여는 없다.
 
-**기본 스위트 실측(2026-08-05 · 3-E/4-A 반영 후 · RUN_E2E/RUN_DOCKER_IT 미설정)**: 본체 `tests/test_alarm`+`tests/test_scripts` **934 passed·9 skipped**(915→934) · `mcp_server/tests` **175 passed·2 skipped** · `sre_agent/tests` **164 passed·2 skipped**(144→164) — 전부 green, 과금 API 실 호출 0(D-127 전역 소켓 가드).
+**기본 스위트 실측(2026-08-05 · 3-E/4-A/D-139 반영 후 · RUN_E2E/RUN_DOCKER_IT 미설정)**: `noise_gate/tests` **1040 passed·9 skipped·4 failed**(사전 존재 — 클린 기준선에도 동일) · `mcp_server/tests` **175 passed·2 skipped** · `sre_agent/tests` **164 passed·2 skipped**(144→164) · 리포지토리 전체(e2e 제외) **3840 passed·40 failed·5 errors** — 실패 45건은 전부 D-139 이관 **이전 기준선과 집합 일치**(회귀 0). 과금 API 실 호출 0(D-127 전역 소켓 가드).
+
+> **경로 주의(D-139)**: 종전 `tests/test_alarm/`·`tests/test_scripts/`(노이즈 게이트분)·`scripts/mock_polestar_events.py`는 **`noise_gate/` 아래로 이관**됐다. 본 계획의 과거 이력 행에 남은 옛 경로는 그 시점 기록이다.
 
 ## 2. 통합 목표 아키텍처 (완성 시점 그림)
 
@@ -112,6 +114,8 @@
 
 **불변 원칙(전 단계 공통)**: 결정적=판단/LLM=보조(D-035) · 읽기전용·조치는 권고만(D-003) · 전 신규 기능 옵트인 기본 off·플래그 off 시 비트동일 · 억제≠삭제(전 판정 감사) · 패키지 경계(collectorinfra↔`sre_agent` 양방향 import 0, 통신은 MCP 계약뿐) · `arch_check --ci` 0.
 
+**패키지 배치 규칙(2026-08-05 · D-139)**: 기능 코드는 **소속 최상위 패키지 폴더 안에서** 구현한다 — 노이즈 게이트·E7/E8 게이트 배선은 `noise_gate/`(종전 `src/alarm/`), 조사 코어·후처리는 `sre_agent/`, 관측 도구는 `mcp_server/`. 각 패키지가 자기 `tests/`·`scripts/`·`testdata/`를 소유하며, 본체 `src/`에는 조립(entry)·배선만 남긴다. 본 계획의 잔여 웨이브도 이 배치를 따른다 — 예: R11(E8 게이트 배선)의 `host_diagnostic_collector.py`는 `src/alarm/`이 아니라 **`noise_gate/infrastructure/`**에 만든다. `noise_gate`는 본체와 같은 프로세스·같은 venv라 `src/ → noise_gate` 의존만 예외로 허용된다(D-048 워커 in-process 기동).
+
 ## 3. 통합 구현 단계 (Phase 0~5)
 
 각 Phase는 독립 배포 가능하며, Phase 내 병렬 표기(∥)는 동시 진행 가능. 규모는 S/M/L.
@@ -150,7 +154,7 @@
 
 | Wave | 내용 | 원 계획 | 규모 |
 |---|---|---|---|
-| **3-A** | **R8 CW-A**: `notification_gate` PAGE 시 비차단 emit → `sre_agent` MCP 클라이언트(`src/alarm/infrastructure/`, DBHubClient 패턴) submit → poll → 브리핑 `alarm_notifier` 첨부 + `decision_store` 감사. `investigation_trigger_enabled`(기본 off). **트리거 배선 결정 등재**(구 D-101 대체분 — 채번 규칙) | Plan 64 §0.2·Plan 60 §14 | S~M |
+| **3-A** | **R8 CW-A**: `notification_gate` PAGE 시 비차단 emit → `sre_agent` MCP 클라이언트(`noise_gate/infrastructure/`, DBHubClient 패턴) submit → poll → 브리핑 `alarm_notifier` 첨부 + `decision_store` 감사. `investigation_trigger_enabled`(기본 off). **트리거 배선 결정 등재**(구 D-101 대체분 — 채번 규칙) | Plan 64 §0.2·Plan 60 §14 | S~M |
 | 3-B ∥ | **R8 CW-B**: deepagents `fault_diagnosis` 의도 → `sre_diagnose` 위임 · **CW-C**: `verdict.escalate` 시 escalate-only 후속 통보 승격 | Plan 64 §0.2 | S |
 | 3-C | **R9**: Plan 65 §4.3 `invest-trigger` 시나리오(메뉴 [12]) — submit 응답·`duplicate` dedup 확인, 실 HolmesGPT 완주는 `RUN_E2E=1` | Plan 65 §4.3 | S |
 | 3-D | **R13**: MCP 전송 인증(Bearer — mcp_server·조사 서비스 양쪽) + **실 폴스타 DB 런타임 검증(D-126: PostgreSQL 한정 — 완료)** — plans/15 승계 검증 부채, mock 통과를 완료로 치지 않는다 | sre-agent/04 M-D | S~M |
@@ -165,7 +169,7 @@
 | Wave | 내용 | 원 계획 | 규모 |
 |---|---|---|---|
 | 4-A | **R10**: 실 Prometheus 연동·hostname 정합 규약 실측 확정(R-D — nodename 라벨 표준화·D-119 서버측 조립의 전제 라벨 실측, 착수 시 실측 후 D-등재 · **미착수·P0-3 선행**) + ~~remediation_recommender~~ **완료**(2026-08-05 · **D-138** — 시그니처 기반 결정적 카탈로그·고위험×저신뢰 "[검토 필요]" 강등·실행 경로 부재 테스트 4건 고정) — 02 W-C | sre-agent/06 R-C/R-D·02 W-C | M |
-| 4-B | **R11 E8**: 폴스타 에이전트 스냅샷 채널 어댑터(`host_diagnostic_collector.py` — collectorinfra 게이트 자산) + 게이트 동기 경계 probe(kind별 USE·≤2s·캐시) + post-gate 결정적 요지 첨부(sre_agent 미가용 시 폴백) + 측정 기반 dedup 상태지문 | Plan 60 §18 | M~L (P0-4 선행) |
+| 4-B | **R11 E8**: 폴스타 에이전트 스냅샷 채널 어댑터(`noise_gate/infrastructure/host_diagnostic_collector.py` — 게이트 자산(D-139 배치)) + 게이트 동기 경계 probe(kind별 USE·≤2s·캐시) + post-gate 결정적 요지 첨부(sre_agent 미가용 시 폴백) + 측정 기반 dedup 상태지문 | Plan 60 §18 | M~L (P0-4 선행) |
 | 4-C | **R12 결정**: E8 채널의 `polestar_host_snapshot` 고수준 도구 노출 여부·마스킹 정책 — 노출 시 원격 조사에서 dmesg/journal 원문 시그니처 가용(sre-agent/02 §6 Prometheus 카운터 대체를 폴백으로 강등) | sre-agent/04 §4.2 후보 | S |
 
 ### Phase 5 — 독립 트랙 (어느 Phase와도 병렬 가능)
@@ -230,6 +234,7 @@ Phase 5  R14(실DB) ∥ R15 ∥ P0-1 활성화     (전 구간 병렬 가능)
 
 | 날짜 | 변경 | 사유 |
 |---|---|---|
+| 2026-08-05 | **패키지 경계 재편 — 노이즈 캔슬링 `noise_gate/` 분리(D-139·b79808a)** — `src/alarm`(53)·`tests/test_alarm`+알람 루트 테스트(63)·전용 스크립트(2)를 최상위 `noise_gate/`로 이관(git mv 119건), 각 기능 패키지가 자기 tests/scripts/testdata를 소유하는 배치를 표준화(§2 「패키지 배치 규칙」 신설 — 잔여 웨이브도 이 배치를 따른다: R11의 `host_diagnostic_collector.py`는 `noise_gate/infrastructure/`). 설계 실측 2건: ①2단 중첩(`noise_gate/noise_gate/`)은 루트에서 `import noise_gate.domain`이 해석되지 않아(네임스페이스 선점) editable 설치 의존 → **평탄 레이아웃** 채택 ②`src/api`가 AlarmWorker를 in-process 기동(D-048)하므로 `src → noise_gate` 의존은 설계상 잔존(sre_agent식 양방향 0은 프로세스 분리 선행 필요). arch_check 스캔 루트·내부 패키지 판정 확장(noise_gate 46파일 편입·미매핑 0)·overfit 경로·pyproject(packages/testpaths) 동반 갱신. **회귀 0 실증**: `git worktree add HEAD` 클린 기준선 대조로 3840 passed·40 failed·5 errors 집계 동일 + 실패 집합 45건 경로 정규화 후 diff 0 | 사용자 지시("노이즈 캔슬링을 별도 폴더로 구분 — 별도 코드는 별도 폴더로, 계획 수정 후 기구현분도 검토·수정"). 분리 수준은 인터뷰로 B안(최상위 패키지·venv 공유) 채택 |
 | 2026-08-05 | **잔여 2건 구현 — 3-E 신설·4-A 일부 완료** — ① **3-E 즉시통보+후속 브리핑**(**D-137**·b7ccc20): MVP 실 완주 161초 실측으로 인라인 첨부가 곧 PAGE 통보 지연이 되는 구조를 옵트인 후속 모드로 해소. 트리거 `_submit_only` → `investigation_pending` → notifier가 즉시 통보 **후** 태스크 spawn(순서 보장) → poll 완주 → 후속 workb 발송 → 종결 감사. 설계 실측 2건: 워커가 알람 **직렬 처리·클라이언트 1개 공유**라 백그라운드 폴링은 **자체 클라이언트** 필요(`build_sre_agent_client` 신설), verdict 판정은 트리거·후속 공용이라 **domain으로 이관**. 빈 후속 미발송·workb 한정·원 통보 성공 시에만·동시 상한 8·전 구간 graceful. 플래그 3종 기본 off. 본체 915→**934 passed**. ② **4-A 일부 remediation_recommender**(**D-138**·03933b8): 브리핑 「권고」 자리표시를 결정적 카탈로그로 실효화 — 입력은 LLM 서술이 아니라 severity_judge 매칭 시그니처(환각 차단·D-035), 시그니처 11종 대응, 고위험×저신뢰 "[검토 필요]" 강등, 근거 없는 권고 금지, 옵트인 기본 off. **실행 경로 부재(D-003·D-011)를 테스트 4건으로 고정**(실행 수단 import 0·명령 리터럴 0·패키지 전역 subprocess/ssh 0). sre_agent 144→**164 passed**. 전 게이트 green(arch 양쪽 0·mcp_server 175 무회귀·flags-off 비트동일) | 사용자 지시("잔여 작업을 단계적으로 구현"). 잔여 6건 중 **외부 선행조건이 없는 2건**을 선별 착수(나머지는 과금 승인·인프라 실측·벤더 협의·환경 대기로 코드 진행 불가). 기존 경계 테스트가 금지한 명령 리터럴(`kill -`)을 실측 존중해 조치 문구를 서술형으로 교정 |
 | 2026-08-05 | **구현 현황 정리(실측)** — §1.2 상태 열 전면 갱신(R1~R9·R13·R16 완료 / R10~R12·R14·R15 미착수)·**§1.4 스냅샷 신설**(Phase 1~3 완료=MVP·잔여 6항목·기본 스위트 실측 본체 915/9s·mcp_server 175/2s·sre_agent 144/2s 전부 green)·§6 등재 완료 반영(D-121~D-126)·헤더 상태 갱신. 아울러 본 이력에 미기록이던 7/28~7/29 구현 3건 소급: ① **MVP 실 완주 실증**(1331abf — `max_steps` 10→40+step-limit graceful·`_default_diagnose_fn`에 `remote_vm_profile`+mcp_servers(Bearer) 실 배선, `RUN_E2E=1` e2e로 실 Gemini(3.5-flash) 조사 완주 161s·promql 감사 37건·서버측 nodename 조립 실동작 — D-119 실증, A/B 게이트만 잔여. 조사 배치는 고수준 도구만: `EXPOSE_EXECUTE_SQL/RAW_PROMQL=false`) ② **D-120 갱신**(8f4e59e — 키 `.encenv` `LLM_GEMINI_API_KEY` AliasChoices 배선·기본 모델 gemini-2.0-flash 서버 퇴역(404) 실측→**gemini-3.5-flash** ListModels 실측 확정·스모크 2단계 완주) + **D-126**(실 DB 검증 PG 한정·Prometheus 픽스처 target-vm 승격 — `node_uname_info` 실 uname e2e) ③ **D-127 과금 API 승인 게이트**(d9142c7·39049bd·1048020 — 실 호출 전부 `RUN_E2E=1` 옵트인·키 존재 게이팅 금지·전역 소켓 가드로 기본 스위트 실 호출 0·§5-4 기반영). 부수: mcp_server 도메인 deny 중 RESOURCE_CONF_ID 조인 금지는 D-022 재검토로 제거(f15ac46 · 2026-08-04 등재) | 사용자 지시("66번 계획의 구현 현황을 관련 계획 파일에 정리"). git 이력·`docs/02_decision.md` D-120~D-127 대조 + 테스트 스위트 3종 당일 재실행 실측 |
 | 2026-07-28 | **Docker 게이트 실 e2e 검증 (D-119·D-122)** — Prometheus(9190·§8.1)·PG(5434·cmm_resource 1581행) 픽스처 기동 후 `TestDockerPrometheusIntegration`·`TestDockerIntegration` placeholder→실 단언 e2e 교체. PromQL 서버측 nodename 조립+mock 결정값(8589934592·97.5/1.5·oom 3)·원시 옵트인·timeout / PG 실 asyncpg·반환 계약·LIMIT 방언·svr-web-01. `RUN_DOCKER_IT=1` 2 passed·기본 스위트 166/2 무회귀·test_alarm 총계 785 불변(Docker 기동으로 25 skip→pass·0 failed). **D-122 M-D PG 부채 일부 해소**(DB2 보류)·**D-119 PromQL 실 HTTP 검증**(A/B 게이트는 GEMINI_API_KEY 대기). 연결 env 주입·하드코딩 금지 | 사용자 지시(Docker 블로커 해소·팀장 f308a1a 픽스처 커밋) — placeholder 2곳 실 단언 교체·문서(§8.1 포트 9190·D-119/D-122 검증 상태) 갱신 |

@@ -95,9 +95,28 @@ python -m agents.run --phase 2    # +계획
 python -m agents.run --phase 3    # +구현
 ```
 
+## 패키지 경계 — 기능별 최상위 폴더 (D-139)
+
+기능 단위 코드는 **자기 최상위 패키지 폴더 안에서** 구현한다. 각 패키지는 자기 `tests/`·
+`scripts/`·`testdata/`를 소유하며, 본체 `src/`는 text2sql 파이프라인과 조립(entry)만 남긴다.
+
+| 패키지 | 담당 | 실행 형태 | 경계 |
+|---|---|---|---|
+| `src/` | text2sql 파이프라인·API 조립 | 본체 프로세스 | — |
+| `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 | **본체와 같은 프로세스·같은 venv** | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 |
+| `sre_agent/` | HolmesGPT 장애 조사 | 별도 venv·별도 프로세스 | 양방향 import 0 (MCP 계약만) |
+| `mcp_server/` | 관측 데이터 읽기 경계 | 별도 venv·별도 프로세스 | 양방향 import 0 |
+
+- **신규 기능은 소속 패키지 폴더에** 만들고, 본체 수정은 배선 최소로 한정한다.
+- `noise_gate`는 **평탄 레이아웃**(디렉토리 자체가 패키지) — 2단 중첩은 루트에서 import가
+  해석되지 않아 editable 설치에 의존하게 된다(D-139 실측). `sre_agent`·`mcp_server`는 자체
+  venv·자체 cwd라 2단 중첩 유지.
+- 테스트: `pytest`(본체+noise_gate 자동 수집) / `cd sre_agent && pytest` / `cd mcp_server && ../.venv/bin/python -m pytest`
+
 ## Clean Architecture 계층 규칙
 
-의존성은 안쪽(domain)에서 바깥쪽(entry)으로만 향해야 한다.
+의존성은 안쪽(domain)에서 바깥쪽(entry)으로만 향해야 한다. `src/`와 `noise_gate/`에 **동일하게**
+적용되며 `arch_check.py`가 양쪽을 함께 검사한다(패키지 내 `tests/`·`scripts/`는 대상 제외).
 
 ```
 domain → config/utils → prompts → infrastructure → application → orchestration → interface → entry
