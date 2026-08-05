@@ -80,13 +80,13 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.api":                       "interface",
     "src.main":                      "entry",
     # alarm 서브패키지 계층 매핑
-    "src.alarm.domain":                         "domain",
-    "src.alarm.prompts":                        "prompts",
-    "src.alarm.infrastructure":                 "infrastructure",
-    "src.alarm.application.nodes":              "application",
-    "src.alarm.application.alarm_worker":       "orchestration",
-    "src.alarm.application":                    "application",
-    "src.alarm.orchestration":                  "orchestration",
+    "noise_gate.domain":                         "domain",
+    "noise_gate.prompts":                        "prompts",
+    "noise_gate.infrastructure":                 "infrastructure",
+    "noise_gate.application.nodes":              "application",
+    "noise_gate.application.alarm_worker":       "orchestration",
+    "noise_gate.application":                    "application",
+    "noise_gate.orchestration":                  "orchestration",
 }
 
 # ──────────────────────────────────────────────
@@ -143,8 +143,17 @@ class ImportInfo:
     statement: str
 
 
+# 계층 규칙 대상 내부 패키지(D-139: noise_gate는 본체와 같은 프로세스·같은 계층 규칙).
+_INTERNAL_ROOTS: tuple[str, ...] = ("src.", "noise_gate.")
+
+
+def _is_internal(module: str) -> bool:
+    """내부 패키지 import인지 판정한다(외부 라이브러리는 계층 규칙 대상이 아니다)."""
+    return module.startswith(_INTERNAL_ROOTS)
+
+
 def extract_imports(file_path: Path) -> list[ImportInfo]:
-    """파일에서 src.* import 문을 추출한다."""
+    """파일에서 내부 패키지(src.*·noise_gate.*) import 문을 추출한다."""
     try:
         source = file_path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(file_path))
@@ -155,14 +164,14 @@ def extract_imports(file_path: Path) -> list[ImportInfo]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("src."):
+                if _is_internal(alias.name):
                     imports.append(ImportInfo(
                         module=alias.name,
                         line=node.lineno,
                         statement=f"import {alias.name}",
                     ))
         elif isinstance(node, ast.ImportFrom):
-            if node.module and node.module.startswith("src."):
+            if node.module and _is_internal(node.module):
                 imports.append(ImportInfo(
                     module=node.module,
                     line=node.lineno,
@@ -254,20 +263,32 @@ def check_file(file_path: Path, project_root: Path) -> list[Violation]:
 
 
 def check_project(project_root: Path) -> CheckResult:
-    """프로젝트 전체의 의존성 규칙을 검사한다."""
-    src_dir = project_root / "src"
-    result = CheckResult()
+    """프로젝트 전체의 의존성 규칙을 검사한다.
 
-    for py_file in sorted(src_dir.rglob("*.py")):
-        if py_file.name == "__init__.py":
-            # __init__.py는 re-export 목적이므로 같은 패키지 내 참조 허용
+    `noise_gate/`는 최상위 패키지지만 본체와 같은 프로세스·같은 venv에서 돌고 동일한 계층
+    규칙을 따르므로 함께 검사한다(D-139). 자체 venv·별도 프로세스인 `sre_agent/`·`mcp_server/`는
+    각자 `scripts/arch_check.py`를 가지므로 여기서 스캔하지 않는다.
+    """
+    result = CheckResult()
+    scan_roots = [project_root / "src", project_root / "noise_gate"]
+
+    for root in scan_roots:
+        if not root.is_dir():
             continue
-        result.checked_files += 1
-        imports = extract_imports(py_file)
-        result.total_imports += len(imports)
-        file_violations = check_file(py_file, project_root)
-        result.violations.extend(file_violations)
-        result.allowed_imports += len(imports) - len(file_violations)
+        for py_file in sorted(root.rglob("*.py")):
+            if py_file.name == "__init__.py":
+                # __init__.py는 re-export 목적이므로 같은 패키지 내 참조 허용
+                continue
+            # 패키지 내부의 테스트·스크립트는 계층 규칙 대상이 아니다(noise_gate/tests 등).
+            rel_parts = py_file.relative_to(root).parts
+            if rel_parts and rel_parts[0] in ("tests", "scripts", "testdata"):
+                continue
+            result.checked_files += 1
+            imports = extract_imports(py_file)
+            result.total_imports += len(imports)
+            file_violations = check_file(py_file, project_root)
+            result.violations.extend(file_violations)
+            result.allowed_imports += len(imports) - len(file_violations)
 
     return result
 

@@ -92,7 +92,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+# noise_gate는 최상위 독립 패키지지만 본체와 **같은 프로세스·같은 venv**에서 돌아간다
+# (src/api가 AlarmWorker를 in-process 기동) — 별도 venv·별도 프로세스인 sre_agent/mcp_server와
+# 다른 점이라 본체 배포에 함께 포함한다.
+include = ["src*", "noise_gate*"]
+exclude = ["noise_gate.tests*", "noise_gate.scripts*"]
 
 [tool.ruff]
 target-version = "py311"
@@ -107,5 +111,7 @@ strict = true
 warn_return_any = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# noise_gate/tests는 별도 폴더지만 본체와 같은 venv·같은 rootdir이라 함께 수집한다
+# (sre_agent/mcp_server는 자체 venv라 각자 디렉토리에서 별도 실행).
+testpaths = ["tests", "noise_gate/tests"]
 asyncio_mode = "auto"

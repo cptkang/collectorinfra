@@ -14,7 +14,7 @@ user_invocable: true
 
 스캔 대상(Plan 67 R2에서 사각지대 4곳 편입 — `docs/polestar_bias_review.md` §5):
 `src/utils`·`src/nodes`·`src/orchestration`·`src/prompts`·`src/document`·`src/schema_cache`·
-`src/alarm/domain`·`mcp_server/mcp_server`.
+`noise_gate/domain`·`mcp_server/mcp_server`.
 제외: `src/db_adapters/`(어댑터 격리 계층), `mcp_server/mcp_server/polestar_tools.py`(전용 도구).
 
 ## 카테고리

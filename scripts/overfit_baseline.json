@@ -7,10 +7,10 @@
       "cmm_vendor",
       "core_config_prop"
     ],
-    "src/alarm/domain/correlation.py": [
+    "noise_gate/domain/correlation.py": [
       "server.Cpus"
     ],
-    "src/alarm/domain/topology.py": [
+    "noise_gate/domain/topology.py": [
       "cmm_resource"
     ],
     "src/nodes/field_mapper.py": [

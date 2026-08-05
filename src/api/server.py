@@ -251,7 +251,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     app.state.checkpointer = checkpointer
     logger.info("에이전트 그래프 빌드 완료")
 
-    from src.alarm.infrastructure.notification_bus import AlarmNotificationBus
+    from noise_gate.infrastructure.notification_bus import AlarmNotificationBus
     app.state.alarm_bus = AlarmNotificationBus()
 
     # 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성)
@@ -318,7 +318,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     alarm_worker_task = None
     if config.alarm.enabled:
         import asyncio as _asyncio
-        from src.alarm.application.alarm_worker import AlarmWorker
+        from noise_gate.application.alarm_worker import AlarmWorker
         alarm_worker_task = _asyncio.create_task(AlarmWorker(config).run())
         logger.info(
             "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
@@ -336,7 +336,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             import asyncio as _asyncio
             import redis.asyncio as _aioredis
 
-            from src.alarm.infrastructure.sse_bridge import run_sse_bridge_subscriber
+            from noise_gate.infrastructure.sse_bridge import run_sse_bridge_subscriber
 
             sse_bridge_redis = _aioredis.from_url(
                 f"redis://{config.redis.host}:{config.redis.port}",
@@ -375,7 +375,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             import asyncio as _asyncio
             import asyncpg
 
-            from src.alarm.infrastructure.incident_repository import (
+            from noise_gate.infrastructure.incident_repository import (
                 PostgresIncidentStore,
             )
 
@@ -390,7 +390,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
             import redis.asyncio as _aioredis
 
-            from src.alarm.infrastructure.incident_events import (
+            from noise_gate.infrastructure.incident_events import (
                 RedisIncidentPublisher,
                 run_incident_event_subscriber,
             )

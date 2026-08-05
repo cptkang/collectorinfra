@@ -330,7 +330,7 @@ class TestProcessQueryHandler:
 
     async def test_success_path_masked_rows(self, monkeypatch):
         """정상 경로: 프로세스 API 결과를 상위 N으로 선별·마스킹하여 반환."""
-        from src.alarm.infrastructure.polestar_process_api import ProcessApiResult
+        from noise_gate.infrastructure.polestar_process_api import ProcessApiResult
 
         alarm = _ProcCfg({"polestar_cm_gp": "http://gp"})
         cfg = _AppCfgStub(alarm, ["polestar_cm_gp"])
@@ -352,7 +352,7 @@ class TestProcessQueryHandler:
             )
 
         monkeypatch.setattr(
-            "src.alarm.infrastructure.polestar_process_api.PolestarProcessApiClient.list_by_hostname",
+            "noise_gate.infrastructure.polestar_process_api.PolestarProcessApiClient.list_by_hostname",
             _fake_list,
         )
         out = await run_process_query(
@@ -368,7 +368,7 @@ class TestProcessQueryHandler:
 
     async def test_chat_topN_csv_full_split(self, monkeypatch):
         """채팅 표시는 상위 N(=2)으로 제한, query_results(CSV)는 전체 보존(D-047)."""
-        from src.alarm.infrastructure.polestar_process_api import ProcessApiResult
+        from noise_gate.infrastructure.polestar_process_api import ProcessApiResult
 
         alarm = _ProcCfg({"polestar_cm_gp": "http://gp"})
         alarm.process_top_n = 2  # 상위 2개만 채팅 표시
@@ -389,7 +389,7 @@ class TestProcessQueryHandler:
             return ProcessApiResult(captured_at=None, processes=procs)
 
         monkeypatch.setattr(
-            "src.alarm.infrastructure.polestar_process_api.PolestarProcessApiClient.list_by_hostname",
+            "noise_gate.infrastructure.polestar_process_api.PolestarProcessApiClient.list_by_hostname",
             _fake_list,
         )
         out = await run_process_query(

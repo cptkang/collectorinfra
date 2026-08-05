@@ -271,7 +271,7 @@ class TestCallSitesUseSharedExtractor:
         "src/nodes/candidate_selector.py",
         "src/nodes/schema_analyzer.py",
         "src/schema_cache/cache_manager.py",
-        "src/alarm/application/nodes/alarm_analyzer.py",
+        "noise_gate/application/nodes/alarm_analyzer.py",
     )
     _DUP_PATTERNS = (
         r'```(?:json)?\s*(\{.*?\})\s*```',
@@ -354,7 +354,7 @@ class TestCallSiteBehaviourUnchanged:
             _parse_llm_json("not json at all")
 
     def test_alarm_extract_json(self):
-        from src.alarm.application.nodes.alarm_analyzer import _extract_json
+        from noise_gate.application.nodes.alarm_analyzer import _extract_json
 
         assert _extract_json('{"severity_label": "경고"}') == {"severity_label": "경고"}
         assert _extract_json('```json\n{"a": 1}\n```') == {"a": 1}

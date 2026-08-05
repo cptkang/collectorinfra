@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from src.api.dependencies import alarm_zones_for_user, require_user, resolve_stream_user
 from src.routing.zones import all_zones, db_id_to_zone
-from src.alarm.domain.alarm import (
+from noise_gate.domain.alarm import (
     AlarmAnalysisResult,
     AlarmEvent,
     AlarmHistoryEntry,
@@ -483,7 +483,7 @@ async def _resolve_process_snapshot(
     """
     try:
         if simulated_processes is not None:
-            from src.alarm.domain.process_rank import (
+            from noise_gate.domain.process_rank import (
                 classify_alarm_kind,
                 select_top_processes,
             )
@@ -504,10 +504,10 @@ async def _resolve_process_snapshot(
                 source_host=event.hostname,
             )
         if query_process:
-            from src.alarm.application.nodes.alarm_context_enricher import (
+            from noise_gate.application.nodes.alarm_context_enricher import (
                 enrich_processes,
             )
-            from src.alarm.infrastructure.polestar_process_api import (
+            from noise_gate.infrastructure.polestar_process_api import (
                 PolestarProcessApiClient,
             )
 
@@ -554,7 +554,7 @@ async def _resolve_history_stats(
     """
     try:
         if simulated_history is not None:
-            from src.alarm.domain.alarm_pattern import compute_history_stats
+            from noise_gate.domain.alarm_pattern import compute_history_stats
 
             entries = _simulated_entries(simulated_history)
             return compute_history_stats(
@@ -565,8 +565,8 @@ async def _resolve_history_stats(
                 source="simulated",
             )
         if query_history:
-            from src.alarm.application.nodes.alarm_context_enricher import enrich_history
-            from src.alarm.infrastructure.polestar_history import (
+            from noise_gate.application.nodes.alarm_context_enricher import enrich_history
+            from noise_gate.infrastructure.polestar_history import (
                 PolestarAlarmHistoryRepository,
             )
             from src.routing.db_registry import DBRegistry
@@ -592,7 +592,7 @@ def _build_workb_preview(
     process_snapshot: Optional[ProcessSnapshot] = None,
 ) -> _WorkbPreview:
     """WorkB 발송 미리보기를 생성한다."""
-    from src.alarm.application.nodes.alarm_notifier import build_workb_body
+    from noise_gate.application.nodes.alarm_notifier import build_workb_body
 
     ev = result.alarm_event
     title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
@@ -616,7 +616,7 @@ def _build_webhook_preview(
     process_snapshot: Optional[ProcessSnapshot] = None,
 ) -> _WebhookPreview:
     """Webhook 발송 미리보기를 생성한다."""
-    from src.alarm.application.nodes.alarm_notifier import _process_payload
+    from noise_gate.application.nodes.alarm_notifier import _process_payload
 
     ev = result.alarm_event
     payload = {
@@ -675,9 +675,9 @@ def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
     """
     if not config.noise_gate.enable_noise_gate:
         return {}
-    from src.alarm.infrastructure.decision_store import DecisionStore
-    from src.alarm.infrastructure.feedback_store import FeedbackStore
-    from src.alarm.infrastructure.ticket_queue import TicketBatchQueue
+    from noise_gate.infrastructure.decision_store import DecisionStore
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
+    from noise_gate.infrastructure.ticket_queue import TicketBatchQueue
 
     ng = config.noise_gate
     return {
@@ -777,7 +777,7 @@ async def analyze_alarm_test(
     )
 
     # 3. LLM 알람 분석 실행 (analyzer 노드만 직접 호출)
-    from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
+    from noise_gate.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
@@ -860,7 +860,7 @@ async def analyze_alarm_test(
     # 7. 실제 발송 (dry_run=False + send_notification=True일 때만)
     notifications_sent: Optional[dict[str, bool]] = None
     if not body.dry_run and body.send_notification:
-        from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
+        from noise_gate.application.nodes.alarm_notifier import alarm_notifier_node
 
         # result_state는 노드의 업데이트 dict({"analysis_result": ...})만 담으므로
         # 게이트/notifier가 쓰는 alarm_event·history_stats는 원본 state에서 병합한다.
@@ -871,7 +871,7 @@ async def analyze_alarm_test(
         # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
         # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
         if config.noise_gate.enable_noise_gate:
-            from src.alarm.application.nodes.notification_gate import (
+            from noise_gate.application.nodes.notification_gate import (
                 notification_gate_node,
             )
 
@@ -988,7 +988,7 @@ async def alarm_metrics(
     current_user: dict = Depends(require_user),
 ) -> AlarmMetricsResponse:
     """decision_store 집계 + 메타경보를 운영 지표 JSON으로 반환한다 (Plan 52 §9)."""
-    from src.alarm.infrastructure.decision_store import DecisionStore
+    from noise_gate.infrastructure.decision_store import DecisionStore
 
     config = request.app.state.config
     ng = config.noise_gate
@@ -1132,7 +1132,7 @@ async def submit_alarm_feedback(
     if body.label not in ("noise", "valid"):
         raise HTTPException(status_code=400, detail="label은 'noise' 또는 'valid'만 허용")
 
-    from src.alarm.infrastructure.feedback_store import FeedbackStore
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
 
     store = FeedbackStore(ng.feedback_store_path, ng.feedback_store_enabled)
     store.record_feedback(
@@ -1198,7 +1198,7 @@ def _build_alarm_event_from_payload(
     raw_payload = payload
     if format_tolerant:
         # (E7-c) 사이트 토큰 추출(네트워크 장비 포맷) — 원본 payload를 변형하지 않도록 사본에 노출.
-        from src.alarm.domain.correlation import extract_site_token
+        from noise_gate.domain.correlation import extract_site_token
 
         site = extract_site_token(
             str(payload.get("serverName", "") or ""),
@@ -1289,7 +1289,7 @@ async def analyze_alarm_raw(
     )
 
     # 4. LLM 알람 분석
-    from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
+    from noise_gate.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
@@ -1370,7 +1370,7 @@ async def analyze_alarm_raw(
     # 7. 실제 발송 (dry_run=False + send_notification=True)
     notifications_sent: Optional[dict[str, bool]] = None
     if not body.dry_run and body.send_notification:
-        from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
+        from noise_gate.application.nodes.alarm_notifier import alarm_notifier_node
 
         # result_state는 노드의 업데이트 dict({"analysis_result": ...})만 담으므로
         # 게이트/notifier가 쓰는 alarm_event·history_stats는 원본 state에서 병합한다.
@@ -1381,7 +1381,7 @@ async def analyze_alarm_raw(
         # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
         # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
         if config.noise_gate.enable_noise_gate:
-            from src.alarm.application.nodes.notification_gate import (
+            from noise_gate.application.nodes.notification_gate import (
                 notification_gate_node,
             )
 

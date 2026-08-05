@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from src.alarm.infrastructure.polestar_hostname_resolver import (
+from noise_gate.infrastructure.polestar_hostname_resolver import (
     PolestarHostnameResolver,
     _sql_literal,
     build_hostname_sql,
@@ -244,7 +244,7 @@ class TestResolveDbIdLocationHint:
 class TestRunProcessQueryUsesResolvedHostname:
     async def test_api_called_with_resolved_hostname(self, monkeypatch):
         """서버명으로 질의해도 프로세스 API는 해소된 hostname으로 호출되어야 한다."""
-        from src.alarm.infrastructure.polestar_process_api import ProcessApiResult
+        from noise_gate.infrastructure.polestar_process_api import ProcessApiResult
 
         alarm = _ProcCfg({"polestar_cm_gp": "http://gp"})
         cfg = _AppCfgStub(alarm, ["polestar_cm_gp"])
@@ -262,7 +262,7 @@ class TestRunProcessQueryUsesResolvedHostname:
             return "saisvd01"
 
         monkeypatch.setattr(
-            "src.alarm.infrastructure.polestar_hostname_resolver."
+            "noise_gate.infrastructure.polestar_hostname_resolver."
             "PolestarHostnameResolver.resolve",
             _fake_resolve,
         )
@@ -277,7 +277,7 @@ class TestRunProcessQueryUsesResolvedHostname:
             )
 
         monkeypatch.setattr(
-            "src.alarm.infrastructure.polestar_process_api."
+            "noise_gate.infrastructure.polestar_process_api."
             "PolestarProcessApiClient.list_by_hostname",
             _fake_list,
         )
@@ -297,7 +297,7 @@ class TestRunProcessQueryUsesResolvedHostname:
 
     async def test_resolution_failure_falls_back_to_raw(self, monkeypatch):
         """해소 실패(None) 시 원시 입력 값을 그대로 hostname으로 사용(회귀 없음)."""
-        from src.alarm.infrastructure.polestar_process_api import ProcessApiResult
+        from noise_gate.infrastructure.polestar_process_api import ProcessApiResult
 
         alarm = _ProcCfg({"polestar_cm_gp": "http://gp"})
         cfg = _AppCfgStub(alarm, ["polestar_cm_gp"])
@@ -312,7 +312,7 @@ class TestRunProcessQueryUsesResolvedHostname:
             return None  # 해소 불가
 
         monkeypatch.setattr(
-            "src.alarm.infrastructure.polestar_hostname_resolver."
+            "noise_gate.infrastructure.polestar_hostname_resolver."
             "PolestarHostnameResolver.resolve",
             _fake_resolve,
         )
@@ -324,7 +324,7 @@ class TestRunProcessQueryUsesResolvedHostname:
             return ProcessApiResult(captured_at=None, processes=[])
 
         monkeypatch.setattr(
-            "src.alarm.infrastructure.polestar_process_api."
+            "noise_gate.infrastructure.polestar_process_api."
             "PolestarProcessApiClient.list_by_hostname",
             _fake_list,
         )

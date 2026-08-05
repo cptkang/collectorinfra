@@ -47,7 +47,7 @@ BASELINE_PATH = Path(__file__).resolve().parent / "overfit_baseline.json"
 #   src/document      — 공용 문서 매핑인데 리터럴이 매핑 우선순위·스킵 게이트를 좌우
 #   src/schema_cache  — 캐시 계층의 DB-agnostic 전제 위반 폴백 검출
 #   mcp_server        — 범용 도구 경로(단 전용 모듈 polestar_tools.py는 EXCLUDE 대칭)
-#   src/alarm/domain  — Clean Architecture domain 계층의 벤더 스키마 누수 검출
+#   noise_gate/domain  — Clean Architecture domain 계층의 벤더 스키마 누수 검출
 #                       (infrastructure는 어댑터 논리라 제외)
 #   src/tools         — Plan 67 S1 fine-grained tools 계층(공용 — 어댑터 지식은 주입/레지스트리 경유만)
 PUBLIC_LAYER_DIRS: tuple[str, ...] = (
@@ -57,7 +57,7 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     "src/prompts",
     "src/document",
     "src/schema_cache",
-    "src/alarm/domain",
+    "noise_gate/domain",
     "mcp_server/mcp_server",
     "src/tools",
     # P5-1(Plan 69)로 semantic_compiler에서 분리된 IR 계층 — 이동 전과 동일하게 감시

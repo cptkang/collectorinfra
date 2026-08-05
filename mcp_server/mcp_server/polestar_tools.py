@@ -49,7 +49,7 @@ _PG_SCHEMA = "polestar"
 _DB2_SCHEMA = "POLESTAR"
 
 # metric kind → (resource_type, definition_name) 서버 상수
-# (src/alarm/domain/anomaly.py·src/db_adapters/polestar/prompts.py 실측 정합).
+# (noise_gate/domain/anomaly.py·src/db_adapters/polestar/prompts.py 실측 정합).
 _METRIC_KIND_MAP: dict[str, tuple[str, str]] = {
     "cpu": ("server.Cpus", "Utilization"),
     "memory": ("server.Memory", "Utilization"),
@@ -65,7 +65,7 @@ _METRIC_TABLE: dict[str, str] = {
 
 _PROCESS_PATH = "/rest/server/process/listByhostname"
 
-# 프로세스 args 마스킹 패턴 (src/alarm/domain/process_rank.py 이식 — 값만 *** 치환).
+# 프로세스 args 마스킹 패턴 (noise_gate/domain/process_rank.py 이식 — 값만 *** 치환).
 _SENSITIVE_KEY = (
     r"(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|credential)"
 )

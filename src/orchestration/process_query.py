@@ -4,8 +4,8 @@
 처리한다. 없는 테이블(`SDQ000.MON_CF_WAIT_TIME`) 조회로 인한 `SQL0204N` 재발을 막는다.
 
 재사용 (신규 비즈니스 로직 없음):
-- 조회: `src.alarm.infrastructure.polestar_process_api.PolestarProcessApiClient` (Plan 47-1, infrastructure).
-- 선별·마스킹: `src.alarm.domain.process_rank.select_top_processes` (Plan 47-1, domain — 결정적 처리).
+- 조회: `noise_gate.infrastructure.polestar_process_api.PolestarProcessApiClient` (Plan 47-1, infrastructure).
+- 선별·마스킹: `noise_gate.domain.process_rank.select_top_processes` (Plan 47-1, domain — 결정적 처리).
   → 마스킹·상위 N 선별은 결정적으로 수행하고 LLM에 원시 주입하지 않는다(D-047-1 / Known Mistakes 정합).
 
 대상 결정:
@@ -31,8 +31,8 @@ from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 
-from src.alarm.domain.process_rank import select_top_processes
-from src.alarm.infrastructure.polestar_process_api import PolestarProcessApiClient
+from noise_gate.domain.process_rank import select_top_processes
+from noise_gate.infrastructure.polestar_process_api import PolestarProcessApiClient
 from src.config import AppConfig
 from src.routing.registry import get_registry
 
@@ -213,7 +213,7 @@ async def _resolve_canonical_hostname(
         해소된 hostname 또는 None(해소 불가)
     """
     try:
-        from src.alarm.infrastructure.polestar_hostname_resolver import (
+        from noise_gate.infrastructure.polestar_hostname_resolver import (
             PolestarHostnameResolver,
         )
         from src.routing.db_registry import DBRegistry

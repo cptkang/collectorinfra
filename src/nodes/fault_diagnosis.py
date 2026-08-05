@@ -170,7 +170,7 @@ def _build_client(gate_cfg):  # noqa: ANN001, ANN201 — NoiseGateConfig → Sre
     생성 실패 시 None을 반환한다 — 노드는 사유를 담은 자연어 응답으로 graceful 처리한다.
     """
     try:
-        from src.alarm.infrastructure.sre_agent_client import SreAgentClient
+        from noise_gate.infrastructure.sre_agent_client import SreAgentClient
 
         url = getattr(gate_cfg, "investigation_service_url", "")
         if not url:
