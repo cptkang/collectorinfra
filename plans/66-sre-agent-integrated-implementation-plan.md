@@ -5,11 +5,11 @@
 > **대상 계획**: `plans/sre-agent/` 01(대체)·02(중심)·03(대체)·04·05·06 + Plan 60(E7·E8·§14 잔여)·61(잔여)·62(우산)·63(완료·후속)·64(§0 재편 CW)·65(미구현).
 > **관련 결정**: D-120(HolmesGPT 개발·테스트 LLM=Gemini API — 운영 LLM 결정과 분리), D-119(PromQL `mcp_server` 통합 — 관측 읽기 접근 경계 일원화), D-118(SREAgent 통합·`sre_agent/` 독립 패키지), D-117(E8 L3 게이트 편입·폴스타 에이전트 확장), D-116(E7 텍스트·주석 신호), D-106~D-114(Plan 60 E1~E6·STL·임베딩 — 구현 완료), D-035(결정적=판단/LLM=보조), D-003(읽기전용).
 > **신규 결정**: 본 계획 자체는 신규 D-번호를 부여하지 않는다 — 각 단계 착수 시 해당 하위 계획의 예약분을 **collectorinfra 채번 규칙**(`## D-` 헤더+「변경 이력」 grep 최댓값+1, 현재 D-120)으로 등재한다(§6). ※ D-119(PromQL `mcp_server` 통합 — R5 반영)·D-120(Gemini 테스트 LLM — R16 반영)은 2026-07-27 사용자 채택으로 기등재.
-> **상태**: 로드맵(실행 순서 확정 문서). 착수 게이트는 §7의 사용자·행정 확인 항목.
+> **상태**: **Phase 1~3 구현 완료 — MVP 실증**(2026-07-28 실 Gemini 조사 완주). Phase 4~5·잔여 항목은 §1.4 스냅샷(2026-08-05 실측) 참조. 착수 게이트는 §7의 사용자·행정 확인 항목.
 
 ---
 
-## 1. 현황 집계 — 구현 완료 vs 잔여 (2026-07-24 실측)
+## 1. 현황 집계 — 구현 완료 vs 잔여 (2026-07-24 실측 · 상태 열 2026-08-05 갱신)
 
 ### 1.1 구현 완료 (재구현 금지 — 조합 대상 자산)
 
@@ -30,22 +30,22 @@
 
 | # | 항목 | 원 계획 | 상태 |
 |---|---|---|---|
-| R1 | 목업 이벤트 생성기(대화형 메뉴·TCP 주입·판정 대조) | Plan 65 §3~§6 (sre-agent/03 대체 흡수) | 미구현 · D-115 예약 |
-| R2 | E7 텍스트·주석 신호(a 하베스팅·b 비알람 분류·c 파서 견고성·d 사이트 상관) | Plan 60 §17 | 미구현 · D-116 등재·B-9 확정 — **착수 가능** |
-| R3 | `mcp_server` 조사용 고수준 도구 8종 + 프로세스 프록시(마스킹) + 도메인 deny | sre-agent/04 M-A/M-B | 미구현 |
-| R4 | `sre_agent/` 패키지 골격 + 조사 코어(HolmesGPT·pull) + 브리핑·후처리 | sre-agent/02 W-A, 05 §5 | 미구현 |
-| R5 | 원격 프로파일(`remote_vm_profile`) + **`mcp_server` PromQL 도구(D-119 — hostname 앵커 고수준 기본·원시 옵트인)** + 로컬 픽스처 검증·품질 게이트 | sre-agent/06 R-A/R-B·04 §4.4 | 미구현 · **D-119 등재** |
-| R6 | 조사 서비스 MCP 노출(submit/poll·잡 저장소·경계 테스트) | sre-agent/05 §3~§5 | 미구현 |
-| R7 | HolmesGPT `mcp_servers` 연동 + dispatcher·push·severity_judge | sre-agent/04 M-C, 02 W-B | 미구현 |
-| R8 | collectorinfra 소비 배선: 게이트 훅→submit/poll·브리핑 첨부·pull 위임·escalate 승격 | Plan 64 §0.2 CW-A~C, Plan 60 §14 | 미구현 |
-| R9 | `invest-trigger` 시나리오(목업→훅→submit 확인, e2e 옵트인) | Plan 65 §4.3 | 미구현 (R1·R8 선행) |
-| R10 | 원격 합류(폴스타 MCP·hostname 규약 실측) + remediation_recommender | sre-agent/06 R-C/R-D, 02 W-C | 미구현 |
-| R11 | E8 L3 게이트 배선(폴스타 에이전트 채널·경계 probe kind 확장·post-gate 요지 첨부·측정 dedup) | Plan 60 §18 | 미구현 · D-117 등재·보안 확정 |
+| R1 | 목업 이벤트 생성기(대화형 메뉴·TCP 주입·판정 대조) | Plan 65 §3~§6 (sre-agent/03 대체 흡수) | **완료**(1-A · **D-121** — 예약 D-115 무효화. 카탈로그 [13][14] 보강, [12]는 3-C에서 활성) |
+| R2 | E7 텍스트·주석 신호(a 하베스팅·b 비알람 분류·c 파서 견고성·d 사이트 상관) | Plan 60 §17 | **완료**(1-B · D-116 구현 + 1-C 교차 검증 `test_e7_mock_crossvalidation.py`. 후속: 주석 분류 LLM 전환은 Plan 67 D-132 소관) |
+| R3 | `mcp_server` 조사용 고수준 도구 8종 + 프로세스 프록시(마스킹) + 도메인 deny | sre-agent/04 M-A/M-B | **완료**(2-A · **D-122** — PG 실 런타임 e2e 포함. ※ deny 중 RESOURCE_CONF_ID 조인 금지는 D-022 재검토로 제거 f15ac46) |
+| R4 | `sre_agent/` 패키지 골격 + 조사 코어(HolmesGPT·pull) + 브리핑·후처리 | sre-agent/02 W-A, 05 §5 | **완료**(2-B·2-C · D-118 골격 + D-123 — 실 Gemini 조사 완주 실증 2026-07-28) |
+| R5 | 원격 프로파일(`remote_vm_profile`) + **`mcp_server` PromQL 도구(D-119 — hostname 앵커 고수준 기본·원시 옵트인)** + 로컬 픽스처 검증·품질 게이트 | sre-agent/06 R-A/R-B·04 §4.4 | **완료**(2-B′ · D-119 구현·Docker e2e·서버측 nodename 조립 실증 — **A/B 품질 게이트 실측만 잔여**, D-127 승인 필요) |
+| R6 | 조사 서비스 MCP 노출(submit/poll·잡 저장소·경계 테스트) | sre-agent/05 §3~§5 | **완료**(2-C · **D-123**) |
+| R7 | HolmesGPT `mcp_servers` 연동 + dispatcher·push·severity_judge | sre-agent/04 M-C, 02 W-B | **완료**(2-C/2-D · D-123 — dispatcher·severity_judge·briefing_builder) |
+| R8 | collectorinfra 소비 배선: 게이트 훅→submit/poll·브리핑 첨부·pull 위임·escalate 승격 | Plan 64 §0.2 CW-A~C, Plan 60 §14 | **완료**(3-A/3-B · **D-124** — CW-A·CW-B·CW-C) + **정련 완료**(3-E · **D-137** — 즉시통보+후속 브리핑, 옵트인) |
+| R9 | `invest-trigger` 시나리오(목업→훅→submit 확인, e2e 옵트인) | Plan 65 §4.3 | **완료**(3-C — 목업 [12] accepted/duplicate, 실 완주는 `RUN_E2E=1`) |
+| R10 | 원격 합류(폴스타 MCP·hostname 규약 실측) + remediation_recommender | sre-agent/06 R-C/R-D, 02 W-C | **부분 완료** — remediation_recommender 완료(**D-138** · 권고만·실행 경로 부재 고정). 원격 실연동·hostname 규약 실측(R-D)은 미착수(P0-3 선행) |
+| R11 | E8 L3 게이트 배선(폴스타 에이전트 채널·경계 probe kind 확장·post-gate 요지 첨부·측정 dedup) | Plan 60 §18 | 미착수(4-B — P0-4 선행) · D-117 등재·보안 확정 |
 | R12 | (후보) `polestar_host_snapshot` 도구 노출 — E8 채널의 조사 개방 | sre-agent/04 §4.2 후보 | E8(R11) 후 결정 |
 | R13 | 전송 인증(Bearer) + 실 폴스타 DB 런타임 검증(**PostgreSQL 한정 — D-126**) | sre-agent/04 M-D | **완료**(D-125 Bearer·PG e2e — DB2는 방언 단위 테스트 유지·실 인스턴스 확보 시 별도) |
-| R14 | Text-to-SQL 잔여(경로 C 값 인덱스·커버리지 확장·실 DB EX 측정·프로필 예시 정비) | Plan 61 §12.3-7/8 | 실 DB 접속 환경 필요 |
-| R15 | Plan 63 후속(EX 라이브 재측정·라우팅 어휘 단일 출처화 별도 계획) | Plan 63 §1.3·상태 | 데이터 적재 시 |
-| R16 | **HolmesGPT Gemini 테스트 경로**: `AgentSettings` LLM 필드 + 스모크 하네스 `smoke_llm.py`(litellm tool-calling 왕복·`DiagnosisAgent` ask 1회) + 데이터 통제(목업·픽스처만) | sre-agent/02 §10.1 | 미구현 · **D-120 등재** |
+| R14 | Text-to-SQL 잔여(경로 C 값 인덱스·커버리지 확장·실 DB EX 측정·프로필 예시 정비) | Plan 61 §12.3-7/8 | 미착수 — 실 DB 접속 환경 필요 |
+| R15 | Plan 63 후속(EX 라이브 재측정·라우팅 어휘 단일 출처화 별도 계획) | Plan 63 §1.3·상태 | 미착수 — 데이터 적재 시 |
+| R16 | **HolmesGPT Gemini 테스트 경로**: `AgentSettings` LLM 필드 + 스모크 하네스 `smoke_llm.py`(litellm tool-calling 왕복·`DiagnosisAgent` ask 1회) + 데이터 통제(목업·픽스처만) | sre-agent/02 §10.1 | **완료**(2-0 · **D-120** — 기본 모델 `gemini/gemini-3.5-flash` ListModels 실측 확정·스모크 2단계 완주·D-127 승인 게이트 하 운용) |
 | — | 자동 조치 실행(폐루프 뒤 절반) | Plan 64 §8.3 B-3 | **착수 금지 유지**(D-003 예외 거버넌스 미확정) |
 
 ### 1.3 구현하지 않는 것 (대체 확인)
@@ -53,6 +53,23 @@
 - sre-agent/01(자체 게이트)·03(자체 목업): **대체됨** — 기존 게이트(Plan 52/60)·Plan 65가 담당.
 - Plan 64 §3 `investigation_graph`·§5 severity_judge·§6 briefing_deliverer·§8 remediation_recommender의 **collectorinfra 자체 구현**: 대체됨(D-118) — `sre_agent/` 패키지(sre-agent/02)가 구현, collectorinfra는 MCP로 소비(Plan 64 §0).
 - sre-agent/04 `polestar_noise_signals` 집약 도구·§7.1 게이트 결정적 클라이언트: 폐기 — 게이트는 기존 자체 신호 수집(`polestar_noise_context.py`) 유지.
+
+### 1.4 구현 현황 스냅샷 (2026-08-05 실측)
+
+| Phase | 상태 | 비고 |
+|---|---|---|
+| Phase 0 | 부분 | P0-2는 개발 환경 확보 완료(`sre_agent/.venv` — holmesgpt 0.36.0·litellm 1.89.0 실측; 폐쇄망 반입 행정은 별도 잔여). P0-1(반입 행정)·P0-3(실 Prometheus 실측)·P0-4(벤더 협의) 대기 |
+| Phase 1 | **완료** (2026-07-27) | 1-A(D-121)·1-B(D-116)·1-C 교차 검증 21건(`tests/test_scripts/test_e7_mock_crossvalidation.py`) |
+| Phase 2 | **완료** (2026-07-27~28) | 2-0(D-120)·2-A(D-122)·2-B(D-118)·2-B′(D-119)·2-C/2-D(D-123). 잔여 1건: D-119 A/B 품질 게이트 실측(과금 승인 D-127 필요) |
+| Phase 3 | **완료 = MVP** (2026-07-28) + **정련 완료**(3-E · 2026-08-05) | 3-A/3-B(D-124)·3-C(R9)·3-D(D-125·D-126). **MVP 실 완주 실증**: 실 Gemini(3.5-flash) 조사 완주 161s·promql 감사 37건·서버측 `{nodename}` 조립 실동작·한국어 인용 브리핑(1331abf). **3-E**(D-137): 그 161초가 곧 통보 지연이던 구조를 즉시통보+후속 브리핑 옵트인으로 해소 |
+| Phase 4 | 부분 착수 | **remediation_recommender 완료**(4-A 일부 · **D-138**). 잔여: R10 원격 실연동(P0-3 선행)·R11 E8(P0-4 선행)·R12(R11 후 결정) |
+| Phase 5 | 미착수 | R14(실 DB 환경)·R15(데이터 적재)·P0-1 활성화(행정 완료 시) |
+
+**잔여 항목 전량(착수 조건)**: ① D-119 A/B 품질 게이트 실측 — 사용자 과금 승인(D-127) ② R10 원격 실연동·hostname 규약 실측 — Prometheus 인프라 실측(P0-3) 선행 ③ R11 E8·R12 — 폴스타 에이전트 벤더 협의(P0-4) 선행 ④ Phase 5 R14·R15 — 실 DB 접속·데이터 적재 대기 ⑤ 운영 LLM 확정(§7-1 — 운영 활성화 게이트) ⑥ DB2 실 인스턴스 런타임 검증(D-126으로 스코프 밖 보류). **착수 금지(자동 조치 실행)는 유지**.
+
+> 잔여 6건은 전부 **코드 외 선행조건**(과금 승인·인프라 실측·벤더 협의·환경/데이터·운영 결정)에 묶여 있다 — 현 환경에서 코드로 진행 가능한 잔여는 없다.
+
+**기본 스위트 실측(2026-08-05 · 3-E/4-A 반영 후 · RUN_E2E/RUN_DOCKER_IT 미설정)**: 본체 `tests/test_alarm`+`tests/test_scripts` **934 passed·9 skipped**(915→934) · `mcp_server/tests` **175 passed·2 skipped** · `sre_agent/tests` **164 passed·2 skipped**(144→164) — 전부 green, 과금 API 실 호출 0(D-127 전역 소켓 가드).
 
 ## 2. 통합 목표 아키텍처 (완성 시점 그림)
 
@@ -138,13 +155,16 @@
 | 3-C | **R9**: Plan 65 §4.3 `invest-trigger` 시나리오(메뉴 [12]) — submit 응답·`duplicate` dedup 확인, 실 HolmesGPT 완주는 `RUN_E2E=1` | Plan 65 §4.3 | S |
 | 3-D | **R13**: MCP 전송 인증(Bearer — mcp_server·조사 서비스 양쪽) + **실 폴스타 DB 런타임 검증(D-126: PostgreSQL 한정 — 완료)** — plans/15 승계 검증 부채, mock 통과를 완료로 치지 않는다 | sre-agent/04 M-D | S~M |
 
+| **3-E** | **즉시통보 + 후속 브리핑**(D-124 설계 노트 정련 · Plan 64 §6.2 "후속 메시지") — 트리거 submit-only → notifier가 즉시 통보 **후** 백그라운드 poll·후속 workb 발송. 자체 클라이언트(워커 공유 인스턴스 경합 회피)·빈 후속 미발송·동시 상한·전 구간 감사. 옵트인 `investigation_followup_enabled` 기본 off | Plan 64 §6.2 | S~M |
+
 > **Phase 3 완료 = 최소 완결 가치(MVP)**: "PAGE 1건 → 자동 조사 1회 → 인용 있는 브리핑이 통보에 첨부" 흐름이 목업으로 재현 가능.
+> **3-E 추가 근거(2026-08-05)**: MVP 실 완주가 161초로 실측되면서 인라인 첨부가 곧 통보 지연이 됐다 — 운영 활성화 전 정련(D-137).
 
 ### Phase 4 — 원격·L3 확장
 
 | Wave | 내용 | 원 계획 | 규모 |
 |---|---|---|---|
-| 4-A | **R10**: 실 Prometheus 연동·hostname 정합 규약 실측 확정(R-D — nodename 라벨 표준화·D-119 서버측 조립의 전제 라벨 실측, 착수 시 실측 후 D-등재) + remediation_recommender(권고만·실행 경로 부재 테스트 고정) — 02 W-C 완결 | sre-agent/06 R-C/R-D·02 W-C | M |
+| 4-A | **R10**: 실 Prometheus 연동·hostname 정합 규약 실측 확정(R-D — nodename 라벨 표준화·D-119 서버측 조립의 전제 라벨 실측, 착수 시 실측 후 D-등재 · **미착수·P0-3 선행**) + ~~remediation_recommender~~ **완료**(2026-08-05 · **D-138** — 시그니처 기반 결정적 카탈로그·고위험×저신뢰 "[검토 필요]" 강등·실행 경로 부재 테스트 4건 고정) — 02 W-C | sre-agent/06 R-C/R-D·02 W-C | M |
 | 4-B | **R11 E8**: 폴스타 에이전트 스냅샷 채널 어댑터(`host_diagnostic_collector.py` — collectorinfra 게이트 자산) + 게이트 동기 경계 probe(kind별 USE·≤2s·캐시) + post-gate 결정적 요지 첨부(sre_agent 미가용 시 폴백) + 측정 기반 dedup 상태지문 | Plan 60 §18 | M~L (P0-4 선행) |
 | 4-C | **R12 결정**: E8 채널의 `polestar_host_snapshot` 고수준 도구 노출 여부·마스킹 정책 — 노출 시 원격 조사에서 dmesg/journal 원문 시그니처 가용(sre-agent/02 §6 Prometheus 카운터 대체를 폴백으로 강등) | sre-agent/04 §4.2 후보 | S |
 
@@ -186,15 +206,15 @@ Phase 5  R14(실DB) ∥ R15 ∥ P0-1 활성화     (전 구간 병렬 가능)
 
 | 시점 | 등재 대상 | 원 예약(인용) |
 |---|---|---|
-| 1-A | 목업 주입 경로(TCP 기본+Redis 폴백) | Plan 65 **D-115(예약 유지)** |
-| 2-A~2-D | 고수준 도구 노출 정책 / 조사 루프 위임+결정적 후처리 경계 / mcp_servers 등록 / 권고 human-gated | sre-agent D-014·D-009·D-010·D-011 (SREAgent 체계 인용 — collectorinfra 번호로 재부여) |
-| 2-C | submit/poll 비동기 잡 계약 / 배치 구성(별도 venv·프로세스) | sre-agent D-017·D-018 |
-| 3-A | 게이트 훅 트리거 배선(구 Plan 64 D-101 대체분) | Plan 64 §0.3 |
-| 3-D | MCP 전송 인증 | sre-agent D-015 |
+| 1-A | 목업 주입 경로(TCP 기본+Redis 폴백) | Plan 65 D-115 예약 → **D-121로 등재 완료**(D-115 무효화) |
+| 2-A~2-D | 고수준 도구 노출 정책 / 조사 루프 위임+결정적 후처리 경계 / mcp_servers 등록 / 권고 human-gated | sre-agent D-014·D-009·D-010·D-011 인용 → **D-122·D-123으로 등재 완료** |
+| 2-C | submit/poll 비동기 잡 계약 / 배치 구성(별도 venv·프로세스) | sre-agent D-017·D-018 인용 → **D-123에 통합 등재 완료** |
+| 3-A | 게이트 훅 트리거 배선(구 Plan 64 D-101 대체분) | Plan 64 §0.3 → **D-124로 등재 완료** |
+| 3-D | MCP 전송 인증 | sre-agent D-015 인용 → **D-125로 등재 완료**(검증 스코프는 D-126) |
 | 4-A | 원격 VM 프로파일·hostname 정합 규약 | sre-agent D-020 |
 | 4-B | E8 구현 확정분(D-117 상태 갱신) · 4-C `polestar_host_snapshot` 노출 여부 | Plan 60 §18 / sre-agent/04 §4.2 |
 
-> 등재 직전 `## D-` 헤더·「변경 이력」 표 전체 grep으로 최댓값 재확인(현재 D-119) — Known Mistakes 원칙.
+> 등재 직전 `## D-` 헤더·「변경 이력」 표 전체 grep으로 최댓값 재확인(2026-08-05 실측 최댓값 **D-136**) — Known Mistakes 원칙.
 
 ## 7. 착수 전 사용자 확인 필요 (CLAUDE.md 의사결정 규칙)
 
@@ -210,6 +230,8 @@ Phase 5  R14(실DB) ∥ R15 ∥ P0-1 활성화     (전 구간 병렬 가능)
 
 | 날짜 | 변경 | 사유 |
 |---|---|---|
+| 2026-08-05 | **잔여 2건 구현 — 3-E 신설·4-A 일부 완료** — ① **3-E 즉시통보+후속 브리핑**(**D-137**·b7ccc20): MVP 실 완주 161초 실측으로 인라인 첨부가 곧 PAGE 통보 지연이 되는 구조를 옵트인 후속 모드로 해소. 트리거 `_submit_only` → `investigation_pending` → notifier가 즉시 통보 **후** 태스크 spawn(순서 보장) → poll 완주 → 후속 workb 발송 → 종결 감사. 설계 실측 2건: 워커가 알람 **직렬 처리·클라이언트 1개 공유**라 백그라운드 폴링은 **자체 클라이언트** 필요(`build_sre_agent_client` 신설), verdict 판정은 트리거·후속 공용이라 **domain으로 이관**. 빈 후속 미발송·workb 한정·원 통보 성공 시에만·동시 상한 8·전 구간 graceful. 플래그 3종 기본 off. 본체 915→**934 passed**. ② **4-A 일부 remediation_recommender**(**D-138**·03933b8): 브리핑 「권고」 자리표시를 결정적 카탈로그로 실효화 — 입력은 LLM 서술이 아니라 severity_judge 매칭 시그니처(환각 차단·D-035), 시그니처 11종 대응, 고위험×저신뢰 "[검토 필요]" 강등, 근거 없는 권고 금지, 옵트인 기본 off. **실행 경로 부재(D-003·D-011)를 테스트 4건으로 고정**(실행 수단 import 0·명령 리터럴 0·패키지 전역 subprocess/ssh 0). sre_agent 144→**164 passed**. 전 게이트 green(arch 양쪽 0·mcp_server 175 무회귀·flags-off 비트동일) | 사용자 지시("잔여 작업을 단계적으로 구현"). 잔여 6건 중 **외부 선행조건이 없는 2건**을 선별 착수(나머지는 과금 승인·인프라 실측·벤더 협의·환경 대기로 코드 진행 불가). 기존 경계 테스트가 금지한 명령 리터럴(`kill -`)을 실측 존중해 조치 문구를 서술형으로 교정 |
+| 2026-08-05 | **구현 현황 정리(실측)** — §1.2 상태 열 전면 갱신(R1~R9·R13·R16 완료 / R10~R12·R14·R15 미착수)·**§1.4 스냅샷 신설**(Phase 1~3 완료=MVP·잔여 6항목·기본 스위트 실측 본체 915/9s·mcp_server 175/2s·sre_agent 144/2s 전부 green)·§6 등재 완료 반영(D-121~D-126)·헤더 상태 갱신. 아울러 본 이력에 미기록이던 7/28~7/29 구현 3건 소급: ① **MVP 실 완주 실증**(1331abf — `max_steps` 10→40+step-limit graceful·`_default_diagnose_fn`에 `remote_vm_profile`+mcp_servers(Bearer) 실 배선, `RUN_E2E=1` e2e로 실 Gemini(3.5-flash) 조사 완주 161s·promql 감사 37건·서버측 nodename 조립 실동작 — D-119 실증, A/B 게이트만 잔여. 조사 배치는 고수준 도구만: `EXPOSE_EXECUTE_SQL/RAW_PROMQL=false`) ② **D-120 갱신**(8f4e59e — 키 `.encenv` `LLM_GEMINI_API_KEY` AliasChoices 배선·기본 모델 gemini-2.0-flash 서버 퇴역(404) 실측→**gemini-3.5-flash** ListModels 실측 확정·스모크 2단계 완주) + **D-126**(실 DB 검증 PG 한정·Prometheus 픽스처 target-vm 승격 — `node_uname_info` 실 uname e2e) ③ **D-127 과금 API 승인 게이트**(d9142c7·39049bd·1048020 — 실 호출 전부 `RUN_E2E=1` 옵트인·키 존재 게이팅 금지·전역 소켓 가드로 기본 스위트 실 호출 0·§5-4 기반영). 부수: mcp_server 도메인 deny 중 RESOURCE_CONF_ID 조인 금지는 D-022 재검토로 제거(f15ac46 · 2026-08-04 등재) | 사용자 지시("66번 계획의 구현 현황을 관련 계획 파일에 정리"). git 이력·`docs/02_decision.md` D-120~D-127 대조 + 테스트 스위트 3종 당일 재실행 실측 |
 | 2026-07-28 | **Docker 게이트 실 e2e 검증 (D-119·D-122)** — Prometheus(9190·§8.1)·PG(5434·cmm_resource 1581행) 픽스처 기동 후 `TestDockerPrometheusIntegration`·`TestDockerIntegration` placeholder→실 단언 e2e 교체. PromQL 서버측 nodename 조립+mock 결정값(8589934592·97.5/1.5·oom 3)·원시 옵트인·timeout / PG 실 asyncpg·반환 계약·LIMIT 방언·svr-web-01. `RUN_DOCKER_IT=1` 2 passed·기본 스위트 166/2 무회귀·test_alarm 총계 785 불변(Docker 기동으로 25 skip→pass·0 failed). **D-122 M-D PG 부채 일부 해소**(DB2 보류)·**D-119 PromQL 실 HTTP 검증**(A/B 게이트는 GEMINI_API_KEY 대기). 연결 env 주입·하드코딩 금지 | 사용자 지시(Docker 블로커 해소·팀장 f308a1a 픽스처 커밋) — placeholder 2곳 실 단언 교체·문서(§8.1 포트 9190·D-119/D-122 검증 상태) 갱신 |
 | 2026-07-28 | **Phase 3 구현 (3-A~3-D · MVP 도달)** — R8 CW-A(게이트 훅→submit/poll→브리핑 첨부·`sre_agent_client`·`investigation_trigger`·config 7플래그·**D-124**)·CW-B(fault_diagnosis intent·D-004 3곳)·CW-C(verdict.escalate 승격)·R9 목업 [12] 활성화(accepted/duplicate·test_scripts 74→87)·R13 Bearer 전송 인증(mcp_server·sre_agent·클라이언트·**D-125**·mcp_server/tests 155→166). test_alarm 716→**756**·전 게이트 green(arch 양쪽 0·경계 import 0·flags-off 비트동일). 부수: test_dbhub_integration 15건(D-122 미포착 회귀) 교정→57 passed. **MVP(PAGE→조사→브리핑 첨부)가 스텁 서비스로 재현 가능**. **보류**: 실 HolmesGPT 완주(GEMINI_API_KEY)·실 DB(Docker)·즉시통보+후속브리핑 정련(실 LLM). **환경 주의**: 목업 런타임이 stale 비-editable `.venv/src` 로드(플래그 반영 안 됨) — `pip install -e .` 권고 | Plan 66 §3 Phase 3(사용자 "계속 진행"). 3-A→3-B 순차·3-C∥3-D 병렬·팀장 직접 검증·회귀 원인 실측 분류(.env·MagicMock·D-122)·D-021류 리뷰 교정 |
 | 2026-07-27 | **Phase 2 심화 구현 (2-B′ R-A/R-B·2-C·2-D)** — R5(D-119 코드): mcp_server PromQL 도구(고수준 2종 서버측 `{nodename}` 조립+원시 옵트인·mcp_server/tests 103→155)·`remote_vm_profile`·`DiagnosisAgent.mcp_servers`·`AgentSettings.polestar_mcp_url/token`. R4/R6/R7(**D-123 신규**): FastMCP 조사 서비스(9098·도구 5종·contract "1")·잡 저장소(sweep·재기동 running→failed·감사 JSONL)·dispatcher(dedup TTL·동시 상한·전체 타임아웃 300s·예산·토큰 감사)·severity_judge(escalate-only·domain 순수)·briefing_builder(6요소·인용 검증)·DiagnosisResult 확장. `sre_agent/tests` 18→**140 passed**·arch 0·경계 양방향 import 0·test_alarm 716 무회귀. **보류(환경)**: 실 HolmesGPT 완주(GEMINI_API_KEY)·Docker Prometheus 픽스처·D-119 A/B 게이트·게이트 훅 배선(R8/Phase 3). 리뷰 교정: 2-D 조기종료(API 에러) 후 guard 테스트 briefing_fn 누락 4-5건 실측·수정 | Plan 66 §3 Phase 2 심화(사용자 지시 "계속 진행"). R-A∥R-B 병렬(별 패키지)·2-C→2-D 순차·팀장 직접 검증(sre_agent 140/0·arch 0·경계 0) |
