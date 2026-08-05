@@ -86,7 +86,7 @@ def test_recommendation_is_human_gated():
 
 def test_recommendation_default_when_none():
     b = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"])
-    assert "W-C 소관" in b["recommendation"]["items"][0]
+    assert "조치 권고 없음" in b["recommendation"]["items"][0]
 
 
 # ── 한계 서술 강제 ────────────────────────────────────────────────

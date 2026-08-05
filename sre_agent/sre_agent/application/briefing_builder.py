@@ -94,7 +94,7 @@ def build_briefing(
     # 권고: 제공된 조치 후보 + human-gated 안내 강제(실행 경로 없음).
     rec_items = list(remediation or [])
     if not rec_items:
-        rec_items = ["조치 권고 없음(remediation_recommender는 W-C 소관)"]
+        rec_items = ["조치 권고 없음(remediation_recommender off 또는 근거 시그니처 무매칭)"]
     recommendation = {"items": rec_items, "note": HUMAN_GATED_NOTE}
 
     # 한계: 제공된 한계 + 자동 부가(단면 데이터·증거 불충분·미검증 인용).

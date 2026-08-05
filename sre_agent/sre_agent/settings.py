@@ -64,3 +64,8 @@ class AgentSettings(BaseSettings):
     # 중요도 2차 판정(severity_judge) 활성화. 기본 off — 켜야 도구 원시 출력
     # 시그니처 매칭을 수행한다(escalate-only). off면 게이트 판정을 그대로 승계.
     severity_judge_enabled: bool = False
+    # 조치 권고(remediation_recommender) 활성화 (Plan 02 §9 · D-011). 기본 off —
+    # 켜면 매칭된 시그니처에서 조치 후보를 결정적으로 도출해 브리핑 권고에 싣는다.
+    # **제시 전용**: 실행 코드 경로는 어느 배치에도 존재하지 않는다(D-003·테스트 고정).
+    # severity_judge가 off면 매칭 시그니처가 없어 권고도 비어 있다(근거 없는 권고 금지).
+    remediation_recommender_enabled: bool = False

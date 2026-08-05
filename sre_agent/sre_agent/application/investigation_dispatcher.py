@@ -33,6 +33,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from sre_agent.domain.remediation import recommend_lines
 from sre_agent.domain.severity_signatures import (
     LEVEL_NAMES,
     ImportanceVerdict,
@@ -232,6 +233,7 @@ class InvestigationDispatcher:
             verdict=verdict,
             tool_names=[to.tool_name for to in result.tool_outputs],
             gate_tier=gate_tier,
+            remediation=self._recommend_remediation(verdict),
         )
 
         job.status = "done"
@@ -282,6 +284,18 @@ class InvestigationDispatcher:
         texts: list[str] = [to.output for to in result.tool_outputs]
         texts += [to.error for to in result.tool_outputs if to.error]
         return judge(gate_severity, texts, remote=self._remote)
+
+    def _recommend_remediation(self, verdict: ImportanceVerdict) -> list[str] | None:
+        """remediation_recommender_enabled면 매칭 시그니처에서 조치 후보를 도출한다(제시 전용).
+
+        off면 None을 반환해 briefing_builder의 기존 문구를 유지한다(회귀 0). 켜져 있어도
+        매칭 시그니처가 없으면 None — 근거 없는 권고를 만들지 않는다(D-035·§9).
+        **실행 경로 없음**: 반환값은 브리핑에 실릴 문자열일 뿐이다(D-003·D-011).
+        """
+        if not self._settings.remediation_recommender_enabled:
+            return None
+        lines = recommend_lines(verdict.signals)
+        return lines or None
 
     # ── 스텁(조사 불가) ─────────────────────────────────────────
 
