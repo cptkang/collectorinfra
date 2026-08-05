@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
+from src.utils.json_extract import coerce_content_text
 from src.state import create_followup_input, create_initial_state
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,16 @@ def _store_result(query_id: str, data: dict) -> None:
 def _sse_event(data: dict) -> str:
     """SSE 이벤트 문자열을 생성한다."""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _token_text(chunk: object) -> str:
+    """스트리밍 청크의 content를 텍스트로 정규화한다.
+
+    Gemini 3.x thinking 계열은 content를 블록 리스트로 반환하는데, 이를 그대로
+    SSE에 실으면 프론트가 배열을 문자열에 더해(`accumulatedText += event.content`)
+    `[object Object]`가 되어 마크다운 표가 렌더되지 않는다.
+    """
+    return coerce_content_text(getattr(chunk, "content", ""))
 
 
 async def _get_checkpoint_state(graph, thread_config: dict) -> dict | None:
@@ -685,11 +696,12 @@ async def process_query_stream(
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
                             if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
                                 chunk = event.get("data", {}).get("chunk")
-                                if chunk and hasattr(chunk, "content") and chunk.content:
+                                token_text = _token_text(chunk) if chunk else ""
+                                if token_text:
                                     streamed_any_token = True
                                     yield _sse_event({
                                         "type": "token",
-                                        "content": chunk.content,
+                                        "content": token_text,
                                     })
 
                         elif kind == "on_chain_end":
@@ -1094,11 +1106,12 @@ async def process_file_query_stream(
                             _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
                             if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
                                 chunk = event.get("data", {}).get("chunk")
-                                if chunk and hasattr(chunk, "content") and chunk.content:
+                                token_text = _token_text(chunk) if chunk else ""
+                                if token_text:
                                     streamed_any_token = True
                                     yield _sse_event({
                                         "type": "token",
-                                        "content": chunk.content,
+                                        "content": token_text,
                                     })
 
                         elif kind == "on_chain_end":

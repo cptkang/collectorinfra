@@ -12,6 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
 from src.config import AppConfig
+from src.utils.json_extract import coerce_content_text
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,10 @@ async def astream_text(
             if content:
                 parts.append(content)
         elif content:
-            # 일부 모델은 content를 블록 리스트로 반환할 수 있다.
-            parts.append(str(content))
+            # 일부 모델(Gemini 3.x thinking 계열 등)은 content를 블록 리스트로 반환한다.
+            # str()로 감싸면 파이썬 repr이 그대로 사용자 응답에 실려 마크다운 표가
+            # 한 줄 텍스트로 깨진다 — 블록의 text만 뽑아 이어 붙인다.
+            parts.append(coerce_content_text(content))
     return "".join(parts)
 
 
