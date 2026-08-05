@@ -72,11 +72,6 @@
     "src/semantic/ir.py": [
       "server.Cpus"
     ],
-    "src/sql_validation.py": [
-      "configuration_id",
-      "server.Server",
-      "stringvalue_short"
-    ],
     "src/utils/column_matcher.py": [
       "cmm_resource",
       "cmm_resource_hostname"

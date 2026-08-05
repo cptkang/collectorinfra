@@ -534,13 +534,51 @@ def _check_excluded_join_columns(sql: str, schema_info: dict) -> list[str]:
     return warnings
 
 
+def _eav_bridge_hint(eav_pat: dict, entity_table: str, config_table: str) -> str:
+    """EAV 브릿지 조인 안내 문구를 **패턴 메타에서** 조립한다(정보가 없으면 빈 문자열).
+
+    속성명 컬럼·값 컬럼·브릿지 속성/컬럼·config 조인 컬럼을 전부 프로필 선언에서 읽는다
+    — 종전에는 특정 DB의 컬럼·속성 이름이 문구에 박혀 있어, 다른 EAV 프로필에서는 존재하지
+    않는 컬럼을 쓰라는 지시가 나갔다(D-088 공용 계층 DB-agnostic).
+
+    브릿지 선언(`value_joins`)이나 config 조인 컬럼이 없으면 **안내를 붙이지 않는다** —
+    자리표시자로 조립하면 존재하지 않는 컬럼을 쓰라는 지시가 재시도 프롬프트로 들어간다.
+
+    Args:
+        eav_pat: `_structure_meta.patterns`의 EAV 패턴 항목
+        entity_table/config_table: 스키마 접두사를 제거한 bare 테이블명
+
+    Returns:
+        "반드시 … 브릿지한 후, …" 안내 문장(조립 불가하면 빈 문자열)
+    """
+    value_joins = eav_pat.get("value_joins") or []
+    bridge = value_joins[0] if value_joins else {}
+    bridge_attr = bridge.get("eav_attribute")
+    bridge_column = bridge.get("entity_column")
+    config_column = (eav_pat.get("direct_join") or {}).get("config_column")
+    if not (bridge_attr and bridge_column and config_column):
+        return ""
+    # 값 컬럼은 브릿지 자신의 선언을 우선하고, 없으면 패턴 기본값을 쓴다.
+    # 공용 계층 폴백은 DB-agnostic 일반명이어야 한다(특정 DB 값을 기본값으로 박지 않는다).
+    attribute_column = eav_pat.get("attribute_column") or "NAME"
+    value_column = (
+        bridge.get("eav_value_column") or eav_pat.get("value_column") or "VALUE"
+    )
+    return (
+        f"반드시 {bridge_column} 기반 브릿지 조인을 사용하세요: "
+        f"{config_table}.{attribute_column}='{bridge_attr}' AND "
+        f"{config_table}.{value_column} = {entity_table}.{bridge_column} 으로 "
+        f"브릿지한 후, {config_column}로 다른 속성을 조인하세요."
+    )
+
+
 def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
     """EAV 프로필에서 금지된 조인 패턴을 검출한다.
 
     _structure_meta의 EAV 패턴에서 entity_table, config_table,
     excluded_join_columns 정보를 사용하여 다음 패턴을 감지한다:
 
-    1. entity_table.id = config_table.configuration_id 직접 조인
+    1. entity_table.id = config_table.<direct_join.config_column> 직접 조인
        (서로 다른 ID 체계이므로 잘못된 결과 반환)
     2. excluded_join_columns에 정의된 컬럼이 config_table과의 조인에 사용되는 패턴
        (운영 DB에서 NULL 등의 이유로 사용 불가)
@@ -601,6 +639,12 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
             continue
 
         excluded_join_columns = eav_pat.get("excluded_join_columns", [])
+        # 금지 조인 판정·안내에 쓰는 컬럼명은 전부 프로필 선언에서 읽는다(D-088).
+        # config 조인 컬럼 선언이 없으면 패턴 1(직접 조인)은 식별할 수 없어 건너뛴다.
+        config_column = (eav_pat.get("direct_join") or {}).get("config_column") or ""
+        config_column_lower = config_column.lower()
+        bridge_hint = _eav_bridge_hint(eav_pat, entity_table, config_table)
+        hint_suffix = f" {bridge_hint}" if bridge_hint else ""
 
         for left_ref, col_left, right_ref, col_right in join_conditions:
             actual_left = _resolve_table(left_ref)
@@ -608,34 +652,30 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
             col_left_lower = col_left.lower()
             col_right_lower = col_right.lower()
 
-            # 패턴 1: entity_table.id = config_table.configuration_id
+            # 패턴 1: entity_table.id = config_table.<config 조인 컬럼>
             if (
-                actual_left == entity_table
+                config_column_lower
+                and actual_left == entity_table
                 and col_left_lower == "id"
                 and actual_right == config_table
-                and col_right_lower == "configuration_id"
+                and col_right_lower == config_column_lower
             ):
                 errors.append(
-                    f"금지된 조인 감지: {entity_table}.id = {config_table}.configuration_id 직접 조인은 "
-                    f"ID 체계가 달라 잘못된 결과를 반환합니다. "
-                    f"반드시 hostname 기반 브릿지 조인을 사용하세요: "
-                    f"{config_table}.name='Hostname' AND {config_table}.stringvalue_short = {entity_table}.hostname 으로 "
-                    f"브릿지한 후, configuration_id로 다른 속성을 조인하세요."
+                    f"금지된 조인 감지: {entity_table}.id = {config_table}.{config_column} 직접 조인은 "
+                    f"ID 체계가 달라 잘못된 결과를 반환합니다.{hint_suffix}"
                 )
 
-            # 패턴 1 역방향: config_table.configuration_id = entity_table.id
+            # 패턴 1 역방향: config_table.<config 조인 컬럼> = entity_table.id
             if (
-                actual_left == config_table
-                and col_left_lower == "configuration_id"
+                config_column_lower
+                and actual_left == config_table
+                and col_left_lower == config_column_lower
                 and actual_right == entity_table
                 and col_right_lower == "id"
             ):
                 errors.append(
-                    f"금지된 조인 감지: {config_table}.configuration_id = {entity_table}.id 직접 조인은 "
-                    f"ID 체계가 달라 잘못된 결과를 반환합니다. "
-                    f"반드시 hostname 기반 브릿지 조인을 사용하세요: "
-                    f"{config_table}.name='Hostname' AND {config_table}.stringvalue_short = {entity_table}.hostname 으로 "
-                    f"브릿지한 후, configuration_id로 다른 속성을 조인하세요."
+                    f"금지된 조인 감지: {config_table}.{config_column} = {entity_table}.id 직접 조인은 "
+                    f"ID 체계가 달라 잘못된 결과를 반환합니다.{hint_suffix}"
                 )
 
             # 패턴 2: excluded_join_columns에 정의된 컬럼이 config_table과의 조인에 사용
@@ -657,10 +697,7 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
                 ):
                     errors.append(
                         f"금지된 조인 감지: {exc_table}.{exc_column}이 {config_table}과의 조인에 사용되었습니다. "
-                        f"사유: {exc_reason}. "
-                        f"반드시 hostname 기반 브릿지 조인을 사용하세요: "
-                        f"{config_table}.name='Hostname' AND {config_table}.stringvalue_short = {entity_table}.hostname 으로 "
-                        f"브릿지한 후, configuration_id로 다른 속성을 조인하세요."
+                        f"사유: {exc_reason}.{hint_suffix}"
                     )
 
                 # 역방향: 오른쪽이 excluded 컬럼, 왼쪽이 config_table
@@ -671,10 +708,7 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
                 ):
                     errors.append(
                         f"금지된 조인 감지: {exc_table}.{exc_column}이 {config_table}과의 조인에 사용되었습니다. "
-                        f"사유: {exc_reason}. "
-                        f"반드시 hostname 기반 브릿지 조인을 사용하세요: "
-                        f"{config_table}.name='Hostname' AND {config_table}.stringvalue_short = {entity_table}.hostname 으로 "
-                        f"브릿지한 후, configuration_id로 다른 속성을 조인하세요."
+                        f"사유: {exc_reason}.{hint_suffix}"
                     )
 
                 # 패턴 3: excluded_join_columns 컬럼이 임의 테이블과의 조인에 사용
@@ -707,7 +741,7 @@ def check_left_join_where_demotion(sql: str) -> list[str]:
 
     LEFT JOIN된 테이블의 컬럼에 비교 필터를 WHERE에 두면 미매칭 행(NULL)이
     모두 탈락하여 LEFT JOIN이 INNER JOIN으로 강등된다. 피벗 패턴에서는
-    메트릭이 없는 server.Server 행이 제거되어 서버명이 NULL로 나오는
+    측정치가 없는 엔티티 행이 제거되어 식별 컬럼(서버명 등)이 NULL로 나오는
     결함이 된다(2026-07-16 SYN-H-02 실측, D-085).
 
     보수적 판정(오탐 최소화)을 위해 다음은 감지 대상에서 제외한다:

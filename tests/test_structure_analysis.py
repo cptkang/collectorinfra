@@ -815,6 +815,20 @@ def _make_eav_schema_info() -> dict:
                     "config_table": "core_config_prop",
                     "attribute_column": "name",
                     "value_column": "stringvalue_short",
+                    # 실 프로필(`config/db_profiles/polestar_*.yaml`)이 선언하는 조인 메타.
+                    # 금지 조인 검출·브릿지 안내가 이 선언에서 컬럼명을 읽으므로(D-088 —
+                    # 하드코딩 제거) 픽스처도 실 프로필과 같은 shape여야 한다.
+                    "direct_join": {
+                        "entity_column": "resource_conf_id",
+                        "config_column": "configuration_id",
+                    },
+                    "value_joins": [
+                        {
+                            "eav_attribute": "Hostname",
+                            "eav_value_column": "stringvalue_short",
+                            "entity_column": "hostname",
+                        }
+                    ],
                     "excluded_join_columns": [
                         {
                             "table": "cmm_resource",
