@@ -51,6 +51,35 @@ def safe_sample_preview(samples: list, max_rows: int = 3) -> str:
     return preview
 
 
+def cap_sample_rows(samples: list, max_rows: int = 5) -> list:
+    """샘플 행 목록을 행 수·값 길이 상한으로 절단해 반환한다.
+
+    safe_sample_preview가 프롬프트 직렬화 직전의 절단이라면, 이 함수는 샘플을
+    state에 **부착하는 시점**의 절단이다. DB2 CLOB성 수 MB 값이 상태·체크포인트·
+    후단 PII 스크럽 비용을 무상한으로 키우는 것을 원천 차단한다(2026-08-04 b0
+    동결 계열 — 부착 시점 미절단이 남은 유입구였음).
+
+    Args:
+        samples: 샘플 행 목록(dict 행 권장)
+        max_rows: 유지할 최대 행 수
+
+    Returns:
+        값 단위 절단이 적용된 샘플 행 목록 (원본 비변경)
+    """
+    def _cap(value):  # noqa: ANN001 — JSON 값(str/num/bool/None/중첩)
+        if isinstance(value, str) and len(value) > SAMPLE_VALUE_MAX_CHARS:
+            return value[:SAMPLE_VALUE_MAX_CHARS] + "…(절단)"
+        return value
+
+    capped: list = []
+    for row in samples[:max_rows]:
+        if isinstance(row, dict):
+            capped.append({k: _cap(v) for k, v in row.items()})
+        else:
+            capped.append(_cap(row))
+    return capped
+
+
 def build_excluded_join_map(schema_info: dict) -> dict[tuple[str, str], str]:
     """_structure_meta의 excluded_join_columns에서 금지 컬럼 매핑을 구축한다.
 

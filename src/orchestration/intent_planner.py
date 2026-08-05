@@ -58,6 +58,7 @@ from src.utils.query_gen_common import (  # noqa: E402
     FORM_MEMORY_VIEW_KEYWORDS as _FORM_MEMORY_VIEW_KEYWORDS,
     is_form_memory_command,
     memory_query_normalized as _memory_query_normalized,
+    refers_to_demonstrative_server,
 )
 
 # 사용자에게 그대로 노출되는 고정 안내문 — LLM을 통과시키지 않는다(라이브 실측
@@ -438,25 +439,18 @@ def _build_context_block(
     has_explicit_location = any(
         term in (user_query or "") for term in LOCATION_HINT_TERMS
     )
+    # 이번 턴에 지시어("해당/그/위 … 서버")가 있을 때만 직전 서버 엔티티를 주입한다
+    # (D-120 후속1). previous_entities는 직전 턴이 대량 조회였으면 상한 샘플
+    # (_MAX_ENTITY_ROWS)일 뿐 스코프가 아니다 — "대상 미명시 → 직전 값 보존" 규칙과
+    # 결합되면 LLM이 새 전량 후속 질의를 샘플 서버 몇 대로 좁혀 재작성한다
+    # (2026-08-04 라이브 실측: gp/yd 전량 조회 후 "OS 종류…확인" 후속이 4개 서버로 축소).
+    # 위치 명시 게이트(2026-07-16)와 동형 — 오염원을 입력에서 결정적으로 제거한다.
+    has_demonstrative = refers_to_demonstrative_server(user_query or "")
 
     location = conversation_context.get("previous_location") or ""
     db_ids = conversation_context.get("previous_db_ids") or []
     entities = conversation_context.get("previous_entities") or []
     summary = conversation_context.get("previous_results_summary") or ""
-
-    # 식별 엔티티는 상한 내 소량만 표면화(토큰 절약 — 2026-06-11 상한 원칙).
-    entity_strs: list[str] = []
-    seen: set[str] = set()
-    for e in entities[:10]:
-        if not isinstance(e, dict):
-            continue
-        field = e.get("field", "")
-        value = e.get("value", "")
-        token = f"{field}={value}"
-        if value != "" and token not in seen:
-            seen.add(token)
-            entity_strs.append(token)
-    entity_line = ", ".join(entity_strs) if entity_strs else "(없음)"
 
     lines = ["## 이전 대화 맥락 (후속 턴 분해 시 활용)"]
     if has_explicit_location:
@@ -468,8 +462,22 @@ def _build_context_block(
     else:
         lines.append(f"- 직전 대상 위치/환경: {location or '(미상)'}")
         lines.append(f"- 직전 대상 DB 후보: {', '.join(db_ids) if db_ids else '(미상)'}")
+    if has_demonstrative:
+        # 식별 엔티티는 상한 내 소량만 표면화(토큰 절약 — 2026-06-11 상한 원칙).
+        entity_strs: list[str] = []
+        seen: set[str] = set()
+        for e in entities[:10]:
+            if not isinstance(e, dict):
+                continue
+            field = e.get("field", "")
+            value = e.get("value", "")
+            token = f"{field}={value}"
+            if value != "" and token not in seen:
+                seen.add(token)
+                entity_strs.append(token)
+        entity_line = ", ".join(entity_strs) if entity_strs else "(없음)"
+        lines.append(f"- 직전 대상 서버/장비: {entity_line}")
     lines += [
-        f"- 직전 대상 서버/장비: {entity_line}",
         f"- 직전 작업 요약: {summary or '(없음)'}",
         "",
         '지시어("해당 서버", "그 장비", "위 결과", "이 DB") 해소 규칙:',

@@ -47,8 +47,11 @@ from src.orchestration.process_query import (
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.utils.query_gen_common import (
+    build_zone_clarification,
+    has_host_identifier_filter,
     is_realtime_usage_query,
     is_server_identity_col,
+    refers_to_demonstrative_server,
     resolve_query_limit,
 )
 
@@ -197,6 +200,84 @@ def _has_new_location_db_signal(text: str) -> bool:
     return any(sig.lower() in lowered for sig in _LOCATION_DB_SIGNALS)
 
 
+def _zone_clarification_or_none_task(
+    task: dict,
+    isolated: dict,
+    targets: list[dict],
+    *,
+    db_pinned: bool,
+    db_succeeded: bool,
+    app_config: AppConfig,
+) -> Optional[dict]:
+    """존 역질문 후단 게이트 판정 (D-109 후속2 — 텍스트 경로 파이프라인 내 결정적 게이트).
+
+    라우트 pre-gate(표면어 "서버"+전량 조회 필수)가 놓치는 형태 — 위치어 없는 존 단위
+    조회("OS 버전 확인하시오" 등)가 LLM 임의 팬아웃(전 존/임의 존)으로 흐르는 것을,
+    파싱·분류가 끝난 시점의 실제 신호로 판정해 존 선택 역질문으로 전환한다.
+    §4.2 비발동 목록을 결정적 조건으로 옮긴 것: 서버명 지목·승계 가능·존 무관 질의는
+    비발동, 비대화 채널(zone_clarification_allowed=False)은 항상 비발동.
+
+    Args:
+        task: 현재 TaskSpec
+        isolated: 격리 입력(zone_clarification_allowed/parsed_requirements 포함)
+        targets: 분류·핀·승계가 끝난 대상 DB 목록
+        db_pinned: 이번 턴 위치 힌트 결정적 고정 여부
+        db_succeeded: 직전 턴 DB 승계 여부
+        app_config: 앱 설정
+
+    Returns:
+        발동 시 clarification 페이로드, 비발동이면 None
+    """
+    # 채널 게이트: 대화형 텍스트 라우트만 허용(§4.3-3 — 배치·평가·API 직접 호출 보호)
+    if not isolated.get("zone_clarification_allowed"):
+        return None
+    # data_query 전용 (alarm_query 등은 기존 폴백 유지 — 스코프 최소화)
+    if task.get("agent", "data_query") != "data_query":
+        return None
+    # 복합 계획 제외(중간 task 역질문은 UX 어색 + 전역 판정 부정확 — 핀 게이트와 동일 사유)
+    if isolated.get("is_composite"):
+        return None
+    # 위치 힌트 고정·승계가 발동했으면 존은 이미 결정적(§4.2 승계 우선)
+    if db_pinned or db_succeeded:
+        return None
+    # 첫 턴 한정: 직전 턴 DB가 있으면 승계 계열이 처리(분류가 직전 DB 1개로 수렴해
+    # db_succeeded=False로 남는 경우 포함 — previous_db_ids 존재 자체를 비발동 조건으로)
+    ctx = isolated.get("conversation_context") or {}
+    if ctx.get("previous_db_ids"):
+        return None
+    # 이번 턴 원문·sub_query에 위치/DB 신호가 있으면 비발동(D-065 결정적 보강이 처리)
+    original_query = isolated.get("original_user_query") or isolated.get("user_query", "")
+    if _has_new_location_db_signal(original_query) or _has_new_location_db_signal(
+        task.get("sub_query", "")
+    ):
+        return None
+    parsed = isolated.get("parsed_requirements") or {}
+    # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ) — hostname으로 어차피 특정됨
+    if has_host_identifier_filter(parsed):
+        return None
+    # 조회 대상 필드가 파싱되지 않은 질의(잡담성 오분류 등)는 비발동 — 과잉 역질문 방지
+    if not parsed.get("query_targets"):
+        return None
+    # 대상이 전부 폴스타 존일 때만(비폴스타 대상은 존 선택이 무의미)
+    polestar_ids = app_config.get_polestar_db_ids() or set()
+    target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
+    if not target_ids or not all(d in polestar_ids for d in target_ids):
+        return None
+    payload = build_zone_clarification(
+        app_config.multi_db.get_active_db_ids(), original_query,
+        # 존 그룹 상호배타(D-109 후속3) — 라우트 pre-gate와 동일 UI 규칙
+        group_exclusive=bool(
+            getattr(app_config.multi_db, "zone_group_exclusive", True)
+        ),
+    )
+    if payload:
+        logger.info(
+            "존 역질문 후단 게이트 발동(D-109 후속2): 위치어·서버 식별·승계 신호 없음 — "
+            "LLM 임의 팬아웃(%s) 대신 존 선택 요청", target_ids,
+        )
+    return payload
+
+
 def _refers_to_specific_server(text: str) -> bool:
     """질의가 지시어로 특정 서버 하나를 가리키는지 판정한다 (전체 조회 방지 게이트).
 
@@ -209,17 +290,9 @@ def _refers_to_specific_server(text: str) -> bool:
     Returns:
         지시어로 특정 서버를 지목하면 True
     """
-    if not text:
-        return False
-    if any(k in text for k in ("전체", "모든", "모두")):
-        return False
-    # 지시어 접두 + (선택 공백) + 서버 명사 인접 구문만 인정한다.
-    # 단순 부분매칭은 단일 문자 접두("이"/"그"/"위")가 "이상"/"그래서" 등에 오탐하므로 금지.
-    for p in _DEMONSTRATIVE_PREFIXES:
-        for n in _DEMONSTRATIVE_NOUNS:
-            if f"{p}{n}" in text or f"{p} {n}" in text:
-                return True
-    return False
+    # 구현은 utils.query_gen_common으로 이동(D-120 후속1 단일 출처 — intent_planner
+    # 맥락 주입 게이트와 공유) — 동작 동일.
+    return refers_to_demonstrative_server(text)
 
 
 def _inject_demonstrative_hostname(isolated: dict) -> dict:
@@ -656,6 +729,11 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 이번 턴 원문 위치 힌트의 결정적 DB 고정(_apply_turn_hint_pinning)은 전역 힌트를
         # 쓰므로 단일 task 계획에서만 안전 — 복합 여부를 게이트 신호로 전달한다.
         "is_composite": bool(state.get("is_composite")),
+        # 존 역질문 후단 게이트(D-109 후속2): 채널 플래그(대화형 텍스트 라우트만 True)와
+        # 원문 질의(호출부가 user_query를 sub_query로 덮어써도 게이트 판정·재전송 페이로드는
+        # 원문 기준이어야 함 — resolved_limit 승격과 동일 원리).
+        "zone_clarification_allowed": bool(state.get("zone_clarification_allowed")),
+        "original_user_query": state.get("user_query", ""),
     }
 
     # 노드 KeyError 방지용 기본값 (대형 누적분은 빈 값으로 초기화)
@@ -849,6 +927,25 @@ async def run_data_query_pipeline(
             "user_specified": False,
             "reason": "대상 DB 미식별 폴백",
         }]
+
+    # 존 역질문 후단 게이트 (D-109 후속2): 첫 턴 + 위치어·서버 식별·승계·핀 신호가 전부
+    # 없는 data_query가 폴스타 존으로 팬아웃되면, LLM 임의 라우팅(전 존/임의 존 — 종전
+    # "기존 폴백"의 실체) 대신 존 선택을 역질문한다. 재개 턴은 selected_db_ids가
+    # raw_targets로 고정되므로 비발동.
+    if not raw_targets:
+        _zone_q = _zone_clarification_or_none_task(
+            task, isolated, targets,
+            db_pinned=db_pinned, db_succeeded=db_succeeded, app_config=app_config,
+        )
+        if _zone_q:
+            return {
+                "final_response": _zone_q["question"],
+                "zone_clarification": _zone_q,
+                "source": [],
+                # target_db_ids를 의도적으로 남기지 않는다 — result_aggregator의 DB 승격
+                # (_collect_db_promotion)이 임의 분류 결과를 previous_db_ids로 체크포인터에
+                # 남겨 재개·후속 턴 승계를 오염시키는 것을 차단(요청 스코프 원칙).
+            }
 
     # Plan 66: 실시간 사용률 분기 (옵트인 기본 OFF, B안 게이트 — 원문 기준 승격 신호).
     # 대상이 전부 폴스타이고 measurement 조회가 성공하면 SQL 파이프라인을 건너뛴다.

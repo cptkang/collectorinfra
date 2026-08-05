@@ -552,3 +552,23 @@ class TestEnforceAllQueryLimit:
 
         out = enforce_all_query_limit("select * from t fetch first 100 rows only", 100_000, 1000)
         assert "FETCH FIRST 100000 ROWS ONLY" in out
+
+    def test_legacy_default_cap_corrected_after_config_uplift(self):
+        """운영이 QUERY_DEFAULT_LIMIT을 상향(10,000)해도 레거시 캡 1000은 교정된다.
+
+        2026-08-05 라이브 실측: "은행존과 공동존 김포의 서버들…조회"(전량 상향 100k)가
+        1,000건 절단 — LLM이 관례 캡 1000을 모방했는데 캡 집합이 {100, config_default}라
+        config_default=10,000으로 바꾼 순간 1000이 교정 대상에서 빠졌다(D-120 후속2).
+        """
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = "SELECT r.hostname FROM POLESTAR.cmm_resource r FETCH FIRST 1000 ROWS ONLY"
+        out = enforce_all_query_limit(sql, 100_000, 10_000)
+        assert "FETCH FIRST 100000 ROWS ONLY" in out
+
+        out2 = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", 100_000, 10_000)
+        assert out2.endswith("LIMIT 100000")
+
+        # 새 config_default(10,000) 캡도 여전히 교정된다
+        out3 = enforce_all_query_limit("SELECT * FROM t LIMIT 10000", 100_000, 10_000)
+        assert out3.endswith("LIMIT 100000")

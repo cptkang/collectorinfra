@@ -80,6 +80,17 @@ async def replanner(
         logger.info("replanner: 전 task가 결정적 direct_response — 재계획 스킵(D-117/D-118)")
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
+    # 존 역질문(D-109 후속2)은 정의상 이번 턴의 최종 응답(사용자 존 선택 대기) — LLM
+    # 재평가에 넘기면 빈 결과로 오판해 데이터 조회 후속을 만들어 역질문을 덮어쓴다
+    # (FIX-22 direct_response와 동형 위험). 결정적으로 종료한다.
+    _results_now = state.get("task_results", {}) or {}
+    if any(
+        isinstance(r, dict) and r.get("zone_clarification")
+        for r in _results_now.values()
+    ):
+        logger.info("replanner: 존 역질문 대기 — 재계획 스킵(D-109 후속2)")
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
     decision = await _llm_evaluate(
         llm,
         state.get("user_query", ""),

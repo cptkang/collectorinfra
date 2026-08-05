@@ -260,3 +260,23 @@ class TestQueryValidatorNode:
 
         assert result["validation_result"]["passed"] is False
         assert "bad_column" in result["validation_result"]["reason"]
+
+
+class TestFilterBlockedDetection:
+    """FabriX PII 필터 차단 안내문 감지 (D-120 후속2 — 멀티 경로와 대칭)."""
+
+    @pytest.mark.asyncio
+    async def test_filter_blocked_content_reports_clear_reason(self):
+        from src.nodes.query_validator import query_validator
+
+        state = {
+            "generated_sql": (
+                "Your request was blocked by the filter. "
+                "filterBlockReason: personal information"
+            ),
+            "schema_info": {"tables": {}},
+            "retry_count": 0,
+        }
+        result = await query_validator(state)
+        assert result["validation_result"]["passed"] is False
+        assert "PII 필터 차단" in result["validation_result"]["reason"]

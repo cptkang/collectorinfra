@@ -167,6 +167,13 @@ class AgentState(TypedDict):
     # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
     # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
     selected_db_ids: Optional[list[str]]
+    # 존 역질문 후단 게이트 허용 채널 여부(D-109 후속2). 대화형 텍스트 라우트만 True로
+    # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
+    # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
+    zone_clarification_allowed: Optional[bool]
+    # 존 역질문 후단 게이트 발동 페이로드(D-109 후속2, 요청 스코프) — 라우트가
+    # status="clarification" 응답으로 변환(pre-gate와 동일 shape, 프론트 재사용).
+    zone_clarification: Optional[dict]
 
     # === [Phase 3] 멀티턴 대화 ===
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
@@ -220,7 +227,9 @@ class AgentState(TypedDict):
 
 
 def create_followup_input(
-    user_query: str, selected_db_ids: Optional[list[str]] = None
+    user_query: str,
+    selected_db_ids: Optional[list[str]] = None,
+    allow_zone_clarification: bool = False,
 ) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
@@ -259,6 +268,10 @@ def create_followup_input(
         # 존 선택(Plan 65 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
         # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
         "selected_db_ids": selected_db_ids,
+        # 존 역질문 후단 게이트(D-109 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
+        # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
+        "zone_clarification_allowed": allow_zone_clarification,
+        "zone_clarification": None,
         # HITL 폼필(D-118) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
         # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
         # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
@@ -284,6 +297,7 @@ def create_initial_state(
     client_ip: Optional[str] = None,
     selected_db_ids: Optional[list[str]] = None,
     resolved_limit: Optional[int] = None,
+    allow_zone_clarification: bool = False,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -368,6 +382,8 @@ def create_initial_state(
         is_multi_db=False,
         user_specified_db=None,
         selected_db_ids=selected_db_ids,
+        zone_clarification_allowed=allow_zone_clarification,
+        zone_clarification=None,
         # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,

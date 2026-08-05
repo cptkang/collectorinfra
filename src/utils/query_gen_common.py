@@ -249,6 +249,11 @@ _TRAILING_LIMIT_RE = re.compile(
     r"(?is)(LIMIT\s+(\d+)|FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+ONLY)(\s*;)?\s*$"
 )
 _GENERIC_EXAMPLE_CAP = 100  # 프로필 query_examples 말미의 관례적 캡
+# 역대 기본 LIMIT(1000) — 프로필 예시·LLM 학습 관례에 굳어 있어, 운영이
+# QUERY_DEFAULT_LIMIT을 상향(예: 10,000)해도 LLM은 말미 캡 1000을 계속 모방한다.
+# config_default만 캡 집합에 넣으면 설정 변경 순간 1000이 교정 집합에서 빠져
+# 전량 질의가 1,000건에 절단된다(2026-08-05 라이브 실측: "서버들…조회" 1,000건).
+_LEGACY_DEFAULT_CAP = 1000
 
 
 def enforce_all_query_limit(sql: str, effective_limit: int, config_default_limit: int) -> str:
@@ -276,7 +281,9 @@ def enforce_all_query_limit(sql: str, effective_limit: int, config_default_limit
     if not m:
         return sql
     n = int(m.group(2) or m.group(3))
-    if n == effective_limit or n not in {_GENERIC_EXAMPLE_CAP, config_default_limit}:
+    if n == effective_limit or n not in {
+        _GENERIC_EXAMPLE_CAP, _LEGACY_DEFAULT_CAP, config_default_limit,
+    }:
         return sql
     clause = (
         f"LIMIT {effective_limit}" if m.group(2)
@@ -682,3 +689,313 @@ def is_form_memory_command(text: str) -> bool:
             or any(k in q for k in FORM_MEMORY_DELETE_KEYWORDS)
         )
     )
+
+
+# ── LLM 응답 SQL 추출 (D-120 — 단일/멀티 경로 2벌 중복 해소, D-067 취지) ─────────
+# 폐쇄망 실측(2026-08-04): 추출 실패 시 응답 전문(산문)이 SQL로 흘러 간이 검증
+# "SELECT 문이 아닙니다"로 떨어졌고, 멀티 경로에서는 동일 스키마 SQL 캐시(D-066 후속6)
+# 구조상 첫 번째 DB(공동존 gp)만 간헐 누락됐다. LLM 출력 형식(펜스 태그 대소문자·
+# 언어 태그 변형·세미콜론 생략)의 비결정성은 프롬프트 강제가 아니라 결정적 후처리로
+# 흡수한다(Known Mistakes 원칙).
+_SQL_FENCE_RE = re.compile(
+    r"```[ \t]*[A-Za-z0-9_+-]*[ \t]*\r?\n?(.*?)```", re.DOTALL
+)
+# 세미콜론 종결 SQL(서두 산문 허용). WITH는 영어 산문("with the ...")과의 오탐을 막기 위해
+# CTE 형태(WITH <이름> AS ()만 인정한다.
+_SQL_SEMI_RE = re.compile(
+    r'((?:SELECT\s+|WITH\s+[\w"]+\s+AS\s*\().*?;)', re.IGNORECASE | re.DOTALL
+)
+# 세미콜론 생략 SQL — SELECT/WITH부터 말미까지(닫는 펜스 잔재는 호출부에서 제거).
+_SQL_TAIL_RE = re.compile(
+    r'((?:SELECT\s+|WITH\s+[\w"]+\s+AS\s*\().*)', re.IGNORECASE | re.DOTALL
+)
+_SQL_COMMENT_RE = re.compile(r"(?:--[^\n]*\n?|/\*.*?\*/)", re.DOTALL)
+
+
+def looks_like_readonly_sql(text: str) -> bool:
+    """주석 제거 후 SELECT/WITH로 시작하는 읽기 전용 SQL 형태인지 판정한다."""
+    cleaned = _SQL_COMMENT_RE.sub("", text or "").strip()
+    return cleaned.upper().startswith(("SELECT", "WITH"))
+
+
+def extract_sql_from_llm_response(content: str) -> str:
+    """LLM 응답에서 SQL을 추출한다 (query_generator·multi_db_executor 공용 단일 출처).
+
+    흡수하는 실패 형태(종전 구현은 전부 응답 전문 폴백 → 검증 실패):
+    ① 펜스 언어 태그 변형: ```SQL / ```postgresql / 무태그 — 태그 불문 매칭 후
+       블록 내용이 SQL 형태(SELECT/WITH 시작)인지로 판정.
+    ② 세미콜론 생략: SELECT/WITH부터 말미까지 추출(닫는 펜스 잔재 제거).
+    ③ 서두 산문 + 펜스 없는 SQL(세미콜론 유무 불문).
+
+    말미 산문이 딸려 들어가는 과추출은 후단 검증(_find_bare_hangul_tokens·실행 에러
+    재시도)이 잡는다 — 종전의 "확정 추출 실패"보다 항상 좁거나 같은 실패면이다.
+
+    Args:
+        content: LLM 응답 텍스트
+
+    Returns:
+        추출된 SQL 문자열 (추출 불가 시 전문 반환 — 기존 폴백 시맨틱 유지)
+    """
+    text = content or ""
+
+    # 1) 코드 펜스(언어 태그·대소문자 불문) 중 SQL 형태인 첫 블록
+    for m in _SQL_FENCE_RE.finditer(text):
+        block = m.group(1).strip()
+        if block and looks_like_readonly_sql(block):
+            return block
+
+    # 2) 세미콜론 종결 SQL (서두 산문 허용)
+    m = _SQL_SEMI_RE.search(text)
+    if m:
+        return m.group(1).strip()
+
+    # 3) 세미콜론 생략 SQL — SELECT/WITH부터 말미까지, 닫는 펜스·백틱 잔재 제거
+    m = _SQL_TAIL_RE.search(text)
+    if m:
+        tail = m.group(1).split("```", 1)[0].strip().strip("`").strip()
+        if tail:
+            return tail
+
+    # 4) 최후 수단: 전문 반환 (후단 검증이 거른다 — 기존 동작 유지)
+    return text.strip()
+
+
+# ── 존 역질문 공용 판정·페이로드 (Plan 65 §4 / D-109 후속2) ──────────────────────
+# 위치 표면어 단일 출처(D-053 사본 금지). 종전 canonical은 input_parser였으나,
+# 레거시 경로(semantic_router, infrastructure 계층)가 후단 게이트에서 같은 목록을
+# 써야 해 계층 규칙(infrastructure→application 금지)상 utils로 내렸다.
+# input_parser가 re-export하므로 기존 임포트 지점은 그대로 동작한다.
+LOCATION_HINT_TERMS: tuple[str, ...] = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+
+# 존 역질문 스킵 신호 — 위치어 + 제품/DB 표면어(사용자가 대상을 이미 지목한 형태).
+ZONE_SKIP_SIGNAL_TERMS: tuple[str, ...] = (*LOCATION_HINT_TERMS, "폴스타", "polestar")
+
+# 서버 식별자로 인정할 filter_conditions field (종전 canonical: process_query._HOST_FIELDS —
+# 존 게이트가 routing 계층에서도 필요해 utils로 내림, process_query가 re-export).
+HOST_IDENTIFIER_FIELDS: tuple[str, ...] = (
+    "hostname", "host_name", "server_name", "name", "host", "device_name",
+    "서버명", "서버이름", "장비명", "호스트명", "서버", "장비",
+)
+# 지시어(demonstrative) 접두/명사 — 실제 서버명이 아니라 직전 대상을 가리키는 표현.
+DEMONSTRATIVE_PREFIXES: tuple[str, ...] = ("해당", "그", "이", "저", "위", "방금", "앞서", "직전", "이전")
+DEMONSTRATIVE_NOUNS: tuple[str, ...] = ("서버", "장비", "호스트명", "호스트", "인스턴스", "노드", "머신", "시스템")
+
+
+def is_demonstrative_identifier(value: object) -> bool:
+    """서버 식별자 값이 실제 이름이 아니라 지시어/플레이스홀더인지 판정한다.
+
+    (process_query._is_demonstrative_value의 단일 출처 이동분 — 동작 동일.)
+    """
+    if value is None:
+        return True
+    v = str(value).strip()
+    if not v:
+        return True
+    compact = v.lower().replace(" ", "").replace("_", "").replace("-", "")
+    if ("previous" in compact or compact.startswith("prev")) and (
+        "server" in compact or "host" in compact
+    ):
+        return True
+    body = v
+    for noun in DEMONSTRATIVE_NOUNS:
+        if body.endswith(noun):
+            body = body[: -len(noun)].strip()
+            break
+    return body in DEMONSTRATIVE_PREFIXES
+
+
+def refers_to_demonstrative_server(text: str) -> bool:
+    """질의가 지시어("해당/그/위 … 서버")로 특정 서버를 가리키는지 판정한다.
+
+    "전체/모든/모두" 전역 조회 신호가 있으면 False(서버 스코프 강제 금지).
+    지시어 접두 + (선택 공백) + 서버 명사 인접 구문만 인정 — 단순 부분매칭은 단일 문자
+    접두("이"/"그"/"위")가 "이상"/"그래서" 등에 오탐하므로 금지.
+    (subagents._refers_to_specific_server의 단일 출처 이동분 — 동작 동일.)
+    """
+    if not text:
+        return False
+    if any(k in text for k in ("전체", "모든", "모두")):
+        return False
+    for p in DEMONSTRATIVE_PREFIXES:
+        for n in DEMONSTRATIVE_NOUNS:
+            if f"{p}{n}" in text or f"{p} {n}" in text:
+                return True
+    return False
+
+
+def has_host_identifier_filter(parsed_requirements: dict | None) -> bool:
+    """이번 턴 filter_conditions에 실제 서버 식별자(지시어 제외)가 있는지 판정한다.
+
+    존 역질문 비발동 조건 ⓐ(D-109 §4.2 — 서버명 지목 질의는 존이 결과에 영향 없음)의
+    결정적 판정. 라우트 레벨 표면어 게이트는 이 정보가 없어 판정할 수 없었다(후속2 동기).
+    """
+    parsed = parsed_requirements or {}
+    for cond in parsed.get("filter_conditions") or []:
+        if not isinstance(cond, dict):
+            continue
+        if str(cond.get("field", "")).lower() in HOST_IDENTIFIER_FIELDS:
+            value = cond.get("value")
+            if value and not is_demonstrative_identifier(value):
+                return True
+    return False
+
+
+# 존 선택지 — DB 라우팅 입도와 일치(D-109 §4.4). group은 존 그룹 상호배타(D-109 후속3):
+# 은행존(bank)과 공동존(common)은 담당 조직이 달라 동시 조회 실수요가 없고(사용자 확정
+# 2026-08-05), b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈의
+# 회피를 겸한다. 공동존 내 김포/여의도는 다중 선택 유지.
+# 종전 canonical은 api/routes/query.py._ZONE_OPTIONS — 후단 게이트(orchestration·
+# routing 계층)와 공유하기 위해 utils로 내림(query.py가 alias 유지).
+ZONE_CLARIFY_OPTIONS: tuple[dict, ...] = (
+    {"db_id": "polestar_b0", "label": "은행존", "group": "bank"},
+    {"db_id": "polestar_cm_gp", "label": "공동존 김포", "group": "common"},
+    {"db_id": "polestar_cm_yd", "label": "공동존 여의도", "group": "common"},
+)
+
+_ZONE_GROUP_BY_DB: dict[str, str] = {
+    o["db_id"]: o["group"] for o in ZONE_CLARIFY_OPTIONS
+}
+
+# 존 그룹 표면어 — 텍스트 질의에서 은행존·공동존 동시 지정을 결정적으로 감지(D-109 후속3).
+# LOCATION_HINT_TERMS의 그룹 분할(단일 출처 파생 — 사본 아님, 항목 추가 시 여기도 갱신).
+_ZONE_GROUP_TERMS: dict[str, tuple[str, ...]] = {
+    "bank": ("은행존", "은행", "레거시"),
+    "common": ("공동존", "김포", "여의도"),
+}
+
+ZONE_CLARIFY_QUESTION = (
+    "조회할 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
+    "(복수 선택 가능 — 전체 조회는 모두 선택)"
+)
+
+# 존 그룹 상호배타(D-109 후속3) 활성 시의 기본 안내 — "전체는 모두 선택" 문구 제거
+ZONE_CLARIFY_QUESTION_EXCLUSIVE = (
+    "조회할 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
+    "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
+)
+
+ZONE_GROUP_EXCLUSIVE_QUESTION = (
+    "은행존과 공동존은 동시에 조회할 수 없습니다(담당 영역 분리). "
+    "아래에서 조회할 존을 선택해 주세요. (공동존은 김포/여의도 복수 선택 가능)"
+)
+
+
+def mixed_zone_groups(db_ids: list[str] | None) -> bool:
+    """선택 DB 목록이 은행존(bank)과 공동존(common)을 동시에 포함하는지 판정한다."""
+    groups = {
+        _ZONE_GROUP_BY_DB[d] for d in (db_ids or []) if d in _ZONE_GROUP_BY_DB
+    }
+    return len(groups) > 1
+
+
+def has_mixed_zone_group_terms(text: str) -> bool:
+    """질의 텍스트가 은행존·공동존 표면어를 동시에 포함하는지 판정한다(D-109 후속3).
+
+    두 그룹 표면어가 모두 있을 때만 True — 단일 그룹 지정·존 무관 질의는 영향 없다.
+    오탐의 대가는 존 선택창 재표시(막다른 에러 아님)라 낮다.
+    """
+    t = text or ""
+    return all(
+        any(term in t for term in terms) for terms in _ZONE_GROUP_TERMS.values()
+    )
+
+
+def build_zone_clarification(
+    active_db_ids: list[str] | None,
+    original_query: str,
+    *,
+    question: str | None = None,
+    has_file: bool = False,
+    group_exclusive: bool = False,
+) -> dict | None:
+    """존 선택 역질문 페이로드를 만든다 (라우트 pre-gate와 동일 shape — 프론트 재사용).
+
+    Args:
+        active_db_ids: 활성 DB 목록(비활성 존은 선택지에서 제외)
+        original_query: 원문 질의(프론트가 selected_db_ids와 함께 재전송)
+        question: 질문 문구(기본 ZONE_CLARIFY_QUESTION)
+        has_file: 파일 경로 여부(프론트가 보관 파일 재전송)
+
+    Returns:
+        clarification 페이로드 dict. 폴스타 존이 전부 비활성이면 None(기존 폴백 유지).
+    """
+    active = set(active_db_ids or [])
+    options = [o for o in ZONE_CLARIFY_OPTIONS if not active or o["db_id"] in active]
+    if not options:
+        return None
+    if question is None:
+        question = (
+            ZONE_CLARIFY_QUESTION_EXCLUSIVE if group_exclusive else ZONE_CLARIFY_QUESTION
+        )
+    payload: dict = {
+        "kind": "zone_select",
+        "question": question,
+        "options": options,
+        "original_query": original_query or "",
+        "multi": True,
+    }
+    if has_file:
+        payload["has_file"] = True
+    if group_exclusive:
+        # 존 그룹 상호배타(D-109 후속3) — 프론트가 bank/common 그룹 간 라디오 동작 적용
+        payload["group_exclusive"] = True
+    return payload
+
+
+# ── 존 선택 재개 턴 원문 재작성 (D-121 — D-109 후속3의 잔여 버그) ─────────────────
+_ZONE_LABEL_BY_DB: dict[str, str] = {
+    o["db_id"]: o["label"] for o in ZONE_CLARIFY_OPTIONS
+}
+
+# 존 열거 구간: 존 표면어로 시작해 접속어·존 표면어·"센터" 표기가 이어지는 최장 span.
+# 예: "은행존 및 공동존 여의도 센터" / "공동존 김포와 여의도". 바깥 조사("…센터의")는
+# span에 포함하지 않아 치환 후 자연스럽게 이어진다("은행존" + "의 모든 서버…").
+_ZONE_ENUM_RE = re.compile(
+    r"(?:은행존|공동존|김포|여의도|레거시)"
+    r"(?:\s*(?:및|와|과|,|·|/|그리고)?\s*(?:은행존|공동존|은행|레거시|김포|여의도|센터|센타))*"
+)
+
+
+def rewrite_zone_mentions_for_selection(
+    query: str, selected_db_ids: list[str] | None
+) -> str:
+    """존 재선택 재개 턴에서 원문의 존 열거를 선택 존 라벨로 결정적으로 재작성한다.
+
+    (D-121) 상호배타 재선택("은행존 및 공동존 여의도…" → 은행존만 선택) 후에도 원문이
+    그대로 파이프라인에 들어가면 ①처리 현황·응답 서술에 미선택 존이 남고 ②단일 경로는
+    sub_query_context가 원문이라 미선택 존 위치어(여의도 등)가 SQL WHERE로 누출된다.
+    라우팅은 selected_db_ids가 이미 고정이므로 텍스트만 교정한다 — 결정적 문자열 치환
+    (ㅇㅇ존 플레이스홀더 치환과 동형, LLM 재해석 아님).
+
+    발동 조건을 "혼합 존 그룹 표면어 + selected_db_ids"로 좁혀, 단일 그룹 지정·일반
+    재개 턴(치환 불필요)은 원문을 그대로 반환한다(호스트명 등 오치환 면적 최소화).
+
+    Args:
+        query: 원문 질의
+        selected_db_ids: 존 선택 UI에서 확정된 DB 목록
+
+    Returns:
+        존 열거가 선택 존 라벨로 치환된 질의 (비발동 시 원문 그대로)
+    """
+    q = query or ""
+    if not selected_db_ids or not has_mixed_zone_group_terms(q):
+        return q
+    labels = [_ZONE_LABEL_BY_DB.get(d, d) for d in selected_db_ids]
+    replacement = ", ".join(labels)
+    selected_groups = {
+        _ZONE_GROUP_BY_DB[d] for d in selected_db_ids if d in _ZONE_GROUP_BY_DB
+    }
+    non_selected_terms = tuple(
+        term
+        for grp, terms in _ZONE_GROUP_TERMS.items()
+        if grp not in selected_groups
+        for term in terms
+    )
+
+    def _sub(m: re.Match) -> str:
+        span = m.group(0)
+        # 미선택 그룹 표면어를 포함한 열거 구간만 치환 — 선택 존만 언급한 구간은 유지
+        return replacement if any(t in span for t in non_selected_terms) else span
+
+    rewritten = _ZONE_ENUM_RE.sub(_sub, q)
+    return re.sub(r"[ \t]{2,}", " ", rewritten).strip()

@@ -37,6 +37,7 @@ from src.utils.query_gen_common import (
     build_stat_month_block,
     correct_servername_hostname_mapping,
     enforce_all_query_limit,
+    extract_sql_from_llm_response,
     resolve_effective_limit,
     resolve_query_limit,
     resolve_stat_month_range,
@@ -169,6 +170,10 @@ async def multi_db_executor(
     # alias를 비결정적으로 만들어(서버 이름 vs 서버명) 병합 결과 컬럼이 어긋나고 폼필이 깨진다.
     # 첫 DB의 검증된 SQL을 같은 스키마의 나머지 DB에 재사용해 컬럼명을 일관되게 만든다.
     _sql_by_schema: dict[tuple, str] = {}
+    # 생성·검증 실패 DB의 스키마 키 — 루프 종료 후 동일 스키마의 검증 통과 SQL로 소급
+    # 재실행한다(D-120). 첫 DB가 LLM 생성 실패를 흡수하고 뒤 DB가 성공하는 형태(gp 누락)의
+    # 결정적 복구. 연결/실행 에러는 대상이 아니다(SQL 재사용으로 해소 불가).
+    _validation_failed: dict[str, tuple] = {}
 
     # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066)
     prior_block = build_prior_rows_block(state.get("prior_rows"))
@@ -252,18 +257,37 @@ async def multi_db_executor(
                         form_fill_answers=form_fill_answers,
                     )
 
-                    # 3. SQL 검증 (간이)
+                    # 3. SQL 검증 (간이) — 실패 시 최대 2회 재생성(총 3회 시도, 단일 경로
+                    # 재시도 3회와 대칭 — D-120 후속1). 동일 스키마 복구원이 없는 조합
+                    # (b0+gp 등)은 소급 복구가 불가하므로 재생성 횟수가 유일한 방어선이다.
+                    # 산출 head를 로그로 남겨 폐쇄망에서 비-SQL 산출의 실제 형태(산문/거절/
+                    # 오류문)를 특정할 수 있게 한다(폼필 진단 프로토콜 — 실패 산출 전문 우선).
                     validation_error = _validate_sql_simple(sql, schema_info)
-                    if validation_error:
-                        # 1회 재시도
+                    for _retry in range(1, 3):
+                        if not validation_error:
+                            break
+                        if "PII 필터 차단" in validation_error:
+                            # 같은 프롬프트(스키마·샘플 동일) 재생성은 다시 차단 — 재시도 무의미
+                            logger.warning(
+                                "DB '%s' PII 필터 차단 — 재생성 중단(동일 프롬프트 재차단)",
+                                db_id,
+                            )
+                            break
                         logger.warning(
-                            "DB '%s' SQL 검증 실패, 재생성 시도: %s",
-                            db_id, validation_error,
+                            "DB '%s' SQL 검증 실패(시도 %d/3), 재생성: %s | 산출 head=%r",
+                            db_id, _retry, validation_error, (sql or "")[:300],
                         )
+                        _err_ctx = validation_error
+                        if "SELECT 문이 아닙니다" in _err_ctx:
+                            # 산문/거절 응답 재발 방지 — 형식 지시를 좁게 못박는다
+                            _err_ctx += (
+                                " 직전 응답은 실행 가능한 SQL이 아니었습니다. "
+                                "설명·사과·안내문 없이 SELECT 문 한 개만 출력하세요."
+                            )
                         sql = await _generate_sql(
                             llm, parsed_requirements, schema_info,
                             sub_context, effective_limit,
-                            error_context=validation_error,
+                            error_context=_err_ctx,
                             column_mapping=db_mapping,
                             db_engine=db_engine,
                             db_id=db_id,
@@ -277,9 +301,27 @@ async def multi_db_executor(
                             form_fill_answers=form_fill_answers,
                         )
                         validation_error = _validate_sql_simple(sql, schema_info)
-                        if validation_error:
-                            db_errors[db_id] = f"SQL 검증 실패: {validation_error}"
-                            continue
+                    if validation_error:
+                        logger.warning(
+                            "DB '%s' SQL 검증 최종 실패: %s | 산출 head=%r",
+                            db_id, validation_error, (sql or "")[:300],
+                        )
+                        _err_msg = f"SQL 검증 실패: {validation_error}"
+                        # 비-SQL 산출(산문·PII 필터 차단문)은 발췌를 에러에 실어 UI에서 바로
+                        # 원인 특정(D-120 후속2 — 폐쇄망 진단 프로토콜: 실패 산출 전문 우선.
+                        # 발췌는 PII 스크럽). 차단문 발췌는 [PII-FILTER] 로그가 없는 환경
+                        # (클라이언트 구버전·로깅 OFF)에서도 정책/문구를 특정하게 해준다.
+                        if (
+                            "SELECT 문이 아닙니다" in validation_error
+                            or "PII 필터 차단" in validation_error
+                        ):
+                            _head = scrub_pii(" ".join((sql or "").split())[:150])
+                            if _head:
+                                _err_msg += f" | LLM 산출 발췌: {_head!r}"
+                        db_errors[db_id] = _err_msg
+                        # 동일 스키마 DB가 나중에 검증 통과 SQL을 만들면 소급 복구(D-120)
+                        _validation_failed[db_id] = schema_key
+                        continue
                     # 검증 통과한 SQL을 스키마 키로 캐시 (다음 동일 스키마 DB가 재사용)
                     _sql_by_schema[schema_key] = sql
 
@@ -322,6 +364,46 @@ async def multi_db_executor(
                 row_count=0,
                 execution_time_ms=0,
             ))
+
+    # 동일 스키마 소급 복구(D-120 — D-066 후속6 재사용 시맨틱의 대칭 완성): 생성·검증
+    # 실패로 누락된 DB를, 같은 (엔진, 스키마)의 다른 DB에서 검증 통과한 SQL로 재실행한다.
+    # 첫 DB(예: gp)가 LLM 출력 형식 비결정성으로 두 번 연속 추출·검증에 실패해도, 뒤
+    # DB(yd)가 성공하면 존 누락 없이 복구된다. 복구 실패 시 원 에러를 유지하고 사유를
+    # 로그로 남긴다(침묵 폴백 금지).
+    for _failed_db_id, _failed_key in _validation_failed.items():
+        _recovery_sql = _sql_by_schema.get(_failed_key)
+        if not _recovery_sql:
+            continue
+        try:
+            async with registry.get_client(_failed_db_id) as client:
+                start_time = time.time()
+                result = await client.execute_sql(_recovery_sql)
+                elapsed_ms = (time.time() - start_time) * 1000
+        except Exception as e:  # noqa: BLE001 — 복구 실패는 원 검증 에러 유지
+            logger.warning(
+                "DB '%s' 동일 스키마 소급 복구 실패(원 에러 유지): %s", _failed_db_id, e
+            )
+            continue
+        db_results[_failed_db_id] = result.rows
+        db_errors.pop(_failed_db_id, None)
+        all_attempts.append(QueryAttempt(
+            sql=_recovery_sql,
+            success=True,
+            error=None,
+            row_count=result.row_count,
+            execution_time_ms=round(elapsed_ms, 2),
+        ))
+        await log_query_execution(
+            sql=_recovery_sql,
+            row_count=result.row_count,
+            execution_time_ms=elapsed_ms,
+            success=True,
+            retry_attempt=2,
+        )
+        logger.info(
+            "DB '%s' 동일 스키마%s 소급 복구 성공: %d건, %.0fms (검증 통과 SQL 재실행)",
+            _failed_db_id, _failed_key, result.row_count, elapsed_ms,
+        )
 
     # 전체 병합 결과 생성 — 엔진별 칼럼명 차이(DB2 소문자화 등)를 양식 필드 기준으로 통일
     _canonical_fields = list((state.get("column_mapping") or {}).keys())
@@ -1071,6 +1153,18 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     if not sql or not sql.strip():
         return "빈 SQL"
 
+    # FabriX PII 필터 차단 안내문이 content로 온 변형 감지(D-120 후속2) —
+    # status SUCCESS + 차단 문구 content 형태가 존재(pii_filter.is_filter_blocked의
+    # content 검사 사유). 같은 프롬프트 재생성은 다시 차단되므로 호출부가 재시도를
+    # 중단할 수 있게 구분 메시지를 반환한다(원인 정확 노출 — 침묵 강등 금지).
+    from src.security.pii_filter import is_filter_blocked
+
+    if is_filter_blocked(raw_text=sql):
+        return (
+            "FabriX PII 필터 차단 응답(비-SQL) — 프롬프트에 PII성 텍스트 포함 "
+            "(로그 [PII-FILTER] 참조)"
+        )
+
     # SELECT 문 확인 — CTE(WITH ... SELECT)도 읽기 전용이므로 허용(2026-07-21 gp-014,
     # 단일 경로 _get_statement_type과 동일 규칙). DML은 아래 위험 키워드 검사가 차단.
     sql_upper = sql.strip().upper()
@@ -1166,7 +1260,7 @@ def _format_schema(schema_info: dict) -> str:
 
 
 def _extract_sql(content: str) -> str:
-    """LLM 응답에서 SQL을 추출한다.
+    """LLM 응답에서 SQL을 추출한다 (공용 구현 위임 — D-120, 경로 2벌 중복 해소).
 
     Args:
         content: LLM 응답 텍스트
@@ -1174,21 +1268,7 @@ def _extract_sql(content: str) -> str:
     Returns:
         추출된 SQL 문자열
     """
-    sql_match = re.search(r"```sql\s*(.*?)\s*```", content, re.DOTALL)
-    if sql_match:
-        return sql_match.group(1).strip()
-
-    code_match = re.search(
-        r"```\s*(SELECT.*?)\s*```", content, re.DOTALL | re.IGNORECASE
-    )
-    if code_match:
-        return code_match.group(1).strip()
-
-    select_match = re.search(r"(SELECT\s+.*?;)", content, re.DOTALL | re.IGNORECASE)
-    if select_match:
-        return select_match.group(1).strip()
-
-    return content.strip()
+    return extract_sql_from_llm_response(content)
 
 
 def _merge_results(

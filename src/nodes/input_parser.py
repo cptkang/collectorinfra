@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 # 원문에 이 표면어가 있으면 결정적으로 target_db_hints에 보강한다. DB 해소는 하지 않고
 # 표면어만 넘겨(field_mapper._resolve_priority_db_ids / semantic_router가 alias로 해소),
 # "공동존 김포"처럼 더 구체적 표현이 이미 힌트에 있으면 중복 추가하지 않는다.
-_LOCATION_HINT_TERMS: tuple[str, ...] = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+# canonical은 utils.query_gen_common(D-120 — 존 역질문 후단 게이트가 routing 계층에서도
+# 사용, 계층 규칙상 utils로 이동). 여기서는 re-export만 유지(모듈별 사본 금지, D-053).
+from src.utils.query_gen_common import LOCATION_HINT_TERMS
 
-# 위치 표면어 단일 출처 공개 별칭 — intent_planner(맥락 주입 게이트)·subagents(결정적 DB 고정)가
-# 동일 목록을 공유한다(모듈별 사본 금지, D-053 존 라우팅 교훈).
-LOCATION_HINT_TERMS = _LOCATION_HINT_TERMS
+_LOCATION_HINT_TERMS = LOCATION_HINT_TERMS
 
 
 def _ensure_location_hints(parsed: dict, user_query: str) -> dict:

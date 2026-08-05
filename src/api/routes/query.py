@@ -26,11 +26,25 @@ from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
 from src.state import create_followup_input, create_initial_state
-from src.utils.query_gen_common import is_full_scan_query, resolve_query_limit
+from src.utils.query_gen_common import (
+    ZONE_CLARIFY_OPTIONS,
+    ZONE_GROUP_EXCLUSIVE_QUESTION,
+    build_zone_clarification,
+    has_mixed_zone_group_terms,
+    is_full_scan_query,
+    mixed_zone_groups,
+    resolve_query_limit,
+    rewrite_zone_mentions_for_selection,
+)
 
 # 폼필(파일 업로드) 기본 LIMIT — 전량 채움이 기본(_ALL_QUERY_LIMIT와 동일 값).
 # 실행 상한은 db 클라이언트 max_rows(10,000)가 안전망(D-066 후속7 계열).
 _FORM_FILL_DEFAULT_LIMIT = 100_000
+# 존 선택 재개 턴 기본 LIMIT (D-120 후속1) — 존 역질문은 존 단위 전량 조회에서만
+# 발동하므로 재개 턴은 전량 상향이 기본(명시 건수는 resolve_query_limit이 우선 반영).
+# 미상향 시 "모든/전체" 표면어 없는 질의에서 few-shot 말미 캡(FETCH FIRST 100) 모방이
+# 교정되지 않아 100건 절단된다(2026-08-04 라이브 실측: 은행존 VM 100건).
+_ZONE_SCAN_LIMIT = 100_000
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -372,10 +386,17 @@ def _build_turn_input_state(
             )
         # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
         # selected_db_ids(존 선택)는 요청 스코프 — 이번 턴 값 또는 None으로 매 턴 재공급.
-        return create_followup_input(
+        # allow_zone_clarification=True: 대화형 텍스트 라우트는 존 역질문 후단 게이트
+        # (D-109 후속2) 허용 채널 — 배치·평가·API 직접 호출 경로는 기본 False 유지.
+        delta = create_followup_input(
             _substitute_zone_placeholder(body.query, body.selected_db_ids),
             selected_db_ids=body.selected_db_ids,
+            allow_zone_clarification=True,
         )
+        # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-120 후속1, 폼필 후속1과 동형)
+        if body.selected_db_ids:
+            delta["resolved_limit"] = resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
+        return delta
     # 첫 턴: 전체 초기화
     return create_initial_state(
         user_query=_substitute_zone_placeholder(body.query, body.selected_db_ids),
@@ -384,6 +405,12 @@ def _build_turn_input_state(
         user_department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
         selected_db_ids=body.selected_db_ids,
+        allow_zone_clarification=True,
+        # 존 선택 재개 턴(pre-gate는 파이프라인 미실행이라 첫 턴으로 도착)도 전량 상향
+        resolved_limit=(
+            resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
+            if body.selected_db_ids else None
+        ),
     )
 
 
@@ -395,27 +422,30 @@ def _build_turn_input_state(
 # 발동. selected_db_ids가 이미 오면 비발동(재개 턴).
 _ZONE_PLACEHOLDER = "ㅇㅇ존"
 # 선택지 입도는 DB 라우팅 입도와 일치(§4.4 확정 — 체크박스 3개 단독, 단축 버튼 없음).
-_ZONE_OPTIONS: tuple[dict, ...] = (
-    {"db_id": "polestar_b0", "label": "은행존"},
-    {"db_id": "polestar_cm_gp", "label": "공동존 김포"},
-    {"db_id": "polestar_cm_yd", "label": "공동존 여의도"},
-)
+# canonical은 utils.query_gen_common.ZONE_CLARIFY_OPTIONS(D-120 — 후단 게이트와 공유,
+# 계층 규칙상 utils로 이동). 여기서는 기존 이름으로 alias만 유지.
+_ZONE_OPTIONS: tuple[dict, ...] = ZONE_CLARIFY_OPTIONS
 
 
 _ZONE_LABEL_BY_ID: dict[str, str] = {o["db_id"]: o["label"] for o in _ZONE_OPTIONS}
 
 
 def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) -> str:
-    """존 선택 재개 턴에서 'ㅇㅇ존' 플레이스홀더를 선택 존 라벨로 치환한다.
+    """존 선택 재개 턴에서 존 표기를 선택 존 라벨로 치환한다.
 
     결정적 문자열 치환(LLM 재해석 아님 — 라우팅은 selected_db_ids가 이미 고정).
-    치환하지 않으면 sub_query·처리 현황·응답 서술에 'ㅇㅇ존'이 그대로 남는다
-    (2026-07-24 폐쇄망 실측: 데이터는 정상인데 화면 표기가 전부 'ㅇㅇ존').
+    ① 'ㅇㅇ존' 플레이스홀더 치환: 미치환 시 sub_query·처리 현황·응답 서술에 'ㅇㅇ존'이
+       그대로 남는다(2026-07-24 폐쇄망 실측: 데이터는 정상인데 화면 표기가 전부 'ㅇㅇ존').
+    ② 혼합 존 열거 재작성(D-121): 상호배타 재선택 후 원문("은행존 및 공동존 여의도…")이
+       그대로 흐르면 처리 현황에 미선택 존이 남고, 미선택 존 위치어가 SQL WHERE로
+       누출된다(2026-08-05 실측). 미선택 그룹 표면어를 포함한 열거만 선택 라벨로 치환.
     """
-    if not selected_db_ids or _ZONE_PLACEHOLDER not in (query or ""):
+    if not selected_db_ids:
         return query
-    labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
-    return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
+    if _ZONE_PLACEHOLDER in (query or ""):
+        labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
+        return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
+    return rewrite_zone_mentions_for_selection(query, selected_db_ids)
 
 
 def _file_zone_clarification_or_none(
@@ -427,33 +457,38 @@ def _file_zone_clarification_or_none(
     조건 없이 **위치어 미해소면 발동**한다(미발동 시 임의 존(b0 등)으로 오라우팅되는
     실측 사례). has_file=True로 표기해 프론트가 보관한 파일과 함께 재전송하게 한다.
     """
-    if selected_db_ids:
-        return None  # 선택 재개 턴
     q = query or ""
     # FIX-20(라이브 실측 2026-08-03): 확인 이력 조회·삭제는 DB 조회가 없어 존 선택이
     # 불필요 — 존 역질문이 가로채면 ③.45(결정적 단락)에 도달하지 못한다.
     from src.orchestration.intent_planner import is_form_memory_command
     if is_form_memory_command(q):
         return None
+    # 존 그룹 상호배타(D-109 후속3) — 텍스트 경로와 대칭(혼합 선택·혼합 텍스트)
+    exclusive = _zone_group_exclusive_or_none(
+        q, selected_db_ids, config, has_file=True
+    )
+    if exclusive:
+        return exclusive
+    if selected_db_ids:
+        return None  # 선택 재개 턴
     if _ZONE_PLACEHOLDER not in q:
         from src.nodes.input_parser import LOCATION_HINT_TERMS
         if any(t in q for t in LOCATION_HINT_TERMS):
             return None  # 위치어 해소 — D-065 결정적 보강이 처리
-    active = set(config.multi_db.get_active_db_ids() or [])
-    options = [o for o in _ZONE_OPTIONS if not active or o["db_id"] in active]
-    if not options:
-        return None
-    return {
-        "kind": "zone_select",
-        "question": (
+    return build_zone_clarification(
+        config.multi_db.get_active_db_ids(),
+        q,
+        question=(
             "양식을 채울 대상 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
-            "(복수 선택 가능 — 전체는 모두 선택)"
+            + (
+                "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
+                if getattr(config.multi_db, "zone_group_exclusive", True)
+                else "(복수 선택 가능 — 전체는 모두 선택)"
+            )
         ),
-        "options": options,
-        "original_query": q,
-        "multi": True,
-        "has_file": True,
-    }
+        has_file=True,
+        group_exclusive=getattr(config.multi_db, "zone_group_exclusive", True),
+    )
 
 
 def _parse_selected_db_ids_form(raw: str | None) -> list[str] | None:
@@ -464,10 +499,44 @@ def _parse_selected_db_ids_form(raw: str | None) -> list[str] | None:
     return ids or None
 
 
+def _zone_group_exclusive_or_none(
+    query: str, selected_db_ids: list[str] | None, config, *, has_file: bool = False
+) -> dict | None:
+    """존 그룹 상호배타 위반이면 안내 문구를 붙인 존 선택 clarification을 반환한다.
+
+    (D-109 후속3) 은행존(b0)과 공동존(gp/yd)은 동시 조회 불가 — 담당 조직 분리(존 조합
+    실수요 없음, 사용자 확정 2026-08-05) + b0+gp 조합의 FabriX PII 필터 차단(미종결) 회피.
+    ①혼합 selected_db_ids(프론트 우회·API 직접 호출 포함 — UI 게이트 ≠ 검증)와
+    ②혼합 텍스트 지정("은행존과 공동존 김포…")을 결정적으로 감지해, 에러 대신
+    기존 존 선택 UI로 재선택을 요청한다(막다른 에러·침묵 강등 금지). 턴 유형 무관 발동.
+    """
+    # getattr 폴백: 폐쇄망 부분 배포(구버전 config.py)에서도 기본 on으로 동작
+    if not getattr(config.multi_db, "zone_group_exclusive", True):
+        return None
+    if selected_db_ids:
+        if not mixed_zone_groups(selected_db_ids):
+            return None  # 단일 그룹 선택 — 정상 재개
+    elif not has_mixed_zone_group_terms(query or ""):
+        return None
+    return build_zone_clarification(
+        config.multi_db.get_active_db_ids(),
+        query or "",
+        question=ZONE_GROUP_EXCLUSIVE_QUESTION,
+        has_file=has_file,
+        group_exclusive=True,
+    )
+
+
 def _zone_clarification_or_none(
     body: QueryRequest, checkpoint_state: dict | None, config
 ) -> dict | None:
     """존 선택 역질문이 필요하면 clarification 컨텍스트를, 아니면 None을 반환한다."""
+    # 존 그룹 상호배타(D-109 후속3) — 혼합 선택·혼합 텍스트는 턴 유형 무관 최우선 발동
+    exclusive = _zone_group_exclusive_or_none(
+        body.query or "", body.selected_db_ids, config
+    )
+    if exclusive:
+        return exclusive
     if body.selected_db_ids:
         return None  # 선택 재개 턴 — 게이트 통과
     query = body.query or ""
@@ -481,21 +550,12 @@ def _zone_clarification_or_none(
         from src.nodes.input_parser import LOCATION_HINT_TERMS
         if any(t in query for t in LOCATION_HINT_TERMS):
             return None
-    # 비활성 DB는 선택지에서 제외
-    active = set(config.multi_db.get_active_db_ids() or [])
-    options = [o for o in _ZONE_OPTIONS if not active or o["db_id"] in active]
-    if not options:
-        return None  # 폴스타 전부 비활성 — 기존 폴백 유지
-    return {
-        "kind": "zone_select",
-        "question": (
-            "조회할 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
-            "(복수 선택 가능 — 전체 조회는 모두 선택)"
-        ),
-        "options": options,
-        "original_query": query,
-        "multi": True,
-    }
+    # 페이로드 조립은 공용 헬퍼로(D-109 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
+    return build_zone_clarification(
+        config.multi_db.get_active_db_ids(),
+        query,
+        group_exclusive=getattr(config.multi_db, "zone_group_exclusive", True),
+    )
 
 
 @router.post(
@@ -572,6 +632,11 @@ async def process_query(
 
     # 응답 구성
     status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
+    # 존 역질문 후단 게이트(D-109 후속2): 파이프라인이 존 선택 요청으로 종결한 턴 —
+    # pre-gate와 동일 shape(status="clarification" + clarification)로 프론트 UI 재사용.
+    zone_clarification = result.get("zone_clarification")
+    if zone_clarification:
+        status = "clarification"
     turn_count = _count_human_messages(result.get("messages", []))
 
     response_data = {
@@ -590,6 +655,8 @@ async def process_query(
         "has_mapping_report": result.get("mapping_report_md") is not None,
         # HITL 폼필(D-118): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
+        # 존 역질문 후단 게이트(D-109 후속2) — pre-gate와 동일 키로 프론트 렌더
+        "clarification": zone_clarification,
     }
     _store_result(query_id, {
         **response_data,
@@ -773,6 +840,10 @@ async def process_query_stream(
                                 })
 
                                 status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
+                                # 존 역질문 후단 게이트(D-109 후속2) — pre-gate와 동일 shape
+                                _zone_clar = output.get("zone_clarification")
+                                if _zone_clar:
+                                    status = "clarification"
                                 turn_count = _count_human_messages(output.get("messages", []))
 
                                 response_data = {
@@ -789,6 +860,7 @@ async def process_query_stream(
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
                                     # HITL 폼필(D-118): 역질문 패널 컨텍스트
                                     "form_fill_clarification": output.get("form_fill_clarification"),
+                                    "clarification": _zone_clar,
                                 }
                                 _store_result(query_id, {
                                     **response_data,
@@ -811,6 +883,8 @@ async def process_query_stream(
                                     "turn_count": turn_count,
                                     "has_mapping_report": response_data.get("has_mapping_report", False),
                                     "form_fill_clarification": response_data.get("form_fill_clarification"),
+                                    # 존 역질문 후단 게이트(D-109 후속2) — pre-gate done 이벤트와 동일 키
+                                    "clarification": response_data.get("clarification"),
                                 })
                                 return
 
@@ -838,6 +912,10 @@ async def process_query_stream(
             })
 
             status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
+            # 존 역질문 후단 게이트(D-109 후속2) — pre-gate와 동일 shape
+            _zone_clar = result.get("zone_clarification")
+            if _zone_clar:
+                status = "clarification"
             turn_count = _count_human_messages(result.get("messages", []))
 
             response_data = {
@@ -854,6 +932,7 @@ async def process_query_stream(
                 "has_mapping_report": result.get("mapping_report_md") is not None,
                 # HITL 폼필(D-118): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
+                "clarification": _zone_clar,
             }
             _store_result(query_id, {
                 **response_data,
@@ -875,6 +954,8 @@ async def process_query_stream(
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
+                # 존 역질문 후단 게이트(D-109 후속2) — pre-gate done 이벤트와 동일 키
+                "clarification": response_data.get("clarification"),
             })
 
         except asyncio.TimeoutError:

@@ -25,6 +25,11 @@ from src.prompts.semantic_router import SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
+from src.utils.query_gen_common import (
+    ZONE_SKIP_SIGNAL_TERMS,
+    build_zone_clarification,
+    has_host_identifier_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +262,28 @@ async def semantic_router(
             user_specified_db = t["db_id"]
             break
 
+    # 존 역질문 후단 게이트 (D-109 후속2) — 레거시(비오케스트레이션) 경로 대칭.
+    # 트랙 A(subagents._zone_clarification_or_none_task)와 동일 판정: 대화형 채널 +
+    # 첫 턴 + 위치어·서버 식별·사용자 지정 신호 없음 + 폴스타 존 팬아웃이면 역질문.
+    zone_q = _zone_clarification_or_none_router(
+        state, targets, user_specified_db, app_config
+    )
+    if zone_q:
+        logger.info(
+            "존 역질문 후단 게이트 발동(D-109 후속2, 레거시 경로): targets=%s",
+            [t["db_id"] for t in targets],
+        )
+        return {
+            "target_databases": [],
+            "is_multi_db": False,
+            "active_db_id": None,
+            "user_specified_db": None,
+            "routing_intent": "zone_clarification",
+            "zone_clarification": zone_q,
+            "final_response": zone_q["question"],
+            "current_node": "semantic_router",
+        }
+
     is_multi_db = len(targets) > 1
     active_db_id = targets[0]["db_id"]
 
@@ -275,6 +302,61 @@ async def semantic_router(
         "routing_intent": intent,
         "current_node": "semantic_router",
     }
+
+
+def _zone_clarification_or_none_router(
+    state: AgentState,
+    targets: list[dict],
+    user_specified_db: Optional[str],
+    app_config: AppConfig,
+) -> Optional[dict]:
+    """존 역질문 후단 게이트 판정 (D-109 후속2 — 레거시 semantic_router 경로).
+
+    §4.2 비발동 목록을 결정적 조건으로 판정한다. selected_db_ids(우선순위 2.5)·
+    mapped_db_ids(우선순위 3)는 본 함수 도달 전에 조기 반환되므로 재검사하지 않는다.
+
+    Args:
+        state: 현재 에이전트 상태 (input_parser/context_resolver 산출 포함)
+        targets: 관련도 필터·정렬이 끝난 대상 DB 목록
+        user_specified_db: 사용자가 직접 지정한 DB (있으면 비발동)
+        app_config: 앱 설정
+
+    Returns:
+        발동 시 clarification 페이로드, 비발동이면 None
+    """
+    # 채널 게이트(§4.3-3): 대화형 텍스트 라우트만 — 배치·평가·API 직접 호출 보호
+    if not state.get("zone_clarification_allowed"):
+        return None
+    if user_specified_db:
+        return None
+    # 첫 턴 한정 — 직전 턴 DB가 있으면 기존 승계 흐름 유지(§4.2)
+    ctx = state.get("conversation_context") or {}
+    if ctx.get("previous_db_ids"):
+        return None
+    # 이번 턴 원문에 위치/DB 신호가 있으면 비발동(D-065 결정적 보강이 처리)
+    user_query = state.get("user_query", "") or ""
+    lowered = user_query.lower()
+    if any(t.lower() in lowered for t in ZONE_SKIP_SIGNAL_TERMS):
+        return None
+    parsed = state.get("parsed_requirements") or {}
+    # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ)
+    if has_host_identifier_filter(parsed):
+        return None
+    # 조회 대상 필드가 파싱되지 않은 질의는 비발동(과잉 역질문 방지)
+    if not parsed.get("query_targets"):
+        return None
+    # 대상이 전부 폴스타 존일 때만
+    polestar_ids = app_config.get_polestar_db_ids() or set()
+    target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
+    if not target_ids or not all(d in polestar_ids for d in target_ids):
+        return None
+    return build_zone_clarification(
+        app_config.multi_db.get_active_db_ids(), user_query,
+        # 존 그룹 상호배타(D-109 후속3) — 라우트 pre-gate와 동일 UI 규칙
+        group_exclusive=bool(
+            getattr(app_config.multi_db, "zone_group_exclusive", True)
+        ),
+    )
 
 
 async def _llm_classify(

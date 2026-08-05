@@ -385,6 +385,17 @@ class MultiDBConfig(BaseSettings):
         validation_alias=AliasChoices("ACTIVE_DB_IDS", "MULTI_DB_ACTIVE_DB_IDS_CSV"),
     )
 
+    # 존 그룹 상호배타(D-109 후속3): 은행존(b0)과 공동존(gp/yd)의 동시 조회 차단.
+    # 근거: ①담당 조직 분리로 존 조합 실수요 없음(사용자 확정 2026-08-05)
+    # ②b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈 회피.
+    # 원인 종결 시 off로 되돌릴 수 있도록 플래그화(ZONE_GROUP_EXCLUSIVE=false).
+    zone_group_exclusive: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "ZONE_GROUP_EXCLUSIVE", "MULTI_DB_ZONE_GROUP_EXCLUSIVE"
+        ),
+    )
+
     model_config = {
         "env_prefix": "MULTI_DB_",
         "env_file": ".env",

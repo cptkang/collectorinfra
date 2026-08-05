@@ -73,7 +73,17 @@ async def query_validator(
     # 2. SELECT 문 여부 확인
     statement_type = _get_statement_type(sql)
     if statement_type != "SELECT":
-        errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")
+        # FabriX PII 필터 차단 안내문이 content로 온 변형 감지(D-120 후속2) —
+        # 일반 "SELECT 아님"과 구분해 원인을 정확히 노출한다(멀티 경로와 대칭).
+        from src.security.pii_filter import is_filter_blocked
+
+        if is_filter_blocked(raw_text=sql):
+            errors.append(
+                "FabriX PII 필터 차단 응답(비-SQL) — 프롬프트에 PII성 텍스트 포함 "
+                "(로그 [PII-FILTER] 참조)"
+            )
+        else:
+            errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")
 
     # 3. 금지 키워드 확인
     forbidden = guard.detect_forbidden_keywords(sql, FORBIDDEN_SQL_KEYWORDS)

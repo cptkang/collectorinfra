@@ -135,6 +135,9 @@ async def result_aggregator(
             out["form_fill_clarification"] = f["form_fill_clarification"]
         if "pending_form_fill" in f:
             out["pending_form_fill"] = f["pending_form_fill"]
+        # 존 역질문(D-109 후속2): 단일 task 고정(게이트가 복합 계획 제외)이라 이 분기로 충분.
+        if "zone_clarification" in f:
+            out["zone_clarification"] = f["zone_clarification"]
         out.update(db_promotion)
         return _with_answer_history(_apply_incomplete_notice(out, state))
 
@@ -445,6 +448,9 @@ async def _finalize_task(
         # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
         "query_results": res.get("query_results") or [],
     }
+    # 존 역질문(D-109 후속2): 페이로드를 최종 응답까지 운반(form_fill_clarification 동형).
+    if "zone_clarification" in res:
+        base["zone_clarification"] = res["zone_clarification"]
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     organized = res.get("organized_data")

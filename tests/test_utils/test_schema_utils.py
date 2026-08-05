@@ -1,6 +1,45 @@
 """build_excluded_join_map() 유틸리티 함수 단위 테스트."""
 
-from src.utils.schema_utils import build_excluded_join_map
+from src.utils.schema_utils import (
+    SAMPLE_VALUE_MAX_CHARS,
+    build_excluded_join_map,
+    cap_sample_rows,
+)
+
+
+def test_cap_sample_rows_truncates_long_values():
+    """CLOB성 대형 문자열 값은 SAMPLE_VALUE_MAX_CHARS로 절단된다(D-121)."""
+    huge = "x" * (SAMPLE_VALUE_MAX_CHARS * 10)
+    rows = [{"conf": huge, "id": 1}]
+    capped = cap_sample_rows(rows)
+    assert len(capped[0]["conf"]) <= SAMPLE_VALUE_MAX_CHARS + len("…(절단)")
+    assert capped[0]["conf"].endswith("…(절단)")
+    assert capped[0]["id"] == 1
+
+
+def test_cap_sample_rows_limits_row_count():
+    """max_rows를 초과하는 행은 잘린다."""
+    rows = [{"id": i} for i in range(10)]
+    assert len(cap_sample_rows(rows, max_rows=5)) == 5
+
+
+def test_cap_sample_rows_preserves_short_values_and_original():
+    """짧은 값은 그대로 유지되고 원본 리스트는 변경되지 않는다."""
+    rows = [{"name": "srv01", "cpu": 4}]
+    capped = cap_sample_rows(rows)
+    assert capped == [{"name": "srv01", "cpu": 4}]
+    huge = "y" * (SAMPLE_VALUE_MAX_CHARS + 100)
+    rows2 = [{"conf": huge}]
+    cap_sample_rows(rows2)
+    assert rows2[0]["conf"] == huge  # 원본 비변경
+
+
+def test_cap_sample_rows_non_dict_rows():
+    """dict가 아닌 행(문자열 등)도 값 절단이 적용된다."""
+    huge = "z" * (SAMPLE_VALUE_MAX_CHARS + 50)
+    capped = cap_sample_rows([huge, 42])
+    assert capped[0].endswith("…(절단)")
+    assert capped[1] == 42
 
 
 def test_build_excluded_join_map_returns_mapping():

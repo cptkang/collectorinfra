@@ -1210,7 +1210,7 @@
         var boxId = "zoneClarify-" + Date.now();
         var itemsHtml = options.map(function (o) {
             return '<label class="zone-clarify-item">' +
-                '<input type="checkbox" value="' + escapeHtml(o.db_id) + '" data-label="' + escapeHtml(o.label) + '"> ' +
+                '<input type="checkbox" value="' + escapeHtml(o.db_id) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '"> ' +
                 escapeHtml(o.label) +
                 '</label>';
         }).join("");
@@ -1224,6 +1224,15 @@
         var checks = box.querySelectorAll('input[type="checkbox"]');
         checks.forEach(function (c) {
             c.addEventListener("change", function () {
+                // 존 그룹 상호배타(D-109 후속3): 은행존(bank)과 공동존(common)은 동시
+                // 선택 불가 — 다른 그룹을 체크하면 기존 그룹 선택을 해제한다(라디오 동작).
+                // 공동존 내 김포/여의도는 같은 그룹이라 복수 선택 유지.
+                if (clar.group_exclusive && c.checked) {
+                    var g = c.getAttribute("data-group");
+                    checks.forEach(function (x) {
+                        if (x !== c && x.getAttribute("data-group") !== g) x.checked = false;
+                    });
+                }
                 var any = Array.prototype.some.call(checks, function (x) { return x.checked; });
                 confirmBtn.disabled = !any;  // 미선택 시 비활성 (Plan 65 §5.1 항목 3)
             });

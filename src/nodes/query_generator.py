@@ -32,6 +32,7 @@ from src.utils.query_gen_common import (
     build_value_index_block,
     correct_servername_hostname_mapping,
     enforce_all_query_limit,
+    extract_sql_from_llm_response,
     resolve_effective_limit,
     resolve_query_limit,
     resolve_stat_month_range,
@@ -1249,7 +1250,7 @@ def _format_schema_for_prompt(
 
 
 def _extract_sql_from_response(content: str) -> str:
-    """LLM 응답에서 SQL 쿼리를 추출한다.
+    """LLM 응답에서 SQL 쿼리를 추출한다 (공용 구현 위임 — D-120, 경로 2벌 중복 해소).
 
     Args:
         content: LLM 응답 텍스트
@@ -1257,24 +1258,6 @@ def _extract_sql_from_response(content: str) -> str:
     Returns:
         추출된 SQL 문자열
     """
-    # ```sql ... ``` 패턴
-    sql_match = re.search(r"```sql\s*(.*?)\s*```", content, re.DOTALL)
-    if sql_match:
-        return sql_match.group(1).strip()
-
-    # ``` ... ``` 패턴 (SELECT로 시작)
-    code_match = re.search(
-        r"```\s*(SELECT.*?)\s*```", content, re.DOTALL | re.IGNORECASE
-    )
-    if code_match:
-        return code_match.group(1).strip()
-
-    # SELECT로 시작하는 텍스트 직접 추출
-    select_match = re.search(r"(SELECT\s+.*?;)", content, re.DOTALL | re.IGNORECASE)
-    if select_match:
-        return select_match.group(1).strip()
-
-    # 전체 내용 반환 (최후 수단)
-    return content.strip()
+    return extract_sql_from_llm_response(content)
 
 
