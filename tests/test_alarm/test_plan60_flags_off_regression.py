@@ -321,6 +321,54 @@ class TestInvestigationTriggerOffRegression:
         assert before["total"] == after["total"] == 1
         assert before["by_tier"] == after["by_tier"]
 
+    async def test_followup_off_keeps_inline_attach_and_no_background_task(self):
+        # (Plan 66 3-E) investigation_followup_enabled off면 트리거는 인라인 poll로 브리핑을
+        # 첨부하고 pending을 만들지 않으며, notifier는 후속 태스크를 띄우지 않는다(비트동일).
+        import src.alarm.application.nodes.alarm_notifier as notifier_mod
+        from src.alarm.application.nodes.investigation_trigger import (
+            investigation_trigger_node,
+        )
+        from src.alarm.domain.notification_policy import NotificationDecision
+
+        class _Client:
+            async def connect(self):
+                pass
+
+            async def disconnect(self):
+                pass
+
+            async def submit(self, payload):
+                return {"investigation_id": "inv-1", "status": "accepted"}
+
+            async def poll(self, inv_id):
+                return {"status": "done", "briefing": {"cause": "x"}, "verdict": None}
+
+        state = {
+            "alarm_event": SimpleNamespace(alarm_id="A", server_name="s", hostname="h",
+                                           severity=2, db_id="d", alarm_name="n",
+                                           resource_type="t", resource_name="r",
+                                           conditions="", condition_log="", alarm_time=None),
+            "notification_decision": NotificationDecision(
+                tier=TIER_PAGE, reason="r", priority=3, signals={}, fingerprint="fp"
+            ),
+            "recurrence": None, "correlation_meta": None,
+        }
+        cfg = {"configurable": {
+            "app_config": SimpleNamespace(noise_gate=SimpleNamespace(
+                investigation_trigger_enabled=True,
+                investigation_trigger_min_tier="PAGE",
+                investigation_poll_interval_seconds=0.0,
+                investigation_total_timeout_seconds=5.0,
+            )),
+            "sre_agent_client": _Client(),
+            "decision_store": None,
+        }}
+        out = await investigation_trigger_node(state, cfg)
+        # 플래그 미설정(=off) → 기존 CW-A 인라인 첨부 경로 그대로.
+        assert out["investigation_briefing"] == {"cause": "x"}
+        assert "investigation_pending" not in out
+        assert not notifier_mod._FOLLOWUP_TASKS
+
 
 # ─────────────────────────────────────────────────────────────
 # F. E3 동적 baseline — dynamic_baseline_enabled=False면 무변경(회귀 0)

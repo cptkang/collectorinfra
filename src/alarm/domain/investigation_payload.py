@@ -85,4 +85,41 @@ def build_trigger_payload(
     }
 
 
-__all__ = ["CONTRACT_VERSION", "build_trigger_payload"]
+def verdict_escalates(verdict: object) -> bool:
+    """poll verdict가 상향(escalate)을 지시하는지 판정한다 (Plan 64 CW-C · §5.1).
+
+    구조화 ImportanceVerdict(dict — sre-agent/02 §6)이면 `escalate` 불리언을, 문자열이면
+    'escalate' 여부를 본다(sre_get_investigation 반환 실측 방어 — sre-agent/05 §3).
+    그 외 타입/None이면 상향 아님.
+    """
+    if isinstance(verdict, dict):
+        return verdict.get("escalate") is True
+    if isinstance(verdict, str):
+        return verdict.strip().lower() == "escalate"
+    return False
+
+
+def build_escalation(verdict: object) -> Optional[dict]:
+    """escalate=True인 verdict에서 통보 승격 안내 블록 데이터를 만든다(아니면 None).
+
+    **escalate-only** — 게이트 판정(tier/routing/decision)은 소급 변경·하향하지 않고,
+    상향 신호만 통보에 첨부할 데이터를 반환한다(Plan 64 §5.1 역방향 계약). 구조화 verdict면
+    level/confidence/signals를 함께 실어 근거를 노출한다(문자열이면 escalate 플래그만).
+    """
+    if not verdict_escalates(verdict):
+        return None
+    escalation: dict[str, object] = {"escalate": True}
+    if isinstance(verdict, dict):
+        for key in ("level", "confidence", "signals"):
+            val = verdict.get(key)
+            if val not in (None, "", [], {}):
+                escalation[key] = val
+    return escalation
+
+
+__all__ = [
+    "CONTRACT_VERSION",
+    "build_escalation",
+    "build_trigger_payload",
+    "verdict_escalates",
+]

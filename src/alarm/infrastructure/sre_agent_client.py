@@ -257,6 +257,42 @@ class SreAgentClient:
             raise SreAgentClientError(f"조사 서비스 응답 파싱 실패: {e}") from e
 
 
+def build_sre_agent_client(gate_cfg) -> Optional["SreAgentClient"]:  # noqa: ANN001
+    """noise_gate 설정으로 클라이언트를 생성한다 (Plan 66 3-E · 실패 시 None).
+
+    후속 브리핑 발송 태스크처럼 **자체 연결이 필요한 소비자**를 위한 팩토리다. 워커가 주입하는
+    공유 클라이언트는 알람 처리 사이에 connect/disconnect가 오가므로, 통보 이후까지 살아있는
+    백그라운드 폴링이 그것을 함께 쓰면 세션이 서로 끊긴다(워커는 알람 직렬 처리·클라이언트 1개 공유).
+
+    Args:
+        gate_cfg: NoiseGateConfig(덕 타이핑) — url/token/호출 타임아웃을 읽는다.
+
+    Returns:
+        SreAgentClient 또는 None(url 미설정·생성 실패 — 호출부가 graceful 처리).
+    """
+    try:
+        url = getattr(gate_cfg, "investigation_service_url", "")
+        if not url:
+            return None
+        token = getattr(gate_cfg, "investigation_service_token", None)
+        # SecretStr(.get_secret_value) 또는 평문 문자열(테스트 SimpleNamespace) 모두 수용.
+        token_val = (
+            token.get_secret_value()
+            if hasattr(token, "get_secret_value")
+            else (token or "")
+        )
+        return SreAgentClient(
+            server_url=url,
+            bearer_token=token_val or None,
+            mcp_call_timeout=float(
+                getattr(gate_cfg, "investigation_mcp_call_timeout_seconds", 10.0)
+            ),
+        )
+    except Exception:  # noqa: BLE001 — 생성 실패는 graceful no-client
+        logger.warning("조사 서비스 클라이언트 생성 실패", exc_info=True)
+        return None
+
+
 @asynccontextmanager
 async def get_sre_agent_client(
     server_url: str,
@@ -276,4 +312,9 @@ async def get_sre_agent_client(
         await client.disconnect()
 
 
-__all__ = ["SreAgentClient", "SreAgentClientError", "get_sre_agent_client"]
+__all__ = [
+    "SreAgentClient",
+    "SreAgentClientError",
+    "build_sre_agent_client",
+    "get_sre_agent_client",
+]

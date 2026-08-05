@@ -57,6 +57,7 @@ class AlarmState(TypedDict):
     anomaly_severity: Optional[int]                     # Plan 60 E3: enricher가 산출한 동적 baseline 이상 상향 후보(dynamic_baseline_enabled 시에만 채워짐)
     investigation_briefing: Optional[dict]              # Plan 64 CW-A: sre_agent 조사 서비스 브리핑(investigation_trigger_enabled 시에만 채워짐·notifier가 통보 첨부)
     investigation_escalation: Optional[dict]            # Plan 64 CW-C: escalate-only 후속 통보 승격 데이터(fault_escalation_enabled + verdict.escalate 시에만 채워짐·notifier가 상향 안내 첨부·게이트 판정 소급 변경 없음)
+    investigation_pending: Optional[dict]               # Plan 66 3-E: 후속 모드에서 submit만 된 조사 식별자(investigation_followup_enabled 시에만 채워짐·notifier가 즉시 통보 후 백그라운드로 poll·후속 발송)
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001

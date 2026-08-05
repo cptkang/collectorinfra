@@ -28,7 +28,10 @@ from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from src.alarm.domain.investigation_payload import build_trigger_payload
+from src.alarm.domain.investigation_payload import (
+    build_escalation,
+    build_trigger_payload,
+)
 from src.alarm.domain.notification_policy import _TIER_RANK, TIER_PAGE
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,8 @@ async def investigation_trigger_node(
     Returns:
         {"investigation_briefing": <dict>} (브리핑 수신 시) 또는 빈 dict
         (비활성/티어 미달/클라이언트 미주입/거부·타임아웃·실패 시 — graceful).
+        후속 모드(investigation_followup_enabled)에서는 브리핑 대신
+        {"investigation_pending": {...}}를 실어 notifier가 즉시 통보 후 후속 발송하게 한다.
     """
     decision = state.get("notification_decision")
     if decision is None:
@@ -84,6 +89,13 @@ async def investigation_trigger_node(
         correlation_meta=state.get("correlation_meta"),
         root_resource=signals.get("root_resource"),
     )
+
+    # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
+    # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
+    if getattr(gate_cfg, "investigation_followup_enabled", False):
+        return await _submit_only(
+            client, payload, event, decision, configurable.get("decision_store")
+        )
 
     total_timeout = float(
         getattr(gate_cfg, "investigation_total_timeout_seconds", 45.0)
@@ -118,10 +130,63 @@ async def investigation_trigger_node(
     # 때만 상향 안내 블록을 state에 싣는다(notifier가 통보에 첨부). 게이트 판정(tier/routing/
     # decision)은 소급 변경·하향하지 않는다(§5.1). off/미escalate면 미첨부 → 통보 비트동일.
     if getattr(gate_cfg, "fault_escalation_enabled", False):
-        escalation = _build_escalation(verdict)
+        escalation = build_escalation(verdict)
         if escalation is not None:
             result["investigation_escalation"] = escalation
     return result
+
+
+async def _submit_only(
+    client,  # noqa: ANN001 — SreAgentClient (덕 타이핑)
+    payload: dict,
+    event,  # noqa: ANN001 — AlarmEvent
+    decision,  # noqa: ANN001 — NotificationDecision
+    store,  # noqa: ANN001 — DecisionStore | None
+) -> dict[str, Any]:
+    """조사를 submit만 하고 통보를 즉시 내보낸다 (Plan 66 3-E 후속 모드).
+
+    poll을 하지 않으므로 통보 지연이 submit 왕복(≤ investigation_mcp_call_timeout_seconds)으로
+    묶인다. 후속 발송에 필요한 식별자를 `investigation_pending`으로 state에 실어 notifier에
+    넘긴다(브리핑은 아직 없다). 여기서도 감사는 남긴다(status="submitted" — 종결 상태는 후속
+    태스크가 재기록).
+
+    Returns:
+        {"investigation_pending": {...}} (submit 성공) 또는 {} (거부·실패 — graceful).
+    """
+    status = "error"
+    investigation_id: Optional[str] = None
+    reason: Any = None
+    try:
+        await client.connect()
+        try:
+            sub = await client.submit(payload)
+        finally:
+            await client.disconnect()
+        investigation_id = sub.get("investigation_id")
+        sub_status = sub.get("status")
+        if sub_status == "rejected":
+            status, reason = "rejected", sub.get("reason")
+        elif investigation_id:
+            status = "submitted"
+        else:
+            status = "error"
+    except Exception:  # noqa: BLE001 — 서비스 다운도 게이트 통보를 막지 않는다
+        status = "down"
+        logger.warning(
+            "조사 submit 실패(graceful·즉시통보 진행): alarm_id=%s",
+            getattr(event, "alarm_id", ""), exc_info=True,
+        )
+
+    _audit(store, event, decision, investigation_id, status, reason)
+    if status != "submitted" or not investigation_id:
+        return {}
+    return {
+        "investigation_pending": {
+            "investigation_id": investigation_id,
+            "alarm_id": getattr(event, "alarm_id", ""),
+            "fingerprint": getattr(decision, "fingerprint", ""),
+        }
+    }
 
 
 async def _submit_and_poll(
@@ -192,33 +257,3 @@ def _audit(
         )
 
 
-def _verdict_escalates(verdict: Any) -> bool:
-    """poll verdict가 상향(escalate)을 지시하는지 판정한다 (Plan 64 CW-C · §5.1).
-
-    구조화 ImportanceVerdict(dict — sre-agent/02 §6)이면 `escalate` 불리언을, 문자열이면
-    'escalate' 여부를 본다(sre_get_investigation 반환 실측 방어 — sre-agent/05 §3).
-    그 외 타입/None이면 상향 아님.
-    """
-    if isinstance(verdict, dict):
-        return verdict.get("escalate") is True
-    if isinstance(verdict, str):
-        return verdict.strip().lower() == "escalate"
-    return False
-
-
-def _build_escalation(verdict: Any) -> Optional[dict]:
-    """escalate=True인 verdict에서 통보 승격 안내 블록 데이터를 만든다(아니면 None).
-
-    **escalate-only** — 게이트 판정(tier/routing/decision)은 소급 변경·하향하지 않고,
-    상향 신호만 통보에 첨부할 데이터를 반환한다(Plan 64 §5.1 역방향 계약). 구조화 verdict면
-    level/confidence/signals를 함께 실어 근거를 노출한다(문자열이면 escalate 플래그만).
-    """
-    if not _verdict_escalates(verdict):
-        return None
-    escalation: dict[str, Any] = {"escalate": True}
-    if isinstance(verdict, dict):
-        for key in ("level", "confidence", "signals"):
-            val = verdict.get(key)
-            if val not in (None, "", [], {}):
-                escalation[key] = val
-    return escalation

@@ -6,7 +6,7 @@
   3. 옵트인: fault_escalation_enabled off → verdict.escalate여도 미첨부(비트동일).
   4. 소급 변경 없음: notification_decision(tier/reason/priority)은 불변(상향만·하향 없음).
   5. 렌더: build_workb_body가 상향 안내 블록을 첨부(None이면 비트동일).
-  6. verdict 판정 헬퍼: _verdict_escalates/_build_escalation 단위.
+  6. verdict 판정 헬퍼: verdict_escalates/build_escalation 단위(domain — 트리거·후속 공용).
 """
 
 from __future__ import annotations
@@ -16,11 +16,13 @@ from types import SimpleNamespace
 
 from src.alarm.application.nodes.alarm_notifier import build_workb_body
 from src.alarm.application.nodes.investigation_trigger import (
-    _build_escalation,
-    _verdict_escalates,
     investigation_trigger_node,
 )
 from src.alarm.domain.alarm import AlarmEvent
+from src.alarm.domain.investigation_payload import (
+    build_escalation as _build_escalation,
+    verdict_escalates as _verdict_escalates,
+)
 from src.alarm.domain.notification_policy import NotificationDecision, TIER_PAGE
 
 

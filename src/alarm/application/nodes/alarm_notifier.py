@@ -13,6 +13,7 @@ AlarmAnalysisResult의 notification_channels에 따라 채널별로 순차 발�
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from datetime import datetime
@@ -29,6 +30,7 @@ from src.alarm.domain.alarm import (
     ProcessSnapshot,
 )
 from src.alarm.domain.enrichment_profile import build_summary
+from src.alarm.domain.investigation_payload import build_escalation
 from src.alarm.domain.notification_policy import (
     _TIER_RANK,
     TIER_DASHBOARD,
@@ -43,6 +45,15 @@ _SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
 
 # 발송하지 않는 티어(§7) — PAGE/미상 티어는 기존 발송 경로로 폴백(보수적, 재현율 우선)
 _NON_PAGE_TIERS = frozenset({TIER_TICKET, TIER_DASHBOARD, TIER_SUPPRESS})
+
+# (Plan 66 3-E) 후속 브리핑 발송 태스크 참조 보관소. asyncio는 태스크를 약참조로만 들고 있어
+# 지역 변수로 두면 GC가 실행 중인 태스크를 수거할 수 있다 — 완료 시 discard로 자동 정리한다.
+_FOLLOWUP_TASKS: set[asyncio.Task] = set()
+
+# poll이 종결로 간주하는 상태(sre-agent/05 §3 · investigation_trigger와 동일 계약).
+_TERMINAL_POLL_STATUSES: frozenset[str] = frozenset(
+    {"done", "failed", "timeout", "stub", "rejected", "not_found"}
+)
 
 
 def _pattern_badge(result: AlarmAnalysisResult) -> str:
@@ -380,7 +391,170 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
                 channel,
             )
 
+    # ── Plan 66 3-E: 즉시통보 완료 후 후속 브리핑 발송 태스크 spawn ──
+    # 후속 모드(investigation_followup_enabled)에서 트리거가 submit만 하고 넘긴 pending이 있을
+    # 때만 진행한다. 여기서 spawn하므로 후속 메시지는 **즉시 통보 이후**에만 나간다(순서 보장).
+    # off/pending 없음이면 아무 것도 하지 않는다 → 통보 경로 비트동일(회귀 0).
+    _spawn_investigation_followup(
+        state.get("investigation_pending"), result, cfg, gate_cfg, config
+    )
+
     return {"analysis_result": result}
+
+
+def _spawn_investigation_followup(
+    pending: Optional[dict],
+    result: AlarmAnalysisResult,
+    cfg,  # noqa: ANN001 — AppConfig (덕 타이핑)
+    gate_cfg,  # noqa: ANN001 — NoiseGateConfig | None (덕 타이핑)
+    config: RunnableConfig,
+) -> None:
+    """후속 브리핑 발송을 백그라운드 태스크로 띄운다 (Plan 66 3-E · fire-and-forget).
+
+    통보를 막지 않는 것이 이 경로의 존재 이유이므로 **await하지 않는다**. 스폰 자체가 불가능한
+    조건(플래그 off·pending 없음·workb 미발송·상한 초과·이벤트 루프 부재)에서는 조용히 넘어가되,
+    상한 초과만은 사유를 로그로 남긴다(침묵 폴백 금지 — 유실이 아니라 의도된 차단임을 남긴다).
+    """
+    if not pending or not getattr(gate_cfg, "investigation_followup_enabled", False):
+        return
+    # 즉시 통보가 workb로 실제 발송된 경우에만 후속을 보낸다 — 원 통보 없이 브리핑만 가는
+    # 고아 메시지를 만들지 않는다.
+    if not result.notifications_sent.get("workb"):
+        return
+    max_inflight = int(getattr(gate_cfg, "investigation_followup_max_inflight", 8))
+    if len(_FOLLOWUP_TASKS) >= max_inflight:
+        logger.warning(
+            "후속 브리핑 태스크 상한(%d) 초과 — 이번 조사는 후속 발송 생략: alarm_id=%s inv=%s",
+            max_inflight, result.alarm_event.alarm_id, pending.get("investigation_id"),
+        )
+        return
+    store = (config or {}).get("configurable", {}).get("decision_store")
+    try:
+        task = asyncio.create_task(
+            _deliver_investigation_followup(pending, result, cfg, gate_cfg, store)
+        )
+    except RuntimeError:  # 실행 중인 이벤트 루프 없음(동기 컨텍스트) — graceful
+        logger.warning(
+            "후속 브리핑 태스크 생성 불가(이벤트 루프 부재): alarm_id=%s",
+            result.alarm_event.alarm_id,
+        )
+        return
+    _FOLLOWUP_TASKS.add(task)
+    task.add_done_callback(_FOLLOWUP_TASKS.discard)
+
+
+async def _deliver_investigation_followup(
+    pending: dict,
+    result: AlarmAnalysisResult,
+    cfg,  # noqa: ANN001 — AppConfig (덕 타이핑)
+    gate_cfg,  # noqa: ANN001 — NoiseGateConfig (덕 타이핑)
+    store,  # noqa: ANN001 — DecisionStore | None (덕 타이핑)
+) -> None:
+    """조사 종결까지 poll한 뒤 브리핑을 후속 메시지로 발송한다 (Plan 66 3-E).
+
+    즉시 통보 뒤에 백그라운드로 도는 경로다. 전 구간이 graceful — 어떤 실패도 이미 나간 통보나
+    다음 알람 처리에 영향을 주지 않으며, 최종 상태는 사유와 함께 감사에 남긴다(침묵 금지).
+    브리핑도 상향 안내도 없으면 발송하지 않는다(빈 후속 메시지 금지).
+    """
+    investigation_id = pending.get("investigation_id") or ""
+    alarm_id = pending.get("alarm_id") or ""
+    fingerprint = pending.get("fingerprint") or ""
+    timeout = float(getattr(gate_cfg, "investigation_followup_timeout_seconds", 300.0))
+
+    briefing: Optional[dict] = None
+    verdict: Any = None
+    status = "error"
+    try:
+        briefing, status, verdict = await asyncio.wait_for(
+            _poll_until_terminal(investigation_id, gate_cfg), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        status = "followup_timeout"
+        logger.warning(
+            "후속 브리핑 poll 타임아웃(%.0fs 초과): alarm_id=%s inv=%s",
+            timeout, alarm_id, investigation_id,
+        )
+    except Exception:  # noqa: BLE001 — 후속 실패가 이미 나간 통보를 되돌리지 않는다
+        status = "followup_failed"
+        logger.warning(
+            "후속 브리핑 poll 실패: alarm_id=%s inv=%s",
+            alarm_id, investigation_id, exc_info=True,
+        )
+
+    escalation = (
+        build_escalation(verdict)
+        if getattr(gate_cfg, "fault_escalation_enabled", False)
+        else None
+    )
+    if briefing is None and escalation is None:
+        _audit_followup(store, alarm_id, fingerprint, investigation_id, status, verdict)
+        return
+
+    try:
+        await _send_workb_followup(cfg.workb, result, briefing, escalation)
+        logger.info(
+            "후속 브리핑 발송 완료: alarm_id=%s inv=%s status=%s",
+            alarm_id, investigation_id, status,
+        )
+    except Exception:  # noqa: BLE001 — 발송 실패도 감사에 남기고 종료
+        status = f"{status}/followup_send_failed"
+        logger.warning(
+            "후속 브리핑 발송 실패: alarm_id=%s inv=%s",
+            alarm_id, investigation_id, exc_info=True,
+        )
+    _audit_followup(store, alarm_id, fingerprint, investigation_id, status, verdict)
+
+
+async def _poll_until_terminal(
+    investigation_id: str,
+    gate_cfg,  # noqa: ANN001 — NoiseGateConfig (덕 타이핑)
+) -> tuple[Optional[dict], str, Any]:
+    """자체 클라이언트로 조사 종결까지 poll한다(상위 wait_for가 전체 유계).
+
+    워커가 주입한 공유 클라이언트를 쓰지 않는다 — 이 폴링은 통보 이후까지 살아있는데 워커는
+    다음 알람을 처리하며 같은 인스턴스를 connect/disconnect하므로 세션이 서로 끊긴다.
+    """
+    from src.alarm.infrastructure.sre_agent_client import build_sre_agent_client
+
+    client = build_sre_agent_client(gate_cfg)
+    if client is None:
+        return None, "followup_no_client", None
+    poll_interval = float(
+        getattr(gate_cfg, "investigation_poll_interval_seconds", 1.0)
+    )
+    await client.connect()
+    try:
+        while True:
+            res = await client.poll(investigation_id)
+            poll_status = res.get("status")
+            if poll_status in _TERMINAL_POLL_STATUSES:
+                return res.get("briefing"), poll_status, res.get("verdict")
+            await asyncio.sleep(poll_interval)
+    finally:
+        await client.disconnect()
+
+
+def _audit_followup(
+    store,  # noqa: ANN001 — DecisionStore | None (덕 타이핑)
+    alarm_id: str,
+    fingerprint: str,
+    investigation_id: str,
+    status: str,
+    verdict: Any,
+) -> None:
+    """후속 브리핑의 최종 상태를 감사에 남긴다(트리거의 submitted 레코드에 이어지는 종결 기록)."""
+    if store is None:
+        return
+    try:
+        store.record_investigation(
+            alarm_id=alarm_id,
+            fingerprint=fingerprint,
+            investigation_id=investigation_id,
+            status=status,
+            verdict=verdict,
+        )
+    except Exception:  # noqa: BLE001 — 감사 실패는 무시(이미 발송 완료)
+        logger.warning("후속 브리핑 감사 기록 실패(무시): alarm_id=%s", alarm_id)
 
 
 def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
@@ -596,6 +770,65 @@ async def _send_workb(
         "systemDiv": workb_cfg.system_div,
         "msgTitle": msg_title,
         "msgBody": msg_body,
+        "sendId": workb_cfg.send_id,
+        "userIds": workb_cfg.get_user_ids(ev.severity),
+        "alias": workb_cfg.alias,
+    }
+    headers = {
+        "Authorization": f"Bearer {workb_cfg.bearer_token}",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+    }
+    url = f"{workb_cfg.base_url.rstrip('/')}/api/sendWorkbMsg"
+    async with httpx.AsyncClient(timeout=workb_cfg.timeout_seconds) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+
+
+def build_followup_body(
+    result: AlarmAnalysisResult,
+    briefing: Optional[dict] = None,
+    escalation: Optional[dict] = None,
+) -> str:
+    """후속 브리핑 메시지 본문(HTML)을 생성한다 (Plan 66 3-E).
+
+    즉시 통보에 이어지는 별도 메시지이므로 알람 원문 전체를 반복하지 않고, 어느 알람의 후속인지
+    식별할 최소 정보(알람명·서버·알람ID)만 머리에 두고 브리핑·상향 안내 블록을 붙인다.
+    블록 렌더는 인라인 첨부(CW-A/CW-C)와 **같은 함수**를 쓴다 — 두 모드의 표현이 갈리지 않는다.
+    """
+    ev = result.alarm_event
+    body = (
+        f"<b>자동 조사 결과 (후속)</b><br>"
+        f"<b>알람명:</b> {html.escape(ev.alarm_name)}<br>"
+        f"<b>서버:</b> {html.escape(ev.server_name)} ({html.escape(ev.hostname)})<br>"
+        f"<b>알람 ID:</b> {html.escape(ev.alarm_id)}"
+    )
+    if briefing is not None:
+        body += _investigation_briefing_html(briefing)
+    if escalation is not None:
+        body += _investigation_escalation_html(escalation)
+    return body
+
+
+async def _send_workb_followup(
+    workb_cfg,  # noqa: ANN001 — WorkbConfig (덕 타이핑)
+    result: AlarmAnalysisResult,
+    briefing: Optional[dict],
+    escalation: Optional[dict],
+) -> None:
+    """후속 브리핑을 worKB 쪽지로 발송한다 (Plan 66 3-E · `_send_workb` 전송 규약 동형).
+
+    수신자·인증·엔드포인트는 원 통보와 동일하고 제목만 후속임을 드러낸다. webhook 채널은
+    후속 대상이 아니다 — 기계 연동 채널은 원 알람을 이미 받았고, 브리핑은 사람이 읽는 정보다.
+    """
+    if not workb_cfg.base_url:
+        raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")
+
+    ev = result.alarm_event
+    payload = {
+        "systemDiv": workb_cfg.system_div,
+        "msgTitle": f"[조사 결과] {ev.server_name} ({ev.hostname})",
+        "msgBody": build_followup_body(result, briefing, escalation),
         "sendId": workb_cfg.send_id,
         "userIds": workb_cfg.get_user_ids(ev.severity),
         "alias": workb_cfg.alias,

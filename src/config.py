@@ -739,6 +739,17 @@ class NoiseGateConfig(BaseSettings):
     investigation_mcp_call_timeout_seconds: float = 10.0   # (CW-A) submit/poll 개별 호출 타임아웃(초)
     investigation_poll_interval_seconds: float = 1.0       # (CW-A) poll 재조회 간격(초)
     investigation_total_timeout_seconds: float = 45.0      # (CW-A) 전체(submit+poll) 타임아웃 가드(per-call 아님·§3.2)
+    # ── Plan 66 3-E: 즉시통보 + 후속 브리핑 (D-124 설계 노트 정련 · Plan 64 §6.2 "후속 메시지") ──
+    # 기본(off)은 CW-A 인라인 첨부 — 트리거 노드가 poll 완주까지 기다렸다가 브리핑을 실어 통보를
+    # 한 번 보낸다. 실 LLM 조사는 수십~수백 초라 PAGE 통보가 그만큼 지연된다. on이면 트리거는
+    # submit까지만 하고(통보 즉시 발송·지연 0) 백그라운드 태스크가 poll 완주 후 **브리핑을 후속
+    # 메시지로 별도 발송**한다. 후속 전달은 자체 클라이언트로 수행한다 — 워커의 공유 클라이언트를
+    # 쓰면 다음 알람의 connect/disconnect와 경합한다(워커는 알람을 직렬 처리·클라이언트 1개 공유).
+    # off면 CW-A 경로 비트동일(회귀 0). 후속 발송 실패·타임아웃은 감사에 사유 기록(침묵 금지)하고
+    # 통보·판정에는 영향을 주지 않는다. 읽기전용·조치 없음(D-003).
+    investigation_followup_enabled: bool = False           # (3-E) 즉시통보+후속 브리핑 옵트인
+    investigation_followup_timeout_seconds: float = 300.0  # (3-E) 후속 poll 전체 타임아웃(초·조사 서비스 dispatcher 상한 정렬)
+    investigation_followup_max_inflight: int = 8           # (3-E) 동시 진행 후속 태스크 상한(알람 폭주 시 spawn 차단·사유 로그)
     # ── Plan 64 CW-B: pull 위임 (deepagents/시멘틱 라우팅 fault_diagnosis 의도 → sre_diagnose) ──
     # 사용자가 "○○ 서버 원인 분석해줘"류로 장애 진단을 요청하면(pull), 시멘틱 라우터가
     # fault_diagnosis 의도로 분류하고 신규 노드가 sre_agent에 sre_diagnose(question, server?, host?,
