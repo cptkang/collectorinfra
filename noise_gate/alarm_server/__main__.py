@@ -20,8 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from alarm_server.config import AlarmServerConfig
-from alarm_server.tcp_receiver import TcpReceiver
+from noise_gate.alarm_server.config import AlarmServerConfig
+from noise_gate.alarm_server.tcp_receiver import TcpReceiver
 
 
 def main() -> None:

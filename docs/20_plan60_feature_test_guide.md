@@ -279,7 +279,7 @@ cd /path/to/collectorinfra
 source .venv/bin/activate
 
 # ① 전제: alarm_server(TCP 9100)·AlarmWorker·게이트(NOISE_ENABLE_NOISE_GATE=true) 기동
-python -m alarm_server        # 별도 터미널 (TCP 실경로 수신부)
+python -m noise_gate.alarm_server        # 별도 터미널 (TCP 실경로 수신부)
 
 # ② 목업 생성기 상주 실행 → 번호 입력
 python scripts/mock_polestar_events.py

@@ -540,7 +540,7 @@ class TcpSender:
                 return True, f"{self.label} 도달"
         except OSError as exc:
             return False, (
-                f"{self.label} 도달 실패 ({exc}) — 'python -m alarm_server' 기동 후 재시도"
+                f"{self.label} 도달 실패 ({exc}) — 'python -m noise_gate.alarm_server' 기동 후 재시도"
                 " 하거나 '--path redis'로 폴백하세요"
             )
 
@@ -881,7 +881,7 @@ def dispatch_scenario(scenario: Scenario, ctx: RunContext) -> None:
             ctx.sender.send(step.payload)
         except Exception as exc:  # 소켓/Redis 실패 — 침묵 폴백 금지, 사유 노출 후 중단
             print(f"  [오류] 전송 실패({ctx.sender.label}): {exc}")
-            print("  → alarm_server 미기동일 수 있습니다. 'python -m alarm_server' 또는 '--path redis'.")
+            print("  → alarm_server 미기동일 수 있습니다. 'python -m noise_gate.alarm_server' 또는 '--path redis'.")
             return
         print(f"  [주입 {idx}/{len(steps)}] {step.label} alarm_id={step.alarm_id}")
 

@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 
-from alarm_server.base_receiver import BaseReceiver
+from noise_gate.alarm_server.base_receiver import BaseReceiver
 
 logger = logging.getLogger(__name__)
 

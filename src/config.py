@@ -454,7 +454,7 @@ class SchemaCacheConfig(BaseSettings):
 class AlarmConfig(BaseSettings):
     """에이전트 서버의 알람 분석·발송 설정.
 
-    소켓 수신 설정은 alarm_server/config.py에서 관리.
+    소켓 수신 설정은 noise_gate/alarm_server/config.py에서 관리.
     에이전트 서버는 Redis Stream 소비 및 알림 발송만 담당.
     """
 

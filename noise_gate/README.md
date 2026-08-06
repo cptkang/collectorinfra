@@ -7,6 +7,7 @@
 
 ```
 noise_gate/
+├── alarm_server/     # 폴스타 TCP 수신 → Redis XADD (독립 프로세스 진입점)
 ├── domain/           # 순수 판정 로직(정책·상관·이상탐지·지문·시그니처)
 ├── application/      # 노드·워커·분류기 (LangGraph 노드 = application)
 ├── infrastructure/   # Redis·폴스타 API·decision_store·SSE·MCP 클라이언트
@@ -17,7 +18,23 @@ noise_gate/
 └── testdata/         # 이 패키지 전용 픽스처
 ```
 
-계층 규칙은 본체와 동일하며 `scripts/arch_check.py`가 `noise_gate.*` 매핑으로 함께 검사한다.
+수신부 기동:
+
+```bash
+python -m noise_gate.alarm_server   # TCP 9100 수신 → Redis Stream 'alarm:raw'
+```
+
+계층 규칙은 본체와 동일하며 `scripts/arch_check.py`가 `noise_gate.*` 매핑으로 함께 검사한다
+(`alarm_server`는 수신·적재=infrastructure / 기동부=entry / 설정=config로 매핑).
+
+## 이 패키지로 옮기지 않은 것 — `src/api/routes/alarm.py`
+
+알람 REST 라우트(1,420줄)는 알람 전용 표면이지만 **본체 `src/api/`에 남긴다**. 이 라우트는
+본체 FastAPI 앱의 인증 계층(`src.api.dependencies` — `require_user`·`alarm_zones_for_user`·
+`resolve_stream_user`)에 묶여 있어, 옮기면 `noise_gate → src.api` 의존이 새로 생긴다. 현재는
+`src/api/server.py`가 라우터를 mount하는 **한 방향**(앱 → 패키지)인데, 옮기면 패키지가 앱의
+세션·JWT 계층을 되짚는 역방향이 더해져 결합이 오히려 나빠진다. 라우터 등록은 앱 조립(entry)의
+일이므로 현 위치가 맞다. 인증을 mount 지점 주입으로 바꾸는 재설계가 선행되면 재검토 대상이다.
 
 ## 다른 독립 패키지와의 차이 — 같은 프로세스에서 돈다
 
