@@ -1141,7 +1141,8 @@ def dump_sqls(path: str, reports: list[BatchReport]) -> None:
                     )
                 f.write("[pred_sql]\n")
                 f.write((r.pred_sql or "(없음)").strip() + "\n")
-    print(f"  [저장] 생성 SQL 전문: {path}")
+    # 진행 알림은 stderr로 - stdout은 리포트 채널(--json 시 순수 JSON)이어야 한다.
+    print(f"  [저장] 생성 SQL 전문: {path}", file=sys.stderr)
 
 
 def print_ab_report(ab: dict) -> None:
@@ -1169,6 +1170,58 @@ def print_ab_report(ab: dict) -> None:
 # ──────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────
+
+def _run_meta(started_at: float, started_wall: str) -> dict:
+    """산출물에 실행 출처(provenance)를 남긴다.
+
+    E1 A/B 사고(2026-08-04)의 직접 원인: 산출물에 커밋·실행 시각·활성 토글이 없어
+    두 팔이 서로 다른 커밋·시간대에서 돌았다는 사실이 사후에야 드러났다. 또한
+    `wall_clock_seconds`(벽시계)와 항목별 `latency_ms` 합계(perf_counter, macOS에서
+    슬립 중 정지)의 괴리는 런이 중간에 얼어붙었음을 즉시 드러내는 신호다.
+    """
+    import subprocess
+    import time
+    from datetime import datetime
+
+    commit, dirty = None, None
+    try:
+        root = Path(__file__).resolve().parent.parent
+        commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=5).stdout.strip() or None
+        dirty = bool(subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                                    capture_output=True, text=True, timeout=5).stdout.strip())
+    except Exception:
+        pass
+
+    # 파이프라인 동작을 바꾸는 실효 설정 - 어느 팔인지 산출물만으로 식별 가능해야 한다.
+    # os.environ 스캔 금지: `.env` 로딩은 os.environ에 주입되지 않아 누락된다(CLAUDE.md).
+    # 반드시 로드된 AppConfig(=OS env > .encenv > .env > 기본값 병합 결과)에서 읽는다.
+    settings: dict = {}
+    try:
+        from src.config import load_config
+
+        cfg = load_config()
+        settings = {
+            "llm_provider": cfg.llm.provider,
+            "llm_model": cfg.llm.gemini_model or cfg.llm.model,
+            "orchestrator_provider": cfg.orchestrator.provider,
+            "orchestrator_model": cfg.orchestrator.model,
+            "text2sql": {k: v for k, v in cfg.text2sql.model_dump().items()
+                         if isinstance(v, (bool, int, float, str))},
+        }
+    except Exception as exc:  # 설정 로드 실패를 침묵시키지 않는다
+        settings = {"error": f"설정 스냅샷 실패: {type(exc).__name__}: {exc}"}
+
+    return {
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "started_at": started_wall,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        # 벽시계 - 항목별 latency_ms 합계(perf_counter)와 크게 벌어지면 런이 얼어붙은 것
+        "wall_clock_seconds": round(time.perf_counter() - started_at, 1),
+        "settings": settings,
+    }
+
 
 def _build_flags(args: argparse.Namespace) -> dict:
     """CLI 인자로부터 파이프라인 플래그 dict를 조립한다."""
@@ -1213,6 +1266,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             _stream.reconfigure(errors="replace")
         except Exception:
             pass
+
+    # 감사 structlog(user_request/query_executed)는 기본 PrintLoggerFactory가 stdout에 찍는다.
+    # 하네스의 stdout은 리포트 채널(--json은 순수 JSON)이므로 감사 로그를 stderr로 옮긴다.
+    # (미적용 시 --json 산출물 선두에 로그 줄이 섞여 JSON 파싱이 깨짐 - 2026-08-04 E1 실측)
+    import structlog
+    import time as _time
+    from datetime import datetime as _datetime
+
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
+
+    _t0 = _time.perf_counter()
+    _wall0 = _datetime.now().isoformat(timespec="seconds")
+
     parser = argparse.ArgumentParser(description="Text-to-SQL EX 평가 하네스 (Plan 61 / E1)")
     parser.add_argument("--gold-dir", default=str(_default_gold_dir()), help="골드셋 디렉터리")
     parser.add_argument("--db", default="all", help="대상 DB 파일(gp|yd|b0|all)")
@@ -1313,7 +1379,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         float_tol=args.float_tol, apply_flags=not args.mock)
         ab = build_ab_report(base, var, args.ab)
         if args.json:
-            print(json.dumps(ab, ensure_ascii=False, indent=2))
+            print(json.dumps({**ab, "_run": _run_meta(_t0, _wall0)}, ensure_ascii=False, indent=2))
         else:
             print_ab_report(ab)
             if args.verbose:
@@ -1334,7 +1400,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     report = run_batch(items, predictor, executor, label=label, flags=flags,
                        float_tol=args.float_tol, apply_flags=not args.mock)
     if args.json:
-        print(json.dumps(aggregate(report), ensure_ascii=False, indent=2))
+        print(json.dumps({**aggregate(report), "_run": _run_meta(_t0, _wall0)},
+                         ensure_ascii=False, indent=2))
     else:
         print_report(report, verbose=args.verbose)
         skipped = sum(1 for r in report.items if not r.ex_scored)

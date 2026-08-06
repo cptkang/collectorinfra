@@ -46,3 +46,5 @@ temp/
 .kiro
 multilingual-e5-small/
 sre_agent/.data/
+*.log
+eval_results/
