@@ -853,6 +853,14 @@
 - **근거**: 결정적 가드 우선(D-035)·감사 일원화·자격증명 보관 지점 축소·경계 단순화. **대안 기각**: A안 유지(감사·hostname 정합 약점), C안 별도 Prometheus MCP 서버(얇은 래퍼에 패키지·프로세스·인증 과중), A+B 병행(같은 소스 2경로 — 소스 혼동 배가).
 - **관련**: D-118(`sre_agent` 경계 — 하향 의존 서술 갱신), SREAgent D-019(원격 2축 — **2축(소스) 구도는 유지**, Prometheus 축의 전송 경로만 `mcp_server` 경유로 갱신), SREAgent D-013(폴스타 MCP 일원화 — 관측 일원화로 확장). 반영: sre-agent/04(§1 스코프 재정의·§4.4)·06(§1~§3·§5·§6·§8)·02(§3·§8·§11 전송 경로 표기)·README(하향 의존)·Plan 66(R5·2-B′·§2).
 
+### D-119 전제 라벨(nodename) 규약 실측 — Docker Prometheus (2026-08-06 · R-D 부분)
+
+- **결론: 서버측 `{nodename="…"}` 조립의 전제가 픽스처에서 성립함을 실측 확인.** 단 **대상은 Docker 픽스처(9190)이며 운영 Prometheus가 아니다** — 운영 인프라 소유·라벨 표준화 협의(P0-3)와 R-D 최종 확정은 그대로 잔여.
+- **실측치(Prometheus 2.53.0)**: ① **nodename 커버리지 1404/1404 = 100%** — `nodename` 없는 시계열 0건. 스크레이프 설정의 `static_configs.labels`로 **수집 시점 주입**하므로 job(node·mock) 무관하게 전 메트릭이 보유 → 고수준 도구가 임의 지표에 `{nodename=…}`을 붙여도 빈 결과가 되지 않는다. ② **보존 15d**, 스크레이프 간격 5s, 타깃 2종 모두 `up`. ③ **인증 없음** — 무인증 쿼리 HTTP 200(운영은 `PROMETHEUS_AUTH_HEADER` 전제이므로 픽스처와 다름). ④ 미존재 hostname(`nodename="no-such-host"`) → `status=success`·빈 배열로 **graceful**(오류 아님).
+- **라벨 충돌 실측(주의)**: node_exporter가 `node_uname_info`에 자기 `nodename`(실 uname)을 실어 보내는데, 스크레이프 타깃 라벨과 이름이 겹쳐 **Prometheus가 노출 측 라벨을 `exported_nodename`으로 밀어낸다**(honor_labels 미사용 기본 동작). 결과적으로 **타깃 라벨이 이기므로 D-119 조립은 안전**하다. 다만 `exported_nodename` 값 목록에 **컨테이너 ID `efc0cb8b934d`가 남아 있다** — 2026-07-28 14:49 단일 시점의 `node_uname_info` 잔재(D-126 target-vm 승격 이전 수집분)로 현재 활성 시계열은 0건이나 **15d 보존 창 안이라 조회는 된다**. 소비 측이 `nodename` 대신 `exported_nodename`을 쓰면 서버명이 아닌 컨테이너 ID에 매칭될 수 있다 → **조립·검증은 반드시 `nodename`을 쓴다**(코드는 이미 그러함).
+- **운영 편입 시 체크리스트(P0-3에 인계)**: ① 운영 스크레이프가 `nodename`을 폴스타 `server_name`과 동일 값으로 주입하는지(픽스처는 `static_configs.labels`로 정렬) ② exporter 자체 라벨과의 충돌 시 `exported_*` 승격 정책 ③ 보존기간·인증 헤더 ④ 미존재 호스트 graceful 여부.
+- **관련**: D-119(서버측 조립)·D-126(target-vm 승격·실 uname 경로)·Plan 06 §5-1/§8.1·Plan 66 R10/4-A(R-D).
+
 ### D-119 품질 게이트 실측 완료 (2026-08-06 · 사용자 승인 실 Gemini 호출)
 
 - **결과: 열화 없음 — B안(현행 `mcp_server` PromQL 경유) 유지 확정.** A안 복귀 불필요. Plan 06 §8 수용 기준 7 충족.
