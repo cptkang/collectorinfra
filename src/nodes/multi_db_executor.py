@@ -28,7 +28,12 @@ from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
 from src.security.audit_logger import log_query_execution
-from src.security.pii_filter import is_scrub_samples_enabled, scrub_pii
+from src.security.pii_filter import (
+    diagnose_blocked_prompt,
+    is_filter_blocked,
+    is_scrub_samples_enabled,
+    scrub_pii,
+)
 from src.state import AgentState, QueryAttempt
 from src.utils.query_gen_common import (
     build_generic_period_hint,
@@ -176,7 +181,10 @@ async def multi_db_executor(
     _validation_failed: dict[str, tuple] = {}
 
     # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066)
+    # 실행 결과 라이브 행이므로 PII 스크럽 적용(D-122 후속3 — 단일 경로와 대칭)
     prior_block = build_prior_rows_block(state.get("prior_rows"))
+    if prior_block and is_scrub_samples_enabled():
+        prior_block = scrub_pii(prior_block)
 
     # 폼필 월 시리즈(D-113) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
     form_context = template_context_text(state.get("template_structure"))
@@ -1135,9 +1143,22 @@ async def _generate_sql(
     response = await llm.ainvoke(messages)
     # few-shot 말미 캡 모방 교정 — 이 함수의 default_limit 인자는 호출부(multi_db_executor)가
     # 이미 resolve_effective_limit로 확정한 값이다(변수명만 default).
-    return enforce_all_query_limit(
+    sql = enforce_all_query_limit(
         _extract_sql(response.content), default_limit, app_config.query.default_limit
     )
+    # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-122, 단일 경로 대칭).
+    # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-120 후속2)와 별개로
+    # 섹션별 로컬 스캔을 로그에 남겨 "어느 재료의 어떤 값"인지까지 특정한다.
+    if is_filter_blocked(raw_text=sql):
+        logger.warning(
+            "[PII-FILTER] SQL 생성 응답 차단(멀티 db=%s) — 원인 후보: %s",
+            db_id,
+            diagnose_blocked_prompt({
+                "시스템 프롬프트(스키마·샘플·유사어)": system_prompt,
+                "사용자 프롬프트(질의·매핑·컨텍스트)": user_prompt,
+            }),
+        )
+    return sql
 
 
 def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:

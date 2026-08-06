@@ -85,6 +85,10 @@ class AgentState(TypedDict):
     text2sql_fallback: Optional[dict]        # 트랙 A 3단 폴백 결과 {tier, confidence, method, reason}; 미진입 None
     column_value_index: Optional[dict[str, list[str]]]  # E5-2 실측 값 인덱스 런타임 주입 {column: [값,...]}
     synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
+    # FabriX PII 필터 차단 시 프롬프트 섹션별 로컬 스캔 진단(D-122) — query_generator가
+    # 차단 감지 시 산출, query_validator가 에러 메시지에 노출(폐쇄망 UI 자가 진단).
+    # 생성 시도 스코프 값(차단 아닌 생성이 성공하면 의미 없음 — 소비부가 차단 시에만 읽음).
+    pii_block_diagnosis: Optional[str]
     validation_result: ValidationResult      # 검증 결과
     query_results: list[dict[str, Any]]      # 현재 쿼리 실행 결과
 
@@ -355,6 +359,7 @@ def create_initial_state(
         text2sql_fallback=None,
         column_value_index=None,
         synonym_usage=None,
+        pii_block_diagnosis=None,
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={

@@ -293,6 +293,18 @@ class SecurityConfig(BaseSettings):
     # FabriX 개인정보 필터에 오탐 차단되는 것을 예방한다. 형식 보존 마스킹이라 컬럼·형식 추론
     # 신호는 유지된다(pii_filter.scrub_pii). False면 원문 그대로 주입(현행 동작).
     pii_scrub_samples: bool = True
+    # 날짜·타임스탬프 무해화 스크럽 (SECURITY_PII_SCRUB_SUSPECT_DATES). 기본 False.
+    # FabriX 계좌번호(851) 룰이 숫자 많은 라인의 날짜형(2026-06-17 02:30:45, DB2
+    # 2026-08-05-14.30.45)까지 광폭 매칭하는 정황(D-122 후속3) — 진단으로 확정되면
+    # 이 플래그만 켠다(코드 재배포 불요). 마스킹이 아니라 구분자 점 치환이라 값·자릿수
+    # 형식 신호는 보존된다("2026-06-17 02:30:45" → "2026.06.17.02:30:45").
+    pii_scrub_suspect_dates: bool = False
+    # PII 필터 차단 시 전송 프롬프트·응답 전문을 파일로 덤프할지 (SECURITY_PII_BLOCK_DUMP_ENABLED).
+    # 기본 True. 로컬 규칙 무매칭 차단(서버측 정책이 더 넓은 경우)은 "무엇이 걸렸는지"를
+    # 로그 발췌만으로 특정할 수 없다(D-122 후속1) — 전송 원문 전체를 서버 로컬 파일로 남겨
+    # 운영자가 직접 대조·이등분 재현으로 트리거를 확정한다. 덤프는 서버 밖으로 나가지 않는다
+    # (FabriX로 이미 전송한 것과 동일한 텍스트). 경로: logs/pii_block/.
+    pii_block_dump_enabled: bool = True
 
     model_config = {"env_prefix": "SECURITY_", "env_file": ".env", "extra": "ignore"}
 

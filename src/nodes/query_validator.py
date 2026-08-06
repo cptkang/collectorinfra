@@ -78,9 +78,17 @@ async def query_validator(
         from src.security.pii_filter import is_filter_blocked
 
         if is_filter_blocked(raw_text=sql):
+            # D-122: query_generator가 차단 시점에 산출한 섹션별 로컬 스캔 진단을
+            # 에러에 실어 "어느 블록의 어떤 값이 걸렸는지"를 UI에서 바로 읽게 한다
+            # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널).
+            _diag = state.get("pii_block_diagnosis")
             errors.append(
-                "FabriX PII 필터 차단 응답(비-SQL) — 프롬프트에 PII성 텍스트 포함 "
-                "(로그 [PII-FILTER] 참조)"
+                "FabriX PII 필터 차단 응답(비-SQL) — "
+                + (
+                    f"원인 후보: {_diag}"
+                    if _diag
+                    else "프롬프트에 PII성 텍스트 포함 (로그 [PII-FILTER] 참조)"
+                )
             )
         else:
             errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")

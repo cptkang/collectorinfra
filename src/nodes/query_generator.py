@@ -20,7 +20,12 @@ from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.db_adapters import get_adapter
-from src.security.pii_filter import is_scrub_samples_enabled, scrub_pii
+from src.security.pii_filter import (
+    diagnose_blocked_prompt,
+    is_filter_blocked,
+    is_scrub_samples_enabled,
+    scrub_pii,
+)
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
@@ -564,15 +569,21 @@ async def query_generator(
                 user_prompt += "\n\n" + _gp_block
 
         # E5-2 값 검색 리터럴 주입 — value_retrieval ON + 인덱스 매칭 시만(회귀 0).
+        # 실측 DB 값이라 샘플과 동일하게 PII 스크럽 적용(D-122 후속3 — 스크럽 우회 주입구 차단)
         _vi_block = _build_value_index_injection(state, user_query, app_config)
         if _vi_block:
+            if is_scrub_samples_enabled():
+                _vi_block = scrub_pii(_vi_block)
             user_prompt += _vi_block
 
         # 선행 task 결과 서버 스코프 강제 — orchestration 데이터 의존(input_from) 경로(D-086).
         # prior_rows는 생성만 되고 소비처가 없던 죽은 배선이었다(2026-07-18 실측: 의존 task가
         # 알람 조건을 재표현하다 resource_type='alarm.Alarm' 환각으로 0건).
+        # 실행 결과 라이브 행이므로 PII 스크럽 적용(D-122 후속3)
         _pr_block = build_prior_rows_block(state.get("prior_rows"))
         if _pr_block:
+            if is_scrub_samples_enabled():
+                _pr_block = scrub_pii(_pr_block)
             user_prompt += "\n\n" + _pr_block
 
         # 트랙 A(E2~E4): 다중 후보 생성·선택. 재시도(에러 컨텍스트)에는 미진입(현행 단일 수정 경로).
@@ -621,6 +632,21 @@ async def query_generator(
 
             # SQL 추출
             sql = _extract_sql_from_response(response.content)
+
+        # FabriX PII 필터 차단 응답(비-SQL) 감지 시 원인 블록·값을 즉시 특정한다(D-122).
+        # 프롬프트 재료(system/user)를 모두 가진 유일한 지점 — 진단을 state
+        # (pii_block_diagnosis)로 승격해 query_validator 에러 메시지에 노출한다
+        # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널 — D-120 후속2 원칙).
+        if is_filter_blocked(raw_text=sql):
+            _pii_diag = diagnose_blocked_prompt({
+                "시스템 프롬프트(스키마·샘플·유사어)": system_prompt,
+                "사용자 프롬프트(질의·매핑·컨텍스트)": user_prompt,
+            })
+            logger.warning(
+                "[PII-FILTER] SQL 생성 응답 차단(db=%s, retry=%d) — 원인 후보: %s",
+                state.get("active_db_id"), retry_count, _pii_diag,
+            )
+            extra_return["pii_block_diagnosis"] = _pii_diag
 
     # "모든/전체" 상향인데 LLM이 프로필 few-shot 예시의 말미 캡(FETCH FIRST 100 등)을
     # 모방한 경우 결정적 교정 — 2026-07-24 b0 실측(Plan 65 §5.1 항목 6, D-066 후속8).

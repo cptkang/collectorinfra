@@ -186,6 +186,7 @@ class KBGenAIChat(BaseChatModel):
         response.raise_for_status()
 
         blocked_logged = False
+        _content_parts: list[str] = []
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
@@ -212,6 +213,7 @@ class KBGenAIChat(BaseChatModel):
                 if event_status in ["STATUS", "SYNC", "FINISH"]:
                     continue
 
+                _content_parts.append(content)
                 clean_content = self.remove_llm_junk(content, strip=False)
                 if clean_content:
                     chunk = ChatGenerationChunk(
@@ -222,6 +224,15 @@ class KBGenAIChat(BaseChatModel):
                     yield chunk
             except json.JSONDecodeError:
                 continue
+
+        # 차단 안내문이 여러 청크로 쪼개져 오면 라인 단위 검사가 전부 통과한다 —
+        # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-122,
+        # 2026-08-05 실측: validator만 차단을 감지하고 원인 로그 부재).
+        if not blocked_logged and is_filter_blocked(raw_text="".join(_content_parts)):
+            log_filter_block_if_any(
+                logger, raw_text="".join(_content_parts),
+                prompt=self._prompt_text(messages), where="_stream(assembled)",
+            )
 
     async def _astream(
         self,
@@ -241,6 +252,7 @@ class KBGenAIChat(BaseChatModel):
                 response.raise_for_status()
 
                 blocked_logged = False
+                _content_parts: list[str] = []
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -267,6 +279,7 @@ class KBGenAIChat(BaseChatModel):
                         if event_status in ["STATUS", "SYNC", "FINISH"]:
                             continue
 
+                        _content_parts.append(content)
                         clean_content = self.remove_llm_junk(content, strip=False)
                         if clean_content:
                             chunk = ChatGenerationChunk(
@@ -279,6 +292,18 @@ class KBGenAIChat(BaseChatModel):
                             yield chunk
                     except json.JSONDecodeError:
                         continue
+
+                # 차단 안내문이 여러 청크로 쪼개져 오면 라인 단위 검사가 전부 통과한다 —
+                # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-122,
+                # 2026-08-05 실측: validator만 차단을 감지하고 원인 로그 부재).
+                if not blocked_logged and is_filter_blocked(
+                    raw_text="".join(_content_parts)
+                ):
+                    log_filter_block_if_any(
+                        logger, raw_text="".join(_content_parts),
+                        prompt=self._prompt_text(messages),
+                        where="_astream(assembled)",
+                    )
 
     def bind_tools(self, tools, tool_choice="auto") -> "KBGenAIChat":
         for t in tools:
