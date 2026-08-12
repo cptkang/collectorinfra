@@ -690,6 +690,28 @@ class NoiseGateConfig(BaseSettings):
         return result
 
 
+class DrmConfig(BaseSettings):
+    """Softcamp ServiceLinker DRM 해제 설정 (Plan 69 / D-123).
+
+    기본 비활성(enabled=False) — 개발 PC·CI는 DRM 모듈 설치가 불가하므로
+    Passthrough로 동작하고, 운영(RHEL 9.6)에서만 활성화한다.
+    softcamp.properties의 내용(LinkSystemIP 등)은 scsl.jar가 직접 읽는 파일이라
+    env로 대체 불가 — 여기에는 경로만 담는다 (계획서 §2.7).
+    """
+
+    enabled: bool = False
+    java_bin: str = "java"              # Java 1.8+ (반입은 JDK 21)
+    wrapper_path: str = ""              # tools/drm-wrapper/Decrypt.java 절대경로 (단일 소스 실행)
+    scsl_jar_path: str = ""             # scsl.jar (소프트캠프 제공) 절대경로
+    properties_path: str = ""           # 02_ServiceLinker/softcamp.properties 절대경로
+    key_file_path: str = ""             # 04_KeyFile/keyDAC_SVR0.sc 절대경로
+    group_id: str = "SECURITYDOMAIN"    # 가이드 "수정금지" 리터럴 — 변경 대비 주입 가능
+    temp_dir: str = ""                  # 빈 값이면 시스템 temp 하위 drm_scsl/ 자동 생성
+    timeout_sec: int = 20
+
+    model_config = {"env_prefix": "DRM_", "env_file": ".env", "extra": "ignore"}
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -714,6 +736,7 @@ class AppConfig(BaseSettings):
     workb: WorkbConfig = Field(default_factory=WorkbConfig)
     noise_gate: NoiseGateConfig = Field(default_factory=NoiseGateConfig)  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
     polestar_rest: PolestarRestConfig = Field(default_factory=PolestarRestConfig)  # Plan 66: 실시간 사용률 API
+    drm: DrmConfig = Field(default_factory=DrmConfig)  # Plan 69: 양식 업로드 DRM 해제
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

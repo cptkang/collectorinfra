@@ -1025,6 +1025,15 @@ async def process_file_query(
     if len(file_bytes) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="파일 크기가 10MB를 초과합니다.")
 
+    # 2.5 DRM 해제 (Plan 69) — 평문은 통과, 암호문은 복호화. /query/file/stream과 대칭.
+    file_bytes = await _resolve_uploaded_bytes(
+        file_bytes,
+        file_ext,
+        file.filename,
+        request.app.state.config,
+        user_id=current_user.get("sub"),
+    )
+
     # 3. Excel → CSV 변환 (xlsx인 경우, Redis 캐시 활용)
     csv_sheet_data = None
     if file_ext == "xlsx":
@@ -1122,6 +1131,98 @@ def _get_file_extension(filename: str | None) -> str:
     return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
+async def _resolve_uploaded_bytes(
+    file_bytes: bytes,
+    file_ext: str,
+    filename: str | None,
+    config,
+    user_id: str | None = None,
+) -> bytes:
+    """업로드 바이트를 평문으로 정규화한다 (Plan 69 DRM 해제 / D-123).
+
+    평문(ZIP)은 그대로 반환하고, Softcamp DRM 암호문(SCDS)은 복호화해 반환한다.
+    실패는 침묵 폴백 없이 명확한 HTTP 에러로 노출한다 — /query/file과
+    /query/file/stream 양쪽에 동일하게 배선할 것(대칭 유지).
+    """
+    from src.infrastructure.drm import (
+        DrmDecryptError,
+        detect_file_kind,
+        get_decryptor,
+        header_hex,
+    )
+    from src.security.audit_logger import log_drm_decrypt
+
+    kind = detect_file_kind(file_bytes)
+    if kind == "plain":
+        return file_bytes
+
+    if kind == "unknown":
+        logger.warning(
+            "업로드 파일 형식 불명: file=%s ext=%s head=%s",
+            filename, file_ext, header_hex(file_bytes),
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f".{file_ext} 파일이 손상되었거나 지원하지 않는 형식입니다. "
+                "파일을 다시 저장한 뒤 업로드해 주세요."
+            ),
+        )
+
+    # kind == "drm"
+    drm_cfg = config.drm
+    if not drm_cfg.enabled:
+        await log_drm_decrypt(
+            file_name=filename,
+            file_size_bytes=len(file_bytes),
+            success=False,
+            error="drm_disabled",
+            user_id=user_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "DRM 암호화 파일입니다. 이 서버는 DRM 해제가 비활성화되어 있어 "
+                "처리할 수 없습니다. 평문 파일로 다시 업로드하거나 관리자에게 "
+                "문의하세요."
+            ),
+        )
+
+    decryptor = get_decryptor(drm_cfg)
+    start = time.time()
+    try:
+        plain_bytes = await decryptor.decrypt(
+            file_bytes, filename or f"upload.{file_ext}"
+        )
+    except DrmDecryptError as e:
+        await log_drm_decrypt(
+            file_name=filename,
+            file_size_bytes=len(file_bytes),
+            success=False,
+            error=str(e),
+            ret_code=e.ret_code,
+            elapsed_ms=(time.time() - start) * 1000,
+            user_id=user_id,
+        )
+        logger.error(
+            "DRM 복호화 실패: file=%s reason=%s ret=%s detail=%s",
+            filename, e.reason, e.ret_code, e.detail,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"DRM 암호화 파일로 확인되나 복호화에 실패했습니다: {e.reason}",
+        )
+
+    await log_drm_decrypt(
+        file_name=filename,
+        file_size_bytes=len(file_bytes),
+        success=True,
+        elapsed_ms=(time.time() - start) * 1000,
+        user_id=user_id,
+    )
+    return plain_bytes
+
+
 @router.post("/query/file/stream")
 async def process_file_query_stream(
     request: Request,
@@ -1172,6 +1273,20 @@ async def process_file_query_stream(
             status_code=400,
             content={"detail": "파일 크기가 10MB를 초과합니다."},
         )
+
+    # DRM 해제 (Plan 69) — /query/file과 대칭. SSE 경로는 HTTPException 대신
+    # JSONResponse로 반환해야 하므로 여기서 변환한다.
+    try:
+        file_bytes = await _resolve_uploaded_bytes(
+            file_bytes,
+            file_ext,
+            file.filename,
+            request.app.state.config,
+            user_id=current_user.get("sub"),
+        )
+    except HTTPException as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
 
     csv_sheet_data = None
     if file_ext == "xlsx":

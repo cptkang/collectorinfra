@@ -887,4 +887,175 @@
             if (btn) btn.disabled = false;
         }
     }
+
+    // --- DRM 연동 진단 (Plan 69 §4.2) ---
+    //
+    // 실기 환경이 운영계뿐이므로 셸 없이 연동 상태를 점검한다.
+    // 진단 응답은 실패도 200 + 구조화된 결과이므로, 화면은 항상 결과를 렌더한다.
+
+    var drmStatusBody = document.getElementById("drmStatusBody");
+    var drmStatusTable = document.getElementById("drmStatusTable");
+    var drmStatusLoading = document.getElementById("drmStatusLoading");
+    var drmSummary = document.getElementById("drmSummary");
+    var refreshDrmBtn = document.getElementById("refreshDrmBtn");
+    var drmVerifyBtn = document.getElementById("drmVerifyBtn");
+    var drmSampleInput = document.getElementById("drmSampleInput");
+    var drmVerifyLoading = document.getElementById("drmVerifyLoading");
+    var drmVerifyResult = document.getElementById("drmVerifyResult");
+
+    if (refreshDrmBtn) refreshDrmBtn.addEventListener("click", loadDrmStatus);
+    if (drmVerifyBtn) drmVerifyBtn.addEventListener("click", verifyDrmSample);
+
+    document.querySelectorAll('.tab[data-tab="drm"]').forEach(function (tab) {
+        tab.addEventListener("click", loadDrmStatus);
+    });
+
+    function escapeHtml(value) {
+        return String(value === null || value === undefined ? "" : value)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    function drmBadge(ok) {
+        var color = ok ? "var(--success, #2e7d32)" : "var(--danger, #c62828)";
+        return '<span style="color: ' + color + '; font-weight: 600;">' +
+            (ok ? "정상" : "확인 필요") + "</span>";
+    }
+
+    async function loadDrmStatus() {
+        if (!drmStatusBody) return;
+        if (drmStatusLoading) drmStatusLoading.classList.add("active");
+        if (drmStatusTable) drmStatusTable.style.display = "none";
+        if (drmSummary) drmSummary.style.display = "none";
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/drm/status");
+            if (!response.ok) {
+                if (drmStatusLoading) drmStatusLoading.classList.remove("active");
+                showError("DRM 상태를 불러오지 못했습니다.");
+                return;
+            }
+            renderDrmStatus(await response.json());
+        } catch (err) {
+            if (drmStatusLoading) drmStatusLoading.classList.remove("active");
+            showError("DRM 상태를 불러오지 못했습니다.");
+        }
+    }
+
+    function renderDrmStatus(data) {
+        if (drmStatusLoading) drmStatusLoading.classList.remove("active");
+
+        if (drmSummary) {
+            var tone = data.enabled
+                ? (data.ready ? "rgba(46,125,50,0.12)" : "rgba(198,40,40,0.12)")
+                : "rgba(120,120,120,0.12)";
+            drmSummary.style.background = tone;
+            drmSummary.innerHTML =
+                "<strong>DRM_ENABLED = " + (data.enabled ? "true" : "false") + "</strong>" +
+                " &mdash; " + escapeHtml(data.summary);
+            drmSummary.style.display = "block";
+        }
+
+        var rows = [];
+        (data.checks || []).forEach(function (c) {
+            var ok = c.exists && c.readable && !c.stale;
+            var detail = escapeHtml(c.message || "");
+            if (c.path) detail += '<br><span style="color: var(--text-muted); font-size: 0.75rem;">' + escapeHtml(c.path) + "</span>";
+            rows.push([escapeHtml(c.label), drmBadge(ok), detail]);
+        });
+        if (data.java) {
+            rows.push([
+                escapeHtml(data.java.label || "Java 런타임"),
+                drmBadge(!!data.java.available),
+                escapeHtml(data.java.message || ""),
+            ]);
+        }
+        if (data.temp_dir) {
+            var t = data.temp_dir;
+            var tDetail = escapeHtml(t.message || "");
+            if (t.path) tDetail += '<br><span style="color: var(--text-muted); font-size: 0.75rem;">' + escapeHtml(t.path) + "</span>";
+            if (t.leftover_files) tDetail += " · 잔여 파일 " + t.leftover_files + "개";
+            rows.push([escapeHtml(t.label || "작업 디렉터리"), drmBadge(!t.exists || t.writable), tDetail]);
+        }
+        rows.push(["GroupID", "-", escapeHtml(data.group_id || "")]);
+        rows.push(["복호화 타임아웃", "-", escapeHtml(data.timeout_sec) + "초"]);
+
+        drmStatusBody.innerHTML = rows.map(function (r) {
+            return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td><td>" + r[2] + "</td></tr>";
+        }).join("");
+        if (drmStatusTable) drmStatusTable.style.display = "table";
+    }
+
+    async function verifyDrmSample() {
+        if (!drmSampleInput || !drmSampleInput.files || drmSampleInput.files.length === 0) {
+            showError("진단할 샘플 파일을 선택하세요.");
+            return;
+        }
+        var formData = new FormData();
+        formData.append("file", drmSampleInput.files[0]);
+
+        if (drmVerifyBtn) drmVerifyBtn.disabled = true;
+        if (drmVerifyLoading) drmVerifyLoading.classList.add("active");
+        if (drmVerifyResult) drmVerifyResult.style.display = "none";
+
+        try {
+            // FormData는 Content-Type을 브라우저가 boundary와 함께 설정해야 하므로
+            // apiRequest(JSON 전용)를 쓰지 않고 직접 호출한다.
+            var response = await fetch("/api/v1/admin/drm/verify", {
+                method: "POST",
+                headers: { "Authorization": "Bearer " + token },
+                body: formData,
+            });
+            if (!response.ok) {
+                showError("진단 요청에 실패했습니다 (HTTP " + response.status + ")");
+                return;
+            }
+            renderDrmVerify(await response.json());
+        } catch (err) {
+            showError("진단 요청에 실패했습니다.");
+        } finally {
+            if (drmVerifyBtn) drmVerifyBtn.disabled = false;
+            if (drmVerifyLoading) drmVerifyLoading.classList.remove("active");
+        }
+    }
+
+    function renderDrmVerify(result) {
+        if (!drmVerifyResult) return;
+
+        var DETECT_LABELS = { drm: "DRM 암호문 (SCDS)", plain: "평문 문서 (ZIP)", unknown: "판별 불가" };
+        var rows = [
+            ["파일", escapeHtml(result.file_name) + " (" + (result.file_size_bytes || 0).toLocaleString() + " bytes)"],
+            ["감지 결과", escapeHtml(DETECT_LABELS[result.detected] || result.detected || "-")],
+        ];
+        if (result.header_hex) rows.push(["선두 바이트", "<code>" + escapeHtml(result.header_hex) + "</code>"]);
+        if (result.ret !== null && result.ret !== undefined) rows.push(["scsl 반환값 (ret)", "<code>" + escapeHtml(result.ret) + "</code>"]);
+        if (result.elapsed_ms !== null && result.elapsed_ms !== undefined) rows.push(["소요 시간", escapeHtml(result.elapsed_ms) + " ms"]);
+
+        var out = result.output;
+        if (out) {
+            rows.push(["산출물 크기", (out.size_bytes || 0).toLocaleString() + " bytes"]);
+            rows.push(["ZIP 시그니처", out.is_zip ? "확인됨 (PK)" : "없음"]);
+            if (out.parse_message) {
+                rows.push(["문서 파싱", escapeHtml(out.parse_message)]);
+            }
+            if (out.sheet_names) rows.push(["시트", escapeHtml(out.sheet_names.join(", "))]);
+            if (out.paragraph_count !== undefined) {
+                rows.push(["문단/표", out.paragraph_count + "개 / " + (out.table_count || 0) + "개"]);
+            }
+        }
+        if (result.detail) rows.push(["상세", "<code>" + escapeHtml(result.detail) + "</code>"]);
+
+        var ok = !!result.success;
+        var tone = ok ? "rgba(46,125,50,0.12)" : "rgba(198,40,40,0.12)";
+        drmVerifyResult.innerHTML =
+            '<div style="padding: 12px 14px; border-radius: 6px; background: ' + tone + '; margin-bottom: 12px; font-size: 0.85rem;">' +
+            "<strong>" + (ok ? "성공" : "실패") + "</strong> &mdash; " + escapeHtml(result.message || "") +
+            "</div>" +
+            '<table class="settings-table"><tbody>' +
+            rows.map(function (r) {
+                return '<tr><td style="width: 22%;">' + r[0] + "</td><td>" + r[1] + "</td></tr>";
+            }).join("") +
+            "</tbody></table>";
+        drmVerifyResult.style.display = "block";
+    }
 })();

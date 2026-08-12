@@ -40,6 +40,7 @@
                 <button class="tab" data-tab="users">사용자 관리</button>
                 <button class="tab" data-tab="auditlogs">감사 로그</button>
                 <button class="tab" data-tab="incidents">열린 사건</button>
+                <button class="tab" data-tab="drm">DRM 연동</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -304,6 +305,50 @@
                         <tbody id="incidentsBody"></tbody>
                     </table>
                     <p id="incidentsEmpty" style="display: none; color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 20px 0;">열린 사건이 없습니다.</p>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-drm">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>DRM 연동 상태</h2>
+                        <button class="btn btn-secondary" id="refreshDrmBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">Softcamp ServiceLinker 연동 설정과 KeyManager 상태를 점검합니다. 키 파일 갱신 시각이 24시간을 크게 넘기면 KeyManager 동작을 확인하세요.</p>
+                    <div id="drmStatusLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">상태를 확인하는 중...</div>
+                    </div>
+                    <div id="drmSummary" style="display: none; padding: 12px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 0.85rem;"></div>
+                    <table class="settings-table" id="drmStatusTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th style="width: 22%;">항목</th>
+                                <th style="width: 12%;">상태</th>
+                                <th>내용</th>
+                            </tr>
+                        </thead>
+                        <tbody id="drmStatusBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar">
+                        <h2>복호화 진단</h2>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        DRM이 적용된 .xlsx / .docx 샘플을 업로드하면 서버에서 복호화를 시도하고 <strong>진단 결과만</strong> 표시합니다.
+                        복호화된 파일은 반환하지 않으며, 서버에도 남기지 않습니다.
+                    </p>
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="file" id="drmSampleInput" accept=".xlsx,.docx" style="font-size: 0.8125rem;">
+                        <button class="btn" id="drmVerifyBtn" style="padding: 8px 18px; font-size: 0.8125rem;">진단 실행</button>
+                    </div>
+                    <div id="drmVerifyLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">복호화를 시도하는 중...</div>
+                    </div>
+                    <div id="drmVerifyResult" style="display: none; margin-top: 14px;"></div>
                 </div>
             </div>
         </div>
