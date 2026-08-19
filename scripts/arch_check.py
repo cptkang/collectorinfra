@@ -61,6 +61,7 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.document":                  "infrastructure",
     "src.routing":                   "infrastructure",
     "src.infrastructure":            "infrastructure",
+    "src.observability":             "infrastructure",  # D-141: 실패 트레이스 수집·덤프
     "src.infrastructure.auth_provider":    "infrastructure",
     "src.infrastructure.user_repository":  "infrastructure",
     "src.infrastructure.audit_repository": "infrastructure",

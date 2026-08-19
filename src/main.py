@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import uuid
 from pathlib import Path
 
 # 프로젝트 루트를 sys.path에 추가 (IDE 직접 실행 지원)
@@ -38,14 +39,19 @@ async def run_query(query: str) -> str:
     config = load_config()
 
     from src.utils.sql_file_logger import init_sql_file_logger
-    init_sql_file_logger()
+    init_sql_file_logger(enabled=config.observability.sql_log_enabled)
+
+    from src.observability.trace_collector import start_request
+    from src.observability.trace_writer import flush_if_failed
 
     from src.graph import _create_checkpointer_async
 
     checkpointer = await _create_checkpointer_async(config)
     graph = build_graph(config, checkpointer=checkpointer)
 
-    initial_state = create_initial_state(user_query=query)
+    # CLI는 HTTP 미들웨어를 지나지 않으므로 트레이스 수명을 여기서 직접 관리한다(D-141).
+    request_id = f"cli-{uuid.uuid4().hex[:8]}"
+    initial_state = create_initial_state(user_query=query, request_id=request_id)
 
     thread_config = {
         "configurable": {
@@ -53,10 +59,20 @@ async def run_query(query: str) -> str:
         }
     }
 
+    if config.observability.trace_enabled:
+        start_request(
+            request_id,
+            thread_id="cli-session",
+            user_query=query,
+            max_steps=config.observability.trace_max_steps,
+        )
+
     try:
         result = await graph.ainvoke(initial_state, thread_config)
         return result.get("final_response", "응답을 생성할 수 없습니다.")
     finally:
+        if config.observability.trace_enabled:
+            flush_if_failed(request_id, enabled=True)
         conn = getattr(checkpointer, "conn", None)
         if conn is not None and hasattr(conn, "close"):
             try:
