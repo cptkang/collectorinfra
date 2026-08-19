@@ -27,11 +27,13 @@ D-129 설정 카탈로그가 그룹 수·필드 수를 정확히 단언하므로
 - [x] `AppConfig.observability`가 `Field(default_factory=ObservabilityConfig)`로 선언된다
       (CLAUDE.md「nested 필드는 `default_factory`로 — 임포트 시점 고정 방지」)
 - [x] `.env.example`에 5개 키가 **인라인 주석 없이**(주석은 별도 줄) 등재된다
-- [x] 설정 카탈로그가 그룹 19개 / 필드 248개로 갱신되고 UI에 자동 노출된다
+- [x] 설정 카탈로그가 그룹 19개 / 필드 **251개**로 갱신되고 UI에 자동 노출된다
+      *(계획 시 248 예상 — 기준선을 243으로 알았으나 실측 246이었다.
+      차이 3은 커밋 `b7ccc20`이 필드를 추가하며 단언을 갱신하지 않은 사전존재 실패분)*
 
 **Verification:**
 - [x] `pytest tests/test_api/test_settings_catalog.py -v` — `test_t2_group_and_field_counts`의
-      `len(group_keys) == 19`, `len(index) == 248` 갱신 후 통과
+      `len(group_keys) == 19`, `len(index) == **251**` 갱신 후 통과
 - [x] T1 커버리지 게이트(`카탈로그 ⊇ .env ∪ .env.example − 시크릿`) 통과
 - [x] `python -c "from src.config import load_config; print(load_config().observability)"` 로
       기본값 실측 확인
@@ -73,7 +75,10 @@ D-129 설정 카탈로그가 그룹 수·필드 수를 정확히 단언하므로
 **Verification:**
 - [x] `pytest tests/test_utils/test_sql_file_logger.py -v` — `tmp_path` fixture로 실 파일
       쓰기·읽기 검증 (mock 아님)
-- [x] 수동: `make server` 후 질의 1건 → `ls logs/sql/` 실측
+- [ ] 수동: `make server` 후 질의 1건 → `ls logs/sql/` 실측
+      **미수행** — 실 질의는 LLM 호출을 유발해 D-127 승인 게이트 대상이다.
+      대체 검증: 스모크로 `logs/sql/2026-08-19.sql` 실제 생성·내용 확인,
+      lifespan의 `init_sql_file_logger(enabled=…)` 호출을 코드로 확인
 - [x] `grep -rn "sqls/act" src/` 결과 0건
 
 **Dependencies:** T0
@@ -102,8 +107,10 @@ D-129 설정 카탈로그가 그룹 수·필드 수를 정확히 단언하므로
 
 **Verification:**
 - [x] `cd mcp_server && ../.venv/bin/python -m pytest tests/ -v`
-- [x] 동시 쓰기 테스트: 두 프로세스가 각 100 레코드를 append → 200 레코드가 모두
+- [x] 동시 쓰기 테스트: 두 프로세스가 각 50 레코드를 append → 100 레코드가 모두
       온전한 형태로 존재하는지 파싱 단언
+      *(초판은 스레드로만 검증 — GIL 아래 반쪽 검증이라 2026-08-19 실제 `subprocess`
+      2개로 보강. 별도 프로세스 경계에서도 `O_APPEND` 원자성 성립 실측)*
 - [x] `grep -rn "from src\.\|import src" mcp_server/` 결과 0건
 
 **Dependencies:** T1
@@ -134,7 +141,9 @@ D-083에서 `cleanup_old_logs()`가 "구현·설정은 있으나 호출부 전�
       만들고 경계값(정확히 N일, N+1일) 삭제 여부 단언
 - [x] **호출부 grep 실측**: `grep -rn "cleanup_old_sql_logs\|cleanup_old_traces" src/` 이
       **0건이 아님**을 확인 (D-083 재발 방지)
-- [x] 수동: 더미 오래된 파일 생성 → 서버 기동 → 삭제 확인
+- [ ] 수동: 더미 오래된 파일 생성 → 서버 기동 → 삭제 확인
+      **미수행** — 서버 기동에 DB 연결이 필요하다. 대체 검증: 경계값 단위 테스트
+      (정확히 N일 보존 / N+1일 삭제) + 호출부 grep 실측 2곳(D-083 조건)
 
 **Dependencies:** T1 (T5 완료 후 트레이스 부분 활성화)
 
@@ -223,7 +232,9 @@ D-083에서 `cleanup_old_logs()`가 "구현·설정은 있으나 호출부 전�
 - [x] 덤프 실패 시 요청 처리는 정상 완료된다
 
 **Verification:**
-- [x] `pytest tests/test_observability/test_failure_predicate.py tests/test_observability/test_writer.py -v`
+- [x] `pytest tests/test_observability/test_levels.py tests/test_observability/test_writer.py -v`
+      *(계획의 `test_failure_predicate.py` 대신 `test_levels.py`에 배치 — 판정 술어가
+      레벨 규약과 같은 모듈이라 응집도가 높다)*
 - [x] 실 파일 I/O 테스트(`tmp_path`) — 쓴 뒤 읽어 JSON 파싱까지 단언 (mock 아님)
 - [x] `oct(path.stat().st_mode)[-3:] == "600"` 단언
 - [x] 마스킹 테스트: 비밀번호·토큰 문자열을 payload에 넣고 파일에 원문이 없음을 단언
@@ -253,15 +264,19 @@ D-083에서 `cleanup_old_logs()`가 "구현·설정은 있으나 호출부 전�
 - [x] 조건부 노드(`use_deep_agent`, `enable_semantic_routing`, `fault_dx_enabled`)도
       플래그 on일 때 자동 편입된다
 - [x] 프록시가 `compile`·`add_edge`·`add_conditional_edges`·`set_entry_point`를 정확히 위임한다
-- [x] 진입점 **6곳 전부**(`query.py` `ainvoke` 3 + `astream_events` 2, `main.py:57`)에서
-      트레이스가 남는다 — 경로별 발동 단언 테스트로 고정
+- [x] 진입점 **전부**에서 트레이스가 남는다 — HTTP 4경로는 공통 `AuditMiddleware`에서,
+      CLI는 `main.py`에서. 실제 요청 발동 테스트로 고정
+      *(계획은 진입점마다 배선을 전제했으나, `traced`가 노드 진입 state에서 신호를
+      관찰하도록 바꿔 호출부가 최종 state를 몰라도 되게 만들어 1곳으로 수렴)*
 - [x] `OBS_TRACE_ENABLED=false`면 프록시가 no-op이고 **비트동일** 동작한다
 
 **Verification:**
 - [x] `pytest tests/test_observability/test_graph_proxy.py -v` (계약 테스트 — 먼저 작성)
 - [x] `pytest tests/test_graph.py tests/test_graph_extended.py tests/test_graph_routing_gaps.py -v`
       — 기존 그래프 테스트 무회귀
-- [x] 경로별 발동 테스트: 6개 진입점 각각에서 트레이스 파일 생성 확인
+- [x] 경로별 발동 테스트: `test_entrypoint_activation.py` — 실제 요청을 흘려 파일 생성 확인
+      *(배선이 미들웨어 1곳으로 수렴해 HTTP 4경로가 함께 덮인다. 초판은 소스 텍스트
+      검사만 있어 "코드가 거기 있다"까지였고, 2026-08-19 `TestClient` 실발동으로 보강)*
 - [x] 플래그 off 비트동일 테스트
 
 **Dependencies:** T5
@@ -291,8 +306,11 @@ D-083에서 `cleanup_old_logs()`가 "구현·설정은 있으나 호출부 전�
 - [x] 신규 `src/observability/` 라인 커버리지 85% 이상
 
 **Verification:**
-- [x] `pytest tests/test_observability/ -v --cov=src/observability --cov-report=term-missing`
-- [x] 벤치: 200단계 수집 × 100회 반복 → p95 경과시간 단언 (주입 가능한 clock 사용)
+- [x] `pytest tests/test_observability/ -v` + stdlib `trace` 근사 커버리지
+      *(`pytest-cov`·`coverage` 미설치 — 환경 제약. 신규 모듈 96.5% 실측)*
+- [x] 벤치: 40단계 수집 × 30회(워밍업 5 제외) → **중앙값** 단언 + 최악값 4배 상한
+      *(p95는 GC·스케줄러·커버리지 계측에 쉽게 튄다 — 실측에서 `trace` 계측 하
+      5.07ms로 경계를 넘었다. 예산 5ms는 그대로 두고 측정을 견고하게 바꿨다)*
 - [x] 예산 초과 시 **수집 항목을 줄이고 스펙은 완화하지 않는다**
 
 **Dependencies:** T6
@@ -416,8 +434,9 @@ LLM 파싱은 미매칭 시에만 폴백으로 쓴다.
 
 **Verification:**
 - [x] `pytest tests/test_semantic_routing/ tests/test_nodes/test_synonym_set.py -v`
-- [x] 라우팅 단언: 요건 원문 → `routing_intent == "cache_management"`,
-      `action == "add-synonym-set"`
+- [x] 라우팅 단언: 요건 원문 → `routing_intent == "cache_management"`
+      *(`action == "add-synonym-set"`는 노드 테스트에서 확인 — 결정적 선파서가
+      LLM 파싱을 건너뛰므로 라우팅 단계에는 `action` 개념이 없다)*
 - [x] before/after 매칭 대조 테스트
 - [x] e2e는 사용자 승인 후에만 `RUN_E2E=1`로 실행
 

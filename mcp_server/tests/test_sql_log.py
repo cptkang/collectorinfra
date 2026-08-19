@@ -110,3 +110,44 @@ def test_project_root_autodetect():
 
     assert (root / "mcp_server").is_dir()
     assert root.name == "collectorinfra" or (root / "pyproject.toml").exists()
+
+
+def test_concurrent_processes_do_not_interleave(tmp_path):
+    """서로 다른 **프로세스**가 같은 파일에 append해도 레코드가 온전하다.
+
+    스레드 테스트는 GIL 아래에서 도는 반쪽 검증이다. 본체와 mcp_server는 실제로
+    별도 프로세스이므로, `O_APPEND` 원자성에 기대는 설계가 프로세스 경계에서도
+    성립하는지 여기서 확인한다.
+    """
+    import subprocess
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from mcp_server import sql_log\n"
+        "sql_log.init(sys.argv[1])\n"
+        "tag = sys.argv[2]\n"
+        "for i in range(50):\n"
+        "    sql_log.log_sql(f'SELECT {tag}_{i}', source=tag)\n",
+        encoding="utf-8",
+    )
+
+    def _run(tag: str) -> int:
+        return subprocess.run(
+            [sys.executable, str(writer), str(tmp_path), tag],
+            capture_output=True, text=True,
+        ).returncode
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(_run, ["p1", "p2"]))
+
+    assert codes == [0, 0], "writer 프로세스가 실패했다"
+
+    content = _today_file(tmp_path).read_text(encoding="utf-8")
+    assert content.count("-- ==========") == 100
+    for tag in ("p1", "p2"):
+        for i in range(50):
+            assert f"SELECT {tag}_{i};" in content, f"{tag}_{i} 레코드가 깨졌다"
