@@ -338,3 +338,161 @@ class TestInlineSecretMasking:
         raw = self._payload_value(tmp_path, {"error": benign})
 
         assert benign in raw
+
+
+class TestPayloadSizeLimits:
+    """트레이스에 담기는 문자열은 상한이 있어야 한다.
+
+    Prove-It: user_query 30000자 + payload 50000자로 실패 요청을 만들면 덤프에 **8.8초**가
+    걸렸다(성능 예산 5ms의 1767배). 원인은 두 가지가 겹친 것이다 —
+    ① 마스킹 정규식이 입력 길이에 이차로 반응(20KB에 1.4초)
+    ② 담기는 문자열에 길이 상한이 없음.
+    user_query는 사용자 입력이므로 이 경로는 외부에서 직접 닿는다.
+    """
+
+    def test_long_user_query_is_truncated(self, tmp_path):
+        tc.start_request("req1", user_query="가" * 30_000)
+        tc.record_step("req1", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.INFO, event="node.exit", elapsed_ms=1.0))
+        state = {"routing_intent": "data_query", "query_results": [], "retry_count": 0}
+
+        header = _read_lines(tw.flush_if_failed("req1", state, project_root=tmp_path))[0]
+
+        assert len(header["user_query"]) <= tw._MAX_TEXT_LEN + 16  # 말줄임 표시 여유
+
+    def test_long_payload_string_is_truncated(self, tmp_path):
+        tc.start_request("req1")
+        tc.record_step("req1", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.ERROR, event="e", elapsed_ms=1.0,
+            reason="x", payload={"note": "b" * 50_000}))
+        state = {"routing_intent": "data_query", "error_message": "x",
+                 "query_results": [], "retry_count": 0}
+
+        step = _read_lines(tw.flush_if_failed("req1", state, project_root=tmp_path))[1]
+
+        assert len(step["payload"]["note"]) <= tw._MAX_TEXT_LEN + 16
+
+    def test_truncation_is_visible(self, tmp_path):
+        """잘렸다는 사실이 드러나야 한다 — 조용히 자르면 진단을 오도한다."""
+        tc.start_request("req1")
+        tc.record_step("req1", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.ERROR, event="e", elapsed_ms=1.0,
+            reason="x", payload={"note": "b" * 50_000}))
+        state = {"routing_intent": "data_query", "error_message": "x",
+                 "query_results": [], "retry_count": 0}
+
+        step = _read_lines(tw.flush_if_failed("req1", state, project_root=tmp_path))[1]
+
+        assert "생략" in step["payload"]["note"] or "…" in step["payload"]["note"]
+
+    def test_dump_stays_within_time_budget(self, tmp_path):
+        """긴 입력에서도 덤프가 예산 안에서 끝난다 (ReDoS 방어)."""
+        import time
+
+        tc.start_request("req1", user_query="가" * 30_000)
+        for i in range(20):
+            tc.record_step("req1", tc.TraceStep(
+                step=i, node="n", level=TraceLevel.ERROR, event="e", elapsed_ms=1.0,
+                reason="x", payload={"error": "eyJ" + "a" * 20_000}))
+        state = {"routing_intent": "data_query", "error_message": "x",
+                 "query_results": [], "retry_count": 0}
+
+        started = time.perf_counter()
+        tw.flush_if_failed("req1", state, project_root=tmp_path)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+
+        assert elapsed_ms < 100, f"덤프 {elapsed_ms:.0f}ms — 긴 입력에서 지연이 폭발한다"
+
+    def test_short_text_is_untouched(self, tmp_path):
+        """상한 안의 문자열은 그대로 보존된다."""
+        msg = "SQLCODE=-206: BAD_COL is not valid"
+        tc.start_request("req1")
+        tc.record_step("req1", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.ERROR, event="e", elapsed_ms=1.0,
+            reason="x", payload={"error": msg}))
+        state = {"routing_intent": "data_query", "error_message": "x",
+                 "query_results": [], "retry_count": 0}
+
+        step = _read_lines(tw.flush_if_failed("req1", state, project_root=tmp_path))[1]
+
+        assert step["payload"]["error"] == msg
+
+
+class TestRequestIdPathSafety:
+    """`request_id`는 파일 경로에 들어가므로 경로 조작을 막아야 한다.
+
+    Prove-It: `"../../../../tmp/pwned"`를 넘기면 `logs/trace/<날짜>/../../../../tmp/pwned.jsonl`로
+    경로가 조립됐다(대상 디렉토리가 있었다면 logs/ 밖에 파일이 쓰인다). 지금은 호출부가
+    내부 uuid를 넘기지만 `flush_if_failed`는 공개 함수이고 방어가 0이었다.
+    """
+
+    @pytest.mark.parametrize("evil", [
+        "../../../../tmp/pwned",
+        "../escape",
+        "sub/dir",
+        "a/../../b",
+        "..",
+        ".",
+        "x\x00y",
+        "a" * 200,
+    ])
+    def test_path_traversal_is_rejected(self, tmp_path, evil):
+        """탈출 시도는 **덤프 자체를 거부**한다 (디렉토리 부재로 우연히 실패하는 것에 기대지 않는다)."""
+        # 상위 디렉토리를 미리 만들어, 방어가 없으면 실제로 파일이 쓰이는 조건을 만든다.
+        (tmp_path / "logs" / "trace").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "tmp").mkdir(exist_ok=True)
+
+        tc.start_request(evil)
+        tc.record_step(evil, tc.TraceStep(
+            step=1, node="n", level=TraceLevel.INFO, event="e", elapsed_ms=1.0))
+        state = {"routing_intent": "data_query", "query_results": [], "retry_count": 0}
+
+        path = tw.flush_if_failed(evil, state, project_root=tmp_path)
+
+        assert path is None, f"위험한 request_id가 수용됨: {path}"
+        # logs/trace 밖에 파일이 생기지 않았다
+        assert not list((tmp_path / "tmp").glob("**/*.jsonl"))
+
+    def test_rejected_id_still_releases_buffer(self, tmp_path):
+        """거부하더라도 버퍼는 해제한다 (누수 방지)."""
+        tc.start_request("../evil")
+        tc.record_step("../evil", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.INFO, event="e", elapsed_ms=1.0))
+        state = {"routing_intent": "data_query", "query_results": [], "retry_count": 0}
+
+        tw.flush_if_failed("../evil", state, project_root=tmp_path)
+
+        assert tc.active_request_count() == 0
+
+    def test_rejection_does_not_log_raw_path(self, tmp_path, caplog):
+        """거부 로그에 원본을 그대로 싣지 않는다 (경로 전체 노출 방지)."""
+        evil = "../../../../etc/passwd"
+        tc.start_request(evil)
+        state = {"routing_intent": "data_query", "query_results": [], "retry_count": 0}
+
+        with caplog.at_level("WARNING"):
+            tw.flush_if_failed(evil, state, project_root=tmp_path)
+
+        assert not any(evil in r.getMessage() for r in caplog.records)
+        assert any("안전하지 않" in r.getMessage() for r in caplog.records), "거부 사유가 남지 않았다"
+
+    def test_normal_request_id_still_works(self, tmp_path):
+        tc.start_request("a1b2c3d4")
+        tc.record_step("a1b2c3d4", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.INFO, event="e", elapsed_ms=1.0))
+        state = {"routing_intent": "data_query", "query_results": [], "retry_count": 0}
+
+        path = tw.flush_if_failed("a1b2c3d4", state, project_root=tmp_path)
+
+        assert path is not None and path.name == "a1b2c3d4.jsonl"
+
+    def test_cli_style_request_id_works(self, tmp_path):
+        """CLI는 `cli-<hex>` 형태를 쓴다 — 하이픈이 거부되면 안 된다."""
+        tc.start_request("cli-9f3c2a10")
+        tc.record_step("cli-9f3c2a10", tc.TraceStep(
+            step=1, node="n", level=TraceLevel.INFO, event="e", elapsed_ms=1.0))
+        state = {"routing_intent": "data_query", "query_results": [], "retry_count": 0}
+
+        path = tw.flush_if_failed("cli-9f3c2a10", state, project_root=tmp_path)
+
+        assert path is not None and path.name == "cli-9f3c2a10.jsonl"

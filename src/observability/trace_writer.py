@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 
 _MASK = "********"
 
+#: 트레이스에 담는 문자열 하나의 최대 길이. 진단에는 앞부분이면 충분하고, 상한이 없으면
+#: 두 가지가 동시에 터진다 — 마스킹 정규식이 입력 길이에 **이차로** 반응하고(20KB에 1.4초),
+#: 파일·버퍼 크기가 예산을 넘는다. 30KB 질의 + 20단계 × 20KB payload로 덤프가 28초 걸린
+#: 실측(2026-08-19)이 이 상한의 근거다.
+_MAX_TEXT_LEN = 2000
+
+#: 잘렸다는 사실을 남긴다 — 조용히 자르면 "여기서 끝났다"로 오독된다.
+_TRUNCATED_SUFFIX = "…(생략)"
+
+#: `request_id`는 파일명이 되므로 경로 구분자·상위 참조가 섞이면 안 된다.
+#: 호출부는 내부 uuid를 넘기지만 `flush_if_failed`는 공개 함수이므로 여기서 막는다.
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
 #: 키 이름만으로 마스킹할 대상. 값 패턴에 안 걸리는 평문 비밀번호를 잡는다.
 _SENSITIVE_KEY = re.compile(
     r"(password|passwd|pwd|secret|token|api[_-]?key|credential|authorization)",
@@ -34,7 +47,11 @@ _SENSITIVE_KEY = re.compile(
 
 #: `scheme://user:password@host` 형태의 자격증명. DB 연결 실패 메시지에 자주 섞인다.
 #: 호스트는 진단에 필요하므로 비밀번호 부분만 가린다.
-_URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://[^:/@\s]+:)(?P<pw>[^@/\s]+)(?=@)")
+#:
+#: 스킴에 길이 상한을 둔 이유: 종전 `[\w+.-]*`는 무제한 greedy라 `://`가 없는 긴 문자열에서
+#: **모든 시작 위치마다** 끝까지 확장했다가 되돌아왔다(20KB에 1.4초 — 2026-08-19 실측).
+#: 실제 URL 스킴은 길어야 십수 자다.
+_URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]{0,32}://[^:/@\s]{1,256}:)(?P<pw>[^@/\s]{1,256})(?=@)")
 
 #: 값 **전체**가 시크릿 형태인지 판정. `DataMasker`의 패턴을 재사용한다
 #: (인스턴스가 아닌 클래스 속성이라 SecurityConfig 의존 없이 쓸 수 있다).
@@ -48,16 +65,28 @@ _SECRET_VALUE_PATTERNS = DataMasker.SENSITIVE_VALUE_PATTERNS
 #: 패턴을 문장 검색으로 돌리면 정상 진단 정보(해시·ID·타임스탬프)를 지워
 #: 트레이스의 존재 이유를 없앤다 — 그쪽은 값 전체 일치 검사로만 남긴다.
 _INLINE_SECRET_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"sk-[A-Za-z0-9]{20,}"),                                   # OpenAI 계열 API 키
-    re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?"),  # JWT
+    re.compile(r"sk-[A-Za-z0-9]{20,512}"),                                # OpenAI 계열 API 키
+    re.compile(r"eyJ[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{1,4096}(?:\.[A-Za-z0-9_-]{1,4096})?"),  # JWT
     re.compile(r"AKIA[0-9A-Z]{16}"),                                      # AWS Access Key
     re.compile(r"ghp_[A-Za-z0-9]{36}"),                                   # GitHub PAT
-    re.compile(r"glpat-[A-Za-z0-9_-]{20,}"),                              # GitLab PAT
+    re.compile(r"glpat-[A-Za-z0-9_-]{20,512}"),                           # GitLab PAT
     re.compile(r"\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}"),                     # bcrypt 해시
 ]
 
 #: payload에서 해시로 대체할 키. 원문은 logs/sql/에 이미 있다.
 _HASHED_KEYS = ("sql", "generated_sql")
+
+
+def _truncate(text: str) -> str:
+    """문자열을 기록 상한까지 자른다. 잘린 경우 표시를 남긴다."""
+    if len(text) <= _MAX_TEXT_LEN:
+        return text
+    return text[:_MAX_TEXT_LEN] + _TRUNCATED_SUFFIX
+
+
+def _is_safe_request_id(request_id: str) -> bool:
+    """파일명으로 써도 안전한 형태인지 판정한다(경로 탈출 방지)."""
+    return bool(_SAFE_REQUEST_ID.match(request_id)) and request_id not in (".", "..")
 
 
 def _sql_hash(sql: str) -> str:
@@ -73,7 +102,15 @@ def _mask_text(text: str) -> str:
     2. 문장 내 토큰 — 접두사가 뚜렷한 자격증명을 제자리 치환(문맥은 보존)
     3. 값 전체가 시크릿 형태 — 통째로 마스킹
     """
-    masked = _URL_CREDENTIALS.sub(lambda m: m.group("scheme") + _MASK, text)
+    # 마스킹 **전에** 자른다. 정규식이 입력 길이에 이차로 반응하므로 자르지 않고 넣으면
+    # 긴 문자열 하나가 덤프 전체를 수 초씩 붙든다.
+    text = _truncate(text)
+
+    # `://`가 없으면 URL 패턴을 아예 시도하지 않는다(대부분의 로그 문자열이 여기 해당).
+    masked = (
+        _URL_CREDENTIALS.sub(lambda m: m.group("scheme") + _MASK, text)
+        if "://" in text else text
+    )
 
     for pattern in _INLINE_SECRET_PATTERNS:
         masked = pattern.sub(_MASK, masked)
@@ -166,6 +203,12 @@ def flush_if_failed(
     """
     try:
         if not request_id:
+            return None
+        if not _is_safe_request_id(request_id):
+            # 로그에 원본을 그대로 싣지 않는다(경로가 통째로 노출된다).
+            logger.warning("트레이스 request_id 형식이 안전하지 않아 덤프를 건너뜁니다(%d자)",
+                           len(request_id))
+            tc.end_request(request_id)
             return None
         if not enabled:
             tc.end_request(request_id)
