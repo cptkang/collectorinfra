@@ -439,6 +439,24 @@ class AuditConfig(BaseSettings):
     model_config = {"env_prefix": "AUDIT_", "env_file": ".env", "extra": "ignore"}
 
 
+class ObservabilityConfig(BaseSettings):
+    """실행 SQL 파일 로그·실패 트레이스 설정 (D-140/D-141).
+
+    감사 로그(AuditConfig)와 목적이 다르다 — 감사는 "누가 무엇을 했는가"의 규정 준수 기록이고,
+    여기는 "왜 실패했는가"의 진단 재료다. 보존 기간도 트레이스가 더 짧다(실패 건만 쌓임).
+    """
+
+    sql_log_enabled: bool = True          # 실행 SQL을 logs/sql/에 파일 기록
+    sql_log_retention_days: int = 30      # SQL 로그 보존 일수 (0 이하면 정리 비활성)
+    trace_enabled: bool = True            # 실패 요청 단계 트레이스 수집
+    trace_retention_days: int = 14        # 트레이스 보존 일수 (0 이하면 정리 비활성)
+    # 요청당 링버퍼 단계 상한. 노드 20개 × 재시도 3회 + 여유를 감안한 값으로, 초과 시
+    # 가장 오래된 단계부터 밀어낸다(in-memory 버퍼는 bound 필수 — Known Mistakes).
+    trace_max_steps: int = 200
+
+    model_config = {"env_prefix": "OBS_", "env_file": ".env", "extra": "ignore"}
+
+
 class SchemaCacheConfig(BaseSettings):
     """스키마 캐시 관련 설정."""
 
@@ -809,6 +827,7 @@ class AppConfig(BaseSettings):
     redis: RedisConfig = Field(default_factory=RedisConfig)
     schema_cache: SchemaCacheConfig = Field(default_factory=SchemaCacheConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)  # D-140/D-141: SQL 파일 로그·실패 트레이스
     alarm: AlarmConfig = Field(default_factory=AlarmConfig)
     workb: WorkbConfig = Field(default_factory=WorkbConfig)
     noise_gate: NoiseGateConfig = Field(default_factory=NoiseGateConfig)  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
