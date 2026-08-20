@@ -891,6 +891,17 @@ class AppConfig(BaseSettings):
         # 플래그 미입력(None)이면 멀티 DB 연결이 하나라도 설정된 경우 자동 활성화한다.
         # 명시적 true/false는 pydantic-settings가 .env·OS env에서 필드로 직접 읽어 존중한다
         # (enable_deepagent_orchestration과 동일 방식 — os.getenv 미사용).
+        # tri-state 자동 해석이 발동했는지 기록한다(D-143 / plans/70 P0-1).
+        # 덮어쓴 뒤에는 명시 설정과 구별할 수 없으므로 여기서만 남길 수 있다.
+        # 운영 경로가 DB 등록 상태에 종속된다는 사실이 기동 로그에 드러나야 한다.
+        object.__setattr__(
+            self,
+            "_orchestration_resolved_by",
+            "auto_multidb"
+            if (self.enable_semantic_routing is None or self.enable_deepagent_orchestration is None)
+            else "explicit_env",
+        )
+
         if self.enable_semantic_routing is None:
             self.enable_semantic_routing = bool(self.multi_db.get_active_db_ids())
 

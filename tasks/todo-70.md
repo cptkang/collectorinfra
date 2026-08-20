@@ -45,7 +45,7 @@
 ---
 
 ## ✅ Checkpoint R
-- [ ] D-143 등재 확인, 이후 모든 폐기 제안이 이 규칙 아래 실행됨
+- [x] D-143 등재 확인, 이후 모든 폐기 제안이 이 규칙 아래 실행됨
 
 ---
 
@@ -57,15 +57,15 @@
 한다. 빌드 타임 배타이므로 요청별 카운터가 아니라 빌드 완료 로그에 필드를 더한다.
 
 **Acceptance:**
-- [ ] 빌드 완료 로그(`src/graph.py` `"에이전트 그래프 빌드 완료"`)에 `use_deep_agent`·`degraded_reason` 추가
-- [ ] 강등 사유가 `package_missing`/`orchestrator_unavailable`/`flag_off`/`none`으로 구분
-- [ ] tri-state 자동 해석 발동 여부가 `resolved_by="auto_multidb"|"explicit_env"`로 기록
-- [ ] **새 플래그 추가 0** (AD-3)
+- [x] 빌드 완료 로그(`src/graph.py` `"에이전트 그래프 빌드 완료"`)에 `use_deep_agent`·`degraded_reason` 추가
+- [x] 강등 사유가 `package_missing`/`orchestrator_unavailable`/`flag_off`/`none`으로 구분
+- [x] tri-state 자동 해석 발동 여부가 `resolved_by="auto_multidb"|"explicit_env"`로 기록
+- [x] **새 플래그 추가 0** (AD-3)
 
 **Verify:**
-- [ ] 4단 각 조건으로 빌드 시 로그가 해당 단·사유를 출력함을 테스트로 단언
-- [ ] `pytest tests/test_graph.py tests/test_graph_routing_gaps.py tests/test_orchestration/ -q`
-- [ ] 골든 스냅샷 무갱신
+- [x] 4단 각 조건으로 빌드 시 로그가 해당 단·사유를 출력함을 테스트로 단언
+- [x] `pytest tests/test_graph.py tests/test_graph_routing_gaps.py tests/test_orchestration/ -q`
+- [x] 골든 스냅샷 무갱신
 
 **Files:** `src/graph.py`, `src/config.py`, `tests/test_observability/` 또는 `tests/test_graph*.py`
 **Scope:** S
@@ -227,7 +227,9 @@
 ---
 
 ## ✅ Checkpoint 병렬
-- [ ] O1 기동 로그로 **확정 단과 사유를 실제 확인** → 게이트 6 판정 근거 확보
+- [x] O1 기동 로그로 **확정 단과 사유를 실제 확인** → 게이트 6 판정 근거 확보
+      실측(2026-08-20, 운영 `.env`): `tier=deep_agent degraded_reason=none resolved_by=explicit_env`
+      → 정본 1단 확정 · 강등 없음 · 레거시 4단 **미도달**
 - [ ] `pytest` 전체 무회귀 · `arch_check --ci` 0
 - [ ] **사람 검토 후 Phase L 진행**
 
@@ -302,7 +304,7 @@
 4단→3단 단순화**다(실체 3줄, -5~-20줄).
 
 **Acceptance:**
-- [ ] O1 기동 로그로 **4단 미확정 확인** 후에만 착수
+- [x] O1 기동 로그로 **4단 미확정 확인** 후에만 착수 — 확인 완료(`tier=deep_agent`), 단 관측은 현 운영 `.env` 1종 한정
 - [ ] 단일 DB 처리는 3단(`semantic_router`)이 담당함을 확인
 - [ ] 4단으로 확정되는 설정 조합이 실제로 쓰이면 **폐기하지 않고 존치**
 

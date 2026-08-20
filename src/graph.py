@@ -35,6 +35,7 @@ from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability.graph_proxy import TracedGraph
+from src.observability.ladder import log_ladder_resolution, resolve_ladder_tier
 from src.orchestration import (
     agent_orchestrator,
     intent_planner,
@@ -329,13 +330,15 @@ def build_graph(config: AppConfig, checkpointer=None):
     # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
     # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
     # 실패하면 기존 semantic_router 경로로 안전 폴백한다(그래프 크래시 방지 — 회귀 없음).
-    use_deep_agent = select_orchestration_backend(config) == "deep_agent"
-    if use_deep_agent and not _deep_agent_buildable(config, llm):
+    _backend = select_orchestration_backend(config)
+    _buildable = _deep_agent_buildable(config, llm) if _backend == "deep_agent" else False
+    use_deep_agent = _backend == "deep_agent" and _buildable
+    if _backend == "deep_agent" and not _buildable:
         logger.warning(
             "Track B 선택(deep_agent)이나 deepagents 패키지 조립 불가 → "
-            "semantic_router 경로로 폴백합니다(폐쇄망 wheel 반입 필요)."
+            "semantic_router 경로로 폴백합니다(폐쇄망 wheel 반입 필요). "
+            "degraded_reason=package_missing"
         )
-        use_deep_agent = False
 
     # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. 시멘틱 라우팅 경로에서만·플래그 on일 때만
     # fault_diagnosis 노드를 배선한다. off면 노드·엣지 미배선 → 라우팅 비트동일(회귀 0).
@@ -648,4 +651,14 @@ def build_graph(config: AppConfig, checkpointer=None):
         config.enable_sql_approval,
         config.enable_structure_approval,
     )
+
+    # 확정된 사다리 단과 강등 사유를 기록한다(D-143 / plans/70 P0-1).
+    # 경로 4종은 병존이 아니라 1 정본 + 3 폴백이며, 확정은 여기서 1회 일어난다.
+    # 이 로그가 "레거시 4단이 실제로 쓰이는가"를 판정하는 유일한 근거다.
+    _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
+    log_ladder_resolution(
+        _tier, _reason,
+        flag_origin=getattr(config, "_orchestration_resolved_by", "explicit_env"),
+    )
+
     return compiled
