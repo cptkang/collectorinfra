@@ -237,10 +237,18 @@ def test_alias_addition_requires_single_file_edit():
 
     # 프로필 외 나머지 동기화 지점에는 이 속성의 별칭 지식이 없어야 한다(수정 불필요).
     existing_aliases = [a for a in vendor["synonyms"] if a != new_alias]
+    # D-145(Vendor+Model 결합 규칙)의 필드명 표면 패턴("제조사"+"모델" 동시 포함 판정,
+    # assembler.find_vendor_model_concat)은 별칭 지식이 아니라 양식 필드 인식 규칙이라
+    # 별칭 추가 시 수정 대상이 아니다 — assembler 검사에서만 제외한다.
+    _d145_surface_triggers = {"제조사"}
     needs_edit = ["db_profiles"]
     for point in ("prompts", "assembler"):
         text = _SYNC_POINTS[point].read_text(encoding="utf-8")
-        if any(alias in text for alias in existing_aliases):
+        scan = [
+            a for a in existing_aliases
+            if not (point == "assembler" and a in _d145_surface_triggers)
+        ]
+        if any(alias in text for alias in scan):
             needs_edit.append(point)
     assert needs_edit == ["db_profiles"], f"수정 필요 파일: {needs_edit}"
 

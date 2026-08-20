@@ -193,7 +193,7 @@ class TestQueryGeneratorWiring:
         qg = importlib.import_module("src.nodes.query_generator")
         seen: dict = {}
 
-        def fake_limit(user_query, default_limit, *, parsed_limit=None):
+        def fake_limit(state, user_query, default_limit, parsed_limit=None):
             seen["parsed_limit"] = parsed_limit
             return default_limit
 
@@ -201,9 +201,9 @@ class TestQueryGeneratorWiring:
             seen["parsed_time_range"] = parsed_time_range
             return None
 
-        original_limit = qg.resolve_query_limit
+        original_limit = qg.resolve_effective_limit
         original_month = qg.resolve_stat_month_range
-        qg.resolve_query_limit = fake_limit
+        qg.resolve_effective_limit = fake_limit
         qg.resolve_stat_month_range = fake_month
         try:
             sample_state["parsed_requirements"]["limit"] = 42
@@ -220,7 +220,7 @@ class TestQueryGeneratorWiring:
 
             await qg.query_generator(sample_state, llm=mock_llm, app_config=mock_config)
         finally:
-            qg.resolve_query_limit = original_limit
+            qg.resolve_effective_limit = original_limit
             qg.resolve_stat_month_range = original_month
 
         assert seen["parsed_limit"] == 42
@@ -242,12 +242,12 @@ class TestMultiDbExecutorWiring:
         mdb = importlib.import_module("src.nodes.multi_db_executor")
         seen: dict = {}
 
-        def fake_limit(user_query, default_limit, *, parsed_limit=None):
+        def fake_limit(state, user_query, default_limit, parsed_limit=None):
             seen["parsed_limit"] = parsed_limit
             return default_limit
 
-        original = mdb.resolve_query_limit
-        mdb.resolve_query_limit = fake_limit
+        original = mdb.resolve_effective_limit
+        mdb.resolve_effective_limit = fake_limit
         try:
             app_config = MagicMock()
             app_config.query.default_limit = 1000
@@ -261,7 +261,7 @@ class TestMultiDbExecutorWiring:
                 app_config=app_config,
             )
         finally:
-            mdb.resolve_query_limit = original
+            mdb.resolve_effective_limit = original
 
         assert seen["parsed_limit"] == 55
 

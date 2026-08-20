@@ -331,6 +331,11 @@ class TestAnalyzeSchemaAttachesStructureMeta:
         assert meta.get("query_guide")  # 조인 가이드도 함께 로드
 
 
+from src.utils.query_gen_common import (
+    _ALL_QUERY_LIMIT as ALL_LIMIT,  # 전량 상향값 — D-134에서 10,000으로 하향(spec 정합)
+)
+
+
 # ── C: 경로 패리티 가드 (D-067) ───────────────────────────────────────────────
 # 단일 DB(query_generator)와 멀티 DB(multi_db_executor)가 예시·LIMIT 로직을 각자
 # 복붙으로 갈라놓으면 D-066 같은 비대칭이 재발한다. 두 경로가 같은 헬퍼를 참조하고,
@@ -349,7 +354,7 @@ class TestCrossPathParity:
         mdb = importlib.import_module("src.nodes.multi_db_executor")
         # few-shot 예시 주입은 P3-1에서 `build_query_examples`(이력/고정 선택 포함)로 통합됐다.
         assert qg.build_query_examples is mdb.build_query_examples
-        assert qg.resolve_query_limit is mdb.resolve_query_limit
+        assert qg.resolve_effective_limit is mdb.resolve_effective_limit
 
     def test_both_paths_use_shared_prompt_builders(self):
         """P3-1 공유 빌더를 두 경로가 같은 객체로 참조한다(복붙 재분기 차단).
@@ -496,7 +501,7 @@ class TestResolvedLimitPromotion:
         from src.utils.query_gen_common import resolve_effective_limit
 
         for bad in (None, 0, -1):
-            assert resolve_effective_limit({"resolved_limit": bad}, "모든 서버", 1000) == 100_000
+            assert resolve_effective_limit({"resolved_limit": bad}, "모든 서버", 1000) == ALL_LIMIT
 
     def test_both_paths_reference_same_effective_helper(self):
         """단일/멀티 경로가 동일 resolve_effective_limit 객체를 참조(복붙 분기 차단, D-067)."""
@@ -519,11 +524,11 @@ class TestResolvedLimitPromotion:
         task = {"task_id": "t1", "agent": "data_query", "sub_query": self.TRIMMED}
         isolated = _make_isolated_input(task, state, prior={})
 
-        assert isolated["resolved_limit"] == 100_000
+        assert isolated["resolved_limit"] == ALL_LIMIT
 
         # 호출부의 교체(agent_orchestrator._run_agent / subagents 단일 DB 파이프라인) 재현
         isolated["user_query"] = self.TRIMMED
-        assert resolve_effective_limit(isolated, isolated["user_query"], 1000) == 100_000
+        assert resolve_effective_limit(isolated, isolated["user_query"], 1000) == ALL_LIMIT
 
     def test_isolated_input_respects_pre_promoted_value(self):
         """상류(라우트 등)에서 이미 승격된 resolved_limit이 있으면 재계산하지 않고 존중."""
@@ -554,22 +559,22 @@ class TestEnforceAllQueryLimit:
             "WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL\n"
             "FETCH FIRST 100 ROWS ONLY;"
         )
-        out = enforce_all_query_limit(sql, 100_000, 1000)
-        assert "FETCH FIRST 100000 ROWS ONLY;" in out
+        out = enforce_all_query_limit(sql, ALL_LIMIT, 1000)
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY;" in out
         assert "FETCH FIRST 100 ROWS ONLY" not in out
 
     def test_pg_default_cap_corrected(self):
         from src.utils.query_gen_common import enforce_all_query_limit
 
-        out = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", 100_000, 1000)
-        assert out.endswith("LIMIT 100000")
+        out = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", ALL_LIMIT, 1000)
+        assert out.endswith(f"LIMIT {ALL_LIMIT}")
 
     def test_intentional_top_n_preserved(self):
         """LIMIT 1(최상위 1건) 등 캡 집합 밖 TOP-N은 '모든' 질의여도 보존."""
         from src.utils.query_gen_common import enforce_all_query_limit
 
         sql = "SELECT * FROM t ORDER BY v DESC LIMIT 1"
-        assert enforce_all_query_limit(sql, 100_000, 1000) == sql
+        assert enforce_all_query_limit(sql, ALL_LIMIT, 1000) == sql
 
     def test_subquery_latest_value_pattern_preserved(self):
         """서브쿼리의 FETCH FIRST 1 ROW ONLY(최신값 패턴)는 보존, 말미 캡만 교정."""
@@ -581,9 +586,9 @@ class TestEnforceAllQueryLimit:
             "FROM POLESTAR.cmm_resource r\n"
             "FETCH FIRST 100 ROWS ONLY;"
         )
-        out = enforce_all_query_limit(sql, 100_000, 1000)
+        out = enforce_all_query_limit(sql, ALL_LIMIT, 1000)
         assert "FETCH FIRST 1 ROW ONLY" in out
-        assert "FETCH FIRST 100000 ROWS ONLY;" in out
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY;" in out
 
     def test_non_all_query_untouched(self):
         """'모든' 상향이 아니면(명시 건수·기본) 어떤 SQL도 교정하지 않는다."""
@@ -597,14 +602,14 @@ class TestEnforceAllQueryLimit:
         from src.utils.query_gen_common import enforce_all_query_limit
 
         sql = "SELECT COUNT(*) FROM t"
-        assert enforce_all_query_limit(sql, 100_000, 1000) == sql
-        assert enforce_all_query_limit("", 100_000, 1000) == ""
+        assert enforce_all_query_limit(sql, ALL_LIMIT, 1000) == sql
+        assert enforce_all_query_limit("", ALL_LIMIT, 1000) == ""
 
     def test_case_insensitive(self):
         from src.utils.query_gen_common import enforce_all_query_limit
 
-        out = enforce_all_query_limit("select * from t fetch first 100 rows only", 100_000, 1000)
-        assert "FETCH FIRST 100000 ROWS ONLY" in out
+        out = enforce_all_query_limit("select * from t fetch first 100 rows only", ALL_LIMIT, 1000)
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY" in out
 
     def test_legacy_default_cap_corrected_after_config_uplift(self):
         """운영이 QUERY_DEFAULT_LIMIT을 상향(10,000)해도 레거시 캡 1000은 교정된다.
@@ -616,12 +621,12 @@ class TestEnforceAllQueryLimit:
         from src.utils.query_gen_common import enforce_all_query_limit
 
         sql = "SELECT r.hostname FROM POLESTAR.cmm_resource r FETCH FIRST 1000 ROWS ONLY"
-        out = enforce_all_query_limit(sql, 100_000, 10_000)
-        assert "FETCH FIRST 100000 ROWS ONLY" in out
+        out = enforce_all_query_limit(sql, ALL_LIMIT, 10_000)
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY" in out
 
-        out2 = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", 100_000, 10_000)
-        assert out2.endswith("LIMIT 100000")
+        out2 = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", ALL_LIMIT, 10_000)
+        assert out2.endswith(f"LIMIT {ALL_LIMIT}")
 
         # 새 config_default(10,000) 캡도 여전히 교정된다
-        out3 = enforce_all_query_limit("SELECT * FROM t LIMIT 10000", 100_000, 10_000)
-        assert out3.endswith("LIMIT 100000")
+        out3 = enforce_all_query_limit("SELECT * FROM t LIMIT 10000", ALL_LIMIT, 10_000)
+        assert out3 == "SELECT * FROM t LIMIT 10000"  # 캡==상향값이면 교정 불요(동치)

@@ -130,7 +130,7 @@ class TestFileZoneClarification:
 
         assert resolve_query_limit(
             "사용률은 지난달 1개월 통계를 사용하시오", _FORM_FILL_DEFAULT_LIMIT
-        ) == 100_000
+        ) == _FORM_FILL_DEFAULT_LIMIT  # 전량 상향값(D-134 하향 후 10,000)과 동일
         assert resolve_query_limit("상위 100건만 채워줘", _FORM_FILL_DEFAULT_LIMIT) == 100
 
 

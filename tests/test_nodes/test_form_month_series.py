@@ -1371,7 +1371,9 @@ class TestFormFillHitl:
         # FIX-17: 파이프라인 입력은 원 질의로 복원(위치 힌트 유실 → priority 공백 →
         # 전 DB 유사어 프롬프트 413 + 오라우팅 라이브 실측) + 폼필 LIMIT 복원
         assert delta["user_query"] == "양식 채워줘"
-        assert delta["resolved_limit"] == 100_000
+        from src.utils.query_gen_common import _ALL_QUERY_LIMIT
+
+        assert delta["resolved_limit"] == _ALL_QUERY_LIMIT  # 폼필 기본 = 전량 상향값(D-134 정합)
         # FIX-26: 존 체크박스 런("채워줘")은 원 질의에 위치어가 없어 pending 보존 존을
         # selected_db_ids로 복원해야 기본 DB(b0) 침묵 오라우팅·타 DB 존재성 검증 탈락을 막는다
         assert delta["selected_db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]

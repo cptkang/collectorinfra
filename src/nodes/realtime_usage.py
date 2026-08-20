@@ -36,12 +36,11 @@ _KST = timezone(timedelta(hours=9))
 
 _METRIC_COLUMNS = {"cpu": "CPU 사용률(%)", "memory": "메모리 사용률(%)"}
 
-# 존 표기 (선택지 라벨과 동일 입도 — Plan 70 §4.4)
-_ZONE_LABELS = {
-    "polestar_b0": "은행존",
-    "polestar_cm_gp": "공동존 김포",
-    "polestar_cm_yd": "공동존 여의도",
-}
+# 존 표기 (선택지 라벨과 동일 입도 — Plan 70 §4.4). 라벨 정본은 존 역질문 선택지
+# (ZONE_CLARIFY_OPTIONS)이므로 파생한다(사본 금지 — 위치 표면어 정본 1곳 단언 테스트 준수).
+from src.utils.query_gen_common import ZONE_CLARIFY_OPTIONS
+
+_ZONE_LABELS = {o["db_id"]: o["label"] for o in ZONE_CLARIFY_OPTIONS}
 
 # 서버명 지목 질의의 결정적 필터용 토큰: 영숫자+하이픈, 숫자 포함, 5자 이상
 # (예: cob0-bnoapd05). "cpu"/"메모리" 등 지표어는 숫자가 없어 자연 배제된다.

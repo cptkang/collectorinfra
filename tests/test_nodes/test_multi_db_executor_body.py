@@ -178,7 +178,11 @@ class TestSqlReuseBySchema:
 
 
 class TestSimpleValidationRetry:
-    """간이 검증 실패 시 에러 컨텍스트를 실어 1회만 재생성한다."""
+    """간이 검증 실패 시 에러 컨텍스트를 실어 최대 2회 재생성한다(총 3회 시도).
+
+    단일 경로 재시도 3회와 대칭(D-150 후속1) — 동일 스키마 복구원이 없는 조합은
+    재생성 횟수가 유일한 방어선이다(ux_improvement 병합 승계).
+    """
 
     async def test_first_failure_triggers_single_regeneration(self, monkeypatch):
         h = _Harness(
@@ -198,13 +202,13 @@ class TestSimpleValidationRetry:
     async def test_second_failure_gives_up_on_that_db(self, monkeypatch):
         h = _Harness(
             monkeypatch,
-            validation_errors=["1차 실패", "2차 실패"],
+            validation_errors=["1차 실패", "2차 실패", "3차 실패"],
         )
 
         result = await h.run(["db_a"])
 
-        assert len(h.generate_calls) == 2, "재시도는 1회로 제한된다"
-        assert result["db_errors"]["db_a"] == "SQL 검증 실패: 2차 실패"
+        assert len(h.generate_calls) == 3, "재시도는 2회로 제한된다(총 3회 시도, D-150 후속1)"
+        assert result["db_errors"]["db_a"] == "SQL 검증 실패: 3차 실패"
         assert h.execute_calls == [], "검증을 통과하지 못한 SQL은 실행하지 않는다"
         assert result["error_message"] == "모든 DB 쿼리가 실패했습니다."
 

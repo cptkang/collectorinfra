@@ -268,7 +268,8 @@ class TestZoneResumeTurnLimit:
             ["polestar_b0", "polestar_cm_gp"],
             {},  # 후단 게이트 재개 턴(체크포인트 존재)
         )
-        assert delta["resolved_limit"] == 100_000
+        from src.utils.query_gen_common import _ALL_QUERY_LIMIT
+        assert delta["resolved_limit"] == _ALL_QUERY_LIMIT
 
     def test_first_turn_resume_uplifts_limit(self):
         """pre-gate 재개 턴은 파이프라인 미실행이라 첫 턴(체크포인트 없음)으로 도착."""
@@ -277,7 +278,8 @@ class TestZoneResumeTurnLimit:
             ["polestar_cm_gp", "polestar_cm_yd"],
             None,
         )
-        assert state["resolved_limit"] == 100_000
+        from src.utils.query_gen_common import _ALL_QUERY_LIMIT
+        assert state["resolved_limit"] == _ALL_QUERY_LIMIT
 
     def test_explicit_count_wins(self):
         delta = self._build(

@@ -38,14 +38,19 @@ from src.utils.query_gen_common import (
     rewrite_zone_mentions_for_selection,
 )
 
-# 폼필(파일 업로드) 기본 LIMIT — 전량 채움이 기본(_ALL_QUERY_LIMIT와 동일 값).
+# 폼필(파일 업로드) 기본 LIMIT — 전량 채움이 기본(전량 상향값과 동일).
 # 실행 상한은 db 클라이언트 max_rows(10,000)가 안전망(D-066 후속7 계열).
-_FORM_FILL_DEFAULT_LIMIT = 100_000
+# 값은 _ALL_QUERY_LIMIT 참조로 고정한다 — 독립 리터럴(구 100,000)로 두면 D-134 하향
+# (10,000, spec 정합) 이후 enforce_all_query_limit의 발동 조건(effective==상향값)과
+# 어긋나 캡 모방 교정이 침묵 무력화된다(병합 검증 실측).
+from src.utils.query_gen_common import _ALL_QUERY_LIMIT
+
+_FORM_FILL_DEFAULT_LIMIT = _ALL_QUERY_LIMIT
 # 존 선택 재개 턴 기본 LIMIT (D-150 후속1) — 존 역질문은 존 단위 전량 조회에서만
 # 발동하므로 재개 턴은 전량 상향이 기본(명시 건수는 resolve_query_limit이 우선 반영).
 # 미상향 시 "모든/전체" 표면어 없는 질의에서 few-shot 말미 캡(FETCH FIRST 100) 모방이
 # 교정되지 않아 100건 절단된다(2026-08-04 라이브 실측: 은행존 VM 100건).
-_ZONE_SCAN_LIMIT = 100_000
+_ZONE_SCAN_LIMIT = _ALL_QUERY_LIMIT
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
