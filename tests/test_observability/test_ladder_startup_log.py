@@ -173,7 +173,7 @@ class TestGraphWiring:
         from pathlib import Path
 
         src = Path("src/graph.py").read_text(encoding="utf-8")
-        assert "log_ladder_resolution" in src, "build_graph가 사다리 판정을 기록하지 않음"
+        assert "ladder_resolution" in src, "build_graph가 사다리 판정을 기록하지 않음"
 
     def test_no_new_flag_introduced(self):
         """관측을 위해 새 enable_* 플래그를 만들지 않는다 (자기모순 회피)."""

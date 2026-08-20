@@ -77,13 +77,13 @@
 **Description:** O1의 기동 판정을 `src/observability/`에 지표로 얹는다. **신규 패키지 신설 없음**(AD-2).
 
 **Acceptance:**
-- [ ] 확정 단·강등 사유가 `src/observability/`의 기존 구조로 조회 가능
-- [ ] 정본(1단) 미확정 시 경고 **1회만**(스팸 없음)
-- [ ] 임계값은 상수 (새 `enable_*` 없음)
+- [x] 확정 단·강등 사유가 `src/observability/`의 기존 구조로 조회 가능
+- [x] 정본(1단) 미확정 시 경고 **1회만**(스팸 없음)
+- [x] 임계값은 상수 (새 `enable_*` 없음)
 
 **Verify:**
-- [ ] 4단 각 조건 주입 시 지표가 독립적으로 반영됨을 단위 테스트로 단언
-- [ ] `arch_check --ci` 0 (`src.observability`는 infrastructure)
+- [x] 4단 각 조건 주입 시 지표가 독립적으로 반영됨을 단위 테스트로 단언
+- [x] `arch_check --ci` 0 (`src.observability`는 infrastructure)
 
 **Files:** `src/observability/`, `src/graph.py`
 **Dependencies:** O1

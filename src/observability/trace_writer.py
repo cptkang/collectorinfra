@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.observability import ladder
 from src.observability import trace_collector as tc
 from src.observability.levels import failure_triggers, severity_for
 from src.security.data_masker import DataMasker
@@ -242,6 +243,9 @@ def flush_if_failed(
             "total_ms": round(total_ms, 1),
             "node_path": _node_path(steps),
             "step_count": len(steps),
+            # 어느 사다리 단에서 난 실패인지. 단이 다르면 노드 구성이 다르므로
+            # 이 값 없이는 node_path를 해석할 기준이 없다 (plans/70 O2).
+            "ladder": ladder.current_ladder(),
         }
 
         lines = [json.dumps(header, ensure_ascii=False)]

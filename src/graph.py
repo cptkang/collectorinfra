@@ -35,7 +35,7 @@ from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability.graph_proxy import TracedGraph
-from src.observability.ladder import log_ladder_resolution, resolve_ladder_tier
+from src.observability.ladder import record_ladder_resolution, resolve_ladder_tier
 from src.orchestration import (
     agent_orchestrator,
     intent_planner,
@@ -656,7 +656,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     # 경로 4종은 병존이 아니라 1 정본 + 3 폴백이며, 확정은 여기서 1회 일어난다.
     # 이 로그가 "레거시 4단이 실제로 쓰이는가"를 판정하는 유일한 근거다.
     _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
-    log_ladder_resolution(
+    record_ladder_resolution(
         _tier, _reason,
         flag_origin=getattr(config, "_orchestration_resolved_by", "explicit_env"),
     )

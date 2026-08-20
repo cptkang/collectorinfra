@@ -120,3 +120,43 @@ def log_ladder_resolution(
             "의도한 구성인지 확인하세요 — docs/21_orchestration_ladder.md",
             tier.value, reason,
         )
+
+
+#: 마지막으로 확정된 단. 확정은 빌드 시 1회뿐이라 카운터가 아니라 단일 스냅샷이다.
+#: 실패 트레이스가 이 값을 읽어 "어느 파이프라인에서 난 실패인가"를 함께 남긴다 —
+#: 단이 달라지면 노드 구성 자체가 달라지므로, 이 값이 없으면 node_path를 해석할 기준이 없다.
+_resolution: dict[str, str] | None = None
+
+
+def record_ladder_resolution(
+    tier: LadderTier,
+    reason: str,
+    *,
+    flag_origin: str = "explicit_env",
+) -> None:
+    """확정 결과를 프로세스에 보존하고 기동 로그를 남긴다.
+
+    보존과 로그를 한 진입점에 묶는다 — 나뉘면 한쪽만 호출돼 둘이 어긋난다.
+    재빌드 시에는 덮어쓴다(누적 아님). 최신 확정만이 유효한 사실이다.
+    """
+    global _resolution
+    _resolution = {
+        "tier": tier.value,
+        "degraded_reason": reason,
+        "resolved_by": flag_origin,
+    }
+    log_ladder_resolution(tier, reason, flag_origin=flag_origin)
+
+
+def current_ladder() -> dict[str, str] | None:
+    """확정된 단을 조회한다. 아직 빌드 전이면 None.
+
+    호출부가 반환값을 변형해도 내부 상태가 오염되지 않도록 사본을 준다.
+    """
+    return dict(_resolution) if _resolution is not None else None
+
+
+def reset_ladder() -> None:
+    """확정 상태를 지운다 (테스트 격리용)."""
+    global _resolution
+    _resolution = None
