@@ -1292,6 +1292,7 @@ class TestFormFillHitl:
             "form_fill_literals": {"용도": "웹서버"},
             "form_fill_overrides": {"구분": {"action": "blank", "applied": True}},
             "form_fill_candidates": [{"value": "column:name", "label": "cmm_resource.name", "kind": "column"}],
+            "selected_db_ids": ["polestar_cm_gp", "polestar_cm_yd"],
         }
         fill_stats = {
             "서버 이름": 5, f"{_AVG}|M": 0, "용도": 5,
@@ -1306,6 +1307,26 @@ class TestFormFillHitl:
         assert pending["uploaded_file"] == b"xlsx-bytes"
         assert pending["file_type"] == "xlsx"
         assert pending["unresolved"] == ["도입일자"]
+        # FIX-26: 존 체크박스 런의 확정 존이 pending에 보존돼야 답변 턴이 복원한다
+        assert pending["db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+    def test_hitl_pending_db_ids_fallback_without_selection(self):
+        """FIX-26 폴백: 존 체크박스 선택이 없는 런(텍스트 위치어 런)은 라우팅 확정
+        (target_databases∪active_db_id∪mapped_db_ids)에서 존을 보존한다."""
+        from src.nodes.output_generator import _build_form_fill_hitl
+
+        state = {
+            "template_structure": {"sheets": [{"name": "Sheet1"}]},
+            "uploaded_file": b"xlsx-bytes",
+            "file_type": "xlsx",
+            "parsed_requirements": {"original_query": "김포 서버로 채워줘"},
+            "selected_db_ids": None,
+            "target_databases": [{"db_id": "polestar_cm_gp"}],
+            "active_db_id": "polestar_cm_gp",
+        }
+        clar, pending = _build_form_fill_hitl(state, {"서버 이름": 5, "도입일자": 0})
+        assert pending is not None
+        assert pending["db_ids"] == ["polestar_cm_gp"]
 
     def test_hitl_none_when_all_zero_or_resolved(self):
         from src.nodes.output_generator import _build_form_fill_hitl
@@ -1332,6 +1353,7 @@ class TestFormFillHitl:
                 "file_type": "xlsx",
                 "original_query": "양식 채워줘",
                 "unresolved": ["도입일자"],
+                "db_ids": ["polestar_cm_gp", "polestar_cm_yd"],
             }
         }
         delta = _build_turn_input_state(body, "t1", checkpoint, {"sub": "u1"})
@@ -1344,6 +1366,52 @@ class TestFormFillHitl:
         # 전 DB 유사어 프롬프트 413 + 오라우팅 라이브 실측) + 폼필 LIMIT 복원
         assert delta["user_query"] == "양식 채워줘"
         assert delta["resolved_limit"] == 100_000
+        # FIX-26: 존 체크박스 런("채워줘")은 원 질의에 위치어가 없어 pending 보존 존을
+        # selected_db_ids로 복원해야 기본 DB(b0) 침묵 오라우팅·타 DB 존재성 검증 탈락을 막는다
+        assert delta["selected_db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+    def test_route_body_selection_wins_over_pending_db_ids(self):
+        """FIX-26 우선순위: 이번 턴 명시 존 선택(body.selected_db_ids)이 pending 보존분보다
+        우선한다(요청 스코프 계약 — 사용자가 새로 고르면 그 값이 이긴다)."""
+        from src.api.routes.query import _build_turn_input_state
+        from src.api.schemas import QueryRequest
+
+        body = QueryRequest(
+            query="[양식 미해결 항목 답변]",
+            form_fill_answers={"도입일자": {"action": "blank", "value": None}},
+            selected_db_ids=["polestar_b0"],
+        )
+        checkpoint = {
+            "pending_form_fill": {
+                "uploaded_file": b"xlsx-bytes",
+                "file_type": "xlsx",
+                "original_query": "양식 채워줘",
+                "unresolved": ["도입일자"],
+                "db_ids": ["polestar_cm_gp"],
+            }
+        }
+        delta = _build_turn_input_state(body, "t1", checkpoint, {"sub": "u1"})
+        assert delta["selected_db_ids"] == ["polestar_b0"]
+
+    def test_route_legacy_pending_without_db_ids(self):
+        """FIX-26 하위호환: 구버전 pending(db_ids 부재)은 기존 동작(존 미복원)을 유지한다."""
+        from src.api.routes.query import _build_turn_input_state
+        from src.api.schemas import QueryRequest
+
+        body = QueryRequest(
+            query="[양식 미해결 항목 답변]",
+            form_fill_answers={"도입일자": {"action": "blank", "value": None}},
+        )
+        checkpoint = {
+            "pending_form_fill": {
+                "uploaded_file": b"xlsx-bytes",
+                "file_type": "xlsx",
+                "original_query": "양식 채워줘",
+                "unresolved": ["도입일자"],
+            }
+        }
+        delta = _build_turn_input_state(body, "t1", checkpoint, {"sub": "u1"})
+        assert delta["selected_db_ids"] is None
 
     def test_route_ignores_answers_without_pending(self):
         from src.api.routes.query import _build_turn_input_state

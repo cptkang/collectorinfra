@@ -880,12 +880,24 @@
 
 ---
 
+## D-124. 폼필 답변 턴 존 선택 보존 — pending_form_fill에 확정 db_ids 동봉·복원 (FIX-26)
+- **결정일**: 2026-08-13 | **상태**: 확정 (구현·테스트 완료, 폐쇄망 검증 대기)
+- **배경(라이브 실측 2026-08-13, 폐쇄망 금감원 양식 테스트 3)**: 존 체크박스로 CM-YD·CM-GP를 선택해 채운 뒤 역질문 패널에서 답변·"다시 채우기" 시 대상 DB가 b0로 침묵 전환되고, 저장한 답(column:ipaddress·name)이 "조회 가능한 항목이 아닙니다(존재성 검증 실패)"로 전량 탈락. 원인 3중첩: ①프론트 폼필 패널 확정이 `selectedDbIds=null`로 전송 ②`pending_form_fill` 보존 항목에 db_ids 부재 ③FIX-17의 원 질의 복원은 존이 **텍스트 위치어**로 지정된 런에서만 라우팅을 재현("채워줘"는 위치어 없음 → 기본 DB) + 답변 턴은 `allow_zone_clarification=False`라 존 재역질문도 불가. 존재성 검증 탈락은 오라우팅의 파생(패널 후보는 CM존 PostgreSQL 소문자 스키마 실측, 검증은 b0 DB2 스키마 후보와 정확 일치 대조).
+- **결정**: ⓐ `_build_form_fill_hitl`(output_generator)이 pending에 **이 런의 확정 존**을 `db_ids`로 동봉 — 우선순위 `selected_db_ids`(체크박스) > `_extract_previous_db_ids` 통합(target_databases∪active_db_id∪mapped_db_ids, context_resolver 선례 재사용) > `db_results` 키. ⓑ 답변 턴 라우트(`_build_turn_input_state`)가 `body.selected_db_ids or pending.db_ids`를 `create_followup_input(selected_db_ids=...)`로 복원 — intent_planner ②.5(존 선택 고정)의 검증된 기존 배관을 그대로 탄다(LLM·위치어 무관 결정적 고정). 이번 턴 명시 선택이 있으면 그것이 우선(요청 스코프 계약 유지). 구버전 pending(db_ids 부재)은 기존 동작 유지(하위호환).
+- **대안 기각**: 프론트가 refill 시 selectedDbIds 재전송(존 패널 없는 텍스트 위치어 런을 못 덮고 서버 상태가 진실 원천이어야 함), 답변 턴 `allow_zone_clarification=True`(존 역질문 재발동 시 프론트 존 패널 확정이 form_fill_answers 없이 파일 재전송 — 답변 유실 플로우 파손), 존재성 검증 대소문자 완화(증상 완화일 뿐 오라우팅 자체를 못 고침).
+- **주의**: 검증 실패 재생성(error_context) 턴의 오버라이드 스킵, 비고/서버명=등록명 규칙(D-115)과 테스터 의도 충돌, 도입일자 epoch 미변환은 본 결정 비범위(별도 트래킹).
+- **검증**: `tests/test_nodes/test_form_month_series.py` 4건(pending 보존·폴백 통합·라우트 복원·이번 턴 우선·하위호환) 신규/보강, 파일 전체 95건 그린, arch_check 통과.
+- **관련**: D-118(HITL 폼필·FIX-17), Plan 65 §4(selected_db_ids 결정적 고정 배관), D-109 후속3(존 상호배타 — 복원 존은 선택 시점에 이미 검증된 동일 그룹).
+
+---
+
 ## 변경 이력
 
 > 각 변경의 상세 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브) 참조.
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-08-13 | D-124 | **폼필 답변 턴 존 선택 보존(FIX-26)** — 존 체크박스 런의 "다시 채우기"가 b0로 침묵 오라우팅(원 질의 "채워줘"에 위치어 없음)+타 DB 스키마 기준 존재성 검증 전량 탈락 교정: pending_form_fill에 확정 존(db_ids) 동봉(selected_db_ids > 라우팅 통합 > db_results), 답변 턴 라우트가 selected_db_ids로 복원(②.5 기존 배관). 이번 턴 명시 선택 우선, 구버전 pending 하위호환. 테스트 4건. |
 | 2026-08-12 | D-123 후속1 | **어드민 DRM 진단 도구** — `/admin/drm/status`(키 파일 mtime으로 KeyManager 생존 판정) + `/admin/drm/verify`(**평문 미반환**, ret·시그니처·파싱 성공까지 진단). 실패도 200+구조화 반환. 복호화 다운로드는 승인 전 비범위. `decrypt_detailed()` 추가. 테스트 10건. |
 | 2026-08-07 | D-123 | **양식 업로드 DRM 해제(Plan 69)** — `SCDS` 시그니처 결정적 감지 + `Decrypt.java` 단일 소스 실행 래퍼(`CreateDecryptFileDAC`, ret 0/-36 성공) + `DRM_ENABLED` env 토글(기본 false=Passthrough). 재암호화 비범위(클라이언트 열람 시점 자동 암호화 확인). 실기 검증은 운영계(RHEL 9.6) 단계적 활성화. 테스트 25건. |
 | 2026-08-06 | D-122 후속5 | **정책 표적 대조로 재정렬(사용자 명세)** — 서버 사유(policy_id) 유형의 로컬 정규식만 프롬프트에 역적용: 매칭=원인 값 특정 / 룰 있는데 0건=**"알려진 필터로는 차단 불가한 프롬프트가 차단됨(서버 필터 변경 의심)"** 명시 / 정책표 밖=대응 룰 없음. 덤프에 policy id+대조 결과 동봉, 터미널 로그 다행 구조화. 테스트 4건. |

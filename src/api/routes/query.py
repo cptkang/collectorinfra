@@ -354,9 +354,16 @@ def _build_turn_input_state(
         pending_ff = checkpoint_state.get("pending_form_fill")
         if body.form_fill_answers:
             if pending_ff and pending_ff.get("uploaded_file"):
+                # FIX-26(라이브 실측 2026-08-13): 존 선택 복원 — FIX-17의 원 질의 복원은
+                # 존이 텍스트 위치어로 지정된 런에서만 라우팅을 재현한다. 존 체크박스 런
+                # ("채워줘" 원 질의)은 위치어가 없어 답변 턴이 기본 DB(b0)로 침묵
+                # 오라우팅되고 존재성 검증도 b0 스키마 기준이 됐다. 패널을 발행한 런의
+                # 확정 존(pending.db_ids)을 selected_db_ids로 복원한다(이번 턴 명시
+                # 선택이 있으면 그것이 우선 — 요청 스코프 계약 유지).
+                restored_db_ids = body.selected_db_ids or pending_ff.get("db_ids") or None
                 delta = create_followup_input(
                     body.query or "[양식 미해결 항목 답변]",
-                    selected_db_ids=body.selected_db_ids,
+                    selected_db_ids=restored_db_ids,
                 )
                 delta["uploaded_file"] = pending_ff.get("uploaded_file")
                 delta["file_type"] = pending_ff.get("file_type")
@@ -375,9 +382,9 @@ def _build_turn_input_state(
                 delta["resolved_limit"] = _FORM_FILL_DEFAULT_LIMIT
                 logger.info(
                     "폼필 답변 턴(D-118): %d개 필드 답변 수신, 원본 파일·원 질의 복원"
-                    "(file_type=%s, query=%r)",
+                    "(file_type=%s, query=%r, 존 복원=%s)",
                     len(body.form_fill_answers), pending_ff.get("file_type"),
-                    (original_q or "")[:50],
+                    (original_q or "")[:50], restored_db_ids,
                 )
                 return delta
             # pending 없이 답변만 도착 — 침묵 무시 대신 로그 후 일반 질의로 처리

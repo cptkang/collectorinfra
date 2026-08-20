@@ -477,6 +477,17 @@ def _build_form_fill_hitl(
         "fields": [{"name": f, "label": _display_field_name(f)} for f in unresolved],
         "candidates": candidates,
     }
+    # FIX-26(라이브 실측 2026-08-13): 답변 턴 존 유실 방지 — 원 질의 복원(FIX-17)은
+    # 존이 텍스트 위치어로 지정된 런에서만 라우팅을 재현한다. 존 체크박스 런
+    # ("채워줘" + CM존 선택)은 복원된 원 질의에 위치어가 없어 답변 턴이 기본 DB(b0)로
+    # 침묵 오라우팅되고, 존재성 검증도 b0 스키마 기준이 되어 답변이 전량 탈락한다.
+    # 이 런의 확정 존을 pending에 보존해 답변 턴 라우트가 selected_db_ids로 복원한다.
+    # 우선순위: 사용자 체크박스 선택 > 라우팅 확정(target_databases 등) > 실행 결과 DB.
+    from src.nodes.context_resolver import _extract_previous_db_ids
+
+    db_ids = list(state.get("selected_db_ids") or []) or _extract_previous_db_ids(state)
+    if not db_ids:
+        db_ids = [d for d in (state.get("db_results") or {}) if d]
     pending = {
         "uploaded_file": state.get("uploaded_file"),
         "file_type": state.get("file_type")
@@ -484,6 +495,7 @@ def _build_form_fill_hitl(
         "original_query": state.get("parsed_requirements", {}).get("original_query")
         or state.get("user_query", ""),
         "unresolved": unresolved,
+        "db_ids": db_ids or None,
     }
     return clarification, pending
 
