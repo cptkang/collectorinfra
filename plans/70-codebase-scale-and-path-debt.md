@@ -103,15 +103,57 @@ P0 (실측·안전망)  →  P1 (무위험 정리)  →  P2 (경로 일원화)  
 
 ### 1.1 규모
 
-| 구분 | 줄 수 | 내역 |
-|---|---:|---|
-| 프로덕션 Python | **67,202** | src 51,037 · noise_gate 11,452 · mcp_server 2,724 · sre_agent 1,989 |
-| 테스트 | 67,144 | 루트 47,391 · noise_gate 15,484 · mcp_server 2,173 · sre_agent 2,096 |
-| 스크립트 | 7,136 | 루트 4,882 · noise_gate 1,431 · sre_agent 823 |
-| 웹 UI | 9,074 | `src/static/` (HTML/JS/CSS) |
-| 문서 | 60,051 | `docs/` 38개 + `plans/` 76개. **측정 시점 = 본 계획 작성 전**(v3 단서 — 재현 명령은 본 계획·문헌 검토 문서 자신을 포함해 세므로 지금 실행하면 60,795가 나온다. 두 산출물 제외 시 60,066) |
-| 프롬프트 정의 | 2,059 | 프로덕션의 3.1% |
-| LLM 호출 지점 | 70곳 | — |
+**재측정 2026-08-20 (E1)** — 최초 측정치는 `sre_agent/.venv`·`build/` 포함 여부가 명령에
+명시되지 않아 재현이 불가능했다. 아래는 제외 규칙을 명시한 값이다.
+
+| 구분 | 줄 수 | 내역 | 최초 측정(2026-08-06) |
+|---|---:|---|---:|
+| 프로덕션 Python | **69,143** | src 52,827 · noise_gate 11,452 · mcp_server 2,875 · sre_agent 1,989 | 67,202 |
+| 테스트 | 70,395 | 루트 50,489 · noise_gate 15,484 · mcp_server 2,326 · sre_agent 2,096 | 67,144 |
+| 스크립트 | 7,228 | 루트 4,883 · noise_gate 1,431 · sre_agent 914 | 7,136 |
+| 웹 UI | 9,074 | `src/static/` (HTML/JS/CSS) | 9,074 |
+| 문서 | 61,350 | `docs/` 39개 + `plans/` 75개 | 60,051 |
+
+증가분은 계획 작성 이후의 실제 커밋(D-140~D-143, O1·O2 등)이다.
+`plans/` 파일 수는 **최상위 75개**(`README.md` 포함) + 하위 `plans/sre-agent/` 7개 = 추적 82개다.
+최초 측정의 "76개"가 어느 집합인지는 명령이 남아 있지 않아 확인되지 않는다 — 그 자체가
+재현 명령을 명시해야 하는 이유다. D1의 "75건"은 **최상위 기준**이다.
+
+#### 재현 명령 (제외 규칙 명시 — 이것이 없으면 값이 재현되지 않는다)
+
+```bash
+# 프로덕션 Python — venv·build·테스트·스크립트 제외
+for d in src noise_gate mcp_server sre_agent; do
+  printf "%-12s %s\n" "$d" "$(find $d -name '*.py' \
+    -not -path '*/venv/*' -not -path '*/.venv/*' -not -path '*/build/*' \
+    -not -path '*/tests/*' -not -path '*/scripts/*' -not -name 'test_*' \
+    -print0 | xargs -0 cat | wc -l)"
+done
+
+# 문서
+find docs plans -name '*.md' -print0 | xargs -0 cat | wc -l
+```
+
+> **`-not -path '*/.venv/*'`는 선택이 아니다.** `sre_agent/.venv`에는 벤더 패키지가 들어 있어
+> 제외하지 않으면 규모뿐 아니라 **플래그 참조 수까지 오염된다** — F1 실측에서 단순 grep이
+> `trace_enabled`를 52건(실제 5건), `enable_thinking`을 7건(실제 4건)으로 부풀렸다.
+
+#### E1 부수 발견 — `.venv` 안의 stale 사본 (원 계획에 없던 항목)
+
+`.venv/lib/python3.12/site-packages/src/`에 **2026-07-23자 비-editable 사본**(178개 `.py`)이
+설치돼 있었다. `collectorinfra-0.1.0.dist-info`가 소유했고, `top_level.txt = src`라
+**D-139 이전 시점의 스냅샷**이다(`noise_gate`는 아예 없음).
+
+결과: 프로젝트 밖 cwd에서 `import src.config`가 **한 달 된 코드를 조용히** 잡았다.
+
+```
+(수정 전) /…/collectorinfra/.venv/lib/python3.12/site-packages/src/config.py
+(수정 후) /…/collectorinfra/src/config.py
+```
+
+`pip install -e . --no-deps`로 교체(의존성 재해석 없음 — 폐쇄망 안전). `noise_gate`도 함께
+해석되고 `bin/collectorinfra` 진입점도 프로젝트 소스를 가리킨다.
+전체 스위트 회귀 0 (38 failed / 4,122 passed — 실패 집합 동일).
 
 ### 1.2 경로 구조 — **v2 정정: "4종 병존"이 아니라 "1 정본 + 3 폴백 사다리"**
 

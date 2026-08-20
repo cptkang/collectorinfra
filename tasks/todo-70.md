@@ -117,13 +117,13 @@
 재현 명령에 venv 제외를 넣는다. **스펙 §0 N1·N2 — 원 계획에 없던 발견.**
 
 **Acceptance:**
-- [ ] 프로젝트 밖 cwd에서 `import src.config` 시 프로젝트 사본이 잡힘
-- [ ] `plans/70` §1.1 재현 명령에 `-not -path "*venv*"` 포함
-- [ ] 규모 수치가 재측정값으로 갱신
+- [x] 프로젝트 밖 cwd에서 `import src.config` 시 프로젝트 사본이 잡힘
+- [x] `plans/70` §1.1 재현 명령에 `-not -path "*venv*"` 포함
+- [x] 규모 수치가 재측정값으로 갱신
 
 **Verify:**
-- [ ] `cd /tmp && python -c "import src.config as c; print(c.__file__)"` → 프로젝트 경로
-- [ ] `pytest` 전체 무회귀 · `python -c "import src.api.server"` 성공
+- [x] `cd /tmp && python -c "import src.config as c; print(c.__file__)"` → 프로젝트 경로
+- [x] `pytest` 전체 무회귀 · `python -c "import src.api.server"` 성공
 
 **Files:** `.venv/`(정리), `plans/70-codebase-scale-and-path-debt.md`
 **Scope:** XS
