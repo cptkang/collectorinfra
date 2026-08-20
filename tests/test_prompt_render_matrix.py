@@ -234,6 +234,16 @@ async def _collect_prompts(monkeypatch) -> dict[str, dict[str, str]]:
     )
     prompts["single_prior_rows"] = _texts(llm)
 
+    # (c-2) 사다리 2단(orchestration) — 오케스트레이터가 결정적으로 세팅하는 routing_intent가
+    # 실린 상태. 2단은 단일 경로와 같은 query_generator를 쓰지만 상류가 다른 state를 넘기므로,
+    # 이 키가 없으면 "2단 프롬프트는 한 번도 채록된 적이 없다"가 된다(plans/70 V3).
+    # 1단(deep_agent)은 패키지 내부 조립이라 이 매트릭스로 채록 불가 → V1의 --path deep_agent가 담당.
+    llm = _CapturingLLM()
+    await query_generator(
+        _single_state(routing_intent="alarm_query"), llm=llm, app_config=_cfg()
+    )
+    prompts["orchestration_alarm_intent"] = _texts(llm)
+
     # 멀티 경로: 스키마 접두사는 레지스트리 파일 대신 고정값(환경 비의존)
     monkeypatch.setattr("src.routing.db_schema.get_schema_prefix", lambda db_id: "polestar.")
     # 멀티 스키마 텍스트 재료(W-6)는 캐시 매니저 **싱글톤** 상태에 좌우된다 — 앞선 테스트가
@@ -334,6 +344,17 @@ async def test_scenario_anchors(monkeypatch):
     assert "인프라 DB에 대한 SQL 쿼리를 생성하는 전문가" in prompts["multi_basic"]["system"]
     assert "[스키마 한정 규칙]" in prompts["multi_basic"]["system"]
     assert "[스키마 한정 규칙]" not in prompts["single_basic"]["system"]
+
+    # 사다리 2단 — 오케스트레이터가 넘긴 routing_intent="alarm_query"가 알람 전용 템플릿을
+    # 고른다. 해시만 있고 내용 단언이 없으면 "무엇이 고정됐는지" 모르는 스냅샷이 된다.
+    tier2 = prompts["orchestration_alarm_intent"]
+    assert "알람(Alert) 쿼리 생성 전문가" in tier2["system"]
+    assert tier2["system"] != prompts["single_basic"]["system"], (
+        "2단 프롬프트가 단일 경로와 동일하면 이 시나리오는 아무것도 고정하지 않는다"
+    )
+    assert tier2["human"] == prompts["single_basic"]["human"], (
+        "사용자 프롬프트는 routing_intent와 무관하다"
+    )
 
     # 멀티 폼필: 매핑 강제·성능 지표 안내·미매핑 필드 블록
     human = prompts["multi_column_mapping"]["human"]

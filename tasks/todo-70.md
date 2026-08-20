@@ -215,12 +215,12 @@
 1단(deep_agent)은 패키지 내부 조립이라 이 매트릭스로 채록 불가 → V1이 담당.
 
 **Acceptance:**
-- [ ] 2단 시나리오 키 추가
-- [ ] **기존 12키 값 불변**(추가만·변경 0)
-- [ ] 연속 2회 바이트 동일
+- [x] 2단 시나리오 키 추가
+- [x] **기존 12키 값 불변**(추가만·변경 0)
+- [x] 연속 2회 바이트 동일
 
 **Verify:**
-- [ ] 최초 `UPDATE_PROMPT_SNAPSHOT=1`로 채록, 재실행은 **갱신 없이** 그린
+- [x] 최초 `UPDATE_PROMPT_SNAPSHOT=1`로 채록, 재실행은 **갱신 없이** 그린
 
 **Files:** `tests/test_prompt_render_matrix.py`, `tests/snapshots/prompt_render_sha256.json`
 **Scope:** S
