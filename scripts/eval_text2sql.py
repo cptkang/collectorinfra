@@ -8,7 +8,8 @@
 ---------
 - 골드셋 로드/검증: `testdata/text2sql_gold/*.yaml`
 - EX 채점(`execution_match`): Spider/BIRD 방식 참조 - 정렬 무관 멀티셋, 컬럼순서·별칭 무관, 부동소수 tolerance
-- 3경로 구동(§7 경로 커버리지): `--path {graph,orchestration,multidb}`
+- 4경로 구동(§7 경로 커버리지): `--path {graph,orchestration,multidb,deep_agent}`
+  `deep_agent`는 사다리 1단(정본) — 확정 단이 정본이 아니면 전 항목 graceful 스킵
 - A/B 축: `--synonym-fuzzy`, `--value-retrieval`, `--candidate-count`, `--selection`, `--semantic-compose`
   (os.environ 플래그 세팅 + `load_config.cache_clear()`로 파이프라인 토글)
 - 트랙 C 전용 축: SMQ 생성 정확도(훅), 커버리지율(coverage=inside 비율)
@@ -47,7 +48,10 @@ import yaml
 
 CATEGORIES = ("server_config", "performance", "alarm", "complex", "unhandled")
 COVERAGES = ("inside", "outside")
-PATHS = ("graph", "orchestration", "multidb")
+# deep_agent = 사다리 1단(정본). `.env` 활성 경로의 실행정확도를 재려면 이 경로가 필요하다
+# (plans/70 V1). graph와 같은 그래프를 돌리되, 확정 단이 실제로 deep_agent인지 검사한다 —
+# 아니면 "정본을 쟀다"는 말이 성립하지 않으므로 조용히 통과시키지 않고 스킵한다.
+PATHS = ("graph", "orchestration", "multidb", "deep_agent")
 SELECTIONS = ("consistency", "llm", "hybrid")
 
 # 골드셋 SQL 안전성(SELECT 전용) 검사용 금지 키워드 - 문장 선두/독립 토큰만 위반으로 본다.
@@ -706,10 +710,15 @@ class RealExecutor:
             return None
 
 
+class _LadderNotCanonical(RuntimeError):
+    """`--path deep_agent`인데 사다리가 정본으로 확정되지 않음(graceful 스킵 사유)."""
+
+
 class PipelinePredictor:
     """실제 파이프라인(3경로)을 구동하는 예측기(best-effort).
 
-    path: graph | orchestration | multidb. 접속/의존 실패 시 모든 예외를 삼켜 skipped 반환한다
+    path: graph | orchestration | multidb | deep_agent. 접속/의존 실패 시 모든 예외를 삼켜
+    skipped 반환한다
     (폐쇄망 CI graceful degrade). 정상 시 생성 SQL을 추출해 PredictionResult로 반환한다.
     """
 
@@ -743,7 +752,7 @@ class PipelinePredictor:
                 # `state["parsed_requirements"]`로 직접 인덱싱하므로, 생략 시 전 항목이
                 # KeyError로 스킵된다(폐쇄망 실측 2026-07-16). graph 경로는 그래프 내부에서
                 # input_parser가 실행되므로 불필요.
-                if self.path != "graph":
+                if self.path not in ("graph", "deep_agent"):
                     from src.nodes.input_parser import input_parser  # type: ignore
 
                     state.update(await input_parser(state, llm=llm, app_config=cfg))
@@ -774,6 +783,17 @@ class PipelinePredictor:
                 # 전 항목 침묵 skip). 평가는 항목별 고유 thread_id의 1회성 실행이라
                 # 인메모리 체크포인터로 충분하다 — 주입으로 async 비호환만 우회.
                 graph = build_graph(cfg, checkpointer=InMemorySaver())
+                if self.path == "deep_agent":
+                    # build_graph가 사다리 단을 확정·기록한다(O1/O2). 정본이 아니면 이 실행은
+                    # 폴백 경로를 잰 것이므로 결과를 정본 수치로 보고해선 안 된다.
+                    from src.observability.ladder import current_ladder  # type: ignore
+
+                    snap = current_ladder() or {}
+                    if snap.get("tier") != "deep_agent":
+                        raise _LadderNotCanonical(
+                            f"정본(deep_agent) 미확정 — tier={snap.get('tier') or '미확정'} "
+                            f"degraded_reason={snap.get('degraded_reason') or '미상'}"
+                        )
                 return await graph.ainvoke(
                     state, config={"configurable": {"thread_id": f"eval-{item.id}"}}
                 )
@@ -1282,7 +1302,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Text-to-SQL EX 평가 하네스 (Plan 61 / E1)")
     parser.add_argument("--gold-dir", default=str(_default_gold_dir()), help="골드셋 디렉터리")
     parser.add_argument("--db", default="all", help="대상 DB 파일(gp|yd|b0|all)")
-    parser.add_argument("--path", choices=PATHS, default="orchestration", help="실행 경로")
+    parser.add_argument("--path", choices=PATHS, default="orchestration",
+                        help="실행 경로 (deep_agent=사다리 1단 정본)")
     parser.add_argument("--dry-run", action="store_true", help="파이프라인 미실행, 골드셋 검증·통계만")
     parser.add_argument("--check-gold", action="store_true",
                         help="골드 SQL만 실 DB에서 전건 실행해 골드셋 자체를 검증(0행/실행실패=결함 후보)")

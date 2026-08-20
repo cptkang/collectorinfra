@@ -175,13 +175,13 @@
 없다. P3의 "현행 이상" 판정 기준을 세우려면 선행되어야 한다.
 
 **Acceptance:**
-- [ ] `--path deep_agent`가 인자로 수용됨
-- [ ] 오케스트레이터 미가용 시 graceful 스킵(기존 규약 재사용)
-- [ ] 기존 3경로 동작 불변
+- [x] `--path deep_agent`가 인자로 수용됨
+- [x] 오케스트레이터 미가용 시 graceful 스킵(기존 규약 재사용)
+- [x] 기존 3경로 동작 불변
 
 **Verify:**
-- [ ] `.venv/bin/python scripts/eval_text2sql.py --dry-run` 그린
-- [ ] `--path deep_agent --mock` 정상 종료
+- [x] `.venv/bin/python scripts/eval_text2sql.py --dry-run` 그린
+- [x] `--path deep_agent --mock` 정상 종료
 
 **Files:** `scripts/eval_text2sql.py`
 **Scope:** S
