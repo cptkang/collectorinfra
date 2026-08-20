@@ -12,8 +12,10 @@ parsed_requirements를 기반으로 LLM이 필요한 테이블과 컬럼을 선�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -27,11 +29,20 @@ from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
 from src.utils.json_extract import coerce_content_text, strip_code_fence
+from src.utils.schema_utils import cap_sample_rows
 
 logger = logging.getLogger(__name__)
 
 # 유사어 기반 allowed_tables 동적 보완 상한 (D-051: 누적 유사어 전 테이블 유입 차단)
 _MAX_SYNONYM_SUPPLEMENT_TABLES = 15
+
+# 라이브 샘플 수집 타임박스 (D-151, 2026-08-05 폐쇄망 실측):
+# 샘플은 보조 정보인데 get_sample_data 1건이 mcp_call_timeout(60s)까지 침묵 대기하면
+# SSE 무이벤트 타임아웃(query_timeout=60s)을 단독으로 초과해 파이프라인 전체가
+# "처리 시간 초과"로 죽는다(존 선택 재개 b0 단일 경로, DB2 CLOB성 대형 테이블).
+# 호출당·총량 상한으로 결정적으로 bound한다 — 실패·스킵은 로그로 가시화(침묵 강등 금지).
+_SAMPLE_FETCH_TIMEOUT_SEC = 8.0
+_SAMPLE_TOTAL_BUDGET_SEC = 20.0
 
 
 def _synonym_tables_matching_query(
@@ -992,20 +1003,57 @@ async def schema_analyzer(
             logger.warning("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
 
             # 4. 샘플 데이터 수집 (관련 테이블만)
-            # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음
+            # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음 — 부착 시점에 값 절단
+            # (CLOB성 대형 값의 상태·체크포인트·PII 스크럽 무상한 유입 차단, D-151)
             if full_schema_dict:
                 for table_name in relevant:
                     cached_table = full_schema_dict.get("tables", {}).get(table_name, {})
                     if cached_table.get("sample_data"):
-                        schema_dict["tables"][table_name]["sample_data"] = cached_table["sample_data"]
+                        schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(
+                            cached_table["sample_data"]
+                        )
 
-            for table_name in relevant:
-                if not schema_dict["tables"].get(table_name, {}).get("sample_data"):
+            # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-151, 상수 주석 참조).
+            # 시작/완료 INFO 로그는 SSE 무이벤트 구간 진단용 계측을 겸한다(끊긴 지점 확정).
+            _pending_samples = [
+                t for t in relevant
+                if not schema_dict["tables"].get(t, {}).get("sample_data")
+            ]
+            if _pending_samples:
+                logger.info(
+                    "라이브 샘플 수집 시작: %d개 테이블 (db_id=%s)",
+                    len(_pending_samples), db_id,
+                )
+                _sample_started = time.monotonic()
+                _budget_skipped: list[str] = []
+                for table_name in _pending_samples:
+                    if time.monotonic() - _sample_started > _SAMPLE_TOTAL_BUDGET_SEC:
+                        _budget_skipped.append(table_name)
+                        continue
                     try:
-                        samples = await client.get_sample_data(table_name, limit=5)
-                        schema_dict["tables"][table_name]["sample_data"] = samples
+                        samples = await asyncio.wait_for(
+                            client.get_sample_data(table_name, limit=5),
+                            timeout=_SAMPLE_FETCH_TIMEOUT_SEC,
+                        )
+                        schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(
+                            samples
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "샘플 데이터 조회 타임아웃(%.0fs 초과) — 스킵: %s",
+                            _SAMPLE_FETCH_TIMEOUT_SEC, table_name,
+                        )
                     except Exception as e:
                         logger.warning(f"샘플 데이터 조회 실패 ({table_name}): {e}")
+                if _budget_skipped:
+                    logger.warning(
+                        "샘플 수집 총량 예산(%.0fs) 소진 — %d개 테이블 스킵: %s",
+                        _SAMPLE_TOTAL_BUDGET_SEC, len(_budget_skipped), _budget_skipped,
+                    )
+                logger.info(
+                    "라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)",
+                    time.monotonic() - _sample_started, db_id,
+                )
 
             # 구조 분석: 수동 프로필 -> Redis 캐시 -> LLM 분석 -> HITL 승인 -> 자동 저장
             structure_meta: Optional[dict] = None

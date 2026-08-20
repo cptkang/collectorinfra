@@ -423,3 +423,46 @@ class TestInvalidFile:
         """유효하지 않은 바이트는 ValueError를 발생시킨다."""
         with pytest.raises(ValueError, match="Excel 파일을 읽을 수 없습니다"):
             excel_to_csv(b"this is not an excel file")
+
+
+class TestMultiRowHeaderConversion:
+    """2행 병합 헤더 블록의 CSV 변환 (D-142 — 폼필 경로와 대칭)."""
+
+    def test_two_row_header_converted_with_composite_names(self):
+        """그룹+서브 헤더 데이터 파일이 복합 필드명으로 변환된다."""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        # 1행: 그룹 헤더 (B1:C1 가로 병합), A1:A2 세로 병합
+        ws.cell(row=1, column=1, value="서버명")
+        ws.cell(row=1, column=2, value="사용률")
+        # 2행: 서브 헤더
+        ws.cell(row=2, column=2, value="평균")
+        ws.cell(row=2, column=3, value="최대")
+        ws.merge_cells("A1:A2")
+        ws.merge_cells("B1:C1")
+        # 3행~: 데이터 (기준행 휴리스틱이 헤더를 유지하도록 행당 셀 수 ≤ 헤더 셀 수)
+        ws.cell(row=3, column=1, value="web-01")
+        ws.cell(row=3, column=2, value=55.1)
+        ws.cell(row=4, column=1, value="web-02")
+        ws.cell(row=4, column=3, value=91.2)
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        result = excel_to_csv(buf.getvalue())
+        sheet = result["Sheet1"]
+        assert sheet.headers == ["서버명", "사용률|평균", "사용률|최대"]
+        assert sheet.data_start_row == 3
+        assert sheet.example_rows[0][:2] == ["web-01", "55.1"]
+
+    def test_single_row_header_unchanged(self):
+        """병합 증거가 없는 단일 헤더 파일은 기존과 동일하게 변환된다."""
+        data = _make_excel_bytes(
+            headers=["서버명", "IP"],
+            data_rows=[["web-01", "10.0.0.1"]],
+        )
+
+        result = excel_to_csv(data)
+        sheet = result["Sheet1"]
+        assert sheet.headers == ["서버명", "IP"]
+        assert sheet.data_start_row == 2

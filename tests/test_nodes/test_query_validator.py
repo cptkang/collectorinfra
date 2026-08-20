@@ -284,3 +284,43 @@ class TestQueryValidatorNode:
 
         assert result["validation_result"]["passed"] is False
         assert "bad_column" in result["validation_result"]["reason"]
+
+
+class TestFilterBlockedDetection:
+    """FabriX PII 필터 차단 안내문 감지 (D-150 후속2 — 멀티 경로와 대칭)."""
+
+    @pytest.mark.asyncio
+    async def test_filter_blocked_content_reports_clear_reason(self):
+        from src.nodes.query_validator import query_validator
+
+        state = {
+            "generated_sql": (
+                "Your request was blocked by the filter. "
+                "filterBlockReason: personal information"
+            ),
+            "schema_info": {"tables": {}},
+            "retry_count": 0,
+        }
+        result = await query_validator(state)
+        assert result["validation_result"]["passed"] is False
+        assert "PII 필터 차단" in result["validation_result"]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_filter_blocked_exposes_diagnosis_when_present(self):
+        """query_generator가 산출한 섹션별 진단이 에러 메시지에 노출된다(D-152)."""
+        from src.nodes.query_validator import query_validator
+
+        state = {
+            "generated_sql": "The content was blocked by the filter",
+            "schema_info": {"tables": {}},
+            "retry_count": 0,
+            "pii_block_diagnosis": (
+                "《시스템 프롬프트(스키마·샘플·유사어)》 핸드폰번호(룰855)×2 "
+                '["contact": >>0**********8<<]'
+            ),
+        }
+        result = await query_validator(state)
+        assert result["validation_result"]["passed"] is False
+        reason = result["validation_result"]["reason"]
+        assert "원인 후보" in reason
+        assert "핸드폰번호" in reason

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from src.config import AppConfig
 from src.utils.query_gen_common import (
@@ -492,6 +492,7 @@ def format_schema_text(
     include_not_null: bool = False,
     sample_style: Literal["labeled", "compact"] = "compact",
     relationships_header: str = "### FK Relationships",
+    sample_renderer: Optional[Callable[[list], str]] = None,
 ) -> str:
     """스키마 정보를 프롬프트용 텍스트로 변환한다.
 
@@ -507,6 +508,8 @@ def format_schema_text(
         include_not_null: NOT NULL 표기 포함 여부
         sample_style: 샘플 데이터 표기("labeled"=건수 포함 한글 / "compact"=`sample:`)
         relationships_header: FK 관계 섹션 헤더 문구
+        sample_renderer: 샘플 프리뷰 렌더러(선택) — 호출부가 상한·PII 스크럽 등 방어를
+            주입한다(공용 계층은 DB/보안 정책에 무지, D-088 원칙). None이면 종전 렌더.
 
     Returns:
         사람이 읽기 쉬운 스키마 텍스트
@@ -541,7 +544,10 @@ def format_schema_text(
 
         samples = table_data.get("sample_data", [])
         if samples:
-            preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
+            if sample_renderer is not None:
+                preview = sample_renderer(samples)
+            else:
+                preview = json.dumps(samples[:3], ensure_ascii=False, indent=2)
             if sample_style == "labeled":
                 lines.append(f"  샘플 데이터 ({len(samples)}건):\n{preview}")
             else:

@@ -90,17 +90,25 @@ class DBHubClient:
             from mcp import ClientSession
             from mcp.client.sse import sse_client
 
-            # SSE 클라이언트로 원격 MCP 서버에 연결(Bearer 헤더는 설정 토큰이 있을 때만 첨부).
-            self._sse_context = sse_client(
-                url=self._config.server_url, headers=self._auth_headers()
-            )
-            sse_transport = await self._sse_context.__aenter__()
-            read_stream, write_stream = sse_transport
+            async def _open() -> None:
+                # SSE 클라이언트로 원격 MCP 서버에 연결(Bearer 헤더는 설정 토큰이 있을 때만 첨부).
+                self._sse_context = sse_client(
+                    url=self._config.server_url, headers=self._auth_headers()
+                )
+                sse_transport = await self._sse_context.__aenter__()
+                read_stream, write_stream = sse_transport
 
-            # MCP 세션 생성 및 초기화
-            self._session_context = ClientSession(read_stream, write_stream)
-            self._mcp_session = await self._session_context.__aenter__()
-            await self._mcp_session.initialize()
+                # MCP 세션 생성 및 초기화
+                self._session_context = ClientSession(read_stream, write_stream)
+                self._mcp_session = await self._session_context.__aenter__()
+                await self._mcp_session.initialize()
+
+            # 연결·핸드셰이크 전체 타임아웃 — 서버가 TCP만 수락하고 SSE 핸드셰이크를
+            # 못 끝내면 무한 대기가 가능하다. execute_sql의 per-call 타임아웃만으로는
+            # connect 단계 hang을 끊지 못한다(전체 타임아웃 가드 원칙).
+            await asyncio.wait_for(
+                _open(), timeout=self._config.mcp_call_timeout
+            )
 
             self._connected = True
             logger.debug(
@@ -112,6 +120,12 @@ class DBHubClient:
                 "MCP SDK가 설치되지 않았습니다. DBHub 클라이언트가 제한 모드로 동작합니다."
             )
             self._connected = True
+        except asyncio.TimeoutError:
+            await self.disconnect()  # 반쯤 열린 컨텍스트 정리(베스트 에포트)
+            raise DBConnectionError(
+                f"MCP 서버 연결 타임아웃 ({self._config.mcp_call_timeout}초): "
+                f"{self._config.server_url}"
+            )
         except Exception as e:
             raise DBConnectionError(
                 f"MCP 서버 연결 실패 ({self._config.server_url}): {e}"

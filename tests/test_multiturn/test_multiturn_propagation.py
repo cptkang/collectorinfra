@@ -40,20 +40,38 @@ class TestContextBlock:
         """turn_count<=1이면 빈 블록(회귀 방지)."""
         assert _build_context_block({"turn_count": 1}) == ""
 
+    _SIGNAL_CTX = {
+        "turn_count": 2,
+        "previous_location": "김포 운영",
+        "previous_db_ids": ["polestar_cm_gp"],
+        "previous_entities": [{"field": "hostname", "value": "###"}],
+        "previous_results_summary": "1건 조회됨",
+    }
+
     def test_follow_up_block_contains_signals(self):
-        """후속 턴이면 위치·DB·서버 식별자가 블록에 포함된다."""
-        ctx = {
-            "turn_count": 2,
-            "previous_location": "김포 운영",
-            "previous_db_ids": ["polestar_cm_gp"],
-            "previous_entities": [{"field": "hostname", "value": "###"}],
-            "previous_results_summary": "1건 조회됨",
-        }
-        block = _build_context_block(ctx)
+        """지시어 후속 턴이면 위치·DB·서버 식별자가 블록에 포함된다."""
+        block = _build_context_block(self._SIGNAL_CTX, "해당 서버의 OS 확인")
         assert "김포 운영" in block
         assert "polestar_cm_gp" in block
         assert "hostname=###" in block
         assert "해당 서버" in block  # 지시어 해소 규칙 포함
+
+    def test_non_demonstrative_follow_up_omits_entities(self):
+        """지시어 없는 후속 턴은 직전 서버 엔티티를 주입하지 않는다 (D-150 후속1).
+
+        previous_entities는 직전 턴이 대량 조회였으면 상한 샘플일 뿐 스코프가 아니다 —
+        "대상 미명시 → 직전 값 보존" 규칙과 결합되면 새 전량 후속 질의가 샘플 서버
+        몇 대로 축소된다(2026-08-04 라이브 실측: gp/yd 전량 조회 후 "OS 종류 확인"
+        후속이 4개 서버만 반환).
+        """
+        block = _build_context_block(
+            self._SIGNAL_CTX, "OS 종류, OS 버전 및 OS패치버전 확인"
+        )
+        assert "hostname=###" not in block
+        assert "직전 대상 서버/장비" not in block
+        # 위치/DB 승계 신호는 유지(DB 라우팅 승계는 정상 동작)
+        assert "김포 운영" in block
+        assert "polestar_cm_gp" in block
 
 
 class _FakeLLM:

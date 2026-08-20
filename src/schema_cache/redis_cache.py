@@ -1899,3 +1899,59 @@ class RedisSchemaCache:
         except Exception as e:
             logger.error("Redis 캐시 상태 조회 실패: %s", e)
             return {"exists": False, "error": str(e)}
+
+    # === 폼필 확인 이력 (Plan 73 Phase 3, D-148) ===
+    # 키: formfill:memory:{signature} — JSON 문자열 + TTL(sliding).
+    # 유사어와 키 공간 분리(양식 시그니처 스코프) — 전역 질의에 영향 없음.
+
+    def _form_memory_key(self, signature: str) -> str:
+        return f"formfill:memory:{signature}"
+
+    async def load_form_memory(self, signature: str) -> Optional[dict]:
+        """양식 시그니처의 확인 이력을 반환한다 (없으면 None)."""
+        if self._redis is None:
+            return None
+        try:
+            raw = await self._redis.get(self._form_memory_key(signature))
+            if not raw:
+                return None
+            return json.loads(raw)
+        except Exception as e:
+            logger.warning("폼필 확인 이력 조회 실패(%s): %s", signature, e)
+            return None
+
+    async def save_form_memory(
+        self, signature: str, data: dict, ttl_seconds: int
+    ) -> bool:
+        """확인 이력을 저장한다 (TTL 필수 — 무기한 저장 금지, Plan 73 §2.4 개정)."""
+        if self._redis is None or ttl_seconds <= 0:
+            return False
+        try:
+            await self._redis.set(
+                self._form_memory_key(signature),
+                json.dumps(data, ensure_ascii=False),
+                ex=ttl_seconds,
+            )
+            return True
+        except Exception as e:
+            logger.warning("폼필 확인 이력 저장 실패(%s): %s", signature, e)
+            return False
+
+    async def delete_form_memory(self, signature: str) -> bool:
+        """확인 이력 전체를 삭제한다."""
+        if self._redis is None:
+            return False
+        try:
+            return bool(await self._redis.delete(self._form_memory_key(signature)))
+        except Exception as e:
+            logger.warning("폼필 확인 이력 삭제 실패(%s): %s", signature, e)
+            return False
+
+    async def touch_form_memory(self, signature: str, ttl_seconds: int) -> None:
+        """sliding TTL 갱신 — 적용(사용)이 곧 재확인이므로 만료를 연장한다."""
+        if self._redis is None or ttl_seconds <= 0:
+            return
+        try:
+            await self._redis.expire(self._form_memory_key(signature), ttl_seconds)
+        except Exception as e:
+            logger.debug("폼필 확인 이력 TTL 갱신 실패(%s): %s", signature, e)

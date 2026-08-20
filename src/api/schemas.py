@@ -37,6 +37,28 @@ class QueryRequest(BaseModel):
         default=None,
         description="세션 ID (멀티턴 대화용, Phase 3)",
     )
+    # Plan 70 §4: 존 역질문(clarification)에서 사용자가 체크박스로 선택한 DB 목록.
+    # 자연어 재조합 금지 원칙 — 선택 결과는 이 구조화 필드로만 전달되어
+    # semantic_router/intent_planner의 결정적 고정(mapped_db_ids 선례)으로 주입된다.
+    selected_db_ids: Optional[list[str]] = Field(
+        default=None,
+        description="존 선택 역질문 응답 — 조회 대상 DB 식별자 목록 (결정적 라우팅 고정)",
+    )
+    # Plan 73 §11 (D-148): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
+    # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
+    form_fill_answers: Optional[dict[str, dict]] = Field(
+        default=None,
+        description=(
+            "폼필 역질문 답변 {필드명: {action: blank|column|eav|literal, value}} "
+            "(pending_form_fill 대기 중인 thread에서만 유효)"
+        ),
+    )
+    # Phase 3 (D-148): 답변을 양식 시그니처 스코프의 확인 이력에 저장할지(옵트인).
+    # TTL sliding(QueryConfig.form_memory_ttl_days) — 무기한 저장 없음.
+    form_fill_remember: bool = Field(
+        default=False,
+        description="폼필 답변을 이 양식에 기억(TTL sliding, 옵트인)",
+    )
 
 
 # --- 응답 모델 ---
@@ -72,6 +94,16 @@ class QueryResponse(BaseModel):
     )
     has_mapping_report: bool = Field(
         default=False, description="매핑 보고서 존재 여부"
+    )
+    # Plan 70 §4: status="clarification"일 때 존 선택 컨텍스트
+    # {kind, question, options: [{db_id, label}], original_query, multi}
+    clarification: Optional[dict] = Field(
+        default=None, description="역질문 컨텍스트 (존 선택 등)"
+    )
+    # Plan 73 §11 (D-148): 폼필 미해결 필드 역질문 — 결과와 함께 첨부(사후 패널).
+    # {question, fields: [{name, label}], candidates: [{value, label, kind}]}
+    form_fill_clarification: Optional[dict] = Field(
+        default=None, description="폼필 미해결 필드 역질문 패널 컨텍스트"
     )
 
 

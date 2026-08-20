@@ -119,6 +119,29 @@ async def query_validator(
         adapter_checks=adapter_checks,
     )
 
+    # FabriX PII 필터 차단 안내문이 content로 온 변형 감지(D-150 후속2) — 검증 코어의
+    # "SELECT 아님" 판정을 차단 원인 진단으로 치환해 정확히 노출한다(멀티 경로와 대칭).
+    # 코어는 state 접근이 없으므로 진단 결합은 노드 계층에서 수행한다.
+    _non_select_errors = [
+        e for e in outcome.errors if e.startswith("SELECT 문만 허용됩니다")
+    ]
+    if _non_select_errors:
+        from src.security.pii_filter import is_filter_blocked
+
+        if is_filter_blocked(raw_text=sql):
+            # D-152: query_generator가 차단 시점에 산출한 섹션별 로컬 스캔 진단을
+            # 에러에 실어 "어느 블록의 어떤 값이 걸렸는지"를 UI에서 바로 읽게 한다
+            # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널).
+            _diag = state.get("pii_block_diagnosis")
+            _pii_msg = "FabriX PII 필터 차단 응답(비-SQL) — " + (
+                f"원인 후보: {_diag}"
+                if _diag
+                else "프롬프트에 PII성 텍스트 포함 (로그 [PII-FILTER] 참조)"
+            )
+            outcome.errors[:] = [
+                _pii_msg if e in _non_select_errors else e for e in outcome.errors
+            ]
+
     if outcome.forbidden_keywords:
         _audit_logger.warning(
             "security_alert",

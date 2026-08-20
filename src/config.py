@@ -153,7 +153,51 @@ class QueryConfig(BaseSettings):
     # D-130)로 처리된다 — ON은 그 확정 불가분만 LLM 1콜로 회복한다.
     intent_llm_assist: bool = False
 
+    # 폼필 확인 이력(D-148 Phase 3) TTL — sliding(적용 시 연장). 0이면 기능 OFF.
+    # 짧은 기본값이 안전측: 만료 비용(패널 재답변 1회) ≪ 부패 지속 비용(감사자료 오기재).
+    form_memory_ttl_days: int = 7
+
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
+
+
+class PolestarRestConfig(BaseSettings):
+    """폴스타 REST measurement API 설정 (Plan 71 / Plan 70 §1 — 실시간 사용률 데이터 평면).
+
+    전 기능 기본 OFF — realtime_usage_enabled=false면 기존 SQL 경로 바이트 무변경(회귀 0).
+    프로세스 API(AlarmConfig.process_api_base_urls_csv, Plan 47-1)와 base가 같은 폴스타
+    REST지만 소비처 회귀 방지를 위해 설정은 분리 유지(통합 rename은 Plan 70 §1.3-5 후속).
+    내부망 http·비인증·읽기 전용 GET(D-003) — Plan 47-1과 동일 규약.
+    """
+
+    realtime_usage_enabled: bool = False
+    # db_id=base_url CSV (프로세스 API와 동일 형식). 은행존(b0)은 포트 명시 필수
+    # (Plan 70 §1.3-5 실측: 10.37.16.51:9010 — gp/yd와 달리 기본 포트가 아님).
+    base_urls_csv: str = (
+        "polestar_b0=http://10.37.16.51:9010,"
+        "polestar_cm_gp=http://polestar.kbonecloud.com,"
+        "polestar_cm_yd=http://yd-polestar.kbonecloud.com"
+    )
+    # gp 200대 실측 2.46s(Plan 70 §1.3-4) — 프로세스 API 3s 재사용 금지, 여유 있게 별도 설정.
+    measurement_timeout_seconds: int = 10
+    measurement_chunk_size: int = 200   # 실측 확정(URL 길이·응답 크기 안전 범위)
+    stale_after_minutes: int = 15       # time(수집 시각)이 이보다 오래되면 "수집 지연" 표기
+
+    model_config = {"env_prefix": "POLESTAR_REST_", "env_file": ".env", "extra": "ignore"}
+
+    def get_base_url(self, db_id: str) -> Optional[str]:
+        """db_id에 매핑된 measurement base_url을 반환한다 (없으면 None).
+
+        매핑 형식: "db_id1=http://host1,db_id2=http://host2:port" (CSV, '=' 구분).
+        AlarmConfig.get_process_api_base_url와 동일 규칙 — 잘못된 항목(= 미포함)은 무시.
+        """
+        for pair in self.base_urls_csv.split(","):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            key, _, url = pair.partition("=")
+            if key.strip() == db_id and url.strip():
+                return url.strip().rstrip("/")
+        return None
 
 
 class SynonymMatchConfig(BaseSettings):
@@ -298,6 +342,33 @@ class SecurityConfig(BaseSettings):
     mask_ip: bool = False
     mask_email: bool = False
 
+    # FabriX 개인정보(PII) 필터 차단 감지 로깅 on/off (SECURITY_PII_FILTER_LOG_ENABLED).
+    # ON이면 FabriX가 프롬프트/응답을 PII로 차단할 때 어떤 유형·어떤 텍스트(마스킹)·filter_log_id를
+    # 경고 1건으로 남긴다. 판정 규칙 변경은 src/security/pii_filter.py의 PII_RULES에서 한다
+    # (근거: docs/pii_filtering_rules.md). 기본 ON(차단 원인 가시화용, 차단 시에만 발화).
+    pii_filter_log_enabled: bool = True
+    # 감지된 문자열을 로그에 **원문 그대로** 남길지 (SECURITY_PII_FILTER_LOG_UNMASK).
+    # 기본 False = 마스킹(형태만 노출). True로 켜면 오탐(타임스탬프 등) 판정을 위해 실제 값을
+    # 그대로 로그에 남긴다 — 로그에 실 개인정보가 남을 수 있으니 진단 시에만 한시적으로 켠다.
+    pii_filter_log_unmask: bool = False
+    # 프롬프트 주입 전 샘플 데이터(라이브 DB 행)의 PII를 마스킹 스크럽할지 (SECURITY_PII_SCRUB_SAMPLES).
+    # 기본 True. schema 샘플(SELECT * ... LIMIT N)에 섞인 이메일·연락처·타임스탬프 등이
+    # FabriX 개인정보 필터에 오탐 차단되는 것을 예방한다. 형식 보존 마스킹이라 컬럼·형식 추론
+    # 신호는 유지된다(pii_filter.scrub_pii). False면 원문 그대로 주입(현행 동작).
+    pii_scrub_samples: bool = True
+    # 날짜·타임스탬프 무해화 스크럽 (SECURITY_PII_SCRUB_SUSPECT_DATES). 기본 False.
+    # FabriX 계좌번호(851) 룰이 숫자 많은 라인의 날짜형(2026-06-17 02:30:45, DB2
+    # 2026-08-05-14.30.45)까지 광폭 매칭하는 정황(D-152 후속3) — 진단으로 확정되면
+    # 이 플래그만 켠다(코드 재배포 불요). 마스킹이 아니라 구분자 점 치환이라 값·자릿수
+    # 형식 신호는 보존된다("2026-06-17 02:30:45" → "2026.06.17.02:30:45").
+    pii_scrub_suspect_dates: bool = False
+    # PII 필터 차단 시 전송 프롬프트·응답 전문을 파일로 덤프할지 (SECURITY_PII_BLOCK_DUMP_ENABLED).
+    # 기본 True. 로컬 규칙 무매칭 차단(서버측 정책이 더 넓은 경우)은 "무엇이 걸렸는지"를
+    # 로그 발췌만으로 특정할 수 없다(D-152 후속1) — 전송 원문 전체를 서버 로컬 파일로 남겨
+    # 운영자가 직접 대조·이등분 재현으로 트리거를 확정한다. 덤프는 서버 밖으로 나가지 않는다
+    # (FabriX로 이미 전송한 것과 동일한 텍스트). 경로: logs/pii_block/.
+    pii_block_dump_enabled: bool = True
+
     model_config = {"env_prefix": "SECURITY_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -387,6 +458,17 @@ class MultiDBConfig(BaseSettings):
     active_db_ids_csv: str = Field(
         default="",
         validation_alias=AliasChoices("ACTIVE_DB_IDS", "MULTI_DB_ACTIVE_DB_IDS_CSV"),
+    )
+
+    # 존 그룹 상호배타(D-140 후속3): 은행존(b0)과 공동존(gp/yd)의 동시 조회 차단.
+    # 근거: ①담당 조직 분리로 존 조합 실수요 없음(사용자 확정 2026-08-05)
+    # ②b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈 회피.
+    # 원인 종결 시 off로 되돌릴 수 있도록 플래그화(ZONE_GROUP_EXCLUSIVE=false).
+    zone_group_exclusive: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "ZONE_GROUP_EXCLUSIVE", "MULTI_DB_ZONE_GROUP_EXCLUSIVE"
+        ),
     )
 
     model_config = {
@@ -789,6 +871,28 @@ class NoiseGateConfig(BaseSettings):
         return result
 
 
+class DrmConfig(BaseSettings):
+    """Softcamp ServiceLinker DRM 해제 설정 (Plan 74 / D-153).
+
+    기본 비활성(enabled=False) — 개발 PC·CI는 DRM 모듈 설치가 불가하므로
+    Passthrough로 동작하고, 운영(RHEL 9.6)에서만 활성화한다.
+    softcamp.properties의 내용(LinkSystemIP 등)은 scsl.jar가 직접 읽는 파일이라
+    env로 대체 불가 — 여기에는 경로만 담는다 (계획서 §2.7).
+    """
+
+    enabled: bool = False
+    java_bin: str = "java"              # Java 1.8+ (반입은 JDK 21)
+    wrapper_path: str = ""              # tools/drm-wrapper/Decrypt.java 절대경로 (단일 소스 실행)
+    scsl_jar_path: str = ""             # scsl.jar (소프트캠프 제공) 절대경로
+    properties_path: str = ""           # 02_ServiceLinker/softcamp.properties 절대경로
+    key_file_path: str = ""             # 04_KeyFile/keyDAC_SVR0.sc 절대경로
+    group_id: str = "SECURITYDOMAIN"    # 가이드 "수정금지" 리터럴 — 변경 대비 주입 가능
+    temp_dir: str = ""                  # 빈 값이면 시스템 temp 하위 drm_scsl/ 자동 생성
+    timeout_sec: int = 20
+
+    model_config = {"env_prefix": "DRM_", "env_file": ".env", "extra": "ignore"}
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -812,6 +916,8 @@ class AppConfig(BaseSettings):
     alarm: AlarmConfig = Field(default_factory=AlarmConfig)
     workb: WorkbConfig = Field(default_factory=WorkbConfig)
     noise_gate: NoiseGateConfig = Field(default_factory=NoiseGateConfig)  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
+    polestar_rest: PolestarRestConfig = Field(default_factory=PolestarRestConfig)  # Plan 71: 실시간 사용률 API
+    drm: DrmConfig = Field(default_factory=DrmConfig)  # Plan 74: 양식 업로드 DRM 해제
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

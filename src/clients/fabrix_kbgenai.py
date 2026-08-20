@@ -5,6 +5,7 @@ NWAgent의 llm_chat_connector.py를 기반으로 collectorinfra에 맞게 적용
 """
 
 import json
+import logging
 
 import httpx
 import requests
@@ -25,6 +26,8 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
+from src.security.pii_filter import is_filter_blocked, log_filter_block_if_any
+
 LLAMA_JUNK_TOKENS = [
     "<|eot_id|>",
     "<|end_header_id|>",
@@ -33,6 +36,8 @@ LLAMA_JUNK_TOKENS = [
 ]
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+logger = logging.getLogger(__name__)
 
 
 class KBGenAIChat(BaseChatModel):
@@ -76,6 +81,12 @@ class KBGenAIChat(BaseChatModel):
             "Content-Type": "application/json",
         }
 
+    def _prompt_text(self, messages: List[BaseMessage]) -> str:
+        """전송 프롬프트를 로컬 PII 스캔용 단일 문자열로 재구성한다."""
+        payload = self._get_payload(messages)
+        contents = "\n".join(str(c) for c in payload.get("contents", []))
+        return f"{payload.get('systemPrompt', '')}\n{contents}"
+
     def _get_payload(
         self, messages: List[BaseMessage], is_stream: bool = False
     ) -> dict:
@@ -112,6 +123,11 @@ class KBGenAIChat(BaseChatModel):
         )
         response.raise_for_status()
         result = response.json()
+        if not isinstance(result, dict):
+            raise ValueError(f"API returned non-dict response: {result!r}")
+        log_filter_block_if_any(
+            logger, result=result, prompt=self._prompt_text(messages), where="_generate"
+        )
 
         if result.get("status") != "SUCCESS":
             raise ValueError(f"API returned error status: {result.get('status')}")
@@ -136,6 +152,11 @@ class KBGenAIChat(BaseChatModel):
             )
             response.raise_for_status()
             result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError(f"API returned non-dict response: {result!r}")
+            log_filter_block_if_any(
+                logger, result=result, prompt=self._prompt_text(messages), where="_agenerate"
+            )
 
             if result.get("status") != "SUCCESS":
                 raise ValueError(
@@ -164,6 +185,8 @@ class KBGenAIChat(BaseChatModel):
         )
         response.raise_for_status()
 
+        blocked_logged = False
+        _content_parts: list[str] = []
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
@@ -174,12 +197,23 @@ class KBGenAIChat(BaseChatModel):
 
             try:
                 line_json = json.loads(line)
-                content = line_json.get("content", "")
-                event_status = line_json.get("event_status", "")
+                # FabriX는 `data: null` 등 non-dict 라인을 보낼 수 있다 — json.loads는
+                # 성공하므로 JSONDecodeError로 걸러지지 않는다(2026-08-03 라이브 실측:
+                # None.get AttributeError가 최종 응답 생성을 통째로 실패시킴).
+                if not isinstance(line_json, dict):
+                    continue
+                content = line_json.get("content") or ""
+                event_status = line_json.get("event_status") or ""
+                if not blocked_logged and is_filter_blocked(line_json, line):
+                    blocked_logged = log_filter_block_if_any(
+                        logger, result=line_json, raw_text=line,
+                        prompt=self._prompt_text(messages), where="_stream",
+                    )
 
                 if event_status in ["STATUS", "SYNC", "FINISH"]:
                     continue
 
+                _content_parts.append(content)
                 clean_content = self.remove_llm_junk(content, strip=False)
                 if clean_content:
                     chunk = ChatGenerationChunk(
@@ -190,6 +224,15 @@ class KBGenAIChat(BaseChatModel):
                     yield chunk
             except json.JSONDecodeError:
                 continue
+
+        # 차단 안내문이 여러 청크로 쪼개져 오면 라인 단위 검사가 전부 통과한다 —
+        # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-152,
+        # 2026-08-05 실측: validator만 차단을 감지하고 원인 로그 부재).
+        if not blocked_logged and is_filter_blocked(raw_text="".join(_content_parts)):
+            log_filter_block_if_any(
+                logger, raw_text="".join(_content_parts),
+                prompt=self._prompt_text(messages), where="_stream(assembled)",
+            )
 
     async def _astream(
         self,
@@ -208,6 +251,8 @@ class KBGenAIChat(BaseChatModel):
             ) as response:
                 response.raise_for_status()
 
+                blocked_logged = False
+                _content_parts: list[str] = []
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -218,12 +263,23 @@ class KBGenAIChat(BaseChatModel):
 
                     try:
                         line_json = json.loads(line)
-                        content = line_json.get("content", "")
-                        event_status = line_json.get("event_status", "")
+                        # FabriX는 `data: null` 등 non-dict 라인을 보낼 수 있다 — json.loads는
+                        # 성공하므로 JSONDecodeError로 걸러지지 않는다(2026-08-03 라이브 실측:
+                        # None.get AttributeError가 최종 응답 생성을 통째로 실패시킴).
+                        if not isinstance(line_json, dict):
+                            continue
+                        content = line_json.get("content") or ""
+                        event_status = line_json.get("event_status") or ""
+                        if not blocked_logged and is_filter_blocked(line_json, line):
+                            blocked_logged = log_filter_block_if_any(
+                                logger, result=line_json, raw_text=line,
+                                prompt=self._prompt_text(messages), where="_astream",
+                            )
 
                         if event_status in ["STATUS", "SYNC", "FINISH"]:
                             continue
 
+                        _content_parts.append(content)
                         clean_content = self.remove_llm_junk(content, strip=False)
                         if clean_content:
                             chunk = ChatGenerationChunk(
@@ -236,6 +292,18 @@ class KBGenAIChat(BaseChatModel):
                             yield chunk
                     except json.JSONDecodeError:
                         continue
+
+                # 차단 안내문이 여러 청크로 쪼개져 오면 라인 단위 검사가 전부 통과한다 —
+                # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-152,
+                # 2026-08-05 실측: validator만 차단을 감지하고 원인 로그 부재).
+                if not blocked_logged and is_filter_blocked(
+                    raw_text="".join(_content_parts)
+                ):
+                    log_filter_block_if_any(
+                        logger, raw_text="".join(_content_parts),
+                        prompt=self._prompt_text(messages),
+                        where="_astream(assembled)",
+                    )
 
     def bind_tools(self, tools, tool_choice="auto") -> "KBGenAIChat":
         for t in tools:
