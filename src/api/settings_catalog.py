@@ -41,7 +41,7 @@ TOP_LEVEL_GROUP = "general"
 GROUP_ORDER: tuple[str, ...] = (
     "llm", "orchestrator", "dbhub", "query", "synonym", "text2sql",
     "security", "server", "admin", "auth", "multi_db", "redis",
-    "schema_cache", "audit", "alarm", "workb", "noise_gate", TOP_LEVEL_GROUP,
+    "schema_cache", "audit", "observability", "alarm", "workb", "noise_gate", TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
@@ -59,6 +59,7 @@ GROUP_TITLES: dict[str, str] = {
     "redis": "Redis",
     "schema_cache": "스키마 캐시",
     "audit": "감사 로그",
+    "observability": "실행 로그·트레이스",
     "alarm": "알람",
     "workb": "worKB 발송",
     "noise_gate": "노이즈 게이트",

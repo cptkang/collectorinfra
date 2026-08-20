@@ -34,6 +34,7 @@ from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
+from src.observability.graph_proxy import TracedGraph
 from src.orchestration import (
     agent_orchestrator,
     intent_planner,
@@ -346,7 +347,12 @@ def build_graph(config: AppConfig, checkpointer=None):
         getattr(getattr(config, "noise_gate", None), "fault_diagnosis_enabled", False)
     )
 
-    graph = StateGraph(AgentState)
+    # 노드 트레이싱 프록시 (D-141). `add_node`만 가로채므로 조건부·신규 노드가 자동 편입되고,
+    # 노드 파일은 수정하지 않는다. off면 원본 함수를 그대로 등록해 비트동일하게 동작한다.
+    graph = TracedGraph(
+        StateGraph(AgentState),
+        enabled=bool(getattr(getattr(config, "observability", None), "trace_enabled", False)),
+    )
 
     # --- 노드 등록 ---
 

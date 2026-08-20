@@ -18,6 +18,7 @@ from typing import Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
+from src.utils.synonym_set_parser import parse_synonym_set
 from src.config import AppConfig, load_config
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.llm import create_llm
@@ -134,7 +135,23 @@ async def semantic_router(
                 "current_node": "semantic_router",
             }
 
-    # [우선순위 3] field_mapper에서 이미 대상 DB를 결정한 경우 (양식 업로드 시)
+    # [우선순위 3] 앵커 없는 동의어 집합 등록 → cache_management 강제 라우팅 (D-142)
+    # "vcore, cpu, core은 동의어이다. 캐시에 등록하라" 형태를 LLM 라우팅에 맡기면
+    # data_query로 새는 경우가 생긴다. 선파서가 확정한 문장은 결정적으로 보낸다.
+    # 존 선택 확정(2.5)보다 뒤 — 두 게이트는 트리거가 배타적(state 키 vs 문장 패턴)이나
+    # UI 확정은 어떤 텍스트 해석보다 우선한다는 기존 원칙을 유지한다.
+    if parse_synonym_set(user_query):
+        logger.info("동의어 집합 등록 요청 감지(결정적), cache_management로 라우팅")
+        return {
+            "target_databases": [],
+            "is_multi_db": False,
+            "active_db_id": None,
+            "user_specified_db": None,
+            "routing_intent": "cache_management",
+            "current_node": "semantic_router",
+        }
+
+    # [우선순위 4] field_mapper에서 이미 대상 DB를 결정한 경우 (양식 업로드 시)
     mapped_db_ids = state.get("mapped_db_ids")
     if mapped_db_ids:
         logger.info(
@@ -331,7 +348,7 @@ def _zone_clarification_or_none_router(
     """존 역질문 후단 게이트 판정 (D-143 후속2 — 레거시 semantic_router 경로).
 
     §4.2 비발동 목록을 결정적 조건으로 판정한다. selected_db_ids(우선순위 2.5)·
-    mapped_db_ids(우선순위 3)는 본 함수 도달 전에 조기 반환되므로 재검사하지 않는다.
+    mapped_db_ids(우선순위 4)는 본 함수 도달 전에 조기 반환되므로 재검사하지 않는다.
 
     Args:
         state: 현재 에이전트 상태 (input_parser/context_resolver 산출 포함)

@@ -167,6 +167,40 @@ async def _run_audit_retention_loop(audit_repo, retention_days: int, interval_se
         await _cleanup_audit_once(audit_repo, retention_days)
 
 
+def _positive_days(value: object) -> bool:
+    """보존 일수가 양의 정수로 해석되는지 판정한다.
+
+    판정은 `log_retention._as_days`에 위임한다 — 삭제 여부를 가르는 규칙이 두 곳에서
+    갈리면 "기동은 정리한다고 판단했는데 정리 함수는 건너뛴다" 같은 어긋남이 생긴다.
+    """
+    from src.utils.log_retention import _as_days
+
+    days = _as_days(value)
+    return days is not None and days > 0
+
+
+async def _run_file_log_retention_loop(
+    sql_days: object, trace_days: object, interval_seconds: int = 86400
+) -> None:
+    """파일 로그(SQL·트레이스) 정리를 주기적으로(기본 하루 1회) 수행한다 (D-140/D-141).
+
+    감사 로그 루프와 분리한 이유: 감사 정리는 `audit_repo`(DB)가 있을 때만 도는데,
+    파일 로그는 DB 없이도 쌓인다. 같은 루프에 얹으면 무인증 구성에서 영영 정리되지 않는다.
+    """
+    import asyncio
+
+    from src.utils.log_retention import cleanup_file_logs
+
+    if not _positive_days(sql_days) and not _positive_days(trace_days):
+        return
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            break
+        cleanup_file_logs(Path.cwd(), sql_days, trace_days)
+
+
 # D-049: incident 라이프사이클 테이블 (ddl/alarm_incidents.sql과 동일)
 _INCIDENT_DDL = """
 CREATE TABLE IF NOT EXISTS alarm_incidents (
@@ -238,9 +272,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # D-071: 운영 모드 필수 크레덴셜·시크릿 검증(미설정 시 기동 거부)
     _validate_production_secrets(config)
 
-    # SQL 파일 로거 초기화
+    # SQL 파일 로거 초기화 (logs/sql/ — D-140)
     from src.utils.sql_file_logger import init_sql_file_logger
-    init_sql_file_logger()
+    init_sql_file_logger(enabled=config.observability.sql_log_enabled)
+
+    # 파일 로그 보존 정리(D-140/D-141): 기동 시 1회.
+    # 감사 로그 정리와 달리 DB 연결에 의존하지 않으므로 인증 DB 블록 밖에서 무조건 실행한다.
+    from src.utils.log_retention import cleanup_file_logs
+    cleanup_file_logs(
+        Path.cwd(),
+        config.observability.sql_log_retention_days,
+        config.observability.trace_retention_days,
+    )
 
     from src.graph import _create_checkpointer_async
 
@@ -303,6 +346,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             _run_audit_retention_loop(app.state.audit_repo, config.audit.retention_days)
         )
         logger.info("감사 로그 로테이션 주기 태스크 시작 (보관 %s일)", config.audit.retention_days)
+
+    # 파일 로그 정리 주기 태스크(하루 1회). DB 무관하게 항상 기동한다.
+    file_log_retention_task = None
+    if _positive_days(config.observability.sql_log_retention_days) or _positive_days(
+        config.observability.trace_retention_days
+    ):
+        import asyncio as _asyncio
+        file_log_retention_task = _asyncio.create_task(
+            _run_file_log_retention_loop(
+                config.observability.sql_log_retention_days,
+                config.observability.trace_retention_days,
+            )
+        )
+        logger.info(
+            "파일 로그 정리 주기 태스크 시작 (SQL %s일 / 트레이스 %s일)",
+            config.observability.sql_log_retention_days,
+            config.observability.trace_retention_days,
+        )
 
     # Redis 연결 (스키마 캐시)
     if config.schema_cache.backend == "redis":
@@ -474,6 +535,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         audit_retention_task.cancel()
         try:
             await audit_retention_task
+        except Exception:
+            pass
+
+    # 종료 시: 파일 로그 정리 주기 태스크 정리 (D-140/D-141)
+    if file_log_retention_task:
+        file_log_retention_task.cancel()
+        try:
+            await file_log_retention_task
         except Exception:
             pass
 

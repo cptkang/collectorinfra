@@ -68,11 +68,18 @@ def _node_names(compiled) -> set[str]:
 
 
 def _bound_partial(compiled, node_name):
-    """컴파일된 그래프 노드에 바인딩된 functools.partial을 추출한다(동기/비동기 모두)."""
+    """컴파일된 그래프 노드에 바인딩된 functools.partial을 추출한다(동기/비동기 모두).
+
+    노드는 관측 래퍼(`traced` — D-141)로 감싸여 등록될 수 있으므로 `inspect.unwrap()`으로
+    원본까지 따라간다. 래핑 유무와 무관하게 **배선 의미(synthesize 등)를 검사**하는 것이
+    이 헬퍼의 목적이다.
+    """
     import functools
+    import inspect
 
     rc = compiled.nodes[node_name].bound
     target = rc.afunc if getattr(rc, "afunc", None) is not None else rc.func
+    target = inspect.unwrap(target)
     return target if isinstance(target, functools.partial) else None
 
 

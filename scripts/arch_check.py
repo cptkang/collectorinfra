@@ -61,6 +61,7 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.document":                  "infrastructure",
     "src.routing":                   "infrastructure",
     "src.infrastructure":            "infrastructure",
+    "src.observability":             "infrastructure",  # D-141: 실패 트레이스 수집·덤프
     "src.infrastructure.auth_provider":    "infrastructure",
     "src.infrastructure.user_repository":  "infrastructure",
     "src.infrastructure.audit_repository": "infrastructure",
@@ -79,7 +80,7 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.graph":                     "orchestration",
     "src.api":                       "interface",
     "src.main":                      "entry",
-    # alarm 서브패키지 계층 매핑
+    # noise_gate 패키지 계층 매핑 (D-139 — 종전 src.alarm)
     "noise_gate.domain":                         "domain",
     "noise_gate.prompts":                        "prompts",
     "noise_gate.infrastructure":                 "infrastructure",
@@ -87,6 +88,11 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "noise_gate.application.alarm_worker":       "orchestration",
     "noise_gate.application":                    "application",
     "noise_gate.orchestration":                  "orchestration",
+    # alarm_server: TCP 수신 → Redis XADD 독립 프로세스(진입점 `python -m noise_gate.alarm_server`).
+    # 수신·적재는 외부 I/O라 infrastructure, 기동부는 entry, 설정은 config로 본다.
+    "noise_gate.alarm_server.__main__":          "entry",
+    "noise_gate.alarm_server.config":            "config",
+    "noise_gate.alarm_server":                   "infrastructure",
 }
 
 # ──────────────────────────────────────────────

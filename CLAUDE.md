@@ -103,7 +103,7 @@ python -m agents.run --phase 3    # +구현
 | 패키지 | 담당 | 실행 형태 | 경계 |
 |---|---|---|---|
 | `src/` | text2sql 파이프라인·API 조립 | 본체 프로세스 | — |
-| `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 | **본체와 같은 프로세스·같은 venv** | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 |
+| `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 + TCP 수신부(`alarm_server/`) | 게이트·워커는 **본체와 같은 프로세스·같은 venv**, 수신부는 독립 프로세스 | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 |
 | `sre_agent/` | HolmesGPT 장애 조사 | 별도 venv·별도 프로세스 | 양방향 import 0 (MCP 계약만) |
 | `mcp_server/` | 관측 데이터 읽기 경계 | 별도 venv·별도 프로세스 | 양방향 import 0 |
 
@@ -112,6 +112,9 @@ python -m agents.run --phase 3    # +구현
   해석되지 않아 editable 설치에 의존하게 된다(D-139 실측). `sre_agent`·`mcp_server`는 자체
   venv·자체 cwd라 2단 중첩 유지.
 - 테스트: `pytest`(본체+noise_gate 자동 수집) / `cd sre_agent && pytest` / `cd mcp_server && ../.venv/bin/python -m pytest`
+- 알람 수신부 기동: `python -m noise_gate.alarm_server` (TCP 9100 → Redis Stream `alarm:raw`)
+- 예외: `src/api/routes/alarm.py`는 알람 전용이지만 본체 앱 인증 계층에 묶여 `src/api/`에 남긴다
+  (옮기면 `noise_gate → src.api` 역방향 결합 신설 — D-139 근거 참조)
 
 ## Clean Architecture 계층 규칙
 

@@ -16,7 +16,8 @@ CACHE_MANAGEMENT_PARSE_PROMPT = """사용자의 캐시 관리 요청을 분석�
 - `status`: 캐시 상태 조회
 - `invalidate`: 캐시 삭제
 - `list-synonyms`: 유사 단어 목록 조회 ("유사 단어 목록을 보여줘", "hostname의 유사 단어를 보여줘", "polestar DB의 유사 단어를 보여줘")
-- `add-synonym`: 유사 단어 추가 ("hostname에 '서버호스트' 유사 단어를 추가해줘")
+- `add-synonym`: 유사 단어 추가 ("hostname에 '서버호스트' 유사 단어를 추가해줘") — **기준 컬럼이 있는 경우**
+- `add-synonym-set`: 앵커 없는 동의어 집합 등록 ("vcore, cpu, core은 동의어이다. 캐시에 등록하라") — **기준 컬럼 없이 단어들이 대등한 경우**
 - `remove-synonym`: 유사 단어 삭제 ("hostname에서 '호스트네임' 유사 단어를 삭제해줘")
 - `update-synonym`: 유사 단어 교체 ("usage_pct의 유사 단어를 '사용률, 사용비율'로 변경해줘")
 - `update-description`: 글로벌 컬럼 설명 수정 ("hostname 컬럼의 설명을 '서버의 호스트명 (FQDN)'으로 변경해줘")
@@ -46,6 +47,14 @@ CACHE_MANAGEMENT_PARSE_PROMPT = """사용자의 캐시 관리 요청을 분석�
 - seed_words: 사용자가 제공한 유사 단어 예시 (generate-global-synonyms 시, 선택). 문자열 배열.
 - description: 컬럼 설명 텍스트 (update-description 시)
 - reuse_mode: 재활용 모드 (reuse-synonym 시). "reuse" | "new" | "merge"
+
+## add-synonym vs add-synonym-set 판별 기준
+- `add-synonym`: "**X에** Y를 추가" 처럼 **기준 컬럼 X가 명시**된 경우.
+  target_column=X, words=[Y, ...].
+- `add-synonym-set`: "A, B, C는 동의어" 처럼 단어들이 **대등하게 나열**되고 기준 컬럼이
+  없는 경우. **target_column은 null**로 두고 나열된 단어를 **전부** words에 담으세요
+  (어느 하나를 임의로 기준으로 고르지 마세요 — 기준 판정은 시스템이 실제 스키마를 보고
+  결정합니다).
 
 ## generate-global-synonyms 판별 기준
 사용자가 특정 필드/컬럼에 대해 "유사 단어를 생성해줘", "유사 단어를 만들어줘", "더 만들어줘" 등의 **생성** 요청을 한 경우.

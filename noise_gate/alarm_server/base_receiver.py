@@ -12,7 +12,7 @@ import logging
 
 import redis.asyncio as aioredis
 
-from alarm_server.config import AlarmServerConfig
+from noise_gate.alarm_server.config import AlarmServerConfig
 
 logger = logging.getLogger(__name__)
 

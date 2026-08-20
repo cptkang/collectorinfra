@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.types import Receive, Scope, Send
 
+from mcp_server import sql_log
 from mcp_server.config import AppServerConfig, load_config
 from mcp_server.db import DBPoolManager
 from mcp_server.polestar_tools import register_polestar_tools
@@ -83,8 +84,9 @@ def build_asgi_app(mcp: FastMCP, token: str | None) -> Starlette:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
-    """서버 시작 시 DB 풀 초기화, 종료 시 정리."""
+    """서버 시작 시 SQL 파일 로거·DB 풀 초기화, 종료 시 정리."""
     config = load_config()
+    sql_log.init()  # 실행 SQL을 프로젝트 공용 logs/sql/에 기록 (D-140)
     pool_manager = DBPoolManager(config.sources)
     await pool_manager.initialize()
 

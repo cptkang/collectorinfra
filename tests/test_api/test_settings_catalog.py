@@ -110,13 +110,13 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
     response = await get_settings_schema(_ADMIN)
 
-    assert len(response.groups) == 18
+    assert len(response.groups) == 19
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 243
+    assert len(items) == 251
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
@@ -133,7 +133,7 @@ async def test_t1_schema_warns_when_env_file_missing(monkeypatch, tmp_path):
 
 
 def test_t2_group_and_field_counts():
-    """그룹 17개 + top-level 15필드 = 234필드.
+    """그룹 18개 + top-level 15필드 = 251필드.
 
     D-129 등재 시점 224 → ORCHESTRATOR_RECURSION_LIMIT 추가(Plan 67 Phase 0 ③)로 225
     → ALARM_DEFAULT_TEST_DB_ID 추가(Plan 67 Phase 0 ⑫)로 226
@@ -145,12 +145,17 @@ def test_t2_group_and_field_counts():
     → NOISE_ANNOTATION_LLM_{CLASSIFICATION_ENABLED,TIMEOUT_SECONDS,CACHE_MAX,CACHE_TTL_SECONDS}
       + NOISE_ANOMALY_METRIC_SOURCE_MAP_CSV 추가(Plan 67 R3-(v) / D-132)로 240
     → TEXT2SQL_PROMPT_KNOWLEDGE_RENDER 추가(Plan 67 R1 잔여 / D-131)로 242
-    → TEXT2SQL_PATH_PARITY 추가(Plan 69 P3-2 경로 대칭 옵트인)로 243.
+    → TEXT2SQL_PATH_PARITY 추가(Plan 69 P3-2 경로 대칭 옵트인)로 243
+    → NOISE_INVESTIGATION_FOLLOWUP_{ENABLED,TIMEOUT_SECONDS,MAX_INFLIGHT} 추가
+      (Plan 66 3-E / D-137, 커밋 b7ccc20)로 246 — **당시 이 단언이 갱신되지 않아
+      2026-08-19까지 사전존재 실패로 남아 있었다**
+    → OBS_{SQL_LOG_ENABLED,SQL_LOG_RETENTION_DAYS,TRACE_ENABLED,TRACE_RETENTION_DAYS,
+      TRACE_MAX_STEPS} 추가(D-140/D-141)로 **251**, 그룹 18→19(observability 신설).
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 18  # 17 그룹 + 전역
-    assert len(index) == 243
+    assert len(group_keys) == 19  # 18 그룹 + 전역
+    assert len(index) == 251
     assert len([s for s in index.values() if s.group_key == "general"]) == 15
 
 

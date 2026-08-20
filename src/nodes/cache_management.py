@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -18,6 +19,7 @@ from src.prompts.cache_management import CACHE_MANAGEMENT_PARSE_PROMPT
 from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
+from src.utils.synonym_set_parser import parse_synonym_set
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,21 @@ async def cache_management(
     pending_reuse = state.get("pending_synonym_reuse")
 
     try:
+        # 결정적 선파서 1차 (D-142). "A, B, C는 동의어" 형태는 LLM을 거치지 않는다 —
+        # LLM이 임의의 한 단어를 앵커로 골라 나머지를 종속시키는 비결정성을 원천 차단한다.
+        # 미매칭이면 None을 돌려주므로 아래 LLM 파싱으로 넘어간다.
+        preparsed_set = parse_synonym_set(user_query)
+        if preparsed_set:
+            logger.info("동의어 집합 결정적 파싱 (LLM 미사용): %s", preparsed_set)
+            response_text = await _handle_add_synonym_set(
+                cache_mgr, app_config, None, preparsed_set
+            )
+            return {
+                "final_response": response_text,
+                "current_node": "cache_management",
+                "error_message": None,
+            }
+
         # LLM으로 의도 파싱
         parsed = await _parse_cache_intent(llm, user_query)
         action = parsed.get("action", "status")
@@ -220,6 +237,8 @@ async def _execute_cache_action(
         return await _handle_add_synonym(
             cache_mgr, app_config, db_id, target_column, words
         )
+    elif action == "add-synonym-set":
+        return await _handle_add_synonym_set(cache_mgr, app_config, db_id, words)
     elif action == "remove-synonym":
         return await _handle_remove_synonym(
             cache_mgr, app_config, db_id, target_column, words
@@ -717,6 +736,242 @@ async def _handle_list_synonyms(
                 line += f" ({desc})"
             lines.append(line)
         return "\n".join(lines) + redis_warning
+
+
+#: 동의어 집합 검증 규칙 (선파서와 동일 — LLM 폴백 경로에도 같은 가드를 적용한다).
+_SET_MIN_WORDS = 2
+_SET_MAX_WORDS = 20
+_SET_MAX_WORD_LEN = 64
+_SET_WORD_RE = re.compile(r"^[0-9A-Za-z_\-가-힣ㄱ-ㅎㅏ-ㅣ]+$")
+
+
+def _normalize_set_words(words: Optional[list[str]]) -> list[str]:
+    """공백 제거·중복 제거(대소문자 무시)로 집합을 정규화한다."""
+    if not words:
+        return []
+    seen: dict[str, str] = {}
+    for w in words:
+        if not isinstance(w, str):
+            continue
+        word = w.strip()
+        if word and word.lower() not in seen:
+            seen[word.lower()] = word
+    return list(seen.values())
+
+
+def _validate_set_words(words: list[str]) -> Optional[str]:
+    """검증 실패 사유를 반환한다. 통과하면 None.
+
+    LLM이 파싱한 경우에도 **쓰기 직전** 여기서 결정적으로 막는다 —
+    출력 교정만으로는 오염 자기강화 루프를 못 끊는다.
+    """
+    if len(words) < _SET_MIN_WORDS:
+        return (
+            f"동의어 집합은 최소 {_SET_MIN_WORDS}개가 필요합니다 "
+            f"(중복 제거 후 {len(words)}개). 예: `vcore, cpu, core은 동의어야. 등록해줘`"
+        )
+    if len(words) > _SET_MAX_WORDS:
+        return f"동의어는 한 번에 최대 {_SET_MAX_WORDS}개까지 등록할 수 있습니다 (요청 {len(words)}개)."
+    bad = [w for w in words if len(w) > _SET_MAX_WORD_LEN or not _SET_WORD_RE.match(w)]
+    if bad:
+        return (
+            f"허용되지 않는 형식의 단어가 있어 등록하지 않았습니다: {', '.join(bad[:5])}\n"
+            f"영문·숫자·한글·언더스코어·하이픈만, 단어당 {_SET_MAX_WORD_LEN}자 이내로 입력해 주세요."
+        )
+    return None
+
+
+async def _collect_anchor_sources(
+    cache_mgr: Any,
+    app_config: AppConfig,
+    db_id: Optional[str],
+) -> dict[str, tuple[str, str]]:
+    """앵커 후보가 될 수 있는 이름을 모은다.
+
+    소스는 우선순위대로 ①활성 DB 스키마 컬럼명 ②전역 유사어 사전 키 ③EAV NAME 값이다.
+    한 소스가 실패해도 나머지로 판정할 수 있도록 **개별 try/except**로 감싼다
+    (한 블록에 묶으면 첫 실패가 나머지 수집을 통째로 버린다).
+
+    Returns:
+        {소문자 이름: (실제 표기, 출처 라벨)}. 실제 표기를 함께 돌려주는 이유는
+        사전 키를 **스키마 표기로 통일**하기 위해서다 — 사용자가 `CPU`로 입력해도
+        컬럼이 `cpu`면 `cpu`로 등록해야 대소문자만 다른 중복 키가 생기지 않는다.
+    """
+    found: dict[str, tuple[str, str]] = {}
+
+    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    for did in db_ids:
+        try:
+            schema = await cache_mgr.get_schema(did)
+            for table_data in (schema or {}).get("tables", {}).values():
+                for col in table_data.get("columns", []):
+                    name = str(col.get("name", "")).strip()
+                    if name:
+                        found.setdefault(name.lower(), (name, f"{did} 스키마 컬럼"))
+        except Exception as e:
+            logger.warning("앵커 후보 수집 실패(스키마 %s): %s", did, e)
+
+    try:
+        for col in (await cache_mgr.get_global_synonyms() or {}):
+            name = str(col)
+            found.setdefault(name.lower(), (name, "글로벌 유사어 사전"))
+    except Exception as e:
+        logger.warning("앵커 후보 수집 실패(글로벌 사전): %s", e)
+
+    try:
+        redis_cache = getattr(cache_mgr, "_redis_cache", None)
+        loader = getattr(redis_cache, "load_eav_name_synonyms", None)
+        if loader is not None:
+            for raw_name in (await loader() or {}):
+                name = str(raw_name)
+                found.setdefault(name.lower(), (name, "EAV 속성명"))
+    except Exception as e:
+        logger.warning("앵커 후보 수집 실패(EAV 속성명): %s", e)
+
+    return found
+
+
+async def _infer_anchor(
+    cache_mgr: Any,
+    app_config: AppConfig,
+    words: list[str],
+    db_id: Optional[str] = None,
+) -> tuple[Optional[str], list[str], str]:
+    """집합 원소 중 실제 스키마에 존재하는 것을 앵커로 고른다 (D-142).
+
+    후보가 정확히 하나일 때만 확정한다. 0개면 어디에 붙일지 알 수 없고, 2개 이상이면
+    어느 쪽이 상위 개념인지 알 수 없다 — 어느 경우든 임의로 고르면 오등록이 조용히
+    쌓인다. 되묻는 편이 1턴 비싸지만 정확하다.
+
+    Returns:
+        (앵커 또는 None, 후보 목록, 사유). 사유는 "ok" | "not_found" | "ambiguous".
+        앵커·후보는 **스키마에 저장된 표기**로 돌려준다(사용자 입력 표기가 아님).
+    """
+    known = await _collect_anchor_sources(cache_mgr, app_config, db_id)
+    # 사용자 입력 표기가 아니라 **스키마에 저장된 표기**를 채택한다.
+    candidates = [known[w.lower()][0] for w in words if w.lower() in known]
+
+    if len(candidates) == 1:
+        return candidates[0], candidates, "ok"
+    if not candidates:
+        return None, [], "not_found"
+    return None, candidates, "ambiguous"
+
+
+async def _find_synonym_conflicts(
+    cache_mgr: Any,
+    anchor: str,
+    words: list[str],
+) -> dict[str, str]:
+    """등록할 단어가 **다른** 앵커에 이미 붙어 있는지 찾는다.
+
+    조용히 병합하면 같은 표현이 두 컬럼을 가리키게 되어 매칭이 어느 쪽으로 튈지
+    모르게 된다. 등록은 진행하되 사실을 응답에 노출한다.
+
+    Returns:
+        {단어: 이미 물려 있는 다른 앵커}
+    """
+    conflicts: dict[str, str] = {}
+    try:
+        existing = await cache_mgr.get_global_synonyms() or {}
+    except Exception as e:
+        logger.warning("유사어 충돌 검사 실패(등록은 계속): %s", e)
+        return conflicts
+
+    lowered = {w.lower() for w in words}
+    for other_anchor, other_words in existing.items():
+        if str(other_anchor).lower() == anchor.lower():
+            continue
+        for ow in other_words or []:
+            if str(ow).lower() in lowered:
+                conflicts[str(ow)] = str(other_anchor)
+    return conflicts
+
+
+async def _handle_add_synonym_set(
+    cache_mgr: Any,
+    app_config: AppConfig,
+    db_id: Optional[str],
+    words: Optional[list[str]],
+) -> str:
+    """앵커 없는 동의어 집합을 등록한다 (D-142).
+
+    `"vcore, cpu, core은 동의어이다. 캐시에 등록하라."`처럼 원소가 대등한 요청을 받아
+    실제 스키마에 있는 원소를 앵커로 삼고 나머지를 그 유사어로 등록한다.
+
+    Args:
+        cache_mgr: 스키마 캐시 매니저
+        app_config: 앱 설정
+        db_id: 대상 DB (None이면 활성 DB 전체)
+        words: 동의어 집합
+
+    Returns:
+        사용자에게 보여줄 응답. 등록하지 않은 경우 **사유를 반드시 담는다**.
+    """
+    if not cache_mgr.redis_available:
+        return "Redis에 연결할 수 없어 동의어를 등록할 수 없습니다. Redis 상태를 확인해 주세요."
+
+    normalized = _normalize_set_words(words)
+    invalid_reason = _validate_set_words(normalized)
+    if invalid_reason:
+        return invalid_reason
+
+    anchor, candidates, reason = await _infer_anchor(cache_mgr, app_config, normalized, db_id)
+
+    if reason == "not_found":
+        return (
+            f"'{', '.join(normalized)}' 중 **실제 컬럼(또는 등록된 속성)으로 찾지 못했습니다**.\n\n"
+            "동의어는 기준이 되는 컬럼에 붙여서 저장합니다. "
+            "어느 컬럼의 동의어인지 알려주시면 등록하겠습니다.\n"
+            f"예: `hostname에 '{normalized[0]}' 유사 단어를 추가해줘`"
+        )
+
+    if reason == "ambiguous":
+        return (
+            f"기준 컬럼을 하나로 정하지 못했습니다 — {', '.join(candidates)}가 모두 "
+            "실제 컬럼(또는 등록된 속성)입니다.\n\n"
+            "임의로 고르면 잘못된 매핑이 남을 수 있어 등록하지 않았습니다. "
+            "어느 것을 기준으로 할지 알려주세요.\n"
+            f"예: `{candidates[0]}에 "
+            f"'{', '.join(w for w in normalized if w != candidates[0])}' 유사 단어를 추가해줘`"
+        )
+
+    assert anchor is not None  # reason == "ok"
+    # 앵커는 스키마 표기이므로 입력 표기와 다를 수 있다 — 대소문자 무시로 제외한다
+    # (`["CPU", "vcore"]` + 앵커 `cpu`에서 CPU가 자기 유사어로 재등록되는 것을 막는다).
+    rest = [w for w in normalized if w.lower() != anchor.lower()]
+    conflicts = await _find_synonym_conflicts(cache_mgr, anchor, rest)
+
+    results: list[str] = []
+    if await cache_mgr.add_global_synonym(anchor, rest):
+        results.append("- 글로벌 사전에 등록 완료")
+
+    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    for did in db_ids:
+        try:
+            schema = await cache_mgr.get_schema(did)
+        except Exception as e:
+            logger.warning("동의어 DB 동기화 실패(%s): %s", did, e)
+            continue
+        for table_name, table_data in (schema or {}).get("tables", {}).items():
+            for col in table_data.get("columns", []):
+                if str(col.get("name", "")).lower() == anchor.lower():
+                    col_key = f"{table_name}.{col['name']}"
+                    await cache_mgr.add_synonyms(did, col_key, rest, source="operator")
+                    results.append(f"- {did} DB ({col_key})에 동기화 완료")
+
+    message = (
+        f"**{anchor}**를 기준으로 {', '.join(f"'{w}'" for w in rest)}을(를) "
+        f"동의어로 등록했습니다.\n" + "\n".join(results)
+    )
+    if conflicts:
+        detail = ", ".join(f"'{w}' → {other}" for w, other in conflicts.items())
+        message += (
+            f"\n\n⚠️ 아래 단어는 **이미 다른 컬럼의 유사어로 등록**되어 있습니다: {detail}\n"
+            "같은 표현이 두 컬럼을 가리키면 질의 매핑이 흔들릴 수 있습니다. "
+            "의도한 것이 아니라면 한쪽을 삭제해 주세요."
+        )
+    return message
 
 
 async def _handle_add_synonym(

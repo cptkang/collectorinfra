@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
+from mcp_server import sql_log
 from mcp_server.config import SourceConfig
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,9 @@ class DBPoolManager:
     async def execute(self, source_name: str, sql: str) -> list[dict[str, Any]]:
         """소스 타입에 따라 적절한 드라이버로 쿼리를 실행한다.
 
+        실행된 SQL은 성공·실패 모두 `logs/sql/`에 기록한다(D-140). PG·DB2 분기가
+        여기 한 곳으로 모이므로 로깅도 여기서 한 번만 건다(경로 대칭).
+
         Args:
             source_name: 데이터소스 이름
             sql: 실행할 SQL
@@ -71,14 +76,33 @@ class DBPoolManager:
             ValueError: 알 수 없는 소스명
         """
         if source_name in self._pg_pools:
-            return await self._execute_pg(source_name, sql)
+            runner = self._execute_pg
         elif source_name in self._db2_configs:
-            return await self._execute_db2(source_name, sql)
+            runner = self._execute_db2
         else:
             raise ValueError(
                 f"알 수 없는 소스: {source_name}. "
                 f"사용 가능: {list(self._sources.keys())}"
             )
+
+        started = time.perf_counter()
+        try:
+            rows = await runner(source_name, sql)
+        except Exception as e:
+            sql_log.log_sql(
+                sql,
+                source=source_name,
+                execution_time_ms=(time.perf_counter() - started) * 1000,
+                error=str(e),
+            )
+            raise
+        sql_log.log_sql(
+            sql,
+            source=source_name,
+            execution_time_ms=(time.perf_counter() - started) * 1000,
+            row_count=len(rows),
+        )
+        return rows
 
     async def _execute_pg(self, source_name: str, sql: str) -> list[dict[str, Any]]:
         """PostgreSQL 쿼리를 실행한다."""
