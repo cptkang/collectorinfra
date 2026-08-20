@@ -52,6 +52,42 @@ Plan 61 §E1의 **대표성 원칙**을 따른다.
 (Plan 61 §7 트랙 C 검증기준). inside/outside는 *예상값*이며, E6 컴파일러 구현 후 실측으로
 갱신한다(초기 baseline은 커버리지율의 상한 추정치).
 
+## 표본 목표 (plans/70 V2 · 2026-08-20)
+
+26건은 "목표 20건 이상"은 넘겼으나 **카테고리별로 보면 얇다** — `unhandled` 1건,
+`alarm` 3건으로는 그 경로의 거부·폴백 설계 근거가 되지 못한다. 한 건이 흔들리면
+카테고리 정확도가 100%p 단위로 튄다.
+
+| 카테고리 | 현재 (inside/outside) | 최소 목표 | 부족 | 근거 |
+|---|---|---:|---:|---|
+| `server_config` | 11 / 0 | 8 (outside ≥1) | outside 1 | 충족. 다만 outside 0이라 이 카테고리의 폴백 거동이 미측정 |
+| `performance` | 4 / 2 | 8 (outside ≥3) | 2 (outside 1) | 지표·기간·임계 조합이 가장 넓은 축 |
+| `alarm` | 1 / 2 | 6 (inside ≥3) | 3 (inside 2) | inside 1건은 결정적 경로 회귀를 사실상 감지 못 함 |
+| `complex` | 4 / 1 | 6 (outside ≥2) | 2 (outside 1) | 피벗·자기조인 등 조합 난도 |
+| `unhandled` | 0 / 1 | 4 | 3 | **거부 경로 설계 근거로 1건은 표본이 아니다** |
+| 합계 | 20 / 6 | **32** | **+6** | 커버리지율 목표 70~80% 유지(현 76.9%) |
+
+### 착수 조건 — 실 DB 검증 없이는 추가하지 않는다
+
+기존 항목의 `notes`가 보여주듯(`실측 정비 15차` 등) 이 골드셋은 **항목마다 실 DB
+`--check-gold` 실측으로 확정**돼 왔다. 골드 SQL은 채점의 정답이므로, 미검증 항목을 넣으면
+그 오답이 이후 모든 평가의 기준이 된다. `--dry-run`은 스키마만 보므로 **미검증 항목도
+통과시키고 카테고리 분포와 커버리지율만 좋아 보이게 만든다** — 측정이 나빠지면서 지표는
+좋아지는 최악의 조합이다.
+
+따라서 추가 절차는 다음 순서를 강제한다.
+
+```bash
+# 1) DBHUB 기동 확인 (미기동이면 여기서 중단 — 초안 골드를 커밋하지 않는다)
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 http://localhost:9099/sse
+
+# 2) 후보 항목 작성 후 스키마 검증
+.venv/bin/python scripts/eval_text2sql.py --dry-run
+
+# 3) 실 DB 대조 — 이 단계를 통과한 항목만 확정한다
+.venv/bin/python scripts/eval_text2sql.py --check-gold --db <b0|gp|yd>
+```
+
 ## 엔진 방언 주의 (골드 SQL 작성 규칙)
 
 - **PostgreSQL(gp/yd)**: 행 제한 `LIMIT n`, 소수 보존 `ROUND(AVG(...)::numeric, 2)`, 스키마 `polestar.`
