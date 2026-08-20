@@ -190,7 +190,7 @@ class TestParseExcelTemplate:
 
 
 class TestMultiRowHeaderBlock:
-    """2행 병합 헤더 블록 결합 테스트 (D-142)."""
+    """2행 병합 헤더 블록 결합 테스트 (D-145)."""
 
     def _parse_form(self, filename: str) -> dict:
         data = (_FORMS_DIR / filename).read_bytes()

@@ -43,7 +43,7 @@ _MEMORY_QUERY_HINTS = ("메모리", "memory", "mem ", "ram")
 # hostname으로 인정할 filter_conditions field / previous_entities field.
 # 영문 컬럼명뿐 아니라 LLM이 한글 필드명으로 추출하는 경우(서버명/장비명/호스트명 등)도 방어적으로 인정한다
 # (input_parser는 hostname으로 정규화하도록 유도하지만 LLM 출력은 비결정적이므로 한글 변형까지 수용).
-# canonical은 utils.query_gen_common(D-150 — 존 역질문 후단 게이트가 routing 계층에서도
+# canonical은 utils.query_gen_common(D-153 — 존 역질문 후단 게이트가 routing 계층에서도
 # 사용, 계층 규칙상 utils로 이동). 여기서는 기존 이름으로 re-export만 유지(사본 금지, D-053).
 from src.utils.query_gen_common import (
     DEMONSTRATIVE_NOUNS as _DEMONSTRATIVE_NOUNS,
@@ -142,7 +142,7 @@ def _is_demonstrative_value(value: object) -> bool:
     Returns:
         지시어/플레이스홀더면 True (실제 서버명이면 False)
     """
-    # 구현은 utils.query_gen_common으로 이동(D-150 단일 출처) — 동작 동일.
+    # 구현은 utils.query_gen_common으로 이동(D-153 단일 출처) — 동작 동일.
     from src.utils.query_gen_common import is_demonstrative_identifier
 
     return is_demonstrative_identifier(value)

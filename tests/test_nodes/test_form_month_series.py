@@ -1,4 +1,4 @@
-"""금감원 취합자료 월 시리즈(M~M+5) 폼필 파이프라인 테스트 (plans/72 Phase 3, D-143/D-144/D-145).
+"""금감원 취합자료 월 시리즈(M~M+5) 폼필 파이프라인 테스트 (plans/72 Phase 3, D-146/D-147/D-148).
 
 인식기(순수 함수) → 단일/멀티 SQL 경로 대칭 배선 → writer 채움 → 응답 사유 노출까지
 결정적 경로 전체를 고정한다. LLM은 어디에도 개입하지 않아야 한다.
@@ -68,7 +68,7 @@ _EAV_META = {
 
 
 class TestRecognizeMonthSeries:
-    """월 시리즈 인식기(D-143) — 구조 패턴 기반, 기관명·시트제목 하드코딩 없음."""
+    """월 시리즈 인식기(D-146) — 구조 패턴 기반, 기관명·시트제목 하드코딩 없음."""
 
     def test_cpu_form_relative_months(self):
         ms = recognize_month_series(
@@ -159,7 +159,7 @@ class TestRecognizeMonthSeries:
 
 
 class TestCapacityScopeRule:
-    """'처리능력|(GB)' 요청 스코프 규칙(Q1/D-145) — 유사어 등록 없이 3중 문맥으로만."""
+    """'처리능력|(GB)' 요청 스코프 규칙(Q1/D-148) — 유사어 등록 없이 3중 문맥으로만."""
 
     _ATTR_RT = {"TOTALSIZE": "server.Memory", "MODEL": "server.Server"}
 
@@ -185,7 +185,7 @@ class TestCapacityScopeRule:
 
 
 class TestVendorModelConcat:
-    """'제조사(모델명)' Vendor+Model 결합 규칙(D-145) — 라이브 실측 반쪽 매핑 교정."""
+    """'제조사(모델명)' Vendor+Model 결합 규칙(D-148) — 라이브 실측 반쪽 매핑 교정."""
 
     def test_rule_picks_server_scoped_exact_case_names(self):
         """server.Cpus의 MODEL/VENDOR(대문자 충돌)가 아니라 server.Server의
@@ -289,7 +289,7 @@ class TestSinglePathWiring:
 
 
 class TestD116FormIntentGate:
-    """D-146 게이트 확장 — 양식 업로드는 월 시리즈·자식 EAV 없어도 항상 결정적 조립.
+    """D-149 게이트 확장 — 양식 업로드는 월 시리즈·자식 EAV 없어도 항상 결정적 조립.
 
     라이브 실측(2026-07-30): 단순 양식(서버 이름·IP·OS·코어·메모리)이 CM DB들에서 LLM
     폴백으로 떨어져 `column "r.name" must appear in the GROUP BY clause`로 전멸.
@@ -436,7 +436,7 @@ class TestD116FormIntentGate:
 
 
 class TestLlmInferredDemotion:
-    """D-146 — 폼필에서 llm_inferred 매핑 채움 금지(침묵 오염 → 공란+역질문 후보)."""
+    """D-149 — 폼필에서 llm_inferred 매핑 채움 금지(침묵 오염 → 공란+역질문 후보)."""
 
     def _state(self, mapping: dict, sources: dict) -> dict:
         return {
@@ -650,7 +650,7 @@ class TestWriterFillsMonthColumns:
             file_data, template, mapping, [row], fill_stats=stats
         )
         assert filled >= 6
-        # 필드별 실제 채움 통계(D-144 판정 근거)
+        # 필드별 실제 채움 통계(D-147 판정 근거)
         assert stats["호스트명"] == 1
         assert stats[f"{_AVG}|M"] == 1
         assert stats["처리능력|(TPMC)"] == 0
@@ -683,7 +683,7 @@ class TestWriterFillsMonthColumns:
 
 
 class TestFormFillNotes:
-    """응답의 기준월 명시(§2.4) + 미작성 사유(D-144)."""
+    """응답의 기준월 명시(§2.4) + 미작성 사유(D-147)."""
 
     def test_notes_appended(self):
         from src.nodes.output_generator import _append_form_fill_notes
@@ -1127,7 +1127,7 @@ class TestForeignTableRegularEntryDropped:
 
 
 class TestFormFillHitl:
-    """Plan 73 Phase 2 (D-148) — 역질문 답변 검증·적용·후보·미해결 수집·writer 상수."""
+    """Plan 73 Phase 2 (D-151) — 역질문 답변 검증·적용·후보·미해결 수집·writer 상수."""
 
     _META = _EAV_META
     _SCHEMA = {
@@ -1482,7 +1482,7 @@ _CFG0 = SimpleNamespace(query=SimpleNamespace(form_memory_ttl_days=0))
 
 
 class TestFormSignature:
-    """양식 시그니처(D-148 Phase 3) — 헤더 집합만, 정규화 불변."""
+    """양식 시그니처(D-151 Phase 3) — 헤더 집합만, 정규화 불변."""
 
     def test_whitespace_and_case_invariant(self):
         from src.utils.schema_utils import form_signature

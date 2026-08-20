@@ -106,9 +106,9 @@ def classify_metric_field(field: str) -> tuple[str, str, str] | None:
     return rt, agg[0], agg[1]
 
 
-# ── 월 시리즈(가로 6개월 등) 양식 인식기 (D-143/D-145, plans/72 §2.3) ─────────────
+# ── 월 시리즈(가로 6개월 등) 양식 인식기 (D-146/D-148, plans/72 §2.3) ─────────────
 #
-# 2단 병합 헤더 결합(D-142)이 만든 복합 필드명 "그룹라벨|서브"에서
+# 2단 병합 헤더 결합(D-145)이 만든 복합 필드명 "그룹라벨|서브"에서
 # "사용률+집계어 그룹 | M+k(또는 절대월) 서브" **구조 패턴**만 인식한다.
 # 기관명·시트제목·칼럼순서 하드코딩 금지(과적합 가드 — plans/72 §8 R3의 경계 지표).
 # 판정 불가 시 None을 반환해 기존 경로로 폴백한다(오동작이 아니라 미발동으로 실패).
@@ -189,7 +189,7 @@ def recognize_month_series(
     user_query: str = "",
     today: date | None = None,
 ) -> MonthSeries | None:
-    """복합 필드명에서 월 시리즈(사용률 가로 전개) 패턴을 결정적으로 인식한다(D-143).
+    """복합 필드명에서 월 시리즈(사용률 가로 전개) 패턴을 결정적으로 인식한다(D-146).
 
     인식 조건(모두 충족해야 발동 — 미충족 시 None 폴백):
     - 미매핑(None 또는 cmm_metric_stat 오매핑) 필드명이 "그룹|서브" 구조이고,
@@ -236,7 +236,7 @@ def recognize_month_series(
         if len(fname.encode("utf-8")) > _MAX_ALIAS_BYTES:
             # alias 잘림 → 월 서픽스 소실·충돌 위험. 양식 전체 폴백.
             logger.info(
-                "월 시리즈 미발동(D-143): 필드명 %d바이트 > %d(PG 식별자 한도) — %r",
+                "월 시리즈 미발동(D-146): 필드명 %d바이트 > %d(PG 식별자 한도) — %r",
                 len(fname.encode("utf-8")), _MAX_ALIAS_BYTES, fname[:40],
             )
             return None
@@ -247,7 +247,7 @@ def recognize_month_series(
         near = [f for f in column_mapping if "|" in f and "사용률" in f]
         if near:
             logger.info(
-                "월 시리즈 미발동(D-143): '그룹|서브' 사용률 필드 %d개가 있으나 "
+                "월 시리즈 미발동(D-146): '그룹|서브' 사용률 필드 %d개가 있으나 "
                 "집계어/서브(M+k·절대월) 패턴 불충족 — 예: %r",
                 len(near), near[0],
             )
@@ -256,7 +256,7 @@ def recognize_month_series(
     kinds = {p[2][0] for p in parsed}
     if len(kinds) != 1:
         logger.info(
-            "월 시리즈 미발동(D-143): 상대(M+k)·절대월 표기 혼재 %d필드 — 결정적 해석 불가",
+            "월 시리즈 미발동(D-146): 상대(M+k)·절대월 표기 혼재 %d필드 — 결정적 해석 불가",
             len(parsed),
         )
         return None  # 상대·절대 혼재 — 결정적 해석 불가
@@ -268,7 +268,7 @@ def recognize_month_series(
     rt = next((r for noun, r in _CONTEXT_NOUN_RT if noun in search_text), None)
     if rt is None:
         logger.info(
-            "월 시리즈 미발동(D-143): 월 필드 %d개 인식했으나 리소스 명사(cpu/메모리/"
+            "월 시리즈 미발동(D-146): 월 필드 %d개 인식했으나 리소스 명사(cpu/메모리/"
             "주기억장치/디스크)를 문맥에서 못 찾음 — context_text=%r, user_query=%r",
             len(parsed), (context_text or "")[:80], (user_query or "")[:80],
         )
@@ -373,7 +373,7 @@ def build_form_fill_candidates(
     schema_info: dict | None,
     eav_pattern: dict | None,
 ) -> list[dict]:
-    """역질문 드롭다운 후보를 스키마 실측으로 산출한다(D-148 — LLM 불개입).
+    """역질문 드롭다운 후보를 스키마 실측으로 산출한다(D-151 — LLM 불개입).
 
     후보 = entity 테이블 직접 칼럼(스키마에 칼럼 목록이 있으면 실측, 없으면 안전
     화이트리스트) + EAV known_attributes(설명을 한글 라벨로 병기). 조립기가 실을 수
@@ -423,7 +423,7 @@ def resolve_form_fill_answers(
     *,
     protected_fields: set[str] | None = None,
 ) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
-    """역질문 답변을 존재성 검증 후 오버라이드로 확정한다(D-148 — 사용자 층 최우선).
+    """역질문 답변을 존재성 검증 후 오버라이드로 확정한다(D-151 — 사용자 층 최우선).
 
     액션 어휘는 조립기 기존 능력의 부분집합(C5): blank / column(entity 직접 칼럼) /
     eav(server EAV 속성) / literal(writer 상수 기입). 검증 탈락은 침묵 없이 사유를
@@ -490,7 +490,7 @@ def resolve_form_fill_answers(
 
 
 def build_month_series_block(month_series: MonthSeries | None) -> str:
-    """LLM 폴백 프롬프트용 월 리터럴 강제 블록(D-143 폴백 안전망).
+    """LLM 폴백 프롬프트용 월 리터럴 강제 블록(D-146 폴백 안전망).
 
     결정적 조립이 스킵되는 경로(재시도 턴 등)에서 LLM이 `CURRENT_DATE - k MONTH`류
     동적 계산으로 월 방향을 뒤집는 실측 사례(2026-07-29: M=지난달·M+5=6개월 전 역순)가
@@ -513,11 +513,11 @@ def apply_remark_server_name_rule(
     column_mapping: dict[str, str | None],
     entity_table: str,
 ) -> dict[str, str]:
-    """'비고' 필드를 서버 등록명(cmm_resource.name)으로 채우는 요청 스코프 규칙(D-145).
+    """'비고' 필드를 서버 등록명(cmm_resource.name)으로 채우는 요청 스코프 규칙(D-148).
 
     사용자 확정(2026-07-28): 공동존·은행존 모두 폴스타 UI 정합성 확인에 등록명이 필요
     (등록명에 업무 등 정보성 텍스트 포함). field_mapper가 다른 매핑(예: b0 비고→description)을
-    만들었어도 이 규칙이 우선한다(D-144 "임의 기재 금지"의 사용자 지정 예외).
+    만들었어도 이 규칙이 우선한다(D-147 "임의 기재 금지"의 사용자 지정 예외).
 
     Returns:
         {비고 필드명: "<entity>.name"} 갱신분(비고 필드 없으면 빈 dict).
@@ -533,7 +533,7 @@ def find_vendor_model_concat(
     schema_info: dict | None,
     column_mapping: dict[str, str | None],
 ) -> list[tuple[str, str, str]]:
-    """'제조사(모델명)'류 필드를 서버 Vendor+Model 결합으로 채우는 요청 스코프 규칙(D-145).
+    """'제조사(모델명)'류 필드를 서버 Vendor+Model 결합으로 채우는 요청 스코프 규칙(D-148).
 
     라이브 실측(2026-07-28): LLM/field_mapper는 이 필드를 Vendor 또는 Model **한쪽**으로만
     매핑해 반쪽 값이 채워졌다. 프로필의 server.Server 태그 속성에서 Vendor·Model의
@@ -578,12 +578,12 @@ def apply_capacity_scope_rule(
     """'처리능력' 필드의 요청 스코프 규칙 — GB+메모리 문맥만 용량 매핑, 그 외는 강제 공란.
 
     Q1 확정(2026-07-27): 유사어 등록 없이 **단위 (GB) + 메모리 문맥 + 프로필에 TotalSize
-    존재**의 3중 문맥으로만 용량(EAV TotalSize)을 매핑한다(D-145 — 전역 오염 차단).
+    존재**의 3중 문맥으로만 용량(EAV TotalSize)을 매핑한다(D-148 — 전역 오염 차단).
 
     그 외 처리능력 필드(예: CPU 양식 '(TPMC)')는 **강제 None** — 라이브 실측(2026-07-28
     4차): field_mapper의 학습/캐시 매핑('처리능력'→TotalSize)이 CPU 양식에 유입되어
     TPMC 칼럼에 메모리 용량이 채워졌다. 미지원 단위는 매핑이 있어도 결정적으로 차단해
-    공란을 보장한다(D-144 임의 기재 금지).
+    공란을 보장한다(D-147 임의 기재 금지).
 
     Returns:
         {필드명: "EAV:TotalSize" 또는 None} 갱신분. 호출부가 로컬 매핑(None→파티션 제외)과
@@ -658,7 +658,7 @@ def _metric_agg_expr(
     표현식 조립은 이 함수 하나로 일원화한다.
 
     stat_date를 주면 CASE 조건에 `AND s.stat_date='YYYYMM'`을 넣어 **특정 월의 값만** 뽑는다
-    (월별 가로 피벗 — D-143). 이때 월 통계 테이블은 (resource, definition, 월)당 1행이므로
+    (월별 가로 피벗 — D-146). 이때 월 통계 테이블은 (resource, definition, 월)당 1행이므로
     집계는 행 복제(config×metric 이중 조인) 제거용 MAX면 충분하며 GROUP BY는 불변이다.
 
     Utilization에는 값 타당성 게이트(BETWEEN 0 AND 1000)를 CASE 조건에 넣어, 범위 밖 쓰레기
@@ -709,7 +709,7 @@ def _pivot_select_parts(
     쓰는 명시 지정으로, 라벨 분류에 의존하지 않고 (alias, resource_type, agg_fn, val_col,
     definition_name)을 직접 전달한다(MaxIORate 등 Utilization 외 지표 지원). 둘 다 주면 합쳐 넣는다.
 
-    month_measures는 월별 가로 피벗(D-143) 명시 지정 — (alias, resource_type, 값컬럼,
+    month_measures는 월별 가로 피벗(D-146) 명시 지정 — (alias, resource_type, 값컬럼,
     YYYYMM) 항목당 해당 월의 값을 뽑는 SELECT 라인 1개를 만든다(집계는 MAX 고정 — 월 통계는
     월당 1행이라 값 선택이며, stat_date는 GROUP BY에 넣지 않아 서버당 1행 불변식 유지).
     alias는 호출부(결정적 인식기)가 부여하며 DB2 결과 칼럼 소문자화 대응을 위해 라틴 소문자를
@@ -741,7 +741,7 @@ def _pivot_select_parts(
             f"  MAX(CASE WHEN c.resource_type='{rt}' "
             f"AND cc.{attr_col}='{attr}' THEN cc.{val_col} END) AS \"{field}\""
         )
-    # 두 서버 EAV 속성 결합 — "Vendor(Model)" 형태(D-145 제조사(모델명) 규칙).
+    # 두 서버 EAV 속성 결합 — "Vendor(Model)" 형태(D-148 제조사(모델명) 규칙).
     # `||`·CASE·NULLIF는 PostgreSQL/DB2 공통 문법. 둘 다 NULL이면 NULL(공란 유지).
     for field, attr_a, attr_b in concat_eav or []:
         a = (
@@ -836,7 +836,7 @@ def _build_pivot_sql(
         explicit_measures: 시맨틱 컴파일러용 명시 measure (alias, resource_type, agg_fn,
             val_col, definition_name). metric_fields의 한글라벨 분류 대신 직접 지정(패턴 B).
         month_measures: 월별 가로 피벗 measure (alias, resource_type, val_col, YYYYMM) —
-            항목당 해당 월 값 1칼럼(D-143, 금감원 M~M+5 양식 등). stat_date는 SELECT의
+            항목당 해당 월 값 1칼럼(D-146, 금감원 M~M+5 양식 등). stat_date는 SELECT의
             CASE 피벗으로만 쓰고 GROUP BY는 불변(서버당 1행 계약 유지). 조인 월 필터는
             항목들의 (최소, 최대) 월 범위로 자동 산출하며 stat_month보다 우선한다.
         server_scope: 선행 결과 서버 한정 (식별컬럼, 값목록) — HAVING의 집계 CASE WHEN으로
@@ -992,8 +992,8 @@ def build_form_fill_pivot_sql(
 
     측정치는 양식 헤더의 한글 라벨(``metric_fields``)을 ``classify_metric_field``로 분류해
     도출한다 — 시맨틱 경로의 명시 measure·정렬·HAVING 계열 파라미터는 이 경로에 해당하지
-    않으므로 시그니처에서 뺐다. 월 시리즈 가로 피벗(``month_measures``, D-143)과
-    Vendor+Model 결합(``concat_eav``, D-145)은 폼필 전용 확장이라 이 진입점이 받는다
+    않으므로 시그니처에서 뺐다. 월 시리즈 가로 피벗(``month_measures``, D-146)과
+    Vendor+Model 결합(``concat_eav``, D-148)은 폼필 전용 확장이라 이 진입점이 받는다
     (구 ``build_multi_resource_pivot_sql`` wrapper의 ux_improvement 확장분 승계).
 
     Args:

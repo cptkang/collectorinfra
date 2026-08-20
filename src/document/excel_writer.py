@@ -78,9 +78,9 @@ def fill_excel_template(
         sheet_mappings: 시트별 매핑 결과 목록 (멀티시트용, 선택)
         target_sheets: 대상 시트명 목록 (None이면 전체 시트)
         fill_stats: 필드(헤더)별 실제 채움 셀 수를 담아 돌려줄 out-param(선택) —
-            D-144 미작성 사유는 매핑 유무가 아니라 **실제 채움 결과**로 판정한다
+            D-147 미작성 사유는 매핑 유무가 아니라 **실제 채움 결과**로 판정한다
             (라이브 실측 2026-07-28: 매핑 None이어도 행 키=필드명 폴백으로 채워짐)
-        literal_values: 사용자 직접 입력 상수(D-148 역질문 답변) — {필드명: 값}.
+        literal_values: 사용자 직접 입력 상수(D-151 역질문 답변) — {필드명: 값}.
             해당 헤더 열의 모든 데이터 행에 동일값을 기입한다(행 조회 무관, 매핑보다 우선)
 
     Returns:
@@ -181,9 +181,9 @@ def _fill_sheet(
     numeric_hint_cols: set[int] = set()
     # 필드명 폴백(alias=필드명) 열 — 엄격 조회만 허용(유사 매칭 금지)
     strict_cols: set[int] = set()
-    # 필드별 실제 채움 통계(D-144) — 헤더 전체를 0으로 초기화(미채움 필드도 관측)
+    # 필드별 실제 채움 통계(D-147) — 헤더 전체를 0으로 초기화(미채움 필드도 관측)
     header_by_col: dict[int, str] = {}
-    # 사용자 직접 입력 상수 열(D-148) — 행 조회를 거치지 않고 전 데이터 행 동일값 기입
+    # 사용자 직접 입력 상수 열(D-151) — 행 조회를 거치지 않고 전 데이터 행 동일값 기입
     literal_cols: dict[int, str] = {}
     for hc in header_cells:
         col_idx = hc["col"]
@@ -280,7 +280,7 @@ def _fill_sheet(
             if col_idx in style_cache:
                 _apply_style(cell, style_cache[col_idx])
 
-        # 사용자 직접 입력 상수(D-148) — 수식 셀 제외, 전 행 동일값 기입
+        # 사용자 직접 입력 상수(D-151) — 수식 셀 제외, 전 행 동일값 기입
         for col_idx, lit in literal_cols.items():
             cell = ws.cell(row=target_row, column=col_idx)
             if cell.coordinate in formula_cells_set:

@@ -555,7 +555,7 @@ def drop_entries_missing_columns(
 def template_context_text(template_structure: dict | None) -> str:
     """양식 구조에서 문맥 텍스트(시트 제목 title_text·시트명)를 모은다.
 
-    월 시리즈 인식기(D-143)의 리소스 판정 등 양식 종류 판별에 쓴다. 단일(query_generator)·
+    월 시리즈 인식기(D-146)의 리소스 판정 등 양식 종류 판별에 쓴다. 단일(query_generator)·
     멀티(multi_db_executor) 경로가 공유한다(대칭 — Known Mistakes 단일/멀티 비대칭 방지).
     """
     parts: list[str] = []
@@ -820,7 +820,7 @@ def extract_sql_from_response(content: str | list) -> str:
 
     단일 DB 경로(query_generator)와 멀티 DB 경로(multi_db_executor)가 동일 추출
     규칙을 쓰도록 단일 출처로 공유한다(D-066). 추출 엔진은 강화판
-    `extract_sql_from_llm_response`(펜스 태그 변형·세미콜론 생략·WITH 지원, D-150)에
+    `extract_sql_from_llm_response`(펜스 태그 변형·세미콜론 생략·WITH 지원, D-153)에
     위임하고, 여기서는 실 모델의 콘텐츠 블록 리스트 정규화만 얹는다(json_extract와 대칭).
 
     Args:
@@ -837,7 +837,7 @@ _normalize_stat_month = normalize_stat_month
 _utilization_guard = utilization_guard
 _collect_prior_identity_values = collect_prior_identity_values
 
-# ── 폼필 확인 이력 명령 판정 (Plan 73 Phase 3, D-148 — 단일 출처) ────────────────
+# ── 폼필 확인 이력 명령 판정 (Plan 73 Phase 3, D-151 — 단일 출처) ────────────────
 # intent_planner(②.7 단락)·query.py(존 역질문 스킵, FIX-20)·field_mapper(매핑 스킵,
 # FIX-24)가 공유한다. "기억" 계열 명사 필수 — 일반 조회와 충돌 차단.
 FORM_MEMORY_NOUN_KEYWORDS = ("기억", "저장된 답", "저장된 값", "확인 이력")
@@ -871,7 +871,7 @@ def is_form_memory_command(text: str) -> bool:
     )
 
 
-# ── LLM 응답 SQL 추출 (D-150 — 단일/멀티 경로 2벌 중복 해소, D-067 취지) ─────────
+# ── LLM 응답 SQL 추출 (D-153 — 단일/멀티 경로 2벌 중복 해소, D-067 취지) ─────────
 # 폐쇄망 실측(2026-08-04): 추출 실패 시 응답 전문(산문)이 SQL로 흘러 간이 검증
 # "SELECT 문이 아닙니다"로 떨어졌고, 멀티 경로에서는 동일 스키마 SQL 캐시(D-066 후속6)
 # 구조상 첫 번째 DB(공동존 gp)만 간헐 누락됐다. LLM 출력 형식(펜스 태그 대소문자·
@@ -940,7 +940,7 @@ def extract_sql_from_llm_response(content: str) -> str:
     return text.strip()
 
 
-# ── 존 역질문 공용 판정·페이로드 (Plan 70 §4 / D-140 후속2) ──────────────────────
+# ── 존 역질문 공용 판정·페이로드 (Plan 70 §4 / D-143 후속2) ──────────────────────
 # 위치 표면어 단일 출처(D-053 사본 금지). 종전 canonical은 input_parser였으나,
 # 레거시 경로(semantic_router, infrastructure 계층)가 후단 게이트에서 같은 목록을
 # 써야 해 계층 규칙(infrastructure→application 금지)상 utils로 내렸다.
@@ -1006,7 +1006,7 @@ def refers_to_demonstrative_server(text: str) -> bool:
 def has_host_identifier_filter(parsed_requirements: dict | None) -> bool:
     """이번 턴 filter_conditions에 실제 서버 식별자(지시어 제외)가 있는지 판정한다.
 
-    존 역질문 비발동 조건 ⓐ(D-140 §4.2 — 서버명 지목 질의는 존이 결과에 영향 없음)의
+    존 역질문 비발동 조건 ⓐ(D-143 §4.2 — 서버명 지목 질의는 존이 결과에 영향 없음)의
     결정적 판정. 라우트 레벨 표면어 게이트는 이 정보가 없어 판정할 수 없었다(후속2 동기).
     """
     parsed = parsed_requirements or {}
@@ -1020,7 +1020,7 @@ def has_host_identifier_filter(parsed_requirements: dict | None) -> bool:
     return False
 
 
-# 존 선택지 — DB 라우팅 입도와 일치(D-140 §4.4). group은 존 그룹 상호배타(D-140 후속3):
+# 존 선택지 — DB 라우팅 입도와 일치(D-143 §4.4). group은 존 그룹 상호배타(D-143 후속3):
 # 은행존(bank)과 공동존(common)은 담당 조직이 달라 동시 조회 실수요가 없고(사용자 확정
 # 2026-08-05), b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈의
 # 회피를 겸한다. 공동존 내 김포/여의도는 다중 선택 유지.
@@ -1036,7 +1036,7 @@ _ZONE_GROUP_BY_DB: dict[str, str] = {
     o["db_id"]: o["group"] for o in ZONE_CLARIFY_OPTIONS
 }
 
-# 존 그룹 표면어 — 텍스트 질의에서 은행존·공동존 동시 지정을 결정적으로 감지(D-140 후속3).
+# 존 그룹 표면어 — 텍스트 질의에서 은행존·공동존 동시 지정을 결정적으로 감지(D-143 후속3).
 # LOCATION_HINT_TERMS의 그룹 분할(단일 출처 파생 — 사본 아님, 항목 추가 시 여기도 갱신).
 _ZONE_GROUP_TERMS: dict[str, tuple[str, ...]] = {
     "bank": ("은행존", "은행", "레거시"),
@@ -1048,7 +1048,7 @@ ZONE_CLARIFY_QUESTION = (
     "(복수 선택 가능 — 전체 조회는 모두 선택)"
 )
 
-# 존 그룹 상호배타(D-140 후속3) 활성 시의 기본 안내 — "전체는 모두 선택" 문구 제거
+# 존 그룹 상호배타(D-143 후속3) 활성 시의 기본 안내 — "전체는 모두 선택" 문구 제거
 ZONE_CLARIFY_QUESTION_EXCLUSIVE = (
     "조회할 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
     "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
@@ -1069,7 +1069,7 @@ def mixed_zone_groups(db_ids: list[str] | None) -> bool:
 
 
 def has_mixed_zone_group_terms(text: str) -> bool:
-    """질의 텍스트가 은행존·공동존 표면어를 동시에 포함하는지 판정한다(D-140 후속3).
+    """질의 텍스트가 은행존·공동존 표면어를 동시에 포함하는지 판정한다(D-143 후속3).
 
     두 그룹 표면어가 모두 있을 때만 True — 단일 그룹 지정·존 무관 질의는 영향 없다.
     오탐의 대가는 존 선택창 재표시(막다른 에러 아님)라 낮다.
@@ -1117,12 +1117,12 @@ def build_zone_clarification(
     if has_file:
         payload["has_file"] = True
     if group_exclusive:
-        # 존 그룹 상호배타(D-140 후속3) — 프론트가 bank/common 그룹 간 라디오 동작 적용
+        # 존 그룹 상호배타(D-143 후속3) — 프론트가 bank/common 그룹 간 라디오 동작 적용
         payload["group_exclusive"] = True
     return payload
 
 
-# ── 존 선택 재개 턴 원문 재작성 (D-151 — D-140 후속3의 잔여 버그) ─────────────────
+# ── 존 선택 재개 턴 원문 재작성 (D-154 — D-143 후속3의 잔여 버그) ─────────────────
 _ZONE_LABEL_BY_DB: dict[str, str] = {
     o["db_id"]: o["label"] for o in ZONE_CLARIFY_OPTIONS
 }
@@ -1141,7 +1141,7 @@ def rewrite_zone_mentions_for_selection(
 ) -> str:
     """존 재선택 재개 턴에서 원문의 존 열거를 선택 존 라벨로 결정적으로 재작성한다.
 
-    (D-151) 상호배타 재선택("은행존 및 공동존 여의도…" → 은행존만 선택) 후에도 원문이
+    (D-154) 상호배타 재선택("은행존 및 공동존 여의도…" → 은행존만 선택) 후에도 원문이
     그대로 파이프라인에 들어가면 ①처리 현황·응답 서술에 미선택 존이 남고 ②단일 경로는
     sub_query_context가 원문이라 미선택 존 위치어(여의도 등)가 SQL WHERE로 누출된다.
     라우팅은 selected_db_ids가 이미 고정이므로 텍스트만 교정한다 — 결정적 문자열 치환

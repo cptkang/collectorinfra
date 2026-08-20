@@ -194,12 +194,12 @@ def _try_build_form_fill_pivot_sql(
     *,
     adapter_db_ids: set[str] | None = None,
 ) -> Optional[dict]:
-    """폼필 결정적 피벗 SQL 조립 — 자식 리소스 EAV·월 시리즈·양식 업로드(D-068/D-143/D-146).
+    """폼필 결정적 피벗 SQL 조립 — 자식 리소스 EAV·월 시리즈·양식 업로드(D-068/D-146/D-149).
 
     프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
     (서버 중복·config 누락)한다. well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을 우회한다
     (D-068 2차). 양식 업로드(template_structure) 턴은 월 시리즈·자식 EAV가 없어도 항상 결정적
-    조립한다(D-146 — 경로 선택이 per-DB LLM 매핑에 종속돼 LLM 폴백이 GROUP BY 계약을 깨던
+    조립한다(D-149 — 경로 선택이 per-DB LLM 매핑에 종속돼 LLM 폴백이 GROUP BY 계약을 깨던
     라이브 실측의 근본 수정). 해당 케이스가 아니면 None(LLM 경로 유지).
 
     Args:
@@ -208,7 +208,7 @@ def _try_build_form_fill_pivot_sql(
     Returns:
         {"sql": str, "month_anchor": dict|None, "mapping_updates": dict, "candidates": list,
         "overrides": dict, "literals": dict} 또는 None.
-        month_anchor는 M~M+max 실제 월(응답 명시 §2.4)·인식 필드 목록(D-144 사유 제외용),
+        month_anchor는 M~M+max 실제 월(응답 명시 §2.4)·인식 필드 목록(D-147 사유 제외용),
         mapping_updates는 요청 스코프 규칙(처리능력 GB 등)의 매핑 갱신분(state 반영용).
     """
     column_mapping = state.get("column_mapping")
@@ -225,7 +225,7 @@ def _try_build_form_fill_pivot_sql(
         correct_servername_hostname_mapping(column_mapping, eav_pattern.get("entity_table", ""))
     attr_rt = eav_attr_resource_types(schema_info)
 
-    # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-146) — 라이브 오염(TPMC·acl_id·
+    # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-149) — 라이브 오염(TPMC·acl_id·
     # epoch류)의 공통 출처. 유사어·힌트 출처와 아래 확정 규칙만 채움 허용, 나머지는
     # 공란+사유(역질문 후보). 키는 유지(월 시리즈 인식·결합 규칙이 필드명을 본다).
     _inferred_dropped: list[str] = []
@@ -239,11 +239,11 @@ def _try_build_form_fill_pivot_sql(
             column_mapping[f] = None
         if _inferred_dropped:
             logger.info(
-                "폼필 llm_inferred 매핑 %d건 채움 제외(D-146, 역질문 후보): %s",
+                "폼필 llm_inferred 매핑 %d건 채움 제외(D-149, 역질문 후보): %s",
                 len(_inferred_dropped), _inferred_dropped,
             )
 
-    # 월 시리즈(가로 6개월 등) 인식 + 요청 스코프 규칙(D-143/D-145). 인식 실패는 폴백(무발동).
+    # 월 시리즈(가로 6개월 등) 인식 + 요청 스코프 규칙(D-146/D-148). 인식 실패는 폴백(무발동).
     month_series = recognize_month_series(
         column_mapping,
         context_text=template_context_text(state.get("template_structure")),
@@ -272,7 +272,7 @@ def _try_build_form_fill_pivot_sql(
         mapping_updates.update({f: None for f in month_series.fields})
         mapping_updates.update({f: None for f in _remark})
 
-    # 제조사(모델명)류는 Vendor+Model 결합으로 채운다(D-145 — 라이브 실측: 한쪽만 매핑돼
+    # 제조사(모델명)류는 Vendor+Model 결합으로 채운다(D-148 — 라이브 실측: 한쪽만 매핑돼
     # 반쪽 값). 결합 대상 필드는 단독 EAV/직접 컬럼 파티션에서 제외(중복 alias 방지).
     concat_eav = find_vendor_model_concat(schema_info, column_mapping)
     concat_fields = {c[0] for c in concat_eav}
@@ -280,7 +280,7 @@ def _try_build_form_fill_pivot_sql(
         # 결합 필드도 행 키=필드명 조회 강제(잔존 EAV:Vendor류 매핑의 오조회 방지)
         mapping_updates.update({f: None for f in concat_fields})
 
-    # 사용자 답변 오버라이드(D-148) — 우선순위 최상위(사용자 > 확정 규칙 > 자동 매핑).
+    # 사용자 답변 오버라이드(D-151) — 우선순위 최상위(사용자 > 확정 규칙 > 자동 매핑).
     # 규칙·결합 산출 뒤에 적용해 같은 필드는 사용자 답이 이긴다. 검증(존재성)은
     # resolve_form_fill_answers가 수행하고, 탈락분은 사유와 함께 반환돼 응답에 노출된다.
     overrides_out: dict[str, dict] = {}
@@ -294,9 +294,9 @@ def _try_build_form_fill_pivot_sql(
         _applied = [f for f, o in overrides_out.items() if o.get("applied")]
         _rejected = [(f, o.get("reason")) for f, o in overrides_out.items() if not o.get("applied")]
         if _applied:
-            logger.info("폼필 답변 오버라이드 적용(D-148): %s", _applied)
+            logger.info("폼필 답변 오버라이드 적용(D-151): %s", _applied)
         if _rejected:
-            logger.info("폼필 답변 오버라이드 거부(D-148): %s", _rejected)
+            logger.info("폼필 답변 오버라이드 거부(D-151): %s", _rejected)
         column_mapping.update(_ov_map)
         mapping_updates.update(_ov_map)
         # 오버라이드/직접입력 필드는 결합 규칙에서 제외(중복 alias·사용자 층 우선)
@@ -313,7 +313,7 @@ def _try_build_form_fill_pivot_sql(
         for f, a in eav_entries
         if a.upper() in attr_rt and attr_rt[a.upper()] != _ENTITY_RESOURCE_TYPE
     ]
-    # D-146 게이트: 자식 EAV·월 시리즈 외에 양식 업로드(form_intent) 자체가 발동 조건.
+    # D-149 게이트: 자식 EAV·월 시리즈 외에 양식 업로드(form_intent) 자체가 발동 조건.
     # eav_pattern 부재 DB(비폴스타)는 발동하지 않는다(현행 LLM 경로 유지).
     if not child_eav and not month_series and not form_intent:
         return None
@@ -321,7 +321,7 @@ def _try_build_form_fill_pivot_sql(
         return None
     if form_intent and not child_eav and not month_series:
         logger.info(
-            "폼필 결정적 계약 경로(D-146): 월시리즈·자식EAV 없음 — 게이트 확장으로 조립"
+            "폼필 결정적 계약 경로(D-149): 월시리즈·자식EAV 없음 — 게이트 확장으로 조립"
         )
     server_eav = [
         (f, a) for f, a in eav_entries
@@ -392,7 +392,7 @@ def _try_build_form_fill_pivot_sql(
             "fields": month_series.fields,
         }
         logger.info(
-            "폼필 월 시리즈 인식(D-143): rt=%s, 기간=%s~%s, 필드=%d개",
+            "폼필 월 시리즈 인식(D-146): rt=%s, 기간=%s~%s, 필드=%d개",
             month_series.resource_type, month_series.anchor[0],
             month_series.anchor[1], len(month_series.fields),
         )
@@ -400,7 +400,7 @@ def _try_build_form_fill_pivot_sql(
         "sql": sql,
         "month_anchor": month_anchor,
         "mapping_updates": mapping_updates,
-        # HITL 폼필(D-148): 역질문 드롭다운 후보(스키마 실측) + 답변 적용/거부 내역 + 상수
+        # HITL 폼필(D-151): 역질문 드롭다운 후보(스키마 실측) + 답변 적용/거부 내역 + 상수
         "candidates": build_form_fill_candidates(schema_info, eav_pattern) if form_intent else [],
         "overrides": overrides_out,
         "literals": literals_out,
@@ -615,7 +615,7 @@ async def _build_fallback_prompts(
             user_prompt += "\n\n" + _gp_block
 
     # 폼필 월 시리즈 양식이 LLM 폴백으로 흐르는 경우(재시도 턴 등) — 인식기가 확정한
-    # 필드↔YYYYMM 리터럴을 강제해 CURRENT_DATE 역방향 계산(월 뒤집힘 실측)을 차단(D-143).
+    # 필드↔YYYYMM 리터럴을 강제해 CURRENT_DATE 역방향 계산(월 뒤집힘 실측)을 차단(D-146).
     if state.get("template_structure"):
         _ms_block = build_month_series_block(recognize_month_series(
             state.get("column_mapping") or {},
@@ -628,7 +628,7 @@ async def _build_fallback_prompts(
     # E5-2 값 검색 리터럴 주입 — value_retrieval ON + 인덱스 매칭 시만(회귀 0).
     _vi_block = _build_value_index_injection(state, user_query, app_config)
     if _vi_block:
-        # 실 DB 값 리터럴이므로 PII 스크럽(D-152 후속3 — FabriX 필터 오탐 차단)
+        # 실 DB 값 리터럴이므로 PII 스크럽(D-155 후속3 — FabriX 필터 오탐 차단)
         if is_scrub_samples_enabled():
             _vi_block = scrub_pii(_vi_block)
         user_prompt += _vi_block
@@ -638,7 +638,7 @@ async def _build_fallback_prompts(
     # 알람 조건을 재표현하다 resource_type='alarm.Alarm' 환각으로 0건).
     _pr_block = build_prior_rows_block(state.get("prior_rows"))
     if _pr_block:
-        # 실행 결과 라이브 행이므로 PII 스크럽(D-152 후속3 — 멀티 경로와 대칭)
+        # 실행 결과 라이브 행이므로 PII 스크럽(D-155 후속3 — 멀티 경로와 대칭)
         if is_scrub_samples_enabled():
             _pr_block = scrub_pii(_pr_block)
         user_prompt += "\n\n" + _pr_block
@@ -709,10 +709,10 @@ async def _llm_fallback(
         # SQL 추출
         sql = extract_sql_from_response(response.content)
 
-        # FabriX PII 필터 차단 응답(비-SQL) 감지 시 원인 블록·값을 즉시 특정한다(D-152).
+        # FabriX PII 필터 차단 응답(비-SQL) 감지 시 원인 블록·값을 즉시 특정한다(D-155).
         # 프롬프트 재료(system/user)를 모두 가진 유일한 지점 — 진단을 state
         # (pii_block_diagnosis)로 승격해 query_validator 에러 메시지에 노출한다
-        # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널 — D-150 후속2 원칙).
+        # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널 — D-153 후속2 원칙).
         if is_filter_blocked(raw_text=sql):
             _pii_diag = diagnose_blocked_prompt({
                 "시스템 프롬프트(스키마·샘플·유사어)": system_prompt,
@@ -831,7 +831,7 @@ async def query_generator(
     """
     ctx = _prepare(state, llm, app_config)
 
-    # 폼필 확인 이력(D-148 Phase 3) — 시그니처 이력을 답변 형식으로 로드해 이번 턴
+    # 폼필 확인 이력(D-151 Phase 3) — 시그니처 이력을 답변 형식으로 로드해 이번 턴
     # 답변 아래에 병합(이번 턴 답이 이김: {**memory, **answers}). 적용 시 sliding TTL
     # 연장. Redis 불가·TTL 0이면 빈 dict(현행 동일). 멀티 경로(_prepare_multi_run)와 대칭.
     if state.get("template_structure") and not ctx.is_retry:
@@ -866,7 +866,7 @@ async def query_generator(
             state, ctx, coverage_outside,
         )
 
-    # 폼필 산출 승격(D-143/D-145/D-148) — 월 앵커·매핑 갱신분·HITL 산출물을 state 델타로.
+    # 폼필 산출 승격(D-146/D-148/D-151) — 월 앵커·매핑 갱신분·HITL 산출물을 state 델타로.
     # output_generator가 역질문 페이로드·사유·상수 기입에 사용한다(멀티 경로와 대칭).
     if form_fill:
         if form_fill.get("month_anchor"):
@@ -1414,7 +1414,7 @@ def _format_schema_for_prompt(
         include_not_null=True,
         sample_style="labeled",
         relationships_header="### 테이블 관계 (FK)",
-        # 라이브 샘플 방어(D-152): 크기 상한 프리뷰(값 200자·테이블당 2,000자)로 스크럽
+        # 라이브 샘플 방어(D-155): 크기 상한 프리뷰(값 200자·테이블당 2,000자)로 스크럽
         # 비용을 bound하고, PII 스크럽으로 FabriX 필터 오탐을 차단한다(멀티 경로와 대칭).
         sample_renderer=_render_samples_secure,
     )

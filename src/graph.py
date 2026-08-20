@@ -138,7 +138,7 @@ def route_after_semantic_router(state: AgentState) -> str:
     intent = state.get("routing_intent")
     if intent in _INTENT_ROUTE_MAP:
         return _INTENT_ROUTE_MAP[intent]
-    # 존 역질문 후단 게이트(D-140 후속2): 역질문은 이번 턴의 최종 응답 — 즉시 종료.
+    # 존 역질문 후단 게이트(D-143 후속2): 역질문은 이번 턴의 최종 응답 — 즉시 종료.
     # 라우트가 zone_clarification 페이로드를 status="clarification"으로 변환한다.
     if intent == "zone_clarification":
         return END
@@ -515,7 +515,7 @@ def build_graph(config: AppConfig, checkpointer=None):
             "cache_management": "cache_management",
             "synonym_registrar": "synonym_registrar",
             "general_inference": "general_inference",
-            # 존 역질문 후단 게이트(D-140 후속2) — 역질문은 턴 종결
+            # 존 역질문 후단 게이트(D-143 후속2) — 역질문은 턴 종결
             END: END,
         }
         if fault_dx_enabled:

@@ -1,4 +1,4 @@
-"""멀티 DB 동일 스키마 소급 복구 테스트 (D-150).
+"""멀티 DB 동일 스키마 소급 복구 테스트 (D-153).
 
 버그(2026-08-04 실측): 공동존 gp/yd 멀티 조회에서 첫 DB(gp)의 LLM SQL 생성이 형식
 비결정성으로 2회 연속 추출·검증에 실패하면 gp만 "SQL 검증 실패: SELECT 문이 아닙니다"로
@@ -86,7 +86,7 @@ def _patch_common(monkeypatch, calls, gen_by_db):
 async def test_first_db_validation_failure_recovered_by_same_schema_sql(monkeypatch):
     """gp 생성 3회 연속 실패(원 시도+재생성 2회) → yd 검증 통과 SQL로 gp 소급 복구(존 누락 0)."""
     calls: list = []
-    # gp: 산문 3회(원 시도 + 재생성 2회 모두 검증 실패 — D-150 후속1), yd: 정상 SQL
+    # gp: 산문 3회(원 시도 + 재생성 2회 모두 검증 실패 — D-153 후속1), yd: 정상 SQL
     gen_by_db = {
         "polestar_cm_gp": [_PROSE, _PROSE, _PROSE],
         "polestar_cm_yd": [_GOOD_SQL],
@@ -183,7 +183,7 @@ _FILTER_BLOCKED = (
 
 @pytest.mark.asyncio
 async def test_filter_blocked_response_fails_fast_with_clear_reason(monkeypatch):
-    """PII 필터 차단 응답(D-150 후속2): 재생성 중단(동일 프롬프트 재차단) + 명확한 사유.
+    """PII 필터 차단 응답(D-153 후속2): 재생성 중단(동일 프롬프트 재차단) + 명확한 사유.
 
     gen_by_db에 차단 응답 1건만 둔다 — 재시도가 발생하면 IndexError로 실패하므로
     "1회만 호출"이 테스트로 고정된다.
@@ -199,14 +199,14 @@ async def test_filter_blocked_response_fails_fast_with_clear_reason(monkeypatch)
 
     assert "polestar_cm_gp" in result["db_errors"]
     assert "PII 필터 차단" in result["db_errors"]["polestar_cm_gp"]
-    # 차단문 발췌가 UI 에러에 실린다(로그 없는 환경 자가 진단 — D-150 후속2)
+    # 차단문 발췌가 UI 에러에 실린다(로그 없는 환경 자가 진단 — D-153 후속2)
     assert "LLM 산출 발췌" in result["db_errors"]["polestar_cm_gp"]
     assert calls == []  # 차단 응답은 실행되지 않음
 
 
 @pytest.mark.asyncio
 async def test_prose_failure_error_includes_output_excerpt(monkeypatch):
-    """비-SQL 산출 최종 실패 시 db_errors에 산출 발췌가 실린다(UI 자가 진단 — D-150 후속2)."""
+    """비-SQL 산출 최종 실패 시 db_errors에 산출 발췌가 실린다(UI 자가 진단 — D-153 후속2)."""
     calls: list = []
     gen_by_db = {"polestar_cm_gp": [_PROSE, _PROSE, _PROSE]}
     _patch_common(monkeypatch, calls, gen_by_db)

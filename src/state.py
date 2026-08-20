@@ -108,7 +108,7 @@ class AgentState(TypedDict):
     smq_derivation: Optional[list[SmqDerivation]]  # 트랙 S(S2/D-128) 단계적 도출 기록; 미발동 None
     column_value_index: Optional[dict[str, list[str]]]  # E5-2 실측 값 인덱스 런타임 주입 {column: [값,...]}
     synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
-    # FabriX PII 필터 차단 시 프롬프트 섹션별 로컬 스캔 진단(D-152) — query_generator가
+    # FabriX PII 필터 차단 시 프롬프트 섹션별 로컬 스캔 진단(D-155) — query_generator가
     # 차단 감지 시 산출, query_validator가 에러 메시지에 노출(폐쇄망 UI 자가 진단).
     # 생성 시도 스코프 값(차단 아닌 생성이 성공하면 의미 없음 — 소비부가 차단 시에만 읽음).
     pii_block_diagnosis: Optional[str]
@@ -139,12 +139,12 @@ class AgentState(TypedDict):
     pending_synonym_registrations: Optional[list[dict]]      # 유사어 등록 대기 [{index, field, column, db_id}]
     llm_inference_details: Optional[list[dict]]              # LLM 추론 매핑 상세 [{field, db_id, column, matched_synonym, confidence, reason}]
     mapping_report_md: Optional[str]                         # 매핑 보고서 Markdown 텍스트
-    # 폼필 월 시리즈(M~M+5) 인식 결과(D-143) — {start, end: YYYYMM, resource_type, fields}.
-    # output_generator가 기준월을 응답에 명시하고 인식 필드를 미작성 사유(D-144)에서 제외.
+    # 폼필 월 시리즈(M~M+5) 인식 결과(D-146) — {start, end: YYYYMM, resource_type, fields}.
+    # output_generator가 기준월을 응답에 명시하고 인식 필드를 미작성 사유(D-147)에서 제외.
     # 요청 스코프 값 — 매 턴 초기화.
     form_month_anchor: Optional[dict]
 
-    # === 멀티턴 HITL 폼필 (Plan 73 Phase 2, D-148) ===
+    # === 멀티턴 HITL 폼필 (Plan 73 Phase 2, D-151) ===
     # 역질문 답변(요청 스코프 — route가 이번 턴 값 주입, followup에서 매 턴 초기화).
     # {field: {"action": "blank"|"column"|"eav"|"literal", "value": str|None}}
     form_fill_answers: Optional[dict[str, dict]]
@@ -194,11 +194,11 @@ class AgentState(TypedDict):
     # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
     # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
     selected_db_ids: Optional[list[str]]
-    # 존 역질문 후단 게이트 허용 채널 여부(D-140 후속2). 대화형 텍스트 라우트만 True로
+    # 존 역질문 후단 게이트 허용 채널 여부(D-143 후속2). 대화형 텍스트 라우트만 True로
     # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
     # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
     zone_clarification_allowed: Optional[bool]
-    # 존 역질문 후단 게이트 발동 페이로드(D-140 후속2, 요청 스코프) — 라우트가
+    # 존 역질문 후단 게이트 발동 페이로드(D-143 후속2, 요청 스코프) — 라우트가
     # status="clarification" 응답으로 변환(pre-gate와 동일 shape, 프론트 재사용).
     zone_clarification: Optional[dict]
 
@@ -290,17 +290,17 @@ def create_followup_input(
         # 원문 기준 LIMIT 확정값은 요청 스코프 — 직전 턴 값이 승계되지 않도록 명시 초기화
         # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 70 §3).
         "resolved_limit": None,
-        # 폼필 월 시리즈 앵커(D-143)도 요청 스코프 — 직전 폼필 턴 값이 텍스트 턴 응답에
+        # 폼필 월 시리즈 앵커(D-146)도 요청 스코프 — 직전 폼필 턴 값이 텍스트 턴 응답에
         # 기준월 안내로 잔존하지 않도록 명시 초기화(field_mapper 산출물이 아니라 자기정리 필요).
         "form_month_anchor": None,
         # 존 선택(Plan 70 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
         # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
         "selected_db_ids": selected_db_ids,
-        # 존 역질문 후단 게이트(D-140 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
+        # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
         # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
         "zone_clarification_allowed": allow_zone_clarification,
         "zone_clarification": None,
-        # HITL 폼필(D-148) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
+        # HITL 폼필(D-151) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
         # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
         # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
         "form_fill_answers": None,
@@ -363,7 +363,7 @@ def create_initial_state(
         llm_inference_details=None,
         mapping_report_md=None,
         form_month_anchor=None,
-        # HITL 폼필(D-148): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
+        # HITL 폼필(D-151): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
         # (새 파일 업로드 턴은 output_generator가 새 미해결로 교체).
         form_fill_answers=None,
         form_fill_overrides=None,

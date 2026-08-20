@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # 표면어만 넘겨(field_mapper._resolve_priority_db_ids / semantic_router가 alias로 해소),
 # "공동존 김포"처럼 더 구체적 표현이 이미 힌트에 있으면 중복 추가하지 않는다.
 # 선언 정본은 `config/db_registry.yaml`의 locations(Plan 67 R2/D-131). 다만 존 역질문
-# 후단 게이트(D-150)가 routing(infrastructure) 계층에서도 이 값을 쓰는데 utils는
+# 후단 게이트(D-153)가 routing(infrastructure) 계층에서도 이 값을 쓰는데 utils는
 # registry를 임포트할 수 없어(계층 규칙), 값은 utils.query_gen_common에 두고 registry와의
 # 동기를 테스트로 강제한다(tests/test_routing/test_location_terms_sync.py).
 # D-004 경계: 이 표면어는 라우팅 의도 분류에 쓰지 않는다(사용자 명시 힌트 보강 전용).

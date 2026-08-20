@@ -226,7 +226,7 @@ class KBGenAIChat(BaseChatModel):
                 continue
 
         # 차단 안내문이 여러 청크로 쪼개져 오면 라인 단위 검사가 전부 통과한다 —
-        # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-152,
+        # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-155,
         # 2026-08-05 실측: validator만 차단을 감지하고 원인 로그 부재).
         if not blocked_logged and is_filter_blocked(raw_text="".join(_content_parts)):
             log_filter_block_if_any(
@@ -294,7 +294,7 @@ class KBGenAIChat(BaseChatModel):
                         continue
 
                 # 차단 안내문이 여러 청크로 쪼개져 오면 라인 단위 검사가 전부 통과한다 —
-                # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-152,
+                # 조립 전문으로 재검사해 [PII-FILTER] 진단 로그 누락을 막는다(D-155,
                 # 2026-08-05 실측: validator만 차단을 감지하고 원인 로그 부재).
                 if not blocked_logged and is_filter_blocked(
                     raw_text="".join(_content_parts)

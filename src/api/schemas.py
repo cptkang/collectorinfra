@@ -44,7 +44,7 @@ class QueryRequest(BaseModel):
         default=None,
         description="존 선택 역질문 응답 — 조회 대상 DB 식별자 목록 (결정적 라우팅 고정)",
     )
-    # Plan 73 §11 (D-148): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
+    # Plan 73 §11 (D-151): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
     # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
     form_fill_answers: Optional[dict[str, dict]] = Field(
         default=None,
@@ -53,7 +53,7 @@ class QueryRequest(BaseModel):
             "(pending_form_fill 대기 중인 thread에서만 유효)"
         ),
     )
-    # Phase 3 (D-148): 답변을 양식 시그니처 스코프의 확인 이력에 저장할지(옵트인).
+    # Phase 3 (D-151): 답변을 양식 시그니처 스코프의 확인 이력에 저장할지(옵트인).
     # TTL sliding(QueryConfig.form_memory_ttl_days) — 무기한 저장 없음.
     form_fill_remember: bool = Field(
         default=False,
@@ -100,7 +100,7 @@ class QueryResponse(BaseModel):
     clarification: Optional[dict] = Field(
         default=None, description="역질문 컨텍스트 (존 선택 등)"
     )
-    # Plan 73 §11 (D-148): 폼필 미해결 필드 역질문 — 결과와 함께 첨부(사후 패널).
+    # Plan 73 §11 (D-151): 폼필 미해결 필드 역질문 — 결과와 함께 첨부(사후 패널).
     # {question, fields: [{name, label}], candidates: [{value, label, kind}]}
     form_fill_clarification: Optional[dict] = Field(
         default=None, description="폼필 미해결 필드 역질문 패널 컨텍스트"

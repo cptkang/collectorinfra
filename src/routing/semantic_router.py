@@ -280,7 +280,7 @@ async def semantic_router(
             user_specified_db = t["db_id"]
             break
 
-    # 존 역질문 후단 게이트 (D-140 후속2) — 레거시(비오케스트레이션) 경로 대칭.
+    # 존 역질문 후단 게이트 (D-143 후속2) — 레거시(비오케스트레이션) 경로 대칭.
     # 트랙 A(subagents._zone_clarification_or_none_task)와 동일 판정: 대화형 채널 +
     # 첫 턴 + 위치어·서버 식별·사용자 지정 신호 없음 + 폴스타 존 팬아웃이면 역질문.
     zone_q = _zone_clarification_or_none_router(
@@ -288,7 +288,7 @@ async def semantic_router(
     )
     if zone_q:
         logger.info(
-            "존 역질문 후단 게이트 발동(D-140 후속2, 레거시 경로): targets=%s",
+            "존 역질문 후단 게이트 발동(D-143 후속2, 레거시 경로): targets=%s",
             [t["db_id"] for t in targets],
         )
         return {
@@ -328,7 +328,7 @@ def _zone_clarification_or_none_router(
     user_specified_db: Optional[str],
     app_config: AppConfig,
 ) -> Optional[dict]:
-    """존 역질문 후단 게이트 판정 (D-140 후속2 — 레거시 semantic_router 경로).
+    """존 역질문 후단 게이트 판정 (D-143 후속2 — 레거시 semantic_router 경로).
 
     §4.2 비발동 목록을 결정적 조건으로 판정한다. selected_db_ids(우선순위 2.5)·
     mapped_db_ids(우선순위 3)는 본 함수 도달 전에 조기 반환되므로 재검사하지 않는다.
@@ -370,7 +370,7 @@ def _zone_clarification_or_none_router(
         return None
     return build_zone_clarification(
         app_config.multi_db.get_active_db_ids(), user_query,
-        # 존 그룹 상호배타(D-140 후속3) — 라우트 pre-gate와 동일 UI 규칙
+        # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
         group_exclusive=bool(
             getattr(app_config.multi_db, "zone_group_exclusive", True)
         ),

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # 유사어 기반 allowed_tables 동적 보완 상한 (D-051: 누적 유사어 전 테이블 유입 차단)
 _MAX_SYNONYM_SUPPLEMENT_TABLES = 15
 
-# 라이브 샘플 수집 타임박스 (D-151, 2026-08-05 폐쇄망 실측):
+# 라이브 샘플 수집 타임박스 (D-154, 2026-08-05 폐쇄망 실측):
 # 샘플은 보조 정보인데 get_sample_data 1건이 mcp_call_timeout(60s)까지 침묵 대기하면
 # SSE 무이벤트 타임아웃(query_timeout=60s)을 단독으로 초과해 파이프라인 전체가
 # "처리 시간 초과"로 죽는다(존 선택 재개 b0 단일 경로, DB2 CLOB성 대형 테이블).
@@ -1004,7 +1004,7 @@ async def schema_analyzer(
 
             # 4. 샘플 데이터 수집 (관련 테이블만)
             # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음 — 부착 시점에 값 절단
-            # (CLOB성 대형 값의 상태·체크포인트·PII 스크럽 무상한 유입 차단, D-151)
+            # (CLOB성 대형 값의 상태·체크포인트·PII 스크럽 무상한 유입 차단, D-154)
             if full_schema_dict:
                 for table_name in relevant:
                     cached_table = full_schema_dict.get("tables", {}).get(table_name, {})
@@ -1013,7 +1013,7 @@ async def schema_analyzer(
                             cached_table["sample_data"]
                         )
 
-            # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-151, 상수 주석 참조).
+            # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-154, 상수 주석 참조).
             # 시작/완료 INFO 로그는 SSE 무이벤트 구간 진단용 계측을 겸한다(끊긴 지점 확정).
             _pending_samples = [
                 t for t in relevant

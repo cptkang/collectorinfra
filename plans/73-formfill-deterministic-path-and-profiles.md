@@ -2,13 +2,13 @@
 
 - 작성일: 2026-07-30 (v2 개정: 사용자 검토 의견 반영 — form_profiles YAML 철회,
   유사어·HITL 중심 재설계)
-- 상태: **종결(2026-08-03, §13·D-149)** — Phase 1~3 구현·라이브 게이트 전체 통과.
-  Phase 4는 D-149로 축소 확정(재분류, 이관·제거 철회), Phase 2b/층3은 수요 실증 시
+- 상태: **종결(2026-08-03, §13·D-152)** — Phase 1~3 구현·라이브 게이트 전체 통과.
+  Phase 4는 D-152로 축소 확정(재분류, 이관·제거 철회), Phase 2b/층3은 수요 실증 시
   재개. 잔존 백로그는 §13 참조
-- 선행: Plan 72 (결정적 엔진 3존 그린 완료), Plan 70/D-140 (존 역질문 배선),
-  Plan 63 (과적합 분리), D-067/D-068, D-142~D-145
-- 신규 결정 예정: D-146 (폼필 결정적 계약화 + LLM 추론 매핑의 채움 금지),
-  D-147 (폼필 단일 태스크 고정), D-148 (멀티턴 HITL 폼필 + 확인 이력)
+- 선행: Plan 72 (결정적 엔진 3존 그린 완료), Plan 70/D-143 (존 역질문 배선),
+  Plan 63 (과적합 분리), D-067/D-068, D-145~D-148
+- 신규 결정 예정: D-149 (폼필 결정적 계약화 + LLM 추론 매핑의 채움 금지),
+  D-150 (폼필 단일 태스크 고정), D-151 (멀티턴 HITL 폼필 + 확인 이력)
 
 ---
 
@@ -56,7 +56,7 @@ per-DB LLM 매핑·캐시 상태에 종속된 것이 근본 원인.
 | v1 | 검토 의견 | v2 |
 |---|---|---|
 | 층3: 수작성 form_profiles YAML | 수많은 양식을 프로필로 관리하는 것은 비현실적. 이름/내용 충돌 규칙 불명확 | **철회.** 지식 저장소를 ①기존 유사어(문맥 무관 지식) ②HITL 확인 이력(자동 축적)으로 대체 — 사람이 관리하는 프로필 목록 자체를 없앰 |
-| 층4: 질의 내 지시 오버라이드만 | 매칭 실패 시 사용자에게 되묻는 멀티턴 폼필은 안 되는가 | **채택·확장.** 미해결 필드를 역질문으로 승격(선례: D-140 clarification, pending_synonym_registrations 멀티턴). 지시 오버라이드는 그 부분집합 |
+| 층4: 질의 내 지시 오버라이드만 | 매칭 실패 시 사용자에게 되묻는 멀티턴 폼필은 안 되는가 | **채택·확장.** 미해결 필드를 역질문으로 승격(선례: D-143 clarification, pending_synonym_registrations 멀티턴). 지시 오버라이드는 그 부분집합 |
 | (암묵) LLM 추론 매핑을 채움에 사용 | 유사어로 처리하면 되지 않는가 | 유사어 매핑(+힌트)은 채움에 사용, **llm_inferred 매핑은 폼필에서 채움 금지 — 역질문 후보로 강등**(핵심 신규 원칙) |
 | — | DeepAgent 회귀(vLLM/GPU) 검토 중 | §7에 비교 분석 — 회귀 반대, 단 의사결정 게이트 제안 |
 
@@ -80,7 +80,7 @@ per-DB LLM 매핑·캐시 상태에 종속된 것이 근본 원인.
 - **LLM 산출물의 자동 영속화** — 확인 이력의 쓰기 게이트는 사용자 명시 답변뿐
   (Known Mistakes: 유사어 자동 등록 = 오염 자기강화 루프).
 - 전역 유사어의 양식 문맥 의존 지식 등록 — '처리능력'처럼 양식에 따라 의미가 바뀌는
-  단어를 전역 등록하면 4차 라운드(TPMC에 메모리 용량) 사고가 제도화된다(D-145 유지).
+  단어를 전역 등록하면 4차 라운드(TPMC에 메모리 용량) 사고가 제도화된다(D-148 유지).
 
 ---
 
@@ -99,26 +99,26 @@ per-DB LLM 매핑·캐시 상태에 종속된 것이 근본 원인.
  ×. llm_inferred 매핑 — 폼필에서는 채움에 쓰지 않고 역질문 후보로만 사용
 ```
 
-### 2.1 경로 결정화: 게이트 확장 (D-146 예정) — v1 층1 유지
+### 2.1 경로 결정화: 게이트 확장 (D-149 예정) — v1 층1 유지
 
 결정적 피벗 발동 조건을 **"폼필 intent(template_structure) + eav_pattern 존재"**로
 확장(월 시리즈·child_eav 불요). 단일(`query_generator.py` `_try_build_form_fill_pivot_sql`
 게이트)·멀티(`multi_db_executor.py` `use_multi_resource_pivot`) 대칭 수정.
 eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근본 수정.
 
-**신규 원칙(D-146에 포함)**: 폼필 경로에서 `mapping_sources[field] == "llm_inferred"`인
+**신규 원칙(D-149에 포함)**: 폼필 경로에서 `mapping_sources[field] == "llm_inferred"`인
 매핑은 조립 SELECT에 넣지 않는다(공란 처리, 미해결 목록에 등재). 유사어·힌트 출처
 매핑과 구조 인식기(월 시리즈)·기존 확정 규칙(처리능력/비고/Vendor+Model — Plan 72
 검증 자산)만 채움에 사용한다. llm_inferred 차단으로 생기는 공란은 2.3의 역질문이
 받는다 — 침묵 오염(TPMC·acl_id·epoch류)의 원천 차단.
 
-### 2.2 폼필 단일 태스크 고정 (D-147 예정) — v1 층2 유지
+### 2.2 폼필 단일 태스크 고정 (D-150 예정) — v1 층2 유지
 
 `intent_planner.py` 계층 A에 ③.5 추가: template_structure 존재 → `data_query`
 단일 태스크(LLM 분해 우회, mapped_db_ids 있으면 db_ids 승계). 파일 없는 "양식
 채워줘"류는 안내 응답으로 단락(첨부 요청 + 지원 형식).
 
-### 2.3 멀티턴 HITL 폼필 (D-148 예정) — v2 신규 중심축
+### 2.3 멀티턴 HITL 폼필 (D-151 예정) — v2 신규 중심축
 
 **흐름**:
 
@@ -136,7 +136,7 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 
 **기존 배선 재사용(신규 인프라 최소화)**:
 
-- 역질문 UX: D-140 `clarification_needed`(intent_planner → query.py → 프론트) 선례.
+- 역질문 UX: D-143 `clarification_needed`(intent_planner → query.py → 프론트) 선례.
 - 멀티턴 대기 상태: `pending_synonym_registrations` 선례와 동형의
   `pending_form_fill`(파싱된 template_structure + 부분 매핑 + 미해결 목록 보존,
   intent_planner 계층 A pre-check로 답변 턴 라우팅). 요청 스코프 상태 명시 초기화
@@ -169,7 +169,7 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 - Plan 72의 3양식 확정 규칙(처리능력·비고·Vendor+Model)은 검증된 코드 자산으로
   유지하고 이관하지 않는다 — 확인 이력은 **새 양식**의 축적 수단.
 
-### 2.5 응답 계약 (D-144 확장)
+### 2.5 응답 계약 (D-147 확장)
 
 폼필 응답: ①기준월(해당 시) ②채움 통계 ③공란 필드+사유(정책/매핑 불성립/데이터
 부재 구분) ④사용자 지시·이력 적용 내역 ⑤미해결 필드 역질문(있을 때).
@@ -185,7 +185,7 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 | C3 | LLM 산출물의 자동 영속화 0건 (쓰기 게이트 = 사용자 확인) | 코드 리뷰 + 쓰기 경로 테스트 |
 | C4 | 확인 이력·역질문 부재 시 현행 동일 동작 | 기존 회귀 전체 통과 |
 | C5 | 이력 소스 어휘 = 조립기 기존 능력의 부분집합 | 어휘 화이트리스트(미지 소스 거부) |
-| C6 | 전역 유사어 오염 0건 (양식 문맥 지식의 전역 등록 금지) | D-145 유지, 등록 경로 grep |
+| C6 | 전역 유사어 오염 0건 (양식 문맥 지식의 전역 등록 금지) | D-148 유지, 등록 경로 grep |
 
 ## 4. 트레이드오프 · 사이드이펙트 · 리스크
 
@@ -291,9 +291,9 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 ## 8. 기존 결정과의 정합
 
 - D-067(단일 조립 엔진)·D-068(LLM 우회): 정합 — 엔진 신설 없음, 우회 범위 확장.
-- D-140(역질문 배선)·pending_* 멀티턴 선례: 재사용 — 신규 패러다임 없음.
-- D-144: 사유 어휘 확장(정책/사용자 지시/이력) — 정합.
-- D-145(요청 스코프 격리·전역 등록 금지): **강화** — llm_inferred 채움 금지 +
+- D-143(역질문 배선)·pending_* 멀티턴 선례: 재사용 — 신규 패러다임 없음.
+- D-147: 사유 어휘 확장(정책/사용자 지시/이력) — 정합.
+- D-148(요청 스코프 격리·전역 등록 금지): **강화** — llm_inferred 채움 금지 +
   쓰기 게이트(사용자 확인)로 원칙이 코드 계약이 됨. 확인 이력은 양식 시그니처
   스코프라 전역 오염 없음.
 - CLAUDE.md Phase 3 로드맵(멀티턴·human-in-the-loop 승인): 본 계획 2.3이 그 구현.
@@ -318,7 +318,7 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 
 ### Q2. 역질문 UX 형태 (v2.1 — 구조화 패널로 확정 제안)
 
-- **구조화 패널(기본안, 사용자 편의 지적 반영)**: D-140 존 역질문의 기존 구현
+- **구조화 패널(기본안, 사용자 편의 지적 반영)**: D-143 존 역질문의 기존 구현
   (app.js — 체크박스 패널 + 자연어 재조합 없이 `selected_db_ids` 구조화 필드 재전송)
   과 동형으로, 미해결 필드별 위젯 패널을 채팅 버블에 렌더:
   - 필드마다 라디오 3택 — `공란 유지`(기본 선택) / `DB 항목 선택`(드롭다운: 유사어
@@ -382,13 +382,13 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
   스코프 확인 이력**(해당 양식에만). `유사어 등록`(별도 옵션, 문맥 무관 후보에만
   노출) = **전역**(폴스타 계열 전 질의). 문맥 의존어(`처리능력`·`용도`·`구분`·
   `비고`·`도입일자`·`서버명`)는 유사어 등록 옵션을 **표시하지 않는다**(결정적
-  차단 목록) — 전역 오염 원천 봉쇄(D-145, 4차 라운드 교훈).
+  차단 목록) — 전역 오염 원천 봉쇄(D-148, 4차 라운드 교훈).
 
 ---
 
 ## 10. 구현 이력
 
-### Phase 1 — 구현 완료 (2026-07-30, D-146/D-147 등재)
+### Phase 1 — 구현 완료 (2026-07-30, D-149/D-150 등재)
 
 **수정 파일 3개(src) + 테스트 3개**:
 
@@ -397,7 +397,7 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 | `src/nodes/query_generator.py` | `_try_build_form_fill_pivot_sql` — ①`form_intent = bool(template_structure)` 게이트 추가(월시리즈·자식EAV 없어도 조립, eav_pattern 필수 유지) ②llm_inferred 매핑 채움 제외(값 None화 + `mapping_updates` 강제 None, 집계어 명시 사용률은 metric_fields로 회수) ③식별 컬럼 주입 조건에 form_intent 추가 |
 | `src/nodes/multi_db_executor.py` | `_generate_sql`에 `form_intent`/`mapping_sources` 파라미터 신설(호출부 2곳 전달) — ①시맨틱 컴파일 게이트에 `not form_intent` ②진입 조건에 `or form_intent` ③llm_inferred 강등(form_intent+eav_pattern+비재시도 한정, form_fill_out.mapping_updates 강제 None) ④피벗 게이트 `(child_eav or month_series or (form_intent and eav_pattern))` ⑤강등 사용률류 pivot_metric_fields 회수 ⑥식별 컬럼 주입 대칭 |
 | `src/orchestration/intent_planner.py` | ③.5 template_structure → data_query 단일 task(LLM 분해 우회), ③.6 양식 명사+채움 동사 & 파일 부재 → general_inference 안내 단락 |
-| `tests/test_nodes/test_form_month_series.py` | `TestD116FormIntentGate`(단일·멀티 게이트 매트릭스, 단순 양식 파서→조립 e2e, 식별 주입) + `TestLlmInferredDemotion`(강등·회수·비폼필 무영향·멀티 대칭) 신규 12건. `test_non_form_query_unchanged`는 D-146 계약으로 갱신(파일 없는 일반 질의만 None) |
+| `tests/test_nodes/test_form_month_series.py` | `TestD116FormIntentGate`(단일·멀티 게이트 매트릭스, 단순 양식 파서→조립 e2e, 식별 주입) + `TestLlmInferredDemotion`(강등·회수·비폼필 무영향·멀티 대칭) 신규 12건. `test_non_form_query_unchanged`는 D-149 계약으로 갱신(파일 없는 일반 질의만 None) |
 | `tests/test_orchestration/test_intent_planner.py` | ③.5/③.6 pre-check 3건(단일 고정·안내 단락·명사 단독 미발동) |
 | `tests/test_generic_path/test_generic_llm_mapping.py` | (부수) `read_text(encoding="utf-8")` — Windows cp949 기본 인코딩이 UTF-8 JSON 컬렉션을 중단시키던 기존재 결함 수정 |
 
@@ -410,11 +410,11 @@ eav_pattern 필수 유지로 비폴스타 DB 무영향. 0.1의 GROUP BY 건 근�
 후보 — `classify_metric_field` 보수 계약 유지). C2(기관명 하드코딩) grep 통과.
 
 **신규 로그 라인(폐쇄망 판별용)**:
-- `폼필 결정적 계약 경로(D-146): 월시리즈·자식EAV 없음 — 게이트 확장으로 조립` (단일)
-- `DB '<id>': 폼필 결정적 계약 경로(D-146) — …` (멀티, DB별)
-- `폼필 llm_inferred 매핑 N건 채움 제외(D-146, 역질문 후보): [...]` (단일/멀티)
-- `intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-147)`
-- `intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-147)`
+- `폼필 결정적 계약 경로(D-149): 월시리즈·자식EAV 없음 — 게이트 확장으로 조립` (단일)
+- `DB '<id>': 폼필 결정적 계약 경로(D-149) — …` (멀티, DB별)
+- `폼필 llm_inferred 매핑 N건 채움 제외(D-149, 역질문 후보): [...]` (단일/멀티)
+- `intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-150)`
+- `intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-150)`
 
 **유사어 실효성 점검(Q4-1) 코드 측 결과**: 유사어 매칭은 공백 양방향 정규화 기구현
 (`src/document/field_mapper.py` — `word_norm.replace(" ","") == field_no_space`,
@@ -433,12 +433,12 @@ RedisInsight로 함께 확인(§5 Phase 1 게이트).
 
 | # | 증상 | 판정 | 조치 |
 |---|---|---|---|
-| L1 | 단순 양식: CM 2개 DB가 server_name/hostname(주입 식별 칼럼)만 채움 — 양식 필드 미채움 | per-DB 매핑 기아 — CM의 유사어가 Redis에 없거나 llm_inferred뿐(D-146 강등). B0는 유사어 적중으로 전부 채움 | **폐쇄망 점검**: RedisInsight에서 CM 유사어 키 확인 → 없으면 `synonym_seeds.py load --db polestar_cm_gp/_cm_yd`. 코드 수정 아님 |
+| L1 | 단순 양식: CM 2개 DB가 server_name/hostname(주입 식별 칼럼)만 채움 — 양식 필드 미채움 | per-DB 매핑 기아 — CM의 유사어가 Redis에 없거나 llm_inferred뿐(D-149 강등). B0는 유사어 적중으로 전부 채움 | **폐쇄망 점검**: RedisInsight에서 CM 유사어 키 확인 → 없으면 `synonym_seeds.py load --db polestar_cm_gp/_cm_yd`. 코드 수정 아님 |
 | L2 | 서버 양식 3존 data_insufficient + LLM 폴백이 계약(공란·규칙) 덮음(서버명=등록명, 비고=IP) | **구조 확정**: FIX-6 억제가 월 앵커 런에만 적용 — 월 시리즈 없는 폼필의 의도적 공란이 부족 판정→재시도→결정적 스킵→LLM 덮음 | **FIX-A**: result_organizer 억제를 폼필 턴 전체(template_structure+행 존재)로 확장 |
 | L3 | 파일 없는 폼필 최종 응답이 "죄송합니다…" 일반 오류 | **코드 확정**: 안내 지시문을 general_inference LLM에 재서술시키다 LLM 호출 실패 → 오류 폴백(general_inference.py:241) | **FIX-B**: 고정 안내문을 task.direct_response로 결정적 반환(LLM 무통과) |
 | L4 | B0 CPU 양식: "결과 생성 중 오류: 'NoneType' object has no attribute 'get'" | 발생 지점 특정 불가 — result_aggregator 래퍼가 exc_info 없이 메시지만 기록. 후보: output_generator의 None 불안전 `.get` 2곳(형태 일치, 미확정) | **FIX-C**: exc_info=True 추가(다음 라운드 traceback 확보) + 후보 2곳 or-폴백. **근본 확정은 재실측 traceback으로** |
-| L5 | GP+YD CPU: 월 데이터는 채워지나 제조사(모델명)·비고 공란(이전 라운드는 정상) | **미확정** — 조립 로그(regular=/concat=/D-146/llm_inferred 제외 라인)와 실행 SQL 필요. 가설(검증 대기): 결정적 SQL 1차 검증 실패→error_context 재생성→LLM 폴백(월 리터럴 블록만 유지) | 로그 요청. 추정 가드 추가 안 함(진단 프로토콜) |
-| L6 | 로그에 D-147 미검출 | 정상 가능성 — 업로드 턴은 ③(mapped_db_ids)이 선행 발동해 "mapped_db_ids 감지"로 기록됨. ③.6은 발동 실증(L3) | 재검증 시 "폼필 고정"·"안내 응답 단락" 문구로 검색 |
+| L5 | GP+YD CPU: 월 데이터는 채워지나 제조사(모델명)·비고 공란(이전 라운드는 정상) | **미확정** — 조립 로그(regular=/concat=/D-149/llm_inferred 제외 라인)와 실행 SQL 필요. 가설(검증 대기): 결정적 SQL 1차 검증 실패→error_context 재생성→LLM 폴백(월 리터럴 블록만 유지) | 로그 요청. 추정 가드 추가 안 함(진단 프로토콜) |
+| L6 | 로그에 D-150 미검출 | 정상 가능성 — 업로드 턴은 ③(mapped_db_ids)이 선행 발동해 "mapped_db_ids 감지"로 기록됨. ③.6은 발동 실증(L3) | 재검증 시 "폼필 고정"·"안내 응답 단락" 문구로 검색 |
 
 **Phase 1.1 수정 파일**: `src/nodes/result_organizer.py`(FIX-A),
 `src/orchestration/intent_planner.py`+`src/orchestration/subagents.py`(FIX-B),
@@ -480,11 +480,11 @@ ipaddress류 학습 유사어가 등록돼 있는지(과거 LLM 등록 흐름의
 
 ```
 [1차 폼필 런]
- query_generator/multi (D-146 경로)
+ query_generator/multi (D-149 경로)
    └─ form_fill_candidates 산출(schema_info: entity 안전 칼럼 + EAV known_attributes 한글 라벨)
  output_generator (fill_stats 계산 후)
    ├─ unresolved = 채움 0건 필드 − 월 시리즈 필드 − 사용자 지정 공란
-   ├─ 응답에 form_fill_clarification {fields, candidates} 첨부 (D-140 응답 동형)
+   ├─ 응답에 form_fill_clarification {fields, candidates} 첨부 (D-143 응답 동형)
    └─ state.pending_form_fill = {uploaded_file, file_type, original_query, unresolved}
 [프론트 패널]
  필드별 라디오: 공란 유지(기본) / DB 항목 선택(드롭다운=candidates) / 직접 입력(텍스트)
@@ -511,7 +511,7 @@ ipaddress류 학습 유사어가 등록돼 있는지(과거 LLM 등록 흐름의
 | `pending_form_fill` | **멀티턴 보존**(pending_synonym_registrations 동형) | ①답변 적용 후 미해결 0 ②새 파일 업로드 턴(교체) |
 
 - 월 시리즈 필드·결합 필드는 답변 대상이 아님(검증에서 거부 — 구조 채움 영역).
-- 오버라이드는 규칙(D-145 확정 규칙)보다 **우선**(사용자 층이 최상위 — §2 우선순위).
+- 오버라이드는 규칙(D-148 확정 규칙)보다 **우선**(사용자 층이 최상위 — §2 우선순위).
 
 ### 11.4 게이트 2 (재검증 기준)
 
@@ -520,7 +520,7 @@ ipaddress류 학습 유사어가 등록돼 있는지(과거 LLM 등록 흐름의
 응답 명시 ③검증 불가 답변(실재하지 않는 칼럼) 거부+사유 ④답변 없는 일반 질의
 턴에서 pending 오염 없음 ⑤기존 CPU/메모리/단순 양식 결과 불변.
 
-### Phase 2 — 구현 완료 (2026-07-31, D-148 등재; 폐쇄망 게이트 2 실측 대기)
+### Phase 2 — 구현 완료 (2026-07-31, D-151 등재; 폐쇄망 게이트 2 실측 대기)
 
 **수정 파일(배포 대상 10개)**:
 
@@ -541,11 +541,11 @@ ipaddress류 학습 유사어가 등록돼 있는지(과거 LLM 등록 흐름의
 오버라이드 대칭/writer 상수/미해결 수집/라우트 복원·무시) — 전부 통과. 폼필 전체 65건
 그린, 인접 모듈(orchestration/document/api) 신규 실패 0(기존재 6건 동일), arch_check 0.
 
-**배포 확인 grep**: `grep -rn "D-148" src/ | wc -l` (10파일 매칭),
+**배포 확인 grep**: `grep -rn "D-151" src/ | wc -l` (10파일 매칭),
 `grep -n "form_fill_answers" src/api/schemas.py` (1건).
 
 **게이트 2 재검증 시나리오(§11.4)**: ①서버 양식 업로드 → 응답 하단에 미해결 필드
-패널 표시(로그: `폼필 역질문 발행(D-148)`) ②패널에서 "용도=직접 입력 '웹서버',
+패널 표시(로그: `폼필 역질문 발행(D-151)`) ②패널에서 "용도=직접 입력 '웹서버',
 도입일자=DB 항목, 구분=공란 유지" 후 [선택한 방법으로 다시 채우기] → 재채움 산출물
 반영 + 응답에 [사용자 답변 적용 내역] ③존재하지 않는 항목 답변 거부 사유 표시
 ④같은 thread에서 일반 질의 → 패널 비활성·오염 없음 ⑤CPU/메모리/단순 양식 결과 불변.
@@ -691,9 +691,9 @@ static/js/app.js / state.py
 ### 게이트 3 재검증 시나리오
 
 ①서버 양식 + 패널 답변 + **"이 답을 기억" 체크** → 응답에 `[기억 저장] '…'에 N개
-항목…(유효 7일)` (로그: `폼필 확인 이력 저장(D-148)`) ②**같은 양식 재업로드** →
+항목…(유효 7일)` (로그: `폼필 확인 이력 저장(D-151)`) ②**같은 양식 재업로드** →
 패널 없이(또는 축소되어) 자동 반영 + `[확인 이력 적용]` 표시 (로그: `폼필 확인
-이력 적용(D-148) … TTL 7일 연장`) ③파일 첨부 + "이 양식에 기억된 답 보여줘" →
+이력 적용(D-151) … TTL 7일 연장`) ③파일 첨부 + "이 양식에 기억된 답 보여줘" →
 목록 표시(채우기 미실행) ④"도입일자 기억 삭제" → 삭제 확인 + 다음 런에 도입일자
 재질문 ⑤기억 없이(체크 안 함) 답변 → 다음 런에 다시 질문(저장 안 됨 확인)
 ⑥CPU/메모리 양식 결과 불변.
@@ -809,12 +809,12 @@ static/js/app.js / state.py
 
 ---
 
-## 13. Plan 73 종결 (2026-08-03, D-149)
+## 13. Plan 73 종결 (2026-08-03, D-152)
 
 ### B1~B3 최종 처리 (사용자 승인)
 
 - **B1(Phase 4) 축소 확정**: 이관·제거 **철회** — 규칙 4종을 도메인 일반 규칙로
-  재분류(D-149). 근거: ①TTL 캐시는 부정 규칙(처리능력 강제 공란)의 이관처 불가
+  재분류(D-152). 근거: ①TTL 캐시는 부정 규칙(처리능력 강제 공란)의 이관처 불가
   (만료=보호 소실) ②4종 모두 기관·양식 리터럴이 아닌 필드명 의미론 ③실질 목표
   (새 양식=코드 0줄)는 게이트 3에서 실증 완료. 동결 계약(C1)은 유지.
 - **B2(질의 내 즉시 지시)**: 보류 — 수요 실증 시 착수(비고 건 해소로 긴급성 소멸,
@@ -823,15 +823,15 @@ static/js/app.js / state.py
 
 ### 최종 상태 요약
 
-- **구현 완료·라이브 검증**: D-146(경로 결정화+llm_inferred 채움 금지),
-  D-147(단일 task+파일 없는 안내), D-148(HITL 역질문+구조화 답변+TTL 확인 이력+
+- **구현 완료·라이브 검증**: D-149(경로 결정화+llm_inferred 채움 금지),
+  D-150(단일 task+파일 없는 안내), D-151(HITL 역질문+구조화 답변+TTL 확인 이력+
   조회/삭제), 안정화 FIX-16~25.
 - **우려 대조**: "양식마다 코드·에러 증가" → 역전(새 양식 코드 0줄 실증, 에러→계약된
   공란/질문, 지식은 사용자 확인 기반 자동 축적·자동 만료). DeepAgent 회귀 의사결정
   게이트의 판정 재료 확보(§7).
 - **잔존 백로그**(Plan 73 밖):
   1. **field_mapper의 LLM 매핑 즉시 Redis 등록 경로** — 오염 자기강화 잔여
-     (비고→description류의 원 출처 추정). 폼필은 D-146/FIX-25로 무해화됐으나 일반
+     (비고→description류의 원 출처 추정). 폼필은 D-149/FIX-25로 무해화됐으나 일반
      질의 영향은 별도 검토 대상.
   2. 안내성 문구 스트리밍 통일성(low).
   3. FabriX security filter 오류 — 정상 런 재발 시 추적.

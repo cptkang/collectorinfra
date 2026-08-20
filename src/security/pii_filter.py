@@ -128,7 +128,7 @@ PII_RULES: List[PiiRule] = [
 
 _WHOLE_LINE_MAX = 120  # whole_line 규칙(계좌 등)은 짧은 라인에만 적용(백트래킹·오탐 방지)
 
-# ── 계좌번호(851) 광폭 매칭 의심 형태 (D-152 후속3) ─────────────────────────────
+# ── 계좌번호(851) 광폭 매칭 의심 형태 (D-155 후속3) ─────────────────────────────
 # 폐쇄망 실측(2026-08-05): 계좌번호 정책 차단인데 덤프에서 계좌 유사 문자열을 찾지
 # 못하는 사례. 서버 원문 단편의 날짜 제외는 2자리 연도(YY-MM-DD)형만 커버하고,
 # 자릿수 창이 비숫자 관통(\D*)이라면 `"2026-06-17 02:30:45", "id": 123` 같은 라인이
@@ -246,7 +246,7 @@ def is_scrub_samples_enabled() -> bool:
 def is_block_dump_enabled() -> bool:
     """차단 시 프롬프트·응답 전문 파일 덤프 on/off (``SECURITY_PII_BLOCK_DUMP_ENABLED``, 기본 ON).
 
-    설정 로드 실패 시 안전하게 ON으로 간주한다(원인 특정이 우선 — D-152 후속1).
+    설정 로드 실패 시 안전하게 ON으로 간주한다(원인 특정이 우선 — D-155 후속1).
     """
     try:
         from src.config import load_config
@@ -300,7 +300,7 @@ def scan_pii(
         unmask: True면 감지 문자열을 원문 그대로 담는다. None(기본)이면
             ``SECURITY_PII_FILTER_LOG_UNMASK`` 설정을 따른다(기본 마스킹).
         rules: 지정하면 해당 규칙들로만 스캔한다(서버 차단 유형별 표적 대조용,
-            D-152 후속5). None이면 전체 규칙(9종).
+            D-155 후속5). None이면 전체 규칙(9종).
     """
     if not text:
         return []
@@ -334,7 +334,7 @@ def scan_pii(
 def scan_account_suspects(
     text: str, max_hits: int = 8, unmask: Optional[bool] = None
 ) -> List[PiiMatch]:
-    """계좌번호(851) 광폭 매칭 **의심** 형태(날짜·타임스탬프)를 스캔한다 (D-152 후속3).
+    """계좌번호(851) 광폭 매칭 **의심** 형태(날짜·타임스탬프)를 스캔한다 (D-155 후속3).
 
     라인 총 숫자 자릿수가 ``_SUSPECT_MIN_LINE_DIGITS`` 이상일 때만 보고한다 —
     서버 룰의 자릿수 창이 비숫자 관통(\\D*)이라는 가설에서, 짧은 날짜 단독 라인은
@@ -371,7 +371,7 @@ def scrub_pii(text: str) -> str:
     숫자·상태 등)은 바이트 무변경으로 통과한다.
 
     ``SECURITY_PII_SCRUB_SUSPECT_DATES=true`` 옵트인 시 날짜·타임스탬프의 구분자를
-    점으로 치환해 서버 계좌번호(851) 광폭 매칭을 회피한다(D-152 후속3 — 값·자릿수
+    점으로 치환해 서버 계좌번호(851) 광폭 매칭을 회피한다(D-155 후속3 — 값·자릿수
     보존, 코드 재배포 없이 env로 활성화).
     """
     if not text:
@@ -416,7 +416,7 @@ def _format_scan(matches: List[PiiMatch]) -> str:
 def diagnose_blocked_prompt(
     sections: dict[str, str], max_per_rule: int = 5
 ) -> str:
-    """차단된 요청의 프롬프트를 **섹션별**로 스캔해 원인 후보를 특정한다 (D-152).
+    """차단된 요청의 프롬프트를 **섹션별**로 스캔해 원인 후보를 특정한다 (D-155).
 
     "프롬프트에 PII성 텍스트 포함"만으로는 어느 재료(스키마 샘플/유사어/질의/매핑)가
     걸렸는지 알 수 없다(2026-08-05 폐쇄망 실측 — FabriX 필터 정책 강화 후 SQL 생성
@@ -440,7 +440,7 @@ def diagnose_blocked_prompt(
         if matches:
             parts.append(f"《{name}》 {_format_scan(matches)}")
         # 정식 규칙과 별개로 계좌(851) 광폭 매칭 의심 형태(날짜·타임스탬프)도 보고
-        # (D-152 후속3 — "계좌번호 차단인데 계좌 유사 문자열 부재" 실측 대응)
+        # (D-155 후속3 — "계좌번호 차단인데 계좌 유사 문자열 부재" 실측 대응)
         suspects = scan_account_suspects(text)
         if suspects:
             suspect_parts.append(f"《{name}》[의심] {_format_scan(suspects)}")
@@ -475,7 +475,7 @@ def _diagnose_reasons_vs_prompt(
 ) -> tuple[str, bool]:
     """서버가 반환한 차단 유형별로 **그 유형의 로컬 정규식**을 프롬프트에 역적용한다.
 
-    (D-152 후속5) "차단 사유(policy_id)"와 "프롬프트의 어떤 값" 사이를 직접 연결하는
+    (D-155 후속5) "차단 사유(policy_id)"와 "프롬프트의 어떤 값" 사이를 직접 연결하는
     표적 대조. 셋 중 하나로 판정한다:
     ① 매칭 → 걸린 값(마스킹)·문맥을 그대로 보고 — 원인 값 특정 완료.
     ② 대응 룰이 있는데 매칭 0건 → **알려진 필터 기준으로는 차단될 수 없는 프롬프트가
@@ -523,7 +523,7 @@ def _diagnose_reasons_vs_prompt(
 
 
 # ---------------------------------------------------------------------------
-# 차단 원문 덤프 (D-152 후속1)
+# 차단 원문 덤프 (D-155 후속1)
 # ---------------------------------------------------------------------------
 _DUMP_DIR = "logs/pii_block"
 
@@ -560,7 +560,7 @@ def dump_blocked_payload(
         safe_where = re.sub(r"[^A-Za-z0-9_.-]", "_", where or "block")
         path = d / f"{ts}_{safe_where}.log"
         parts: List[str] = [
-            "# FabriX PII 필터 차단 덤프 (D-152 후속1)",
+            "# FabriX PII 필터 차단 덤프 (D-155 후속1)",
             f"# where: {where}",
             f"# 탐지 상세(policy/rule id): {detail}",
             f"# 원인 값 대조: {diagnosis}" if diagnosis else "# 원인 값 대조: (미수행)",
@@ -724,7 +724,7 @@ def log_filter_block_if_any(
         prompt: 전송한 프롬프트 전체. 차단 상세(policy_id)가 없을 때 어떤
             텍스트가 걸렸는지 로컬 스캔으로 특정하는 데 쓴다.
         prompt_sections: {섹션명: 텍스트}. 주면 전체 스캔 대신 섹션별 진단
-            (:func:`diagnose_blocked_prompt`)으로 원인 블록까지 특정한다(D-152).
+            (:func:`diagnose_blocked_prompt`)으로 원인 블록까지 특정한다(D-155).
         where: 로그 위치 태그(예: "_agenerate").
 
     Returns:
@@ -756,7 +756,7 @@ def log_filter_block_if_any(
     else:
         detail = "차단 상세(policy_id/filter_log_id) 미제공 — 아래 원문 응답에서 직접 확인"
 
-    # 원문 응답 전체(D-152 후속1) — 차단 응답은 안내문뿐이라 짧다. 정규화 파서가 모르는
+    # 원문 응답 전체(D-155 후속1) — 차단 응답은 안내문뿐이라 짧다. 정규화 파서가 모르는
     # 키(정책 개편으로 필드명이 바뀐 경우 등)도 그대로 보이도록 JSON 전문을 남긴다.
     import json as _json
 
@@ -771,7 +771,7 @@ def log_filter_block_if_any(
     if len(raw_repr) > 2000:
         raw_repr = raw_repr[:2000] + "…(절단 — 전문은 덤프 파일)"
 
-    # ── 원인 값 대조 (D-152 후속5) ─────────────────────────────────────────────
+    # ── 원인 값 대조 (D-155 후속5) ─────────────────────────────────────────────
     # 서버 사유(policy_id→유형)가 있으면 **그 유형의 로컬 정규식만** 프롬프트에
     # 역적용해 "정확히 어떤 값이 걸렸는지"를 특정한다. 표적 대조가 0건이면
     # "알려진 필터로는 차단 불가한 프롬프트가 차단됨(서버 필터 변경 의심)"을 명시하고
@@ -805,7 +805,7 @@ def log_filter_block_if_any(
 
     # filter_log_id = 서버측 필터 로그 레코드 ID — 클라이언트 응답에는 탐지 문자열이
     # 실리지 않으므로(APIM 경로만 catched_text 제공), 표적 대조 0건일 때의 무추정
-    # 확인 경로는 FabriX 테넌트 관리 콘솔에서 이 ID로 조회하는 것뿐이다(D-152 후속4).
+    # 확인 경로는 FabriX 테넌트 관리 콘솔에서 이 ID로 조회하는 것뿐이다(D-155 후속4).
     _log_ids = sorted({r["filter_log_id"] for r in reasons if r.get("filter_log_id")})
     server_lookup = (
         f"서버측 탐지 내역 조회: FabriX 관리 콘솔 필터 로그에서 filter_log_id={','.join(_log_ids)} 조회"
@@ -813,7 +813,7 @@ def log_filter_block_if_any(
         "filter_log_id 미제공 — 서버측 조회 불가, scripts/pii_probe.py 이등분 재현으로 특정"
     )
 
-    # 전송 원문·응답 전문 파일 덤프(D-152 후속1) — 사유·대조 결과를 함께 기록해
+    # 전송 원문·응답 전문 파일 덤프(D-155 후속1) — 사유·대조 결과를 함께 기록해
     # 파일 하나로 "프롬프트 전문 + policy/rule id + 원인 값" 식별이 닫히게 한다.
     dump_path = dump_blocked_payload(
         response_text=_raw,

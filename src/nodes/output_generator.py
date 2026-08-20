@@ -114,7 +114,7 @@ async def _run_output_generator(
                 app_config, state, llm=llm, stream_user_response=stream_user_response
             )
             text_response = _append_inferred_mapping_info(text_response, state)
-            # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-144) — 감사자료 오기재·침묵 공란 방지.
+            # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
             # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
             text_response = _append_form_fill_notes(
                 text_response, state, fill_stats=file_result.get("fill_stats")
@@ -139,7 +139,7 @@ async def _run_output_generator(
                 "current_node": "output_generator",
                 "error_message": None,
             }
-            # 확인 이력 저장(D-148 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
+            # 확인 이력 저장(D-151 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
             # 답변(origin=answer)만. LLM 산출물·이력 재적용분은 저장하지 않는다(C3).
             if state.get("form_fill_remember"):
                 _remember = {
@@ -169,7 +169,7 @@ async def _run_output_generator(
                             "적용되었습니다."
                         )
 
-            # HITL 폼필(D-148): 미해결 필드 역질문 페이로드 + 대기 상태.
+            # HITL 폼필(D-151): 미해결 필드 역질문 페이로드 + 대기 상태.
             # 미해결 0이면 pending=None으로 자기정리(답변 적용 완료 턴 포함).
             if state.get("template_structure"):
                 clarification, pending = _build_form_fill_hitl(
@@ -179,7 +179,7 @@ async def _run_output_generator(
                 if clarification:
                     result["form_fill_clarification"] = clarification
                     logger.info(
-                        "폼필 역질문 발행(D-148): 미해결 %d건 — %s",
+                        "폼필 역질문 발행(D-151): 미해결 %d건 — %s",
                         len(clarification["fields"]),
                         [f["name"] for f in clarification["fields"]][:10],
                     )
@@ -302,7 +302,7 @@ def _build_response_prompt(
         구성된 프롬프트 문자열
     """
     # 결과가 많으면 상위 20건만 프롬프트에 포함.
-    # 복합 필드명(그룹|서브, D-142)의 '|'는 Markdown 표 구분자와 충돌해 응답 표가
+    # 복합 필드명(그룹|서브, D-145)의 '|'는 Markdown 표 구분자와 충돌해 응답 표가
     # 깨진다(라이브 실측: 칼럼 분해·순서 뒤죽박죽) — 표시용 키로 결정적 치환.
     display_rows = [
         {_display_field_name(str(k)): v for k, v in r.items()} if isinstance(r, dict) else r
@@ -347,7 +347,7 @@ def _append_form_fill_notes(
     state: AgentState,
     fill_stats: dict[str, int] | None = None,
 ) -> str:
-    """폼필 응답에 기준월 매핑(§2.4)과 미작성 항목 사유(D-144)를 덧붙인다.
+    """폼필 응답에 기준월 매핑(§2.4)과 미작성 항목 사유(D-147)를 덧붙인다.
 
     - 기준월: 월 시리즈(M~M+5) 양식은 M이 어느 달인지 양식에 없으므로 실제 사용 월을
       응답에 반드시 명시한다(감사자료 오기재 방지 — plans/72 R4). 양식 원본(비고 열 등)에는
@@ -388,7 +388,7 @@ def _append_form_fill_notes(
             f for f, c in column_mapping.items()
             if c is None and f not in month_fields
         ]
-    # 사용자 답변/확인 이력 적용·거부 내역(D-148) — 침묵 반영·침묵 무시 금지.
+    # 사용자 답변/확인 이력 적용·거부 내역(D-151) — 침묵 반영·침묵 무시 금지.
     # origin으로 분리 표시: answer=이번 턴 패널 답변, memory=확인 이력(Phase 3).
     overrides = state.get("form_fill_overrides") or {}
     if overrides:
@@ -439,7 +439,7 @@ def _build_form_fill_hitl(
     state: AgentState,
     fill_stats: dict[str, int] | None,
 ) -> tuple[Optional[dict], Optional[dict]]:
-    """미해결 필드를 역질문 페이로드와 멀티턴 대기 상태로 구성한다(D-148).
+    """미해결 필드를 역질문 페이로드와 멀티턴 대기 상태로 구성한다(D-151).
 
     미해결 = 실제 채움 0건 필드 − 월 시리즈 필드 − 직접 입력 상수 − 사용자 지정 공란.
     전 필드 0건(식별 칼럼 포함)이면 매핑이 아니라 데이터·SQL 문제이므로 역질문하지
@@ -681,7 +681,7 @@ def _generate_document_file(
                 sheet_mappings=sheet_mappings,
                 target_sheets=target_sheets,
                 fill_stats=fill_stats,
-                # 사용자 직접 입력 상수(D-148 역질문 답변) — 전 데이터 행 동일값
+                # 사용자 직접 입력 상수(D-151 역질문 답변) — 전 데이터 행 동일값
                 literal_values=state.get("form_fill_literals"),
             )
 

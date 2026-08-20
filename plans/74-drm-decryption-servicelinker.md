@@ -1,12 +1,12 @@
 # Plan 74 — 양식 업로드 DRM 해제 (Softcamp ServiceLinker 연동)
 
 - 작성일: 2026-08-07 (확정 통합본 — 조사·문답 경위는 git 이력 참조)
-- 상태: **Phase 1·2·2b 구현 완료 (2026-08-12, D-153)** — 감지·라우트 대칭 배선·
+- 상태: **Phase 1·2·2b 구현 완료 (2026-08-12, D-156)** — 감지·라우트 대칭 배선·
   `ScslCliDecryptor`·`Decrypt.java`·어드민 진단 도구(§4.2), 테스트 35건 그린.
   잔여: Phase 0(ITSM·서비스 ID — §8 N2) → Phase 3(운영계 단계적 활성화, §4.1).
   실기 실측은 운영계에서만 수행(개발 PC는 DRM 모듈 설치 불가, `DRM_ENABLED` 토글)
-- 선행: Plan 73 (폼필 결정적 경로 — 업로드 파이프라인 현행 구조), D-148 (HITL 폼필)
-- 결정: **D-153** (`docs/02_decision.md` — 감지·래퍼·env 토글·재암호화 비범위)
+- 선행: Plan 73 (폼필 결정적 경로 — 업로드 파이프라인 현행 구조), D-151 (HITL 폼필)
+- 결정: **D-156** (`docs/02_decision.md` — 감지·래퍼·env 토글·재암호화 비범위)
 
 ---
 
@@ -292,7 +292,7 @@ java -cp <scsl.jar> tools/drm-wrapper/Decrypt.java <in> <out> <properties> <keyf
 
 | Phase | 내용 | 산출물 | 게이트 |
 |---|---|---|---|
-| **0** | ITSM 신청 + 설치본·서비스 ID 수령 + JDK 반입 + 잔여 미결(§8) 확인 | 설치본·서비스 ID, D-153 등록 | 설치본 수령·ID 확정 |
+| **0** | ITSM 신청 + 설치본·서비스 ID 수령 + JDK 반입 + 잔여 미결(§8) 확인 | 설치본·서비스 ID, D-156 등록 | 설치본 수령·ID 확정 |
 | **1** | 감지 + 인터페이스 + Passthrough + 라우트 대칭 배선 + 에러 노출 + audit + 픽스처 | `src/infrastructure/drm/*`, 라우트 헬퍼, `DrmConfig`, 단위 테스트 | DRM 없이도 배포 가능(기본 무영향), arch_check 통과, 암호문 업로드 시 명확한 에러 메시지 |
 | **2** | Java 래퍼(`Decrypt.java`) + `ScslCliDecryptor` 구현 (**실기 없이** — mock·픽스처 검증까지) | `tools/drm-wrapper/Decrypt.java`, `scsl.py`, e2e 스크립트(옵트인, 운영계용) | 단위 테스트 그린. 래퍼는 리뷰 검증(실컴파일·실행은 Phase 3-3) |
 | **2b** ✔ | **어드민 DRM 진단 도구**(§4.2) — 상태 패널 + 진단 업로드(파일 미반환) | `drm/diagnostics.py`, `/admin/drm/status`·`/admin/drm/verify`, 대시보드 "DRM 연동" 탭 | 완료(2026-08-12): 비활성 상태 정상 렌더 + 진단 단위 테스트 10건 그린 |

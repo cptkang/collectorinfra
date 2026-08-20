@@ -57,7 +57,7 @@ class TestContextBlock:
         assert "해당 서버" in block  # 지시어 해소 규칙 포함
 
     def test_non_demonstrative_follow_up_omits_entities(self):
-        """지시어 없는 후속 턴은 직전 서버 엔티티를 주입하지 않는다 (D-150 후속1).
+        """지시어 없는 후속 턴은 직전 서버 엔티티를 주입하지 않는다 (D-153 후속1).
 
         previous_entities는 직전 턴이 대량 조회였으면 상한 샘플일 뿐 스코프가 아니다 —
         "대상 미명시 → 직전 값 보존" 규칙과 결합되면 새 전량 후속 질의가 샘플 서버

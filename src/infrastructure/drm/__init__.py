@@ -1,4 +1,4 @@
-"""Softcamp ServiceLinker DRM 해제 계층 (Plan 74 / D-153).
+"""Softcamp ServiceLinker DRM 해제 계층 (Plan 74 / D-156).
 
 업로드 파일의 DRM 암호문 감지(detector)와 복호화 어댑터(decryptor, scsl)를 제공한다.
 `DRM_ENABLED=false`(기본)에서는 Passthrough로 동작하여 기존 경로에 영향이 없다.

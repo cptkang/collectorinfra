@@ -426,7 +426,7 @@ class TestInvalidFile:
 
 
 class TestMultiRowHeaderConversion:
-    """2행 병합 헤더 블록의 CSV 변환 (D-142 — 폼필 경로와 대칭)."""
+    """2행 병합 헤더 블록의 CSV 변환 (D-145 — 폼필 경로와 대칭)."""
 
     def test_two_row_header_converted_with_composite_names(self):
         """그룹+서브 헤더 데이터 파일이 복합 필드명으로 변환된다."""

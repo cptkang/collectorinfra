@@ -81,7 +81,7 @@ async def field_mapper(
             **_CLEARED_MAPPING_FIELDS,
         }
 
-    # 폼필 확인 이력 조회·삭제 턴(D-148, FIX-24): intent_planner ②.7이 결정적으로
+    # 폼필 확인 이력 조회·삭제 턴(D-151, FIX-24): intent_planner ②.7이 결정적으로
     # 단락하므로 매핑 산출물이 전부 불필요하다. 여기서 전체 매핑을 수행하면 —
     # 이력 명령 질의에는 위치어가 없어 priority_db_ids가 비고 → 전 DB 유사어가 LLM
     # 프롬프트에 실려 413(FabriX 95K) 재시도로 수십 초 낭비(라이브 실측 2026-08-03).

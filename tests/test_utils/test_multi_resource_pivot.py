@@ -535,7 +535,7 @@ class TestResolveStatMonthAbsolute:
 
 
 class TestMonthPivotSql:
-    """월별 가로 피벗(M~M+5) 결정적 조립 (D-143, plans/72 Phase 2).
+    """월별 가로 피벗(M~M+5) 결정적 조립 (D-146, plans/72 Phase 2).
 
     금감원 취합자료의 '월중 평균/Peak 사용률 6개월 가로 전개'를 SELECT의 stat_date CASE
     피벗으로 조립한다. stat_date는 GROUP BY에 넣지 않는다(서버당 1행 계약 불변 — D-068).

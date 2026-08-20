@@ -1900,7 +1900,7 @@ class RedisSchemaCache:
             logger.error("Redis 캐시 상태 조회 실패: %s", e)
             return {"exists": False, "error": str(e)}
 
-    # === 폼필 확인 이력 (Plan 73 Phase 3, D-148) ===
+    # === 폼필 확인 이력 (Plan 73 Phase 3, D-151) ===
     # 키: formfill:memory:{signature} — JSON 문자열 + TTL(sliding).
     # 유사어와 키 공간 분리(양식 시그니처 스코프) — 전역 질의에 영향 없음.
 

@@ -237,7 +237,7 @@ def test_alias_addition_requires_single_file_edit():
 
     # 프로필 외 나머지 동기화 지점에는 이 속성의 별칭 지식이 없어야 한다(수정 불필요).
     existing_aliases = [a for a in vendor["synonyms"] if a != new_alias]
-    # D-145(Vendor+Model 결합 규칙)의 필드명 표면 패턴("제조사"+"모델" 동시 포함 판정,
+    # D-148(Vendor+Model 결합 규칙)의 필드명 표면 패턴("제조사"+"모델" 동시 포함 판정,
     # assembler.find_vendor_model_concat)은 별칭 지식이 아니라 양식 필드 인식 규칙이라
     # 별칭 추가 시 수정 대상이 아니다 — assembler 검사에서만 제외한다.
     _d145_surface_triggers = {"제조사"}

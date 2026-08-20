@@ -209,7 +209,7 @@ def _zone_clarification_or_none_task(
     db_succeeded: bool,
     app_config: AppConfig,
 ) -> Optional[dict]:
-    """존 역질문 후단 게이트 판정 (D-140 후속2 — 텍스트 경로 파이프라인 내 결정적 게이트).
+    """존 역질문 후단 게이트 판정 (D-143 후속2 — 텍스트 경로 파이프라인 내 결정적 게이트).
 
     라우트 pre-gate(표면어 "서버"+전량 조회 필수)가 놓치는 형태 — 위치어 없는 존 단위
     조회("OS 버전 확인하시오" 등)가 LLM 임의 팬아웃(전 존/임의 존)으로 흐르는 것을,
@@ -265,14 +265,14 @@ def _zone_clarification_or_none_task(
         return None
     payload = build_zone_clarification(
         app_config.multi_db.get_active_db_ids(), original_query,
-        # 존 그룹 상호배타(D-140 후속3) — 라우트 pre-gate와 동일 UI 규칙
+        # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
         group_exclusive=bool(
             getattr(app_config.multi_db, "zone_group_exclusive", True)
         ),
     )
     if payload:
         logger.info(
-            "존 역질문 후단 게이트 발동(D-140 후속2): 위치어·서버 식별·승계 신호 없음 — "
+            "존 역질문 후단 게이트 발동(D-143 후속2): 위치어·서버 식별·승계 신호 없음 — "
             "LLM 임의 팬아웃(%s) 대신 존 선택 요청", target_ids,
         )
     return payload
@@ -290,7 +290,7 @@ def _refers_to_specific_server(text: str) -> bool:
     Returns:
         지시어로 특정 서버를 지목하면 True
     """
-    # 구현은 utils.query_gen_common으로 이동(D-150 후속1 단일 출처 — intent_planner
+    # 구현은 utils.query_gen_common으로 이동(D-153 후속1 단일 출처 — intent_planner
     # 맥락 주입 게이트와 공유) — 동작 동일.
     return refers_to_demonstrative_server(text)
 
@@ -721,7 +721,7 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "db_column_mapping": state.get("db_column_mapping"),
         "column_mapping": state.get("column_mapping"),
         "mapping_sources": state.get("mapping_sources"),
-        # HITL 폼필 답변(D-148, FIX-19): 라우트가 복원한 답변이 이 격리 경계를 통과해야
+        # HITL 폼필 답변(D-151, FIX-19): 라우트가 복원한 답변이 이 격리 경계를 통과해야
         # multi_db_executor/query_generator의 오버라이드 적용에 도달한다(라이브 실측
         # 2026-07-31: 누락 시 답변이 유실돼 동일 미해결 → 역질문 패널 무한 반복).
         "form_fill_answers": state.get("form_fill_answers"),
@@ -731,7 +731,7 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 이번 턴 원문 위치 힌트의 결정적 DB 고정(_apply_turn_hint_pinning)은 전역 힌트를
         # 쓰므로 단일 task 계획에서만 안전 — 복합 여부를 게이트 신호로 전달한다.
         "is_composite": bool(state.get("is_composite")),
-        # 존 역질문 후단 게이트(D-140 후속2): 채널 플래그(대화형 텍스트 라우트만 True)와
+        # 존 역질문 후단 게이트(D-143 후속2): 채널 플래그(대화형 텍스트 라우트만 True)와
         # 원문 질의(호출부가 user_query를 sub_query로 덮어써도 게이트 판정·재전송 페이로드는
         # 원문 기준이어야 함 — resolved_limit 승격과 동일 원리).
         "zone_clarification_allowed": bool(state.get("zone_clarification_allowed")),
@@ -860,12 +860,12 @@ async def run_general_inference(
     Returns:
         general_inference 노드의 반환 dict
     """
-    # 결정적 고정 안내(D-147 — 파일 없는 폼필 등)는 LLM을 통과시키지 않는다.
+    # 결정적 고정 안내(D-150 — 파일 없는 폼필 등)는 LLM을 통과시키지 않는다.
     # 라이브 실측(2026-07-30): 고정 안내를 LLM 재서술시키다 호출 실패 → 일반 오류
     # 문구("죄송합니다…")로 강등. 고정문은 그대로 반환한다(침묵 강등 금지).
     direct = task.get("direct_response")
     if direct:
-        logger.info("general_inference: direct_response 고정 안내 반환(D-147, LLM 미호출)")
+        logger.info("general_inference: direct_response 고정 안내 반환(D-150, LLM 미호출)")
         return {
             "final_response": direct,
             "routing_intent": "general_inference",
@@ -931,7 +931,7 @@ async def run_data_query_pipeline(
             "reason": "대상 DB 미식별 폴백",
         }]
 
-    # 존 역질문 후단 게이트 (D-140 후속2): 첫 턴 + 위치어·서버 식별·승계·핀 신호가 전부
+    # 존 역질문 후단 게이트 (D-143 후속2): 첫 턴 + 위치어·서버 식별·승계·핀 신호가 전부
     # 없는 data_query가 폴스타 존으로 팬아웃되면, LLM 임의 라우팅(전 존/임의 존 — 종전
     # "기존 폴백"의 실체) 대신 존 선택을 역질문한다. 재개 턴은 selected_db_ids가
     # raw_targets로 고정되므로 비발동.
@@ -1027,7 +1027,7 @@ async def run_data_query_pipeline(
     if s.get("error_message"):
         result["error"] = s["error_message"]
 
-    # 폼필 산출물 승격(D-143/D-148): orchestration에서 output_generator는 파이프라인
+    # 폼필 산출물 승격(D-146/D-151): orchestration에서 output_generator는 파이프라인
     # 내부 state(s)가 아니라 result_aggregator의 _build_output_state 입력을 받으므로,
     # 기준월 앵커·역질문 후보·답변 적용 내역·직접입력 상수를 task 결과로 실어 전달한다
     # (미승격 시 기준월 안내·역질문이 그래프 경로에서만 동작하는 비대칭 — Known Mistakes).

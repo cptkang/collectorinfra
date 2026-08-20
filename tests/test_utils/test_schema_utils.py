@@ -8,7 +8,7 @@ from src.utils.schema_utils import (
 
 
 def test_cap_sample_rows_truncates_long_values():
-    """CLOB성 대형 문자열 값은 SAMPLE_VALUE_MAX_CHARS로 절단된다(D-151)."""
+    """CLOB성 대형 문자열 값은 SAMPLE_VALUE_MAX_CHARS로 절단된다(D-154)."""
     huge = "x" * (SAMPLE_VALUE_MAX_CHARS * 10)
     rows = [{"conf": huge, "id": 1}]
     capped = cap_sample_rows(rows)

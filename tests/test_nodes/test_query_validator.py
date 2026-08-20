@@ -287,7 +287,7 @@ class TestQueryValidatorNode:
 
 
 class TestFilterBlockedDetection:
-    """FabriX PII 필터 차단 안내문 감지 (D-150 후속2 — 멀티 경로와 대칭)."""
+    """FabriX PII 필터 차단 안내문 감지 (D-153 후속2 — 멀티 경로와 대칭)."""
 
     @pytest.mark.asyncio
     async def test_filter_blocked_content_reports_clear_reason(self):
@@ -307,7 +307,7 @@ class TestFilterBlockedDetection:
 
     @pytest.mark.asyncio
     async def test_filter_blocked_exposes_diagnosis_when_present(self):
-        """query_generator가 산출한 섹션별 진단이 에러 메시지에 노출된다(D-152)."""
+        """query_generator가 산출한 섹션별 진단이 에러 메시지에 노출된다(D-155)."""
         from src.nodes.query_validator import query_validator
 
         state = {

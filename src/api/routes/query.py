@@ -46,7 +46,7 @@ from src.utils.query_gen_common import (
 from src.utils.query_gen_common import _ALL_QUERY_LIMIT
 
 _FORM_FILL_DEFAULT_LIMIT = _ALL_QUERY_LIMIT
-# 존 선택 재개 턴 기본 LIMIT (D-150 후속1) — 존 역질문은 존 단위 전량 조회에서만
+# 존 선택 재개 턴 기본 LIMIT (D-153 후속1) — 존 역질문은 존 단위 전량 조회에서만
 # 발동하므로 재개 턴은 전량 상향이 기본(명시 건수는 resolve_query_limit이 우선 반영).
 # 미상향 시 "모든/전체" 표면어 없는 질의에서 few-shot 말미 캡(FETCH FIRST 100) 모방이
 # 교정되지 않아 100건 절단된다(2026-08-04 라이브 실측: 은행존 VM 100건).
@@ -506,7 +506,7 @@ def _build_turn_input_state(
                 "approval_action": action,
                 "approval_modified_sql": modified_sql if action == "modify" else None,
             }
-        # HITL 폼필 답변 턴(Plan 73 §11, D-148): 구조화 답변 + pending의 원본 파일 복원.
+        # HITL 폼필 답변 턴(Plan 73 §11, D-151): 구조화 답변 + pending의 원본 파일 복원.
         # input_parser가 template을 재파싱(③.5 단일 task 고정)하고 결정적 조립이 답변을
         # 오버라이드(존재성 검증)로 적용한다. LLM 파싱 없음.
         pending_ff = checkpoint_state.get("pending_form_fill")
@@ -533,13 +533,13 @@ def _build_turn_input_state(
                 original_q = pending_ff.get("original_query")
                 if original_q:
                     delta["user_query"] = original_q
-                # Phase 3(D-148): 기억 옵트인 — 검증 통과 답변만 output_generator가 저장
+                # Phase 3(D-151): 기억 옵트인 — 검증 통과 답변만 output_generator가 저장
                 delta["form_fill_remember"] = bool(body.form_fill_remember)
                 # 폼필은 전량 채움이 기본 — 파일 경로와 동일 LIMIT(텍스트 경로 기본
                 # 1,000 절단 방지, D-066 후속7 계열)
                 delta["resolved_limit"] = _FORM_FILL_DEFAULT_LIMIT
                 logger.info(
-                    "폼필 답변 턴(D-148): %d개 필드 답변 수신, 원본 파일·원 질의 복원"
+                    "폼필 답변 턴(D-151): %d개 필드 답변 수신, 원본 파일·원 질의 복원"
                     "(file_type=%s, query=%r, 존 복원=%s)",
                     len(body.form_fill_answers), pending_ff.get("file_type"),
                     (original_q or "")[:50], restored_db_ids,
@@ -552,13 +552,13 @@ def _build_turn_input_state(
         # 일반 후속 질의 — 직전 폼업로드 턴의 요청-스코프 폼필 상태를 초기화한다(D-064).
         # selected_db_ids(존 선택)는 요청 스코프 — 이번 턴 값 또는 None으로 매 턴 재공급.
         # allow_zone_clarification=True: 대화형 텍스트 라우트는 존 역질문 후단 게이트
-        # (D-140 후속2) 허용 채널 — 배치·평가·API 직접 호출 경로는 기본 False 유지.
+        # (D-143 후속2) 허용 채널 — 배치·평가·API 직접 호출 경로는 기본 False 유지.
         delta = create_followup_input(
             _substitute_zone_placeholder(body.query, body.selected_db_ids),
             selected_db_ids=body.selected_db_ids,
             allow_zone_clarification=True,
         )
-        # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-150 후속1, 폼필 후속1과 동형)
+        # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-153 후속1, 폼필 후속1과 동형)
         if body.selected_db_ids:
             delta["resolved_limit"] = resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
         return delta
@@ -587,7 +587,7 @@ def _build_turn_input_state(
 # 발동. selected_db_ids가 이미 오면 비발동(재개 턴).
 _ZONE_PLACEHOLDER = "ㅇㅇ존"
 # 선택지 입도는 DB 라우팅 입도와 일치(§4.4 확정 — 체크박스 3개 단독, 단축 버튼 없음).
-# canonical은 utils.query_gen_common.ZONE_CLARIFY_OPTIONS(D-150 — 후단 게이트와 공유,
+# canonical은 utils.query_gen_common.ZONE_CLARIFY_OPTIONS(D-153 — 후단 게이트와 공유,
 # 계층 규칙상 utils로 이동). 여기서는 기존 이름으로 alias만 유지.
 _ZONE_OPTIONS: tuple[dict, ...] = ZONE_CLARIFY_OPTIONS
 
@@ -601,7 +601,7 @@ def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) 
     결정적 문자열 치환(LLM 재해석 아님 — 라우팅은 selected_db_ids가 이미 고정).
     ① 'ㅇㅇ존' 플레이스홀더 치환: 미치환 시 sub_query·처리 현황·응답 서술에 'ㅇㅇ존'이
        그대로 남는다(2026-07-24 폐쇄망 실측: 데이터는 정상인데 화면 표기가 전부 'ㅇㅇ존').
-    ② 혼합 존 열거 재작성(D-151): 상호배타 재선택 후 원문("은행존 및 공동존 여의도…")이
+    ② 혼합 존 열거 재작성(D-154): 상호배타 재선택 후 원문("은행존 및 공동존 여의도…")이
        그대로 흐르면 처리 현황에 미선택 존이 남고, 미선택 존 위치어가 SQL WHERE로
        누출된다(2026-08-05 실측). 미선택 그룹 표면어를 포함한 열거만 선택 라벨로 치환.
     """
@@ -628,7 +628,7 @@ def _file_zone_clarification_or_none(
     from src.orchestration.intent_planner import is_form_memory_command
     if is_form_memory_command(q):
         return None
-    # 존 그룹 상호배타(D-140 후속3) — 텍스트 경로와 대칭(혼합 선택·혼합 텍스트)
+    # 존 그룹 상호배타(D-143 후속3) — 텍스트 경로와 대칭(혼합 선택·혼합 텍스트)
     exclusive = _zone_group_exclusive_or_none(
         q, selected_db_ids, config, has_file=True
     )
@@ -669,7 +669,7 @@ def _zone_group_exclusive_or_none(
 ) -> dict | None:
     """존 그룹 상호배타 위반이면 안내 문구를 붙인 존 선택 clarification을 반환한다.
 
-    (D-140 후속3) 은행존(b0)과 공동존(gp/yd)은 동시 조회 불가 — 담당 조직 분리(존 조합
+    (D-143 후속3) 은행존(b0)과 공동존(gp/yd)은 동시 조회 불가 — 담당 조직 분리(존 조합
     실수요 없음, 사용자 확정 2026-08-05) + b0+gp 조합의 FabriX PII 필터 차단(미종결) 회피.
     ①혼합 selected_db_ids(프론트 우회·API 직접 호출 포함 — UI 게이트 ≠ 검증)와
     ②혼합 텍스트 지정("은행존과 공동존 김포…")을 결정적으로 감지해, 에러 대신
@@ -696,7 +696,7 @@ def _zone_clarification_or_none(
     body: QueryRequest, checkpoint_state: dict | None, config
 ) -> dict | None:
     """존 선택 역질문이 필요하면 clarification 컨텍스트를, 아니면 None을 반환한다."""
-    # 존 그룹 상호배타(D-140 후속3) — 혼합 선택·혼합 텍스트는 턴 유형 무관 최우선 발동
+    # 존 그룹 상호배타(D-143 후속3) — 혼합 선택·혼합 텍스트는 턴 유형 무관 최우선 발동
     exclusive = _zone_group_exclusive_or_none(
         body.query or "", body.selected_db_ids, config
     )
@@ -715,7 +715,7 @@ def _zone_clarification_or_none(
         from src.nodes.input_parser import LOCATION_HINT_TERMS
         if any(t in query for t in LOCATION_HINT_TERMS):
             return None
-    # 페이로드 조립은 공용 헬퍼로(D-140 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
+    # 페이로드 조립은 공용 헬퍼로(D-143 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
     return build_zone_clarification(
         config.multi_db.get_active_db_ids(),
         query,
@@ -802,7 +802,7 @@ async def process_query(
 
     # 응답 구성
     status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
-    # 존 역질문 후단 게이트(D-140 후속2): 파이프라인이 존 선택 요청으로 종결한 턴 —
+    # 존 역질문 후단 게이트(D-143 후속2): 파이프라인이 존 선택 요청으로 종결한 턴 —
     # pre-gate와 동일 shape(status="clarification" + clarification)로 프론트 UI 재사용.
     zone_clarification = result.get("zone_clarification")
     if zone_clarification:
@@ -823,9 +823,9 @@ async def process_query(
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
         "has_mapping_report": result.get("mapping_report_md") is not None,
-        # HITL 폼필(D-148): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
+        # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
-        # 존 역질문 후단 게이트(D-140 후속2) — pre-gate와 동일 키로 프론트 렌더
+        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
     }
     _store_result(query_id, {
@@ -1014,7 +1014,7 @@ async def process_query_stream(
                                 })
 
                                 status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
-                                # 존 역질문 후단 게이트(D-140 후속2) — pre-gate와 동일 shape
+                                # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
                                 _zone_clar = output.get("zone_clarification")
                                 if _zone_clar:
                                     status = "clarification"
@@ -1032,7 +1032,7 @@ async def process_query_stream(
                                     "processing_time_ms": elapsed_ms,
                                     "turn_count": turn_count,
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
-                                    # HITL 폼필(D-148): 역질문 패널 컨텍스트
+                                    # HITL 폼필(D-151): 역질문 패널 컨텍스트
                                     "form_fill_clarification": output.get("form_fill_clarification"),
                                     "clarification": _zone_clar,
                                 }
@@ -1057,7 +1057,7 @@ async def process_query_stream(
                                     "turn_count": turn_count,
                                     "has_mapping_report": response_data.get("has_mapping_report", False),
                                     "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                    # 존 역질문 후단 게이트(D-140 후속2) — pre-gate done 이벤트와 동일 키
+                                    # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                     "clarification": response_data.get("clarification"),
                                 })
                                 return
@@ -1086,7 +1086,7 @@ async def process_query_stream(
             })
 
             status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
-            # 존 역질문 후단 게이트(D-140 후속2) — pre-gate와 동일 shape
+            # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
             _zone_clar = result.get("zone_clarification")
             if _zone_clar:
                 status = "clarification"
@@ -1104,7 +1104,7 @@ async def process_query_stream(
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,
                 "has_mapping_report": result.get("mapping_report_md") is not None,
-                # HITL 폼필(D-148): 역질문 패널 컨텍스트
+                # HITL 폼필(D-151): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
                 "clarification": _zone_clar,
             }
@@ -1128,7 +1128,7 @@ async def process_query_stream(
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
-                # 존 역질문 후단 게이트(D-140 후속2) — pre-gate done 이벤트와 동일 키
+                # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
             })
 
@@ -1280,7 +1280,7 @@ async def process_file_query(
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
         "has_mapping_report": result.get("mapping_report_md") is not None,
-        # HITL 폼필(D-148): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
+        # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
     }
     _store_result(query_id, {
@@ -1312,7 +1312,7 @@ async def _resolve_uploaded_bytes(
     config,
     user_id: str | None = None,
 ) -> bytes:
-    """업로드 바이트를 평문으로 정규화한다 (Plan 74 DRM 해제 / D-153).
+    """업로드 바이트를 평문으로 정규화한다 (Plan 74 DRM 해제 / D-156).
 
     평문(ZIP)은 그대로 반환하고, Softcamp DRM 암호문(SCDS)은 복호화해 반환한다.
     실패는 침묵 폴백 없이 명확한 HTTP 에러로 노출한다 — /query/file과
@@ -1620,7 +1620,7 @@ async def process_file_query_stream(
                                     "processing_time_ms": elapsed_ms,
                                     "turn_count": turn_count,
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
-                                    # HITL 폼필(D-148): 역질문 패널 컨텍스트
+                                    # HITL 폼필(D-151): 역질문 패널 컨텍스트
                                     "form_fill_clarification": output.get("form_fill_clarification"),
                                 }
                                 _store_result(query_id, {
@@ -1685,7 +1685,7 @@ async def process_file_query_stream(
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,
                 "has_mapping_report": result.get("mapping_report_md") is not None,
-                # HITL 폼필(D-148): 역질문 패널 컨텍스트
+                # HITL 폼필(D-151): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
             }
             _store_result(query_id, {

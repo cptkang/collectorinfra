@@ -43,12 +43,12 @@ _PROCESS_HISTORY_KEYWORDS = (
 # 있어(bare "event" 질의) 프롬프트 어휘만으로는 부족 — 결정적으로 교정한다.
 _ALARM_KEYWORDS = ("알람", "alert", "이벤트", "event", "경보")
 
-# 폼필 요청 감지 키워드 (Plan 73 D-147 — 파일 없는 "양식 채워줘" 안내용).
+# 폼필 요청 감지 키워드 (Plan 73 D-150 — 파일 없는 "양식 채워줘" 안내용).
 # 양식 명사 + 채움 동사가 함께 있어야 발동한다(오발동 최소).
 _FORM_NOUN_KEYWORDS = ("양식", "서식", "템플릿")
 _FORM_FILL_VERB_KEYWORDS = ("채우", "채워", "기입", "작성")
 
-# 폼필 확인 이력 명령 판정(D-148) — 단일 출처는 utils.query_gen_common으로 이동
+# 폼필 확인 이력 명령 판정(D-151) — 단일 출처는 utils.query_gen_common으로 이동
 # (nodes.field_mapper가 계층 역방향 없이 공유하기 위함, FIX-24). 기존 임포터
 # (api.routes.query 등)를 위해 이 모듈에서 재수출한다.
 from src.utils.query_gen_common import (  # noqa: E402
@@ -179,7 +179,7 @@ async def intent_planner(
         logger.info("intent_planner: 유사어 등록 요청 감지, synonym_registration 단일 task")
         return _single_task_plan("synonym_registration", user_query)
 
-    # ②.7 폼필 확인 이력 조회·삭제 (Plan 73 Phase 3, D-148 — FIX-21).
+    # ②.7 폼필 확인 이력 조회·삭제 (Plan 73 Phase 3, D-151 — FIX-21).
     # 반드시 ②.5(selected_db_ids)·③(mapped_db_ids)보다 먼저 판정해야 한다 —
     # 양식 업로드 턴은 field_mapper가 항상 mapped_db_ids를 세팅하므로 ③이 조기
     # 반환하면 이력 명령이 채우기(data_query)로 오탈취된다(라이브 실측
@@ -207,7 +207,7 @@ async def intent_planner(
             text = await _form_memory_delete_response(state, user_query, app_config, _sig)
         else:
             text = await _form_memory_view_response(state, app_config, _sig)
-        logger.info("intent_planner: 폼필 확인 이력 조회/삭제 단락(D-148)")
+        logger.info("intent_planner: 폼필 확인 이력 조회/삭제 단락(D-151)")
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = text
         if _sig:
@@ -236,21 +236,21 @@ async def intent_planner(
             _single_task_plan("data_query", user_query, db_ids=mapped_db_ids), state,
         )
 
-    # ③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 73 D-147).
+    # ③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 73 D-150).
     # 양식 채우기는 의미상 단일 파이프라인 작업 — LLM 복합 분해가 서버정보/월지표를
     # 별도 task로 쪼개면 결과 병합이 2배 행이 된다(라이브 실측 2026-07-30 B0).
     # mapped_db_ids 미성립 턴(③ 미발동)도 결정적으로 단일화한다.
     if state.get("template_structure"):
-        logger.info("intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-147)")
+        logger.info("intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-150)")
         return _with_form_signature(_single_task_plan("data_query", user_query), state)
 
-    # ③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 73 D-147).
+    # ③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 73 D-150).
     # template_structure 없이 "양식 채워줘"류가 LLM 분해로 가면 data_query가 존재하지
     # 않는 양식을 환각 처리한다(라이브 실측 2026-07-30 7차). 고정 안내문은 LLM을
     # 통과시키지 않고 direct_response로 결정적 반환한다(LLM 실패 시 일반 오류 강등 방지).
     if (any(k in user_query for k in _FORM_NOUN_KEYWORDS)
             and any(k in user_query for k in _FORM_FILL_VERB_KEYWORDS)):
-        logger.info("intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-147)")
+        logger.info("intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-150)")
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _FORM_FILL_NO_FILE_GUIDANCE
         return plan
@@ -277,7 +277,7 @@ async def intent_planner(
 async def _form_memory_view_response(
     state: AgentState, app_config: AppConfig, signature: str | None = None
 ) -> str:
-    """첨부 양식의 확인 이력을 조회 전용(TTL 미연장)으로 표시한다(D-148 Phase 3)."""
+    """첨부 양식의 확인 이력을 조회 전용(TTL 미연장)으로 표시한다(D-151 Phase 3)."""
     from src.schema_cache.form_memory import load_form_memory_answers
 
     _sig, answers, meta = await load_form_memory_answers(
@@ -311,7 +311,7 @@ async def _form_memory_delete_response(
     state: AgentState, user_query: str, app_config: AppConfig,
     signature: str | None = None,
 ) -> str:
-    """첨부 양식의 확인 이력을 삭제한다 — 필드명 언급분만, '전부'류면 전체(D-148 Phase 3).
+    """첨부 양식의 확인 이력을 삭제한다 — 필드명 언급분만, '전부'류면 전체(D-151 Phase 3).
 
     필드 특정은 결정적 매칭(질의에 필드명 등장 여부)이며, 특정 실패 시 삭제하지 않고
     현황+지정 방법을 안내한다(침묵 오삭제 방지). 전체 삭제 응답에는 삭제된 내용
@@ -440,7 +440,7 @@ def _build_context_block(
         term in (user_query or "") for term in LOCATION_HINT_TERMS
     )
     # 이번 턴에 지시어("해당/그/위 … 서버")가 있을 때만 직전 서버 엔티티를 주입한다
-    # (D-150 후속1). previous_entities는 직전 턴이 대량 조회였으면 상한 샘플
+    # (D-153 후속1). previous_entities는 직전 턴이 대량 조회였으면 상한 샘플
     # (_MAX_ENTITY_ROWS)일 뿐 스코프가 아니다 — "대상 미명시 → 직전 값 보존" 규칙과
     # 결합되면 LLM이 새 전량 후속 질의를 샘플 서버 몇 대로 좁혀 재작성한다
     # (2026-08-04 라이브 실측: gp/yd 전량 조회 후 "OS 종류…확인" 후속이 4개 서버로 축소).

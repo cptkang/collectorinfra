@@ -1,4 +1,4 @@
-"""폼필 확인 이력 (Plan 73 Phase 3, D-148) — 양식 시그니처 스코프의 TTL 단기 캐시.
+"""폼필 확인 이력 (Plan 73 Phase 3, D-151) — 양식 시그니처 스코프의 TTL 단기 캐시.
 
 사용자가 역질문 패널에서 확정한 답을 양식 시그니처(헤더 필드 집합 해시) 단위로
 Redis에 저장한다. 설계 원칙(plans/73 §2.4 개정):
@@ -99,7 +99,7 @@ async def load_form_memory_answers(
         data["use_count"] = int(data.get("use_count") or 0) + 1
         await redis.save_form_memory(signature, data, ttl)
         logger.info(
-            "폼필 확인 이력 적용(D-148): '%s' %d개 항목 (사용 %d회, TTL %d일 연장)",
+            "폼필 확인 이력 적용(D-151): '%s' %d개 항목 (사용 %d회, TTL %d일 연장)",
             data.get("display_name", signature), len(answers),
             data["use_count"], ttl // 86400,
         )
@@ -145,7 +145,7 @@ async def save_form_memory_entries(
     }
     if await redis.save_form_memory(signature, data, ttl):
         logger.info(
-            "폼필 확인 이력 저장(D-148): '%s' %d개 항목 (TTL %d일, 총 %d개)",
+            "폼필 확인 이력 저장(D-151): '%s' %d개 항목 (TTL %d일, 총 %d개)",
             display, len(entries), ttl // 86400, len(fields),
         )
         return display
@@ -180,7 +180,7 @@ async def delete_form_memory_entries(
     fields: dict = data.get("fields") or {}
     if field_names is None:
         await redis.delete_form_memory(signature)
-        logger.info("폼필 확인 이력 전체 삭제(D-148): '%s' %d개 항목", display, len(fields))
+        logger.info("폼필 확인 이력 전체 삭제(D-151): '%s' %d개 항목", display, len(fields))
         return len(fields), display
     removed = [f for f in field_names if fields.pop(f, None) is not None]
     if not removed:
@@ -194,5 +194,5 @@ async def delete_form_memory_entries(
     else:
         if not await redis.delete_form_memory(signature):
             return 0, display
-    logger.info("폼필 확인 이력 필드 삭제(D-148): '%s' — %s", display, removed)
+    logger.info("폼필 확인 이력 필드 삭제(D-151): '%s' — %s", display, removed)
     return len(removed), display

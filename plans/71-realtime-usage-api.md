@@ -3,10 +3,10 @@
 > 작성일: 2026-07-24
 > **상위 문서**: Plan 70 §1 (검토·확정 완료 — 2안 API 채택, 실측 5건 해소, 라우팅 게이트 B안 확정)
 > **관련 결정**: D-003(읽기전용 — HTTP GET만), D-035(결정적 게이트, LLM 분류 불의존), D-066(LIMIT 계열과 무관하나 원문 신호 state 운반 원칙 공유)
-> **신규 결정**: **D-141 등재 완료**(2026-07-24, 실시간 사용률 데이터 평면 — `docs/02_decision.md`)
+> **신규 결정**: **D-144 등재 완료**(2026-07-24, 실시간 사용률 데이터 평면 — `docs/02_decision.md`)
 > **상태**: **구현 완료 (2026-07-24)**. **옵트인 기본 OFF**(`POLESTAR_REST_REALTIME_USAGE_ENABLED=false`) — 비활성 시 기존 경로 바이트 무변경(회귀 0). 활성화는 `.env`에 `POLESTAR_REST_REALTIME_USAGE_ENABLED=true` 1줄. 폐쇄망 검증(§6-2·3) 대기.
 >
-> **구현 결과**: §3 표의 6개 구성요소 전부 구현 — ①[config.py](../src/config.py) `PolestarRestConfig`(base_urls_csv에 b0 포트 포함 기본값·timeout 10s·chunk 200·stale 15분) ②[clients/polestar_measurement.py](../src/clients/polestar_measurement.py)(청크 병렬+전체 가드·확정 shape 파서·부분 실패 병합) ③[query_gen_common.is_realtime_usage_query](../src/utils/query_gen_common.py)(B안 게이트) ④[nodes/realtime_usage.py](../src/nodes/realtime_usage.py)(2단계 하이브리드·미수집/수집 지연 표기·감사로깅) ⑤[subagents.py](../src/orchestration/subagents.py)(data_query 분기 + 원문 기준 의도 승격 realtime_usage_intent) ⑥[tests/test_nodes/test_realtime_usage.py](../tests/test_nodes/test_realtime_usage.py) 17종 통과(§4 게이트 경계 표 전부 고정). 그래프 직행 경로는 미배선(활성 런타임=트랙 A, D-141 주의 참조).
+> **구현 결과**: §3 표의 6개 구성요소 전부 구현 — ①[config.py](../src/config.py) `PolestarRestConfig`(base_urls_csv에 b0 포트 포함 기본값·timeout 10s·chunk 200·stale 15분) ②[clients/polestar_measurement.py](../src/clients/polestar_measurement.py)(청크 병렬+전체 가드·확정 shape 파서·부분 실패 병합) ③[query_gen_common.is_realtime_usage_query](../src/utils/query_gen_common.py)(B안 게이트) ④[nodes/realtime_usage.py](../src/nodes/realtime_usage.py)(2단계 하이브리드·미수집/수집 지연 표기·감사로깅) ⑤[subagents.py](../src/orchestration/subagents.py)(data_query 분기 + 원문 기준 의도 승격 realtime_usage_intent) ⑥[tests/test_nodes/test_realtime_usage.py](../tests/test_nodes/test_realtime_usage.py) 17종 통과(§4 게이트 경계 표 전부 고정). 그래프 직행 경로는 미배선(활성 런타임=트랙 A, D-144 주의 참조).
 
 ---
 

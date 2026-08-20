@@ -24,7 +24,7 @@ _MAX_HEADER_SEARCH_ROWS = 20
 # 연속 빈 행이 이 수를 초과하면 데이터 영역 끝으로 판단
 _MAX_CONSECUTIVE_EMPTY_ROWS = 3
 
-# 2행 병합 헤더 결합 시 그룹 헤더와 서브 헤더를 잇는 구분자 (D-142)
+# 2행 병합 헤더 결합 시 그룹 헤더와 서브 헤더를 잇는 구분자 (D-145)
 # normalize_field_name이 보존하는 문자여야 한다
 _HEADER_JOIN_SEPARATOR = "|"
 
@@ -93,7 +93,7 @@ def _analyze_sheet(ws: Worksheet) -> dict[str, Any] | None:
     formula_cells = _detect_formula_cells(ws, data_start_row, data_end_row, max_column)
 
     # 헤더 블록 위 제목·유의사항 텍스트 — 양식 문맥 판정(월 시리즈 인식기의 리소스 판정 등)에
-    # 쓰인다. 시트 이름(Sheet1)만으로는 양식 종류를 알 수 없는 실물 양식이 많다(D-143).
+    # 쓰인다. 시트 이름(Sheet1)만으로는 양식 종류를 알 수 없는 실물 양식이 많다(D-146).
     title_text = _collect_title_text(ws, block_top)
 
     return {
@@ -101,7 +101,7 @@ def _analyze_sheet(ws: Worksheet) -> dict[str, Any] | None:
         "headers": headers,
         "title_text": title_text,
         # header_row는 헤더 블록의 "하단 행" — 모든 소비처가 data_start_row =
-        # header_row + 1 계약에 의존하므로 2행 블록에서도 이 계약을 유지한다(D-142).
+        # header_row + 1 계약에 의존하므로 2행 블록에서도 이 계약을 유지한다(D-145).
         "header_row": header_row,
         "data_start_row": data_start_row,
         "data_end_row": data_end_row,
@@ -140,7 +140,7 @@ def _detect_header_row(
     """헤더 행을 자동 탐지한다 (헤더 블록 탐지의 호환 래퍼).
 
     2행 병합 헤더 블록이 결합된 경우에도 (블록 하단 행, 결합된 셀 목록)을 반환하므로
-    기존 소비처의 `data_start_row = header_row + 1` 계약이 그대로 유지된다(D-142).
+    기존 소비처의 `data_start_row = header_row + 1` 계약이 그대로 유지된다(D-145).
     excel_csv_converter 등 폼필 외 경로도 이 래퍼를 통해 동일하게 해석한다(경로 대칭).
 
     Returns:
@@ -157,7 +157,7 @@ def _detect_header_block(
 
     1) 탐색 범위 내에서 비어있지 않은 셀이 가장 많은 행을 기준 헤더로 판단한다.
     2) 기준 행의 인접 행이 병합 구조로 결합된 2행 헤더(그룹 헤더 + 서브 헤더)이면
-       두 행을 열 단위로 결합해 복합 필드명("그룹|서브")을 생성한다(D-142).
+       두 행을 열 단위로 결합해 복합 필드명("그룹|서브")을 생성한다(D-145).
        결합 조건 미충족 시 기존 단일 행 동작과 완전히 동일하다.
 
     Returns:
@@ -251,7 +251,7 @@ def _try_combine_header_rows(
 ) -> list[dict[str, Any]] | None:
     """인접 2행이 병합 헤더 블록이면 열 단위로 결합한 헤더 셀 목록을 반환한다.
 
-    보수적 3중 게이트(D-142 — 기존 단일 헤더 템플릿 오결합 방지):
+    보수적 3중 게이트(D-145 — 기존 단일 헤더 템플릿 오결합 방지):
     1. 두 행 모두 비어있지 않은 셀이 _MIN_HEADER_CELLS 이상
     2. 병합 증거: 두 행에 정확히 걸친 **세로 병합**이 존재 (필수).
        가로 병합만으로는 결합하지 않는다 — 부분 그룹 행(예: sample/취합 예시2.xlsx

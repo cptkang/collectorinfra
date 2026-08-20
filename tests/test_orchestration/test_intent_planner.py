@@ -322,7 +322,7 @@ async def test_pre_route_template_structure_single_task(mock_config):
     """(d) ③.5 양식 업로드(template_structure) → data_query 단일 task 고정, LLM 미호출.
 
     라이브 실측(2026-07-30 B0): LLM 분해가 폼필을 서버정보/월지표 2개 task로 쪼개
-    병합 결과가 2배 행이 됐다(D-147).
+    병합 결과가 2배 행이 됐다(D-150).
     """
     llm = AsyncMock()
     state = create_initial_state(user_query="양식 채워줘")
@@ -341,7 +341,7 @@ async def test_pre_route_form_fill_without_file_guidance(mock_config):
     """(e) ③.6 파일 없는 '양식 채워줘' → general_inference 안내 단락, LLM 미호출.
 
     template_structure 없이 LLM 분해로 가면 data_query가 존재하지 않는 양식을
-    환각 처리한다(라이브 실측 2026-07-30 7차, D-147).
+    환각 처리한다(라이브 실측 2026-07-30 7차, D-150).
     """
     llm = AsyncMock()
     state = create_initial_state(user_query="금감원 양식 채워줘")
@@ -359,7 +359,7 @@ async def test_pre_route_form_fill_without_file_guidance(mock_config):
 
 @pytest.mark.asyncio
 async def test_direct_response_skips_llm():
-    """direct_response가 있는 task는 general_inference LLM을 호출하지 않는다(D-147)."""
+    """direct_response가 있는 task는 general_inference LLM을 호출하지 않는다(D-150)."""
     from src.orchestration.subagents import run_general_inference
 
     task = {"task_id": "t1", "agent": "general_inference", "direct_response": "양식 파일을 첨부해 주세요."}

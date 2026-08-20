@@ -150,9 +150,9 @@ class _MultiRun:
     mc_derivations: list[dict]
     sql_by_schema: dict[tuple, str]
     # 생성·검증 실패 DB의 스키마 키 — 루프 종료 후 동일 스키마의 검증 통과 SQL로 소급
-    # 재실행한다(D-150). 연결/실행 에러는 대상이 아니다(SQL 재사용으로 해소 불가).
+    # 재실행한다(D-153). 연결/실행 에러는 대상이 아니다(SQL 재사용으로 해소 불가).
     validation_failed: dict[str, tuple]
-    # 폼필 번들(D-143/D-146/D-148) — 양식 문맥·의도·매핑 출처·답변, 산출 out-param.
+    # 폼필 번들(D-146/D-149/D-151) — 양식 문맥·의도·매핑 출처·답변, 산출 out-param.
     form_context: str
     form_intent: bool
     mapping_sources: dict
@@ -204,19 +204,19 @@ async def _prepare_multi_run(
 
     # 선행 task 결과 서버 스코프 — 단일 경로(query_generator)와 대칭 배선(D-086/D-066).
     # prior_scope(결정적 컴파일 전달용)·value_index는 경로 대칭 ON일 때만 소비된다(P3-2).
-    # 실행 결과 라이브 행이므로 PII 스크럽 적용(D-152 후속3 — 단일 경로와 대칭).
+    # 실행 결과 라이브 행이므로 PII 스크럽 적용(D-155 후속3 — 단일 경로와 대칭).
     prior_block = build_prior_rows_block(state.get("prior_rows"))
     if prior_block and is_scrub_samples_enabled():
         prior_block = scrub_pii(prior_block)
     prior_scope = prior_server_scope(state.get("prior_rows"))
     value_index = state.get("column_value_index")
 
-    # 폼필 월 시리즈(D-143) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
+    # 폼필 월 시리즈(D-146) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
     form_context = template_context_text(state.get("template_structure"))
-    # D-146: 양식 업로드 자체가 결정적 조립 발동 조건(문맥 텍스트 유무와 무관한 명시 신호).
+    # D-149: 양식 업로드 자체가 결정적 조립 발동 조건(문맥 텍스트 유무와 무관한 명시 신호).
     form_intent = bool(state.get("template_structure"))
     mapping_sources = state.get("mapping_sources") or {}
-    # D-148: 역질문 답변(라우트 주입, 요청 스코프) — 오버라이드 최우선 적용.
+    # D-151: 역질문 답변(라우트 주입, 요청 스코프) — 오버라이드 최우선 적용.
     form_fill_answers = state.get("form_fill_answers")
     # 폼필 확인 이력(Phase 3) — 이번 턴 답변 아래에 병합(이번 턴이 이김). 단일 경로 대칭.
     if form_intent:
@@ -349,7 +349,7 @@ async def _generate_validated_sql(
     )
 
     # 3. SQL 검증 (간이) — 실패 시 최대 2회 재생성(총 3회 시도, 단일 경로 재시도 3회와
-    # 대칭 — D-150 후속1). 동일 스키마 복구원이 없는 조합(b0+gp 등)은 소급 복구가
+    # 대칭 — D-153 후속1). 동일 스키마 복구원이 없는 조합(b0+gp 등)은 소급 복구가
     # 불가하므로 재생성 횟수가 유일한 방어선이다. 산출 head를 로그로 남겨 폐쇄망에서
     # 비-SQL 산출의 실제 형태(산문/거절/오류문)를 특정할 수 있게 한다(폼필 진단 프로토콜).
     validation_error = _validate_sql(
@@ -360,7 +360,7 @@ async def _generate_validated_sql(
         if not validation_error:
             break
         if "PII 필터 차단" in validation_error:
-            # 같은 프롬프트(스키마·샘플 동일) 재생성은 다시 차단 — 재시도 무의미(D-152)
+            # 같은 프롬프트(스키마·샘플 동일) 재생성은 다시 차단 — 재시도 무의미(D-155)
             logger.warning(
                 "DB '%s' PII 필터 차단 — 재생성 중단(동일 프롬프트 재차단)", db_id,
             )
@@ -457,7 +457,7 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                     )
                     _err_msg = f"SQL 검증 실패: {validation_error}"
                     # 비-SQL 산출(산문·PII 필터 차단문)은 발췌를 에러에 실어 UI에서 바로
-                    # 원인 특정(D-150 후속2 — 폐쇄망 진단 프로토콜: 실패 산출 전문 우선.
+                    # 원인 특정(D-153 후속2 — 폐쇄망 진단 프로토콜: 실패 산출 전문 우선.
                     # 발췌는 PII 스크럽). 차단문 발췌는 [PII-FILTER] 로그가 없는 환경
                     # (클라이언트 구버전·로깅 OFF)에서도 정책/문구를 특정하게 해준다.
                     if (
@@ -468,7 +468,7 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                         if _head:
                             _err_msg += f" | LLM 산출 발췌: {_head!r}"
                     run.db_errors[db_id] = _err_msg
-                    # 동일 스키마 DB가 나중에 검증 통과 SQL을 만들면 소급 복구(D-150)
+                    # 동일 스키마 DB가 나중에 검증 통과 SQL을 만들면 소급 복구(D-153)
                     run.validation_failed[db_id] = schema_key
                     return
                 # 검증 통과한 SQL을 스키마 키로 캐시 (다음 동일 스키마 DB가 재사용)
@@ -517,7 +517,7 @@ async def multi_db_executor(
     for target in targets:
         await _run_single_target(target, run)
 
-    # 동일 스키마 소급 복구(D-150 — D-066 후속6 재사용 시맨틱의 대칭 완성): 생성·검증
+    # 동일 스키마 소급 복구(D-153 — D-066 후속6 재사용 시맨틱의 대칭 완성): 생성·검증
     # 실패로 누락된 DB를, 같은 (엔진, 스키마)의 다른 DB에서 검증 통과한 SQL로 재실행한다.
     # 첫 DB(예: gp)가 LLM 출력 형식 비결정성으로 두 번 연속 추출·검증에 실패해도, 뒤
     # DB(yd)가 성공하면 존 누락 없이 복구된다. 복구 실패 시 원 에러를 유지하고 사유를
@@ -575,7 +575,7 @@ async def multi_db_executor(
         "current_node": "multi_db_executor",
         "error_message": None if run.db_results else "모든 DB 쿼리가 실패했습니다.",
     }
-    # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-143/D-145 — 단일 경로와 대칭).
+    # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
     if run.form_fill_out.get("month_anchor"):
         result["form_month_anchor"] = run.form_fill_out["month_anchor"]
     if run.form_fill_out.get("mapping_updates"):
@@ -583,7 +583,7 @@ async def multi_db_executor(
             **(state.get("column_mapping") or {}),
             **run.form_fill_out["mapping_updates"],
         }
-    # HITL 폼필 산출물(D-148) — output_generator가 역질문 페이로드·사유·상수 기입에 사용.
+    # HITL 폼필 산출물(D-151) — output_generator가 역질문 페이로드·사유·상수 기입에 사용.
     if run.form_fill_out.get("candidates"):
         result["form_fill_candidates"] = run.form_fill_out["candidates"]
     if run.form_fill_out.get("overrides"):
@@ -818,8 +818,8 @@ async def _invoke_llm_for_sql(
     sql = enforce_all_query_limit(
         extract_sql_from_response(response.content), default_limit, _config_default
     )
-    # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-152, 단일 경로 대칭).
-    # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-150 후속2)와 별개로
+    # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).
+    # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-153 후속2)와 별개로
     # 섹션별 로컬 스캔을 로그에 남겨 "어느 재료의 어떤 값"인지까지 특정한다.
     if is_filter_blocked(raw_text=sql):
         logger.warning(
@@ -1033,8 +1033,8 @@ def _multi_resource_pivot_result(
 
     기본은 **코드가 직접 조립**(LLM 우회)이고, 재시도(결정적 SQL이 이미 실패)에서 경로 대칭이
     켜져 있으면 단일 경로처럼 피벗 지침 블록을 주어 LLM이 에러를 반영하게 한다(P3-2 (c)).
-    월 시리즈 가로 피벗(D-143)·Vendor+Model 결합(D-145)·llm_inferred 사용률 회수(D-146)·
-    답변 오버라이드 우선(D-148)은 ux_improvement 승계 확장이다.
+    월 시리즈 가로 피벗(D-146)·Vendor+Model 결합(D-148)·llm_inferred 사용률 회수(D-149)·
+    답변 오버라이드 우선(D-151)은 ux_improvement 승계 확장이다.
 
     Returns:
         (프롬프트 블록 또는 None, 결정적 SQL 또는 None, 갱신된 unmapped_fields)
@@ -1054,14 +1054,14 @@ def _multi_resource_pivot_result(
         field for field, _ in metric_entries
         if field not in _month_fields and _is_metric(field)
     ]
-    # llm_inferred 강등 필드 중 사용률류는 필드명 기반 결정적 피벗으로 회수(D-146) —
+    # llm_inferred 강등 필드 중 사용률류는 필드명 기반 결정적 피벗으로 회수(D-149) —
     # 매핑 값은 버리되 채움 능력은 유지(전역 unmapped_fields에 없어 _um이 못 받는 몫).
     pivot_metric_fields += [
         f for f in (dropped_inferred or [])
         if f not in _month_fields and f not in concat_fields
         and f not in pivot_metric_fields and _is_metric(f)
     ]
-    # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-148)
+    # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-151)
     pivot_metric_fields = [
         f for f in pivot_metric_fields if f not in (applied_overrides or set())
     ]
@@ -1253,7 +1253,7 @@ def _build_mapping_user_parts(
 
     자식 리소스 EAV가 섞이면 폼필 피벗을 **코드가 결정적으로 조립**해 LLM을 우회하므로,
     이 함수는 프롬프트 섹션과 함께 그 SQL을 돌려준다(있으면 호출부가 즉시 반환한다).
-    폼필 규칙(D-143~D-148 — llm_inferred 강등·월 시리즈·Vendor+Model 결합·답변
+    폼필 규칙(D-146~D-151 — llm_inferred 강등·월 시리즈·Vendor+Model 결합·답변
     오버라이드·역질문 후보)은 split 전에 매핑을 결정적으로 보정한다(ux_improvement 승계).
 
     Returns:
@@ -1263,7 +1263,7 @@ def _build_mapping_user_parts(
     _sn_eav = _get_eav_pattern(schema_info)
     column_mapping = dict(column_mapping or {})
 
-    # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-146, 단일 경로와 대칭) —
+    # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-149, 단일 경로와 대칭) —
     # 라이브 오염(TPMC·acl_id·epoch류)의 공통 출처. 결정적 피벗이 확실한 조건
     # (form_intent + eav_pattern + 비재시도)에서만 강등한다(비EAV DB의 LLM 경로는
     # 현행 유지). 키는 유지 — 인식기·결합 규칙이 필드명을 본다. 사용률류 필드는
@@ -1279,7 +1279,7 @@ def _build_mapping_user_parts(
             column_mapping[f] = None
         if _dropped_inferred:
             logger.info(
-                "DB '%s' 폼필 llm_inferred 매핑 %d건 채움 제외(D-146, 역질문 후보): %s",
+                "DB '%s' 폼필 llm_inferred 매핑 %d건 채움 제외(D-149, 역질문 후보): %s",
                 db_id, len(_dropped_inferred), _dropped_inferred,
             )
             if form_fill_out is not None:
@@ -1288,7 +1288,7 @@ def _build_mapping_user_parts(
                     {f: None for f in _dropped_inferred}
                 )
 
-    # 월 시리즈(M~M+5 가로 전개) 인식 + 요청 스코프 규칙(D-143/D-145) — 단일 경로와 대칭.
+    # 월 시리즈(M~M+5 가로 전개) 인식 + 요청 스코프 규칙(D-146/D-148) — 단일 경로와 대칭.
     # 멀티 경로는 미매핑 필드가 unmapped_fields로 분리 전달되므로 합쳐서 인식한다.
     _recog_mapping: dict[str, str | None] = {
         f: None for f in (unmapped_fields or [])
@@ -1324,7 +1324,7 @@ def _build_mapping_user_parts(
             _mu.update({f: None for f in month_series.fields})
             _mu.update({f: None for f in _remark_updates})
 
-    # 제조사(모델명)류 Vendor+Model 결합 규칙(D-145) — 단일 경로와 대칭.
+    # 제조사(모델명)류 Vendor+Model 결합 규칙(D-148) — 단일 경로와 대칭.
     # 결합 필드 제외는 결정적 피벗 발동 시에만 적용한다(LLM 폴백 프롬프트의
     # 매핑 블록에서 필드가 사라지는 회귀 방지).
     concat_eav = find_vendor_model_concat(schema_info, _recog_mapping)
@@ -1335,7 +1335,7 @@ def _build_mapping_user_parts(
             {f: None for f in concat_fields}
         )
 
-    # 사용자 답변 오버라이드(D-148) — 우선순위 최상위(사용자 > 규칙 > 자동 매핑).
+    # 사용자 답변 오버라이드(D-151) — 우선순위 최상위(사용자 > 규칙 > 자동 매핑).
     # 검증 탈락은 사유와 함께 form_fill_out으로 승격돼 응답에 노출된다.
     _applied_ov: set[str] = set()
     if form_fill_answers and form_intent and _sn_eav and not error_context:
@@ -1345,10 +1345,10 @@ def _build_mapping_user_parts(
         )
         _applied_ov = {f for f, o in _ov_out.items() if o.get("applied")}
         if _applied_ov:
-            logger.info("DB '%s' 폼필 답변 오버라이드 적용(D-148): %s", db_id, sorted(_applied_ov))
+            logger.info("DB '%s' 폼필 답변 오버라이드 적용(D-151): %s", db_id, sorted(_applied_ov))
         _ov_rejected = [(f, o.get("reason")) for f, o in _ov_out.items() if not o.get("applied")]
         if _ov_rejected:
-            logger.info("DB '%s' 폼필 답변 오버라이드 거부(D-148): %s", db_id, _ov_rejected)
+            logger.info("DB '%s' 폼필 답변 오버라이드 거부(D-151): %s", db_id, _ov_rejected)
         column_mapping.update(_ov_map)
         _ov_fields = set(_ov_map.keys()) | set(_ov_lit.keys())
         concat_eav = [c for c in concat_eav if c[0] not in _ov_fields]
@@ -1359,7 +1359,7 @@ def _build_mapping_user_parts(
             if _ov_lit:
                 form_fill_out.setdefault("literals", {}).update(_ov_lit)
 
-    # D-148: 역질문 드롭다운 후보(스키마 실측, 첫 EAV DB 기준 — 폴스타 계열 동일 스키마)
+    # D-151: 역질문 드롭다운 후보(스키마 실측, 첫 EAV DB 기준 — 폴스타 계열 동일 스키마)
     if form_intent and _sn_eav and form_fill_out is not None:
         form_fill_out.setdefault(
             "candidates", build_form_fill_candidates(schema_info, _sn_eav)
@@ -1376,7 +1376,7 @@ def _build_mapping_user_parts(
     child_eav, server_eav = split_eav_by_resource_type(
         eav_entries, attr_rt, entity_resource_type=_ENTITY_RESOURCE_TYPE
     )
-    # D-146: 양식 업로드(form_intent)는 eav_pattern 존재 DB에서 결정적 조립 게이트 확장.
+    # D-149: 양식 업로드(form_intent)는 eav_pattern 존재 DB에서 결정적 조립 게이트 확장.
     # 재생성(error_context) 턴의 월시리즈·폼필은 같은 SQL 재조립을 피해 LLM 폴백으로
     # 넘긴다(단일 경로 is_retry와 대칭 — ux_improvement 승계). 자식 EAV 단독 재시도는
     # _multi_resource_pivot_result 내부의 경로대칭(c) 분기가 담당한다(HEAD 유지).
@@ -1390,7 +1390,7 @@ def _build_mapping_user_parts(
         use_multi_resource_pivot = bool(child_eav)
     if form_intent and use_multi_resource_pivot and not child_eav and not month_series:
         logger.info(
-            "DB '%s': 폼필 결정적 계약 경로(D-146) — 월시리즈·자식EAV 없음, 게이트 확장으로 조립",
+            "DB '%s': 폼필 결정적 계약 경로(D-149) — 월시리즈·자식EAV 없음, 게이트 확장으로 조립",
             db_id,
         )
     if month_series and not use_multi_resource_pivot:
@@ -1474,14 +1474,14 @@ async def _generate_sql(
         derivation_sink: 트랙 S 단계적 도출 관측 레코드 적재 리스트 (선택, S2/D-128)
         prior_scope: 선행 task 결과 서버 스코프 (경로 대칭 ON일 때만 소비, P3-2 (d))
         value_index: 컬럼 값 인덱스 (경로 대칭 ON일 때만 소비, P3-2 (c))
-        form_context_text: 양식 문맥 텍스트(시트 제목 등) — 월 시리즈 인식(D-143)용
+        form_context_text: 양식 문맥 텍스트(시트 제목 등) — 월 시리즈 인식(D-146)용
         form_fill_out: 폼필 산출 out-param(선택) — 월 앵커·스코프 매핑 갱신분을 담아
             노드가 state 델타로 반영한다("month_anchor"/"mapping_updates" 키)
         form_intent: 양식 업로드(template_structure) 턴 여부 — 참이면 월 시리즈·자식
-            EAV 없이도 결정적 피벗을 발동한다(D-146, eav_pattern 존재 DB 한정)
+            EAV 없이도 결정적 피벗을 발동한다(D-149, eav_pattern 존재 DB 한정)
         mapping_sources: 필드별 매핑 출처(hint/synonym/llm_inferred) — 폼필에서
-            llm_inferred 매핑을 채움에서 제외(D-146, 침묵 오염 차단)
-        form_fill_answers: 역질문 답변(D-148) — 오버라이드 최우선 적용
+            llm_inferred 매핑을 채움에서 제외(D-149, 침묵 오염 차단)
+        form_fill_answers: 역질문 답변(D-151) — 오버라이드 최우선 적용
 
     Returns:
         생성된 SQL 문자열
@@ -1490,7 +1490,7 @@ async def _generate_sql(
         app_config = load_config()
     _parity = path_parity_enabled(app_config)
 
-    # D-146: 양식 업로드 턴은 결정적 폼필 조립 대상 — 시맨틱 컴파일(SMQ)은 양식 계약
+    # D-149: 양식 업로드 턴은 결정적 폼필 조립 대상 — 시맨틱 컴파일(SMQ)은 양식 계약
     # (한글 alias·공란 규칙)을 표현하지 못하므로 우회한다(ux_improvement 병합 승계).
     if not form_intent:
         semantic_sql = await _try_semantic_compile(
@@ -1634,7 +1634,7 @@ def _build_multi_user_prompt(
     # 양식 필드 매핑에서 파생되는 섹션들 — 폼필 피벗이 결정적으로 조립되면 여기서 SQL이 나온다.
     # 미매핑 필드만 있어도(per-DB 매핑이 비어도) 월 시리즈 인식은 발동해야 하므로
     # unmapped_fields도 진입 조건에 포함한다(라이브 실측 2026-07-28 — FIX-1).
-    # 양식 업로드 턴은 매핑 유무와 무관하게 진입한다(D-146).
+    # 양식 업로드 턴은 매핑 유무와 무관하게 진입한다(D-149).
     if column_mapping or unmapped_fields or form_intent:
         _parts, _deterministic, unmapped_fields = _build_mapping_user_parts(
             column_mapping or {}, schema_info, unmapped_fields,
@@ -1712,7 +1712,7 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
     if not sql or not sql.strip():
         return "빈 SQL"
 
-    # FabriX PII 필터 차단 안내문이 content로 온 변형 감지(D-150 후속2) —
+    # FabriX PII 필터 차단 안내문이 content로 온 변형 감지(D-153 후속2) —
     # status SUCCESS + 차단 문구 content 형태가 존재(pii_filter.is_filter_blocked의
     # content 검사 사유). 같은 프롬프트 재생성은 다시 차단되므로 호출부가 재시도를
     # 중단할 수 있게 구분 메시지를 반환한다(원인 정확 노출 — 침묵 강등 금지).
@@ -1851,7 +1851,7 @@ def _format_schema(schema_info: dict, materials: dict[str, dict] | None = None) 
         eav_name_synonyms=mat.get("eav_name_synonyms"),
         include_not_null=True,
         sample_style="labeled",
-        # 라이브 샘플 방어(D-152/b0 동결 실측): 크기 상한 프리뷰(값 200자·테이블당
+        # 라이브 샘플 방어(D-155/b0 동결 실측): 크기 상한 프리뷰(값 200자·테이블당
         # 2,000자)로 스크럽 비용을 bound하고, PII 스크럽으로 FabriX 필터 오탐을 차단한다.
         sample_renderer=_render_samples_secure,
     )

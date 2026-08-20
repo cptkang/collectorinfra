@@ -616,7 +616,7 @@ class TestEnforceAllQueryLimit:
 
         2026-08-05 라이브 실측: "은행존과 공동존 김포의 서버들…조회"(전량 상향 100k)가
         1,000건 절단 — LLM이 관례 캡 1000을 모방했는데 캡 집합이 {100, config_default}라
-        config_default=10,000으로 바꾼 순간 1000이 교정 대상에서 빠졌다(D-150 후속2).
+        config_default=10,000으로 바꾼 순간 1000이 교정 대상에서 빠졌다(D-153 후속2).
         """
         from src.utils.query_gen_common import enforce_all_query_limit
 

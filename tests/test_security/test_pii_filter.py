@@ -1,4 +1,4 @@
-"""FabriX PII 필터 진단 유틸 테스트 (D-152).
+"""FabriX PII 필터 진단 유틸 테스트 (D-155).
 
 차단 원인 특정(섹션별 로컬 스캔)·스트림 조립 재검사 근거·로그 상세를 검증한다.
 전부 로컬 규칙 기반 — 네트워크·LLM 미사용.
@@ -91,7 +91,7 @@ class TestLogFilterBlockDetail:
         assert "핸드폰번호" in joined
 
     def test_full_raw_response_in_log(self, caplog, no_dump):
-        """정규화 파서가 모르는 키도 원문 응답 JSON 전문으로 로그에 노출된다(D-152 후속1)."""
+        """정규화 파서가 모르는 키도 원문 응답 JSON 전문으로 로그에 노출된다(D-155 후속1)."""
         with caplog.at_level(logging.WARNING):
             log_filter_block_if_any(
                 result={
@@ -129,7 +129,7 @@ class TestLogFilterBlockDetail:
 
 
 class TestPolicyTargetedDiagnosis:
-    """서버 사유(policy_id)의 룰을 프롬프트에 역적용하는 표적 대조 (D-152 후속5).
+    """서버 사유(policy_id)의 룰을 프롬프트에 역적용하는 표적 대조 (D-155 후속5).
 
     기대 동작: ①사유 유형의 룰로 걸린 값을 특정 ②매칭 0건이면 "알려진 필터로는
     차단 불가한 프롬프트가 차단됨(서버 필터 변경 의심)" 명시 ③미상 유형은 대응 룰
@@ -277,7 +277,7 @@ class TestRevisedRules2026:
     def test_account_exclusions_not_detected(self, text):
         assert not any(m.name == "계좌번호" for m in scan_pii(text)), text
 
-    # 인프라 데이터에서 계좌번호(851) 룰에 걸리는 실형태 카탈로그(D-152 후속3 —
+    # 인프라 데이터에서 계좌번호(851) 룰에 걸리는 실형태 카탈로그(D-155 후속3 —
     # 공동존/PG 경로 "계좌 유사값 부재" 실측 대응). 유선 전화는 핸드폰 룰(855)이
     # 아니라 계좌 룰로 차단된다는 점이 육안 진단의 맹점.
     @pytest.mark.parametrize("text", [
@@ -303,7 +303,7 @@ class TestRevisedRules2026:
 
 
 class TestAccountSuspects:
-    """계좌번호(851) 광폭 매칭 의심 형태 — 날짜·타임스탬프 (D-152 후속3)."""
+    """계좌번호(851) 광폭 매칭 의심 형태 — 날짜·타임스탬프 (D-155 후속3)."""
 
     _SAMPLE_LINE = '"created_at": "2026-06-17 02:30:45", "id": 123'
 
@@ -344,7 +344,7 @@ class TestAccountSuspects:
 
 
 class TestResponseShapeParsing:
-    """가이드 실측 응답 shape — snake_case·FR-200/400·APIM (D-152 후속2)."""
+    """가이드 실측 응답 shape — snake_case·FR-200/400·APIM (D-155 후속2)."""
 
     _BLOCKED_CHUNK = {
         "content": "The content was blocked by the filter",

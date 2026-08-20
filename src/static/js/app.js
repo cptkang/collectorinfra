@@ -947,7 +947,7 @@
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
             }
-            // Plan 73 D-148: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
+            // Plan 73 D-151: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
             if (formFillAnswers) {
                 streamBody.form_fill_answers = formFillAnswers;
                 // Phase 3: 기억 옵트인(양식 시그니처 스코프, TTL sliding)
@@ -1052,7 +1052,7 @@
 
             // Finalize streaming message
             finalizeStreamingMessage(finalText, metaData);
-            // Plan 73 D-148: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
@@ -1224,7 +1224,7 @@
         var checks = box.querySelectorAll('input[type="checkbox"]');
         checks.forEach(function (c) {
             c.addEventListener("change", function () {
-                // 존 그룹 상호배타(D-140 후속3): 은행존(bank)과 공동존(common)은 동시
+                // 존 그룹 상호배타(D-143 후속3): 은행존(bank)과 공동존(common)은 동시
                 // 선택 불가 — 다른 그룹을 체크하면 기존 그룹 선택을 해제한다(라디오 동작).
                 // 공동존 내 김포/여의도는 같은 그룹이라 복수 선택 유지.
                 if (clar.group_exclusive && c.checked) {
@@ -1278,7 +1278,7 @@
         });
     }
 
-    // ─── Form Fill HITL Panel (Plan 73 §11, D-148) ───
+    // ─── Form Fill HITL Panel (Plan 73 §11, D-151) ───
     // 폼필 미해결 필드 역질문 — 필드별 처리 방법(공란/DB 항목/직접 입력)을 위젯으로
     // 지정해 form_fill_answers(구조화 필드)로 재전송한다. 자연어 재조합·LLM 파싱 없음
     // (서버는 존재성 검증만 수행). 존 역질문(selected_db_ids)과 동형 패턴.
@@ -1401,7 +1401,7 @@
 
             // Plan 70 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
             appendZoneClarificationToLastBubble(data.clarification);
-            // Plan 73 D-148: 폼필 미해결 필드 역질문 패널
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
 
         } catch (err) {
@@ -1525,7 +1525,7 @@
                 ? metaData.response : accumulatedText;
             finalizeStreamingMessage(finalText, metaData);
             attachDownloadToLastFileCard(metaData.query_id);
-            // Plan 73 D-148: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
+            // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
@@ -1582,7 +1582,7 @@
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
             appendZoneClarificationToLastBubble(data.clarification);
-            // Plan 73 D-148: 폼필 미해결 필드 역질문 패널
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
         } catch (err) {
             removeProcessingMessage();

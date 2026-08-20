@@ -153,7 +153,7 @@ class QueryConfig(BaseSettings):
     # D-130)로 처리된다 — ON은 그 확정 불가분만 LLM 1콜로 회복한다.
     intent_llm_assist: bool = False
 
-    # 폼필 확인 이력(D-148 Phase 3) TTL — sliding(적용 시 연장). 0이면 기능 OFF.
+    # 폼필 확인 이력(D-151 Phase 3) TTL — sliding(적용 시 연장). 0이면 기능 OFF.
     # 짧은 기본값이 안전측: 만료 비용(패널 재답변 1회) ≪ 부패 지속 비용(감사자료 오기재).
     form_memory_ttl_days: int = 7
 
@@ -358,13 +358,13 @@ class SecurityConfig(BaseSettings):
     pii_scrub_samples: bool = True
     # 날짜·타임스탬프 무해화 스크럽 (SECURITY_PII_SCRUB_SUSPECT_DATES). 기본 False.
     # FabriX 계좌번호(851) 룰이 숫자 많은 라인의 날짜형(2026-06-17 02:30:45, DB2
-    # 2026-08-05-14.30.45)까지 광폭 매칭하는 정황(D-152 후속3) — 진단으로 확정되면
+    # 2026-08-05-14.30.45)까지 광폭 매칭하는 정황(D-155 후속3) — 진단으로 확정되면
     # 이 플래그만 켠다(코드 재배포 불요). 마스킹이 아니라 구분자 점 치환이라 값·자릿수
     # 형식 신호는 보존된다("2026-06-17 02:30:45" → "2026.06.17.02:30:45").
     pii_scrub_suspect_dates: bool = False
     # PII 필터 차단 시 전송 프롬프트·응답 전문을 파일로 덤프할지 (SECURITY_PII_BLOCK_DUMP_ENABLED).
     # 기본 True. 로컬 규칙 무매칭 차단(서버측 정책이 더 넓은 경우)은 "무엇이 걸렸는지"를
-    # 로그 발췌만으로 특정할 수 없다(D-152 후속1) — 전송 원문 전체를 서버 로컬 파일로 남겨
+    # 로그 발췌만으로 특정할 수 없다(D-155 후속1) — 전송 원문 전체를 서버 로컬 파일로 남겨
     # 운영자가 직접 대조·이등분 재현으로 트리거를 확정한다. 덤프는 서버 밖으로 나가지 않는다
     # (FabriX로 이미 전송한 것과 동일한 텍스트). 경로: logs/pii_block/.
     pii_block_dump_enabled: bool = True
@@ -460,7 +460,7 @@ class MultiDBConfig(BaseSettings):
         validation_alias=AliasChoices("ACTIVE_DB_IDS", "MULTI_DB_ACTIVE_DB_IDS_CSV"),
     )
 
-    # 존 그룹 상호배타(D-140 후속3): 은행존(b0)과 공동존(gp/yd)의 동시 조회 차단.
+    # 존 그룹 상호배타(D-143 후속3): 은행존(b0)과 공동존(gp/yd)의 동시 조회 차단.
     # 근거: ①담당 조직 분리로 존 조합 실수요 없음(사용자 확정 2026-08-05)
     # ②b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈 회피.
     # 원인 종결 시 off로 되돌릴 수 있도록 플래그화(ZONE_GROUP_EXCLUSIVE=false).
@@ -872,7 +872,7 @@ class NoiseGateConfig(BaseSettings):
 
 
 class DrmConfig(BaseSettings):
-    """Softcamp ServiceLinker DRM 해제 설정 (Plan 74 / D-153).
+    """Softcamp ServiceLinker DRM 해제 설정 (Plan 74 / D-156).
 
     기본 비활성(enabled=False) — 개발 PC·CI는 DRM 모듈 설치가 불가하므로
     Passthrough로 동작하고, 운영(RHEL 9.6)에서만 활성화한다.

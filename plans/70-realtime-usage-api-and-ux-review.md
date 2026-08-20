@@ -1,6 +1,6 @@
 # 65. UX 개선 기획 검토 의견 — 실시간 사용률 API · 버튼 명령어 · LIMIT 절단 · 존 모호성 역질문
 
-> 작성일: 2026-07-23 / 개정: 2026-07-23 v2 (§1 API 2안 확정·실측 5건 해소, §3 테스트 가이드 신설, §4 존 선택 UI 검토) / 개정: 2026-07-24 v3 (§3 원인 경로 확정 — 단일 DB 경로의 sub_query_context 대체, §5.1 상세화) / 개정: 2026-07-24 v4 (§5.1 회신 반영) / v5 (B안 확정, §3.4 구현 완료) / v6 (§3.6-E 검증 통과, §2 버튼 UI 반영) / v7 (항목 6 해소 — few-shot 캡 모방, D-066 후속8) / v8 (잔여 전체 구현 — §4 D-140, §1 Plan 71·D-141) / **v9 (폐쇄망 §4 검증 피드백 반영 — ①'ㅇㅇ존' 플레이스홀더가 라우팅은 정상인데 sub_query·처리 현황·응답 서술에 잔존 → 재개 턴에서 선택 존 라벨로 결정적 문자열 치환(`_substitute_zone_placeholder`, LLM 재해석 아님) ②실시간 의도 감지+플래그 OFF 시 침묵 스킵 → 진단 로그 추가. 잔여=항목 7)**
+> 작성일: 2026-07-23 / 개정: 2026-07-23 v2 (§1 API 2안 확정·실측 5건 해소, §3 테스트 가이드 신설, §4 존 선택 UI 검토) / 개정: 2026-07-24 v3 (§3 원인 경로 확정 — 단일 DB 경로의 sub_query_context 대체, §5.1 상세화) / 개정: 2026-07-24 v4 (§5.1 회신 반영) / v5 (B안 확정, §3.4 구현 완료) / v6 (§3.6-E 검증 통과, §2 버튼 UI 반영) / v7 (항목 6 해소 — few-shot 캡 모방, D-066 후속8) / v8 (잔여 전체 구현 — §4 D-143, §1 Plan 71·D-144) / **v9 (폐쇄망 §4 검증 피드백 반영 — ①'ㅇㅇ존' 플레이스홀더가 라우팅은 정상인데 sub_query·처리 현황·응답 서술에 잔존 → 재개 턴에서 선택 존 라벨로 결정적 문자열 치환(`_substitute_zone_placeholder`, LLM 재해석 아님) ②실시간 의도 감지+플래그 OFF 시 침묵 스킵 → 진단 로그 추가. 잔여=항목 7)**
 > **성격**: 사용자 기획(4개 항목)에 대한 **검토 의견서** (구현 계획 아님 — 각 항목 확정 후 필요 시 별도 계획서/섹션으로 구체화)
 > **관련 결정**: D-003(읽기전용 절대원칙), D-035(결정적 규칙=판단·LLM=보조), D-065(위치 힌트 결정적 보강), D-066(전체/모든 조회 LIMIT 상향)
 > **관련 계획**: Plan 47-1(실시간 프로세스 API — 인프라 재사용 원형), Plan 48/49(오케스트레이션 경로 — §3 원인 지점), Plan 50-multiturn(멀티턴 컨텍스트 — §4 역질문 후속 턴)
@@ -221,7 +221,7 @@ python scripts/arch_check.py --ci                                       # exit 0
 
 ### 4.1 결론
 
-**찬성 — 단, 발동 조건은 결정적 게이트로 좁게.** → **구현 완료 (2026-07-24, D-140).** 최종 구현은 LLM `clarification_needed` 방출을 기다리지 않고 **라우트 진입 시 결정적 게이트로 파이프라인 실행 전 반환**하는 stateless 설계를 채택했다(`api/routes/query.py::_zone_clarification_or_none` — 서버측 보류 상태 없음, 재개는 프론트가 원문+`selected_db_ids`를 재전송). 배선: /query·/query/stream 대칭 조기 반환 → 프론트 체크박스 3개 UI([app.js](src/static/js/app.js) `renderZoneClarification`, 미선택 시 확인 버튼 비활성, 새 질의 시 보류 블록 자기정리) → `selected_db_ids` 구조화 재전송 → [semantic_router](src/routing/semantic_router.py)(우선순위 2.5)·[intent_planner](src/orchestration/intent_planner.py)(②.5 pre-check)가 mapped_db_ids 선례 동형으로 LLM 우회 고정 → 복합 계획 개별 task까지 [subagents](src/orchestration/subagents.py) raw_targets 폴백으로 커버. 테스트 12종(`tests/test_orchestration/test_zone_selection.py`).
+**찬성 — 단, 발동 조건은 결정적 게이트로 좁게.** → **구현 완료 (2026-07-24, D-143).** 최종 구현은 LLM `clarification_needed` 방출을 기다리지 않고 **라우트 진입 시 결정적 게이트로 파이프라인 실행 전 반환**하는 stateless 설계를 채택했다(`api/routes/query.py::_zone_clarification_or_none` — 서버측 보류 상태 없음, 재개는 프론트가 원문+`selected_db_ids`를 재전송). 배선: /query·/query/stream 대칭 조기 반환 → 프론트 체크박스 3개 UI([app.js](src/static/js/app.js) `renderZoneClarification`, 미선택 시 확인 버튼 비활성, 새 질의 시 보류 블록 자기정리) → `selected_db_ids` 구조화 재전송 → [semantic_router](src/routing/semantic_router.py)(우선순위 2.5)·[intent_planner](src/orchestration/intent_planner.py)(②.5 pre-check)가 mapped_db_ids 선례 동형으로 LLM 우회 고정 → 복합 계획 개별 task까지 [subagents](src/orchestration/subagents.py) raw_targets 폴백으로 커버. 테스트 12종(`tests/test_orchestration/test_zone_selection.py`).
 
 ### 4.2 발동 조건 — LLM 방출에 의존하지 말 것
 
@@ -264,8 +264,8 @@ UX 보강(2026-07-24, 사용자 피드백): 존 선택 대기 중 입력창이 �
 | 순서 | 항목 | 규모 | 성격 |
 |---|---|---|---|
 | 1 | §3 LIMIT 전파 버그 | 소 | ✅ **구현 완료(2026-07-24)** — resolved_limit 승격 + 회귀 테스트 7종 + D-066 후속7(§3.4). 후속8(few-shot 캡 교정)까지 완료 |
-| 2 | §2 버튼 + §4 역질문 (세트) | 중 | ✅ **구현 완료(2026-07-24)** — §2 버튼 UI + §4 역질문 배선(**D-140**): 라우트 결정적 게이트 → 체크박스 3개 UI → `selected_db_ids` 구조화 재전송 → semantic_router·intent_planner LLM 우회 고정. 테스트 12종 |
-| 3 | §1 실시간 사용률 API | 대 | ✅ **구현 완료(2026-07-24)** — **Plan 71** 작성·구현(**D-141**, 옵트인 기본 OFF): B안 게이트 → 서버 목록 결정적 SQL → measurement API(청크·병렬) → 병합(미수집·수집 지연). 테스트 17종. 폐쇄망 검증 대기 |
+| 2 | §2 버튼 + §4 역질문 (세트) | 중 | ✅ **구현 완료(2026-07-24)** — §2 버튼 UI + §4 역질문 배선(**D-143**): 라우트 결정적 게이트 → 체크박스 3개 UI → `selected_db_ids` 구조화 재전송 → semantic_router·intent_planner LLM 우회 고정. 테스트 12종 |
+| 3 | §1 실시간 사용률 API | 대 | ✅ **구현 완료(2026-07-24)** — **Plan 71** 작성·구현(**D-144**, 옵트인 기본 OFF): B안 게이트 → 서버 목록 결정적 SQL → measurement API(청크·병렬) → 병합(미수집·수집 지연). 테스트 17종. 폐쇄망 검증 대기 |
 
 **잔여 (미구현)**: §5.1 항목 7(싱글턴 모호 질의 침묵 강등 — 생성 결과가 SQL이 아닐 때 안내문을 사용자 응답으로 노출). 역질문과 별개의 파이프라인 내부 배선(query_generator→output 경로)이라 이번 릴리스에서 제외 — 다음 턴 착수 대상.
 
