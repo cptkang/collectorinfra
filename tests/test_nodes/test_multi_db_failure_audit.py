@@ -50,7 +50,7 @@ async def test_failure_attempt_preserves_sql_and_audits(monkeypatch):
         def get_client(self, db_id):
             return _FailingClientCtx()
 
-    async def _schema(client, parsed, *, db_id, app_config):
+    async def _schema(client, parsed, *, db_id, app_config, **kwargs):
         return {"tables": {"servers": {"columns": []}}}
 
     async def _gen(*args, **kwargs):

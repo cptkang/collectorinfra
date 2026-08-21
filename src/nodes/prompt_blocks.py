@@ -603,6 +603,53 @@ def path_parity_enabled(app_config: Optional[AppConfig]) -> bool:
     return getattr(getattr(app_config, "text2sql", None), "path_parity", False) is True
 
 
+# ──────────────────────────────────────────────
+# 데이터 평면 프롬프트 토큰 예산 (D-159)
+# ──────────────────────────────────────────────
+
+
+class PromptBudgetExceeded(RuntimeError):
+    """프롬프트 토큰 예산 초과 — 절단 계단을 다 내려도 한도를 넘는 경우.
+
+    호출하지 않고 명시 실패한다: FabriX 데이터 평면은 한도 초과 예외를 HTTP 에러가
+    아닌 **응답 content 텍스트**로 반환하므로("Input tokens must be <= 95232" 실측),
+    보내면 그 텍스트가 SQL 검증으로 흘러가 "SELECT 문이 아닙니다"로 오표면화된다.
+    """
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    """FabriX 데이터 평면 입력 한도 대비 보수 토큰 추정치를 계산한다 (D-159).
+
+    폐쇄망 백엔드 토크나이저를 밖에서 실측할 수 없으므로 보수 가중을 쓴다 —
+    ASCII 4자/토큰, 비ASCII(한글 등) 1.5자/토큰. 실측 대조(2026-08-21 공동존):
+    FabriX 실보고 136,707tok 프롬프트가 종전 len//4 추정으로는 과소평가됐다.
+    계수 보정은 폐쇄망 [토큰예산] 로그의 추정치와 FabriX 실보고 값을 대조해 수행한다.
+
+    Args:
+        text: 추정 대상 텍스트
+
+    Returns:
+        보수 추정 토큰 수 (빈 문자열은 0)
+    """
+    if not text:
+        return 0
+    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
+    return int(ascii_chars / 4 + (len(text) - ascii_chars) / 1.5)
+
+
+def resolve_prompt_token_budget(app_config: Optional["AppConfig"]) -> int:
+    """설정에서 프롬프트 토큰 예산을 읽는다 — 미설정·비정상 값은 0(가드 비활성).
+
+    ``isinstance(int)`` 검사는 의도적이다 — 설정 대역(MagicMock/SimpleNamespace)의
+    미정의 속성이 가드를 오발동시키지 않게 한다(path_parity_enabled의 ``is True``와
+    같은 이유).
+    """
+    budget = getattr(getattr(app_config, "text2sql", None), "prompt_token_budget", 0)
+    if isinstance(budget, bool) or not isinstance(budget, int):
+        return 0
+    return budget if budget > 0 else 0
+
+
 def build_schema_prefix_rule(
     schema_prefix: str, *, example_table: str, foreign_prefix_example: str
 ) -> str:

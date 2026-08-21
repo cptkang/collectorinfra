@@ -319,6 +319,20 @@ class Text2SQLConfig(BaseSettings):
     # 기본 OFF = 양 경로 프롬프트 바이트 무변경(계획서 §0.3-3).
     path_parity: bool = False
 
+    # === D-159: 멀티 DB 경로 관련 테이블 게이트 (공동존 토큰 폭증 근본 수정) ===
+    # ON이면 멀티 경로 스키마를 프로필 allowed_tables + 이번 질의 매칭 유사어 테이블로
+    # 좁힌다(단일 경로 schema_analyzer 게이트의 멀티 대칭 — Plan 52 §1.5 미이행분).
+    # 프로필 부재 DB·필터 결과 공집합은 전량 유지(현행 불변). 기본 ON — OFF는 폐쇄망
+    # P1 장애(공동존 cm_gp 136,707tok > FabriX 95,232 한도) 재현을 의미하므로
+    # 비상 복귀용 kill-switch로만 쓴다.
+    multi_relevant_gate: bool = True
+
+    # === D-159: 데이터 평면 프롬프트 토큰 예산 (W-6 커밋이 예고한 "절단 상한" 후속) ===
+    # FabriX(GptOss) 데이터 평면 입력 한도(실측 95,232tok)에 대한 보수 예산. 초과 시
+    # 재료(유사어·설명)→샘플 순으로 절단하고, 그래도 넘으면 호출 없이 명시 실패한다
+    # (절단·실패 모두 로그 가시화 — 침묵 강등 금지). 0 이하면 가드 비활성.
+    prompt_token_budget: int = 90_000
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

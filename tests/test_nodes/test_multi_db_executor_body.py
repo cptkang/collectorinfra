@@ -86,7 +86,7 @@ class _Harness:
                     db_id, harness.rows_by_db, harness.errors_by_db, harness.execute_calls
                 )
 
-        async def _schema(client, parsed, *, db_id, app_config):
+        async def _schema(client, parsed, *, db_id, app_config, **kwargs):
             return {"tables": {"servers": {"columns": [{"name": "hostname", "type": "text"}]}}}
 
         async def _generate(llm, parsed, schema_info, sub_context, limit, **kwargs):

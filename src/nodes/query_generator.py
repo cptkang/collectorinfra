@@ -53,11 +53,13 @@ from src.nodes.prompt_blocks import (
     build_value_index_injection,
     build_value_joins_block,
     eav_patterns_of,
+    estimate_prompt_tokens,
     filter_mapping_by_schema,
     first_eav_pattern,
     format_schema_text,
     path_parity_enabled,
     prior_server_scope,
+    resolve_prompt_token_budget,
     select_history_fewshot,
     split_eav_by_resource_type,
     split_mapping_entries,
@@ -588,6 +590,42 @@ async def _build_fallback_prompts(
         query_history_examples=history_examples,
         path_parity=path_parity_enabled(app_config),
     )
+
+    # 토큰 예산 가드(D-159, 단일·멀티 공통 후속 — W-6 예고분). 단일 경로는 relevant
+    # 게이트로 이미 좁혀져 발동이 이례적이므로 강등만 하고 실패시키지는 않는다 —
+    # 최종 초과분은 백엔드 예외 감지(멀티 D-159 FIX-C 대응)가 사후 방어한다.
+    # 예산 내면 바이트 무변경(프롬프트 sha256 스냅샷 계약 유지).
+    _budget = resolve_prompt_token_budget(app_config)
+    if _budget and estimate_prompt_tokens(system_prompt) > _budget:
+        _est_before = estimate_prompt_tokens(system_prompt)
+        logger.warning(
+            "[토큰예산] 단일 경로 초과(추정 %d > 예산 %d, db=%s) — 유사어·설명 재료 "
+            "제거 후 재조립", _est_before, _budget, state.get("active_db_id"),
+        )
+        system_prompt = _build_system_prompt(
+            schema_info=state["schema_info"],
+            default_limit=ctx.limit_value,
+            column_descriptions=None,
+            column_synonyms=None,
+            resource_type_synonyms=None,
+            eav_name_synonyms=None,
+            active_db_id=state.get("active_db_id"),
+            polestar_db_ids=ctx.adapter_db_ids,
+            active_db_engine=state.get("active_db_engine"),
+            routing_intent=state.get("routing_intent"),
+            query_history_examples=history_examples,
+            path_parity=path_parity_enabled(app_config),
+        )
+        _est_after = estimate_prompt_tokens(system_prompt)
+        if _est_after > _budget:
+            # 재료 제거로도 초과 — 스키마 자체가 과대(스코프 미필터 캐시). 강등 사실과
+            # 잔여 초과를 로그로 남긴다(단일 경로는 여기서 실패시키지 않음 — 위 주석).
+            logger.error(
+                "[토큰예산] 단일 경로 재료 제거 후에도 초과(추정 %d > 예산 %d, db=%s, "
+                "테이블 %d개) — relevant 게이트/프로필 점검 필요",
+                _est_after, _budget, state.get("active_db_id"),
+                len((state["schema_info"] or {}).get("tables") or {}),
+            )
 
     user_prompt = _build_user_prompt(
         parsed_requirements=state["parsed_requirements"],

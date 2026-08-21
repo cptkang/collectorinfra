@@ -69,7 +69,7 @@ def _state(targets):
 def _patch_common(monkeypatch, calls, gen_by_db):
     """스키마 분석·SQL 생성·레지스트리·감사 로깅을 결정적 mock으로 고정한다."""
 
-    async def fake_analyze(client, parsed, *, db_id, app_config):
+    async def fake_analyze(client, parsed, *, db_id, app_config, **kwargs):
         return {"tables": {"polestar.cmm_resource": {"columns": []}}}
 
     async def fake_generate(llm, parsed, schema_info, sub_ctx, limit, **kwargs):

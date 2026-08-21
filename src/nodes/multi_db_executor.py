@@ -51,6 +51,7 @@ from src.utils.query_gen_common import (
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
     EAV_JOIN_RULE_BLOCK,
+    PromptBudgetExceeded,
     build_eav_pivot_block,
     build_forbidden_join_block,
     build_query_examples,
@@ -60,10 +61,12 @@ from src.nodes.prompt_blocks import (
     build_value_index_injection,
     build_value_joins_block,
     eav_patterns_of,
+    estimate_prompt_tokens,
     filter_mapping_by_schema,
     first_eav_pattern,
     format_schema_text,
     path_parity_enabled,
+    resolve_prompt_token_budget,
     prior_server_scope,
     select_history_fewshot,
     split_eav_by_resource_type,
@@ -110,6 +113,21 @@ _FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 
 
 # 캐시 스키마 샘플 백필 시 턴당 최대 조회 테이블 수(순차 MCP 왕복 상한)
 _SAMPLE_BACKFILL_MAX = 50
+
+# LLM 백엔드(FabriX 오케스트레이터) 예외가 HTTP 에러가 아닌 **응답 content 텍스트**로
+# 반환되는 계약 결함의 감지 마커(D-159, 소문자 비교). 폐쇄망 실측(2026-08-21 공동존):
+# "An exception occurred in GptOssAdapter.llm_call: Input tokens must be <= 95232"가
+# 정상 응답으로 유입돼 "SELECT 문이 아닙니다"로 오표면화됐다. 정당한 SQL에 이 문구가
+# 들어갈 확률은 사실상 0이라 좁게 잡는다 — 문구 변경 시 감지 실패해도 현행 동작으로
+# 강등될 뿐이다(하방 안전).
+_LLM_TOKEN_LIMIT_MARKERS = ("input tokens must be",)
+_LLM_BACKEND_ERROR_MARKERS = (
+    "error occurred from orchestrator",
+    "gptossadapter.llm_call",
+)
+# 재시도 중단 판정용 구분 프리픽스 — 토큰 한도 초과는 같은 프롬프트 재생성이
+# 결정적으로 다시 초과하므로 재시도가 무의미하다(PII 차단 D-153 후속2와 동형).
+_TOKEN_LIMIT_ERROR_PREFIX = "LLM 백엔드 입력 토큰 한도 초과"
 
 
 def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
@@ -365,6 +383,13 @@ async def _generate_validated_sql(
                 "DB '%s' PII 필터 차단 — 재생성 중단(동일 프롬프트 재차단)", db_id,
             )
             break
+        if _TOKEN_LIMIT_ERROR_PREFIX in validation_error:
+            # 같은 프롬프트 재생성은 결정적으로 다시 한도 초과 — 재시도 무의미(D-159)
+            logger.warning(
+                "DB '%s' LLM 입력 토큰 한도 초과 — 재생성 중단(동일 프롬프트 재초과)",
+                db_id,
+            )
+            break
         logger.warning(
             "DB '%s' SQL 검증 실패(시도 %d/3), 재생성: %s | 산출 head=%r",
             db_id, _retry, validation_error, (sql or "")[:300],
@@ -423,6 +448,8 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
             schema_info = await _analyze_schema(
                 client, run.parsed_requirements,
                 db_id=db_id, app_config=run.app_config,
+                sub_query_context=sub_context,
+                routing_intent=run.state.get("routing_intent"),
             )
             run.db_schemas[db_id] = schema_info
 
@@ -593,11 +620,113 @@ async def multi_db_executor(
     return result
 
 
+def _gate_schema_tables(
+    schema_dict: dict,
+    manual_prof: Optional[dict],
+    synonyms: Optional[dict],
+    parsed_requirements: dict,
+    sub_query_context: str,
+    *,
+    db_id: str,
+    app_config: Optional[AppConfig],
+    routing_intent: Optional[str] = None,
+) -> dict:
+    """멀티 경로 스키마를 관련 테이블로 좁힌다 (D-159 — 단일 게이트의 멀티 대칭).
+
+    단일 경로(schema_analyzer)는 프로필 ``allowed_tables`` + **이번 질의와 매칭된**
+    유사어 테이블로 relevant를 좁히는데(Plan 52/D-051), 멀티 경로는 캐시 스키마
+    전량을 프롬프트에 실어 왔다. 미스코프 캐시(b0 실측 408테이블) × W-6 재료
+    전량이 곱해져 FabriX 한도(95,232tok)를 초과한다(2026-08-21 공동존 cm_gp
+    실측 136,707tok — Plan 52 §1.5 멀티 대칭 미이행분의 발화).
+
+    방호: 프로필 부재·allowed_tables 미선언·필터 결과 공집합·alarm_query 인텐트는
+    전량 유지(현행 불변). 캐시 공유 객체는 변형하지 않고 얕은 사본을 반환한다.
+
+    Args:
+        schema_dict: 캐시에서 로드한 스키마 딕셔너리 (변형하지 않음)
+        manual_prof: ``_load_manual_profile(db_id)`` 결과 (없으면 게이트 미적용)
+        synonyms: DB별 등록 유사어 ({"table.column": [단어, ...]})
+        parsed_requirements: 파싱된 요구사항 (원질의·query_targets 매칭 재료)
+        sub_query_context: 라우터가 만든 이 DB 담당 조회 설명 (매칭 재료 보강)
+        db_id: DB 식별자 (로그용)
+        app_config: 앱 설정 (kill-switch ``text2sql.multi_relevant_gate`` 판정)
+        routing_intent: 라우팅 의도 — alarm_query는 게이트를 건너뛴다
+
+    Returns:
+        관련 테이블로 좁힌 스키마 딕셔너리(얕은 사본) 또는 원본 그대로
+    """
+    # `is True` 비교는 의도적 — 설정 대역(MagicMock/SimpleNamespace)의 미정의 속성이
+    # 게이트를 오발동시키지 않게 한다(path_parity_enabled와 같은 이유).
+    _flag = getattr(getattr(app_config, "text2sql", None), "multi_relevant_gate", False)
+    if _flag is not True:
+        return schema_dict
+    if routing_intent == "alarm_query":
+        return schema_dict
+    if not manual_prof or "allowed_tables" not in manual_prof:
+        return schema_dict
+    tables = schema_dict.get("tables") or {}
+    if not tables:
+        return schema_dict
+
+    allowed = {t.lower() for t in manual_prof["allowed_tables"]}
+
+    # 이번 질의와 매칭된 유사어의 테이블만 동적 보완한다 — 전량 추가하면 누적 유사어
+    # 전 테이블이 유입되는 b0 재발 경로(D-051 게이트를 파라미터까지 단일 출처로 재사용).
+    syn_matched: set[str] = set()
+    if synonyms:
+        match_text = " ".join(
+            part for part in (
+                parsed_requirements.get("original_query", "") or "",
+                sub_query_context or "",
+                " ".join(parsed_requirements.get("query_targets") or []),
+            ) if part
+        ).lower()
+        try:
+            from src.nodes.schema_analyzer import _synonym_tables_matching_query
+
+            _syn_cfg = getattr(app_config, "synonym", None)
+            syn_matched = _synonym_tables_matching_query(
+                synonyms,
+                match_text,
+                cap=getattr(_syn_cfg, "max_synonym_supplement_tables", 15),
+                fuzzy=getattr(_syn_cfg, "fuzzy_match", False) is True,
+                min_score=getattr(_syn_cfg, "match_confidence_min", 0.85),
+                semantic=getattr(_syn_cfg, "semantic_match", False) is True,
+                semantic_min=getattr(_syn_cfg, "semantic_confidence_min", 0.65),
+            )
+            allowed |= syn_matched
+        except Exception as e:  # noqa: BLE001 — 보완 실패는 화이트리스트만 적용(사유 로그)
+            logger.warning(
+                "[멀티게이트] db=%s 유사어 보완 실패(화이트리스트만 적용): %s", db_id, e
+            )
+
+    kept = {
+        name: data for name, data in tables.items()
+        if name.rsplit(".", 1)[-1].lower() in allowed
+    }
+    if not kept:
+        logger.warning(
+            "[멀티게이트] db=%s 필터 결과 공집합 — 전량 유지(%d개, allowed=%s)",
+            db_id, len(tables), sorted(allowed),
+        )
+        return schema_dict
+    if len(kept) == len(tables):
+        return schema_dict
+    logger.info(
+        "[멀티게이트] db=%s 테이블 %d→%d (유사어 보완 매칭 %d)",
+        db_id, len(tables), len(kept), len(syn_matched),
+    )
+    return {**schema_dict, "tables": kept}
+
+
 async def _analyze_schema(
     client: Any,
     parsed_requirements: dict,
     db_id: str = "_default",
     app_config: Optional[AppConfig] = None,
+    *,
+    sub_query_context: str = "",
+    routing_intent: Optional[str] = None,
 ) -> dict:
     """DB 스키마를 분석하여 관련 테이블 정보를 수집한다.
 
@@ -609,6 +738,8 @@ async def _analyze_schema(
         parsed_requirements: 파싱된 요구사항
         db_id: DB 식별자 (캐시 키)
         app_config: 앱 설정
+        sub_query_context: 이 DB 담당 조회 설명 (관련 테이블 게이트 매칭 재료, D-159)
+        routing_intent: 라우팅 의도 (alarm_query는 게이트 미적용, D-159)
 
     Returns:
         스키마 정보 딕셔너리
@@ -623,6 +754,22 @@ async def _analyze_schema(
     # 통합 메서드로 3단계 캐시 + DB 폴백 수행
     schema_dict, cache_hit, _cache_source, _descriptions, _synonyms = (
         await cache_mgr.get_schema_or_fetch(client, db_id)
+    )
+
+    # 수동 프로필은 게이트(D-159)와 구조 메타 부착(D-066)이 함께 쓴다 — 1회만 로드.
+    try:
+        from src.nodes.schema_analyzer import _load_manual_profile
+
+        _manual_prof = _load_manual_profile(db_id)
+    except Exception:
+        _manual_prof = None
+
+    # 관련 테이블 게이트(D-159) — 샘플 백필보다 먼저 적용해 백필 MCP 왕복·PII 스크럽·
+    # 직렬화가 전부 좁힌 스키마 기준으로 돌게 한다.
+    schema_dict = _gate_schema_tables(
+        schema_dict, _manual_prof, _synonyms, parsed_requirements,
+        sub_query_context, db_id=db_id, app_config=app_config,
+        routing_intent=routing_intent,
     )
 
     # 샘플 데이터 수집 (캐시에서 로드한 경우 샘플이 없을 수 있으므로 보충).
@@ -652,14 +799,9 @@ async def _analyze_schema(
     # 않아 멀티 DB 폼필이 metric 조인 환각(존재하지 않는 definition_name·잘못된 조인)을 낸다.
     if not schema_dict.get("_structure_meta"):
         structure_meta: Optional[dict] = None
-        try:
-            from src.nodes.schema_analyzer import _load_manual_profile
-
-            manual = _load_manual_profile(db_id)
-        except Exception:
-            manual = None
-        if manual is not None:
-            structure_meta = {k: v for k, v in manual.items() if k != "source"}
+        # 위에서 로드한 수동 프로필 재사용 (게이트·구조 메타 단일 로드, D-159)
+        if _manual_prof is not None:
+            structure_meta = {k: v for k, v in _manual_prof.items() if k != "source"}
         else:
             try:
                 structure_meta = await cache_mgr.get_structure_meta(db_id)
@@ -979,15 +1121,69 @@ async def _build_multi_system_prompt(
             template = _adapter_template
             logger.info("[경로대칭] (a) 어댑터 템플릿 적용(db=%s)", db_id)
 
-    return template.format(
-        schema=_format_schema(
-            schema_info, await _load_schema_prompt_materials(db_id, app_config)
-        ),
-        default_limit=default_limit,
-        structure_guide=await _build_multi_structure_guide(
-            schema_info, parsed_requirements, sub_query_context, db_id, app_config,
-        ),
-        db_engine_hint=_build_multi_engine_hint(db_engine, db_id),
+    structure_guide = await _build_multi_structure_guide(
+        schema_info, parsed_requirements, sub_query_context, db_id, app_config,
+    )
+    db_engine_hint = _build_multi_engine_hint(db_engine, db_id)
+
+    def _render(schema_for_prompt: dict, materials: Optional[dict]) -> str:
+        return template.format(
+            schema=_format_schema(schema_for_prompt, materials),
+            default_limit=default_limit,
+            structure_guide=structure_guide,
+            db_engine_hint=db_engine_hint,
+        )
+
+    prompt = _render(
+        schema_info, await _load_schema_prompt_materials(db_id, app_config)
+    )
+
+    # 토큰 예산 가드(D-159) — W-6(d90f260)이 예고한 "절단 상한" 후속. 예산 내면 바이트
+    # 무변경(스냅샷 계약 유지). 초과 시 재료→샘플 순으로 절단하고, 그래도 넘으면 호출
+    # 없이 명시 실패한다 — FabriX는 한도 초과를 응답 content 텍스트로 반환하므로
+    # 보내봤자 "SELECT 문이 아닙니다" 오표면화다. 절단·실패는 전부 [토큰예산] 로그로
+    # 가시화한다(침묵 강등 금지).
+    budget = resolve_prompt_token_budget(app_config)
+    if not budget:
+        return prompt
+    est = estimate_prompt_tokens(prompt)
+    if est <= budget:
+        return prompt
+
+    logger.warning(
+        "[토큰예산] db=%s 초과(추정 %d > 예산 %d) — 1단 절단: 유사어·설명 재료 제거",
+        db_id, est, budget,
+    )
+    prompt = _render(schema_info, None)
+    est = estimate_prompt_tokens(prompt)
+    if est <= budget:
+        return prompt
+
+    logger.warning(
+        "[토큰예산] db=%s 여전히 초과(추정 %d > 예산 %d) — 2단 절단: 샘플 데이터 제거",
+        db_id, est, budget,
+    )
+    no_samples = {
+        **schema_info,
+        "tables": {
+            name: {k: v for k, v in (data or {}).items() if k != "sample_data"}
+            for name, data in (schema_info.get("tables") or {}).items()
+        },
+    }
+    prompt = _render(no_samples, None)
+    est = estimate_prompt_tokens(prompt)
+    if est <= budget:
+        return prompt
+
+    table_count = len(schema_info.get("tables") or {})
+    logger.error(
+        "[토큰예산] db=%s 절단 후에도 초과(추정 %d > 예산 %d, 테이블 %d개) — 호출 중단",
+        db_id, est, budget, table_count,
+    )
+    raise PromptBudgetExceeded(
+        f"프롬프트 토큰 예산 초과(db={db_id}): 추정 {est} > 예산 {budget}, "
+        f"테이블 {table_count}개 — 재료·샘플 절단 후에도 데이터 평면 한도를 넘습니다. "
+        "스키마 스코프 축소(프로필 allowed_tables/멀티 관련 테이블 게이트) 필요"
     )
 
 
@@ -1723,6 +1919,20 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
             "FabriX PII 필터 차단 응답(비-SQL) — 프롬프트에 PII성 텍스트 포함 "
             "(로그 [PII-FILTER] 참조)"
         )
+
+    # LLM 백엔드(FabriX 오케스트레이터) 예외 텍스트가 정상 응답 content로 온 변형
+    # 감지(D-159) — SQL이 아니라 백엔드 에러이므로 "SELECT 문이 아닙니다"(증상)로
+    # 오표면화하지 않고 원인을 정확히 노출한다(침묵 강등 금지). 토큰 한도 초과는
+    # 구분 프리픽스로 반환해 호출부가 재시도를 중단한다(D-153 후속2와 동형).
+    _lowered = sql.lower()
+    _excerpt = scrub_pii(" ".join(sql.split())[:200])
+    if any(m in _lowered for m in _LLM_TOKEN_LIMIT_MARKERS):
+        return (
+            f"{_TOKEN_LIMIT_ERROR_PREFIX} 응답(비-SQL) — 프롬프트가 데이터 평면 "
+            f"한도를 초과함(스키마 스코프·재료 축소 필요) | 응답 원문: {_excerpt!r}"
+        )
+    if any(m in _lowered for m in _LLM_BACKEND_ERROR_MARKERS):
+        return f"LLM 백엔드 예외 응답(비-SQL) | 응답 원문: {_excerpt!r}"
 
     # SELECT 문 확인 — CTE(WITH ... SELECT)도 읽기 전용이므로 허용(2026-07-21 gp-014,
     # 단일 경로 _get_statement_type과 동일 규칙). DML은 아래 위험 키워드 검사가 차단.
