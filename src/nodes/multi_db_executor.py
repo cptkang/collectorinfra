@@ -41,8 +41,10 @@ from src.utils.query_gen_common import (
     build_prior_rows_block,
     build_stat_month_block,
     correct_servername_hostname_mapping,
+    eav_value_cast_columns,
     enforce_all_query_limit,
     extract_sql_from_response,
+    normalize_eav_numeric_casts,
     resolve_effective_limit,
     resolve_stat_month_range,
     template_context_text,
@@ -940,8 +942,12 @@ async def _invoke_llm_for_sql(
                 db_id, selection.get("method"), selection.get("confidence", 0.0),
             )
             # few-shot 말미 캡 모방 교정 — 단일 경로와 동일 가드(D-066 후속8)
-            return enforce_all_query_limit(
-                selection["sql"], default_limit, app_config.query.default_limit
+            # + EAV 숫자 값 정수 캐스트 교정(D-160) — 값 컬럼은 구조 메타 선언에서 도출
+            return normalize_eav_numeric_casts(
+                enforce_all_query_limit(
+                    selection["sql"], default_limit, app_config.query.default_limit
+                ),
+                eav_value_cast_columns(first_eav_pattern(schema_info)),
             )
 
     messages: list[BaseMessage] = [
@@ -959,6 +965,11 @@ async def _invoke_llm_for_sql(
     )
     sql = enforce_all_query_limit(
         extract_sql_from_response(response.content), default_limit, _config_default
+    )
+    # EAV 숫자 값 정수 캐스트 결정적 교정(D-160) — '4.0' 문자열의 BIGINT 캐스트 실행
+    # 거부(2026-08-21 공동존 실측) 재발 차단. 값 컬럼은 eav_pattern 선언에서 도출(D-088).
+    sql = normalize_eav_numeric_casts(
+        sql, eav_value_cast_columns(first_eav_pattern(schema_info))
     )
     # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).
     # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-153 후속2)와 별개로

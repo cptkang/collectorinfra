@@ -355,7 +355,19 @@ class DBHubClient:
                 f"MCP 호출 타임아웃 ({self._config.mcp_call_timeout}초 초과): "
                 f"{sql[:100]}..."
             )
-        except (QueryTimeoutError, QueryExecutionError):
+        except QueryTimeoutError:
+            raise
+        except QueryExecutionError as e:
+            # DB 측 SQL 에러(DBHub isError → _parse_query_result)는 종전 재던지기만 해
+            # 실패 SQL이 파일 로그에서 통째로 빠졌다(D-140 커버리지 공백 — 2026-08-21
+            # 공동존 bigint 실측: logs/sql에 실패 SQL 부재로 감사 로그 수동 대조가 필요
+            # 했음, D-160). 가장 진단 가치가 큰 실패 건이므로 기록 후 재던진다.
+            # 타임아웃 핸들러가 만든 예외는 같은 try의 except로 재진입하지 않아
+            # 이중 기록은 없다.
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._config.source_name, error=str(e),
+            )
             raise
         except Exception as e:
             sql_file_logger.log_sql(

@@ -34,8 +34,10 @@ from src.utils.query_gen_common import (
     build_prior_rows_block,
     build_stat_month_block,
     correct_servername_hostname_mapping,
+    eav_value_cast_columns,
     enforce_all_query_limit,
     extract_sql_from_response,
+    normalize_eav_numeric_casts,
     resolve_effective_limit,
     resolve_stat_month_range,
     template_context_text,
@@ -766,6 +768,11 @@ async def _llm_fallback(
     # 모방한 경우 결정적 교정 — 2026-07-24 b0 실측(Plan 70 §5.1 항목 6, D-066 후속8).
     sql = enforce_all_query_limit(
         sql, ctx.limit_value, ctx.app_config.query.default_limit
+    )
+    # EAV 숫자 값 정수 캐스트 결정적 교정(D-160) — 멀티 경로와 동일 가드(D-066 대칭).
+    # 값 컬럼 리터럴은 구조 메타 선언에서 도출한다(D-088).
+    sql = normalize_eav_numeric_casts(
+        sql, eav_value_cast_columns(first_eav_pattern(state.get("schema_info")))
     )
 
     return sql, sql_candidates, text2sql_fallback, extra_return

@@ -450,6 +450,128 @@ def enforce_all_query_limit(sql: str, effective_limit: int, config_default_limit
     return sql[: m.start(1)] + clause + (m.group(4) or "")
 
 
+# EAV 값 컬럼에 걸린 정수 캐스트 타입(교정 대상). NUMERIC은 PostgreSQL·DB2 공통 유효
+# (DB2에서 DECIMAL 동의어)라 방언 분기가 필요 없다. 긴 이름을 앞에 둔다(INT가 INTEGER를
+# 부분 선점하지 않도록 — 대안 순서 의존).
+_EAV_INT_CAST_TYPES = r"(?:BIGINT|INTEGER|SMALLINT|INT8|INT4|INT2|INT)"
+
+
+def eav_value_cast_columns(eav_pattern: dict | None) -> tuple[str, ...]:
+    """eav_pattern 선언에서 숫자 캐스트 교정 대상 값 컬럼 패밀리를 도출한다 (D-160).
+
+    ``value_column``과 그 단축/전문 변형(``_short`` 접미 유무 쌍)을 함께 반환한다 —
+    컬럼 리터럴은 코드가 아니라 구조 메타 선언(프로필)에서만 온다(D-088: 공용 계층
+    DB-agnostic). eav_pattern이 없는 DB는 빈 튜플 → 교정 자체가 스킵돼 동작 불변.
+    """
+    base = (eav_pattern or {}).get("value_column") or ""
+    if not base:
+        return ()
+    if base.endswith("_short"):
+        return (base[: -len("_short")], base)
+    return (base, base + "_short")
+
+
+def normalize_eav_numeric_casts(sql: str, value_columns: tuple[str, ...] | list[str]) -> str:
+    """EAV 값 컬럼에 걸린 정수 캐스트를 NUMERIC으로 결정적 교정한다 (D-160).
+
+    폐쇄망 실측(2026-08-21 공동존): LLM이 "vcore 수" 집계에
+    ``SUM(CAST(<EAV 값 컬럼> AS BIGINT))``를 생성 — EAV 값은 부동소수 표기
+    문자열('4.0')이라 PostgreSQL이 ``invalid input syntax for type bigint``로 거부.
+    캐스트 선택은 LLM 비결정 영역이라 프롬프트 규칙(프로필 query_guide)만으로는
+    재발을 막을 수 없어 후처리로 교정한다(Known Mistakes: 결정적 가드 원칙,
+    enforce_all_query_limit·correct_servername_hostname_mapping과 동일 계열).
+
+    좁은 스코프(오교정 방지):
+    - **값 컬럼이 포함된** 캐스트만 대상 — ``CAST(r.id AS BIGINT)`` 같은 정당한 정수
+      캐스트는 불변.
+    - CAST 인자·괄호식은 균형 괄호 스캔으로 식별(``CAST(COALESCE(col,'0') AS INT)``
+      같은 임의 깊이 중첩 커버). 괄호 불균형·형태 미상은 무변경(하방 안전 —
+      교정 실패는 현행 실패 유지일 뿐 악화 없음).
+    - 문자열 리터럴 내부는 구분하지 않는다 — LLM SQL의 리터럴에 캐스트 구문이 들어갈
+      확률은 사실상 0이고, 오매칭해도 결과는 여전히 유효 SQL이다.
+
+    Args:
+        sql: LLM이 생성한 SQL
+        value_columns: 교정 대상 값 컬럼명들 (``eav_value_cast_columns`` 산출)
+
+    Returns:
+        교정된(또는 원본 그대로의) SQL — 교정 발생 시 INFO 로그
+    """
+    if not sql or not value_columns:
+        return sql
+    cols_re = r"\b(?:" + "|".join(re.escape(c) for c in value_columns if c) + r")\b"
+    if cols_re == r"\b(?:)\b":
+        return sql
+
+    # 교체 대상 타입 토큰의 (시작, 끝) 스팬을 모은 뒤 오른쪽부터 NUMERIC으로 치환한다.
+    spans: list[tuple[int, int]] = []
+
+    # 형태 1: CAST(<값 컬럼 포함 식> AS 정수형) — 인자를 균형 스캔으로 확정
+    for m in re.finditer(r"CAST\s*\(", sql, flags=re.IGNORECASE):
+        open_pos = m.end() - 1
+        close_pos = _matching_paren(sql, open_pos)
+        if close_pos is None:
+            continue
+        inner = sql[open_pos + 1: close_pos]
+        tm = re.search(rf"\s+AS\s+({_EAV_INT_CAST_TYPES})\s*$", inner, flags=re.IGNORECASE)
+        if not tm:
+            continue
+        if not re.search(cols_re, inner[: tm.start()], flags=re.IGNORECASE):
+            continue
+        spans.append((open_pos + 1 + tm.start(1), open_pos + 1 + tm.end(1)))
+
+    # 형태 2: PostgreSQL 축약 캐스트 — <값 컬럼>::정수형
+    for m in re.finditer(
+        rf"(?:\w+\.)?{cols_re}\s*::\s*({_EAV_INT_CAST_TYPES})\b", sql, flags=re.IGNORECASE
+    ):
+        spans.append((m.start(1), m.end(1)))
+
+    # 형태 3: (…값 컬럼…)::정수형 — 닫는 괄호에서 역방향 균형 스캔으로 괄호식 확정
+    for m in re.finditer(rf"\)\s*::\s*({_EAV_INT_CAST_TYPES})\b", sql, flags=re.IGNORECASE):
+        open_pos = _matching_paren_backward(sql, m.start())
+        if open_pos is None:
+            continue
+        if re.search(cols_re, sql[open_pos: m.start() + 1], flags=re.IGNORECASE):
+            spans.append((m.start(1), m.end(1)))
+
+    if not spans:
+        return sql
+    result = sql
+    for start, end in sorted(set(spans), reverse=True):
+        result = result[:start] + "NUMERIC" + result[end:]
+    logger.info(
+        "[EAV캐스트] 값 컬럼 정수 캐스트 → NUMERIC 교정 %d건 (cols=%s)",
+        len(set(spans)), list(value_columns),
+    )
+    return result
+
+
+def _matching_paren(sql: str, open_pos: int) -> int | None:
+    """``open_pos``의 여는 괄호와 짝이 되는 닫는 괄호 위치를 찾는다(불균형은 None)."""
+    depth = 0
+    for i in range(open_pos, len(sql)):
+        if sql[i] == "(":
+            depth += 1
+        elif sql[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _matching_paren_backward(sql: str, close_pos: int) -> int | None:
+    """``close_pos``의 닫는 괄호와 짝이 되는 여는 괄호 위치를 찾는다(불균형은 None)."""
+    depth = 0
+    for i in range(close_pos, -1, -1):
+        if sql[i] == ")":
+            depth += 1
+        elif sql[i] == "(":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
 # 헤더/필드명이 사용률 지표(명사+집계어)인지 **표면어로만** 판정한다 — DB 스키마 리터럴
 # (server.* resource_type 등)을 쓰지 않아 공용 계층 과적합 가드(D-088)를 통과한다.
 # 문서 계층(document.excel_writer, infrastructure)이 지표 컬럼 서식 힌트로 사용한다.
