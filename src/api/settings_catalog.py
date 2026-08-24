@@ -212,7 +212,7 @@ IMMEDIATE_KEYS: frozenset[str] = frozenset({
 RELOADABLE_KEYS: frozenset[str] = frozenset({
     # --- top-level: 그래프 토폴로지·빌드 시점 판독 (그래프 재빌드로 반영) ---
     "ENABLE_SEMANTIC_ROUTING",
-    "ENABLE_DEEPAGENT_ORCHESTRATION",
+    "ENABLE_INTENT_ORCHESTRATION",
     "ENABLE_DEEPAGENTS_PACKAGE",
     "MAX_REPLAN",
     "WORKER_PROVIDER_OVERRIDE",
@@ -344,9 +344,10 @@ DESCRIPTION_OVERRIDES: dict[str, str] = {
     "ENABLE_SEMANTIC_ROUTING": (
         "시멘틱 라우팅 활성화. 미설정(auto)이면 ACTIVE_DB_IDS가 하나라도 있을 때 자동 활성화된다."
     ),
-    "ENABLE_DEEPAGENT_ORCHESTRATION": (
-        "deepagents 의도 분해 오케스트레이션. 미설정(auto)이면 멀티 DB 환경에서 자동 활성화된다. "
-        "시멘틱 라우팅과 동시 활성 시 오케스트레이션이 우선한다."
+    "ENABLE_INTENT_ORCHESTRATION": (
+        "의도 분해 오케스트레이션(사다리 2단). 미설정(auto)이면 멀티 DB 환경에서 자동 활성화된다. "
+        "상위 단(ENABLE_DEEPAGENTS_PACKAGE)이 성립하면 true여도 2단은 배선되지 않는다. "
+        "구 이름 ENABLE_DEEPAGENT_ORCHESTRATION도 계속 인식하지만 2027-02-20 폐기 예정이다."
     ),
     "ACTIVE_DB_IDS": "활성 DB 식별자 목록. 그래프 토폴로지를 결정하므로 변경 영향이 크다.",
     "DB_CONNECTION_STRING": "direct 백엔드의 PostgreSQL 접속 문자열. 'DB 연결 설정' 탭에서도 편집할 수 있다.",

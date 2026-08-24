@@ -547,7 +547,7 @@ class TestWorkerProviderOverride:
             worker_provider_override="gemini",
         )
         # semantic_routing/deepagent 비활성으로 단순화 (워커 생성 호출만 확인)
-        config.enable_deepagent_orchestration = False
+        config.enable_intent_orchestration = False
         config.enable_semantic_routing = False
         config.enable_deepagents_package = False
         build_graph(config)

@@ -134,7 +134,7 @@ class TestTraceHeader:
 class TestNoNewFlag:
     def test_observability_adds_no_flag(self):
         src = Path("src/observability/ladder.py").read_text(encoding="utf-8")
-        known = ("enable_deepagents_package", "enable_deepagent_orchestration",
+        known = ("enable_deepagents_package", "enable_intent_orchestration",
                  "enable_semantic_routing")
         stripped = src
         for name in known:

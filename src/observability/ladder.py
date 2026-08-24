@@ -79,7 +79,7 @@ def resolve_ladder_tier(
     else:
         reason = _REASON_PACKAGE_MISSING
 
-    if getattr(config, "enable_deepagent_orchestration", False):
+    if getattr(config, "enable_intent_orchestration", False):
         return LadderTier.INTENT_ORCHESTRATION, reason
     if getattr(config, "enable_semantic_routing", False):
         return LadderTier.SEMANTIC_ROUTER, reason
@@ -89,7 +89,7 @@ def resolve_ladder_tier(
 def resolve_flag_origin(flag_value: bool | None) -> str:
     """플래그 값이 명시 설정인지 암묵 활성인지 판정한다.
 
-    `enable_semantic_routing`·`enable_deepagent_orchestration`은 tri-state다 —
+    `enable_semantic_routing`·`enable_intent_orchestration`은 tri-state다 —
     `None`이면 "멀티 DB 등록 여부"로 자동 결정된다. 운영 경로가 DB 상태에 종속되므로
     그 사실이 로그에 드러나야 한다.
 

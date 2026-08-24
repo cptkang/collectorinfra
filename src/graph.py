@@ -384,7 +384,7 @@ def build_graph(config: AppConfig, checkpointer=None):
 
     # Plan 48: deepagents 의도 분해 오케스트레이션 노드 (semantic_routing보다 우선, 상호 배타)
     # 트랙 B(deep_agent) 활성 시에는 트랙 A 노드를 등록하지 않는다(상호 배타, 죽은 노드 방지).
-    if config.enable_deepagent_orchestration and not use_deep_agent:
+    if config.enable_intent_orchestration and not use_deep_agent:
         graph.add_node(
             "intent_planner",
             partial(intent_planner, llm=llm, app_config=config),
@@ -491,7 +491,7 @@ def build_graph(config: AppConfig, checkpointer=None):
         # deepagents가 도구(=FabriX 파이프라인) 호출·동적 재계획·최종 응답 생성을 담당한다.
         graph.add_edge("field_mapper", "deep_agent")
         graph.add_edge("deep_agent", END)
-    elif config.enable_deepagent_orchestration:
+    elif config.enable_intent_orchestration:
         # Plan 48/49: 의도 분해 오케스트레이션 경로 (semantic_routing보다 우선)
         # field_mapper -> intent_planner -> agent_orchestrator -> [replanner 루프] -> result_aggregator -> END
         graph.add_edge("field_mapper", "intent_planner")
@@ -649,7 +649,7 @@ def build_graph(config: AppConfig, checkpointer=None):
 
     logger.info(
         "에이전트 그래프 빌드 완료 (orchestration=%s, semantic_routing=%s, sql_approval=%s, structure_approval=%s)",
-        config.enable_deepagent_orchestration,
+        config.enable_intent_orchestration,
         config.enable_semantic_routing,
         config.enable_sql_approval,
         config.enable_structure_approval,

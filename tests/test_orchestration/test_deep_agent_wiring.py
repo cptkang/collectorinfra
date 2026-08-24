@@ -45,7 +45,7 @@ def _build_config(*, package: bool, semantic: bool) -> AppConfig:
 
     model_post_init가 환경변수를 읽으므로 관련 env를 제거하고 생성 후 명시 설정한다.
     """
-    os.environ.pop("ENABLE_DEEPAGENT_ORCHESTRATION", None)
+    os.environ.pop("ENABLE_INTENT_ORCHESTRATION", None)
     os.environ.pop("ENABLE_SEMANTIC_ROUTING", None)
     cfg = AppConfig(
         llm=LLMConfig(provider="ollama", model="llama3.1:8b"),
@@ -57,7 +57,7 @@ def _build_config(*, package: bool, semantic: bool) -> AppConfig:
         checkpoint_backend="sqlite",
         checkpoint_db_url=":memory:",
     )
-    cfg.enable_deepagent_orchestration = False
+    cfg.enable_intent_orchestration = False
     cfg.enable_semantic_routing = semantic
     cfg.enable_deepagents_package = package
     return cfg
@@ -94,7 +94,7 @@ def test_orchestration_result_aggregator_wired_with_synthesize(monkeypatch):
     monkeypatch.setattr(graph_module, "select_orchestration_backend", lambda c: "semantic_router")
 
     cfg = _build_config(package=False, semantic=False)
-    cfg.enable_deepagent_orchestration = True
+    cfg.enable_intent_orchestration = True
     compiled = build_graph(cfg)
 
     assert "result_aggregator" in _node_names(compiled)

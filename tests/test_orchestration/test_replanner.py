@@ -566,7 +566,7 @@ async def test_pattern12_no_replan_regression(mock_config):
 
 def _build_orchestration_config() -> AppConfig:
     """deepagent 오케스트레이션 활성 config를 만든다 (test_graph_orchestration 패턴)."""
-    os.environ.pop("ENABLE_DEEPAGENT_ORCHESTRATION", None)
+    os.environ.pop("ENABLE_INTENT_ORCHESTRATION", None)
     os.environ.pop("ENABLE_SEMANTIC_ROUTING", None)
     cfg = AppConfig(
         llm=LLMConfig(provider="ollama", model="llama3.1:8b"),
@@ -577,7 +577,7 @@ def _build_orchestration_config() -> AppConfig:
         checkpoint_backend="sqlite",
         checkpoint_db_url=":memory:",
     )
-    cfg.enable_deepagent_orchestration = True
+    cfg.enable_intent_orchestration = True
     cfg.enable_semantic_routing = False
     # 트랙 B는 범위 밖 — .env의 ENABLE_DEEPAGENTS_PACKAGE 누수로 deep_agent 경로가
     # 선택되면 replanner 루프 노드가 미등록되어 오탐한다(D-037 Decision 2 패턴).

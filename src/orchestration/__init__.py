@@ -3,7 +3,8 @@
 사용자 질의를 sub-task로 분해(intent_planner)하고, registry 기반으로 각 task를
 순차/병렬/데이터-의존으로 실행(agent_orchestrator)한 뒤 결과를 통합(result_aggregator)한다.
 
-ENABLE_DEEPAGENT_ORCHESTRATION 플래그가 활성일 때만 그래프에 연결된다.
+ENABLE_INTENT_ORCHESTRATION 플래그가 활성일 때만 그래프에 연결된다
+(사다리 2단 — 상위 단이 성립하면 배선되지 않는다. docs/21_orchestration_ladder.md).
 """
 
 from src.orchestration.agent_orchestrator import agent_orchestrator

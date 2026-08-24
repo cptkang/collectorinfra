@@ -1,6 +1,6 @@
 """tri-state 암묵 활성 경고 테스트 (plans/70 L3).
 
-`enable_semantic_routing` · `enable_deepagent_orchestration`은 `bool | None`이다.
+`enable_semantic_routing` · `enable_intent_orchestration`은 `bool | None`이다.
 `None`이면 "멀티 DB 등록 여부"로 자동 결정되므로, **운영 실행 경로가 DB 등록 상태에
 종속**된다 — DB를 하나 등록/해제하는 것만으로 확정 단이 바뀔 수 있다.
 
@@ -20,7 +20,7 @@ from src.config import AppConfig
 def _cfg(**kwargs) -> AppConfig:
     """`.env` 누수를 막기 위해 판정 대상 필드를 명시해 생성한다."""
     kwargs.setdefault("enable_semantic_routing", False)
-    kwargs.setdefault("enable_deepagent_orchestration", False)
+    kwargs.setdefault("enable_intent_orchestration", False)
     return AppConfig(**kwargs)
 
 
@@ -34,10 +34,10 @@ class TestAutoResolutionWarning:
 
     def test_warns_when_orchestration_is_auto_resolved(self, caplog):
         with caplog.at_level(logging.WARNING, logger="src.config"):
-            _cfg(enable_deepagent_orchestration=None)
+            _cfg(enable_intent_orchestration=None)
 
         msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("enable_deepagent_orchestration" in m for m in msgs), msgs
+        assert any("enable_intent_orchestration" in m for m in msgs), msgs
 
     def test_warning_names_the_db_dependency(self, caplog):
         """경고가 '왜 문제인지'를 말해야 한다 — 값만 알려주면 조치할 수 없다."""
@@ -50,7 +50,7 @@ class TestAutoResolutionWarning:
     def test_silent_when_both_explicitly_set(self, caplog):
         """명시 설정이면 자동 해석이 개입하지 않으므로 경고도 없다."""
         with caplog.at_level(logging.WARNING, logger="src.config"):
-            _cfg(enable_semantic_routing=True, enable_deepagent_orchestration=False)
+            _cfg(enable_semantic_routing=True, enable_intent_orchestration=False)
 
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
@@ -65,8 +65,8 @@ class TestExplicitValuesUntouched:
 
     @pytest.mark.parametrize("value", [True, False])
     def test_explicit_orchestration_survives(self, value):
-        cfg = _cfg(enable_deepagent_orchestration=value)
-        assert cfg.enable_deepagent_orchestration is value
+        cfg = _cfg(enable_intent_orchestration=value)
+        assert cfg.enable_intent_orchestration is value
 
     def test_explicit_false_is_not_auto_upgraded(self):
         """False는 '미입력'이 아니다 — 멀티 DB가 있어도 켜지면 안 된다."""

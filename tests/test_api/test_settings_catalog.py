@@ -172,7 +172,7 @@ def test_t2_type_detection():
     """타입 판정: bool·tristate·enum·숫자·json_list·csv·secret."""
     index = field_index()
     assert index["SECURITY_MASK_IP"].type == "bool"
-    assert index["ENABLE_DEEPAGENT_ORCHESTRATION"].type == "tristate"
+    assert index["ENABLE_INTENT_ORCHESTRATION"].type == "tristate"
     assert index["LLM_PROVIDER"].type == "enum"
     assert index["LLM_PROVIDER"].enum_choices == ["ollama", "fabrix", "gemini"]
     assert index["LOG_LEVEL"].enum_choices == ["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -301,9 +301,9 @@ async def test_t3_reset_keys_remove_line(monkeypatch, tmp_path):
 
 async def test_t3_tristate_reset_to_auto(monkeypatch, tmp_path):
     """tristate(auto)는 줄 제거로 표현된다."""
-    env_file = _use_env_file(monkeypatch, tmp_path, "ENABLE_DEEPAGENT_ORCHESTRATION=false\n")
+    env_file = _use_env_file(monkeypatch, tmp_path, "ENABLE_INTENT_ORCHESTRATION=false\n")
     await update_settings(
-        _request(), EnvUpdateRequest(reset_keys=["ENABLE_DEEPAGENT_ORCHESTRATION"]), _ADMIN,
+        _request(), EnvUpdateRequest(reset_keys=["ENABLE_INTENT_ORCHESTRATION"]), _ADMIN,
     )
     assert env_file.read_text(encoding="utf-8").strip() == ""
 

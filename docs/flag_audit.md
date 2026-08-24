@@ -64,7 +64,7 @@ git log --reverse -1 --format='%ad|%h' --date=short -S'<flag>' -- <참조 파일
 | 18 | `noise_gate.multi_hop_cascade_enabled`<br>`NOISE_MULTI_HOP_CASCADE_ENABLED` | D-107 | `False` | `false` | 4 | 2026-07-22 `e530c73` | 2026-07-22 `e530c73`<br>*(D-139 이전 제외)* | **존치** | 프로덕션 참조 4건 — 실 게이트로 배선됨 |
 | 19 | `noise_gate.ticket_batch_queue_enabled`<br>`NOISE_TICKET_BATCH_QUEUE_ENABLED` | — | `True` | `true` | 4 | 2026-06-30 `2a8aee9` | 2026-06-30 `2a8aee9`<br>*(D-139 이전 제외)* | **존치** | 프로덕션 참조 4건 — 실 게이트로 배선됨 |
 | 20 | `orchestrator.enable_thinking`<br>`ORCHESTRATOR_ENABLE_THINKING` | D-042 | `False` | *(미명시)* | 4 | 2026-06-26 `a896de6` | 2026-06-26 `a896de6` | **존치** | 프로덕션 참조 4건 — 실 게이트로 배선됨 |
-| 21 | `enable_deepagent_orchestration`<br>`ENABLE_DEEPAGENT_ORCHESTRATION` | D-129 | `None` | `true` | 5 | 2026-06-17 `475960b` | 2026-08-20 `3859917` | **존치** | `.env`가 코드 기본값을 뒤집음 — 운영이 실제로 쓰는 레버 |
+| 21 | `enable_intent_orchestration`<br>`ENABLE_INTENT_ORCHESTRATION` | D-129 | `None` | `true` | 5 | 2026-06-17 `475960b` | 2026-08-20 `3859917` | **존치** | `.env`가 코드 기본값을 뒤집음 — 운영이 실제로 쓰는 레버 |
 | 22 | `enable_deepagents_package`<br>`ENABLE_DEEPAGENTS_PACKAGE` | — | `False` | `true` | 5 | 2026-06-17 `475960b` | 2026-08-20 `3859917` | **존치** | `.env`가 코드 기본값을 뒤집음 — 운영이 실제로 쓰는 레버 |
 | 23 | `enable_structure_approval`<br>`ENABLE_STRUCTURE_APPROVAL` | D-020 | `True` | *(미명시)* | 5 | 2026-03-31 `f994ceb` | 2026-03-31 `f994ceb` | **존치** | 프로덕션 참조 5건 — 실 게이트로 배선됨 |
 | 24 | `noise_gate.investigation_followup_enabled`<br>`NOISE_INVESTIGATION_FOLLOWUP_ENABLED` | D-137 | `False` | *(미명시)* | 5 | 2026-08-05 `b7ccc20` | 2026-08-05 `b7ccc20`<br>*(D-139 이전 제외)* | **존치** | 프로덕션 참조 5건 — 실 게이트로 배선됨 |
@@ -111,10 +111,11 @@ git log --reverse -1 --format='%ad|%h' --date=short -S'<flag>' -- <참조 파일
   존재하나 이 플래그로 게이팅하는 호출부가 없다. `polestar_metric_baseline.py:24`에
   *"prometheus_client(폴백 채널·preparatory)는 §5.2 확정 설계상 배선하지 않는다"* 는 사유가 이미
   남아 있어 **의도적 예비 코드**다. 따라서 삭제가 아니라 기한 부여가 맞다(P1-1 선택지 ③).
-- **`enable_deepagent_orchestration` 명명 부채** — 이름은 "deepagent"지만 실제로 가리키는 것은
-  **트랙 A(의도 분해)** 이고, 트랙 B(deepagents 패키지)는 `enable_deepagents_package`다.
-  사다리 2단과 1단을 각각 가리키는데 이름이 뒤섞여 오독을 유발한다 → L2에서 개명 검토.
-- **tri-state 2개** (`enable_semantic_routing` · `enable_deepagent_orchestration`) — `bool | None`이며
+- **`enable_deepagent_orchestration` 명명 부채 — 해소(2026-08-24, L2)** — 이름은 "deepagent"지만
+  실제로 가리키는 것은 **트랙 A(의도 분해, 2단)** 이고, 트랙 B(1단)는 `enable_deepagents_package`다.
+  `enable_intent_orchestration`으로 개명했고, 구 환경변수명은 `AliasChoices`로 계속 인식하되
+  **2027-02-20 폐기 예정**이다. 구 키 사용 시 기동 경고 — 상세는 `docs/21_orchestration_ladder.md` §9.
+- **tri-state 2개** (`enable_semantic_routing` · `enable_intent_orchestration`) — `bool | None`이며
   `None`이면 멀티 DB 등록 여부로 자동 결정된다. 운영 경로가 DB 등록 상태에 종속되므로
   기동 로그의 `resolved_by`로 발동 여부를 확인할 것(O1).
 - **`observability.trace_enabled` / `sql_log_enabled`** — 2026-08-19 신설(D-140·D-141). 실사용

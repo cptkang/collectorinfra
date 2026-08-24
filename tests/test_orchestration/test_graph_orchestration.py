@@ -28,7 +28,7 @@ def _build_config(*, orchestration: bool, semantic: bool) -> AppConfig:
     model_post_init가 환경변수를 읽으므로, 생성 전 관련 env를 제거하고
     생성 후 플래그를 명시적으로 덮어쓴다(테스트 환경 오염 방지).
     """
-    os.environ.pop("ENABLE_DEEPAGENT_ORCHESTRATION", None)
+    os.environ.pop("ENABLE_INTENT_ORCHESTRATION", None)
     os.environ.pop("ENABLE_SEMANTIC_ROUTING", None)
     cfg = AppConfig(
         llm=LLMConfig(provider="ollama", model="llama3.1:8b"),
@@ -39,7 +39,7 @@ def _build_config(*, orchestration: bool, semantic: bool) -> AppConfig:
         checkpoint_backend="sqlite",
         checkpoint_db_url=":memory:",
     )
-    cfg.enable_deepagent_orchestration = orchestration
+    cfg.enable_intent_orchestration = orchestration
     cfg.enable_semantic_routing = semantic
     # 트랙 B(deepagents 실제 패키지)는 이 테스트 범위 밖 — .env의 ENABLE_DEEPAGENTS_PACKAGE
     # 누수로 deep_agent 경로가 선택되면 orchestration/semantic 노드가 미등록되어 오탐한다.

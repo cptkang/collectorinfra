@@ -143,11 +143,30 @@ WARN  정본 경로(deep_agent)가 아닌 <단> 단으로 확정됐습니다 (�
 상태 / 브랜치 한정 `git log` 최종 수정일 / 역방향 import)을 첨부해야 한다. 하나라도 빠진
 폐기 제안은 반려된다.
 
-## 9. 명명 부채 (미해소)
+## 9. 명명 부채 — 해소됨 (2026-08-24, L2)
 
-`enable_deepagent_orchestration`이 가리키는 것은 **2단(트랙 A · 의도 분해)** 이고,
-1단(트랙 B · deepagents 패키지)은 `enable_deepagents_package`다. 이름이 뒤섞여 오독을
-유발한다 — plans/70 L2에서 개명 검토 대상.
+구 이름 `enable_deepagent_orchestration`이 가리키는 것은 **2단(트랙 A · 의도 분해)** 인데,
+1단(트랙 B) 플래그 `enable_deepagents_package`와 이름이 뒤섞여 오독을 유발했다.
+
+**`enable_intent_orchestration` / `ENABLE_INTENT_ORCHESTRATION`으로 개명**했다.
+구 환경변수명은 `AliasChoices`로 계속 인식하되 **2027-02-20 폐기 예정**이다(D-143 ①).
+
+### 구 키를 쓸 때의 침묵 손실 — 실측 2026-08-24
+
+`AliasChoices`는 **소스 우선순위보다 별칭 순서를 먼저 적용한다.** 따라서:
+
+| `.env` | OS env | 적용값 |
+|---|---|---|
+| `ENABLE_INTENT_ORCHESTRATION=true` | — | `True` |
+| `ENABLE_INTENT_ORCHESTRATION=true` | `ENABLE_DEEPAGENT_ORCHESTRATION=false` | **`True`** ← 구 키가 무시된다 |
+| — | `ENABLE_INTENT_ORCHESTRATION=false` | `False` |
+
+보통은 OS env가 `.env`를 이기지만, **서로 다른 별칭**이면 그 규칙이 적용되지 않는다.
+구 키로 오버라이드하려던 의도가 조용히 사라지므로, 구 키가 설정돼 있으면 기동 시
+경고를 남긴다(`src/config.py` `model_post_init`). **두 키를 동시에 두지 말 것.**
+
+구 키는 설정 카탈로그(D-129)에 등재하지 않는다 — 관리자 화면은 신 키만 편집한다.
+다만 화면의 *실효값*은 `AppConfig`에서 읽으므로 구 키로 들어온 값도 정확히 표시된다.
 
 ## 참조
 

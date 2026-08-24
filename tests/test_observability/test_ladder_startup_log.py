@@ -31,7 +31,7 @@ def _config(
 ):
     cfg = MagicMock()
     cfg.enable_deepagents_package = package
-    cfg.enable_deepagent_orchestration = orchestration
+    cfg.enable_intent_orchestration = orchestration
     cfg.enable_semantic_routing = semantic
     cfg.multi_db.get_active_db_ids.return_value = ["db1"] if multi_db else []
     return cfg
@@ -181,5 +181,5 @@ class TestGraphWiring:
 
         src = Path("src/observability/ladder.py").read_text(encoding="utf-8")
         assert "enable_" not in src.replace("enable_deepagents_package", "").replace(
-            "enable_deepagent_orchestration", ""
+            "enable_intent_orchestration", ""
         ).replace("enable_semantic_routing", ""), "신규 플래그가 도입됨"

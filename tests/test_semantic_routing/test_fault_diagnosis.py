@@ -328,7 +328,7 @@ def _graph_config(*, fault_on: bool) -> AppConfig:
         checkpoint_db_url=":memory:",
     )
     cfg.enable_semantic_routing = True
-    cfg.enable_deepagent_orchestration = False
+    cfg.enable_intent_orchestration = False
     cfg.enable_deepagents_package = False
     cfg.noise_gate.fault_diagnosis_enabled = fault_on
     return cfg
