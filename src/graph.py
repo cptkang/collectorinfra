@@ -327,6 +327,9 @@ def build_graph(config: AppConfig, checkpointer=None):
 
     # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
     # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"(§4.6).
+    # 실행 경로 4종은 대등한 병존이 아니라 **1 정본 + 3 폴백 사다리**다 —
+    # 구조·활성 조건·강등 사유·모듈 의존 방향은 docs/21_orchestration_ladder.md가 단일 출처다.
+    # 특히 §7: 배선은 배타적이지만 모듈 의존은 아니다(1단이 2·3단 모듈을 재사용).
     # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
     # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
     # 실패하면 기존 semantic_router 경로로 안전 폴백한다(그래프 크래시 방지 — 회귀 없음).

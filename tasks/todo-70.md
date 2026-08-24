@@ -255,14 +255,16 @@
 원 계획 v1이 트랙 A/B 폐기를 권고했다가 오판으로 판명된 것의 **직접 재발 방지책**이다.
 
 **Acceptance:**
-- [ ] `docs/21_orchestration_ladder.md` 신설 — 4단 구조·각 단 활성 조건·강등 트리거·
+- [x] `docs/21_orchestration_ladder.md` 신설 — 4단 구조·각 단 활성 조건·강등 트리거·
       모듈 의존 방향·각 단 담당 질의 유형·삭제 금지 근거(D-037)
-- [ ] `graph.py` 분기 주석과 `.env` 주석이 이 문서를 가리킴
-- [ ] 라인 참조에 함수·상수명 병기 (AD-4)
+- [x] `graph.py` 분기 주석과 `.env` 주석이 이 문서를 가리킴
+      (`.env`는 gitignore 대상이라 로컬 반영 + **추적되는 `.env.example`에 사다리 안내 등재**)
+- [x] 라인 참조에 함수·상수명 병기 (AD-4)
 
 **Verify:**
-- [ ] **합격 기준**: 이 문서만 읽고 "트랙 A를 지우면 트랙 B가 깨진다"를 알 수 있는가
-- [ ] `grep -n "21_orchestration_ladder" src/graph.py .env` 결과 존재
+- [x] **합격 기준**: 이 문서만 읽고 "트랙 A를 지우면 트랙 B가 깨진다"를 알 수 있는가
+      → §7 모듈 의존 방향에 **실측 import 체인**을 라인 참조로 명시(주장이 아니라 근거)
+- [x] `grep -n "21_orchestration_ladder" src/graph.py .env` 결과 존재
 
 **Files:** `docs/21_orchestration_ladder.md`, `src/graph.py`, `.env`
 **Dependencies:** O1
