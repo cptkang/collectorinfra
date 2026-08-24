@@ -122,7 +122,7 @@ class AgentState(TypedDict):
     retry_count: int                         # 재시도 횟수 (최대 3)
     error_message: Optional[str]             # 에러 메시지 (재시도 시 참조)
     current_node: str                        # 현재 실행 중인 노드
-    # 원문 기준 LIMIT 확정값 (Plan 70 §3 / D-066 후속). 오케스트레이션이 user_query를
+    # 원문 기준 LIMIT 확정값 (Plan 75 §3 / D-066 후속). 오케스트레이션이 user_query를
     # sub_query/sub_query_context로 교체하기 전에 원문으로 계산해 승격한다 — 문자열 훼손과
     # 무관하게 보존. None이면 소비부(resolve_effective_limit)가 user_query로 폴백 계산.
     # 요청 스코프 값이므로 매 턴 초기화(create_initial_state/create_followup_input).
@@ -190,7 +190,7 @@ class AgentState(TypedDict):
     db_errors: dict[str, str]                # DB별 에러 메시지 {db_id: error_msg}
     is_multi_db: bool                        # 멀티 DB 쿼리 여부
     user_specified_db: Optional[str]         # 사용자가 직접 지정한 DB (없으면 None)
-    # 존 역질문(Plan 70 §4)에서 사용자가 체크박스로 선택한 DB 목록. LLM 재해석 없이
+    # 존 역질문(Plan 75 §4)에서 사용자가 체크박스로 선택한 DB 목록. LLM 재해석 없이
     # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
     # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
     selected_db_ids: Optional[list[str]]
@@ -288,12 +288,12 @@ def create_followup_input(
         "file_type": None,
         "csv_sheet_data": None,
         # 원문 기준 LIMIT 확정값은 요청 스코프 — 직전 턴 값이 승계되지 않도록 명시 초기화
-        # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 70 §3).
+        # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 75 §3).
         "resolved_limit": None,
         # 폼필 월 시리즈 앵커(D-146)도 요청 스코프 — 직전 폼필 턴 값이 텍스트 턴 응답에
         # 기준월 안내로 잔존하지 않도록 명시 초기화(field_mapper 산출물이 아니라 자기정리 필요).
         "form_month_anchor": None,
-        # 존 선택(Plan 70 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
+        # 존 선택(Plan 75 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
         # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
         "selected_db_ids": selected_db_ids,
         # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.

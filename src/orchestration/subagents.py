@@ -675,7 +675,7 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
     # 실행에 필요한 컨텍스트 필드 (얕은 복사)
     base: dict[str, Any] = {
         "user_query": state.get("user_query", ""),
-        # 원문 기준 LIMIT 확정값 승격(Plan 70 §3 / D-066 후속): 호출부가 user_query를
+        # 원문 기준 LIMIT 확정값 승격(Plan 75 §3 / D-066 후속): 호출부가 user_query를
         # sub_query(planner 재작성)로, 단일 DB 파이프라인이 다시 sub_query_context
         # (semantic_router 정제 — "모든" 등 수량 한정어까지 압축 탈락)로 교체해도,
         # 이 시점의 state.user_query(원문)로 계산한 limit이 state 필드로 살아남는다.
@@ -710,7 +710,7 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "target_sheets": state.get("target_sheets"),
         "file_type": state.get("file_type"),
         "csv_sheet_data": state.get("csv_sheet_data"),
-        # 존 선택 고정(Plan 70 §4): intent_planner pre-check가 못 덮는 복합 계획의
+        # 존 선택 고정(Plan 75 §4): intent_planner pre-check가 못 덮는 복합 계획의
         # 개별 task까지 run_data_query_pipeline에서 결정적 고정하도록 전파.
         "selected_db_ids": state.get("selected_db_ids"),
         # 실시간 사용률 의도(Plan 71, B안 게이트)는 **원문 기준**으로 판정해 승격 —
@@ -899,7 +899,7 @@ async def run_data_query_pipeline(
 
     # 1) DB 선택 — db_ids 고정(②mapped_db_ids)이 있으면 우선, 없으면 classify_dbs.
     #    classify_dbs 후, 이번 턴에 새 위치/DB 신호가 없으면 직전 턴 DB를 승계한다(③, M2).
-    #    selected_db_ids(존 선택 역질문, Plan 70 §4)는 복합 계획의 개별 task에도 적용되도록
+    #    selected_db_ids(존 선택 역질문, Plan 75 §4)는 복합 계획의 개별 task에도 적용되도록
     #    task.db_ids 다음 순위로 결합 — LLM 분류(classify_dbs)를 우회한다.
     raw_targets = task.get("db_ids") or isolated.get("selected_db_ids")
     db_succeeded = False

@@ -214,7 +214,7 @@ async def intent_planner(
             plan["last_form_signature"] = _sig  # 직전 양식 컨텍스트 갱신(멀티턴 보존)
         return plan
 
-    # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 70 §4) — LLM 분해를 건너뛰어
+    # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 75 §4) — LLM 분해를 건너뛰어
     # 자연어 재조합 없이 결정적 고정(mapped_db_ids 선례 동형). task.db_ids는 하류
     # run_data_query_pipeline이 classify_dbs를 우회하는 기존 배관을 그대로 탄다.
     selected_db_ids = state.get("selected_db_ids")

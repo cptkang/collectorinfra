@@ -1,6 +1,6 @@
 """실시간 사용률 데이터 평면 테스트 (Plan 71 — 게이트·클라이언트·노드 병합).
 
-전부 mock — 네트워크·DB 미사용. 응답 shape는 Plan 70 §1.3-2 확정본을 그대로 고정한다.
+전부 mock — 네트워크·DB 미사용. 응답 shape는 Plan 75 §1.3-2 확정본을 그대로 고정한다.
 """
 
 from types import SimpleNamespace
@@ -17,7 +17,7 @@ from src.config import PolestarRestConfig
 from src.utils.query_gen_common import is_realtime_usage_query
 
 
-# Plan 70 §1.3-2 확정 응답 shape (사용자 교정본 그대로)
+# Plan 75 §1.3-2 확정 응답 shape (사용자 교정본 그대로)
 _FIXED_PAYLOAD = {
     "date": "2026-07-23 09:11:15",
     "data": {

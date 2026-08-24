@@ -1,15 +1,15 @@
 """폴스타 measurement API 클라이언트 (Plan 71 — 실시간 CPU/메모리 사용률).
 
-엔드포인트 (Plan 70 §1 확정 — 2안):
+엔드포인트 (Plan 75 §1 확정 — 2안):
     GET {base}/rest/v1/dashboard/measurement
         ?resourceIds={ids}&definitions={def}&type={type}&timeSelector=recent&count=1
 
 핵심 규칙:
     - **읽기 전용 HTTP GET** — D-003 정합. 내부망 http, 비인증 (Plan 47-1과 동일 규약).
     - resourceIds는 **서버 리소스 ID**(cmm_resource.id). 콤마 구분, 200개/콜 청크
-      (Plan 70 §1.3-4 실측: 200대 yd 814ms·gp 2,460ms/37KB — 안전 범위).
+      (Plan 75 §1.3-4 실측: 200대 yd 814ms·gp 2,460ms/37KB — 안전 범위).
     - 청크는 병렬 호출 + **전체 타임아웃 가드**(per-call만으론 무력화 — Known Mistakes).
-    - 응답 shape는 Plan 70 §1.3-2 확정본: 최상위 date(호출 시각) + data.measurement[]
+    - 응답 shape는 Plan 75 §1.3-2 확정본: 최상위 date(호출 시각) + data.measurement[]
       (resourceId·resourceName·min/avg/max·time(수집 시각 Unix ms)·targetId).
     - 요청한 서버가 응답에 누락될 수 있음(수집 중단 등) — 호출부가 요청 ID 집합과
       대조해 "미수집" 처리한다.
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _PATH = "/rest/v1/dashboard/measurement"
 
-# 지표 → (definitions, type) 파라미터 (Plan 70 §1.2 — 지표별 1콜)
+# 지표 → (definitions, type) 파라미터 (Plan 75 §1.2 — 지표별 1콜)
 METRIC_SPECS: dict[str, tuple[str, str]] = {
     "cpu": ("Utilization", "server.Cpus"),
     "memory": ("UsedPercent", "server.Memory"),

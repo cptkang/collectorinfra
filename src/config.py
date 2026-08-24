@@ -162,23 +162,23 @@ class QueryConfig(BaseSettings):
 
 
 class PolestarRestConfig(BaseSettings):
-    """폴스타 REST measurement API 설정 (Plan 71 / Plan 70 §1 — 실시간 사용률 데이터 평면).
+    """폴스타 REST measurement API 설정 (Plan 71 / Plan 75 §1 — 실시간 사용률 데이터 평면).
 
     전 기능 기본 OFF — realtime_usage_enabled=false면 기존 SQL 경로 바이트 무변경(회귀 0).
     프로세스 API(AlarmConfig.process_api_base_urls_csv, Plan 47-1)와 base가 같은 폴스타
-    REST지만 소비처 회귀 방지를 위해 설정은 분리 유지(통합 rename은 Plan 70 §1.3-5 후속).
+    REST지만 소비처 회귀 방지를 위해 설정은 분리 유지(통합 rename은 Plan 75 §1.3-5 후속).
     내부망 http·비인증·읽기 전용 GET(D-003) — Plan 47-1과 동일 규약.
     """
 
     realtime_usage_enabled: bool = False
     # db_id=base_url CSV (프로세스 API와 동일 형식). 은행존(b0)은 포트 명시 필수
-    # (Plan 70 §1.3-5 실측: 10.37.16.51:9010 — gp/yd와 달리 기본 포트가 아님).
+    # (Plan 75 §1.3-5 실측: 10.37.16.51:9010 — gp/yd와 달리 기본 포트가 아님).
     base_urls_csv: str = (
         "polestar_b0=http://10.37.16.51:9010,"
         "polestar_cm_gp=http://polestar.kbonecloud.com,"
         "polestar_cm_yd=http://yd-polestar.kbonecloud.com"
     )
-    # gp 200대 실측 2.46s(Plan 70 §1.3-4) — 프로세스 API 3s 재사용 금지, 여유 있게 별도 설정.
+    # gp 200대 실측 2.46s(Plan 75 §1.3-4) — 프로세스 API 3s 재사용 금지, 여유 있게 별도 설정.
     measurement_timeout_seconds: int = 10
     measurement_chunk_size: int = 200   # 실측 확정(URL 길이·응답 크기 안전 범위)
     stale_after_minutes: int = 15       # time(수집 시각)이 이보다 오래되면 "수집 지연" 표기

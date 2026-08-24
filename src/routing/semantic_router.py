@@ -108,7 +108,7 @@ async def semantic_router(
                 "current_node": "semantic_router",
             }
 
-    # [우선순위 2.5] 존 역질문에서 사용자가 체크박스로 확정한 DB 목록 (Plan 70 §4).
+    # [우선순위 2.5] 존 역질문에서 사용자가 체크박스로 확정한 DB 목록 (Plan 75 §4).
     # UI 선택은 어떤 추론보다 우선 — mapped_db_ids 선례와 동형으로 LLM 라우팅을 스킵해
     # 결정적으로 고정한다(자연어 재조합 금지: sub_query_context=원문 유지).
     selected_db_ids = state.get("selected_db_ids")

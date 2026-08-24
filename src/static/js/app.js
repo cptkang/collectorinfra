@@ -217,7 +217,7 @@
     var messages = []; // session message history
     var stageTimer = null;
     var currentThreadId = null;
-    // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 70 §4 확장)
+    // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 75 §4 확장)
     var lastUploadedFile = null;
 
     // ─── Scroll (stick-to-bottom) State ───
@@ -591,7 +591,7 @@
         savedCurrentInput = "";
 
         hideError();
-        // 답하지 않은 존 선택 블록은 새 질의 시작 시 비활성 (보류 상태 자기정리 — Plan 70 §4)
+        // 답하지 않은 존 선택 블록은 새 질의 시작 시 비활성 (보류 상태 자기정리 — Plan 75 §4)
         disableZoneClarifyBlocks();
 
         // Hide welcome
@@ -943,7 +943,7 @@
             if (currentThreadId) {
                 streamBody.thread_id = currentThreadId;
             }
-            // Plan 70 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
+            // Plan 75 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
             }
@@ -1182,7 +1182,7 @@
             }
         }
 
-        // Plan 70 §4: 존 선택 역질문 — 체크박스 블록 렌더 (ID 제거 전에 삽입)
+        // Plan 75 §4: 존 선택 역질문 — 체크박스 블록 렌더 (ID 제거 전에 삽입)
         if (meta.clarification) {
             var streamingMsgClar = document.getElementById("streamingMessage");
             var bubbleClar = streamingMsgClar ? streamingMsgClar.querySelector(".message-bubble") : null;
@@ -1200,7 +1200,7 @@
         scrollToBottomIfSticky();
     }
 
-    // ─── Zone Clarification (Plan 70 §4) ───
+    // ─── Zone Clarification (Plan 75 §4) ───
     // 존 미지정 대량 조회 시 백엔드가 status="clarification"으로 존 선택을 요청한다.
     // 체크 결과는 자연어 재조합 없이 selected_db_ids(구조화 필드)로 재전송한다(§4.4) —
     // LLM 재해석 오라우팅(2026-07-16 실측) 차단. 화면에는 "선택: …"만 에코한다.
@@ -1234,7 +1234,7 @@
                     });
                 }
                 var any = Array.prototype.some.call(checks, function (x) { return x.checked; });
-                confirmBtn.disabled = !any;  // 미선택 시 비활성 (Plan 70 §5.1 항목 3)
+                confirmBtn.disabled = !any;  // 미선택 시 비활성 (Plan 75 §5.1 항목 3)
             });
         });
         confirmBtn.addEventListener("click", function () {
@@ -1249,7 +1249,7 @@
             var echoMsg = { role: "user", content: "선택: " + labels.join(", "), time: new Date(), file: null };
             messages.push(echoMsg);
             renderUserMessage(echoMsg);
-            // 파일(폼필) 경로 역질문이면 보관해 둔 파일과 함께 재전송 (Plan 70 §4 확장)
+            // 파일(폼필) 경로 역질문이면 보관해 둔 파일과 함께 재전송 (Plan 75 §4 확장)
             if (clar.has_file && lastUploadedFile) {
                 executeFileQuery(clar.original_query || "", lastUploadedFile, ids);
             } else {
@@ -1399,7 +1399,7 @@
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
 
-            // Plan 70 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
+            // Plan 75 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
@@ -1417,7 +1417,7 @@
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
 
-        // Plan 70 §4 파일 경로: 존 역질문 후 재전송을 위해 파일 참조 보관
+        // Plan 75 §4 파일 경로: 존 역질문 후 재전송을 위해 파일 참조 보관
         // (handleSend가 입력창의 selectedFile을 clearFile()로 비우므로 여기서 캡처)
         lastUploadedFile = file;
 

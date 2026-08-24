@@ -458,7 +458,7 @@ class TestCrossPathParity:
         assert "::numeric" not in decimal_cast_example("db2")  # DB2 문법 오류 방지
 
 
-# ── D: 원문 기준 resolved_limit 승격 (Plan 70 §3, D-066 후속) ─────────────────
+# ── D: 원문 기준 resolved_limit 승격 (Plan 75 §3, D-066 후속) ─────────────────
 # 폐쇄망 실측(2026-07-24): 오케스트레이션 단일 DB 경로가 user_query를 semantic_router
 # 정제 질의(sub_query_context)로 교체하며 "모든"이 탈락 → LIMIT 1000 절단
 # (은행존 2,328대 중 1,328대 누락, 멀티 경로는 sub_query 유지로 미발현).

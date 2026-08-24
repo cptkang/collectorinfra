@@ -1,4 +1,4 @@
-"""존 역질문 게이트·selected_db_ids 결정적 고정 테스트 (Plan 70 §4).
+"""존 역질문 게이트·selected_db_ids 결정적 고정 테스트 (Plan 75 §4).
 
 - 게이트(_zone_clarification_or_none): 결정적 발동/비발동 경계 고정
 - intent_planner pre-check: selected_db_ids → LLM 분해 우회, task.db_ids 고정
@@ -78,7 +78,7 @@ class TestZoneClarificationGate:
 
 
 class TestFileZoneClarification:
-    """파일(폼필) 경로 존 역질문 (Plan 70 §4 확장, 2026-07-24 실측 요구).
+    """파일(폼필) 경로 존 역질문 (Plan 75 §4 확장, 2026-07-24 실측 요구).
 
     폼필은 항상 존 단위 대량 조회 — 위치어 미해소면 "모든" 표면어 없이도 발동.
     """

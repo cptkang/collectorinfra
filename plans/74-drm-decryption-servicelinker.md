@@ -266,7 +266,7 @@ class DrmConfig(BaseSettings):
   2. `register.sh` 실행 → 표시된 서비스 ID를 `softcamp.properties`에 기입
      (**ID 40번부터는 register 표시 ID와 기입 ID가 상이** — 가이드 우측 ID 기준)
   3. `startup.sh` 기동 — **재부팅 시 수동 재실행 필요** → systemd unit 자동화 검토
-- **배포 절차: `docs/19_drm_deployment_guide.md`** — 반영 파일 목록(신규 `tools/`
+- **배포 절차: `docs/22_drm_deployment_guide.md`** — 반영 파일 목록(신규 `tools/`
   디렉터리 포함), 확인 grep, systemd(`agent.service`) 재시작 절차, ret별 조치표,
   롤백. 특히 systemd 환경 트랩 3종(PATH에 java 없음 / `PrivateTmp` 격리 /
   키 파일 읽기 권한)을 배포 전 점검 항목으로 명시.

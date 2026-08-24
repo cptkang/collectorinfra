@@ -808,7 +808,7 @@ body.auth-pending .auth-splash {
     color: #fff;
 }
 
-/* ─── Zone Clarification (Plan 70 §4 — 존 선택 역질문 체크박스) ─── */
+/* ─── Zone Clarification (Plan 75 §4 — 존 선택 역질문 체크박스) ─── */
 .zone-clarify {
     margin-top: 12px;
     padding: 12px;
@@ -859,7 +859,7 @@ body.auth-pending .auth-splash {
     opacity: 0.55;
 }
 
-/* 기획 중 버튼: 비활성 표시 (Plan 70 §2 — 월보 추출 2종) */
+/* 기획 중 버튼: 비활성 표시 (Plan 75 §2 — 월보 추출 2종) */
 .chat-welcome-hint--disabled,
 .chat-welcome-hint--disabled:hover {
     cursor: not-allowed;

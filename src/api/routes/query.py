@@ -579,7 +579,7 @@ def _build_turn_input_state(
     )
 
 
-# ── 존 모호성 역질문 (Plan 70 §4 — clarification 배선) ─────────────────────────
+# ── 존 모호성 역질문 (Plan 75 §4 — clarification 배선) ─────────────────────────
 # 결정적 게이트(D-035): LLM(clarification_needed) 방출에 의존하지 않는다.
 # 발동 = (존 단위 대량 조회 의도 — is_full_scan_query, LIMIT 상향 게이트와 동일 판정 공유)
 # AND (존 식별 불가), 또는 "ㅇㅇ존" 리터럴(버튼 프리필 무수정 전송 — 항상 모호).
@@ -616,7 +616,7 @@ def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) 
 def _file_zone_clarification_or_none(
     query: str, selected_db_ids: list[str] | None, config
 ) -> dict | None:
-    """파일(폼필) 경로 존 역질문 (Plan 70 §4 확장, 2026-07-24 실측 요구).
+    """파일(폼필) 경로 존 역질문 (Plan 75 §4 확장, 2026-07-24 실측 요구).
 
     폼필은 본질적으로 존 단위 대량 조회이므로, 텍스트 경로와 달리 "모든/전체" 표면어
     조건 없이 **위치어 미해소면 발동**한다(미발동 시 임의 존(b0 등)으로 오라우팅되는
@@ -755,7 +755,7 @@ async def process_query(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    # Plan 70 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
+    # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
     if clarification:
         return QueryResponse(
@@ -861,7 +861,7 @@ async def process_query_stream(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    # Plan 70 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
+    # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
     if clarification:
         async def clarification_generator() -> AsyncGenerator[str, None]:
@@ -1180,7 +1180,7 @@ async def process_file_query(
             detail=f"지원하지 않는 파일 형식입니다: .{file_ext}. .xlsx 또는 .docx만 지원합니다.",
         )
 
-    # 1.5 존 역질문 게이트 (Plan 70 §4 파일 경로 확장) — 무거운 처리 전에 조기 반환
+    # 1.5 존 역질문 게이트 (Plan 75 §4 파일 경로 확장) — 무거운 처리 전에 조기 반환
     selected_list = _parse_selected_db_ids_form(selected_db_ids)
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config
@@ -1415,7 +1415,7 @@ async def process_file_query_stream(
             content={"detail": f"지원하지 않는 파일 형식: .{file_ext}"},
         )
 
-    # 존 역질문 게이트 (Plan 70 §4 파일 경로 확장) — /query/file과 대칭
+    # 존 역질문 게이트 (Plan 75 §4 파일 경로 확장) — /query/file과 대칭
     selected_list = _parse_selected_db_ids_form(selected_db_ids)
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config

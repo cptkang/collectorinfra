@@ -282,7 +282,7 @@ def has_all_scope_keyword(text: str | None) -> bool:
 def is_full_scan_query(user_query: str | None) -> bool:
     """질의가 전량 나열 의도(대량 조회 표면어 포함)인지 결정적으로 판정한다.
 
-    resolve_query_limit의 LIMIT 상향과 존 역질문 게이트(Plan 70 §4)가 같은 판정을
+    resolve_query_limit의 LIMIT 상향과 존 역질문 게이트(Plan 75 §4)가 같은 판정을
     공유한다 — 한쪽만 넓히는 비대칭 방지(D-066 계열).
     """
     text = user_query or ""
@@ -343,7 +343,7 @@ def resolve_effective_limit(
 ) -> int:
     """state에 승격된 원문 기준 limit(resolved_limit)을 우선하고, 없으면 표면어로 계산한다.
 
-    폐쇄망 실측(2026-07-24, Plan 70 §3): 오케스트레이션 단일 DB 경로는 user_query를
+    폐쇄망 실측(2026-07-24, Plan 75 §3): 오케스트레이션 단일 DB 경로는 user_query를
     semantic_router 정제 질의(sub_query_context)로 교체하는데, 이 정제(문장 압축)가
     "모든" 등 수량 한정어까지 탈락시켜 resolve_query_limit이 기본 1,000으로 떨어졌다
     (은행존 2,328대 중 1,328대 절단 — 멀티 경로는 sub_query 유지로 미발현, 구조적 비대칭).
@@ -366,7 +366,7 @@ def resolve_effective_limit(
     return resolve_query_limit(user_query, default_limit, parsed_limit=parsed_limit)
 
 
-# ── 실시간 사용률 라우팅 게이트 (Plan 71 / Plan 70 §1, B안 확정 2026-07-24) ──
+# ── 실시간 사용률 라우팅 게이트 (Plan 71 / Plan 75 §1, B안 확정 2026-07-24) ──
 # LLM 의도 분류에 의존하지 않는 결정적 게이트(D-035). B안: "실시간/현재/지금" 명시 +
 # CPU/메모리 지표어 + 기간 표현 부재일 때만 실시간 API 경로. "현황" 단독은 비트리거
 # (실무 한국어에서 "현황"은 목록/정리 광의 — 기존 DB 질의 습관과 충돌 방지).
@@ -379,7 +379,7 @@ _PERIOD_TERMS: tuple[str, ...] = ("지난", "개월", "월별", "추이", "통�
 def is_realtime_usage_query(user_query: str | None) -> bool:
     """질의가 실시간 CPU/메모리 사용률 조회(API 경로) 대상인지 결정적으로 판정한다.
 
-    B안(Plan 70 §5.1 항목 1 확정): "실시간/현재/지금" 명시 시에만 — 오분기 비용이
+    B안(Plan 75 §5.1 항목 1 확정): "실시간/현재/지금" 명시 시에만 — 오분기 비용이
     비대칭(통계 질의가 순간 스냅샷으로 답하는 사고 > 실시간 질의가 몇 분 낡은 DB 값)이라
     좁게 시작한다. 판정은 **원문 기준**이어야 한다(sub_query 재작성으로 표면어가 탈락할
     수 있음 — D-066 후속7과 동일 원리).
@@ -1062,7 +1062,7 @@ def extract_sql_from_llm_response(content: str) -> str:
     return text.strip()
 
 
-# ── 존 역질문 공용 판정·페이로드 (Plan 70 §4 / D-143 후속2) ──────────────────────
+# ── 존 역질문 공용 판정·페이로드 (Plan 75 §4 / D-143 후속2) ──────────────────────
 # 위치 표면어 단일 출처(D-053 사본 금지). 종전 canonical은 input_parser였으나,
 # 레거시 경로(semantic_router, infrastructure 계층)가 후단 게이트에서 같은 목록을
 # 써야 해 계층 규칙(infrastructure→application 금지)상 utils로 내렸다.

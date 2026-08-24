@@ -1,15 +1,17 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **전건 75개** (최상위 `plans/*.md` 기준)
+> **생성** 2026-08-20 (plans/70 D1) · **갱신** 2026-08-24 (병합 편입분 5건 추가) · **전건 80개** (최상위 `plans/*.md` 기준)
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
-이 파일은 그 위에 얹는 것이 아니라 **전건 인덱스**다 — 68·69·70을 포함해 누락 0.
+이 파일은 그 위에 얹는 것이 아니라 **전건 인덱스**다 — 68·69·70과 ux_improvement 병합
+편입분(71~75)을 포함해 누락 0. 편입분은 구 65~69의 재부여이며, 구 70(실시간·UX 검토)은
+팀장 70(코드베이스 규모·경로 부채) 선점에 따라 **75로 재이동**했다(2026-08-24, 팀장 번호 우선).
 
 ## 표기 규칙
 
 - **상태** = 파일 앞부분 40줄의 `**상태**:` / `상태:` 표기를 **기계적으로 그대로 옮긴 값**.
-  추정하지 않는다. 표기가 없으면 `*(미표기)*` — 54건이 여기 해당한다.
+  추정하지 않는다. 표기가 없으면 `*(미표기)*` — 56건이 여기 해당한다.
   대부분 초기(01~59) 계획서로, 당시엔 상태 표기 관례가 없었다.
 - **최종 수정일** = 현 브랜치(`multiintent`) 한정 `git log -1`. 다른 브랜치의 수정은 잡히지 않는다.
 
@@ -88,6 +90,11 @@
 | 68 | [`68-webui-env-settings.md`](./68-webui-env-settings.md) | 68. 설정 웹UI 전면 개편 계획 (v2 — 설정 코드 정밀 분석 반영) | **확정 — 착수 가능 (2026-07-29 사용자 승인)**. §9 게이트 5건 전부 권고안대로 확정 + **사용자 인터뷰 4건 확정(§9-보완)**. 옵션… | 2026-07-30 |
 | 69 | [`69-query-generation-structural-refactoring.md`](./69-query-generation-structural-refactoring.md) | 69. 쿼리 생성 영역 구조 리팩토링 — 중복 통합·경로 대칭·계층 정리 | v9 — **계획·후속·별건 전량 완결. 잔여 0건.** P0~P5 구현·D-134 등재·문구 통일 적용·후속 3건에 이어 마지막 별건(EAV 검증 리터럴 이… | 2026-08-05 |
 | 70 | [`70-codebase-scale-and-path-debt.md`](./70-codebase-scale-and-path-debt.md) | 70. 코드베이스 규모·경로 부채 정리 — 경로 일원화·플래그 감사·시맨틱 레이어 수렴 | **v4 — 코드 대조 검증 반영 완료. 게이트 1 즉시 해소 가능(관측 대기 소멸). 코드 변경 0건.** | 2026-08-20 |
+| 71 | [`71-realtime-usage-api.md`](./71-realtime-usage-api.md) | 71. CPU/메모리 실시간 사용률 조회 — 폴스타 measurement API 데이터 평면 | **구현 완료 (2026-07-24)**. **옵트인 기본 OFF**(`POLESTAR_REST_REALTIME_USAGE_ENABLED=false`) — … | 2026-08-24 |
+| 72 | [`72-fss-audit-form-multirow-header-and-month-pivot.md`](./72-fss-audit-form-multirow-header-and-month-pivot.md) | 72. 금감원 감사 취합자료 양식 폼필 지원 — 2단 병합 헤더 결합 · 월별 가로 피벗(M~M+5) · 도메인 밖 필드 정책 | *(미표기)* | 2026-08-24 |
+| 73 | [`73-formfill-deterministic-path-and-profiles.md`](./73-formfill-deterministic-path-and-profiles.md) | Plan 73 — 폼필 결정적 경로 + 멀티턴 HITL 폼필 (v2) | *(미표기)* | 2026-08-24 |
+| 74 | [`74-drm-decryption-servicelinker.md`](./74-drm-decryption-servicelinker.md) | Plan 74 — 양식 업로드 DRM 해제 (Softcamp ServiceLinker 연동) | **Phase 1·2·2b 구현 완료 (2026-08-12, D-156)** — 감지·라우트 대칭 배선·… | 2026-08-24 |
+| 75 | [`75-realtime-usage-api-and-ux-review.md`](./75-realtime-usage-api-and-ux-review.md) | 75. UX 개선 기획 검토 의견 — 실시간 사용률 API · 버튼 명령어 · LIMIT 절단 · 존 모호성 역질문 | 검토 의견 v2. §1은 사용자 확정(2안 채택)·실측 완료로 **별도 구현 계획서(Plan 71)** 분리 — … | 2026-08-24 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

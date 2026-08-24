@@ -195,7 +195,7 @@ async def _prepare_multi_run(
     parsed_requirements = state.get("parsed_requirements", {})
 
     # "전체/모든" 조회는 LIMIT를 상향해 1000건 절단을 방지한다 — 단일 DB 경로와 동등화(RC4/D-066).
-    # 승격된 원문 기준 resolved_limit 우선(Plan 70 §3 — 존 재선택 재작성 질의의 수량어 탈락
+    # 승격된 원문 기준 resolved_limit 우선(Plan 75 §3 — 존 재선택 재작성 질의의 수량어 탈락
     # 방어), 표면어 미매칭이면 input_parser LLM 산출물(limit)로 2단 폴백(Plan 67 R3-(i)).
     effective_limit = resolve_effective_limit(
         state, state.get("user_query", ""), app_config.query.default_limit,

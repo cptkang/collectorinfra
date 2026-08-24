@@ -36,7 +36,7 @@ _KST = timezone(timedelta(hours=9))
 
 _METRIC_COLUMNS = {"cpu": "CPU 사용률(%)", "memory": "메모리 사용률(%)"}
 
-# 존 표기 (선택지 라벨과 동일 입도 — Plan 70 §4.4). 라벨 정본은 존 역질문 선택지
+# 존 표기 (선택지 라벨과 동일 입도 — Plan 75 §4.4). 라벨 정본은 존 역질문 선택지
 # (ZONE_CLARIFY_OPTIONS)이므로 파생한다(사본 금지 — 위치 표면어 정본 1곳 단언 테스트 준수).
 from src.utils.query_gen_common import ZONE_CLARIFY_OPTIONS
 
@@ -211,7 +211,7 @@ async def realtime_usage_lookup(
             continue
         any_success = True
 
-        # ③ 병합 — 미수집·수집 지연·조회 실패 표기 (Plan 70 §1.3-2 파서 주의 ①③)
+        # ③ 병합 — 미수집·수집 지연·조회 실패 표기 (Plan 75 §1.3-2 파서 주의 ①③)
         # "조회 실패"(API 청크 실패 — 재시도하면 나올 수 있음)와 "미수집"(응답에 없음 =
         # measurement에 최근 수집값 부재: 수집 중단·모니터링 미등록 등)을 구분한다.
         failed_ids: set[int] = set()

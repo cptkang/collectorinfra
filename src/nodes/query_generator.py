@@ -455,7 +455,7 @@ def _prepare(
     # (Plan 67 R3-(i)). 종전에는 이 두 값이 계산만 되고 SQL 경로에서 소비되지 않아 "지난 반년"·
     # "100개만" 류가 침묵 소실됐다. 정규식이 매칭되면 폴백은 발동하지 않는다(동작 불변).
     _parsed_req = state.get("parsed_requirements") or {}
-    # 승격된 원문 기준 resolved_limit 우선(Plan 70 §3 — 오케스트레이션의 정제 질의가
+    # 승격된 원문 기준 resolved_limit 우선(Plan 75 §3 — 오케스트레이션의 정제 질의가
     # "모든" 등 수량 한정어를 탈락시켜도 state로 운반된 값을 신뢰). 없으면 표면어 →
     # input_parser LLM 산출물(limit) 순 2단 폴백(R3-(i)). 멀티 경로와 동일 규칙(D-066).
     limit_value = resolve_effective_limit(
@@ -765,7 +765,7 @@ async def _llm_fallback(
             extra_return["pii_block_diagnosis"] = _pii_diag
 
     # "모든/전체" 상향인데 LLM이 프로필 few-shot 예시의 말미 캡(FETCH FIRST 100 등)을
-    # 모방한 경우 결정적 교정 — 2026-07-24 b0 실측(Plan 70 §5.1 항목 6, D-066 후속8).
+    # 모방한 경우 결정적 교정 — 2026-07-24 b0 실측(Plan 75 §5.1 항목 6, D-066 후속8).
     sql = enforce_all_query_limit(
         sql, ctx.limit_value, ctx.app_config.query.default_limit
     )

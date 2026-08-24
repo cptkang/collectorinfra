@@ -37,7 +37,7 @@ class QueryRequest(BaseModel):
         default=None,
         description="세션 ID (멀티턴 대화용, Phase 3)",
     )
-    # Plan 70 §4: 존 역질문(clarification)에서 사용자가 체크박스로 선택한 DB 목록.
+    # Plan 75 §4: 존 역질문(clarification)에서 사용자가 체크박스로 선택한 DB 목록.
     # 자연어 재조합 금지 원칙 — 선택 결과는 이 구조화 필드로만 전달되어
     # semantic_router/intent_planner의 결정적 고정(mapped_db_ids 선례)으로 주입된다.
     selected_db_ids: Optional[list[str]] = Field(
@@ -95,7 +95,7 @@ class QueryResponse(BaseModel):
     has_mapping_report: bool = Field(
         default=False, description="매핑 보고서 존재 여부"
     )
-    # Plan 70 §4: status="clarification"일 때 존 선택 컨텍스트
+    # Plan 75 §4: status="clarification"일 때 존 선택 컨텍스트
     # {kind, question, options: [{db_id, label}], original_query, multi}
     clarification: Optional[dict] = Field(
         default=None, description="역질문 컨텍스트 (존 선택 등)"
