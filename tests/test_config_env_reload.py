@@ -41,7 +41,7 @@ def test_nested_config_env_flip_int_field(monkeypatch):
         load_config.cache_clear()
 
 
-# ── 의도 분해 오케스트레이션 플래그 개명 하위호환 (plans/70 L2 / D-144) ──
+# ── 의도 분해 오케스트레이션 플래그 개명 하위호환 (plans/70 L2 / D-162) ──
 #
 # `enable_deepagent_orchestration` → `enable_intent_orchestration` 개명.
 # 구 이름은 이름만 보면 1단(`enable_deepagents_package`, 트랙 B)을 가리키는 것처럼 읽히지만

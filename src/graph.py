@@ -661,7 +661,7 @@ def build_graph(config: AppConfig, checkpointer=None):
         config.enable_structure_approval,
     )
 
-    # 확정된 사다리 단과 강등 사유를 기록한다(D-143 / plans/70 P0-1).
+    # 확정된 사다리 단과 강등 사유를 기록한다(D-161 / plans/70 P0-1).
     # 경로 4종은 병존이 아니라 1 정본 + 3 폴백이며, 확정은 여기서 1회 일어난다.
     # 이 로그가 "레거시 4단이 실제로 쓰이는가"를 판정하는 유일한 근거다.
     _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)

@@ -970,10 +970,10 @@ class AppConfig(BaseSettings):
     # True/False = 명시적 강제(.env·OS env 모두 반영). 사다리 상위 단(deep_agent)이 성립하면
     # 이 플래그가 true여도 2단 노드는 등록되지 않는다 — docs/21_orchestration_ladder.md §1·§2
     #
-    # 개명(D-144 / plans/70 L2): `enable_deepagent_orchestration` → `enable_intent_orchestration`.
+    # 개명(D-162 / plans/70 L2): `enable_deepagent_orchestration` → `enable_intent_orchestration`.
     # 구 이름이 가리키는 것은 **2단(트랙 A)** 인데 1단 플래그 `enable_deepagents_package`
     # (트랙 B)와 이름이 뒤섞여 오독을 유발했다 — plans/70 v1 오판의 원인 중 하나다.
-    # 구 환경변수명은 AliasChoices로 계속 받는다(하위호환). **폐기 기한 2027-02-20**(D-143 ①).
+    # 구 환경변수명은 AliasChoices로 계속 받는다(하위호환). **폐기 기한 2027-02-20**(D-161 ①).
     enable_intent_orchestration: bool | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -1028,7 +1028,7 @@ class AppConfig(BaseSettings):
         # 플래그 미입력(None)이면 멀티 DB 연결이 하나라도 설정된 경우 자동 활성화한다.
         # 명시적 true/false는 pydantic-settings가 .env·OS env에서 필드로 직접 읽어 존중한다
         # (enable_intent_orchestration과 동일 방식 — os.getenv 미사용).
-        # tri-state 자동 해석이 발동했는지 기록한다(D-143 / plans/70 P0-1).
+        # tri-state 자동 해석이 발동했는지 기록한다(D-161 / plans/70 P0-1).
         # 덮어쓴 뒤에는 명시 설정과 구별할 수 없으므로 여기서만 남길 수 있다.
         # 운영 경로가 DB 등록 상태에 종속된다는 사실이 기동 로그에 드러나야 한다.
         object.__setattr__(
@@ -1039,7 +1039,7 @@ class AppConfig(BaseSettings):
             else "explicit_env",
         )
 
-        # 구 환경변수명 사용을 알린다(개명 D-144 / plans/70 L2, 폐기 2027-02-20).
+        # 구 환경변수명 사용을 알린다(개명 D-162 / plans/70 L2, 폐기 2027-02-20).
         # 여기서 os.environ을 보는 것은 **설정값 판정이 아니라 폐기 예고**다 —
         # 값은 위 pydantic 필드가 이미 결정했다(Known Mistakes 2026-06-10 준수).
         #
