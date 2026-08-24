@@ -299,12 +299,12 @@
 발동 시 경고를 남겨 관측 가능하게 한다.
 
 **Acceptance:**
-- [ ] 자동 해석 발동 시 경고 로그
-- [ ] `.env` 명시값이 있을 때 자동 해석이 **개입하지 않음**을 테스트로 단언
+- [x] 자동 해석 발동 시 경고 로그
+- [x] `.env` 명시값이 있을 때 자동 해석이 **개입하지 않음**을 테스트로 단언
 
 **Verify:**
-- [ ] `.env` 명시값/미설정 두 조건 기동 확인
-- [ ] `pytest tests/test_config_env_reload.py -q`
+- [x] `.env` 명시값/미설정 두 조건 기동 확인
+- [x] `pytest tests/test_config_env_reload.py -q`
 
 **Files:** `src/config.py`
 **Dependencies:** O1

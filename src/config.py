@@ -902,6 +902,26 @@ class AppConfig(BaseSettings):
             else "explicit_env",
         )
 
+        # 자동 해석이 발동하면 경고를 남긴다(plans/70 L3). 덮어쓰고 나면 명시 설정과
+        # 구별할 수 없으므로 여기가 유일한 기회다. 값만 알려주는 경고는 조치로 이어지지
+        # 않으므로, "무엇이 무엇에 종속되는가"를 함께 말한다.
+        _auto = [
+            name for name, value in (
+                ("enable_semantic_routing", self.enable_semantic_routing),
+                ("enable_deepagent_orchestration", self.enable_deepagent_orchestration),
+            )
+            if value is None
+        ]
+        if _auto:
+            logger.warning(
+                "%s 미입력 → 멀티 DB 등록 여부로 자동 결정합니다(등록 %d건 → %s). "
+                "실행 경로가 DB 등록 상태에 종속되므로, 고정하려면 .env에 명시하세요 "
+                "— docs/21_orchestration_ladder.md §6",
+                "·".join(_auto),
+                len(self.multi_db.get_active_db_ids()),
+                bool(self.multi_db.get_active_db_ids()),
+            )
+
         if self.enable_semantic_routing is None:
             self.enable_semantic_routing = bool(self.multi_db.get_active_db_ids())
 
