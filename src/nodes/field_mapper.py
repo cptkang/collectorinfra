@@ -81,6 +81,19 @@ async def field_mapper(
             **_CLEARED_MAPPING_FIELDS,
         }
 
+    # 폼필 확인 이력 조회·삭제 턴(D-151, FIX-24): intent_planner ②.7이 결정적으로
+    # 단락하므로 매핑 산출물이 전부 불필요하다. 여기서 전체 매핑을 수행하면 —
+    # 이력 명령 질의에는 위치어가 없어 priority_db_ids가 비고 → 전 DB 유사어가 LLM
+    # 프롬프트에 실려 413(FabriX 95K) 재시도로 수십 초 낭비(라이브 실측 2026-08-03).
+    from src.utils.query_gen_common import is_form_memory_command
+
+    if is_form_memory_command(state.get("user_query", "")):
+        logger.info("field_mapper: 폼필 확인 이력 명령 감지 — 매핑 스킵(FIX-24, LLM 미호출)")
+        return {
+            "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
+        }
+
     if app_config is None:
         app_config = load_config()
     if llm is None:
@@ -237,6 +250,32 @@ def _hint_excludes_db(hint: str, db_id_lower: str) -> bool:
     return any(region in hint for region in regions)
 
 
+# 상호 배타 지역 그룹 — 한 hint에 서로 다른 그룹이 함께 들어오면(예: "공동존 김포/여의도")
+# hint 단위 배제가 모든 DB를 전멸시킨다(gp는 '여의도'에, yd는 '김포'에, b0는 둘 다에 배제
+# → 빈 priority → 폴백 오판. 라이브 실측 2026-07-29: 은행존 선택). 지역별로 분해한다.
+_EXCLUSIVE_REGION_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("김포",),
+    ("여의도",),
+    ("은행존", "은행", "레거시"),
+)
+
+
+def _split_multi_region_hint(hint: str) -> list[str]:
+    """한 hint에 상호 배타 지역이 2개 이상이면 지역 토큰별 hint로 분해한다(결정적).
+
+    예: "공동존 김포/여의도" → ["김포", "여의도"], "김포와 여의도" → ["김포", "여의도"].
+    지역이 0~1개면 원본 그대로(기존 동작 불변).
+    """
+    found: list[str] = []
+    for group in _EXCLUSIVE_REGION_GROUPS:
+        token = next((t for t in group if t in hint), None)
+        if token:
+            found.append(token)
+    if len(found) < 2:
+        return [hint]
+    return found
+
+
 def _resolve_priority_db_ids(
     target_db_hints: list[str],
     active_db_ids: list[str],
@@ -254,6 +293,11 @@ def _resolve_priority_db_ids(
 
     priority_set = set()
     normalized_hints = [hint.strip().lower() for hint in target_db_hints if hint.strip()]
+    # 복수 지역이 한 hint에 든 경우(예: "공동존 김포/여의도") 지역별로 분해 —
+    # hint 단위 배제의 상호 전멸을 방지한다(라이브 실측 2026-07-29 FIX-14).
+    normalized_hints = [
+        part for hint in normalized_hints for part in _split_multi_region_hint(hint)
+    ]
 
     # 지역(공동존/김포/여의도/은행 등)이 명시된 경우, 제품명 단독 토큰("폴스타")은 변별력이 없어
     # 오히려 b0("은행 폴스타") 등을 부분매칭으로 끌어들인다(D-065 후속). 지역 토큰이 있으면

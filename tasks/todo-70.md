@@ -279,18 +279,27 @@
 `enable_deepagents_package`(트랙 B)와 혼동을 일으킨다. 원 계획 v1 오독의 원인 중 하나다.
 
 **Acceptance:**
-- [ ] `enable_intent_orchestration`으로 개명
-- [ ] 구 이름 `AliasChoices` 하위호환 유지 (제거 아님 — 폐기 기한만 D-143에 부여)
-- [ ] 설정 카탈로그(D-129) 항목 반영 · 필드 수 단언 갱신
+- [x] `enable_intent_orchestration`으로 개명
+- [x] 구 이름 `AliasChoices` 하위호환 유지 (제거 아님 — 폐기 기한만 D-143에 부여)
+- [x] 설정 카탈로그(D-129) 항목 반영 — 신 키만 등재, **항목 수 251 불변**(개명이지 추가 아님)
+      → 필드 수 단언 갱신 불필요
 
 **Verify:**
-- [ ] **두 환경변수명 모두**로 기동 확인 (pydantic 필드로 판정 — `os.getenv` 금지)
-- [ ] `pytest tests/test_config_env_reload.py tests/test_graph.py tests/test_api/test_settings_catalog.py -q`
-- [ ] 골든 무갱신
+- [x] **두 환경변수명 모두**로 기동 확인 (pydantic 필드로 판정 — `os.getenv` 금지)
+- [x] `pytest tests/test_config_env_reload.py tests/test_graph.py tests/test_api/test_settings_catalog.py -q`
+- [x] 골든 무갱신
 
 **Files:** `src/config.py`, `.env`, `.env.example`, `src/graph.py`, 소비처
 **Dependencies:** L1, R1
 **Scope:** M
+
+**부수 발견(전체 스위트에서만 드러남):** `validation_alias`를 붙이면 pydantic이 **필드명 주입을
+막는다** — `AppConfig(enable_intent_orchestration=False)`가 조용히 무시되고 `.env` 값으로 떨어진다.
+`populate_by_name=True`로 해소(`MultiDBConfig`가 `ACTIVE_DB_IDS` alias에 쓰는 것과 동일).
+격리 실행에서는 `.env` 값이 우연히 일치하면 통과하므로 영역 스위트로는 잡히지 않았다.
+
+**개명의 대가(실측):** `AliasChoices`는 소스 우선순위보다 **별칭 순서**가 이겨서, `.env`에 신 키가
+있으면 OS env의 구 키가 무시된다. 침묵 손실이라 기동 경고로 가시화했다.
 
 ---
 

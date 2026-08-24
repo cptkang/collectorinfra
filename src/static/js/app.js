@@ -217,6 +217,8 @@
     var messages = []; // session message history
     var stageTimer = null;
     var currentThreadId = null;
+    // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 70 §4 확장)
+    var lastUploadedFile = null;
 
     // ─── Scroll (stick-to-bottom) State ───
     var stickToBottom = true;          // 맨 아래 고정 여부
@@ -563,6 +565,20 @@
 
         var query = promptEl.value.trim();
         if (!query) {
+            // 존 선택 대기 중이면 전송 버튼(Enter 포함)도 '선택한 존으로 조회'와 동일 동작
+            // (사용자는 체크 후 습관적으로 전송을 누름 — 2026-07-24 UX 피드백).
+            var pendingClarify = document.querySelectorAll(".zone-clarify:not(.zone-clarify--done)");
+            if (pendingClarify.length) {
+                var lastBox = pendingClarify[pendingClarify.length - 1];
+                var clarifyConfirm = lastBox.querySelector(".zone-clarify-confirm");
+                var anyChecked = lastBox.querySelector('input[type="checkbox"]:checked');
+                if (clarifyConfirm && anyChecked) {
+                    clarifyConfirm.click();
+                    return;
+                }
+                showError("조회할 존을 선택해주세요.");
+                return;
+            }
             showError("질의를 입력해주세요.");
             return;
         }
@@ -575,6 +591,8 @@
         savedCurrentInput = "";
 
         hideError();
+        // 답하지 않은 존 선택 블록은 새 질의 시작 시 비활성 (보류 상태 자기정리 — Plan 70 §4)
+        disableZoneClarifyBlocks();
 
         // Hide welcome
         if (chatWelcome && !chatWelcome.classList.contains("hidden")) {
@@ -908,7 +926,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -925,6 +943,18 @@
             if (currentThreadId) {
                 streamBody.thread_id = currentThreadId;
             }
+            // Plan 70 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
+            if (selectedDbIds && selectedDbIds.length) {
+                streamBody.selected_db_ids = selectedDbIds;
+            }
+            // Plan 73 D-151: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
+            if (formFillAnswers) {
+                streamBody.form_fill_answers = formFillAnswers;
+                // Phase 3: 기억 옵트인(양식 시그니처 스코프, TTL sliding)
+                if (formFillRemember) {
+                    streamBody.form_fill_remember = true;
+                }
+            }
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
@@ -935,7 +965,7 @@
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query);
+                await executeFallbackQuery(query, selectedDbIds);
                 return;
             }
 
@@ -1022,6 +1052,8 @@
 
             // Finalize streaming message
             finalizeStreamingMessage(finalText, metaData);
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
+            appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1150,6 +1182,13 @@
             }
         }
 
+        // Plan 70 §4: 존 선택 역질문 — 체크박스 블록 렌더 (ID 제거 전에 삽입)
+        if (meta.clarification) {
+            var streamingMsgClar = document.getElementById("streamingMessage");
+            var bubbleClar = streamingMsgClar ? streamingMsgClar.querySelector(".message-bubble") : null;
+            if (bubbleClar) renderZoneClarification(bubbleClar, meta.clarification);
+        }
+
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
         if (streamingMsg) streamingMsg.removeAttribute("id");
@@ -1161,9 +1200,173 @@
         scrollToBottomIfSticky();
     }
 
+    // ─── Zone Clarification (Plan 70 §4) ───
+    // 존 미지정 대량 조회 시 백엔드가 status="clarification"으로 존 선택을 요청한다.
+    // 체크 결과는 자연어 재조합 없이 selected_db_ids(구조화 필드)로 재전송한다(§4.4) —
+    // LLM 재해석 오라우팅(2026-07-16 실측) 차단. 화면에는 "선택: …"만 에코한다.
+    function renderZoneClarification(bubble, clar) {
+        var options = clar.options || [];
+        if (!options.length) return;
+        var boxId = "zoneClarify-" + Date.now();
+        var itemsHtml = options.map(function (o) {
+            return '<label class="zone-clarify-item">' +
+                '<input type="checkbox" value="' + escapeHtml(o.db_id) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '"> ' +
+                escapeHtml(o.label) +
+                '</label>';
+        }).join("");
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify" id="' + boxId + '">' +
+                '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
+                '<button class="zone-clarify-confirm" disabled>선택한 존으로 조회</button>' +
+            '</div>');
+        var box = document.getElementById(boxId);
+        var confirmBtn = box.querySelector(".zone-clarify-confirm");
+        var checks = box.querySelectorAll('input[type="checkbox"]');
+        checks.forEach(function (c) {
+            c.addEventListener("change", function () {
+                // 존 그룹 상호배타(D-143 후속3): 은행존(bank)과 공동존(common)은 동시
+                // 선택 불가 — 다른 그룹을 체크하면 기존 그룹 선택을 해제한다(라디오 동작).
+                // 공동존 내 김포/여의도는 같은 그룹이라 복수 선택 유지.
+                if (clar.group_exclusive && c.checked) {
+                    var g = c.getAttribute("data-group");
+                    checks.forEach(function (x) {
+                        if (x !== c && x.getAttribute("data-group") !== g) x.checked = false;
+                    });
+                }
+                var any = Array.prototype.some.call(checks, function (x) { return x.checked; });
+                confirmBtn.disabled = !any;  // 미선택 시 비활성 (Plan 70 §5.1 항목 3)
+            });
+        });
+        confirmBtn.addEventListener("click", function () {
+            var ids = [], labels = [];
+            checks.forEach(function (c) {
+                if (c.checked) { ids.push(c.value); labels.push(c.getAttribute("data-label")); }
+            });
+            if (!ids.length) return;
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+            // 선택 결과를 사용자 메시지로 에코(대화 이력 가독성) — 라우팅은 selected_db_ids가 결정
+            var echoMsg = { role: "user", content: "선택: " + labels.join(", "), time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            // 파일(폼필) 경로 역질문이면 보관해 둔 파일과 함께 재전송 (Plan 70 §4 확장)
+            if (clar.has_file && lastUploadedFile) {
+                executeFileQuery(clar.original_query || "", lastUploadedFile, ids);
+            } else {
+                executeStreamingQuery(clar.original_query || "", ids);
+            }
+        });
+    }
+
+    function appendZoneClarificationToLastBubble(clar) {
+        // 비스트리밍(JSON) 응답 경로 공용 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
+        if (!clar) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderZoneClarification(last, clar);
+    }
+
+    function disableZoneClarifyBlocks() {
+        // 역질문에 답하지 않고 새 질의를 보내면 보류 블록을 비활성(자기정리 — §4.3-4)
+        document.querySelectorAll(".zone-clarify:not(.zone-clarify--done)").forEach(function (box) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+        });
+        document.querySelectorAll(".form-fill-clarify:not(.zone-clarify--done)").forEach(function (box) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
+        });
+    }
+
+    // ─── Form Fill HITL Panel (Plan 73 §11, D-151) ───
+    // 폼필 미해결 필드 역질문 — 필드별 처리 방법(공란/DB 항목/직접 입력)을 위젯으로
+    // 지정해 form_fill_answers(구조화 필드)로 재전송한다. 자연어 재조합·LLM 파싱 없음
+    // (서버는 존재성 검증만 수행). 존 역질문(selected_db_ids)과 동형 패턴.
+    function renderFormFillPanel(bubble, ctx) {
+        var fields = (ctx && ctx.fields) || [];
+        if (!fields.length) return;
+        var candidates = ctx.candidates || [];
+        var boxId = "formFill-" + Date.now();
+        var candOptions = candidates.map(function (c) {
+            return '<option value="' + escapeHtml(c.value) + '">' + escapeHtml(c.label) + '</option>';
+        }).join("");
+        var rowsHtml = fields.map(function (f) {
+            var name = escapeHtml(f.name);
+            var label = escapeHtml(f.label || f.name);
+            return '<div class="form-fill-row" data-field="' + name + '" style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap;">' +
+                '<div class="form-fill-label" style="min-width:160px;font-weight:600;">' + label + '</div>' +
+                '<select class="form-fill-action">' +
+                    '<option value="blank">공란 유지</option>' +
+                    '<option value="db">DB 항목 선택</option>' +
+                    '<option value="literal">직접 입력</option>' +
+                '</select>' +
+                '<select class="form-fill-candidate" style="display:none;max-width:280px;">' + candOptions + '</select>' +
+                '<input type="text" class="form-fill-literal" style="display:none;" placeholder="채울 값 입력">' +
+            '</div>';
+        }).join("");
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify form-fill-clarify" id="' + boxId + '">' +
+                '<div class="form-fill-title" style="margin-bottom:6px;">' +
+                    escapeHtml(ctx.question || "채우지 못한 항목의 처리 방법을 지정해 주세요.") +
+                '</div>' +
+                rowsHtml +
+                '<label class="form-fill-remember-label" style="display:block;margin:6px 0;">' +
+                    '<input type="checkbox" class="form-fill-remember"> ' +
+                    '이 답을 기억 — 같은 양식에 자동 반영 (일정 기간 후 자동 만료, 사용 시 연장)' +
+                '</label>' +
+                '<button class="zone-clarify-confirm form-fill-confirm">선택한 방법으로 다시 채우기</button>' +
+            '</div>');
+        var box = document.getElementById(boxId);
+        box.querySelectorAll(".form-fill-row").forEach(function (row) {
+            var action = row.querySelector(".form-fill-action");
+            action.addEventListener("change", function () {
+                row.querySelector(".form-fill-candidate").style.display = action.value === "db" ? "" : "none";
+                row.querySelector(".form-fill-literal").style.display = action.value === "literal" ? "" : "none";
+            });
+        });
+        box.querySelector(".form-fill-confirm").addEventListener("click", function () {
+            var answers = {}, summary = [];
+            box.querySelectorAll(".form-fill-row").forEach(function (row) {
+                var field = row.getAttribute("data-field");
+                var action = row.querySelector(".form-fill-action").value;
+                if (action === "db") {
+                    var v = row.querySelector(".form-fill-candidate").value || "";
+                    var sep = v.indexOf(":");
+                    // value="column:name" | "eav:Vendor" → {action: kind, value: 항목명}
+                    answers[field] = { action: v.substring(0, sep), value: v.substring(sep + 1) };
+                    summary.push(field + "=DB 항목(" + v.substring(sep + 1) + ")");
+                } else if (action === "literal") {
+                    var lit = row.querySelector(".form-fill-literal").value;
+                    answers[field] = { action: "literal", value: lit };
+                    summary.push(field + "=직접 입력('" + lit + "')");
+                } else {
+                    answers[field] = { action: "blank", value: null };
+                    summary.push(field + "=공란 유지");
+                }
+            });
+            var rememberEl = box.querySelector(".form-fill-remember");
+            var remember = !!(rememberEl && rememberEl.checked);
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
+            // 선택 요약을 사용자 메시지로 에코(이력 가독성) — 처리 자체는 구조화 필드가 결정
+            var echoText = "양식 답변: " + summary.join(", ") + (remember ? " (기억)" : "");
+            var echoMsg = { role: "user", content: echoText, time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery("[양식 미해결 항목 답변]", null, answers, remember);
+        });
+    }
+
+    function appendFormFillPanelToLastBubble(ctx) {
+        if (!ctx) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderFormFillPanel(last, ctx);
+    }
+
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query) {
+    async function executeFallbackQuery(query, selectedDbIds) {
         renderProcessingMessage();
         resetProgressPanel();
 
@@ -1172,6 +1375,9 @@
             var queryBody = { query: query };
             if (currentThreadId) {
                 queryBody.thread_id = currentThreadId;
+            }
+            if (selectedDbIds && selectedDbIds.length) {
+                queryBody.selected_db_ids = selectedDbIds;
             }
             var response = await fetch("/api/v1/query", {
                 method: "POST",
@@ -1193,6 +1399,11 @@
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
 
+            // Plan 70 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
+            appendZoneClarificationToLastBubble(data.clarification);
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(data.form_fill_clarification);
+
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);
@@ -1201,10 +1412,14 @@
 
     // ─── File Query (SSE streaming) ───
 
-    async function executeFileQuery(query, file) {
+    async function executeFileQuery(query, file, selectedDbIds) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
+
+        // Plan 70 §4 파일 경로: 존 역질문 후 재전송을 위해 파일 참조 보관
+        // (handleSend가 입력창의 selectedFile을 clearFile()로 비우므로 여기서 캡처)
+        lastUploadedFile = file;
 
         renderProcessingMessage();
         resetProgressPanel();
@@ -1214,6 +1429,9 @@
         formData.append("file", file);
         if (currentThreadId) {
             formData.append("thread_id", currentThreadId);
+        }
+        if (selectedDbIds && selectedDbIds.length) {
+            formData.append("selected_db_ids", selectedDbIds.join(","));
         }
 
         try {
@@ -1249,6 +1467,7 @@
                 attachDownloadToLastFileCard(jsonData.query_id);
                 currentThreadId = jsonData.thread_id || currentThreadId;
                 messages.push({ role: "agent", data: jsonData, time: new Date() });
+                appendZoneClarificationToLastBubble(jsonData.clarification);
                 return;
             }
 
@@ -1306,6 +1525,8 @@
                 ? metaData.response : accumulatedText;
             finalizeStreamingMessage(finalText, metaData);
             attachDownloadToLastFileCard(metaData.query_id);
+            // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1360,6 +1581,9 @@
             attachDownloadToLastFileCard(data.query_id);
             currentThreadId = data.thread_id || currentThreadId;
             messages.push({ role: "agent", data: data, time: new Date() });
+            appendZoneClarificationToLastBubble(data.clarification);
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(data.form_fill_clarification);
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);
@@ -2005,6 +2229,11 @@
         var html = '<ul class="step-data-list">';
         tasks.forEach(function (t, idx) {
             var label = agentLabels[t.agent] || t.agent || "작업";
+            // Plan 71: 실행 결과가 실시간 API 경로면 라벨을 실제 경로로 교체
+            // (실행 전 의도 분석 단계에는 source가 없어 "DB 조회"로 표시됨 — 폴백 가능성상 정직한 표기)
+            if (t.source === "realtime_api") {
+                label = "실시간 API 조회";
+            }
             var ordinal = t.order != null ? t.order : (idx + 1);
             var statusBadge = "";
             if (t.status === "completed") {

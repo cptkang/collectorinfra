@@ -48,3 +48,5 @@ multilingual-e5-small/
 sre_agent/.data/
 *.log
 eval_results/
+# DRM 연동 가이드(내부 정보 포함 — 저장소 반입 금지, 로컬 별도 보관)
+docs/servicelinker_guide/

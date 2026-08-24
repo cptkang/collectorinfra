@@ -144,6 +144,51 @@ async def log_user_request(
     await _write_audit_file(entry)
 
 
+async def log_drm_decrypt(
+    file_name: Optional[str],
+    file_size_bytes: int,
+    success: bool,
+    error: Optional[str] = None,
+    ret_code: Optional[int] = None,
+    elapsed_ms: Optional[float] = None,
+    user_id: Optional[str] = None,
+    temp_file: Optional[str] = None,
+    mode: str = "form_fill",
+) -> None:
+    """DRM 복호화 시도를 감사 로그에 기록한다 (Plan 74 §2.8).
+
+    파일 내용은 기록하지 않는다. temp_file은 ServiceLinker 자체 로그
+    (LogPath/TransLogPath)와의 대사 키로 사용된다.
+
+    Args:
+        file_name: 업로드 파일명
+        file_size_bytes: 파일 크기
+        success: 복호화 성공 여부 (drm_disabled 차단도 False로 기록)
+        error: 실패 사유
+        ret_code: scsl CreateDecryptFileDAC 반환값
+        elapsed_ms: 소요 시간 (ms)
+        user_id: 사용자 ID
+        temp_file: 복호화에 사용된 temp 파일명 (scsl 로그 대사용)
+        mode: 호출 경로 — "form_fill"(양식 업로드) | "admin_verify"(어드민 진단)
+    """
+    entry = AuditEntry(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event="drm_decrypt",
+        mode=mode,
+        file_name=file_name,
+        file_size_bytes=file_size_bytes,
+        success=success,
+        error=error,
+        ret_code=ret_code,
+        elapsed_ms=round(elapsed_ms, 2) if elapsed_ms is not None else None,
+        user_id=user_id,
+        temp_file=temp_file,
+    )
+    log_data = {k: v for k, v in entry.to_dict().items() if k != "event"}
+    logger.info("drm_decrypt", **log_data)
+    await _write_audit_file(entry)
+
+
 async def _write_audit_file(entry: AuditEntry) -> None:
     """감사 로그를 날짜별 JSONL 파일에 추가한다.
 

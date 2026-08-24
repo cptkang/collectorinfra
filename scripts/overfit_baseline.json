@@ -33,6 +33,10 @@
       "configuration_id",
       "server.Server"
     ],
+    "src/nodes/realtime_usage.py": [
+      "cmm_resource",
+      "server.Server"
+    ],
     "src/nodes/schema_analyzer.py": [
       "cmm_alarm",
       "cmm_alarm_active",

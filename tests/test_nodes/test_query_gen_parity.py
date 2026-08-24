@@ -24,7 +24,13 @@ class TestResolveQueryLimit:
 
     @pytest.mark.parametrize(
         "query",
-        ["공동존의 전체 서버들에 대하여", "모든 서버 조회", "서버 모두 보여줘"],
+        [
+            "공동존의 전체 서버들에 대하여", "모든 서버 조회", "서버 모두 보여줘",
+            # 2026-07-24 실측 확장: "모든" 없는 전량 나열 표면어("서버별" 등)가
+            # 기본 LIMIT(1000)에 절단되던 질의를 그대로 고정
+            "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 보여줘",
+            "각 서버의 디스크 사용량을 보여줘",
+        ],
     )
     def test_all_query_raises_limit(self, query):
         assert resolve_query_limit(query, 1000) == 10_000
@@ -325,6 +331,11 @@ class TestAnalyzeSchemaAttachesStructureMeta:
         assert meta.get("query_guide")  # 조인 가이드도 함께 로드
 
 
+from src.utils.query_gen_common import (
+    _ALL_QUERY_LIMIT as ALL_LIMIT,  # 전량 상향값 — D-134에서 10,000으로 하향(spec 정합)
+)
+
+
 # ── C: 경로 패리티 가드 (D-067) ───────────────────────────────────────────────
 # 단일 DB(query_generator)와 멀티 DB(multi_db_executor)가 예시·LIMIT 로직을 각자
 # 복붙으로 갈라놓으면 D-066 같은 비대칭이 재발한다. 두 경로가 같은 헬퍼를 참조하고,
@@ -343,7 +354,7 @@ class TestCrossPathParity:
         mdb = importlib.import_module("src.nodes.multi_db_executor")
         # few-shot 예시 주입은 P3-1에서 `build_query_examples`(이력/고정 선택 포함)로 통합됐다.
         assert qg.build_query_examples is mdb.build_query_examples
-        assert qg.resolve_query_limit is mdb.resolve_query_limit
+        assert qg.resolve_effective_limit is mdb.resolve_effective_limit
 
     def test_both_paths_use_shared_prompt_builders(self):
         """P3-1 공유 빌더를 두 경로가 같은 객체로 참조한다(복붙 재분기 차단).
@@ -445,3 +456,177 @@ class TestCrossPathParity:
         assert "::numeric" in decimal_cast_example("postgresql")
         assert "DECIMAL" in decimal_cast_example("db2")
         assert "::numeric" not in decimal_cast_example("db2")  # DB2 문법 오류 방지
+
+
+# ── D: 원문 기준 resolved_limit 승격 (Plan 70 §3, D-066 후속) ─────────────────
+# 폐쇄망 실측(2026-07-24): 오케스트레이션 단일 DB 경로가 user_query를 semantic_router
+# 정제 질의(sub_query_context)로 교체하며 "모든"이 탈락 → LIMIT 1000 절단
+# (은행존 2,328대 중 1,328대 누락, 멀티 경로는 sub_query 유지로 미발현).
+# limit 신호는 문자열이 아니라 state(resolved_limit)로 운반한다.
+
+
+class TestResolvedLimitPromotion:
+    """원문 기준 LIMIT 확정값(resolved_limit) 승격·소비 회귀 가드."""
+
+    # 실측 질의 1(2026-07-24)과 그 정제 축소 형태를 그대로 고정한다.
+    ORIGINAL = "은행존에 등록된 모든 데이터들에 대해 OS 종류 및 버전을 확인"
+    TRIMMED = "OS 종류 및 버전 조회"
+
+    def test_old_bug_shape_documented(self):
+        """정제 질의만 보면 기본 LIMIT로 떨어진다 — 승격 없이는 절단(버그 형태 고정)."""
+        from src.utils.query_gen_common import resolve_effective_limit
+
+        assert resolve_effective_limit({}, self.TRIMMED, 1000) == 1000
+
+    def test_promoted_limit_survives_trimmed_query(self):
+        """resolved_limit이 승격돼 있으면 정제 질의와 무관하게 원문 기준 값을 쓴다."""
+        from src.utils.query_gen_common import resolve_effective_limit
+
+        state = {"user_query": self.TRIMMED, "resolved_limit": 100_000}
+        assert resolve_effective_limit(state, self.TRIMMED, 1000) == 100_000
+
+    def test_explicit_count_promoted(self):
+        """명시 건수("100건")도 원문 기준으로 승격·보존된다."""
+        from src.utils.query_gen_common import (
+            resolve_effective_limit,
+            resolve_query_limit,
+        )
+
+        promoted = resolve_query_limit("경고 알람 100건 조회해줘", 1000)
+        assert promoted == 100
+        assert resolve_effective_limit({"resolved_limit": promoted}, self.TRIMMED, 1000) == 100
+
+    def test_none_or_invalid_promotion_falls_back(self):
+        """resolved_limit이 None/0/음수면 무시하고 표면어 폴백 계산(방어)."""
+        from src.utils.query_gen_common import resolve_effective_limit
+
+        for bad in (None, 0, -1):
+            assert resolve_effective_limit({"resolved_limit": bad}, "모든 서버", 1000) == ALL_LIMIT
+
+    def test_both_paths_reference_same_effective_helper(self):
+        """단일/멀티 경로가 동일 resolve_effective_limit 객체를 참조(복붙 분기 차단, D-067)."""
+        import importlib
+
+        qg = importlib.import_module("src.nodes.query_generator")
+        mdb = importlib.import_module("src.nodes.multi_db_executor")
+        assert qg.resolve_effective_limit is mdb.resolve_effective_limit
+
+    def test_isolated_input_promotes_from_original_query(self):
+        """_make_isolated_input이 sub_query 대체 **전** 원문으로 limit을 승격하는지.
+
+        실측 질의 1 재현: 원문에 "모든" → isolated.resolved_limit=100,000이어야 하며,
+        이후 호출부의 user_query 교체(sub_query/sub_query_context)에도 값이 보존된다.
+        """
+        from src.orchestration.subagents import _make_isolated_input
+        from src.utils.query_gen_common import resolve_effective_limit
+
+        state = {"user_query": self.ORIGINAL, "parsed_requirements": {}}
+        task = {"task_id": "t1", "agent": "data_query", "sub_query": self.TRIMMED}
+        isolated = _make_isolated_input(task, state, prior={})
+
+        assert isolated["resolved_limit"] == ALL_LIMIT
+
+        # 호출부의 교체(agent_orchestrator._run_agent / subagents 단일 DB 파이프라인) 재현
+        isolated["user_query"] = self.TRIMMED
+        assert resolve_effective_limit(isolated, isolated["user_query"], 1000) == ALL_LIMIT
+
+    def test_isolated_input_respects_pre_promoted_value(self):
+        """상류(라우트 등)에서 이미 승격된 resolved_limit이 있으면 재계산하지 않고 존중."""
+        from src.orchestration.subagents import _make_isolated_input
+
+        state = {
+            "user_query": self.ORIGINAL,
+            "parsed_requirements": {},
+            "resolved_limit": 100,  # 예: 원문 "100건" 턴의 승격값
+        }
+        task = {"task_id": "t1", "agent": "data_query", "sub_query": self.TRIMMED}
+        isolated = _make_isolated_input(task, state, prior={})
+        assert isolated["resolved_limit"] == 100
+
+
+class TestEnforceAllQueryLimit:
+    """few-shot 예시 말미 캡 모방 교정 가드 (D-066 후속8, 2026-07-24 b0 실측).
+
+    실측: "은행존의 모든 서버들에 대해 실시간 CPU 사용률" — 지시 limit 100,000인데
+    LLM이 프로필 예시의 `FETCH FIRST 100 ROWS ONLY`를 모방 → 2,328대 중 100행.
+    """
+
+    def test_db2_example_cap_corrected(self):
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = (
+            "SELECT r.hostname FROM POLESTAR.cmm_resource r\n"
+            "WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL\n"
+            "FETCH FIRST 100 ROWS ONLY;"
+        )
+        out = enforce_all_query_limit(sql, ALL_LIMIT, 1000)
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY;" in out
+        assert "FETCH FIRST 100 ROWS ONLY" not in out
+
+    def test_pg_default_cap_corrected(self):
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        out = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", ALL_LIMIT, 1000)
+        assert out.endswith(f"LIMIT {ALL_LIMIT}")
+
+    def test_intentional_top_n_preserved(self):
+        """LIMIT 1(최상위 1건) 등 캡 집합 밖 TOP-N은 '모든' 질의여도 보존."""
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = "SELECT * FROM t ORDER BY v DESC LIMIT 1"
+        assert enforce_all_query_limit(sql, ALL_LIMIT, 1000) == sql
+
+    def test_subquery_latest_value_pattern_preserved(self):
+        """서브쿼리의 FETCH FIRST 1 ROW ONLY(최신값 패턴)는 보존, 말미 캡만 교정."""
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = (
+            "SELECT r.hostname, (SELECT m.v FROM m WHERE m.rid = r.id "
+            "ORDER BY m.t DESC FETCH FIRST 1 ROW ONLY) AS last_v\n"
+            "FROM POLESTAR.cmm_resource r\n"
+            "FETCH FIRST 100 ROWS ONLY;"
+        )
+        out = enforce_all_query_limit(sql, ALL_LIMIT, 1000)
+        assert "FETCH FIRST 1 ROW ONLY" in out
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY;" in out
+
+    def test_non_all_query_untouched(self):
+        """'모든' 상향이 아니면(명시 건수·기본) 어떤 SQL도 교정하지 않는다."""
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = "SELECT * FROM t LIMIT 100"
+        assert enforce_all_query_limit(sql, 100, 1000) == sql      # 명시 "100건"
+        assert enforce_all_query_limit(sql, 1000, 1000) == sql     # 기본
+
+    def test_no_trailing_limit_untouched(self):
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = "SELECT COUNT(*) FROM t"
+        assert enforce_all_query_limit(sql, ALL_LIMIT, 1000) == sql
+        assert enforce_all_query_limit("", ALL_LIMIT, 1000) == ""
+
+    def test_case_insensitive(self):
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        out = enforce_all_query_limit("select * from t fetch first 100 rows only", ALL_LIMIT, 1000)
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY" in out
+
+    def test_legacy_default_cap_corrected_after_config_uplift(self):
+        """운영이 QUERY_DEFAULT_LIMIT을 상향(10,000)해도 레거시 캡 1000은 교정된다.
+
+        2026-08-05 라이브 실측: "은행존과 공동존 김포의 서버들…조회"(전량 상향 100k)가
+        1,000건 절단 — LLM이 관례 캡 1000을 모방했는데 캡 집합이 {100, config_default}라
+        config_default=10,000으로 바꾼 순간 1000이 교정 대상에서 빠졌다(D-153 후속2).
+        """
+        from src.utils.query_gen_common import enforce_all_query_limit
+
+        sql = "SELECT r.hostname FROM POLESTAR.cmm_resource r FETCH FIRST 1000 ROWS ONLY"
+        out = enforce_all_query_limit(sql, ALL_LIMIT, 10_000)
+        assert f"FETCH FIRST {ALL_LIMIT} ROWS ONLY" in out
+
+        out2 = enforce_all_query_limit("SELECT * FROM t LIMIT 1000", ALL_LIMIT, 10_000)
+        assert out2.endswith(f"LIMIT {ALL_LIMIT}")
+
+        # 새 config_default(10,000) 캡도 여전히 교정된다
+        out3 = enforce_all_query_limit("SELECT * FROM t LIMIT 10000", ALL_LIMIT, 10_000)
+        assert out3 == "SELECT * FROM t LIMIT 10000"  # 캡==상향값이면 교정 불요(동치)

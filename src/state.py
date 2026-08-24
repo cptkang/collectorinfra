@@ -108,6 +108,10 @@ class AgentState(TypedDict):
     smq_derivation: Optional[list[SmqDerivation]]  # 트랙 S(S2/D-128) 단계적 도출 기록; 미발동 None
     column_value_index: Optional[dict[str, list[str]]]  # E5-2 실측 값 인덱스 런타임 주입 {column: [값,...]}
     synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
+    # FabriX PII 필터 차단 시 프롬프트 섹션별 로컬 스캔 진단(D-155) — query_generator가
+    # 차단 감지 시 산출, query_validator가 에러 메시지에 노출(폐쇄망 UI 자가 진단).
+    # 생성 시도 스코프 값(차단 아닌 생성이 성공하면 의미 없음 — 소비부가 차단 시에만 읽음).
+    pii_block_diagnosis: Optional[str]
     validation_result: ValidationResult      # 검증 결과
     query_results: list[dict[str, Any]]      # 현재 쿼리 실행 결과
 
@@ -118,6 +122,11 @@ class AgentState(TypedDict):
     retry_count: int                         # 재시도 횟수 (최대 3)
     error_message: Optional[str]             # 에러 메시지 (재시도 시 참조)
     current_node: str                        # 현재 실행 중인 노드
+    # 원문 기준 LIMIT 확정값 (Plan 70 §3 / D-066 후속). 오케스트레이션이 user_query를
+    # sub_query/sub_query_context로 교체하기 전에 원문으로 계산해 승격한다 — 문자열 훼손과
+    # 무관하게 보존. None이면 소비부(resolve_effective_limit)가 user_query로 폴백 계산.
+    # 요청 스코프 값이므로 매 턴 초기화(create_initial_state/create_followup_input).
+    resolved_limit: Optional[int]
 
     # === 실행 이력 ===
     query_attempts: list[QueryAttempt]       # SQL 시도 이력 (디버깅/감사용)
@@ -130,6 +139,36 @@ class AgentState(TypedDict):
     pending_synonym_registrations: Optional[list[dict]]      # 유사어 등록 대기 [{index, field, column, db_id}]
     llm_inference_details: Optional[list[dict]]              # LLM 추론 매핑 상세 [{field, db_id, column, matched_synonym, confidence, reason}]
     mapping_report_md: Optional[str]                         # 매핑 보고서 Markdown 텍스트
+    # 폼필 월 시리즈(M~M+5) 인식 결과(D-146) — {start, end: YYYYMM, resource_type, fields}.
+    # output_generator가 기준월을 응답에 명시하고 인식 필드를 미작성 사유(D-147)에서 제외.
+    # 요청 스코프 값 — 매 턴 초기화.
+    form_month_anchor: Optional[dict]
+
+    # === 멀티턴 HITL 폼필 (Plan 73 Phase 2, D-151) ===
+    # 역질문 답변(요청 스코프 — route가 이번 턴 값 주입, followup에서 매 턴 초기화).
+    # {field: {"action": "blank"|"column"|"eav"|"literal", "value": str|None}}
+    form_fill_answers: Optional[dict[str, dict]]
+    # 검증 통과 오버라이드(요청 스코프, query_generator/multi 산출) — 사유 노출용.
+    # {field: {"action":..., "value":..., "applied": bool, "reason": str|None}}
+    form_fill_overrides: Optional[dict[str, dict]]
+    # 직접 입력 상수(요청 스코프) — writer가 전 데이터 행 동일값 기입. {field: value}
+    form_fill_literals: Optional[dict[str, str]]
+    # 역질문 드롭다운 후보(요청 스코프, 스키마 실측 산출) — [{value, label, kind}]
+    form_fill_candidates: Optional[list[dict]]
+    # 역질문 대기 상태(멀티턴 보존 — pending_synonym_registrations 동형).
+    # {uploaded_file: bytes, file_type: str, original_query: str,
+    #  unresolved: [필드명, ...], candidates: [...]}
+    # 정리: ①답변 적용 후 미해결 0 ②새 파일 업로드 턴(교체). output_generator가 관리.
+    pending_form_fill: Optional[dict]
+    # 역질문 페이로드(요청 스코프) — API 응답이 프론트 패널 렌더에 사용.
+    # {"question": str, "fields": [{"name", "reason"}], "candidates": [...]}
+    form_fill_clarification: Optional[dict]
+    # 기억 옵트인(요청 스코프, Phase 3) — 답변 턴에서만 라우트가 주입.
+    form_fill_remember: Optional[bool]
+    # 직전 양식 시그니처(멀티턴 보존, FIX-23) — 파일 재첨부 없는 "기억 보여줘/삭제"가
+    # 직전 양식을 가리키게 한다. 양식 턴(②.7 조회·③.5 채우기)마다 갱신(최신 승리),
+    # followup에서 비우지 않는다(pending_* 계열).
+    last_form_signature: Optional[str]
 
     # === 유사단어 재활용 대기 ===
     pending_synonym_reuse: Optional[dict]
@@ -151,6 +190,17 @@ class AgentState(TypedDict):
     db_errors: dict[str, str]                # DB별 에러 메시지 {db_id: error_msg}
     is_multi_db: bool                        # 멀티 DB 쿼리 여부
     user_specified_db: Optional[str]         # 사용자가 직접 지정한 DB (없으면 None)
+    # 존 역질문(Plan 70 §4)에서 사용자가 체크박스로 선택한 DB 목록. LLM 재해석 없이
+    # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
+    # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
+    selected_db_ids: Optional[list[str]]
+    # 존 역질문 후단 게이트 허용 채널 여부(D-143 후속2). 대화형 텍스트 라우트만 True로
+    # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
+    # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
+    zone_clarification_allowed: Optional[bool]
+    # 존 역질문 후단 게이트 발동 페이로드(D-143 후속2, 요청 스코프) — 라우트가
+    # status="clarification" 응답으로 변환(pre-gate와 동일 shape, 프론트 재사용).
+    zone_clarification: Optional[dict]
 
     # === [Phase 3] 멀티턴 대화 ===
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
@@ -204,7 +254,11 @@ class AgentState(TypedDict):
     replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
 
 
-def create_followup_input(user_query: str) -> dict:
+def create_followup_input(
+    user_query: str,
+    selected_db_ids: Optional[list[str]] = None,
+    allow_zone_clarification: bool = False,
+) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
     멀티턴에서 체크포인터는 이전 턴 State 전체를 복원하고, 텍스트 경로는 델타 키만
@@ -233,6 +287,28 @@ def create_followup_input(user_query: str) -> dict:
         "uploaded_file": None,
         "file_type": None,
         "csv_sheet_data": None,
+        # 원문 기준 LIMIT 확정값은 요청 스코프 — 직전 턴 값이 승계되지 않도록 명시 초기화
+        # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 70 §3).
+        "resolved_limit": None,
+        # 폼필 월 시리즈 앵커(D-146)도 요청 스코프 — 직전 폼필 턴 값이 텍스트 턴 응답에
+        # 기준월 안내로 잔존하지 않도록 명시 초기화(field_mapper 산출물이 아니라 자기정리 필요).
+        "form_month_anchor": None,
+        # 존 선택(Plan 70 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
+        # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
+        "selected_db_ids": selected_db_ids,
+        # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
+        # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
+        "zone_clarification_allowed": allow_zone_clarification,
+        "zone_clarification": None,
+        # HITL 폼필(D-151) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
+        # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
+        # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
+        "form_fill_answers": None,
+        "form_fill_overrides": None,
+        "form_fill_literals": None,
+        "form_fill_candidates": None,
+        "form_fill_clarification": None,
+        "form_fill_remember": None,
     }
 
 
@@ -247,6 +323,9 @@ def create_initial_state(
     allowed_db_ids: Optional[list[str]] = None,
     request_id: Optional[str] = None,
     client_ip: Optional[str] = None,
+    selected_db_ids: Optional[list[str]] = None,
+    resolved_limit: Optional[int] = None,
+    allow_zone_clarification: bool = False,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -283,6 +362,17 @@ def create_initial_state(
         pending_synonym_registrations=None,
         llm_inference_details=None,
         mapping_report_md=None,
+        form_month_anchor=None,
+        # HITL 폼필(D-151): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
+        # (새 파일 업로드 턴은 output_generator가 새 미해결로 교체).
+        form_fill_answers=None,
+        form_fill_overrides=None,
+        form_fill_literals=None,
+        form_fill_candidates=None,
+        form_fill_clarification=None,
+        form_fill_remember=None,
+        last_form_signature=None,
+        pending_form_fill=None,
         pending_synonym_reuse=None,
         column_descriptions={},
         column_synonyms={},
@@ -294,6 +384,7 @@ def create_initial_state(
         smq_derivation=None,
         column_value_index=None,
         synonym_usage=None,
+        pii_block_diagnosis=None,
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={
@@ -307,6 +398,9 @@ def create_initial_state(
         retry_count=0,
         error_message=None,
         current_node="",
+        # 라우트가 원문 기준으로 승격한 LIMIT 확정값(D-066 후속7). 파일(폼필) 경로는
+        # 전량 채움이 기본이라 라우트가 상향값을 명시 전달한다(Plan 71 후속 — 폼필 1000 절단).
+        resolved_limit=resolved_limit,
         query_attempts=[],
         active_db_engine=None,
         routing_intent=None,
@@ -317,6 +411,9 @@ def create_initial_state(
         db_errors={},
         is_multi_db=False,
         user_specified_db=None,
+        selected_db_ids=selected_db_ids,
+        zone_clarification_allowed=allow_zone_clarification,
+        zone_clarification=None,
         # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,

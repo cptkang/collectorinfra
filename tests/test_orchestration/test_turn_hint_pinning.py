@@ -147,8 +147,9 @@ class TestContextBlockLocationGate:
         assert "polestar_cm_gp" not in block
         # 이번 질의 위치만 쓰라는 지시가 대신 들어간다
         assert "이번 질의에 적힌 위치만" in block
-        # 지시어 해소용 엔티티·요약 줄은 유지(D-055 보존)
-        assert "hostname=###" in block
+        # 요약 줄은 유지. 서버 엔티티는 지시어 없는 질의라 미주입(D-153 후속1 —
+        # 지시어 턴에만 주입, 샘플 엔티티의 스코프 오염 차단).
+        assert "hostname=###" not in block
         assert "폼필 완료" in block
 
     def test_no_location_keeps_previous_lines(self):

@@ -21,6 +21,12 @@ from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.db_adapters import get_adapter
+from src.security.pii_filter import (
+    diagnose_blocked_prompt,
+    is_filter_blocked,
+    is_scrub_samples_enabled,
+    scrub_pii,
+)
 from src.state import AgentState
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
@@ -28,9 +34,13 @@ from src.utils.query_gen_common import (
     build_prior_rows_block,
     build_stat_month_block,
     correct_servername_hostname_mapping,
+    eav_value_cast_columns,
+    enforce_all_query_limit,
     extract_sql_from_response,
-    resolve_query_limit,
+    normalize_eav_numeric_casts,
+    resolve_effective_limit,
     resolve_stat_month_range,
+    template_context_text,
 )
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
@@ -45,11 +55,13 @@ from src.nodes.prompt_blocks import (
     build_value_index_injection,
     build_value_joins_block,
     eav_patterns_of,
+    estimate_prompt_tokens,
     filter_mapping_by_schema,
     first_eav_pattern,
     format_schema_text,
     path_parity_enabled,
     prior_server_scope,
+    resolve_prompt_token_budget,
     select_history_fewshot,
     split_eav_by_resource_type,
     split_mapping_entries,
@@ -61,16 +73,26 @@ from src.nodes.prompt_blocks import (
 from src.db_adapters.polestar.assembler import (
     METRIC_PIVOT_KEYS,
     METRIC_PIVOT_TABLE,
+    apply_capacity_scope_rule,
+    apply_remark_server_name_rule,
+    build_form_fill_candidates,
     build_form_fill_pivot_sql,
+    build_month_series_block,
     build_multi_resource_pivot_block,
     decimal_cast_example,
     eav_attr_resource_types,
+    filter_pivot_regular_entries,
+    find_vendor_model_concat,
+    recognize_month_series,
+    resolve_form_fill_answers,
 )
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
 from src.tools.metrics import classify_metric_field
+from src.schema_cache.form_memory import load_form_memory_answers
+from src.utils.schema_utils import safe_sample_preview
 from src.utils.synonym_usage import extract_synonym_usage
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
@@ -175,50 +197,181 @@ def _try_build_form_fill_pivot_sql(
     user_query: str,
     *,
     adapter_db_ids: set[str] | None = None,
-) -> Optional[str]:
-    """폼필에 자식 리소스 EAV(CPU 코어 수/메모리 용량 등)가 있으면 결정적 피벗 SQL을 조립한다.
+) -> Optional[dict]:
+    """폼필 결정적 피벗 SQL 조립 — 자식 리소스 EAV·월 시리즈·양식 업로드(D-068/D-146/D-149).
 
     프롬프트로 스켈레톤을 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
     (서버 중복·config 누락)한다. well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을 우회한다
-    (D-068 2차). 해당 케이스가 아니면 None(LLM 경로 유지).
+    (D-068 2차). 양식 업로드(template_structure) 턴은 월 시리즈·자식 EAV가 없어도 항상 결정적
+    조립한다(D-149 — 경로 선택이 per-DB LLM 매핑에 종속돼 LLM 폴백이 GROUP BY 계약을 깨던
+    라이브 실측의 근본 수정). 해당 케이스가 아니면 None(LLM 경로 유지).
 
     Args:
         adapter_db_ids: 어댑터 담당 db_id 집합 — 지표 필드 분류를 레지스트리로 디스패치한다.
+
+    Returns:
+        {"sql": str, "month_anchor": dict|None, "mapping_updates": dict, "candidates": list,
+        "overrides": dict, "literals": dict} 또는 None.
+        month_anchor는 M~M+max 실제 월(응답 명시 §2.4)·인식 필드 목록(D-147 사유 제외용),
+        mapping_updates는 요청 스코프 규칙(처리능력 GB 등)의 매핑 갱신분(state 반영용).
     """
     column_mapping = state.get("column_mapping")
     if not column_mapping:
         return None
+    form_intent = bool(state.get("template_structure"))
     schema_info = state.get("schema_info") or {}
     eav_pattern = _get_eav_pattern(schema_info)
+    active_db_id = state.get("active_db_id") or ""
     # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정(프로필 확정 규칙).
     # state를 오염시키지 않도록 사본에 적용.
     column_mapping = dict(column_mapping)
     if eav_pattern:
         correct_servername_hostname_mapping(column_mapping, eav_pattern.get("entity_table", ""))
     attr_rt = eav_attr_resource_types(schema_info)
-    _, eav_entries = split_mapping_entries(column_mapping)
-    child_eav, server_eav = split_eav_by_resource_type(
-        eav_entries, attr_rt, entity_resource_type=_ENTITY_RESOURCE_TYPE
+
+    # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-149) — 라이브 오염(TPMC·acl_id·
+    # epoch류)의 공통 출처. 유사어·힌트 출처와 아래 확정 규칙만 채움 허용, 나머지는
+    # 공란+사유(역질문 후보). 키는 유지(월 시리즈 인식·결합 규칙이 필드명을 본다).
+    _inferred_dropped: list[str] = []
+    if form_intent:
+        _sources = state.get("mapping_sources") or {}
+        _inferred_dropped = [
+            f for f, c in column_mapping.items()
+            if c and _sources.get(f) == "llm_inferred"
+        ]
+        for f in _inferred_dropped:
+            column_mapping[f] = None
+        if _inferred_dropped:
+            logger.info(
+                "폼필 llm_inferred 매핑 %d건 채움 제외(D-149, 역질문 후보): %s",
+                len(_inferred_dropped), _inferred_dropped,
+            )
+
+    # 월 시리즈(가로 6개월 등) 인식 + 요청 스코프 규칙(D-146/D-148). 인식 실패는 폴백(무발동).
+    month_series = recognize_month_series(
+        column_mapping,
+        context_text=template_context_text(state.get("template_structure")),
+        user_query=user_query,
     )
-    if not child_eav:
+    mapping_updates: dict[str, Optional[str]] = {}
+    # 채움 제외된 llm_inferred 필드는 state 매핑도 None으로 — writer가 낡은 매핑으로
+    # 역조회해 무관 칼럼 값을 채우는 것을 차단(엄격 필드명 조회로 공란 보장).
+    # 이후 확정 규칙(_cap 등)이 같은 필드를 갱신하면 규칙이 우선한다(dict.update 순서).
+    mapping_updates.update({f: None for f in _inferred_dropped})
+    if month_series:
+        _cap = apply_capacity_scope_rule(
+            column_mapping, attr_rt, month_series.resource_type
+        )
+        _remark = apply_remark_server_name_rule(
+            column_mapping,
+            (eav_pattern or {}).get("entity_table", "cmm_resource"),
+        )
+        column_mapping.update(_cap)
+        column_mapping.update(_remark)  # SQL은 등록명 SELECT — 비고 규칙(사용자 확정)
+        mapping_updates.update(_cap)
+        # 월 시리즈·비고 필드는 state 매핑을 **강제 None**으로 갱신한다 — writer가 필드명
+        # (=SELECT alias=행 키)으로 조회하게 하기 위함. 라이브 실측(2026-07-28 3차):
+        # field_mapper가 월 필드 전부를 같은 칼럼(cmm_metric_stat_m.avg_val)으로 매핑해
+        # 두면 writer 역매핑(N:1의 마지막 필드)이 6칼럼에 동일값(M+5)을 복제한다.
+        mapping_updates.update({f: None for f in month_series.fields})
+        mapping_updates.update({f: None for f in _remark})
+
+    # 제조사(모델명)류는 Vendor+Model 결합으로 채운다(D-148 — 라이브 실측: 한쪽만 매핑돼
+    # 반쪽 값). 결합 대상 필드는 단독 EAV/직접 컬럼 파티션에서 제외(중복 alias 방지).
+    concat_eav = find_vendor_model_concat(schema_info, column_mapping)
+    concat_fields = {c[0] for c in concat_eav}
+    if month_series and concat_fields:
+        # 결합 필드도 행 키=필드명 조회 강제(잔존 EAV:Vendor류 매핑의 오조회 방지)
+        mapping_updates.update({f: None for f in concat_fields})
+
+    # 사용자 답변 오버라이드(D-151) — 우선순위 최상위(사용자 > 확정 규칙 > 자동 매핑).
+    # 규칙·결합 산출 뒤에 적용해 같은 필드는 사용자 답이 이긴다. 검증(존재성)은
+    # resolve_form_fill_answers가 수행하고, 탈락분은 사유와 함께 반환돼 응답에 노출된다.
+    overrides_out: dict[str, dict] = {}
+    literals_out: dict[str, str] = {}
+    _answers = state.get("form_fill_answers") if form_intent else None
+    if _answers:
+        _protected = set(month_series.fields) if month_series else set()
+        overrides_out, _ov_map, literals_out = resolve_form_fill_answers(
+            _answers, schema_info, eav_pattern, protected_fields=_protected,
+        )
+        _applied = [f for f, o in overrides_out.items() if o.get("applied")]
+        _rejected = [(f, o.get("reason")) for f, o in overrides_out.items() if not o.get("applied")]
+        if _applied:
+            logger.info("폼필 답변 오버라이드 적용(D-151): %s", _applied)
+        if _rejected:
+            logger.info("폼필 답변 오버라이드 거부(D-151): %s", _rejected)
+        column_mapping.update(_ov_map)
+        mapping_updates.update(_ov_map)
+        # 오버라이드/직접입력 필드는 결합 규칙에서 제외(중복 alias·사용자 층 우선)
+        _ov_fields = set(_ov_map.keys()) | set(literals_out.keys())
+        concat_eav = [c for c in concat_eav if c[0] not in _ov_fields]
+        concat_fields = {c[0] for c in concat_eav}
+
+    eav_entries = [
+        (f, c[4:]) for f, c in column_mapping.items()
+        if c and c.startswith("EAV:") and f not in concat_fields
+    ]
+    child_eav = [
+        (f, a, attr_rt[a.upper()])
+        for f, a in eav_entries
+        if a.upper() in attr_rt and attr_rt[a.upper()] != _ENTITY_RESOURCE_TYPE
+    ]
+    # D-149 게이트: 자식 EAV·월 시리즈 외에 양식 업로드(form_intent) 자체가 발동 조건.
+    # eav_pattern 부재 DB(비폴스타)는 발동하지 않는다(현행 LLM 경로 유지).
+    if not child_eav and not month_series and not form_intent:
         return None
     if not eav_pattern:
         return None
+    if form_intent and not child_eav and not month_series:
+        logger.info(
+            "폼필 결정적 계약 경로(D-149): 월시리즈·자식EAV 없음 — 게이트 확장으로 조립"
+        )
+    server_eav = [
+        (f, a) for f, a in eav_entries
+        if a.upper() not in attr_rt or attr_rt[a.upper()] == _ENTITY_RESOURCE_TYPE
+    ]
     # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(미매핑으로 접힘)
     regular_entries = [
         (f, c) for f, c in column_mapping.items()
         if c and not c.startswith("EAV:") and "cmm_metric_stat" not in c.lower()
+        and f not in concat_fields
     ]
-    active_db_id = state.get("active_db_id") or ""
+    # 환각 매핑 칼럼(스키마에 없는 칼럼)이 결정적 SELECT에 유입되면 쿼리 전체가 죽는다
+    # (라이브 실측: 구분→cmm_resource.category). 스키마 검증 + 검증 불가 시 entity
+    # 안전 화이트리스트로 결정적 차단(FIX-5/FIX-13).
+    regular_entries, _dropped = filter_pivot_regular_entries(
+        regular_entries, schema_info, eav_pattern.get("entity_table", "cmm_resource")
+    )
+    if _dropped:
+        logger.warning(
+            "폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외(환각 매핑 차단) — %s",
+            len(_dropped), _dropped,
+        )
+        # 불변식(FIX-25): SQL SELECT에서 제외된 필드는 state 매핑도 None — 낡은 매핑이
+        # 남으면 writer의 유연 조회(부분 매칭 등)가 무관한 행 키(예: 'IP')로 오채움한다
+        # (라이브 실측: 비고=IP값. 월/결합/llm_inferred 강제 None과 동일 패턴).
+        mapping_updates.update({f: None for f, _c in _dropped})
+    # 월 피벗/폼필인데 서버 식별 컬럼이 하나도 없으면 행 대조가 불가능 — 결정적 식별 컬럼 주입
+    # (alias는 양식 헤더와 무충돌인 라틴명 — writer가 무시하고 병합·진단에만 쓰임).
+    if (month_series or form_intent) and not regular_entries and not server_eav and not concat_eav:
+        entity = eav_pattern.get("entity_table", "cmm_resource")
+        regular_entries = [
+            ("server_name", f"{entity}.name"), ("hostname", f"{entity}.hostname"),
+        ]
+    month_fields = set(month_series.fields) if month_series else set()
+    # 적용된 오버라이드(공란/직접입력 포함)는 metric 회수 대상에서 제외 — 사용자 층 우선
+    _applied_ov = {f for f, o in overrides_out.items() if o.get("applied")}
     metric_fields = [
         f for f, c in column_mapping.items()
-        if c is None and classify_metric_field(
+        if c is None and f not in month_fields and f not in concat_fields
+        and f not in _applied_ov and classify_metric_field(
             f, db_id=active_db_id, adapter_db_ids=adapter_db_ids
         )
     ]
     domain = get_domain_by_id(active_db_id)
     db_schema = domain.db_schema if domain else ""
-    return build_form_fill_pivot_sql(
+    sql = build_form_fill_pivot_sql(
         regular_entries, server_eav, child_eav, eav_pattern,
         metric_fields=metric_fields,
         db_engine=state.get("active_db_engine"),
@@ -226,14 +379,36 @@ def _try_build_form_fill_pivot_sql(
         limit=limit_value,
         # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경). 제외하면
         # "지난 반년 + 양식 첨부"처럼 표면어가 미매칭인 질의에서 stat_date 필터가 통째로 빠져
-        # 전 기간 평균으로 침묵 왜곡된다(D-099 계열). LIMIT은 이미 노드의 단일 값(limit_value)을
-        # 물려받아 폴백이 적용되므로 기간만 제외하면 오히려 비대칭이다.
-        # 멀티 경로 `multi_db_executor._generate_sql`의 폼필 피벗도 동형(D-066).
+        # 전 기간 평균으로 침묵 왜곡된다(D-099 계열). 멀티 경로 폼필 피벗도 동형(D-066).
         stat_month=resolve_stat_month_range(
             user_query,
             parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
         ),
+        month_measures=month_series.measures if month_series else None,
+        concat_eav=concat_eav or None,
     )
+    month_anchor = None
+    if month_series:
+        month_anchor = {
+            "start": month_series.anchor[0],
+            "end": month_series.anchor[1],
+            "resource_type": month_series.resource_type,
+            "fields": month_series.fields,
+        }
+        logger.info(
+            "폼필 월 시리즈 인식(D-146): rt=%s, 기간=%s~%s, 필드=%d개",
+            month_series.resource_type, month_series.anchor[0],
+            month_series.anchor[1], len(month_series.fields),
+        )
+    return {
+        "sql": sql,
+        "month_anchor": month_anchor,
+        "mapping_updates": mapping_updates,
+        # HITL 폼필(D-151): 역질문 드롭다운 후보(스키마 실측) + 답변 적용/거부 내역 + 상수
+        "candidates": build_form_fill_candidates(schema_info, eav_pattern) if form_intent else [],
+        "overrides": overrides_out,
+        "literals": literals_out,
+    }
 
 
 @dataclass(frozen=True)
@@ -280,8 +455,11 @@ def _prepare(
     # (Plan 67 R3-(i)). 종전에는 이 두 값이 계산만 되고 SQL 경로에서 소비되지 않아 "지난 반년"·
     # "100개만" 류가 침묵 소실됐다. 정규식이 매칭되면 폴백은 발동하지 않는다(동작 불변).
     _parsed_req = state.get("parsed_requirements") or {}
-    limit_value = resolve_query_limit(
-        user_query, app_config.query.default_limit,
+    # 승격된 원문 기준 resolved_limit 우선(Plan 70 §3 — 오케스트레이션의 정제 질의가
+    # "모든" 등 수량 한정어를 탈락시켜도 state로 운반된 값을 신뢰). 없으면 표면어 →
+    # input_parser LLM 산출물(limit) 순 2단 폴백(R3-(i)). 멀티 경로와 동일 규칙(D-066).
+    limit_value = resolve_effective_limit(
+        state, user_query, app_config.query.default_limit,
         parsed_limit=_parsed_req.get("limit"),
     )
     # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
@@ -313,20 +491,35 @@ def _prepare(
     )
 
 
-def _try_deterministic(state: AgentState, ctx: _GenContext) -> Optional[str]:
+def _try_deterministic(state: AgentState, ctx: _GenContext) -> Optional[dict]:
     """폼필 다중 리소스 피벗을 코드가 결정적으로 조립한다(LLM 우회, 해당 없으면 None).
 
     재시도(에러 컨텍스트) 시엔 결정적 SQL이 이미 실패했을 수 있으므로 진입하지 않고
     LLM 폴백이 에러를 반영해 수정하게 한다.
+
+    Returns:
+        폼필 산출 dict({"sql", "month_anchor", "mapping_updates", "candidates",
+        "overrides", "literals"}) 또는 None — 호출부가 sql 외 키를 state 델타로 승격한다.
     """
     if ctx.is_retry:
+        if state.get("template_structure"):
+            # 침묵 금지: 폼필 턴에서 결정적 조립이 재시도 사유로 스킵되어 LLM 폴백이
+            # 양식을 처리하는 시점을 로그로 가시화(라이브 실측: 이 경로가 월 방향
+            # 뒤집힘의 근원 — ux_improvement 승계).
+            logger.info(
+                "폼필 결정적 조립 스킵 — 재시도 턴(error=%s). LLM 폴백이 양식 처리",
+                str(state.get("error_message") or "")[:120],
+            )
         return None
-    sql = _try_build_form_fill_pivot_sql(
+    form_fill = _try_build_form_fill_pivot_sql(
         state, ctx.limit_value, ctx.user_query, adapter_db_ids=ctx.adapter_db_ids,
     )
-    if sql:
-        logger.info("폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s", sql[:500])
-    return sql
+    if form_fill and form_fill.get("sql"):
+        logger.info(
+            "폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s",
+            form_fill["sql"][:500],
+        )
+    return form_fill
 
 
 async def _try_semantic(
@@ -400,6 +593,42 @@ async def _build_fallback_prompts(
         path_parity=path_parity_enabled(app_config),
     )
 
+    # 토큰 예산 가드(D-159, 단일·멀티 공통 후속 — W-6 예고분). 단일 경로는 relevant
+    # 게이트로 이미 좁혀져 발동이 이례적이므로 강등만 하고 실패시키지는 않는다 —
+    # 최종 초과분은 백엔드 예외 감지(멀티 D-159 FIX-C 대응)가 사후 방어한다.
+    # 예산 내면 바이트 무변경(프롬프트 sha256 스냅샷 계약 유지).
+    _budget = resolve_prompt_token_budget(app_config)
+    if _budget and estimate_prompt_tokens(system_prompt) > _budget:
+        _est_before = estimate_prompt_tokens(system_prompt)
+        logger.warning(
+            "[토큰예산] 단일 경로 초과(추정 %d > 예산 %d, db=%s) — 유사어·설명 재료 "
+            "제거 후 재조립", _est_before, _budget, state.get("active_db_id"),
+        )
+        system_prompt = _build_system_prompt(
+            schema_info=state["schema_info"],
+            default_limit=ctx.limit_value,
+            column_descriptions=None,
+            column_synonyms=None,
+            resource_type_synonyms=None,
+            eav_name_synonyms=None,
+            active_db_id=state.get("active_db_id"),
+            polestar_db_ids=ctx.adapter_db_ids,
+            active_db_engine=state.get("active_db_engine"),
+            routing_intent=state.get("routing_intent"),
+            query_history_examples=history_examples,
+            path_parity=path_parity_enabled(app_config),
+        )
+        _est_after = estimate_prompt_tokens(system_prompt)
+        if _est_after > _budget:
+            # 재료 제거로도 초과 — 스키마 자체가 과대(스코프 미필터 캐시). 강등 사실과
+            # 잔여 초과를 로그로 남긴다(단일 경로는 여기서 실패시키지 않음 — 위 주석).
+            logger.error(
+                "[토큰예산] 단일 경로 재료 제거 후에도 초과(추정 %d > 예산 %d, db=%s, "
+                "테이블 %d개) — relevant 게이트/프로필 점검 필요",
+                _est_after, _budget, state.get("active_db_id"),
+                len((state["schema_info"] or {}).get("tables") or {}),
+            )
+
     user_prompt = _build_user_prompt(
         parsed_requirements=state["parsed_requirements"],
         template_structure=state.get("template_structure"),
@@ -425,9 +654,23 @@ async def _build_fallback_prompts(
         if _gp_block:
             user_prompt += "\n\n" + _gp_block
 
+    # 폼필 월 시리즈 양식이 LLM 폴백으로 흐르는 경우(재시도 턴 등) — 인식기가 확정한
+    # 필드↔YYYYMM 리터럴을 강제해 CURRENT_DATE 역방향 계산(월 뒤집힘 실측)을 차단(D-146).
+    if state.get("template_structure"):
+        _ms_block = build_month_series_block(recognize_month_series(
+            state.get("column_mapping") or {},
+            context_text=template_context_text(state.get("template_structure")),
+            user_query=user_query,
+        ))
+        if _ms_block:
+            user_prompt += "\n\n" + _ms_block
+
     # E5-2 값 검색 리터럴 주입 — value_retrieval ON + 인덱스 매칭 시만(회귀 0).
     _vi_block = _build_value_index_injection(state, user_query, app_config)
     if _vi_block:
+        # 실 DB 값 리터럴이므로 PII 스크럽(D-155 후속3 — FabriX 필터 오탐 차단)
+        if is_scrub_samples_enabled():
+            _vi_block = scrub_pii(_vi_block)
         user_prompt += _vi_block
 
     # 선행 task 결과 서버 스코프 강제 — orchestration 데이터 의존(input_from) 경로(D-086).
@@ -435,6 +678,9 @@ async def _build_fallback_prompts(
     # 알람 조건을 재표현하다 resource_type='alarm.Alarm' 환각으로 0건).
     _pr_block = build_prior_rows_block(state.get("prior_rows"))
     if _pr_block:
+        # 실행 결과 라이브 행이므로 PII 스크럽(D-155 후속3 — 멀티 경로와 대칭)
+        if is_scrub_samples_enabled():
+            _pr_block = scrub_pii(_pr_block)
         user_prompt += "\n\n" + _pr_block
 
     return system_prompt, user_prompt
@@ -502,6 +748,32 @@ async def _llm_fallback(
 
         # SQL 추출
         sql = extract_sql_from_response(response.content)
+
+        # FabriX PII 필터 차단 응답(비-SQL) 감지 시 원인 블록·값을 즉시 특정한다(D-155).
+        # 프롬프트 재료(system/user)를 모두 가진 유일한 지점 — 진단을 state
+        # (pii_block_diagnosis)로 승격해 query_validator 에러 메시지에 노출한다
+        # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널 — D-153 후속2 원칙).
+        if is_filter_blocked(raw_text=sql):
+            _pii_diag = diagnose_blocked_prompt({
+                "시스템 프롬프트(스키마·샘플·유사어)": system_prompt,
+                "사용자 프롬프트(질의·매핑·컨텍스트)": user_prompt,
+            })
+            logger.warning(
+                "[PII-FILTER] SQL 생성 응답 차단(db=%s, retry=%d) — 원인 후보: %s",
+                state.get("active_db_id"), ctx.retry_count, _pii_diag,
+            )
+            extra_return["pii_block_diagnosis"] = _pii_diag
+
+    # "모든/전체" 상향인데 LLM이 프로필 few-shot 예시의 말미 캡(FETCH FIRST 100 등)을
+    # 모방한 경우 결정적 교정 — 2026-07-24 b0 실측(Plan 70 §5.1 항목 6, D-066 후속8).
+    sql = enforce_all_query_limit(
+        sql, ctx.limit_value, ctx.app_config.query.default_limit
+    )
+    # EAV 숫자 값 정수 캐스트 결정적 교정(D-160) — 멀티 경로와 동일 가드(D-066 대칭).
+    # 값 컬럼 리터럴은 구조 메타 선언에서 도출한다(D-088).
+    sql = normalize_eav_numeric_casts(
+        sql, eav_value_cast_columns(first_eav_pattern(state.get("schema_info")))
+    )
 
     return sql, sql_candidates, text2sql_fallback, extra_return
 
@@ -604,11 +876,27 @@ async def query_generator(
     """
     ctx = _prepare(state, llm, app_config)
 
+    # 폼필 확인 이력(D-151 Phase 3) — 시그니처 이력을 답변 형식으로 로드해 이번 턴
+    # 답변 아래에 병합(이번 턴 답이 이김: {**memory, **answers}). 적용 시 sliding TTL
+    # 연장. Redis 불가·TTL 0이면 빈 dict(현행 동일). 멀티 경로(_prepare_multi_run)와 대칭.
+    if state.get("template_structure") and not ctx.is_retry:
+        _sig, _mem_answers, _ = await load_form_memory_answers(
+            state.get("template_structure"), ctx.app_config
+        )
+        if _mem_answers:
+            state = {
+                **state,
+                "form_fill_answers": {
+                    **_mem_answers, **(state.get("form_fill_answers") or {}),
+                },
+            }
+
     # 트랙 S(S2/D-128) 단계적 도출 관측 레코드 — 루프 미발동이면 빈 리스트로 남아 None을 반환한다
     # (요청 스코프 상태 자기정리 — 노드 스킵 경로가 직전 턴 값을 물려주지 않게).
     derivation_records: list[dict] = []
     # 결정적 경로 우선(LLM 우회) → 둘 다 비면 트랙 A LLM 폴백.
-    sql = _try_deterministic(state, ctx)
+    form_fill = _try_deterministic(state, ctx)
+    sql = form_fill["sql"] if form_fill else None
     semantic_sql, coverage_outside = await _try_semantic(
         state, ctx, sql, derivation_records,
     )
@@ -622,6 +910,23 @@ async def query_generator(
         sql, sql_candidates, text2sql_fallback, extra_return = await _llm_fallback(
             state, ctx, coverage_outside,
         )
+
+    # 폼필 산출 승격(D-146/D-148/D-151) — 월 앵커·매핑 갱신분·HITL 산출물을 state 델타로.
+    # output_generator가 역질문 페이로드·사유·상수 기입에 사용한다(멀티 경로와 대칭).
+    if form_fill:
+        if form_fill.get("month_anchor"):
+            extra_return["form_month_anchor"] = form_fill["month_anchor"]
+        if form_fill.get("mapping_updates"):
+            extra_return["column_mapping"] = {
+                **(state.get("column_mapping") or {}),
+                **form_fill["mapping_updates"],
+            }
+        if form_fill.get("candidates"):
+            extra_return["form_fill_candidates"] = form_fill["candidates"]
+        if form_fill.get("overrides"):
+            extra_return["form_fill_overrides"] = form_fill["overrides"]
+        if form_fill.get("literals"):
+            extra_return["form_fill_literals"] = form_fill["literals"]
 
     logger.info(f"SQL 생성 완료 (retry={ctx.retry_count}): {sql[:1000]}...")
 
@@ -1154,6 +1459,17 @@ def _format_schema_for_prompt(
         include_not_null=True,
         sample_style="labeled",
         relationships_header="### 테이블 관계 (FK)",
+        # 라이브 샘플 방어(D-155): 크기 상한 프리뷰(값 200자·테이블당 2,000자)로 스크럽
+        # 비용을 bound하고, PII 스크럽으로 FabriX 필터 오탐을 차단한다(멀티 경로와 대칭).
+        sample_renderer=_render_samples_secure,
     )
+
+
+def _render_samples_secure(samples: list) -> str:
+    """스키마 샘플을 상한 프리뷰로 만들고 PII를 스크럽한다(단일 경로 프롬프트 방어)."""
+    preview = safe_sample_preview(samples)
+    if is_scrub_samples_enabled():
+        preview = scrub_pii(preview)  # 라이브 샘플 PII → FabriX 필터 오탐 차단 예방
+    return preview
 
 

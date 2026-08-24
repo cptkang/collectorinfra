@@ -69,6 +69,23 @@ async def result_organizer(
         app_config=app_config,
     )
 
+    # 폼필 결정적 조립(D-146/D-149)이 발동해 행이 반환됐으면 부족 판정을 무시한다.
+    # 라이브 실측(2026-07-28 yd): 미수집 항목(구분/용도 등) 때문에 부족으로 판정 →
+    # 재시도에서 LLM 폴백이 **올바른 결정적 결과를 동일값 SQL로 덮어씀**. 이 쿼리는
+    # well-defined라 재생성이 개선을 만들 수 없고(D-068 원리), 미채움 필드는 미수집
+    # 항목이라 재조회 무의미 — 사유는 D-147 미작성 안내가 노출한다.
+    # D-149 확장(라이브 실측 2026-07-30 서버목록 양식 3존): 월 시리즈 없는 폼필도
+    # 의도적 공란(정책 필드) 다수가 부족으로 판정 → 재시도 턴이 결정적 조립을 스킵해
+    # LLM 폴백이 계약(공란·등록명 규칙)을 덮었다. 양식 턴 + 행 존재면 동일하게 억제한다.
+    if not is_sufficient and masked_results and (
+        state.get("form_month_anchor") or state.get("template_structure")
+    ):
+        logger.info(
+            "폼필 결정적 결과(D-146/D-149) %d행 — 부족 판정 무시(재시도 억제)",
+            len(masked_results),
+        )
+        is_sufficient = True
+
     if not is_sufficient and state.get("retry_count", 0) < app_config.query.max_retry_count:
         logger.info("데이터 부족으로 재시도 요청")
         return {

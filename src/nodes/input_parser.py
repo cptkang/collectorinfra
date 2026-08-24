@@ -20,7 +20,6 @@ from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
     INPUT_PARSER_SYSTEM_PROMPT,
 )
-from src.routing.registry import get_registry
 from src.schema_cache.cache_manager import get_cache_manager
 from src.security.audit_logger import log_user_request
 from src.state import AgentState
@@ -33,13 +32,14 @@ logger = logging.getLogger(__name__)
 # 원문에 이 표면어가 있으면 결정적으로 target_db_hints에 보강한다. DB 해소는 하지 않고
 # 표면어만 넘겨(field_mapper._resolve_priority_db_ids / semantic_router가 alias로 해소),
 # "공동존 김포"처럼 더 구체적 표현이 이미 힌트에 있으면 중복 추가하지 않는다.
-# 정본은 `config/db_registry.yaml`의 locations 선언이다(Plan 67 R2 — 사본 금지).
+# 선언 정본은 `config/db_registry.yaml`의 locations(Plan 67 R2/D-131). 다만 존 역질문
+# 후단 게이트(D-153)가 routing(infrastructure) 계층에서도 이 값을 쓰는데 utils는
+# registry를 임포트할 수 없어(계층 규칙), 값은 utils.query_gen_common에 두고 registry와의
+# 동기를 테스트로 강제한다(tests/test_routing/test_location_terms_sync.py).
 # D-004 경계: 이 표면어는 라우팅 의도 분류에 쓰지 않는다(사용자 명시 힌트 보강 전용).
-_LOCATION_HINT_TERMS: tuple[str, ...] = get_registry().location_terms()
+from src.utils.query_gen_common import LOCATION_HINT_TERMS
 
-# 위치 표면어 단일 출처 공개 별칭 — intent_planner(맥락 주입 게이트)·subagents(결정적 DB 고정)가
-# 동일 목록을 공유한다(모듈별 사본 금지, D-053 존 라우팅 교훈).
-LOCATION_HINT_TERMS = _LOCATION_HINT_TERMS
+_LOCATION_HINT_TERMS = LOCATION_HINT_TERMS
 
 
 def _ensure_location_hints(parsed: dict, user_query: str) -> dict:

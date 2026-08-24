@@ -221,6 +221,19 @@ def _container_strings(node: ast.AST) -> list[str]:
 class TestSingleDefinitionSite:
     """위치 표면어 튜플 사본이 src/에 남아 있지 않은지(정의처 1곳 단언)."""
 
+    # 문서화된 예외(ux_improvement 병합 승계) — 값 사본이되 동기·파생이 보장된 지점.
+    # ① utils.query_gen_common: 존 역질문 후단 게이트가 routing(infrastructure)에서
+    #    소비해 registry(infrastructure) 임포트가 계층 규칙상 불가 → 값 사본 + 동기 가드
+    #    (tests/test_routing/test_location_terms_sync.py)로 강제. 파생물(ZONE_SKIP/
+    #    ZONE_CLARIFY/_ZONE_GROUP_TERMS)도 이 파일 안에서만 파생한다.
+    # ② nodes.field_mapper._EXCLUSIVE_REGION_GROUPS: 상호 배타 지역 그룹 —
+    #    registry locations와 입도가 달라(김포/여의도 분리, 공동존 제외) 파생 불가.
+    #    locations 항목 추가 시 함께 갱신할 것.
+    _ALLOWED_VALUE_COPY_FILES = {
+        "src/utils/query_gen_common.py",
+        "src/nodes/field_mapper.py",
+    }
+
     def test_no_location_term_tuple_in_src(self):
         terms = set(get_registry().location_terms())
         offenders: list[str] = []
@@ -237,9 +250,14 @@ class TestSingleDefinitionSite:
                     continue
                 if any(s in terms for s in _container_strings(value)):
                     offenders.append(f"{py.relative_to(REPO).as_posix()}:{node.lineno}")
+        offenders = [
+            o for o in offenders
+            if o.rsplit(":", 1)[0] not in self._ALLOWED_VALUE_COPY_FILES
+        ]
         assert offenders == [], (
             "위치 표면어 튜플 사본이 남아 있습니다 — 정의는 config/db_registry.yaml "
-            "한 곳이어야 합니다(Plan 67 R2):\n  " + "\n  ".join(offenders)
+            "한 곳이어야 합니다(Plan 67 R2, 허용 예외는 _ALLOWED_VALUE_COPY_FILES 참조):\n  "
+            + "\n  ".join(offenders)
         )
 
     def test_registry_file_is_the_definition(self):

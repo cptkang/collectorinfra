@@ -90,17 +90,25 @@ class DBHubClient:
             from mcp import ClientSession
             from mcp.client.sse import sse_client
 
-            # SSE 클라이언트로 원격 MCP 서버에 연결(Bearer 헤더는 설정 토큰이 있을 때만 첨부).
-            self._sse_context = sse_client(
-                url=self._config.server_url, headers=self._auth_headers()
-            )
-            sse_transport = await self._sse_context.__aenter__()
-            read_stream, write_stream = sse_transport
+            async def _open() -> None:
+                # SSE 클라이언트로 원격 MCP 서버에 연결(Bearer 헤더는 설정 토큰이 있을 때만 첨부).
+                self._sse_context = sse_client(
+                    url=self._config.server_url, headers=self._auth_headers()
+                )
+                sse_transport = await self._sse_context.__aenter__()
+                read_stream, write_stream = sse_transport
 
-            # MCP 세션 생성 및 초기화
-            self._session_context = ClientSession(read_stream, write_stream)
-            self._mcp_session = await self._session_context.__aenter__()
-            await self._mcp_session.initialize()
+                # MCP 세션 생성 및 초기화
+                self._session_context = ClientSession(read_stream, write_stream)
+                self._mcp_session = await self._session_context.__aenter__()
+                await self._mcp_session.initialize()
+
+            # 연결·핸드셰이크 전체 타임아웃 — 서버가 TCP만 수락하고 SSE 핸드셰이크를
+            # 못 끝내면 무한 대기가 가능하다. execute_sql의 per-call 타임아웃만으로는
+            # connect 단계 hang을 끊지 못한다(전체 타임아웃 가드 원칙).
+            await asyncio.wait_for(
+                _open(), timeout=self._config.mcp_call_timeout
+            )
 
             self._connected = True
             logger.debug(
@@ -112,6 +120,12 @@ class DBHubClient:
                 "MCP SDK가 설치되지 않았습니다. DBHub 클라이언트가 제한 모드로 동작합니다."
             )
             self._connected = True
+        except asyncio.TimeoutError:
+            await self.disconnect()  # 반쯤 열린 컨텍스트 정리(베스트 에포트)
+            raise DBConnectionError(
+                f"MCP 서버 연결 타임아웃 ({self._config.mcp_call_timeout}초): "
+                f"{self._config.server_url}"
+            )
         except Exception as e:
             raise DBConnectionError(
                 f"MCP 서버 연결 실패 ({self._config.server_url}): {e}"
@@ -341,7 +355,19 @@ class DBHubClient:
                 f"MCP 호출 타임아웃 ({self._config.mcp_call_timeout}초 초과): "
                 f"{sql[:100]}..."
             )
-        except (QueryTimeoutError, QueryExecutionError):
+        except QueryTimeoutError:
+            raise
+        except QueryExecutionError as e:
+            # DB 측 SQL 에러(DBHub isError → _parse_query_result)는 종전 재던지기만 해
+            # 실패 SQL이 파일 로그에서 통째로 빠졌다(D-140 커버리지 공백 — 2026-08-21
+            # 공동존 bigint 실측: logs/sql에 실패 SQL 부재로 감사 로그 수동 대조가 필요
+            # 했음, D-160). 가장 진단 가치가 큰 실패 건이므로 기록 후 재던진다.
+            # 타임아웃 핸들러가 만든 예외는 같은 try의 except로 재진입하지 않아
+            # 이중 기록은 없다.
+            sql_file_logger.log_sql(
+                sql, execution_time_ms=(time.time() - start_time) * 1000,
+                source=self._config.source_name, error=str(e),
+            )
             raise
         except Exception as e:
             sql_file_logger.log_sql(

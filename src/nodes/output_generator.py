@@ -17,6 +17,7 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
+from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,11 @@ async def _run_output_generator(
                 app_config, state, llm=llm, stream_user_response=stream_user_response
             )
             text_response = _append_inferred_mapping_info(text_response, state)
+            # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
+            # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
+            text_response = _append_form_fill_notes(
+                text_response, state, fill_stats=file_result.get("fill_stats")
+            )
 
             # Excel 데이터 0건 채움 경고 메시지 추가
             total_filled = file_result.get("total_filled")
@@ -126,13 +132,58 @@ async def _run_output_generator(
                     + text_response
                 )
 
-            return {
+            result: dict = {
                 "final_response": text_response,
                 "output_file": file_result["file_bytes"],
                 "output_file_name": file_result["file_name"],
                 "current_node": "output_generator",
                 "error_message": None,
             }
+            # 확인 이력 저장(D-151 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
+            # 답변(origin=answer)만. LLM 산출물·이력 재적용분은 저장하지 않는다(C3).
+            if state.get("form_fill_remember"):
+                _remember = {
+                    f: {"action": o.get("action"), "value": o.get("value")}
+                    for f, o in (state.get("form_fill_overrides") or {}).items()
+                    if o.get("applied") and o.get("origin") != "memory"
+                }
+                if _remember:
+                    _saved = await save_form_memory_entries(
+                        state.get("template_structure"), _remember,
+                        state.get("parsed_requirements", {}).get("original_query", "")
+                        or state.get("user_query", ""),
+                        app_config,
+                    )
+                    _ttl_days = getattr(app_config.query, "form_memory_ttl_days", 0)
+                    if _saved:
+                        result["final_response"] += (
+                            f"\n\n**[기억 저장]** '{_saved}'에 {len(_remember)}개 항목을 "
+                            f"기억했습니다 (유효 {_ttl_days}일, 사용할 때마다 연장). "
+                            "다음부터 이 양식에 자동 반영됩니다."
+                        )
+                    else:
+                        # 침묵 강등 금지 — 저장 실패(기능 OFF·Redis 불가)를 명시
+                        result["final_response"] += (
+                            "\n\n**[기억 저장 안 됨]** 저장소를 사용할 수 없거나 기억 기능이 "
+                            "꺼져 있어(form_memory_ttl_days=0) 이번 답변은 이번 실행에만 "
+                            "적용되었습니다."
+                        )
+
+            # HITL 폼필(D-151): 미해결 필드 역질문 페이로드 + 대기 상태.
+            # 미해결 0이면 pending=None으로 자기정리(답변 적용 완료 턴 포함).
+            if state.get("template_structure"):
+                clarification, pending = _build_form_fill_hitl(
+                    state, file_result.get("fill_stats")
+                )
+                result["pending_form_fill"] = pending
+                if clarification:
+                    result["form_fill_clarification"] = clarification
+                    logger.info(
+                        "폼필 역질문 발행(D-151): 미해결 %d건 — %s",
+                        len(clarification["fields"]),
+                        [f["name"] for f in clarification["fields"]][:10],
+                    )
+            return result
         else:
             # 파일 생성 실패: 사유를 사용자에게 노출하고 텍스트/CSV로 폴백 (D-059 — 침묵적 강등 금지)
             reason = (file_result or {}).get("reason") or "알 수 없는 이유로 양식을 채우지 못했습니다."
@@ -250,8 +301,13 @@ def _build_response_prompt(
     Returns:
         구성된 프롬프트 문자열
     """
-    # 결과가 많으면 상위 20건만 프롬프트에 포함
-    display_rows = rows[:20]
+    # 결과가 많으면 상위 20건만 프롬프트에 포함.
+    # 복합 필드명(그룹|서브, D-145)의 '|'는 Markdown 표 구분자와 충돌해 응답 표가
+    # 깨진다(라이브 실측: 칼럼 분해·순서 뒤죽박죽) — 표시용 키로 결정적 치환.
+    display_rows = [
+        {_display_field_name(str(k)): v for k, v in r.items()} if isinstance(r, dict) else r
+        for r in rows[:20]
+    ]
     truncated = len(rows) > 20
 
     parts = [
@@ -279,6 +335,176 @@ def _build_response_prompt(
     return "\n\n".join(parts)
 
 
+def _format_ym(yyyymm: str) -> str:
+    """YYYYMM을 'YYYY년 M월'로 표기한다."""
+    if len(yyyymm) != 6 or not yyyymm.isdigit():
+        return yyyymm
+    return f"{yyyymm[:4]}년 {int(yyyymm[4:6])}월"
+
+
+def _append_form_fill_notes(
+    response: str,
+    state: AgentState,
+    fill_stats: dict[str, int] | None = None,
+) -> str:
+    """폼필 응답에 기준월 매핑(§2.4)과 미작성 항목 사유(D-147)를 덧붙인다.
+
+    - 기준월: 월 시리즈(M~M+5) 양식은 M이 어느 달인지 양식에 없으므로 실제 사용 월을
+      응답에 반드시 명시한다(감사자료 오기재 방지 — plans/72 R4). 양식 원본(비고 열 등)에는
+      기재하지 않는다(Q3 확정).
+    - 미작성 사유: **writer의 실제 채움 통계(fill_stats)** 기준으로 0건 채워진 칼럼만
+      나열한다(침묵 공란 금지 — D-059의 필드 단위 확장). 라이브 실측(2026-07-28): 매핑
+      None이어도 행 키=필드명 폴백으로 채워지는 칼럼이 있어 매핑 기준 판정은 오보를 냈다.
+      fill_stats가 없으면(docx 등) 종전 매핑 기준으로 폴백한다.
+    - 월 시리즈 필드가 전부 0건이면 사유 목록 대신 "생성 SQL 확인" 안내를 낸다
+      (D-050 — null/공란은 데이터 부재가 아니라 SQL 문제일 수 있음).
+    """
+    anchor = state.get("form_month_anchor") or {}
+    month_fields = set(anchor.get("fields") or [])
+
+    parts: list[str] = []
+    if anchor.get("start") and anchor.get("end"):
+        parts.append(
+            "**[기준월 안내]** 월별 사용률 칼럼은 "
+            f"{_format_ym(anchor['start'])}부터 {_format_ym(anchor['end'])}까지 "
+            "(M=첫 달, 별도 지정이 없으면 실행일 기준 지난달이 마지막 칼럼) 데이터로 채웠습니다. "
+            "다른 기준월이 필요하면 \"기준월 3월\"처럼 지정해 다시 요청해주세요."
+        )
+
+    if fill_stats:
+        unfilled = [
+            f for f, cnt in fill_stats.items()
+            if cnt == 0 and f not in month_fields
+        ]
+        observed_month = [f for f in month_fields if f in fill_stats]
+        if observed_month and all(fill_stats[f] == 0 for f in observed_month):
+            parts.append(
+                "**[확인 필요]** 월별 사용률 칼럼이 전부 채워지지 않았습니다. 데이터 부재가 "
+                "아니라 조회 SQL 문제일 수 있으니 처리현황의 생성 SQL을 확인해주세요."
+            )
+    else:
+        column_mapping = state.get("column_mapping") or {}
+        unfilled = [
+            f for f, c in column_mapping.items()
+            if c is None and f not in month_fields
+        ]
+    # 사용자 답변/확인 이력 적용·거부 내역(D-151) — 침묵 반영·침묵 무시 금지.
+    # origin으로 분리 표시: answer=이번 턴 패널 답변, memory=확인 이력(Phase 3).
+    overrides = state.get("form_fill_overrides") or {}
+    if overrides:
+        _act_label = {
+            "blank": "공란 유지",
+            "column": "DB 항목 지정",
+            "eav": "DB 항목 지정",
+            "literal": "직접 입력",
+        }
+        ans_lines: list[str] = []
+        mem_lines: list[str] = []
+        user_blank_fields: set[str] = set()
+        for f, o in overrides.items():
+            label = _display_field_name(f)
+            if o.get("applied"):
+                act = _act_label.get(o.get("action"), str(o.get("action")))
+                val = o.get("value")
+                suffix = f"('{val}')" if val not in (None, "") else ""
+                line = f"  - {label}: {act}{suffix} 적용"
+                if o.get("action") == "blank":
+                    user_blank_fields.add(f)
+            else:
+                line = f"  - {label}: 반영 불가 — {o.get('reason')}"
+            (mem_lines if o.get("origin") == "memory" else ans_lines).append(line)
+        if ans_lines:
+            parts.append("**[사용자 답변 적용 내역]**\n" + "\n".join(ans_lines))
+        if mem_lines:
+            parts.append(
+                "**[확인 이력 적용]** (이전에 기억한 답 — 변경하려면 \"필드명 기억 삭제\"라고 요청)\n"
+                + "\n".join(mem_lines)
+            )
+        # 사용자 지정 공란은 미작성 사유 목록에서 제외(중복 안내 방지)
+        unfilled = [f for f in unfilled if f not in user_blank_fields]
+
+    if unfilled:
+        shown = "\n".join(f"  - {_display_field_name(f)}" for f in unfilled)
+        parts.append(
+            "**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 "
+            f"비워두었습니다(임의 기재 금지):\n{shown}"
+        )
+
+    if not parts:
+        return response
+    return response + "\n\n---\n" + "\n\n".join(parts)
+
+
+def _build_form_fill_hitl(
+    state: AgentState,
+    fill_stats: dict[str, int] | None,
+) -> tuple[Optional[dict], Optional[dict]]:
+    """미해결 필드를 역질문 페이로드와 멀티턴 대기 상태로 구성한다(D-151).
+
+    미해결 = 실제 채움 0건 필드 − 월 시리즈 필드 − 직접 입력 상수 − 사용자 지정 공란.
+    전 필드 0건(식별 칼럼 포함)이면 매핑이 아니라 데이터·SQL 문제이므로 역질문하지
+    않는다(D-050 — 잘못된 질문으로 오진 유도 금지).
+
+    Returns:
+        (clarification | None, pending | None) — 미해결 없으면 (None, None)이며
+        호출부가 pending_form_fill=None 델타로 자기정리한다.
+    """
+    if not fill_stats:
+        return None, None
+    if not any(cnt > 0 for cnt in fill_stats.values()):
+        return None, None
+    anchor = state.get("form_month_anchor") or {}
+    month_fields = set(anchor.get("fields") or [])
+    literals = state.get("form_fill_literals") or {}
+    overrides = state.get("form_fill_overrides") or {}
+    user_blanks = {
+        f for f, o in overrides.items()
+        if o.get("applied") and o.get("action") == "blank"
+    }
+    unresolved = [
+        f for f, cnt in fill_stats.items()
+        if cnt == 0 and f not in month_fields
+        and f not in literals and f not in user_blanks
+    ]
+    if not unresolved:
+        return None, None
+    candidates = state.get("form_fill_candidates") or []
+    clarification = {
+        "question": (
+            f"채우지 못한 항목이 {len(unresolved)}건 있습니다. "
+            "각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요."
+        ),
+        "fields": [{"name": f, "label": _display_field_name(f)} for f in unresolved],
+        "candidates": candidates,
+    }
+    # FIX-26(라이브 실측 2026-08-13): 답변 턴 존 유실 방지 — 원 질의 복원(FIX-17)은
+    # 존이 텍스트 위치어로 지정된 런에서만 라우팅을 재현한다. 존 체크박스 런
+    # ("채워줘" + CM존 선택)은 복원된 원 질의에 위치어가 없어 답변 턴이 기본 DB(b0)로
+    # 침묵 오라우팅되고, 존재성 검증도 b0 스키마 기준이 되어 답변이 전량 탈락한다.
+    # 이 런의 확정 존을 pending에 보존해 답변 턴 라우트가 selected_db_ids로 복원한다.
+    # 우선순위: 사용자 체크박스 선택 > 라우팅 확정(target_databases 등) > 실행 결과 DB.
+    from src.nodes.context_resolver import _extract_previous_db_ids
+
+    db_ids = list(state.get("selected_db_ids") or []) or _extract_previous_db_ids(state)
+    if not db_ids:
+        db_ids = [d for d in (state.get("db_results") or {}) if d]
+    pending = {
+        "uploaded_file": state.get("uploaded_file"),
+        "file_type": state.get("file_type")
+        or state.get("parsed_requirements", {}).get("output_format"),
+        "original_query": state.get("parsed_requirements", {}).get("original_query")
+        or state.get("user_query", ""),
+        "unresolved": unresolved,
+        "db_ids": db_ids or None,
+    }
+    return clarification, pending
+
+
+def _display_field_name(field: str) -> str:
+    """복합 필드명(그룹|서브)을 사용자 표시용 'A > B'로 변환한다(내부 키는 '|' 유지)."""
+    return field.replace("|", " > ")
+
+
 def _append_inferred_mapping_info(response: str, state: AgentState) -> str:
     """LLM 추론 매핑 정보와 유사어 등록 안내를 응답에 추가한다.
 
@@ -296,8 +522,10 @@ def _append_inferred_mapping_info(response: str, state: AgentState) -> str:
     if not mapping_sources:
         return response
 
-    column_mapping = state.get("column_mapping", {})
-    db_column_mapping = state.get("db_column_mapping", {})
+    # 키가 None 값으로 실려 오면 .get(key, {})는 None을 반환한다 — or-폴백 필수
+    # (오케스트레이션 _build_output_state가 state 값을 그대로 복사).
+    column_mapping = state.get("column_mapping") or {}
+    db_column_mapping = state.get("db_column_mapping") or {}
 
     # LLM 추론 매핑만 수집
     inferred_items: list[tuple[str, str, str]] = []  # (field, column, db_id)
@@ -444,6 +672,7 @@ def _generate_document_file(
             sheet_mappings = organized.get("sheet_mappings")
             target_sheets = state.get("target_sheets")
 
+            fill_stats: dict[str, int] = {}
             file_bytes, total_filled = fill_excel_template(
                 file_data=uploaded_file,
                 template_structure=template,
@@ -451,6 +680,9 @@ def _generate_document_file(
                 rows=rows,
                 sheet_mappings=sheet_mappings,
                 target_sheets=target_sheets,
+                fill_stats=fill_stats,
+                # 사용자 직접 입력 상수(D-151 역질문 답변) — 전 데이터 행 동일값
+                literal_values=state.get("form_fill_literals"),
             )
 
             if total_filled == 0 and rows:
@@ -466,6 +698,7 @@ def _generate_document_file(
                 "file_bytes": file_bytes,
                 "file_name": f"result_{timestamp}.xlsx",
                 "total_filled": total_filled,
+                "fill_stats": fill_stats,
             }
 
         elif output_format == "docx":

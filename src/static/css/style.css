@@ -808,6 +808,67 @@ body.auth-pending .auth-splash {
     color: #fff;
 }
 
+/* ─── Zone Clarification (Plan 70 §4 — 존 선택 역질문 체크박스) ─── */
+.zone-clarify {
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px dashed var(--border-accent);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.zone-clarify-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-bottom: 10px;
+}
+
+.zone-clarify-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.zone-clarify-confirm {
+    padding: 6px 14px;
+    border: 1px solid var(--border-accent);
+    border-radius: 16px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.zone-clarify-confirm:hover:not(:disabled) {
+    background: var(--accent);
+    color: #fff;
+}
+
+.zone-clarify-confirm:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.zone-clarify--done {
+    opacity: 0.55;
+}
+
+/* 기획 중 버튼: 비활성 표시 (Plan 70 §2 — 월보 추출 2종) */
+.chat-welcome-hint--disabled,
+.chat-welcome-hint--disabled:hover {
+    cursor: not-allowed;
+    opacity: 0.45;
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text-secondary);
+}
+
 /* ─── Message Bubbles ─── */
 
 .message {

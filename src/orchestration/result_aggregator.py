@@ -129,6 +129,15 @@ async def result_aggregator(
         if f.get("output_file") is not None:
             out["output_file"] = f["output_file"]
             out["output_file_name"] = f.get("output_file_name")
+        # HITL 폼필(D-151): 역질문 페이로드는 API 응답으로, pending은 체크포인터 state로.
+        # 폼필은 D-150 단일 task 고정이라 이 단일 분기로 충분하다.
+        if "form_fill_clarification" in f:
+            out["form_fill_clarification"] = f["form_fill_clarification"]
+        if "pending_form_fill" in f:
+            out["pending_form_fill"] = f["pending_form_fill"]
+        # 존 역질문(D-143 후속2): 단일 task 고정(게이트가 복합 계획 제외)이라 이 분기로 충분.
+        if "zone_clarification" in f:
+            out["zone_clarification"] = f["zone_clarification"]
         out.update(db_promotion)
         return _with_answer_history(_apply_incomplete_notice(out, state))
 
@@ -439,6 +448,9 @@ async def _finalize_task(
         # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
         "query_results": res.get("query_results") or [],
     }
+    # 존 역질문(D-143 후속2): 페이로드를 최종 응답까지 운반(form_fill_clarification 동형).
+    if "zone_clarification" in res:
+        base["zone_clarification"] = res["zone_clarification"]
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     organized = res.get("organized_data")
@@ -463,8 +475,19 @@ async def _finalize_task(
             base["text"] = out.get("final_response", "")
             base["output_file"] = out.get("output_file")
             base["output_file_name"] = out.get("output_file_name")
+            # HITL 폼필(D-151): 역질문 페이로드·대기 상태를 최종 응답까지 운반.
+            # pending_form_fill은 None(해소·자기정리)도 유의미한 델타이므로 키 존재로 판별.
+            if "form_fill_clarification" in out:
+                base["form_fill_clarification"] = out["form_fill_clarification"]
+            if "pending_form_fill" in out:
+                base["pending_form_fill"] = out["pending_form_fill"]
         except Exception as e:
-            logger.error("result_aggregator output_generator 실패 (task=%s): %s", task.get("task_id"), e)
+            # exc_info 필수 — 라이브에서 "'NoneType' object has no attribute 'get'"만
+            # 남아 발생 지점을 특정할 수 없었다(2026-07-30 B0 CPU 양식 실측).
+            logger.error(
+                "result_aggregator output_generator 실패 (task=%s): %s",
+                task.get("task_id"), e, exc_info=True,
+            )
             base["text"] = f"결과 생성 중 오류가 발생했습니다: {e}"
             base["error"] = base["error"] or str(e)
         return base
@@ -516,6 +539,15 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "column_mapping": state.get("column_mapping"),
         "db_column_mapping": state.get("db_column_mapping"),
         "llm_inference_details": state.get("llm_inference_details"),
+        # 폼필 산출물(D-146/D-151): 파이프라인 res 우선(top-level state는 orchestration
+        # 경로에서 이 키들을 받지 못함 — run_data_query_pipeline이 res로 승격).
+        "form_month_anchor": res.get("form_month_anchor") or state.get("form_month_anchor"),
+        "form_fill_candidates": res.get("form_fill_candidates"),
+        "form_fill_overrides": res.get("form_fill_overrides"),
+        "form_fill_literals": res.get("form_fill_literals"),
+        "form_fill_answers": state.get("form_fill_answers"),
+        "form_fill_remember": state.get("form_fill_remember"),
+        "pending_form_fill": state.get("pending_form_fill"),
         "final_response": "",
         "output_file": None,
         "output_file_name": None,

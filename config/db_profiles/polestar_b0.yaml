@@ -283,6 +283,11 @@ query_guide: |
     GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계하고,
     MAX(CASE WHEN resource_type = '...' AND name = '...' THEN stringvalue_short END)로 피벗합니다.
 
+  [EAV 숫자 값 캐스트 규칙 — 정수 캐스트 금지]
+  core_config_prop의 숫자 속성 값(stringvalue/stringvalue_short)은 부동소수 표기 문자열입니다(예: LOGICALCORE = '4.0').
+  집계(SUM/AVG)나 수치 비교에는 반드시 CAST(... AS NUMERIC) 또는 CAST(... AS DECIMAL)을 사용하세요(집계 함수 내부에서 캐스트).
+  INT/BIGINT 등 정수 캐스트는 '4.0' 파싱 실패로 실행 오류를 냅니다. (PostgreSQL식 ::numeric은 DB2 문법 오류 — 사용 금지)
+
   [날짜/시간 및 통계 테이블(cmm_metric_stat_[h,d,m]) 분기 처리]
   사용자가 요청하는 시간 단위에 따라 알맞은 통계 테이블을 조회합니다.
   - 시간 단위 ("현재", "실시간", "최근 N시간") → `cmm_metric_stat_h` 테이블 조인 (stat_date 형식: YYYYMMDDHH, 예: '2026052214')

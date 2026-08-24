@@ -532,3 +532,109 @@ class TestResolveStatMonthAbsolute:
         from src.utils.query_gen_common import resolve_stat_month_range
 
         assert resolve_stat_month_range("CPU 사용률 현황") is None
+
+
+class TestMonthPivotSql:
+    """월별 가로 피벗(M~M+5) 결정적 조립 (D-146, plans/72 Phase 2).
+
+    금감원 취합자료의 '월중 평균/Peak 사용률 6개월 가로 전개'를 SELECT의 stat_date CASE
+    피벗으로 조립한다. stat_date는 GROUP BY에 넣지 않는다(서버당 1행 계약 불변 — D-068).
+    """
+
+    _PATTERN = _SCHEMA_INFO["_structure_meta"]["patterns"][0]
+    _REG = [("호스트명", "cmm_resource.hostname")]
+    _MONTHS = ["202602", "202603", "202604", "202605", "202606", "202607"]
+
+    def _month_measures(self, rt: str = "server.Cpus", prefix: str = "cpu"):
+        out = []
+        for k, month in enumerate(self._MONTHS):
+            out.append((f"{prefix}_m{k}_avg", rt, "avg_val", month))
+            out.append((f"{prefix}_m{k}_peak", rt, "max_val", month))
+        return out
+
+    def _sql(self, **kw):
+        base = dict(
+            regular_entries=self._REG, server_eav=[], child_eav=[],
+            eav_pattern=self._PATTERN, month_measures=self._month_measures(),
+        )
+        base.update(kw)
+        return build_form_fill_pivot_sql(**base)
+
+    def test_per_month_case_pivot_pg(self):
+        """월별 칼럼이 stat_date CASE 조건으로 전개되고 D-086 게이트가 유지된다."""
+        sql = self._sql(db_engine="postgresql")
+        assert (
+            "MAX(CASE WHEN c.resource_type='server.Cpus' "
+            "AND s.definition_name='Utilization' AND s.stat_date='202602' "
+            "AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) "
+            'AS "cpu_m0_avg"'
+        ) in sql
+        assert "AND s.stat_date='202607' AND s.max_val BETWEEN 0 AND 1000" in sql
+        assert 'AS "cpu_m5_peak"' in sql
+        # 12칼럼 전부 존재
+        for k in range(6):
+            assert f'"cpu_m{k}_avg"' in sql
+            assert f'"cpu_m{k}_peak"' in sql
+
+    def test_group_by_unchanged_no_stat_date(self):
+        """월 전개는 SELECT 피벗으로만 — GROUP BY는 서버당 1행 불변(D-068 계약 유지)."""
+        sql = self._sql(db_engine="postgresql")
+        assert sql.count("GROUP BY") == 1
+        assert "GROUP BY COALESCE(c.platform_resource_id, c.id)" in sql
+        gb = sql.split("GROUP BY", 1)[1]
+        assert "stat_date" not in gb
+
+    def test_join_range_derived_from_measures(self):
+        """조인 월 필터는 measure들의 (최소, 최대) 범위 BETWEEN — stat_month보다 우선."""
+        sql = self._sql(db_engine="postgresql", stat_month="202501")
+        assert "AND s.stat_date BETWEEN '202602' AND '202607'" in sql
+        assert "'202501'" not in sql
+
+    def test_single_month_join_collapses_to_equality(self):
+        """모든 measure가 같은 월이면 조인 필터는 등호로 접힌다."""
+        mm = [("cpu_m0_avg", "server.Cpus", "avg_val", "202606"),
+              ("cpu_m0_peak", "server.Cpus", "max_val", "202606")]
+        sql = self._sql(month_measures=mm)
+        assert "AND s.stat_date = '202606'" in sql
+        assert "BETWEEN" not in sql.split("LEFT JOIN cmm_metric_stat_m", 1)[1].split("\n", 1)[0]
+
+    def test_db2_dialect_cast_and_fetch(self):
+        """DB2: 집계 내부 DOUBLE 캐스트 + 최종 DECIMAL(31,2) 스케일 고정 + FETCH FIRST."""
+        sql = self._sql(db_engine="db2", db_schema="POLESTAR", limit=100000)
+        assert "FROM POLESTAR.cmm_resource c" in sql
+        assert "::numeric" not in sql
+        assert "CAST(ROUND(MAX(CASE WHEN c.resource_type='server.Cpus'" in sql
+        assert "CAST(s.avg_val AS DOUBLE)" in sql
+        assert 'AS DECIMAL(31,2)) AS "cpu_m0_avg"' in sql
+        assert sql.rstrip().endswith("FETCH FIRST 100000 ROWS ONLY;")
+
+    def test_memory_and_cpu_measures_together(self):
+        """CPU·메모리 measure 혼합 시 resource_type이 모두 조인 대상에 포함된다."""
+        mm = self._month_measures() + self._month_measures(rt="server.Memory", prefix="mem")
+        sql = self._sql(month_measures=mm)
+        assert "'server.Cpus'" in sql
+        assert "'server.Memory'" in sql
+        assert 'AS "mem_m3_avg"' in sql
+
+    def test_without_month_measures_unchanged(self):
+        """month_measures 미지정 시 기존 경로와 동일 SQL(회귀 0 — 게이트 2 계약)."""
+        legacy = build_form_fill_pivot_sql(
+            regular_entries=self._REG, server_eav=[], child_eav=[],
+            eav_pattern=self._PATTERN, metric_fields=["CPU 평균"],
+            db_engine="postgresql", stat_month=("202604", "202606"),
+        )
+        explicit_none = build_form_fill_pivot_sql(
+            regular_entries=self._REG, server_eav=[], child_eav=[],
+            eav_pattern=self._PATTERN, metric_fields=["CPU 평균"],
+            db_engine="postgresql", stat_month=("202604", "202606"),
+            month_measures=None,
+        )
+        assert legacy == explicit_none
+        assert "s.stat_date BETWEEN '202604' AND '202606'" in legacy
+
+    def test_invalid_month_format_raises(self):
+        """YYYYMM 형식이 아닌 월은 조립 전에 ValueError(결정적 호출부 버그 조기 검출)."""
+        import pytest
+
+        with pytest.raises(ValueError, match="YYYYMM"):
+            self._sql(month_measures=[("cpu_m0_avg", "server.Cpus", "avg_val", "2026-02")])

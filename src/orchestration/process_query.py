@@ -43,14 +43,13 @@ _MEMORY_QUERY_HINTS = ("메모리", "memory", "mem ", "ram")
 # hostname으로 인정할 filter_conditions field / previous_entities field.
 # 영문 컬럼명뿐 아니라 LLM이 한글 필드명으로 추출하는 경우(서버명/장비명/호스트명 등)도 방어적으로 인정한다
 # (input_parser는 hostname으로 정규화하도록 유도하지만 LLM 출력은 비결정적이므로 한글 변형까지 수용).
-_HOST_FIELDS = (
-    "hostname", "host_name", "server_name", "name", "host", "device_name",
-    "서버명", "서버이름", "장비명", "호스트명", "서버", "장비",
+# canonical은 utils.query_gen_common(D-153 — 존 역질문 후단 게이트가 routing 계층에서도
+# 사용, 계층 규칙상 utils로 이동). 여기서는 기존 이름으로 re-export만 유지(사본 금지, D-053).
+from src.utils.query_gen_common import (
+    DEMONSTRATIVE_NOUNS as _DEMONSTRATIVE_NOUNS,
+    DEMONSTRATIVE_PREFIXES as _DEMONSTRATIVE_PREFIXES,
+    HOST_IDENTIFIER_FIELDS as _HOST_FIELDS,
 )
-# 지시어(demonstrative) 접두 — 실제 서버명이 아니라 직전 대상을 가리키는 표현.
-_DEMONSTRATIVE_PREFIXES = ("해당", "그", "이", "저", "위", "방금", "앞서", "직전", "이전")
-# 지시어 뒤에 붙는 일반 명사 (식별자 아님).
-_DEMONSTRATIVE_NOUNS = ("서버", "장비", "호스트명", "호스트", "인스턴스", "노드", "머신", "시스템")
 # 위치 → db_id 매핑 신호. 첫 턴(task.db_ids/previous_db_ids 공백)에 질의 텍스트로
 # db_id를 재도출하는 결정적 폴백. 단일 DB를 **배타적으로** 지목하는 위치 표면어만 담긴다
 # (여러 DB를 포괄하는 존 표면어 "공동존"은 대상 DB를 좁히지 못하므로 제외).
@@ -143,24 +142,10 @@ def _is_demonstrative_value(value: object) -> bool:
     Returns:
         지시어/플레이스홀더면 True (실제 서버명이면 False)
     """
-    if value is None:
-        return True
-    v = str(value).strip()
-    if not v:
-        return True
-    # 영문 플레이스홀더: previous/prev + server/host (예: previous_server, prev_host)
-    compact = v.lower().replace(" ", "").replace("_", "").replace("-", "")
-    if ("previous" in compact or compact.startswith("prev")) and (
-        "server" in compact or "host" in compact
-    ):
-        return True
-    # 한글 지시어(+ 일반 명사): "해당", "해당 서버", "그 장비", "위 서버" 등
-    body = v
-    for noun in _DEMONSTRATIVE_NOUNS:
-        if body.endswith(noun):
-            body = body[: -len(noun)].strip()
-            break
-    return body in _DEMONSTRATIVE_PREFIXES
+    # 구현은 utils.query_gen_common으로 이동(D-153 단일 출처) — 동작 동일.
+    from src.utils.query_gen_common import is_demonstrative_identifier
+
+    return is_demonstrative_identifier(value)
 
 
 def _resolve_hostname(isolated: dict) -> Optional[str]:
