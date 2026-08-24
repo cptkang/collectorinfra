@@ -13,14 +13,15 @@
 `## D-143`으로 등재한다. 원 계획이 D-140을 예약했으나 소진돼 재채번한 건이다.
 
 **Acceptance:**
-- [ ] `## D-143` 헤더 1건 + 「변경 이력」 표 1행
-- [ ] ②-3항에 **브랜치 한정 조회 의무** 포함(`git branch -a --contains` / `merge-base --is-ancestor`)
-- [ ] 채번 안내 라인이 "현재 최대 D-143 → 다음 D-144"로 갱신
-- [ ] D-140~142가 plans/70 예약분이 **아니었음**을 안내 라인에 부기(재발 방지)
+- [x] `## D-143` 헤더 1건 + 「변경 이력」 표 1행
+- [x] ②-3항에 **브랜치 한정 조회 의무** 포함(`git branch -a --contains` / `merge-base --is-ancestor`)
+- [x] 채번 안내 라인이 "현재 최대 D-143 → 다음 D-144"로 갱신
+      *(이후 D-144 등재로 "최대 D-144 → 다음 D-145"로 진행 — 정상 갱신)*
+- [x] D-140~142가 plans/70 예약분이 **아니었음**을 안내 라인에 부기(재발 방지)
 
 **Verify:**
-- [ ] `grep -c "^## D-143" docs/02_decision.md` = 1
-- [ ] 헤더·변경이력 양쪽 grep 최댓값이 143으로 일치
+- [x] `grep -c "^## D-143" docs/02_decision.md` = 1
+- [x] 헤더·변경이력 양쪽 grep 최댓값이 일치 (D-143 시점 143 → D-144 등재 후 144)
 
 **Files:** `docs/02_decision.md`
 **Scope:** XS
@@ -32,11 +33,11 @@
 **Description:** 신규 세션이 CLAUDE.md만 읽고 이 규칙을 적용할 수 있게 1~2줄 추가.
 
 **Acceptance:**
-- [ ] "Known Mistakes 핵심 원칙"에 폐기 제안 4항 실측 의무 등재
-- [ ] 기존 원칙 문구 변경 0 (추가만)
+- [x] "Known Mistakes 핵심 원칙"에 폐기 제안 4항 실측 의무 등재
+- [x] 기존 원칙 문구 변경 0 (추가만) — R2 시점 기준. 채번 규칙 라인 1줄은 **D2에서** 3소스로 의도 개정
 
 **Verify:**
-- [ ] `git diff CLAUDE.md`가 추가 라인만 보여줌
+- [x] `git diff CLAUDE.md` +3/-1 — 삭제 1줄은 D2의 채번 규칙 개정분
 
 **Files:** `CLAUDE.md`
 **Dependencies:** R1
