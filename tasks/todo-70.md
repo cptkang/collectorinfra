@@ -240,8 +240,10 @@
 - [x] O1 기동 로그로 **확정 단과 사유를 실제 확인** → 게이트 6 판정 근거 확보
       실측(2026-08-20, 운영 `.env`): `tier=deep_agent degraded_reason=none resolved_by=explicit_env`
       → 정본 1단 확정 · 강등 없음 · 레거시 4단 **미도달**
-- [ ] `pytest` 전체 무회귀 · `arch_check --ci` 0
-- [ ] **사람 검토 후 Phase L 진행**
+- [x] `pytest` 전체 무회귀 · `arch_check --ci` 0
+      실측(2026-08-24): 38 failed / **4,122 passed** / 29 skipped — 리뷰 시점 실패 집합과
+      **완전 동일**(신규 실패 0). passed +26 = O1 16건 + O2 10건. `arch_check --ci` exit 0
+- [ ] **사람 검토 후 Phase L 진행** ← 여기서 대기 (L4는 게이트 6 승인 필요)
 
 ---
 
