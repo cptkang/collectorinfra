@@ -1295,8 +1295,8 @@
   2. **확정 결과를 조회 가능하게 하고 실패 트레이스에 싣는다** — 단이 다르면 노드 구성이 다르므로, 이 값 없이는 트레이스의 `node_path`를 해석할 기준이 없다.
   3. **`docs/21_orchestration_ladder.md`를 사다리 단일 출처로 한다** — `graph.py` 분기 주석·`.env`·`.env.example`이 이 문서를 가리킨다. 특히 **§7 모듈 의존 방향**: 배선은 배타적이지만 모듈 의존은 아니다(1단이 2·3단 모듈을 재사용). *"2단 배선이 안 쓰인다"가 "2단 모듈이 안 쓰인다"를 함의하지 않는다* — 이것이 plans/70 v1 오독의 정확한 지점이다.
   4. **tri-state 자동 해석 발동 시 경고한다** — `enable_semantic_routing`·`enable_deepagent_orchestration`이 `None`이면 멀티 DB 등록 여부로 결정되어 **실행 경로가 DB 등록 상태에 종속**된다. `model_post_init`이 덮어쓴 뒤에는 명시 설정과 구별 불가라 그 자리에서만 남길 수 있다.
-  5. **`enable_deepagent_orchestration` → `enable_intent_orchestration` 개명**(L2) — 구 이름이 가리키는 것은 2단(트랙 A)인데 1단 플래그 `enable_deepagents_package`(트랙 B)와 이름이 뒤섞여 오독을 유발했다. 구 환경변수명은 `AliasChoices`로 계속 인식하되 **폐기 기한 2027-02-20**(D-143 ① 준수). 설정 카탈로그(D-129)는 신 키만 등재한다(항목 수 251 불변 — 개명이지 추가가 아니다).
-  6. **플래그 판정 규칙을 고정한다**(`docs/flag_audit.md`) — 순서대로: ①참조 0건 → 기한부 ②`.env` 실제값이 코드 기본값과 다름 → **존치(상수화 금지)** ③참조 3건 이상 → 존치 ④참조 1~2건·기본값 ON → 상수화 ⑤참조 1~2건·기본값 OFF → 기한부. 단 **생성 30일 미만은 상수화하지 않는다**(실사용 이력 부재). 기한부 만료일은 **2027-02-20**으로 통일하며, 도래 시 D-143 ①에 따라 삭제 또는 사유부 연장을 강제한다.
+  5. **`enable_deepagent_orchestration` → `enable_intent_orchestration` 개명**(L2) — 구 이름이 가리키는 것은 2단(트랙 A)인데 1단 플래그 `enable_deepagents_package`(트랙 B)와 이름이 뒤섞여 오독을 유발했다. 구 환경변수명은 `AliasChoices`로 계속 인식하되 **폐기 기한 2027-02-20**(D-161 ① 준수). 설정 카탈로그(D-129)는 신 키만 등재한다(항목 수 251 불변 — 개명이지 추가가 아니다).
+  6. **플래그 판정 규칙을 고정한다**(`docs/flag_audit.md`) — 순서대로: ①참조 0건 → 기한부 ②`.env` 실제값이 코드 기본값과 다름 → **존치(상수화 금지)** ③참조 3건 이상 → 존치 ④참조 1~2건·기본값 ON → 상수화 ⑤참조 1~2건·기본값 OFF → 기한부. 단 **생성 30일 미만은 상수화하지 않는다**(실사용 이력 부재). 기한부 만료일은 **2027-02-20**으로 통일하며, 도래 시 D-161 ①에 따라 삭제 또는 사유부 연장을 강제한다.
 - **실측 근거**:
   - 운영 `.env` 기동: `tier=deep_agent degraded_reason=none resolved_by=explicit_env` → **정본 1단 확정·강등 없음·레거시 4단 미도달**(게이트 1·6 판정 근거)
   - 1단→2단 import 체인 실측: `deep_agent.py:19 → deepagents_tools` → `intent_planner.has_alarm_signal`·`subagents.SUBAGENT_REGISTRY`, `deep_agent.py:460 → result_aggregator`; 2단→3단 `subagents.py:48 → semantic_router.MIN_RELEVANCE_SCORE/_llm_classify`
