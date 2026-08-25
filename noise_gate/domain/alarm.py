@@ -24,7 +24,7 @@ class AlarmEvent:
     폴스타 등록 템플릿 형식:
         {"dbId":"<상수>","serverName":"${platformName}","hostname":"${hostname}",
          "ipAddress":"${ipAddress}","resourceAncestry":"${resourceAncestry}",
-         "alarmId":"${alarmId}","severity":${severity},"alarmStatus":"${alarmStatus}",
+         "alarmId":"${alarmId}","severity":"${severity}","alarmStatus":"${alarmStatus}",
          "resourceType":"${resourceType}","resourceName":"${resourceName}","alarmName":"${alarmName}",
          "alarmTime":"${formatAlarmDate('yyyyMMddHHmmss')}",
          "conditions":"${conditions}","conditionLog":"${conditionLog}"}
@@ -40,6 +40,8 @@ class AlarmEvent:
     # --- 알람 상세 ---
     alarm_id: str                       # ${alarmId}       — 중복 제거 키
     severity: int                       # ${severity}      — 0=해소, 1=주의, 2=경고, 3=심각
+                                        #   폴스타 원문은 한글 라벨(해제/주의/경고/심각)로 도착한다(D-163)
+                                        #   → domain/severity.parse_severity로 정규화한 뒤 담는다
     alarm_status: str                   # ${alarmStatus}   — 폴스타 UI 인지(ACK) 상태 (NOT_ACK 등).
                                         #                    해소 여부와 무관하므로 판정에 사용하지 않음 (Plan 47 §9)
     resource_type: str                  # ${resourceType}  — 'server.Server' 등

@@ -811,7 +811,7 @@ if alarm_worker_task:
 | `${ipAddress}` | `ipAddress` | `ip_address` | IP 주소 |
 | `${resourceAncestry}` | `resourceAncestry` | `resource_ancestry` | 폴스타 트리 전체 경로 |
 | `${alarmId}` | `alarmId` | `alarm_id` | 알람 고유 ID (중복 제거 키) |
-| `${severity}` | `severity` | `severity` | 0=해소, 1=주의, 2=경고, 3=심각 |
+| `${severity}` | `severity` | `severity` | 0=해소, 1=주의, 2=경고, 3=심각 — **실측 정정(2026-08-25·D-163)**: 폴스타는 한글 라벨(`해제`/`주의`/`경고`/`심각`)로 렌더링한다 → 템플릿에 **따옴표 필수**(`"severity":"${severity}"`), 워커·API가 `noise_gate/domain/severity.parse_severity`로 정규화 |
 | `${alarmStatus}` | `alarmStatus` | `alarm_status` | `발생` / `해소` |
 | `${resourceType}` | `resourceType` | `resource_type` | `server.Server`, `server.Cpus` 등 |
 | `${resourceName}` | `resourceName` | `resource_name` | 자원 이름 |

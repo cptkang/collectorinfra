@@ -578,6 +578,12 @@ class AlarmConfig(BaseSettings):
     redis_consumer_group: str = "alarm-workers"
     min_severity: int = 2                 # 처리할 최소 심각도 (0=해소, 1=주의, 2=경고, 3=심각)
     dedup_ttl_seconds: int = 300          # 중복 알람 억제 TTL (초)
+    # ── D-163: 처리 실패 메시지 dead-letter ──
+    # 워커가 파싱·처리 예외로 ACK 폐기하기 전에 원문+사유를 별도 스트림에 보관한다.
+    # (2026-08-25 폐쇄망: 폴스타 severity 한글 라벨 → int() 실패 → 전량 침묵 폐기 재발 방지)
+    dead_letter_enabled: bool = True
+    dead_letter_stream_key: str = "alarm:dead"
+    dead_letter_maxlen: int = 1000        # XADD MAXLEN ~ (근사 상한)
     # 현재 지원 채널: workb만 사용 가능.
     # 추후 "slack,workb" 등 복수 지정 가능하도록 CSV 구조를 유지한다.
     notification_channels_csv: str = "workb"

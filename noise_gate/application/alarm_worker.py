@@ -40,9 +40,11 @@ from noise_gate.domain.correlation import (
 )
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
 from noise_gate.domain.notification_policy import compute_fingerprint
+from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
 from noise_gate.infrastructure.redis_queue import (
     ack_message,
+    dead_letter_message,
     ensure_consumer_group,
     read_messages,
 )
@@ -526,7 +528,19 @@ class AlarmWorker:
                 alarm_time = datetime.now()
 
             alarm_status = payload.get("alarmStatus", "")
-            severity = int(payload["severity"])
+            # (D-163) 폴스타 `${severity}`는 정수가 아니라 한글 라벨(해제/주의/경고/심각)로
+            # 렌더링된다(폐쇄망 실측). 결정적 정규화 — API 경로 `_build_alarm_event_from_payload`와
+            # 동일 함수를 쓴다(경로 대칭). 미지 값은 크래시·폐기 대신 보수적 폴백 + WARNING.
+            severity, severity_fallback_reason = coerce_severity(payload.get("severity"))
+            if severity_fallback_reason is not None:
+                logger.warning(
+                    "심각도 미식별 → 보수적 폴백 %s 적용(폐기 대신 통보 경로 유지): "
+                    "alarm_id=%s raw=%r reason=%s",
+                    severity,
+                    payload.get("alarmId"),
+                    payload.get("severity"),
+                    severity_fallback_reason,
+                )
             # is_clear는 severity == 0 단독 기준 — alarmStatus는 폴스타 UI 인지(ACK)
             # 상태(NOT_ACK 등)로 해소 여부와 무관하다 (Plan 47 §9, D-035)
             is_clear = (severity == 0)
@@ -787,10 +801,42 @@ class AlarmWorker:
                     }
                 },
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)
+            # (D-163) ACK 전에 dead-letter 스트림에 원문+사유를 보관한다 — 실패 건이 흔적 없이
+            # 폐기되어 진단이 로그 전사에만 의존하던 상태(2026-08-25 severity 라벨 건) 재발 방지.
+            await self._dead_letter(r, stream_key, msg_id, fields, exc)
         finally:
             await ack_message(r, stream_key, group, msg_id)
+
+    async def _dead_letter(
+        self,
+        r: aioredis.Redis,
+        stream_key: str,
+        msg_id: bytes,
+        fields: dict,
+        exc: BaseException,
+    ) -> None:
+        """처리 실패 메시지를 dead-letter 스트림에 적재한다 (D-163 · graceful).
+
+        `alarm.dead_letter_enabled=False`면 스킵. 적재 실패는 warning 후 무시한다 —
+        dead-letter가 ACK·소비 루프를 막아서는 안 된다.
+        """
+        alarm_cfg = getattr(self._config, "alarm", None)
+        if not getattr(alarm_cfg, "dead_letter_enabled", False):
+            return
+        try:
+            await dead_letter_message(
+                r,
+                getattr(alarm_cfg, "dead_letter_stream_key", "alarm:dead"),
+                stream_key,
+                msg_id,
+                fields,
+                exc,
+                maxlen=int(getattr(alarm_cfg, "dead_letter_maxlen", 1000)),
+            )
+        except Exception:  # noqa: BLE001 — dead-letter 실패가 소비 루프를 막지 않는다
+            logger.warning("dead-letter 적재 실패(무시): msg_id=%s", msg_id)
 
     async def _publish_incident_resolved(
         self, event: AlarmEvent, fingerprint: str, self_heal: bool

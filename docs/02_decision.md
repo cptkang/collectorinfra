@@ -5,7 +5,7 @@
 
 - 각 결정의 상세 배경·코드 예시·대안 비교·재현 로그 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브, 이후 갱신하지 않음) 참조.
 - **신규 결정은 이 파일에만** 아래 압축 형식(결정일/상태/결정/근거/구현/주의/관련)으로 추가한다.
-- **D-번호 채번**: 이 파일의 **①`## D-` 헤더 ②하단 「변경 이력」 표 ③아래 「채번 이력」 표**를 모두 grep하여 실제 최댓값+1 부여 (현재 최대 **D-162** → 다음 **D-163**. **D-158은 미등재 예약** — 재사용 금지). **계획서에만 적힌 예약은 효력이 없다** — grep 대상은 이 세 곳뿐이므로 예약은 ③에 행으로 등재할 것(D-161 참조).
+- **D-번호 채번**: 이 파일의 **①`## D-` 헤더 ②하단 「변경 이력」 표 ③아래 「채번 이력」 표**를 모두 grep하여 실제 최댓값+1 부여 (현재 최대 **D-163** → 다음 **D-164**. **D-158은 미등재 예약** — 재사용 금지). **계획서에만 적힌 예약은 효력이 없다** — grep 대상은 이 세 곳뿐이므로 예약은 ③에 행으로 등재할 것(D-161 참조).
 - 본문 섹션 없는 번호(재사용 금지): D-039·D-040·D-060·D-077(변경 이력 표 행으로만 등재), D-052(D-051에서 replanner 인프라성 에러 가드용 예약), D-078~D-081(결번).
 
 ### 채번 이력 — 예약 · 결번 · 재부여
@@ -1307,6 +1307,15 @@
 - **대안(기각)**: ①요청별 사다리 카운터 — 빌드 타임 배타라 같은 값의 반복 기록 ②신규 관측 패키지 신설 — `src/observability/` 재사용으로 충분 ③플래그 즉시 삭제 — 참조 0건인 `alarm.prometheus_enabled`조차 `polestar_metric_baseline.py:24`에 의도적 보류 사유가 명시돼 있어 기한 부여가 맞다
 - **관련**: D-161(폐기 4항 실측 의무 — 본 결정이 그 데이터를 공급)·D-037(트랙 A/B)·D-129(설정 카탈로그)·D-139(패키지 경계)·D-140/D-141(SQL 로그·실패 트레이스). 계획 `plans/70`, 태스크 `tasks/todo-70.md`, 문서 `docs/21_orchestration_ladder.md`·`docs/flag_audit.md`·`plans/INDEX.md`
 
+## D-163. 폴스타 심각도 라벨 정규화 + 워커 dead-letter + 설정 카탈로그 그룹 전수 등재
+- **결정일**: 2026-08-25 | **상태**: 구현 완료(개발망 테스트 통과) — 폐쇄망 실기 검증 대기
+- **배경**: 폐쇄망에서 알람 서버가 폴스타 메시지를 정상 수신하는데 웹 UI에 0건. 실측(D-161 ②): Redis `alarm:raw` 적재값의 `severity`가 `"해제"`·`"주의"`(redis-cli 표시 `\xed\x95\xb4\xec\xa0\x9c`…) **한글 라벨**이고, 워커 `_process`의 `int(payload["severity"])`가 ValueError → `except: 로그 / finally: ACK`로 **전량 폐기**(`XINFO GROUPS` pending=0 + 예외 로그 공존이 그 증거). 설계 전제(Plan 46 §6.1 "`${severity}`=0~3 정수")가 실제 폴스타 렌더링과 달랐고, 목업 생성기가 정수를 보내 시나리오 테스트는 이를 드러내지 못했다. 알람 서버의 "알람 페이로드 파싱 실패" 로그는 같은 원인의 다른 갈래(템플릿 무따옴표 `"severity":${severity}` → `"severity":주의` JSON 문법 오류 → XADD 전 폐기). 부기: 어드민 설정 UI에 DRM 그룹이 없다는 보고를 실측하니 `settings_catalog.GROUP_ORDER`에 `polestar_rest`(Plan 71)·`drm`(Plan 74)이 미등재 — `build_catalog`가 튜플의 그룹만 응답에 실어 인덱스(21그룹)에는 있으나 UI(19그룹)에서 탈락, 카운트 테스트(251·19)도 갱신되지 않아 실패 상태로 방치돼 있었다.
+- **결정**: ①`noise_gate/domain/severity.py` 신설 — `parse_severity()`(정수·정수 문자열·한글/영문 라벨 → 0~3, 미지값 `SeverityParseError`(ValueError 하위))·`coerce_severity()`(예외 없이 `(값, 사유)`, 폴백=2 보수적). LLM·휴리스틱 없는 결정적 매핑이며 어휘는 폴스타 실측(해제/주의/경고/심각)+조건식 어휘(CLEAR/ATTENTION/TROUBLE)+직역만 둔다(범용어 확장 금지 — 오매핑 위험). ②워커 `_process`와 API `_build_alarm_event_from_payload` **양쪽**에 동일 함수 적용(경로 대칭). 워커는 미지값을 폐기 대신 보수적 폴백 + WARNING(사유·원값 포함). API 비-tolerant 경로는 누락→0·미지값→ValueError 전파 계약 유지, tolerant 경로는 폴백. ③워커 처리 예외는 ACK 전에 **dead-letter Stream**(`alarm:dead`, `XADD MAXLEN ~1000`)에 원문·출처 스트림·msg_id·사유·시각을 보관(`AlarmConfig.dead_letter_enabled/stream_key/maxlen`, 기본 on). 자동 재투입 없음(같은 실패 무한 루프 방지) — 운영자가 `XRANGE`로 꺼내 `alarm:raw`에 재XADD. dead-letter 실패·off는 graceful(ACK·루프 무차단). ④폴스타 템플릿 권장을 `"severity":"${severity}"`(따옴표)로 정정(수신부·도메인 docstring·Plan 46 표) — 정수 렌더 환경에서도 `"2"`는 정규화되므로 안전. ⑤(부기) `GROUP_ORDER`/`GROUP_TITLES`에 `polestar_rest`·`drm` 등재, 테스트가 `group_keys == set(GROUP_ORDER)`로 AppConfig 하위 설정 전수 등재를 고정(카운트 277·21).
+- **근거**: 침묵 폴백·침묵 드롭 금지. 정규화를 domain 단일 출처로 두어야 워커/API 비대칭(E7-c `format_tolerant`가 API 경로에만 있던 상태)이 재발하지 않는다. dead-letter는 pub/sub가 아닌 Stream(영속·XRANGE 조회) — 실패 건이 진단 가치가 가장 크다(D-160 동류). 폴백값 2는 E7-c `_E7C_CONSERVATIVE_SEVERITY`와 동일(비-해소 쪽 보수, is_clear 오판→드롭 방지).
+- **구현**: `noise_gate/domain/severity.py`(신규)·`noise_gate/application/alarm_worker.py`(`coerce_severity`·`_dead_letter`)·`noise_gate/infrastructure/redis_queue.py`(`dead_letter_message`)·`src/config.py`(`AlarmConfig` 3필드)·`src/api/routes/alarm.py`(`_build_alarm_event_from_payload`)·`src/api/settings_catalog.py`(GROUP_ORDER/TITLES)·`noise_gate/alarm_server/tcp_receiver.py`·`noise_gate/domain/alarm.py`(docstring)·`.env.example`·`noise_gate/tests/test_severity_parse.py`(신규)·`tests/test_api/test_settings_catalog.py`(251→277·19→21)·`plans/46` §6.1·`plans/68` 부록 A.19/A.20.
+- **주의**: 폴스타 템플릿 따옴표 정정은 **폴스타 측 설정 변경**이라 코드 배포와 별도로 반영해야 알람 서버 단의 JSON 오류 갈래가 닫힌다(코드만 배포하면 `"severity":"해제"`로 오는 건은 살아나고 무따옴표 건은 계속 수신부에서 폐기). 폐쇄망 확인 항목: 워커 로그 `심각도 미식별 → 보수적 폴백`(새 라벨 출현 감시)·`DASHBOARD(UI 표시만`/`TICKET(`/workb 발송 로그(정상 흐름 재개)·`XRANGE alarm:dead - + COUNT 20`(실패 잔존)·grep 심볼 `coerce_severity`/`dead_letter_message`/`"polestar_rest", "drm"`(부분 반영 방지). UI 표시 여부는 여전히 D-048.10 플래그(`NOISE_ENABLE_NOISE_GATE`·`NOISE_SSE_BRIDGE_ENABLED`)와 티어(PAGE는 incident 트래킹 없이는 UI 미표시)에 종속 — 본 결정은 그 앞단의 100% 소실을 닫는 것이다.
+- **관련**: D-035(is_clear=severity==0)·D-048.10(SSE 브리지)·D-129(설정 카탈로그)·D-156(DRM)·D-160(실패 건 가시화)·D-161(실측 4항)·Plan 46 §6.1·Plan 60 E7-c
+
 ---
 
 ## 변경 이력
@@ -1315,6 +1324,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-08-25 | D-163 | **폴스타 심각도 라벨 정규화 + 워커 dead-letter + 설정 카탈로그 그룹 전수 등재** — 폐쇄망 실측: `alarm:raw`의 severity가 `"해제"/"주의"` 한글 라벨 → 워커 `int()` ValueError → ACK 폐기(전량 UI 미도달). domain `severity.py` 결정적 매핑을 워커·API 양쪽에 적용, 실패 건 `alarm:dead` Stream 보관(자동 재투입 없음), 템플릿 따옴표 정정. 부기: `polestar_rest`·`drm` 그룹이 `GROUP_ORDER` 미등재로 어드민 설정 UI에서 누락 → 등재 + 전수 등재 단언(277·21). |
 | 2026-08-24 | D-162 | **오케스트레이션 사다리 관측·문서화 + 플래그 감사 판정 규칙** — D-161이 폐기 4항 실측을 강제했으나 그 근거 데이터가 없던 공백을 메운다. ①확정 단을 기동 1회 로그(`tier`·`degraded_reason`·`resolved_by`) ②확정 결과 조회 + 실패 트레이스 헤더 반영 ③`docs/21_orchestration_ladder.md` 단일 출처(§7 **모듈 의존 방향** — 배선은 배타적이나 모듈 의존은 아니다) ④tri-state 자동 해석 경고 ⑤`enable_deepagent_orchestration`→`enable_intent_orchestration` **개명**(구 env명 alias 유지, 2027-02-20 폐기) ⑥플래그 판정 규칙 5단계 + 기한부 만료일 2027-02-20. 실측: 운영 `.env` → `tier=deep_agent`(레거시 4단 미도달), 플래그 43개 = 기한부 5·상수화 3·존치 35. **신규 플래그 추가 0**. |
 | 2026-08-21 | D-160 | **EAV 숫자 값 정수 캐스트 3층 수정** — 공동존 "vcore 수" 집계가 `CAST(… AS BIGINT)`로 실행 거부('4.0' 문자열, 감사 로그 전사 확정). FIX-D 균형 괄호 스캔 기반 NUMERIC 교정(값 컬럼은 eav_pattern 선언 도출, 단일·멀티 공통), FIX-E 프로필 캐스트 금지 규칙+vcore 예시(b0는 DB2 방언 규칙만), FIX-G dbhub 실패 SQL 파일 로그 공백 보완(D-140). 병합 오합침 아님 실증(프로필 diff 추가만·집계형 골드셋 0건 — D-142 신규 유입구의 무방비 지대). 테스트 20건 신규·영향권 328 그린·arch/overfit 0. |
 | 2026-08-21 | D-159 | **멀티 경로 토큰 폭증 3중 수정** — 공동존 cm_gp 136,707tok > FabriX 95,232 폐쇄망 실측(병합본 첫 전체 배포 + D-142 유사어 등록이 잠복 W-6 증량을 발화). FIX-A 관련 테이블 게이트(프로필+질의 매칭 유사어, 단일 D-051 게이트 재사용, `TEXT2SQL_MULTI_RELEVANT_GATE` 기본 ON), FIX-B 토큰 예산 절단 계단(재료→샘플→명시 실패, `TEXT2SQL_PROMPT_TOKEN_BUDGET`=90k, W-6 예고 후속), FIX-C 백엔드 예외 content 감지+재시도 중단(D-153 후속2 동형). 테스트 26건 신규·영향권 131건 그린·arch/overfit 0. |

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from src.api.dependencies import alarm_zones_for_user, require_user, resolve_stream_user
 from src.routing.zones import all_zones, db_id_to_zone
+from noise_gate.domain.severity import coerce_severity, parse_severity
 from noise_gate.domain.alarm import (
     AlarmAnalysisResult,
     AlarmEvent,
@@ -1180,18 +1181,16 @@ def _build_alarm_event_from_payload(
         alarm_time = _dt.now()
 
     alarm_status = payload.get("alarmStatus", "")
+    # (D-163) 폴스타 `${severity}`는 한글 라벨로 렌더링된다 — 워커 `_process`와 동일한
+    # 결정적 정규화(noise_gate.domain.severity)를 쓴다(경로 대칭). 정수·정수 문자열·라벨 수용.
+    raw_sev = payload.get("severity", None)
     if format_tolerant:
-        raw_sev = payload.get("severity", None)
-        try:
-            severity = (
-                int(raw_sev)
-                if raw_sev is not None
-                else _E7C_CONSERVATIVE_SEVERITY  # 누락 → 보수적(드롭 방지)
-            )
-        except (ValueError, TypeError):
-            severity = _E7C_CONSERVATIVE_SEVERITY  # 비정수 → 보수적(크래시 방지)
+        # 누락·미지 값 → 보수적(드롭·크래시 방지). 라벨/정수는 정규화.
+        severity, _ = coerce_severity(raw_sev, fallback=_E7C_CONSERVATIVE_SEVERITY)
     else:
-        severity = int(payload.get("severity", 0))  # 현행 동작(비트동일)
+        # 누락 → 0(현행 유지). 라벨/정수 문자열은 정규화, 미지 값은 SeverityParseError(ValueError
+        # 하위) 전파 — 현행 '비정수 → ValueError' 계약 유지.
+        severity = 0 if raw_sev is None else parse_severity(raw_sev)
     # is_clear는 severity == 0 단독 기준 — alarmStatus는 ACK 상태로 무관 (Plan 47 §9)
     is_clear = severity == 0
 
