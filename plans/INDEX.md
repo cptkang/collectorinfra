@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **갱신** 2026-08-24 (병합 편입분 5건 추가) · **전건 80개** (최상위 `plans/*.md` 기준)
+> **생성** 2026-08-20 (plans/70 D1) · **갱신** 2026-08-25 (76 추가) · **전건 81개** (최상위 `plans/*.md` 기준)
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -95,12 +95,13 @@
 | 73 | [`73-formfill-deterministic-path-and-profiles.md`](./73-formfill-deterministic-path-and-profiles.md) | Plan 73 — 폼필 결정적 경로 + 멀티턴 HITL 폼필 (v2) | *(미표기)* | 2026-08-24 |
 | 74 | [`74-drm-decryption-servicelinker.md`](./74-drm-decryption-servicelinker.md) | Plan 74 — 양식 업로드 DRM 해제 (Softcamp ServiceLinker 연동) | **Phase 1·2·2b 구현 완료 (2026-08-12, D-156)** — 감지·라우트 대칭 배선·… | 2026-08-24 |
 | 75 | [`75-realtime-usage-api-and-ux-review.md`](./75-realtime-usage-api-and-ux-review.md) | 75. UX 개선 기획 검토 의견 — 실시간 사용률 API · 버튼 명령어 · LIMIT 절단 · 존 모호성 역질문 | 검토 의견 v2. §1은 사용자 확정(2안 채택)·실측 완료로 **별도 구현 계획서(Plan 71)** 분리 — … | 2026-08-24 |
+| 76 | [`76-execution-logging-and-failure-trace.md`](./76-execution-logging-and-failure-trace.md) | 76. 실행 관측 로깅 — 실행 SQL 파일 로그 + 실패 요청 단계 트레이스 (설계·구현 정리) | **구현 완료 (2026-08-19 랜딩 · D-140/D-141 등재)** — 본 문서는 실행 코드 실측(2026-08-25) 대조본. | 2026-08-25 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |
 | — | [`xls_plan.md`](./xls_plan.md) | Excel 양식 기반 데이터 조회 및 파일 작성 — 개선 계획 | *(미표기)* | 2026-04-09 |
 
-## 상태 표기 있는 계획서만 (21건)
+## 상태 표기 있는 계획서만 (22건)
 
 신규 계획서는 앞부분에 `> **상태**: …`를 넣는다. 이 인덱스가 기계적으로 읽는 유일한 근거다.
 
