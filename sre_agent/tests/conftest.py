@@ -14,3 +14,6 @@ for _p in (_TOP, _TOP / "scripts"):
     _s = str(_p)
     if _s not in sys.path:
         sys.path.insert(0, _s)
+
+# MVP 실행 기록기 — MVP 테스트가 어떤 방식으로 실행되든 대장(docs/24)에 기록이 남는다.
+pytest_plugins = ["tests.mvp_record"]

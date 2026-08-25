@@ -113,6 +113,8 @@ class DiagnosisAgent:
         self._config = Config(
             model=self.settings.model,
             api_key=self.settings.api_key,
+            # 사내 OpenAI 호환 엔드포인트(vLLM 등). None이면 프로바이더 기본 경로.
+            api_base=self.settings.api_base,
             max_steps=self.settings.max_steps,
             toolsets=toolsets if toolsets is not None else vm_profile(),
             mcp_servers=mcp_servers,

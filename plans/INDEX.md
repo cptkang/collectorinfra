@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **갱신** 2026-08-25 (76 추가) · **전건 81개** (최상위 `plans/*.md` 기준)
+> **생성** 2026-08-20 (plans/70 D1) · **갱신** 2026-08-25 (77 추가) · **전건 82개** (최상위 `plans/*.md` 기준)
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -85,7 +85,7 @@
 | 63 | [`63-polestar-overfit-decoupling.md`](./63-polestar-overfit-decoupling.md) | 63. 폴스타 과적합 분리 — DB 어댑터 격리 + 공통 경로 LLM 일반화 (Polestar Decoupling & LLM Generalization) | **완료** (전 트랙 P1~P4, 2026-07-20, 커밋 affca22~9fd1917). 후속 EX 라이브 측정은 **DB 데이터 미적재로 유효 검증 불… | 2026-07-21 |
 | 64 | [`64-automated-incident-investigation-and-response.md`](./64-automated-incident-investigation-and-response.md) | 64. 이벤트 자동 조사·진단 브리핑 및 장애 대응 오케스트레이션 (Automated On-Event Investigation, Triage Briefing & Response) | 계획 (미구현). 사용자 확정(2026-07-21): ①산출물=Plan 60 훅 + 신규 Plan 64, ②조사 범위=**L3 실호스트 명령까지 즉시 대상**… | 2026-07-27 |
 | 65 | [`65-noise-cancellation-mock-event-generator.md`](./65-noise-cancellation-mock-event-generator.md) | 65. 노이즈 캔슬링 목업 이벤트 생성기 (Mock Polestar Event Generator) | **구현 완료 (2026-07-27 · Plan 66 Wave 1-A · D-121 등재)** — `scripts/mock_polestar_events.py`… | 2026-07-27 |
-| 66 | [`66-sre-agent-integrated-implementation-plan.md`](./66-sre-agent-integrated-implementation-plan.md) | 66. SRE-Agent 통합 구현 계획 — sre-agent 01~06 × Plan 60~65 종합 실행 시퀀스 | **Phase 1~3 구현 완료 — MVP 실증**(2026-07-28 실 Gemini 조사 완주). Phase 4~5·잔여 항목은 §1.4 스냅샷(2026-… | 2026-08-06 |
+| 66 | [`66-sre-agent-integrated-implementation-plan.md`](./66-sre-agent-integrated-implementation-plan.md) | 66. SRE-Agent 통합 구현 계획 — sre-agent 01~06 × Plan 60~65 종합 실행 시퀀스 | **Phase 1~3 구현 완료 — MVP 실증**(2026-07-28 실 Gemini 조사 완주). Phase 4~5·잔여 항목은 §1.4 스냅샷 참조. **2026-08-25 재점검: Plan 66 스코프 코드 진척 0·회귀 0 — 잔여 5건은 전부 코드 외 선행조건 대기**(§1.5)… | 2026-08-25 |
 | 67 | [`67-stepwise-llm-query-composition.md`](./67-stepwise-llm-query-composition.md) | 67. 단계적 LLM 쿼리 조립 + 경직성 해소 리팩토링 — deep agents vs semantic routing 비교 검토 | **전 트랙 구현 + E1 A/B 평가 실행(2026-08-05, v16) — 단, 측정 조건 불일치로 판정은 잠정·재측정 대기(v17)** — E1 판정: … | 2026-08-06 |
 | 68 | [`68-webui-env-settings.md`](./68-webui-env-settings.md) | 68. 설정 웹UI 전면 개편 계획 (v2 — 설정 코드 정밀 분석 반영) | **확정 — 착수 가능 (2026-07-29 사용자 승인)**. §9 게이트 5건 전부 권고안대로 확정 + **사용자 인터뷰 4건 확정(§9-보완)**. 옵션… | 2026-07-30 |
 | 69 | [`69-query-generation-structural-refactoring.md`](./69-query-generation-structural-refactoring.md) | 69. 쿼리 생성 영역 구조 리팩토링 — 중복 통합·경로 대칭·계층 정리 | v9 — **계획·후속·별건 전량 완결. 잔여 0건.** P0~P5 구현·D-134 등재·문구 통일 적용·후속 3건에 이어 마지막 별건(EAV 검증 리터럴 이… | 2026-08-05 |
@@ -96,12 +96,13 @@
 | 74 | [`74-drm-decryption-servicelinker.md`](./74-drm-decryption-servicelinker.md) | Plan 74 — 양식 업로드 DRM 해제 (Softcamp ServiceLinker 연동) | **Phase 1·2·2b 구현 완료 (2026-08-12, D-156)** — 감지·라우트 대칭 배선·… | 2026-08-24 |
 | 75 | [`75-realtime-usage-api-and-ux-review.md`](./75-realtime-usage-api-and-ux-review.md) | 75. UX 개선 기획 검토 의견 — 실시간 사용률 API · 버튼 명령어 · LIMIT 절단 · 존 모호성 역질문 | 검토 의견 v2. §1은 사용자 확정(2안 채택)·실측 완료로 **별도 구현 계획서(Plan 71)** 분리 — … | 2026-08-24 |
 | 76 | [`76-execution-logging-and-failure-trace.md`](./76-execution-logging-and-failure-trace.md) | 76. 실행 관측 로깅 — 실행 SQL 파일 로그 + 실패 요청 단계 트레이스 (설계·구현 정리) | **구현 완료 (2026-08-19 랜딩 · D-140/D-141 등재)** — 본 문서는 실행 코드 실측(2026-08-25) 대조본. | 2026-08-25 |
+| 77 | [`77-synonym-proposal-queue-and-approval-ui.md`](./77-synonym-proposal-queue-and-approval-ui.md) | 77. 유사어 제안 대기열 + 승인 웹 UI — 자동 캡처 · 선택적 영구 저장 (Synonym Proposal Queue & Approval UI) | **계획 (미구현)** — 사용자 요건 확정 3건 반영(§1.2). 착수 시 D-163 등재. | 2026-08-25 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |
 | — | [`xls_plan.md`](./xls_plan.md) | Excel 양식 기반 데이터 조회 및 파일 작성 — 개선 계획 | *(미표기)* | 2026-04-09 |
 
-## 상태 표기 있는 계획서만 (22건)
+## 상태 표기 있는 계획서만 (23건)
 
 신규 계획서는 앞부분에 `> **상태**: …`를 넣는다. 이 인덱스가 기계적으로 읽는 유일한 근거다.
 
