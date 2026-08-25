@@ -59,7 +59,7 @@ cd sre_agent && RUN_E2E=1 .venv/bin/python -m pytest tests/test_investigation_e2
 | 위치 | 내용 | 수명 |
 |---|---|---|
 | `logs/mvp_test/runs.jsonl` | 런별 1줄 — 결과·소요·**환경 지문**·관측값 | **`logs/`는 gitignore → 로컬 한정** |
-| **`docs/24_plan66_mvp_test_log.md`** | **실행 대장** — 런별 1행 | **커밋 대상 → 세션·작업자를 넘어 참조** |
+| **`logs/mvp_test/mvp_test_log.md`** | **실행 대장** — 런별 1행(사람이 읽는 누적 이력) | **`logs/`는 gitignore → 실행한 호스트에만** |
 
 기록 규약:
 
@@ -573,7 +573,7 @@ PY
 | 목업 주입 `mock_polestar_events.py` | A | 레포 루트 | `.venv` | §5.3 |
 | 감사 확인 (`logs/alarm_decisions.jsonl`) | A | 레포 루트 | — | §5.4 |
 | worKB 스텁 수신기 | A | 무관 | `.venv` | §6 |
-| 실행 대장 확인 (`docs/24`) | A | 레포 루트 | — | §12.1 |
+| 실행 대장 확인 (`logs/mvp_test/mvp_test_log.md`) | 실행한 호스트(보통 A) | 레포 루트 | — | §12.1 |
 
 **설정 파일** — CWD가 아니라 *어느 서버의 어느 파일*이 기준이다.
 
@@ -1463,12 +1463,17 @@ NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT=8
 Plan 66의 잔여 웨이브(§13)를 이어서 진행할 때, **먼저 대장을 읽고 시작한다.**
 "직전에 무엇이 어떤 환경에서 어떻게 동작했는가"를 코드에서 재추론하지 않기 위해서다.
 
+> **기록은 `logs/` 아래에만 있고 `logs/`는 gitignore다** — 즉 **테스트를 실행한 그 호스트에만**
+> 남는다. 다른 작업자·세션에 넘겨야 하면 ①`logs/mvp_test/` 폴더를 첨부하거나
+> ②요지를 **Plan 66 §8 변경 이력**에 옮겨 적는다(모델·판정·소요·커밋 4가지면 충분하다).
+> 그래서 §12.3의 "기록이 없을 때" 절차가 예외가 아니라 **자주 밟는 경로**다.
+
 ### 12.1 착수 전 3분 — 대장으로 현재 위치 확인
 
 ```bash
 # [서버 A · CWD=레포 루트]
-tail -20 docs/24_plan66_mvp_test_log.md        # 최근 실행 이력(커밋 대상 — 항상 존재)
-tail -3 logs/mvp_test/runs.jsonl | python -m json.tool   # 지문 상세(로컬에 있을 때만)
+tail -20 logs/mvp_test/mvp_test_log.md         # 최근 실행 이력(사람이 읽는 누적)
+tail -3 logs/mvp_test/runs.jsonl | python -m json.tool   # 지문 상세(같은 폴더)
 ```
 
 읽는 순서와 해석:
@@ -1509,8 +1514,9 @@ tail -3 logs/mvp_test/runs.jsonl | python -m json.tool   # 지문 상세(로컬�
 ### 12.4 기록에 남기지 않는 것
 
 키·토큰·연결 문자열은 **값을 남기지 않는다**(`api_key_set: true/false`처럼 설정 여부만).
-실 데이터 조사(§8)의 브리핑 본문에는 운영 정보가 들어갈 수 있으므로, **대장에는 요약 수치만**
-남기고 본문은 `logs/`(로컬)에 둔다 — 대장은 커밋 대상이다.
+`logs/`는 커밋되지 않지만 **파일 첨부·화면 공유로 밖으로 나갈 수 있다** — 대장에는 요약 수치만
+남기고 브리핑 본문 같은 운영 정보는 싣지 않는다. 특히 실 데이터 조사(§8) 결과를 옮겨 적을
+때는 호스트명·계정·연결 문자열이 섞이지 않았는지 확인한다.
 
 ---
 
@@ -1537,7 +1543,7 @@ Plan 66 §1.5 기준 — 전부 **코드 외 선행조건**이라 현 환경에�
 - 인접 가이드: `docs/16`(Plan 52 게이트 E2E) · `docs/20`(Plan 60 기능별 §8 목업 사용법) ·
   `docs/09`(DB 설정) · `docs/19`(임베딩 모델 설치)
 - **실행 기록**: `noise_gate/tests/mvp_record.py`·`sre_agent/tests/mvp_record.py`(테스트 내장 기록기 · §0.1) ·
-  **`docs/24_plan66_mvp_test_log.md`(실행 대장 — 커밋 대상)** · `logs/mvp_test/runs.jsonl`(지문 상세 · 로컬 한정) ·
+  **`logs/mvp_test/mvp_test_log.md`(실행 대장)** · `logs/mvp_test/runs.jsonl`(지문 상세) — 둘 다 `logs/` 아래(gitignore) ·
   해석 방법은 **§12**
 - **배치 근거**: `plans/sre-agent/05` §2(배치 구성 — 별도 프로세스·별도 venv 단일 프로파일) ·
   `plans/sre-agent/06` §1(**에이전트 중앙 1곳 실행 · 대상 VM 미배포 · SSH 미채택**)·§8.1(픽스처 포트 재배치 근거) ·

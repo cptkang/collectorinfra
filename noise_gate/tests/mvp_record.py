@@ -4,9 +4,9 @@
 판정 로직이 두 벌이 되고, pytest를 직접 돌렸을 때는 기록이 남지 않는다. 그래서 기록은
 테스트 자신이 관측한 값으로 남긴다 — 어떤 방식으로 실행하든(pytest·IDE·CI) 기록이 생긴다.
 
-산출:
-    logs/mvp_test/runs.jsonl              런별 1줄(기계 판독 · `logs/`는 gitignore)
-    docs/24_plan66_mvp_test_log.md        실행 대장(커밋 대상 · 세션을 넘는 참조 경로)
+산출(둘 다 `logs/` 아래 — 운영 산출물이지 문서가 아니다):
+    logs/mvp_test/runs.jsonl        런별 1줄(기계 판독 — 지문·관측값 전체)
+    logs/mvp_test/mvp_test_log.md   실행 대장(사람이 읽는 누적 이력)
 
 사용:
     @pytest.mark.mvp
@@ -32,20 +32,20 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 RUNS_JSONL = REPO / "logs" / "mvp_test" / "runs.jsonl"
-LEDGER = REPO / "docs" / "24_plan66_mvp_test_log.md"
+LEDGER = REPO / "logs" / "mvp_test" / "mvp_test_log.md"
 
 LEVEL = "A(stub·배관)"
 
-LEDGER_HEADER = """# 24. Plan 66 MVP 테스트 실행 기록 (대장)
+LEDGER_HEADER = """# Plan 66 MVP 테스트 실행 기록 (대장)
 
 > MVP 테스트가 실행될 때마다 **테스트 코드 자신이** 한 행을 덧붙인다
 > (`noise_gate/tests/mvp_record.py` · `sre_agent/tests/mvp_record.py`).
 > 절차·판정 기준은 `docs/23_plan66_mvp_test_guide.md`, 잔여 항목은
 > `plans/66-sre-agent-integrated-implementation-plan.md` §1.5.
+> 지문·관측값 전체는 같은 폴더의 `runs.jsonl`에 있다. 해석 방법은 `docs/23` §12.
 >
-> 원시 기록은 `logs/mvp_test/runs.jsonl`에 남으며 **`logs/`는 gitignore라 로컬 한정**이다 —
-> 이 대장이 세션·작업자를 넘어 참조 가능한 유일한 기록이므로, 판정 근거가 되는 값은 여기에 적는다.
-> 해석 방법은 `docs/23` §12(실행 기록을 Plan 66 진행에 쓰는 법).
+> **`logs/`는 gitignore라 이 파일은 커밋되지 않는다** — 실행한 호스트에만 남는다.
+> 다른 작업자·세션에 넘길 때는 이 파일을 첨부하거나 요지를 Plan 66 §8 변경 이력에 옮겨 적는다.
 
 | 실행 시각(UTC) | 레벨 | 테스트 | 결과 | 소요 | 커밋 | 관측 요약 |
 |---|---|---|---|---|---|---|
@@ -89,7 +89,7 @@ def env_fingerprint() -> dict:
 
 
 def write_record(record: dict) -> None:
-    """runs.jsonl 1줄 + 대장 1행. 기록 실패는 테스트를 깨뜨리지 않되 침묵하지 않는다."""
+    """runs.jsonl 1줄 + 대장 1행(둘 다 logs/mvp_test/). 기록 실패는 테스트를 깨뜨리지 않되 침묵하지 않는다."""
     try:
         RUNS_JSONL.parent.mkdir(parents=True, exist_ok=True)
         with RUNS_JSONL.open("a", encoding="utf-8") as fh:

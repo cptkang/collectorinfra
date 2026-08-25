@@ -23,7 +23,7 @@ import pytest
 TOP = Path(__file__).resolve().parents[1]        # collectorinfra/sre_agent/
 REPO = TOP.parent                                 # collectorinfra/
 RUNS_JSONL = REPO / "logs" / "mvp_test" / "runs.jsonl"
-LEDGER = REPO / "docs" / "24_plan66_mvp_test_log.md"
+LEDGER = REPO / "logs" / "mvp_test" / "mvp_test_log.md"
 
 LEVEL = "B(real·조사완주)"
 
@@ -72,7 +72,7 @@ def write_record(record: dict) -> None:
 
         if not LEDGER.exists():   # 레벨 A 기록기가 먼저 만들지만 단독 실행도 가능해야 한다
             LEDGER.write_text(
-                "# 24. Plan 66 MVP 테스트 실행 기록 (대장)\n\n"
+                "# Plan 66 MVP 테스트 실행 기록 (대장)\n\n"
                 "| 실행 시각(UTC) | 레벨 | 테스트 | 결과 | 소요 | 커밋 | 관측 요약 |\n"
                 "|---|---|---|---|---|---|---|\n", encoding="utf-8")
         obs = record.get("observed") or {}
