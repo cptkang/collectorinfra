@@ -199,6 +199,7 @@ async def intent_planner(
 
         _template = state.get("template_structure")
         _sig = form_signature(_template) or state.get("last_form_signature")
+        _panel = None
         if not _sig:
             text = (
                 "기억된 답을 조회·삭제하려면 대상 양식이 필요합니다. 양식 파일을 "
@@ -211,10 +212,14 @@ async def intent_planner(
         elif any(k in _mq for k in _FORM_MEMORY_DELETE_KEYWORDS):
             text = await _form_memory_delete_response(state, user_query, app_config, _sig)
         else:
-            text = await _form_memory_view_response(state, app_config, _sig)
+            # D-166: 조회 응답에 항목별 삭제 패널(구조화 컨텍스트)을 동봉 — 프론트가 체크박스·
+            # 버튼으로 form_memory_delete를 보내면 라우트가 파이프라인·LLM 없이 결정적 삭제.
+            text, _panel = await _form_memory_view_payload(state, app_config, _sig)
         logger.info("intent_planner: 폼필 확인 이력 조회/삭제 단락(D-151)")
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = text
+        if _panel:
+            plan["task_plan"][0]["form_memory_panel"] = _panel
         if _sig:
             plan["last_form_signature"] = _sig  # 직전 양식 컨텍스트 갱신(멀티턴 보존)
         return plan
@@ -279,10 +284,44 @@ async def intent_planner(
     return result
 
 
-async def _form_memory_view_response(
+_FORM_MEMORY_ACTION_LABELS = {
+    "blank": "공란 유지", "column": "DB 항목", "eav": "DB 항목", "literal": "직접 입력",
+}
+
+
+def build_form_memory_panel(
+    signature: str | None, answers: dict | None, meta: dict | None
+) -> dict | None:
+    """저장 값 삭제 패널 컨텍스트(D-166) — 프론트 체크박스·버튼 렌더용 구조화 페이로드.
+
+    {signature, display_name, entries: [{field, label, action, value}]}. 항목이 없으면 None.
+    라우트의 삭제 후 재표시와 intent_planner의 조회 응답이 같은 shape를 쓴다(단일 출처).
+    """
+    if not signature or not answers:
+        return None
+    entries = []
+    for field, ans in answers.items():
+        entries.append({
+            "field": field,
+            "label": field.replace("|", " > "),
+            "action": _FORM_MEMORY_ACTION_LABELS.get(ans.get("action"), str(ans.get("action"))),
+            "value": ans.get("value"),
+        })
+    return {
+        "signature": signature,
+        "display_name": (meta or {}).get("display_name") or "이 양식",
+        "entries": entries,
+    }
+
+
+async def _form_memory_view_payload(
     state: AgentState, app_config: AppConfig, signature: str | None = None
-) -> str:
-    """첨부 양식의 확인 이력을 조회 전용(TTL 미연장)으로 표시한다(D-151 Phase 3)."""
+) -> tuple[str, dict | None]:
+    """첨부 양식의 확인 이력을 조회 전용(TTL 미연장)으로 표시한다(D-151 Phase 3).
+
+    Returns:
+        (응답 텍스트, 삭제 패널 컨텍스트 또는 None) — 패널은 D-166.
+    """
     from src.schema_cache.form_memory import load_form_memory_answers
 
     _sig, answers, meta = await load_form_memory_answers(
@@ -293,24 +332,32 @@ async def _form_memory_view_response(
             "이 양식에 기억된 답이 없습니다. 양식을 채운 뒤 미해결 항목 패널에서 "
             "'이 답을 기억'을 선택하면 저장됩니다(일정 기간 후 자동 만료). "
             + _FORM_MEMORY_SHORTCUT_HINT
-        )
-    _act = {"blank": "공란 유지", "column": "DB 항목", "eav": "DB 항목", "literal": "직접 입력"}
+        ), None
     lines = []
     for field, ans in answers.items():
         label = field.replace("|", " > ")
-        act = _act.get(ans.get("action"), str(ans.get("action")))
+        act = _FORM_MEMORY_ACTION_LABELS.get(ans.get("action"), str(ans.get("action")))
         val = ans.get("value")
         suffix = f"({val})" if val not in (None, "") else ""
         lines.append(f"- {label}: {act}{suffix}")
-    return (
+    text = (
         f"'{meta.get('display_name', '이 양식')}' 양식에 기억된 답이 {len(answers)}건 "
         f"있습니다 (저장 {str(meta.get('created_at', ''))[:10]}, "
         f"{meta.get('use_count', 0)}회 사용).\n\n"
         + "\n".join(lines)
-        + "\n\n특정 항목을 삭제하려면 \"<필드명> 기억 삭제\", 전체를 삭제하려면 "
-        "\"기억 전부 삭제\"라고 요청해 주세요. 이 답들은 같은 양식을 채울 때 "
+        + "\n\n아래 패널에서 항목을 선택해 삭제하거나, \"<필드명> 기억 삭제\"·"
+        "\"기억 전부 삭제\"라고 요청할 수도 있습니다. 이 답들은 같은 양식을 채울 때 "
         "자동으로 반영됩니다. " + _FORM_MEMORY_SHORTCUT_HINT
     )
+    return text, build_form_memory_panel(_sig or signature, answers, meta)
+
+
+async def _form_memory_view_response(
+    state: AgentState, app_config: AppConfig, signature: str | None = None
+) -> str:
+    """`_form_memory_view_payload`의 텍스트만(하위호환)."""
+    text, _panel = await _form_memory_view_payload(state, app_config, signature)
+    return text
 
 
 async def _form_memory_delete_response(

@@ -926,7 +926,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -947,6 +947,10 @@
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
             }
+            // D-166: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
+            if (formMemoryDelete) {
+                streamBody.form_memory_delete = formMemoryDelete;
+            }
             // Plan 73 D-151: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
             if (formFillAnswers) {
                 streamBody.form_fill_answers = formFillAnswers;
@@ -965,7 +969,7 @@
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query, selectedDbIds);
+                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete);
                 return;
             }
 
@@ -1054,6 +1058,8 @@
             finalizeStreamingMessage(finalText, metaData);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
+            // D-166: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1364,9 +1370,76 @@
         if (last) renderFormFillPanel(last, ctx);
     }
 
+    // ─── D-166: 양식 저장 값 패널(항목별 삭제) ───
+    // '?' 조회 응답의 form_memory_panel {signature, display_name, entries:[{field,label,action,value}]}를
+    // 체크박스 목록 + [선택 삭제]/[전체 삭제]로 렌더한다. 클릭 결과는 자연어 재조합 없이
+    // form_memory_delete(구조화 필드)로 전송되고 서버가 파이프라인·LLM 없이 결정적으로 삭제한다
+    // (존 역질문·폼필 답변 패널과 동형). 삭제 응답은 남은 항목으로 패널을 다시 내려준다.
+    function renderFormMemoryPanel(bubble, ctx) {
+        var entries = (ctx && ctx.entries) || [];
+        if (!entries.length || !ctx.signature) return;
+        var boxId = "formMemory-" + Date.now();
+        var rowsHtml = entries.map(function (e) {
+            var field = escapeHtml(e.field);
+            var label = escapeHtml(e.label || e.field);
+            var valueText = (e.value === null || e.value === undefined || e.value === "") ? "" : " (" + escapeHtml(String(e.value)) + ")";
+            return '<label class="form-memory-row" style="display:flex;gap:6px;align-items:center;margin:4px 0;">' +
+                '<input type="checkbox" class="form-memory-check" value="' + field + '">' +
+                '<span style="min-width:160px;font-weight:600;">' + label + '</span>' +
+                '<span>' + escapeHtml(e.action || "") + valueText + '</span>' +
+                '</label>';
+        }).join("");
+        var html = '<div class="zone-clarify form-memory-panel" id="' + boxId + '">' +
+            '<div class="zone-clarify-title">저장 값 관리 — ' + escapeHtml(ctx.display_name || "이 양식") + '</div>' +
+            rowsHtml +
+            '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                '<button type="button" class="zone-clarify-confirm form-memory-delete-selected">선택 삭제</button>' +
+                '<button type="button" class="zone-clarify-confirm form-memory-delete-all">전체 삭제</button>' +
+            '</div>' +
+            '</div>';
+        var wrap = document.createElement("div");
+        wrap.innerHTML = html;
+        var box = wrap.firstChild;
+        bubble.appendChild(box);
+
+        function submitDelete(payload, echoText) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+            var echoMsg = { role: "user", content: echoText, time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery("[양식 기억 삭제]", null, null, false, payload);
+        }
+        box.querySelector(".form-memory-delete-selected").addEventListener("click", function () {
+            var fields = [];
+            box.querySelectorAll(".form-memory-check:checked").forEach(function (cb) { fields.push(cb.value); });
+            if (!fields.length) {
+                alert("삭제할 항목을 선택해 주세요.");
+                return;
+            }
+            submitDelete(
+                { signature: ctx.signature, fields: fields, all: false },
+                "기억 삭제: " + fields.map(function (f) { return f.replace(/\|/g, " > "); }).join(", ")
+            );
+        });
+        box.querySelector(".form-memory-delete-all").addEventListener("click", function () {
+            if (!confirm("'" + (ctx.display_name || "이 양식") + "'에 저장된 값 " + entries.length + "건을 모두 삭제할까요? 되돌릴 수 없습니다.")) {
+                return;
+            }
+            submitDelete({ signature: ctx.signature, fields: null, all: true }, "기억 전부 삭제");
+        });
+    }
+
+    function appendFormMemoryPanelToLastBubble(ctx) {
+        if (!ctx) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderFormMemoryPanel(last, ctx);
+    }
+
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query, selectedDbIds) {
+    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete) {
         renderProcessingMessage();
         resetProgressPanel();
 
@@ -1378,6 +1451,10 @@
             }
             if (selectedDbIds && selectedDbIds.length) {
                 queryBody.selected_db_ids = selectedDbIds;
+            }
+            // D-166: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
+            if (formMemoryDelete) {
+                queryBody.form_memory_delete = formMemoryDelete;
             }
             var response = await fetch("/api/v1/query", {
                 method: "POST",
@@ -1403,6 +1480,8 @@
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
+            // D-166: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
         } catch (err) {
             removeProcessingMessage();
@@ -1527,6 +1606,8 @@
             attachDownloadToLastFileCard(metaData.query_id);
             // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
+            // D-166: '?' 조회(파일 첨부) 응답의 저장 값 패널
+            appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1584,6 +1665,8 @@
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
+            // D-166: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(data.form_memory_panel);
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);

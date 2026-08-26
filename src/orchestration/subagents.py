@@ -866,11 +866,15 @@ async def run_general_inference(
     direct = task.get("direct_response")
     if direct:
         logger.info("general_inference: direct_response 고정 안내 반환(D-150, LLM 미호출)")
-        return {
+        out = {
             "final_response": direct,
             "routing_intent": "general_inference",
             "current_node": "general_inference",
         }
+        # 저장 값 삭제 패널(D-166): 조회 단락의 구조화 컨텍스트를 task 결과로 운반
+        if task.get("form_memory_panel"):
+            out["form_memory_panel"] = task["form_memory_panel"]
+        return out
     return await general_inference(isolated, llm=llm, app_config=app_config)
 
 

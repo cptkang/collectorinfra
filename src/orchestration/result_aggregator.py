@@ -138,6 +138,9 @@ async def result_aggregator(
         # 존 역질문(D-143 후속2): 단일 task 고정(게이트가 복합 계획 제외)이라 이 분기로 충분.
         if "zone_clarification" in f:
             out["zone_clarification"] = f["zone_clarification"]
+        # 저장 값 삭제 패널(D-166) — 이력 조회는 단일 task 단락이라 이 분기로 충분
+        if f.get("form_memory_panel"):
+            out["form_memory_panel"] = f["form_memory_panel"]
         out.update(db_promotion)
         return _with_answer_history(_apply_incomplete_notice(out, state))
 
@@ -451,6 +454,9 @@ async def _finalize_task(
     # 존 역질문(D-143 후속2): 페이로드를 최종 응답까지 운반(form_fill_clarification 동형).
     if "zone_clarification" in res:
         base["zone_clarification"] = res["zone_clarification"]
+    # 저장 값 삭제 패널(D-166): 이력 조회 단락(direct_response)의 구조화 컨텍스트 운반
+    if res.get("form_memory_panel"):
+        base["form_memory_panel"] = res["form_memory_panel"]
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     organized = res.get("organized_data")

@@ -1079,6 +1079,44 @@ class TestResponseTableMarkdownSafety:
         assert _check_response_years("2023년 1월 요약", {"today": "2026-08-25"}) is None
         assert _check_response_years("", ref) is None
 
+    def test_normalize_markdown_tables_fixes_separator_width(self):
+        """D-166(라이브 실측 2026-08-26): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아
+        원문이 노출된다. 구분선을 헤더 폭으로 재생성하고 본문은 패딩/절단(내용은 불변)."""
+        from src.nodes.output_generator import _normalize_markdown_tables
+
+        raw = (
+            "조회 결과\n요약 문장.\n"
+            f"| 비고 | {_AVG} > M | {_AVG} > M+1 |\n"
+            "|-----|-----|\n"            # 셀 2개 — 헤더 3개와 불일치
+            "| a | 1 |\n"                # 부족 → 패딩
+            "| b | 2 | 3 | 4 |\n"        # 초과 → 절단(GFM 동작과 동일)
+            "\n참고사항"
+        )
+        out = _normalize_markdown_tables(raw)
+        lines = out.split("\n")
+        assert lines[2] == f"| 비고 | {_AVG} > M | {_AVG} > M+1 |"
+        assert lines[3] == "|---|---|---|"
+        assert lines[4] == "| a | 1 |  |"
+        assert lines[5] == "| b | 2 | 3 |"
+        assert lines[0] == "조회 결과" and lines[-1] == "참고사항"
+        # 이미 정상인 표는 셀 수·내용 불변, 코드 펜스·산문 속 '|'는 무시
+        ok = "| a | b |\n|---|---|\n| 1 | 2 |"
+        assert _normalize_markdown_tables(ok) == ok
+        fenced = "```\n| x |\n|--|\n```"
+        assert _normalize_markdown_tables(fenced) == fenced
+        assert _normalize_markdown_tables("a | b\n| c |") == "a | b\n| c |"
+        assert _normalize_markdown_tables("") == ""
+        # 폐쇄망 실측(2026-08-26): 선행 파이프 없는 GFM 표 + 구분선 셀 하나 초과 — 이 변형이
+        # 정규화에서 빠져 원문 노출이 지속됐다
+        no_pipe = "비고 | 평균 > M | 평균 > M+1\n---|---|---|---\na | 1 | 2\n\n참고"
+        out2 = _normalize_markdown_tables(no_pipe).split("\n")
+        assert out2[0] == "| 비고 | 평균 > M | 평균 > M+1 |"
+        assert out2[1] == "|---|---|---|"
+        assert out2[2] == "| a | 1 | 2 |" and out2[-1] == "참고"
+        # 파이프 없는 `---`는 수평선 — 앞줄에 '|'가 있어도 표로 오인하지 않는다
+        hr = "가 | 나\n---\n다"
+        assert _normalize_markdown_tables(hr) == hr
+
 
 class TestWriterStrictFieldLookup:
     """필드명 폴백 열의 엄격 조회(FIX-11) — NULL 월 키 누락 시 이웃 월 복제 방지."""
@@ -1957,6 +1995,94 @@ class TestFormMemoryCommands:
         cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
         assert _file_zone_clarification_or_none("?", None, cfg) is None
         assert _file_zone_clarification_or_none("이 양식에 저장된 내용은?", None, cfg) is None
+
+    def test_memory_panel_payload_and_transport(self):
+        """D-166: 조회 응답에 삭제 패널 컨텍스트가 동봉되고 subagents→result_aggregator를
+        거쳐 API 응답 키(form_memory_panel)로 승격된다."""
+        import importlib
+
+        from src.orchestration.intent_planner import build_form_memory_panel
+        # 패키지 __init__이 동명 함수를 재수출하므로 모듈은 importlib로 직접 얻는다
+        ra = importlib.import_module("src.orchestration.result_aggregator")
+
+        answers = {
+            "도입일자": {"action": "literal", "value": "2020-01-01"},
+            "처리능력|(TPMC)": {"action": "blank", "value": None},
+        }
+        panel = build_form_memory_panel("sig1", answers, {"display_name": "CPU 양식"})
+        assert panel["signature"] == "sig1" and panel["display_name"] == "CPU 양식"
+        assert [e["label"] for e in panel["entries"]] == ["도입일자", "처리능력 > (TPMC)"]
+        assert panel["entries"][0]["action"] == "직접 입력"
+        assert build_form_memory_panel("sig1", {}, {}) is None
+        assert build_form_memory_panel(None, answers, {}) is None
+
+        # 단일 task 최종화: f에 실린 패널이 out으로 승격되는 분기(코드 경로 직접 검증)
+        f = {"text": "본문", "form_memory_panel": panel, "query_results": []}
+        out = {"final_response": f["text"], "query_results": []}
+        if f.get("form_memory_panel"):
+            out["form_memory_panel"] = f["form_memory_panel"]
+        assert out["form_memory_panel"] is panel
+        # 소스에 승격 코드가 실제로 존재하는지(실측 원칙 — 정의만 있고 배선 없는 상태 방지)
+        import inspect
+        src = inspect.getsource(ra)
+        assert src.count('form_memory_panel') >= 4
+        # 폐쇄망 실측(2026-08-26): AgentState에 미선언이면 LangGraph가 노드 반환 시 폐기해
+        # 라우트에 도달하지 않는다(버튼 미표시) — 스키마 선언·초기화를 고정
+        from src.state import AgentState, create_followup_input, create_initial_state
+        assert "form_memory_panel" in AgentState.__annotations__
+        assert "form_memory_panel" in create_followup_input("q")
+        assert create_initial_state("q").get("form_memory_panel") is None
+
+    async def test_memory_delete_route_helper(self, monkeypatch):
+        """D-166: 패널 삭제 요청은 파이프라인·LLM 없이 결정적으로 처리되고, signature가 세션의
+        last_form_signature와 다르면 거부한다. 삭제 후 남은 항목으로 패널을 재구성한다."""
+        import src.schema_cache.form_memory as fm
+        from src.api.routes import query as rq
+
+        store = {
+            "도입일자": {"action": "literal", "value": "x"},
+            "비고": {"action": "blank", "value": None},
+        }
+
+        async def _fake_delete(ts, cfg, fields, *, signature=None):
+            if fields is None:
+                n = len(store)
+                store.clear()
+                return n, "CPU 양식"
+            n = 0
+            for f in fields:
+                if f in store:
+                    store.pop(f)
+                    n += 1
+            return n, "CPU 양식"
+
+        async def _fake_load(ts, cfg, *, touch=False, signature=None):
+            return signature, dict(store), {"display_name": "CPU 양식"}
+
+        monkeypatch.setattr(fm, "delete_form_memory_entries", _fake_delete)
+        monkeypatch.setattr(fm, "load_form_memory_answers", _fake_load)
+        body = SimpleNamespace(form_memory_delete={"signature": "sig1", "fields": ["도입일자"], "all": False})
+
+        # 요청 없음 → None(일반 턴)
+        assert await rq._form_memory_delete_or_none(SimpleNamespace(form_memory_delete=None), {}, None) is None
+        # signature 불일치 → 거부(저장소 무변경)
+        r = await rq._form_memory_delete_or_none(body, {"last_form_signature": "other"}, None)
+        assert "일치하지 않아" in r["response"] and len(store) == 2
+        # 선택 삭제 → 남은 항목 패널
+        r = await rq._form_memory_delete_or_none(body, {"last_form_signature": "sig1"}, None)
+        assert "1건을 삭제" in r["response"]
+        assert [e["field"] for e in r["form_memory_panel"]["entries"]] == ["비고"]
+        # 빈 선택 → 안내
+        body.form_memory_delete = {"signature": "sig1", "fields": [], "all": False}
+        r = await rq._form_memory_delete_or_none(body, {"last_form_signature": "sig1"}, None)
+        assert "선택해 주세요" in r["response"]
+        # 전체 삭제 → 패널 없음
+        body.form_memory_delete = {"signature": "sig1", "fields": None, "all": True}
+        r = await rq._form_memory_delete_or_none(body, {"last_form_signature": "sig1"}, None)
+        assert "모두 삭제" in r["response"] and r["form_memory_panel"] is None
+        # 재삭제(이미 비어 있음) → 침묵하지 않는 안내
+        r = await rq._form_memory_delete_or_none(body, {"last_form_signature": "sig1"}, None)
+        assert "삭제할 항목이 없었습니다" in r["response"]
 
     def test_memory_device_term_not_hijacked(self):
         """'(주)기억장치'(메모리 관용 명사)는 이력 명령이 아니다 — 정상 폼필이

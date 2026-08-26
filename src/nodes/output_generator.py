@@ -268,6 +268,9 @@ async def _generate_text_response(
     # 합성(D-062)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
     tags = [USER_RESPONSE_TAG] if stream_user_response else None
     response = await astream_text(llm, messages, tags=tags)
+    # 표 정규화(D-166): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아 원문이 노출된다
+    # (19열 금감원 양식에서 LLM이 셀 수를 자주 틀림 — 라이브 실측 2026-08-26). 렌더만 보장.
+    response = _normalize_markdown_tables(response)
     # 사후 가드(D-165): 요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 침묵하지 않는다.
     # 스트리밍은 이미 화면에 나간 뒤라 회수가 아닌 후행 경고이며, 자동 치환은 하지 않는다.
     warn = _check_response_years(response, reference_info)
@@ -377,6 +380,73 @@ def _build_response_prompt(
         )
 
     return "\n\n".join(parts)
+
+
+_TABLE_SEP_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
+
+
+def _split_table_cells(line: str) -> list[str]:
+    """`| a | b |` 행을 셀 목록으로 나눈다(양끝 파이프 제거, `\\|` 이스케이프 보존)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    return [c.strip() for c in re.split(r"(?<!\\)\|", s)]
+
+
+def _normalize_markdown_tables(text: str) -> str:
+    """마크다운 표 블록의 구분선·본문 셀 수를 헤더에 맞춘다(D-166 — 렌더 실패 안전망).
+
+    GFM(marked.js gfm=true)은 **구분선 행의 셀 수가 헤더와 다르면** 블록을 표로 인식하지
+    않고 원문을 그대로 보여준다. 19열 양식에서 LLM이 셀 수를 틀리는 일이 잦아(라이브
+    실측) 구분선을 헤더 셀 수로 재생성하고, 본문 행은 부족분 패딩·초과분 절단(GFM이 초과
+    셀을 버리는 동작과 동일)한다. 내용(누락 칼럼·순서)은 고치지 않는다 — 렌더만 보장.
+    코드 펜스 내부와 "2행이 구분선"이 아닌 블록은 건드리지 않는다.
+    """
+    if not text or "|" not in text:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    in_fence = False
+
+    def _has_pipe(s: str) -> bool:
+        # 선행 파이프 없는 GFM 표(`a | b` / `---|---`)도 표다 — LLM이 자주 쓰는 형태
+        # (폐쇄망 실측 2026-08-26: 선행 `|` 요구 시 이 변형이 정규화에서 빠져 원문 노출 지속)
+        return bool(re.search(r"(?<!\\)\|", s))
+
+    def _is_sep_line(s: str) -> bool:
+        if not _has_pipe(s):
+            return False  # 파이프 없는 `---`는 수평선(hr)이지 표 구분선이 아니다
+        cells = _split_table_cells(s)
+        return bool(cells) and all(_TABLE_SEP_CELL_RE.match(c) for c in cells)
+
+    while i < n:
+        line = lines[i]
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if (not in_fence) and _has_pipe(line) and i + 1 < n and _is_sep_line(lines[i + 1]):
+            header_cells = _split_table_cells(line)
+            width = len(header_cells)
+            out.append("| " + " | ".join(header_cells) + " |")
+            out.append("|" + "|".join(["---"] * width) + "|")
+            i += 2
+            while i < n and lines[i].strip() and _has_pipe(lines[i]):
+                cells = _split_table_cells(lines[i])
+                if len(cells) < width:
+                    cells = cells + [""] * (width - len(cells))
+                elif len(cells) > width:
+                    cells = cells[:width]
+                out.append("| " + " | ".join(cells) + " |")
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
 
 
 def _build_reference_info(state: AgentState) -> dict:
