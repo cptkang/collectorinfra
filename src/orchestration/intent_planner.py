@@ -57,6 +57,8 @@ from src.utils.query_gen_common import (  # noqa: E402
     FORM_MEMORY_NOUN_KEYWORDS as _FORM_MEMORY_NOUN_KEYWORDS,
     FORM_MEMORY_VIEW_KEYWORDS as _FORM_MEMORY_VIEW_KEYWORDS,
     is_form_memory_command,
+    FORM_MEMORY_SHORTCUT_HINT as _FORM_MEMORY_SHORTCUT_HINT,
+    is_form_memory_shortcut as _is_form_memory_shortcut,
     memory_query_normalized as _memory_query_normalized,
     refers_to_demonstrative_server,
 )
@@ -203,6 +205,9 @@ async def intent_planner(
                 "첨부해 다시 요청해 주세요. (같은 세션에서 방금 다룬 양식이 있으면 "
                 "파일 없이도 처리됩니다.)"
             )
+            if _is_form_memory_shortcut(user_query):
+                # '?'만 친 사용자에게는 문맥이 없다 — 단축키 의미를 먼저 밝힌다(D-165)
+                text = "'?'는 양식에 저장된 값을 조회하는 단축키입니다. " + text
         elif any(k in _mq for k in _FORM_MEMORY_DELETE_KEYWORDS):
             text = await _form_memory_delete_response(state, user_query, app_config, _sig)
         else:
@@ -286,7 +291,8 @@ async def _form_memory_view_response(
     if not answers or not meta:
         return (
             "이 양식에 기억된 답이 없습니다. 양식을 채운 뒤 미해결 항목 패널에서 "
-            "'이 답을 기억'을 선택하면 저장됩니다(일정 기간 후 자동 만료)."
+            "'이 답을 기억'을 선택하면 저장됩니다(일정 기간 후 자동 만료). "
+            + _FORM_MEMORY_SHORTCUT_HINT
         )
     _act = {"blank": "공란 유지", "column": "DB 항목", "eav": "DB 항목", "literal": "직접 입력"}
     lines = []
@@ -303,7 +309,7 @@ async def _form_memory_view_response(
         + "\n".join(lines)
         + "\n\n특정 항목을 삭제하려면 \"<필드명> 기억 삭제\", 전체를 삭제하려면 "
         "\"기억 전부 삭제\"라고 요청해 주세요. 이 답들은 같은 양식을 채울 때 "
-        "자동으로 반영됩니다."
+        "자동으로 반영됩니다. " + _FORM_MEMORY_SHORTCUT_HINT
     )
 
 

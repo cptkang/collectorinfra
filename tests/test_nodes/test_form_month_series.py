@@ -100,6 +100,55 @@ class TestRecognizeMonthSeries:
         assert ms.anchor == ("202510", "202603")
         assert ms.month_by_field[f"{_AVG}|M+5"] == "202603"
 
+    def test_month_range_query_sets_anchor_end(self):
+        """라이브 실측(2026-08-25, D-164): "1월부터 6월까지" → M=1월, M+5=6월(지난달 폴백 아님)."""
+        ms = recognize_month_series(
+            _cpu_form_mapping(),
+            context_text="CPU 사용현황",
+            user_query="1월부터 6월까지의 데이터를 기준으로 양식을 채우시오",
+            today=date(2026, 8, 25),
+        )
+        assert ms.anchor == ("202601", "202606")
+        assert ms.requested == ("202601", "202606")
+        assert ms.anchor_source == "query"
+
+    def test_llm_time_range_fallback_reaches_anchor(self):
+        """정규식 미매칭("지난 반년")이면 parsed_time_range(LLM 산출물)로 앵커를 잡는다 — 폼필
+        피벗 stat_month에만 있던 D-136 2단 폴백의 앵커 대칭(D-164)."""
+        ms = recognize_month_series(
+            _cpu_form_mapping(),
+            context_text="CPU 사용현황",
+            user_query="지난 반년 데이터로 채워줘",
+            today=date(2026, 8, 25),
+            parsed_time_range={"start": "2026-01-01", "end": "2026-06-30"},
+        )
+        assert ms.anchor == ("202601", "202606")
+        assert ms.anchor_source == "query"
+
+    def test_no_period_falls_back_to_last_month_and_marks_default(self):
+        """기간 표현이 없으면 종전대로 지난달=M+5, 단 출처를 default로 남긴다(안내문 근거)."""
+        ms = recognize_month_series(
+            _cpu_form_mapping(), context_text="CPU 사용현황",
+            user_query="양식을 채워줘", today=date(2026, 8, 25),
+        )
+        assert ms.anchor == ("202602", "202607")
+        assert ms.requested is None
+        assert ms.anchor_source == "default"
+
+    def test_anchor_payload_shape_is_shared(self):
+        """단일·멀티 경로가 공용 payload를 쓴다 — requested/source 포함(D-164)."""
+        from src.db_adapters.polestar.assembler import month_anchor_payload
+
+        ms = recognize_month_series(
+            _cpu_form_mapping(), context_text="CPU 사용현황",
+            user_query="1월부터 3월까지", today=date(2026, 8, 25),
+        )
+        payload = month_anchor_payload(ms)
+        assert payload["start"] == "202510" and payload["end"] == "202603"
+        assert payload["requested"] == ["202601", "202603"]
+        assert payload["source"] == "query"
+        assert set(payload) == {"start", "end", "resource_type", "fields", "requested", "source"}
+
     def test_memory_context_noun(self):
         """'주기억장치'(관용 표현)로 메모리 리소스를 판정한다."""
         ms = recognize_month_series(
@@ -714,6 +763,48 @@ class TestFormFillNotes:
 
         assert _append_form_fill_notes("본문", {"column_mapping": {"a": "t.c"}}) == "본문"
 
+    def test_note_states_query_basis_when_requested(self):
+        """질의 기간으로 앵커를 잡았으면 안내문에 그 근거를 명시한다(D-164)."""
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        state = {
+            "form_month_anchor": {
+                "start": "202601", "end": "202606", "fields": [],
+                "requested": ["202601", "202606"], "source": "query",
+            },
+            "column_mapping": {},
+        }
+        out = _append_form_fill_notes("본문", state)
+        assert "질의에서 지정한 기간(2026년 1월~2026년 6월)" in out
+        assert "[기간 불일치]" not in out
+
+    def test_note_flags_mismatch_between_request_and_filled_months(self):
+        """요청 개월 수 ≠ 양식 칸 수(1~3월 요청, 6칸)면 침묵하지 않고 불일치를 명시한다(D-164)."""
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        state = {
+            "form_month_anchor": {
+                "start": "202510", "end": "202603", "fields": [],
+                "requested": ["202601", "202603"], "source": "query",
+            },
+            "column_mapping": {},
+        }
+        out = _append_form_fill_notes("본문", state)
+        assert "[기간 불일치]" in out
+        assert "2026년 1월~2026년 3월" in out and "2025년 10월~2026년 3월" in out
+
+    def test_note_default_basis_without_period(self):
+        """기간 지정이 없을 때(종전 payload 포함 — requested/source 키 없음)는 지난달 기준 안내."""
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        state = {
+            "form_month_anchor": {"start": "202602", "end": "202607", "fields": []},
+            "column_mapping": {},
+        }
+        out = _append_form_fill_notes("본문", state)
+        assert "기간 지정이 없어 실행일 기준 지난달" in out
+        assert "[기간 불일치]" not in out
+
     def test_fill_stats_overrides_mapping_based_judgment(self):
         """실제로 채워진 칼럼(매핑 None이어도)은 미작성 목록에 오르지 않는다(라이브 실측 교정)."""
         from src.nodes.output_generator import _append_form_fill_notes
@@ -947,6 +1038,46 @@ class TestResponseTableMarkdownSafety:
         assert f"{_AVG} > M+2" in prompt
         assert "처리능력 > (TPMC)" in prompt
         assert f"{_AVG}|M+2" not in prompt  # 원본 '|' 키는 프롬프트에 없어야 함
+
+    def test_reference_info_block_injected(self):
+        """D-165(라이브 실측 2026-08-25): 프롬프트에 연도가 없어("1월~6월"+M/M+1 칼럼) LLM이
+        '2023년'을 적었다 — 오늘·기준월·조회 기간을 결정적 블록으로 주입하고, 표시 절단
+        (상위 20건)을 데이터 특성으로 서술하지 않도록 명시한다."""
+        from src.nodes.output_generator import _build_reference_info, _build_response_prompt
+
+        rows = [{"호스트명": f"web-{i:02d}", f"{_AVG}|M": 10.0} for i in range(25)]
+        ref = {"today": "2026-08-25", "anchor": ("202601", "202606"), "period": ("202601", "202606")}
+        prompt = _build_response_prompt("1월~6월 데이터로 채우시오", "요약", rows, reference_info=ref)
+        assert "## 기준 정보" in prompt
+        assert "오늘: 2026-08-25" in prompt
+        assert "기준월: 2026년 1월 ~ 2026년 6월" in prompt
+        assert "조회 기간: 2026년 1월 ~ 2026년 6월" in prompt
+        assert "전체 결과는 25건" in prompt and "상위 20건만" in prompt
+        # reference_info 없으면 종전 프롬프트와 동일(블록 없음)
+        assert "## 기준 정보" not in _build_response_prompt("질의", "요약", rows[:1])
+
+        state = {
+            "form_month_anchor": {"start": "202601", "end": "202606"},
+            "parsed_requirements": {"original_query": "1월부터 6월까지 채우시오", "time_range": None},
+        }
+        info = _build_reference_info(state)
+        assert info["anchor"] == ("202601", "202606")
+        assert info["period"] == ("202601", "202606")
+        assert "today" in info
+
+    def test_year_guard_flags_summary_only(self):
+        """D-165 사후 가드: 요약 문단의 기준 밖 연도만 경고, 표 본문의 도입일자 연도는 오탐 아님.
+        자동 치환 없음·기준 연도 없으면 미발동."""
+        from src.nodes.output_generator import _check_response_years
+
+        ref = {"today": "2026-08-25", "anchor": ("202601", "202606")}
+        bad = "조회 결과\n2023년 1월~6월 기간동안 2,427건을 정리했습니다.\n| 호스트명 | 도입일자 |\n| a | 2019년 3월 |"
+        warn = _check_response_years(bad, ref)
+        assert warn and "2023년" in warn and "2026년" in warn and "2019년" not in warn
+        ok = "조회 결과\n2026년 1월~2026년 6월 기간 2,427건\n| 도입일자 |\n| 2019년 3월 |"
+        assert _check_response_years(ok, ref) is None
+        assert _check_response_years("2023년 1월 요약", {"today": "2026-08-25"}) is None
+        assert _check_response_years("", ref) is None
 
 
 class TestWriterStrictFieldLookup:
@@ -1315,6 +1446,40 @@ class TestFormFillHitl:
         assert pending["unresolved"] == ["도입일자"]
         # FIX-26: 존 체크박스 런의 확정 존이 pending에 보존돼야 답변 턴이 복원한다
         assert pending["db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+    def test_hitl_pending_db_ids_survive_orchestration_output_state(self):
+        """D-165(라이브 실측 2026-08-25): 존 체크박스 런은 항상 오케스트레이션을 타는데
+        `_build_output_state`가 만든 state에 selected_db_ids/target_databases/db_results가
+        없어 FIX-26의 pending.db_ids가 항상 None → 답변 턴이 b0(은행존)로 침묵 전환됐다.
+        FIX-26 단위 테스트는 완전한 state를 직접 넣어 이 경로를 못 봤다 — 연결 경로로 고정."""
+        from src.nodes.output_generator import _build_form_fill_hitl
+        from src.orchestration.result_aggregator import _build_output_state
+
+        full_state = {
+            "user_query": "양식 채워줘",
+            "selected_db_ids": ["polestar_cm_gp", "polestar_cm_yd"],
+            "template_structure": {"sheets": []},
+            "parsed_requirements": {"original_query": "양식 채워줘"},
+            "uploaded_file": b"xlsx-bytes",
+            "column_mapping": {"도입일자": None},
+        }
+        res = {
+            "target_db_ids": ["polestar_cm_gp", "polestar_cm_yd"],
+            "organized_data": {"rows": [], "summary": ""},
+        }
+        out_state = _build_output_state(full_state, {"sub_query": "양식 채워줘"}, res)
+        _clar, pending = _build_form_fill_hitl(out_state, {"도입일자": 0, "호스트명": 12})
+        assert pending["db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+        # 체크박스 없는 텍스트 위치어 런: task가 실제 실행한 DB(res.target_db_ids)로 보존
+        full_state["selected_db_ids"] = None
+        res["target_db_ids"] = ["polestar_cm_yd"]
+        out_state = _build_output_state(full_state, {"sub_query": "양식 채워줘"}, res)
+        _clar, pending = _build_form_fill_hitl(out_state, {"도입일자": 0, "호스트명": 12})
+        assert pending["db_ids"] == ["polestar_cm_yd"]
+
+        # 역질문 문구에 '?' 단축키 안내(D-165 발견성)
+        assert "'?'" in _clar["question"]
 
     def test_hitl_pending_db_ids_fallback_without_selection(self):
         """FIX-26 폴백: 존 체크박스 선택이 없는 런(텍스트 위치어 런)은 라우팅 확정
@@ -1768,6 +1933,30 @@ class TestFormMemoryCommands:
         assert _file_zone_clarification_or_none("기억 전부 삭제", None, cfg) is None
         # 일반 폼필(존 미지정)은 기존대로 역질문 발동
         assert _file_zone_clarification_or_none("양식 채워줘", None, cfg) is not None
+
+    def test_memory_gate_question_forms_and_shortcut(self):
+        """D-165(라이브 실측 2026-08-25): 의문형·'저장된 내용'·'?' 단축키는 이력 조회로,
+        채움 동사 동반·일반 의문문·'?!'은 이력 명령이 아니다(오탐→조회 대체 방지)."""
+        from src.api.routes.query import _file_zone_clarification_or_none
+        from src.orchestration.intent_planner import is_form_memory_command
+        from src.utils.query_gen_common import is_form_memory_shortcut
+
+        for q in (
+            "이 양식에서 기억하는 내용은 뭐지?", "이 양식에 저장된 내용은?",
+            "?", "？", "??", " ? ", "기억 전부 삭제",
+        ):
+            assert is_form_memory_command(q), q
+        for q in (
+            "CPU 사용률은?", "서버 수는?", "?!", "기억한 값으로 채워줘",
+            "저장된 값 반영해서 작성해줘", "주기억장치 사용현황은 뭐지?",
+            "여의도 서버들에 대해 양식을 채우시오",
+        ):
+            assert not is_form_memory_command(q), q
+        assert is_form_memory_shortcut("？？") and not is_form_memory_shortcut("CPU?")
+
+        cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
+        assert _file_zone_clarification_or_none("?", None, cfg) is None
+        assert _file_zone_clarification_or_none("이 양식에 저장된 내용은?", None, cfg) is None
 
     def test_memory_device_term_not_hijacked(self):
         """'(주)기억장치'(메모리 관용 명사)는 이력 명령이 아니다 — 정상 폼필이

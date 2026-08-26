@@ -92,6 +92,7 @@ from src.db_adapters.polestar.assembler import (
     filter_pivot_regular_entries,
     find_vendor_model_concat,
     recognize_month_series,
+    month_anchor_payload,
     resolve_form_fill_answers,
 )
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
@@ -1505,8 +1506,17 @@ def _build_mapping_user_parts(
         _recog_mapping,
         context_text=form_context_text,
         user_query=parsed_requirements.get("original_query", "") or "",
+        # 앵커 산출에도 LLM 기간 2단 폴백 — 단일 경로·아래 stat_month와 대칭(D-164)
+        parsed_time_range=parsed_requirements.get("time_range"),
     )
     if month_series:
+        # 단일 경로와 동일 관측 로그(D-164 — 멀티 경로만 인식 로그가 없어 폐쇄망 진단 불가였음)
+        logger.info(
+            "DB '%s' 폼필 월 시리즈 인식(D-146): rt=%s, 기간=%s~%s, 필드=%d개, 앵커출처=%s, 요청기간=%s",
+            db_id, month_series.resource_type, month_series.anchor[0],
+            month_series.anchor[1], len(month_series.fields),
+            month_series.anchor_source, month_series.requested,
+        )
         _attr_rt_scope = eav_attr_resource_types(schema_info)
         _scope_updates = apply_capacity_scope_rule(
             _recog_mapping, _attr_rt_scope, month_series.resource_type
@@ -1518,12 +1528,7 @@ def _build_mapping_user_parts(
         column_mapping.update(_scope_updates)
         column_mapping.update(_remark_updates)  # SQL은 등록명 SELECT(비고 규칙)
         if form_fill_out is not None:
-            form_fill_out["month_anchor"] = {
-                "start": month_series.anchor[0],
-                "end": month_series.anchor[1],
-                "resource_type": month_series.resource_type,
-                "fields": month_series.fields,
-            }
+            form_fill_out["month_anchor"] = month_anchor_payload(month_series)
             _mu = form_fill_out.setdefault("mapping_updates", {})
             _mu.update(_scope_updates)
             # 월 시리즈·비고 필드는 state 매핑 강제 None — writer가 필드명(=행 키)으로

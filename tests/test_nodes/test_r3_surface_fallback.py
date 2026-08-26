@@ -101,6 +101,55 @@ class TestStatMonthLLMFallback:
         assert resolve_stat_month_range("CPU 사용률 현황", _TODAY, parsed_time_range=bad) is None
 
 
+class TestMonthRangeExpressions:
+    """절대 월 범위·반기 표현의 결정적 해석(D-164) — 정규식 1순위, LLM 산출물보다 우선.
+
+    라이브 실측(2026-08-25): "1월부터 6월까지" 폼필이 어느 정규식에도 안 잡혀 기준월이
+    지난달 기본값(2~7월)으로 침묵 폴백했다. 연도 있는 범위는 첫 월 단일로 오해석됐다.
+    """
+
+    _AUG = date(2026, 8, 25)
+
+    @pytest.mark.parametrize(
+        "query, want",
+        [
+            ("1월부터 6월까지의 데이터를 기준으로 양식을 채우시오", ("202601", "202606")),
+            ("1월~6월 CPU 사용률", ("202601", "202606")),
+            ("1월에서 6월", ("202601", "202606")),
+            ("2026년 1월부터 6월까지", ("202601", "202606")),   # 종전: 1월 단일(첫 매치)
+            ("2026년 1월~2026년 6월", ("202601", "202606")),
+            ("2026-01~2026-06", ("202601", "202606")),
+            ("11월부터 2월까지", ("202511", "202602")),           # 연말→연초: 시작은 전년
+            ("2025년 11월부터 2월까지", ("202511", "202602")),
+            ("상반기", ("202601", "202606")),
+            ("하반기", ("202607", "202612")),                    # 8월: 진행 중 반기 허용
+            ("작년 하반기", ("202507", "202512")),
+            ("2025년 상반기", ("202501", "202506")),
+        ],
+    )
+    def test_range_expressions(self, query, want):
+        got = resolve_stat_month_range(
+            query, self._AUG, parsed_time_range={"start": "2020-01-01", "end": "2020-12-31"}
+        )
+        assert got == want
+        assert fallback_counters() == {}  # 정규식 매칭 → LLM 폴백 미발동
+
+    @pytest.mark.parametrize(
+        "query",
+        ["상위 3-5개 서버", "1-6 서버", "2026-03-13 기준 현황", "CPU 사용률 현황"],
+    )
+    def test_numeric_ranges_are_not_months(self, query):
+        """'월' 접미도 연도도 없는 숫자 범위·ISO 날짜는 월 범위로 오탐하지 않는다."""
+        got = resolve_stat_month_range(query, self._AUG)
+        assert got in (None, ("202603", "202603"))  # ISO 날짜는 종전 단일 월 해석 유지
+
+    def test_single_month_paths_unchanged(self):
+        """범위 표현이 없으면 종전 단일 월·상대 표현 해석이 그대로다."""
+        assert resolve_stat_month_range("2026년 3월 기준으로", self._AUG) == ("202603", "202603")
+        assert resolve_stat_month_range("지난 3개월", self._AUG) == ("202605", "202607")
+        assert resolve_stat_month_range("지난달", self._AUG) == ("202607", "202607")
+
+
 class TestQueryLimitLLMFallback:
     """건수 표현(A4~A6) 2단 폴백."""
 

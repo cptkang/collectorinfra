@@ -548,6 +548,16 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "form_fill_answers": state.get("form_fill_answers"),
         "form_fill_remember": state.get("form_fill_remember"),
         "pending_form_fill": state.get("pending_form_fill"),
+        # 존 보존(D-157/FIX-26 → D-165 실효화): `_build_form_fill_hitl`이 pending.db_ids를
+        # selected_db_ids > target_databases > db_results 순으로 읽는데, 이 dict에는 셋 다
+        # 없어 오케스트레이션(존 체크박스 런의 유일한 경로)에서 항상 None → 답변 턴이
+        # 기본 DB(b0=은행존)로 침묵 전환됐다(라이브 실측 2026-08-25). 체크박스 선택과
+        # 이 task가 실제 실행한 DB(subagents가 res로 승격)를 함께 싣는다.
+        "selected_db_ids": state.get("selected_db_ids"),
+        "target_databases": (
+            [{"db_id": d} for d in (res.get("target_db_ids") or []) if d]
+            or state.get("target_databases")
+        ),
         "final_response": "",
         "output_file": None,
         "output_file_name": None,
