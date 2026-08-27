@@ -27,6 +27,18 @@ from noise_gate.domain.notification_policy import NotificationDecision, TIER_PAG
 
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────
+
+def _authz_ns():
+    """조사 인가·복합 설정 대역 (Plan 78 W3-5 · W1).
+
+    실제 `AppConfig`는 이 둘을 **항상** 갖는다. 대역에서 빼면 인가가 `unknown_authz_mode`로
+    차단된다 — fail-closed의 설계 의도이므로 정책이 아니라 대역을 프로덕션 형태에 맞춘다.
+    """
+    return {
+        "host_authz": SimpleNamespace(mode="admin_only"),
+        "composite": SimpleNamespace(prior_targets_enabled=False),
+    }
+
 def _event() -> AlarmEvent:
     return AlarmEvent(
         db_id="db1", server_name="srv-1", hostname="h1", ip_address="10.0.0.1",
@@ -65,7 +77,7 @@ def _state(decision) -> dict:
 
 def _config(ng, client) -> dict:
     return {"configurable": {
-        "app_config": SimpleNamespace(noise_gate=ng),
+        "app_config": SimpleNamespace(noise_gate=ng, **_authz_ns()),
         "sre_agent_client": client, "decision_store": None,
     }}
 

@@ -32,7 +32,16 @@ def make_settings(gemini_api_key="k", **overrides) -> AgentSettings:
     return AgentSettings(_env_file=None, **{**defaults, **overrides})
 
 
-def make_job(fingerprint="fp", severity=2, kind="alarm") -> InvestigationJob:
+def make_job(
+    fingerprint="fp", severity=2, kind="alarm", server="web-01"
+) -> InvestigationJob:
+    """조사 잡 대역.
+
+    `server`가 인자인 이유(2026-08-27 · L-4 도입): **같은 호스트는 동시 조사가 거부된다**
+    (`host_investigation_in_flight`). 예산·동시성처럼 **다른 가드를 검증하는 테스트**는
+    서로 다른 호스트를 써야 그 가드에 도달한다 — 아니면 L-4가 먼저 막아 의도한 경로를
+    한 번도 밟지 못한다.
+    """
     now = time.time()
     return InvestigationJob(
         investigation_id=f"id-{fingerprint}-{now}",
@@ -41,7 +50,7 @@ def make_job(fingerprint="fp", severity=2, kind="alarm") -> InvestigationJob:
         created_at=now,
         updated_at=now,
         fingerprint=fingerprint,
-        payload={"event": {"serverName": "web-01", "severity": severity}, "decision": {"tier": "PAGE"}},
+        payload={"event": {"serverName": server, "severity": severity}, "decision": {"tier": "PAGE"}},
     )
 
 
@@ -113,7 +122,12 @@ def test_hourly_budget_rejects_over_limit():
         briefing_fn=build_briefing,
         clock=lambda: now[0],
     )
-    j1, j2, j3 = make_job("a"), make_job("b"), make_job("c")
+    # 호스트를 분리한다 — 같은 호스트면 L-4가 먼저 막아 예산 가드에 도달하지 못한다.
+    j1, j2, j3 = (
+        make_job("a", server="web-01"),
+        make_job("b", server="web-02"),
+        make_job("c", server="web-03"),
+    )
     disp(j1)
     disp(j2)
     disp(j3)
@@ -146,8 +160,9 @@ def test_max_concurrent_caps_parallelism():
         briefing_fn=build_briefing,
         timeout_seconds=10.0,
     )
+    # 호스트를 분리한다 — 같은 호스트면 L-4가 직렬화해 동시 상한을 측정할 수 없다.
     for i in range(6):
-        disp(make_job(fingerprint=f"c{i}"))
+        disp(make_job(fingerprint=f"c{i}", server=f"web-{i:02d}"))
     disp.wait_workers(10)
     assert state["peak"] == 2  # 상한 2를 넘지 않고, 병렬성이 실제로 2까지 도달
 

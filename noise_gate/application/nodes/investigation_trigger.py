@@ -33,6 +33,9 @@ from noise_gate.domain.investigation_payload import (
     build_trigger_payload,
 )
 from noise_gate.domain.notification_policy import _TIER_RANK, TIER_PAGE
+from src.domain.host_authz import Principal, authorize_host_investigation
+from src.observability.investigation_metrics import record_investigation
+from src.utils.prior_targets import resolve_targets
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,56 @@ async def investigation_trigger_node(
         return {}  # 클라이언트 미주입(빌드 실패/off) → graceful no-op
 
     event = state["alarm_event"]
+
+    # 조사 대상 확정 — **채팅 경로와 같은 공통 모듈**을 쓴다 (Plan 78 W1-4 · G5 대칭).
+    # 이벤트 경로는 알람 페이로드가 1순위이므로 그것만 넘긴다. 종전에는 hostname이
+    # 플레이스홀더("해당 서버" 등)여도 그대로 submit해 sre_agent가 rejected로 되돌렸다 —
+    # 결정적 가드를 진입부에 두어 왕복을 없앤다.
+    #
+    # **플래그 off면 판정만 하고 막지 않는다**(회귀 0 — Plan 80 §5.4-③).
+    target_resolution = resolve_targets(
+        alarm_payload={
+            "server_name": getattr(event, "server_name", None),
+            "hostname": getattr(event, "hostname", None),
+            "db_id": getattr(event, "db_id", None),
+        }
+    )
+    if not target_resolution.resolved:
+        reasons = [d.get("reason") for d in target_resolution.dropped] or ["no_identifier"]
+        logger.info(
+            "조사 트리거 대상 미확정: alarm_id=%s 사유=%s (차단=%s)",
+            getattr(event, "alarm_id", ""), reasons,
+            getattr(getattr(cfg, "composite", None), "prior_targets_enabled", False),
+        )
+        if getattr(getattr(cfg, "composite", None), "prior_targets_enabled", False):
+            _audit(
+                configurable.get("decision_store"), event, decision,
+                None, "target_unresolved", None,
+            )
+            return {}
+
+    # ★ 호스트 인가 게이트 — **채팅 경로와 같은 모듈**을 호출한다 (Plan 78 W3-5 · G5 대칭).
+    # 한쪽만 적용되는 비대칭이 이 저장소의 반복 실수다. 이벤트 경로에는 사용자가 없으므로
+    # `system` 주체를 쓰고, 허용되더라도 **판정 결과를 감사에 남긴다**(W6-5).
+    first = target_resolution.targets[0] if target_resolution.resolved else None
+    authz = authorize_host_investigation(
+        mode=getattr(getattr(cfg, "host_authz", None), "mode", None),
+        principal=Principal.system(),
+        hostname=(first.hostname or first.server_name) if first else None,
+        db_id=getattr(event, "db_id", None),
+    )
+    if not authz.allowed:
+        logger.warning(
+            "조사 트리거 인가 거부: alarm_id=%s %s",
+            getattr(event, "alarm_id", ""), authz.as_audit(),
+        )
+        record_investigation(denied_reason=authz.reason)
+        _audit(
+            configurable.get("decision_store"), event, decision,
+            None, "authz_denied", None,
+        )
+        return {}
+
     signals = getattr(decision, "signals", None) or {}
     payload = build_trigger_payload(
         event,

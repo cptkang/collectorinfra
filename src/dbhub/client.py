@@ -262,6 +262,149 @@ class DBHubClient:
         except Exception as e:
             raise DBHubError(f"테이블 스키마 조회 실패 ({table_name}): {e}") from e
 
+    # ──────────────────────────────────────────────
+    # 호스트 조사 고수준 도구 (Plan 78 W3-1·4 · G1 중간 비용대 공백 해소)
+    # ──────────────────────────────────────────────
+    #
+    # `mcp_server`가 이미 고수준 도구를 제공하므로 **신규 커넥터 없이** 기존 `_call_tool`로
+    # 배선한다. 방언·금지조인·마스킹은 **서버가 처리하므로 본체는 무지해도 된다**(D-122).
+    #
+    # **도구 수를 늘리지 않는다**(W3-4 — "적지만 더 나은 도구"): 공개 API는 `inspect_host`
+    # 하나이고 어느 도구를 부를지는 `profile` 인자가 정한다. 이름은 기존 `_TOOL_NAMES`의
+    # 동사+목적어 관례(`query_infra_db`·`query_live_processes`)를 따른다.
+    #
+    # **식별 키가 도구마다 다르다**(실측 2026-08-27 — `mcp_server/mcp_server/polestar_tools.py`):
+    # `metric_trend`·`resource_status`는 `server_name`을, `os_config`·`process_snapshot`은
+    # `hostname`을 받는다. 폴스타는 server_name ≠ hostname이므로(D-046) 섞으면 0건이 된다.
+    # `process_snapshot`은 프로세스 API 직결이라 **`source` 인자 자체가 없다.**
+
+    HOST_INSPECT_PROFILES: dict[str, dict[str, Any]] = {
+        "processes": {
+            "tool": "polestar_process_snapshot",
+            "identifier": "hostname",
+            "needs_source": False,
+        },
+        "os_config": {
+            "tool": "polestar_os_config",
+            "identifier": "hostname",
+            "needs_source": True,
+        },
+        "resource_status": {
+            "tool": "polestar_resource_status",
+            "identifier": "server_name",
+            "needs_source": True,
+        },
+        "metric_trend": {
+            "tool": "polestar_metric_trend",
+            "identifier": "server_name",
+            "needs_source": True,
+        },
+    }
+
+    #: 서버가 받는 열거값. **호출 전에** 여기서 거른다 — 왕복 한 번을 아끼는 것보다,
+    #: 모델에게 "무엇이 틀렸는지"를 구조화해 돌려주는 것이 중요하다(W3-4).
+    _METRIC_KINDS: frozenset[str] = frozenset({"cpu", "memory", "filesystem", "disk_io"})
+    _METRIC_GRANULARITIES: frozenset[str] = frozenset({"h", "d", "m"})
+    _PROCESS_SORTS: frozenset[str] = frozenset({"cpu", "mem"})
+
+    def _validate_inspect_args(
+        self,
+        profile: str,
+        hostname: Optional[str],
+        server_name: Optional[str],
+        options: dict[str, Any],
+    ) -> Optional[str]:
+        """`inspect_host` 인자를 **실행 전에** 검증한다 (W3-4).
+
+        Returns:
+            오류 메시지, 문제가 없으면 None
+        """
+        spec = self.HOST_INSPECT_PROFILES.get(profile)
+        if spec is None:
+            allowed = ", ".join(sorted(self.HOST_INSPECT_PROFILES))
+            return f"지원하지 않는 profile: {profile} (허용: {allowed})"
+
+        identifier = hostname if spec["identifier"] == "hostname" else server_name
+        if not identifier or not str(identifier).strip():
+            return f"profile '{profile}'에는 {spec['identifier']}이(가) 필요합니다"
+
+        if profile == "metric_trend":
+            kind = options.get("kind")
+            if kind not in self._METRIC_KINDS:
+                return f"지원하지 않는 kind: {kind} (허용: {', '.join(sorted(self._METRIC_KINDS))})"
+            gran = options.get("granularity", "h")
+            if gran not in self._METRIC_GRANULARITIES:
+                return f"지원하지 않는 granularity: {gran} (허용: h, d, m)"
+            periods = options.get("periods", 24)
+            if not isinstance(periods, int) or periods < 1:
+                return f"periods는 1 이상의 정수여야 합니다: {periods!r}"
+        elif profile == "processes":
+            sort = options.get("sort", "cpu")
+            if sort not in self._PROCESS_SORTS:
+                return f"지원하지 않는 sort: {sort} (허용: cpu, mem)"
+            top_n = options.get("top_n", 10)
+            if not isinstance(top_n, int) or top_n < 1:
+                return f"top_n은 1 이상의 정수여야 합니다: {top_n!r}"
+        return None
+
+    async def inspect_host(
+        self,
+        *,
+        profile: str,
+        hostname: Optional[str] = None,
+        server_name: Optional[str] = None,
+        source: Optional[str] = None,
+        **options: Any,
+    ) -> dict[str, Any]:
+        """`mcp_server` 고수준 도구로 호스트를 조사한다 (Plan 78 W3-1).
+
+        조회 비용의 **중간대 공백**을 메운다 — 프로세스 목록(낮음)과 `sre_agent` 위임(높음)
+        사이에 "OS 구성·메트릭·토폴로지 단건 조회"가 없었다(§2.2 G1).
+
+        **읽기 전용 불변**: `execute_sql` 노출 정책(D-122 ④)을 건드리지 않는다. 여기서 부르는
+        도구는 전부 서버가 SQL을 조립하는 고수준 도구다.
+
+        Args:
+            profile: processes | os_config | resource_status | metric_trend
+            hostname: OS 호스트명 (processes · os_config)
+            server_name: 폴스타 등록 서버명 (resource_status · metric_trend)
+            source: 데이터소스(db_id). 미지정 시 설정된 source_name.
+                `processes`는 프로세스 API 직결이라 사용하지 않는다
+            **options: 프로파일별 인자 — metric_trend(kind, granularity, periods) ·
+                processes(top_n, sort)
+
+        Returns:
+            서버 반환 계약 `{rows, row_count, queried_at, source_kind, source, engine}`
+            그대로. 실패는 **예외가 아니라** `{error: 사유}`로 돌려준다 —
+            모델에게 구조화된 실패를 주어야 다음 행동을 고를 수 있다(W3-4).
+        """
+        problem = self._validate_inspect_args(profile, hostname, server_name, options)
+        if problem:
+            logger.info("inspect_host 인자 검증 탈락: %s", problem)
+            return {"error": problem}
+
+        spec = self.HOST_INSPECT_PROFILES[profile]
+        arguments: dict[str, Any] = {}
+        if spec["needs_source"]:
+            arguments["source"] = source or self._config.source_name
+        if spec["identifier"] == "hostname":
+            arguments["hostname"] = str(hostname).strip()
+        else:
+            arguments["server_name"] = str(server_name).strip()
+        arguments.update({k: v for k, v in options.items() if v is not None})
+
+        try:
+            self._ensure_connected()
+            raw = await self._call_tool(spec["tool"], arguments)
+        except Exception as e:  # noqa: BLE001 — 조사 실패는 구조화해 반환한다(침묵 금지)
+            logger.warning("inspect_host 실패 (%s/%s): %s", profile, spec["tool"], e)
+            return {"error": f"{spec['tool']} 호출 실패: {e}"}
+
+        parsed = self._parse_json_result(raw)
+        if not parsed:
+            return {"error": f"{spec['tool']} 응답을 해석하지 못했습니다"}
+        return parsed
+
     async def get_full_schema(self) -> SchemaInfo:
         """전체 DB 스키마를 수집한다.
 

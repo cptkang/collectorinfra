@@ -87,6 +87,41 @@ DiagnoseFn = Callable[[JobLike], DiagnosisLike]
 BriefingFn = Callable[..., dict]
 
 
+def _host_key(job: JobLike) -> tuple[str, str] | None:
+    """조사 대상 호스트의 in-flight 키 `(db_id, host)`를 만든다 (78 W2-6 L-4).
+
+    **두 진입점의 payload 형태가 다르다**(실측 2026-08-27) — 한쪽만 보면 그 경로에서 가드가
+    통째로 무력화된다(Known Mistakes: 단일/멀티 경로 비대칭):
+
+        알람 트리거  `payload["event"]["dbId"|"hostname"|"serverName"]`
+        pull 진단    `payload["db_id"|"hostname"|"server_name"]`
+
+    **한계**: `hostname`이 없으면 `serverName`으로 대체한다. 폴스타는 server_name ≠ hostname
+    이므로(D-046), 같은 호스트가 한 번은 hostname으로 한 번은 serverName으로 들어오면 **다른
+    키가 되어 가드를 비껴간다.** 해소하려면 이름 해소가 필요한데 그건 본체(`cmm_resource`) 소관이라
+    여기서 부를 수 없다(D-118 경계) — 완화가 아니라 **명시된 잔여 한계**다.
+
+    Args:
+        job: 조사 잡
+
+    Returns:
+        `(db_id, host)` 키. 대상을 식별할 수 없으면 None(부하 귀속이 불가하므로 가드 대상 아님)
+    """
+    payload = getattr(job, "payload", None) or {}
+    event = payload.get("event") or {}
+    db_id = str(event.get("dbId") or payload.get("db_id") or "").strip()
+    host = str(
+        event.get("hostname")
+        or event.get("serverName")
+        or payload.get("hostname")
+        or payload.get("server_name")
+        or ""
+    ).strip()
+    if not host:
+        return None
+    return (db_id, host)
+
+
 class InvestigationDispatcher:
     """JobStore executor로 주입되는 결정적 dispatcher.
 
@@ -120,6 +155,11 @@ class InvestigationDispatcher:
         self._semaphore = threading.BoundedSemaphore(max(1, settings.investigation_max_concurrent))
         self._lock = threading.Lock()
         self._dedup: dict[str, float] = {}          # fingerprint -> 마지막 조사 시작 시각(clock)
+        # L-4 대상 호스트 부하 가드 — (db_id, host) -> (investigation_id, 획득 시각).
+        # **fingerprint dedup과 목적이 다르다**: dedup은 *같은 알람*의 재조사를 TTL로 억제하고,
+        # 이쪽은 *서로 다른 알람이라도 같은 호스트*의 **동시** 조사를 막는다. 부하는 곱해지므로
+        # 이미 포화된 대상에 조사를 겹쳐 걸면 조사가 장애를 악화시킨다(78 W2-6 · docs/25 L-4).
+        self._inflight_hosts: dict[tuple[str, str], tuple[str, float]] = {}
         self._budget_window: deque[float] = deque()  # 최근 1시간 조사 시작 시각들
         self._workers: set[threading.Thread] = set()
 
@@ -173,12 +213,35 @@ class InvestigationDispatcher:
             if budget is not None and len(self._budget_window) >= budget:
                 return "hourly_budget_exceeded"
 
+            # L-4 — 같은 호스트를 조사 중이면 거부한다. 직렬화(대기)하지 않는 이유:
+            # 조사는 분 단위로 길어(실측 161s) submit을 붙들면 MCP 동기 타임아웃(60s)을 넘긴다.
+            # 거부하고 사유를 남기면 호출자가 진행 중인 조사의 브리핑을 받아 쓸 수 있다.
+            host_key = _host_key(job)
+            if host_key is not None and host_key in self._inflight_hosts:
+                return "host_investigation_in_flight"
+
             # 통과 — 상태 기록.
             if fp and ttl is not None:
                 self._dedup[fp] = now
             if budget is not None:
                 self._budget_window.append(now)
+            if host_key is not None:
+                self._inflight_hosts[host_key] = (job.investigation_id, now)
             return None
+
+    def _release_host(self, job: JobLike) -> None:
+        """L-4 in-flight 키를 해제한다.
+
+        **자기 조사가 잡은 키만 푼다** — 방어적 축출 뒤 다른 조사가 같은 키를 잡았을 수 있고,
+        그때 무조건 pop하면 남의 가드를 풀어 버린다.
+        """
+        key = _host_key(job)
+        if key is None:
+            return
+        with self._lock:
+            held = self._inflight_hosts.get(key)
+            if held is not None and held[0] == job.investigation_id:
+                self._inflight_hosts.pop(key, None)
 
     def _sweep(self, now: float) -> None:
         """dedup dict(ttl 만료·하드 상한)·budget window(1시간 만료)를 정리한다(lock 보유 전제)."""
@@ -194,6 +257,14 @@ class InvestigationDispatcher:
         # budget window: 1시간 초과분 제거.
         while self._budget_window and (now - self._budget_window[0]) > 3600.0:
             self._budget_window.popleft()
+        # in-flight 호스트: 해제는 워커·스텁 경로가 명시로 하지만, 워커가 죽으면 키가 남는다.
+        # 조사 전체 타임아웃의 2배가 지난 항목은 방어적으로 축출한다 — 없으면 그 호스트가
+        # **영구히 조사 불가**가 된다(가드가 장애가 되는 형태).
+        stale_after = self._timeout * 2
+        for key, (_iid, ts) in list(self._inflight_hosts.items()):
+            if (now - ts) > stale_after:
+                logger.warning("in-flight 호스트 키 방어적 축출(워커 유실 의심): %s", key)
+                self._inflight_hosts.pop(key, None)
 
     # ── 백그라운드 워커(동시 상한 · 전체 타임아웃 · 후처리) ─────
 
@@ -208,6 +279,7 @@ class InvestigationDispatcher:
             logger.exception("dispatcher 워커 예외: investigation_id=%s", job.investigation_id)
             self._audit({"event": "failed", "investigation_id": job.investigation_id, "error": job.error})
         finally:
+            self._release_host(job)
             with self._lock:
                 self._workers.discard(threading.current_thread())
 
@@ -311,6 +383,8 @@ class InvestigationDispatcher:
         job.tool_calls_summary, job.tokens, job.cost, job.error = [], 0, 0.0, None
         job.updated_at = self._wall_clock()
         self._audit({"event": "stub", "investigation_id": job.investigation_id, "message": message})
+        # 스텁 경로는 워커가 돌지 않는다 — 여기서 풀지 않으면 그 호스트가 영구히 조사 불가가 된다.
+        self._release_host(job)
 
     # ── 게이트 컨텍스트 추출 ────────────────────────────────────
 

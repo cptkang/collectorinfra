@@ -16,6 +16,8 @@ from typing import Any, Optional
 
 import structlog
 
+from noise_gate.domain.process_rank import mask_args
+
 logger = structlog.get_logger("audit")
 
 # Phase 1: 파일 기반 감사 로그 (날짜별 분리)
@@ -186,6 +188,113 @@ async def log_drm_decrypt(
     )
     log_data = {k: v for k, v in entry.to_dict().items() if k != "event"}
     logger.info("drm_decrypt", **log_data)
+    await _write_audit_file(entry)
+
+
+#: 조사 원문(stdout)의 기록 상한. 전량은 CSV·트레이스가 갖고, 감사는 대조용 앞부분만 든다.
+_INVESTIGATION_STDOUT_LIMIT = 4000
+
+
+def _mask_shell_text(text: str, *, max_len: int) -> str:
+    """수집 명령·표준출력의 민감정보를 가린다 (D-117 §18.5 계승).
+
+    **두 마스커를 겹쳐 쓴다** — 각자 잡는 것이 다르다:
+    - `mask_args`(Plan 47-1): `password=…`·`token: …`·접속문자열의 **값**. 키는 보존한다
+    - `_mask_text`(D-141): `sk-…`·JWT·AWS/GitHub 토큰처럼 **접두사로 식별되는** 값
+
+    한쪽만 쓰면 반대쪽이 평문으로 남는다 — 조사 stdout은 셸 명령 출력이라 둘 다 나온다.
+    """
+    if not text:
+        return ""
+    # 지연 import — `observability.trace_writer`가 `security.data_masker`를 참조하므로
+    # 모듈 최상단에서 끌어오면 `src.security` 패키지 초기화와 순환한다(실측 2026-08-27).
+    from src.observability.trace_writer import _mask_text
+
+    return _mask_text(mask_args(text, max_len=max_len))
+
+
+# 조사 감사 레코드의 결과 구분 (Plan 78 W6-1). 문자열 상수로 고정해 표기 드리프트를 막는다.
+INVESTIGATION_OK = "ok"
+INVESTIGATION_PARTIAL = "partial"
+INVESTIGATION_FAILED = "failed"
+INVESTIGATION_DENIED = "denied"
+INVESTIGATION_TIMEOUT = "timeout"
+
+
+async def log_investigation(
+    *,
+    request_id: Optional[str] = None,
+    entry_point: str = "chat",
+    targets: Optional[list[dict]] = None,
+    outcome: str = INVESTIGATION_OK,
+    user_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    commands: Optional[list[str]] = None,
+    backend: Optional[str] = None,
+    rc: Optional[int] = None,
+    duration_ms: Optional[float] = None,
+    authz: Optional[dict] = None,
+    stdout: Optional[str] = None,
+    truncation: Optional[dict] = None,
+    cache: Optional[dict] = None,
+    degraded: Optional[list[dict]] = None,
+    **extra: Any,
+) -> None:
+    """호스트 조사 1건을 감사 로그에 기록한다 (Plan 78 W6 · 계약 C-B v2).
+
+    **감사 스키마의 소유권은 78 W6에 있다**(80 §6 계약 C-B v2). 79 트랙 C가 재개되면
+    신뢰도·분포·엔트로피 필드를 **추가**하는데, `AuditEntry`가 `**kwargs`를 그대로 받고
+    `to_dict()`가 None을 떨구므로 **기존 레코드를 깨지 않고 확장**된다 — 이것이 v2 계약이
+    성립하는 근거다(`**extra`가 그 확장 지점이다).
+
+    신규 모듈을 만들지 않는 이유(SPEC C-5): 여기에 `AuditEntry` + 날짜별 JSONL + 로테이션이
+    **이미 있다**. 별도 감사 경로를 세우면 "누가 무엇을 조사했는가"의 기록이 두 벌이 된다(D-053).
+
+    Args:
+        request_id: 요청 식별자(실패 트레이스와 대조하는 키)
+        entry_point: 진입점 — "chat"(CW-B) | "event"(CW-A). G5 대칭 확인의 재료다
+        targets: 조사 대상 [{server_name, hostname, ip, db_id}]
+        outcome: ok | partial | failed | denied | timeout
+        user_id: 사용자 ID
+        thread_id: 세션 ID
+        profile: 수집 프로파일(vm/middleware 등)
+        commands: 실행된 수집 명령. 마스킹 후 저장한다
+        backend: 조사 경로 — sre_agent | mcp_server | process_api
+        rc: 수집 종료 코드
+        duration_ms: 소요 시간(비용 귀속의 지연 축)
+        authz: 인가 판정 {allowed, mode, principal, reason} — **W3-5가 채운다**(W6-5).
+            추적에 신원과 권한 상태가 같은 세밀도로 남아야 G 계층의 증거가 된다
+        stdout: 수집 원문. **마스킹 후** 저장한다(D-117 §18.5 계승)
+        truncation: 절단 사실 {truncated, truncated_count, per_host}
+        cache: 캐시 {hit, age_seconds}
+        degraded: 강등·폴백 사유 목록(침묵 폴백 금지)
+        **extra: 후속 확장 필드(계약 C-B v2)
+    """
+    entry = AuditEntry(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event="host_investigation",
+        request_id=request_id,
+        entry_point=entry_point,
+        targets=targets or None,
+        target_count=len(targets) if targets else 0,
+        outcome=outcome,
+        user_id=user_id,
+        thread_id=thread_id,
+        profile=profile,
+        commands=[_mask_shell_text(c, max_len=500) for c in commands] if commands else None,
+        backend=backend,
+        rc=rc,
+        duration_ms=duration_ms,
+        authz=authz,
+        stdout=_mask_shell_text(stdout, max_len=_INVESTIGATION_STDOUT_LIMIT) if stdout else None,
+        truncation=truncation,
+        cache=cache,
+        degraded=degraded or None,
+        **extra,
+    )
+    log_data = {k: v for k, v in entry.to_dict().items() if k != "event"}
+    logger.info("host_investigation", **log_data)
     await _write_audit_file(entry)
 
 

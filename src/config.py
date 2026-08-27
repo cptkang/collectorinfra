@@ -904,6 +904,88 @@ class NoiseGateConfig(BaseSettings):
         return result
 
 
+class RouterConfig(BaseSettings):
+    """라우터 2단 분리·신뢰도 설정 (Plan 79 트랙 B·C · WU-D2 · env_prefix="ROUTER_").
+
+    이름은 `plans/79` §6.2가 이미 선언한 것을 그대로 쓴다(계획서에 없는 이름을 새로 만들지
+    않는다). **전부 기본값이 현행 동작**이며 **기동 시 1회 해석**한다(78 P14 — 요청 시점에
+    출력 형식을 바꾸면 프롬프트 접두부가 흔들려 KV 캐시가 무효화된다).
+
+    ⚠ **`two_stage_enabled=True`는 S-1·S-2 이후에만 켠다.** 구조는 세웠으나 아래가 전부
+    미검증이다(SPEC-router-two-stage 「미검증으로 남는 것」):
+      M-1 트랙 B가 이득인지 손해인지 — 근거가 **모델 크기 종속**(1.5B −33.6 / 9B +11.2)
+      M-2 2단 분리의 컨텍스트 대역폭 손실 — 완화책은 넣었으나 효과 미측정
+      M-3 조기 차단 임계 — 자기보고 값에 근거 없음(그래서 기본 off)
+      M-4 비용 — 호출 1회 → 2회. 지연·토큰·KV 캐시 영향 미측정
+    """
+
+    # 트랙 B — intent/DB 2단 분리. 기본 off = 기존 단일 호출 경로가 비트동일하게 실행된다.
+    two_stage_enabled: bool = False
+
+    # 트랙 C — 의도 신뢰도의 **소스**. 지금은 자기보고뿐이다(FabriX KBGenAI는 logprobs
+    # 원천 불가). 라우터 평면 이동 후 "logprob"으로 바꾸면 교체점은 `_intent_confidence` 하나다.
+    confidence_source: Literal["self_report", "logprob"] = "self_report"
+
+    # B-2-1 조기 차단 — 1단계 저신뢰 시 2단계 호출 없이 중단. **기본 off.**
+    # 근거 없는 임계를 하나 더 만들지 않기 위해서다 — S-3(WU-01)가 `MIN_RELEVANCE_SCORE=0.3`
+    # 에 대해 고정한 문제가 자기보고 확신도에도 그대로 있다.
+    early_stop_enabled: bool = False
+
+    # 조기 차단 임계. **미설정(None)이면 차단하지 않는다** — 기본값을 숫자로 두면
+    # early_stop_enabled만 켜도 근거 없는 값이 즉시 판단에 관여한다.
+    min_confidence: Optional[float] = None
+
+    model_config = {"env_prefix": "ROUTER_", "env_file": ".env", "extra": "ignore"}
+
+
+class CompositeConfig(BaseSettings):
+    """복합 질의 호스트 조사 설정 (Plan 78 §6.2 · 전부 기본 off / 보수값).
+
+    미설정 시 현행 동작과 **비트 동일**해야 한다(회귀 0 — Plan 80 §5.4-③).
+    플래그는 **기동 시 1회 해석**한다(78 P14 — 요청 시점 변경 금지, KV 캐시 무효화 방지).
+
+    접근 경로: cfg.composite.* (env_prefix="COMPOSITE_").
+    """
+
+    # W1 — 선행 결과 → 조사 대상 전달(채팅·이벤트 공통)
+    prior_targets_enabled: bool = False
+    # W1-3 해석 3단(LLM 컬럼 지목). off면 1·2단만 — 비용·비결정성 최소화
+    target_column_llm_enabled: bool = False
+    # W1-3-2 / W2 — fan-out 상한. 초과분은 절단하고 절단 사실을 결과에 실는다
+    max_targets: int = 10
+    # W2 — 동시 조사 수 / 대상별 타임아웃 / fan-out 전체 타임아웃
+    fanout_concurrency: int = 3
+    target_timeout_seconds: float = 10.0
+    total_timeout_seconds: float = 45.0
+    # W2-8 — 단기 조사 캐시 TTL(Tier 2). **기본 0 = 끔.**
+    #
+    # `plans/78` §6.2는 60을 적었으나 그러면 "실시간 프로세스 조회"가 기본 설정에서 조용히
+    # 캐시된다 — `plans/80` §5.4-③(플래그 기본값은 현행 동작·비트동일)에 걸리고, 충돌 시
+    # §5가 우선한다(80 §5 머리말). 운영자가 명시로 켠다(SPEC 정정 C-6).
+    snapshot_ttl_seconds: int = 0
+    # W3 — 조사 경로 진입(구 COMPOSITE_HOST_DIAGNOSTICS_ENABLED)
+    investigation_enabled: bool = False
+    # W6 — 조사 감사. 기본 on(감사는 끄는 것이 예외다)
+    audit_enabled: bool = True
+
+    model_config = {"env_prefix": "COMPOSITE_", "env_file": ".env", "extra": "ignore"}
+
+
+class HostAuthzConfig(BaseSettings):
+    """호스트 인가 설정 (Plan 78 W3-5 · R-9 확정 2026-08-27).
+
+    `admin_only` = admin 역할만 조사 진입 허용. **미설정·미상 값도 차단**(fail-closed) —
+    판정은 `src/domain/host_authz.py`가 하고 여기서는 모드 문자열만 나른다.
+
+    env_prefix를 두지 않는 이유: 78 §6.2가 확정한 환경변수명이 `HOST_AUTHZ_MODE`라
+    접두 없는 단일 필드가 그대로 매핑된다.
+    """
+
+    mode: str = Field(default="admin_only", validation_alias=AliasChoices("HOST_AUTHZ_MODE"))
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class DrmConfig(BaseSettings):
     """Softcamp ServiceLinker DRM 해제 설정 (Plan 74 / D-156).
 
@@ -952,6 +1034,9 @@ class AppConfig(BaseSettings):
     noise_gate: NoiseGateConfig = Field(default_factory=NoiseGateConfig)  # Plan 52: 알람 노이즈 캔슬링 게이트 (형제 필드)
     polestar_rest: PolestarRestConfig = Field(default_factory=PolestarRestConfig)  # Plan 71: 실시간 사용률 API
     drm: DrmConfig = Field(default_factory=DrmConfig)  # Plan 74: 양식 업로드 DRM 해제
+    composite: CompositeConfig = Field(default_factory=CompositeConfig)  # Plan 78: 복합 질의 호스트 조사
+    router: RouterConfig = Field(default_factory=RouterConfig)  # Plan 79 트랙 B·C: 라우터 2단 분리·신뢰도
+    host_authz: HostAuthzConfig = Field(default_factory=HostAuthzConfig)  # Plan 78 W3-5: 호스트 인가
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 
@@ -996,6 +1081,18 @@ class AppConfig(BaseSettings):
     # 경로 전체(input_parser/field_mapper + deep_agent 워커)가 gemini로 동작 → FabriX 없이 검증.
     # 오케스트레이터(제어 평면)는 ORCHESTRATOR_PROVIDER로 별도 지정 (Plan 49 §4.7 / D-037).
     worker_provider_override: Literal["ollama", "fabrix", "gemini"] | None = None
+
+    # ── 구조화 출력 백엔드 (Plan 79 트랙 E-3 / D-169) ────────────────────────
+    # LLM 응답을 타입 계약(pydantic)으로 받고, 검증 실패 시 오류를 모델에 되먹여 재질의한다.
+    # "none"(기본)이면 어댑터가 관여하지 않아 **현행 동작과 비트동일**하다.
+    # instructor는 optional extra(`structured`)이며 미설치 시 graceful 강등된다(로그 남김).
+    # ⚠ 기동 시 1회 해석한다(plans/78 P14) — 요청 시점에 바꾸면 프롬프트 접두가 흔들려
+    #   KV 캐시가 무효화된다.
+    structured_output_backend: Literal["none", "instructor"] = "none"
+
+    # 재시도 횟수. 총 LLM 호출은 이 값 + 1회다(instructor `max_retries` 규약 실측).
+    # 라우터는 지연에 민감하므로 1로 시작하고 실측 후 조정한다(응답시간 목표: 단순 <10s).
+    structured_output_max_retries: int = 1
 
     # Polestar 전용 프롬프트를 적용할 DB ID (콤마 구분으로 복수 지정 가능)
     # .env에서 POLESTAR_DB_IDS=polestar,polestar2 로 설정하면

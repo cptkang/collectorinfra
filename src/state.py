@@ -230,6 +230,9 @@ class AgentState(TypedDict):
     # === 사용자 컨텍스트 (인증 시스템에서 주입) ===
     user_id: Optional[str]                   # "anonymous" 또는 실제 user_id
     user_department: Optional[str]
+    # 조사 인가 판정 재료 (Plan 78 W3-5 · C-4). **없으면 차단**된다(fail-closed) —
+    # 전파 누락이 곧 fail-open이 되지 않도록 판정 기본값을 거부로 두었다.
+    user_role: Optional[str]
     allowed_db_ids: Optional[list[str]]      # None=전체 허용
 
     # === 감사 로깅 ===
@@ -247,6 +250,10 @@ class AgentState(TypedDict):
     task_results: dict[str, dict]    # {task_id: {organized_data, query_results, source, error, ...}}
     is_composite: bool               # task 2개 이상 여부
     prior_rows: Optional[dict[str, list[dict]]]  # 선행 task 결과 식별 행 {task_id: [행, ...]} (input_from 주입, D-086)
+    # 선행 결과에서 해소한 **조사 대상** [{server_name, hostname, ip, db_id}] (Plan 78 W1-5).
+    # prior_rows(SQL 스코프 키)와 목적이 다르다 — 이쪽은 실호스트 조사의 대상 집합이다.
+    # 값은 dict 목록으로 싣는다(TargetRef.model_dump()) — 체크포인터 직렬화 대상이므로.
+    prior_targets: Optional[list[dict]]
 
     # === [Plan 49] 동적 재계획 ===
     replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
@@ -320,6 +327,7 @@ def create_initial_state(
     csv_sheet_data: Optional[dict[str, Any]] = None,
     user_id: Optional[str] = None,
     user_department: Optional[str] = None,
+    user_role: Optional[str] = None,
     allowed_db_ids: Optional[list[str]] = None,
     request_id: Optional[str] = None,
     client_ip: Optional[str] = None,
@@ -337,6 +345,7 @@ def create_initial_state(
         csv_sheet_data: 시트별 CsvSheetData dict (선택, Excel CSV 변환 결과)
         user_id: 인증된 사용자 ID (선택, 인증 비활성화 시 None)
         user_department: 사용자 부서 (선택)
+        user_role: 사용자 역할 (조사 인가 판정용 — 없으면 조사 차단)
         allowed_db_ids: 허용 DB 목록 (선택, None=전체 허용)
         request_id: 요청 추적 ID (선택, 미들웨어에서 주입)
         client_ip: 클라이언트 IP (선택, 미들웨어에서 주입)
@@ -426,6 +435,7 @@ def create_initial_state(
         # 사용자 컨텍스트
         user_id=user_id,
         user_department=user_department,
+        user_role=user_role,
         allowed_db_ids=allowed_db_ids,
         # 감사 로깅
         request_id=request_id,
@@ -440,6 +450,9 @@ def create_initial_state(
         task_results={},
         is_composite=False,
         prior_rows=None,  # 요청 스코프 — 명시 초기화로 이전 턴 승계 차단 (Plan 69 P0-⑥)
+        # 요청 스코프 — LangGraph 체크포인터는 델타만 병합하므로 명시 초기화가 없으면
+        # 이전 턴 대상이 승계돼 엉뚱한 호스트를 조사한다(Plan 78 W1-5).
+        prior_targets=None,
         # Plan 49: 동적 재계획
         replan_count=0,
         needs_replan=False,

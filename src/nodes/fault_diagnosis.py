@@ -29,6 +29,17 @@ from langchain_core.messages import AIMessage
 
 from src.config import AppConfig, load_config
 from src.state import AgentState
+from src.domain.host_authz import (
+    DENY_DB_NOT_ALLOWED,
+    DENY_NO_PRINCIPAL,
+    DENY_ROLE_NOT_ALLOWED,
+    DENY_UNKNOWN_MODE,
+    Principal,
+    authorize_host_investigation,
+)
+from src.observability.investigation_metrics import record_investigation
+from src.security.audit_logger import INVESTIGATION_DENIED, log_investigation
+from src.utils.prior_targets import resolve_targets
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +53,27 @@ _ANSWER_FIELDS = ("answer", "diagnosis", "response", "text", "message")
 
 # 브리핑 dict를 자연어로 조립할 때의 6요소 라벨(alarm_notifier와 동일 순서·용어).
 _BRIEFING_ORDER = ("timeline", "bottleneck", "cause", "evidence", "recommendation", "limitation")
+# 인가 거부 시 사용자에게 보일 문구. 사유별로 **다른 안내**를 준다 —
+# "권한이 없습니다" 하나로 뭉치면 설정 오류(미상 모드)와 정상 거부가 구분되지 않는다.
+_DENY_MESSAGES: dict[str, str] = {
+    DENY_ROLE_NOT_ALLOWED: (
+        "장애 진단은 관리자 권한이 필요한 기능입니다. "
+        "조회 가능한 데이터 질의로 다시 요청하시거나 관리자에게 문의해 주세요."
+    ),
+    DENY_NO_PRINCIPAL: (
+        "요청자 권한 정보를 확인하지 못해 장애 진단을 수행하지 않았습니다. "
+        "다시 로그인한 뒤 시도해 주세요."
+    ),
+    DENY_DB_NOT_ALLOWED: (
+        "해당 대상은 조회 인가된 범위 밖이라 장애 진단을 수행하지 않았습니다."
+    ),
+    DENY_UNKNOWN_MODE: (
+        "호스트 조사 인가 설정(HOST_AUTHZ_MODE)이 확인되지 않아 진단을 차단했습니다. "
+        "관리자에게 문의해 주세요."
+    ),
+    "_default": "권한 확인에 실패하여 장애 진단을 수행하지 않았습니다.",
+}
+
 _BRIEFING_LABELS = {
     "timeline": "타임라인", "bottleneck": "병목", "cause": "원인",
     "evidence": "근거", "recommendation": "권고", "limitation": "한계",
@@ -80,6 +112,40 @@ async def fault_diagnosis(
             "현재 장애 진단 기능이 비활성화되어 있습니다. 조회 가능한 데이터 질의로 다시 요청해 주세요.",
         )
 
+    server_name, hostname, db_id = _extract_targets(state)
+
+    # ★ 호스트 인가 게이트 (Plan 78 W3-5 · G 계층 최우선).
+    # **조회 권한 ≠ 조사 권한**이다 — allowed_db_ids만으로 실호스트 조사를 열지 않는다.
+    # 판정은 **위임 직전**(실행 경계)에 둔다. planner·LLM 경로에서 막으면 우회가 생긴다
+    # (UI 게이트 ≠ 인가). 이벤트 경로(investigation_trigger)가 **같은 모듈**을 호출한다(G5).
+    decision = authorize_host_investigation(
+        mode=getattr(getattr(app_config, "host_authz", None), "mode", None),
+        principal=Principal(
+            role=state.get("user_role"),
+            user_id=state.get("user_id"),
+            allowed_db_ids=state.get("allowed_db_ids"),
+            entry_point="chat",
+        ),
+        hostname=hostname or server_name,
+        db_id=db_id,
+    )
+    if not decision.allowed:
+        # 조용히 건너뛰지 않는다 — 사유를 응답·감사·지표에 남긴다(78 W3-5 · W6-5).
+        logger.info("장애 진단 인가 거부: %s", decision.as_audit())
+        record_investigation(denied_reason=decision.reason)
+        await log_investigation(
+            request_id=state.get("request_id"),
+            entry_point="chat",
+            targets=[{"server_name": server_name, "hostname": hostname, "db_id": db_id}]
+            if (server_name or hostname) else None,
+            outcome=INVESTIGATION_DENIED,
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            backend="sre_agent",
+            authz=decision.as_audit(),
+        )
+        return _respond(_DENY_MESSAGES.get(decision.reason, _DENY_MESSAGES["_default"]))
+
     client = _build_client(gate_cfg)
     if client is None:
         return _respond(
@@ -87,7 +153,6 @@ async def fault_diagnosis(
             "잠시 후 다시 시도하시거나 관리자에게 문의해 주세요.",
         )
 
-    server_name, hostname, db_id = _extract_targets(state)
     total_timeout = float(
         getattr(gate_cfg, "investigation_total_timeout_seconds", 45.0)
     )
@@ -199,47 +264,44 @@ def _extract_targets(
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """진단 대상 식별자(server_name, hostname, db_id)를 state에서 추출한다.
 
-    parsed_requirements.filter_conditions의 식별 필터를 우선하고, 없으면 멀티턴
-    직전 턴 식별 엔티티(conversation_context.previous_entities, "해당 서버")로 폴백한다.
+    **해소 본체는 공통 모듈**(`src.utils.prior_targets`)이 담당한다 (Plan 78 W1-4 · G5) —
+    `process_query`·`investigation_trigger`와 **같은 함수**를 쓴다. 각자 구현하면 개선이
+    한쪽에만 들어간다(§2.2 G5 실측): 종전 이 함수는 `prior_targets`를 보지 않아
+    *"CPU 80% 이상 서버를 조회하고 그 서버들 원인 분석"* 이 RCA 경로에서 불성립했다(G2).
+
+    우선순위(전 경로 동일): ① 이번 턴 `filter_conditions` → ② `prior_targets`
+    → ③ `previous_entities`. **①이 ②를 이긴다**(사용자 명시 지목 우선).
+
     db_id는 active_db_id → 직전 대상 DB 순으로 best-effort 추출한다(진단의 선택 힌트).
+
+    반환형은 종전대로 **첫 대상 하나**다 — N-대상 진단은 본 계획 범위 밖이다(W2는
+    `process_query` fan-out 소관).
     """
-    db_id = state.get("active_db_id") or None
-    server_name: Optional[str] = None
-    hostname: Optional[str] = None
-
-    parsed = state.get("parsed_requirements") or {}
-    for cond in parsed.get("filter_conditions", []) or []:
-        if not isinstance(cond, dict):
-            continue
-        field = str(cond.get("field", "")).lower()
-        value = cond.get("value")
-        if not value:
-            continue
-        if field in ("hostname", "host_name") and hostname is None:
-            hostname = str(value)
-        elif field in ("server_name", "name") and server_name is None:
-            server_name = str(value)
-
     ctx = state.get("conversation_context") or {}
-    if server_name is None and hostname is None:
-        for e in ctx.get("previous_entities") or []:
-            if not isinstance(e, dict):
-                continue
-            f = str(e.get("field", "")).lower()
-            v = e.get("value")
-            if not v:
-                continue
-            if f in ("hostname", "host_name") and hostname is None:
-                hostname = str(v)
-            elif f in ("server_name", "name") and server_name is None:
-                server_name = str(v)
-
+    db_id = state.get("active_db_id") or None
     if db_id is None:
         prev_db_ids = ctx.get("previous_db_ids") or []
         if prev_db_ids:
             db_id = prev_db_ids[0]
 
-    return server_name, hostname, db_id
+    parsed = state.get("parsed_requirements") or {}
+    resolution = resolve_targets(
+        filter_conditions=parsed.get("filter_conditions"),
+        prior_targets=state.get("prior_targets"),
+        previous_entities=ctx.get("previous_entities"),
+        db_id=db_id,
+        max_targets=load_config().composite.max_targets,
+    )
+    if not resolution.resolved:
+        if resolution.dropped:
+            logger.info(
+                "장애 진단 대상 미확정 — 사유: %s",
+                [d.get("reason") for d in resolution.dropped],
+            )
+        return None, None, db_id
+
+    first = resolution.targets[0]
+    return first.server_name, first.hostname, first.db_id or db_id
 
 
 def _extract_diagnosis_text(poll_result: dict) -> str:
@@ -250,16 +312,56 @@ def _extract_diagnosis_text(poll_result: dict) -> str:
     """
     if not isinstance(poll_result, dict):
         return ""
+    briefing = poll_result.get("briefing")
     for key in _ANSWER_FIELDS:
         val = poll_result.get(key)
         if isinstance(val, str) and val.strip():
-            return val.strip()
-    briefing = poll_result.get("briefing")
+            # ★ Plan 78 W4-1: 자연어 필드가 있어도 **브리핑의 권고·한계를 버리지 않는다.**
+            # 종전에는 여기서 곧장 return해 `Remediation` 목록이 통째로 유실됐다 —
+            # `sre_agent/domain/remediation.py`가 위험도 3등급까지 계산해 보낸 것을
+            # 사용자가 못 보는 상태였다(실측 2026-08-27).
+            return _append_briefing_extras(val.strip(), briefing)
     if isinstance(briefing, str) and briefing.strip():
         return briefing.strip()
     if isinstance(briefing, dict):
         return _briefing_to_text(briefing)
     return ""
+
+
+#: 자연어 필드에 가려 유실되기 쉬운 브리핑 요소. 조치 권고와 한계는 **판단에 직접 쓰이므로**
+#: 요약 텍스트가 있어도 반드시 함께 보인다.
+_BRIEFING_EXTRA_KEYS: tuple[str, ...] = ("recommendation", "limitation")
+
+
+def _append_briefing_extras(text: str, briefing: object) -> str:
+    """자연어 진단에 브리핑의 권고·한계를 덧붙인다 (Plan 78 W4-1·2 — **소비만** 한다).
+
+    **문자열을 가공하지 않는다.** `Remediation.to_line()`이 이미
+    `"[검토 필요] … (위험도 high·신뢰도 medium) — 근거: …"` 형태로 위험도·신뢰도를 담아
+    보낸다. 여기서 다시 쓰거나 접두를 떼면 **고위험×저신뢰로 강등된 항목이 정식 권고처럼
+    보인다**(W4-2). 78은 권고를 **생성하지 않고 그대로 나른다**.
+
+    Args:
+        text: 자연어 진단 텍스트
+        briefing: poll 결과의 브리핑(dict가 아니면 원문 그대로 반환)
+
+    Returns:
+        권고·한계가 덧붙은 텍스트(중복이면 덧붙이지 않는다)
+    """
+    if not isinstance(briefing, dict):
+        return text
+    lines: list[str] = []
+    for key in _BRIEFING_EXTRA_KEYS:
+        val = briefing.get(key)
+        if not val:
+            continue
+        rendered = "\n".join(str(v) for v in val) if isinstance(val, list) else str(val)
+        if not rendered.strip() or rendered.strip() in text:
+            continue  # 이미 자연어에 포함됨 — 두 번 보이지 않게 한다
+        lines.append(f"[{_BRIEFING_LABELS[key]}] {rendered}")
+    if not lines:
+        return text
+    return text + "\n\n" + "\n".join(lines)
 
 
 def _briefing_to_text(briefing: dict) -> str:
@@ -272,7 +374,10 @@ def _briefing_to_text(briefing: dict) -> str:
         val = briefing.get(key)
         if val:
             seen.add(key)
-            lines.append(f"[{_BRIEFING_LABELS[key]}] {val}")
+            # 권고는 `list[str]`로 온다(`Remediation.to_line()` 렌더 결과) —
+            # 문자열화하면 `['...', '...']`가 그대로 노출되므로 줄바꿈으로 편다.
+            rendered = "\n".join(str(v) for v in val) if isinstance(val, list) else val
+            lines.append(f"[{_BRIEFING_LABELS[key]}] {rendered}")
     for key in sorted(briefing.keys()):
         if key in seen or key in ("stub", "elements"):
             continue

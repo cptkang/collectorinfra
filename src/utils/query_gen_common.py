@@ -1106,6 +1106,31 @@ def is_demonstrative_identifier(value: object) -> bool:
     return body in DEMONSTRATIVE_PREFIXES
 
 
+def looks_like_process_rows(rows: list[dict] | None) -> bool:
+    """결과 행이 프로세스 조회 결과인지 판별한다 (엔티티·조사 대상 오수집 방지용).
+
+    프로세스 조회 결과 행은 `pid`를 갖는다(process_query._process_to_dict:
+    {name, pid, user, cpu_pct, mem_pct, rss, args}). `name`은 프로세스명, `pid`는 서버가
+    아니므로 이런 행에서 서버 식별 엔티티를 수집하면 안 된다. 서버 조회 결과 행에는 `pid`가 없다.
+
+    (context_resolver._looks_like_process_rows의 단일 출처 이동분 — 동작 동일.
+    utils로 내린 이유: 조사 대상 해소(prior_targets)가 application 계층을 import할 수 없다.)
+
+    Args:
+        rows: 결과 행 목록
+
+    Returns:
+        첫 행이 `pid` 키를 가지면 True(프로세스 행으로 간주)
+    """
+    if not rows:
+        return False
+    first = rows[0]
+    if not isinstance(first, dict):
+        return False
+    keys = {str(k).lower() for k in first.keys()}
+    return "pid" in keys
+
+
 def refers_to_demonstrative_server(text: str) -> bool:
     """질의가 지시어("해당/그/위 … 서버")로 특정 서버를 가리키는지 판정한다.
 

@@ -47,6 +47,7 @@ from src.orchestration.process_query import (
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
+from src.utils.prior_targets import build_prior_targets
 from src.utils.query_gen_common import (
     build_zone_clarification,
     has_host_identifier_filter,
@@ -699,6 +700,9 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "thread_id": state.get("thread_id"),
         "user_id": state.get("user_id"),
         "user_department": state.get("user_department"),
+        # 조사 인가는 **실행 경계**(handler 내부)에서 판정하므로 여기를 통과해야 한다.
+        # 빠뜨리면 role이 None이 되어 전 조사가 차단된다(fail-closed — 78 W3-5).
+        "user_role": state.get("user_role"),
         "allowed_db_ids": state.get("allowed_db_ids"),
         "request_id": state.get("request_id"),
         "client_ip": state.get("client_ip"),
@@ -792,7 +796,92 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
             prior_rows[tid] = _extract_identity_rows(rows or [])
         base["prior_rows"] = prior_rows
 
+    # 조사 대상 전달 (Plan 78 W1 · G2). 소비 방식이 agent별로 다르다 —
+    # data_query/alarm_query는 위의 prior_rows(SQL 스코프, D-086)를 그대로 쓰고,
+    # process_query/fault_diagnosis는 **대상 집합**(prior_targets)을 받는다.
+    #
+    # 이 지점이 1단(deepagents_tools 도구 경로)·2단(agent_orchestrator 계획 경로) **양쪽의
+    # 합류점**이다 — 두 경로가 같은 함수를 통과하므로 비대칭이 생기지 않는다
+    # (Known Mistakes: "한쪽만 고치는 비대칭이 반복 원인").
+    if task.get("agent") in _TARGET_CONSUMER_AGENTS:
+        targets = _build_prior_targets_for_task(task, state, prior)
+        if targets is not None:
+            base["prior_targets"] = targets
+
     return base
+
+
+# 선행 결과를 **조사 대상 집합**으로 소비하는 agent (Plan 78 W1-2).
+_TARGET_CONSUMER_AGENTS: tuple[str, ...] = ("process_query", "fault_diagnosis")
+
+
+def _prior_result_rows(res: dict) -> list[dict]:
+    """선행 task 결과에서 행 목록을 꺼낸다(결과 형태 3종 방어 — prior_rows 로직과 동일 규약)."""
+    rows = res.get("rows")
+    if rows is None:
+        rows = res.get("query_results")
+    if rows is None:
+        organized = res.get("organized_data") or {}
+        rows = organized.get("rows", [])
+    return rows or []
+
+
+def _build_prior_targets_for_task(
+    task: dict, state: dict, prior: dict
+) -> Optional[list[dict]]:
+    """선행 결과에서 조사 대상을 해소해 상태에 실을 dict 목록을 만든다 (Plan 78 W1).
+
+    플래그(`COMPOSITE_PRIOR_TARGETS_ENABLED`)가 off면 **아무것도 하지 않는다** —
+    미설정 시 현행 동작과 비트 동일해야 한다(Plan 80 §5.4-③).
+
+    `input_from`이 지정돼 있으면 그 task 결과만, 없으면 완료된 선행 결과 전체를 본다.
+    후자는 계획 경로(2단)에서 planner가 `input_from`을 채우지 않는 경우를 위한 것이며,
+    `intent_planner`를 수정하지 않고 대상 전달을 성립시킨다(78 R-13 경계 유지).
+
+    Args:
+        task: 현재 TaskSpec
+        state: 전체 에이전트 상태
+        prior: 완료된 task 결과 {task_id: 결과}
+
+    Returns:
+        `TargetRef.model_dump()` 목록, 또는 해소 불가·플래그 off 시 None
+    """
+    cfg = load_config().composite
+    if not cfg.prior_targets_enabled:
+        return None
+
+    input_from = task.get("input_from") or []
+    sources = (
+        [prior.get(tid) or {} for tid in input_from]
+        if input_from
+        else [r for r in (prior or {}).values() if isinstance(r, dict)]
+    )
+
+    for res in sources:
+        if not isinstance(res, dict) or res.get("error"):
+            continue
+        rows = _prior_result_rows(res)
+        if not rows:
+            continue
+        db_ids = res.get("target_db_ids") or []
+        resolution = build_prior_targets(
+            rows,
+            db_id=db_ids[0] if db_ids else state.get("active_db_id"),
+            max_targets=cfg.max_targets,
+        )
+        if resolution.resolved:
+            if resolution.truncated:
+                logger.info(
+                    "prior_targets 절단(Plan 78 W1): %d건 초과 — 상한 %d",
+                    resolution.truncated_count, cfg.max_targets,
+                )
+            return resolution.as_state_value()
+        if resolution.dropped:
+            logger.info(
+                "prior_targets 미해소(task=%s): %s",
+                task.get("task_id"), [d.get("reason") for d in resolution.dropped],
+            )
+    return None
 
 
 # ──────────────────────────────────────────────

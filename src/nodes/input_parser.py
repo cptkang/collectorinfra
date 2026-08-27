@@ -23,6 +23,8 @@ from src.prompts.input_parser import (
 from src.schema_cache.cache_manager import get_cache_manager
 from src.security.audit_logger import log_user_request
 from src.state import AgentState
+from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
+from src.nodes.schemas import ParsedRequirements
 from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
@@ -169,6 +171,32 @@ async def input_parser(
     }
 
 
+async def _try_structured_requirements(
+    llm, messages: list, *, config=None
+) -> Optional[dict]:
+    """구조화 출력으로 요구사항을 받는다. 비활성·미설치·실패면 None(기존 경로로 강등).
+
+    **두 파서 함수가 이 헬퍼를 공유**한다 — 이것이 종전 비대칭(`synonym_registration`
+    기본값이 CSV 경로에만 없던 문제)을 구조적으로 해소한다(Plan 79 E-3c).
+    """
+    try:
+        cfg = config if config is not None else load_config()
+    except Exception:  # noqa: BLE001 — 설정 부재가 파싱을 막으면 안 된다
+        return None
+    try:
+        model = await try_structured_call(
+            llm, messages, ParsedRequirements,
+            backend=getattr(cfg, "structured_output_backend", "none"),
+            max_retries=getattr(cfg, "structured_output_max_retries", 1),
+        )
+    except StructuredOutputError as e:
+        logger.warning(
+            "요구사항 구조화 추출 실패(%d회 시도) — 기존 파싱으로 강등: %s", e.attempts, e
+        )
+        return None
+    return model.model_dump() if model is not None else None
+
+
 async def _parse_natural_language(
     llm: BaseChatModel,
     user_query: str,
@@ -214,8 +242,8 @@ async def _parse_natural_language(
     # Remove any None entries (no effect for other LLMs)
     messages = [m for m in messages if m is not None]
 
-    parsed: dict = {}
-    for attempt in range(2):  # 최대 2회 시도
+    parsed: dict = await _try_structured_requirements(llm, messages) or {}
+    for attempt in range(2 if not parsed else 0):  # 최대 2회 시도 (구조화 성공 시 생략)
         response = await llm.ainvoke(messages)
         parsed = extract_json_from_response(response.content) or {}
         if parsed and parsed.get("query_targets"):
@@ -314,8 +342,8 @@ async def _parse_natural_language_with_csv(
         HumanMessage(content=user_query),
     ]
 
-    parsed: dict = {}
-    for attempt in range(2):
+    parsed: dict = await _try_structured_requirements(llm, messages) or {}
+    for attempt in range(2 if not parsed else 0):  # 구조화 성공 시 생략(대칭)
         response = await llm.ainvoke(messages)
         parsed = extract_json_from_response(response.content) or {}
         if parsed and parsed.get("query_targets"):
@@ -334,6 +362,8 @@ async def _parse_natural_language_with_csv(
     parsed.setdefault("limit", None)
     parsed.setdefault("field_mapping_hints", [])
     parsed.setdefault("target_db_hints", [])
+    # 비대칭 해소(E-3c) — 종전 이 경로에만 이 기본값이 없어 CSV 질의에서 키가 사라졌다.
+    parsed.setdefault("synonym_registration", None)
 
     return parsed
 

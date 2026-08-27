@@ -130,6 +130,15 @@ def _serialize_for_tool(result: Any, app_config: Optional[AppConfig] = None) -> 
     return _truncate(json.dumps(payload, ensure_ascii=False, default=str), limit)
 
 
+# 선행 결과를 후속 task의 스코프로 넘길 수 있는 agent (Plan 78 W1-1·W1-2).
+# 생산자·소비자를 같은 집합으로 두는 이유: 조회형 결과는 어느 쪽으로도 흐를 수 있다
+# (프로세스 조회 결과 → 원인 분석 대상 등). 실제 소비 형태 분기는 _make_isolated_input이 한다.
+_SCOPE_PRODUCER_AGENTS: tuple[str, ...] = (
+    "data_query", "alarm_query", "process_query", "fault_diagnosis",
+)
+_SCOPE_CONSUMER_AGENTS: tuple[str, ...] = _SCOPE_PRODUCER_AGENTS
+
+
 def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]:
     """후속 조회 task에 주입할 선행 결과 의존(input_from/prior)을 결정한다 (D-095).
 
@@ -156,7 +165,10 @@ def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]
     # 선행 후보: 조회형 agent의 성공 결과 중 행이 있는 것만
     candidates: list[tuple[dict, dict, list]] = []
     for t, res in collector:
-        if t.get("agent") not in ("data_query", "alarm_query"):
+        # Plan 78 W1-1: 생산자 후보에 process_query·fault_diagnosis를 추가한다 —
+        # 조회형 결과면 후속 task의 스코프가 될 수 있다. 프로세스 행(pid 보유)이
+        # 서버 대상으로 오인되는 것은 build_prior_targets의 결정적 가드가 막는다.
+        if t.get("agent") not in _SCOPE_PRODUCER_AGENTS:
             continue
         if not isinstance(res, dict) or res.get("error"):
             continue
@@ -238,7 +250,10 @@ async def _run_subagent_tool(
     # 선행 결과 스코프 결정적 주입(D-095): 게이트 충족 시 D-086 prior_rows 경로 배선.
     input_from: list[str] = []
     prior: dict[str, Any] = {}
-    if collector and agent_name in ("data_query", "alarm_query"):
+    # Plan 78 W1-2: 소비 방식이 agent별로 다르다 —
+    #   data_query/alarm_query   → prior_rows(SQL 스코프, D-086)
+    #   process_query/fault_diagnosis → prior_targets(대상 집합) — _make_isolated_input이 조립
+    if collector and agent_name in _SCOPE_CONSUMER_AGENTS:
         input_from, prior = _dependency_scope(sub_query, collector)
         if input_from:
             logger.info(

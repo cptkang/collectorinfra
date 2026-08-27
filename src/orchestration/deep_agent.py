@@ -141,6 +141,7 @@ _AMBIENT_KEYS = (
     "thread_id",
     "user_id",
     "user_department",
+    "user_role",
     "allowed_db_ids",
     "request_id",
     "client_ip",

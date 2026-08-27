@@ -568,6 +568,7 @@ def _build_turn_input_state(
         thread_id=thread_id,
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
+        user_role=current_user.get("role"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
         selected_db_ids=body.selected_db_ids,
         allow_zone_clarification=True,
@@ -1241,6 +1242,7 @@ async def process_file_query(
         csv_sheet_data=csv_sheet_data,
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
+        user_role=current_user.get("role"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
         selected_db_ids=selected_list,
         # 폼필은 전량 채움이 기본 — 기본 LIMIT(1000) 절단 방지(실측: 지시문에 "모든"이
@@ -1487,6 +1489,7 @@ async def process_file_query_stream(
         csv_sheet_data=csv_sheet_data,
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
+        user_role=current_user.get("role"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
         selected_db_ids=selected_list,
         # 폼필은 전량 채움이 기본 — 기본 LIMIT(1000) 절단 방지(실측: 지시문에 "모든"이

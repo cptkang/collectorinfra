@@ -22,6 +22,11 @@ from src.orchestration.subagents import (
     SubAgentSpec,
     _make_isolated_input,
 )
+from src.orchestration.sufficiency import (
+    SufficiencyReport,
+    check_sufficiency,
+    summarize_shortfalls,
+)
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -58,6 +63,8 @@ async def agent_orchestrator(
     tasks = state["task_plan"]
     # 누적 결과를 시드로 시작 (재진입 시 완료 task 결과 보존, prior 주입원도 누적분 사용)
     results: dict[str, dict] = dict(state.get("task_results") or {})
+    # task별 주입 대상 — 충족도 판정(W5)의 기준. 대상 주입이 없으면 비어 있고 검증도 건너뛴다.
+    injected: dict[str, list[dict]] = {}
 
     # 미완료(pending) task만 실행 — 완료/실패 task 재실행 방지(R-A2).
     # topological_levels는 by_id에 없는 의존(완료 task)을 자동 무시하므로
@@ -70,7 +77,7 @@ async def agent_orchestrator(
             t["status"] = "in_progress"
 
         coros = [
-            _run_agent(task, state, llm, app_config, prior=results)
+            _run_agent(task, state, llm, app_config, prior=results, injected=injected)
             for task in level
         ]
         level_results = await asyncio.gather(*coros, return_exceptions=True)
@@ -85,11 +92,78 @@ async def agent_orchestrator(
                     task["task_id"], task.get("agent"), norm["error"],
                 )
 
-    return {
+    # 오케스트레이션 수준 충족도 검증·재계획 (Plan 78 W5 · P7 · LLM 미사용).
+    # 대상 주입이 없었으면 `injected`가 비어 검증도 재시도도 일어나지 않는다 — 회귀 0.
+    sufficiency_reasons: list[dict] = []
+    if injected:
+        report = check_sufficiency(tasks, results, injected)
+        retried = False
+        if not report.sufficient:
+            logger.info("충족도 미달 — 1회 재실행: %s", report.as_reasons())
+            results, retried = await _retry_once(
+                report, tasks, state, llm, app_config, results, injected
+            )
+            # **재판정은 한 번뿐**이다. 개선 여부와 무관하게 여기서 끝낸다(무한 루프 금지).
+            report = check_sufficiency(tasks, results, injected)
+        if not report.sufficient:
+            sufficiency_reasons = report.as_reasons()
+            note = summarize_shortfalls(report, retried=retried)
+            logger.warning("충족도 미달 잔존(사유 노출): %s", note)
+
+    out: dict = {
         "task_plan": tasks,
         "task_results": results,
         "current_node": "agent_orchestrator",
     }
+    if sufficiency_reasons:
+        # 미충족 사유를 응답에 노출한다(78 W5-3 · 침묵 폴백 금지).
+        out["sufficiency_shortfalls"] = sufficiency_reasons
+    return out
+
+
+async def _retry_once(
+    report: SufficiencyReport,
+    tasks: list[dict],
+    state: AgentState,
+    llm: BaseChatModel,
+    app_config: AppConfig,
+    results: dict[str, dict],
+    injected: dict[str, list[dict]],
+) -> tuple[dict[str, dict], bool]:
+    """미충족 task를 **1회만** 재실행한다 (78 W5-2).
+
+    종료 조건 셋을 전부 지킨다: **최대 1회 재시도** · **개선 없으면 즉시 중단** ·
+    전체 타임아웃 준수(handler 내부 가드에 위임).
+
+    대상 집합을 **명시 주입**한다 — 재실행이 같은 경로를 다시 밟으면 같은 결과가 나온다.
+
+    Returns:
+        (갱신된 결과, 재시도 수행 여부)
+    """
+    by_id = {t.get("task_id"): t for t in tasks}
+    retried = False
+    for task_id in report.task_ids:
+        task = by_id.get(task_id)
+        if task is None:
+            continue
+        targets = injected.get(task_id) or []
+        if not targets:
+            continue
+        retry_state = dict(state)
+        retry_state["prior_targets"] = targets   # 명시 주입
+        try:
+            res = _normalize(
+                await _run_agent(task, retry_state, llm, app_config, prior=results)
+            )
+        except Exception as exc:  # noqa: BLE001 — 재시도 실패가 원 결과를 지우지 않는다
+            logger.warning("충족도 재실행 실패 task=%s: %s", task_id, exc)
+            continue
+        retried = True
+        if res.get("error"):
+            continue  # 개선 없음 — 원 결과를 유지한다
+        results[task_id] = res
+        task["status"] = "completed"
+    return results, retried
 
 
 def topological_levels(tasks: list[dict]) -> list[list[dict]]:
@@ -144,6 +218,7 @@ async def _run_agent(
     app_config: AppConfig,
     *,
     prior: dict,
+    injected: Optional[dict] = None,
 ) -> dict:
     """단일 task를 해당 subagent handler로 실행한다.
 
@@ -153,6 +228,7 @@ async def _run_agent(
         llm: 메인 LLM 인스턴스
         app_config: 앱 설정
         prior: 지금까지 완료된 task 결과 (input_from 주입용)
+        injected: (선택) task별 주입 대상 기록 수집기 — 충족도 판정 기준(W5)
 
     Returns:
         subagent handler의 반환 dict
@@ -160,6 +236,10 @@ async def _run_agent(
     spec = SUBAGENT_REGISTRY.get(task["agent"]) or _fallback_spec()
     isolated = _make_isolated_input(task, state, prior)
     isolated["user_query"] = task["sub_query"]
+    # 이 task에 실제로 주입된 대상 집합을 기록한다 — 충족도 판정(W5-1)과 대상 정합
+    # 사후 대조(W5-5)의 **기준**이다. 기록하지 않으면 "몇 개를 조사했어야 하는가"를 알 수 없다.
+    if injected is not None and isolated.get("prior_targets"):
+        injected[task["task_id"]] = list(isolated["prior_targets"])
     return await spec.handler(
         task, isolated, llm=spec.model or llm, app_config=app_config
     )

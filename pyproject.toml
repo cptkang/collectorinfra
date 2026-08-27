@@ -66,6 +66,13 @@ semantic = [
     "sentence-transformers>=2.2.0",
     "numpy>=1.24.0",
 ]
+# 구조화 출력 백엔드 (D-169 / Plan 79 트랙 E-3): LLM 응답을 pydantic 계약으로 받고
+# 검증 오류를 모델에 되먹여 재질의한다 (opt-in). 미설치 시 기존 정규식 파싱으로 graceful 강등.
+# STRUCTURED_OUTPUT_BACKEND=instructor 로 활성화. 폐쇄망은 wheel 반입 필요
+# (기반 의존 11종 중 10종 기설치 — 신규는 aiohttp 계열 ≈7종).
+structured = [
+    "instructor>=1.15.4",
+]
 # E3 2차(D-113): STL 분해 이상탐지 (opt-in). 미설치 시 순수 Python HW로 graceful 폴백.
 # 폐쇄망은 wheel 반입·보안 협의 필요(운영 반영 전 행정 절차).
 stl = [

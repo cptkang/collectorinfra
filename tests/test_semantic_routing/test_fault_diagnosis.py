@@ -82,9 +82,19 @@ def _gate_cfg(**over):
     return SimpleNamespace(**base)
 
 
-def _app_cfg(gate):
+def _app_cfg(gate, *, authz_mode: str = "admin_only"):
+    """앱 설정 대역.
+
+    `host_authz`·`composite`는 실제 `AppConfig`가 **항상** 갖는다(Plan 78 W3-5 · W1).
+    빼면 조사 인가가 `unknown_authz_mode`로 차단된다 — fail-closed의 설계 의도이므로
+    정책이 아니라 대역을 프로덕션 형태에 맞춘다.
+    """
     from types import SimpleNamespace
-    return SimpleNamespace(noise_gate=gate)
+    return SimpleNamespace(
+        noise_gate=gate,
+        host_authz=SimpleNamespace(mode=authz_mode),
+        composite=SimpleNamespace(prior_targets_enabled=False, max_targets=10),
+    )
 
 
 def _state(**extra) -> dict:
@@ -95,6 +105,11 @@ def _state(**extra) -> dict:
             "filter_conditions": [{"field": "hostname", "value": "web-01"}]
         },
         "conversation_context": None,
+        # 조사 인가는 **위임 직전**에 판정한다(Plan 78 W3-5) — role이 없으면 그 앞에서
+        # 차단되므로, 위임 이후 동작을 보는 테스트는 인가된 주체를 명시해야 한다.
+        # 미인가 경로는 `TestHostAuthz`가 따로 본다.
+        "user_role": "admin",
+        "user_id": "admin-1",
     }
     st.update(extra)
     return st
@@ -250,9 +265,21 @@ class TestPromptExposure:
             self._domains(), fault_diagnosis_enabled=False
         )
 
-    def test_base_template_unchanged(self):
-        # 기본 템플릿 자체에는 fault_diagnosis가 없어야 한다(섹션은 append 전용).
-        assert "fault_diagnosis" not in SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE
+    def test_off_prompt_never_exposes_fault_diagnosis(self):
+        """off면 **완성 프롬프트**에 fault_diagnosis가 어디에도 없어야 한다.
+
+        (Plan 79 A-5) 종전에는 `"fault_diagnosis" not in SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE`로
+        템플릿 문자열만 검사했다. 그러나 fault_diagnosis 절이 스스로 "최우선 검토"라고 선언하면서
+        프롬프트 맨 뒤(append)에 놓이는 모순이 있어, 절과 클래스 정의 줄을 **플레이스홀더로 주입**
+        하도록 바꿨다. 그 결과 템플릿에는 플레이스홀더 이름이 남는다.
+
+        검사 대상을 템플릿에서 **조립 결과**로 옮긴다 — 의도(off면 LLM이 이 클래스를 모른다)는
+        동일하고, 조립 과정에서 새어나가는 경우까지 잡으므로 보장은 오히려 강해진다.
+        """
+        off_prompt = _build_router_prompt(self._domains(), fault_diagnosis_enabled=False)
+        assert "fault_diagnosis" not in off_prompt
+        # 미치환 플레이스홀더가 남으면 LLM에 중괄호 토큰이 그대로 노출된다.
+        assert "{fault_diagnosis" not in off_prompt
 
 
 # ── 6. 라우터 강등/유지 ──────────────────────────────────────────────────
