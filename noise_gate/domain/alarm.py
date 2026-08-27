@@ -26,9 +26,12 @@ class ServerIdentity:
     hostname: str = ""
     ip_address: str = ""      # cmm_resource.ipaddress
     os_type: str = ""         # core_config_prop OSType(EAV, 스칼라 서브쿼리) — 값이 있을 때만 UI 배지
+    os_version: str = ""      # core_config_prop OSVerson(EAV 원본 철자) — 배지 툴팁의 상세 OS 버전
     zone: str = ""            # 존 코드(gongjon/bankjon) — config/db_registry.yaml 파생
     zone_label: str = ""      # 존 라벨
     site_label: str = ""      # 사이트 라벨(김포/여의도/은행존)
+    source_label: str = ""    # 소스 배지 라벨 — 레지스트리 family 제품명("폴스타"); 소스 확장 시 family만 등록
+    source_detail: str = ""   # 소스 배지 툴팁 — "폴스타 — 공동존 김포; polestar_cm_gp"
     source: str = ""          # "polestar_db" | "cache" | "event"(조회 실패·존 라벨만)
     ambiguous: bool = False   # 동일 hostname server.Server 행 2건 이상 → 승격 생략
 

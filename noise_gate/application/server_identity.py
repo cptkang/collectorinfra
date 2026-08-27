@@ -36,7 +36,8 @@ from noise_gate.domain.alarm import AlarmEvent, ServerIdentity
 
 logger = logging.getLogger(__name__)
 
-_CACHE_KEY = "alarm:identity:{db_id}:{hostname}"
+# v2: os_version 필드 추가(D-179 부기) — 구 캐시 dict(필드 부재)가 TTL 동안 툴팁을 비우지 않도록 키 세대 분리
+_CACHE_KEY = "alarm:identity:v2:{db_id}:{hostname}"
 
 SOURCE_DB = "polestar_db"
 SOURCE_CACHE = "cache"
@@ -63,6 +64,37 @@ def zone_labels_for(db_id: str) -> tuple[str, str, str]:
     except Exception:  # noqa: BLE001 — 라벨 파생 실패가 알람 처리를 막지 않는다
         logger.warning("존/사이트 라벨 파생 실패(표시 생략): db_id=%s", db_id)
         return "", "", ""
+
+
+def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") -> tuple[str, str]:
+    """db_id → (소스 배지 라벨, 툴팁 상세)를 레지스트리 family에서 파생한다 (D-179 부기).
+
+    라벨은 `families[].product_terms[0]`("폴스타") — 김포/여의도/은행 대신 **소스 제품명**을 배지에
+    쓰고 위치는 툴팁으로 내린다(알람 소스 확장 시 레지스트리 family 등록만으로 배지가 따라온다).
+    상세는 `"{라벨} — {존 약칭} {사이트}; {db_id}"` — 존 약칭은 존 라벨의 `(`/`—` 앞 토큰(공동존/은행존),
+    사이트가 존 약칭과 같으면(은행존) 한 번만 쓴다. 미등록 db_id·family 없음은 라벨 빈 문자열
+    (UI가 기존 사이트 라벨로 폴백), 상세는 있는 조각만 이어 붙인다.
+    """
+    label = ""
+    try:
+        from src.routing.registry import get_registry
+
+        registry = get_registry()
+        entry = registry.get(db_id)
+        family = (entry.family if entry and entry.family else "") or ""
+        spec = next((f for f in registry.families if f.name == family), None) if family else None
+        label = (spec.product_terms[0] if spec and spec.product_terms else family) or ""
+    except Exception:  # noqa: BLE001 — 라벨 파생 실패가 알람 처리를 막지 않는다
+        logger.warning("소스 라벨 파생 실패(표시 생략): db_id=%s", db_id)
+    zone_short = (zone_label or "").split("(")[0].split("—")[0].strip()
+    site = (site_label or "").strip()
+    if site and zone_short and (site == zone_short or zone_short in site):
+        where = site
+    else:
+        where = " ".join(p for p in (zone_short, site) if p)
+    head = " — ".join(p for p in (label, where) if p)
+    detail = "; ".join(p for p in (head, db_id or "") if p)
+    return label, detail
 
 
 def _promote(event: AlarmEvent, row: dict[str, Any]) -> None:
@@ -128,6 +160,7 @@ async def attach_server_identity(
         return None
 
     zone, zone_label, site_label = zone_labels_for(event.db_id)
+    source_label, source_detail = source_labels_for(event.db_id, zone_label, site_label)
     identity = ServerIdentity(
         name="",
         hostname=hostname,
@@ -135,6 +168,8 @@ async def attach_server_identity(
         zone=zone,
         zone_label=zone_label,
         site_label=site_label,
+        source_label=source_label,
+        source_detail=source_detail,
         source=SOURCE_EVENT,
     )
 
@@ -169,6 +204,7 @@ async def attach_server_identity(
         identity.name = str(row.get("name") or "").strip()
         identity.ip_address = str(row.get("ip_address") or "").strip() or identity.ip_address
         identity.os_type = str(row.get("os_type") or "").strip()
+        identity.os_version = str(row.get("os_version") or "").strip()
         identity.ambiguous = bool(row.get("ambiguous"))
         if identity.ambiguous:
             logger.warning(

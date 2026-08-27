@@ -93,7 +93,7 @@ def build_server_identity_sql(db_id: str, hostname: str, db_engine: str = "postg
 
     - server.Server 행만 대상(DTIME IS NULL — 삭제 리소스 제외), hostname **완전 일치**.
     - 최대 2행을 읽어 동일 hostname 중복(모호) 여부를 판별한다 — 모호하면 호출부가 승격을 생략.
-    - OS는 `core_config_prop`(EAV) `OSType`을 **스칼라 서브쿼리(MAX)** 로 얹는다 — LEFT JOIN과 달리
+    - OS는 `core_config_prop`(EAV) `OSType`·`OSVerson`(원본 철자)을 **스칼라 서브쿼리(MAX)** 로 얹는다 — LEFT JOIN과 달리
       속성 행이 여러 개여도 서버 행이 증식되지 않아 모호 판별(2행)이 오염되지 않는다. 조인 키는
       `r.resource_conf_id = cc.configuration_id` — D-022 재검토(2026-07-30)로 확정된 현행 정본
       방식(프롬프트 규칙 9·docs/10 검증 쿼리·D-076 시맨틱 모델과 동일).
@@ -106,7 +106,9 @@ def build_server_identity_sql(db_id: str, hostname: str, db_engine: str = "postg
     return (
         "SELECT r.name AS name, r.hostname AS hostname, r.ipaddress AS ipaddress,\n"
         f"       (SELECT MAX(cc.stringvalue_short) FROM {t_prop} cc\n"
-        "         WHERE cc.configuration_id = r.resource_conf_id AND cc.name = 'OSType') AS ostype\n"
+        "         WHERE cc.configuration_id = r.resource_conf_id AND cc.name = 'OSType') AS ostype,\n"
+        f"       (SELECT MAX(cv.stringvalue_short) FROM {t_prop} cv\n"
+        "         WHERE cv.configuration_id = r.resource_conf_id AND cv.name = 'OSVerson') AS osversion\n"
         f"FROM {t_resource} r\n"
         "WHERE r.resource_type = 'server.Server'\n"
         "  AND r.dtime IS NULL\n"
@@ -186,7 +188,7 @@ class PolestarHostnameResolver:
         return None
 
     async def lookup_identity(self, db_id: str, hostname: str) -> Optional[dict[str, Any]]:
-        """hostname → {name, hostname, ip_address, os_type, ambiguous} 역조회 (D-179).
+        """hostname → {name, hostname, ip_address, os_type, os_version, ambiguous} 역조회 (D-179).
 
         미등록 db_id / 조회 실패 / 0건이면 None. 같은 hostname의 server.Server 행이 2건 이상이면
         첫 행 값과 함께 ambiguous=True를 돌려 호출부가 승격을 생략하게 한다.
@@ -218,10 +220,12 @@ class PolestarHostnameResolver:
             "hostname": str(_row_value(first, "hostname") or "").strip(),
             "ip_address": str(_row_value(first, "ipaddress") or "").strip(),
             "os_type": str(_row_value(first, "ostype") or "").strip(),
+            "os_version": str(_row_value(first, "osversion") or "").strip(),
             "ambiguous": len(rows) > 1,
         }
         logger.info(
-            "서버 식별 역조회: db_id=%s hostname='%s' → name='%s' ip='%s' os='%s' ambiguous=%s",
-            db_id, hostname, found["name"], found["ip_address"], found["os_type"], found["ambiguous"],
+            "서버 식별 역조회: db_id=%s hostname='%s' → name='%s' ip='%s' os='%s' ver='%s' ambiguous=%s",
+            db_id, hostname, found["name"], found["ip_address"], found["os_type"], found["os_version"],
+            found["ambiguous"],
         )
         return found

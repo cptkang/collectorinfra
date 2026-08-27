@@ -35,6 +35,7 @@ from noise_gate.application.server_identity import (
     SOURCE_DB,
     SOURCE_EVENT,
     attach_server_identity,
+    source_labels_for,
     zone_labels_for,
 )
 from noise_gate.domain.alarm import AlarmAnalysisResult, AlarmEvent, ServerIdentity
@@ -118,7 +119,7 @@ def make_event(**kwargs) -> AlarmEvent:
 
 
 ROW = {"name": "AP-WEB-01 (WEB AP서버)", "hostname": "fdgaapd2", "ip_address": "10.1.2.3",
-       "os_type": "LINUX", "ambiguous": False}
+       "os_type": "LINUX", "os_version": "Red Hat Enterprise Linux 8.10 (Ootpa)", "ambiguous": False}
 
 
 # ─── A. SQL 조립 ─────────────────────────────────────────────────────────────
@@ -133,7 +134,10 @@ class TestBuildServerIdentitySql:
         assert "r.ipaddress AS ipaddress" in sql
         # OSType: 스칼라 서브쿼리(MAX) — LEFT JOIN 행 증식 없이 단일 값
         assert "(SELECT MAX(cc.stringvalue_short) FROM polestar.core_config_prop cc" in sql
-        assert "cc.configuration_id = r.resource_conf_id AND cc.name = 'OSType') AS ostype" in sql
+        assert "cc.configuration_id = r.resource_conf_id AND cc.name = 'OSType') AS ostype," in sql
+        # OSVerson(폴스타 EAV 원본 철자): 별도 스칼라 서브쿼리 — 배지 툴팁 상세 버전
+        assert "(SELECT MAX(cv.stringvalue_short) FROM polestar.core_config_prop cv" in sql
+        assert "cv.configuration_id = r.resource_conf_id AND cv.name = 'OSVerson') AS osversion" in sql
         assert "LEFT JOIN" not in sql
         assert sql.rstrip().endswith("LIMIT 2")  # 모호 판별용 2행
         assert "resource_conf_id = " not in sql  # D-022 원 규칙의 조인 형태(r JOIN cc ON …)가 아니라 서브쿼리
@@ -153,16 +157,18 @@ class TestBuildServerIdentitySql:
 
 class TestLookupIdentity:
     async def test_single_row(self):
-        client = _FakeClient([{"NAME": "AP-WEB-01", "HOSTNAME": "fdgaapd2", "IPADDRESS": "10.1.2.3", "OSTYPE": "LINUX"}])
+        client = _FakeClient([{"NAME": "AP-WEB-01", "HOSTNAME": "fdgaapd2", "IPADDRESS": "10.1.2.3", "OSTYPE": "LINUX",
+                               "OSVERSION": "Red Hat Enterprise Linux 8.10 (Ootpa)"}])
         r = PolestarHostnameResolver(_FakeRegistry(client))
         found = await r.lookup_identity("polestar_cm_gp", "fdgaapd2")
         assert found == {"name": "AP-WEB-01", "hostname": "fdgaapd2", "ip_address": "10.1.2.3",
-                         "os_type": "LINUX", "ambiguous": False}
+                         "os_type": "LINUX", "os_version": "Red Hat Enterprise Linux 8.10 (Ootpa)",
+                         "ambiguous": False}
 
     async def test_os_null_is_blank(self):
         client = _FakeClient([{"name": "A", "hostname": "h", "ipaddress": "1.1.1.1", "ostype": None}])
         found = await PolestarHostnameResolver(_FakeRegistry(client)).lookup_identity("polestar_cm_gp", "h")
-        assert found["os_type"] == ""
+        assert found["os_type"] == "" and found["os_version"] == ""  # osversion 칼럼 부재도 빈 문자열
 
     async def test_two_rows_ambiguous(self):
         client = _FakeClient([
@@ -210,6 +216,29 @@ class TestZoneLabels:
         assert zone_labels_for("nope") == ("", "", "")
 
 
+class TestSourceLabels:
+    """(D-179 부기) 소스 배지: 제품명 표시 + 위치·db_id 툴팁 — 레지스트리 family 파생."""
+
+    def test_gongjon_gimpo(self):
+        label, detail = source_labels_for("polestar_cm_gp", *zone_labels_for("polestar_cm_gp")[1:])
+        assert label == "폴스타"
+        assert detail == "폴스타 — 공동존 김포; polestar_cm_gp"
+
+    def test_gongjon_yeouido(self):
+        detail = source_labels_for("polestar_cm_yd", *zone_labels_for("polestar_cm_yd")[1:])[1]
+        assert detail == "폴스타 — 공동존 여의도; polestar_cm_yd"
+
+    def test_bankjon_no_duplicate_zone_word(self):
+        # 사이트 라벨(은행존)이 존 약칭(은행존)과 같으면 한 번만
+        assert source_labels_for("polestar_b0", *zone_labels_for("polestar_b0")[1:]) == (
+            "폴스타", "폴스타 — 은행존; polestar_b0"
+        )
+
+    def test_unknown_db_falls_back_to_pieces(self):
+        assert source_labels_for("nope") == ("", "nope")  # 라벨 없음 → UI는 사이트 라벨 폴백, 툴팁은 db_id만
+        assert source_labels_for("", "", "") == ("", "")
+
+
 class TestAttach:
     async def test_promotes_name_and_ip_when_template_gave_hostname(self):
         ev = make_event()  # server_name == hostname, ip 비어 있음
@@ -219,6 +248,8 @@ class TestAttach:
         assert identity is ev.server_identity
         assert identity.name == ROW["name"] and identity.source == SOURCE_DB
         assert identity.os_type == "LINUX"  # UI 배지 렌더 입력
+        assert identity.os_version == "Red Hat Enterprise Linux 8.10 (Ootpa)"  # 배지 툴팁
+        assert identity.source_label == "폴스타" and identity.source_detail == "폴스타 — 공동존 김포; polestar_cm_gp"
         assert identity.zone == "gongjon" and identity.site_label == "김포"
 
     async def test_keeps_explicit_server_name(self):
@@ -261,7 +292,7 @@ class TestAttach:
         assert identity.source == SOURCE_EVENT
 
     async def test_cache_hit_skips_resolver(self):
-        key = "alarm:identity:polestar_cm_gp:fdgaapd2"
+        key = "alarm:identity:v2:polestar_cm_gp:fdgaapd2"
         redis = _FakeRedis({key: json.dumps(ROW, ensure_ascii=False).encode("utf-8")})
         resolver = _FakeResolver(ROW)
         ev = make_event()
@@ -275,7 +306,7 @@ class TestAttach:
         await attach_server_identity(ev, _FakeResolver(ROW), redis=redis, cache_ttl=123)
         assert len(redis.sets) == 1
         key, value, ex = redis.sets[0]
-        assert key == "alarm:identity:polestar_cm_gp:fdgaapd2" and ex == 123
+        assert key == "alarm:identity:v2:polestar_cm_gp:fdgaapd2" and ex == 123
         assert json.loads(value)["name"] == ROW["name"]
 
     async def test_cache_disabled_when_ttl_zero(self):
@@ -286,6 +317,7 @@ class TestAttach:
     def test_identity_to_dict_roundtrip(self):
         d = ServerIdentity(name="n", hostname="h", ip_address="i", zone="gongjon").to_dict()
         assert d["name"] == "n" and d["ambiguous"] is False and "os_type" in d
+        assert "os_version" in d and "source_label" in d and "source_detail" in d  # SSE/JSON에 실려 UI가 읽는다
 
 
 # ─── D. 워커 통합 ────────────────────────────────────────────────────────────

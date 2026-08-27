@@ -2548,13 +2548,15 @@
         [/solaris|sunos/i, "Solaris", "unix"]
     ];
 
-    function renderOsBadge(osType) {
+    // 배지 라벨은 OSType을 접은 계열명(Linux/Windows…), 툴팁은 OSVerson 상세("Red Hat Enterprise Linux 8.10 (Ootpa)") — 없으면 OSType 원값
+    function renderOsBadge(osType, osVersion) {
         if (!osType) return "";
         var label = String(osType), cls = "other";
         for (var i = 0; i < ALARM_OS_LABELS.length; i++) {
             if (ALARM_OS_LABELS[i][0].test(label)) { label = ALARM_OS_LABELS[i][1]; cls = ALARM_OS_LABELS[i][2]; break; }
         }
-        return '<span class="alarm-os alarm-os--' + cls + '" title="OS: ' + escapeHtml(String(osType)) + '">' + escapeHtml(label) + '</span>';
+        var tip = osVersion ? String(osVersion) : String(osType);
+        return '<span class="alarm-os alarm-os--' + cls + '" title="OS: ' + escapeHtml(tip) + '">' + escapeHtml(label) + '</span>';
     }
 
     // D-179 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — 둘이 60초 이상 벌어지면 수신 시각도 함께 표시(지연 진단).
@@ -2593,10 +2595,12 @@
         if (hostname && hostname !== title) meta.push('<span class="alarm-hostname">' + escapeHtml(hostname) + '</span>');
         var ip = ident.ip_address || data.ip_address;
         if (ip) meta.push('<span class="alarm-ip">' + escapeHtml(ip) + '</span>');
-        var os = renderOsBadge(ident.os_type);
+        var os = renderOsBadge(ident.os_type, ident.os_version);
         if (os) meta.push(os);
-        var site = ident.site_label || ident.zone_label;
-        if (site) meta.push('<span class="alarm-zone" title="' + escapeHtml(data.db_id || "") + '">' + escapeHtml(site) + '</span>');
+        // 소스 배지: 제품명("폴스타") 표시, 위치·db_id는 툴팁("폴스타 — 공동존 김포; polestar_cm_gp") — 소스 확장 대비. 라벨 없으면 사이트 라벨 폴백
+        var site = ident.source_label || ident.site_label || ident.zone_label;
+        var siteTip = ident.source_detail || data.db_id || "";
+        if (site) meta.push('<span class="alarm-zone" title="' + escapeHtml(siteTip) + '">' + escapeHtml(site) + '</span>');
         var ts = renderAlarmTimes(data.alarm_time, data.received_at);
         if (ts) meta.push(ts);
         var metaHtml = meta.length
