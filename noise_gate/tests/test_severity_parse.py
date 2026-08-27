@@ -108,7 +108,7 @@ class _FakeGraph:
         return state
 
 
-def _worker(*, min_severity: int = 1, dead_letter: bool = True) -> tuple[AlarmWorker, _FakeGraph]:
+def _worker(*, min_severity: int = 1) -> tuple[AlarmWorker, _FakeGraph]:
     cfg = SimpleNamespace(
         noise_gate=SimpleNamespace(
             enable_noise_gate=True,
@@ -119,7 +119,6 @@ def _worker(*, min_severity: int = 1, dead_letter: bool = True) -> tuple[AlarmWo
         alarm=SimpleNamespace(
             min_severity=min_severity,
             dedup_ttl_seconds=300,
-            dead_letter_enabled=dead_letter,
             dead_letter_stream_key="alarm:dead",
             dead_letter_maxlen=50,
         ),
@@ -202,11 +201,13 @@ async def test_worker_missing_alarm_id_goes_to_dead_letter():
     assert "KeyError" in r.xadds[0][1]["error"]
 
 
-async def test_worker_dead_letter_disabled_skips_xadd():
-    worker, _ = _worker(dead_letter=False)
+async def test_worker_dead_letter_defaults_without_alarm_config():
+    # 상시 동작: alarm 설정이 없어도 기본 키(alarm:dead)·상한(1000)으로 적재한다(플래그 없음).
+    worker = AlarmWorker(SimpleNamespace(noise_gate=SimpleNamespace(enable_noise_gate=False)))
+    worker._graph = _FakeGraph()
     r = _FakeRedis()
     await worker._process(r, "alarm:raw", "g", b"1-1", {b"data": b"{bad"}, {})
-    assert r.xadds == []
+    assert r.xadds[0][0] == "alarm:dead" and r.xadds[0][2]["maxlen"] == 1000
     assert len(r.acks) == 1
 
 

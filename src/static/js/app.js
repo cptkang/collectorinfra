@@ -2539,6 +2539,85 @@
             '</table>';
     }
 
+    // D-167: OS 배지 — 값이 있을 때만 렌더(현재 백엔드 미조회·2차 범위). 미매핑 값은 원문 텍스트.
+    var ALARM_OS_LABELS = [
+        [/linux|rhel|centos|ubuntu|rocky/i, "Linux", "linux"],
+        [/windows|win/i, "Windows", "windows"],
+        [/aix/i, "AIX", "unix"],
+        [/hp-?ux/i, "HP-UX", "unix"],
+        [/solaris|sunos/i, "Solaris", "unix"]
+    ];
+
+    function renderOsBadge(osType) {
+        if (!osType) return "";
+        var label = String(osType), cls = "other";
+        for (var i = 0; i < ALARM_OS_LABELS.length; i++) {
+            if (ALARM_OS_LABELS[i][0].test(label)) { label = ALARM_OS_LABELS[i][1]; cls = ALARM_OS_LABELS[i][2]; break; }
+        }
+        return '<span class="alarm-os alarm-os--' + cls + '" title="OS: ' + escapeHtml(String(osType)) + '">' + escapeHtml(label) + '</span>';
+    }
+
+    // D-167 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — 둘이 60초 이상 벌어지면 수신 시각도 함께 표시(지연 진단).
+    function fmtAlarmTs(iso) {
+        // "2026-08-27T09:41:07" → "08-27 09:41:07" (타임존 변환 없이 문자열 슬라이스)
+        if (!iso || typeof iso !== "string" || iso.length < 19) return "";
+        return iso.slice(5, 19).replace("T", " ");
+    }
+
+    function renderAlarmTimes(alarmIso, receivedIso) {
+        var occurred = fmtAlarmTs(alarmIso);
+        var received = fmtAlarmTs(receivedIso);
+        if (!occurred && !received) return "";
+        var html = occurred ? escapeHtml(occurred) + ' 발생' : escapeHtml(received) + ' 수신';
+        if (occurred && received) {
+            var a = Date.parse(alarmIso), b = Date.parse(receivedIso);
+            if (!isNaN(a) && !isNaN(b) && Math.abs(b - a) >= 60000) {
+                html += ' <span class="alarm-time-recv">(' + escapeHtml(received.slice(6)) + ' 수신)</span>';
+            }
+        }
+        var title = (alarmIso ? '발생 ' + alarmIso : '') + (receivedIso ? ' / 수신 ' + receivedIso : '');
+        return '<span class="alarm-time" title="' + escapeHtml(title.trim()) + '">' + html + '</span>';
+    }
+
+    // D-167: 헤더 2줄 구조 — 1행 [심각도] 폴스타 등록 서버명 — 알람명 (자원), 2행 hostname · IP · OS · 존 · 시각.
+    // (2026-08-27 사용자 검토) 알람명을 1행으로 올려 "어느 서버의 어떤 알람"이 한 줄에서 읽히게 한다.
+    // 등록명은 server_identity(hostname 역조회)가 우선, 없으면 server_name, 그마저 없으면 hostname.
+    function renderAlarmIdentityHeader(data, severityColor) {
+        var ident = data.server_identity || {};
+        var hostname = data.hostname || "";
+        var title = ident.name || "";
+        if (!title && data.server_name && data.server_name !== hostname) title = data.server_name;
+        if (!title) title = hostname || data.server_name || "-";
+
+        var meta = [];
+        if (hostname && hostname !== title) meta.push('<span class="alarm-hostname">' + escapeHtml(hostname) + '</span>');
+        var ip = ident.ip_address || data.ip_address;
+        if (ip) meta.push('<span class="alarm-ip">' + escapeHtml(ip) + '</span>');
+        var os = renderOsBadge(ident.os_type);
+        if (os) meta.push(os);
+        var site = ident.site_label || ident.zone_label;
+        if (site) meta.push('<span class="alarm-zone" title="' + escapeHtml(data.db_id || "") + '">' + escapeHtml(site) + '</span>');
+        var ts = renderAlarmTimes(data.alarm_time, data.received_at);
+        if (ts) meta.push(ts);
+        var metaHtml = meta.length
+            ? '<div class="alarm-meta">' + meta.join('<span class="alarm-meta-sep">·</span>') + '</div>'
+            : "";
+        var warn = ident.ambiguous
+            ? ' <span class="alarm-ident-warn" title="동일 hostname의 서버가 2건 이상 — 등록명 미확정">?</span>'
+            : "";
+        var resource = data.resource_name
+            ? ' <span class="alarm-resource">(' + escapeHtml(data.resource_name) + ')</span>'
+            : "";
+        var alarmName = data.alarm_name
+            ? '<span class="alarm-title-sep">—</span><span class="alarm-title-alarm">' + escapeHtml(data.alarm_name) + '</span>' + resource
+            : resource;
+        return '<div class="alarm-header">' +
+                '<span class="alarm-severity" style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
+                '<span class="alarm-server">' + escapeHtml(title) + '</span>' + warn + alarmName +
+            '</div>' +
+            metaHtml;
+    }
+
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
@@ -2600,12 +2679,7 @@
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
                 '<div class="message-bubble">' +
-                    '<div class="alarm-header">' +
-                        '<span style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
-                        escapeHtml(data.resource_name) +
-                        '<span class="alarm-host"> (' + escapeHtml(data.hostname) + ')</span>' +
-                    '</div>' +
-                    '<div class="alarm-name">' + escapeHtml(data.alarm_name) + '</div>' +
+                    renderAlarmIdentityHeader(data, severityColor) +
                     '<div class="alarm-section">' +
                         '<span class="alarm-section-label">요약</span>' +
                         '<p>' + escapeHtml(data.summary) + '</p>' +

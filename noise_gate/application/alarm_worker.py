@@ -40,6 +40,7 @@ from noise_gate.domain.correlation import (
 )
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
 from noise_gate.domain.notification_policy import compute_fingerprint
+from noise_gate.application.server_identity import attach_server_identity
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
 from noise_gate.infrastructure.redis_queue import (
@@ -86,6 +87,7 @@ class AlarmWorker:
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
         self._sre_agent_client = None  # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트
+        self._identity_resolver = None  # (D-167) hostname → 등록 서버명·IP 역조회 리졸버
         # (Plan 67 R3-(v) · D-132) 운영자 주석 LLM 분류기 — annotation_llm_classification_enabled
         # 활성 시에만 생성. None이면 주석 신호는 기존 정규식 추출로 산출된다(비트동일·회귀 0).
         self._annotation_classifier = None
@@ -149,6 +151,23 @@ class AlarmWorker:
             )
         except Exception:
             logger.exception("알람 이력 리포지토리 생성 실패 — 패턴 분석 비활성으로 진행")
+            return None
+
+    def _build_identity_resolver(self):  # noqa: ANN202
+        """서버 식별 역조회 리졸버를 생성한다 (D-167 · _build_history_repo 미러).
+
+        상시 동작(끄는 플래그 없음 — D-162 §6 플래그 부채 원칙). 생성 실패 시 None — 식별 정보는
+        존 라벨만 붙고(source=event) server_name·ip 승격이 생략된다(graceful, 알람 처리 정상 진행).
+        """
+        try:
+            from noise_gate.infrastructure.polestar_hostname_resolver import (
+                PolestarHostnameResolver,
+            )
+            from src.routing.db_registry import DBRegistry
+
+            return PolestarHostnameResolver(DBRegistry(self._config))
+        except Exception:
+            logger.exception("서버 식별 리졸버 생성 실패 — 역조회 없이 진행")
             return None
 
     def _build_process_client(self):  # noqa: ANN202
@@ -458,6 +477,7 @@ class AlarmWorker:
         await ensure_consumer_group(r, stream_key, group)
         self._graph = build_alarm_graph(self._config)
         self._history_repo = self._build_history_repo()
+        self._identity_resolver = self._build_identity_resolver()
         self._process_client = self._build_process_client()
         self._noise_repo = self._build_noise_repo()
         self._metric_baseline = self._build_metric_baseline()
@@ -562,6 +582,18 @@ class AlarmWorker:
                 condition_log=payload.get("conditionLog", ""),
                 is_clear=is_clear,
                 raw_payload=payload,
+                received_at=datetime.now(),
+            )
+
+            # (D-167) hostname → 폴스타 등록 서버명·IP 역조회 후 server_name/ip 승격.
+            # dedup·지문·이력 매칭·통보·SSE보다 앞에 두어 모든 소비처가 등록명을 쓰게 한다
+            # (API 경로 `_attach_server_identity`와 대칭). 실패·타임아웃은 graceful.
+            await attach_server_identity(
+                event,
+                self._identity_resolver,
+                redis=self._redis,
+                timeout=float(getattr(self._config.alarm, "server_identity_timeout_seconds", 3.0)),
+                cache_ttl=int(getattr(self._config.alarm, "server_identity_cache_ttl_seconds", 3600)),
             )
 
             gate_on = bool(self._config.noise_gate.enable_noise_gate)
@@ -819,12 +851,10 @@ class AlarmWorker:
     ) -> None:
         """처리 실패 메시지를 dead-letter 스트림에 적재한다 (D-163 · graceful).
 
-        `alarm.dead_letter_enabled=False`면 스킵. 적재 실패는 warning 후 무시한다 —
+        상시 동작(끄는 플래그 없음 — D-162 §6). 적재 실패는 warning 후 무시한다 —
         dead-letter가 ACK·소비 루프를 막아서는 안 된다.
         """
         alarm_cfg = getattr(self._config, "alarm", None)
-        if not getattr(alarm_cfg, "dead_letter_enabled", False):
-            return
         try:
             await dead_letter_message(
                 r,

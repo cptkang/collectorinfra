@@ -522,6 +522,37 @@ async def _resolve_process_snapshot(
     return None
 
 
+async def _attach_server_identity(config, event: AlarmEvent) -> None:  # noqa: ANN001
+    """hostname → 등록 서버명·IP 역조회를 붙인다 (D-167 · 워커 `_process`와 대칭).
+
+    상시 동작(끄는 플래그 없음). 리졸버 생성·조회 실패는 graceful(존 라벨만 부착).
+    """
+    from noise_gate.application.server_identity import attach_server_identity
+
+    resolver = None
+    try:
+        from noise_gate.infrastructure.polestar_hostname_resolver import (
+            PolestarHostnameResolver,
+        )
+        from src.routing.db_registry import DBRegistry
+
+        resolver = PolestarHostnameResolver(DBRegistry(config))
+    except Exception:
+        logger.warning("서버 식별 리졸버 생성 실패 — 역조회 없이 진행", exc_info=True)
+    await attach_server_identity(
+        event,
+        resolver,
+        timeout=float(getattr(config.alarm, "server_identity_timeout_seconds", 3.0)),
+        cache_ttl=0,  # API 테스트 경로는 프로세스 로컬 — 캐시 미사용
+    )
+
+
+def _identity_dict(event: AlarmEvent) -> Optional[dict[str, Any]]:
+    """SSE payload용 서버 식별 dict (없으면 None)."""
+    identity = getattr(event, "server_identity", None)
+    return identity.to_dict() if identity is not None else None
+
+
 def _simulated_entries(items: list[dict[str, Any]]) -> list[AlarmHistoryEntry]:
     """simulated_history 항목을 AlarmHistoryEntry 목록으로 변환한다 (Plan 47 §5.9)."""
     from datetime import datetime as _dt
@@ -758,7 +789,10 @@ async def analyze_alarm_test(
                 "query_process", "simulated_processes",
             }
         ),
+        received_at=_dt.now(),
     )
+    # (D-167) hostname 역조회 — 워커 경로와 대칭(server_name이 hostname과 같을 때만 승격)
+    await _attach_server_identity(config, event)
 
     # 2. 사용할 채널 결정 (요청 오버라이드 > 서버 설정)
     channels: list[str] = (
@@ -841,6 +875,7 @@ async def analyze_alarm_test(
             "resource_type": event.resource_type,
             "resource_name": event.resource_name,
             "alarm_status": event.alarm_status,
+            "server_identity": _identity_dict(event),  # (D-167) UI 헤더(등록명·IP·존) 렌더용
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
@@ -850,6 +885,7 @@ async def analyze_alarm_test(
             "pattern_analysis": analysis_result.pattern_analysis,
             # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
             "alarm_time": event.alarm_time.isoformat(),
+            "received_at": event.received_at.isoformat() if event.received_at else None,
             "history_stats": _stats_to_dict(history_stats) if history_stats else None,
             # Plan 47-1: 영향 프로세스 표 렌더용 (args는 마스킹된 값)
             "process_snapshot": _process_to_dict(process_snapshot) if process_snapshot else None,
@@ -1223,6 +1259,7 @@ def _build_alarm_event_from_payload(
         condition_log=payload.get("conditionLog", ""),
         is_clear=is_clear,
         raw_payload=raw_payload,
+        received_at=_dt.now(),
     )
 
 
@@ -1269,6 +1306,8 @@ async def analyze_alarm_raw(
             getattr(getattr(config, "noise_gate", None), "format_tolerant_parsing_enabled", False)
         ),
     )
+    # (D-167) hostname 역조회 — 워커 경로와 대칭
+    await _attach_server_identity(config, event)
 
     # 3. 사용할 채널 결정
     channels: list[str] = (
@@ -1349,6 +1388,7 @@ async def analyze_alarm_raw(
             "resource_type": event.resource_type,
             "resource_name": event.resource_name,
             "alarm_status": event.alarm_status,
+            "server_identity": _identity_dict(event),  # (D-167) UI 헤더(등록명·IP·존) 렌더용
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
@@ -1358,6 +1398,7 @@ async def analyze_alarm_raw(
             "pattern_analysis": analysis_result.pattern_analysis,
             # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
             "alarm_time": event.alarm_time.isoformat(),
+            "received_at": event.received_at.isoformat() if event.received_at else None,
             "history_stats": _stats_to_dict(history_stats) if history_stats else None,
             # Plan 47-1: 영향 프로세스 표 렌더용 (args는 마스킹된 값)
             "process_snapshot": _process_to_dict(process_snapshot) if process_snapshot else None,
