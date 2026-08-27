@@ -163,7 +163,7 @@ class AgentState(TypedDict):
     # 역질문 페이로드(요청 스코프) — API 응답이 프론트 패널 렌더에 사용.
     # {"question": str, "fields": [{"name", "reason"}], "candidates": [...]}
     form_fill_clarification: Optional[dict]
-    # 저장 값 삭제 패널(요청 스코프, D-166) — '?' 조회 응답에 동봉. **스키마에 없는 키는
+    # 저장 값 삭제 패널(요청 스코프, D-178) — '?' 조회 응답에 동봉. **스키마에 없는 키는
     # LangGraph가 노드 반환 시 폐기**하므로 반드시 선언(라이브 실측 2026-08-26: 미선언 상태에서
     # result_aggregator가 반환해도 라우트에 도달하지 않아 버튼 미표시).
     form_memory_panel: Optional[dict]

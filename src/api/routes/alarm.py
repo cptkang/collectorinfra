@@ -523,7 +523,7 @@ async def _resolve_process_snapshot(
 
 
 async def _attach_server_identity(config, event: AlarmEvent) -> None:  # noqa: ANN001
-    """hostname → 등록 서버명·IP 역조회를 붙인다 (D-167 · 워커 `_process`와 대칭).
+    """hostname → 등록 서버명·IP 역조회를 붙인다 (D-179 · 워커 `_process`와 대칭).
 
     상시 동작(끄는 플래그 없음). 리졸버 생성·조회 실패는 graceful(존 라벨만 부착).
     """
@@ -791,7 +791,7 @@ async def analyze_alarm_test(
         ),
         received_at=_dt.now(),
     )
-    # (D-167) hostname 역조회 — 워커 경로와 대칭(server_name이 hostname과 같을 때만 승격)
+    # (D-179) hostname 역조회 — 워커 경로와 대칭(server_name이 hostname과 같을 때만 승격)
     await _attach_server_identity(config, event)
 
     # 2. 사용할 채널 결정 (요청 오버라이드 > 서버 설정)
@@ -875,7 +875,7 @@ async def analyze_alarm_test(
             "resource_type": event.resource_type,
             "resource_name": event.resource_name,
             "alarm_status": event.alarm_status,
-            "server_identity": _identity_dict(event),  # (D-167) UI 헤더(등록명·IP·존) 렌더용
+            "server_identity": _identity_dict(event),  # (D-179) UI 헤더(등록명·IP·존) 렌더용
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
@@ -1217,7 +1217,7 @@ def _build_alarm_event_from_payload(
         alarm_time = _dt.now()
 
     alarm_status = payload.get("alarmStatus", "")
-    # (D-163) 폴스타 `${severity}`는 한글 라벨로 렌더링된다 — 워커 `_process`와 동일한
+    # (D-175) 폴스타 `${severity}`는 한글 라벨로 렌더링된다 — 워커 `_process`와 동일한
     # 결정적 정규화(noise_gate.domain.severity)를 쓴다(경로 대칭). 정수·정수 문자열·라벨 수용.
     raw_sev = payload.get("severity", None)
     if format_tolerant:
@@ -1306,7 +1306,7 @@ async def analyze_alarm_raw(
             getattr(getattr(config, "noise_gate", None), "format_tolerant_parsing_enabled", False)
         ),
     )
-    # (D-167) hostname 역조회 — 워커 경로와 대칭
+    # (D-179) hostname 역조회 — 워커 경로와 대칭
     await _attach_server_identity(config, event)
 
     # 3. 사용할 채널 결정
@@ -1388,7 +1388,7 @@ async def analyze_alarm_raw(
             "resource_type": event.resource_type,
             "resource_name": event.resource_name,
             "alarm_status": event.alarm_status,
-            "server_identity": _identity_dict(event),  # (D-167) UI 헤더(등록명·IP·존) 렌더용
+            "server_identity": _identity_dict(event),  # (D-179) UI 헤더(등록명·IP·존) 렌더용
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,

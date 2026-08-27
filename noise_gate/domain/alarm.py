@@ -16,7 +16,7 @@ from typing import Optional
 
 @dataclass
 class ServerIdentity:
-    """폴스타 등록 기준 서버 식별 정보 (D-167) — hostname → cmm_resource 역조회 결과.
+    """폴스타 등록 기준 서버 식별 정보 (D-179) — hostname → cmm_resource 역조회 결과.
 
     템플릿이 `${platformName}`·`${ipAddress}`를 지원하지 않아(EL1008E) 이벤트에는 hostname만
     실린다. 웹 UI·통보 본문이 폴스타 등록 서버명·IP·존을 표시할 수 있도록 별도로 붙인다.
@@ -63,7 +63,7 @@ class AlarmEvent:
     # --- 알람 상세 ---
     alarm_id: str                       # ${alarmId}       — 중복 제거 키
     severity: int                       # ${severity}      — 0=해소, 1=주의, 2=경고, 3=심각
-                                        #   폴스타 원문은 한글 라벨(해제/주의/경고/심각)로 도착한다(D-163)
+                                        #   폴스타 원문은 한글 라벨(해제/주의/경고/심각)로 도착한다(D-175)
                                         #   → domain/severity.parse_severity로 정규화한 뒤 담는다
     alarm_status: str                   # ${alarmStatus}   — 폴스타 UI 인지(ACK) 상태 (NOT_ACK 등).
                                         #                    해소 여부와 무관하므로 판정에 사용하지 않음 (Plan 47 §9)
@@ -76,9 +76,9 @@ class AlarmEvent:
     # --- 파생 필드 ---
     is_clear: bool = False              # severity == 0 단독 기준 (alarmStatus는 ACK 상태로 무관)
     raw_payload: dict = field(default_factory=dict)  # 원본 JSON dict 보존
-    # (D-167) hostname 역조회로 부착되는 서버 식별 정보 — application/server_identity가 채운다.
+    # (D-179) hostname 역조회로 부착되는 서버 식별 정보 — application/server_identity가 채운다.
     server_identity: Optional[ServerIdentity] = None
-    # (D-167 부기) 워커/API가 이벤트를 구성한 시각 — UI '수신' 표시·지연 진단용(폴스타 alarm_time과 대비)
+    # (D-179 부기) 워커/API가 이벤트를 구성한 시각 — UI '수신' 표시·지연 진단용(폴스타 alarm_time과 대비)
     received_at: Optional[datetime] = None
 
 

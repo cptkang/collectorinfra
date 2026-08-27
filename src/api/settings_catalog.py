@@ -40,7 +40,7 @@ TOP_LEVEL_GROUP = "general"
 #: 아코디언 표시 순서 (Plan 68 부록 A.1~A.20).
 #: ※ `build_catalog`는 이 튜플에 있는 그룹만 응답에 싣는다 — AppConfig에 하위 설정을 추가하면
 #:   반드시 여기와 GROUP_TITLES에 등재할 것. (Plan 71 `polestar_rest`·Plan 74 `drm`이 누락되어
-#:   인덱스에는 있으나 UI에서 조회·수정 불가였던 사례 — 2026-08-25 정정, D-163 부기.)
+#:   인덱스에는 있으나 UI에서 조회·수정 불가였던 사례 — 2026-08-25 정정, D-175 부기.)
 #:   `test_settings_catalog.test_t2_group_and_field_counts`가 AppConfig 하위 설정 전수 등재를 고정한다.
 GROUP_ORDER: tuple[str, ...] = (
     "llm", "orchestrator", "dbhub", "query", "synonym", "text2sql",

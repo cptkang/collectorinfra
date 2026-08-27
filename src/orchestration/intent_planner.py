@@ -207,12 +207,12 @@ async def intent_planner(
                 "파일 없이도 처리됩니다.)"
             )
             if _is_form_memory_shortcut(user_query):
-                # '?'만 친 사용자에게는 문맥이 없다 — 단축키 의미를 먼저 밝힌다(D-165)
+                # '?'만 친 사용자에게는 문맥이 없다 — 단축키 의미를 먼저 밝힌다(D-177)
                 text = "'?'는 양식에 저장된 값을 조회하는 단축키입니다. " + text
         elif any(k in _mq for k in _FORM_MEMORY_DELETE_KEYWORDS):
             text = await _form_memory_delete_response(state, user_query, app_config, _sig)
         else:
-            # D-166: 조회 응답에 항목별 삭제 패널(구조화 컨텍스트)을 동봉 — 프론트가 체크박스·
+            # D-178: 조회 응답에 항목별 삭제 패널(구조화 컨텍스트)을 동봉 — 프론트가 체크박스·
             # 버튼으로 form_memory_delete를 보내면 라우트가 파이프라인·LLM 없이 결정적 삭제.
             text, _panel = await _form_memory_view_payload(state, app_config, _sig)
         logger.info("intent_planner: 폼필 확인 이력 조회/삭제 단락(D-151)")
@@ -292,7 +292,7 @@ _FORM_MEMORY_ACTION_LABELS = {
 def build_form_memory_panel(
     signature: str | None, answers: dict | None, meta: dict | None
 ) -> dict | None:
-    """저장 값 삭제 패널 컨텍스트(D-166) — 프론트 체크박스·버튼 렌더용 구조화 페이로드.
+    """저장 값 삭제 패널 컨텍스트(D-178) — 프론트 체크박스·버튼 렌더용 구조화 페이로드.
 
     {signature, display_name, entries: [{field, label, action, value}]}. 항목이 없으면 None.
     라우트의 삭제 후 재표시와 intent_planner의 조회 응답이 같은 shape를 쓴다(단일 출처).
@@ -320,7 +320,7 @@ async def _form_memory_view_payload(
     """첨부 양식의 확인 이력을 조회 전용(TTL 미연장)으로 표시한다(D-151 Phase 3).
 
     Returns:
-        (응답 텍스트, 삭제 패널 컨텍스트 또는 None) — 패널은 D-166.
+        (응답 텍스트, 삭제 패널 컨텍스트 또는 None) — 패널은 D-178.
     """
     from src.schema_cache.form_memory import load_form_memory_answers
 

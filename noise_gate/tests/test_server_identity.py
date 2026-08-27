@@ -1,4 +1,4 @@
-"""서버 식별 역조회(hostname → 폴스타 등록 서버명·IP) + 승격 규칙 + 경로 대칭 (D-167).
+"""서버 식별 역조회(hostname → 폴스타 등록 서버명·IP) + 승격 규칙 + 경로 대칭 (D-179).
 
 배경: 폴스타 템플릿이 `${platformName}`·`${ipAddress}`를 지원하지 않아(EL1008E) 운영 템플릿이
 `serverName=${hostname}`로 바뀌었다. 공동존(name ≠ hostname)에서 UI 식별·이력 매칭이 깨지지
@@ -384,7 +384,7 @@ def test_sse_payload_includes_identity():
     assert payload["server_identity"]["site_label"] == "김포"
     incident = _incident_open_payload(_result(ev), _decision())
     assert incident["server_identity"]["ip_address"] == "10.1.2.3"
-    # (D-167 부기) 발생·수신 시각 — 워커 SSE·incident 재발행 모두 API 경로와 대칭
+    # (D-179 부기) 발생·수신 시각 — 워커 SSE·incident 재발행 모두 API 경로와 대칭
     assert payload["alarm_time"] == REF.isoformat() and payload["received_at"] is None
     ev.received_at = datetime(2026, 8, 26, 10, 0, 5)
     assert _tier_sse_payload(_result(ev), _decision())["received_at"] == "2026-08-26T10:00:05"

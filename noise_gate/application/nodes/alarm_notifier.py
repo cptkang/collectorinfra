@@ -241,7 +241,7 @@ def build_workb_body(
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
     severity_html = f'<span style="color:{color};font-weight:bold">{result.severity_label}</span>'
-    # (D-167) 존/사이트 라인 — 식별 정보가 붙은 경우에만 첨부(미부착이면 본문 비트 동일).
+    # (D-179) 존/사이트 라인 — 식별 정보가 붙은 경우에만 첨부(미부착이면 본문 비트 동일).
     identity = getattr(ev, "server_identity", None)
     zone_text = (identity.site_label or identity.zone_label) if identity is not None else ""
     zone_html = f"<b>존:</b> {zone_text}<br>" if zone_text else ""
@@ -568,7 +568,7 @@ def _iso_or_none(value) -> Optional[str]:  # noqa: ANN001 — datetime | None
 
 
 def _identity_dict(ev) -> Optional[dict]:  # noqa: ANN001 — AlarmEvent
-    """서버 식별 정보 dict (D-167) — 미부착이면 None(구 이벤트·테스트 픽스처 호환)."""
+    """서버 식별 정보 dict (D-179) — 미부착이면 None(구 이벤트·테스트 픽스처 호환)."""
     identity = getattr(ev, "server_identity", None)
     return identity.to_dict() if identity is not None else None
 
@@ -602,9 +602,9 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
         # ── Phase E3: 4-티어 라우팅 메타데이터 ──
         "tier": decision.tier,
         "tier_reason": decision.reason,
-        # ── D-167: 서버 식별(등록명·IP·존) — UI 헤더 렌더용 ──
+        # ── D-179: 서버 식별(등록명·IP·존) — UI 헤더 렌더용 ──
         "server_identity": _identity_dict(ev),
-        # ── D-167 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — API 경로와 대칭 ──
+        # ── D-179 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — API 경로와 대칭 ──
         "alarm_time": _iso_or_none(ev.alarm_time),
         "received_at": _iso_or_none(getattr(ev, "received_at", None)),
     }
@@ -722,7 +722,7 @@ def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # no
         "is_routine": result.is_routine,
         "pattern_analysis": result.pattern_analysis,
         "tier": decision.tier,
-        "server_identity": _identity_dict(ev),  # (D-167) 재발행 카드 헤더용
+        "server_identity": _identity_dict(ev),  # (D-179) 재발행 카드 헤더용
         "alarm_time": _iso_or_none(ev.alarm_time),
         "received_at": _iso_or_none(getattr(ev, "received_at", None)),
     }

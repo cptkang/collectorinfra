@@ -117,7 +117,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         for group in response.groups for item in group.settings
     }
     assert len(items) == 278
-    # (D-163 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
+    # (D-175 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
     assert {"polestar_rest", "drm"} <= group_keys
@@ -158,9 +158,9 @@ def test_t2_group_and_field_counts():
     → OBS_{SQL_LOG_ENABLED,SQL_LOG_RETENTION_DAYS,TRACE_ENABLED,TRACE_RETENTION_DAYS,
       TRACE_MAX_STEPS} 추가(D-140/D-141)로 **251**, 그룹 18→19(observability 신설).
     → POLESTAR_REST_* 5(Plan 71)·DRM_* 9(Plan 74)는 config 추가 당시 이 단언이 갱신되지 않았고
-      GROUP_ORDER 미등재로 UI 응답에서도 탈락해 있었다(사전존재 실패) → 2026-08-25 D-163 부기로
+      GROUP_ORDER 미등재로 UI 응답에서도 탈락해 있었다(사전존재 실패) → 2026-08-25 D-175 부기로
       두 그룹 등재 + ALARM_DEAD_LETTER_{ENABLED,STREAM_KEY,MAXLEN} 3 추가로 **277**, 그룹 19→21.
-    → ALARM_SERVER_IDENTITY_{ENABLED,TIMEOUT_SECONDS,CACHE_TTL_SECONDS} 3 추가(D-167)로 **280**.
+    → ALARM_SERVER_IDENTITY_{ENABLED,TIMEOUT_SECONDS,CACHE_TTL_SECONDS} 3 추가(D-179)로 **280**.
     → 2026-08-27 `ALARM_DEAD_LETTER_ENABLED`·`ALARM_SERVER_IDENTITY_ENABLED` 제거(기본 on·끌 이유 없음,
       D-162 §6 플래그 부채 원칙)로 **278**.
     """
@@ -169,7 +169,7 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 21  # 20 그룹 + 전역
-    # AppConfig 하위 설정은 전부 GROUP_ORDER에 있어야 UI 응답에 실린다(D-163 부기 재발 방지).
+    # AppConfig 하위 설정은 전부 GROUP_ORDER에 있어야 UI 응답에 실린다(D-175 부기 재발 방지).
     assert group_keys == set(GROUP_ORDER), f"GROUP_ORDER 미등재 그룹: {group_keys - set(GROUP_ORDER)}"
     assert len(index) == 278
     assert len([s for s in index.values() if s.group_key == "general"]) == 15

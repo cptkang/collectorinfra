@@ -87,7 +87,7 @@ class AlarmWorker:
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
         self._sre_agent_client = None  # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트
-        self._identity_resolver = None  # (D-167) hostname → 등록 서버명·IP 역조회 리졸버
+        self._identity_resolver = None  # (D-179) hostname → 등록 서버명·IP 역조회 리졸버
         # (Plan 67 R3-(v) · D-132) 운영자 주석 LLM 분류기 — annotation_llm_classification_enabled
         # 활성 시에만 생성. None이면 주석 신호는 기존 정규식 추출로 산출된다(비트동일·회귀 0).
         self._annotation_classifier = None
@@ -154,7 +154,7 @@ class AlarmWorker:
             return None
 
     def _build_identity_resolver(self):  # noqa: ANN202
-        """서버 식별 역조회 리졸버를 생성한다 (D-167 · _build_history_repo 미러).
+        """서버 식별 역조회 리졸버를 생성한다 (D-179 · _build_history_repo 미러).
 
         상시 동작(끄는 플래그 없음 — D-162 §6 플래그 부채 원칙). 생성 실패 시 None — 식별 정보는
         존 라벨만 붙고(source=event) server_name·ip 승격이 생략된다(graceful, 알람 처리 정상 진행).
@@ -548,7 +548,7 @@ class AlarmWorker:
                 alarm_time = datetime.now()
 
             alarm_status = payload.get("alarmStatus", "")
-            # (D-163) 폴스타 `${severity}`는 정수가 아니라 한글 라벨(해제/주의/경고/심각)로
+            # (D-175) 폴스타 `${severity}`는 정수가 아니라 한글 라벨(해제/주의/경고/심각)로
             # 렌더링된다(폐쇄망 실측). 결정적 정규화 — API 경로 `_build_alarm_event_from_payload`와
             # 동일 함수를 쓴다(경로 대칭). 미지 값은 크래시·폐기 대신 보수적 폴백 + WARNING.
             severity, severity_fallback_reason = coerce_severity(payload.get("severity"))
@@ -585,7 +585,7 @@ class AlarmWorker:
                 received_at=datetime.now(),
             )
 
-            # (D-167) hostname → 폴스타 등록 서버명·IP 역조회 후 server_name/ip 승격.
+            # (D-179) hostname → 폴스타 등록 서버명·IP 역조회 후 server_name/ip 승격.
             # dedup·지문·이력 매칭·통보·SSE보다 앞에 두어 모든 소비처가 등록명을 쓰게 한다
             # (API 경로 `_attach_server_identity`와 대칭). 실패·타임아웃은 graceful.
             await attach_server_identity(
@@ -835,7 +835,7 @@ class AlarmWorker:
             )
         except Exception as exc:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)
-            # (D-163) ACK 전에 dead-letter 스트림에 원문+사유를 보관한다 — 실패 건이 흔적 없이
+            # (D-175) ACK 전에 dead-letter 스트림에 원문+사유를 보관한다 — 실패 건이 흔적 없이
             # 폐기되어 진단이 로그 전사에만 의존하던 상태(2026-08-25 severity 라벨 건) 재발 방지.
             await self._dead_letter(r, stream_key, msg_id, fields, exc)
         finally:
@@ -849,7 +849,7 @@ class AlarmWorker:
         fields: dict,
         exc: BaseException,
     ) -> None:
-        """처리 실패 메시지를 dead-letter 스트림에 적재한다 (D-163 · graceful).
+        """처리 실패 메시지를 dead-letter 스트림에 적재한다 (D-175 · graceful).
 
         상시 동작(끄는 플래그 없음 — D-162 §6). 적재 실패는 warning 후 무시한다 —
         dead-letter가 ACK·소비 루프를 막아서는 안 된다.

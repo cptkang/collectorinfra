@@ -89,7 +89,7 @@ def build_hostname_sql(db_id: str, value: str, db_engine: str = "postgresql") ->
 
 
 def build_server_identity_sql(db_id: str, hostname: str, db_engine: str = "postgresql") -> str:
-    """hostname → 등록 서버명·IP 역조회 고정 SELECT를 조립한다 (D-167 · 읽기 전용 단일문).
+    """hostname → 등록 서버명·IP 역조회 고정 SELECT를 조립한다 (D-179 · 읽기 전용 단일문).
 
     - server.Server 행만 대상(DTIME IS NULL — 삭제 리소스 제외), hostname **완전 일치**.
     - 최대 2행을 읽어 동일 hostname 중복(모호) 여부를 판별한다 — 모호하면 호출부가 승격을 생략.
@@ -186,7 +186,7 @@ class PolestarHostnameResolver:
         return None
 
     async def lookup_identity(self, db_id: str, hostname: str) -> Optional[dict[str, Any]]:
-        """hostname → {name, hostname, ip_address, os_type, ambiguous} 역조회 (D-167).
+        """hostname → {name, hostname, ip_address, os_type, ambiguous} 역조회 (D-179).
 
         미등록 db_id / 조회 실패 / 0건이면 None. 같은 hostname의 server.Server 행이 2건 이상이면
         첫 행 값과 함께 ambiguous=True를 돌려 호출부가 승격을 생략하게 한다.

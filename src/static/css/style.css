@@ -1495,7 +1495,7 @@ body.auth-pending .auth-splash {
     margin-bottom: 10px;
 }
 
-/* ─── D-167: 서버 식별 헤더(등록명 · hostname · IP · OS · 존) ─── */
+/* ─── D-179: 서버 식별 헤더(등록명 · hostname · IP · OS · 존) ─── */
 .alarm-server {
     font-weight: 600;
     word-break: break-all;

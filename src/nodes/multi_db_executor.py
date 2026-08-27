@@ -1506,11 +1506,11 @@ def _build_mapping_user_parts(
         _recog_mapping,
         context_text=form_context_text,
         user_query=parsed_requirements.get("original_query", "") or "",
-        # 앵커 산출에도 LLM 기간 2단 폴백 — 단일 경로·아래 stat_month와 대칭(D-164)
+        # 앵커 산출에도 LLM 기간 2단 폴백 — 단일 경로·아래 stat_month와 대칭(D-176)
         parsed_time_range=parsed_requirements.get("time_range"),
     )
     if month_series:
-        # 단일 경로와 동일 관측 로그(D-164 — 멀티 경로만 인식 로그가 없어 폐쇄망 진단 불가였음)
+        # 단일 경로와 동일 관측 로그(D-176 — 멀티 경로만 인식 로그가 없어 폐쇄망 진단 불가였음)
         logger.info(
             "DB '%s' 폼필 월 시리즈 인식(D-146): rt=%s, 기간=%s~%s, 필드=%d개, 앵커출처=%s, 요청기간=%s",
             db_id, month_series.resource_type, month_series.anchor[0],

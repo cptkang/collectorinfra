@@ -101,7 +101,7 @@ class TestRecognizeMonthSeries:
         assert ms.month_by_field[f"{_AVG}|M+5"] == "202603"
 
     def test_month_range_query_sets_anchor_end(self):
-        """라이브 실측(2026-08-25, D-164): "1월부터 6월까지" → M=1월, M+5=6월(지난달 폴백 아님)."""
+        """라이브 실측(2026-08-25, D-176): "1월부터 6월까지" → M=1월, M+5=6월(지난달 폴백 아님)."""
         ms = recognize_month_series(
             _cpu_form_mapping(),
             context_text="CPU 사용현황",
@@ -114,7 +114,7 @@ class TestRecognizeMonthSeries:
 
     def test_llm_time_range_fallback_reaches_anchor(self):
         """정규식 미매칭("지난 반년")이면 parsed_time_range(LLM 산출물)로 앵커를 잡는다 — 폼필
-        피벗 stat_month에만 있던 D-136 2단 폴백의 앵커 대칭(D-164)."""
+        피벗 stat_month에만 있던 D-136 2단 폴백의 앵커 대칭(D-176)."""
         ms = recognize_month_series(
             _cpu_form_mapping(),
             context_text="CPU 사용현황",
@@ -136,7 +136,7 @@ class TestRecognizeMonthSeries:
         assert ms.anchor_source == "default"
 
     def test_anchor_payload_shape_is_shared(self):
-        """단일·멀티 경로가 공용 payload를 쓴다 — requested/source 포함(D-164)."""
+        """단일·멀티 경로가 공용 payload를 쓴다 — requested/source 포함(D-176)."""
         from src.db_adapters.polestar.assembler import month_anchor_payload
 
         ms = recognize_month_series(
@@ -764,7 +764,7 @@ class TestFormFillNotes:
         assert _append_form_fill_notes("본문", {"column_mapping": {"a": "t.c"}}) == "본문"
 
     def test_note_states_query_basis_when_requested(self):
-        """질의 기간으로 앵커를 잡았으면 안내문에 그 근거를 명시한다(D-164)."""
+        """질의 기간으로 앵커를 잡았으면 안내문에 그 근거를 명시한다(D-176)."""
         from src.nodes.output_generator import _append_form_fill_notes
 
         state = {
@@ -779,7 +779,7 @@ class TestFormFillNotes:
         assert "[기간 불일치]" not in out
 
     def test_note_flags_mismatch_between_request_and_filled_months(self):
-        """요청 개월 수 ≠ 양식 칸 수(1~3월 요청, 6칸)면 침묵하지 않고 불일치를 명시한다(D-164)."""
+        """요청 개월 수 ≠ 양식 칸 수(1~3월 요청, 6칸)면 침묵하지 않고 불일치를 명시한다(D-176)."""
         from src.nodes.output_generator import _append_form_fill_notes
 
         state = {
@@ -1040,7 +1040,7 @@ class TestResponseTableMarkdownSafety:
         assert f"{_AVG}|M+2" not in prompt  # 원본 '|' 키는 프롬프트에 없어야 함
 
     def test_reference_info_block_injected(self):
-        """D-165(라이브 실측 2026-08-25): 프롬프트에 연도가 없어("1월~6월"+M/M+1 칼럼) LLM이
+        """D-177(라이브 실측 2026-08-25): 프롬프트에 연도가 없어("1월~6월"+M/M+1 칼럼) LLM이
         '2023년'을 적었다 — 오늘·기준월·조회 기간을 결정적 블록으로 주입하고, 표시 절단
         (상위 20건)을 데이터 특성으로 서술하지 않도록 명시한다."""
         from src.nodes.output_generator import _build_reference_info, _build_response_prompt
@@ -1066,7 +1066,7 @@ class TestResponseTableMarkdownSafety:
         assert "today" in info
 
     def test_year_guard_flags_summary_only(self):
-        """D-165 사후 가드: 요약 문단의 기준 밖 연도만 경고, 표 본문의 도입일자 연도는 오탐 아님.
+        """D-177 사후 가드: 요약 문단의 기준 밖 연도만 경고, 표 본문의 도입일자 연도는 오탐 아님.
         자동 치환 없음·기준 연도 없으면 미발동."""
         from src.nodes.output_generator import _check_response_years
 
@@ -1080,7 +1080,7 @@ class TestResponseTableMarkdownSafety:
         assert _check_response_years("", ref) is None
 
     def test_normalize_markdown_tables_fixes_separator_width(self):
-        """D-166(라이브 실측 2026-08-26): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아
+        """D-178(라이브 실측 2026-08-26): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아
         원문이 노출된다. 구분선을 헤더 폭으로 재생성하고 본문은 패딩/절단(내용은 불변)."""
         from src.nodes.output_generator import _normalize_markdown_tables
 
@@ -1486,7 +1486,7 @@ class TestFormFillHitl:
         assert pending["db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]
 
     def test_hitl_pending_db_ids_survive_orchestration_output_state(self):
-        """D-165(라이브 실측 2026-08-25): 존 체크박스 런은 항상 오케스트레이션을 타는데
+        """D-177(라이브 실측 2026-08-25): 존 체크박스 런은 항상 오케스트레이션을 타는데
         `_build_output_state`가 만든 state에 selected_db_ids/target_databases/db_results가
         없어 FIX-26의 pending.db_ids가 항상 None → 답변 턴이 b0(은행존)로 침묵 전환됐다.
         FIX-26 단위 테스트는 완전한 state를 직접 넣어 이 경로를 못 봤다 — 연결 경로로 고정."""
@@ -1516,7 +1516,7 @@ class TestFormFillHitl:
         _clar, pending = _build_form_fill_hitl(out_state, {"도입일자": 0, "호스트명": 12})
         assert pending["db_ids"] == ["polestar_cm_yd"]
 
-        # 역질문 문구에 '?' 단축키 안내(D-165 발견성)
+        # 역질문 문구에 '?' 단축키 안내(D-177 발견성)
         assert "'?'" in _clar["question"]
 
     def test_hitl_pending_db_ids_fallback_without_selection(self):
@@ -1973,7 +1973,7 @@ class TestFormMemoryCommands:
         assert _file_zone_clarification_or_none("양식 채워줘", None, cfg) is not None
 
     def test_memory_gate_question_forms_and_shortcut(self):
-        """D-165(라이브 실측 2026-08-25): 의문형·'저장된 내용'·'?' 단축키는 이력 조회로,
+        """D-177(라이브 실측 2026-08-25): 의문형·'저장된 내용'·'?' 단축키는 이력 조회로,
         채움 동사 동반·일반 의문문·'?!'은 이력 명령이 아니다(오탐→조회 대체 방지)."""
         from src.api.routes.query import _file_zone_clarification_or_none
         from src.orchestration.intent_planner import is_form_memory_command
@@ -1997,7 +1997,7 @@ class TestFormMemoryCommands:
         assert _file_zone_clarification_or_none("이 양식에 저장된 내용은?", None, cfg) is None
 
     def test_memory_panel_payload_and_transport(self):
-        """D-166: 조회 응답에 삭제 패널 컨텍스트가 동봉되고 subagents→result_aggregator를
+        """D-178: 조회 응답에 삭제 패널 컨텍스트가 동봉되고 subagents→result_aggregator를
         거쳐 API 응답 키(form_memory_panel)로 승격된다."""
         import importlib
 
@@ -2034,7 +2034,7 @@ class TestFormMemoryCommands:
         assert create_initial_state("q").get("form_memory_panel") is None
 
     async def test_memory_delete_route_helper(self, monkeypatch):
-        """D-166: 패널 삭제 요청은 파이프라인·LLM 없이 결정적으로 처리되고, signature가 세션의
+        """D-178: 패널 삭제 요청은 파이프라인·LLM 없이 결정적으로 처리되고, signature가 세션의
         last_form_signature와 다르면 거부한다. 삭제 후 남은 항목으로 패널을 재구성한다."""
         import src.schema_cache.form_memory as fm
         from src.api.routes import query as rq

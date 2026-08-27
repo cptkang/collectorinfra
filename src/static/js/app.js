@@ -947,7 +947,7 @@
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
             }
-            // D-166: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
+            // D-178: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
             if (formMemoryDelete) {
                 streamBody.form_memory_delete = formMemoryDelete;
             }
@@ -1058,7 +1058,7 @@
             finalizeStreamingMessage(finalText, metaData);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
-            // D-166: 저장 값 패널(항목별 삭제)
+            // D-178: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
@@ -1370,7 +1370,7 @@
         if (last) renderFormFillPanel(last, ctx);
     }
 
-    // ─── D-166: 양식 저장 값 패널(항목별 삭제) ───
+    // ─── D-178: 양식 저장 값 패널(항목별 삭제) ───
     // '?' 조회 응답의 form_memory_panel {signature, display_name, entries:[{field,label,action,value}]}를
     // 체크박스 목록 + [선택 삭제]/[전체 삭제]로 렌더한다. 클릭 결과는 자연어 재조합 없이
     // form_memory_delete(구조화 필드)로 전송되고 서버가 파이프라인·LLM 없이 결정적으로 삭제한다
@@ -1452,7 +1452,7 @@
             if (selectedDbIds && selectedDbIds.length) {
                 queryBody.selected_db_ids = selectedDbIds;
             }
-            // D-166: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
+            // D-178: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
             if (formMemoryDelete) {
                 queryBody.form_memory_delete = formMemoryDelete;
             }
@@ -1480,7 +1480,7 @@
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
-            // D-166: 저장 값 패널(항목별 삭제)
+            // D-178: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
         } catch (err) {
@@ -1606,7 +1606,7 @@
             attachDownloadToLastFileCard(metaData.query_id);
             // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
-            // D-166: '?' 조회(파일 첨부) 응답의 저장 값 패널
+            // D-178: '?' 조회(파일 첨부) 응답의 저장 값 패널
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
@@ -1665,7 +1665,7 @@
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
-            // D-166: 저장 값 패널(항목별 삭제)
+            // D-178: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(data.form_memory_panel);
         } catch (err) {
             removeProcessingMessage();
@@ -2539,7 +2539,7 @@
             '</table>';
     }
 
-    // D-167: OS 배지 — 값이 있을 때만 렌더(현재 백엔드 미조회·2차 범위). 미매핑 값은 원문 텍스트.
+    // D-179: OS 배지 — 값이 있을 때만 렌더(현재 백엔드 미조회·2차 범위). 미매핑 값은 원문 텍스트.
     var ALARM_OS_LABELS = [
         [/linux|rhel|centos|ubuntu|rocky/i, "Linux", "linux"],
         [/windows|win/i, "Windows", "windows"],
@@ -2557,7 +2557,7 @@
         return '<span class="alarm-os alarm-os--' + cls + '" title="OS: ' + escapeHtml(String(osType)) + '">' + escapeHtml(label) + '</span>';
     }
 
-    // D-167 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — 둘이 60초 이상 벌어지면 수신 시각도 함께 표시(지연 진단).
+    // D-179 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — 둘이 60초 이상 벌어지면 수신 시각도 함께 표시(지연 진단).
     function fmtAlarmTs(iso) {
         // "2026-08-27T09:41:07" → "08-27 09:41:07" (타임존 변환 없이 문자열 슬라이스)
         if (!iso || typeof iso !== "string" || iso.length < 19) return "";
@@ -2579,7 +2579,7 @@
         return '<span class="alarm-time" title="' + escapeHtml(title.trim()) + '">' + html + '</span>';
     }
 
-    // D-167: 헤더 2줄 구조 — 1행 [심각도] 폴스타 등록 서버명 — 알람명 (자원), 2행 hostname · IP · OS · 존 · 시각.
+    // D-179: 헤더 2줄 구조 — 1행 [심각도] 폴스타 등록 서버명 — 알람명 (자원), 2행 hostname · IP · OS · 존 · 시각.
     // (2026-08-27 사용자 검토) 알람명을 1행으로 올려 "어느 서버의 어떤 알람"이 한 줄에서 읽히게 한다.
     // 등록명은 server_identity(hostname 역조회)가 우선, 없으면 server_name, 그마저 없으면 hostname.
     function renderAlarmIdentityHeader(data, severityColor) {

@@ -616,7 +616,7 @@ def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) 
 async def _form_memory_delete_or_none(
     body, checkpoint_state: dict, config
 ) -> dict | None:
-    """저장 값 패널의 삭제 버튼 요청(form_memory_delete)을 파이프라인 없이 결정적으로 처리한다(D-166).
+    """저장 값 패널의 삭제 버튼 요청(form_memory_delete)을 파이프라인 없이 결정적으로 처리한다(D-178).
 
     - 파이프라인·LLM 미경유(FIX-23의 "삭제했다" 환각 경로 원천 차단).
     - signature는 이 세션이 마지막으로 조회·채운 양식(`last_form_signature`)과 일치해야
@@ -639,7 +639,7 @@ async def _form_memory_delete_or_none(
     session_sig = (checkpoint_state or {}).get("last_form_signature")
     if not signature or signature != session_sig:
         logger.warning(
-            "form_memory_delete 거부(D-166): 요청 signature=%r ≠ 세션 signature=%r",
+            "form_memory_delete 거부(D-178): 요청 signature=%r ≠ 세션 signature=%r",
             signature[:16], (session_sig or "")[:16],
         )
         return {
@@ -673,7 +673,7 @@ async def _form_memory_delete_or_none(
         text += f"\n\n남은 항목 {len(panel['entries'])}건은 아래 패널에서 계속 관리할 수 있습니다."
     else:
         text += "\n\n남은 저장 값이 없습니다."
-    logger.info("form_memory_delete 처리(D-166): removed=%d, fields=%s", removed, fields)
+    logger.info("form_memory_delete 처리(D-178): removed=%d, fields=%s", removed, fields)
     return {"response": text, "form_memory_panel": panel}
 
 
@@ -829,7 +829,7 @@ async def process_query(
             thread_id=thread_id,
             clarification=clarification,
         )
-    # D-166: 저장 값 패널 삭제 버튼 — 파이프라인·LLM 없이 결정적 처리(/query/stream과 대칭)
+    # D-178: 저장 값 패널 삭제 버튼 — 파이프라인·LLM 없이 결정적 처리(/query/stream과 대칭)
     mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
     if mem_delete:
         return QueryResponse(
@@ -899,7 +899,7 @@ async def process_query(
         "has_mapping_report": result.get("mapping_report_md") is not None,
         # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
-        "form_memory_panel": result.get("form_memory_panel"),  # D-166 저장 값 패널
+        "form_memory_panel": result.get("form_memory_panel"),  # D-178 저장 값 패널
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
     }
@@ -957,7 +957,7 @@ async def process_query_stream(
             },
         )
 
-    # D-166: 저장 값 패널 삭제 버튼 — /query와 대칭(파이프라인·LLM 미경유, done 이벤트 즉시)
+    # D-178: 저장 값 패널 삭제 버튼 — /query와 대칭(파이프라인·LLM 미경유, done 이벤트 즉시)
     mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
     if mem_delete:
         async def mem_delete_generator() -> AsyncGenerator[str, None]:
@@ -1130,7 +1130,7 @@ async def process_query_stream(
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
                                     # HITL 폼필(D-151): 역질문 패널 컨텍스트
                                     "form_fill_clarification": output.get("form_fill_clarification"),
-                                    "form_memory_panel": output.get("form_memory_panel"),  # D-166 저장 값 패널
+                                    "form_memory_panel": output.get("form_memory_panel"),  # D-178 저장 값 패널
                                     "clarification": _zone_clar,
                                 }
                                 _store_result(query_id, {
@@ -1154,7 +1154,7 @@ async def process_query_stream(
                                     "turn_count": turn_count,
                                     "has_mapping_report": response_data.get("has_mapping_report", False),
                                     "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                    "form_memory_panel": response_data.get("form_memory_panel"),  # D-166 저장 값 패널
+                                    "form_memory_panel": response_data.get("form_memory_panel"),  # D-178 저장 값 패널
                                     # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                     "clarification": response_data.get("clarification"),
                                 })
@@ -1204,7 +1204,7 @@ async def process_query_stream(
                 "has_mapping_report": result.get("mapping_report_md") is not None,
                 # HITL 폼필(D-151): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
-                "form_memory_panel": result.get("form_memory_panel"),  # D-166 저장 값 패널
+                "form_memory_panel": result.get("form_memory_panel"),  # D-178 저장 값 패널
                 "clarification": _zone_clar,
             }
             _store_result(query_id, {
@@ -1227,7 +1227,7 @@ async def process_query_stream(
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
-                "form_memory_panel": response_data.get("form_memory_panel"),  # D-166 저장 값 패널
+                "form_memory_panel": response_data.get("form_memory_panel"),  # D-178 저장 값 패널
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
             })
@@ -1382,7 +1382,7 @@ async def process_file_query(
         "has_mapping_report": result.get("mapping_report_md") is not None,
         # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
-        "form_memory_panel": result.get("form_memory_panel"),  # D-166 저장 값 패널
+        "form_memory_panel": result.get("form_memory_panel"),  # D-178 저장 값 패널
     }
     _store_result(query_id, {
         **response_data,
@@ -1723,7 +1723,7 @@ async def process_file_query_stream(
                                     "has_mapping_report": output.get("mapping_report_md") is not None,
                                     # HITL 폼필(D-151): 역질문 패널 컨텍스트
                                     "form_fill_clarification": output.get("form_fill_clarification"),
-                                    "form_memory_panel": output.get("form_memory_panel"),  # D-166 저장 값 패널
+                                    "form_memory_panel": output.get("form_memory_panel"),  # D-178 저장 값 패널
                                 }
                                 _store_result(query_id, {
                                     **response_data,
@@ -1751,7 +1751,7 @@ async def process_file_query_stream(
                                     "turn_count": turn_count,
                                     "has_mapping_report": response_data.get("has_mapping_report", False),
                                     "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                    "form_memory_panel": response_data.get("form_memory_panel"),  # D-166 저장 값 패널
+                                    "form_memory_panel": response_data.get("form_memory_panel"),  # D-178 저장 값 패널
                                 })
                                 return
 
@@ -1790,7 +1790,7 @@ async def process_file_query_stream(
                 "has_mapping_report": result.get("mapping_report_md") is not None,
                 # HITL 폼필(D-151): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
-                "form_memory_panel": result.get("form_memory_panel"),  # D-166 저장 값 패널
+                "form_memory_panel": result.get("form_memory_panel"),  # D-178 저장 값 패널
             }
             _store_result(query_id, {
                 **response_data,
@@ -1815,7 +1815,7 @@ async def process_file_query_stream(
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
-                "form_memory_panel": response_data.get("form_memory_panel"),  # D-166 저장 값 패널
+                "form_memory_panel": response_data.get("form_memory_panel"),  # D-178 저장 값 패널
             })
 
         except asyncio.TimeoutError:
