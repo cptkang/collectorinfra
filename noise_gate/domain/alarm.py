@@ -16,7 +16,7 @@ from typing import Optional
 
 @dataclass
 class ServerIdentity:
-    """폴스타 등록 기준 서버 식별 정보 (D-179) — hostname → cmm_resource 역조회 결과.
+    """폴스타 등록 기준 서버 식별 정보 (D-179) — hostname → 폴스타 등록 서버 테이블 역조회 결과.
 
     템플릿이 `${platformName}`·`${ipAddress}`를 지원하지 않아(EL1008E) 이벤트에는 hostname만
     실린다. 웹 UI·통보 본문이 폴스타 등록 서버명·IP·존을 표시할 수 있도록 별도로 붙인다.
