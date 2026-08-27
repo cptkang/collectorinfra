@@ -26,6 +26,7 @@ process_rank는 domain → orchestration → {infrastructure, domain} 의존은 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -33,8 +34,18 @@ from langchain_core.language_models import BaseChatModel
 
 from noise_gate.domain.process_rank import select_top_processes
 from noise_gate.infrastructure.polestar_process_api import PolestarProcessApiClient
-from src.config import AppConfig
+from src.config import AppConfig, load_config
+from src.observability.investigation_metrics import record_compaction
+from src.orchestration.investigation_cache import (
+    InvestigationCache,
+    freshness_note,
+)
 from src.routing.registry import get_registry
+from src.utils.prior_targets import (
+    TargetResolution,
+    build_prior_targets,
+    resolve_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,36 +159,88 @@ def _is_demonstrative_value(value: object) -> bool:
     return is_demonstrative_identifier(value)
 
 
+def resolve_investigation_targets(
+    isolated: dict, *, db_id: Optional[str] = None
+) -> TargetResolution:
+    """조사 대상 집합을 **공통 모듈**로 해소한다 (Plan 78 W1-4 · G2 + G5).
+
+    세 진입 경로(`process_query`·`fault_diagnosis`·`investigation_trigger`)가 같은 함수를 쓴다 —
+    각자 구현하면 개선이 한쪽에만 들어간다(§2.2 G5 실측).
+
+    선행 결과는 두 형태로 도착할 수 있다:
+    - `prior_targets` — `_make_isolated_input`이 이미 해소해 둔 대상 dict 목록
+    - `prior_rows` — 아직 해소되지 않은 선행 결과 식별 행(도구 경로 등)
+
+    후자는 여기서 `build_prior_targets`로 해소한다. **플래그가 off면 둘 다 보지 않는다** —
+    미설정 시 현행 동작과 동일해야 한다(Plan 80 §5.4-③).
+
+    Args:
+        isolated: 격리 입력(parsed_requirements/conversation_context/prior_* 포함)
+        db_id: 대상이 속한 DB(각 TargetRef에 실린다)
+
+    Returns:
+        `TargetResolution` — 대상·출처·절단·탈락 사유
+    """
+    cfg = load_config().composite
+    parsed = isolated.get("parsed_requirements") or {}
+    ctx = isolated.get("conversation_context") or {}
+
+    prior_targets = None
+    if cfg.prior_targets_enabled:
+        prior_targets = isolated.get("prior_targets") or None
+        if not prior_targets:
+            prior_targets = _targets_from_prior_rows(
+                isolated.get("prior_rows"), db_id=db_id, max_targets=cfg.max_targets
+            )
+
+    return resolve_targets(
+        filter_conditions=parsed.get("filter_conditions"),
+        prior_targets=prior_targets,
+        previous_entities=ctx.get("previous_entities"),
+        db_id=db_id,
+        max_targets=cfg.max_targets,
+    )
+
+
+def _targets_from_prior_rows(
+    prior_rows: object, *, db_id: Optional[str], max_targets: int
+) -> Optional[list[dict]]:
+    """`prior_rows`({task_id: [행, ...]})에서 조사 대상을 해소한다.
+
+    해석 3단 중 **1·2단만** 쓴다 — LLM 컬럼 지목(3단)은 `COMPOSITE_TARGET_COLUMN_LLM_ENABLED`
+    소관이고 이 경로는 결정적이어야 한다(호출부가 콜러블을 주입하지 않는다).
+    """
+    if not isinstance(prior_rows, dict):
+        return None
+    for rows in prior_rows.values():
+        resolution = build_prior_targets(rows, db_id=db_id, max_targets=max_targets)
+        if resolution.resolved:
+            return resolution.as_state_value()
+    return None
+
+
 def _resolve_hostname(isolated: dict) -> Optional[str]:
-    """대상 hostname을 결정한다 (이번 턴 filter → previous_entities, M3).
+    """대상 hostname을 결정한다 (단일 대상 호환 경로).
+
+    Plan 78 W1-4 이후 해소 본체는 `resolve_investigation_targets`가 담당하고, 이 함수는
+    **첫 대상 하나**를 종전 반환형(`Optional[str]`)으로 돌려주는 얇은 래퍼다.
+    N-대상 fan-out은 W2가 `resolve_investigation_targets`를 직접 쓴다.
 
     Args:
         isolated: 격리 입력(parsed_requirements/conversation_context 포함)
 
     Returns:
-        hostname 문자열 또는 None
+        hostname 또는 서버명 문자열, 없으면 None
     """
-    # ① 이번 턴 filter_conditions의 식별 키 (지시어/플레이스홀더는 제외 — ②로 폴백)
-    parsed = isolated.get("parsed_requirements") or {}
-    for cond in parsed.get("filter_conditions", []) or []:
-        if not isinstance(cond, dict):
-            continue
-        if str(cond.get("field", "")).lower() in _HOST_FIELDS:
-            value = cond.get("value")
-            if value and not _is_demonstrative_value(value):
-                return str(value)
-
-    # ② 직전 턴 식별 엔티티 (M3 — "해당 서버" 해소)
-    ctx = isolated.get("conversation_context") or {}
-    for ent in ctx.get("previous_entities") or []:
-        if not isinstance(ent, dict):
-            continue
-        if str(ent.get("field", "")).lower() in _HOST_FIELDS:
-            value = ent.get("value")
-            if value and not _is_demonstrative_value(value):
-                return str(value)
-
-    return None
+    resolution = resolve_investigation_targets(isolated)
+    if not resolution.resolved:
+        return None
+    first = resolution.targets[0]
+    # 종전 순서 유지: 처음 매칭된 조건 종류를 우선한다 — `[{server_name}, {hostname}]`이
+    # 들어오면 종전에도 server_name을 돌려줬다(첫 조건 우선).
+    if resolution.column and resolution.column not in ("hostname", "host_name", "호스트명"):
+        return first.server_name or first.hostname or first.ip
+    return first.hostname or first.server_name or first.ip
 
 
 async def _resolve_canonical_hostname(
@@ -227,6 +290,285 @@ def _process_to_dict(p) -> dict[str, Any]:  # noqa: ANN001 — ProcessInfo
     }
 
 
+# ──────────────────────────────────────────────
+# N-대상 fan-out (Plan 78 W2 · G3 해소)
+# ──────────────────────────────────────────────
+
+#: 같은 호스트에 대한 **동시 조사 금지** 락 (W2-6 · 부하 가드).
+#: 대표 시나리오가 *이미 포화된 서버*를 조사하는 것이다 — 중복 조사가 장애를 악화시키면
+#: 계획의 목적 자체가 무너진다. 키는 `(db_id, hostname)`.
+_inflight_locks: dict[tuple[str, str], asyncio.Lock] = {}
+#: 락 dict의 키 상한 — in-memory dict는 값 bound뿐 아니라 키 상한도 필요하다(Known Mistakes).
+_MAX_INFLIGHT_KEYS = 512
+
+
+def _inflight_lock(db_id: str, hostname: str) -> asyncio.Lock:
+    """`(db_id, hostname)` 단위 직렬화 락을 얻는다.
+
+    상한을 넘으면 **사용 중이 아닌** 락부터 버린다 — 사용 중인 락을 버리면 직렬화가 깨진다.
+    """
+    key = (db_id or "", hostname or "")
+    lock = _inflight_locks.get(key)
+    if lock is None:
+        if len(_inflight_locks) >= _MAX_INFLIGHT_KEYS:
+            for k, v in list(_inflight_locks.items()):
+                if not v.locked():
+                    _inflight_locks.pop(k, None)
+                if len(_inflight_locks) < _MAX_INFLIGHT_KEYS:
+                    break
+        lock = asyncio.Lock()
+        _inflight_locks[key] = lock
+    return lock
+
+
+#: 프로세스 스냅샷 캐시. TTL이 바뀌면 새로 만든다 — 플래그는 기동 시 1회 해석이지만
+#: 테스트가 TTL을 바꿔가며 검증할 수 있어야 한다.
+_snapshot_cache_instance: Optional[InvestigationCache] = None
+_snapshot_cache_ttl: Optional[float] = None
+
+
+def _snapshot_cache() -> Optional[InvestigationCache]:
+    """설정된 TTL의 조사 캐시를 얻는다. TTL이 0 이하면 캐시를 쓰지 않는다."""
+    global _snapshot_cache_instance, _snapshot_cache_ttl
+    ttl = float(load_config().composite.snapshot_ttl_seconds or 0)
+    if ttl <= 0:
+        return None
+    if _snapshot_cache_instance is None or _snapshot_cache_ttl != ttl:
+        _snapshot_cache_instance = InvestigationCache(ttl_seconds=ttl)
+        _snapshot_cache_ttl = ttl
+    return _snapshot_cache_instance
+
+
+async def _collect_one_target(
+    db_id: str,
+    identifier: str,
+    alarm_kind: str,
+    app_config: AppConfig,
+) -> dict:
+    """대상 1건의 프로세스 스냅샷을 수집한다 (단일·다중 경로 공용).
+
+    단일 대상 경로가 종전과 **비트 동일**해야 하므로, 여기 로직은 v1 `run_process_query`의
+    수집부를 그대로 옮긴 것이다(사본이 아니라 이동 — 두 경로가 이 함수 하나를 쓴다).
+
+    Args:
+        db_id: 대상 DB
+        identifier: 서버명 또는 호스트명
+        alarm_kind: 정렬 기준(cpu|memory)
+        app_config: 앱 설정
+
+    Returns:
+        `{ok, identifier, hostname, server_label, rows, total, captured_at, error}`
+    """
+    resolved = await _resolve_canonical_hostname(db_id, identifier, app_config)
+    hostname = resolved or identifier
+    server_label = identifier if hostname == identifier else f"{identifier}(호스트명 {hostname})"
+
+    # 단기 조사 캐시(W2-8 · Tier 2) — TTL 내 재조회는 **수집기를 부르지 않는다**.
+    # 히트 사실과 나이는 결과에 실어 사용자에게 드러낸다(실시간 오인 방지 · 침묵 금지).
+    cache = _snapshot_cache()
+    # `is not None`으로 본다 — `InvestigationCache`는 `__len__`을 가지므로 **빈 캐시가
+    # falsy**다. `if cache:`로 쓰면 첫 저장이 영원히 일어나지 않는다(실측 2026-08-27).
+    cached = cache.get(db_id, hostname, alarm_kind) if cache is not None else None
+    if cached is not None:
+        rows, total, captured_at = cached.value
+        return {
+            "ok": True, "identifier": identifier, "hostname": hostname,
+            "server_label": server_label, "rows": rows, "total": total,
+            "captured_at": captured_at, "error": None,
+            "cache": {"hit": True, "age_seconds": int(cached.age_seconds()),
+                      "note": freshness_note(cached)},
+        }
+
+    async with _inflight_lock(db_id, hostname):
+        client = PolestarProcessApiClient(app_config.alarm)
+        result = await client.list_by_hostname(db_id, hostname)
+
+    if result is None:
+        return {
+            "ok": False,
+            "identifier": identifier,
+            "hostname": hostname,
+            "server_label": server_label,
+            "rows": [],
+            "total": 0,
+            "captured_at": None,
+            "error": "프로세스 API 미응답/타임아웃",
+        }
+
+    ranked_all, total = select_top_processes(
+        result.processes, alarm_kind, len(result.processes or [])
+    )
+    rows = [_process_to_dict(p) for p in ranked_all]
+    captured_at = str(result.captured_at) if result.captured_at else None
+    if cache is not None:
+        cache.put(db_id, hostname, alarm_kind, (rows, total, captured_at),
+                  captured_at=captured_at)
+    return {
+        "ok": True,
+        "identifier": identifier,
+        "hostname": hostname,
+        "server_label": server_label,
+        "rows": rows,
+        "total": total,
+        "captured_at": captured_at,
+        "error": None,
+        "cache": {"hit": False, "age_seconds": 0},
+    }
+
+
+async def _fanout(
+    db_id: str,
+    identifiers: list[str],
+    alarm_kind: str,
+    app_config: AppConfig,
+) -> tuple[list[dict], list[dict]]:
+    """N개 대상을 동시 수집한다 (W2-1·2·3).
+
+    - `Semaphore`로 동시 수 제한, 대상별 `wait_for`로 per-target 타임아웃
+    - **대상별 개별 try/except** — 하나가 죽어도 나머지가 반환된다(Known Mistakes:
+      "독립 신호 수집은 개별 try/except로 부분 반환 보장")
+    - fan-out **전체** 타임아웃은 호출부가 씌운다 — per-call 타임아웃만으로는 무력화된다
+
+    Returns:
+        (성공 결과 목록, 실패 `{target, error}` 목록)
+    """
+    cfg = load_config().composite
+    sem = asyncio.Semaphore(max(1, cfg.fanout_concurrency))
+
+    async def _one(identifier: str) -> dict:
+        async with sem:
+            try:
+                return await asyncio.wait_for(
+                    _collect_one_target(db_id, identifier, alarm_kind, app_config),
+                    timeout=cfg.target_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                return {"ok": False, "identifier": identifier, "hostname": identifier,
+                        "server_label": identifier, "rows": [], "total": 0,
+                        "captured_at": None, "error": "대상 타임아웃"}
+            except Exception as exc:  # noqa: BLE001 — 대상 하나의 실패가 전체를 막지 않는다
+                logger.warning("process_query 대상 실패: %s — %s", identifier, exc)
+                return {"ok": False, "identifier": identifier, "hostname": identifier,
+                        "server_label": identifier, "rows": [], "total": 0,
+                        "captured_at": None, "error": str(exc)}
+
+    outcomes = await asyncio.gather(*(_one(i) for i in identifiers))
+    succeeded = [o for o in outcomes if o.get("ok")]
+    failed = [{"target": o["identifier"], "error": o["error"]} for o in outcomes if not o.get("ok")]
+    return succeeded, failed
+
+
+def _compact_per_host_limit(base_top_n: int, host_count: int) -> int:
+    """호스트 수에 따라 **호스트당 노출 행 수**를 결정적으로 축소한다 (W2-7 2단).
+
+    호스트가 늘수록 표 전체가 선형으로 커진다 — 대상 10개 × 상위 10행이면 100행이다.
+    총 노출 행을 대략 `base_top_n × 3` 안으로 묶되, 호스트당 최소 1행은 남긴다
+    (0으로 줄이면 그 호스트가 표에서 사라져 "조사 안 됨"으로 오인된다).
+
+    LLM 압축은 쓰지 않는다(§4.5-④ 미채택) — 결정적이어야 재현·감사가 된다.
+    """
+    if host_count <= 1 or base_top_n <= 0:
+        return base_top_n
+    return max(1, min(base_top_n, (base_top_n * 3) // host_count))
+
+
+def _reduce_fanout(
+    db_id: str,
+    succeeded: list[dict],
+    failed: list[dict],
+    resolution: TargetResolution,
+    alarm_kind: str,
+    app_config: AppConfig,
+) -> dict:
+    """대상별 결과를 **결정적으로** 표 하나로 병합한다 (W2-4).
+
+    응답에 반드시 포함한다: 조사 대상 수 / 성공 / 실패 / **절단 여부와 절단된 수**.
+    부분 결과를 전체로 오인시키지 않기 위한 최소 조건이다(침묵 폴백 금지).
+
+    표시·다운로드는 D-047 규약 계승 — 채팅은 호스트당 상위 N, CSV는 전량.
+    """
+    # 결정적 2단 축약(W2-7 · Tier 2):
+    #   1단 — 호스트별 상위 N(이미 select_top_processes가 정렬·마스킹 완료)
+    #   2단 — 호스트 수에 따라 **호스트당 노출 행 수를 동적 축소**
+    # **원문 전량 보존이 필수 조건**(§3.4.3-⑤): 상위 N 선별은 정밀도 우선이라 문서의
+    # 재현율 우선 권고와 어긋난다. 그 편차를 상쇄하는 조건이 `query_results`에 전량을
+    # 남겨 손실을 복구 가능하게 두는 것이다 — 보존 없이 상위 N만 남기면 규칙 위반이 된다.
+    base_top_n = max(0, app_config.alarm.process_top_n)
+    per_host_n = _compact_per_host_limit(base_top_n, len(succeeded))
+    chat_rows: list[dict] = []
+    full_rows: list[dict] = []
+    per_host_truncated: dict[str, int] = {}
+    for item in succeeded:
+        for row in item["rows"]:
+            full_rows.append({"server": item["server_label"], "hostname": item["hostname"], **row})
+        shown = item["rows"][:per_host_n]
+        dropped = max(0, len(item["rows"]) - len(shown))
+        if dropped:
+            per_host_truncated[item["hostname"]] = dropped
+            record_compaction(host=item["hostname"], rows_truncated=dropped)
+        for row in shown:
+            chat_rows.append({"server": item["server_label"], "hostname": item["hostname"], **row})
+    top_n = per_host_n
+
+    target_count = len(succeeded) + len(failed)
+    metric_label = "메모리" if alarm_kind == "memory" else "CPU"
+    parts = [
+        f"대상 {target_count}건 중 {len(succeeded)}건 조사 완료"
+        f"(실패 {len(failed)}건) — 호스트별 {metric_label} 점유 상위 {top_n}건을 표시합니다."
+    ]
+    if resolution.truncated:
+        parts.append(
+            f"⚠ 조사 대상이 상한({len(resolution.targets)}건)을 넘어 "
+            f"{resolution.truncated_count}건이 제외됐습니다."
+        )
+    if failed:
+        parts.append(
+            "실패 대상: " + ", ".join(f"{f['target']}({f['error']})" for f in failed)
+        )
+    if full_rows:
+        parts.append(f"전체 {len(full_rows)}건은 'CSV 다운로드'로 받을 수 있습니다.")
+
+    return {
+        "organized_data": {
+            "summary": " ".join(parts),
+            "rows": chat_rows,
+            "column_mapping": None,
+            "resolved_mapping": None,
+            "is_sufficient": bool(succeeded),
+            "sheet_mappings": None,
+        },
+        "query_results": full_rows,
+        "source": [{"db_id": db_id, "reason": "실시간 프로세스 API (Plan 78 W2 fan-out)"}],
+        "target_db_ids": [db_id],
+        "process_query": {
+            "db_id": db_id,
+            "target_count": target_count,
+            "succeeded_count": len(succeeded),
+            "failed_count": len(failed),
+            "failed": failed,
+            "truncated": resolution.truncated,
+            "truncated_count": resolution.truncated_count,
+            "total_count": sum(i["total"] for i in succeeded),
+            "shown_count": len(chat_rows),
+            "metric": alarm_kind,
+            "targets": [
+                {"server_name": t.server_name, "hostname": t.hostname, "db_id": t.db_id}
+                for t in resolution.targets
+            ],
+            "captured_at": {i["hostname"]: i["captured_at"] for i in succeeded},
+            # 압축 손실을 결과에 실는다(ETCLOVG 체크리스트 ③ — 조용한 절단 금지).
+            "compaction": {
+                "per_host_shown": per_host_n,
+                "per_host_truncated": per_host_truncated,
+                "rows_preserved": len(full_rows),
+            },
+            "cache": {
+                i["hostname"]: (i.get("cache") or {}).get("hit", False) for i in succeeded
+            },
+        },
+    }
+
+
 async def run_process_query(
     task: dict,
     isolated: dict,
@@ -238,6 +580,10 @@ async def run_process_query(
 
     SUBAGENT_REGISTRY handler 규약(task, isolated, *, llm, app_config)을 따른다.
     llm은 사용하지 않는다(결정적 조회·선별 — 마스킹된 상위 N만 반환).
+
+    **N-대상 fan-out**(Plan 78 W2 · G3): 대상이 여럿이면 동시 수집 후 결정적으로 병합한다.
+    대상이 **하나면 종전 경로 그대로**다(회귀 0) — 요약 문구·반환 키가 비트 동일해야
+    기존 소비처(output_generator·CSV)가 변하지 않는다.
 
     Args:
         task: 현재 TaskSpec (db_ids 승계/고정 가능)
@@ -251,13 +597,15 @@ async def run_process_query(
     """
     sub_query = task.get("sub_query", isolated.get("user_query", ""))
     db_id = _resolve_db_id(task, isolated, sub_query, app_config)
+    resolution = resolve_investigation_targets(isolated, db_id=db_id)
     identifier = _resolve_hostname(isolated)
     base_url_present = bool(db_id and app_config.alarm.get_process_api_base_url(db_id))
     # 진입 진단(early-return으로 hostname 해소·API 로그가 안 남는 경우를 식별하기 위함):
     # 어느 게이트(db_id/identifier/base_url)에서 0건으로 빠지는지 한 줄로 드러낸다.
     logger.info(
-        "process_query 진입: db_id=%s identifier=%s base_url=%s sub_query=%r",
-        db_id, identifier, "있음" if base_url_present else "없음", (sub_query or "")[:120],
+        "process_query 진입: db_id=%s identifier=%s targets=%d base_url=%s sub_query=%r",
+        db_id, identifier, len(resolution.targets),
+        "있음" if base_url_present else "없음", (sub_query or "")[:120],
     )
 
     # 대상 미식별 → graceful 안내 (없는 테이블 조회로 폴백하지 않음 — SQL0204N 방지)
@@ -279,30 +627,49 @@ async def run_process_query(
         )
         return _empty_result(msg, db_id, identifier)
 
+    alarm_kind = _infer_alarm_kind(sub_query)
+    identifiers = [
+        t.hostname or t.server_name or t.ip for t in resolution.targets
+    ]
+    identifiers = [i for i in identifiers if i]
+
+    # N-대상 경로 (W2). 전체 타임아웃 가드는 fan-out **전체**에 씌운다 —
+    # per-call 타임아웃만으로는 무력화된다(Known Mistakes).
+    if len(identifiers) > 1:
+        cfg = load_config().composite
+        try:
+            succeeded, failed = await asyncio.wait_for(
+                _fanout(db_id, identifiers, alarm_kind, app_config),
+                timeout=cfg.total_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "process_query fan-out 전체 타임아웃(%.1fs 초과): 대상 %d건",
+                cfg.total_timeout_seconds, len(identifiers),
+            )
+            succeeded, failed = [], [
+                {"target": i, "error": f"전체 타임아웃({cfg.total_timeout_seconds:.0f}s 초과)"}
+                for i in identifiers
+            ]
+        return _reduce_fanout(
+            db_id, succeeded, failed, resolution, alarm_kind, app_config
+        )
+
+    # 단일 대상 경로 — 종전과 동일(회귀 0).
     # 서버명 → 호스트명 해소 (D-046): 프로세스 API 조회 키는 hostname이므로,
     # 입력이 서버명이면 cmm_resource에서 hostname을 찾아 사용한다. 해소 실패 시 원시 값 사용.
-    resolved = await _resolve_canonical_hostname(db_id, identifier, app_config)
-    hostname = resolved or identifier
-    # 사용자에게 보일 서버 레이블: 입력 식별자(서버명)를 우선 표기하되, 호스트명이 다르면 함께 표기.
-    server_label = identifier if hostname == identifier else f"{identifier}(호스트명 {hostname})"
-
-    client = PolestarProcessApiClient(app_config.alarm)
-    result = await client.list_by_hostname(db_id, hostname)
-    if result is None:
+    outcome = await _collect_one_target(db_id, identifier, alarm_kind, app_config)
+    hostname = outcome["hostname"]
+    server_label = outcome["server_label"]
+    if not outcome["ok"]:
         msg = (
             f"서버 '{server_label}'의 실시간 프로세스를 조회하지 못했습니다 "
             "(프로세스 API 미응답/타임아웃). 잠시 후 다시 시도해 주세요."
         )
         return _empty_result(msg, db_id, hostname)
 
-    alarm_kind = _infer_alarm_kind(sub_query)
-    # 전체를 한 번에 지표 내림차순 정렬·마스킹한 뒤(top_n=전체 건수),
-    # 채팅 표시는 상위 N개로 제한하고 CSV 다운로드용 query_results에는 전체를 보존한다
-    # (D-047 / 사용자 결정 2026-06-29: "채팅 상위N + CSV 전체").
-    ranked_all, total = select_top_processes(
-        result.processes, alarm_kind, len(result.processes or [])
-    )
-    full_rows = [_process_to_dict(p) for p in ranked_all]
+    full_rows = outcome["rows"]
+    total = outcome["total"]
     top_n = max(0, app_config.alarm.process_top_n)
     rows = full_rows[:top_n]  # 채팅 표시용 상위 N
 
@@ -310,14 +677,19 @@ async def run_process_query(
     if total > len(rows):
         summary = (
             f"서버 '{server_label}'의 현재 실행 중 프로세스 {total}건 중 {metric_label} 점유 상위 "
-            f"{len(rows)}건을 표시합니다 (스냅샷 시각: {result.captured_at or '미상'}). "
+            f"{len(rows)}건을 표시합니다 (스냅샷 시각: {outcome['captured_at'] or '미상'}). "
             f"전체 {total}건은 'CSV 다운로드'로 받을 수 있습니다."
         )
     else:
         summary = (
             f"서버 '{server_label}'의 현재 실행 중 프로세스 {total}건 "
-            f"(스냅샷 시각: {result.captured_at or '미상'})."
+            f"(스냅샷 시각: {outcome['captured_at'] or '미상'})."
         )
+    # 캐시 히트를 **드러낸다**(W2-8 · 침묵 금지) — 60초 전 스냅샷을 "현재"로 보여주면
+    # 사용자는 실시간 값으로 오인한다. 캐시가 꺼져 있으면(기본) 이 문구는 붙지 않는다.
+    cache_meta = outcome.get("cache") or {}
+    if cache_meta.get("hit"):
+        summary = f"{summary} {cache_meta.get('note', '')}".strip()
 
     logger.info(
         "process_query: db_id=%s identifier=%s hostname=%s total=%d shown=%d kind=%s",
@@ -342,7 +714,7 @@ async def run_process_query(
             "hostname": hostname,
             "total_count": total,
             "shown_count": len(rows),
-            "captured_at": str(result.captured_at) if result.captured_at else None,
+            "captured_at": outcome["captured_at"],
             "metric": alarm_kind,
         },
     }

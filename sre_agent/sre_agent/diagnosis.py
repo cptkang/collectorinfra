@@ -13,7 +13,7 @@ from holmes.core.tool_calling_llm import ToolCallingLLM
 from holmes.core.tools import ToolsetTag
 
 from sre_agent.settings import AgentSettings
-from sre_agent.toolset_profiles import vm_profile
+from sre_agent.toolset_profiles import LOAD_GUARD_NOTE, vm_profile
 
 
 def to_tool_records(tool_calls: list | None) -> list["ToolCallRecord"]:
@@ -86,6 +86,28 @@ class DiagnosisResult:
     incomplete: bool = False
 
 
+def _with_load_guard_note(additions: str | None) -> str:
+    """조사 지침에 **부하 가드 안내를 항상** 덧붙인다 (Plan 78 W2-6 · `docs/25`).
+
+    **왜 기본 주입인가**: 부하 가드의 실효 강제는 bash allowlist다 — 무거운 명령이
+    `timeout N nice -n P …` 형태로만 등록돼 있어 가드 없는 형태는 거부된다. 그런데
+    `system_prompt_additions`를 넘기는 **프로덕션 호출부가 0건**이었으므로(2026-08-27 실측),
+    안내 없이 강제만 걸리면 무거운 명령이 전부 거부되어 **조사가 무력화된다**.
+    강제와 안내는 한 세트여야 한다.
+
+    호출자가 준 지침은 **보존**하고 뒤에 덧붙인다(덮어쓰지 않는다).
+
+    Args:
+        additions: 호출자가 준 system_prompt_additions (없으면 None)
+
+    Returns:
+        부하 가드 안내가 포함된 지침 문자열
+    """
+    if additions and LOAD_GUARD_NOTE in additions:
+        return additions          # 이미 포함(예: MIDDLEWARE_FOCUS_NOTE) — 중복 주입하지 않는다
+    return f"{additions}\n\n{LOAD_GUARD_NOTE}" if additions else LOAD_GUARD_NOTE
+
+
 class DiagnosisAgent:
     """HolmesGPT ToolCallingLLM을 감싼 장애 진단 에이전트.
 
@@ -113,6 +135,8 @@ class DiagnosisAgent:
         self._config = Config(
             model=self.settings.model,
             api_key=self.settings.api_key,
+            # 사내 OpenAI 호환 엔드포인트(vLLM 등). None이면 프로바이더 기본 경로.
+            api_base=self.settings.api_base,
             max_steps=self.settings.max_steps,
             toolsets=toolsets if toolsets is not None else vm_profile(),
             mcp_servers=mcp_servers,
@@ -140,7 +164,7 @@ class DiagnosisAgent:
             initial_user_prompt=question,
             file_paths=None,
             tool_executor=self.llm.tool_executor,
-            system_prompt_additions=system_prompt_additions,
+            system_prompt_additions=_with_load_guard_note(system_prompt_additions),
         )
         try:
             result = self.llm.call(messages)

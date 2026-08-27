@@ -1,0 +1,126 @@
+# 라우팅 골든셋 — 의도 분류 · DB 선택 회귀 (Plan 80 WU-05 / S-1)
+#
+# 목적: 트랙 A(A-1 규칙 5 제거 등)가 **회귀를 냈는지** 판정한다.
+#   ★ 최우선 감시 대상은 **멀티 DB 축소**(plans/79 §1.1 불변식 · §8 ⑩) —
+#     임계를 올리거나 파싱이 깨지면 2순위·3순위 DB가 조용히 잘려 단일 선택이 된다.
+#
+# 판정 규칙(scripts/eval_routing.py):
+#   intent_match     : 산출 intent == expect.intent
+#   db_recall        : expect.databases ⊆ 산출 db_id 집합            ← 축소 감지의 본체
+#   db_precision     : 산출 db_id 집합 ⊆ expect.databases ∪ allow_extra
+#   multi_preserved  : expect.min_databases 이상이 살아남았는가
+#
+# ⚠ 실 LLM 호출은 **D-127 건별 승인 + RUN_E2E=1** 이후에만.
+#
+# 케이스 선정 근거:
+#   - 단일 DB 기본형(회귀 기준선)
+#   - **멀티 DB 3건**(불변식 ⑩ 직접 감시) — 위치 분기 · 도메인 교차 · 명시 복수 지정
+#   - 의도 분기 전부(alarm_query · cache_management · general_inference)
+#   - A-1 노출 확대 케이스(모호 질의 — 저신뢰 후보가 실제로 출력되는지)
+
+version: 1
+items:
+  # ── 단일 DB · data_query ────────────────────────────────────────────
+  - id: r-001
+    query: "여의도 개발 서버들의 CPU 사용률을 보여줘"
+    expect:
+      intent: data_query
+      databases: [polestar_cm_yd]
+      min_databases: 1
+    note: "위치어(여의도)→db_id 매핑. _LOCATION_DB_HINTS 경로."
+
+  - id: r-002
+    query: "김포 운영 서버 목록과 메모리 사양 알려줘"
+    expect:
+      intent: data_query
+      databases: [polestar_cm_gp]
+      min_databases: 1
+
+  - id: r-003
+    query: "은행존 서버의 디스크 사용량 조회"
+    expect:
+      intent: data_query
+      databases: [polestar_b0]
+      min_databases: 1
+
+  # ── 멀티 DB ★ 불변식 ⑩ 직접 감시 ────────────────────────────────────
+  - id: r-010
+    query: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
+    expect:
+      intent: data_query
+      databases: [polestar_cm_gp, polestar_cm_yd]
+      min_databases: 2
+    critical: multi_db
+    note: "명시 복수 지정. 하나로 줄면 즉시 회귀 — 사용자가 두 곳을 요구했다."
+
+  - id: r-011
+    query: "전체 존의 서버 대수와 VM 대수를 합쳐서 알려줘"
+    expect:
+      intent: data_query
+      databases: [polestar_b0, polestar_cm_gp, polestar_cm_yd, cloud_portal]
+      min_databases: 2
+    critical: multi_db
+    note: "도메인 교차(폴스타+가상화). 부분 매칭 허용하되 2개 미만이면 축소."
+
+  - id: r-012
+    query: "인시던트가 발생한 서버들의 자산 정보와 현재 사양을 보여줘"
+    expect:
+      intent: data_query
+      databases: [itsm, itam]
+      min_databases: 2
+    critical: multi_db
+    note: "ITSM→ITAM 교차. sub_query_context가 DB별로 분리돼야 한다."
+
+  # ── 의도 분기 ───────────────────────────────────────────────────────
+  - id: r-020
+    query: "현재 활성 상태인 심각 알람 목록 보여줘"
+    expect:
+      intent: alarm_query
+      min_databases: 1
+
+  - id: r-021
+    query: "이번 달 CPU 임계값 초과 알람 이력 조회"
+    expect:
+      intent: alarm_query
+      min_databases: 1
+
+  - id: r-030
+    query: "polestar DB의 스키마 캐시를 갱신해줘"
+    expect:
+      intent: cache_management
+      databases: []
+      min_databases: 0
+
+  - id: r-031
+    query: "조회 가능한 DB 목록과 설명을 알려줘"
+    expect:
+      intent: cache_management
+      databases: []
+      min_databases: 0
+
+  - id: r-040
+    query: "안녕하세요, 오늘 날씨 어때요?"
+    expect:
+      intent: general_inference
+      databases: []
+      min_databases: 0
+    note: "최후 수단 클래스. 여기로 과잉 분류되면 A-4 편중 완화가 역효과."
+
+  # ── A-1 노출 확대 케이스 (저신뢰가 실제로 출력되는가) ────────────────
+  - id: r-050
+    query: "서버 상태 좀 확인해줘"
+    expect:
+      intent: data_query
+      min_databases: 1
+    critical: low_confidence
+    note: >
+      모호 질의 — A-1(규칙 5 제거)로 이제 저신뢰 후보도 출력돼야 한다.
+      relevance_score 분포에서 0.3~0.5 대역이 관측되는지 S-2가 확인한다.
+
+  - id: r-051
+    query: "그 장비 정보"
+    expect:
+      intent: data_query
+      min_databases: 1
+    critical: low_confidence
+    note: "지시어 질의. 후보가 0건이면 기본 DB 폴백으로 떨어지는지 관측."

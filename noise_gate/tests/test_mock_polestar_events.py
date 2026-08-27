@@ -556,11 +556,45 @@ def test_send_dup_suppress_e2e():
     assert rc == 0
 
 
+@pytest.mark.mvp
 @pytest.mark.skipif(os.getenv("RUN_E2E") != "1", reason="RUN_E2E=1 옵트인(서버+조사 서비스 필요)")
-def test_send_invest_trigger_e2e():
-    """--send invest-trigger가 게이트 PAGE→조사 submit 경로를 크래시 없이 완주한다(옵트인).
+def test_send_invest_trigger_e2e(mvp_record):
+    """**레벨 A MVP 판정** — 게이트 PAGE → 조사 submit → 감사 적재까지 실제로 일어났는가.
 
-    플래그 off면 전제 미충족 사유 출력 후 graceful(rc=0), 플래그 on+서비스 기동이면 submit
-    accepted/duplicate 확인까지 완주(rc=0). 실 HolmesGPT 완주는 별도 RUN_E2E 환경에서 대조."""
-    rc = mpe.main(["--send", "invest-trigger"])
-    assert rc == 0
+    docs/23 §5.5 합격 기준을 여기서 대조한다. rc==0만 보면 트리거가 graceful 실패해도
+    통과하므로(비차단 계약상 rc는 0이다) **감사 레코드로 판정**한다 — 결과는 mvp_record를
+    통해 실행 대장(docs/24)에 남는다.
+
+    실 HolmesGPT 완주(레벨 B)는 `sre_agent/tests/test_investigation_e2e.py` 소관이다.
+    """
+    from noise_gate.tests.mvp_record import REPO, decision_slice, load_gate_config
+
+    cfg = load_gate_config()
+    if cfg is not None and not cfg.investigation_trigger_enabled:
+        pytest.skip("NOISE_INVESTIGATION_TRIGGER_ENABLED=false — 트리거 미배선(전제 미충족)")
+
+    log_path = REPO / (getattr(cfg, "decision_store_path", None)
+                       or "logs/alarm_decisions.jsonl")
+    with decision_slice(log_path) as sliced:
+        rc = mpe.main(["--send", "invest-trigger"])
+
+    records = sliced.records()
+    gate = [r for r in records if r.get("type") != "investigation"]
+    invest = [r for r in records if r.get("type") == "investigation"]
+    tiers = sorted({str(r.get("tier")) for r in gate if r.get("tier")})
+    ids = [r.get("investigation_id") for r in invest if r.get("investigation_id")]
+    statuses = sorted({str(r.get("status")) for r in invest if r.get("status")})
+
+    mvp_record["observed"] |= {
+        "rc": rc, "gate_records": len(gate), "tiers": ",".join(tiers) or "-",
+        "investigation_records": len(invest), "investigation_id": (ids[0] if ids else "-"),
+        "status": ",".join(statuses) or "-",
+    }
+
+    assert rc == 0, "주입기가 비정상 종료(전제 미충족은 rc=0 + 사유 출력이어야 한다)"
+    assert gate, "게이트 판정 레코드가 적재되지 않았다 — 워커·Redis 경로 확인"
+    assert "PAGE" in tiers, f"PAGE 티어가 관측되지 않았다(관측: {tiers})"
+    assert invest, "type=investigation 감사 레코드가 없다 — 트리거 노드 미배선/미발동"
+    assert ids, "investigation_id가 비었다 — submit 실패(조사 서비스 미도달) 가능성"
+    # 스텁(LLM 키 부재)·실 조사 어느 쪽이든 종결 상태여야 한다. 진행 중(running)이면 미완주.
+    assert statuses and "running" not in statuses, f"조사가 종결되지 않았다(status={statuses})"

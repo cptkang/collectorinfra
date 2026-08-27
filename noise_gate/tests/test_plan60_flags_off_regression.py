@@ -38,6 +38,18 @@ from noise_gate.infrastructure.polestar_noise_context import (
 from noise_gate.orchestration.alarm_graph import build_alarm_graph
 
 
+
+def _authz_ns():
+    """조사 인가·복합 설정 대역 (Plan 78 W3-5 · W1).
+
+    실제 `AppConfig`는 이 둘을 **항상** 갖는다. 대역에서 빼면 인가가 `unknown_authz_mode`로
+    차단된다 — fail-closed의 설계 의도이므로 정책이 아니라 대역을 프로덕션 형태에 맞춘다.
+    """
+    return {
+        "host_authz": SimpleNamespace(mode="admin_only"),
+        "composite": SimpleNamespace(prior_targets_enabled=False),
+    }
+
 def _event(severity: int = 2) -> SimpleNamespace:
     return SimpleNamespace(
         severity=severity, is_clear=(severity == 0), db_id="db1",
@@ -299,7 +311,7 @@ class TestInvestigationTriggerOffRegression:
         cfg = {"configurable": {
             "app_config": SimpleNamespace(noise_gate=SimpleNamespace(
                 investigation_trigger_enabled=False
-            )),
+            ), **_authz_ns()),
             "sre_agent_client": _Spy(),
             "decision_store": None,
         }}
@@ -359,7 +371,7 @@ class TestInvestigationTriggerOffRegression:
                 investigation_trigger_min_tier="PAGE",
                 investigation_poll_interval_seconds=0.0,
                 investigation_total_timeout_seconds=5.0,
-            )),
+            ), **_authz_ns()),
             "sre_agent_client": _Client(),
             "decision_store": None,
         }}

@@ -46,7 +46,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "llm", "orchestrator", "dbhub", "query", "synonym", "text2sql",
     "security", "server", "admin", "auth", "multi_db", "redis",
     "schema_cache", "audit", "observability", "alarm", "workb", "noise_gate",
-    "polestar_rest", "drm", TOP_LEVEL_GROUP,
+    "polestar_rest", "drm", "composite", "router", "host_authz", TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
@@ -70,6 +70,9 @@ GROUP_TITLES: dict[str, str] = {
     "noise_gate": "노이즈 게이트",
     "polestar_rest": "폴스타 실시간 REST",
     "drm": "DRM 해제",
+    "composite": "복합 질의 호스트 조사",
+    "router": "라우터 2단 분리·신뢰도",
+    "host_authz": "호스트 인가",
     TOP_LEVEL_GROUP: "전역",
 }
 

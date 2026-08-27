@@ -110,13 +110,13 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
     response = await get_settings_schema(_ADMIN)
 
-    assert len(response.groups) == 21
+    assert len(response.groups) == 24
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 278
+    assert len(items) == 294
     # (D-175 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -168,11 +168,11 @@ def test_t2_group_and_field_counts():
 
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 21  # 20 그룹 + 전역
+    assert len(group_keys) == 24  # 23 그룹 + 전역 (multiintent 병합: composite·router·host_authz 추가)
     # AppConfig 하위 설정은 전부 GROUP_ORDER에 있어야 UI 응답에 실린다(D-175 부기 재발 방지).
     assert group_keys == set(GROUP_ORDER), f"GROUP_ORDER 미등재 그룹: {group_keys - set(GROUP_ORDER)}"
-    assert len(index) == 278
-    assert len([s for s in index.values() if s.group_key == "general"]) == 15
+    assert len(index) == 294
+    assert len([s for s in index.values() if s.group_key == "general"]) == 17
 
 
 def test_t2_alias_key_used_for_multi_db():

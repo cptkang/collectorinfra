@@ -69,14 +69,25 @@ def _investigate(question: str, max_steps: int | None = None):
     return agent.ask(question)
 
 
-def test_mvp_investigation_completes_or_graceful():
-    """실 Gemini 조사가 완주(도구 인용·answer)하거나 graceful 미완주로 반환 — 하드 실패 없음."""
+@pytest.mark.mvp
+def test_mvp_investigation_completes_or_graceful(mvp_record):
+    """**레벨 B MVP 판정** — 실 LLM 조사가 완주(도구 인용·answer)하거나 graceful 미완주.
+
+    결과는 mvp_record를 통해 실행 대장(docs/24)에 남는다. 백엔드(vLLM/Gemini)·모델은
+    지문에 자동 기록되므로, 나중에 "어떤 모델로 완주했는가"를 대장에서 대조할 수 있다
+    (docs/23 §7-V.5 완주 판정의 근거).
+    """
     r = _investigate(
         "소스 polestar의 서버 svr-web-01에 대해 Prometheus 메트릭으로 CPU 사용률과 메모리 "
         "상태를 조회하고, 근거(도구 출력)와 함께 한국어로 간단히 진단하라. 도구는 "
         "hostname=svr-web-01로 호출하고 충분한 근거가 모이면 즉시 결론을 내라."
     )
     assert r is not None
+    mvp_record["observed"] |= {
+        "완주": "no(incomplete)" if r.incomplete else "yes",
+        "도구호출": len(r.tool_calls or []),
+        "토큰": getattr(r, "total_tokens", 0),
+    }
     if r.incomplete:
         # 미완주도 유효 결과 — 사유가 구조화돼 있어야 한다(침묵 실패 금지).
         assert "미완주" in r.answer

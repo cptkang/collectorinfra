@@ -195,23 +195,11 @@ def _extract_previous_db_ids(state: AgentState) -> list[str]:
 def _looks_like_process_rows(rows: list[dict]) -> bool:
     """결과 행이 프로세스 조회 결과인지 판별한다 (엔티티 오수집 방지용).
 
-    프로세스 조회 결과 행은 `pid`를 갖는다(process_query._process_to_dict:
-    {name, pid, user, cpu_pct, mem_pct, rss, args}). `name`은 프로세스명, `pid`는 서버가
-    아니므로 이런 행에서 서버 식별 엔티티를 수집하면 안 된다. 서버 조회 결과 행에는 `pid`가 없다.
-
-    Args:
-        rows: 직전 턴 결과 행 목록
-
-    Returns:
-        첫 행이 `pid` 키를 가지면 True(프로세스 행으로 간주)
+    구현은 utils.query_gen_common으로 이동(D-053 단일 출처) — 동작 동일.
     """
-    if not rows:
-        return False
-    first = rows[0]
-    if not isinstance(first, dict):
-        return False
-    keys = {str(k).lower() for k in first.keys()}
-    return "pid" in keys
+    from src.utils.query_gen_common import looks_like_process_rows
+
+    return looks_like_process_rows(rows)
 
 
 def _extract_previous_entities(

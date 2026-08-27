@@ -35,6 +35,7 @@ from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability.graph_proxy import TracedGraph
+from src.observability.investigation_metrics import log_investigation_startup
 from src.observability.ladder import record_ladder_resolution, resolve_ladder_tier
 from src.orchestration import (
     agent_orchestrator,
@@ -669,5 +670,10 @@ def build_graph(config: AppConfig, checkpointer=None):
         _tier, _reason,
         flag_origin=getattr(config, "_orchestration_resolved_by", "explicit_env"),
     )
+
+    # 호스트 조사 경로의 확정값도 같은 자리에서 1회 남긴다 (Plan 78 W6-3 · P14).
+    # 사다리 로그와 나란히 두는 이유: 둘 다 "무엇이 켜진 채 돌고 있는가"의 재구성 재료이고,
+    # 호출 지점이 흩어지면 한쪽만 남는 상태가 생긴다(ladder record/log를 묶은 것과 같은 이유).
+    log_investigation_startup(config)
 
     return compiled

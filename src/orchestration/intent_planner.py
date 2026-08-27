@@ -25,6 +25,8 @@ from src.llm import create_llm
 from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.prompts.intent_planner import INTENT_PLANNER_SYSTEM_TEMPLATE
 from src.state import AgentState
+from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
+from src.orchestration.schemas import DecomposedPlan
 from src.utils.json_extract import extract_json_from_response
 
 logger = logging.getLogger(__name__)
@@ -543,6 +545,30 @@ def _build_context_block(
     return "\n".join(lines)
 
 
+def _plan_from_model(model: DecomposedPlan, user_query: str) -> dict:
+    """검증된 DecomposedPlan을 기존 반환 계약(dict)으로 변환한다.
+
+    상태 저장은 dict를 유지한다 — AgentState가 TypedDict이고 LangGraph 체크포인터가
+    직렬화하므로 모델 객체를 그대로 싣지 않는다.
+    """
+    tasks: list[dict] = []
+    for i, t in enumerate(model.tasks, 1):
+        d = t.model_dump()
+        d["order"] = d.get("order") or i
+        d["status"] = "pending"
+        tasks.append(d)
+    if not tasks:
+        logger.warning("intent_planner 구조화 분해 결과가 비었음 — 단일 data_query 폴백")
+        return {
+            "tasks": [{
+                "task_id": "t1", "agent": "data_query", "sub_query": user_query,
+                "depends_on": [], "input_from": [], "order": 1, "status": "pending",
+            }],
+            "clarification_needed": None,
+        }
+    return {"tasks": tasks, "clarification_needed": model.clarification_needed}
+
+
 async def _llm_decompose(
     llm: BaseChatModel,
     user_query: str,
@@ -584,14 +610,37 @@ async def _llm_decompose(
     context_block = _build_context_block(conversation_context, user_query)
     human_content = f"{context_block}{user_query}" if context_block else user_query
 
-    try:
-        messages: list[BaseMessage] = [
-            SystemMessage(content=INTENT_PLANNER_SYSTEM_TEMPLATE)
-        ]
-        if isinstance(llm, KBGenAIChat):
-            messages.append(AIMessage(content=""))
-        messages.append(HumanMessage(content=human_content))
+    messages: list[BaseMessage] = [
+        SystemMessage(content=INTENT_PLANNER_SYSTEM_TEMPLATE)
+    ]
+    if isinstance(llm, KBGenAIChat):
+        messages.append(AIMessage(content=""))
+    messages.append(HumanMessage(content=human_content))
 
+    # 구조화 출력 경로 (E-3a · D-169). 플래그 off면 None을 돌려받아 기존 파싱으로 내려간다 —
+    # 기존 경로를 지우지 않는다(off가 상시 존재한다).
+    parsed: dict | None = None
+    try:
+        model = await try_structured_call(
+            llm, messages, DecomposedPlan,
+            backend=getattr(app_config, "structured_output_backend", "none"),
+            max_retries=getattr(app_config, "structured_output_max_retries", 1),
+        )
+        if model is not None:
+            return _plan_from_model(model, user_query)
+    except StructuredOutputError as e:
+        # F4 해소 — 침묵 폴백 금지. 사유를 구조화해 반환에 싣는다.
+        logger.warning("intent_planner 구조화 분해 실패(%d회 시도): %s", e.attempts, e)
+        degraded = dict(fallback)
+        degraded["degraded"] = [{
+            "stage": "intent_planner._llm_decompose",
+            "reason": "structured_output_validation_failed",
+            "attempts": e.attempts,
+            "detail": str(e.last_error)[:500],
+        }]
+        return degraded
+
+    try:
         response = await llm.ainvoke(messages)
         parsed = extract_json_from_response(response.content)
     except Exception as e:

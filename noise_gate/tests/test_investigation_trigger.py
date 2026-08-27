@@ -64,8 +64,18 @@ def _ng_cfg(**over) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _app_cfg(ng: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(noise_gate=ng)
+def _app_cfg(ng: SimpleNamespace, *, authz_mode: str = "admin_only") -> SimpleNamespace:
+    """앱 설정 대역.
+
+    `host_authz`·`composite`는 실제 `AppConfig`가 **항상** 갖는 필드다(Plan 78 W3-5 · W1).
+    대역에서 빼면 조사 인가가 `unknown_authz_mode`로 **차단**된다 — 그것이 fail-closed의
+    설계 의도이므로, 대역을 프로덕션 형태에 맞춘다(정책을 느슨하게 하지 않는다).
+    """
+    return SimpleNamespace(
+        noise_gate=ng,
+        host_authz=SimpleNamespace(mode=authz_mode),
+        composite=SimpleNamespace(prior_targets_enabled=False),
+    )
 
 
 def _state(decision, **extra) -> dict:
@@ -79,10 +89,10 @@ def _state(decision, **extra) -> dict:
     return st
 
 
-def _config(ng, client=None, store=None) -> dict:
+def _config(ng, client=None, store=None, *, authz_mode: str = "admin_only") -> dict:
     return {
         "configurable": {
-            "app_config": _app_cfg(ng),
+            "app_config": _app_cfg(ng, authz_mode=authz_mode),
             "sre_agent_client": client,
             "decision_store": store,
         }

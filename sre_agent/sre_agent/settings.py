@@ -43,6 +43,13 @@ class AgentSettings(BaseSettings):
         validation_alias=AliasChoices("GEMINI_API_KEY", "LLM_GEMINI_API_KEY"),
     )
 
+    # 사내 OpenAI 호환 엔드포인트(vLLM 등)의 base_url — litellm `api_base`로 전달된다.
+    # None이면 프로바이더 기본 경로(Gemini 등 SaaS)를 쓴다. 사내 FabriX(KBGenAIChat)는
+    # OpenAI 비호환이라 여기 넣을 수 없다 — 조사 LLM은 tool-calling 되는 엔드포인트여야 한다
+    # (holmes ToolCallingLLM이 매 호출에 tools/tool_choice를 싣고 폴백이 없다).
+    # env: API_BASE. holmes 0.36.0 Config가 api_base 필드를 보유함을 실측 확인했다.
+    api_base: str | None = None
+
     # 조사 서비스(interface/mcp_service) 정적 Bearer 토큰 (Plan 05 §5-인증).
     # None이면 무인증(로컬/개발). SecretStr로 pydantic 필드로만 판정한다
     # (env: SERVICE_BEARER_TOKEN, os.getenv 금지). 협의 후 mTLS 승격 여지.
