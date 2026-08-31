@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import date
 
 from src.utils.json_extract import coerce_content_text
@@ -164,6 +165,89 @@ def resolve_stat_month_range(
     if llm_range:
         note_fallback(FALLBACK_TIME_RANGE_LLM, f"{parsed_time_range} → {llm_range}")
         return llm_range
+    return None
+
+
+# ──────────────────────────────────────────────
+# 기간 대비 비교(급증) — Plan 82 Wave 9 · D-176 후속2
+# ──────────────────────────────────────────────
+
+#: "1달 전 대비"류 월 단위 비교 표면어. 여기 있는 표현만 비교 모드로 들어간다.
+_MONTH_COMPARISON_SIGNALS: tuple[str, ...] = (
+    "1달 전", "한달 전", "한 달 전", "1개월 전", "전월 대비", "지난달 대비",
+    "저번달 대비", "전달 대비", "month over month", "mom",
+)
+#: 주 단위 비교 표면어 — **열려 있지 않다**(일별 통계 보존기간 미확인 · §6.12 ③).
+_WEEK_COMPARISON_SIGNALS: tuple[str, ...] = (
+    "1주일 전", "일주일 전", "1주 전", "지난주 대비", "전주 대비", "주간 대비",
+)
+
+
+@dataclass(frozen=True)
+class ComparisonPeriods:
+    """비교 기간 쌍 — (기준 월, 비교 월). 둘 다 YYYYMM."""
+
+    base_month: str
+    cur_month: str
+
+
+@dataclass(frozen=True)
+class BlockedComparison:
+    """열려 있지 않은 비교 요청. **사유와 대체 제안을 반드시 응답에 표기**한다.
+
+    약속하고 조용히 누락시키는 것이 최악이다 — 지원하지 않는다고 말하면 사용자가
+    다른 방법을 찾지만, 침묵하면 틀린 답을 믿는다(§6.12 ③).
+    """
+
+    reason: str
+    suggestion: str
+
+
+def previous_month(stat_month: str) -> str:
+    """YYYYMM 문자열의 직전 월을 돌려준다(연 경계 처리)."""
+    year, month = int(stat_month[:4]), int(stat_month[4:6])
+    total = year * 12 + (month - 1) - 1
+    return f"{total // 12}{total % 12 + 1:02d}"
+
+
+def resolve_comparison_periods(
+    user_query: str | None, today: date | None = None
+) -> ComparisonPeriods | BlockedComparison | None:
+    """질의의 **기간 대비** 표현을 (기준 월, 비교 월) 쌍으로 해석한다(없으면 None).
+
+    `resolve_stat_month_range`의 형제다 — 저쪽은 단일 기간 필터를, 이쪽은 두 기간의
+    비교를 낸다. 기존 함수는 **건드리지 않는다**(단일 기간 경로 동작 불변).
+
+    "1달 전 대비"·"전월 대비" → (직전월−1, 직전월). 진행 중인 달은 월 통계가
+    미완결이라 비교 대상이 아니다(D-076 후속4와 같은 원칙).
+
+    주 단위 요청은 `BlockedComparison`을 돌려준다 — `metric_tables`에 `week` grain이
+    없고(hour/day/month만), 일별 통계의 **실제 보존일수가 저장소에 기록돼 있지 않다**.
+    DBHub 가동 후 프로브 1회로 해소된다:
+    `SELECT MIN(stat_date), MAX(stat_date), COUNT(DISTINCT stat_date) FROM <일별 통계>`
+
+    Args:
+        user_query: 사용자 원문 질의
+        today: 상대 표현의 기준일(기본 오늘)
+
+    Returns:
+        비교 기간 쌍 / 차단 신호 / None(비교 표현 없음)
+    """
+    text = user_query or ""
+    lowered = text.lower()
+    ref = today or date.today()
+
+    if any(sig in lowered for sig in _WEEK_COMPARISON_SIGNALS):
+        return BlockedComparison(
+            reason="주 단위 비교는 일별 통계 보존기간이 확인되지 않아 제공하지 않습니다.",
+            suggestion="월 단위(전월 대비)로 조회하면 같은 판정을 지금 받을 수 있습니다.",
+        )
+
+    if any(sig in lowered for sig in _MONTH_COMPARISON_SIGNALS):
+        return ComparisonPeriods(
+            base_month=_month_shift(ref, -2), cur_month=_month_shift(ref, -1)
+        )
+
     return None
 
 
@@ -1173,6 +1257,12 @@ def has_host_identifier_filter(parsed_requirements: dict | None) -> bool:
 # 회피를 겸한다. 공동존 내 김포/여의도는 다중 선택 유지.
 # 종전 canonical은 api/routes/query.py._ZONE_OPTIONS — 후단 게이트(orchestration·
 # routing 계층)와 공유하기 위해 utils로 내림(query.py가 alias 유지).
+# `group` 값은 레지스트리 `zone_groups`(D-176)와 **같은 값이어야 한다**. 다만 여기서
+# 임포트 시점에 레지스트리를 읽으면 ①순환 임포트(`src/routing/__init__.py`가
+# `semantic_router`를 즉시 임포트하고 그것이 이 모듈을 다시 읽는다) ②계층 위반
+# (utils → infrastructure 금지)이 된다 — 둘 다 2026-08-28 실측. 그래서 값은 리터럴로
+# 두고 **정합성은 테스트가 지킨다**
+# (`tests/test_orchestration/test_execution_groups.py::test_group_values_match_registry`).
 ZONE_CLARIFY_OPTIONS: tuple[dict, ...] = (
     {"db_id": "polestar_b0", "label": "은행존", "group": "bank"},
     {"db_id": "polestar_cm_gp", "label": "공동존 김포", "group": "common"},

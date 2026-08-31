@@ -53,6 +53,11 @@ SOURCE_ALARM = "alarm_payload"
 
 # hostname 계열 컬럼 힌트 — 폴스타는 server_name ≠ hostname이므로 섞으면 0건이 된다(D-046/D-061).
 _HOSTNAME_COL_HINTS: tuple[str, ...] = ("hostname", "host_name")
+
+#: 멀티 DB 병합이 행마다 붙이는 **출처 태그** 키(`multi_db_executor._merge_results`).
+#: 대상의 db_id 정본으로 쓰되(D-176), 서버 식별자 컬럼 후보에서는 배제한다 — 값이
+#: "polestar_cm_gp" 같은 DB 식별자라 hostname으로 오인되면 조회가 0건이 된다.
+SOURCE_DB_KEY = "_source_db"
 # filter_conditions/previous_entities의 field가 hostname을 가리키는 표면형.
 _HOSTNAME_FIELD_NAMES: frozenset[str] = frozenset({"hostname", "host_name", "호스트명"})
 
@@ -153,6 +158,9 @@ def _pick_identifier_column(
     Returns:
         (선택된 컬럼명 또는 "", LLM 호출 횟수)
     """
+    # 내부 태그는 후보에서 제외한다(D-176) — 사용자 데이터가 아니라 병합이 붙인 메타다.
+    columns = [c for c in columns if str(c) != SOURCE_DB_KEY]
+
     # 1단 — 결정적 매칭. hostname 계열을 server_name 계열보다 우선한다(조회 키가 hostname).
     hostname_cols = [c for c in columns if any(h in str(c).lower() for h in _HOSTNAME_COL_HINTS)]
     if hostname_cols:
@@ -255,10 +263,16 @@ def build_prior_targets(
             dropped.append(_drop(REASON_DEMONSTRATIVE, value=str(value)))
             continue
         text = str(value).strip()
+        # 행별 출처 우선(D-176 · plans/82 §2.2): 팬아웃 결과는 행마다 `_source_db`를 갖는다.
+        # 호출부가 준 db_id 하나를 전 대상에 찍으면 abd00이 공동존에 있어도 은행존으로
+        # 표기돼 후속 단계가 엉뚱한 존의 API를 친다(§2.4 — 탐색형을 막던 실질 병목).
+        # 태그가 없거나 비면 종전대로 호출부 값 폴백 — 단일 DB 경로는 비트 동일.
+        _row_src = row.get(SOURCE_DB_KEY)
+        ref_db = str(_row_src).strip() if _row_src and str(_row_src).strip() else db_id
         ref = (
-            TargetRef(hostname=text, db_id=db_id)
+            TargetRef(hostname=text, db_id=ref_db)
             if is_hostname_col
-            else TargetRef(server_name=text, db_id=db_id)
+            else TargetRef(server_name=text, db_id=ref_db)
         )
         if ref.key in seen:
             continue

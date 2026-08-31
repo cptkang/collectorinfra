@@ -188,10 +188,16 @@ def create_service(
         server_name: str | None = None,
         hostname: str | None = None,
         db_id: str | None = None,
+        target_state: dict | None = None,
     ) -> str:
-        """pull형 자연어 진단 잡을 제출한다(§3 — 챗 의도 위임용). 동일 잡 패턴."""
+        """pull형 자연어 진단 잡을 제출한다(§3 — 챗 의도 위임용). 동일 잡 패턴.
+
+        `target_state`(Plan 81)는 호출자가 판정한 대상 가용성이다. **선택 인자**이므로
+        넘기지 않는 구버전 호출자는 종전과 동일하게 동작한다(fail-open). 값이 있고
+        `state == "unavailable"`이면 dispatcher가 조사 전에 거부한다.
+        """
         return json.dumps(
-            store.submit_diagnosis(question, server_name, hostname, db_id),
+            store.submit_diagnosis(question, server_name, hostname, db_id, target_state),
             ensure_ascii=False,
         )
 

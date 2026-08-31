@@ -106,7 +106,7 @@ _S_OUTPUT_JSON = """## 출력 형식
 _S_INTENT_CLASSES = """- data_query: 서버 사양, 성능 지표, 프로세스 등 일반 인프라 데이터 조회
 - alarm_query: 알람 현황, 알람 이력, 임계값 초과, 모니터링 alert·이벤트(event) 조회
 - cache_management: 캐시 생성/갱신/삭제, 유사어 관리, 컬럼 설명 변경{fault_diagnosis_class_line}
-- general_inference: 위 어디에도 해당하지 않는 일반 응답. databases는 빈 배열([]) — **최후 수단**
+- general_inference: 위 어디에도 해당하지 않는 일반 응답. databases는 빈 배열([]) — **최후 수단**{unknown_class_line}
 
 """
 
@@ -239,7 +239,7 @@ _S_EXAMPLES = """## 예시
     ]
 }}
 ```
-
+{unknown_example}
 """
 
 _S_DB_GUIDE = """## DB 설명 조회 의도
@@ -534,6 +534,33 @@ def allowed_intents(*, fault_diagnosis_enabled: bool = False) -> frozenset[str]:
         return SEMANTIC_ROUTER_BASE_INTENTS | SEMANTIC_ROUTER_OPTIN_INTENTS
     return SEMANTIC_ROUTER_BASE_INTENTS
 
+
+# ── Plan 79 A-6 (WU-21): `unknown` 클래스 — 옵트인 ──────────────────────
+# **`general_inference`와 의미가 다르다**: general_inference는 *DB에 접근하지 않는 일반 응답*
+# (개념 설명·인사)이고, unknown은 **분류 불가**다. 후자는 답을 지어내지 않고 **사용자에게
+# 되묻는다**(§3.3 기존 되묻기 인프라 재사용 — 신규 UI 0).
+#
+# 논문이 unknown recall 개선의 직접 원인으로 지목한 것이 *"모호한 질의를 unknown으로 분류하는
+# 예시"* 이므로 정의 줄과 예시를 **함께** 넣는다(예시가 지시문을 이긴다 — Known Mistakes).
+#
+# 옵트인 클래스는 **정의 줄·예시 두 자리 모두 조건부**여야 한다(`plans/80` 계약 C-A):
+# 정의만 남겨도 LLM이 그 클래스를 알게 되어 off 상태에서 산출할 수 있는데, 그때는 이 값을
+# 받아 처리할 분기가 없다. off면 두 상수 모두 빈 문자열로 치환된다.
+SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE = (
+    "\n- unknown: **분류 불가** — 위 어느 의도인지 판단할 근거가 부족한 모호한 질의. "
+    "databases는 빈 배열([]). 추측하지 말고 이 값을 쓰세요(시스템이 사용자에게 되묻습니다)"
+)
+
+SEMANTIC_ROUTER_UNKNOWN_EXAMPLE = """
+입력: "그거 좀 확인해줘"
+출력:
+```json
+{{
+    "intent": "unknown",
+    "databases": []
+}}
+```
+"""
 
 SEMANTIC_ROUTER_FAULT_DIAGNOSIS_CLASS_LINE = (
     "\n- fault_diagnosis: 특정 서버/장비의 장애 **원인 분석·진단** 요청 (단순 조회가 아님)"

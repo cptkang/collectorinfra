@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>로그인 - 인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=11">
+    <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
+    <script src="/static/js/theme.js"></script>
     <style>
         .auth-container {
             max-width: 400px;
@@ -13,8 +15,8 @@
             padding: 0 20px;
         }
         .auth-card {
-            background: var(--bg-card, #1e1e2e);
-            border: 1px solid var(--border, #333);
+            background: var(--surface);
+            border: 1px solid var(--border);
             border-radius: 12px;
             padding: 32px;
         }
@@ -31,28 +33,28 @@
             margin-bottom: 6px;
             font-size: 0.875rem;
             font-weight: 500;
-            color: var(--text-secondary, #aaa);
+            color: var(--text-secondary);
         }
         .auth-form input[type="text"],
         .auth-form input[type="password"] {
             width: 100%;
             padding: 10px 14px;
-            background: var(--bg-input, #2a2a3e);
-            border: 1px solid var(--border, #444);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
             border-radius: 8px;
-            color: var(--text-primary, #eee);
+            color: var(--text);
             font-size: 0.9375rem;
             box-sizing: border-box;
         }
         .auth-form input:focus {
             outline: none;
-            border-color: var(--accent, #7c3aed);
+            border-color: var(--accent);
         }
         .auth-btn {
             width: 100%;
             padding: 12px;
-            background: var(--accent, #7c3aed);
-            color: #fff;
+            background: var(--accent);
+            color: var(--on-accent);
             border: none;
             border-radius: 8px;
             font-size: 1rem;
@@ -71,16 +73,16 @@
             text-align: center;
             margin-top: 16px;
             font-size: 0.875rem;
-            color: var(--text-secondary, #aaa);
+            color: var(--text-secondary);
         }
         .auth-footer a {
-            color: var(--accent, #7c3aed);
+            color: var(--accent);
             text-decoration: none;
         }
         .auth-error {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #ef4444;
+            background: var(--error-bg);
+            border: 1px solid var(--error);
+            color: var(--error);
             padding: 10px 14px;
             border-radius: 8px;
             font-size: 0.875rem;
@@ -94,7 +96,7 @@
         .auth-logo svg {
             width: 48px;
             height: 48px;
-            fill: var(--accent, #7c3aed);
+            fill: var(--accent);
         }
     </style>
 </head>

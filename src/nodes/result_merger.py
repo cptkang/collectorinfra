@@ -67,6 +67,9 @@ async def result_merger(
 
     return {
         "query_results": merged_results,
+        # DB별 요약 — 종전에는 생성 즉시 버려졌다(반환 dict 미포함). 그룹별 섹션·처리
+        # 현황이 이 값을 쓰므로 승격한다(D-176 · plans/82 §3.3).
+        "db_result_summary": db_result_summary,
         "error_message": error_summary if not db_results else None,
         "current_node": "result_merger",
     }

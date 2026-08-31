@@ -22,10 +22,19 @@ from multiprocessing import Process
 from typing import Any, AsyncGenerator, Optional
 
 import pytest
-from playwright.sync_api import Page
 
-if not os.getenv("RUN_E2E"):
+if os.getenv("RUN_E2E"):
+    from playwright.sync_api import Page
+else:
+    # 기본 스위트에서는 e2e를 수집하지 않는다(위 docstring). playwright는 선택적
+    # `e2e` extra(pyproject.toml)라 **미설치가 정상**인데, 종전에는 이 임포트가
+    # 무조건 실행돼 conftest 임포트 실패 → **전체 수집이 중단**됐다
+    # (2026-08-28 실측: `pytest -q`가 ModuleNotFoundError로 0건 수집).
+    # 임포트를 옵트인 뒤로 옮겨 아래 collect_ignore_glob이 실제로 작동하게 한다.
+    # `from __future__ import annotations`가 있어 Page는 주석으로만 쓰이며
+    # 런타임에 평가되지 않는다(사용처: page fixture 시그니처 1곳).
     collect_ignore_glob = ["test_*.py"]
+    Page = Any
 
 TEST_PORT = 18980
 TEST_BASE_URL = f"http://localhost:{TEST_PORT}"

@@ -40,8 +40,8 @@ def test_sectioned_groups_have_expected_shape():
     noise_sections = [s.section for s in noise.settings if s.section]
     assert len(set(noise_sections)) >= 10  # 세부 개수는 config 진화에 따라 변동 — 하한만 고정
 
-    # 구획 내 상대 순서 보존(안정 정렬): E1 기본의 대표 2필드가 정의 순서대로
-    e1_keys = [s.env_key for s in noise.settings if s.section == "E1 기본"]
+    # 구획 내 상대 순서 보존(안정 정렬): '기본 동작' 구획의 대표 2필드가 정의 순서대로
+    e1_keys = [s.env_key for s in noise.settings if s.section == "기본 동작"]
     assert e1_keys.index("NOISE_ENABLE_NOISE_GATE") < e1_keys.index(
         "NOISE_SELF_HEAL_WINDOW_SECONDS"
     )
@@ -54,3 +54,40 @@ def test_sectioned_groups_have_expected_shape():
         i for i, s in enumerate(alarm.settings) if s.section is not None
     )
     assert all(s.section is not None for s in alarm.settings[first_sectioned:])
+
+
+# ─── Plan 83 T1: 구획 누락 감지 · 파일 키 커버리지 ────────────────────────────
+
+
+def test_every_noise_key_has_section():
+    """모든 `NOISE_` 키가 구획을 갖는다 — 미분류는 UI에서 소제목 없이 섞여 발견성을 떨어뜨린다.
+
+    이 테스트는 **신규 플래그가 늘 때 자동으로 실패**하는 그물이다. `NOISE_` 키를 추가하면서
+    `SECTION_BY_KEY` 등재를 잊으면 여기서 잡힌다(Plan 83 §3.2 C-1 — 실제 누락 8건에서 출발).
+    """
+    from src.api.settings_catalog import SECTION_BY_KEY, field_index
+
+    missing = sorted(
+        k for k in field_index() if k.startswith("NOISE_") and k not in SECTION_BY_KEY
+    )
+    assert missing == [], (
+        f"구획 미분류 NOISE 키 {len(missing)}건: {missing} — "
+        "SECTION_BY_KEY에 인접 키와 같은 구획명으로 등재할 것"
+    )
+
+
+def test_env_files_fully_covered_by_catalog():
+    """`.env`·`.env.example`의 모든 키가 카탈로그에 존재한다(관리자 UI에서 정의 가능).
+
+    Plan 68의 인트로스펙션 SSOT가 유지되는지 고정한다 — 파일에만 있고 config에 없는 키가
+    생기면 그 옵션은 웹UI에서 보이지 않는다(2026-08-28 실측 기준선: 양쪽 모두 누락 0건).
+    """
+    from src.api.settings_catalog import _PROJECT_ROOT, _parse_env_keys, field_index
+
+    catalog = set(field_index())
+    for name in (".env", ".env.example"):
+        path = _PROJECT_ROOT / name
+        if not path.exists():
+            continue  # 배포 환경에 따라 부재 가능 — 있을 때만 검사
+        missing = sorted(_parse_env_keys(path) - catalog)
+        assert missing == [], f"{name}: 카탈로그 미포함 {len(missing)}건 — {missing}"

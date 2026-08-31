@@ -74,7 +74,11 @@ def _app_cfg(ng: SimpleNamespace, *, authz_mode: str = "admin_only") -> SimpleNa
     return SimpleNamespace(
         noise_gate=ng,
         host_authz=SimpleNamespace(mode=authz_mode),
-        composite=SimpleNamespace(prior_targets_enabled=False),
+        # 가용성 사전 판정(Plan 81)은 **명시적으로 꺼 둔다** — 이 파일은 트리거 계약을 본다.
+        # 판정 경로는 `noise_gate/tests/test_investigation_target_state.py`가 따로 본다.
+        composite=SimpleNamespace(
+            prior_targets_enabled=False, availability_precheck_enabled=False
+        ),
     )
 
 

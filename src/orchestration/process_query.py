@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -35,6 +36,10 @@ from langchain_core.language_models import BaseChatModel
 from noise_gate.domain.process_rank import select_top_processes
 from noise_gate.infrastructure.polestar_process_api import PolestarProcessApiClient
 from src.config import AppConfig, load_config
+from src.domain.host_availability import (
+    HostAvailability,
+    describe as describe_availability,
+)
 from src.observability.investigation_metrics import record_compaction
 from src.orchestration.investigation_cache import (
     InvestigationCache,
@@ -84,8 +89,14 @@ def _resolve_db_id(
 ) -> Optional[str]:
     """프로세스 API 대상 db_id를 결정한다.
 
-    우선순위: ① task.db_ids(승계/고정) > ② previous_db_ids(멀티턴) > ③ 위치 신호 매칭.
+    우선순위: ① task.db_ids(UI 확정/고정) > ② **prior_targets(이번 턴 선행 결과)** >
+    ③ previous_db_ids(멀티턴 승계) > ④ 위치 신호 매칭.
     base_url 매핑이 있는 db_id를 우선 선택한다(조회 가능한 대상으로 좁힘).
+
+    ②는 D-176 신설이다 — 선행 조회가 "이 서버는 공동존에 있다"를 확정해도 그 값이 여기로
+    흐르지 않아 후속 프로세스 조회가 엉뚱한 존을 쳤다(plans/82 §2.3). 이번 턴 결과가
+    직전 턴 승계(③)보다 강하다(요청 스코프 우선). 다만 **①보다는 뒤**다 — 존 선택 UI에서
+    사용자가 확정한 값은 어떤 추론보다 우선한다는 기존 원칙을 지킨다(D-143).
 
     Args:
         task: 현재 TaskSpec
@@ -108,7 +119,16 @@ def _resolve_db_id(
         if isinstance(did, str) and did not in candidates:
             candidates.append(did)
 
-    # ② 멀티턴 승계 previous_db_ids
+    # ② 이번 턴 선행 결과가 확정한 존 (D-176) — prior_targets는 행별 `_source_db`에서
+    #    해소된 대상이라 "어느 존에서 찾았는가"를 이미 담고 있다.
+    for _t in isolated.get("prior_targets") or []:
+        if not isinstance(_t, dict):
+            continue
+        did = _t.get("db_id")
+        if isinstance(did, str) and did and did not in candidates:
+            candidates.append(did)
+
+    # ③ 멀티턴 승계 previous_db_ids
     ctx = isolated.get("conversation_context") or {}
     for did in ctx.get("previous_db_ids") or []:
         if isinstance(did, str) and did not in candidates:
@@ -119,7 +139,7 @@ def _resolve_db_id(
         if _has_base_url(did):
             return did
 
-    # ③ 위치 신호 매칭 (sub_query + previous_location)
+    # ④ 위치 신호 매칭 (sub_query + previous_location)
     location_text = f"{sub_query} {ctx.get('previous_location', '')}"
     hint_matches = [
         did for did, hints in _LOCATION_DB_HINTS.items()
@@ -243,38 +263,101 @@ def _resolve_hostname(isolated: dict) -> Optional[str]:
     return first.hostname or first.server_name or first.ip
 
 
-async def _resolve_canonical_hostname(
-    db_id: str, value: str, app_config: AppConfig
-) -> Optional[str]:
-    """입력 식별자(서버명 또는 호스트명)를 정규 hostname으로 해소한다 (D-046).
+async def _resolve_target_lookup(db_id: str, value: str, app_config: AppConfig):
+    """입력 식별자를 정규 hostname으로 해소하고 **가용성 판정을 함께** 얻는다 (D-046 · Plan 81).
 
-    `PolestarHostnameResolver`로 폴스타 DB(cmm_resource)를 조회하여 hostname을 얻는다.
-    어떤 단계든 실패하면 None을 반환하고, 호출부는 원시 입력 값을 그대로 사용한다
-    (이미 hostname이거나 DB가 미연결인 경우에도 회귀 없이 동작).
+    판정 컬럼이 해소 SELECT에 함께 실리므로 **DB 왕복이 늘지 않는다**. 구현은
+    `noise_gate.infrastructure.polestar_hostname_resolver.lookup_host` — 세 진입 경로가
+    같은 함수를 쓴다(사본 금지 · D-171 G5 선례). 여기서는 이름만 유지한다.
+    """
+    from noise_gate.infrastructure.polestar_hostname_resolver import lookup_host
+
+    return await lookup_host(app_config, db_id, value)
+
+
+async def _lookup_targets(
+    db_id: str, values: list[str], app_config: AppConfig
+) -> dict:
+    """다대상 가용성·hostname을 **1쿼리**로 조회한다 (Plan 81 fan-out 공용 함수 위임)."""
+    from noise_gate.infrastructure.polestar_hostname_resolver import lookup_hosts
+
+    return await lookup_hosts(app_config, db_id, values)
+
+
+def _discovered_zone_label(discovery: Optional[dict]) -> str:
+    """탐색이 확정한 존의 라벨(탐색 미발동·미확정이면 빈 문자열)."""
+    if not discovery or discovery.get("state") != "resolved":
+        return ""
+    hits = (discovery.get("trace") or {}).get("hits") or []
+    return str(hits[0].get("zone_label", "")) if hits else ""
+
+
+async def _discover_db_id(
+    identifier: str, isolated: dict, app_config: AppConfig
+) -> tuple[Optional[str], Optional[dict]]:
+    """인가된 존을 순회해 대상 존을 확정한다 (D-176 후속3 · `_resolve_db_id` ⑤).
+
+    ①~④가 전부 실패했을 때만 호출된다 — 앞 순위가 하나라도 성립하면 진입하지 않는다.
+    탐색은 **경과이지 결과가 아니므로** LLM 합성을 추가하지 않는다(U7) — 확정된 존으로
+    본 조회가 이어지고, 기존 단일 합성이 그 결과를 서술한다.
 
     Args:
-        db_id: 조회 대상 폴스타 인스턴스
-        value: 사용자 입력 식별자(서버명/장비명 또는 호스트명)
-        app_config: 앱 설정 (DBRegistry 생성용)
+        identifier: 서버명 또는 호스트명
+        isolated: 격리 입력(`allowed_db_ids` 포함)
+        app_config: 앱 설정
 
     Returns:
-        해소된 hostname 또는 None(해소 불가)
+        `(확정 db_id 또는 None, 안내 페이로드 또는 None)`.
+        안내 페이로드는 **되묻거나 못 찾았을 때만** 채워진다.
     """
-    try:
-        from noise_gate.infrastructure.polestar_hostname_resolver import (
-            PolestarHostnameResolver,
-        )
-        from src.routing.db_registry import DBRegistry
+    cfg = app_config.composite
+    if not cfg.host_discovery_enabled:
+        return None, None
 
-        registry = DBRegistry(app_config)
-        resolver = PolestarHostnameResolver(registry)
-        return await resolver.resolve(db_id, value)
-    except Exception as exc:
-        logger.warning(
-            "hostname 해소 중 예외 — 원시 값 사용: db_id=%s value=%s err=%s",
-            db_id, value, exc,
-        )
-        return None
+    from src.domain.host_discovery import (
+        AMBIGUOUS,
+        NOT_FOUND,
+        RESOLVED,
+        classify,
+        render_ambiguous,
+        render_not_found,
+        trace_payload,
+    )
+    from src.orchestration.host_sweep import authorized_zones, sweep_zones
+
+    # 순회할 존이 없으면 탐색이 아무것도 더하지 못한다 — 단일 DB 배포·존 미배정
+    # 인스턴스(`ACTIVE_DB_IDS=polestar`)가 여기 해당한다. 이때는 **현행 안내 문구를
+    # 그대로** 두는 것이 맞다(0개 존을 순회했다는 메시지는 소음이다).
+    if not authorized_zones(
+        app_config.multi_db.get_active_db_ids(), isolated.get("allowed_db_ids")
+    ):
+        logger.info("탐색 미진입 — 순회 가능한 폴스타 존 0개")
+        return None, None
+
+    async def _lookup(db_id: str, value: str):
+        return await _resolve_target_lookup(db_id, value, app_config)
+
+    outcome = await sweep_zones(
+        identifier,
+        app_config.multi_db.get_active_db_ids(),
+        lookup=_lookup,
+        allowed_db_ids=isolated.get("allowed_db_ids"),
+        early_exit=cfg.discovery_early_exit,
+        ttl_seconds=cfg.discovery_cache_ttl_seconds,
+    )
+    verdict = classify(outcome)
+    trace = trace_payload(verdict)
+
+    if verdict.state == RESOLVED:
+        return verdict.db_id, {"state": RESOLVED, "trace": trace}
+    if verdict.state == AMBIGUOUS:
+        # 임의 선택하지 않는다 — 잘못 고르면 **오답이 정답처럼** 나간다(U5).
+        return None, {
+            "state": AMBIGUOUS, "trace": trace, "message": render_ambiguous(verdict),
+        }
+    return None, {
+        "state": NOT_FOUND, "trace": trace, "message": render_not_found(outcome),
+    }
 
 
 def _process_to_dict(p) -> dict[str, Any]:  # noqa: ANN001 — ProcessInfo
@@ -339,29 +422,66 @@ def _snapshot_cache() -> Optional[InvestigationCache]:
     return _snapshot_cache_instance
 
 
+#: 가용성 사전 판정으로 수집을 생략했을 때의 실패 사유 코드(Plan 81).
+REASON_HOST_UNAVAILABLE = "host_unavailable"
+
+
 async def _collect_one_target(
     db_id: str,
     identifier: str,
     alarm_kind: str,
     app_config: AppConfig,
+    lookup=None,  # noqa: ANN001 — HostLookup (fan-out이 배치 조회 결과를 넘긴다)
 ) -> dict:
     """대상 1건의 프로세스 스냅샷을 수집한다 (단일·다중 경로 공용).
 
     단일 대상 경로가 종전과 **비트 동일**해야 하므로, 여기 로직은 v1 `run_process_query`의
     수집부를 그대로 옮긴 것이다(사본이 아니라 이동 — 두 경로가 이 함수 하나를 쓴다).
 
+    **가용성 사전 판정**(Plan 81): 대상이 `unavailable`이면 프로세스 API를 **호출하지 않고**
+    사유를 담아 반환한다. 판정이 꺼져 있으면(`availability_precheck_enabled=false`) 결과
+    dict에 관련 키가 붙지 않아 종전과 비트 동일하다.
+
     Args:
         db_id: 대상 DB
         identifier: 서버명 또는 호스트명
         alarm_kind: 정렬 기준(cpu|memory)
         app_config: 앱 설정
+        lookup: 이미 조회된 `HostLookup`(fan-out 배치 경로). None이면 여기서 조회한다
 
     Returns:
         `{ok, identifier, hostname, server_label, rows, total, captured_at, error}`
+        (+ 판정 활성 시 `availability`·`notice`, 차단 시 `reason`)
     """
-    resolved = await _resolve_canonical_hostname(db_id, identifier, app_config)
-    hostname = resolved or identifier
+    if lookup is None:
+        lookup = await _resolve_target_lookup(db_id, identifier, app_config)
+    hostname = lookup.hostname or identifier
     server_label = identifier if hostname == identifier else f"{identifier}(호스트명 {hostname})"
+
+    cfg = load_config().composite
+    availability: HostAvailability = lookup.availability
+    precheck_on = bool(cfg.availability_precheck_enabled)
+    notice = describe_availability(availability, server_label) if precheck_on else ""
+    # 판정 메타는 **활성일 때만** 실는다 — off 경로의 반환 dict를 종전과 비트 동일하게 유지한다.
+    meta = {"availability": availability.to_dict(), "notice": notice} if precheck_on else {}
+
+    if precheck_on and cfg.availability_block_on_unavailable and availability.blocks_collection:
+        logger.info(
+            "process_query 수집 생략(가용성 비정상): db_id=%s identifier=%s hostname=%s reason=%s",
+            db_id, identifier, hostname, availability.reason,
+        )
+        return {
+            "ok": False,
+            "identifier": identifier,
+            "hostname": hostname,
+            "server_label": server_label,
+            "rows": [],
+            "total": 0,
+            "captured_at": None,
+            "error": "가용성 비정상(중지/통신이상) — 수집 생략",
+            "reason": REASON_HOST_UNAVAILABLE,
+            **meta,
+        }
 
     # 단기 조사 캐시(W2-8 · Tier 2) — TTL 내 재조회는 **수집기를 부르지 않는다**.
     # 히트 사실과 나이는 결과에 실어 사용자에게 드러낸다(실시간 오인 방지 · 침묵 금지).
@@ -377,6 +497,7 @@ async def _collect_one_target(
             "captured_at": captured_at, "error": None,
             "cache": {"hit": True, "age_seconds": int(cached.age_seconds()),
                       "note": freshness_note(cached)},
+            **meta,
         }
 
     async with _inflight_lock(db_id, hostname):
@@ -393,6 +514,7 @@ async def _collect_one_target(
             "total": 0,
             "captured_at": None,
             "error": "프로세스 API 미응답/타임아웃",
+            **meta,
         }
 
     ranked_all, total = select_top_processes(
@@ -413,6 +535,7 @@ async def _collect_one_target(
         "captured_at": captured_at,
         "error": None,
         "cache": {"hit": False, "age_seconds": 0},
+        **meta,
     }
 
 
@@ -435,11 +558,20 @@ async def _fanout(
     cfg = load_config().composite
     sem = asyncio.Semaphore(max(1, cfg.fanout_concurrency))
 
+    # 가용성 판정을 **배치 1쿼리**로 선취한다(Plan 81) — 대상마다 조회하면 왕복이 N배가 된다.
+    # 판정이 꺼져 있으면 배치를 돌리지 않는다: 대상별 해소가 종전 경로 그대로 동작해야 한다.
+    lookups: dict = {}
+    if cfg.availability_precheck_enabled:
+        lookups = await _lookup_targets(db_id, identifiers, app_config)
+
     async def _one(identifier: str) -> dict:
         async with sem:
             try:
                 return await asyncio.wait_for(
-                    _collect_one_target(db_id, identifier, alarm_kind, app_config),
+                    _collect_one_target(
+                        db_id, identifier, alarm_kind, app_config,
+                        lookup=lookups.get(identifier),
+                    ),
                     timeout=cfg.target_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -454,8 +586,45 @@ async def _fanout(
 
     outcomes = await asyncio.gather(*(_one(i) for i in identifiers))
     succeeded = [o for o in outcomes if o.get("ok")]
-    failed = [{"target": o["identifier"], "error": o["error"]} for o in outcomes if not o.get("ok")]
+    # 실패에 **사유 코드**를 함께 싣는다 — "재시도하면 되는 실패"와 "재시도해도 같은 실패"를
+    # 사용자가 구분할 수 있어야 한다(Plan 81 §1.1 ③).
+    failed = [
+        {
+            "target": o["identifier"],
+            "error": o["error"],
+            "reason": o.get("reason"),
+            "availability": o.get("availability"),
+        }
+        for o in outcomes if not o.get("ok")
+    ]
     return succeeded, failed
+
+
+#: 실패 사유 코드 → 사용자 라벨. **재시도 가치가 드러나야 한다** — 이것이 분해의 목적이다.
+_FAILURE_REASON_LABELS: dict[str, str] = {
+    REASON_HOST_UNAVAILABLE: "가용성 비정상(재시도해도 동일)",
+    "collect_error": "조회 실패(재시도 가능)",
+}
+
+
+def _failure_breakdown(failed: list[dict]) -> str:
+    """실패 대상을 **사유별로 집계**한다 (Plan 81 §1.1 ③).
+
+    종전에는 실패가 "대상 타임아웃" 한 덩어리로 보여 재시도 가치가 있는 실패와 없는 실패를
+    구분할 수 없었다.
+
+    Args:
+        failed: `{target, error, reason}` 목록
+
+    Returns:
+        `"가용성 비정상(재시도해도 동일) 2건 / 조회 실패(재시도 가능) 1건"` 형태. 없으면 빈 문자열
+    """
+    if not failed:
+        return ""
+    counts = Counter(f.get("reason") or "collect_error" for f in failed)
+    return " / ".join(
+        f"{_FAILURE_REASON_LABELS.get(code, code)} {n}건" for code, n in counts.most_common()
+    )
 
 
 def _compact_per_host_limit(base_top_n: int, host_count: int) -> int:
@@ -525,6 +694,13 @@ def _reduce_fanout(
         parts.append(
             "실패 대상: " + ", ".join(f"{f['target']}({f['error']})" for f in failed)
         )
+        breakdown = _failure_breakdown(failed)
+        if breakdown:
+            parts.append(f"실패 사유: {breakdown}.")
+    # 수집은 됐지만 알릴 만한 판정(점검·알 수 없음)이 있으면 함께 알린다(침묵 금지).
+    notices = [n for n in (o.get("notice") for o in succeeded) if n]
+    if notices:
+        parts.append(" ".join(notices))
     if full_rows:
         parts.append(f"전체 {len(full_rows)}건은 'CSV 다운로드'로 받을 수 있습니다.")
 
@@ -564,6 +740,12 @@ def _reduce_fanout(
             },
             "cache": {
                 i["hostname"]: (i.get("cache") or {}).get("hit", False) for i in succeeded
+            },
+            # 대상별 가용성 판정(판정 비활성이면 빈 dict — 종전과 동일한 소비 형태).
+            # 실패 항목은 hostname 대신 target 키를 쓴다(`_fanout` 반환 형태).
+            "availability": {
+                **{i["hostname"]: i["availability"] for i in succeeded if i.get("availability")},
+                **{f["target"]: f["availability"] for f in failed if f.get("availability")},
             },
         },
     }
@@ -607,6 +789,22 @@ async def run_process_query(
         db_id, identifier, len(resolution.targets),
         "있음" if base_url_present else "없음", (sub_query or "")[:120],
     )
+
+    # ⑤ 존 순회 탐색 (D-176 후속3) — ①~④가 전부 실패했을 때만 진입한다.
+    # 현행은 여기서 *"위치를 지정해 주세요"* 라는 막다른 안내로 끝났는데, 운영 `.env`는
+    # 세 존 전부 프로세스 API가 매핑돼 있어 **순회하면 찾을 수 있었다**(plans/82 §1.3).
+    discovery: Optional[dict] = None
+    if not db_id and identifier:
+        db_id, discovery = await _discover_db_id(identifier, isolated, app_config)
+        if discovery and discovery.get("state") in ("ambiguous", "not_found"):
+            return _empty_result(
+                discovery["message"], None, identifier,
+                reason=discovery["state"], discovery=discovery["trace"],
+            )
+        if db_id:
+            # 탐색이 존을 확정했으므로 대상 해소를 다시 돌린다(선행 스코프 배관 재사용).
+            resolution = resolve_investigation_targets(isolated, db_id=db_id)
+            logger.info("탐색으로 대상 존 확정: db_id=%s identifier=%s", db_id, identifier)
 
     # 대상 미식별 → graceful 안내 (없는 테이블 조회로 폴백하지 않음 — SQL0204N 방지)
     if not db_id:
@@ -662,11 +860,23 @@ async def run_process_query(
     hostname = outcome["hostname"]
     server_label = outcome["server_label"]
     if not outcome["ok"]:
-        msg = (
-            f"서버 '{server_label}'의 실시간 프로세스를 조회하지 못했습니다 "
-            "(프로세스 API 미응답/타임아웃). 잠시 후 다시 시도해 주세요."
+        if outcome.get("reason") == REASON_HOST_UNAVAILABLE:
+            # 가용성 비정상은 **재시도 유도를 붙이지 않는다** — 재시도해도 결과가 같다(§1.1 ①).
+            msg = (
+                f"{outcome.get('notice', '')} "
+                "실시간 프로세스 조회를 수행하지 않았습니다. "
+                "서버 상태를 확인한 뒤 다시 요청해 주세요."
+            ).strip()
+        else:
+            msg = (
+                f"서버 '{server_label}'의 실시간 프로세스를 조회하지 못했습니다 "
+                "(프로세스 API 미응답/타임아웃). 잠시 후 다시 시도해 주세요."
+            )
+        return _empty_result(
+            msg, db_id, hostname,
+            availability=outcome.get("availability"),
+            reason=outcome.get("reason"),
         )
-        return _empty_result(msg, db_id, hostname)
 
     full_rows = outcome["rows"]
     total = outcome["total"]
@@ -690,6 +900,16 @@ async def run_process_query(
     cache_meta = outcome.get("cache") or {}
     if cache_meta.get("hit"):
         summary = f"{summary} {cache_meta.get('note', '')}".strip()
+    # 판정 문구는 **맨 앞**에 둔다 — 사용자는 표보다 이 문장을 먼저 읽는다(점검·알 수 없음 등).
+    notice = outcome.get("notice")
+    if notice:
+        summary = f"{notice} {summary}".strip()
+    # 탐색이 존을 확정했으면 **어디서 찾았는지 밝힌다**(D-176 후속3). 사용자는 위치를
+    # 말하지 않았으므로, 밝히지 않으면 **어느 존의 서버를 보고 있는지 모른 채** 결과를
+    # 읽는다 — 동명 호스트가 있는 환경에서 이것은 조용한 오답과 같다.
+    _zone_label = _discovered_zone_label(discovery)
+    if _zone_label:
+        summary = f"{summary} (대상 존: {_zone_label} — 존 순회 탐색으로 확정)"
 
     logger.info(
         "process_query: db_id=%s identifier=%s hostname=%s total=%d shown=%d kind=%s",
@@ -716,12 +936,35 @@ async def run_process_query(
             "shown_count": len(rows),
             "captured_at": outcome["captured_at"],
             "metric": alarm_kind,
+            **({"availability": outcome["availability"]} if outcome.get("availability") else {}),
+            **({"discovery": discovery["trace"]} if discovery else {}),
         },
     }
 
 
-def _empty_result(message: str, db_id: Optional[str], hostname: Optional[str]) -> dict:
-    """조회 불가 시 graceful 빈 결과(안내 요약)를 반환한다."""
+def _empty_result(
+    message: str,
+    db_id: Optional[str],
+    hostname: Optional[str],
+    *,
+    availability: Optional[dict] = None,
+    reason: Optional[str] = None,
+    discovery: Optional[dict] = None,
+) -> dict:
+    """조회 불가 시 graceful 빈 결과(안내 요약)를 반환한다.
+
+    `availability`/`reason`/`discovery`는 **있을 때만** 실린다 — 판정·탐색이 꺼져 있으면
+    반환 dict가 종전과 비트 동일해야 한다(Plan 81·D-176 후속3 회귀 안전).
+    """
+    meta: dict[str, Any] = {"db_id": db_id, "hostname": hostname, "total_count": 0}
+    if availability:
+        meta["availability"] = availability
+    if reason:
+        meta["reason"] = reason
+    if discovery:
+        # 어느 존을 돌았고 어디가 실패했는지 — 0건 진단(D-176 후속1)과 같은 원칙:
+        # **끊긴 지점이 특정되어야 한다.**
+        meta["discovery"] = discovery
     return {
         "organized_data": {
             "summary": message,
@@ -734,5 +977,5 @@ def _empty_result(message: str, db_id: Optional[str], hostname: Optional[str]) -
         "query_results": [],
         "source": [{"db_id": db_id} if db_id else {}],
         "target_db_ids": [db_id] if db_id else [],
-        "process_query": {"db_id": db_id, "hostname": hostname, "total_count": 0},
+        "process_query": meta,
     }

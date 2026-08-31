@@ -20,6 +20,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
 from src.utils.llm_compat import is_kbgenai
+from src.observability.group_metrics import record_group
+from src.utils.sql_dialect import is_db2
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.candidate_generator import classify_complexity
@@ -130,6 +132,101 @@ _LLM_BACKEND_ERROR_MARKERS = (
 # 재시도 중단 판정용 구분 프리픽스 — 토큰 한도 초과는 같은 프롬프트 재생성이
 # 결정적으로 다시 초과하므로 재시도가 무의미하다(PII 차단 D-153 후속2와 동형).
 _TOKEN_LIMIT_ERROR_PREFIX = "LLM 백엔드 입력 토큰 한도 초과"
+
+# 방언 불일치 사유의 구분 프리픽스 — 호출부가 재생성 유도 대상으로 식별한다(D-176).
+_DIALECT_ERROR_PREFIX = "행 제한 절 방언 불일치"
+
+# 실행 오류 중 **재생성으로 고쳐질 수 있는 것**의 마커 (D-176 · 소문자 비교).
+# SQL 문법·식별자 오류는 LLM이 다시 쓰면 고쳐질 수 있다. DB2는 SQLnnnnN 코드,
+# PostgreSQL은 문장형 메시지를 낸다.
+_REGENERABLE_EXEC_MARKERS = (
+    "sql0104n",             # DB2: unexpected token (LIMIT 오용 등)
+    "sql0204n",             # DB2: undefined name (스키마 미한정 — D-057)
+    "sql0206n",             # DB2: 컬럼이 해당 테이블에 없음
+    "syntax error",         # PostgreSQL
+    "undefined name",
+    "does not exist",       # PostgreSQL: relation/column does not exist
+    "undefined column",
+    "undefined table",
+)
+# 재생성해도 결과가 같은 인프라성 오류 — 토큰을 태우지 않는다. 위 마커보다 **먼저** 본다
+# (예: "connection ... does not exist" 형태의 혼합 문구를 문법 오류로 오분류하지 않기 위함).
+_NON_REGENERABLE_EXEC_MARKERS = (
+    "connection",
+    "timeout",
+    "timed out",
+    "refused",
+    "ssl",
+    "unreachable",
+    "authentication",
+    "permission denied",
+)
+
+
+def _is_regenerable_exec_error(exc: Exception) -> bool:
+    """실행 오류가 **SQL 재작성으로 고쳐질 수 있는 종류**인지 판정한다 (D-176).
+
+    단일 경로는 실행 오류 시 `query_generator`로 백엣지를 타 에러 컨텍스트와 함께
+    재생성한다. 멀티 경로에는 그 경로가 없어(`graph.py`가 무조건 전진) DB2 대상의
+    `LIMIT` 같은 방언 오류가 **한 번 죽으면 그대로 존 누락**이 됐다(plans/82 §1.1).
+
+    인프라성 오류(연결·타임아웃·인가)는 재생성해도 같으므로 제외한다 — 재생성은
+    프롬프트 1회분 토큰을 쓰는 행위라 이득이 없는 곳에 쓰지 않는다(D-159 비용 감수성).
+
+    Args:
+        exc: `client.execute_sql`이 낸 예외
+
+    Returns:
+        재생성할 가치가 있으면 True
+    """
+    msg = str(exc or "").lower()
+    if not msg:
+        return False
+    if any(m in msg for m in _NON_REGENERABLE_EXEC_MARKERS):
+        return False
+    return any(m in msg for m in _REGENERABLE_EXEC_MARKERS)
+
+
+def _check_row_limit_dialect(sql: str, db_engine: str | None) -> Optional[str]:
+    """최상위 행 제한 절이 대상 엔진 문법과 맞는지 판정한다 (D-176 · plans/82 §1.1).
+
+    단일 DB 경로는 `sql_validation._add_limit_clause`가 엔진별 절을 붙여 주는데
+    (DB2는 `FETCH FIRST n ROWS ONLY`), 멀티 경로 간이 검증에는 그 그물이 없어 DB2 대상의
+    `LIMIT`이 검증을 통과하고 **실행 시점에 SQL0104N으로 죽었다**(재생성 기회 없음 —
+    `graph.py`가 multi_db_executor에서 무조건 전진). 경로 비대칭 해소(D-066)다.
+
+    **보정이 아니라 거부**다. `LIMIT n` → `FETCH FIRST n ROWS ONLY` 문자열 치환은 중첩·
+    서브쿼리·`OFFSET` 동반 형태에서 틀릴 수 있어, 재생성으로 LLM이 올바른 절을 쓰게 한다.
+
+    판정 범위를 좁게 유지해 위양성을 만들지 않는다:
+      - **최상위만** 검사한다(`_strip_parenthesized` 재사용 — 서브쿼리 내부 LIMIT은 정상)
+      - 행 제한 절 **부재는 문제로 보지 않는다**(기존 동작 보존 — 상향은 별 관심사)
+      - PostgreSQL의 `FETCH FIRST`는 **통과**시킨다(표준 SQL 문법이라 실제로 동작한다)
+      - 미지·미설정 엔진은 통과 — 새 실패를 만들지 않는다
+
+    Args:
+        sql: 생성된 SQL
+        db_engine: 대상 엔진("db2"·"postgresql" 등). None/미지면 판정하지 않는다
+
+    Returns:
+        거부 사유(재생성 유도 문구 포함) 또는 None(통과)
+    """
+    if not sql or not is_db2(db_engine):
+        return None
+    # 괄호(서브쿼리) 내부를 제거해 최상위 텍스트만 본다(단일 경로와 동일 규약).
+    from src.nodes.query_validator import _strip_parenthesized
+
+    top_level = _strip_parenthesized(sql)
+    # 문자열 리터럴 제거 — `'no limit 5 here'` 같은 값에 오탐하지 않는다.
+    # 패턴은 `sql_validation.find_bare_hangul_tokens`가 쓰는 것과 동일(표준 SQL의 `''`
+    # 이스케이프 허용). 단일 사용이라 헬퍼로 빼지 않는다.
+    top_level = re.sub(r"'(?:[^']|'')*'", " ", top_level)
+    if not re.search(r"\bLIMIT\s+\d+", top_level, re.IGNORECASE):
+        return None
+    return (
+        f"{_DIALECT_ERROR_PREFIX}: 대상 엔진이 DB2인데 `LIMIT`을 사용했습니다. "
+        "행 수 제한은 `FETCH FIRST n ROWS ONLY`로 작성하세요."
+    )
 
 
 def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
@@ -334,8 +431,14 @@ async def _generate_validated_sql(
     *,
     db_engine: str,
     db_id: str,
+    error_context: str | None = None,
 ) -> tuple[str, str | None]:
     """대상 DB의 SQL을 생성하고 간이 검증한다(실패 시 1회 재생성).
+
+    Args:
+        error_context: 선행 실패 사유(선택). 실행 오류 후 재생성 시 호출부가 실어 보낸다
+            (D-176) — 단일 경로가 백엣지로 에러 컨텍스트를 주는 것과 대칭. None이면
+            종전 동작 그대로다.
 
     Returns:
         (sql, 검증 오류) — 오류가 남아 있으면 호출부가 이 DB를 건너뛴다.
@@ -350,6 +453,7 @@ async def _generate_validated_sql(
     sql = await _generate_sql(
         run.llm, run.parsed_requirements, schema_info,
         sub_context, run.effective_limit,
+        error_context=error_context,
         column_mapping=db_mapping,
         db_engine=db_engine,
         db_id=db_id,
@@ -503,14 +607,144 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                 # 검증 통과한 SQL을 스키마 키로 캐시 (다음 동일 스키마 DB가 재사용)
                 run.sql_by_schema[schema_key] = sql
 
-            # 4. SQL 실행
+            # 4. SQL 실행 — 문법·식별자 오류는 에러 컨텍스트를 실어 **1회 재생성**한다.
+            #    단일 경로는 query_executor→query_generator 백엣지가 이 일을 하는데 멀티
+            #    경로에는 그 경로가 없어(graph.py 무조건 전진) 한 번 죽으면 존 누락이었다
+            #    (D-176 · plans/82 §1.1). 경로 비대칭 해소(D-066).
             exec_start = time.time()
-            result = await client.execute_sql(sql)
+            try:
+                result = await client.execute_sql(sql)
+            except Exception as exec_exc:
+                if not _is_regenerable_exec_error(exec_exc):
+                    raise  # 인프라성 오류 — 재생성해도 같다. 기존 실패 경로로
+                logger.warning(
+                    "DB '%s' 실행 오류 — 에러 컨텍스트 실어 재생성 1회: %s | SQL head=%r",
+                    db_id, exec_exc, (sql or "")[:200],
+                )
+                _first_error = str(exec_exc)
+                sql, _regen_validation_error = await _generate_validated_sql(
+                    run, client, schema_info, sub_context, db_mapping,
+                    db_engine=db_engine, db_id=db_id,
+                    error_context=(
+                        f"직전 SQL이 실행 시점에 실패했습니다: {_first_error} "
+                        "동일한 오류가 나지 않도록 대상 엔진 문법과 스키마 한정을 다시 확인하세요."
+                    ),
+                )
+                if _regen_validation_error:
+                    # 재생성 산출이 검증도 통과하지 못함 — 원 실행 오류와 함께 노출
+                    run.db_errors[db_id] = (
+                        f"DB '{db_id}' 실행 에러: {_first_error} "
+                        f"| 재생성 1회 시도했으나 검증 실패: {_regen_validation_error}"
+                    )
+                    return
+                exec_start = time.time()
+                try:
+                    result = await client.execute_sql(sql)
+                except Exception as regen_exc:
+                    await _record_failure(run, db_id, sql, regen_exc, exec_start)
+                    # 침묵 금지 — 원 오류와 재생성 사실을 함께 남긴다(진단 가능성 보존)
+                    run.db_errors[db_id] = (
+                        f"DB '{db_id}' 실행 에러: {_first_error} "
+                        f"| 재생성 1회 후 재실패: {regen_exc}"
+                    )
+                    return
+                # 재생성 SQL이 동작했으므로 같은 스키마의 다음 DB도 이것을 쓰게 한다
+                run.sql_by_schema[schema_key] = sql
             await _record_success(run, db_id, sql, result, exec_start)
 
     except Exception as e:
         await _record_failure(run, db_id, sql, e, exec_start)
 
+
+
+async def _run_groups(
+    state: AgentState,
+    groups: list[dict],
+    targets: list[dict],
+    llm: BaseChatModel | None,
+    app_config: AppConfig | None,
+) -> tuple[_MultiRun, dict[str, dict], list[dict]]:
+    """실행 그룹을 **순서대로** 실행하고 그룹별 결과·부분 결과를 모은다 (D-176).
+
+    그룹마다 `_prepare_multi_run`을 새로 부른다 — `sql_by_schema`가 그룹 스코프로
+    격리돼 공동존(gp/yd)은 SQL을 공유하고 은행존(b0)은 분리된다. 그룹별 LLM 재료가
+    섞이지 않는 것은 b0+gp 조합의 PII 차단 가설 검증(plans/82 §10.1 H1)에도 필요하다.
+
+    한 그룹의 실패가 다음 그룹을 막지 않는다 — 그룹은 실패 격리 단위다(§4.1 원칙 4).
+    결과는 **하나의 누적 run**으로 합쳐 반환해, 호출부의 후단 처리(병합·폼필 승격)가
+    단일 그룹 경로와 동일하게 동작하게 한다.
+
+    Args:
+        state: 에이전트 상태
+        groups: 순서 확정된 실행 그룹 목록
+        targets: `target_databases` (그룹의 db_ids로 필터링해 쓴다)
+        llm: LLM 인스턴스
+        app_config: 앱 설정
+
+    Returns:
+        (누적 run, {group_key: 그룹 결과}, 부분 결과 목록)
+    """
+    by_db = {t.get("db_id"): t for t in targets if t.get("db_id")}
+    merged: _MultiRun | None = None
+    group_results: dict[str, dict] = {}
+    group_packets: list[dict] = []
+
+    for group in groups:
+        group_targets = [
+            by_db[d] for d in (group.get("db_ids") or []) if d in by_db
+        ]
+        if not group_targets:
+            continue
+        run = await _prepare_multi_run(state, llm, app_config)
+        started = time.time()
+        for target in group_targets:
+            await _run_single_target(target, run)
+        elapsed_ms = (time.time() - started) * 1000
+        # 유형별 분포 수집(P13 — 측정이 최적화보다 먼저). 계측 실패가 조회를 막지 않는다.
+        try:
+            record_group(group, elapsed_ms)
+        except Exception:  # noqa: BLE001 — 관측 실패는 본 경로에 영향을 주지 않는다
+            logger.debug("그룹 계측 기록 실패(무시)", exc_info=True)
+
+        db_ids = [t["db_id"] for t in group_targets]
+        rows = [r for d in db_ids for r in (run.db_results.get(d) or [])]
+        errors = {d: run.db_errors[d] for d in db_ids if d in run.db_errors}
+        group_results[group["group_key"]] = {
+            "label": group.get("label", ""),
+            "db_ids": db_ids,
+            "row_count": len(rows),
+            "elapsed_ms": round(elapsed_ms, 2),
+            "errors": errors,
+            "sqls": [a.sql for a in run.all_attempts if getattr(a, "sql", None)],
+        }
+        # 부분 결과 — 그룹 완료 즉시 노출용(문헌 정정 ② · Online Aggregation).
+        # peer 그룹만이다: discovery는 결과가 아니라 경과이고, dependent는 앞 그룹만으로
+        # 답이 되지 않아 부분 노출이 오해를 만든다(plans/82 §4.9).
+        if group.get("kind", "peer") == "peer":
+            group_packets.append({
+                "group_key": group["group_key"],
+                "label": group.get("label", ""),
+                "row_count": len(rows),
+                "rows": rows,
+                "errors": errors,
+                "elapsed_ms": round(elapsed_ms, 2),
+            })
+
+        if merged is None:
+            merged = run
+        else:
+            merged.db_results.update(run.db_results)
+            merged.db_schemas.update(run.db_schemas)
+            merged.db_errors.update(run.db_errors)
+            merged.all_attempts.extend(run.all_attempts)
+            merged.mc_candidates.extend(run.mc_candidates)
+            merged.mc_derivations.extend(run.mc_derivations)
+            merged.validation_failed.update(run.validation_failed)
+            merged.form_fill_out.update(run.form_fill_out)
+
+    if merged is None:
+        merged = await _prepare_multi_run(state, llm, app_config)
+    return merged, group_results, group_packets
 
 
 async def multi_db_executor(
@@ -541,10 +775,23 @@ async def multi_db_executor(
         - query_attempts: 실행 이력
         - current_node: "multi_db_executor"
     """
-    run = await _prepare_multi_run(state, llm, app_config)
     targets = state.get("target_databases", [])
-    for target in targets:
-        await _run_single_target(target, run)
+    groups = state.get("execution_groups") or None
+
+    if not groups:
+        # 단일 그룹 폴백 — 종전 경로와 **호출 순서·반환 키가 동일**해야 한다(회귀 0).
+        run = await _prepare_multi_run(state, llm, app_config)
+        for target in targets:
+            await _run_single_target(target, run)
+        group_results: dict[str, dict] = {}
+        group_packets: list[dict] = []
+    else:
+        # 그룹 순차 실행(D-176 · plans/82 §4.9) — 순서 정본은 레지스트리 query_order이지
+        # relevance_score(LLM 자기보고)가 아니다(D-035). 그룹마다 _prepare_multi_run을
+        # 새로 부르므로 sql_by_schema가 그룹 스코프로 격리된다(gp/yd 공유·b0 분리).
+        run, group_results, group_packets = await _run_groups(
+            state, groups, targets, llm, app_config
+        )
 
     # 동일 스키마 소급 복구(D-153 — D-066 후속6 재사용 시맨틱의 대칭 완성): 생성·검증
     # 실패로 누락된 DB를, 같은 (엔진, 스키마)의 다른 DB에서 검증 통과한 SQL로 재실행한다.
@@ -604,6 +851,10 @@ async def multi_db_executor(
         "current_node": "multi_db_executor",
         "error_message": None if run.db_results else "모든 DB 쿼리가 실패했습니다.",
     }
+    # 그룹 산출물은 그룹 실행일 때만 싣는다 — 단일 그룹 턴의 반환 shape를 바꾸지 않는다.
+    if groups:
+        result["group_results"] = group_results
+        result["group_packets"] = group_packets
     # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
     if run.form_fill_out.get("month_anchor"):
         result["form_month_anchor"] = run.form_fill_out["month_anchor"]
@@ -1887,7 +2138,9 @@ def _validate_sql(
     if not getattr(
         getattr(app_config, "text2sql", None), "multi_full_validation", False
     ):
-        return _validate_sql_simple(sql, schema_info)
+        # 간이 검증에도 엔진 방언 그물을 씌운다(D-176) — full validation을 켜지 않아도
+        # DB2 대상의 LIMIT은 잡아야 한다(위양성이 구조적으로 없는 부분집합만 기본 ON).
+        return _validate_sql_simple(sql, schema_info, db_engine=db_engine)
     from src.db_adapters import get_adapter
     from src.nodes.query_validator import validate_sql
 
@@ -1906,12 +2159,16 @@ def _validate_sql(
     return None
 
 
-def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
+def _validate_sql_simple(
+    sql: str, schema_info: dict, *, db_engine: str | None = None
+) -> Optional[str]:
     """SQL을 간이 검증한다.
 
     Args:
         sql: SQL 문자열
         schema_info: 스키마 정보
+        db_engine: 대상 엔진(선택). 주면 행 제한 절 방언까지 검사한다(D-176).
+            미전달 시 현행 동작 그대로 — 방언 판정이 발동하지 않는다.
 
     Returns:
         에러 메시지 (정상이면 None)
@@ -1983,6 +2240,13 @@ def _validate_sql_simple(sql: str, schema_info: dict) -> Optional[str]:
 
     if missing_dtime_filter(sql):
         return MISSING_DTIME_ERROR
+
+    # 엔진 방언 — 행 제한 절이 대상 엔진 문법과 어긋나면 실행 시점에 죽는다(D-176).
+    # SELECT 판정·금지 키워드보다 **뒤**에 둔다: 비-SELECT를 방언 사유로 오표면화하면
+    # 원인이 흐려진다(원인 정확 노출 원칙).
+    dialect_error = _check_row_limit_dialect(sql, db_engine)
+    if dialect_error:
+        return dialect_error
 
     return None
 

@@ -21,7 +21,6 @@ from src.prompts.input_parser import (
     INPUT_PARSER_SYSTEM_PROMPT,
 )
 from src.schema_cache.cache_manager import get_cache_manager
-from src.security.audit_logger import log_user_request
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
 from src.nodes.schemas import ParsedRequirements
@@ -153,14 +152,9 @@ async def input_parser(
         target_sheets,
     )
 
-    # 감사 로그: 사용자 요청 기록
-    await log_user_request(
-        user_query=state["user_query"],
-        output_format=parsed.get("output_format", "text"),
-        has_file=bool(state.get("uploaded_file")),
-        user_id=state.get("user_id"),
-        thread_id=state.get("thread_id"),
-    )
+    # 감사 기록은 여기서 하지 않는다(D-183) — 요청 수신 지점(API 라우트 · CLI 진입부)이
+    # 주체다. 노드는 app.state에 닿지 못해 client_ip·session_id를 채울 수 없고,
+    # 여기서 파일에 쓰면 라우트의 AuditService 기록과 겹쳐 파일에 같은 질의가 두 번 남는다.
 
     return {
         "parsed_requirements": parsed,

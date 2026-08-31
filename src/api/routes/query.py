@@ -60,6 +60,41 @@ _MAX_RESULTS_STORE_SIZE = 1000
 _results_store: OrderedDict[str, dict] = OrderedDict()
 
 
+async def _audit_user_request(
+    request: Request,
+    current_user: dict,
+    *,
+    user_query: str,
+    output_format: str,
+    has_file: bool,
+    thread_id: Optional[str],
+) -> None:
+    """사용자 질의를 감사에 기록한다 (D-183).
+
+    **기록의 주체는 요청 수신 지점이지 파싱 노드가 아니다.** 종전에는
+    `input_parser` 노드가 파일 감사만 직접 호출했는데(그래서 DB 감사에는 질의가
+    한 건도 없었다), 노드는 `app.state`에 닿지 못해 `client_ip`·`session_id`를
+    영원히 채울 수 없다. 이 헬퍼로 옮기면서 파일·DB가 한 지점에서 나오므로
+    두 저장소의 건수가 일치한다.
+
+    감사 실패는 질의를 막지 않는다 — 다만 삼키지 않고 경고로 남긴다.
+    """
+    audit_service = getattr(request.app.state, "audit_service", None)
+    if not audit_service:
+        return
+    try:
+        await audit_service.log_user_request(
+            user_id=current_user.get("sub") if current_user else None,
+            user_query=user_query,
+            output_format=output_format,
+            has_file=has_file,
+            client_ip=request.client.host if request.client else None,
+            session_id=thread_id,
+        )
+    except Exception as e:
+        logger.warning("사용자 질의 감사 기록 실패: %s", e)
+
+
 def _store_result(query_id: str, data: dict) -> None:
     """결과를 저장하고, 최대 크기를 초과하면 오래된 항목을 제거한다."""
     _results_store[query_id] = data
@@ -483,6 +518,7 @@ def _build_turn_input_state(
     current_user: dict,
     *,
     approval: tuple[str, str] | None = None,
+    config=None,
 ) -> dict:
     """턴 유형(첫/후속/승인)에 따른 그래프 입력 상태를 조립한다 — 텍스트 라우트 단일 출처.
 
@@ -494,6 +530,9 @@ def _build_turn_input_state(
     Args:
         approval: 라우트가 미리 해소한 (action, modified_sql). 승인 의사 LLM 보조(R3-(ii))는
             async라 이 동기 헬퍼 밖에서 해소해 주입한다. 미지정이면 결정적 판정만 수행한다.
+        config: 앱 설정. 범위 축소 기록(D-176 후속4)에만 쓰이며 **키워드 기본값**이라
+            기존 호출부(테스트 12곳 포함)는 무변경으로 동작한다 — 미지정이면 기록을
+            남기지 않는다(종전 동작과 동일).
     """
     if checkpoint_state is not None:
         # 후속 턴: delta input만 전달
@@ -561,6 +600,10 @@ def _build_turn_input_state(
         # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-153 후속1, 폼필 후속1과 동형)
         if body.selected_db_ids:
             delta["resolved_limit"] = resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
+        # 범위를 좁혔으면 그 사실을 state에 남긴다(D-176 후속4 — 침묵 절단 금지).
+        delta["scope_narrowed"] = (
+            _scope_narrowed_or_none(body, config, current_user) if config else None
+        )
         return delta
     # 첫 턴: 전체 초기화
     return create_initial_state(
@@ -577,7 +620,11 @@ def _build_turn_input_state(
             resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
             if body.selected_db_ids else None
         ),
-    )
+    ) | {
+        "scope_narrowed": (
+            _scope_narrowed_or_none(body, config, current_user) if config else None
+        )
+    }
 
 
 # ── 존 모호성 역질문 (Plan 75 §4 — clarification 배선) ─────────────────────────
@@ -612,6 +659,105 @@ def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) 
         labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
         return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
     return rewrite_zone_mentions_for_selection(query, selected_db_ids)
+
+
+def _scope_narrowed_or_none(body, config, current_user: dict | None) -> dict | None:
+    """이번 턴이 범위를 **좁혔는지** 판정하고 기록을 만든다 (D-176 후속4 · §5.3 불변식 6).
+
+    범위 축소는 정보 손실이 복구되지 않는 절단이라, 무엇을 보지 않았는지가 응답과 감사
+    로그 양쪽에 남아야 한다. 전부 선택했으면 절단이 아니므로 None.
+    """
+    if not body.selected_db_ids:
+        return None
+    from src.domain.scope_select import narrowed_record
+    from src.routing.execution_groups import partition_execution_groups
+
+    allowed = (current_user or {}).get("allowed_db_ids")
+    active = config.multi_db.get_active_db_ids() or []
+    targets = [d for d in active if allowed is None or d in set(allowed)]
+    record = narrowed_record(partition_execution_groups(targets), body.selected_db_ids)
+    if record:
+        record["all_db_ids"] = targets
+    return record
+
+
+def build_scope_reexpand(record: dict | None, original_query: str) -> dict | None:
+    """미조회 범위를 되돌릴 **사후 패널**을 만든다(폼필 역질문 패널과 동형).
+
+    이것이 없으면 §5.3 불변식 6의 절반(기록)만 지켜진다 — 사용자가 "아, 은행존도 봐야겠다"
+    고 생각했을 때 원문을 다시 타이핑해야 한다면 좁히기의 비용이 이득을 넘는다.
+    """
+    if not record or not record.get("skipped_db_ids"):
+        return None
+    return {
+        "kind": "scope_reexpand",
+        "question": (
+            f"{', '.join(record.get('skipped') or [])}은(는) 조회하지 않았습니다. "
+            "전체 범위로 다시 조회할까요?"
+        ),
+        "options": [{
+            "key": "__all__",
+            "label": "전체 범위로 다시 조회",
+            "db_ids": list(record.get("all_db_ids") or []),
+            "default": True,
+        }],
+        "original_query": original_query or "",
+        "multi": False,
+    }
+
+
+def _scope_select_or_none(
+    body, checkpoint_state: dict | None, config, current_user: dict | None
+) -> dict | None:
+    """범위 사전 선택 역질문 (D-176 후속4 · plans/82 §5.3~§5.5).
+
+    **모호성 해소(`_zone_clarification_or_none`) 다음 순위**로만 호출된다 — 두 질문이 한 턴에
+    겹치면 사용자를 두 번 붙잡고, 성격이 다른 질문(진행 불가 vs 성능 최적화)을 같은 것으로
+    학습시킨다.
+
+    발동 형태를 **전량 조회 질의로 좁힌다**: 비용은 존당 SQL(~50ms)이 아니라 **스키마
+    분석(존당 ≤20s) + LLM 생성**에 있고(§5.1 실측), 그 비용이 실제로 배가되는 형태가
+    전량 조회다. 서버 식별자 하나를 찾는 질의는 탐색(D-176 후속3)이 ~150ms에 끝내므로
+    여기서 사용자를 붙잡는 것은 **순손실**이다(§5.2).
+
+    Args:
+        body: 요청 본문
+        checkpoint_state: 체크포인트(후속 턴이면 not None)
+        config: 앱 설정
+        current_user: 인증 주체(인가 존 필터)
+
+    Returns:
+        clarification 페이로드 또는 None.
+    """
+    from src.domain.scope_select import scope_question_or_none
+    from src.routing.execution_groups import partition_execution_groups
+
+    if body.selected_db_ids:
+        return None  # 재개 턴
+    query = body.query or ""
+    # 후속 턴은 직전 존 승계가 우선이다(§4.2 비발동 — zone_select와 같은 규칙).
+    if checkpoint_state is not None:
+        return None
+    if not is_full_scan_query(query):
+        return None
+    # 위치어가 있으면 D-065가 결정적으로 좁힌다 — 이미 정해진 것을 되묻지 않는다.
+    from src.nodes.input_parser import LOCATION_HINT_TERMS
+    if any(t in query for t in LOCATION_HINT_TERMS):
+        return None
+
+    allowed = (current_user or {}).get("allowed_db_ids")
+    active = config.multi_db.get_active_db_ids() or []
+    targets = [d for d in active if allowed is None or d in set(allowed)]
+    groups = partition_execution_groups(targets)
+
+    return scope_question_or_none(
+        groups=groups,
+        ctx={
+            "zone_clarification_allowed": True,  # 텍스트 라우트만 이 함수를 부른다
+            "original_query": query,
+        },
+        enabled=getattr(config.composite, "scope_select_enabled", False),
+    )
 
 
 def _file_zone_clarification_or_none(
@@ -751,6 +897,17 @@ async def process_query(
     config = request.app.state.config
     thread_id = body.thread_id or query_id
 
+    # 감사(D-183): 역질문으로 조기 반환하는 경로에서도 "물었다"는 사실은 남아야 하므로
+    # 파이프라인 진입 전에 기록한다.
+    await _audit_user_request(
+        request,
+        current_user,
+        user_query=body.query,
+        output_format=getattr(body.output_format, "value", str(body.output_format)),
+        has_file=False,
+        thread_id=thread_id,
+    )
+
     thread_config = {"configurable": {"thread_id": thread_id}}
 
     # 체크포인트에서 이전 State 확인
@@ -758,6 +915,11 @@ async def process_query(
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
+    # 범위 사전 선택은 **모호성 해소 다음**이다(2연속 질문 금지 — D-176 후속4).
+    if not clarification:
+        clarification = _scope_select_or_none(
+            body, checkpoint_state, config, current_user
+        )
     if clarification:
         return QueryResponse(
             query_id=query_id,
@@ -771,7 +933,7 @@ async def process_query(
     # 라우트가 동일하게 호출해야 한다(SSE만 빠지는 비대칭 재발 방지, D-066).
     approval = await _resolve_turn_approval(body, checkpoint_state, config)
     input_state = _build_turn_input_state(
-        body, thread_id, checkpoint_state, current_user, approval=approval
+        body, thread_id, checkpoint_state, current_user, approval=approval, config=config
     )
 
     # FIX-18: 폼필 답변 턴은 양식 재채움 전체 파이프라인(파일 런과 동일 부하)이므로
@@ -826,6 +988,11 @@ async def process_query(
         "has_mapping_report": result.get("mapping_report_md") is not None,
         # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
+        # 범위 재확장(D-176 후속4): 좁혀 조회했을 때만 붙는 사후 패널 — 폼필 패널과 동형.
+        # 기록만 남기고 되돌릴 길을 안 주면 좁히기의 비용이 이득을 넘는다(§5.3 불변식 6).
+        "scope_reexpand": build_scope_reexpand(
+            result.get("scope_narrowed"), result.get("user_query", "")
+        ),
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
     }
@@ -857,6 +1024,17 @@ async def process_query_stream(
     config = request.app.state.config
     thread_id = body.thread_id or query_id
 
+    # 감사(D-183): 역질문으로 조기 반환하는 경로에서도 "물었다"는 사실은 남아야 하므로
+    # 파이프라인 진입 전에 기록한다.
+    await _audit_user_request(
+        request,
+        current_user,
+        user_query=body.query,
+        output_format=getattr(body.output_format, "value", str(body.output_format)),
+        has_file=False,
+        thread_id=thread_id,
+    )
+
     thread_config = {"configurable": {"thread_id": thread_id}}
 
     # 체크포인트에서 이전 State 확인
@@ -864,6 +1042,11 @@ async def process_query_stream(
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
+    # 범위 사전 선택은 **모호성 해소 다음**이다(2연속 질문 금지 — D-176 후속4).
+    if not clarification:
+        clarification = _scope_select_or_none(
+            body, checkpoint_state, config, current_user
+        )
     if clarification:
         async def clarification_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
@@ -886,7 +1069,7 @@ async def process_query_stream(
     # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
     approval = await _resolve_turn_approval(body, checkpoint_state, config)
     input_state = _build_turn_input_state(
-        body, thread_id, checkpoint_state, current_user, approval=approval
+        body, thread_id, checkpoint_state, current_user, approval=approval, config=config
     )
 
     # FIX-18: 폼필 답변 턴은 파일 런과 동일 부하 — 파일 타임아웃 적용(/query와 대칭)
@@ -1173,6 +1356,17 @@ async def process_file_query(
     current_user: dict = Depends(require_user),
 ) -> QueryResponse:
     """양식 파일과 함께 질의를 처리한다."""
+    # 감사(D-183): 파일 경로도 텍스트 경로와 대칭으로 기록한다
+    # (한쪽만 기록하는 비대칭은 이 저장소의 반복 실수 유형이다).
+    await _audit_user_request(
+        request,
+        current_user,
+        user_query=query,
+        output_format="file",
+        has_file=True,
+        thread_id=thread_id,
+    )
+
     # 1. 파일 타입 검증
     file_ext = _get_file_extension(file.filename)
     if file_ext not in ("xlsx", "docx"):
@@ -1409,6 +1603,17 @@ async def process_file_query_stream(
     current_user: dict = Depends(require_user),
 ) -> StreamingResponse:
     """파일 업로드와 함께 SSE 스트리밍 방식으로 질의를 처리한다."""
+    # 감사(D-183): 파일 경로도 텍스트 경로와 대칭으로 기록한다
+    # (한쪽만 기록하는 비대칭은 이 저장소의 반복 실수 유형이다).
+    await _audit_user_request(
+        request,
+        current_user,
+        user_query=query,
+        output_format="file",
+        has_file=True,
+        thread_id=thread_id,
+    )
+
     file_ext = _get_file_extension(file.filename)
     if file_ext not in ("xlsx", "docx"):
         from fastapi.responses import JSONResponse

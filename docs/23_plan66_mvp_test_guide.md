@@ -1049,8 +1049,9 @@ GEMINI_API_KEY=dummy   # 사실상 "조사 LLM 사용 가능" 플래그로 쓰�
 # [서버 A · CWD=레포 루트 · sre_agent/.venv]
 cd /Users/cptkang/AIOps/collectorinfra
 GEMINI_API_KEY=dummy \
-INVESTIGATION_LLM_MODEL="openai/Qwen3.5-9B" \
+MODEL="openai/Qwen3.5-9B" \
 API_BASE="http://<vllm-host>:8000/v1" \
+API_KEY=dummy \
 POLESTAR_MCP_URL=http://localhost:9097/sse \
 MAX_STEPS=40 \
 SEVERITY_JUDGE_ENABLED=true \
@@ -1060,10 +1061,18 @@ sre_agent/.venv/bin/python -m sre_agent.run_service
 
 | 설정 | 값 | 비고 |
 |---|---|---|
-| `INVESTIGATION_LLM_MODEL` | `openai/<served-model-name>` | **`openai/` 접두사 필수** — litellm이 OpenAI 호환 경로로 보낸다 |
+| `MODEL` | `openai/<served-model-name>` | **`openai/` 접두사 필수** — litellm이 OpenAI 호환 경로로 보낸다. **`INVESTIGATION_LLM_MODEL`이 아니다**(아래 정정) |
+| `API_KEY` | 아무 값 | `None`이면 litellm이 인증 헤더 없이 보내 400이 날 수 있다 |
 | `API_BASE` | `http://<vllm-host>:8000/v1` | `/v1`까지 포함 |
 | `GEMINI_API_KEY` | 아무 값 | 스텁 게이트 통과용(§7-V.3) |
 | `MAX_STEPS` | 40(기본) | 소용량 모델은 상한 도달이 잦다 — 미완주는 graceful |
+
+> **정정(2026-08-28 · 실측)**: 종전 이 명령은 `INVESTIGATION_LLM_MODEL`을 지정했으나
+> **운영 조사 경로가 그 필드를 읽지 않는다.** `DiagnosisAgent`는 `Config(model=settings.model, …)`로
+> 넘기고(`diagnosis.py:136`), `investigation_llm_model`을 읽는 곳은 `scripts/smoke_llm.py`와
+> 테스트뿐이다. 실제로 종전 명령대로 주면 `Config.model`이 기본값 `anthropic/claude-sonnet-5`로
+> 남고 `api_base`만 vLLM을 가리켜, litellm이 anthropic 프로바이더로 vLLM에 붙으려다 실패한다.
+> ⇒ **`MODEL`로 지정한다.** 배선 도달 확인 절차는 `docs/26_sre_agent_guide.md` §5.6.4.
 
 > **CWD 주의(§2.3 반대 방향)**: 레포 루트에서 띄우면 `.encenv`의 `LLM_GEMINI_API_KEY`도 함께
 > 잡힌다. 위처럼 `GEMINI_API_KEY`를 명시 지정하면 그 값이 쓰이므로 **외부 Gemini 호출은 발생하지
@@ -1228,6 +1237,9 @@ docker ps | grep polestar_pg    # 픽스처가 떠 있으면 헷갈린다. 실�
 ---
 
 ### 8.2 실 Prometheus 연결
+
+> **연동 정본**: Prometheus의 구성·기동·도구 사용·운영 편입 체크리스트는
+> `docs/27_prometheus_integration_guide.md`에 한 곳으로 모았다. 이 절은 그중 실연동 절차 부분이다.
 
 #### 8.2.1 설정 (mcp_server 전용 — `sre_agent`는 보유하지 않는다)
 

@@ -31,6 +31,7 @@ from langchain_core.runnables import RunnableConfig
 from noise_gate.domain.investigation_payload import (
     build_escalation,
     build_trigger_payload,
+    is_availability_alarm,
 )
 from noise_gate.domain.notification_policy import _TIER_RANK, TIER_PAGE
 from src.domain.host_authz import Principal, authorize_host_investigation
@@ -134,6 +135,12 @@ async def investigation_trigger_node(
         )
         return {}
 
+    # ★ 가용성 사전 판정 (Plan 81 · D-175). 판정 결과를 페이로드에 실어 보내면
+    # `sre_agent`가 조사 예산을 쓰기 전에 거부한다(같은 요구, 다른 수단 — `docs/25` L-5).
+    # **여기서 트리거를 취소하지 않는다** — 거부 사유가 담긴 브리핑이 통보에 첨부되는 편이
+    # 침묵보다 낫다(침묵 폴백 금지).
+    target_state = await _resolve_target_state(cfg, event, first)
+
     signals = getattr(decision, "signals", None) or {}
     payload = build_trigger_payload(
         event,
@@ -141,6 +148,7 @@ async def investigation_trigger_node(
         recurrence=state.get("recurrence"),
         correlation_meta=state.get("correlation_meta"),
         root_resource=signals.get("root_resource"),
+        target_state=target_state,
     )
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
@@ -187,6 +195,49 @@ async def investigation_trigger_node(
         if escalation is not None:
             result["investigation_escalation"] = escalation
     return result
+
+
+async def _resolve_target_state(cfg, event, first) -> Optional[dict]:  # noqa: ANN001
+    """조사 대상의 가용성을 판정해 페이로드에 실을 dict를 만든다 (Plan 81 · G-3 예외 포함).
+
+    판정하지 않는 경우(전부 None 반환 → 페이로드는 종전과 동일):
+        - 플래그 off (`availability_precheck_enabled=false`) — 회귀 0
+        - **가용성/다운 계열 알람** — 대상이 다운인 것이 당연하므로 판정하면 "왜 내려갔나"
+          조사가 막힌다(G-3 확정)
+        - 대상·db_id 미식별 — 조회할 곳이 없다
+
+    Args:
+        cfg: 앱 설정
+        event: 알람 이벤트
+        first: 해소된 첫 대상(TargetRef) 또는 None
+
+    Returns:
+        `HostAvailability.to_dict()` 또는 None
+    """
+    comp = getattr(cfg, "composite", None)
+    if comp is None or not getattr(comp, "availability_precheck_enabled", False):
+        return None
+    if is_availability_alarm(event):
+        logger.debug(
+            "가용성 계열 알람 — 사전 판정 생략(다운 원인 조사 보존): alarm_id=%s",
+            getattr(event, "alarm_id", ""),
+        )
+        return None
+    target = (first.hostname or first.server_name) if first else None
+    db_id = getattr(event, "db_id", None)
+    if not target or not db_id:
+        return None
+
+    from noise_gate.infrastructure.polestar_hostname_resolver import lookup_host
+
+    lookup = await lookup_host(cfg, db_id, target)
+    availability = lookup.availability
+    if availability.blocks_collection:
+        logger.info(
+            "조사 대상 가용성 비정상 — 판정을 페이로드에 실어 전달: alarm_id=%s host=%s reason=%s",
+            getattr(event, "alarm_id", ""), target, availability.reason,
+        )
+    return availability.to_dict()
 
 
 async def _submit_only(

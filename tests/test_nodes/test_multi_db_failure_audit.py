@@ -60,7 +60,8 @@ async def test_failure_attempt_preserves_sql_and_audits(monkeypatch):
     monkeypatch.setattr(mdb, "DBRegistry", _Registry)
     monkeypatch.setattr(mdb, "_analyze_schema", _schema)
     monkeypatch.setattr(mdb, "_generate_sql", _gen)
-    monkeypatch.setattr(mdb, "_validate_sql_simple", lambda sql, schema: None)
+    # **_kw: 실 `_validate_sql_simple`은 키워드 전용 인자(db_engine 등)를 받는다(D-176).
+    monkeypatch.setattr(mdb, "_validate_sql_simple", lambda sql, schema, **_kw: None)
     monkeypatch.setattr(mdb, "get_domain_by_id", lambda db_id: None)
     monkeypatch.setattr(mdb, "log_query_execution", audit_mock)
 

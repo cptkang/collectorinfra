@@ -240,6 +240,25 @@ class AgentState(TypedDict):
     client_ip: Optional[str]                 # 클라이언트 IP
     accessed_tables: list[str]               # 실제 접근한 테이블 목록 (미소비 — 쓰기 없음, Plan 69 §1.6. 삭제는 별건)
 
+    # === [D-176] 실행 그룹 (plans/82 §4.7) — 전부 **요청 스코프**다 ===
+    # 라우트가 매 턴 명시 초기화해야 한다(체크포인터는 델타만 병합 — Known Mistakes).
+    execution_groups: Optional[list[dict]]   # 순서 확정된 실행 그룹 목록(미설정=단일 그룹 폴백)
+    group_results: Optional[dict[str, dict]] # {group_key: {row_count, elapsed_ms, errors, sqls}}
+    group_packets: Optional[list[dict]]      # peer 그룹의 부분 결과(완료 즉시 노출용 — 문헌 정정 ②)
+    db_result_summary: Optional[dict[str, dict]]  # result_merger의 DB별 요약(종전 폐기분 승격)
+    # 0건 원인 진단(D-176 후속1 · §6). `src.domain.empty_answer.as_payload()` 산출물 —
+    # 체크포인터 직렬화 대상이라 dataclass가 아니라 dict로 싣는다.
+    empty_diagnosis: Optional[dict]
+    # 급증 조회의 **한계 표기**(D-176 후속2 · §6.12) — 기본 임계값·용량 미대조·주 단위 차단.
+    # 응답에 결정적으로 덧붙인다(LLM에 맡기면 누락된다).
+    spike_notes: Optional[list[str]]
+    # 존 순회 탐색 경과(D-176 후속3 · §4.3) — 어느 존을 돌았고 어디가 실패했는지.
+    # `src.domain.host_discovery.trace_payload()` 산출물(체크포인터 직렬화 대상 dict).
+    discovery_trace: Optional[dict]
+    # 범위 축소 기록(D-176 후속4 · §5.3 불변식 6) — {selected, skipped, skipped_db_ids}.
+    # **미조회 범위를 남기지 않으면 침묵 절단이다**(복구 불가한 정보 손실).
+    scope_narrowed: Optional[dict]
+
     # === 출력 ===
     final_response: str                      # 자연어 응답
     output_file: Optional[bytes]             # 생성된 파일 바이너리
@@ -441,6 +460,15 @@ def create_initial_state(
         request_id=request_id,
         client_ip=client_ip,
         accessed_tables=[],
+        # D-176 실행 그룹 — 요청 스코프(이전 턴 승계 차단)
+        execution_groups=None,
+        group_results=None,
+        group_packets=None,
+        db_result_summary=None,
+        empty_diagnosis=None,
+        spike_notes=None,
+        discovery_trace=None,
+        scope_narrowed=None,
         # 출력
         final_response="",
         output_file=None,

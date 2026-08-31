@@ -67,6 +67,21 @@ async def run_query(query: str) -> str:
             max_steps=config.observability.trace_max_steps,
         )
 
+    # 감사(D-183): CLI는 API 라우트를 지나지 않으므로 여기가 이 경로의 유일한 기록 지점이다.
+    # AuditService는 app.state에 매여 있어(HTTP 수명주기) CLI에서는 파일 감사를 직접 부른다.
+    from src.security.audit_logger import log_user_request
+
+    try:
+        await log_user_request(
+            user_query=query,
+            output_format="text",
+            has_file=False,
+            user_id=None,
+            thread_id="cli-session",
+        )
+    except Exception as e:  # 감사 실패가 질의를 막지 않는다
+        logger.warning("CLI 질의 감사 기록 실패: %s", e)
+
     try:
         result = await graph.ainvoke(initial_state, thread_config)
         return result.get("final_response", "응답을 생성할 수 없습니다.")

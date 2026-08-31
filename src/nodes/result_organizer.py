@@ -16,7 +16,20 @@ from langchain_core.language_models import BaseChatModel
 from src.utils.json_extract import coerce_content_text
 from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
+from src.db import get_db_client
+from src.domain.empty_answer import (
+    SINGLE_GROUP,
+    FunnelStage,
+    as_payload,
+    build_diagnosis,
+    detect_unexpressed_conditions,
+)
 from src.llm import create_llm
+from src.nodes.condition_probe import (
+    build_probe_sqls,
+    split_user_conditions,
+    truncated_stage_count,
+)
 from src.security.data_masker import DataMasker
 from src.state import AgentState, OrganizedData, SheetMappingResult
 
@@ -86,6 +99,18 @@ async def result_organizer(
         )
         is_sufficient = True
 
+    # 0건 원인 진단(D-176 후속1 · §6) — **0건일 때만** 발동한다. 결과가 있으면 프로브 호출 0회라
+    # 정상 경로 비용이 0이고, 플래그 OFF면 진단 자체가 없다(응답 문구 바이트 무변경).
+    diagnosis_delta: dict = {}
+    if not masked_results:
+        diagnosis = await _diagnose_empty_result(state, parsed, app_config)
+        if diagnosis is not None:
+            diagnosis_delta = {"empty_diagnosis": as_payload(diagnosis)}
+            if not diagnosis.regenerable:
+                # G-5: 상위 단계에는 데이터가 있다 = SQL은 정상 동작했다. 재생성은 토큰만 쓴다.
+                logger.info("0건 진단 — 재생성 중단(퍼널 상위 단계에 데이터 존재)")
+                is_sufficient = True
+
     if not is_sufficient and state.get("retry_count", 0) < app_config.query.max_retry_count:
         logger.info("데이터 부족으로 재시도 요청")
         return {
@@ -98,6 +123,7 @@ async def result_organizer(
             ),
             "error_message": "data_insufficient",
             "current_node": "result_organizer",
+            **diagnosis_delta,
         }
 
     # 3. 숫자 포맷팅 (텍스트 출력 시만)
@@ -190,7 +216,153 @@ async def result_organizer(
         ),
         "error_message": None,
         "current_node": "result_organizer",
+        **diagnosis_delta,
     }
+
+
+
+# ──────────────────────────────────────────────
+# 0건 원인 진단 (D-176 후속1 · plans/82 §6)
+# ──────────────────────────────────────────────
+
+#: 0단계(사용자 조건 0개) 라벨 — 원문 조건이 아니라 "무엇을 대상으로 셌는가"다.
+_P0_LABEL = "조건 없음(대상 전체)"
+
+
+def _probe_sources(state: AgentState) -> list[tuple[str, str, Optional[str]]]:
+    """퍼널을 그릴 (열 이름, SQL, db_id) 목록. 그룹이 있으면 **그룹별 열**로 나눈다.
+
+    존이 여럿이면 전역 퍼널보다 그룹별 퍼널이 정보량이 크다(§6.6) — 어느 존이 어디서
+    끊겼는지가 갈린다. 그룹 축은 `group_results`(1차 산출물)를 그대로 재사용하며
+    **재구현하지 않는다**.
+    """
+    groups = state.get("group_results") or {}
+    sources: list[tuple[str, str, Optional[str]]] = []
+    for key, info in groups.items():
+        if not isinstance(info, dict):
+            continue
+        sqls = [q for q in (info.get("sqls") or []) if q]
+        db_ids = info.get("db_ids") or []
+        if not sqls:
+            continue
+        sources.append((info.get("label") or key, sqls[-1], db_ids[0] if db_ids else None))
+    if sources:
+        return sources
+
+    sql = state.get("generated_sql")
+    if not sql:
+        return []
+    return [(SINGLE_GROUP, sql, state.get("active_db_id"))]
+
+
+async def _count_rows(app_config: AppConfig, db_id: Optional[str], sql: str) -> int:
+    """COUNT 프로브 1건을 실행한다. 읽기 전용이며 행을 가져오지 않는다(PII·전송량 0)."""
+    target = db_id if db_id and db_id not in ("_default", "default") else None
+    async with get_db_client(app_config, db_id=target) as client:
+        result = await client.execute_sql(sql)
+    rows = result.rows or []
+    if not rows:
+        return 0
+    first = rows[0]
+    values = list(first.values()) if isinstance(first, dict) else list(first)
+    return int(values[0]) if values else 0
+
+
+async def _probe_group(
+    app_config: AppConfig,
+    label: str,
+    sql: str,
+    db_id: Optional[str],
+    k_max: int,
+    notes: list[str],
+    report_missing: bool,
+) -> tuple[list[str], list[Optional[int]]]:
+    """그룹 하나의 (단계 라벨, 단계별 잔존 건수)를 만든다.
+
+    측정하지 못한 단계는 `None`으로 남긴다 — 0으로 채우면 "여기서 끊겼다"는 거짓말이 된다.
+    실패는 전부 사유와 함께 `notes`에 남긴다(침묵 폴백 금지).
+    """
+    conditions = split_user_conditions(sql)
+    if not conditions:
+        # 조건이 애초에 없던 질의("서버 목록 보여줘")까지 사유를 붙이면 소음이다 —
+        # 강등 사유는 **사용자가 조건을 걸었는데** 단계로 나누지 못한 경우에만 낸다.
+        if report_missing:
+            notes.append(
+                f"{label or '전체'}: 조회 조건에 단계로 나눌 수 있는 수치 비교가 없어 "
+                "단계별 진단을 수행하지 못했습니다."
+            )
+        return [], []
+
+    labels = [_P0_LABEL] + [c.text for c in conditions]
+    counts: list[Optional[int]] = [None] * len(labels)
+    # 마지막 단계(전 조건 적용)는 이번 조회가 0건이었다는 사실 그 자체다 — 다시 재지 않는다.
+    counts[-1] = 0
+
+    for probe in build_probe_sqls(sql, k_max):
+        try:
+            counts[probe.stage_index] = await _count_rows(app_config, db_id, probe.sql)
+        except Exception as e:  # noqa: BLE001 — 진단 실패가 응답을 막으면 안 된다
+            logger.warning("0건 진단 프로브 실패(%s, %d단계): %s", label, probe.stage_index, e)
+            notes.append(
+                f"{label or '전체'}: {probe.stage_index}단계 진단 프로브가 실패했습니다({type(e).__name__})."
+            )
+
+    truncated = truncated_stage_count(sql, k_max)
+    if truncated:
+        notes.append(
+            f"{label or '전체'}: 조건 {truncated}개는 프로브 상한({k_max})을 넘어 측정하지 않았습니다."
+        )
+    return labels, counts
+
+
+async def _diagnose_empty_result(
+    state: AgentState, parsed: dict, app_config: AppConfig
+) -> Optional[Any]:
+    """0건 응답에 붙일 진단을 만든다(플래그 OFF·재료 부재면 None).
+
+    LLM을 호출하지 않는다 — 조건 제거는 SQL 텍스트 조작이고, `COUNT(*)`만 던진다.
+    """
+    if not app_config.text2sql.empty_diagnosis_enabled:
+        return None
+
+    k_max = app_config.text2sql.empty_diagnosis_max_probes
+    notes: list[str] = []
+    unexpressed = detect_unexpressed_conditions(
+        state.get("user_query"), parsed.get("filter_conditions")
+    )
+
+    labels: list[str] = []
+    per_group: dict[str, list[Optional[int]]] = {}
+    for label, sql, db_id in _probe_sources(state):
+        group_labels, counts = await _probe_group(
+            app_config, label, sql, db_id, k_max, notes,
+            report_missing=bool(parsed.get("filter_conditions")),
+        )
+        if not group_labels:
+            continue
+        per_group[label] = counts
+        if len(group_labels) > len(labels):
+            labels = group_labels
+
+    if not per_group:
+        if not unexpressed and not notes:
+            return None
+        # 퍼널을 못 그려도 **미반영 경고와 사유는 반드시 낸다** — 말하지 않는 것이 최악이다.
+        return build_diagnosis(
+            parsed=parsed, stage_counts=[], unexpressed=unexpressed, notes=notes,
+        )
+
+    stages = [
+        FunnelStage(
+            label=labels[idx],
+            counts={g: (c[idx] if idx < len(c) else None) for g, c in per_group.items()},
+            source="probe",
+        )
+        for idx in range(len(labels))
+    ]
+    return build_diagnosis(
+        parsed=parsed, stage_counts=stages, unexpressed=unexpressed, notes=notes,
+    )
 
 
 async def _resolve_unmatched_via_llm(

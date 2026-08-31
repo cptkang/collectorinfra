@@ -11,6 +11,7 @@ import json
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -28,8 +29,18 @@ from src.security.pii_filter import (
     scrub_pii,
 )
 from src.state import AgentState
+from src.domain.change_terms import (
+    load_change_terms,
+    matched_filesystem_term,
+    matched_other_metric_terms,
+    resolve_absolute_threshold,
+    resolve_spike_request,
+)
+from src.db_adapters.polestar.spike_sql import CAPACITY_CHANGE_NOTE, build_spike_sql
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
+    BlockedComparison,
+    ComparisonPeriods,
     build_generic_period_hint,
     build_prior_rows_block,
     build_stat_month_block,
@@ -38,6 +49,9 @@ from src.utils.query_gen_common import (
     enforce_all_query_limit,
     extract_sql_from_response,
     normalize_eav_numeric_casts,
+    normalize_stat_month,
+    previous_month,
+    resolve_comparison_periods,
     resolve_effective_limit,
     resolve_stat_month_range,
     template_context_text,
@@ -519,7 +533,101 @@ def _try_deterministic(state: AgentState, ctx: _GenContext) -> Optional[dict]:
             "폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회): %s",
             form_fill["sql"][:500],
         )
+        return form_fill
+
+    # 폼필 **다음** 순위로 급증 비교 조립을 시도한다(D-176 후속2). 폼필이 잡은 턴에는
+    # 진입하지 않는다 — 양식 계약이 우선이고 두 조립기가 같은 SQL 자리를 다투면 안 된다.
+    spike = _try_spike(state, ctx)
+    if spike:
+        return spike
     return form_fill
+
+
+def _try_spike(state: AgentState, ctx: _GenContext) -> Optional[dict]:
+    """급증(기간 대비 상승) 비교 SQL을 코드가 결정적으로 조립한다(해당 없으면 None).
+
+    LLM 자유 생성을 쓰지 않는 이유는 두 가지다 — ①조인 구조가 고정돼 있다
+    ②프롬프트로 시키면 `build_stat_month_block`의 단일 기간 강제와 경쟁한다(§6.11).
+    **그래서 비교 모드에서는 그 블록을 주입하지 않는다** — 이 함수가 반환한 SQL은
+    프롬프트 경로를 아예 지나지 않으므로 충돌이 구조적으로 발생하지 않는다.
+
+    진입 조건(전부 만족해야 한다):
+        1. `spike_condition_enabled` ON
+        2. 대상이 폴스타 어댑터 DB
+        3. 급증 어휘가 있다
+        4. **절대 임계**가 명시돼 있다 — 차분만으로는 저사용 노이즈가 상위를 점령한다
+        5. 파일시스템 축이다 — 이번 범위(CPU·메모리 확장은 SPEC Ask first)
+        6. 주 단위 요청이 아니다 — 보존기간 미확인이라 차단하고 사유를 남긴다
+
+    Returns:
+        `{"sql": ..., "spike_notes": [...]}` 또는 None. 조립하지 않았어도 **사용자에게
+        알려야 할 사유가 있으면** notes만 담아 돌려준다(침묵 금지).
+    """
+    cfg = ctx.app_config.text2sql
+    if not cfg.spike_condition_enabled:
+        return None
+
+    db_id = state.get("active_db_id")
+    if not db_id or not ctx.adapter_db_ids or db_id not in ctx.adapter_db_ids:
+        return None
+
+    terms = load_change_terms()
+    request = resolve_spike_request(ctx.user_query, terms)
+    if not request:
+        return None
+
+    periods = resolve_comparison_periods(ctx.user_query)
+    if isinstance(periods, BlockedComparison):
+        # 약속하고 조용히 누락시키는 것이 최악이다 — 사유와 대체 제안을 응답에 남기고
+        # SQL은 LLM 경로에 맡긴다(§6.12 ③).
+        logger.info("급증 조립 미진입 — %s", periods.reason)
+        return {"spike_notes": [periods.reason, periods.suggestion]}
+
+    if not matched_filesystem_term(ctx.user_query, terms):
+        return None
+
+    threshold = resolve_absolute_threshold(ctx.user_query, terms)
+    if threshold is None:
+        # 차분만으로 판정하면 5→10%(2배)가 75→85%를 이겨 저사용 파일시스템이 상위를
+        # 점령한다(§6.10 ①). 절대 임계가 없으면 조립하지 않고 LLM 경로로 넘긴다 —
+        # 미반영 사실은 Wave 8의 G-4 경고가 안전망으로 알린다.
+        logger.info("급증 조립 미진입 — 절대 임계 미명시")
+        return None
+
+    if isinstance(periods, ComparisonPeriods):
+        base_month, cur_month = periods.base_month, periods.cur_month
+    else:
+        # 비교 표현이 없으면 선언 파일의 기본 기준(month)을 쓴다 — 질의가 이미 해석한
+        # 기간이 있으면 그 끝 월을 현재로 삼는다.
+        rng = normalize_stat_month(ctx.stat_month)
+        cur_month = rng[1] if rng else previous_month(date.today().strftime("%Y%m"))
+        base_month = previous_month(cur_month)
+
+    domain = get_domain_by_id(db_id)
+    sql = build_spike_sql(
+        db_engine=state.get("active_db_engine"),
+        db_schema=(domain.db_schema if domain else "") or None,
+        base_month=base_month,
+        cur_month=cur_month,
+        threshold_pct=threshold,
+        delta_pp=request.delta_pp,
+        limit=ctx.limit_value,
+    )
+    logger.info("급증 비교 SQL 결정적 조립(LLM 우회): %s", sql[:500])
+
+    notes = [
+        f"급증 기준: {base_month[:4]}-{base_month[4:]} 대비 +{request.delta_pp:g}%p"
+        + ("(기본값)" if request.delta_source == "default" else "")
+        + f" · 절대 임계 {threshold:g}%",
+        CAPACITY_CHANGE_NOTE,
+    ]
+    others = matched_other_metric_terms(ctx.user_query, terms)
+    if others:
+        notes.append(
+            f"이번 조회는 **파일시스템 사용률 급증만** 판정했습니다 — "
+            f"질의에 함께 있던 {', '.join(others).upper()} 조건은 반영되지 않았습니다."
+        )
+    return {"sql": sql, "spike_notes": notes}
 
 
 async def _try_semantic(
@@ -896,7 +1004,9 @@ async def query_generator(
     derivation_records: list[dict] = []
     # 결정적 경로 우선(LLM 우회) → 둘 다 비면 트랙 A LLM 폴백.
     form_fill = _try_deterministic(state, ctx)
-    sql = form_fill["sql"] if form_fill else None
+    # `.get`이어야 한다 — 급증 경로는 조립을 못 했어도 **사유(notes)만 담아** 돌려주므로
+    # `sql` 키가 없는 dict가 온다(주 단위 차단 등). 그때는 LLM 폴백으로 진행한다.
+    sql = form_fill.get("sql") if form_fill else None
     semantic_sql, coverage_outside = await _try_semantic(
         state, ctx, sql, derivation_records,
     )
@@ -914,6 +1024,9 @@ async def query_generator(
     # 폼필 산출 승격(D-146/D-148/D-151) — 월 앵커·매핑 갱신분·HITL 산출물을 state 델타로.
     # output_generator가 역질문 페이로드·사유·상수 기입에 사용한다(멀티 경로와 대칭).
     if form_fill:
+        if form_fill.get("spike_notes"):
+            # 급증 한계 표기(D-176 후속2) — 조립 성공/미진입 어느 쪽이든 사유를 운반한다.
+            extra_return["spike_notes"] = form_fill["spike_notes"]
         if form_fill.get("month_anchor"):
             extra_return["form_month_anchor"] = form_fill["month_anchor"]
         if form_fill.get("mapping_updates"):

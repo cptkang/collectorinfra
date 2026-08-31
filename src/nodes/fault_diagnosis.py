@@ -37,6 +37,7 @@ from src.domain.host_authz import (
     Principal,
     authorize_host_investigation,
 )
+from src.domain.host_availability import describe as describe_availability
 from src.observability.investigation_metrics import record_investigation
 from src.security.audit_logger import INVESTIGATION_DENIED, log_investigation
 from src.utils.prior_targets import resolve_targets
@@ -146,6 +147,36 @@ async def fault_diagnosis(
         )
         return _respond(_DENY_MESSAGES.get(decision.reason, _DENY_MESSAGES["_default"]))
 
+    # ★ 가용성 사전 판정 게이트 (Plan 81 · D-175 · G-2 확정).
+    # **인가 다음, 위임 직전**이다 — 인가보다 앞서면 권한 없는 요청이 DB를 읽게 되고,
+    # 위임 뒤면 이미 조사 예산(전체 타임아웃·토큰)이 나간 뒤다.
+    # 차단은 `unavailable` 하나뿐이며(fail-open), 판정이 꺼져 있으면 이 블록은 통째로 건너뛴다.
+    availability = await _check_target_availability(state, app_config, server_name, hostname, db_id)
+    if availability is not None and availability.blocks_collection:
+        label = hostname or server_name or "대상 서버"
+        notice = describe_availability(availability, label)
+        logger.info(
+            "장애 진단 생략(가용성 비정상): db_id=%s host=%s reason=%s",
+            db_id, label, availability.reason,
+        )
+        record_investigation(denied_reason="target_unavailable")
+        await log_investigation(
+            request_id=state.get("request_id"),
+            entry_point="chat",
+            targets=[{"server_name": server_name, "hostname": hostname, "db_id": db_id}],
+            # outcome 어휘를 늘리지 않는다(소비처 호환) — 사유는 degraded로 구분한다.
+            outcome=INVESTIGATION_DENIED,
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            backend="sre_agent",
+            degraded=[{"reason": "target_unavailable", "detail": availability.reason}],
+            availability=availability.to_dict(),
+        )
+        return _respond(
+            f"{notice} 조사를 수행하지 않았습니다. "
+            "서버 상태를 확인한 뒤 다시 요청해 주세요."
+        )
+
     client = _build_client(gate_cfg)
     if client is None:
         return _respond(
@@ -192,6 +223,43 @@ async def fault_diagnosis(
         status, server_name, hostname,
     )
     return _respond(text)
+
+
+async def _check_target_availability(
+    state: AgentState,
+    app_config: AppConfig,
+    server_name: Optional[str],
+    hostname: Optional[str],
+    db_id: Optional[str],
+):
+    """조사 대상의 가용성을 판정한다 (Plan 81). 판정하지 않을 조건이면 None.
+
+    조회는 `noise_gate.infrastructure.polestar_hostname_resolver.lookup_host` —
+    `process_query`·`investigation_trigger`와 **같은 함수**를 쓴다(사본 금지 · D-171 G5 선례).
+
+    Args:
+        state: 에이전트 상태(미사용 — 시그니처 대칭 유지)
+        app_config: 앱 설정
+        server_name / hostname: 대상 식별자(하나라도 있어야 판정한다)
+        db_id: 대상 DB(없으면 조회할 곳을 모른다)
+
+    Returns:
+        `HostAvailability` 또는 None(판정 비활성·대상 미식별·차단 비활성)
+    """
+    cfg = getattr(app_config, "composite", None)
+    if cfg is None or not getattr(cfg, "availability_precheck_enabled", False):
+        return None
+    if not getattr(cfg, "availability_block_on_unavailable", False):
+        # 관찰 모드 — 조사 경로는 표시할 표가 없으므로 판정만 하고 진행한다(문구 미사용).
+        return None
+    target = hostname or server_name
+    if not target or not db_id:
+        return None
+
+    from noise_gate.infrastructure.polestar_hostname_resolver import lookup_host
+
+    lookup = await lookup_host(app_config, db_id, target)
+    return lookup.availability
 
 
 async def _diagnose_and_poll(

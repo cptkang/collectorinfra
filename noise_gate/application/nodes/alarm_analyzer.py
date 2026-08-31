@@ -25,6 +25,7 @@ LLM 응답 형식 (JSON):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -225,6 +226,10 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
     history_section = ""
     if stats is not None:
         history_section = "\n" + _render_history_section(stats, event, cfg.alarm)
+    # (Plan 83 T6) 결정적 사전분류를 여기서 한 번만 산출한다 — few-shot 조회 키와 SSE
+    # payload(피드백 저장 키)가 **같은 값**을 쓰게 하려는 것이다. LLM 산출 pattern_type과
+    # 어긋나면 조회 가점(+1)이 조용히 누락된다(docs/28 A-3 실측).
+    pre_classification = stats.pre_classification if stats is not None else ""
 
     # Plan 47-1: 영향 프로세스 스냅샷이 있으면 프롬프트에 주입, 없으면 빈 문자열
     snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
@@ -241,12 +246,15 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         fb_store = config["configurable"].get("feedback_store")
         if fb_store is not None:
             try:
-                pattern = stats.pre_classification if stats is not None else ""
-                examples = fb_store.find_similar(
-                    alarm_name=event.alarm_name,
-                    resource_name=event.resource_name,
-                    pattern=pattern or "",
-                    limit=getattr(gate, "actionability_fewshot_count", 3),
+                # 파일 I/O는 blocking이라 이벤트 루프를 막지 않도록 스레드로 넘긴다
+                # (조회는 알람마다 실행되는 hot path다 — Plan 83 A-6).
+                examples = await asyncio.to_thread(
+                    lambda: fb_store.find_similar(
+                        alarm_name=event.alarm_name,
+                        resource_name=event.resource_name,
+                        pattern=pre_classification or "",
+                        limit=getattr(gate, "actionability_fewshot_count", 3),
+                    )
                 )
                 rendered = _render_feedback_section(examples)
                 if rendered:
@@ -293,6 +301,8 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
             pattern_type=str(parsed.get("pattern_type") or ""),
             is_routine=is_routine if isinstance(is_routine, bool) else None,
             pattern_analysis=str(parsed.get("pattern_analysis") or ""),
+            # (Plan 83 T6) 결정적 사전분류를 결과에 실어 SSE payload·피드백 저장까지 전달한다
+            pre_classification=pre_classification,
         )
 
         # Plan 52 E3: AI 메시지 심각도 보강(상향 전용) — 추가 LLM 호출 없이 기존 응답 재파싱.

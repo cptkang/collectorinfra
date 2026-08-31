@@ -66,17 +66,31 @@ class TestBuildResponsePrompt:
     """응답 생성 프롬프트 구성 검증."""
 
     def test_includes_all_sections(self):
-        """프롬프트에 모든 섹션이 포함된다."""
+        """프롬프트에 질의·요약·결과 행이 포함된다."""
         prompt = _build_response_prompt(
             original_query="서버 목록",
             summary="3건 조회",
             rows=[{"hostname": "web-01"}],
-            sql="SELECT * FROM servers LIMIT 10",
         )
         assert "서버 목록" in prompt
         assert "3건 조회" in prompt
-        assert "SELECT" in prompt
         assert "web-01" in prompt
+
+    def test_sql_is_not_exposed_to_the_response_prompt(self):
+        """★ 응답 프롬프트에 SQL을 싣지 않는다(커밋 014ed90 "응답에서 SQL 제외", 2026-06-09).
+
+        그 커밋이 `sql` 인자와 프롬프트 섹션을 지웠는데 이 테스트 파일은 갱신되지 않아
+        `sql=`을 넘기며 2개월 넘게 TypeError로 실패하고 있었다. 계약을 **강화하는 방향**으로
+        되살린다 — 인자를 지우는 데 그치지 않고 SQL이 새어 들어오면 잡히게 한다.
+        """
+        import inspect
+
+        assert "sql" not in inspect.signature(_build_response_prompt).parameters
+
+        prompt = _build_response_prompt(
+            original_query="서버 목록", summary="3건", rows=[{"hostname": "web-01"}],
+        )
+        assert "SELECT" not in prompt.upper()
 
     def test_truncates_large_result(self):
         """결과가 20건을 초과하면 상위 20건만 표시한다."""
@@ -85,7 +99,6 @@ class TestBuildResponsePrompt:
             original_query="test",
             summary="50건",
             rows=rows,
-            sql="SELECT * FROM t",
         )
         assert "상위 20건" in prompt
 

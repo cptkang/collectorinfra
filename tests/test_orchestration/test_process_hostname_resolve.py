@@ -12,10 +12,12 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from noise_gate.infrastructure.polestar_hostname_resolver import (
+    HostLookup,
     PolestarHostnameResolver,
     _sql_literal,
     build_hostname_sql,
 )
+from src.domain.host_availability import judge_availability
 from src.orchestration.process_query import run_process_query
 
 
@@ -256,14 +258,15 @@ class TestRunProcessQueryUsesResolvedHostname:
             }
         }
 
-        # 서버명 → hostname 해소를 가짜로 대체 (DB 미연결 환경)
+        # 서버명 → hostname 해소를 가짜로 대체 (DB 미연결 환경).
+        # Plan 81 이후 실 호출 경로는 `resolve_with_status`다(해소 + 가용성 판정 1쿼리).
         async def _fake_resolve(self, db_id, value):
             assert value == "WEB-SVR-01"
-            return "saisvd01"
+            return HostLookup("saisvd01", "WEB-SVR-01", judge_availability(avail_status=0))
 
         monkeypatch.setattr(
             "noise_gate.infrastructure.polestar_hostname_resolver."
-            "PolestarHostnameResolver.resolve",
+            "PolestarHostnameResolver.resolve_with_status",
             _fake_resolve,
         )
 
@@ -309,11 +312,12 @@ class TestRunProcessQueryUsesResolvedHostname:
         }
 
         async def _fake_resolve(self, db_id, value):
-            return None  # 해소 불가
+            # 해소 불가 — 조회 실패는 '가용하지 않음'이 아니므로 조회를 막지 않는다(fail-open)
+            return HostLookup(None, None, judge_availability(lookup_failed=True))
 
         monkeypatch.setattr(
             "noise_gate.infrastructure.polestar_hostname_resolver."
-            "PolestarHostnameResolver.resolve",
+            "PolestarHostnameResolver.resolve_with_status",
             _fake_resolve,
         )
 

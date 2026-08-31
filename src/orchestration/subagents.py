@@ -44,6 +44,7 @@ from src.orchestration.process_query import (
     _resolve_hostname,
     run_process_query,
 )
+from src.orchestration.host_inspect import HOST_INSPECT_AGENT, run_host_inspect
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
@@ -863,6 +864,9 @@ def _build_prior_targets_for_task(
         rows = _prior_result_rows(res)
         if not rows:
             continue
+        # 행별 `_source_db`가 있으면 `build_prior_targets`가 그것을 db_id 정본으로 쓴다
+        # (D-176). 여기서 주는 값은 **태그가 없는 행의 폴백**일 뿐이다 — 종전에는 이 값
+        # 하나가 전 대상에 찍혀, 팬아웃 결과의 대상들이 전부 첫 DB(b0)로 표기됐다.
         db_ids = res.get("target_db_ids") or []
         resolution = build_prior_targets(
             rows,
@@ -1195,5 +1199,14 @@ SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
     "general_inference": SubAgentSpec(
         "general_inference", "DB 미접근 일반 응답", run_general_inference,
         fallback=True, needs_history=True,
+    ),
+    # Plan 78 W3-1·W3-2 (WU-18) — 중간 비용대. `data_query`(DB SQL)와 `fault_diagnosis`
+    # (sre_agent 위임) 사이의 공백을 메운다. **도구 수를 늘리지 않는다**(W3-4): 프로파일
+    # 4종을 `profile` 인자로 흡수한다. 목록 노출은 플래그 종속 — `active_subagents()` 참조.
+    HOST_INSPECT_AGENT: SubAgentSpec(
+        HOST_INSPECT_AGENT,
+        "특정 서버의 OS 구성·자원 현황·메트릭 추세 단건 조회 "
+        "(DB SQL도 장애 진단 위임도 아닌 mcp_server 고수준 도구 경로)",
+        run_host_inspect,
     ),
 }

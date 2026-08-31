@@ -33,6 +33,8 @@ from src.prompts.semantic_router import (
     SEMANTIC_ROUTER_FAULT_DIAGNOSIS_CLASS_LINE,
     SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION,
     SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE,
+    SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE,
+    SEMANTIC_ROUTER_UNKNOWN_EXAMPLE,
 )
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
 from src.routing.registry import get_registry
@@ -278,6 +280,38 @@ async def semantic_router(
             "routing_intent": "cache_management",
             "current_node": "semantic_router",
         }
+
+    # ── A-6(WU-21) `unknown` — **분류 불가는 되묻는다** ──────────────
+    # `general_inference`(DB 미접근 일반 응답)와 의미가 다르다: unknown은 *판단 근거 부족*이므로
+    # 답을 지어내지 않고 사용자에게 되돌린다. **신규 UI를 만들지 않는다** — 존 역질문이 쓰는
+    # `final_response` + 전용 `routing_intent` 규약을 그대로 재사용한다(79 §3.3).
+    #
+    # 플래그가 off면 프롬프트에 `unknown` 정의가 없으므로 LLM이 이 값을 낼 수 없다. 그래도
+    # **여기서 한 번 더 막는다**(fail-closed): 모델이 규정 밖 라벨을 내는 것은 관측된 실패
+    # 유형이고(트랙 E-1 허용 집합 대조), off 상태에서 처리 분기 없이 통과하면 엉뚱한 DB로 간다.
+    if intent == "unknown":
+        if not load_config().router.unknown_enabled:
+            # off인데 산출됐다 = 규정 밖 라벨. 되묻기로 가지 않고 **강등**한다(E-1 정합).
+            logger.warning(
+                "라우터가 off 상태에서 unknown을 산출 — general_inference로 강등(A-6 fail-closed)"
+            )
+            intent = "general_inference"
+        else:
+            logger.info("시멘틱 라우팅: 분류 불가(unknown) — 사용자에게 되묻는다")
+            question = (
+                "요청하신 내용을 어떤 작업으로 처리할지 판단하기 어렵습니다. "
+                "무엇을 조회할지(예: 서버 사양·알람 이력·프로세스 목록)와 "
+                "대상(서버명 또는 위치)을 함께 알려주세요."
+            )
+            return {
+                "target_databases": [],
+                "is_multi_db": False,
+                "active_db_id": None,
+                "user_specified_db": None,
+                "routing_intent": "unknown",
+                "final_response": question,
+                "current_node": "semantic_router",
+            }
 
     if intent == "general_inference":
         logger.info("시멘틱 라우팅: 일반 추론 의도 감지")
@@ -733,6 +767,9 @@ async def _llm_classify_two_stage(
             SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION if fault_diagnosis_enabled else ""
         ),
         location_db_examples=_render_location_db_examples(),
+        unknown_class_line=(
+            SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE if cfg.unknown_enabled else ""
+        ),
     )
     messages: list[BaseMessage] = [SystemMessage(content=stage1_prompt)]
     if isinstance(llm, KBGenAIChat):
@@ -798,6 +835,13 @@ async def _llm_classify_two_stage(
         confirmed_intent=intent,
         intent_section=_stage2_intent_section(
             intent, fault_diagnosis_enabled=fault_diagnosis_enabled
+        ),
+        # ⚠ 2단 모드에서 이 예시는 **DB 선택 단계**에 실린다 — `_S_EXAMPLES`가 STAGE2
+        # 조립에 속하기 때문이다. intent 예시로서는 자리가 어긋나지만, 2단 모드는
+        # 기본 off이고 미검증(M-1~M-4)이라 프롬프트 재조립까지 하지 않는다.
+        # 단일 호출(기본 경로)에서는 정의 줄·예시가 **둘 다 올바른 자리**에 온다.
+        unknown_example=(
+            SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if cfg.unknown_enabled else ""
         ),
     )
     messages2: list[BaseMessage] = [SystemMessage(content=stage2_prompt)]
@@ -911,12 +955,16 @@ def _build_router_prompt(
     fault_section = (
         SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION if fault_diagnosis_enabled else ""
     )
+    # (Plan 79 A-6 · WU-21) `unknown`도 **정의 줄·예시 두 자리 모두** 조건부다(계약 C-A).
+    unknown_on = load_config().router.unknown_enabled
     return SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE.format(
         db_list=db_list,
         location_vocab=_render_location_vocab(),
         location_db_examples=_render_location_db_examples(),
         fault_diagnosis_class_line=fault_class_line,
         fault_diagnosis_section=fault_section,
+        unknown_class_line=SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE if unknown_on else "",
+        unknown_example=SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if unknown_on else "",
     )
 
 

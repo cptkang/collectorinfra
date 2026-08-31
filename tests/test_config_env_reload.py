@@ -96,12 +96,20 @@ def test_new_name_wins_when_both_present():
                  ENABLE_DEEPAGENT_ORCHESTRATION="false") is True
 
 
-def test_alias_order_beats_source_priority(monkeypatch, tmp_path):
-    """**침묵 손실 경로** — `.env`의 신 키가 OS env의 구 키를 이긴다.
+def test_source_priority_beats_alias_order(monkeypatch, tmp_path):
+    """★ **침묵 손실 경로** — OS env의 구 키가 `.env`의 신 키를 이긴다(2026-08-28 실측).
 
-    보통 OS env가 dotenv보다 우선하지만, AliasChoices는 소스 우선순위보다 **별칭 순서**를
-    먼저 적용한다. 따라서 구 키로 오버라이드하려던 운영자의 의도가 조용히 사라진다.
-    개명의 대가로 생긴 함정이므로 동작을 못 박고, 경고로 가시화한다(아래 테스트).
+    이 동작은 **뒤집힌 적이 있다**:
+      2026-08-24 실측 — AliasChoices의 별칭 순서가 이겨 `.env` 신 키가 우선
+      2026-08-28 실측(pydantic-settings 2.15.0) — **소스 우선순위가 이겨 OS env 구 키가 우선**
+
+    라이브러리 버전에 종속된 동작이므로 **어느 쪽이든 단언 자체가 취약하다.** 그럼에도
+    고정하는 이유는 뒤집힘을 **조용히 지나치지 않기 위해서**다 — 이 테스트가 깨지면
+    `config.py`의 경고 문구도 함께 낡았다는 신호다(둘은 같은 사실을 말한다).
+
+    ⚠ 그래서 경고 문구에는 규칙을 못박지 않는다. 종전 경고가 *"`.env`에 신 키가 있으면
+    이 구 키는 무시됩니다"* 라고 단정하는 바람에, 동작이 뒤집힌 뒤 운영자에게 **거짓을
+    말하고 있었다**(구 키가 실제로 적용되는데 무시된다고 안내).
     """
     env_file = tmp_path / ".env"
     env_file.write_text("ENABLE_INTENT_ORCHESTRATION=true\n", encoding="utf-8")
@@ -110,7 +118,27 @@ def test_alias_order_beats_source_priority(monkeypatch, tmp_path):
 
     cfg = AppConfig(_env_file=str(env_file), enable_semantic_routing=False)
 
-    assert cfg.enable_intent_orchestration is True, "별칭 순서가 소스 우선순위를 이긴다"
+    assert cfg.enable_intent_orchestration is False, "OS env 구 키가 .env 신 키를 이긴다"
+
+
+def test_legacy_conflict_is_named_in_the_warning(monkeypatch, tmp_path, caplog):
+    """구 키 값이 적용되지 **않았을** 때 그 사실을 문구로 지목한다(침묵 금지)."""
+    import logging
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("ENABLE_DEEPAGENT_ORCHESTRATION", "false")
+    monkeypatch.setenv("ENABLE_INTENT_ORCHESTRATION", "true")
+
+    with caplog.at_level(logging.WARNING):
+        cfg = AppConfig(_env_file=str(env_file), enable_semantic_routing=False)
+
+    # `getMessage()`가 아니라 `%`를 직접 쓰면 다른 로거의 레코드에서 포맷 예외가 난다.
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "구 키 값=false" in text
+    assert f"실제 적용값={cfg.enable_intent_orchestration}" in text
+    if cfg.enable_intent_orchestration is True:
+        assert "적용되지 않았습니다" in text
 
 
 def test_legacy_env_name_warns(monkeypatch, caplog):

@@ -58,6 +58,8 @@ _TOOL_NAMES: dict[str, str] = {
     "cache_management": "manage_cache",
     "synonym_registration": "register_synonym",
     "general_inference": "general_answer",
+    # Plan 78 W3-4 — 동사+목적어. 이름 정렬만으로 호출 오류가 크게 준다(arXiv 2510.07248).
+    "host_inspect": "inspect_host",
 }
 
 
@@ -310,6 +312,9 @@ def build_tools(
     """
     ambient = ambient_state or {}
     tools: list[StructuredTool] = []
+    # **목록은 고정한다**(78 P14): 조사 경로가 비활성이어도 도구를 빼지 않는다 —
+    # 도구 정의는 컨텍스트 접두부라 목록이 흔들리면 이후 전 턴의 KV 캐시가 무효화된다.
+    # 가용성 제어는 handler 진입부 게이트가 담당한다(`run_host_inspect` — 구조화 거부).
     for agent_name, spec in SUBAGENT_REGISTRY.items():
         tool_name = _TOOL_NAMES.get(agent_name, agent_name)
 

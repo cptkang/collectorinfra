@@ -60,6 +60,42 @@ class FamilySpec:
 
 
 @dataclass(frozen=True)
+class SolutionSpec:
+    """관측 솔루션 선언 — 실행 그룹의 1차 축 (D-176 · plans/82 §4.2).
+
+    Attributes:
+        code: 솔루션 식별자(polestar·apm·dpm …).
+        order: 솔루션 간 조회 순서. **선언 순서가 아니라 이 값이 정본**이다.
+        backend: 그룹 실행 주체 선택 키(sql·rest·mcp).
+        capabilities: 이 솔루션이 답할 수 있는 관측 능력.
+        requires: 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm → host_location).
+    """
+
+    code: str
+    label: str = ""
+    order: int = 0
+    backend: str = "sql"
+    family: str = ""
+    capabilities: tuple[str, ...] = ()
+    requires: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ZoneGroupSpec:
+    """존 그룹 선언 — 솔루션 내부의 2차 축 (D-176).
+
+    `zones` 선언 순서(=알림 RBAC 선택지 순서)와 **별개 축**이다. 조회 순서는
+    `query_order`가 정본이며, 두 순서를 겹치면 한쪽 요구가 다른 쪽을 흔든다.
+    """
+
+    code: str
+    label: str = ""
+    solution: str = ""
+    zones: tuple[str, ...] = ()
+    query_order: int = 0
+
+
+@dataclass(frozen=True)
 class LocationSpec:
     """위치 표면어 → db_id 매핑 선언."""
 
@@ -96,6 +132,8 @@ class DBRegistry:
 
     version: int = 1
     zones: tuple[ZoneSpec, ...] = ()
+    solutions_: tuple[SolutionSpec, ...] = ()
+    zone_groups_: tuple[ZoneGroupSpec, ...] = ()
     families: tuple[FamilySpec, ...] = ()
     environment_terms: tuple[str, ...] = ()
     locations: tuple[LocationSpec, ...] = ()
@@ -125,6 +163,38 @@ class DBRegistry:
             if entry.zone:
                 out.setdefault(entry.zone, []).append(entry.db_id)
         return {code: tuple(ids) for code, ids in out.items()}
+
+    # ── 실행 그룹 축 (D-176 · plans/82 §4.2) ───────────────
+    def solutions(self) -> tuple[SolutionSpec, ...]:
+        """등록된 관측 솔루션을 `order` 순으로 반환한다.
+
+        선언 순서가 아니라 `order`가 정본이다 — 조회 순서를 YAML 줄 위치에 의존시키면
+        무관한 편집이 실행 순서를 바꾼다.
+        """
+        return tuple(sorted(self.solutions_, key=lambda s: (s.order, s.code)))
+
+    def zone_groups(self) -> tuple[ZoneGroupSpec, ...]:
+        """존 그룹을 `query_order` 순으로 반환한다(은행존 → 공동존).
+
+        `zone_codes()`(알림 RBAC 선택지 순서)와 **다른 축**이다.
+        """
+        return tuple(sorted(self.zone_groups_, key=lambda g: (g.query_order, g.code)))
+
+    def zone_group_of(self, db_id: str) -> str | None:
+        """db_id가 속한 존 그룹 코드를 반환한다(매핑 없으면 None)."""
+        entry = self.get(db_id)
+        if not entry or not entry.zone:
+            return None
+        for group in self.zone_groups_:
+            if entry.zone in group.zones:
+                return group.code
+        return None
+
+    def capability_providers(self, capability: str) -> tuple[str, ...]:
+        """해당 관측 능력을 제공하는 솔루션 코드를 `order` 순으로 반환한다."""
+        return tuple(
+            s.code for s in self.solutions() if capability in s.capabilities
+        )
 
     # ── 위치·제품 어휘 ─────────────────────────────────────
     def location_terms(self) -> tuple[str, ...]:
@@ -250,6 +320,31 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
         if isinstance(loc, dict) and loc.get("term")
     )
 
+    solutions = tuple(
+        SolutionSpec(
+            code=str(raw["code"]),
+            label=str(raw.get("label", "")),
+            order=int(raw.get("order", 0)),
+            backend=str(raw.get("backend", "sql")),
+            family=str(raw.get("family", "")),
+            capabilities=_as_str_tuple(raw.get("capabilities")),
+            requires=_as_str_tuple(raw.get("requires")),
+        )
+        for raw in data.get("solutions") or []
+        if isinstance(raw, dict) and raw.get("code")
+    )
+    zone_groups = tuple(
+        ZoneGroupSpec(
+            code=str(raw["code"]),
+            label=str(raw.get("label", "")),
+            solution=str(raw.get("solution", "")),
+            zones=_as_str_tuple(raw.get("zones")),
+            query_order=int(raw.get("query_order", 0)),
+        )
+        for raw in data.get("zone_groups") or []
+        if isinstance(raw, dict) and raw.get("code")
+    )
+
     databases: list[DBEntry] = []
     for raw in data.get("databases") or []:
         if not isinstance(raw, dict):
@@ -282,6 +377,20 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 logger.warning(
                     "레지스트리 위치 '%s'가 미등록 db_id '%s'를 참조합니다.", loc.term, db_id
                 )
+    declared_solutions = {s.code for s in solutions}
+    for group in zone_groups:
+        if group.solution and group.solution not in declared_solutions:
+            logger.warning(
+                "레지스트리 존 그룹 '%s'가 미선언 솔루션 '%s'를 참조합니다.",
+                group.code, group.solution,
+            )
+        for zcode in group.zones:
+            if zcode not in {z.code for z in zones}:
+                logger.warning(
+                    "레지스트리 존 그룹 '%s'가 미선언 존 '%s'를 참조합니다.",
+                    group.code, zcode,
+                )
+
     declared_zones = {z.code for z in zones}
     for entry in databases:
         if entry.zone and entry.zone not in declared_zones:
@@ -293,6 +402,8 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
     return DBRegistry(
         version=int(data.get("version", 1)),
         zones=zones,
+        solutions_=solutions,
+        zone_groups_=zone_groups,
         families=families,
         environment_terms=_as_str_tuple(data.get("environment_terms")),
         locations=locations,

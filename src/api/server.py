@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import admin, admin_auth, alarm, conversation, health, query, schema_cache, user_auth
+from src.api.routes import admin, admin_auth, alarm, conversation, health, query, schema_cache, ui, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
@@ -626,6 +626,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.include_router(
         user_auth.router, prefix="/api/v1", tags=["user-auth"]
     )
+    application.include_router(ui.router, prefix="/api/v1", tags=["ui"])
 
     # 정적 파일 디렉토리
     static_dir = Path(__file__).resolve().parent.parent / "static"

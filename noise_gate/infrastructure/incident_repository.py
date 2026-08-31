@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import asyncpg
 
@@ -169,6 +169,20 @@ class PostgresIncidentStore(IncidentStore):
         except Exception as e:  # noqa: BLE001
             logger.error("incident ack 실패: %s", e)
             return False
+
+    async def get_db_id(self, incident_id: int) -> Optional[str]:
+        """incident id의 db_id를 조회한다 (Plan 83 T3 — 존 RBAC 판정용).
+
+        대상 없음·조회 실패는 None(graceful) — 호출자가 이를 거부로 바꾸지 않는다.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                return await conn.fetchval(
+                    "SELECT db_id FROM alarm_incidents WHERE id = $1", incident_id
+                )
+        except Exception as e:  # noqa: BLE001 — 판정 불가는 차단이 아니라 통과다
+            logger.warning("incident db_id 조회 실패(무시): %s", e)
+            return None
 
     async def list_open(self, *, limit: int = 100) -> list[dict]:
         """열린 incident를 최신순으로 조회한다(실패 시 빈 리스트)."""

@@ -5,7 +5,8 @@ description = "인프라 DB 접근용 MCP 서버 (PostgreSQL + DB2)"
 requires-python = ">=3.11"
 
 dependencies = [
-    "mcp[cli]",              # FastMCP 서버 프레임워크 + SSE transport
+    "mcp[cli]<2",            # FastMCP 서버 프레임워크 + SSE transport
+                            # <2 고정 — 2.x는 FastMCP를 MCPServer로 개명(D-181)
     "asyncpg>=0.29.0",       # PostgreSQL async 드라이버
     "ibm-db>=3.2.0",         # DB2 드라이버 (동기, asyncio.to_thread로 래핑)
     "sqlparse>=0.5.0",       # SQL 파싱 (읽기 전용 검증)

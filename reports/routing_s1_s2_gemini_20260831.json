@@ -1,0 +1,298 @@
+{
+  "summary": {
+    "total": 13,
+    "passed": 13,
+    "intent_match": 13,
+    "multi_db_cases": 3,
+    "multi_db_preserved": 3,
+    "score_count": 17,
+    "score_distribution": {
+      "0.8~1.0 (확실)": 16,
+      "0.5~0.8 (가능)": 1
+    },
+    "below_gate": 0,
+    "dropped_total": 0,
+    "errors": 0
+  },
+  "results": [
+    {
+      "id": "r-001",
+      "query": "여의도 개발 서버들의 CPU 사용률을 보여줘",
+      "critical": null,
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [
+        "polestar_cm_yd"
+      ],
+      "db_got": [
+        "polestar_cm_yd"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        0.95
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-002",
+      "query": "김포 운영 서버 목록과 메모리 사양 알려줘",
+      "critical": null,
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [
+        "polestar_cm_gp"
+      ],
+      "db_got": [
+        "polestar_cm_gp"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        1.0
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-003",
+      "query": "은행존 서버의 디스크 사용량 조회",
+      "critical": null,
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [
+        "polestar_b0"
+      ],
+      "db_got": [
+        "polestar_b0"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        0.95
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-010",
+      "query": "김포와 여의도 서버의 CPU 사용률을 비교해줘",
+      "critical": "multi_db",
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [
+        "polestar_cm_gp",
+        "polestar_cm_yd"
+      ],
+      "db_got": [
+        "polestar_cm_gp",
+        "polestar_cm_yd"
+      ],
+      "db_recall": true,
+      "min_databases": 2,
+      "multi_preserved": true,
+      "scores": [
+        0.9,
+        0.9
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-011",
+      "query": "전체 존의 서버 대수와 VM 대수를 합쳐서 알려줘",
+      "critical": "multi_db",
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [
+        "cloud_portal",
+        "polestar_b0",
+        "polestar_cm_gp",
+        "polestar_cm_yd"
+      ],
+      "db_got": [
+        "polestar_b0",
+        "polestar_cm_gp",
+        "polestar_cm_yd",
+        "cloud_portal"
+      ],
+      "db_recall": true,
+      "min_databases": 2,
+      "multi_preserved": true,
+      "scores": [
+        0.9,
+        0.9,
+        0.9,
+        0.9
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-012",
+      "query": "인시던트가 발생한 서버들의 자산 정보와 현재 사양을 보여줘",
+      "critical": "multi_db",
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [
+        "itam",
+        "itsm"
+      ],
+      "db_got": [
+        "itsm",
+        "itam",
+        "polestar_b0"
+      ],
+      "db_recall": true,
+      "min_databases": 2,
+      "multi_preserved": true,
+      "scores": [
+        0.95,
+        0.9,
+        0.85
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-020",
+      "query": "현재 활성 상태인 심각 알람 목록 보여줘",
+      "critical": null,
+      "intent_expected": "alarm_query",
+      "intent_got": "alarm_query",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [
+        "polestar_b0"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        0.95
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-021",
+      "query": "이번 달 CPU 임계값 초과 알람 이력 조회",
+      "critical": null,
+      "intent_expected": "alarm_query",
+      "intent_got": "alarm_query",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [
+        "polestar_b0"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        0.95
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-030",
+      "query": "polestar DB의 스키마 캐시를 갱신해줘",
+      "critical": null,
+      "intent_expected": "cache_management",
+      "intent_got": "cache_management",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [],
+      "db_recall": true,
+      "min_databases": 0,
+      "multi_preserved": true,
+      "scores": [],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-031",
+      "query": "조회 가능한 DB 목록과 설명을 알려줘",
+      "critical": null,
+      "intent_expected": "cache_management",
+      "intent_got": "cache_management",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [],
+      "db_recall": true,
+      "min_databases": 0,
+      "multi_preserved": true,
+      "scores": [],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-040",
+      "query": "안녕하세요, 오늘 날씨 어때요?",
+      "critical": null,
+      "intent_expected": "general_inference",
+      "intent_got": "general_inference",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [],
+      "db_recall": true,
+      "min_databases": 0,
+      "multi_preserved": true,
+      "scores": [],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-050",
+      "query": "서버 상태 좀 확인해줘",
+      "critical": "low_confidence",
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [
+        "polestar_b0"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        0.9
+      ],
+      "dropped": [],
+      "passed": true
+    },
+    {
+      "id": "r-051",
+      "query": "그 장비 정보",
+      "critical": "low_confidence",
+      "intent_expected": "data_query",
+      "intent_got": "data_query",
+      "intent_match": true,
+      "db_expected": [],
+      "db_got": [
+        "polestar_b0",
+        "itam"
+      ],
+      "db_recall": true,
+      "min_databases": 1,
+      "multi_preserved": true,
+      "scores": [
+        0.8,
+        0.75
+      ],
+      "dropped": [],
+      "passed": true
+    }
+  ]
+}

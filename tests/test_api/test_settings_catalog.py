@@ -110,13 +110,13 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
     response = await get_settings_schema(_ADMIN)
 
-    assert len(response.groups) == 19
+    assert len(response.groups) == 24
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 251
+    assert len(items) == 305
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
@@ -151,12 +151,50 @@ def test_t2_group_and_field_counts():
       2026-08-19까지 사전존재 실패로 남아 있었다**
     → OBS_{SQL_LOG_ENABLED,SQL_LOG_RETENTION_DAYS,TRACE_ENABLED,TRACE_RETENTION_DAYS,
       TRACE_MAX_STEPS} 추가(D-140/D-141)로 **251**, 그룹 18→19(observability 신설).
+    → 2026-08-28 정산으로 **300**, 그룹 19→24. 증가분 49는 세 계획의 누적분이다:
+      composite 12(Plan 78·81 — 팬아웃·조사·가용성) · noise_gate/alarm 증분(Plan 83 —
+      피드백·표시 레벨) · router 4(Plan 79 2단 분리) · polestar_rest 5(Plan 71 실시간) ·
+      drm 9(Plan 74) · host_authz 1(Plan 80) · text2sql +4(Plan 82 Wave 8·9 — D-176 후속1·후속2).
+      ★ 이 중 **31개(5개 그룹)는 GROUP_ORDER 미등재로 관리자 UI에 렌더되지 않고 있었다** —
+      단언이 낡은 것이 아니라 **기능이 빠져 있었다**. 그룹을 등재해 해소했고, 아래
+      `test_t2_group_order_covers_every_config_group`가 파생 등가성으로 재발을 막는다.
+    → COMPOSITE_{HOST_DISCOVERY_ENABLED,DISCOVERY_EARLY_EXIT,DISCOVERY_CACHE_TTL_SECONDS,
+      SCOPE_SELECT_ENABLED} 추가(plans/82 Wave 5·6.5 · D-176 후속3·후속4)로 **304**.
+      그룹 수는 불변(composite 기존 그룹) — 드리프트 가드가 통과한 것이 그 증거다.
+    → ROUTER_UNKNOWN_ENABLED(동시 작업 `plans/79` 2단 라우터 · 미커밋 추가분)로 **305**.
+      ★ 이 한 건이 이 단언의 성격을 보여준다: **다른 작업이 설정을 더해도 내 테스트가 빨개진다.**
+
+    ⚠ 이 숫자 단언은 **본질적으로 취약하다** — 설정을 추가할 때마다 갱신해야 한다.
+    회귀를 실제로 막는 것은 아래 파생 등가성 가드이며, 이 단언은 "얼마나 늘었는지"를
+    이력으로 남기는 용도다. 갱신을 잊어 빨간 상태로 방치하면 그 이력 가치도 사라진다.
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 19  # 18 그룹 + 전역
-    assert len(index) == 251
-    assert len([s for s in index.values() if s.group_key == "general"]) == 15
+    assert len(group_keys) == 24
+    assert len(index) == 305
+    assert len([s for s in index.values() if s.group_key == "general"]) == 18
+
+
+def test_t2_group_order_covers_every_config_group():
+    """★ 드리프트 가드 — `GROUP_ORDER`에 없는 그룹은 관리자 UI에서 **통째로 사라진다**.
+
+    `build_catalog`가 GROUP_ORDER만 순회하므로, config에 새 `*Config` 그룹을 추가하고
+    이 목록에 등재하지 않으면 그 설정 전체가 침묵 누락된다(2026-08-28 실측: 5개 그룹
+    31개 설정). 카운터 단언은 갱신을 잊으면 낡을 뿐이지만, **파생 등가성 단언은 낡지
+    않는다** — 그래서 숫자가 아니라 집합을 비교한다.
+    """
+    from src.api.settings_catalog import GROUP_ORDER, GROUP_TITLES
+
+    config_groups = {spec.group_key for spec in field_index().values()}
+    ordered = set(GROUP_ORDER)
+
+    assert config_groups - ordered == set(), (
+        "config에 있는데 GROUP_ORDER에 없다 — 관리자 UI에 노출되지 않는다"
+    )
+    assert ordered - config_groups == set(), (
+        "GROUP_ORDER에 있는데 config에 없다 — 빈 아코디언이 렌더된다"
+    )
+    assert ordered - set(GROUP_TITLES) == set(), "제목 없는 그룹은 키가 그대로 노출된다"
 
 
 def test_t2_alias_key_used_for_multi_db():

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Optional
 
 
 class IncidentStore(ABC):
@@ -93,6 +94,22 @@ class IncidentStore(ABC):
 
         Returns:
             True=ack 완료, False=대상 없음/이미 처리됨. 실패 시 False(graceful).
+        """
+        ...
+
+    @abstractmethod
+    async def get_db_id(self, incident_id: int) -> Optional[str]:
+        """incident id의 db_id를 반환한다 (Plan 83 T3 — 존 RBAC 판정용).
+
+        ack 요청자의 알림 존 권한을 검사하려면 대상 incident가 어느 존인지 알아야 한다.
+        조회 실패·대상 없음은 None을 반환하며, 호출자는 **None을 거부로 바꾸지 않는다**
+        (판정 불가 ≠ 권한 없음 — SSE `_visible`의 보수 규약과 동형).
+
+        Args:
+            incident_id: 대상 incident id
+
+        Returns:
+            db_id 문자열. 대상 없음·실패 시 None(graceful).
         """
         ...
 

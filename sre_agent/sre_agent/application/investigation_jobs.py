@@ -293,8 +293,12 @@ class JobStore:
         server_name: str | None = None,
         hostname: str | None = None,
         db_id: str | None = None,
+        target_state: dict | None = None,
     ) -> dict:
         """pull형 자연어 진단 잡을 제출한다(§3 `sre_diagnose`). 계약 검증 불요.
+
+        `target_state`(Plan 81)는 호출자가 판정한 대상 가용성이며 잡 payload에 보존된다 —
+        dispatcher의 가용성 가드가 이 값을 읽는다. 없으면 종전과 동일(가드 통과).
 
         반환: {investigation_id, status: accepted|rejected, reason?}.
         """
@@ -309,7 +313,12 @@ class JobStore:
                 return {"investigation_id": job.investigation_id, "status": "rejected", "reason": "question 결측"}
 
             job = self._new_job(kind="diagnosis", status="accepted", question=question)
-            job.payload = {"server_name": server_name, "hostname": hostname, "db_id": db_id}
+            job.payload = {
+                "server_name": server_name,
+                "hostname": hostname,
+                "db_id": db_id,
+                "target_state": target_state,
+            }
             self._jobs[job.investigation_id] = job
             self._audit(
                 {"investigation_id": job.investigation_id, "event": "accepted", "status": "accepted", "kind": "diagnosis"}

@@ -97,7 +97,9 @@ class _Harness:
             })
             return f"SELECT hostname FROM servers -- gen{len(harness.generate_calls)}"
 
-        def _validate(sql, schema_info):
+        def _validate(sql, schema_info, **_kw):
+            # **_kw: 실 `_validate_sql_simple`은 키워드 전용 인자(db_engine 등)를 받는다(D-176).
+            # 스텁이 좁은 시그니처면 호출부의 TypeError가 "DB 실행 에러"로 삼켜져 진단이 어렵다.
             if harness.validation_errors:
                 return harness.validation_errors.pop(0)
             return None

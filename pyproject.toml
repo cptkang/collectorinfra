@@ -10,8 +10,10 @@ dependencies = [
     "langgraph>=0.2.0",
     "langchain-core>=0.3.0",
 
-    # MCP 클라이언트 (DBHub 모드)
-    "mcp",
+    # MCP 클라이언트 (DBHub 모드) + mcp_server의 FastMCP 서버 프레임워크
+    # <2 고정: mcp 2.x는 FastMCP를 MCPServer로 개명하며 `mcp.server.fastmcp`를 제거했다.
+    # 상한을 풀면 mcp_server가 임포트 단계에서 깨진다(D-181).
+    "mcp<2",
 
     # DB 직접 연결 (direct 모드)
     "asyncpg>=0.29.0",

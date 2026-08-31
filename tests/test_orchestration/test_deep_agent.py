@@ -220,7 +220,11 @@ def test_orchestrator_config_recursion_limit_default():
 
 
 def test_build_tools_exposes_five_named_tools(mock_config):
-    """SUBAGENT_REGISTRY 5개가 약속된 도구 이름으로 노출된다."""
+    """SUBAGENT_REGISTRY 전부가 약속된 도구 이름으로 노출된다.
+
+    **목록은 플래그와 무관하게 고정**이다(78 P14) — `host_inspect`도 비활성일 때
+    목록에 남고, 가용성은 handler 게이트가 구조화 거부로 제어한다.
+    """
     tools = build_tools(worker_llm=None, app_config=mock_config)
     assert len(tools) == len(SUBAGENT_REGISTRY)
     names = {t.name for t in tools}

@@ -3,7 +3,11 @@
 HolmesGPT ReAct 조사 루프를 감싸되, **트리거·dedup·동시성·타임아웃·예산은 코드가 전담**한다
 (LLM에 위임 금지). JobStore(2-C)가 남긴 executor 주입점에 배선되는 실 dispatcher다.
 
-가드 5종:
+가드 6종:
+0. **대상 가용성**(Plan 81 · `docs/25` L-5) — 호출자가 실은 `target_state`가 `unavailable`이면
+   조사 전에 거부한다. 죽은 호스트에서는 도구가 **에러가 아니라 빈 데이터**를 돌려주므로
+   ReAct 루프가 전체 타임아웃(300s)까지 돌며 근거 없는 서술을 만들 수 있다.
+   **필드가 없으면 통과**한다(fail-open) — 이 가드는 보안 통제가 아니라 낭비 방지다.
 1. fingerprint dedup TTL — 완료된 조사도 `investigation_dedup_ttl_seconds` 내 재조사 억제.
 2. 동시 상한 — `investigation_max_concurrent`(기본 2) 세마포어.
 3. 전체 타임아웃 — `investigation_timeout_seconds`(기본 300s), **조사 1건 전체**에 asyncio.wait_for
@@ -122,6 +126,36 @@ def _host_key(job: JobLike) -> tuple[str, str] | None:
     return (db_id, host)
 
 
+#: 대상 가용성 가드의 거부 사유 코드(Plan 81).
+GUARD_TARGET_UNAVAILABLE = "target_unavailable"
+
+
+def _target_state(job: JobLike) -> dict | None:
+    """잡에서 호출자가 실은 대상 가용성 판정을 꺼낸다 (Plan 81).
+
+    **두 진입점의 payload 형태가 다르다**(`_host_key`와 같은 이유):
+
+        알람 트리거  `payload["meta"]["target_state"]`
+        pull 진단    `payload["target_state"]`
+
+    한쪽만 보면 그 경로에서 가드가 통째로 무력화된다(Known Mistakes: 단일/멀티 경로 비대칭).
+
+    Args:
+        job: 조사 잡
+
+    Returns:
+        판정 dict 또는 None(호출자가 싣지 않았거나 형태가 다름 → 가드 통과)
+    """
+    payload = getattr(job, "payload", None) or {}
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("meta")
+    for candidate in ((meta or {}).get("target_state"), payload.get("target_state")):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return None
+
+
 class InvestigationDispatcher:
     """JobStore executor로 주입되는 결정적 dispatcher.
 
@@ -172,7 +206,7 @@ class InvestigationDispatcher:
         blocked = self._apply_sync_guards(job)
         if blocked is not None:
             job.status, job.reason = "rejected", blocked
-            job.verdict = f"조사 거부 — {blocked}"
+            job.verdict = self._blocked_verdict(job, blocked)
             job.briefing = {"stub": True, "message": job.verdict, "elements": None}
             job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
             job.updated_at = self._wall_clock()
@@ -191,7 +225,25 @@ class InvestigationDispatcher:
             self._workers.add(worker)
         worker.start()
 
-    # ── 동기 가드(dedup TTL · 시간당 예산) + sweep ──────────────
+    @staticmethod
+    def _blocked_verdict(job: JobLike, blocked: str) -> str:
+        """거부 사유를 사람이 읽을 문구로 만든다.
+
+        가용성 거부만 **사실을 담아** 돌려준다(G-2: 거부 + 사실 브리핑) — 호출자가 그대로
+        사용자에게 보이므로 "왜 조사하지 않았는지"가 문구에 있어야 한다. 다른 사유는
+        종전 문구를 그대로 유지한다(회귀 0).
+        """
+        if blocked != GUARD_TARGET_UNAVAILABLE:
+            return f"조사 거부 — {blocked}"
+        state = _target_state(job) or {}
+        at = f"(확인 시각 {state['as_of']}) " if state.get("as_of") else ""
+        return (
+            f"조사 거부 — 대상 호스트가 가용하지 않습니다 {at}"
+            f"[판정 {state.get('reason') or 'unknown'}]. "
+            "가용성 회복 후 다시 요청하십시오."
+        ).replace("  ", " ")
+
+    # ── 동기 가드(대상 가용성 · dedup TTL · 시간당 예산) + sweep ──────────────
 
     def _apply_sync_guards(self, job: JobLike) -> str | None:
         """dedup TTL·예산 가드를 판정한다. 통과면 None, 차단이면 사유 문자열.
@@ -201,6 +253,12 @@ class InvestigationDispatcher:
         now = self._clock()
         with self._lock:
             self._sweep(now)
+
+            # 가용성 가드는 **가장 먼저** 본다 — 거부될 조사가 dedup·예산·in-flight 슬롯을
+            # 잡으면 정작 필요한 조사가 그 슬롯에서 밀린다.
+            state = _target_state(job)
+            if state and str(state.get("state") or "").strip() == "unavailable":
+                return GUARD_TARGET_UNAVAILABLE
 
             fp = job.fingerprint
             ttl = self._settings.investigation_dedup_ttl_seconds
@@ -430,6 +488,7 @@ class InvestigationDispatcher:
 
 __all__ = [
     "InvestigationDispatcher",
+    "GUARD_TARGET_UNAVAILABLE",
     "ToolOutputLike",
     "DiagnosisLike",
     "JobLike",

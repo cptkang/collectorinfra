@@ -193,7 +193,10 @@ class TestCapabilityScopeConstraint:
         """후속 턴 프롬프트가 미지원 항목(InnoDB 등) 예시 제안을 금지한다."""
         prompt = _build_system_prompt(self._follow_up_state(), mock_config)
         assert "[지원 가능한 조회 유형]" in prompt  # 제안은 지원 목록 안에서만
-        assert "InnoDB" in prompt  # 미지원 예시 명시적 금지(대표 사례)
+        # ★ "InnoDB"는 **기본 프롬프트에도** 들어 있어 addendum 여부를 변별하지 못한다
+        # (2026-08-28 실측 — 미지원 제안 금지가 첫 턴에도 적용되도록 확장됐다).
+        # addendum 고유 문구인 "rightsizing"으로 판정한다.
+        assert "rightsizing" in prompt  # _JUDGMENT_GUIDANCE 고유
         assert "프로세스" in prompt and "알람" in prompt  # 지원 목록 자체 존재
 
     def test_no_catalog_follow_up_still_carries_capability_list(self):
@@ -208,9 +211,17 @@ class TestCapabilityScopeConstraint:
 
         prompt = _build_system_prompt(self._follow_up_state(), _NoCatalogCfg())
         assert "[지원 가능한 조회 유형]" in prompt
-        assert "InnoDB" in prompt  # _JUDGMENT_GUIDANCE의 미지원 예시 금지 문구
+        assert "rightsizing" in prompt  # _JUDGMENT_GUIDANCE 고유(위 주석 참조)
 
     def test_first_turn_no_capability_constraint_addendum(self, mock_config):
-        """첫 턴(맥락 없음)이면 판단·제안 제약 addendum을 붙이지 않는다(회귀 방지)."""
+        """첫 턴(맥락 없음)이면 판단·제안 제약 addendum을 붙이지 않는다(회귀 방지).
+
+        ★ 종전에는 `"InnoDB" not in prompt`로 판정했는데, 미지원 제안 금지 문구가
+        **기본 프롬프트로도 확장**되면서 그 마커가 변별력을 잃어 사전존재 실패로 남아
+        있었다(2026-08-28 정리). 판정을 addendum 고유 문구로 좁히고, 기본 프롬프트의
+        제약은 **여전히 있어야 한다**는 것도 함께 못박는다.
+        """
         prompt = _build_system_prompt({"conversation_context": None}, mock_config)
-        assert "InnoDB" not in prompt
+
+        assert "rightsizing" not in prompt, "첫 턴에는 판단 addendum이 붙지 않는다"
+        assert "InnoDB" in prompt, "미지원 제안 금지는 첫 턴에도 적용된다"

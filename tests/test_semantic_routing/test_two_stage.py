@@ -480,9 +480,14 @@ def test_stage_templates_declare_only_the_keys_they_need():
 
     assert keys(SEMANTIC_ROUTER_STAGE1_INTENT_TEMPLATE) == {
         "fault_diagnosis_class_line", "fault_diagnosis_section", "location_db_examples",
+        # Plan 79 A-6(WU-21) — `unknown`도 옵트인 클래스라 정의 줄이 조건부 슬롯이다.
+        "unknown_class_line",
     }
     assert keys(SEMANTIC_ROUTER_STAGE2_DATABASE_TEMPLATE) == {
         "confirmed_intent", "db_list", "intent_section", "location_vocab",
+        # `unknown` 예시는 `_S_EXAMPLES`에 있고 그 블록이 STAGE2 조립에 속한다.
+        # 2단 모드에서 자리가 어긋나는 것은 알려진 한계다(2단은 기본 off · 미검증).
+        "unknown_example",
     }
 
 

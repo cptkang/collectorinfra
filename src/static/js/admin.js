@@ -178,6 +178,40 @@
         window.location.href = "/login";
     });
 
+    // --- 테마 (전역 기본값) ---
+
+    // 운영자 화면의 토글은 자기 브라우저가 아니라 **전체 기본 테마**(UI_DEFAULT_THEME)를 바꾼다.
+    // 즉시 반영 키라서 저장 후 새로 접속하는 화면부터 적용되며, 재시작·리로드가 필요 없다.
+    // 저장 후 개인 선택을 지워, 운영자 자신의 화면도 방금 정한 기본값을 따르게 한다.
+    var themeToggleBtn = document.getElementById("themeToggle");
+    if (themeToggleBtn && window.AppTheme) {
+        themeToggleBtn.addEventListener("click", async function () {
+            var next = window.AppTheme.toggleValue();
+            themeToggleBtn.disabled = true;
+            try {
+                var response = await apiRequest("PUT", "/api/v1/admin/settings", {
+                    settings: { UI_DEFAULT_THEME: next },
+                    reset_keys: [],
+                });
+                var data = await response.json();
+                if (!response.ok) {
+                    showError(errorMessage(data, "기본 테마 저장에 실패했습니다."));
+                    return;
+                }
+                window.AppTheme.cacheGlobalDefault(next);
+                window.AppTheme.clearPersonal();
+                showSuccess("기본 테마를 " + (next === "dark" ? "어둡게" : "밝게") + "로 저장했습니다.");
+                // 설정 목록이 옛 값을 보여주지 않도록 새로 읽는다 —
+                // 단, 저장하지 않은 편집이 있으면 덮어쓰지 않는다.
+                if (!Object.keys(settingsEdits).length) await loadSettings();
+            } catch (err) {
+                showError("서버와의 통신에 실패했습니다.");
+            } finally {
+                themeToggleBtn.disabled = false;
+            }
+        });
+    }
+
     // --- 환경변수 설정 (Plan 68: 카탈로그 기반 아코디언) ---
     //
     // 모든 렌더링은 createElement/textContent로 수행한다(innerHTML 금지 —
@@ -1464,6 +1498,19 @@
         });
         if (logsLoading) logsLoading.classList.remove("active");
         if (logsTable) logsTable.style.display = "table";
+        renderAuditAnonymousNotice(logs);
+    }
+
+    // 인증이 꺼져 있으면 모든 요청이 anonymous로 기록된다(D-183). 사용자 열이 전부 같아
+    // 보이는 것이 버그로 읽히지 않도록, 실제로 그런 행이 있을 때만 사유를 밝힌다
+    // — 인증을 켜면 안내가 저절로 사라진다(정적 문구를 박아두지 않는 이유).
+    function renderAuditAnonymousNotice(logs) {
+        var notice = document.getElementById("auditAnonymousNotice");
+        if (!notice) return;
+        var hasAnonymous = (logs || []).some(function(log) {
+            return log.user_id === "anonymous";
+        });
+        notice.style.display = hasAnonymous ? "block" : "none";
     }
 
     // --- 감사 통계 ---
@@ -1542,6 +1589,68 @@
         } catch (err) {
             if (alertsLoading) alertsLoading.classList.remove("active");
         }
+    }
+
+    // --- 알람 피드백 집계 — Plan 83 T13 ---
+    // 조회 전용이다. 상반된 라벨(같은 알람에 유효/노이즈가 함께 쌓인 경우)을 사람이 보고
+    // 판단하게 할 뿐, 발송 판정에는 관여하지 않는다.
+
+    var feedbackBody = document.getElementById("feedbackBody");
+    var feedbackTable = document.getElementById("feedbackTable");
+    var feedbackLoading = document.getElementById("feedbackLoading");
+    var feedbackEmpty = document.getElementById("feedbackEmpty");
+    var refreshFeedbackBtn = document.getElementById("refreshFeedbackBtn");
+
+    if (refreshFeedbackBtn) {
+        refreshFeedbackBtn.addEventListener("click", loadFeedbackSummary);
+    }
+    document.querySelectorAll('.tab[data-tab="feedback"]').forEach(function (tab) {
+        tab.addEventListener("click", loadFeedbackSummary);
+    });
+
+    async function loadFeedbackSummary() {
+        if (!feedbackBody) return;
+        if (feedbackLoading) feedbackLoading.classList.add("active");
+        if (feedbackTable) feedbackTable.style.display = "none";
+        if (feedbackEmpty) feedbackEmpty.style.display = "none";
+        try {
+            var response = await apiRequest("GET", "/api/v1/alarm/feedback/summary?limit=200");
+            if (!response.ok) {
+                if (feedbackLoading) feedbackLoading.classList.remove("active");
+                if (feedbackEmpty) feedbackEmpty.style.display = "block";
+                return;
+            }
+            var data = await response.json();
+            renderFeedbackSummary((data && data.items) || []);
+        } catch (e) {
+            if (feedbackLoading) feedbackLoading.classList.remove("active");
+            if (feedbackEmpty) feedbackEmpty.style.display = "block";
+        }
+    }
+
+    function renderFeedbackSummary(items) {
+        feedbackBody.innerHTML = "";
+        if (items.length === 0) {
+            if (feedbackLoading) feedbackLoading.classList.remove("active");
+            if (feedbackEmpty) feedbackEmpty.style.display = "block";
+            return;
+        }
+        items.forEach(function (it) {
+            var conflict = it.valid > 0 && it.noise > 0;   // 상충 표시 대상
+            var tr = document.createElement("tr");
+            tr.innerHTML =
+                "<td>" + escapeHtml(it.alarm_name || "-") + "</td>" +
+                "<td>" + escapeHtml(it.resource_name || "-") + "</td>" +
+                "<td>" + it.valid + "</td>" +
+                "<td>" + it.noise + "</td>" +
+                "<td>" + (it.last_label === "valid" ? "유효" : "노이즈") +
+                    (conflict ? " <span title='같은 알람에 상반된 라벨이 있습니다'>⚠</span>" : "") + "</td>" +
+                "<td>" + escapeHtml(it.last_labeled_by || "-") + "</td>" +
+                "<td>" + escapeHtml((it.last_ts || "").replace("T", " ").slice(0, 19)) + "</td>";
+            feedbackBody.appendChild(tr);
+        });
+        if (feedbackLoading) feedbackLoading.classList.remove("active");
+        if (feedbackTable) feedbackTable.style.display = "table";
     }
 
     // --- 열린 사건(incident) — D-049 ---

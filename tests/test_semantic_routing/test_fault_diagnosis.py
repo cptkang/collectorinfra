@@ -93,7 +93,15 @@ def _app_cfg(gate, *, authz_mode: str = "admin_only"):
     return SimpleNamespace(
         noise_gate=gate,
         host_authz=SimpleNamespace(mode=authz_mode),
-        composite=SimpleNamespace(prior_targets_enabled=False, max_targets=10),
+        # 가용성 사전 판정(Plan 81)은 **명시적으로 꺼 둔다** — 이 파일은 위임 계약을 본다.
+        # 판정 경로는 `tests/test_composite/test_fault_diagnosis_availability.py`가 따로 본다
+        # (테스트 config는 검증 대상 필드를 명시한다 — Known Mistakes).
+        composite=SimpleNamespace(
+            prior_targets_enabled=False,
+            max_targets=10,
+            availability_precheck_enabled=False,
+            availability_block_on_unavailable=False,
+        ),
     )
 
 

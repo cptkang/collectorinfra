@@ -105,6 +105,12 @@ class QueryResponse(BaseModel):
     form_fill_clarification: Optional[dict] = Field(
         default=None, description="폼필 미해결 필드 역질문 패널 컨텍스트"
     )
+    # Plan 82 §5.3 불변식 6 (D-176 후속4): 범위를 좁혀 조회했을 때 **미조회 범위 재확장**
+    # 사후 패널. 범위 축소는 정보 손실이 복구되지 않는 절단이므로 되돌릴 경로를 함께 준다.
+    # {kind: "scope_reexpand", question, options: [{key, label, db_ids}], original_query}
+    scope_reexpand: Optional[dict] = Field(
+        default=None, description="좁힌 범위의 재확장 패널 컨텍스트"
+    )
 
 
 class HealthResponse(BaseModel):

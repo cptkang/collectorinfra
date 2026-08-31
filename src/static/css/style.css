@@ -18,7 +18,92 @@
     font-display: swap;
 }
 
+/* ─── 테마 토큰 ───────────────────────────────────────────────
+   기본(:root) = 라이트. `<html data-theme="dark">`이면 아래 다크 블록이 덮는다.
+   테마 선택은 관리자 전역 기본값(UI_DEFAULT_THEME) + 사용자 개인 선택(localStorage)이
+   결정하며, 적용은 각 페이지 head의 부트스트랩 스크립트가 담당한다. */
+
 :root {
+    /* Core palette */
+    --bg-deep: #e8edf4;
+    --bg: #f5f7fa;
+    --bg-elevated: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f1f5f9;
+    --surface-active: #e2e8f0;
+
+    /* Accent — teal (라이트 배경 대비 확보용으로 어둡게 조정) */
+    --accent: #00806a;
+    --accent-dim: #00695a;
+    --accent-glow: rgba(0, 128, 106, 0.12);
+    --accent-glow-strong: rgba(0, 128, 106, 0.22);
+
+    /* Secondary — indigo */
+    --secondary: #4f46e5;
+    --secondary-dim: #4338ca;
+
+    /* Text */
+    --text: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+
+    /* Borders */
+    --border: #dbe3ec;
+    --border-accent: rgba(0, 128, 106, 0.3);
+
+    /* Status */
+    --success: #047857;
+    --success-bg: rgba(4, 120, 87, 0.1);
+    --error: #be123c;
+    --error-bg: rgba(190, 18, 60, 0.1);
+    --warning: #b45309;
+    --warning-bg: rgba(180, 83, 9, 0.1);
+    --info: #0369a1;
+    --info-bg: rgba(3, 105, 161, 0.1);
+
+    /* 표면 위 텍스트/구조 토큰 — 테마별로 반전되는 값들 */
+    --on-accent: #ffffff;
+    --header-bg: rgba(255, 255, 255, 0.88);
+    --bar-bg: rgba(255, 255, 255, 0.94);
+    --tooltip-bg: #1e293b;
+    --tooltip-text: #f1f5f9;
+    --overlay-scrim: rgba(15, 23, 42, 0.45);
+    --table-header-border: rgba(15, 23, 42, 0.14);
+    --table-cell-border: rgba(15, 23, 42, 0.08);
+    --table-stripe: rgba(15, 23, 42, 0.025);
+    --track: rgba(100, 116, 139, 0.14);
+    --track-strong: rgba(71, 85, 105, 0.55);
+    --grid-line: rgba(0, 128, 106, 0.035);
+    --page-glow: rgba(0, 128, 106, 0.05);
+
+    /* 라벨·배지에 쓰는 색조. 다크 팔레트의 밝은 색을 밝은 배경에 그대로 쓰면
+       대비가 1.5~2.7:1까지 떨어져 읽히지 않으므로 테마별로 나눈다. */
+    --tone-lime: #4d7c0f;
+    --tone-sky: #1d4ed8;
+    --tone-amber: #b45309;
+    --tone-orange: #c2410c;
+    --tone-rose: #be123c;
+    --tone-violet: #6d28d9;
+
+    /* Typography */
+    --font-display: 'Pretendard', -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    --font-mono: 'D2Coding', 'Consolas', 'Monaco', monospace;
+
+    /* Spatial */
+    --header-h: 64px;
+    --view-tabs-h: 44px;
+    --radius-sm: 6px;
+    --radius: 10px;
+    --radius-lg: 16px;
+
+    /* Shadows */
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+    --shadow-lg: 0 8px 32px rgba(15, 23, 42, 0.12);
+    --shadow-glow: 0 0 24px var(--accent-glow);
+}
+
+:root[data-theme="dark"] {
     /* Core palette */
     --bg-deep: #06090f;
     --bg: #0b1120;
@@ -37,10 +122,12 @@
     --secondary: #818cf8;
     --secondary-dim: #6366f1;
 
-    /* Text */
-    --text: #e8edf5;
-    --text-secondary: #94a3b8;
-    --text-muted: #506180;
+    /* Text — 보조·흐림 단계는 surface 위 WCAG AA(4.5:1)를 충족하도록 상향했다.
+       종전 값(#94a3b8 / #506180)은 surface 위 6.36:1 / 2.61:1로, 특히 muted가
+       관리자 화면(테이블·라벨·설명문)에서 판독 불가 수준이었다. */
+    --text: #eef3fa;
+    --text-secondary: #b9c6d9;
+    --text-muted: #8c9db8;
 
     /* Borders */
     --border: #1e2d45;
@@ -56,14 +143,28 @@
     --info: #38bdf8;
     --info-bg: rgba(56, 189, 248, 0.1);
 
-    /* Typography */
-    --font-display: 'Pretendard', -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
-    --font-mono: 'D2Coding', 'Consolas', 'Monaco', monospace;
+    /* 표면 위 텍스트/구조 토큰 */
+    --on-accent: #04121a;
+    --header-bg: rgba(11, 17, 32, 0.85);
+    --bar-bg: rgba(11, 17, 32, 0.92);
+    --tooltip-bg: #1a1a2e;
+    --tooltip-text: #eef3fa;
+    --overlay-scrim: rgba(6, 9, 15, 0.75);
+    --table-header-border: rgba(255, 255, 255, 0.12);
+    --table-cell-border: rgba(255, 255, 255, 0.08);
+    --table-stripe: rgba(255, 255, 255, 0.03);
+    --track: rgba(125, 145, 170, 0.16);
+    --track-strong: rgba(125, 145, 170, 0.7);
+    --grid-line: rgba(0, 228, 184, 0.02);
+    --page-glow: rgba(0, 228, 184, 0.06);
 
-    /* Spatial */
-    --radius-sm: 6px;
-    --radius: 10px;
-    --radius-lg: 16px;
+    /* 라벨·배지 색조 (어두운 배경 기준) */
+    --tone-lime: #a3e635;
+    --tone-sky: #60a5fa;
+    --tone-amber: #fbbf24;
+    --tone-orange: #fd7e14;
+    --tone-rose: #f87171;
+    --tone-violet: #a78bfa;
 
     /* Shadows */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -100,8 +201,8 @@ body::before {
     position: fixed;
     inset: 0;
     background:
-        linear-gradient(rgba(0, 228, 184, 0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 228, 184, 0.02) 1px, transparent 1px);
+        linear-gradient(var(--grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
     background-size: 60px 60px;
     pointer-events: none;
     z-index: 0;
@@ -116,7 +217,7 @@ body::after {
     transform: translateX(-50%);
     width: 800px;
     height: 600px;
-    background: radial-gradient(ellipse, rgba(0, 228, 184, 0.06) 0%, transparent 70%);
+    background: radial-gradient(ellipse, var(--page-glow) 0%, transparent 70%);
     pointer-events: none;
     z-index: 0;
 }
@@ -134,7 +235,7 @@ body::after {
 /* ─── Header ─── */
 
 header {
-    background: rgba(11, 17, 32, 0.85);
+    background: var(--header-bg);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border-bottom: 1px solid var(--border);
@@ -148,7 +249,7 @@ header .container {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 64px;
+    height: var(--header-h);
 }
 
 header h1 {
@@ -193,16 +294,409 @@ header nav {
 
 /* ─── Chat Layout ─── */
 
+/* ─── 뷰 탭 (질의응답 · 이벤트 알람) ───
+   알람은 질의응답과 성격이 달라 같은 메시지 스트림에 섞으면 대화 흐름을 끊는다.
+   탭은 본문만 교체하고, 헤더의 알람 수신·표시 레벨 컨트롤은 두 뷰가 공유한다
+   (수신 상태를 어느 뷰에서나 볼 수 있어야 하기 때문). */
+
+.view-tabs {
+    height: var(--view-tabs-h);
+    padding-top: 6px;              /* 탭이 띠 안에서 아래로 붙어 '꽂힌' 모양이 된다 */
+    background: var(--bg-deep);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: var(--header-h);
+    z-index: 9;
+}
+
+.view-tabs .container {
+    display: flex;
+    align-items: stretch;
+    height: 100%;
+    gap: 2px;
+}
+
+.view-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 18px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    margin-bottom: -1px;           /* 띠의 아래 경계선을 덮어 탭 아래가 열린 것처럼 보인다 */
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.view-tab:hover:not(.active) {
+    background: var(--surface-hover);
+    color: var(--text-secondary);
+}
+
+/* 활성 탭은 본문과 같은 배경을 써서 아래로 이어지고, 상단 강조선으로 선택을 알린다.
+   (두 배경의 명도 차가 작은 다크에서도 테두리+강조선이 형태를 만든다) */
+.view-tab.active {
+    background: var(--bg);
+    border-color: var(--border);
+    border-top: 2px solid var(--accent);
+    color: var(--text);
+    font-weight: 700;
+}
+
+.view-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* 미확인 알람 수 — 다른 뷰에 있는 동안 도착한 건수만 센다(0이면 감춘다) */
+.view-tab-badge {
+    display: none;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--error);
+    color: var(--on-accent);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+}
+
+.view-tab-badge.has-unread {
+    display: inline-block;
+}
+
+/* 비활성 뷰는 레이아웃에서 완전히 뺀다 — grid/flex 값을 되돌릴 필요가 없다 */
+.view-hidden {
+    display: none !important;
+}
+
+/* ─── 이벤트 알람 뷰 ─── */
+
+.alarm-view {
+    height: calc(100vh - var(--header-h) - var(--view-tabs-h));
+    overflow-y: auto;
+    position: relative;
+    z-index: 1;
+}
+
+.alarm-view-inner {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+.alarm-view-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.alarm-view-header h2 {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.alarm-view-count {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-right: auto;
+}
+
+.alarm-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 64px 24px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.alarm-empty svg {
+    width: 32px;
+    height: 32px;
+    stroke: var(--text-muted);
+    fill: none;
+    stroke-width: 1.5;
+}
+
+.alarm-empty p {
+    font-size: 0.875rem;
+    line-height: 1.7;
+}
+
+/* ─── 질의 이력 사이드바 (D-183) ───
+   오른쪽 진행 패널과 대칭이다: 같은 grid의 한 열이고, 접으면 44px 손잡이만 남는다.
+   본문을 교체하는 뷰가 아니라 옆에 붙어 있는 패널이라 질의를 보내면서도 목록이 보인다. */
+
+.history-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-deep);
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+    min-width: 0;
+}
+
+.chat-layout.history-collapsed .history-panel {
+    width: 44px;
+}
+
+.history-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    height: 46px;
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--border);
+}
+
+.history-panel-header h3 {
+    font-family: var(--font-display);
+    font-size: 0.8125rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.history-panel-count {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    margin-right: auto;
+    white-space: nowrap;
+}
+
+/* 접으면 제목·건수는 사라지고 손잡이만 남는다(오른쪽 패널과 같은 규칙). */
+.chat-layout.history-collapsed .history-panel-header {
+    padding: 0;
+    justify-content: center;
+}
+
+.chat-layout.history-collapsed .history-panel-header h3,
+.chat-layout.history-collapsed .history-panel-count,
+.chat-layout.history-collapsed .history-panel-body {
+    display: none;
+}
+
+.history-panel-toggle {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--radius-sm);
+    transition: color 0.15s, background 0.15s;
+}
+
+.history-panel-toggle:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+}
+
+.history-panel-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.history-panel-toggle svg {
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    transition: transform 0.2s;
+}
+
+/* 화살표는 "누르면 일어날 일"을 가리킨다 — 펼침일 때 ◀(접기), 접힘일 때 ▶(펼치기) */
+.chat-layout.history-collapsed .history-panel-toggle svg {
+    transform: rotate(180deg);
+}
+
+.history-panel-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.history-panel-tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px;
+    flex: 0 0 auto;
+}
+
+.history-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+}
+
+.history-search:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.history-search::placeholder {
+    color: var(--text-muted);
+}
+
+.history-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 8px 12px;
+}
+
+.history-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 32px 16px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.history-empty svg {
+    width: 26px;
+    height: 26px;
+    stroke: var(--text-muted);
+    fill: none;
+    stroke-width: 1.5;
+}
+
+.history-empty p {
+    font-size: 0.75rem;
+    line-height: 1.6;
+}
+
+/* 클래스명이 `history-item`이 아니라 `history-row`인 이유: 파일 뒤쪽(`.query-history`
+   계열)에 사용처 없는 옛 `.history-item` 규칙이 남아 있어, 같은 이름을 쓰면 뒤 규칙이
+   이겨(배경·라운드·margin) 의도한 행 모양이 나오지 않는다. 옛 규칙은 이 작업의 범위가
+   아니라 지우지 않는다.
+
+   좁은 열이라 한 행이 두 줄이다 — 위는 질의문(2줄까지), 아래는 시각과 동작 버튼. */
+.history-row {
+    display: block;
+    padding: 8px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.history-row:hover {
+    background: var(--surface-hover);
+}
+
+.history-row-query {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.history-row-meta {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.history-row-time {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    margin-right: auto;
+}
+
+/* 동작 버튼은 평소 숨어 있다 — 좁은 열에서 상시 노출은 질의문 자리를 뺏는다.
+   키보드 접근을 위해 포커스 시에도 나타난다. */
+.history-row-btn {
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.history-row:hover .history-row-btn,
+.history-row-btn:focus-visible {
+    opacity: 1;
+}
+
+.history-row-btn:hover {
+    background: var(--surface-active);
+    color: var(--text);
+}
+
+.history-row-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.history-row-btn svg {
+    width: 13px;
+    height: 13px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+}
+
 .chat-layout {
     display: grid;
-    grid-template-columns: 1fr 380px;
-    height: calc(100vh - 64px);
+    grid-template-columns: 260px 1fr 380px;
+    height: calc(100vh - var(--header-h) - var(--view-tabs-h));
     position: relative;
     z-index: 1;
 }
 
 .chat-layout.panel-collapsed {
-    grid-template-columns: 1fr 42px;
+    grid-template-columns: 260px 1fr 42px;
+}
+
+/* 두 패널은 독립적으로 접힌다 — 조합 네 가지가 모두 성립해야 한다. */
+.chat-layout.history-collapsed {
+    grid-template-columns: 44px 1fr 380px;
+}
+
+.chat-layout.history-collapsed.panel-collapsed {
+    grid-template-columns: 44px 1fr 42px;
 }
 
 /* ─── Chat Main (Left Column) ─── */
@@ -230,9 +724,11 @@ header nav {
 
 /* ─── §15: 초기 인증 게이트 (FOUC 방지) ─── */
 
-/* 인증 확정 전까지 앱 셸(header + chat-layout)을 숨긴다. app.js revealApp()가 해제. */
+/* 인증 확정 전까지 앱 셸(header + 뷰 탭 + 본문)을 숨긴다. app.js revealApp()가 해제. */
 body.auth-pending > header,
-body.auth-pending > .chat-layout {
+body.auth-pending > .view-tabs,
+body.auth-pending > .chat-layout,
+body.auth-pending > .alarm-view {
     visibility: hidden;
 }
 
@@ -254,7 +750,7 @@ body.auth-pending .auth-splash {
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    border: 3px solid var(--surface-active, #24344f);
+    border: 3px solid var(--surface-active);
     border-top-color: var(--accent);
     animation: authSplashSpin 0.8s linear infinite;
 }
@@ -274,7 +770,7 @@ body.auth-pending .auth-splash {
     border-radius: 50%;
     background: var(--surface);
     border: 1px solid var(--border);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--shadow);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -523,8 +1019,8 @@ body.auth-pending .auth-splash {
 #appTooltip {
     position: fixed;
     z-index: 9999;
-    background: #0d1626;
-    color: var(--text);
+    background: var(--tooltip-bg);
+    color: var(--tooltip-text);
     font-family: var(--font-sans, sans-serif);
     font-size: 0.6875rem;
     font-weight: 400;
@@ -534,7 +1030,7 @@ body.auth-pending .auth-splash {
     border: 1px solid var(--border-accent);
     white-space: nowrap;
     pointer-events: none;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    box-shadow: var(--shadow-lg);
     opacity: 0;
     transition: opacity 0.15s;
 }
@@ -805,7 +1301,7 @@ body.auth-pending .auth-splash {
 
 .chat-welcome-hint--help:hover {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 /* ─── Zone Clarification (Plan 75 §4 — 존 선택 역질문 체크박스) ─── */
@@ -847,10 +1343,36 @@ body.auth-pending .auth-splash {
 
 .zone-clarify-confirm:hover:not(:disabled) {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .zone-clarify-confirm:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* 건너뛰기 = 전체 조회(D-176 후속4 · U10). 확인 버튼보다 **약하게** 보여야 한다 —
+   기본 동작이지만 권장 동작은 "좁히기"가 아니라 사용자의 선택이기 때문이다.
+   테두리만 있는 형태로 두어 확인 버튼과 시각적 위계를 만든다. */
+.zone-clarify-skip {
+    margin-left: 8px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.zone-clarify-skip:hover:not(:disabled) {
+    border-color: var(--border-accent);
+    color: var(--text-primary);
+}
+
+.zone-clarify-skip:disabled {
     opacity: 0.45;
     cursor: not-allowed;
 }
@@ -1078,19 +1600,19 @@ body.auth-pending .auth-splash {
     color: var(--accent);
     font-weight: 600;
     padding: 7px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--table-header-border);
     text-align: left;
     white-space: nowrap;
 }
 .response-text td {
     padding: 6px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--table-cell-border);
     color: var(--text-secondary);
     line-height: 1.5;
     white-space: nowrap;
 }
 .response-text tr:nth-child(even) td {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--table-stripe);
 }
 .response-text tr:hover td {
     background: var(--surface-hover);
@@ -1352,7 +1874,7 @@ body.auth-pending .auth-splash {
     margin-top: 10px;
     padding: 8px 16px;
     background: var(--success);
-    color: #fff;
+    color: var(--on-accent);
     border-radius: var(--radius);
     font-family: var(--font-display);
     font-size: 0.8125rem;
@@ -1408,7 +1930,7 @@ body.auth-pending .auth-splash {
 .message-download--csv {
     background: rgba(163, 230, 53, 0.15);
     border-color: rgba(163, 230, 53, 0.3);
-    color: #a3e635;
+    color: var(--tone-lime);
 }
 
 .message-download--csv:hover {
@@ -1420,7 +1942,7 @@ body.auth-pending .auth-splash {
 .message-download--report {
     background: rgba(96, 165, 250, 0.15);
     border-color: rgba(96, 165, 250, 0.3);
-    color: #60a5fa;
+    color: var(--tone-sky);
 }
 
 .message-download--report:hover {
@@ -1437,7 +1959,7 @@ body.auth-pending .auth-splash {
     background: rgba(251, 191, 36, 0.15);
     border: 1px solid rgba(251, 191, 36, 0.3);
     border-radius: 8px;
-    color: #fbbf24;
+    color: var(--tone-amber);
     font-size: 0.75rem;
     font-weight: 600;
     cursor: pointer;
@@ -1464,7 +1986,7 @@ body.auth-pending .auth-splash {
 .message--alarm .message-avatar {
     background: linear-gradient(135deg, rgba(253, 126, 20, 0.2), var(--surface));
     border: 1px solid rgba(253, 126, 20, 0.4);
-    color: #fd7e14;
+    color: var(--tone-orange);
 }
 
 .message--alarm .message-bubble {
@@ -1595,6 +2117,30 @@ body.auth-pending .auth-splash {
     color: var(--text-muted);
 }
 
+/* Plan 83: 피드백 메모 입력 + 취소(철회) 링크 */
+
+.alarm-feedback-note {
+    flex: 1 1 200px;
+    min-width: 160px;
+    font-size: 0.72rem;
+    padding: 4px 8px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.alarm-feedback-note:disabled {
+    opacity: 0.6;
+}
+
+.alarm-feedback-undo {
+    font-size: 0.72rem;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
 /* ─── Plan 47: 패턴 분석 근거 표 + 시간대 막대 ─── */
 
 .alarm-evidence {
@@ -1654,7 +2200,7 @@ body.auth-pending .auth-splash {
 .alarm-hist-track {
     flex: 1 1 auto;
     height: 10px;
-    background: rgba(125, 145, 170, 0.16);
+    background: var(--track);
     border-radius: 3px;
     overflow: hidden;
 }
@@ -1663,7 +2209,7 @@ body.auth-pending .auth-splash {
     display: block;
     height: 100%;
     min-width: 2px;
-    background: rgba(125, 145, 170, 0.7);
+    background: var(--track-strong);
     border-radius: 3px;
 }
 
@@ -1679,7 +2225,7 @@ body.auth-pending .auth-splash {
 }
 
 .alarm-hist-row.is-current .alarm-hist-cnt {
-    color: #dc3545;
+    color: var(--tone-rose);
     font-weight: 600;
 }
 
@@ -1688,7 +2234,7 @@ body.auth-pending .auth-splash {
 .alarm-proc-table th {
     /* 행 헤더(고정폭)가 아니라 컬럼 헤더이므로 .alarm-evidence th의 width/정렬을 해제 */
     width: auto;
-    border-bottom: 1px solid rgba(125, 145, 170, 0.25);
+    border-bottom: 1px solid var(--border);
     padding: 2px 8px 4px 0;
 }
 
@@ -1816,7 +2362,7 @@ body.auth-pending .auth-splash {
 .input-bar {
     position: relative;
     z-index: 10;
-    background: rgba(11, 17, 32, 0.92);
+    background: var(--bar-bg);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border-top: 1px solid var(--border);
@@ -1995,7 +2541,7 @@ body.auth-pending .auth-splash {
 /* §11: 전송 버튼이 중단(Stop) 모드일 때 — 빨강 계열, 클릭 가능 유지 */
 .input-btn--send.input-btn--stop {
     background: var(--error);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .input-btn--send.input-btn--stop:hover {
@@ -2292,7 +2838,7 @@ select:focus {
 
 .btn-success {
     background: var(--success);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .btn-success:hover {
@@ -2941,8 +3487,8 @@ select:focus {
     position: absolute;
     top: calc(100% + 8px);
     right: 0;
-    background: var(--bg-secondary, #1a1a2e);
-    border: 1px solid var(--border, rgba(255,255,255,0.1));
+    background: var(--tooltip-bg);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 8px 12px;
     font-size: 0.75rem;
@@ -2950,7 +3496,7 @@ select:focus {
     white-space: nowrap;
     z-index: 200;
     min-width: 160px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow);
 }
 
 .status-badge-wrapper:hover .status-tooltip:not(:empty) {
@@ -2962,7 +3508,7 @@ select:focus {
     align-items: center;
     gap: 8px;
     padding: 3px 0;
-    color: var(--text-secondary, #aaa);
+    color: var(--text-secondary);
 }
 
 .status-tooltip-dot {
@@ -2988,6 +3534,67 @@ select:focus {
     display: inline-flex;
     align-items: center;
 }
+
+.alarm-level-select {
+    margin-left: 6px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+/* ─── 테마 토글 (헤더) ─── */
+
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    color: var(--text-secondary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.theme-toggle:hover {
+    color: var(--accent);
+    background: var(--surface-hover);
+    border-color: var(--border-accent);
+}
+
+.theme-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.theme-toggle:disabled {
+    opacity: 0.6;
+    cursor: progress;
+}
+
+.theme-toggle svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* 현재 테마에서 "전환하면 어떻게 되는지"를 보여준다 — 라이트에선 달, 다크에선 해 */
+.theme-toggle .theme-toggle-sun { display: none; }
+.theme-toggle .theme-toggle-moon { display: block; }
+:root[data-theme="dark"] .theme-toggle .theme-toggle-sun { display: block; }
+:root[data-theme="dark"] .theme-toggle .theme-toggle-moon { display: none; }
 
 .alarm-toggle {
     display: inline-flex;
@@ -3217,7 +3824,19 @@ select:focus {
 
 @media (max-width: 1024px) {
     .chat-layout {
-        grid-template-columns: 1fr 320px;
+        grid-template-columns: 220px 1fr 320px;
+    }
+
+    .chat-layout.panel-collapsed {
+        grid-template-columns: 220px 1fr 42px;
+    }
+
+    .chat-layout.history-collapsed {
+        grid-template-columns: 44px 1fr 320px;
+    }
+
+    .chat-layout.history-collapsed.panel-collapsed {
+        grid-template-columns: 44px 1fr 42px;
     }
 }
 
@@ -3226,8 +3845,9 @@ select:focus {
         padding: 0 16px;
     }
 
-    header .container {
-        height: 56px;
+    :root {
+        --header-h: 56px;
+        --view-tabs-h: 40px;
     }
 
     header h1 {
@@ -3264,12 +3884,16 @@ select:focus {
         grid-template-columns: 1fr;
     }
 
-    /* Chat responsive — hide panel on small screens */
-    .chat-layout {
+    /* Chat responsive — hide side panels on small screens */
+    .chat-layout,
+    .chat-layout.panel-collapsed,
+    .chat-layout.history-collapsed,
+    .chat-layout.history-collapsed.panel-collapsed {
         grid-template-columns: 1fr;
     }
 
-    .progress-panel {
+    .progress-panel,
+    .history-panel {
         display: none;
     }
 
@@ -3744,7 +4368,7 @@ select:focus {
 
 .badge--reload {
     border-color: rgba(167, 139, 250, 0.4);
-    color: #a78bfa;
+    color: var(--tone-violet);
 }
 
 .badge--unconsumed {
@@ -3777,7 +4401,7 @@ select:focus {
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(6, 9, 15, 0.75);
+    background: var(--overlay-scrim);
 }
 
 .modal {
@@ -3866,4 +4490,35 @@ select:focus {
     .setting-state {
         align-items: flex-start;
     }
+}
+
+/* Plan 83 C-2: 설정 화면 범위 밖 안내 */
+
+.settings-scope-note {
+    margin-top: 20px;
+    padding: 14px 16px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.settings-scope-note__title {
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.settings-scope-note ul {
+    margin: 8px 0 0 18px;
+}
+
+.settings-scope-note li {
+    margin-bottom: 4px;
+}
+
+.settings-scope-note code {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
 }

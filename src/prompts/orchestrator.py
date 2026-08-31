@@ -23,4 +23,5 @@ ORCHESTRATOR_INSTRUCTIONS = """당신은 인프라 데이터 질의 오케스트
 - manage_cache: 스키마 캐시·유사어 관리
 - register_synonym: 유사어 등록
 - general_answer: DB 미접근 일반 응답
+- inspect_host: 특정 서버의 OS 구성·자원 현황·메트릭 추세 단건 조회 (DB SQL도 장애 진단 위임도 아닌 중간 비용 경로. 비활성이면 사유를 담아 거부한다)
 """

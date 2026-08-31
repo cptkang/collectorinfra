@@ -334,6 +334,29 @@ class Text2SQLConfig(BaseSettings):
     # (절단·실패 모두 로그 가시화 — 침묵 강등 금지). 0 이하면 가드 비활성.
     prompt_token_budget: int = 90_000
 
+    # === [D-176 후속1] 0건 응답 원인 진단 (plans/82 §6.1~§6.8 · Wave 8) ===
+    # ON이면 결과가 0건일 때만 조건 누적 COUNT 프로브를 돌려 **어느 조건에서 끊겼는지**를
+    # 응답에 낸다(MFS/XSS). 결과가 있으면 프로브 호출 0회라 정상 경로 비용은 0이고,
+    # OFF면 0건 응답 문구가 바이트 단위로 무변경이다.
+    # **기본 ON**(사용자 결정 2026-08-28) — 현행 0건 응답이 결함(어느 조건에서 끊겼는지
+    # 말하지 않는다)이고 발동이 0건일 때로 한정돼 정상 경로 비용이 0이기 때문이다.
+    # 되돌리려면 `TEXT2SQL_EMPTY_DIAGNOSIS_ENABLED=false`.
+    empty_diagnosis_enabled: bool = True
+    # 프로브 상한 K. 모든 MFS 열거는 NP-hard이나 K 고정이면 다항이다(EMPTY-MFS-01).
+    # 초과분은 측정하지 않고 **절단 사실을 응답에 노출**한다(침묵 절단 금지).
+    empty_diagnosis_max_probes: int = 5
+
+    # === [D-176 후속2] 급증(기간 대비 상승) 조건 결정적 조립 (plans/82 §6.9~§6.13 · Wave 9) ===
+    # ON이면 "갑자기 80% 이상 상승" 류 질의를 LLM 자유 생성 대신 코드가 비교 SQL로 조립한다.
+    # OFF면 `_try_deterministic`이 급증을 시도조차 하지 않는다(현행 경로 무변경).
+    # **기본 ON**(사용자 결정 2026-08-28) — 진입 조건이 좁아(급증 어휘 AND 절대 임계 명시 AND
+    # 파일시스템 축 AND 폴스타 어댑터 DB AND 비재시도 턴) 해당 없는 질의는 조립 자체를 시도하지
+    # 않는다. 되돌리려면 `TEXT2SQL_SPIKE_CONDITION_ENABLED=false`.
+    spike_condition_enabled: bool = True
+    # 질의에 수치가 없을 때 쓰는 기본 차분 임계(%p). 선언 파일(config/change_terms.yaml)이
+    # 정본이고 이 값은 **운영 override**다 — 사용 시 값을 응답에 노출한다(§6.12 ②).
+    spike_default_delta_pp: float = 20.0
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -774,6 +797,7 @@ class NoiseGateConfig(BaseSettings):
     feedback_store_path: str = "logs/alarm_feedback.jsonl"   # (E4) 운영자 피드백 저장
     feedback_store_enabled: bool = True                      # (E4) 피드백 적재 on/off
     actionability_fewshot_count: int = 3                     # (E4) few-shot 예시 최대 개수
+    feedback_store_max_lines: int = 20000                    # (Plan 83) 피드백 회전 상한 = 조회 창
     # ── E5: deepagents Advisory Enricher (agentic 보조 분석기, §8.5/§8.7, D-048.7) ──
     # 전부 옵트인(기본 off) — enable_agentic_enricher=False면 E1~E4 배선·발송 판단 무변경.
     # 판단은 결정적 notification_policy가 하고, enricher는 signals(승격 전용)만 보강한다.
@@ -792,6 +816,9 @@ class NoiseGateConfig(BaseSettings):
     # 기본 off면 워커 경로 티어 SSE는 로그 폴백(E3 무변경, 회귀 0). 스칼라라 .env JSON 회피.
     sse_bridge_enabled: bool = False          # (E3 후속) 워커→UI 실시간 SSE 브리지 on/off
     sse_bridge_channel: str = "alarm:sse"     # (E3 후속) SSE 브리지 Redis pub/sub 채널명
+    # (Plan 83) SUPPRESS 티어 SSE 발행 — 감사 레벨(관리자 전용 표시)의 전제.
+    # 기본 off면 현행과 비트 동일(발행 0). 억제율이 높은 환경에선 최대 트래픽원이다.
+    sse_suppressed_enabled: bool = False      # (Plan 83) SUPPRESS SSE 발행 on/off
     # ── D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소) ──
     # 기본 off면 incident 트래커 미기동 → /alarm/metrics는 기존 null 동작 유지(회귀 0).
     # 활성 시 워커는 incident 이벤트를 Redis로 발행, API 단일 라이터가 PG에 영속한다.
@@ -935,6 +962,12 @@ class RouterConfig(BaseSettings):
     # early_stop_enabled만 켜도 근거 없는 값이 즉시 판단에 관여한다.
     min_confidence: Optional[float] = None
 
+    # A-6(WU-21) — `unknown` 클래스. **기본 off = 프롬프트가 현행과 바이트 동일**이다
+    # (정의 줄·예시 두 자리 모두 조건부 — `plans/80` 계약 C-A).
+    # 켜면 라우터가 *분류 불가*를 표현할 수 있고, 시스템은 답을 지어내는 대신
+    # **되묻는다**(기존 `status="clarification"` 규약 재사용 — 신규 UI 0).
+    unknown_enabled: bool = False
+
     model_config = {"env_prefix": "ROUTER_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -967,6 +1000,40 @@ class CompositeConfig(BaseSettings):
     investigation_enabled: bool = False
     # W6 — 조사 감사. 기본 on(감사는 끄는 것이 예외다)
     audit_enabled: bool = True
+
+    # ── Plan 81 (D-175) 호스트 가용성 사전 판정 ──────────────────────
+    # **기본 on** — 이 파일의 다른 플래그와 정반대다(G-1 사용자 확정 2026-08-28).
+    # `plans/80` §5.4-③("기본값은 현행 동작과 비트 동일")의 **명시적 예외**이며, 근거는
+    # 현행 동작 자체가 결함이라는 것이다: 전원이 꺼진 서버에 "프로세스 0건"(정상 결과로 서술)
+    # 또는 "잠시 후 다시 시도"(재시도해도 같음)를 돌려준다(`plans/81` §1.1 실측).
+    # off 경로의 비트 동일성은 테스트로 계속 고정한다.
+    availability_precheck_enabled: bool = True
+    # 판정이 `unavailable`일 때 수집을 **생략**할지. off면 문구만 병기하고 조회는 진행한다
+    # (관찰 모드 — 게이트가 정상 조회를 막는지 현장에서 확인할 때 쓴다).
+    availability_block_on_unavailable: bool = True
+    # Tier 2 신선도 신호(measurement 왕복 +1). 기본 off — §2-2 "추가 왕복 0" 원칙 유지.
+    availability_staleness_enabled: bool = False
+
+    # === [D-176 후속3] 존 순회 대상 소재 탐색 (plans/82 §4.3~§4.4 · Wave 5) ===
+    # ON이면 대상 존이 미해소일 때 인가된 폴스타 존을 순회해 서버 소재를 찾는다.
+    # **기본 ON**(사용자 결정 2026-08-28) — 현행은 `_resolve_db_id` 실패 시 *"위치를
+    # 지정해 주세요"* 라는 막다른 안내로 끝나는데, 운영 `.env`는 세 존 전부 프로세스 API가
+    # 매핑돼 있어 **물을 이유가 없는 것을 묻고 있었다**. 비용은 존당 SELECT 1회·LLM 0회
+    # (3존 ≈ 150ms 실측). 되돌리려면 `COMPOSITE_HOST_DISCOVERY_ENABLED=false`.
+    host_discovery_enabled: bool = True
+    # 첫 히트에서 순회를 멈출지(U4). **기본 off = 전수 순회** — 동명 호스트가 여러 존에
+    # 있을 수 있고 첫 히트로 끊으면 그 사실이 은폐된다. 응답 ~100ms를 아끼려 할 때만 켠다.
+    discovery_early_exit: bool = False
+    # 탐색 결과 캐시 TTL(초 · U12). **0건·조회 실패는 캐시하지 않는다**(host_sweep 가드) —
+    # 캐시하면 방금 등록한 서버가 TTL 동안 "없는 서버"가 된다.
+    discovery_cache_ttl_seconds: float = 60.0
+
+    # === [D-176 후속4] 범위 사전 선택 역질문 (plans/82 §5.3~§5.5 · Wave 6.5) ===
+    # ON이면 실행 그룹이 2개 이상일 때 "범위를 좁히시겠습니까?"를 묻는다.
+    # **시간 임계는 두지 않는다**(U11 사용자 확정) — 근거 없는 잠정 상수가 무기한 실동작한
+    # 전례(D-174 ②)를 만들지 않는 대신, **발동률 관측**으로 습관화를 통제한다.
+    # "전체 조회"가 항상 첫 선택지·기본값이라 답하지 않아도 진행된다(U10).
+    scope_select_enabled: bool = True
 
     model_config = {"env_prefix": "COMPOSITE_", "env_file": ".env", "extra": "ignore"}
 
@@ -1094,6 +1161,13 @@ class AppConfig(BaseSettings):
     # 라우터는 지연에 민감하므로 1로 시작하고 실측 후 조정한다(응답시간 목표: 단순 <10s).
     structured_output_max_retries: int = 1
 
+    # ── 웹 UI 기본 테마 ────────────────────────────────────────────────
+    # 사용자·운영자 화면의 **전역 기본 테마**. 운영자 대시보드 헤더의 테마 토글이
+    # 이 값을 저장하며, 각 페이지 head의 부트스트랩(static/js/theme.js)이
+    # `GET /api/v1/ui/theme`로 읽어 `<html data-theme>`에 반영한다.
+    # 개인이 헤더 토글로 고른 값(localStorage)은 이 기본값보다 우선한다.
+    ui_default_theme: Literal["light", "dark"] = "light"
+
     # Polestar 전용 프롬프트를 적용할 DB ID (콤마 구분으로 복수 지정 가능)
     # .env에서 POLESTAR_DB_IDS=polestar,polestar2 로 설정하면
     # active_db_id가 이 목록에 포함될 때 Polestar 전용 시스템 프롬프트를 사용한다.
@@ -1140,16 +1214,32 @@ class AppConfig(BaseSettings):
         # 여기서 os.environ을 보는 것은 **설정값 판정이 아니라 폐기 예고**다 —
         # 값은 위 pydantic 필드가 이미 결정했다(Known Mistakes 2026-06-10 준수).
         #
-        # 침묵 손실 경로가 하나 있다: AliasChoices는 소스 우선순위보다 **별칭 순서**가 이기므로,
-        # `.env`에 신 키가 있으면 OS env의 구 키가 무시된다(실측 2026-08-24).
-        # 조용히 무시되면 운영자는 자기 오버라이드가 먹은 줄 안다 → 반드시 알린다.
-        if os.environ.get("ENABLE_DEEPAGENT_ORCHESTRATION") is not None:
+        # 침묵 손실 경로가 하나 있다: 두 키가 함께 있을 때 **어느 쪽이 이기는지가
+        # pydantic-settings 버전에 따라 뒤집힌다**.
+        #   2026-08-24 실측: AliasChoices의 별칭 순서가 이겨 `.env` 신 키가 우선
+        #   2026-08-28 실측(pydantic-settings 2.15.0): **소스 우선순위가 이겨 OS env 구 키가 우선**
+        # 그래서 경고에 규칙을 못박지 않는다 — 규칙을 적으면 라이브러리가 바뀌는 순간
+        # 경고가 운영자에게 **거짓을 말한다**(실제로 그렇게 돼 있었다). 대신 **구 키 원값과
+        # 실제 적용값을 나란히** 보여주고, 둘이 어긋나면 그 사실을 명시한다.
+        _legacy_raw = os.environ.get("ENABLE_DEEPAGENT_ORCHESTRATION")
+        if _legacy_raw is not None:
+            _applied = self.enable_intent_orchestration
+            _legacy_parsed = {"true": True, "1": True, "yes": True,
+                              "false": False, "0": False, "no": False}.get(
+                _legacy_raw.strip().lower()
+            )
+            _conflict = (
+                _legacy_parsed is not None and _applied is not None
+                and _legacy_parsed != _applied
+            )
             logger.warning(
                 "ENABLE_DEEPAGENT_ORCHESTRATION은 ENABLE_INTENT_ORCHESTRATION으로 개명됐습니다"
-                "(2027-02-20 폐기 예정). 현재 적용값=%s. "
-                "**`.env`에 신 키가 있으면 이 구 키는 무시됩니다** — 신 키로 옮기세요 "
-                "— docs/21_orchestration_ladder.md",
-                self.enable_intent_orchestration,
+                "(2027-02-20 폐기 예정). 구 키 값=%s · **실제 적용값=%s**.%s "
+                "두 키를 동시에 두지 마세요 — 어느 쪽이 이기는지는 pydantic-settings 버전에 "
+                "따라 달라집니다(2.15.0 실측: OS env 구 키가 `.env` 신 키를 이깁니다). "
+                "구 키를 제거하고 신 키만 남기세요 — docs/21_orchestration_ladder.md",
+                _legacy_raw, _applied,
+                " ⚠ 구 키 값이 적용되지 않았습니다." if _conflict else "",
             )
 
         # 자동 해석이 발동하면 경고를 남긴다(plans/70 L3). 덮어쓰고 나면 명시 설정과

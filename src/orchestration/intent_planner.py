@@ -139,6 +139,69 @@ def _coerce_process_intent(tasks: list[dict]) -> list[dict]:
     return tasks
 
 
+def _coerce_host_inspect_intent(
+    tasks: list[dict], state: AgentState, app_config: AppConfig
+) -> list[dict]:
+    """OS 구성·자원 현황·메트릭 추세 **단건 조회**를 `host_inspect`로 교정한다.
+
+    Plan 78 W3-2(경로 선택 규칙) · WU-18. `_coerce_process_intent`(D-046/047)와 같은 계열의
+    **결정적 교정**이다 — LLM 분류를 고치되 값을 만들지 않는다(D-035).
+
+    중간 비용대의 공백을 메운다: 이 요구는 지금 `data_query`(DB SQL로 근사)나
+    `fault_diagnosis`(sre_agent 위임 · 비쌈)로 가는데, `mcp_server` 고수준 도구가
+    **더 싸고 정확한** 답을 준다(78 §2.2 G1).
+
+    **발화 조건 셋을 모두 만족할 때만** 교정한다:
+
+    1. 플래그 on (`COMPOSITE_INVESTIGATION_ENABLED`) — off면 **아무것도 하지 않는다**(비트 동일)
+    2. 현재 분류가 `data_query` — 다른 경로는 건드리지 않는다
+    3. 프로파일 키워드가 **명시적으로** 있고, **대상 호스트가 식별**된다
+
+    조건 3이 좁은 이유: `data_query`는 본체의 주력 경로라 욕심을 내면 정상 조회를 잠식하는데,
+    WU-06(분포 실측)이 막혀 있어 **정확도를 측정할 수단이 없다**(`SPEC-host-inspect-routing.md` §0.1).
+    측정 없이 넓히지 않는다.
+
+    Args:
+        tasks: 분해된 task 목록
+        state: 현재 상태(parsed_requirements·conversation_context에서 대상 신호를 본다)
+        app_config: 앱 설정(플래그)
+
+    Returns:
+        교정이 적용된 동일 리스트(in-place 수정 후 반환)
+    """
+    # 설정 접근은 **방어적으로** 한다 — 이 교정은 intent_planner 말미에서 무조건 돌고,
+    # 기존 테스트 중에는 `app_config`로 스텁 객체를 넘기는 것이 있다. 속성이 없으면
+    # **꺼진 것으로 본다**(fail-closed · `semantic_router.py:216` 동일 패턴).
+    composite = getattr(app_config, "composite", None)
+    if not getattr(composite, "investigation_enabled", False):
+        return tasks
+
+    # 대상 신호 판정은 **78 자기 모듈**에 있다 — `intent_planner`가 `src.utils.prior_targets`를
+    # 직접 임포트하면 W1 소유 경계를 넘는다(R-13 · 80 §6 소유권 계약).
+    from src.orchestration.host_inspect import (
+        HOST_INSPECT_AGENT,
+        detect_profile,
+        has_target_signal,
+    )
+
+    if not has_target_signal(state, app_config):
+        return tasks
+
+    for task in tasks:
+        if task.get("agent") != "data_query":
+            continue
+        profile = detect_profile(str(task.get("sub_query", "")))
+        if not profile:
+            continue
+        task["agent"] = HOST_INSPECT_AGENT
+        logger.info(
+            "intent_planner: 호스트 조사 결정적 교정 — data_query→%s "
+            "(profile=%s · sub_query=%r)",
+            HOST_INSPECT_AGENT, profile, task.get("sub_query"),
+        )
+    return tasks
+
+
 async def intent_planner(
     state: AgentState,
     *,
@@ -264,6 +327,9 @@ async def intent_planner(
     )
     # 결정적 가드: 시간성 신호 없는 프로세스 조회는 실시간 API로 교정(D-041/D-046, 폴백 포함)
     tasks = _coerce_alarm_intent(_coerce_process_intent(decomposed["tasks"]))
+    # Plan 78 W3-2(WU-18): 단건 호스트 조사를 중간 비용 경로로 교정.
+    # 플래그 off면 no-op이다 — 프로세스/알람 교정 **뒤**에 두어 그 둘의 결과를 뒤집지 않는다.
+    tasks = _coerce_host_inspect_intent(tasks, state, app_config)
     result: dict = {
         "task_plan": tasks,
         "is_composite": len(tasks) > 1,

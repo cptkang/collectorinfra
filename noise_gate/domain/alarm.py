@@ -158,6 +158,9 @@ class AlarmAnalysisResult:
     pattern_type: str = ""                # "첫 발생"|"주기적"|"급증"|"산발적"|"" (이력 분석 불가 시 빈 값)
     is_routine: Optional[bool] = None     # True=일상적 반복 알람, None=판단 불가
     pattern_analysis: str = ""            # LLM 패턴 해석 (1~3문장)
+    # (Plan 83 T6) 결정적 사전분류 — 피드백 저장·조회 키의 단일 원천.
+    # pattern_type(LLM 산출)과 값 도메인은 같지만 어긋날 수 있어 분리한다.
+    pre_classification: str = ""          # "첫 발생"|"주기적"|"급증"|"산발적"|""
     # --- Plan 52 E3: AI 메시지 심각도 보강 (상향 전용) ---
     ai_message_severity: Optional[int] = None   # E3 AI 상향 심각도(상향 전용, 미상향이면 None)
     ai_severity_reason: str = ""                # 상향 근거(시그니처/문구 인용)

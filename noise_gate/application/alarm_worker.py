@@ -310,6 +310,7 @@ class AlarmWorker:
             return FeedbackStore(
                 self._config.noise_gate.feedback_store_path,
                 self._config.noise_gate.feedback_store_enabled,
+                getattr(self._config.noise_gate, "feedback_store_max_lines", 20000),
             )
         except Exception:
             logger.exception("피드백 저장소 생성 실패 — few-shot 없이 진행")

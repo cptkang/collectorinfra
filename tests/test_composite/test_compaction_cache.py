@@ -12,7 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from noise_gate.infrastructure.polestar_hostname_resolver import HostLookup
 from src.config import load_config
+from src.domain.host_availability import judge_availability
 from src.observability import investigation_metrics as metrics
 from src.orchestration import process_query as pq
 from src.orchestration.investigation_cache import InvestigationCache, freshness_note
@@ -40,7 +42,12 @@ class _Client:
 
 
 async def _noop_resolver(db_id, value, app_config):
-    return None
+    # Plan 81: 해소 실패 = 판정 불가(fail-open) — 입력 식별자를 그대로 hostname으로 쓴다
+    return HostLookup(None, None, judge_availability(lookup_failed=True))
+
+
+async def _noop_lookup_many(db_id, values, app_config):
+    return {v: HostLookup(None, None, judge_availability(lookup_failed=True)) for v in values}
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +56,8 @@ def wired(monkeypatch):
     metrics.reset()
     monkeypatch.setattr(pq, "PolestarProcessApiClient", _Client)
     monkeypatch.setattr(pq, "_resolve_db_id", lambda *a, **k: "polestar_gimpo")
-    monkeypatch.setattr(pq, "_resolve_canonical_hostname", _noop_resolver)
+    monkeypatch.setattr(pq, "_resolve_target_lookup", _noop_resolver)
+    monkeypatch.setattr(pq, "_lookup_targets", _noop_lookup_many)
     pq._inflight_locks.clear()
     pq._snapshot_cache_instance = None
     pq._snapshot_cache_ttl = None

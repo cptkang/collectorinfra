@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 import typing
 from dataclasses import dataclass
 from functools import lru_cache
@@ -38,24 +39,35 @@ _ENCENV_FILE = _PROJECT_ROOT / ".encenv"
 TOP_LEVEL_GROUP = "general"
 
 #: 아코디언 표시 순서 (Plan 68 부록 A.1~A.18).
+#:
+#: ⚠ 이 목록에 없는 그룹은 **엔드포인트가 통째로 버린다**(`build_catalog`가 GROUP_ORDER만 순회) —
+#: config에 필드가 있어도 관리자 UI에 나타나지 않는다. 2026-08-28 실측으로 5개 그룹 31개 설정
+#: (composite·router·polestar_rest·host_authz·drm)이 이렇게 누락돼 있었다. 커버리지 테스트가
+#: `.env → field_index` 방향만 봐서 반대 방향(config → 렌더)을 놓친 것이다.
+#: 재발 방지: `test_t2_group_order_covers_every_config_group`가 파생 등가성을 단언한다.
 GROUP_ORDER: tuple[str, ...] = (
-    "llm", "orchestrator", "dbhub", "query", "synonym", "text2sql",
-    "security", "server", "admin", "auth", "multi_db", "redis",
-    "schema_cache", "audit", "observability", "alarm", "workb", "noise_gate", TOP_LEVEL_GROUP,
+    "llm", "orchestrator", "router", "dbhub", "query", "synonym", "text2sql",
+    "composite", "security", "host_authz", "server", "admin", "auth",
+    "multi_db", "polestar_rest", "redis", "schema_cache", "audit", "observability",
+    "alarm", "workb", "noise_gate", "drm", TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
     "llm": "LLM",
-    "orchestrator": "오케스트레이터(deepagents)",
+    "orchestrator": "오케스트레이터",
+    "router": "시멘틱 라우터",
     "dbhub": "DBHub(MCP)",
     "query": "쿼리 정책",
     "synonym": "동의어 매칭",
     "text2sql": "Text2SQL",
+    "composite": "복합 질의·조사",
     "security": "보안 마스킹",
+    "host_authz": "호스트 조사 인가",
     "server": "API 서버",
     "admin": "운영자 인증",
     "auth": "사용자 인증",
     "multi_db": "멀티 DB",
+    "polestar_rest": "폴스타 REST(실시간)",
     "redis": "Redis",
     "schema_cache": "스키마 캐시",
     "audit": "감사 로그",
@@ -63,108 +75,119 @@ GROUP_TITLES: dict[str, str] = {
     "alarm": "알람",
     "workb": "worKB 발송",
     "noise_gate": "노이즈 게이트",
+    "drm": "DRM 복호화",
     TOP_LEVEL_GROUP: "전역",
 }
 
 #: 그룹 내 하위 구획(소제목). 알람·노이즈 게이트는 필드 수가 많아 구획으로 나눈다(부록 A.15/A.17).
 SECTION_BY_KEY: dict[str, str] = {
     # --- 알람 ---
-    "ALARM_HISTORY_ENABLED": "Plan 47 이력",
-    "ALARM_HISTORY_LOOKBACK_DAYS": "Plan 47 이력",
-    "ALARM_HISTORY_MAX_ROWS": "Plan 47 이력",
-    "ALARM_HISTORY_CACHE_TTL_SECONDS": "Plan 47 이력",
-    "ALARM_PROCESS_ENRICH_ENABLED": "Plan 47-1 프로세스",
-    "ALARM_PROCESS_API_BASE_URLS_CSV": "Plan 47-1 프로세스",
-    "ALARM_PROCESS_API_TIMEOUT_SECONDS": "Plan 47-1 프로세스",
-    "ALARM_PROCESS_TOP_N": "Plan 47-1 프로세스",
+    "ALARM_HISTORY_ENABLED": "알람 이력 분석",
+    "ALARM_HISTORY_LOOKBACK_DAYS": "알람 이력 분석",
+    "ALARM_HISTORY_MAX_ROWS": "알람 이력 분석",
+    "ALARM_HISTORY_CACHE_TTL_SECONDS": "알람 이력 분석",
+    "ALARM_PROCESS_ENRICH_ENABLED": "영향 프로세스 조회",
+    "ALARM_PROCESS_API_BASE_URLS_CSV": "영향 프로세스 조회",
+    "ALARM_PROCESS_API_TIMEOUT_SECONDS": "영향 프로세스 조회",
+    "ALARM_PROCESS_TOP_N": "영향 프로세스 조회",
     "ALARM_PROMETHEUS_ENABLED": "Prometheus",
     "ALARM_PROMETHEUS_BASE_URLS_CSV": "Prometheus",
     "ALARM_PROMETHEUS_TIMEOUT_SECONDS": "Prometheus",
     # --- 노이즈 게이트 ---
-    "NOISE_ENABLE_NOISE_GATE": "E1 기본",
-    "NOISE_SUPPRESS_MAX_SEVERITY": "E1 기본",
-    "NOISE_IMPORTANCE_VALUE_MAP_CSV": "E1 기본",
-    "NOISE_SELF_HEAL_WINDOW_SECONDS": "E1 기본",
-    "NOISE_REPEAT_INTERVAL_SECONDS": "E1 기본",
-    "NOISE_SEV3_REPEAT_INTERVAL_SECONDS": "E1 기본",
-    "NOISE_NOISE_CONTEXT_TIMEOUT_SECONDS": "E1 기본",
-    "NOISE_NOISE_CONTEXT_CACHE_TTL_SECONDS": "E1 기본",
-    "NOISE_RESOLVED_TO_DASHBOARD": "E1 기본",
-    "NOISE_DECISION_STORE_PATH": "E1 기본",
-    "NOISE_DECISION_STORE_ENABLED": "E1 기본",
-    "NOISE_DEBOUNCE_SECONDS": "E2 억제",
-    "NOISE_FLAP_HIGH_THRESHOLD": "E2 억제",
-    "NOISE_FLAP_LOW_THRESHOLD": "E2 억제",
-    "NOISE_FLAPPING_ENABLED": "E2 억제",
-    "NOISE_DEPENDENCY_SUPPRESSION": "E2 억제",
-    "NOISE_INHIBITION_ENABLED": "E2 억제",
-    "NOISE_INHIBITION_WINDOW_SECONDS": "E2 억제",
-    "NOISE_STORM_GROUPING_ENABLED": "E2 억제",
-    "NOISE_STORM_WINDOW_SECONDS": "E2 억제",
-    "NOISE_STORM_THRESHOLD": "E2 억제",
-    "NOISE_META_ALERT_SUPPRESS_RATIO": "E3 메타·보강",
-    "NOISE_META_ALERT_WINDOW_SECONDS": "E3 메타·보강",
-    "NOISE_META_ALERT_MIN_EVENTS": "E3 메타·보강",
-    "NOISE_ENABLE_AI_SEVERITY_BOOST": "E3 메타·보강",
-    "NOISE_AI_SEVERITY_ESCALATE_ONLY": "E3 메타·보강",
-    "NOISE_BUSINESS_HOURS_CSV": "E3 메타·보강",
-    "NOISE_TICKET_BATCH_QUEUE_PATH": "E3 메타·보강",
-    "NOISE_TICKET_BATCH_QUEUE_ENABLED": "E3 메타·보강",
-    "NOISE_ENABLE_LLM_ACTIONABILITY": "E4 피드백",
-    "NOISE_FEEDBACK_STORE_PATH": "E4 피드백",
-    "NOISE_FEEDBACK_STORE_ENABLED": "E4 피드백",
-    "NOISE_ACTIONABILITY_FEWSHOT_COUNT": "E4 피드백",
-    "NOISE_ENABLE_AGENTIC_ENRICHER": "E5 agentic enricher",
-    "NOISE_AGENTIC_ENRICHER_FALLBACK": "E5 agentic enricher",
-    "NOISE_AGENTIC_ENRICHER_TIMEOUT_SECONDS": "E5 agentic enricher",
-    "NOISE_AGENTIC_ENRICHER_MAX_TOOL_CALLS": "E5 agentic enricher",
-    "NOISE_AGENTIC_ENRICHER_MESSAGE_ALARMS_ONLY": "E5 agentic enricher",
-    "NOISE_MULTI_HOP_CASCADE_ENABLED": "Plan 60 E4 토폴로지",
-    "NOISE_TOPOLOGY_CACHE_TTL_SECONDS": "Plan 60 E4 토폴로지",
-    "NOISE_TOPOLOGY_MAX_HOPS": "Plan 60 E4 토폴로지",
-    "NOISE_CROSS_HOST_CORRELATION_ENABLED": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_SIM_THRESHOLD": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_WINDOW_SECONDS": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_MIN_CLUSTER_SIZE": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_BUFFER_MAX": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_FIELD_WEIGHTS_CSV": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_CORRELATION_TOPOLOGY_WEIGHT": "Plan 60 E2 크로스-호스트 상관",
-    "NOISE_RECURRENCE_AUDIT_EVERY_N": "Plan 60 E1 재발 감사",
-    "NOISE_DYNAMIC_BASELINE_ENABLED": "Plan 60 E3 동적 baseline",
-    "NOISE_ANOMALY_Z_HIGH": "Plan 60 E3 동적 baseline",
-    "NOISE_ANOMALY_MIN_PERIODS": "Plan 60 E3 동적 baseline",
-    "NOISE_ANOMALY_BASELINE_CACHE_TTL_SECONDS": "Plan 60 E3 동적 baseline",
-    "NOISE_ANOMALY_STL_ENABLED": "Plan 60 E3 동적 baseline",
-    "NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED": "Plan 60 B-7 임베딩 주석",
-    "NOISE_TOPOLOGY_TEXT_FUSION_ENABLED": "Plan 60 B-7 임베딩 주석",
-    "NOISE_EMBEDDING_MODEL_PATH": "Plan 60 B-7 임베딩 주석",
-    "NOISE_EMBEDDING_SIMILARITY_THRESHOLD": "Plan 60 B-7 임베딩 주석",
-    "NOISE_EMBEDDING_TIMEOUT_SECONDS": "Plan 60 B-7 임베딩 주석",
-    "NOISE_SSE_BRIDGE_ENABLED": "SSE 브리지",
-    "NOISE_SSE_BRIDGE_CHANNEL": "SSE 브리지",
-    "NOISE_INCIDENT_TRACKING_ENABLED": "D-049 incident 계측",
-    "NOISE_INCIDENT_EVENT_CHANNEL": "D-049 incident 계측",
-    "NOISE_MESSAGE_ENRICHMENT_ENABLED": "Plan 60 E6 통보 보강",
-    "NOISE_ENRICHMENT_MIN_TIER": "Plan 60 E6 통보 보강",
-    "NOISE_ENRICHMENT_L1_TIMEOUT_SECONDS": "Plan 60 E6 통보 보강",
-    "NOISE_ENRICHMENT_PROFILE_MAP_CSV": "Plan 60 E6 통보 보강",
-    "NOISE_CHANGE_CORRELATION_ENABLED": "Plan 60 E5 변경 상관",
-    "NOISE_CHANGE_WINDOW_SECONDS": "Plan 60 E5 변경 상관",
-    "NOISE_ANNOTATION_HARVEST_ENABLED": "Plan 60 E7 ITSM 보완",
-    "NOISE_ANNOTATION_PLANNED_SUPPRESS": "Plan 60 E7 ITSM 보완",
-    "NOISE_NON_ALARM_FILTER_ENABLED": "Plan 60 E7 ITSM 보완",
-    "NOISE_FORMAT_TOLERANT_PARSING_ENABLED": "Plan 60 E7 ITSM 보완",
-    "NOISE_CORRELATION_SITE_DIMENSION_ENABLED": "Plan 60 E7 ITSM 보완",
-    "NOISE_INVESTIGATION_TRIGGER_ENABLED": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_INVESTIGATION_TRIGGER_MIN_TIER": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_INVESTIGATION_SERVICE_URL": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_INVESTIGATION_SERVICE_TOKEN": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_INVESTIGATION_MCP_CALL_TIMEOUT_SECONDS": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_INVESTIGATION_POLL_INTERVAL_SECONDS": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_FAULT_DIAGNOSIS_ENABLED": "Plan 64 CW-A/B/C 자동조사",
-    "NOISE_FAULT_ESCALATION_ENABLED": "Plan 64 CW-A/B/C 자동조사",
+    "NOISE_ENABLE_NOISE_GATE": "기본 동작",
+    "NOISE_SUPPRESS_MAX_SEVERITY": "기본 동작",
+    "NOISE_IMPORTANCE_VALUE_MAP_CSV": "기본 동작",
+    "NOISE_SELF_HEAL_WINDOW_SECONDS": "기본 동작",
+    "NOISE_REPEAT_INTERVAL_SECONDS": "기본 동작",
+    "NOISE_SEV3_REPEAT_INTERVAL_SECONDS": "기본 동작",
+    "NOISE_NOISE_CONTEXT_TIMEOUT_SECONDS": "기본 동작",
+    "NOISE_NOISE_CONTEXT_CACHE_TTL_SECONDS": "기본 동작",
+    "NOISE_RESOLVED_TO_DASHBOARD": "기본 동작",
+    "NOISE_DECISION_STORE_PATH": "기본 동작",
+    "NOISE_DECISION_STORE_ENABLED": "기본 동작",
+    "NOISE_DEBOUNCE_SECONDS": "중복·연쇄 억제",
+    "NOISE_FLAP_HIGH_THRESHOLD": "중복·연쇄 억제",
+    "NOISE_FLAP_LOW_THRESHOLD": "중복·연쇄 억제",
+    "NOISE_FLAPPING_ENABLED": "중복·연쇄 억제",
+    "NOISE_DEPENDENCY_SUPPRESSION": "중복·연쇄 억제",
+    "NOISE_INHIBITION_ENABLED": "중복·연쇄 억제",
+    "NOISE_INHIBITION_WINDOW_SECONDS": "중복·연쇄 억제",
+    "NOISE_STORM_GROUPING_ENABLED": "중복·연쇄 억제",
+    "NOISE_STORM_WINDOW_SECONDS": "중복·연쇄 억제",
+    "NOISE_STORM_THRESHOLD": "중복·연쇄 억제",
+    "NOISE_META_ALERT_SUPPRESS_RATIO": "메타 알림·보강",
+    "NOISE_META_ALERT_WINDOW_SECONDS": "메타 알림·보강",
+    "NOISE_META_ALERT_MIN_EVENTS": "메타 알림·보강",
+    "NOISE_ENABLE_AI_SEVERITY_BOOST": "메타 알림·보강",
+    "NOISE_AI_SEVERITY_ESCALATE_ONLY": "메타 알림·보강",
+    "NOISE_BUSINESS_HOURS_CSV": "메타 알림·보강",
+    "NOISE_TICKET_BATCH_QUEUE_PATH": "메타 알림·보강",
+    "NOISE_TICKET_BATCH_QUEUE_ENABLED": "메타 알림·보강",
+    "NOISE_ENABLE_LLM_ACTIONABILITY": "운영자 피드백",
+    "NOISE_FEEDBACK_STORE_PATH": "운영자 피드백",
+    "NOISE_FEEDBACK_STORE_ENABLED": "운영자 피드백",
+    "NOISE_ACTIONABILITY_FEWSHOT_COUNT": "운영자 피드백",
+    "NOISE_FEEDBACK_STORE_MAX_LINES": "운영자 피드백",
+    "NOISE_ENABLE_AGENTIC_ENRICHER": "자동 원인 보강",
+    "NOISE_AGENTIC_ENRICHER_FALLBACK": "자동 원인 보강",
+    "NOISE_AGENTIC_ENRICHER_TIMEOUT_SECONDS": "자동 원인 보강",
+    "NOISE_AGENTIC_ENRICHER_MAX_TOOL_CALLS": "자동 원인 보강",
+    "NOISE_AGENTIC_ENRICHER_MESSAGE_ALARMS_ONLY": "자동 원인 보강",
+    "NOISE_MULTI_HOP_CASCADE_ENABLED": "토폴로지 연쇄 억제",
+    "NOISE_TOPOLOGY_CACHE_TTL_SECONDS": "토폴로지 연쇄 억제",
+    "NOISE_TOPOLOGY_MAX_HOPS": "토폴로지 연쇄 억제",
+    "NOISE_CROSS_HOST_CORRELATION_ENABLED": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_SIM_THRESHOLD": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_WINDOW_SECONDS": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_MIN_CLUSTER_SIZE": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_BUFFER_MAX": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_FIELD_WEIGHTS_CSV": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED": "호스트 간 상관 분석",
+    "NOISE_CORRELATION_TOPOLOGY_WEIGHT": "호스트 간 상관 분석",
+    "NOISE_RECURRENCE_AUDIT_EVERY_N": "재발 감사",
+    "NOISE_DYNAMIC_BASELINE_ENABLED": "동적 기준선 이상탐지",
+    "NOISE_ANOMALY_Z_HIGH": "동적 기준선 이상탐지",
+    "NOISE_ANOMALY_MIN_PERIODS": "동적 기준선 이상탐지",
+    "NOISE_ANOMALY_BASELINE_CACHE_TTL_SECONDS": "동적 기준선 이상탐지",
+    "NOISE_ANOMALY_STL_ENABLED": "동적 기준선 이상탐지",
+    "NOISE_ANOMALY_METRIC_SOURCE_MAP_CSV": "동적 기준선 이상탐지",
+    "NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED": "유사 알람 주석",
+    "NOISE_TOPOLOGY_TEXT_FUSION_ENABLED": "유사 알람 주석",
+    "NOISE_EMBEDDING_MODEL_PATH": "유사 알람 주석",
+    "NOISE_EMBEDDING_SIMILARITY_THRESHOLD": "유사 알람 주석",
+    "NOISE_EMBEDDING_TIMEOUT_SECONDS": "유사 알람 주석",
+    "NOISE_SSE_BRIDGE_ENABLED": "실시간 알림 전송",
+    "NOISE_SSE_BRIDGE_CHANNEL": "실시간 알림 전송",
+    "NOISE_SSE_SUPPRESSED_ENABLED": "실시간 알림 전송",
+    "NOISE_INCIDENT_TRACKING_ENABLED": "사건 계측",
+    "NOISE_INCIDENT_EVENT_CHANNEL": "사건 계측",
+    "NOISE_MESSAGE_ENRICHMENT_ENABLED": "통보 내용 보강",
+    "NOISE_ENRICHMENT_MIN_TIER": "통보 내용 보강",
+    "NOISE_ENRICHMENT_L1_TIMEOUT_SECONDS": "통보 내용 보강",
+    "NOISE_ENRICHMENT_PROFILE_MAP_CSV": "통보 내용 보강",
+    "NOISE_CHANGE_CORRELATION_ENABLED": "변경 이력 상관",
+    "NOISE_CHANGE_WINDOW_SECONDS": "변경 이력 상관",
+    "NOISE_ANNOTATION_HARVEST_ENABLED": "ITSM 연동 보완",
+    "NOISE_ANNOTATION_PLANNED_SUPPRESS": "ITSM 연동 보완",
+    "NOISE_ANNOTATION_LLM_CLASSIFICATION_ENABLED": "ITSM 연동 보완",
+    "NOISE_ANNOTATION_LLM_TIMEOUT_SECONDS": "ITSM 연동 보완",
+    "NOISE_ANNOTATION_LLM_CACHE_MAX": "ITSM 연동 보완",
+    "NOISE_ANNOTATION_LLM_CACHE_TTL_SECONDS": "ITSM 연동 보완",
+    "NOISE_NON_ALARM_FILTER_ENABLED": "ITSM 연동 보완",
+    "NOISE_FORMAT_TOLERANT_PARSING_ENABLED": "ITSM 연동 보완",
+    "NOISE_CORRELATION_SITE_DIMENSION_ENABLED": "ITSM 연동 보완",
+    "NOISE_INVESTIGATION_TRIGGER_ENABLED": "자동 장애 조사",
+    "NOISE_INVESTIGATION_TRIGGER_MIN_TIER": "자동 장애 조사",
+    "NOISE_INVESTIGATION_SERVICE_URL": "자동 장애 조사",
+    "NOISE_INVESTIGATION_SERVICE_TOKEN": "자동 장애 조사",
+    "NOISE_INVESTIGATION_MCP_CALL_TIMEOUT_SECONDS": "자동 장애 조사",
+    "NOISE_INVESTIGATION_POLL_INTERVAL_SECONDS": "자동 장애 조사",
+    "NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS": "자동 장애 조사",
+    "NOISE_INVESTIGATION_FOLLOWUP_ENABLED": "자동 장애 조사",
+    "NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS": "자동 장애 조사",
+    "NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT": "자동 장애 조사",
+    "NOISE_FAULT_DIAGNOSIS_ENABLED": "자동 장애 조사",
+    "NOISE_FAULT_ESCALATION_ENABLED": "자동 장애 조사",
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.
@@ -198,6 +221,7 @@ IMMEDIATE_KEYS: frozenset[str] = frozenset({
     "SYNONYM_MATCH_CONFIDENCE_MIN",
     "SYNONYM_GOVERNANCE",                        # (c) redis_cache.py
     "SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS",   # (c) cache_manager.py
+    "UI_DEFAULT_THEME",                          # (c) routes/ui.py 요청 시 fresh load_config
 })
 
 #: 저장 후 **설정 리로드**(`POST /admin/settings/reload` — app.state.config 교체 + 그래프
@@ -358,6 +382,14 @@ DESCRIPTION_OVERRIDES: dict[str, str] = {
     "QUERY_MAX_RETRY_COUNT": "재시도 상한. 현재 graph.py의 하드코딩 값(3)이 쓰인다(미소비).",
     "CONVERSATION_MAX_TURNS": "대화 최대 턴 수. 현재 코드가 읽지 않는다(미소비).",
     "CONVERSATION_TTL_HOURS": "대화 세션 유효 시간. 현재 코드가 읽지 않는다(미소비).",
+    # 아래 두 키는 `.env.example`에서 구획 소제목만 달고 있어, 소제목을 도움말에서
+    # 제외한 뒤 설명이 비었다. 운영자용 문구를 직접 채운다.
+    "ALARM_HISTORY_ENABLED": "알람 이력 패턴 분석 사용 여부. 같은 알람의 과거 발생 이력을 조회해 분석에 함께 활용한다.",
+    "NOISE_DEBOUNCE_SECONDS": "상태가 안정될 때까지 기다리는 시간(초). 0이면 사용하지 않는다.",
+    "UI_DEFAULT_THEME": (
+        "화면 기본 테마(밝게/어둡게). 헤더의 테마 버튼으로 바꿔도 같은 값이 저장되며, "
+        "저장 즉시 새로 접속하는 사용자에게 적용된다. 개인이 자기 화면에서 고른 테마가 있으면 그 선택이 우선한다."
+    ),
 }
 
 _MASK_VALUE = "********"
@@ -565,7 +597,11 @@ def field_index() -> dict[str, FieldSpec]:
             apply_mode=apply_mode,
             consumed=env_key not in UNCONSUMED_KEYS,
             section=SECTION_BY_KEY.get(env_key),
-            description=DESCRIPTION_OVERRIDES.get(env_key) or descriptions.get(env_key),
+            # 오버라이드는 사람이 쓴 운영자용 문구이므로 그대로, 원천 주석은 정제해서 내보낸다
+            description=(
+                DESCRIPTION_OVERRIDES.get(env_key)
+                or sanitize_description(descriptions.get(env_key))
+            ),
             group_cls=group_cls,
         )
 
@@ -601,6 +637,11 @@ def parse_env_example_descriptions() -> dict[str, str]:
             if text.startswith("===") and text.endswith("==="):
                 block = []  # 섹션 제목 — 개별 키 설명이 아니다
                 continue
+            if text[:2] in {"──", "══"} or text[:3] == "═══":
+                # `── E1 (현재 구현) ──` 류의 구획 소제목. 개별 키 설명이 아니며,
+                # 이어붙이면 바로 아래 키의 도움말에 개발 구획 코드가 섞인다.
+                block = []
+                continue
             block.append(text)
             continue
         if "=" in stripped:
@@ -614,6 +655,73 @@ def parse_env_example_descriptions() -> dict[str, str]:
 # ──────────────────────────────────────────────
 # 검증 (결정적 3단: sanitize → 타입 → 그룹 dry-run)
 # ──────────────────────────────────────────────
+
+
+#: 개발 문서 참조 토큰(계획 번호·결정 번호·단계 코드). 운영자 화면에는 의미가 없으므로
+#: 도움말로 내보내기 전에 제거한다 — 원천(`.env.example`)은 개발자용이라 그대로 둔다.
+_DEV_REF = (
+    r"(?:Plan\s*\d+(?:[-–]\w+)*(?:\s+[A-Z]?[-–]?\d+)?"
+    r"|P\d{2,}(?:\s+\d+차)?(?:\s+[A-Z]-\d+)?"
+    r"|D-\d+(?:\s*후속\s*\d*)?"
+    r"|§\s*[\d.]+(?:[-–][\d.]+)?"
+    r"|Phase\s*\d+"
+    r"|트랙\s*[A-Z](?:\s*[·/]\s*[A-Z])*"
+    r"|CW-[A-C](?:\s*[/·]\s*[A-C])*"
+    r"|E\d+(?:[-–]\d+)?"
+    r"|L-\d+"
+    r"|B-\d+"
+    r"|R\d+-\w+"
+    r"|FIX-\d+)"
+)
+#: 참조에 붙어서만 의미를 갖는 꼬리말(`P60 E3 2차`, `E3 후속`). 단독으로는 지우지 않는다 —
+#: "3차 시도" 같은 정상 문구까지 사라지기 때문이다.
+_DEV_REF_AUX = r"(?:\d+차|후속\d*)"
+_DEV_REF_RUN = (
+    _DEV_REF
+    + r"(?:\s*[/·,]?\s*(?:" + _DEV_REF + r"|" + _DEV_REF_AUX + r"))*"
+)
+
+#: 개발자에게만 의미 있는 주의 문장 — 도움말에서 통째로 제거한다.
+_DEV_NOTES = (
+    r"주의:\s*\.env 계열 파일에는 인라인 주석 금지\(값 뒤 # 금지\)\.",
+    r"설명은 반드시 별도 줄\.",
+    r"전 기능 기본 OFF\s*[—-]\s*활성 전에는[^.]*?\(회귀 0\)\.",
+)
+
+
+def sanitize_description(text: Optional[str]) -> Optional[str]:
+    """도움말에서 개발 참조 코드를 걷어내고 구두점을 정리한다.
+
+    운영자 화면은 개발 계획 번호(Plan 60·E4·트랙 B·D-155 등)를 읽는 자리가 아니다.
+    표시 직전에만 정제하므로 `.env.example`·코드 주석의 추적성은 그대로 유지된다.
+
+    Args:
+        text: 원본 도움말
+
+    Returns:
+        정제된 도움말(내용이 남지 않으면 None)
+    """
+    if not text:
+        return text
+
+    out = text
+    for pattern in _DEV_NOTES:
+        out = re.sub(pattern, " ", out)
+    # 참조만 담긴 괄호는 괄호째, 문장 안의 참조는 토큰만 제거
+    out = re.sub(r"[(（]\s*" + _DEV_REF_RUN + r"\s*[)）]", "", out)
+    out = re.sub(_DEV_REF_RUN, "", out)
+    # 참조가 빠지며 남은 빈 괄호·떠 있는 구분자 정리
+    out = re.sub(r"[(（]\s*[)）]", "", out)
+    out = re.sub(r"([(（])\s*[,，·/—–-]\s*", r"\1", out)
+    out = re.sub(r"\s*[,，·/]\s*(?=[)）])", "", out)
+    out = re.sub(r"\s*[—–]\s*(?=[)）])", "", out)
+    out = re.sub(r"([(（])\s+", r"\1", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([.,)）])", r"\1", out)
+    out = re.sub(r"^[\s─═—–\-·,./:]+", "", out)
+    out = re.sub(r"[\s─═—–]+$", "", out)
+    out = out.strip()
+    return out or None
 
 
 def validate_updates(updates: dict[str, str]) -> list[FieldError]:

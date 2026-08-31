@@ -37,6 +37,7 @@ def build_trigger_payload(
     recurrence: Optional[dict] = None,
     correlation_meta: Optional[dict] = None,
     root_resource: Optional[str] = None,
+    target_state: Optional[dict] = None,
 ) -> dict:
     """게이트 보유값으로 조사 트리거 페이로드(`contract_version: "1"`)를 조립한다.
 
@@ -51,10 +52,25 @@ def build_trigger_payload(
         recurrence: E1 재발생 메타(직전 창 count 등, 없으면 None).
         correlation_meta: E2 크로스-호스트 클러스터 메타(대표 지문·멤버 순번 등, 없으면 None).
         root_resource: E4 다홉 연쇄의 root 리소스 식별자(없으면 None).
+        target_state: 대상 호스트 가용성 판정(Plan 81 · `HostAvailability.to_dict()`).
+            **값이 있을 때만 `meta.target_state` 키가 생긴다** — 없으면 페이로드가 종전과
+            바이트 동일하다. `validate_payload`가 여분 키를 거부하지 않으므로 구버전
+            수신자와도 호환된다(실측).
 
     Returns:
         `{contract_version, event, decision, meta}` 형태의 JSON 직렬화 가능 dict.
     """
+    meta: dict = {
+        "recurrence": recurrence,
+        "cluster": correlation_meta,
+        "root_resource": root_resource,
+        "source": "collectorinfra",
+    }
+    # Plan 81: 판정이 **있을 때만** 키를 넣는다. 항상 넣으면 판정을 끈 상태·가용성 알람
+    # 예외 경로에서도 페이로드가 달라져 "미설정 시 종전과 동일"이 깨진다(회귀 0).
+    if target_state is not None:
+        meta["target_state"] = target_state
+
     return {
         "contract_version": CONTRACT_VERSION,
         "event": {
@@ -76,13 +92,39 @@ def build_trigger_payload(
             "fingerprint": getattr(decision, "fingerprint", ""),
             "signals": dict(getattr(decision, "signals", None) or {}),
         },
-        "meta": {
-            "recurrence": recurrence,
-            "cluster": correlation_meta,
-            "root_resource": root_resource,
-            "source": "collectorinfra",
-        },
+        "meta": meta,
     }
+
+
+#: 가용성(DOWN) 계열 알람을 알아보는 표면어 (Plan 81 G-3).
+#: **넓게 잡는 쪽이 안전하다** — 오탐(가용성 알람이 아닌데 그렇게 본다)의 대가는
+#: "사전 판정을 건너뛴다"(=종전 동작)뿐이지만, 누락의 대가는 **정작 필요한 다운 원인
+#: 조사를 막는 것**이다. 비대칭이 명확하므로 재현율을 택한다.
+_AVAILABILITY_ALARM_MARKERS: tuple[str, ...] = (
+    "down", "다운", "가용", "avail", "unreachable", "응답없음", "응답 없음",
+    "ping", "접속불가", "접속 불가", "통신", "connection", "connect fail",
+    "disconnect", "중지", "정지", "shutdown", "power",
+)
+
+
+def is_availability_alarm(event) -> bool:  # noqa: ANN001 — AlarmEvent (덕 타이핑)
+    """알람 자체가 **가용성/다운 계열**인지 결정적으로 판정한다 (Plan 81 G-3).
+
+    왜 필요한가: 다운 알람의 대상은 당연히 가용하지 않다. 여기에 가용성 사전 판정을
+    그대로 적용하면 **"서버가 왜 내려갔는지" 조사가 통째로 막힌다** — 정작 필요한 조사다.
+    이 판정이 True면 사전 판정을 건너뛰고 조사를 진행시킨다.
+
+    Args:
+        event: 알람 이벤트(alarm_name/conditions/resource_name/condition_log 사용)
+
+    Returns:
+        가용성 계열 알람이면 True
+    """
+    haystack = " ".join(
+        str(getattr(event, field, "") or "")
+        for field in ("alarm_name", "conditions", "condition_log", "resource_name")
+    ).lower()
+    return any(marker in haystack for marker in _AVAILABILITY_ALARM_MARKERS)
 
 
 def verdict_escalates(verdict: object) -> bool:

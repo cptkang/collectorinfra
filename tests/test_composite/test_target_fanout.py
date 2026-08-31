@@ -13,7 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from noise_gate.infrastructure.polestar_hostname_resolver import HostLookup
 from src.config import load_config
+from src.domain.host_availability import judge_availability
 from src.orchestration import process_query as pq
 
 
@@ -60,14 +62,20 @@ def wired(monkeypatch):
     _FakeClient.calls = []
     monkeypatch.setattr(pq, "PolestarProcessApiClient", _FakeClient)
     monkeypatch.setattr(pq, "_resolve_db_id", lambda *a, **k: "polestar_gimpo")
-    monkeypatch.setattr(pq, "_resolve_canonical_hostname", _noop_resolver)
+    monkeypatch.setattr(pq, "_resolve_target_lookup", _noop_resolver)
+    monkeypatch.setattr(pq, "_lookup_targets", _noop_lookup_many)
     pq._inflight_locks.clear()
     yield
     load_config.cache_clear()
 
 
 async def _noop_resolver(db_id, value, app_config):
-    return None  # 입력 식별자를 그대로 hostname으로 쓴다
+    # Plan 81: 해소 실패 = 판정 불가(fail-open) — 입력 식별자를 그대로 hostname으로 쓴다
+    return HostLookup(None, None, judge_availability(lookup_failed=True))
+
+
+async def _noop_lookup_many(db_id, values, app_config):
+    return {v: HostLookup(None, None, judge_availability(lookup_failed=True)) for v in values}
 
 
 @pytest.fixture
@@ -244,18 +252,25 @@ def test_inflight_lock_dict_is_bounded():
 # 단일 대상 회귀 0 (W2-1 단서)
 # ──────────────────────────────────────────────
 
+#: 단일 대상 경로의 종전 반환 키(D-047 규약).
+_LEGACY_SINGLE_KEYS = {
+    "db_id", "server_name", "hostname", "total_count", "shown_count",
+    "captured_at", "metric",
+}
+
+
 @pytest.mark.asyncio
 async def test_single_target_keeps_legacy_shape():
     """★ 회귀 0 — 대상이 하나면 **종전 반환 키·요약 문구 그대로**다.
 
     `output_generator`·CSV 다운로드가 이 형태에 의존한다(D-047 규약).
+
+    Plan 81 이후 판정 메타(`availability`) **한 키가 추가**된다 — 소비처가 특정 키를 읽는
+    구조라 추가는 안전하며, **판정을 끄면 종전 키 집합 그대로**임을 아래 별도 테스트가 고정한다.
     """
     res = await _run("svweb001")
     pqi = res["process_query"]
-    assert set(pqi) == {
-        "db_id", "server_name", "hostname", "total_count", "shown_count",
-        "captured_at", "metric",
-    }
+    assert set(pqi) == _LEGACY_SINGLE_KEYS | {"availability"}
     assert pqi["server_name"] == "svweb001"
     assert "서버 'svweb001'의 현재 실행 중 프로세스" in res["organized_data"]["summary"]
     # 채팅=상위 N, CSV=전량 (D-047)

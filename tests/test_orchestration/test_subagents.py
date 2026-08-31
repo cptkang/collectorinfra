@@ -38,6 +38,9 @@ def test_subagent_registry_has_expected_agents():
         "cache_management",
         "synonym_registration",
         "general_inference",
+        # Plan 78 W3-1·W3-2(WU-18) — 중간 비용대 호스트 조사.
+        # 목록은 **항상 고정**이고(P14) 가용성은 handler 게이트가 제어한다.
+        "host_inspect",
     }
     assert set(SUBAGENT_REGISTRY.keys()) == expected
     for name, spec in SUBAGENT_REGISTRY.items():

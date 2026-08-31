@@ -29,6 +29,24 @@
     var scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
     var progressScrollBtn = document.getElementById("progressScrollBtn");
 
+    // 뷰 탭(질의응답 · 이벤트 알람) — 알람은 질의응답 스트림에 섞지 않고 자기 뷰에 쌓는다
+    var chatView = document.getElementById("chatView");
+    var alarmView = document.getElementById("alarmView");
+    var alarmList = document.getElementById("alarmList");
+    var alarmEmpty = document.getElementById("alarmEmpty");
+    var alarmTabBadge = document.getElementById("alarmTabBadge");
+    var alarmViewCount = document.getElementById("alarmViewCount");
+    var alarmClearBtn = document.getElementById("alarmClearBtn");
+
+    // 질의 이력 사이드바(D-183) — 이 브라우저에만 남는 목록
+    var historyPanel = document.getElementById("historyPanel");
+    var historyToggle = document.getElementById("historyToggle");
+    var historyList = document.getElementById("historyList");
+    var historyEmpty = document.getElementById("historyEmpty");
+    var historyPanelCount = document.getElementById("historyPanelCount");
+    var historySearch = document.getElementById("historySearch");
+    var historyClearBtn = document.getElementById("historyClearBtn");
+
     // ─── Auth Helpers ───
 
     function getAuthHeaders() {
@@ -242,6 +260,70 @@
     var historyIndex = -1;            // 현재 탐색 위치 (-1 = 탐색 안 함)
     var savedCurrentInput = "";       // 히스토리 진입 전 입력 중이던 텍스트 보존
 
+    // ─── 질의 이력 저장소 (D-183) ───
+    //
+    // 위 promptHistory와 목적이 다르다 — 저것은 "직전에 친 순서"(↑↓ 탐색)라 세션 안에서만
+    // 의미가 있고, 이것은 "무엇을 물었나"(목록)라 새로고침을 넘겨 남아야 한다.
+    // 그래서 자료구조를 합치지 않는다: 합치면 한쪽 요구(연속 중복 보존 vs 중복 제거)가 깨진다.
+    //
+    // 저장 위치가 브라우저인 이유는 인증이 꺼져 있어(AUTH_ENABLED 미설정) 서버에 두면
+    // 모든 사용자가 anonymous 한 명으로 뭉쳐 남의 질의가 내 목록에 섞이기 때문이다.
+
+    var HISTORY_KEY = "query_prompt_history";   // 전례: alarm_receive_enabled · alarm_view_level
+    var HISTORY_MAX = 200;                      // 상한 없는 누적은 이 저장소의 금기
+
+    // 사생활 모드·용량 초과에서 localStorage는 **던진다**. 목록이 비는 것은 허용해도
+    // 그 때문에 질의 전송이 막히는 것은 허용하지 않는다 — 모든 접근을 감싼다.
+    function loadHistory() {
+        try {
+            var raw = localStorage.getItem(HISTORY_KEY);
+            var parsed = raw ? JSON.parse(raw) : [];
+            if (!Array.isArray(parsed)) return [];
+            // 손상된 항목은 조용히 걸러낸다(옛 형식·수동 편집)
+            return parsed.filter(function (it) {
+                return it && typeof it.q === "string" && it.q.length > 0;
+            });
+        } catch (e) {
+            console.warn("[history] 이력 로드 실패:", e);
+            return [];
+        }
+    }
+
+    function saveHistory(items) {
+        try {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+            return true;
+        } catch (e) {
+            console.warn("[history] 이력 저장 실패:", e);
+            return false;
+        }
+    }
+
+    // 같은 질의를 다시 보내면 기존 항목을 지우고 최신으로 올린다 —
+    // 같은 문장이 목록을 도배하면 목록 자체의 쓸모가 사라진다.
+    function pushHistory(query) {
+        var items = loadHistory().filter(function (it) { return it.q !== query; });
+        items.push({ q: query, t: Date.now() });
+        if (items.length > HISTORY_MAX) {
+            items = items.slice(items.length - HISTORY_MAX);
+        }
+        saveHistory(items);
+        renderHistoryList();
+    }
+
+    function removeHistoryAt(index) {
+        var items = loadHistory();
+        if (index < 0 || index >= items.length) return;
+        items.splice(index, 1);
+        saveHistory(items);
+        renderHistoryList();
+    }
+
+    function clearHistory() {
+        saveHistory([]);
+        renderHistoryList();
+    }
+
     // Stage definitions
     var stages = ["parse", "schema", "sql", "exec", "result"];
     var stageLabels = {
@@ -343,6 +425,17 @@
     });
 
     // ─── Initialization ───
+
+    setupViewTabs();
+
+    // 테마 토글 — 이 브라우저에만 적용되는 개인 선택(전역 기본값은 운영자가 정한다).
+    // data-theme 적용 자체는 head의 theme.js가 첫 페인트 전에 끝낸다.
+    var themeToggleBtn = document.getElementById("themeToggle");
+    if (themeToggleBtn && window.AppTheme) {
+        themeToggleBtn.addEventListener("click", function () {
+            window.AppTheme.setPersonal(window.AppTheme.toggleValue());
+        });
+    }
 
     promptEl.addEventListener("input", autoResizeTextarea);
     promptEl.addEventListener("keydown", handleKeydown);
@@ -587,6 +680,10 @@
         if (promptHistory.length === 0 || promptHistory[promptHistory.length - 1] !== query) {
             promptHistory.push(query);
         }
+        // 질의 이력(D-183)에도 함께 남긴다. handleSend는 전송의 단일 진입점이라
+        // (버튼·Enter·웰컴 힌트·파일 업로드가 전부 여기를 지난다) 기록 지점을 늘릴 필요가 없다.
+        // 성공 여부를 기다리지 않는 것은 기록 대상이 "무엇을 물었나"이기 때문이다.
+        pushHistory(query);
         historyIndex = -1;
         savedCurrentInput = "";
 
@@ -1054,6 +1151,7 @@
             finalizeStreamingMessage(finalText, metaData);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
+            appendZoneClarificationToLastBubble(metaData.scope_reexpand);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1207,20 +1305,33 @@
     function renderZoneClarification(bubble, clar) {
         var options = clar.options || [];
         if (!options.length) return;
+        // 범위 사전 선택(D-176 후속4)은 **성능 최적화**라 답하지 않아도 진행된다.
+        // 모호성 해소(zone_select)는 답해야 진행되므로 문구·버튼이 다르다.
+        var isScope = clar.kind === "scope_select";
         var boxId = "zoneClarify-" + Date.now();
         var itemsHtml = options.map(function (o) {
+            // scope_select는 그룹 단위라 db_ids 배열을, zone_select는 단일 db_id를 싣는다.
+            var val = (o.db_ids && o.db_ids.length) ? o.db_ids.join(",") : (o.db_id || "");
             return '<label class="zone-clarify-item">' +
-                '<input type="checkbox" value="' + escapeHtml(o.db_id) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '"> ' +
+                '<input type="checkbox" value="' + escapeHtml(val) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '" data-key="' + escapeHtml(o.key || "") + '"' + (o.default ? " checked" : "") + '> ' +
                 escapeHtml(o.label) +
                 '</label>';
         }).join("");
+        var anyDefault = options.some(function (o) { return !!o.default; });
+        var confirmLabel = isScope ? "선택한 범위로 조회" : "선택한 존으로 조회";
+        // 건너뛰기 = 전체 조회. 이것이 있어야 "묻는 것이 진행을 막지 않는다"가 성립한다(U10).
+        var skipHtml = clar.skippable
+            ? '<button class="zone-clarify-skip">건너뛰고 전체 조회</button>'
+            : "";
         bubble.insertAdjacentHTML("beforeend",
             '<div class="zone-clarify" id="' + boxId + '">' +
                 '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
-                '<button class="zone-clarify-confirm" disabled>선택한 존으로 조회</button>' +
+                '<button class="zone-clarify-confirm"' + (anyDefault ? "" : " disabled") + '>' + confirmLabel + '</button>' +
+                skipHtml +
             '</div>');
         var box = document.getElementById(boxId);
         var confirmBtn = box.querySelector(".zone-clarify-confirm");
+        var skipBtn = box.querySelector(".zone-clarify-skip");
         var checks = box.querySelectorAll('input[type="checkbox"]');
         checks.forEach(function (c) {
             c.addEventListener("change", function () {
@@ -1233,14 +1344,43 @@
                         if (x !== c && x.getAttribute("data-group") !== g) x.checked = false;
                     });
                 }
+                // "전체 조회"와 개별 그룹은 서로 배타다 — 함께 체크하면 무엇을 고른 건지
+                // 사용자도 시스템도 알 수 없다.
+                if (isScope && c.checked) {
+                    var isAll = c.getAttribute("data-key") === "__all__";
+                    checks.forEach(function (x) {
+                        if (x === c) return;
+                        var xAll = x.getAttribute("data-key") === "__all__";
+                        if (isAll || xAll) x.checked = false;
+                    });
+                }
                 var any = Array.prototype.some.call(checks, function (x) { return x.checked; });
                 confirmBtn.disabled = !any;  // 미선택 시 비활성 (Plan 75 §5.1 항목 3)
             });
         });
+        if (skipBtn) {
+            skipBtn.addEventListener("click", function () {
+                var all = [];
+                checks.forEach(function (c) {
+                    if (c.getAttribute("data-key") === "__all__") {
+                        all = c.value ? c.value.split(",") : [];
+                    }
+                });
+                box.classList.add("zone-clarify--done");
+                box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+                executeStreamingQuery(clar.original_query || "", all);
+            });
+        }
         confirmBtn.addEventListener("click", function () {
             var ids = [], labels = [];
             checks.forEach(function (c) {
-                if (c.checked) { ids.push(c.value); labels.push(c.getAttribute("data-label")); }
+                if (c.checked) {
+                    // scope_select는 값이 CSV(그룹의 db_ids)라 펼친다.
+                    (c.value ? c.value.split(",") : []).forEach(function (v) {
+                        if (v && ids.indexOf(v) === -1) ids.push(v);
+                    });
+                    labels.push(c.getAttribute("data-label"));
+                }
             });
             if (!ids.length) return;
             box.classList.add("zone-clarify--done");
@@ -1403,6 +1543,7 @@
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
+            appendZoneClarificationToLastBubble(data.scope_reexpand);
 
         } catch (err) {
             removeProcessingMessage();
@@ -1527,6 +1668,7 @@
             attachDownloadToLastFileCard(metaData.query_id);
             // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
+            appendZoneClarificationToLastBubble(metaData.scope_reexpand);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1584,6 +1726,7 @@
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
+            appendZoneClarificationToLastBubble(data.scope_reexpand);
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);
@@ -2456,6 +2599,229 @@
             '</table>';
     }
 
+    // ─── 뷰 탭 (질의응답 · 이벤트 알람) ───
+    //
+    // 알람은 SSE로 대화와 무관하게 도착하므로 질의응답 스트림에 섞으면 흐름이 끊긴다.
+    // 수신(EventSource)은 어느 탭에 있든 그대로 유지하고, 보고 있지 않은 동안 도착한
+    // 건수만 탭 배지로 알린다 — 알람 뷰를 열면 그 시점에 0으로 돌아간다.
+
+    var activeView = "chat";
+    var alarmUnreadCount = 0;
+
+    // 뷰 등록표. 탭이 늘어도 setActiveView는 다시 손대지 않는다
+    // (하드코딩 toggle을 늘리면 뷰 하나가 조용히 안 숨는 회귀가 생긴다).
+    // 질의 이력은 여기 없다 — 탭으로 본문을 바꾸는 뷰가 아니라 채팅 옆에 붙는 사이드바다.
+    function viewRegistry() {
+        return { chat: chatView, alarm: alarmView };
+    }
+
+    function setActiveView(view) {
+        activeView = view;
+        var views = viewRegistry();
+        Object.keys(views).forEach(function (key) {
+            var el = views[key];
+            if (el) el.classList.toggle("view-hidden", key !== view);
+        });
+        document.querySelectorAll(".view-tab").forEach(function (btn) {
+            var on = btn.dataset.view === view;
+            btn.classList.toggle("active", on);
+            btn.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        if (view === "alarm") {
+            alarmUnreadCount = 0;
+            renderAlarmBadge();
+        } else if (view === "chat" && stickToBottom && chatMessages) {
+            // 숨겨진 동안 chatMessages.scrollHeight는 0이라 스트리밍 추종이 맨 위로 밀어 놓는다.
+            // 돌아올 때 "맨 아래 고정" 상태였던 경우에 한해 복원한다.
+            // (조건을 else로 두면 이력 탭으로 *갈* 때 복원이 돌아 엉뚱한 곳을 만진다.)
+            requestAnimationFrame(function () {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            });
+        }
+    }
+
+    function renderAlarmBadge() {
+        if (!alarmTabBadge) return;
+        alarmTabBadge.textContent = alarmUnreadCount > 99 ? "99+" : String(alarmUnreadCount);
+        alarmTabBadge.classList.toggle("has-unread", alarmUnreadCount > 0);
+    }
+
+    // 수신 건수 표시·빈 상태를 목록의 실제 내용에 맞춘다.
+    function updateAlarmViewState() {
+        if (!alarmList) return;
+        var count = alarmList.children.length;
+        if (alarmEmpty) alarmEmpty.style.display = count ? "none" : "flex";
+        if (alarmViewCount) alarmViewCount.textContent = count ? count + "건 수신" : "";
+        // 지울 것이 없으면 버튼을 감춘다 — .btn에는 비활성 스타일이 없어
+        // disabled로 두면 눌리는 것처럼 보인다.
+        if (alarmClearBtn) alarmClearBtn.style.display = count ? "" : "none";
+    }
+
+    // 알람 수신 권한이 없는 사용자에게는 탭을 감춘다 — 영영 비어 있을 탭이기 때문이다.
+    // (헤더의 수신 토글도 같은 조건으로 숨긴다 — setupAlarmToggle)
+    function setAlarmTabVisible(visible) {
+        var tab = document.querySelector('.view-tab[data-view="alarm"]');
+        if (tab) tab.style.display = visible ? "" : "none";
+        if (!visible && activeView === "alarm") setActiveView("chat");
+    }
+
+    // ─── 질의 이력 목록 (D-183) ───
+
+    function formatHistoryTime(ms) {
+        var d = new Date(ms);
+        function p(n) { return n < 10 ? "0" + n : String(n); }
+        return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    }
+
+    // 목록에서 고른 질의는 **입력창에 채우기만** 한다. 즉시 보내지 않는 이유는
+    // 옛 질의가 지금도 유효하다는 보장이 없고(존 개명·서버 폐기), 오전송은 되돌릴 수 없어서다.
+    function reuseHistoryQuery(query) {
+        if (!promptEl) return;
+        promptEl.value = query;
+        historyIndex = -1;
+        savedCurrentInput = "";
+        // 뷰 전환은 필요 없다 — 사이드바는 채팅 뷰 안에 있어서, 여기를 누를 수 있다는 것은
+        // 이미 채팅 뷰라는 뜻이다.
+        autoResizeTextarea();
+        promptEl.focus();
+    }
+
+    function renderHistoryList() {
+        if (!historyList) return;
+        // 접힌 동안의 렌더는 낭비다(보이지 않는다). 펼칠 때 applyHistoryPanelState가 부른다.
+        var layout = document.querySelector(".chat-layout");
+        if (layout && layout.classList.contains("history-collapsed")) return;
+        var items = loadHistory();
+        var keyword = historySearch ? historySearch.value.trim().toLowerCase() : "";
+        // 저장은 오래된 순, 표시는 최신순. 검색은 서버 왕복 없이 부분일치로 거른다.
+        var rows = [];
+        for (var i = items.length - 1; i >= 0; i--) {
+            if (keyword && items[i].q.toLowerCase().indexOf(keyword) === -1) continue;
+            rows.push({ item: items[i], index: i });
+        }
+
+        historyList.innerHTML = "";
+        rows.forEach(function (row) {
+            var el = document.createElement("div");
+            el.className = "history-row";
+
+            var text = document.createElement("div");
+            text.className = "history-row-query";
+            text.textContent = row.item.q;      // textContent — 질의문은 마크업으로 해석하지 않는다
+            text.title = row.item.q;            // 잘린 전문은 툴팁으로
+
+            var meta = document.createElement("div");
+            meta.className = "history-row-meta";
+
+            var time = document.createElement("span");
+            time.className = "history-row-time";
+            time.textContent = formatHistoryTime(row.item.t);
+
+            var reuseBtn = document.createElement("button");
+            reuseBtn.type = "button";
+            reuseBtn.className = "history-row-btn";
+            reuseBtn.title = "입력창에 불러오기";
+            reuseBtn.setAttribute("aria-label", "이 질의를 입력창에 불러오기");
+            reuseBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"></polyline>' +
+                '<path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>';
+            reuseBtn.addEventListener("click", function () { reuseHistoryQuery(row.item.q); });
+
+            var delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.className = "history-row-btn";
+            delBtn.title = "이 항목 삭제";
+            delBtn.setAttribute("aria-label", "이 질의 이력 삭제");
+            delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line>' +
+                '<line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+            delBtn.addEventListener("click", function () { removeHistoryAt(row.index); });
+
+            meta.appendChild(time);
+            meta.appendChild(reuseBtn);
+            meta.appendChild(delBtn);
+            el.appendChild(text);
+            el.appendChild(meta);
+            historyList.appendChild(el);
+        });
+
+        // 빈 상태 문구는 두 가지다 — 아직 아무것도 없는 것과, 검색에 안 걸린 것.
+        if (historyEmpty) {
+            historyEmpty.style.display = rows.length ? "none" : "flex";
+            var emptyText = historyEmpty.querySelector("p");
+            if (emptyText) {
+                emptyText.innerHTML = keyword
+                    ? "검색어와 일치하는 질의가 없습니다."
+                    : "저장된 질의가 없습니다.<br>질의를 보내면 여기에 최신순으로 쌓입니다.";
+            }
+        }
+        if (historyPanelCount) {
+            historyPanelCount.textContent = items.length
+                ? (keyword ? rows.length + " / " + items.length + "건" : items.length + "건 저장")
+                : "";
+        }
+        // 지울 것이 없으면 버튼을 감춘다(알람 뷰와 같은 규칙 — .btn에 비활성 스타일이 없다).
+        if (historyClearBtn) historyClearBtn.style.display = items.length ? "" : "none";
+    }
+
+    // ─── 이력 사이드바 접기 (D-183) ───
+    //
+    // 기본은 **접힘**이다 — 첫 방문 화면이 종전(2열)과 같아 회귀가 없고, 필요한 사람만 펼친다.
+    // 편 상태는 브라우저가 기억한다(D-178·D-180의 "개인 선호는 브라우저"와 같은 계열).
+
+    var HISTORY_PANEL_KEY = "query_history_panel_open";
+
+    function isHistoryPanelOpen() {
+        try {
+            return localStorage.getItem(HISTORY_PANEL_KEY) === "1";
+        } catch (e) {
+            return false;   // 저장소가 막힌 환경에서는 기본값(접힘)
+        }
+    }
+
+    function applyHistoryPanelState(open) {
+        var layout = document.querySelector(".chat-layout");
+        if (layout) layout.classList.toggle("history-collapsed", !open);
+        if (historyToggle) historyToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        // 접혀 있는 동안은 그리지 않는다 — 펼치는 순간 최신 상태로 그린다.
+        if (open) renderHistoryList();
+    }
+
+    function setupHistoryPanel() {
+        applyHistoryPanelState(isHistoryPanelOpen());
+        if (!historyToggle) return;
+        historyToggle.addEventListener("click", function () {
+            var open = !isHistoryPanelOpen();
+            try {
+                localStorage.setItem(HISTORY_PANEL_KEY, open ? "1" : "0");
+            } catch (e) {
+                console.warn("[history] 패널 상태 저장 실패:", e);
+            }
+            applyHistoryPanelState(open);
+        });
+    }
+
+    function setupViewTabs() {
+        document.querySelectorAll(".view-tab").forEach(function (btn) {
+            btn.addEventListener("click", function () { setActiveView(btn.dataset.view); });
+        });
+        if (alarmClearBtn) {
+            alarmClearBtn.addEventListener("click", function () {
+                if (!alarmList) return;
+                alarmList.innerHTML = "";
+                alarmUnreadCount = 0;
+                renderAlarmBadge();
+                updateAlarmViewState();
+            });
+        }
+        if (historyClearBtn) {
+            historyClearBtn.addEventListener("click", function () { clearHistory(); });
+        }
+        if (historySearch) {
+            historySearch.addEventListener("input", function () { renderHistoryList(); });
+        }
+        updateAlarmViewState();
+        setupHistoryPanel();
+    }
+
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
@@ -2504,14 +2870,22 @@
                 '</div>';
         }
 
-        // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 — incident 여부와 무관하게 항상 표시.
-        var feedbackHtml =
-            '<div class="alarm-section alarm-feedback-section">' +
-                '<span class="alarm-feedback-label">이 알람이 유용했나요?</span>' +
-                '<button type="button" class="btn-alarm-feedback" data-label="valid">유효</button>' +
-                '<button type="button" class="btn-alarm-feedback" data-label="noise">노이즈</button>' +
-                '<span class="alarm-feedback-msg"></span>' +
-            '</div>';
+        // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼.
+        // (Plan 83 T7) 게이트가 꺼져 있으면 아예 렌더하지 않는다 — 종전에는 버튼이 보이고
+        // 누르면 503이 떠서 운영자가 원인을 알 수 없었다. capabilities 조회 실패(null)면
+        // 종전대로 표시한다(폴백 — 기능을 조회 실패로 숨기지 않는다).
+        var feedbackHtml = "";
+        if (!alarmCapabilities || alarmCapabilities.feedback_enabled) {
+            feedbackHtml =
+                '<div class="alarm-section alarm-feedback-section">' +
+                    '<span class="alarm-feedback-label">이 알람이 유용했나요?</span>' +
+                    '<button type="button" class="btn-alarm-feedback" data-label="valid">유효</button>' +
+                    '<button type="button" class="btn-alarm-feedback" data-label="noise">노이즈</button>' +
+                    '<input type="text" class="alarm-feedback-note" maxlength="200" ' +
+                        'placeholder="메모(선택) — 민감정보·계정·키 입력 금지">' +
+                    '<span class="alarm-feedback-msg"></span>' +
+                '</div>';
+        }
 
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
@@ -2542,10 +2916,10 @@
                 '</div>' +
             '</div>';
 
-        if (chatWelcome && !chatWelcome.classList.contains("hidden")) {
-            chatWelcome.classList.add("hidden");
-        }
-        chatMessages.appendChild(el);
+        // 알람은 질의응답 스트림이 아니라 알람 뷰에 최신순(맨 위)으로 쌓는다.
+        // 채팅 웰컴 화면은 건드리지 않는다 — 알람 도착이 대화 시작으로 보이면 안 된다.
+        if (!alarmList) return;
+        alarmList.insertBefore(el, alarmList.firstChild);
 
         // D-049: ack 버튼 이벤트 바인딩(closure로 incident_id 캡처 — 인라인 onclick 미사용)
         if (data.incident_id) {
@@ -2559,7 +2933,12 @@
         // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
         bindAlarmFeedback(el, data);
 
-        scrollToBottomIfSticky();
+        // 보고 있지 않은 동안 도착한 알람만 미확인으로 센다(채팅 스크롤은 건드리지 않는다).
+        if (activeView !== "alarm") {
+            alarmUnreadCount += 1;
+            renderAlarmBadge();
+        }
+        updateAlarmViewState();
     }
 
     // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 핸들러를 바인딩한다.
@@ -2573,34 +2952,87 @@
                 var label = btn.dataset.label;
                 buttons.forEach(function (b) { b.disabled = true; });
                 if (msgEl) msgEl.textContent = "";
+                var noteEl = el.querySelector(".alarm-feedback-note");
                 fetch("/api/v1/alarm/feedback", {
                     method: "POST",
                     headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
                     body: JSON.stringify({
                         alarm_name: data.alarm_name,
                         resource_name: data.resource_name,
-                        pattern_type: data.pattern_type,
+                        // (Plan 83 T6) 결정적 사전분류를 저장 키로 쓴다 — LLM 산출 pattern_type과
+                        // 어긋나면 few-shot 조회 가점이 조용히 누락된다. 없으면 종전 값으로 폴백.
+                        pattern_type: data.pre_classification || data.pattern_type,
                         severity: data.severity,
+                        // (Plan 83 T2·A-2) 존 판정·서버별 집계에 필요하다
+                        db_id: data.db_id || "",
+                        server_name: data.server_name || "",
+                        note: noteEl ? noteEl.value.trim() : "",
                         label: label
                     })
                 })
                     .then(function (resp) {
                         if (resp.status === 503) throw new Error("disabled");
+                        if (resp.status === 403) throw new Error("forbidden");
                         if (!resp.ok) throw new Error("HTTP " + resp.status);
                         return resp.json();
                     })
-                    .then(function () {
-                        if (msgEl) msgEl.textContent = "피드백 감사합니다";
+                    .then(function (result) {
+                        if (noteEl) noteEl.disabled = true;
+                        if (msgEl) {
+                            msgEl.textContent = "피드백 감사합니다 ";
+                            // (Plan 83 A-5) 오클릭 되돌리기 — tombstone append로 후보에서 뺀다
+                            if (result && result.ts) {
+                                appendUndoLink(msgEl, result.ts, data, buttons, noteEl);
+                            }
+                        }
                     })
                     .catch(function (err) {
                         buttons.forEach(function (b) { b.disabled = false; });
                         if (msgEl) {
                             msgEl.textContent =
-                                (err && err.message === "disabled") ? "피드백 비활성" : "전송 실패";
+                                (err && err.message === "disabled") ? "피드백 비활성"
+                                : (err && err.message === "forbidden") ? "권한 없음(다른 존 알람)"
+                                : "전송 실패";
                         }
                     });
             });
         });
+    }
+
+    // Plan 83 A-5: 피드백 취소(철회) 링크를 붙인다.
+    // 서버는 tombstone 한 줄을 append할 뿐이라 원본 레코드는 감사용으로 남고,
+    // few-shot 후보에서만 빠진다(파일 재작성 없음).
+    function appendUndoLink(msgEl, ts, data, buttons, noteEl) {
+        var undo = document.createElement("a");
+        undo.href = "#";
+        undo.className = "alarm-feedback-undo";
+        undo.textContent = "취소";
+        undo.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            undo.style.display = "none";
+            fetch("/api/v1/alarm/feedback/retract", {
+                method: "POST",
+                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                body: JSON.stringify({
+                    target_ts: ts,
+                    alarm_name: data.alarm_name,
+                    db_id: data.db_id || ""
+                })
+            })
+                .then(function (resp) {
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    msgEl.textContent = "피드백을 취소했습니다";
+                    // 다시 라벨을 남길 수 있게 되돌린다
+                    buttons.forEach(function (b) { b.disabled = false; });
+                    if (noteEl) noteEl.disabled = false;
+                })
+                .catch(function () {
+                    undo.style.display = "";
+                    msgEl.textContent = "취소 실패 · 다시 시도 ";
+                    msgEl.appendChild(undo);
+                });
+        });
+        msgEl.appendChild(undo);
     }
 
     // D-049: incident 확인(ack) 버튼 핸들러를 바인딩한다.
@@ -2646,6 +3078,37 @@
     var alarmStreamSource = null;
     var alarmReceiveEnabled = (localStorage.getItem("alarm_receive_enabled") !== "0");  // 기본 on
 
+    // Plan 83 T11: 개인 표시 레벨. 존(권한)은 서버가, 티어 표시(선호)는 여기서 판단한다.
+    // 저장소는 alarm_receive_enabled 전례를 따라 localStorage — 서버는 이 값을 모른다.
+    // 기본값 dashboard = 현행 동작 보존(지금 보이던 카드가 사라지지 않는다).
+    var ALARM_VIEW_LEVELS = ["page", "ticket", "dashboard", "suppress"];
+    var ALARM_LEVEL_LABELS = {
+        page: "긴급만", ticket: "통보 대상", dashboard: "전체", suppress: "억제 포함(감사)"
+    };
+    var alarmViewLevel = localStorage.getItem("alarm_view_level") || "dashboard";
+    if (ALARM_VIEW_LEVELS.indexOf(alarmViewLevel) < 0) alarmViewLevel = "dashboard";
+
+    // 서버가 내리는 게이트 상태(GET /alarm/capabilities). 앱 기동 시 1회 조회해 캐시한다.
+    var alarmCapabilities = null;
+
+    // 티어가 표시 레벨에 드는지 판정한다. tier 미상은 **항상 통과** —
+    // analyze 테스트 경로 payload에는 tier가 없어서, 막으면 테스트 카드가 사라진다.
+    function isTierVisible(tier) {
+        if (!tier) return true;
+        var allowed = ALARM_VIEW_LEVELS.indexOf(alarmViewLevel);
+        var actual = ALARM_VIEW_LEVELS.indexOf(tier);
+        return actual >= 0 && allowed >= 0 && actual <= allowed;
+    }
+
+    async function loadAlarmCapabilities() {
+        try {
+            var resp = await fetch("/api/v1/alarm/capabilities", { headers: getAuthHeaders() });
+            if (resp.ok) alarmCapabilities = await resp.json();
+        } catch (_) {
+            alarmCapabilities = null;   // 조회 실패 시 종전 동작(버튼 표시)으로 폴백
+        }
+    }
+
     function connectAlarmStream() {
         if (!alarmCanReceive || !alarmReceiveEnabled) return;
         if (alarmStreamSource) return;  // 중복 연결 방지
@@ -2655,7 +3118,8 @@
             try {
                 var data = JSON.parse(e.data);
                 if (data.type === "alarm_notification") {
-                    renderAlarmMessage(data);
+                    // Plan 83 T11: 개인 표시 레벨 필터(권한 필터는 서버가 이미 적용)
+                    if (isTierVisible(data.tier)) renderAlarmMessage(data);
                 }
             } catch (_) {}
         };
@@ -2688,6 +3152,37 @@
             localStorage.setItem("alarm_receive_enabled", cb.checked ? "1" : "0");
             if (cb.checked) connectAlarmStream();
             else disconnectAlarmStream();
+        });
+    }
+
+    // Plan 83 T11: 표시 레벨 셀렉트. 억제 포함(감사)은 관리자에게만 노출한다 —
+    // 서버도 SUPPRESS를 관리자에게만 보내므로(event_visible_to) UI는 그 사실을 반영만 한다.
+    function setupAlarmLevelSelect(userInfo, authEnabled) {
+        var sel = document.getElementById("alarmViewLevel");
+        if (!sel) return;
+        if (!alarmCanReceive) { sel.style.display = "none"; return; }
+        var isAdmin = !authEnabled || !!(userInfo && userInfo.role === "admin");
+        var suppressStream = !!(alarmCapabilities && alarmCapabilities.suppress_stream);
+
+        sel.innerHTML = "";
+        ALARM_VIEW_LEVELS.forEach(function (level) {
+            // 억제 포함은 관리자 + 서버 발행이 켜져 있을 때만 고를 수 있다(빈 선택지 방지)
+            if (level === "suppress" && !(isAdmin && suppressStream)) return;
+            var opt = document.createElement("option");
+            opt.value = level;
+            opt.textContent = ALARM_LEVEL_LABELS[level];
+            sel.appendChild(opt);
+        });
+        // 고를 수 없게 된 레벨이 저장돼 있으면 기본값으로 되돌린다
+        if (!Array.prototype.some.call(sel.options, function (o) { return o.value === alarmViewLevel; })) {
+            alarmViewLevel = "dashboard";
+            localStorage.setItem("alarm_view_level", alarmViewLevel);
+        }
+        sel.value = alarmViewLevel;
+        sel.style.display = "inline-block";
+        sel.addEventListener("change", function () {
+            alarmViewLevel = sel.value;
+            localStorage.setItem("alarm_view_level", alarmViewLevel);
         });
     }
 
@@ -2729,7 +3224,12 @@
             !!(userInfo && (userInfo.role === "admin" ||
                 (userInfo.alarm_zones && userInfo.alarm_zones.length > 0)));
         setupAlarmToggle();
+        setAlarmTabVisible(alarmCanReceive);
         renderAlarmZonesTooltip(userInfo, authEnabled);
+        // (Plan 83) 게이트 상태를 먼저 받아야 레벨 선택지·피드백 버튼 노출을 정할 수 있다
+        loadAlarmCapabilities().then(function () {
+            setupAlarmLevelSelect(userInfo, authEnabled);
+        });
         if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
     }
 

@@ -15,6 +15,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
+from src.domain.empty_answer import from_payload as diagnosis_from_payload
+from src.domain.empty_answer import render_diagnosis
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
 from src.schema_cache.form_memory import save_form_memory_entries
@@ -98,6 +100,8 @@ async def _run_output_generator(
             app_config, state, llm=llm, stream_user_response=stream_user_response
         )
         response = _append_inferred_mapping_info(response, state)
+        response = _append_spike_notes(response, state)
+        response = _append_scope_note(response, state)
         return {
             "final_response": response,
             "output_file": None,
@@ -114,6 +118,8 @@ async def _run_output_generator(
                 app_config, state, llm=llm, stream_user_response=stream_user_response
             )
             text_response = _append_inferred_mapping_info(text_response, state)
+            text_response = _append_spike_notes(text_response, state)
+            text_response = _append_scope_note(text_response, state)
             # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
             # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
             text_response = _append_form_fill_notes(
@@ -238,7 +244,7 @@ async def _generate_text_response(
 
     # 결과가 없는 경우
     if not organized["rows"]:
-        return _generate_empty_result_response(parsed)
+        return _generate_empty_result_response(parsed, state.get("empty_diagnosis"))
 
     if llm is None:
         llm = create_llm(config)
@@ -263,11 +269,19 @@ async def _generate_text_response(
     return await astream_text(llm, messages, tags=tags)
 
 
-def _generate_empty_result_response(parsed: dict) -> str:
+def _generate_empty_result_response(
+    parsed: dict, diagnosis_payload: dict | None = None
+) -> str:
     """결과가 0건일 때의 응답을 생성한다.
+
+    진단(D-176 후속1)이 있으면 *"어느 조건에서 끊겼는지"* 를 덧붙인다. 조건이 3개일 때
+    "필터 조건을 완화해보세요"는 **어느 것을 완화해야 하는지**를 알려주지 못한다.
+
+    진단이 없으면(플래그 OFF·프로브 미발동) 종전 문구를 **바이트 단위로** 그대로 낸다.
 
     Args:
         parsed: 파싱된 요구사항
+        diagnosis_payload: `state["empty_diagnosis"]`(없으면 None)
 
     Returns:
         빈 결과 안내 텍스트
@@ -276,6 +290,12 @@ def _generate_empty_result_response(parsed: dict) -> str:
     filters = parsed.get("filter_conditions", [])
 
     response = f"조건에 해당하는 {targets} 데이터가 없습니다."
+
+    diagnosis = diagnosis_from_payload(diagnosis_payload)
+    if diagnosis is not None:
+        rendered = render_diagnosis(diagnosis)
+        if rendered:
+            return f"{response}\n\n{rendered}"
 
     if filters:
         response += "\n\n다음과 같은 방법을 시도해보세요:"
@@ -503,6 +523,32 @@ def _build_form_fill_hitl(
 def _display_field_name(field: str) -> str:
     """복합 필드명(그룹|서브)을 사용자 표시용 'A > B'로 변환한다(내부 키는 '|' 유지)."""
     return field.replace("|", " > ")
+
+
+def _append_scope_note(response: str, state: AgentState) -> str:
+    """좁힌 범위의 **미조회 사실**을 응답에 덧붙인다(D-176 후속4 · §5.3 불변식 6).
+
+    범위 축소는 정보 손실이 복구되지 않는 절단이다 — 좁혔다는 사실을 말하지 않으면
+    사용자는 **전체를 본 결과로 읽는다**. LLM 프롬프트에 각주를 지시하면 누락되므로
+    코드가 결정적으로 붙인다(급증 한계 표기와 같은 원칙).
+    """
+    from src.domain.scope_select import render_narrowed_note
+
+    note = render_narrowed_note(state.get("scope_narrowed"))
+    return f"{response}\n\n{note}" if note else response
+
+
+def _append_spike_notes(response: str, state: AgentState) -> str:
+    """급증 조회의 한계를 응답에 **결정적으로** 덧붙인다(D-176 후속2 · §6.12).
+
+    LLM 프롬프트에 "각주를 달아라"라고 지시하면 누락된다(LLM 비결정성). 기본 임계값을
+    썼다는 사실·용량 변경 미대조·주 단위 차단은 **반드시** 보여야 하므로 코드가 붙인다 —
+    못 하는 것보다 말하지 않는 것이 나쁘다.
+    """
+    notes = state.get("spike_notes")
+    if not notes:
+        return response
+    return response + "\n\n" + "\n".join(f"- {n}" for n in notes)
 
 
 def _append_inferred_mapping_info(response: str, state: AgentState) -> str:

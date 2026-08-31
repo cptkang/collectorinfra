@@ -321,7 +321,13 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
         # (E3 후속) 워커 경로 SSE Redis pub/sub 발행기 — alarm_bus 미주입 시에만 사용.
         sse_publisher = configurable.get("sse_publisher")
         await _route_non_page_tier(
-            result, decision, ticket_queue, alarm_bus, sse_publisher
+            result,
+            decision,
+            ticket_queue,
+            alarm_bus,
+            sse_publisher,
+            # (Plan 83) SUPPRESS SSE 옵트인 — 게이트 설정 부재 시 False(현행 유지)
+            suppress_sse=bool(getattr(gate_cfg, "sse_suppressed_enabled", False)),
         )
         return {"analysis_result": result}
 
@@ -583,6 +589,8 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
         "pattern_type": result.pattern_type,
         "is_routine": result.is_routine,
         "pattern_analysis": result.pattern_analysis,
+        # (Plan 83 T6) 결정적 사전분류 — 카드가 피드백 저장 키로 되돌려 보낸다
+        "pre_classification": result.pre_classification,
         # ── Phase E3: 4-티어 라우팅 메타데이터 ──
         "tier": decision.tier,
         "tier_reason": decision.reason,
@@ -595,6 +603,7 @@ async def _route_non_page_tier(
     ticket_queue,  # noqa: ANN001 — TicketBatchQueue | None (덕 타이핑)
     alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None (덕 타이핑)
     sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None (덕 타이핑)
+    suppress_sse: bool = False,
 ) -> None:
     """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 라우팅한다(발송 안 함, §7 · Phase E3).
 
@@ -604,7 +613,9 @@ async def _route_non_page_tier(
 
     - TICKET: 일배치 요약 큐 적재(ticket_queue 있으면) + DASHBOARD와 동일하게 SSE 표시.
     - DASHBOARD: SSE(alarm_bus 또는 sse_publisher 있으면)로 UI에만 표시.
-    - SUPPRESS: 발송·큐·SSE 모두 없음 — 로그만.
+    - SUPPRESS: 발송·큐 없음. `suppress_sse=True`(Plan 83 · NOISE_SSE_SUPPRESSED_ENABLED)면
+      SSE만 발행해 **관리자 감사 레벨**에서 볼 수 있게 한다 — 기본 False면 종전처럼 로그만이라
+      비트 동일하다. 수신 측 권한(관리자 전용)은 스트림 엔드포인트가 판정한다(이 함수 밖).
 
     alarm_bus는 API 경로(app.state.alarm_bus)에서만 주입된다. 워커 경로(cross-process)는
     alarm_bus를 공유할 수 없어 대신 sse_publisher(Redis pub/sub 브리지, E3 후속·D-048.9)를
@@ -631,8 +642,13 @@ async def _route_non_page_tier(
             decision.reason,
         )
     else:  # TIER_SUPPRESS
+        # (Plan 83) 옵트인 시에만 SSE 발행 — 억제 내역을 UI에서 감사하기 위한 경로다.
+        # 발송·큐는 여전히 없다(억제 판정 자체는 불변). 기본 off면 종전과 동일.
+        if suppress_sse:
+            await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
         logger.info(
-            "SUPPRESS(미통보 — 감사 기록만): alarm_id=%s reason=%s",
+            "SUPPRESS(미통보 — 감사 기록만%s): alarm_id=%s reason=%s",
+            " · SSE 발행" if suppress_sse else "",
             alarm_id,
             decision.reason,
         )
@@ -700,6 +716,8 @@ def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # no
         "pattern_type": result.pattern_type,
         "is_routine": result.is_routine,
         "pattern_analysis": result.pattern_analysis,
+        # (Plan 83 T6) 결정적 사전분류 — 카드가 피드백 저장 키로 되돌려 보낸다
+        "pre_classification": result.pre_classification,
         "tier": decision.tier,
     }
 

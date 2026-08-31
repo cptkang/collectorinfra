@@ -38,6 +38,56 @@ zones:
   - code: bankjon
     label: 은행존(K리전 은행/레거시)
 
+# ── 관측 솔루션(solution) — 실행 그룹의 1차 축 (D-176 · plans/82 §4.2).
+#    존 그룹(2차 축)과 함께 "무엇을 어떤 순서로 조회할 것인가"를 선언한다.
+#    order        : 솔루션 간 조회 순서(작을수록 먼저). 선언 순서가 아니라 이 값이 정본이다.
+#    backend      : 그룹 실행 주체 선택 키 — sql | rest | mcp
+#    capabilities : 이 솔루션이 답할 수 있는 관측 능력. 파이프라인 전개의 결정적 재료다.
+#    requires     : 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm은 host_location 선행)
+#
+#    ⚠ 지금은 polestar 하나만 등록한다. apm·dpm은 실제 연동 시 주석을 풀어 등재하며,
+#      그때까지 등록 0건 상태에서 회귀 0을 테스트가 단언한다(plans/82 Wave 7 비범위).
+solutions:
+  - code: polestar
+    label: 폴스타(인프라 모니터링)
+    order: 10
+    backend: sql
+    family: polestar
+    capabilities: [server_spec, server_usage, alarm, host_location, process_list]
+
+  # 향후 편입 예시 (현재 미등록 — plans/55 · plans/78 W7-2 소관):
+  # - code: apm
+  #   label: APM(애플리케이션 성능)
+  #   order: 20
+  #   backend: rest
+  #   capabilities: [was_metric, jvm_heap, thread_pool, transaction]
+  #   requires: [host_location]
+  # - code: dpm
+  #   label: DPM(DB 성능)
+  #   order: 30
+  #   backend: rest
+  #   capabilities: [db_session, slow_query, lock_wait]
+  #   requires: [host_location]
+
+# ── 존 그룹(zone_group) — 솔루션 내부의 2차 축. 담당 조직·DB 엔진이 갈리는 경계다.
+#    query_order가 **조회 순서의 정본**이다 — 사용자 요구(2026-08-28): 은행존을 먼저
+#    조회하고 완료되면 공동존을 조회한다.
+#
+#    ⚠ 위 `zones:` 선언 순서를 재정렬하지 않는다. all_zones()는 **알림 지역 스코프 RBAC의
+#      선택지 순서**를 만들고 있어 조회 순서와 용도가 다르다 — 두 순서를 한 리스트에
+#      겹치면 한쪽 요구가 다른 쪽을 흔든다(plans/82 §4.2).
+zone_groups:
+  - code: bank
+    label: 은행존
+    solution: polestar
+    zones: [bankjon]
+    query_order: 10
+  - code: common
+    label: 공동존
+    solution: polestar
+    zones: [gongjon]
+    query_order: 20
+
 # ── 제품군(family) — 같은 제품군 DB끼리만 "경쟁 지역" 배제 판정을 수행한다.
 #    product_terms: 제품명 단독 토큰(지역 변별력 없음 — 지역 토큰이 함께 있으면 제거 대상)
 #    signal_terms : "이번 턴에 사용자가 DB를 새로 지목했다"고 볼 표면어(멀티턴 승계 차단)
