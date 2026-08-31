@@ -4,96 +4,231 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Infrastructure data query agent that converts natural language queries (Korean) into SQL, executes them against infrastructure databases via DBHub (MCP server), and returns results as natural language responses or filled Excel/Word templates.
+자연어(한국어) 질의로 인프라 관측 데이터를 조회·분석하는 에이전트 플랫폼. 세 축으로 구성된다.
 
-Full requirements are in `spec.md`.
-Architecture decisions and design rationale are documented in `docs/02_decision.md` — **team-lead agent must consult this file before making changes and update it when new decisions are made.**
+| 축 | 담당 | 진입 |
+|---|---|---|
+| **text2sql 파이프라인** | 자연어 → SQL/REST/MCP 조회 → 자연어 응답 또는 Excel/Word 양식 산출 | `src/` (LangGraph) |
+| **알람 노이즈 캔슬링** | 폴스타 알람 수신·중복/상관 억제·분석·통보 | `noise_gate/` |
+| **장애 조사** | HolmesGPT 기반 조사 위임 | `sre_agent/` (별도 프로세스) |
 
-## Architecture
+관측 데이터 읽기 경계는 `mcp_server/`(FastMCP)가 담당한다 — DB SQL 실행·폴스타 도구·PromQL.
 
-**LangGraph state machine** with 7 nodes in sequence:
+규모(실측 2026-08-31): `src/` 약 68K LOC · `noise_gate/` 약 14K LOC · 테스트 360개 파일
+(`tests/` 263 · `noise_gate/tests/` 68 · `sre_agent/tests/` 20 · `mcp_server/tests/` 9).
+
+- 원 요구사항: `spec.md` (초기 스펙 — 현 구현은 이보다 훨씬 확장됨)
+- **의사결정 정본: `docs/02_decision.md`** — 작업 전 필독, 작업 후 갱신 (아래 「의사결정 기록」 참조)
+- 계획서 전건 인덱스: `plans/INDEX.md` (91건) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
+- 최근 작업 단위는 `plans/NN-*.md` + 루트 `SPEC-*.md` + `CAPABILITY-MAP-*.md` 조합으로 진행된다.
+
+## 저장소 지도
 
 ```
-input_parser → schema_analyzer → query_generator → query_validator → query_executor → result_organizer → output_generator
+src/            text2sql 파이프라인 · FastAPI 앱 조립 · 웹 UI(static)
+noise_gate/     알람 노이즈 게이트 (본체와 같은 프로세스) + alarm_server(독립 프로세스)
+sre_agent/      HolmesGPT 장애 조사 (별도 venv·별도 프로세스)
+mcp_server/     관측 데이터 읽기 MCP 서버 (별도 venv·별도 프로세스)
+config/         런타임 정본 YAML (DB 레지스트리·프로필·시맨틱 모델·지식·유사어 시드)
+docs/           설계·가이드·의사결정(02)·실수 이력(18)·사다리(21)
+plans/          영역별 구현 계획서 (INDEX.md가 전건 인덱스)
+scripts/        품질 게이트(arch_check·overfit_check)·평가(eval_*)·운영 CLI
+tests/          본체 테스트 (pytest가 noise_gate/tests와 함께 수집)
+testdata/       픽스처·골드셋(text2sql_gold·routing_gold·pg init·prometheus)
+db/ db2/ redis/ 로컬 개발용 docker-compose (PostgreSQL·DB2·Redis)
+tools/          부속 도구 (drm-wrapper·migdata·redis_migration)
+agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 ```
 
-- `query_validator` loops back to `query_generator` on failure (max 3 retries)
-- `query_executor` loops back to `query_generator` on SQL error (with error context)
-- `result_organizer` loops back to `query_generator` if data is insufficient
+## 실행 경로 — 오케스트레이션 사다리
 
-**State** is a `TypedDict` (`AgentState`) tracking user input, parsed requirements, DB schema/results, retry count, and output.
+**실행 경로 4종은 대등하게 병존하지 않는다. 1 정본 + 3 폴백의 강등 사다리다.**
+단일 출처는 `docs/21_orchestration_ladder.md`이며, 판정 코드는 `src/observability/ladder.py`,
+배선은 `src/graph.py`의 `build_graph()`다.
+
+| 단 | 이름 | 배선 | 활성 조건(앞 단이 전부 불성립일 때) |
+|---:|---|---|---|
+| **1 (정본)** | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 조립 성공 |
+| 2 | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration` |
+| 3 | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
+| 4 | `legacy` | `field_mapper → schema_analyzer` 직행 | 위 셋 모두 불성립 |
+
+- **배타성은 런타임이 아니라 빌드 타임이다** — 상위 단이 성립하면 하위 단은 노드조차 등록되지
+  않는다. 확정은 기동당 1회이며, 그 결과는 기동 로그 1줄(`record_ladder_resolution`)로만 판독된다.
+- `enable_semantic_routing`·`enable_intent_orchestration`은 **tri-state**다. 미입력(None)이면
+  `ACTIVE_DB_IDS` 등록 여부로 자동 결정되고 경고를 남긴다 — 실행 경로가 DB 등록 상태에 종속되므로
+  고정하려면 `.env`에 명시한다.
+- **"코드에 분기가 남아 있다"는 사실만으로 죽은 경로를 판정하지 말 것.** 어느 단을 지우려면 그
+  단이 확정되는 설정 조합이 실제로 쓰이지 않음을 먼저 보여야 한다(D-161 · plans/70 v1 오판 사례).
+
+## LangGraph 노드
+
+공통 전단: `context_resolver → input_parser → field_mapper` (사다리 전 단 공통).
+3단(semantic_router) 경로의 분기 대상은 `schema_analyzer`(단일 DB) · `multi_db_executor`(멀티 DB) ·
+`cache_management` · `synonym_registrar` · `general_inference` · `fault_diagnosis`(옵트인) · `END`(역질문).
+
+단일 DB 경로: `schema_analyzer → [structure_approval_gate] → query_generator → query_validator →
+[approval_gate] → query_executor → result_organizer → output_generator`
+
+- `query_validator` 실패 → `query_generator` 회귀 (예산 `QUERY_MAX_RETRY_COUNT`, 기본 3)
+- `query_executor` SQL 에러 → `query_generator` 회귀 (에러 컨텍스트 동반)
+- `result_organizer` 데이터 부족 → `query_generator` 회귀
+- HITL 게이트 2종은 `interrupt_before`로 배선된다(`enable_sql_approval` 기본 off /
+  `enable_structure_approval` 기본 **on**)
+- 노드 전체 목록은 `src/nodes/` 참조 — 후보 생성/선택, 단계적 컬럼 도출, 조건 프로브,
+  실시간 사용률, 시맨틱 컴파일러 등 옵트인 노드가 다수 있다.
+- **상태**는 `TypedDict`(`AgentState`, `src/state.py`). LangGraph 체크포인터는 **델타만 병합**하므로
+  요청 스코프 상태는 라우트에서 명시 초기화한다(아래 Known Mistakes 참조).
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
-| Agent framework | LangGraph (≥0.2.0) |
-| LLM | Claude or GPT via langchain-anthropic / langchain-openai |
-| DB access | DBHub (MCP server, readonly) |
-| Document processing | openpyxl (Excel), python-docx (Word) |
-| API server | FastAPI + uvicorn (optional) |
-| Checkpoint store | langgraph-checkpoint-sqlite (dev) / postgres (prod) |
+| 에이전트 프레임워크 | LangGraph ≥0.2 (+ 옵트인 `deepagents` extra) |
+| LLM provider | `ollama` / `fabrix`(KBGenAI, 운영) / `gemini` — `LLM_PROVIDER`로 선택. 오케스트레이터는 `ORCHESTRATOR_PROVIDER`로 별도 지정 |
+| DB 접근 | DBHub 계열 MCP 서버(`mcp_server/`, readonly) 또는 direct(asyncpg) — `DB_BACKEND` |
+| DB 엔진 | PostgreSQL · IBM DB2 (방언 분기 필수) |
+| 문서 처리 | openpyxl(Excel) · python-docx(Word) — `document` extra |
+| API 서버 | FastAPI + uvicorn (웹 UI 정적 자산 포함) |
+| 상태 저장 | langgraph-checkpoint-sqlite(기본) / postgres(opt) · Redis(캐시·알람 스트림·세션) |
+| 옵트인 extra | `semantic`(E5 임베딩) · `structured`(instructor) · `stl`(statsmodels) · `deepagents` · `gemini` · `e2e` |
 
-## Key Constraints
+`mcp<2` 상한 고정 — mcp 2.x는 `mcp.server.fastmcp`를 제거해 `mcp_server`가 임포트 단계에서 깨진다(D-181).
 
-- **Read-only DB access only** — agent must never generate INSERT/UPDATE/DELETE/DDL
-- Generated SQL must be validated before execution (syntax, safety, referenced tables/columns exist, LIMIT clause for large queries)
-- All query executions must be audit-logged
-- Sensitive data (passwords, keys) must be masked in responses
-- Query timeout: 30s max; max rows: 10,000
-- Response time targets: simple queries <10s, complex queries <30s, document generation <60s
+## 개발 명령
 
-## Data Domains
+```bash
+# 설치 (uv 또는 pip)
+pip install -e ".[dev,document]"
 
-The agent queries 5 infrastructure domains: servers, CPU metrics, memory metrics, disk metrics, network traffic metrics. Schema is discovered dynamically at runtime via DBHub's `search_objects`.
+# 본체 서버 (FastAPI + 웹 UI + AlarmWorker in-process 기동)
+python -m src.main --server
+# 단일 질의 CLI / 대화형 CLI
+python -m src.main --query "김포 서버 CPU 사용률 상위 10건"
+python -m src.main
 
-## Document Processing
+# 알람 수신부 (독립 프로세스, TCP 9100 → Redis Stream 'alarm:raw')
+python -m noise_gate.alarm_server
 
-- **Excel**: auto-detect header rows, fill data rows, preserve merged cells/formulas/formatting
-- **Word**: detect `{{placeholder}}` patterns and table structures, fill data while preserving styles
-- LLM performs semantic mapping between template field names and DB column names (e.g., "서버명" → `servers.hostname`)
+# MCP 서버 (별도 venv·별도 cwd)
+cd mcp_server && python -m mcp_server
 
-## Development Phases
+# 테스트
+pytest                                   # 본체 + noise_gate 자동 수집
+pytest tests/test_graph.py -v
+cd sre_agent && .venv/bin/python -m pytest tests -q   # 자체 venv 보유
+cd mcp_server && ../.venv/bin/python -m pytest       # 자체 venv 없음 — 루트 venv 사용
 
-1. **Phase 1**: Natural language → SQL pipeline (LangGraph graph, DBHub integration, error handling)
-2. **Phase 2**: Excel/Word template parsing and filling
-3. **Phase 3**: Multi-turn conversation, human-in-the-loop query approval, template management, audit logging
+# 품질 게이트
+python scripts/arch_check.py --ci        # 계층 의존성 (스킬: /arch-check)
+python scripts/overfit_check.py --ci     # 공용 계층 스키마 리터럴 누수 (스킬: /overfit-check)
+ruff check src/ tests/ && mypy src/
+
+# 평가 하네스 (실 파이프라인 구동 — 과금 경로다. 먼저 --dry-run/--mock으로 확인할 것)
+python scripts/eval_text2sql.py --dry-run
+python scripts/eval_routing.py --help
+```
+
+**e2e·실 LLM 호출은 `RUN_E2E=1` 옵트인 뒤에 있다.** `tests/conftest.py`가 전역 네트워크 가드를
+설치하고 `live_llm` 마커를 자동 skip한다 — 설정·실행 자체가 사용자 승인 사항이다(D-127).
+
+## 설정과 정본 파일
+
+설정은 `pydantic-settings` 계층 구조다 — `AppConfig`(`src/config.py`, 23개 nested config)가
+`.env`/`.encenv`에서 읽는다. 접근은 `cfg.<그룹>.<필드>` (예: `cfg.composite.max_targets`).
+
+| 정본 | 내용 | 신규 편입 시 |
+|---|---|---|
+| `config/db_registry.yaml` | DB 등록·존·솔루션·실행 그룹·위치 표면어·제품군 | **신규 DB는 여기 + `.env` 둘만 수정** |
+| `config/db_profiles/{db_id}.yaml` | 구조 정본 (테이블·EAV·컬럼) | |
+| `config/knowledge/{db_id}/` | 큐레이션 지식(카탈로그 등) | |
+| `config/semantic_models/{db_id}.yaml` | 시맨틱 모델 — **폴백 사본**(런타임은 profiles+knowledge에서 생성) | 동등성은 `scripts/catalog_diff.py` |
+| `config/synonym_seeds/{db_id}.yaml` | 유사어 시드 | |
+| `config/middleware_signatures.yaml` · `change_terms.yaml` | 미들웨어 식별 · 변경 용어 | |
+
+- 운영 실측(`.env`, 2026-08-31): `LLM_PROVIDER=gemini` · `ORCHESTRATOR_PROVIDER=gemini` ·
+  `DB_BACKEND=dbhub` · `ACTIVE_DB_IDS=polestar` · 사다리 1·2·3단 플래그 모두 true.
+  **코드 기본값이 아니라 이 실제값을 근거로 판단할 것.**
+- 신규 기능 플래그는 **기본 off = 현행 동작과 비트 동일**이 원칙이다(`plans/80` §5.4-③).
+  명시적 예외는 근거와 함께 config 주석에 남긴다(예: `COMPOSITE_AVAILABILITY_PRECHECK_ENABLED`,
+  `COMPOSITE_HOST_DISCOVERY_ENABLED`, `COMPOSITE_SCOPE_SELECT_ENABLED`는 기본 on).
+- 플래그는 **기동 시 1회 해석**한다 — 요청 시점에 바꾸면 프롬프트 접두가 흔들려 KV 캐시가 무효화된다.
+
+## 데이터 도메인
+
+운영 대상은 폴스타(인프라 모니터링) DB 3종 + 로컬 샌드박스다. 존(zone)은 알림 지역 스코프 RBAC
+단위이고, 존 그룹(zone_group)은 조회 순서의 축이다(은행존 → 공동존).
+
+| db_id | 존 | 엔진 | 스키마 |
+|---|---|---|---|
+| `polestar_b0` | bankjon(은행존) | DB2 | `POLESTAR` (대문자 필수) |
+| `polestar_cm_gp` | gongjon(공동존·김포 운영/DR) | PostgreSQL | `polestar` |
+| `polestar_cm_yd` | gongjon(공동존·여의도 개발/스테이징) | PostgreSQL | `polestar` |
+| `polestar` | — | PostgreSQL | 로컬 도커 샌드박스(`testdata/pg/init`) |
+
+주요 데이터: 서버 사양·사용량(EAV `core_config_prop` 피벗 + `cmm_resource` 직접 컬럼),
+성능지표(`cmm_metric_stat_[h,d,m]`), 알람(`cmm_alarm` / `cmm_alarm_active` / `cmm_alarm_def`),
+프로세스·토폴로지(폴스타 REST·MCP 도구), Prometheus 메트릭(PromQL 도구).
+
+스키마 지식은 레지스트리가 아니라 `db_profiles`/`knowledge`에 둔다. DB별 SQL 특화 로직은
+`src/db_adapters/{db}/`에만 격리한다(D-089).
+
+## 문서 처리
+
+- **Excel**: 헤더 행 자동 감지 → 데이터 행 채우기. 병합셀·수식·서식 보존. Excel→CSV→LLM→Excel
+  파이프라인(`src/document/excel_csv_converter.py`)과 다중 헤더·월 피벗 폼필을 지원한다.
+- **Word**: `{{placeholder}}` 및 표 구조 감지 후 스타일 보존 채우기.
+- 양식 필드명 ↔ DB 컬럼 매핑은 LLM 의미 매핑 + 매핑 보고서(`mapping_report.py`) + 사용자 피드백.
+- 스키마·조인이 고정된 쿼리(폼필 피벗 등)는 **코드가 runnable SQL을 직접 조립**하고 LLM을
+  우회한다(실패 시에만 폴백) — LLM 비결정성 대응.
+- 업로드 양식의 DRM 해제는 `src/infrastructure/drm/`(`DRM_*` 설정, `docs/22_drm_deployment_guide.md`).
+
+## 보안 · 제약
+
+- **읽기 전용 DB 접근만** — INSERT/UPDATE/DELETE/DDL 생성 금지. 3중 방어(D-003):
+  프롬프트 지시 + `src/security/sql_guard.py` 검증 + MCP 서버 readonly.
+- 생성 SQL은 실행 전 검증한다(구문·안전성·참조 테이블/컬럼 존재·LIMIT). 기본 LIMIT 1000,
+  재시도 예산 3. **DB 레벨 제한(timeout·max_rows)은 MCP 서버가 관리한다** — 클라이언트 설정 아님.
+- 민감 데이터 마스킹(`data_masker.py`)과 FabriX PII 필터 대응(`pii_filter.py`,
+  근거 `docs/pii_filtering_rules.md`). 차단 원인 진단용 덤프는 `logs/pii_block/`에 남고 서버 밖으로 나가지 않는다.
+- 모든 질의 실행은 감사 로그 대상(`src/security/audit_*`, `src/api/middleware/audit_middleware.py`).
+- 인증은 사용자/운영자 분리(JWT). **토큰 서명 검증만으로 끝내지 말고 `type`·role 클레임을 명시 검증**한다.
+- 응답시간 목표: 단순 질의 <10s · 복합 <30s · 문서 생성 <60s.
+
+## 품질 게이트
+
+| 게이트 | 검사 | 실행 |
+|---|---|---|
+| `arch_check.py` | Clean Architecture 계층 의존 방향 (`src/` + `noise_gate/` 동시) | `--ci` |
+| `overfit_check.py` | 공용 계층의 폴스타 스키마 리터럴·운영 도메인 누수 (기준선 대비 신규 유입 차단) | `--ci` |
+| `catalog_diff.py` | 시맨틱 모델 사본 ↔ profiles+knowledge 파생 동등성 | |
+| `prompt_render_diff.py` | 프롬프트 렌더 회귀 | |
+| `pii_probe.py` / `pii_regex_check.py` | PII 규칙 점검 | |
+
+`overfit_check`의 기준선은 `scripts/overfit_baseline.json`이다 — **전면 재생성 금지**,
+자기 델타만 소거한다. 스캔 대상에 `noise_gate/domain`·`mcp_server/mcp_server`가 포함되므로
+**독스트링의 스키마 리터럴도 게이트에 걸린다**(D-179 실사례).
 
 ## Multi-Agent Build System
 
-`.claude/agents/` 디렉토리의 `.md` 파일로 에이전트를 정의하고, Claude Agent SDK로 실행합니다.
-
-```
-.claude/agents/
-├── team-lead.md             # 오케스트레이터 (메인 에이전트)
-├── requirements-analyst.md  # 요구사항 분석
-├── research-planner.md      # 기술 조사 및 구현 계획
-├── implementer.md           # 코드 구현
-└── verifier.md              # 검증 및 테스트
-agents/
-└── run.py                   # 실행 스크립트
-```
-
-### 에이전트 구성 및 Phase
+`.claude/agents/`의 `.md` 파일로 에이전트를 정의하고, Claude Agent SDK(`agents/run.py`) 또는
+Claude Code 서브에이전트로 실행한다.
 
 | Phase | Agent | 산출물 |
 |-------|-------|--------|
 | 1 | **requirements-analyst** | `docs/01_requirements.md` |
-| 2 | **research-planner** | `plans/*.md` (영역별 계획서) |
+| 2 | **research-planner** | `plans/*.md` |
 | 3 | **implementer** | `src/`, `pyproject.toml` |
 | 4 | **verifier** | `tests/`, `docs/verification_report.md` |
 
-**team-lead**가 각 Phase의 산출물을 검토·승인한 후 다음 Phase로 진행합니다.
-
-### 실행 방법
+**team-lead**가 각 Phase 산출물을 검토·승인한 후 다음 Phase로 진행한다.
 
 ```bash
-pip install claude-agent-sdk anyio
 python -m agents.run              # 전체 (Phase 1~4)
 python -m agents.run --phase 1    # 요구사항 분석만
-python -m agents.run --phase 2    # +계획
-python -m agents.run --phase 3    # +구현
 ```
+
+프로젝트 스킬: `/arch-check` · `/overfit-check` (`.claude/skills/`).
 
 ## 패키지 경계 — 기능별 최상위 폴더 (D-139)
 
@@ -111,8 +246,6 @@ python -m agents.run --phase 3    # +구현
 - `noise_gate`는 **평탄 레이아웃**(디렉토리 자체가 패키지) — 2단 중첩은 루트에서 import가
   해석되지 않아 editable 설치에 의존하게 된다(D-139 실측). `sre_agent`·`mcp_server`는 자체
   venv·자체 cwd라 2단 중첩 유지.
-- 테스트: `pytest`(본체+noise_gate 자동 수집) / `cd sre_agent && pytest` / `cd mcp_server && ../.venv/bin/python -m pytest`
-- 알람 수신부 기동: `python -m noise_gate.alarm_server` (TCP 9100 → Redis Stream `alarm:raw`)
 - 예외: `src/api/routes/alarm.py`는 알람 전용이지만 본체 앱 인증 계층에 묶여 `src/api/`에 남긴다
   (옮기면 `noise_gate → src.api` 역방향 결합 신설 — D-139 근거 참조)
 
@@ -124,6 +257,15 @@ python -m agents.run --phase 3    # +구현
 ```
 domain → config/utils → prompts → infrastructure → application → orchestration → interface → entry
 ```
+
+`src/` 매핑(정본은 `arch_check.py`의 `MODULE_LAYER_MAP`): `state.py`·`domain/`=domain ·
+`config.py`=config · `utils/`=utils · `prompts/`=prompts · `llm.py`·`clients/`·`db/`·`dbhub/`·
+`security/`·`schema_cache/`·`document/`·`routing/`·`infrastructure/`·`observability/`=infrastructure ·
+`nodes/`·`db_adapters/`·`semantic/`·`tools/`·`sql_validation.py`=**application** ·
+`orchestration/`·`graph.py`=orchestration · `api/`=interface · `main.py`=entry.
+
+`db_adapters/`·`tools/`·`semantic/`이 infrastructure가 아니라 application인 것에 주의한다 —
+노드·어댑터의 순수 함수를 재노출하는 계층이라 소비처(nodes·orchestration)와 같은 높이다.
 
 ```bash
 python scripts/arch_check.py              # 위반 검사
