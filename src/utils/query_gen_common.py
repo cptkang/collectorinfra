@@ -27,7 +27,7 @@ _CUR_MONTH_SIGNALS: tuple[str, ...] = ("이번달", "이번 달", "당월", "금
 _ABS_MONTH_RE = re.compile(r"(\d{4})\s*(?:년\s*|[-/])\s*(\d{1,2})\s*월?")
 # "지난/최근/과거 N개월(간)" — 직전 완결 월부터 N개월 범위(진행 중인 달 제외, D-076 후속4 원칙 유지)
 _N_MONTHS_RE = re.compile(r"(?:지난|최근|과거|last)\s*(\d{1,2})\s*(?:개\s*월|months?)")
-# 절대 월 **범위** 표현(D-176): "1월부터 6월까지" / "2026년 1월~6월" / "1월에서 6월" / "2026-01~2026-06".
+# 절대 월 **범위** 표현(D-185): "1월부터 6월까지" / "2026년 1월~6월" / "1월에서 6월" / "2026-01~2026-06".
 # 연도는 양끝 모두 선택. 오탐 차단: 각 끝점은 '월' 접미 또는 연도 중 하나를 반드시 가진다("1-6" 무매칭).
 # 금감원 감사자료 폼필 실측(2026-08-25): "1월부터 6월까지"가 어느 정규식에도 안 잡혀 기준월이
 # 기본값(지난달=M+5 → 2~7월)으로 침묵 폴백했다. 정규식 1순위 원칙(Known Mistakes)으로 결정적 해석.
@@ -36,7 +36,7 @@ _MONTH_RANGE_RE = re.compile(
     r"(?:부터|에서|~|∼|〜|-|–|—)\s*"
     r"(?:(?P<y2>\d{4})\s*(?:년\s*|[-/.]))?(?<![\d.])(?P<m2>\d{1,2})\s*(?P<w2>월)?"
 )
-# 반기 표현(D-176): "(2026년|올해|작년) 상반기/하반기" — 연도 미상은 "미래가 아닌 가장 최근 반기".
+# 반기 표현(D-185): "(2026년|올해|작년) 상반기/하반기" — 연도 미상은 "미래가 아닌 가장 최근 반기".
 _HALF_YEAR_RE = re.compile(
     r"(?:(?P<y>\d{4})\s*년\s*|(?P<rel>올해|금년|당해|작년|전년|지난해)\s*)?(?P<half>상반기|하반기)"
 )
@@ -142,7 +142,7 @@ def _infer_year_not_future(month: int, ref: date) -> int:
 
 
 def _resolve_month_range_expr(text: str, ref: date) -> tuple[str, str] | None:
-    """절대 월 범위 표현("1월부터 6월까지"·"2026년 1월~6월"·"2026-01~2026-06")을 해석한다(D-176).
+    """절대 월 범위 표현("1월부터 6월까지"·"2026년 1월~6월"·"2026-01~2026-06")을 해석한다(D-185).
 
     각 끝점은 '월' 접미 또는 연도를 가져야 한다("1-6"·"3-5개" 등 숫자 범위 오탐 차단).
     연도 규칙: 끝 월 연도 미상이면 시작 월 연도(있으면) 또는 미래가 아닌 최근 발생;
@@ -173,7 +173,7 @@ def _resolve_month_range_expr(text: str, ref: date) -> tuple[str, str] | None:
 
 
 def _resolve_half_year_expr(text: str, ref: date) -> tuple[str, str] | None:
-    """반기 표현("2026년 상반기"·"작년 하반기"·"상반기")을 (시작, 끝) 월 범위로 해석한다(D-176)."""
+    """반기 표현("2026년 상반기"·"작년 하반기"·"상반기")을 (시작, 끝) 월 범위로 해석한다(D-185)."""
     m = _HALF_YEAR_RE.search(text)
     if not m:
         return None
@@ -213,7 +213,7 @@ def resolve_stat_month_range(
     """
     text = user_query or ""
     ref = today or date.today()
-    # 절대 월 **범위**·반기 표현이 최우선(D-176) — "2026년 1월부터 6월까지"가 아래 단일 월
+    # 절대 월 **범위**·반기 표현이 최우선(D-185) — "2026년 1월부터 6월까지"가 아래 단일 월
     # 정규식(.search=첫 매치)에 1월 단일로 오해석되던 것을 막는다. 범위가 없을 때만 내려간다.
     rng = _resolve_month_range_expr(text, ref) or _resolve_half_year_expr(text, ref)
     if rng:
@@ -1125,21 +1125,21 @@ _collect_prior_identity_values = collect_prior_identity_values
 # FIX-24)가 공유한다. "기억" 계열 명사 필수 — 일반 조회와 충돌 차단.
 FORM_MEMORY_NOUN_KEYWORDS = (
     "기억", "저장된 답", "저장된 값", "확인 이력",
-    # D-177: "이 양식에 저장된 내용은?" — '저장된 답/값'만 있어 미탐(라이브 실측 2026-08-25)
+    # D-186: "이 양식에 저장된 내용은?" — '저장된 답/값'만 있어 미탐(라이브 실측 2026-08-25)
     "저장된 내용", "저장한 내용",
 )
 FORM_MEMORY_VIEW_KEYWORDS = (
     "보여", "조회", "알려",
-    # D-177: 의문형("기억하는 내용은 뭐지?") — 명령형만 잡혀 존 역질문으로 흘렀다.
+    # D-186: 의문형("기억하는 내용은 뭐지?") — 명령형만 잡혀 존 역질문으로 흘렀다.
     # '?'는 명사 동반이 전제(아래 AND 규칙)라 "CPU 사용률은?"류 일반 질의에는 걸리지 않는다.
     "뭐", "무엇", "뭔지", "어떤", "?", "？",
 )
 FORM_MEMORY_DELETE_KEYWORDS = ("삭제", "지워", "잊어", "다시 물어")
 FORM_MEMORY_ALL_KEYWORDS = ("전부", "전체", "모두", "모든")
-# D-177: 채움 동사가 동반되면 이력 조회가 아니라 채움 요청("기억한 값으로 채워줘") — 조회로
+# D-186: 채움 동사가 동반되면 이력 조회가 아니라 채움 요청("기억한 값으로 채워줘") — 조회로
 # 단락되면 DB 조회가 통째로 이력 응답으로 대체되므로(3중 게이트) 미탐 쪽으로 보수적 판정.
 _FORM_MEMORY_FILL_VERBS = ("채워", "채우", "작성", "기입", "반영")
-# D-177: 양식 업로드 후 '?'만 입력 — 저장 값 조회 단축키(반각·전각·반복 허용). 정확 일치라 오탐 0.
+# D-186: 양식 업로드 후 '?'만 입력 — 저장 값 조회 단축키(반각·전각·반복 허용). 정확 일치라 오탐 0.
 _FORM_MEMORY_SHORTCUT_CHARS = frozenset({"?", "？"})
 # 단축키 발견성 안내(결정적 문구) — 이력 조회 응답·HITL 패널 응답 말미에 붙는다(utils 계층에 두어
 # nodes.output_generator·orchestration.intent_planner가 역방향 import 없이 공유).
@@ -1163,19 +1163,19 @@ def is_form_memory_command(text: str) -> bool:
     """
     stripped = (text or "").strip()
     if stripped and all(ch in _FORM_MEMORY_SHORTCUT_CHARS for ch in stripped):
-        return True  # '?' 단축키(D-177)
+        return True  # '?' 단축키(D-186)
     q = memory_query_normalized(text)
     if not any(k in q for k in FORM_MEMORY_NOUN_KEYWORDS):
         return False
     if any(k in q for k in FORM_MEMORY_DELETE_KEYWORDS):
         return True
     if any(v in q for v in _FORM_MEMORY_FILL_VERBS):
-        return False  # 채움 요청은 이력 조회가 아니다(D-177 보수적 가드)
+        return False  # 채움 요청은 이력 조회가 아니다(D-186 보수적 가드)
     return any(k in q for k in FORM_MEMORY_VIEW_KEYWORDS)
 
 
 def is_form_memory_shortcut(text: str) -> bool:
-    """'?'만 입력한 저장 값 조회 단축키인지(D-177) — 안내 문구 분기용."""
+    """'?'만 입력한 저장 값 조회 단축키인지(D-186) — 안내 문구 분기용."""
     stripped = (text or "").strip()
     return bool(stripped) and all(ch in _FORM_MEMORY_SHORTCUT_CHARS for ch in stripped)
 

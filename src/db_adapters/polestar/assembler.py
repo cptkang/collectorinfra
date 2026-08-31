@@ -160,7 +160,7 @@ class MonthSeries:
     anchor: tuple[str, str] = ("", "")  # (M, M+max) — 응답 명시용(§2.4)
     resource_type: str = ""
     month_by_field: dict[str, str] = dc_field(default_factory=dict)  # 표시용 {필드명: YYYYMM}
-    # 사용자가 질의에서 명시한 기간(시작, 끝) — 상대(M+k) 양식에서 앵커 산출에 쓴 값(D-176).
+    # 사용자가 질의에서 명시한 기간(시작, 끝) — 상대(M+k) 양식에서 앵커 산출에 쓴 값(D-185).
     # None이면 기간 표현 없음(실행일 기준 지난달 폴백). anchor와 다르면 응답에 불일치를 명시한다.
     requested: tuple[str, str] | None = None
     anchor_source: str = "default"  # "query"(질의 기간) | "default"(지난달 폴백) | "absolute"(양식 절대월)
@@ -208,7 +208,7 @@ def recognize_month_series(
     없으면 실행일 기준 지난달(마지막 완결 월)이 M+max_k. 기간 해석은 정규식 1순위 →
     `parsed_time_range`(input_parser LLM 산출물) 2단 폴백(D-136 R3-(i)) — 폼필 피벗의
     stat_month 자리에는 배선됐으나 **앵커 산출 자리에는 빠져** "1월부터 6월까지"가 지난달
-    기준(2~7월)으로 침묵 폴백한 라이브 실측(2026-08-25, D-176)의 대칭 보완.
+    기준(2~7월)으로 침묵 폴백한 라이브 실측(2026-08-25, D-185)의 대칭 보완.
 
     Args:
         column_mapping: field_mapper 산출 {필드명: 컬럼 또는 None}
@@ -325,7 +325,7 @@ def recognize_month_series(
 
 
 def month_anchor_payload(ms: MonthSeries) -> dict:
-    """MonthSeries → state `form_month_anchor` dict(단일·멀티 경로 공용 shape, D-147/D-176).
+    """MonthSeries → state `form_month_anchor` dict(단일·멀티 경로 공용 shape, D-147/D-185).
 
     두 경로가 각자 dict를 손으로 조립하면 키가 어긋나는 비대칭이 생기므로 단일 출처로 둔다.
     """

@@ -267,7 +267,7 @@ def _try_build_form_fill_pivot_sql(
         column_mapping,
         context_text=template_context_text(state.get("template_structure")),
         user_query=user_query,
-        # 앵커 산출에도 LLM 기간 2단 폴백(D-136 R3-(i)) — 아래 stat_month와 대칭(D-176)
+        # 앵커 산출에도 LLM 기간 2단 폴백(D-136 R3-(i)) — 아래 stat_month와 대칭(D-185)
         parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
     )
     mapping_updates: dict[str, Optional[str]] = {}

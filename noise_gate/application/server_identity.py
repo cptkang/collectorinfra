@@ -1,4 +1,4 @@
-"""서버 식별 정보 부착 — hostname → 폴스타 등록 서버명·IP 역조회 (D-179).
+"""서버 식별 정보 부착 — hostname → 폴스타 등록 서버명·IP 역조회 (D-188).
 
 배경: 폴스타 알람 소켓 연계 템플릿은 `${platformName}`·`${ipAddress}`를 지원하지 않아
 (EL1008E, 2026-08-26 실측) 운영 템플릿이 `"serverName":"${hostname}"`로 바뀌었다. 그 결과
@@ -36,7 +36,7 @@ from noise_gate.domain.alarm import AlarmEvent, ServerIdentity
 
 logger = logging.getLogger(__name__)
 
-# v2: os_version 필드 추가(D-179 부기) — 구 캐시 dict(필드 부재)가 TTL 동안 툴팁을 비우지 않도록 키 세대 분리
+# v2: os_version 필드 추가(D-188 부기) — 구 캐시 dict(필드 부재)가 TTL 동안 툴팁을 비우지 않도록 키 세대 분리
 _CACHE_KEY = "alarm:identity:v2:{db_id}:{hostname}"
 
 SOURCE_DB = "polestar_db"
@@ -67,7 +67,7 @@ def zone_labels_for(db_id: str) -> tuple[str, str, str]:
 
 
 def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") -> tuple[str, str]:
-    """db_id → (소스 배지 라벨, 툴팁 상세)를 레지스트리 family에서 파생한다 (D-179 부기).
+    """db_id → (소스 배지 라벨, 툴팁 상세)를 레지스트리 family에서 파생한다 (D-188 부기).
 
     라벨은 `families[].product_terms[0]`("폴스타") — 김포/여의도/은행 대신 **소스 제품명**을 배지에
     쓰고 위치는 툴팁으로 내린다(알람 소스 확장 시 레지스트리 family 등록만으로 배지가 따라온다).

@@ -104,7 +104,7 @@ async def dead_letter_message(
     *,
     maxlen: int = 1000,
 ) -> None:
-    """처리 실패 메시지를 dead-letter 스트림에 보관한다 (D-175).
+    """처리 실패 메시지를 dead-letter 스트림에 보관한다 (D-184).
 
     원문(`data`)·출처 스트림·원 msg_id·에러 사유·실패 시각을 XADD한다. `MAXLEN ~ maxlen`으로
     무상한 적재를 막는다(근사 트리밍). 재처리는 운영자가 `XRANGE`로 원문을 꺼내 수동/스크립트로

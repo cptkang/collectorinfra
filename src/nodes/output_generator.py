@@ -252,7 +252,7 @@ async def _generate_text_response(
     if llm is None:
         llm = create_llm(config)
 
-    # 기준 정보(D-177): 프롬프트에 연도가 전혀 없어("1월~6월" 질의 + M/M+1 칼럼) LLM이 학습
+    # 기준 정보(D-186): 프롬프트에 연도가 전혀 없어("1월~6월" 질의 + M/M+1 칼럼) LLM이 학습
     # prior(2023년)를 적었다(라이브 실측 2026-08-25). 결정적 값(앵커·조회 기간·오늘)을 주입.
     reference_info = _build_reference_info(state)
     user_prompt = _build_response_prompt(
@@ -274,10 +274,10 @@ async def _generate_text_response(
     # 합성(D-062)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
     tags = [USER_RESPONSE_TAG] if stream_user_response else None
     response = await astream_text(llm, messages, tags=tags)
-    # 표 정규화(D-178): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아 원문이 노출된다
+    # 표 정규화(D-187): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아 원문이 노출된다
     # (19열 금감원 양식에서 LLM이 셀 수를 자주 틀림 — 라이브 실측 2026-08-26). 렌더만 보장.
     response = _normalize_markdown_tables(response)
-    # 사후 가드(D-177): 요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 침묵하지 않는다.
+    # 사후 가드(D-186): 요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 침묵하지 않는다.
     # 스트리밍은 이미 화면에 나간 뒤라 회수가 아닌 후행 경고이며, 자동 치환은 하지 않는다.
     warn = _check_response_years(response, reference_info)
     if warn:
@@ -335,7 +335,7 @@ def _build_response_prompt(
         summary: 데이터 요약
         rows: 결과 데이터 행
         reference_info: `_build_reference_info` 산출(오늘·기준월·조회 기간) — 기간·연도 표기의
-            결정적 근거(D-177). None이면 블록 생략(종전 프롬프트와 동일).
+            결정적 근거(D-186). None이면 블록 생략(종전 프롬프트와 동일).
 
     Returns:
         구성된 프롬프트 문자열
@@ -371,7 +371,7 @@ def _build_response_prompt(
             + ", ".join(columns)
         )
         if truncated:
-            # "N건 중 상위 20건(대표 서버)" 오서술 차단(D-177) — 절단은 표시 제한이지 데이터 특성이 아니다
+            # "N건 중 상위 20건(대표 서버)" 오서술 차단(D-186) — 절단은 표시 제한이지 데이터 특성이 아니다
             rule += (
                 f"\n전체 결과는 {len(rows)}건이며 위 JSON은 표시용으로 상위 20건만 실은 것입니다. "
                 "요약에는 전체 건수만 쓰고, '상위 20건'·'대표 서버'처럼 절단을 데이터 특성으로 "
@@ -379,7 +379,7 @@ def _build_response_prompt(
             )
         parts.append(rule)
 
-    # 기준 정보(D-177): 기간·연도 표기의 결정적 근거. 프롬프트에 연도가 없으면 LLM이 학습
+    # 기준 정보(D-186): 기간·연도 표기의 결정적 근거. 프롬프트에 연도가 없으면 LLM이 학습
     # prior 연도를 적는다 — [기준월 안내]는 LLM 생성 **이후** 덧붙어 LLM이 볼 수 없다.
     if reference_info:
         ref_lines = [f"- 오늘: {reference_info['today']}"]
@@ -416,7 +416,7 @@ def _split_table_cells(line: str) -> list[str]:
 
 
 def _normalize_markdown_tables(text: str) -> str:
-    """마크다운 표 블록의 구분선·본문 셀 수를 헤더에 맞춘다(D-178 — 렌더 실패 안전망).
+    """마크다운 표 블록의 구분선·본문 셀 수를 헤더에 맞춘다(D-187 — 렌더 실패 안전망).
 
     GFM(marked.js gfm=true)은 **구분선 행의 셀 수가 헤더와 다르면** 블록을 표로 인식하지
     않고 원문을 그대로 보여준다. 19열 양식에서 LLM이 셀 수를 틀리는 일이 잦아(라이브
@@ -470,9 +470,9 @@ def _normalize_markdown_tables(text: str) -> str:
 
 
 def _build_reference_info(state: AgentState) -> dict:
-    """응답 프롬프트용 기준 정보(오늘·월 시리즈 앵커·조회 기간)를 결정적으로 산출한다(D-177).
+    """응답 프롬프트용 기준 정보(오늘·월 시리즈 앵커·조회 기간)를 결정적으로 산출한다(D-186).
 
-    앵커는 `form_month_anchor`(D-146/D-176), 조회 기간은 `resolve_stat_month_range`
+    앵커는 `form_month_anchor`(D-146/D-185), 조회 기간은 `resolve_stat_month_range`
     (정규식 1순위 → LLM time_range 폴백)로 SQL 필터와 같은 값을 쓴다. 기간 표현이 없으면
     오늘만 싣는다(비폼필 "지난달"류 서술의 연도 정확도도 함께 보강).
     """
@@ -496,7 +496,7 @@ _YEAR_MONTH_RE = re.compile(r"(\d{4})년\s*\d{1,2}월")
 
 
 def _check_response_years(response: str, reference_info: dict | None) -> str | None:
-    """요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 경고 문구를 돌려준다(D-177 사후 가드).
+    """요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 경고 문구를 돌려준다(D-186 사후 가드).
 
     검사 범위를 **첫 표 이전 문단**의 **연+월 패턴**으로 한정한다 — 표 본문의 도입일자·비고
     등 정당한 연도(서버 양식)를 오탐하지 않기 위함. 기준 연도(앵커·조회 기간)가 없으면
@@ -517,7 +517,7 @@ def _check_response_years(response: str, reference_info: dict | None) -> str | N
     if not bad:
         return None
     logger.warning(
-        "응답 요약의 연도가 기준 연도 밖(D-177 가드): 발견=%s, 기준=%s", bad, sorted(years)
+        "응답 요약의 연도가 기준 연도 밖(D-186 가드): 발견=%s, 기준=%s", bad, sorted(years)
     )
     return (
         "**[확인 필요]** 요약 문장의 연도(" + ", ".join(f"{y}년" for y in bad) + ")가 "
@@ -569,7 +569,7 @@ def _append_form_fill_notes(
             f"({basis}) 데이터로 채웠습니다. "
             "다른 기준월이 필요하면 \"1월부터 6월까지\"처럼 기간을 지정해 다시 요청해주세요."
         )
-        # 요청 기간과 실제 채운 월이 다르면 침묵하지 않는다(D-176) — 요청 개월 수 ≠ 양식 칸 수
+        # 요청 기간과 실제 채운 월이 다르면 침묵하지 않는다(D-185) — 요청 개월 수 ≠ 양식 칸 수
         # (예: 1~3월 지정에 6칸 양식)나 상대 양식의 끝 월 정렬로 생기는 차이를 명시.
         if requested and (
             str(requested[0]) != str(anchor["start"]) or str(requested[1]) != str(anchor["end"])
