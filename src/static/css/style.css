@@ -2017,6 +2017,91 @@ body.auth-pending .auth-splash {
     margin-bottom: 10px;
 }
 
+/* ─── D-179: 서버 식별 헤더(등록명 · hostname · IP · OS · 존) ─── */
+.alarm-server {
+    font-weight: 600;
+    word-break: break-all;
+}
+
+.alarm-header {
+    line-height: 1.5;
+}
+
+.alarm-title-sep {
+    color: var(--text-muted);
+    padding: 0 6px;
+    font-weight: 400;
+}
+
+.alarm-title-alarm {
+    font-weight: 500;
+    color: var(--text);
+}
+
+.alarm-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    margin-bottom: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.alarm-meta-sep {
+    color: var(--text-muted);
+    padding: 0 6px;
+}
+
+.alarm-hostname,
+.alarm-ip {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.alarm-zone,
+.alarm-os {
+    display: inline-block;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    line-height: 1.6;
+    border: 1px solid rgba(125, 145, 170, 0.35);
+    color: var(--text-secondary);
+    background: rgba(125, 145, 170, 0.12);
+}
+
+.alarm-os--linux { border-color: rgba(253, 126, 20, 0.45); color: #fd7e14; }
+.alarm-os--windows { border-color: rgba(0, 120, 212, 0.5); color: #3b9cff; }
+.alarm-os--unix { border-color: rgba(108, 117, 125, 0.5); }
+
+.alarm-resource {
+    color: var(--text-muted);
+    font-weight: 400;
+    word-break: break-all;
+}
+
+.alarm-time {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.alarm-time-recv {
+    color: #ffc107;
+}
+
+.alarm-ident-warn {
+    display: inline-block;
+    width: 1.1em;
+    text-align: center;
+    border-radius: 50%;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #ffc107;
+    border: 1px solid rgba(255, 193, 7, 0.6);
+    cursor: help;
+}
+
 .alarm-section {
     margin-top: 8px;
     font-size: 0.8125rem;

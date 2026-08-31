@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from datetime import date
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -21,6 +23,7 @@ from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
+from src.utils.query_gen_common import FORM_MEMORY_SHORTCUT_HINT, resolve_stat_month_range
 
 logger = logging.getLogger(__name__)
 
@@ -249,10 +252,14 @@ async def _generate_text_response(
     if llm is None:
         llm = create_llm(config)
 
+    # 기준 정보(D-177): 프롬프트에 연도가 전혀 없어("1월~6월" 질의 + M/M+1 칼럼) LLM이 학습
+    # prior(2023년)를 적었다(라이브 실측 2026-08-25). 결정적 값(앵커·조회 기간·오늘)을 주입.
+    reference_info = _build_reference_info(state)
     user_prompt = _build_response_prompt(
         original_query=parsed.get("original_query", ""),
         summary=organized["summary"],
         rows=organized["rows"],
+        reference_info=reference_info,
     )
 
     messages: list[BaseMessage] = [
@@ -266,7 +273,16 @@ async def _generate_text_response(
     # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다. 단, 딥 에이전트 단일
     # 합성(D-062)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
     tags = [USER_RESPONSE_TAG] if stream_user_response else None
-    return await astream_text(llm, messages, tags=tags)
+    response = await astream_text(llm, messages, tags=tags)
+    # 표 정규화(D-178): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아 원문이 노출된다
+    # (19열 금감원 양식에서 LLM이 셀 수를 자주 틀림 — 라이브 실측 2026-08-26). 렌더만 보장.
+    response = _normalize_markdown_tables(response)
+    # 사후 가드(D-177): 요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 침묵하지 않는다.
+    # 스트리밍은 이미 화면에 나간 뒤라 회수가 아닌 후행 경고이며, 자동 치환은 하지 않는다.
+    warn = _check_response_years(response, reference_info)
+    if warn:
+        response = f"{response}\n\n{warn}"
+    return response
 
 
 def _generate_empty_result_response(
@@ -310,6 +326,7 @@ def _build_response_prompt(
     original_query: str,
     summary: str,
     rows: list[dict],
+    reference_info: dict | None = None,
 ) -> str:
     """응답 생성 프롬프트를 구성한다.
 
@@ -317,6 +334,8 @@ def _build_response_prompt(
         original_query: 원본 사용자 질의
         summary: 데이터 요약
         rows: 결과 데이터 행
+        reference_info: `_build_reference_info` 산출(오늘·기준월·조회 기간) — 기간·연도 표기의
+            결정적 근거(D-177). None이면 블록 생략(종전 프롬프트와 동일).
 
     Returns:
         구성된 프롬프트 문자열
@@ -346,13 +365,165 @@ def _build_response_prompt(
     # 이끌려 일부 컬럼만 표시하는 것을 방지(실측: "제조사와 일련번호" 질의에서 서버명·알람명 누락).
     columns = list(display_rows[0].keys()) if display_rows and isinstance(display_rows[0], dict) else []
     if columns:
-        parts.append(
+        rule = (
             "## 표시 규칙\n"
             f"아래 {len(columns)}개 컬럼을 **모두** 표에 포함하세요(하나도 생략 금지): "
             + ", ".join(columns)
         )
+        if truncated:
+            # "N건 중 상위 20건(대표 서버)" 오서술 차단(D-177) — 절단은 표시 제한이지 데이터 특성이 아니다
+            rule += (
+                f"\n전체 결과는 {len(rows)}건이며 위 JSON은 표시용으로 상위 20건만 실은 것입니다. "
+                "요약에는 전체 건수만 쓰고, '상위 20건'·'대표 서버'처럼 절단을 데이터 특성으로 "
+                "서술하지 마세요."
+            )
+        parts.append(rule)
+
+    # 기준 정보(D-177): 기간·연도 표기의 결정적 근거. 프롬프트에 연도가 없으면 LLM이 학습
+    # prior 연도를 적는다 — [기준월 안내]는 LLM 생성 **이후** 덧붙어 LLM이 볼 수 없다.
+    if reference_info:
+        ref_lines = [f"- 오늘: {reference_info['today']}"]
+        anchor = reference_info.get("anchor")
+        if anchor:
+            ref_lines.append(
+                f"- 월별 칼럼 기준월: {_format_ym(anchor[0])} ~ {_format_ym(anchor[1])} "
+                "(M=첫 달, 이후 M+1, M+2 … 순)"
+            )
+        period = reference_info.get("period")
+        if period:
+            ref_lines.append(f"- 조회 기간: {_format_ym(period[0])} ~ {_format_ym(period[1])}")
+        parts.append(
+            "## 기준 정보\n"
+            "기간·연도를 언급할 때는 **반드시 아래 값을 그대로** 쓰고, 여기에 없는 연도를 "
+            "추정해 적지 마세요. 이 블록 자체를 본문에 복창하지 말고 기간 표기에만 참조하세요.\n"
+            + "\n".join(ref_lines)
+        )
 
     return "\n\n".join(parts)
+
+
+_TABLE_SEP_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
+
+
+def _split_table_cells(line: str) -> list[str]:
+    """`| a | b |` 행을 셀 목록으로 나눈다(양끝 파이프 제거, `\\|` 이스케이프 보존)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    return [c.strip() for c in re.split(r"(?<!\\)\|", s)]
+
+
+def _normalize_markdown_tables(text: str) -> str:
+    """마크다운 표 블록의 구분선·본문 셀 수를 헤더에 맞춘다(D-178 — 렌더 실패 안전망).
+
+    GFM(marked.js gfm=true)은 **구분선 행의 셀 수가 헤더와 다르면** 블록을 표로 인식하지
+    않고 원문을 그대로 보여준다. 19열 양식에서 LLM이 셀 수를 틀리는 일이 잦아(라이브
+    실측) 구분선을 헤더 셀 수로 재생성하고, 본문 행은 부족분 패딩·초과분 절단(GFM이 초과
+    셀을 버리는 동작과 동일)한다. 내용(누락 칼럼·순서)은 고치지 않는다 — 렌더만 보장.
+    코드 펜스 내부와 "2행이 구분선"이 아닌 블록은 건드리지 않는다.
+    """
+    if not text or "|" not in text:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    in_fence = False
+
+    def _has_pipe(s: str) -> bool:
+        # 선행 파이프 없는 GFM 표(`a | b` / `---|---`)도 표다 — LLM이 자주 쓰는 형태
+        # (폐쇄망 실측 2026-08-26: 선행 `|` 요구 시 이 변형이 정규화에서 빠져 원문 노출 지속)
+        return bool(re.search(r"(?<!\\)\|", s))
+
+    def _is_sep_line(s: str) -> bool:
+        if not _has_pipe(s):
+            return False  # 파이프 없는 `---`는 수평선(hr)이지 표 구분선이 아니다
+        cells = _split_table_cells(s)
+        return bool(cells) and all(_TABLE_SEP_CELL_RE.match(c) for c in cells)
+
+    while i < n:
+        line = lines[i]
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if (not in_fence) and _has_pipe(line) and i + 1 < n and _is_sep_line(lines[i + 1]):
+            header_cells = _split_table_cells(line)
+            width = len(header_cells)
+            out.append("| " + " | ".join(header_cells) + " |")
+            out.append("|" + "|".join(["---"] * width) + "|")
+            i += 2
+            while i < n and lines[i].strip() and _has_pipe(lines[i]):
+                cells = _split_table_cells(lines[i])
+                if len(cells) < width:
+                    cells = cells + [""] * (width - len(cells))
+                elif len(cells) > width:
+                    cells = cells[:width]
+                out.append("| " + " | ".join(cells) + " |")
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def _build_reference_info(state: AgentState) -> dict:
+    """응답 프롬프트용 기준 정보(오늘·월 시리즈 앵커·조회 기간)를 결정적으로 산출한다(D-177).
+
+    앵커는 `form_month_anchor`(D-146/D-176), 조회 기간은 `resolve_stat_month_range`
+    (정규식 1순위 → LLM time_range 폴백)로 SQL 필터와 같은 값을 쓴다. 기간 표현이 없으면
+    오늘만 싣는다(비폼필 "지난달"류 서술의 연도 정확도도 함께 보강).
+    """
+    today = date.today()
+    info: dict = {"today": today.isoformat()}
+    anchor = state.get("form_month_anchor") or {}
+    if anchor.get("start") and anchor.get("end"):
+        info["anchor"] = (str(anchor["start"]), str(anchor["end"]))
+    parsed = state.get("parsed_requirements") or {}
+    period = resolve_stat_month_range(
+        parsed.get("original_query") or state.get("user_query") or "",
+        today,
+        parsed_time_range=parsed.get("time_range"),
+    )
+    if period:
+        info["period"] = period
+    return info
+
+
+_YEAR_MONTH_RE = re.compile(r"(\d{4})년\s*\d{1,2}월")
+
+
+def _check_response_years(response: str, reference_info: dict | None) -> str | None:
+    """요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 경고 문구를 돌려준다(D-177 사후 가드).
+
+    검사 범위를 **첫 표 이전 문단**의 **연+월 패턴**으로 한정한다 — 표 본문의 도입일자·비고
+    등 정당한 연도(서버 양식)를 오탐하지 않기 위함. 기준 연도(앵커·조회 기간)가 없으면
+    판정 근거가 없으므로 미발동. 자동 치환은 하지 않는다(LLM 문장 임의 수정 금지).
+    """
+    if not response or not reference_info:
+        return None
+    years: set[str] = set()
+    for key in ("anchor", "period"):
+        rng = reference_info.get(key)
+        if rng:
+            years.update({str(rng[0])[:4], str(rng[1])[:4]})
+    if not years:
+        return None
+    summary = response.split("\n|", 1)[0]
+    found = {m.group(1) for m in _YEAR_MONTH_RE.finditer(summary)}
+    bad = sorted(found - years)
+    if not bad:
+        return None
+    logger.warning(
+        "응답 요약의 연도가 기준 연도 밖(D-177 가드): 발견=%s, 기준=%s", bad, sorted(years)
+    )
+    return (
+        "**[확인 필요]** 요약 문장의 연도(" + ", ".join(f"{y}년" for y in bad) + ")가 "
+        "실제 조회 기준(" + ", ".join(f"{y}년" for y in sorted(years)) + ")과 다릅니다. "
+        "기간은 아래 [기준월 안내]와 처리현황의 생성 SQL을 기준으로 확인해주세요."
+    )
 
 
 def _format_ym(yyyymm: str) -> str:
@@ -384,12 +555,31 @@ def _append_form_fill_notes(
 
     parts: list[str] = []
     if anchor.get("start") and anchor.get("end"):
+        requested = anchor.get("requested") or None
+        source = anchor.get("source") or ("query" if requested else "default")
+        if source == "query" and requested:
+            basis = f"질의에서 지정한 기간({_format_ym(requested[0])}~{_format_ym(requested[1])})의 끝 월을 마지막 칼럼(M+N)으로"
+        elif source == "absolute":
+            basis = "양식에 표기된 절대 월 기준으로"
+        else:
+            basis = "기간 지정이 없어 실행일 기준 지난달을 마지막 칼럼(M+N)으로"
         parts.append(
             "**[기준월 안내]** 월별 사용률 칼럼은 "
             f"{_format_ym(anchor['start'])}부터 {_format_ym(anchor['end'])}까지 "
-            "(M=첫 달, 별도 지정이 없으면 실행일 기준 지난달이 마지막 칼럼) 데이터로 채웠습니다. "
-            "다른 기준월이 필요하면 \"기준월 3월\"처럼 지정해 다시 요청해주세요."
+            f"({basis}) 데이터로 채웠습니다. "
+            "다른 기준월이 필요하면 \"1월부터 6월까지\"처럼 기간을 지정해 다시 요청해주세요."
         )
+        # 요청 기간과 실제 채운 월이 다르면 침묵하지 않는다(D-176) — 요청 개월 수 ≠ 양식 칸 수
+        # (예: 1~3월 지정에 6칸 양식)나 상대 양식의 끝 월 정렬로 생기는 차이를 명시.
+        if requested and (
+            str(requested[0]) != str(anchor["start"]) or str(requested[1]) != str(anchor["end"])
+        ):
+            parts.append(
+                "**[기간 불일치]** 요청 기간은 "
+                f"{_format_ym(requested[0])}~{_format_ym(requested[1])}이지만 양식의 월 칼럼 수에 맞춰 "
+                f"{_format_ym(anchor['start'])}~{_format_ym(anchor['end'])}로 채웠습니다. "
+                "요청 개월 수와 양식 칸 수가 다르면 끝 월을 기준으로 정렬합니다."
+            )
 
     if fill_stats:
         unfilled = [
@@ -492,7 +682,8 @@ def _build_form_fill_hitl(
     clarification = {
         "question": (
             f"채우지 못한 항목이 {len(unresolved)}건 있습니다. "
-            "각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요."
+            "각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요. "
+            + FORM_MEMORY_SHORTCUT_HINT
         ),
         "fields": [{"name": f, "label": _display_field_name(f)} for f in unresolved],
         "candidates": candidates,

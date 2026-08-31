@@ -601,6 +601,18 @@ class AlarmConfig(BaseSettings):
     redis_consumer_group: str = "alarm-workers"
     min_severity: int = 2                 # 처리할 최소 심각도 (0=해소, 1=주의, 2=경고, 3=심각)
     dedup_ttl_seconds: int = 300          # 중복 알람 억제 TTL (초)
+    # ── D-175: 처리 실패 메시지 dead-letter ──
+    # 워커가 파싱·처리 예외로 ACK 폐기하기 전에 원문+사유를 별도 스트림에 보관한다.
+    # (2026-08-25 폐쇄망: 폴스타 severity 한글 라벨 → int() 실패 → 전량 침묵 폐기 재발 방지)
+    # 상시 동작 — `_enabled` 플래그는 두지 않는다(D-162 §6 플래그 부채 원칙, 2026-08-27 정리).
+    dead_letter_stream_key: str = "alarm:dead"
+    dead_letter_maxlen: int = 1000        # XADD MAXLEN ~ (근사 상한)
+    # ── D-179: 서버 식별 역조회(hostname → 폴스타 등록 서버명·IP) ──
+    # 템플릿이 platformName/ipAddress를 지원하지 않아(EL1008E) cmm_resource를 hostname으로 역조회한다.
+    # 조회 결과로 server_name(템플릿이 hostname을 준 경우만)·ip_address(빈 경우만)를 승격한다.
+    # 상시 동작 — `_enabled` 플래그는 두지 않는다(실패·타임아웃은 graceful로 충분).
+    server_identity_timeout_seconds: float = 3.0
+    server_identity_cache_ttl_seconds: int = 3600   # Redis 캐시 TTL(초, 0=미캐시)
     # 현재 지원 채널: workb만 사용 가능.
     # 추후 "slack,workb" 등 복수 지정 가능하도록 CSV 구조를 유지한다.
     notification_channels_csv: str = "workb"

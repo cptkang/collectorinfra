@@ -407,7 +407,7 @@ def validate_updates(updates: dict[str, str]) -> list[FieldError]  # 3단 검증
 - **반영**: `재시작` = 저장 후 서버 재시작 필요(뱃지+배너, §1.3) / `다음 요청` = cache_clear 후 다음 요청부터 반영 / `—` = 편집 불가.
 - **비고**: `**미소비**` = 현재 코드가 읽지 않는 필드(§1.5-4) — **기본 숨김**이며 툴바 "미소비 필드 표시" 토글 시에만 노출(뱃지+편집 허용) [인터뷰 확정].
 - 모든 행 공통: "기본값 사용 중"(파일 미설정) 흐림 표시·기본값 리셋 버튼·OS env/.encenv 오버라이드 경고 뱃지(§3.2 `override`)·`.env.example` 주석 도움말 툴팁이 적용된다(§4.2).
-- 그룹 배치: A.1~A.18이 아코디언 순서다. `알람`·`노이즈 게이트`는 표의 "구획" 값이 하위 소제목이 된다(§4.2).
+- 그룹 배치: A.1~A.20이 아코디언 순서다. `알람`·`노이즈 게이트`는 표의 "구획" 값이 하위 소제목이 된다(§4.2).
 
 ### A.1 LLM (`cfg.llm` · 11필드)
 | env 키 | 위젯 | 기본값 | 반영 | 비고 |
@@ -704,3 +704,29 @@ def validate_updates(updates: dict[str, str]) -> list[FieldError]  # 3단 검증
 | `ENABLE_STRUCTURE_APPROVAL` | 토글 | `true` | 재시작 |  |
 | `CONVERSATION_MAX_TURNS` | 숫자(int) | `20` | 재시작 | **미소비** |
 | `CONVERSATION_TTL_HOURS` | 숫자(int) | `24` | 재시작 | **미소비** |
+
+### A.19 폴스타 실시간 REST (`cfg.polestar_rest` · 5필드) — 2026-08-25 추가(D-175 부기)
+| env 키 | 위젯 | 기본값 | 반영 | 비고 |
+|---|---|---|---|---|
+| `POLESTAR_REST_REALTIME_USAGE_ENABLED` | 토글 | `false` | 재시작 | Plan 71 |
+| `POLESTAR_REST_BASE_URLS_CSV` | 텍스트 | (코드 기본 3존) | 재시작 | `db_id=base_url` CSV |
+| `POLESTAR_REST_MEASUREMENT_TIMEOUT_SECONDS` | 숫자(int) | `10` | 재시작 |  |
+| `POLESTAR_REST_MEASUREMENT_CHUNK_SIZE` | 숫자(int) | `200` | 재시작 |  |
+| `POLESTAR_REST_STALE_AFTER_MINUTES` | 숫자(int) | `15` | 재시작 |  |
+
+### A.20 DRM 해제 (`cfg.drm` · 9필드) — 2026-08-25 추가(D-175 부기)
+| env 키 | 위젯 | 기본값 | 반영 | 비고 |
+|---|---|---|---|---|
+| `DRM_ENABLED` | 토글 | `false` | 재시작 | Plan 74 / D-156 — 운영(RHEL)에서만 활성 |
+| `DRM_JAVA_BIN` | 텍스트 | `java` | 재시작 |  |
+| `DRM_WRAPPER_PATH` | 텍스트 |  | 재시작 | `tools/drm-wrapper/Decrypt.java` 절대경로 |
+| `DRM_SCSL_JAR_PATH` | 텍스트 |  | 재시작 |  |
+| `DRM_PROPERTIES_PATH` | 텍스트 |  | 재시작 | 내용은 scsl이 직접 읽음 — 경로만 |
+| `DRM_KEY_FILE_PATH` | 텍스트 |  | 재시작 |  |
+| `DRM_GROUP_ID` | 텍스트 | `SECURITYDOMAIN` | 재시작 |  |
+| `DRM_TEMP_DIR` | 텍스트 |  | 재시작 | 빈 값이면 시스템 temp 하위 자동 |
+| `DRM_TIMEOUT_SEC` | 숫자(int) | `20` | 재시작 |  |
+
+> Plan 71·74가 config만 추가하고 이 부록·`settings_catalog.GROUP_ORDER`를 갱신하지 않아 두 그룹이
+> 어드민 설정 UI에서 보이지 않았다(인덱스 21그룹 vs 응답 19그룹). D-175 부기로 정정 — 이후
+> `test_settings_catalog.test_t2_group_and_field_counts`가 AppConfig 하위 설정 전수 등재를 고정한다.

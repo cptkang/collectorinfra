@@ -9,9 +9,35 @@ AlarmAnalysisResult: LLM 분석 결과 및 발송 내역
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Optional
+
+
+@dataclass
+class ServerIdentity:
+    """폴스타 등록 기준 서버 식별 정보 (D-179) — hostname → 폴스타 등록 서버 테이블 역조회 결과.
+
+    템플릿이 `${platformName}`·`${ipAddress}`를 지원하지 않아(EL1008E) 이벤트에는 hostname만
+    실린다. 웹 UI·통보 본문이 폴스타 등록 서버명·IP·존을 표시할 수 있도록 별도로 붙인다.
+    """
+
+    name: str = ""            # cmm_resource.name — 폴스타 등록 서버명(공동존은 hostname과 다름)
+    hostname: str = ""
+    ip_address: str = ""      # cmm_resource.ipaddress
+    os_type: str = ""         # core_config_prop OSType(EAV, 스칼라 서브쿼리) — 값이 있을 때만 UI 배지
+    os_version: str = ""      # core_config_prop OSVerson(EAV 원본 철자) — 배지 툴팁의 상세 OS 버전
+    zone: str = ""            # 존 코드(gongjon/bankjon) — config/db_registry.yaml 파생
+    zone_label: str = ""      # 존 라벨
+    site_label: str = ""      # 사이트 라벨(김포/여의도/은행존)
+    source_label: str = ""    # 소스 배지 라벨 — 레지스트리 family 제품명("폴스타"); 소스 확장 시 family만 등록
+    source_detail: str = ""   # 소스 배지 툴팁 — "폴스타 — 공동존 김포; polestar_cm_gp"
+    source: str = ""          # "polestar_db" | "cache" | "event"(조회 실패·존 라벨만)
+    ambiguous: bool = False   # 동일 hostname server.Server 행 2건 이상 → 승격 생략
+
+    def to_dict(self) -> dict:
+        """SSE/JSON 직렬화용 dict."""
+        return asdict(self)
 
 
 @dataclass
@@ -24,7 +50,7 @@ class AlarmEvent:
     폴스타 등록 템플릿 형식:
         {"dbId":"<상수>","serverName":"${platformName}","hostname":"${hostname}",
          "ipAddress":"${ipAddress}","resourceAncestry":"${resourceAncestry}",
-         "alarmId":"${alarmId}","severity":${severity},"alarmStatus":"${alarmStatus}",
+         "alarmId":"${alarmId}","severity":"${severity}","alarmStatus":"${alarmStatus}",
          "resourceType":"${resourceType}","resourceName":"${resourceName}","alarmName":"${alarmName}",
          "alarmTime":"${formatAlarmDate('yyyyMMddHHmmss')}",
          "conditions":"${conditions}","conditionLog":"${conditionLog}"}
@@ -40,6 +66,8 @@ class AlarmEvent:
     # --- 알람 상세 ---
     alarm_id: str                       # ${alarmId}       — 중복 제거 키
     severity: int                       # ${severity}      — 0=해소, 1=주의, 2=경고, 3=심각
+                                        #   폴스타 원문은 한글 라벨(해제/주의/경고/심각)로 도착한다(D-175)
+                                        #   → domain/severity.parse_severity로 정규화한 뒤 담는다
     alarm_status: str                   # ${alarmStatus}   — 폴스타 UI 인지(ACK) 상태 (NOT_ACK 등).
                                         #                    해소 여부와 무관하므로 판정에 사용하지 않음 (Plan 47 §9)
     resource_type: str                  # ${resourceType}  — 'server.Server' 등
@@ -51,6 +79,10 @@ class AlarmEvent:
     # --- 파생 필드 ---
     is_clear: bool = False              # severity == 0 단독 기준 (alarmStatus는 ACK 상태로 무관)
     raw_payload: dict = field(default_factory=dict)  # 원본 JSON dict 보존
+    # (D-179) hostname 역조회로 부착되는 서버 식별 정보 — application/server_identity가 채운다.
+    server_identity: Optional[ServerIdentity] = None
+    # (D-179 부기) 워커/API가 이벤트를 구성한 시각 — UI '수신' 표시·지연 진단용(폴스타 alarm_time과 대비)
+    received_at: Optional[datetime] = None
 
 
 @dataclass

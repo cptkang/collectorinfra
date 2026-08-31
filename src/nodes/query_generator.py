@@ -98,6 +98,7 @@ from src.db_adapters.polestar.assembler import (
     filter_pivot_regular_entries,
     find_vendor_model_concat,
     recognize_month_series,
+    month_anchor_payload,
     resolve_form_fill_answers,
 )
 from src.nodes.candidate_generator import classify_complexity
@@ -266,6 +267,8 @@ def _try_build_form_fill_pivot_sql(
         column_mapping,
         context_text=template_context_text(state.get("template_structure")),
         user_query=user_query,
+        # 앵커 산출에도 LLM 기간 2단 폴백(D-136 R3-(i)) — 아래 stat_month와 대칭(D-176)
+        parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
     )
     mapping_updates: dict[str, Optional[str]] = {}
     # 채움 제외된 llm_inferred 필드는 state 매핑도 None으로 — writer가 낡은 매핑으로
@@ -403,16 +406,12 @@ def _try_build_form_fill_pivot_sql(
     )
     month_anchor = None
     if month_series:
-        month_anchor = {
-            "start": month_series.anchor[0],
-            "end": month_series.anchor[1],
-            "resource_type": month_series.resource_type,
-            "fields": month_series.fields,
-        }
+        month_anchor = month_anchor_payload(month_series)
         logger.info(
-            "폼필 월 시리즈 인식(D-146): rt=%s, 기간=%s~%s, 필드=%d개",
+            "폼필 월 시리즈 인식(D-146): rt=%s, 기간=%s~%s, 필드=%d개, 앵커출처=%s, 요청기간=%s",
             month_series.resource_type, month_series.anchor[0],
             month_series.anchor[1], len(month_series.fields),
+            month_series.anchor_source, month_series.requested,
         )
     return {
         "sql": sql,
@@ -769,6 +768,7 @@ async def _build_fallback_prompts(
             state.get("column_mapping") or {},
             context_text=template_context_text(state.get("template_structure")),
             user_query=user_query,
+            parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
         ))
         if _ms_block:
             user_prompt += "\n\n" + _ms_block

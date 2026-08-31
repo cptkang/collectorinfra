@@ -40,9 +40,12 @@ from noise_gate.domain.correlation import (
 )
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
 from noise_gate.domain.notification_policy import compute_fingerprint
+from noise_gate.application.server_identity import attach_server_identity
+from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
 from noise_gate.infrastructure.redis_queue import (
     ack_message,
+    dead_letter_message,
     ensure_consumer_group,
     read_messages,
 )
@@ -84,6 +87,7 @@ class AlarmWorker:
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
         self._sre_agent_client = None  # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트
+        self._identity_resolver = None  # (D-179) hostname → 등록 서버명·IP 역조회 리졸버
         # (Plan 67 R3-(v) · D-132) 운영자 주석 LLM 분류기 — annotation_llm_classification_enabled
         # 활성 시에만 생성. None이면 주석 신호는 기존 정규식 추출로 산출된다(비트동일·회귀 0).
         self._annotation_classifier = None
@@ -147,6 +151,23 @@ class AlarmWorker:
             )
         except Exception:
             logger.exception("알람 이력 리포지토리 생성 실패 — 패턴 분석 비활성으로 진행")
+            return None
+
+    def _build_identity_resolver(self):  # noqa: ANN202
+        """서버 식별 역조회 리졸버를 생성한다 (D-179 · _build_history_repo 미러).
+
+        상시 동작(끄는 플래그 없음 — D-162 §6 플래그 부채 원칙). 생성 실패 시 None — 식별 정보는
+        존 라벨만 붙고(source=event) server_name·ip 승격이 생략된다(graceful, 알람 처리 정상 진행).
+        """
+        try:
+            from noise_gate.infrastructure.polestar_hostname_resolver import (
+                PolestarHostnameResolver,
+            )
+            from src.routing.db_registry import DBRegistry
+
+            return PolestarHostnameResolver(DBRegistry(self._config))
+        except Exception:
+            logger.exception("서버 식별 리졸버 생성 실패 — 역조회 없이 진행")
             return None
 
     def _build_process_client(self):  # noqa: ANN202
@@ -457,6 +478,7 @@ class AlarmWorker:
         await ensure_consumer_group(r, stream_key, group)
         self._graph = build_alarm_graph(self._config)
         self._history_repo = self._build_history_repo()
+        self._identity_resolver = self._build_identity_resolver()
         self._process_client = self._build_process_client()
         self._noise_repo = self._build_noise_repo()
         self._metric_baseline = self._build_metric_baseline()
@@ -527,7 +549,19 @@ class AlarmWorker:
                 alarm_time = datetime.now()
 
             alarm_status = payload.get("alarmStatus", "")
-            severity = int(payload["severity"])
+            # (D-175) 폴스타 `${severity}`는 정수가 아니라 한글 라벨(해제/주의/경고/심각)로
+            # 렌더링된다(폐쇄망 실측). 결정적 정규화 — API 경로 `_build_alarm_event_from_payload`와
+            # 동일 함수를 쓴다(경로 대칭). 미지 값은 크래시·폐기 대신 보수적 폴백 + WARNING.
+            severity, severity_fallback_reason = coerce_severity(payload.get("severity"))
+            if severity_fallback_reason is not None:
+                logger.warning(
+                    "심각도 미식별 → 보수적 폴백 %s 적용(폐기 대신 통보 경로 유지): "
+                    "alarm_id=%s raw=%r reason=%s",
+                    severity,
+                    payload.get("alarmId"),
+                    payload.get("severity"),
+                    severity_fallback_reason,
+                )
             # is_clear는 severity == 0 단독 기준 — alarmStatus는 폴스타 UI 인지(ACK)
             # 상태(NOT_ACK 등)로 해소 여부와 무관하다 (Plan 47 §9, D-035)
             is_clear = (severity == 0)
@@ -549,6 +583,18 @@ class AlarmWorker:
                 condition_log=payload.get("conditionLog", ""),
                 is_clear=is_clear,
                 raw_payload=payload,
+                received_at=datetime.now(),
+            )
+
+            # (D-179) hostname → 폴스타 등록 서버명·IP 역조회 후 server_name/ip 승격.
+            # dedup·지문·이력 매칭·통보·SSE보다 앞에 두어 모든 소비처가 등록명을 쓰게 한다
+            # (API 경로 `_attach_server_identity`와 대칭). 실패·타임아웃은 graceful.
+            await attach_server_identity(
+                event,
+                self._identity_resolver,
+                redis=self._redis,
+                timeout=float(getattr(self._config.alarm, "server_identity_timeout_seconds", 3.0)),
+                cache_ttl=int(getattr(self._config.alarm, "server_identity_cache_ttl_seconds", 3600)),
             )
 
             gate_on = bool(self._config.noise_gate.enable_noise_gate)
@@ -788,10 +834,40 @@ class AlarmWorker:
                     }
                 },
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)
+            # (D-175) ACK 전에 dead-letter 스트림에 원문+사유를 보관한다 — 실패 건이 흔적 없이
+            # 폐기되어 진단이 로그 전사에만 의존하던 상태(2026-08-25 severity 라벨 건) 재발 방지.
+            await self._dead_letter(r, stream_key, msg_id, fields, exc)
         finally:
             await ack_message(r, stream_key, group, msg_id)
+
+    async def _dead_letter(
+        self,
+        r: aioredis.Redis,
+        stream_key: str,
+        msg_id: bytes,
+        fields: dict,
+        exc: BaseException,
+    ) -> None:
+        """처리 실패 메시지를 dead-letter 스트림에 적재한다 (D-175 · graceful).
+
+        상시 동작(끄는 플래그 없음 — D-162 §6). 적재 실패는 warning 후 무시한다 —
+        dead-letter가 ACK·소비 루프를 막아서는 안 된다.
+        """
+        alarm_cfg = getattr(self._config, "alarm", None)
+        try:
+            await dead_letter_message(
+                r,
+                getattr(alarm_cfg, "dead_letter_stream_key", "alarm:dead"),
+                stream_key,
+                msg_id,
+                fields,
+                exc,
+                maxlen=int(getattr(alarm_cfg, "dead_letter_maxlen", 1000)),
+            )
+        except Exception:  # noqa: BLE001 — dead-letter 실패가 소비 루프를 막지 않는다
+            logger.warning("dead-letter 적재 실패(무시): msg_id=%s", msg_id)
 
     async def _publish_incident_resolved(
         self, event: AlarmEvent, fingerprint: str, self_heal: bool

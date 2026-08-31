@@ -806,18 +806,18 @@ if alarm_worker_task:
 | 원천 | JSON 키 | `AlarmEvent` 필드 | 설명 |
 |------|---------|-------------------|------|
 | 상수 (직접 기입) | `dbId` | `db_id` | 폴스타 인스턴스 식별자 — DB의 `db_id`와 매핑 |
-| `${platformName}` | `serverName` | `server_name` | 폴스타에 등록된 서버 이름 — DB의 `server_name`과 매핑 |
+| ~~`${platformName}`~~ → `${hostname}` | `serverName` | `server_name` | **실측 정정(2026-08-26·D-179)**: `platformName`은 연계 모듈 미지원(`EL1008E`, 발송 실패) → 템플릿은 `${hostname}`을 싣고, 워커·API가 `cmm_resource` 역조회로 등록 서버명을 승격한다(`application/server_identity`) |
 | `${hostname}` | `hostname` | `hostname` | 호스트네임 |
-| `${ipAddress}` | `ipAddress` | `ip_address` | IP 주소 |
-| `${resourceAncestry}` | `resourceAncestry` | `resource_ancestry` | 폴스타 트리 전체 경로 |
+| ~~`${ipAddress}`~~ | `ipAddress` | `ip_address` | **미지원(2026-08-26 실측)** — 템플릿에서 제외. D-179 역조회(`cmm_resource.ipaddress`)로 채운다 |
+| ~~`${resourceAncestry}`~~ | `resourceAncestry` | `resource_ancestry` | **미지원(2026-08-26 실측)** — 템플릿에서 제외, 코드는 빈 값 기본 |
 | `${alarmId}` | `alarmId` | `alarm_id` | 알람 고유 ID (중복 제거 키) |
-| `${severity}` | `severity` | `severity` | 0=해소, 1=주의, 2=경고, 3=심각 |
+| `${severity}` | `severity` | `severity` | 0=해소, 1=주의, 2=경고, 3=심각 — **실측 정정(2026-08-25·D-175)**: 폴스타는 한글 라벨(`해제`/`주의`/`경고`/`심각`)로 렌더링한다 → 템플릿에 **따옴표 필수**(`"severity":"${severity}"`), 워커·API가 `noise_gate/domain/severity.parse_severity`로 정규화 |
 | `${alarmStatus}` | `alarmStatus` | `alarm_status` | `발생` / `해소` |
 | `${resourceType}` | `resourceType` | `resource_type` | `server.Server`, `server.Cpus` 등 |
 | `${resourceName}` | `resourceName` | `resource_name` | 자원 이름 |
 | `${alarmName}` | `alarmName` | `alarm_name` | 알람 이름 |
 | `${formatAlarmDate('yyyyMMddHHmmss')}` | `alarmTime` | `alarm_time` | 알람 일시 → `datetime` 변환 |
-| `${conditions}` | `conditions` | `conditions` | 발생/해소 조건 정의 |
+| ~~`${conditions}`~~ | `conditions` | `conditions` | **미지원(2026-08-26 실측)** — 템플릿에서 제외, 코드는 빈 값 기본 |
 | `${conditionLog}` | `conditionLog` | `condition_log` | 이 알람이 울리게 된 조건 값 |
 | — | — | `is_clear` | 파생: `alarm_status == '해소'` 또는 `severity == 0` |
 | — | — | `raw_payload` | 원본 JSON dict 보존 |

@@ -146,10 +146,13 @@ async def input_parser(
     # 3. 시트명 추출
     target_sheets = _extract_target_sheets(parsed, state["user_query"])
 
+    # time_range를 함께 남긴다(D-176) — 기간 2단 폴백(R3-(i))의 입력값이 로그에 없어
+    # 폐쇄망에서 "LLM이 기간을 뽑았는지" 확인이 불가능했다(2026-08-25 실측).
     logger.info(
-        "입력 파싱 완료: targets=%s, target_sheets=%s",
+        "입력 파싱 완료: targets=%s, target_sheets=%s, time_range=%s",
         parsed.get("query_targets", []),
         target_sheets,
+        parsed.get("time_range"),
     )
 
     # 감사 기록은 여기서 하지 않는다(D-183) — 요청 수신 지점(API 라우트 · CLI 진입부)이

@@ -160,6 +160,10 @@ class MonthSeries:
     anchor: tuple[str, str] = ("", "")  # (M, M+max) — 응답 명시용(§2.4)
     resource_type: str = ""
     month_by_field: dict[str, str] = dc_field(default_factory=dict)  # 표시용 {필드명: YYYYMM}
+    # 사용자가 질의에서 명시한 기간(시작, 끝) — 상대(M+k) 양식에서 앵커 산출에 쓴 값(D-176).
+    # None이면 기간 표현 없음(실행일 기준 지난달 폴백). anchor와 다르면 응답에 불일치를 명시한다.
+    requested: tuple[str, str] | None = None
+    anchor_source: str = "default"  # "query"(질의 기간) | "default"(지난달 폴백) | "absolute"(양식 절대월)
 
 
 def _parse_month_sub(sub: str) -> tuple[str, int | str] | None:
@@ -188,6 +192,7 @@ def recognize_month_series(
     context_text: str = "",
     user_query: str = "",
     today: date | None = None,
+    parsed_time_range: dict | None = None,
 ) -> MonthSeries | None:
     """복합 필드명에서 월 시리즈(사용률 가로 전개) 패턴을 결정적으로 인식한다(D-146).
 
@@ -200,13 +205,17 @@ def recognize_month_series(
     - alias(=필드명) UTF-8 길이가 PG 식별자 한도 이내
 
     기준월(Q3 확정): 사용자 질의에 기간이 있으면 그 **끝 월**이 M+max_k,
-    없으면 실행일 기준 지난달(마지막 완결 월)이 M+max_k.
+    없으면 실행일 기준 지난달(마지막 완결 월)이 M+max_k. 기간 해석은 정규식 1순위 →
+    `parsed_time_range`(input_parser LLM 산출물) 2단 폴백(D-136 R3-(i)) — 폼필 피벗의
+    stat_month 자리에는 배선됐으나 **앵커 산출 자리에는 빠져** "1월부터 6월까지"가 지난달
+    기준(2~7월)으로 침묵 폴백한 라이브 실측(2026-08-25, D-176)의 대칭 보완.
 
     Args:
         column_mapping: field_mapper 산출 {필드명: 컬럼 또는 None}
         context_text: 양식 제목(title_text)·파일명 등 리소스 판정 문맥
         user_query: 사용자 질의(기간 해석용)
         today: 기준일(테스트 주입용, None이면 오늘)
+        parsed_time_range: `parsed_requirements["time_range"]` — 정규식 미매칭 시에만 채택
 
     Returns:
         MonthSeries 또는 None(패턴 아님 — 기존 경로 유지)
@@ -276,10 +285,16 @@ def recognize_month_series(
 
     last_month = _last_complete_month(today)
     month_by_field: dict[str, str] = {}
+    requested: tuple[str, str] | None = None
+    anchor_source = "absolute"
     if kinds == {"rel"}:
         ks = [p[2][1] for p in parsed]
         max_k = max(ks)  # type: ignore[type-var]
-        rng = resolve_stat_month_range(user_query, today)
+        rng = resolve_stat_month_range(
+            user_query, today, parsed_time_range=parsed_time_range
+        )
+        requested = rng
+        anchor_source = "query" if rng else "default"
         anchor_end = rng[1] if rng else last_month
         base = _ym_add(anchor_end, -int(max_k))
         for fname, _vc, (_kind, k) in parsed:
@@ -304,7 +319,24 @@ def recognize_month_series(
         anchor=(months_sorted[0], months_sorted[-1]),
         resource_type=rt,
         month_by_field=month_by_field,
+        requested=requested,
+        anchor_source=anchor_source,
     )
+
+
+def month_anchor_payload(ms: MonthSeries) -> dict:
+    """MonthSeries → state `form_month_anchor` dict(단일·멀티 경로 공용 shape, D-147/D-176).
+
+    두 경로가 각자 dict를 손으로 조립하면 키가 어긋나는 비대칭이 생기므로 단일 출처로 둔다.
+    """
+    return {
+        "start": ms.anchor[0],
+        "end": ms.anchor[1],
+        "resource_type": ms.resource_type,
+        "fields": ms.fields,
+        "requested": list(ms.requested) if ms.requested else None,
+        "source": ms.anchor_source,
+    }
 
 
 # 폴스타 entity(cmm_resource)의 검증된 직접 컬럼 — 스키마에 칼럼 목록이 없어 검증

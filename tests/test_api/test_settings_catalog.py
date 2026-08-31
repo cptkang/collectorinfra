@@ -116,7 +116,13 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 305
+    assert len(items) == 309
+    # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
+    # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
+    group_keys = {group.group_key for group in response.groups}
+    assert {"polestar_rest", "drm"} <= group_keys
+    assert items["DRM_ENABLED"].group_key == "drm"
+    assert items["POLESTAR_REST_REALTIME_USAGE_ENABLED"].group_key == "polestar_rest"
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
@@ -151,6 +157,12 @@ def test_t2_group_and_field_counts():
       2026-08-19까지 사전존재 실패로 남아 있었다**
     → OBS_{SQL_LOG_ENABLED,SQL_LOG_RETENTION_DAYS,TRACE_ENABLED,TRACE_RETENTION_DAYS,
       TRACE_MAX_STEPS} 추가(D-140/D-141)로 **251**, 그룹 18→19(observability 신설).
+    → POLESTAR_REST_* 5(Plan 71)·DRM_* 9(Plan 74)는 config 추가 당시 이 단언이 갱신되지 않았고
+      GROUP_ORDER 미등재로 UI 응답에서도 탈락해 있었다(사전존재 실패) → 2026-08-25 D-184 부기로
+      두 그룹 등재 + ALARM_DEAD_LETTER_{ENABLED,STREAM_KEY,MAXLEN} 3 추가로 **277**, 그룹 19→21.
+    → ALARM_SERVER_IDENTITY_{ENABLED,TIMEOUT_SECONDS,CACHE_TTL_SECONDS} 3 추가(D-188)로 **280**.
+    → 2026-08-27 `ALARM_DEAD_LETTER_ENABLED`·`ALARM_SERVER_IDENTITY_ENABLED` 제거(기본 on·끌 이유 없음,
+      D-162 §6 플래그 부채 원칙)로 **278**.
     → 2026-08-28 정산으로 **300**, 그룹 19→24. 증가분 49는 세 계획의 누적분이다:
       composite 12(Plan 78·81 — 팬아웃·조사·가용성) · noise_gate/alarm 증분(Plan 83 —
       피드백·표시 레벨) · router 4(Plan 79 2단 분리) · polestar_rest 5(Plan 71 실시간) ·
@@ -164,6 +176,10 @@ def test_t2_group_and_field_counts():
     → ROUTER_UNKNOWN_ENABLED(동시 작업 `plans/79` 2단 라우터 · 미커밋 추가분)로 **305**.
       ★ 이 한 건이 이 단언의 성격을 보여준다: **다른 작업이 설정을 더해도 내 테스트가 빨개진다.**
 
+    → 2026-08-31 원격 `multiintent` 병합으로 **309**. 증가분 4는 ALARM_DEAD_LETTER_{STREAM_KEY,
+      MAXLEN}·ALARM_SERVER_IDENTITY_{TIMEOUT_SECONDS,CACHE_TTL_SECONDS}이며 그룹 수는 불변
+      (alarm 기존 그룹) — 병합 시 양쪽 카운터(305 vs 278)가 갈렸으므로 **실측으로 확정**했다.
+
     ⚠ 이 숫자 단언은 **본질적으로 취약하다** — 설정을 추가할 때마다 갱신해야 한다.
     회귀를 실제로 막는 것은 아래 파생 등가성 가드이며, 이 단언은 "얼마나 늘었는지"를
     이력으로 남기는 용도다. 갱신을 잊어 빨간 상태로 방치하면 그 이력 가치도 사라진다.
@@ -171,7 +187,7 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 24
-    assert len(index) == 305
+    assert len(index) == 309
     assert len([s for s in index.values() if s.group_key == "general"]) == 18
 
 

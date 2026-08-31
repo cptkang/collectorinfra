@@ -24,6 +24,10 @@ noise_gate/
 python -m noise_gate.alarm_server   # TCP 9100 수신 → Redis Stream 'alarm:raw'
 ```
 
+> **폴스타 템플릿 주의(D-175)**: `${severity}`는 한글 라벨(해제/주의/경고/심각)로 렌더링되므로 템플릿에
+> 반드시 `"severity":"${severity}"`처럼 따옴표로 등록한다. 워커·API는 `domain/severity.py`로 정규화하고,
+> 처리 실패 건은 ACK 전에 `alarm:dead` 스트림에 보관된다(`XRANGE alarm:dead - + COUNT 20`).
+
 계층 규칙은 본체와 동일하며 `scripts/arch_check.py`가 `noise_gate.*` 매핑으로 함께 검사한다
 (`alarm_server`는 수신·적재=infrastructure / 기동부=entry / 설정=config로 매핑).
 

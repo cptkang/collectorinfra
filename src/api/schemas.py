@@ -59,6 +59,15 @@ class QueryRequest(BaseModel):
         default=False,
         description="폼필 답변을 이 양식에 기억(TTL sliding, 옵트인)",
     )
+    # D-187: 저장 값 패널의 삭제 버튼 — 구조화 필드로만 전달되어 라우트가 파이프라인·LLM 없이
+    # 결정적으로 삭제한다. signature는 세션의 last_form_signature와 일치해야 수행(임의 삭제 차단).
+    form_memory_delete: Optional[dict] = Field(
+        default=None,
+        description=(
+            "저장 값 패널 삭제 요청 {signature, fields: [필드명] | null, all: bool} "
+            "(같은 세션에서 조회한 양식 시그니처만 유효)"
+        ),
+    )
 
 
 # --- 응답 모델 ---
@@ -110,6 +119,10 @@ class QueryResponse(BaseModel):
     # {kind: "scope_reexpand", question, options: [{key, label, db_ids}], original_query}
     scope_reexpand: Optional[dict] = Field(
         default=None, description="좁힌 범위의 재확장 패널 컨텍스트"
+    )
+    # D-187: 저장 값 조회 응답의 삭제 패널 — {signature, display_name, entries: [{field, label, action, value}]}
+    form_memory_panel: Optional[dict] = Field(
+        default=None, description="양식 저장 값 패널 컨텍스트(항목별 삭제 버튼)"
     )
 
 

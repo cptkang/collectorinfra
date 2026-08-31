@@ -241,10 +241,15 @@ def build_workb_body(
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
     severity_html = f'<span style="color:{color};font-weight:bold">{result.severity_label}</span>'
+    # (D-179) 존/사이트 라인 — 식별 정보가 붙은 경우에만 첨부(미부착이면 본문 비트 동일).
+    identity = getattr(ev, "server_identity", None)
+    zone_text = (identity.site_label or identity.zone_label) if identity is not None else ""
+    zone_html = f"<b>존:</b> {zone_text}<br>" if zone_text else ""
     body = (
         f"<b>심각도:</b> {severity_html}<br>"
         f"<b>알람명:</b> {ev.alarm_name}<br>"
         f"<b>서버:</b> {ev.server_name} ({ev.hostname}, {ev.ip_address})<br>"
+        f"{zone_html}"
         f"<b>자원 경로:</b> {ev.resource_ancestry}<br>"
         f"<b>자원 종류:</b> {ev.resource_type}<br>"
         f"<b>자원 이름:</b> {ev.resource_name}<br>"
@@ -563,6 +568,17 @@ def _audit_followup(
         logger.warning("후속 브리핑 감사 기록 실패(무시): alarm_id=%s", alarm_id)
 
 
+def _iso_or_none(value) -> Optional[str]:  # noqa: ANN001 — datetime | None
+    """datetime → ISO 문자열(없으면 None). SSE 페이로드 시각 필드용."""
+    return value.isoformat() if value is not None else None
+
+
+def _identity_dict(ev) -> Optional[dict]:  # noqa: ANN001 — AlarmEvent
+    """서버 식별 정보 dict (D-179) — 미부착이면 None(구 이벤트·테스트 픽스처 호환)."""
+    identity = getattr(ev, "server_identity", None)
+    return identity.to_dict() if identity is not None else None
+
+
 def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
     """티어 라우팅용 SSE 이벤트 payload를 생성한다(§7 · Phase E3).
 
@@ -594,6 +610,11 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
         # ── Phase E3: 4-티어 라우팅 메타데이터 ──
         "tier": decision.tier,
         "tier_reason": decision.reason,
+        # ── D-179: 서버 식별(등록명·IP·존) — UI 헤더 렌더용 ──
+        "server_identity": _identity_dict(ev),
+        # ── D-179 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — API 경로와 대칭 ──
+        "alarm_time": _iso_or_none(ev.alarm_time),
+        "received_at": _iso_or_none(getattr(ev, "received_at", None)),
     }
 
 
@@ -719,6 +740,9 @@ def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # no
         # (Plan 83 T6) 결정적 사전분류 — 카드가 피드백 저장 키로 되돌려 보낸다
         "pre_classification": result.pre_classification,
         "tier": decision.tier,
+        "server_identity": _identity_dict(ev),  # (D-179) 재발행 카드 헤더용
+        "alarm_time": _iso_or_none(ev.alarm_time),
+        "received_at": _iso_or_none(getattr(ev, "received_at", None)),
     }
 
 

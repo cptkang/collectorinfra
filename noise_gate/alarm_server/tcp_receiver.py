@@ -4,7 +4,12 @@
 단일 행 JSON 형식으로 파싱하여 Redis Stream에 발행한다.
 
 폴스타 권장 메시지 템플릿 (단일 행 JSON):
-    {"alarmId":"${alarmId}","severity":${severity},...}
+    {"alarmId":"${alarmId}","severity":"${severity}",...}
+
+※ `${severity}`는 폴스타가 **한글 라벨**(해제/주의/경고/심각)로 렌더링한다(2026-08-25 실측,
+  D-175). 따옴표 없이 `"severity":${severity}`로 등록하면 `"severity":주의`가 되어 JSON
+  문법 오류 → 이 수신부의 `_parse`에서 "알람 페이로드 파싱 실패"로 폐기된다. 반드시 따옴표로
+  감싸 등록한다(정수로 렌더링되는 환경에서도 `"2"`는 워커가 정규화하므로 안전).
 
 수신 포트: ALARM_SERVER_SOCKET_PORT (기본 9100)
 """

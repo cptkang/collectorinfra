@@ -1023,7 +1023,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -1044,6 +1044,10 @@
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
             }
+            // D-187: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
+            if (formMemoryDelete) {
+                streamBody.form_memory_delete = formMemoryDelete;
+            }
             // Plan 73 D-151: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
             if (formFillAnswers) {
                 streamBody.form_fill_answers = formFillAnswers;
@@ -1062,7 +1066,7 @@
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query, selectedDbIds);
+                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete);
                 return;
             }
 
@@ -1152,6 +1156,8 @@
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
+            // D-187: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1504,9 +1510,76 @@
         if (last) renderFormFillPanel(last, ctx);
     }
 
+    // ─── D-187: 양식 저장 값 패널(항목별 삭제) ───
+    // '?' 조회 응답의 form_memory_panel {signature, display_name, entries:[{field,label,action,value}]}를
+    // 체크박스 목록 + [선택 삭제]/[전체 삭제]로 렌더한다. 클릭 결과는 자연어 재조합 없이
+    // form_memory_delete(구조화 필드)로 전송되고 서버가 파이프라인·LLM 없이 결정적으로 삭제한다
+    // (존 역질문·폼필 답변 패널과 동형). 삭제 응답은 남은 항목으로 패널을 다시 내려준다.
+    function renderFormMemoryPanel(bubble, ctx) {
+        var entries = (ctx && ctx.entries) || [];
+        if (!entries.length || !ctx.signature) return;
+        var boxId = "formMemory-" + Date.now();
+        var rowsHtml = entries.map(function (e) {
+            var field = escapeHtml(e.field);
+            var label = escapeHtml(e.label || e.field);
+            var valueText = (e.value === null || e.value === undefined || e.value === "") ? "" : " (" + escapeHtml(String(e.value)) + ")";
+            return '<label class="form-memory-row" style="display:flex;gap:6px;align-items:center;margin:4px 0;">' +
+                '<input type="checkbox" class="form-memory-check" value="' + field + '">' +
+                '<span style="min-width:160px;font-weight:600;">' + label + '</span>' +
+                '<span>' + escapeHtml(e.action || "") + valueText + '</span>' +
+                '</label>';
+        }).join("");
+        var html = '<div class="zone-clarify form-memory-panel" id="' + boxId + '">' +
+            '<div class="zone-clarify-title">저장 값 관리 — ' + escapeHtml(ctx.display_name || "이 양식") + '</div>' +
+            rowsHtml +
+            '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                '<button type="button" class="zone-clarify-confirm form-memory-delete-selected">선택 삭제</button>' +
+                '<button type="button" class="zone-clarify-confirm form-memory-delete-all">전체 삭제</button>' +
+            '</div>' +
+            '</div>';
+        var wrap = document.createElement("div");
+        wrap.innerHTML = html;
+        var box = wrap.firstChild;
+        bubble.appendChild(box);
+
+        function submitDelete(payload, echoText) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+            var echoMsg = { role: "user", content: echoText, time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery("[양식 기억 삭제]", null, null, false, payload);
+        }
+        box.querySelector(".form-memory-delete-selected").addEventListener("click", function () {
+            var fields = [];
+            box.querySelectorAll(".form-memory-check:checked").forEach(function (cb) { fields.push(cb.value); });
+            if (!fields.length) {
+                alert("삭제할 항목을 선택해 주세요.");
+                return;
+            }
+            submitDelete(
+                { signature: ctx.signature, fields: fields, all: false },
+                "기억 삭제: " + fields.map(function (f) { return f.replace(/\|/g, " > "); }).join(", ")
+            );
+        });
+        box.querySelector(".form-memory-delete-all").addEventListener("click", function () {
+            if (!confirm("'" + (ctx.display_name || "이 양식") + "'에 저장된 값 " + entries.length + "건을 모두 삭제할까요? 되돌릴 수 없습니다.")) {
+                return;
+            }
+            submitDelete({ signature: ctx.signature, fields: null, all: true }, "기억 전부 삭제");
+        });
+    }
+
+    function appendFormMemoryPanelToLastBubble(ctx) {
+        if (!ctx) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderFormMemoryPanel(last, ctx);
+    }
+
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query, selectedDbIds) {
+    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete) {
         renderProcessingMessage();
         resetProgressPanel();
 
@@ -1518,6 +1591,10 @@
             }
             if (selectedDbIds && selectedDbIds.length) {
                 queryBody.selected_db_ids = selectedDbIds;
+            }
+            // D-187: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
+            if (formMemoryDelete) {
+                queryBody.form_memory_delete = formMemoryDelete;
             }
             var response = await fetch("/api/v1/query", {
                 method: "POST",
@@ -1544,6 +1621,8 @@
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
             appendZoneClarificationToLastBubble(data.scope_reexpand);
+            // D-187: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
         } catch (err) {
             removeProcessingMessage();
@@ -1669,6 +1748,8 @@
             // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
+            // D-187: '?' 조회(파일 첨부) 응답의 저장 값 패널
+            appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
             messages.push({
                 role: "agent",
@@ -1727,6 +1808,8 @@
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
             appendZoneClarificationToLastBubble(data.scope_reexpand);
+            // D-187: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(data.form_memory_panel);
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);
@@ -2822,6 +2905,89 @@
         setupHistoryPanel();
     }
 
+    // D-188: OS 배지 — 값이 있을 때만 렌더(현재 백엔드 미조회·2차 범위). 미매핑 값은 원문 텍스트.
+    var ALARM_OS_LABELS = [
+        [/linux|rhel|centos|ubuntu|rocky/i, "Linux", "linux"],
+        [/windows|win/i, "Windows", "windows"],
+        [/aix/i, "AIX", "unix"],
+        [/hp-?ux/i, "HP-UX", "unix"],
+        [/solaris|sunos/i, "Solaris", "unix"]
+    ];
+
+    // 배지 라벨은 OSType을 접은 계열명(Linux/Windows…), 툴팁은 OSVerson 상세("Red Hat Enterprise Linux 8.10 (Ootpa)") — 없으면 OSType 원값
+    function renderOsBadge(osType, osVersion) {
+        if (!osType) return "";
+        var label = String(osType), cls = "other";
+        for (var i = 0; i < ALARM_OS_LABELS.length; i++) {
+            if (ALARM_OS_LABELS[i][0].test(label)) { label = ALARM_OS_LABELS[i][1]; cls = ALARM_OS_LABELS[i][2]; break; }
+        }
+        var tip = osVersion ? String(osVersion) : String(osType);
+        return '<span class="alarm-os alarm-os--' + cls + '" title="OS: ' + escapeHtml(tip) + '">' + escapeHtml(label) + '</span>';
+    }
+
+    // D-188 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — 둘이 60초 이상 벌어지면 수신 시각도 함께 표시(지연 진단).
+    function fmtAlarmTs(iso) {
+        // "2026-08-27T09:41:07" → "08-27 09:41:07" (타임존 변환 없이 문자열 슬라이스)
+        if (!iso || typeof iso !== "string" || iso.length < 19) return "";
+        return iso.slice(5, 19).replace("T", " ");
+    }
+
+    function renderAlarmTimes(alarmIso, receivedIso) {
+        var occurred = fmtAlarmTs(alarmIso);
+        var received = fmtAlarmTs(receivedIso);
+        if (!occurred && !received) return "";
+        var html = occurred ? escapeHtml(occurred) + ' 발생' : escapeHtml(received) + ' 수신';
+        if (occurred && received) {
+            var a = Date.parse(alarmIso), b = Date.parse(receivedIso);
+            if (!isNaN(a) && !isNaN(b) && Math.abs(b - a) >= 60000) {
+                html += ' <span class="alarm-time-recv">(' + escapeHtml(received.slice(6)) + ' 수신)</span>';
+            }
+        }
+        var title = (alarmIso ? '발생 ' + alarmIso : '') + (receivedIso ? ' / 수신 ' + receivedIso : '');
+        return '<span class="alarm-time" title="' + escapeHtml(title.trim()) + '">' + html + '</span>';
+    }
+
+    // D-188: 헤더 2줄 구조 — 1행 [심각도] 폴스타 등록 서버명 — 알람명 (자원), 2행 hostname · IP · OS · 존 · 시각.
+    // (2026-08-27 사용자 검토) 알람명을 1행으로 올려 "어느 서버의 어떤 알람"이 한 줄에서 읽히게 한다.
+    // 등록명은 server_identity(hostname 역조회)가 우선, 없으면 server_name, 그마저 없으면 hostname.
+    function renderAlarmIdentityHeader(data, severityColor) {
+        var ident = data.server_identity || {};
+        var hostname = data.hostname || "";
+        var title = ident.name || "";
+        if (!title && data.server_name && data.server_name !== hostname) title = data.server_name;
+        if (!title) title = hostname || data.server_name || "-";
+
+        var meta = [];
+        if (hostname && hostname !== title) meta.push('<span class="alarm-hostname">' + escapeHtml(hostname) + '</span>');
+        var ip = ident.ip_address || data.ip_address;
+        if (ip) meta.push('<span class="alarm-ip">' + escapeHtml(ip) + '</span>');
+        var os = renderOsBadge(ident.os_type, ident.os_version);
+        if (os) meta.push(os);
+        // 소스 배지: 제품명("폴스타") 표시, 위치·db_id는 툴팁("폴스타 — 공동존 김포; polestar_cm_gp") — 소스 확장 대비. 라벨 없으면 사이트 라벨 폴백
+        var site = ident.source_label || ident.site_label || ident.zone_label;
+        var siteTip = ident.source_detail || data.db_id || "";
+        if (site) meta.push('<span class="alarm-zone" title="' + escapeHtml(siteTip) + '">' + escapeHtml(site) + '</span>');
+        var ts = renderAlarmTimes(data.alarm_time, data.received_at);
+        if (ts) meta.push(ts);
+        var metaHtml = meta.length
+            ? '<div class="alarm-meta">' + meta.join('<span class="alarm-meta-sep">·</span>') + '</div>'
+            : "";
+        var warn = ident.ambiguous
+            ? ' <span class="alarm-ident-warn" title="동일 hostname의 서버가 2건 이상 — 등록명 미확정">?</span>'
+            : "";
+        var resource = data.resource_name
+            ? ' <span class="alarm-resource">(' + escapeHtml(data.resource_name) + ')</span>'
+            : "";
+        var alarmName = data.alarm_name
+            ? '<span class="alarm-title-sep">—</span><span class="alarm-title-alarm">' + escapeHtml(data.alarm_name) + '</span>' + resource
+            : resource;
+        return '<div class="alarm-header">' +
+                '<span class="alarm-severity" style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
+                '<span class="alarm-server">' + escapeHtml(title) + '</span>' + warn + alarmName +
+            '</div>' +
+            metaHtml;
+    }
+
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
@@ -2891,12 +3057,7 @@
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
                 '<div class="message-bubble">' +
-                    '<div class="alarm-header">' +
-                        '<span style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
-                        escapeHtml(data.resource_name) +
-                        '<span class="alarm-host"> (' + escapeHtml(data.hostname) + ')</span>' +
-                    '</div>' +
-                    '<div class="alarm-name">' + escapeHtml(data.alarm_name) + '</div>' +
+                    renderAlarmIdentityHeader(data, severityColor) +
                     '<div class="alarm-section">' +
                         '<span class="alarm-section-label">요약</span>' +
                         '<p>' + escapeHtml(data.summary) + '</p>' +

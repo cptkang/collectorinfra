@@ -138,6 +138,9 @@ async def result_aggregator(
         # 존 역질문(D-143 후속2): 단일 task 고정(게이트가 복합 계획 제외)이라 이 분기로 충분.
         if "zone_clarification" in f:
             out["zone_clarification"] = f["zone_clarification"]
+        # 저장 값 삭제 패널(D-178) — 이력 조회는 단일 task 단락이라 이 분기로 충분
+        if f.get("form_memory_panel"):
+            out["form_memory_panel"] = f["form_memory_panel"]
         out.update(db_promotion)
         return _with_answer_history(_apply_incomplete_notice(out, state))
 
@@ -451,6 +454,9 @@ async def _finalize_task(
     # 존 역질문(D-143 후속2): 페이로드를 최종 응답까지 운반(form_fill_clarification 동형).
     if "zone_clarification" in res:
         base["zone_clarification"] = res["zone_clarification"]
+    # 저장 값 삭제 패널(D-178): 이력 조회 단락(direct_response)의 구조화 컨텍스트 운반
+    if res.get("form_memory_panel"):
+        base["form_memory_panel"] = res["form_memory_panel"]
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     organized = res.get("organized_data")
@@ -548,6 +554,16 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "form_fill_answers": state.get("form_fill_answers"),
         "form_fill_remember": state.get("form_fill_remember"),
         "pending_form_fill": state.get("pending_form_fill"),
+        # 존 보존(D-157/FIX-26 → D-177 실효화): `_build_form_fill_hitl`이 pending.db_ids를
+        # selected_db_ids > target_databases > db_results 순으로 읽는데, 이 dict에는 셋 다
+        # 없어 오케스트레이션(존 체크박스 런의 유일한 경로)에서 항상 None → 답변 턴이
+        # 기본 DB(b0=은행존)로 침묵 전환됐다(라이브 실측 2026-08-25). 체크박스 선택과
+        # 이 task가 실제 실행한 DB(subagents가 res로 승격)를 함께 싣는다.
+        "selected_db_ids": state.get("selected_db_ids"),
+        "target_databases": (
+            [{"db_id": d} for d in (res.get("target_db_ids") or []) if d]
+            or state.get("target_databases")
+        ),
         "final_response": "",
         "output_file": None,
         "output_file_name": None,
