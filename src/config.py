@@ -11,7 +11,7 @@ import os
 from functools import lru_cache
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, Field, PrivateAttr, SecretStr
+from pydantic import AliasChoices, Field, PrivateAttr, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,31 @@ class LLMConfig(BaseSettings):
     fabrix_client_key: str = ""
     fabrix_chat_model: str = ""
 
+    # FabriX 하이퍼파라미터 프로파일(D-194) — KBGenAI 요청 body의 `llmConfig` 규약
+    # ({"temperature": <float>, "top_k": <int>, "top_p": <float>})으로 전송된다.
+    # JSON 객체 **문자열**로 선언한다: dict 타입이면 `.env`의 빈 값(`KEY=`)이 config 로드
+    # 자체를 깨뜨린다(json.loads("") 실패). 빈 값이면 llmConfig 필드를 보내지 않아
+    # FabriX 서버 기본값이 적용된다(D-194 이전 동작 보존).
+    fabrix_llm_config: str = ""
+    # 최종 사용자 응답 합성(create_llm purpose="answer") 전용 프로파일.
+    # 빈 값이면 fabrix_llm_config로 폴백한다.
+    fabrix_answer_llm_config: str = ""
+
     model_config = {"env_prefix": "LLM_", "env_file": [".env", ".encenv"], "extra": "ignore"}
+
+    @field_validator("fabrix_llm_config", "fabrix_answer_llm_config")
+    @classmethod
+    def _validate_fabrix_llm_config(cls, v: str) -> str:
+        """비어 있지 않으면 JSON 객체여야 한다 — 오탈자를 기동 시점에 명확히 실패시킨다."""
+        if v and v.strip():
+            import json
+
+            parsed = json.loads(v)  # 실패 시 ValidationError로 승격 (침묵 폴백 금지)
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    'JSON 객체여야 합니다 (예: {"temperature": 0.5, "top_k": 40})'
+                )
+        return v
 
     def model_post_init(self, __context: object) -> None:
         """환경변수를 직접 읽어 보정한다."""

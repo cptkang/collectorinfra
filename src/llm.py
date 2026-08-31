@@ -66,7 +66,12 @@ async def astream_text(
     return "".join(parts)
 
 
-def create_llm(config: AppConfig, *, provider_override: str | None = None) -> BaseChatModel:
+def create_llm(
+    config: AppConfig,
+    *,
+    provider_override: str | None = None,
+    purpose: str = "deterministic",
+) -> BaseChatModel:
     """설정에 따라 워커(데이터 평면) LLM 인스턴스를 생성한다.
 
     Args:
@@ -75,6 +80,10 @@ def create_llm(config: AppConfig, *, provider_override: str | None = None) -> Ba
             `config.llm.provider` 대신 사용한다. 미지정(None)이면 설정값을 그대로
             따른다 — 운영 동작 무변. (deepagent 경로 전체를 gemini로 테스트하기 위한
             `worker_provider_override` 주입 경로 — Plan 49 §4.7 / D-037)
+        purpose: 하이퍼파라미터 프로파일 선택(D-194). "deterministic"(기본 — SQL 생성·
+            분류 등 중간 호출)이면 `fabrix_llm_config`, "answer"(최종 사용자 응답 합성
+            — USER_RESPONSE_TAG 부여 3개 지점)면 `fabrix_answer_llm_config`를 적용한다.
+            현재 fabrix provider에만 반영되며 ollama/gemini는 무시한다(temperature 0.0 고정 유지).
 
     Returns:
         LLM 인스턴스
@@ -87,7 +96,7 @@ def create_llm(config: AppConfig, *, provider_override: str | None = None) -> Ba
     if provider == "ollama":
         return _create_ollama(config)
     elif provider == "fabrix":
-        return _create_fabrix(config)
+        return _create_fabrix(config, purpose=purpose)
     elif provider == "gemini":
         return _create_gemini(config)
     else:
@@ -243,7 +252,34 @@ def _create_gemini(config: AppConfig) -> BaseChatModel:
     )
 
 
-def _create_fabrix(config: AppConfig) -> BaseChatModel:
+def _resolve_fabrix_llm_profile(config: AppConfig, purpose: str) -> dict:
+    """purpose에 해당하는 FabriX 하이퍼파라미터 프로파일을 dict로 해석한다(D-194).
+
+    config 필드는 JSON 문자열이며 유효성은 LLMConfig field_validator가 기동 시점에
+    보장한다. 여기서의 파싱 실패는 방어적 폴백이되, 침묵하지 않고 ERROR로 남긴다.
+    """
+    import json
+
+    raw = config.llm.fabrix_llm_config
+    if purpose == "answer" and config.llm.fabrix_answer_llm_config.strip():
+        raw = config.llm.fabrix_answer_llm_config
+    if not raw or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(
+            "FabriX llm_config 파싱 실패 — 프로파일 없이 진행(서버 기본값): %s | raw=%r",
+            e, raw,
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        logger.error("FabriX llm_config가 JSON 객체가 아님 — 무시: raw=%r", raw)
+        return {}
+    return parsed
+
+
+def _create_fabrix(config: AppConfig, purpose: str = "deterministic") -> BaseChatModel:
     """FabriX LLM 클라이언트를 생성한다.
 
     fabrix_client_key가 설정된 경우 KBGenAIChat (SDS 전용 API),
@@ -261,12 +297,16 @@ def _create_fabrix(config: AppConfig) -> BaseChatModel:
         )
 
     model = config.llm.fabrix_chat_model or config.llm.model
+    profile = _resolve_fabrix_llm_profile(config, purpose)
 
     # KBGenAI 모드 (client_key가 있는 경우)
     if config.llm.fabrix_client_key:
         from src.clients.fabrix_kbgenai import KBGenAIChat
 
-        logger.info("FabriX KBGenAI 초기화: endpoint=%s", config.llm.fabrix_base_url)
+        logger.info(
+            "FabriX KBGenAI 초기화: endpoint=%s, purpose=%s, llm_config=%s",
+            config.llm.fabrix_base_url, purpose, profile or "(미설정)",
+        )
         return KBGenAIChat(
             endpoint_url=config.llm.fabrix_base_url,
             x_openapi_token=config.llm.fabrix_api_key,
@@ -274,9 +314,10 @@ def _create_fabrix(config: AppConfig) -> BaseChatModel:
             asset_id=model,
             kb_id="User",
             system_prompt="",
+            llm_config=profile or None,
         )
 
-    # OpenAI 호환 모드
+    # OpenAI 호환 모드 — llmConfig는 KBGenAI 전용 규약이라 temperature만 매핑한다
     from src.clients.fabrix_client import FabriXAPIClient
 
     logger.info("FabriX API 초기화: base_url=%s, model=%s", config.llm.fabrix_base_url, model)
@@ -284,5 +325,5 @@ def _create_fabrix(config: AppConfig) -> BaseChatModel:
         base_url=config.llm.fabrix_base_url,
         chat_model=model,
         api_key=config.llm.fabrix_api_key,
-        temperature=0.0,
+        temperature=float(profile.get("temperature", 0.0)),
     )

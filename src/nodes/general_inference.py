@@ -234,7 +234,8 @@ async def general_inference(
     if app_config is None:
         app_config = load_config()
     if llm is None:
-        llm = create_llm(app_config)
+        # 최종 사용자 응답(USER_RESPONSE_TAG) — answer 프로파일(D-194)
+        llm = create_llm(app_config, purpose="answer")
 
     user_query = state["user_query"]
 

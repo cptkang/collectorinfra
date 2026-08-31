@@ -51,6 +51,10 @@ class KBGenAIChat(BaseChatModel):
     tool_registry: dict = {}
     system_prompt: str = ""
     timeout: int = 300
+    # 하이퍼파라미터 프로파일(D-194) — FabriX 가이드의 llmConfig 규약
+    # ({"temperature": <float>, "top_k": <int>, "top_p": <float>}).
+    # None/빈 dict이면 요청 body에 llmConfig 필드 자체를 넣지 않는다(서버 기본값 적용).
+    llm_config: Optional[dict] = None
 
     @property
     def _llm_type(self) -> str:
@@ -97,7 +101,7 @@ class KBGenAIChat(BaseChatModel):
             if isinstance(m, SystemMessage):
                 system_prompt = m.content
                 break
-        return {
+        payload = {
             "modelId": self.asset_id,
             "contents": self._convert_messages_to_prompts(messages),
             "isStream": is_stream,
@@ -106,6 +110,9 @@ class KBGenAIChat(BaseChatModel):
             "executeRagStandaloneQuery": False,
             "systemPrompt": system_prompt,
         }
+        if self.llm_config:
+            payload["llmConfig"] = self.llm_config
+        return payload
 
     def _generate(
         self,

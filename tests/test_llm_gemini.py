@@ -160,7 +160,7 @@ class TestCreateGeminiFactory:
             ),
         )
         result = create_llm(config)
-        mock_create_fabrix.assert_called_once_with(config)
+        mock_create_fabrix.assert_called_once_with(config, purpose="deterministic")
         assert result is mock_create_fabrix.return_value
 
 
@@ -392,20 +392,24 @@ class TestNodeCodeUnchanged:
     """노드 코드가 create_llm() 호출 패턴을 변경 없이 유지하는지 구조적으로 검증."""
 
     def test_create_llm_signature_backward_compatible(self):
-        """create_llm()은 config 위치인자 + 선택 keyword-only provider_override를 받는다.
+        """create_llm()은 config 위치인자 + 선택 keyword-only 인자들을 받는다.
 
-        provider_override는 기본값 None의 keyword-only 인자이므로 기존 호출
-        `create_llm(config)`는 변경 없이 동작한다(노드 코드 영향 없음).
+        provider_override(기본 None)·purpose(기본 "deterministic" — D-194)는 모두
+        기본값 있는 keyword-only 인자이므로 기존 호출 `create_llm(config)`는 변경
+        없이 동작한다(노드 코드 영향 없음).
         """
         import inspect
         from src.llm import create_llm
 
         sig = inspect.signature(create_llm)
         params = sig.parameters
-        assert list(params.keys()) == ["config", "provider_override"]
+        assert list(params.keys()) == ["config", "provider_override", "purpose"]
         # config: 위치 가능 / provider_override: keyword-only + 기본 None
         assert params["provider_override"].kind is inspect.Parameter.KEYWORD_ONLY
         assert params["provider_override"].default is None
+        # purpose: keyword-only + 기본 "deterministic" (D-194)
+        assert params["purpose"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["purpose"].default == "deterministic"
 
     def test_create_llm_return_type_annotation(self):
         """create_llm()의 반환 타입이 BaseChatModel이어야 한다."""
@@ -532,7 +536,7 @@ class TestWorkerProviderOverride:
             llm=LLMConfig(provider="fabrix", fabrix_base_url="http://fabrix.local", fabrix_api_key="k"),
         )
         result = create_llm(config, provider_override=None)
-        mock_create_fabrix.assert_called_once_with(config)
+        mock_create_fabrix.assert_called_once_with(config, purpose="deterministic")
         assert result is mock_create_fabrix.return_value
 
     @patch("src.graph.create_llm")

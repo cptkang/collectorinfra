@@ -265,6 +265,8 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "LLM_GEMINI_MODEL",
     "LLM_FABRIX_BASE_URL",
     "LLM_FABRIX_CHAT_MODEL",
+    "LLM_FABRIX_LLM_CONFIG",
+    "LLM_FABRIX_ANSWER_LLM_CONFIG",
     # --- orchestrator: 빌드 시 create_orchestrator_llm·deep_agent 조립 ---
     "ORCHESTRATOR_PROVIDER",
     "ORCHESTRATOR_BASE_URL",

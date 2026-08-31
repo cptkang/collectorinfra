@@ -170,6 +170,51 @@ settings:
     behavior: API 키와 함께 쓰이는 전송 인증 크레덴셜이다. 시크릿이라 이 화면에서 편집할 수 없다.
     related: [LLM_PROVIDER, LLM_FABRIX_API_KEY]
 
+  LLM_FABRIX_LLM_CONFIG:
+    summary: FabriX 결정적 경로(SQL 생성·분류 등 중간 호출)의 하이퍼파라미터 프로파일 — JSON 문자열.
+    behavior: >-
+      LLM_PROVIDER=fabrix일 때 KBGenAI 요청 body의 llmConfig(temperature·top_k·top_p)로
+      전송된다(D-194). SQL 생성·의도 분류 등 최종 응답 합성 전의 모든 호출에 적용된다.
+      비워 두면 llmConfig 필드 자체를 보내지 않아 D-194 이전 페이로드와 바이트 동일하고,
+      FabriX 서버 기본값으로 동작한다. 값은 dict가 아니라 JSON 객체 "문자열"이다 —
+      기동 시점에 JSON 유효성을 검증해 오탈자를 명확히 실패시킨다.
+    example: >-
+      '{"temperature": 0.0}'으로 두면 같은 질문에 같은 SQL이 나올 확률이 올라간다. 반대로
+      이 값을 높이면 SQL 형태가 흔들려 검증 실패·재시도가 늘어난다 — SQL 경로는 낮은 온도
+      유지가 원칙이다(Known Mistakes: LLM 비결정성).
+    performance: >-
+      temperature가 높을수록 생성 SQL의 변동성이 커져 검증 재시도(예산 3회)가 붙을 수 있다 —
+      호출 수가 늘어 총 응답 시간이 길어진다.
+    stability: >-
+      JSON 오탈자는 기동 시점에 실패한다(침묵 폴백 금지). 알람 워커는 기동 캡처 config라
+      설정 리로드로는 질의 경로만 바뀌고 워커는 재시작까지 이전 값을 쓴다.
+    recommendation: >-
+      운영은 비워 두거나(서버 기본값) temperature 0.0 부근의 낮은 값으로 고정한다.
+      응답 다양성 조정은 이 키가 아니라 LLM_FABRIX_ANSWER_LLM_CONFIG에서 한다.
+    related: [LLM_PROVIDER, LLM_FABRIX_ANSWER_LLM_CONFIG, LLM_FABRIX_CHAT_MODEL]
+    references:
+      - docs/02_decision.md (D-194)
+
+  LLM_FABRIX_ANSWER_LLM_CONFIG:
+    summary: FabriX 최종 사용자 응답 합성 전용 하이퍼파라미터 프로파일 — JSON 문자열.
+    behavior: >-
+      최종 응답을 합성하는 3곳(output_generator 단일 DB · result_aggregator 멀티 DB 최종
+      합성 · general_inference — D-009 USER_RESPONSE_TAG 경계와 동일)에서만 쓰인다.
+      비워 두면 LLM_FABRIX_LLM_CONFIG로 폴백한다. D-062 중간 합성은 최종 합성의 재료라
+      결정적 프로파일을 유지한다.
+    example: >-
+      '{"temperature": 0.4}'로 두면 같은 데이터라도 답변 문장이 매번 조금씩 달라져 자연스러움이
+      올라간다. 다만 표 형식·수치 표현의 변동성도 함께 커지므로 0.3~0.5에서 시작해
+      대표 질의로 확인하며 올리는 것이 안전하다(D-194 주의).
+    performance: 응답 합성 1회 호출에만 적용되므로 지연 영향은 미미하다.
+    stability: >-
+      온도를 올리면 표 형식·수치 변동성이 커진다 — 후단에 표 정규화(D-187)·연도 가드(D-186)가
+      있지만 과신하지 말 것. JSON 오탈자는 기동 시점에 실패한다.
+    recommendation: 비워 두고 시작해, 응답이 딱딱하다는 피드백이 있을 때 0.3~0.5부터 시도한다.
+    related: [LLM_FABRIX_LLM_CONFIG, LLM_PROVIDER]
+    references:
+      - docs/02_decision.md (D-194)
+
   LLM_OLLAMA_API_KEY:
     example: >-
       Ollama에 직접 붙는 구성이면 비워 두는 것이 정상이다. 앞단에 인증 게이트웨이를 둔 경우에만 필요하며, 비어 있으면 LLM_API_KEY 값으로 보정된다.
