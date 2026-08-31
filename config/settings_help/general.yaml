@@ -1,0 +1,472 @@
+# 설정 옵션 상세 설명 — 전역 (D-191)
+#
+# 이 파일은 운영자 화면 오른쪽 설명 패널의 내용이다. 여기 없는 키는 카탈로그 메타에서
+# 자동 파생된 일반 설명이 대신 표시된다(설명이 비지는 않는다).
+#
+# 근거: src/config.py 필드 주석 · docs/21_orchestration_ladder.md · docs/02_decision.md
+# 반영 시점·오버라이드 경고는 여기 적지 않는다 — 카탈로그 실측으로 자동 생성된다.
+
+version: 1
+group: general
+
+settings:
+
+  ENABLE_DEEPAGENTS_PACKAGE:
+    summary: 실행 경로 사다리의 1단(deep_agent)을 켠다 — 성립하면 아래 단들은 배선조차 되지 않는다.
+    behavior: >-
+      질문을 처리하는 경로는 네 가지가 있고, 이들은 나란히 있는 선택지가 아니라 위에서부터
+      성립하는 것 하나만 쓰이는 사다리다. 이 값이 켜져 있고 오케스트레이터(vLLM)가 실제로
+      응답하며 조립까지 성공하면 1단 deep_agent가 확정된다. 셋 중 하나라도 어긋나면 조용히
+      다음 단으로 내려간다. 판정은 서버가 뜰 때 딱 한 번 일어나며, 그 결과는 기동 로그
+      한 줄로만 확인할 수 있다.
+    options:
+      - value: "true"
+        label: 1단 시도
+        effect: >-
+          기동할 때 오케스트레이터 가용성을 확인하고, 되면 deep_agent 경로로 고정한다.
+          vLLM 인프라가 없거나 응답하지 않으면 경고를 남기고 2단 이하로 내려간다 —
+          켰다고 해서 반드시 1단으로 도는 것은 아니다.
+      - value: "false"
+        label: 1단 건너뜀
+        effect: >-
+          1단을 아예 시도하지 않고 2단(의도 분해) 이하에서 경로를 정한다. vLLM을
+          운영하지 않는 환경의 정상 상태다.
+    example: >-
+      운영 .env는 이 값이 true다. 그런데 vLLM 서버를 내리고 애플리케이션을 재시작하면,
+      설정은 그대로인데 실제 경로는 2단으로 내려간다. "설정을 바꾼 적이 없는데 응답 형태가
+      달라졌다"는 신고의 상당수가 이 자동 강등이다 — 기동 로그의 사다리 확정 줄을 먼저 볼 것.
+    performance: >-
+      1단은 제어 평면(오케스트레이터)과 데이터 평면(워커)이 분리돼 LLM 호출이 한 번 더
+      들어간다. 단순 질의에서는 아래 단보다 느릴 수 있고, 여러 대상으로 갈라지는 복합
+      질의에서 이득이 난다. 기동 시 가용성 확인을 위해 오케스트레이터에 요청이 1회 나간다.
+    stability: >-
+      가장 큰 위험은 강등이 조용하다는 점이다. 인프라가 빠져도 서비스는 계속 뜨지만 처리
+      경로가 통째로 바뀐다. 경로가 바뀌면 응답 형식·지연·품질이 함께 달라지므로, 이 값을
+      켜서 쓸 생각이면 오케스트레이터 가용성 자체를 감시 대상에 넣어야 한다.
+    recommendation: >-
+      vLLM 오케스트레이터를 실제로 운영하는 환경에서만 true로 둔다. 그렇지 않다면 false로
+      명시해 두는 편이 낫다 — 켜 두고 못 쓰는 상태는 기동 로그를 볼 때까지 드러나지 않는다.
+    caveats:
+      - 사다리 상위 단이 성립하면 ENABLE_INTENT_ORCHESTRATION이 true여도 2단 노드는 등록되지 않는다.
+      - 확정은 기동당 1회다. 요청 중에 값을 바꿔도 그 요청의 경로는 바뀌지 않는다.
+    related: [ENABLE_INTENT_ORCHESTRATION, ENABLE_SEMANTIC_ROUTING, WORKER_PROVIDER_OVERRIDE]
+    references:
+      - docs/21_orchestration_ladder.md
+      - docs/02_decision.md (D-037 트랙 A/B · D-162)
+
+  ENABLE_INTENT_ORCHESTRATION:
+    summary: 사다리 2단(의도 분해 → 에이전트 오케스트레이션 → 재계획 루프)을 켠다.
+    behavior: >-
+      한 문장에 여러 의도가 섞인 질문을 쪼개서 각각 실행하고 결과를 합치는 경로다.
+      미설정(자동)이면 멀티 DB 환경일 때 스스로 켜진다 — 즉 이 값을 건드리지 않아도
+      등록된 DB 구성에 따라 동작이 달라진다. 상위 단인 deep_agent가 성립하면 이 값이
+      true여도 2단은 배선되지 않는다.
+    options:
+      - value: "(미설정)"
+        label: 자동
+        effect: >-
+          멀티 DB 환경이면 켜지고 단일·레거시면 꺼진다. 편한 대신, 실행 경로가 DB 등록
+          상태에 따라 조용히 바뀐다 — 나중에 DB를 하나 더 붙이는 순간 경로가 달라진다.
+      - value: "true"
+        label: 항상 켬
+        effect: >-
+          DB 구성과 무관하게 2단을 배선한다(상위 단이 성립하지 않는 한). 복합 질의가
+          쪼개져 실행되고, 결과가 부족하면 재계획 루프가 돈다.
+      - value: "false"
+        label: 항상 끔
+        effect: 2단을 건너뛰고 3단(시멘틱 라우터) 이하에서 경로를 정한다.
+    example: >-
+      "김포와 여의도 서버 중 CPU 사용률이 높은 순으로 알려줘" 같은 질문은 2단에서 존별로
+      갈라져 실행된 뒤 합쳐진다. 2단이 꺼져 있으면 단일 경로가 이 질문을 한 번에 처리하려
+      들고, 존이 섞인 결과가 나오거나 한쪽만 조회되는 일이 생긴다.
+    performance: >-
+      의도 분해에 LLM 호출이 추가되고, 재계획이 돌면 그만큼 더 늘어난다. 반복 상한은
+      MAX_REPLAN이다. 단순 질의에 대해서는 순수 오버헤드다.
+    stability: >-
+      미설정(자동)으로 두는 것이 이 항목의 가장 흔한 함정이다. 실행 경로가 ACTIVE_DB_IDS
+      등록 상태에 종속되므로, DB를 추가·제거하는 작업이 의도치 않게 처리 경로를 바꾼다.
+      고정하려면 true 또는 false를 명시한다.
+    recommendation: >-
+      운영에서는 자동에 맡기지 말고 명시한다. 운영 .env는 true다. 어느 쪽이든 값을 적어
+      두면 DB 구성을 바꿔도 경로가 흔들리지 않는다.
+    caveats:
+      - 구 환경변수명 ENABLE_DEEPAGENT_ORCHESTRATION도 아직 인식하지만 2027-02-20 폐기 예정이다.
+      - 이름과 달리 1단(deepagents 패키지)과는 다른 층이다 — 1단은 ENABLE_DEEPAGENTS_PACKAGE다.
+    related: [ENABLE_DEEPAGENTS_PACKAGE, ENABLE_SEMANTIC_ROUTING, MAX_REPLAN, ACTIVE_DB_IDS]
+    references:
+      - docs/21_orchestration_ladder.md
+      - docs/02_decision.md (D-037 · D-162)
+
+  ENABLE_SEMANTIC_ROUTING:
+    summary: 사다리 3단(시멘틱 라우터)을 켠다 — 질문을 분류해 알맞은 처리 노드로 보낸다.
+    behavior: >-
+      질문의 의도를 분류해 단일 DB 조회·멀티 DB 조회·캐시 관리·유사어 등록·일반 추론·
+      역질문 중 어디로 보낼지 정하는 단계다. 미설정(자동)이면 ACTIVE_DB_IDS에 DB가 하나라도
+      등록돼 있을 때 켜진다. 상위 단(1단·2단)이 성립하면 이 값과 무관하게 3단은 배선되지 않는다.
+    options:
+      - value: "(미설정)"
+        label: 자동
+        effect: ACTIVE_DB_IDS가 비어 있지 않으면 켜진다. 실행 경로가 DB 등록 상태에 종속된다.
+      - value: "true"
+        label: 항상 켬
+        effect: 라우터를 항상 배선한다. 질문이 분류되고, 분류 결과에 따라 처리 노드가 갈린다.
+      - value: "false"
+        label: 항상 끔
+        effect: >-
+          4단(legacy)으로 내려가 질문을 곧장 스키마 분석 → SQL 생성 경로에 태운다.
+          분류가 없으므로 알람 조회·유사어 등록 같은 비-SQL 의도도 SQL로 처리하려 든다.
+    example: >-
+      "이 서버 이름을 앞으로 웹서버1로 불러줘" 같은 유사어 등록 요청은 3단이 켜져 있어야
+      등록 노드로 간다. 꺼져 있으면 같은 문장이 SQL 생성으로 흘러가 엉뚱한 조회를 시도한다.
+    performance: >-
+      분류를 위한 LLM 호출이 질의당 1회 추가된다. 대신 잘못된 경로로 갔다가 되돌아오는
+      비용이 없어져, 의도가 다양한 환경에서는 전체로 보면 이득인 경우가 많다.
+    stability: >-
+      과거에 이 값이 .env에 false로 적혀 있어도 무시되고 강제 활성화되던 결함이 있었다.
+      지금은 .env·OS 환경변수 모두 반영된다. 자동(미설정)으로 두면 DB 등록 상태 변화가
+      곧 경로 변화이므로, 재현 가능한 운영을 원하면 명시한다.
+    recommendation: 운영 .env는 true다. 자동에 맡기지 말고 명시하는 쪽을 권한다.
+    related: [ENABLE_INTENT_ORCHESTRATION, ENABLE_DEEPAGENTS_PACKAGE, ACTIVE_DB_IDS]
+    references:
+      - docs/21_orchestration_ladder.md
+
+  MAX_REPLAN:
+    example: >-
+      '없는 컬럼'을 요구하는 질의는 몇 번을 다시 계획해도 같은 이유로 실패한다. 이 값이 3이면 사용자는 같은 실패를 네 번 겪을 시간만큼 기다린 뒤 결과를 못 받는다 —
+      응답이 느리다는 민원이 특정 질의에 몰린다면 이 값을 2로 줄여 실패를 빨리 드러내는 편이 낫다.
+    summary: 결과가 부족할 때 계획을 다시 세우는 최대 반복 횟수 — 무한 루프를 막는 상한이다.
+    behavior: >-
+      2단 경로에서 실행 결과가 질문에 못 미치면 재계획 노드가 계획을 고쳐 다시 시도한다.
+      이 값은 그 반복의 상한이다. 상한에 닿으면 그때까지 모은 결과로 답을 만든다.
+    options:
+      - value: "0"
+        label: 재계획 없음
+        effect: 한 번 세운 계획으로만 실행한다. 가장 빠르지만, 첫 계획이 빗나가면 그대로 부족한 답이 나간다.
+      - value: "3"
+        label: 기본
+        effect: 최대 세 번까지 계획을 고쳐 시도한다. 대부분의 실패는 1~2회 안에 회복된다.
+      - value: "5 이상"
+        effect: >-
+          회복 가능성이 조금 더 올라가지만, 실패가 확정되기까지 사용자가 기다리는 시간이
+          그만큼 길어진다. 복합 질의 30초 목표를 넘기기 쉽다.
+    performance: >-
+      재계획 1회는 계획 수립 LLM 호출 + 실행을 통째로 다시 밟는다. 최악의 응답 시간이
+      이 값에 거의 비례해 늘어난다고 보면 된다.
+    stability: >-
+      원인이 고정적인 실패(없는 컬럼, 권한 없음, 데이터 자체가 0건)는 몇 번을 다시 계획해도
+      같은 이유로 실패한다. 이 값을 키워서 해결되는 문제가 아니며, 오히려 실패를 알리는
+      시점만 늦춘다.
+    recommendation: 기본 3을 유지한다. 응답이 느리다는 민원이 잦으면 2로 줄여 실패를 빨리 드러내는 편이 낫다.
+    related: [ENABLE_INTENT_ORCHESTRATION, QUERY_MAX_RETRY_COUNT]
+
+  ENABLE_STRUCTURE_APPROVAL:
+    summary: 구조 분석 결과를 사용자에게 확인받고 진행할지 — 기본으로 켜져 있는 승인 게이트다.
+    behavior: >-
+      질문을 어떤 테이블·컬럼으로 풀지 정한 뒤, 실행에 들어가기 전에 그 해석이 맞는지
+      사용자에게 묻는다. 사용자가 승인해야 다음 노드로 넘어간다.
+    options:
+      - value: "true"
+        label: 확인 후 진행 (기본)
+        effect: >-
+          구조 분석 결과를 화면에 보여 주고 사용자의 승인을 기다린다. 해석이 틀렸을 때
+          엉뚱한 조회가 실행되기 전에 바로잡을 수 있다.
+      - value: "false"
+        label: 곧바로 진행
+        effect: 확인 없이 조회까지 한 번에 간다. 응답이 빨라지지만, 해석이 틀려도 그대로 실행된다.
+    example: >-
+      "서버 사용량"이라는 말이 CPU인지 메모리인지 디스크인지 애매한 질문에서, 게이트가
+      켜져 있으면 "메모리 사용률로 해석했습니다 — 맞습니까?"를 먼저 묻는다. 꺼져 있으면
+      메모리로 조회한 결과가 그대로 나가고, 사용자는 그게 해석의 결과라는 것을 모른다.
+    performance: 사용자가 응답할 때까지 대화가 멈춘다. 시스템 자원은 거의 쓰지 않지만 체감 완료 시간은 사용자 응답 속도에 달린다.
+    stability: >-
+      이 값을 바꾼 뒤 설정 리로드를 하면 승인 대기 중이던 대화가 재개 불능이 될 수 있다.
+      대기 중인 승인이 없는 시점에 바꾸는 것이 안전하다.
+    recommendation: >-
+      기본값 true를 유지한다. 잘못된 해석이 조용히 실행되는 것보다 한 번 묻는 편이 낫다.
+      질문 유형이 정형화된 자동화 용도라면 false를 검토할 만하다.
+    caveats:
+      - 이 값을 바꾼 리로드는 대기 중인 승인 스레드를 재개 불능으로 만들 수 있다(D-131 주의 ①).
+    related: [ENABLE_SQL_APPROVAL]
+
+  ENABLE_SQL_APPROVAL:
+    example: >-
+      이 값을 켜면 질의마다 SQL 전문이 화면에 뜨고 사용자가 승인해야 실행된다. SQL을 읽을 수 있는 소수에게는 확실한 검증 수단이지만, 일반 사용자에게는 매번 이해할 수
+      없는 문장을 승인하라는 요구가 되어 사실상 무의미한 확인이 된다.
+    summary: 생성된 SQL을 실행 전에 사용자에게 보여 주고 승인받을지 여부.
+    behavior: >-
+      SQL을 만든 뒤 실행 직전에 멈춰 그 문장을 사용자에게 보여 준다. 승인해야 실행한다.
+      구조 승인(ENABLE_STRUCTURE_APPROVAL)보다 한 단계 뒤, 더 기술적인 게이트다.
+    options:
+      - value: "true"
+        label: SQL 확인 후 실행
+        effect: >-
+          실행될 SQL 전문을 화면에 띄우고 기다린다. SQL을 읽을 수 있는 사용자에게는
+          가장 확실한 검증 수단이다.
+      - value: "false"
+        label: 곧바로 실행 (기본)
+        effect: >-
+          검증을 통과한 SQL을 바로 실행한다. 읽기 전용 가드와 문법·안전성 검증은 이
+          설정과 무관하게 항상 동작한다.
+    performance: 승인을 기다리는 동안 대화가 멈춘다. 질의마다 사람이 개입하므로 처리량이 크게 떨어진다.
+    stability: >-
+      끄더라도 안전 장치가 사라지는 것은 아니다 — 쓰기 구문 차단·참조 무결성 검증·LIMIT
+      강제는 별도 계층에서 항상 적용된다. 이 게이트는 "의도한 조회가 맞는지"를 사람이
+      보는 용도다.
+    recommendation: >-
+      일반 운영에서는 기본값 false가 맞다. SQL을 읽을 수 있는 소수 사용자만 쓰는 검증
+      환경에서 한시적으로 켜는 용도로 본다.
+    caveats:
+      - 이 값을 바꾼 리로드는 대기 중인 승인 스레드를 재개 불능으로 만들 수 있다(D-131 주의 ①).
+    related: [ENABLE_STRUCTURE_APPROVAL, QUERY_DEFAULT_LIMIT]
+
+  DB_BACKEND:
+    example: >-
+      은행존은 DB2라 MCP 도구를 거쳐야 조회된다. direct로 바꾸면 PostgreSQL 존만 조회되고 은행존 질의는 실패한다 — 운영에서 이 값을 direct로 두면 존
+      절반이 사라지는 셈이다.
+    summary: 데이터베이스에 어떻게 접근할지 — MCP 서버를 경유할지, 직접 연결할지.
+    behavior: >-
+      dbhub는 별도 프로세스인 MCP 서버를 통해 조회한다. 타임아웃·최대 행수 같은 DB 레벨
+      제한과 읽기 전용 보장이 그 서버 쪽에 있다. direct는 애플리케이션이 PostgreSQL에
+      직접 붙는다.
+    options:
+      - value: dbhub
+        label: MCP 서버 경유 (운영)
+        effect: >-
+          조회가 MCP 서버를 거친다. 읽기 전용 강제와 실행 제한이 서버에서 관리되므로,
+          이쪽 설정으로는 그 한도를 바꿀 수 없다. MCP 서버가 내려가면 조회가 전부 실패한다.
+      - value: direct
+        label: 직접 연결
+        effect: >-
+          DB_CONNECTION_STRING으로 PostgreSQL에 직접 붙는다. 중간 홉이 없어 지연이 적지만,
+          DB2 등 MCP 도구로만 닿는 대상은 쓸 수 없다.
+    performance: direct가 홉 하나만큼 빠르다. 다만 실제 응답 시간의 대부분은 DB 자체의 쿼리 실행 시간이라 차이는 크지 않다.
+    stability: >-
+      dbhub는 장애점이 하나 늘어나는 대신 안전 경계가 프로세스로 분리된다. 운영 환경은
+      dbhub다 — 폴스타 DB2를 포함해 여러 엔진을 다뤄야 하고, 읽기 전용 보장을 애플리케이션
+      바깥에 두는 편이 안전하기 때문이다.
+    recommendation: 운영은 dbhub를 유지한다. direct는 로컬 샌드박스 개발용으로 본다.
+    caveats:
+      - 조회 타임아웃과 최대 행수는 MCP 서버가 관리한다 — 이 화면의 값으로 바꿀 수 없다.
+      - direct로 바꾸면 MCP 전용 도구(폴스타 REST·PromQL)는 그대로 쓰되 SQL 경로만 달라진다.
+    related: [DB_CONNECTION_STRING, ACTIVE_DB_IDS]
+
+  DB_CONNECTION_STRING:
+    example: >-
+      화면에서는 비밀번호가 가려져 보인다. 그 가려진 문자열을 그대로 저장해도 서버가 마스킹 값을 무시하므로 기존 비밀번호가 지워지지 않는다 — 다른 항목을 고치려고 이 폼을
+      다시 저장해도 안전하다는 뜻이다.
+    summary: direct 백엔드가 쓰는 PostgreSQL 접속 문자열.
+    behavior: >-
+      DB_BACKEND=direct일 때만 쓰인다. dbhub 경유일 때는 이 값이 채워져 있어도 조회에
+      쓰이지 않는다. 'DB 연결 설정' 탭에서도 같은 값을 편집할 수 있다.
+    performance: 접속 문자열 자체는 성능과 무관하다. 다만 연결 대상이 원격이면 왕복 지연이 매 조회에 얹힌다.
+    stability: >-
+      비밀번호가 포함되므로 화면에서는 마스킹된다. 마스킹된 값을 그대로 저장해도 서버가
+      무시하므로 기존 값이 지워지지는 않는다.
+    caveats:
+      - DB_BACKEND가 dbhub이면 이 값을 고쳐도 조회 동작은 달라지지 않는다.
+    related: [DB_BACKEND]
+
+  LOG_LEVEL:
+    summary: 로그를 어느 수준까지 남길지.
+    behavior: >-
+      DEBUG로 갈수록 남는 양이 급격히 늘어난다. 이 값은 설정 리로드로 즉시 재적용되므로
+      재시작 없이 조사 중에 올렸다 내릴 수 있다.
+    options:
+      - value: DEBUG
+        effect: >-
+          내부 처리 단계·프롬프트 요약·중간 판정까지 남는다. 문제를 재현해 원인을 찾을 때만
+          쓴다. 디스크 사용량과 I/O가 크게 늘고, 민감할 수 있는 값이 로그에 더 많이 남는다.
+      - value: INFO
+        label: 기본
+        effect: 요청 처리·경로 확정·주요 판정만 남는다. 평시 운영 수준이다.
+      - value: WARNING
+        effect: 이상 징후만 남는다. 로그는 줄지만 정상 흐름의 근거가 사라져 사후 조사가 어려워진다.
+      - value: ERROR
+        effect: 실패만 남는다. 사실상 사후 조사를 포기하는 수준이다.
+    example: >-
+      "특정 질문만 결과가 0건"을 조사할 때 DEBUG로 올려 한 번 재현하고 곧바로 INFO로
+      되돌리는 것이 표준 절차다. 리로드로 반영되므로 재시작이 필요 없다.
+    performance: DEBUG는 로그 기록 자체가 요청 처리 시간에 얹히고 디스크를 빠르게 채운다. 상시로 두면 안 된다.
+    stability: 디스크가 가득 차면 애플리케이션이 아니라 서버 전체가 흔들린다. DEBUG로 올렸으면 반드시 되돌린다.
+    recommendation: 평시 INFO. 조사할 때만 한시적으로 DEBUG.
+    related: [AUDIT_RETENTION_DAYS]
+
+  STRUCTURED_OUTPUT_BACKEND:
+    example: >-
+      LLM이 JSON을 내야 하는 자리에서 앞뒤에 설명 문장을 붙여 파싱이 깨지는 일이 있다. instructor를 켜면 그 응답을 스키마로 검증해 실패 시 '형식이 틀렸다'를
+      모델에 알려 다시 묻는다 — 형식 오류로 인한 실패는 줄지만 그만큼 호출이 늘어난다.
+    summary: LLM 응답을 타입 계약으로 받고 어긋나면 되먹여 다시 묻는 어댑터를 쓸지.
+    behavior: >-
+      none이면 어댑터가 관여하지 않아 지금까지의 동작과 완전히 같다. instructor를 고르면
+      LLM 응답을 정해진 스키마로 파싱하고, 실패하면 오류를 모델에 알려 다시 질의한다.
+    options:
+      - value: none
+        label: 기본
+        effect: 어댑터를 쓰지 않는다. 현행 동작과 비트 단위로 동일하다.
+      - value: instructor
+        effect: >-
+          응답을 스키마로 검증한다. 형식이 어긋난 응답이 뒤 단계로 흘러가는 사고가 줄지만,
+          재질의가 붙어 호출 수와 지연이 늘어난다. instructor 패키지가 설치돼 있어야 하며,
+          없으면 로그를 남기고 none처럼 동작한다.
+    performance: 검증 실패마다 LLM을 다시 부른다. 총 호출 수는 최대 STRUCTURED_OUTPUT_MAX_RETRIES + 1회다.
+    stability: >-
+      LLM 출력 형식 흔들림에는 확실히 강해진다. 다만 이 값은 기동 시 1회 해석되며,
+      프롬프트 접두가 달라지므로 요청 중에 바꾸면 캐시 효율이 떨어진다.
+    recommendation: 형식 오류로 인한 실패가 실제로 관측될 때 켠다. 그전에는 none이 맞다.
+    caveats:
+      - optional extra(structured)가 설치돼 있어야 한다. 미설치 시 조용히 none처럼 동작하되 로그에는 남는다.
+    related: [STRUCTURED_OUTPUT_MAX_RETRIES, LLM_PROVIDER]
+    references:
+      - docs/02_decision.md (D-169)
+
+  STRUCTURED_OUTPUT_MAX_RETRIES:
+    example: >-
+      라우터처럼 지연에 민감한 자리에서 이 값을 3으로 올리면 최악의 경우 네 번 호출한다. 한 번에 1초 걸리는 모델이라면 그 자리에서만 4초가 되어 단순 질의 10초 목표를
+      압박한다.
+    summary: 구조화 출력 검증이 실패했을 때 다시 물어보는 횟수.
+    behavior: >-
+      총 LLM 호출은 이 값 + 1회다. STRUCTURED_OUTPUT_BACKEND가 none이면 아무 영향이 없다.
+    options:
+      - value: "1"
+        label: 기본
+        effect: 최대 두 번 호출한다(첫 시도 + 재시도 1회). 라우터처럼 지연에 민감한 경로를 고려한 값이다.
+      - value: "3 이상"
+        effect: >-
+          형식 오류 회복률이 오르지만 최악의 경우 네 번 호출한다. 단순 질의 10초 목표를
+          넘기기 쉽다.
+    performance: 재시도 하나가 LLM 호출 하나다. 지연과 비용이 그대로 비례해 늘어난다.
+    stability: 모델이 그 스키마를 아예 못 맞추는 상황이면 재시도를 늘려도 전부 실패한다 — 스키마나 프롬프트 쪽 문제다.
+    recommendation: 기본 1에서 시작하고, 실제 실패율을 본 뒤에만 올린다.
+    related: [STRUCTURED_OUTPUT_BACKEND]
+
+  WORKER_PROVIDER_OVERRIDE:
+    example: >-
+      1단 경로를 검증하려고 gemini로 바꿔 두고 잊으면, 이후 모든 워커 호출이 외부로 나가 과금된다. 검증이 끝나면 값을 비우는 것까지가 한 세트다.
+    summary: deep_agent(1단) 경로에서 워커 LLM 공급자를 강제로 바꾼다 — 검증용이다.
+    behavior: >-
+      미설정이면 LLM_PROVIDER를 그대로 쓴다. 값을 지정하면 데이터 평면(워커)만 그 공급자로
+      돌아가고, 제어 평면(오케스트레이터)은 ORCHESTRATOR_PROVIDER를 따른다.
+    options:
+      - value: "(미설정)"
+        label: 운영 그대로
+        effect: LLM_PROVIDER 설정을 따른다. 운영에서는 이 상태여야 한다.
+      - value: gemini
+        effect: 워커를 Gemini로 강제한다. FabriX 없이 1단 경로를 검증할 때 쓴다. 외부 과금이 발생한다.
+      - value: fabrix
+        effect: 워커를 FabriX로 강제한다.
+      - value: ollama
+        effect: 워커를 로컬 Ollama로 강제한다.
+    performance: 공급자에 따라 응답 시간이 크게 달라진다. 로컬 모델은 하드웨어에, 외부 API는 네트워크와 상대 서버에 좌우된다.
+    stability: >-
+      테스트 전용 항목이다. 운영에 값이 남아 있으면 실제 트래픽이 의도하지 않은 공급자로
+      나가며, 외부 API라면 과금까지 이어진다.
+    recommendation: 운영에서는 반드시 비워 둔다. 검증이 끝나면 곧바로 지운다.
+    caveats:
+      - gemini·fabrix 지정은 외부 API 호출이다 — 과금 경로이므로 승인 없이 켜지 않는다(D-127).
+    related: [LLM_PROVIDER, ENABLE_DEEPAGENTS_PACKAGE]
+    references:
+      - docs/02_decision.md (D-127 과금 승인 게이트)
+
+  POLESTAR_DB_IDS:
+    example: >-
+      공동존 DB를 새로 편입하면서 ACTIVE_DB_IDS에만 추가하고 여기를 빠뜨리면, 그 존만 EAV 구조를 모르는 범용 프롬프트로 처리된다. 다른 존은 정상인데 한 존만
+      조회 품질이 나쁜 증상이 이렇게 생긴다.
+    summary: 폴스타 전용 시스템 프롬프트를 적용할 DB 식별자 목록(쉼표 구분).
+    behavior: >-
+      폴스타 DB는 서버 사양·사용량을 EAV 구조로 담고 있어 일반 스키마와 조회 방식이
+      다르다. 여기 나열된 DB가 조회 대상일 때만 그 구조를 아는 전용 프롬프트가 쓰인다.
+      비워 두면 범용 프롬프트로 처리한다.
+    options:
+      - value: "(비움)"
+        effect: 범용 프롬프트를 쓴다. EAV 구조를 모르는 상태로 SQL을 만들게 되므로 폴스타 DB에서는 조회 품질이 크게 떨어진다.
+      - value: "polestar,polestar_cm_gp"
+        label: 예시
+        effect: 나열한 DB가 조회 대상일 때 전용 프롬프트가 적용된다. ACTIVE_DB_IDS에 포함된 DB 중에서 고른다.
+    performance: 전용 프롬프트가 더 길어 입력 토큰이 늘지만, 잘못된 SQL로 인한 재시도가 줄어 전체로는 이득이다.
+    stability: 신규 폴스타 DB를 편입하면서 여기에 추가하는 것을 빠뜨리면, 그 DB만 조용히 조회 품질이 떨어진다.
+    recommendation: 폴스타 계열 DB를 ACTIVE_DB_IDS에 추가할 때마다 여기도 함께 갱신한다.
+    related: [ACTIVE_DB_IDS]
+
+  UI_DEFAULT_THEME:
+    example: >-
+      이 값을 dark로 바꿔도 이미 헤더에서 밝은 테마를 고른 사용자의 화면은 그대로다 — 개인 선택이 우선하기 때문이다. 바뀌는 대상은 아직 테마를 고른 적 없는
+      사용자뿐이다.
+    summary: 사용자·운영자 화면의 전역 기본 테마.
+    behavior: >-
+      새로 접속하는 사용자에게 적용되는 기본값이다. 헤더의 테마 버튼으로 개인이 고른
+      값이 있으면 그 선택이 우선한다. 저장하면 즉시 반영된다.
+    options:
+      - value: light
+        label: 밝게 (기본)
+        effect: 밝은 배경으로 시작한다.
+      - value: dark
+        label: 어둡게
+        effect: 어두운 배경으로 시작한다.
+    performance: 성능에 영향이 없다.
+    stability: 개인 선택이 우선하므로, 이 값을 바꿔도 이미 테마를 고른 사용자의 화면은 그대로다.
+    related: []
+
+  CHECKPOINT_BACKEND:
+    example: >-
+      한 대에서만 서비스하다가 앞단에 로드밸런서를 두고 프로세스를 두 개로 늘리는 순간 문제가 드러난다. sqlite면 두 프로세스가 각자 파일을 갖게 되어, 승인을 요청한
+      프로세스와 응답을 받는 프로세스가 다르면 '진행 중이던 대화가 없다'로 끝난다. postgres로 바꾸면 두 프로세스가 같은 상태를 본다.
+    summary: 대화 상태(체크포인트)를 어디에 저장할지.
+    behavior: >-
+      멀티턴 대화의 상태와 승인 대기 지점이 여기에 저장된다. sqlite는 파일 하나,
+      postgres는 외부 DB다.
+    options:
+      - value: sqlite
+        label: 기본
+        effect: >-
+          CHECKPOINT_DB_URL이 가리키는 파일에 저장한다. 설정이 간단하지만 프로세스가
+          여러 개인 구성에서는 상태가 공유되지 않는다.
+      - value: postgres
+        effect: >-
+          외부 PostgreSQL에 저장한다. 여러 프로세스가 상태를 공유할 수 있고 백업 체계에
+          함께 들어가지만, DB가 죽으면 대화 상태도 함께 멈춘다.
+    performance: sqlite는 로컬 파일 I/O라 빠르지만 동시 쓰기에 약하다. postgres는 왕복이 붙는 대신 동시성이 낫다.
+    stability: 단일 프로세스로 운영한다면 sqlite로 충분하다. 수평 확장을 하는 순간 postgres가 필요해진다.
+    recommendation: 현재 구성(단일 프로세스)에서는 sqlite 유지.
+    related: [CHECKPOINT_DB_URL]
+
+  CHECKPOINT_DB_URL:
+    example: >-
+      systemd로 서비스를 등록하면서 WorkingDirectory를 지정하지 않으면 작업 디렉터리가 `/`가 된다. 상대 경로 `checkpoints.db`는 그때
+      `/checkpoints.db`를 가리키게 되고, 재시작 후 '이전 대화가 전부 사라졌다'로 나타난다 — 파일은 지워진 게 아니라 다른 곳을 보고 있는 것이다.
+    summary: 체크포인트 저장 위치 — sqlite 파일 경로 또는 PostgreSQL 접속 문자열.
+    behavior: >-
+      CHECKPOINT_BACKEND가 sqlite면 파일 경로(:memory: 가능)이고, postgres면 접속
+      문자열이다. 상대 경로는 서버의 작업 디렉터리 기준이다.
+    options:
+      - value: checkpoints.db
+        label: 기본
+        effect: 작업 디렉터리에 파일로 저장한다. 서버를 다른 디렉터리에서 띄우면 이전 대화 이력을 못 찾는다.
+      - value: ":memory:"
+        effect: 메모리에만 둔다. 재시작하면 대화 상태가 전부 사라진다 — 테스트 용도다.
+    performance: 파일이 커질수록 조회가 느려진다. 장기 운영 시 크기를 확인할 필요가 있다.
+    stability: >-
+      상대 경로는 작업 디렉터리에 종속된다. 서비스 등록 방식이 바뀌어 작업 디렉터리가
+      달라지면 "대화 이력이 사라졌다"로 나타난다 — 절대 경로를 권한다.
+    related: [CHECKPOINT_BACKEND]
+
+  CONVERSATION_MAX_TURNS:
+    example: >-
+      대화가 길어져 느려진다고 이 값을 줄여도 아무 일도 일어나지 않는다 — 코드가 읽지 않기 때문이다. 대화 길이를 제한하려면 별도 구현이 필요하다.
+    summary: 대화 최대 턴 수 — 현재 코드가 읽지 않는다.
+    behavior: >-
+      설정 항목으로 정의돼 있지만 지금 코드에는 이 값을 읽는 곳이 없다. 값을 바꿔도
+      대화 길이는 달라지지 않는다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음).
+    recommendation: 건드릴 필요가 없다. 대화 길이를 제한해야 한다면 별도 구현이 필요하다.
+    related: [CONVERSATION_TTL_HOURS]
+
+  CONVERSATION_TTL_HOURS:
+    example: >-
+      세션이 오래 남아 있는 것이 문제라고 판단해 이 값을 줄여도 만료 시점은 달라지지 않는다 — 소비처가 없다.
+    summary: 대화 세션 유효 시간 — 현재 코드가 읽지 않는다.
+    behavior: 정의만 있고 소비처가 없다. 값을 바꿔도 세션이 만료되는 시점은 달라지지 않는다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음).
+    recommendation: 건드릴 필요가 없다.
+    related: [CONVERSATION_MAX_TURNS]

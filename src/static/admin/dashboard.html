@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>운영자 대시보드 - 인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=11">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
     <style>
@@ -15,7 +15,7 @@
         #usersTable th, #usersTable td { white-space: nowrap; }
     </style>
 </head>
-<body>
+<body class="admin-dashboard">
     <header>
         <div class="container">
             <h1>ADMIN DASHBOARD</h1>
@@ -95,11 +95,14 @@
                     <div class="settings-banner settings-banner--warn" id="settingsWarnings" style="display: none;"></div>
                     <div class="settings-banner settings-banner--restart" id="restartBanner" style="display: none;"></div>
 
-                    <div id="settingsLoading" class="loading active">
-                        <div class="spinner"></div>
-                        <div class="loading-text">설정을 불러오는 중...</div>
-                    </div>
-                    <div class="settings-accordion" id="settingsAccordion"></div>
+                    <!-- D-191: 좌(설정 목록) + 우(선택한 설정의 상세 설명). 패널이 닫혀 있으면 1열이다. -->
+                    <div class="settings-layout" id="settingsLayout">
+                      <div class="settings-main">
+                        <div id="settingsLoading" class="loading active">
+                            <div class="spinner"></div>
+                            <div class="loading-text">설정을 불러오는 중...</div>
+                        </div>
+                        <div class="settings-accordion" id="settingsAccordion"></div>
 
                     <!-- Plan 83 C-2: 이 화면이 다루지 않는 설정을 명시한다.
                          별도 venv·별도 프로세스라 본체 카탈로그 밖이며, 여기서 쓰지 않는다
@@ -115,6 +118,20 @@
                             <li><code>sre_agent/.env</code> — 장애 조사 에이전트(별도 venv · HolmesGPT)</li>
                             <li><code>.encenv</code> — 시크릿(위 목록에서 🔒 표시된 항목). 웹UI 수정은 반영되지 않습니다.</li>
                         </ul>
+                        </div>
+                      </div>
+
+                      <!-- D-191: 설정 옵션 상세 설명 패널 -->
+                      <aside class="settings-help" id="settingsHelp" aria-labelledby="settingsHelpKey" hidden>
+                        <div class="settings-help__head">
+                            <div class="settings-help__titles">
+                                <code class="settings-help__key" id="settingsHelpKey"></code>
+                                <span class="settings-help__group" id="settingsHelpGroup"></span>
+                            </div>
+                            <button type="button" class="settings-help__close" id="settingsHelpClose" aria-label="설명 닫기" title="설명 닫기">✕</button>
+                        </div>
+                        <div class="settings-help__body" id="settingsHelpBody"></div>
+                      </aside>
                     </div>
                 </div>
             </div>
@@ -462,6 +479,6 @@
 
     <div class="footer">INFRA QUERY AGENT v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=4"></script>
+    <script src="/static/js/admin.js?v=5"></script>
 </body>
 </html>

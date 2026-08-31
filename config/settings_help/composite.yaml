@@ -1,0 +1,348 @@
+# 설정 옵션 상세 설명 — 복합 질의·호스트 조사 (D-191)
+# 근거: src/config.py CompositeConfig 주석 · plans/78 §6.2 · plans/81 · plans/82
+# 주의: 이 그룹은 대부분 기본 off지만 네 개(가용성 사전 판정·차단·존 순회·범위 역질문)는
+#       명시적 예외로 기본 on이다 — 아래 각 항목의 「권장 설정」에 근거를 적었다.
+
+version: 1
+group: composite
+
+settings:
+
+  COMPOSITE_INVESTIGATION_ENABLED:
+    example: >-
+      'CPU 높은 서버 찾아서 왜 그런지 알려줘'는 조회에서 끝나지 않고 해당 호스트에 실제로 요청을 보낸다. 켜면 답이 훨씬 구체적이지만 응답이 수십 초로 늘고, 관리 대상
+      서버에 그만큼 부하가 간다 — 인가 게이트(HOST_AUTHZ_MODE)도 함께 통과해야 실행된다.
+    summary: 조회 결과에서 문제 서버를 찾아 실제로 들여다보는 조사 경로를 열지.
+    behavior: >-
+      켜면 "CPU가 높은 서버를 찾아 무엇 때문인지 알려줘" 같은 질문이 조회에서 끝나지 않고
+      해당 호스트의 프로세스·자원 상태까지 수집하는 단계로 이어진다. 꺼져 있으면 조회
+      결과만 돌려준다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사 경로에 진입하지 않는다. 지금까지의 동작과 같다.
+      - value: "true"
+        effect: >-
+          조회 뒤 대상 호스트를 실제로 조사한다. 응답 시간이 크게 늘고 대상 시스템에
+          요청이 나간다. 인가 게이트(HOST_AUTHZ_MODE)를 함께 통과해야 실행된다.
+    performance: >-
+      조사 한 건마다 외부 API 호출이 붙는다. 대상이 여러 대면 COMPOSITE_FANOUT_CONCURRENCY
+      만큼 동시에 나가고, 전체는 COMPOSITE_TOTAL_TIMEOUT_SECONDS로 잘린다.
+    stability: >-
+      대상 서버에 실제로 요청을 보내는 경로다. 조사 대상이 많아지면 그 부하가 관측 대상
+      시스템으로 간다 — 상한(COMPOSITE_MAX_TARGETS)을 반드시 함께 확인한다.
+    recommendation: 인가 정책과 부하 영향을 검토한 뒤에 켠다. 켤 때는 대상 상한과 타임아웃을 먼저 정한다.
+    related: [HOST_AUTHZ_MODE, COMPOSITE_MAX_TARGETS, COMPOSITE_TOTAL_TIMEOUT_SECONDS, COMPOSITE_AUDIT_ENABLED]
+
+  COMPOSITE_PRIOR_TARGETS_ENABLED:
+    example: >-
+      'CPU 상위 10대를 뽑고 그 서버들이 왜 높은지 봐줘'는 두 단계다. 이 값이 꺼져 있으면 두 번째 단계에서 대상을 몰라 사용자가 호스트명을 직접 적어야 한다. 켜면 앞
+      조회 결과가 그대로 조사 대상이 되며, 대상 수는 COMPOSITE_MAX_TARGETS에서 잘린다.
+    summary: 앞선 조회 결과를 다음 조사의 대상 목록으로 넘길지.
+    behavior: >-
+      "사용률 상위 10대를 뽑고, 그 서버들을 조사해 줘"처럼 앞 단계 결과가 뒤 단계의
+      입력이 되는 흐름을 가능하게 한다. 꺼져 있으면 사용자가 호스트를 직접 지정해야 한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 앞 결과를 넘기지 않는다. 조사 대상은 질문에 명시된 것만 쓴다.
+      - value: "true"
+        effect: 앞 조회에서 나온 호스트가 그대로 조사 대상이 된다. 대상 수는 COMPOSITE_MAX_TARGETS로 잘린다.
+    performance: 조사 대상이 자동으로 늘어나므로 응답 시간과 외부 호출이 함께 늘어난다.
+    stability: 앞 조회가 광역이면 조사 대상도 광역이 된다 — 상한 설정이 사실상의 안전장치다.
+    related: [COMPOSITE_MAX_TARGETS, COMPOSITE_INVESTIGATION_ENABLED]
+
+  COMPOSITE_MAX_TARGETS:
+    example: >-
+      임계를 넘은 서버가 30대인데 상한이 10이면 열 대만 조사하고 '20대는 상한으로 제외했다'는 사실이 결과에 함께 표시된다 — 조용히 버리지 않으므로 결과를 전체로
+      오해하지는 않는다. 상한을 50으로 올리면 조사가 세 배 길어지고 전체 타임아웃에 먼저 걸릴 가능성이 높다.
+    summary: 한 번에 조사할 호스트 수의 상한 — 넘는 대상은 잘리고, 잘렸다는 사실이 결과에 함께 실린다.
+    behavior: >-
+      조사 대상이 이 수를 넘으면 앞에서부터 자르고 절단 사실을 결과에 명시한다.
+      조용히 버리지 않는다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 열 대까지 조사한다. 응답 시간과 대상 시스템 부하를 함께 고려한 보수적인 값이다.
+      - value: "3 이하"
+        effect: 매우 가볍지만, 문제 서버가 그보다 많은 상황에서 대부분이 잘린다.
+      - value: "50 이상"
+        effect: >-
+          누락은 줄지만 조사 시간이 길어지고 대상 시스템으로 나가는 요청이 급증한다.
+          전체 타임아웃에 먼저 걸려 결국 일부만 조사된 결과가 나올 가능성이 높다.
+    performance: 조사 시간은 대략 (대상 수 ÷ 동시 실행 폭) × 대상별 소요다. 상한을 올릴 때는 동시 실행 폭도 함께 본다.
+    stability: >-
+      이 값은 관측 대상 시스템을 보호하는 상한이다. 크게 잡으면 한 번의 질문이 수십 대
+      서버에 동시에 요청을 보내는 상황이 만들어진다.
+    recommendation: 기본 10에서 시작한다. 올릴 때는 COMPOSITE_FANOUT_CONCURRENCY와 총 타임아웃을 함께 조정한다.
+    related: [COMPOSITE_FANOUT_CONCURRENCY, COMPOSITE_TOTAL_TIMEOUT_SECONDS, COMPOSITE_PRIOR_TARGETS_ENABLED]
+
+  COMPOSITE_FANOUT_CONCURRENCY:
+    example: >-
+      대상 10대·대상별 10초·동시 3건이면 이론상 약 40초가 걸려 전체 타임아웃(45초)에 아슬아슬하다. 동시 5건으로 올리면 20초로 줄지만 폴스타 REST에 동시 요청이
+      다섯 개씩 몰린다 — 상대가 감당하는 선을 먼저 확인해야 한다.
+    summary: 여러 호스트를 조사할 때 동시에 몇 건까지 진행할지.
+    behavior: 대상 목록을 이 수만큼씩 동시에 처리한다. 나머지는 앞 건이 끝나는 대로 순서대로 들어간다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 세 건씩 동시에 조사한다. 대상 시스템에 부담을 크게 주지 않는 선이다.
+      - value: "1"
+        effect: 한 건씩 순차 처리한다. 가장 안전하지만 대상이 많으면 총 타임아웃에 걸린다.
+      - value: "10 이상"
+        effect: >-
+          빠르지만 관측 대상 API에 동시 요청이 몰린다. 상대가 감당하지 못하면 오히려
+          전체가 느려지고 실패가 늘어난다.
+    performance: 총 조사 시간은 대략 대상 수를 이 값으로 나눈 만큼이다. 다만 상대 시스템이 병목이면 늘려도 빨라지지 않는다.
+    stability: 폐쇄망 관측 대상은 동시 요청에 약할 수 있다. 늘리기 전에 상대 시스템의 한계를 먼저 확인한다.
+    recommendation: 기본 3 유지. 늘릴 때는 한 단계씩 올리며 실패율을 관찰한다.
+    related: [COMPOSITE_MAX_TARGETS, COMPOSITE_TARGET_TIMEOUT_SECONDS]
+
+  COMPOSITE_TARGET_TIMEOUT_SECONDS:
+    example: >-
+      서버 한 대가 응답하지 않으면 그 대상만 10초를 쓰고 실패로 표시된다. 나머지 대상은 영향받지 않고 계속 진행되므로, 한 대의 장애가 조사 전체를 무너뜨리지는 않는다.
+    summary: 호스트 한 대를 조사할 때 기다리는 시간(초).
+    behavior: 대상 하나가 이 시간을 넘기면 그 대상만 실패로 처리하고 나머지는 계속 진행한다.
+    options:
+      - value: "10.0"
+        label: 기본
+        effect: 대상 하나에 10초. 정상 응답은 대개 수 초 안에 온다.
+      - value: "3 이하"
+        effect: 잠깐 느려진 서버까지 실패로 처리한다. 조사 결과에 빈 칸이 늘어난다.
+      - value: "30 이상"
+        effect: 응답이 느린 서버도 기다리지만, 죽은 서버 한 대 때문에 전체 조사가 그만큼 지연된다.
+    performance: 전체 타임아웃 안에서 대상별로 이 시간이 소비된다 — 둘의 비율이 실제로 몇 대나 조사되는지를 결정한다.
+    stability: 대상별 실패는 전체를 무너뜨리지 않는다. 실패한 대상은 그 사실이 결과에 표시된다.
+    recommendation: 기본 10초 유지. 총 타임아웃(45초)과의 비율을 보면 동시 3건일 때 약 12대까지 소화한다.
+    related: [COMPOSITE_TOTAL_TIMEOUT_SECONDS, COMPOSITE_FANOUT_CONCURRENCY]
+
+  COMPOSITE_TOTAL_TIMEOUT_SECONDS:
+    example: >-
+      대상이 20대인데 동시 3건·대상별 10초면 산술상 약 67초가 필요하다. 전체 상한이 45초이므로 실제로는 13대쯤에서 잘리고, 나머지는 조사되지 않은 채 결과가 나간다
+      — 대상 상한과 이 값의 비율이 실제 조사 가능 대수를 정한다.
+    summary: 여러 호스트 조사 전체에 주어진 시간(초) — 넘으면 그때까지의 결과로 답한다.
+    behavior: >-
+      대상별 타임아웃과 별개로 조사 전체를 감싸는 상한이다. 대상별 타임아웃만 두면
+      대상이 많을 때 전체가 무한정 길어지므로 이쪽이 최종 방어선이다.
+    options:
+      - value: "45.0"
+        label: 기본
+        effect: 45초. 복합 질의 응답 목표(30초)보다 여유를 둔 값이다.
+      - value: "20 이하"
+        effect: 응답은 빨라지지만 대상이 몇 대만 돼도 절반쯤에서 잘린다.
+      - value: "120 이상"
+        effect: 대부분 완주하지만 사용자가 2분을 기다린다 — 그 사이 화면은 진행 중으로만 보인다.
+    performance: 이 시간 동안 처리 슬롯이 점유된다. 동시 사용자가 많으면 전체 처리량에 영향을 준다.
+    stability: >-
+      장시간 실행 경로에는 전체 타임아웃이 반드시 있어야 한다. 대상별 타임아웃만으로는
+      대상 수가 늘어나는 순간 무력해진다.
+    recommendation: 기본 45초 유지. 늘리기 전에 대상 상한을 줄이는 쪽을 먼저 검토한다.
+    related: [COMPOSITE_TARGET_TIMEOUT_SECONDS, COMPOSITE_MAX_TARGETS]
+
+  COMPOSITE_TARGET_COLUMN_LLM_ENABLED:
+    example: >-
+      앞 조회 결과의 열 이름이 `NODE_NM`처럼 관례를 벗어나면 규칙으로는 어느 열이 호스트명인지 못 정한다. 꺼져 있으면 거기서 조사가 중단되고, 켜면 LLM이 한 번
+      지목해 이어간다 — 대신 엉뚱한 열을 지목하면 없는 서버를 조사하려 든다.
+    summary: 조사 대상을 뽑을 컬럼을 LLM에게 지목시킬지 — 앞 두 단계로 못 정할 때만 쓰인다.
+    behavior: >-
+      앞 조회 결과에서 어느 컬럼이 호스트 이름인지 정하는 3단계 해석 중 마지막 단이다.
+      꺼 두면 결정적인 1·2단만 쓴다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 결정적 규칙으로만 컬럼을 정한다. 못 정하면 조사로 넘어가지 않는다.
+      - value: "true"
+        effect: 규칙으로 못 정한 경우 LLM에게 묻는다. 성공률이 오르지만 호출 비용과 비결정성이 들어온다.
+    performance: 앞 단계가 실패한 경우에만 호출되므로 평균 비용 증가는 작다.
+    stability: LLM이 엉뚱한 컬럼을 호스트명으로 지목하면 없는 서버를 조사하려 든다.
+    recommendation: 기본 off 유지. 컬럼 해석 실패가 실제로 잦을 때만 켠다.
+    related: [COMPOSITE_PRIOR_TARGETS_ENABLED]
+
+  COMPOSITE_SNAPSHOT_TTL_SECONDS:
+    example: >-
+      장애 대응 중 같은 서버를 1분 간격으로 두 번 물으면, 이 값이 60이면 두 번째 답이 첫 번째와 완전히 같다. 프로세스가 그 사이 바뀌었어도 보이지 않으므로
+      '실시간'이라는 안내가 사실과 어긋난다.
+    summary: 조사 결과를 잠깐 재사용할지 — 0이면 캐시하지 않는다(기본).
+    behavior: >-
+      같은 호스트를 짧은 시간 안에 다시 조사할 때 앞 결과를 재사용한다. 기본이 0인 이유는,
+      "실시간 프로세스 조회"라고 안내한 결과가 조용히 캐시되는 것을 막기 위해서다.
+    options:
+      - value: "0"
+        label: 기본 (캐시 안 함)
+        effect: 매번 실제로 조사한다. 사용자가 보는 값이 항상 그 시점의 실측이다.
+      - value: "60"
+        effect: 1분간 재사용한다. 같은 질문을 반복할 때 빠르지만, 그 사이의 변화는 보이지 않는다.
+    performance: 켜면 반복 조회에서 대상 시스템 호출이 사라져 응답이 즉시 나온다.
+    stability: >-
+      실시간이라고 안내한 값이 실제로는 1분 전 값인 상황이 만들어진다. 장애 대응 중에는
+      이 차이가 판단을 그르칠 수 있다.
+    recommendation: 기본 0을 유지한다. 반복 조회 부하가 실제 문제일 때만 짧게 켠다.
+    related: [COMPOSITE_INVESTIGATION_ENABLED]
+
+  COMPOSITE_AUDIT_ENABLED:
+    example: >-
+      조사는 실제 서버에 요청을 보내는 행위다. 이 기록이 없으면 '누가 언제 어느 서버를 들여다봤는가'를 사후에 확인할 수 없어, 보안 점검에서 설명할 근거가 사라진다.
+    summary: 호스트 조사 실행을 감사 로그에 남길지 — 기본으로 켜져 있다.
+    behavior: 누가 어떤 호스트를 언제 조사했는지 기록한다. 이 그룹에서 기본 on인 몇 안 되는 항목이다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 조사 실행이 감사 로그에 남는다.
+      - value: "false"
+        effect: 기록하지 않는다. 사후에 누가 무엇을 조사했는지 확인할 수 없다.
+    performance: 기록 비용은 조사 자체에 비하면 무시할 수준이다.
+    stability: 감사는 끄는 것이 예외다. 실제 서버에 접근하는 경로이므로 기록이 없으면 사고 조사가 불가능해진다.
+    recommendation: 켠 채로 둔다.
+    related: [COMPOSITE_INVESTIGATION_ENABLED, AUDIT_DB_ENABLED]
+
+  COMPOSITE_AVAILABILITY_PRECHECK_ENABLED:
+    summary: 조사 전에 그 서버가 살아 있는지 먼저 판정할지 — 예외적으로 기본 on이다.
+    behavior: >-
+      대상 호스트의 가용성을 먼저 확인하고, 죽어 있으면 그 사실을 알린다. 이 그룹의
+      다른 플래그와 달리 기본이 on인 이유는 현행 동작 자체가 결함이었기 때문이다 —
+      전원이 꺼진 서버에 "프로세스 0건"(정상 결과처럼 서술)이나 "잠시 후 다시 시도"
+      (다시 해도 같다)를 돌려주고 있었다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 조사 전에 살아 있는지 확인하고, 죽어 있으면 그렇게 답한다.
+      - value: "false"
+        effect: >-
+          확인 없이 조사한다. 꺼진 서버에 대해 "프로세스가 0건"이라는, 정상처럼 보이는
+          오해를 부르는 답이 다시 나온다.
+    example: >-
+      전원이 내려간 서버를 두고 "무슨 프로세스가 도는지" 물으면, 이 판정이 꺼져 있을 때는
+      "0건"이라고 답한다. 켜져 있으면 "서버가 응답하지 않습니다"라고 답한다 — 같은 상황에
+      대한 전혀 다른 결론이다.
+    performance: 판정에 짧은 확인 요청이 1회 붙는다. 죽은 서버에 대해서는 오히려 조사 전체를 생략해 더 빠르다.
+    stability: 끄면 알려진 결함이 되살아난다. 끌 이유는 게이트가 정상 조회를 막는지 현장에서 확인할 때뿐이다.
+    recommendation: 켠 채로 둔다. 이 값의 기본 on은 의도된 예외다.
+    related: [COMPOSITE_AVAILABILITY_BLOCK_ON_UNAVAILABLE, COMPOSITE_AVAILABILITY_STALENESS_ENABLED]
+    references:
+      - docs/02_decision.md (D-175)
+
+  COMPOSITE_AVAILABILITY_BLOCK_ON_UNAVAILABLE:
+    example: >-
+      전원이 꺼진 서버를 조사할 때, 켜져 있으면 요청을 아예 보내지 않고 '응답하지 않습니다'로 끝난다. 끄면 안내 문구는 붙지만 요청은 그대로 나가 타임아웃까지 기다린 뒤
+      같은 결론에 도달한다 — 판정이 맞는지 현장에서 확인할 때만 끈다.
+    summary: 서버가 죽었다고 판정되면 조사를 아예 생략할지, 문구만 덧붙이고 진행할지.
+    behavior: >-
+      가용성 사전 판정이 켜져 있을 때만 의미가 있다. 켜면 죽은 대상은 수집을 건너뛰고,
+      끄면 안내 문구만 병기한 채 조회는 그대로 진행한다(관찰 모드).
+    options:
+      - value: "true"
+        label: 기본
+        effect: 죽은 대상은 조사하지 않는다. 응답이 빨라지고 무의미한 요청이 나가지 않는다.
+      - value: "false"
+        label: 관찰 모드
+        effect: >-
+          문구만 덧붙이고 조회는 진행한다. 게이트가 정상 대상까지 막고 있는지 현장에서
+          확인할 때 쓴다.
+    performance: 켜면 죽은 대상에 대한 조사 시간이 통째로 절약된다.
+    stability: 관찰 모드는 판정의 정확도를 검증하는 용도다 — 상시 운영 상태로 두는 값이 아니다.
+    recommendation: 켠 채로 둔다. 오판정이 의심될 때만 잠깐 끄고 관찰한다.
+    related: [COMPOSITE_AVAILABILITY_PRECHECK_ENABLED]
+
+  COMPOSITE_AVAILABILITY_STALENESS_ENABLED:
+    example: >-
+      서버는 살아 있는데 수집기가 죽어 데이터만 멈춘 경우가 있다. 이 값을 켜면 '살아 있지만 데이터가 30분 전 것'이라고 구분해 주지만, 그 판정을 위해 대상마다 조회가 한
+      번씩 더 나간다.
+    summary: 가용성 판정에 데이터 신선도 신호를 하나 더 볼지 — 왕복이 1회 늘어난다.
+    behavior: >-
+      마지막 측정 시각을 함께 조회해 "살아 있지만 데이터가 오래됐다"를 구분한다.
+      기본이 off인 이유는 추가 왕복 0을 원칙으로 삼았기 때문이다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 추가 조회 없이 판정한다.
+      - value: "true"
+        effect: 신선도까지 본다. 판정이 정교해지지만 대상마다 요청이 한 번 더 나간다.
+    performance: 대상 수만큼 왕복이 추가된다. 대상이 많을수록 비용이 곱으로 늘어난다.
+    stability: 신선도 신호가 있으면 "수집기가 죽은 것"과 "서버가 죽은 것"을 구분할 수 있다.
+    recommendation: 대상 수가 적고 오판정이 문제될 때만 켠다.
+    related: [COMPOSITE_AVAILABILITY_PRECHECK_ENABLED]
+
+  COMPOSITE_HOST_DISCOVERY_ENABLED:
+    summary: 서버가 어느 존에 있는지 모를 때 인가된 존을 돌며 찾을지 — 예외적으로 기본 on이다.
+    behavior: >-
+      대상 존이 정해지지 않았을 때 접근 권한이 있는 폴스타 존을 차례로 조회해 그 서버가
+      어디 있는지 찾는다. 기본이 on인 이유는, 이전에는 존을 못 정하면 "위치를 지정해
+      주세요"라는 막다른 안내로 끝났는데 운영 환경은 세 존 모두 조회 가능해서 물을 이유가
+      없었기 때문이다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 존을 돌며 서버 소재를 찾는다. 비용은 존당 조회 1회이고 LLM 호출은 없다(3존 기준 약 150ms).
+      - value: "false"
+        effect: 존이 정해지지 않으면 사용자에게 위치를 되묻는다. 되돌리려면 이 값을 false로 둔다.
+    example: >-
+      "웹서버01 상태 알려줘"처럼 존을 말하지 않은 질문에서, 켜져 있으면 세 존을 훑어
+      그 서버를 찾아 바로 답한다. 꺼져 있으면 "김포인가요 여의도인가요"를 먼저 묻는다.
+    performance: 존당 단순 조회 1회씩이다. LLM 호출이 없어 비용이 작다.
+    stability: 동명 호스트가 여러 존에 있으면 전수 순회가 그 사실을 드러낸다 — 조기 종료를 켜면 이 정보가 가려진다.
+    recommendation: 켠 채로 둔다. 이 값의 기본 on은 의도된 예외다.
+    related: [COMPOSITE_DISCOVERY_EARLY_EXIT, COMPOSITE_DISCOVERY_CACHE_TTL_SECONDS]
+    references:
+      - docs/02_decision.md (D-176 후속3)
+
+  COMPOSITE_DISCOVERY_EARLY_EXIT:
+    example: >-
+      `web01`이라는 이름이 김포와 여의도에 모두 있는 경우, 전수 순회는 두 곳을 다 찾아 그 사실을 드러낸다. 조기 종료를 켜면 먼저 찾은 한 곳만 보고 끝나므로 사용자는
+      다른 존의 동명 서버를 모른 채 판단하게 된다.
+    summary: 서버를 찾으면 나머지 존 탐색을 멈출지 — 기본은 전수 순회다.
+    behavior: >-
+      첫 히트에서 멈추면 약 100ms를 아낀다. 기본이 off인 이유는 같은 이름의 서버가 여러
+      존에 있을 수 있고, 첫 히트로 끊으면 그 사실이 가려지기 때문이다.
+    options:
+      - value: "false"
+        label: 기본 (전수 순회)
+        effect: 모든 존을 확인한다. 동명 호스트가 여러 존에 있으면 그 사실이 드러난다.
+      - value: "true"
+        effect: 처음 찾은 곳에서 멈춘다. 약 100ms 빠르지만 다른 존의 동명 서버를 놓친다.
+    performance: 절약되는 시간은 존 하나당 수십 ms 수준이다.
+    stability: 동명 호스트를 은폐하는 대가로 얻는 이득이 작다 — 이 값을 켤 이유는 흔치 않다.
+    recommendation: 기본 off 유지.
+    related: [COMPOSITE_HOST_DISCOVERY_ENABLED]
+
+  COMPOSITE_DISCOVERY_CACHE_TTL_SECONDS:
+    example: >-
+      방금 폴스타에 등록한 서버를 물으면 탐색이 0건을 돌려준다. 그 0건은 캐시하지 않으므로 다음 질문에서는 정상적으로 찾아진다 — 찾은 결과만 캐시한다는 규칙이 이 상황을
+      막아 준다.
+    summary: 존 탐색으로 찾은 서버 위치를 몇 초간 기억할지.
+    behavior: >-
+      찾은 결과만 캐시한다. 0건이거나 조회에 실패한 경우는 캐시하지 않는다 — 캐시하면
+      방금 등록한 서버가 그 시간 동안 계속 "없는 서버"가 되기 때문이다.
+    options:
+      - value: "60.0"
+        label: 기본
+        effect: 1분간 위치를 기억한다. 같은 서버를 이어서 물을 때 존 순회를 건너뛴다.
+      - value: "0"
+        effect: 매번 순회한다. 항상 최신이지만 연속 질문마다 존 조회가 반복된다.
+      - value: "600 이상"
+        effect: 순회 비용이 거의 사라지지만, 서버가 다른 존으로 옮겨가도 그 시간 동안 옛 위치를 쓴다.
+    performance: 적중하면 존당 조회가 통째로 생략된다.
+    stability: 실패·0건을 캐시하지 않는 가드가 있어, 신규 등록 서버가 캐시 때문에 안 보이는 사고는 일어나지 않는다.
+    recommendation: 기본 60초 유지.
+    related: [COMPOSITE_HOST_DISCOVERY_ENABLED]
+
+  COMPOSITE_SCOPE_SELECT_ENABLED:
+    example: >-
+      '전체 서버 디스크 사용률'처럼 존을 말하지 않은 질의에서, 대상 그룹이 둘 이상이면 '범위를 좁히시겠습니까?'를 먼저 묻는다. 답하지 않아도 '전체 조회'가 기본값이라
+      진행되며, 범위를 좁혀 조회한 뒤에는 '은행존은 조회하지 않았습니다. 전체 범위로 다시 조회할까요?' 패널로 되돌릴 수 있다.
+    summary: 조회 대상 그룹이 둘 이상일 때 "범위를 좁힐까요?"를 먼저 물을지 — 기본 on이다.
+    behavior: >-
+      실행 그룹이 여러 개면 전체를 다 조회하기 전에 범위를 물어본다. 시간 임계는 두지
+      않는다 — 근거 없는 잠정 상수를 상시 동작시키지 않기 위해서다. 대신 "전체 조회"가
+      항상 첫 선택지이자 기본값이라 답하지 않아도 진행된다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 대상 그룹이 둘 이상이면 범위를 묻는다. 답하지 않아도 전체 조회로 진행된다.
+      - value: "false"
+        effect: 묻지 않고 전체를 조회한다. 되묻는 단계가 사라지는 대신, 광역 조회가 그대로 실행된다.
+    performance: 사용자가 범위를 좁히면 조회량이 그만큼 줄어든다. 묻는 것 자체의 비용은 없다.
+    stability: 되묻기가 습관적으로 반복되면 오히려 방해가 된다 — 발동률을 관측해 조정하도록 설계됐다.
+    recommendation: 켠 채로 둔다. 되묻기가 잦아 불편하다는 의견이 실제로 모이면 그때 검토한다.
+    related: [COMPOSITE_HOST_DISCOVERY_ENABLED]
+    references:
+      - docs/02_decision.md (D-176 후속4)

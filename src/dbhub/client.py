@@ -126,26 +126,59 @@ class DBHubClient:
                 f"MCP 서버 연결 타임아웃 ({self._config.mcp_call_timeout}초): "
                 f"{self._config.server_url}"
             )
+        except asyncio.CancelledError:
+            # 취소(상위 전체 타임아웃·클라이언트 중단)로 핸드셰이크가 중간에 끊기면
+            # sse_client는 열렸는데 ClientSession은 미완인 반쯤 열린 상태가 남는다.
+            # 이 정리를 상위(get_db_client의 finally)에 맡기면 **다른 태스크에서**
+            # `__aexit__`가 불려 anyio cancel scope 규약이 깨지고, sse_client가
+            # 좀비로 남아 이후 서버 메시지마다 BrokenResourceError를 뿜는다(D-193).
+            # 반드시 connect를 연 바로 이 태스크에서 정리하고 취소를 재전파한다.
+            try:
+                await self.disconnect()
+            except BaseException:  # noqa: BLE001 — 정리 실패가 취소 전파를 막지 않는다
+                pass
+            raise
         except Exception as e:
             raise DBConnectionError(
                 f"MCP 서버 연결 실패 ({self._config.server_url}): {e}"
             ) from e
 
     async def disconnect(self) -> None:
-        """MCP 서버 연결을 종료한다."""
-        try:
-            if self._session_context:
-                await self._session_context.__aexit__(None, None, None)
-            if self._sse_context:
-                await self._sse_context.__aexit__(None, None, None)
-        except Exception as e:
-            logger.warning(f"MCP 서버 연결 종료 중 에러: {e}")
-        finally:
-            self._mcp_session = None
-            self._sse_context = None
-            self._session_context = None
-            self._connected = False
-            logger.debug("MCP 서버 연결 종료")
+        """MCP 서버 연결을 종료한다.
+
+        session·sse 컨텍스트를 **각각 독립 try로** 정리한다(D-193). 한 try에 묶으면
+        앞선 session `__aexit__` 실패(취소 중 언와인딩·anyio cancel scope 위반 등)에
+        막혀 `sse_client`가 열린 채 남고, 좀비 sse_reader가 이후 서버 메시지마다
+        `anyio.BrokenResourceError`를 뿜는다(2026-08-31 실측 재현).
+        """
+        # 취소는 삼키지 않는다 — 남은 컨텍스트까지 정리한 뒤 재던진다.
+        cancelled: BaseException | None = None
+        for _name, _ctx in (
+            ("session", self._session_context),
+            ("sse", self._sse_context),
+        ):
+            if _ctx is None:
+                continue
+            try:
+                await _ctx.__aexit__(None, None, None)
+            except asyncio.CancelledError as e:
+                cancelled = e
+                logger.warning(
+                    "MCP %s 컨텍스트 종료가 취소됨 — 나머지 정리를 계속한다", _name
+                )
+            except Exception as e:
+                logger.warning(
+                    "MCP %s 컨텍스트 종료 실패: %s: %s", _name, type(e).__name__, e
+                )
+
+        self._mcp_session = None
+        self._sse_context = None
+        self._session_context = None
+        self._connected = False
+        logger.debug("MCP 서버 연결 종료")
+
+        if cancelled is not None:
+            raise cancelled
 
     async def health_check(self) -> bool:
         """연결 상태를 확인한다. 5초 이내 응답하지 않으면 실패로 판단한다.

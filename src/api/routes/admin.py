@@ -25,6 +25,7 @@ from src.api.settings_catalog import (
     mask_value,
     validate_updates,
 )
+from src.api.settings_help import SettingHelp, build_help
 from src.domain.user import UserRole, UserStatus
 from src.api.schemas import (
     UpdatePermissionsRequest,
@@ -603,6 +604,62 @@ async def get_settings_schema(
         env_file_path=str(_ENV_FILE),
         warnings=warnings,
     )
+
+
+@router.get(
+    "/admin/settings/help/{env_key}",
+    response_model=SettingHelp,
+)
+async def get_setting_help(
+    env_key: str,
+    _admin: dict = Depends(require_admin_user),
+) -> SettingHelp:
+    """설정 1건의 상세 도움말을 조회한다 (D-191).
+
+    "이 값을 이렇게 두면 무엇이 어떻게 동작하는가"를 돌려준다. 큐레이션 YAML
+    (`config/settings_help/`)이 있으면 그 내용을, 없으면 카탈로그 메타에서 결정적으로
+    파생한 설명을 준다(`source` 필드로 구분). 반영 시점·오버라이드 경고(`operational`)는
+    두 경우 모두 카탈로그 실측으로 채운다.
+
+    Args:
+        env_key: 설정 키
+
+    Returns:
+        도움말 1건
+
+    Raises:
+        HTTPException: 카탈로그에 없는 키면 404
+    """
+    if env_key not in field_index():
+        raise HTTPException(status_code=404, detail=f"알 수 없는 설정 키입니다: {env_key}")
+
+    # 오버라이드·현재값 표시는 카탈로그 실측에 의존한다(OS env/.encenv 우선순위 반영).
+    # 실패해도 도움말 본문은 유효하므로 메타 없이 진행한다.
+    item: Optional[dict] = None
+    try:
+        from src.config import AppConfig
+
+        catalog = build_catalog(
+            file_values=_read_env_file(),
+            config=AppConfig(),
+            os_environ=dict(os.environ),
+            env_file_path=str(_ENV_FILE),
+            warnings=[],
+        )
+        for group in catalog.groups:
+            for setting in group.settings:
+                if setting.env_key == env_key:
+                    item = setting.model_dump()
+                    break
+            if item is not None:
+                break
+    except Exception as e:  # noqa: BLE001 — 메타 부재가 도움말을 막지 않는다
+        logger.warning("도움말 메타 계산 실패 %s: %s", env_key, e)
+
+    help_entry = build_help(env_key, item)
+    if help_entry is None:
+        raise HTTPException(status_code=404, detail=f"알 수 없는 설정 키입니다: {env_key}")
+    return help_entry
 
 
 @router.put(

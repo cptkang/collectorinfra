@@ -810,6 +810,11 @@ class NoiseGateConfig(BaseSettings):
     feedback_store_enabled: bool = True                      # (E4) 피드백 적재 on/off
     actionability_fewshot_count: int = 3                     # (E4) few-shot 예시 최대 개수
     feedback_store_max_lines: int = 20000                    # (Plan 83) 피드백 회전 상한 = 조회 창
+    # ── Plan 86 (D-192): 알람 카드의 LLM 추천 질의 ──
+    # 결정적 축 매핑이 비는 알람(management.*/platform.*/미매핑)에서만 호출한다.
+    # **기본 off** — 켜면 알람 카드 조회 경로에 과금이 붙는다(D-127). 결정적 추천이
+    # 있으면 프론트가 아예 호출하지 않으므로, on이어도 호출 빈도는 미매핑 축에 한정된다.
+    alarm_prompt_llm_suggest_enabled: bool = False
     # ── E5: deepagents Advisory Enricher (agentic 보조 분석기, §8.5/§8.7, D-048.7) ──
     # 전부 옵트인(기본 off) — enable_agentic_enricher=False면 E1~E4 배선·발송 판단 무변경.
     # 판단은 결정적 notification_policy가 하고, enricher는 signals(승격 전용)만 보강한다.

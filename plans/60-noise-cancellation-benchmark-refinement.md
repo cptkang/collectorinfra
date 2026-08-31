@@ -878,7 +878,7 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 
 ---
 
-## 18. E8 — L3 실호스트 조사 통합: 통보 보강·측정 기반 dedup·경계 상향 (D-117) [계획]
+## 18. E8 — L3 실호스트 조사 통합: 통보 보강·측정 기반 dedup·경계 상향 (D-117 · **접근 경로 D-189로 개정**) [계획]
 
 > **신규(2026-07-24)**. 사용자 지시: "Plan 60에 **L3 단계 기능을 추가해서라도** 처리하라. 보안 관련 결정은 인터뷰로 진행하라." 인터뷰(2026-07-24) 확정으로 **D-104(경계 `uptime` probe만)·§16.4·§17.11의 「L3 = Plan 60 범위 밖」 경계를 개정**하여, L3 실호스트 read-only 조사를 **노이즈 게이트 목적**(통보 보강·측정 기반 dedup·경계 상향)으로 Plan 60에 편입한다. **전면 RCA·인과추론·조치 거버넌스는 여전히 Plan 64**(공용 L3 수집기·severity_judge·브리핑 재사용, 중복 구현 금지).
 
@@ -886,12 +886,18 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 
 | 항목 | 확정 | 근거 |
 |---|---|---|
-| **접근 경로(B-1)** | **A. 폴스타 에이전트 확장** | 폴스타가 이미 호스트에 둔 에이전트에 read-only 스냅샷 노출 → **신규 접근경로 0·검증 채널 재사용**(Plan 64 §7.1·Plan 51 §9). SSH 신규 수집기(B)·로그 파이프라인(C) 미채택 |
+| **접근 경로(B-1)** | ~~A. 폴스타 에이전트 확장~~ → **B. 허용목록 read-only 명령 실행** (**2026-08-31 개정 · D-189**) | **원 사유(A)**: 신규 접근경로 0·검증 채널 재사용. **개정 사유(B)**: ①B는 이미 구현·실동작 중(`sre_agent/toolset_profiles.py::VM_DIAG_ALLOW` — HolmesGPT 채택 D-118 시 딸려 들어옴, MVP 완주 D-123) ②A는 **코드 자산 0건**이고 벤더 협의(P0-4) 리드타임이 통제 밖 ③B의 위험은 부하 가드 L-1~L-4·deny 우회 차단·감사로 **Plan 51 §9 요구를 초과 방어** ④A 신설 시 조사 경로 3갈래 분기(Plan 78 §0). **A는 격하 — 벤더가 제품 기능으로 제공하면 추가 채널로 재검토** |
 | **실행 모델** | **둘 다** | 게이트 동기 경계 probe(§14.4 확장) + PAGE post-gate 비차단 보강(§4.8.6식). 경계 tie-break와 생존 통보 보강을 함께 |
 | **허용목록** | **§7.2 전체 USE 프로파일**(kind 스코프) | CPU/mem/IO/disk/net read-only 전체 채택. 단 매 조사는 알람 kind별 프로파일만 실행(전량 실행 아님) |
 | **통제** | **최소권한 read-only·권고만** | D-003 유지·변경명령 물리 제외·자격증명 수집기측 분리·전 수집 감사+마스킹 |
 
-### 18.2 L3 수집기 — 폴스타 에이전트 확장 (읽기전용·Plan 64 §7 통제 채택)
+### 18.2 L3 수집기 — ~~폴스타 에이전트 확장~~ **허용목록 명령 실행** (읽기전용·Plan 64 §7 통제 채택)
+
+> **2026-08-31 개정(D-189)**: 채널이 B로 바뀌었다. 아래 「접근」 항의 폴스타 에이전트 문구는 **원안 이력**이며,
+> 현행 채널은 `sre_agent/toolset_profiles.py`의 prefix allowlist다. **허용목록·변경명령 물리 제외·
+> 최소권한·감사·마스킹 항목은 그대로 유효**하고, 실제 구현이 그것을 이미 충족한다(오히려 부하 가드
+> L-1~L-4가 추가돼 원안보다 강하다). `graceful skip → L1 폴백` 규칙도 유지된다 — 명령이 거부되거나
+> 대상이 비-Linux면 그 신호만 건너뛴다.
 
 - **접근**: 폴스타 에이전트에 read-only 진단 스냅샷을 정의·노출하고, 결과는 **폴스타 REST/ES 채널**(§16 `list_by_hostname` 전례)로 조회한다 — **SSH·신규 접근경로 없음**. 폴스타 에이전트가 특정 명령을 미노출하면 그 신호만 skip→L1 폴백(graceful). 비-Linux 호스트 skip.
 - **허용목록(§7.2 채택·read-only)**: `uptime`·`top -b -n1`·`vmstat 1 3`·`mpstat -P ALL 1`·`pidstat 1`·`iostat -xz 1`·`free -m`·`df -h/-i`·`ss -s`·`sar`·`journalctl -p err --since`·`dmesg`·`cat /proc/{loadavg,meminfo}`·`ps aux --sort=-%mem`/`--sort=-%cpu`·`systemctl show -p NRestarts <unit>`. 임의 명령·셸 메타문자·쓰기 인자 정규식 차단.
@@ -902,6 +908,19 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 
 - **(a) 게이트 동기 경계 probe (§14.4 D-104 확장)**: 잠정 판정이 **고중요·sev2·경계(TICKET/DASHBOARD)** 인 소수에만 **kind별 초경량 L3 프로파일**(메모리=`free`+`vmstat`, CPU=`vmstat`+`mpstat`)을 동기 실행 → **escalate-only tie-break**. 하드 타임아웃(`gate_l3_probe_timeout_seconds`≤2s)·캐시(`gate:probe:{db_id}:{server}`)·소수 subset. 실패/정상→판정 유지(하향 없음). D-104가 `uptime`만이던 것을 **kind별 USE 프로파일로 확장**(여전히 경계 케이스 유계·escalate-only).
 - **(b) post-gate 비차단 보강 (전 PAGE)**: 통보 결정(PAGE) 후 fire-and-forget으로 **kind별 L3 전체 프로파일** 조사 → §18.4의 세 용도. **게이트 <10s 예산 무영향**(비차단·재발생 dedup·클러스터 대표 상속 → 조사도 대표 1건).
+
+> **★ 잔여 설계 과제 (2026-08-31 · D-189 「잔여 설계 과제」)** — **(a)의 지연 예산이 열려 있다.**
+> (a)는 게이트 예산 **<10s** 안에서 **동기** 실행해야 하는데, `sre_agent` 조사는 **분 단위**이고
+> (dispatcher 상한 300s) `noise_gate`는 패키지 경계상 `sre_agent`를 **import할 수 없다**(D-118·D-139 —
+> 통신은 MCP뿐). 따라서 착수 시 택일한다:
+>
+> - **(가)** 경량 **동기 MCP 도구**를 신설한다 — kind별 초경량 프로파일(`free`+`vmstat` 등)만 실행하고
+>   2초 타임아웃(`gate_l3_probe_timeout_seconds`)으로 끊는 전용 도구. 조사 잡 큐를 타지 않는다.
+> - **(나)** **(a)를 폐기**하고 **(b) post-gate 비차단 보강만** 유지한다. 경계 상향(§18.4-3)은
+>   L1 신호로만 판정하게 되어 D-104 수준으로 되돌아간다.
+>
+> **본 계획은 이 선택을 하지 않는다** — D-189가 확정한 것은 *접근 경로*이고, *실행 모델*은
+> D-117 ②(둘 다)를 유지한 채 E8 착수 시점으로 넘긴다.
 
 ### 18.4 세 가지 용도 (동일 1회 수집·캐시 공유)
 
@@ -915,14 +934,14 @@ Plan 60의 각 항목이 벤더 마케팅이 아니라 **동료심사 학술 문
 - **escalate-only·불변식**: L3는 억제를 되돌리거나 새로 억제하지 않는다·하향 없음·심각도3 단락·유지보수 억제 불침범(§14.4·§5 계승).
 - **결정적=판단·LLM=서술**: USE 병목·상향은 결정적 신호가 판정, LLM은 종합·신뢰도·인용만(D-035). 증거 불충분·L3 부재→상향 보류·한계 명시.
 - **옵트인·회귀 0**: `l3_enrichment_enabled`·`gate_l3_probe_enabled`(기본 off)→비활성 시 L1/텍스트 경로 비트동일. L3 부재/미노출→L1 폴백(보수적).
-- **폐쇄망**: 폴스타 에이전트 채널만(외부 SaaS·신규 SSH 없음). 전 L3 수집 감사+마스킹.
+- **폐쇄망**: 외부 SaaS 없음. ~~폴스타 에이전트 채널만~~ → **허용목록 명령 실행 채널**(2026-08-31 · D-189 — `VM_DIAG_ALLOW` prefix 매칭. 원격은 `remote_vm_profile()`·`REMOTE_SSH_ALLOW` 옵트인). 전 L3 수집 감사+마스킹. **부하 가드 필수**(`timeout 20 nice -n 10` 접두 — deny에도 같은 접두를 적용해 우회 차단, `docs/25_host_investigation_load_guard.md`).
 
 ### 18.6 산출물·설정·결정·수용 기준
 
 - **공용 자산(통합 갱신 2026-07-24 · D-118)**: severity_judge·briefing의 구현 소재가 `sre_agent/` 패키지(sre-agent/02 §6·§7)로 바뀌었고 **collectorinfra는 이를 import할 수 없다**(패키지 경계 원칙 — 통신은 MCP뿐). 따라서 ①정밀 2차 판정·정밀 브리핑은 §14 훅의 조사 결과(`verdict`·`briefing`)를 poll로 **소비**하고, ②E8의 게이트 배선(§14.4 probe kind 확장·post-gate 결정적 요지 첨부·측정 dedup 상태지문·L3 수집기 `host_diagnostic_collector.py`=폴스타 에이전트 어댑터)은 **collectorinfra 측 자산**으로 구현한다(구 Plan 64 §5.2 시그니처 표는 사양 공유·코드는 각자). E8 수집 채널을 `mcp_server` 고수준 도구(예: `polestar_host_snapshot`)로 노출하면 `sre_agent` 조사도 동일 채널로 호스트 스냅샷·로그 원문을 소비한다(sre-agent/04 §4.2 후보 — E8 착수 시 결정).
-- **설정**(`NoiseGateConfig` 신규·전부 기본 off/보수): `l3_enrichment_enabled`·`gate_l3_probe_enabled`·`gate_l3_probe_timeout_seconds`(2.0)·`l3_profile_map_csv`(kind→프로파일)·`l3_host_access_mode`(폴스타 에이전트 재사용)·`l3_audit_enabled`.
-- **결정 D-117**(L3 실호스트 조사 Plan 60 편입 — 폴스타 에이전트 확장·§7.2 read-only·escalate-only 보강/dedup/경계 상향). 인터뷰(§18.1)로 **D-104를 kind별 프로파일로 확장·D-102/B-1(Plan 64 L3 보안)을 A안·최소권한 read-only로 확정**. 등재 최댓값 D-116→**D-117**(D-115는 Plan 65 예약·등재 직전 재확인). 상태: 계획(미구현)·**보안통제·방향 확정**.
-- **수용 기준**: ① 메모리 90% 알람에 kind별 L3 보강 브리핑 첨부(폴스타 에이전트 경유·§4.8.6 워크드). ② 측정 상태변화(90%→OOM 등) 시 escalate-only dedup 예외·완화·동일은 재통보 0. ③ 경계 케이스 probe 상향(고중요·sev2). ④ 변경명령 수집기 부재·허용목록 외 차단·마스킹·감사 테스트 고정. ⑤ 전 플래그 off 시 비트동일(회귀 0)·L3 부재→L1 폴백·심각도3 단락 불변·`arch_check --ci` 0.
+- **설정**(`NoiseGateConfig` 신규·전부 기본 off/보수): `l3_enrichment_enabled`·`gate_l3_probe_enabled`·`gate_l3_probe_timeout_seconds`(2.0)·`l3_profile_map_csv`(kind→프로파일)·`l3_host_access_mode`(**기본 `allowlist_exec` — D-189**; 원안 값 `polestar_agent`는 벤더 제공 시 추가 채널로 재검토)(구 문구: 폴스타 에이전트 재사용)·`l3_audit_enabled`.
+- **결정 D-117**(L3 실호스트 조사 Plan 60 편입 — ~~폴스타 에이전트 확장~~ **허용목록 명령 실행(D-189)**·§7.2 read-only·escalate-only 보강/dedup/경계 상향). 인터뷰(§18.1)로 **D-104를 kind별 프로파일로 확장·D-102/B-1(Plan 64 L3 보안)을 A안·최소권한 read-only로 확정**. 등재 최댓값 D-116→**D-117**(D-115는 Plan 65 예약·등재 직전 재확인). 상태: 계획(미구현)·**보안통제·방향 확정**.
+- **수용 기준**: ① 메모리 90% 알람에 kind별 L3 보강 브리핑 첨부(**허용목록 명령 실행 경유** — D-189·§4.8.6 워크드). ② 측정 상태변화(90%→OOM 등) 시 escalate-only dedup 예외·완화·동일은 재통보 0. ③ 경계 케이스 probe 상향(고중요·sev2). ④ 변경명령 수집기 부재·허용목록 외 차단·마스킹·감사 테스트 고정. ⑤ 전 플래그 off 시 비트동일(회귀 0)·L3 부재→L1 폴백·심각도3 단락 불변·`arch_check --ci` 0.
 
 ---
 

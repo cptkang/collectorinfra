@@ -224,6 +224,8 @@
     var groupExpanded = {};       // group_key -> 펼침 여부
     var settingsLoaded = false;
     var settingsAllExpanded = false;
+    var settingsHelpCache = {};   // env_key -> 도움말 응답 (탭 체류 중 재조회 방지)
+    var settingsHelpKey = null;   // 현재 패널에 띄운 키 (null = 닫힘)
 
     ensureSettingsLoaded();  // 설정 탭이 기본 활성 상태다
 
@@ -365,6 +367,8 @@
 
         updateCount(shown);
         refreshGroupCounts();
+        // 행이 새로 그려지면 하이라이트가 사라지므로, 열려 있는 설명 대상에 다시 표시한다.
+        markHelpRow(settingsHelpKey);
         document.getElementById("settingsLoading").classList.remove("active");
     }
 
@@ -463,6 +467,18 @@
         key.textContent = item.env_key;
         keyLine.appendChild(key);
         buildBadges(item).forEach(function (badge) { keyLine.appendChild(badge); });
+
+        // D-191: 이 설정을 어떻게 두면 무엇이 달라지는지 오른쪽 패널로 연다.
+        // 위젯 조작과 섞이지 않도록 행 전체가 아니라 전용 버튼을 트리거로 둔다.
+        var helpBtn = document.createElement("button");
+        helpBtn.type = "button";
+        helpBtn.className = "setting-help-btn";
+        helpBtn.textContent = "?";
+        helpBtn.title = item.env_key + " 설명 보기";
+        helpBtn.setAttribute("aria-label", item.env_key + " 설명 보기");
+        helpBtn.addEventListener("click", function () { openSettingHelp(item.env_key); });
+        keyLine.appendChild(helpBtn);
+
         label.appendChild(keyLine);
 
         if (item.description) {
@@ -491,6 +507,215 @@
         settingsRows[item.env_key] = { row: row, state: state, error: error };
         refreshRow(item.env_key);
         return row;
+    }
+
+    // --- D-191: 설정 옵션 상세 설명 패널 ---
+    //
+    // "이 옵션을 이렇게 두면 무엇이 어떻게 동작하는가"를 오른쪽에 띄운다. 서버가
+    // 큐레이션(사람이 쓴 사례·성능·안정성)과 자동 파생(카탈로그 메타에서 결정적 생성)을
+    // 구분해 내려주며, 화면은 source 뱃지로 그 차이를 드러낸다.
+
+    var helpPanel = document.getElementById("settingsHelp");
+    var helpLayout = document.getElementById("settingsLayout");
+    var helpBody = document.getElementById("settingsHelpBody");
+    var helpKeyLabel = document.getElementById("settingsHelpKey");
+    var helpGroupLabel = document.getElementById("settingsHelpGroup");
+
+    document.getElementById("settingsHelpClose").addEventListener("click", closeSettingHelp);
+
+    document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && settingsHelpKey) closeSettingHelp();
+    });
+
+    function closeSettingHelp() {
+        settingsHelpKey = null;
+        helpPanel.hidden = true;
+        helpLayout.classList.remove("help-open");
+        markHelpRow(null);
+    }
+
+    function markHelpRow(key) {
+        Object.keys(settingsRows).forEach(function (rowKey) {
+            var nodes = settingsRows[rowKey];
+            if (nodes) nodes.row.classList.toggle("setting-row--help", rowKey === key);
+        });
+    }
+
+    async function openSettingHelp(key) {
+        settingsHelpKey = key;
+        helpPanel.hidden = false;
+        helpLayout.classList.add("help-open");
+        helpKeyLabel.textContent = key;
+        helpGroupLabel.textContent = "";
+        markHelpRow(key);
+
+        var row = settingsRows[key];
+        if (row) row.row.scrollIntoView({ block: "nearest" });
+
+        if (settingsHelpCache[key]) {
+            renderSettingHelp(settingsHelpCache[key]);
+            return;
+        }
+
+        helpBody.textContent = "";
+        var loading = document.createElement("p");
+        loading.className = "settings-help__loading";
+        loading.textContent = "설명을 불러오는 중...";
+        helpBody.appendChild(loading);
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/settings/help/" + encodeURIComponent(key));
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            var data = await response.json();
+            settingsHelpCache[key] = data;
+            // 응답을 기다리는 동안 다른 항목으로 옮겨갔으면 늦게 온 결과로 덮지 않는다.
+            if (settingsHelpKey === key) renderSettingHelp(data);
+        } catch (err) {
+            if (settingsHelpKey !== key) return;
+            helpBody.textContent = "";
+            var failure = document.createElement("p");
+            failure.className = "settings-help__loading";
+            failure.textContent = "설명을 불러오지 못했습니다.";
+            helpBody.appendChild(failure);
+        }
+    }
+
+    function helpSection(title, text) {
+        if (!text) return null;
+        var section = document.createElement("section");
+        section.className = "settings-help__section";
+        var heading = document.createElement("h4");
+        heading.textContent = title;
+        section.appendChild(heading);
+        var body = document.createElement("p");
+        body.textContent = text;
+        section.appendChild(body);
+        return section;
+    }
+
+    function helpListSection(title, items, className) {
+        if (!items || !items.length) return null;
+        var section = document.createElement("section");
+        section.className = "settings-help__section";
+        var heading = document.createElement("h4");
+        heading.textContent = title;
+        section.appendChild(heading);
+        var list = document.createElement("ul");
+        list.className = className || "settings-help__list";
+        items.forEach(function (text) {
+            var entry = document.createElement("li");
+            entry.textContent = text;
+            list.appendChild(entry);
+        });
+        section.appendChild(list);
+        return section;
+    }
+
+    function renderSettingHelp(data) {
+        helpBody.textContent = "";
+        helpKeyLabel.textContent = data.env_key;
+        helpGroupLabel.textContent = data.group_title || "";
+
+        // 헤더 아래 메타 — 지금 무슨 값이고 기본값은 무엇인지
+        var item = settingsItems[data.env_key];
+        var meta = document.createElement("div");
+        meta.className = "settings-help__meta";
+        if (item) {
+            meta.appendChild(makeBadge(
+                data.source === "curated" ? "운영 설명" : "자동 생성",
+                data.source === "curated" ? "badge--curated" : "badge--derived",
+                data.source === "curated"
+                    ? "운영 지식을 바탕으로 작성된 설명입니다."
+                    : "설정의 타입·기본값·반영 시점에서 자동으로 만든 일반 설명입니다."));
+            var effective = item.is_secret
+                ? (item.is_set ? "설정됨" : "미설정")
+                : (item.effective_value === null || item.effective_value === undefined
+                    ? "(미설정)" : String(item.effective_value));
+            meta.appendChild(makeBadge("현재 " + effective, "badge--meta", "지금 적용 중인 값입니다."));
+            var fallback = item.default === null || item.default === undefined
+                ? "(없음)" : String(item.default);
+            meta.appendChild(makeBadge("기본 " + fallback, "badge--meta", "지정하지 않았을 때 쓰이는 값입니다."));
+        }
+        helpBody.appendChild(meta);
+
+        var summary = document.createElement("p");
+        summary.className = "settings-help__summary";
+        summary.textContent = data.summary || "";
+        helpBody.appendChild(summary);
+
+        var sections = [
+            helpSection("무엇을 제어하는가", data.behavior),
+        ];
+
+        if (data.options && data.options.length) {
+            var optionSection = document.createElement("section");
+            optionSection.className = "settings-help__section";
+            var optionHeading = document.createElement("h4");
+            optionHeading.textContent = "값에 따른 동작";
+            optionSection.appendChild(optionHeading);
+
+            data.options.forEach(function (option) {
+                var card = document.createElement("div");
+                card.className = "settings-help__option";
+                if (option.is_current) card.classList.add("settings-help__option--current");
+
+                var head = document.createElement("div");
+                head.className = "settings-help__option-head";
+                var value = document.createElement("code");
+                value.textContent = option.value;
+                head.appendChild(value);
+                if (option.label) {
+                    var label = document.createElement("span");
+                    label.className = "settings-help__option-label";
+                    label.textContent = option.label;
+                    head.appendChild(label);
+                }
+                if (option.is_current) head.appendChild(makeBadge("현재", "badge--meta", "지금 이 값으로 동작 중입니다."));
+                if (option.is_default) head.appendChild(makeBadge("기본", "badge--meta", "코드 기본값입니다."));
+                card.appendChild(head);
+
+                var effect = document.createElement("p");
+                effect.textContent = option.effect;
+                card.appendChild(effect);
+                optionSection.appendChild(card);
+            });
+            sections.push(optionSection);
+        }
+
+        sections.push(helpSection("이럴 때 이렇게 됩니다", data.example));
+        sections.push(helpSection("성능에 미치는 영향", data.performance));
+        sections.push(helpSection("안정성에 미치는 영향", data.stability));
+        sections.push(helpSection("권장 설정", data.recommendation));
+        sections.push(helpListSection("주의할 점", data.caveats));
+        sections.push(helpListSection("반영 시점과 제약", data.operational));
+
+        sections.forEach(function (section) {
+            if (section) helpBody.appendChild(section);
+        });
+
+        if (data.related && data.related.length) {
+            var relatedSection = document.createElement("section");
+            relatedSection.className = "settings-help__section";
+            var relatedHeading = document.createElement("h4");
+            relatedHeading.textContent = "함께 보는 설정";
+            relatedSection.appendChild(relatedHeading);
+            var links = document.createElement("div");
+            links.className = "settings-help__related";
+            data.related.forEach(function (relatedKey) {
+                var link = document.createElement("button");
+                link.type = "button";
+                link.className = "settings-help__related-link";
+                link.textContent = relatedKey;
+                link.addEventListener("click", function () { openSettingHelp(relatedKey); });
+                links.appendChild(link);
+            });
+            relatedSection.appendChild(links);
+            relatedSection.appendChild(document.createTextNode(""));
+            helpBody.appendChild(relatedSection);
+        }
+
+        var referenceSection = helpListSection("근거 문서", data.references, "settings-help__refs");
+        if (referenceSection) helpBody.appendChild(referenceSection);
     }
 
     function applyMode(item) {

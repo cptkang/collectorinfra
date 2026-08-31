@@ -7,7 +7,7 @@
 > **관련 결정**: D-029(알람 의도 분리), D-030(해소 이력 포함), D-031(알람 파이프라인), D-032(알람 메시지 포맷),
 > D-035(알람 이력 패턴 분석), D-036(영향 프로세스 보강), D-037(오케스트레이션) /
 > 구현 착수 시 **D-038**로 등재 예정 (§14)
-> **상태**: 계획 (미구현)
+> **상태**: **부분 구현 — 재판정(2026-08-31 · `plans/85` §4 A-1)**. **조사 실행·증거 수집·LLM 인과·리포트·pull/push 트리거는 `sre_agent` 위임 방식으로 구현 완료** — `src/nodes/fault_diagnosis.py`(pull · D-124 CW-B) · `noise_gate/.../investigation_trigger.py`(push · D-124 CW-A) · `mcp_server` 조사 도구 8종 + PromQL 7종(D-122·D-119) · `sre_agent` `DiagnosisAgent`·`briefing_builder`(D-118·D-123). **`src/diagnosis/` 자체 서브그래프는 만들지 않는다**(D-118 위임 — 재편은 이미 실행됐다). **진짜 잔여 = 결정적 상관 축 5건**: §6.1 통합 타임라인 병합 · §6.2 metric_anomaly(z-score·지속성·선행성) · §6.4 CorrelationResult(leading_signal·notes) · §7.2 복수 가설 rank·confidence · §9.1 상대시각 타임라인. 공통점은 **LLM이 못 하는 결정적 계산**이라는 것이며(D-035 취지), 착수 범위는 **`sre_agent` 도구 출력을 입력으로 받는 순수 함수 계층**으로 좁혀진다. 절별 대조표는 `plans/85` §4 A-1 참조.
 
 ---
 

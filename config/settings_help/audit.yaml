@@ -1,0 +1,155 @@
+# 설정 옵션 상세 설명 — 감사 로그 (D-191)
+# 근거: src/config.py AuditConfig · docs/02_decision.md (D-083 로테이션 배선)
+
+version: 1
+group: audit
+
+settings:
+
+  AUDIT_JSONL_ENABLED:
+    example: >-
+      감사 DB가 잠시 멈춘 사이의 활동도 파일에는 남는다. 파일 기록을 끄면 그 구간의 기록이 통째로 비어, 사후 조사에서 '그 시간에 아무 일도 없었다'와 구별되지 않는다.
+    summary: 감사 기록을 JSONL 파일로 남길지.
+    behavior: >-
+      감사는 파일과 DB 두 곳에 이중으로 남긴다. 이쪽은 파일이다. DB가 죽어도 파일에는
+      남는다는 것이 이중 기록의 목적이다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 파일에 기록한다. DB 장애 중에도 감사 기록이 끊기지 않는다.
+      - value: "false"
+        effect: 파일 기록을 끈다. DB 하나에만 의존하게 되고, DB가 멈추면 그동안의 기록이 사라진다.
+    performance: 요청당 한 줄 append다. 부담이 거의 없다.
+    stability: 두 경로 중 하나를 끄면 이중화의 의미가 사라진다.
+    recommendation: 켠 채로 둔다.
+    related: [AUDIT_DB_ENABLED, AUDIT_RETENTION_DAYS]
+
+  AUDIT_DB_ENABLED:
+    example: >-
+      운영자 화면의 감사 로그 탭은 DB 쪽을 읽는다. 이 값을 끄면 화면에서 조회·필터가 불가능해지고, 확인하려면 서버에 접속해 JSONL 파일을 직접 뒤져야 한다.
+    summary: 감사 기록을 PostgreSQL에도 남길지.
+    behavior: 조회·검색·통계가 필요한 감사 기록은 DB 쪽을 쓴다. 운영자 화면의 감사 로그 탭도 이쪽을 읽는다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: DB에 기록한다. 운영자 화면에서 조회·필터가 가능해진다.
+      - value: "false"
+        effect: >-
+          DB 기록을 끈다. 파일에는 남지만 화면에서 조회할 수 없어, 사후 확인이 파일을
+          직접 뒤지는 작업이 된다.
+    performance: 요청당 INSERT 한 건이다. 조회 자체의 비용에 비하면 작다.
+    stability: DB가 응답하지 않으면 기록이 지연될 수 있다 — 파일 기록을 함께 켜 두는 이유다.
+    recommendation: 켠 채로 둔다.
+    related: [AUDIT_JSONL_ENABLED, AUDIT_RETENTION_DAYS]
+
+  AUDIT_RETENTION_DAYS:
+    example: >-
+      90일이면 분기 점검에서 직전 분기를 되짚을 수 있다. 30일로 줄이면 분기 점검 시점에 이미 앞 두 달치가 지워져 있어, 정작 조사가 필요할 때 근거가 없다.
+    summary: 감사 로그를 며칠 보관할지 — 지난 기록은 자동 삭제된다.
+    behavior: >-
+      이 기간이 지난 DB 기록은 기동 시 1회, 그리고 하루 한 번 자동으로 지워진다.
+      0 이하로 두면 정리가 비활성화돼 무한히 쌓인다.
+    options:
+      - value: "90"
+        label: 기본
+        effect: 3개월치를 보관한다. 대부분의 사후 조사에 충분한 기간이다.
+      - value: "0 이하"
+        effect: 자동 정리를 끈다. 기록이 계속 쌓여 언젠가 저장 공간과 조회 성능 문제가 된다.
+      - value: "365 이상"
+        effect: 1년 이상 보관한다. 규정 요건이 있다면 그쪽이 기준이지만, 테이블 크기와 조회 속도를 함께 봐야 한다.
+    performance: 보관 기간이 길수록 감사 테이블이 커지고 화면 조회가 느려진다.
+    stability: >-
+      짧게 잡으면 사고 조사 시점에 이미 근거가 지워져 있을 수 있다. 규정상 보존 요건이
+      있다면 그것이 하한이다.
+    recommendation: 규정 요건을 먼저 확인하고, 없으면 기본 90일을 유지한다.
+    caveats:
+      - 자동 삭제 대상은 DB 기록이다. JSONL 파일은 별도 로테이션 정책을 따른다.
+    related: [AUDIT_DB_ENABLED, AUDIT_JSONL_ENABLED]
+
+  AUDIT_SENSITIVE_TABLES:
+    example: >-
+      인증 사용자 테이블을 여기 등록해 두면, 그 테이블을 조회한 기록이 감사에서 구분돼 보인다. 정기 점검에서 '누가 계정 정보를 열람했는가'를 바로 추릴 수 있다.
+    summary: 접근 자체를 특별히 기록할 민감 테이블 목록.
+    behavior: 여기 등록된 테이블을 조회하면 감사에 별도로 표시된다. 비워 두면 모든 테이블을 동등하게 취급한다.
+    options:
+      - value: "[]"
+        label: 기본
+        effect: 테이블별 구분 없이 기록한다.
+      - value: '["auth_users","audit_logs"]'
+        effect: 나열한 테이블 접근이 감사에서 구분돼 보인다. 사후 점검에서 우선 확인 대상이 된다.
+    performance: 이름 비교라 비용이 없다.
+    stability: 목록에 없는 테이블은 특별 취급되지 않는다 — 스키마가 늘어나면 함께 갱신해야 한다.
+    caveats:
+      - .env에 적을 때는 JSON 배열 형식이어야 한다.
+    related: [AUDIT_DB_ENABLED]
+
+  AUDIT_ALERT_ON_FAILED_LOGIN:
+    example: >-
+      임계를 2로 낮추면 비밀번호를 두 번 헷갈린 정상 사용자도 매번 보안 경보를 만든다. 경보가 흔해지면 진짜 시도 공격이 그 사이에 묻힌다.
+    summary: 로그인 실패가 몇 번 연속되면 보안 경보를 만들지.
+    behavior: 같은 대상에 대해 이 횟수만큼 로그인이 실패하면 감사에 보안 경보를 생성한다. 계정 잠금과는 별개의 신호다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 다섯 번 실패하면 경보를 남긴다. 오타로 인한 실패와 시도 공격을 구분하기에 적당한 선이다.
+      - value: "2~3"
+        effect: 민감하게 반응한다. 비밀번호를 헷갈린 정상 사용자까지 경보로 잡혀 신호가 묻힌다.
+      - value: "20 이상"
+        effect: 느슨해져 실제 시도 공격도 한참 뒤에야 드러난다.
+    performance: 카운트 비교라 비용이 없다.
+    stability: 임계를 낮추면 경보가 많아져 결국 아무도 보지 않게 된다 — 오탐과 미탐의 균형 문제다.
+    recommendation: 기본 5 유지. 계정 잠금 임계(AUTH_MAX_LOGIN_ATTEMPTS)와 함께 본다.
+    related: [AUTH_MAX_LOGIN_ATTEMPTS, AUTH_LOCKOUT_MINUTES]
+
+  AUDIT_ALERT_ON_LARGE_RESULT:
+    example: >-
+      기본 조회 상한(QUERY_DEFAULT_LIMIT)을 5000으로 올렸다면, 경보 임계도 함께 올려야 한다. 그렇지 않으면 정상 조회가 매번 대량 반출 경보로 잡힌다.
+    summary: 한 번에 몇 행 이상을 조회하면 대량 조회로 보고 경보를 남길지.
+    behavior: 조회 결과가 이 행수를 넘으면 감사에 경보를 만든다. 데이터 대량 반출 징후를 잡는 신호다.
+    options:
+      - value: "5000"
+        label: 기본
+        effect: 기본 조회 상한(1000)의 다섯 배다. 정상 업무 조회는 대개 걸리지 않는다.
+      - value: "1000 이하"
+        effect: 기본 LIMIT과 겹쳐 일상적인 조회가 계속 경보로 잡힌다.
+      - value: "50000 이상"
+        effect: 사실상 꺼 둔 것과 같다.
+    performance: 행수 비교라 비용이 없다.
+    stability: QUERY_DEFAULT_LIMIT을 올렸다면 이 값도 함께 올려야 경보가 의미를 유지한다.
+    recommendation: 기본 조회 상한의 몇 배 수준으로 유지한다.
+    related: [QUERY_DEFAULT_LIMIT]
+
+  AUDIT_NIGHT_ALERT_START:
+    example: >-
+      야간 배치 작업이 새벽 3시에 돌면서 조회를 한다면, 시작 시각이 2시인 동안 그 작업이 매일 심야 접근으로 표시된다 — 실제 업무 시간대에 맞춰 정해야 신호가 의미를
+      갖는다.
+    summary: 심야 시간대 조회 경보의 시작 시각(시).
+    behavior: >-
+      이 시각부터 AUDIT_NIGHT_ALERT_END까지의 조회를 심야 접근으로 보고 감사에 표시한다.
+      정상 업무 시간 밖의 접근을 눈에 띄게 하려는 신호다.
+    options:
+      - value: "2"
+        label: 기본
+        effect: 새벽 2시부터를 심야로 본다.
+      - value: "0"
+        effect: 자정부터를 심야로 본다. 야근이 잦은 환경에서는 경보가 늘어난다.
+    performance: 영향 없다.
+    stability: 교대 근무나 야간 배치 작업이 있는 환경에서는 정상 작업이 계속 경보로 잡힌다.
+    recommendation: 실제 업무 시간대를 확인하고 정한다.
+    related: [AUDIT_NIGHT_ALERT_END]
+
+  AUDIT_NIGHT_ALERT_END:
+    example: >-
+      이른 출근이 잦은 조직에서 종료를 9시로 잡으면 정상 근무가 계속 심야 접근으로 잡힌다. 시작보다 이른 시각을 넣으면 구간 해석이 의도와 달라질 수 있으므로 두 값을 함께
+      본다.
+    summary: 심야 시간대 조회 경보의 종료 시각(시).
+    behavior: AUDIT_NIGHT_ALERT_START부터 이 시각까지가 심야 구간이다.
+    options:
+      - value: "6"
+        label: 기본
+        effect: 새벽 6시까지를 심야로 본다.
+      - value: "9"
+        effect: 업무 시작 전까지를 심야로 본다. 이른 출근이 잦으면 경보가 늘어난다.
+    performance: 영향 없다.
+    stability: 시작 시각과의 관계를 뒤집어 설정하면(끝 < 시작) 구간 해석이 의도와 달라질 수 있다.
+    related: [AUDIT_NIGHT_ALERT_START]

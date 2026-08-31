@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=11">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -185,6 +185,17 @@
                         <button class="input-file-remove" id="removeFile">Remove</button>
                     </div>
 
+                    <!-- 추천 질의 확인 바 (Plan 86 · G-2 = 확인 후 전송).
+                         알람 카드에서 올라온 질의는 **무엇이 나가는지 보이고 확인을 받은 뒤** 전송한다.
+                         자동 전송하지 않는다 — 시스템이 만든 문장을 사용자가 읽지도 않고 보내면 안 된다. -->
+                    <div class="prompt-confirm" id="promptConfirm" style="display: none;">
+                        <span class="prompt-confirm-badge">알람에서 생성</span>
+                        <span class="prompt-confirm-text"></span>
+                        <button type="button" class="prompt-confirm-btn prompt-confirm-btn--run"
+                            id="promptConfirmRun">이대로 조회</button>
+                        <button type="button" class="prompt-confirm-btn" id="promptConfirmEdit">수정</button>
+                    </div>
+
                     <!-- Input row -->
                     <div class="input-row">
                         <textarea id="prompt" placeholder="인프라 데이터에 대해 질문하세요..." rows="1"></textarea>
@@ -258,6 +269,30 @@
                 <button type="button" class="btn btn-secondary" id="alarmClearBtn"
                     style="font-size: 0.75rem; padding: 5px 12px;">모두 지우기</button>
             </div>
+            <!-- 레벨 필터 + 키워드 찾아보기.
+                 필터는 **표시만** 거른다 — 미확인 배지·수신 건수는 필터와 무관하게 유지된다
+                 (필터에 가려진 알람을 못 본 알람으로 만들면 안 된다).
+                 필터 상태는 저장하지 않는다 — 다시 들어왔을 때 필터가 걸린 채면
+                 알람이 하나도 없는 것처럼 보인다. -->
+            <div class="alarm-tools" id="alarmTools">
+                <div class="alarm-level-filter" role="group" aria-label="알람 레벨 필터">
+                    <button type="button" class="alarm-chip active" data-severity=""
+                        aria-pressed="true">전체<span class="alarm-chip-count"></span></button>
+                    <button type="button" class="alarm-chip alarm-chip--critical" data-severity="심각"
+                        aria-pressed="false">심각<span class="alarm-chip-count"></span></button>
+                    <button type="button" class="alarm-chip alarm-chip--major" data-severity="경고"
+                        aria-pressed="false">경고<span class="alarm-chip-count"></span></button>
+                    <button type="button" class="alarm-chip alarm-chip--minor" data-severity="주의"
+                        aria-pressed="false">주의<span class="alarm-chip-count"></span></button>
+                    <button type="button" class="alarm-chip alarm-chip--clear" data-severity="해소"
+                        aria-pressed="false">해소<span class="alarm-chip-count"></span></button>
+                </div>
+                <input type="search" class="alarm-search" id="alarmSearch"
+                    placeholder="찾아보기 — 서버·알람명·요약·원인"
+                    aria-label="알람 키워드 찾아보기">
+                <button type="button" class="alarm-filter-reset" id="alarmFilterReset"
+                    title="필터 초기화" aria-label="레벨·검색 필터 초기화">초기화</button>
+            </div>
             <div class="alarm-list" id="alarmList"></div>
             <div class="alarm-empty" id="alarmEmpty">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -271,7 +306,7 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=6"></script>
+    <script src="/static/js/app.js?v=8"></script>
 </body>
 
 </html>

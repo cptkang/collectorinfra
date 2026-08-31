@@ -1,0 +1,410 @@
+# 설정 옵션 상세 설명 — 노이즈 게이트: 통보 · 메타경보 · 피드백 · 사건 계측 (D-191)
+# 근거: src/config.py NoiseGateConfig (Plan 60 E3/E6 · D-048.9 · D-049 · Plan 83)
+#       docs/28_noise_cancellation_operator_guide.md
+
+version: 1
+group: noise_gate
+
+settings:
+
+  NOISE_META_ALERT_SUPPRESS_RATIO:
+    example: >-
+      게이트가 한 시간 동안 들어온 알람의 95%를 억제했다면, 억제가 지나쳐 진짜 장애까지 삼키고 있을 수 있다. 이 경보가 없으면 게이트가 조용히 모든 것을 흡수해도 아무도
+      모른다 — 게이트 자체를 감시하는 장치다.
+    summary: 억제율이 이 비율을 넘으면 "너무 많이 억제하고 있다"고 알릴지의 기준.
+    behavior: >-
+      게이트가 지나치게 많이 억제하면 실제 장애까지 묻힐 수 있다. 집계 창 안의 억제
+      비율이 이 값을 넘으면 메타경보를 만들어 운영자에게 알린다 — 게이트 자체를
+      감시하는 장치다.
+    options:
+      - value: "0.9"
+        label: 기본
+        effect: 90%를 넘게 억제하면 경보한다. 대부분 억제되고 있다는 신호다.
+      - value: "0.7"
+        effect: 더 일찍 알린다. 억제율이 원래 높은 환경에서는 경보가 상시 발생한다.
+      - value: "0.99"
+        effect: 거의 전부 억제할 때만 알린다 — 사실상 감시가 없는 상태에 가깝다.
+    performance: 집계 계산이라 비용이 없다.
+    stability: >-
+      이 경보가 없으면 게이트가 조용히 모든 것을 삼켜도 아무도 모른다. 억제율이 높은
+      것 자체가 나쁜 것은 아니지만, 그 사실은 보여야 한다.
+    recommendation: 기본 0.9에서 시작해 실제 억제율 분포를 보고 조정한다.
+    related: [NOISE_META_ALERT_WINDOW_SECONDS, NOISE_META_ALERT_MIN_EVENTS]
+
+  NOISE_META_ALERT_WINDOW_SECONDS:
+    example: >-
+      창이 5분이면 알람 두세 건만으로 억제율 100%가 나와 경보가 남발된다. 한 시간이면 표본이 충분해 비율이 안정적이지만, 문제를 알아채는 시점도 그만큼 늦다.
+    summary: 억제율과 운영 지표를 집계할 시간창(초).
+    behavior: 이 창 단위로 억제율을 계산하고 메타경보 여부를 판단한다.
+    options:
+      - value: "3600"
+        label: 기본 (1시간)
+        effect: 한 시간 단위로 집계한다. 짧은 변동에 흔들리지 않는다.
+      - value: "300"
+        effect: 5분 단위. 민감하게 반응하지만 표본이 적어 비율이 튄다.
+      - value: "86400"
+        effect: 하루 단위. 안정적이지만 문제를 하루 뒤에 안다.
+    performance: 창이 길수록 유지할 집계 상태가 늘어난다.
+    stability: 창이 짧으면 알람 두세 건만으로 억제율 100%가 나와 경보가 남발된다.
+    recommendation: 기본 1시간 유지.
+    related: [NOISE_META_ALERT_SUPPRESS_RATIO, NOISE_META_ALERT_MIN_EVENTS]
+
+  NOISE_META_ALERT_MIN_EVENTS:
+    example: >-
+      한 시간 동안 알람이 한 건도 없으면 평화로운 것일 수도, 수신부가 죽은 것일 수도 있다. 이 경보가 그 둘을 구분해 주며, 0으로 두면 수신 경로가 끊겨도 아무도 모른다.
+    summary: 창 안의 알람이 이 수보다 적으면 "알람이 안 들어온다"고 알린다.
+    behavior: >-
+      알람이 아예 안 오는 것도 이상 신호다 — 수신부가 죽었거나 연결이 끊겼을 수 있다.
+      창 안 이벤트 수가 이 값 미만이면 무수신 메타경보를 만든다.
+    options:
+      - value: "1"
+        label: 기본
+        effect: 한 시간 동안 알람이 한 건도 없으면 알린다.
+      - value: "0"
+        effect: 무수신 감지를 끈다. 수신부가 죽어도 아무도 모른다.
+      - value: "10"
+        effect: 한 시간에 열 건 미만이면 이상으로 본다 — 조용한 환경에서는 상시 경보가 된다.
+    performance: 영향 없다.
+    stability: >-
+      알람 시스템의 침묵은 "평화"일 수도 있고 "고장"일 수도 있다. 이 값이 그 둘을
+      구분하려는 장치다.
+    recommendation: 평소 알람 유입량을 보고 정한다. 기본 1은 최소한의 생존 확인이다.
+    related: [NOISE_META_ALERT_WINDOW_SECONDS]
+
+  NOISE_ENABLE_AI_SEVERITY_BOOST:
+    example: >-
+      메시지 본문에 '커널 패닉' 같은 표현이 있으면 원래 심각도가 2여도 상향된다. 심각도가 오르면 억제 대상에서 빠지므로 통보량이 늘어나는 방향이다 — 오억제가 문제일 때
+      도움이 된다.
+    summary: 알람 메시지 내용을 보고 심각도를 올릴지.
+    behavior: >-
+      메시지 본문을 분석해 심각도를 상향 조정한다. 동적 기준선 이상탐지의 결과도
+      이 스위치가 켜져 있어야 심각도에 반영된다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 심각도는 원본 그대로 쓴다.
+      - value: "true"
+        effect: 내용상 더 심각해 보이는 알람의 심각도가 올라간다. 통보량이 늘어난다.
+    performance: 분석 비용이 붙는다. 동적 기준선과 함께 쓰면 계산이 더 늘어난다.
+    stability: >-
+      심각도가 올라가면 억제 대상에서 빠진다 — 통보량이 늘어나는 방향이다. 억제율이
+      높아 문제인 환경에서는 도움이 되지만, 반대 상황에서는 부담이 된다.
+    recommendation: 오억제가 실제 문제일 때 켠다.
+    related: [NOISE_AI_SEVERITY_ESCALATE_ONLY, NOISE_DYNAMIC_BASELINE_ENABLED]
+
+  NOISE_AI_SEVERITY_ESCALATE_ONLY:
+    example: >-
+      하향을 막으려고 이 값을 켜 두어도, 어차피 하향은 구현 자체에 없다 — 코드가 이 값을 읽지 않는다.
+    summary: 심각도 조정을 올리는 방향으로만 허용할지 — 현재 코드가 읽지 않는다.
+    behavior: >-
+      내리는 방향을 금지해 안전을 확보하려는 항목이다. 지금 코드에는 이 값을 읽는
+      곳이 없으며, 상향 전용 동작은 구현 자체에 고정돼 있다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음). 하향은 어차피 일어나지 않는다.
+    related: [NOISE_ENABLE_AI_SEVERITY_BOOST]
+
+  NOISE_BUSINESS_HOURS_CSV:
+    example: >-
+      업무 시간 밖 알람의 티어를 낮추려고 값을 채워도 아무 변화가 없다 — 소비처가 없다.
+    summary: 업무 시간대 정의 — 현재 코드가 읽지 않는다.
+    behavior: 업무 시간 밖 알람의 티어를 낮추려는 예약 항목이다. 지금은 소비처가 없다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음).
+    related: [AUDIT_NIGHT_ALERT_START]
+
+  NOISE_TICKET_BATCH_QUEUE_ENABLED:
+    example: >-
+      TICKET은 즉시 대응할 것은 아니지만 기록해 둘 알람이다. 큐에 쌓아 두면 주간 리뷰에서 묶어 볼 수 있고, 끄면 그 층의 알람이 어디에도 남지 않는다.
+    summary: TICKET 티어 알람을 일괄 요약용 큐에 쌓을지 — 기본으로 켜져 있다.
+    behavior: >-
+      TICKET은 즉시 대응할 것은 아니지만 기록해 둘 알람이다. 큐에 쌓아 두면 나중에
+      묶어서 요약할 수 있다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: TICKET 알람이 큐 파일에 쌓인다.
+      - value: "false"
+        effect: 쌓지 않는다. TICKET 알람의 일괄 요약이 불가능해진다.
+    performance: 한 줄 append다. 비용이 거의 없다.
+    stability: 큐 파일이 계속 커지므로 정리 정책이 필요하다.
+    related: [NOISE_TICKET_BATCH_QUEUE_PATH]
+
+  NOISE_TICKET_BATCH_QUEUE_PATH:
+    example: >-
+      상대 경로는 서버 작업 디렉터리 기준이다. 파일이 계속 커지므로 정리 정책이 없으면 언젠가 디스크를 압박한다.
+    summary: TICKET 일괄 요약 큐 파일 경로.
+    behavior: 상대 경로는 서버 작업 디렉터리 기준이다.
+    performance: 영향 없다.
+    stability: 경로를 바꾸면 이전 큐는 옛 경로에 남는다.
+    related: [NOISE_TICKET_BATCH_QUEUE_ENABLED]
+
+  NOISE_MESSAGE_ENRICHMENT_ENABLED:
+    example: >-
+      디스크 알람에 '어느 파일시스템이 몇 % 찼는지', 로그 알람에 '어떤 패턴이 몇 건 났는지'가 함께 붙는다. CPU·메모리
+      보강(ALARM_PROCESS_ENRICH_ENABLED)과는 별개 경로라 그쪽 동작은 바뀌지 않는다.
+    summary: 디스크·네트워크·프로세스·로그 알람에도 상세 정보를 붙일지.
+    behavior: >-
+      기존 프로세스 보강(CPU·메모리)과 별개의 경로다. 켜면 그 밖의 알람 종류에도
+      메시지 내용을 근거로 관련 정보를 조회해 첨부한다. CPU·메모리 쪽 동작은 바뀌지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 새 종류의 보강을 하지 않는다. 통보 내용이 지금과 같다.
+      - value: "true"
+        effect: 디스크·네트워크·로그 알람에도 근거 정보가 붙는다.
+    performance: 알람마다 추가 조회가 붙는다. 티어 제한으로 대상을 좁힐 수 있다.
+    stability: 보강 실패는 통보를 막지 않는다.
+    recommendation: 켤 때는 NOISE_ENRICHMENT_MIN_TIER로 대상을 PAGE 이상에 한정하는 편이 안전하다.
+    related: [NOISE_ENRICHMENT_MIN_TIER, NOISE_ENRICHMENT_L1_TIMEOUT_SECONDS, ALARM_PROCESS_ENRICH_ENABLED]
+
+  NOISE_ENRICHMENT_MIN_TIER:
+    example: >-
+      하한을 DASHBOARD로 낮추면 화면에 뜨는 거의 모든 알람에 보강 조회가 붙는다. 알람이 분당 수십 건 들어오는 환경에서는 그 조회만으로 대상 시스템에 상당한 부하가
+      간다.
+    summary: 어느 티어 이상일 때만 보강 정보를 붙일지.
+    behavior: 보강은 비용이 드는 조회다. 중요한 알람에만 붙이도록 하한을 둔다.
+    options:
+      - value: PAGE
+        label: 기본
+        effect: 즉시 대응 알람에만 붙인다. 조회 비용이 가장 적다.
+      - value: TICKET
+        effect: 기록용 알람에도 붙인다. 나중에 볼 때 근거가 남지만 조회가 늘어난다.
+      - value: DASHBOARD
+        effect: 화면에 뜨는 거의 모든 알람에 붙인다 — 조회 부담이 크게 늘어난다.
+    performance: 하한을 낮출수록 보강 대상 알람이 늘어 외부 호출이 급증한다.
+    stability: 폭주 상황에서 하한이 낮으면 보강 조회가 워커를 붙잡는다.
+    recommendation: 기본 PAGE 유지.
+    related: [NOISE_MESSAGE_ENRICHMENT_ENABLED]
+
+  NOISE_ENRICHMENT_L1_TIMEOUT_SECONDS:
+    example: >-
+      서버 전체 프로세스 조회는 무거운 편이라 3초 안에 못 끝나는 경우가 있다. 실패하면 보강 없이 통보되므로 알람 자체를 놓치지는 않는다.
+    summary: 보강을 위한 추가 조회에 주는 시간(초).
+    behavior: 서버 전체 프로세스 조회 같은 무거운 조회의 상한이다.
+    options:
+      - value: "3.0"
+        label: 기본
+        effect: 3초. 실패하면 보강 없이 통보한다.
+      - value: "1"
+        effect: 자주 실패해 보강이 붙지 않는다.
+      - value: "10 이상"
+        effect: 성공률은 오르지만 알람 통보가 그만큼 늦어진다.
+    performance: 알람 처리 시간에 직접 얹힌다.
+    stability: 실패해도 통보는 나간다 — 근거 정보만 빠진다.
+    recommendation: 기본 3초 유지.
+    related: [NOISE_MESSAGE_ENRICHMENT_ENABLED]
+
+  NOISE_ENRICHMENT_PROFILE_MAP_CSV:
+    example: >-
+      알람 종류별 요지 제목을 바꾸는 용도다. 형식이 잘못된 항목은 조용히 무시되고 기본 제목이 쓰인다.
+    summary: 알람 종류별 보강 요지 제목을 바꾸는 매핑.
+    behavior: '"disk=제목,log=제목" 형식이다. 비워 두면 기본 제목을 쓴다.'
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 기본 제목을 쓴다.
+    performance: 영향 없다.
+    stability: 형식이 잘못된 항목은 무시된다.
+    related: [NOISE_MESSAGE_ENRICHMENT_ENABLED]
+
+  NOISE_SSE_BRIDGE_ENABLED:
+    summary: 워커가 만든 알람 카드를 웹 화면으로 실시간 중계할지.
+    behavior: >-
+      워커는 API 서버와 다른 흐름에서 돌기 때문에, 워커가 만든 카드는 그대로는 화면에
+      닿지 않는다. 이 브리지가 Redis를 통해 중계한다. 꺼져 있으면 워커의 판단 결과가
+      로그에만 남는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 워커가 만든 카드가 화면에 뜨지 않는다.
+      - value: "true"
+        effect: TICKET·DASHBOARD 카드가 실시간으로 화면에 나타난다.
+    example: >-
+      "알람이 처리는 되는데 화면에 안 뜬다"는 신고에서 확인할 값이다. 감사 파일에는
+      판단 기록이 있는데 화면이 비어 있다면 이 값이 꺼져 있을 가능성이 높다.
+    performance: 알람마다 Redis 발행이 하나 붙는다. 비용은 작다.
+    stability: Redis가 없으면 중계가 되지 않는다.
+    recommendation: 알람 화면을 쓰는 환경에서는 켠다.
+    related: [NOISE_SSE_BRIDGE_CHANNEL, NOISE_SSE_SUPPRESSED_ENABLED]
+    references:
+      - docs/28_noise_cancellation_operator_guide.md
+
+  NOISE_SSE_BRIDGE_CHANNEL:
+    example: >-
+      워커와 API가 같은 채널 이름을 봐야 한다. 한쪽만 바꾸면 중계가 조용히 끊겨 화면에 아무것도 뜨지 않는다.
+    summary: 중계에 쓸 Redis 채널 이름.
+    behavior: 워커와 API가 같은 채널 이름을 봐야 한다. 한쪽만 바꾸면 중계가 끊긴다.
+    performance: 영향 없다.
+    stability: 바꿀 이유가 거의 없는 값이다.
+    related: [NOISE_SSE_BRIDGE_ENABLED]
+
+  NOISE_SSE_SUPPRESSED_ENABLED:
+    example: >-
+      억제율이 90%인 환경에서 이 값을 켜면 발행량이 열 배가 된다 — 전체 실시간 트래픽을 좌우하는 최대 요인이다. 오억제 점검이 필요한 기간에만 켜고 되돌리는 편이
+      안전하다.
+    summary: 억제된 알람까지 화면으로 내보낼지 — 억제 감사용이다.
+    behavior: >-
+      억제된 알람은 원래 화면에 뜨지 않는다. 켜면 관리자에게만 보이는 감사 레벨로
+      함께 내보내, 무엇이 억제되고 있는지 화면에서 확인할 수 있다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 억제된 알람은 화면에 나오지 않는다. 감사 파일에서만 확인할 수 있다.
+      - value: "true"
+        effect: >-
+          억제 포함 표시 레벨이 선택지에 나타나고 관리자에게 전송된다. 억제율이 높은
+          환경에서는 이것이 가장 큰 트래픽 원인이 된다.
+    performance: >-
+      억제된 알람 전량이 발행 대상이 되므로, 억제율이 높을수록 발행량이 급증한다.
+      대부분의 환경에서 이 값이 전체 SSE 트래픽을 좌우한다.
+    stability: 트래픽이 크게 늘 수 있으므로 상시 켜기보다 점검 기간에만 켜는 편이 낫다.
+    recommendation: 오억제 점검이 필요한 기간에만 켠다.
+    related: [NOISE_SSE_BRIDGE_ENABLED, NOISE_DECISION_STORE_ENABLED]
+
+  NOISE_INCIDENT_TRACKING_ENABLED:
+    summary: PAGE 알람의 확인·해결 흐름을 사건 단위로 추적할지.
+    behavior: >-
+      켜면 알람 카드에 확인 버튼이 나타나고, 누가 언제 확인했는지와 해결까지 걸린
+      시간이 기록된다. 꺼져 있으면 확인 버튼 자체가 표시되지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 확인 버튼이 없다. 대응 시간 지표도 계산되지 않는다.
+      - value: "true"
+        effect: 사건 라이프사이클이 기록되고 평균 확인·해결 시간을 볼 수 있다.
+    example: >-
+      "확인 버튼이 안 보인다"는 문의의 원인 중 하나다. 다른 하나는 그 카드가 PAGE 티어가
+      아닌 경우다.
+    performance: 사건 이벤트가 Redis로 발행되고 API가 PostgreSQL에 기록한다. 알람당 몇 건의 쓰기가 붙는다.
+    stability: >-
+      PostgreSQL 연결과 Redis가 모두 필요하다. 둘 중 하나가 없으면 켜도 동작하지 않는다.
+    recommendation: 대응 시간 지표가 필요하면 켠다. 켜기 전에 DB 연결을 확인한다.
+    related: [NOISE_INCIDENT_EVENT_CHANNEL, NOISE_SSE_BRIDGE_ENABLED]
+    references:
+      - docs/28_noise_cancellation_operator_guide.md
+
+  NOISE_INCIDENT_EVENT_CHANNEL:
+    example: >-
+      워커가 발행하고 API가 받아 DB에 쓴다. 양쪽이 같은 이름을 봐야 하며, 바꿀 이유가 거의 없는 값이다.
+    summary: 사건 이벤트를 주고받을 Redis 채널 이름.
+    behavior: 워커가 발행하고 API가 받아 DB에 쓴다. 양쪽이 같은 이름을 봐야 한다.
+    performance: 영향 없다.
+    stability: 바꿀 이유가 거의 없는 값이다.
+    related: [NOISE_INCIDENT_TRACKING_ENABLED]
+
+  NOISE_ALARM_PROMPT_LLM_SUGGEST_ENABLED:
+    example: >-
+      CPU 알람 카드에는 '이 서버 CPU 사용률 추이'처럼 검증된 질의가 이미 붙는다. 반면 관리·플랫폼 계열처럼 축이 매핑되지 않은 알람은 추천이 비는데, 이 값을 켜면
+      그런 카드에서만 LLM이 질의 하나를 제안한다 — 제안된 질의도 사용자가 눌러야 실행되므로 잘못된 조회가 자동으로 나가지는 않는다.
+    summary: 알람 카드에서 "이 알람을 조회할 질의"를 LLM이 추천할지의 여부.
+    behavior: >-
+      알람 카드는 자원 종류(CPU·메모리·파일시스템 등)에 따라 미리 검증된 조회 질의를
+      추천한다. 이 설정을 켜면 **그 추천이 하나도 없는 알람**에 한해 권고 조치·패턴
+      분석을 LLM에 보내 질의 1건을 더 만들어 본다. 추천이 이미 있는 알람에서는
+      호출 자체가 일어나지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: LLM을 부르지 않는다. 미리 검증된 추천만 표시된다(추가 비용 없음).
+      - value: "true"
+        effect: >-
+          검증된 추천이 없는 알람에서만 LLM이 질의를 제안한다. 제안된 질의도 사용자가
+          확인 버튼을 눌러야 실행된다.
+    performance: >-
+      켜도 검증된 추천이 없는 알람에서만 호출한다. 실패하거나 느리면 추천 없이 넘어가며
+      알람 카드 표시가 지연되지 않는다.
+    stability: >-
+      LLM이 만든 질의는 미리 검증된 질의와 달리 조회가 잘 된다는 보장이 없다. 그래서
+      기본은 꺼져 있고, 켜더라도 사용자 확인 없이는 실행되지 않는다.
+    recommendation: >-
+      기본(꺼짐)으로 두고, 검증된 추천이 없는 알람 종류가 많아 불편할 때 켠다.
+    related: [LLM_PROVIDER]
+
+  NOISE_ENABLE_LLM_ACTIONABILITY:
+    summary: 운영자 피드백(유효·노이즈)을 받아 판단에 참고할지 — 피드백 버튼의 전제다.
+    behavior: >-
+      켜면 알람 카드에 유효·노이즈 버튼이 나타나고, 쌓인 라벨이 이후 판단의 참고
+      예시로 쓰인다. 꺼져 있으면 버튼을 눌러도 "피드백 비활성"이 뜬다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 피드백 버튼이 동작하지 않는다.
+      - value: "true"
+        effect: 피드백을 받고, 최대 몇 건을 참고 예시로 판단에 넣는다.
+    example: >-
+      "피드백 비활성"이 뜨는 원인은 둘이다 — 이 값이 꺼져 있거나, 게이트 전체
+      스위치(NOISE_ENABLE_NOISE_GATE)가 꺼져 있는 경우다.
+    performance: 판단에 LLM 호출이 붙는다. 알람 유입량만큼 호출이 발생한다.
+    stability: >-
+      피드백은 즉시 반영되지 않는다 — 참고 예시로 들어갈 뿐 결정적 규칙이 되지는
+      않는다. 라벨이 충분히 쌓이면 결정적 규칙으로 승격시키는 것이 다음 단계다.
+    recommendation: 게이트를 켠 뒤 운영이 안정되면 함께 켠다.
+    caveats:
+      - 알람 유입량만큼 LLM 호출이 발생한다 — 외부 과금 공급자를 쓰는 환경에서는 비용 영향을 먼저 확인한다(D-127).
+    related: [NOISE_FEEDBACK_STORE_ENABLED, NOISE_ACTIONABILITY_FEWSHOT_COUNT, NOISE_ENABLE_NOISE_GATE]
+    references:
+      - docs/28_noise_cancellation_operator_guide.md
+
+  NOISE_FEEDBACK_STORE_ENABLED:
+    example: >-
+      액션가능성 기능이 꺼져 있으면 이 값이 켜져 있어도 피드백 자체가 들어오지 않는다. 둘은 상위·하위 관계라 위쪽부터 확인해야 한다.
+    summary: 운영자 피드백을 파일에 적재할지 — 기본으로 켜져 있다.
+    behavior: 피드백 한 건이 한 줄로 쌓인다. 액션가능성 기능이 켜져 있어야 실제로 피드백을 받을 수 있다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 피드백이 적재된다.
+      - value: "false"
+        effect: 적재하지 않는다. 피드백이 축적되지 않아 참고 예시도 만들어지지 않는다.
+    performance: 한 줄 append다.
+    stability: 상위 스위치가 꺼져 있으면 이 값이 켜져 있어도 피드백 자체가 들어오지 않는다.
+    related: [NOISE_ENABLE_LLM_ACTIONABILITY, NOISE_FEEDBACK_STORE_PATH, NOISE_FEEDBACK_STORE_MAX_LINES]
+
+  NOISE_FEEDBACK_STORE_PATH:
+    example: >-
+      경로를 바꾸면 이전 피드백은 옛 경로에 남아 참고 예시 후보에서 빠진다 — 쌓아 온 라벨이 갑자기 반영되지 않는 것처럼 보인다.
+    summary: 운영자 피드백을 저장할 파일 경로.
+    behavior: 상대 경로는 서버 작업 디렉터리 기준이다.
+    performance: 영향 없다.
+    stability: 경로를 바꾸면 이전 피드백은 옛 경로에 남아, 참고 예시에서 빠진다.
+    related: [NOISE_FEEDBACK_STORE_ENABLED]
+
+  NOISE_FEEDBACK_STORE_MAX_LINES:
+    example: >-
+      상한을 넘으면 오래된 줄부터 밀려나고, 밀려난 피드백은 참고 예시에서도 사라진다. 1000으로 줄이면 초기에 공들여 남긴 라벨이 금방 없어져 학습 효과가 약해진다.
+    summary: 피드백 파일에 몇 줄까지 남길지 — 이 값이 곧 조회 가능한 범위다.
+    behavior: >-
+      상한을 넘으면 오래된 줄부터 밀려난다. 밀려난 피드백은 참고 예시 후보에서도
+      사라지므로, 이 값은 보관 한도이자 조회 창이다.
+    options:
+      - value: "20000"
+        label: 기본
+        effect: 최근 2만 건을 보관한다. 상당 기간의 라벨이 유지된다.
+      - value: "1000"
+        effect: 금방 밀려난다. 초기에 남긴 라벨이 사라져 학습 효과가 약해진다.
+      - value: "100000 이상"
+        effect: 오래 보관하지만 파일이 커지고 조회가 느려진다.
+    performance: 파일이 클수록 유사 피드백 검색이 느려진다.
+    stability: 밀려난 피드백은 복구되지 않는다 — 장기 보관이 필요하면 별도로 백업한다.
+    recommendation: 기본 2만 유지.
+    related: [NOISE_FEEDBACK_STORE_PATH]
+
+  NOISE_ACTIONABILITY_FEWSHOT_COUNT:
+    example: >-
+      유사 피드백은 알람 이름이 정확히 일치해야 걸린다. 이름이 조금만 달라도 예시가 붙지 않으므로, 개수를 늘려도 적중이 없으면 효과가 없다.
+    summary: 판단할 때 참고 예시로 넣을 과거 피드백을 몇 건까지 쓸지.
+    behavior: 비슷한 과거 피드백을 이 개수만큼 프롬프트에 넣는다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 세 건. 방향을 잡기에 충분하고 토큰 부담도 작다.
+      - value: "1"
+        effect: 한 건이 빗나가면 판단이 그쪽으로 끌려간다.
+      - value: "10 이상"
+        effect: 프롬프트가 길어지고 호출 비용이 늘어난다.
+    performance: 예시 하나가 곧 입력 토큰이다.
+    stability: >-
+      유사 피드백 검색은 알람 이름이 정확히 일치해야 걸린다 — 이름이 조금만 달라도
+      예시가 붙지 않는다.
+    recommendation: 기본 3 유지.
+    related: [NOISE_ENABLE_LLM_ACTIONABILITY, NOISE_FEEDBACK_STORE_MAX_LINES]

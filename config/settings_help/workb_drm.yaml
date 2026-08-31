@@ -1,0 +1,260 @@
+# 설정 옵션 상세 설명 — worKB 발송 · DRM 복호화 (D-191)
+# 근거: src/config.py WorkbConfig(get_user_ids 심각도 분기) · DrmConfig(Plan 74 / D-156)
+#       docs/22_drm_deployment_guide.md
+
+version: 1
+group: workb
+
+settings:
+
+  WORKB_BASE_URL:
+    summary: 사내 메신저(worKB) 쪽지 발송 API 주소.
+    behavior: >-
+      알람 통보의 실제 전달 경로다. 비어 있으면 발송이 되지 않으므로, 화면에는 알람이
+      떠도 담당자에게는 아무것도 가지 않는다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 발송하지 않는다. 알람 화면과 감사 기록만 남는다.
+      - value: "http://<포탈주소>:28080"
+        effect: 그 주소로 쪽지를 보낸다.
+    example: >-
+      "알람은 화면에 뜨는데 메신저로 안 온다"는 신고에서 가장 먼저 볼 값이다.
+      그다음이 토큰·시스템 구분자·수신자 목록 순이다.
+    performance: 발송마다 외부 호출이 하나 붙는다.
+    stability: 이 주소가 응답하지 않으면 통보가 밀린다 — 타임아웃을 짧게 잡는 이유다.
+    related: [WORKB_BEARER_TOKEN, WORKB_SYSTEM_DIV, WORKB_USER_IDS_CSV, ALARM_NOTIFICATION_CHANNELS_CSV]
+
+  WORKB_BEARER_TOKEN:
+    example: >-
+      토큰이 만료되면 발송만 조용히 실패한다 — 알람 처리와 화면 표시는 정상이라 '메신저로만 안 온다'는 형태로 드러난다. 갱신 주기를 운영 일정에 넣어 두는 편이 안전하다.
+    summary: worKB 인증 토큰 — .encenv에서 관리한다.
+    behavior: 시크릿이라 이 화면에서 편집할 수 없다. 토큰이 없거나 만료되면 발송이 거부된다.
+    stability: 토큰 만료는 조용히 발송 실패로 나타난다 — 갱신 주기를 운영 일정에 넣어야 한다.
+    related: [WORKB_BASE_URL]
+
+  WORKB_SYSTEM_DIV:
+    example: >-
+      인증이 통과해도 이 구분자가 틀리면 발송이 거부된다. 토큰 문제와 증상이 같아 보이므로, 둘 다 발급처에서 함께 확인한다.
+    summary: worKB가 발신 시스템을 구분하는 코드 — 관리자에게서 발급받는다.
+    behavior: 이 값이 맞아야 발송이 수락된다. 임의로 정하는 값이 아니다.
+    stability: 값이 틀리면 인증은 통과해도 발송이 거부될 수 있다.
+    related: [WORKB_BASE_URL, WORKB_SEND_ID]
+
+  WORKB_SEND_ID:
+    example: >-
+      발송자 사번이 조직 개편으로 사라지면 그 시점부터 발송이 실패한다. 담당자 개인 사번보다 시스템 계정을 쓰는 편이 오래 간다.
+    summary: 발송자로 표시될 사번.
+    behavior: 수신자가 보는 발신인이다. 조직에서 인정하는 계정이어야 한다.
+    stability: 퇴사·조직 변경으로 계정이 사라지면 발송이 실패할 수 있다.
+    related: [WORKB_SYSTEM_DIV]
+
+  WORKB_USER_IDS_CSV:
+    summary: 기본 수신자 사번 목록(쉼표 구분).
+    behavior: >-
+      심각도별 전용 수신자가 지정돼 있지 않으면 모든 알람이 이 목록으로 간다.
+      비어 있으면 받는 사람이 없어 발송이 무의미해진다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 수신자가 없다. 발송 설정이 되어 있어도 아무에게도 가지 않는다.
+      - value: "12345,67890"
+        effect: 두 명에게 모든 알람이 간다.
+    example: >-
+      심각도 3만 당직자에게 보내고 나머지는 팀 전체에 보내려면, 이 목록에 팀 전체를 넣고
+      WORKB_CRITICAL_USER_IDS_CSV에 당직자를 넣는다 — 심각도 3은 당직자에게만 간다(합쳐지지 않는다).
+    performance: 수신자 수는 발송 호출 수에 영향을 준다.
+    stability: >-
+      심각도별 목록이 지정되면 **기본 목록은 그 심각도에서 쓰이지 않는다** — 더해지는
+      것이 아니라 **대체된다**. 당직자만 지정하면 팀 전체는 그 심각도 알람을 못 받는다.
+    related: [WORKB_CRITICAL_USER_IDS_CSV, WORKB_WARNING_USER_IDS_CSV]
+
+  WORKB_CRITICAL_USER_IDS_CSV:
+    example: >-
+      여기에 당직자 사번만 넣으면 심각 알람은 당직자에게만 간다 — 기본 목록의 팀원들은 받지 않는다. 팀도 함께 받아야 한다면 당직자와 팀원을 모두 이 목록에 넣어야
+      한다(더해지지 않고 대체된다).
+    summary: 심각도 3(심각) 알람만 받을 수신자 — 비어 있으면 기본 목록으로 간다.
+    behavior: >-
+      값이 있으면 심각도 3 알람은 **이 목록으로만** 간다(기본 목록에 더해지지 않는다).
+      비어 있으면 기본 수신자가 받는다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 심각 알람도 기본 수신자에게 간다.
+      - value: "당직자 사번"
+        effect: 심각 알람이 당직자에게만 간다. 기본 목록의 다른 사람은 받지 않는다.
+    performance: 영향이 없다.
+    stability: 대체 방식이라는 점을 놓치면 "심각 알람이 팀에 안 온다"가 된다.
+    related: [WORKB_USER_IDS_CSV, WORKB_WARNING_USER_IDS_CSV]
+
+  WORKB_WARNING_USER_IDS_CSV:
+    example: >-
+      경고 알람만 다른 팀으로 보내고 싶을 때 쓴다. 심각도 1(주의)에는 전용 목록이 없어 항상 기본 수신자가 받는다.
+    summary: 심각도 2(경고) 알람만 받을 수신자 — 비어 있으면 기본 목록으로 간다.
+    behavior: 심각도 3과 같은 규칙이다 — 값이 있으면 그 심각도는 이 목록으로만 간다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 경고 알람도 기본 수신자에게 간다.
+    stability: 심각도 1(주의)에는 전용 목록이 없다 — 항상 기본 수신자가 받는다.
+    related: [WORKB_USER_IDS_CSV, WORKB_CRITICAL_USER_IDS_CSV]
+
+  WORKB_ALIAS:
+    example: >-
+      말머리가 길면 메신저 목록에서 제목이 잘려 정작 어떤 알람인지 보이지 않는다. `[인프라알람]` 정도의 짧은 표식이 목록에서 알아보기에 충분하다.
+    summary: 쪽지 제목 앞에 붙는 말머리.
+    behavior: 실제 제목은 이 값 + 공백 + 알람 제목이다. 수신자가 목록에서 알람을 알아보는 표식이다.
+    options:
+      - value: "[인프라알람]"
+        label: 기본
+        effect: 제목이 "[인프라알람] CPU 임계 초과 …" 형태가 된다.
+    performance: 영향이 없다.
+    stability: 너무 길면 제목이 잘려 정작 알람 내용이 보이지 않는다.
+    related: [WORKB_BASE_URL]
+
+  WORKB_TIMEOUT_SECONDS:
+    example: >-
+      포탈이 멈춘 상태에서 이 값이 30초면, 알람이 열 건 몰릴 때 발송에만 5분이 묶인다. 그동안 새 알람 처리가 밀리므로 통보 채널 장애가 알람 파이프라인 전체를
+      지연시킨다.
+    summary: 쪽지 발송을 얼마나 기다릴지(초).
+    behavior: >-
+      발송 호출 하나에 걸리는 상한이다. 넘기면 그 통보는 실패로 처리되고, 다른 채널이
+      설정돼 있으면 그쪽 발송은 계속된다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 10초. 느린 응답도 대체로 수용한다.
+      - value: "3"
+        effect: 빠르게 포기한다. 포탈이 조금만 느려도 통보를 놓친다.
+      - value: "30 이상"
+        effect: 포탈이 멈췄을 때 발송 하나가 30초를 잡아먹는다 — 알람 폭주 시 처리가 밀린다.
+    performance: 발송 대기 동안 워커가 묶인다.
+    stability: 통보 채널 장애가 알람 처리 전체를 지연시키지 않도록 짧게 잡는 편이 안전하다.
+    related: [WORKB_BASE_URL, ALARM_WEBHOOK_TIMEOUT_SECONDS]
+
+  DRM_ENABLED:
+    summary: 업로드된 양식 파일의 DRM 암호를 풀지.
+    behavior: >-
+      사내 문서는 DRM으로 암호화돼 있어 그대로는 열 수 없다. 켜면 업로드 시점에
+      복호화를 시도한다. 꺼져 있으면 파일을 그대로 통과시키므로(passthrough)
+      암호화된 파일은 파싱에 실패한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: >-
+          복호화하지 않는다. 개발 PC·CI에는 DRM 모듈을 설치할 수 없으므로 이 상태가
+          정상이다. 평문 양식은 그대로 처리된다.
+      - value: "true"
+        effect: 업로드 파일을 복호화한 뒤 처리한다. 운영 서버에서만 켜는 값이다.
+    example: >-
+      "엑셀 양식을 올렸는데 읽을 수 없다"는 신고에서, 파일이 DRM 암호화돼 있고 이 값이
+      꺼져 있으면 그것이 원인이다. 운영자 화면의 DRM 연동 탭에서 경로·런타임·키 상태를
+      셸 없이 점검할 수 있다.
+    performance: 파일마다 외부 프로세스(Java) 호출이 붙는다 — 업로드 처리 시간이 늘어난다.
+    stability: >-
+      켜려면 아래 경로 넷(래퍼·JAR·설정·키 파일)이 모두 실제로 존재해야 한다.
+      하나라도 없으면 복호화가 실패하고 그 사유가 응답에 노출된다(조용히 넘어가지 않는다).
+    recommendation: 운영 서버에서만 true. 개발·CI는 false를 유지한다.
+    related: [DRM_JAVA_BIN, DRM_WRAPPER_PATH, DRM_SCSL_JAR_PATH, DRM_PROPERTIES_PATH, DRM_KEY_FILE_PATH]
+    references:
+      - docs/22_drm_deployment_guide.md
+
+  DRM_JAVA_BIN:
+    example: >-
+      셸에서는 `java`가 잘 잡히는데 systemd 서비스로 띄우면 PATH가 달라 못 찾는 일이 흔하다. 복호화만 실패하고 다른 기능은 정상이라 원인을 찾는 데 시간이
+      걸린다 — 절대 경로를 권하는 이유다.
+    summary: 복호화에 쓸 Java 실행 파일.
+    behavior: DRM 복호화는 벤더가 제공한 Java 라이브러리로 수행한다. Java 1.8 이상이 필요하다.
+    options:
+      - value: java
+        label: 기본
+        effect: PATH에서 java를 찾는다. 서비스 계정의 PATH에 없으면 실패한다.
+      - value: "/usr/lib/jvm/.../bin/java"
+        effect: 절대 경로로 지정한다. 서비스로 띄울 때는 이쪽이 안전하다.
+    stability: PATH는 로그인 셸과 서비스 프로세스가 다를 수 있다 — 절대 경로를 권한다.
+    related: [DRM_ENABLED, DRM_WRAPPER_PATH]
+
+  DRM_WRAPPER_PATH:
+    example: >-
+      상대 경로를 쓰면 서비스 작업 디렉터리에 따라 찾지 못한다. 운영자 화면의 DRM 연동 탭이 이 경로의 존재 여부를 셸 접속 없이 점검해 준다.
+    summary: 복호화 래퍼 소스 파일의 절대 경로.
+    behavior: 단일 소스로 실행되는 래퍼다. 이 경로가 비면 복호화가 동작하지 않는다.
+    stability: 상대 경로를 쓰면 서비스 작업 디렉터리에 따라 찾지 못한다 — 절대 경로여야 한다.
+    related: [DRM_ENABLED, DRM_SCSL_JAR_PATH]
+
+  DRM_SCSL_JAR_PATH:
+    example: >-
+      벤더가 JAR을 새 버전으로 배포하면 경로만 바꾸고 끝내지 말고, 진단 기능으로 샘플 복호화가 실제로 되는지 확인한다 — 경로는 맞는데 동작이 달라지는 경우가 있다.
+    summary: 벤더가 제공한 복호화 라이브러리(JAR)의 절대 경로.
+    behavior: 이 JAR이 실제 복호화를 수행한다. 벤더 배포본에서 가져온다.
+    stability: 버전이 바뀌면 동작이 달라질 수 있다 — 교체 시 운영자 화면의 DRM 진단으로 확인한다.
+    related: [DRM_ENABLED, DRM_PROPERTIES_PATH]
+
+  DRM_PROPERTIES_PATH:
+    example: >-
+      이 파일 안의 연동 서버 주소가 바뀌면 복호화가 실패하는데, 파일 내용은 이 화면에서 볼 수 없다. 경로만 맞다고 정상인 것은 아니므로 진단 기능으로 실제 복호화를
+      확인한다.
+    summary: 벤더 설정 파일(softcamp.properties)의 절대 경로.
+    behavior: >-
+      연동 서버 주소 같은 값이 이 파일 안에 있고, 라이브러리가 직접 읽는다 —
+      환경변수로 대체할 수 없어 **경로만** 여기에 둔다.
+    stability: 파일 내용은 이 화면 범위 밖이다. 내용이 틀리면 복호화가 실패한다.
+    related: [DRM_SCSL_JAR_PATH, DRM_KEY_FILE_PATH]
+
+  DRM_KEY_FILE_PATH:
+    summary: 복호화 키 파일의 절대 경로.
+    behavior: >-
+      이 키는 **24시간 주기로 갱신**된다. 파일의 수정 시각이 30시간을 넘으면 갱신
+      데몬에 이상이 있다는 신호이며, 운영자 화면의 DRM 진단이 그 판정을 대신해 준다.
+    example: >-
+      복호화가 갑자기 전부 실패하기 시작했다면 이 파일의 수정 시각을 먼저 본다 —
+      키 갱신이 멈춘 것이 가장 흔한 원인이다.
+    stability: 키가 낡으면 복호화가 실패한다. 진단 화면이 셸 접속 없이 이를 판별하도록 만들어져 있다.
+    related: [DRM_ENABLED, DRM_PROPERTIES_PATH]
+
+  DRM_GROUP_ID:
+    example: >-
+      벤더 가이드가 '수정 금지'로 지정한 값이다. 임의로 바꾸면 복호화가 실패하며, 증상이 키 문제와 비슷해 원인을 오해하기 쉽다.
+    summary: 벤더 가이드가 고정값으로 지정한 보안 도메인 식별자.
+    behavior: 가이드상 "수정 금지" 값이지만, 벤더가 바꿀 경우를 대비해 설정으로 꺼내 두었다.
+    options:
+      - value: SECURITYDOMAIN
+        label: 기본
+        effect: 가이드가 지정한 값이다. 바꿀 이유가 없다.
+    stability: 임의로 바꾸면 복호화가 실패한다 — 벤더 지시가 있을 때만 변경한다.
+    related: [DRM_ENABLED]
+
+  DRM_TEMP_DIR:
+    example: >-
+      복호화된 평문이 이 디렉터리에 잠시 놓인다. 권한이 느슨하면 DRM으로 보호한 문서가 그 자리에서 다른 계정에 노출될 수 있으므로 서비스 계정으로 제한한다.
+    summary: 복호화 중간 파일을 둘 디렉터리. 비우면 시스템 임시 경로 아래에 자동 생성한다.
+    behavior: 복호화된 평문이 잠시 머무는 곳이다 — 접근 권한 관리가 필요하다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 시스템 임시 디렉터리 아래에 전용 폴더를 만든다.
+    stability: >-
+      복호화된 평문이 놓이는 경로다. 권한이 느슨하면 DRM으로 보호한 문서가 그 자리에서
+      노출될 수 있다.
+    caveats:
+      - 이 디렉터리에는 평문이 잠시 존재한다 — 접근 권한을 서비스 계정으로 제한한다.
+    related: [DRM_ENABLED]
+
+  DRM_TIMEOUT_SEC:
+    example: >-
+      첫 복호화는 JVM 기동이 포함돼 유독 느리다. 5초로 줄이면 서버 기동 후 첫 업로드가 거의 항상 실패하고, 두 번째부터는 성공하는 이상한 증상이 된다.
+    summary: 복호화 프로세스를 얼마나 기다릴지(초).
+    behavior: >-
+      외부 Java 프로세스를 띄워 복호화하므로 JVM 기동 시간이 매 호출에 포함된다.
+      넘기면 복호화 실패로 처리되고 사유가 응답에 노출된다.
+    options:
+      - value: "20"
+        label: 기본
+        effect: 20초. 일반적인 양식 크기에 충분하다.
+      - value: "5"
+        effect: 큰 파일이나 첫 실행(JVM 기동 포함)에서 자주 실패한다.
+      - value: "120 이상"
+        effect: 큰 파일도 처리하지만 업로드 응답이 그만큼 늦어진다.
+    performance: Java 프로세스 기동 시간이 매번 포함된다 — 첫 호출이 특히 느리다.
+    stability: 파일 업로드 전체 타임아웃(API_FILE_QUERY_TIMEOUT)보다 충분히 작아야 한다.
+    related: [DRM_ENABLED, API_FILE_QUERY_TIMEOUT]

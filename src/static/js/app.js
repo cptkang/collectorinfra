@@ -37,6 +37,12 @@
     var alarmTabBadge = document.getElementById("alarmTabBadge");
     var alarmViewCount = document.getElementById("alarmViewCount");
     var alarmClearBtn = document.getElementById("alarmClearBtn");
+    var alarmTools = document.getElementById("alarmTools");
+    var alarmSearch = document.getElementById("alarmSearch");
+    var alarmFilterReset = document.getElementById("alarmFilterReset");
+    var promptConfirm = document.getElementById("promptConfirm");
+    var promptConfirmRun = document.getElementById("promptConfirmRun");
+    var promptConfirmEdit = document.getElementById("promptConfirmEdit");
 
     // 질의 이력 사이드바(D-183) — 이 브라우저에만 남는 목록
     var historyPanel = document.getElementById("historyPanel");
@@ -655,6 +661,7 @@
             stopStreaming();
             return;
         }
+        hidePromptConfirm();   // Plan 86: 어느 경로로 보내든 확인 바는 여기서 닫힌다
 
         var query = promptEl.value.trim();
         if (!query) {
@@ -2546,6 +2553,85 @@
         "해소": "#28a745"
     };
 
+    // ─── 알람 → 질의 프롬프트 인계 (Plan 86 · D-192) ───
+    //
+    // 추천 문구는 창작 대상이 아니라 **검증된 형태의 재사용**이다. 각 문구는 골드셋
+    // (testdata/text2sql_gold/gp.yaml)에 동형이 있는 것만 넣는다 — 파이프라인이 못 푸는 질의를
+    // 추천하면 사용자가 얻는 경험은 "기능이 됐다"가 아니라 "알람에 답을 못 한다"이다.
+    //
+    // 축 판정 키는 **resource_type**이다. alarm_name은 자유 한국어라 단독 키로 쓸 수 없다
+    // (실측 값에 "내부Cloud ○○○님의 Cloud PC 사양변경 승인바랍니다" 같은 것이 섞인다).
+    // history_stats에는 의존하지 않는다 — SSE 티어 payload에 없어 경로에 따라 조용히 빈다.
+    var ALARM_PROMPT_AXES = {
+        "server.Cpus": [
+            { label: "1개월 CPU 사용률", suffix: "서버의 지난 1개월 평균·최대 CPU 사용률을 보여줘" }
+        ],
+        "server.Memory": [
+            { label: "1개월 메모리 사용률", suffix: "서버의 지난 1개월 평균·최대 메모리 사용률을 보여줘" }
+        ],
+        // 급증형은 **임계·차분을 문구에 명시**해야 급증 조립기(spike_sql.py)가 결정적으로 진입한다
+        // — 없으면 "급증 조립 미진입" 후 LLM 폴백이라 결과 품질이 보장되지 않는다(plans/86 §4.3).
+        "server.Disks": [
+            { label: "파일시스템 사용률", suffix: "서버의 파일시스템별 사용률을 보여줘" },
+            { label: "사용률 급증", spike: true,
+              suffix: "서버에서 지난달 대비 사용률이 10%p 이상 상승하고 80% 이상인 파일시스템을 보여줘" }
+        ],
+        "server.FileSystems": [
+            { label: "파일시스템 사용률", suffix: "서버의 파일시스템별 사용률을 보여줘" },
+            { label: "사용률 급증", spike: true,
+              suffix: "서버에서 지난달 대비 사용률이 10%p 이상 상승하고 80% 이상인 파일시스템을 보여줘" }
+        ],
+        "server.LogMonitor": [
+            { label: "최근 알람 이력", suffix: "서버의 최근 3개월 알람 발생 이력을 보여줘" }
+        ],
+        "server.Server": [
+            { label: "가용성 상태", suffix: "서버의 가용성 상태와 IP를 조회해줘" }
+        ]
+        // server.Network는 골드셋에 동형이 없어 **일부러 비워 둔다** — 답변 가능성 실측(T7) 후 편입.
+    };
+
+    // 축과 무관한 공통 추천. 매핑된 축에만 덧붙인다 — 미매핑 축을 이것 하나로 채우면
+    // "결정적 추천 0건"이 성립하지 않아 LLM 보강 경로(Plan 86 T5)가 영영 열리지 않는다.
+    var ALARM_PROMPT_COMMON = { label: "사양·OS 정보", suffix: "서버의 사양과 OS 정보를 조회해줘" };
+    //: 고르는 비용이 조회 비용을 넘지 않게 하는 상한.
+    var ALARM_PROMPT_MAX = 3;
+
+    // 질의의 주어. **카드 헤더와 같은 우선순위**여야 한다 — 헤더가 보여준 이름과 프롬프트의
+    // 이름이 다르면 사용자는 다른 서버를 조회한 것으로 읽는다(renderAlarmIdentityHeader 참조).
+    function alarmTargetName(data) {
+        var ident = data.server_identity || {};
+        var hostname = data.hostname || "";
+        var name = ident.name || "";
+        if (!name && data.server_name && data.server_name !== hostname) name = data.server_name;
+        if (!name) name = hostname || data.server_name || "";
+        return name;
+    }
+
+    // 알람 payload → 추천 질의 목록. 순수 함수다(DOM·네트워크·전역 상태를 만지지 않는다).
+    function buildAlarmPrompts(data) {
+        var name = alarmTargetName(data);
+        if (!name) return [];                       // 주어 없는 질의는 만들지 않는다
+        var axis = (data && data.resource_type) || "";
+        var specs = ALARM_PROMPT_AXES[axis];
+        if (!specs || !specs.length) return [];     // 미매핑 — LLM 보강 대상
+        specs = specs.slice();
+        // 카드가 "급증"이라 말했는데 추천이 평상시 통계부터 내밀면 분석과 추천이 어긋난다.
+        if (data.pattern_type === "급증") {
+            specs.sort(function (a, b) { return (b.spike ? 1 : 0) - (a.spike ? 1 : 0); });
+        }
+        specs.push(ALARM_PROMPT_COMMON);
+        var out = [];
+        for (var i = 0; i < specs.length && out.length < ALARM_PROMPT_MAX; i++) {
+            out.push({
+                label: specs[i].label,
+                text: name + " " + specs[i].suffix,
+                axis: axis,
+                source: "deterministic"
+            });
+        }
+        return out;
+    }
+
     // Plan 47: 패턴 근거 표 렌더 헬퍼 — history_stats(결정적 통계)를 그대로 표시한다.
 
     function fmtHistTs(iso) {
@@ -2729,15 +2815,88 @@
         alarmTabBadge.classList.toggle("has-unread", alarmUnreadCount > 0);
     }
 
+    // 현재 선택된 레벨 필터("" = 전체). 새로고침하면 전체로 돌아간다 —
+    // 저장해 두면 다시 들어왔을 때 걸려 있는 필터 때문에 알람이 없는 것처럼 보인다.
+    var alarmFilterSeverity = "";
+
     // 수신 건수 표시·빈 상태를 목록의 실제 내용에 맞춘다.
+    // 레벨 칩과 키워드는 카드를 지우지 않고 감추기만 한다 — 필터를 풀면 그대로 돌아온다.
     function updateAlarmViewState() {
         if (!alarmList) return;
-        var count = alarmList.children.length;
-        if (alarmEmpty) alarmEmpty.style.display = count ? "none" : "flex";
-        if (alarmViewCount) alarmViewCount.textContent = count ? count + "건 수신" : "";
+        var cards = alarmList.children;
+        var total = cards.length;
+        var keyword = alarmSearch ? alarmSearch.value.trim().toLowerCase() : "";
+        // 칩 건수는 **키워드만** 적용해 센다 — 레벨까지 반영하면 고른 칩 외에는
+        // 전부 0으로 보여 다른 레벨로 옮겨갈 단서가 사라진다.
+        var counts = {};
+        var byKeyword = 0;
+        var shown = 0;
+        for (var i = 0; i < total; i++) {
+            var card = cards[i];
+            var sev = card.dataset.severity || "";
+            var hitKeyword = !keyword || (card.dataset.search || "").indexOf(keyword) !== -1;
+            if (hitKeyword) {
+                counts[sev] = (counts[sev] || 0) + 1;
+                byKeyword += 1;
+            }
+            var visible = hitKeyword && (!alarmFilterSeverity || sev === alarmFilterSeverity);
+            card.classList.toggle("alarm-card-hidden", !visible);
+            if (visible) shown += 1;
+        }
+
+        document.querySelectorAll(".alarm-chip").forEach(function (chip) {
+            var sev = chip.dataset.severity || "";
+            var n = sev ? (counts[sev] || 0) : byKeyword;
+            var badge = chip.querySelector(".alarm-chip-count");
+            if (badge) badge.textContent = n ? String(n) : "";
+            // 고를 것이 없는 레벨은 흐리게 — 다만 지금 고른 칩은 풀 수 있어야 하므로 남긴다.
+            chip.classList.toggle("alarm-chip--empty", !n && sev !== alarmFilterSeverity);
+        });
+
+        var filtered = !!alarmFilterSeverity || !!keyword;
+        if (alarmTools) alarmTools.style.display = total ? "" : "none";
+        if (alarmFilterReset) alarmFilterReset.style.display = filtered ? "" : "none";
+        if (alarmEmpty) {
+            alarmEmpty.style.display = shown ? "none" : "flex";
+            var emptyText = alarmEmpty.querySelector("p");
+            // 빈 상태 문구는 두 가지다 — 아직 아무것도 안 왔을 때와, 필터에 걸린 게 없을 때.
+            if (emptyText) {
+                emptyText.innerHTML = total
+                    ? "필터·검색어와 일치하는 알람이 없습니다.<br>레벨을 바꾸거나 검색어를 지워보세요."
+                    : "수신한 이벤트 알람이 없습니다.<br>알람이 도착하면 여기에 최신순으로 쌓입니다.";
+            }
+        }
+        if (alarmViewCount) {
+            alarmViewCount.textContent = total
+                ? (filtered ? shown + " / " + total + "건 표시" : total + "건 수신")
+                : "";
+        }
         // 지울 것이 없으면 버튼을 감춘다 — .btn에는 비활성 스타일이 없어
         // disabled로 두면 눌리는 것처럼 보인다.
-        if (alarmClearBtn) alarmClearBtn.style.display = count ? "" : "none";
+        if (alarmClearBtn) alarmClearBtn.style.display = total ? "" : "none";
+    }
+
+    // 레벨·키워드 필터를 전체 보기로 되돌린다(칩 표시 상태 포함).
+    function resetAlarmFilter() {
+        alarmFilterSeverity = "";
+        if (alarmSearch) alarmSearch.value = "";
+        document.querySelectorAll(".alarm-chip").forEach(function (c) {
+            var on = !(c.dataset.severity || "");
+            c.classList.toggle("active", on);
+            c.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+    }
+
+    // 키워드 검색 대상. 카드 전체 텍스트를 긁으면 버튼 문구("유효"·"노이즈")까지 걸리므로
+    // 운영자가 실제로 찾는 필드만 모은다.
+    function alarmSearchText(data) {
+        var ident = data.server_identity || {};
+        return [
+            data.severity_label, ident.name, data.server_name, data.hostname,
+            ident.ip_address, data.ip_address, data.alarm_name, data.resource_name,
+            ident.source_label || ident.site_label || ident.zone_label,
+            data.summary, data.probable_cause, data.recommended_action
+        ].filter(Boolean).join(" ").toLowerCase();
     }
 
     // 알람 수신 권한이 없는 사용자에게는 탭을 감춘다 — 영영 비어 있을 탭이기 때문이다.
@@ -2890,9 +3049,46 @@
             alarmClearBtn.addEventListener("click", function () {
                 if (!alarmList) return;
                 alarmList.innerHTML = "";
+                // 목록을 비우면 필터도 푼다 — 남겨 두면 다음에 도착한 알람이 조용히 가려진다.
+                resetAlarmFilter();
                 alarmUnreadCount = 0;
                 renderAlarmBadge();
                 updateAlarmViewState();
+            });
+        }
+        document.querySelectorAll(".alarm-chip").forEach(function (chip) {
+            chip.addEventListener("click", function () {
+                var sev = chip.dataset.severity || "";
+                // 고른 칩을 다시 누르면 전체로 돌아간다 — 해제하려고 "전체"를 찾을 필요가 없다.
+                alarmFilterSeverity = (alarmFilterSeverity === sev) ? "" : sev;
+                document.querySelectorAll(".alarm-chip").forEach(function (c) {
+                    var on = (c.dataset.severity || "") === alarmFilterSeverity;
+                    c.classList.toggle("active", on);
+                    c.setAttribute("aria-pressed", on ? "true" : "false");
+                });
+                updateAlarmViewState();
+            });
+        });
+        if (alarmSearch) {
+            alarmSearch.addEventListener("input", function () { updateAlarmViewState(); });
+        }
+        if (alarmFilterReset) {
+            alarmFilterReset.addEventListener("click", function () {
+                resetAlarmFilter();
+                updateAlarmViewState();
+            });
+        }
+        // Plan 86: 추천 질의 확인 바. [이대로 조회]만 전송하고, 전송은 handleSend 단일 진입점을 탄다.
+        if (promptConfirmRun) {
+            promptConfirmRun.addEventListener("click", function () {
+                if (isProcessing) return;
+                handleSend();
+            });
+        }
+        if (promptConfirmEdit) {
+            promptConfirmEdit.addEventListener("click", function () {
+                hidePromptConfirm();
+                if (promptEl) promptEl.focus();   // 내용·커서는 그대로 둔다
             });
         }
         if (historyClearBtn) {
@@ -2950,7 +3146,7 @@
     // D-188: 헤더 2줄 구조 — 1행 [심각도] 폴스타 등록 서버명 — 알람명 (자원), 2행 hostname · IP · OS · 존 · 시각.
     // (2026-08-27 사용자 검토) 알람명을 1행으로 올려 "어느 서버의 어떤 알람"이 한 줄에서 읽히게 한다.
     // 등록명은 server_identity(hostname 역조회)가 우선, 없으면 server_name, 그마저 없으면 hostname.
-    function renderAlarmIdentityHeader(data, severityColor) {
+    function renderAlarmIdentityHeader(data, severityColor, promptable) {
         var ident = data.server_identity || {};
         var hostname = data.hostname || "";
         var title = ident.name || "";
@@ -2981,18 +3177,44 @@
         var alarmName = data.alarm_name
             ? '<span class="alarm-title-sep">—</span><span class="alarm-title-alarm">' + escapeHtml(data.alarm_name) + '</span>' + resource
             : resource;
+        // 추천 질의가 있을 때만 서버명을 버튼으로 만든다 — 누를 것이 없는데 눌리게 보이면
+        // 클릭이 무반응으로 끝난다(Plan 86 G-1).
+        var serverHtml = promptable
+            ? '<button type="button" class="alarm-server alarm-prompt-trigger" ' +
+                  'title="이 서버를 조회하는 추천 질의 보기">' + escapeHtml(title) + '</button>'
+            : '<span class="alarm-server">' + escapeHtml(title) + '</span>';
         return '<div class="alarm-header">' +
                 '<span class="alarm-severity" style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
-                '<span class="alarm-server">' + escapeHtml(title) + '</span>' + warn + alarmName +
+                serverHtml + warn + alarmName +
             '</div>' +
             metaHtml;
+    }
+
+    // 추천 섹션 골격. **칩은 여기서 만들지 않는다** — 프롬프트 전문에는 서버명(외부 데이터)이
+    // 들어가는데 escapeHtml은 따옴표를 이스케이프하지 않아 속성값으로 넣으면 마크업이 깨진다.
+    // 칩은 bindAlarmPrompts가 DOM으로 만들고 textContent로만 다룬다.
+    function renderAlarmPromptSection(prompts, collapsed) {
+        if (!prompts.length) return "";
+        return '<div class="alarm-section alarm-prompt-section' +
+                    (collapsed ? ' alarm-prompt-section--collapsed' : '') + '">' +
+                '<button type="button" class="alarm-prompt-toggle" aria-expanded="' +
+                    (collapsed ? 'false' : 'true') + '">이 알람을 조회해 볼까요?</button>' +
+                '<div class="alarm-prompt-chips"></div>' +
+            '</div>';
     }
 
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
+        // 레벨·키워드 필터의 판정 키. 카드에 심어 두면 필터가 데이터를 다시 들추지 않는다.
+        el.dataset.severity = data.severity_label || "";
+        el.dataset.search = alarmSearchText(data);
 
         var severityColor = ALARM_SEVERITY_COLORS[data.severity_label] || "#fd7e14";
+        // Plan 86: 추천 질의. 노이즈 게이트가 "일상적 반복"으로 판정한 알람은 섹션을 접어 둔다 —
+        // 게이트의 판단을 UI가 뒤집어 조회를 권하지 않는다.
+        var alarmPrompts = buildAlarmPrompts(data);
+        var promptHtml = renderAlarmPromptSection(alarmPrompts, data.is_routine === true);
         var alarmSvg = '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
 
         // Plan 47: 패턴 분석 배지 — is_routine=true는 회색(일상), false는 강조색(확인 필요)
@@ -3057,7 +3279,7 @@
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
                 '<div class="message-bubble">' +
-                    renderAlarmIdentityHeader(data, severityColor) +
+                    renderAlarmIdentityHeader(data, severityColor, alarmPrompts.length > 0) +
                     '<div class="alarm-section">' +
                         '<span class="alarm-section-label">요약</span>' +
                         '<p>' + escapeHtml(data.summary) + '</p>' +
@@ -3073,6 +3295,7 @@
                     processHtml +
                     patternHtml +
                     ackHtml +
+                    promptHtml +
                     feedbackHtml +
                 '</div>' +
             '</div>';
@@ -3091,6 +3314,10 @@
             }
         }
 
+        // Plan 86: 추천 질의 바인딩(같은 closure 패턴). 결정적 추천이 없으면 LLM 보강을 시도한다.
+        bindAlarmPrompts(el, alarmPrompts);
+        if (!alarmPrompts.length) requestLlmPrompt(el, data);
+
         // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
         bindAlarmFeedback(el, data);
 
@@ -3100,6 +3327,122 @@
             renderAlarmBadge();
         }
         updateAlarmViewState();
+    }
+
+    // Plan 86: 추천 질의 칩을 DOM으로 만들고 closure로 프롬프트 전문을 캡친다.
+    // 속성(data-*)에 담지 않는 이유는 renderAlarmPromptSection 주석 참조.
+    function bindAlarmPrompts(el, prompts) {
+        var section = el.querySelector(".alarm-prompt-section");
+        if (!section || !prompts.length) return;
+
+        var toggle = section.querySelector(".alarm-prompt-toggle");
+        var chipBox = section.querySelector(".alarm-prompt-chips");
+        prompts.forEach(function (p) {
+            var chip = document.createElement("button");
+            chip.type = "button";
+            chip.className = "alarm-prompt-chip";
+            chip.textContent = p.label;        // textContent — 라벨을 마크업으로 해석하지 않는다
+            chip.title = p.text;               // 무엇이 나갈지 누르기 전에 보인다
+            chip.setAttribute("aria-label", "이 질의로 조회: " + p.text);
+            chip.addEventListener("click", function () { stageAlarmPrompt(p.text); });
+            chipBox.appendChild(chip);
+        });
+
+        function setCollapsed(on) {
+            section.classList.toggle("alarm-prompt-section--collapsed", on);
+            if (toggle) toggle.setAttribute("aria-expanded", on ? "false" : "true");
+        }
+        if (toggle) {
+            toggle.addEventListener("click", function () {
+                setCollapsed(!section.classList.contains("alarm-prompt-section--collapsed"));
+            });
+        }
+        // 헤더 서버명 트리거(G-1) — 펼치고 첫 칩으로 포커스를 준다. **전송하지 않는다.**
+        var trigger = el.querySelector(".alarm-prompt-trigger");
+        if (trigger) {
+            trigger.addEventListener("click", function () {
+                setCollapsed(false);
+                var first = section.querySelector(".alarm-prompt-chip");
+                if (first) first.focus();
+            });
+        }
+    }
+
+    // 결정적 추천이 **0건일 때만** 서버에 묻는다(Plan 86 T5). 추천이 이미 있으면 네트워크 요청
+    // 자체가 나가지 않는다 — 과금 경로를 미매핑 축(management.*/platform.*)으로 좁힌다.
+    // capabilities가 꺼졌다고 알려주면 아예 부르지 않는다(알람마다 503을 때리지 않게).
+    // 실패·비활성·권한없음은 조용히 넘긴다: 추천이 없다고 카드가 달라질 이유가 없다.
+    function requestLlmPrompt(el, data) {
+        if (!alarmCapabilities || !alarmCapabilities.prompt_suggest_enabled) return;
+        var target = alarmTargetName(data);
+        if (!target) return;
+        fetch("/api/v1/alarm/suggest-prompt", {
+            method: "POST",
+            headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+            body: JSON.stringify({
+                target: target,
+                alarm_name: data.alarm_name || "",
+                resource_type: data.resource_type || "",
+                resource_name: data.resource_name || "",
+                severity_label: data.severity_label || "",
+                summary: data.summary || "",
+                probable_cause: data.probable_cause || "",
+                recommended_action: data.recommended_action || "",
+                pattern_type: data.pattern_type || "",
+                pattern_analysis: data.pattern_analysis || "",
+                db_id: data.db_id || ""
+            })
+        })
+            .then(function (resp) { return resp.ok ? resp.json() : null; })
+            .then(function (result) {
+                var sug = result && result.suggestion;
+                if (!sug || !sug.text) return;
+                insertAlarmPromptSection(el, [sug]);
+            })
+            .catch(function (err) {
+                console.warn("[alarm] 질의 추천 실패:", err);
+            });
+    }
+
+    // 뒤늦게 도착한 추천을 카드에 끼워 넣는다. 위치는 결정적 경로와 같다(피드백 섹션 위).
+    // 헤더 서버명은 버튼으로 바뀌지 않는다 — 렌더 시점에 확정되며, 트리거는 결정적 추천의 진입이다.
+    function insertAlarmPromptSection(el, prompts) {
+        var bubble = el.querySelector(".message-bubble");
+        if (!bubble || el.querySelector(".alarm-prompt-section")) return;
+        var holder = document.createElement("div");
+        holder.innerHTML = renderAlarmPromptSection(prompts, false);
+        var section = holder.firstChild;
+        if (!section) return;
+        var feedback = bubble.querySelector(".alarm-feedback-section");
+        if (feedback) bubble.insertBefore(section, feedback);
+        else bubble.appendChild(section);
+        bindAlarmPrompts(el, prompts);
+    }
+
+    // 추천 질의를 입력창에 올리고 **확인을 받는다**(G-2 확정 2026-08-31 · 안 C).
+    // 자동 전송하지 않는 이유: 시스템이 만든 문장을 사용자가 읽지도 않고 보내는 일이 없어야 한다.
+    // (질의 이력 재사용 reuseHistoryQuery는 확인 바 없이 채우기만 한다 — 그쪽 계약은 D-183이고,
+    //  여기를 고칠 때 저쪽을 "일관성 있게" 따라 고치면 안 된다. 두 경로는 의도가 다르다.)
+    function stageAlarmPrompt(text) {
+        if (!text || !promptEl) return;
+        setActiveView("chat");
+        promptEl.value = text;
+        autoResizeTextarea();
+        showPromptConfirm(text);
+        promptEl.focus();
+    }
+
+    function showPromptConfirm(text) {
+        if (!promptConfirm) return;
+        var textEl = promptConfirm.querySelector(".prompt-confirm-text");
+        if (textEl) textEl.textContent = text;
+        promptConfirm.style.display = "flex";
+        // 진행 중이면 조회를 막는다 — 연타로 중복 전송되면 과금이 두 번이다.
+        if (promptConfirmRun) promptConfirmRun.disabled = !!isProcessing;
+    }
+
+    function hidePromptConfirm() {
+        if (promptConfirm) promptConfirm.style.display = "none";
     }
 
     // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 핸들러를 바인딩한다.

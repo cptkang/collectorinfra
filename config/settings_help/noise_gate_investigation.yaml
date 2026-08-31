@@ -1,0 +1,519 @@
+# 설정 옵션 상세 설명 — 노이즈 게이트: 자동 조사 · 원인 보강 · ITSM 텍스트 신호 (D-191)
+# 근거: src/config.py NoiseGateConfig (Plan 64 CW-A/B/C · Plan 66 3-E · Plan 60 E5/E7 · D-132)
+
+version: 1
+group: noise_gate
+
+settings:
+
+  NOISE_INVESTIGATION_TRIGGER_ENABLED:
+    summary: 중요 알람이 뜨면 장애 조사 에이전트에게 자동으로 조사를 맡길지.
+    behavior: >-
+      게이트가 PAGE로 판정한 직후, 별도 조사 서비스에 조사를 의뢰하고 결과 브리핑을
+      통보에 첨부한다. 게이트의 판정 자체는 바뀌지 않는다 — 조사는 읽기 전용이고
+      조치를 하지 않는다. 서비스가 죽어 있거나 시간을 넘기면 브리핑 없이 통보만 나간다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사를 맡기지 않는다. 통보 내용이 지금과 같다.
+      - value: "true"
+        effect: >-
+          PAGE 알람에 자동 조사 브리핑이 붙는다. 담당자가 상황을 파악하는 시간이 줄어든다.
+          대신 조사가 끝날 때까지 통보가 지연된다.
+    example: >-
+      새벽에 PAGE 알람을 받았을 때 "무엇이 문제인지"까지 함께 오면 초동이 빨라진다.
+      다만 조사에 수십 초가 걸리면 통보도 그만큼 늦는다 — 그 지연이 부담되면 후속
+      브리핑 방식(NOISE_INVESTIGATION_FOLLOWUP_ENABLED)을 함께 켠다.
+    performance: >-
+      조사 완료까지 기다렸다가 통보하므로 PAGE 통보가 최대
+      NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS만큼 지연된다.
+    stability: >-
+      서비스 장애·타임아웃·거부는 모두 정상 통보로 이어진다(사유는 감사에 남는다).
+      조사 실패가 알람을 막지는 않는다.
+    recommendation: >-
+      조사 서비스가 실제로 운영되고 있을 때만 켠다. 켠다면 통보 지연을 피하기 위해
+      후속 브리핑 방식을 함께 검토한다.
+    related: [NOISE_INVESTIGATION_TRIGGER_MIN_TIER, NOISE_INVESTIGATION_SERVICE_URL, NOISE_INVESTIGATION_FOLLOWUP_ENABLED, NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS]
+
+  NOISE_INVESTIGATION_TRIGGER_MIN_TIER:
+    example: >-
+      하한을 TICKET으로 낮추면 조사 호출이 크게 늘어난다. 조사 하나가 수십 초 걸리므로, 알람이 몰릴 때 조사 서비스가 병목이 되어 통보 지연이 전반적으로 늘어난다.
+    summary: 어느 티어 이상일 때 자동 조사를 맡길지.
+    behavior: 조사는 비싼 작업이므로 중요한 알람에만 건다.
+    options:
+      - value: PAGE
+        label: 기본
+        effect: 즉시 대응 알람만 조사한다.
+      - value: TICKET
+        effect: 기록용 알람까지 조사한다 — 조사 호출이 크게 늘어난다.
+      - value: DASHBOARD
+        effect: 거의 모든 알람을 조사한다. 조사 서비스가 감당하기 어려운 수준이 되기 쉽다.
+    performance: 하한을 낮출수록 조사 호출이 급증한다. 조사 하나가 수십 초 걸린다는 점을 감안한다.
+    stability: 동시 조사가 몰리면 조사 서비스가 병목이 되어 통보 지연이 전반적으로 늘어난다.
+    recommendation: 기본 PAGE 유지.
+    related: [NOISE_INVESTIGATION_TRIGGER_ENABLED]
+
+  NOISE_INVESTIGATION_SERVICE_URL:
+    example: >-
+      조사 서비스는 별도 프로세스라 자기 설정 파일을 쓴다 — 이 화면에서 그쪽 동작을 바꿀 수는 없다. 주소가 틀려도 알람 통보는 정상이고 브리핑만 빠진다.
+    summary: 장애 조사 서비스의 주소.
+    behavior: >-
+      별도 프로세스로 도는 조사 에이전트의 엔드포인트다. 이 서비스는 자체 설정 파일을
+      쓰므로 이 화면에서 그쪽 동작을 바꿀 수는 없다.
+    options:
+      - value: "http://localhost:9098/sse"
+        label: 기본
+        effect: 같은 장비의 조사 서비스에 붙는다.
+    performance: 원격이면 왕복 지연이 조사 시간에 얹힌다.
+    stability: 주소가 틀려도 알람 처리는 정상이다 — 브리핑만 빠지고 사유가 감사에 남는다.
+    related: [NOISE_INVESTIGATION_SERVICE_TOKEN, NOISE_INVESTIGATION_TRIGGER_ENABLED]
+
+  NOISE_INVESTIGATION_SERVICE_TOKEN:
+    example: >-
+      조사 서비스가 인증을 요구하는데 값이 비면 조사가 거부된다. 알람 통보 자체에는 영향이 없어 '브리핑만 안 붙는다'로 나타난다.
+    summary: 조사 서비스 인증 토큰 — 시크릿이라 이 화면에서 편집할 수 없다.
+    behavior: 값이 없으면 인증 헤더 없이 호출한다. 조사 서비스가 인증을 요구하면 반드시 설정해야 한다.
+    stability: 토큰이 틀리면 조사가 거부된다 — 알람 통보 자체에는 영향이 없다.
+    related: [NOISE_INVESTIGATION_SERVICE_URL]
+
+  NOISE_INVESTIGATION_MCP_CALL_TIMEOUT_SECONDS:
+    example: >-
+      전체 상한이 45초인데 개별 호출을 30초로 잡으면, 조회 두 번만에 예산이 바닥난다. 개별은 전체보다 충분히 작아야 poll을 여러 번 돌 수 있다.
+    summary: 조사 서비스 호출 하나에 주는 시간(초).
+    behavior: 조사 의뢰와 결과 조회 각각에 적용되는 개별 타임아웃이다. 전체 상한과는 별개다.
+    options:
+      - value: "10.0"
+        label: 기본
+        effect: 호출 하나에 10초.
+      - value: "3"
+        effect: 서비스가 조금만 느려도 조사가 실패한다.
+      - value: "30 이상"
+        effect: 개별 호출이 오래 붙잡혀 전체 상한을 금방 소진한다.
+    performance: 전체 타임아웃 안에서 이 시간이 소비된다.
+    stability: 개별 타임아웃만으로는 반복 조회를 막지 못한다 — 전체 상한이 따로 있는 이유다.
+    recommendation: 기본 10초 유지. 전체 상한보다 충분히 작게 둔다.
+    related: [NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS, NOISE_INVESTIGATION_POLL_INTERVAL_SECONDS]
+
+  NOISE_INVESTIGATION_POLL_INTERVAL_SECONDS:
+    example: >-
+      조사 자체가 수십 초 걸리므로 간격을 0.2초로 줄여도 체감 차이는 거의 없고 조회 요청만 다섯 배가 된다.
+    summary: 조사 결과를 몇 초마다 다시 확인할지.
+    behavior: 조사를 맡긴 뒤 완료됐는지 주기적으로 물어본다.
+    options:
+      - value: "1.0"
+        label: 기본
+        effect: 1초마다 확인한다. 완료 즉시 알아챈다.
+      - value: "0.2"
+        effect: 더 빨리 알아채지만 조회 호출이 다섯 배가 된다.
+      - value: "5"
+        effect: 호출은 줄지만 조사가 끝난 뒤 최대 5초를 더 기다린다.
+    performance: 짧을수록 조사 서비스에 가는 조회 요청이 늘어난다.
+    stability: 조사 자체가 수십 초 걸리므로 간격을 1초보다 크게 잡아도 체감 차이는 작다.
+    recommendation: 기본 1초 유지.
+    related: [NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS]
+
+  NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS:
+    example: >-
+      PAGE는 즉시 대응 알람인데, 인라인 방식에서는 이 시간만큼 통보가 늦어진다. 45초를 300초로 늘리면 브리핑은 대부분 완주하지만 긴급 알람이 5분 늦게 도착해 본말이
+      전도된다.
+    summary: 조사 의뢰부터 결과 수신까지 전체에 주는 시간(초).
+    behavior: >-
+      개별 호출 타임아웃만으로는 반복 조회가 이어지는 경로를 막지 못한다. 이 값이
+      최종 상한이다. 넘으면 브리핑 없이 통보한다.
+    options:
+      - value: "45.0"
+        label: 기본
+        effect: 45초. 이 시간만큼 PAGE 통보가 지연될 수 있다.
+      - value: "15"
+        effect: 통보 지연이 짧아지지만 대부분의 조사가 완료 전에 잘린다.
+      - value: "300"
+        effect: 조사는 대부분 완주하지만 PAGE 통보가 5분 늦는다 — 긴급 알람으로서 의미를 잃는다.
+    performance: 이 시간 동안 워커가 해당 알람에 묶인다. 알람이 몰리면 처리 지연이 누적된다.
+    stability: >-
+      PAGE는 즉시 대응 알람이다. 조사를 기다리느라 통보가 늦어지는 것은 본말전도가 될
+      수 있다 — 후속 브리핑 방식이 그 문제를 해결하려는 대안이다.
+    recommendation: 기본 45초를 넘기지 않는다. 더 긴 조사가 필요하면 후속 브리핑으로 전환한다.
+    related: [NOISE_INVESTIGATION_FOLLOWUP_ENABLED, NOISE_INVESTIGATION_MCP_CALL_TIMEOUT_SECONDS]
+
+  NOISE_INVESTIGATION_FOLLOWUP_ENABLED:
+    example: >-
+      기본 방식은 조사가 끝날 때까지 기다렸다가 한 번에 보내므로 PAGE 통보가 수십 초 지연된다. 켜면 통보가 즉시 나가고 브리핑은 나중에 별도 메시지로 오는데, 알림이 두
+      번 온다는 점을 담당자가 알고 있어야 혼선이 없다.
+    summary: 통보를 먼저 보내고 조사 브리핑은 나중에 따로 보낼지.
+    behavior: >-
+      기본 방식은 조사가 끝날 때까지 기다렸다가 브리핑을 실어 한 번 보낸다. 실제 조사는
+      수십에서 수백 초가 걸려 PAGE 통보가 그만큼 늦는다. 켜면 의뢰만 하고 통보는 즉시
+      나가며, 조사가 끝나면 브리핑을 별도 메시지로 보낸다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사 완료를 기다렸다가 한 번에 보낸다. 통보가 지연된다.
+      - value: "true"
+        effect: 통보는 즉시, 브리핑은 나중에 따로. 알림이 두 번 오지만 초동이 늦지 않는다.
+    performance: >-
+      통보 지연이 0이 된다. 대신 백그라운드 조사 태스크가 동시에 여러 개 돌 수 있어
+      NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT로 상한을 둔다.
+    stability: >-
+      후속 발송 실패는 감사에 사유가 남고 통보·판정에는 영향을 주지 않는다.
+      알림이 두 번 오는 것을 담당자가 알고 있어야 혼선이 없다.
+    recommendation: 자동 조사를 쓴다면 이 방식을 함께 켜는 편이 PAGE의 성격에 맞는다.
+    related: [NOISE_INVESTIGATION_TRIGGER_ENABLED, NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS, NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT]
+
+  NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS:
+    example: >-
+      통보는 이미 나갔으므로 넉넉히 잡을 수 있지만, 15분 뒤에 오는 브리핑은 이미 상황이 끝난 뒤라 가치가 없다. 조사 서비스의 실제 소요 시간에 맞춘다.
+    summary: 후속 브리핑을 기다리는 전체 시간(초).
+    behavior: 통보는 이미 나갔으므로 인라인 방식보다 넉넉히 잡을 수 있다. 조사 서비스의 상한에 맞춘 값이다.
+    options:
+      - value: "300.0"
+        label: 기본
+        effect: 5분. 실제 LLM 조사 시간을 감안한 값이다.
+      - value: "60"
+        effect: 오래 걸리는 조사가 잘려 브리핑이 오지 않는다.
+      - value: "900 이상"
+        effect: 브리핑이 15분 뒤에 온다 — 그때는 이미 상황이 끝나 있을 수 있다.
+    performance: 백그라운드 태스크가 이 시간 동안 살아 있다.
+    stability: 너무 늦게 오는 브리핑은 가치가 없다 — 조사 서비스의 실제 소요 시간에 맞춘다.
+    recommendation: 기본 300초 유지.
+    related: [NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
+
+  NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT:
+    example: >-
+      PAGE 알람이 스무 건 몰리면 후속 조사 태스크도 스무 개가 뜨려 한다. 상한이 8이면 나머지는 만들지 않고 그 사실을 로그에 남기므로, 조사 서비스가 감당하는 선을 넘지
+      않는다.
+    summary: 동시에 진행할 후속 조사 태스크의 상한.
+    behavior: >-
+      알람이 폭주하면 조사 태스크도 함께 폭주한다. 이 상한을 넘으면 새 태스크를 만들지
+      않고 그 사실을 로그에 남긴다.
+    options:
+      - value: "8"
+        label: 기본
+        effect: 여덟 건까지 동시에 조사한다.
+      - value: "2"
+        effect: 폭주 시 대부분의 알람에 브리핑이 붙지 않는다.
+      - value: "50 이상"
+        effect: 조사 서비스가 감당하지 못해 전부 타임아웃으로 끝날 수 있다.
+    performance: 동시 태스크가 많을수록 메모리와 조사 서비스 부하가 늘어난다.
+    stability: 상한이 없으면 알람 폭주가 곧 태스크 폭주가 된다 — 값을 크게 두지 않는다.
+    recommendation: 조사 서비스가 감당하는 동시 처리량에 맞춰 정한다. 기본 8에서 시작한다.
+    related: [NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
+
+  NOISE_FAULT_ESCALATION_ENABLED:
+    example: >-
+      조사 결과가 '생각보다 심각하다'고 판단하면 통보에 상향 안내가 붙는다. 게이트가 내린 티어를 소급해 바꾸지는 않으며, 자동 조사 트리거가 꺼져 있으면 조사 결과 자체가
+      없어 아무 일도 일어나지 않는다.
+    summary: 조사 결과가 "더 심각하다"고 하면 통보에 상향 안내를 붙일지.
+    behavior: >-
+      조사 결과에 담긴 판정을 읽어 상향이 필요하다고 하면 통보에 안내 블록을 덧붙인다.
+      상향 안내만 붙일 뿐 게이트가 내린 티어를 소급해서 바꾸지는 않는다 — 내리는
+      방향으로는 절대 움직이지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사 결과의 상향 신호를 통보에 반영하지 않는다.
+      - value: "true"
+        effect: >-
+          "자동 조사 결과 중요도 상향" 안내가 통보에 붙는다.
+    performance: 영향이 거의 없다 — 이미 받은 조사 결과를 읽을 뿐이다.
+    stability: >-
+      자동 조사 트리거가 켜져 있어야 조사 결과 자체가 존재한다. 트리거가 꺼져 있으면
+      이 값을 켜도 아무 일도 일어나지 않는다.
+    related: [NOISE_INVESTIGATION_TRIGGER_ENABLED]
+
+  NOISE_FAULT_DIAGNOSIS_ENABLED:
+    example: >-
+      'web01 서버 원인 분석해줘'라고 물으면 조사 에이전트로 위임되어 자연어 진단이 돌아온다. 일반 조회보다 훨씬 오래 걸리고, 호스트 인가
+      게이트(HOST_AUTHZ_MODE)를 함께 통과해야 실행된다.
+    summary: 사용자가 "이 서버 원인 분석해 줘"라고 물으면 조사 에이전트에 위임할지.
+    behavior: >-
+      알람이 아니라 사용자 질문에서 출발하는 경로다. 켜면 시멘틱 라우터가 장애 진단
+      의도를 인식하고 조사 서비스에 위임한 뒤 자연어 진단 결과를 돌려준다. 꺼져 있으면
+      라우터의 선택지에 이 의도가 아예 나타나지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 장애 진단 요청도 일반 조회로 처리된다.
+      - value: "true"
+        effect: 진단 요청이 조사 에이전트로 간다. 응답이 조회보다 훨씬 오래 걸린다.
+    performance: 조사 서비스 왕복이 붙어 응답이 수십 초 이상 걸릴 수 있다.
+    stability: >-
+      호스트 인가 게이트(HOST_AUTHZ_MODE)를 함께 통과해야 실행된다. 서비스 장애는
+      침묵 폴백 없이 사유를 담은 응답으로 돌아온다.
+    recommendation: 조사 서비스가 운영되고 인가 정책이 정해진 뒤에 켠다.
+    related: [NOISE_INVESTIGATION_SERVICE_URL, HOST_AUTHZ_MODE, ENABLE_SEMANTIC_ROUTING]
+
+  NOISE_ENABLE_AGENTIC_ENRICHER:
+    example: >-
+      로그 기반 알람은 문장을 읽어야 의미를 알 수 있다. 보조 분석기가 도구를 써 가며 원인 후보를 찾아 신호로 보태지만, 판단 자체는 결정적 로직이 그대로 하므로 억제 동작이
+      뒤집히지는 않는다.
+    summary: 알람 원인을 스스로 조사해 보는 보조 분석기를 쓸지.
+    behavior: >-
+      도구를 써 가며 원인을 좁혀 보는 분석기다. 판단은 결정적 로직이 그대로 하고,
+      이 분석기는 승격 방향의 신호만 보탠다 — 억제를 늘리는 쪽으로는 작용하지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 보조 분석을 하지 않는다.
+      - value: "true"
+        effect: 알람 원인 후보를 스스로 찾아 신호로 보탠다. LLM 호출과 도구 호출이 붙는다.
+    performance: >-
+      도구 호출이 최대 NOISE_AGENTIC_ENRICHER_MAX_TOOL_CALLS회까지 붙고, 전체는
+      타임아웃으로 잘린다. 알람 처리 시간이 눈에 띄게 늘어난다.
+    stability: >-
+      판단 로직을 건드리지 않으므로 켜도 억제 동작이 뒤집히지는 않는다.
+      다만 알람 유입량만큼 LLM 호출이 발생한다.
+    recommendation: 비용 영향을 확인한 뒤 켠다. 메시지형 알람에 한정하는 옵션을 함께 쓴다.
+    caveats:
+      - 알람 유입량에 비례해 LLM 호출이 발생한다 — 외부 과금 공급자에서는 비용을 먼저 확인한다(D-127).
+    related: [NOISE_AGENTIC_ENRICHER_TIMEOUT_SECONDS, NOISE_AGENTIC_ENRICHER_MAX_TOOL_CALLS, NOISE_AGENTIC_ENRICHER_MESSAGE_ALARMS_ONLY]
+
+  NOISE_AGENTIC_ENRICHER_FALLBACK:
+    example: >-
+      전용 인프라(vLLM)가 없는 환경에서 semantic_routing으로 두면 대체 경로가 계속 호출된다. deterministic_only로 두면 보조 분석을 아예 포기해
+      가장 가볍고 예측 가능하다.
+    summary: 보조 분석기용 오케스트레이터가 없을 때 무엇으로 대체할지.
+    behavior: 전용 인프라(vLLM)가 서빙되지 않을 때의 동작을 정한다.
+    options:
+      - value: semantic_routing
+        label: 기본
+        effect: 일반 라우팅 경로로 대체해 분석을 시도한다.
+      - value: deterministic_only
+        effect: 보조 분석을 포기하고 결정적 판단만 쓴다. 가장 가볍고 예측 가능하다.
+    performance: deterministic_only가 비용이 없다.
+    stability: 인프라가 없는 환경에서 semantic_routing으로 두면 대체 경로가 계속 호출된다.
+    recommendation: 전용 인프라가 없다면 deterministic_only가 명확하다.
+    related: [NOISE_ENABLE_AGENTIC_ENRICHER]
+
+  NOISE_AGENTIC_ENRICHER_TIMEOUT_SECONDS:
+    example: >-
+      8초를 넘기면 분석 결과를 버리고 결정적 판단만으로 진행한다 — 아무것도 하지 않은 것과 같아지므로 판단이 깨지지는 않는다. 30초로 늘리면 알람 한 건이 그만큼 워커를
+      붙잡는다.
+    summary: 보조 분석기 전체에 주는 시간(초). 넘으면 아무것도 하지 않은 것으로 처리한다.
+    behavior: 이 시간을 넘기면 분석 결과를 버리고 결정적 판단만으로 진행한다.
+    options:
+      - value: "8.0"
+        label: 기본
+        effect: 8초. 도구를 몇 번 부를 수 있는 정도다.
+      - value: "3"
+        effect: 대부분의 분석이 완료 전에 잘린다.
+      - value: "30 이상"
+        effect: 알람 한 건이 30초를 잡아먹는다 — 폭주 시 처리가 밀린다.
+    performance: 알람 처리 시간에 직접 얹힌다.
+    stability: 타임아웃되면 분석이 없던 것처럼 진행되므로 판단이 깨지지는 않는다.
+    recommendation: 기본 8초 유지.
+    related: [NOISE_ENABLE_AGENTIC_ENRICHER]
+
+  NOISE_AGENTIC_ENRICHER_MAX_TOOL_CALLS:
+    example: >-
+      호출마다 결과가 프롬프트에 누적되므로 20으로 올리면 토큰이 급증하고, 대개 타임아웃에 먼저 걸린다. 타임아웃과 이중으로 걸려 있어 루프가 폭주하지는 않는다.
+    summary: 보조 분석기가 도구를 몇 번까지 부를 수 있을지.
+    behavior: 탐색 루프가 무한정 돌지 않게 하는 상한이다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 다섯 번. 몇 가지 가설을 확인하기에 충분하다.
+      - value: "2"
+        effect: 확인이 부족한 채로 끝난다.
+      - value: "20 이상"
+        effect: 토큰 사용량이 급증하고 타임아웃에 먼저 걸린다.
+    performance: 호출마다 토큰이 누적된다.
+    stability: 타임아웃과 함께 이중으로 걸려 있어 루프가 폭주하지 않는다.
+    related: [NOISE_ENABLE_AGENTIC_ENRICHER, NOISE_AGENTIC_ENRICHER_TIMEOUT_SECONDS]
+
+  NOISE_AGENTIC_ENRICHER_MESSAGE_ALARMS_ONLY:
+    example: >-
+      CPU 90% 알람은 원인이 이미 명확해 보조 분석의 이득이 작다. 켜 두면 분석 대상이 로그·보안·앱 알람으로 좁혀져 호출 수가 크게 줄고, 끄면 알람 전량이 LLM 호출
+      대상이 된다.
+    summary: 보조 분석을 메시지형 알람(로그·보안·애플리케이션)에만 적용할지 — 기본으로 켜져 있다.
+    behavior: >-
+      수치형 알람(CPU 90%)은 이미 원인이 명확하지만, 로그 기반 알람은 문장을 읽어야
+      의미를 알 수 있다. 분석 대상을 그쪽으로 한정한다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 메시지형 알람에만 분석을 건다. 호출 수가 크게 줄어든다.
+      - value: "false"
+        effect: 모든 알람에 분석을 건다 — LLM 호출이 알람 전량으로 늘어난다.
+    performance: 켜 두면 분석 대상이 크게 줄어 비용이 절감된다.
+    stability: 끄면 수치형 알람에도 분석이 붙어 이득 없이 비용만 늘기 쉽다.
+    recommendation: 켠 채로 둔다.
+    related: [NOISE_ENABLE_AGENTIC_ENRICHER]
+
+  NOISE_ANNOTATION_HARVEST_ENABLED:
+    example: >-
+      재발 알람을 억제하면서 거기 달린 '계획작업 중'·'조치 완료' 주석을 원 사건에 옮겨 둔다. 억제는 삭제가 아니므로 통보는 안 하되 텍스트 정보는 잃지 않는다.
+    summary: 억제할 때 알람에 달린 운영자 주석을 뽑아 원 사건에 보존할지.
+    behavior: >-
+      재발 알람을 억제하면서 그 알람에 달린 계획작업·해소·접수 주석을 추출해 원래
+      사건 기록에 남긴다. 억제는 삭제가 아니라는 원칙에 따라, 통보는 안 하되 텍스트
+      정보는 잃지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 주석을 추출하지 않는다. 억제된 알람의 텍스트 정보가 사라진다.
+      - value: "true"
+        effect: 주석이 원 사건에 누적된다. 나중에 그 사건을 볼 때 경과가 함께 보인다.
+    performance: 텍스트 추출이라 비용이 작다.
+    stability: 재통보를 늘리지 않는다 — 보존만 한다.
+    related: [NOISE_ANNOTATION_PLANNED_SUPPRESS, NOISE_ANNOTATION_LLM_CLASSIFICATION_ENABLED]
+
+  NOISE_ANNOTATION_PLANNED_SUPPRESS:
+    example: >-
+      '계획작업 중' 주석 하나만으로는 낮추지 않는다 — 해소 주석이 있거나 상관 클러스터에 속하거나 직전 변경이 있어야 한다. 계획작업이라고 표시됐지만 실제로는 장애인 경우가
+      있어, 완전 억제가 아니라 대시보드까지만 낮춘다.
+    summary: 계획작업 주석이 달린 알람을 대시보드로 낮출지.
+    behavior: >-
+      "계획작업 중"이라는 주석 하나만으로 낮추지는 않는다. 계획작업 표시에 더해
+      해소 주석이 있거나, 상관 클러스터에 속하거나, 직전 변경이 있어야 낮춘다.
+      텍스트 단독으로 억제를 강화하지 않는다는 원칙이다. 낮추더라도 대시보드까지이며
+      완전 억제는 아니다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 주석은 첨부만 하고 티어를 바꾸지 않는다.
+      - value: "true"
+        effect: 여러 근거가 함께 있을 때만 대시보드로 낮춘다.
+    performance: 영향이 작다.
+    stability: >-
+      계획작업 중이라고 표시됐지만 실제로는 장애인 경우가 있다 — 여러 근거를 함께
+      요구하는 이유이며, 완전 억제가 아니라 대시보드까지만 낮추는 이유이기도 하다.
+    recommendation: 계획작업 표기가 실제로 신뢰할 만한 환경에서만 켠다.
+    related: [NOISE_ANNOTATION_HARVEST_ENABLED]
+
+  NOISE_ANNOTATION_LLM_CLASSIFICATION_ENABLED:
+    example: >-
+      운영자가 '이상무'라고 적으면 정규식은 못 알아본다. LLM 분류를 켜면 인식하지만 알람 유입량만큼 호출이 발생하므로, 하루 알람이 수천 건인 환경에서는 그만큼 비용이
+      든다.
+    summary: 운영자가 손으로 쓴 주석을 LLM으로 분류할지.
+    behavior: >-
+      "이상무"·"문제없음" 같은 실제 표현은 정규식 어휘를 벗어난다. 켜면 LLM이 주석을
+      세 가지로 분류한다. 실패·타임아웃·파싱 불가는 정규식 분류로 내려가며 사유가
+      로그에 남는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 정규식으로 분류한다. 정형화된 표현만 인식한다.
+      - value: "true"
+        effect: 자연스러운 한국어 표현까지 인식한다. 대신 알람 유입량만큼 호출이 발생한다.
+    performance: >-
+      주석이 달린 알람마다 LLM 호출이 붙는다. 캐시가 같은 주석의 반복 호출을 막지만,
+      유입량이 많으면 비용이 상당해진다.
+    stability: 실패해도 정규식으로 내려가므로 분류 자체가 멈추지는 않는다.
+    recommendation: 켜기 전에 비용 영향을 산정한다 — 이것은 과금 판단이 필요한 운영 결정이다.
+    caveats:
+      - 알람 유입량만큼 LLM 호출이 발생한다. 외부 과금 공급자를 쓴다면 승인 대상이다(D-127).
+    related: [NOISE_ANNOTATION_LLM_TIMEOUT_SECONDS, NOISE_ANNOTATION_LLM_CACHE_MAX, NOISE_ANNOTATION_LLM_CACHE_TTL_SECONDS]
+    references:
+      - docs/02_decision.md (D-132 · D-127)
+
+  NOISE_ANNOTATION_LLM_TIMEOUT_SECONDS:
+    example: >-
+      3초를 넘기면 정규식 분류로 내려가고 그 사유가 로그에 남는다. 1초로 줄이면 대부분 정규식으로 처리돼 LLM을 켠 의미가 줄어든다.
+    summary: 주석 분류 한 건에 주는 시간(초). 넘으면 정규식 분류로 내려간다.
+    behavior: 짧게 잡혀 있다 — 분류는 부가 정보이므로 알람 처리를 오래 붙잡으면 안 된다.
+    options:
+      - value: "3.0"
+        label: 기본
+        effect: 3초. 넘으면 정규식으로 처리한다.
+      - value: "1"
+        effect: 대부분 정규식으로 내려가 기능의 효과가 줄어든다.
+      - value: "10 이상"
+        effect: 알람 처리가 그만큼 지연된다.
+    performance: 알람 처리 시간에 직접 얹힌다.
+    stability: 강등이 조용히 일어나지 않는다 — 사유가 로그에 남는다.
+    recommendation: 기본 3초 유지.
+    related: [NOISE_ANNOTATION_LLM_CLASSIFICATION_ENABLED]
+
+  NOISE_ANNOTATION_LLM_CACHE_MAX:
+    example: >-
+      '조치 완료' 같은 정형 주석은 반복해서 들어온다. 캐시가 적중하면 LLM 호출이 통째로 생략되므로, 상한이 클수록 비용 절감 효과가 크다 — 다만 메모리를 그만큼 쓴다.
+    summary: 주석 분류 결과를 몇 건까지 캐시할지 — 메모리 가드다.
+    behavior: 같은 주석이 반복될 때 다시 분류하지 않도록 해시 기준으로 캐시한다.
+    options:
+      - value: "500"
+        label: 기본
+        effect: 500건까지 기억한다. 반복되는 정형 주석의 호출이 사라진다.
+      - value: "50"
+        effect: 금방 밀려나 같은 주석을 반복 분류한다 — 호출 비용이 늘어난다.
+      - value: "10000 이상"
+        effect: 적중률은 오르지만 메모리를 그만큼 쓴다.
+    performance: 적중하면 LLM 호출이 통째로 생략된다 — 비용 절감 효과가 크다.
+    stability: 메모리에 두는 자료구조라 상한이 필요하다. 0이나 매우 큰 값을 두지 않는다.
+    recommendation: 기본 500 유지.
+    related: [NOISE_ANNOTATION_LLM_CACHE_TTL_SECONDS]
+
+  NOISE_ANNOTATION_LLM_CACHE_TTL_SECONDS:
+    example: >-
+      한 시간이면 반복 주석의 호출을 충분히 막는다. 60초로 줄이면 금방 만료돼 캐시 효과가 거의 없어지고 호출 비용이 그대로 든다.
+    summary: 캐시한 분류 결과를 몇 초 뒤에 버릴지.
+    behavior: 개수 상한과 별개로 시간 기준 만료도 함께 적용한다.
+    options:
+      - value: "3600"
+        label: 기본
+        effect: 한 시간. 반복 호출을 막기에 충분하다.
+      - value: "60"
+        effect: 금방 만료돼 캐시 효과가 거의 없다.
+      - value: "86400"
+        effect: 하루 유지한다. 분류 기준이 바뀌어도 옛 결과가 계속 쓰인다.
+    performance: 길수록 호출이 줄어든다.
+    stability: 개수 상한과 함께 걸려 있어 메모리가 무한정 늘지 않는다.
+    recommendation: 기본 3600초 유지.
+    related: [NOISE_ANNOTATION_LLM_CACHE_MAX]
+
+  NOISE_NON_ALARM_FILTER_ENABLED:
+    example: >-
+      알람 채널로 '승인 요청드립니다' 같은 안내성 메시지가 들어오는 경우가 있다. 켜면 초기 단계에서 걸러지며, 애매하면 알람으로 간주하므로 진짜 알람을 놓칠 위험은 낮다.
+    summary: 알람이 아닌 안내성 메시지(승인 요청 등)를 미리 걸러낼지.
+    behavior: >-
+      알람 채널로 들어오지만 실제로는 알람이 아닌 것들이 있다. 켜면 알람 표지가 없고
+      안내성 표현이 있는 메시지를 초기 단계에서 억제한다. 애매하면 알람으로 간주한다 —
+      놓치는 것보다 남기는 쪽이 안전하기 때문이다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 모든 메시지를 알람으로 처리한다.
+      - value: "true"
+        effect: 안내성 메시지가 걸러진다. 결정적 표지로 판정하며 감사에 남는다.
+    performance: 문자열 검사라 비용이 없다. 걸러지면 이후 처리가 통째로 생략된다.
+    stability: 애매한 경우 알람으로 남기는 방향이라 오억제 위험이 낮다.
+    related: [NOISE_FORMAT_TOLERANT_PARSING_ENABLED]
+
+  NOISE_FORMAT_TOLERANT_PARSING_ENABLED:
+    example: >-
+      네트워크 장비처럼 호스트 접두가 없는 형식은 파싱에 실패해 폐기된다. 켜면 가능한 만큼 읽어 처리하고 심각도를 모르면 보수적으로 취급하므로, 침묵 폐기가 줄어든다 — 알려진
+      형식의 처리 결과는 바뀌지 않는다.
+    summary: 예상과 다른 형식의 메시지도 최대한 해석해 볼지.
+    behavior: >-
+      호스트 접두가 없거나 네트워크 장비가 보낸 이질적인 형식은 파싱에 실패한다. 켜면
+      그런 경우에도 가능한 만큼 읽어 처리한다. 심각도를 알 수 없으면 보수적으로 처리해
+      버려지지 않게 한다. 알려진 형식의 해석 결과는 바뀌지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 알려진 형식만 처리한다. 그 밖은 파싱 실패로 남는다.
+      - value: "true"
+        effect: 이질 형식도 최대한 해석한다. 침묵 폐기가 줄어든다.
+    performance: 폴백 경로가 추가되지만 비용은 작다.
+    stability: >-
+      알려진 형식의 처리 결과는 그대로다 — 새 폴백만 추가된다. 이 저장소에서 실제로
+      형식 불일치로 알람이 전량 폐기된 사고가 있었다.
+    recommendation: 이질 형식 장비가 알람을 보내는 환경이면 켠다.
+    related: [NOISE_NON_ALARM_FILTER_ENABLED, ALARM_DEAD_LETTER_STREAM_KEY]
+
+  NOISE_CORRELATION_SITE_DIMENSION_ENABLED:
+    example: >-
+      전원이나 공조 문제처럼 같은 위치의 장비가 함께 영향받는 장애에서 유용하다. 상위 스위치(NOISE_CROSS_HOST_CORRELATION_ENABLED)가 꺼져 있으면
+      이 값만으로는 아무 일도 일어나지 않는다.
+    summary: 상관 분석에 사이트·위치 정보를 차원으로 추가할지.
+    behavior: >-
+      같은 위치의 알람끼리 더 잘 묶이도록 위치 토큰을 특징에 더한다. 존 경계를 넘는
+      상관 금지는 그대로 유지된다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 위치를 상관 판단에 쓰지 않는다.
+      - value: "true"
+        effect: 같은 위치의 알람이 더 잘 묶인다. 위치 단위 장애(전원·공조 등)에 유용하다.
+    performance: 토큰이 하나 늘어나는 정도라 비용이 작다.
+    stability: 서버 상관 스위치가 꺼져 있으면 이 값만으로는 아무 일도 일어나지 않는다.
+    related: [NOISE_CROSS_HOST_CORRELATION_ENABLED, NOISE_CORRELATION_SIM_THRESHOLD]

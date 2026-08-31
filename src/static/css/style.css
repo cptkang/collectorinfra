@@ -440,6 +440,266 @@ header nav {
     line-height: 1.7;
 }
 
+/* ─── 알람 레벨 필터 · 찾아보기 ─── */
+
+.alarm-tools {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.alarm-level-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.alarm-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 11px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.alarm-chip:hover {
+    background: var(--surface-hover);
+}
+
+.alarm-chip.active {
+    background: var(--accent-glow);
+    border-color: var(--border-accent);
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* 레벨별 색조 — 고른 칩에서만 드러낸다(평소엔 목록이 알록달록해지지 않게) */
+.alarm-chip--critical.active { color: var(--tone-rose); border-color: var(--tone-rose); }
+.alarm-chip--major.active { color: var(--tone-orange); border-color: var(--tone-orange); }
+.alarm-chip--minor.active { color: var(--tone-amber); border-color: var(--tone-amber); }
+.alarm-chip--clear.active { color: var(--success); border-color: var(--success); }
+.alarm-chip--critical.active,
+.alarm-chip--major.active,
+.alarm-chip--minor.active,
+.alarm-chip--clear.active {
+    background: var(--surface);
+}
+
+/* 해당 레벨 알람이 하나도 없을 때 — 누를 수는 있지만 비었다는 것이 보인다 */
+.alarm-chip--empty {
+    opacity: 0.45;
+}
+
+.alarm-chip-count {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.alarm-chip.active .alarm-chip-count {
+    color: inherit;
+}
+
+.alarm-search {
+    flex: 1 1 200px;
+    min-width: 140px;
+    margin-left: auto;
+    padding: 5px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+}
+
+.alarm-search:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.alarm-search::placeholder {
+    color: var(--text-muted);
+}
+
+.alarm-filter-reset {
+    padding: 5px 10px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 0.7rem;
+    cursor: pointer;
+}
+
+.alarm-filter-reset:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+/* 필터에 걸러진 카드 — 지우는 게 아니라 감춘다(필터를 풀면 그대로 돌아온다) */
+.alarm-card-hidden {
+    display: none !important;
+}
+
+/* ─── 알람 → 질의 프롬프트 인계 (Plan 86) ─── */
+
+.alarm-prompt-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.alarm-prompt-toggle {
+    align-self: flex-start;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.alarm-prompt-toggle::before {
+    content: "▾ ";
+    display: inline-block;
+}
+
+.alarm-prompt-section--collapsed .alarm-prompt-toggle::before {
+    content: "▸ ";
+}
+
+.alarm-prompt-toggle:hover {
+    color: var(--text);
+}
+
+.alarm-prompt-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* 접힌 동안 칩만 숨긴다 — 섹션 제목은 남아 있어야 다시 펼 수 있다 */
+.alarm-prompt-section--collapsed .alarm-prompt-chips {
+    display: none;
+}
+
+.alarm-prompt-chip {
+    padding: 5px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border-accent);
+    border-radius: 999px;
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+
+.alarm-prompt-chip:hover {
+    background: var(--accent-glow);
+}
+
+/* 헤더 서버명 트리거 — 버튼이지만 제목처럼 보여야 한다(버튼 기본 스타일 제거) */
+button.alarm-prompt-trigger {
+    padding: 0;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+    cursor: pointer;
+}
+
+button.alarm-prompt-trigger:hover {
+    color: var(--accent);
+}
+
+/* ─── 추천 질의 확인 바 (입력창 위) ─── */
+
+.prompt-confirm {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background: var(--accent-glow);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-sm);
+}
+
+.prompt-confirm-badge {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    background: var(--accent);
+    border-radius: 999px;
+    color: var(--on-accent);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+.prompt-confirm-text {
+    flex: 1 1 200px;
+    min-width: 0;
+    color: var(--text);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.prompt-confirm-btn {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.prompt-confirm-btn:hover {
+    background: var(--surface-hover);
+}
+
+.prompt-confirm-btn--run {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+}
+
+.prompt-confirm-btn--run:hover {
+    background: var(--accent-dim);
+}
+
+/* 진행 중에는 조회를 막는다 — 눌리는 것처럼 보이면 안 된다 */
+.prompt-confirm-btn--run:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* ─── 질의 이력 사이드바 (D-183) ───
    오른쪽 진행 패널과 대칭이다: 같은 grid의 한 열이고, 접으면 44px 손잡이만 남는다.
    본문을 교체하는 뷰가 아니라 옆에 붙어 있는 패널이라 질의를 보내면서도 목록이 보인다. */
@@ -4606,4 +4866,310 @@ select:focus {
 .settings-scope-note code {
     font-family: var(--font-mono);
     color: var(--text-secondary);
+}
+
+/* ──────────────────────────────────────────────
+   D-191: 설정 옵션 상세 설명 패널 (오른쪽)
+   ────────────────────────────────────────────── */
+
+/* 운영자 대시보드는 표·폼 화면이라 채팅 기준 폭(920px)으로는 좁다. 설명 패널을 나란히
+   놓으려면 더더욱 부족하다 — 920px에서는 설정 행의 고정 열(위젯 200 + 상태 160)과 패널
+   최소 320을 빼고 나면 키·설명 열에 70px도 남지 않아 글자가 뭉개진다. */
+.admin-dashboard .container {
+    max-width: 1560px;
+}
+
+/* 폭을 넓힌 대가로 입력 폼이 화면 끝까지 늘어난다 — 접속 정보 폼은 읽기 좋은 폭으로 묶는다
+   (표·설정 목록은 넓을수록 낫지만 입력 필드는 그렇지 않다). */
+.admin-dashboard #dbConfigForm {
+    max-width: 760px;
+}
+
+/* 설명 패널이 스크롤을 따라오려면 조상에 overflow가 걸려 있으면 안 된다
+   (`.card`의 overflow:hidden이 sticky를 무력화한다). */
+#tab-settings .card {
+    overflow: visible;
+}
+
+.settings-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.settings-layout.help-open {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 400px);
+}
+
+.settings-main {
+    min-width: 0;
+}
+
+/* 패널이 열려 목록이 좁아지면 고정 열부터 줄인다 — 키와 설명이 먼저 뭉개지면 안 된다.
+   상태 열은 160px 고정 대신 내용 폭(auto)으로 두어 남는 폭을 라벨에 넘긴다. */
+.settings-layout.help-open .setting-row {
+    grid-template-columns: minmax(0, 1fr) minmax(170px, 260px) auto;
+}
+
+/* 설정 목록이 길어도 설명은 화면에 남는다 — 값을 만지면서 읽는 용도이기 때문이다.
+   헤더가 sticky(64px)라 그 아래에 붙인다. */
+.settings-help {
+    position: sticky;
+    top: calc(var(--header-h) + 16px);
+    max-height: calc(100vh - var(--header-h) - 40px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.settings-help__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-hover);
+}
+
+.settings-help__titles {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.settings-help__key {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-all;
+}
+
+.settings-help__group {
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.settings-help__close {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 0.8rem;
+    line-height: 1;
+    background: none;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.settings-help__close:hover {
+    color: var(--text);
+    background: var(--surface-active);
+}
+
+.settings-help__body {
+    padding: 14px;
+    overflow-y: auto;
+    font-size: 0.76rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+
+.settings-help__loading {
+    color: var(--text-muted);
+    font-size: 0.74rem;
+}
+
+.settings-help__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+
+.settings-help__summary {
+    margin-bottom: 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 1.65;
+    color: var(--text);
+}
+
+.settings-help__section {
+    margin-bottom: 14px;
+}
+
+.settings-help__section:last-child {
+    margin-bottom: 0;
+}
+
+.settings-help__section h4 {
+    margin-bottom: 5px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.settings-help__section p {
+    margin: 0;
+}
+
+.settings-help__list,
+.settings-help__refs {
+    margin: 0;
+    padding-left: 16px;
+}
+
+.settings-help__list li,
+.settings-help__refs li {
+    margin-bottom: 4px;
+}
+
+.settings-help__refs li {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    word-break: break-all;
+}
+
+.settings-help__option {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.settings-help__option--current {
+    border-color: var(--border-accent);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.settings-help__option-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 3px;
+}
+
+.settings-help__option-head code {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.settings-help__option-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.settings-help__related {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.settings-help__related-link {
+    padding: 3px 8px;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    background: none;
+    color: var(--accent);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.settings-help__related-link:hover {
+    background: var(--accent-glow);
+}
+
+/* 설정 행의 도움말 트리거 */
+
+.setting-help-btn {
+    width: 17px;
+    height: 17px;
+    padding: 0;
+    font-size: 0.66rem;
+    font-weight: 700;
+    line-height: 1;
+    background: none;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.setting-help-btn:hover {
+    color: var(--accent);
+    border-color: var(--border-accent);
+    background: var(--accent-glow);
+}
+
+.setting-row--help {
+    background: var(--accent-glow);
+}
+
+.badge--curated {
+    border-color: var(--border-accent);
+    color: var(--accent);
+}
+
+.badge--derived {
+    border-color: var(--border);
+    color: var(--text-muted);
+}
+
+.badge--meta {
+    border-color: var(--border);
+    color: var(--text-secondary);
+}
+
+/* 목록이 좁아지는 구간에서는 행을 세로로 쌓는다 — 3열을 우겨넣으면 키가 잘린다.
+   1100px 이하와 달리 패널은 아직 오른쪽에 남는다(폭은 최소 300px). */
+@media (max-width: 1360px) {
+    .settings-layout.help-open .setting-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .settings-layout.help-open .setting-state {
+        align-items: flex-start;
+    }
+}
+
+/* 더 좁아지면 나란히 두는 것 자체가 무리다 — 설명을 목록 아래로 내린다. */
+@media (max-width: 1100px) {
+    .settings-layout.help-open {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .settings-layout.help-open .setting-row {
+        grid-template-columns: minmax(0, 1fr) minmax(200px, 320px) 160px;
+    }
+
+    .settings-help {
+        position: static;
+        max-height: none;
+    }
+}
+
+/* 900px 이하는 패널 유무와 무관하게 행이 세로로 쌓인다(기존 규칙과 같은 지점). */
+@media (max-width: 900px) {
+    .settings-layout.help-open .setting-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }

@@ -1,0 +1,261 @@
+# 설정 옵션 상세 설명 — 사용자 인증 · 운영자 인증 · 호스트 조사 인가 (D-191)
+# 근거: src/config.py AuthConfig/AdminConfig/HostAuthzConfig
+#       docs/02_decision.md (D-070 시크릿 분리 · D-071 기본 크레덴셜 제거 · D-083 · D-189)
+
+version: 1
+group: auth
+
+settings:
+
+  AUTH_ENABLED:
+    summary: 운영 모드 스위치 — 켜면 로그인이 필수가 되고, 필수 시크릿이 없으면 기동을 거부한다.
+    behavior: >-
+      이 값 하나가 개발 모드와 운영 모드를 가른다. 켜면 모든 화면이 로그인을 요구하고,
+      기동 시점에 운영자 계정과 JWT 시크릿이 실제로 설정돼 있는지 검사해 하나라도 비어
+      있으면 서버가 아예 뜨지 않는다(안전 실패).
+    options:
+      - value: "false"
+        label: 기본 (개발)
+        effect: >-
+          로그인 없이 모든 기능이 동작한다. 시크릿이 비어 있으면 임시 값을 만들어 쓴다 —
+          재시작할 때마다 값이 바뀌므로 기존 토큰은 무효가 된다. 운영에 두면 안 되는 상태다.
+      - value: "true"
+        label: 운영
+        effect: >-
+          로그인이 필수가 된다. ADMIN_USERNAME·ADMIN_PASSWORD·ADMIN_JWT_SECRET·
+          AUTH_JWT_SECRET이 모두 설정돼 있어야 기동한다. 하나라도 없으면 기동을 거부한다.
+    example: >-
+      운영 서버에서 이 값이 false면 인증 없이 누구나 조회하고 설정을 바꿀 수 있다.
+      화면에 로그인 버튼이 보이지 않는다는 것이 그 상태의 첫 신호다.
+    performance: 인증 검증은 토큰 서명 확인 정도라 비용이 작다.
+    stability: >-
+      켤 때는 필수 시크릿을 먼저 채워 둔다 — 안 채우면 재시작 순간 서버가 뜨지 않는다.
+      설정 리로드로 켠 경우에는 초기 관리자 자동 생성이 실행되지 않으므로, 계정이 준비돼
+      있는지 확인해야 한다.
+    recommendation: 운영은 반드시 true. 켜기 전에 네 개의 필수 값을 먼저 채운다.
+    caveats:
+      - 개발 모드에서 자동 생성된 JWT 시크릿은 재시작마다 바뀐다 — 로그인 상태가 유지되지 않는다.
+      - 리로드로 켜면 초기 관리자 부트스트랩이 실행되지 않는다.
+    related: [ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_JWT_SECRET, AUTH_JWT_SECRET]
+    references:
+      - docs/02_decision.md (D-071)
+
+  AUTH_JWT_SECRET:
+    example: >-
+      이 키를 바꾸면 이미 발급된 모든 사용자 토큰이 무효가 되어 전원이 다시 로그인해야 한다. 키 교체는 그 사실을 공지한 뒤에 한다.
+    summary: 사용자 토큰 서명 키 — 운영자 키와 분리돼 있다. .encenv에서 관리한다.
+    behavior: >-
+      사용자 토큰과 운영자 토큰을 서로 다른 키로 서명한다. 같은 키를 쓰면 일반 사용자
+      토큰으로 운영자 화면을 통과할 수 있게 되므로 분리가 필수다.
+    stability: >-
+      값이 비면 개발 모드에서는 임시 생성되고 운영 모드에서는 기동이 거부된다.
+      키를 바꾸면 발급된 모든 사용자 토큰이 무효가 되어 전원 재로그인이 필요하다.
+    recommendation: 충분히 긴 무작위 값을 .encenv에 두고, 운영자 키와 절대 같은 값을 쓰지 않는다.
+    caveats:
+      - 운영자 키(ADMIN_JWT_SECRET)와 같은 값을 쓰면 권한 분리가 무너진다.
+    related: [ADMIN_JWT_SECRET, AUTH_ENABLED]
+    references:
+      - docs/02_decision.md (D-070)
+
+  AUTH_JWT_EXPIRE_HOURS:
+    example: >-
+      퇴사자의 계정을 비활성화해도, 이미 발급된 토큰은 만료 시각까지 살아 있다. 8시간이면 최악의 경우 8시간 동안 접근이 유지되므로, 즉시 차단이 필요하면 만료에 기대지 말고
+      계정 자체를 막아야 한다.
+    summary: 사용자 로그인이 몇 시간 뒤에 만료될지.
+    behavior: 발급된 토큰의 유효 시간이다. 만료되면 다시 로그인해야 한다.
+    options:
+      - value: "8"
+        label: 기본
+        effect: 근무 시간 한 번 로그인하면 하루가 끝날 때까지 유지되는 길이다.
+      - value: "1~2"
+        effect: 탈취된 토큰의 유효 시간이 짧아 안전하지만, 재로그인이 잦아 불편해진다.
+      - value: "72 이상"
+        effect: 편하지만 토큰이 새어 나갔을 때 오래 쓰인다. 퇴사·권한 회수 반영도 그만큼 늦다.
+    performance: 영향 없다.
+    stability: >-
+      길게 잡으면 권한을 회수해도 이미 발급된 토큰은 만료까지 살아 있다 — 즉시 차단이
+      필요하면 토큰 만료에 기대지 말고 계정 자체를 비활성화해야 한다.
+    recommendation: 기본 8시간 유지.
+    related: [ADMIN_JWT_EXPIRE_HOURS]
+
+  AUTH_MAX_LOGIN_ATTEMPTS:
+    example: >-
+      비밀번호를 세 번 틀린 사용자가 네 번째에 성공하면 아무 일도 없다. 다섯 번째까지 실패하면 30분간 잠기고, 같은 시점에 감사
+      경보(AUDIT_ALERT_ON_FAILED_LOGIN)도 함께 남는다 — 두 임계를 같은 값으로 두면 잠김과 경보가 동시에 발생한다.
+    summary: 로그인을 몇 번 틀리면 계정을 잠글지.
+    behavior: 연속 실패가 이 횟수에 닿으면 AUTH_LOCKOUT_MINUTES 동안 로그인을 막는다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 다섯 번까지 허용한다. 오타 몇 번은 통과시키고 반복 시도는 막는 선이다.
+      - value: "3"
+        effect: 더 엄격하다. 비밀번호를 헷갈린 사용자가 자주 잠기고 문의가 늘어난다.
+      - value: "10 이상"
+        effect: 사용자는 편하지만 추측 공격에 그만큼 많은 기회를 준다.
+    performance: 영향 없다.
+    stability: >-
+      잠금은 정당한 사용자를 막는 부작용이 있다. 잠금 시간과 함께 조정해야 하며,
+      운영자 계정까지 잠기면 복구가 번거로워진다.
+    recommendation: 기본 5 유지. 감사 경보 임계(AUDIT_ALERT_ON_FAILED_LOGIN)와 함께 본다.
+    related: [AUTH_LOCKOUT_MINUTES, AUDIT_ALERT_ON_FAILED_LOGIN]
+
+  AUTH_LOCKOUT_MINUTES:
+    example: >-
+      잠긴 계정은 30분 뒤 자동으로 풀린다. 이 값을 하루로 늘리면 사실상 관리자가 풀어 줘야 하므로, 야간에 잠긴 당직자가 대응하지 못하는 상황이 생길 수 있다.
+    summary: 계정이 잠겼을 때 몇 분 뒤에 풀릴지.
+    behavior: 실패 횟수 초과로 잠긴 계정이 자동으로 다시 열리기까지의 시간이다.
+    options:
+      - value: "30"
+        label: 기본
+        effect: 30분. 자동 공격에는 충분히 성가시고, 사람에게는 견딜 만한 길이다.
+      - value: "5"
+        effect: 금방 풀린다. 사용자는 편하지만 반복 시도를 늦추는 효과가 약해진다.
+      - value: "1440 (하루)"
+        effect: 사실상 관리자 개입 없이는 못 쓴다. 문의가 몰린다.
+    performance: 영향 없다.
+    stability: 길게 잡으면 정당한 사용자의 업무가 그만큼 멈춘다. 잠금 해제 절차가 정해져 있어야 한다.
+    recommendation: 기본 30분 유지.
+    related: [AUTH_MAX_LOGIN_ATTEMPTS]
+
+  AUTH_PASSWORD_MIN_LENGTH:
+    example: >-
+      이 값을 12로 올려도 기존 8자 비밀번호는 그대로 쓰인다 — 새로 만들거나 바꿀 때만 적용되기 때문이다. 전원에게 강제하려면 별도의 재설정 유도가 필요하다.
+    summary: 비밀번호 최소 길이.
+    behavior: 가입·변경 시 이 길이 미만이면 거부한다. 이미 설정된 비밀번호에는 소급되지 않는다.
+    options:
+      - value: "8"
+        label: 기본
+        effect: 최소 여덟 자. 일반적인 하한이다.
+      - value: "12 이상"
+        effect: 더 안전하다. 사내 보안 정책이 요구하면 그쪽을 따른다.
+      - value: "6 이하"
+        effect: 추측에 매우 취약해진다. 권장하지 않는다.
+    performance: 영향 없다.
+    stability: 값을 올려도 기존 비밀번호는 그대로다 — 강제하려면 별도의 재설정 유도가 필요하다.
+    recommendation: 사내 보안 정책의 하한을 따른다. 없으면 기본 8 이상.
+    related: []
+
+  AUTH_AUTH_DB_URL:
+    example: >-
+      이 DB에 닿지 못하면 운영 모드에서 아무도 로그인할 수 없다. 조회 대상 DB가 멀쩡해도 서비스는 사실상 멈추므로, 인증 DB 가용성을 별도로 감시해야 한다.
+    summary: 사용자 계정 정보가 들어 있는 DB 접속 문자열.
+    behavior: >-
+      로그인·권한·부서 정보가 이 DB에 있다. 비밀번호가 포함되므로 화면에서는 마스킹되며,
+      마스킹된 값을 그대로 저장해도 기존 값이 지워지지 않는다.
+    stability: >-
+      이 DB에 닿지 못하면 운영 모드에서 아무도 로그인할 수 없다. 인증 DB 가용성이 곧
+      서비스 가용성이다.
+    recommendation: 조회 대상 DB와 분리해 관리한다.
+    related: [AUTH_ENABLED, AUTH_DEFAULT_ALLOWED_DB_IDS]
+
+  AUTH_DEFAULT_ALLOWED_DB_IDS:
+    example: >-
+      여기에 공동존을 넣어 두면 새 계정이 만들어지는 순간 그 존의 서버 정보를 조회할 수 있게 된다. 비워 두면 관리자가 명시적으로 권한을 줄 때까지 아무것도 못 보므로, 존
+      단위 통제가 유지된다.
+    summary: 신규 사용자에게 기본으로 열어 줄 DB 목록.
+    behavior: 개별 권한이 지정되지 않은 사용자가 접근할 수 있는 DB의 기본값이다. 비워 두면 아무 DB도 열리지 않는다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 신규 사용자는 아무 DB도 조회할 수 없다. 관리자가 명시적으로 권한을 줘야 한다(안전 실패).
+      - value: "polestar_cm_gp"
+        effect: 신규 사용자가 그 DB를 바로 조회할 수 있다. 편하지만 권한이 자동으로 넓어진다.
+    performance: 영향 없다.
+    stability: >-
+      비워 두는 쪽이 안전하다. 값을 채우면 계정이 만들어지는 순간 그 DB의 데이터에 접근
+      가능해지므로, 존 단위 접근 통제의 의미가 약해진다.
+    recommendation: 비워 두고 권한은 개별 부여한다.
+    related: [AUTH_ENABLED, ACTIVE_DB_IDS]
+
+  ADMIN_USERNAME:
+    example: >-
+      평소 운영자 접근은 일반 로그인 화면에서 admin 역할로 들어간다. 이 계정은 그 경로가 막혔을 때만 쓰는 비상 통로이며, 링크가 걸려 있지 않아 주소를 알아야 접근할 수
+      있다.
+    summary: 비상용(break-glass) 운영자 계정 아이디.
+    behavior: >-
+      평소 운영자 접근은 사용자 DB의 admin 역할로 이루어진다. 이 계정은 그 경로가
+      막혔을 때 쓰는 비상 통로이며, 전용 로그인 화면에는 링크가 걸려 있지 않다.
+    stability: >-
+      운영 모드에서 이 값이 비어 있으면 서버가 기동을 거부한다. 비상 통로가 없는 상태로
+      운영에 들어가지 않게 하려는 장치다.
+    recommendation: 추측하기 어려운 아이디를 쓰고, 이 계정의 사용 자체를 감사 대상으로 삼는다.
+    caveats:
+      - 비밀번호와 시크릿은 .encenv에서 관리한다 — 이 화면에서 바꿀 수 없다.
+    related: [ADMIN_PASSWORD, ADMIN_JWT_SECRET, AUTH_ENABLED]
+    references:
+      - docs/02_decision.md (D-071 · D-083)
+
+  ADMIN_PASSWORD:
+    example: >-
+      이 계정 하나로 설정 변경·사용자 삭제·DB 접속 정보 변경이 모두 가능하다. 운영 모드에서 값이 비어 있으면 서버가 아예 뜨지 않는데, 그것이 '비상 통로 없는 운영'을
+      막는 장치다.
+    summary: 비상용 운영자 비밀번호 — .encenv에서 관리한다.
+    behavior: >-
+      기본 크레덴셜은 제거돼 있다. 값이 없으면 운영 모드에서 기동이 거부된다.
+      시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 이 계정 하나로 설정 변경·사용자 삭제·DB 접속정보 변경이 모두 가능하다 — 가장 강한 크레덴셜이다.
+    recommendation: 충분히 긴 무작위 값을 쓰고 별도로 보관한다.
+    related: [ADMIN_USERNAME, ADMIN_JWT_SECRET]
+
+  ADMIN_JWT_SECRET:
+    example: >-
+      이 키를 사용자 키와 같은 값으로 두면 일반 사용자 토큰이 운영자 API를 통과한다 — 실제로 그 결함이 있었고 키를 분리해 막았다. 두 값이 같지 않은지 배포 전에
+      확인한다.
+    summary: 운영자 토큰 서명 키 — 사용자 키와 분리돼 있다. .encenv에서 관리한다.
+    behavior: >-
+      운영자 토큰만 이 키로 서명한다. 사용자 키와 같은 값을 쓰면 일반 사용자 토큰이
+      운영자 API를 통과할 수 있게 된다 — 실제로 그 결함이 있었고 키 분리로 막았다.
+    stability: 값이 비면 운영 모드에서 기동이 거부된다. 개발 모드에서는 임시 생성되고 재시작마다 바뀐다.
+    recommendation: 사용자 키(AUTH_JWT_SECRET)와 반드시 다른 값을 쓴다.
+    caveats:
+      - 두 키를 같은 값으로 두면 권한 분리가 무너진다.
+    related: [AUTH_JWT_SECRET, ADMIN_JWT_EXPIRE_HOURS]
+    references:
+      - docs/02_decision.md (D-070)
+
+  ADMIN_JWT_EXPIRE_HOURS:
+    example: >-
+      운영자 토큰은 설정 변경과 사용자 관리 권한을 가진다. 일주일로 늘리면 그 권한이 담긴 토큰이 일주일간 유효하므로, 사용자 토큰보다 짧게 두는 편이 원칙에 맞다.
+    summary: 운영자 로그인이 몇 시간 뒤에 만료될지.
+    behavior: 운영자 토큰의 유효 시간이다. 사용자 토큰(기본 8시간)과 별도로 설정한다.
+    options:
+      - value: "24"
+        label: 기본
+        effect: 하루. 운영 작업이 길어져도 중간에 끊기지 않는다.
+      - value: "4 이하"
+        effect: >-
+          가장 강한 권한의 토큰이 짧게만 살아 있어 안전하다. 대신 긴 작업 중에 끊겨
+          다시 로그인해야 한다.
+      - value: "168 (일주일)"
+        effect: 편하지만 최고 권한 토큰이 일주일간 유효하다 — 유출 시 피해가 크다.
+    performance: 영향 없다.
+    stability: 운영자 토큰은 설정 변경·사용자 관리 권한을 가진다. 사용자 토큰보다 짧게 두는 편이 원칙에 맞다.
+    recommendation: 기본 24시간 또는 그보다 짧게.
+    related: [AUTH_JWT_EXPIRE_HOURS, ADMIN_JWT_SECRET]
+
+  HOST_AUTHZ_MODE:
+    summary: 실제 서버를 조사하는 경로에 누가 진입할 수 있는지.
+    behavior: >-
+      호스트 조사는 조회와 달리 대상 서버에 직접 접근하는 경로다. 이 값이 그 진입을
+      통제한다. 판정은 안전 실패 방식이라, 값이 비어 있거나 알 수 없는 값이면 전부 차단한다.
+    options:
+      - value: admin_only
+        label: 기본
+        effect: admin 역할을 가진 사용자만 조사 경로에 들어갈 수 있다. 그 외에는 전부 막힌다.
+      - value: "(그 밖의 값)"
+        effect: >-
+          알 수 없는 값은 차단으로 해석한다. 오타로 인가가 열리는 일은 없지만, 조사 기능
+          자체가 조용히 막히므로 오타를 알아채기 어렵다.
+    example: >-
+      일반 사용자가 "이 서버에서 뭐가 도는지 봐 줘"라고 물으면, 조회까지는 되지만 조사
+      단계에서 막힌다. admin 역할이면 그대로 진행된다.
+    performance: 판정 자체는 비용이 없다. 다만 통과하면 그 뒤의 조사 비용이 발생한다.
+    stability: >-
+      현재는 admin이면 모든 호스트를 조사할 수 있다 — 호스트별 세분화는 아직 없다.
+      인가에서 열려 있는 쪽으로 실패하면 통제가 없는 것과 같으므로 안전 실패가 원칙이다.
+    recommendation: 기본 admin_only를 유지한다.
+    caveats:
+      - 이 게이트가 걸리는 경로(조사·진단)는 둘 다 기본 off라, 그 플래그를 켜야 실제로 의미를 갖는다.
+    related: [COMPOSITE_INVESTIGATION_ENABLED, COMPOSITE_AUDIT_ENABLED]
+    references:
+      - docs/02_decision.md (D-189 · plans/78 W3-5)

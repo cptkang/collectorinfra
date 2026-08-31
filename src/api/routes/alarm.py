@@ -411,6 +411,43 @@ class AlarmFeedbackRequest(BaseModel):
     severity: Optional[int] = Field(default=None, description="심각도(선택)")
 
 
+class AlarmPromptSuggestRequest(BaseModel):
+    """알람 카드의 LLM 조회 질의 추천 요청 (Plan 86 · D-192).
+
+    프론트는 **결정적 축 매핑이 0건일 때만** 이 엔드포인트를 부른다 — 추천이 이미 있으면
+    네트워크 요청 자체가 나가지 않는다(과금 경로를 미매핑 축으로 좁힌다).
+    """
+
+    target: str = Field(description="질의의 주어가 될 대상 서버 표기(등록명 우선)")
+    alarm_name: str = Field(default="", description="${alarmName}")
+    resource_type: str = Field(default="", description="${resourceType} — 결정적 매핑이 비는 축")
+    resource_name: str = Field(default="", description="${resourceName}")
+    severity_label: str = Field(default="", description="심각/경고/주의/해소")
+    summary: str = Field(default="", description="LLM 요약")
+    probable_cause: str = Field(default="", description="추정 원인")
+    recommended_action: str = Field(default="", description="권고 조치 — 추천의 주 근거")
+    pattern_type: str = Field(default="", description="첫 발생/주기적/급증/산발적")
+    pattern_analysis: str = Field(default="", description="패턴 해석 — 추천의 보조 근거")
+    db_id: str = Field(default="", description="dbId — 존 RBAC 판정용")
+
+
+class AlarmPromptSuggestion(BaseModel):
+    """추천 질의 1건. 형식은 프론트의 결정적 추천과 동일하다(CAPABILITY-MAP-86)."""
+
+    label: str = Field(description="칩에 표시할 짧은 요지")
+    text: str = Field(description="입력창에 들어갈 질의 전문")
+    axis: str = Field(default="", description="판정에 쓰인 resource_type")
+    source: str = Field(default="llm", description="deterministic | llm")
+
+
+class AlarmPromptSuggestResponse(BaseModel):
+    """추천 응답. 실패는 5xx가 아니라 `suggestion=null`이다 — 카드 렌더를 깨뜨리지 않는다."""
+
+    suggestion: Optional[AlarmPromptSuggestion] = Field(
+        default=None, description="추천 질의(생성 실패·파싱 실패 시 null)"
+    )
+
+
 class AlarmFeedbackResponse(BaseModel):
     """운영자 알람 피드백 응답 (Plan 52 E4)."""
 
@@ -464,6 +501,9 @@ class AlarmCapabilitiesResponse(BaseModel):
     sse_bridge: bool = Field(description="워커→UI SSE 브리지 활성")
     suppress_stream: bool = Field(description="SUPPRESS 티어 SSE 발행 활성(관리자 전용 표시)")
     suppress_max_severity: int = Field(description="억제 허용 최대 심각도(그 위는 강등 불가)")
+    prompt_suggest_enabled: bool = Field(
+        default=False, description="알람 조회 질의 LLM 추천 활성 (Plan 86 · 기본 off)"
+    )
 
 
 # ─── 유틸 함수 ───────────────────────────────────────────────────────────────
@@ -1276,6 +1316,83 @@ async def list_incidents(
 # ─── 운영자 피드백 엔드포인트 (Plan 52 E4) ───────────────────────────────────
 
 @router.post(
+    "/alarm/suggest-prompt",
+    response_model=AlarmPromptSuggestResponse,
+    summary="알람 조회 질의 추천 (LLM · 기본 off)",
+)
+async def suggest_alarm_prompt(
+    request: Request,
+    body: AlarmPromptSuggestRequest,
+    current_user: dict = Depends(require_user),
+) -> AlarmPromptSuggestResponse:
+    """권고 조치·패턴 분석을 근거로 조회 질의 1건을 제안한다 (Plan 86 · D-192).
+
+    결정적 축 매핑이 비는 알람에서만 프론트가 호출한다. **기본 off**이며(과금 경로 —
+    D-127) 꺼져 있으면 503이다. 생성·파싱 실패는 200 + `suggestion=null`로 돌려준다 —
+    추천이 없다고 알람 카드가 깨지면 안 된다.
+    """
+    config = request.app.state.config
+    ng = config.noise_gate
+    if not getattr(ng, "alarm_prompt_llm_suggest_enabled", False):
+        raise HTTPException(status_code=503, detail="프롬프트 추천 비활성")
+    if not body.target.strip():
+        raise HTTPException(status_code=400, detail="target(대상 서버)이 비어 있습니다")
+    # 쓰기 경로와 같은 존 RBAC 규약 — 다른 존 알람의 내용을 LLM에 실어 보내지 못하게 한다.
+    _assert_zone_access(request, current_user, body.db_id)
+
+    from src.llm import create_llm
+    from src.utils.json_extract import extract_json_from_response
+    from noise_gate.prompts.alarm_prompt_suggest import (
+        ALARM_PROMPT_SUGGEST_SYSTEM,
+        ALARM_PROMPT_SUGGEST_USER_TEMPLATE,
+    )
+
+    user_msg = ALARM_PROMPT_SUGGEST_USER_TEMPLATE.format(
+        target=body.target,
+        alarm_name=body.alarm_name,
+        resource_type=body.resource_type,
+        resource_name=body.resource_name,
+        severity_label=body.severity_label,
+        summary=body.summary,
+        probable_cause=body.probable_cause,
+        recommended_action=body.recommended_action,
+        pattern_type=body.pattern_type,
+        pattern_analysis=body.pattern_analysis,
+    )
+    try:
+        llm = create_llm(config)
+        response = await llm.ainvoke(
+            [
+                {"role": "system", "content": ALARM_PROMPT_SUGGEST_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ]
+        )
+        parsed = extract_json_from_response(getattr(response, "content", ""))
+    except Exception as exc:  # noqa: BLE001 — 어떤 실패든 카드는 계속 동작해야 한다
+        logger.warning("알람 질의 추천 실패: %s", exc)
+        return AlarmPromptSuggestResponse(suggestion=None)
+
+    label = (parsed or {}).get("label") or ""
+    text = (parsed or {}).get("text") or ""
+    if not isinstance(label, str) or not isinstance(text, str) or not text.strip():
+        logger.warning("알람 질의 추천 산출 형식 불일치: %s", parsed)
+        return AlarmPromptSuggestResponse(suggestion=None)
+    # 주어 없는 질의는 쓸모가 없다 — 대상이 빠졌으면 추천하지 않는다(결정적 경로와 같은 규칙).
+    if body.target not in text:
+        logger.warning("알람 질의 추천에 대상 서버 누락: %s", text)
+        return AlarmPromptSuggestResponse(suggestion=None)
+
+    return AlarmPromptSuggestResponse(
+        suggestion=AlarmPromptSuggestion(
+            label=label.strip()[:40] or "알람 조회",
+            text=text.strip(),
+            axis=body.resource_type,
+            source="llm",
+        )
+    )
+
+
+@router.post(
     "/alarm/feedback",
     response_model=AlarmFeedbackResponse,
     summary="운영자 알람 피드백(유효/노이즈)",
@@ -1418,6 +1535,10 @@ async def alarm_capabilities(
         incident_tracking=bool(getattr(ng, "incident_tracking_enabled", False)),
         sse_bridge=bool(getattr(ng, "sse_bridge_enabled", False)),
         suppress_stream=bool(getattr(ng, "sse_suppressed_enabled", False)),
+        # Plan 86: 꺼져 있으면 프론트가 아예 호출하지 않는다 — 알람마다 503을 때리지 않게 한다.
+        prompt_suggest_enabled=bool(
+            getattr(ng, "alarm_prompt_llm_suggest_enabled", False)
+        ),
         suppress_max_severity=int(getattr(ng, "suppress_max_severity", 2)),
     )
 

@@ -1,0 +1,346 @@
+# 설정 옵션 상세 설명 — MCP 접속 · API 서버 · Redis · 스키마 캐시 (D-191)
+# 근거: src/config.py DBHubConfig/ServerConfig/RedisConfig/SchemaCacheConfig
+
+version: 1
+group: dbhub
+
+settings:
+
+  DBHUB_SERVER_URL:
+    summary: 관측 데이터를 읽는 MCP 서버의 주소.
+    behavior: >-
+      `DB_BACKEND=dbhub`일 때 모든 SQL 조회가 이 주소를 거친다. 폴스타 REST 도구와
+      PromQL 도구도 같은 서버가 제공한다. 이 서버는 **별도 프로세스·별도 설정 파일**로
+      돌기 때문에, 조회 타임아웃이나 최대 행수 같은 DB 레벨 제한은 이쪽에서 바꿀 수 없다.
+    options:
+      - value: "http://localhost:9099/sse"
+        label: 기본
+        effect: 같은 장비의 MCP 서버에 붙는다.
+      - value: "http://<mcp-host>:9099/sse"
+        effect: 별도 장비의 MCP 서버를 쓴다. 왕복 지연이 조회마다 얹힌다.
+    example: >-
+      "조회가 전부 실패한다"는 신고에서 이 주소와 MCP 서버 프로세스 생존을 먼저 본다.
+      본체는 정상 기동하고 질의 시점에만 실패하므로 기동 로그로는 드러나지 않는다.
+    performance: 조회마다 이 서버를 왕복한다. 원격이면 지연이 그만큼 더해진다.
+    stability: 이 서버가 내려가면 SQL 조회 경로 전체가 멈춘다 — 단일 장애점이다.
+    related: [DB_BACKEND, DBHUB_MCP_CALL_TIMEOUT, DBHUB_SOURCE_NAME]
+
+  DBHUB_SOURCE_NAME:
+    example: >-
+      MCP 서버 쪽 `config.toml`에 `polestar_cm_gp`로 등록돼 있는데 여기에 `polestar-cm-gp`(하이픈)로 적으면 조회가 대상을 못 찾는다.
+      오타가 아니라 표기 차이라 눈으로 지나치기 쉽다.
+    summary: MCP 서버에 등록된 기본 조회 대상 소스 이름.
+    behavior: >-
+      MCP 서버 쪽 `config.toml`의 소스 이름과 **문자 하나까지 정확히** 같아야 한다.
+      다르면 조회가 대상을 찾지 못한다.
+    options:
+      - value: "(비움)"
+        effect: 기본 소스를 지정하지 않는다. 질의마다 대상을 명시해야 한다.
+    performance: 영향이 없다.
+    stability: >-
+      MCP 서버의 설정 파일은 이 화면 범위 밖이다 — 양쪽을 함께 확인해야 하고,
+      한쪽만 고치면 조회가 조용히 실패한다.
+    related: [DBHUB_SERVER_URL, ACTIVE_DB_IDS]
+
+  DBHUB_MCP_CALL_TIMEOUT:
+    example: >-
+      MCP 서버가 자체 실행 제한으로 30초에 조회를 끊는다면, 이쪽 값은 그보다 커야 서버 측 사유(`쿼리 시간 초과`)가 그대로 전달된다. 이쪽이 더 짧으면 클라이언트
+      타임아웃으로 먼저 끊겨 원인이 흐려진다.
+    summary: MCP 호출 하나를 얼마나 기다릴지(초).
+    behavior: >-
+      조회 요청 전체에 걸리는 클라이언트 측 상한이다. 이 시간을 넘기면 실패로 처리되고
+      재시도 예산이 남아 있으면 다시 시도한다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 1분. 대량 조회도 대체로 이 안에 끝난다.
+      - value: "10 이하"
+        effect: 큰 테이블 조회가 정상인데도 끊긴다.
+      - value: "300 이상"
+        effect: 느린 조회도 완주하지만, 사용자가 5분을 기다린 뒤 실패를 볼 수 있다.
+    performance: 실패 확정까지 이 시간이 걸리고 그동안 처리 슬롯이 점유된다.
+    stability: >-
+      DB 쪽 실행 제한은 MCP 서버가 따로 관리한다 — 이 값은 그보다 넉넉해야 서버 측
+      제한이 먼저 걸린다(그래야 원인이 명확하게 드러난다).
+    related: [DBHUB_SERVER_URL, API_QUERY_TIMEOUT]
+
+  DBHUB_BEARER_TOKEN:
+    example: >-
+      MCP 서버에 인증을 붙인 뒤 이 값을 채우지 않으면 모든 조회가 401로 거부된다. 본체는 정상 기동하므로 첫 질의에서야 드러난다.
+    summary: MCP 서버 전송 인증 토큰 — .encenv에서 관리한다.
+    behavior: 비어 있으면 인증 헤더 없이 호출한다(서버가 무인증이라는 전제). 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 서버가 인증을 요구하는데 값이 비면 모든 조회가 거부된다.
+    related: [DBHUB_SERVER_URL]
+
+  API_HOST:
+    example: >-
+      127.0.0.1로 바꾸면 같은 장비에서만 접속된다 — 앞단에 nginx를 두는 구성에서는 이쪽이 안전하지만, 프록시 없이 바꾸면 다른 장비에서 화면이 열리지 않는다.
+    summary: API 서버가 바인딩할 주소.
+    behavior: 어느 네트워크 인터페이스에서 요청을 받을지 정한다.
+    options:
+      - value: "0.0.0.0"
+        label: 기본
+        effect: 모든 인터페이스에서 받는다. 같은 망의 다른 장비에서 접속할 수 있다.
+      - value: "127.0.0.1"
+        effect: 같은 장비에서만 접속된다. 앞단에 리버스 프록시를 두는 구성에 맞다.
+    performance: 영향이 없다.
+    stability: 0.0.0.0은 망 안의 누구나 닿을 수 있다는 뜻이다 — 인증(AUTH_ENABLED)이 켜져 있어야 한다.
+    related: [API_PORT, API_CORS_ORIGINS, AUTH_ENABLED]
+
+  API_PORT:
+    example: >-
+      8000이 이미 다른 서비스에 쓰이고 있으면 기동이 실패한다. 포트를 바꾸면 방화벽 정책과 사용자에게 안내한 주소도 함께 바꿔야 한다.
+    summary: API 서버가 사용할 포트.
+    behavior: 웹 UI와 API가 같은 포트를 쓴다. 바꾸면 접속 주소가 함께 바뀐다.
+    options:
+      - value: "8000"
+        label: 기본
+        effect: 8000번 포트로 서비스한다.
+    stability: 이미 쓰이는 포트를 지정하면 기동이 실패한다. 방화벽 정책과도 함께 맞춰야 한다.
+    related: [API_HOST]
+
+  API_CORS_ORIGINS:
+    example: >-
+      웹 UI를 같은 서버가 제공하는 기본 구성에서는 이 값이 사실상 쓰이지 않는다. 다만 `*`로 둔 상태에서 별도 프런트를 붙이면, 임의 사이트의 스크립트도 사용자 브라우저를
+      통해 이 API를 부를 수 있게 된다.
+    summary: 브라우저에서 이 API를 호출할 수 있는 출처 목록.
+    behavior: >-
+      다른 도메인의 웹 페이지가 이 API를 부를 수 있는지 결정한다. 같은 서버가 웹 UI를
+      함께 제공하므로 기본 구성에서는 사실상 쓰이지 않지만, 별도 프런트를 붙이면 필요해진다.
+    options:
+      - value: '["*"]'
+        label: 기본
+        effect: >-
+          모든 출처를 허용한다. 개발에는 편하지만, 운영에서는 임의 사이트의 스크립트가
+          사용자 브라우저를 통해 이 API를 부를 수 있게 된다.
+      - value: '["https://내부도메인"]'
+        effect: 지정한 출처만 허용한다. 운영에서 권장하는 형태다.
+    performance: 영향이 없다.
+    stability: 운영에서 `*`로 두는 것은 인증에만 기대는 상태다 — 실제 사용하는 출처로 좁힌다.
+    caveats:
+      - .env에 적을 때는 JSON 배열 형식이어야 한다.
+    related: [AUTH_ENABLED, API_HOST]
+
+  API_QUERY_TIMEOUT:
+    example: >-
+      LLM 타임아웃 180초·MCP 60초인데 이 값이 60이면, 하위 단계가 끝나기 전에 전체가 먼저 끊긴다. 그러면 실패 원인이 '전체 시간 초과'로만 남아 어느 단계가
+      느렸는지 알 수 없다 — 상위 타임아웃은 하위의 합보다 커야 한다.
+    summary: 일반 질의 하나에 허용하는 전체 시간(초).
+    behavior: >-
+      그래프 실행 전체를 감싸는 상한이다 — LLM 호출·DB 조회·재시도를 모두 합쳐
+      이 시간을 넘기면 중단된다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 1분. 단순 질의 10초·복합 질의 30초 목표에 여유를 둔 값이다.
+      - value: "20 이하"
+        effect: 복합 질의나 재시도가 붙은 질의가 자주 중단된다.
+      - value: "180 이상"
+        effect: 대부분 완주하지만 사용자가 3분을 기다린다. 동시 사용자가 많으면 처리량이 떨어진다.
+    performance: 이 시간 동안 처리 슬롯이 점유된다 — 동시 요청 수에 직접 영향을 준다.
+    stability: 하위 타임아웃(LLM·MCP)의 합보다 커야 원인이 하위에서 먼저 드러난다.
+    related: [API_FILE_QUERY_TIMEOUT, DBHUB_MCP_CALL_TIMEOUT, LLM_OLLAMA_TIMEOUT]
+
+  API_FILE_QUERY_TIMEOUT:
+    example: >-
+      열이 30개인 월간 보고서 양식은 필드마다 매핑 판단이 붙어 LLM 호출이 수십 번 일어난다. 일반 질의 타임아웃(60초)으로는 대부분 중단되므로 별도로 넉넉히 잡아 둔
+      것이다.
+    summary: 양식 파일을 올린 질의에 허용하는 전체 시간(초).
+    behavior: >-
+      엑셀·워드 양식을 채우는 경로는 필드마다 매핑 판단이 붙어 LLM 호출이 많다.
+      그래서 일반 질의보다 넉넉하게 따로 잡는다.
+    options:
+      - value: "120"
+        label: 기본
+        effect: 2분. 문서 생성 60초 목표에 재시도 여유를 더한 값이다.
+      - value: "60"
+        effect: 필드가 많은 양식이 완료 전에 끊긴다.
+      - value: "600 이상"
+        effect: 큰 양식도 완주하지만 한 요청이 10분간 슬롯을 점유한다.
+    performance: 양식 처리는 원래 무거운 경로다 — 동시에 여러 건이 들어오면 서버 부하가 크다.
+    stability: 중단되면 산출물이 나오지 않는다. 실패 사유는 응답에 노출되므로 조용히 빈 파일이 나가지는 않는다.
+    related: [API_QUERY_TIMEOUT, QUERY_FORM_MEMORY_TTL_DAYS]
+
+  REDIS_HOST:
+    example: >-
+      Redis를 껐다 켜면 캐시가 비는 데 그치지 않는다 — 알람 스트림에 쌓여 있던 미처리 메시지와 pub/sub 중계가 함께 끊겨, 그 사이 도착한 알람이 화면에 뜨지
+      않는다.
+    summary: Redis 서버 주소.
+    behavior: >-
+      Redis는 스키마 캐시·알람 스트림·세션·각종 단기 캐시에 함께 쓰인다.
+      알람 기능을 쓰는 구성에서는 Redis가 곧 알람 파이프라인의 전달 경로다.
+    options:
+      - value: localhost
+        label: 기본
+        effect: 같은 장비의 Redis를 쓴다.
+    performance: 원격이면 캐시 조회마다 왕복이 붙는다 — 캐시의 이점이 줄어든다.
+    stability: >-
+      Redis가 죽으면 캐시 미스로 느려지는 데 그치지 않고, 알람 수신·중계 경로가 함께
+      멈춘다(스트림과 pub/sub을 쓰기 때문이다).
+    related: [REDIS_PORT, REDIS_PASSWORD, SCHEMA_CACHE_BACKEND, ALARM_REDIS_STREAM_KEY]
+
+  REDIS_PORT:
+    example: >-
+      한 장비에 Redis를 두 개(6379·6380) 띄운 구성에서 본체와 알람 수신부가 서로 다른 포트를 보면, 수신부는 정상 적재하는데 워커는 빈 스트림을 읽는다 —
+      '알람이 안 뜬다'의 원인이 된다.
+    summary: Redis 포트.
+    behavior: >-
+      주소와 함께 접속 대상을 결정한다. 한 장비에 여러 Redis를 띄운 구성이면
+      인스턴스마다 포트가 다르므로 캐시·알람이 서로 다른 인스턴스를 보지 않도록 맞춰야 한다.
+    options:
+      - value: "6379"
+        label: 기본
+        effect: 표준 포트를 쓴다.
+    stability: 주소가 맞아도 포트가 틀리면 연결이 실패한다.
+    related: [REDIS_HOST]
+
+  REDIS_DB:
+    example: >-
+      다른 시스템과 Redis를 공유하면서 번호를 나누지 않으면 키가 충돌할 수 있다. 반대로 운영 중에 번호를 바꾸면 이전 번호의 캐시와 알람 스트림이 보이지 않게 되어
+      처음부터 다시 쌓인다.
+    summary: 사용할 Redis 논리 DB 번호.
+    behavior: >-
+      한 Redis 인스턴스를 여러 용도로 나눠 쓸 때 번호로 구분한다. 다른 시스템과
+      같은 인스턴스를 공유한다면 번호를 나눠 키 충돌을 피한다.
+    options:
+      - value: "0"
+        label: 기본
+        effect: 0번 DB를 쓴다.
+    stability: 번호를 바꾸면 이전 번호에 있던 캐시·스트림이 보이지 않는다 — 알람 스트림도 함께 옮겨진다.
+    related: [REDIS_HOST]
+
+  REDIS_PASSWORD:
+    example: >-
+      인증을 켠 Redis에 이 값을 채우지 않으면 캐시 조회와 알람 경로가 동시에 실패한다. 캐시는 미스로 폴백되지만 알람은 대체 경로가 없어 통보가 멈춘다.
+    summary: Redis 인증 비밀번호 — .encenv에서 관리한다.
+    behavior: 인증이 걸린 Redis에 붙을 때 필요하다. 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 비밀번호가 틀리면 캐시와 알람 경로가 모두 실패한다.
+    related: [REDIS_HOST, REDIS_SSL]
+
+  REDIS_SSL:
+    example: >-
+      서버가 TLS를 켜지 않았는데 이 값을 true로 두면 연결 자체가 실패한다. 캐시가 죽는 것보다 알람이 멈추는 영향이 크므로 서버 설정을 먼저 확인한다.
+    summary: Redis 연결에 TLS를 쓸지.
+    behavior: >-
+      서버가 TLS를 지원할 때만 켤 수 있다. 서버 설정과 어긋나면 연결 자체가 실패해
+      캐시와 알람 경로가 함께 멈춘다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 평문으로 연결한다. 같은 장비·폐쇄망 전제다.
+      - value: "true"
+        effect: TLS로 연결한다. 서버가 TLS를 지원해야 하며, 아니면 연결이 실패한다.
+    performance: 암복호화 비용이 붙지만 캐시 조회 규모에서는 체감되지 않는다.
+    stability: 망 경계를 넘는 구간이라면 켜야 한다.
+    related: [REDIS_PASSWORD]
+
+  REDIS_SOCKET_TIMEOUT:
+    example: >-
+      Redis가 멈춘 상황에서 이 값이 30초면, 캐시를 조회하는 모든 요청이 30초씩 붙잡힌다 — 캐시가 응답을 빠르게 하려고 있는 건데 오히려 전체를 느리게 만드는 역전이
+      일어난다.
+    summary: Redis 응답을 얼마나 기다릴지(초).
+    behavior: 캐시 조회 하나에 걸리는 상한이다. 넘기면 캐시 미스처럼 처리되고 원본을 조회한다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 5초. 정상 Redis는 밀리초 단위로 응답한다.
+      - value: "1"
+        effect: Redis가 잠깐 느려지면 캐시가 자주 미스로 처리돼 원본 부하가 는다.
+      - value: "30 이상"
+        effect: Redis가 멈췄을 때 요청이 그만큼 붙잡힌다 — 캐시 때문에 전체가 느려지는 역전이 일어난다.
+    performance: 캐시는 빨라야 의미가 있다 — 이 값이 크면 장애 시 오히려 병목이 된다.
+    stability: 짧게 잡는 편이 안전하다. 캐시 실패는 원본 조회로 폴백되므로 치명적이지 않다.
+    related: [REDIS_HOST, SCHEMA_CACHE_BACKEND]
+
+  SCHEMA_CACHE_ENABLED:
+    example: >-
+      테이블이 수백 개인 공동존에서 캐시를 끄면 질의마다 전체 구조를 다시 읽는다. 조회 자체보다 스키마 파악에 더 오래 걸리는 상태가 되어 단순 질의도 수십 초로 늘어난다.
+    summary: 스키마 정보를 캐시할지.
+    behavior: >-
+      테이블·컬럼 구조와 설명을 매 질의마다 DB에서 읽으면 느리다. 켜면 한 번 읽은
+      구조를 보관해 재사용한다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 캐시를 쓴다. 질의마다 스키마 조회가 사라져 응답이 빨라진다.
+      - value: "false"
+        effect: >-
+          매번 DB에서 읽는다. 스키마 변경이 즉시 반영되지만 질의마다 조회가 늘어
+          응답이 눈에 띄게 느려진다.
+    performance: 끄면 질의마다 스키마 조회가 붙는다 — 테이블이 많은 DB에서 특히 무겁다.
+    stability: 스키마가 바뀌었는데 캐시가 낡으면 없는 컬럼을 조회하려 든다 — 지문(fingerprint) 검증이 그것을 잡는다.
+    related: [SCHEMA_CACHE_BACKEND, SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS]
+
+  SCHEMA_CACHE_BACKEND:
+    example: >-
+      file로 바꾸면 Redis 없이도 동작하지만, 프로세스를 두 개로 늘리면 각자 캐시를 만들어 최초 조회가 두 번씩 일어난다. 재시작할 때마다 디렉터리가 그대로 남아 있어야
+      캐시가 유지된다.
+    summary: 스키마 캐시를 어디에 저장할지.
+    behavior: >-
+      캐시 자체를 켤지(SCHEMA_CACHE_ENABLED)와는 별개로, 켠 캐시를 어디에 둘지 정한다.
+      백엔드를 바꾸면 이전 백엔드의 캐시는 남아 있어도 읽지 않으므로 처음부터 다시 만든다.
+    options:
+      - value: redis
+        label: 기본
+        effect: Redis에 저장한다. 프로세스를 재시작해도 캐시가 남고 여러 프로세스가 공유한다.
+      - value: file
+        effect: >-
+          로컬 파일에 저장한다. Redis 없이 동작하지만 프로세스마다 따로 캐시를 갖고,
+          디렉터리 관리가 필요하다.
+    performance: 둘 다 원본 조회보다 훨씬 빠르다. Redis는 왕복이, 파일은 디스크 I/O가 든다.
+    stability: redis를 골랐는데 Redis가 죽으면 캐시가 통째로 미스가 된다 — 조회는 되지만 느려진다.
+    related: [SCHEMA_CACHE_CACHE_DIR, REDIS_HOST]
+
+  SCHEMA_CACHE_CACHE_DIR:
+    example: >-
+      상대 경로 `.cache/schema`는 서버 작업 디렉터리 기준이다. 서비스 등록 방식이 바뀌어 작업 디렉터리가 달라지면 이전 캐시를 못 찾아 처음부터 다시 만든다 — 첫
+      질의가 갑자기 느려지는 형태로 나타난다.
+    summary: 파일 백엔드가 캐시를 저장할 디렉터리.
+    behavior: >-
+      `SCHEMA_CACHE_BACKEND=file`일 때만 쓰인다. 상대 경로는 서버 작업 디렉터리 기준이다.
+    stability: 작업 디렉터리가 바뀌면 이전 캐시를 못 찾아 처음부터 다시 만든다.
+    related: [SCHEMA_CACHE_BACKEND]
+
+  SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS:
+    example: >-
+      폴스타에 컬럼을 추가한 직후 질의하면, 검증 주기가 30분이라 최대 30분 동안은 캐시가 옛 구조를 들고 있다. 그동안 그 컬럼을 물으면 '없는 컬럼'으로 처리된다 —
+      스키마를 바꾼 뒤 바로 확인해야 한다면 값을 줄이거나 캐시를 수동으로 비운다.
+    summary: 캐시한 스키마가 아직 유효한지 얼마 만에 다시 확인할지(초).
+    behavior: >-
+      DB 구조의 지문을 주기적으로 비교해, 달라졌으면 캐시를 버리고 다시 읽는다.
+      이 값은 그 검증 주기다 — 캐시 자체의 수명이 아니라 **검증 간격**이다.
+    options:
+      - value: "1800"
+        label: 기본 (30분)
+        effect: 30분마다 구조 변경 여부를 확인한다.
+      - value: "60"
+        effect: 변경이 빨리 반영되지만 검증 조회가 잦아진다.
+      - value: "86400"
+        effect: >-
+          하루에 한 번만 확인한다. 컬럼을 추가해도 최대 하루 동안 캐시가 낡은 구조를
+          들고 있어 "새 컬럼을 못 찾는다"로 나타난다.
+    performance: 검증은 가벼운 조회지만 주기가 짧으면 누적된다.
+    stability: 스키마 변경이 잦은 환경에서는 짧게, 안정적인 환경에서는 길게 잡는다.
+    related: [SCHEMA_CACHE_ENABLED, SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS]
+
+  SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS:
+    summary: 컬럼 설명을 LLM으로 자동 생성해 캐시에 넣을지.
+    behavior: >-
+      컬럼 이름만으로는 무슨 데이터인지 모호할 때, LLM이 설명을 만들어 스키마 정보에
+      함께 실어 준다. 이 설명은 SQL 생성 프롬프트의 재료가 된다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 캐시를 만들 때 설명도 생성한다. SQL 생성 정확도가 올라간다.
+      - value: "false"
+        effect: 컬럼 이름만 쓴다. LLM 호출이 줄지만 이름이 모호한 컬럼에서 오조회가 늘어난다.
+    example: >-
+      `CMM_RESC_ID` 같은 축약 컬럼명은 이름만으로 용도를 알기 어렵다. 자동 설명이
+      "자원 식별자"라고 붙여 주면 질의어 매칭이 훨씬 정확해진다.
+    performance: >-
+      캐시를 새로 만들 때만 호출된다 — 평상시 질의에는 비용이 없다. 다만 테이블이 많으면
+      최초 생성에 상당한 호출이 일어난다(외부 과금 공급자라면 그만큼 비용이 발생한다).
+    stability: 생성된 설명이 틀리면 매칭이 잘못될 수 있다 — 큐레이션 지식(config/knowledge)이 있으면 그쪽이 우선이다.
+    caveats:
+      - 캐시 재생성 시 LLM 호출이 테이블 수만큼 발생한다 — 외부 과금 공급자에서는 규모를 먼저 확인한다(D-127).
+    related: [SCHEMA_CACHE_ENABLED, LLM_PROVIDER]

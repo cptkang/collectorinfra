@@ -1,0 +1,243 @@
+# 설정 옵션 상세 설명 — 오케스트레이터(제어 평면) (D-191)
+# 근거: src/config.py OrchestratorConfig 주석 · docs/21_orchestration_ladder.md
+#       deep_agent.select_orchestration_backend(가용성 분기) · deepagents_tools._max_chars
+
+version: 1
+group: orchestrator
+
+settings:
+
+  ORCHESTRATOR_PROVIDER:
+    summary: 사다리 1단(deep_agent)에서 계획을 세우는 제어 평면 모델을 어디서 부를지.
+    behavior: >-
+      1단 경로는 일을 둘로 나눈다 — **제어 평면**이 "무엇을 어떤 순서로 조회할지"를
+      도구 호출로 정하고, **데이터 평면(워커)**이 실제 조회와 응답 작성을 한다.
+      이 값은 제어 평면 쪽이고, 워커는 LLM_PROVIDER를 따른다. 둘을 따로 두는 이유는
+      도구 호출에 강한 모델과 한국어 응답에 강한 모델이 다를 수 있기 때문이다.
+    options:
+      - value: vllm
+        label: 기본 (운영)
+        effect: >-
+          사내에 서빙 중인 vLLM을 OpenAI 호환 방식으로 부른다. 외부로 나가지 않고
+          과금도 없다. ORCHESTRATOR_BASE_URL이 비어 있거나 서버가 응답하지 않으면
+          1단이 성립하지 않아 사다리가 아래 단으로 내려간다.
+      - value: gemini
+        effect: >-
+          Gemini를 제어 평면으로 쓴다. vLLM 없이 1단 경로를 검증할 때만 쓰는 설정이며
+          **외부 호출·과금 경로**다. API 키가 없으면 LLM_GEMINI_API_KEY로 폴백한다.
+    example: >-
+      운영 .env는 gemini로 되어 있다. 이는 vLLM이 아직 서빙되지 않는 환경에서 1단을
+      검증하려는 설정이며, 그대로 두면 질의마다 제어 평면 호출이 외부로 나가 과금된다 —
+      1단을 실제로 쓰지 않을 계획이면 ENABLE_DEEPAGENTS_PACKAGE를 false로 명시하는 편이 낫다.
+    performance: >-
+      제어 평면 호출이 워커 호출과 별개로 추가된다. 단순 질의에서는 순수 오버헤드이고,
+      여러 대상으로 갈라지는 복합 질의에서 이득이 난다.
+    stability: >-
+      제어 평면이 응답하지 않으면 사다리가 조용히 아래 단으로 내려간다 — 서비스는 계속
+      뜨지만 처리 경로가 통째로 바뀐다. 기동 로그의 사다리 확정 줄로만 판독할 수 있다.
+    recommendation: vLLM을 실제로 운영하는 환경에서만 1단을 켜고 vllm으로 둔다.
+    caveats:
+      - gemini 지정은 외부 과금 경로다 — 검증 실행도 승인 대상이다(D-127).
+    related: [ENABLE_DEEPAGENTS_PACKAGE, ORCHESTRATOR_BASE_URL, ORCHESTRATOR_MODEL, LLM_PROVIDER, WORKER_PROVIDER_OVERRIDE]
+    references:
+      - docs/21_orchestration_ladder.md
+
+  ORCHESTRATOR_BASE_URL:
+    example: >-
+      이 값이 비어 있으면 ENABLE_DEEPAGENTS_PACKAGE가 true여도 사다리가 2단으로 확정된다. 설정만 보면 1단을 쓰는 것 같지만 실제로는 아니며, 그
+      차이는 기동 로그의 사다리 확정 줄에서만 드러난다.
+    summary: vLLM 오케스트레이터의 엔드포인트 — 비어 있으면 1단이 성립하지 않는다.
+    behavior: >-
+      OpenAI 호환 `/v1` 주소다(예: `http://vllm-host:8000/v1`). 기동할 때 이 주소로
+      가용성 확인 요청이 한 번 나가고, 실패하면 1단을 포기하고 아래 단으로 내려간다.
+    options:
+      - value: "(비움)"
+        effect: 1단을 시도조차 하지 않는다. ENABLE_DEEPAGENTS_PACKAGE가 true여도 사다리는 2단 이하로 확정된다.
+      - value: "http://<vllm-host>:8000/v1"
+        effect: 그 주소를 제어 평면으로 쓴다. 기동 로그에 사다리 확정 결과가 남는다.
+    performance: 원격이면 왕복 지연이 제어 평면 호출마다 얹힌다.
+    stability: >-
+      주소가 틀려도 서버는 정상 기동한다 — 조용히 아래 단으로 내려갈 뿐이다.
+      바꾼 뒤에는 기동 로그의 사다리 확정 줄을 반드시 확인한다.
+    related: [ORCHESTRATOR_PROVIDER, ORCHESTRATOR_HEALTH_TIMEOUT, ORCHESTRATOR_VERIFY_SSL]
+
+  ORCHESTRATOR_MODEL:
+    example: >-
+      vLLM에 로딩된 모델명과 한 글자라도 다르면 가용성 확인에서 걸러져 1단이 성립하지 않는다. 서비스는 정상 기동하고 조용히 아래 단으로 내려가므로, 모델을 교체한 뒤에는
+      기동 로그를 반드시 확인한다.
+    summary: 제어 평면으로 서빙되는 모델 이름.
+    behavior: >-
+      vLLM에 실제로 로딩된 모델명과 정확히 같아야 한다. provider가 gemini면 여기에
+      Gemini 모델명을 적는다.
+    options:
+      - value: "Qwen3.5-9B"
+        label: 기본
+        effect: 도구 호출에 쓰이는 9B급 모델을 가정한 값이다.
+    performance: 모델이 클수록 계획 수립이 느려지고, 도구 호출 JSON의 안정성은 대체로 올라간다.
+    stability: >-
+      서빙되지 않는 이름을 적으면 기동 시 가용성 확인에서 걸러져 1단이 성립하지 않는다.
+      모델을 바꿀 때는 ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS 같은 예산 값도 함께 검토한다.
+    related: [ORCHESTRATOR_PROVIDER, ORCHESTRATOR_ENABLE_THINKING, ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS]
+
+  ORCHESTRATOR_API_KEY:
+    example: >-
+      vLLM을 인증 없는 내부망에 두었다면 비워 두는 것이 정상이다. provider를 gemini로 바꿔 검증할 때 이 값이 비어 있으면 LLM_GEMINI_API_KEY를
+      대신 쓴다.
+    summary: 제어 평면 인증 키 — .encenv에서 관리한다.
+    behavior: >-
+      vLLM은 대개 인증이 없어 비워 둔다. provider가 gemini인데 이 값이 비면
+      LLM_GEMINI_API_KEY로 폴백한다. 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 인증을 요구하는 게이트웨이 뒤에 vLLM을 두었다면 반드시 설정해야 한다.
+    related: [ORCHESTRATOR_PROVIDER, LLM_GEMINI_API_KEY]
+
+  ORCHESTRATOR_TIMEOUT:
+    example: >-
+      제어 평면이 도구 호출을 여러 단계 결정하는 복합 질의에서는 한 번의 응답이 수십 초 걸리기도 한다. 30초로 줄이면 그런 질의가 계획 단계에서 끊겨, 조회는 시작도 못 한
+      채 실패한다.
+    summary: 제어 평면 호출 하나를 얼마나 기다릴지(초).
+    behavior: 계획 수립·도구 호출 결정 한 번에 적용된다. 넘기면 그 호출이 실패한다.
+    options:
+      - value: "120"
+        label: 기본
+        effect: 2분. 도구 호출을 여러 단계 거치는 복합 질의를 감안한 값이다.
+      - value: "30 이하"
+        effect: 계획이 긴 질의에서 자주 끊긴다.
+      - value: "300 이상"
+        effect: 제어 평면이 멈춰도 5분을 기다린다 — 복합 질의 30초 목표와 크게 어긋난다.
+    performance: 실패 확정까지 이 시간이 걸리고 그동안 처리 슬롯이 점유된다.
+    stability: 가용성 확인용 타임아웃(ORCHESTRATOR_HEALTH_TIMEOUT)과 다르다 — 그쪽은 기동 시 짧게, 이쪽은 실행 시 길게 잡는다.
+    related: [ORCHESTRATOR_HEALTH_TIMEOUT, ORCHESTRATOR_RECURSION_LIMIT]
+
+  ORCHESTRATOR_HEALTH_TIMEOUT:
+    example: >-
+      vLLM이 살아 있는데 네트워크가 잠깐 느려 3초 안에 응답하지 못하면, 그 기동에서는 1단을 포기하고 2단으로 확정된다. 재시작 전까지 계속 2단으로 도는데 설정은
+      그대로라 원인을 찾기 어렵다 — 오케스트레이터가 원격이면 값을 올려 두는 편이 안전하다.
+    summary: 기동 시 오케스트레이터가 살아 있는지 확인할 때 기다리는 시간(초).
+    behavior: >-
+      사다리 1단 성립 여부를 정하는 확인 요청에 적용된다. 짧게 잡혀 있는 이유는
+      **기동을 지연시키지 않기 위해서**다 — 없는 서버를 오래 기다릴 이유가 없다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 3초 안에 응답이 없으면 없는 것으로 보고 아래 단으로 내려간다.
+      - value: "1"
+        effect: 네트워크가 잠깐 느리면 살아 있는 서버도 없는 것으로 판정된다 — 경로가 바뀐다.
+      - value: "30 이상"
+        effect: 서버가 죽어 있으면 기동이 그만큼 늦어진다.
+    performance: 기동 시 1회만 쓰인다. 평상시 비용은 없다.
+    stability: >-
+      이 확인이 실패하면 **경로가 통째로 바뀐다**. 너무 짧게 잡아 일시적 지연으로
+      1단을 놓치는 것이 이 값의 실질적 위험이다.
+    recommendation: 기본 3초 유지. 오케스트레이터가 원격이면 5~10초를 검토한다.
+    related: [ORCHESTRATOR_BASE_URL, ENABLE_DEEPAGENTS_PACKAGE]
+
+  ORCHESTRATOR_VERIFY_SSL:
+    example: >-
+      폐쇄망 vLLM이 자체 서명 인증서로 443을 열어 두었다면, 이 값이 true인 동안 가용성 확인이 계속 실패해 1단이 성립하지 않는다. false로 바꾸면 연결되지만
+      그만큼 검증을 포기하는 것이다.
+    summary: 오케스트레이터 접속 시 인증서를 검증할지.
+    behavior: >-
+      목적지 vLLM이 HTTPS를 쓰되 유효한 인증서가 없는 폐쇄망 구성에서 끄기 위한
+      값이다. 가용성 확인과 실제 호출 양쪽에 함께 적용된다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 인증서를 검증한다. 사설 인증서면 연결이 실패해 1단이 성립하지 않는다.
+      - value: "false"
+        effect: 검증을 건너뛴다. 폐쇄망 사설 인증서 대응책이며, 그만큼 중간자 공격에 노출된다.
+    performance: 영향이 없다.
+    stability: 끄는 것은 폐쇄망 안이라는 전제에 기대는 선택이다 — 망 경계를 넘는 구간에서는 켜 둔다.
+    related: [ORCHESTRATOR_BASE_URL, SYNONYM_SEMANTIC_VLLM_VERIFY_SSL]
+
+  ORCHESTRATOR_RECURSION_LIMIT:
+    example: >-
+      여러 존을 순회하며 조사까지 하는 질의는 도구 호출 단계가 금방 25를 넘긴다. '순회 한도 초과' 오류가 그 신호이며, 그때만 50 정도로 올린다 — 무한 루프를 막는
+      안전장치이기도 하므로 근거 없이 키우지 않는다.
+    summary: 제어 평면 그래프가 몇 단계까지 순회할 수 있을지.
+    behavior: >-
+      도구 호출과 판단을 반복하는 루프의 상한이다. 미지정이면 프레임워크 기본값 25에
+      암묵적으로 의존하게 되므로 명시 노브로 꺼내 둔 값이다.
+    options:
+      - value: "25"
+        label: 기본
+        effect: 프레임워크 기본값과 같다 — 이 값을 그대로 두면 동작이 바뀌지 않는다.
+      - value: "50 이상"
+        effect: >-
+          도구 호출 단계가 많은 복합 질의에서 "순회 한도 초과" 오류가 날 때 올린다.
+          대신 한 질의가 훨씬 오래 돌 수 있다.
+      - value: "10 이하"
+        effect: 복합 질의가 완료 전에 한도 초과로 끊긴다.
+    performance: 한도가 클수록 최악의 응답 시간이 길어진다. 실제 소요는 질의 복잡도가 결정한다.
+    stability: 한도 초과 오류가 실제로 관측될 때만 올린다 — 무한 루프를 막는 안전장치이기도 하다.
+    related: [ORCHESTRATOR_TIMEOUT, MAX_REPLAN]
+
+  ORCHESTRATOR_ENABLE_THINKING:
+    example: >-
+      Qwen 계열에서 이 값을 켜면 모델이 먼저 긴 추론을 출력하고, 그 뒤에 나와야 할 도구 호출 JSON이 잘리거나 형식이 깨지는 일이 생긴다. 계획 수립 자체가 실패하므로
+      질의가 답까지 가지 못한다.
+    summary: 제어 평면 모델의 추론(thinking) 모드를 켤지.
+    behavior: >-
+      Qwen 계열은 끄는 쪽이 권장이다 — 추론 토큰이 컨텍스트 한계를 압박하고 도구 호출
+      JSON 파싱이 불안정해지기 때문이다. 추론이 유리한 큰 모델로 바꿨을 때 켜는 값이다.
+    options:
+      - value: "false"
+        label: 기본 (권장)
+        effect: 추론 토큰 없이 곧바로 도구 호출을 낸다. 파싱이 안정적이고 토큰을 아낀다.
+      - value: "true"
+        effect: 모델이 먼저 추론한다. 복잡한 계획의 품질이 올라갈 수 있지만 토큰과 지연이 늘고 JSON이 깨질 확률도 높아진다.
+    performance: 켜면 호출당 출력 토큰이 크게 늘어난다.
+    stability: 도구 호출 JSON이 깨지면 계획 수립 자체가 실패한다 — 모델을 바꾸지 않았다면 기본값을 유지한다.
+    related: [ORCHESTRATOR_MODEL, STRUCTURED_OUTPUT_BACKEND]
+
+  ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS:
+    example: >-
+      조회 결과가 1000행이어도 제어 평면에는 2000토큰 분량의 요약만 간다. 이 값을 500으로 줄이면 '결과가 몇 건이고 어떤 형태인지'조차 흐릿해져 제어 평면이 다음
+      단계를 잘못 정할 수 있다.
+    summary: 도구 조회 결과 하나를 제어 평면에 돌려줄 때의 요약 상한(토큰).
+    behavior: >-
+      조회 원본은 따로 보관하고, 제어 평면에는 이 상한까지만 요약해 돌려준다.
+      제어 평면은 "다음에 무엇을 할지"만 정하면 되므로 전문이 필요 없다.
+      이 그룹의 예산 항목 넷 중 **실제로 읽히는 것은 이 값 하나뿐**이다.
+    options:
+      - value: "2000"
+        label: 기본
+        effect: 결과 하나당 약 2000토큰까지 제어 평면이 본다.
+      - value: "500 이하"
+        effect: 요약이 너무 짧아 제어 평면이 다음 단계를 잘못 정할 수 있다.
+      - value: "8000 이상"
+        effect: 제어 평면 컨텍스트가 빠르게 차서 여러 단계를 밟는 질의가 한도에 걸린다.
+    performance: 도구 호출마다 이 크기가 컨텍스트에 누적된다 — 단계가 많을수록 영향이 커진다.
+    stability: 모델을 컨텍스트가 큰 것으로 바꿨다면 함께 올릴 수 있다.
+    related: [ORCHESTRATOR_MODEL, ORCHESTRATOR_MAX_INPUT_TOKENS]
+
+  ORCHESTRATOR_MAX_INPUT_TOKENS:
+    example: >-
+      컨텍스트가 넘친다고 판단해 이 값을 올려도 트리밍은 일어나지 않는다 — 코드가 읽지 않기 때문이다. 실제로 컨텍스트를 줄이는 값은
+      ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS다.
+    summary: 제어 평면 입력 토큰 상한 — 현재 코드가 읽지 않는다.
+    behavior: >-
+      서버의 컨텍스트 한계에 맞춰 트리밍을 트리거하려던 항목이지만, 지금 코드에는
+      이 값을 읽는 곳이 없다. 값을 바꿔도 트리밍은 일어나지 않는다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음). 실제로 컨텍스트를 제어하는 값은 ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS다.
+    related: [ORCHESTRATOR_MAX_TOOL_RESULT_TOKENS, ORCHESTRATOR_CONTEXT_BUDGET_RATIO]
+
+  ORCHESTRATOR_CONTEXT_BUDGET_RATIO:
+    example: >-
+      이 비율을 낮춰 트리밍을 일찍 시작하게 하려 해도 동작은 달라지지 않는다 — 소비처가 없다.
+    summary: 상한 대비 트리밍 시작 비율 — 현재 코드가 읽지 않는다.
+    behavior: 입력 상한의 80%에 닿으면 오래된 도구 결과를 요약하려던 항목이다. 소비처가 없다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음).
+    related: [ORCHESTRATOR_MAX_INPUT_TOKENS]
+
+  ORCHESTRATOR_MAX_HISTORY_TURNS:
+    example: >-
+      제어 평면이 앞 대화를 너무 많이 기억한다고 판단해 줄여도 변화가 없다 — 이 값을 읽는 코드가 없다.
+    summary: 제어 평면이 기억할 대화 턴 수 — 현재 코드가 읽지 않는다.
+    behavior: >-
+      데이터 평면의 대화 이력과 별개로 제어 평면 맥락을 유지하려던 항목이다.
+      소비처가 없어 값을 바꿔도 기억 범위는 달라지지 않는다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음).
+    related: [ORCHESTRATOR_MAX_INPUT_TOKENS]

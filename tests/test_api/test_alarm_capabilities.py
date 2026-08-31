@@ -69,6 +69,7 @@ def test_capabilities_expose_no_paths_or_secrets():
     assert set(body) == {
         "feedback_enabled", "incident_tracking", "sse_bridge",
         "suppress_stream", "suppress_max_severity",
+        "prompt_suggest_enabled",   # Plan 86 — 불리언(경로·시크릿 아님)
     }
     for value in body.values():
         assert isinstance(value, (bool, int)), value

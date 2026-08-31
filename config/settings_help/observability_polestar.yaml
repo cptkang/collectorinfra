@@ -1,0 +1,212 @@
+# 설정 옵션 상세 설명 — 실행 로그·트레이스 · 폴스타 REST(실시간) (D-191)
+# 근거: src/config.py ObservabilityConfig(D-140/D-141) · PolestarRestConfig(Plan 71 / Plan 75 §1)
+
+version: 1
+group: observability
+
+settings:
+
+  OBS_SQL_LOG_ENABLED:
+    summary: 실행된 SQL을 날짜별 파일로 남길지.
+    behavior: >-
+      감사 로그와 목적이 다르다 — 감사는 "누가 무엇을 했는가"의 규정 기록이고, 이쪽은
+      "무슨 SQL이 실제로 나갔는가"의 진단 재료다. `logs/sql/YYYY-MM-DD.sql`에 전량 기록된다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 실행 SQL이 전부 남는다. "왜 이 결과가 나왔나"를 되짚을 수 있는 유일한 원본이다.
+      - value: "false"
+        effect: 남기지 않는다. 결과가 이상할 때 실제 나간 SQL을 확인할 방법이 사라진다.
+    example: >-
+      "특정 서버만 결과에서 빠진다"는 신고에서, 이 로그를 열어 WHERE 절을 보면 조건이
+      잘못 붙었는지 데이터가 실제로 없는지 즉시 구분된다. 로그가 없으면 재현부터 해야 한다.
+    performance: 요청당 파일 append 한 번이다. 부담이 거의 없다.
+    stability: 디스크가 계속 차므로 보존 일수를 함께 설정해야 한다.
+    recommendation: 켠 채로 둔다.
+    related: [OBS_SQL_LOG_RETENTION_DAYS, OBS_TRACE_ENABLED, AUDIT_JSONL_ENABLED]
+
+  OBS_SQL_LOG_RETENTION_DAYS:
+    example: >-
+      분기 점검에서 두 달 전 조회를 되짚으려 해도 30일이면 이미 지워져 있다. 감사 로그(90일)와 달리 이쪽은 규정 요건이 없으므로, 필요한 조사 주기에 맞춰 조정한다.
+    summary: SQL 로그를 며칠 보관할지. 0 이하면 자동 정리를 하지 않는다.
+    behavior: >-
+      기간이 지난 파일을 자동으로 지운다. 감사 로그와 달리 이쪽은 진단 재료라
+      보존 요건이 규정에 묶여 있지 않다.
+    options:
+      - value: "30"
+        label: 기본
+        effect: 한 달치를 보관한다. 대부분의 사후 조사에 충분하다.
+      - value: "0 이하"
+        effect: 자동 정리를 끈다. 파일이 계속 쌓여 언젠가 디스크를 채운다.
+      - value: "90 이상"
+        effect: 오래 보관하지만 디스크 사용량이 그만큼 늘어난다.
+    performance: 보관 기간이 길수록 디스크를 쓴다. 조회 성능에는 영향이 없다(파일이라 인덱스가 없다).
+    stability: 감사 로그(기본 90일)보다 짧게 잡혀 있다 — 진단 재료는 규정 기록보다 수명이 짧아도 된다는 판단이다.
+    related: [OBS_SQL_LOG_ENABLED, AUDIT_RETENTION_DAYS]
+
+  OBS_TRACE_ENABLED:
+    summary: 실패한 요청의 단계별 진행을 파일로 덤프할지.
+    behavior: >-
+      **정상 응답을 내지 못한 요청만** 남긴다 — 정상 요청은 파일이 만들어지지 않는다.
+      어느 노드까지 갔고 어디서 끊겼는지가 그대로 남아 원인 지점을 바로 짚을 수 있다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 실패 요청의 단계 트레이스가 `logs/trace/`에 남는다.
+      - value: "false"
+        effect: 남기지 않는다. 실패 원인을 로그 한 줄과 예외 메시지로만 추적해야 한다.
+    example: >-
+      "가끔 답이 안 나온다"는 산발적 실패는 재현이 어렵다. 트레이스가 있으면 그 건이
+      스키마 분석에서 멈췄는지 SQL 검증에서 반복 실패했는지 사후에 확인할 수 있다.
+    performance: 요청마다 단계를 메모리 버퍼에 쌓고, 실패했을 때만 파일로 쓴다 — 정상 요청의 비용은 버퍼뿐이다.
+    stability: 실패가 잦으면 파일이 빠르게 늘어난다 — 보존 일수를 함께 본다.
+    recommendation: 켠 채로 둔다.
+    related: [OBS_TRACE_MAX_STEPS, OBS_TRACE_RETENTION_DAYS, OBS_SQL_LOG_ENABLED]
+
+  OBS_TRACE_MAX_STEPS:
+    example: >-
+      재시도가 세 번 붙은 복합 질의는 단계가 100개를 넘기기도 한다. 상한을 50으로 줄이면 앞부분이 밀려나, 정작 원인이 된 초기 스키마 분석 단계가 트레이스에서 사라진다.
+    summary: 요청 하나의 트레이스를 몇 단계까지 기억할지.
+    behavior: >-
+      메모리에 두는 링버퍼라 상한이 필요하다. 넘으면 가장 오래된 단계부터 밀려난다.
+      기본값은 노드 20개 × 재시도 3회에 여유를 더한 크기다.
+    options:
+      - value: "200"
+        label: 기본
+        effect: 재시도가 붙은 복합 질의도 처음부터 끝까지 담긴다.
+      - value: "50"
+        effect: 앞부분이 밀려나 정작 원인이 된 초기 단계가 사라질 수 있다.
+      - value: "1000 이상"
+        effect: 요청마다 메모리를 더 쓴다. 동시 요청이 많으면 누적된다.
+    performance: 요청당 메모리 사용량이 이 값에 비례한다.
+    stability: 메모리에 두는 자료구조는 상한이 있어야 한다 — 0이나 매우 큰 값을 두지 않는다.
+    related: [OBS_TRACE_ENABLED]
+
+  OBS_TRACE_RETENTION_DAYS:
+    example: >-
+      일주일에 한 번꼴로 나는 산발적 실패는 2주치로도 두세 건밖에 안 남아 패턴을 보기 어렵다. 그런 조사 기간에는 임시로 늘렸다가 되돌린다.
+    summary: 실패 트레이스를 며칠 보관할지. 0 이하면 자동 정리를 하지 않는다.
+    behavior: >-
+      실패한 요청만 파일이 만들어지므로 SQL 로그보다 훨씬 적게 쌓인다.
+      그만큼 보존 기본값도 짧게 잡혀 있다.
+    options:
+      - value: "14"
+        label: 기본
+        effect: 2주. 실패 건만 쌓이므로 SQL 로그(30일)보다 짧게 잡혀 있다.
+      - value: "0 이하"
+        effect: 자동 정리를 끈다.
+      - value: "60 이상"
+        effect: 오래된 실패까지 되짚을 수 있지만 파일이 누적된다.
+    performance: 디스크 사용량에만 영향을 준다.
+    stability: 산발적 실패의 패턴을 보려면 2주로는 짧을 수 있다 — 조사 중에는 임시로 늘린다.
+    related: [OBS_TRACE_ENABLED]
+
+  POLESTAR_REST_REALTIME_USAGE_ENABLED:
+    summary: >-
+      "지금·실시간" CPU·메모리 질의를 SQL 대신 폴스타 REST API로 조회할지.
+    behavior: >-
+      성능 지표 테이블은 수집 주기만큼 지연된 값을 담는다. "지금 CPU 얼마야"라는
+      질문에 그 값을 주면 실제로는 몇 분 전 상태다. 켜면 그런 질의를 SQL이 아니라
+      폴스타 measurement API로 돌려 현재 값을 가져온다.
+      **꺼져 있으면 기존 SQL 경로가 바이트 단위로 무변경**이다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 모든 사용률 질의가 SQL로 처리된다. 수집 주기만큼 지연된 값이 나온다.
+      - value: "true"
+        effect: >-
+          "실시간·현재·지금" 같은 표현이 붙은 CPU·메모리 질의만 REST로 간다.
+          그 외 질의는 그대로 SQL이다.
+    example: >-
+      "지금 김포 서버 CPU 사용률 상위 10건"은 켜져 있으면 measurement API로 현재 값을
+      가져오고, 꺼져 있으면 성능 지표 테이블의 마지막 수집분을 돌려준다 — 후자는
+      장애 대응 중에 몇 분 전 상태를 보고 판단하게 만든다.
+    performance: >-
+      대상 서버를 청크로 나눠 조회한다. 200대 기준 한 번의 호출에 약 2.5초가 걸린 실측이
+      있어 타임아웃이 10초로 따로 잡혀 있다.
+    stability: >-
+      REST가 응답하지 않으면 그 질의가 실패한다. 대상 존의 주소가 설정돼 있어야 하며,
+      은행존은 포트를 명시해야 한다.
+    recommendation: 실시간 값이 실제로 필요하고 REST 주소가 확인된 환경에서 켠다.
+    related: [POLESTAR_REST_BASE_URLS_CSV, POLESTAR_REST_MEASUREMENT_TIMEOUT_SECONDS, POLESTAR_REST_STALE_AFTER_MINUTES]
+
+  POLESTAR_REST_BASE_URLS_CSV:
+    example: >-
+      은행존 주소에 포트(:9010)를 빠뜨리면 기본 포트로 붙으려다 실패한다. 형식이 잘못된 항목은 조용히 무시되므로 오류 없이 그 존만 실시간 조회가 빠진다 — 공동존은
+      되는데 은행존만 안 되는 증상이 이렇게 생긴다.
+    summary: 존별 폴스타 REST 주소 — "db_id=주소" 형식의 쉼표 목록.
+    behavior: >-
+      존마다 주소가 다르고, 은행존은 기본 포트가 아니라 **포트를 명시해야 한다**(실측 9010).
+      공동존은 도메인만으로 닿는다. 매핑이 없는 존에서는 실시간 조회가 동작하지 않는다.
+    options:
+      - value: "polestar_b0=http://…:9010,polestar_cm_gp=http://…,polestar_cm_yd=http://…"
+        label: 기본값에 세 존이 이미 들어 있다
+        effect: 세 존 모두 실시간 조회가 가능하다.
+    performance: 주소가 원격일수록 왕복이 길어진다.
+    stability: >-
+      형식이 잘못된 항목은 조용히 무시된다 — 그 존만 실시간 조회가 빠지고 오류는 나지
+      않는다. 은행존 포트를 빠뜨리는 것이 가장 흔한 실수다.
+    caveats:
+      - 알람 쪽 프로세스 조회 주소(ALARM_PROCESS_API_BASE_URLS_CSV)와 같은 폴스타 REST지만 설정은 분리돼 있다.
+    related: [POLESTAR_REST_REALTIME_USAGE_ENABLED, ALARM_PROCESS_API_BASE_URLS_CSV]
+
+  POLESTAR_REST_MEASUREMENT_TIMEOUT_SECONDS:
+    example: >-
+      200대 조회에 2.5초가 걸린 실측이 있는데 타임아웃을 3초로 두면 여유가 거의 없다. 대상 시스템이 조금만 느려져도 실시간 조회가 실패해 SQL 폴백 없이 그대로
+      끝난다.
+    summary: 실시간 사용률 조회를 얼마나 기다릴지(초).
+    behavior: >-
+      알람 쪽 프로세스 API(3초)와 **별도로** 잡혀 있다. 200대 조회에 2.5초가 걸린
+      실측이 있어 그보다 여유 있게 설정된 값이다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 200대 규모 조회에 여유가 있다.
+      - value: "3"
+        effect: 프로세스 API와 같은 값인데, 실측 소요(2.5초)에 여유가 거의 없어 자주 실패한다.
+      - value: "30 이상"
+        effect: 큰 조회도 완주하지만 응답이 느려진다.
+    performance: 청크 하나당 이 시간이 상한이다 — 대상이 많아 여러 청크로 나뉘면 총 시간이 배가된다.
+    stability: 프로세스 API 타임아웃을 그대로 재사용하지 않은 이유가 이 실측 차이다.
+    related: [POLESTAR_REST_MEASUREMENT_CHUNK_SIZE, ALARM_PROCESS_API_TIMEOUT_SECONDS]
+
+  POLESTAR_REST_MEASUREMENT_CHUNK_SIZE:
+    example: >-
+      대상이 1000대면 청크 200 기준으로 5회 호출이 나간다. 청크를 500으로 올리면 2회로 줄지만 URL이 길어져 서버가 거부하거나 응답이 커져 타임아웃에 걸릴 수
+      있다.
+    summary: 한 번의 호출로 조회할 서버 수.
+    behavior: >-
+      대상이 많으면 나눠서 부른다. 200대는 URL 길이와 응답 크기가 안전한 범위로
+      실측 확정된 값이다.
+    options:
+      - value: "200"
+        label: 기본
+        effect: 실측으로 확정된 안전 범위다.
+      - value: "500 이상"
+        effect: 호출 횟수는 줄지만 URL이 길어져 거부되거나 응답이 커져 타임아웃에 걸릴 수 있다.
+      - value: "50"
+        effect: 안전하지만 호출 횟수가 네 배가 되어 전체 조회가 느려진다.
+    performance: 총 호출 수 = 대상 수 ÷ 이 값이다. 각 호출에 타임아웃이 따로 걸린다.
+    stability: 실측으로 정한 값이라 근거 없이 올리면 URL 길이 제한에 걸린다.
+    related: [POLESTAR_REST_MEASUREMENT_TIMEOUT_SECONDS]
+
+  POLESTAR_REST_STALE_AFTER_MINUTES:
+    example: >-
+      폴스타 수집 주기가 5분인데 이 값을 3으로 두면, 정상 수집된 값도 절반 이상이 '수집 지연'으로 표시된다. 수집 주기의 두세 배로 잡아야 표시가 실제 이상 신호로
+      작동한다.
+    summary: 수집 시각이 몇 분보다 오래되면 "수집 지연"으로 표시할지.
+    behavior: >-
+      실시간 조회로 가져온 값에도 수집 시각이 함께 온다. 그 시각이 지금보다 이만큼
+      오래됐으면 결과에 지연 표시를 붙인다 — 실시간이라 안내한 값이 사실 낡았을 때
+      그것을 감추지 않기 위해서다.
+    options:
+      - value: "15"
+        label: 기본
+        effect: 15분 이상 지난 값에 지연 표시가 붙는다.
+      - value: "3"
+        effect: 민감하게 표시한다. 정상 수집 주기가 5분이면 대부분 지연으로 보인다.
+      - value: "60 이상"
+        effect: 한 시간 지난 값도 정상처럼 보인다 — 실시간이라는 안내가 무의미해진다.
+    performance: 표시 판정이라 비용이 없다.
+    stability: 폴스타 수집 주기보다 넉넉하게 잡아야 정상 상태가 계속 지연으로 표시되지 않는다.
+    related: [POLESTAR_REST_REALTIME_USAGE_ENABLED]

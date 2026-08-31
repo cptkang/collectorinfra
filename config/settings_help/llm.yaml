@@ -1,0 +1,180 @@
+# 설정 옵션 상세 설명 — LLM (D-191)
+# 근거: src/config.py LLMConfig · docs/02_decision.md (D-127 과금 승인 게이트)
+
+version: 1
+group: llm
+
+settings:
+
+  LLM_PROVIDER:
+    summary: 질문을 이해하고 SQL·답변을 만드는 언어 모델을 어디서 부를지.
+    behavior: >-
+      이 값 하나로 응답 품질·속도·비용·데이터가 나가는 범위가 모두 달라진다. 고른 공급자에
+      해당하는 설정(base_url·모델명·키)만 실제로 쓰이고 나머지는 무시된다. 1단 deep_agent
+      경로에서는 제어 평면이 ORCHESTRATOR_PROVIDER로 따로 지정되며, 이 값은 워커 쪽이다.
+    options:
+      - value: gemini
+        label: 운영
+        effect: >-
+          Google Gemini API를 호출한다. 품질이 가장 안정적이지만 외부로 나가는 호출이고
+          호출당 과금된다. 질문 내용과 스키마 정보가 외부 서비스로 전송되므로 PII 필터가
+          함께 걸린다.
+      - value: fabrix
+        label: 사내 게이트웨이
+        effect: >-
+          KBGenAI FabriX를 경유한다. 사내 통제 안에서 처리되지만, 게이트웨이의 PII 필터에
+          걸려 요청이 차단될 수 있다(차단 원인 덤프는 logs/pii_block/에 남는다).
+      - value: ollama
+        label: 로컬
+        effect: >-
+          같은 망의 Ollama 서버로 부른다. 외부 유출도 과금도 없지만, 모델 크기에 따라
+          품질 차이가 크고 응답이 느릴 수 있다. 개발·폐쇄망 검증용이다.
+    example: >-
+      운영 .env는 gemini다. 이 값을 ollama로 바꾸면 과금은 사라지지만 SQL 생성 정확도가
+      떨어져 재시도가 늘고, 결과적으로 체감 응답이 더 느려지는 경우가 흔하다 — 모델 교체는
+      비용만이 아니라 재시도율까지 함께 봐야 한다.
+    performance: >-
+      외부 API는 네트워크 왕복과 상대 서버 대기가 붙고, 로컬 모델은 GPU/CPU 자원에 좌우된다.
+      작은 로컬 모델은 한 번의 호출은 빨라도 형식 오류로 재시도가 붙어 총 시간이 더 걸리기도 한다.
+    stability: >-
+      공급자를 바꾸면 프롬프트가 같아도 출력 형태가 달라진다. 유사어 매핑·의도 분류처럼
+      LLM 출력에 의존하는 판정이 함께 흔들리므로, 교체 뒤에는 대표 질의로 회귀를 확인한다.
+    recommendation: >-
+      운영은 gemini 또는 fabrix를 유지한다. 바꾸기 전에 해당 공급자의 키·base_url이
+      채워져 있는지 먼저 확인한다 — 비어 있으면 기동은 되고 호출에서 실패한다.
+    caveats:
+      - gemini·fabrix는 외부 과금 경로다. 테스트 실행도 승인 대상이다(D-127).
+      - 알람 워커는 기동 시점의 설정을 붙들고 있어, 설정 리로드로는 질의 경로만 바뀌고 워커는 재시작까지 이전 공급자를 쓴다.
+    related: [LLM_MODEL, LLM_GEMINI_MODEL, LLM_FABRIX_CHAT_MODEL, LLM_OLLAMA_BASE_URL, WORKER_PROVIDER_OVERRIDE]
+    references:
+      - docs/02_decision.md (D-127)
+      - docs/pii_filtering_rules.md
+
+  LLM_MODEL:
+    example: >-
+      8B 모델로 EAV 구조 조회를 시키면 조인을 빠뜨린 SQL이 자주 나온다. 검증에서 걸려 재시도가 붙으므로 호출은 한 번이 아니라 두세 번이 되고, 결국 큰 모델보다
+      느려지는 경우가 생긴다 — 모델 크기는 비용만이 아니라 재시도율까지 함께 봐야 한다.
+    summary: 오픈소스(Ollama) 경로에서 쓸 모델 이름.
+    behavior: >-
+      LLM_PROVIDER=ollama일 때만 쓰인다. gemini·fabrix를 쓰는 중이면 이 값을 바꿔도
+      아무 일도 일어나지 않는다 — 그쪽은 각각 LLM_GEMINI_MODEL·LLM_FABRIX_CHAT_MODEL이다.
+    options:
+      - value: "llama3.1:8b"
+        label: 기본
+        effect: 8B급 모델. 가볍고 빠르지만 복잡한 스키마에서 SQL 생성 정확도가 떨어진다.
+      - value: "llama3.1:70b"
+        effect: 품질이 크게 올라가지만 GPU 메모리 요구가 커지고 응답이 몇 배 느려진다.
+      - value: "qwen2.5-coder:14b"
+        effect: 코드·SQL 생성에 특화된 계열. 같은 크기 대비 SQL 품질이 나은 편이다.
+    performance: 모델이 클수록 토큰당 생성 시간이 길어진다. 타임아웃(LLM_OLLAMA_TIMEOUT)을 함께 조정해야 한다.
+    stability: >-
+      Ollama 서버에 그 모델이 실제로 내려받아져 있어야 한다. 없는 이름을 적으면 기동은
+      성공하고 첫 질의에서 실패한다.
+    recommendation: 사용 가능한 GPU 메모리 안에서 가장 큰 코드 특화 모델을 고른다.
+    related: [LLM_PROVIDER, LLM_OLLAMA_BASE_URL, LLM_OLLAMA_TIMEOUT]
+
+  LLM_OLLAMA_BASE_URL:
+    example: >-
+      GPU 장비를 따로 두고 이 주소만 바꾸면 본체는 그대로 두고 모델만 옮길 수 있다. 다만 주소가 틀려도 기동은 성공하므로, 바꾼 뒤 질의를 한 번 던져 확인해야 한다.
+    summary: Ollama 서버 주소.
+    behavior: LLM_PROVIDER=ollama일 때 호출 대상이다. 다른 공급자를 쓰는 중이면 무시된다.
+    options:
+      - value: "http://localhost:11434"
+        label: 기본
+        effect: 같은 장비에서 도는 Ollama에 붙는다.
+      - value: "http://<원격주소>:11434"
+        effect: 별도 GPU 장비를 쓴다. 네트워크 왕복이 응답 시간에 더해진다.
+    performance: 원격이면 왕복 지연이 매 호출에 얹힌다. 생성 시간에 비하면 대개 작은 몫이다.
+    stability: 주소가 틀려도 기동은 되고 질의 시점에 실패한다 — 바꾼 뒤에는 질의를 한 번 던져 확인한다.
+    related: [LLM_PROVIDER, LLM_MODEL]
+
+  LLM_OLLAMA_TIMEOUT:
+    example: >-
+      70B 모델로 긴 프롬프트를 처리하면 생성에 2분 넘게 걸리기도 한다. 타임아웃이 60초면 정상 생성 중인데도 끊기고 재시도가 붙어, 결국 더 오래 걸린 뒤 실패한다.
+    summary: Ollama 요청을 얼마나 기다릴지(초).
+    behavior: >-
+      모델이 크고 프롬프트가 길수록 생성에 오래 걸린다. 이 시간을 넘기면 실패로 처리되고,
+      재시도 예산이 남아 있으면 다시 시도한다.
+    options:
+      - value: "180"
+        label: 기본
+        effect: 3분. 8B급 모델에 넉넉한 값이다.
+      - value: "60 이하"
+        effect: >-
+          큰 모델이나 긴 프롬프트에서 정상 생성 중인데도 끊긴다. 재시도가 붙으면 오히려
+          총 시간이 더 걸린다.
+      - value: "300 이상"
+        effect: >-
+          느린 모델도 완주하지만, 서버가 응답하지 않는 상황에서 사용자가 5분을 기다린 뒤에야
+          실패를 본다.
+    performance: 길게 잡으면 실패 확정까지 그만큼 걸리고 그동안 처리 슬롯이 점유된다.
+    stability: 응답시간 목표(단순 질의 10초)와 이 값의 간극이 크다 — 이 값은 최악의 경우를 위한 상한이지 기대치가 아니다.
+    recommendation: 쓰는 모델로 실제 생성 시간을 재고, 그 두 배쯤으로 잡는다.
+    related: [LLM_MODEL, LLM_PROVIDER]
+
+  LLM_GEMINI_MODEL:
+    example: >-
+      모델 세대가 바뀌어 기존 이름이 폐기되면, 설정은 그대로인데 어느 날부터 모든 질의가 실패한다. 기동 시에는 드러나지 않고 첫 질의에서 인증·모델 오류로 나타난다.
+    summary: Gemini 경로에서 쓸 모델 이름.
+    behavior: LLM_PROVIDER=gemini일 때만 쓰인다. 비워 두면 클라이언트 기본 모델이 쓰인다.
+    performance: 모델 등급에 따라 지연과 호출 단가가 함께 달라진다.
+    stability: 존재하지 않는 모델명을 적으면 질의 시점에 실패한다. 모델 세대가 바뀌면 이름도 함께 갱신해야 한다.
+    recommendation: 사용 중인 계정에서 실제로 접근 가능한 최신 모델명을 적는다.
+    caveats:
+      - 외부 과금 경로다. 모델을 바꾼 뒤 검증 호출도 승인 대상이다(D-127).
+    related: [LLM_PROVIDER, LLM_GEMINI_API_KEY]
+
+  LLM_GEMINI_API_KEY:
+    example: >-
+      키가 비어 있어도 서버는 정상 기동한다. 첫 질의에서야 인증 실패가 나므로, 배포 직후 질의 한 번으로 확인하는 절차가 필요하다.
+    summary: Gemini API 키 — .encenv에서 관리한다.
+    behavior: >-
+      시크릿이라 이 화면에서 편집할 수 없다. .env를 고쳐도 반영되지 않으며,
+      .encenv를 직접 편집한 뒤 재시작해야 한다.
+    stability: 키가 비어 있으면 기동은 성공하고 첫 질의에서 인증 실패한다.
+    related: [LLM_PROVIDER, LLM_GEMINI_MODEL]
+
+  LLM_FABRIX_BASE_URL:
+    example: >-
+      주소가 맞아도 요청 내용에 개인정보로 보이는 문자열이 있으면 게이트웨이가 차단한다. 이때 실패는 주소 문제가 아니므로, logs/pii_block/의 덤프를 봐야 원인이
+      드러난다.
+    summary: FabriX(KBGenAI) 게이트웨이 주소.
+    behavior: LLM_PROVIDER=fabrix일 때 호출 대상이다.
+    stability: >-
+      게이트웨이가 PII 필터를 거느리므로, 주소가 맞아도 요청 내용 때문에 차단될 수 있다.
+      차단 진단용 덤프는 logs/pii_block/에 남고 서버 밖으로 나가지 않는다.
+    related: [LLM_PROVIDER, LLM_FABRIX_CHAT_MODEL, LLM_FABRIX_API_KEY]
+    references:
+      - docs/pii_filtering_rules.md
+
+  LLM_FABRIX_CHAT_MODEL:
+    example: >-
+      게이트웨이가 제공하는 모델 목록에서 특정 모델이 내려가면 그 순간부터 전 질의가 실패한다 — 우리 설정은 그대로이므로 공지를 함께 추적해야 한다.
+    summary: FabriX 경로에서 쓸 채팅 모델 이름.
+    behavior: LLM_PROVIDER=fabrix일 때만 쓰인다. 게이트웨이가 제공하는 모델 목록 안에서 골라야 한다.
+    performance: 모델 등급이 지연과 품질을 좌우한다.
+    stability: 게이트웨이에서 그 모델이 내려가면 질의가 전부 실패한다 — 모델 변경 공지를 함께 추적한다.
+    related: [LLM_PROVIDER, LLM_FABRIX_BASE_URL]
+
+  LLM_FABRIX_API_KEY:
+    example: >-
+      이 화면에서 값을 고쳐 저장해도 반영되지 않는다. `.encenv`를 직접 편집하고 서버를 재시작해야 한다 — '분명히 바꿨는데 그대로'인 대표 사례다.
+    summary: FabriX API 키 — .encenv에서 관리한다.
+    behavior: 시크릿이라 이 화면에서 편집할 수 없다. .encenv를 고치고 재시작해야 반영된다.
+    related: [LLM_PROVIDER, LLM_FABRIX_CLIENT_KEY]
+
+  LLM_FABRIX_CLIENT_KEY:
+    example: >-
+      API 키와 짝을 이루는 값이라 하나만 갱신하면 인증이 실패한다. 벤더에서 재발급받을 때는 두 값을 함께 교체한다.
+    summary: FabriX 클라이언트 키 — .encenv에서 관리한다.
+    behavior: API 키와 함께 쓰이는 전송 인증 크레덴셜이다. 시크릿이라 이 화면에서 편집할 수 없다.
+    related: [LLM_PROVIDER, LLM_FABRIX_API_KEY]
+
+  LLM_OLLAMA_API_KEY:
+    example: >-
+      Ollama에 직접 붙는 구성이면 비워 두는 것이 정상이다. 앞단에 인증 게이트웨이를 둔 경우에만 필요하며, 비어 있으면 LLM_API_KEY 값으로 보정된다.
+    summary: Ollama 게이트웨이 인증 키 — .encenv에서 관리한다.
+    behavior: >-
+      Ollama 앞단에 인증이 걸린 게이트웨이를 둔 구성에서만 쓴다. 직접 붙는 구성이면
+      비워 둔다. 값이 비어 있으면 LLM_API_KEY로 보정된다.
+    related: [LLM_PROVIDER, LLM_OLLAMA_BASE_URL]

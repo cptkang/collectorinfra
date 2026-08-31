@@ -1,0 +1,115 @@
+# 설정 옵션 상세 설명 — 시멘틱 라우터 (D-191)
+# 근거: src/config.py RouterConfig 주석 · plans/79 · SPEC-router-two-stage
+# ⚠ 이 그룹은 구조만 세워졌고 이득/손해가 미검증이다 — 기본값이 곧 현행 동작이다.
+
+version: 1
+group: router
+
+settings:
+
+  ROUTER_TWO_STAGE_ENABLED:
+    summary: 질문의 의도와 대상 DB를 한 번에 분류하지 않고 두 번에 나눠 물을지.
+    behavior: >-
+      지금은 한 번의 호출로 "무슨 의도인가 + 어느 DB인가"를 함께 정한다. 켜면 의도를
+      먼저 정하고 그 다음 DB를 정한다. **켜기 전에는 기존 단일 호출 경로가 그대로 실행된다.**
+    options:
+      - value: "false"
+        label: 기본
+        effect: 한 번의 호출로 분류한다. 현행 동작과 비트 단위로 같다.
+      - value: "true"
+        effect: >-
+          두 번 나눠 호출한다. 각 단계의 지시문이 짧아져 분류 정확도가 오를 수 있지만,
+          **이득인지 손해인지가 아직 측정되지 않았다** — 근거가 모델 크기에 종속돼
+          작은 모델에서는 오히려 나빠진다는 실측이 있다.
+    example: >-
+      "김포 서버 CPU 상위 10건"은 한 번에 분류해도 어렵지 않다. 반면 "지난주에 알람 많이
+      난 서버 목록"처럼 의도(알람 조회)와 대상(폴스타)이 함께 걸린 질문에서 2단 분리의
+      차이가 드러난다 — 다만 그 차이의 방향이 아직 검증되지 않았다.
+    performance: 호출이 1회에서 2회로 늘어난다. 지연·토큰·캐시 효율 영향이 모두 미측정이다.
+    stability: >-
+      의도가 먼저 정해지므로 그 판단이 틀리면 DB 선택도 함께 틀어진다. 반대로 앞 단계에서
+      잘못을 조기에 차단할 여지도 생긴다 — 어느 쪽이 큰지가 미검증 지점이다.
+    recommendation: 성능 측정을 마치기 전까지 기본 off를 유지한다.
+    caveats:
+      - 이 값은 기동 시 1회 해석된다 — 요청 중에 바꾸면 프롬프트 접두가 흔들려 캐시가 무효화된다.
+    related: [ROUTER_CONFIDENCE_SOURCE, ROUTER_EARLY_STOP_ENABLED, ENABLE_SEMANTIC_ROUTING]
+
+  ROUTER_CONFIDENCE_SOURCE:
+    example: >-
+      logprob으로 바꿔도 지금 운영 공급자(FabriX)는 토큰 확률을 주지 않아 값을 얻을 수 없다. 설정만 바뀌고 판정 근거는 그대로 자기보고에 머문다.
+    summary: 라우터가 자기 판단의 확신도를 어디서 얻을지.
+    behavior: >-
+      지금 쓸 수 있는 것은 모델이 스스로 보고하는 값뿐이다. 사내 게이트웨이가 토큰
+      확률(logprob)을 내주지 않기 때문이다. 자기보고 값은 실제 정확도와 잘 맞지 않을 수 있다.
+    options:
+      - value: self_report
+        label: 기본
+        effect: 모델이 응답에 함께 적어 낸 확신도를 쓴다. 지금 환경에서 가능한 유일한 선택지다.
+      - value: logprob
+        effect: >-
+          토큰 확률에서 계산한다. 훨씬 신뢰할 만하지만, 현재 운영 공급자가 확률을
+          제공하지 않아 실제로 동작하지 않는다.
+    performance: 영향이 없다.
+    stability: >-
+      자기보고 확신도에 임계를 걸어 판단을 차단하는 것은 근거가 약하다 — 조기 차단이
+      기본 off인 이유이기도 하다.
+    recommendation: 기본값을 유지한다. logprob은 공급자가 지원하게 된 뒤에 검토한다.
+    related: [ROUTER_EARLY_STOP_ENABLED, ROUTER_MIN_CONFIDENCE]
+
+  ROUTER_EARLY_STOP_ENABLED:
+    example: >-
+      이 값만 켜고 ROUTER_MIN_CONFIDENCE를 비워 두면 아무것도 차단되지 않는다 — 임계가 없으면 비교할 기준이 없기 때문이다. 켰는데 동작이 그대로라면 임계가
+      비어 있는지 먼저 본다.
+    summary: 1단계 분류의 확신도가 낮으면 2단계를 호출하지 않고 중단할지.
+    behavior: >-
+      2단 분리가 켜져 있을 때만 의미가 있다. 앞 단계가 자신 없으면 뒤 단계를 부르지
+      않고 멈춘다 — 잘못된 방향으로 더 가지 않으려는 장치다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 확신도와 무관하게 끝까지 진행한다.
+      - value: "true"
+        effect: >-
+          임계(ROUTER_MIN_CONFIDENCE) 미만이면 중단한다. **임계를 지정하지 않으면
+          켜도 아무것도 차단하지 않는다** — 근거 없는 기본 임계를 만들지 않기 위해서다.
+    performance: 차단되면 2단계 호출이 생략돼 그만큼 빠르다.
+    stability: 자기보고 확신도에 기대는 차단이라, 정상 질의가 저신뢰로 잡혀 막힐 수 있다.
+    recommendation: 임계의 근거를 실측으로 확보한 뒤에 켠다.
+    related: [ROUTER_MIN_CONFIDENCE, ROUTER_TWO_STAGE_ENABLED]
+
+  ROUTER_MIN_CONFIDENCE:
+    example: >-
+      0.5를 넣으면 자기보고 확신도가 0.5 미만인 분류가 전부 중단된다. 그런데 그 확신도가 실제 정확도와 어떻게 대응하는지는 측정되지 않았으므로, 정상 질의가 대량으로 막힐
+      수 있다 — 분포를 먼저 보고 정한다.
+    summary: 조기 차단 임계 — 미설정이면 차단하지 않는다.
+    behavior: >-
+      기본값을 숫자로 두지 않은 것이 설계 의도다. 숫자가 있으면 조기 차단을 켜는
+      순간 근거 없는 값이 즉시 판단에 관여하기 때문이다.
+    options:
+      - value: "(미설정)"
+        label: 기본
+        effect: 차단하지 않는다. 조기 차단을 켜도 실질 동작이 없다.
+      - value: "0.5"
+        effect: 확신도 절반 미만이면 중단한다. 이 숫자의 근거는 실측으로 확보해야 한다.
+    performance: 임계가 높을수록 조기 차단이 잦아 호출이 줄지만 되묻기가 늘어난다.
+    stability: 근거 없는 임계는 한 번 들어가면 무기한 실동작한다 — 값을 넣기 전에 분포를 먼저 본다.
+    related: [ROUTER_EARLY_STOP_ENABLED, ROUTER_CONFIDENCE_SOURCE]
+
+  ROUTER_UNKNOWN_ENABLED:
+    summary: 라우터가 "분류할 수 없다"고 답할 수 있게 할지.
+    behavior: >-
+      꺼져 있으면 라우터는 반드시 어느 하나로 분류한다 — 애매한 질문도 억지로 배정된다.
+      켜면 분류 불가를 표현할 수 있고, 그때 시스템은 답을 지어내는 대신 **사용자에게 되묻는다**
+      (기존 역질문 규약을 그대로 쓰므로 새 화면은 없다).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 프롬프트가 현행과 바이트 단위로 같다. 애매한 질문도 어딘가로 분류된다.
+      - value: "true"
+        effect: 애매한 질문에 되묻는다. 엉뚱한 조회는 줄지만 되묻기 횟수가 늘어난다.
+    example: >-
+      "그거 어떻게 됐어?" 같은 맥락 없는 질문은 지금 어느 의도로든 배정돼 엉뚱한 조회로
+      이어질 수 있다. 켜면 "무엇을 조회할까요?"라고 되묻는다.
+    performance: 되묻기는 조회를 하지 않으므로 오히려 가볍다. 다만 사용자의 왕복이 한 번 늘어난다.
+    stability: 되묻기가 잦아지면 사용성이 떨어진다 — 실제 분류 실패율을 보고 판단한다.
+    related: [ENABLE_SEMANTIC_ROUTING, QUERY_INTENT_LLM_ASSIST]

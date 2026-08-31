@@ -1,0 +1,473 @@
+# 설정 옵션 상세 설명 — 노이즈 게이트: 기본 동작 · 중복/연쇄 억제 (D-191)
+# 근거: src/config.py NoiseGateConfig 주석 · docs/28_noise_cancellation_operator_guide.md
+# 원칙: 전 기능 기본 비활성 — 켜기 전에는 기존 알람 발송 경로가 바이트 단위로 무변경이다.
+
+version: 1
+group: noise_gate
+
+settings:
+
+  NOISE_ENABLE_NOISE_GATE:
+    summary: 노이즈 캔슬링 전체 스위치 — 이 값이 꺼져 있으면 아래 억제 설정이 전부 무의미하다.
+    behavior: >-
+      켜면 들어온 알람을 4단계 티어(PAGE·TICKET·DASHBOARD·SUPPRESS)로 분류하고, 억제할
+      것은 억제한 뒤 판단 근거를 감사 파일에 남긴다. 꺼져 있으면 모든 알람이 예전처럼
+      그대로 통보된다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 게이트가 동작하지 않는다. 억제·티어 분류·감사가 전부 없다.
+      - value: "true"
+        effect: 4단계 판단이 동작한다. 통보량이 줄고 판단 근거가 감사 파일에 남는다.
+    example: >-
+      이 값이 꺼져 있으면 알람 카드의 피드백 버튼(유효·노이즈)을 눌러도 아무 일이
+      일어나지 않는다. "피드백 비활성"이 뜨는 원인의 하나가 이것이다.
+    performance: 알람마다 판단 로직이 돌지만 대부분 결정적 계산이라 비용이 작다. 실제 비용은 이력 조회·보강 쪽이다.
+    stability: >-
+      켜는 순간 통보량이 줄어든다 — 그중에 필요한 알람이 섞여 있지 않은지 초기에는
+      억제된 목록(감사 파일)을 함께 봐야 한다. 억제된 알람은 화면에 뜨지 않으므로
+      감사 파일이 유일한 확인 경로다.
+    recommendation: >-
+      켤 때는 억제 관련 하위 기능(플래핑·스톰·인히비션)을 한꺼번에 켜지 말고 하나씩
+      켜면서 억제 결과를 확인한다.
+    related: [NOISE_SUPPRESS_MAX_SEVERITY, NOISE_DECISION_STORE_ENABLED, ALARM_ENABLED]
+    references:
+      - docs/28_noise_cancellation_operator_guide.md
+
+  NOISE_SUPPRESS_MAX_SEVERITY:
+    example: >-
+      억제 로직이 '이건 노이즈'라고 판단해도 심각도가 3이면 통보된다. 이 값을 3으로 올리면 그 안전선이 사라져, 판단이 틀렸을 때 진짜 장애 알람이 묻힐 수 있다.
+    summary: 어느 심각도까지 억제를 허용할지 — 이보다 높은 알람은 무조건 통보된다.
+    behavior: >-
+      억제 판단이 아무리 "노이즈"라고 해도, 심각도가 이 값을 넘으면 통보한다.
+      심각도 3(심각)은 항상 PAGE로 나간다는 안전선이 여기서 나온다.
+    options:
+      - value: "2"
+        label: 기본
+        effect: 경고(2) 이하만 억제 대상이다. 심각(3)은 어떤 신호가 있어도 통보된다.
+      - value: "1"
+        effect: 주의(1) 이하만 억제한다. 더 보수적이지만 경고 수준의 반복 알람이 그대로 나간다.
+      - value: "3"
+        effect: >-
+          심각 알람까지 억제 대상이 된다. 진짜 장애가 억제될 수 있으므로 권장하지 않는다.
+    performance: 영향 없다.
+    stability: >-
+      이 값은 억제 로직이 잘못 판단했을 때의 최후 방어선이다. 올리는 것은 그 방어선을
+      걷어내는 일이다.
+    recommendation: 기본 2를 유지한다.
+    related: [NOISE_ENABLE_NOISE_GATE, ALARM_MIN_SEVERITY]
+
+  NOISE_REPEAT_INTERVAL_SECONDS:
+    example: >-
+      디스크가 가득 찬 서버는 조치할 때까지 같은 알람을 계속 낸다. 4시간이면 하루 여섯 번만 상기시키고, 한 시간으로 줄이면 스물네 번이 되어 도배에 가까워진다.
+    summary: 같은 알람이 계속 날 때 몇 초마다 한 번씩 다시 통보할지.
+    behavior: >-
+      해결되지 않은 알람이 반복해서 들어와도 매번 알리지 않는다. 이 간격이 지나면
+      한 번 더 알린다 — 잊히지 않게 하되 도배하지 않는 절충이다.
+    options:
+      - value: "14400"
+        label: 기본 (4시간)
+        effect: 같은 알람은 4시간에 한 번만 다시 알린다.
+      - value: "3600"
+        effect: 한 시간마다 상기시킨다. 놓칠 가능성은 줄지만 통보량이 네 배가 된다.
+      - value: "86400"
+        effect: 하루 한 번. 조용하지만 미해결 상태를 잊기 쉽다.
+    performance: 억제되면 통보 발송과 그에 딸린 처리가 생략된다.
+    stability: 너무 길게 잡으면 계속 나는 문제를 아무도 다시 보지 않게 된다.
+    recommendation: 기본 4시간 유지. 심각도 3은 별도 설정으로 더 짧게 잡을 수 있다.
+    related: [NOISE_SEV3_REPEAT_INTERVAL_SECONDS, ALARM_DEDUP_TTL_SECONDS]
+
+  NOISE_SEV3_REPEAT_INTERVAL_SECONDS:
+    example: >-
+      심각 장애 대응이 길어질 때 4시간마다 오는 재통보는 묻히기 쉽다. 30분으로 줄이면 미해결 상태가 계속 드러나지만, 이미 대응 중인 담당자에게는 방해가 될 수 있다.
+    summary: 심각(3) 알람의 재통보 간격 — 일반 간격과 따로 짧게 잡을 수 있다.
+    behavior: 기본값은 공통 간격과 같다. 심각 알람만 더 자주 상기시키고 싶을 때 줄인다.
+    options:
+      - value: "14400"
+        label: 기본 (공통과 같음)
+        effect: 심각 알람도 4시간에 한 번 재통보한다.
+      - value: "1800"
+        effect: 30분마다 상기시킨다. 미해결 심각 장애가 묻히지 않는다.
+    performance: 간격이 짧을수록 통보가 늘어난다.
+    stability: 심각 알람은 대응 중일 가능성이 높다 — 지나치게 짧으면 대응 중인 담당자에게 도배가 된다.
+    recommendation: 운영 초기에는 기본값으로 두고, 심각 알람이 묻히는 사례가 나오면 줄인다.
+    related: [NOISE_REPEAT_INTERVAL_SECONDS, NOISE_SUPPRESS_MAX_SEVERITY]
+
+  NOISE_SELF_HEAL_WINDOW_SECONDS:
+    example: >-
+      배치 작업이 돌면서 CPU가 3분간 치솟았다가 끝나면, 5분 창 안에 해소되므로 자가복구로 보고 통보하지 않는다. 창을 30분으로 늘리면 실제로 30분간 영향이 있었던
+      장애까지 자가복구로 묻힌다.
+    summary: 알람이 난 뒤 이 시간 안에 스스로 해소되면 자가복구로 본다.
+    behavior: >-
+      발생과 해소가 짧은 간격으로 붙어 있으면 사람이 개입할 필요가 없었던 일이다.
+      그런 쌍을 찾아 통보 판단에 반영한다.
+    options:
+      - value: "300"
+        label: 기본 (5분)
+        effect: 5분 안에 해소되면 자가복구로 본다.
+      - value: "60"
+        effect: 아주 짧은 순간 장애만 자가복구로 인정한다. 대부분의 일시 장애가 그대로 통보된다.
+      - value: "1800"
+        effect: 30분 안에 해소되면 자가복구로 본다 — 실제로 30분간 영향이 있었던 장애까지 묻힐 수 있다.
+    performance: 창이 길수록 판단을 위해 보류하는 상태가 오래 유지된다.
+    stability: 자가복구로 판정된 알람은 통보되지 않는다 — 창을 넓히는 것은 그만큼의 장애를 안 알리는 결정이다.
+    recommendation: 기본 5분 유지.
+    related: [NOISE_DEBOUNCE_SECONDS, NOISE_RESOLVED_TO_DASHBOARD]
+
+  NOISE_DEBOUNCE_SECONDS:
+    example: >-
+      상태가 안정될 때까지 기다리게 하려고 이 값을 올려도 아무 변화가 없다 — 코드가 읽지 않는다. 일시 진동을 억제하려면 NOISE_FLAPPING_ENABLED를 쓴다.
+    summary: 상태가 안정될 때까지 기다리는 시간(초) — 현재 코드가 읽지 않는다.
+    behavior: >-
+      알람을 바로 처리하지 않고 잠깐 기다려 상태가 확정되면 처리하려는 항목이지만,
+      지금 코드에는 이 값을 읽는 곳이 없다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음). 일시 진동을 억제하려면 플래핑 쪽 설정을 쓴다.
+    related: [NOISE_FLAPPING_ENABLED, NOISE_SELF_HEAL_WINDOW_SECONDS]
+
+  NOISE_FLAPPING_ENABLED:
+    summary: 상태가 켜졌다 꺼졌다를 반복하는 알람을 억제할지.
+    behavior: >-
+      임계선 근처를 오르내리는 지표는 발생·해소를 반복하며 알람을 쏟아낸다. 켜면 그
+      진동을 감지해 억제한다. 시작·종료 임계는 별도 항목으로 조정한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 진동을 억제하지 않는다. 오르내릴 때마다 알람이 나간다.
+      - value: "true"
+        effect: 진동 상태로 판정되면 억제한다. 임계선에 걸친 서버의 알람 도배가 사라진다.
+    example: >-
+      CPU 임계가 80%인데 실제 사용률이 79~81%를 오가는 서버는 몇 분마다 발생·해소
+      알람을 낸다. 이 기능이 그런 경우를 잡는다.
+    performance: 진동 상태 추적을 위한 계산이 붙지만 비용은 작다.
+    stability: >-
+      진동으로 판정되면 통보가 멈춘다 — 실제로 임계선에 걸쳐 있다는 사실 자체는
+      조치 대상이므로, 억제와 별개로 임계값 재조정을 검토해야 한다.
+    recommendation: 임계선 진동이 실제 문제일 때 켠다.
+    related: [NOISE_FLAP_HIGH_THRESHOLD, NOISE_FLAP_LOW_THRESHOLD]
+
+  NOISE_FLAP_HIGH_THRESHOLD:
+    example: >-
+      CPU 임계가 80%인 서버의 실제 사용률이 79~81%를 오가면 발생·해소가 몇 분마다 반복된다. 변화율이 20%를 넘으면 진동으로 보고 억제하는데, 임계를 10으로
+      낮추면 정상적인 부하 변동도 진동으로 잡힌다.
+    summary: 상태 변화 비율이 이 값을 넘으면 진동 상태로 본다(%).
+    behavior: 최근 상태 변화의 비율을 재고, 이 값을 넘으면 진동으로 판정해 억제를 시작한다. Nagios의 기본값을 따랐다.
+    options:
+      - value: "20.0"
+        label: 기본
+        effect: 변화율 20%를 넘으면 진동으로 본다.
+      - value: "10"
+        effect: 민감해진다. 몇 번만 오르내려도 진동으로 판정돼 정상 알람이 억제될 수 있다.
+      - value: "40 이상"
+        effect: 심하게 흔들려야 진동으로 인정한다. 웬만한 진동은 그대로 통보된다.
+    performance: 영향 없다.
+    stability: 진입 임계(이 값)와 해제 임계(NOISE_FLAP_LOW_THRESHOLD) 사이의 간격이 좁으면 진동 판정 자체가 진동한다.
+    recommendation: 기본 20 유지. 해제 임계와 충분한 간격을 둔다.
+    related: [NOISE_FLAP_LOW_THRESHOLD, NOISE_FLAPPING_ENABLED]
+
+  NOISE_FLAP_LOW_THRESHOLD:
+    example: >-
+      진입 20·해제 5면 그 사이에 여유가 있어 판정이 안정적이다. 해제를 18로 올리면 진입과 거의 붙어, 억제가 켜졌다 꺼졌다 하며 오히려 예측하기 어려워진다.
+    summary: 변화 비율이 이 값 아래로 내려가면 진동이 끝난 것으로 본다(%).
+    behavior: 진동 상태를 해제하는 기준이다. 진입 임계보다 낮게 두어 판정이 왔다 갔다 하지 않게 한다.
+    options:
+      - value: "5.0"
+        label: 기본
+        effect: 변화율 5% 아래로 안정되면 진동 해제. 진입(20)과 충분한 간격이 있다.
+      - value: "18"
+        effect: 진입 임계와 너무 가까워 진동 판정 자체가 흔들린다.
+    performance: 영향 없다.
+    stability: 두 임계가 가까우면 억제가 켜졌다 꺼졌다 하며 오히려 예측하기 어려워진다.
+    recommendation: 진입 임계의 4분의 1 수준을 유지한다.
+    related: [NOISE_FLAP_HIGH_THRESHOLD]
+
+  NOISE_INHIBITION_ENABLED:
+    summary: 더 심각한 알람이 진행 중일 때 같은 대상의 하위 알람을 음소거할지.
+    behavior: >-
+      한 서버에 심각 알람이 떠 있는데 같은 서버의 경고 알람이 계속 오면 그 경고는
+      새 정보가 아니다. 켜면 상위 심각도가 활성인 동안 하위 알람을 억제한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 심각도와 무관하게 각각 통보한다.
+      - value: "true"
+        effect: 상위 알람 대응 중에 하위 잡음이 끼어들지 않는다.
+    example: >-
+      디스크가 가득 차 심각 알람이 뜬 서버에서 응답 지연 경고가 이어져 나올 때,
+      경고는 심각 알람의 증상이므로 따로 알릴 필요가 없다.
+    performance: 억제되면 통보 처리가 생략된다.
+    stability: >-
+      상위 알람과 무관한 별개의 문제가 같은 시간에 발생하면 그것도 함께 묻힌다 —
+      창(NOISE_INHIBITION_WINDOW_SECONDS)을 지나치게 넓히지 않는 이유다.
+    recommendation: 대응 중 잡음이 실제 문제일 때 켠다.
+    related: [NOISE_INHIBITION_WINDOW_SECONDS, NOISE_SUPPRESS_MAX_SEVERITY]
+
+  NOISE_INHIBITION_WINDOW_SECONDS:
+    example: >-
+      초동 대응이 보통 10분 걸리는데 창이 5분이면 대응 중반부터 하위 알람이 다시 들어온다. 반대로 한 시간으로 늘리면 그동안 발생한 별개의 새 문제까지 가려진다.
+    summary: 상위 심각도 알람이 몇 초 동안 "진행 중"으로 간주될지.
+    behavior: 이 시간 안에 발생한 상위 알람이 있으면 하위 알람을 음소거한다.
+    options:
+      - value: "300"
+        label: 기본 (5분)
+        effect: 5분간 상위 알람이 하위를 음소거한다.
+      - value: "60"
+        effect: 짧아 실제 대응 시간을 커버하지 못한다 — 대응 중에 하위 잡음이 다시 들어온다.
+      - value: "3600"
+        effect: 한 시간간 하위 알람이 묻힌다. 별개의 새 문제도 함께 가려진다.
+    performance: 창이 길수록 활성 상위 알람을 추적하는 상태가 오래 유지된다.
+    stability: 창을 넓히는 것은 그 시간 동안 하위 알람을 안 보겠다는 결정이다.
+    recommendation: 실제 초동 대응 시간에 맞춰 정한다. 기본 5분에서 시작한다.
+    related: [NOISE_INHIBITION_ENABLED]
+
+  NOISE_STORM_GROUPING_ENABLED:
+    summary: 한 서버에서 알람이 한꺼번에 쏟아질 때 대표 하나만 남길지.
+    behavior: >-
+      같은 서버에서 짧은 시간에 여러 알람이 터지면 대개 원인이 하나다. 켜면 대표 알람
+      하나만 통보하고 나머지는 억제한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 쏟아지는 알람을 모두 통보한다.
+      - value: "true"
+        effect: 대표 하나만 통보한다. 서버 한 대의 장애가 수십 건의 통보로 번지지 않는다.
+    example: 서버가 재부팅되면 프로세스·포트·응답 알람이 동시에 수십 건 터진다 — 담당자에게 필요한 것은 "그 서버가 내려갔다" 하나다.
+    performance: 억제된 만큼 통보 처리가 줄어 폭주 상황에서 워커 부담이 크게 감소한다.
+    stability: 같은 서버에 정말로 서로 다른 문제가 동시에 났다면 그중 하나만 보인다.
+    recommendation: 서버 단위 장애가 잦은 환경에서 켠다.
+    related: [NOISE_STORM_WINDOW_SECONDS, NOISE_STORM_THRESHOLD]
+
+  NOISE_STORM_WINDOW_SECONDS:
+    example: >-
+      재부팅 알람은 1분 안에 몰리지만, 서서히 번지는 장애는 5분에 걸쳐 나온다. 창이 60초면 후자를 스톰으로 묶지 못하고, 600초로 늘리면 그 사이 발생한 무관한 알람까지
+      한 사건으로 합쳐진다.
+    summary: 스톰을 판정할 시간창(초).
+    behavior: 이 창 안에서 같은 서버의 알람 수를 센다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 1분 안의 알람을 묶어 센다.
+      - value: "10"
+        effect: 매우 짧아 순간적으로 몰린 경우만 잡는다. 몇 분에 걸쳐 번지는 장애는 놓친다.
+      - value: "600"
+        effect: 10분간의 알람을 한 사건으로 묶는다 — 그 사이의 새 문제도 같은 스톰으로 묶인다.
+    performance: 창이 길수록 추적할 상태가 늘어난다.
+    stability: 창이 넓으면 서로 다른 사건이 하나로 묶여 대표가 아닌 알람이 전부 가려진다.
+    recommendation: 기본 60초 유지.
+    related: [NOISE_STORM_THRESHOLD, NOISE_STORM_GROUPING_ENABLED]
+
+  NOISE_STORM_THRESHOLD:
+    example: >-
+      1분에 다섯 건을 넘으면 스톰으로 본다. 임계를 2로 낮추면 서로 무관한 알람 두 건이 우연히 겹쳐도 스톰으로 묶여, 그중 하나가 대표가 아니라는 이유로 가려진다.
+    summary: 창 안에 몇 건을 넘으면 스톰으로 볼지.
+    behavior: 이 수를 초과하면 스톰으로 판정하고 대표 외의 알람을 억제한다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 1분에 다섯 건을 넘으면 스톰이다.
+      - value: "2~3"
+        effect: 민감하다. 서로 무관한 알람 두세 건이 우연히 겹쳐도 스톰으로 묶인다.
+      - value: "20 이상"
+        effect: 대규모 폭주만 잡는다. 중간 규모의 도배는 그대로 나간다.
+    performance: 영향 없다.
+    stability: 임계가 낮으면 정상적인 다중 알람이 스톰으로 묶여 중요한 건이 가려진다.
+    recommendation: 실제 알람 밀도를 보고 정한다. 기본 5에서 시작한다.
+    related: [NOISE_STORM_WINDOW_SECONDS]
+
+  NOISE_DEPENDENCY_SUPPRESSION:
+    example: >-
+      스위치 하나가 죽으면 그 아래 서버 스무 대가 전부 응답 없음으로 잡힌다. 켜면 스위치 알람 하나만 통보되지만, 토폴로지 정보가 부정확하면 무관한 알람이 연쇄로 오인돼
+      억제될 수 있다.
+    summary: 상위 장애 때문에 딸려 나온 하위 알람을 억제할지.
+    behavior: >-
+      스위치가 죽으면 그 아래 서버들이 전부 응답 없음으로 잡힌다. 켜면 토폴로지상
+      상위 노드에 장애가 있을 때 하위 알람을 억제한다. 다홉 연쇄 억제의 전제이기도 하다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 하위 알람을 각각 통보한다.
+      - value: "true"
+        effect: 상위 원인 하나만 통보한다. 연쇄 알람이 사라진다.
+    performance: 토폴로지 조회가 붙는다. 결과는 캐시된다.
+    stability: >-
+      토폴로지 정보가 부정확하면 무관한 알람이 연쇄로 오인돼 억제된다 — 토폴로지 데이터의
+      정확도가 이 기능의 전제다.
+    recommendation: 토폴로지 데이터가 신뢰할 만할 때 켠다.
+    related: [NOISE_MULTI_HOP_CASCADE_ENABLED, NOISE_TOPOLOGY_MAX_HOPS]
+
+  NOISE_MULTI_HOP_CASCADE_ENABLED:
+    example: >-
+      스위치 → 서버 → 애플리케이션처럼 두 단계 이상 이어진 연쇄는 한 단계 억제로는 중간층이 남는다. 다홉을 켜면 최상위 원인까지 거슬러 올라가는데,
+      공동존(PostgreSQL)만 지원하고 은행존(DB2)은 한 단계 억제로 자동 폴백한다 — 존에 따라 동작이 다르다.
+    summary: 연쇄 억제를 한 단계가 아니라 여러 단계까지 따라갈지.
+    behavior: >-
+      의존성 억제(NOISE_DEPENDENCY_SUPPRESSION)와 함께 켜져 있어야 동작한다.
+      둘 다 켜져야 다홉 조회가 일어난다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 직접 연결된 한 단계만 본다.
+      - value: "true"
+        effect: 여러 단계를 거슬러 올라가 원인을 찾는다. 깊은 연쇄까지 정리된다.
+    performance: 그래프 탐색이 붙는다. 결과는 하루 단위로 캐시되므로 반복 비용은 작다.
+    stability: >-
+      PostgreSQL 존(공동존)만 지원한다. 은행존(DB2)은 한 단계 억제로 자동 폴백한다 —
+      존에 따라 동작이 다르다는 점을 알고 있어야 한다.
+    recommendation: 의존성 억제를 먼저 켜서 검증한 뒤 확장한다.
+    related: [NOISE_DEPENDENCY_SUPPRESSION, NOISE_TOPOLOGY_MAX_HOPS, NOISE_TOPOLOGY_CACHE_TTL_SECONDS]
+
+  NOISE_TOPOLOGY_MAX_HOPS:
+    example: >-
+      다섯 단계면 일반적인 인프라 계층을 커버한다. 10으로 올리면 탐색 대상이 급격히 늘고, 열 단계 위의 장비를 이 알람의 원인이라고 보기도 어려워진다.
+    summary: 연쇄를 몇 단계까지 거슬러 올라갈지.
+    behavior: 탐색 깊이 상한이다. 순환 구조에 빠지지 않게 하는 안전장치이자 비용 가드다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 다섯 단계까지 본다. 일반적인 인프라 계층 깊이를 커버한다.
+      - value: "2"
+        effect: 얕게 본다. 깊은 연쇄의 진짜 원인에 닿지 못한다.
+      - value: "10 이상"
+        effect: 탐색 범위가 넓어져 조회 비용이 늘고, 관련성이 희박한 노드까지 원인 후보가 된다.
+    performance: 깊이가 늘면 탐색 대상 노드가 급격히 증가한다.
+    stability: 깊게 파고들수록 인과관계가 약해진다 — 열 단계 위의 장비가 이 알람의 원인이라고 보기는 어렵다.
+    recommendation: 기본 5 유지.
+    related: [NOISE_MULTI_HOP_CASCADE_ENABLED]
+
+  NOISE_TOPOLOGY_CACHE_TTL_SECONDS:
+    example: >-
+      장비를 새로 붙이거나 연결을 바꾸면 그 반영이 최대 하루 늦는다. 대규모 구성 변경 뒤에는 재시작으로 캐시를 비우는 편이 확실하다.
+    summary: 토폴로지 그래프를 몇 초 동안 캐시할지.
+    behavior: 정적 연결 정보는 거의 바뀌지 않으므로 길게 잡아 둔다.
+    options:
+      - value: "86400"
+        label: 기본 (24시간)
+        effect: 하루 한 번만 다시 읽는다. 조회 비용이 사실상 사라진다.
+      - value: "300"
+        effect: 5분마다 다시 읽는다. 토폴로지 변경이 빨리 반영되지만 조회가 잦아진다.
+    performance: 길게 잡을수록 억제 판단이 빨라진다.
+    stability: 장비를 새로 붙이거나 연결을 바꾸면 그 반영이 최대 하루 늦는다.
+    recommendation: 기본 24시간 유지. 대규모 구성 변경 뒤에는 재시작으로 캐시를 비운다.
+    related: [NOISE_MULTI_HOP_CASCADE_ENABLED]
+
+  NOISE_IMPORTANCE_VALUE_MAP_CSV:
+    example: >-
+      폴스타 중요도 코드가 1=높음인데 매핑을 `1=낮음`으로 적으면 중요도가 뒤집힌다. 핵심 자산의 알람이 저중요로 판정돼 더 쉽게 억제되므로, 코드 값을 먼저 확인해야 한다.
+    summary: 폴스타의 중요도 코드를 사람이 읽는 라벨로 바꾸는 매핑.
+    behavior: >-
+      "1=낮음,2=보통,3=높음" 형식이다. 비워 두면 전부 보통으로 취급한다 — 중요도가
+      판단에 반영되지 않는다는 뜻이다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 모든 자원을 같은 중요도로 본다. 중요 자산과 개발 장비가 동등하게 취급된다.
+      - value: "1=낮음,2=보통,3=높음"
+        effect: 중요도가 티어 판단에 반영된다. 저중요 자산의 알람이 더 쉽게 억제된다.
+    performance: 영향 없다.
+    stability: >-
+      매핑이 실제 폴스타 코드 체계와 다르면 중요도가 뒤집혀 반영된다 — 중요 자산이
+      억제되는 사고로 이어질 수 있으므로 코드 값을 먼저 확인한다.
+    recommendation: 폴스타의 실제 중요도 코드를 확인해 정확히 매핑한다.
+    related: [NOISE_SUPPRESS_MAX_SEVERITY]
+
+  NOISE_RESOLVED_TO_DASHBOARD:
+    example: >-
+      해소 이벤트를 화면에 남기면 '있었다가 풀렸다'는 흐름이 보인다. 다만 억제율이 높은 환경에서는 대시보드가 해소 이벤트로 가득 차 정작 볼 알람이 묻힐 수 있다.
+    summary: 스스로 해소된 알람을 화면에 남길지, 아예 안 보이게 할지.
+    behavior: 해소 이벤트를 대시보드 티어로 표시하면 "있었다가 풀렸다"는 사실이 화면에 남는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 해소 이벤트를 화면에 띄우지 않는다. 화면이 조용하다.
+      - value: "true"
+        effect: 대시보드 티어로 남긴다. 무슨 일이 있었는지 흐름이 보인다.
+    performance: 켜면 화면으로 나가는 이벤트가 늘어난다.
+    stability: 켜면 대시보드가 해소 이벤트로 채워질 수 있다 — 억제율이 높은 환경에서는 특히 그렇다.
+    related: [NOISE_SELF_HEAL_WINDOW_SECONDS, NOISE_SSE_SUPPRESSED_ENABLED]
+
+  NOISE_DECISION_STORE_ENABLED:
+    example: >-
+      억제된 알람은 화면에 뜨지 않으므로, 오억제를 확인할 방법은 이 파일뿐이다. 끄면 게이트가 무엇을 왜 삼켰는지 사후에 알 수 없어 검증 불가능한 블랙박스가 된다.
+    summary: 게이트가 내린 판단을 파일에 남길지 — 기본으로 켜져 있다.
+    behavior: >-
+      어떤 알람을 왜 억제했는지 한 줄씩 기록한다. 억제된 알람은 화면에 뜨지 않으므로,
+      오억제를 확인할 방법은 이 파일뿐이다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 판단 근거가 남는다. 주간 리뷰에서 오억제를 점검할 수 있다.
+      - value: "false"
+        effect: 남기지 않는다. 무엇이 왜 억제됐는지 확인할 방법이 사라진다.
+    performance: 알람당 한 줄 append다. 비용이 거의 없다.
+    stability: 이 파일이 없으면 게이트는 검증 불가능한 블랙박스가 된다.
+    recommendation: 켠 채로 둔다.
+    related: [NOISE_DECISION_STORE_PATH, NOISE_RECURRENCE_AUDIT_EVERY_N]
+
+  NOISE_DECISION_STORE_PATH:
+    example: >-
+      상대 경로는 서버 작업 디렉터리 기준이다. 서비스 등록 방식이 바뀌면 이전 기록이 옛 경로에 남고 새 경로에서 처음부터 쌓이므로, 주간 리뷰에서 기록이 갑자기 짧아진 것처럼
+      보인다.
+    summary: 게이트 판단 기록을 저장할 파일 경로.
+    behavior: 상대 경로는 서버 작업 디렉터리 기준이다.
+    performance: 영향 없다.
+    stability: >-
+      디스크가 가득 차지 않도록 정리 정책이 필요하다. 경로를 바꾸면 이전 기록은 옛
+      경로에 그대로 남는다.
+    related: [NOISE_DECISION_STORE_ENABLED]
+
+  NOISE_RECURRENCE_AUDIT_EVERY_N:
+    example: >-
+      같은 알람이 하루 100번 억제되면 기록도 100줄이 쌓인다. 10으로 샘플링하면 파일 증가가 10분의 1로 줄지만, 집계할 때 실제 억제 횟수가 10배라는 점을 감안해야
+      한다.
+    summary: 재발생 억제 기록을 몇 건에 한 번씩 남길지.
+    behavior: >-
+      같은 알람이 계속 억제될 때 매번 기록하면 파일이 빠르게 커진다. 1이면 매번,
+      10이면 열 번에 한 번 남긴다.
+    options:
+      - value: "1"
+        label: 기본
+        effect: 모든 억제를 기록한다. 가장 정확하지만 파일이 빨리 커진다.
+      - value: "10"
+        effect: 열 번에 한 번만 남긴다. 파일 증가가 크게 줄지만 개별 억제 시점이 사라진다.
+    performance: 값을 올리면 파일 쓰기가 그만큼 줄어든다.
+    stability: 샘플링하면 억제 횟수 통계가 실제보다 적게 보인다 — 집계할 때 이 값을 감안해야 한다.
+    recommendation: 파일 크기가 문제되기 전까지는 기본 1을 유지한다.
+    related: [NOISE_DECISION_STORE_ENABLED]
+
+  NOISE_NOISE_CONTEXT_TIMEOUT_SECONDS:
+    example: >-
+      판단 재료(이력·토폴로지·변경)를 모으는 데 3초를 준다. 1초로 줄이면 재료가 자주 부족한 채로 판단하게 되어 억제 정확도가 떨어지고, 10초로 늘리면 알람 폭주 시
+      처리량이 그만큼 떨어진다.
+    summary: 억제 판단에 필요한 배경 정보를 모으는 데 주는 시간(초).
+    behavior: 이력·토폴로지·변경 등 판단 재료를 모으는 단계의 상한이다. 넘으면 있는 정보만으로 판단한다.
+    options:
+      - value: "3.0"
+        label: 기본
+        effect: 3초. 대부분의 조회가 그 안에 끝난다.
+      - value: "1"
+        effect: 재료가 자주 부족한 채로 판단하게 된다 — 억제 정확도가 떨어진다.
+      - value: "10 이상"
+        effect: 재료는 충실해지지만 알람 처리가 느려진다. 폭주 시 처리량이 떨어진다.
+    performance: 알람 한 건의 처리 시간에 직접 얹힌다.
+    stability: 재료가 부족해도 판단은 진행된다 — 다만 근거가 얕아진다.
+    recommendation: 기본 3초 유지.
+    related: [NOISE_NOISE_CONTEXT_CACHE_TTL_SECONDS]
+
+  NOISE_NOISE_CONTEXT_CACHE_TTL_SECONDS:
+    example: >-
+      같은 서버의 알람이 1분 간격으로 이어질 때, 5분 캐시면 배경 조회가 한 번만 일어난다. 한 시간으로 늘리면 그 사이 발생한 변경이 판단 재료에 반영되지 않아 억제 결정이
+      어긋날 수 있다.
+    summary: 판단 배경 정보를 몇 초 동안 재사용할지.
+    behavior: 같은 대상에 대한 재료를 짧은 시간 안에 다시 모으지 않는다.
+    options:
+      - value: "300"
+        label: 기본
+        effect: 5분간 재사용한다. 알람이 몰릴 때 조회 부담을 크게 줄인다.
+      - value: "0"
+        effect: 매번 모은다. 항상 최신이지만 폭주 시 부담이 크다.
+      - value: "3600"
+        effect: 한 시간 재사용한다. 그 사이의 변화가 판단에 반영되지 않는다.
+    performance: 적중하면 배경 조회가 통째로 생략된다.
+    stability: 길게 잡으면 방금 발생한 상황이 판단 재료에 없어 억제 결정이 어긋날 수 있다.
+    recommendation: 기본 300초 유지.
+    related: [NOISE_NOISE_CONTEXT_TIMEOUT_SECONDS]
