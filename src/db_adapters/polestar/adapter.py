@@ -15,6 +15,8 @@ from src.db_adapters.polestar.prompts import (
     render_system_template,
 )
 from src.db_adapters.polestar.validators import (
+    check_active_status_literal_filter,
+    check_alarm_table_allowlist,
     check_contradictory_alias_resource_type,
     check_routing_filter_misuse,
     check_metric_join_on_server_entity,
@@ -22,6 +24,7 @@ from src.db_adapters.polestar.validators import (
     check_ranking_order_by_nulls_last,
     check_scope_filter_where_demotion,
     check_scoped_pivot_missing_server_identity,
+    check_severity_label_filter,
     check_value_column_join,
 )
 
@@ -69,6 +72,9 @@ class PolestarAdapter:
             check_pivot_metric_inner_join,
             check_contradictory_alias_resource_type,
             check_ranking_order_by_nulls_last,
+            check_alarm_table_allowlist,
+            check_severity_label_filter,
+            check_active_status_literal_filter,
         ]
         if knowledge_render_enabled():
             checks.append(check_value_column_join)

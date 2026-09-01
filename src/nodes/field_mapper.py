@@ -66,11 +66,20 @@ async def field_mapper(
     parsed = state.get("parsed_requirements", {})
     synonym_reg = parsed.get("synonym_registration")
     if synonym_reg:
-        reg_result = await _handle_synonym_registration(
-            state, synonym_reg, app_config
-        )
-        if reg_result:
-            return reg_result
+        # 신규 동의어 집합 선언("vcore, cpu, core은 동의어이다. 등록하라")은 이 분기의
+        # 소관이 아니다 — pending 없이 가로채면 "등록할 매핑 없음"으로 오종결되어
+        # cache_management의 결정적 셋 파서(D-142)에 도달하지 못한다(2026-09-01 라이브
+        # 실측 A-10). pending이 있거나 셋 선언이 아닐 때만 기존 등록 흐름을 처리한다.
+        from src.utils.synonym_set_parser import parse_synonym_set
+
+        if state.get("pending_synonym_registrations") or not parse_synonym_set(
+            state.get("user_query", "")
+        ):
+            reg_result = await _handle_synonym_registration(
+                state, synonym_reg, app_config
+            )
+            if reg_result:
+                return reg_result
 
     template = state.get("template_structure")
     if not template:

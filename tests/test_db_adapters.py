@@ -638,3 +638,145 @@ class TestPivotScopeAndRanking:
         """작은따옴표가 포함된 값은 이스케이프한다(SQL 인젝션·문법 오류 방지)."""
         sql = self._build(server_scope=("name", ["O'Brien"]))
         assert "'O''Brien'" in sql
+
+
+class TestAlarmSeverityChecks:
+    """알람 허용 테이블·심각도 라벨 필터 검사 (2026-09-01 A-04 라이브 실측 재발 방지)."""
+
+    # A-04 실측 SQL 형태 — 허용 목록 밖 표시 테이블 조인 + 영문 라벨 ILIKE → 침묵 0건
+    _A04_SQL = (
+        "SELECT a.id, sd.displayname AS severity FROM polestar.cmm_alarm a "
+        "JOIN polestar.cmm_alarm_severity_display sd ON sd.severity = a.alarmseverity "
+        "JOIN polestar.cmm_resource r ON r.id = a.resource_id "
+        "WHERE a.currentalarmstatus = 'ACTIVE' AND sd.displayname ILIKE '%critical%' "
+        "AND r.dtime IS NULL LIMIT 100"
+    )
+
+    def test_allowlist_rejects_severity_display(self):
+        from src.db_adapters.polestar.validators import check_alarm_table_allowlist
+
+        errors = check_alarm_table_allowlist(self._A04_SQL)
+        assert len(errors) == 1
+        assert "cmm_alarm_severity_display" in errors[0]
+        assert "alarmseverity" in errors[0]  # 정수 비교 안내 동봉
+
+    def test_allowlist_passes_allowed_tables(self):
+        from src.db_adapters.polestar.validators import check_alarm_table_allowlist
+
+        sql = (
+            "SELECT ca.* FROM polestar.cmm_alarm_active ca "
+            "JOIN polestar.cmm_alarm a ON a.id = ca.alarm_id "
+            "JOIN polestar.cmm_alarm_def d ON d.id = a.alarm_def_id "
+            "JOIN polestar.cmm_alarm_def_noti n ON n.alarm_def_id = d.id LIMIT 100"
+        )
+        assert check_alarm_table_allowlist(sql) == []
+
+    def test_severity_label_string_compare_rejected(self):
+        from src.db_adapters.polestar.validators import check_severity_label_filter
+
+        errors = check_severity_label_filter(
+            "SELECT * FROM cmm_alarm_active WHERE alarmseverity = '심각' LIMIT 10"
+        )
+        assert errors
+        assert "alarmseverity" in errors[0]
+
+    def test_severity_numeric_and_numeric_string_pass(self):
+        from src.db_adapters.polestar.validators import check_severity_label_filter
+
+        assert check_severity_label_filter(
+            "SELECT * FROM cmm_alarm_active a WHERE a.alarmseverity = 3 LIMIT 10"
+        ) == []
+        # 숫자 문자열은 암묵 캐스트로 동작하므로 허용
+        assert check_severity_label_filter(
+            "SELECT * FROM cmm_alarm_active a WHERE a.alarmseverity IN ('1', '2', '3')"
+        ) == []
+
+    def test_severity_in_label_rejected(self):
+        from src.db_adapters.polestar.validators import check_severity_label_filter
+
+        errors = check_severity_label_filter(
+            "SELECT * FROM cmm_alarm WHERE alarmseverity IN ('critical', 'warning')"
+        )
+        assert errors
+
+    def test_displayname_label_filter_rejected(self):
+        from src.db_adapters.polestar.validators import check_severity_label_filter
+
+        errors = check_severity_label_filter(self._A04_SQL)
+        assert errors
+        assert "displayname" in errors[0]
+
+    def test_display_case_when_labels_pass(self):
+        """정당한 표시 패턴(CASE WHEN alarmseverity = 3 THEN '심각')은 필터가 아니므로 통과."""
+        from src.db_adapters.polestar.validators import check_severity_label_filter
+
+        sql = (
+            "SELECT CASE WHEN ca.alarmseverity = 3 THEN '심각' "
+            "WHEN ca.alarmseverity = 2 THEN '경고' ELSE '기타' END AS severity_grade "
+            "FROM cmm_alarm_active ca WHERE ca.alarmseverity >= 2 LIMIT 100"
+        )
+        assert check_severity_label_filter(sql) == []
+
+    def test_checks_registered_in_adapter(self):
+        """정의만 있고 배선 안 된 검사 방지 — validator_checks()에 실제 등재."""
+        adapter = get_adapter("polestar", {"polestar"})
+        names = {c.__name__ for c in adapter.validator_checks()}
+        assert {"check_alarm_table_allowlist", "check_severity_label_filter"} <= names
+
+
+class TestActiveStatusLiteralFilter:
+    """currentalarmstatus 문자열 비교 반려 (2026-09-01 V1-4/V1-5 실측 재발 방지)."""
+
+    def test_active_string_compare_rejected(self):
+        from src.db_adapters.polestar.validators import check_active_status_literal_filter
+
+        errors = check_active_status_literal_filter(
+            "SELECT * FROM polestar.cmm_alarm a "
+            "WHERE a.currentalarmstatus = 'ACTIVE' LIMIT 100"
+        )
+        assert errors
+        assert "cmm_alarm_active" in errors[0]  # 정본 조인 안내 동봉
+
+    def test_active_in_list_rejected(self):
+        from src.db_adapters.polestar.validators import check_active_status_literal_filter
+
+        errors = check_active_status_literal_filter(
+            "SELECT * FROM cmm_alarm WHERE currentalarmstatus IN ('ACTIVE', 'OPEN')"
+        )
+        assert errors
+
+    def test_ack_vocabulary_passes(self):
+        """확인(ACK) 상태 어휘 비교는 정당하다 — 미확인 알람 질의 (2026-09-02 실측:
+        cmm_alarm_active.currentalarmstatus='NOT_ACK' 9건 실반환)."""
+        from src.db_adapters.polestar.validators import check_active_status_literal_filter
+
+        sql = (
+            "SELECT * FROM polestar.cmm_alarm_active aa "
+            "WHERE aa.alarmseverity = 3 AND aa.currentalarmstatus = 'NOT_ACK' LIMIT 100"
+        )
+        assert check_active_status_literal_filter(sql) == []
+
+    def test_canonical_active_join_passes(self):
+        from src.db_adapters.polestar.validators import check_active_status_literal_filter
+
+        sql = (
+            "SELECT a.* FROM polestar.cmm_alarm a "
+            "JOIN polestar.cmm_alarm_active ca ON ca.alarm_id = a.id "
+            "WHERE a.alarmseverity = 3 LIMIT 100"
+        )
+        assert check_active_status_literal_filter(sql) == []
+
+    def test_select_column_without_filter_passes(self):
+        """필터가 아닌 SELECT 표시용 참조는 반려하지 않는다."""
+        from src.db_adapters.polestar.validators import check_active_status_literal_filter
+
+        sql = (
+            "SELECT a.currentalarmstatus AS alarm_status FROM cmm_alarm a "
+            "WHERE a.alarmseverity = 3 LIMIT 100"
+        )
+        assert check_active_status_literal_filter(sql) == []
+
+    def test_registered_in_adapter(self):
+        adapter = get_adapter("polestar", {"polestar"})
+        names = {c.__name__ for c in adapter.validator_checks()}
+        assert "check_active_status_literal_filter" in names

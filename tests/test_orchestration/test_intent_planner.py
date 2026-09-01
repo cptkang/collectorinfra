@@ -394,3 +394,23 @@ async def test_form_noun_without_fill_verb_goes_llm(mock_config):
 
     assert result["task_plan"][0]["agent"] == "data_query"
     llm.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pre_route_synonym_set_declaration(mock_config):
+    """②.3 앵커 없는 동의어 집합 선언 → cache_management 단일 task, LLM 미호출 (A-10).
+
+    3단 pre-gate(semantic_router 우선순위 ③)와의 대칭 분기 — 트랙 A에서 신규 셋 선언이
+    LLM 분해(synonym_registration 오분류)로 새지 않음을 고정한다.
+    """
+    llm = AsyncMock()
+    state = create_initial_state(
+        user_query="vcore, cpu, core은 동의어이다. 캐시에 등록하라."
+    )
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert len(result["task_plan"]) == 1
+    assert result["task_plan"][0]["agent"] == "cache_management"
+    assert result["is_composite"] is False
+    llm.ainvoke.assert_not_called()
