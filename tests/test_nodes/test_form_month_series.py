@@ -1365,6 +1365,24 @@ class TestFormFillHitl:
         values = {c["value"] for c in cands}
         assert "column:hostname" in values and "column:name" in values  # 안전 화이트리스트
 
+    def test_candidates_column_labels_include_profile_descriptions(self):
+        # 프로필 entity_columns 설명이 직접 칼럼 라벨에 병기된다(EAV description과 대칭).
+        # 설명 없는 칼럼은 종전 라벨(테이블.칼럼)을 유지한다 — 회귀 0 보장.
+        import copy
+
+        from src.db_adapters.polestar.assembler import build_form_fill_candidates
+
+        schema = copy.deepcopy(self._SCHEMA)
+        schema["_structure_meta"]["patterns"][0]["entity_columns"] = [
+            {"name": "name", "description": "VM명 — 폴스타 등록 이름"},
+        ]
+        cands = build_form_fill_candidates(
+            schema, schema["_structure_meta"]["patterns"][0]
+        )
+        by_value = {c["value"]: c["label"] for c in cands}
+        assert "폴스타 등록 이름" in by_value["column:name"]
+        assert by_value["column:hostname"] == "cmm_resource.hostname"  # 설명 없음 → 종전 라벨
+
     # ── 단일 경로 오버라이드 적용 ──
 
     def test_single_path_applies_answers(self):

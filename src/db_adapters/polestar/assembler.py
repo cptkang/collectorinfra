@@ -411,10 +411,26 @@ def build_form_fill_candidates(
     화이트리스트) + EAV known_attributes(설명을 한글 라벨로 병기). 조립기가 실을 수
     있는 것만 후보가 된다(엔진/지식 분리 — 후보에 있으면 반드시 조립 가능).
 
+    직접 칼럼도 프로필 ``entity_columns``(known_attributes와 대칭)에 설명이 있으면
+    라벨에 병기한다 — 칼럼명만으로는 의미를 알 수 없는 것(name=폴스타 등록명 등)이
+    역질문 드롭다운에서 사용자 혼동을 만들던 실측 대응. 설명 없는 칼럼은 종전 라벨.
+
     Returns:
         [{"value": "column:name"|"eav:Vendor", "label": 표시명, "kind": "column"|"eav"}]
     """
     entity = (eav_pattern or {}).get("entity_table", "cmm_resource")
+    patterns = ((schema_info or {}).get("_structure_meta") or {}).get("patterns", [])
+    col_desc: dict[str, str] = {}
+    for pattern in patterns:
+        if pattern.get("type") != "eav":
+            continue
+        for colinfo in pattern.get("entity_columns") or []:
+            if not isinstance(colinfo, dict):
+                continue
+            cname = str(colinfo.get("name") or "").strip()
+            cdesc = str(colinfo.get("description") or "").strip()
+            if cname and cdesc:
+                col_desc.setdefault(cname.lower(), cdesc)
     out: list[dict] = []
     cols: list[str] = []
     for tname, tinfo in ((schema_info or {}).get("tables") or {}).items():
@@ -431,8 +447,10 @@ def build_form_fill_candidates(
     for col in cols:
         if not col:
             continue
-        out.append({"value": f"column:{col}", "label": f"{entity}.{col}", "kind": "column"})
-    for pattern in ((schema_info or {}).get("_structure_meta") or {}).get("patterns", []):
+        desc = col_desc.get(str(col).lower(), "")
+        label = f"{entity}.{col}" + (f" — {desc}" if desc else "")
+        out.append({"value": f"column:{col}", "label": label, "kind": "column"})
+    for pattern in patterns:
         if pattern.get("type") != "eav":
             continue
         attrs = pattern.get("known_attributes_detail") or pattern.get("known_attributes", [])

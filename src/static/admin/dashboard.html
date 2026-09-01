@@ -5,14 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>운영자 대시보드 - 인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=13">
+    <link rel="stylesheet" href="/static/css/style.css?v=15">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
     <style>
-        /* 사용자 관리 테이블: 폭이 넘치면 가로 스크롤(개행으로 인한 가독성 저하 방지) */
+        /* 사용자 관리·열린 사건 테이블: 폭이 넘치면 가로 스크롤(개행으로 인한 가독성 저하 방지).
+           심각도 라벨·확인 버튼이 좁은 열에서 개행되던 문제도 nowrap이 함께 해소한다. */
         .users-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; width: 100%; }
-        #usersTable { min-width: max-content; }
-        #usersTable th, #usersTable td { white-space: nowrap; }
+        #usersTable, #incidentsTable { min-width: max-content; }
+        #usersTable th, #usersTable td,
+        #incidentsTable th, #incidentsTable td { white-space: nowrap; }
     </style>
 </head>
 <body class="admin-dashboard">
@@ -365,20 +367,22 @@
                         <div class="spinner"></div>
                         <div class="loading-text">열린 사건을 불러오는 중...</div>
                     </div>
-                    <table class="settings-table" id="incidentsTable" style="display: none;">
-                        <thead>
-                            <tr>
-                                <th>발생시각</th>
-                                <th>경과</th>
-                                <th>서버 (DB)</th>
-                                <th>알람명</th>
-                                <th>심각도</th>
-                                <th>tier</th>
-                                <th>확인</th>
-                            </tr>
-                        </thead>
-                        <tbody id="incidentsBody"></tbody>
-                    </table>
+                    <div class="users-table-scroll">
+                        <table class="settings-table" id="incidentsTable" style="display: none;">
+                            <thead>
+                                <tr>
+                                    <th>발생시각</th>
+                                    <th>경과</th>
+                                    <th>서버 (DB)</th>
+                                    <th>알람명</th>
+                                    <th>심각도</th>
+                                    <th>tier</th>
+                                    <th>확인</th>
+                                </tr>
+                            </thead>
+                            <tbody id="incidentsBody"></tbody>
+                        </table>
+                    </div>
                     <p id="incidentsEmpty" style="display: none; color: var(--text-muted); font-size: 0.8rem; text-align: center; padding: 20px 0;">열린 사건이 없습니다.</p>
                 </div>
             </div>
@@ -479,6 +483,6 @@
 
     <div class="footer">INFRA QUERY AGENT v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=5"></script>
+    <script src="/static/js/admin.js?v=6"></script>
 </body>
 </html>
