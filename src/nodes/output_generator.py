@@ -105,6 +105,8 @@ async def _run_output_generator(
         response = _append_inferred_mapping_info(response, state)
         response = _append_spike_notes(response, state)
         response = _append_scope_note(response, state)
+        response = _append_zone_coverage_notes(response, state)
+        response = _prepend_alarm_headline(response, state, app_config)
         return {
             "final_response": response,
             "output_file": None,
@@ -123,6 +125,7 @@ async def _run_output_generator(
             text_response = _append_inferred_mapping_info(text_response, state)
             text_response = _append_spike_notes(text_response, state)
             text_response = _append_scope_note(text_response, state)
+            text_response = _append_zone_coverage_notes(text_response, state)
             # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
             # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
             text_response = _append_form_fill_notes(
@@ -535,6 +538,98 @@ def _format_ym(yyyymm: str) -> str:
     if len(yyyymm) != 6 or not yyyymm.isdigit():
         return yyyymm
     return f"{yyyymm[:4]}년 {int(yyyymm[4:6])}월"
+
+
+_ALARM_MODE_LABELS = {"active": "활성", "history": "이력"}
+
+
+def _prepend_alarm_headline(response: str, state: AgentState, app_config) -> str:
+    """알람 결정적 조립 대상 질의의 응답 첫 줄에 코드가 만든 헤드라인을 붙인다.
+
+    응답 LLM이 샘플 행의 ack_status 값을 보고 "전부 NOT_ACK"처럼 전체를 일반화하는
+    서술 환각(2026-09-02 폐쇄망 실측 — 연도 환각 D-177③과 동형)에 대한 결정적 대응:
+    건수는 db_result_summary(실측), 조건 서술은 인식기 재실행(결정적)에서 얻으므로
+    LLM 서술과 무관하게 정확한 숫자·조건이 항상 최상단에 보인다.
+
+    플래그 OFF·비알람·미인식·건수 없음이면 no-op(응답 바이트 무변경).
+    """
+    cfg = getattr(app_config, "text2sql", None)
+    if not getattr(cfg, "alarm_deterministic", False):
+        return response
+    if state.get("routing_intent") != "alarm_query":
+        return response
+    from src.db_adapters.polestar.assembler import recognize_active_alarm_query
+
+    spec = recognize_active_alarm_query(
+        state.get("user_query", ""),
+        parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+    )
+    if spec is None:
+        return response
+
+    summary = state.get("db_result_summary") or {}
+    if summary:
+        counts = {d: (info or {}).get("row_count", 0) for d, info in summary.items()}
+        total = sum(counts.values())
+        per_zone = " (" + " · ".join(f"{d} {c:,}건" for d, c in counts.items()) + ")"
+    else:
+        rows = state.get("query_results") or []
+        if not rows:
+            return response  # 0건은 기존 0건 안내가 담당
+        total, per_zone = len(rows), ""
+
+    parts = [_ALARM_MODE_LABELS.get(spec.mode, spec.mode)]
+    if spec.mode == "history" and spec.month_range:
+        parts.append(f"{spec.month_range[0]}~{spec.month_range[1]}")
+    if spec.severity is not None:
+        op = " 이상" if spec.severity_op == ">=" else ""
+        parts.append(f"심각도 {spec.severity}{op}")
+    if spec.unack_only:
+        parts.append("미확인만")
+    headline = (
+        f"**[알람 조회]** {' · '.join(parts)} — 총 {total:,}건{per_zone}"
+    )
+    return headline + chr(10) + chr(10) + (response or "")
+
+
+def _append_zone_coverage_notes(response: str, state: AgentState) -> str:
+    """멀티 DB 조회의 존별 커버리지·부분 실패를 응답 말미에 명시한다 (침묵 강등 금지).
+
+    한 존이라도 행을 반환하면 나머지 존의 실패·0행이 무표시로 증발하던 문제의 교정
+    (2026-09-02 폐쇄망 실측 — 같은 알람 질의가 턴마다 "B0만"/"GP·YD만"으로 보였고,
+    사용자는 "그 존엔 없다"로 오독). db_errors는 result_merger가 전체 실패일 때만
+    error_message로 승격하고 부분 실패는 삼켰다(result_merger `not db_results` 조건).
+    단일 DB 조회(두 필드 모두 빈 값)는 no-op — 응답 바이트 무변경.
+
+    Args:
+        response: 지금까지 조립된 응답 텍스트
+        state: 에이전트 상태 (db_errors · db_result_summary 소비)
+
+    Returns:
+        각주가 덧붙은 응답 (해당 없으면 원본 그대로)
+    """
+    db_errors = state.get("db_errors") or {}
+    summary = state.get("db_result_summary") or {}
+    lines: list[str] = []
+
+    if db_errors:
+        lines.append("**[일부 존 조회 실패]**")
+        for db_id, err in db_errors.items():
+            lines.append(f"- {db_id}: {str(err)[:150]}")
+
+    # 멀티 존 조회에서 일부 존만 0행이면 존별 건수를 명시한다 — "그 존에 없음(0건)"과
+    # "조회 누락"을 사용자가 구별할 수 있게 한다. 전 존 0행은 기존 0건 안내가 담당한다.
+    if len(summary) >= 2:
+        counts = {d: (info or {}).get("row_count", 0) for d, info in summary.items()}
+        if any(c == 0 for c in counts.values()) and any(c > 0 for c in counts.values()):
+            rendered = " · ".join(
+                f"{d} {c:,}건" for d, c in counts.items()
+            )
+            lines.append(f"**[존별 결과]** {rendered}")
+
+    if not lines:
+        return response
+    return (response or "") + "\n\n" + "\n".join(lines)
 
 
 def _append_form_fill_notes(

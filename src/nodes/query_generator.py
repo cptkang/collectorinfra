@@ -1007,6 +1007,10 @@ async def query_generator(
     # `.get`이어야 한다 — 급증 경로는 조립을 못 했어도 **사유(notes)만 담아** 돌려주므로
     # `sql` 키가 없는 dict가 온다(주 단위 차단 등). 그때는 LLM 폴백으로 진행한다.
     sql = form_fill.get("sql") if form_fill else None
+    # 활성 알람 결정적 조립(옵트인) — 멀티 경로 훅과 대칭. 실행 오류 재시도 턴은
+    # LLM에 수리를 맡긴다(같은 조립 SQL 재출력 방지).
+    if not sql and not ctx.is_retry:
+        sql = _try_deterministic_alarm_single(state, ctx)
     semantic_sql, coverage_outside = await _try_semantic(
         state, ctx, sql, derivation_records,
     )
@@ -1056,6 +1060,40 @@ async def query_generator(
         **extra_return,
     }
 
+
+
+def _try_deterministic_alarm_single(state: AgentState, ctx: "_GenContext") -> Optional[str]:
+    """활성 알람 결정적 조립(단일 경로) — 멀티 경로 훅과 대칭 배선. 미해당이면 None.
+
+    조립 골격·인식 규칙은 어댑터(assembler) 소유. 여기서는 플래그·intent·존 스키마·
+    상한만 공급한다. 조립 SQL은 하류 query_validator를 그대로 통과한다(안전망 유지).
+    """
+    cfg = getattr(ctx.app_config, "text2sql", None)
+    if not getattr(cfg, "alarm_deterministic", False):
+        return None
+    if state.get("routing_intent") != "alarm_query":
+        return None
+    db_id = state.get("active_db_id")
+    from src.db_adapters import get_adapter
+
+    if get_adapter(db_id, ctx.adapter_db_ids) is None:
+        return None
+    from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
+    from src.routing.domain_config import get_domain_by_id
+
+    domain_cfg = get_domain_by_id(db_id) if db_id else None
+    sql = try_deterministic_alarm_sql(
+        ctx.user_query,
+        routing_intent="alarm_query",
+        db_engine=domain_cfg.db_engine if domain_cfg else None,
+        db_schema=domain_cfg.db_schema if domain_cfg else "",
+        limit=ctx.limit_value,
+        enabled=True,
+        parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+    )
+    if sql:
+        logger.info("[알람조립] 단일 경로 결정적 SQL 사용(db=%s)", db_id)
+    return sql
 
 
 def _build_stepwise_deps(

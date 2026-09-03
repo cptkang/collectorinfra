@@ -331,6 +331,13 @@ class Text2SQLConfig(BaseSettings):
     # 기본 OFF = 프롬프트 sha256 무변경·validator 7종 유지(회귀 0).
     prompt_knowledge_render: bool = False
 
+    # === 활성 알람 결정적 조립 (기본 OFF 옵트인, 2026-09-02 폐쇄망 실측 기반) ===
+    # ON이면 "활성 + 심각도 + 목록/건수" 알람 질의의 SQL을 코드가 직접 조립한다(LLM 우회,
+    # 미인식 질의는 현행 LLM 폴백). LLM 생성이 턴마다 다른 축소 조인(resource_type INNER,
+    # ACK 필터)을 만들어 건수가 요동하던 문제(같은 질의 3회 → B0 46/1170/1174)의 근본
+    # 해결 — 폼필 피벗 D-068과 동일 판단. 기본 OFF = 현행 경로 무변경.
+    alarm_deterministic: bool = False
+
     # === Plan 69 P4-3: 멀티 DB 경로 검증 강화 (기본 OFF 옵트인) ===
     # ON이면 멀티 DB 경로가 간이 검증(_validate_sql_simple) 대신 단일 경로와 같은
     # full validator(테이블·컬럼 존재, EAV 금지 조인, 어댑터 훅 포함)를 소비한다.

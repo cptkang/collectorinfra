@@ -535,6 +535,9 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "parsed_requirements": parsed,
         "organized_data": res.get("organized_data"),
         "query_results": res.get("query_results", []),
+        # 존 커버리지 각주(D-159 계열 침묵 강등 금지) — 부분 실패·0행 존 명시용
+        "db_errors": res.get("db_errors"),
+        "db_result_summary": res.get("db_result_summary"),
         "template_structure": state.get("template_structure"),
         # uploaded_file(원본 파일 바이너리)이 없으면 output_generator가 양식을 채우지 못하고
         # CSV로만 강등된다(비대칭 전파 방지, D-053 계열).

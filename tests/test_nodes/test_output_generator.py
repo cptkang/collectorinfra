@@ -200,3 +200,139 @@ class TestOutputGeneratorNode:
         result = await output_generator(state, app_config=MagicMock())
 
         assert "지원하지 않는" in result["final_response"]
+
+
+# === 존 커버리지 각주 (2026-09-02 폐쇄망 실측 — 존 결과 침묵 증발 교정) ===
+
+
+class TestZoneCoverageNotes:
+    """`_append_zone_coverage_notes` — 부분 실패·0행 존 명시 (침묵 강등 금지)."""
+
+    def test_partial_failure_rendered(self):
+        from src.nodes.output_generator import _append_zone_coverage_notes
+
+        state = {
+            "db_errors": {"polestar_b0": "DB2 connection refused"},
+            "db_result_summary": {},
+        }
+        out = _append_zone_coverage_notes("알람 114건입니다.", state)
+        assert "[일부 존 조회 실패]" in out
+        assert "polestar_b0" in out
+        assert out.startswith("알람 114건입니다.")
+
+    def test_zero_row_zone_rendered_when_others_have_rows(self):
+        from src.nodes.output_generator import _append_zone_coverage_notes
+
+        state = {
+            "db_errors": {},
+            "db_result_summary": {
+                "polestar_b0": {"row_count": 1174},
+                "polestar_cm_gp": {"row_count": 0},
+                "polestar_cm_yd": {"row_count": 116},
+            },
+        }
+        out = _append_zone_coverage_notes("결과입니다.", state)
+        assert "[존별 결과]" in out
+        assert "polestar_cm_gp 0건" in out
+        assert "polestar_b0 1,174건" in out
+
+    def test_all_zones_have_rows_no_note(self):
+        from src.nodes.output_generator import _append_zone_coverage_notes
+
+        state = {
+            "db_errors": {},
+            "db_result_summary": {
+                "polestar_cm_gp": {"row_count": 114},
+                "polestar_cm_yd": {"row_count": 116},
+            },
+        }
+        assert _append_zone_coverage_notes("응답", state) == "응답"
+
+    def test_single_db_noop(self):
+        """단일 DB 조회는 바이트 무변경 — 기존 응답 회귀 0."""
+        from src.nodes.output_generator import _append_zone_coverage_notes
+
+        assert _append_zone_coverage_notes("응답", {}) == "응답"
+        assert _append_zone_coverage_notes(
+            "응답", {"db_result_summary": {"polestar_cm_gp": {"row_count": 0}}}
+        ) == "응답"
+
+    def test_all_zones_zero_no_note(self):
+        """전 존 0행은 기존 0건 안내가 담당 — 각주 중복 금지."""
+        from src.nodes.output_generator import _append_zone_coverage_notes
+
+        state = {
+            "db_result_summary": {
+                "polestar_cm_gp": {"row_count": 0},
+                "polestar_cm_yd": {"row_count": 0},
+            },
+        }
+        assert _append_zone_coverage_notes("조건에 해당하는 데이터가 없습니다.", state) == (
+            "조건에 해당하는 데이터가 없습니다."
+        )
+
+
+class TestAlarmHeadline:
+    """`_prepend_alarm_headline` — 결정적 헤드라인 (LLM 서술 환각 대응, 2.5차 F2)."""
+
+    def _cfg(self, on=True):
+        from unittest.mock import MagicMock
+        cfg = MagicMock()
+        cfg.text2sql.alarm_deterministic = on
+        return cfg
+
+    def test_active_headline_with_zone_counts(self):
+        from src.nodes.output_generator import _prepend_alarm_headline
+
+        state = {
+            "routing_intent": "alarm_query",
+            "user_query": "현재 활성 상태인 심각(severity 3) 알람 목록",
+            "db_result_summary": {
+                "polestar_b0": {"row_count": 1173},
+                "polestar_cm_gp": {"row_count": 113},
+            },
+        }
+        out = _prepend_alarm_headline("요약", state, self._cfg())
+        head = out.splitlines()[0]
+        assert "[알람 조회]" in head and "활성" in head
+        assert "총 1,286건" in head and "polestar_b0 1,173건" in head
+        assert out.endswith("요약")
+
+    def test_history_headline_shows_period(self):
+        from src.nodes.output_generator import _prepend_alarm_headline
+
+        state = {
+            "routing_intent": "alarm_query",
+            "user_query": "2026년 1월부터 3월까지 심각 알람 이력",
+            "db_result_summary": {"polestar_cm_gp": {"row_count": 403}},
+        }
+        head = _prepend_alarm_headline("요약", state, self._cfg()).splitlines()[0]
+        assert "이력" in head and "202601~202603" in head
+
+    def test_flag_off_noop(self):
+        from src.nodes.output_generator import _prepend_alarm_headline
+
+        state = {"routing_intent": "alarm_query", "user_query": "현재 활성 심각 알람"}
+        assert _prepend_alarm_headline("요약", state, self._cfg(on=False)) == "요약"
+
+    def test_non_alarm_or_unrecognized_noop(self):
+        from src.nodes.output_generator import _prepend_alarm_headline
+
+        assert _prepend_alarm_headline(
+            "요약", {"routing_intent": "data_query", "user_query": "현재 활성 심각 알람"},
+            self._cfg(),
+        ) == "요약"
+        assert _prepend_alarm_headline(
+            "요약", {"routing_intent": "alarm_query", "user_query": "서버 목록"},
+            self._cfg(),
+        ) == "요약"
+
+    def test_empty_results_noop(self):
+        from src.nodes.output_generator import _prepend_alarm_headline
+
+        state = {
+            "routing_intent": "alarm_query",
+            "user_query": "현재 활성 심각 알람",
+            "query_results": [],
+        }
+        assert _prepend_alarm_headline("0건 안내", state, self._cfg()) == "0건 안내"

@@ -1171,6 +1171,11 @@ async def run_data_query_pipeline(
     db_errors = s.get("db_errors")
     if db_errors:
         result["db_errors"] = db_errors
+    # 존별 건수 요약 — output_generator의 존 커버리지 각주(_append_zone_coverage_notes)가
+    # 소비한다. db_errors만 전파하면 "0행 존 생략"이 트랙 A에서 보이지 않는다.
+    db_result_summary = s.get("db_result_summary")
+    if db_result_summary:
+        result["db_result_summary"] = db_result_summary
     return result
 
 

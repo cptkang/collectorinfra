@@ -1184,3 +1184,242 @@ def build_multi_resource_pivot_block(
         f"- {val_col}를 다른 서버 행 config에 브릿지 조인하지 마세요."
         f"{metric_note}"
     )
+
+
+# ──────────────────────────────────────────────
+# 활성 알람 결정적 조립 (2026-09-02 폐쇄망 실측 기반)
+# ──────────────────────────────────────────────
+# "활성 + 심각도 + 목록/건수" 알람 질의는 LLM 생성이 턴마다 다른 축소 조인
+# (resource_type INNER, ACK 필터, 상태 리터럴)을 만들어 건수가 요동했다
+# (같은 질의 3회 → B0 46/1170/1174 · GP 114/73/114 — 참값 B0 1174·GP 114·YD 116).
+# 스키마·조인이 고정된 형태이므로 코드가 SQL을 직접 조립하고 LLM은 폴백으로 강등한다
+# (D-068 폼필 피벗과 동일 판단). 골격은 폐쇄망 실측으로 확정:
+#   - 활성 = cmm_alarm_active 존재 (currentalarmstatus는 ACK 상태 칼럼 — 활성 판정 금지)
+#   - 심각도 = alarmseverity 정수 (심각=3/경고=2/주의=1/해소=0)
+#   - 서버 식별 = LEFT JOIN + COALESCE(platform_resource_id, id) 승격
+#     (resource_type INNER 필터는 자식/비서버 리소스 알람을 탈락시켜 침묵 축소 — 금지)
+#   - 3존 동일 별칭 → 병합 CSV 칼럼 분리 해소 (DB2 결과 키는 기존 소문자 정규화와 합류)
+
+_ALARM_NOUN_RE = re.compile(r"알람|알림|alarm|alert", re.IGNORECASE)
+_ALARM_ACTIVE_RE = re.compile(r"활성|현재\s*발생|발생\s*중|미해소", re.IGNORECASE)
+# 기간·이력 신호가 있으면 활성 스냅샷 조립 대상이 아니다(이력 조회는 cmm_alarm — LLM 경로 유지)
+_ALARM_PERIOD_RE = re.compile(
+    r"이력|최근|지난|과거|추세|추이|기간|부터|까지|주간|일간|월간|history", re.IGNORECASE
+)
+_ALARM_SEV_NUM_RE = re.compile(r"(?:severity|심각도)\s*[:=]?\s*([0-3])", re.IGNORECASE)
+_ALARM_SEV_WORDS: tuple[tuple[str, int], ...] = (("심각", 3), ("경고", 2), ("주의", 1))
+_ALARM_UNACK_RE = re.compile(r"미확인|unack", re.IGNORECASE)
+_ALARM_COUNT_RE = re.compile(r"몇\s*건|몇\s*개|건수|개수|카운트|count", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ActiveAlarmSpec:
+    """알람 결정적 조립 인식 결과 (활성 스냅샷 + 이력)."""
+
+    severity: int | None      # None이면 심각도 필터 없음
+    severity_op: str          # "=" 또는 ">=" ("경고 이상")
+    unack_only: bool          # "미확인 알람" → currentalarmstatus = 'NOT_ACK' (활성 전용)
+    count_only: bool          # 건수 질의 → COUNT(*)
+    mode: str = "active"      # "active"(cmm_alarm_active 스냅샷) | "history"(cmm_alarm)
+    # history 전용 — (YYYYMM, YYYYMM). None이면 기간 필터 없음(ORDER+LIMIT만)
+    month_range: tuple[str, str] | None = None
+
+
+def _parse_alarm_severity(q: str) -> tuple[int | None, str]:
+    """질의에서 심각도 필터를 결정적으로 뽑는다 — (값, 연산자)."""
+    severity: int | None = None
+    m = _ALARM_SEV_NUM_RE.search(q)
+    if m:
+        severity = int(m.group(1))
+    else:
+        for word, level in _ALARM_SEV_WORDS:
+            if word in q:
+                severity = level
+                break
+    op = ">=" if (severity is not None and re.search(r"이상", q)) else "="
+    return severity, op
+
+
+def recognize_active_alarm_query(
+    user_query: str,
+    parsed_time_range: dict | None = None,
+) -> ActiveAlarmSpec | None:
+    """알람 목록/건수 질의(활성 스냅샷·이력)를 결정적으로 인식한다. 미매칭이면 None.
+
+    보수 원칙 — 다음은 인식하지 않고 LLM에 맡긴다(오조립 방지):
+    - 활성 신호와 기간 신호가 동시에 있는 질의(의도 모호)
+    - 미확인(unack) + 이력 조합(cmm_alarm의 ACK 어휘 미실측)
+
+    Args:
+        user_query: 사용자 질의
+        parsed_time_range: input_parser LLM 산출 time_range(2단 폴백, D-136 대칭)
+    """
+    q = user_query or ""
+    if not _ALARM_NOUN_RE.search(q):
+        return None
+
+    has_active = bool(_ALARM_ACTIVE_RE.search(q))
+    month_range = resolve_stat_month_range(q, parsed_time_range=parsed_time_range)
+    has_period = bool(_ALARM_PERIOD_RE.search(q)) or month_range is not None
+    severity, severity_op = _parse_alarm_severity(q)
+    unack = bool(_ALARM_UNACK_RE.search(q))
+    count = bool(_ALARM_COUNT_RE.search(q))
+
+    if has_active and not has_period:
+        return ActiveAlarmSpec(
+            severity=severity, severity_op=severity_op,
+            unack_only=unack, count_only=count, mode="active",
+        )
+    if has_period and not has_active:
+        if unack:
+            return None  # cmm_alarm의 확인 상태 어휘 미실측 — LLM 폴백
+        return ActiveAlarmSpec(
+            severity=severity, severity_op=severity_op,
+            unack_only=False, count_only=count,
+            mode="history", month_range=month_range,
+        )
+    return None  # 활성+기간 동시(모호) 또는 어느 신호도 없음
+
+
+def build_active_alarm_sql(
+    spec: ActiveAlarmSpec,
+    *,
+    db_engine: str | None,
+    db_schema: str,
+    limit: int,
+) -> str:
+    """인식 결과로 존 공통 별칭의 runnable SQL을 조립한다 (엔진 방언 분기 포함)."""
+    prefix = f"{db_schema}." if db_schema else ""
+    conds: list[str] = []
+    if spec.severity is not None:
+        conds.append(f"a.alarmseverity {spec.severity_op} {spec.severity}")
+    if spec.unack_only:
+        conds.append("a.currentalarmstatus = 'NOT_ACK'")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+    if spec.count_only:
+        row_limit = row_limit_clause(db_engine, 1)
+        return (
+            f"SELECT COUNT(*) AS alarm_count FROM {prefix}cmm_alarm_active a "
+            f"{where} {row_limit}"
+        ).strip()
+
+    row_limit = row_limit_clause(db_engine, limit)
+    return (
+        "SELECT a.alarm_id, a.alarmseverity AS severity, "
+        "a.currentalarmstatus AS ack_status, a.conditionlogtext AS description, "
+        "a.ctime AS alarm_time, "
+        "COALESCE(srv.name, srv.hostname, res.name) AS server_name, "
+        "srv.hostname AS hostname, srv.ipaddress AS ipaddress "
+        f"FROM {prefix}cmm_alarm_active a "
+        f"LEFT JOIN {prefix}cmm_resource res "
+        "ON a.resource_id = res.id AND res.dtime IS NULL "
+        f"LEFT JOIN {prefix}cmm_resource srv "
+        "ON COALESCE(res.platform_resource_id, res.id) = srv.id "
+        "AND srv.resource_type = 'server.Server' AND srv.dtime IS NULL "
+        f"{where} ORDER BY a.ctime DESC {row_limit}"
+    ).strip()
+
+
+def _month_range_to_ts_bounds(month_range: tuple[str, str]) -> tuple[str, str]:
+    """(YYYYMM, YYYYMM) 월 범위를 타임스탬프 리터럴 양단으로 바꾼다 — [시작월 1일, 끝월+1월 1일).
+
+    월 경계 규약(D-102)과 일치. PG·DB2 공통의 ISO TIMESTAMP 리터럴을 쓴다
+    (골드셋 gp-012/gp-015로 ctime이 타임스탬프임을 실측 — epoch 아님).
+    """
+    start_ym, end_ym = month_range
+    start = f"{start_ym[:4]}-{start_ym[4:6]}-01 00:00:00"
+    ey, em = int(end_ym[:4]), int(end_ym[4:6])
+    if em == 12:
+        ey, em = ey + 1, 1
+    else:
+        em += 1
+    end = f"{ey:04d}-{em:02d}-01 00:00:00"
+    return start, end
+
+
+def build_alarm_history_sql(
+    spec: ActiveAlarmSpec,
+    *,
+    db_engine: str | None,
+    db_schema: str,
+    limit: int,
+) -> str:
+    """알람 이력(cmm_alarm) 조회를 골드셋 패턴 C 정본 골격으로 조립한다.
+
+    골격 근거(testdata/text2sql_gold/gp.yaml gp-012·gp-015 — 실측 검증된 정답):
+    - 자원 INNER JOIN + WHERE dtime IS NULL (삭제 자원 알람 제외)
+    - 부모 서버 승격 = LEFT JOIN + COALESCE(platform_resource_id,
+      service_resource_id, id) **3단 사슬** (알람은 자식/비서버 자원에 붙는다)
+    - 기간 = ctime 타임스탬프 리터럴 양단 (월 경계, D-102)
+    별칭은 활성 조립과 동일 집합 — 존 병합 CSV 칼럼 통일 유지.
+    """
+    prefix = f"{db_schema}." if db_schema else ""
+    conds: list[str] = ["res.dtime IS NULL"]
+    if spec.severity is not None:
+        conds.append(f"a.alarmseverity {spec.severity_op} {spec.severity}")
+    if spec.month_range is not None:
+        ts_start, ts_end = _month_range_to_ts_bounds(spec.month_range)
+        conds.append(f"a.ctime >= TIMESTAMP '{ts_start}'")
+        conds.append(f"a.ctime < TIMESTAMP '{ts_end}'")
+    where = "WHERE " + " AND ".join(conds)
+
+    if spec.count_only:
+        row_limit = row_limit_clause(db_engine, 1)
+        return (
+            f"SELECT COUNT(*) AS alarm_count FROM {prefix}cmm_alarm a "
+            f"JOIN {prefix}cmm_resource res ON a.resource_id = res.id "
+            f"{where} {row_limit}"
+        ).strip()
+
+    row_limit = row_limit_clause(db_engine, limit)
+    return (
+        "SELECT a.id AS alarm_id, a.alarmseverity AS severity, "
+        "a.currentalarmstatus AS ack_status, a.conditionlogtext AS description, "
+        "a.ctime AS alarm_time, "
+        "COALESCE(srv.name, srv.hostname, res.name) AS server_name, "
+        "srv.hostname AS hostname, srv.ipaddress AS ipaddress "
+        f"FROM {prefix}cmm_alarm a "
+        f"JOIN {prefix}cmm_resource res ON a.resource_id = res.id "
+        f"LEFT JOIN {prefix}cmm_resource srv "
+        "ON srv.id = COALESCE(res.platform_resource_id, "
+        "res.service_resource_id, res.id) "
+        f"{where} ORDER BY a.ctime DESC, a.id DESC {row_limit}"
+    ).strip()
+
+
+def try_deterministic_alarm_sql(
+    user_query: str,
+    *,
+    routing_intent: str | None,
+    db_engine: str | None,
+    db_schema: str,
+    limit: int,
+    enabled: bool,
+    parsed_time_range: dict | None = None,
+) -> str | None:
+    """알람 결정적 조립 진입점(활성+이력) — 미해당·플래그 OFF면 None(현행 무변경)."""
+    if not enabled:
+        return None
+    if routing_intent != "alarm_query":
+        return None
+    spec = recognize_active_alarm_query(user_query, parsed_time_range=parsed_time_range)
+    if spec is None:
+        return None
+    if spec.mode == "history":
+        sql = build_alarm_history_sql(
+            spec, db_engine=db_engine, db_schema=db_schema, limit=limit
+        )
+    else:
+        sql = build_active_alarm_sql(
+            spec, db_engine=db_engine, db_schema=db_schema, limit=limit
+        )
+    logger.info(
+        "[알람조립] 결정적 SQL 조립(LLM 미호출): mode=%s severity=%s%s "
+        "months=%s unack=%s count=%s",
+        spec.mode,
+        spec.severity_op if spec.severity is not None else "",
+        spec.severity if spec.severity is not None else "(무필터)",
+        spec.month_range, spec.unack_only, spec.count_only,
+    )
+    return sql

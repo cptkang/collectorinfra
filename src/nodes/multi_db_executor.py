@@ -423,6 +423,39 @@ async def _record_failure(
     )
 
 
+def _deterministic_alarm_sql_or_none(
+    run: "_MultiRun", *, db_engine: str, db_id: str
+) -> Optional[str]:
+    """활성 알람 결정적 조립 진입 판정 (플래그 OFF·비폴스타·미인식이면 None).
+
+    조립 골격·인식 규칙은 어댑터(assembler)가 소유하고, 이 함수는 실행 문맥
+    (플래그·intent·존 스키마·상한)만 공급한다.
+    """
+    cfg = getattr(run.app_config, "text2sql", None)
+    if not getattr(cfg, "alarm_deterministic", False):
+        return None
+    if run.state.get("routing_intent") != "alarm_query":
+        return None
+    from src.db_adapters import get_adapter
+
+    if get_adapter(db_id, run.app_config.get_polestar_db_ids() or None) is None:
+        return None
+    from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
+    from src.routing.domain_config import get_domain_by_id
+
+    domain_cfg = get_domain_by_id(db_id)
+    db_schema = domain_cfg.db_schema if domain_cfg else ""
+    return try_deterministic_alarm_sql(
+        run.state.get("user_query", ""),
+        routing_intent="alarm_query",
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=run.effective_limit,
+        enabled=True,
+        parsed_time_range=(run.parsed_requirements or {}).get("time_range"),
+    )
+
+
 async def _generate_validated_sql(
     run: _MultiRun,
     client: Any,
@@ -450,6 +483,23 @@ async def _generate_validated_sql(
             return {"rows": _r.rows, "error": None}
         except Exception as _e:  # noqa: BLE001
             return {"rows": None, "error": str(_e)}
+
+    # 활성 알람 결정적 조립(옵트인) — 인식되면 LLM 생성·재생성 루프 전체를 우회한다.
+    # 실행 오류 재생성(error_context 있음)에서는 같은 SQL을 다시 내게 되므로 건너뛰고
+    # LLM에 수리를 맡긴다. 조립 SQL도 아래 검증은 동일하게 통과시킨다(안전망 유지).
+    if error_context is None:
+        det_sql = _deterministic_alarm_sql_or_none(run, db_engine=db_engine, db_id=db_id)
+        if det_sql is not None:
+            det_error = _validate_sql(
+                det_sql, schema_info, db_id=db_id, db_engine=db_engine,
+                user_query=run.state.get("user_query", ""), app_config=run.app_config,
+            )
+            if not det_error:
+                logger.info("[알람조립] db=%s 결정적 SQL 사용(LLM 미호출)", db_id)
+                return det_sql, None
+            logger.warning(
+                "[알람조립] db=%s 조립 SQL 검증 실패 — LLM 폴백: %s", db_id, det_error
+            )
 
     sql = await _generate_sql(
         run.llm, run.parsed_requirements, schema_info,
