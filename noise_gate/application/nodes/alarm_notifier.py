@@ -30,6 +30,7 @@ from noise_gate.domain.alarm import (
     ProcessSnapshot,
 )
 from noise_gate.domain.enrichment_profile import build_summary
+from noise_gate.domain.investigation_briefing import render_briefing_lines
 from noise_gate.domain.investigation_payload import build_escalation
 from noise_gate.domain.notification_policy import (
     _TIER_RANK,
@@ -135,32 +136,20 @@ def _investigation_briefing_html(briefing: dict) -> str:
     """sre_agent 조사 브리핑 블록(HTML) — workb 본문용 (Plan 64 CW-A · sre-agent/05 §3).
 
     브리핑 JSON은 sre_agent가 반환한 구조화 dict다. 스텁(조사 서비스 미가용·LLM 키 부재)이면
-    `{"stub": True, "message": ...}`, 실 조사면 6요소 구조(sre-agent/02 §7 — timeline/bottleneck/
-    cause/evidence/recommendation/limitation 등)다. CW-A는 수신한 브리핑을 **안전하게 첨부**만
-    한다(6요소 렌더 심화·인용 검증은 조사 서비스/후속 Wave 소관). 모든 텍스트는 escape한다.
+    `{"stub": True, "message": ...}`, 실 조사면 생산자 정본 키(severity/summary/timeline/bottleneck/
+    cause/recommendation/limitations/hypotheses — sre-agent/02 §7)다. 키·순서·값 전개는 공용 렌더러
+    `noise_gate.domain.investigation_briefing`이 담당하고(챗 경로와 같은 함수 — D-194), 여기서는
+    HTML 이스케이프와 줄바꿈 변환만 한다. 모든 텍스트는 escape한다.
     """
     header = "<br><br><b>조사 브리핑 (자동 조사)</b>"
     if briefing.get("stub"):
         msg = html.escape(str(briefing.get("message", "조사 미실행(스텁)")))
         return f"{header}<br>{msg}"
     lines: list[str] = []
-    # 알려진 6요소(있을 때만·순서 고정) + 그 외 스칼라 필드(정렬)로 안전하게 나열한다.
-    ordered = ["timeline", "bottleneck", "cause", "evidence", "recommendation", "limitation"]
-    labels = {
-        "timeline": "타임라인", "bottleneck": "병목", "cause": "원인",
-        "evidence": "근거", "recommendation": "권고", "limitation": "한계",
-    }
-    seen: set[str] = set()
-    for key in ordered:
-        val = briefing.get(key)
-        if val:
-            seen.add(key)
-            lines.append(f"<b>{labels[key]}:</b> {html.escape(str(val))}")
-    for key in sorted(briefing.keys()):
-        if key in seen or key in ("stub", "elements") or briefing.get(key) in (None, "", [], {}):
-            continue
-        if isinstance(briefing[key], (str, int, float, bool)):
-            lines.append(f"<b>{html.escape(str(key))}:</b> {html.escape(str(briefing[key]))}")
+    for label, val in render_briefing_lines(briefing):
+        # 복수 항목(타임라인·권고·한계·가설)은 줄바꿈 + 들여쓰기로 이어 붙인다.
+        rendered = "<br>&nbsp;&nbsp;".join(html.escape(ln) for ln in val.split("\n"))
+        lines.append(f"<b>{html.escape(label)}:</b> {rendered}")
     body = "<br>".join(lines) if lines else html.escape(str(briefing))
     return f"{header}<br>{body}"
 
@@ -610,6 +599,9 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
         # ── Phase E3: 4-티어 라우팅 메타데이터 ──
         "tier": decision.tier,
         "tier_reason": decision.reason,
+        # (Plan 54) 결정 단계 — 관제 화면이 피드에서 바로 "무엇이 잘랐는지"를 보여준다.
+        # 기존 사용자 UI는 모르는 키를 무시하므로 카드 렌더는 그대로다.
+        "stage": getattr(decision, "stage", ""),
         # ── D-188: 서버 식별(등록명·IP·존) — UI 헤더 렌더용 ──
         "server_identity": _identity_dict(ev),
         # ── D-188 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — API 경로와 대칭 ──

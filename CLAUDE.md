@@ -28,7 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 src/            text2sql 파이프라인 · FastAPI 앱 조립 · 웹 UI(static)
 noise_gate/     알람 노이즈 게이트 (본체와 같은 프로세스) + alarm_server(독립 프로세스)
 sre_agent/      HolmesGPT 장애 조사 (별도 venv·별도 프로세스)
-mcp_server/     관측 데이터 읽기 MCP 서버 (별도 venv·별도 프로세스)
+mcp_server/     관측 데이터 읽기 MCP 서버 (자체 pyproject·별도 프로세스 — venv는 루트 공유)
 config/         런타임 정본 YAML (DB 레지스트리·프로필·시맨틱 모델·지식·유사어 시드)
 docs/           설계·가이드·의사결정(02)·실수 이력(18)·사다리(21)
 plans/          영역별 구현 계획서 (INDEX.md가 전건 인덱스)
@@ -110,7 +110,9 @@ python -m src.main
 # 알람 수신부 (독립 프로세스, TCP 9100 → Redis Stream 'alarm:raw')
 python -m noise_gate.alarm_server
 
-# MCP 서버 (별도 venv·별도 cwd)
+# MCP 서버 (별도 프로세스·별도 cwd — 자체 venv 없음, 루트 venv로 기동)
+# DB2(polestar_b0) 조회에는 ibm-db가 필요한데 루트 venv에는 미설치다(실측 2026-09-02).
+# mcp_server/pyproject.toml에만 선언돼 있으므로 DB2 대상 기동 전 설치 여부를 확인할 것.
 cd mcp_server && python -m mcp_server
 
 # 테스트
@@ -240,12 +242,14 @@ python -m agents.run --phase 1    # 요구사항 분석만
 | `src/` | text2sql 파이프라인·API 조립 | 본체 프로세스 | — |
 | `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 + TCP 수신부(`alarm_server/`) | 게이트·워커는 **본체와 같은 프로세스·같은 venv**, 수신부는 독립 프로세스 | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 |
 | `sre_agent/` | HolmesGPT 장애 조사 | 별도 venv·별도 프로세스 | 양방향 import 0 (MCP 계약만) |
-| `mcp_server/` | 관측 데이터 읽기 경계 | 별도 venv·별도 프로세스 | 양방향 import 0 |
+| `mcp_server/` | 관측 데이터 읽기 경계 | 별도 프로세스·별도 cwd (**자체 venv 없음 — 루트 공유**) | 양방향 import 0 |
 
 - **신규 기능은 소속 패키지 폴더에** 만들고, 본체 수정은 배선 최소로 한정한다.
 - `noise_gate`는 **평탄 레이아웃**(디렉토리 자체가 패키지) — 2단 중첩은 루트에서 import가
-  해석되지 않아 editable 설치에 의존하게 된다(D-139 실측). `sre_agent`·`mcp_server`는 자체
-  venv·자체 cwd라 2단 중첩 유지.
+  해석되지 않아 editable 설치에 의존하게 된다(D-139 실측). `sre_agent`·`mcp_server`는 **자체
+  `pyproject.toml`·자체 cwd**를 가져 2단 중첩을 유지한다(`sre_agent`는 자체 venv도 보유 —
+  본체 >=3.11 · holmesgpt 스택 >=3.13으로 요구 버전이 갈린다. `mcp_server`는 >=3.11로 같아
+  루트 venv를 공유한다).
 - 예외: `src/api/routes/alarm.py`는 알람 전용이지만 본체 앱 인증 계층에 묶여 `src/api/`에 남긴다
   (옮기면 `noise_gate → src.api` 역방향 결합 신설 — D-139 근거 참조)
 

@@ -19,9 +19,12 @@ from starlette.types import Receive, Scope, Send
 
 from sre_agent import __version__
 from sre_agent.application.briefing_builder import build_briefing
+from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
+from sre_agent.application.investigation_guidance import build_guidance
 from sre_agent.application.investigation_dispatcher import InvestigationDispatcher
 from sre_agent.application.investigation_jobs import CONTRACT_VERSION, JobStore
 from sre_agent.diagnosis import DiagnosisAgent, DiagnosisResult
+from sre_agent.infrastructure.mcp_tool_client import make_batch_caller
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import remote_vm_profile
 
@@ -80,11 +83,15 @@ def _job_to_question(job) -> str:
         return job.question
     event = (getattr(job, "payload", None) or {}).get("event") or {}
     server = event.get("serverName") or event.get("hostname") or "대상 서버"
+    # 사건 좌표계(plans/50 A′-5): 알람 시각을 질문에 싣는다 — 워커 지연·재처리 시에도 조사가
+    # "지금"이 아니라 그 시각을 기준으로 이뤄지도록. 구간·도구 인자 지시는 guidance가 나른다.
+    when = getattr(job, "reference_time", None)
+    at = f"(발생 시각 {when} — 이 시각 이전 구간을 조사) " if when else ""
     # 결론 유도(수렴 가드): 트리아지 순서는 유지하되 핵심 지표 위주로 간결히 조사하고
     # 충분한 근거가 모이면 즉시 결론을 내도록 지시한다(불필요한 반복 조회가 step을 소진해
     # 미완주로 빠지는 것을 방지 — 실측 기반).
     return (
-        f"{server} 장애 원인을 조사하고 트리아지하라(부하→병목→원인 격리→로그). "
+        f"{server} 장애 원인을 {at}조사하고 트리아지하라(부하→병목→원인 격리→로그). "
         f"핵심 지표(CPU·메모리·디스크·네트워크) 위주로 **간결히** 조사하고, 충분한 근거가 "
         f"모이면 **즉시 결론**을 내라(동일 지표 반복 조회 금지). 모든 주장에 도구 출력을 인용하라."
     )
@@ -128,17 +135,46 @@ def _default_diagnose_fn(settings: AgentSettings):
                 mcp_servers=_build_mcp_servers(settings),
             )
             holder["agent"] = agent
-        return agent.ask(_job_to_question(job))
+        # 조사 지침 주입(plans/50 G5 · D-194): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
+        # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
+        return agent.ask(
+            _job_to_question(job),
+            system_prompt_additions=build_guidance(settings, job, remote=True),
+        )
 
     return _diagnose
 
 
+def _default_prefetch_fn(settings: AgentSettings):
+    """결정적 사전수집 함수(plans/50 G4)를 만든다 — dispatcher.prefetch_fn 주입용.
+
+    `evidence_correlation_enabled`가 off거나 mcp URL이 없으면 None(주입 자체를 하지 않아 dispatcher
+    경로가 종전과 비트 동일). 켜져 있으면 잡의 기준시각·소스·서버명으로 mcp_server 도구를 배치
+    호출해 `CorrelationResult.to_dict()`를 돌려준다. 범위를 만들 수 없는 잡은 None.
+    """
+    if not settings.evidence_correlation_enabled:
+        return None
+    call_batch = make_batch_caller(settings)
+    if call_batch is None:
+        logger.warning("evidence_correlation_enabled=true이나 POLESTAR_MCP_URL 미설정 — 사전수집 비활성")
+        return None
+
+    def _prefetch(job) -> dict | None:
+        scope = scope_from_job(job, baseline_periods=settings.evidence_baseline_periods)
+        if scope is None:
+            return None
+        return prefetch_and_correlate(scope, call_batch).to_dict()
+
+    return _prefetch
+
+
 def _build_dispatcher(settings: AgentSettings) -> InvestigationDispatcher:
-    """실 dispatcher를 조립한다(diagnose_fn·briefing_fn 주입). JobStore executor로 배선된다."""
+    """실 dispatcher를 조립한다(diagnose_fn·briefing_fn·prefetch_fn 주입). JobStore executor로 배선된다."""
     return InvestigationDispatcher(
         settings,
         diagnose_fn=_default_diagnose_fn(settings),
         briefing_fn=build_briefing,
+        prefetch_fn=_default_prefetch_fn(settings),
     )
 
 
@@ -189,15 +225,23 @@ def create_service(
         hostname: str | None = None,
         db_id: str | None = None,
         target_state: dict | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
     ) -> str:
         """pull형 자연어 진단 잡을 제출한다(§3 — 챗 의도 위임용). 동일 잡 패턴.
 
         `target_state`(Plan 81)는 호출자가 판정한 대상 가용성이다. **선택 인자**이므로
         넘기지 않는 구버전 호출자는 종전과 동일하게 동작한다(fail-open). 값이 있고
         `state == "unavailable"`이면 dispatcher가 조사 전에 거부한다.
+
+        `reference_time`(ISO 8601)·`lookback_minutes`(plans/50 A′-5)는 사건 좌표계다 — 조사가
+        "지금"이 아니라 그 구간의 증거를 쓰게 한다. 형식 오류는 `rejected`로 돌려준다.
         """
         return json.dumps(
-            store.submit_diagnosis(question, server_name, hostname, db_id, target_state),
+            store.submit_diagnosis(
+                question, server_name, hostname, db_id, target_state,
+                reference_time=reference_time, lookback_minutes=lookback_minutes,
+            ),
             ensure_ascii=False,
         )
 

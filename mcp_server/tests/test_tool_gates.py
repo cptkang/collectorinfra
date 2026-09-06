@@ -2,7 +2,7 @@
 
 - ⑬ `execute_sql`의 폴스타 도메인 deny(D-022/D-028)가 `polestar_domain_guard`로 게이트되는지.
   범용 SQL 실행 경로가 DB 종류와 무관하게 폴스타 스키마 전제를 강제하던 구조를 옵트아웃 가능하게 했다.
-- ⑭ 폴스타 고수준 도구 8종 등록이 `expose_polestar_tools`로 게이트되는지.
+- ⑭ 폴스타 고수준 도구 9종 등록이 `expose_polestar_tools`로 게이트되는지.
 
 DB 연결 없이 동작한다 — pool_manager는 최소 대역(fake)으로 대체하고, 도구 등록 여부는
 FastMCP `list_tools()` 발견 표면으로 확인한다.

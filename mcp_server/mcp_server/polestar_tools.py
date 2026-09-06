@@ -1,7 +1,7 @@
 """폴스타 조사용 고수준 MCP 도구 (Plan 66 Wave 2-A · sre-agent/04 §4.2).
 
 HolmesGPT 등 소비자가 방언·스키마·조인 규칙을 모른 채 **값 인자만**으로 폴스타
-관측 데이터를 읽도록 하는 고정 SQL/REST 도구 8종을 등록한다. 소비자는 SQL 텍스트를
+관측 데이터를 읽도록 하는 고정 SQL/REST 도구 9종을 등록한다. 소비자는 SQL 텍스트를
 넘기지 않는다 — 서버가 고정 SQL을 조립하고 방언을 분기한다(§5).
 
 공통 반환 계약(§4.2):
@@ -32,7 +32,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -125,6 +125,102 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------
+# 사건 구간 앵커 (plans/50 G1·G2·G3 · SPEC-incident-window-tools · D-194)
+#
+# 조회 도구가 전부 now 앵커라 "어제 14시" 구간의 증거를 가져올 수 없었다(§3.4 "now() 금지").
+# 기준시각·구간 인자를 받아 경계를 **파이썬이 계산해 리터럴로** 보간한다 — 엔진별 interval
+# 산술을 SQL에 두지 않으며, 인자를 지정하지 않으면 종전 SQL과 문자열이 같다(회귀 0).
+# ---------------------------------------------------------------------
+
+# granularity → stat_date(varchar) 포맷·1단위 분(실측 db_profiles: h=YYYYMMDDHH · d=YYYYMMDD · m=YYYYMM).
+_STAT_DATE_FMT: dict[str, str] = {"h": "%Y%m%d%H", "d": "%Y%m%d", "m": "%Y%m"}
+_GRANULARITY_MINUTES: dict[str, int] = {"h": 60, "d": 1440, "m": 43200}
+# lookback 상한(분) — 30일. 구간 조회는 사건 전후이지 장기 추세가 아니다.
+_MAX_LOOKBACK_MINUTES = 60 * 24 * 30
+
+
+def parse_reference_time(value: Any) -> datetime:
+    """ISO 8601 기준시각을 파싱한다. 리터럴로 보간되므로 자유 문자열은 거부한다(ValueError).
+
+    반환은 파싱된 그대로다(오프셋이 있으면 tz-aware). 폴스타 SQL 경로는 벽시계 값만 쓴다
+    (`_wall_clock`), PromQL 경로는 epoch가 필요해 tz를 살린다.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"reference_time은 ISO 8601 문자열이어야 함: {value!r}")
+    try:
+        return datetime.fromisoformat(value.strip())
+    except ValueError as e:
+        raise ValueError(f"reference_time은 ISO 8601 문자열이어야 함: {value!r}") from e
+
+
+def _wall_clock(dt: datetime) -> datetime:
+    """오프셋을 떼고 벽시계 값만 남긴다(변환하지 않는다 — 폴스타 DB tz는 서버가 모른다)."""
+    return dt.replace(tzinfo=None)
+
+
+def _ts_literal(is_db2: bool, dt: datetime) -> str:
+    """엔진별 timestamp 리터럴(초 해상도)."""
+    s = dt.strftime("%Y-%m-%d %H:%M:%S")
+    return f"TIMESTAMP('{s}')" if is_db2 else f"TIMESTAMP '{s}'"
+
+
+def _shift_months(dt: datetime, months: int) -> datetime:
+    """월 단위 이동(일자는 1일로 정규화 — YYYYMM 비교에만 쓴다)."""
+    idx = dt.year * 12 + (dt.month - 1) - int(months)
+    return dt.replace(year=idx // 12, month=idx % 12 + 1, day=1)
+
+
+def _shift_periods(dt: datetime, granularity: str, periods: int) -> datetime:
+    if granularity == "m":
+        return _shift_months(dt, periods)
+    return dt - timedelta(minutes=_GRANULARITY_MINUTES[granularity] * int(periods))
+
+
+def _ctime_window_clause(is_db2: bool, reference_time: str, lookback_minutes: int) -> str:
+    """`CA.CTIME`를 [기준시각 − lookback, 기준시각]으로 한정하는 WHERE 조각."""
+    ref = _wall_clock(parse_reference_time(reference_time))
+    lo = ref - timedelta(minutes=_clamp(lookback_minutes, 1, _MAX_LOOKBACK_MINUTES))
+    return (
+        f"  AND CA.CTIME >= {_ts_literal(is_db2, lo)}\n"
+        f"  AND CA.CTIME <= {_ts_literal(is_db2, ref)}\n"
+    )
+
+
+def incident_window(
+    reference_time: str,
+    lookback_minutes: Optional[int],
+    granularity: str,
+    baseline_periods: Optional[int],
+) -> dict[str, Any]:
+    """metric_trend 앵커 구간 메타 — SQL 경계와 응답 `window`가 같은 값을 쓴다.
+
+    - incident: [reference − lookback, reference]. lookback 미지정 시 granularity 1단위.
+    - baseline(G2): incident 직전 `baseline_periods` 단위. 소비자가 `stat_date_incident_from`으로 쪼갠다.
+    """
+    if granularity not in _STAT_DATE_FMT:
+        raise ValueError(
+            f"지원하지 않는 granularity: {granularity} (허용: {sorted(_STAT_DATE_FMT)})"
+        )
+    ref = _wall_clock(parse_reference_time(reference_time))
+    minutes = _GRANULARITY_MINUTES[granularity] if lookback_minutes is None else lookback_minutes
+    incident_from = ref - timedelta(minutes=_clamp(minutes, 1, _MAX_LOOKBACK_MINUTES))
+    baseline_from = (
+        _shift_periods(incident_from, granularity, baseline_periods)
+        if baseline_periods else None
+    )
+    fmt = _STAT_DATE_FMT[granularity]
+    lower = baseline_from or incident_from
+    return {
+        "reference_time": ref.isoformat(),
+        "incident_from": incident_from.isoformat(),
+        "baseline_from": baseline_from.isoformat() if baseline_from else None,
+        "stat_date_to": ref.strftime(fmt),
+        "stat_date_incident_from": incident_from.strftime(fmt),
+        "stat_date_from": lower.strftime(fmt),
+    }
+
+
 def _clamp(value: int, lo: int, hi: int) -> int:
     """value를 [lo, hi] 범위로 제한한다."""
     return max(lo, min(int(value), hi))
@@ -209,6 +305,8 @@ def build_alarm_history_sql(
     hours: int,
     exclude_alarm_id: Optional[str],
     limit: int,
+    reference_time: Optional[str] = None,
+    lookback_minutes: Optional[int] = None,
 ) -> str:
     """동일 (서버, 알람명) 과거 알람 이력 조회 SQL을 조립한다(읽기 전용 SELECT 단일문).
 
@@ -216,6 +314,9 @@ def build_alarm_history_sql(
     server.Server 행(SVR)을 식별해 SVR.NAME으로 매칭한다(hostname 매칭 금지 — 공동존
     폴스타는 name≠hostname). ALARMSEVERITY IN (0,1,2,3)로 해소(0) 포함(D-030).
     RESOURCE_CONF_ID JOIN 미포함(D-022).
+
+    `reference_time`이 있으면 now 앵커 대신 [기준시각 − lookback, 기준시각] 구간으로 한정한다
+    (lookback 미지정 시 `hours*60`). 없으면 종전 SQL과 문자열이 같다.
     """
     t_alarm = _q(is_db2, "cmm_alarm")
     t_def = _q(is_db2, "cmm_alarm_def")
@@ -223,6 +324,11 @@ def build_alarm_history_sql(
     exclude = ""
     if exclude_alarm_id is not None and str(exclude_alarm_id).strip():
         exclude = f"  AND CA.ID <> {_id_literal(exclude_alarm_id)}\n"
+    if reference_time is None:
+        time_clause = f"  AND CA.CTIME >= {_time_floor(is_db2, hours)}\n"
+    else:
+        minutes = int(hours) * 60 if lookback_minutes is None else lookback_minutes
+        time_clause = _ctime_window_clause(is_db2, reference_time, minutes)
     return (
         "SELECT\n"
         "    CA.ID AS alarm_id,\n"
@@ -240,9 +346,53 @@ def build_alarm_history_sql(
         "  AND CA.ALARMSEVERITY IN (0, 1, 2, 3)\n"
         f"  AND D.NAME = {_sql_literal(alarm_name)}\n"
         f"  AND SVR.NAME = {_sql_literal(server_name)}\n"
-        f"  AND CA.CTIME >= {_time_floor(is_db2, hours)}\n"
+        f"{time_clause}"
         f"{exclude}"
         "ORDER BY CA.CTIME DESC\n"
+        f"{_row_limit(is_db2, limit)}"
+    )
+
+
+def build_incident_alarms_sql(
+    is_db2: bool,
+    server_name: str,
+    reference_time: str,
+    lookback_minutes: int,
+    alarm_name: Optional[str],
+    limit: int,
+) -> str:
+    """사건 구간 안의 **전 알람**(알람명 불문) 조회 SQL — plans/50 §4.1 · G3.
+
+    조인·필터는 `build_alarm_history_sql`과 같고(COALESCE 조인 · 해소 포함 · RESOURCE_CONF_ID
+    미조인), `D.NAME` 필터는 선택이다. 타임라인 병합용이라 **CTIME 오름차순**이다.
+    """
+    t_alarm = _q(is_db2, "cmm_alarm")
+    t_def = _q(is_db2, "cmm_alarm_def")
+    t_res = _q(is_db2, "cmm_resource")
+    name_clause = ""
+    if alarm_name is not None and str(alarm_name).strip():
+        name_clause = f"  AND D.NAME = {_sql_literal(alarm_name)}\n"
+    return (
+        "SELECT\n"
+        "    CA.ID AS alarm_id,\n"
+        "    CA.CTIME AS alarm_time,\n"
+        "    CA.ALARMSEVERITY AS severity,\n"
+        "    CA.CURRENTALARMSTATUS AS alarm_status,\n"
+        "    D.NAME AS alarm_name,\n"
+        "    CR.NAME AS resource_name,\n"
+        "    CR.RESOURCE_TYPE AS resource_type\n"
+        f"FROM {t_alarm} CA\n"
+        f"JOIN {t_def} D ON CA.DEFINITION_ID = D.ID\n"
+        f"JOIN {t_res} CR ON CA.RESOURCE_ID = CR.ID\n"
+        f"JOIN {t_res} SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)\n"
+        "                     AND SVR.RESOURCE_TYPE = 'server.Server'\n"
+        "                     AND SVR.DTIME IS NULL\n"
+        "WHERE CR.DTIME IS NULL\n"
+        "  AND CA.ALARMSEVERITY IN (0, 1, 2, 3)\n"
+        f"  AND SVR.NAME = {_sql_literal(server_name)}\n"
+        f"{_ctime_window_clause(is_db2, reference_time, lookback_minutes)}"
+        f"{name_clause}"
+        "ORDER BY CA.CTIME ASC\n"
         f"{_row_limit(is_db2, limit)}"
     )
 
@@ -253,6 +403,9 @@ def build_metric_trend_sql(
     kind: str,
     granularity: str,
     periods: int,
+    reference_time: Optional[str] = None,
+    lookback_minutes: Optional[int] = None,
+    baseline_periods: Optional[int] = None,
 ) -> str:
     """서버 사용률 시계열(avg/min/max) 조회 SQL을 조립한다(읽기 전용 SELECT 단일문).
 
@@ -260,8 +413,11 @@ def build_metric_trend_sql(
     kind→(resource_type, definition_name)·granularity→테이블은 서버 상수다.
     최신 periods개를 stat_date DESC로 가져온다. 집계 없음 → CAST 불요.
 
+    `reference_time`이 있으면 `stat_date`(varchar)를 granularity 포맷 문자열로 구간 한정한다
+    (`incident_window` 참조 — baseline 포함). 없으면 종전 SQL과 문자열이 같다.
+
     Raises:
-        ValueError: 지원하지 않는 kind 또는 granularity.
+        ValueError: 지원하지 않는 kind 또는 granularity, 잘못된 reference_time.
     """
     if kind not in _METRIC_KIND_MAP:
         raise ValueError(
@@ -274,6 +430,13 @@ def build_metric_trend_sql(
     resource_type, definition_name = _METRIC_KIND_MAP[kind]
     t_res = _q(is_db2, "cmm_resource")
     t_metric = _q(is_db2, _METRIC_TABLE[granularity])
+    window_clause = ""
+    if reference_time is not None:
+        w = incident_window(reference_time, lookback_minutes, granularity, baseline_periods)
+        window_clause = (
+            f"  AND s.stat_date >= {_sql_literal(w['stat_date_from'])}\n"
+            f"  AND s.stat_date <= {_sql_literal(w['stat_date_to'])}\n"
+        )
     return (
         "SELECT\n"
         "    s.stat_date AS stat_date,\n"
@@ -289,6 +452,7 @@ def build_metric_trend_sql(
         f"  AND child.resource_type = {_sql_literal(resource_type)}\n"
         "  AND child.dtime IS NULL\n"
         f"  AND s.definition_name = {_sql_literal(definition_name)}\n"
+        f"{window_clause}"
         "ORDER BY s.stat_date DESC\n"
         f"{_row_limit(is_db2, periods)}"
     )
@@ -518,7 +682,7 @@ def _resolve_engine(pool: DBPoolManager, source: str) -> tuple[bool, str]:
 
 
 def register_polestar_tools(mcp: FastMCP) -> None:
-    """폴스타 조사용 고수준 도구 8종을 MCP 서버에 등록한다."""
+    """폴스타 조사용 고수준 도구 9종을 MCP 서버에 등록한다."""
 
     @mcp.tool()
     async def polestar_alarm_history(
@@ -527,6 +691,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         alarm_name: str,
         hours: int = 168,
         exclude_alarm_id: str | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
         ctx: Context | None = None,
     ) -> str:
         """동일 (서버, 알람명)의 과거 알람 이력을 조회한다.
@@ -537,10 +703,13 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             alarm_name: 알람 정의명(cmm_alarm_def.name).
             hours: 조회 창(시간). 기본 168(7일).
             exclude_alarm_id: 제외할 알람 ID(현재 이벤트 자기 제외용).
+            reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 지정하면 now 대신 이 시각을 앵커로
+                [기준시각 − lookback, 기준시각] 구간을 조회한다.
+            lookback_minutes: 기준시각 이전 조회 폭(분). 미지정 시 hours*60.
             ctx: MCP 컨텍스트.
 
         Returns:
-            JSON 문자열 {rows, row_count, queried_at, source_kind} 또는 {error}.
+            JSON 문자열 {rows, row_count, queried_at, source_kind[, window]} 또는 {error}.
         """
         pool = _pool(ctx)
         try:
@@ -548,14 +717,69 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
-        sql = build_alarm_history_sql(
-            is_db2, server_name, alarm_name, hours, exclude_alarm_id, limit
-        )
+        try:
+            sql = build_alarm_history_sql(
+                is_db2, server_name, alarm_name, hours, exclude_alarm_id, limit,
+                reference_time=reference_time, lookback_minutes=lookback_minutes,
+            )
+        except ValueError as e:
+            return _err(str(e))
+        extra: dict[str, Any] = {}
+        if reference_time is not None:
+            minutes = int(hours) * 60 if lookback_minutes is None else lookback_minutes
+            extra["window"] = incident_window(reference_time, minutes, "h", None)
+            extra["window"].pop("baseline_from", None)
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine)
+            return _ok(rows, source, engine, **extra)
         except Exception as e:
             logger.warning("polestar_alarm_history 실패 (%s): %s", source, e)
+            return _err(str(e))
+
+    @mcp.tool()
+    async def polestar_incident_alarms(
+        source: str,
+        server_name: str,
+        reference_time: str,
+        lookback_minutes: int = 60,
+        alarm_name: str | None = None,
+        ctx: Context | None = None,
+    ) -> str:
+        """사건 구간 안에서 서버에 발생한 **전 알람**(알람명 불문)을 시간순으로 조회한다.
+
+        `polestar_alarm_history`가 같은 알람의 과거 이력이라면, 이 도구는 사건 구간의 알람 축이다
+        (타임라인 병합 · 선행 알람 탐색 — plans/50 §4.1·§6.1).
+
+        Args:
+            source: 데이터소스(db_id).
+            server_name: 폴스타 등록 서버명.
+            reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 필수.
+            lookback_minutes: 기준시각 이전 조회 폭(분). 기본 60.
+            alarm_name: 지정하면 그 알람명만.
+            ctx: MCP 컨텍스트.
+
+        Returns:
+            JSON 문자열 {rows, row_count, queried_at, source_kind, window} 또는 {error}.
+        """
+        pool = _pool(ctx)
+        try:
+            is_db2, engine = _resolve_engine(pool, source)
+        except ValueError as e:
+            return _err(str(e))
+        limit = pool.get_source_config(source).max_rows
+        try:
+            sql = build_incident_alarms_sql(
+                is_db2, server_name, reference_time, lookback_minutes, alarm_name, limit
+            )
+            window = incident_window(reference_time, lookback_minutes, "h", None)
+        except ValueError as e:
+            return _err(str(e))
+        window.pop("baseline_from", None)
+        try:
+            rows = await pool.execute(source, sql)
+            return _ok(rows, source, engine, window=window)
+        except Exception as e:
+            logger.warning("polestar_incident_alarms 실패 (%s): %s", source, e)
             return _err(str(e))
 
     @mcp.tool()
@@ -565,9 +789,12 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         kind: str,
         granularity: str = "h",
         periods: int = 24,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        baseline_periods: int | None = None,
         ctx: Context | None = None,
     ) -> str:
-        """서버의 사용률 시계열(최신 periods개)을 조회한다.
+        """서버의 사용률 시계열(최신 periods개, 또는 사건 구간)을 조회한다.
 
         Args:
             source: 데이터소스(db_id).
@@ -575,10 +802,15 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             kind: cpu | memory | filesystem | disk_io.
             granularity: h(시간) | d(일) | m(월). 기본 h.
             periods: 반환 기간 수(최신 우선). 기본 24.
+            reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 지정하면 최신 N개 대신
+                [기준시각 − lookback, 기준시각] 구간을 조회한다.
+            lookback_minutes: 기준시각 이전 조회 폭(분). 미지정 시 granularity 1단위.
+            baseline_periods: 사건 구간 직전에 포함할 baseline 기간 수(granularity 단위).
+                응답 `window.stat_date_incident_from`으로 baseline/사건 구간을 가른다.
             ctx: MCP 컨텍스트.
 
         Returns:
-            JSON 문자열 {rows, row_count, queried_at, source_kind} 또는 {error}.
+            JSON 문자열 {rows, row_count, queried_at, source_kind[, window]} 또는 {error}.
         """
         pool = _pool(ctx)
         try:
@@ -586,14 +818,24 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         max_rows = pool.get_source_config(source).max_rows
-        capped = _clamp(periods, 1, max_rows)
+        # 앵커 모드는 "최신 N"이 아니라 구간 안이 대상 — baseline 행까지 담도록 상한을 넓힌다.
+        capped = _clamp(int(periods) + int(baseline_periods or 0), 1, max_rows)
+        extra: dict[str, Any] = {"kind": kind, "granularity": granularity}
         try:
-            sql = build_metric_trend_sql(is_db2, server_name, kind, granularity, capped)
+            sql = build_metric_trend_sql(
+                is_db2, server_name, kind, granularity, capped,
+                reference_time=reference_time, lookback_minutes=lookback_minutes,
+                baseline_periods=baseline_periods,
+            )
+            if reference_time is not None:
+                extra["window"] = incident_window(
+                    reference_time, lookback_minutes, granularity, baseline_periods
+                )
         except ValueError as e:
             return _err(str(e))
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine, kind=kind, granularity=granularity)
+            return _ok(rows, source, engine, **extra)
         except Exception as e:
             logger.warning("polestar_metric_trend 실패 (%s): %s", source, e)
             return _err(str(e))

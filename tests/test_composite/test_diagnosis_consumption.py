@@ -28,13 +28,18 @@ REMEDIATION = [
 # 소비 (W4-1)
 # ──────────────────────────────────────────────
 
-def test_briefing_six_elements_are_rendered():
-    """브리핑 6요소를 `_BRIEFING_ORDER`로 조립한다 — 기존 자산 재사용(사본 금지)."""
+def test_briefing_elements_are_rendered():
+    """브리핑을 공용 렌더러(`noise_gate.domain.investigation_briefing`)로 조립한다 — 사본 금지.
+
+    키는 생산자 정본(`limitations`·`hypotheses`·`severity`)이다. 종전의 `evidence`·`limitation`은
+    생산자가 만들지 않는 키를 이 테스트가 정답으로 굳힌 것이라 정정했다(plans/50 G6 · D-194).
+    """
     text = _briefing_to_text({
+        "severity": {"level": "심각", "confidence": "high"}, "summary": "요약문",
         "timeline": "12:00 알람", "bottleneck": "CPU", "cause": "배치 폭주",
-        "evidence": "top 출력", "recommendation": REMEDIATION, "limitation": "샘플 1회",
+        "recommendation": REMEDIATION, "limitations": ["샘플 1회"], "hypotheses": ["추정"],
     })
-    for label in ("[타임라인]", "[병목]", "[원인]", "[근거]", "[권고]", "[한계]"):
+    for label in ("[중요도]", "[요약]", "[타임라인]", "[병목]", "[원인]", "[권고]", "[한계]", "[가설]"):
         assert label in text
 
 
@@ -53,7 +58,7 @@ def test_answer_field_no_longer_swallows_remediation():
     """
     out = _extract_diagnosis_text({
         "answer": "CPU 포화가 원인입니다.",
-        "briefing": {"recommendation": REMEDIATION, "limitation": "디스크 미수집"},
+        "briefing": {"recommendation": REMEDIATION, "limitations": ["디스크 미수집"]},
     })
     assert "CPU 포화가 원인입니다." in out
     assert REMEDIATION[0] in out

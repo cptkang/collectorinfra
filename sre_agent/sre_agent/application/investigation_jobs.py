@@ -27,6 +27,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from sre_agent.domain.incident_scope import (
+    DEFAULT_LOOKBACK_MINUTES,
+    alarm_time_to_iso,
+    normalize_lookback,
+    normalize_reference_time,
+)
 from sre_agent.settings import AgentSettings
 
 logger = logging.getLogger(__name__)
@@ -69,6 +75,11 @@ class InvestigationJob:
     cost: float | None = None
     error: str | None = None
     reason: str | None = None
+    # 사건 좌표계(plans/50 A′-5 · D-194). push=alarmTime, pull=호출자 파싱. None이면 앵커 없는 조사.
+    reference_time: str | None = None
+    lookback_minutes: int | None = None
+    # 결정적 상관 결과(CorrelationResult.to_dict — plans/50 G4). 사전수집 off·불가면 None.
+    correlation: dict | None = None
 
     def summary(self) -> dict:
         """§3 `sre_get_investigation`/`sre_list_investigations` 반환 스키마."""
@@ -84,6 +95,9 @@ class InvestigationJob:
             "cost": self.cost,
             "error": self.error,
             "reason": self.reason,
+            "reference_time": self.reference_time,
+            "lookback_minutes": self.lookback_minutes,
+            "correlation": self.correlation,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -272,6 +286,9 @@ class JobStore:
                     return {"investigation_id": existing_id, "status": "duplicate"}
 
             job = self._new_job(kind="alarm", status="accepted", fingerprint=fingerprint, payload=payload)
+            # 사건 좌표계: 알람 시각을 기준시각으로(변환 불가면 앵커 없는 조사 — 종전과 동일).
+            job.reference_time = alarm_time_to_iso((payload.get("event") or {}).get("alarmTime"))
+            job.lookback_minutes = DEFAULT_LOOKBACK_MINUTES if job.reference_time else None
             self._jobs[job.investigation_id] = job
             if fingerprint:
                 self._fingerprint_index[fingerprint] = job.investigation_id
@@ -294,25 +311,40 @@ class JobStore:
         hostname: str | None = None,
         db_id: str | None = None,
         target_state: dict | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
     ) -> dict:
         """pull형 자연어 진단 잡을 제출한다(§3 `sre_diagnose`). 계약 검증 불요.
 
         `target_state`(Plan 81)는 호출자가 판정한 대상 가용성이며 잡 payload에 보존된다 —
         dispatcher의 가용성 가드가 이 값을 읽는다. 없으면 종전과 동일(가드 통과).
 
+        `reference_time`(ISO 8601)·`lookback_minutes`(plans/50 A′-5)는 사건 좌표계다. 형식 오류는
+        침묵 폴백 대신 **거부**한다(호출자가 결정적으로 만들어 넘기는 값이라 오류는 결함이다).
+
         반환: {investigation_id, status: accepted|rejected, reason?}.
         """
         with self._lock:
             self._sweep()
+            reason: str | None = None
             if not question or not question.strip():
-                job = self._new_job(kind="diagnosis", status="rejected", reason="question 결측")
+                reason = "question 결측"
+            elif reference_time is not None:
+                try:
+                    reference_time = normalize_reference_time(reference_time)
+                except ValueError as e:
+                    reason = str(e)
+            if reason is not None:
+                job = self._new_job(kind="diagnosis", status="rejected", reason=reason)
                 self._jobs[job.investigation_id] = job
                 self._audit(
-                    {"investigation_id": job.investigation_id, "event": "rejected", "status": "rejected", "reason": "question 결측"}
+                    {"investigation_id": job.investigation_id, "event": "rejected", "status": "rejected", "reason": reason}
                 )
-                return {"investigation_id": job.investigation_id, "status": "rejected", "reason": "question 결측"}
+                return {"investigation_id": job.investigation_id, "status": "rejected", "reason": reason}
 
             job = self._new_job(kind="diagnosis", status="accepted", question=question)
+            job.reference_time = reference_time
+            job.lookback_minutes = normalize_lookback(lookback_minutes) if reference_time else None
             job.payload = {
                 "server_name": server_name,
                 "hostname": hostname,

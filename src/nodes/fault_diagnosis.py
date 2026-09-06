@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Optional
 
 from langchain_core.messages import AIMessage
@@ -38,9 +39,11 @@ from src.domain.host_authz import (
     authorize_host_investigation,
 )
 from src.domain.host_availability import describe as describe_availability
+from src.domain.incident_time import parse_incident_time
 from src.observability.investigation_metrics import record_investigation
 from src.security.audit_logger import INVESTIGATION_DENIED, log_investigation
 from src.utils.prior_targets import resolve_targets
+from noise_gate.domain.investigation_briefing import render_briefing_lines
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +55,8 @@ _TERMINAL_POLL_STATUSES: frozenset[str] = frozenset(
 # poll 결과에서 자연어 진단 텍스트를 담을 수 있는 필드(우선순위 순 — sre_diagnose 반환 방어).
 _ANSWER_FIELDS = ("answer", "diagnosis", "response", "text", "message")
 
-# 브리핑 dict를 자연어로 조립할 때의 6요소 라벨(alarm_notifier와 동일 순서·용어).
-_BRIEFING_ORDER = ("timeline", "bottleneck", "cause", "evidence", "recommendation", "limitation")
+# 브리핑 렌더 순서·라벨은 공용 렌더러(noise_gate.domain.investigation_briefing)가 정본이다 —
+# 생산자(sre_agent briefing_builder) 키를 따르며 alarm_notifier와 같은 함수를 쓴다(D-194).
 # 인가 거부 시 사용자에게 보일 문구. 사유별로 **다른 안내**를 준다 —
 # "권한이 없습니다" 하나로 뭉치면 설정 오류(미상 모드)와 정상 거부가 구분되지 않는다.
 _DENY_MESSAGES: dict[str, str] = {
@@ -74,12 +77,6 @@ _DENY_MESSAGES: dict[str, str] = {
     ),
     "_default": "권한 확인에 실패하여 장애 진단을 수행하지 않았습니다.",
 }
-
-_BRIEFING_LABELS = {
-    "timeline": "타임라인", "bottleneck": "병목", "cause": "원인",
-    "evidence": "근거", "recommendation": "권고", "limitation": "한계",
-}
-
 
 async def fault_diagnosis(
     state: AgentState,
@@ -188,10 +185,23 @@ async def fault_diagnosis(
         getattr(gate_cfg, "investigation_total_timeout_seconds", 45.0)
     )
 
+    # 사건 좌표계(plans/50 A′-5): 질의의 시간 표현을 결정적으로 파싱해 위임 인자로 넘긴다.
+    # 표현이 없으면 인자 자체를 보내지 않는다(종전 계약과 동일 — 앵커 없는 조사).
+    scope = parse_incident_time(question, datetime.now())
+    scope_kwargs: dict = (
+        {"reference_time": scope.reference_time, "lookback_minutes": scope.lookback_minutes}
+        if scope else {}
+    )
+    if scope:
+        logger.info(
+            "장애 진단 사건 구간: anchor=%s resolution=%s reference_time=%s lookback=%d",
+            scope.anchor.isoformat(), scope.resolution, scope.reference_time, scope.lookback_minutes,
+        )
+
     try:
         text, status = await asyncio.wait_for(
             _diagnose_and_poll(
-                client, gate_cfg, question, server_name, hostname, db_id
+                client, gate_cfg, question, server_name, hostname, db_id, scope_kwargs
             ),
             timeout=total_timeout,
         )
@@ -269,8 +279,11 @@ async def _diagnose_and_poll(
     server_name: Optional[str],
     hostname: Optional[str],
     db_id: Optional[str],
+    scope_kwargs: Optional[dict] = None,
 ) -> tuple[str, str]:
     """진단 잡을 submit(diagnose)하고 종결까지 poll한다(연결/해제 포함, 상위 wait_for가 전체 유계).
+
+    `scope_kwargs`(reference_time·lookback_minutes)는 사건 좌표계다 — 있을 때만 전달한다.
 
     Returns:
         (diagnosis_text, status). rejected/failed 등 종결이나 텍스트가 없으면 ("", status).
@@ -281,7 +294,8 @@ async def _diagnose_and_poll(
     await client.connect()
     try:
         sub = await client.diagnose(
-            question, server_name=server_name, hostname=hostname, db_id=db_id
+            question, server_name=server_name, hostname=hostname, db_id=db_id,
+            **(scope_kwargs or {}),
         )
         sub_status = sub.get("status")
         investigation_id = sub.get("investigation_id")
@@ -398,7 +412,7 @@ def _extract_diagnosis_text(poll_result: dict) -> str:
 
 #: 자연어 필드에 가려 유실되기 쉬운 브리핑 요소. 조치 권고와 한계는 **판단에 직접 쓰이므로**
 #: 요약 텍스트가 있어도 반드시 함께 보인다.
-_BRIEFING_EXTRA_KEYS: tuple[str, ...] = ("recommendation", "limitation")
+_BRIEFING_EXTRA_KEYS: tuple[str, ...] = ("recommendation", "limitations")
 
 
 def _append_briefing_extras(text: str, briefing: object) -> str:
@@ -418,41 +432,27 @@ def _append_briefing_extras(text: str, briefing: object) -> str:
     """
     if not isinstance(briefing, dict):
         return text
+    subset = {key: briefing.get(key) for key in _BRIEFING_EXTRA_KEYS}
     lines: list[str] = []
-    for key in _BRIEFING_EXTRA_KEYS:
-        val = briefing.get(key)
-        if not val:
+    for label, rendered in render_briefing_lines(subset):
+        # 항목 단위로 중복을 거른다 — 이미 자연어에 포함된 줄은 두 번 보이지 않게 한다.
+        kept = [ln for ln in rendered.splitlines() if ln.strip() and ln.strip() not in text]
+        if not kept:
             continue
-        rendered = "\n".join(str(v) for v in val) if isinstance(val, list) else str(val)
-        if not rendered.strip() or rendered.strip() in text:
-            continue  # 이미 자연어에 포함됨 — 두 번 보이지 않게 한다
-        lines.append(f"[{_BRIEFING_LABELS[key]}] {rendered}")
+        lines.append(f"[{label}] " + "\n".join(kept))
     if not lines:
         return text
     return text + "\n\n" + "\n".join(lines)
 
 
 def _briefing_to_text(briefing: dict) -> str:
-    """구조화 브리핑 dict를 자연어 텍스트로 조립한다(스텁·6요소·기타 스칼라)."""
+    """구조화 브리핑 dict를 자연어 텍스트로 조립한다(스텁 · 정본 키 순서 · 그 외 키 말미).
+
+    렌더는 공용 렌더러가 한다 — 여기서 키·순서를 다시 정하지 않는다(alarm_notifier와 대칭).
+    """
     if briefing.get("stub"):
         return str(briefing.get("message", "조사 미실행(스텁)")).strip()
-    lines: list[str] = []
-    seen: set[str] = set()
-    for key in _BRIEFING_ORDER:
-        val = briefing.get(key)
-        if val:
-            seen.add(key)
-            # 권고는 `list[str]`로 온다(`Remediation.to_line()` 렌더 결과) —
-            # 문자열화하면 `['...', '...']`가 그대로 노출되므로 줄바꿈으로 편다.
-            rendered = "\n".join(str(v) for v in val) if isinstance(val, list) else val
-            lines.append(f"[{_BRIEFING_LABELS[key]}] {rendered}")
-    for key in sorted(briefing.keys()):
-        if key in seen or key in ("stub", "elements"):
-            continue
-        val = briefing.get(key)
-        if isinstance(val, (str, int, float, bool)) and val not in (None, "", False):
-            lines.append(f"[{key}] {val}")
-    return "\n".join(lines).strip()
+    return "\n".join(f"[{label}] {val}" for label, val in render_briefing_lines(briefing)).strip()
 
 
 def _respond(text: str) -> dict:

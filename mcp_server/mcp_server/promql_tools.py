@@ -254,6 +254,18 @@ async def _prom_get(
 # =====================================================================
 
 
+def _reference_epoch(reference_time: Optional[str]) -> float:
+    """기준시각 → epoch 초. 미지정이면 now. 비 ISO 문자열은 거부한다(ValueError)."""
+    if reference_time is None:
+        return time.time()
+    if not isinstance(reference_time, str) or not reference_time.strip():
+        raise ValueError(f"reference_time은 ISO 8601 문자열이어야 함: {reference_time!r}")
+    try:
+        return datetime.fromisoformat(reference_time.strip()).timestamp()
+    except ValueError as e:
+        raise ValueError(f"reference_time은 ISO 8601 문자열이어야 함: {reference_time!r}") from e
+
+
 async def run_metric_instant(
     cfg: PrometheusConfig,
     hostname: str,
@@ -282,17 +294,22 @@ async def run_metric_range(
     step: str,
     *,
     client: Optional[httpx.AsyncClient] = None,
+    reference_time: Optional[str] = None,
 ) -> str:
-    """고수준 range 조회: ``metric{nodename="hostname"}``의 최근 window 시계열(§3·§5-0)."""
+    """고수준 range 조회: ``metric{nodename="hostname"}``의 window 시계열(§3·§5-0).
+
+    `reference_time`(ISO 8601)이 있으면 그 시각을 `end`로 앵커한다(plans/50 G1 — now 앵커
+    금지). tz-aware면 그대로, naive면 서버 로컬 tz로 epoch를 계산한다.
+    """
     if not hostname or not str(hostname).strip():
         return _err("hostname이 비어 있음")
     try:
         selector = build_high_level_selector(metric, hostname)
         window_s = parse_duration_seconds(window)
         step_s = parse_duration_seconds(step)
+        end = _reference_epoch(reference_time)
     except ValueError as e:
         return _err(str(e))
-    end = time.time()
     start = end - window_s
     params = {
         "query": selector,
@@ -442,9 +459,10 @@ def register_promql_tools(mcp: FastMCP, expose_raw_promql: bool = False) -> None
         metric: str,
         window: str = "1h",
         step: str = "60s",
+        reference_time: str | None = None,
         ctx: Context | None = None,
     ) -> str:
-        """서버(hostname)의 메트릭 시계열(최근 window)을 조회한다(Prometheus range).
+        """서버(hostname)의 메트릭 시계열(window)을 조회한다(Prometheus range).
 
         서버가 ``{nodename="<hostname>"}`` 필터를 결정적으로 조립한다(§5-0). metric은
         bare 메트릭 이름만 허용한다.
@@ -454,13 +472,14 @@ def register_promql_tools(mcp: FastMCP, expose_raw_promql: bool = False) -> None
             metric: bare 메트릭 이름(예: node_cpu_seconds_total).
             window: 조회 창(예: 1h, 30m, 15s). 기본 1h.
             step: 해상도 스텝(예: 60s, 15s). 기본 60s.
+            reference_time: 사건 기준시각(ISO 8601). 지정하면 now 대신 이 시각이 창의 끝이다.
             ctx: MCP 컨텍스트.
 
         Returns:
             JSON 문자열 {data, queried_at, source_kind} 또는 {error}.
         """
         return await run_metric_range(
-            _prom_config(ctx), hostname, metric, window, step
+            _prom_config(ctx), hostname, metric, window, step, reference_time=reference_time
         )
 
     if not expose_raw_promql:

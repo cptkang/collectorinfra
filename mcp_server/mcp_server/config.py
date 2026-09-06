@@ -37,7 +37,7 @@ class ServerConfig:
     # 서빙하지 않는 배치에서만 config.toml/환경변수로 False 옵트아웃한다.
     # env: POLESTAR_DOMAIN_GUARD.
     polestar_domain_guard: bool = True
-    # 폴스타 고수준 도구 8종 등록 여부 (기본 True — 현행 동작 보존).
+    # 폴스타 고수준 도구 9종 등록 여부 (기본 True — 현행 동작 보존).
     # 폴스타 소스가 없는 배치에서는 False로 두어 도구 표면을 줄인다(expose_execute_sql·
     # expose_raw_promql과 동일한 게이트 패턴). env: EXPOSE_POLESTAR_TOOLS.
     expose_polestar_tools: bool = True

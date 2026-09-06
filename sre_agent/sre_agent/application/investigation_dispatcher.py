@@ -85,10 +85,16 @@ class JobLike(Protocol):
     error: str | None
     reason: str | None
     updated_at: float
+    # 사건 좌표계·상관(plans/50 A′-5·G4). 구현체에 없으면 getattr 기본값으로 읽는다.
+    reference_time: str | None
+    lookback_minutes: int | None
+    correlation: dict | None
 
 
 DiagnoseFn = Callable[[JobLike], DiagnosisLike]
 BriefingFn = Callable[..., dict]
+#: 사전수집 콜러블 — 잡을 받아 CorrelationResult.to_dict()(또는 None)를 돌려준다. 예외를 던져도 된다(격리).
+PrefetchFn = Callable[[JobLike], "dict | None"]
 
 
 def _host_key(job: JobLike) -> tuple[str, str] | None:
@@ -171,6 +177,7 @@ class InvestigationDispatcher:
         diagnose_fn: DiagnoseFn | None = None,
         briefing_fn: BriefingFn | None = None,
         *,
+        prefetch_fn: PrefetchFn | None = None,
         remote: bool = False,
         timeout_seconds: float | None = None,
         audit_path: str | Path | None = None,
@@ -180,6 +187,7 @@ class InvestigationDispatcher:
         self._settings = settings
         self._diagnose_fn = diagnose_fn
         self._briefing_fn = briefing_fn
+        self._prefetch_fn = prefetch_fn
         self._remote = remote
         self._timeout = timeout_seconds if timeout_seconds is not None else float(settings.investigation_timeout_seconds)
         self._audit_path = Path(audit_path) if audit_path is not None else None
@@ -342,7 +350,12 @@ class InvestigationDispatcher:
                 self._workers.discard(threading.current_thread())
 
     def _run_and_postprocess(self, job: JobLike) -> None:
-        """전체 타임아웃 하에 조사를 실행하고 severity_judge·briefing으로 후처리한다."""
+        """전체 타임아웃 하에 조사를 실행하고 severity_judge·briefing으로 후처리한다.
+
+        조사 전에 결정적 사전수집(plans/50 G4)을 돈다 — 결과는 `job.correlation`에 실려 조사 지침
+        (`build_guidance`)과 브리핑이 읽는다. 사전수집은 조사를 막지 않는다(실패 → None + 감사).
+        """
+        job.correlation = self._prefetch(job)
         try:
             result = self._investigate_with_timeout(job)
         except asyncio.TimeoutError:
@@ -358,12 +371,16 @@ class InvestigationDispatcher:
 
         gate_severity, gate_tier = self._gate_context(job)
         verdict = self._run_severity_judge(gate_severity, result)
+        briefing_kwargs: dict = {}
+        if getattr(job, "correlation", None):
+            briefing_kwargs["correlation"] = job.correlation   # 없을 땐 인자 자체를 넘기지 않는다(종전 호출 동일)
         briefing = self._briefing_fn(
             answer=result.answer,
             verdict=verdict,
             tool_names=[to.tool_name for to in result.tool_outputs],
             gate_tier=gate_tier,
             remediation=self._recommend_remediation(verdict),
+            **briefing_kwargs,
         )
 
         job.status = "done"
@@ -385,6 +402,31 @@ class InvestigationDispatcher:
                 "cost": result.total_cost,
             }
         )
+
+    def _prefetch(self, job: JobLike) -> dict | None:
+        """사전수집 콜러블을 격리 실행한다. 미주입·기준시각 없음이면 None(호출 자체를 하지 않는다)."""
+        if self._prefetch_fn is None or not getattr(job, "reference_time", None):
+            return None
+        try:
+            correlation = self._prefetch_fn(job)
+        except Exception as e:  # noqa: BLE001 — 사전수집 실패는 조사를 막지 않는다(사유는 감사로)
+            logger.warning("증거 사전수집 실패 (%s): %s", job.investigation_id, e)
+            self._audit({"event": "prefetch_failed", "investigation_id": job.investigation_id, "error": str(e)})
+            return None
+        if correlation is None:
+            return None
+        findings = correlation.get("metric_findings") or {}
+        self._audit(
+            {
+                "event": "prefetch",
+                "investigation_id": job.investigation_id,
+                "leading_signal": correlation.get("leading_signal"),
+                "anomalies": sorted(k for k, f in findings.items() if isinstance(f, dict) and f.get("is_anomalous")),
+                "alarms": (correlation.get("alarm_summary") or {}).get("count"),
+                "notes": len(correlation.get("notes") or []),
+            }
+        )
+        return correlation
 
     def _investigate_with_timeout(self, job: JobLike) -> DiagnosisLike:
         """조사 **전체**를 asyncio.wait_for로 감싸 실행한다(per-call 타임아웃 아님).

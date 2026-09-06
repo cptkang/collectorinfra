@@ -70,6 +70,8 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "sre_agent.domain.severity_signatures":              "domain",
     "sre_agent.application.investigation_dispatcher":    "application",
     "sre_agent.application.briefing_builder":            "application",
+    "src.sre_agent.infrastructure":                      "infrastructure",
+    "sre_agent.infrastructure":                          "infrastructure",
 }
 
 # ──────────────────────────────────────────────

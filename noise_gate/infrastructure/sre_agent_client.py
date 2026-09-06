@@ -179,6 +179,8 @@ class SreAgentClient:
         server_name: Optional[str] = None,
         hostname: Optional[str] = None,
         db_id: Optional[str] = None,
+        reference_time: Optional[str] = None,
+        lookback_minutes: Optional[int] = None,
     ) -> dict:
         """pull형 장애 진단 잡을 제출한다(`sre_diagnose` — sre-agent/05 §3·§7).
 
@@ -191,6 +193,9 @@ class SreAgentClient:
             server_name: 대상 서버명(선택 — 식별자 이원화, sre-agent/05 §4).
             hostname: 대상 hostname(선택).
             db_id: 대상 폴스타 DB 식별자(선택 — 존별 스코프 힌트).
+            reference_time: 사건 기준시각(ISO 8601, 선택 — plans/50 A′-5). 조사가 이 시각 이전
+                구간의 증거를 쓰게 한다.
+            lookback_minutes: 기준시각 이전 조사 폭(분, 선택).
 
         Returns:
             `{investigation_id, status, ...}` (파싱된 dict). 이후 `poll`로 진단 결과를 조회한다.
@@ -206,6 +211,10 @@ class SreAgentClient:
             arguments["hostname"] = hostname
         if db_id:
             arguments["db_id"] = db_id
+        if reference_time:
+            arguments["reference_time"] = reference_time
+            if lookback_minutes:
+                arguments["lookback_minutes"] = int(lookback_minutes)
         return await self._call_tool_json("sre_diagnose", arguments)
 
     # --- 내부 메서드 (DBHubClient 미러링) ---

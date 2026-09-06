@@ -334,3 +334,53 @@ def test_injected_as_jobstore_executor_real_path(tmp_path):
     assert got["status"] == "done"
     assert got["tokens"] == 50
     assert got["briefing"]["severity"]["level"] == "심각"
+
+
+# ── 결정적 사전수집 주입 (plans/50 G4 · D-194) ──────────────────────
+
+
+def _run(disp, job):
+    disp(job)
+    disp.wait_workers()
+    return job
+
+
+def test_prefetch_skipped_without_fn_or_reference_time():
+    calls = []
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing,
+                                   prefetch_fn=lambda job: calls.append(job) or {"leading_signal": "x"})
+    job = _run(disp, make_job(server="pf-none"))          # reference_time 없음 → 호출 자체가 없다
+    assert calls == [] and job.correlation is None and job.status == "done"
+
+    disp2 = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing)
+    job2 = make_job(server="pf-nofn"); job2.reference_time = "2026-09-01T14:00:00"
+    assert _run(disp2, job2).correlation is None
+
+
+def test_prefetch_result_lands_on_job_and_is_audited(tmp_path):
+    audit = tmp_path / "a.jsonl"
+    corr = {"leading_signal": "disk_io", "metric_findings": {"disk_io": {"is_anomalous": True}},
+            "alarm_summary": {"count": 1}, "timeline": [], "notes": ["n"]}
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing,
+                                   prefetch_fn=lambda job: corr, audit_path=audit)
+    job = make_job(server="pf-ok"); job.reference_time = "2026-09-01T14:00:00"; job.lookback_minutes = 60
+    _run(disp, job)
+    assert job.correlation == corr and job.status == "done"
+    events = [json.loads(l) for l in audit.read_text().splitlines()]
+    pf = next(e for e in events if e["event"] == "prefetch")
+    assert pf["leading_signal"] == "disk_io" and pf["anomalies"] == ["disk_io"] and pf["alarms"] == 1
+
+
+def test_prefetch_failure_does_not_block_investigation(tmp_path):
+    audit = tmp_path / "a.jsonl"
+
+    def boom(job):
+        raise RuntimeError("mcp down")
+
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing,
+                                   prefetch_fn=boom, audit_path=audit)
+    job = make_job(server="pf-fail"); job.reference_time = "2026-09-01T14:00:00"
+    _run(disp, job)
+    assert job.status == "done" and job.correlation is None
+    events = [json.loads(l) for l in audit.read_text().splitlines()]
+    assert any(e["event"] == "prefetch_failed" and "mcp down" in e["error"] for e in events)

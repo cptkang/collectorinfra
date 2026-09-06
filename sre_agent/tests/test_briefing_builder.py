@@ -33,6 +33,25 @@ def test_six_elements_present():
     assert b["severity"]["gate_tier"] == "PAGE"
 
 
+# ── 소비자 계약 (collectorinfra tests/test_briefing_contract.py 와 같은 리터럴) ──
+
+CONSUMER_CONTRACT_KEYS = frozenset({
+    "severity", "summary", "timeline", "bottleneck", "cause", "root_cause_hypotheses",
+    "recommendation", "limitations", "citations_verified", "hypotheses",
+})
+
+
+def test_output_keys_match_consumer_contract():
+    """build_briefing() 산출 키 == 본체 소비자 렌더러가 인지하는 키(plans/50 G6 · D-194).
+
+    키를 늘리거나 개명하면 본체의 `tests/test_briefing_contract.py::CONTRACT_KEYS`와
+    `noise_gate/domain/investigation_briefing.py::_ORDERED`도 함께 갱신한다(양방향 import 0이라
+    같은 리터럴을 양쪽에 둔다).
+    """
+    b = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"], gate_tier="PAGE")
+    assert set(b) == CONSUMER_CONTRACT_KEYS
+
+
 # ── 인용 검증 → 가설 강등 ─────────────────────────────────────────
 
 
@@ -126,3 +145,79 @@ def test_stub_briefing_shape():
     assert s["stub"] is True
     assert s["elements"] is None
     assert "LLM 키 부재" in s["message"]
+
+
+# ── 결정적 상관 → 타임라인·가설·한계 (plans/50 §7.2·§9.1 · SPEC-diagnosis-briefing) ──
+
+CORR = {
+    "reference_time": "2026-09-01T14:00:00",
+    "timeline": [
+        {"t_offset_min": -15, "kind": "metric", "detail": "disk_io sustained 시작 (peak 97.0 @ 2026-09-01T13:50:00 z=12.5)"},
+        {"t_offset_min": -12, "kind": "metric", "detail": "cpu spike 시작 (peak 88.0 @ 2026-09-01T13:48:00)"},
+        {"t_offset_min": -10, "kind": "alarm", "detail": "[severity 3] CPU Utilization Critical (cpu0)"},
+        {"t_offset_min": -2, "kind": "alarm", "detail": "[해소] CPU Utilization Critical (cpu0)"},
+    ],
+    "metric_findings": {
+        "disk_io": {"is_anomalous": True, "kind": "sustained", "onset_offset_min": -15, "peak_value": 97.0,
+                    "peak_time": "2026-09-01T13:50:00", "z_score": 12.5, "lead_lag_min": -5},
+        "cpu": {"is_anomalous": True, "kind": "spike", "onset_offset_min": -12, "peak_value": 88.0,
+                "peak_time": "2026-09-01T13:48:00", "z_score": None, "lead_lag_min": -2},
+        "memory": {"is_anomalous": False, "lead_lag_min": None},
+    },
+    "alarm_summary": {"count": 2, "first_offset_min": -10, "resolved": 1},
+    "leading_signal": "disk_io",
+    "notes": ["지표 정밀도 60분 단위 — 그보다 짧은 선후는 판정 불가"],
+}
+
+
+def _with_corr(answer="원인: 디스크 IO 폭주 ← polestar_metric_trend", corr=CORR):
+    return build_briefing(answer=answer, verdict=_verdict(), tool_names=["polestar_metric_trend"],
+                          gate_tier="PAGE", correlation=corr)
+
+
+def test_correlation_timeline_is_relative_and_first():
+    b = _with_corr()
+    assert b["timeline"][0] == "T-15m 메트릭 disk_io sustained 시작 (peak 97.0 @ 2026-09-01T13:50:00 z=12.5)"
+    assert b["timeline"][2] == "T-10m 알람 [severity 3] CPU Utilization Critical (cpu0)"
+    assert b["timeline"][-1] == "원인: 디스크 IO 폭주 ← polestar_metric_trend"   # 인용 라인은 뒤에
+
+
+def test_hypotheses_ranked_leading_first():
+    b = _with_corr()
+    h = b["root_cause_hypotheses"]
+    assert [x["rank"] for x in h] == [1, 2, 3]
+    assert h[0]["cause"] == "disk_io sustained 이상이 첫 알람에 5분 선행" and h[0]["confidence"] == "high"
+    assert h[0]["evidence"][0].startswith("T-15m 메트릭 disk_io") and any("알람" in e for e in h[0]["evidence"])
+    assert h[1]["cause"].startswith("cpu spike 이상") and h[1]["confidence"] == "medium"
+    assert h[2]["cause"] == "원인: 디스크 IO 폭주 ← polestar_metric_trend" and h[2]["confidence"] == "medium"
+    assert b["cause"] == h[0]["cause"]
+    assert all("상관 ≠ 인과" in x["reasoning"] for x in h[:2])
+
+
+def test_correlation_notes_reach_limitations():
+    b = _with_corr()
+    assert "지표 정밀도 60분 단위 — 그보다 짧은 선후는 판정 불가" in b["limitations"]
+    assert any("상관 ≠ 인과" in x for x in b["limitations"])
+
+
+def test_numbers_come_only_from_injected_values():
+    """환각 0 — 브리핑의 수치는 correlation 주입값에만 존재한다."""
+    b = _with_corr(answer="원인 서술 ← polestar_metric_trend")
+    text = "\n".join(b["timeline"]) + "\n".join(h["cause"] + h["reasoning"] for h in b["root_cause_hypotheses"])
+    import re
+    for num in set(re.findall(r"\d+(?:\.\d+)?", text)):
+        assert num in str(CORR) or num in ("1", "2", "3", "5"), num   # rank·시차(5=|−5|)
+
+
+def test_no_correlation_keeps_previous_shape_and_empty_hypotheses():
+    b = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"])
+    assert b["root_cause_hypotheses"] == []
+    assert b["timeline"] == ["x ← t"] and b["cause"] == "x ← t"
+    assert not any("상관" in x for x in b["limitations"])
+
+
+def test_uncited_llm_cause_is_low_confidence_hypothesis():
+    b = build_briefing(answer="아마 누수", verdict=_verdict(), tool_names=[],
+                       correlation={"timeline": [], "metric_findings": {}, "alarm_summary": {}, "leading_signal": None, "notes": []})
+    h = b["root_cause_hypotheses"]
+    assert len(h) == 1 and h[0]["confidence"] == "low" and h[0]["evidence"] == []

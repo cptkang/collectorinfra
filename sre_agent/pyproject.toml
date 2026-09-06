@@ -7,6 +7,9 @@ requires-python = ">=3.13"
 dependencies = [
     "holmesgpt>=0.36.0",
     "pydantic-settings>=2.0",
+    # 결정적 사전수집이 mcp_server 도구를 직접 부른다(plans/50 B′). 종전엔 holmesgpt 전이 의존이었다.
+    # 2.x는 FastMCP 제거로 mcp_server가 깨진다 — 루트 pyproject과 같은 상한(D-181).
+    "mcp<2",
 ]
 
 [project.optional-dependencies]

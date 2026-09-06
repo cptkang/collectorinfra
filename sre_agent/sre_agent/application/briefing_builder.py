@@ -35,6 +35,80 @@ HYPOTHESIS_PREFIX = "[가설] "
 # 조치 권고 human-gated 안내(항상 병기 — 실행 경로 부재를 서술로 고정, D-011).
 HUMAN_GATED_NOTE = "※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
 
+# 상관 ≠ 인과 — 결정적 상관에서 도출한 가설의 신뢰도 한계(plans/50 §6.3).
+CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
+_KIND_LABEL = {"metric": "메트릭", "alarm": "알람"}
+
+
+def _fmt_offset(minutes: object) -> str:
+    try:
+        m = int(minutes)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "T?"
+    return f"T{'-' if m < 0 else '+'}{abs(m)}m"
+
+
+def correlation_timeline(correlation: dict) -> list[str]:
+    """§9.1 상대시각 타임라인 — `T-15m 메트릭 디스크 IO 급등 …`(수치는 주입값만)."""
+    lines: list[str] = []
+    for t in correlation.get("timeline") or []:
+        if not isinstance(t, dict):
+            continue
+        kind = _KIND_LABEL.get(str(t.get("kind")), str(t.get("kind")))
+        lines.append(f"{_fmt_offset(t.get('t_offset_min'))} {kind} {t.get('detail')}")
+    return lines
+
+
+def root_cause_hypotheses(correlation: dict | None, llm_cause: str, citations_verified: bool) -> list[dict]:
+    """§7.2 복수 가설(rank·confidence·evidence) — 결정적 상관에서 먼저, LLM 인용 원인은 마지막.
+
+    ① 선행 신호(첫 알람보다 앞선 onset) 지표: sustained=high · spike=medium
+    ② 그 외 이상 지표: 알람 선행이면 medium, 아니면 low
+    ③ LLM 인용 원인: 인용 검증됐으면 medium, 아니면 low(가설 강등)
+
+    상관이 없으면 빈 목록 — 렌더러가 빈 값을 생략하므로 사용자 출력은 종전과 같다(기본 off 비트 동일).
+    """
+    out: list[dict] = []
+    if not correlation:
+        return out
+    if correlation:
+        findings = correlation.get("metric_findings") or {}
+        timeline = correlation_timeline(correlation)
+        leading = correlation.get("leading_signal")
+        first_alarm = (correlation.get("alarm_summary") or {}).get("first_offset_min")
+        ordered = sorted(
+            ((f.get("onset_offset_min"), name, f) for name, f in findings.items()
+             if isinstance(f, dict) and f.get("is_anomalous")),
+            key=lambda x: (x[0] if x[0] is not None else 0, x[1]),
+        )
+        for onset, name, f in ordered:
+            lag = f.get("lead_lag_min")
+            leads = isinstance(lag, int) and lag < 0
+            if name == leading and leads:
+                confidence = "high" if f.get("kind") == "sustained" else "medium"
+                cause = f"{name} {f.get('kind')} 이상이 첫 알람에 {abs(lag)}분 선행"
+            else:
+                confidence = "medium" if leads else "low"
+                lag_s = f"첫 알람 대비 {lag:+d}분" if isinstance(lag, int) else "알람 대비 시차 미산출"
+                cause = f"{name} {f.get('kind')} 이상 ({lag_s})"
+            evidence = [ln for ln in timeline if ln.split(" ", 2)[-1].startswith(name)]
+            if first_alarm is not None:
+                evidence += [ln for ln in timeline if " 알람 " in ln][:1]
+            out.append({
+                "rank": len(out) + 1, "cause": cause, "confidence": confidence,
+                "evidence": evidence or [f"{name} onset {_fmt_offset(onset)}"],
+                "reasoning": f"{name} onset {_fmt_offset(onset)} · peak {f.get('peak_value')} · z={f.get('z_score')}. "
+                             + CORRELATION_NOT_CAUSATION_NOTE,
+            })
+    if llm_cause and llm_cause.strip():
+        out.append({
+            "rank": len(out) + 1, "cause": llm_cause,
+            "confidence": "medium" if citations_verified else "low",
+            "evidence": [llm_cause] if citations_verified else [],
+            "reasoning": "조사 서술의 인용 원인" + ("" if citations_verified else " — 도구 출력 인용 결여로 가설 강등"),
+        })
+    return out
+
 
 def _is_cited(line: str, tool_names: list[str]) -> bool:
     """한 라인이 도구 출력 인용을 포함하는지 판정한다(도구명 언급 또는 인용 마커)."""
@@ -56,11 +130,16 @@ def build_briefing(
     gate_tier: str | None = None,
     remediation: list[str] | None = None,
     limitations: list[str] | None = None,
+    correlation: dict | None = None,
 ) -> dict:
     """6요소 브리핑 dict를 결정적으로 조립한다.
 
     인용 검증: 근거 인용이 없는 단정은 가설로 강등하고 `hypotheses`에 모은다. 도구 출력이
     전무하거나(tool_names 없음) 인용된 단정이 하나도 없으면 요약/원인을 가설로 표기한다.
+
+    `correlation`(plans/50 G4 · `CorrelationResult.to_dict()`)이 있으면 **그 수치가 정본**이다 —
+    타임라인은 상대시각 항목(§9.1)으로, 원인은 rank·confidence 가설(§7.2)로 조립하고 `notes`를
+    한계에 싣는다. 없으면 `root_cause_hypotheses`만 빈 목록이고 나머지는 종전과 같다.
     """
     tool_names = tool_names or []
     claims = _claim_lines(answer)
@@ -82,8 +161,18 @@ def build_briefing(
     else:
         cause = HYPOTHESIS_PREFIX + "원인 미확정"
 
-    # 타임라인: 인용/시간 패턴을 가진 라인만 추린다(없으면 안내).
-    timeline = [c for c in claims if _is_cited(c, tool_names)] or ["타임라인 근거 없음(도구 출력 인용 결여)"]
+    # 타임라인: 상관 타임라인(상대시각 · 주입값) 먼저, 인용 라인은 근거로 뒤에(없으면 안내).
+    cited_lines = [c for c in claims if _is_cited(c, tool_names)]
+    if correlation:
+        timeline = correlation_timeline(correlation) + cited_lines
+        timeline = timeline or ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
+    else:
+        timeline = cited_lines or ["타임라인 근거 없음(도구 출력 인용 결여)"]
+
+    # 원인 가설(§7.2): 결정적 상관에서 먼저, LLM 인용 원인은 마지막. rank 1이 `cause` 문자열이 된다.
+    hypotheses_ranked = root_cause_hypotheses(correlation, cause, citations_verified)
+    if correlation and hypotheses_ranked:
+        cause = hypotheses_ranked[0]["cause"]
 
     # 병목: 매칭된 시그니처 라벨에서 도출(없으면 미확정).
     if verdict.signals:
@@ -104,6 +193,9 @@ def build_briefing(
         limits.append("증거 불충분 — 원격 배치에서 로그·대체 카운터 무매칭(상향 보류)")
     if not citations_verified:
         limits.append("도구 출력 인용이 결여돼 서술을 가설로 강등함(글래스박스 검증 불가)")
+    if correlation:
+        limits.extend(str(n) for n in (correlation.get("notes") or []))
+        limits.append(CORRELATION_NOT_CAUSATION_NOTE)
 
     # 중요도 헤더: severity_judge 판정 + 게이트 근거.
     severity = {
@@ -121,6 +213,7 @@ def build_briefing(
         "timeline": timeline,
         "bottleneck": bottleneck,
         "cause": cause,
+        "root_cause_hypotheses": hypotheses_ranked,
         "recommendation": recommendation,
         "limitations": limits,
         "citations_verified": citations_verified,
@@ -135,6 +228,9 @@ def stub_briefing(message: str) -> dict:
 
 __all__ = [
     "BRIEFING_ELEMENTS",
+    "CORRELATION_NOT_CAUSATION_NOTE",
+    "correlation_timeline",
+    "root_cause_hypotheses",
     "CITATION_MARKERS",
     "HYPOTHESIS_PREFIX",
     "HUMAN_GATED_NOTE",
