@@ -1,6 +1,6 @@
 # Plan 50 실행 계획 — 장애진단·원인분석 잔여(v2.1 · G1~G6)
 
-> `plans/50` §0(v2.1) · `CAPABILITY-MAP-50.md` · D-194 예정 · 사용자 확정(2026-09-02):
+> `plans/50` §0(v2.1) · `CAPABILITY-MAP-50.md` · D-197 예정 · 사용자 확정(2026-09-02):
 > **6모듈 전부 순차** · 브리핑 계약 수정은 **챗·알림 둘 다 즉시 노출**(플래그 없음)
 
 ## 구현 순서와 그 이유
@@ -16,7 +16,7 @@ M5 evidence-correlation     ← M2 도구를 결정적으로 사전 호출 + 상
       ↓
 M6 diagnosis-briefing       ← M5 결과를 M1 계약으로 표현(rank·confidence·상대시각)
       ↓
-M7 문서(D-194 · plans/50 §0.3 해소 표기 · INDEX)
+M7 문서(D-197 · plans/50 §0.3 해소 표기 · INDEX)
 ```
 
 ## 검증 체크포인트

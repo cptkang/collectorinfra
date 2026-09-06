@@ -1,4 +1,4 @@
-"""조사 브리핑 수신 계약 — 공용 렌더러 (plans/50 G6 · SPEC-briefing-contract · D-194).
+"""조사 브리핑 수신 계약 — 공용 렌더러 (plans/50 G6 · SPEC-briefing-contract · D-197).
 
 `sre_agent` briefing_builder.build_briefing()이 내는 dict가 **정본**이다. 이 모듈은 그 dict를
 표현 매체(챗 평문 · WorkB HTML)에 무관한 `[(라벨, 평문 값), ...]`로 편다. 두 소비자

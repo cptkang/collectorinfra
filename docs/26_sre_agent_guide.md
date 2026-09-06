@@ -312,7 +312,7 @@ escalate = level > baseline                  # 엄밀 상향일 때만 True
 - **한계 서술 강제**: "조사 시점 단면" 문구는 항상 붙고, 증거 불충분·인용 결여는 자동 추가된다.
 - **권고는 항상 human-gated 문구 병기**: `※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)`.
 - 조사 미실행 시에는 6요소 대신 `{"stub": true, "message": <사유>, "elements": null}`을 낸다.
-- **사건 좌표계·결정적 상관(D-194 · `plans/50` v2.2)**: 잡에 `reference_time`(push=알람 시각 · pull=호출자 파싱)·
+- **사건 좌표계·결정적 상관(D-197 · `plans/50` v2.2)**: 잡에 `reference_time`(push=알람 시각 · pull=호출자 파싱)·
   `lookback_minutes`가 실리면 조사 지침(`investigation_guidance.build_guidance`)이 도구 앵커 인자 사용을 지시한다.
   `EVIDENCE_CORRELATION_ENABLED=true`(기본 false)면 조사 **전에** `evidence_prefetch`가 mcp_server 도구(구간 내 전 알람 +
   지표 4종·baseline)를 코드로 호출해 `domain/correlation.py`가 z-score·선행성·`T-15m` 타임라인을 계산하고, 그 결과가

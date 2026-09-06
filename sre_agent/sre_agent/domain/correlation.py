@@ -1,4 +1,4 @@
-"""결정적 상관 계산 (plans/50 §6 · SPEC-evidence-correlation · D-194).
+"""결정적 상관 계산 (plans/50 §6 · SPEC-evidence-correlation · D-197).
 
 기준시각 좌표계(`reference_time`, 상대 분 `t_offset_min` — 음수가 이전)에서 알람과 지표 이상을 병합해
 "무엇이 먼저 일어났는가"를 계산한다. **벤더 중립**: 시각·수치·라벨만 다루며 관측 제품의 어휘(테이블·

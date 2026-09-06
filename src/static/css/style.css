@@ -65,8 +65,10 @@
     --on-accent: #ffffff;
     --header-bg: rgba(255, 255, 255, 0.88);
     --bar-bg: rgba(255, 255, 255, 0.94);
-    --tooltip-bg: #1e293b;
-    --tooltip-text: #f1f5f9;
+    /* 툴팁은 테마를 따른다 — 배경만 다크로 두면 내부 텍스트(--text 계열)와 충돌해
+       라이트 모드에서 판독 불가가 된다(DB 상태·알림 수신 툴팁 실측). */
+    --tooltip-bg: #ffffff;
+    --tooltip-text: #0f172a;
     --overlay-scrim: rgba(15, 23, 42, 0.45);
     --table-header-border: rgba(15, 23, 42, 0.14);
     --table-cell-border: rgba(15, 23, 42, 0.08);
@@ -290,6 +292,22 @@ header nav {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+/* 헤더 컨트롤 높이 통일 — 배지·알림 토글·레벨 셀렉트·버튼이 패딩 제각각으로
+   25~33px까지 흩어져 있어, 테마 토글(32px 정사각)을 기준 높이로 고정한다.
+   폰트·좌우 패딩은 각자 유지하고 높이만 맞춘다(index·admin 헤더 공용).
+   margin: 0 — 알림 수신 칩은 <label>이라 폼용 전역 label 규칙(margin-bottom: 8px)을
+   물려받아 혼자 위로 밀렸다. line-height: 1 — Admin은 <a>(body 1.6 상속), Logout은
+   <button>(UA 기본)이라 라인박스 높이가 달라 글자 세로 위치가 미묘하게 어긋났다. */
+header nav .status-badge,
+header nav .alarm-toggle,
+header nav .alarm-level-select,
+header nav .theme-toggle,
+header nav .btn {
+    height: 32px;
+    margin: 0;
+    line-height: 1;
 }
 
 /* ─── Chat Layout ─── */
@@ -1090,6 +1108,15 @@ body.auth-pending .auth-splash {
     display: none;
 }
 
+/* 이벤트 알람 뷰 "맨 위로" 버튼 — 알람은 최신이 맨 위에 쌓이므로 채팅과 방향이 반대다.
+   .alarm-view 자체가 스크롤 컨테이너라 absolute면 내용과 함께 밀려 내려간다 → 뷰포트 고정.
+   알람 뷰가 .view-hidden(display:none)이면 내부 버튼도 함께 숨는다. */
+.scroll-to-bottom-btn--alarm {
+    position: fixed;
+    bottom: 32px;
+    right: 32px;
+}
+
 /* ─── Right Progress Panel ─── */
 
 .progress-panel {
@@ -1130,12 +1157,17 @@ body.auth-pending .auth-splash {
     display: none;
 }
 
+/* 질의 이력 토글(.history-panel-toggle)과 동일 디자인 — 좌우 대칭 패널이라 버튼도
+   같은 형태여야 한다. svg 규칙이 없으면 SVG 기본값(검은 채움)으로 그려져 다크 모드에서
+   안 보이고 이력 쪽(스트로크 셰브론)과 모양도 달라진다. */
 .progress-panel-toggle {
     background: none;
     border: none;
     color: var(--text-muted);
     cursor: pointer;
     padding: 4px;
+    display: inline-flex;
+    align-items: center;
     border-radius: var(--radius-sm);
     transition: color 0.15s, background 0.15s;
     flex-shrink: 0;
@@ -1143,7 +1175,19 @@ body.auth-pending .auth-splash {
 
 .progress-panel-toggle:hover {
     color: var(--text);
-    background: var(--surface);
+    background: var(--surface-hover);
+}
+
+.progress-panel-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.progress-panel-toggle svg {
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    transition: transform 0.2s;
 }
 
 .chat-layout.panel-collapsed .progress-panel-toggle svg {
@@ -3882,10 +3926,13 @@ select:focus {
 
 .alarm-level-select {
     margin-left: 6px;
-    padding: 4px 8px;
+    /* 우측 패딩은 캐럿 자리 — 전역 select 규칙의 background-image 캐럿을 그대로 쓴다.
+       background 단축 속성을 쓰면 그 캐럿 이미지가 지워지므로 반드시 background-color로. */
+    padding: 4px 22px 4px 8px;
     font-size: 0.72rem;
     color: var(--text-secondary);
-    background: var(--surface);
+    background-color: var(--surface);
+    background-position: right 8px center;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -3996,6 +4043,19 @@ select:focus {
     align-items: center;
     gap: 5px;
     cursor: pointer;
+    /* 폼용 전역 label 규칙(margin-bottom: 8px)이 셀 안 체크박스를 위로 밀어 올린다 */
+    margin: 0;
+}
+
+/* 사용자 관리 역할·상태 셀렉트 — 전역 select는 폼용(패딩 12/14 · width 100% · 캐럿 right 14px)
+   이라 테이블 셀에서 과대하고 캐럿이 글자를 덮는다. 컴팩트 크기 + 캐럿 자리 확보. */
+.role-select,
+.status-select {
+    width: auto;
+    padding: 5px 26px 5px 10px;
+    font-size: 0.8125rem;
+    background-position: right 8px center;
+    border-radius: var(--radius-sm);
 }
 
 .zone-chk-group input[type="checkbox"] {
@@ -4319,9 +4379,13 @@ select:focus {
 }
 
 .settings-filter-select {
-    padding: 7px 10px;
+    width: auto;
+    /* background 단축 속성은 전역 select의 캐럿 background-image를 지운다(.alarm-level-select와
+       동일 결함) — background-color로 쓰고 우측 패딩으로 캐럿 자리를 확보한다. */
+    padding: 7px 26px 7px 10px;
     font-size: 0.8rem;
-    background: var(--bg);
+    background-color: var(--bg);
+    background-position: right 8px center;
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -4334,6 +4398,8 @@ select:focus {
     font-size: 0.75rem;
     color: var(--text-secondary);
     cursor: pointer;
+    /* 폼용 전역 label 규칙(margin-bottom: 8px)의 필터 행 수직 어긋남 상쇄 */
+    margin: 0;
 }
 
 .settings-count {

@@ -76,10 +76,10 @@ class AgentSettings(BaseSettings):
     # **제시 전용**: 실행 코드 경로는 어느 배치에도 존재하지 않는다(D-003·테스트 고정).
     # severity_judge가 off면 매칭 시그니처가 없어 권고도 비어 있다(근거 없는 권고 금지).
     remediation_recommender_enabled: bool = False
-    # 조사 지침 추가 문구(plans/50 G5 · D-194). 기본 None — 운영자가 .env로 넣는 자유 지침이며
+    # 조사 지침 추가 문구(plans/50 G5 · D-197). 기본 None — 운영자가 .env로 넣는 자유 지침이며
     # Plan 51 §6 플레이북의 편입점이다. `investigation_guidance.build_guidance`가 말미에 덧붙인다.
     investigation_guidance_extra: str | None = None
-    # 사건 구간 증거 사전수집 + 결정적 상관(plans/50 G4 · D-194). 기본 off — 켜면 잡에 reference_time이
+    # 사건 구간 증거 사전수집 + 결정적 상관(plans/50 G4 · D-197). 기본 off — 켜면 잡에 reference_time이
     # 있을 때 조사 전에 mcp_server 도구(전 알람 1 + 지표 4)를 코드가 호출해 선행 신호·타임라인을 계산하고
     # 조사 지침·브리핑에 싣는다. LLM 호출 0. 실패해도 조사를 막지 않는다(상관 없음 + 감사).
     evidence_correlation_enabled: bool = False

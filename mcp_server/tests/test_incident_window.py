@@ -1,4 +1,4 @@
-"""사건 구간 앵커 조회 도구 (plans/50 G1·G2·G3 · SPEC-incident-window-tools · D-194).
+"""사건 구간 앵커 조회 도구 (plans/50 G1·G2·G3 · SPEC-incident-window-tools · D-197).
 
 핵심 회귀 형태: **인자를 지정하지 않으면 생성 SQL이 2026-09-02 스냅샷과 문자열 동일**하다.
 스냅샷 리터럴은 변경 직전 `build_*_sql` 실행 결과를 그대로 박은 것이다(자기 델타 검증).

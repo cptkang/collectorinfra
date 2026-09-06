@@ -1,4 +1,4 @@
-"""사건 구간 증거 사전수집 (plans/50 G4-b · SPEC-evidence-correlation · D-194).
+"""사건 구간 증거 사전수집 (plans/50 G4-b · SPEC-evidence-correlation · D-197).
 
 조사 LLM이 도구를 부르기 전에 코드가 사건 구간의 **전 알람 + 지표 4종(baseline 포함)** 을 결정적으로
 수집해 `domain.correlation.correlate`에 넘긴다. 관측 제품 어휘(도구명·행 컬럼·지표 종류)는 이 모듈까지만

@@ -1484,7 +1484,7 @@
                     "</select></td>" +
                     deptCell +
                     zoneCell +
-                    "<td style='font-size:0.75rem'>" + (u.last_login_at ? u.last_login_at.substring(0, 19) : "-") + "</td>" +
+                    "<td style='font-size:0.75rem'>" + escapeHtml(formatTsKst(u.last_login_at)) + "</td>" +
                     "<td>" +
                         '<button class="btn btn-secondary btn-sm reset-pw-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;margin-right:4px"' + protAttr + ">PW초기화</button>" +
                         '<button class="btn btn-secondary btn-sm delete-user-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;color:#ef4444"' + protAttr + ">삭제</button>" +
@@ -1707,7 +1707,7 @@
         logsBody.innerHTML = "";
         logs.forEach(function(log) {
             var tr = document.createElement("tr");
-            var time = log.created_at ? log.created_at.substring(0, 19) : "-";
+            var time = formatTsKst(log.created_at);
             var eventType = log.event_type || "-";
             var userId = log.user_id || "-";
             var ip = log.ip_address || "-";
@@ -1794,7 +1794,7 @@
 
             alerts.forEach(function(a) {
                 var tr = document.createElement("tr");
-                var time = a.created_at ? a.created_at.substring(0, 19) : "-";
+                var time = formatTsKst(a.created_at);
                 var severity = (a.detail && a.detail.severity) || "warning";
                 var sevColor = severity === "critical" ? "var(--error)" : severity === "warning" ? "#f59e0b" : "var(--text-muted)";
                 var userId = a.user_id || "-";
@@ -1906,6 +1906,44 @@
         if (sec < 3600) return Math.floor(sec / 60) + "분";
         if (sec < 86400) return Math.floor(sec / 3600) + "시간";
         return Math.floor(sec / 86400) + "일";
+    }
+
+    // 시각 표시 헬퍼 — ISO 문자열을 "YYYY-MM-DD HH:mm (N분 전)"로 만든다.
+    // 서버 시각은 두 계열이 섞여 있다: 인증(last_login_at)·감사 로그는 aware UTC
+    // (+00:00 접미, datetime.now(timezone.utc).isoformat()), incident created_at은
+    // naive 서버 로컬(KST, alarm_notifier의 datetime.now()). 오프셋 유무로 분기해
+    // aware만 KST(UTC+9 고정 — 한국은 DST 없음)로 변환하고, naive는 벽시계 숫자를
+    // 그대로 쓴다(이중 변환 방지). 종전 substring(0,19)는 UTC를 표기 없이 노출했다.
+    function formatTsKst(iso) {
+        if (!iso) return "-";
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso).substring(0, 19);
+        var y, mo, da, h, mi;
+        if (/Z$|[+-]\d\d:?\d\d$/.test(String(iso))) {
+            var k = new Date(d.getTime() + 9 * 3600 * 1000);
+            y = k.getUTCFullYear(); mo = k.getUTCMonth() + 1; da = k.getUTCDate();
+            h = k.getUTCHours(); mi = k.getUTCMinutes();
+        } else {
+            y = d.getFullYear(); mo = d.getMonth() + 1; da = d.getDate();
+            h = d.getHours(); mi = d.getMinutes();
+        }
+        function p(n) { return n < 10 ? "0" + n : String(n); }
+        var sec = Math.floor((Date.now() - d.getTime()) / 1000);
+        if (sec < 0) sec = 0;
+        return y + "-" + p(mo) + "-" + p(da) + " " + p(h) + ":" + p(mi) +
+            " (" + formatAgo(sec) + ")";
+    }
+
+    // 상대시간 버킷: 1분 미만 / N분 전(1~59) / N시간 전(1~23) / N일 전(1~364) / N년 전
+    function formatAgo(sec) {
+        if (sec < 60) return "1분 미만";
+        var min = Math.floor(sec / 60);
+        if (min < 60) return min + "분 전";
+        var hr = Math.floor(min / 60);
+        if (hr < 24) return hr + "시간 전";
+        var day = Math.floor(hr / 24);
+        if (day < 365) return day + "일 전";
+        return Math.floor(day / 365) + "년 전";
     }
 
     async function loadIncidents() {

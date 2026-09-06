@@ -1,4 +1,4 @@
-"""사건 시각 파싱 + 위임 인자 전달 (plans/50 A′-5 · SPEC-incident-scope · D-194)."""
+"""사건 시각 파싱 + 위임 인자 전달 (plans/50 A′-5 · SPEC-incident-scope · D-197)."""
 
 from __future__ import annotations
 

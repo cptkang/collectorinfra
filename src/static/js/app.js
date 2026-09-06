@@ -43,6 +43,7 @@
     var promptConfirm = document.getElementById("promptConfirm");
     var promptConfirmRun = document.getElementById("promptConfirmRun");
     var promptConfirmEdit = document.getElementById("promptConfirmEdit");
+    var alarmScrollTopBtn = document.getElementById("alarmScrollTopBtn");
 
     // 질의 이력 사이드바(D-183) — 이 브라우저에만 남는 목록
     var historyPanel = document.getElementById("historyPanel");
@@ -110,14 +111,16 @@
                 var adminLink = document.getElementById("adminEntryLink");
                 if (adminLink && userInfo &&
                     (userInfo.role === "admin" || !data.auth_enabled)) {
-                    adminLink.style.display = "inline-block";
+                    // inline-block으로 두면 .btn의 inline-flex(수직 중앙정렬)가 덮여
+                    // 헤더 고정 높이(32px)에서 글자가 위로 붙는다 — 클래스 표시값 복원
+                    adminLink.style.display = "inline-flex";
                 }
                 // Plan 59 §17: 알림 존 권한을 확정한 뒤 구독을 시작한다(권한 없으면 미구독).
                 initAlarmSubscription(userInfo, data.auth_enabled);
                 // 로그아웃 버튼
                 var logoutBtn = document.getElementById("userLogoutBtn");
                 if (logoutBtn && data.auth_enabled) {
-                    logoutBtn.style.display = "inline-block";
+                    logoutBtn.style.display = "inline-flex";   // .btn 수직 중앙정렬 유지(Admin과 동일)
                     logoutBtn.addEventListener("click", function() {
                         fetch("/api/v1/auth/logout", {
                             method: "POST",
@@ -493,6 +496,19 @@
     if (progressScrollBtn) {
         progressScrollBtn.addEventListener("click", function () {
             scrollProgressToBottom(true);   // smooth 이동 + progressStickToBottom=true 복귀
+        });
+    }
+
+    // 이벤트 알람 뷰 스크롤: 최신 알람은 맨 위에 쌓이므로 채팅 버튼의 상하 반전이다 —
+    // 맨 위를 벗어나면 "맨 위로" 버튼을 띄우고, 그 사이 도착한 알람은 점으로 강조한다.
+    if (alarmView) {
+        alarmView.addEventListener("scroll", updateAlarmScrollBtn, { passive: true });
+    }
+    if (alarmScrollTopBtn) {
+        alarmScrollTopBtn.addEventListener("click", function () {
+            alarmView.scrollTo({ top: 0, behavior: "smooth" });
+            alarmHasNew = false;
+            updateAlarmScrollBtn();
         });
     }
 
@@ -2799,6 +2815,7 @@
         if (view === "alarm") {
             alarmUnreadCount = 0;
             renderAlarmBadge();
+            updateAlarmScrollBtn();   // 복귀 시 스크롤 위치에 맞춰 "맨 위로" 버튼 표시 갱신
         } else if (view === "chat" && stickToBottom && chatMessages) {
             // 숨겨진 동안 chatMessages.scrollHeight는 0이라 스트리밍 추종이 맨 위로 밀어 놓는다.
             // 돌아올 때 "맨 아래 고정" 상태였던 경우에 한해 복원한다.
@@ -2818,6 +2835,23 @@
     // 현재 선택된 레벨 필터("" = 전체). 새로고침하면 전체로 돌아간다 —
     // 저장해 두면 다시 들어왔을 때 걸려 있는 필터 때문에 알람이 없는 것처럼 보인다.
     var alarmFilterSeverity = "";
+
+    // ─── 알람 뷰 "맨 위로" 버튼 (채팅 scroll-to-bottom의 상하 반전) ───
+    // 최신 알람이 맨 위에 삽입되므로 "새 내용" 방향이 채팅과 반대다. 맨 위 근처로
+    // 돌아오면 신규 강조를 해제한다(채팅의 stick-to-bottom 복귀와 동형).
+    var alarmHasNew = false;
+
+    function isAlarmNearTop() {
+        return !alarmView || alarmView.scrollTop < 40;
+    }
+
+    function updateAlarmScrollBtn() {
+        if (!alarmScrollTopBtn) return;
+        if (isAlarmNearTop()) alarmHasNew = false;
+        var show = activeView === "alarm" && !isAlarmNearTop();
+        alarmScrollTopBtn.classList.toggle("is-visible", show);
+        alarmScrollTopBtn.classList.toggle("has-new", show && alarmHasNew);
+    }
 
     // 수신 건수 표시·빈 상태를 목록의 실제 내용에 맞춘다.
     // 레벨 칩과 키워드는 카드를 지우지 않고 감추기만 한다 — 필터를 풀면 그대로 돌아온다.
@@ -3054,6 +3088,8 @@
                 alarmUnreadCount = 0;
                 renderAlarmBadge();
                 updateAlarmViewState();
+                alarmHasNew = false;
+                updateAlarmScrollBtn();   // 목록이 비면 버튼도 정리(스크롤 이벤트가 안 온다)
             });
         }
         document.querySelectorAll(".alarm-chip").forEach(function (chip) {
@@ -3325,7 +3361,11 @@
         if (activeView !== "alarm") {
             alarmUnreadCount += 1;
             renderAlarmBadge();
+        } else if (!isAlarmNearTop()) {
+            // 알람 뷰에서 아래(과거)를 보는 중 도착 — "맨 위로" 버튼에 신규 점 강조
+            alarmHasNew = true;
         }
+        updateAlarmScrollBtn();
         updateAlarmViewState();
     }
 

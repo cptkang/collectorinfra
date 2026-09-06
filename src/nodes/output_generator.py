@@ -250,7 +250,11 @@ async def _generate_text_response(
         return _generate_empty_result_response(parsed, state.get("empty_diagnosis"))
 
     if llm is None:
-        llm = create_llm(config)
+        # 최종 사용자 응답만 answer 프로파일(D-194). D-062 중간 합성
+        # (stream_user_response=False)은 최종 합성의 재료이므로 결정적 프로파일을 유지한다.
+        llm = create_llm(
+            config, purpose="answer" if stream_user_response else "deterministic"
+        )
 
     # 기준 정보(D-186): 프롬프트에 연도가 전혀 없어("1월~6월" 질의 + M/M+1 칼럼) LLM이 학습
     # prior(2023년)를 적었다(라이브 실측 2026-08-25). 결정적 값(앵커·조회 기간·오늘)을 주입.

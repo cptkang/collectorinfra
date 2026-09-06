@@ -1,6 +1,6 @@
 # Todo 50 — 장애진단·원인분석 잔여
 
-> `tasks/plan-50.md` · 모듈 id는 `CAPABILITY-MAP-50.md` 기준 · **전부 완료(2026-09-02 · D-194)**
+> `tasks/plan-50.md` · 모듈 id는 `CAPABILITY-MAP-50.md` 기준 · **전부 완료(2026-09-02 · D-197)**
 
 ## `briefing-contract` (M1)
 - [x] T1 결함 고정 테스트(red) — `tests/test_briefing_contract.py`(16)
@@ -26,7 +26,7 @@
 - [x] `build_briefing(correlation=…)` — 상대시각 타임라인 · `root_cause_hypotheses` rank/confidence · `notes`→limitations · 상관 없으면 `[]` · 렌더러 `[원인 가설]`
 
 ## 문서 (M7)
-- [x] D-194 등재(3곳) · `plans/50` §0.3 해소 표·§0.6 ✅·§18 v2.2 · `plans/INDEX.md` · SPEC 정정 · `docs/26` §3.7 · `docs/18`
+- [x] D-197 등재(3곳) · `plans/50` §0.3 해소 표·§0.6 ✅·§18 v2.2 · `plans/INDEX.md` · SPEC 정정 · `docs/26` §3.7 · `docs/18`
 
 ## 남은 것(범위 밖)
 - [ ] 실 조사 e2e(D-127 건별 승인) · 플래그 on 운영 실측 · Phase C′(다중서버 연쇄 · 진단 이력)

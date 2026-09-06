@@ -662,7 +662,8 @@ async def _synthesize_finalized(
             merged_rows.extend(rows)
 
     if llm is None:
-        llm = create_llm(app_config)
+        # 최종 사용자 응답 합성 — answer 프로파일(D-194)
+        llm = create_llm(app_config, purpose="answer")
 
     user_prompt = (
         f"## 사용자 원본 질의\n{state.get('user_query', '')}\n\n"

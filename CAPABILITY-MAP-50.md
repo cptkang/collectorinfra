@@ -1,4 +1,4 @@
-# Capability Map: 장애진단 · 원인분석 잔여 (`plans/50` v2.1 · D-194 예정)
+# Capability Map: 장애진단 · 원인분석 잔여 (`plans/50` v2.1 · D-197 예정)
 
 > **작성일**: 2026-09-02 · **근거**: `plans/50-fault-diagnosis-rca-WIP.md` §0(v2.1)
 > **전제**: 조사 실행·증거 수집 도구·pull/push 트리거·인가 게이트는 **이미 구현됨**(D-118·D-122·D-124).
@@ -19,7 +19,7 @@
 **Build order**: `briefing-contract` · `incident-window-tools` · `investigation-guidance` (**서로 독립 — 병렬 가능**)
 → `incident-scope` → `evidence-correlation` → `diagnosis-briefing`
 
-> **구현 완료(2026-09-02 · D-194)** — 6모듈 전부. 구현 중 확정: `evidence-correlation`의 호출 수단은 계획 B′(`mcp` 클라이언트)를
+> **구현 완료(2026-09-02 · D-197)** — 6모듈 전부. 구현 중 확정: `evidence-correlation`의 호출 수단은 계획 B′(`mcp` 클라이언트)를
 > 선행 채택(holmes `ToolInvokeContext`가 LLM 객체 필수 — 실측). 검증 수치·잔여는 `plans/50` §0.3 해소 표·§18 v2.2.
 
 ## 경계가 이렇게 그어진 이유

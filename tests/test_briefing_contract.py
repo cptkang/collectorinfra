@@ -1,4 +1,4 @@
-"""조사 브리핑 키 계약 정합 (plans/50 G6 · SPEC-briefing-contract · D-194).
+"""조사 브리핑 키 계약 정합 (plans/50 G6 · SPEC-briefing-contract · D-197).
 
 생산자(`sre_agent` briefing_builder.build_briefing)가 내는 키가 정본이고, 두 소비자
 (챗 `_briefing_to_text` · WorkB `_investigation_briefing_html`)는 같은 domain 렌더러를 쓴다.

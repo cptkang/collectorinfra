@@ -1,4 +1,4 @@
-"""사건 기준시각·구간 (plans/50 A′-5 · SPEC-incident-scope · D-194).
+"""사건 기준시각·구간 (plans/50 A′-5 · SPEC-incident-scope · D-197).
 
 조사에 시간 좌표계를 부여하는 최소 계약이다. push는 알람 시각(yyyyMMddHHmmss), pull은 호출자가
 파싱한 ISO 8601을 넘기며, 잡은 `reference_time`(ISO) · `lookback_minutes`를 보유한다.

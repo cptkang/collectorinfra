@@ -1,4 +1,4 @@
-"""조사 지침 조립 (plans/50 G5 · SPEC-investigation-guidance · D-194).
+"""조사 지침 조립 (plans/50 G5 · SPEC-investigation-guidance · D-197).
 
 `system_prompt_additions`를 넘기는 프로덕션 호출부가 0건이라(2026-08-27·09-02 실측) 원격 프로파일이
 요구한 `REMOTE_VM_SHELL_NOTE`조차 주입되지 않았다. 여기서 지침을 한 문자열로 조립해

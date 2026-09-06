@@ -1,4 +1,4 @@
-"""결정적 상관 계산 골든 케이스 (plans/50 §6 · SPEC-evidence-correlation · D-194)."""
+"""결정적 상관 계산 골든 케이스 (plans/50 §6 · SPEC-evidence-correlation · D-197)."""
 
 import pathlib
 

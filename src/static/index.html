@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=13">
+    <link rel="stylesheet" href="/static/css/style.css?v=15">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -294,6 +294,14 @@
                     title="필터 초기화" aria-label="레벨·검색 필터 초기화">초기화</button>
             </div>
             <div class="alarm-list" id="alarmList"></div>
+            <!-- 맨 위로 이동 플로팅 버튼 — 알람은 최신순(맨 위)이라 채팅 버튼의 상하 반전이다 -->
+            <button class="scroll-to-bottom-btn scroll-to-bottom-btn--alarm" id="alarmScrollTopBtn"
+                type="button" aria-label="맨 위(최신 알람)로 이동">
+                <svg viewBox="0 0 24 24" width="20" height="20">
+                    <polyline points="18 15 12 9 6 15"></polyline>
+                </svg>
+                <span class="scroll-to-bottom-dot" aria-hidden="true"></span>
+            </button>
             <div class="alarm-empty" id="alarmEmpty">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -306,7 +314,7 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=8"></script>
+    <script src="/static/js/app.js?v=9"></script>
 </body>
 
 </html>

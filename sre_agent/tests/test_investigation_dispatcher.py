@@ -336,7 +336,7 @@ def test_injected_as_jobstore_executor_real_path(tmp_path):
     assert got["briefing"]["severity"]["level"] == "심각"
 
 
-# ── 결정적 사전수집 주입 (plans/50 G4 · D-194) ──────────────────────
+# ── 결정적 사전수집 주입 (plans/50 G4 · D-197) ──────────────────────
 
 
 def _run(disp, job):

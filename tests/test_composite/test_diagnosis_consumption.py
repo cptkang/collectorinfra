@@ -32,7 +32,7 @@ def test_briefing_elements_are_rendered():
     """브리핑을 공용 렌더러(`noise_gate.domain.investigation_briefing`)로 조립한다 — 사본 금지.
 
     키는 생산자 정본(`limitations`·`hypotheses`·`severity`)이다. 종전의 `evidence`·`limitation`은
-    생산자가 만들지 않는 키를 이 테스트가 정답으로 굳힌 것이라 정정했다(plans/50 G6 · D-194).
+    생산자가 만들지 않는 키를 이 테스트가 정답으로 굳힌 것이라 정정했다(plans/50 G6 · D-197).
     """
     text = _briefing_to_text({
         "severity": {"level": "심각", "confidence": "high"}, "summary": "요약문",

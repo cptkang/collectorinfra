@@ -1,4 +1,4 @@
-"""조사 지침 주입 배선 (plans/50 G5 · SPEC-investigation-guidance · D-194).
+"""조사 지침 주입 배선 (plans/50 G5 · SPEC-investigation-guidance · D-197).
 
 핵심 고정: `_default_diagnose_fn`이 `ask()`에 `system_prompt_additions`를 **실제로 넘긴다**
 (2026-09-02 실측 0건이던 결함). 실 LLM은 호출하지 않는다 — DiagnosisAgent를 대역으로 바꾼다.

@@ -116,7 +116,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 310
+    assert len(items) == 312
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -179,6 +179,11 @@ def test_t2_group_and_field_counts():
     → 2026-08-31 원격 `multiintent` 병합으로 **309**. 증가분 4는 ALARM_DEAD_LETTER_{STREAM_KEY,
       MAXLEN}·ALARM_SERVER_IDENTITY_{TIMEOUT_SECONDS,CACHE_TTL_SECONDS}이며 그룹 수는 불변
       (alarm 기존 그룹) — 병합 시 양쪽 카운터(305 vs 278)가 갈렸으므로 **실측으로 확정**했다.
+    → LLM_FABRIX_{LLM_CONFIG,ANSWER_LLM_CONFIG} 추가(D-194 FabriX 하이퍼파라미터 프로파일)로
+      **311**. 그룹 수 불변(llm 기존 그룹).
+    → 2026-09-01 원격 `multiintent` 병합으로 **312**. 원격 증가분 1은
+      NOISE_ALARM_PROMPT_LLM_SUGGEST_ENABLED(D-192 알람 LLM 추천 질의 · 기본 off).
+      그룹 수 불변 — 병합 시 양쪽 카운터(310 vs 311)가 갈렸으므로 **실측으로 확정**했다.
 
     ⚠ 이 숫자 단언은 **본질적으로 취약하다** — 설정을 추가할 때마다 갱신해야 한다.
     회귀를 실제로 막는 것은 아래 파생 등가성 가드이며, 이 단언은 "얼마나 늘었는지"를
@@ -187,7 +192,7 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 24
-    assert len(index) == 310
+    assert len(index) == 312
     assert len([s for s in index.values() if s.group_key == "general"]) == 18
 
 

@@ -138,7 +138,7 @@ def _investigation_briefing_html(briefing: dict) -> str:
     브리핑 JSON은 sre_agent가 반환한 구조화 dict다. 스텁(조사 서비스 미가용·LLM 키 부재)이면
     `{"stub": True, "message": ...}`, 실 조사면 생산자 정본 키(severity/summary/timeline/bottleneck/
     cause/recommendation/limitations/hypotheses — sre-agent/02 §7)다. 키·순서·값 전개는 공용 렌더러
-    `noise_gate.domain.investigation_briefing`이 담당하고(챗 경로와 같은 함수 — D-194), 여기서는
+    `noise_gate.domain.investigation_briefing`이 담당하고(챗 경로와 같은 함수 — D-197), 여기서는
     HTML 이스케이프와 줄바꿈 변환만 한다. 모든 텍스트는 escape한다.
     """
     header = "<br><br><b>조사 브리핑 (자동 조사)</b>"

@@ -1,4 +1,4 @@
-"""mcp_server 도구 배치 호출 (plans/50 B′ · SPEC-evidence-correlation · D-194).
+"""mcp_server 도구 배치 호출 (plans/50 B′ · SPEC-evidence-correlation · D-197).
 
 결정적 사전수집이 조사 LLM과 무관하게 도구를 부르기 위한 최소 SSE 클라이언트다. holmes의
 `Tool.invoke`는 `ToolInvokeContext(llm=…)`를 요구해(실측 0.36.0) LLM 객체 없이는 쓸 수 없으므로

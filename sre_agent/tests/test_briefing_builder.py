@@ -42,7 +42,7 @@ CONSUMER_CONTRACT_KEYS = frozenset({
 
 
 def test_output_keys_match_consumer_contract():
-    """build_briefing() 산출 키 == 본체 소비자 렌더러가 인지하는 키(plans/50 G6 · D-194).
+    """build_briefing() 산출 키 == 본체 소비자 렌더러가 인지하는 키(plans/50 G6 · D-197).
 
     키를 늘리거나 개명하면 본체의 `tests/test_briefing_contract.py::CONTRACT_KEYS`와
     `noise_gate/domain/investigation_briefing.py::_ORDERED`도 함께 갱신한다(양방향 import 0이라

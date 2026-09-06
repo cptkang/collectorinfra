@@ -135,7 +135,7 @@ def _default_diagnose_fn(settings: AgentSettings):
                 mcp_servers=_build_mcp_servers(settings),
             )
             holder["agent"] = agent
-        # 조사 지침 주입(plans/50 G5 · D-194): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
+        # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
         return agent.ask(
             _job_to_question(job),

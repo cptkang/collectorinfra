@@ -75,7 +75,7 @@ class InvestigationJob:
     cost: float | None = None
     error: str | None = None
     reason: str | None = None
-    # 사건 좌표계(plans/50 A′-5 · D-194). push=alarmTime, pull=호출자 파싱. None이면 앵커 없는 조사.
+    # 사건 좌표계(plans/50 A′-5 · D-197). push=alarmTime, pull=호출자 파싱. None이면 앵커 없는 조사.
     reference_time: str | None = None
     lookback_minutes: int | None = None
     # 결정적 상관 결과(CorrelationResult.to_dict — plans/50 G4). 사전수집 off·불가면 None.

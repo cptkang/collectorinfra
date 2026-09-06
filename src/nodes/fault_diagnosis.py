@@ -56,7 +56,7 @@ _TERMINAL_POLL_STATUSES: frozenset[str] = frozenset(
 _ANSWER_FIELDS = ("answer", "diagnosis", "response", "text", "message")
 
 # 브리핑 렌더 순서·라벨은 공용 렌더러(noise_gate.domain.investigation_briefing)가 정본이다 —
-# 생산자(sre_agent briefing_builder) 키를 따르며 alarm_notifier와 같은 함수를 쓴다(D-194).
+# 생산자(sre_agent briefing_builder) 키를 따르며 alarm_notifier와 같은 함수를 쓴다(D-197).
 # 인가 거부 시 사용자에게 보일 문구. 사유별로 **다른 안내**를 준다 —
 # "권한이 없습니다" 하나로 뭉치면 설정 오류(미상 모드)와 정상 거부가 구분되지 않는다.
 _DENY_MESSAGES: dict[str, str] = {
