@@ -13,10 +13,10 @@
 version: '1.0'
 db_id: polestar_b0
 derived_from:
-- file: config/semantic_models/polestar_b0.yaml
-  sha256: b94c48cf1680abbb33895b70be4ee30a39d0e23d6bbc61c993cad264cbe5426c
-- file: config/db_profiles/polestar_b0.yaml
-  sha256: 60b07e2173dc1b33a67b1d1759c345c77e37ad8c5c36b2e4953d14e2f15d6f56
+- file: config\semantic_models\polestar_b0.yaml
+  sha256: 8e98ec4ae8c1762d094227286e40596df940f376d227d96c23568fc647f1780d
+- file: config\db_profiles\polestar_b0.yaml
+  sha256: 8a90d2e6311588bb120a2558e3ceb0e3b4c9e0405abd0901b710022c1626fbbf
 source_tag: operator
 column_synonyms:
   POLESTAR.cmm_alarm.alarmseverity:
@@ -31,8 +31,6 @@ column_synonyms:
   POLESTAR.cmm_metric_stat_d.avg_val:
   - CPU
   - CPU 사용률
-  - 디스크 IO
-  - 디스크 아이오
   - 메모리
   - 메모리 사용률
   - 파일시스템
@@ -40,8 +38,6 @@ column_synonyms:
   POLESTAR.cmm_metric_stat_h.avg_val:
   - CPU
   - CPU 사용률
-  - 디스크 IO
-  - 디스크 아이오
   - 메모리
   - 메모리 사용률
   - 파일시스템
@@ -49,8 +45,6 @@ column_synonyms:
   POLESTAR.cmm_metric_stat_m.avg_val:
   - CPU
   - CPU 사용률
-  - 디스크 IO
-  - 디스크 아이오
   - 메모리
   - 메모리 사용률
   - 파일시스템

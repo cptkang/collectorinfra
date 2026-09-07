@@ -75,10 +75,11 @@ pattern_b:
     max: max_val
     min: min_val
   measures:
-    - {resource_type: server.Cpus,        definition_name: Utilization, aliases: [CPU 사용률, CPU]}
-    - {resource_type: server.Memory,      definition_name: Utilization, aliases: [메모리 사용률, 메모리]}
-    - {resource_type: server.FileSystems, definition_name: Utilization, aliases: [파일시스템 사용률, 파일시스템]}
-    - {resource_type: server.Disks,       definition_name: MaxIORate,   aliases: [디스크 IO, 디스크 아이오]}
+    # 은행존 실측(2026-09-07): 파일시스템은 단수형(server.FileSystem)만 존재, 디스크 IO는
+    # 미수집 — 정본은 knowledge/polestar_b0/catalog.yaml 오버레이(catalog_diff로 동등성 검증).
+    - {resource_type: server.Cpus,       definition_name: Utilization, aliases: [CPU 사용률, CPU]}
+    - {resource_type: server.Memory,     definition_name: Utilization, aliases: [메모리 사용률, 메모리]}
+    - {resource_type: server.FileSystem, definition_name: Utilization, aliases: [파일시스템 사용률, 파일시스템]}
 
 # ── 패턴 C: 알람 (정규화 관계형 조인) ────────────────────────────────────────
 # 알람은 EAV가 아니라 CMM_ALARM(CA)↔CMM_ALARM_DEF(D)↔CMM_ALARM_ACTIVE(A)↔CMM_RESOURCE(CR) 조인.

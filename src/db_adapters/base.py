@@ -28,8 +28,14 @@ class DBAdapter(Protocol):
         """의도별 전용 시스템 프롬프트 템플릿(공통을 쓰면 None)."""
         ...
 
-    def validator_checks(self) -> list[Callable[[str], list[str]]]:
-        """SQL 문자열을 받아 오류 메시지 목록을 반환하는 전용 검증 함수들(없으면 [])."""
+    def validator_checks(
+        self, user_query: str | None = None
+    ) -> list[Callable[[str], list[str]]]:
+        """SQL 문자열을 받아 오류 메시지 목록을 반환하는 전용 검증 함수들(없으면 []).
+
+        user_query를 주면 질의 맥락 의존 검사가 추가될 수 있다(D-198). 미지정이면
+        종전 목록 그대로다(하위 호환).
+        """
         ...
 
     # 참고: 알람 코어 테이블/schema_table_policy 훅은 P3-4에서 프로필 `alarm_core_tables`

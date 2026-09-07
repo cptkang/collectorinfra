@@ -60,6 +60,7 @@ from src.utils.query_gen_common import (
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
+    CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     build_eav_pivot_block,
     build_forbidden_join_block,
@@ -1340,6 +1341,10 @@ def _build_system_prompt(
             "[경로대칭] (b) 스키마 한정 규칙 주입(db=%s, prefix=%s)",
             active_db_id, _prefix or "(무스키마)",
         )
+
+    # 기준 칼럼 노출·집계 단위 규칙(C-04·C-07·C-11) — 멀티 경로(_build_multi_engine_hint)와
+    # 같은 블록을 주입한다(D-066 대칭).
+    db_engine_hint += CRITERIA_AND_GRAIN_RULE_BLOCK
 
     # DB 어댑터 디스패치: 담당 어댑터(폴스타)가 있으면 의도별 전용 템플릿, 없으면 공통 템플릿.
     # POLESTAR_DB_IDS 게이트는 어댑터 owns()로 이동(Plan 63 P2/D-089, 동작 불변).

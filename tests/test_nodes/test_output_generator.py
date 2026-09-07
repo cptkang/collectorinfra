@@ -103,6 +103,197 @@ class TestBuildResponsePrompt:
         assert "상위 20건" in prompt
 
 
+class TestNumericSummary:
+    """`## 수치 요약` 블록 — 전체 rows 기준 결정적 통계 (C-10~C-12)."""
+
+    def test_stats_computed_over_full_rows_not_preview(self):
+        """20행 미리보기가 아니라 전체 50행 기준으로 최대·평균이 계산돼야 한다."""
+        rows = [{"host": f"h{i}", "cpu_avg": float(i)} for i in range(50)]
+        prompt = _build_response_prompt(original_query="q", summary="50건", rows=rows)
+        assert "## 수치 요약" in prompt
+        assert "전체 50건" in prompt
+        assert "최대 49.0" in prompt  # 미리보기(상위 20행)만 보면 19.0
+        assert "평균 24.5" in prompt
+
+    def test_identifier_and_string_columns_excluded(self):
+        """식별자성('리소스 ID')·문자열 칼럼은 통계에서 제외된다."""
+        rows = [
+            {"리소스 ID": 10, "hostname": "a", "value": 1.0},
+            {"리소스 ID": 20, "hostname": "b", "value": 2.0},
+        ]
+        prompt = _build_response_prompt(original_query="q", summary="2건", rows=rows)
+        assert "- value: 최소 1.0 · 최대 2.0 · 평균 1.5" in prompt
+        assert "- 리소스 ID" not in prompt
+        assert "- hostname" not in prompt
+
+    def test_null_count_reported(self):
+        """null이 섞인 칼럼은 null 건수를 명시한다(C-03 판독성)."""
+        rows = [{"v": 1.0}, {"v": None}, {"v": 3.0}]
+        prompt = _build_response_prompt(original_query="q", summary="3건", rows=rows)
+        assert "(null 1건)" in prompt
+
+    def test_no_numeric_columns_no_block(self):
+        """숫자 칼럼이 없으면 블록 자체가 없다 — 종전 프롬프트와 동일."""
+        rows = [{"hostname": "a", "os": "Linux"}]
+        prompt = _build_response_prompt(original_query="q", summary="1건", rows=rows)
+        assert "## 수치 요약" not in prompt
+
+    def test_unit_rule_present_with_block(self):
+        """단위 임의 부여 금지 규칙(C-10)이 블록에 실린다 — pct 별칭 허점까지 명시.
+
+        재실측(2026-09-07): "칼럼명에 단위가 명시된 경우 허용" 문구를 LLM이 'pct' 접미를
+        단위 명시로 해석해 개월 수에 %를 붙였다 — 개수 값은 칼럼명이 pct여도 % 금지로 강화.
+        """
+        rows = [{"months_over_40pct": 28}]
+        prompt = _build_response_prompt(original_query="q", summary="1건", rows=rows)
+        assert "임의로 붙이지 마세요" in prompt
+        assert "pct/percent가 들어 있어도 %를 붙이지 말고" in prompt
+        assert "months_over_40pct" in prompt
+
+    def test_string_numbers_not_coerced(self):
+        """문자열 숫자('4.0' — EAV 원값)는 강제 변환하지 않고 블록에서 제외한다."""
+        rows = [{"core": "4.0"}, {"core": "8.0"}]
+        prompt = _build_response_prompt(original_query="q", summary="2건", rows=rows)
+        assert "## 수치 요약" not in prompt
+
+
+class TestAllNullDegrade:
+    """전 행 null 강등(C-06) — 판정과 결정적 안내 응답."""
+
+    def _rows_all_null(self):
+        return [
+            {"hostname": "h1", "month": None, "cpu_avg": None},
+            {"hostname": "h2", "month": None, "cpu_avg": None},
+        ]
+
+    def test_detects_all_null_value_columns(self):
+        from src.nodes.output_generator import _all_null_value_columns
+
+        assert _all_null_value_columns(self._rows_all_null()) == ["month", "cpu_avg"]
+
+    def test_partial_values_not_degraded(self):
+        """지표가 한 값이라도 채워졌으면 미발동(C-03 부분 null 보호)."""
+        from src.nodes.output_generator import _all_null_value_columns
+
+        rows = [
+            {"hostname": "h1", "cpu_avg": 12.5, "month": None},
+            {"hostname": "h2", "cpu_avg": None, "month": None},
+        ]
+        assert _all_null_value_columns(rows) is None
+
+    def test_minor_null_column_not_degraded(self):
+        """전체 칼럼의 절반 미만인 부수적 공란(빈 비고)은 미발동."""
+        from src.nodes.output_generator import _all_null_value_columns
+
+        rows = [{"hostname": "h1", "os": "Linux", "vendor": "HP", "비고": None}]
+        assert _all_null_value_columns(rows) is None
+
+    def test_empty_or_non_dict_rows_not_degraded(self):
+        from src.nodes.output_generator import _all_null_value_columns
+
+        assert _all_null_value_columns([]) is None
+        assert _all_null_value_columns([("a", 1)]) is None
+
+    def test_identifier_heavy_multi_merge_rows_degraded(self):
+        """멀티 병합 표(식별 칼럼 다수)도 지표 2칼럼 전 행 null이면 발동한다.
+
+        재실측(2026-09-07 C-06 CM): 존·서버명·호스트명 등 식별 칼럼이 많은 병합 표에서
+        절반 기준이 미달해 미발동 — null 칼럼 ≥2 기준을 합집합으로 추가한 회귀 고정.
+        """
+        from src.nodes.output_generator import _all_null_value_columns
+
+        rows = [
+            {"존": "공동존 김포", "서버명": "s1", "hostname": "h1",
+             "cpu_avg_per_server": None, "cpu_avg_overall": None},
+            {"존": "공동존 여의도", "서버명": "s2", "hostname": "h2",
+             "cpu_avg_per_server": None, "cpu_avg_overall": None},
+        ]
+        assert _all_null_value_columns(rows) == [
+            "cpu_avg_per_server", "cpu_avg_overall"
+        ]
+
+    def test_single_metric_half_rule_still_degrades(self):
+        """단일 지표 결과([hostname, cpu_avg])는 절반 기준으로 발동을 유지한다."""
+        from src.nodes.output_generator import _all_null_value_columns
+
+        rows = [{"hostname": "h1", "cpu_avg": None}, {"hostname": "h2", "cpu_avg": None}]
+        assert _all_null_value_columns(rows) == ["cpu_avg"]
+
+    @pytest.mark.asyncio
+    async def test_xlsx_format_not_degraded(self):
+        """폼필(xlsx) 동반 텍스트는 강등하지 않는다 — H-06 의도적 공란 보호."""
+        state = create_initial_state(user_query="양식 채워줘")
+        state["organized_data"] = {
+            "summary": "요약",
+            "rows": [
+                {"hostname": "h1", "TPMC": None, "도입일자": None},
+                {"hostname": "h2", "TPMC": None, "도입일자": None},
+            ],
+            "column_mapping": None,
+            "is_sufficient": True,
+        }
+        state["parsed_requirements"] = {
+            "query_targets": ["서버"],
+            "output_format": "xlsx",
+            "original_query": "양식 채워줘",
+            "filter_conditions": [],
+        }
+
+        mock_llm = _make_streaming_llm("텍스트 응답")
+        result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
+
+        assert "전 행 null이어서" not in result["final_response"]
+
+    @pytest.mark.asyncio
+    async def test_node_returns_deterministic_notice(self):
+        """노드 레벨: LLM 미호출로 안내 응답을 돌려주고 목록 표를 내지 않는다."""
+        state = create_initial_state(user_query="이번 달 CPU 사용률")
+        state["organized_data"] = {
+            "summary": "요약",
+            "rows": self._rows_all_null(),
+            "column_mapping": None,
+            "is_sufficient": True,
+        }
+        state["parsed_requirements"] = {
+            "query_targets": ["CPU"],
+            "output_format": "text",
+            "original_query": "이번 달 CPU 사용률",
+            "filter_conditions": [],
+        }
+
+        result = await output_generator(state, app_config=MagicMock())
+
+        text = result["final_response"]
+        assert "2건 수행되었으나" in text
+        assert "전 행 null" in text
+        assert "CSV" in text
+        assert "h1" not in text  # 무의미한 서버 목록 미표시
+        # "이번 달" 질의 → 조회 기간에 진행 중인 달 포함 → 직전월 안내(C-06)
+        assert "직전월" in text
+
+    @pytest.mark.asyncio
+    async def test_past_period_no_current_month_notice(self):
+        """과거 월 질의는 강등되더라도 직전월 안내가 붙지 않는다."""
+        state = create_initial_state(user_query="2025년 1월 CPU 사용률")
+        state["organized_data"] = {
+            "summary": "요약",
+            "rows": self._rows_all_null(),
+            "column_mapping": None,
+            "is_sufficient": True,
+        }
+        state["parsed_requirements"] = {
+            "query_targets": ["CPU"],
+            "output_format": "text",
+            "original_query": "2025년 1월 CPU 사용률",
+            "filter_conditions": [],
+        }
+
+        result = await output_generator(state, app_config=MagicMock())
+
+        assert "전 행 null" in result["final_response"]
+        assert "직전월" not in result["final_response"]
+
+
 class TestOutputGeneratorNode:
     """output_generator 노드 전체 동작 검증."""
 
@@ -270,6 +461,123 @@ class TestZoneCoverageNotes:
         assert _append_zone_coverage_notes("조건에 해당하는 데이터가 없습니다.", state) == (
             "조건에 해당하는 데이터가 없습니다."
         )
+
+
+class TestCurrentMonthPartialNote:
+    """`_append_current_month_partial_note` — 진행월 stat_d 집계 기준 결정적 각주."""
+
+    def _state(self, **over):
+        base = {
+            "user_query": "이번 달 서버별 CPU 사용률 보여줘",
+            "routing_intent": "data_query",
+            "query_results": [{"hostname": "h1", "cpu_avg": 12.5}],
+            "parsed_requirements": {},
+        }
+        base.update(over)
+        return base
+
+    def test_current_month_metric_query_gets_note(self):
+        from src.nodes.output_generator import _append_current_month_partial_note
+
+        out = _append_current_month_partial_note("응답", self._state())
+        assert "진행 중인 달" in out
+        assert "당월 1일부터 어제까지" in out
+
+    def test_past_month_query_noop(self):
+        from src.nodes.output_generator import _append_current_month_partial_note
+
+        state = self._state(user_query="지난달 서버별 CPU 사용률 보여줘")
+        assert _append_current_month_partial_note("응답", state) == "응답"
+
+    def test_alarm_query_noop(self):
+        """알람은 진행월 실데이터가 정상 — 각주 오부착 금지."""
+        from src.nodes.output_generator import _append_current_month_partial_note
+
+        state = self._state(
+            user_query="이번 달 CPU 임계값 초과 알람 통계",
+            routing_intent="alarm_query",
+        )
+        assert _append_current_month_partial_note("응답", state) == "응답"
+
+    def test_no_metric_term_noop(self):
+        from src.nodes.output_generator import _append_current_month_partial_note
+
+        state = self._state(user_query="이번 달 등록된 서버 목록")
+        assert _append_current_month_partial_note("응답", state) == "응답"
+
+    def test_all_null_rows_noop(self):
+        """숫자 값이 없으면(전 행 null 강등 케이스) 자체 안내가 담당 — 이중 각주 금지."""
+        from src.nodes.output_generator import _append_current_month_partial_note
+
+        state = self._state(query_results=[{"hostname": "h1", "cpu_avg": None}])
+        assert _append_current_month_partial_note("응답", state) == "응답"
+
+
+class TestUnavailableMetricNotes:
+    """`_append_unavailable_metric_notes` — 미수집 지표 결정적 안내 (C-02 2차 실측)."""
+
+    def test_b0_disk_io_query_gets_note(self):
+        from src.nodes.output_generator import _append_unavailable_metric_notes
+
+        state = {
+            "user_query": "지난 3개월 서버별 CPU, 메모리, 파일시스템, 디스크 IO 통계 조회",
+            "active_db_id": "polestar_b0",
+        }
+        out = _append_unavailable_metric_notes("응답", state)
+        assert out.startswith("응답")
+        assert "[안내]" in out
+        assert "디스크 IO 통계를 수집하지 않아" in out
+
+    def test_b0_without_disk_terms_noop(self):
+        from src.nodes.output_generator import _append_unavailable_metric_notes
+
+        state = {"user_query": "서버별 CPU 통계", "active_db_id": "polestar_b0"}
+        assert _append_unavailable_metric_notes("응답", state) == "응답"
+
+    def test_gongjon_disk_io_noop(self):
+        """공동존은 디스크 IO를 수집하므로 안내가 붙지 않는다."""
+        from src.nodes.output_generator import _append_unavailable_metric_notes
+
+        state = {"user_query": "디스크 IO 통계", "active_db_id": "polestar_cm_gp"}
+        assert _append_unavailable_metric_notes("응답", state) == "응답"
+
+    def test_db_result_summary_signal_also_detected(self):
+        """멀티/오케스트레이션 경로 신호(db_result_summary)로도 대상 DB를 인식한다."""
+        from src.nodes.output_generator import _append_unavailable_metric_notes
+
+        state = {
+            "user_query": "디스크 IO 보여줘",
+            "db_result_summary": {"polestar_b0": {"row_count": 10}},
+        }
+        assert "디스크 IO 통계를 수집하지 않아" in _append_unavailable_metric_notes(
+            "응답", state
+        )
+
+
+class TestLimitTruncationNote:
+    """`_append_limit_truncation_note` — LIMIT 도달 절단 결정적 명시 (K-09)."""
+
+    def test_at_limit_appends_note(self):
+        from src.nodes.output_generator import _append_limit_truncation_note
+
+        state = {"resolved_limit": 3, "query_results": [{}, {}, {}]}
+        out = _append_limit_truncation_note("응답", state)
+        assert "[안내] 결과가 조회 상한(LIMIT 3)" in out
+        assert "절단" in out
+
+    def test_below_limit_noop(self):
+        from src.nodes.output_generator import _append_limit_truncation_note
+
+        state = {"resolved_limit": 10, "query_results": [{}, {}]}
+        assert _append_limit_truncation_note("응답", state) == "응답"
+
+    def test_no_resolved_limit_noop(self):
+        from src.nodes.output_generator import _append_limit_truncation_note
+
+        assert _append_limit_truncation_note("응답", {}) == "응답"
+        assert _append_limit_truncation_note(
+            "응답", {"resolved_limit": None, "query_results": [{}]}
+        ) == "응답"
 
 
 class TestAlarmHeadline:

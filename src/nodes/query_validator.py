@@ -108,7 +108,10 @@ async def query_validator(
     # DB 어댑터 전용 검증(폴스타 라우팅 필터 오용 등) — 담당 어댑터가 있으면 훅을 주입
     # (기존 _check_routing_filter_misuse를 폴스타 어댑터로 이동, Plan 63 P2/D-089).
     adapter = get_adapter(state.get("active_db_id"), app_config.get_polestar_db_ids() or None)
-    adapter_checks = adapter.validator_checks() if adapter is not None else []
+    adapter_checks = (
+        adapter.validator_checks(user_query=state.get("user_query", "") or "")
+        if adapter is not None else []
+    )
 
     outcome = validate_sql(
         sql,

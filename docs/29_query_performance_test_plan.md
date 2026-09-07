@@ -12,6 +12,7 @@
 
 | 항목 | 내용 |
 |---|---|
+| **용어 표기(2026-09-08 통일)** | 이 문서 전체 = "**docs/29 테스트 스위트**" · 섹션 그룹 = "**○군**"(예: A군=라우팅, C군=성능 통계, H군=폼필) · 개별 케이스 = 기존 ID(C-02) · 실행 회차 = "○군 n차". 커밋·D-번호 기록도 이 표기를 따른다("스위트"는 전체를 가리킬 때만, "영역" 표기는 계층/패키지 경계 용어와 혼동되므로 미사용. 기존 커밋 메시지는 소급 수정하지 않음) |
 | 과금 게이트 | 실 LLM 호출은 전부 `RUN_E2E=1` 옵트인 + **건별 승인**(D-127). 골든셋 배치(`scripts/eval_text2sql.py`, `scripts/eval_routing.py`)도 동일 |
 | 플래그 상태 명시 | 기본 off 기능: 2단 라우팅(`router.two_stage_enabled`), `fault_diagnosis`, 실시간 사용률 API(`POLESTAR_REST_REALTIME_USAGE_ENABLED`), 하이퍼님 확장(`TEXT2SQL_HYPERNYM_AMBIGUITY`), 퍼지/시맨틱 유사어. 테스트 기록에 **어느 플래그로 돌렸는지** 반드시 적는다 |
 | 사다리 단 확인 | 기동 로그의 `deep_agent \| intent_orchestration \| semantic_router \| legacy` 한 줄(`src/observability/ladder.py`) — 폐쇄망 정본은 **트랙 A(intent_orchestration)** |

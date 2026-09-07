@@ -55,6 +55,7 @@ from src.utils.query_gen_common import (
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
+    CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     PromptBudgetExceeded,
     build_eav_pivot_block,
@@ -1412,6 +1413,9 @@ def _build_multi_engine_hint(db_engine: str, db_id: str) -> str:
         hint += (
             "\n[DB2 방언] 행 수 제한은 `LIMIT` 대신 `FETCH FIRST n ROWS ONLY`를 사용하세요."
         )
+    # 기준 칼럼 노출·집계 단위 규칙(C-04·C-07·C-11) — 단일 경로(build_system_prompt)와
+    # 같은 블록을 주입한다(D-066 대칭).
+    hint += CRITERIA_AND_GRAIN_RULE_BLOCK
     return hint
 
 
@@ -2207,7 +2211,10 @@ def _validate_sql(
     from src.nodes.query_validator import validate_sql
 
     adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
-    adapter_checks = adapter.validator_checks() if adapter is not None else []
+    adapter_checks = (
+        adapter.validator_checks(user_query=user_query)
+        if adapter is not None else []
+    )
     outcome = validate_sql(
         sql, schema_info,
         db_engine=db_engine, user_query=user_query,

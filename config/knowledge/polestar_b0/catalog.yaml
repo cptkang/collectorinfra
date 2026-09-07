@@ -1,3 +1,23 @@
 # 카탈로그 큐레이션 — 은행존 폴스타 (polestar_b0, DB2)
 # 공통 정본을 상속만 한다. db별 차이가 생기면 이 파일에 그 항목만 적는다(오버레이 우선).
 extends: [_base]
+
+# ── 은행존 실측 차이 (2026-09-07, scripts/diag_metric_definitions.sql 3존 전수) ──
+#   - 파일시스템 통계: 복수형 컨테이너(server.FileSystems) 행이 **없고**, 개별 파일시스템
+#     행(server.FileSystem, 단수)만 존재한다(1,094,885행 — 공동존은 둘 다 존재).
+#     복수형으로 조회하면 fs_* 전부 null(C-02 실측 원인).
+#   - 디스크 IO(server.Disks + MaxIORate): **미수집**(stat_m 행 0건) — measure에서 제외.
+#     조회 요청 시 미수집 안내는 db_profiles/polestar_b0.yaml 지식 서술이 담당한다.
+# deep_merge는 리스트를 통째로 대체하므로 measures는 전량을 다시 적는다.
+pattern_b:
+  measures:
+    - {resource_type: server.Cpus,       definition_name: Utilization, aliases: [CPU 사용률, CPU]}
+    - {resource_type: server.Memory,     definition_name: Utilization, aliases: [메모리 사용률, 메모리]}
+    - {resource_type: server.FileSystem, definition_name: Utilization, aliases: [파일시스템 사용률, 파일시스템]}
+
+taxonomy:
+  사용률:
+    measures:
+      - server.Cpus/Utilization
+      - server.Memory/Utilization
+      - server.FileSystem/Utilization

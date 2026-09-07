@@ -39,7 +39,10 @@ def validate_sql_draft(
         — valid=False면 errors가 재작성 사유, fixed_sql은 행 제한이 보정된 SQL이다.
     """
     adapter = get_adapter(db_id, adapter_db_ids)
-    adapter_checks = adapter.validator_checks() if adapter is not None else []
+    adapter_checks = (
+        adapter.validator_checks(user_query=user_query)
+        if adapter is not None else []
+    )
     outcome = validate_sql(
         sql,
         schema_info,

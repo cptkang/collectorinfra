@@ -662,3 +662,44 @@ def check_active_status_literal_filter(sql: str) -> list[str]:
             "않아 항상 0건입니다. " + _ACTIVE_GUIDE
         ]
     return []
+
+
+# ── D-198: "이번 달" 질의의 stat_m 당월 조회 반려 (2026-09-07) ────────────────
+# 폴스타 월간 통계(cmm_metric_stat_m)는 직전월까지만 집계된다(C-06 3존 실측) —
+# "이번 달" 질의를 stat_m으로 생성하면 전부 null이다. 프로필 query_guide 규칙
+# (stat_d 당월 1일~어제 집계)의 LLM 순응은 비결정이므로, 검증기가 결정적으로
+# 반려해 재생성 힌트를 준다(프롬프트 규칙 + 검증기 2겹 — D-198 주의① 예고분).
+
+_CURRENT_MONTH_STAT_GUIDE = (
+    "'이번 달' 성능 통계는 cmm_metric_stat_m(월간)으로 조회하면 안 됩니다 — 월간 통계는 "
+    "직전월까지만 집계되어 현재 월 값이 전부 null입니다. cmm_metric_stat_d(일간)를 "
+    "stat_date BETWEEN 당월 1일 AND 어제 범위로 조회하고, 서버별 GROUP BY로 "
+    "AVG(avg_val)=월중 평균, MAX(max_val)=월중 최대를 집계하세요."
+)
+
+
+def check_current_month_stat_table(sql: str, user_query: str) -> list[str]:
+    """'이번 달' 단일 기간 질의가 stat_m을 참조하면 반려한다 (D-198 결정적 안전망).
+
+    발동을 좁게 고정한다: 질의의 기간 해석(resolve_stat_month_range — 프로필 규칙과
+    같은 결정적 해석기)이 **정확히 (당월, 당월)** 일 때만. 범위 질의("5월부터 이번
+    달까지")는 stat_m 사용이 부분 정당하므로 미발동. stat_d로 생성된 SQL은 통과.
+
+    Args:
+        sql: SQL 쿼리
+        user_query: 사용자 원문 질의(기간 해석용)
+
+    Returns:
+        에러 메시지 목록
+    """
+    from datetime import date as _date
+
+    from src.utils.query_gen_common import resolve_stat_month_range
+
+    period = resolve_stat_month_range(user_query or "", _date.today())
+    cur = _date.today().strftime("%Y%m")
+    if period != (cur, cur):
+        return []
+    if not re.search(r"\bcmm_metric_stat_m\b", sql, re.IGNORECASE):
+        return []
+    return [_CURRENT_MONTH_STAT_GUIDE]

@@ -527,6 +527,30 @@ def resolve_effective_limit(
     return resolve_query_limit(user_query, default_limit, parsed_limit=parsed_limit)
 
 
+# ── '가동률' 미지원 지표 pre-gate (D-197, 2026-09-07) ────────────────────────
+# '가동률'은 실무 통용대로 가동 시간 비율(uptime/availability) 계열로 확정(사용자 결정).
+# 폴스타는 해당 지표를 집계하지 않는다(3존 stat_m definition_name 전수 실측 —
+# scripts/diag_metric_definitions.sql). CPU 사용률로의 임의 해석(오답)과 B0 재계획
+# 폭주(C-08 실측)를 함께 차단하기 위해 LLM 이전에 결정적으로 단락한다.
+# 어간이 달라 퍼지 매칭 원리상 도달 불가한 어휘라(수동 결정 필수) 표면어 포함 판정로 충분하다.
+UPTIME_RATE_TERM = "가동률"
+
+#: 사용자에게 그대로 노출되는 고정 안내문 — LLM을 통과시키지 않는다(D-150 선례).
+UPTIME_RATE_GUIDANCE = (
+    "'가동률'은 서버 가동 시간 비율(uptime/availability)을 뜻하는 용어로 해석합니다.\n"
+    "폴스타는 가동 시간 비율을 통계 지표로 집계하지 않아 해당 조회를 제공할 수 없습니다"
+    "(은행존·공동존 전체 실측 확인).\n\n"
+    "다음 중 원하시는 조회로 다시 질의해 주세요:\n"
+    "- 현재 가동(가용성) 상태 기준: \"가용 상태가 비정상인 서버 목록 보여줘\"\n"
+    "- CPU 사용률 기준: \"지난달 CPU 사용률이 낮은 서버 순으로 보여줘\""
+)
+
+
+def is_uptime_rate_query(user_query: str | None) -> bool:
+    """질의가 '가동률'(미지원 지표)을 요구하는지 결정적으로 판정한다(D-197)."""
+    return UPTIME_RATE_TERM in (user_query or "")
+
+
 # ── 실시간 사용률 라우팅 게이트 (Plan 71 / Plan 75 §1, B안 확정 2026-07-24) ──
 # LLM 의도 분류에 의존하지 않는 결정적 게이트(D-035). B안: "실시간/현재/지금" 명시 +
 # CPU/메모리 지표어 + 기간 표현 부재일 때만 실시간 API 경로. "현황" 단독은 비트리거
