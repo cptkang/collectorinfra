@@ -315,6 +315,7 @@ def _create_fabrix(config: AppConfig, purpose: str = "deterministic") -> BaseCha
             kb_id="User",
             system_prompt="",
             llm_config=profile or None,
+            total_timeout=config.llm.fabrix_total_timeout,
         )
 
     # OpenAI 호환 모드 — llmConfig는 KBGenAI 전용 규약이라 temperature만 매핑한다

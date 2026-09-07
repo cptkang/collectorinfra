@@ -37,6 +37,10 @@ class LLMConfig(BaseSettings):
     fabrix_api_key: str = ""
     fabrix_client_key: str = ""
     fabrix_chat_model: str = ""
+    # FabriX 호출 1건의 벽시계 총상한(초, D-195). 클라이언트 timeout(300)은 httpx
+    # 의미상 read 1회당 간격이라 하트비트(STATUS/SYNC)가 계속 오면 무기한 대기가
+    # 가능하다(2026-09-07 무한대기 실측) — 총상한이 벽시계 기준으로 끊는다.
+    fabrix_total_timeout: int = 300
 
     # FabriX 하이퍼파라미터 프로파일(D-194) — KBGenAI 요청 body의 `llmConfig` 규약
     # ({"temperature": <float>, "top_k": <int>, "top_p": <float>})으로 전송된다.

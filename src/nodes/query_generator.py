@@ -49,6 +49,7 @@ from src.utils.query_gen_common import (
     enforce_all_query_limit,
     extract_sql_from_response,
     normalize_eav_numeric_casts,
+    normalize_eav_unit_casts,
     normalize_stat_month,
     previous_month,
     resolve_comparison_periods,
@@ -879,9 +880,10 @@ async def _llm_fallback(
     )
     # EAV 숫자 값 정수 캐스트 결정적 교정(D-160) — 멀티 경로와 동일 가드(D-066 대칭).
     # 값 컬럼 리터럴은 구조 메타 선언에서 도출한다(D-088).
-    sql = normalize_eav_numeric_casts(
-        sql, eav_value_cast_columns(first_eav_pattern(state.get("schema_info")))
-    )
+    _eav_cols = eav_value_cast_columns(first_eav_pattern(state.get("schema_info")))
+    sql = normalize_eav_numeric_casts(sql, _eav_cols)
+    # 단위 문자열("14.9 GB"/"2 TB") 캐스트의 GB 기준 정규화(D-196) — B-11 실측.
+    sql = normalize_eav_unit_casts(sql, _eav_cols)
 
     return sql, sql_candidates, text2sql_fallback, extra_return
 

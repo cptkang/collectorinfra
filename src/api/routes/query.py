@@ -60,6 +60,35 @@ _MAX_RESULTS_STORE_SIZE = 1000
 _results_store: OrderedDict[str, dict] = OrderedDict()
 
 
+async def _next_event_or_timeout(event_iter, timeout: float) -> tuple[object, bool]:
+    """SSE 이벤트 fetch를 대기하되, 타임아웃 **검출**과 내부 **취소 완료**를 분리한다(D-195).
+
+    종전의 ``asyncio.wait_for``는 타임아웃 발화 후 내부 태스크의 취소가 **완료될
+    때까지** 기다린다 — LLM 호출이 취소에 반응하지 않으면(FabriX 미귀환,
+    2026-09-07 task_dump 실측: event_generator가 wait_for에 8분+ 고정) TimeoutError가
+    영영 raise되지 않아 가드 자체가 무력화된다. ``asyncio.wait``는 타임아웃 시
+    태스크를 건드리지 않고 반환하므로, 취소는 걸어두되 완료는 기다리지 않는다.
+    잔여(유령) 태스크의 수명은 FabriX 클라이언트 총상한(D-195 F1)이 보장한다.
+
+    Returns:
+        (event, False) 정상 수신 / (None, True) 타임아웃.
+
+    Raises:
+        StopAsyncIteration: 이터레이터 소진 (호출부 break 용 — 종전과 동일).
+    """
+    fetch = asyncio.ensure_future(event_iter.__anext__())
+    done, _pending = await asyncio.wait({fetch}, timeout=timeout)
+    if not done:
+        fetch.cancel()
+        logger.warning(
+            "SSE 이벤트 대기 %.0fs 초과 — 내부 실행에 취소만 걸고 응답을 종료한다 "
+            "(취소 완료 대기 없음, 잔여 태스크는 FabriX 총상한에서 정리 — D-195)",
+            timeout,
+        )
+        return None, True
+    return fetch.result(), False
+
+
 async def _audit_user_request(
     request: Request,
     current_user: dict,
@@ -1187,7 +1216,8 @@ async def process_query_stream(
                 try:
                     # 이벤트 fetch마다 타임아웃을 건다(D-066 후속). 노드 내부 LLM 호출이
                     # 응답 없이 멈추면 astream_events가 다음 이벤트를 영영 못 내놓아 SSE가
-                    # 무한 hang된다(healthcheck만 도는 증상). wait_for로 stuck fetch를 끊는다.
+                    # 무한 hang된다(healthcheck만 도는 증상). 검출·취소 분리는 D-195
+                    # (_next_event_or_timeout docstring) 참조.
                     _event_iter = graph.astream_events(
                         input_state,
                         thread_config,
@@ -1195,13 +1225,12 @@ async def process_query_stream(
                     ).__aiter__()
                     while True:
                         try:
-                            event = await asyncio.wait_for(
-                                _event_iter.__anext__(),
-                                timeout=effective_timeout,
+                            event, _timed_out = await _next_event_or_timeout(
+                                _event_iter, effective_timeout
                             )
                         except StopAsyncIteration:
                             break
-                        except asyncio.TimeoutError:
+                        if _timed_out:
                             yield _sse_event({
                                 "type": "error",
                                 "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
@@ -1816,7 +1845,8 @@ async def process_file_query_stream(
             if hasattr(graph, "astream_events"):
                 try:
                     # 이벤트 fetch마다 타임아웃(D-066 후속). 노드 내부 LLM 호출이 응답 없이
-                    # 멈추면 SSE가 무한 hang되므로 stuck fetch를 wait_for로 끊는다.
+                    # 멈추면 SSE가 무한 hang되므로 stuck fetch를 끊는다. 검출·취소 분리는
+                    # D-195 (_next_event_or_timeout docstring) 참조.
                     _event_iter = graph.astream_events(
                         initial_state,
                         thread_config,
@@ -1824,13 +1854,12 @@ async def process_file_query_stream(
                     ).__aiter__()
                     while True:
                         try:
-                            event = await asyncio.wait_for(
-                                _event_iter.__anext__(),
-                                timeout=config.server.file_query_timeout,
+                            event, _timed_out = await _next_event_or_timeout(
+                                _event_iter, config.server.file_query_timeout
                             )
                         except StopAsyncIteration:
                             break
-                        except asyncio.TimeoutError:
+                        if _timed_out:
                             yield _sse_event({
                                 "type": "error",
                                 "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
