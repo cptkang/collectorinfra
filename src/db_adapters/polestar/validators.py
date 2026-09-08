@@ -387,6 +387,66 @@ def check_ranking_order_by_nulls_last(sql: str) -> list[str]:
     ]
 
 
+def ensure_ranking_nulls_last(sql: str) -> str:
+    """집계 순위 정렬의 NULLS LAST 누락을 반려 대신 결정적으로 교정한다 (D-199 2차).
+
+    D군 2차 폐쇄망 실측(D-04 CM) — LLM이 에러 힌트를 받고도 재시도 전부에서 NULLS LAST를
+    반복 누락해 재생성 예산(3회)을 이 한 가지로 소진했다. 요구 수정이 기계적 부가
+    (`DESC` → `DESC NULLS LAST`, 의미 변경 없음)이므로 생성 직후 결정적으로 교정한다
+    (Known Mistakes: 프롬프트 강제 반복 실패 형태는 결정적 처리 대상).
+
+    check_ranking_order_by_nulls_last가 반려할 SQL만 대상 — 비대상은 바이트 불변.
+    NULLS LAST는 PostgreSQL·DB2 공통 문법이라 방언 분기 불필요.
+    """
+    if not check_ranking_order_by_nulls_last(sql):
+        return sql
+    m = _ORDER_BY_RE.search(sql)
+    if not m:
+        return sql  # 원문에서 ORDER BY 구간 미특정(주석 개입 등) — 교정 포기, 검증기에 맡김
+    segment = m.group(1)
+    fixed = re.sub(
+        r"\bDESC\b(?!\s+NULLS)", "DESC NULLS LAST", segment, flags=re.IGNORECASE
+    )
+    return sql[: m.start(1)] + fixed + sql[m.end(1):]
+
+
+def check_alarm_resource_server_type_filter(sql: str) -> list[str]:
+    """알람 자원에 대한 WHERE `resource_type = 'server.Server'` 필터를 탐지한다 (D-199 2차).
+
+    알람은 자식 리소스(server.Cpus/Memory/Disks/FileSystems 등)에 붙으므로, 알람 조회에서
+    자원을 server.Server로 INNER 한정하면 자식 리소스 알람이 전부 탈락한다 — 0건(D군 2차
+    D-05 실측) 또는 침묵 축소(2026-09-02 실측: B0 1174→46건). 서버 식별이 필요하면 부모
+    승격 LEFT JOIN을 쓰고, 타입 한정은 그 **ON 절**에 둬야 한다(결정적 조립 골격과 동일).
+    WHERE 이후 구간만 판정하므로 ON 절의 타입 한정은 대상이 아니다. 주석 제거 후
+    판정한다(D-087 규약).
+
+    Args:
+        sql: SQL 쿼리
+
+    Returns:
+        에러 메시지 목록
+    """
+    text = sqlparse.format(sql, strip_comments=True)
+    if not re.search(r"\bcmm_alarm(?:_active)?\b", text, re.IGNORECASE):
+        return []
+    where_m = re.search(r"\bWHERE\b", text, re.IGNORECASE)
+    if not where_m:
+        return []
+    if not re.search(
+        r"\bresource_type\s*=\s*'server\.Server'", text[where_m.start():], re.IGNORECASE
+    ):
+        return []
+    return [
+        "알람 자원에 WHERE resource_type = 'server.Server' 필터가 있습니다. 알람은 자식 "
+        "리소스(server.Cpus/Memory/Disks/FileSystems 등)에 붙으므로 이 필터가 자식 리소스 "
+        "알람을 전부 탈락시켜 0건 또는 침묵 축소가 됩니다. 알람의 자원(res)에는 "
+        "resource_type 필터를 걸지 말고, 서버 이름·IP가 필요하면 `LEFT JOIN cmm_resource srv "
+        "ON srv.id = COALESCE(res.platform_resource_id, res.service_resource_id, res.id)`로 "
+        "부모 서버를 승격해 srv에서 읽으세요(타입 한정이 필요하면 WHERE가 아니라 그 LEFT "
+        "JOIN의 ON 절에 두세요)."
+    ]
+
+
 # 파생 테이블(서브쿼리) 조인: `) alias ON <조건>` — 조건은 다음 절 키워드 전까지
 _DERIVED_JOIN_RE = re.compile(
     r"\)\s*(\w+)\s+ON\s+(.*?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bHAVING\b|"

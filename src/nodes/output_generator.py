@@ -711,6 +711,10 @@ def _prepend_alarm_headline(response: str, state: AgentState, app_config) -> str
     )
     if spec is None:
         return response
+    if spec.group_by:
+        # 서버별 집계(D-199 3차)는 행수=서버 수라 "총 N건" 헤드라인이 오독을 만든다 —
+        # 집계 표 자체가 결정적 산출물이므로 헤드라인 없이 그대로 둔다.
+        return response
 
     summary = state.get("db_result_summary") or {}
     if summary:
@@ -726,6 +730,8 @@ def _prepend_alarm_headline(response: str, state: AgentState, app_config) -> str
     parts = [_ALARM_MODE_LABELS.get(spec.mode, spec.mode)]
     if spec.mode == "history" and spec.month_range:
         parts.append(f"{spec.month_range[0]}~{spec.month_range[1]}")
+    if spec.type_label:
+        parts.append(f"{spec.type_label} 유형")
     if spec.severity is not None:
         op = " 이상" if spec.severity_op == ">=" else ""
         parts.append(f"심각도 {spec.severity}{op}")

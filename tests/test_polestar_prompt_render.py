@@ -216,8 +216,10 @@ class TestHiSubqueryJoinKey:
     def test_example_passes_registered_validators(self, knowledge_render, monkeypatch):
         """예제와 검증이 함께 움직인다 — 각 플래그 상태의 예제가 그 상태의 validator를 통과한다.
 
-        OFF: 기존 7종 통과(현행 유지). ON: 교정 예제 + 값 컬럼 조인 검사 8종 통과.
+        OFF: 기본 11종 통과(현행 유지). ON: 교정 예제 + 값 컬럼 조인 검사 12종 통과.
         (플래그를 섞으면 — OFF 예제 + ON 검사 — 예제 자체가 반려된다: 아래 별도 테스트)
+        카운트는 기본 등록 목록(adapter.validator_checks, user_query 미지정)과 함께 갱신한다
+        — 7/8 시절 값이 D-175~D-199 검사 추가를 따라오지 못해 사전 실패로 방치돼 있었다.
         """
         from src.db_adapters.polestar.adapter import PolestarAdapter
 
@@ -227,7 +229,7 @@ class TestHiSubqueryJoinKey:
         sql = next(b for b in _sql_blocks(rendered) if "cmm_metric_stat_m s" in b)
         sql = sql.replace("{default_limit}", "100")
         checks = PolestarAdapter().validator_checks()
-        assert len(checks) == (8 if knowledge_render else 7)
+        assert len(checks) == (12 if knowledge_render else 11)
         for check in checks:
             assert check(sql) == [], check.__name__
 

@@ -103,6 +103,8 @@ from src.db_adapters.polestar.assembler import (
     month_anchor_payload,
     resolve_form_fill_answers,
 )
+# 순위 정렬 NULLS LAST 결정적 교정(D-199 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
+from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
@@ -885,6 +887,8 @@ async def _llm_fallback(
     sql = normalize_eav_numeric_casts(sql, _eav_cols)
     # 단위 문자열("14.9 GB"/"2 TB") 캐스트의 GB 기준 정규화(D-196) — B-11 실측.
     sql = normalize_eav_unit_casts(sql, _eav_cols)
+    # 집계 순위 정렬 NULLS LAST 부가(D-199 2차) — LLM 반복 누락으로 재시도 소진 실측.
+    sql = ensure_ranking_nulls_last(sql)
 
     return sql, sql_candidates, text2sql_fallback, extra_return
 

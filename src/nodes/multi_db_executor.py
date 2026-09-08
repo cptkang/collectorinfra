@@ -99,6 +99,8 @@ from src.db_adapters.polestar.assembler import (
     month_anchor_payload,
     resolve_form_fill_answers,
 )
+# 순위 정렬 NULLS LAST 결정적 교정(D-199 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
+from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
 from src.tools.metrics import classify_metric_field
@@ -1248,15 +1250,19 @@ async def _invoke_llm_for_sql(
             # few-shot 말미 캡 모방 교정 — 단일 경로와 동일 가드(D-066 후속8)
             # + EAV 숫자 값 정수 캐스트 교정(D-160) — 값 컬럼은 구조 메타 선언에서 도출
             # + 단위 문자열 캐스트 GB 정규화(D-196) — 단일 경로와 대칭
+            # + 순위 정렬 NULLS LAST 부가(D-199 2차) — 단일 경로와 대칭
             _eav_cols = eav_value_cast_columns(first_eav_pattern(schema_info))
-            return normalize_eav_unit_casts(
-                normalize_eav_numeric_casts(
-                    enforce_all_query_limit(
-                        selection["sql"], default_limit, app_config.query.default_limit
+            return ensure_ranking_nulls_last(
+                normalize_eav_unit_casts(
+                    normalize_eav_numeric_casts(
+                        enforce_all_query_limit(
+                            selection["sql"], default_limit,
+                            app_config.query.default_limit,
+                        ),
+                        _eav_cols,
                     ),
                     _eav_cols,
-                ),
-                _eav_cols,
+                )
             )
 
     messages: list[BaseMessage] = [
@@ -1281,6 +1287,8 @@ async def _invoke_llm_for_sql(
     sql = normalize_eav_numeric_casts(sql, _eav_cols)
     # 단위 문자열("14.9 GB"/"2 TB") 캐스트의 GB 기준 정규화(D-196) — B-11 실측, 단일 대칭.
     sql = normalize_eav_unit_casts(sql, _eav_cols)
+    # 집계 순위 정렬 NULLS LAST 부가(D-199 2차) — LLM 반복 누락 재시도 소진 실측, 단일 대칭.
+    sql = ensure_ranking_nulls_last(sql)
     # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).
     # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-153 후속2)와 별개로
     # 섹션별 로컬 스캔을 로그에 남겨 "어느 재료의 어떤 값"인지까지 특정한다.

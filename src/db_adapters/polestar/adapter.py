@@ -16,6 +16,7 @@ from src.db_adapters.polestar.prompts import (
 )
 from src.db_adapters.polestar.validators import (
     check_active_status_literal_filter,
+    check_alarm_resource_server_type_filter,
     check_alarm_table_allowlist,
     check_contradictory_alias_resource_type,
     check_current_month_stat_table,
@@ -82,6 +83,7 @@ class PolestarAdapter:
             check_alarm_table_allowlist,
             check_severity_label_filter,
             check_active_status_literal_filter,
+            check_alarm_resource_server_type_filter,
         ]
         if knowledge_render_enabled():
             checks.append(check_value_column_join)

@@ -1015,3 +1015,335 @@ class TestAlarmHistoryAssembly:
             assert check_alarm_table_allowlist(sql) == []
             assert check_severity_label_filter(sql) == []
             assert check_active_status_literal_filter(sql) == []
+
+
+class TestAlarmAssemblyCoverageGuard:
+    """커버리지 밖 신호 가드 (D-199) — 조립기가 표현 못 하는 의도는 조립하지 않는다.
+
+    D군 실측: "서버별 … 상위 10개"가 전역 COUNT 1행으로(D-04), "CPU 임계값 초과"가
+    무필터 전체 이력으로(D-05) 조립되어 조건이 침묵 드롭됐다. 이런 질의는 None을
+    반환해 LLM(집계는 알람 템플릿 C-4·시맨틱 패턴 C)에 맡긴다.
+    """
+
+    def _spec(self, q):
+        from src.db_adapters.polestar.assembler import recognize_active_alarm_query
+        return recognize_active_alarm_query(q)
+
+    def test_non_server_group_axis_falls_back(self):
+        # 서버 축 외 집계는 여전히 LLM 폴백 (서버 축은 3·4차에서 조립 승격 — 아래 클래스)
+        assert self._spec("이번달 존별 알람 건수 집계") is None
+        assert self._spec("알람 유형별 발생 건수 순위") is None
+
+    def test_unmapped_metric_filter_falls_back(self):
+        # 자원 타입으로 매핑되지 않는 조건만 폴백 (매핑 유형은 4차부터 조립 — 아래 클래스)
+        assert self._spec("지난달 사용률 초과 알람 이력") is None
+        assert self._spec("최근 트래픽 알람 보여줘") is None
+        assert self._spec("현재 활성 응답 시간 지연 알람") is None
+
+    def test_plain_queries_still_recognized(self):
+        # 가드가 정상 커버리지를 침식하지 않는다 — 기존 인식 형태 유지 재확인
+        assert self._spec("현재 활성 심각 알람 목록") is not None
+        assert self._spec("최근 3개월 심각 알람 이력 보여줘") is not None
+        spec = self._spec("지난달 심각 알람 몇 건이야")
+        assert spec is not None and spec.count_only  # 전역 건수 질의는 계속 조립 대상
+
+
+class TestAlarmServerGroupAssembly:
+    """서버별 알람 건수 집계 결정적 조립 (D-199 3차).
+
+    1차에서는 서버별 집계를 LLM 폴백 대상으로 뒀으나, 3차 폐쇄망 실측에서 LLM 재생성이
+    3존 모두 비수렴(시도마다 상이한 위반 — 금지 테이블·통계 조인 환각·server.Server
+    WHERE 반복)했다. Known Mistakes 규약(반복 실패 형태 = 결정적 조립)대로 승격한다.
+    """
+
+    def _spec(self, q):
+        from src.db_adapters.polestar.assembler import recognize_active_alarm_query
+        return recognize_active_alarm_query(q)
+
+    def test_recognize_d04_history_group(self):
+        # D-04 원형·재계획 sub_query·4차 실측 문구 — 전부 결정적 조립 대상
+        for q in (
+            "지난 3개월 서버별 알람 발생 건수 상위 10개 서버",
+            "서버별 알람 발생 건수를 집계하여 상위 10개 서버 조회",
+            "최근 3개월 알람이 가장 많이 발생한 서버 상위 10개",  # 4차 실측 표현
+            "지난달 알람 많이 발생한 호스트 알려줘",
+        ):
+            spec = self._spec(q)
+            assert spec is not None and spec.group_by == "server", q
+            assert not spec.count_only  # "건수"는 서버당 건수 — 전역 COUNT와 배타
+
+    def test_recognize_active_group(self):
+        spec = self._spec("현재 활성 알람 서버별 건수 보여줘")
+        assert spec is not None and spec.mode == "active" and spec.group_by == "server"
+
+    def test_group_composes_with_type_filter(self):
+        # 서버별 집계 + 유형 필터 조합(D-199 4차) — 둘 다 결정적으로 표현 가능
+        spec = self._spec("지난달 서버별 CPU 알람 건수")
+        assert spec is not None and spec.group_by == "server"
+        assert spec.resource_types == ("server.Cpus",)
+
+    def test_unmapped_filter_still_falls_back(self):
+        assert self._spec("지난달 서버별 트래픽 알람 건수") is None  # 비매핑 조건은 밖
+
+    def test_history_group_sql_shape(self):
+        from src.db_adapters.polestar.assembler import build_alarm_history_sql
+        spec = self._spec("지난 3개월 서버별 경고 이상 알람 발생 건수 상위 10개 서버")
+        assert spec is not None and spec.mode == "history"
+        pg = build_alarm_history_sql(
+            spec, db_engine="postgresql", db_schema="polestar", limit=10
+        )
+        assert "COUNT(*) AS alarm_count" in pg
+        assert "GROUP BY COALESCE(srv.name, srv.hostname, res.name)" in pg
+        assert "ORDER BY alarm_count DESC NULLS LAST" in pg
+        assert "res.dtime IS NULL" in pg and "a.alarmseverity >= 2" in pg
+        assert "LIMIT 10" in pg
+        db2 = build_alarm_history_sql(
+            spec, db_engine="db2", db_schema="POLESTAR", limit=10
+        )
+        assert "POLESTAR.cmm_alarm a" in db2
+        assert "FETCH FIRST 10 ROWS ONLY" in db2 and "LIMIT" not in db2
+
+    def test_active_group_sql_shape(self):
+        from src.db_adapters.polestar.assembler import build_active_alarm_sql
+        spec = self._spec("현재 활성 알람 서버별 건수")
+        sql = build_active_alarm_sql(
+            spec, db_engine="postgresql", db_schema="polestar", limit=100
+        )
+        assert "cmm_alarm_active a" in sql
+        assert "GROUP BY COALESCE(srv.name, srv.hostname, res.name)" in sql
+        assert "ORDER BY alarm_count DESC NULLS LAST" in sql
+        # 타입 한정은 승격 LEFT JOIN의 ON 절 — WHERE 강등 금지 골격 유지
+        assert "AND srv.resource_type = 'server.Server'" in sql
+
+    def test_group_sql_passes_all_registered_validators(self):
+        """조립 SQL이 등록 검증기 전체를 통과한다 — 조립·검증 자기모순 방지(전수)."""
+        from src.db_adapters import get_adapter
+        from src.db_adapters.polestar.assembler import (
+            build_active_alarm_sql, build_alarm_history_sql,
+        )
+        checks = get_adapter("polestar", {"polestar"}).validator_checks()
+        hist = self._spec("지난 3개월 서버별 심각 알람 건수 상위 10개 서버")
+        act = self._spec("현재 활성 알람 서버별 건수")
+        for engine, schema in (("postgresql", "polestar"), ("db2", "POLESTAR")):
+            for sql in (
+                build_alarm_history_sql(
+                    hist, db_engine=engine, db_schema=schema, limit=10
+                ),
+                build_active_alarm_sql(
+                    act, db_engine=engine, db_schema=schema, limit=10
+                ),
+            ):
+                for check in checks:
+                    assert check(sql) == [], f"{engine}: {check.__name__}"
+
+
+class TestAlarmResourceTypeFilter:
+    """알람 유형 → 자원 타입 결정적 필터 (D-199 4차 — diag_alarm_definitions.sql 실측).
+
+    정의명(cmm_alarm_def.name)은 센터별 임의 등록이라 축으로 부적합(사용자 확인).
+    res.resource_type이 3존 공통 안정 축(CPU=server.Cpus 지배적)이라 이것으로 조립한다.
+    """
+
+    def _spec(self, q):
+        from src.db_adapters.polestar.assembler import recognize_active_alarm_query
+        return recognize_active_alarm_query(q)
+
+    def test_recognize_d05_shape(self):
+        # D-05 원형 — "임계값"은 유형어 동반 시 의미 잉여(알람 자체가 임계 이벤트)
+        spec = self._spec("이번달 CPU 임계값 초과 알람 조회")
+        assert spec is not None and spec.mode == "history"
+        assert spec.resource_types == ("server.Cpus",)
+        assert spec.type_label == "CPU"
+
+    def test_category_mappings(self):
+        cases = {
+            "지난달 메모리 알람": ("server.Memory",),
+            "지난달 파일시스템 알람": ("server.FileSystem", "server.FileSystems"),
+            "지난달 디스크 알람": ("server.Disks",),
+            "지난달 스왑 알람": ("server.VirtualMemory",),
+            "지난달 네트워크 인터페이스 알람": ("server.NetworkInterface",),
+            "지난달 프로세스 알람": ("server.Process", "server.ProcessMonitor"),
+        }
+        for q, types in cases.items():
+            spec = self._spec(q)
+            assert spec is not None and spec.resource_types == types, q
+
+    def test_history_type_sql_shape(self):
+        from src.db_adapters.polestar.assembler import build_alarm_history_sql
+        spec = self._spec("지난달 CPU 심각 알람 이력")
+        pg = build_alarm_history_sql(
+            spec, db_engine="postgresql", db_schema="polestar", limit=100
+        )
+        assert "res.resource_type IN ('server.Cpus')" in pg
+        assert "res.dtime IS NULL" in pg and "a.alarmseverity = 3" in pg
+        db2 = build_alarm_history_sql(
+            spec, db_engine="db2", db_schema="POLESTAR", limit=100
+        )
+        assert "res.resource_type IN ('server.Cpus')" in db2
+        assert "FETCH FIRST 100 ROWS ONLY" in db2
+
+    def test_active_type_join_is_inner(self):
+        """유형 필터 활성 조회는 자원 조인이 INNER(타입 한정 의도) — 무필터는 LEFT 유지."""
+        from src.db_adapters.polestar.assembler import build_active_alarm_sql
+        typed = build_active_alarm_sql(
+            self._spec("현재 활성 CPU 알람"), db_engine="postgresql",
+            db_schema="polestar", limit=100,
+        )
+        assert "JOIN polestar.cmm_resource res" in typed
+        assert "LEFT JOIN polestar.cmm_resource res" not in typed
+        assert "res.resource_type IN ('server.Cpus')" in typed
+        plain = build_active_alarm_sql(
+            self._spec("현재 활성 심각 알람 목록"), db_engine="postgresql",
+            db_schema="polestar", limit=100,
+        )
+        assert "LEFT JOIN polestar.cmm_resource res" in plain
+
+    def test_typed_count_sql_joins_resource(self):
+        from src.db_adapters.polestar.assembler import build_active_alarm_sql
+        spec = self._spec("현재 활성 CPU 알람 몇 건이야")
+        sql = build_active_alarm_sql(
+            spec, db_engine="postgresql", db_schema="polestar", limit=10
+        )
+        assert "COUNT(*) AS alarm_count" in sql
+        assert "cmm_resource res" in sql and "res.resource_type IN" in sql
+
+    def test_type_sql_passes_all_registered_validators(self):
+        from src.db_adapters import get_adapter
+        from src.db_adapters.polestar.assembler import (
+            build_active_alarm_sql, build_alarm_history_sql,
+        )
+        checks = get_adapter("polestar", {"polestar"}).validator_checks()
+        hist = self._spec("지난달 CPU 심각 알람 이력")
+        act = self._spec("현재 활성 메모리 알람")
+        grp = self._spec("지난달 서버별 CPU 알람 건수 상위 10개 서버")
+        for engine, schema in (("postgresql", "polestar"), ("db2", "POLESTAR")):
+            for sql in (
+                build_alarm_history_sql(
+                    hist, db_engine=engine, db_schema=schema, limit=10
+                ),
+                build_active_alarm_sql(
+                    act, db_engine=engine, db_schema=schema, limit=10
+                ),
+                build_alarm_history_sql(
+                    grp, db_engine=engine, db_schema=schema, limit=10
+                ),
+            ):
+                for check in checks:
+                    assert check(sql) == [], f"{engine}: {check.__name__}"
+
+
+class TestEnsureRankingNullsLast:
+    """순위 정렬 NULLS LAST 결정적 교정 (D-199 2차).
+
+    D군 2차 실측(D-04 CM) — LLM이 검증기 힌트를 받고도 재시도 전부에서 NULLS LAST를
+    누락해 재생성 예산 소진. 반려 대신 생성 직후 결정적 부가로 교정한다.
+    """
+
+    _RANKING_SQL = (
+        "SELECT COALESCE(srv.name, srv.hostname) AS server_name, "
+        "COUNT(*) AS alarm_count FROM polestar.cmm_alarm a "
+        "JOIN polestar.cmm_resource res ON a.resource_id = res.id "
+        "GROUP BY COALESCE(srv.name, srv.hostname) "
+        "ORDER BY alarm_count DESC LIMIT 10"
+    )
+
+    def test_appends_nulls_last_and_passes_check(self):
+        from src.db_adapters.polestar.validators import (
+            check_ranking_order_by_nulls_last,
+            ensure_ranking_nulls_last,
+        )
+        assert check_ranking_order_by_nulls_last(self._RANKING_SQL)  # 교정 전 반려 대상
+        fixed = ensure_ranking_nulls_last(self._RANKING_SQL)
+        assert "DESC NULLS LAST" in fixed
+        assert check_ranking_order_by_nulls_last(fixed) == []
+
+    def test_direct_aggregate_and_db2_fetch(self):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+        sql = (
+            "SELECT res.name FROM POLESTAR.cmm_alarm a "
+            "GROUP BY res.name ORDER BY COUNT(*) DESC FETCH FIRST 10 ROWS ONLY"
+        )
+        assert "COUNT(*) DESC NULLS LAST" in ensure_ranking_nulls_last(sql)
+
+    def test_compliant_and_non_ranking_unchanged(self):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+        compliant = self._RANKING_SQL.replace("DESC LIMIT", "DESC NULLS LAST LIMIT")
+        assert ensure_ranking_nulls_last(compliant) == compliant  # 바이트 불변
+        listing = (
+            "SELECT a.id FROM polestar.cmm_alarm a "
+            "ORDER BY a.ctime DESC, a.id DESC LIMIT 100"
+        )
+        assert ensure_ranking_nulls_last(listing) == listing  # 비집계 정렬 불변
+
+    def test_multi_key_order_by(self):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+        sql = self._RANKING_SQL.replace(
+            "ORDER BY alarm_count DESC", "ORDER BY alarm_count DESC, server_name ASC"
+        )
+        fixed = ensure_ranking_nulls_last(sql)
+        assert "alarm_count DESC NULLS LAST, server_name ASC" in fixed
+
+    def test_wired_in_both_paths(self):
+        """단일·멀티 양 경로 배선 고정 — 정의만 있고 소비처 없는 것 방지(비대칭 재발 방지)."""
+        import importlib
+        import inspect
+
+        qg = importlib.import_module("src.nodes.query_generator")
+        mde = importlib.import_module("src.nodes.multi_db_executor")
+        # 단일 경로: 호출부 1곳 이상, 멀티 경로: _invoke_llm_for_sql 내 2곳(후보 선택·직접 생성)
+        assert inspect.getsource(qg).count("ensure_ranking_nulls_last(") >= 1
+        assert inspect.getsource(mde._invoke_llm_for_sql).count(
+            "ensure_ranking_nulls_last("
+        ) >= 2
+
+
+class TestAlarmResourceServerTypeFilter:
+    """알람 자원 WHERE server.Server 필터 검증기 (D-199 2차) — D-05 0건 근본원인."""
+
+    # D-05 실측 SQL 골격 (CM-GP, 0건 원인)
+    _D05_SQL = (
+        "SELECT COALESCE(r.name, r.hostname) AS server_name, a.id AS alarm_id "
+        "FROM polestar.cmm_alarm AS a "
+        "JOIN polestar.cmm_alarm_def AS d ON a.definition_id = d.id "
+        "JOIN polestar.cmm_resource AS r ON a.resource_id = r.id "
+        "WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL "
+        "AND d.name ILIKE '%CPU%' ORDER BY a.ctime DESC LIMIT 10000"
+    )
+
+    def test_flags_d05_shape(self):
+        from src.db_adapters.polestar.validators import (
+            check_alarm_resource_server_type_filter,
+        )
+        errors = check_alarm_resource_server_type_filter(self._D05_SQL)
+        assert len(errors) == 1 and "자식 리소스" in errors[0]
+
+    def test_on_clause_type_filter_passes(self):
+        """결정적 조립 골격(승격 LEFT JOIN의 ON 절 타입 한정)은 대상이 아니다."""
+        from src.db_adapters.polestar.assembler import (
+            build_active_alarm_sql, recognize_active_alarm_query,
+        )
+        from src.db_adapters.polestar.validators import (
+            check_alarm_resource_server_type_filter,
+        )
+        spec = recognize_active_alarm_query("현재 활성 심각 알람 목록")
+        for engine, schema in (("postgresql", "polestar"), ("db2", "POLESTAR")):
+            sql = build_active_alarm_sql(
+                spec, db_engine=engine, db_schema=schema, limit=100
+            )
+            assert check_alarm_resource_server_type_filter(sql) == []
+
+    def test_non_alarm_sql_passes(self):
+        from src.db_adapters.polestar.validators import (
+            check_alarm_resource_server_type_filter,
+        )
+        sql = (
+            "SELECT r.name FROM polestar.cmm_resource r "
+            "WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL LIMIT 100"
+        )
+        assert check_alarm_resource_server_type_filter(sql) == []
+
+    def test_registered_in_adapter(self):
+        from src.db_adapters import get_adapter
+        adapter = get_adapter("polestar", {"polestar"})
+        names = {c.__name__ for c in adapter.validator_checks()}
+        assert "check_alarm_resource_server_type_filter" in names
