@@ -191,6 +191,38 @@ def test_overall_timeout_fires_across_whole_investigation():
     assert "타임아웃" in job.verdict
 
 
+def test_timeout_fires_even_when_investigation_thread_hangs():
+    """D-211 — 조사 스레드가 **영원히 반환하지 않아도** 타임아웃이 발화한다.
+
+    종전 구현(asyncio.run + run_in_executor)은 wait_for 만료 후 정리 단계가 스레드
+    종료를 무기한 대기해, 무한 read(죽은 MCP SSE 등)에서 timeout 감사 없이 잡이
+    영원히 running으로 남았다(2026-09-09 폐쇄망 실측 960s+). 위의
+    test_overall_timeout_fires_across_whole_investigation은 '결국 끝나는' 스레드만
+    검증해 이 결함을 잡지 못했다 — 본 테스트가 그 구멍을 고정한다.
+    """
+    release = threading.Event()
+
+    def hanging_fn(job):
+        release.wait()  # 테스트가 풀어줄 때까지 절대 반환하지 않는 조사 대역
+        return DiagnosisResult(answer="", tool_outputs=[])
+
+    disp = InvestigationDispatcher(
+        make_settings(), diagnose_fn=hanging_fn, timeout_seconds=0.2
+    )
+    job = make_job()
+    started = time.monotonic()
+    disp(job)
+    disp.wait_workers(10)
+    elapsed = time.monotonic() - started
+    try:
+        assert job.status == "timeout"
+        assert job.reason == "investigation_timeout"
+        assert "타임아웃" in job.verdict
+        assert elapsed < 5, f"타임박스 미작동 — {elapsed:.1f}s 소요(무기한 대기 회귀)"
+    finally:
+        release.set()  # 버려진 데몬 스레드를 풀어 테스트 프로세스 잔류 방지
+
+
 def test_fast_investigation_does_not_timeout():
     disp = InvestigationDispatcher(
         make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing, timeout_seconds=5.0

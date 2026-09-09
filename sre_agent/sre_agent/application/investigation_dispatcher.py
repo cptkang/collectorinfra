@@ -429,21 +429,44 @@ class InvestigationDispatcher:
         return correlation
 
     def _investigate_with_timeout(self, job: JobLike) -> DiagnosisLike:
-        """조사 **전체**를 asyncio.wait_for로 감싸 실행한다(per-call 타임아웃 아님).
+        """조사 **전체**를 스레드 join 타임박스로 실행한다(per-call 타임아웃 아님).
 
-        블로킹 조사(diagnose_fn)를 executor 스레드에서 돌리고 wait_for로 전체를 감싼다.
-        타임아웃 시 in-flight 스레드는 결과가 폐기된다(중단 불가하나 결과 미채택).
+        D-211: 종전 `asyncio.run(wait_for(run_in_executor(...)))`는 타임아웃 발화 후
+        `asyncio.run`의 정리 단계(`shutdown_default_executor`)가 executor 스레드 종료를
+        **무기한 대기**했다 — 조사 스레드가 무한 read(죽은 MCP SSE 등)에 매달리면
+        TimeoutError가 밖으로 나오지 못해 timeout 감사도 없이 잡이 영원히 running으로
+        남는다(2026-09-09 폐쇄망 실측: 300s 상한에 960s+ running·mcp_server 종료가 원인).
+        join(timeout) 방식은 만료 즉시 TimeoutError를 올리고, 매달린 스레드는 데몬으로
+        버려진다(중단 불가·결과 폐기 — 종전과 동일 의미론이며 '대기'만 제거).
         """
         assert self._diagnose_fn is not None
 
-        async def _runner() -> DiagnosisLike:
-            loop = asyncio.get_running_loop()
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, self._diagnose_fn, job),
-                timeout=self._timeout,
-            )
+        box: dict = {}
+        finished = threading.Event()
 
-        return asyncio.run(_runner())
+        def _target() -> None:
+            try:
+                box["result"] = self._diagnose_fn(job)
+            except BaseException as exc:  # noqa: BLE001 — 원예외를 호출 스레드로 그대로 전달
+                box["error"] = exc
+            finally:
+                finished.set()
+
+        worker = threading.Thread(
+            target=_target,
+            daemon=True,
+            name=f"sre-investigate-{str(job.investigation_id)[:8]}",
+        )
+        worker.start()
+        if not finished.wait(timeout=self._timeout):
+            # asyncio.TimeoutError는 3.11+에서 builtin TimeoutError의 별칭 —
+            # 호출부의 `except asyncio.TimeoutError` 분기가 그대로 잡는다.
+            raise TimeoutError(
+                f"조사 전체 타임아웃({self._timeout}s) — 스레드 미종료(결과 폐기)"
+            )
+        if "error" in box:
+            raise box["error"]
+        return box["result"]
 
     def _run_severity_judge(self, gate_severity: int, result: DiagnosisLike) -> ImportanceVerdict:
         """severity_judge_enabled면 도구 원시 출력 시그니처 매칭, 아니면 게이트 승계(상향 없음)."""
