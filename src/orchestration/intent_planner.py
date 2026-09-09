@@ -28,6 +28,7 @@ from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
 from src.orchestration.schemas import DecomposedPlan
 from src.utils.json_extract import extract_json_from_response
+from src.utils.synonym_set_parser import parse_synonym_set
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ from src.utils.query_gen_common import (  # noqa: E402
     is_form_memory_shortcut as _is_form_memory_shortcut,
     memory_query_normalized as _memory_query_normalized,
     refers_to_demonstrative_server,
+    UPTIME_RATE_GUIDANCE as _UPTIME_RATE_GUIDANCE,
+    is_uptime_rate_query as _is_uptime_rate_query,
 )
 
 # 사용자에게 그대로 노출되는 고정 안내문 — LLM을 통과시키지 않는다(라이브 실측
@@ -246,6 +249,14 @@ async def intent_planner(
         logger.info("intent_planner: 유사어 등록 요청 감지, synonym_registration 단일 task")
         return _single_task_plan("synonym_registration", user_query)
 
+    # ②.3 앵커 없는 동의어 집합 선언(D-142) — 3단 pre-gate(semantic_router 우선순위 ③)와
+    # 대칭. 트랙 A에는 이 분기가 없어 신규 셋 선언이 LLM 분해에서 synonym_registration
+    # (pending 답변 턴 전용)으로 오분류되거나 field_mapper 전단에 가로채였다(2026-09-01
+    # 라이브 실측 A-10). cache_management 노드가 같은 파서로 결정적 등록한다.
+    if parse_synonym_set(user_query):
+        logger.info("intent_planner: 동의어 집합 선언 감지(D-142), cache_management 단일 task")
+        return _single_task_plan("cache_management", user_query)
+
     # ②.7 폼필 확인 이력 조회·삭제 (Plan 73 Phase 3, D-151 — FIX-21).
     # 반드시 ②.5(selected_db_ids)·③(mapped_db_ids)보다 먼저 판정해야 한다 —
     # 양식 업로드 턴은 field_mapper가 항상 mapped_db_ids를 세팅하므로 ③이 조기
@@ -328,6 +339,16 @@ async def intent_planner(
         logger.info("intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-150)")
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _FORM_FILL_NO_FILE_GUIDANCE
+        return plan
+
+    # ③.7 '가동률' 질의 → 미지원 지표 안내 단락 (D-200, D-150 동형).
+    # 가동 시간 비율(uptime) 지표는 폴스타 3존 모두 미집계(2026-09-07 전수 실측) —
+    # LLM 분해로 가면 CPU 사용률 임의 해석(공동존 오답) 또는 재계획 폭주(은행존 C-08)가
+    # 된다. 고정 안내문을 direct_response로 결정적 반환한다(LLM 미통과).
+    if _is_uptime_rate_query(user_query):
+        logger.info("intent_planner: '가동률' 미지원 지표 감지 — 안내 응답 단락(D-200)")
+        plan = _single_task_plan("general_inference", user_query)
+        plan["task_plan"][0]["direct_response"] = _UPTIME_RATE_GUIDANCE
         return plan
 
     # [계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1).

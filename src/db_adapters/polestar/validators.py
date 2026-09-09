@@ -387,6 +387,66 @@ def check_ranking_order_by_nulls_last(sql: str) -> list[str]:
     ]
 
 
+def ensure_ranking_nulls_last(sql: str) -> str:
+    """집계 순위 정렬의 NULLS LAST 누락을 반려 대신 결정적으로 교정한다 (D-202 2차).
+
+    D군 2차 폐쇄망 실측(D-04 CM) — LLM이 에러 힌트를 받고도 재시도 전부에서 NULLS LAST를
+    반복 누락해 재생성 예산(3회)을 이 한 가지로 소진했다. 요구 수정이 기계적 부가
+    (`DESC` → `DESC NULLS LAST`, 의미 변경 없음)이므로 생성 직후 결정적으로 교정한다
+    (Known Mistakes: 프롬프트 강제 반복 실패 형태는 결정적 처리 대상).
+
+    check_ranking_order_by_nulls_last가 반려할 SQL만 대상 — 비대상은 바이트 불변.
+    NULLS LAST는 PostgreSQL·DB2 공통 문법이라 방언 분기 불필요.
+    """
+    if not check_ranking_order_by_nulls_last(sql):
+        return sql
+    m = _ORDER_BY_RE.search(sql)
+    if not m:
+        return sql  # 원문에서 ORDER BY 구간 미특정(주석 개입 등) — 교정 포기, 검증기에 맡김
+    segment = m.group(1)
+    fixed = re.sub(
+        r"\bDESC\b(?!\s+NULLS)", "DESC NULLS LAST", segment, flags=re.IGNORECASE
+    )
+    return sql[: m.start(1)] + fixed + sql[m.end(1):]
+
+
+def check_alarm_resource_server_type_filter(sql: str) -> list[str]:
+    """알람 자원에 대한 WHERE `resource_type = 'server.Server'` 필터를 탐지한다 (D-202 2차).
+
+    알람은 자식 리소스(server.Cpus/Memory/Disks/FileSystems 등)에 붙으므로, 알람 조회에서
+    자원을 server.Server로 INNER 한정하면 자식 리소스 알람이 전부 탈락한다 — 0건(D군 2차
+    D-05 실측) 또는 침묵 축소(2026-09-02 실측: B0 1174→46건). 서버 식별이 필요하면 부모
+    승격 LEFT JOIN을 쓰고, 타입 한정은 그 **ON 절**에 둬야 한다(결정적 조립 골격과 동일).
+    WHERE 이후 구간만 판정하므로 ON 절의 타입 한정은 대상이 아니다. 주석 제거 후
+    판정한다(D-087 규약).
+
+    Args:
+        sql: SQL 쿼리
+
+    Returns:
+        에러 메시지 목록
+    """
+    text = sqlparse.format(sql, strip_comments=True)
+    if not re.search(r"\bcmm_alarm(?:_active)?\b", text, re.IGNORECASE):
+        return []
+    where_m = re.search(r"\bWHERE\b", text, re.IGNORECASE)
+    if not where_m:
+        return []
+    if not re.search(
+        r"\bresource_type\s*=\s*'server\.Server'", text[where_m.start():], re.IGNORECASE
+    ):
+        return []
+    return [
+        "알람 자원에 WHERE resource_type = 'server.Server' 필터가 있습니다. 알람은 자식 "
+        "리소스(server.Cpus/Memory/Disks/FileSystems 등)에 붙으므로 이 필터가 자식 리소스 "
+        "알람을 전부 탈락시켜 0건 또는 침묵 축소가 됩니다. 알람의 자원(res)에는 "
+        "resource_type 필터를 걸지 말고, 서버 이름·IP가 필요하면 `LEFT JOIN cmm_resource srv "
+        "ON srv.id = COALESCE(res.platform_resource_id, res.service_resource_id, res.id)`로 "
+        "부모 서버를 승격해 srv에서 읽으세요(타입 한정이 필요하면 WHERE가 아니라 그 LEFT "
+        "JOIN의 ON 절에 두세요)."
+    ]
+
+
 # 파생 테이블(서브쿼리) 조인: `) alias ON <조건>` — 조건은 다음 절 키워드 전까지
 _DERIVED_JOIN_RE = re.compile(
     r"\)\s*(\w+)\s+ON\s+(.*?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bHAVING\b|"
@@ -489,3 +549,217 @@ def check_scope_filter_where_demotion(sql: str) -> list[str]:
                     "별도 alias로 분리 조인하고 서버 alias에만 필터를 적용하세요."
                 )
     return errors
+
+
+# 알람 계열(cmm_alarm 프리픽스) 허용 테이블 — 프로필 `alarm_allowed_tables`의 cmm_alarm
+# 계열과 동일 집합(존 공통). 목록 밖 테이블(예: 심각도 표시 테이블) 조인은 라벨 문자열
+# 필터로 이어져 침묵 0건이 된다(2026-09-01 라이브 실측 — displayname ILIKE '%critical%'가
+# 한글 라벨과 불일치, 심각 활성 알람 128건이 "데이터 없음"으로 응답됨).
+_ALARM_TABLE_ALLOWLIST = frozenset({
+    "cmm_alarm",
+    "cmm_alarm_active",
+    "cmm_alarm_def",
+    "cmm_alarm_def_noti",
+    "cmm_alarm_def_noti_user",
+    "cmm_alarm_def_noti_group",
+    "cmm_alarm_def_noti_role",
+    "cmm_alarm_def_noti_rmtype",
+})
+_ALARM_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+[\w.]*?\b(cmm_alarm\w*)\b", re.IGNORECASE
+)
+_SEVERITY_GUIDE = (
+    "심각도 조건은 라벨 문자열이 아니라 alarmseverity 정수 비교로 작성하세요 "
+    "(심각=3, 경고=2, 주의=1, 해소=0 — 예: a.alarmseverity = 3)."
+)
+# alarmseverity를 문자열 리터럴과 직접 비교: = '심각', ILIKE 'critical' 등
+_SEVERITY_STR_CMP_RE = re.compile(
+    r"\balarmseverity\s*(?:=|!=|<>|NOT\s+I?LIKE|I?LIKE)\s*'([^']*)'", re.IGNORECASE
+)
+# alarmseverity IN (...) 나열 — 리터럴 목록을 캡처해 비숫자 문자열만 위반으로 본다
+_SEVERITY_IN_RE = re.compile(
+    r"\balarmseverity\s+(?:NOT\s+)?IN\s*\(([^)]*)\)", re.IGNORECASE
+)
+# 심각도 표시 라벨 컬럼(displayname)에 대한 문자열 필터
+_DISPLAYNAME_CMP_RE = re.compile(
+    r"\bdisplayname\s*(?:=|!=|<>|NOT\s+I?LIKE|I?LIKE)\s*'([^']*)'", re.IGNORECASE
+)
+# 라벨 어휘 — 영문(폴스타 라벨은 한글이라 영문 매칭은 반드시 0건)·한글 심각도 명칭
+_SEVERITY_LABEL_TOKENS = (
+    "critical", "warning", "major", "minor", "severe", "clear",
+    "심각", "경고", "주의", "해소",
+)
+
+
+def check_alarm_table_allowlist(sql: str) -> list[str]:
+    """허용 목록 밖 알람 계열 테이블 참조를 탐지한다 (P1-③).
+
+    알람 조회의 허용 테이블은 프로필 `alarm_allowed_tables`로 프롬프트에 안내되지만,
+    공용 validator의 테이블 존재 검사는 라이브 스키마(수백 개 전체) 기준이라 목록 밖
+    테이블도 실존하면 통과한다. cmm_alarm 프리픽스 계열만 결정적으로 차단해 심각도
+    표시 테이블 등으로의 우회를 막는다(2026-09-01 라이브 실측). 주석 제거 후 판정한다
+    (D-087 규약).
+
+    Args:
+        sql: SQL 쿼리
+
+    Returns:
+        에러 메시지 목록 (위반 테이블당 1건)
+    """
+    text = sqlparse.format(sql, strip_comments=True)
+    errors: list[str] = []
+    seen: set[str] = set()
+    for m in _ALARM_TABLE_RE.finditer(text):
+        table = m.group(1).lower()
+        if table in _ALARM_TABLE_ALLOWLIST or table in seen:
+            continue
+        seen.add(table)
+        errors.append(
+            f"알람 조회에 허용되지 않은 테이블 '{table}'을(를) 참조했습니다. "
+            f"알람 계열은 {', '.join(sorted(_ALARM_TABLE_ALLOWLIST))}만 사용하세요. "
+            + _SEVERITY_GUIDE
+        )
+    return errors
+
+
+def check_severity_label_filter(sql: str) -> list[str]:
+    """심각도를 라벨 문자열로 필터한 패턴을 탐지한다 (P1-①).
+
+    폴스타 심각도 정본은 alarmseverity 정수(심각=3, 경고=2, 주의=1, 해소=0)다. LLM이
+    ①`alarmseverity = '심각'`처럼 정수 컬럼을 비숫자 문자열과 비교하거나 ②표시 라벨
+    컬럼(displayname)을 'critical' 등 라벨 문자열로 필터하면, 라벨 불일치(운영 라벨은
+    한글)로 항상 0건이 되는 침묵 오답이 난다(2026-09-01 라이브 실측 — 심각 활성 알람
+    128건 존재에도 0건 응답). 숫자 문자열('3')은 암묵 캐스트로 동작하므로 허용한다.
+    주석 제거 후 판정한다(D-087 규약).
+
+    Args:
+        sql: SQL 쿼리
+
+    Returns:
+        에러 메시지 목록
+    """
+    text = sqlparse.format(sql, strip_comments=True)
+    errors: list[str] = []
+
+    for m in _SEVERITY_STR_CMP_RE.finditer(text):
+        literal = m.group(1)
+        if not re.fullmatch(r"\s*\d+\s*", literal):
+            errors.append(
+                f"alarmseverity(정수 컬럼)를 문자열 '{literal}'와 비교했습니다. "
+                + _SEVERITY_GUIDE
+            )
+
+    for m in _SEVERITY_IN_RE.finditer(text):
+        for lit in re.findall(r"'([^']*)'", m.group(1)):
+            if not re.fullmatch(r"\s*\d+\s*", lit):
+                errors.append(
+                    f"alarmseverity IN 목록에 비숫자 문자열 '{lit}'이(가) 있습니다. "
+                    + _SEVERITY_GUIDE
+                )
+                break
+
+    for m in _DISPLAYNAME_CMP_RE.finditer(text):
+        normalized = m.group(1).lower().strip("%_ ")
+        if any(token in normalized for token in _SEVERITY_LABEL_TOKENS):
+            errors.append(
+                f"심각도 표시 라벨(displayname)을 문자열 '{m.group(1)}'로 필터했습니다. "
+                "표시 라벨은 환경에 따라 달라 필터 기준이 될 수 없습니다. " + _SEVERITY_GUIDE
+            )
+    return errors
+
+
+# 활성 판정 오답: currentalarmstatus를 'ACTIVE'류 리터럴과 비교하는 패턴. LLM이 활성
+# 알람을 `currentalarmstatus = 'ACTIVE'`로 추정 생성하지만 이 값은 어느 존에도 없다
+# (2026-09-02 폐쇄망 실측 — cmm_alarm 테이블 3존 0건, cmm_alarm_active에서도 0건.
+# 이 칼럼의 실제 어휘는 'NOT_ACK' 등 **확인(ACK) 상태**로 실측됨). 따라서 활성 판정은
+# cmm_alarm_active 존재로만 하고, ACTIVE류 리터럴 비교만 반려한다 — ACK 어휘 비교
+# ("미확인 알람" 질의의 NOT_ACK 등)는 정당하므로 손대지 않는다.
+_ACTIVE_STATUS_CMP_RE = re.compile(
+    r"\bcurrentalarmstatus\s*(?:=|!=|<>|NOT\s+I?LIKE|I?LIKE)\s*'([^']*)'",
+    re.IGNORECASE,
+)
+_ACTIVE_STATUS_IN_RE = re.compile(
+    r"\bcurrentalarmstatus\s+(?:NOT\s+)?IN\s*\(([^)]*)\)", re.IGNORECASE
+)
+# 활성/열림 의미로 오인되는 리터럴 — 실측 어휘(ACK 계열)에 존재하지 않는 값들
+_ACTIVE_LIKE_LITERAL_RE = re.compile(
+    r"^\s*%?_?(?:active|activated|open|opened|enabled|on|활성|발생)%?\s*$",
+    re.IGNORECASE,
+)
+_ACTIVE_GUIDE = (
+    "활성 알람 여부는 cmm_alarm_active 조인으로 판정하세요 "
+    "(예: JOIN cmm_alarm_active ca ON ca.alarm_id = a.id — "
+    "cmm_alarm_active에 행이 있으면 활성). currentalarmstatus는 확인(ACK) 상태 "
+    "칼럼이며 실제 값은 NOT_ACK(미확인)·ACKED(확인)·FINISHED뿐입니다"
+    "(2026-09-02 3존 실측 — 'ACTIVE'는 존재하지 않음). 활성 목록·건수 질의라면 "
+    "이 칼럼을 필터에 쓰지 마세요."
+)
+
+
+def check_active_status_literal_filter(sql: str) -> list[str]:
+    """currentalarmstatus를 ACTIVE류 리터럴과 비교한 패턴을 탐지한다 (V1-4/V1-5 실측).
+
+    'NOT_ACK' 등 확인 상태 어휘 비교는 정당하므로(미확인 알람 질의) 반려하지 않는다.
+
+    Args:
+        sql: SQL 쿼리
+
+    Returns:
+        에러 메시지 목록
+    """
+    text = sqlparse.format(sql, strip_comments=True)
+    offending: list[str] = []
+    for m in _ACTIVE_STATUS_CMP_RE.finditer(text):
+        if _ACTIVE_LIKE_LITERAL_RE.match(m.group(1)):
+            offending.append(m.group(1))
+    for m in _ACTIVE_STATUS_IN_RE.finditer(text):
+        for lit in re.findall(r"'([^']*)'", m.group(1)):
+            if _ACTIVE_LIKE_LITERAL_RE.match(lit):
+                offending.append(lit)
+    if offending:
+        return [
+            f"currentalarmstatus를 '{offending[0]}'와 비교했습니다 — 이 값은 존재하지 "
+            "않아 항상 0건입니다. " + _ACTIVE_GUIDE
+        ]
+    return []
+
+
+# ── D-201: "이번 달" 질의의 stat_m 당월 조회 반려 (2026-09-07) ────────────────
+# 폴스타 월간 통계(cmm_metric_stat_m)는 직전월까지만 집계된다(C-06 3존 실측) —
+# "이번 달" 질의를 stat_m으로 생성하면 전부 null이다. 프로필 query_guide 규칙
+# (stat_d 당월 1일~어제 집계)의 LLM 순응은 비결정이므로, 검증기가 결정적으로
+# 반려해 재생성 힌트를 준다(프롬프트 규칙 + 검증기 2겹 — D-201 주의① 예고분).
+
+_CURRENT_MONTH_STAT_GUIDE = (
+    "'이번 달' 성능 통계는 cmm_metric_stat_m(월간)으로 조회하면 안 됩니다 — 월간 통계는 "
+    "직전월까지만 집계되어 현재 월 값이 전부 null입니다. cmm_metric_stat_d(일간)를 "
+    "stat_date BETWEEN 당월 1일 AND 어제 범위로 조회하고, 서버별 GROUP BY로 "
+    "AVG(avg_val)=월중 평균, MAX(max_val)=월중 최대를 집계하세요."
+)
+
+
+def check_current_month_stat_table(sql: str, user_query: str) -> list[str]:
+    """'이번 달' 단일 기간 질의가 stat_m을 참조하면 반려한다 (D-201 결정적 안전망).
+
+    발동을 좁게 고정한다: 질의의 기간 해석(resolve_stat_month_range — 프로필 규칙과
+    같은 결정적 해석기)이 **정확히 (당월, 당월)** 일 때만. 범위 질의("5월부터 이번
+    달까지")는 stat_m 사용이 부분 정당하므로 미발동. stat_d로 생성된 SQL은 통과.
+
+    Args:
+        sql: SQL 쿼리
+        user_query: 사용자 원문 질의(기간 해석용)
+
+    Returns:
+        에러 메시지 목록
+    """
+    from datetime import date as _date
+
+    from src.utils.query_gen_common import resolve_stat_month_range
+
+    period = resolve_stat_month_range(user_query or "", _date.today())
+    cur = _date.today().strftime("%Y%m")
+    if period != (cur, cur):
+        return []
+    if not re.search(r"\bcmm_metric_stat_m\b", sql, re.IGNORECASE):
+        return []
+    return [_CURRENT_MONTH_STAT_GUIDE]

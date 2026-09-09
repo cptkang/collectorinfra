@@ -105,6 +105,11 @@ async def _run_output_generator(
         response = _append_inferred_mapping_info(response, state)
         response = _append_spike_notes(response, state)
         response = _append_scope_note(response, state)
+        response = _append_zone_coverage_notes(response, state)
+        response = _append_current_month_partial_note(response, state)
+        response = _append_unavailable_metric_notes(response, state)
+        response = _append_limit_truncation_note(response, state)
+        response = _prepend_alarm_headline(response, state, app_config)
         return {
             "final_response": response,
             "output_file": None,
@@ -123,6 +128,8 @@ async def _run_output_generator(
             text_response = _append_inferred_mapping_info(text_response, state)
             text_response = _append_spike_notes(text_response, state)
             text_response = _append_scope_note(text_response, state)
+            text_response = _append_zone_coverage_notes(text_response, state)
+            text_response = _append_unavailable_metric_notes(text_response, state)
             # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
             # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
             text_response = _append_form_fill_notes(
@@ -249,6 +256,14 @@ async def _generate_text_response(
     if not organized["rows"]:
         return _generate_empty_result_response(parsed, state.get("empty_diagnosis"))
 
+    # 전 행 null 강등(C-06): 값 칼럼이 전부 전 행 null이면 의미 없는 목록 표 대신 결정적
+    # 안내로 응답한다(LLM 미호출). CSV 산출 원본(query_results)은 건드리지 않는다.
+    # text 전용 — 폼필(xlsx/docx) 동반 텍스트는 의도적 공란(H-06 도메인 밖 열)이 있어 제외.
+    if parsed.get("output_format", "text") == "text":
+        all_null_cols = _all_null_value_columns(organized["rows"])
+        if all_null_cols is not None:
+            return _generate_all_null_response(all_null_cols, organized["rows"], state)
+
     if llm is None:
         # 최종 사용자 응답만 answer 프로파일(D-194). D-062 중간 합성
         # (stream_user_response=False)은 최종 합성의 재료이므로 결정적 프로파일을 유지한다.
@@ -326,6 +341,122 @@ def _generate_empty_result_response(
     return response
 
 
+# 식별자성 칼럼('리소스 ID', 'resource_id', 'id' 등 — 이름이 별도 단어 'id'로 끝남) 판정.
+# 식별자의 최소/최대/평균은 무의미하므로 수치 요약에서 제외한다.
+_IDENTIFIER_COL_RE = re.compile(r"(?:^|[^0-9A-Za-z가-힣])id$", re.IGNORECASE)
+
+
+def _numeric_summary_lines(rows: list) -> list[str]:
+    """전체 rows에서 숫자 칼럼별 최소·최대·평균·null 건수를 결정적으로 계산한다(C-11·C-12).
+
+    포함 기준(좁게): 비-null 값이 1개 이상이고 전부 int/float(bool 제외)인 칼럼.
+    식별자성 칼럼(`_IDENTIFIER_COL_RE`)은 통계가 무의미하므로 제외. 문자열 숫자('4.0')는
+    강제 변환하지 않는다 — 형 추정 오류로 잘못된 통계를 싣는 것보다 생략이 안전하다.
+    """
+    dict_rows = [r for r in rows if isinstance(r, dict)]
+    if not dict_rows or len(dict_rows) != len(rows):
+        return []
+    columns: list[str] = []
+    for r in dict_rows:
+        for k in r.keys():
+            key = str(k)
+            if key not in columns:
+                columns.append(key)
+    lines: list[str] = []
+    for col in columns:
+        if _IDENTIFIER_COL_RE.search(col.strip()):
+            continue
+        values = [r.get(col) for r in dict_rows]
+        non_null = [v for v in values if v is not None]
+        if not non_null:
+            continue
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null
+        ):
+            continue
+        null_count = len(values) - len(non_null)
+        line = (
+            f"- {_display_field_name(col)}: 최소 {round(min(non_null), 2)} · "
+            f"최대 {round(max(non_null), 2)} · "
+            f"평균 {round(sum(non_null) / len(non_null), 2)}"
+        )
+        if null_count:
+            line += f" (null {null_count}건)"
+        lines.append(line)
+    return lines
+
+
+def _all_null_value_columns(rows: list) -> list[str] | None:
+    """전 행 null 강등(C-06) 판정 — 발동 조건을 좁게 고정한다.
+
+    발동 조건(전부 충족 시 전-행-null 칼럼 목록 반환, 아니면 None):
+      ① 행이 1건 이상이고 전부 dict
+      ② 결과 전체에 비-null 숫자 값이 하나도 없음 — 지표가 한 값이라도 채워졌으면
+         미발동(C-03 부분 null 오폭 방지)
+      ③ 전 행 null 칼럼이 **2개 이상**, 또는 1개 이상이면서 전체 칼럼의 절반 이상
+         — 절반 기준만 쓰면 멀티 병합 표(존·서버명·호스트명 등 식별 칼럼 다수)에서
+         지표 2칼럼 전 행 null인데도 미발동한다(C-06 CM 재실측 결함). ≥2 기준만 쓰면
+         [hostname, cpu_avg(null)] 같은 단일 지표 결과를 놓친다 — 둘의 합집합.
+         식별자 목록 + 부수적 공란 1칼럼(빈 비고)은 두 기준 모두 미달이라 보호된다.
+    호출부는 output_format=text에서만 발동시킨다 — 폼필(xlsx/docx) 동반 텍스트는
+    의도적 공란(도메인 밖 열, H-06)이 있어 강등하면 안 된다.
+    """
+    dict_rows = [r for r in rows if isinstance(r, dict)]
+    if not dict_rows or len(dict_rows) != len(rows):
+        return None
+    columns: list[str] = []
+    for r in dict_rows:
+        for k in r.keys():
+            key = str(k)
+            if key not in columns:
+                columns.append(key)
+    if not columns:
+        return None
+    all_null: list[str] = []
+    has_numeric = False
+    for col in columns:
+        values = [r.get(col) for r in dict_rows]
+        non_null = [v for v in values if v is not None]
+        if not non_null:
+            all_null.append(col)
+            continue
+        if any(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null
+        ):
+            has_numeric = True
+    if not all_null or has_numeric:
+        return None
+    if len(all_null) < 2 and len(all_null) * 2 < len(columns):
+        return None
+    return all_null
+
+
+def _generate_all_null_response(
+    null_cols: list[str], rows: list, state: AgentState
+) -> str:
+    """값 칼럼이 전 행 null인 결과의 결정적 안내 응답(C-06 — LLM 미호출).
+
+    조회 기간에 진행 중인 달이 포함되면 "월간 통계는 직전월까지 집계" 안내를 덧붙인다.
+    CSV 산출은 라우트가 query_results로 별도 생성하므로 여기서 잃지 않는다.
+    """
+    cols = ", ".join(_display_field_name(c) for c in null_cols)
+    response = (
+        f"조회는 {len(rows)}건 수행되었으나, 값 칼럼({cols})이 전 행 null이어서 "
+        "목록 표시를 생략합니다.\n"
+        "원본 조회 데이터는 CSV 다운로드로 확인할 수 있습니다."
+    )
+    info = _build_reference_info(state)
+    period = info.get("period")
+    this_month = date.today().strftime("%Y%m")
+    if period and str(period[1]) >= this_month:
+        response += (
+            f"\n\n[안내] 조회 기간({_format_ym(str(period[0]))}~{_format_ym(str(period[1]))})에 "
+            "진행 중인 달이 포함되어 있습니다. 폴스타 월간 통계는 직전월까지 집계되므로, "
+            "직전월 기준으로 다시 질의하면 값이 조회될 수 있습니다."
+        )
+    return response
+
+
 def _build_response_prompt(
     original_query: str,
     summary: str,
@@ -364,6 +495,23 @@ def _build_response_prompt(
             f"```"
         ),
     ]
+
+    # 수치 요약(결정적, C-10~C-12): 응답 LLM은 위 20행 미리보기만 보므로 최대/최소/평균을
+    # 직접 계산하면 전체와 어긋난다(라이브 실측: 전체 max 99.58%를 49.02%로 서술).
+    # 전체 rows에서 코드가 계산한 값만 인용하도록 강제한다.
+    stats_lines = _numeric_summary_lines(rows)
+    if stats_lines:
+        parts.append(
+            f"## 수치 요약 (전체 {len(rows)}건 전수 기준 — 코드 계산값)\n"
+            "최대·최소·평균 등 수치를 서술할 때는 **반드시 아래 값을 그대로** 쓰세요. "
+            "위 조회 결과 JSON은 표시용 일부라 직접 계산하면 틀립니다. "
+            "칼럼 값에 단위(%, GB 등)를 임의로 붙이지 마세요. 값이 개수·건수·개월 수면 "
+            "칼럼명에 pct/percent가 들어 있어도 %를 붙이지 말고(별칭 표기 오류일 수 있음 — "
+            "예: months_over_40pct는 '개월 수'), 칼럼명을 '비율'로 바꿔 부르지도 마세요. "
+            "%는 값 자체가 비율(0~100 사용률 등)일 때만 씁니다. "
+            "이 블록 자체를 본문에 복창하지 마세요.\n"
+            + "\n".join(stats_lines)
+        )
 
     # 표에 모든 컬럼을 빠짐없이 포함하도록 컬럼 목록을 명시한다(D-100) — LLM이 질의 문구에
     # 이끌려 일부 컬럼만 표시하는 것을 방지(실측: "제조사와 일련번호" 질의에서 서버명·알람명 누락).
@@ -535,6 +683,104 @@ def _format_ym(yyyymm: str) -> str:
     if len(yyyymm) != 6 or not yyyymm.isdigit():
         return yyyymm
     return f"{yyyymm[:4]}년 {int(yyyymm[4:6])}월"
+
+
+_ALARM_MODE_LABELS = {"active": "활성", "history": "이력"}
+
+
+def _prepend_alarm_headline(response: str, state: AgentState, app_config) -> str:
+    """알람 결정적 조립 대상 질의의 응답 첫 줄에 코드가 만든 헤드라인을 붙인다.
+
+    응답 LLM이 샘플 행의 ack_status 값을 보고 "전부 NOT_ACK"처럼 전체를 일반화하는
+    서술 환각(2026-09-02 폐쇄망 실측 — 연도 환각 D-177③과 동형)에 대한 결정적 대응:
+    건수는 db_result_summary(실측), 조건 서술은 인식기 재실행(결정적)에서 얻으므로
+    LLM 서술과 무관하게 정확한 숫자·조건이 항상 최상단에 보인다.
+
+    플래그 OFF·비알람·미인식·건수 없음이면 no-op(응답 바이트 무변경).
+    """
+    cfg = getattr(app_config, "text2sql", None)
+    if not getattr(cfg, "alarm_deterministic", False):
+        return response
+    if state.get("routing_intent") != "alarm_query":
+        return response
+    from src.db_adapters.polestar.assembler import recognize_active_alarm_query
+
+    spec = recognize_active_alarm_query(
+        state.get("user_query", ""),
+        parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+    )
+    if spec is None:
+        return response
+    if spec.group_by:
+        # 서버별 집계(D-202 3차)는 행수=서버 수라 "총 N건" 헤드라인이 오독을 만든다 —
+        # 집계 표 자체가 결정적 산출물이므로 헤드라인 없이 그대로 둔다.
+        return response
+
+    summary = state.get("db_result_summary") or {}
+    if summary:
+        counts = {d: (info or {}).get("row_count", 0) for d, info in summary.items()}
+        total = sum(counts.values())
+        per_zone = " (" + " · ".join(f"{d} {c:,}건" for d, c in counts.items()) + ")"
+    else:
+        rows = state.get("query_results") or []
+        if not rows:
+            return response  # 0건은 기존 0건 안내가 담당
+        total, per_zone = len(rows), ""
+
+    parts = [_ALARM_MODE_LABELS.get(spec.mode, spec.mode)]
+    if spec.mode == "history" and spec.month_range:
+        parts.append(f"{spec.month_range[0]}~{spec.month_range[1]}")
+    if spec.type_label:
+        parts.append(f"{spec.type_label} 유형")
+    if spec.severity is not None:
+        op = " 이상" if spec.severity_op == ">=" else ""
+        parts.append(f"심각도 {spec.severity}{op}")
+    if spec.unack_only:
+        parts.append("미확인만")
+    headline = (
+        f"**[알람 조회]** {' · '.join(parts)} — 총 {total:,}건{per_zone}"
+    )
+    return headline + chr(10) + chr(10) + (response or "")
+
+
+def _append_zone_coverage_notes(response: str, state: AgentState) -> str:
+    """멀티 DB 조회의 존별 커버리지·부분 실패를 응답 말미에 명시한다 (침묵 강등 금지).
+
+    한 존이라도 행을 반환하면 나머지 존의 실패·0행이 무표시로 증발하던 문제의 교정
+    (2026-09-02 폐쇄망 실측 — 같은 알람 질의가 턴마다 "B0만"/"GP·YD만"으로 보였고,
+    사용자는 "그 존엔 없다"로 오독). db_errors는 result_merger가 전체 실패일 때만
+    error_message로 승격하고 부분 실패는 삼켰다(result_merger `not db_results` 조건).
+    단일 DB 조회(두 필드 모두 빈 값)는 no-op — 응답 바이트 무변경.
+
+    Args:
+        response: 지금까지 조립된 응답 텍스트
+        state: 에이전트 상태 (db_errors · db_result_summary 소비)
+
+    Returns:
+        각주가 덧붙은 응답 (해당 없으면 원본 그대로)
+    """
+    db_errors = state.get("db_errors") or {}
+    summary = state.get("db_result_summary") or {}
+    lines: list[str] = []
+
+    if db_errors:
+        lines.append("**[일부 존 조회 실패]**")
+        for db_id, err in db_errors.items():
+            lines.append(f"- {db_id}: {str(err)[:150]}")
+
+    # 멀티 존 조회에서 일부 존만 0행이면 존별 건수를 명시한다 — "그 존에 없음(0건)"과
+    # "조회 누락"을 사용자가 구별할 수 있게 한다. 전 존 0행은 기존 0건 안내가 담당한다.
+    if len(summary) >= 2:
+        counts = {d: (info or {}).get("row_count", 0) for d, info in summary.items()}
+        if any(c == 0 for c in counts.values()) and any(c > 0 for c in counts.values()):
+            rendered = " · ".join(
+                f"{d} {c:,}건" for d, c in counts.items()
+            )
+            lines.append(f"**[존별 결과]** {rendered}")
+
+    if not lines:
+        return response
+    return (response or "") + "\n\n" + "\n".join(lines)
 
 
 def _append_form_fill_notes(
@@ -731,6 +977,120 @@ def _append_scope_note(response: str, state: AgentState) -> str:
 
     note = render_narrowed_note(state.get("scope_narrowed"))
     return f"{response}\n\n{note}" if note else response
+
+
+# ── 결정적 각주: 진행 중인 달 집계 기준 (C-06 후속 — "이번 달"=stat_d 집계 결정) ──
+
+#: 성능 통계 계열 질의 판별 표면어 — 알람·목록 조회에 각주가 오부착되지 않도록 좁힌다.
+_CURRENT_MONTH_NOTE_METRIC_TERMS = (
+    "사용률", "이용률", "통계", "cpu", "씨피유", "메모리", "파일시스템",
+)
+
+
+def _append_current_month_partial_note(response: str, state: AgentState) -> str:
+    """진행 중인 달이 조회 기간에 포함된 성능 통계 응답에 집계 기준을 결정적으로 명시한다.
+
+    "이번 달" 질의는 프로필 규칙(2026-09-07)에 따라 stat_d(당월 1일~어제) 집계로 답하므로,
+    그 값이 확정 월간 통계로 읽히지 않게 한다(LLM 각주 지시는 누락됨 — spike_notes 원칙).
+    미발동 조건: 알람 질의(진행월 실데이터가 정상) · 지표어 없음 · 기간 끝이 당월 아님 ·
+    숫자 값 없음(전 행 null 강등·빈 결과는 자체 안내가 담당).
+    """
+    if state.get("routing_intent") == "alarm_query":
+        return response
+    rows = state.get("query_results") or []
+    has_numeric = any(
+        isinstance(v, (int, float)) and not isinstance(v, bool)
+        for r in rows if isinstance(r, dict) for v in r.values()
+    )
+    if not has_numeric:
+        return response
+    query = (
+        state.get("user_query")
+        or (state.get("parsed_requirements") or {}).get("original_query")
+        or ""
+    )
+    if not any(t in query.lower() for t in _CURRENT_MONTH_NOTE_METRIC_TERMS):
+        return response
+    today = date.today()
+    parsed = state.get("parsed_requirements") or {}
+    period = resolve_stat_month_range(
+        query, today, parsed_time_range=parsed.get("time_range")
+    )
+    if not period or str(period[1]) != today.strftime("%Y%m"):
+        return response
+    return (
+        response
+        + f"\n\n[안내] 조회 기간에 진행 중인 달({_format_ym(str(period[1]))})이 포함되어 "
+        "있습니다. 진행 중인 달의 값은 확정 월간 통계가 아니라 당월 1일부터 어제까지의 "
+        "일간 통계를 집계한 기준입니다."
+    )
+
+
+# ── 결정적 각주: 미수집 지표 · LIMIT 절단 (C-02 2차 실측 2026-09-07) ──────────
+
+#: DB별 미수집 지표 안내 — 질의에 표면어가 있으면 응답에 결정적으로 붙인다.
+#: 프로필의 "미수집 안내" 지시는 SQL 생성 프롬프트에만 실려 응답 LLM에게 전달되지
+#: 않는다(생성기는 SQL만 반환 — 2차 실측에서 안내 누락 확인) — 코드가 붙인다
+#: (_append_spike_notes와 같은 원칙). 근거: scripts/diag_metric_definitions.sql
+#: 3존 전수 실측 — 은행존 stat_m에 MaxIORate 행 0건.
+_DB_UNAVAILABLE_METRIC_NOTES: dict[str, tuple[tuple[str, ...], str]] = {
+    "polestar_b0": (
+        ("디스크 io", "디스크io", "disk io", "diskio", "디스크 아이오", "maxiorate"),
+        "은행존 폴스타는 디스크 IO 통계를 수집하지 않아 해당 항목을 제공할 수 없습니다"
+        "(실측 2026-09-07).",
+    ),
+}
+
+
+def _involved_db_ids(state: AgentState) -> set[str]:
+    """이번 응답에 관여한 DB id 집합(단일·멀티·오케스트레이션 경로 공통 신호 합집합)."""
+    ids: set[str] = set()
+    if state.get("active_db_id"):
+        ids.add(str(state["active_db_id"]))
+    for t in state.get("target_databases") or []:
+        if isinstance(t, dict) and t.get("db_id"):
+            ids.add(str(t["db_id"]))
+    ids.update((state.get("db_result_summary") or {}).keys())
+    return ids
+
+
+def _append_unavailable_metric_notes(response: str, state: AgentState) -> str:
+    """미수집 지표 요청에 대한 안내를 결정적으로 덧붙인다(침묵 공란 금지)."""
+    query = (
+        state.get("user_query")
+        or (state.get("parsed_requirements") or {}).get("original_query")
+        or ""
+    ).lower()
+    if not query:
+        return response
+    notes: list[str] = []
+    for db_id in sorted(_involved_db_ids(state)):
+        entry = _DB_UNAVAILABLE_METRIC_NOTES.get(db_id)
+        if entry and any(term in query for term in entry[0]):
+            notes.append(entry[1])
+    if not notes:
+        return response
+    return response + "\n\n" + "\n".join(f"[안내] {n}" for n in notes)
+
+
+def _append_limit_truncation_note(response: str, state: AgentState) -> str:
+    """LIMIT 도달 절단을 결정적으로 명시한다(K-09 — 절단 사실 응답 명시).
+
+    행 수가 resolved_limit에 도달했다는 것은 그 이후가 잘렸을 개연성이 높다는 뜻인데,
+    2차 실측(C-02 B0: 10,000행 도달)에서 응답이 이를 말하지 않았다. LLM 지시는
+    누락되므로 코드가 붙인다. resolved_limit 미승격 경로는 no-op(오탐 없음).
+    """
+    limit = state.get("resolved_limit")
+    if not isinstance(limit, int) or limit <= 0:
+        return response
+    rows = state.get("query_results") or []
+    if len(rows) < limit:
+        return response
+    return (
+        response
+        + f"\n\n[안내] 결과가 조회 상한(LIMIT {limit:,})에 도달해 이후 행이 절단되었을 수 "
+        "있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 확인할 수 있습니다."
+    )
 
 
 def _append_spike_notes(response: str, state: AgentState) -> str:

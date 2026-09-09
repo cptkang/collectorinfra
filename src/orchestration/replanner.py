@@ -122,6 +122,16 @@ async def replanner(
         )
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
+    # 관리 작업 강등 차단: 순수 관리 요청(캐시/유사어)의 후속으로 DB 조회를 붙이면
+    # 관리 실패가 무관한 조회 결과로 종결된다(침묵 강등 금지, D-059 계열).
+    new_tasks = _filter_management_demotion(new_tasks, state.get("task_plan", []))
+    if not new_tasks:
+        logger.info(
+            "replanner: 관리 작업 계획의 조회 강등 후속 전부 제거 → 종료 (reason=%s)",
+            decision.get("reason"),
+        )
+        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
     # 중복 재답변 방지(R-A4 강화): 후속이 모두 general_inference(일반 안내)면
     # 데이터 기반 후속이 아니라 같은 주제를 다시 답변하는 패턴이다. general_inference는
     # 자체 완결적 안내 답변(사용법·지원 소스·조회 가능 데이터 등)이므로, 여기에 또
@@ -335,6 +345,51 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
             task["supersedes"] = [id_map.get(d, d) for d in task["supersedes"]]
 
     return assigned
+
+
+# 관리 계열 agent — 실패 사유가 그대로 사용자에게 종결 노출되어야 하는 작업들
+_MANAGEMENT_AGENTS = ("cache_management", "synonym_registration")
+# DB/API 조회 계열 agent — 관리 작업의 대체 수단이 될 수 없는 작업들
+_QUERY_AGENTS = ("data_query", "alarm_query", "process_query")
+
+
+def _filter_management_demotion(
+    new_tasks: list[dict],
+    existing: list[dict],
+) -> list[dict]:
+    """순수 관리 요청 계획에 조회 후속을 붙이는 강등을 제거한다.
+
+    캐시/유사어 관리 task가 실패하면 replanner LLM이 "다른 방법으로 정보를 구하자"며
+    data_query 후속을 만들어, 관리 실패가 무관한 DB 조회 결과(테이블명 나열 등)로
+    종결된다(2026-09-01 라이브 실측 — 캐시 갱신 실패가 재계획 3회 끝에 b0 테이블명
+    출력으로 끝남). 관리 작업의 실패 사유는 조회로 덮지 않고 그대로 종결 노출한다
+    (침묵 강등 금지 — D-059 계열).
+
+    혼합 요청("캐시 갱신하고 서버 목록도 조회해줘")은 기존 계획에 조회 계열 task가
+    이미 있으므로 대상이 아니다 — 순수 관리 계획일 때만 발동한다.
+
+    Args:
+        new_tasks: _assign_ids로 id가 부여된 신규 task 목록
+        existing: 기존 task_plan
+
+    Returns:
+        조회 강등 후속을 제외한 신규 task 목록
+    """
+    if not existing or not all(
+        t.get("agent") in _MANAGEMENT_AGENTS for t in existing
+    ):
+        return new_tasks
+
+    kept: list[dict] = []
+    for t in new_tasks:
+        if t.get("agent") in _QUERY_AGENTS:
+            logger.info(
+                "replanner: 관리 작업 계획의 조회 강등 차단 (agent=%s, sub_query=%.60s)",
+                t.get("agent"), t.get("sub_query", ""),
+            )
+            continue
+        kept.append(t)
+    return kept
 
 
 def _filter_futile_retries(

@@ -223,6 +223,7 @@ def _merge_task_results_by_identity(
     merged: dict[str, dict] = {}
     col_order: list[str] = [canonical]
     dropped = 0
+    keyless = 0
     for rows, idc in sources:
         for row in rows:
             if not isinstance(row, dict):
@@ -230,6 +231,7 @@ def _merge_task_results_by_identity(
             raw_key = row.get(idc)
             key = str(raw_key).strip().lower() if raw_key is not None else ""
             if not key:
+                keyless += 1  # 식별키 없는 행(전역 COUNT류 등)은 표에 반영 불가
                 continue
             slot = merged.setdefault(key, {canonical: raw_key})
             for col, val in row.items():
@@ -255,8 +257,19 @@ def _merge_task_results_by_identity(
     }
     scoped = {k: v for k, v in merged.items() if k in base_keys}
     if scoped:
+        if len(scoped) < len(merged):
+            logger.info(
+                "result_aggregator 병합: 최소 행수 조회(%d행) 기준 스코프로 %d→%d행 축소",
+                len(base_rows), len(merged), len(scoped),
+            )
         merged = scoped
 
+    if keyless:
+        logger.info(
+            "result_aggregator 병합: 식별키(%s) 없는 행 %d건 제외 — 전역 COUNT류 "
+            "결과는 최종 표에 반영되지 않음",
+            canonical, keyless,
+        )
     if dropped:
         logger.info(
             "result_aggregator 병합: 서버당 다건으로 %d개 값이 대표행에 흡수되지 않음(대표 유지)",
@@ -535,6 +548,9 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         "parsed_requirements": parsed,
         "organized_data": res.get("organized_data"),
         "query_results": res.get("query_results", []),
+        # 존 커버리지 각주(D-159 계열 침묵 강등 금지) — 부분 실패·0행 존 명시용
+        "db_errors": res.get("db_errors"),
+        "db_result_summary": res.get("db_result_summary"),
         "template_structure": state.get("template_structure"),
         # uploaded_file(원본 파일 바이너리)이 없으면 output_generator가 양식을 채우지 못하고
         # CSV로만 강등된다(비대칭 전파 방지, D-053 계열).

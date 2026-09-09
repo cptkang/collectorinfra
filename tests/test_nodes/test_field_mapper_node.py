@@ -599,3 +599,33 @@ class TestServerNameVsHostname:
         assert result.mapping_sources["호스트네임"] in ("synonym", "eav_synonym")
 
 
+
+
+# === 동의어 집합 선언 가로채기 방지 (2026-09-01 A-10 실측 재발 방지) ===
+
+
+@pytest.mark.asyncio
+async def test_synonym_set_declaration_not_intercepted():
+    """pending 없는 신규 동의어 집합 선언은 등록 분기가 가로채지 않는다 (A-10).
+
+    가로채면 "등록할 매핑 없음"으로 오종결되어 cache_management의 결정적 셋 파서
+    (D-142)에 도달하지 못한다. 분기를 통과해 일반 스킵 경로(final_response 없음)로
+    흘러야 한다.
+    """
+    state = _make_state(
+        user_query="vcore, cpu, core은 동의어이다. 캐시에 등록하라.",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    result = await field_mapper(state)
+    assert "final_response" not in result
+
+
+@pytest.mark.asyncio
+async def test_registration_answer_without_pending_still_guided():
+    """셋 선언이 아닌 등록 답변("전체 등록")은 pending 부재 안내를 유지한다 (회귀 고정)."""
+    state = _make_state(
+        user_query="전체 등록",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    result = await field_mapper(state)
+    assert "등록할 유사어 매핑이 없습니다" in result["final_response"]

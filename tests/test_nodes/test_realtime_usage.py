@@ -223,6 +223,33 @@ class TestRealtimeLookup:
         assert "미수집 1대" in out["organized_data"]["summary"]
         assert "최근 수집값이 없는 서버" in out["organized_data"]["summary"]
 
+    async def test_rows_sorted_by_primary_metric_desc(self, monkeypatch):
+        """결정적 정렬(C-12): 첫 지표 내림차순, 미수집(None)은 맨 뒤."""
+        import time as _time
+        now_ms = int(_time.time() * 1000)
+        servers = {"polestar_b0": [
+            {"id": 1, "name": "low", "hostname": "h1", "avail_status": 0},
+            {"id": 2, "name": "none", "hostname": "h2", "avail_status": 0},
+            {"id": 3, "name": "high", "hostname": "h3", "avail_status": 0},
+        ]}
+
+        def fetch(_db, _ids, _metric):
+            return MeasurementResult(
+                rows={
+                    1: MeasurementRow(1, "low", 3.2, 1.0, 5.0, now_ms, None),
+                    3: MeasurementRow(3, "high", 99.58, 1.0, 99.9, now_ms, None),
+                },
+                failed_chunks=0, total_chunks=1,
+            )
+
+        mod = self._patch(monkeypatch, servers, fetch)
+        cfg = SimpleNamespace(polestar_rest=_cfg())
+        out = await mod.realtime_usage_lookup(
+            ["polestar_b0"], "지금 CPU 사용률 높은 서버 알려줘", cfg,
+        )
+        names = [r["서버명"] for r in out["query_results"]]
+        assert names == ["high", "low", "none"]
+
     async def test_failed_chunk_marked_as_query_failure(self, monkeypatch):
         """API 청크 실패 서버는 '미수집'이 아니라 '조회 실패'로 구분 표기."""
         servers = {"polestar_b0": [

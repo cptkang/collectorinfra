@@ -83,6 +83,28 @@ async def cache_management(
                 logger.info(
                     "cache_management: db_id 자동 추론 (previous_db_id=%s)", db_id
                 )
+
+        # 결정적 db_id 검증·제품군 전개(2026-09-01 A-05 실측): LLM 추출 db_id가 활성
+        # 목록에 없으면 — 사용자 표면어 "polestar"(제품군)가 비활성 샌드박스 db_id와
+        # 문자열 일치하는 경우 — 캐시 작업이 존재하지 않는 DB로 나가 실패하고, 이후
+        # 재계획이 무관한 조회로 강등된다. 활성 목록 프리픽스로 전개하고, 전개 불가면
+        # 실행 없이 안내로 종결한다.
+        db_ids_override: Optional[list[str]] = None
+        db_note: Optional[str] = None
+        if action in _DB_SCOPED_ACTIONS:
+            db_id, db_ids_override, db_note = _resolve_cache_db_target(
+                db_id, app_config
+            )
+            if db_note and db_ids_override is None:
+                logger.info("cache_management: 미등록 db_id 안내 종결 — %s", db_note)
+                return {
+                    "final_response": db_note,
+                    "current_node": "cache_management",
+                    "error_message": None,
+                }
+            if db_note:
+                logger.info("cache_management: 제품군 전개 — %s", db_note)
+
         target_table = parsed.get("target_table")
         target_column = parsed.get("target_column")
         words = parsed.get("words")
@@ -117,7 +139,11 @@ async def cache_management(
             cache_mgr=cache_mgr,
             app_config=app_config,
             llm=llm,
+            db_ids_override=db_ids_override,
         )
+        # 전개가 일어났으면 그 사실을 응답에 명시한다(침묵 확대 실행 금지)
+        if db_note and isinstance(result, str):
+            result = f"{db_note}\n\n{result}"
 
         # result가 dict면 pending_synonym_reuse 포함 가능
         if isinstance(result, dict):
@@ -167,6 +193,47 @@ async def _parse_cache_intent(
     return {"action": "status", "db_id": None}
 
 
+# db_id 대상 검증·전개를 적용하는 작업 — 대상 DB로 introspection/삭제가 나가는 작업만.
+# (유사어·설명 계열은 캐시 키 조회라 미등록 db_id여도 "캐시 없음" 안내로 안전하게 끝난다)
+_DB_SCOPED_ACTIONS = ("generate", "generate-descriptions", "invalidate")
+
+
+def _resolve_cache_db_target(
+    db_id: Optional[str],
+    app_config: AppConfig,
+) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+    """LLM이 추출한 db_id를 활성 DB 목록으로 결정적 검증·전개한다.
+
+    LLM 추출 결과를 그대로 신뢰하면 사용자 표면어("polestar" 등 제품군 이름)가
+    레지스트리의 비활성 db_id(로컬 샌드박스)와 문자열 일치해 존재하지 않는 DB로
+    작업이 나간다(2026-09-01 라이브 실측 — 캐시 갱신이 '테이블 0개' 오류로 실패).
+
+    Returns:
+        (db_id, db_ids_override, note) 3항:
+        - 활성 db_id → (그대로, None, None)
+        - 활성 목록 프리픽스와 일치(제품군) → (None, [활성 후보들], 전개 안내문)
+        - 미해석 → (None, None, 안내문) — 호출부는 실행하지 않고 안내로 종결한다
+    """
+    if not db_id:
+        return None, None, None
+    active = app_config.multi_db.get_active_db_ids()
+    if db_id in active:
+        return db_id, None, None
+    prefix = db_id.lower()
+    candidates = [d for d in active if d.lower().startswith(prefix)]
+    if candidates:
+        note = (
+            f"'{db_id}'은(는) 개별 DB 식별자가 아니라 제품군으로 해석되어 "
+            f"활성 DB {', '.join(candidates)} 전체를 대상으로 처리합니다."
+        )
+        return None, candidates, note
+    note = (
+        f"'{db_id}'은(는) 등록·활성 DB가 아니어서 작업을 수행하지 않았습니다. "
+        f"활성 DB: {', '.join(active) if active else '(없음)'}"
+    )
+    return None, None, note
+
+
 async def _execute_cache_action(
     action: str,
     db_id: Optional[str],
@@ -178,6 +245,7 @@ async def _execute_cache_action(
     cache_mgr: Any,
     app_config: AppConfig,
     llm: BaseChatModel,
+    db_ids_override: Optional[list[str]] = None,
 ) -> str | dict:
     """캐시 관리 작업을 수행하고 응답 텍스트를 생성한다.
 
@@ -199,10 +267,12 @@ async def _execute_cache_action(
     if action == "status":
         return await _handle_status(cache_mgr, db_id)
     elif action == "generate":
-        return await _handle_generate(cache_mgr, app_config, db_id)
+        return await _handle_generate(
+            cache_mgr, app_config, db_id, db_ids_override=db_ids_override
+        )
     elif action == "generate-descriptions":
         return await _handle_generate_descriptions(
-            cache_mgr, app_config, llm, db_id
+            cache_mgr, app_config, llm, db_id, db_ids_override=db_ids_override
         )
     elif action == "generate-synonyms":
         return await _handle_generate_synonyms(
@@ -228,7 +298,9 @@ async def _execute_cache_action(
     elif action == "db-guide":
         return await _handle_db_guide(cache_mgr)
     elif action == "invalidate":
-        return await _handle_invalidate(cache_mgr, db_id)
+        return await _handle_invalidate(
+            cache_mgr, db_id, db_ids_override=db_ids_override
+        )
     elif action == "list-synonyms":
         return await _handle_list_synonyms(
             cache_mgr, app_config, db_id, target_column
@@ -287,16 +359,31 @@ async def _handle_generate(
     cache_mgr: Any,
     app_config: AppConfig,
     db_id: Optional[str],
+    db_ids_override: Optional[list[str]] = None,
 ) -> str:
     """캐시 생성/갱신을 처리한다."""
     from src.db import get_db_client
+    from src.routing.domain_config import get_domain_by_id
+    from src.utils.sql_dialect import is_db2
 
-    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    db_ids = db_ids_override or (
+        [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    )
     if not db_ids:
         db_ids = ["_default"]
 
     results = []
     for did in db_ids:
+        # DB2 존은 fingerprint 조회가 PostgreSQL 전용(information_schema)이라 갱신이
+        # 성립하지 않는다 — 시도하면 침묵 error(테이블 0개)로 끝난다(2026-09-01 폐쇄망
+        # 실측 V2-1). 정식 DB2 분기(SYSCAT) 전까지 명시 안내로 대체한다.
+        domain_cfg = get_domain_by_id(did)
+        if domain_cfg and is_db2(domain_cfg.db_engine):
+            results.append(
+                f"- {did}: 건너뜀 — DB2 존은 캐시 갱신 미지원"
+                "(fingerprint 조회가 PostgreSQL 전용). 기존 캐시는 그대로 유지됩니다."
+            )
+            continue
         try:
             async with get_db_client(app_config, db_id=did) as client:
                 result = await cache_mgr.refresh_cache(did, client)
@@ -316,11 +403,14 @@ async def _handle_generate_descriptions(
     app_config: AppConfig,
     llm: BaseChatModel,
     db_id: Optional[str],
+    db_ids_override: Optional[list[str]] = None,
 ) -> str:
     """컬럼 설명 생성을 처리한다."""
     from src.schema_cache.description_generator import DescriptionGenerator
 
-    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    db_ids = db_ids_override or (
+        [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    )
     generator = DescriptionGenerator(llm)
     results = []
 
@@ -637,8 +727,15 @@ async def _handle_db_guide(cache_mgr: Any) -> str:
 async def _handle_invalidate(
     cache_mgr: Any,
     db_id: Optional[str],
+    db_ids_override: Optional[list[str]] = None,
 ) -> str:
     """캐시 삭제를 처리한다 (글로벌 사전만 보존)."""
+    if db_ids_override:
+        lines = []
+        for did in db_ids_override:
+            success = await cache_mgr.invalidate(did)
+            lines.append(f"- {did}: 캐시 삭제 {'성공' if success else '실패'}")
+        return "캐시 삭제 결과 (글로벌 사전만 보존됩니다):\n" + "\n".join(lines)
     if db_id:
         success = await cache_mgr.invalidate(db_id)
         return (

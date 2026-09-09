@@ -223,3 +223,33 @@ settings:
       Ollama 앞단에 인증이 걸린 게이트웨이를 둔 구성에서만 쓴다. 직접 붙는 구성이면
       비워 둔다. 값이 비어 있으면 LLM_API_KEY로 보정된다.
     related: [LLM_PROVIDER, LLM_OLLAMA_BASE_URL]
+
+  LLM_FABRIX_TOTAL_TIMEOUT:
+    summary: FabriX 호출 1건이 아무리 오래 걸려도 이 시간(초)에서 강제로 끊는 벽시계 상한.
+    behavior: >-
+      기존 timeout(300초)은 "읽기 1회당 간격"이라, FabriX가 연결을 유지한 채
+      하트비트(STATUS/SYNC)만 계속 보내면 타이머가 매번 리셋되어 호출이 무기한이
+      된다 — 2026-09-07 성능테스트에서 1시간 넘는 무한대기의 근본 원인으로 실측
+      확정된 경로다(D-198). 이 값은 그와 무관하게 호출 시작부터의 총 경과 시간으로
+      끊는다. 발화하면 경과 시간·수신 라인 수·마지막 event_status가 ERROR 로그로
+      남아 FabriX 쪽 상태를 판정할 증거가 된다.
+    example: >-
+      FabriX 모델 큐가 정체된 날, 종전에는 질의가 1시간 넘게 "처리 중"으로 매달려
+      사용자가 수동 중단해야 했다. 이 상한이 있으면 300초에서 호출이 실패로 떨어지고
+      재시도 예산(3회) 또는 에러 응답으로 이어진다 — 무한이 유한이 된다.
+    performance: >-
+      정상 응답에는 영향이 없다. 서버 응답 가드(API_QUERY_TIMEOUT 60초 /
+      API_FILE_QUERY_TIMEOUT 120초)가 사용자 응답을 먼저 끊으므로, 이 상한이 실제로
+      끊는 것은 백그라운드에 남은 잔여 호출이다.
+    stability: >-
+      너무 낮추면(예: 60초 미만) 대형 프롬프트의 정상 응답까지 끊겨 재시도가 늘어난다.
+      SSE 가드의 유령 태스크 수명도 이 값이 보장하므로 0이나 과대값으로 두면 안 된다.
+    recommendation: >-
+      기본 300초 유지. FabriX 정체가 잦으면 낮추기보다 먼저 ERROR 로그의 수신
+      라인·event_status로 게이트웨이 상태를 FabriX 운영 측과 대조한다.
+    caveats:
+      - 읽기가 완전히 침묵하는 구간에서는 read 타임아웃(300초)만큼 발화가 늦어질 수 있다.
+      - ollama·gemini·구 FabriX(OpenAI 호환) 경로에는 적용되지 않는다(D-198 후속).
+    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, LLM_PROVIDER]
+    references:
+      - docs/02_decision.md (D-198)

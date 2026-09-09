@@ -49,6 +49,7 @@ from src.utils.query_gen_common import (
     enforce_all_query_limit,
     extract_sql_from_response,
     normalize_eav_numeric_casts,
+    normalize_eav_unit_casts,
     normalize_stat_month,
     previous_month,
     resolve_comparison_periods,
@@ -59,6 +60,7 @@ from src.utils.query_gen_common import (
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
+    CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     build_eav_pivot_block,
     build_forbidden_join_block,
@@ -101,6 +103,8 @@ from src.db_adapters.polestar.assembler import (
     month_anchor_payload,
     resolve_form_fill_answers,
 )
+# 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
+from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
@@ -879,9 +883,12 @@ async def _llm_fallback(
     )
     # EAV 숫자 값 정수 캐스트 결정적 교정(D-160) — 멀티 경로와 동일 가드(D-066 대칭).
     # 값 컬럼 리터럴은 구조 메타 선언에서 도출한다(D-088).
-    sql = normalize_eav_numeric_casts(
-        sql, eav_value_cast_columns(first_eav_pattern(state.get("schema_info")))
-    )
+    _eav_cols = eav_value_cast_columns(first_eav_pattern(state.get("schema_info")))
+    sql = normalize_eav_numeric_casts(sql, _eav_cols)
+    # 단위 문자열("14.9 GB"/"2 TB") 캐스트의 GB 기준 정규화(D-199) — B-11 실측.
+    sql = normalize_eav_unit_casts(sql, _eav_cols)
+    # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락으로 재시도 소진 실측.
+    sql = ensure_ranking_nulls_last(sql)
 
     return sql, sql_candidates, text2sql_fallback, extra_return
 
@@ -1007,6 +1014,10 @@ async def query_generator(
     # `.get`이어야 한다 — 급증 경로는 조립을 못 했어도 **사유(notes)만 담아** 돌려주므로
     # `sql` 키가 없는 dict가 온다(주 단위 차단 등). 그때는 LLM 폴백으로 진행한다.
     sql = form_fill.get("sql") if form_fill else None
+    # 활성 알람 결정적 조립(옵트인) — 멀티 경로 훅과 대칭. 실행 오류 재시도 턴은
+    # LLM에 수리를 맡긴다(같은 조립 SQL 재출력 방지).
+    if not sql and not ctx.is_retry:
+        sql = _try_deterministic_alarm_single(state, ctx)
     semantic_sql, coverage_outside = await _try_semantic(
         state, ctx, sql, derivation_records,
     )
@@ -1056,6 +1067,40 @@ async def query_generator(
         **extra_return,
     }
 
+
+
+def _try_deterministic_alarm_single(state: AgentState, ctx: "_GenContext") -> Optional[str]:
+    """활성 알람 결정적 조립(단일 경로) — 멀티 경로 훅과 대칭 배선. 미해당이면 None.
+
+    조립 골격·인식 규칙은 어댑터(assembler) 소유. 여기서는 플래그·intent·존 스키마·
+    상한만 공급한다. 조립 SQL은 하류 query_validator를 그대로 통과한다(안전망 유지).
+    """
+    cfg = getattr(ctx.app_config, "text2sql", None)
+    if not getattr(cfg, "alarm_deterministic", False):
+        return None
+    if state.get("routing_intent") != "alarm_query":
+        return None
+    db_id = state.get("active_db_id")
+    from src.db_adapters import get_adapter
+
+    if get_adapter(db_id, ctx.adapter_db_ids) is None:
+        return None
+    from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
+    from src.routing.domain_config import get_domain_by_id
+
+    domain_cfg = get_domain_by_id(db_id) if db_id else None
+    sql = try_deterministic_alarm_sql(
+        ctx.user_query,
+        routing_intent="alarm_query",
+        db_engine=domain_cfg.db_engine if domain_cfg else None,
+        db_schema=domain_cfg.db_schema if domain_cfg else "",
+        limit=ctx.limit_value,
+        enabled=True,
+        parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+    )
+    if sql:
+        logger.info("[알람조립] 단일 경로 결정적 SQL 사용(db=%s)", db_id)
+    return sql
 
 
 def _build_stepwise_deps(
@@ -1300,6 +1345,10 @@ def _build_system_prompt(
             "[경로대칭] (b) 스키마 한정 규칙 주입(db=%s, prefix=%s)",
             active_db_id, _prefix or "(무스키마)",
         )
+
+    # 기준 칼럼 노출·집계 단위 규칙(C-04·C-07·C-11) — 멀티 경로(_build_multi_engine_hint)와
+    # 같은 블록을 주입한다(D-066 대칭).
+    db_engine_hint += CRITERIA_AND_GRAIN_RULE_BLOCK
 
     # DB 어댑터 디스패치: 담당 어댑터(폴스타)가 있으면 의도별 전용 템플릿, 없으면 공통 템플릿.
     # POLESTAR_DB_IDS 게이트는 어댑터 owns()로 이동(Plan 63 P2/D-089, 동작 불변).

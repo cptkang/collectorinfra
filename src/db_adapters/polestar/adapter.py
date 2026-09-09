@@ -15,13 +15,18 @@ from src.db_adapters.polestar.prompts import (
     render_system_template,
 )
 from src.db_adapters.polestar.validators import (
+    check_active_status_literal_filter,
+    check_alarm_resource_server_type_filter,
+    check_alarm_table_allowlist,
     check_contradictory_alias_resource_type,
+    check_current_month_stat_table,
     check_routing_filter_misuse,
     check_metric_join_on_server_entity,
     check_pivot_metric_inner_join,
     check_ranking_order_by_nulls_last,
     check_scope_filter_where_demotion,
     check_scoped_pivot_missing_server_identity,
+    check_severity_label_filter,
     check_value_column_join,
 )
 
@@ -53,13 +58,19 @@ class PolestarAdapter:
         """
         return _classify_metric_field(field)
 
-    def validator_checks(self) -> list[Callable[[str], list[str]]]:
+    def validator_checks(
+        self, user_query: str | None = None
+    ) -> list[Callable[[str], list[str]]]:
         """폴스타 전용 SQL 검증 함수 목록(라우팅 필터 오용·피벗 스코프 WHERE 강등 탐지).
 
         값 컬럼 조인 검사(`check_value_column_join`)는 **프롬프트 지식 렌더 플래그와 같은 게이트**
         뒤에 둔다. 이 검사는 현행(플래그 OFF) 프롬프트의 Template B 예제
         (`ON svr.ipaddress = hi.ipaddress`)를 위반으로 잡으므로, 예제 교정 없이 등록하면 LLM이
         예제대로 생성한 SQL이 매번 반려되어 재시도만 소모한다(검사와 예제는 함께 움직여야 한다).
+
+        Args:
+            user_query: 사용자 원문 질의 — 주면 질의 맥락 의존 검사(D-201 "이번 달"
+                stat_m 반려)가 추가된다. 미지정(None)이면 종전 목록 그대로(동작 불변).
         """
         checks = [
             check_routing_filter_misuse,
@@ -69,7 +80,15 @@ class PolestarAdapter:
             check_pivot_metric_inner_join,
             check_contradictory_alias_resource_type,
             check_ranking_order_by_nulls_last,
+            check_alarm_table_allowlist,
+            check_severity_label_filter,
+            check_active_status_literal_filter,
+            check_alarm_resource_server_type_filter,
         ]
         if knowledge_render_enabled():
             checks.append(check_value_column_join)
+        if user_query:
+            checks.append(
+                lambda sql: check_current_month_stat_table(sql, user_query)
+            )
         return checks

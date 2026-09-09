@@ -13,10 +13,10 @@
 version: '1.0'
 db_id: polestar_cm_gp
 derived_from:
-- file: config/semantic_models/polestar_cm_gp.yaml
-  sha256: 032302f845b93bb32b09aa887943cacb8cbdb9b02032cbfa52370ab429a2ced7
-- file: config/db_profiles/polestar_cm_gp.yaml
-  sha256: e7bde827d2195774755fe5e7bc6d9c921bb89921119f6747709b2164df797086
+- file: config\semantic_models\polestar_cm_gp.yaml
+  sha256: 2c6bc504efeb29ff9aca3428deac687376fe31cfe0798777bca584f5a1ebf482
+- file: config\db_profiles\polestar_cm_gp.yaml
+  sha256: 4f5091671d0d302a0cc5b45e15ed0f0f1ed66fc539386aca699f692da6f16b18
 source_tag: operator
 column_synonyms:
   polestar.cmm_alarm.alarmseverity:

@@ -1184,3 +1184,394 @@ def build_multi_resource_pivot_block(
         f"- {val_col}를 다른 서버 행 config에 브릿지 조인하지 마세요."
         f"{metric_note}"
     )
+
+
+# ──────────────────────────────────────────────
+# 활성 알람 결정적 조립 (2026-09-02 폐쇄망 실측 기반)
+# ──────────────────────────────────────────────
+# "활성 + 심각도 + 목록/건수" 알람 질의는 LLM 생성이 턴마다 다른 축소 조인
+# (resource_type INNER, ACK 필터, 상태 리터럴)을 만들어 건수가 요동했다
+# (같은 질의 3회 → B0 46/1170/1174 · GP 114/73/114 — 참값 B0 1174·GP 114·YD 116).
+# 스키마·조인이 고정된 형태이므로 코드가 SQL을 직접 조립하고 LLM은 폴백으로 강등한다
+# (D-068 폼필 피벗과 동일 판단). 골격은 폐쇄망 실측으로 확정:
+#   - 활성 = cmm_alarm_active 존재 (currentalarmstatus는 ACK 상태 칼럼 — 활성 판정 금지)
+#   - 심각도 = alarmseverity 정수 (심각=3/경고=2/주의=1/해소=0)
+#   - 서버 식별 = LEFT JOIN + COALESCE(platform_resource_id, id) 승격
+#     (resource_type INNER 필터는 자식/비서버 리소스 알람을 탈락시켜 침묵 축소 — 금지)
+#   - 3존 동일 별칭 → 병합 CSV 칼럼 분리 해소 (DB2 결과 키는 기존 소문자 정규화와 합류)
+
+_ALARM_NOUN_RE = re.compile(r"알람|알림|alarm|alert", re.IGNORECASE)
+_ALARM_ACTIVE_RE = re.compile(r"활성|현재\s*발생|발생\s*중|미해소", re.IGNORECASE)
+# 기간·이력 신호가 있으면 활성 스냅샷 조립 대상이 아니다(이력 조회는 cmm_alarm — LLM 경로 유지)
+_ALARM_PERIOD_RE = re.compile(
+    r"이력|최근|지난|과거|추세|추이|기간|부터|까지|주간|일간|월간|history", re.IGNORECASE
+)
+_ALARM_SEV_NUM_RE = re.compile(r"(?:severity|심각도)\s*[:=]?\s*([0-3])", re.IGNORECASE)
+_ALARM_SEV_WORDS: tuple[tuple[str, int], ...] = (("심각", 3), ("경고", 2), ("주의", 1))
+_ALARM_UNACK_RE = re.compile(r"미확인|unack", re.IGNORECASE)
+_ALARM_COUNT_RE = re.compile(r"몇\s*건|몇\s*개|건수|개수|카운트|count", re.IGNORECASE)
+# 서버별 집계 축 (D-202 3차) — "서버별 알람 건수"는 1차에서 LLM 폴백 대상이었으나,
+# 3차 폐쇄망 실측에서 LLM 재생성이 3존 모두 수렴하지 않아(시도마다 다른 위반 조합 —
+# 금지 테이블·성능 통계 조인 환각·server.Server WHERE 반복) 결정적 조립으로 승격.
+# 4차 실측: 실제 질의 표현은 "가장 많이 발생한 서버"였고 「~별」만으로는 미인식 →
+# 서버 건수 순위 표현 3형(많이 발생한/순위·랭킹/상위 N개)을 편입.
+_ALARM_SERVER_GROUP_RE = re.compile(
+    r"(?:서버|호스트|장비|노드)\s*별"
+    r"|(?:가장\s*)?많이\s*발생한?\s*(?:서버|호스트|장비|노드)"
+    r"|(?:서버|호스트|장비|노드)\s*(?:순위|랭킹)"
+    r"|상위\s*\d+\s*(?:개|대|건)?\s*(?:서버|호스트|장비|노드)",
+    re.IGNORECASE,
+)
+# 알람 유형 ↔ 자원 타입 결정적 매핑 (D-202 4차 — scripts/diag_alarm_definitions.sql 실측).
+# 정의명(cmm_alarm_def.name)은 센터별 임의 등록이라 필터 축으로 부적합(사용자 확인);
+# res.resource_type이 3존 공통 안정 축이다(CPU=server.Cpus: B0 834K·GP 27K·YD 29K 등).
+# 파일시스템 단·복수, 프로세스 2종은 실측 분포 그대로 병기한다.
+_ALARM_RESOURCE_CATEGORIES: tuple[tuple[re.Pattern, tuple[str, ...], str], ...] = (
+    (re.compile(r"cpu|씨피유", re.IGNORECASE), ("server.Cpus",), "CPU"),
+    (re.compile(r"스왑|swap|페이지\s*파일|가상\s*메모리", re.IGNORECASE),
+     ("server.VirtualMemory",), "가상메모리"),
+    (re.compile(r"메모리|memory", re.IGNORECASE), ("server.Memory",), "메모리"),
+    (re.compile(r"디스크|disk", re.IGNORECASE), ("server.Disks",), "디스크"),
+    (re.compile(r"파일\s*시스템|filesystem", re.IGNORECASE),
+     ("server.FileSystem", "server.FileSystems"), "파일시스템"),
+    (re.compile(r"네트워크|network|인터페이스|interface", re.IGNORECASE),
+     ("server.NetworkInterface",), "네트워크"),
+    (re.compile(r"프로세스|process", re.IGNORECASE),
+     ("server.Process", "server.ProcessMonitor"), "프로세스"),
+)
+# 커버리지 밖 신호 가드 (D-202) — ActiveAlarmSpec이 표현할 수 없는 의도가 섞인 질의는
+# 조립하지 않는다. 조립하면 그 조건이 침묵 드롭된다(D군 실측: "서버별 … 상위 10개"가
+# 전역 COUNT 1행으로, "CPU 임계값 초과"가 무필터 전체 이력으로 조립됨).
+# ① 집계 축(GROUP BY) 신호 — 서버별(위 정규식)만 조립 지원, 그 외 축은 LLM 폴백
+_ALARM_GROUP_AXIS_RE = re.compile(
+    r"(?:서버|호스트|장비|노드|자원|리소스|존|유형|등급|심각도|일자|날짜|시간대|요일|월|db|디비)\s*별"
+    r"|집계|그룹|group\s*by|순위|랭킹|ranking|가장\s*많이|많이\s*발생|다발"
+    r"|상위\s*\d+\s*(?:개|대|건)?\s*(?:서버|호스트|장비|노드)"
+    r"|top\s*\d+",
+    re.IGNORECASE,
+)
+# ② 자원 타입으로 매핑되지 않는 메트릭·조건 신호 — 이것만 남으면 조립 불가(LLM 폴백).
+# 매핑 가능한 유형어(cpu/메모리/디스크 등)는 4차부터 _ALARM_RESOURCE_CATEGORIES가 흡수한다.
+# 사용률/임계값류는 유형어와 동반되면 의미 잉여(폴스타 알람 자체가 임계 이벤트)라 무시되고,
+# 단독이면 어느 타입인지 특정 불가라 폴백이다.
+_ALARM_METRIC_FILTER_RE = re.compile(
+    r"트래픽|사용률|사용율|사용량|임계값|임계치|threshold"
+    r"|응답\s*시간|지연|latency|\bping\b|세션|커넥션|connection",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ActiveAlarmSpec:
+    """알람 결정적 조립 인식 결과 (활성 스냅샷 + 이력)."""
+
+    severity: int | None      # None이면 심각도 필터 없음
+    severity_op: str          # "=" 또는 ">=" ("경고 이상")
+    unack_only: bool          # "미확인 알람" → currentalarmstatus = 'NOT_ACK' (활성 전용)
+    count_only: bool          # 건수 질의 → COUNT(*)
+    mode: str = "active"      # "active"(cmm_alarm_active 스냅샷) | "history"(cmm_alarm)
+    # history 전용 — (YYYYMM, YYYYMM). None이면 기간 필터 없음(ORDER+LIMIT만)
+    month_range: tuple[str, str] | None = None
+    # "server"면 서버별 건수 집계(GROUP BY + COUNT DESC) — D-202 3차. count_only보다 우선.
+    group_by: str | None = None
+    # 알람 유형 필터(D-202 4차) — res.resource_type IN (…) 결정적 한정. None이면 무필터.
+    resource_types: tuple[str, ...] | None = None
+    type_label: str | None = None  # 헤드라인 표기용 ("CPU" 등)
+
+
+def _parse_alarm_severity(q: str) -> tuple[int | None, str]:
+    """질의에서 심각도 필터를 결정적으로 뽑는다 — (값, 연산자)."""
+    severity: int | None = None
+    m = _ALARM_SEV_NUM_RE.search(q)
+    if m:
+        severity = int(m.group(1))
+    else:
+        for word, level in _ALARM_SEV_WORDS:
+            if word in q:
+                severity = level
+                break
+    op = ">=" if (severity is not None and re.search(r"이상", q)) else "="
+    return severity, op
+
+
+def recognize_active_alarm_query(
+    user_query: str,
+    parsed_time_range: dict | None = None,
+) -> ActiveAlarmSpec | None:
+    """알람 목록/건수 질의(활성 스냅샷·이력)를 결정적으로 인식한다. 미매칭이면 None.
+
+    보수 원칙 — 다음은 인식하지 않고 LLM에 맡긴다(오조립 방지):
+    - 활성 신호와 기간 신호가 동시에 있는 질의(의도 모호)
+    - 미확인(unack) + 이력 조합(cmm_alarm의 ACK 어휘 미실측)
+    - 집계 축("서버별" 등)·유형/메트릭 필터("CPU 임계값" 등) 신호가 섞인 질의 —
+      조립기가 표현할 수 없어 조립 시 해당 조건이 침묵 드롭된다(D-202, D군 실측)
+
+    Args:
+        user_query: 사용자 질의
+        parsed_time_range: input_parser LLM 산출 time_range(2단 폴백, D-136 대칭)
+    """
+    q = user_query or ""
+    if not _ALARM_NOUN_RE.search(q):
+        return None
+
+    # 유형어 → 자원 타입 결정적 매핑(D-202 4차). 복수 유형 동시 언급은 합집합.
+    matched_types: list[str] = []
+    type_labels: list[str] = []
+    for pat, types, label in _ALARM_RESOURCE_CATEGORIES:
+        if pat.search(q):
+            matched_types.extend(t for t in types if t not in matched_types)
+            type_labels.append(label)
+    resource_types = tuple(matched_types) if matched_types else None
+    type_label = "·".join(type_labels) if type_labels else None
+
+    if resource_types is None:
+        metric_hit = _ALARM_METRIC_FILTER_RE.search(q)
+        if metric_hit:
+            logger.info(
+                "[알람조립] 커버리지 밖 신호 '%s' — 조립 포기(자원 타입으로 매핑되지 "
+                "않는 조건, 침묵 드롭 방지) → LLM 경로 폴백 (D-202)",
+                metric_hit.group(0),
+            )
+            return None
+    # 서버별 집계는 조립 지원(D-202 3차 — LLM 비수렴 실측으로 승격). 그 외 집계 축만 폴백.
+    server_group = bool(_ALARM_SERVER_GROUP_RE.search(q))
+    if not server_group:
+        axis_hit = _ALARM_GROUP_AXIS_RE.search(q)
+        if axis_hit:
+            logger.info(
+                "[알람조립] 커버리지 밖 신호 '%s' — 조립 포기(서버별 외 집계 축 미지원, "
+                "침묵 드롭 방지) → LLM 경로 폴백 (D-202)",
+                axis_hit.group(0),
+            )
+            return None
+
+    has_active = bool(_ALARM_ACTIVE_RE.search(q))
+    month_range = resolve_stat_month_range(q, parsed_time_range=parsed_time_range)
+    has_period = bool(_ALARM_PERIOD_RE.search(q)) or month_range is not None
+    severity, severity_op = _parse_alarm_severity(q)
+    unack = bool(_ALARM_UNACK_RE.search(q))
+    count = bool(_ALARM_COUNT_RE.search(q))
+
+    # 서버별 집계에서 "건수"는 서버당 건수를 뜻한다 — 전역 COUNT(count_only)와 배타
+    group_by = "server" if server_group else None
+    if server_group:
+        count = False
+
+    if has_active and not has_period:
+        return ActiveAlarmSpec(
+            severity=severity, severity_op=severity_op,
+            unack_only=unack, count_only=count, mode="active",
+            group_by=group_by, resource_types=resource_types, type_label=type_label,
+        )
+    if has_period and not has_active:
+        if unack:
+            return None  # cmm_alarm의 확인 상태 어휘 미실측 — LLM 폴백
+        return ActiveAlarmSpec(
+            severity=severity, severity_op=severity_op,
+            unack_only=False, count_only=count,
+            mode="history", month_range=month_range,
+            group_by=group_by, resource_types=resource_types, type_label=type_label,
+        )
+    if group_by and not has_active:
+        # 서버별 집계는 "발생 건수" 의미상 이력 집계가 자연 기본 — 활성 신호가 없으면
+        # 기간 신호 부재를 모호로 보지 않는다(재계획 sub_query가 기간어를 잃는 D군 3차
+        # 실측 대응 — 기간은 parsed_time_range 2단 폴백이 있으면 그 월 범위, 없으면 전체).
+        return ActiveAlarmSpec(
+            severity=severity, severity_op=severity_op,
+            unack_only=False, count_only=False,
+            mode="history", month_range=month_range,
+            group_by=group_by, resource_types=resource_types, type_label=type_label,
+        )
+    return None  # 활성+기간 동시(모호) 또는 어느 신호도 없음
+
+
+def build_active_alarm_sql(
+    spec: ActiveAlarmSpec,
+    *,
+    db_engine: str | None,
+    db_schema: str,
+    limit: int,
+) -> str:
+    """인식 결과로 존 공통 별칭의 runnable SQL을 조립한다 (엔진 방언 분기 포함)."""
+    prefix = f"{db_schema}." if db_schema else ""
+    conds: list[str] = []
+    if spec.resource_types:
+        types = ", ".join(f"'{t}'" for t in spec.resource_types)
+        conds.append(f"res.resource_type IN ({types})")
+    if spec.severity is not None:
+        conds.append(f"a.alarmseverity {spec.severity_op} {spec.severity}")
+    if spec.unack_only:
+        conds.append("a.currentalarmstatus = 'NOT_ACK'")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+    # 유형 필터는 자원 타입으로 한정하는 의도이므로 자원 조인이 INNER — 무필터면 종전
+    # 그대로 LEFT(자원 행 부재 알람을 떨어뜨리지 않음, D-202 4차).
+    res_join = (
+        f"JOIN {prefix}cmm_resource res "
+        "ON a.resource_id = res.id AND res.dtime IS NULL "
+        if spec.resource_types else
+        f"LEFT JOIN {prefix}cmm_resource res "
+        "ON a.resource_id = res.id AND res.dtime IS NULL "
+    )
+
+    if spec.group_by == "server":
+        # 서버별 건수 집계(D-202 3차) — 조인·별칭은 목록 조립과 동일 골격, NULLS LAST는
+        # check_ranking_order_by_nulls_last 규약(순위 정렬 + 행 제한) 준수.
+        row_limit = row_limit_clause(db_engine, limit)
+        server_expr = "COALESCE(srv.name, srv.hostname, res.name)"
+        return (
+            f"SELECT {server_expr} AS server_name, COUNT(*) AS alarm_count "
+            f"FROM {prefix}cmm_alarm_active a "
+            f"{res_join}"
+            f"LEFT JOIN {prefix}cmm_resource srv "
+            "ON COALESCE(res.platform_resource_id, res.id) = srv.id "
+            "AND srv.resource_type = 'server.Server' AND srv.dtime IS NULL "
+            f"{where} GROUP BY {server_expr} "
+            f"ORDER BY alarm_count DESC NULLS LAST {row_limit}"
+        ).strip()
+
+    if spec.count_only:
+        row_limit = row_limit_clause(db_engine, 1)
+        count_join = res_join if spec.resource_types else ""
+        return (
+            f"SELECT COUNT(*) AS alarm_count FROM {prefix}cmm_alarm_active a "
+            f"{count_join}{where} {row_limit}"
+        ).strip()
+
+    row_limit = row_limit_clause(db_engine, limit)
+    return (
+        "SELECT a.alarm_id, a.alarmseverity AS severity, "
+        "a.currentalarmstatus AS ack_status, a.conditionlogtext AS description, "
+        "a.ctime AS alarm_time, "
+        "COALESCE(srv.name, srv.hostname, res.name) AS server_name, "
+        "srv.hostname AS hostname, srv.ipaddress AS ipaddress "
+        f"FROM {prefix}cmm_alarm_active a "
+        f"{res_join}"
+        f"LEFT JOIN {prefix}cmm_resource srv "
+        "ON COALESCE(res.platform_resource_id, res.id) = srv.id "
+        "AND srv.resource_type = 'server.Server' AND srv.dtime IS NULL "
+        f"{where} ORDER BY a.ctime DESC {row_limit}"
+    ).strip()
+
+
+def _month_range_to_ts_bounds(month_range: tuple[str, str]) -> tuple[str, str]:
+    """(YYYYMM, YYYYMM) 월 범위를 타임스탬프 리터럴 양단으로 바꾼다 — [시작월 1일, 끝월+1월 1일).
+
+    월 경계 규약(D-102)과 일치. PG·DB2 공통의 ISO TIMESTAMP 리터럴을 쓴다
+    (골드셋 gp-012/gp-015로 ctime이 타임스탬프임을 실측 — epoch 아님).
+    """
+    start_ym, end_ym = month_range
+    start = f"{start_ym[:4]}-{start_ym[4:6]}-01 00:00:00"
+    ey, em = int(end_ym[:4]), int(end_ym[4:6])
+    if em == 12:
+        ey, em = ey + 1, 1
+    else:
+        em += 1
+    end = f"{ey:04d}-{em:02d}-01 00:00:00"
+    return start, end
+
+
+def build_alarm_history_sql(
+    spec: ActiveAlarmSpec,
+    *,
+    db_engine: str | None,
+    db_schema: str,
+    limit: int,
+) -> str:
+    """알람 이력(cmm_alarm) 조회를 골드셋 패턴 C 정본 골격으로 조립한다.
+
+    골격 근거(testdata/text2sql_gold/gp.yaml gp-012·gp-015 — 실측 검증된 정답):
+    - 자원 INNER JOIN + WHERE dtime IS NULL (삭제 자원 알람 제외)
+    - 부모 서버 승격 = LEFT JOIN + COALESCE(platform_resource_id,
+      service_resource_id, id) **3단 사슬** (알람은 자식/비서버 자원에 붙는다)
+    - 기간 = ctime 타임스탬프 리터럴 양단 (월 경계, D-102)
+    별칭은 활성 조립과 동일 집합 — 존 병합 CSV 칼럼 통일 유지.
+    """
+    prefix = f"{db_schema}." if db_schema else ""
+    conds: list[str] = ["res.dtime IS NULL"]
+    if spec.resource_types:
+        types = ", ".join(f"'{t}'" for t in spec.resource_types)
+        conds.append(f"res.resource_type IN ({types})")
+    if spec.severity is not None:
+        conds.append(f"a.alarmseverity {spec.severity_op} {spec.severity}")
+    if spec.month_range is not None:
+        ts_start, ts_end = _month_range_to_ts_bounds(spec.month_range)
+        conds.append(f"a.ctime >= TIMESTAMP '{ts_start}'")
+        conds.append(f"a.ctime < TIMESTAMP '{ts_end}'")
+    where = "WHERE " + " AND ".join(conds)
+
+    if spec.group_by == "server":
+        # 서버별 건수 집계(D-202 3차) — 골드 정본(gp-012/gp-015) 조인 골격 + GROUP BY.
+        row_limit = row_limit_clause(db_engine, limit)
+        server_expr = "COALESCE(srv.name, srv.hostname, res.name)"
+        return (
+            f"SELECT {server_expr} AS server_name, COUNT(*) AS alarm_count "
+            f"FROM {prefix}cmm_alarm a "
+            f"JOIN {prefix}cmm_resource res ON a.resource_id = res.id "
+            f"LEFT JOIN {prefix}cmm_resource srv "
+            "ON srv.id = COALESCE(res.platform_resource_id, "
+            "res.service_resource_id, res.id) "
+            f"{where} GROUP BY {server_expr} "
+            f"ORDER BY alarm_count DESC NULLS LAST {row_limit}"
+        ).strip()
+
+    if spec.count_only:
+        row_limit = row_limit_clause(db_engine, 1)
+        return (
+            f"SELECT COUNT(*) AS alarm_count FROM {prefix}cmm_alarm a "
+            f"JOIN {prefix}cmm_resource res ON a.resource_id = res.id "
+            f"{where} {row_limit}"
+        ).strip()
+
+    row_limit = row_limit_clause(db_engine, limit)
+    return (
+        "SELECT a.id AS alarm_id, a.alarmseverity AS severity, "
+        "a.currentalarmstatus AS ack_status, a.conditionlogtext AS description, "
+        "a.ctime AS alarm_time, "
+        "COALESCE(srv.name, srv.hostname, res.name) AS server_name, "
+        "srv.hostname AS hostname, srv.ipaddress AS ipaddress "
+        f"FROM {prefix}cmm_alarm a "
+        f"JOIN {prefix}cmm_resource res ON a.resource_id = res.id "
+        f"LEFT JOIN {prefix}cmm_resource srv "
+        "ON srv.id = COALESCE(res.platform_resource_id, "
+        "res.service_resource_id, res.id) "
+        f"{where} ORDER BY a.ctime DESC, a.id DESC {row_limit}"
+    ).strip()
+
+
+def try_deterministic_alarm_sql(
+    user_query: str,
+    *,
+    routing_intent: str | None,
+    db_engine: str | None,
+    db_schema: str,
+    limit: int,
+    enabled: bool,
+    parsed_time_range: dict | None = None,
+) -> str | None:
+    """알람 결정적 조립 진입점(활성+이력) — 미해당·플래그 OFF면 None(현행 무변경)."""
+    if not enabled:
+        return None
+    if routing_intent != "alarm_query":
+        return None
+    spec = recognize_active_alarm_query(user_query, parsed_time_range=parsed_time_range)
+    if spec is None:
+        return None
+    if spec.mode == "history":
+        sql = build_alarm_history_sql(
+            spec, db_engine=db_engine, db_schema=db_schema, limit=limit
+        )
+    else:
+        sql = build_active_alarm_sql(
+            spec, db_engine=db_engine, db_schema=db_schema, limit=limit
+        )
+    logger.info(
+        "[알람조립] 결정적 SQL 조립(LLM 미호출): mode=%s severity=%s%s "
+        "months=%s unack=%s count=%s group=%s types=%s",
+        spec.mode,
+        spec.severity_op if spec.severity is not None else "",
+        spec.severity if spec.severity is not None else "(무필터)",
+        spec.month_range, spec.unack_only, spec.count_only, spec.group_by,
+        spec.resource_types,
+    )
+    return sql

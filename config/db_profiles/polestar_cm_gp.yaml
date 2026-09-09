@@ -317,14 +317,22 @@ query_guide: |
     * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')
   - 일 단위 ("오늘", "어제", "최근 N일", "특정 일자") → `cmm_metric_stat_d` 테이블 조인 (stat_date 형식: YYYYMMDD, 예: '20260522')
     * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
-  - 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 테이블 조인 (stat_date 형식: YYYYMM, 예: '202605')
+  - 월 단위 ("최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 테이블 조인 (stat_date 형식: YYYYMM, 예: '202605')
     * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
+  - "이번 달"/"이번달"/"당월" 명시 → 월간 통계(stat_m)는 직전월까지만 집계되므로 현재 월을 stat_m으로 조회하면 전부 null이 됩니다.
+    대신 `cmm_metric_stat_d`(일간)를 당월 1일~어제 범위로 집계합니다(진행 중인 달의 근사 통계, 2026-09-07 결정):
+    * 예: s.stat_date BETWEEN TO_CHAR(CURRENT_DATE, 'YYYYMM') || '01' AND TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
+    * 서버별 GROUP BY로 AVG(s.avg_val)=월중 평균, MAX(s.max_val)=월중 최대를 집계합니다.
+    (매월 1일에는 어제가 전월이라 범위가 비어 0행 — "데이터 없음" 안내가 정상 동작입니다)
   주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 CURRENT_DATE 기반의 동적 계산을 사용합니다.
   통계 기간 미지정/"지난달"/"최근" 시 기본 관행은 직전월(s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM'))입니다.
-  (SELECT MAX(stat_date) ...) 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지 — "이번 달" 명시 요청 시에만 현재 월을 사용합니다.
+  (SELECT MAX(stat_date) ...) 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지.
   단, "~한 적이 있는"(임계 초과/발생 이력의 존재 여부) 질의는 특정 월로 한정하지 말고 전 보관 기간을 검색합니다.
   이때 반드시 보관 기간이 가장 긴 cmm_metric_stat_m(월간)을 사용합니다 — _d/_h는 보관 기간이 짧아 과거 이력이 누락됩니다(월간 max_val이 피크를 보존).
   임계 비교(예: > 90)에는 쓰레기 값 오탐 방지를 위해 상한 게이트를 함께 적용합니다(예: AND s.max_val <= 1000).
+  월별 분해(stat_date를 SELECT/GROUP BY에 포함) 시 통계 테이블 조인은 INNER JOIN을 사용합니다 —
+  LEFT JOIN이면 통계 없는 서버가 stat_date가 빈(null) 유령 행으로 추가됩니다(C-05 실측 2026-09-07).
+  LEFT JOIN(통계 없는 서버 포함)은 서버당 1행 피벗(월별 분해 없음)에서만 사용합니다.
 
   [계층 구조]
   cmm_resource.resource_type으로 리소스 종류를 구분합니다:

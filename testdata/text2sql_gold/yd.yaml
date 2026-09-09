@@ -117,7 +117,7 @@ items:
     category: performance
     coverage: outside
     scoring: subset
-    known_fail: "랭킹 질의는 트랙 C 커버리지 밖(정렬 미지원)이라 LLM 폴백 — INNER(747행, 무통계 서버 누락)/LEFT(788행, 정본) 형태를 실행마다 오가는 비결정 플립플롭 감시. 근본 해법은 패턴 B ORDER BY 확장(백로그). PASS 전환 시 폴백이 정본 형태로 안정화됐다는 신호."
+    known_fail: "D-200(2026-09-07) 이후 이 질의의 정답은 SQL이 아니라 결정적 안내 단락이다 — '가동률'=가동 시간 비율(uptime)로 확정(사용자 결정), 폴스타 3존 미집계 실측으로 intent_planner ③.7 pre-gate가 UPTIME_RATE_GUIDANCE를 direct_response로 반환한다. 따라서 이 항목이 gold_sql과 일치하는 SQL을 생성하면 PASS가 아니라 **pre-gate 우회 회귀**다. gold_sql은 구 해석('가동률'=사용률 의역)의 참고 사본으로만 유지."
     gold_sql: |
       SELECT
           MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name,
@@ -134,7 +134,7 @@ items:
     gold_result_signature:
       row_count: null
       columns: [server_name, cpu_avg]
-    notes: "커버리지 밖 — '가동률'은 '사용률'의 의역 동의어(E5-4 임베딩 대상). 2026-07-20 실측 정비 9차: 질의에 '지난달 통계 기준' 명시 + 직전월 필터. 2026-07-21 실측 15차: 리스트 정본화 파급으로 pred 788행 → 골드를 정본(전 서버 LEFT JOIN 피벗)에 정렬. 16차: pred가 747(INNER)로 회귀 — 랭킹은 폴백 경로라 형태가 실행마다 흔들리는 비결정임이 확정, 골드는 정본(788) 유지하고 known_fail 선언(사용자 원칙: 의도된 false-negative는 PASS로 맞추지 않음)."
+    notes: "[D-200 개정 2026-09-07] '가동률'=사용률 의역이라는 구 전제(E5-4 임베딩 대상)를 폐기 — 실무 통용(가동 시간 비율)로 확정하고 pre-gate 안내가 정답. 검증 방법: 이 질의 실행 시 응답이 UPTIME_RATE_GUIDANCE(가용성/CPU 사용률 대체 질의 안내)면 정상, SQL이 생성되면 회귀. [구 이력] 2026-07-20 9차: '지난달 통계 기준' 명시. 07-21 15·16차: INNER/LEFT 플립플롭 비결정 확정, known_fail 선언(의도된 false-negative는 PASS로 맞추지 않음)."
 
   - id: yd-006
     query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"

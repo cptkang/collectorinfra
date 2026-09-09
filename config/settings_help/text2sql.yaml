@@ -531,3 +531,28 @@ settings:
       경로에 따라 다르게 처리된다.
     recommendation: 켠 뒤 발동 로그로 실제 갭을 확인하고, 회귀가 없으면 유지한다.
     related: [TEXT2SQL_MULTI_FULL_VALIDATION, TEXT2SQL_MULTI_RELEVANT_GATE]
+
+  TEXT2SQL_ALARM_DETERMINISTIC:
+    summary: 활성 알람의 목록·건수 질의 SQL을 LLM 대신 코드가 직접 조립할지(옵트인).
+    behavior: >-
+      켜면 "활성 + 심각도 + 목록/건수" 형태의 알람 질의에서 코드가 검증된 SQL을
+      직접 조립하고 LLM을 우회한다(인식하지 못한 질의는 현행 LLM 경로로 폴백).
+      LLM이 턴마다 다른 축소 조인(resource_type INNER, ACK 필터)을 만들어 같은
+      질의의 건수가 요동하던 문제의 근본 해결이다 — 폼필 피벗(D-068)과 같은
+      "고정 스키마 쿼리는 결정적 조립" 원칙. 기본 off이며 끈 상태는 현행 경로와
+      비트 동일하다.
+    example: >-
+      "현재 심각 알람 몇 건이야"를 3회 반복했을 때 B0에서 46건/1170건/1174건으로
+      요동했다(2026-09-02 폐쇄망 실측). 켜면 같은 질의는 항상 같은 조인으로 실행되어
+      건수가 고정된다.
+    performance: >-
+      해당 형태의 질의에서 LLM 호출 1회가 통째로 사라져 응답이 빨라진다.
+    stability: >-
+      결정적 조립기가 인식하는 질의 형태에만 개입하므로, 그 밖의 알람 질의 동작은
+      바뀌지 않는다. 켠 뒤에는 대표 알람 질의로 건수 고정 여부를 확인한다.
+    recommendation: >-
+      건수 요동이 확인된 환경(폴스타 운영)에서는 켜는 것을 권장. 새 환경에서는
+      off로 시작해 현행 경로와 결과를 비교한 뒤 전환한다.
+    related: [TEXT2SQL_MULTI_FULL_VALIDATION]
+    references:
+      - docs/02_decision.md (D-068)

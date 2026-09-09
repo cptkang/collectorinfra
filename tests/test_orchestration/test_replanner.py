@@ -705,3 +705,46 @@ def test_arch_check():
     assert not errors, "아키텍처 error 위반 발견:\n" + "\n".join(
         f"  {v.file}:{v.line} {v.from_layer}->{v.to_layer} ({v.reason})" for v in errors
     )
+
+
+# === 관리 작업 강등 차단 (2026-09-01 A-05 실측 재발 방지) ===
+
+
+class TestManagementDemotionFilter:
+    """`_filter_management_demotion` — 순수 관리 계획의 조회 후속 제거."""
+
+    def test_pure_management_plan_blocks_query_followup(self):
+        """캐시 갱신 실패 → data_query 후속은 제거된다 (A-05: b0 테이블명 출력 강등)."""
+        from src.orchestration.replanner import _filter_management_demotion
+
+        existing = [{"task_id": "t1", "agent": "cache_management", "status": "completed"}]
+        new_tasks = [
+            {"task_id": "t2", "agent": "data_query", "sub_query": "polestar 테이블 조회"},
+            {"task_id": "t3", "agent": "cache_management", "sub_query": "캐시 상태 확인"},
+        ]
+        kept = _filter_management_demotion(new_tasks, existing)
+        assert [t["task_id"] for t in kept] == ["t3"]
+
+    def test_mixed_plan_keeps_query_followup(self):
+        """혼합 요청("캐시 갱신하고 서버 목록도")의 조회 후속은 정당하므로 보존한다."""
+        from src.orchestration.replanner import _filter_management_demotion
+
+        existing = [
+            {"task_id": "t1", "agent": "cache_management"},
+            {"task_id": "t2", "agent": "data_query"},
+        ]
+        new_tasks = [{"task_id": "t3", "agent": "data_query", "sub_query": "재조회"}]
+        assert _filter_management_demotion(new_tasks, existing) == new_tasks
+
+    def test_query_plan_untouched(self):
+        from src.orchestration.replanner import _filter_management_demotion
+
+        existing = [{"task_id": "t1", "agent": "data_query"}]
+        new_tasks = [{"task_id": "t2", "agent": "alarm_query"}]
+        assert _filter_management_demotion(new_tasks, existing) == new_tasks
+
+    def test_empty_existing_untouched(self):
+        from src.orchestration.replanner import _filter_management_demotion
+
+        new_tasks = [{"task_id": "t1", "agent": "data_query"}]
+        assert _filter_management_demotion(new_tasks, []) == new_tasks

@@ -37,6 +37,10 @@ class LLMConfig(BaseSettings):
     fabrix_api_key: str = ""
     fabrix_client_key: str = ""
     fabrix_chat_model: str = ""
+    # FabriX 호출 1건의 벽시계 총상한(초, D-198). 클라이언트 timeout(300)은 httpx
+    # 의미상 read 1회당 간격이라 하트비트(STATUS/SYNC)가 계속 오면 무기한 대기가
+    # 가능하다(2026-09-07 무한대기 실측) — 총상한이 벽시계 기준으로 끊는다.
+    fabrix_total_timeout: int = 300
 
     # FabriX 하이퍼파라미터 프로파일(D-194) — KBGenAI 요청 body의 `llmConfig` 규약
     # ({"temperature": <float>, "top_k": <int>, "top_p": <float>})으로 전송된다.
@@ -330,6 +334,13 @@ class Text2SQLConfig(BaseSettings):
     # (같은 게이트로 값 컬럼 조인 validator도 등록 — 예제와 검증은 함께 움직인다).
     # 기본 OFF = 프롬프트 sha256 무변경·validator 7종 유지(회귀 0).
     prompt_knowledge_render: bool = False
+
+    # === 활성 알람 결정적 조립 (기본 OFF 옵트인, 2026-09-02 폐쇄망 실측 기반) ===
+    # ON이면 "활성 + 심각도 + 목록/건수" 알람 질의의 SQL을 코드가 직접 조립한다(LLM 우회,
+    # 미인식 질의는 현행 LLM 폴백). LLM 생성이 턴마다 다른 축소 조인(resource_type INNER,
+    # ACK 필터)을 만들어 건수가 요동하던 문제(같은 질의 3회 → B0 46/1170/1174)의 근본
+    # 해결 — 폼필 피벗 D-068과 동일 판단. 기본 OFF = 현행 경로 무변경.
+    alarm_deterministic: bool = False
 
     # === Plan 69 P4-3: 멀티 DB 경로 검증 강화 (기본 OFF 옵트인) ===
     # ON이면 멀티 DB 경로가 간이 검증(_validate_sql_simple) 대신 단일 경로와 같은

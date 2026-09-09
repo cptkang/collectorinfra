@@ -47,6 +47,7 @@ from src.utils.query_gen_common import (
     enforce_all_query_limit,
     extract_sql_from_response,
     normalize_eav_numeric_casts,
+    normalize_eav_unit_casts,
     resolve_effective_limit,
     resolve_stat_month_range,
     template_context_text,
@@ -54,6 +55,7 @@ from src.utils.query_gen_common import (
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
+    CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     PromptBudgetExceeded,
     build_eav_pivot_block,
@@ -97,6 +99,8 @@ from src.db_adapters.polestar.assembler import (
     month_anchor_payload,
     resolve_form_fill_answers,
 )
+# 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
+from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
 from src.tools.metrics import classify_metric_field
@@ -423,6 +427,39 @@ async def _record_failure(
     )
 
 
+def _deterministic_alarm_sql_or_none(
+    run: "_MultiRun", *, db_engine: str, db_id: str
+) -> Optional[str]:
+    """활성 알람 결정적 조립 진입 판정 (플래그 OFF·비폴스타·미인식이면 None).
+
+    조립 골격·인식 규칙은 어댑터(assembler)가 소유하고, 이 함수는 실행 문맥
+    (플래그·intent·존 스키마·상한)만 공급한다.
+    """
+    cfg = getattr(run.app_config, "text2sql", None)
+    if not getattr(cfg, "alarm_deterministic", False):
+        return None
+    if run.state.get("routing_intent") != "alarm_query":
+        return None
+    from src.db_adapters import get_adapter
+
+    if get_adapter(db_id, run.app_config.get_polestar_db_ids() or None) is None:
+        return None
+    from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
+    from src.routing.domain_config import get_domain_by_id
+
+    domain_cfg = get_domain_by_id(db_id)
+    db_schema = domain_cfg.db_schema if domain_cfg else ""
+    return try_deterministic_alarm_sql(
+        run.state.get("user_query", ""),
+        routing_intent="alarm_query",
+        db_engine=db_engine,
+        db_schema=db_schema,
+        limit=run.effective_limit,
+        enabled=True,
+        parsed_time_range=(run.parsed_requirements or {}).get("time_range"),
+    )
+
+
 async def _generate_validated_sql(
     run: _MultiRun,
     client: Any,
@@ -450,6 +487,23 @@ async def _generate_validated_sql(
             return {"rows": _r.rows, "error": None}
         except Exception as _e:  # noqa: BLE001
             return {"rows": None, "error": str(_e)}
+
+    # 활성 알람 결정적 조립(옵트인) — 인식되면 LLM 생성·재생성 루프 전체를 우회한다.
+    # 실행 오류 재생성(error_context 있음)에서는 같은 SQL을 다시 내게 되므로 건너뛰고
+    # LLM에 수리를 맡긴다. 조립 SQL도 아래 검증은 동일하게 통과시킨다(안전망 유지).
+    if error_context is None:
+        det_sql = _deterministic_alarm_sql_or_none(run, db_engine=db_engine, db_id=db_id)
+        if det_sql is not None:
+            det_error = _validate_sql(
+                det_sql, schema_info, db_id=db_id, db_engine=db_engine,
+                user_query=run.state.get("user_query", ""), app_config=run.app_config,
+            )
+            if not det_error:
+                logger.info("[알람조립] db=%s 결정적 SQL 사용(LLM 미호출)", db_id)
+                return det_sql, None
+            logger.warning(
+                "[알람조립] db=%s 조립 SQL 검증 실패 — LLM 폴백: %s", db_id, det_error
+            )
 
     sql = await _generate_sql(
         run.llm, run.parsed_requirements, schema_info,
@@ -1195,11 +1249,20 @@ async def _invoke_llm_for_sql(
             )
             # few-shot 말미 캡 모방 교정 — 단일 경로와 동일 가드(D-066 후속8)
             # + EAV 숫자 값 정수 캐스트 교정(D-160) — 값 컬럼은 구조 메타 선언에서 도출
-            return normalize_eav_numeric_casts(
-                enforce_all_query_limit(
-                    selection["sql"], default_limit, app_config.query.default_limit
-                ),
-                eav_value_cast_columns(first_eav_pattern(schema_info)),
+            # + 단위 문자열 캐스트 GB 정규화(D-199) — 단일 경로와 대칭
+            # + 순위 정렬 NULLS LAST 부가(D-202 2차) — 단일 경로와 대칭
+            _eav_cols = eav_value_cast_columns(first_eav_pattern(schema_info))
+            return ensure_ranking_nulls_last(
+                normalize_eav_unit_casts(
+                    normalize_eav_numeric_casts(
+                        enforce_all_query_limit(
+                            selection["sql"], default_limit,
+                            app_config.query.default_limit,
+                        ),
+                        _eav_cols,
+                    ),
+                    _eav_cols,
+                )
             )
 
     messages: list[BaseMessage] = [
@@ -1220,9 +1283,12 @@ async def _invoke_llm_for_sql(
     )
     # EAV 숫자 값 정수 캐스트 결정적 교정(D-160) — '4.0' 문자열의 BIGINT 캐스트 실행
     # 거부(2026-08-21 공동존 실측) 재발 차단. 값 컬럼은 eav_pattern 선언에서 도출(D-088).
-    sql = normalize_eav_numeric_casts(
-        sql, eav_value_cast_columns(first_eav_pattern(schema_info))
-    )
+    _eav_cols = eav_value_cast_columns(first_eav_pattern(schema_info))
+    sql = normalize_eav_numeric_casts(sql, _eav_cols)
+    # 단위 문자열("14.9 GB"/"2 TB") 캐스트의 GB 기준 정규화(D-199) — B-11 실측, 단일 대칭.
+    sql = normalize_eav_unit_casts(sql, _eav_cols)
+    # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락 재시도 소진 실측, 단일 대칭.
+    sql = ensure_ranking_nulls_last(sql)
     # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).
     # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-153 후속2)와 별개로
     # 섹션별 로컬 스캔을 로그에 남겨 "어느 재료의 어떤 값"인지까지 특정한다.
@@ -1355,6 +1421,9 @@ def _build_multi_engine_hint(db_engine: str, db_id: str) -> str:
         hint += (
             "\n[DB2 방언] 행 수 제한은 `LIMIT` 대신 `FETCH FIRST n ROWS ONLY`를 사용하세요."
         )
+    # 기준 칼럼 노출·집계 단위 규칙(C-04·C-07·C-11) — 단일 경로(build_system_prompt)와
+    # 같은 블록을 주입한다(D-066 대칭).
+    hint += CRITERIA_AND_GRAIN_RULE_BLOCK
     return hint
 
 
@@ -2150,7 +2219,10 @@ def _validate_sql(
     from src.nodes.query_validator import validate_sql
 
     adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
-    adapter_checks = adapter.validator_checks() if adapter is not None else []
+    adapter_checks = (
+        adapter.validator_checks(user_query=user_query)
+        if adapter is not None else []
+    )
     outcome = validate_sql(
         sql, schema_info,
         db_engine=db_engine, user_query=user_query,

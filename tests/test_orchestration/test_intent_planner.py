@@ -394,3 +394,63 @@ async def test_form_noun_without_fill_verb_goes_llm(mock_config):
 
     assert result["task_plan"][0]["agent"] == "data_query"
     llm.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_uptime_rate_query_short_circuits(mock_config):
+    """③.7 '가동률' 질의 → 미지원 지표 안내 단락(D-200) — LLM 미호출.
+
+    C-08 실측: 공동존은 CPU 사용률로 임의 해석(의미 오답), 은행존은 재계획 폭주.
+    가동 시간 비율 지표는 3존 stat_m 전수 실측(2026-09-07)상 미집계다.
+    """
+    llm = AsyncMock()
+    state = create_initial_state(
+        user_query="지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
+    )
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert len(result["task_plan"]) == 1
+    t = result["task_plan"][0]
+    assert t["agent"] == "general_inference"
+    assert "가동 시간 비율" in t["direct_response"]
+    assert "CPU 사용률" in t["direct_response"]  # 대체 질의어 제시
+    llm.ainvoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_usage_rate_query_not_gated_by_uptime_pre_gate(mock_config):
+    """'사용률' 질의는 ③.7 게이트에 걸리지 않는다 — LLM 분해 유지(오발동 방지)."""
+    content = json.dumps(
+        {"tasks": [{"task_id": "t1", "agent": "data_query",
+                    "sub_query": "지난달 CPU 사용률이 낮은 서버",
+                    "depends_on": [], "input_from": [], "order": 1}]},
+        ensure_ascii=False,
+    )
+    llm = _mock_llm(content)
+    state = create_initial_state(user_query="지난달 CPU 사용률이 낮은 서버 순으로 보여줘")
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert result["task_plan"][0]["agent"] == "data_query"
+    llm.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pre_route_synonym_set_declaration(mock_config):
+    """②.3 앵커 없는 동의어 집합 선언 → cache_management 단일 task, LLM 미호출 (A-10).
+
+    3단 pre-gate(semantic_router 우선순위 ③)와의 대칭 분기 — 트랙 A에서 신규 셋 선언이
+    LLM 분해(synonym_registration 오분류)로 새지 않음을 고정한다.
+    """
+    llm = AsyncMock()
+    state = create_initial_state(
+        user_query="vcore, cpu, core은 동의어이다. 캐시에 등록하라."
+    )
+
+    result = await intent_planner(state, llm=llm, app_config=mock_config)
+
+    assert len(result["task_plan"]) == 1
+    assert result["task_plan"][0]["agent"] == "cache_management"
+    assert result["is_composite"] is False
+    llm.ainvoke.assert_not_called()

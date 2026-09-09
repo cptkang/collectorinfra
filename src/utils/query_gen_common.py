@@ -527,6 +527,30 @@ def resolve_effective_limit(
     return resolve_query_limit(user_query, default_limit, parsed_limit=parsed_limit)
 
 
+# ── '가동률' 미지원 지표 pre-gate (D-200, 2026-09-07) ────────────────────────
+# '가동률'은 실무 통용대로 가동 시간 비율(uptime/availability) 계열로 확정(사용자 결정).
+# 폴스타는 해당 지표를 집계하지 않는다(3존 stat_m definition_name 전수 실측 —
+# scripts/diag_metric_definitions.sql). CPU 사용률로의 임의 해석(오답)과 B0 재계획
+# 폭주(C-08 실측)를 함께 차단하기 위해 LLM 이전에 결정적으로 단락한다.
+# 어간이 달라 퍼지 매칭 원리상 도달 불가한 어휘라(수동 결정 필수) 표면어 포함 판정로 충분하다.
+UPTIME_RATE_TERM = "가동률"
+
+#: 사용자에게 그대로 노출되는 고정 안내문 — LLM을 통과시키지 않는다(D-150 선례).
+UPTIME_RATE_GUIDANCE = (
+    "'가동률'은 서버 가동 시간 비율(uptime/availability)을 뜻하는 용어로 해석합니다.\n"
+    "폴스타는 가동 시간 비율을 통계 지표로 집계하지 않아 해당 조회를 제공할 수 없습니다"
+    "(은행존·공동존 전체 실측 확인).\n\n"
+    "다음 중 원하시는 조회로 다시 질의해 주세요:\n"
+    "- 현재 가동(가용성) 상태 기준: \"가용 상태가 비정상인 서버 목록 보여줘\"\n"
+    "- CPU 사용률 기준: \"지난달 CPU 사용률이 낮은 서버 순으로 보여줘\""
+)
+
+
+def is_uptime_rate_query(user_query: str | None) -> bool:
+    """질의가 '가동률'(미지원 지표)을 요구하는지 결정적으로 판정한다(D-200)."""
+    return UPTIME_RATE_TERM in (user_query or "")
+
+
 # ── 실시간 사용률 라우팅 게이트 (Plan 71 / Plan 75 §1, B안 확정 2026-07-24) ──
 # LLM 의도 분류에 의존하지 않는 결정적 게이트(D-035). B안: "실시간/현재/지금" 명시 +
 # CPU/메모리 지표어 + 기간 표현 부재일 때만 실시간 API 경로. "현황" 단독은 비트리거
@@ -703,6 +727,178 @@ def normalize_eav_numeric_casts(sql: str, value_columns: tuple[str, ...] | list[
     logger.info(
         "[EAV캐스트] 값 컬럼 정수 캐스트 → NUMERIC 교정 %d건 (cols=%s)",
         len(set(spans)), list(value_columns),
+    )
+    return result
+
+
+# 단위 정규화 대상 숫자 캐스트 타입(D-199). D-160과 달리 여기는 "이미 숫자 캐스트인데
+# 값에 단위 접미('14.9 GB')가 붙어 실행이 깨지는" 케이스라 NUMERIC/DECIMAL이 대상이다.
+_EAV_UNIT_CAST_TYPES = r"(?:NUMERIC|DECIMAL|DEC)"
+# 이 가드가 생성하는 캐스트 피연산자의 공통 접두(단위 분기·ELSE 분기 양쪽) —
+# 재적용(이중 래핑) 방지용 마커. LLM이 자발적으로 NULLIF(TRIM(…))을 쓴 경우도
+# 스킵되지만, 그건 이미 정규화 시도가 있는 식이라 추가 래핑 실익이 없다.
+_UNIT_GUARD_MARKER = "NULLIF(TRIM("
+
+
+def _unwrap_llm_unit_replace(operand: str) -> str:
+    """LLM이 만든 ``REPLACE(<식>, '<단위>', '')`` 임기응변을 벗긴다(D-199 후속).
+
+    REPLACE는 sql_guard 금지 키워드(MySQL ``REPLACE INTO`` 차단)라 검증기가 SQL
+    전체를 거부한다(2026-09-07 폐쇄망 실측 — B0/GP/YD 전부 재생성 루프 유발).
+    피연산자가 정확히 "REPLACE(X, '단위 문자열', '')" 형태면 X만 남긴다 — 단위
+    처리는 이 가드의 CASE가 원값 기준으로 대신한다. 형태가 다르면 무변경.
+    """
+    m = re.match(r"\s*REPLACE\s*\(", operand, flags=re.IGNORECASE)
+    if not m:
+        return operand
+    open_pos = m.end() - 1
+    close_pos = _matching_paren(operand, open_pos)
+    if close_pos is None or operand[close_pos + 1:].strip():
+        return operand  # REPLACE(...)가 피연산자 전체가 아니면 보수적으로 무변경
+    # 최상위 콤마로 3개 인자 분해
+    inner = operand[open_pos + 1: close_pos]
+    args: list[str] = []
+    depth = 0
+    last = 0
+    for i, ch in enumerate(inner):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(inner[last:i])
+            last = i + 1
+    args.append(inner[last:])
+    if len(args) != 3:
+        return operand
+    if not re.fullmatch(r"\s*'[^']*'\s*", args[1]) or not re.fullmatch(
+        r"\s*'\s*'\s*", args[2]
+    ):
+        return operand
+    return args[0].strip()
+
+
+def _unit_normalized_expr(operand: str) -> str:
+    """단위 접미 문자열을 GB 기준 숫자로 정규화하는 방언 중립 SQL 식을 만든다(D-199).
+
+    CASE·LIKE·SUBSTR·LENGTH·TRIM·NULLIF·UPPER·CAST만 사용 — PostgreSQL과 DB2에서
+    동일 구문이며 **sql_guard 금지 키워드와 겹치지 않는다**(REPLACE는 금지 키워드,
+    regexp_replace는 PG 'g' 플래그·DB2 인자 차이, TRANSLATE는 인자 순서가 방언마다
+    달라 전부 배제 — 2026-09-07 폐쇄망 검증기 거부 실측 후 위치 기반으로 확정).
+    단위 제거는 "값 끝의 2글자 단위" 위치 기반(SUBSTR)이라 대소문자 무관하다.
+    단위가 없는 값('4.0' 등)은 ELSE에서 있는 그대로 캐스트한다(스케일 불변).
+    """
+    x = _unwrap_llm_unit_replace(operand.strip())
+    y = f"TRIM({x})"
+    strip_cast = (
+        f"CAST(NULLIF(TRIM(SUBSTR({y}, 1, LENGTH({y}) - 2)), '')"
+        " AS DECIMAL(31, 6))"
+    )
+    return (
+        "CASE"
+        f" WHEN UPPER({x}) LIKE '%TB%' THEN {strip_cast} * 1024"
+        f" WHEN UPPER({x}) LIKE '%GB%' THEN {strip_cast}"
+        f" WHEN UPPER({x}) LIKE '%MB%' THEN {strip_cast} / 1024.0"
+        f" WHEN UPPER({x}) LIKE '%KB%' THEN {strip_cast} / 1048576.0"
+        f" ELSE CAST(NULLIF(TRIM({x}), '') AS DECIMAL(31, 6)) END"
+    )
+
+
+def normalize_eav_unit_casts(sql: str, value_columns: tuple[str, ...] | list[str]) -> str:
+    """EAV 값 컬럼의 숫자 캐스트를 단위 인지 정규화 식으로 교체한다 (D-199).
+
+    폐쇄망 실측(2026-09-07 B-11): 메모리 크기 EAV 값이 ``"14.9 GB"`` 단위 문자열이라
+    ``CAST(… AS NUMERIC)``이 ``invalid input syntax for type numeric``으로 거부됐다.
+    LLM은 ``REPLACE(…, 'GB', '')`` 임기응변을 만들기도 하는데 GB만 처리해 TB 값에서
+    깨진다. 실측 단위 분포는 세 존 모두 TB/GB/MB 혼재(B0: TB 26,073·GB 21,783·MB 21 /
+    GP: GB 10,449·TB 1,455·MB 43 / YD: GB 4,796·TB 743·MB 1)라 **단위 제거만으로는
+    900 MB > 14.9 GB로 정렬되는 침묵 오류**가 되므로 GB 기준 환산 CASE로 교체한다.
+
+    스코프·안전:
+    - 값 컬럼이 포함된 NUMERIC/DECIMAL 캐스트만 대상(D-160과 동일 탐지 골격).
+      ``CAST(r.id AS NUMERIC)`` 같은 무관 캐스트는 불변.
+    - 단위 없는 값('4.0' vcore 등)은 ELSE 분기에서 스케일 불변 — vcore 합계류(D-160
+      계열) 결과에 영향 없음.
+    - LLM의 ``REPLACE(…, 'GB', '')`` 임기응변 위에 겹쳐 적용돼도 정합(GB는 이미
+      제거돼 ELSE=GB 기준, 잔존 TB/MB는 해당 분기에서 환산).
+    - 이 가드가 만든 식은 재적용 시 스킵(마커 검사) — 이중 래핑 방지.
+    - 괄호 불균형·형태 미상은 무변경(하방 안전, D-160과 동일).
+
+    Args:
+        sql: LLM이 생성한(그리고 D-160 교정을 거친) SQL
+        value_columns: 교정 대상 값 컬럼명들 (``eav_value_cast_columns`` 산출)
+
+    Returns:
+        교정된(또는 원본 그대로의) SQL — 교정 발생 시 INFO 로그
+    """
+    if not sql or not value_columns:
+        return sql
+    cols_re = r"\b(?:" + "|".join(re.escape(c) for c in value_columns if c) + r")\b"
+    if cols_re == r"\b(?:)\b":
+        return sql
+
+    # (치환 시작, 치환 끝, 피연산자) — 오른쪽부터 치환해 앞쪽 오프셋을 보존한다.
+    repls: list[tuple[int, int, str]] = []
+
+    # 형태 1: CAST(<값 컬럼 포함 식> AS NUMERIC|DECIMAL[(p[,s])]) — 균형 스캔
+    for m in re.finditer(r"CAST\s*\(", sql, flags=re.IGNORECASE):
+        open_pos = m.end() - 1
+        close_pos = _matching_paren(sql, open_pos)
+        if close_pos is None:
+            continue
+        inner = sql[open_pos + 1: close_pos]
+        tm = re.search(
+            rf"\s+AS\s+{_EAV_UNIT_CAST_TYPES}\s*(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*$",
+            inner, flags=re.IGNORECASE,
+        )
+        if not tm:
+            continue
+        operand = inner[: tm.start()]
+        if not re.search(cols_re, operand, flags=re.IGNORECASE):
+            continue
+        if _UNIT_GUARD_MARKER in operand:  # 이미 이 가드가 만든 식 — 재래핑 금지
+            continue
+        repls.append((m.start(), close_pos + 1, operand))
+
+    # 형태 2: PostgreSQL 축약 캐스트 — <값 컬럼>::numeric[(p,s)]
+    for m in re.finditer(
+        rf"((?:\w+\.)?{cols_re})\s*::\s*{_EAV_UNIT_CAST_TYPES}"
+        r"(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\b",
+        sql, flags=re.IGNORECASE,
+    ):
+        repls.append((m.start(), m.end(), m.group(1)))
+
+    # 형태 3: (…값 컬럼…)::numeric — 닫는 괄호 역방향 균형 스캔
+    for m in re.finditer(
+        rf"\)\s*::\s*{_EAV_UNIT_CAST_TYPES}(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\b",
+        sql, flags=re.IGNORECASE,
+    ):
+        open_pos = _matching_paren_backward(sql, m.start())
+        if open_pos is None:
+            continue
+        operand = sql[open_pos: m.start() + 1]
+        if not re.search(cols_re, operand, flags=re.IGNORECASE):
+            continue
+        if _UNIT_GUARD_MARKER in operand:
+            continue
+        repls.append((open_pos, m.end(), operand))
+
+    if not repls:
+        return sql
+    # 중첩 스팬 제거(바깥 CAST가 안쪽 :: 캐스트를 포함하는 경우 바깥 우선)
+    repls.sort(key=lambda r: (r[0], -r[1]))
+    picked: list[tuple[int, int, str]] = []
+    last_end = -1
+    for start, end, operand in repls:
+        if start >= last_end:
+            picked.append((start, end, operand))
+            last_end = end
+    result = sql
+    for start, end, operand in sorted(picked, reverse=True):
+        result = result[:start] + _unit_normalized_expr(operand) + result[end:]
+    logger.info(
+        "[EAV단위캐스트] 값 컬럼 숫자 캐스트 → 단위 정규화(GB 기준) 교정 %d건 (cols=%s)",
+        len(picked), list(value_columns),
     )
     return result
 

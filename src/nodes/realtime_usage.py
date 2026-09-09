@@ -278,6 +278,12 @@ async def realtime_usage_lookup(
         )
         return None
 
+    # 결정적 정렬(C-12): 첫 지표 내림차순, 미수집(None)은 맨 뒤. 응답 LLM은 상위 20행만
+    # 보므로(output_generator) 레지스트리 순서 그대로면 "높은 서버" 질의에서 표시 상위가
+    # 실제 상위가 아니게 된다. 존 구분은 '존' 칼럼으로 판독 가능.
+    primary = _METRIC_COLUMNS[metrics[0]]
+    rows_out.sort(key=lambda r: (r.get(primary) is None, -(r.get(primary) or 0.0)))
+
     metric_label = "·".join(_METRIC_COLUMNS[m] for m in metrics)
     status_counts = Counter(r.get("상태") for r in rows_out)
     status_text = ", ".join(f"{k} {v}대" for k, v in status_counts.most_common())
