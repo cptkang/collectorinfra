@@ -2,7 +2,7 @@
 
 > 작성일: 2026-06-26
 > **상위 로드맵**: **Plan 62(AIOps 전체 역량 마스터 로드맵) — Phase P2(진단·RCA)**. 대응 벤치마크 역량 C1(데이터 수집·통합폭)·C4(RCA 증거 수집).
-> **상위/자매 계획**: `plans/50-fault-diagnosis-rca.md` (진단 서브그래프·오케스트레이션 아키텍처).
+> **상위/자매 계획**: `plans/50-fault-diagnosis-rca-WIP.md` (진단 서브그래프·오케스트레이션 아키텍처).
 > 본 계획은 그 중 **증거 수집(evidence_collector)** 과 **상관/인과 분석(correlation_engine·causal_reasoner)** 에
 > 들어갈 **데이터 소스·수집 방법·장애분석 기법**을 정립한다.
 > **관련 Plan**: 47(알람 이력), 47-1(실시간 프로세스 API), 44/46(알람 파이프라인)
@@ -619,4 +619,4 @@ L1/L2는 기존 읽기전용 DBHub/REST 통제를 그대로 따른다. **L3 옵�
   커널 소스(`mm/oom_kill.c`,`kernel/watchdog.c` — OOM/락업 시그니처 원문), RFC 5424(syslog),
   Red Hat/SUSE/Elastic/rsyslog/Prometheus 문서
 - 데이터 모델: `schema/polestar-schema.md`, `schema/polestar-data.md`, `config/db_profiles/polestar_cm_gp.yaml`
-- 자매 계획: `plans/50-fault-diagnosis-rca.md`
+- 자매 계획: `plans/50-fault-diagnosis-rca-WIP.md`

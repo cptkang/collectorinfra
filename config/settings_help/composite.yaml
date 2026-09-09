@@ -346,3 +346,142 @@ settings:
     related: [COMPOSITE_HOST_DISCOVERY_ENABLED]
     references:
       - docs/02_decision.md (D-176 후속4)
+
+  COMPOSITE_SEQUENTIAL_GATE_ENABLED:
+    example: >-
+      'CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘'에서 1단계가 0대를 찾았을 때, 이 값이 꺼져 있으면 2단계가 대상 없이
+      전체 서버의 1개월 사용률을 돌려준다 — 조건에 맞는 서버가 없다는 사실이 전체 목록으로 둔갑한다. 켜면 2단계를 실행하지 않고 그 사유를 응답에 남긴다.
+    summary: 앞 단계 조회가 실패했거나 0건이면 뒤 단계를 실행하지 않고 사유를 남길지.
+    behavior: >-
+      앞 조회 결과를 입력으로 쓰는 뒤 단계에 대해, 앞 결과가 실패·0건·서버 식별 컬럼 없음이면
+      실행하지 않고 "건너뜀"으로 표시한다. 정상이면 몇 대로 대상을 한정했는지와 상한(100대)
+      절단 여부를 응답 말미 "순차 처리 경과"에 적는다. 꺼져 있으면 판정만 로그에 남기고
+      지금까지와 똑같이 실행한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 판정을 로그로만 남긴다. 실행·응답은 지금까지와 같다.
+      - value: "true"
+        effect: 앞 결과가 비면 뒤 단계를 건너뛰고 사유를 응답에 적는다. 정상일 때는 대상 대수·절단 여부가 경과로 표시된다.
+    performance: 추가 조회가 없다 — 판정은 앞 결과 행을 한 번 훑는 것뿐이다. 건너뛰면 오히려 LLM 호출 1회가 준다.
+    stability: 결정적 판정이라 같은 입력에 같은 결과다. 앞 결과에 서버 식별 컬럼이 없으면 보수적으로 건너뛴다.
+    recommendation: 로그의 "순차 게이트 관측(off)" 발동률을 본 뒤 켠다. 켜도 정상 질의의 동작은 바뀌지 않는다.
+    related: [COMPOSITE_SCOPE_POSTCHECK_ENABLED, COMPOSITE_PRIOR_TARGETS_ENABLED, COMPOSITE_MAX_TARGETS]
+    references:
+      - docs/02_decision.md (D-203)
+      - plans/88 §4.1
+
+  COMPOSITE_SCOPE_POSTCHECK_ENABLED:
+    example: >-
+      앞 단계가 서버 3대를 골랐는데 뒤 단계 SQL이 규칙을 어겨 다른 서버까지 돌려주면, 이 값이 켜져 있을 때 그 행을 제거하고 '선행 스코프 밖 서버 1대의 행을
+      제외했습니다'를 응답에 적는다. 골라진 3대 중 결과가 없는 서버도 '결과가 없습니다'로 드러낸다.
+    summary: 뒤 단계 결과를 앞 단계가 고른 서버 목록과 대조해 벗어난 행을 제거할지.
+    behavior: >-
+      뒤 단계 결과의 서버 식별 값을 앞 단계 목록과 대조한다. 목록 밖 서버 행은 제거하고,
+      목록 안인데 결과가 없는 서버는 표기한다. 결과에 같은 종류의 식별 컬럼이 없으면 대조하지
+      않는다(잘못 제거하는 것보다 그대로 두는 편이 안전하다).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 대조하지 않는다. 지금까지와 같다.
+      - value: "true"
+        effect: 스코프 밖 행을 제거하고 사유를 남긴다. 결정적 조립 경로에서는 원래 벗어나는 행이 없어 영향이 없다.
+    performance: 결과 행을 한 번 훑는 비용뿐이다.
+    stability: 컬럼 종류(호스트명 vs 서버명)가 다르면 대조하지 않으므로 정상 결과가 잘려 나가지 않는다.
+    recommendation: 앞 단계 스코프를 LLM 프롬프트 지시로만 강제하는 질의가 많다면 켠다.
+    related: [COMPOSITE_SEQUENTIAL_GATE_ENABLED]
+    references:
+      - docs/02_decision.md (D-203)
+      - plans/88 §4.3
+
+  COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED:
+    example: >-
+      앞 단계가 은행존 3대·공동존(김포) 4대를 골랐을 때, 이 값이 꺼져 있으면 뒤 단계가 세 존 모두에 7대 전체를 조건으로 붙인다. 켜면 은행존 SQL에는 3대,
+      김포에는 4대만 들어가고, 고른 서버가 없는 여의도는 조회하지 않으며 그 사실을 응답에 적는다.
+    summary: 앞 단계 결과를 출처 DB별로 나눠 뒤 단계 조회의 대상 DB와 조건을 분리할지.
+    behavior: >-
+      앞 결과 행마다 붙는 출처 DB 표시를 뒤 단계로 넘겨, DB별로 다른 서버 목록을 조건에 넣는다.
+      고른 서버가 하나도 없는 DB는 조회하지 않고 "조회하지 않았습니다"로 표기한다. 앞 결과가
+      한 DB에서만 왔으면 지금까지와 같다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 모든 대상 DB에 같은 서버 목록을 붙인다. 지금까지와 같다.
+      - value: "true"
+        effect: DB별로 목록을 나누고, 해당 서버가 없는 DB는 건너뛴다. 존이 여러 개일 때만 차이가 난다.
+    performance: 고른 서버가 없는 존을 건너뛰므로 존 수만큼 스키마 분석·LLM 호출이 준다.
+    stability: 출처 표시가 없는 행은 종전대로 전 DB에 적용한다. 출처 값이 조건에 새어 나가지 않도록 테스트로 고정돼 있다.
+    recommendation: 폴스타 존을 둘 이상 등록해 조회할 때 켠다. 단일 DB 운영에서는 켜도 차이가 없다.
+    related: [COMPOSITE_SEQUENTIAL_GATE_ENABLED, ACTIVE_DB_IDS]
+    references:
+      - docs/02_decision.md (D-203)
+      - plans/88 §4.9
+
+  COMPOSITE_PLAN_DAG_VALIDATION_ENABLED:
+    example: >-
+      복합 질의를 두 단계로 나눈 계획에서 두 번째 단계가 존재하지 않는 첫 단계 id를 가리키거나 서로를 기다리면, 이 값이 꺼져 있을 때는 조용히 두 단계가 동시에
+      실행돼 앞 결과 없이 뒤 조회가 돈다. 켜면 계획 오류를 잡아 한 번 다시 요청하고, 그래도 틀리면 단일 조회로 내려가며 사유를 응답에 적는다.
+    summary: LLM이 만든 작업 계획의 의존 관계(참조·순환·누락)를 검증하고 틀리면 한 번 다시 요청할지.
+    behavior: >-
+      계획의 task id 중복·존재하지 않는 참조·순환을 검사한다. "데이터 의존인데 순서 의존이 빠진" 경우는
+      자동으로 보정한다. 보정할 수 없는 오류는 사유를 붙여 한 번 다시 요청하고, 재요청도 틀리면 단일
+      조회로 내려가며 그 사유를 응답 말미 "순차 처리 경과"에 적는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 검증하지 않는다. 지금까지와 같다(계획 오류가 있으면 순차가 조용히 병렬로 바뀐다).
+      - value: "true"
+        effect: 검증·자동 보정하고, 위반 시 LLM 재요청이 최대 1회 늘어난다.
+    performance: 정상 계획이면 추가 호출이 없다. 위반이 있을 때만 LLM 호출 1회가 는다.
+    stability: 결정적 검사라 같은 계획에 같은 결과다. 재요청은 시스템 지시문을 바꾸지 않고 사용자 메시지 말미에만 사유를 덧붙인다.
+    recommendation: 구조화 출력 backend를 쓰지 않는 운영(기본 none)에서 켜는 것이 특히 이득이다.
+    related: [COMPOSITE_SEQUENTIAL_REPLAN_ENABLED, STRUCTURED_OUTPUT_BACKEND]
+    references:
+      - docs/02_decision.md (D-203)
+      - plans/88 §4.8
+
+  COMPOSITE_SEQUENTIAL_REPLAN_ENABLED:
+    example: >-
+      'CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘'를 LLM이 한 단계로 뭉개면, 이 값이 켜져 있을 때 "앞 결과가 뒤 조회의 대상"이라는
+      사유를 붙여 한 번 다시 분해를 요청한다. 그래도 한 단계면 그대로 실행하되 "순차 분해 미적용"을 응답에 적는다.
+    summary: 순차 표지가 있는 질의가 한 단계로 분해되면 한 번 다시 분해를 요청할지.
+    behavior: >-
+      "…를 찾아 그 서버들의…", "조회한 뒤 해당 서버…" 같은 표지가 있는데 계획에 앞→뒤 데이터 배선이 없으면
+      재분해를 1회 요청한다. 재요청 예산은 계획 검증(COMPOSITE_PLAN_DAG_VALIDATION_ENABLED)과 공유해 총 1회다.
+      표지 판정은 재요청 여부에만 쓰이고 실행 경로를 바꾸지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 재요청하지 않는다. 한 단계로 분해되면 그대로 실행된다(사용자는 순차가 안 됐음을 모른다).
+      - value: "true"
+        effect: 표지가 있는데 단일 계획이면 LLM 재요청 1회. 그래도 단일이면 실행하고 사유를 남긴다.
+    performance: 표지가 있는 질의에서만 최대 LLM 1회 추가. "김포 서버를 찾아줘"처럼 단일이 정답인 질의도 표지에 걸려 1회 재요청될 수 있다.
+    stability: 재요청 결과가 단일이면 그대로 실행하므로 정상 단일 질의의 결과는 바뀌지 않는다.
+    recommendation: 순차 질의가 한 단계로 처리되는 사례가 로그에 보이면 켠다.
+    related: [COMPOSITE_PLAN_DAG_VALIDATION_ENABLED, COMPOSITE_SEQUENTIAL_GATE_ENABLED]
+    references:
+      - docs/02_decision.md (D-203)
+      - plans/88 §4.2
+
+  COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED:
+    example: >-
+      의도 오케스트레이션과 deepagents가 둘 다 꺼진 기동(3·4단)에서 '높은 서버를 찾아 그 서버들의…'는 원래 SQL 한 번으로 처리된다. 켜면 두 단계로 나눠
+      앞 결과를 뒤 조회의 대상으로 넘긴다. 단, 구조 승인이나 SQL 승인이 켜져 있으면 승인 단계를 건너뛰게 되므로 진입하지 않는다.
+    summary: 순차 처리가 없는 3·4단 실행 경로에 두 단계 순차 노드를 붙일지. 승인 기능이 켜져 있으면 동작하지 않는다.
+    behavior: >-
+      semantic_router 또는 legacy 경로로 확정된 기동에서만 노드가 등록된다. 순차 표지 + 데이터 조회 의도 +
+      ENABLE_STRUCTURE_APPROVAL·ENABLE_SQL_APPROVAL 둘 다 off + 양식 아님이 전부 성립할 때만 진입한다.
+      분해가 순차로 나오지 않으면 단일 조회로 실행하고 사유를 남긴다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 노드를 등록하지 않는다. 그래프 배선이 지금까지와 같다.
+      - value: "true"
+        effect: 3·4단 빌드에 노드가 추가된다. 1·2단 기동에서는 아무 영향이 없다.
+    performance: 진입한 질의는 조회가 두 번 돈다(분해 LLM 1회 + 조회 2회).
+    stability: 승인 기능이 켜진 상태에서는 절대 진입하지 않는다 — 운영 기본(구조 승인 on)에서는 켜도 동작하지 않으며, 미진입 사유가 로그에 남는다.
+    recommendation: 운영 기동이 1·2단(기본)이면 켤 필요가 없다. 강등 기동에서 순차 질의를 써야 할 때만 승인 정책과 함께 검토한다.
+    related: [ENABLE_STRUCTURE_APPROVAL, ENABLE_SQL_APPROVAL, ENABLE_INTENT_ORCHESTRATION, ENABLE_DEEPAGENTS_PACKAGE]
+    references:
+      - docs/02_decision.md (D-203)
+      - plans/88 §4.7

@@ -855,3 +855,10 @@ async def test_run_deep_agent_resume_failure_falls_back_to_first_result(monkeypa
     assert calls["n"] == 2
     assert "orchestration_incomplete_notice" in captured["state"]
     assert out["current_node"] == "deep_agent"
+
+
+def test_extract_ambient_state_passes_selected_db_ids():
+    """D-205 T0(plans/90 §1.4): 1단은 `selected_db_ids`를 ambient로 넘겨야 존 선택(역질문·스코프 칩)이
+    `_make_isolated_input`(subagents.py)에 닿는다. 빠지면 격리 입력이 None을 받아 classify 팬아웃된다."""
+    ambient = _extract_ambient_state({"thread_id": "t1", "selected_db_ids": ["polestar_b0"]})
+    assert ambient["selected_db_ids"] == ["polestar_b0"]

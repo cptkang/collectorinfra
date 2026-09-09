@@ -45,6 +45,7 @@ from src.orchestration import (
     run_deep_agent,
     select_orchestration_backend,
 )
+from src.orchestration.sequential_runner import sequential_entry, sequential_runner
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
 
@@ -147,6 +148,25 @@ def route_after_semantic_router(state: AgentState) -> str:
         return END
     if state.get("is_multi_db"):
         return "multi_db_executor"
+    return "schema_analyzer"
+
+
+def route_after_semantic_router_sequential(state: AgentState, *, config: AppConfig) -> str:
+    """3단 + `sequential_runner` 등록 시의 라우팅 (D-203 · plans/88 §4.7).
+
+    진입 조건(플래그·표지·데이터 의도·HITL off·폼필 아님)이 전부 성립할 때만 `sequential_runner`,
+    아니면 현행 `route_after_semantic_router` 그대로. 캐시·유사어·일반추론·존 역질문 의도는
+    `sequential_entry`가 데이터 의도가 아니라고 판정해 가로채지 않는다.
+    """
+    if sequential_entry(state, config):
+        return "sequential_runner"
+    return route_after_semantic_router(state)
+
+
+def route_after_field_mapper_legacy(state: AgentState, *, config: AppConfig) -> str:
+    """4단(legacy) + `sequential_runner` 등록 시: field_mapper → sequential_runner | schema_analyzer."""
+    if sequential_entry(state, config):
+        return "sequential_runner"
     return "schema_analyzer"
 
 
@@ -447,6 +467,19 @@ def build_graph(config: AppConfig, checkpointer=None):
                 partial(fault_diagnosis_node, app_config=config),
             )
 
+    # D-203 (plans/88 §4.7): 3단·4단 빌드 전용 순차 2-pass 노드 — 1·2단 빌드에는 등록하지 않는다
+    # (1단은 도구 루프, 2단은 task DAG가 이미 순차를 갖는다). 플래그 off면 등록도 하지 않는다.
+    sequential_tier = (
+        bool(getattr(getattr(config, "composite", None), "sequential_fallback_tiers_enabled", False))
+        and not use_deep_agent
+        and not config.enable_intent_orchestration
+    )
+    if sequential_tier:
+        graph.add_node(
+            "sequential_runner",
+            partial(sequential_runner, llm=llm, app_config=config),
+        )
+
     graph.add_node(
         "schema_analyzer",
         partial(schema_analyzer, llm=llm, app_config=config),
@@ -533,11 +566,21 @@ def build_graph(config: AppConfig, checkpointer=None):
         }
         if fault_dx_enabled:
             _router_targets["fault_diagnosis"] = "fault_diagnosis"
-        graph.add_conditional_edges(
-            "semantic_router",
-            route_after_semantic_router,
-            _router_targets,
-        )
+        if sequential_tier:
+            # D-203: 진입 조건이 성립할 때만 순차 러너로 — 불성립이면 현행 분기 함수 그대로 위임.
+            _router_targets["sequential_runner"] = "sequential_runner"
+            graph.add_conditional_edges(
+                "semantic_router",
+                partial(route_after_semantic_router_sequential, config=config),
+                _router_targets,
+            )
+            graph.add_edge("sequential_runner", END)
+        else:
+            graph.add_conditional_edges(
+                "semantic_router",
+                route_after_semantic_router,
+                _router_targets,
+            )
 
         # 멀티 DB 경로
         graph.add_edge("multi_db_executor", "result_merger")
@@ -555,6 +598,14 @@ def build_graph(config: AppConfig, checkpointer=None):
         # (Plan 64 CW-B) 장애 진단 경로 (옵트인 on일 때만 노드가 존재)
         if fault_dx_enabled:
             graph.add_edge("fault_diagnosis", END)
+    elif sequential_tier:
+        # 레거시 모드 + 순차 러너(D-203): 진입 조건 성립 시에만 분기, 아니면 현행 직행.
+        graph.add_conditional_edges(
+            "field_mapper",
+            partial(route_after_field_mapper_legacy, config=config),
+            {"sequential_runner": "sequential_runner", "schema_analyzer": "schema_analyzer"},
+        )
+        graph.add_edge("sequential_runner", END)
     else:
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")

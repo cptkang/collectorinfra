@@ -154,6 +154,7 @@ async def semantic_router(
                 "active_db_id": targets[0]["db_id"],
                 "user_specified_db": targets[0]["db_id"] if len(targets) == 1 else None,
                 "routing_intent": "data_query",
+                "db_scope_source": "selected",  # D-205 스코프 출처(구조화 키)
                 "current_node": "semantic_router",
             }
 
@@ -197,6 +198,7 @@ async def semantic_router(
             "active_db_id": targets[0]["db_id"],
             "user_specified_db": None,
             "routing_intent": "data_query",
+            "db_scope_source": "planned",  # D-205: 양식 매핑으로 고정된 DB
             "current_node": "semantic_router",
         }
 
@@ -389,6 +391,8 @@ async def semantic_router(
         "active_db_id": active_db_id,
         "user_specified_db": user_specified_db,
         "routing_intent": intent,
+        # D-205 스코프 출처 — 사용자가 원문에서 DB를 지목했으면 hint, 아니면 LLM 분류.
+        "db_scope_source": "hint" if user_specified_db else "classified",
         "current_node": "semantic_router",
     }
 

@@ -68,6 +68,12 @@ class QueryRequest(BaseModel):
             "(같은 세션에서 조회한 양식 시그니처만 유효)"
         ),
     )
+    # plans/90 (D-205): 스코프 칩 "해제" — 이 턴부터 직전 존 승계를 끊는다(다음 질의는 첫 턴 규칙).
+    # 기본 False = 현행 동작 동일. 선택은 별도 필드 없이 기존 selected_db_ids(1회 전송)로 한다.
+    reset_db_scope: bool = Field(
+        default=False,
+        description="스레드 DB 스코프 해제 — 직전 턴 DB 승계를 끊고 첫 턴 규칙으로 처리",
+    )
 
 
 # --- 응답 모델 ---
@@ -123,6 +129,16 @@ class QueryResponse(BaseModel):
     # D-187: 저장 값 조회 응답의 삭제 패널 — {signature, display_name, entries: [{field, label, action, value}]}
     form_memory_panel: Optional[dict] = Field(
         default=None, description="양식 저장 값 패널 컨텍스트(항목별 삭제 버튼)"
+    )
+    # plans/90 (D-205): 스레드 DB 스코프 — 다음 턴이 승계할 DB를 축 구조로 보고한다(4 응답 경로 대칭).
+    # {zone_group: {code,label,db_ids}|null, solutions: [{code,label,db_ids}], db_ids, source}
+    db_scope: Optional[dict] = Field(
+        default=None, description="스레드 DB 스코프(존 그룹·솔루션 축·출처) — 스코프 칩 표시용"
+    )
+    # plans/88 (D-203): 복합 질의 순차 처리 경과 — 게이트(후속 미실행)·대조·절단·충족도 미달 노트.
+    # [{kind, task_id, reason, detail, ...}] — 본문 말미 블록과 같은 내용의 구조화본.
+    dependency_notes: Optional[list[dict]] = Field(
+        default=None, description="복합 질의 순차 처리 경과 노트(게이트·대조·절단·충족도)"
     )
 
 

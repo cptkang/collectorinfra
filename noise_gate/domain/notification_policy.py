@@ -17,6 +17,9 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from noise_gate.domain.silence import match_rules
 
 # ── E7-b 비알람 사전분류 마커(§17.4, 결정적·재현율 우선) ──────────────────
 # 알람 마커: 운영 알람이면 통상 아래 중 하나를 텍스트에 담는다.
@@ -45,6 +48,106 @@ _RANK_TIER: dict[int, str] = {rank: tier for tier, rank in _TIER_RANK.items()}
 _IMPORTANCE_WEIGHT: dict[str, int] = {"낮음": 1, "보통": 2, "높음": 3}
 _VALID_IMPORTANCE = frozenset(_IMPORTANCE_WEIGHT.keys())
 
+# ── 결정 단계 라벨 (Plan 54 모듈 1 — 퍼널의 근거 데이터) ─────────────────
+# "어느 단계가 이 알람을 잘랐는가"를 레코드에 남기기 위한 **닫힌 집합**이다.
+# reason 문자열 역추정 대신 이 라벨을 쓰는 이유: 사유 문구를 고치면 퍼널이 조용히 깨진다.
+# 라벨은 티어·사유·우선순위 산출에 **일절 관여하지 않는다**(관측 전용 — 판정 회귀 0).
+STAGE_NON_ALARM = "non_alarm"                  # step 0.5 비운영(승인/안내성) 사전분류
+STAGE_SEVERITY3 = "severity3"                  # step 3   심각도3 단락(억제 불가)
+STAGE_SELF_HEAL = "self_heal"                  # step 4   자가복구 상관
+STAGE_RESOLVED = "resolved"                    # step 4   독립 해소
+STAGE_COLLECTION_FAILED = "collection_failed"  # step 5   신호 수집 실패 보수화
+STAGE_MAINTENANCE = "maintenance"              # step 6   유지보수 모드
+STAGE_SILENCE = "silence"                      # step 6.2 운영자 침묵 규칙(Plan 54 모듈 4)
+STAGE_DEPENDENCY = "dependency"                # step 6.4 의존성 연쇄 억제
+STAGE_INHIBITION = "inhibition"                # step 6.5 인히비션
+STAGE_FLAPPING = "flapping"                    # step 6   플래핑
+STAGE_STORM = "storm"                          # step 7   스톰 그룹핑
+STAGE_CORRELATION = "correlation"              # step 7.5 크로스-호스트 상관
+STAGE_ANNOTATION = "annotation"                # step 7.7 계획-무해 주석 강등
+STAGE_MATRIX = "matrix"                        # step 8~9 매트릭스 + 보조 조정(최종 관문)
+
+# 파이프라인 **선언 순서** — 퍼널의 단계 배열이 이 튜플 하나에서 온다.
+# 집계 계층이 순서를 따로 알면 어긋나므로, 순서의 정본은 판정 코드와 같은 파일에 둔다.
+STAGE_ORDER: tuple[str, ...] = (
+    STAGE_NON_ALARM,
+    STAGE_SEVERITY3,
+    STAGE_SELF_HEAL,
+    STAGE_RESOLVED,
+    STAGE_COLLECTION_FAILED,
+    STAGE_MAINTENANCE,
+    STAGE_SILENCE,
+    STAGE_DEPENDENCY,
+    STAGE_INHIBITION,
+    STAGE_FLAPPING,
+    STAGE_STORM,
+    STAGE_CORRELATION,
+    STAGE_ANNOTATION,
+    STAGE_MATRIX,
+)
+
+# 단계 표시명(관제 화면 라벨) — UI가 영문 키를 그대로 노출하지 않게 한다.
+STAGE_LABELS: dict[str, str] = {
+    STAGE_NON_ALARM: "비운영 알람",
+    STAGE_SEVERITY3: "심각도3 단락",
+    STAGE_SELF_HEAL: "자가복구 상관",
+    STAGE_RESOLVED: "독립 해소",
+    STAGE_COLLECTION_FAILED: "수집 실패 보수화",
+    STAGE_MAINTENANCE: "유지보수",
+    STAGE_SILENCE: "침묵 규칙",
+    STAGE_DEPENDENCY: "의존성 연쇄",
+    STAGE_INHIBITION: "인히비션",
+    STAGE_FLAPPING: "플래핑",
+    STAGE_STORM: "스톰",
+    STAGE_CORRELATION: "크로스-호스트 상관",
+    STAGE_ANNOTATION: "계획-무해 주석",
+    STAGE_MATRIX: "우선순위 매트릭스",
+}
+
+
+# 사유 접두 → 단계 폴백 매핑 (Plan 54 모듈 2).
+# `stage` 필드 도입 **이전**에 쌓인 감사 레코드도 퍼널에서 탈락하지 않게 한다.
+# 사유 문자열의 정본이 이 파일이므로 매핑도 여기 둔다 — 문구를 고치면 이 표가 같이 보인다.
+_REASON_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("비운영 알람", STAGE_NON_ALARM),
+    ("심각도3", STAGE_SEVERITY3),
+    ("자가복구 상관", STAGE_SELF_HEAL),
+    ("독립 해소", STAGE_RESOLVED),
+    ("신호 수집 실패", STAGE_COLLECTION_FAILED),
+    ("유지보수 모드", STAGE_MAINTENANCE),
+    ("침묵 규칙", STAGE_SILENCE),
+    ("의존성 억제", STAGE_DEPENDENCY),
+    ("의존성 연쇄", STAGE_DEPENDENCY),
+    ("인히비션", STAGE_INHIBITION),
+    ("플래핑", STAGE_FLAPPING),
+    ("스톰", STAGE_STORM),
+    ("크로스-호스트 상관", STAGE_CORRELATION),
+    ("계획-무해 주석", STAGE_ANNOTATION),
+    ("매트릭스", STAGE_MATRIX),
+)
+
+# 매핑 실패 레코드가 모이는 자리 — **버리지 않는다**(합계 항등식이 깨지면 퍼널이 거짓말을 한다).
+STAGE_UNKNOWN = "unknown"
+
+
+def stage_from_reason(reason: str) -> str:
+    """사유 문자열에서 결정 단계를 역추정한다(구 레코드 폴백 전용).
+
+    `stage` 필드가 있는 레코드에는 쓰지 않는다. 어느 접두에도 걸리지 않으면
+    `STAGE_UNKNOWN`을 돌려준다 — 집계에서 제외하지 않기 위해서다.
+
+    Args:
+        reason: 결정 사유 문자열.
+
+    Returns:
+        단계 라벨 또는 `STAGE_UNKNOWN`.
+    """
+    text = (reason or "").strip()
+    for prefix, stage in _REASON_STAGE_PREFIXES:
+        if text.startswith(prefix):
+            return stage
+    return STAGE_UNKNOWN
+
 
 @dataclass
 class NotificationDecision:
@@ -55,6 +158,8 @@ class NotificationDecision:
     priority: int      # 산출 우선순위(높을수록 시급)
     signals: dict      # 사용된 신호 스냅샷(§8.2 키 스키마)
     fingerprint: str = ""
+    # (Plan 54 모듈 1) 결정이 난 단계 — 관측 전용. 맨 뒤 기본값이라 기존 위치 인자 호출은 무영향.
+    stage: str = ""
 
 
 def compute_fingerprint(event) -> str:
@@ -156,6 +261,8 @@ def decide_notification(
     storm: bool = False,
     correlated: bool = False,
     annotation: dict | None = None,
+    silence_rules=None,  # noqa: ANN001 — list[SilenceRule] | None (Plan 54 모듈 4)
+    now: datetime | None = None,
 ) -> NotificationDecision:
     """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정) + E2 의존성/인히비션/플래핑/스톰 단계.
 
@@ -170,6 +277,16 @@ def decide_notification(
         cascaded, root_resource, root_resource_name(=E4), root_notified(=E4 enricher 산출),
         change_nearby, change_candidates(=E5), source}
     수집 실패(None 또는 source=="unavailable") 시 보수화 후 effective_severity>=1이면 PAGE.
+
+    Plan 54 침묵(step 6.2 — silence_enabled 뒤, 규칙 미주입이면 무변경):
+        - silence_rules(인자)는 워커가 저장소에서 읽어 넘기는 **활성 규칙 목록**이다. 매칭은
+          이 모듈이 한다 — 규칙의 심각도 상한이 **실효 심각도**(AI 보강 반영 후)와 대조돼야
+          하는데 그 값은 여기서만 알 수 있기 때문이다(flapping·storm의 bool 주입과 다른 이유).
+          저장소·파일은 import하지 않는다(도메인 순수성 유지 — 순수 함수 silence.match_rules만 사용).
+        - **유지보수(step 6) 다음**에 둔다: 유지보수는 시스템이 알려준 사실이고 침묵은 운영자의
+          의도라, 사실이 먼저 사유로 남아야 감사가 정확하다.
+        - 심각도3은 step3에서 이미 단락되므로 **어떤 침묵 규칙으로도 조용해지지 않는다**.
+        - now는 규칙 만료 판정 기준 시각이다(미지정이면 현재 UTC).
 
     E5 추가(step 9 보조 조정 — §7.2): noise_ctx["change_nearby"]가 True면 promote에
         "변경 근접(원인성)"을 추가한다(**억제 아님·승격만** — 원인성 판단·PAGE 근거 보강,
@@ -302,13 +419,18 @@ def decide_notification(
             "correlated": bool(correlated),
         }
 
-    def _decision(tier: str, reason: str) -> NotificationDecision:
+    def _decision(tier: str, reason: str, stage: str) -> NotificationDecision:
+        """티어·사유·**결정 단계**로 판단 결과를 만든다.
+
+        stage는 관측 전용(Plan 54 퍼널)이며 tier/reason/priority/signals 산출에 관여하지 않는다.
+        """
         return NotificationDecision(
             tier=tier,
             reason=reason,
             priority=_priority(tier, effective_severity, importance),
             signals=_signals(),
             fingerprint=compute_fingerprint(event),
+            stage=stage,
         )
 
     # ── step 0.5(E7-b): 비알람 사전분류 — 승인/안내성 메시지 억제(§17.4) ──
@@ -317,28 +439,61 @@ def decide_notification(
     # (§17.4). is_operational_alarm은 알람 마커 부재+비알람 마커 존재일 때만 False(애매하면 알람).
     if non_alarm_filter_enabled and not is_operational_alarm(event):
         return _decision(
-            TIER_SUPPRESS, "비운영 알람 — 승인/안내성 메시지(마커 기반 사전 억제)"
+            TIER_SUPPRESS,
+            "비운영 알람 — 승인/안내성 메시지(마커 기반 사전 억제)",
+            STAGE_NON_ALARM,
         )
 
     # ── step 3: 심각도 3 → 즉시 PAGE(단락, 억제 금지 D-035) ──
     if effective_severity == 3:
-        return _decision(TIER_PAGE, "심각도3 — 항상 통보(억제 단계 미경유)")
+        return _decision(
+            TIER_PAGE, "심각도3 — 항상 통보(억제 단계 미경유)", STAGE_SEVERITY3
+        )
 
     # ── step 4: 해소(severity 0)/자가복구 상관(매트릭스 미경유) ─
     if bool(getattr(event, "is_clear", False)):
         if self_heal:
-            return _decision(TIER_SUPPRESS, "자가복구 상관 — 발생 알람과 해소 매칭으로 억제")
+            return _decision(
+                TIER_SUPPRESS,
+                "자가복구 상관 — 발생 알람과 해소 매칭으로 억제",
+                STAGE_SELF_HEAL,
+            )
         if resolved_to_dashboard:
-            return _decision(TIER_DASHBOARD, "독립 해소 — 대시보드 표시(통보 없음)")
-        return _decision(TIER_SUPPRESS, "독립 해소 — 매칭 발생 없음, 감사 기록만")
+            return _decision(
+                TIER_DASHBOARD, "독립 해소 — 대시보드 표시(통보 없음)", STAGE_RESOLVED
+            )
+        return _decision(
+            TIER_SUPPRESS, "독립 해소 — 매칭 발생 없음, 감사 기록만", STAGE_RESOLVED
+        )
 
     # ── step 5: 수집 실패 보수 처리(심각도/해소 규칙 다음) ────
     if collection_failed and effective_severity >= 1:
-        return _decision(TIER_PAGE, "신호 수집 실패 — 보수적 PAGE")
+        return _decision(
+            TIER_PAGE, "신호 수집 실패 — 보수적 PAGE", STAGE_COLLECTION_FAILED
+        )
 
     # ── step 6: 유지보수 모드 → SUPPRESS(기록 유지) ──────────
     if maintenance:
-        return _decision(TIER_SUPPRESS, "유지보수 모드 — 신규 발송 억제(감사 기록)")
+        return _decision(
+            TIER_SUPPRESS, "유지보수 모드 — 신규 발송 억제(감사 기록)", STAGE_MAINTENANCE
+        )
+
+    # ── step 6.2(Plan 54): 침묵 — 운영자가 건 규칙에 걸리면 억제(감사 기록 유지) ──
+    # silence_enabled=False(기본)면 워커가 silenced를 산출하지 않아 평가 자체가 없다(회귀 0).
+    # 심각도3은 step3에서 이미 단락되어 이 단계에 도달하지 않는다 — 규칙으로 뚫을 수 없다.
+    if silence_rules:
+        matched_rule = match_rules(
+            silence_rules,
+            event,
+            effective_severity=effective_severity,
+            now=now or datetime.now(timezone.utc),
+        )
+        if matched_rule is not None:
+            return _decision(
+                TIER_SUPPRESS,
+                f"침묵 규칙({matched_rule.id}) — {matched_rule.reason or '운영자 지정 기간 억제'}",
+                STAGE_SILENCE,
+            )
 
     # ── step 6.4(E2·E4): 의존성 억제 — 조상 비정상 시 자식 연쇄 노이즈(§3.6·§6.2) ──
     # dependency_suppression=False(기본)면 단계 자체를 평가하지 않아 E1 무변경.
@@ -348,11 +503,14 @@ def decide_notification(
         if noise_ctx and noise_ctx.get("cascaded"):
             if noise_ctx.get("root_notified"):
                 return _decision(
-                    TIER_SUPPRESS, "의존성 억제(다홉) — 근본원인 노드 통보됨"
+                    TIER_SUPPRESS,
+                    "의존성 억제(다홉) — 근본원인 노드 통보됨",
+                    STAGE_DEPENDENCY,
                 )
             return _decision(
                 TIER_DASHBOARD,
                 "의존성 연쇄(다홉) — 근본원인 미통보, 대시보드 강등",
+                STAGE_DEPENDENCY,
             )
         # 1홉 폴백(현행 무변경): parent_avail_status 0=정상, ≠0=비정상, None=미수집(보수적 비억제·R-3).
         parent_avail_status = noise_ctx.get("parent_avail_status") if noise_ctx else None
@@ -361,6 +519,7 @@ def decide_notification(
                 TIER_SUPPRESS,
                 f"의존성 억제 — 부모 리소스 비정상(AVAIL_STATUS={parent_avail_status}),"
                 " 자식 연쇄 노이즈",
+                STAGE_DEPENDENCY,
             )
 
     # ── step 6.5(E2): 인히비션 — 동일 서버 상위 심각도 발생 중 하위 음소거(§3.4) ──
@@ -368,7 +527,9 @@ def decide_notification(
     # inhibition_enabled=False(기본)면 평가하지 않아 E1 무변경.
     if inhibition_enabled and inhibited:
         return _decision(
-            TIER_SUPPRESS, "인히비션 — 동일 서버 상위 심각도 발생 중, 하위 음소거"
+            TIER_SUPPRESS,
+            "인히비션 — 동일 서버 상위 심각도 발생 중, 하위 음소거",
+            STAGE_INHIBITION,
         )
 
     # ── step 6(§6 파이프라인·E2): 플래핑 — 상태 진동 시 안정화까지 보류(§3.7) ──
@@ -377,7 +538,9 @@ def decide_notification(
     # flapping_enabled=False(기본)면 평가하지 않아 E1 무변경.
     if flapping_enabled and flapping and effective_severity <= suppress_max_severity:
         return _decision(
-            TIER_SUPPRESS, "플래핑 — 상태 진동(Nagios), 안정화까지 통보 보류"
+            TIER_SUPPRESS,
+            "플래핑 — 상태 진동(Nagios), 안정화까지 통보 보류",
+            STAGE_FLAPPING,
         )
 
     # ── step 7(§6 파이프라인·E2): 스톰 — 동일 서버 다발 시 대표만 통보(§3.8) ──
@@ -385,7 +548,7 @@ def decide_notification(
     # storm_grouping_enabled=False(기본)면 평가하지 않아 E1 무변경.
     if storm_grouping_enabled and storm:
         return _decision(
-            TIER_SUPPRESS, "스톰 — 동일 서버 다발, 대표 1건만 통보"
+            TIER_SUPPRESS, "스톰 — 동일 서버 다발, 대표 1건만 통보", STAGE_STORM
         )
 
     # ── step 7.5(E2): 크로스-호스트 상관 — 클러스터 대표 외 억제(§4.2) ──
@@ -395,7 +558,7 @@ def decide_notification(
     # 사유를 구분한다 — storm 경로 재사용 시 "동일 서버 다발" 사유가 감사를 오도하기 때문.
     if cross_host_correlation_enabled and correlated:
         return _decision(
-            TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제"
+            TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제", STAGE_CORRELATION
         )
 
     # ── step 7.7(E7-a·B-9): 계획-무해 주석 코로보레이션 게이팅 DASHBOARD 강등(§17.3) ──
@@ -414,6 +577,7 @@ def decide_notification(
             return _decision(
                 TIER_DASHBOARD,
                 "계획-무해 주석(코로보레이션) — 대시보드 강등(계획작업+해소/상관/변경근접)",
+                STAGE_ANNOTATION,
             )
 
     # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
@@ -460,4 +624,4 @@ def decide_notification(
         f"매트릭스(심각도{effective_severity}×중요도{importance}) → {base_tier}{adjust_note}"
         f" → 최종 {tier}"
     )
-    return _decision(tier, reason)
+    return _decision(tier, reason, STAGE_MATRIX)

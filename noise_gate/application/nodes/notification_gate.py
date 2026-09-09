@@ -66,6 +66,8 @@ async def notification_gate_node(
         correlated=bool(state.get("correlated", False)),
         # (Plan 60 E7-a) 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호(off/없으면 None).
         annotation=state.get("annotation"),
+        # (Plan 54 모듈 4) 워커가 읽어 넘긴 활성 침묵 규칙(off/없으면 빈 목록 → 단계 미평가).
+        silence_rules=state.get("silence_rules"),
     )
 
     store = configurable.get("decision_store")
@@ -79,6 +81,11 @@ async def notification_gate_node(
             store.record(
                 decision,
                 alarm_id=event.alarm_id,
+                # (Plan 54) 관제 화면의 "무엇이 억제됐는가" — 지문 해시로는 역인용이 안 된다.
+                alarm_name=str(getattr(event, "alarm_name", "") or ""),
+                server_name=str(
+                    getattr(event, "server_name", "") or getattr(event, "hostname", "") or ""
+                ),
                 recurrence=state.get("recurrence"),
                 correlation_meta=state.get("correlation_meta"),
                 semantic_annotation=state.get("semantic_annotation"),

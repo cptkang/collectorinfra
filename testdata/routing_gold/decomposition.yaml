@@ -1,0 +1,60 @@
+# 분해(의도 계획) 골든셋 — 순차 의존 회귀 (D-203 · plans/88 §4.6 · W4)
+#
+# 목적: `intent_planner._llm_decompose`가 "앞 조회 결과가 뒤 조회의 대상"인 질의를 **2개 이상 task +
+#   input_from 배선**으로 분해하는지 판정한다. 라우팅 골든셋(routing.yaml)은 의도·DB 선택만 보고
+#   분해 구조는 보지 않는다 — 순차가 한 task로 뭉개져도 잡히지 않았다(plans/88 R-6).
+#
+# 판정 규칙(scripts/eval_routing.py --decomposition):
+#   task_count_ok : 산출 task 수 >= expect.min_tasks
+#   edge_ok       : expect.edges의 (agent_from → agent_to) 쌍마다, 뒤 task의 input_from이 앞 task를 가리킨다
+#   agents_ok     : expect.agents ⊆ 산출 agent 집합
+#   single_ok     : expect.min_tasks == 1 인 케이스는 task 1개(오탐 방지 — 단일이 정답인 질의)
+#
+# ⚠ 실 LLM 호출은 D-127 건별 승인 + RUN_E2E=1 이후에만. --dry-run은 정합성만, --mock은 목업.
+
+version: 1
+items:
+  - id: d-001
+    query: "CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘"
+    expect:
+      min_tasks: 2
+      agents: [data_query, data_query]
+      edges: [[data_query, data_query]]
+    critical: sequential
+    note: "plans/88 예시 질의 — data→data 순차. 한 task로 뭉개지면 R-1·R-2."
+
+  - id: d-002
+    query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 메모리 사용률을 보여줘"
+    expect:
+      min_tasks: 2
+      agents: [alarm_query, data_query]
+      edges: [[alarm_query, data_query]]
+    critical: sequential
+    note: "프롬프트 예시 3-1 동형 — alarm→data 순차(D-086 회귀 기준선)."
+
+  - id: d-003
+    query: "디스크 사용률 상위 5대를 뽑고 그 중 메모리 사용률이 가장 높은 서버의 제조사를 알려줘"
+    expect:
+      min_tasks: 2
+      agents: [data_query, data_query]
+      edges: [[data_query, data_query]]
+    critical: sequential
+    note: "순위형 후속('그 중 … 가장') — 선별 집합 내 순위 산정은 앞 결과 스코프가 있어야 맞는다."
+
+  - id: d-004
+    query: "김포 운영 서버 목록을 찾아줘"
+    expect:
+      min_tasks: 1
+      agents: [data_query]
+      edges: []
+    critical: single
+    note: "표지('찾아')가 있지만 단일이 정답 — 재분해 오탐이 실행 경로를 바꾸지 않는지(§7 S5)."
+
+  - id: d-005
+    query: "전체 서버의 OS 종류와 버전을 보여줘"
+    expect:
+      min_tasks: 1
+      agents: [data_query]
+      edges: []
+    critical: single
+    note: "전역 범위 단일 질의 — 순차로 잘못 쪼개지면 안 된다."

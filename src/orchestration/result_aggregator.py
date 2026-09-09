@@ -26,6 +26,7 @@ from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.output_generator import output_generator
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
 from src.state import AgentState
+from src.utils.prior_dependency import render_dependency_notes
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +330,7 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     미실행 작업 안내문을 state["orchestration_incomplete_notice"]로 전달한다. LLM 합성
     결과에 의존하지 않고 결정적으로 덧붙여, 일부 하위 작업만 수행된 부분 결과가 완전한
     답처럼 보이는 것을 차단한다(침묵적 강등 금지). 안내문이 없으면 원본 그대로 반환한다.
+    순차 처리 경과 블록(D-203)도 같은 자리에서 이어 붙인다 — 4개 반환 지점의 단일 통과점.
 
     Args:
         result: result_aggregator가 반환할 State 갱신 dict
@@ -339,10 +341,50 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     """
     notice = (state.get("orchestration_incomplete_notice") or "").strip()
     if not notice:
-        return result
+        return _apply_dependency_notes(result, state)
     body = (result.get("final_response") or "").strip()
     out = dict(result)
     out["final_response"] = f"{body}\n\n---\n{notice}" if body else notice
+    return _apply_dependency_notes(out, state)
+
+
+def _collect_dependency_notes(result: dict, state: AgentState) -> list[dict]:
+    """상태·결과·task_plan(1단 도구 경로가 task에 실은 노트)의 순차 경과 노트를 한 목록으로 모은다."""
+    notes: list[dict] = []
+    seen: set[tuple] = set()
+    sources = [state.get("dependency_notes") or [], result.get("dependency_notes") or []]
+    # 1단(deepagents)은 ambient가 복사될 수 있어 노트를 task dict에 싣는다(D-203 · plans/88 §4.10).
+    sources.append([t.get("dependency_note") for t in (state.get("task_plan") or []) if isinstance(t, dict)])
+    # 사후 대조·DB별 분할 노트는 task 결과에 실린다(1단·2단 공통 — 집계기가 한 곳에서 모은다).
+    for res in (state.get("task_results") or {}).values():
+        if isinstance(res, dict) and res.get("dependency_notes"):
+            sources.append(res["dependency_notes"])
+    for src in sources:
+        for n in src:
+            if not isinstance(n, dict) or not n.get("detail"):
+                continue
+            key = (n.get("kind"), n.get("task_id"), n.get("detail"))
+            if key in seen:
+                continue
+            seen.add(key)
+            notes.append(n)
+    return notes
+
+
+def _apply_dependency_notes(result: dict, state: AgentState) -> dict:
+    """순차 처리 경과(게이트·대조·절단·충족도 미달)를 최종 응답 말미에 **결정적으로** 덧붙인다.
+
+    D-203 · plans/88 §4.4. LLM 합성에 맡기면 누락된다(`spike_notes`와 같은 이유). 노트가 없으면
+    원본 그대로(바이트 동일). 모은 노트는 `dependency_notes`로도 돌려줘 라우트가 API에 노출한다.
+    """
+    notes = _collect_dependency_notes(result, state)
+    block = render_dependency_notes(notes)
+    if not block:
+        return result
+    body = (result.get("final_response") or "").strip()
+    out = dict(result)
+    out["final_response"] = f"{body}\n\n---\n{block}" if body else block
+    out["dependency_notes"] = notes
     return out
 
 
@@ -385,17 +427,24 @@ def _collect_db_promotion(
         {"active_db_id", "target_databases"} dict (승격할 db_id가 없으면 빈 dict)
     """
     db_ids: list[str] = []
+    origin: Optional[str] = None
     for t in tasks:
         res = task_results.get(t.get("task_id"), {})
         for did in res.get("target_db_ids") or []:
             if did and did not in db_ids:
                 db_ids.append(did)
+        if origin is None and res.get("db_origin"):
+            origin = str(res["db_origin"])
     if not db_ids:
         return {}
-    return {
+    promoted = {
         "active_db_id": db_ids[0],
         "target_databases": [{"db_id": d} for d in db_ids],
     }
+    if origin:
+        # D-205: 스코프 출처도 top-level로 — target_databases shape는 기존 테스트가 고정하므로 별도 키.
+        promoted["db_scope_source"] = origin
+    return promoted
 
 
 def _collect_superseded(tasks: list[dict], task_results: dict[str, dict]) -> set[str]:

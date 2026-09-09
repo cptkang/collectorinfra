@@ -26,8 +26,9 @@ from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.prompts.intent_planner import INTENT_PLANNER_SYSTEM_TEMPLATE
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
-from src.orchestration.schemas import DecomposedPlan
+from src.orchestration.schemas import DecomposedPlan, validate_plan_dag
 from src.utils.json_extract import extract_json_from_response
+from src.utils.prior_dependency import NOTE_DECOMPOSE, has_sequential_marker
 from src.utils.synonym_set_parser import parse_synonym_set
 
 logger = logging.getLogger(__name__)
@@ -370,6 +371,14 @@ async def intent_planner(
     clarification = decomposed.get("clarification_needed")
     if clarification:
         result["clarification_needed"] = clarification
+    # 분해 단계 강등·보정·미적용 사유를 사유 채널에 싣는다(D-203 §4.10 — 종전에는 `degraded`가
+    # 이 노드에서 버려져 응답에 닿지 않았다).
+    degraded = decomposed.get("degraded")
+    if degraded:
+        result["dependency_notes"] = list(state.get("dependency_notes") or []) + [
+            {"kind": NOTE_DECOMPOSE, "task_id": None, "reason": d.get("reason"), "detail": d.get("detail", "")}
+            for d in degraded if isinstance(d, dict) and d.get("detail")
+        ]
     return result
 
 
@@ -704,6 +713,99 @@ async def _llm_decompose(
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=human_content))
 
+    result = await _decompose_once(llm, messages, user_query, app_config, fallback)
+    # 분해 계약(D-203 · plans/88 §4.2-b·§4.8): DAG 검증·순차 표지 — 플래그 off면 no-op(바이트 동일).
+    return await _enforce_plan_contract(llm, messages, user_query, app_config, fallback, result)
+
+
+def _degraded(reason: str, detail: str, *, attempts: int = 1) -> dict:
+    """분해 단계 강등 사유 1건 — 구조화 경로(F4)와 같은 shape."""
+    return {
+        "stage": "intent_planner._llm_decompose", "reason": reason,
+        "attempts": attempts, "detail": detail[:500],
+    }
+
+
+async def _enforce_plan_contract(
+    llm: BaseChatModel,
+    messages: list[BaseMessage],
+    user_query: str,
+    app_config: AppConfig,
+    fallback: dict,
+    result: dict,
+) -> dict:
+    """DAG 검증(§4.8)·순차 표지(§4.2-b)를 적용하고 필요하면 **되먹임 1회**만 재요청한다.
+
+    두 판정은 재시도 예산을 공유한다(총 LLM 호출 ≤ 2). 되먹임은 user 메시지 말미에만 사유를
+    덧붙인다(시스템 접두 불변 — KV 캐시). 재요청 뒤에도 위반이면 보정 가능한 것은 보정하고,
+    불가하면 단일 폴백 + `degraded` 사유(침묵 폴백 금지). 표지가 있는데 여전히 단일이면 실행은
+    하되 `sequential_not_applied`를 남긴다.
+    """
+    cfg = getattr(app_config, "composite", None)
+    dag_on = bool(getattr(cfg, "plan_dag_validation_enabled", False))
+    replan_on = bool(getattr(cfg, "sequential_replan_enabled", False))
+    if not (dag_on or replan_on):
+        return result
+
+    def _apply(res: dict, *, final: bool) -> tuple[dict, list[str]]:
+        hints: list[str] = []
+        tasks = list(res.get("tasks") or [])
+        notes = list(res.get("degraded") or [])
+        if dag_on:
+            tasks, violations, fixes = validate_plan_dag(tasks)
+            if fixes:
+                notes.append(_degraded("plan_dag_autofixed", "; ".join(fixes)))
+            if violations:
+                if final:
+                    logger.warning("intent_planner DAG 위반 잔존 — 단일 data_query 폴백: %s", violations)
+                    out = dict(fallback)
+                    out["degraded"] = notes + [_degraded("plan_dag_invalid", "; ".join(violations), attempts=2)]
+                    return out, []
+                hints += [f"계획 오류: {v}" for v in violations]
+        if replan_on and has_sequential_marker(user_query) and not any(t.get("input_from") for t in tasks):
+            if final:
+                notes.append(_degraded(
+                    "sequential_not_applied",
+                    "순차 분해가 적용되지 않아 한 번의 조회로 처리했습니다(앞 결과 → 뒤 조회 대상 배선 없음).",
+                    attempts=2,
+                ))
+            else:
+                hints.append(
+                    "이 질의는 앞 조회 결과가 뒤 조회의 대상입니다 — 같은 agent라도 2개 task로 나누고, "
+                    "뒤 task의 depends_on과 input_from에 앞 task의 task_id를 넣으세요."
+                )
+        out = dict(res)
+        out["tasks"] = tasks
+        if notes:
+            out["degraded"] = notes
+        return out, hints
+
+    checked, hints = _apply(result, final=False)
+    if not hints:
+        return checked
+
+    # 되먹임 1회 — 마지막 HumanMessage 말미에 사유를 덧붙인다.
+    last = messages[-1]
+    retry_messages = list(messages[:-1]) + [HumanMessage(
+        content=f"{getattr(last, 'content', user_query)}\n\n## 재요청 사유\n" + "\n".join(f"- {h}" for h in hints)
+    )]
+    logger.info("intent_planner 되먹임 재요청 1회(D-203): %s", hints)
+    retried = await _decompose_once(llm, retry_messages, user_query, app_config, fallback)
+    final, _ = _apply(retried, final=True)
+    prior_notes = list(checked.get("degraded") or [])
+    if prior_notes:
+        final["degraded"] = prior_notes + list(final.get("degraded") or [])
+    return final
+
+
+async def _decompose_once(
+    llm: BaseChatModel,
+    messages: list[BaseMessage],
+    user_query: str,
+    app_config: AppConfig,
+    fallback: dict,
+) -> dict:
+    """LLM 1회 호출로 분해한다(구조화 경로 → JSON 파싱 폴백)."""
     # 구조화 출력 경로 (E-3a · D-169). 플래그 off면 None을 돌려받아 기존 파싱으로 내려간다 —
     # 기존 경로를 지우지 않는다(off가 상시 존재한다).
     parsed: dict | None = None

@@ -51,3 +51,58 @@ class DecomposedPlan(BaseModel):
 
     tasks: list[TaskSpec] = Field(default_factory=list)
     clarification_needed: Optional[dict] = None
+
+
+def validate_plan_dag(tasks: list[dict]) -> tuple[list[dict], list[str], list[str]]:
+    """task DAG를 결정적으로 검증한다 (D-203 · plans/88 §4.8). backend 무관 · LLM 0회.
+
+    `model_post_init`은 agent 이름만 검증한다 — DAG 규칙(중복 id·미존재 참조·`input_from ⊄ depends_on`·
+    순환)은 여기서 본다. `agent_orchestrator.topological_levels`가 순환·누락을 "한 레벨로 안전 처리"
+    하므로 검증 없이는 순차가 **조용히 병렬**로 바뀐다.
+
+    Returns:
+        (보정된 tasks 사본, 보정 불가 위반 목록, 자동 보정 기록)
+    """
+    fixed: list[dict] = [dict(t) for t in tasks if isinstance(t, dict)]
+    violations: list[str] = []
+    fixes: list[str] = []
+    ids = [str(t.get("task_id") or "") for t in fixed]
+    known = set(ids)
+
+    dup = sorted({i for i in ids if ids.count(i) > 1})
+    if dup:
+        violations.append(f"task_id 중복: {', '.join(dup)}")
+    if "" in known:
+        violations.append("task_id가 비어 있는 task가 있습니다")
+
+    for t in fixed:
+        tid = str(t.get("task_id") or "")
+        deps = [str(d) for d in (t.get("depends_on") or []) if d]
+        inputs = [str(d) for d in (t.get("input_from") or []) if d]
+        for ref in deps + inputs:
+            if ref == tid:
+                violations.append(f"{tid}: 자기 참조")
+            elif ref not in known:
+                violations.append(f"{tid}: 존재하지 않는 task 참조 {ref!r}")
+        # 데이터 의존은 순서 의존을 함의한다(TaskSpec docstring) — 빠졌으면 보정한다.
+        missing = [i for i in inputs if i not in deps]
+        if missing:
+            t["depends_on"] = deps + missing
+            fixes.append(f"{tid}: input_from {missing} → depends_on에 추가")
+        else:
+            t["depends_on"] = deps
+        t["input_from"] = inputs
+
+    # 순환 — Kahn 잔여
+    if not violations:
+        remaining = {str(t["task_id"]): {d for d in t["depends_on"]} for t in fixed}
+        placed: set[str] = set()
+        while remaining:
+            ready = [k for k, d in remaining.items() if d <= placed]
+            if not ready:
+                violations.append(f"순환 의존: {', '.join(sorted(remaining))}")
+                break
+            for k in ready:
+                placed.add(k)
+                remaining.pop(k)
+    return fixed, violations, fixes

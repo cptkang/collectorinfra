@@ -145,6 +145,104 @@ async def run(items: list[dict], *, llm=None) -> list[dict]:
     return results
 
 
+# ──────────────────────────────────────────────
+# 분해(의도 계획) 골든셋 — D-203 · plans/88 §4.6
+# ──────────────────────────────────────────────
+
+_DECOMP_GOLD = _GOLD.parent / "decomposition.yaml"
+
+
+def validate_decomposition_gold(items: list[dict]) -> list[str]:
+    """분해 골든셋 정합성 — 실행 전에 잡는다."""
+    from src.orchestration.schemas import allowed_agents
+
+    known = allowed_agents()
+    errs: list[str] = []
+    seen: set[str] = set()
+    for it in items:
+        iid = it.get("id", "?")
+        if iid in seen:
+            errs.append(f"{iid}: 중복 id")
+        seen.add(iid)
+        exp = it.get("expect") or {}
+        if not it.get("query"):
+            errs.append(f"{iid}: query 없음")
+        if int(exp.get("min_tasks", 0)) < 1:
+            errs.append(f"{iid}: min_tasks는 1 이상")
+        for a in exp.get("agents") or []:
+            if a not in known:
+                errs.append(f"{iid}: 알 수 없는 agent {a!r}")
+        for edge in exp.get("edges") or []:
+            if not (isinstance(edge, list) and len(edge) == 2):
+                errs.append(f"{iid}: edge는 [from_agent, to_agent] 쌍")
+    return errs
+
+
+def judge_decomposition(item: dict, plan: dict) -> dict:
+    """한 건의 분해 판정 — task 수 · input_from 엣지 · agent 집합."""
+    exp = item.get("expect") or {}
+    tasks = [t for t in (plan.get("tasks") or []) if isinstance(t, dict)]
+    by_id = {t.get("task_id"): t for t in tasks}
+    min_tasks = int(exp.get("min_tasks", 1))
+    got_agents = [t.get("agent") for t in tasks]
+
+    count_ok = len(tasks) >= min_tasks
+    single_ok = len(tasks) == 1 if min_tasks == 1 else True
+    agents_ok = all(a in got_agents for a in (exp.get("agents") or []))
+    edge_results: list[bool] = []
+    for a_from, a_to in (exp.get("edges") or []):
+        hit = False
+        for t in tasks:
+            if t.get("agent") != a_to:
+                continue
+            for src in t.get("input_from") or []:
+                if by_id.get(src, {}).get("agent") == a_from:
+                    hit = True
+        edge_results.append(hit)
+    edge_ok = all(edge_results)
+    return {
+        "id": item.get("id"), "query": item.get("query"), "critical": item.get("critical"),
+        "task_count": len(tasks), "min_tasks": min_tasks, "task_count_ok": count_ok,
+        "single_ok": single_ok, "agents_got": got_agents, "agents_ok": agents_ok,
+        "edge_ok": edge_ok, "degraded": plan.get("degraded") or [],
+        "passed": count_ok and single_ok and agents_ok and edge_ok,
+    }
+
+
+async def run_decomposition(items: list[dict], *, llm=None) -> list[dict]:
+    from src.config import load_config
+    from src.llm import create_llm
+    import importlib
+
+    ip = importlib.import_module("src.orchestration.intent_planner")
+    cfg = load_config()
+    if llm is None:
+        llm = create_llm(cfg)
+    results: list[dict] = []
+    for it in items:
+        try:
+            plan = await ip._llm_decompose(llm, it["query"], cfg)
+        except Exception as e:  # noqa: BLE001
+            results.append({"id": it.get("id"), "query": it.get("query"),
+                            "error": f"{type(e).__name__}: {e}", "passed": False})
+            continue
+        results.append(judge_decomposition(it, plan))
+    return results
+
+
+def summarize_decomposition(results: list[dict]) -> dict:
+    seq = [r for r in results if r.get("critical") == "sequential"]
+    return {
+        "total": len(results),
+        "passed": sum(1 for r in results if r.get("passed")),
+        "sequential_cases": len(seq),
+        "sequential_preserved": sum(1 for r in seq if r.get("edge_ok")),
+        "single_false_split": sum(1 for r in results if r.get("critical") == "single" and not r.get("single_ok")),
+        "degraded": sum(1 for r in results if r.get("degraded")),
+        "errors": sum(1 for r in results if r.get("error")),
+    }
+
+
 def summarize(results: list[dict]) -> dict:
     scores = [s for r in results for s in (r.get("scores") or []) if isinstance(s, (int, float))]
     dist = Counter(_band(float(s)) for s in scores)
@@ -174,7 +272,13 @@ def main() -> int:
     ap.add_argument("--tolerate", type=int, default=0,
                     help="허용 실패 건수(LLM 비결정성 대비). 기본 0=엄격. "
                          "멀티 DB 축소와 호출 실패는 이 값과 무관하게 항상 회귀다.")
+    ap.add_argument("--decomposition", action="store_true",
+                    help="라우팅 대신 분해(의도 계획) 골든셋을 평가한다(D-203 · plans/88 W4). "
+                         "판정: task 수 · input_from 엣지 · agent 집합 · 단일 오탐")
     args = ap.parse_args()
+
+    if args.decomposition:
+        return _main_decomposition(args)
 
     items = load_gold()
     errs = validate_gold(items)
@@ -221,6 +325,53 @@ def main() -> int:
         print(f"저장: {args.out}")
 
     return _verdict(summary, tolerate=args.tolerate)
+
+
+def _main_decomposition(args) -> int:
+    """`--decomposition` 모드 — 게이트·목업 규약은 라우팅 모드와 동일."""
+    items = load_gold(_DECOMP_GOLD)
+    errs = validate_decomposition_gold(items)
+    if errs:
+        print("분해 골든셋 정합성 오류:", file=sys.stderr)
+        for e in errs:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+    print(f"분해 골든셋 {len(items)}건 정합성 OK "
+          f"(순차 {sum(1 for i in items if i.get('critical') == 'sequential')}건 포함)")
+    if args.dry_run:
+        from src.config import load_config
+        cfg = load_config()
+        print(f"[dry-run] 실 호출 없음. provider={cfg.llm.provider} "
+              f"plan_dag_validation={cfg.composite.plan_dag_validation_enabled} "
+              f"sequential_replan={cfg.composite.sequential_replan_enabled}")
+        return 0
+    if args.mock is not None:
+        from tests.mocks.fabrix_kbgenai_mock import make_llm, mock_kbgenai
+
+        print(f"[mock] FabriX KBGenAI 목업 · fault={args.mock} · 실 호출 0건")
+        with mock_kbgenai(fault=args.mock):
+            results = asyncio.run(run_decomposition(items, llm=make_llm()))
+    else:
+        _require_optin()
+        results = asyncio.run(run_decomposition(items))
+    summary = summarize_decomposition(results)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    for r in results:
+        if not r.get("passed"):
+            print(f"  ✗ {r.get('id')}: {r.get('error') or r}", file=sys.stderr)
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(
+            json.dumps({"summary": summary, "results": results}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"저장: {args.out}")
+    if summary["errors"]:
+        return 1
+    # 순차 케이스 배선 유실은 항용 오차(tolerate)와 무관하게 회귀다 — 이 골든셋의 존재 이유.
+    if summary["sequential_preserved"] < summary["sequential_cases"]:
+        return 1
+    return 0 if (summary["total"] - summary["passed"]) <= args.tolerate else 1
 
 
 def _verdict(summary: dict, *, tolerate: int = 0) -> int:

@@ -18,6 +18,14 @@ from langchain_core.tools import StructuredTool
 
 from src.config import AppConfig
 from src.orchestration.intent_planner import has_alarm_signal
+from src.orchestration.task_progress import emit_task_progress
+from src.utils.prior_dependency import (
+    POSTCHECK_AGENTS,
+    apply_scope_postcheck,
+    assess_prior_dependency,
+    skip_result,
+    verdict_note,
+)
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
     _extract_identity_rows,
@@ -271,17 +279,83 @@ async def _run_subagent_tool(
         "order": order,
         "status": "pending",
     }
+    # 단계 진행 이벤트(plans/89 §3.4 · D-204) — 1단은 총 단계 수를 모른다(total=None)
+    await emit_task_progress(task, "start")
+    # 선행 결과 게이트(D-203 · plans/88 §4.1) — 2단 `_gate_level`과 같은 판정 함수.
+    # 1단은 선행이 0건/실패면 `_dependency_scope`가 후보를 만들지 않아 input_from이 비므로,
+    # 참조어·순위어가 있는데 생산자 결과가 전부 빈/실패인 경우를 따로 잡는다(SPEC 가정 4).
+    verdict = None
+    if collector and agent_name in _SCOPE_CONSUMER_AGENTS:
+        gate_ids, gate_prior = (input_from, prior) if input_from else _referenced_but_empty(sub_query, collector)
+        if gate_ids:
+            verdict = assess_prior_dependency({"input_from": gate_ids}, gate_prior)
+            gate_on = bool(getattr(getattr(app_config, "composite", None), "sequential_gate_enabled", False))
+            if verdict is not None and gate_on:
+                # 노트는 task에 실어 collector로 전달한다(ambient는 `or {}`로 복사될 수 있다).
+                task["dependency_note"] = verdict_note(verdict, task["task_id"])
+                if not verdict.ok:
+                    result = skip_result(verdict, guidance=_SKIP_GUIDANCE)
+                    task["status"] = "skipped"
+                    collector.append((task, result))
+                    logger.warning(
+                        "deepagents 순차 게이트 — %s 미실행(%s)", task["task_id"], verdict.reason
+                    )
+                    await emit_task_progress(task, "end", result=result, verdict=verdict)
+                    return _serialize_for_tool(result, app_config)
+            elif verdict is not None and not verdict.ok:
+                logger.info("deepagents 순차 게이트 관측(off) reason=%s", verdict.reason)
     isolated = _make_isolated_input(task, ambient_state, prior=prior)
     isolated["user_query"] = sub_query
     result = await spec.handler(
         task, isolated, llm=spec.model or worker_llm, app_config=app_config
     )
+    # 사후 대조(D-203 · plans/88 §4.3) — 2단 agent_orchestrator와 같은 함수.
+    if (
+        verdict is not None and agent_name in POSTCHECK_AGENTS
+        and bool(getattr(getattr(app_config, "composite", None), "scope_postcheck_enabled", False))
+    ):
+        result = apply_scope_postcheck(verdict, result, task["task_id"])
     if collector is not None:
         task["status"] = "failed" if isinstance(result, dict) and result.get("error") else "completed"
         # collector에는 truncate 전 원본 결과를 적재한다(B1 — 최종 응답은 원본 기반).
         collector.append((task, result))
+    await emit_task_progress(task, "end", result=result)
     # vLLM에 반환하는 텍스트만 제어 평면 토큰 예산(B1)으로 축소한다.
     return _serialize_for_tool(result, app_config)
+
+
+_SKIP_GUIDANCE = (
+    "이 단계는 실행되지 않았습니다. 같은 요청으로 이 도구를 다시 호출하지 말고, "
+    "선행 결과가 비어 있음을 사용자에게 알리세요."
+)
+
+
+def _referenced_but_empty(sub_query: str, collector: list) -> tuple[list[str], dict]:
+    """참조어/순위어로 선행 결과를 가리키는데 생산자 결과가 전부 빈/실패인 경우를 찾는다 (D-203).
+
+    `_dependency_scope`는 행이 있는 성공 결과만 후보로 삼으므로, 선행이 0건이면 input_from이
+    비어 후속 도구가 **무스코프로** 실행된다(plans/88 §3.2 R-1). 이 함수는 그 사각을 메운다 —
+    전역 범위 표지가 있으면 빈 튜플(주입 안 함)이다.
+
+    Returns:
+        (생산자 task_id 목록, {task_id: 결과}) — 조건 미충족이면 ([], {})
+    """
+    low = (sub_query or "").lower()
+    if any(m in low for m in _GLOBAL_SCOPE_MARKERS):
+        return [], {}
+    if not (any(m in low for m in _PRIOR_REF_MARKERS) or any(m in low for m in _RANKING_MARKERS)):
+        return [], {}
+    ids: list[str] = []
+    prior: dict = {}
+    for t, res in collector:
+        if t.get("agent") not in _SCOPE_PRODUCER_AGENTS:
+            continue
+        tid = t.get("task_id")
+        if not tid or tid in prior:
+            continue
+        ids.append(tid)
+        prior[tid] = res if isinstance(res, dict) else {"error": str(res)}
+    return ids, prior
 
 
 def _fallback_spec():

@@ -285,4 +285,4 @@ validator 본체는 촘촘(8개 파일+어댑터 7훅 전부 커버). 공백: **
 
 - 분석 원천: 본 문서 §1 전수 실측(2026-07-30, Explore 에이전트 3방향 — query_generator 계열 / semantic_compiler·조립 경로 / validator·executor·배선·테스트)
 - 코드: §0 대상 파일 목록 · `src/security/{sql_guard,audit_logger}.py` · `src/db_adapters/polestar/{adapter,validators}.py` · `src/tools/{binding,catalog,validation,metrics,interpretation}.py` · `src/orchestration/subagents.py`
-- 문서: `plans/67-stepwise-llm-query-composition.md`(§1.2 경직성 — 기능 트랙과의 경계), `plans/63`(3계층·overfit), `docs/02_decision.md`(D-035·066·067·076·088·089·099·128·131), `docs/18_known_mistakes.md`(비대칭·초기화·일괄 갱신·worktree 기준선 원칙), `spec.md:721`(행 수 상한 — §0.2-5 모순)
+- 문서: `plans/67-stepwise-llm-query-composition-WIP.md`(§1.2 경직성 — 기능 트랙과의 경계), `plans/63`(3계층·overfit), `docs/02_decision.md`(D-035·066·067·076·088·089·099·128·131), `docs/18_known_mistakes.md`(비대칭·초기화·일괄 갱신·worktree 기준선 원칙), `spec.md:721`(행 수 상한 — §0.2-5 모순)

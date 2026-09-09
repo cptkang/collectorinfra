@@ -471,3 +471,98 @@ settings:
     stability: 길게 잡으면 방금 발생한 상황이 판단 재료에 없어 억제 결정이 어긋날 수 있다.
     recommendation: 기본 300초 유지.
     related: [NOISE_NOISE_CONTEXT_TIMEOUT_SECONDS]
+
+  # ── Plan 54 · D-196: 관제 화면 조회 상한 + 운영자 침묵 규칙 ──
+
+  NOISE_DECISION_STORE_MAX_LINES:
+    example: >-
+      감사 파일이 수십만 줄로 자라도 관제 화면은 끝에서 이 줄 수만 되짚는다. 값을 크게 잡으면 화면이 느려지고, 너무 작게 잡으면 조회 범위를 24시간으로 놓아도 그만큼밖에 못 본다.
+    summary: 관제 화면이 판단 기록 파일 끝에서 되짚는 줄 수 상한.
+    behavior: >-
+      관제 화면의 집계·조회(퍼널·추이·상위 억제·결정 목록)가 파일 **끝에서** 이 줄 수만
+      읽는다. 감사 파일 자체는 그대로 두고 화면 응답만 보호한다. 운영 지표
+      (`/alarm/metrics`)는 이 값과 무관하게 전량을 집계한다.
+    options:
+      - value: "20000"
+        label: 기본
+        effect: 최근 2만 건까지 화면에 반영된다. 대부분의 운영 규모에서 충분하다.
+      - value: "100000"
+        effect: 더 멀리 본다. 파일이 크면 화면 응답이 눈에 띄게 느려진다.
+      - value: "2000"
+        effect: 가볍지만, 알람이 많은 날에는 조회 범위를 24시간으로 놓아도 일부만 보인다.
+    performance: 값에 비례해 화면 조회의 파일 읽기 비용이 늘어난다.
+    stability: 감사 기록 자체는 이 값과 무관하게 전부 남는다 — 잘리는 것은 화면의 시야뿐이다.
+    recommendation: 기본 20000 유지. 화면이 느리면 줄인다.
+    related: [NOISE_DECISION_STORE_PATH, NOISE_DECISION_STORE_ENABLED]
+
+  NOISE_SILENCE_ENABLED:
+    example: >-
+      운영자가 관제 화면에서 만든 침묵 규칙을 게이트가 실제로 적용할지 결정한다. 꺼두면 규칙을 만들어도 알람은 그대로 나가므로, 점검 중이라 생각하고 방치하면 시끄럽다. 반대로 켜두고 만료 없는 습관이 생기면 진짜 장애가 조용히 묻힌다.
+    summary: 운영자가 건 침묵 규칙을 게이트가 적용할지 — 기본으로 꺼져 있다.
+    behavior: >-
+      켜면 알람 처리 시 활성 침묵 규칙과 대조해, 걸리는 알람을 SUPPRESS로 억제한다
+      (기록은 남는다). 끄면 규칙을 **조회조차 하지 않아** 판단이 종전과 완전히 같다.
+      **심각도 3은 어떤 규칙으로도 침묵되지 않는다** — 규칙보다 앞선 단계에서 통보가 확정된다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 규칙을 만들 수는 있으나 게이트가 적용하지 않는다. 화면이 그 사실을 알려준다.
+      - value: "true"
+        effect: 규칙이 실제로 알람을 억제한다. 만료가 있으므로 영구 침묵은 생기지 않는다.
+    performance: 규칙 목록을 짧게 캐시해 알람마다 파일을 다시 읽지 않는다.
+    stability: >-
+      침묵은 사람이 직접 거는 억제라 오억제의 책임 소재가 분명하다. 생성·해제가 감사에
+      남고 만료가 강제되므로, 잊힌 규칙이 계속 알람을 삼키는 상황은 생기지 않는다.
+    recommendation: 점검·배포 기간에만 켠다.
+    related: [NOISE_SILENCE_MAX_DURATION_SECONDS, NOISE_SUPPRESS_MAX_SEVERITY]
+    references:
+      - docs/28_noise_cancellation_operator_guide.md
+
+  NOISE_SILENCE_STORE_PATH:
+    example: >-
+      침묵 규칙은 이 파일에 덧붙이기만 하고 지우지 않는다. 해제해도 원 기록이 남으므로, 나중에 "그때 무엇을 왜 조용히 시켰나"를 되짚을 수 있다. 경로를 바꾸면 기존 규칙은 옛 파일에 남아 더 이상 적용되지 않는다.
+    summary: 침묵 규칙을 저장할 파일 경로.
+    behavior: >-
+      규칙 생성·해제를 한 줄씩 덧붙이고, 조회할 때 재생해 현재 상태를 만든다.
+      파일을 고쳐 쓰지 않으므로 감사가 온전히 남는다.
+    performance: 영향 없다.
+    stability: 경로를 바꾸면 기존 활성 규칙이 함께 사라진 것처럼 동작한다(옛 파일에 남는다).
+    related: [NOISE_SILENCE_ENABLED]
+
+  NOISE_SILENCE_MAX_DURATION_SECONDS:
+    example: >-
+      규칙 1건이 존속할 수 있는 최대 기간이다. 이 값을 넘는 침묵은 생성 단계에서 거부된다. 길게 잡을수록 "걸어두고 잊는" 침묵이 생기기 쉽고, 그 사이의 진짜 장애는 조용히 묻힌다.
+    summary: 침묵 규칙 1건의 최대 존속 기간 — 만료 없는 침묵을 막는다.
+    behavior: >-
+      침묵 생성 요청의 지속 시간이 이 값을 넘으면 거부한다(만료 없는 침묵은 애초에 만들 수 없다).
+      기존 규칙에는 소급되지 않는다.
+    options:
+      - value: "604800"
+        label: 기본
+        effect: 최대 7일. 장기 점검도 담기지만 잊고 방치하기엔 짧다.
+      - value: "86400"
+        effect: 최대 1일. 더 안전하지만 주말 점검마다 다시 걸어야 한다.
+    performance: 영향 없다.
+    stability: 길게 잡을수록 잊힌 침묵이 진짜 장애를 삼킬 여지가 커진다.
+    recommendation: 기본 7일 유지.
+    related: [NOISE_SILENCE_ENABLED]
+
+  NOISE_SILENCE_CACHE_TTL_SECONDS:
+    example: >-
+      알람 1건마다 규칙 파일을 다시 읽지 않도록 짧게 캐시한다. 운영자가 규칙을 만들거나 해제한 뒤 최대 이 시간만큼 반영이 늦는다.
+    summary: 활성 침묵 규칙 목록을 재사용하는 시간.
+    behavior: >-
+      알람 처리 경로에서 규칙 목록을 이 시간만큼 재사용한다. 그동안 만들어진 규칙은
+      아직 적용되지 않는다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 10초. 규칙 변경이 거의 즉시 반영되면서 파일 읽기도 줄인다.
+      - value: "0"
+        effect: 매번 읽는다. 즉시 반영되지만 알람이 몰릴 때 파일 읽기가 늘어난다.
+      - value: "60"
+        effect: 1분 재사용. 급히 건 침묵이 그만큼 늦게 듣는다.
+    performance: 값이 클수록 파일 읽기가 줄어든다.
+    stability: 너무 길면 "침묵을 걸었는데 알람이 계속 온다"는 혼선이 생긴다.
+    recommendation: 기본 10초 유지.
+    related: [NOISE_SILENCE_ENABLED]

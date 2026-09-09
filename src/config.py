@@ -453,6 +453,14 @@ class ServerConfig(BaseSettings):
     cors_origins: list[str] = ["*"]
     query_timeout: int = 60
     file_query_timeout: int = 120
+    # plans/89 · D-204: SSE 진행 신호. **기본 on** — plans/80 §5.4-③(신규 플래그 기본 off)의
+    # 명시 예외다. 근거: ①추가되는 이벤트(progress·heartbeat)는 부가적이고 구 클라이언트는
+    # 미지 type을 무시한다(app.js SSE 파서 실측) ②off면 이 기능이 푸는 증상("커서만 깜박임",
+    # 무이벤트 최대 API_QUERY_TIMEOUT초)이 운영에서 그대로 남는다 ③프론트와 동시 배포된다.
+    sse_progress_events: bool = True
+    # 무이벤트 구간에 heartbeat를 내는 주기(초). 0 이하면 하트비트 없음. 무이벤트 상한
+    # (query_timeout/file_query_timeout)의 의미는 바뀌지 않는다.
+    sse_heartbeat_interval_sec: int = 5
 
     model_config = {"env_prefix": "API_", "env_file": ".env", "extra": "ignore"}
 
@@ -861,6 +869,16 @@ class NoiseGateConfig(BaseSettings):
     resolved_to_dashboard: bool = False       # 독립 해소(severity 0)를 DASHBOARD로 표시할지 (E1)
     decision_store_path: str = "logs/alarm_decisions.jsonl"
     decision_store_enabled: bool = True
+    # (Plan 54) 관제 화면 조회가 파일 끝에서 되짚는 줄 수 상한 — 감사 파일은 그대로 두고
+    # 화면 응답만 보호한다. 운영 지표(aggregate/meta_alerts)는 종전대로 전량 스캔한다.
+    decision_store_max_lines: int = 20000
+    # ── Plan 54 모듈 4: 운영자 침묵(Silence) 규칙 ──
+    # 기본 off — 켜기 전에는 워커가 규칙을 조회조차 하지 않아 판정이 현행과 비트 동일하다.
+    # 심각도 3은 이 기능이 켜져 있어도 어떤 규칙으로도 침묵되지 않는다(게이트 단락이 앞선다).
+    silence_enabled: bool = False
+    silence_store_path: str = "logs/alarm_silences.jsonl"
+    silence_max_duration_seconds: int = 604800   # 규칙 1건의 최대 존속 기간(7일)
+    silence_cache_ttl_seconds: int = 10          # 워커의 활성 규칙 캐시 TTL(hot-path 보호)
     ticket_batch_queue_path: str = "logs/alarm_ticket_queue.jsonl"   # (E3) TICKET 일배치 요약 큐
     ticket_batch_queue_enabled: bool = True   # (E3) TICKET 티어를 일배치 요약 큐에 적재할지
     # ── E3 후속: 워커→UI 실시간 SSE Redis pub/sub 브리지 (D-048.9 한계 해소) ──
@@ -1052,6 +1070,23 @@ class CompositeConfig(BaseSettings):
     investigation_enabled: bool = False
     # W6 — 조사 감사. 기본 on(감사는 끄는 것이 예외다)
     audit_enabled: bool = True
+
+    # === [D-203] 복합 질의 순차 의존 계약 (plans/88 §4.1·§4.3·§4.9) — 전부 기본 off ===
+    # off면 판정은 로그로만 남고 실행·상태·응답은 현행과 비트 동일이다(발동률 관측 → on 근거).
+    # 선행 결과 게이트: input_from 선행이 실패·0건·식별 컬럼 부재면 후속을 실행하지 않고 사유를 남긴다.
+    sequential_gate_enabled: bool = False
+    # 사후 대조: 후속 결과에서 선행 스코프 밖 서버 행을 제거하고 미조회 서버를 표기한다.
+    scope_postcheck_enabled: bool = False
+    # DB별 스코프 분할: prior_rows의 _source_db로 후속 멀티 DB 조회의 IN 목록·대상 DB를 나눈다.
+    prior_scope_by_db_enabled: bool = False
+    # === [D-203 2차] 분해 계약 · 3·4단 순차 러너 — 기본 off ===
+    # 분해 DAG 결정적 검증(중복 id·미존재 참조·input_from⊄depends_on 보정·순환) + 위반 시 되먹임 1회.
+    plan_dag_validation_enabled: bool = False
+    # 순차 표지("…를 찾아 그 서버들의…")가 있는데 단일 task로 분해되면 재분해 1회(위 검증과 예산 공유 = 총 1회).
+    sequential_replan_enabled: bool = False
+    # 3단(semantic_router)·4단(legacy) 빌드에 `sequential_runner` 2-pass 노드를 등록한다. HITL 승인 플래그가
+    # 켜져 있으면 진입하지 않는다(승인 게이트 우회 금지 — plans/88 §4.7).
+    sequential_fallback_tiers_enabled: bool = False
 
     # ── Plan 81 (D-175) 호스트 가용성 사전 판정 ──────────────────────
     # **기본 on** — 이 파일의 다른 플래그와 정반대다(G-1 사용자 확정 2026-08-28).

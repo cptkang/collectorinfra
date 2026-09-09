@@ -205,6 +205,12 @@ class AgentState(TypedDict):
     # 존 역질문 후단 게이트 발동 페이로드(D-143 후속2, 요청 스코프) — 라우트가
     # status="clarification" 응답으로 변환(pre-gate와 동일 shape, 프론트 재사용).
     zone_clarification: Optional[dict]
+    # 스레드 DB 스코프(plans/90 · D-205) — 둘 다 **요청 스코프**(매 턴 라우트가 재공급).
+    #   db_scope_source: 이번 턴 대상 DB가 어디서 왔나(selected|hint|inherited|planned|classified).
+    #     문자열 reason 매칭 대신 구조화 키 — 3단 semantic_router·2단 subagents(db_origin 승격)가 남긴다.
+    #   db_scope_reset: 사용자가 스코프 칩에서 "해제"한 턴. context_resolver가 sticky 승계를 건너뛴다.
+    db_scope_source: Optional[str]
+    db_scope_reset: Optional[bool]
 
     # === [Phase 3] 멀티턴 대화 ===
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
@@ -277,6 +283,10 @@ class AgentState(TypedDict):
     # prior_rows(SQL 스코프 키)와 목적이 다르다 — 이쪽은 실호스트 조사의 대상 집합이다.
     # 값은 dict 목록으로 싣는다(TargetRef.model_dump()) — 체크포인터 직렬화 대상이므로.
     prior_targets: Optional[list[dict]]
+    # 순차 의존 경과·사유 채널(D-203 · plans/88 §4.10) — 게이트/대조/절단/충족도 미달/DB별 분할 노트.
+    # 요청 스코프(라우트·후속 턴 명시 초기화). agent_orchestrator가 쓰던 `sufficiency_shortfalls`는
+    # 선언·소비처가 없어 응답에 닿지 않았다 — 같은 내용을 이 채널에 병기하고 2027-03-09 폐기(D-161 ①).
+    dependency_notes: Optional[list[dict]]
 
     # === [Plan 49] 동적 재계획 ===
     replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
@@ -288,6 +298,7 @@ def create_followup_input(
     user_query: str,
     selected_db_ids: Optional[list[str]] = None,
     allow_zone_clarification: bool = False,
+    reset_db_scope: bool = False,
 ) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
@@ -305,11 +316,14 @@ def create_followup_input(
 
     Args:
         user_query: 이번 턴 자연어 질의
+        reset_db_scope: 스코프 칩 "해제"(plans/90 · D-205). True면 승계 원천(active_db_id/
+            target_databases/mapped_db_ids)을 비우고 context_resolver의 sticky 폴백도 건너뛰게
+            db_scope_reset을 세운다(G-4: 폼필 고정 DB도 비운다 — 재업로드 시 다시 고정된다).
 
     Returns:
         graph.ainvoke에 전달할 델타 입력 dict
     """
-    return {
+    delta: dict = {
         "user_query": user_query,
         "messages": [HumanMessage(content=user_query)],
         # 폼필 트리거 초기화 (input_parser 재파싱 방지). 파일 업로드 경로는 이 함수를
@@ -340,7 +354,18 @@ def create_followup_input(
         "form_fill_clarification": None,
         "form_memory_panel": None,
         "form_fill_remember": None,
+        # 순차 의존 경과 노트(D-203)도 요청 스코프 — 직전 턴 경과가 새 턴 응답에 붙지 않도록.
+        "dependency_notes": None,
+        # 스레드 DB 스코프(D-205) — 요청 스코프. source는 이번 턴 라우터/서브에이전트가 다시 남긴다.
+        "db_scope_source": None,
+        "db_scope_reset": bool(reset_db_scope),
     }
+    if reset_db_scope:
+        # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
+        delta["active_db_id"] = None
+        delta["target_databases"] = []
+        delta["mapped_db_ids"] = None
+    return delta
 
 
 def create_initial_state(
@@ -448,6 +473,8 @@ def create_initial_state(
         selected_db_ids=selected_db_ids,
         zone_clarification_allowed=allow_zone_clarification,
         zone_clarification=None,
+        db_scope_source=None,
+        db_scope_reset=False,
         # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,
@@ -487,6 +514,7 @@ def create_initial_state(
         # 요청 스코프 — LangGraph 체크포인터는 델타만 병합하므로 명시 초기화가 없으면
         # 이전 턴 대상이 승계돼 엉뚱한 호스트를 조사한다(Plan 78 W1-5).
         prior_targets=None,
+        dependency_notes=None,  # 요청 스코프(D-203)
         # Plan 49: 동적 재계획
         replan_count=0,
         needs_replan=False,

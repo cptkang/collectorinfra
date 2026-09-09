@@ -161,6 +161,46 @@ settings:
     stability: 중단되면 산출물이 나오지 않는다. 실패 사유는 응답에 노출되므로 조용히 빈 파일이 나가지는 않는다.
     related: [API_QUERY_TIMEOUT, QUERY_FORM_MEMORY_TTL_DAYS]
 
+  API_SSE_PROGRESS_EVENTS:
+    example: >-
+      복합 질의가 40초쯤 걸리는 동안 화면에는 커서만 깜박여 사용자가 새로고침을 눌렀다. 이 값을 켜 두면 "인프라 DB 조회 중… 18초"처럼 지금 하는 일과
+      경과가 커서 아래에 보이고, 서버 신호가 끊기면 "신호 대기 중"으로 바뀐다.
+    summary: 스트리밍 응답에 진행 신호(도구·단계 progress, heartbeat)를 실어 보낼지.
+    behavior: >-
+      켜면 도구 호출·복합 질의 단계마다 progress 이벤트를, 이벤트가 없는 구간에는
+      heartbeat를 보낸다. 끄면 기존 6종 이벤트만 나가고 화면은 다시 커서만 보인다.
+      질의 처리 자체·타임아웃 판정에는 영향이 없다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 커서 아래 상태줄이 동작한다. 신규 플래그 기본 off 원칙의 명시 예외다 — 구 화면은 미지 이벤트를 무시한다.
+      - value: "false"
+        effect: 진행 신호가 나가지 않는다. 오래 걸리는 질의에서 진행 중인지 멈췄는지 화면만으로 구분할 수 없다.
+    performance: 이벤트 하나가 수십 바이트라 부하는 무시할 수준이다. LLM 호출은 늘지 않는다.
+    stability: 신호 발행 실패는 삼켜지며 질의를 중단시키지 않는다.
+    related: [API_SSE_HEARTBEAT_INTERVAL_SEC, API_QUERY_TIMEOUT]
+
+  API_SSE_HEARTBEAT_INTERVAL_SEC:
+    example: >-
+      스키마 샘플 수집처럼 한 단계가 수십 초 조용히 도는 구간에서, 5초마다 heartbeat가 오면 화면은 "진행 중"을 유지하고
+      15초간 아무 신호도 없으면 "서버 신호 대기 중"으로 바꿔 사용자가 멈춤을 의심할 수 있게 한다.
+    summary: 무이벤트 구간에 heartbeat를 보내는 주기(초).
+    behavior: >-
+      마지막 이벤트 뒤 이 시간 동안 새 이벤트가 없으면 heartbeat를 하나 보낸다. 0이면
+      보내지 않는다. 무이벤트 상한(API_QUERY_TIMEOUT 등)의 의미는 그대로다 — heartbeat는
+      상한 카운트를 되돌리지 않는다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 화면의 정지 판정(15초)이 heartbeat 3회 결손과 맞물린다.
+      - value: "1"
+        effect: 신호가 잦아 정지 감지가 빠르지만 연결당 초당 1건이 늘 흐른다.
+      - value: "0"
+        effect: heartbeat 없음. 조용한 구간에서는 정지 판정이 늦어진다.
+    performance: 연결마다 주기당 수십 바이트. 동시 접속이 수백이 아니면 체감 없음.
+    stability: 하트비트 자체는 판정에 쓰이지 않으므로 값이 커도 타임아웃이 빨라지거나 늦어지지 않는다.
+    related: [API_SSE_PROGRESS_EVENTS, API_QUERY_TIMEOUT]
+
   REDIS_HOST:
     example: >-
       Redis를 껐다 켜면 캐시가 비는 데 그치지 않는다 — 알람 스트림에 쌓여 있던 미처리 메시지와 pub/sub 중계가 함께 끊겨, 그 사이 도착한 알람이 화면에 뜨지

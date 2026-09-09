@@ -699,8 +699,8 @@ G-WHEEL은 79 E-3 계열만 막으므로 **영향 범위가 더 좁다**.
 
 ## 10. 참고
 
-- `plans/78-composite-query-host-diagnostics-orchestration.md` (v9) — 조사 배선 설계 근거
-- `plans/79-semantic-routing-improvement.md` (v10) — 라우팅 개선 설계 근거
+- `plans/78-composite-query-host-diagnostics-orchestration-WIP.md` (v9) — 조사 배선 설계 근거
+- `plans/79-semantic-routing-improvement-WIP.md` (v10) — 라우팅 개선 설계 근거
 - `docs/02_decision.md` — D-004 · D-035 · D-118 · D-119 · D-127 · D-161
 - `docs/18_known_mistakes.md` — 단일/멀티 경로 대칭 · 예시가 지시문을 이긴다 · 요청 스코프 초기화
 - 실측 대상: `src/prompts/semantic_router.py`(367줄) · `src/routing/semantic_router.py`

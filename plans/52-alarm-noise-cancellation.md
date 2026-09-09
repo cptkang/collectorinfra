@@ -818,9 +818,9 @@ D-029~D-032 재사용, D-003(읽기전용) 준수. 충돌 없음.
 - 레이트리밋/자가복구: Opsgenie api-rate-limiting·de-duplication ; PagerDuty rest-api-rate-limits·configurable-service-settings
 - 데이터기반(배경, **ML은 미채택 — LLM-ICL로 대체**): AlertRank(INFOCOM 2020)·TEQ(arXiv:2302.06648)·
   DeepLog(CCS 2017)·AIOps 서베이(JNCA 2024) — 특징 중요도·피드백 가치의 근거로만 인용
-- LLM-RCA(인컨텍스트·few-shot 그라운딩): `plans/51-fault-diagnosis-data-collection.md` §3.8 계승
+- LLM-RCA(인컨텍스트·few-shot 그라운딩): `plans/51-fault-diagnosis-data-collection-WIP.md` §3.8 계승
 - 지표: Atlassian incident KPIs ; incident.io alerting best practices(액션가능 30~50%) ;
   Google ML crash course(precision/recall/PR-AUC)
 - 프로젝트 자산/데이터: `src/alarm/*`, `schema/polestar-schema.md`, `config/db_profiles/polestar_*.yaml`
-- 자매 계획: `plans/47-alarm-history-pattern-analysis.md`, `plans/50-fault-diagnosis-rca.md`,
-  `plans/51-fault-diagnosis-data-collection.md`
+- 자매 계획: `plans/47-alarm-history-pattern-analysis.md`, `plans/50-fault-diagnosis-rca-WIP.md`,
+  `plans/51-fault-diagnosis-data-collection-WIP.md`

@@ -191,6 +191,38 @@ async def log_drm_decrypt(
     await _write_audit_file(entry)
 
 
+async def log_silence_change(
+    *,
+    action: str,
+    rule_id: str,
+    actor: str,
+    detail: Optional[dict] = None,
+) -> None:
+    """침묵 규칙의 생성·해제를 감사 로그에 기록한다 (Plan 54 모듈 5).
+
+    침묵은 **실제로 알람을 억제**하므로, 누가 언제 무엇을 조용히 시켰는지가 규칙 자체보다
+    오래 남아야 한다. 규칙 내용(매처·심각도 상한·사유·만료)을 통째로 남긴다 — 나중에
+    "그때 어떤 조건이었나"를 되짚을 수 있어야 오억제 조사가 가능하다.
+
+    Args:
+        action: "create" | "revoke".
+        rule_id: 침묵 규칙 id.
+        actor: 행위자.
+        detail: 규칙 스냅샷(생성 시 새 규칙, 해제 시 해제 직전 규칙).
+    """
+    entry = AuditEntry(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event="silence_change",
+        action=action,
+        rule_id=rule_id,
+        user_id=actor,
+        detail=detail or {},
+    )
+    log_data = {k: v for k, v in entry.to_dict().items() if k != "event"}
+    logger.info("silence_change", **log_data)
+    await _write_audit_file(entry)
+
+
 #: 조사 원문(stdout)의 기록 상한. 전량은 CSV·트레이스가 갖고, 감사는 대조용 앞부분만 든다.
 _INVESTIGATION_STDOUT_LIMIT = 4000
 

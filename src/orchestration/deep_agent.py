@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage
 
 from src.config import AppConfig
 from src.orchestration.deepagents_tools import build_tools
+from src.orchestration.task_progress import emit_step
 from src.prompts.orchestrator import ORCHESTRATOR_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,9 @@ _AMBIENT_KEYS = (
     "target_sheets",
     "file_type",
     "mapped_db_ids",
+    # 존 선택(역질문 답·스코프 칩 — D-143·D-205). 빠지면 _make_isolated_input이 None을 받아
+    # 1단에서만 classify 팬아웃되는 비대칭이 생긴다(plans/90 §1.4 실측 결손).
+    "selected_db_ids",
     "db_column_mapping",
     "column_mapping",
     "mapping_sources",
@@ -243,6 +247,7 @@ async def run_deep_agent(
             "deep_agent: 오케스트레이터 빈 응답 조기 종료 감지 → 재개 %d/%d (D-093)",
             attempts, _MAX_RESUME_ATTEMPTS,
         )
+        await emit_step("agent.resume", label=f"재개 {attempts}/{_MAX_RESUME_ATTEMPTS}")
         result = await _resume_after_empty_response(agent, result, config=invoke_config)
         incomplete = _ended_prematurely(result)
         logger.info(
@@ -260,6 +265,7 @@ async def run_deep_agent(
             if incomplete
             else None
         )
+        await emit_step("agent.aggregate", label="최종 응답 합성")
         out = await _aggregate_with_fabrix(
             collector, state, app_config, worker_llm, incomplete_notice=notice
         )

@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>노이즈 캔슬링 관제 - 인프라 데이터 조회 에이전트</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
+    <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
+    <script src="/static/js/theme.js"></script>
+    <style>
+        /* ── Plan 54 관제 화면 전용 레이아웃 ──────────────────────────────
+           색은 전부 테마 토큰(style.css)에서 온다. 라이트/다크 양쪽에서 대비가 유지되도록
+           하드코딩 색을 두지 않는다(D-180 정합). */
+        .noise-wrap { max-width: 1440px; margin: 0 auto; padding: 20px 24px 60px; }
+
+        /* 헤더 */
+        .noise-top {
+            display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+            padding: 14px 18px; margin-bottom: 18px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .noise-brand { display: flex; align-items: center; gap: 12px; }
+        .noise-mark {
+            width: 40px; height: 40px; border-radius: 9px; flex: none;
+            border: 1px solid var(--border); display: grid; place-items: center;
+            background: var(--bg-deep);
+        }
+        /* 노이즈 → 평탄 파형(노이즈 캔슬링 은유) */
+        .wave { display: flex; align-items: flex-end; gap: 2px; height: 18px; }
+        .wave i { width: 2px; background: var(--accent); border-radius: 2px; animation: cancel 3.4s ease-in-out infinite; }
+        @keyframes cancel { 0%, 100% { opacity: .95 } 48%, 62% { height: 3px !important; opacity: .4 } }
+        @media (prefers-reduced-motion: reduce) { .wave i { animation: none } }
+        .noise-brand h1 { font-size: 15px; font-weight: 800; letter-spacing: .01em; margin: 0; }
+        .noise-brand small {
+            display: block; font-family: var(--font-mono); font-size: 10.5px;
+            color: var(--text-muted); letter-spacing: .16em; margin-top: 2px;
+        }
+        .noise-spacer { flex: 1 }
+        .pill {
+            display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono);
+            font-size: 11.5px; padding: 6px 11px; border-radius: 999px;
+            border: 1px solid var(--border); background: var(--bg-deep); color: var(--text-secondary);
+        }
+        .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted) }
+        .pill--ok .dot { background: var(--success) }
+        .pill--warn { color: var(--warning); border-color: var(--warning) }
+        .pill--warn .dot { background: var(--warning) }
+        .pill--err { color: var(--error); border-color: var(--error) }
+        .pill--err .dot { background: var(--error) }
+        .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden }
+        .seg button {
+            font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+            background: transparent; border: 0; padding: 7px 12px; cursor: pointer;
+        }
+        .seg button.on { background: var(--accent); color: var(--bg-elevated); font-weight: 700 }
+
+        /* KPI */
+        .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 18px }
+        .kpi {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 13px 14px; position: relative; overflow: hidden;
+        }
+        .kpi .lab { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px }
+        .kpi .num { font-size: 28px; font-weight: 800; margin-top: 6px; font-variant-numeric: tabular-nums; line-height: 1 }
+        .kpi .sub { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); margin-top: 6px }
+        .kpi .tag { width: 7px; height: 7px; border-radius: 2px; display: inline-block }
+        .kpi::after { content: ""; position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; opacity: .9 }
+        .kpi.t-page::after { background: var(--tier-page) }
+        .kpi.t-ticket::after { background: var(--tier-ticket) }
+        .kpi.t-dash::after { background: var(--tier-dash) }
+        .kpi.t-sup::after { background: var(--tier-suppress) }
+        .kpi.t-in::after { background: var(--text-muted) }
+        .kpi.t-rate::after { background: var(--accent) }
+        .num.c-page { color: var(--tier-page) }
+        .num.c-ticket { color: var(--tier-ticket) }
+        .num.c-dash { color: var(--tier-dash) }
+        .num.c-sup { color: var(--tier-suppress) }
+        .num.c-acc { color: var(--accent) }
+
+        /* 본문 그리드 */
+        .noise-grid { display: grid; grid-template-columns: 1fr 380px; gap: 14px; margin-bottom: 14px }
+        .card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 15px 16px;
+        }
+        .card h2 {
+            font-size: 13px; font-weight: 700; margin: 0 0 12px;
+            display: flex; align-items: baseline; gap: 8px;
+        }
+        .card h2 .hint { font-size: 11px; font-weight: 400; color: var(--text-muted) }
+        .card h2 .hint.right { margin-left: auto }
+
+        /* 퍼널 */
+        .funnel-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; flex-wrap: wrap }
+        .funnel-head .big { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums }
+        .funnel-head .lab { font-size: 11.5px; color: var(--text-muted) }
+        .stages { display: flex; flex-direction: column; gap: 5px }
+        .stage-row { display: grid; grid-template-columns: 120px 1fr 92px; align-items: center; gap: 10px }
+        .stage-row .name { font-size: 11.5px; color: var(--text-secondary); text-align: right }
+        .stage-row .bar {
+            height: 16px; background: var(--bg-deep); border-radius: 4px;
+            position: relative; overflow: hidden; border: 1px solid var(--border);
+        }
+        .stage-row .bar .live { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .55 }
+        .stage-row .bar .gone {
+            position: absolute; top: 0; bottom: 0; background: var(--tier-suppress); opacity: .8;
+            background-image: repeating-linear-gradient(
+                45deg, transparent, transparent 3px,
+                rgba(255, 255, 255, .35) 3px, rgba(255, 255, 255, .35) 6px);
+        }
+        .stage-row .val { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); text-align: right }
+        .stage-row.is-idle { opacity: .45 }
+        .tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px }
+        .tier-card { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; border-left-width: 3px }
+        .tier-card.t-page { border-left-color: var(--tier-page) }
+        .tier-card.t-ticket { border-left-color: var(--tier-ticket) }
+        .tier-card.t-dash { border-left-color: var(--tier-dash) }
+        .tier-card.t-sup { border-left-color: var(--tier-suppress) }
+        .tier-card .t { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); letter-spacing: .08em }
+        .tier-card .v { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 3px }
+        .tier-card .p { font-size: 10.5px; color: var(--text-muted); margin-top: 2px }
+
+        /* 추이 차트 */
+        .chart { display: flex; align-items: flex-end; gap: 3px; height: 128px; margin-top: 4px }
+        .chart .col { flex: 1; display: flex; flex-direction: column-reverse; gap: 1px; min-width: 0 }
+        .chart .seg-bar { width: 100%; border-radius: 1px }
+        .chart .seg-bar.t-page { background: var(--tier-page) }
+        .chart .seg-bar.t-ticket { background: var(--tier-ticket) }
+        .chart .seg-bar.t-dash { background: var(--tier-dash) }
+        .chart .seg-bar.t-sup { background: var(--tier-suppress) }
+        .chart-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap }
+        .chart-legend span { display: inline-flex; align-items: center; gap: 5px }
+        .chart-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block }
+
+        /* 피드 */
+        .feed { display: flex; flex-direction: column; gap: 7px; max-height: 470px; overflow-y: auto }
+        .feed-item {
+            border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+            cursor: pointer; border-left-width: 3px; background: var(--bg-elevated);
+        }
+        .feed-item:hover { background: var(--surface-hover) }
+        .feed-item.t-page { border-left-color: var(--tier-page) }
+        .feed-item.t-ticket { border-left-color: var(--tier-ticket) }
+        .feed-item.t-dashboard { border-left-color: var(--tier-dash) }
+        .feed-item.t-suppress { border-left-color: var(--tier-suppress) }
+        .feed-item .row1 { display: flex; align-items: center; gap: 7px }
+        .feed-item .nm { font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+        .feed-item .rs { font-size: 11px; color: var(--text-muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+        .badge-tier {
+            font-family: var(--font-mono); font-size: 9.5px; padding: 2px 6px;
+            border-radius: 4px; letter-spacing: .05em; white-space: nowrap; color: var(--bg-elevated);
+        }
+        .badge-tier.t-page { background: var(--tier-page) }
+        .badge-tier.t-ticket { background: var(--tier-ticket) }
+        .badge-tier.t-dashboard { background: var(--tier-dash) }
+        .badge-tier.t-suppress { background: var(--tier-suppress) }
+
+        /* 메타 */
+        .meta-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px }
+        .gauge { display: flex; align-items: center; gap: 14px }
+        .ring {
+            width: 92px; height: 92px; border-radius: 50%; flex: none;
+            display: grid; place-items: center; position: relative;
+        }
+        .ring::after {
+            content: ""; position: absolute; inset: 10px; border-radius: 50%; background: var(--surface);
+        }
+        .ring b, .ring small { position: relative; z-index: 1 }
+        .ring b { font-size: 19px; font-variant-numeric: tabular-nums }
+        .ring small { font-size: 9.5px; color: var(--text-muted); display: block; text-align: center }
+        .meta-note { font-size: 11.5px; color: var(--text-secondary); line-height: 1.6 }
+        .kv { width: 100%; border-collapse: collapse; font-size: 11.5px }
+        .kv td { padding: 5px 0; border-bottom: 1px solid var(--border) }
+        .kv td:last-child { text-align: right; font-family: var(--font-mono); color: var(--tier-suppress) }
+        .kv tr:last-child td { border-bottom: 0 }
+
+        /* 관리 탭 */
+        .mgmt-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap }
+        .mgmt-tabs button {
+            background: transparent; border: 0; border-bottom: 2px solid transparent;
+            padding: 8px 12px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer;
+        }
+        .mgmt-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700 }
+        .pane { display: none }
+        .pane.on { display: block }
+        .tbl { width: 100%; border-collapse: collapse; font-size: 12px }
+        .tbl th {
+            text-align: left; font-size: 10.5px; color: var(--text-muted); font-weight: 600;
+            padding: 6px 8px; border-bottom: 1px solid var(--border); letter-spacing: .03em;
+        }
+        .tbl td { padding: 8px; border-bottom: 1px solid var(--border) }
+        .tbl td.k { font-family: var(--font-mono); font-size: 11px }
+        .matrix { display: grid; grid-template-columns: 128px repeat(3, 1fr); gap: 6px; max-width: 560px }
+        .matrix .h { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; padding: 6px }
+        .matrix .cell {
+            border-radius: 6px; padding: 9px; text-align: center; font-family: var(--font-mono);
+            font-size: 10.5px; color: var(--bg-elevated);
+        }
+        .matrix .cell.t-page { background: var(--tier-page) }
+        .matrix .cell.t-ticket { background: var(--tier-ticket) }
+        .matrix .cell.t-dashboard { background: var(--tier-dash) }
+        .matrix .cell.t-suppress { background: var(--tier-suppress) }
+        .lock {
+            font-size: 9px; padding: 1px 5px; border-radius: 4px;
+            background: var(--warning-bg); color: var(--warning);
+        }
+        .policy-list { margin-top: 18px; display: grid; gap: 8px }
+        .policy-item {
+            display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+            border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
+        }
+        .policy-item .env { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted) }
+        .policy-item .val { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px }
+
+        /* 결정 추적 드로어 */
+        .scrim {
+            position: fixed; inset: 0; background: rgba(0, 0, 0, .45);
+            opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40;
+        }
+        .scrim.on { opacity: 1; pointer-events: auto }
+        .drawer {
+            position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 92vw);
+            background: var(--surface); border-left: 1px solid var(--border);
+            transform: translateX(100%); transition: transform .24s ease; z-index: 41;
+            overflow-y: auto; padding: 20px 22px 40px;
+        }
+        .drawer.on { transform: translateX(0) }
+        .drawer .x {
+            position: absolute; top: 14px; right: 16px; background: transparent;
+            border: 0; color: var(--text-muted); font-size: 16px; cursor: pointer;
+        }
+        .drawer h3 { font-size: 15px; margin: 0 0 4px; padding-right: 28px }
+        .drawer .meta-id { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); margin-bottom: 16px }
+        .trace { display: flex; flex-direction: column; gap: 0; margin-bottom: 18px }
+        .trace-row { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start }
+        .trace-row .mark { display: flex; flex-direction: column; align-items: center; height: 100% }
+        .trace-row .dot2 { width: 9px; height: 9px; border-radius: 50%; background: var(--border); margin-top: 5px; flex: none }
+        .trace-row .line { width: 1px; flex: 1; background: var(--border); min-height: 12px }
+        .trace-row .txt { font-size: 12px; color: var(--text-muted); padding-bottom: 10px }
+        .trace-row.passed .dot2 { background: var(--success) }
+        .trace-row.decided .dot2 { background: var(--tier-page); box-shadow: 0 0 0 3px var(--error-bg) }
+        .trace-row.decided .txt { color: var(--text); font-weight: 700 }
+        .trace-row.short_circuited { opacity: .42 }
+        .signals { width: 100%; border-collapse: collapse; font-size: 11.5px }
+        .signals td { padding: 5px 6px; border-bottom: 1px solid var(--border) }
+        .signals td:first-child { color: var(--text-muted); width: 46% }
+        .signals td:last-child { font-family: var(--font-mono) }
+
+        .noise-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px }
+        .empty { font-size: 12px; color: var(--text-muted); padding: 18px 4px; text-align: center }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px }
+        .form-row label { font-size: 11px; color: var(--text-secondary); display: block; margin-bottom: 4px }
+        .form-row input, .form-row select {
+            width: 100%; padding: 7px 9px; font-size: 12px; border-radius: 6px;
+            border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text);
+        }
+
+        @media (max-width: 1080px) {
+            .noise-grid { grid-template-columns: 1fr }
+            .kpis { grid-template-columns: repeat(3, 1fr) }
+            .meta-row { grid-template-columns: 1fr }
+        }
+    </style>
+</head>
+<body class="admin-dashboard">
+    <div class="noise-wrap">
+        <!-- ── 헤더 ── -->
+        <header class="noise-top">
+            <div class="noise-brand">
+                <div class="noise-mark"><div class="wave" id="wave"></div></div>
+                <div>
+                    <h1>노이즈 캔슬링 관제</h1>
+                    <small>NOISE GATE CONSOLE</small>
+                </div>
+            </div>
+            <div class="noise-spacer"></div>
+            <span class="pill" id="streamPill"><span class="dot"></span>스트림 연결 중</span>
+            <span class="pill" id="healthPill"><span class="dot"></span>억제기 상태 확인 중</span>
+            <div class="seg" id="rangeSeg">
+                <button data-range="1h">1H</button>
+                <button data-range="24h" class="on">24H</button>
+                <button data-range="7d">7D</button>
+                <button data-range="30d">30D</button>
+            </div>
+            <a href="/static/admin/dashboard.html" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">운영자 대시보드</a>
+        </header>
+
+        <div class="alert alert-error" id="alertError" style="display:none;"></div>
+        <div class="alert alert-success" id="alertSuccess" style="display:none;"></div>
+
+        <!-- ── KPI ── -->
+        <section class="kpis">
+            <div class="kpi t-in">
+                <div class="lab"><span class="tag" style="background:var(--text-muted)"></span>수신 알람</div>
+                <div class="num" id="kpiRaw">0</div>
+                <div class="sub" id="kpiRawSub">— · raw ingress</div>
+            </div>
+            <div class="kpi t-page">
+                <div class="lab"><span class="tag" style="background:var(--tier-page)"></span>PAGE</div>
+                <div class="num c-page" id="kpiPage">0</div>
+                <div class="sub">즉시 통보</div>
+            </div>
+            <div class="kpi t-ticket">
+                <div class="lab"><span class="tag" style="background:var(--tier-ticket)"></span>TICKET</div>
+                <div class="num c-ticket" id="kpiTicket">0</div>
+                <div class="sub">대기열·기록</div>
+            </div>
+            <div class="kpi t-dash">
+                <div class="lab"><span class="tag" style="background:var(--tier-dash)"></span>DASHBOARD</div>
+                <div class="num c-dash" id="kpiDashboard">0</div>
+                <div class="sub">UI 표시만</div>
+            </div>
+            <div class="kpi t-sup">
+                <div class="lab"><span class="tag" style="background:var(--tier-suppress)"></span>SUPPRESS</div>
+                <div class="num c-sup" id="kpiSuppress">0</div>
+                <div class="sub">억제(기록 유지)</div>
+            </div>
+            <div class="kpi t-rate">
+                <div class="lab"><span class="tag" style="background:var(--accent)"></span>억제율 / 액션가능</div>
+                <div class="num c-acc" id="kpiRatio">0%</div>
+                <div class="sub" id="kpiActionable">액션가능 —</div>
+            </div>
+        </section>
+
+        <!-- ── 퍼널 · 추이 · 피드 ── -->
+        <div class="noise-grid">
+            <div>
+                <div class="card" style="margin-bottom:14px;">
+                    <h2>노이즈 캔슬링 퍼널<span class="hint">결정 파이프라인 · 단계별 억제량</span></h2>
+                    <div class="funnel-head">
+                        <span class="big" id="funnelRaw">0</span><span class="lab">수신</span>
+                        <span class="big c-page" id="funnelPage" style="margin-left:auto">0</span><span class="lab">PAGE</span>
+                    </div>
+                    <div class="stages" id="stages"></div>
+                    <div class="tiers" id="tierCards"></div>
+                </div>
+
+                <div class="card">
+                    <h2>티어 분포 추이<span class="hint" id="chartHint">—</span></h2>
+                    <div class="chart" id="chart"></div>
+                    <div class="chart-legend">
+                        <span><i style="background:var(--tier-page)"></i>PAGE</span>
+                        <span><i style="background:var(--tier-ticket)"></i>TICKET</span>
+                        <span><i style="background:var(--tier-dash)"></i>DASHBOARD</span>
+                        <span><i style="background:var(--tier-suppress)"></i>SUPPRESS</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>실시간 결정 피드<span class="hint right">클릭 → 결정 추적</span></h2>
+                <div class="feed" id="feed"><div class="empty">결정 이력을 불러오는 중…</div></div>
+                <p class="sub" style="font-size:10.5px;color:var(--text-muted);margin-top:10px;line-height:1.5;">
+                    PAGE는 즉시 통보 경로라 실시간 스트림에 실리지 않습니다 —
+                    이 피드는 주기적으로 결정 이력과 재동기화해 PAGE도 함께 보여줍니다.
+                </p>
+            </div>
+        </div>
+
+        <!-- ── 메타모니터링 ── -->
+        <div class="meta-row">
+            <div class="card">
+                <h2>억제율 감시<span class="hint">메타모니터링</span></h2>
+                <div class="gauge">
+                    <div class="ring" id="ratioRing"><b id="ratioText">—</b><small>SUPPRESS</small></div>
+                    <div class="meta-note" id="ratioNote">집계를 불러오는 중…</div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>워치독<span class="hint">무수신 감지</span></h2>
+                <div class="gauge">
+                    <div class="ring" id="watchRing"><b id="watchText" style="font-size:13px">—</b><small>LAST</small></div>
+                    <div class="meta-note" id="watchNote">집계를 불러오는 중…</div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>상위 억제 알람 유형<span class="hint">무엇이 캔슬되는가</span></h2>
+                <table class="kv"><tbody id="topSuppressed"></tbody></table>
+            </div>
+        </div>
+
+        <!-- ── 관리 ── -->
+        <div class="card">
+            <div class="mgmt-tabs">
+                <button class="on" data-pane="silence">침묵(Silence)</button>
+                <button data-pane="decisions">결정 이력</button>
+                <button data-pane="policy">정책(읽기 전용)</button>
+            </div>
+
+            <!-- 침묵 -->
+            <div class="pane on" id="pane-silence">
+                <div id="silenceDisabledNote" class="alert alert-warning" style="display:none;font-size:12px;margin-bottom:12px;">
+                    침묵 기능이 꺼져 있습니다 — 규칙을 만들어도 게이트가 적용하지 않습니다.
+                    설정에서 <code>NOISE_GATE_SILENCE_ENABLED</code>를 켜십시오.
+                </div>
+                <div class="form-row">
+                    <div>
+                        <label for="slcServer">서버명 글롭</label>
+                        <input type="text" id="slcServer" placeholder="WEB-*">
+                    </div>
+                    <div>
+                        <label for="slcAlarm">알람명 글롭</label>
+                        <input type="text" id="slcAlarm" placeholder="(전체)">
+                    </div>
+                    <div>
+                        <label for="slcResource">자원명 글롭</label>
+                        <input type="text" id="slcResource" placeholder="(전체)">
+                    </div>
+                    <div>
+                        <label for="slcSeverity">심각도 상한</label>
+                        <select id="slcSeverity"><option value="1">1 (주의)</option><option value="2" selected>2 (경고)</option></select>
+                    </div>
+                    <div>
+                        <label for="slcDuration">지속 시간</label>
+                        <select id="slcDuration">
+                            <option value="3600">1시간</option>
+                            <option value="7200" selected>2시간</option>
+                            <option value="21600">6시간</option>
+                            <option value="86400">1일</option>
+                            <option value="604800">7일</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="slcReason">사유(필수)</label>
+                        <input type="text" id="slcReason" placeholder="월간 배포 점검">
+                    </div>
+                </div>
+                <div class="noise-actions">
+                    <button class="btn btn-primary" id="addSilenceBtn" style="padding:7px 16px;font-size:12px;">침묵 추가</button>
+                    <label style="font-size:11.5px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
+                        <input type="checkbox" id="showInactive"> 만료·해제분 포함
+                    </label>
+                    <span style="font-size:11px;color:var(--text-muted);">
+                        심각도 3은 어떤 규칙으로도 침묵되지 않습니다.
+                    </span>
+                </div>
+                <table class="tbl">
+                    <thead><tr><th>매처</th><th>사유</th><th>생성자</th><th>만료</th><th></th></tr></thead>
+                    <tbody id="silenceBody"></tbody>
+                </table>
+            </div>
+
+            <!-- 결정 이력 -->
+            <div class="pane" id="pane-decisions">
+                <div class="noise-actions">
+                    <input type="search" id="decSearch" placeholder="알람명·서버명·사유 검색"
+                           style="flex:1;min-width:200px;padding:7px 10px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                    <select id="decTier" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                        <option value="">전 티어</option>
+                        <option value="page">PAGE</option>
+                        <option value="ticket">TICKET</option>
+                        <option value="dashboard">DASHBOARD</option>
+                        <option value="suppress">SUPPRESS</option>
+                    </select>
+                    <select id="decStage" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                        <option value="">전 단계</option>
+                    </select>
+                    <button class="btn btn-secondary" id="decSearchBtn" style="padding:7px 14px;font-size:12px;">조회</button>
+                    <span id="decTotal" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);"></span>
+                </div>
+                <table class="tbl">
+                    <thead><tr><th>시각</th><th>알람</th><th>서버</th><th>티어</th><th>결정 단계</th><th>사유</th></tr></thead>
+                    <tbody id="decisionBody"></tbody>
+                </table>
+            </div>
+
+            <!-- 정책 -->
+            <div class="pane" id="pane-policy">
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
+                    아래 값은 <strong>읽기 전용</strong>입니다. 변경은 설정 화면에서 하십시오 —
+                    검증·백업·감사·리로드가 그 경로에만 있습니다.
+                </p>
+                <div class="matrix" id="policyMatrix"></div>
+                <div class="policy-list" id="policySettings"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── 결정 추적 드로어 ── -->
+    <div class="scrim" id="scrim"></div>
+    <aside class="drawer" id="drawer" aria-hidden="true">
+        <button class="x" id="closeDrawer" aria-label="닫기">✕</button>
+        <h3 id="drawerName">—</h3>
+        <div class="meta-id" id="drawerMeta">—</div>
+        <div class="trace" id="drawerTrace"></div>
+        <h2 style="font-size:12px;margin:0 0 8px;">신호 스냅샷</h2>
+        <table class="signals"><tbody id="drawerSignals"></tbody></table>
+        <div class="noise-actions" style="margin-top:16px;">
+            <button class="btn btn-secondary" id="silenceThisBtn" style="padding:7px 14px;font-size:12px;">이 패턴 침묵</button>
+        </div>
+    </aside>
+
+    <script src="/static/js/noise.js?v=1"></script>
+</body>
+</html>

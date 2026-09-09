@@ -1,6 +1,6 @@
 # 23. Plan 66 MVP 테스트 가이드 — 폴스타 알람 → 자동 조사 → 브리핑 첨부 (Gemini · FabriX 2종)
 
-> **대상**: `plans/66-sre-agent-integrated-implementation-plan.md` Phase 3 완료 = **MVP** —
+> **대상**: `plans/66-sre-agent-integrated-implementation-plan-WIP.md` Phase 3 완료 = **MVP** —
 > *"PAGE 1건 → 자동 조사 1회 → 인용 있는 브리핑이 통보에 첨부"* 흐름을 폴스타 실계 없이 재현한다.
 > **근거 결정**: D-118(`sre_agent` 독립 패키지)·D-119(PromQL `mcp_server` 통합)·D-120(개발·테스트 LLM=Gemini)·
 > D-122(고수준 도구 8종)·D-123(조사 서비스 submit/poll)·D-124(게이트 훅 트리거)·D-125(Bearer)·D-126(PG 한정 검증)·
@@ -1549,7 +1549,7 @@ Plan 66 §1.5 기준 — 전부 **코드 외 선행조건**이라 현 환경에�
 
 ## 14. 참조
 
-- 계획: `plans/66-sre-agent-integrated-implementation-plan.md`(§2 아키텍처·§3 Phase·§1.5 잔여) ·
+- 계획: `plans/66-sre-agent-integrated-implementation-plan-WIP.md`(§2 아키텍처·§3 Phase·§1.5 잔여) ·
   `plans/sre-agent/02·04·05·06` · `plans/64`(§0.2 CW) · `plans/65`(목업 §5.3)
 - 결정: `docs/02_decision.md` — D-118~D-127 · D-137 · D-138 · D-139
 - 인접 가이드: `docs/16`(Plan 52 게이트 E2E) · `docs/20`(Plan 60 기능별 §8 목업 사용법) ·

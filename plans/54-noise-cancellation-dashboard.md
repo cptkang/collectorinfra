@@ -4,7 +4,17 @@
 > **상위 계획**: `plans/52-alarm-noise-cancellation.md` (노이즈 게이트 — 본 대시보드가 모니터링·관리하는 대상)
 > **관련**: `plans/51-...` 부록 A.1(시그니처), Plan 47(패턴), 기존 운영자 대시보드(`src/static/admin/`)
 > **UI 시안(Claude 디자인, 실동작)**: `plans/54-noise-cancellation-dashboard-mockup.html` (브라우저로 열어 확인)
-> **상태**: 계획 (미구현)
+> **상태**: **구현 완료 (F1~F3 · 2026-09-03 · D-196)** — F4(기간 비교·CSV·급변 통지)는 선택 미착수
+>
+> **구현 산출물**: 스펙 `SPEC-noise-console.md` · 모듈 맵 `CAPABILITY-MAP-54.md`(6모듈) ·
+> 화면 `src/static/admin/noise.html`+`js/noise.js` · API `src/api/routes/noise_dashboard.py` ·
+> 침묵 `noise_gate/domain/silence.py`+`infrastructure/silence_store.py`
+>
+> ⚠️ **본문 §2·§5·§6·§10은 2026-06-29 시점 기술이라 현행과 다르다** — 경로가 `src/alarm/…`으로
+> 적혀 있으나 실제는 `noise_gate/`이고, "신설"로 적힌 결정 저장소·SSE tier·피드백 API는
+> **이미 구현돼 있었다**. 어긋남 8건의 실측 대조는 `CAPABILITY-MAP-54.md` 冒頭 표를 볼 것.
+> 구현 중 확정된 설계 변경 4건(정책 읽기 전용 · 알람명 기록 추가 · 침묵 판정 위치 ·
+> PAGE SSE 미포함)은 `SPEC-noise-console.md`와 D-196에 있다.
 
 ---
 

@@ -44,6 +44,13 @@
     var promptConfirmRun = document.getElementById("promptConfirmRun");
     var promptConfirmEdit = document.getElementById("promptConfirmEdit");
     var alarmScrollTopBtn = document.getElementById("alarmScrollTopBtn");
+    // 스코프 칩(Plan 90 · D-205) — 이 창이 다음 질의에서 볼 폴스타 존
+    var dbScopeChip = document.getElementById("dbScopeChip");
+    var dbScopeText = document.getElementById("dbScopeText");
+    var dbScopePick = document.getElementById("dbScopePick");
+    var dbScopeSol = document.getElementById("dbScopeSol");
+    var dbScopeClear = document.getElementById("dbScopeClear");
+    var dbScopePopover = document.getElementById("dbScopePopover");
 
     // 질의 이력 사이드바(D-183) — 이 브라우저에만 남는 목록
     var historyPanel = document.getElementById("historyPanel");
@@ -246,6 +253,13 @@
     var currentThreadId = null;
     // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 75 §4 확장)
     var lastUploadedFile = null;
+    // 스코프 칩 상태(Plan 90 · D-205). currentDbScope는 서버가 마지막 응답에 실은 db_scope(거울),
+    // pendingDbIds/pendingReset은 "다음 전송에 실릴 것". 저장하지 않는다 — thread_id가 메모리
+    // 전용이라 새로고침이 곧 새 스레드이고, 그때 칩도 새로 시작해야 맞다.
+    var currentDbScope = null;
+    var pendingDbIds = null;
+    var pendingReset = false;
+    var scopeAxes = null;   // GET /api/v1/scope/options 결과(1회 로드)
 
     // ─── Scroll (stick-to-bottom) State ───
     var stickToBottom = true;          // 맨 아래 고정 여부
@@ -263,6 +277,12 @@
     // ─── Streaming Render State (비파괴 렌더 + rAF 코얼레싱) ───
     var _streamAccumulated = "";       // 현재 스트리밍 메시지의 누적 마크다운(렌더 입력)
     var _streamRafQueued = false;      // 이번 프레임 렌더 예약 여부(토큰 버스트 코얼레싱)
+
+    // ─── Stream Status — 커서 아래 진행 상태 영역 (plans/89 · D-204) ───
+    // 서버 SSE progress/heartbeat 계약을 소비한다. 상태 문구는 도구명·노드명 → 결정적 라벨만
+    // 쓰고, LLM 사고 과정 텍스트는 노출하지 않는다(plans/89 §2).
+    var STREAM_STALL_MS = 15000;   // 마지막 신호 후 이만큼 조용하면 "신호 대기 중"(G-3: 하트비트 5s × 3)
+    var _streamStatus = null;      // 진행 중 스트림의 상태 기계 {startedAt,lastEventAt,phase,stalled,tasks,...}
 
     // ─── Prompt History ───
     var promptHistory = [];           // 전송된 프롬프트 히스토리 (오래된 순)
@@ -335,8 +355,11 @@
 
     // Stage definitions
     var stages = ["parse", "schema", "sql", "exec", "result"];
+    // 칩 정렬 순서 — "agent"는 1·2단 경로에서만 지연 생성된다(plans/89 §3.3)
+    var stageOrder = ["parse", "agent", "schema", "sql", "exec", "result"];
     var stageLabels = {
         parse: "입력 분석",
+        agent: "에이전트 실행",
         schema: "스키마 탐색",
         sql: "SQL 생성",
         exec: "쿼리 실행",
@@ -344,6 +367,7 @@
     };
     var stageMessages = {
         parse: "입력 분석 중...",
+        agent: "에이전트 실행 중...",
         schema: "데이터베이스 스키마 탐색 중...",
         sql: "SQL 쿼리 생성 중...",
         exec: "쿼리 실행 중...",
@@ -391,6 +415,12 @@
         agent_orchestrator: "작업 실행",
         replanner: "재계획",
         result_aggregator: "결과 통합",
+        // plans/89 · D-204: 사다리 1단 정본 + 옵트인 노드(서버 화이트리스트 보정과 대칭)
+        deep_agent: "에이전트 실행",
+        fault_diagnosis: "장애 진단",
+        cache_management: "캐시 관리",
+        approval_gate: "SQL 승인 대기",
+        synonym_registrar: "유사어 등록",
     };
 
     // task agent 식별자 → 사용자용 라벨 (처리 현황 작업 목록 표시)
@@ -400,7 +430,33 @@
         cache_management: "캐시 관리",
         synonym_registration: "유사어 등록",
         general_inference: "일반 안내",
+        // plans/89 §3.4: 빠져 있던 agent — 상태줄이 원시 이름을 노출하지 않도록 보강
+        process_query: "프로세스 조회",
+        host_inspect: "호스트 점검",
+        fault_diagnosis: "장애 진단",
     };
+
+    // 도구 이름 → 사용자용 라벨 (plans/89 · D-204). 서버는 원시 이름만 낸다 —
+    // deepagents_tools._TOOL_NAMES 7종 + deepagents 0.6.x 내장 도구. 미지 이름은 폴백 문구.
+    var toolLabels = {
+        query_infra_db: "인프라 DB 조회",
+        query_live_processes: "프로세스 실시간 조회",
+        query_alarm: "알람 조회",
+        manage_cache: "캐시 관리",
+        register_synonym: "유사어 등록",
+        general_answer: "일반 답변 생성",
+        inspect_host: "호스트 점검",
+        write_todos: "작업 계획 수립",
+        task: "하위 작업 위임",
+        read_file: "작업 메모 확인",
+        write_file: "작업 메모 기록",
+        edit_file: "작업 메모 수정",
+        ls: "작업 메모 확인",
+    };
+    var stepLabels = { "agent.resume": "에이전트 재개", "agent.aggregate": "최종 응답 합성" };
+
+    function toolLabel(name) { return toolLabels[name] || ("도구 실행: " + name); }
+    function agentLabel(agent) { return agentLabels[agent] || agent || "작업"; }
 
     // ─── Tooltip ───
 
@@ -436,6 +492,7 @@
     // ─── Initialization ───
 
     setupViewTabs();
+    setupDbScopeChip();   // Plan 90 D-205
 
     // 테마 토글 — 이 브라우저에만 적용되는 개인 선택(전역 기본값은 운영자가 정한다).
     // data-theme 적용 자체는 head의 theme.js가 첫 페인트 전에 끝낸다.
@@ -733,12 +790,17 @@
         promptEl.value = "";
         promptEl.style.height = "auto";
 
-        // Execute
+        // Execute — 스코프 칩의 pending(선택 1회 / 해제)은 여기서만 소비·초기화한다(단일 진입점).
+        var sendDbIds = pendingDbIds;
+        var sendReset = pendingReset;
+        pendingDbIds = null;
+        pendingReset = false;
         if (selectedFile) {
-            executeFileQuery(query, selectedFile);
+            // 파일 턴은 초기 상태로 시작해 원래 승계하지 않는다(SPEC Open Q2) — reset은 실을 필요가 없다.
+            executeFileQuery(query, selectedFile, sendDbIds);
             clearFile();
         } else {
-            executeStreamingQuery(query);
+            executeStreamingQuery(query, sendDbIds, undefined, undefined, undefined, sendReset);
         }
     }
 
@@ -845,7 +907,33 @@
         query_executor: "exec", multi_db_executor: "exec",
         result_organizer: "result", result_merger: "result",
         output_generator: "result",
+        // plans/89 · D-204: 1·2단 노드 → agent 단계(지연 칩)
+        deep_agent: "agent", intent_planner: "agent", agent_orchestrator: "agent",
+        replanner: "agent", fault_diagnosis: "agent", result_aggregator: "result",
     };
+
+    function stageContainer() {
+        return document.getElementById("streamingStages") || document.getElementById("processingStages");
+    }
+
+    // 칩을 지연 생성한다 — 없는 단계는 만들고, 있으면 그대로 돌려준다
+    function ensureStageChip(stage) {
+        var box = stageContainer();
+        if (!box || !stage) return null;
+        var chip = box.querySelector('.stage[data-stage="' + stage + '"]');
+        if (chip) return chip;
+        chip = document.createElement("div");
+        chip.className = "stage";
+        chip.setAttribute("data-stage", stage);
+        chip.innerHTML = '<span class="stage-dot"></span>' + (stageLabels[stage] || stage);
+        var idx = stageOrder.indexOf(stage);
+        var before = null;
+        Array.prototype.forEach.call(box.querySelectorAll(".stage"), function (c) {
+            if (!before && stageOrder.indexOf(c.getAttribute("data-stage")) > idx) before = c;
+        });
+        box.insertBefore(chip, before);
+        return chip;
+    }
 
     function startStageAnimation() {
         // 초기 상태만 설정하고, SSE 이벤트를 대기한다.
@@ -858,14 +946,20 @@
         var stage = nodeToStage[node];
         if (!stage) return;
 
-        var stageEl = document.querySelector('.stage[data-stage="' + stage + '"]');
+        // 스트리밍 말풍선의 칩(#streamingStages)을 우선, 없으면 처리 말풍선(폴백 경로)
+        var stageEl = ensureStageChip(stage);
         if (!stageEl) return;
 
         var textEl = document.getElementById("processingText");
 
         if (status === "start") {
             stageEl.classList.add("active");
-            if (textEl) textEl.textContent = stageMessages[stage] || "처리 중...";
+            var msg = nodeLabels[node] ? (nodeLabels[node] + " 중...") : (stageMessages[stage] || "처리 중...");
+            if (textEl) textEl.textContent = msg;
+            if (_streamStatus && _streamStatus.phase !== "streaming") {
+                _streamStatus.phase = "active";
+                setStreamStatusText(msg);
+            }
         } else if (status === "complete") {
             stageEl.classList.remove("active");
             stageEl.classList.add("done");
@@ -996,6 +1090,15 @@
                 '<div class="message-bubble">' +
                     '<div class="response-text" id="streamingText"></div>' +
                     '<span class="typing-cursor" id="streamingCursor"></span>' +
+                    // plans/89 · D-204: 커서 아래 진행 상태 영역 — 활동 문구 · 경과 · 단계 칩(이관) · 복합 단계 목록
+                    '<div class="stream-status" id="streamingStatus" role="status" aria-live="polite">' +
+                        '<div class="stream-status-line">' +
+                            '<span class="stream-status-spinner" aria-hidden="true"></span>' +
+                            '<span class="stream-status-text" id="streamingStatusText">요청 분석 중...</span>' +
+                            '<span class="stream-status-elapsed" id="streamingStatusElapsed">0.0s</span>' +
+                        '</div>' +
+                        '<div class="processing-stages stream-status-steps" id="streamingStages"></div>' +
+                    '</div>' +
                     '<div id="streamingMeta"></div>' +
                     '<div id="streamingSql"></div>' +
                 '</div>' +
@@ -1003,13 +1106,246 @@
             '</div>';
 
         chatMessages.appendChild(el);
+        // 처리 말풍선(#processingMessage)의 단계 칩 상태를 스트리밍 말풍선으로 이관한다 —
+        // 예전에는 SSE 연결 직후 칩을 지웠고 이후 갱신은 대상 DOM이 없어 무동작이었다(plans/89 §0 ③).
+        var oldChips = document.querySelectorAll("#processingStages .stage");
+        if (oldChips.length) {
+            Array.prototype.forEach.call(oldChips, function (c) {
+                var chip = ensureStageChip(c.getAttribute("data-stage"));
+                if (chip) chip.className = c.className;
+            });
+        } else {
+            stages.forEach(ensureStageChip);
+        }
+        beginStreamStatus();
         scrollToBottomIfSticky();
         return el;
+    }
+
+    // ─── Stream Status 상태 기계 (plans/89 §3.3) ───
+    // waiting → active(node/tool/task) → streaming(첫 token) → done | stalled(무신호 15s, 하트비트로 복귀)
+    function beginStreamStatus() {
+        stopStreamStatusTimers();
+        var now = Date.now();
+        _streamStatus = { startedAt: now, lastEventAt: now, phase: "waiting", stalled: false,
+                          stepCount: 0, tasks: {}, taskOrder: [], activeTaskId: null, text: "", timer: null };
+        // 경과 시간은 클라이언트 타이머 — 서버 신호와 무관하게 "시간이 흐른다"는 최소 피드백(폴백 경로 포함)
+        _streamStatus.timer = setInterval(tickStreamStatus, 1000);
+        setStreamStatusText("요청 분석 중...");
+    }
+
+    function stopStreamStatusTimers() {
+        if (_streamStatus && _streamStatus.timer) {
+            clearInterval(_streamStatus.timer);
+            _streamStatus.timer = null;
+        }
+    }
+
+    function tickStreamStatus() {
+        if (!_streamStatus) return;
+        var el = document.getElementById("streamingStatusElapsed");
+        if (el) el.textContent = ((Date.now() - _streamStatus.startedAt) / 1000).toFixed(1) + "s";
+        var box = document.getElementById("streamingStatus");
+        if (!box) return;
+        var quiet = Date.now() - _streamStatus.lastEventAt;
+        if (quiet >= STREAM_STALL_MS && !_streamStatus.stalled) {
+            _streamStatus.stalled = true;
+            box.classList.add("stalled");
+        }
+        if (_streamStatus.stalled) {
+            var t = document.getElementById("streamingStatusText");
+            if (t) t.textContent = "서버 신호 대기 중 · 마지막 신호 " + Math.round(quiet / 1000) + "초 전";
+        }
+    }
+
+    // 모든 SSE 이벤트(heartbeat 포함)가 호출한다 — stalled 복귀
+    function noteStreamActivity() {
+        if (!_streamStatus) return;
+        _streamStatus.lastEventAt = Date.now();
+        if (_streamStatus.stalled) {
+            _streamStatus.stalled = false;
+            var box = document.getElementById("streamingStatus");
+            if (box) box.classList.remove("stalled");
+            var t = document.getElementById("streamingStatusText");
+            if (t) t.textContent = _streamStatus.text || "처리 중...";
+        }
+    }
+
+    function setStreamStatusText(text) {
+        if (_streamStatus) _streamStatus.text = text;
+        var t = document.getElementById("streamingStatusText");
+        if (t && !(_streamStatus && _streamStatus.stalled)) t.textContent = text;
+    }
+
+    function markStreamTokens() {
+        if (_streamStatus && _streamStatus.phase !== "streaming") {
+            _streamStatus.phase = "streaming";
+            setStreamStatusText("응답 작성 중...");
+        }
+    }
+
+    // progress 이벤트 — 문구 우선순위: task(in_progress) > tool > node (plans/89 §3.4)
+    function handleProgressEvent(event) {
+        if (!_streamStatus) return;
+        if (event.phase === "start") _streamStatus.stepCount++;
+        if (event.kind === "task" && event.task) {
+            handleTaskProgress(event);
+        } else if (event.kind === "tool") {
+            if (event.phase === "start" && _streamStatus.phase !== "streaming" && !_streamStatus.activeTaskId) {
+                _streamStatus.phase = "active";
+                setStreamStatusText(toolLabel(event.name) + " 중...");
+            }
+        } else if (event.kind === "step") {
+            if (event.phase === "start" && _streamStatus.phase !== "streaming") {
+                setStreamStatusText((event.label || stepLabels[event.name] || event.name) + "...");
+            }
+        }
+        appendPipelineSubStep(event);
+    }
+
+    function taskOrdinal(t) {
+        return t.total ? (t.order + "/" + t.total + " 단계") : (t.order + "번째 조회");
+    }
+
+    // 복합 질의 단계(plans/88 연계) — 실행 중 목록. 필드명은 서버 task 페이로드(DependencyVerdict) 그대로.
+    function handleTaskProgress(event) {
+        var t = event.task;
+        var id = t.task_id || ("t" + t.order);
+        if (!_streamStatus.tasks[id]) _streamStatus.taskOrder.push(id);
+        _streamStatus.tasks[id] = t;
+        if (event.phase === "start") {
+            _streamStatus.activeTaskId = id;
+        } else if (_streamStatus.activeTaskId === id) {
+            _streamStatus.activeTaskId = null;
+        }
+        renderStreamTasks();
+        if (_streamStatus.phase !== "streaming") {
+            if (event.phase === "start") {
+                _streamStatus.phase = "active";
+                setStreamStatusText(taskOrdinal(t) + " · " + (t.sub_query || agentLabel(t.agent)) + " 중...");
+            } else if (t.status === "skipped") {
+                setStreamStatusText(taskOrdinal(t) + " 건너뜀");
+            }
+        }
+    }
+
+    function renderStreamTasks() {
+        var box = document.getElementById("streamingStatus");
+        if (!box) return;
+        var list = box.querySelector(".stream-status-tasks");
+        if (!list) {
+            // 단일 DB 경로(3·4단)에는 task 이벤트가 없으므로 목록 DOM 자체가 생기지 않는다
+            list = document.createElement("ul");
+            list.className = "stream-status-tasks";
+            box.appendChild(list);
+        }
+        var html = "";
+        _streamStatus.taskOrder.forEach(function (id) {
+            var t = _streamStatus.tasks[id];
+            // reason이 있으면 상태값과 무관하게 "건너뜀" 우선(88 R-A: skipped 도입이 미뤄지면 failed로 온다)
+            var cls = (t.status === "skipped" || t.reason) ? "skipped"
+                    : t.status === "failed" ? "failed"
+                    : t.status === "completed" ? "done" : "active";
+            var mark = cls === "done" ? "\u2713" : cls === "skipped" ? "\u2298" : cls === "failed" ? "\u2715" : "\u25B8";
+            var tail = "";
+            if (t.row_count != null) tail += " \u2192 " + t.row_count + "건";
+            if (t.scope_size) tail += " · 대상 " + t.scope_size + "대" + (t.scope_col ? " (" + t.scope_col + ")" : "");
+            if (t.truncated_count) tail += " · " + t.truncated_count + "대 절단";
+            if (cls === "skipped") tail += " — 건너뜀" + (t.error ? ": " + t.error : "");
+            else if (cls === "failed" && t.error) tail += " — 실패: " + t.error;
+            else if (cls === "active") tail += " · 진행 중";
+            html += '<li class="stream-task stream-task--' + cls + '"><span class="stream-task-mark" aria-hidden="true">' + mark + '</span> ' +
+                    '<strong>' + escapeHtml(taskOrdinal(t)) + '</strong> ' +
+                    escapeHtml(t.sub_query || agentLabel(t.agent)) + escapeHtml(tail) + '</li>';
+        });
+        list.innerHTML = html;
+        scrollToBottomIfSticky();
+    }
+
+    // 완료: G-2/G-5 — 한 줄 요약으로 접는다(단계 목록은 클릭으로 펼침). 본문의 순차 처리 경과
+    // 블록(plans/88 R-5)이 정본이라 펼친 채 두면 같은 내용이 두 번 보인다. 중단·오류는 영역 제거.
+    function endStreamStatus(outcome, meta) {
+        stopStreamStatusTimers();
+        var box = document.getElementById("streamingStatus");
+        var st = _streamStatus;
+        _streamStatus = null;
+        if (!box) return;
+        if (outcome !== "done" || !st) { box.remove(); return; }
+        var elapsed = (meta && meta.processing_time_ms != null)
+            ? meta.processing_time_ms / 1000 : (Date.now() - st.startedAt) / 1000;
+        var count = st.taskOrder.length || st.stepCount;
+        var summary = "완료 · " + (count ? count + "단계 · " : "") + elapsed.toFixed(1) + "s";
+        var line = box.querySelector(".stream-status-line");
+        if (line) line.remove();
+        var chips = box.querySelector(".stream-status-steps");
+        if (chips) chips.remove();
+        var tasks = box.querySelector(".stream-status-tasks");
+        var doneEl = document.createElement("button");
+        doneEl.type = "button";
+        doneEl.className = "stream-status-done";
+        doneEl.textContent = summary;
+        if (tasks) {
+            tasks.hidden = true;
+            doneEl.setAttribute("aria-expanded", "false");
+            doneEl.addEventListener("click", function () {
+                tasks.hidden = !tasks.hidden;
+                doneEl.setAttribute("aria-expanded", String(!tasks.hidden));
+            });
+        } else {
+            doneEl.disabled = true;
+        }
+        box.insertBefore(doneEl, box.firstChild);
+        box.classList.add("stream-status--done");
+        box.classList.remove("stalled");
+        box.removeAttribute("aria-live");
+    }
+
+    // 오른쪽 처리 현황 패널 — 활성 스텝 본문에 도구/단계 하위 행(G-4 · T7)
+    function appendPipelineSubStep(event) {
+        if (!progressPipeline) return;
+        var stepEl = (event.node && document.getElementById("step-" + event.node))
+                  || progressPipeline.querySelector(".pipeline-step.active");
+        if (!stepEl) return;
+        var bodyEl = stepEl.querySelector(".pipeline-step-body");
+        if (!bodyEl) return;
+        var list = bodyEl.querySelector(".pipeline-substeps");
+        if (!list) {
+            list = document.createElement("ul");
+            list.className = "step-data-list pipeline-substeps";
+            bodyEl.appendChild(list);
+            stepEl.classList.add("expanded");
+        }
+        var isTask = event.kind === "task" && event.task;
+        var key = event.kind + ":" + (isTask ? (event.task.task_id || event.task.order) : event.name);
+        var li = list.querySelector('li[data-key="' + key + '"]');
+        if (!li) {
+            li = document.createElement("li");
+            li.setAttribute("data-key", key);
+            li.setAttribute("data-start", String(event.timestamp_ms || 0));
+            list.appendChild(li);
+        }
+        var label = isTask ? (taskOrdinal(event.task) + " " + (event.task.sub_query || agentLabel(event.task.agent)))
+                  : event.kind === "tool" ? (toolLabel(event.name) + (event.label ? " — " + event.label : ""))
+                  : (event.label || stepLabels[event.name] || event.name);
+        var status = "진행 중";
+        if (event.phase === "end") {
+            var ts = isTask ? event.task.status : "completed";
+            status = (ts === "skipped" || (isTask && event.task.reason)) ? "건너뜀" : ts === "failed" ? "실패" : "완료";
+        }
+        var badgeCls = status === "완료" ? "success" : status === "진행 중" ? "info" : "error";
+        var elapsed = "";
+        if (event.phase === "end") {
+            var d = ((event.timestamp_ms || 0) - parseFloat(li.getAttribute("data-start") || "0")) / 1000;
+            if (d > 0) elapsed = " " + d.toFixed(1) + "s";
+        }
+        li.innerHTML = escapeHtml(label) + ' <span class="step-data-badge step-data-badge--' + badgeCls + '">' + status + '</span>' + escapeHtml(elapsed);
+        scrollProgressToBottomIfSticky();
     }
 
     // §12: 응답 중단 시 에이전트(왼쪽) 말풍선 하단에 회색 안내 라인을 표시한다.
     // 부분 텍스트가 있으면 그 아래에, 스트리밍 버블이 없으면(토큰 0개) 안내만 단독 표시한다.
     function markStreamInterrupted() {
+        endStreamStatus("interrupted");
         // 타이핑 커서 제거
         var cursor = document.getElementById("streamingCursor");
         if (cursor) cursor.remove();
@@ -1024,7 +1360,7 @@
             }
             // 후속 스트림과의 ID 충돌 방지 (finalize와 동일하게 정리)
             streamingMsg.removeAttribute("id");
-            ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql"].forEach(function (id) {
+            ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function (id) {
                 var e2 = document.getElementById(id);
                 if (e2) e2.removeAttribute("id");
             });
@@ -1046,7 +1382,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope) {
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -1066,6 +1402,10 @@
             // Plan 75 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
+            }
+            // Plan 90 D-205: 스코프 칩 "해제" — 직전 존 승계를 끊는다(다음 질의는 첫 질의처럼 확인)
+            if (resetDbScope) {
+                streamBody.reset_db_scope = true;
             }
             // D-187: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
             if (formMemoryDelete) {
@@ -1089,7 +1429,7 @@
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete);
+                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope);
                 return;
             }
 
@@ -1117,8 +1457,8 @@
             }
 
             // Process SSE stream
+            createStreamingMessage();   // 칩 상태 이관을 위해 처리 말풍선보다 먼저 만든다(plans/89)
             removeProcessingMessage();
-            createStreamingMessage();
 
             var reader = response.body.getReader();
             currentReader = reader;
@@ -1144,16 +1484,22 @@
                         var dataStr = line.substring(6);
                         try {
                             var event = JSON.parse(dataStr);
+                            noteStreamActivity();   // plans/89: heartbeat 포함 모든 이벤트가 stalled를 해제
                             if (event.type === "token") {
                                 accumulatedText += event.content;
                                 _streamAccumulated = accumulatedText;
                                 scheduleStreamingRender();   // 비파괴 렌더 + 스크롤(rAF 코얼레싱)
+                                markStreamTokens();
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
                             } else if (event.type === "node_complete") {
                                 handleNodeComplete(event);
                                 updateProcessingStage(event.node, "complete");
+                            } else if (event.type === "progress") {
+                                handleProgressEvent(event);   // plans/89 · D-204
+                            } else if (event.type === "heartbeat") {
+                                // 살아 있음 신호 — noteStreamActivity()로 충분
                             } else if (event.type === "meta") {
                                 metaData = event;
                             } else if (event.type === "done") {
@@ -1182,6 +1528,7 @@
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
+            renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205 — 서버 보고값으로 칩 갱신
             messages.push({
                 role: "agent",
                 data: {
@@ -1210,6 +1557,7 @@
                 }
             }
         } finally {
+            stopStreamStatusTimers();   // plans/89: 경과·정지 타이머 해제(어느 경로로 끝나든)
             isProcessing = false;
             currentAbortController = null;
             currentReader = null;
@@ -1218,6 +1566,7 @@
     }
 
     function finalizeStreamingMessage(text, meta) {
+        endStreamStatus("done", meta);   // plans/89 G-2: 한 줄 요약으로 접는다
         // 최종 텍스트를 렌더링한다. 스트리밍 중 누적된 토큰과 다를 수 있으므로
         // (복합 질의의 병렬 토큰 순서/인터리빙) 권위 있는 최종 응답으로 보정한다.
         var finalTextEl = document.getElementById("streamingText");
@@ -1319,12 +1668,166 @@
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
         if (streamingMsg) streamingMsg.removeAttribute("id");
-        ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql"].forEach(function(id) {
+        ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.removeAttribute("id");
         });
 
         scrollToBottomIfSticky();
+    }
+
+    // ─── DB Scope Chip (Plan 90 · D-205) ───
+    // 칩은 서버 db_scope의 **거울**이다 — 프론트는 존을 추측하지 않는다. 상태는 마지막 응답의
+    // currentDbScope와 "다음 전송에 실릴 것"(pendingDbIds / pendingReset)만으로 정해진다.
+    //   none          존 미지정 — 첫 질의처럼 확인
+    //   inherited     {존} · 승계 중        (hint/planned/classified도 사용자에겐 같은 뜻)
+    //   selected      {존} · 선택
+    //   pending       다음 질의부터: {존}   (선택만 하고 아직 안 보냄)
+    //   pending-reset 다음 질의에서 다시 확인 (해제만 하고 아직 안 보냄)
+    function dbScopeChipState() {
+        if (pendingReset) return "pending-reset";
+        if (pendingDbIds && pendingDbIds.length) return "pending";
+        if (!currentDbScope || !currentDbScope.db_ids || !currentDbScope.db_ids.length) return "none";
+        return currentDbScope.source === "selected" ? "selected" : "inherited";
+    }
+
+    function dbScopeCurrentLabel() {
+        if (!currentDbScope) return "";
+        // D-206: 은행존+공동존을 함께 보는 스레드는 두 그룹을 모두 보여준다(조회 순서대로).
+        var groups = currentDbScope.zone_groups || (currentDbScope.zone_group ? [currentDbScope.zone_group] : []);
+        var labels = groups.map(function (g) { return g.label; }).filter(Boolean);
+        if (labels.length) return labels.join(" + ");
+        return (currentDbScope.db_ids || []).join(", ");
+    }
+
+    function dbScopeOptionLabels(dbIds) {
+        // 라벨은 서버(scope/options)의 것만 쓴다 — 없으면 db_id 원문.
+        var opts = (scopeAxes && scopeAxes[0] && scopeAxes[0].options) || [];
+        return (dbIds || []).map(function (id) {
+            var hit = opts.filter(function (o) { return o.key === id; })[0];
+            return hit ? hit.label : id;
+        });
+    }
+
+    function updateDbScopeChip() {
+        if (!dbScopeChip) return;
+        var state = dbScopeChipState();
+        var text;
+        if (state === "pending-reset") text = "다음 질의에서 다시 확인";
+        else if (state === "pending") text = "다음 질의부터: " + dbScopeOptionLabels(pendingDbIds).join(", ");
+        else if (state === "none") text = "존 미지정 — 첫 질의처럼 확인";
+        else if (state === "selected") text = dbScopeCurrentLabel() + " · 선택";
+        else text = dbScopeCurrentLabel() + " · 승계 중";
+        dbScopeChip.setAttribute("data-state", state);
+        dbScopeText.textContent = text;   // 외부 데이터(라벨)는 textContent로
+        // × 는 끊을 승계/선택이 있을 때만 — none 상태에서 해제는 뜻이 없다.
+        dbScopeClear.hidden = (state === "none" || state === "pending-reset");
+        // 솔루션 보조 줄(plans/90 §9.3 A1): 등록 솔루션이 2개 이상일 때만 — 오늘은 조건 거짓.
+        var sols = (currentDbScope && currentDbScope.solutions) || [];
+        if (sols.length > 1) {
+            dbScopeSol.textContent = sols.map(function (x) { return x.label; }).join(" + ");
+            dbScopeSol.hidden = false;
+        } else {
+            dbScopeSol.hidden = true;
+        }
+    }
+
+    function renderDbScopeChip(scope) {
+        // clarification 응답(db_scope 없음)은 직전 값을 유지한다 — 아직 실행 전이다.
+        if (scope === undefined || scope === null) { updateDbScopeChip(); return; }
+        currentDbScope = scope;
+        updateDbScopeChip();
+    }
+
+    async function loadScopeOptions() {
+        if (scopeAxes) return scopeAxes;
+        try {
+            var res = await fetch("/api/v1/scope/options", { headers: getAuthHeaders() });
+            if (!res.ok) return null;
+            var body = await res.json();
+            scopeAxes = body.axes || [];
+            return scopeAxes;
+        } catch (_e) {
+            return null;   // 로드 실패 → 팝오버 비활성, 칩은 표시만(침묵 대신 버튼 비활성)
+        }
+    }
+
+    function closeDbScopePopover() {
+        if (!dbScopePopover) return;
+        dbScopePopover.hidden = true;
+        dbScopePopover.innerHTML = "";
+        dbScopePick.setAttribute("aria-expanded", "false");
+    }
+
+    function openDbScopePopover(axes) {
+        var axis = axes && axes[0];
+        if (!axis || !axis.options || !axis.options.length) return;
+        // 마크업·라디오 규칙은 존 선택 역질문(renderZoneClarification)과 같다 — 옵션 형식이 같다.
+        var preset = (pendingDbIds && pendingDbIds.length) ? pendingDbIds
+            : ((currentDbScope && currentDbScope.db_ids) || []);
+        var itemsHtml = axis.options.map(function (o) {
+            var checked = preset.indexOf(o.key) !== -1 ? " checked" : "";
+            return '<label class="zone-clarify-item">' +
+                '<input type="checkbox" value="' + escapeHtml(o.key) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '"' + checked + '> ' +
+                escapeHtml(o.label) + '</label>';
+        }).join("");
+        dbScopePopover.innerHTML =
+            '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
+            '<button type="button" class="zone-clarify-confirm db-scope-confirm">다음 질의부터 이 존으로</button>' +
+            '<button type="button" class="zone-clarify-skip db-scope-cancel">닫기</button>' +
+            '<div class="db-scope-popover-note">선택은 다음 질의 1건에 실리고, 그 뒤로는 승계됩니다.' +
+                (axis.exclusive ? "" : " 은행존과 공동존을 함께 선택하면 은행존을 먼저 조회한 뒤 공동존을 조회합니다.") +
+            '</div>';
+        dbScopePopover.hidden = false;
+        dbScopePick.setAttribute("aria-expanded", "true");
+        var checks = dbScopePopover.querySelectorAll('input[type="checkbox"]');
+        var confirmBtn = dbScopePopover.querySelector(".db-scope-confirm");
+        var syncConfirm = function () {
+            confirmBtn.disabled = !Array.prototype.some.call(checks, function (x) { return x.checked; });
+        };
+        checks.forEach(function (c) {
+            c.addEventListener("change", function () {
+                // 존 그룹 상호배타(D-143 후속3): 은행존↔공동존은 라디오 동작, 공동존 내부는 복수 가능.
+                if (axis.exclusive && c.checked) {
+                    var g = c.getAttribute("data-group");
+                    checks.forEach(function (x) {
+                        if (x !== c && x.getAttribute("data-group") !== g) x.checked = false;
+                    });
+                }
+                syncConfirm();
+            });
+        });
+        syncConfirm();
+        confirmBtn.addEventListener("click", function () {
+            var ids = [];
+            checks.forEach(function (c) { if (c.checked) ids.push(c.value); });
+            if (!ids.length) return;
+            pendingDbIds = ids;
+            pendingReset = false;   // 재선택하면 해제는 취소된다
+            closeDbScopePopover();
+            updateDbScopeChip();
+        });
+        dbScopePopover.querySelector(".db-scope-cancel").addEventListener("click", closeDbScopePopover);
+    }
+
+    function setupDbScopeChip() {
+        if (!dbScopeChip) return;
+        dbScopePick.addEventListener("click", async function () {
+            if (!dbScopePopover.hidden) { closeDbScopePopover(); return; }
+            var axes = await loadScopeOptions();
+            if (!axes) { showError("존 선택지를 불러오지 못했습니다."); return; }
+            openDbScopePopover(axes);
+        });
+        dbScopeClear.addEventListener("click", function () {
+            pendingReset = true;
+            pendingDbIds = null;
+            closeDbScopePopover();
+            updateDbScopeChip();
+        });
+        document.addEventListener("click", function (e) {
+            if (!dbScopePopover.hidden && !dbScopeChip.contains(e.target)) closeDbScopePopover();
+        });
+        updateDbScopeChip();
     }
 
     // ─── Zone Clarification (Plan 75 §4) ───
@@ -1602,7 +2105,7 @@
 
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete) {
+    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope) {
         renderProcessingMessage();
         resetProgressPanel();
 
@@ -1614,6 +2117,9 @@
             }
             if (selectedDbIds && selectedDbIds.length) {
                 queryBody.selected_db_ids = selectedDbIds;
+            }
+            if (resetDbScope) {
+                queryBody.reset_db_scope = true;   // Plan 90 D-205 (스트리밍 경로와 대칭)
             }
             // D-187: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
             if (formMemoryDelete) {
@@ -1637,6 +2143,7 @@
             renderAgentMessage(data);
             showPostHocProgress(data);
             currentThreadId = data.thread_id || currentThreadId;
+            renderDbScopeChip(data.db_scope);   // Plan 90 D-205
             messages.push({ role: "agent", data: data, time: new Date() });
 
             // Plan 75 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
@@ -1715,8 +2222,8 @@
             }
 
             // SSE 스트림 처리 (executeStreamingQuery와 동일한 로직)
+            createStreamingMessage();   // 칩 상태 이관을 위해 처리 말풍선보다 먼저 만든다(plans/89)
             removeProcessingMessage();
-            createStreamingMessage();
 
             var reader = response.body.getReader();
             currentReader = reader;
@@ -1740,16 +2247,22 @@
                         var dataStr = line.substring(6);
                         try {
                             var event = JSON.parse(dataStr);
+                            noteStreamActivity();   // plans/89: heartbeat 포함 모든 이벤트가 stalled를 해제
                             if (event.type === "token") {
                                 accumulatedText += event.content;
                                 _streamAccumulated = accumulatedText;
                                 scheduleStreamingRender();   // 비파괴 렌더 + 스크롤(rAF 코얼레싱)
+                                markStreamTokens();
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
                             } else if (event.type === "node_complete") {
                                 handleNodeComplete(event);
                                 updateProcessingStage(event.node, "complete");
+                            } else if (event.type === "progress") {
+                                handleProgressEvent(event);   // plans/89 · D-204
+                            } else if (event.type === "heartbeat") {
+                                // 살아 있음 신호 — noteStreamActivity()로 충분
                             } else if (event.type === "meta") {
                                 metaData = event;
                             } else if (event.type === "done") {
@@ -1774,6 +2287,7 @@
             // D-187: '?' 조회(파일 첨부) 응답의 저장 값 패널
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             currentThreadId = metaData.thread_id || currentThreadId;
+            renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205
             messages.push({
                 role: "agent",
                 data: {
@@ -1797,6 +2311,7 @@
                 showError("서버와의 통신에 실패했습니다: " + err.message);
             }
         } finally {
+            stopStreamStatusTimers();   // plans/89: 경과·정지 타이머 해제(어느 경로로 끝나든)
             isProcessing = false;
             currentAbortController = null;
             currentReader = null;
@@ -1826,6 +2341,7 @@
             showPostHocProgress(data);
             attachDownloadToLastFileCard(data.query_id);
             currentThreadId = data.thread_id || currentThreadId;
+            renderDbScopeChip(data.db_scope);   // Plan 90 D-205
             messages.push({ role: "agent", data: data, time: new Date() });
             appendZoneClarificationToLastBubble(data.clarification);
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
@@ -2235,7 +2751,9 @@
         // Fill body with data
         var bodyEl = stepEl.querySelector(".pipeline-step-body");
         if (bodyEl && data && Object.keys(data).length > 0) {
+            var subSteps = bodyEl.querySelector(".pipeline-substeps");   // plans/89 T7: 하위 행 보존
             bodyEl.innerHTML = renderNodeData(node, data);
+            if (subSteps) bodyEl.appendChild(subSteps);
             // Auto-expand step
             stepEl.classList.add("expanded");
         }
@@ -2491,6 +3009,10 @@
                 statusBadge = ' <span class="step-data-badge step-data-badge--error">실패</span>';
             } else if (t.status === "in_progress") {
                 statusBadge = ' <span class="step-data-badge step-data-badge--info">진행 중</span>';
+            } else if (t.status === "skipped" || t.reason) {
+                // D-203: 선행 결과 게이트로 실행하지 않은 단계 — "대기"로 보이면 오해를 만든다
+                // plans/89: reason이 있으면 상태값과 무관하게 "건너뜀" 우선(skipped 도입 지연 대비)
+                statusBadge = ' <span class="step-data-badge step-data-badge--error">건너뜀</span>';
             } else if (t.status) {
                 statusBadge = ' <span class="step-data-badge step-data-badge--info">대기</span>';
             }
@@ -2505,6 +3027,24 @@
             // 행 수
             if (t.row_count != null) {
                 html += ' <span class="step-data-badge step-data-badge--info">' + t.row_count + "건</span>";
+            }
+            // D-206: 존 순차 실행 경과 — 그룹별 행수·소요를 실행 순서대로(은행존 → 공동존)
+            if (t.group_results && Object.keys(t.group_results).length > 1) {
+                var groupParts = Object.keys(t.group_results).map(function (key) {
+                    var g = t.group_results[key] || {};
+                    var errN = g.errors ? Object.keys(g.errors).length : 0;
+                    return escapeHtml(g.label || key) + " " + (g.row_count != null ? g.row_count : "?") + "건" +
+                        (g.elapsed_ms != null ? " · " + (g.elapsed_ms / 1000).toFixed(1) + "s" : "") +
+                        (errN ? " · 오류 " + errN : "");
+                });
+                html += '<div class="step-data-value">실행 그룹(순차): ' + groupParts.join(" → ") + "</div>";
+            }
+            // plans/89 §3.4 · plans/88 R-1/R-7: 선행 스코프·절단 — 실행 중 표시와 같은 필드명
+            if (t.scope_size) {
+                html += ' <span class="step-data-badge step-data-badge--info">대상 ' + t.scope_size + "대" + (t.scope_col ? " (" + escapeHtml(t.scope_col) + ")" : "") + "</span>";
+            }
+            if (t.truncated_count) {
+                html += ' <span class="step-data-badge step-data-badge--warning">' + t.truncated_count + "대 절단</span>";
             }
             // 생성된 SQL (orchestration에서 어떤 쿼리가 만들어졌는지 확인)
             if (t.generated_sql) {

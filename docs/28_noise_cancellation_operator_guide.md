@@ -301,9 +301,24 @@ NOISE_INCIDENT_TRACKING_ENABLED=true     # PAGE 사건 라이프사이클 + 확�
 
 ### 6.3 주간 리뷰 (운영 담당자)
 
+> **먼저 관제 화면을 보라** (2026-09-03 신설 · D-196): 운영자 로그인 후
+> **`/static/admin/noise.html`** — 아래 ①~③을 화면 하나로 대신한다.
+> 티어 분포·억제율·**단계별 억제량(퍼널)**·추이·메타헬스·실시간 결정 피드가 한 화면에 있고,
+> 피드 항목을 클릭하면 **어느 단계가 무슨 신호로 이 알람을 잘랐는지**(결정 추적)가 뜬다.
+> "관리 → 결정 이력" 탭에서 티어·단계·검색어로 걸러 볼 수 있어, 아래 jq 절차는 화면이
+> 닿지 않는 상황(서버 접속만 가능·스크립트 자동화)의 보조 수단이다.
+>
+> 억제를 **일시적으로 걸어야 할 때**(점검·배포)는 같은 화면의 "침묵(Silence)" 탭을 쓴다 —
+> 매처·심각도 상한·만료·사유가 감사에 남는다. `NOISE_GATE_SILENCE_ENABLED`가 켜져 있어야
+> 게이트가 실제로 적용한다(기본 off). **심각도 3은 어떤 규칙으로도 침묵되지 않는다.**
+
 ```bash
 # ① 티어 분포·억제율·메타경보
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/alarm/metrics | jq
+
+# ①' 퍼널(단계별 억제량) — 무엇이 어디서 잘렸는지. 화면과 같은 집계다
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/admin/noise/summary?range=24h" | jq '.stages[] | select(.terminated > 0)'
 
 # ② 억제된 알람 목록 — 오억제(false negative) 점검. UI에 안 뜨므로 여기서만 볼 수 있다
 jq -r 'select(.tier=="suppress") | [.ts, .alarm_id, .reason] | @tsv' logs/alarm_decisions.jsonl | tail -50

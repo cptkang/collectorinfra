@@ -87,6 +87,14 @@
     --tone-rose: #be123c;
     --tone-violet: #6d28d9;
 
+    /* 알람 4-티어 (Plan 54 관제) — 게이트 결과를 색으로 구분한다.
+       SUPPRESS만 회색조인 것은 의도다: 억제는 "안전하다"가 아니라 "보이지 않는다"이므로
+       녹색 계열을 주면 운영자가 안심해 버린다(계획서 §3.2). */
+    --tier-page: #d92d20;
+    --tier-ticket: #b54708;
+    --tier-dash: #175cd3;
+    --tier-suppress: #667085;
+
     /* Typography */
     --font-display: 'Pretendard', -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
     --font-mono: 'D2Coding', 'Consolas', 'Monaco', monospace;
@@ -167,6 +175,12 @@
     --tone-orange: #fd7e14;
     --tone-rose: #f87171;
     --tone-violet: #a78bfa;
+
+    /* 알람 4-티어 (Plan 54 관제) — 어두운 배경 기준 대비. 시안(NOC 콘솔) 팔레트. */
+    --tier-page: #ff5c5c;
+    --tier-ticket: #ffb020;
+    --tier-dash: #4d9fff;
+    --tier-suppress: #8fa3b8;
 
     /* Shadows */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -5238,4 +5252,209 @@ select:focus {
     .settings-layout.help-open .setting-row {
         grid-template-columns: minmax(0, 1fr);
     }
+}
+
+
+/* ─── 스코프 칩 (Plan 90 · D-205) — 입력창 위, 추천 질의 확인 바와 같은 레이어 ─── */
+
+.db-scope-chip {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.db-scope-chip-label {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+}
+
+.db-scope-chip-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.db-scope-chip-pick:hover {
+    border-color: var(--border-accent);
+    color: var(--text-primary);
+}
+
+.db-scope-chip-caret {
+    font-size: 0.7rem;
+    opacity: 0.7;
+}
+
+/* 상태별 색 — 승계 중(기본 톤) · 선택(강조) · 대기(점선 = 아직 서버에 반영 전) */
+.db-scope-chip[data-state="inherited"] .db-scope-chip-pick,
+.db-scope-chip[data-state="selected"] .db-scope-chip-pick {
+    color: var(--accent);
+    border-color: var(--border-accent);
+    background: var(--accent-glow);
+}
+
+.db-scope-chip[data-state="selected"] .db-scope-chip-pick {
+    font-weight: 600;
+}
+
+.db-scope-chip[data-state="pending"] .db-scope-chip-pick,
+.db-scope-chip[data-state="pending-reset"] .db-scope-chip-pick {
+    border-style: dashed;
+    border-color: var(--border-accent);
+    color: var(--text-primary);
+}
+
+.db-scope-chip-sol {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    opacity: 0.8;
+}
+
+.db-scope-chip-clear {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.db-scope-chip-clear:hover {
+    border-color: var(--border-accent);
+    color: var(--text-primary);
+}
+
+.db-scope-popover {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 6px);
+    z-index: 20;
+    min-width: 260px;
+    padding: 12px;
+    border: 1px solid var(--border-accent);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.db-scope-popover .zone-clarify-items {
+    margin-bottom: 10px;
+}
+
+.db-scope-popover-note {
+    margin-top: 8px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+/* ─── Stream status — 커서 아래 진행 상태 영역 (plans/89 · D-204) ───
+   토큰·배지 색은 기존 것만 쓴다(--accent · --warning · --success · --error). */
+.stream-status {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border);
+}
+.stream-status-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.stream-status-spinner {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    animation: stream-spin 0.9s linear infinite;
+}
+@keyframes stream-spin {
+    to { transform: rotate(360deg); }
+}
+.stream-status-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+}
+.stream-status-elapsed {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+}
+/* 정지 판정(무신호 15s) — 경고색. 하트비트가 오면 클래스가 빠진다 */
+.stream-status.stalled .stream-status-text { color: var(--warning); }
+.stream-status.stalled .stream-status-spinner {
+    border-top-color: var(--warning);
+    animation-duration: 2s;
+}
+.stream-status-steps { margin-top: 8px; }
+/* 복합 질의 단계 목록 — task 이벤트가 있을 때만 생성된다 */
+.stream-status-tasks {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+}
+.stream-status-tasks li { padding: 2px 0; }
+.stream-task-mark {
+    display: inline-block;
+    width: 1em;
+    color: var(--text-muted);
+}
+.stream-task--done .stream-task-mark { color: var(--success); }
+.stream-task--active .stream-task-mark {
+    color: var(--accent);
+    animation: pulse-dot 1s ease-in-out infinite;
+}
+.stream-task--skipped { color: var(--warning); }
+.stream-task--failed .stream-task-mark { color: var(--error); }
+/* 완료 후 한 줄 요약(G-2/G-5) — 단계 목록이 있으면 클릭으로 펼침 */
+.stream-status-done {
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+}
+.stream-status-done:disabled { cursor: default; }
+.stream-status-done:not(:disabled)::before { content: '\25B8 '; }
+.stream-status-done[aria-expanded="true"]::before { content: '\25BE '; }
+.stream-status-done:not(:disabled):hover { color: var(--text-secondary); }
+.stream-status--done .stream-status-tasks { margin-top: 6px; }
+/* 오른쪽 패널 도구/단계 하위 행(G-4) */
+.pipeline-substeps li { white-space: normal; }
+@media (prefers-reduced-motion: reduce) {
+    .stream-status-spinner,
+    .stream-task--active .stream-task-mark { animation: none; }
 }

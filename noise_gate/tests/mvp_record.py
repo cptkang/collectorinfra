@@ -41,7 +41,7 @@ LEDGER_HEADER = """# Plan 66 MVP 테스트 실행 기록 (대장)
 > MVP 테스트가 실행될 때마다 **테스트 코드 자신이** 한 행을 덧붙인다
 > (`noise_gate/tests/mvp_record.py` · `sre_agent/tests/mvp_record.py`).
 > 절차·판정 기준은 `docs/23_plan66_mvp_test_guide.md`, 잔여 항목은
-> `plans/66-sre-agent-integrated-implementation-plan.md` §1.5.
+> `plans/66-sre-agent-integrated-implementation-plan-WIP.md` §1.5.
 > 지문·관측값 전체는 같은 폴더의 `runs.jsonl`에 있다. 해석 방법은 `docs/23` §12.
 >
 > **`logs/`는 gitignore라 이 파일은 커밋되지 않는다** — 실행한 호스트에만 남는다.

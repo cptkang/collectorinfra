@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 import sqlparse
@@ -38,10 +38,12 @@ from src.security.pii_filter import (
     scrub_pii,
 )
 from src.state import AgentState, QueryAttempt
+from src.utils.prior_dependency import scope_db_note
 from src.utils.query_gen_common import (
     build_generic_period_hint,
     build_prior_rows_block,
     build_stat_month_block,
+    filter_prior_rows_for_db,
     correct_servername_hostname_mapping,
     eav_value_cast_columns,
     enforce_all_query_limit,
@@ -74,6 +76,7 @@ from src.nodes.prompt_blocks import (
     path_parity_enabled,
     resolve_prompt_token_budget,
     prior_server_scope,
+    prior_server_scope_by_db,
     select_history_fewshot,
     split_eav_by_resource_type,
     split_mapping_entries,
@@ -280,6 +283,29 @@ class _MultiRun:
     mapping_sources: dict
     form_fill_answers: dict | None
     form_fill_out: dict
+    # D-203 (plans/88 §4.9) — prior_rows의 `_source_db`로 나눈 DB별 선행 스코프.
+    # None이면 현행(전 DB에 같은 prior_block/prior_scope). 플래그 off면 항상 None.
+    prior_scope_by_db: dict[str, tuple[str, list[str]]] | None = None
+    # 분할 결과 선별 서버가 없어 미조회한 DB와 그 경과 노트(응답에 결정적으로 표기).
+    skipped_dbs: list[str] = field(default_factory=list)
+    dependency_notes: list[dict] = field(default_factory=list)
+
+
+def _prior_for_db(run: _MultiRun, db_id: str) -> tuple[str | None, tuple[str, list[str]] | None]:
+    """대상 DB에 투입할 (프롬프트 블록, 결정적 스코프)를 고른다 (D-203 · plans/88 §4.9).
+
+    분할이 없으면 run 단위 값을 그대로(현행). 있으면 그 DB 소속 행(+태그 없는 행)만으로
+    다시 만든다 — b0 값이 gp/yd SQL에 섞이지 않는다.
+    """
+    # isinstance 검사: 테스트 대역(SimpleNamespace·MagicMock run)에서 분할이 오발동하지 않게 한다.
+    by_db = getattr(run, "prior_scope_by_db", None)
+    if not isinstance(by_db, dict) or not by_db:
+        return run.prior_block, run.prior_scope
+    filtered = filter_prior_rows_for_db(run.state.get("prior_rows"), db_id)
+    block = build_prior_rows_block(filtered)
+    if block and is_scrub_samples_enabled():
+        block = scrub_pii(block)
+    return block, prior_server_scope(filtered)
 
 
 async def _prepare_multi_run(
@@ -332,6 +358,10 @@ async def _prepare_multi_run(
         prior_block = scrub_pii(prior_block)
     prior_scope = prior_server_scope(state.get("prior_rows"))
     value_index = state.get("column_value_index")
+    # DB별 스코프 분할(D-203) — `is True` 비교는 설정 대역(MagicMock)의 오발동 방지(multi_relevant_gate와 동일).
+    prior_scope_by_db = None
+    if getattr(getattr(app_config, "composite", None), "prior_scope_by_db_enabled", False) is True:
+        prior_scope_by_db = prior_server_scope_by_db(state.get("prior_rows"))
 
     # 폼필 월 시리즈(D-146) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
     form_context = template_context_text(state.get("template_structure"))
@@ -360,6 +390,7 @@ async def _prepare_multi_run(
         form_context=form_context, form_intent=form_intent,
         mapping_sources=mapping_sources, form_fill_answers=form_fill_answers,
         form_fill_out={},
+        prior_scope_by_db=prior_scope_by_db,
     )
 
 
@@ -505,6 +536,8 @@ async def _generate_validated_sql(
                 "[알람조립] db=%s 조립 SQL 검증 실패 — LLM 폴백: %s", db_id, det_error
             )
 
+    # 선행 스코프는 DB별로 고른다(plans/88 순차 의존 계약) — 분할이 없으면 run 단위 값 그대로.
+    _pb, _ps = _prior_for_db(run, db_id)
     sql = await _generate_sql(
         run.llm, run.parsed_requirements, schema_info,
         sub_context, run.effective_limit,
@@ -516,9 +549,9 @@ async def _generate_validated_sql(
         app_config=run.app_config,
         execute=_mc_execute,
         candidate_sink=run.mc_candidates,
-        prior_block=run.prior_block,
+        prior_block=_pb,
         derivation_sink=run.mc_derivations,
-        prior_scope=run.prior_scope,
+        prior_scope=_ps,
         value_index=run.value_index,
         form_context_text=run.form_context,
         form_fill_out=run.form_fill_out,
@@ -571,8 +604,8 @@ async def _generate_validated_sql(
             db_id=db_id,
             unmapped_fields=run.unmapped_fields,
             app_config=run.app_config,
-            prior_block=run.prior_block,
-            prior_scope=run.prior_scope,
+            prior_block=_pb,
+            prior_scope=_ps,
             value_index=run.value_index,
             form_context_text=run.form_context,
             form_fill_out=run.form_fill_out,
@@ -601,6 +634,16 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
     if not run.registry.is_registered(db_id):
         run.db_errors[db_id] = f"DB '{db_id}'이(가) 레지스트리에 등록되지 않았습니다."
         logger.warning("미등록 DB 스킵: %s", db_id)
+        return
+
+    # DB별 스코프 분할(D-203 · plans/88 §4.9): 선행 결과에 이 DB의 서버가 없으면(태그 없는
+    # 공통 행도 없으면) 조회하지 않는다 — 에러가 아니라 경과이며 응답에 결정적으로 표기된다.
+    by_db = getattr(run, "prior_scope_by_db", None)
+    if isinstance(by_db, dict) and by_db and db_id not in by_db and "" not in by_db:
+        run.skipped_dbs.append(db_id)
+        _dom = get_domain_by_id(db_id)
+        run.dependency_notes.append(scope_db_note(db_id, label=getattr(_dom, "label", None) or None))
+        logger.info("DB '%s': 선행 스코프에 서버 없음 — 미조회(D-203)", db_id)
         return
 
     try:
@@ -796,10 +839,34 @@ async def _run_groups(
             merged.mc_derivations.extend(run.mc_derivations)
             merged.validation_failed.update(run.validation_failed)
             merged.form_fill_out.update(run.form_fill_out)
+            merged.skipped_dbs.extend(run.skipped_dbs)
+            merged.dependency_notes.extend(run.dependency_notes)
 
     if merged is None:
         merged = await _prepare_multi_run(state, llm, app_config)
     return merged, group_results, group_packets
+
+
+def _zone_group_exclusive(app_config: AppConfig | None) -> bool:
+    """존 그룹 상호배타 플래그(D-143 후속3). 설정 부재·테스트 대역(MagicMock)은 **배타(on)**로 본다 —
+    개방은 명시 `ZONE_GROUP_EXCLUSIVE=false`에서만 일어나야 회귀가 0이다."""
+    multi = getattr(app_config, "multi_db", None)
+    value = getattr(multi, "zone_group_exclusive", True)
+    return value if isinstance(value, bool) else True
+
+
+def _auto_execution_groups(targets: list[dict]) -> list[dict] | None:
+    """대상 DB를 레지스트리 존 그룹으로 나눈다 — 2개 이상일 때만 그룹 실행(1개면 종전 경로)."""
+    from src.routing.execution_groups import partition_execution_groups
+
+    groups = partition_execution_groups([t.get("db_id") for t in targets if t.get("db_id")])
+    if len(groups) < 2:
+        return None
+    logger.info(
+        "존 동시 조회(D-206): 실행 그룹 %d개 순차 실행 — %s",
+        len(groups), " → ".join(f"{g['label']}{g['db_ids']}" for g in groups),
+    )
+    return groups
 
 
 async def multi_db_executor(
@@ -832,6 +899,11 @@ async def multi_db_executor(
     """
     targets = state.get("target_databases", [])
     groups = state.get("execution_groups") or None
+    if not groups and not _zone_group_exclusive(app_config):
+        # 존 동시 선택·순차 조회 개방(D-206 · plans/82 U1 (a) "false면 분할"): 상위가
+        # execution_groups를 싣지 않아도(실측: 싣는 코드 0건 — 이 루프는 죽어 있었다) 실행기가
+        # 스스로 존 그룹으로 나눠 은행존→공동존 순차 실행한다(D-176). 그룹이 하나면 종전 경로.
+        groups = _auto_execution_groups(targets)
 
     if not groups:
         # 단일 그룹 폴백 — 종전 경로와 **호출 순서·반환 키가 동일**해야 한다(회귀 0).
@@ -910,6 +982,12 @@ async def multi_db_executor(
     if groups:
         result["group_results"] = group_results
         result["group_packets"] = group_packets
+    # DB별 스코프 분할 경과(D-203) — 발동했을 때만 싣는다(반환 shape 현행 유지). isinstance 검사는
+    # 테스트 대역(MagicMock run)이 키를 오발생시키지 않게 한다.
+    if isinstance(getattr(run, "dependency_notes", None), list) and run.dependency_notes:
+        result["dependency_notes"] = list(run.dependency_notes)
+    if isinstance(getattr(run, "skipped_dbs", None), list) and run.skipped_dbs:
+        result["skipped_dbs"] = list(run.skipped_dbs)
     # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
     if run.form_fill_out.get("month_anchor"):
         result["form_month_anchor"] = run.form_fill_out["month_anchor"]

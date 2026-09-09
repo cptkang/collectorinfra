@@ -128,7 +128,7 @@
 - [x] `cd /tmp && python -c "import src.config as c; print(c.__file__)"` → 프로젝트 경로
 - [x] `pytest` 전체 무회귀 · `python -c "import src.api.server"` 성공
 
-**Files:** `.venv/`(정리), `plans/70-codebase-scale-and-path-debt.md`
+**Files:** `.venv/`(정리), `plans/70-codebase-scale-and-path-debt-WIP.md`
 **Scope:** XS
 **주의:** editable 재설치(`pip install -e .`)가 다른 경로에 영향을 줄 수 있으니 전체 스위트로 확인
 

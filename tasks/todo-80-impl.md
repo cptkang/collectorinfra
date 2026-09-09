@@ -24,7 +24,7 @@
   - Files: `src/routing/semantic_router.py`
 - [x] **T5. WU-01 · 임계 잠정값 주석 고정** (값 변경 없음)
   - Acceptance: S7 · `plans/79` §8 ⑧ 1줄
-  - Files: `src/routing/semantic_router.py` · `plans/79-semantic-routing-improvement.md`
+  - Files: `src/routing/semantic_router.py` · `plans/79-semantic-routing-improvement-WIP.md`
 - [x] **T6. 모듈 ① 회귀** — 전체 회귀 기준선 대조 + `arch_check --ci`
 
 > **모듈 ① 완료(2026-08-27)** — 신규 테스트 **11건 통과** · 전체 회귀 **41 failed / 5 errors = 기준선 동일** ·

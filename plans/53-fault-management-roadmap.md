@@ -246,6 +246,6 @@ Plan 47 (이미 구현: is_routine·이력 통계·프로세스 보강)  ── 
 
 ## 10. 참고
 
-- `plans/50-fault-diagnosis-rca.md`, `plans/51-fault-diagnosis-data-collection.md`, `plans/52-alarm-noise-cancellation.md`
+- `plans/50-fault-diagnosis-rca-WIP.md`, `plans/51-fault-diagnosis-data-collection-WIP.md`, `plans/52-alarm-noise-cancellation.md`
 - 공통 토대: `plans/47-alarm-history-pattern-analysis.md`, `plans/47-1-alarm-process-enrichment.md`
 - 의사결정: `docs/02_decision.md` (D-035 등 / Plan 52=**D-048** 등재 완료, 그 외 착수 시 다음 빈 번호)

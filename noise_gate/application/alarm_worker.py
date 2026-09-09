@@ -82,6 +82,10 @@ class AlarmWorker:
         # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — dynamic_baseline_enabled 시에만 생성.
         self._metric_baseline = None
         self._decision_store = None
+        # (Plan 54 모듈 4) 침묵 규칙 저장소 — silence_enabled off(기본)면 None(조회 자체 없음).
+        self._silence_store = None
+        # 활성 규칙 캐시 (만료 epoch, 규칙 목록) — 알람 1건마다 파일을 다시 읽지 않게 한다.
+        self._silence_cache: tuple[float, list] = (0.0, [])
         self._ticket_queue = None  # (E3) TICKET 티어 일배치 요약 큐
         self._feedback_store = None  # (E4) 운영자 피드백 few-shot 저장소
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
@@ -293,6 +297,53 @@ class AlarmWorker:
             logger.exception("발송 판단 감사 저장소 생성 실패 — 감사 없이 진행")
             return None
 
+    def _active_silence_rules(self, now: float) -> list:
+        """활성 침묵 규칙을 TTL 캐시로 돌려준다 (Plan 54 모듈 4).
+
+        저장소가 없으면(플래그 off·생성 실패) 빈 목록이다 — 게이트는 규칙이 없으면 침묵
+        단계를 평가하지 않으므로 판정이 현행과 비트 동일하다. 알람 1건마다 파일을 다시 읽으면
+        hot-path가 느려지므로 짧은 TTL로 캐시한다(운영자가 규칙을 건 뒤 TTL 이내에 반영).
+
+        Args:
+            now: 현재 epoch 초.
+
+        Returns:
+            활성 SilenceRule 목록(조회 실패 시 빈 목록).
+        """
+        if self._silence_store is None:
+            return []
+        expires_at, cached = self._silence_cache
+        if now < expires_at:
+            return cached
+        try:
+            rules = self._silence_store.active_rules()
+        except Exception:  # noqa: BLE001 — 조회 실패가 알람 처리를 막지 않는다
+            logger.warning("침묵 규칙 조회 실패(무시) — 침묵 없이 진행")
+            rules = []
+        ttl = float(getattr(self._config.noise_gate, "silence_cache_ttl_seconds", 10) or 10)
+        self._silence_cache = (now + ttl, rules)
+        return rules
+
+    def _build_silence_store(self):  # noqa: ANN202
+        """침묵 규칙 저장소를 생성한다 (Plan 54 모듈 4).
+
+        게이트 off·silence_enabled off·생성 실패 시 None을 반환한다 — 침묵 판정만 생략되고
+        나머지 파이프라인은 그대로 돈다(graceful degradation · 기본 off면 회귀 0).
+        """
+        gate_cfg = self._config.noise_gate
+        if not gate_cfg.enable_noise_gate or not getattr(gate_cfg, "silence_enabled", False):
+            return None
+        try:
+            from noise_gate.infrastructure.silence_store import SilenceStore
+
+            return SilenceStore(
+                getattr(gate_cfg, "silence_store_path", "logs/alarm_silences.jsonl"),
+                True,
+            )
+        except Exception:
+            logger.exception("침묵 규칙 저장소 생성 실패 — 침묵 없이 진행")
+            return None
+
     def _build_ticket_queue(self):  # noqa: ANN202
         """TICKET 티어 일배치 요약 큐를 생성한다 (Plan 52 §7 · Phase E3).
 
@@ -485,6 +536,7 @@ class AlarmWorker:
         # (Plan 60 B-7 L-2/L-4) 로컬 임베딩 provider — 두 주석 플래그 모두 off면 None(회귀 0).
         self._embedding_provider = self._build_embedding_provider()
         self._decision_store = self._build_decision_store()
+        self._silence_store = self._build_silence_store()
         self._ticket_queue = self._build_ticket_queue()
         self._feedback_store = self._build_feedback_store()
         self._redis = r
@@ -603,6 +655,8 @@ class AlarmWorker:
             flapping = False
             storm = False
             correlated = False  # (Plan 60 E2) 크로스-호스트 상관 매칭 여부
+            # (Plan 54 모듈 4) 활성 침묵 규칙 — 저장소 off/부재면 빈 목록(게이트가 평가 안 함).
+            silence_rules: list = []
             # (Plan 60 E2) 상관 억제 시 클러스터 메타(대표 지문·멤버 순번·유사도) — 억제일 때만.
             correlation_meta: Optional[dict] = None
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타 — 대표 알람 표기용 그래프 state.
@@ -668,6 +722,10 @@ class AlarmWorker:
                     )
                     await ack_message(r, stream_key, group, msg_id)
                     return
+
+                # (Plan 54 모듈 4) 활성 침묵 규칙 조회 — 저장소가 없으면 빈 목록(회귀 0).
+                # 매칭은 게이트가 한다(실효 심각도 대조가 필요해 판정을 도메인에 둔다).
+                silence_rules = self._active_silence_rules(now)
 
                 # 자가복구 상관 시드(§3.7) — 발생 기록/해소 매칭.
                 self_heal = self._update_firing_registry(event, fingerprint, now)
@@ -789,6 +847,8 @@ class AlarmWorker:
                     "semantic_annotation": semantic_annotation,
                     # (Plan 60 E7-a) 계획-무해 코로보레이션 게이팅용 주석 신호(off/마커 없으면 None).
                     "annotation": annotation_signal_dict,
+                    # (Plan 54 모듈 4) 활성 침묵 규칙(off/없으면 빈 목록 → 침묵 단계 미평가).
+                    "silence_rules": silence_rules,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
                     "enrichment": None,
                     # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).

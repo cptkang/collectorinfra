@@ -19,6 +19,7 @@ from src.orchestration.deepagents_tools import build_tools
 from src.orchestration.intent_planner import intent_planner
 from src.orchestration.replanner import replanner
 from src.orchestration.result_aggregator import result_aggregator
+from src.orchestration.sequential_runner import sequential_entry, sequential_runner
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
     SubAgentSpec,
@@ -30,6 +31,8 @@ __all__ = [
     "agent_orchestrator",
     "replanner",
     "result_aggregator",
+    "sequential_runner",
+    "sequential_entry",
     "SUBAGENT_REGISTRY",
     "SubAgentSpec",
     "classify_dbs",

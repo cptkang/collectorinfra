@@ -26,6 +26,7 @@ from src.utils.query_gen_common import (
     build_query_examples_block,
     build_value_index_block,
     collect_prior_identity_values,
+    collect_prior_identity_values_by_db,
 )
 from src.utils.schema_utils import build_excluded_join_map
 
@@ -713,6 +714,20 @@ def prior_server_scope(prior_rows: Any) -> Optional[tuple[str, list[str]]]:
     if not col or not values:
         return None
     return col, values
+
+
+def prior_server_scope_by_db(prior_rows: Any) -> Optional[dict[str, tuple[str, list[str]]]]:
+    """선행 결과를 출처 DB별로 나눈 결정적 서버 스코프 (D-203 · plans/88 §4.9).
+
+    출처 태그(`_source_db`)가 붙은 행이 하나도 없으면 None — 호출부가 현행(전 DB 공통 스코프)을
+    유지한다. 태그 없는 행은 "" 키로 함께 돌려준다.
+    """
+    if not prior_rows:
+        return None
+    by_db = collect_prior_identity_values_by_db(prior_rows)
+    if not by_db or set(by_db) == {""}:
+        return None
+    return by_db
 
 
 def query_keywords(user_query: str) -> list[str]:

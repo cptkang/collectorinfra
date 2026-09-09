@@ -17,6 +17,7 @@ import logging
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig
+from src.routing.db_scope import extract_state_db_ids
 from src.routing.registry import get_registry
 from src.state import AgentState
 
@@ -111,6 +112,11 @@ async def context_resolver(
     previous_location = _extract_previous_location(state) or (
         prior_ctx.get("previous_location") or ""
     )
+    # 스코프 칩 "해제"(plans/90 · D-205): 라우트가 승계 원천을 비워도 sticky 폴백이 직전 ctx에서
+    # DB를 되살리므로 여기서 끊는다. previous_entities(호스트 지시어 "그 서버")는 존과 무관해 유지.
+    if state.get("db_scope_reset"):
+        previous_db_ids = []
+        previous_location = ""
 
     context = {
         "previous_sql": previous_sql,
@@ -168,28 +174,9 @@ def _extract_previous_db_ids(state: AgentState) -> list[str]:
     Returns:
         직전 턴 DB 식별자 목록 (중복 제거, 빈 목록 가능)
     """
-    db_ids: list[str] = []
-
-    # 1) target_databases (라우팅된 대상 — relevance 순서 보존)
-    for t in state.get("target_databases", []) or []:
-        if isinstance(t, dict):
-            did = t.get("db_id")
-        else:
-            did = t
-        if did and did != "default" and did not in db_ids:
-            db_ids.append(did)
-
-    # 2) active_db_id (단일 DB 경로의 실제 처리 DB)
-    active = state.get("active_db_id")
-    if active and active != "default" and active not in db_ids:
-        db_ids.append(active)
-
-    # 3) mapped_db_ids (양식 업로드로 고정된 DB)
-    for did in state.get("mapped_db_ids", []) or []:
-        if did and did not in db_ids:
-            db_ids.append(did)
-
-    return db_ids
+    # 구현은 src/routing/db_scope.py로 이관(D-205 단일 출처) — 라우트의 db_scope 보고가 같은
+    # 함수를 써야 "칩이 보여주는 값 == 다음 턴이 승계하는 값"이 성립한다. 동작 동일.
+    return extract_state_db_ids(state)
 
 
 def _looks_like_process_rows(rows: list[dict]) -> bool:

@@ -1182,6 +1182,9 @@ def build_value_index_block(matched: dict[str, list[str]] | None) -> str:
 _PRIOR_HOSTNAME_HINTS: tuple[str, ...] = ("hostname", "host_name")
 _PRIOR_NAME_HINTS: tuple[str, ...] = ("server_name", "name")
 _MAX_PRIOR_SCOPE_VALUES: int = 100
+# 멀티 DB 병합이 행마다 붙이는 출처 태그(`multi_db_executor._merge_results`). `prior_targets.SOURCE_DB_KEY`와
+# 같은 리터럴이며, 그 모듈이 이 모듈을 import하므로 여기서 따로 둔다(순환 방지).
+PRIOR_SOURCE_DB_KEY: str = "_source_db"
 
 # 서버 식별 컬럼 판정(D-100): 정확 매칭 집합 + server/host/os 계열 *_name/_id만 인정한다.
 # 선행 조회가 서버명 외 컬럼(alarm_name/definition_name/severity 등)도 반환하게 되면서,
@@ -1214,7 +1217,9 @@ def is_server_identity_col(col: str) -> bool:
     return False
 
 
-def collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
+def collect_prior_identity_values(
+    prior_rows: dict, *, limit: int | None = _MAX_PRIOR_SCOPE_VALUES,
+) -> tuple[str, list[str]]:
     """prior_rows에서 서버 식별 컬럼 종류와 값 목록을 추출한다.
 
     hostname류 컬럼이 하나라도 있으면 hostname을 우선하고, 없으면 name류를 쓴다
@@ -1222,6 +1227,8 @@ def collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
 
     Args:
         prior_rows: {task_id: [식별 키 행, ...]}
+        limit: 값 상한(기본 100). None이면 절단하지 않는다 — 절단 건수를 보고해야 하는
+            게이트(D-203 `prior_dependency`)가 전체 개수를 셀 때 쓴다.
 
     Returns:
         ("hostname" | "name" | "", 중복 제거된 값 목록[상한 적용])
@@ -1250,13 +1257,59 @@ def collect_prior_identity_values(prior_rows: dict) -> tuple[str, list[str]]:
                         seen_n.add(text)
                         names.append(text)
     if hostnames:
-        return "hostname", hostnames[:_MAX_PRIOR_SCOPE_VALUES]
+        return "hostname", (hostnames if limit is None else hostnames[:limit])
     if names:
-        return "name", names[:_MAX_PRIOR_SCOPE_VALUES]
+        return "name", (names if limit is None else names[:limit])
     return "", []
 
 
-def build_prior_rows_block(prior_rows: dict | None) -> str:
+def filter_prior_rows_for_db(prior_rows: dict | None, db_id: str) -> dict:
+    """prior_rows에서 `db_id` 소속 행(+출처 태그 없는 행)만 남긴다 (D-203 · plans/88 §4.9).
+
+    태그가 있는 행이 하나도 없으면 입력을 그대로 돌려준다(단일 DB 선행 — 현행 동작).
+    """
+    if not prior_rows:
+        return {}
+    tagged = any(
+        isinstance(r, dict) and r.get(PRIOR_SOURCE_DB_KEY)
+        for rows in prior_rows.values() for r in (rows or [])
+    )
+    if not tagged:
+        return prior_rows
+    out: dict = {}
+    for tid, rows in prior_rows.items():
+        kept = [
+            r for r in (rows or [])
+            if isinstance(r, dict) and (not r.get(PRIOR_SOURCE_DB_KEY) or str(r.get(PRIOR_SOURCE_DB_KEY)) == db_id)
+        ]
+        if kept:
+            out[tid] = kept
+    return out
+
+
+def collect_prior_identity_values_by_db(prior_rows: dict | None) -> dict[str, tuple[str, list[str]]]:
+    """prior_rows를 행의 `_source_db`로 나눠 DB별 (식별컬럼, 값목록)을 돌려준다 (D-203 · plans/88 §4.9).
+
+    태그 없는 행은 "" 버킷 — 호출부가 전 DB에 적용한다(현행 동작). 컬럼 종류 우선 규칙은
+    `collect_prior_identity_values`와 동일(hostname류 우선 · D-061 혼합 금지)하며 버킷별로 적용한다.
+    `_source_db` 자체는 식별 컬럼이 아니라 값 목록에 새지 않는다.
+    """
+    buckets: dict[str, list[dict]] = {}
+    for rows in (prior_rows or {}).values():
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get(PRIOR_SOURCE_DB_KEY) or "")
+            buckets.setdefault(key, []).append(row)
+    out: dict[str, tuple[str, list[str]]] = {}
+    for key, rows in buckets.items():
+        col, values = collect_prior_identity_values({"_": rows})
+        if col and values:
+            out[key] = (col, values)
+    return out
+
+
+def build_prior_rows_block(prior_rows: dict | None, *, db_id: str | None = None) -> str:
     """선행 task 결과 서버 목록을 SQL 스코프 강제 블록으로 렌더링한다(없으면 빈 문자열).
 
     orchestration 데이터 의존(input_from) 경로에서 선행 task가 선별한 서버들로
@@ -1266,12 +1319,17 @@ def build_prior_rows_block(prior_rows: dict | None) -> str:
 
     Args:
         prior_rows: {task_id: [식별 키 행, ...]} (subagents._make_isolated_input 산출)
+        db_id: 주어지면 그 DB 소속 행(+태그 없는 행)만 렌더한다(D-203 DB별 분할). None=현행(전체).
 
     Returns:
         프롬프트에 덧붙일 스코프 강제 블록(유효한 식별 값이 없으면 "")
     """
     if not prior_rows:
         return ""
+    if db_id is not None:
+        prior_rows = filter_prior_rows_for_db(prior_rows, db_id)
+        if not prior_rows:
+            return ""
     col, values = _collect_prior_identity_values(prior_rows)
     if not values:
         return ""
@@ -1581,7 +1639,8 @@ _ZONE_GROUP_TERMS: dict[str, tuple[str, ...]] = {
 
 ZONE_CLARIFY_QUESTION = (
     "조회할 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
-    "(복수 선택 가능 — 전체 조회는 모두 선택)"
+    "(복수 선택 가능 — 전체 조회는 모두 선택. 은행존과 공동존을 함께 선택하면 "
+    "은행존을 먼저 조회한 뒤 공동존을 조회합니다)"
 )
 
 # 존 그룹 상호배타(D-143 후속3) 활성 시의 기본 안내 — "전체는 모두 선택" 문구 제거

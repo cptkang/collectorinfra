@@ -1,0 +1,34 @@
+# Todo 89 — 스트리밍 진행 상태 (D-204)
+
+- [x] T0 스파이크 — 중첩 그래프 이벤트 전파 실측
+  - Acceptance: 노드 안 `ainvoke`된 내부 그래프의 `on_tool_start`·`on_custom_event`가 바깥 `astream_events(v2)`에 나타난다
+  - Verify: `pytest tests/test_api/test_stream_nested_events.py -q`
+  - Files: tests/test_api/test_stream_nested_events.py
+- [x] T1 화이트리스트 + deep_agent 진행 데이터
+  - Acceptance: 두 스트림 라우트에서 `deep_agent` node_start/node_complete
+  - Verify: `pytest tests/test_api/test_query_stream_progress.py -q -k known_nodes`
+  - Files: src/api/routes/query.py, tests/test_api/test_query_stream_progress.py
+- [x] T2 큐 기반 제너레이터 + 하트비트 + 설정
+  - Acceptance: 하트비트 발행·유휴 상한 보존·생산자 취소·플래그 off 바이트 동일
+  - Verify: `pytest tests/test_api/test_query_stream_progress.py -q` · `pytest tests/test_api/test_settings_help.py -q`
+  - Files: src/api/routes/query.py, src/config.py, config/settings_help/infrastructure.yaml, .env.example
+- [x] T3 도구/커스텀 이벤트 → progress
+  - Acceptance: `on_tool_start`→`progress{kind:tool}`, `on_custom_event(task)`→`progress{kind:task}`
+  - Verify: 위 테스트 파일
+  - Files: src/api/routes/query.py
+- [x] T9 복합 단계 이벤트 헬퍼 + 호출부 + deep_agent 마일스톤
+  - Acceptance: SPEC-composite-task-progress §Success Criteria 1~5
+  - Verify: `pytest tests/test_orchestration/test_task_progress.py -q` · `arch_check --ci`
+  - Files: src/orchestration/task_progress.py, agent_orchestrator.py, deepagents_tools.py, deep_agent.py, tests/test_orchestration/test_task_progress.py
+- [x] T5 프론트 상태 영역
+  - Acceptance: SPEC-stream-status-ui §Success Criteria 1~7
+  - Verify: `pytest tests/test_api/test_ui_stream_status.py -q`
+  - Files: src/static/js/app.js, src/static/css/style.css, tests/test_api/test_ui_stream_status.py
+- [x] T6 e2e 단언 점검(코드만, RUN_E2E 미실행)
+  - Files: tests/e2e/test_progress_display.py, tests/e2e/conftest.py
+- [x] T8 문서 — D-204 본문 · INDEX · plans/89 상태 · 개정 이력 (2026-09-09 등재 완료)
+  - Verify: `grep -n "D-204" docs/02_decision.md` 3표 모두
+  - Files: docs/02_decision.md, plans/INDEX.md, plans/89-*.md
+- [x] 회귀(2026-09-09: 1215 passed · 신규 52 · arch 0 · overfit 0; ruff 미설치로 생략) — `pytest tests/test_api tests/test_multiturn tests/test_orchestration tests/test_composite -q` · `arch_check --ci` · `overfit_check --ci` · `ruff check`
+- [ ] T4 핸들러 마일스톤(schema_analyzer 샘플 수집) — 체감 확인 뒤 필요 시(계획서 §5 순서대로 보류)
+- [x] D-번호 재부여 반영 — 병렬 세션이 D-199→D-204 일괄 치환(2026-09-09 완료 · 본문 등재는 이 세션)

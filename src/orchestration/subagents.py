@@ -48,7 +48,7 @@ from src.orchestration.host_inspect import HOST_INSPECT_AGENT, run_host_inspect
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
-from src.utils.prior_targets import build_prior_targets
+from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
 from src.utils.query_gen_common import (
     build_zone_clarification,
     has_host_identifier_filter,
@@ -423,8 +423,14 @@ def _apply_db_succession(
     sub_query: str,
     conversation_context: Optional[dict],
     active_db_ids: list[str],
+    *,
+    inherit_all: bool = False,
 ) -> tuple[list[dict], bool]:
     """이전 턴 DB를 우선 후보로 승계한다 (M2, Plan 50 §3.2).
+
+    `inherit_all`(D-206 — 존 동시 조회 개방 시): 직전 DB 집합 **전체**를 승계한다. 은행존+공동존을
+    함께 고른 스레드가 다음 턴에 첫 DB 하나로 좁혀지면 "선택된 폴스타로 계속"이 거짓이 된다.
+    상호배타(플래그 on)에서는 종전대로 첫 DB 1개 — 팬아웃 결과의 b0+gp 조합이 한 run에 섞이지 않게.
 
     우선순위: ① 이번 턴 명시 위치/DB > ② mapped_db_ids(호출 전 db_ids 고정) >
     ③ previous_db_ids(멀티턴 승계) > ④ 전체 후보 fan-out.
@@ -459,23 +465,26 @@ def _apply_db_succession(
     if not valid_prev:
         return targets, False
 
-    # 이미 분류 결과가 직전 DB 1개로 수렴했으면 승계 불필요.
+    # 이미 분류 결과가 직전 DB 1개로 수렴했으면 승계 불필요(상호배타 규칙 — 개방이면 집합 비교로 판정).
     current_ids = [t.get("db_id") for t in targets]
-    if len(targets) == 1 and current_ids[0] in valid_prev:
+    if not inherit_all and len(targets) == 1 and current_ids[0] in valid_prev:
+        return targets, False
+    succeed_ids = list(valid_prev) if inherit_all else [valid_prev[0]]
+    # 분류 결과가 승계 집합과 이미 같으면(순서 무관) 승계 불필요.
+    if inherit_all and set(current_ids) == set(succeed_ids):
         return targets, False
 
-    # 승계: 직전 DB(우선순위 1개)를 단일 우선 후보로 사용.
-    succeeded_id = valid_prev[0]
+    # 승계: 직전 DB(상호배타면 우선순위 1개, 개방이면 전체)를 우선 후보로 사용.
     succeeded = [{
-        "db_id": succeeded_id,
+        "db_id": db_id,
         "relevance_score": 1.0,
         "sub_query_context": sub_query,
         "user_specified": False,
         "reason": f"이전 턴 DB 승계(멀티턴, previous_db_ids={valid_prev})",
-    }]
+    } for db_id in succeed_ids]
     logger.info(
-        "data_query DB 승계 적용: %s (분류 결과 %s → 직전 DB 우선)",
-        succeeded_id, current_ids,
+        "data_query DB 승계 적용: %s (분류 결과 %s → 직전 DB 우선, 전체 승계=%s)",
+        succeed_ids, current_ids, inherit_all,
     )
     return succeeded, True
 
@@ -608,7 +617,18 @@ def _extract_identity_rows(rows: list[dict]) -> list[dict]:
         # 식별 키 없으면 전체 컬럼 유지 (행수 상한만)
         return limited
 
+    # DB별 스코프 분할(D-203 · plans/88 §4.9): 출처 태그는 식별 컬럼이 아니지만 후속 멀티 DB
+    # 조회가 DB별로 IN 목록을 나누는 데 필요하다. 플래그 off면 종전대로 버린다(행 shape 불변).
+    if SOURCE_DB_KEY in first and _prior_scope_by_db_enabled():
+        key_cols = [*key_cols, SOURCE_DB_KEY]
+
     return [{col: row.get(col) for col in key_cols} for row in limited if isinstance(row, dict)]
+
+
+def _prior_scope_by_db_enabled() -> bool:
+    """`COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED` — 기동 시 1회 해석(load_config 캐시)."""
+    cfg = getattr(load_config(), "composite", None)
+    return bool(getattr(cfg, "prior_scope_by_db_enabled", False))
 
 
 def _history_for_agent(task: dict, state: dict) -> list:
@@ -1016,7 +1036,23 @@ async def run_data_query_pipeline(
                 sub_query,
                 isolated.get("conversation_context"),
                 app_config.multi_db.get_active_db_ids(),
+                # 존 동시 조회 개방(D-206)이면 직전 DB 집합 전체를 승계한다
+                inherit_all=(
+                    getattr(app_config.multi_db, "zone_group_exclusive", True) is False
+                ),
             )
+
+    # D-205 스코프 출처(구조화 키) — 처리현황 note 문자열이 아니라 이 값을 승격·보고한다.
+    if task.get("db_ids"):
+        db_origin = "selected" if isolated.get("selected_db_ids") else "planned"
+    elif isolated.get("selected_db_ids"):
+        db_origin = "selected"
+    elif db_pinned:
+        db_origin = "hint"
+    elif db_succeeded:
+        db_origin = "inherited"
+    else:
+        db_origin = "classified"
 
     if not targets:
         # 방어적 폴백 (classify_dbs가 항상 1개 이상 반환하지만 안전 차원)
@@ -1123,6 +1159,11 @@ async def run_data_query_pipeline(
     }
     if s.get("error_message"):
         result["error"] = s["error_message"]
+    # DB별 스코프 분할 경과(D-203) — multi_db_executor가 낸 미조회 DB·노트를 task 결과로 승격한다.
+    # group_results(D-206 존 순차 실행 경과)도 처리현황에 실린다.
+    for _dk in ("dependency_notes", "skipped_dbs", "group_results"):
+        if s.get(_dk):
+            result[_dk] = s[_dk]
 
     # 폼필 산출물 승격(D-146/D-151): orchestration에서 output_generator는 파이프라인
     # 내부 state(s)가 아니라 result_aggregator의 _build_output_state 입력을 받으므로,
@@ -1140,6 +1181,7 @@ async def run_data_query_pipeline(
     # 생성 SQL·대상 DB·DB별 에러를 담아 _extract_node_progress(agent_orchestrator)가
     # 처리 현황에 표시하도록 한다(어떤 SQL이 어느 DB로 실행됐는지·b0 오선택 가시화).
     result["target_db_ids"] = [t.get("db_id") for t in targets if t.get("db_id")]
+    result["db_origin"] = db_origin  # D-205: _collect_db_promotion이 db_scope_source로 승격
     if db_succeeded:
         # 처리현황 UI 투명성: 이전 턴 DB 승계 사실을 노출한다(Plan 50 §3.2).
         result["db_succession"] = {

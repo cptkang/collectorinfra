@@ -196,6 +196,21 @@
                         <button type="button" class="prompt-confirm-btn" id="promptConfirmEdit">수정</button>
                     </div>
 
+                    <!-- 스코프 칩 (Plan 90 · D-205). 이 창이 **다음 질의에서 볼 폴스타 존**을 서버 db_scope의
+                         거울로 보여준다. ▾로 존을 고르면 다음 질의 1건에 selected_db_ids로 실리고 이후는
+                         승계, ×는 승계를 끊는다(다음 질의는 첫 질의처럼 확인). 프론트가 추측하지 않는다. -->
+                    <div class="db-scope-chip" id="dbScopeChip" data-state="none">
+                        <span class="db-scope-chip-label">조회 대상</span>
+                        <button type="button" class="db-scope-chip-pick" id="dbScopePick"
+                            title="폴스타 존 선택" aria-haspopup="true" aria-expanded="false">
+                            <span id="dbScopeText">존 미지정 — 첫 질의처럼 확인</span><span class="db-scope-chip-caret" aria-hidden="true">▾</span>
+                        </button>
+                        <span class="db-scope-chip-sol" id="dbScopeSol" hidden></span>
+                        <button type="button" class="db-scope-chip-clear" id="dbScopeClear"
+                            title="선택 해제 — 다음 질의에서 다시 확인" aria-label="스코프 해제" hidden>×</button>
+                        <div class="db-scope-popover" id="dbScopePopover" hidden></div>
+                    </div>
+
                     <!-- Input row -->
                     <div class="input-row">
                         <textarea id="prompt" placeholder="인프라 데이터에 대해 질문하세요..." rows="1"></textarea>
@@ -314,7 +329,7 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=9"></script>
+    <script src="/static/js/app.js?v=10"></script>
 </body>
 
 </html>

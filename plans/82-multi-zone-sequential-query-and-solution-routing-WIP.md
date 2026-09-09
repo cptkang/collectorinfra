@@ -1792,13 +1792,13 @@ Known Mistakes의 *"장시간 실행 경로는 전체 타임아웃 가드 필수
 
 | 문서 | 관계 |
 |---|---|
-| `plans/78-composite-query-host-diagnostics-orchestration.md` | 대상 해소(W1)·fan-out(W2)·미들웨어(W7) — 82가 **재사용하고 배선**한다. W7-2(APM)는 78 소관 |
+| `plans/78-composite-query-host-diagnostics-orchestration-WIP.md` | 대상 해소(W1)·fan-out(W2)·미들웨어(W7) — 82가 **재사용하고 배선**한다. W7-2(APM)는 78 소관 |
 | `plans/81-host-availability-precheck.md` | 가용성 판정 — **동시 편집 충돌 주의(§12.1)**. 82는 소비만 |
 | `plans/55-multi-source-observability-roadmap.md` | APM·DPM 상위 로드맵. 82는 얹힐 **그룹 축**만 만든다 |
-| `plans/80-78-79-joint-execution-contract.md` | 78·79 자산 소유권·게이트. Wave 7 착수 전 §8 순서 계약 확인 |
+| `plans/80-78-79-joint-execution-contract-WIP.md` | 78·79 자산 소유권·게이트. Wave 7 착수 전 §8 순서 계약 확인 |
 | `plans/75-realtime-usage-api-and-ux-review.md` §4 | 존 역질문 원안 — `selected_db_ids` 결정적 고정 계약 |
 | `plans/73-formfill-deterministic-path-and-profiles.md` | 폼필 산출물·HITL 역질문 — Wave 4 그룹 집계 대상 |
-| `plans/79-semantic-routing-improvement.md` | 라우터 출력 계약(D-169). Wave 7은 그 확장이며 **렌더 바이트 동일 골든**을 깨지 않는다 |
+| `plans/79-semantic-routing-improvement-WIP.md` | 라우터 출력 계약(D-169). Wave 7은 그 확장이며 **렌더 바이트 동일 골든**을 깨지 않는다 |
 | `SPEC-middleware-os-identification.md` · `docs/24_middleware_profile_spec.md` | 미들웨어 식별 계약(W7-1 완료 자산) |
 | `docs/pii_filtering_rules.md` | §11 PII 필터 규칙·정책 ID 표 |
 | `docs/02_decision.md` | D-143 후속3 · D-153 · D-154 · D-155 · D-159 · D-161 · D-168 · D-175 |

@@ -8,6 +8,7 @@ SSE 스트리밍 응답도 지원한다.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import json
@@ -27,6 +28,7 @@ from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
 from src.utils.json_extract import coerce_content_text
 from src.state import create_followup_input, create_initial_state
+from src.routing.db_scope import build_db_scope
 from src.utils.query_gen_common import (
     ZONE_CLARIFY_OPTIONS,
     ZONE_GROUP_EXCLUSIVE_QUESTION,
@@ -134,6 +136,143 @@ def _store_result(query_id: str, data: dict) -> None:
 def _sse_event(data: dict) -> str:
     """SSE 이벤트 문자열을 생성한다."""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# 처리 현황 표시 대상 노드(SSE node_start/node_complete 화이트리스트 · D-039).
+# D-204(plans/89 T1): 사다리 1단 정본 `deep_agent`와 옵트인 노드가 빠져 있어 운영 경로에서
+# field_mapper 이후 최종 토큰까지 이벤트가 0건이던 것을 정정한다.
+_STREAM_KNOWN_NODES: frozenset[str] = frozenset({
+    "context_resolver", "input_parser",
+    "semantic_router", "schema_analyzer",
+    "field_mapper",
+    "query_generator", "query_validator",
+    "approval_gate", "query_executor",
+    "result_organizer", "output_generator",
+    "multi_db_executor", "result_merger",
+    "synonym_registrar", "general_inference", "error_response",
+    # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
+    "intent_planner", "agent_orchestrator",
+    "replanner", "result_aggregator",
+    # plans/89 · D-204: 사다리 1단 정본 + 옵트인 노드
+    "deep_agent", "fault_diagnosis", "cache_management",
+})
+
+
+_PRODUCER_CANCEL_GRACE_SEC = 1.0   # 생산자 취소 완료를 기다리는 상한(D-198 F2 정합)
+
+
+async def _graph_event_stream(
+    graph,
+    input_state: dict,
+    thread_config: dict,
+    *,
+    idle_timeout: float,
+    heartbeat_interval: float,
+) -> AsyncGenerator[tuple[str, object], None]:
+    """astream_events를 생산자 태스크로 돌리고 (kind, payload)를 낸다 (plans/89 §3.2-④ · D-204).
+
+    kind: ``"event"``(LangGraph 이벤트) · ``"heartbeat"``(``{"idle_ms"}``) · ``"timeout"``.
+
+    - 무이벤트 연속 시간이 ``idle_timeout``을 넘으면 ``timeout``을 내고 끝낸다 — D-066 후속의
+      "이벤트 fetch당 타임아웃" 의미를 그대로 보존한다.
+    - ``heartbeat_interval``(초) 동안 이벤트가 없으면 ``heartbeat``를 낸다. 0 이하면 하트비트 없음.
+    - **``wait_for(__anext__)``를 재호출하지 않는다** — 취소된 ``__anext__``는 비동기 제너레이터를
+      깨뜨린다. 대신 큐를 기다린다(``Queue.get`` 취소는 안전).
+    - 생산자 예외는 소비자에게 재전달한다(기존 ``except (AttributeError, …)`` 폴백 경로 유지).
+    - 소비자가 어떤 경로로 끝나든 ``finally``에서 생산자를 취소한다(클라이언트 단절 포함).
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _produce() -> None:
+        try:
+            async for ev in graph.astream_events(input_state, thread_config, version="v2"):
+                await queue.put(("event", ev))
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 — 소비자 측 폴백 판정에 그대로 넘긴다
+            await queue.put(("error", exc))
+        finally:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(_produce())
+    last_activity = time.monotonic()
+    wait = min(heartbeat_interval, idle_timeout) if heartbeat_interval and heartbeat_interval > 0 else idle_timeout
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=wait)
+            except asyncio.TimeoutError:
+                idle = time.monotonic() - last_activity
+                if idle >= idle_timeout:
+                    yield ("timeout", None)
+                    return
+                yield ("heartbeat", {"idle_ms": idle * 1000})
+                continue
+            if kind == "done":
+                return
+            if kind == "error":
+                raise payload  # type: ignore[misc]
+            last_activity = time.monotonic()
+            yield ("event", payload)
+    finally:
+        if not producer.done():
+            # D-198 F2(검출·취소 분리): 취소는 걸되 완료를 무한정 기다리지 않는다 — 취소에
+            # 반응하지 않는 LLM 호출(FabriX 미귀환 실측)이 있으면 종전 wait_for처럼 여기서
+            # 갇힌다. 유한 대기 뒤 남는 유령 태스크의 수명은 FabriX 총상한(F1)이 보장한다.
+            producer.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait({producer}, timeout=_PRODUCER_CANCEL_GRACE_SEC)
+
+
+def _heartbeat_sse_payload(start_time: float, hb: dict) -> dict:
+    """heartbeat SSE 페이로드 — 경과와 마지막 활동 시점(ms)."""
+    elapsed_ms = (time.time() - start_time) * 1000
+    idle_ms = float(hb.get("idle_ms", 0.0))
+    return {
+        "type": "heartbeat",
+        "elapsed_ms": elapsed_ms,
+        "last_activity_ms": max(0.0, elapsed_ms - idle_ms),
+    }
+
+
+def _progress_sse_payload(event: dict, current_node: str | None, start_time: float) -> dict | None:
+    """도구·커스텀 이벤트를 SSE ``progress``로 변환한다 (plans/89 §3.1 · D-204).
+
+    - ``on_tool_start``/``on_tool_end`` → ``kind:"tool"``(``name``=도구명, 시작 시 ``sub_query``를 label로)
+    - ``on_custom_event`` name ``"task"`` → ``kind:"task"`` + ``task`` 페이로드(plans/88 verdict 필드명 동일)
+    - 그 외 ``on_custom_event`` → ``kind:"step"``
+    라벨은 클라이언트가 붙인다 — 서버는 원시 이름만 낸다.
+    """
+    kind = event.get("event", "")
+    name = event.get("name", "") or ""
+    if kind not in ("on_tool_start", "on_tool_end", "on_custom_event"):
+        return None
+    base = {
+        "type": "progress",
+        "name": name,
+        "node": current_node or "",
+        "timestamp_ms": (time.time() - start_time) * 1000,
+    }
+    if kind in ("on_tool_start", "on_tool_end"):
+        base["kind"] = "tool"
+        base["phase"] = "start" if kind == "on_tool_start" else "end"
+        if kind == "on_tool_start":
+            inp = (event.get("data") or {}).get("input")
+            if isinstance(inp, dict) and isinstance(inp.get("sub_query"), str):
+                base["label"] = inp["sub_query"][:200]
+        return base
+    data = event.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    base["phase"] = data.get("phase") or "start"
+    if name == "task":
+        base["kind"] = "task"
+        base["task"] = data
+    else:
+        base["kind"] = "step"
+        if data.get("label"):
+            base["label"] = str(data["label"])[:200]
+    return base
 
 
 def _token_text(chunk: object) -> str:
@@ -366,6 +505,9 @@ def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dic
             sql = res.get("generated_sql")
             if sql:
                 item["generated_sql"] = sql
+            # 존 순차 실행 경과(D-206) — 그룹별 행수·소요를 처리현황에 그대로 노출
+            if res.get("group_results"):
+                item["group_results"] = res.get("group_results")
             db_ids = res.get("target_db_ids")
             if db_ids:
                 item["target_db_ids"] = db_ids
@@ -535,6 +677,10 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
         elif node_name == "result_aggregator":
             return {"status": "응답 통합 완료"}
 
+        elif node_name == "deep_agent":
+            # plans/89 T1: 1단 정본 노드 — 도구 단위 진행은 progress 이벤트가 나른다.
+            return {"status": "에이전트 실행 완료"}
+
     except Exception as e:
         logger.debug(f"노드 진행 데이터 추출 실패 ({node_name}): {e}")
     return None
@@ -625,6 +771,8 @@ def _build_turn_input_state(
             _substitute_zone_placeholder(body.query, body.selected_db_ids),
             selected_db_ids=body.selected_db_ids,
             allow_zone_clarification=True,
+            # 스코프 칩 "해제"(D-205) — 승계 원천 초기화 + context_resolver sticky 차단
+            reset_db_scope=bool(getattr(body, "reset_db_scope", False)),
         )
         # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-153 후속1, 폼필 후속1과 동형)
         if body.selected_db_ids:
@@ -765,7 +913,8 @@ def _scope_select_or_none(
         return None  # 재개 턴
     query = body.query or ""
     # 후속 턴은 직전 존 승계가 우선이다(§4.2 비발동 — zone_select와 같은 규칙).
-    if checkpoint_state is not None:
+    # 스코프 해제 턴(D-205)은 zone_select와 같이 첫 턴 규칙으로 본다.
+    if checkpoint_state is not None and not getattr(body, "reset_db_scope", False):
         return None
     if not is_full_scan_query(query):
         return None
@@ -887,7 +1036,7 @@ def _file_zone_clarification_or_none(
             + (
                 "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
                 if getattr(config.multi_db, "zone_group_exclusive", True)
-                else "(복수 선택 가능 — 전체는 모두 선택)"
+                else "(복수 선택 가능 — 전체는 모두 선택. 함께 선택하면 은행존을 먼저 조회한 뒤 공동존을 조회합니다)"
             )
         ),
         has_file=True,
@@ -946,8 +1095,11 @@ def _zone_clarification_or_none(
     query = body.query or ""
     placeholder = _ZONE_PLACEHOLDER in query
     if not placeholder:
-        if checkpoint_state is not None:
-            return None  # 후속 턴: previous_entities/DB 승계 우선(§4.2 비발동)
+        # 후속 턴: previous_entities/DB 승계 우선(§4.2 비발동). 단 스코프 칩 "해제"(reset_db_scope,
+        # D-205)는 승계를 끊는 턴이므로 첫 턴 규칙으로 되돌린다 — 해제했는데 조용히 직전 존으로
+        # 가면 해제가 거짓말이 된다. 자연 소진(스코프 없는 후속 턴)은 현행 유지(SPEC Open Q1).
+        if checkpoint_state is not None and not getattr(body, "reset_db_scope", False):
+            return None
         if not is_full_scan_query(query) or "서버" not in query:
             return None  # 존 단위 대량 조회 의도 아님 — 과잉 역질문 방지
         # 위치 표면어가 하나라도 해소되면 비발동 (D-065 결정적 보강이 처리)
@@ -1096,6 +1248,10 @@ async def process_query(
             result.get("scope_narrowed"), result.get("user_query", "")
         ),
         "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
+        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+        "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
+        # 순차 처리 경과 노트(plans/88 · D-203) — 본문 블록의 구조화본
+        "dependency_notes": result.get("dependency_notes"),
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
     }
@@ -1216,161 +1372,159 @@ async def process_query_stream(
                 try:
                     # 이벤트 fetch마다 타임아웃을 건다(D-066 후속). 노드 내부 LLM 호출이
                     # 응답 없이 멈추면 astream_events가 다음 이벤트를 영영 못 내놓아 SSE가
-                    # 무한 hang된다(healthcheck만 도는 증상). 검출·취소 분리는 D-198
-                    # (_next_event_or_timeout docstring) 참조.
-                    _event_iter = graph.astream_events(
-                        input_state,
-                        thread_config,
-                        version="v2",
-                    ).__aiter__()
-                    while True:
-                        try:
-                            event, _timed_out = await _next_event_or_timeout(
-                                _event_iter, effective_timeout
-                            )
-                        except StopAsyncIteration:
-                            break
-                        if _timed_out:
-                            yield _sse_event({
-                                "type": "error",
-                                "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                            })
-                            return
-                        kind = event.get("event", "")
-                        name = event.get("name", "")
-
-                        # 노드 시작 이벤트 감지
-                        if kind == "on_chain_start" and name and name not in _seen_nodes:
-                            _known_nodes = {
-                                "context_resolver", "input_parser",
-                                "semantic_router", "schema_analyzer",
-                                "field_mapper",
-                                "query_generator", "query_validator",
-                                "approval_gate", "query_executor",
-                                "result_organizer", "output_generator",
-                                "multi_db_executor", "result_merger",
-                                "synonym_registrar", "general_inference", "error_response",
-                                # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
-                                "intent_planner", "agent_orchestrator",
-                                "replanner", "result_aggregator",
-                            }
-                            if name in _known_nodes:
-                                _seen_nodes.add(name)
-                                _current_node = name
+                    # 무한 hang된다(healthcheck만 도는 증상). wait_for로 stuck fetch를 끊는다.
+                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 무이벤트 상한(idle_timeout)은
+                    # 그대로, 그 사이 heartbeat를 낸다. wait_for(__anext__) 재호출 금지.
+                    _progress_on = bool(getattr(config.server, "sse_progress_events", True))
+                    _hb = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if _progress_on else 0.0
+                    async with contextlib.aclosing(_graph_event_stream(
+                        graph, input_state, thread_config,
+                        idle_timeout=effective_timeout, heartbeat_interval=_hb,
+                    )) as _events:
+                        async for _ev_kind, _ev_payload in _events:
+                            if _ev_kind == "timeout":
                                 yield _sse_event({
-                                    "type": "node_start",
-                                    "node": name,
-                                    "timestamp_ms": (time.time() - start_time) * 1000,
+                                    "type": "error",
+                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                                 })
+                                return
+                            if _ev_kind == "heartbeat":
+                                yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
+                                continue
+                            event = _ev_payload
+                            kind = event.get("event", "")
+                            name = event.get("name", "")
 
-                        # 노드 완료 이벤트
-                        if kind == "on_chain_end" and name:
-                            node_output = event.get("data", {}).get("output", {})
-                            if isinstance(node_output, dict) and name in _seen_nodes:
-                                # query_results를 반환하는 노드에서 추적
-                                if name in ("query_executor", "multi_db_executor", "result_merger"):
-                                    node_qr = node_output.get("query_results")
-                                    if isinstance(node_qr, list):
-                                        _tracked_row_count = len(node_qr)
-                                        _tracked_query_results = node_qr
-                                progress_data = _extract_node_progress(name, node_output)
-                                if progress_data:
+                            # 도구·커스텀 이벤트 → progress (plans/89 T3)
+                            if _progress_on:
+                                _prog = _progress_sse_payload(event, _current_node, start_time)
+                                if _prog is not None:
+                                    yield _sse_event(_prog)
+                                    continue
+
+                            # 노드 시작 이벤트 감지
+                            if kind == "on_chain_start" and name and name not in _seen_nodes:
+                                _known_nodes = _STREAM_KNOWN_NODES
+                                if name in _known_nodes:
+                                    _seen_nodes.add(name)
+                                    _current_node = name
                                     yield _sse_event({
-                                        "type": "node_complete",
+                                        "type": "node_start",
                                         "node": name,
-                                        "data": progress_data,
                                         "timestamp_ms": (time.time() - start_time) * 1000,
                                     })
 
-                        # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
-                        if kind == "on_chat_model_stream":
-                            # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
-                            # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
-                            # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
-                            # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
-                            _tags = event.get("tags", []) or []
-                            _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
-                                chunk = event.get("data", {}).get("chunk")
-                                token_text = _token_text(chunk) if chunk else ""
-                                if token_text:
-                                    streamed_any_token = True
+                            # 노드 완료 이벤트
+                            if kind == "on_chain_end" and name:
+                                node_output = event.get("data", {}).get("output", {})
+                                if isinstance(node_output, dict) and name in _seen_nodes:
+                                    # query_results를 반환하는 노드에서 추적
+                                    if name in ("query_executor", "multi_db_executor", "result_merger"):
+                                        node_qr = node_output.get("query_results")
+                                        if isinstance(node_qr, list):
+                                            _tracked_row_count = len(node_qr)
+                                            _tracked_query_results = node_qr
+                                    progress_data = _extract_node_progress(name, node_output)
+                                    if progress_data:
+                                        yield _sse_event({
+                                            "type": "node_complete",
+                                            "node": name,
+                                            "data": progress_data,
+                                            "timestamp_ms": (time.time() - start_time) * 1000,
+                                        })
+
+                            # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
+                            if kind == "on_chat_model_stream":
+                                # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
+                                # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
+                                # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
+                                # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
+                                _tags = event.get("tags", []) or []
+                                _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
+                                if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
+                                    chunk = event.get("data", {}).get("chunk")
+                                    token_text = _token_text(chunk) if chunk else ""
+                                    if token_text:
+                                        streamed_any_token = True
+                                        yield _sse_event({
+                                            "type": "token",
+                                            "content": token_text,
+                                        })
+
+                            elif kind == "on_chain_end":
+                                output = event.get("data", {}).get("output", {})
+                                if isinstance(output, dict) and "final_response" in output:
+                                    elapsed_ms = (time.time() - start_time) * 1000
+
+                                    if not streamed_any_token:
+                                        yield _sse_event({
+                                            "type": "token",
+                                            "content": output.get("final_response", ""),
+                                        })
+
+                                    # output_generator 노드 출력에는 query_results가 없으므로
+                                    # 이전 노드에서 추적한 _tracked_row_count 사용
+                                    _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
+
                                     yield _sse_event({
-                                        "type": "token",
-                                        "content": token_text,
+                                        "type": "meta",
+                                        "executed_sql": output.get("generated_sql"),
+                                        "row_count": _final_row_count,
                                     })
 
-                        elif kind == "on_chain_end":
-                            output = event.get("data", {}).get("output", {})
-                            if isinstance(output, dict) and "final_response" in output:
-                                elapsed_ms = (time.time() - start_time) * 1000
+                                    status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
+                                    # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
+                                    _zone_clar = output.get("zone_clarification")
+                                    if _zone_clar:
+                                        status = "clarification"
+                                    turn_count = _count_human_messages(output.get("messages", []))
 
-                                if not streamed_any_token:
-                                    yield _sse_event({
-                                        "type": "token",
-                                        "content": output.get("final_response", ""),
+                                    response_data = {
+                                        "query_id": query_id,
+                                        "status": status,
+                                        "response": output.get("final_response", ""),
+                                        "thread_id": thread_id,
+                                        "has_file": output.get("output_file") is not None,
+                                        "file_name": output.get("output_file_name"),
+                                        "executed_sql": output.get("generated_sql"),
+                                        "row_count": _final_row_count,
+                                        "processing_time_ms": elapsed_ms,
+                                        "turn_count": turn_count,
+                                        "has_mapping_report": output.get("mapping_report_md") is not None,
+                                        # HITL 폼필(D-151): 역질문 패널 컨텍스트
+                                        "form_fill_clarification": output.get("form_fill_clarification"),
+                                        "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
+                                        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+                                        "db_scope": build_db_scope(output, selected_db_ids=body.selected_db_ids),
+                                        "clarification": _zone_clar,
+                                    }
+                                    _store_result(query_id, {
+                                        **response_data,
+                                        "output_file": output.get("output_file"),
+                                        "mapping_report_md": output.get("mapping_report_md"),
+                                        "query_results": output.get("query_results") or _tracked_query_results,
                                     })
 
-                                # output_generator 노드 출력에는 query_results가 없으므로
-                                # 이전 노드에서 추적한 _tracked_row_count 사용
-                                _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
-
-                                yield _sse_event({
-                                    "type": "meta",
-                                    "executed_sql": output.get("generated_sql"),
-                                    "row_count": _final_row_count,
-                                })
-
-                                status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
-                                # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-                                _zone_clar = output.get("zone_clarification")
-                                if _zone_clar:
-                                    status = "clarification"
-                                turn_count = _count_human_messages(output.get("messages", []))
-
-                                response_data = {
-                                    "query_id": query_id,
-                                    "status": status,
-                                    "response": output.get("final_response", ""),
-                                    "thread_id": thread_id,
-                                    "has_file": output.get("output_file") is not None,
-                                    "file_name": output.get("output_file_name"),
-                                    "executed_sql": output.get("generated_sql"),
-                                    "row_count": _final_row_count,
-                                    "processing_time_ms": elapsed_ms,
-                                    "turn_count": turn_count,
-                                    "has_mapping_report": output.get("mapping_report_md") is not None,
-                                    # HITL 폼필(D-151): 역질문 패널 컨텍스트
-                                    "form_fill_clarification": output.get("form_fill_clarification"),
-                                    "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
-                                    "clarification": _zone_clar,
-                                }
-                                _store_result(query_id, {
-                                    **response_data,
-                                    "output_file": output.get("output_file"),
-                                    "mapping_report_md": output.get("mapping_report_md"),
-                                    "query_results": output.get("query_results") or _tracked_query_results,
-                                })
-
-                                yield _sse_event({
-                                    "type": "done",
-                                    "response": response_data["response"],
-                                    "query_id": query_id,
-                                    "thread_id": thread_id,
-                                    "processing_time_ms": elapsed_ms,
-                                    "row_count": response_data["row_count"],
-                                    "executed_sql": response_data["executed_sql"],
-                                    "has_file": response_data["has_file"],
-                                    "file_name": response_data.get("file_name"),
-                                    "awaiting_approval": output.get("awaiting_approval", False),
-                                    "turn_count": turn_count,
-                                    "has_mapping_report": response_data.get("has_mapping_report", False),
-                                    "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                    "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-                                    # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
-                                    "clarification": response_data.get("clarification"),
-                                })
-                                return
+                                    yield _sse_event({
+                                        "type": "done",
+                                        "response": response_data["response"],
+                                        "query_id": query_id,
+                                        "thread_id": thread_id,
+                                        "processing_time_ms": elapsed_ms,
+                                        "row_count": response_data["row_count"],
+                                        "executed_sql": response_data["executed_sql"],
+                                        "has_file": response_data["has_file"],
+                                        "file_name": response_data.get("file_name"),
+                                        "awaiting_approval": output.get("awaiting_approval", False),
+                                        "turn_count": turn_count,
+                                        "has_mapping_report": response_data.get("has_mapping_report", False),
+                                        "form_fill_clarification": response_data.get("form_fill_clarification"),
+                                        "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+                                        "db_scope": response_data.get("db_scope"),  # D-205
+                                        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
+                                        "clarification": response_data.get("clarification"),
+                                    })
+                                    return
 
                     if not streamed_any_token:
                         raise AttributeError("astream_events did not produce output")
@@ -1417,6 +1571,9 @@ async def process_query_stream(
                 # HITL 폼필(D-151): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
                 "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
+                # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+                "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
+                "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
                 "clarification": _zone_clar,
             }
             _store_result(query_id, {
@@ -1440,6 +1597,7 @@ async def process_query_stream(
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+                "db_scope": response_data.get("db_scope"),  # D-205
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
             })
@@ -1607,6 +1765,9 @@ async def process_file_query(
         # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
         "form_fill_clarification": result.get("form_fill_clarification"),
         "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
+        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+        "db_scope": build_db_scope(result, selected_db_ids=selected_list),
+        "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
     }
     _store_result(query_id, {
         **response_data,
@@ -1845,151 +2006,149 @@ async def process_file_query_stream(
             if hasattr(graph, "astream_events"):
                 try:
                     # 이벤트 fetch마다 타임아웃(D-066 후속). 노드 내부 LLM 호출이 응답 없이
-                    # 멈추면 SSE가 무한 hang되므로 stuck fetch를 끊는다. 검출·취소 분리는
-                    # D-198 (_next_event_or_timeout docstring) 참조.
-                    _event_iter = graph.astream_events(
-                        initial_state,
-                        thread_config,
-                        version="v2",
-                    ).__aiter__()
-                    while True:
-                        try:
-                            event, _timed_out = await _next_event_or_timeout(
-                                _event_iter, config.server.file_query_timeout
-                            )
-                        except StopAsyncIteration:
-                            break
-                        if _timed_out:
-                            yield _sse_event({
-                                "type": "error",
-                                "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                            })
-                            return
-                        kind = event.get("event", "")
-                        name = event.get("name", "")
-
-                        if kind == "on_chain_start" and name and name not in _seen_nodes:
-                            _known_nodes = {
-                                "context_resolver", "input_parser",
-                                "semantic_router", "schema_analyzer",
-                                "field_mapper",
-                                "query_generator", "query_validator",
-                                "approval_gate", "query_executor",
-                                "result_organizer", "output_generator",
-                                "multi_db_executor", "result_merger",
-                                "synonym_registrar", "general_inference", "error_response",
-                                # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
-                                "intent_planner", "agent_orchestrator",
-                                "replanner", "result_aggregator",
-                            }
-                            if name in _known_nodes:
-                                _seen_nodes.add(name)
-                                _current_node = name
+                    # 멈추면 SSE가 무한 hang되므로 stuck fetch를 wait_for로 끊는다.
+                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 무이벤트 상한(idle_timeout)은
+                    # 그대로, 그 사이 heartbeat를 낸다. wait_for(__anext__) 재호출 금지.
+                    _progress_on = bool(getattr(config.server, "sse_progress_events", True))
+                    _hb = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if _progress_on else 0.0
+                    async with contextlib.aclosing(_graph_event_stream(
+                        graph, initial_state, thread_config,
+                        idle_timeout=config.server.file_query_timeout, heartbeat_interval=_hb,
+                    )) as _events:
+                        async for _ev_kind, _ev_payload in _events:
+                            if _ev_kind == "timeout":
                                 yield _sse_event({
-                                    "type": "node_start",
-                                    "node": name,
-                                    "timestamp_ms": (time.time() - start_time) * 1000,
+                                    "type": "error",
+                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                                 })
+                                return
+                            if _ev_kind == "heartbeat":
+                                yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
+                                continue
+                            event = _ev_payload
+                            kind = event.get("event", "")
+                            name = event.get("name", "")
 
-                        if kind == "on_chain_end" and name:
-                            node_output = event.get("data", {}).get("output", {})
-                            if isinstance(node_output, dict) and name in _seen_nodes:
-                                if name in ("query_executor", "multi_db_executor", "result_merger"):
-                                    node_qr = node_output.get("query_results")
-                                    if isinstance(node_qr, list):
-                                        _tracked_row_count = len(node_qr)
-                                        _tracked_query_results = node_qr
-                                progress_data = _extract_node_progress(name, node_output)
-                                if progress_data:
+                            # 도구·커스텀 이벤트 → progress (plans/89 T3)
+                            if _progress_on:
+                                _prog = _progress_sse_payload(event, _current_node, start_time)
+                                if _prog is not None:
+                                    yield _sse_event(_prog)
+                                    continue
+
+                            if kind == "on_chain_start" and name and name not in _seen_nodes:
+                                _known_nodes = _STREAM_KNOWN_NODES
+                                if name in _known_nodes:
+                                    _seen_nodes.add(name)
+                                    _current_node = name
                                     yield _sse_event({
-                                        "type": "node_complete",
+                                        "type": "node_start",
                                         "node": name,
-                                        "data": progress_data,
                                         "timestamp_ms": (time.time() - start_time) * 1000,
                                     })
 
-                        if kind == "on_chat_model_stream":
-                            # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
-                            # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
-                            # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
-                            # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
-                            _tags = event.get("tags", []) or []
-                            _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                            if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
-                                chunk = event.get("data", {}).get("chunk")
-                                token_text = _token_text(chunk) if chunk else ""
-                                if token_text:
-                                    streamed_any_token = True
+                            if kind == "on_chain_end" and name:
+                                node_output = event.get("data", {}).get("output", {})
+                                if isinstance(node_output, dict) and name in _seen_nodes:
+                                    if name in ("query_executor", "multi_db_executor", "result_merger"):
+                                        node_qr = node_output.get("query_results")
+                                        if isinstance(node_qr, list):
+                                            _tracked_row_count = len(node_qr)
+                                            _tracked_query_results = node_qr
+                                    progress_data = _extract_node_progress(name, node_output)
+                                    if progress_data:
+                                        yield _sse_event({
+                                            "type": "node_complete",
+                                            "node": name,
+                                            "data": progress_data,
+                                            "timestamp_ms": (time.time() - start_time) * 1000,
+                                        })
+
+                            if kind == "on_chat_model_stream":
+                                # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
+                                # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
+                                # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
+                                # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
+                                _tags = event.get("tags", []) or []
+                                _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
+                                if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
+                                    chunk = event.get("data", {}).get("chunk")
+                                    token_text = _token_text(chunk) if chunk else ""
+                                    if token_text:
+                                        streamed_any_token = True
+                                        yield _sse_event({
+                                            "type": "token",
+                                            "content": token_text,
+                                        })
+
+                            elif kind == "on_chain_end":
+                                output = event.get("data", {}).get("output", {})
+                                if isinstance(output, dict) and "final_response" in output:
+                                    elapsed_ms = (time.time() - start_time) * 1000
+
+                                    if not streamed_any_token:
+                                        yield _sse_event({
+                                            "type": "token",
+                                            "content": output.get("final_response", ""),
+                                        })
+
+                                    _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
+
                                     yield _sse_event({
-                                        "type": "token",
-                                        "content": token_text,
+                                        "type": "meta",
+                                        "executed_sql": output.get("generated_sql"),
+                                        "row_count": _final_row_count,
                                     })
 
-                        elif kind == "on_chain_end":
-                            output = event.get("data", {}).get("output", {})
-                            if isinstance(output, dict) and "final_response" in output:
-                                elapsed_ms = (time.time() - start_time) * 1000
-
-                                if not streamed_any_token:
-                                    yield _sse_event({
-                                        "type": "token",
-                                        "content": output.get("final_response", ""),
+                                    turn_count = _count_human_messages(output.get("messages", []))
+                                    response_data = {
+                                        "query_id": query_id,
+                                        "status": "completed",
+                                        "response": output.get("final_response", ""),
+                                        "thread_id": actual_thread_id,
+                                        "has_file": output.get("output_file") is not None,
+                                        "file_name": output.get("output_file_name"),
+                                        "executed_sql": output.get("generated_sql"),
+                                        "row_count": _final_row_count,
+                                        "processing_time_ms": elapsed_ms,
+                                        "turn_count": turn_count,
+                                        "has_mapping_report": output.get("mapping_report_md") is not None,
+                                        # HITL 폼필(D-151): 역질문 패널 컨텍스트
+                                        "form_fill_clarification": output.get("form_fill_clarification"),
+                                        "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
+                                        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+                                        "db_scope": build_db_scope(output, selected_db_ids=selected_list),
+                                    }
+                                    _store_result(query_id, {
+                                        **response_data,
+                                        "output_file": output.get("output_file"),
+                                        "mapping_report_md": output.get("mapping_report_md"),
+                                        "query_results": output.get("query_results") or _tracked_query_results,
+                                        # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
+                                        # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
+                                        #   TTL/공유 스토리지 도입 검토.
+                                        "uploaded_file": file_bytes,
+                                        "uploaded_file_name": file.filename,
                                     })
 
-                                _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
-
-                                yield _sse_event({
-                                    "type": "meta",
-                                    "executed_sql": output.get("generated_sql"),
-                                    "row_count": _final_row_count,
-                                })
-
-                                turn_count = _count_human_messages(output.get("messages", []))
-                                response_data = {
-                                    "query_id": query_id,
-                                    "status": "completed",
-                                    "response": output.get("final_response", ""),
-                                    "thread_id": actual_thread_id,
-                                    "has_file": output.get("output_file") is not None,
-                                    "file_name": output.get("output_file_name"),
-                                    "executed_sql": output.get("generated_sql"),
-                                    "row_count": _final_row_count,
-                                    "processing_time_ms": elapsed_ms,
-                                    "turn_count": turn_count,
-                                    "has_mapping_report": output.get("mapping_report_md") is not None,
-                                    # HITL 폼필(D-151): 역질문 패널 컨텍스트
-                                    "form_fill_clarification": output.get("form_fill_clarification"),
-                                    "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
-                                }
-                                _store_result(query_id, {
-                                    **response_data,
-                                    "output_file": output.get("output_file"),
-                                    "mapping_report_md": output.get("mapping_report_md"),
-                                    "query_results": output.get("query_results") or _tracked_query_results,
-                                    # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
-                                    # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
-                                    #   TTL/공유 스토리지 도입 검토.
-                                    "uploaded_file": file_bytes,
-                                    "uploaded_file_name": file.filename,
-                                })
-
-                                yield _sse_event({
-                                    "type": "done",
-                                    "response": response_data["response"],
-                                    "query_id": query_id,
-                                    "thread_id": actual_thread_id,
-                                    "processing_time_ms": elapsed_ms,
-                                    "row_count": response_data["row_count"],
-                                    "executed_sql": response_data["executed_sql"],
-                                    "has_file": response_data["has_file"],
-                                    "file_name": response_data.get("file_name"),
-                                    "awaiting_approval": False,
-                                    "turn_count": turn_count,
-                                    "has_mapping_report": response_data.get("has_mapping_report", False),
-                                    "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                    "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-                                })
-                                return
+                                    yield _sse_event({
+                                        "type": "done",
+                                        "response": response_data["response"],
+                                        "query_id": query_id,
+                                        "thread_id": actual_thread_id,
+                                        "processing_time_ms": elapsed_ms,
+                                        "row_count": response_data["row_count"],
+                                        "executed_sql": response_data["executed_sql"],
+                                        "has_file": response_data["has_file"],
+                                        "file_name": response_data.get("file_name"),
+                                        "awaiting_approval": False,
+                                        "turn_count": turn_count,
+                                        "has_mapping_report": response_data.get("has_mapping_report", False),
+                                        "form_fill_clarification": response_data.get("form_fill_clarification"),
+                                        "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+                                        "db_scope": response_data.get("db_scope"),  # D-205
+                                    })
+                                    return
 
                     if not streamed_any_token:
                         raise AttributeError("astream_events did not produce output")
@@ -2027,6 +2186,9 @@ async def process_file_query_stream(
                 # HITL 폼필(D-151): 역질문 패널 컨텍스트
                 "form_fill_clarification": result.get("form_fill_clarification"),
                 "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
+                # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+                "db_scope": build_db_scope(result, selected_db_ids=selected_list),
+                "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
             }
             _store_result(query_id, {
                 **response_data,
@@ -2052,6 +2214,7 @@ async def process_file_query_stream(
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+                "db_scope": response_data.get("db_scope"),  # D-205
             })
 
         except asyncio.TimeoutError:

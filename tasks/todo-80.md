@@ -1,6 +1,6 @@
 # Task List: Plan 78·79 검토 정정 작업
 
-> 계획: `plans/80-78-79-joint-execution-contract.md` · 대상: `plans/78` · `plans/79`
+> 계획: `plans/80-78-79-joint-execution-contract-WIP.md` · 대상: `plans/78` · `plans/79`
 > (버전은 드리프트가 잦아 핀하지 않는다 — 착수 시 해당 문서의 변경 이력 최신 행을 본다)
 > 작성일: 2026-08-26 · **최종 확인 2026-08-28**
 > **상태**: **A1~A5 · B1~B6 · C3 · C4 · D1 · D2 = 15건 완료** (2026-08-28 실측 재확인).
@@ -75,7 +75,7 @@
 - [x] `grep -n "host_diagnostics" plans/78-*.md` 결과에 §4.5-① 라인이 없다
       (폐기 기록·§0.3·§6.1 취소선 항목은 **의도적 보존**이므로 남는다)
 
-**Files:** `plans/78-composite-query-host-diagnostics-orchestration.md`
+**Files:** `plans/78-composite-query-host-diagnostics-orchestration-WIP.md`
 **Scope:** XS
 
 ---
@@ -167,7 +167,7 @@ logprobs 자리가 없으며 응답이 `{status, content}` 텍스트뿐이라 **
 **Verify:**
 - [x] `grep -n "Gemini" plans/79-*.md`에 §3.1 라인 0건
 
-**Files:** `plans/79-semantic-routing-improvement.md`
+**Files:** `plans/79-semantic-routing-improvement-WIP.md`
 **Scope:** S
 
 ---
@@ -394,7 +394,7 @@ Phase A·B 진행에 따라 상태가 갱신되어야 추적이 된다.
 - [x] Phase A·B 항목과 **1:1 대응**(A1~A5 · B1~B6 번호 병기)
 - [x] 철회 항목(구 S-4 `synonym_registration`)이 철회로 표시
 
-**Files:** `plans/80-78-79-joint-execution-contract.md`
+**Files:** `plans/80-78-79-joint-execution-contract-WIP.md`
 **Scope:** XS
 
 ---

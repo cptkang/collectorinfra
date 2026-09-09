@@ -105,6 +105,12 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_RESOLVED_TO_DASHBOARD": "기본 동작",
     "NOISE_DECISION_STORE_PATH": "기본 동작",
     "NOISE_DECISION_STORE_ENABLED": "기본 동작",
+    "NOISE_DECISION_STORE_MAX_LINES": "기본 동작",
+    # (Plan 54 · D-196) 운영자 침묵 규칙 — 억제를 사람이 직접 거는 유일한 경로.
+    "NOISE_SILENCE_ENABLED": "중복·연쇄 억제",
+    "NOISE_SILENCE_STORE_PATH": "중복·연쇄 억제",
+    "NOISE_SILENCE_MAX_DURATION_SECONDS": "중복·연쇄 억제",
+    "NOISE_SILENCE_CACHE_TTL_SECONDS": "중복·연쇄 억제",
     "NOISE_DEBOUNCE_SECONDS": "중복·연쇄 억제",
     "NOISE_FLAP_HIGH_THRESHOLD": "중복·연쇄 억제",
     "NOISE_FLAP_LOW_THRESHOLD": "중복·연쇄 억제",

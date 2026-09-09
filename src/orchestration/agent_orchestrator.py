@@ -22,12 +22,22 @@ from src.orchestration.subagents import (
     SubAgentSpec,
     _make_isolated_input,
 )
+from src.orchestration.task_progress import emit_task_progress
 from src.orchestration.sufficiency import (
     SufficiencyReport,
     check_sufficiency,
     summarize_shortfalls,
 )
 from src.state import AgentState
+from src.utils.prior_dependency import (
+    NOTE_SUFFICIENCY,
+    POSTCHECK_AGENTS,
+    DependencyVerdict,
+    apply_scope_postcheck,
+    assess_prior_dependency,
+    skip_result,
+    verdict_note,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,21 +81,37 @@ async def agent_orchestrator(
     # pending만 넘겨도 완료 task를 가리키는 depends_on은 안전하게 처리된다.
     pending = [t for t in tasks if t.get("status") == "pending"]
 
+    # 순차 의존 계약(D-203 · plans/88 §4.1): 선행 결과 게이트. off면 판정을 로그로만 남긴다.
+    gate_on = _sequential_gate_on(app_config)
+    postcheck_on = _scope_postcheck_on(app_config)
+    notes: list[dict] = []
+    verdicts: dict[str, DependencyVerdict] = {}
+
     for level in topological_levels(pending):
-        # 레벨 시작: 상태 전이 (P2)
+        runnable = _gate_level(level, results, gate_on=gate_on, notes=notes, verdicts=verdicts)
+        # 단계 진행 이벤트(plans/89 §3.4 · D-204) — 게이트가 건너뛴 task는 end(skipped)만 낸다
         for t in level:
+            if t not in runnable:
+                await emit_task_progress(t, "end", result=results.get(t.get("task_id")), total=len(tasks))
+        # 레벨 시작: 상태 전이 (P2)
+        for t in runnable:
             t["status"] = "in_progress"
+            await emit_task_progress(t, "start", total=len(tasks))
 
         coros = [
             _run_agent(task, state, llm, app_config, prior=results, injected=injected)
-            for task in level
+            for task in runnable
         ]
         level_results = await asyncio.gather(*coros, return_exceptions=True)
 
-        for task, res in zip(level, level_results):
+        for task, res in zip(runnable, level_results):
             norm = _normalize(res)
+            # 사후 대조(D-203 · plans/88 §4.3): 선행 스코프 밖 서버 행 제거·미조회 서버 표기.
+            if postcheck_on and task.get("agent") in POSTCHECK_AGENTS:
+                norm = apply_scope_postcheck(verdicts.get(task.get("task_id", "")), norm, task.get("task_id", ""))
             task["status"] = "failed" if norm.get("error") else "completed"
             results[task["task_id"]] = norm
+            await emit_task_progress(task, "end", result=norm, total=len(tasks))
             if norm.get("error"):
                 logger.warning(
                     "task %s (agent=%s) 실패: %s",
@@ -109,6 +135,15 @@ async def agent_orchestrator(
             sufficiency_reasons = report.as_reasons()
             note = summarize_shortfalls(report, retried=retried)
             logger.warning("충족도 미달 잔존(사유 노출): %s", note)
+            if note:
+                # 78 W5-3의 사유가 실제로 응답에 닿도록 노트 채널에 병기한다(D-203 · plans/88 §2.2 —
+                # `sufficiency_shortfalls`는 AgentState 미선언·소비처 0건이라 버려지고 있었다).
+                notes.append({
+                    "kind": NOTE_SUFFICIENCY,
+                    "task_id": ",".join(report.task_ids) if getattr(report, "task_ids", None) else None,
+                    "reason": "sufficiency_shortfall",
+                    "detail": note,
+                })
 
     out: dict = {
         "task_plan": tasks,
@@ -117,8 +152,60 @@ async def agent_orchestrator(
     }
     if sufficiency_reasons:
         # 미충족 사유를 응답에 노출한다(78 W5-3 · 침묵 폴백 금지).
+        # 병기 유지 — 폐기 기한 2027-03-09(D-161 ①). 실제 전달 경로는 dependency_notes다.
         out["sufficiency_shortfalls"] = sufficiency_reasons
+    if notes:
+        out["dependency_notes"] = list(state.get("dependency_notes") or []) + notes
     return out
+
+
+def _sequential_gate_on(app_config: object) -> bool:
+    """`COMPOSITE_SEQUENTIAL_GATE_ENABLED` — 테스트 더미 설정(`composite` 없음)에서도 off로 읽는다."""
+    composite = getattr(app_config, "composite", None)
+    return bool(getattr(composite, "sequential_gate_enabled", False))
+
+
+def _scope_postcheck_on(app_config: object) -> bool:
+    """`COMPOSITE_SCOPE_POSTCHECK_ENABLED` — 위와 같은 방어적 읽기."""
+    composite = getattr(app_config, "composite", None)
+    return bool(getattr(composite, "scope_postcheck_enabled", False))
+
+
+def _gate_level(
+    level: list[dict], results: dict[str, dict], *, gate_on: bool, notes: list[dict],
+    verdicts: Optional[dict[str, DependencyVerdict]] = None,
+) -> list[dict]:
+    """레벨의 task를 선행 결과 게이트로 거른다 (D-203 · plans/88 §4.1).
+
+    `input_from`이 있는 task만 판정 대상이다. 게이트 on이면 판정 실패 task를 `skipped`로
+    마감하고 결과에 사유를 실어 실행하지 않는다. off면 판정을 로그로만 남긴다(비트 동일 —
+    발동률 관측이 on 전환의 근거다).
+
+    Returns:
+        실행할 task 목록(원 순서 유지)
+    """
+    runnable: list[dict] = []
+    for task in level:
+        verdict = assess_prior_dependency(task, results)
+        if verdict is None:
+            runnable.append(task)
+            continue
+        tid = task.get("task_id", "")
+        if verdicts is not None:
+            verdicts[tid] = verdict  # 사후 대조의 스코프 정본(§4.3) — 두 번 계산하지 않는다
+        if not gate_on:
+            if not verdict.ok:
+                logger.info("순차 게이트 관측(off) task=%s reason=%s", tid, verdict.reason)
+            runnable.append(task)
+            continue
+        notes.append(verdict_note(verdict, tid))
+        if verdict.ok:
+            runnable.append(task)
+            continue
+        task["status"] = "skipped"
+        results[tid] = skip_result(verdict)
+        logger.warning("순차 게이트 — task %s 미실행(%s): %s", tid, verdict.reason, verdict.detail)
+    return runnable
 
 
 async def _retry_once(

@@ -457,6 +457,6 @@ rate(node_network_receive_drop_total[1m])                     # ② NW drop
 - 최소권한 sudoers·agentless: [Red Hat sudoers](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html/security_hardening/managing-sudo-access) · [Lansweeper agentless Linux](https://community.lansweeper.com/t5/requirements/linux-and-unix-agentless-scanning-requirements/ta-p/64378)
 
 **프로젝트 내부**
-- `plans/64-automated-incident-investigation-and-response.md`(§7 L3·§14 산출물), `plans/51-fault-diagnosis-data-collection.md`(§5.3·§9·부록 A), `plans/60-noise-cancellation-benchmark-refinement.md`(§14 트리거), `plans/50-fault-diagnosis-rca.md`
+- `plans/64-automated-incident-investigation-and-response-WIP.md`(§7 L3·§14 산출물), `plans/51-fault-diagnosis-data-collection-WIP.md`(§5.3·§9·부록 A), `plans/60-noise-cancellation-benchmark-refinement.md`(§14 트리거), `plans/50-fault-diagnosis-rca-WIP.md`
 - 코드 실측: `src/dbhub/client.py`(MCP SSE 클라이언트 패턴), `src/alarm/infrastructure/polestar_process_api.py`(read-only GET·자격증명 분리)
 - `docs/aiops_benchmark/incident_investigation_literature.md`(Plan 64 문헌 dossier)
