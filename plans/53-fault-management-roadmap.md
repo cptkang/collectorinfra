@@ -95,7 +95,7 @@ Plan 47 (이미 구현: is_routine·이력 통계·프로세스 보강)  ── 
 
 ### Wave 4 — 심층·외부 게이트 `[Plan 51 L2/L3 + Plan 50 PhaseC]` · 비용 L~XL
 
-> **2026-09-09**: Wave 4의 실행 항목은 `plans/91-TODO-fault-investigation-residual-consolidation.md`이 소유한다(L3 = 1-6 E8 post-gate(경로 B · D-189) · Phase C = 1-1~1-4 · L2 = 1-11 · D-208). 아래는 원안 기록.
+> **2026-09-09**: Wave 4의 실행 항목은 `plans/91-WIP-fault-investigation-residual-consolidation.md`이 소유한다(**2026-09-10 · 1-1~1-6 구현 완료 D-209**)(L3 = 1-6 E8 post-gate(경로 B · D-189) · Phase C = 1-1~1-4 · L2 = 1-11 · D-208). 아래는 원안 기록.
 - 51 L3(원시 syslog/dmesg/OOM·프로세스 추이) = 최대 비용·리스크. **호스트 수집 보안정책 결정이 선행 블로커.**
 - 51 L2는 벤더(폴스타) 협의 의존. 50 PhaseC(다중서버 연쇄·문서·이력)도 여기.
 - 보안 결정·벤더 협의 완료 후 착수 → 명백히 마지막.

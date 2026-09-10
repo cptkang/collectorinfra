@@ -1,0 +1,96 @@
+{
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "sequential_cases": 3,
+    "sequential_preserved": 3,
+    "single_false_split": 0,
+    "degraded": 0,
+    "errors": 0
+  },
+  "results": [
+    {
+      "id": "d-001",
+      "query": "CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘",
+      "critical": "sequential",
+      "task_count": 2,
+      "min_tasks": 2,
+      "task_count_ok": true,
+      "single_ok": true,
+      "agents_got": [
+        "data_query",
+        "data_query"
+      ],
+      "agents_ok": true,
+      "edge_ok": true,
+      "degraded": [],
+      "passed": true
+    },
+    {
+      "id": "d-002",
+      "query": "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 메모리 사용률을 보여줘",
+      "critical": "sequential",
+      "task_count": 2,
+      "min_tasks": 2,
+      "task_count_ok": true,
+      "single_ok": true,
+      "agents_got": [
+        "alarm_query",
+        "data_query"
+      ],
+      "agents_ok": true,
+      "edge_ok": true,
+      "degraded": [],
+      "passed": true
+    },
+    {
+      "id": "d-003",
+      "query": "디스크 사용률 상위 5대를 뽑고 그 중 메모리 사용률이 가장 높은 서버의 제조사를 알려줘",
+      "critical": "sequential",
+      "task_count": 2,
+      "min_tasks": 2,
+      "task_count_ok": true,
+      "single_ok": true,
+      "agents_got": [
+        "data_query",
+        "data_query"
+      ],
+      "agents_ok": true,
+      "edge_ok": true,
+      "degraded": [],
+      "passed": true
+    },
+    {
+      "id": "d-004",
+      "query": "김포 운영 서버 목록을 찾아줘",
+      "critical": "single",
+      "task_count": 1,
+      "min_tasks": 1,
+      "task_count_ok": true,
+      "single_ok": true,
+      "agents_got": [
+        "data_query"
+      ],
+      "agents_ok": true,
+      "edge_ok": true,
+      "degraded": [],
+      "passed": true
+    },
+    {
+      "id": "d-005",
+      "query": "전체 서버의 OS 종류와 버전을 보여줘",
+      "critical": "single",
+      "task_count": 1,
+      "min_tasks": 1,
+      "task_count_ok": true,
+      "single_ok": true,
+      "agents_got": [
+        "data_query"
+      ],
+      "agents_ok": true,
+      "edge_ok": true,
+      "degraded": [],
+      "passed": true
+    }
+  ]
+}

@@ -278,3 +278,37 @@ def test_feedback_summary_aggregates(tmp_path):
 def test_feedback_summary_empty_without_file(tmp_path):
     client = _make_client(_make_config(tmp_path), user=OPERATOR_GONGJON)
     assert client.get("/api/v1/alarm/feedback/summary").json()["items"] == []
+
+
+# ─── plans/91 1-4: 조사 참조 피드백 — 기존 경로(존 RBAC·작성자) 그대로 재사용 ─────────────────
+
+
+def test_feedback_investigation_id_recorded_via_same_zone_path(tmp_path):
+    import json
+
+    config = _make_config(tmp_path)
+    client = _make_client(config, user=OPERATOR_GONGJON)
+    resp = client.post("/api/v1/alarm/feedback",
+                       json=_feedback_body(db_id=GONGJON_DB, note="실제 원인은 배치 X", investigation_id="inv-42"))
+    assert resp.status_code == 200, resp.text
+    rows = [json.loads(l) for l in open(config.noise_gate.feedback_store_path, encoding="utf-8")]
+    assert rows[-1]["investigation_id"] == "inv-42" and rows[-1]["labeled_by"] == "op1"
+
+
+def test_feedback_without_investigation_id_keeps_record_keys(tmp_path):
+    import json
+
+    config = _make_config(tmp_path)
+    client = _make_client(config, user=OPERATOR_GONGJON)
+    assert client.post("/api/v1/alarm/feedback", json=_feedback_body(db_id=GONGJON_DB)).status_code == 200
+    rows = [json.loads(l) for l in open(config.noise_gate.feedback_store_path, encoding="utf-8")]
+    assert "investigation_id" not in rows[-1]
+
+
+def test_feedback_investigation_id_cross_zone_still_denied(tmp_path):
+    config = _make_config(tmp_path)
+    client = _make_client(config, user=OPERATOR_BANKJON)
+    resp = client.post("/api/v1/alarm/feedback", json=_feedback_body(db_id=GONGJON_DB, investigation_id="inv-42"))
+    assert resp.status_code == 403
+    import os
+    assert not os.path.exists(config.noise_gate.feedback_store_path)

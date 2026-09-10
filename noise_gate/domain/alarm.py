@@ -199,3 +199,5 @@ class AlarmAnalysisResult:
     # --- Plan 52 E4: LLM 액션가능성 판단(피드백 few-shot 보조) ---
     llm_actionability: Optional[str] = None   # "actionable" | "noise" | None(판단 없음/비활성)
     actionability_reason: str = ""            # LLM 자문 근거(1문장) 또는 ""
+    # --- plans/91 1-4: 조사 참조 — notifier가 state(investigation_id·investigation_pending)에서 채운다. 빈 값이면 페이로드 키 없음 ---
+    investigation_id: str = ""

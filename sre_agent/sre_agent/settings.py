@@ -83,6 +83,12 @@ class AgentSettings(BaseSettings):
     # 있을 때 조사 전에 mcp_server 도구(전 알람 1 + 지표 4)를 코드가 호출해 선행 신호·타임라인을 계산하고
     # 조사 지침·브리핑에 싣는다. LLM 호출 0. 실패해도 조사를 막지 않는다(상관 없음 + 감사).
     evidence_correlation_enabled: bool = False
+    # plans/91 1-2(C′-2): 사전수집 배치 말미에 변경 이력 1건을 더해 "변경 직후" 가설·타임라인을 만든다.
+    # 기본 off = 배치·결과·to_dict 키 집합 비트 동일. **만료일 2027-03-10**(D-161 C1) — 운영 실측 후 on 또는 삭제.
+    evidence_change_overlay_enabled: bool = False
+    # plans/91 1-3(C′-1): 페이로드 meta.root_resource_name(E4 root 서버)을 연관 서버로 소비해 알람 1건씩 추가 수집.
+    # 상한(대수). 0 = off(비트 동일). U-I 확정 기본 상한 3은 on 전환 시 값. **만료일 2027-03-10**(D-161 C1).
+    evidence_correlation_related_hosts: int = 0
     # baseline 기간 수(granularity 단위 — 시간 지표면 24 = 직전 24시간).
     evidence_baseline_periods: int = 24
     # 사전수집 MCP 배치 타임아웃(초) — SSE 연결·호출 단위에 같이 적용.

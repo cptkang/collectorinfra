@@ -113,5 +113,5 @@ sre_diagnose(question, server_name, hostname, db_id, target_state, reference_tim
 - **조사 실행 자체** — `sre_agent` dispatcher·가드 6종·severity_judge·remediation은 손대지 않는다.
 - **`src/diagnosis/` 서브그래프** — `plans/50` §5 폐기(D-118 위임). 노드 책임은 위 모듈로 흡수됐다.
 - **`POST /diagnosis/analyze`** — §8.3 폐기(진입점은 챗·알람 2종으로 충분).
-- **다중서버 연쇄 RCA · 진단 이력/피드백** — `plans/50` Phase C′(범위 밖) → **2026-09-09 `plans/91-TODO-fault-investigation-residual-consolidation.md` 1-1~1-4로 이관**(D-208).
+- **다중서버 연쇄 RCA · 진단 이력/피드백** — `plans/50` Phase C′(범위 밖) → **2026-09-09 `plans/91-WIP-fault-investigation-residual-consolidation.md` 1-1~1-4로 이관**(D-208).
 - **실 LLM 조사 실행** — D-127 건별 승인 사항. 본 맵의 검증은 단위·통합 테스트까지다.

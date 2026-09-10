@@ -473,3 +473,45 @@ class TestFollowupBody:
         result.alarm_event.alarm_name = "<script>x</script>"
         body = build_followup_body(result, {"cause": "OOM"})
         assert "<script>" not in body and "&lt;script&gt;" in body
+
+
+
+# ── plans/91 1-4: 조사 ID가 카드 페이로드에 실린다(값 있을 때만 키) ─────────────────────────
+
+class TestInvestigationIdOnCardPayload:
+    def test_sse_payload_has_no_key_without_investigation(self):
+        from noise_gate.application.nodes.alarm_notifier import _incident_open_payload, _tier_sse_payload
+
+        r = _result()
+        assert "investigation_id" not in _tier_sse_payload(r, _decision())
+        assert "investigation_id" not in _incident_open_payload(r, _decision())
+
+    async def test_followup_pending_id_lands_on_result_and_payload(self, monkeypatch):
+        """후속 모드: notifier가 investigation_pending의 ID를 결과에 싣고, 카드 페이로드가 그 값을 실어 나른다."""
+        from noise_gate.application.nodes.alarm_notifier import _incident_open_payload, _tier_sse_payload
+
+        _patch_senders(monkeypatch)
+
+        async def fake_send_followup(*a, **k):
+            pass
+
+        async def fake_poll(inv_id, gate_cfg):
+            return None, "done", None
+
+        monkeypatch.setattr(notifier_mod, "_send_workb_followup", fake_send_followup)
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
+        result = _result()
+        state = {"analysis_result": result, "notification_decision": _decision(),
+                 "investigation_pending": {"investigation_id": "inv-77", "alarm_id": "A-1", "fingerprint": "fp-1"}}
+        await alarm_notifier_node(state, _notifier_config(_ng()))
+        await _drain_followups()
+        assert result.investigation_id == "inv-77"
+        assert _tier_sse_payload(result, _decision())["investigation_id"] == "inv-77"
+        assert _incident_open_payload(result, _decision())["investigation_id"] == "inv-77"
+
+    async def test_inline_state_id_lands_on_result(self, monkeypatch):
+        _patch_senders(monkeypatch)
+        result = _result()
+        state = {"analysis_result": result, "notification_decision": _decision(), "investigation_id": "inv-88"}
+        await alarm_notifier_node(state, _notifier_config(_ng(investigation_followup_enabled=False)))
+        assert result.investigation_id == "inv-88"

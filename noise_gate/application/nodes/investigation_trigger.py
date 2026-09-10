@@ -149,6 +149,8 @@ async def investigation_trigger_node(
         correlation_meta=state.get("correlation_meta"),
         root_resource=signals.get("root_resource"),
         target_state=target_state,
+        # plans/91 1-3: root 이름은 signals(§8.2 동결 스키마)가 아니라 노이즈 컨텍스트에 있다.
+        root_resource_name=(state.get("noise_context") or {}).get("root_resource_name"),
     )
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
@@ -187,6 +189,9 @@ async def investigation_trigger_node(
     result: dict[str, Any] = {}
     if briefing is not None:
         result["investigation_briefing"] = briefing
+    # (plans/91 1-4) 조사 ID를 state에 남겨 카드 피드백이 "실제 원인은 X"를 조사와 잇게 한다(값 있을 때만 키).
+    if investigation_id and status != "rejected":
+        result["investigation_id"] = investigation_id
     # (Plan 64 CW-C) escalate-only 후속 통보 승격 — fault_escalation_enabled + verdict.escalate일
     # 때만 상향 안내 블록을 state에 싣는다(notifier가 통보에 첨부). 게이트 판정(tier/routing/
     # decision)은 소급 변경·하향하지 않는다(§5.1). off/미escalate면 미첨부 → 통보 비트동일.

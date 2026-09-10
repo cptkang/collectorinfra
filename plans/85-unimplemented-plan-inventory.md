@@ -136,7 +136,7 @@ sed -n '/VM_DIAG_ALLOW/,/^]/p' sre_agent/sre_agent/toolset_profiles.py          
 
 ### A-1. Plan 50 — 장애진단·원인분석 (RCA) · 757줄 → **재판정: 부분 구현(위임 방식)**
 
-> **2026-09-09 갱신**: ★ 5건은 D-197(G1~G6)로 해소됐고, 그 위의 잔여(Phase C′ 등)는 `plans/91-TODO-fault-investigation-residual-consolidation.md` §1로 이관됐다(D-208). Plan 50은 `-WIP` 해제·완결. 아래는 2026-08-31 시점 기록.
+> **2026-09-09 갱신**: ★ 5건은 D-197(G1~G6)로 해소됐고, 그 위의 잔여(Phase C′ 등)는 `plans/91-WIP-fault-investigation-residual-consolidation.md` §1로 이관됐다(D-208). **2026-09-10: 이관 항목 1-1~1-4 구현 완료(D-209)**. Plan 50은 `-WIP` 해제·완결. 아래는 2026-08-31 시점 기록.
 
 > **⚠ v1 판정 정정(v2)**. v1은 `root_cause|rca_` **키워드** grep만 보고 *"코드 0건"* 이라 판정했다.
 > **기능 축으로 다시 실측한 결과, Plan 50이 요구한 것의 상당 부분이 `sre_agent` 위임 방식으로
@@ -180,7 +180,7 @@ sed -n '/VM_DIAG_ALLOW/,/^]/p' sre_agent/sre_agent/toolset_profiles.py          
 
 ### A-2. Plan 51 — 장애분석 데이터 수집·진단 기법 · 596줄 → **재판정: L1 완료 · L3 어긋남**
 
-> **2026-09-09 갱신**: 잔여(플레이북 편입·L2 벤더)는 `plans/91-TODO-fault-investigation-residual-consolidation.md` 1-5·1-11로 이관(D-208). Plan 51은 `-WIP` 해제·완결. 아래는 2026-08-31 시점 기록.
+> **2026-09-09 갱신**: 잔여(플레이북 편입·L2 벤더)는 `plans/91-WIP-fault-investigation-residual-consolidation.md` 1-5·1-11로 이관(D-208). **2026-09-10: 1-5 플레이북 편입 구현 완료(D-209)**. Plan 51은 `-WIP` 해제·완결. 아래는 2026-08-31 시점 기록.
 
 > **⚠ v1 판정 정정(v2)** — A-1과 동일 사유.
 

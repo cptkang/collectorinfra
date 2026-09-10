@@ -160,7 +160,9 @@ def _default_prefetch_fn(settings: AgentSettings):
         return None
 
     def _prefetch(job) -> dict | None:
-        scope = scope_from_job(job, baseline_periods=settings.evidence_baseline_periods)
+        scope = scope_from_job(job, baseline_periods=settings.evidence_baseline_periods,
+                               change_overlay=settings.evidence_change_overlay_enabled,
+                               related_hosts_max=settings.evidence_correlation_related_hosts)
         if scope is None:
             return None
         return prefetch_and_correlate(scope, call_batch).to_dict()

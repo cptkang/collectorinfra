@@ -409,6 +409,10 @@ class AlarmFeedbackRequest(BaseModel):
     db_id: str = Field(default="", description="dbId — 폴스타 인스턴스 식별자(선택)")
     note: str = Field(default="", description="운영자 메모(선택)")
     severity: Optional[int] = Field(default=None, description="심각도(선택)")
+    investigation_id: str = Field(
+        default="",
+        description="조사 ID(선택 · plans/91 1-4) — '실제 원인은 X' 피드백을 자동 조사 결과와 잇는다. 감사 전용",
+    )
 
 
 class AlarmPromptSuggestRequest(BaseModel):
@@ -1441,6 +1445,8 @@ async def submit_alarm_feedback(
         # (Plan 83 T6/A-4) 작성자 — 감사 전용(few-shot 프롬프트에는 실리지 않는다)
         labeled_by=current_user.get("sub") or current_user.get("name") or "",
         ts=recorded_ts,
+        # (plans/91 1-4 · C′-3) 조사 참조 — 존 RBAC·작성자·철회는 위 경로를 그대로 재사용한다(별도 저장소 없음)
+        investigation_id=body.investigation_id,
     )
     return AlarmFeedbackResponse(recorded=True, ts=recorded_ts.isoformat())
 

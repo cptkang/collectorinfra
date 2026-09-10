@@ -95,3 +95,56 @@ def test_correlation_module_is_vendor_neutral():
     text = src.read_text(encoding="utf-8").lower()
     for token in ("polestar", "cmm_", "stat_date", "avg_val", "prometheus", "promql"):
         assert token not in text, token
+
+
+# ── 변경 이벤트 (plans/91 1-2 · C′-2) ───────────────────────────────────────────────────
+from sre_agent.domain.correlation import ChangePoint  # noqa: E402
+
+
+def test_change_points_order_between_metric_and_alarm_and_finding():
+    ref = "2026-09-01T14:00:00"
+    alarms = [AlarmPoint(time="2026-09-01T13:50:00", severity=3, name="CPU Critical")]
+    changes = [ChangePoint(time="2026-09-01T13:45:00", description="배포 v2", lifecycle="UPDATE"),
+               ChangePoint(time="2026-09-01T13:30:00", description="커널 패치", lifecycle="UPDATE")]
+    r = correlate(ref, alarms, [], changes=changes)
+    kinds = [(t.t_offset_min, t.kind) for t in r.timeline]
+    assert kinds == [(-30, "change"), (-15, "change"), (-10, "alarm")]
+    assert r.change_finding == {"count": 2, "last_change_offset_min": -15, "before_first_alarm": True,
+                                "descriptions": ["[UPDATE] 배포 v2", "[UPDATE] 커널 패치"]}
+    # 같은 offset이면 변경이 알람 앞에 놓이되(표시 순서) "앞선다"는 엄격 비교라 False다.
+    tie = correlate(ref, alarms, [], changes=[ChangePoint(time="2026-09-01T13:50:00", description="d")])
+    assert [(t.t_offset_min, t.kind) for t in tie.timeline] == [(-10, "change"), (-10, "alarm")]
+    assert tie.change_finding["before_first_alarm"] is False
+    assert set(r.to_dict()) == {"reference_time", "timeline", "metric_findings", "alarm_summary", "leading_signal", "notes", "change_finding"}
+
+
+def test_change_after_first_alarm_is_not_before():
+    ref = "2026-09-01T14:00:00"
+    alarms = [AlarmPoint(time="2026-09-01T13:30:00", severity=3, name="X")]
+    r = correlate(ref, alarms, [], changes=[ChangePoint(time="2026-09-01T13:45:00", description="d", lifecycle="")])
+    assert r.change_finding["before_first_alarm"] is False and r.change_finding["descriptions"] == ["d"]
+
+
+def test_no_changes_argument_keeps_to_dict_keys():
+    r = correlate("2026-09-01T14:00:00", [], [])
+    assert r.change_finding is None and "change_finding" not in r.to_dict()
+
+
+# ── 연관 서버 알람 (plans/91 1-3 · C′-1) ─────────────────────────────────────────────────
+def test_related_alarms_prefix_and_leading_note_only_when_earlier():
+    ref = "2026-09-01T14:00:00"
+    rep = [AlarmPoint(time="2026-09-01T13:50:00", severity=3, name="CPU")]
+    related = {"db-01": [AlarmPoint(time="2026-09-01T13:40:00", severity=3, name="DB Down", server="db-01")],
+               "app-02": [AlarmPoint(time="2026-09-01T13:55:00", severity=2, name="Slow", server="app-02")]}
+    r = correlate(ref, rep, [], related_alarms=related)
+    assert r.alarm_summary["count"] == 1
+    kinds = [(t.t_offset_min, t.detail) for t in r.timeline]
+    assert (-20, "[db-01] [severity 3] DB Down") in kinds and (-5, "[app-02] [severity 2] Slow") in kinds
+    assert any("연관 서버 db-01의 첫 알람 T-20m — 대표보다 선행" in n for n in r.notes)
+    assert not any("app-02" in n for n in r.notes)
+    assert "change_finding" not in r.to_dict()
+
+
+def test_alarm_point_server_default_keeps_old_detail():
+    r = correlate("2026-09-01T14:00:00", [AlarmPoint(time="2026-09-01T13:50:00", severity=3, name="X")], [])
+    assert r.timeline[0].detail == "[severity 3] X"

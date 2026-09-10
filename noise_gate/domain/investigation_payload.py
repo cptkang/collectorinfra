@@ -38,6 +38,7 @@ def build_trigger_payload(
     correlation_meta: Optional[dict] = None,
     root_resource: Optional[str] = None,
     target_state: Optional[dict] = None,
+    root_resource_name: Optional[str] = None,
 ) -> dict:
     """게이트 보유값으로 조사 트리거 페이로드(`contract_version: "1"`)를 조립한다.
 
@@ -52,6 +53,8 @@ def build_trigger_payload(
         recurrence: E1 재발생 메타(직전 창 count 등, 없으면 None).
         correlation_meta: E2 크로스-호스트 클러스터 메타(대표 지문·멤버 순번 등, 없으면 None).
         root_resource: E4 다홉 연쇄의 root 리소스 식별자(없으면 None).
+        root_resource_name: E4 root 리소스 NAME(plans/91 1-3 — 조사 측 연관 서버 소비용). 값이 있을 때만
+            `meta.root_resource_name` 키가 생긴다.
         target_state: 대상 호스트 가용성 판정(Plan 81 · `HostAvailability.to_dict()`).
             **값이 있을 때만 `meta.target_state` 키가 생긴다** — 없으면 페이로드가 종전과
             바이트 동일하다. `validate_payload`가 여분 키를 거부하지 않으므로 구버전
@@ -70,6 +73,10 @@ def build_trigger_payload(
     # 예외 경로에서도 페이로드가 달라져 "미설정 시 종전과 동일"이 깨진다(회귀 0).
     if target_state is not None:
         meta["target_state"] = target_state
+    # plans/91 1-3(C′-1): E4 root 리소스 **이름** — `root_resource`는 ID라 조사 측이 서버명으로 쓸 수 없다.
+    # 값이 있을 때만 키를 넣는다(없으면 종전 바이트 동일). 클러스터 멤버명은 게이트가 보존하지 않아 싣지 않는다.
+    if root_resource_name:
+        meta["root_resource_name"] = str(root_resource_name)
 
     return {
         "contract_version": CONTRACT_VERSION,

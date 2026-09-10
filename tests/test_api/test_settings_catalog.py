@@ -116,7 +116,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 327
+    assert len(items) == 335
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -192,7 +192,7 @@ def test_t2_group_and_field_counts():
       (D-203 · plans/88 · +3) + 병행 세션 SSE_PROGRESS_EVENTS·SSE_HEARTBEAT_INTERVAL_SEC(plans/89 · +2).
       그룹 수 불변 — 같은 날 세 세션이 동시에 필드를 넣었으므로 **실측으로 확정**했다.
     → 2026-09-09 **325**: D-203 2차 COMPOSITE_{PLAN_DAG_VALIDATION,SEQUENTIAL_REPLAN,SEQUENTIAL_FALLBACK_TIERS}_ENABLED(+3).
-    → 2026-09-09 원격 `multiintent` 병합(`b45ac9e` · TEXT2SQL_ALARM_DETERMINISTIC·LLM_FABRIX_TOTAL_TIMEOUT +2)과 합산 **327**.
+    → 2026-09-09 원격 `multiintent` 병합(`b45ac9e` · TEXT2SQL_ALARM_DETERMINISTIC·LLM_FABRIX_TOTAL_TIMEOUT +2)과 합산 **327** → 2026-09-10 plans/91 1-6 E8 post-gate L3 플래그 7건(`NOISE_L3_*`) +7 = **334** → 2026-09-10 plans/88 R-E `COMPOSITE_PRIOR_SCOPE_LATEST_ONLY` +1 = **335**.
       그룹 수 불변 — 원격 314 + 로컬 13(plans/54 5 · 88 1차 3 · 89 2 · 88 2차 3), **실측으로 확정**했다.
 
     ⚠ 이 숫자 단언은 **본질적으로 취약하다** — 설정을 추가할 때마다 갱신해야 한다.
@@ -202,7 +202,7 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 24
-    assert len(index) == 327
+    assert len(index) == 335
     assert len([s for s in index.values() if s.group_key == "general"]) == 18
 
 

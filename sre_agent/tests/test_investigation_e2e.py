@@ -7,7 +7,12 @@
        POLESTAR_CONNECTION=postgresql://polestar_user:polestar_pass_2024@localhost:5434/infradb
        PROMETHEUS_URL=http://localhost:9190  EXPOSE_EXECUTE_SQL=false EXPOSE_RAW_PROMQL=false
        PYTHONPATH=<repo>/mcp_server  python -m mcp_server   (포트 9099)
-  3) Gemini 키: .encenv의 LLM_GEMINI_API_KEY (AgentSettings alias·CWD=repo root).
+  3) Gemini 키: .encenv의 LLM_GEMINI_API_KEY. **실행 cwd는 sre_agent**(루트 cwd에서 돌리면 conftest의
+     `tests.mvp_record`가 루트 `tests/` 패키지와 충돌해 수집 단계에서 죽는다 — 2026-09-10 실측). 루트 .encenv는
+     sre_agent cwd에서 읽히지 않으므로 키를 환경변수로 내보낸다:
+       cd sre_agent && LLM_GEMINI_API_KEY=$(grep ^LLM_GEMINI_API_KEY= ../.encenv | cut -d= -f2-) \
+         RUN_E2E=1 POLESTAR_MCP_URL=http://localhost:9097/sse .venv/bin/python -m pytest tests/test_investigation_e2e.py
+  4) 쿼터: 조사 1건이 최대 max_steps(40)회 LLM 호출이라 Gemini **무료 등급(분당 5회)**으로는 429로 완주 불가(2026-09-10 실측).
 
 데이터 통제(D-120): 외부(Gemini) 송신 입력은 목업·Docker 픽스처 데이터만 — 실 운영 미연결.
 값이 아니라 **구조**를 단언한다(LLM 비결정성): 완주 시 도구 인용·answer, 또는 graceful
@@ -112,3 +117,46 @@ def test_step_limit_forces_graceful_incomplete():
     # 2 step으로는 다지표 조사 미완주 가능성이 높다 — 미완주면 graceful(사유), 완주여도 무크래시.
     if r.incomplete:
         assert "미완주" in r.answer and "step 상한" in r.answer
+
+
+# ── 상관 on 실 경로 (plans/91 1-1 · C′-0 · SPEC-correlation-e2e-assertions) ─────────────────
+# JobStore 경유 · evidence_correlation_enabled=True · 페이로드 alarmTime → reference_time. 값이 아니라 **구조**만
+# 단언한다(실 데이터·LLM 비결정성). 실행은 D-127 건별 승인(RUN_E2E=1) 뒤 — 파일 전역 pytestmark가 게이트한다.
+
+
+def test_correlation_on_job_briefing_has_hypotheses_timeline_limitations(tmp_path):
+    from sre_agent.application.briefing_builder import CORRELATION_NOT_CAUSATION_NOTE
+    from sre_agent.application.investigation_jobs import JobStore
+    from sre_agent.interface.mcp_service import _build_dispatcher
+
+    base = AgentSettings()
+    s = AgentSettings(
+        _env_file=None,
+        model=base.investigation_llm_model,
+        api_key=base.gemini_api_key,
+        gemini_api_key=base.gemini_api_key,
+        max_steps=base.max_steps,
+        polestar_mcp_url=base.polestar_mcp_url,
+        polestar_mcp_token=base.polestar_mcp_token,
+        evidence_correlation_enabled=True,
+        investigation_timeout_seconds=600,
+    )
+    disp = _build_dispatcher(s)
+    store = JobStore(s, executor=disp, audit_path=tmp_path / "audit.jsonl")
+    payload = {
+        "contract_version": "1",
+        "event": {"dbId": "polestar", "serverName": "web-01", "hostname": "web-01", "severity": 2,
+                  "alarmTime": "2026-09-01 14:00:00"},
+        "decision": {"fingerprint": "e2e-corr", "tier": "PAGE"},
+    }
+    res = store.submit(payload)
+    assert res["status"] == "accepted"
+    disp.wait_workers(600)
+    got = store.get(res["investigation_id"])
+    assert got["status"] == "done", got
+    b = got["briefing"]
+    hyps = b["root_cause_hypotheses"]
+    assert [h["rank"] for h in hyps] == list(range(1, len(hyps) + 1))
+    assert all(h["confidence"] in {"high", "medium", "low"} for h in hyps)
+    assert any(ln.startswith("T-") or ln.startswith("T+") for ln in b["timeline"]) or "타임라인 근거 없음" in b["timeline"][0]
+    assert CORRELATION_NOT_CAUSATION_NOTE in b["limitations"]

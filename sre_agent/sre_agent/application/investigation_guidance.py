@@ -5,8 +5,8 @@
 `_default_diagnose_fn`이 `DiagnosisAgent.ask()`에 넘긴다.
 
 구성(순서 고정): ① REMOTE_VM_SHELL_NOTE(원격 프로파일) ② 사건 구간 지침(잡의 reference_time —
-도구 호출에 앵커 인자를 쓰라는 지시) ③ settings.investigation_guidance_extra(운영자 자유 지침 —
-plans/51 §6 플레이북의 편입점). 부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
+도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
+결정적 문구) ⑤ settings.investigation_guidance_extra(운영자 자유 지침). 부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
 
 계층: application. LLM을 호출하지 않는다(문자열 조립만).
 """
@@ -80,8 +80,103 @@ def correlation_note(correlation: dict | None) -> str | None:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------
+# 장애 유형별 플레이북 (plans/91 1-5 · plans/51 §6 · D-035 — 결정적 문구, LLM 0)
+#
+# 알람 kind는 게이트(noise_gate `classify_alarm_kind`)와 **같은 어휘·같은 판정 순서**로 페이로드
+# `event.resourceType`·`event.alarmName`에서 유도한다(패키지 경계상 import 불가 — 동형 재정의, D-139).
+# 미매칭 kind면 아무것도 덧붙이지 않아 종전 지침과 문자열이 같다.
+# ---------------------------------------------------------------------
+
+_KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cpu", ("cpu",)),
+    ("memory", ("memory", "메모리", "mem")),
+    ("disk", ("disk", "디스크", "volume", "filesystem", "inode")),
+    ("network", ("network", "net", "traffic", "네트워크", "bandwidth")),
+    ("process", ("process", "프로세스", "daemon", "service down", "프로세스다운")),
+    ("log", ("log", "logmonitor", "로그")),
+)
+
+
+def classify_alarm_kind(resource_type: str | None, alarm_name: str | None) -> str | None:
+    """알람 kind(cpu·memory·disk·network·process·log) — 게이트 분류기와 동형(순서 고정 · 첫 매칭)."""
+    haystack = f"{resource_type or ''} {alarm_name or ''}".lower()
+    if not haystack.strip():
+        return None
+    for kind, words in _KIND_KEYWORDS:
+        if any(w in haystack for w in words):
+            return kind
+    return None
+
+
+def alarm_kind_from_job(job) -> str | None:  # noqa: ANN001 — JobLike
+    payload = getattr(job, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    event = payload.get("event") or {}
+    if not isinstance(event, dict):
+        return None
+    return classify_alarm_kind(event.get("resourceType"), event.get("alarmName"))
+
+
+PLAYBOOK_NOTES: dict[str, str] = {
+    "cpu": (
+        "장애 유형 플레이북 — CPU 포화(plans/51 §6.1):\n"
+        "- 증거: CPU Util 추이(polestar_metric_trend kind=cpu) · 구간 알람 타임라인 · 실시간 Top CPU 프로세스 · "
+        "가능하면 iowait/steal 분해와 런큐(원격 vmstat/mpstat) · 변경 이벤트.\n"
+        "- 기법: USE(사용률·포화·오류) 순으로 본다. iowait↑면 디스크로 드릴다운, steal↑면 가상화 경합, 단일 핫코어면 "
+        "단일 스레드 앱. 타임라인으로 지표가 알람에 선행했는지 먼저 판정한다.\n"
+        "- 서술: \"Top 프로세스 X가 CPU Util 선행 상승과 일치 → 유력 원인(신뢰도 medium — 프로세스 목록은 현재 단면)\" "
+        "형식으로, 수치는 도구 출력에서 인용한다."
+    ),
+    "memory": (
+        "장애 유형 플레이북 — 메모리 고갈/OOM(plans/51 §6.2):\n"
+        "- 증거: Mem Util 추이(kind=memory) · OOM 로그(dmesg 'Out of memory: Killed process') 또는 syslog 관제 알람 · "
+        "실시간 Top Mem 프로세스 · swap/slab 분해와 누수 추이(원격 free/vmstat).\n"
+        "- 기법: vmstat si/so 스왑과 OOM 시그니처가 결정적 증거다. 추이로 누수(지속 증가) vs 스파이크(급등)를 구분한다.\n"
+        "- 서술: OOM 라인의 killed process와 Mem 추이를 함께 인용한다. swap 분해가 없으면 그 한계를 명시한다."
+    ),
+    "disk": (
+        "장애 유형 플레이북 — 디스크 풀/inode/IO 지연(plans/51 §6.3):\n"
+        "- 증거: FS Util·Disk MaxIORate 추이(kind=filesystem·disk_io) · df -i(inode) · iostat await/%util · "
+        "삭제된 열린 파일(lsof +L1) · FS read-only 리마운트(dmesg) · FS 알람.\n"
+        "- 기법: 용량이 100%가 아닌데 쓰기 실패면 inode 고갈을 의심한다. await↑와 %util↑가 함께면 IO 포화, "
+        "RO 리마운트는 FS 손상 신호다.\n"
+        "- 서술: \"FS Util 100% + df -i 99% → inode 고갈\"처럼 두 증거를 결합해 쓴다. iostat이 없으면 IO 포화 단정을 보류한다."
+    ),
+    "network": (
+        "장애 유형 플레이북 — 네트워크 이상(plans/51 §6.4):\n"
+        "- 증거: 인터페이스 errors/drops · ss 상태·재전송 · conntrack/ephemeral 포트 고갈 · Netstat 리소스 · NW 알람.\n"
+        "- 기법: USE(사용률·포화·오류). 재전송↑면 네트워크/원격 문제, TIME_WAIT 폭증은 커넥션 과다, conntrack 고갈은 "
+        "신규 연결 실패로 나타난다.\n"
+        "- 서술: 손실·재전송 수치를 인용한다. 대부분 원격 명령(L2/L3)에 의존하므로 L1 지표만 있으면 신뢰도 제한을 명시한다."
+    ),
+    "process": (
+        "장애 유형 플레이북 — 프로세스 다운/플래핑(plans/51 §6.5):\n"
+        "- 증거: ProcessMonitor avail_status·알람 · 실시간 프로세스 존재 여부 · 크래시 시그널(dmesg segfault) · "
+        "FD/스레드 한계 · 변경 이벤트.\n"
+        "- 기법: avail_status 변화 타임라인으로 재시작 루프(짧은 간격 반복)를 판정하고, segfault/FD 고갈로 원인을 분기한다.\n"
+        "- 서술: \"ProcessMonitor ntpd 14:02 다운, 직전 배포 13:58 → 변경 기반 용의(변경 이벤트 확인 시 신뢰도 상승)\" 형식."
+    ),
+    "log": (
+        "장애 유형 플레이북 — 로그 패턴 오류(plans/51 §6.6):\n"
+        "- 증거: LogMonitor 알람의 conditionLogText · 전체 로그 컨텍스트(원격 journalctl) · 동시간대 타 신호.\n"
+        "- 기법: 매칭 로그 줄을 타임라인에 배치하고 동반 자원 이상과 상관시킨다. 보안 로그면 인증 로그와 교차한다.\n"
+        "- 서술: 매칭 로그 줄을 그대로 인용한다(환각 금지). 전체 컨텍스트가 없으면 \"추가 로그 확인 필요\"라고 쓴다."
+    ),
+}
+
+
+def playbook_note(kind: str | None) -> str | None:
+    """kind별 결정적 플레이북 문구. 미매칭이면 None(종전 지침과 문자열 동일)."""
+    return PLAYBOOK_NOTES.get(kind) if kind else None
+
+
 def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
-    """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다)."""
+    """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
+
+    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 ④ **kind별 플레이북**(plans/91 1-5) ⑤ 운영자 자유 지침.
+    """
     parts: list[str] = []
     if remote:
         parts.append(REMOTE_VM_SHELL_NOTE)
@@ -93,10 +188,14 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     corr = correlation_note(getattr(job, "correlation", None))
     if corr:
         parts.append(corr)
+    playbook = playbook_note(alarm_kind_from_job(job))
+    if playbook:
+        parts.append(playbook)
     extra = (getattr(settings, "investigation_guidance_extra", None) or "").strip()
     if extra:
         parts.append(extra)
     return "\n\n".join(parts) or None
 
 
-__all__ = ["ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "incident_scope_note", "correlation_note", "build_guidance"]
+__all__ = ["ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES", "incident_scope_note", "correlation_note",
+           "classify_alarm_kind", "alarm_kind_from_job", "playbook_note", "build_guidance"]

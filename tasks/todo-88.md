@@ -51,5 +51,5 @@
 - [x] **T10. 분해 골든셋 + `eval_routing.py --decomposition`** (`sequential-eval` — dry-run만)
   - Files: `testdata/routing_gold/decomposition.yaml` · `scripts/eval_routing.py`
 - [x] **T11. 설정 도움말 3건 + 카탈로그 개수(327 실측 · 병행 세션이 반영)**
-- [ ] **T12. `.env` parity(G-3)** — 운영 설정은 사용자 몫
-- [ ] **T13. 실 LLM 분해 평가** — D-127 건별 승인 후 `RUN_E2E=1 … --decomposition`
+- [x] **T12. `.env` parity(G-3)** — 2026-09-10 확정·반영: `TEXT2SQL_PATH_PARITY=false` 명시 + 1차 3종 on · 2차 3종 off(§11.1). on 전환은 82 2차 착수 조건으로 이관
+- [ ] **T13. 실 LLM 분해 평가**(코드 잔여 아님 · 과금 평가) — D-127 승인 후 `RUN_E2E=1 … --decomposition`(§11.4 단계 7)

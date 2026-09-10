@@ -690,7 +690,10 @@ class AlarmConfig(BaseSettings):
     # Prometheus(node_exporter 메트릭) 조회 — 프로세스 API와 동일 db_id→base_url CSV 패턴.
     # node_exporter는 직접 조회하지 않고 앞단 Prometheus HTTP Query API를 read-only GET (D-003).
     # Plan 60 E3 baseline / Plan 64 §4.5 / docs/aiops_benchmark/l3_host_collection_mechanism.md.
-    prometheus_enabled: bool = False           # 옵트인 — 비활성 시 조회 경로 미진입(회귀 0)
+    # ★ 예비 코드(2026-09-10 사용자 확정 · plans/91 1-10): 아래 3키를 읽는 프로덕션 코드가 **없다**(호출부 0건 —
+    #   noise_gate/infrastructure/prometheus_client.py는 테스트만 생성). 값을 채워도 동작이 바뀌지 않는다.
+    #   **판정 기한 2027-02-20**(D-161 C1): 운영 Prometheus(plans/91 1-12) 해소 시 docs/27 §3.3.3 배선, 미해소 시 §3.3.4 삭제.
+    prometheus_enabled: bool = False           # 옵트인 — 비활성 시 조회 경로 미진입(회귀 0) · 현재 소비처 0(예비)
     prometheus_base_urls_csv: str = ""         # "db_id=http://prom:9090,..." (미설정 시 전부 None)
     prometheus_timeout_seconds: int = 3        # 추가 외부 호출 — 이력보다 짧게(프로세스 API와 동일)
 
@@ -901,6 +904,16 @@ class NoiseGateConfig(BaseSettings):
     enrichment_min_tier: str = "PAGE"         # (E6) 이 티어 이상 통보 결정 시에만 보강 첨부
     enrichment_l1_timeout_seconds: float = 3.0  # (E6) L1 추가 조회(host-wide 프로세스) 상한
     enrichment_profile_map_csv: str = ""      # (E6) kind→요지 제목 오버라이드 ("disk=...,log=...")
+    # ── plans/91 1-6 · Plan 60 §18 E8 (나)안: post-gate **비차단** L3 보강 (D-189 허용목록 명령 · U-H 확정) ──
+    # 기본 off면 수집·후속 발송·감사 전부 미수행 → 통보 경로 비트동일(회귀 0). 게이트 동기 경계 probe는 없다(폐기 —
+    # `gate_l3_probe_*` 신설 금지). **만료일 2027-02-20**(D-161 C1 · docs/flag_audit.md 통일 기한) — 기한 도래 시 on 확정 또는 삭제.
+    l3_enrichment_enabled: bool = False         # (E8) PAGE 통보 뒤 kind별 허용목록 명령으로 L3 수집 → 결정적 요지 후속 발송
+    l3_audit_enabled: bool = False              # (E8) 수집 명령·상태지문·전이를 decision_store에 감사(type="l3_state")
+    l3_host_access_mode: str = "allowlist_exec"  # (E8) 실행 채널 — D-189 경로 B. 현재 allowlist_exec(ssh)만 구현
+    l3_profile_map_csv: str = ""                # (E8) kind→프로파일 오버라이드("memory=memory,process=process") — 미지정 시 kind 동명
+    l3_command_timeout_seconds: float = 20.0    # (E8) 명령당 상한 — 부하 가드 접두(`timeout 20 nice -n 10`)와 같은 값
+    l3_ssh_user: str = ""                       # (E8) allowlist_exec ssh 사용자(빈 값이면 현재 사용자)
+    l3_max_inflight: int = 4                    # (E8) 동시 L3 수집 태스크 상한(알람 폭주 시 스폰 차단·사유 로그)
     # ── Plan 60 E5: 변경/구성 이벤트 상관 (D-081 초안 → 착수 시 D-109 재부여) ──
     # 기본 off면 변경 피드 조회·오버레이 미수행 → noise_ctx 신규 키 None·게이트 step9 비트동일(회귀 0).
     # 억제가 아니라 승격 — 변경 근접 알람은 promote 신호로만 추가된다(원인성 판단·재현율 우선, §7.2).
@@ -1087,6 +1100,11 @@ class CompositeConfig(BaseSettings):
     # 3단(semantic_router)·4단(legacy) 빌드에 `sequential_runner` 2-pass 노드를 등록한다. HITL 승인 플래그가
     # 켜져 있으면 진입하지 않는다(승인 게이트 우회 금지 — plans/88 §4.7).
     sequential_fallback_tiers_enabled: bool = False
+    # === [D-203 후속 · plans/88 R-E · 2026-09-10 사용자 확정 (c)] 1단 선행 스코프 — 값 일치 우선 · 없으면 직전 1건 ===
+    # off(현행)면 1단은 성공한 선행 결과를 **전부** 합집합으로 주입한다(4번째 호출이 3번째 결과 10대를 가리켜도 54대).
+    # on이면 후속 sub_query에 식별자가 열거되면(G1) 그 값을 가진 선행 결과만, 없으면 가장 최근 성공 선행 1건만 주입한다.
+    # 선별 밖 서버가 섞일 위험은 양쪽 모두 0. **만료일 2027-03-10**(D-161 C1) — 1단 재검증 뒤 on 확정 또는 삭제.
+    prior_scope_latest_only: bool = False
 
     # ── Plan 81 (D-175) 호스트 가용성 사전 판정 ──────────────────────
     # **기본 on** — 이 파일의 다른 플래그와 정반대다(G-1 사용자 확정 2026-08-28).

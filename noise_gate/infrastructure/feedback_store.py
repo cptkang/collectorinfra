@@ -65,6 +65,7 @@ class FeedbackStore:
         note: str = "",
         labeled_by: str = "",
         ts: Optional[datetime] = None,
+        investigation_id: str = "",
     ) -> None:
         """운영자 피드백을 JSONL 한 줄로 append 한다.
 
@@ -94,6 +95,10 @@ class FeedbackStore:
             "note": note,
             "labeled_by": labeled_by,
         }
+        # plans/91 1-4(C′-3 · U-F (ii)): "실제 원인은 X" 피드백을 조사와 잇는 선택 참조. 값이 있을 때만
+        # 키를 넣어 기존 알람 피드백 레코드는 바이트 동일. few-shot 렌더(find_similar)에는 싣지 않는다.
+        if investigation_id:
+            record["investigation_id"] = str(investigation_id)
         self._append(record)
 
     def record_retract(

@@ -28,6 +28,7 @@ class AlarmPoint:
     name: str
     resource: str = ""
     status: str | None = None
+    server: str = ""   # plans/91 1-3 — 연관 서버 알람이면 서버명(대표 서버는 빈 값 = 종전 표기)
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,23 @@ class MetricSeries:
 
 
 @dataclass(frozen=True)
+class ChangePoint:
+    """변경 이벤트 1건(plans/91 1-2 · C′-2) — 시각·설명·유형만(벤더 중립)."""
+
+    time: str          # ISO 8601(naive)
+    description: str
+    lifecycle: str = ""
+
+
+@dataclass(frozen=True)
 class TimelineItem:
     t_offset_min: int
-    kind: str        # "metric" | "alarm"
+    kind: str        # "metric" | "change" | "alarm"
     detail: str
+
+
+# 타임라인 같은 offset의 표시 순서 — 지표 → 변경 → 알람(종전 metric < alarm 순서 불변).
+_KIND_ORDER = {"metric": 0, "change": 1, "alarm": 2}
 
 
 @dataclass(frozen=True)
@@ -56,9 +70,10 @@ class CorrelationResult:
     alarm_summary: dict
     leading_signal: str | None
     notes: tuple[str, ...] = field(default_factory=tuple)
+    change_finding: dict | None = None   # plans/91 1-2 — 변경 오버레이 off/미수집이면 None(키 자체를 내지 않는다)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "reference_time": self.reference_time,
             "timeline": [
                 {"t_offset_min": t.t_offset_min, "kind": t.kind, "detail": t.detail} for t in self.timeline
@@ -68,6 +83,9 @@ class CorrelationResult:
             "leading_signal": self.leading_signal,
             "notes": list(self.notes),
         }
+        if self.change_finding is not None:
+            out["change_finding"] = self.change_finding
+        return out
 
 
 def _parse(iso: str) -> datetime:
@@ -157,15 +175,37 @@ def alarm_summary(reference_time: str, alarms: list[AlarmPoint]) -> dict:
     }
 
 
+def _change_label(c: ChangePoint) -> str:
+    return f"[{c.lifecycle}] {c.description}" if c.lifecycle else c.description
+
+
+def change_finding(reference_time: str, changes: list[ChangePoint], first_alarm_offset: int | None) -> dict:
+    """plans/91 1-2 — lookback 내 변경 유무·최근 변경 offset·첫 알람 선행 여부(결정적)."""
+    offsets = sorted(offset_minutes(reference_time, c.time) for c in changes)
+    last = offsets[-1] if offsets else None
+    before = (last < first_alarm_offset) if (last is not None and first_alarm_offset is not None) else None
+    ordered = sorted(changes, key=lambda c: offset_minutes(reference_time, c.time), reverse=True)
+    return {
+        "count": len(changes),
+        "last_change_offset_min": last,
+        "before_first_alarm": before,
+        "descriptions": [_change_label(c) for c in ordered[:3]],
+    }
+
+
 def merge_timeline(
-    reference_time: str, alarms: list[AlarmPoint], findings: dict[str, dict]
+    reference_time: str, alarms: list[AlarmPoint], findings: dict[str, dict],
+    changes: list[ChangePoint] | None = None,
 ) -> list[TimelineItem]:
-    """§6.1 — 알람 + 지표 이상(onset·peak)을 기준시각 좌표계로 정렬한다."""
+    """§6.1 — 알람 + 지표 이상(onset·peak) + 변경 이벤트를 기준시각 좌표계로 정렬한다."""
     items: list[TimelineItem] = []
+    for c in changes or []:
+        items.append(TimelineItem(offset_minutes(reference_time, c.time), "change", _change_label(c)))
     for a in alarms:
         label = "해소" if a.severity == 0 else f"severity {a.severity}"
         res = f" ({a.resource})" if a.resource else ""
-        items.append(TimelineItem(offset_minutes(reference_time, a.time), "alarm", f"[{label}] {a.name}{res}"))
+        host = f"[{a.server}] " if a.server else ""
+        items.append(TimelineItem(offset_minutes(reference_time, a.time), "alarm", f"{host}[{label}] {a.name}{res}"))
     for name, f in findings.items():
         if not f.get("is_anomalous"):
             continue
@@ -176,7 +216,7 @@ def merge_timeline(
                 f"{name} {f['kind']} 시작 (peak {f['peak_value']} @ {f['peak_time']}{z})",
             )
         )
-    items.sort(key=lambda t: (t.t_offset_min, 0 if t.kind == "metric" else 1, t.detail))
+    items.sort(key=lambda t: (t.t_offset_min, _KIND_ORDER.get(t.kind, 2), t.detail))
     return items
 
 
@@ -185,8 +225,14 @@ def correlate(
     alarms: list[AlarmPoint],
     series: list[MetricSeries],
     notes: list[str] | None = None,
+    changes: list[ChangePoint] | None = None,
+    related_alarms: dict[str, list[AlarmPoint]] | None = None,
 ) -> CorrelationResult:
-    """§6.1~6.4 — 알람·지표를 병합해 선행 신호와 한계를 결정적으로 산출한다."""
+    """§6.1~6.4 — 알람·지표(·변경·연관 서버 알람)를 병합해 선행 신호와 한계를 결정적으로 산출한다.
+
+    `changes`가 None이면(오버레이 off·미수집) 결과는 종전과 동일하다 — `change_finding=None`.
+    `related_alarms`(plans/91 1-3)는 타임라인·notes에만 실린다 — 요약·선행성은 대표 서버 알람 기준을 유지한다.
+    """
     all_notes: list[str] = list(notes or [])
     findings: dict[str, dict] = {}
     for s in series:
@@ -212,22 +258,32 @@ def correlate(
     if anomalous and first_alarm is not None and min(anomalous)[0] >= first_alarm:
         all_notes.append("이상 지표가 첫 알람보다 앞서지 않음 — 지표 선행 근거 없음(상관 ≠ 인과)")
 
+    # plans/91 1-3 — 연관 서버 첫 알람이 대표 첫 알람보다 앞서면 결정적으로 표기(상관 ≠ 인과).
+    timeline_alarms: list[AlarmPoint] = list(alarms)
+    for host, points in (related_alarms or {}).items():
+        pts = [p if p.server else AlarmPoint(p.time, p.severity, p.name, p.resource, p.status, host) for p in points]
+        timeline_alarms.extend(pts)
+        offsets = [offset_minutes(reference_time, p.time) for p in pts]
+        if offsets and (first_alarm is None or min(offsets) < first_alarm):
+            all_notes.append(f"연관 서버 {host}의 첫 알람 {format_offset(min(offsets))} — 대표보다 선행")
+
     precisions = sorted({s.granularity_minutes for s in series})
     if precisions and max(precisions) > 1:
         all_notes.append(f"지표 정밀도 {'/'.join(str(p) for p in precisions)}분 단위 — 그보다 짧은 선후는 판정 불가")
 
     return CorrelationResult(
         reference_time=_parse(reference_time).isoformat(),
-        timeline=tuple(merge_timeline(reference_time, alarms, findings)),
+        timeline=tuple(merge_timeline(reference_time, timeline_alarms, findings, changes)),
         metric_findings=findings,
         alarm_summary=summary,
         leading_signal=leading,
         notes=tuple(dict.fromkeys(all_notes)),
+        change_finding=change_finding(reference_time, changes, first_alarm) if changes is not None else None,
     )
 
 
 __all__ = [
     "Z_THRESHOLD", "SUSTAINED_MIN_POINTS", "BASELINE_MIN_POINTS",
-    "AlarmPoint", "MetricSeries", "TimelineItem", "CorrelationResult",
-    "offset_minutes", "format_offset", "metric_finding", "alarm_summary", "merge_timeline", "correlate",
+    "AlarmPoint", "ChangePoint", "MetricSeries", "TimelineItem", "CorrelationResult",
+    "offset_minutes", "format_offset", "metric_finding", "alarm_summary", "change_finding", "merge_timeline", "correlate",
 ]

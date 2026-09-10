@@ -256,6 +256,56 @@ class DecisionStore:
         except OSError as exc:
             logger.warning("조사 트리거 감사 기록 실패(무시): %s", exc)
 
+    def record_l3_state(
+        self,
+        *,
+        fingerprint: str = "",
+        alarm_id: str = "",
+        host: str = "",
+        kind: str = "",
+        state_fingerprint: Optional[dict] = None,
+        transition: str = "",
+        sent: bool = False,
+        commands: Optional[list] = None,
+        ts: Optional[datetime] = None,
+    ) -> None:
+        """post-gate L3 수집 결과를 `type="l3_state"` 레코드로 append 한다(plans/91 1-6 · Plan 60 §18.4 ②).
+
+        상태지문은 재발 대조(escalate-only dedup)의 정본이며 `last_l3_state`가 되읽는다. 다른 집계는 `type` 보유
+        레코드를 제외하므로 불변(회귀 0). 기록 실패는 warning 후 무시. enabled=False면 no-op.
+        """
+        if not self.enabled:
+            return
+        when = ts or datetime.now(timezone.utc)
+        record = {
+            "type": "l3_state", "fingerprint": fingerprint, "alarm_id": alarm_id, "host": host, "kind": kind,
+            "state_fingerprint": dict(state_fingerprint or {}), "transition": transition, "sent": bool(sent),
+            "commands": list(commands or []), "ts": when.isoformat(),
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            logger.warning("L3 상태지문 기록 실패(무시): %s", exc)
+
+    def last_l3_state(self, fingerprint: str) -> Optional[dict]:
+        """같은 알람 지문의 **최근** L3 상태지문(없으면 None). 파일을 뒤에서부터 훑는다."""
+        if not self.enabled or not fingerprint or not self.path.exists():
+            return None
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") == "l3_state" and rec.get("fingerprint") == fingerprint:
+                return rec.get("state_fingerprint") or {}
+        return None
+
     @staticmethod
     def _empty_aggregate() -> dict:
         """집계 결과의 빈 형태(전 키 포함)를 반환한다(E3 확장 — 키 스키마 일관성)."""

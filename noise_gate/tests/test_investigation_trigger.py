@@ -186,6 +186,14 @@ class TestBuildTriggerPayload:
             "root_resource": "R9", "source": "collectorinfra",
         }
 
+    def test_root_resource_name_only_when_present(self):
+        """plans/91 1-3: E4 root 리소스 **이름**은 값이 있을 때만 meta 키가 생긴다(없으면 종전 바이트 동일)."""
+        base = build_trigger_payload(_event(), _decision(fp="fp"), root_resource="R9")
+        assert "root_resource_name" not in base["meta"]
+        named = build_trigger_payload(_event(), _decision(fp="fp"), root_resource="R9", root_resource_name="db-01")
+        assert named["meta"]["root_resource_name"] == "db-01"
+        assert {k: v for k, v in named["meta"].items() if k != "root_resource_name"} == base["meta"]
+
     def test_empty_identifiers_pass_through_for_service_rejection(self):
         # 필수 식별자 결측 이벤트는 빈 값으로 직렬화되어 조사 서비스가 rejected로 응답한다.
         p = build_trigger_payload(_event(server="", host=""), _decision())
@@ -203,7 +211,8 @@ class TestNodeAttachesBriefing:
         out = await investigation_trigger_node(
             _state(_decision()), _config(_ng_cfg(), client, store)
         )
-        assert out == {"investigation_briefing": {"cause": "OOM", "recommendation": "힙 상향"}}
+        # (plans/91 1-4) 인라인 경로도 조사 ID를 state에 남긴다 — 카드 피드백이 되돌린다
+        assert out == {"investigation_briefing": {"cause": "OOM", "recommendation": "힙 상향"}, "investigation_id": "inv-1"}
         assert client.connect_calls == 1 and client.disconnect_calls == 1
         assert len(client.submit_calls) == 1 and len(client.poll_calls) == 1
         # submit에 실린 페이로드가 계약(contract_version "1")을 만족.

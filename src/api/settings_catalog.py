@@ -172,6 +172,14 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_ENRICHMENT_MIN_TIER": "통보 내용 보강",
     "NOISE_ENRICHMENT_L1_TIMEOUT_SECONDS": "통보 내용 보강",
     "NOISE_ENRICHMENT_PROFILE_MAP_CSV": "통보 내용 보강",
+    # plans/91 1-6 · Plan 60 §18 E8 (나): post-gate L3 보강(허용목록 명령) — 설정 정의 순서상 E6 직후(구획 연속)
+    "NOISE_L3_ENRICHMENT_ENABLED": "L3 진단 보강",
+    "NOISE_L3_AUDIT_ENABLED": "L3 진단 보강",
+    "NOISE_L3_HOST_ACCESS_MODE": "L3 진단 보강",
+    "NOISE_L3_PROFILE_MAP_CSV": "L3 진단 보강",
+    "NOISE_L3_COMMAND_TIMEOUT_SECONDS": "L3 진단 보강",
+    "NOISE_L3_SSH_USER": "L3 진단 보강",
+    "NOISE_L3_MAX_INFLIGHT": "L3 진단 보강",
     "NOISE_CHANGE_CORRELATION_ENABLED": "변경 이력 상관",
     "NOISE_CHANGE_WINDOW_SECONDS": "변경 이력 상관",
     "NOISE_ANNOTATION_HARVEST_ENABLED": "ITSM 연동 보완",
@@ -357,7 +365,7 @@ UNCONSUMED_KEYS: frozenset[str] = frozenset({
     # --- §6.2 소비 지점 재실측(2026-07-30)로 확인된 추가 미소비 ---
     "ORCHESTRATOR_MAX_HISTORY_TURNS",       # context_resolver.py:26 주석 참조뿐 (D-129 부기 확인 건)
     "SYNONYM_DECAY_DAYS",                   # redis_cache.py:958 인자만 존재 — config에서 넘기는 호출부 없음
-    "ALARM_PROMETHEUS_BASE_URLS_CSV",       # PrometheusClient가 src/에서 미생성 (테스트에서만 생성)
+    "ALARM_PROMETHEUS_BASE_URLS_CSV",       # PrometheusClient가 src/에서 미생성 (테스트에서만 생성) — 예비 코드 확정(2026-09-10 · 판정 기한 2027-02-20 · docs/27 §3.3)
     "ALARM_PROMETHEUS_TIMEOUT_SECONDS",     # 동상
 })
 

@@ -221,3 +221,27 @@ def test_uncited_llm_cause_is_low_confidence_hypothesis():
                        correlation={"timeline": [], "metric_findings": {}, "alarm_summary": {}, "leading_signal": None, "notes": []})
     h = b["root_cause_hypotheses"]
     assert len(h) == 1 and h[0]["confidence"] == "low" and h[0]["evidence"] == []
+
+
+# ── "변경 직후" 가설 (plans/91 1-2 · C′-2) ────────────────────────────────────────────────
+def test_change_before_first_alarm_becomes_rank_one_medium():
+    corr = {
+        **CORR,
+        "timeline": [{"t_offset_min": -20, "kind": "change", "detail": "[UPDATE] 메모리 증설"}] + list(CORR["timeline"]),
+        "change_finding": {"count": 1, "last_change_offset_min": -20, "before_first_alarm": True,
+                           "descriptions": ["[UPDATE] 메모리 증설"]},
+    }
+    b = build_briefing(answer="원인: 디스크 IO 폭주 ← polestar_metric_trend", verdict=_verdict(), tool_names=["polestar_metric_trend"],
+                       correlation=corr)
+    h = b["root_cause_hypotheses"]
+    assert h[0]["rank"] == 1 and h[0]["confidence"] == "medium"
+    assert h[0]["cause"].startswith("변경 직후") and "[UPDATE] 메모리 증설" in h[0]["cause"] and "10분" in h[0]["cause"]
+    assert h[0]["evidence"] == ["T-20m 변경 [UPDATE] 메모리 증설"]
+    assert [x["rank"] for x in h] == list(range(1, len(h) + 1)) and h[1]["cause"].startswith("disk_io")
+    assert b["timeline"][0] == "T-20m 변경 [UPDATE] 메모리 증설" and b["cause"] == h[0]["cause"]
+
+
+def test_change_after_first_alarm_adds_no_hypothesis():
+    corr = {**CORR, "change_finding": {"count": 1, "last_change_offset_min": -3, "before_first_alarm": False, "descriptions": ["d"]}}
+    b = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"], correlation=corr)
+    assert not any(h["cause"].startswith("변경 직후") for h in b["root_cause_hypotheses"])

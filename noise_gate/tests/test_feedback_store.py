@@ -161,6 +161,30 @@ class TestLabeledBy:
         assert _read_rows(p)[0]["labeled_by"] == ""
 
 
+class TestInvestigationRef:
+    """plans/91 1-4(C′-3): 조사 참조는 선택 필드 — 없으면 레코드 바이트 동일, 있어도 few-shot 렌더에 안 실린다."""
+
+    def test_absent_by_default_keeps_record_keys(self, tmp_path):
+        p = tmp_path / "fb.jsonl"
+        FeedbackStore(str(p)).record_feedback(label="valid", alarm_name="MEM 임계")
+        assert "investigation_id" not in _read_rows(p)[0]
+
+    def test_recorded_when_given(self, tmp_path):
+        p = tmp_path / "fb.jsonl"
+        FeedbackStore(str(p)).record_feedback(label="valid", alarm_name="MEM 임계", note="실제 원인은 배치 X",
+                                              investigation_id="abc123")
+        assert _read_rows(p)[0]["investigation_id"] == "abc123"
+
+    def test_absent_from_fewshot_render(self, tmp_path):
+        from noise_gate.application.nodes.alarm_analyzer import _render_feedback_section
+
+        p = tmp_path / "fb.jsonl"
+        store = FeedbackStore(str(p))
+        store.record_feedback(label="valid", alarm_name="MEM 임계", investigation_id="inv-secret")
+        rendered = _render_feedback_section(store.find_similar(alarm_name="MEM 임계"))
+        assert rendered and "inv-secret" not in rendered
+
+
 class TestRetract:
     """A-5: 철회는 tombstone append — 파일을 재작성하지 않는다(append-only 감사)."""
 

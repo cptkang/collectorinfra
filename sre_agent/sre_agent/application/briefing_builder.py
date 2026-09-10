@@ -37,7 +37,7 @@ HUMAN_GATED_NOTE = "※ 실행은 운영자 승인 후 수동 — 시스템은 �
 
 # 상관 ≠ 인과 — 결정적 상관에서 도출한 가설의 신뢰도 한계(plans/50 §6.3).
 CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
-_KIND_LABEL = {"metric": "메트릭", "alarm": "알람"}
+_KIND_LABEL = {"metric": "메트릭", "alarm": "알람", "change": "변경"}
 
 
 def _fmt_offset(minutes: object) -> str:
@@ -76,6 +76,19 @@ def root_cause_hypotheses(correlation: dict | None, llm_cause: str, citations_ve
         timeline = correlation_timeline(correlation)
         leading = correlation.get("leading_signal")
         first_alarm = (correlation.get("alarm_summary") or {}).get("first_offset_min")
+        # plans/91 1-2(C′-2): 변경이 첫 알람보다 앞서면 "변경 직후" 가설을 rank 1에 — confidence 상한 medium(상관≠인과).
+        cf = correlation.get("change_finding") or {}
+        if isinstance(cf, dict) and cf.get("before_first_alarm") and isinstance(cf.get("last_change_offset_min"), int) \
+                and isinstance(first_alarm, int):
+            gap = first_alarm - int(cf["last_change_offset_min"])
+            descs = [str(d) for d in (cf.get("descriptions") or [])]
+            desc = descs[0] if descs else "변경 이벤트"
+            out.append({
+                "rank": 1, "cause": f"변경 직후 — {desc} 이후 {gap}분 뒤 첫 알람", "confidence": "medium",
+                "evidence": [ln for ln in timeline if " 변경 " in ln] or [f"변경 {_fmt_offset(cf['last_change_offset_min'])}"],
+                "reasoning": f"lookback 내 변경 {cf.get('count')}건 · 최근 변경 {_fmt_offset(cf['last_change_offset_min'])} → 첫 알람 "
+                             f"{_fmt_offset(first_alarm)}. " + CORRELATION_NOT_CAUSATION_NOTE,
+            })
         ordered = sorted(
             ((f.get("onset_offset_min"), name, f) for name, f in findings.items()
              if isinstance(f, dict) and f.get("is_anomalous")),

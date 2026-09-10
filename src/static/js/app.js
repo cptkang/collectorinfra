@@ -4051,6 +4051,8 @@
                         db_id: data.db_id || "",
                         server_name: data.server_name || "",
                         note: noteEl ? noteEl.value.trim() : "",
+                        // (plans/91 1-4) 조사 ID — 카드 페이로드에 있을 때만 값이 실린다("실제 원인은 X"를 조사와 잇는다)
+                        investigation_id: data.investigation_id || "",
                         label: label
                     })
                 })

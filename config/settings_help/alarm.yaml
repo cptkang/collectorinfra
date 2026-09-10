@@ -358,12 +358,14 @@ settings:
 
   ALARM_PROMETHEUS_ENABLED:
     example: >-
-      이 값을 켜도 주소 설정(ALARM_PROMETHEUS_BASE_URLS_CSV)과 타임아웃은 현재 코드가 읽지 않는다 — 기능을 실제로 쓰려면 그 배선 상태를 먼저
-      확인해야 한다.
-    summary: Prometheus 메트릭을 알람 분석에 함께 조회할지.
+      이 값을 켜도 지금은 아무 일도 일어나지 않는다 — 이 플래그를 읽는 코드가 없다(예비 코드 · 2026-09-10 확정).
+      운영 Prometheus가 연결되고 nodename 라벨 규약이 확인되면(docs/27 §6.1) 게이트의 동적 기준선 조회에 폴백 채널로 배선된다.
+      판정 기한은 2027-02-20이며, 그때까지 연결이 안 되면 이 항목과 아래 두 항목은 함께 제거된다.
+    summary: Prometheus 메트릭을 알람 분석에 함께 조회할지 — 현재는 예비 항목(소비처 없음, 판정 기한 2027-02-20).
     behavior: >-
-      node_exporter를 직접 보지 않고 앞단 Prometheus의 조회 API를 읽기 전용으로 부른다.
-      옵트인이며, 꺼져 있으면 조회 경로에 아예 들어가지 않는다.
+      설계상 node_exporter를 직접 보지 않고 앞단 Prometheus의 조회 API를 읽기 전용으로 부른다.
+      옵트인이며, 꺼져 있으면 조회 경로에 아예 들어가지 않는다. 다만 지금은 켜도 이 값을 읽는 코드가 없어
+      동작이 바뀌지 않는다(예비 코드 — docs/27 §3.3).
     options:
       - value: "false"
         label: 기본
@@ -372,9 +374,9 @@ settings:
         effect: 메트릭을 함께 본다. 폴스타가 수집하지 않는 세부 지표까지 근거로 쓸 수 있다.
     performance: 알람마다 외부 조회가 하나 더 붙는다.
     stability: >-
-      주소 설정(ALARM_PROMETHEUS_BASE_URLS_CSV)과 타임아웃 항목은 현재 코드가 읽지 않는다 —
-      이 기능을 실제로 쓰려면 그 배선 상태를 먼저 확인해야 한다.
-    recommendation: 배선이 확인되기 전에는 기본 off를 유지한다.
+      세 항목(ENABLED·BASE_URLS_CSV·TIMEOUT) 모두 현재 코드가 읽지 않는다. 운영 Prometheus 연결(외부 선행조건)이
+      풀릴 때까지 예비 코드로 두기로 했다(2026-09-10 · 판정 기한 2027-02-20).
+    recommendation: 기본 off 유지. 연결이 준비되면 docs/27 §3.3.3 순서로 배선한 뒤 켠다.
     related: [ALARM_PROMETHEUS_BASE_URLS_CSV, ALARM_PROMETHEUS_TIMEOUT_SECONDS]
     references:
       - docs/27_prometheus_integration_guide.md
@@ -382,10 +384,10 @@ settings:
   ALARM_PROMETHEUS_BASE_URLS_CSV:
     example: >-
       주소를 채워도 조회 대상이 달라지지 않는다 — 코드가 이 값을 읽지 않기 때문이다.
-    summary: DB별 Prometheus 주소 — 현재 코드가 읽지 않는다.
+    summary: DB별 Prometheus 주소 — 현재 코드가 읽지 않는다(예비 항목 · 판정 기한 2027-02-20).
     behavior: >-
       "db_id=주소" 형식으로 설계된 항목이지만, 지금 코드에 이 값을 읽는 곳이 없다.
-      값을 채워도 조회 대상이 달라지지 않는다.
+      값을 채워도 조회 대상이 달라지지 않는다. 운영 Prometheus 연결 시 존(db_id)별로 다른 주소를 둘 수 있게 설계돼 있다(docs/27 §3.3).
     performance: 영향 없다(소비되지 않음).
     stability: 영향 없다(소비되지 않음).
     related: [ALARM_PROMETHEUS_ENABLED]
@@ -393,8 +395,8 @@ settings:
   ALARM_PROMETHEUS_TIMEOUT_SECONDS:
     example: >-
       타임아웃을 조정해도 동작에 변화가 없다 — 소비처가 없다.
-    summary: Prometheus 조회 타임아웃 — 현재 코드가 읽지 않는다.
-    behavior: 정의만 있고 소비처가 없다. 값을 바꿔도 동작은 달라지지 않는다.
+    summary: Prometheus 조회 타임아웃 — 현재 코드가 읽지 않는다(예비 항목 · 판정 기한 2027-02-20).
+    behavior: 정의만 있고 소비처가 없다. 값을 바꿔도 동작은 달라지지 않는다. 배선 시 이력 조회보다 짧게(기본 3초) 두는 설계다(docs/27 §3.3).
     performance: 영향 없다(소비되지 않음).
     stability: 영향 없다(소비되지 않음).
     related: [ALARM_PROMETHEUS_ENABLED]

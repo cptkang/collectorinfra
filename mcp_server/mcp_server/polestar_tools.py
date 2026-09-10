@@ -599,14 +599,33 @@ def build_os_config_sql(is_db2: bool, hostname: str, limit: int) -> str:
     )
 
 
-def build_change_history_sql(server_name: str, cutoff_epoch: int, limit: int) -> str:
+def change_history_window_epochs(
+    reference_time: str, lookback_minutes: Optional[int], *, hours: int = 24,
+) -> tuple[int, int]:
+    """변경 이력 창 `[ref − lookback, ref]`를 **epoch 정수**로 돌려준다(plans/91 1-2 · G1 동형).
+
+    `event_time`은 epoch 정수 컬럼이라 CTIME용 timestamp 리터럴을 쓸 수 없다. 오프셋이 있으면 그대로,
+    naive면 서버 로컬 시각으로 해석한다 — 종전 now 앵커(`time.time()`)와 같은 좌표계.
+    """
+    ref = parse_reference_time(reference_time)
+    minutes = _clamp(hours, 1, 24 * 365) * 60 if lookback_minutes is None else lookback_minutes
+    minutes = _clamp(minutes, 1, _MAX_LOOKBACK_MINUTES)
+    hi = int(ref.timestamp())
+    return hi - minutes * 60, hi
+
+
+def build_change_history_sql(
+    server_name: str, cutoff_epoch: int, limit: int, until_epoch: Optional[int] = None,
+) -> str:
     """변경 이력 조회 SQL을 조립한다(PostgreSQL 전용 — gp/yd).
 
     cmm_resource_lifecycle_history를 서버 리소스(PLATFORM_RESOURCE_ID COALESCE)로 스코프
     하고 event_time >= cutoff_epoch(초 epoch)로 창을 유계한다. DB2(b0)는 호출부에서 빈
     결과+사유로 강등한다(§5 — 침묵 강등 금지).
+    `until_epoch`(plans/91 1-2 · 기준시각 앵커)가 있으면 상한 1줄을 더한다 — None이면 문자열 동일.
     """
     schema = _PG_SCHEMA
+    upper = f"  AND h.event_time <= {int(until_epoch)}\n" if until_epoch is not None else ""
     return (
         "SELECT\n"
         "    h.id AS id,\n"
@@ -622,6 +641,7 @@ def build_change_history_sql(server_name: str, cutoff_epoch: int, limit: int) ->
         "                     AND svr.dtime IS NULL\n"
         f"WHERE svr.name = {_sql_literal(server_name)}\n"
         f"  AND h.event_time >= {int(cutoff_epoch)}\n"
+        f"{upper}"
         "ORDER BY h.event_time DESC\n"
         f"LIMIT {int(limit)}"
     )
@@ -1005,6 +1025,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         source: str,
         server_name: str,
         hours: int = 24,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
         ctx: Context | None = None,
     ) -> str:
         """서버 리소스의 최근 변경 이력을 조회한다(PostgreSQL 전용 — gp/yd).
@@ -1012,7 +1034,10 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         Args:
             source: 데이터소스(db_id).
             server_name: 폴스타 등록 서버명.
-            hours: 조회 창(시간). 기본 24.
+            hours: 조회 창(시간). 기본 24. `reference_time` 미지정 시 now 앵커(종전 SQL 동일).
+            reference_time: 사건 기준시각(ISO 8601 · plans/91 1-2). 지정 시 창은
+                `[reference_time − (lookback_minutes or hours·60), reference_time]`(epoch 정수).
+            lookback_minutes: 기준시각 이전 조회 분. 미지정 시 `hours`.
             ctx: MCP 컨텍스트.
 
         Returns:
@@ -1031,11 +1056,21 @@ def register_polestar_tools(mcp: FastMCP) -> None:
                 note="변경 이력은 PostgreSQL(gp/yd)만 지원 — DB2(b0)는 미지원",
             )
         limit = pool.get_source_config(source).max_rows
-        cutoff_epoch = int(time.time()) - _clamp(hours, 1, 24 * 365) * 3600
-        sql = build_change_history_sql(server_name, cutoff_epoch, limit)
+        window: dict[str, Any] | None = None
+        if reference_time is not None:
+            try:
+                cutoff_epoch, until_epoch = change_history_window_epochs(reference_time, lookback_minutes, hours=hours)
+            except ValueError as e:
+                return _err(str(e))
+            window = {"reference_time": parse_reference_time(reference_time).isoformat(),
+                      "incident_from_epoch": cutoff_epoch, "reference_epoch": until_epoch}
+            sql = build_change_history_sql(server_name, cutoff_epoch, limit, until_epoch=until_epoch)
+        else:
+            cutoff_epoch = int(time.time()) - _clamp(hours, 1, 24 * 365) * 3600
+            sql = build_change_history_sql(server_name, cutoff_epoch, limit)
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine)
+            return _ok(rows, source, engine, window=window) if window else _ok(rows, source, engine)
         except Exception as e:
             logger.warning("polestar_change_history 실패 (%s): %s", source, e)
             return _err(str(e))

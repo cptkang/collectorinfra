@@ -308,6 +308,25 @@ class TestChangeHistorySql:
         assert "LIMIT 200" in sql
         assert "resource_conf_id" not in sql.lower()
 
+    def test_until_epoch_absent_keeps_sql_identical(self):
+        """plans/91 1-2: 상한 미지정이면 종전 SQL 문자열과 동일(회귀 0)."""
+        assert pt.build_change_history_sql("web01", 1700000000, 200) == pt.build_change_history_sql(
+            "web01", 1700000000, 200, until_epoch=None)
+        assert "<=" not in pt.build_change_history_sql("web01", 1700000000, 200)
+
+    def test_until_epoch_adds_upper_bound_only(self):
+        base = pt.build_change_history_sql("web01", 1700000000, 200)
+        anchored = pt.build_change_history_sql("web01", 1700000000, 200, until_epoch=1700003600)
+        assert "  AND h.event_time <= 1700003600\n" in anchored
+        assert anchored.replace("  AND h.event_time <= 1700003600\n", "") == base
+
+    def test_change_window_epochs_from_reference_time(self):
+        """기준시각·lookback → [ref − lookback, ref] epoch 정수(G1 동형 · 오프셋 있으면 그대로)."""
+        lo, hi = pt.change_history_window_epochs("2026-09-01T14:00:00+00:00", 60)
+        assert hi - lo == 3600 and hi == 1788271200   # 2026-09-01T14:00:00Z
+        lo2, hi2 = pt.change_history_window_epochs("2026-09-01T14:00:00+00:00", None, hours=24)
+        assert hi2 - lo2 == 24 * 3600
+
 
 # =====================================================================
 # 프로세스 마스킹 · 랭킹 (§6-3)

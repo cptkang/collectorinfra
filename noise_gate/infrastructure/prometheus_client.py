@@ -11,6 +11,11 @@ node_exporter는 `/metrics`만 노출하는 스크레이프 타깃이므로, 에
     - 비200/파싱 실패/타임아웃/네트워크 오류 → None (호출부 graceful degradation).
     - 자격증명/인증은 config(서버측)에만 — 에이전트는 base_url만 보유(폴스타 프로세스 API 계승).
     - 기준 시각은 호출부가 사건 시각으로 산정해 start/end로 넘긴다(now() 금지 — Plan 50 §3.4).
+
+★ 상태(2026-09-10 · 사용자 확정 · plans/91 1-10 · 원 plans/70 P1-1): **예비 코드**.
+    프로덕션 호출부 0건(테스트만 생성) · 운영 .env에 ALARM_PROMETHEUS_* 미기재 · 운영 Prometheus 없음(plans/91 1-12 외부 대기).
+    삭제 요건(D-161 ② 4항)은 갖춰졌으나 1-12 해소 시 E3 baseline 폴백 채널로 바로 필요하므로 유지한다.
+    **판정 기한 2027-02-20**(D-161 C1): 1-12 해소 → docs/27 §3.3.3 배선 / 미해소 → §3.3.4 삭제(사유부 연장 1회만).
 """
 
 from __future__ import annotations

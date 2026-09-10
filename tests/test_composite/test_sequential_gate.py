@@ -393,3 +393,51 @@ def test_dependency_scope_still_blocked_for_server_axis_global():
     rows = [{"hostname": "a"}]
     collector = [(t1, {"organized_data": {"rows": rows}, "query_results": rows})]
     assert _dependency_scope("전체 서버의 최근 1개월 CPU 사용률 상위", collector) == ([], {})
+
+
+# ── 1단 선행 스코프 폭 (plans/88 R-E · 2026-09-10 확정 (c) · COMPOSITE_PRIOR_SCOPE_LATEST_ONLY) ──
+def _producer(tid, hosts):
+    t = {"task_id": tid, "agent": "data_query", "sub_query": tid, "depends_on": [], "input_from": [],
+         "order": 1, "status": "completed"}
+    rows = [{"hostname": h} for h in hosts]
+    return (t, {"organized_data": {"rows": rows}, "query_results": rows})
+
+
+COLL = [_producer("tool_data_query_1", ["web-a1", "web-a2"]), _producer("tool_data_query_2", ["db-b1"]),
+        _producer("tool_data_query_3", ["app-c1", "app-c2", "app-c3"])]  # G1 값 일치는 3자 이상
+
+
+def test_latest_only_off_keeps_union_of_all_producers():
+    input_from, prior = _dependency_scope("그 서버들의 CPU", COLL)
+    assert input_from == ["tool_data_query_1", "tool_data_query_2", "tool_data_query_3"] and len(prior) == 3
+
+
+def test_latest_only_without_value_match_takes_most_recent_producer():
+    input_from, prior = _dependency_scope("그 서버들의 CPU 상위 목록", COLL, latest_only=True)
+    assert input_from == ["tool_data_query_3"] and set(prior) == {"tool_data_query_3"}
+
+
+def test_latest_only_with_value_match_takes_only_matching_producers():
+    input_from, _ = _dependency_scope("2026년 7월 web-a1, web-a2 서버 상세", COLL, latest_only=True)
+    assert input_from == ["tool_data_query_1"]
+    input_from2, _ = _dependency_scope("db-b1 및 app-c2 서버 비교", COLL, latest_only=True)
+    assert input_from2 == ["tool_data_query_2", "tool_data_query_3"]
+
+
+def test_latest_only_value_match_prefers_narrow_recent_result_over_wide_earlier_one():
+    """2026-09-10 1단 실측: 열거된 서버가 1번째(넓은)·2번째(좁은) 결과 양쪽에 있으면 좁은 최근 결과만 채택한다."""
+    coll = [_producer("tool_data_query_1", ["web-a1", "web-a2", "db-b1", "app-c1"]),
+            _producer("tool_data_query_2", ["db-b1", "app-c1"])]
+    input_from, _ = _dependency_scope("2026년 7월 서버별 CPU 사용률 평균 (db-b1, app-c1)", coll, latest_only=True)
+    assert input_from == ["tool_data_query_2"]
+
+
+def test_ranking_marker_includes_sunwi():
+    """실측 sub_query "CPU 사용률이 높은 서버 순위 및 사용률 조회" — "순위"가 G3에 포함된다."""
+    input_from, _ = _dependency_scope("2026년 7월 cpu 사용률이 높은 서버 순위 및 사용률 조회", COLL, latest_only=True)
+    assert input_from == ["tool_data_query_3"]
+
+
+def test_latest_only_still_blocked_by_global_scope_and_no_signal():
+    assert _dependency_scope("전체 서버의 CPU", COLL, latest_only=True) == ([], {})
+    assert _dependency_scope("디스크 사용률 조회", COLL, latest_only=True) == ([], {})

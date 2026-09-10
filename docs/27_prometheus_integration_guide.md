@@ -4,25 +4,27 @@
 > 쓰는지**를 한 곳에 모은 문서. 설계 근거는 `docs/02_decision.md` **D-119**, 픽스처·실연동
 > 절차의 원본은 `docs/23` §8.2, 조사 서비스 기동은 `docs/26_sre_agent_guide.md` §5.4에 있다.
 > 여기서는 그 조각들을 **연동 관점 하나로** 재구성하고, **2026-08-28 실측 상태**를 명시한다.
+> **2026-09-10 갱신**: §0 요약을 당일 실측으로 갱신하고, §3.3을 **게이트 측 플래그 처리 방침**(사용자 확정 ③ 예비 코드 + 판정 기한 2027-02-20 — `plans/91` 1-10 · 구 `plans/70` P1-1)으로 확장했다. 조사 경로 접속 URL은 여전히 비어 있다.
 
 ---
 
 ## 0. 30초 요약 — 지금 상태
 
-| 항목 | 실측 결과 (2026-08-28) |
+| 항목 | 실측 결과 (2026-09-10 재실측 · 변동 없는 행은 2026-08-28 값) |
 |---|---|
-| PromQL 도구 구현 | ✅ 있음 — `mcp_server/mcp_server/promql_tools.py` (556줄 · 도구 7종) |
-| 도구 등록 배선 | ✅ 무조건 등록 — `mcp_server/mcp_server/server.py:133` |
-| 조사(SRE) 측 소비 배선 | ✅ 있음 — `sre_agent`가 `mcp_servers`로 등록 (`interface/mcp_service.py:93`) |
-| **접속 URL 설정** | ❌ **세 곳 모두 비어 있음** — `config.toml` `url = ""` · `mcp_server/.env` 0건 · 루트 `.env` 0건 |
-| **`mcp_server` 기동 가능 여부** | ✅ 가능 — 2026-08-28 `mcp` **1.29.1**로 되돌리고 `pyproject`에 `<2` 상한 고정 (D-181 · §4.3) |
-| 게이트(노이즈 캔슬링) 측 Prometheus | ⚠️ 클라이언트만 존재, **프로덕션 호출부 0건** (§3.3) |
+| PromQL 도구 구현 | ✅ 있음 — `mcp_server/mcp_server/promql_tools.py` (도구 7종: 고수준 `prom_metric_instant`·`prom_metric_range` + 원시 5종) |
+| 도구 등록 배선 | ✅ 무조건 등록 — `mcp_server/mcp_server/server.py` |
+| 조사(SRE) 측 소비 배선 | ✅ 있음 — `sre_agent`가 `mcp_servers`로 등록 (`interface/mcp_service.py`). 단 **결정적 사전수집(D-197·D-209)은 폴스타 도구만** 부른다(`evidence_prefetch.py` — 알람·지표·변경 이력); PromQL은 조사 LLM의 ReAct 루프에서만 쓰인다 |
+| **접속 URL 설정** | ❌ **여전히 비어 있음(2026-09-10)** — `config.toml` `url = ""` · `mcp_server/.env`에 `PROMETHEUS_*` 0건 · 루트 `.env` 0건. `.env.example`에는 문서화됨(G-3 해소) |
+| **`mcp_server` 기동 가능 여부** | ✅ 가능 — `mcp<2` 상한 고정 (D-181 · §4.3). 2026-09-10 실 기동 확인(plans/88 검증에서 9099 SSE 기동) |
+| 게이트(노이즈 캔슬링) 측 Prometheus | ⚠️ 클라이언트만 존재 · 프로덕션 호출부 0건 → **2026-09-10 사용자 확정: ③ 예비 코드 명시 + 판정 기한 2027-02-20**(§3.3) |
 | 본체 채팅(text2sql) 경로 | ❌ PromQL 프로파일 없음 — `HOST_INSPECT_PROFILES` 4종 전부 폴스타 SQL (§3.4) |
 | 품질 게이트(D-119 채택 조건) | ✅ **통과 확정** — 2026-08-06 A/B 실측 "열화 없음" (§7.3) |
 
 **한 줄 결론**: 코드는 완성돼 있고 품질 게이트도 통과했으나, **주소가 비어 있어 실제로는 동작하지
-않는다.** 남은 것은 ①`PROMETHEUS_URL` 설정 ②`nodename` 라벨 규약 확인 **둘뿐**이다
-(패키지 파손이던 세 번째 항목은 2026-08-28 해소 — D-181).
+않는다.** 남은 것은 ①`PROMETHEUS_URL` 설정 ②`nodename` 라벨 규약 확인 **둘뿐**이며, 둘 다 운영 Prometheus에
+대한 **외부 선행조건**(`plans/91` 1-12 · P0-3)이라 코드로는 더 진행할 것이 없다. 게이트 측 채널은 그 선행조건이 풀릴 때까지
+**예비 코드**로 두기로 확정했다(§3.3 · 판정 기한 2027-02-20).
 
 ---
 
@@ -72,12 +74,12 @@ HolmesGPT에는 내장 `prometheus/metrics` toolset이 있지만 **쓰지 않는
 | 설정 위치 | `mcp_server/config.toml` `[prometheus]` + `mcp_server/.env` | 루트 `.env` `ALARM_PROMETHEUS_*` |
 | 주소 지정 | 단일 `PROMETHEUS_URL` | **존(db_id)별 CSV** `db_id=url,…` |
 | 소비자 | HolmesGPT ReAct 루프(LLM) | (예정) Holt-Winters baseline 산정 |
-| **현재 상태** | 구현·배선 완료 · **URL 미설정** | 구현만 존재 · **호출부 0건** |
-| 켜는 방법 | §3.1 | **지금은 켤 수 없다** — §3.3 |
+| **현재 상태** | 구현·배선 완료 · **URL 미설정**(외부 선행조건 대기) | 구현만 존재 · **호출부 0건** · **예비 코드 확정(2026-09-10 · 판정 기한 2027-02-20)** |
+| 켜는 방법 | §3.1 | **지금은 켤 수 없다** — §3.3(플래그 처리 방침) |
 
 ②는 `polestar_metric_baseline.py:24`가 *"§5.2 확정 설계상 배선하지 않는다"*로 사유를 남긴
-**의도적 보류**다. `plans/70` **P1-1**에서 처리 방식(배선 완결 / 삭제 / 기한부 예비코드) 택1이
-사용자 결정 대기 중이다. 존별 CSV를 채워도 **현재는 아무 효과가 없다**.
+**의도적 보류**다. 처리 방식(배선 완결 / 삭제 / 기한부 예비코드)은 `plans/70` P1-1 → `plans/91` 1-10으로 이관됐고,
+**2026-09-10 사용자가 ③ 기한부 예비 코드로 확정**했다(§3.3). 존별 CSV를 채워도 **현재는 아무 효과가 없다**.
 
 ---
 
@@ -130,17 +132,60 @@ POLESTAR_MCP_TOKEN=<선택 — 설정 시 Bearer 헤더 부착>
 `AgentSettings`(`sre_agent/sre_agent/settings.py:29`)에 `prometheus_url` 필드는 **의도적으로 없다**.
 Prometheus를 바꾸려면 `sre_agent`가 아니라 `mcp_server` 설정을 바꾼다. 분리 절차 = **URL 1개 변경**.
 
-### 3.3 게이트(노이즈 캔슬링) 측 — 현재 미배선
+### 3.3 게이트(노이즈 캔슬링) 측 — 플래그 처리 방침 (2026-09-10 확정 · `plans/91` 1-10)
 
 ```dotenv
-# 파일: <레포 루트>/.env   ※ 지금 채워도 효과 없음
+# 파일: <레포 루트>/.env   ※ 지금 채워도 효과 없음 — 아래 3.3.1 참조
 ALARM_PROMETHEUS_ENABLED=false                 # 옵트인 플래그 — 프로덕션 참조 0건
 ALARM_PROMETHEUS_BASE_URLS_CSV=polestar_cm_gp=http://prom-gp:9090,polestar_cm_yd=http://prom-yd:9090
 ALARM_PROMETHEUS_TIMEOUT_SECONDS=3
 ```
 
-`src/api/settings_catalog.py:339`가 이 두 키를 **미소비 목록에 명시**하고 있다
-(*"PrometheusClient가 src/에서 미생성 (테스트에서만 생성)"*). §2 표 참조.
+#### 3.3.1 지금 무엇이 있고 무엇이 없는가 (2026-09-10 실측 · D-161 ② 4항)
+
+| 실측 항목 | 결과 | 근거 명령 |
+|---|---|---|
+| ① 운영 `.env` 실제값 | `ALARM_PROMETHEUS_*` **3키 전부 미기재**(= 코드 기본값 off · CSV 빈 값) | `grep -nE '^ALARM_PROMETHEUS' .env` → 0건 |
+| ② 서빙 상태 | 운영 Prometheus **없음**(P0-3 인프라 대기 · `plans/91` 1-12). 로컬은 Docker 픽스처(9190)뿐 | `docker ps` · `docs/23` §8.2 |
+| ③ 최종 수정 | `noise_gate/infrastructure/prometheus_client.py` — **2026-08-05** 패키지 분리 커밋(`b79808a`, 현 브랜치 소속) 이후 변경 0 | `git log -1 -- …/prometheus_client.py` |
+| ④ 역방향 import(소비처) | 테스트 밖 **0건**. `polestar_metric_baseline.py:24`가 독스트링으로 *"배선하지 않는다"*를 남길 뿐 · `settings_catalog.py`가 CSV·timeout 2키를 **미소비 목록**에 명시 | `grep -rn prometheus_client noise_gate src --include=*.py` |
+
+즉 삭제(②안)의 실측 요건은 이미 갖춰져 있다. 그런데도 삭제하지 않는 이유는 **`plans/91` 1-12(운영 Prometheus 실연동 —
+`nodename` 규약 실측·표준화 협의)가 외부 대기 중**이고, 그 선행조건이 풀리는 순간 이 클라이언트가 바로 필요해지기 때문이다
+(게이트 E3 baseline의 유일한 폴백 채널 — 3.3.3).
+
+#### 3.3.2 확정 방침 — ③ 예비 코드 명시 + 판정 기한
+
+| 항목 | 값 |
+|---|---|
+| 결정 | **③ 예비 코드로 유지**(배선 완결 ①·삭제 ② 기각) — 2026-09-10 사용자 확정(`plans/91` 1-10 · 원 `plans/70` P1-1 · `plans/66` §1.5 C3) |
+| 판정 기한 | **2027-02-20**(D-161 C1 · `docs/flag_audit.md` 통일 기한) |
+| 기한 도래 시 판정 규칙 | 1-12(운영 Prometheus)가 **해소됐으면** 3.3.3의 배선 작업으로 전환(플래그 on 경로 실효) · **미해소면** ②안 삭제(플래그 3키·클라이언트·도움말·카탈로그 미소비 목록 동시 제거 — 사유부 연장은 1회만) |
+| 표기 위치 | `prometheus_client.py` 모듈 독스트링 · `src/config.py` `AlarmConfig` 주석 · `config/settings_help/alarm.yaml` 3항목 · `src/api/settings_catalog.py` 미소비 목록 주석 — **네 곳이 같은 문장**(기한·근거 D-161)을 갖는다 |
+| 지금 값을 채우면 | **아무 일도 일어나지 않는다.** `prometheus_enabled=true`여도 이 플래그를 읽는 프로덕션 코드가 없다. 설정 화면의 도움말이 이 사실을 그대로 말한다 |
+
+#### 3.3.3 (참고) 배선을 완결한다면 무엇을 해야 하는가 — 1-12 해소 시의 작업 목록
+
+이 절은 **착수 지시가 아니다.** 기한 판정에서 "해소"로 갈릴 때 필요한 작업의 크기를 미리 적어 둔 것이다.
+
+1. **소비처**: `noise_gate/infrastructure/polestar_metric_baseline.py`의 E3 baseline 조회에 **폴백 채널**로 편입 — 폴스타
+   `cmm_metric_stat_h`가 비어 있거나(b0 DB2·조회 실패·이력 부족) 조회가 실패했을 때만 `PrometheusClient.query_series(db_id,
+   promql, start, end)`로 같은 시계열을 얻는다. PromQL은 코드가 조립하는 고정 템플릿(kind→메트릭 매핑 — `DEFAULT_METRIC_SOURCE_BY_KIND`와
+   대칭) · `{nodename="<server_name>"}` 셀렉터 · `now()` 금지(사건 시각 기준 start/end).
+2. **게이팅**: `alarm_cfg.prometheus_enabled` **AND** `get_prometheus_base_url(db_id)`가 있을 때만. 둘 중 하나라도 없으면 종전과
+   비트 동일(폴스타 경로만).
+3. **설정**: `ALARM_PROMETHEUS_BASE_URLS_CSV`는 존(db_id)별 — 은행존·공동존 Prometheus가 다를 수 있다는 전제(프로세스 API와 같은 패턴).
+   `settings_catalog.py` 미소비 목록에서 2키를 **제거**하고 도움말을 "소비됨"으로 고친다.
+4. **검증**: `httpx.MockTransport` 단위(조립 셀렉터·timeout·None 폴백) + Docker 픽스처(9190) 통합. `nodename` 규약은 §6.1의 5단계를
+   **먼저** 통과해야 한다 — 규약이 어긋나면 조회가 조용히 빈 결과가 되어(§3.5) baseline이 없는 것과 같다.
+5. **회귀 게이트**: 플래그 off 비트 동일 테스트 · `arch_check --ci`(infrastructure → domain만) · `overfit_check --ci`.
+
+#### 3.3.4 (참고) 삭제한다면 — ②안의 범위
+
+기한 판정이 "미해소"로 갈리면 다음을 **한 커밋**에서 지운다(D-161 ② 4항 실측은 3.3.1 표를 갱신해 첨부):
+`prometheus_client.py` · `AlarmConfig.prometheus_*` 3필드 + `get_prometheus_base_url` · `settings_catalog.py` 그룹·미소비 목록 3키 ·
+`config/settings_help/alarm.yaml` 3항목 · 관련 테스트(`noise_gate/tests/test_prometheus_client*.py`) · 본 문서 §2·§3.3 · `docs/02`에
+폐기 결정 등재. `polestar_metric_baseline.py:24`의 독스트링 한 줄은 "폴백 채널 없음"으로 고친다.
 
 ### 3.4 본체 채팅(text2sql) 경로 — PromQL 프로파일 없음
 
@@ -455,7 +500,7 @@ RUN_E2E=1 python sre_agent/scripts/ab_promql_gate.py --trials 2
 | ~~G-2~~ | ~~`test_promql_tools.py` 53건 조용한 skip~~ | — | ✅ **해소** — 52 passed로 복귀. 다만 임포트 가드 skip 구조는 남아 있다(G-7) |
 | G-7 | 임포트 가드 skip이 *환경 부재*와 *환경 파손*을 구별하지 못함 | 파손이 통과로 보인다 | "skip이 지배적이면 실패"하는 CI 게이트 검토(미착수) |
 | ~~G-3~~ | ~~`.env.example` 오버라이드 키 9종 누락 + 유령 키 + 존 3종 미문서화~~ | — | ✅ **해소(2026-08-28)** — 키 보강 + 커버리지 테스트 8건 신설 · §8.1 |
-| G-4 | 게이트 측 Prometheus 채널 미배선 | 존별 CSV가 무효 | `plans/70` P1-1 택1 (사용자 결정 대기) |
+| G-4 | 게이트 측 Prometheus 채널 미배선 | 존별 CSV가 무효 | ✅ **처리 방침 확정(2026-09-10)** — ③ 예비 코드 + 판정 기한 2027-02-20(§3.3 · `plans/91` 1-10). 배선은 1-12 해소 시 §3.3.3 |
 | G-5 | 본체 채팅 경로에 PromQL 프로파일 없음 | 채팅에서 메트릭 조회 불가 | 필요 시 `HOST_INSPECT_PROFILES` 확장 (미요청) |
 | G-6 | 실 Prometheus `nodename` 규약 미확인 | 조회가 **조용히 빈 결과** | §6.1 실측 후 인프라 소유자 협의 |
 
@@ -549,7 +594,7 @@ Plan 81(호스트 가용성 사전 판정)은 현재 폴스타 `cmm_resource.ava
 | `docs/23` §8.2 | 실 Prometheus 연결 절차 원본 · 픽스처 포트 지도 |
 | `docs/26_sre_agent_guide.md` §5.4 | 조사 프로파일 인스턴스 기동 · toolset 프로파일 표 |
 | `plans/sre-agent/06-remote-vm-access.md` | 원격 VM 2축 접근 설계(§3 도구 표면 · §5-0 결정적 조립) |
-| `plans/70` P1-1 | 게이트 측 `prometheus_enabled` 처리 택1 |
+| `plans/91` 1-10 (원 `plans/70` P1-1) | 게이트 측 `prometheus_enabled` 처리 — ③ 예비 코드 확정(2026-09-10 · 기한 2027-02-20) |
 
 **주요 코드 위치**
 
@@ -560,7 +605,7 @@ mcp_server/mcp_server/server.py:133            register_promql_tools 호출
 mcp_server/config.toml:27                      [prometheus] 섹션
 sre_agent/sre_agent/toolset_profiles.py:202    내장 prometheus/metrics 비활성
 sre_agent/sre_agent/interface/mcp_service.py:93 _build_mcp_servers (SSE 등록)
-noise_gate/infrastructure/prometheus_client.py 게이트 경로 클라이언트(호출부 0건)
+noise_gate/infrastructure/prometheus_client.py 게이트 경로 클라이언트(호출부 0건 · 예비 코드 · 판정 기한 2027-02-20)
 src/config.py:615                              ALARM_PROMETHEUS_* 필드
 testdata/prometheus/                           Docker 픽스처(compose·scrape·mock exporter)
 ```

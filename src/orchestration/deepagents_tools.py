@@ -57,7 +57,7 @@ _PRIOR_REF_MARKERS = (
 # 순위/최상급 어휘 — 복합 질의의 후속 조회에서 "선별 집합 내 순위" 신호
 # (2026-07-20 라이브 오답 실측: "6월 CPU 최고 서버 조회"가 전 서버 기준 SQL로 생성).
 _RANKING_MARKERS = (
-    "가장", "최고", "최대", "최소", "최상위", "상위", "하위",
+    "가장", "최고", "최대", "최소", "최상위", "상위", "하위", "순위",   # "순위": 2026-09-10 1단 재검증 실측(§11.7)
     "highest", "lowest", "top",
 )
 
@@ -159,7 +159,40 @@ _SCOPE_PRODUCER_AGENTS: tuple[str, ...] = (
 _SCOPE_CONSUMER_AGENTS: tuple[str, ...] = _SCOPE_PRODUCER_AGENTS
 
 
-def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]:
+def _matched_values(rows: list, low: str) -> set[str]:
+    """선행 결과 행의 식별 값 중 sub_query에 그대로 등장하는 값 집합(G1 값 일치 · 소문자)."""
+    out: set[str] = set()
+    for row in _extract_identity_rows(rows):
+        if not isinstance(row, dict):
+            continue
+        for v in row.values():
+            if isinstance(v, str) and len(v) >= 3 and v.lower() in low:
+                out.add(v.lower())
+    return out
+
+
+def _value_matched(rows: list, low: str) -> bool:
+    return bool(_matched_values(rows, low))
+
+
+def _covering_matches(candidates: list, low: str) -> list:
+    """값 일치 생산자 중 **최근 것부터** 새 값을 더하는 생산자만 남긴다(plans/88 R-E (c) · §11.7 실측 보강).
+
+    같은 서버가 앞선 넓은 결과(54대)와 뒤의 좁은 결과(10대)에 모두 있으면 뒤의 결과만 채택된다 —
+    앞 결과는 새 값을 더하지 못하므로. 서로 다른 서버를 가리키는 두 결과는 둘 다 남는다.
+    """
+    covered: set[str] = set()
+    kept: list = []
+    for c in reversed(candidates):
+        vals = _matched_values(c[2], low)
+        if vals and not vals <= covered:
+            kept.append(c)
+            covered |= vals
+    kept.reverse()
+    return kept
+
+
+def _dependency_scope(sub_query: str, collector: list, *, latest_only: bool = False) -> tuple[list[str], dict]:
     """후속 조회 task에 주입할 선행 결과 의존(input_from/prior)을 결정한다 (D-095).
 
     결정적 게이트 중 하나라도 충족하면 선행 조회 결과를 D-086 prior_rows 경로로 주입해
@@ -170,6 +203,9 @@ def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]
     - G3 순위/최상급 어휘: "가장/최고/상위…" — 복합 질의에서 선행 선별 집합 내 순위
       산정 신호.
     단, sub_query가 **서버 축**의 전역 범위를 명시(_is_global_scope — 대상 명사 동반)하면 주입하지 않는다.
+
+    `latest_only`(plans/88 R-E · 2026-09-10 사용자 확정 (c)): 후보가 여럿이면 **값 일치(G1)한 결과만**, 값 일치가
+    없으면 **가장 최근 성공 선행 1건**만 주입한다. off(기본)면 종전대로 전부 합집합(비트 동일).
 
     Args:
         sub_query: 현재 도구의 자연어 지시
@@ -201,22 +237,16 @@ def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]
 
     ref_hit = any(m in low for m in _PRIOR_REF_MARKERS)
     rank_hit = any(m in low for m in _RANKING_MARKERS)
-    value_hit = False
-    if not (ref_hit or rank_hit):
-        for _, _, rows in candidates:
-            for row in _extract_identity_rows(rows):
-                if not isinstance(row, dict):
-                    continue
-                if any(
-                    isinstance(v, str) and len(v) >= 3 and v.lower() in low
-                    for v in row.values()
-                ):
-                    value_hit = True
-                    break
-            if value_hit:
-                break
+    matched = [c for c in candidates if _value_matched(c[2], low)] if (latest_only or not (ref_hit or rank_hit)) else []
+    value_hit = bool(matched)
+    if latest_only and matched:
+        matched = _covering_matches(candidates, low)
     if not (ref_hit or rank_hit or value_hit):
         return [], {}
+
+    if latest_only:
+        # (c) 값 일치한 결과만 · 없으면 가장 최근 성공 선행 1건(collector는 도착 순).
+        candidates = matched if matched else candidates[-1:]
 
     input_from: list[str] = []
     prior: dict = {}
@@ -274,7 +304,10 @@ async def _run_subagent_tool(
     #   data_query/alarm_query   → prior_rows(SQL 스코프, D-086)
     #   process_query/fault_diagnosis → prior_targets(대상 집합) — _make_isolated_input이 조립
     if collector and agent_name in _SCOPE_CONSUMER_AGENTS:
-        input_from, prior = _dependency_scope(sub_query, collector)
+        input_from, prior = _dependency_scope(
+            sub_query, collector,
+            latest_only=bool(getattr(getattr(app_config, "composite", None), "prior_scope_latest_only", False)),
+        )
         # 관측(plans/88 §11.5 · 2026-09-10): 1단 순차 계약은 오케스트레이터 LLM이 재표현한 sub_query에
         # 의존한다(참조어 G2·순위어 G3) — 어떤 문구로 호출됐는지 로그가 없으면 게이트 미발동을 진단할 수 없다.
         logger.info(

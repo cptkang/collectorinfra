@@ -347,6 +347,28 @@ settings:
     references:
       - docs/02_decision.md (D-176 후속4)
 
+  COMPOSITE_PRIOR_SCOPE_LATEST_ONLY:
+    example: >-
+      한 대화에서 조회를 여러 번 이어갈 때, 세 번째 조회가 "상위 10대"만 가리켜도 꺼진 상태에서는 앞선 조회 결과까지 전부 합쳐
+      54대로 넓어졌다(2026-09-10 실측). 켜면 세 번째 결과 10대만 대상으로 잡는다. 서버 이름을 직접 적으면 그 이름이 있던
+      조회 결과가 우선한다.
+    summary: 앞선 조회가 여러 건일 때 뒤 조회의 대상을 "직전 결과 1건"으로 좁힐지.
+    behavior: >-
+      정본 실행 경로(1단)에서 뒤 조회의 대상은 앞선 성공 결과들에서 온다. 꺼져 있으면 전부 합집합으로 쓰고,
+      켜면 질의에 서버 이름이 있으면 그 이름이 나온 결과만, 없으면 가장 최근 결과 1건만 쓴다.
+      어느 쪽이든 선별 밖 서버가 섞이지는 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 앞선 결과를 전부 합쳐 대상으로 쓴다(지금까지와 같다).
+      - value: "true"
+        label: 켬
+        effect: 서버 이름 일치 결과 우선, 없으면 직전 결과 1건만 대상으로 쓴다.
+    performance: 대상 목록이 작아져 뒤 조회의 IN 목록이 짧아진다.
+    stability: 앞선 결과를 나중에 다시 가리키려면 서버 이름을 질의에 적어야 한다.
+    recommendation: 1단 실 재검증 뒤 켠다(판정 기한 2027-03-10).
+    related: [COMPOSITE_SEQUENTIAL_GATE_ENABLED]
+
   COMPOSITE_SEQUENTIAL_GATE_ENABLED:
     example: >-
       'CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘'에서 1단계가 0대를 찾았을 때, 이 값이 꺼져 있으면 2단계가 대상 없이

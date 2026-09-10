@@ -1,7 +1,7 @@
 # 88. 복합 질의 순차 의존 처리 — 선행 조회 결과가 후속 조회의 대상이 되는 파이프라인
 
 > **작성일**: 2026-09-09
-> **성격**: 구현 계획 · **상태: 1차·2차 구현 + §8 게이트 전건 사용자 확정 + 실 검증(Gemini 11건 · 2단·1단 계약 실효 확인) + 운영 `.env` 반영 완료(2026-09-10 · §11) — 잔여 = §11.4 단계 4·5(2차 3종 on 판단)·7(W4 골든 실 평가) · R-E 합집합 폭(§11.6 부수 관측) · `-WIP`**
+> **성격**: 구현 계획 · **상태: 완료(2026-09-10 · 태그 해제) — 1차·2차 구현(W1~W9 전건) + §8 게이트 전건 사용자 확정 + 실 검증(Gemini 11건 · 2단·1단 계약 실효 확인) + 운영 `.env` 반영(W5). 코드 잔여 0.** **후속 전건 종결(2026-09-10)**: 단계 4·5·7 실 실행(11건) → **2차 3종 운영 on 확정**(사용자) · W4 골든 실 평가 5/5 · R-E (c) 구현·재검증 통과 → `COMPOSITE_PRIOR_SCOPE_LATEST_ONLY=true`. 운영 `.env` = 1차 3종 on · 2차 3종 on · LATEST_ONLY on · `PATH_PARITY=false`(82 2차 이관). INDEX 규칙상 잔여 없음 = 무표기.
 > **v4(2026-09-09)**: 사용자 지시("중단된 작업을 재개하라")로 2차(W2·W8·W9·W4)를 §8 권고안 가정 아래 구현. **실측 정정**: 플래너
 > 프롬프트에 data→data 순차 예시(예시 3 *"찾아 그 서버들의 프로세스"*)가 **이미 있다** — v1 R-2의 "예시 0건"은 과장이었고 **프롬프트는
 > 무변경**(G-4 불필요 · 골든 불변). 2차도 플래그 3종 기본 off(`COMPOSITE_PLAN_DAG_VALIDATION_ENABLED` · `COMPOSITE_SEQUENTIAL_REPLAN_ENABLED` ·
@@ -818,6 +818,28 @@ t1 식별 컬럼은 `name`(DB-ORA-023)이라 G1도 형식 불일치 가능성 �
 | `.encenv`(미추적) 키 누수 — 기준선 worktree엔 파일이 없어 통과 | 1 | `test_gemini_api_key_default_empty` — 환경 차이, 내 변경 아님(기존) |
 | 기준선에서도 실패 — 기존 결함(DB·LLM·Redis 의존 · `polestar_pg.yaml` 부재 5 errors · 스냅샷 드리프트 등) | 27 | 손대지 않음(88 범위 밖) — 목록은 `tests/test_plan33_join_prevention`·`noise_gate/tests/test_alarm_*`·`test_e2e_polestar`·`test_prompt_render_matrix`·`test_schema_cache`·`test_xls_plan_integration` 등 |
 
+**단계 4·5·7 실측(2026-09-10 · Gemini 11건 · 사용자 승인 · 2차 3종 판단 자료)**
+
+| 건 | 설정 | 결과 | 판정 |
+|---|---|---|---|
+| 4-a | 2단 · DAG+REPLAN on · 예시 질의(2026년 7월) | 분해 t1→t2 정상 · 되먹임 0회 · t1 54 → t2 54 한정 · 경과 블록 | ✅ 회귀 없음 |
+| 4-b | 2단 · 같은 플래그 · "김포 운영 서버 목록을 찾아줘" | 단일 task 유지 · 재분해 0회 · 노트 없음(S5 오탐 없음) | ✅ |
+| 4-c | 2단 · 같은 플래그 · "전체 서버의 OS 종류와 버전" | 단일 유지 · 54건 | ✅ |
+| 5-b | 3단(`semantic_router`) · HITL off · FALLBACK_TIERS on | 사다리 `semantic_router` 확정 · `sequential_runner` 2-pass · t1 54 → t2 54 · 경과 블록 | ✅ S12 |
+| 5-c | 4단(`legacy`) · 같은 조건 | 사다리 `legacy` 확정 · 2-pass · 경과 블록 | ✅ |
+| 5-d | 3단 · `ENABLE_STRUCTURE_APPROVAL=true` | **미진입** → 현행 단일 SQL(4건) · 경과 블록 없음 | ✅ HITL 우회 금지 골든과 일치 |
+| 7 | `RUN_E2E=1 eval_routing.py --decomposition` | **5/5 passed** · 순차 3/3 보존 · 단일 오탐 0 · degraded 0 (`reports/decomposition_2026-09-10.json`) | ✅ W4 |
+
+→ **2차 3종 운영 on 확정(2026-09-10 · 사용자 · 인터뷰)**: DAG 검증·재분해는 정상 분해에서 무개입(되먹임 0)·오탐 0, 3·4단 러너는 강등 기동에서만 실효·HITL 존중.
+운영 `.env`에 `COMPOSITE_PLAN_DAG_VALIDATION_ENABLED`·`COMPOSITE_SEQUENTIAL_REPLAN_ENABLED`·`COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED=true` 반영.
+
+**R-E (c) 실 재검증(2026-09-10 · Gemini 2건 · 승인 1+1)**
+
+| 회 | 관측 | 조치 |
+|---|---|---|
+| 1차 | 3번째 호출이 식별자(DB-ORA-023 등)를 열거했는데 그 서버들이 1번째(54대)·2번째(10대) **양쪽**에 있어 값 일치가 둘 다 걸려 합집합 54대. 2번째 호출 문구 "높은 서버 **순위**"는 순위어 목록 밖이라 미주입 | 규칙 보강: 값 일치 생산자를 **최근 것부터** 훑어 새 값을 더하는 생산자만 채택(`_covering_matches` — 넓은 앞 결과는 탈락) · `_RANKING_MARKERS`에 "순위" 추가 · 정오표 2건 |
+| 2차 | t1 4건 → 2번째 호출이 4개 hostname 열거(+"전체 기간" — 차단어 축 한정으로 미차단) → `input_from=['tool_data_query_1']` · 4대(hostname) 한정 · 경과 블록 + 선별 기준 | ✅ 통과 → 운영 `.env` `COMPOSITE_PRIOR_SCOPE_LATEST_ONLY=true` 반영 |
+
 ### 11.6 1단 게이트 발동 조건 — (d) 확정·구현(2026-09-10 · Q11)
 
 > **구현**: `deepagents_tools._GLOBAL_SCOPE_MARKERS`(부분 문자열 3종) → `_GLOBAL_SCOPE_RE` + `_is_global_scope()`(대상 명사 동반 시만 차단) ·
@@ -879,3 +901,7 @@ t1 식별 컬럼은 `name`(DB-ORA-023)이라 G1도 형식 불일치 가능성 �
   arch/overfit 0. **병합 사고**: 작업 중 사용자 `stash pop`이 원격 6커밋과 충돌(6파일 UU) → 마커 해소(query.py는 plans/89 쪽 채택) ·
   원격이 D-198~D-202를 선점해 **D-198→D-203 재부여**(plans/89·90도 D-204·D-205로 — 병행 세션 collectorinfra-99가 마무리).
 - v5(2026-09-09~10) — **인터뷰로 §8 게이트 전건 확정**(`interview-me` · Q1~Q6 · §11.1 표). §11 신설: 플래그 6종 단계별 테스트 절차(단위·dry-run·mock은 과금 0, 실 실행 16건은 D-127 단계별 승인) · 실효화 결정 **"1차 3종 on · 2차 3종 off · `PATH_PARITY=false`를 운영 `.env`에 명시"**(코드 기본값 불변) · G-1·G-4~G-7 가정 5건 확정 · G-3 on은 82 2차로 이관 · 관측 카운터는 로그로 대체. 구현: **G-2 선별 기준 결정적 추출**(`extract_selection_basis`) + **off 관측 로그 대칭**(사후 대조·재분해). 단계 1 실측(§11.5): 단위 89 passed · dry-run OK · mock은 채점 경로만(목업이 분해 JSON을 내지 않음). 실측 정정: §5 관측 카운터는 미구현, 운영 `.env`에 6종·`PATH_PARITY` 전부 부재.
+- v6(2026-09-10) — **태그 해제(`-WIP` → 무표기)**. 사용자 지시 *"수정이 완료된 사항을 확인하여 파일명과 내용을 업데이트하라"* — W1~W9 코드 전건 랜딩 · W5 `.env` 반영 완료 · 실 검증 11건으로 계획의 구현 범위가 닫혔다. 남은 §11.4 단계 4·5·7과 R-E는 코드 잔여가 아니라 운영 판단·과금 평가·별도 결정 후보라 헤더의 "후속"으로 재분류. `tasks/todo-88` T12 완료 표기. 82 Wave 6에 2차 착수 조건(`PATH_PARITY` on + 88 ③ 3-c) 등재.
+- v7(2026-09-10) — **R-E 확정 (c)**(인터뷰): 1단 `_dependency_scope(latest_only=)` — 후속 sub_query에 식별자가 열거되면(G1) 그 값을 가진 선행 결과만, 없으면 가장 최근 성공 선행 1건. 플래그 `COMPOSITE_PRIOR_SCOPE_LATEST_ONLY`(기본 off · 만료 2027-03-10) · `.env`/`.env.example` false 명시 · 도움말 · 카탈로그 335 · 정오표 4건. on 전환은 1단 재검증(Gemini 1건 · D-127) 뒤.
+- v8(2026-09-10) — **단계 4·5·7 실 실행(11건)** 전부 기대 일치(2차 3종 on 판단 자료 확보 · 운영 on 여부는 사용자 판단) · **R-E 실 재검증 2건**: 1차 실측으로 값 일치 규칙 보강(`_covering_matches` · "순위" 순위어) → 2차 통과 → `.env` `COMPOSITE_PRIOR_SCOPE_LATEST_ONLY=true`.
+- v9(2026-09-10) — **2차 3종 운영 on 확정**(인터뷰 · 단계 4·5·7 실측 근거) → `.env`/`.env.example` true. 후속 전건 종결 — 코드·운영 판단·과금 평가 잔여 0.

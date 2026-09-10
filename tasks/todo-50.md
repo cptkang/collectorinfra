@@ -28,5 +28,5 @@
 ## 문서 (M7)
 - [x] D-197 등재(3곳) · `plans/50` §0.3 해소 표·§0.6 ✅·§18 v2.2 · `plans/INDEX.md` · SPEC 정정 · `docs/26` §3.7 · `docs/18`
 
-## 남은 것(범위 밖) — **2026-09-09 전건 `plans/91-TODO-fault-investigation-residual-consolidation.md`로 이관(D-208) · 이 파일은 종결**
+## 남은 것(범위 밖) — **2026-09-09 전건 `plans/91-WIP-fault-investigation-residual-consolidation.md`로 이관(D-208) · 이 파일은 종결**
 - [ ] 실 조사 e2e(D-127 건별 승인 — 소유 66/`docs/23`, 50은 C′-0 단언만) · 플래그 on 운영 실측 · Phase C′ → **`plans/50` §0.8.3 C′-0~C′-4로 구체화(2026-09-09 · D-207)** — 착수 순서 C′-0 → C′-2 → C′-1 → C′-3(U-F 결정 후)

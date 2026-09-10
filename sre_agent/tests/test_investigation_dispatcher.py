@@ -384,3 +384,73 @@ def test_prefetch_failure_does_not_block_investigation(tmp_path):
     assert job.status == "done" and job.correlation is None
     events = [json.loads(l) for l in audit.read_text().splitlines()]
     assert any(e["event"] == "prefetch_failed" and "mcp down" in e["error"] for e in events)
+
+
+# ── 상관 on 경로 브리핑 계약 단언 (plans/91 1-1 · C′-0 · SPEC-correlation-e2e-assertions) ──
+# 레벨 A(과금 0): 가짜 배치로 사전수집을 **실제로 계산**해 dispatcher → build_briefing 끝까지 통과시킨다.
+# 뒤 모듈(변경 오버레이·연관 호스트)이 타임라인·가설·한계에 무엇을 더하든 브리핑 도달을 이 경로가 단언한다.
+
+
+def _stub_prefetch_fn():
+    from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
+    from tests.test_evidence_prefetch import TOOL_ALARMS, _alarm_rows, _batch, _metric_rows
+
+    def base(center):
+        return [center + d for d in (0, 2, 1, 0, 2, 1, 0, 2, 1, 0, 2)]
+
+    responses = {
+        TOOL_ALARMS: _alarm_rows(),
+        "cpu": _metric_rows("cpu", [11.0, 95.0], base(10.0)),
+        "memory": _metric_rows("memory", [40.0, 41.0], base(40.0)),
+        "filesystem": _metric_rows("filesystem", [50.0, 50.0], base(50.0)),
+        "disk_io": _metric_rows("disk_io", [90.0, 95.0], base(10.0)),
+    }
+
+    def _fn(job):
+        scope = scope_from_job(job)
+        return None if scope is None else prefetch_and_correlate(scope, _batch(responses)).to_dict()
+
+    return _fn
+
+
+def _stub_job(server="corr-e2e"):
+    job = make_job(server=server)
+    job.payload["event"]["dbId"] = "polestar"
+    job.reference_time = "2026-09-01T14:00:00"
+    job.lookback_minutes = 60
+    return job
+
+
+def test_correlation_on_briefing_contract_reaches_user(tmp_path):
+    """상관 on: rank·confidence 가설 · `T-` 상대시각 타임라인 · 결정적 한계 · prefetch 감사가 전부 도달한다."""
+    from sre_agent.application.briefing_builder import CORRELATION_NOT_CAUSATION_NOTE
+
+    audit = tmp_path / "a.jsonl"
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(answer="원인: 디스크 IO 폭주 ← polestar_metric_trend"),
+                                   briefing_fn=build_briefing, prefetch_fn=_stub_prefetch_fn(), audit_path=audit)
+    job = _run(disp, _stub_job())
+    assert job.status == "done" and job.correlation and job.correlation["leading_signal"] == "disk_io"
+    b = job.briefing
+    hyps = b["root_cause_hypotheses"]
+    assert [h["rank"] for h in hyps] == list(range(1, len(hyps) + 1)) and len(hyps) >= 2
+    assert all(h["confidence"] in {"high", "medium", "low"} for h in hyps)
+    assert hyps[0]["cause"].startswith("disk_io") and hyps[0]["confidence"] == "high"   # 선행 신호 = rank 1
+    assert b["cause"] == hyps[0]["cause"]
+    assert b["timeline"][0].startswith("T-") and any(" 알람 " in ln for ln in b["timeline"])
+    assert CORRELATION_NOT_CAUSATION_NOTE in b["limitations"]
+    assert any("정밀도" in lim for lim in b["limitations"])          # 상관 notes → limitations 자동 렌더
+    events = [json.loads(l) for l in audit.read_text().splitlines()]
+    pf = next(e for e in events if e["event"] == "prefetch")
+    assert pf["leading_signal"] == "disk_io" and pf["investigation_id"] == job.investigation_id
+
+
+def test_correlation_off_briefing_is_unchanged():
+    """대조: prefetch_fn 없음 → 가설 목록 비고 `T-` 타임라인 없음(현행 비트 동일)."""
+    from sre_agent.application.briefing_builder import CORRELATION_NOT_CAUSATION_NOTE
+
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing)
+    job = _run(disp, _stub_job(server="corr-off"))
+    b = job.briefing
+    assert job.correlation is None and b["root_cause_hypotheses"] == []
+    assert not any(ln.startswith("T-") for ln in b["timeline"])
+    assert CORRELATION_NOT_CAUSATION_NOTE not in b["limitations"]

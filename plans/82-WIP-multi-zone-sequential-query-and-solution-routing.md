@@ -1394,6 +1394,8 @@ SELECT MIN(stat_date), MAX(stat_date), COUNT(DISTINCT stat_date) FROM cmm_metric
 
 ### Wave 6 — UI + 플래그 전환 (**사용자 승인 게이트**)
 
+> **2차(존 편입) 착수 조건 추가(2026-09-10 · `plans/88` §11.1 Q4 이관)**: ①운영 `.env` `TEXT2SQL_PATH_PARITY=false` → **true** 전환(멀티 경로 선행 스코프 결정적 전달 D-099 — 단일 DB 운영에서는 무영향이라 지금은 false 명시) ②`plans/88` §11.3 ③ 3-c 멀티 DB 런타임 검증(`COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED` on 상태에서 DB별 IN 분리·선별 0대 존 미조회 노트). 둘 다 과금 실행이라 D-127 승인 뒤.
+
 | 항목 | 내용 |
 |---|---|
 | 대상 | `src/static/js/app.js` · `.env`/`.env.example` |

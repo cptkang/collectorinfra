@@ -295,6 +295,10 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     result: AlarmAnalysisResult | None = state.get("analysis_result")
     if not result or state.get("error"):
         return {}
+    # (plans/91 1-4) 조사 ID — 인라인(state.investigation_id)·후속(investigation_pending) 어느 경로든 카드에 흘린다.
+    _inv_id = state.get("investigation_id") or (state.get("investigation_pending") or {}).get("investigation_id") or ""
+    if _inv_id and not getattr(result, "investigation_id", ""):
+        result.investigation_id = str(_inv_id)
 
     cfg = config["configurable"]["app_config"]
     process_snapshot: Optional[ProcessSnapshot] = state.get("process_snapshot")
@@ -398,6 +402,8 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     _spawn_investigation_followup(
         state.get("investigation_pending"), result, cfg, gate_cfg, config
     )
+    # ── plans/91 1-6 · Plan 60 §18 E8 (나): post-gate 비차단 L3 보강 — off면 아무 것도 하지 않는다(비트동일). ──
+    _spawn_l3_enrichment(state.get("notification_decision"), result, cfg, gate_cfg, config)
 
     return {"analysis_result": result}
 
@@ -441,6 +447,103 @@ def _spawn_investigation_followup(
         return
     _FOLLOWUP_TASKS.add(task)
     task.add_done_callback(_FOLLOWUP_TASKS.discard)
+
+
+_L3_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_l3_enrichment(
+    decision,  # noqa: ANN001 — NotificationDecision | None (덕 타이핑)
+    result: AlarmAnalysisResult,
+    cfg,  # noqa: ANN001 — AppConfig (덕 타이핑)
+    gate_cfg,  # noqa: ANN001 — NoiseGateConfig | None (덕 타이핑)
+    config: RunnableConfig,
+) -> None:
+    """PAGE 통보 **뒤** L3 수집·후속 발송을 백그라운드로 띄운다(plans/91 1-6 · fire-and-forget · 게이트 예산 무영향).
+
+    off·kind 미판정·workb 미발송·상한 초과·루프 부재면 조용히 넘어간다(상한 초과만 사유 로그).
+    """
+    if not getattr(gate_cfg, "l3_enrichment_enabled", False) or decision is None:
+        return
+    if not result.notifications_sent.get("workb"):
+        return
+    from noise_gate.domain.process_rank import classify_alarm_kind
+
+    kind = classify_alarm_kind(result.alarm_event)
+    if not kind:
+        return
+    max_inflight = int(getattr(gate_cfg, "l3_max_inflight", 4))
+    if len(_L3_TASKS) >= max_inflight:
+        logger.warning("L3 보강 태스크 상한(%d) 초과 — 이번 알람은 L3 수집 생략: alarm_id=%s",
+                       max_inflight, result.alarm_event.alarm_id)
+        return
+    store = (config or {}).get("configurable", {}).get("decision_store")
+    runner = (config or {}).get("configurable", {}).get("l3_runner")
+    try:
+        task = asyncio.create_task(_deliver_l3_enrichment(decision, result, cfg, gate_cfg, store, runner, kind))
+    except RuntimeError:
+        logger.warning("L3 보강 태스크 생성 불가(이벤트 루프 부재): alarm_id=%s", result.alarm_event.alarm_id)
+        return
+    _L3_TASKS.add(task)
+    task.add_done_callback(_L3_TASKS.discard)
+
+
+async def _deliver_l3_enrichment(
+    decision,  # noqa: ANN001
+    result: AlarmAnalysisResult,
+    cfg,  # noqa: ANN001
+    gate_cfg,  # noqa: ANN001
+    store,  # noqa: ANN001 — DecisionStore | None
+    runner,  # noqa: ANN001 — Runner | None (테스트 주입 · 없으면 allowlist_exec ssh)
+    kind: str,
+) -> None:
+    """허용목록 명령으로 L3를 수집하고 상태지문을 대조한 뒤(escalate-only) 후속 쪽지를 보낸다.
+
+    - 첫 수집(first)·악화(worse)만 발송, 동일·완화는 재통보 0(§18.4 ② · 억제 유지).
+    - 어떤 실패도 이미 나간 통보를 되돌리지 않는다. `l3_audit_enabled`면 감사에 남긴다.
+    """
+    from noise_gate.infrastructure.host_diagnostic_collector import build_ssh_runner, collect, compare_fingerprints
+
+    ev = result.alarm_event
+    host = ev.hostname or ev.server_name
+    fingerprint = getattr(decision, "fingerprint", "") or ""
+    if runner is None:
+        runner = build_ssh_runner(user=str(getattr(gate_cfg, "l3_ssh_user", "") or ""))
+    try:
+        diag = await collect(host, kind, runner,
+                             profile_map_csv=str(getattr(gate_cfg, "l3_profile_map_csv", "") or ""),
+                             timeout_seconds=float(getattr(gate_cfg, "l3_command_timeout_seconds", 20.0)))
+    except Exception:  # noqa: BLE001 — 수집 자체 실패도 graceful
+        logger.warning("L3 수집 실패: alarm_id=%s host=%s", ev.alarm_id, host, exc_info=True)
+        return
+    prev = None
+    if store is not None and hasattr(store, "last_l3_state"):
+        try:
+            prev = store.last_l3_state(fingerprint)
+        except Exception:  # noqa: BLE001
+            prev = None
+    transition = compare_fingerprints(prev, diag.fingerprint)
+    sent = False
+    if transition in ("first", "worse") and diag.ok_count > 0:
+        try:
+            await _send_workb_followup(cfg.workb, result, None, None, l3=diag.to_dict() | {"transition": transition})
+            sent = True
+        except Exception:  # noqa: BLE001
+            logger.warning("L3 후속 발송 실패: alarm_id=%s", ev.alarm_id, exc_info=True)
+    if store is not None and getattr(gate_cfg, "l3_audit_enabled", False) and hasattr(store, "record_l3_state"):
+        try:
+            store.record_l3_state(fingerprint=fingerprint, alarm_id=ev.alarm_id, host=host, kind=kind,
+                                  state_fingerprint=diag.fingerprint, transition=transition, sent=sent,
+                                  commands=diag.commands)
+        except Exception:  # noqa: BLE001
+            logger.warning("L3 감사 기록 실패(무시): alarm_id=%s", ev.alarm_id)
+
+
+def _l3_block_html(l3: dict) -> str:
+    """L3 결정적 요지 블록(HTML) — 수치·플래그만(D-035)."""
+    lines = [html.escape(str(x)) for x in (l3.get("summary_lines") or [])]
+    head = f"<br><br><b>L3 진단 요지</b> ({html.escape(str(l3.get('kind', '')))} · {html.escape(str(l3.get('transition', '')))})"
+    return head + ("<br>" + "<br>".join(lines) if lines else "")
 
 
 async def _deliver_investigation_followup(
@@ -575,7 +678,7 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
     그대로 따르고, 티어/근거(tier·tier_reason)를 추가해 일관성을 유지한다.
     """
     ev = result.alarm_event
-    return {
+    payload = {
         "type": "alarm_notification",
         "alarm_id": ev.alarm_id,
         "severity": ev.severity,
@@ -608,6 +711,10 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
         "alarm_time": _iso_or_none(ev.alarm_time),
         "received_at": _iso_or_none(getattr(ev, "received_at", None)),
     }
+    # (plans/91 1-4) 조사 ID — 값 있을 때만 키(없으면 페이로드 바이트 동일). 카드 피드백이 investigation_id로 되돌린다.
+    if getattr(result, "investigation_id", ""):
+        payload["investigation_id"] = result.investigation_id
+    return payload
 
 
 async def _route_non_page_tier(
@@ -705,7 +812,7 @@ def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # no
     SSE 직렬화 부담으로 `_tier_sse_payload`와 동일하게 제외한다(카드의 해당 섹션은 생략됨).
     """
     ev = result.alarm_event
-    return {
+    payload = {
         # ── incident 식별필드 ──
         "type": "open",
         "fingerprint": decision.fingerprint,
@@ -736,6 +843,9 @@ def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # no
         "alarm_time": _iso_or_none(ev.alarm_time),
         "received_at": _iso_or_none(getattr(ev, "received_at", None)),
     }
+    if getattr(result, "investigation_id", ""):   # (plans/91 1-4) 값 있을 때만 키
+        payload["investigation_id"] = result.investigation_id
+    return payload
 
 
 async def _publish_incident_open(
@@ -823,6 +933,7 @@ def build_followup_body(
     result: AlarmAnalysisResult,
     briefing: Optional[dict] = None,
     escalation: Optional[dict] = None,
+    l3: Optional[dict] = None,
 ) -> str:
     """후속 브리핑 메시지 본문(HTML)을 생성한다 (Plan 66 3-E).
 
@@ -841,6 +952,8 @@ def build_followup_body(
         body += _investigation_briefing_html(briefing)
     if escalation is not None:
         body += _investigation_escalation_html(escalation)
+    if l3 is not None:   # plans/91 1-6 — 기본 None이면 종전 본문과 동일
+        body += _l3_block_html(l3)
     return body
 
 
@@ -849,6 +962,7 @@ async def _send_workb_followup(
     result: AlarmAnalysisResult,
     briefing: Optional[dict],
     escalation: Optional[dict],
+    l3: Optional[dict] = None,
 ) -> None:
     """후속 브리핑을 worKB 쪽지로 발송한다 (Plan 66 3-E · `_send_workb` 전송 규약 동형).
 
@@ -861,8 +975,9 @@ async def _send_workb_followup(
     ev = result.alarm_event
     payload = {
         "systemDiv": workb_cfg.system_div,
-        "msgTitle": f"[조사 결과] {ev.server_name} ({ev.hostname})",
-        "msgBody": build_followup_body(result, briefing, escalation),
+        "msgTitle": (f"[L3 진단] {ev.server_name} ({ev.hostname})" if (l3 is not None and briefing is None and escalation is None)
+                     else f"[조사 결과] {ev.server_name} ({ev.hostname})"),
+        "msgBody": build_followup_body(result, briefing, escalation, l3),
         "sendId": workb_cfg.send_id,
         "userIds": workb_cfg.get_user_ids(ev.severity),
         "alias": workb_cfg.alias,

@@ -207,6 +207,111 @@ settings:
     stability: 형식이 잘못된 항목은 무시된다.
     related: [NOISE_MESSAGE_ENRICHMENT_ENABLED]
 
+  # ── plans/91 1-6 · Plan 60 §18 E8 (나)안: post-gate L3 진단 보강 (D-189 허용목록 명령 · 만료일 2027-02-20) ──
+  NOISE_L3_ENRICHMENT_ENABLED:
+    example: >-
+      메모리 90% 알람이 PAGE로 통보된 뒤, 대상 서버에서 free·/proc/meminfo·ps(메모리순)·dmesg 같은 읽기 전용 명령을
+      돌려 "포화 구간 critical · swap 사용 중 · OOM 흔적 있음 · 최대 RSS PID 4242" 요지가 후속 쪽지로 따라온다.
+      통보 자체는 기다리지 않는다 — 수집은 통보가 나간 뒤 백그라운드에서 돈다.
+    summary: PAGE 통보 뒤 서버에서 읽기 전용 진단 명령을 돌려 요지를 후속으로 붙일지.
+    behavior: >-
+      알람 종류(cpu·memory·disk·network·process·log)별로 정해진 허용목록 명령만 실행한다. 변경 명령은 수집기에
+      없고 모든 명령에 `timeout 20 nice -n 10`이 붙는다. 첫 수집과 악화 때만 후속을 보내고 같은 상태·완화는 다시 보내지
+      않는다(재통보 0). 꺼져 있으면 통보 경로가 종전과 똑같다.
+    options:
+      - value: "false"
+        label: 끔(기본)
+        effect: L3 수집·후속 발송·감사 전부 하지 않는다.
+      - value: "true"
+        label: 켬
+        effect: PAGE 통보 뒤 kind별 허용목록 명령을 실행해 요지를 후속 쪽지로 보낸다.
+    performance: 통보 지연 없음(비차단). 서버당 명령 수개가 백그라운드로 돈다.
+    stability: 명령 실패는 개별로 남고 나머지로 요지를 만든다. 접속 자체가 안 되면 후속 없이 끝난다.
+    recommendation: 기본 끔. ssh 접속과 계정을 준비한 뒤 켠다.
+    related: [NOISE_L3_AUDIT_ENABLED, NOISE_L3_SSH_USER, NOISE_MESSAGE_ENRICHMENT_ENABLED]
+
+  NOISE_L3_AUDIT_ENABLED:
+    example: >-
+      켜 두면 어떤 명령을 실행했고 상태지문이 어떻게 바뀌었는지(첫 수집→동일→악화)가 판단 저장소에 남아
+      "왜 이번엔 후속이 안 왔는가"를 나중에 확인할 수 있다.
+    summary: L3 수집 명령·상태지문·전이를 감사 기록으로 남길지.
+    behavior: 판단 저장소에 `l3_state` 레코드로 append 한다. 재발 대조(같은 상태면 재통보 안 함)도 이 기록을 읽는다.
+    options:
+      - value: "false"
+        label: 끔(기본)
+        effect: 기록하지 않는다 — 재발 대조도 매번 첫 수집처럼 동작한다.
+      - value: "true"
+        label: 켬
+        effect: 명령·상태지문·전이·발송 여부를 남긴다.
+    performance: 파일 한 줄 append.
+    stability: 기록 실패는 무시된다(후속 발송에 영향 없음).
+    recommendation: L3 보강을 켤 때 함께 켠다.
+    related: [NOISE_L3_ENRICHMENT_ENABLED]
+
+  NOISE_L3_HOST_ACCESS_MODE:
+    example: 현재는 ssh 기반 허용목록 실행(allowlist_exec) 한 가지만 구현돼 있다.
+    summary: L3 명령을 서버에서 실행하는 채널.
+    behavior: '"allowlist_exec"만 지원한다(ssh BatchMode). 다른 값은 같은 채널로 동작한다.'
+    options:
+      - value: "allowlist_exec"
+        label: 허용목록 ssh 실행(기본)
+        effect: ssh로 접속해 허용목록 명령만 실행한다.
+    performance: 영향 없다.
+    stability: ssh 키·계정이 준비돼 있어야 한다.
+    recommendation: 기본 유지.
+    related: [NOISE_L3_ENRICHMENT_ENABLED, NOISE_L3_SSH_USER]
+
+  NOISE_L3_PROFILE_MAP_CSV:
+    example: '"process=cpu"처럼 적으면 프로세스 알람에 CPU 프로파일의 명령을 돌린다. 없는 프로파일명은 무시된다.'
+    summary: 알람 종류별로 실행할 명령 프로파일을 바꾸는 매핑.
+    behavior: '"종류=프로파일,종류=프로파일" 형식. 비워 두면 종류와 같은 이름의 프로파일을 쓴다. 존재하는 프로파일명만 받는다.'
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 알람 종류와 같은 이름의 프로파일을 쓴다.
+    performance: 영향 없다.
+    stability: 형식이 잘못된 항목은 무시된다.
+    related: [NOISE_L3_ENRICHMENT_ENABLED]
+
+  NOISE_L3_COMMAND_TIMEOUT_SECONDS:
+    example: 명령 하나가 20초 안에 끝나지 않으면 그 명령만 미수집으로 남기고 다음 명령으로 넘어간다.
+    summary: 진단 명령 하나에 주는 시간(초).
+    behavior: 명령별 상한이다. 부하 가드 접두(`timeout 20`)와 같은 값을 쓰는 것이 기본이다.
+    options:
+      - value: "20.0"
+        label: 기본
+        effect: 명령당 20초.
+    performance: 상한을 늘리면 후속 도착이 늦어질 뿐 통보에는 영향이 없다.
+    stability: 초과한 명령은 미수집으로 요지에 표시된다.
+    recommendation: 기본 유지.
+    related: [NOISE_L3_ENRICHMENT_ENABLED]
+
+  NOISE_L3_SSH_USER:
+    example: 비워 두면 워커 프로세스의 계정으로 접속한다. 진단 전용 계정을 쓰려면 그 이름을 적는다.
+    summary: L3 명령을 실행할 때 쓰는 ssh 사용자.
+    behavior: '`user@host` 형태로 접속한다. 비어 있으면 현재 계정을 쓴다.'
+    options:
+      - value: "(비움)"
+        label: 현재 계정(기본)
+        effect: 워커 실행 계정으로 접속한다.
+    performance: 영향 없다.
+    stability: 키 인증(BatchMode)이 준비돼 있어야 한다 — 비밀번호 입력은 없다.
+    recommendation: 최소 권한의 읽기 전용 계정을 권장한다.
+    related: [NOISE_L3_ENRICHMENT_ENABLED, NOISE_L3_HOST_ACCESS_MODE]
+
+  NOISE_L3_MAX_INFLIGHT:
+    example: 알람이 한꺼번에 몰릴 때 동시에 도는 L3 수집을 4건까지만 허용하고 나머지는 생략한다(사유는 로그에 남는다).
+    summary: 동시에 진행할 L3 수집의 상한.
+    behavior: 상한을 넘으면 그 알람의 L3 수집을 건너뛴다. 통보는 이미 나간 뒤라 영향이 없다.
+    options:
+      - value: "4"
+        label: 기본
+        effect: 동시 4건.
+    performance: 상한이 클수록 대상 서버·워커 부하가 는다.
+    stability: 초과분은 생략되고 로그로 남는다.
+    recommendation: 기본 유지.
+    related: [NOISE_L3_ENRICHMENT_ENABLED]
+
   NOISE_SSE_BRIDGE_ENABLED:
     summary: 워커가 만든 알람 카드를 웹 화면으로 실시간 중계할지.
     behavior: >-

@@ -58,6 +58,7 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     "src/document",
     "src/schema_cache",
     "noise_gate/domain",
+    "sre_agent/sre_agent/domain",   # plans/91 1-8(2026-09-10 사용자 확정) — 벤더 중립 계층만(application/infrastructure는 폴스타 어휘 허용)
     "mcp_server/mcp_server",
     "src/tools",
     # P5-1(Plan 69)로 semantic_compiler에서 분리된 IR 계층 — 이동 전과 동일하게 감시

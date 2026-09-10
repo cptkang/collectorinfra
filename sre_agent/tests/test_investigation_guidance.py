@@ -153,3 +153,61 @@ def test_build_guidance_includes_correlation_after_scope():
                                                       "alarm_summary": {}, "timeline": [], "notes": []}))
     assert g.index("사건 기준시각") < g.index("결정적 상관 결과")
     assert "선행 신호: memory" in g
+
+
+# ── 플레이북 편입 (plans/91 1-5 · plans/51 §6 · D-035 결정적 문구) ─────────────────────────
+import pytest  # noqa: E402
+
+from sre_agent.application.investigation_guidance import (  # noqa: E402
+    PLAYBOOK_NOTES,
+    alarm_kind_from_job,
+    classify_alarm_kind,
+    playbook_note,
+)
+
+
+@pytest.mark.parametrize("resource_type,alarm_name,expected", [
+    ("server.Cpus", "CPU Utilization Critical", "cpu"),
+    ("server.Memory", "Memory Utilization", "memory"),
+    ("server.FileSystem", "FS Util 90%", "disk"),
+    ("server.Disk", "Disk IO", "disk"),
+    ("server.NetworkInterface", "traffic burst", "network"),
+    ("server.ProcessMonitor", "ntpd down", "process"),
+    ("server.LogMonitor", "log pattern", "log"),
+    ("server.Server", "Host unreachable", None),
+    ("", "", None),
+])
+def test_classify_alarm_kind_matches_gate_vocabulary(resource_type, alarm_name, expected):
+    assert classify_alarm_kind(resource_type, alarm_name) == expected
+
+
+def test_alarm_kind_from_job_reads_payload_event_only():
+    assert alarm_kind_from_job(_job(payload=None)) is None
+    assert alarm_kind_from_job(_job(payload={"event": {"resourceType": "server.Memory", "alarmName": "x"}})) == "memory"
+    assert alarm_kind_from_job(_job(payload={"event": {"alarmName": "Disk Full"}})) == "disk"
+
+
+def test_playbook_note_has_six_kinds_and_is_deterministic():
+    assert set(PLAYBOOK_NOTES) == {"cpu", "memory", "disk", "network", "process", "log"}
+    for kind, text in PLAYBOOK_NOTES.items():
+        assert text.startswith("장애 유형 플레이북") and "증거" in text and "기법" in text and "서술" in text
+    assert playbook_note("memory") == PLAYBOOK_NOTES["memory"] and playbook_note(None) is None and playbook_note("weird") is None
+
+
+def test_guidance_appends_playbook_for_matched_kind_after_correlation_before_extra():
+    g = build_guidance(
+        _settings(investigation_guidance_extra="운영자 지침"),
+        _job(reference_time="2026-09-01T14:00:00", lookback_minutes=60,
+             correlation={"leading_signal": "memory", "metric_findings": {}, "alarm_summary": {}, "timeline": [], "notes": []},
+             payload={"event": {"resourceType": "server.Memory", "alarmName": "Memory Utilization"}}),
+    )
+    i_corr = g.index("결정적 상관 결과")
+    i_pb = g.index(PLAYBOOK_NOTES["memory"])
+    i_extra = g.index("운영자 지침")
+    assert i_corr < i_pb < i_extra
+    assert "OOM" in PLAYBOOK_NOTES["memory"] and "누수" in PLAYBOOK_NOTES["memory"]
+
+
+def test_guidance_unmatched_kind_is_string_identical():
+    base = build_guidance(_settings(), _job(payload={"event": {"resourceType": "server.Server", "alarmName": "Host"}}))
+    assert base == build_guidance(_settings(), _job())   # 미매칭 kind → 종전 지침과 문자열 동일
