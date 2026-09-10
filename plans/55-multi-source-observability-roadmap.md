@@ -228,7 +228,7 @@ DPM/미들웨어(M3) → 셋을 교차 상관해 RCA를 end-to-end로(M4) → �
 ## 11. 참고
 
 - 선행 로드맵: `plans/53-fault-management-roadmap.md`(§9 분리 판단)
-- 통합 대상: `plans/50-fault-diagnosis-rca-WIP.md`(evidence_collector·correlation_engine), `plans/52-alarm-noise-cancellation.md`
+- 통합 대상: `plans/50-fault-diagnosis-rca.md`(evidence_collector·correlation_engine), `plans/52-alarm-noise-cancellation.md`
   (§3.11 영향·상향, §6 결정 파이프라인), `plans/54-noise-cancellation-dashboard.md`(영향도 표시), `plans/51-...`(3계층·소스축)
 - 재사용 자산: `config/db_profiles/*.yaml`(멀티소스 프로필), `src/orchestration/`(deepagents, D-037), `src/alarm/`(노이즈게이트)
 - 의사결정: `docs/02_decision.md` D-003·D-005·D-037 / 착수 시 D-043 등재

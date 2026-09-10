@@ -744,6 +744,11 @@ async def _enforce_plan_contract(
     cfg = getattr(app_config, "composite", None)
     dag_on = bool(getattr(cfg, "plan_dag_validation_enabled", False))
     replan_on = bool(getattr(cfg, "sequential_replan_enabled", False))
+    if not replan_on:
+        # off 관측(plans/88 §11 · 게이트의 `관측(off)` 로그와 대칭) — 표지가 있는데 순차 배선이 없으면 로그만.
+        plain = list(result.get("tasks") or [])
+        if has_sequential_marker(user_query) and not any(t.get("input_from") for t in plain):
+            logger.info("순차 재분해 관측(off) — 표지 있음·순차 배선 없음(task %d건)", len(plain))
     if not (dag_on or replan_on):
         return result
 

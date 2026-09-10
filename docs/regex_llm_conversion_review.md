@@ -156,4 +156,4 @@ A1~A9의 LLM 재위임은 D-068/D-076/D-099의 실측 근거를 무효화하며 
 ## 9. 참조
 
 - 코드: §4.2·§5·§6 표의 파일:라인 전부. 실측 되돌림 이력: `semantic_compiler.py:646-647,675-677,768-770`, `query_gen_common.py:83-87`, `multi_db_executor.py:629-631`
-- 문서: `plans/67-stepwise-llm-query-composition-WIP.md`(트랙 R·S), `docs/02_decision.md`(D-035·D-068·D-076·D-085·D-096~099·D-104·D-127), `docs/18_known_mistakes.md`("LLM 비결정성 대응")
+- 문서: `plans/67-WIP-stepwise-llm-query-composition.md`(트랙 R·S), `docs/02_decision.md`(D-035·D-068·D-076·D-085·D-096~099·D-104·D-127), `docs/18_known_mistakes.md`("LLM 비결정성 대응")

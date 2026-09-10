@@ -48,7 +48,7 @@
 - [x] **T9. 계획서 정정 반영**
   - Acceptance: `plans/79` §3.5③(synonym_registration 오판) · §8②(logprobs = KBGenAI 원천 불가) 정정
   - Verify: 문서 확인
-  - Files: `plans/79-semantic-routing-improvement-WIP.md`
+  - Files: `plans/79-WIP-semantic-routing-improvement.md`
 
 ---
 

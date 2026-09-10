@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +30,8 @@ from src.utils.query_gen_common import (
     collect_prior_identity_values,
     is_server_identity_col,
 )
+
+logger = logging.getLogger(__name__)
 
 REASON_PRIOR_FAILED = "prior_failed"
 REASON_PRIOR_EMPTY = "prior_empty"
@@ -76,6 +80,7 @@ class DependencyVerdict(BaseModel):
     scope_size: int = 0
     truncated: bool = False
     truncated_count: int = 0
+    selection_basis: str = ""  # 선행 SQL에서 뽑은 선별 기준(G-2 · 표기 전용) — 못 뽑으면 ""
 
 
 class ScopeConformance(BaseModel):
@@ -103,6 +108,69 @@ def _result_rows(res: Any) -> list[dict]:
         organized = res.get("organized_data") or {}
         rows = organized.get("rows", []) if isinstance(organized, dict) else []
     return [r for r in (rows or []) if isinstance(r, dict)]
+
+
+# ──────────────────────────────────────────────
+# 선별 기준 추출 (G-2 · plans/88 §11 · 2026-09-10 확정) — 표기 전용 · LLM 0회
+# ──────────────────────────────────────────────
+# "높은"을 LLM이 상위 N으로 풀었는지 임계로 풀었는지를 선행 SQL에서 결정적으로 읽어 경과 블록에
+# 싣는다. 선별 결과 자체는 바꾸지 않는다. 못 뽑으면 ""(표기 생략 — 안전 폴백).
+
+_SQL_KEYWORDS = frozenset({
+    "SELECT", "FROM", "WHERE", "GROUP", "ORDER", "BY", "HAVING", "LIMIT", "FETCH", "FIRST", "ROWS", "ONLY",
+    "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON", "JOIN", "LEFT", "INNER", "ASC", "DESC", "BETWEEN",
+    "LIKE", "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END", "TRUE", "FALSE",
+    "MAX", "MIN", "AVG", "SUM", "COUNT", "CAST", "COALESCE", "ROUND", "DECIMAL", "NUMERIC", "INTEGER", "FLOAT",
+})
+# 기간 축 컬럼의 비교는 대상 선별 임계가 아니다(기간 축과 대상 축은 분리 — plans/88 §1.4).
+_PERIOD_COL_HINTS = ("month", "date", "time", "ymd", "_dt", "day", "year", "hour")
+_LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)\b", re.I)
+_FETCH_FIRST_RE = re.compile(r"\bFETCH\s+FIRST\s+(\d+)\s+ROWS?\s+ONLY\b", re.I)
+# 식별자는 따옴표 인용("cpus_max")도 허용한다 — 결정적 컴파일 경로가 별칭을 인용해 낸다(2026-09-10 실측).
+_ORDER_BY_RE = re.compile(r"\bORDER\s+BY\s+((?:\"[^\"]+\"|[A-Za-z_][\w.]*)(?:\s*\([^()]*\))?)\s*(ASC|DESC)?", re.I)
+_CMP_RE = re.compile(r"(?<![<>=!])(>=|<=|>|<)(?![>=])\s*(\d+(?:\.\d+)?)(?![\w.])")
+_BOUNDARY_RE = re.compile(r"\b(WHERE|HAVING|AND|OR|ON|WHEN|THEN|ELSE)\b", re.I)
+_IDENT_RE = re.compile(r"\"[^\"]+\"|[A-Za-z_][\w.]*")
+
+
+def _last_column_ident(fragment: str) -> str:
+    """SQL 조각에서 키워드·함수명을 뺀 마지막 식별자(별칭·따옴표 제거)."""
+    cols = [t.strip('"') for t in _IDENT_RE.findall(fragment) if t.strip('"').upper() not in _SQL_KEYWORDS]
+    return cols[-1].rsplit(".", 1)[-1] if cols else ""
+
+
+def extract_selection_basis(sql: Optional[str]) -> str:
+    """선행 SQL의 선별 기준 — "정렬 컬럼 방향 · 상한 N건" · "조건 컬럼 op 값". 못 뽑으면 ""."""
+    text = (sql or "").strip()
+    if not text:
+        return ""
+    parts: list[str] = []
+
+    m_limit = _LIMIT_RE.search(text) or _FETCH_FIRST_RE.search(text)
+    m_order = _ORDER_BY_RE.search(text)
+    # ORDER BY 없는 LIMIT은 기본 상한(검증기 1000 · 컴파일 10000)이지 선별 기준이 아니다. ORDER BY가 있어도
+    # "상위 N건 선별"로 단정하지 않는다 — LIMIT이 기본 상한이면 정렬만 한 전체 목록이기 때문이다(2026-09-10
+    # 실측: "높은 서버" → ORDER BY "cpus_max" DESC LIMIT 10000 = 54대 전부). SQL이 하는 일만 그대로 적는다.
+    if m_limit and m_order:
+        key = _last_column_ident(m_order.group(1))
+        if key:
+            direction = "내림차순" if (m_order.group(2) or "").upper() == "DESC" else "오름차순"
+            parts.append(f"정렬 {key} {direction} · 상한 {m_limit.group(1)}건")
+
+    conds: list[str] = []
+    for m in _CMP_RE.finditer(text):
+        left = text[: m.start()]
+        boundaries = list(_BOUNDARY_RE.finditer(left))
+        fragment = left[boundaries[-1].end():] if boundaries else left
+        col = _last_column_ident(fragment)
+        if not col or any(h in col.lower() for h in _PERIOD_COL_HINTS):
+            continue
+        cond = f"{col} {m.group(1)} {m.group(2)}"
+        if cond not in conds:
+            conds.append(cond)
+    if conds:
+        parts.append("조건 " + ", ".join(conds))
+    return " · ".join(parts)
 
 
 def assess_prior_dependency(
@@ -162,10 +230,19 @@ def assess_prior_dependency(
     detail = f"선행 작업({ids_text}) 결과 {len(all_values)}대({col})로 대상을 한정했습니다."
     if truncated_count:
         detail += f" 상한 {max_values}대 초과분 {truncated_count}대는 제외됐습니다."
+    # 선별 기준(G-2): 선행 결과의 실행 SQL(`generated_sql` — 1단·2단 공통 키)에서 결정적으로 읽는다.
+    basis = ""
+    for tid in input_from:
+        res = prior.get(tid) or {}
+        basis = extract_selection_basis(res.get("generated_sql") or res.get("sql") or "")
+        if basis:
+            break
+    if basis:
+        detail += f" 선별 기준: {basis}."
     return DependencyVerdict(
         ok=True, source_task_ids=input_from, scope_col=col, scope_values=kept,
         scope_size=len(kept), truncated=truncated_count > 0, truncated_count=truncated_count,
-        detail=detail,
+        detail=detail, selection_basis=basis,
     )
 
 
@@ -185,6 +262,8 @@ def verdict_note(verdict: DependencyVerdict, task_id: str) -> dict:
         note["sample"] = list(verdict.scope_values[:_NOTE_SAMPLE_VALUES])
         if verdict.truncated:
             note["truncated_count"] = verdict.truncated_count
+        if verdict.selection_basis:
+            note["selection_basis"] = verdict.selection_basis
     return note
 
 
@@ -310,6 +389,21 @@ def apply_scope_postcheck(verdict: Optional[DependencyVerdict], result: Any, tas
             }
     out["dependency_notes"] = list(out.get("dependency_notes") or []) + [note]
     return out
+
+
+def observe_scope_postcheck(verdict: Optional[DependencyVerdict], result: Any, task_id: str) -> Optional[ScopeConformance]:
+    """플래그 off일 때의 관측 — 대조만 하고 로그를 남긴다(결과 불변). 게이트의 `관측(off)` 로그와 대칭.
+
+    plans/88 §11(2026-09-10): 관측 카운터 대신 로그 문구로 발동률을 본다. 1단·2단 공통.
+    """
+    if verdict is None or not verdict.ok or not isinstance(result, dict) or result.get("error"):
+        return None
+    conf = assess_scope_conformance(verdict, extract_result_rows(result))
+    if conf.checked and (conf.outside or conf.missing):
+        logger.info(
+            "사후 대조 관측(off) task=%s outside=%d missing=%d", task_id, len(conf.outside), len(conf.missing),
+        )
+    return conf
 
 
 def scope_db_note(db_id: str, *, label: Optional[str] = None) -> dict:

@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 원 요구사항: `spec.md` (초기 스펙 — 현 구현은 이보다 훨씬 확장됨)
 - **의사결정 정본: `docs/02_decision.md`** — 작업 전 필독, 작업 후 갱신 (아래 「의사결정 기록」 참조)
-- 계획서 전건 인덱스: `plans/INDEX.md` (93건) — **미완 계획서는 파일명에 상태 접미사를 단다**: `-TODO`(코드 0건) · `-WIP`(잔여 있음) · 무표기(완료·로드맵). 파일을 열기 전에 목록만으로 잔여를 판단할 수 있다(규칙: INDEX 「파일명 상태 접미사」) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
+- 계획서 전건 인덱스: `plans/INDEX.md` (93건) — **미완 계획서는 파일명의 번호 바로 뒤에 상태 태그를 단다**(`NN-TODO-slug.md` / `NN-WIP-slug.md`): `TODO`(코드 0건) · `WIP`(잔여 있음) · 무표기(완료·로드맵). 파일을 열기 전에 목록만으로 잔여를 판단할 수 있다(규칙: INDEX 「파일명 상태 접미사」) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
 - 최근 작업 단위는 `plans/NN-*.md` + 루트 `SPEC-*.md` + `CAPABILITY-MAP-*.md` 조합으로 진행된다.
 
 ## 저장소 지도

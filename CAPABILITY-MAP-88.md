@@ -1,10 +1,11 @@
 # Capability Map: 복합 질의 순차 의존 처리 (`plans/88` · D-203 예약)
 
-> **작성일**: 2026-09-09 · **근거**: `plans/88-sequential-dependent-composite-query-WIP.md` v2
+> **작성일**: 2026-09-09 · **근거**: `plans/88-WIP-sequential-dependent-composite-query.md` v2
 > **상태**: 1차 4모듈 **구현 완료**(2026-09-09 · D-203 본문 등재 · 신규 테스트 78건 · 플래그 3종 기본 off) ·
 > **2차 4모듈 구현 완료**(2026-09-09 재개 지시 · §8 권고안 가정 — `sequential-decompose`(프롬프트 무변경: 예시 3이 이미 data→data) ·
 > `plan-dag-validation` · `sequential-fallback-runner`(HITL on이면 미진입) · `sequential-eval`(dry-run만 — 실 실행은 D-127) ·
 > 신규 테스트 31건 · 플래그 3종 기본 off). 잔여: `.env` parity(G-3 · 사용자) · D-127 실 평가.
+> **§8 게이트 전건 사용자 확정(2026-09-10 인터뷰 · `plans/88` §11.1)** — 가정 1~5 전부 승인. 운영 `.env` = 1차 3종 on · 2차 3종 off · `PATH_PARITY=false`(적용은 실 실행 단계 2·3·6 통과 후). G-2 선별 기준 표기 편입·구현(`extract_selection_basis`) + off 관측 로그 대칭(신규 테스트 16건). G-3 on은 82 2차 이관. 실 검증 Gemini 11건 완료 · 운영 `.env` 반영 완료 · 1단 차단어 축 한정(`_is_global_scope`) · 샌드박스 프로필 복원. 잔여: 단계 4·5·7 · R-E 합집합 폭(§11.6).
 > **실측 기준**: `multiintent` HEAD `9945284` + 사용자 미커밋 스테이징(30+ 파일 — 본 지도가 여는 `src/` 파일은 전부 clean)
 > **기준선**: `pytest tests/test_orchestration tests/test_composite tests/test_nodes/test_multi_db_group_loop.py tests/test_state.py`
 > → **618 passed · 1 skipped**(68s · 2026-09-09 공유 트리)

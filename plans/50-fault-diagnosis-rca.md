@@ -7,8 +7,9 @@
 > **관련 결정**: D-029(알람 의도 분리), D-030(해소 이력 포함), D-031(알람 파이프라인), D-032(알람 메시지 포맷),
 > D-035(알람 이력 패턴 분석), D-036(영향 프로세스 보강), D-037(오케스트레이션) /
 > 착수 시 신규 결정 등재 — **D-038은 이미 소진**(`docs/02_decision.md:313`) → §14 개정 블록 참조
-> **상태**: **잔여 구현 완료(v2.2, 2026-09-02 · D-197) — G1~G6 해소, 실 조사 e2e(D-127)·Phase C′만 남음**. 모듈 맵 `CAPABILITY-MAP-50.md` · 스펙 `SPEC-{briefing-contract,incident-window-tools,investigation-guidance,incident-scope,evidence-correlation,diagnosis-briefing}.md` · 태스크 `tasks/plan-50.md`·`tasks/todo-50.md`. 직전 상태(v2.1): 부분 구현 — 잔여 재측정 + 소유권 확정(§0). 본문 §1~§17은 2026-06-26 원안이며 **처분은 §0.5 표가 정본**이다. 이전 판정(2026-08-31 · `plans/85` §4 A-1): **조사 실행·증거 수집·LLM 인과·리포트·pull/push 트리거는 `sre_agent` 위임 방식으로 구현 완료** — `src/nodes/fault_diagnosis.py`(pull · D-124 CW-B) · `noise_gate/.../investigation_trigger.py`(push · D-124 CW-A) · `mcp_server` 조사 도구 8종 + PromQL 7종(D-122·D-119) · `sre_agent` `DiagnosisAgent`·`briefing_builder`(D-118·D-123). **`src/diagnosis/` 자체 서브그래프는 만들지 않는다**(D-118 위임 — 재편은 이미 실행됐다). **진짜 잔여 = 결정적 상관 축 5건**: §6.1 통합 타임라인 병합 · §6.2 metric_anomaly(z-score·지속성·선행성) · §6.4 CorrelationResult(leading_signal·notes) · §7.2 복수 가설 rank·confidence · §9.1 상대시각 타임라인. 공통점은 **LLM이 못 하는 결정적 계산**이라는 것이며(D-035 취지), 착수 범위는 **`sre_agent` 도구 출력을 입력으로 받는 순수 함수 계층**으로 좁혀진다. 절별 대조표는 `plans/85` §4 A-1 참조.
+> **상태**: **완결(시점 문서) — 2026-09-09 잔여 전건 `plans/91-TODO-fault-investigation-residual-consolidation.md` §1로 이관(D-208 · INDEX 「이관 조항」) · `-WIP` 해제.** 이관 항목: 1-1 C′-0 · 1-2 C′-2 · 1-3 C′-1 · 1-4 C′-3 · 1-7 C′-4 · 1-8 U-D · 1-9 U-C. §0.8이 설계 정본이며 착수·완료 추적은 91에서만 한다. *직전 표기*: **잔여 구현 완료(v2.2, 2026-09-02 · D-197) — G1~G6 해소, 실 조사 e2e(D-127)·Phase C′만 남음**. 모듈 맵 `CAPABILITY-MAP-50.md` · 스펙 `SPEC-{briefing-contract,incident-window-tools,investigation-guidance,incident-scope,evidence-correlation,diagnosis-briefing}.md` · 태스크 `tasks/plan-50.md`·`tasks/todo-50.md`. 직전 상태(v2.1): 부분 구현 — 잔여 재측정 + 소유권 확정(§0). 본문 §1~§17은 2026-06-26 원안이며 **처분은 §0.5 표가 정본**이다. 이전 판정(2026-08-31 · `plans/85` §4 A-1): **조사 실행·증거 수집·LLM 인과·리포트·pull/push 트리거는 `sre_agent` 위임 방식으로 구현 완료** — `src/nodes/fault_diagnosis.py`(pull · D-124 CW-B) · `noise_gate/.../investigation_trigger.py`(push · D-124 CW-A) · `mcp_server` 조사 도구 8종 + PromQL 7종(D-122·D-119) · `sre_agent` `DiagnosisAgent`·`briefing_builder`(D-118·D-123). **`src/diagnosis/` 자체 서브그래프는 만들지 않는다**(D-118 위임 — 재편은 이미 실행됐다). **진짜 잔여 = 결정적 상관 축 5건**: §6.1 통합 타임라인 병합 · §6.2 metric_anomaly(z-score·지속성·선행성) · §6.4 CorrelationResult(leading_signal·notes) · §7.2 복수 가설 rank·confidence · §9.1 상대시각 타임라인. 공통점은 **LLM이 못 하는 결정적 계산**이라는 것이며(D-035 취지), 착수 범위는 **`sre_agent` 도구 출력을 입력으로 받는 순수 함수 계층**으로 좁혀진다. 절별 대조표는 `plans/85` §4 A-1 참조.
 > **v2 개정(2026-09-01)**: 그 5건을 **코드 시그니처에 대고 다시 측정**한 결과 **선행 갭 G1이 드러났다** — `sre_diagnose`·`polestar_metric_trend`·`polestar_alarm_history`·`prom_metric_range` 어디에도 **사건 시각 인자가 없어**(grep 0건) 증거 자체를 사건 구간에서 가져올 수 없다. §3.4의 *"now() 금지"* 가 도구 계약 수준에서 깨져 있으며, **상관 엔진만 만들어도 입력이 now 앵커면 무의미하다**. 여기에 **G6 브리핑 키 계약 불일치**(생산 `limitations`/list ↔ 소비 `limitation` — 한계가 사용자에게 도달하지 않음, pull·push 양쪽 동일)가 더해져 잔여는 **6건**이 됐다. 갭·배치·절별 처분·착수 단계는 **§0**에 있다.
+> **v2.3 개정(2026-09-09 · D-207)**: 사용자 지시 *"50, 64, 66번 등 유사한 계획을 종합적으로 분석하여 계획을 정리하라"* — **§0.8 신설**: 장애 조사 계획군(50·51·64·66 + 60 E8·78·85·87 접점)의 단면별 역할을 고정하고, 표류하던 잔여 8항목에 **단일 소유 계획**을 확정했으며, §0.6이 한 줄로 남긴 **Phase C′를 착수 가능한 4단계(C′-0 e2e 상관 단언 · C′-1 연쇄 소비 · C′-2 변경 이벤트 오버레이 · C′-3 이력·피드백[U-F])로 구체화**했다. 실측 결과 **64는 코드 잔여 0**(CW-A~C·§4.8 L1·권고 전부 완료 — 헤더 정정), 51의 플레이북 편입은 편입점만 생긴 상태(내용 잔여), E8은 다섯 계획이 가리키는 **한 항목**(소유 66 4-B)이다. 신규 사용자 확인 U-F~U-I.
 > **v2.1 개정(2026-09-02)**: 잔여의 **소유권을 확정**했다 — 상관 계산·증거 사전수집은 **`sre_agent` 안에 둔다**(별도 최상위 폴더도 `mcp_server`도 아니다). 결정적 근거는 **원시 도구 출력이 `sre_agent`를 벗어나지 않는다**는 실측(poll은 `briefing` + description 목록만)이며, Plan 50 §5의 5노드 파이프라인이 **이미 `sre_agent`의 파이프라인**이라는 대조(§0.4-b)가 이를 뒷받침한다. `mcp_server`에는 **구간 앵커 SQL(G1~G3)만** 남는다(읽기 경계).
 
 ---
@@ -435,7 +436,7 @@ src/noise_gate [표현]      판단을 사용자에게 어떻게 보일 것인�
 | **A′-5** ✅ | 사건 시각 파싱 — `src`에 시/분 해상도 순수 함수 신설, `sre_diagnose`에 `reference_time`·`lookback_minutes` 인자 추가, `_job_to_question`이 **push는 `event.alarmTime`을 질문에 싣도록** 수정 | "어제 14시" → 구간 산출 단위 테스트 + push 질문에 시각이 포함됨을 단언 |
 | **A′-6** ✅ | **§7.2·§9.1** — `briefing_builder`가 `CorrelationResult`를 정본으로 `timeline`(상대시각 `T-15m`)·`root_cause_hypotheses`(rank·confidence)·`notes`를 조립. 도구 미호출 시 한계 명시 | 상관 있음/없음 두 경로 골든. 수치는 **주입값만** 사용(환각 0) 단언 |
 | **B′** ✅(A′-3과 동시 — holmes `ToolInvokeContext`가 LLM 객체 필수라 처음부터 `mcp` 클라이언트) | 호출 수단 안정화 — A′-3이 holmes 내부 API(`ToolInvokeContext`)를 썼다면 `mcp` 클라이언트 직접 호출로 교체하고 `pyproject.toml`에 `mcp` **명시 선언**(현재 전이 의존) | holmesgpt 버전 상향 시 사전수집이 깨지지 않음을 회귀로 고정 |
-| **C′** | 다중서버 연쇄 진단(§6.3 확장) · 변경 이벤트 오버레이 정식 편입 · 진단 이력·피드백 | 범위 외 유지 |
+| **C′** | ~~다중서버 연쇄 진단(§6.3 확장) · 변경 이벤트 오버레이 정식 편입 · 진단 이력·피드백~~ → **§0.8.3에서 C′-0~C′-4로 구체화**(v2.3 · 2026-09-09). 착수 순서 C′-0 → C′-2 → C′-1 → C′-3 | §0.8.3 표 |
 
 > **A′-0을 맨 앞에 두는 이유**: 지금 상태에서 §7.2·§9.1의 새 필드를 추가하면 **그 필드도 똑같이
 > 출력단에서 탈락한다**(G6). 계약을 먼저 닫지 않으면 A′-6의 산출물이 사용자에게 도달했는지
@@ -449,6 +450,97 @@ src/noise_gate [표현]      판단을 사용자에게 어떻게 보일 것인�
 - **`sre_agent` 재편을 제안하지 않는다.** dispatcher·가드·severity_judge·remediation은 손대지 않는다.
 - **과금 API를 호출하지 않았다.** 본 개정의 모든 판정은 정적 실측이며, 실 조사 재현은
   D-127 건별 승인 사항이다.
+
+### 0.8 장애 조사 계획군 잔여 통합 정리 — 50·51·64·66 (+60 E8·78·85·87 접점) 및 Phase C′ 구체화 (v2.3 · 2026-09-09 · D-207)
+
+> **요구(사용자, 2026-09-09)**: *"50번 계획에 미구현된 부분의 구현 계획을 업데이트하라"* → 이어서
+> *"50, 64, 66번 등 유사한 계획을 종합적으로 분석하여 계획을 정리하라"*.
+>
+> **방법**: 정적 실측만(과금 0 · 코드 변경 0). 네 계획서가 **같은 파이프라인의 다른 단면**을 적고
+> 있어 잔여 항목이 서로를 가리키며 표류했다 — 본 절은 ①단면별 역할을 고정하고 ②표류 항목마다
+> **단일 소유 계획**을 확정하며 ③§0.6이 한 줄로 남긴 **Phase C′를 착수 가능한 단계로 구체화**한다.
+> 근거 명령은 §0.8.6.
+
+#### 0.8.1 계획군의 역할 분담 — 같은 파이프라인의 다른 단면
+
+| 계획 | 단면 | 실측 상태(2026-09-09) | 코드 잔여 |
+|---|---|---|---|
+| **50** (본 계획) | 사건 좌표계 · 결정적 상관 · 브리핑 계약(**RCA 축**) | G1~G6 완료(D-197) — `sre_agent/sre_agent/domain/{incident_scope,correlation}.py` · `application/{evidence_prefetch,investigation_guidance}.py` · `mcp_server` 앵커 인자 + `polestar_incident_alarms` · `noise_gate/domain/investigation_briefing.py` | **Phase C′ 3건**(§0.8.3) + e2e 상관 단언(C′-0) + U-C(`_h` 보존 기간) · U-D(overfit 스캔 편입) |
+| **51** | 증거 카탈로그 · 장애 유형별 플레이북 · L2/L3 데이터 소스 | L1 7종 완료(D-122) · L3 경로 B 확정(D-189) · **편입점은 생겼다**(D-197 `AgentSettings.investigation_guidance_extra` → `build_guidance()` 말미 — 기본 `None`) | ②플레이북 **내용** 편입(편입점 ≠ 편입) · ①L2 6항목(벤더) · ③§3 기법 |
+| **64** | 요구 · 트리아지 절차 사양 · 조치 거버넌스 | **CW-A·B·C 전부 완료**(D-124 · 3-E D-137) — `investigation_trigger.py`(push) · `src/nodes/fault_diagnosis.py`(pull) · `fault_escalation_enabled` 소비 3파일. §4.8 L1 보강 완료(D-108 `message_enrichment_enabled`) · 권고 생성 완료(D-138 `remediation_recommender_enabled`). **헤더 "계획 (미구현)"은 낡았다**(본 개정에서 정정) | **0** — 남은 것은 §8.3 **B-3 자동 조치 거버넌스**(범위 외 · 착수 금지 블로커)뿐. L3 부분은 60 §18 E8로 이관됨 |
+| **66** | 실행 시퀀스 장부(sre-agent 01~06 × 60~65) | Phase 1~3 완료 · 4-A 일부(D-138) | **R11 E8**(착수 가능 — 지연 예산 택일 선행) · R10/R12/R14/R15(외부 선행조건) |
+| 60 §18 | E8 L3 게이트 배선 설계 정본 | 계획 | = 66 R11 (**같은 항목**) |
+| 78/80 | 조회 ↔ 조사 배선(대상 확정 · 경로 분화) | W0~W7-1 완료(80 차수 3-A) | W3-2/3(경로 선택) · W7-2(APM = 87) |
+| 87 | JENNIFER APM | TODO | 사용자 게이트 G-1~G-7 |
+| 85 | 미구현 인벤토리 | v3(2026-08-31) | 문서 — §4 A-1 ★5건 해소·§9 티어 3 소멸 반영 필요(C′-4) |
+
+**왜 표류했나.** 50이 "실 조사 e2e"를 잔여로 적고 66이 같은 것을 R9로 적었다. 60 §18·64 §4.8·51 L3·66 R11·85 티어 3.5가 **전부 E8 하나**를 가리킨다. 50 §6.3 "다중서버 연쇄"는 게이트(60 E4)가 이미 절반을 계산한다. 계획서마다 "완료"의 기준 시점이 달라 같은 항목이 한 곳에서는 잔여, 다른 곳에서는 완료로 읽혔다.
+
+#### 0.8.2 표류 항목의 단일 소유 확정
+
+| # | 항목 | 등장 계획 | **소유** | 나머지 계획의 처리 · 실측 근거 |
+|---|---|---|---|---|
+| ① | **실 조사 e2e**(RUN_E2E · D-127) | 50 잔여 · 66 R9 · `docs/23` §7 레벨 B | **66**(`docs/23`가 절차 정본) | 50은 **C′-0(상관 on 단언)만** 보탠다. 현 `sre_agent/tests/test_investigation_e2e.py`는 완주·도구 호출·토큰만 단언하고 `root_cause_hypotheses`·상대시각 타임라인은 단언하지 않는다(grep 0건) |
+| ② | **E8 L3 게이트 배선** | 60 §18 · 66 R11 · 64 §4.8 L3 · 51 L3 · 85 티어 3.5 | **66 4-B**(설계 정본 60 §18) | 64·51은 **참조만**. 착수 선행 = 60 §18.3 (a) 지연 예산 **택일**(가: 경량 동기 MCP 도구 / 나: (a) 폐기·(b)만) — **U-H**. `host_diagnostic_collector`·`polestar_host_snapshot` grep 0건(미착수 확인) |
+| ③ | **플레이북 프롬프트 편입** | 51 ② · 50 G5 · 85 티어 1 | **51** | 50 G5는 **편입점**(`investigation_guidance_extra` · `build_guidance()`)만 만들었다 — `investigation_guidance.py` 102줄에 51 §6의 6유형 문구는 없다. 구현 위치는 `sre_agent/sre_agent/application/investigation_guidance.py`의 **알람 kind별 결정적 문구**(LLM 아님 · D-035). `sre_agent`는 `overfit_check` 스캔 밖이므로 폴스타 리터럴은 U-D 판정과 함께 |
+| ④ | **다중서버 연쇄** | 50 §6.3/C′ · 60 E4 · 53 Wave 4 | **50 C′-1** | 게이트가 이미 계산한다 — `noise_gate/domain/topology.py::DependencyGraph.{is_cascaded,find_root}` · 페이로드 `meta.root_resource`(E4) · `meta.cluster`(E2 대표 지문·멤버). **`sre_agent`는 `meta.target_state`만 읽고 `cluster`·`root_resource`는 읽지 않는다**(dispatcher grep). C′-1은 **조사 측 소비**이지 토폴로지 재계산이 아니다 |
+| ⑤ | **변경 이벤트 오버레이** | 50 §4.5/C′ · 60 E5 · U-④ | **50 C′-2** | 도구는 있다 — `polestar_change_history(source, server_name, hours=24)` (`cmm_resource_lifecycle_history` · PG 전용). 단 **now 앵커**(`reference_time` 없음 — G1 이전 형태)이고 `evidence_prefetch.build_calls`는 알람 1 + 지표 4만 부른다. 게이트 E5(`change_correlation_enabled` D-111 · 기한부 2027-02-20)는 억제 판정용이라 별개 |
+| ⑥ | **진단 이력·피드백** | 50 §9.3/C′ · 83 D-177 | **50 C′-3** — 단 **사용자 결정 선행(U-F)** | 이력은 이미 남는다(`sre_agent` `JobStore(audit_path)` JSONL + `noise_gate` `decision_store` 감사). 피드백("실제 원인은 X")은 저장소가 없다. 83의 피드백·ack 루프(존 RBAC·작성자 기록)가 후보 기반 |
+| ⑦ | **조치 권고 · 자동 조치** | 64 §8 · sre-agent/02 §9 · 66 착수 금지 | 권고=**완료**(D-138) · 자동 조치=**64 관할 · 착수 금지 유지** | 권고는 `src/nodes/fault_diagnosis.py`(pull)·공용 렌더러 `recommendation` 키(push) 양쪽에 도달. B-3(D-003 예외)은 코드 항목이 아니다 |
+| ⑧ | L2 6항목 · `_h` 보존 기간 · overfit 편입 | 51 ① · 50 U-C · 50 U-D | 각자 유지 | 벤더 협의 / 운영 DB 실조회(과금 아님) / 판정 대기 — 코드 잔여 아님 |
+
+**원칙**: 한 항목은 한 계획서만 "잔여"로 적는다. 나머지는 소유 계획을 가리키는 한 줄만 남긴다.
+
+#### 0.8.3 Phase C′ 구체화 (§0.6 C′ 행을 대체한다)
+
+전제: **A′·B′ 완료 상태 위의 증분**이며 전부 `sre_agent`/`mcp_server` 안에서 끝난다(§0.4-b 3층 경계 유지 — `src`/`noise_gate` 수정 0). 신규 플래그는 기본 off + 만료일 부여(D-161 C1). LLM 호출 0(D-035).
+
+| 단계 | 작업 | 소재지 | verify |
+|---|---|---|---|
+| **C′-0** | **e2e 상관 단언 확장** — `test_investigation_e2e.py`에 `evidence_correlation_enabled=True` 경로: 브리핑에 `root_cause_hypotheses`(rank·confidence) · `timeline`의 상대시각(`T-`) · `limitations` 존재 단언. **무과금 부분 선행**: 레벨 A 스텁 조사에서 dispatcher 감사 이벤트 `prefetch`(`leading_signal` 포함)가 기록됨을 단언 | `sre_agent/tests` · `docs/23` §7 | 코드 작성·스텁 경로는 과금 0. **실 완주는 D-127 건별 승인 후**(RUN_E2E=1) |
+| **C′-1** | **다중서버 연쇄 소비** — (a) `scope_from_job`이 `payload["meta"]["root_resource"]`·`["cluster"]` 멤버를 읽어 `EvidenceScope.related_servers`(상한 기본 3)로 확장 — **`meta.cluster` 실 shape는 착수 시 `_detect_correlated_storm` 반환값으로 실측**(docstring: 대표 지문·멤버 순번) (b) `build_calls`가 연관 서버당 **알람 1건씩만** 추가(지표는 대표 서버만 — R-4 부하) (c) `AlarmPoint.server` 도입, 타임라인 detail에 서버명 접두, `leading_signal`은 대표 서버 기준 유지, `notes`에 *"연관 서버 X의 첫 알람 T-Nm — 대표보다 선행"* 결정적 문장 (d) 브리핑 타임라인 반영. **`polestar_topology` 호출 없음** — 게이트가 판정한 root만 신뢰. 플래그 `EVIDENCE_CORRELATION_RELATED_HOSTS`(기본 0=off · 만료일) | `sre_agent/sre_agent/application/evidence_prefetch.py` · `sre_agent/sre_agent/domain/correlation.py` · `sre_agent/sre_agent/application/briefing_builder.py` | 골든: 연관 서버 알람이 대표보다 앞서면 notes 문장 · 멤버 상한 · **메타 부재·플래그 off 시 종전 결과 비트 동일** · 연관 서버 호출 부분 실패 시 대표 결과 보존 |
+| **C′-2** | **변경 이벤트 오버레이** — (a) `polestar_change_history`에 `reference_time` 선택 인자(**G1 동형** — 미지정 시 SQL 문자열 동일) (b) `build_calls`에 변경 이력 1건 추가(**PG 소스만** — DB2 b0는 `notes`에 결정적 한계 문장) (c) `TimelineItem.kind="change"` + `change_finding`(lookback 내 변경 유무 · 최근 변경 offset) (d) `root_cause_hypotheses`에 *"변경 직후"* 가설 규칙 — 변경 offset < 첫 알람 offset이면 rank 상승, confidence 상한은 유지(상관≠인과) (e) 게이트 E5와 **상호 호출 없음** | `mcp_server/mcp_server/polestar_tools.py` · `sre_agent` 위 3파일 | SQL 스냅샷 · 골든(변경 T-20m → 알람 T-10m ⇒ 가설 1위 "변경") · PG 전용 한계 문장 · 도구 실패 시 상관 나머지 보존 |
+| **C′-3** | **진단 이력·피드백** — **2026-09-09 사용자 확정(권고 채택)** **(ii)**: 피드백("실제 원인은 X")을 **Plan 83 피드백 루프(D-177)에 `investigation_id` 참조로 얹는다** — 별도 저장소 신설 금지 · 존 RBAC·작성자 기록·철회 재사용. 이력 조회는 `JobStore` audit JSONL 그대로(신규 API 없음). *(기각: (i) 이력 조회만 · (iii) 범위 외)* | `noise_gate`(피드백 도메인·저장) + `src/api/routes/alarm.py`(라우트 — D-139 예외 소재지) | SDD: 피드백 레코드에 `investigation_id` 선택 필드 · 존 RBAC 거부 · 철회 · 기존 알람 피드백 경로 비트 동일 |
+| **C′-4** | **문서 정합** — 85 §4 A-1·§9 티어 갱신(★5건 해소 · 티어 3 소멸) · 64 헤더 재판정(**본 개정에서 수행**) · 66 §1.6 교차 참조(**수행**) | `plans/` | 링크 실존 |
+
+**착수 순서**(**2026-09-09 사용자 확정(권고 채택)**): **C′-0 → C′-2 → C′-1 → C′-3**. C′-2는 G1과 같은 패턴의 재사용이라 가장 싸고 §4.5가 말한 인과력이 가장 크다. C′-1은 페이로드 메타 실측이 선행한다. 51 ③(플레이북 편입)은 50과 독립이라 **병렬 가능**(소유 51). E8(②)은 66 4-B가 **(나) 확정** 위에서 진행한다(U-H).
+
+#### 0.8.4 사용자 확인 (v2.3 신규 — §16 표에 추가) — **전건 2026-09-09 사용자 확정(*"권고에 맞게 수정하라"*)**
+
+| # | 쟁점 | 권고 → **확정** | 반영처 |
+|---|---|---|---|
+| **U-F** | C′-3 방향 — (i) 이력 조회만 / (ii) 83 피드백 루프에 편승 / (iii) 범위 외 유지 | **(ii) 확정**. 저장소·RBAC·작성자 기록이 이미 있고 "실제 원인" 피드백은 알람 피드백과 같은 화면에서 받는 것이 자연스럽다 | §0.8.3 C′-3 · D-207 후속 |
+| **U-G** | 64의 `-WIP` 태그 — 코드 잔여 0 · B-3(범위 외)만 남음 | **해제 확정**(무표기 — `64-automated-incident-investigation-and-response.md`). 헤더에 *"B-3 거버넌스 관할 유지"* 문구는 남긴다. INDEX 규칙(*"접미사를 떼는 시점 = 잔여 0"*)에 부합 | 파일명 · INDEX · 참조 4파일 |
+| **U-H** | E8 지연 예산 — (가) 경량 동기 MCP 도구 신설 / (나) (a) 폐기·(b) post-gate 비차단만 | **(나) 확정**. 회귀 0·범위 작음. (가)는 (나) 운영 실측 후 재검토 — D-117 ②("둘 다")는 **(b)만으로 개정** | 60 §18.3·§18.6 · 66 4-B·§1.6 · D-117 부기 |
+| **U-I** | C′-1 연관 서버 상한(기본 3) · 지표 수집 범위(대표만) | **기본값 확정**, 운영 실측 후 조정 | §0.8.3 C′-1 |
+
+#### 0.8.5 이 정리가 하지 않는 것
+
+- **코드 변경 0 · 폐기 제안 0**(D-161 ② 4항 대상 아님 — 계획서·모듈 삭제 제안 없음). 64 태그 해제(U-G)는 파일명 표기이지 폐기가 아니다.
+- **자동 조치 착수 금지 유지**(64 B-3 · 66 착수 금지). 과금 API 호출 0.
+- 78/80·87은 축이 다르므로(조회↔조사 배선 · APM) 접점만 표기하고 잔여를 흡수하지 않는다.
+
+#### 0.8.6 실측 근거 (재현 명령)
+
+```bash
+# ① 64 CW-A~C·§4.8·권고 구현 여부 — 플래그·모듈 소비처 수
+for k in fault_escalation_enabled investigation_followup_enabled message_enrichment_enabled \
+         remediation_recommender_enabled host_diagnostic_collector polestar_host_snapshot; do
+  printf "%-32s src:%s noise_gate:%s\n" "$k" \
+    "$(grep -rlw $k src --include='*.py' | grep -v tests | wc -l)" \
+    "$(grep -rlw $k noise_gate --include='*.py' | grep -v tests | wc -l)"; done
+# ② sre_agent가 페이로드 meta 중 무엇을 읽는가 (target_state만)
+grep -n '"cluster"\|root_resource\|\["meta"\]\|get("meta")' sre_agent/sre_agent/application/investigation_dispatcher.py
+# ③ 사전수집 배치 구성 (알람 1 + 지표 4 — 변경 이력 없음) · 변경 이력 도구의 now 앵커
+grep -n 'TOOL_\|def build_calls' sre_agent/sre_agent/application/evidence_prefetch.py
+grep -nA6 'async def polestar_change_history' mcp_server/mcp_server/polestar_tools.py
+# ④ e2e가 단언하는 것 (상관·가설 0건)
+grep -nE 'assert|correlation|root_cause' sre_agent/tests/test_investigation_e2e.py
+# ⑤ 편입점은 있으나 플레이북 내용은 없음
+grep -nE 'investigation_guidance_extra|플레이북' sre_agent/sre_agent/settings.py sre_agent/sre_agent/application/investigation_guidance.py
+# ⑥ 게이트 측 연쇄 판정 자산
+grep -nE '^    def (ancestors|is_cascaded|find_root|is_related)' noise_gate/domain/topology.py
+```
 
 ---
 
@@ -1356,6 +1448,10 @@ push 경로는 §8.2(alarm_graph 훅). 모든 변경 후 `arch_check --ci` 통�
 > | **U-B** *(v2.1 개정)* | 사전수집의 도구 호출 수단 — holmes `ToolExecutor`(내부 API·연결 재사용) vs `mcp` 클라이언트 직접(계약 수준·안정) | **A′는 `ToolExecutor`로 착수**(신규 의존 0·즉시 가능), **B′에서 `mcp` 직접으로 교체**. 처음부터 후자면 A′가 커진다 |
 > | **U-C** | `_h` 보존 기간 확인 경로 — 운영 DB 실조회가 필요(과금 아님, DB 접속 필요) | 확인 전까지 §6.2는 **정밀도를 `notes`에 결정적으로 기록**하고 confidence 상한을 건다 |
 > | **U-D** *(v2.1 신설)* | `sre_agent`를 `overfit_check` 스캔 대상에 편입할 것인가 — 상관 모듈이 그 패키지에 들어가며 벤더 리터럴 검열 공백이 생긴다 | **편입 권고**. 단 `severity_signatures`의 기존 OS/폴스타 어휘가 기준선에 대량 유입되므로, 편입 시 **기준선은 자기 델타만 소거**(전면 재생성 금지) |
+> | **U-F** *(v2.3 신설)* | C′-3 진단 이력·피드백 방향 — (i) 이력 조회만 / (ii) Plan 83 피드백 루프(D-177) 편승 / (iii) 범위 외 | **(ii) 확정(2026-09-09)** — §0.8.4 |
+> | **U-G** *(v2.3 신설)* | Plan 64 `-WIP` 태그 해제 여부(코드 잔여 0 · B-3 범위 외) | **해제 확정(2026-09-09 · 리네임 완료)** — §0.8.4 |
+> | **U-H** *(v2.3 신설)* | E8 지연 예산 (가)/(나) 택일 — 66 4-B 착수 게이트 | **(나) 확정(2026-09-09 · D-117 ② 개정)** — §0.8.4 |
+> | **U-I** *(v2.3 신설)* | C′-1 연관 서버 상한(3)·지표 수집 범위(대표만) | **기본값 확정(2026-09-09)** — §0.8.4 |
 
 계획 자체는 추가적·읽기전용이라 기존 결정과 충돌하지 않으나, 다음은 범위/우선순위에 영향이 커 확인을 권장한다.
 
@@ -1391,3 +1487,4 @@ push 경로는 §8.2(alarm_graph 훅). 모든 변경 후 `arch_check --ci` 통�
 | **2026-09-02** | **v2.1 (2차)** | 사용자 지시 *"검토한 내용을 기반으로 계획을 수정하라"* — 대화에서만 있던 검토 결과를 계획서에 편입하고 v2 잔재를 정합화했다. **신설**: **§0.0**(목표 재정의 — 원안 3층 + *"조사에 시간 좌표계와 결정적 상관 계산을 부여해 「무엇이 먼저 일어났는가」를 서술이 아니라 계산으로 답하게 만든다"* 라는 잔여 1문장) · **§0.4-b**(소유권 분석 — **D-139는 신규 `rca/`가 아니라 `sre_agent` 편입을 가리킨다**, §5 5노드 ↔ `sre_agent` 파이프라인 대조표, *"2026-06-26엔 sre_agent가 없었다"*, 읽기/조사/표현 **3층 경계도**) · §16 **U-E**. **정합화**: §5 개정 블록의 `mcp_server` 잔재 제거(→ *"파이프라인은 사라지지 않고 소재지만 바뀐다"*) · §13 표의 blockquote 이탈 복구 + **R-14 재정의**(스캔 대상 이탈로 위험의 성격이 "기준선 오염"→"검열 없는 축적"으로 바뀜) · 헤더 v2.1 요약 · §0.5 §5 행을 *"폐기(래퍼만)"* 로 정정 · §0.6에 3층 소재지 명시. |
 | **2026-09-02** | **v2.1 (3차)** | 사용자 질의 *"mcp_server와 sre_agent 각각의 역할이 뭐냐"* → *"정리한 내용과 구성도를 계획서에 포함시켜줘"*. **§0.2-a 패키지 역할 지도 신설** — 역할 대비표(포트 9099/9098 · LLM 유무 · **소비자 수의 비대칭**) · `mcp_server` 도구 19종 구성(4+8+7 실측) · `sre_agent` 계층 표(domain 2 · application 3 · interface 1) · **런타임 호출 사슬 다이어그램** · **반환의 비대칭**(rows는 `sre_agent`를 벗어나지 않음 → §0.4-a 실측 ①과 연결) · 분리 근거 3건. §0.4-b의 **책임 3층 그림**과 축이 다름을 명시해 중복 기술을 방지했다(`plans/85` §1 교훈). **부기**: CLAUDE.md 「저장소 지도」가 `mcp_server`를 *"별도 venv"* 로 적었으나 **`mcp_server/.venv`는 부재**(루트 venv 사용) — 같은 문서 「개발 명령」은 맞게 적혀 있다. 본 계획은 실측을 따르며 CLAUDE.md 정정은 범위 밖. |
 | **2026-09-02** | **v2.2** | 사용자 지시 *"50번 계획의 잔여 계획을 구현하라"* — **G1~G6 전부 구현·검증 완료(D-197 등재)**. SDD 절차(`CAPABILITY-MAP-50.md` 6모듈 → 모듈별 `SPEC-*.md` → `tasks/plan-50.md`·`todo-50.md` → TDD)로 진행. ★실측이 설계를 바꾼 3건: ①**G6 결함 재현** — 두 소비자가 생산자 미산출 키(`evidence`·`limitation`)를 기다려 `[한계]`·`[가설]`·`[중요도]` 미도달 + repr 누출, 기존 테스트가 그 키를 정답으로 굳힘 → 정본=생산자 · 공용 렌더러(`noise_gate/domain/investigation_briefing.py`) · 모르는 키 침묵 누락 금지 ②**`stat_date`는 varchar** → 앵커는 granularity 포맷 문자열 비교, 경계는 파이썬 계산·리터럴 보간, 미지정 시 SQL 스냅샷 동일 ③**holmes `Tool.invoke`가 `ToolInvokeContext(llm=…)` 필수** → A′-3의 holmes 경유 대신 **B′ `mcp` 클라이언트 선행 채택**(`pyproject` `mcp<2` 명시). 신설: `polestar_incident_alarms`(20종) · `src/domain/incident_time.py`(결정적 시각 파서) · `sre_agent/domain/{incident_scope,correlation}.py` · `application/{investigation_guidance,evidence_prefetch}.py` · `infrastructure/mcp_tool_client.py` · 브리핑 `root_cause_hypotheses`. 플래그 `EVIDENCE_CORRELATION_ENABLED`·`INVESTIGATION_GUIDANCE_EXTRA` 기본 off/None. 검증: 본체 340 · mcp_server 219 · sre_agent 325 · arch/overfit 0 · 실 LLM 0. **§0.3에 해소 표 삽입 · §0.6 A′/B′ ✅ 표기.** 남은 것: 실 조사 e2e(D-127) · Phase C′. |
+| **2026-09-09** | **v2.3** | 사용자 지시 *"50번 계획에 미구현된 부분의 구현 계획을 업데이트하라"* → *"50, 64, 66번 등 유사한 계획을 종합적으로 분석하여 계획을 정리하라"*. **§0.8 신설(D-207)** — ①계획군 단면표(§0.8.1): 50=RCA 축·51=카탈로그/플레이북·64=요구·거버넌스·66=시퀀스 장부·60 §18=E8 정본 ②표류 잔여 8항목 단일 소유(§0.8.2): e2e→66(`docs/23`) · E8→66 4-B · 플레이북 편입→51(50 G5는 편입점만) · 연쇄→50 C′-1(게이트 E4 결과 **소비** — `sre_agent`는 `meta.target_state`만 읽음 실측) · 변경 이벤트→50 C′-2(`polestar_change_history`는 now 앵커·prefetch 미포함 실측) · 이력·피드백→50 C′-3(U-F) · 권고=완료 D-138·자동 조치=64 관할 착수 금지 ③**Phase C′ 4단계 구체화**(§0.8.3) + 착수 순서 C′-0→C′-2→C′-1→C′-3 ④신규 사용자 확인 U-F~U-I(§0.8.4 · §16) — **같은 날 전건 권고대로 확정**(*"권고에 맞게 수정하라"*): C′-3=(ii) 83 편승 · 64 `-WIP` 해제(리네임) · E8 (나)=(b)만(D-117 ② 개정) · C′-1 기본값. **64 헤더 재판정**(CW-A~C·§4.8 L1·권고 완료 — 코드 잔여 0) · **66 §1.6 교차 정리 신설** · 51 헤더 ② 정정 · INDEX 갱신. 코드 변경 0 · 과금 0 · 폐기 제안 0. |

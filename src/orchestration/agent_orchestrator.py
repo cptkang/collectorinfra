@@ -35,6 +35,7 @@ from src.utils.prior_dependency import (
     DependencyVerdict,
     apply_scope_postcheck,
     assess_prior_dependency,
+    observe_scope_postcheck,
     skip_result,
     verdict_note,
 )
@@ -107,8 +108,12 @@ async def agent_orchestrator(
         for task, res in zip(runnable, level_results):
             norm = _normalize(res)
             # 사후 대조(D-203 · plans/88 §4.3): 선행 스코프 밖 서버 행 제거·미조회 서버 표기.
-            if postcheck_on and task.get("agent") in POSTCHECK_AGENTS:
-                norm = apply_scope_postcheck(verdicts.get(task.get("task_id", "")), norm, task.get("task_id", ""))
+            if task.get("agent") in POSTCHECK_AGENTS:
+                tid = task.get("task_id", "")
+                if postcheck_on:
+                    norm = apply_scope_postcheck(verdicts.get(tid), norm, tid)
+                else:
+                    observe_scope_postcheck(verdicts.get(tid), norm, tid)  # off = 로그만(결과 불변)
             task["status"] = "failed" if norm.get("error") else "completed"
             results[task["task_id"]] = norm
             await emit_task_progress(task, "end", result=norm, total=len(tasks))

@@ -312,7 +312,7 @@ grep -n "<sql_hash 앞자리>" logs/sql/2026-08-19.sql   # 없으면 헤더 타�
 | 1 | 보존 기간 기본값(SQL 30일 · 트레이스 14일) | **비블로킹 Open Question**으로 기본값 진행. 1개월 실측 후 조정하기로 했으므로 **디스크 사용량 실측이 남아 있다** |
 | 2 | `logs/sql/` 파일 분할 정책 | 날짜별 단일 파일 유지. DB별 분리는 미채택 |
 | 3 | 커버되지 않는 실행 경로 | 앱 자체 운영 SQL(users/audit_logs·부팅 DDL·`*_repository.py`)은 **의도적 대상 외**(§2.9) |
-| 4 | LLM 호출 자체는 미기록 | "왜 그 SQL을 만들었나"(프롬프트·토큰·지연 분해)는 본 기능 범위 밖 — `plans/56-langfuse-observability-TODO.md`(미착수)의 영역이다. 본 기능은 **노드 단위**까지만 본다 |
+| 4 | LLM 호출 자체는 미기록 | "왜 그 SQL을 만들었나"(프롬프트·토큰·지연 분해)는 본 기능 범위 밖 — `plans/56-TODO-langfuse-observability.md`(미착수)의 영역이다. 본 기능은 **노드 단위**까지만 본다 |
 | 5 | `lint` 게이트 | `ruff`·`mypy` 미설치로 미검증 상태 |
 
 ---
@@ -325,7 +325,7 @@ grep -n "<sql_hash 앞자리>" logs/sql/2026-08-19.sql   # 없으면 헤더 타�
 | `tasks/plan.md` · `tasks/todo.md` | 구현 계획(AD-1~AD-6 · 의존 그래프) · 태스크 T0~T10 · 구현 결과 |
 | `docs/02_decision.md` D-140 · D-141 | 확정 결정 원본(근거·기각 대안·보강 이력) |
 | `docs/02_decision.md` D-142 | **모듈 C `synonym-set`** — 같은 스펙에 묶였으나 로깅과 코드 접점 0. 본 문서 범위 밖 |
-| `plans/70-codebase-scale-and-path-debt-WIP.md` | 폴백 사다리 관측(D-162) — 트레이스 헤더 `ladder` 필드의 출처 |
-| `plans/56-langfuse-observability-TODO.md` | LLM 호출 단위 관측(미착수). 본 기능과 계층이 다르다(노드 vs LLM 호출) |
+| `plans/70-WIP-codebase-scale-and-path-debt.md` | 폴백 사다리 관측(D-162) — 트레이스 헤더 `ladder` 필드의 출처 |
+| `plans/56-TODO-langfuse-observability.md` | LLM 호출 단위 관측(미착수). 본 기능과 계층이 다르다(노드 vs LLM 호출) |
 | `plans/40-audit-logging-enhancement.md` | 감사 로깅 — 목적이 다르다("누가 무엇을 했는가" vs "왜 실패했는가") |
 | `docs/18_known_mistakes.md` (2026-08-19) | §6 사건 5건의 상세 |

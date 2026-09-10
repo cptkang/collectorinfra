@@ -62,7 +62,7 @@ awk -F, 'NR==1 || $12 ~ /clarifying-question/' docs/literature/bibliography.csv 
 grep -o 'plans/[0-9]*' docs/literature/bibliography.csv | sort -u
 
 # 하네스 계열은 plans/78이 정본이므로 그쪽을 함께 grep
-grep -n 'P1[0-5]\|ETCLOVG' plans/78-composite-query-host-diagnostics-orchestration-WIP.md
+grep -n 'P1[0-5]\|ETCLOVG' plans/78-WIP-composite-query-host-diagnostics-orchestration.md
 ```
 
 ### 2) 계획서에서 인용하기

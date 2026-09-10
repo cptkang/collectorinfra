@@ -1,6 +1,6 @@
 # Spec: 시멘틱 라우터 분류 지시문 개선 (Plan 79 트랙 A)
 
-> **출처 계획**: `plans/79-semantic-routing-improvement-WIP.md` v9 — 트랙 A
+> **출처 계획**: `plans/79-WIP-semantic-routing-improvement.md` v9 — 트랙 A
 > **관련 결정**: D-004(LLM 전용 시멘틱 라우팅) · D-035(결정적=판단·LLM=보조) · D-127(과금 API 승인 게이트)
 > **신규 결정 예약**: D-169(계획 79 소관)
 > **작성일**: 2026-08-26 | **상태**: **승인 완료 — 구현 중**(v3)

@@ -1,7 +1,7 @@
 # 88. 복합 질의 순차 의존 처리 — 선행 조회 결과가 후속 조회의 대상이 되는 파이프라인
 
 > **작성일**: 2026-09-09
-> **성격**: 구현 계획 · **상태: 1차·2차 구현 완료(2026-09-09 · D-203 본문 등재 · 원 D-198 병합 재부여) — 잔여 = W5 `.env` parity(G-3 · 운영 설정은 사용자 몫) · W4 실 LLM 평가(D-127 승인) · `-WIP`**
+> **성격**: 구현 계획 · **상태: 1차·2차 구현 + §8 게이트 전건 사용자 확정 + 실 검증(Gemini 11건 · 2단·1단 계약 실효 확인) + 운영 `.env` 반영 완료(2026-09-10 · §11) — 잔여 = §11.4 단계 4·5(2차 3종 on 판단)·7(W4 골든 실 평가) · R-E 합집합 폭(§11.6 부수 관측) · `-WIP`**
 > **v4(2026-09-09)**: 사용자 지시("중단된 작업을 재개하라")로 2차(W2·W8·W9·W4)를 §8 권고안 가정 아래 구현. **실측 정정**: 플래너
 > 프롬프트에 data→data 순차 예시(예시 3 *"찾아 그 서버들의 프로세스"*)가 **이미 있다** — v1 R-2의 "예시 0건"은 과장이었고 **프롬프트는
 > 무변경**(G-4 불필요 · 골든 불변). 2차도 플래그 3종 기본 off(`COMPOSITE_PLAN_DAG_VALIDATION_ENABLED` · `COMPOSITE_SEQUENTIAL_REPLAN_ENABLED` ·
@@ -469,7 +469,7 @@ def validate_plan_dag(tasks: list[dict]) -> tuple[list[dict], list[str]]:
 | `CompositeConfig.prior_scope_by_db_enabled` | `COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED`(§4.9) | **False** | 멀티 존 편입(82 2차) 시 on 판단 |
 | `CompositeConfig.plan_dag_validation_enabled` | `COMPOSITE_PLAN_DAG_VALIDATION_ENABLED`(§4.8) | **False** | 위반 검출률 관측 후 on |
 | `CompositeConfig.sequential_fallback_tiers_enabled` | `COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED`(§4.7) | **False** | G-6 결정 종속 |
-| 관측 | `src/observability/`에 `sequential_gate`(verdict별 카운트) · `sequential_replan`(발동·성공) · `scope_postcheck`(outside·missing) | — | 82 §5.4 P15 원칙 |
+| 관측 | ~~`src/observability/` 카운터 3종~~ → **로그 문구 3종으로 대체**(2026-09-10 사용자 확정 · §11.1 Q6): `순차 게이트 관측(off)` · `사후 대조 관측(off)` · `순차 재분해 관측(off)` — off일 때 판정만 하고 로그. 카운터는 미구현 | — | 1차 3종을 관측 없이 on 확정해 카운터의 원래 목적(1차 on 판단)이 소멸 |
 
 `src/config.py`의 `CompositeConfig`(`:1016`)는 82·81이 동시 편집한 이력이 있다 — 착수 직전 `git status --short`로
 hunk 겹침을 재확인한다(메모리 `concurrent-worktree-edits`).
@@ -569,6 +569,288 @@ hunk 겹침을 재확인한다(메모리 `concurrent-worktree-edits`).
 
 ---
 
+## 11. 플래그 6종 단계별 테스트 절차 · 실효화 결정 (v5 · 2026-09-09 인터뷰)
+
+> **실측 기준(2026-09-09)**: 1차·2차 코드는 커밋 완료(관련 `src/` 전부 clean). 운영 `.env`에는 6종 플래그와
+> `TEXT2SQL_PATH_PARITY`가 **한 줄도 없다** = 전부 off = R-1 침묵 오류가 운영에 그대로 살아 있다. §5의 관측
+> 카운터(`src/observability/`)는 **미구현**이며 off 상태 관측은 `agent_orchestrator`·`deepagents_tools`의
+> `순차 게이트 관측(off)` 로그 1줄뿐이다 — "발동률 4주 관측 후 on"은 실질적으로 성립하지 않는다.
+
+### 11.1 사용자 확정 — 플래그 실효화 (인터뷰 Q1 · 2026-09-09)
+
+**결정: 1차 3종 on · 2차 3종 off를 운영 `.env`에 명시한다.**
+
+```
+# .env (운영 · plans/88 §11.1 · D-203)
+COMPOSITE_SEQUENTIAL_GATE_ENABLED=true
+COMPOSITE_SCOPE_POSTCHECK_ENABLED=true
+COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED=true
+COMPOSITE_PLAN_DAG_VALIDATION_ENABLED=false
+COMPOSITE_SEQUENTIAL_REPLAN_ENABLED=false
+COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED=false
+```
+
+- 근거: 1차 3종은 LLM 호출 수를 바꾸지 않는 결정적 판정이고 현행 동작 자체가 결함이다(`plans/81` G-1이 같은
+  논리로 기본 on 예외를 인정한 선례). 코드 기본값은 바꾸지 않는다(plans/80 §5.4-③ 유지 — 운영 파일에서만 on).
+- 2차 3종은 §11.2 단계 4·5 테스트 결과를 본 뒤 별도 판단한다(재분해는 LLM 1회 추가, 3·4단 러너는 운영 1단
+  기동에서 실효 없음).
+- 적용 시점: §11.2 단계 2·3·6(1차 3종 실 실행)을 통과한 뒤 `.env`에 반영한다.
+
+**인터뷰 확정 전건(2026-09-10 · `interview-me` · 되짚기에 명시적 "예")**
+
+| # | 질문 | 확정 | 결과 |
+|---|---|---|---|
+| Q1 | 운영 `.env` 플래그 반영 | **1차 3종 on · 2차 3종 off 명시** | 위 블록. 적용은 단계 2·3·6 통과 후 |
+| Q2 | v3·v4 가정 게이트 G-1·G-4·G-5·G-6·G-7 | **5건 전부 확정** — G-1(a) 미실행+사유 · G-4 프롬프트 무변경 · G-5 본 계획이 배선 · G-6 (a) 러너 도입(HITL on이면 미진입) · G-7 상한 유지+표기 | D-203 "사용자 확정 대기" → 확정 |
+| Q3 | G-2 "높은" 해석값 표기(미구현분) | **범위에 넣는다** — t1 실행 SQL에서 결정적 추출, 실패 시 표기 생략 | §11.5 구현 완료 |
+| Q4 | G-3 `TEXT2SQL_PATH_PARITY` | **`false` 명시 · on 전환은 82 2차(존 편입) 착수 조건으로 이관** — W5는 이관 종료 | `.env`에 `TEXT2SQL_PATH_PARITY=false` 추가(§11.1 블록과 함께) · `plans/82` 2차 체크리스트에 "PATH_PARITY on + 88 ③ 3-c" |
+| Q5 | 실 LLM 실행 방식(D-127) | **단계 1 즉시(과금 0) · 단계 2부터 "단계 N · K건" 단위 승인** | §11.5 단계 1 실측 |
+| Q6 | §5 관측 카운터 3종 | **미구현 · 로그로 대체 + off 관측 로그를 재분해·사후 대조에도 추가(게이트와 대칭)** | §11.5 구현 완료 |
+| Q7 | 단계 2 1단 실측(§11.5) 후 재실행 | **2단 강등(`ENABLE_DEEPAGENTS_PACKAGE=false`)으로 3건 재실행 승인** — 1-c'는 샌드박스에 있는 월(2026년 7월) 지정 | §11.5 단계 2' |
+| Q8 | 1단 게이트 발동 조건 공백(§11.6) | **(c) 2단 검증 후 판단** — 지금은 sub_query 관측 로그만, (b) 규칙 추가는 문구 표본 수집 뒤 별도 질문 | — |
+| Q9 | 긍정 경로가 샌드박스 선행 결함에 막힘 | **샌드박스 프로필 생성(88 범위 밖 · 별도 항목) → 1-c'·단계 3·6 재승인 후 실행 → 통과 시 `.env` 반영** | §11.5 B1 해소 |
+| Q10 | B1 해소 후 긍정 경로 재실행 | **4건 승인** — 2단: 1-c''(GATE) · 2-a'(+POSTCHECK) · 3-b'(+PRIOR_SCOPE_BY_DB) + 1단 정본 1건(GATE · sub_query 표본 수집) · 질의는 샌드박스에 있는 월(2026년 7월) | §11.5 단계 2'' |
+| Q12 | 1단 차단어 수정 실 재검증 | **1건 승인** → 성공(§11.6 표) · 커밋은 사용자가 직접 | — |
+| Q11 | 1단 게이트 우회 확정 원인(차단어 축 오판) | **(d) 차단어 축 한정** — `_is_global_scope`: `(전체|모든|전)\s*(서버|장비|호스트|대상|리소스|vm)`일 때만 차단. 실측 sub_query 정오표 고정 · 1단 재검증은 별도 승인 | §11.6 (d) 구현 완료 |
+| — | Out of scope(확정) | 관측 카운터 · `PATH_PARITY` on · ③ 멀티 DB 런타임(3-c) · G-1 되묻기 · G-7 통일 · 프롬프트 변경 · 2차 3종 운영 on 판단(단계 4·5 뒤) | |
+
+### 11.2 공통 준비
+
+- **플래그는 기동 시 1회 해석** — 단계마다 프로세스를 새로 띄운다. `.env`를 고치지 않고 **쉘 환경변수 접두**로
+  켠다(pydantic-settings는 환경변수가 `env_file`보다 우선).
+  ```bash
+  # [CWD=collectorinfra · 루트 venv]
+  COMPOSITE_SEQUENTIAL_GATE_ENABLED=true python -m src.main --query "…"
+  ```
+- **실 파이프라인 실행은 전부 과금 경로**(`LLM_PROVIDER=gemini`·`ORCHESTRATOR_PROVIDER=gemini`) — 단계 2 이후는
+  **건마다 D-127 승인**. 단계 1만 과금 0.
+- 관찰 지점 3곳: ①응답 본문 말미 `## 순차 처리 경과` 블록(결정적 렌더 · CLI·웹 UI 공통) ②`/query` 응답 JSON
+  `dependency_notes[{stage, task_id, kind, reason, detail}]` ③서버 로그(`LOG_LEVEL=INFO`) 고정 문구.
+
+### 11.3 플래그별 절차
+
+**① `COMPOSITE_SEQUENTIAL_GATE_ENABLED` — 선행 결과 게이트(R-1)**
+
+| 단계 | 설정 | 질의 | 기대 |
+|---|---|---|---|
+| 1-a off 관측 | 접두 없음 | `CPU 사용률이 200%를 넘는 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘` | t1 0건인데 **t2가 전체 서버 결과**(현행 결함 재현). 로그 `순차 게이트 관측(off) task=t2 reason=prior_empty` |
+| 1-b on 0건 | `…GATE_ENABLED=true` | 같은 질의 | t2 미실행 · 경과 블록 "0대" 사유 · 로그 `순차 게이트 — task t2 미실행(prior_empty)` · UI 단계 목록 `⊘ 건너뜀` |
+| 1-c on 정상 | 같음 | `CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘` | t2 SQL `HAVING … IN (선별 hostname)` · 경과 블록 "N대 선별 → N대 조회" |
+| 1-d 절단 | 같음 | 101대 이상 선별되는 질의(예: `CPU 사용률이 0% 이상인 서버를 찾아 …`) | 실행되되 "절단 N대"(R-7) |
+
+**② `COMPOSITE_SCOPE_POSTCHECK_ENABLED` — 사후 대조(R-3)** — 결정적 컴파일 경로는 outside 0건이라 런타임 강제
+불가(단위 테스트 `test_scope_postcheck.py`가 고정). 런타임은 **missing**을 본다. 게이트를 함께 켠다(verdict를
+스코프 정본으로 재사용).
+
+| 단계 | 설정 | 질의 | 기대 |
+|---|---|---|---|
+| 2-a | `GATE=true SCOPE_POSTCHECK=true` | 1-c 질의 | 해당 월 통계 없는 선별 서버가 있으면 "선별 N대 중 M대는 해당 기간 통계가 없습니다" |
+| 2-b | 같음 | 사양 축 선별(`메모리가 64GB 이상인 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률`) | missing 표기 |
+
+**③ `COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED` — DB별 분할(E-4)** — 활성 DB 2개 이상에서만 의미. 운영
+`ACTIVE_DB_IDS=polestar` 단일, 로컬 도커 PG 1대(`db/` 5433)라 현 환경은 **비트 동일 경로**만 밟힌다.
+
+| 단계 | 설정 | 기대 |
+|---|---|---|
+| 3-a 단위 | `pytest tests/test_nodes/test_prior_scope_by_db.py -v` | DB별 IN 분리(SQL 문자열) · 0대 DB 미조회 노트 · `_source_db` 미노출 |
+| 3-b 단일 DB | 플래그 on + 1-c | 현행과 동일(태그 없음 → 분할 없음) — 켜도 안전 |
+| 3-c 멀티 DB | 공동존 환경 `ACTIVE_DB_IDS=polestar_cm_gp,polestar_cm_yd` + on | DB별 분리 IN · "여의도: 선별 0대 → 미조회" 노트 — **82 2차 환경 필요** |
+
+**④ `COMPOSITE_PLAN_DAG_VALIDATION_ENABLED` — DAG 검증(E-3)** — 위반은 LLM 오분해 시에만 발생, 런타임 강제 불가.
+
+| 단계 | 설정 | 기대 |
+|---|---|---|
+| 4-a 단위 | `pytest tests/test_orchestration/test_plan_dag_validation.py -v` | 위반 5종 · 자동 보정 · LLM ≤2 |
+| 4-b dry-run(과금 0) | `python scripts/eval_routing.py --decomposition --dry-run` | 골든 5건 정합성 |
+| 4-c mock(과금 0) | `python scripts/eval_routing.py --decomposition --mock` | 채점 경로 구동 |
+| 4-d 런타임 | `…PLAN_DAG_VALIDATION_ENABLED=true` + 1-c | 정상이면 로그 없음 · 위반 시 `intent_planner 되먹임 재요청 1회(D-203)` · 재위반 `DAG 위반 잔존 — 단일 data_query 폴백` + `decompose` 노트 |
+
+**⑤ `COMPOSITE_SEQUENTIAL_REPLAN_ENABLED` — 표지 재분해(R-2)** — 표지 16개(`"찾아 "`·`"찾아서"`·`"그 서버"`·
+`"해당 서버"`·`"그 중"`·`"조회한 후"` …). `"찾아줘"`는 표지 아님. ④와 되먹임 예산 공유(합계 1회).
+
+| 단계 | 설정 | 질의 | 기대 |
+|---|---|---|---|
+| 5-a 발동 | `…REPLAN_ENABLED=true` | 1-c 질의 | 첫 분해가 단일이면 `되먹임 재요청 1회` → 2 task |
+| 5-b 미적용 노출 | 같음 | 같은 질의 반복 | 재분해 후에도 단일이면 "순차 분해가 적용되지 않아 한 번의 조회로 처리" |
+| 5-c 오탐 | 같음 | `김포 운영 서버 목록을 찾아줘` | 재분해 0회 · 노트 없음(골든 d-004) |
+| 5-d 오탐 2 | 같음 | `전체 서버의 OS 종류와 버전을 보여줘` | 단일 유지(골든 d-005) |
+
+**⑥ `COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED` — 3·4단 러너(E-1)** — 운영 1단 정본에서는 실효 없음. 사다리를
+강등해야 하며 HITL 플래그가 하나라도 on이면 미진입. 운영 `.env`에 `ENABLE_STRUCTURE_APPROVAL`이 없어 **기본 on** →
+반드시 false로 내린다.
+
+| 단계 | 설정 | 기대 |
+|---|---|---|
+| 6-a 단위 | `pytest tests/test_orchestration/test_sequential_runner.py tests/test_graph.py -v` | 3·4단 빌드에만 노드 · HITL on이면 미진입 골든 |
+| 6-b 3단 | `ENABLE_DEEPAGENTS_PACKAGE=false ENABLE_INTENT_ORCHESTRATION=false ENABLE_SEMANTIC_ROUTING=true ENABLE_STRUCTURE_APPROVAL=false ENABLE_SQL_APPROVAL=false COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED=true python -m src.main --query "<1-c>"` | 기동 로그 사다리 확정 `semantic_router` · 2-pass + 경과 블록 · 표지 없는 질의는 현행 단일 SQL |
+| 6-c 4단 | 6-b + `ENABLE_SEMANTIC_ROUTING=false` | 사다리 `legacy` · `field_mapper → sequential_runner` |
+| 6-d 우회 금지 | 6-b + `ENABLE_STRUCTURE_APPROVAL=true` | 미진입 → 현행 단일 SQL + 승인 게이트 정상 |
+
+### 11.4 권장 실행 순서 · 과금 건수
+
+| 순서 | 내용 | 과금(Gemini) |
+|---|---|---|
+| 1 | 단위 6파일 + `--decomposition --dry-run` + `--mock` | 0 |
+| 2 | ① 1-a → 1-b → 1-c | 3 |
+| 3 | ② 2-a | 1 |
+| 4 | ④+⑤ 동시 on: 1-c · 5-c · 5-d | 3 |
+| 5 | ⑥ 6-b · 6-c · 6-d | 3 |
+| 6 | ③ 3-b | 1 |
+| 7 | `RUN_E2E=1 python scripts/eval_routing.py --decomposition`(W4 · 골든 5건) | 5 |
+
+단위 6파일:
+```bash
+pytest tests/test_composite/test_sequential_gate.py tests/test_composite/test_scope_postcheck.py \
+       tests/test_composite/test_dependency_notes.py tests/test_nodes/test_prior_scope_by_db.py \
+       tests/test_orchestration/test_plan_dag_validation.py tests/test_orchestration/test_sequential_runner.py -v
+```
+
+### 11.5 실측·구현 기록 (2026-09-10)
+
+**단계 1(과금 0) 실측**
+
+| 항목 | 결과 |
+|---|---|
+| 단위 6파일 | **89 passed**(구현 전 기준) |
+| `eval_routing.py --decomposition --dry-run` | 골든 5건 정합 OK(순차 3 포함) · `plan_dag_validation=False sequential_replan=False` |
+| `eval_routing.py --decomposition --mock` | **채점 경로 구동만 확인** — FabriX KBGenAI 목업은 분해 JSON을 내지 않아 5건 전부 "분해 결과 없음 → 단일 폴백"으로 채점됨(순차 3건 ✗ · 단일 2건 ✓ · `sequential_preserved=0`). 판정값은 무의미하며 §11.3 4-c의 기대("채점 경로 구동")와 일치. 분해 정확도는 단계 7(실 LLM)에서만 측정된다 |
+
+**G-2 구현(Q3)** — `src/utils/prior_dependency.py::extract_selection_basis(sql)`: 선행 결과의 `generated_sql`(1단·2단 공통
+키 — `subagents.run_data_query_pipeline`이 적재)에서 ①`ORDER BY … LIMIT N` / `FETCH FIRST N ROWS ONLY`(DB2) → *"상위 N건(컬럼
+내림차순)"* ②`WHERE/HAVING … 컬럼 op 숫자` → *"조건 컬럼 >= 값"*(CASE/집계 안의 컬럼도 경계 키워드 역추적으로 뽑는다)을 결정적으로
+추출한다. **ORDER BY 없는 LIMIT은 상위 N이 아니다**(검증기 기본 상한 1000) · 기간 축 컬럼(`month/date/time/ymd/_dt/day/year/hour`)
+비교는 임계에서 제외(§1.4 축 분리) · `<>`는 임계 아님. `DependencyVerdict.selection_basis` + detail *"선별 기준: …"* + 노트
+`selection_basis` 키. 못 뽑으면 `""`(표기 생략). LLM 0회 · 선별 결과 불변.
+
+**off 관측 로그 대칭(Q6)** — `observe_scope_postcheck`(`prior_dependency.py` · 1단 `deepagents_tools`·2단 `agent_orchestrator`
+같은 함수): 플래그 off면 대조만 하고 `사후 대조 관측(off) task=… outside=N missing=M` INFO 로그(결과 불변). `intent_planner.
+_enforce_plan_contract`: 재분해 off + 표지 있음 + 순차 배선 없음 → `순차 재분해 관측(off) — 표지 있음·순차 배선 없음(task N건)`
+(반환 바이트 동일 — 테스트 고정).
+
+**신규 테스트 16건**: `test_sequential_gate.py`(+12: 추출 정오표 10 · verdict 전파 2) · `test_scope_postcheck.py`(+2: 1단·2단 off
+로그 + 결과 불변) · `test_plan_dag_validation.py`(+2: off 로그 1회 · 표지 없음/배선 있음이면 0회).
+
+**회귀(2026-09-10 공유 트리)**: `tests/test_orchestration tests/test_composite tests/test_nodes/test_prior_scope_by_db.py
+tests/test_nodes/test_multi_db_group_loop.py tests/test_state.py tests/test_api` → **1150 passed · 1 skipped**(112s) · `arch_check --ci` 위반 0 ·
+`overfit_check --ci` 신규 유입 0. `ruff`·`mypy`는 루트 venv에 미설치라 미실행(실측).
+
+**단계 2 실측(2026-09-10 · Gemini 3건 · 사용자 승인 · 1단 `deep_agent` 경로 · 샌드박스 `polestar`@5434 · mcp_server 9099)**
+
+| 건 | 설정 | 결과 | 판정 |
+|---|---|---|---|
+| 1-a | off · 200% 질의 | 도구 3회 호출 전부 0건(1회차: 검증기 4회 거부 → 0건 · 2회차: `relation "cmm_resource" does not exist` · 3회차: 0건) → `general_inference` 안내문 | **게이트 미도달** — `순차 게이트 관측(off)` 로그 0건 |
+| 1-b | GATE=true · 200% 질의 | 도구 2회 호출 전부 0건 → 안내문 | **게이트 미도달** — 미실행 로그 0건 · 경과 블록 없음 |
+| 1-c | GATE=true · 정상 질의 | 1회차 실행 0건(`stat_date='202608'`) · 2회차 검증기 4회 거부 → 0건 → 안내문 | **게이트 미도달** |
+
+**끊긴 지점(안쪽 추정이 아니라 로그로 확정 — Known Mistakes "0건 진단은 진입·게이트별로")**
+
+- **B2 샌드박스 데이터 상한**: `cmm_metric_stat_m`의 마지막 `stat_date`가 **202607**(Utilization 12행). "최근 1개월"은 직전 완결 월
+  **202608**로 결정적 해석되므로 어떤 SQL이든 **0건이 보장**된다 — 1-c의 긍정 경로(HAVING IN + 경과 블록)는 이 데이터로는 재현 불가.
+  샌드박스에서 긍정 경로를 보려면 "2026년 7월"처럼 존재하는 월을 지정해야 한다.
+- **B1 스키마 게이팅**: `schema_analyzer`가 LLM 선택 테이블 3개에 `core_config_prop`/`cmm_metric_stat_m`을 보강하지 못해 생성 SQL이
+  `존재하지 않는 테이블 참조`로 **4회 연속 거부** → 도구가 0건을 돌려준다(실행 0회). `_supplement_eav_tables`는 수동 프로필의 EAV 쌍을
+  읽는데 샌드박스 db_id `polestar`의 프로필 파일이 **없다**(`config/db_profiles/` 실측). 88 범위 밖의 선행 결함.
+- **B3 비한정 테이블**: 알람형 SQL이 대문자·비한정 `CMM_RESOURCE`/`CMM_ALARM`(DB2 양식)으로 나와 PostgreSQL에서 실행 실패. 88 범위 밖.
+- **★ 88 계약 공백(1단)**: 세 건 모두 후속 도구 호출이 있었는데 게이트가 **한 번도 평가되지 않았다.** 1단 게이트는 `_dependency_scope`
+  (행 있는 선행만 후보) 또는 `_referenced_but_empty`(sub_query에 참조어·순위어)로만 발동하는데, 선행이 0건이면 전자가 비고, 후자는
+  **오케스트레이터 LLM이 재표현한 sub_query 문구**에 의존한다(예: "CPU 사용률 200% 초과 서버 알람 이벤트 조회"처럼 참조어가 사라짐).
+  즉 1단에서는 선행 0건 + 재표현이 겹치면 R-1 게이트가 우회된다. 이번엔 후속도 0건이라 오답은 안 나왔지만 계약은 비어 있다.
+  sub_query가 로그에 남지 않아 확정이 안 됐으므로 **관측 로그 추가**: `deepagents 도구 호출 agent=… input_from=… sub_query=…`
+  (`deepagents_tools._run_subagent_tool` · INFO). 대안 설계는 §11.6.
+- 부수 관측: Gemini `429 Too Many Requests` 재시도 다수(1-b·1-c) — 연속 실행 간격 필요.
+
+**단계 2' 실측(2026-09-10 · Gemini 3건 · 사용자 승인 Q7 · `ENABLE_DEEPAGENTS_PACKAGE=false` → 2단 `intent_orchestration` 확정 로그 확인)**
+
+| 건 | 설정 | 결과 | 판정 |
+|---|---|---|---|
+| 1-a' | off · 200% 질의 | 분해 t1→t2(`input_from`) · t1 0건(검증기 4회 거부) · 로그 `순차 게이트 관측(off) task=t2 reason=prior_empty` · **t2가 스코프 없이 실행됨**(SQL 주석 "선행 결과의 서버들에 대해 …"인데 HAVING/IN 없음 → `data_insufficient`) · 응답 "조건에 해당하는 서버, CPU 데이터가 없습니다" | ✅ **현행 결함(R-1) 재현** — 샌드박스에 202608 데이터가 없어 0건으로 끝났을 뿐, 운영이면 전체 서버 결과 |
+| 1-b' | GATE=true · 200% 질의 | t1 0건 → 로그 `순차 게이트 — task t2 미실행(prior_empty)` → 응답 말미 `## 순차 처리 경과 / - [t2] 선행 작업(t1)의 결과가 0건이라 이 단계를 실행하지 않았습니다.` | ✅ **기대 일치**(S2) |
+| 1-c' | GATE=true · 2026년 7월 질의 | t1이 B1(검증기 `cmm_metric_stat_m` 거부 4회)로 0건 → 게이트 발동·경과 블록 렌더(1-b'와 동일) | ⚠ 게이트는 정상, **긍정 경로(HAVING IN·선별 기준 표기)는 B1에 막혀 미검증** |
+
+- **결론**: R-1 계약(게이트·상태·사유·경과 블록)은 2단에서 **실 LLM으로 검증됐다.** 남은 미검증은 ①긍정 경로(S1 — B1 해소 필요)
+  ②1단 게이트 발동(§11.6 (c) 대기 · sub_query 로그 수집 중).
+- **B1 재확인**: `_get_eav_companion_tables → _load_manual_profile("polestar")` 가 프로필 부재로 빈 값 → EAV 보강 0건 → 생성 SQL의
+  `core_config_prop`·`cmm_metric_stat_m` 참조가 매번 거부된다. 샌드박스 db_id에 `config/db_profiles/polestar.yaml`이 없다(실측:
+  `polestar_b0`·`polestar_cm_gp`·`polestar_cm_yd`·`test_db`만 존재). **88 범위 밖 선행 결함 — 별도 작업 후보**(프로필 생성 또는
+  샌드박스 db_id를 `polestar_cm_gp` 프로필에 연결).
+
+**B1 해소(2026-09-10 · 사용자 확정 Q9 "샌드박스 프로필 생성 → 재실행" · 88 범위 밖 선행 결함 — 별도 항목)**
+
+- 실측: `config/db_profiles/polestar.yaml`은 **두 번 삭제**됐다 — ①`ac2cdc8`(2026-07-01 · D-054 레거시 도메인 폐기 — 근거 있음)
+  ②`52ceb0a`(2026-07-16 · D-086)는 결정문에 *"db_profiles 4종(gp/yd/b0/polestar) few-shot 예시"* 갱신을 적으면서 이 파일을
+  570줄 통째로 지웠고, 그 삭제를 근거로 삼는 결정은 없다. D-054는 D-076 후속3(2026-07-14 · 샌드박스 편입 · `polestar.yaml` 재등재)이
+  뒤집었으므로 복원은 결정과 충돌하지 않는다(D-161 4항: `.env` 등록 `POLESTAR_CONNECTION` 실측 · 도커 `polestar_pg` 기동 중 ·
+  `git log` 최종 삭제 커밋 현 브랜치 소속 확인 · 역방향 소비처 `schema_analyzer._load_manual_profile`·`field_mapper:394`).
+- 조치: D-076 후속3과 같은 방법 — `polestar_cm_gp.yaml` **현행본**(D-086 이후 드리프트 포함)을 복제하고 헤더 + "공동존 폴스타"→
+  "폴스타(로컬 샌드박스)" 13곳만 치환(635줄). 옛 버전(07-14) 복원을 택하지 않은 이유: 옛 버전은 `platform.server%` LIKE·MAX(stat_date)
+  안내 등 이후 cm_gp에서 수정된 내용을 담고 있다(diff 210줄).
+- 검증: `_load_manual_profile("polestar")` → source=manual · EAV 쌍 `(cmm_resource, core_config_prop)` · `allowed_tables`에 통계
+  3종 포함 · `catalog_diff --db polestar --ci` **차이 0**(`knowledge/polestar/catalog.yaml`의 `structure_from: polestar_cm_gp`가
+  그대로라 시맨틱 모델 파생은 불변) · `overfit_check --ci` 신규 유입 0.
+
+**단계 2'' 실측(2026-09-10 · Gemini 4건 · 사용자 승인 Q10 · 질의 "CPU 사용률이 높은 서버를 찾아 그 서버들의 2026년 7월 CPU 사용률을 보여줘")**
+
+| 건 | 경로·설정 | 결과 | 판정 |
+|---|---|---|---|
+| 1-c'' | 2단 · GATE | t1 **54건**(결정적 컴파일 `ORDER BY "cpus_max" DESC NULLS LAST LIMIT 10000` — "높은"에 임계·상위 N 없음 = 전 서버 정렬) → t2 SQL `HAVING MAX(CASE … c.name END) IN (54개 name)` → 54건 · 경과 블록 `[t2] 선행 작업(t1) 결과 54대(name)로 대상을 한정했습니다.` | ✅ **S1 긍정 경로**(HAVING IN 결정적 주입). ⚠ 선별 기준 미표기 — 추출기가 인용 별칭(`"cpus_max"`)을 못 읽음 → **수정**(아래) |
+| 2-a' | 2단 · GATE+POSTCHECK | 위와 동일 54→54. 사후 대조 노트 없음 | ✅ 결정적 경로 no-op(S6 정의대로). 참고: 결정적 피벗은 LEFT JOIN이라 통계 없는 서버도 **행은 있고 값이 null** → `missing`(행 부재)이 아니다. "50대 통계 없음"은 응답 본문이 서술 |
+| 3-b' | 2단 · +PRIOR_SCOPE_BY_DB | t1 **10건**(같은 질의인데 LLM이 이번엔 `LIMIT 10`형으로 — 비결정성) → t2 10대 한정 · `_source_db` 없음 → 분할 없음 | ✅ 단일 DB에서 켜도 현행 동일(3-b) |
+| 1단 정본 | 1단 · GATE | t1 4건 → **둘째 호출 `input_from=[]`** · 새 로그: `sub_query='2026년 7월 전체 일자별 CPU 사용률 상위 서버 상세 통계 (dbora023, cocm-hdkapp01 등)'` → 스코프 미주입·게이트 미평가·경과 블록 없음. t2는 LLM이 알아서 4건을 냈다 | ❌ **1단 계약 우회 재현**(원인 확정 아래) |
+
+**1단 우회 원인(코드로 확정)**: `deepagents_tools._GLOBAL_SCOPE_MARKERS = ("전체", "모든", "전 서버")`가 **부분 문자열**로 검사돼
+"전체 **일자별**"(기간 축)이 서버 전역 범위로 오판 → `_dependency_scope`가 G1(식별자 `dbora023` 등 포함)·G3("상위") 평가 **전에**
+`([], {})` 반환. 즉 §11.6 (a)의 "참조어 어휘 부족"이 아니라 **차단어의 축 오판**이 1차 원인이다. 부수: 식별자가 hostname 형식인데
+t1 식별 컬럼은 `name`(DB-ORA-023)이라 G1도 형식 불일치 가능성 — 차단어가 아니었어도 G3("상위")로는 주입됐을 것이다.
+
+**G-2 추출기 수정(1-c'' 실측 반영)**: ①ORDER BY·비교 좌변의 **인용 식별자**(`"cpus_max"`) 지원 ②"상위 N건" 대신 **"정렬 {컬럼} {방향} ·
+상한 {N}건"** — `LIMIT 10000`은 컴파일 기본 상한이라 "상위 10000건 선별"로 부르면 오해(실제는 전 서버 정렬). SQL이 하는 일만 적는다.
+테스트 정오표 갱신(34 passed).
+
+**`.env` 반영(2026-09-10)**: Q1 조건(단계 2·3·6 통과) 충족 — 1-b'(게이트) · 1-c''(긍정) · 2-a'(대조 무해) · 3-b'(분할 무해) → 운영 `.env`에
+§11.1 블록 + `TEXT2SQL_PATH_PARITY=false` 추가. `.env`는 git 미추적.
+
+**테스트 귀속(2026-09-10 · 전체 스위트 최초 6,154 passed · 28 failed · 5 errors → 고정 후 **최종 6,167 passed · 26 failed · 5 errors — 실패 전부 아래 '기존 결함' 집합, 신규 0** · 클린 기준선 `git worktree`(HEAD + 내 블록 뺀 `.env` 사본)로 대조)**
+
+| 분류 | 건수 | 처리 |
+|---|---|---|
+| 운영 `.env` 1차 3종 on → off 전제 테스트 누수 | 7 | 플래그 명시 고정(`mock_config.composite.* = False` 5건 · `by_db_off` 픽스처 2건) — CLAUDE.md Known Mistakes 원칙 |
+| 샌드박스 프로필 복원 → 프로필 집합·시드 개수 변화 | 2 | `test_query_history_seed`: 프로필 db_id 집합에 `polestar` 추가 · 합계 55→**69**(골드 26 + 프로필 43 실측). 골드셋 db_id 집합(3종)은 불변 |
+| `.encenv`(미추적) 키 누수 — 기준선 worktree엔 파일이 없어 통과 | 1 | `test_gemini_api_key_default_empty` — 환경 차이, 내 변경 아님(기존) |
+| 기준선에서도 실패 — 기존 결함(DB·LLM·Redis 의존 · `polestar_pg.yaml` 부재 5 errors · 스냅샷 드리프트 등) | 27 | 손대지 않음(88 범위 밖) — 목록은 `tests/test_plan33_join_prevention`·`noise_gate/tests/test_alarm_*`·`test_e2e_polestar`·`test_prompt_render_matrix`·`test_schema_cache`·`test_xls_plan_integration` 등 |
+
+### 11.6 1단 게이트 발동 조건 — (d) 확정·구현(2026-09-10 · Q11)
+
+> **구현**: `deepagents_tools._GLOBAL_SCOPE_MARKERS`(부분 문자열 3종) → `_GLOBAL_SCOPE_RE` + `_is_global_scope()`(대상 명사 동반 시만 차단) ·
+> 호출부 2곳(`_dependency_scope`·`_referenced_but_empty`) 교체. 테스트: 정오표 9건(실측 sub_query·"모든 월"·"전체 기간"은 비차단, "전체 서버"·
+> "모든 장비"·"전 서버"·"전체호스트"는 차단) + `_dependency_scope`가 실측 sub_query에서 G3("상위")로 주입 + 서버 축 전역은 여전히 미주입.
+> 관련 스위트 135 passed. **1단 실 재검증(Gemini 1건)은 별도 승인.** (b) 최상위 질의 표지 규칙은 미채택(t1 재시도 차단 위험).
+
+**1단 실 재검증(2026-09-10 · Gemini 1건 · Q12 승인 · 운영 `.env` 반영 상태 = GATE·POSTCHECK·BY_DB on)** — ✅ **성공**
+
+| 호출 | sub_query(오케스트레이터 재표현 · 새 로그) | input_from | 결과 |
+|---|---|---|---|
+| 1 | (t1) | `[]` | 54건 |
+| 2 | "2026년 7월 서버별 CPU 사용률 통계 상위 목록 및 상세 수치 조회" | `['tool_data_query_1']` (G3 "상위") | 54건 · 경과 노트 + **선별 기준: 정렬 cpus_avg 내림차순 · 상한 1000건**(G-2 1단 렌더) |
+| 3 | "… 평균 CPU 사용률 높은 순 상위 10개 서버와 사용률 조회" | `[1, 2]` | 10건 · 사후 대조 **missing 44대** 노트(운영 `.env` POSTCHECK on) |
+| 4 | "2026년 7월 svr-web-10, svr-app-03, svr-bkp-01, …"(식별자 열거 · G1) | `[1, 2, 3]` | 54건 |
+
+- 종전(차단어 부분 문자열)엔 둘째 호출이 `input_from=[]`였다(§11.5 단계 2''). 수정 후 같은 질의에서 주입·게이트·경과 블록·선별 기준·
+  사후 대조가 1단 정본 경로에서 전부 동작한다. 비결정성 주의: 이번 재표현엔 "전체"가 없었으므로 차단어 수정의 직접 효과는 정오표
+  테스트(실측 sub_query 고정)가 보증하고, 이 실행은 1단 계약 전체의 실효를 보인다.
+- **부수 관측(R-E 실측)**: 1단은 성공한 선행 결과를 **전부** `input_from`에 누적하고 스코프는 **합집합**이라(§9 R-E 결정), 4번째 호출이
+  10대(3번째 결과)를 열거했는데도 스코프가 54대(1·2번째 합집합)로 넓어져 54건을 돌려줬다. 후속이 직전 결과만 가리키는 경우 합집합이
+  의도보다 넓다. 오답은 아니지만(모두 선별 집합 안) "가장 최근 선별로 좁히기"는 별도 결정 후보 — 본 회차 범위 밖.
+
+
+| 안 | 내용 | 장점 | 위험 |
+|---|---|---|---|
+| (a) 현행 유지 + 관측 로그 | 참조어·순위어·값 일치에만 의존. 이번 추가 로그로 sub_query 문구를 모아 표지 어휘를 보강 | 오탐 없음 | LLM 재표현에 따라 R-1 우회 지속 |
+| **(d) 차단어 축 한정**(단계 2'' 실측 후 신설) | `_GLOBAL_SCOPE_MARKERS` 부분 문자열 검사 → **대상 명사 동반**일 때만 차단(`(전체|모든|전)\s*(서버|장비|호스트|대상|리소스)`) · "전체 일자별/전체 기간/모든 월" 같은 기간·컬럼 축은 차단 아님 | 결정적 · 1단 우회의 확정 원인 제거 · G1/G3 기존 규칙 그대로 | "전체"만 단독으로 쓴 sub_query("전체 조회")는 차단에서 빠짐 → 그 경우 G2/G3가 없으면 어차피 미주입이라 실질 위험 낮음 |
+| (b) 최상위 질의 표지 규칙 추가 | `has_sequential_marker(user_query)` **AND** collector에 생산자 결과가 있고 전부 0건/실패 **AND** 이번 호출이 data_query면 게이트 | LLM 재표현과 무관(결정적) | 오케스트레이터가 **t1을 다른 표현으로 재시도**하는 호출(이번 1-a의 2·3회차가 그 형태)을 t2로 오인해 차단 — 재시도 자체를 막는다 |
+| (c) 2단 강등 검증으로 계약 확인 후 (b) 판단 | `ENABLE_DEEPAGENTS_PACKAGE=false`로 2단(intent_orchestration) 재실행 — 분해가 `input_from`을 결정적으로 배선하므로 게이트 발동은 LLM 문구와 무관 | R-1 계약 자체는 2단에서 즉시 검증 가능 | 운영 정본은 1단이라 1단 공백은 남는다 |
+
+---
+
 ## 개정 이력
 
 - v1(2026-09-09) — 최초 작성. 실측 7건(R-1~R-7) · 경계 4건 · 예시 질의 양 경로 추적 · 설계 6절 · Wave 5 · 게이트 4건 ·
@@ -596,3 +878,4 @@ hunk 겹침을 재확인한다(메모리 `concurrent-worktree-edits`).
   (task 수·input_from 엣지·agent·단일 오탐 채점 · dry-run/mock/D-127 게이트 동일). 신규 테스트 2파일 31건 · 관련 스위트 792 passed ·
   arch/overfit 0. **병합 사고**: 작업 중 사용자 `stash pop`이 원격 6커밋과 충돌(6파일 UU) → 마커 해소(query.py는 plans/89 쪽 채택) ·
   원격이 D-198~D-202를 선점해 **D-198→D-203 재부여**(plans/89·90도 D-204·D-205로 — 병행 세션 collectorinfra-99가 마무리).
+- v5(2026-09-09~10) — **인터뷰로 §8 게이트 전건 확정**(`interview-me` · Q1~Q6 · §11.1 표). §11 신설: 플래그 6종 단계별 테스트 절차(단위·dry-run·mock은 과금 0, 실 실행 16건은 D-127 단계별 승인) · 실효화 결정 **"1차 3종 on · 2차 3종 off · `PATH_PARITY=false`를 운영 `.env`에 명시"**(코드 기본값 불변) · G-1·G-4~G-7 가정 5건 확정 · G-3 on은 82 2차로 이관 · 관측 카운터는 로그로 대체. 구현: **G-2 선별 기준 결정적 추출**(`extract_selection_basis`) + **off 관측 로그 대칭**(사후 대조·재분해). 단계 1 실측(§11.5): 단위 89 passed · dry-run OK · mock은 채점 경로만(목업이 분해 JSON을 내지 않음). 실측 정정: §5 관측 카운터는 미구현, 운영 `.env`에 6종·`PATH_PARITY` 전부 부재.

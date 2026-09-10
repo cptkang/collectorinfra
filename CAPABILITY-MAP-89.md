@@ -1,6 +1,6 @@
 # Capability Map: 스트리밍 응답 진행 상태 표시 (`plans/89` · D-204)
 
-> 작성 2026-09-09 · 근거 `plans/89-streaming-progress-status-line-WIP.md` v2.
+> 작성 2026-09-09 · 근거 `plans/89-WIP-streaming-progress-status-line.md` v2.
 > 게이트 G-1~G-5는 사용자 확정 전이며 **권고안을 가정으로 채택**해 진행한다(사용자 지시
 > "수립된 계획을 검토하여 구현을 진행하라", 2026-09-09). 가정은 각 SPEC 머리에 명시한다.
 

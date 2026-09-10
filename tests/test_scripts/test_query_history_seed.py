@@ -74,7 +74,8 @@ def test_gold_entries_preserve_smq():
 def test_profile_entries_use_filename_stem_as_db_id():
     """프로필 db_id는 파일명 stem이며, 예시 없는 프로필은 제외된다."""
     collected = _SEED.collect_profile_entries(verified_at=_FIXED_TS)
-    assert set(collected) == {"polestar_cm_gp", "polestar_cm_yd", "polestar_b0"}
+    # 2026-09-10: 샌드박스 프로필 `polestar.yaml` 복원(plans/88 §11.5 B1) — cm_gp 복제라 query_examples를 보유한다
+    assert set(collected) == {"polestar_cm_gp", "polestar_cm_yd", "polestar_b0", "polestar"}
     assert "test_db" not in collected  # query_examples 미보유
     assert all(
         e["source"] == "profile_example"
@@ -83,9 +84,9 @@ def test_profile_entries_use_filename_stem_as_db_id():
 
 
 def test_collect_entries_merges_both_sources():
-    """두 원천이 db_id별로 합쳐진다(실측 55건 = 골드 26 + 프로필 29)."""
+    """두 원천이 db_id별로 합쳐진다(실측 69건 = 골드 26 + 프로필 43 · 2026-09-10 샌드박스 프로필 복원 반영)."""
     merged = _SEED.collect_entries(verified_at=_FIXED_TS)
-    assert sum(len(v) for v in merged.values()) == 55
+    assert sum(len(v) for v in merged.values()) == 69
     sources = {e["source"] for entries in merged.values() for e in entries}
     assert sources == {"gold", "profile_example"}
 

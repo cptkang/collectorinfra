@@ -1,6 +1,6 @@
 # Capability Map: 장애진단 · 원인분석 잔여 (`plans/50` v2.1 · D-197 예정)
 
-> **작성일**: 2026-09-02 · **근거**: `plans/50-fault-diagnosis-rca-WIP.md` §0(v2.1)
+> **작성일**: 2026-09-02 · **근거**: `plans/50-fault-diagnosis-rca.md` §0(v2.1)
 > **전제**: 조사 실행·증거 수집 도구·pull/push 트리거·인가 게이트는 **이미 구현됨**(D-118·D-122·D-124).
 > 본 맵은 §0.3이 실측한 **잔여 6건(G1~G6)** 만을 대상으로 한다.
 > **소유권 확정(§0.4-b)**: 상관·사전수집=`sre_agent` · 구간 앵커 SQL=`mcp_server` · 표현=`src`/`noise_gate`.
@@ -113,5 +113,5 @@ sre_diagnose(question, server_name, hostname, db_id, target_state, reference_tim
 - **조사 실행 자체** — `sre_agent` dispatcher·가드 6종·severity_judge·remediation은 손대지 않는다.
 - **`src/diagnosis/` 서브그래프** — `plans/50` §5 폐기(D-118 위임). 노드 책임은 위 모듈로 흡수됐다.
 - **`POST /diagnosis/analyze`** — §8.3 폐기(진입점은 챗·알람 2종으로 충분).
-- **다중서버 연쇄 RCA · 진단 이력/피드백** — `plans/50` Phase C′(범위 밖).
+- **다중서버 연쇄 RCA · 진단 이력/피드백** — `plans/50` Phase C′(범위 밖) → **2026-09-09 `plans/91-TODO-fault-investigation-residual-consolidation.md` 1-1~1-4로 이관**(D-208).
 - **실 LLM 조사 실행** — D-127 건별 승인 사항. 본 맵의 검증은 단위·통합 테스트까지다.

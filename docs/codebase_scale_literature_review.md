@@ -5,7 +5,7 @@
 > **방법**: 코드베이스 전수 실측(2026-08-06, 브랜치 `multiintent` / `64666c7`) + 학술·산업 문헌 조사 16건. 실 LLM 호출 검증은 수행하지 않음(D-127 과금 승인 게이트 — 실측과 문헌만으로 도출).
 > **관련 결정**: D-035(결정적=판단·LLM=보조), D-066(단일/멀티 경로 대칭), D-068·D-076(결정적 SQL 조립·SMQ), D-127(과금 API 승인 게이트), D-139(기능별 최상위 패키지 경계)
 > **선행 문서**: `docs/deterministic_sql_composition_review.md`(2026-07-13), `docs/regex_llm_conversion_review.md`(2026-07-29), `docs/text2sql_quality_research.md`, `plans/69-query-generation-structural-refactoring.md`(형상 부채 — 완결)
-> **수용처 계획**: `plans/70-codebase-scale-and-path-debt-WIP.md`
+> **수용처 계획**: `plans/70-WIP-codebase-scale-and-path-debt.md`
 
 ---
 

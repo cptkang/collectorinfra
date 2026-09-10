@@ -26,7 +26,7 @@ SREAgent 프로젝트(HolmesGPT 기반 장애 진단 에이전트)를 별도 프
 | [05-collectorinfra-interop.md](05-collectorinfra-interop.md) | **유효(기준 문서)** | `sre_agent` 조사 서비스의 MCP 노출(submit/poll)·패키지 경계·분리 준비. 게이트 훅·챗 위임의 소비 지점 포함 |
 | [06-remote-vm-access.md](06-remote-vm-access.md) | **유효** | 원격 VM 데이터 경로 = Prometheus + 폴스타 2축(소스)·SSH 미채택 — **전송은 `mcp_server` 일원화(D-119)**, `remote_vm_profile()`·hostname 정합 규약(서버측 nodename 조립) |
 
-**권장 착수 순서**: Plan 04 M-B(mcp_server 고수준 도구) → Plan 02 W-A(조사 코어·pull) + Plan 06 R-A/R-B → Plan 05(서비스 노출·게이트 훅 연동) → Plan 02 W-B/W-C. ※ Plan 60~65 잔여분까지 포함한 **통합 실행 시퀀스는 collectorinfra `plans/66-sre-agent-integrated-implementation-plan-WIP.md`**(Phase 0~5·착수 게이트 §7)가 단일 장부다.
+**권장 착수 순서**: Plan 04 M-B(mcp_server 고수준 도구) → Plan 02 W-A(조사 코어·pull) + Plan 06 R-A/R-B → Plan 05(서비스 노출·게이트 훅 연동) → Plan 02 W-B/W-C. ※ Plan 60~65 잔여분까지 포함한 **통합 실행 시퀀스는 collectorinfra `plans/66-sre-agent-integrated-implementation-plan.md`**(Phase 0~5·착수 게이트 §7)가 단일 장부다.
 
 **collectorinfra 계획 정합화(2026-07-24 완료)**: Plan 60(§14.2 훅 위임처=`sre_investigate_alarm` submit/poll·§18.4/§18.6 공용 자산 소재 재정의), Plan 62(§2 C6·§4 P4·§5.2), Plan 64(**§0 통합 재편** — `investigation_graph` 자체 구현 대체·섹션별 상태 매핑·CW-A~C 소비 배선·블로커/번호 재편), Plan 65(§4.3 `invest-trigger` 델타 편입)가 본 폴더 계획 기준으로 갱신됐다. 역방향 델타: Plan 60 E8(D-117) 폴스타 에이전트 스냅샷 채널의 `polestar_host_snapshot` 노출 후보(Plan 04 §4.2·Plan 02 §6·Plan 06 §9에 기록 — E8 착수 시 결정).
 

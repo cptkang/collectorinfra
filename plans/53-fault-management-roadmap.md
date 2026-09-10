@@ -94,6 +94,8 @@ Plan 47 (이미 구현: is_routine·이력 통계·프로세스 보강)  ── 
 - **통합 지점**: 진단된 근본원인 알람은 PAGE, 연쇄 자식은 52가 억제 → 두 기능 결합.
 
 ### Wave 4 — 심층·외부 게이트 `[Plan 51 L2/L3 + Plan 50 PhaseC]` · 비용 L~XL
+
+> **2026-09-09**: Wave 4의 실행 항목은 `plans/91-TODO-fault-investigation-residual-consolidation.md`이 소유한다(L3 = 1-6 E8 post-gate(경로 B · D-189) · Phase C = 1-1~1-4 · L2 = 1-11 · D-208). 아래는 원안 기록.
 - 51 L3(원시 syslog/dmesg/OOM·프로세스 추이) = 최대 비용·리스크. **호스트 수집 보안정책 결정이 선행 블로커.**
 - 51 L2는 벤더(폴스타) 협의 의존. 50 PhaseC(다중서버 연쇄·문서·이력)도 여기.
 - 보안 결정·벤더 협의 완료 후 착수 → 명백히 마지막.
@@ -246,6 +248,6 @@ Plan 47 (이미 구현: is_routine·이력 통계·프로세스 보강)  ── 
 
 ## 10. 참고
 
-- `plans/50-fault-diagnosis-rca-WIP.md`, `plans/51-fault-diagnosis-data-collection-WIP.md`, `plans/52-alarm-noise-cancellation.md`
+- `plans/50-fault-diagnosis-rca.md`, `plans/51-fault-diagnosis-data-collection.md`, `plans/52-alarm-noise-cancellation.md`
 - 공통 토대: `plans/47-alarm-history-pattern-analysis.md`, `plans/47-1-alarm-process-enrichment.md`
 - 의사결정: `docs/02_decision.md` (D-035 등 / Plan 52=**D-048** 등재 완료, 그 외 착수 시 다음 빈 번호)

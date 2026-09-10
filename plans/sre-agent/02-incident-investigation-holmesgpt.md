@@ -1,7 +1,7 @@
 # 02. 장애 진단 대응 — HolmesGPT 자동 조사·브리핑·조치 권고 (Incident Investigation with HolmesGPT)
 
 > 작성일: 2026-07-24 · **이관일: 2026-07-24** (SREAgent → collectorinfra `plans/sre-agent/`, 통합 결정: collectorinfra D-118 / SREAgent D-021)
-> **원본**: collectorinfra `plans/64-automated-incident-investigation-and-response-WIP.md`를 SREAgent로 이식. 원본은 LangGraph 고정 파이프라인(`investigation_graph`)이었으나, 본 계획은 **조사 루프를 HolmesGPT ReAct에 위임하고 판정·브리핑 조립을 결정적 후처리로 유지**하는 구조로 재설계한다(§2).
+> **원본**: collectorinfra `plans/64-automated-incident-investigation-and-response.md`를 SREAgent로 이식. 원본은 LangGraph 고정 파이프라인(`investigation_graph`)이었으나, 본 계획은 **조사 루프를 HolmesGPT ReAct에 위임하고 판정·브리핑 조립을 결정적 후처리로 유지**하는 구조로 재설계한다(§2).
 > **선행 계획**: `plans/01-event-noise-gate.md` — PAGE 트리거 계약(§8) 소비. 게이트 없이도 pull 경로(운영자 질의)로 단독 동작 가능. `plans/04-polestar-mcp-integration.md` — 폴스타 도구를 노출하는 MCP 서버(본 계획이 소비). `plans/05-collectorinfra-interop.md` — 본 계획의 조사 기능을 MCP 서비스로 노출(collectorinfra가 호출). `plans/06-remote-vm-access.md` — 원격 VM 데이터 경로 확정(Prometheus + 폴스타 MCP 2축, 본 계획 §8의 L3 논의를 종결).
 > **관련 결정**: D-001(HolmesGPT PyPI SDK — `DiagnosisAgent` 래퍼), D-004(VM 진단 대상·`vm_profile()` 읽기 전용 bash), D-005(계획 3종 이식 방향), D-013(폴스타 연동 MCP 일원화), D-019(원격 VM 접근 = Prometheus + 폴스타 MCP 2축, SSH 미채택)
 > **신규 결정(본 계획 예약, 구현 착수 시 등재)**: D-009(조사 루프 HolmesGPT 위임 + 결정적 후처리 경계), D-010(폴스타 MCP 서버 등록 — `Config.mcp_servers`), D-011(조치 권고 human-gated — 실행 경로 미탑재). ※ 이관 후 등재는 **collectorinfra `docs/02_decision.md` 번호 체계**를 grep해 그쪽 최댓값+1로 부여한다(아래 D-번호들은 SREAgent 체계의 예약 인용).

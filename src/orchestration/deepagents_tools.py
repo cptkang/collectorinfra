@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -23,6 +24,7 @@ from src.utils.prior_dependency import (
     POSTCHECK_AGENTS,
     apply_scope_postcheck,
     assess_prior_dependency,
+    observe_scope_postcheck,
     skip_result,
     verdict_note,
 )
@@ -38,7 +40,15 @@ logger = logging.getLogger(__name__)
 # deepagents 경로는 planner의 input_from이 없어 선행 결과 전파가 오케스트레이터의
 # sub_query 작성 품질에 의존했다(D-094 잔여). 아래 게이트로 D-086 prior_rows 주입을 배선한다.
 # 전역 범위 명시 어휘 — 있으면 선행 스코프를 주입하지 않는다(독립 전역 조회 보호).
-_GLOBAL_SCOPE_MARKERS = ("전체", "모든", "전 서버")
+# 전역 범위 차단어 — **대상 명사 동반**일 때만(plans/88 §11.6 (d) · 2026-09-10 사용자 확정). 종전 부분 문자열
+# ("전체","모든","전 서버")은 "전체 일자별"(기간 축) 같은 표현까지 서버 전역으로 오판해 G1·G3 평가 전에 주입을
+# 차단했다(§11.5 단계 2'' 1단 실측). 축을 서버·장비·호스트·대상·리소스로 못 박는다.
+_GLOBAL_SCOPE_RE = re.compile(r"(전체|모든|전)\s*(서버|장비|호스트|대상|리소스|vm)")
+
+
+def _is_global_scope(low: str) -> bool:
+    """sub_query가 서버 축의 전역 범위를 명시하는가(결정적)."""
+    return bool(_GLOBAL_SCOPE_RE.search(low or ""))
 # 선행 결과 참조/선별 어휘 — 있으면 주입.
 _PRIOR_REF_MARKERS = (
     "해당", "그 서버", "이 서버", "위 서버", "이들", "앞서", "선행", "선별", "조회된",
@@ -159,7 +169,7 @@ def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]
     - G2 참조/선별 어휘: "해당/그 서버/앞서/선별…" — 선행 결과 참조 신호.
     - G3 순위/최상급 어휘: "가장/최고/상위…" — 복합 질의에서 선행 선별 집합 내 순위
       산정 신호.
-    단, sub_query가 전역 범위를 명시(_GLOBAL_SCOPE_MARKERS)하면 주입하지 않는다.
+    단, sub_query가 **서버 축**의 전역 범위를 명시(_is_global_scope — 대상 명사 동반)하면 주입하지 않는다.
 
     Args:
         sub_query: 현재 도구의 자연어 지시
@@ -169,7 +179,7 @@ def _dependency_scope(sub_query: str, collector: list) -> tuple[list[str], dict]
         (input_from task_id 목록, {task_id: 원본 결과}) — 게이트 미충족 시 ([], {})
     """
     low = (sub_query or "").lower()
-    if any(m in low for m in _GLOBAL_SCOPE_MARKERS):
+    if _is_global_scope(low):
         return [], {}
 
     # 선행 후보: 조회형 agent의 성공 결과 중 행이 있는 것만
@@ -265,6 +275,12 @@ async def _run_subagent_tool(
     #   process_query/fault_diagnosis → prior_targets(대상 집합) — _make_isolated_input이 조립
     if collector and agent_name in _SCOPE_CONSUMER_AGENTS:
         input_from, prior = _dependency_scope(sub_query, collector)
+        # 관측(plans/88 §11.5 · 2026-09-10): 1단 순차 계약은 오케스트레이터 LLM이 재표현한 sub_query에
+        # 의존한다(참조어 G2·순위어 G3) — 어떤 문구로 호출됐는지 로그가 없으면 게이트 미발동을 진단할 수 없다.
+        logger.info(
+            "deepagents 도구 호출 agent=%s input_from=%s sub_query=%r",
+            agent_name, input_from, (sub_query or "")[:160],
+        )
         if input_from:
             logger.info(
                 "deepagents 도구 선행 스코프 주입(D-095): input_from=%s (sub_query=%r)",
@@ -310,11 +326,11 @@ async def _run_subagent_tool(
         task, isolated, llm=spec.model or worker_llm, app_config=app_config
     )
     # 사후 대조(D-203 · plans/88 §4.3) — 2단 agent_orchestrator와 같은 함수.
-    if (
-        verdict is not None and agent_name in POSTCHECK_AGENTS
-        and bool(getattr(getattr(app_config, "composite", None), "scope_postcheck_enabled", False))
-    ):
-        result = apply_scope_postcheck(verdict, result, task["task_id"])
+    if verdict is not None and agent_name in POSTCHECK_AGENTS:
+        if bool(getattr(getattr(app_config, "composite", None), "scope_postcheck_enabled", False)):
+            result = apply_scope_postcheck(verdict, result, task["task_id"])
+        else:
+            observe_scope_postcheck(verdict, result, task["task_id"])  # off = 로그만(결과 불변)
     if collector is not None:
         task["status"] = "failed" if isinstance(result, dict) and result.get("error") else "completed"
         # collector에는 truncate 전 원본 결과를 적재한다(B1 — 최종 응답은 원본 기반).
@@ -341,7 +357,7 @@ def _referenced_but_empty(sub_query: str, collector: list) -> tuple[list[str], d
         (생산자 task_id 목록, {task_id: 결과}) — 조건 미충족이면 ([], {})
     """
     low = (sub_query or "").lower()
-    if any(m in low for m in _GLOBAL_SCOPE_MARKERS):
+    if _is_global_scope(low):
         return [], {}
     if not (any(m in low for m in _PRIOR_REF_MARKERS) or any(m in low for m in _RANKING_MARKERS)):
         return [], {}

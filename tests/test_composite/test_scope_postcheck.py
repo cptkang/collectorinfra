@@ -117,6 +117,10 @@ async def _handler(task, isolated, **kw):
 
 @pytest.mark.asyncio
 async def test_orchestrator_flag_off_keeps_outside_rows(mock_config):
+    # .env 누수 차단(CLAUDE.md Known Mistakes) — 운영 .env가 2026-09-10부터 1차 3종을 on으로 두므로 off를 명시한다.
+    mock_config.composite.sequential_gate_enabled = False
+    mock_config.composite.scope_postcheck_enabled = False
+    mock_config.composite.prior_scope_by_db_enabled = False
     state = create_initial_state(user_query="q")
     state["task_plan"] = _chain()
     with patch.dict(SUBAGENT_REGISTRY, _registry(AsyncMock(side_effect=_handler))):
@@ -159,3 +163,51 @@ async def test_tool_flag_on_removes_outside_rows(mock_config, monkeypatch):
     _, res = collector[1]
     assert res["organized_data"]["rows"] == [{"hostname": "a"}]
     assert res["dependency_notes"][0]["kind"] == "postcheck"
+
+
+# ──────────────────────────────────────────────
+# off 관측 로그 — 게이트와 대칭 (plans/88 §11 · 2026-09-10 확정: 카운터 대신 로그)
+# ──────────────────────────────────────────────
+
+import logging  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_flag_off_logs_observation(mock_config, caplog):
+    # .env 누수 차단(CLAUDE.md Known Mistakes) — 운영 .env가 2026-09-10부터 1차 3종을 on으로 두므로 off를 명시한다.
+    mock_config.composite.sequential_gate_enabled = False
+    mock_config.composite.scope_postcheck_enabled = False
+    mock_config.composite.prior_scope_by_db_enabled = False
+    state = create_initial_state(user_query="q")
+    state["task_plan"] = _chain()
+    with caplog.at_level(logging.INFO, logger="src.utils.prior_dependency"):
+        with patch.dict(SUBAGENT_REGISTRY, _registry(AsyncMock(side_effect=_handler))):
+            out = await agent_orchestrator(state, llm=AsyncMock(), app_config=mock_config)
+    msgs = [r.getMessage() for r in caplog.records if "사후 대조 관측(off)" in r.getMessage()]
+    assert msgs and "task=t2" in msgs[0] and "outside=1" in msgs[0] and "missing=1" in msgs[0]
+    # 실행·결과는 현행 그대로(바이트 동일)
+    assert len(out["task_results"]["t2"]["query_results"]) == 2
+    assert "dependency_notes" not in out["task_results"]["t2"]
+
+
+@pytest.mark.asyncio
+async def test_tool_flag_off_logs_observation(mock_config, monkeypatch, caplog):
+    # .env 누수 차단(CLAUDE.md Known Mistakes) — 운영 .env가 2026-09-10부터 1차 3종을 on으로 두므로 off를 명시한다.
+    mock_config.composite.sequential_gate_enabled = False
+    mock_config.composite.scope_postcheck_enabled = False
+    mock_config.composite.prior_scope_by_db_enabled = False
+    async def handler(task, isolated, *, llm, app_config):
+        return {"organized_data": {"summary": "2건", "rows": [{"hostname": "a"}, {"hostname": "z"}]}}
+
+    monkeypatch.setitem(SUBAGENT_REGISTRY, "data_query", SubAgentSpec("data_query", "DB", handler))
+    rows = [{"hostname": "a"}, {"hostname": "b"}]
+    t1 = {"task_id": "tool_data_query_1", "agent": "data_query", "sub_query": "높은 서버", "depends_on": [],
+          "input_from": [], "order": 1, "status": "completed"}
+    collector = [(t1, {"organized_data": {"rows": rows}, "query_results": rows})]
+    with caplog.at_level(logging.INFO, logger="src.utils.prior_dependency"):
+        await _run_subagent_tool("data_query", "그 서버들의 CPU", worker_llm=AsyncMock(), app_config=mock_config,
+                                 ambient_state={}, collector=collector)
+    msgs = [r.getMessage() for r in caplog.records if "사후 대조 관측(off)" in r.getMessage()]
+    assert msgs and "outside=1" in msgs[0] and "missing=1" in msgs[0]
+    _, res = collector[1]
+    assert res["organized_data"]["rows"] == [{"hostname": "a"}, {"hostname": "z"}]

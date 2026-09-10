@@ -2,13 +2,13 @@
 
 > 작성일: 2026-06-26
 > **상위 로드맵**: **Plan 62(AIOps 전체 역량 마스터 로드맵) — Phase P2(진단·RCA)**. 대응 벤치마크 역량 C1(데이터 수집·통합폭)·C4(RCA 증거 수집).
-> **상위/자매 계획**: `plans/50-fault-diagnosis-rca-WIP.md` (진단 서브그래프·오케스트레이션 아키텍처).
+> **상위/자매 계획**: `plans/50-fault-diagnosis-rca.md` (진단 서브그래프·오케스트레이션 아키텍처).
 > 본 계획은 그 중 **증거 수집(evidence_collector)** 과 **상관/인과 분석(correlation_engine·causal_reasoner)** 에
 > 들어갈 **데이터 소스·수집 방법·장애분석 기법**을 정립한다.
 > **관련 Plan**: 47(알람 이력), 47-1(실시간 프로세스 API), 44/46(알람 파이프라인)
 > **관련 결정**: D-003(읽기전용), D-022/D-028(폴스타 조인·허용테이블), D-035/D-036(이력·프로세스) /
 > 구현 착수 시 **D-039**로 등재 예정 (§11)
-> **상태**: **부분 구현 — 재판정(2026-08-31 · `plans/85` §4 A-2)**. **L1(§5.1) 7종은 구현 완료**(`mcp_server` 폴스타 도구 8종 · D-122). **L3 접근 경로는 B로 확정**(2026-08-31 · **D-189** — §5.3 개정, 원 권고 A는 격하). 조사 실행은 `sre_agent`가 담당한다(D-118 위임 — 자체 수집기를 만들지 않는다). **잔여**: ①**L2 6항목 조사**(§5.2 — 벤더 협의) ②**§6 장애 유형별 플레이북·§4 카탈로그의 프롬프트 편입** (문서 자산은 완성돼 있으나 코드·프롬프트 소비 0건 — 가장 값싼 잔여) ③§3 분석 기법의 명시적 반영. 절별 대조표는 `plans/85` §4 A-2 참조.
+> **상태**: **완결(시점 문서) — 2026-09-09 잔여 `plans/91-TODO-fault-investigation-residual-consolidation.md`로 이관(1-5 플레이북 편입 · 1-11 L2 벤더 협의 · D-208) · `-WIP` 해제.** 착수·완료 추적은 91에서만. *직전 표기*: **부분 구현 — 재판정(2026-08-31 · `plans/85` §4 A-2)**. **L1(§5.1) 7종은 구현 완료**(`mcp_server` 폴스타 도구 8종 · D-122). **L3 접근 경로는 B로 확정**(2026-08-31 · **D-189** — §5.3 개정, 원 권고 A는 격하). 조사 실행은 `sre_agent`가 담당한다(D-118 위임 — 자체 수집기를 만들지 않는다). **잔여**: ①**L2 6항목 조사**(§5.2 — 벤더 협의) ②**§6 장애 유형별 플레이북·§4 카탈로그의 프롬프트 편입** (문서 자산은 완성돼 있으나 코드·프롬프트 소비 0건 — 가장 값싼 잔여. **2026-09-09 정정**: 편입점은 D-197로 생겼다 — `AgentSettings.investigation_guidance_extra` → `build_guidance()` 말미, 기본 `None`. **잔여는 내용 편입**: `sre_agent/application/investigation_guidance.py`에 알람 kind별 결정적 문구로 §6 6유형을 싣는다. 소유는 본 계획 — `plans/50` §0.8.2 ③) ③§3 분석 기법의 명시적 반영. 절별 대조표는 `plans/85` §4 A-2 참조.
 
 ---
 
@@ -619,4 +619,4 @@ L1/L2는 기존 읽기전용 DBHub/REST 통제를 그대로 따른다. **L3 옵�
   커널 소스(`mm/oom_kill.c`,`kernel/watchdog.c` — OOM/락업 시그니처 원문), RFC 5424(syslog),
   Red Hat/SUSE/Elastic/rsyslog/Prometheus 문서
 - 데이터 모델: `schema/polestar-schema.md`, `schema/polestar-data.md`, `config/db_profiles/polestar_cm_gp.yaml`
-- 자매 계획: `plans/50-fault-diagnosis-rca-WIP.md`
+- 자매 계획: `plans/50-fault-diagnosis-rca.md`

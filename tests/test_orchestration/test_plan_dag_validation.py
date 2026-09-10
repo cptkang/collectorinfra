@@ -199,3 +199,28 @@ async def test_intent_planner_node_routes_degraded_to_dependency_notes(mock_conf
     notes = out["dependency_notes"]
     assert notes[0]["kind"] == "decompose" and notes[0]["reason"] == "sequential_not_applied"
     assert len(out["task_plan"]) == 1
+
+
+# ──────────────────────────────────────────────
+# off 관측 로그 — 게이트와 대칭 (plans/88 §11 · 2026-09-10 확정: 카운터 대신 로그)
+# ──────────────────────────────────────────────
+
+import logging  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_replan_off_logs_observation_and_stays_byte_identical(mock_config, caplog):
+    llm = _llm(SINGLE)
+    with caplog.at_level(logging.INFO, logger="src.orchestration.intent_planner"):
+        out = await _llm_decompose(llm, SEQ_QUERY, mock_config)
+    assert llm.ainvoke.await_count == 1 and len(out["tasks"]) == 1 and "degraded" not in out
+    msgs = [r.getMessage() for r in caplog.records if "순차 재분해 관측(off)" in r.getMessage()]
+    assert len(msgs) == 1
+
+
+@pytest.mark.asyncio
+async def test_replan_off_no_log_without_marker_or_when_chained(mock_config, caplog):
+    with caplog.at_level(logging.INFO, logger="src.orchestration.intent_planner"):
+        await _llm_decompose(_llm(SINGLE), "전체 서버의 OS 종류", mock_config)
+        await _llm_decompose(_llm(CHAIN), SEQ_QUERY, mock_config)
+    assert not [r for r in caplog.records if "순차 재분해 관측(off)" in r.getMessage()]

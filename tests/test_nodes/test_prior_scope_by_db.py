@@ -40,6 +40,15 @@ def by_db_on(monkeypatch):
     load_config.cache_clear()
 
 
+@pytest.fixture
+def by_db_off(monkeypatch):
+    """off를 **명시**한다 — 운영 .env가 2026-09-10부터 on이라 "기본=off"를 .env에 기대면 누수된다(CLAUDE.md Known Mistakes)."""
+    monkeypatch.setenv("COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED", "false")
+    load_config.cache_clear()
+    yield
+    load_config.cache_clear()
+
+
 # ──────────────────────────────────────────────
 # 분할 함수
 # ──────────────────────────────────────────────
@@ -81,7 +90,7 @@ def test_build_block_db_id_none_is_current_behavior():
 ROWS = [{"hostname": "b1", "cpu": 91.0, "_source_db": B0}]
 
 
-def test_extract_identity_rows_flag_off_drops_tag():
+def test_extract_identity_rows_flag_off_drops_tag(by_db_off):
     assert _extract_identity_rows(ROWS) == [{"hostname": "b1"}]
 
 
@@ -165,7 +174,7 @@ def test_executor_returns_notes_only_when_present():
     assert "dependency_notes" not in out2 and "skipped_dbs" not in out2
 
 
-def test_prepare_multi_run_flag_off_has_no_partition():
-    """플래그 off(기본) → `prior_scope_by_db is None` — `_prior_for_db`가 run 단위 값을 쓴다."""
+def test_prepare_multi_run_flag_off_has_no_partition(by_db_off):
+    """플래그 off(명시) → `prior_scope_by_db is None` — `_prior_for_db`가 run 단위 값을 쓴다."""
     cfg = load_config()
     assert cfg.composite.prior_scope_by_db_enabled is False

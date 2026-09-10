@@ -2,7 +2,7 @@
 
 > 작성일: 2026-08-28 | **개정**: v5(2026-08-28 — Wave 5·6.5 구현 완료 반영)
 > **상태**: 1차 4개 모듈 **구현 완료**(D-176) · `empty-answer-diagnosis`·`spike-condition` **구현 완료**(D-176 후속1·후속2, 기본 **ON** 전환) · `host-discovery`·`scope-select` **구현 완료**(D-176 후속3·후속4, 기본 ON) · 잔여 3개(`group-artifacts`·`group-ui`·`solution-pipeline`)는 **U1·U2·U3·U8 대기**
-> 근거 계획: `plans/82-multi-zone-sequential-query-and-solution-routing-WIP.md` (v6)
+> 근거 계획: `plans/82-WIP-multi-zone-sequential-query-and-solution-routing.md` (v6)
 > 실측 기준: 현 브랜치 `multiintent` HEAD `c7d47e8` + 미커밋 동시 작업(§충돌 표 참조)
 
 ## 왜 분해하는가

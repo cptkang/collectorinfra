@@ -136,6 +136,8 @@ sed -n '/VM_DIAG_ALLOW/,/^]/p' sre_agent/sre_agent/toolset_profiles.py          
 
 ### A-1. Plan 50 — 장애진단·원인분석 (RCA) · 757줄 → **재판정: 부분 구현(위임 방식)**
 
+> **2026-09-09 갱신**: ★ 5건은 D-197(G1~G6)로 해소됐고, 그 위의 잔여(Phase C′ 등)는 `plans/91-TODO-fault-investigation-residual-consolidation.md` §1로 이관됐다(D-208). Plan 50은 `-WIP` 해제·완결. 아래는 2026-08-31 시점 기록.
+
 > **⚠ v1 판정 정정(v2)**. v1은 `root_cause|rca_` **키워드** grep만 보고 *"코드 0건"* 이라 판정했다.
 > **기능 축으로 다시 실측한 결과, Plan 50이 요구한 것의 상당 부분이 `sre_agent` 위임 방식으로
 > 이미 구현되어 있다.** 결정적 증거는 `src/nodes/fault_diagnosis.py`(21.5KB · `src/graph.py:447` 배선)이며,
@@ -177,6 +179,8 @@ sed -n '/VM_DIAG_ALLOW/,/^]/p' sre_agent/sre_agent/toolset_profiles.py          
   `sre_agent`가 수집한 도구 출력을 입력으로 받는 **순수 함수 계층**으로 좁아진다.
 
 ### A-2. Plan 51 — 장애분석 데이터 수집·진단 기법 · 596줄 → **재판정: L1 완료 · L3 어긋남**
+
+> **2026-09-09 갱신**: 잔여(플레이북 편입·L2 벤더)는 `plans/91-TODO-fault-investigation-residual-consolidation.md` 1-5·1-11로 이관(D-208). Plan 51은 `-WIP` 해제·완결. 아래는 2026-08-31 시점 기록.
 
 > **⚠ v1 판정 정정(v2)** — A-1과 동일 사유.
 
@@ -526,7 +530,7 @@ Plan 60 §18.3에 동일 내용을 부기했다.
 |---|---|---|---|
 | 1 | **Plan 51 §6 플레이북 + §4 카탈로그의 프롬프트 편입** | **소** | 문서 자산이 **이미 완성돼 있는데 소비되지 않는다**. `sre_agent`의 `system_prompt_additions`(`MIDDLEWARE_FOCUS_NOTE` 전례)에 얹으면 되므로 **가장 값싸게 조사 품질을 올린다** |
 | 2 | **Plan 77** 유사어 제안 큐 | 중(P1~P5) | 후보 캡처 함수(`extract_synonym_usage`)가 **이미 존재**하고 소비 지점만 없다. 미결 3건 모두 기본안 보유 |
-| 3 | **Plan 50 §6 상관 엔진**(★ 5건) | 중 | 범위가 **`src/diagnosis/` 전체 → 순수 함수 계층**으로 축소됐다(§4 A-1 결론). 입력은 `sre_agent`가 이미 수집한 도구 출력 |
+| ~~3~~ | ~~**Plan 50 §6 상관 엔진**(★ 5건)~~ **해소(2026-09-02 · D-197 G1~G6)** — 잔여는 `plans/50` §0.8.3 Phase C′(연쇄 소비·변경 이벤트 오버레이·이력·피드백, D-207 · 2026-09-09) | 중 | 범위가 **`src/diagnosis/` 전체 → 순수 함수 계층**으로 축소됐다(§4 A-1 결론). 입력은 `sre_agent`가 이미 수집한 도구 출력 |
 | 3.5 | **Plan 60 E8 (=Plan 66 R11)** — L3 게이트 배선 | 중 | **D-189로 블로커 해소(2026-08-31)**. 접근 경로가 B로 확정돼 벤더 협의가 선행에서 빠졌다. **단 착수 시 §18.3 (a) 지연 예산 택일 선행**(§8.3 말미) |
 | 4 | **Plan 54** 대시보드 F1~F2 | 중 | 목업·API 명세·데이터 매핑 완료. 신규 빌드툴 0. **단 Plan 83 구현분과의 F2 중복 실측 선행** |
 | 5 | **Plan 56** Langfuse L1~L2 | 중 | 개발 환경 한정은 반입 행정 없이 검증 가능. `LANGFUSE_ENABLED=false` 기본이라 회귀 0 |
