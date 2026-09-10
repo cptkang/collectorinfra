@@ -359,14 +359,14 @@ settings:
       어느 쪽이든 선별 밖 서버가 섞이지는 않는다.
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 앞선 결과를 전부 합쳐 대상으로 쓴다(지금까지와 같다).
       - value: "true"
-        label: 켬
+        label: 기본
         effect: 서버 이름 일치 결과 우선, 없으면 직전 결과 1건만 대상으로 쓴다.
     performance: 대상 목록이 작아져 뒤 조회의 IN 목록이 짧아진다.
     stability: 앞선 결과를 나중에 다시 가리키려면 서버 이름을 질의에 적어야 한다.
-    recommendation: 1단 실 재검증 뒤 켠다(판정 기한 2027-03-10).
+    recommendation: 기본 켬(2026-09-10 1단 실 재검증 통과·사용자 확정). 끄면 앞선 결과 전부 합집합으로 되돌아간다. 만료일 2027-03-10에 끔 분기 삭제 판정.
     related: [COMPOSITE_SEQUENTIAL_GATE_ENABLED]
 
   COMPOSITE_SEQUENTIAL_GATE_ENABLED:
@@ -381,13 +381,14 @@ settings:
       지금까지와 똑같이 실행한다.
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 판정을 로그로만 남긴다. 실행·응답은 지금까지와 같다.
       - value: "true"
+        label: 기본
         effect: 앞 결과가 비면 뒤 단계를 건너뛰고 사유를 응답에 적는다. 정상일 때는 대상 대수·절단 여부가 경과로 표시된다.
     performance: 추가 조회가 없다 — 판정은 앞 결과 행을 한 번 훑는 것뿐이다. 건너뛰면 오히려 LLM 호출 1회가 준다.
     stability: 결정적 판정이라 같은 입력에 같은 결과다. 앞 결과에 서버 식별 컬럼이 없으면 보수적으로 건너뛴다.
-    recommendation: 로그의 "순차 게이트 관측(off)" 발동률을 본 뒤 켠다. 켜도 정상 질의의 동작은 바뀌지 않는다.
+    recommendation: 기본 켬(2026-09-10 사용자 확정 — 꺼진 동작 자체가 결함). 켜도 정상 질의의 동작은 바뀌지 않는다.
     related: [COMPOSITE_SCOPE_POSTCHECK_ENABLED, COMPOSITE_PRIOR_TARGETS_ENABLED, COMPOSITE_MAX_TARGETS]
     references:
       - docs/02_decision.md (D-203)
@@ -404,13 +405,14 @@ settings:
       않는다(잘못 제거하는 것보다 그대로 두는 편이 안전하다).
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 대조하지 않는다. 지금까지와 같다.
       - value: "true"
+        label: 기본
         effect: 스코프 밖 행을 제거하고 사유를 남긴다. 결정적 조립 경로에서는 원래 벗어나는 행이 없어 영향이 없다.
     performance: 결과 행을 한 번 훑는 비용뿐이다.
     stability: 컬럼 종류(호스트명 vs 서버명)가 다르면 대조하지 않으므로 정상 결과가 잘려 나가지 않는다.
-    recommendation: 앞 단계 스코프를 LLM 프롬프트 지시로만 강제하는 질의가 많다면 켠다.
+    recommendation: 기본 켬(2026-09-10 사용자 확정). 끄면 대조 결과가 로그("사후 대조 관측(off)")로만 남는다.
     related: [COMPOSITE_SEQUENTIAL_GATE_ENABLED]
     references:
       - docs/02_decision.md (D-203)
@@ -427,13 +429,14 @@ settings:
       한 DB에서만 왔으면 지금까지와 같다.
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 모든 대상 DB에 같은 서버 목록을 붙인다. 지금까지와 같다.
       - value: "true"
+        label: 기본
         effect: DB별로 목록을 나누고, 해당 서버가 없는 DB는 건너뛴다. 존이 여러 개일 때만 차이가 난다.
     performance: 고른 서버가 없는 존을 건너뛰므로 존 수만큼 스키마 분석·LLM 호출이 준다.
     stability: 출처 표시가 없는 행은 종전대로 전 DB에 적용한다. 출처 값이 조건에 새어 나가지 않도록 테스트로 고정돼 있다.
-    recommendation: 폴스타 존을 둘 이상 등록해 조회할 때 켠다. 단일 DB 운영에서는 켜도 차이가 없다.
+    recommendation: 기본 켬(2026-09-10 사용자 확정). 단일 DB 운영에서는 켜도 차이가 없다.
     related: [COMPOSITE_SEQUENTIAL_GATE_ENABLED, ACTIVE_DB_IDS]
     references:
       - docs/02_decision.md (D-203)
@@ -450,13 +453,14 @@ settings:
       조회로 내려가며 그 사유를 응답 말미 "순차 처리 경과"에 적는다.
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 검증하지 않는다. 지금까지와 같다(계획 오류가 있으면 순차가 조용히 병렬로 바뀐다).
       - value: "true"
+        label: 기본
         effect: 검증·자동 보정하고, 위반 시 LLM 재요청이 최대 1회 늘어난다.
     performance: 정상 계획이면 추가 호출이 없다. 위반이 있을 때만 LLM 호출 1회가 는다.
     stability: 결정적 검사라 같은 계획에 같은 결과다. 재요청은 시스템 지시문을 바꾸지 않고 사용자 메시지 말미에만 사유를 덧붙인다.
-    recommendation: 구조화 출력 backend를 쓰지 않는 운영(기본 none)에서 켜는 것이 특히 이득이다.
+    recommendation: 기본 켬(2026-09-10 실 실행 후 사용자 확정 — 정상 분해에는 개입하지 않는다). 구조화 출력 backend를 쓰지 않는 운영(기본 none)에서 특히 이득이다.
     related: [COMPOSITE_SEQUENTIAL_REPLAN_ENABLED, STRUCTURED_OUTPUT_BACKEND]
     references:
       - docs/02_decision.md (D-203)
@@ -473,13 +477,14 @@ settings:
       표지 판정은 재요청 여부에만 쓰이고 실행 경로를 바꾸지 않는다.
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 재요청하지 않는다. 한 단계로 분해되면 그대로 실행된다(사용자는 순차가 안 됐음을 모른다).
       - value: "true"
+        label: 기본
         effect: 표지가 있는데 단일 계획이면 LLM 재요청 1회. 그래도 단일이면 실행하고 사유를 남긴다.
     performance: 표지가 있는 질의에서만 최대 LLM 1회 추가. "김포 서버를 찾아줘"처럼 단일이 정답인 질의도 표지에 걸려 1회 재요청될 수 있다.
     stability: 재요청 결과가 단일이면 그대로 실행하므로 정상 단일 질의의 결과는 바뀌지 않는다.
-    recommendation: 순차 질의가 한 단계로 처리되는 사례가 로그에 보이면 켠다.
+    recommendation: 기본 켬(2026-09-10 실 실행 후 사용자 확정 — 오탐 0). 끄면 한 단계 분해가 그대로 실행되고 로그("순차 재분해 관측(off)")만 남는다.
     related: [COMPOSITE_PLAN_DAG_VALIDATION_ENABLED, COMPOSITE_SEQUENTIAL_GATE_ENABLED]
     references:
       - docs/02_decision.md (D-203)
@@ -496,13 +501,14 @@ settings:
       분해가 순차로 나오지 않으면 단일 조회로 실행하고 사유를 남긴다.
     options:
       - value: "false"
-        label: 기본
+        label: 끔(종전 동작)
         effect: 노드를 등록하지 않는다. 그래프 배선이 지금까지와 같다.
       - value: "true"
+        label: 기본
         effect: 3·4단 빌드에 노드가 추가된다. 1·2단 기동에서는 아무 영향이 없다.
     performance: 진입한 질의는 조회가 두 번 돈다(분해 LLM 1회 + 조회 2회).
     stability: 승인 기능이 켜진 상태에서는 절대 진입하지 않는다 — 운영 기본(구조 승인 on)에서는 켜도 동작하지 않으며, 미진입 사유가 로그에 남는다.
-    recommendation: 운영 기동이 1·2단(기본)이면 켤 필요가 없다. 강등 기동에서 순차 질의를 써야 할 때만 승인 정책과 함께 검토한다.
+    recommendation: 기본 켬(2026-09-10 실 실행 후 사용자 확정). 운영 1·2단 기동에서는 노드가 등록되지 않아 실효가 없고, 강등 기동에서도 승인 기능이 켜져 있으면 진입하지 않는다.
     related: [ENABLE_STRUCTURE_APPROVAL, ENABLE_SQL_APPROVAL, ENABLE_INTENT_ORCHESTRATION, ENABLE_DEEPAGENTS_PACKAGE]
     references:
       - docs/02_decision.md (D-203)

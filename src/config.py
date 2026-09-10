@@ -1084,27 +1084,30 @@ class CompositeConfig(BaseSettings):
     # W6 — 조사 감사. 기본 on(감사는 끄는 것이 예외다)
     audit_enabled: bool = True
 
-    # === [D-203] 복합 질의 순차 의존 계약 (plans/88 §4.1·§4.3·§4.9) — 전부 기본 off ===
-    # off면 판정은 로그로만 남고 실행·상태·응답은 현행과 비트 동일이다(발동률 관측 → on 근거).
+    # === [D-203] 복합 질의 순차 의존 계약 (plans/88 §4.1·§4.3·§4.9) — **기본 on**(2026-09-10 사용자 확정) ===
+    # `plans/80` §5.4-③(기본 off = 비트 동일)의 **명시적 예외**. 근거: ①현행(off) 동작 자체가 결함 — 선행 조회가
+    # 0건이면 후속이 스코프 없이 전체 서버를 조회하는 침묵 오류(plans/88 §3 R-1) ②결정적 판정이라 LLM 호출 수 불변
+    # ③Gemini 실 실행 14건 통과(plans/88 §11.5) ④`.env`는 git 미추적이라 배포마다 유실될 수 있어 코드 기본값으로
+    # 고정(사용자 지시 2026-09-10). off로 되돌리면 판정은 로그로만 남고 실행·상태·응답은 종전과 비트 동일이다.
     # 선행 결과 게이트: input_from 선행이 실패·0건·식별 컬럼 부재면 후속을 실행하지 않고 사유를 남긴다.
-    sequential_gate_enabled: bool = False
+    sequential_gate_enabled: bool = True
     # 사후 대조: 후속 결과에서 선행 스코프 밖 서버 행을 제거하고 미조회 서버를 표기한다.
-    scope_postcheck_enabled: bool = False
+    scope_postcheck_enabled: bool = True
     # DB별 스코프 분할: prior_rows의 _source_db로 후속 멀티 DB 조회의 IN 목록·대상 DB를 나눈다.
-    prior_scope_by_db_enabled: bool = False
-    # === [D-203 2차] 분해 계약 · 3·4단 순차 러너 — 기본 off ===
+    prior_scope_by_db_enabled: bool = True
+    # === [D-203 2차] 분해 계약 · 3·4단 순차 러너 — **기본 on**(2026-09-10 사용자 확정 · 단계 4·5·7 실 실행 11건: 정상 분해 무개입·오탐 0) ===
     # 분해 DAG 결정적 검증(중복 id·미존재 참조·input_from⊄depends_on 보정·순환) + 위반 시 되먹임 1회.
-    plan_dag_validation_enabled: bool = False
+    plan_dag_validation_enabled: bool = True
     # 순차 표지("…를 찾아 그 서버들의…")가 있는데 단일 task로 분해되면 재분해 1회(위 검증과 예산 공유 = 총 1회).
-    sequential_replan_enabled: bool = False
+    sequential_replan_enabled: bool = True
     # 3단(semantic_router)·4단(legacy) 빌드에 `sequential_runner` 2-pass 노드를 등록한다. HITL 승인 플래그가
     # 켜져 있으면 진입하지 않는다(승인 게이트 우회 금지 — plans/88 §4.7).
-    sequential_fallback_tiers_enabled: bool = False
+    sequential_fallback_tiers_enabled: bool = True
     # === [D-203 후속 · plans/88 R-E · 2026-09-10 사용자 확정 (c)] 1단 선행 스코프 — 값 일치 우선 · 없으면 직전 1건 ===
     # off(현행)면 1단은 성공한 선행 결과를 **전부** 합집합으로 주입한다(4번째 호출이 3번째 결과 10대를 가리켜도 54대).
     # on이면 후속 sub_query에 식별자가 열거되면(G1) 그 값을 가진 선행 결과만, 없으면 가장 최근 성공 선행 1건만 주입한다.
-    # 선별 밖 서버가 섞일 위험은 양쪽 모두 0. **만료일 2027-03-10**(D-161 C1) — 1단 재검증 뒤 on 확정 또는 삭제.
-    prior_scope_latest_only: bool = False
+    # 선별 밖 서버가 섞일 위험은 양쪽 모두 0. **기본 on**(1단 실 재검증 통과 · 2026-09-10 사용자 확정). **만료일 2027-03-10**(D-161 C1) — off 분기 삭제 판정.
+    prior_scope_latest_only: bool = True
 
     # ── Plan 81 (D-175) 호스트 가용성 사전 판정 ──────────────────────
     # **기본 on** — 이 파일의 다른 플래그와 정반대다(G-1 사용자 확정 2026-08-28).

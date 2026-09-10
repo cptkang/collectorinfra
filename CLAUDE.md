@@ -153,7 +153,7 @@ python scripts/eval_routing.py --help
   **코드 기본값이 아니라 이 실제값을 근거로 판단할 것.**
 - 신규 기능 플래그는 **기본 off = 현행 동작과 비트 동일**이 원칙이다(`plans/80` §5.4-③).
   명시적 예외는 근거와 함께 config 주석에 남긴다(예: `COMPOSITE_AVAILABILITY_PRECHECK_ENABLED`,
-  `COMPOSITE_HOST_DISCOVERY_ENABLED`, `COMPOSITE_SCOPE_SELECT_ENABLED`는 기본 on).
+  `COMPOSITE_HOST_DISCOVERY_ENABLED`, `COMPOSITE_SCOPE_SELECT_ENABLED`, D-203 순차 의존 계약 7종은 기본 on).
 - 플래그는 **기동 시 1회 해석**한다 — 요청 시점에 바꾸면 프롬프트 접두가 흔들려 KV 캐시가 무효화된다.
 
 ## 데이터 도메인

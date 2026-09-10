@@ -110,6 +110,9 @@ BROKEN = _plan([
 
 @pytest.mark.asyncio
 async def test_flags_off_single_call_and_byte_identical(mock_config):
+    # 기본값이 on(2026-09-10)이므로 off 전제는 명시로 고정한다(.env 누수·기본값 변경 무관)
+    mock_config.composite.plan_dag_validation_enabled = False
+    mock_config.composite.sequential_replan_enabled = False
     llm = _llm(BROKEN)
     out = await _llm_decompose(llm, SEQ_QUERY, mock_config)
     assert llm.ainvoke.await_count == 1
@@ -210,6 +213,7 @@ import logging  # noqa: E402
 
 @pytest.mark.asyncio
 async def test_replan_off_logs_observation_and_stays_byte_identical(mock_config, caplog):
+    mock_config.composite.sequential_replan_enabled = False  # off 전제 명시(기본값 on)
     llm = _llm(SINGLE)
     with caplog.at_level(logging.INFO, logger="src.orchestration.intent_planner"):
         out = await _llm_decompose(llm, SEQ_QUERY, mock_config)
@@ -220,6 +224,7 @@ async def test_replan_off_logs_observation_and_stays_byte_identical(mock_config,
 
 @pytest.mark.asyncio
 async def test_replan_off_no_log_without_marker_or_when_chained(mock_config, caplog):
+    mock_config.composite.sequential_replan_enabled = False  # off 전제 명시(기본값 on)
     with caplog.at_level(logging.INFO, logger="src.orchestration.intent_planner"):
         await _llm_decompose(_llm(SINGLE), "전체 서버의 OS 종류", mock_config)
         await _llm_decompose(_llm(CHAIN), SEQ_QUERY, mock_config)
