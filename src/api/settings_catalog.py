@@ -298,6 +298,7 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     # --- query/text2sql/security/synonym: 노드 partial 주입 (그래프 재빌드로 반영) ---
     "QUERY_DEFAULT_LIMIT",
     "QUERY_SUFFICIENCY_REQUIRED_THRESHOLD",
+    "QUERY_INTENT_LLM_ASSIST",  # 그래프 재빌드(synonym_registrar partial)+app.state.config 판독
     "TEXT2SQL_SEMANTIC_COMPOSE",
     "TEXT2SQL_SEMANTIC_FALLBACK",
     "TEXT2SQL_FALLBACK_CONFIDENCE_MIN",
@@ -315,6 +316,7 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "TEXT2SQL_STEPWISE_MAX_TOOL_CALLS",
     "TEXT2SQL_STEPWISE_TIMEOUT_SECONDS",
     "TEXT2SQL_HYPERNYM_AMBIGUITY",
+    "TEXT2SQL_PROMPT_KNOWLEDGE_RENDER",  # 요청 시 load_config() 판독 — reload의 cache_clear로 반영
     "SECURITY_SENSITIVE_COLUMNS",
     "SECURITY_MASK_PATTERN",
     "SECURITY_MASK_IP",
