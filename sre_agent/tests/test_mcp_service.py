@@ -55,6 +55,23 @@ def _call(mcp, name, args=None) -> dict:
 # ── 도구 등록 스모크 ─────────────────────────────────────────────
 
 
+def test_dispatcher_audits_to_same_file_as_jobstore():
+    """D-211 후속 — dispatcher 종결 이벤트가 JobStore와 **같은 감사 파일**에 남는다.
+
+    `_build_dispatcher`가 `audit_path`를 넘기지 않으면 `_audit_path is None`이라
+    `done`/`timeout`/`failed`가 **로그로만** 나가고 감사 JSONL에는 `accepted`/`running`만
+    쌓인다. 폐쇄망 실측(2026-09-11): 204건 중 종결 이벤트 **0건** · `restart_failed` 169건
+    (파일만 보면 모든 잡이 영구 active로 보여 재기동마다 다시 실패 확정됐다).
+    조사 결과를 파일로 추적할 수 없으면 운영 진단이 통째로 불가능해진다.
+    """
+    from sre_agent.application.investigation_jobs import default_audit_path
+    from sre_agent.interface.mcp_service import _build_dispatcher
+
+    disp = _build_dispatcher(AgentSettings(_env_file=None, model="m", gemini_api_key=None))
+    assert disp._audit_path is not None, "dispatcher 감사 경로 미배선 — 종결이 파일에 안 남는다"
+    assert disp._audit_path == default_audit_path()
+
+
 def test_five_tools_registered(tmp_path):
     mcp, _ = _service(tmp_path)
     names = sorted(t.name for t in asyncio.run(mcp.list_tools()))

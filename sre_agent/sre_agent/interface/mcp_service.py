@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
@@ -22,7 +23,11 @@ from sre_agent.application.briefing_builder import build_briefing
 from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
 from sre_agent.application.investigation_guidance import build_guidance
 from sre_agent.application.investigation_dispatcher import InvestigationDispatcher
-from sre_agent.application.investigation_jobs import CONTRACT_VERSION, JobStore
+from sre_agent.application.investigation_jobs import (
+    CONTRACT_VERSION,
+    JobStore,
+    default_audit_path,
+)
 from sre_agent.diagnosis import DiagnosisAgent, DiagnosisResult
 from sre_agent.infrastructure.mcp_tool_client import make_batch_caller
 from sre_agent.settings import AgentSettings
@@ -170,13 +175,23 @@ def _default_prefetch_fn(settings: AgentSettings):
     return _prefetch
 
 
-def _build_dispatcher(settings: AgentSettings) -> InvestigationDispatcher:
-    """실 dispatcher를 조립한다(diagnose_fn·briefing_fn·prefetch_fn 주입). JobStore executor로 배선된다."""
+def _build_dispatcher(
+    settings: AgentSettings, audit_path: str | Path | None = None
+) -> InvestigationDispatcher:
+    """실 dispatcher를 조립한다(diagnose_fn·briefing_fn·prefetch_fn 주입). JobStore executor로 배선된다.
+
+    **`audit_path`를 반드시 넘긴다**(D-211 후속): 미지정이면 dispatcher의 `_audit`이 파일 대신
+    로그로만 나가, 감사 JSONL에 `accepted`/`running`만 쌓이고 **종결(done/timeout/failed)이
+    한 건도 남지 않는다**(폐쇄망 실측 2026-09-11: 204건 중 종결 0건 · restart_failed 169건).
+    JobStore와 같은 파일을 써야 잡 한 건의 생애가 한 곳에서 읽히고, 재기동 복구도 완료된 잡을
+    active로 오인하지 않는다.
+    """
     return InvestigationDispatcher(
         settings,
         diagnose_fn=_default_diagnose_fn(settings),
         briefing_fn=build_briefing,
         prefetch_fn=_default_prefetch_fn(settings),
+        audit_path=audit_path if audit_path is not None else default_audit_path(),
     )
 
 

@@ -3,6 +3,7 @@
 실 LLM 없이 fake diagnose_fn으로 결정적으로 검증한다. 백그라운드 워커는 wait_workers()로 조인한다.
 """
 
+import asyncio
 import json
 import threading
 import time
@@ -223,6 +224,34 @@ def test_timeout_fires_even_when_investigation_thread_hangs():
         release.set()  # 버려진 데몬 스레드를 풀어 테스트 프로세스 잔류 방지
 
 
+def test_base_exception_from_investigation_finalizes_job(tmp_path):
+    """D-211 근본원인 — 조사가 **BaseException**(CancelledError)을 올려도 잡이 유실되지 않는다.
+
+    2026-09-11 폐쇄망 스택 덤프로 확정: 조사 중 mcp_server가 죽으면 anyio 취소 스코프가
+    `asyncio.CancelledError`를 올리는데, 이 예외는 3.8+에서 **BaseException 파생**이라
+    종전 `except Exception`을 그대로 통과했다. 그러면 워커 스레드가 감사도 상태 전이도 없이
+    조용히 죽어 잡이 영원히 running으로 남는다(덤프에 조사 스레드가 아예 없었다 — 매달린
+    것이 아니라 죽은 것이었고, 그래서 타임박스도 워치독 전까지 아무것도 잡지 못했다).
+    """
+    audit = tmp_path / "a.jsonl"
+
+    def cancelled_fn(job):
+        raise asyncio.CancelledError("mcp 상대 사망 모사")
+
+    disp = InvestigationDispatcher(
+        make_settings(), diagnose_fn=cancelled_fn, briefing_fn=build_briefing,
+        timeout_seconds=5.0, audit_path=audit,
+    )
+    job = make_job(server="cancel-01")
+    disp(job)
+    disp.wait_workers(10)
+
+    assert job.status == "failed", f"잡이 유실됐다(영구 running 회귀): {job.status}"
+    assert "CancelledError" in (job.error or "")
+    events = [json.loads(l) for l in audit.read_text().splitlines()]
+    assert any(e["event"] == "failed" for e in events), "실패가 감사에 남아야 한다(침묵 금지)"
+
+
 def test_fast_investigation_does_not_timeout():
     disp = InvestigationDispatcher(
         make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing, timeout_seconds=5.0
@@ -401,6 +430,43 @@ def test_prefetch_result_lands_on_job_and_is_audited(tmp_path):
     events = [json.loads(l) for l in audit.read_text().splitlines()]
     pf = next(e for e in events if e["event"] == "prefetch")
     assert pf["leading_signal"] == "disk_io" and pf["anomalies"] == ["disk_io"] and pf["alarms"] == 1
+
+
+def test_prefetch_hang_is_timeboxed_and_investigation_proceeds(tmp_path):
+    """D-211 후속 — 사전수집이 **영원히 반환하지 않아도** 조사는 계속된다.
+
+    prefetch는 조사 타임박스 **앞의** 무가드 구간이었다 — 죽은 MCP read에 매달리면
+    전체 타임아웃에 도달조차 못 하고 잡이 영원히 running으로 남는다(조사 wedge와
+    같은 계열). 타임박스 만료 시 correlation=None 강등 + prefetch_failed 감사 후
+    조사를 계속한다(D-197 "사전수집 실패는 조사를 막지 않는다"의 hang 확장).
+    """
+    audit = tmp_path / "a.jsonl"
+    release = threading.Event()
+
+    def hanging_prefetch(job):
+        release.wait()  # 테스트가 풀어줄 때까지 절대 반환하지 않는 사전수집 대역
+        return {"leading_signal": "x"}
+
+    disp = InvestigationDispatcher(
+        make_settings(), diagnose_fn=fake_diagnose(), briefing_fn=build_briefing,
+        prefetch_fn=hanging_prefetch, prefetch_timeout_seconds=0.2, audit_path=audit,
+    )
+    job = make_job(server="pf-hang")
+    job.reference_time = "2026-09-01T14:00:00"
+    started = time.monotonic()
+    disp(job)
+    disp.wait_workers(10)
+    elapsed = time.monotonic() - started
+    try:
+        assert job.status == "done", f"조사가 완주해야 한다: {job.status}"
+        assert job.correlation is None
+        assert elapsed < 5, f"prefetch 타임박스 미작동 — {elapsed:.1f}s 소요"
+        events = [json.loads(l) for l in audit.read_text().splitlines()]
+        assert any(
+            e["event"] == "prefetch_failed" and "타임박스" in e["error"] for e in events
+        )
+    finally:
+        release.set()  # 버려진 데몬 스레드 정리(테스트 잔류 방지)
 
 
 def test_prefetch_failure_does_not_block_investigation(tmp_path):

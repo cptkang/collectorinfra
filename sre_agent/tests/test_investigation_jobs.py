@@ -143,6 +143,32 @@ def _hang_executor(job):
     job.status = "running"
 
 
+def test_stuck_active_job_finalized_by_watchdog(tmp_path):
+    """D-211 후속 — dispatcher 타임아웃이 미발화해도 낑긴 active 잡은 워치독이 확정한다.
+
+    폐쇄망 실측(2026-09-10): 타임박스 **밖** 구간에서 wedge가 나면 새 코드로도 잡이
+    3.9h+ running으로 남았다. sweep 편승 워치독이 임계(타임아웃×2 · 최소 600s) 초과
+    active 잡을 failed(stuck_watchdog)로 확정해 침묵 잔류를 원천 차단한다.
+    """
+    now = [1000.0]
+    audit = tmp_path / "audit.jsonl"
+    store = JobStore(
+        make_settings(), executor=_hang_executor, audit_path=audit, clock=lambda: now[0]
+    )
+    jid = store.submit(valid_payload(fingerprint="stuck"))["investigation_id"]
+    assert store.get(jid)["status"] == "running"
+
+    now[0] += 599.0  # 임계(600s) 직전 — 진행 중으로 보존
+    assert store.get(jid)["status"] == "running"
+
+    now[0] += 2.0  # 임계 초과 → 워치독 확정
+    got = store.get(jid)
+    assert got["status"] == "failed"
+    assert got["reason"] == "stuck_watchdog"
+    events = [json.loads(x)["event"] for x in audit.read_text().splitlines() if x.strip()]
+    assert "stuck_watchdog" in events
+
+
 def test_restart_running_to_failed(tmp_path):
     audit = tmp_path / "audit.jsonl"
     # 1) 크래시 전 프로세스: running 잡을 남긴다.
