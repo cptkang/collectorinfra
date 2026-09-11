@@ -32,7 +32,7 @@ def main() -> None:
     """조사 서비스를 기동한다."""
     logging.basicConfig(level=logging.INFO)
 
-    # D-211 진단: SIGUSR1 수신 시 **전 스레드 파이썬 스택**을 stderr(journald)로
+    # D-213 진단: SIGUSR1 수신 시 **전 스레드 파이썬 스택**을 stderr(journald)로
     # 덤프한다 — 잡이 running에서 멈췄을 때 어느 코드 줄에 매달렸는지 실측하는 유일한
     # 수단이다(py-spy 미반입 폐쇄망 전제). 전송은 `systemctl kill sre-agent --signal=USR1`.
     # SIGUSR1이 없는 플랫폼(Windows 개발)은 조용히 건너뛴다.

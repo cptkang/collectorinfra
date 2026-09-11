@@ -162,7 +162,7 @@ def _target_state(job: JobLike) -> dict | None:
     return None
 
 
-# 사전수집(prefetch) 타임박스 하한(초) — D-211 후속.
+# 사전수집(prefetch) 타임박스 하한(초) — D-213 후속.
 # **per-call 타임아웃이 아니다**: 도구 1건당 상한은 `evidence_prefetch_timeout_seconds`(기본 20s)가
 # `mcp_tool_client`에서 이미 강제한다. 이쪽은 배치 전체(알람 1 + 지표 4 + 선택 항목)가 통째로
 # 매달렸을 때를 끊는 wedge 네트라, 정상 배치(도구 수 × per-call)를 자르지 않도록 넉넉해야 한다.
@@ -353,7 +353,7 @@ class InvestigationDispatcher:
             with self._semaphore:  # 동시 상한
                 self._run_and_postprocess(job)
         except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 잡이 영구 running으로 남는다
-            # ★ `Exception`이 아니라 `BaseException`이다 (D-211 근본원인 · 2026-09-11 스택 덤프 확정).
+            # ★ `Exception`이 아니라 `BaseException`이다 (D-213 근본원인 · 2026-09-11 스택 덤프 확정).
             # `asyncio.CancelledError`는 3.8+에서 **BaseException 파생**이라 `except Exception`을
             # 그대로 통과한다. MCP SSE 상대가 죽으면(mcp_server 종료) anyio 취소 스코프가 이 예외를
             # 올리고, 그러면 워커 스레드가 **감사도 상태 전이도 없이 조용히 죽어** 잡이 영원히
@@ -429,7 +429,7 @@ class InvestigationDispatcher:
         if self._prefetch_fn is None or not getattr(job, "reference_time", None):
             return None
         try:
-            # D-211 후속: 사전수집도 타임박스로 감싼다 — 조사 타임박스 **앞의 무가드 구간**이라
+            # D-213 후속: 사전수집도 타임박스로 감싼다 — 조사 타임박스 **앞의 무가드 구간**이라
             # 죽은 MCP read에 매달리면 전체 타임아웃에 도달조차 못 한다(조사와 같은 wedge 계열).
             correlation = self._join_timebox(
                 self._prefetch_fn, job, self._prefetch_timeout, "sre-prefetch"
@@ -438,7 +438,7 @@ class InvestigationDispatcher:
             logger.warning("증거 사전수집 타임아웃 (%s): %s", job.investigation_id, e)
             self._audit({"event": "prefetch_failed", "investigation_id": job.investigation_id, "error": str(e)})
             return None
-        except BaseException as e:  # noqa: BLE001 — CancelledError 포함(D-211: MCP 상대 사망 시 발생)
+        except BaseException as e:  # noqa: BLE001 — CancelledError 포함(D-213: MCP 상대 사망 시 발생)
             logger.warning("증거 사전수집 실패 (%s): %s: %s", job.investigation_id, type(e).__name__, e)
             self._audit({"event": "prefetch_failed", "investigation_id": job.investigation_id, "error": str(e)})
             return None
@@ -458,7 +458,7 @@ class InvestigationDispatcher:
         return correlation
 
     def _join_timebox(self, fn, job: JobLike, timeout: float, name_prefix: str):
-        """`fn(job)`을 데몬 스레드에서 실행하고 join 타임박스로 감싼다(D-211 공용).
+        """`fn(job)`을 데몬 스레드에서 실행하고 join 타임박스로 감싼다(D-213 공용).
 
         만료 즉시 `TimeoutError`(3.11+에서 `asyncio.TimeoutError`와 동일 객체)를 올리고,
         매달린 스레드는 데몬으로 버려진다(중단 불가·결과 폐기). `asyncio.run` 기반과 달리
@@ -490,7 +490,7 @@ class InvestigationDispatcher:
     def _investigate_with_timeout(self, job: JobLike) -> DiagnosisLike:
         """조사 **전체**를 스레드 join 타임박스로 실행한다(per-call 타임아웃 아님).
 
-        D-211: 종전 `asyncio.run(wait_for(run_in_executor(...)))`는 타임아웃 발화 후
+        D-213: 종전 `asyncio.run(wait_for(run_in_executor(...)))`는 타임아웃 발화 후
         `asyncio.run`의 정리 단계(`shutdown_default_executor`)가 executor 스레드 종료를
         **무기한 대기**했다 — 조사 스레드가 무한 read(죽은 MCP SSE 등)에 매달리면
         TimeoutError가 밖으로 나오지 못해 timeout 감사도 없이 잡이 영원히 running으로

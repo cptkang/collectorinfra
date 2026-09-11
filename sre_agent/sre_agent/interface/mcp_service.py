@@ -180,7 +180,7 @@ def _build_dispatcher(
 ) -> InvestigationDispatcher:
     """실 dispatcher를 조립한다(diagnose_fn·briefing_fn·prefetch_fn 주입). JobStore executor로 배선된다.
 
-    **`audit_path`를 반드시 넘긴다**(D-211 후속): 미지정이면 dispatcher의 `_audit`이 파일 대신
+    **`audit_path`를 반드시 넘긴다**(D-213 후속): 미지정이면 dispatcher의 `_audit`이 파일 대신
     로그로만 나가, 감사 JSONL에 `accepted`/`running`만 쌓이고 **종결(done/timeout/failed)이
     한 건도 남지 않는다**(폐쇄망 실측 2026-09-11: 204건 중 종결 0건 · restart_failed 169건).
     JobStore와 같은 파일을 써야 잡 한 건의 생애가 한 곳에서 읽히고, 재기동 복구도 완료된 잡을

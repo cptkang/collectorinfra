@@ -56,7 +56,7 @@ def _call(mcp, name, args=None) -> dict:
 
 
 def test_dispatcher_audits_to_same_file_as_jobstore():
-    """D-211 후속 — dispatcher 종결 이벤트가 JobStore와 **같은 감사 파일**에 남는다.
+    """D-213 후속 — dispatcher 종결 이벤트가 JobStore와 **같은 감사 파일**에 남는다.
 
     `_build_dispatcher`가 `audit_path`를 넘기지 않으면 `_audit_path is None`이라
     `done`/`timeout`/`failed`가 **로그로만** 나가고 감사 JSONL에는 `accepted`/`running`만

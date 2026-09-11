@@ -193,7 +193,7 @@ def test_overall_timeout_fires_across_whole_investigation():
 
 
 def test_timeout_fires_even_when_investigation_thread_hangs():
-    """D-211 — 조사 스레드가 **영원히 반환하지 않아도** 타임아웃이 발화한다.
+    """D-213 — 조사 스레드가 **영원히 반환하지 않아도** 타임아웃이 발화한다.
 
     종전 구현(asyncio.run + run_in_executor)은 wait_for 만료 후 정리 단계가 스레드
     종료를 무기한 대기해, 무한 read(죽은 MCP SSE 등)에서 timeout 감사 없이 잡이
@@ -225,7 +225,7 @@ def test_timeout_fires_even_when_investigation_thread_hangs():
 
 
 def test_base_exception_from_investigation_finalizes_job(tmp_path):
-    """D-211 근본원인 — 조사가 **BaseException**(CancelledError)을 올려도 잡이 유실되지 않는다.
+    """D-213 근본원인 — 조사가 **BaseException**(CancelledError)을 올려도 잡이 유실되지 않는다.
 
     2026-09-11 폐쇄망 스택 덤프로 확정: 조사 중 mcp_server가 죽으면 anyio 취소 스코프가
     `asyncio.CancelledError`를 올리는데, 이 예외는 3.8+에서 **BaseException 파생**이라
@@ -433,7 +433,7 @@ def test_prefetch_result_lands_on_job_and_is_audited(tmp_path):
 
 
 def test_prefetch_hang_is_timeboxed_and_investigation_proceeds(tmp_path):
-    """D-211 후속 — 사전수집이 **영원히 반환하지 않아도** 조사는 계속된다.
+    """D-213 후속 — 사전수집이 **영원히 반환하지 않아도** 조사는 계속된다.
 
     prefetch는 조사 타임박스 **앞의** 무가드 구간이었다 — 죽은 MCP read에 매달리면
     전체 타임아웃에 도달조차 못 하고 잡이 영원히 running으로 남는다(조사 wedge와

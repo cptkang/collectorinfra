@@ -144,7 +144,7 @@ def _hang_executor(job):
 
 
 def test_stuck_active_job_finalized_by_watchdog(tmp_path):
-    """D-211 후속 — dispatcher 타임아웃이 미발화해도 낑긴 active 잡은 워치독이 확정한다.
+    """D-213 후속 — dispatcher 타임아웃이 미발화해도 낑긴 active 잡은 워치독이 확정한다.
 
     폐쇄망 실측(2026-09-10): 타임박스 **밖** 구간에서 wedge가 나면 새 코드로도 잡이
     3.9h+ running으로 남았다. sweep 편승 워치독이 임계(타임아웃×2 · 최소 600s) 초과

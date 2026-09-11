@@ -114,7 +114,7 @@ def default_audit_path() -> Path:
 
     **두 생산자가 같은 파일을 써야 한다** — JobStore는 accepted/running/terminal/restart_failed를,
     dispatcher는 done/timeout/failed를 남긴다. 갈라지면 잡의 전반부만 파일에 남아 운영자가
-    결과를 추적할 수 없고, `recover_on_start`가 완료된 잡까지 active로 오인한다(D-211 후속).
+    결과를 추적할 수 없고, `recover_on_start`가 완료된 잡까지 active로 오인한다(D-213 후속).
     """
     return _DEFAULT_AUDIT_PATH
 
@@ -212,7 +212,7 @@ class JobStore:
         """terminal 잡을 TTL·최대 개수 기준으로 제거한다(active 잡은 보존)."""
         now = self._clock()
 
-        # ── 낑긴 active 잡 워치독 (D-211 후속) ────────────────────────────
+        # ── 낑긴 active 잡 워치독 (D-213 후속) ────────────────────────────
         # dispatcher 전체 타임아웃이 어떤 이유로든 발화하지 못해도(폐쇄망 실측:
         # 타임박스 밖 구간 wedge — 2026-09-10, 새 코드에서도 3.9h running 잔류)
         # 잡이 영원히 running으로 남지 않도록, updated_at이 임계(타임아웃×2,
@@ -271,7 +271,7 @@ class JobStore:
         try:
             self._executor(job)
         except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 CancelledError가 새어나간다
-            # dispatcher `_worker`와 같은 이유로 BaseException이다(D-211 근본원인).
+            # dispatcher `_worker`와 같은 이유로 BaseException이다(D-213 근본원인).
             # 여기서 예외가 새면 바로 위에서 `running`으로 올려둔 잡이 그대로 남은 채
             # 예외만 submit 호출자에게 전파된다 — 잡은 영원히 active, 감사에는 아무 기록도 없다.
             job.status = "failed"
