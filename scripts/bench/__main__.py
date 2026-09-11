@@ -27,6 +27,15 @@ from scripts.bench import axes as axes_mod  # noqa: E402
 from scripts.bench import catalog, compare, optimize, probe  # noqa: E402
 from scripts.bench import report as report_mod, sweep as sweep_mod, validate  # noqa: E402
 
+
+def say(message: str = "") -> None:
+    """진행 로그. **즉시 내보낸다.**
+
+    10~30시간짜리 스위프를 `> log.txt`로 넘기면 기본 블록 버퍼링 때문에 끝날 때까지
+    파일이 비어 있다. 실행자가 살아 있는지 확인할 수 없으면 중단할지 판단할 수 없다.
+    """
+    print(message, flush=True)
+
 _RESULTS_DIR = _ROOT / "results" / "bench"
 
 #: 내부망 프로바이더 — 승인·옵트인 없이 실행한다(plans/93 §4.4 · 사용자 확정 2026-09-11).
@@ -59,39 +68,39 @@ def _run_id() -> str:
 
 def cmd_preflight(args: argparse.Namespace) -> int:
     """환경 사전점검 — 개발자 대신 진단한다."""
-    print("[..]   config        읽는 중...")
+    say("[..]   config        읽는 중...")
     echo = probe.echo_config()
     if not echo.ok:
-        print(f"[FAIL] config        {echo.error_type}: {(echo.error or '')[:200]}")
-        print("→ 설정을 먼저 고쳐야 합니다. `.env`의 값 형식을 확인하세요.")
+        say(f"[FAIL] config        {echo.error_type}: {(echo.error or '')[:200]}")
+        say("→ 설정을 먼저 고쳐야 합니다. `.env`의 값 형식을 확인하세요.")
         return 1
 
     knobs = catalog.load_knobs()
     provider = _provider_of(echo)
     need_approval, reason = approval_policy(provider)
 
-    print(f"[OK]   venv          python {sys.version.split()[0]}")
-    print(f"[OK]   config        {len(knobs)} 필드 로드 · 에코 {len(echo.config)} 경로")
-    print(f"[OK]   provider      {provider} — {reason}")
+    say(f"[OK]   venv          python {sys.version.split()[0]}")
+    say(f"[OK]   config        {len(knobs)} 필드 로드 · 에코 {len(echo.config)} 경로")
+    say(f"[OK]   provider      {provider} — {reason}")
 
     nd = probe.detect_nondeterministic_keys()
     if nd:
-        print(f"[INFO] 비결정 필드    {len(nd)}건 자동 제외 ({', '.join(sorted(nd)[:3])})")
+        say(f"[INFO] 비결정 필드    {len(nd)}건 자동 제외 ({', '.join(sorted(nd)[:3])})")
 
     try:
         import ibm_db  # noqa: F401
-        print("[OK]   DB2 드라이버   ibm-db 설치됨")
+        say("[OK]   DB2 드라이버   ibm-db 설치됨")
     except Exception:
-        print("[WARN] DB2 드라이버   ibm-db 미설치 — 은행존(b0) 대상 항목은 건너뜁니다")
+        say("[WARN] DB2 드라이버   ibm-db 미설치 — 은행존(b0) 대상 항목은 건너뜁니다")
 
     free_gb = _free_gb(_ROOT)
-    print(f"[OK]   디스크        여유 {free_gb:.0f}GB")
+    say(f"[OK]   디스크        여유 {free_gb:.0f}GB")
 
     unfinished = _unfinished_run()
     if unfinished:
-        print(f"[INFO] 이전 실행     {unfinished.name} 미완 — 다음 실행에서 이어집니다")
+        say(f"[INFO] 이전 실행     {unfinished.name} 미완 — 다음 실행에서 이어집니다")
 
-    print("→ 실행 가능합니다.  python -m scripts.bench")
+    say("→ 실행 가능합니다.  python -m scripts.bench")
     return 0
 
 
@@ -113,16 +122,16 @@ def cmd_show_env(args: argparse.Namespace) -> int:
     """지금 어떤 설정으로 도는지 — 값이 아니라 출처를 본다."""
     echo = probe.echo_config()
     if not echo.ok:
-        print(f"설정을 읽지 못했습니다: {echo.error_type}: {echo.error}")
+        say(f"설정을 읽지 못했습니다: {echo.error_type}: {echo.error}")
         return 1
     provider = _provider_of(echo)
     need, reason = approval_policy(provider)
-    print(f"프로바이더   : {provider}")
-    print(f"승인 정책    : {'필요' if need else '불요'} — {reason}")
-    print(f"활성 DB      : {echo.value_of('multi_db.active_db_ids_csv')}")
-    print(f"DB 백엔드    : {echo.value_of('db_backend')}")
-    print(f"카탈로그     : {len(catalog.load_knobs())} 필드")
-    print(f"민감 경로    : {len(probe.sensitive_config_paths())} 건(값은 해시로만 기록)")
+    say(f"프로바이더   : {provider}")
+    say(f"승인 정책    : {'필요' if need else '불요'} — {reason}")
+    say(f"활성 DB      : {echo.value_of('multi_db.active_db_ids_csv')}")
+    say(f"DB 백엔드    : {echo.value_of('db_backend')}")
+    say(f"카탈로그     : {len(catalog.load_knobs())} 필드")
+    say(f"민감 경로    : {len(probe.sensitive_config_paths())} 건(값은 해시로만 기록)")
     return 0
 
 
@@ -135,9 +144,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     knobs = catalog.load_knobs()
     base_env = dict(os.environ)
 
-    print(f"[1/5] L1 카탈로그 정합 — {len(knobs)}필드")
+    say(f"[1/5] L1 카탈로그 정합 — {len(knobs)}필드")
     integrity = catalog.check_integrity(knobs=knobs)
-    print(f"      고아 {sum(1 for f in integrity if f.kind == 'orphan')} · "
+    say(f"      고아 {sum(1 for f in integrity if f.kind == 'orphan')} · "
           f"누락 {sum(1 for f in integrity if f.kind == 'missing_example')} · "
           f"설명부재 {sum(1 for f in integrity if f.kind == 'undocumented')}")
 
@@ -151,28 +160,28 @@ def cmd_validate(args: argparse.Namespace) -> int:
     unconsumed_cmp = None
 
     if args.quick:
-        print("[2/5] L2·L4 건너뜀 (--quick)")
-        print(f"[3/5] L3 주입 실효성 — {len(targets)}건")
+        say("[2/5] L2·L4 건너뜀 (--quick)")
+        say(f"[3/5] L3 주입 실효성 — {len(targets)}건")
         shadowed = validate.check_injection(targets, base_env=base_env)
-        print(f"      가림 {len(shadowed)}건")
+        say(f"      가림 {len(shadowed)}건")
     else:
         nd = probe.detect_nondeterministic_keys()
         baseline = probe.echo_config(base_env=base_env)
-        print(f"[2/5] L2 기동 안전성 — {len(targets)}건")
+        say(f"[2/5] L2 기동 안전성 — {len(targets)}건")
         boot = validate.check_boot(targets, exhaustive=args.exhaustive, base_env=base_env)
-        print(f"      거부 {sum(1 for b in boot if not b.ok)}건")
-        print(f"[3/5] L3 주입 실효성 — {len(targets)}건")
+        say(f"      거부 {sum(1 for b in boot if not b.ok)}건")
+        say(f"[3/5] L3 주입 실효성 — {len(targets)}건")
         shadowed = validate.check_injection(targets, base_env=base_env)
-        print(f"      가림 {len(shadowed)}건")
-        print(f"[4/5] L4 소비 실증 — {len(targets)}건")
+        say(f"      가림 {len(shadowed)}건")
+        say(f"[4/5] L4 소비 실증 — {len(targets)}건")
         consumption = validate.check_consumption(
             targets, baseline=baseline, nondeterministic=nd, base_env=base_env)
         unconsumed_cmp = validate.compare_with_unconsumed(consumption)
-        print(f"      변함 {sum(1 for c in consumption if c.verdict == 'changed')} · "
+        say(f"      변함 {sum(1 for c in consumption if c.verdict == 'changed')} · "
               f"불변 {sum(1 for c in consumption if c.verdict == 'unchanged')} · "
               f"목록 낡음 {len(unconsumed_cmp.list_stale)}")
 
-    print("[5/5] 리포트 생성")
+    say("[5/5] 리포트 생성")
     ledger = report_mod.build_ledger(
         knobs, integrity=integrity, shadowed=shadowed, boot=boot,
         consumption=consumption,
@@ -188,14 +197,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
     paths = report_mod.write_report(health, out_dir)
 
     elapsed = time.time() - started
-    print()
-    print(report_mod.render_summary(health))
-    print(f"소요 {elapsed:.0f}초 · 산출 폴더: {paths['summary'].parent}")
+    say()
+    say(report_mod.render_summary(health))
+    say(f"소요 {elapsed:.0f}초 · 산출 폴더: {paths['summary'].parent}")
 
     if args.ci:
         blocking = health.immediate_actions
         if blocking:
-            print(f"\n[CI] 즉시 조치 {len(blocking)}건 — 실패로 처리합니다.")
+            say(f"\n[CI] 즉시 조치 {len(blocking)}건 — 실패로 처리합니다.")
             return 1
     return 0
 
@@ -205,43 +214,58 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     try:
         arms = sweep_mod.build_arms(limit=4 if args.scale == "smoke" else None)
     except Exception as exc:
-        print(f"축 전개 실패: {type(exc).__name__}: {exc}")
+        say(f"축 전개 실패: {type(exc).__name__}: {exc}")
         return 1
 
-    print(f"축 스위프 — arm {len(arms)}개 (기준선 포함) · 규모 {args.scale} · 모드 {args.mode}")
+    say(f"축 스위프 — arm {len(arms)}개 (기준선 포함) · 규모 {args.scale} · 모드 {args.mode}")
+
+    # 규모를 먼저 말한다. arm 1개 = 서버 기동 1회이므로 arm 수가 곧 시간이다(§4.4).
+    # 승인용이 아니라 **운영 시간대를 피할 판단 재료**다 — 내부망은 승인 없이 진행한다.
+    if args.mode != "dry":
+        try:
+            scenarios = len(sweep_mod.load_normal_catalog().scenarios)
+        except Exception:
+            scenarios = 0
+        runs = len(arms) * scenarios * max(1, args.repeat)
+        per_arm_min = 1.0 if args.mode == "mock" else 12.0
+        say(f"  규모: 시나리오 {scenarios}건 × arm {len(arms)} × 반복 {args.repeat} = {runs}회 실행")
+        say(f"  예상: 약 {len(arms) * per_arm_min / 60:.1f}시간 "
+              f"(arm 1개 = 서버 기동 1회 · {args.mode} 기준)")
+        if len(arms) > 30:
+            say(f"  ※ arm이 {len(arms)}개입니다. 먼저 --scale smoke로 파이프라인을 확인하는 것을 권합니다.")
 
     if args.mode == "run":
         echo = probe.echo_config()
         provider = _provider_of(echo)
         need, reason = approval_policy(provider)
-        print(f"  프로바이더: {reason}")
+        say(f"  프로바이더: {reason}")
         if need and not args.yes:
-            print("  → 외부 프로바이더입니다. 승인 없이 실 호출하지 않습니다(D-127).")
-            print("     내부망에서 실행하거나, 승인을 받았다면 --yes를 붙이세요.")
+            say("  → 외부 프로바이더입니다. 승인 없이 실 호출하지 않습니다(D-127).")
+            say("     내부망에서 실행하거나, 승인을 받았다면 --yes를 붙이세요.")
             return 2
 
     if args.mode == "dry":
         for arm in arms:
-            print(f"  {arm.arm_id:52s} {arm.env or '(기준선)'}")
+            say(f"  {arm.arm_id:52s} {arm.env or '(기준선)'}")
         return 0
 
     try:
         result = sweep_mod.run_arms(arms, mode=args.mode, repeat=args.repeat)
     except sweep_mod.SweepUnavailable as exc:
-        print(f"스위프를 돌릴 수 없습니다: {exc}")
+        say(f"스위프를 돌릴 수 없습니다: {exc}")
         return 2
 
     out_dir = Path(result.get("out_dir", "")) if isinstance(result, dict) else None
     raw = (out_dir / "raw.jsonl") if out_dir else None
     if not raw or not raw.exists():
-        print("원시 로그를 찾지 못했습니다. 94 러너 산출을 확인하세요.")
+        say("원시 로그를 찾지 못했습니다. 94 러너 산출을 확인하세요.")
         return 1
 
     observations = sweep_mod.read_observations(raw)
     grouped = sweep_mod.group_by_arm(observations)
     baseline = grouped.get(sweep_mod.BASELINE_ARM, [])
     if not baseline:
-        print("기준선 arm 결과가 없습니다 — 비교 기준이 없어 판정을 내지 않습니다.")
+        say("기준선 arm 결과가 없습니다 — 비교 기준이 없어 판정을 내지 않습니다.")
         return 1
 
     verdicts = []
@@ -251,17 +275,17 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         verdicts.append(compare.judge(
             arm.arm_id, arm.axis, arm.level, baseline, grouped.get(arm.arm_id, [])))
 
-    print()
-    print(f"{'arm':52s} {'판정':10s} 문장")
+    say()
+    say(f"{'arm':52s} {'판정':10s} 문장")
     for v in verdicts:
-        print(f"  {v.arm_id:50s} {v.verdict:10s} {v.sentence}")
+        say(f"  {v.arm_id:50s} {v.verdict:10s} {v.sentence}")
 
     lines = ["# 축 스위프 판정", "", "| arm | 축 | 값 | 판정 | 근거 |", "|---|---|---|---|---|"]
     lines += [f"| `{v.arm_id}` | {v.axis or '—'} | {v.level or '—'} | **{v.verdict}** | {v.sentence} |"
               for v in verdicts]
     if out_dir:
         (out_dir / "axis_verdicts.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"\n산출: {out_dir}")
+        say(f"\n산출: {out_dir}")
     return 0
 
 
@@ -269,13 +293,13 @@ def cmd_propose(args: argparse.Namespace) -> int:
     """트랙 C — 처분 제안서. **파일을 수정하지 않는다**(§6.1)."""
     knobs = catalog.load_knobs()
     base_env = dict(os.environ)
-    print(f"[1/3] 검증 재료 수집 — {len(knobs)}필드")
+    say(f"[1/3] 검증 재료 수집 — {len(knobs)}필드")
     integrity = catalog.check_integrity(knobs=knobs)
 
     targets = [k for k in knobs if catalog.f1_exclusion_reason(k) is None]
     if args.limit:
         targets = targets[: args.limit]
-    print(f"[2/3] 처분 결정 — 대상 {len(targets)}건(참조 수 집계 포함)")
+    say(f"[2/3] 처분 결정 — 대상 {len(targets)}건(참조 수 집계 포함)")
     dispositions = optimize.build_from_validation(
         targets, integrity=integrity, shadowed=[], boot=[], consumption=[])
 
@@ -292,16 +316,16 @@ def cmd_propose(args: argparse.Namespace) -> int:
             if knob and knob.default is not None:
                 pin[d.env_key] = knob.default
 
-    print("[3/3] 제안서 생성")
+    say("[3/3] 제안서 생성")
     out_dir = _RESULTS_DIR / _run_id() / "proposals"
     paths = optimize.write_proposals(dispositions, evidences, pin, out_dir)
     from collections import Counter
     counts = Counter(d.action for d in dispositions)
-    print()
+    say()
     for action, n in counts.most_common():
-        print(f"  {action:16s} {n:4d}건  (단계 {optimize.ROLLOUT.get(action, '—')})")
-    print(f"\n산출: {paths['disposition'].parent}")
-    print("→ 제안일 뿐입니다. 반영은 R0~R2부터 사람이 판단합니다(plans/93 §6.6).")
+        say(f"  {action:16s} {n:4d}건  (단계 {optimize.ROLLOUT.get(action, '—')})")
+    say(f"\n산출: {paths['disposition'].parent}")
+    say("→ 제안일 뿐입니다. 반영은 R0~R2부터 사람이 판단합니다(plans/93 §6.6).")
     return 0
 
 

@@ -159,6 +159,29 @@ def test_저장소_카탈로그의_정규식이_전건_컴파일된다() -> None
                     re.compile(str(pattern))  # 예외가 나면 테스트 실패
 
 
+def test_정본_카탈로그의_프롬프트에_표_파싱_찌꺼기가_없다() -> None:
+    """파서가 엉뚱한 칼럼을 집으면 양식 경로나 실행 방법이 프롬프트가 된다(실측 2026-09-11)."""
+    catalog = load_catalog()
+    for scenario in catalog.scenarios:
+        if not scenario.prompt_authored:
+            continue
+        for turn in scenario.turns:
+            query = turn.send.get("query")
+            if not query:
+                continue
+            assert not query.rstrip().endswith("\\"), f"{scenario.id}: 표 이스케이프 잔여"
+            assert "testdata/" not in query, f"{scenario.id}: 파일 경로가 프롬프트에 있다"
+            assert not query.startswith("`"), f"{scenario.id}: 코드 표기가 벗겨지지 않았다"
+
+
+def test_프롬프트_미작성_시나리오는_사유를_갖는다() -> None:
+    """산문을 프롬프트로 실행하지 않는다 - 다만 조용히 사라지지도 않는다."""
+    catalog = load_catalog()
+    unauthored = [s for s in catalog.scenarios if not s.prompt_authored]
+    assert unauthored, "미작성 표본이 없다 - 전건 작성됐다면 이 테스트를 갱신할 것"
+    assert {s.group for s in unauthored} <= {"F", "I", "K"}
+
+
 def test_실제_저장소_카탈로그가_로드된다() -> None:
     """정본 카탈로그가 항상 로드 가능해야 한다 - 깨지면 무과금 1단에서 막힌다."""
     catalog = load_catalog()

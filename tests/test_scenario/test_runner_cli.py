@@ -89,6 +89,23 @@ def test_R군은_반복_3회로_산정된다() -> None:
     assert result["r_group_turns"] == 3
 
 
+def test_프롬프트_미작성_시나리오는_사유와_함께_건너뛴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """산문을 LLM 에 보내면 무의미한 결과에 돈만 나간다."""
+    from scripts.scenario.runner import execute
+
+    catalog = _catalog()
+    catalog.scenarios.append(
+        Scenario(id="T-99", group="T", plans=[94], title="산문 초안", env="both",
+                 prompt_authored=False, turns=[Turn({"query": "B-01~B-06 각 5회 반복"}, {})])
+    )
+    monkeypatch.setattr(runner_mod, "RESULTS_ROOT", tmp_path)
+    summary = execute(catalog, RunConfig(mode="mock", env="sandbox", only=["T-99"]))
+    assert summary["executed_turns"] == 0
+    assert any("프롬프트 미작성" in s["reason"] for s in summary["skipped"])
+
+
 def test_기동이_실패해도_프로파일이_리포트에서_사라지지_않는다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

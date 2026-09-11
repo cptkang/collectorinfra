@@ -96,6 +96,9 @@ class Scenario:
     depends_on: list[str] = field(default_factory=list)
     repeat: Optional[int] = None
     upload: Optional[str] = None
+    # 원문이 산문이라 실제 프롬프트가 아직 없는 초안. 러너가 사유와 함께 건너뛴다.
+    # 산문을 LLM 에 보내면 무의미한 결과에 돈만 나간다 - 조용히 흘리지 않고 리포트에 남긴다.
+    prompt_authored: bool = True
     notes: Optional[str] = None
     # 무과금 모의 실행(--mock)에서 서버가 돌려줄 응답. 없으면 일반 canned 응답이 나간다.
     mock: Optional[dict[str, Any]] = None
@@ -321,6 +324,7 @@ def _parse_scenario(
         depends_on=[str(d) for d in (raw.get("depends_on") or [])],
         repeat=(int(raw["repeat"]) if raw.get("repeat") is not None else None),
         upload=(str(upload) if upload else None),
+        prompt_authored=bool(raw.get("prompt_authored", True)),
         notes=(str(raw["notes"]) if raw.get("notes") else None),
         mock=(raw.get("mock") if isinstance(raw.get("mock"), dict) else None),
         source_file=source.name,

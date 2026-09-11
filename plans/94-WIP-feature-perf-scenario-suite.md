@@ -3,7 +3,7 @@
 > **작성일**: 2026-09-11
 > **성격**: 구현 계획 · **상태: Wave S0~S4 랜딩(무과금 전 경로 동작) — S5·S6는 D-127 승인 대기 · 사용자 확정 게이트 G-1~G-12 대기(§12)** · 잔여가 있어 파일명 `-WIP`
 > **구현 실적(2026-09-11)**: `scripts/scenario/` 10모듈 · `testdata/scenarios/` 시나리오 **217건**(이관 139 + R군 신규 78) ·
-> `config/scenarios/profiles.yaml` · `docs/30_scenario_coverage.md`(커버리지 분모 95행) · 수용 기준 테스트 **204건**(`tests/test_scenario/` 12파일 — **V1~V20 전건 · 단언 키 19종 전수 · 하네스 10모듈 전건** 커버. Windows 전용 V19 2건은 POSIX 에서 skip).
+> `config/scenarios/profiles.yaml` · `docs/30_scenario_coverage.md`(커버리지 분모 95행) · 수용 기준 테스트 **224건**(`tests/test_scenario/` 12파일 — **V1~V20 전건 · 단언 키 19종 전수 · 하네스 10모듈 전건** 커버. Windows 전용 V19 2건은 POSIX 에서 skip).
 > 착수 기록은 `tasks/plan-94.md`·`tasks/todo-94.md`. **실 LLM 호출 0건** — S0~S4는 전부 무과금이다.
 > **요청 취지(사용자 지시 원문)**: *"내부망 fabrix에서 기능과 성능테스트를 진행할 수 있도록 사용자 프롬프트 테스트 케이스를 현재 구현되어 있는 plans폴더의 기능들을 테스트 해볼 수 있도록 시나리오와 밴치마크 테스트 코드를 작성하고 전체 테스트를 자동으로 진행한 결과를 별도의 레포트로 생성하라. 생성된 레포트는 향후 분석하여 성능 향성이나 기능 보완을 위해 사용할 수 있도록 분석 코드도 작성되어야 한다. 이 요건에 맞게 계획파일을 생성하라."*
 > **요청된 산출물 4종**: ① 프롬프트 시나리오(plans 기능 커버리지) ② 벤치마크 테스트 코드 ③ 전체 자동 실행 + 별도 리포트 ④ 리포트 분석 코드(성능 향상·기능 보완용)
@@ -38,6 +38,9 @@
 >
 > ※ 시나리오 **217건 중 139건은 `expect` 단언이 아직 `manual_review` 원문**이다(§3.4의 사람 작업).
 > 옮긴 만큼만 자동 판정되고 나머지는 리포트 9절에 계속 남는다 — **합격으로 세지 않는다**.
+> ※ 그중 **21건(F 3 · I 8 · K 10)은 `prompt_authored: false`** — 원문이 프롬프트가 아니라
+> 산문(I군 「시나리오」)이거나 실행 방법(K군 「방법」: *"B-01~B-06 각 5회 반복"*)이라
+> **러너가 사유와 함께 건너뛴다.** 산문을 LLM 에 보내면 무의미한 결과에 돈만 나간다.
 
 ### ① 30초 요약 — 명령은 네 개뿐이다
 
@@ -479,6 +482,16 @@ scripts/scenario/import_docs.py --source docs/29 --out testdata/scenarios/ --dra
 ```
 
 - 파서가 채우는 것: `id` · `title` · `turns[].send.query` · `plans`(군→계획서 매핑표) · `notes`(예상 결과 원문)
+- **★ 실측 정정(구현 2026-09-11)**: 프롬프트 칼럼은 **군마다 위치가 다르다.**
+  `A~E·J`는 2번째(`입력 질의`)지만 **`H`는 3번째**(`ID │ 양식 칼럼 구성 │ 입력 질의 │ …`)다.
+  고정 인덱스로 집으면 H군 17건 전건이 **양식 파일 경로**를 프롬프트로 담는다. 또 셀 안의
+  이스케이프 `\|`를 구분자로 자르면 그 뒤 칼럼이 전부 밀린다. 파서는 **헤더로 칼럼을 찾는다**.
+- **`F`의 「입력(2턴)」은 자연어가 아니라 구조화 필드**(`selected_db_ids=[…]`)다. 자동으로
+  `query` 에 넣으면 거짓 프롬프트가 되므로 생성하지 않고 사람이 쓴다(F-01이 그 예시다).
+- **`I`(시나리오 산문)·`K`(방법 서술)에는 프롬프트 칼럼이 없다.** 신규 필드
+  **`prompt_authored: false`** 로 표시하고 러너가 사유와 함께 건너뛴다 — 조용히 흘리지도,
+  몰래 실행하지도 않는다. **K군은 프롬프트가 아니라 실행 방법**이므로 `--repeat`·동시성
+  옵션으로 표현하는 것이 맞는지 재검토 대상이다(§3.1의 `k_load.yaml` 전제와 어긋난다).
 - **사람이 채우는 것: `expect` 단언.** 초안은 `expect: {manual_review: "<원문>"}`으로 두고, 단언으로 옮긴 만큼만
   자동 판정 대상이 된다. **옮기지 않은 것은 `수동 검토`로 리포트에 계속 남는다**(침묵 누락 금지).
 - 이관 후 `docs/29`는 **사람이 읽는 요약**으로 남기고, 헤더에 *"실행 정본은 `testdata/scenarios/`"* 를 명시한다.
@@ -1115,6 +1128,7 @@ results/scenario/<run_id>/
 | 7 | **파일 권한** | `os.open(..., 0o600)` 유효 | **권한 비트가 사실상 무시**된다 | 실패 트레이스(`trace_writer.py:179`가 0600 의도)가 **디렉터리 ACL을 그대로 상속**한다 — 민감 컨텍스트가 들어가는 파일이다 | run 산출 디렉터리를 **사용자 전용 위치**에 두고 ACL을 한 번 설정한다(A.3-⑤). 리포트에 *"Windows에서는 0600이 적용되지 않음"* 을 provenance로 남긴다 |
 | 8 | **venv·인터프리터 경로** | `.venv/bin/python` | **`.venv\Scripts\python.exe`** | `CLAUDE.md`의 `cd mcp_server && ../.venv/bin/python -m pytest` 형태가 그대로는 실패 | A.4 명령 대조표 |
 | 9 | **보조 스크립트** | `db/setup.sh`·`db2/setup.sh` | **bash 전용** | 로컬 샌드박스 구성이 막힌다 | `docker compose up -d`를 직접 쓴다(compose 파일은 상대 경로만 써서 이식 가능 — `db/docker-compose.yml:13`·`redis/docker-compose.yml:10`) |
+| **10** | **외부 명령 출력 인코딩** ★실측 사고 | UTF-8 | **콘솔 코드페이지(cp949)** | `PYTHONUTF8=1`(A.1-3이 요구)이 `subprocess.run(text=True)` 의 디코딩을 UTF-8 로 만들어 `powercfg`·`netsh`·`git` 출력에서 `UnicodeDecodeError`. **디코딩이 reader 스레드에서 일어나** `except (OSError, SubprocessError)` 에 안 잡히고 `stdout` 이 `None` 이 되어 `.strip()` 이 AttributeError — **시나리오 한 건도 못 돌고 런 사망**(2026-09-11 폐쇄망 실측) | **바이트로 받아 직접 디코딩**(`run_capture`: utf-8 -> locale -> cp949 -> replace). `.stdout.strip()` 직접 체이닝 금지. provenance 수집은 **어떤 경우에도 예외를 던지지 않는다** |
 
 ### A.2 측정 신뢰성 — Windows 고유 교란 요인
 
@@ -1205,6 +1219,7 @@ python -c "import ibm_db" ; if ($LASTEXITCODE -ne 0) { python -m pip install "ib
 | W7 | `--mock` 전 경로가 **Windows에서도 통과**해야 한다(V19) | 무과금 검증이 한쪽 OS에서만 되면 절반만 검증된 것이다 |
 | W8 | 경로 조립은 전부 `pathlib`. 문자열 `/` 결합 금지 | 이식성 |
 | W9 | MCP/SSE 경로를 쓰는 배치 실행은 **호출별 `asyncio.run()` 금지 — 단일 공유 루프** | Known Mistakes 2026-07-16(폐쇄망 실측 사고) · OS 무관이나 폐쇄망=Windows라 여기서 발현 |
+| **W10** | 외부 명령 출력은 **`text=True` 금지 — 바이트로 받아 폴백 디코딩**하고, `subprocess.run(...).stdout.strip()` 직접 체이닝 금지(`stdout` 이 `None` 일 수 있다). provenance·진단 수집은 예외를 던지지 않는다 | A.1-10 — `PYTHONUTF8=1` 과 cp949 도구 출력의 충돌. **W5(출력 ASCII)는 쓰기 쪽만 막았고 읽기 쪽이 무방비였다** |
 
 ### A.6 실행 전 체크리스트 (한 장)
 
@@ -1219,6 +1234,7 @@ python -c "import ibm_db" ; if ($LASTEXITCODE -ne 0) { python -m pip install "ib
 [ ] results\scenario ACL 설정 (트레이스에 0600이 적용되지 않는다)
 [ ] 기동 로그에서 "오케스트레이션 사다리 확정: tier=" 1줄 확인
 [ ] 런 종료 후 고아 프로세스 확인: Get-Process python | Format-Table Id,StartTime
+[ ] provenance 의 console_codepage 가 리포트에 찍히는지 확인 (chcp 65001 권장 · 미설정이어도 런은 죽지 않는다)
 ```
 
 ### A.7 남은 불확실성 (실측 대기)

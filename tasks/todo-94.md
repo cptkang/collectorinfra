@@ -28,9 +28,9 @@
   - Acceptance: 어떤 저장소 파일도 수정하지 않는다. 반복 3회 미만이면 전건 보류
   - Verify: `test_V10_분석기는_저장소_파일을_수정하지_않는다` · `test_V18_*` 2건
   - Files: `scripts/scenario/analyze.py`
-- [x] **수용 기준 테스트 204건** — **V1~V20 전건 커버**
+- [x] **수용 기준 테스트 224건** — **V1~V20 전건 커버**
   - Acceptance: 계획서 §10의 수용 기준 20개가 전부 테스트로 고정되고, 하네스 10모듈이 전부 덮인다
-  - Verify: `python -m pytest tests/test_scenario/ -q` → **202 passed, 2 skipped**
+  - Verify: `python -m pytest tests/test_scenario/ -q` → **222 passed, 2 skipped**
     (skip 2건은 V19 Windows 전용 — POSIX 에서 통과로 세지 않는다)
   - Files: `tests/test_scenario/` 12파일
 
@@ -48,6 +48,7 @@
 | `test_integration_mock.py` | 11 | **V6·V12·V20** — 모의 서버 자식 프로세스 왕복 |
 | `test_platform_gates.py` | 9 | V14·V19 · W4·W8 |
 | `test_misc_units.py` | 17 | 프로파일 로더 · provenance · 모의 해석기 |
+| `test_windows_encoding.py` | 12 | **W10 cp949 입력 디코딩** · provenance 무예외 · netsh 파싱 |
 
 ## 남은 작업 (사람 판단 또는 승인 필요)
 
@@ -79,6 +80,63 @@
 - [x] **F-01 단언 이관** — 계획서 §3.2 정본 예시대로 2턴 HITL(역질문 -> `selected_db_ids`)로
       다시 쓰고 `mock:` 블록을 붙여 V6 이 실제로 왕복을 검증하게 했다.
 
+### B-3. 프롬프트 추출 결함 (2026-09-11 3차 · "테스트 프롬프트는 어디에 있냐" 질문에서 드러남)
+
+이관 파서가 **프롬프트 칼럼을 고정 인덱스(2번째)로 집었다.** 실측하면 `docs/29`의 표 구조는
+군마다 다르다. 43건이 영향권이었다.
+
+| 군 | 실제 헤더 | 파서가 담던 것 | 조치 |
+|---|---|---|---|
+| **H** 17건 | `ID │ 양식 칼럼 구성 │ **입력 질의** │ …` | 양식 파일 경로(`testdata/templates/...xlsx`) | 헤더로 칼럼 탐색 → 정정 |
+| **F** 8건 | `ID │ **입력(1턴)** │ 예상 │ **입력(2턴)** │ 예상` | 1턴만, 2턴 누락 | 2턴은 **구조화 필드**(`selected_db_ids=[…]`)라 자동 생성 금지 |
+| **I** 8건 | `ID │ **시나리오**(산문) │ 예상` | 산문을 프롬프트로 | `prompt_authored: false` |
+| **K** 10건 | `ID │ **방법**(다른 군 반복) │ …` | *"B-01~B-06 각 5회 반복"* | `prompt_authored: false` |
+
+추가로 **셀 안의 이스케이프 `\|`가 칼럼 구분자로 잘려** H군 칼럼이 전부 밀려 있었다.
+
+- [x] 파서를 **헤더 인식**으로 교체 (`_prompt_columns`) · `\|` 보호
+- [x] 신규 필드 **`prompt_authored`**(기본 true) — false면 러너가 **사유와 함께 건너뛴다**.
+      산문을 LLM 에 보내면 무의미한 결과에 돈만 나간다. 조용히 흘리지도, 몰래 실행하지도 않는다.
+- [x] H·I·K 재생성 · F는 손으로 쓴 F-01 보존 후 병합
+- [x] 회귀 감시 테스트 8건 — 정본 카탈로그에 표 파싱 찌꺼기(파일 경로·이스케이프 잔여)가 없는지
+- [ ] **프롬프트 미작성 21건**(F 3 · I 8 · K 10)을 사람이 실제 프롬프트로 작성.
+      I-04·I-05·I-06 은 원문이 이미 프롬프트라 플래그만 떼면 된다.
+      **K군은 프롬프트가 아니라 실행 방법이다** — 러너의 `--repeat`·동시성 옵션으로 표현하는 것이
+      맞는지 재검토 필요(계획서 §3.1이 `k_load.yaml K군 10`을 둔 전제와 어긋난다).
+
+### B-4. 폐쇄망 Windows 실행 사고 (2026-09-11 · 사용자 실행 보고)
+
+`python -m scripts.scenario --run --profile baseline` 승인 직후 **시나리오 한 건도 실행되기 전에 사망**.
+
+```
+Exception in thread Thread-5 (_readerthread):
+  UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0 in position 0
+AttributeError: 'NoneType' object has no attribute 'strip'
+  server.py:120 platform_provenance -> ).stdout.strip()
+```
+
+**원인은 내 코드다.** 한글 출력을 위해 **내가 가이드에서 요구한 `PYTHONUTF8=1`** 이
+`subprocess.run(text=True)` 의 기본 디코딩을 UTF-8 로 만들었는데, 한국어 Windows 의
+`powercfg`·`netsh`·`git` 은 **cp949** 로 쓴다. 결정적으로 **그 디코딩이 subprocess 의
+reader 스레드에서 일어나** 예외가 거기서 터지므로 `except (OSError, SubprocessError)` 에
+잡히지 않고 `stdout` 이 조용히 `None` 이 된다. 이어진 `.strip()` 이 런 전체를 죽였다.
+
+기존 실수 이력(`docs/18:82`, 2026-07-16)은 **출력**의 cp949(`UnicodeEncodeError`)만 다뤘고,
+내 W5 요구사항도 출력만 막았다 — **읽기 쪽이 무방비**였다.
+
+- [x] 공통 헬퍼 **`run_capture`** — 바이트로 받아 utf-8 -> locale -> cp949 -> replace 폴백.
+      **절대 예외를 던지지 않는다**
+- [x] 취약 지점 4곳 전부 교체: `powercfg`·`netsh`(server.py) · `git rev-parse`·`git status`(runner.py)
+- [x] `platform_provenance` 이중 방어 — **provenance 수집은 어떤 경우에도 런을 죽이지 않는다**
+- [x] Windows provenance 에 **`console_codepage`** 추가(W6 — 측정 조건 재구성)
+- [x] 회귀 감시 2건 — 하네스 소스에 `capture_output=True`+`text=True` 조합이나
+      `.stdout.strip()` 체이닝이 남아 있으면 테스트 실패
+- [x] 테스트 12건(`test_windows_encoding.py`) — cp949 바이트 · `stdout=None` · 타임아웃 ·
+      netsh 파싱 · provenance 무예외
+- [x] `docs/18_known_mistakes.md` 등재 · 계획서 부록 A.1-10 · **요구사항 W10** 추가
+- [ ] **사용자 단말 동기화 필요** — 실행 위치가 `C:\AIOps\infra-collector\infra-collector-agent`
+      로 이 저장소와 다른 체크아웃이다. 고친 `scripts/scenario/` 를 반영해야 재실행된다.
+
 ### C. 실 서버 대조가 필요한 구현 (무과금 경로로는 검증 불가)
 - [ ] **teardown 3종** — 유사어 등록 해제 · 스키마 캐시 삭제 · 폼필 기억 삭제.
       현재는 `teardown_unsupported` 로 **기록만** 하고 리포트 10절에 노출한다(조용히 넘기지 않는다).
@@ -97,7 +155,7 @@
 ## 검증 로그
 
 ```
-python -m pytest tests/test_scenario/ -q        -> 202 passed, 2 skipped
+python -m pytest tests/test_scenario/ -q        -> 222 passed, 2 skipped
 python scripts/arch_check.py --ci               -> 위반 0 (기존 WARN 1건은 src/tools/validation.py, 무관)
 python scripts/overfit_check.py --ci            -> 신규 유입 없음
 python -m scripts.scenario --dry-run            -> 군 16개, 시나리오 217건

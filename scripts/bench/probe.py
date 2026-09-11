@@ -102,13 +102,28 @@ Runner = Callable[[Mapping[str, str], float], "subprocess.CompletedProcess[str]"
 
 
 def _default_runner(env: Mapping[str, str], timeout: float) -> "subprocess.CompletedProcess[str]":
+    """자식 파이썬을 띄워 설정을 읽어온다.
+
+    **인코딩을 양쪽에서 못박는다.** `text=True`만 쓰면 부모는 로케일 인코딩으로 디코딩하는데,
+    Windows 콘솔 코드페이지(cp949)와 어긋나면 `subprocess`의 리더 스레드가
+    `UnicodeDecodeError`로 죽고 **`capture_output=True`인데도 stdout이 None이 된다**
+    (2026-09-11 폐쇄망 Windows 실측 — 같은 유형이 `scripts/scenario/server.py`를 먼저 쳤다).
+
+    그러면 우리 판정에서는 "에코 없음"이 되어 **인코딩 문제가 설정 문제로 오판**된다.
+    자식에게 `PYTHONIOENCODING=utf-8`을 주고 부모도 utf-8로 읽으면 코드페이지와 무관해진다.
+    """
     code = _ECHO_SNIPPET % {"root": str(_PROJECT_ROOT)}
+    child_env = dict(env)
+    child_env["PYTHONIOENCODING"] = "utf-8"   # 자식이 무엇을 쓰든 utf-8로 낸다
+    child_env.setdefault("PYTHONUTF8", "1")
     return subprocess.run(
         [sys.executable, "-c", code],
         cwd=str(_PROJECT_ROOT),
-        env=dict(env),
+        env=child_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",       # 그래도 깨지면 글자를 버리되 **죽지는 않는다**
         timeout=timeout,
     )
 

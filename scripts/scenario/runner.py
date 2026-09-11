@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import platform
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -17,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from . import REPO_ROOT, utf8_open
+from . import REPO_ROOT, run_capture, utf8_open
 from .assertions import Observation, Verdict, evaluate_turn
 from .catalog import Catalog, Scenario
 from .client import ClientConfig, ScenarioClient
@@ -57,19 +56,14 @@ class RunConfig:
 
 def run_meta(config: RunConfig, catalog: Catalog) -> dict[str, Any]:
     """provenance. 커밋·dirty·환경·플랫폼 없이 나온 결과는 재현할 수 없다(§4.5)."""
-    commit: Optional[str] = None
+    # git 출력도 콘솔 코드페이지다(파일명에 한글이 있으면 cp949). run_capture 가 방어한다.
+    commit = run_capture(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], timeout=5
+    ).strip() or None
     dirty: Optional[bool] = None
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip() or None
-        dirty = bool(subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        pass
+    status = run_capture(["git", "-C", str(REPO_ROOT), "status", "--porcelain"], timeout=5)
+    if commit is not None:
+        dirty = bool(status.strip())
 
     provider = "(설정 로드 실패)"
     try:
@@ -346,6 +340,14 @@ def _run_profile(
     )
     with ScenarioClient(client_config) as client:
         for scenario in scenarios:
+            if not scenario.prompt_authored:
+                # 원문이 산문이라 보낼 프롬프트가 없다. 실행하면 무의미한 결과에 돈만 나간다.
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": "프롬프트 미작성 - 원문이 산문(시나리오/방법 서술)이라 "
+                              "사람이 실제 프롬프트로 고쳐 써야 한다",
+                })
+                continue
             repeats = scenario.repeat or (3 if scenario.is_r_group else config.repeat)
             for repeat in range(repeats):
                 executed += _run_once(

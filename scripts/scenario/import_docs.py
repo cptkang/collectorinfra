@@ -41,22 +41,62 @@ GROUP_SPEC: dict[str, tuple[str, str, int, list[int], str]] = {
 }
 
 # G군은 G-01-1 처럼 멀티턴 행이라 세 번째 조각이 턴 번호다.
+# 프롬프트 칼럼은 군마다 위치가 다르다(실측 2026-09-11).
+#   A~E·J: | ID | 입력 질의 | ...        -> index 1
+#   F     : | ID | 입력(1턴) | ... | 입력(2턴) | ...  -> index 1 과 3 (2턴)
+#   H     : | ID | 양식 칼럼 구성 | 입력 질의 | ...   -> index 2
+#   I     : | ID | 시나리오 | 예상 |      -> 산문. 프롬프트가 아니다
+#   K     : | ID | 방법 | 측정 | 합격 기준 | -> 다른 군을 반복하는 실행 방법. 프롬프트가 아니다
+# 고정 인덱스로 집으면 H군은 양식 파일 경로가, K군은 "B-01~B-06 각 5회 반복"이 프롬프트가 된다.
+_PROMPT_HEADERS = ("입력 질의", "프롬프트", "입력(1턴)", "입력")
+# F군의 "입력(2턴)"은 자연어가 아니라 **구조화 필드 값**이다
+# (`selected_db_ids=[polestar_cm_gp]` · `[gp, yd]` · `b0 선택`). 자동으로 query 에 넣으면
+# 거짓 프롬프트가 되므로, 2턴이 있는 군은 사람이 작성하도록 표시만 하고 원문은 notes 로 남긴다.
+_STRUCTURED_SECOND_TURN_HEADERS = ("입력(2턴)",)
+# 이 헤더가 프롬프트 칼럼 자리에 오면 그 군은 **프롬프트 미작성**이다(사람이 써야 한다).
+_NOT_A_PROMPT_HEADERS = ("시나리오", "방법", "양식", "양식 칼럼 구성", "템플릿")
+
 _DOC29_ID = re.compile(r"^([A-K])-(\d+)(?:-(\d+))?$")
 _SYN_ID = re.compile(r"^SYN-([A-I])-(\d+[a-z]?)$")
 
 
-def _table_rows(text: str) -> list[list[str]]:
-    """마크다운 표의 데이터 행만 뽑는다. 구분선과 헤더는 버린다."""
-    rows: list[list[str]] = []
+def _table_rows(text: str) -> list[tuple[list[str], list[str]]]:
+    """마크다운 표의 (데이터 행, 그 행이 속한 헤더)를 함께 돌려준다.
+
+    헤더를 버리면 프롬프트가 몇 번째 칼럼인지 알 수 없다 - 고정 인덱스로 집는 순간
+    H군은 양식 경로를, K군은 실행 방법을 프롬프트로 담게 된다(실측 2026-09-11).
+    """
+    rows: list[tuple[list[str], list[str]]] = []
+    header: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("|"):
+            header = []          # 표가 끝나면 헤더도 끝난다
             continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        # 셀 안의 이스케이프 `\|` 는 구분자가 아니다. 보호하지 않으면 H군의
+        # "호스트명 \| IP주소 \| ..." 가 여섯 칼럼으로 쪼개져 이후 칼럼이 전부 밀린다.
+        guarded = stripped.replace("\\|", "\x00")
+        cells = [c.strip().replace("\x00", "|") for c in guarded.strip("|").split("|")]
         if not cells or set("".join(cells)) <= set("-: "):
+            continue             # 구분선
+        if not header:
+            header = cells       # 표의 첫 행이 헤더다
             continue
-        rows.append(cells)
+        rows.append((cells, header))
     return rows
+
+
+def _prompt_columns(header: list[str]) -> tuple[Optional[int], Optional[int]]:
+    """헤더에서 (1턴 프롬프트, 2턴 프롬프트) 칼럼 위치를 찾는다. 없으면 None."""
+    first = second = None
+    for index, name in enumerate(header):
+        if index == 0:
+            continue             # ID 칼럼
+        if first is None and name in _PROMPT_HEADERS:
+            first = index
+        elif name in _STRUCTURED_SECOND_TURN_HEADERS:
+            second = index
+    return first, second
 
 
 def _clean(text: str) -> str:
@@ -70,31 +110,50 @@ def _clean(text: str) -> str:
 def parse_doc29(path: Path = DOC29) -> dict[str, list[dict[str, Any]]]:
     text = path.read_text(encoding="utf-8")
     out: dict[str, list[dict[str, Any]]] = {}
-    for cells in _table_rows(text):
+    for cells, header in _table_rows(text):
         match = _DOC29_ID.match(cells[0])
         if not match or len(cells) < 2:
             continue
         group = match.group(1)
-        prompt = _clean(cells[1])
+        first, second = _prompt_columns(header)
+
+        # 프롬프트 칼럼이 없는 군(I: 시나리오 · K: 방법)은 **프롬프트로 단정하지 않는다.**
+        # 원문을 그대로 두되 prompt_authored=false 로 표시해 러너가 사유와 함께 건너뛴다 -
+        # 산문을 LLM 에 보내면 무의미한 결과에 돈만 나간다.
+        authored = first is not None
+        if first is None:
+            first = 1
+
+        prompt = _clean(cells[first]) if first < len(cells) else ""
         if not prompt:
             continue
+        turns = [{"query": prompt, "notes": None}]
+        if second is not None and second < len(cells):
+            follow = _clean(cells[second])
+            if follow and follow not in ("—", "-", "–"):
+                # 2턴은 구조화 필드다. query 로 만들지 않고 사람 작성 대상으로 표시한다.
+                authored = False
+
+        used = {0, first}
+        notes = " / ".join(c for i, c in enumerate(cells) if i not in used and c) or None
+        turns[0]["notes"] = notes
+
         scenario_id = f"{group}-{match.group(2)}"
         turn_no = match.group(3)
-        notes = " / ".join(c for c in cells[2:] if c) or None
         bucket = out.setdefault(group, [])
         existing = next((b for b in bucket if b["id"] == scenario_id), None)
         if existing is None:
-            bucket.append({"id": scenario_id, "turns": [{"query": prompt, "notes": notes}]})
+            bucket.append({"id": scenario_id, "turns": turns, "authored": authored})
         elif turn_no:
             # 멀티턴(G-01-1, G-01-2 ...) - 같은 시나리오의 뒤 턴이다.
-            existing["turns"].append({"query": prompt, "notes": notes})
+            existing["turns"].extend(turns)
     return out
 
 
 def parse_synonym(path: Path = DOC_SYNONYM) -> list[dict[str, Any]]:
     text = path.read_text(encoding="utf-8")
     out: list[dict[str, Any]] = []
-    for cells in _table_rows(text):
+    for cells, _header in _table_rows(text):
         match = _SYN_ID.match(cells[0])
         if not match or len(cells) < 2:
             continue
@@ -103,6 +162,7 @@ def parse_synonym(path: Path = DOC_SYNONYM) -> list[dict[str, Any]]:
             continue
         out.append({
             "id": cells[0],
+            "authored": True,
             "turns": [{
                 "query": prompt,
                 "notes": " / ".join(c for c in cells[2:] if c and c != "☐") or None,
@@ -144,6 +204,10 @@ def render_group(group: str, items: list[dict[str, Any]], env: str) -> str:
         lines.append(f"    env: {env}")
         lines.append("    profile: baseline")
         lines.append(f"    endpoint: {endpoint}")
+        if not item.get("authored", True):
+            lines.append("    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.")
+            lines.append("    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.")
+            lines.append("    prompt_authored: false")
         if endpoint in ("file", "file_stream"):
             # 자리표 양식이다. 케이스별 실제 양식으로 바꾸는 것이 사람의 일이다(§3.4).
             lines.append(f"    upload: {_yaml_quote(PLACEHOLDER_FORM)}")

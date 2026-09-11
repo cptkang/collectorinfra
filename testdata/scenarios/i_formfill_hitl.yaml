@@ -18,6 +18,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -31,6 +34,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -44,6 +50,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -57,6 +66,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -70,6 +82,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -83,6 +98,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -96,6 +114,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:
@@ -109,6 +130,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: file_stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
     turns:
       - send:

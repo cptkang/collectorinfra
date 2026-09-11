@@ -94,6 +94,53 @@ def test_프롬프트에_콜론이_있어도_YAML_이_깨지지_않는다() -> N
     assert data["scenarios"][0]["turns"][0]["send"]["query"] == 'a: "b" \\ c'
 
 
+def test_프롬프트_칼럼을_헤더로_찾는다() -> None:
+    """군마다 프롬프트 칼럼 위치가 다르다. 고정 인덱스로 집으면 엉뚱한 셀을 담는다.
+
+    실측 2026-09-11: H군 표는 `| ID | 양식 칼럼 구성 | 입력 질의 | ... |` 라
+    2번째 칼럼을 집으면 **양식 파일 경로**가 프롬프트가 됐다(17건 전건 오염).
+    """
+    parsed = parse_doc29()
+    h_prompts = {item["id"]: item["turns"][0]["query"] for item in parsed["H"]}
+    assert h_prompts["H-01"] == "김포 서버로 채워줘"
+    assert h_prompts["H-03"] == "여의도 리소스 현황 채워줘"
+    assert not any("testdata/" in q for q in h_prompts.values())
+
+
+def test_셀_안의_이스케이프_파이프가_칼럼을_밀지_않는다() -> None:
+    r"""H군 셀의 `호스트명 \| IP주소 \| ...` 가 여섯 칼럼으로 쪼개지면 이후가 전부 밀린다."""
+    parsed = parse_doc29()
+    for item in parsed["H"]:
+        assert "\\" not in item["turns"][0]["query"]
+        assert not item["turns"][0]["query"].rstrip().endswith("\\")
+
+
+def test_프롬프트가_아닌_군은_미작성으로_표시된다() -> None:
+    """I군은 '시나리오'(산문), K군은 '방법'(다른 군 반복)이다.
+
+    산문을 프롬프트로 담아 실행하면 무의미한 결과에 돈만 나간다.
+    """
+    parsed = parse_doc29()
+    assert all(not item["authored"] for item in parsed["I"])
+    assert all(not item["authored"] for item in parsed["K"])
+    assert all(item["authored"] for item in parsed["A"])
+    assert all(item["authored"] for item in parsed["H"])
+
+
+def test_F군은_2턴이_구조화_필드라_사람이_작성한다() -> None:
+    """`selected_db_ids=[polestar_cm_gp]` 를 query 로 넣으면 거짓 프롬프트가 된다."""
+    by_id = {item["id"]: item for item in parse_doc29()["F"]}
+    assert by_id["F-01"]["authored"] is False      # 2턴 있음
+    assert by_id["F-05"]["authored"] is True       # 2턴 '—'
+    assert len(by_id["F-01"]["turns"]) == 1        # 2턴을 자동 생성하지 않는다
+
+
+def test_미작성_표시가_YAML_로_나간다() -> None:
+    text = render_group("K", parse_doc29()["K"], env="closed")
+    data = yaml.safe_load(text)
+    assert all(s["prompt_authored"] is False for s in data["scenarios"])
+
+
 def test_원문_문서가_여전히_존재한다() -> None:
     """이관 원천이 사라지면 재생성이 불가능하다."""
     assert DOC29.exists() and DOC_SYNONYM.exists()

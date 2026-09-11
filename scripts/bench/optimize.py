@@ -185,15 +185,22 @@ def _operational_value(env_key: str) -> str:
 
 
 def _last_change(env_key: str) -> str:
-    """현 브랜치 한정 최종 변경(D-161 ③ — `--all` 금지)."""
+    """현 브랜치 한정 최종 변경(D-161 ③ — `--all` 금지).
+
+    커밋 메시지에 한글이 흔해서 인코딩을 못박지 않으면 Windows 콘솔 코드페이지와 어긋나
+    디코딩이 깨진다. 그때 빈 문자열을 돌려주면 **증거가 조용히 사라져** D-161 4항이 미완이 되고,
+    제안이 "보류"로 잘못 분류된다 — 침묵 폴백 금지 원칙이 정확히 겨냥하는 상황이다.
+    """
     try:
-        out = subprocess.run(
+        proc = subprocess.run(
             ["git", "-C", str(_ROOT), "log", "-1", "--format=%ad|%h", "--date=short",
              "-S", env_key.lower(), "--", "src", "noise_gate"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout.strip()
-    except Exception:
-        return ""
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        )
+    except Exception as exc:
+        # 실패 사유를 실어 보낸다. 빈 문자열은 "미수집"으로 읽혀 제안을 보류시킨다.
+        return f"(git 조회 실패: {type(exc).__name__})"
+    out = (proc.stdout or "").strip()
     return out or "현 브랜치 이력에서 찾지 못함"
 
 

@@ -64,6 +64,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     turns:
       - send:
           query: "전체 서버 OS 종류 알려줘"
@@ -76,6 +79,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     turns:
       - send:
           query: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
@@ -88,6 +94,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
+    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
+    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
+    prompt_authored: false
     turns:
       - send:
           query: "ㅇㅇ존 서버 CPU 사용률"

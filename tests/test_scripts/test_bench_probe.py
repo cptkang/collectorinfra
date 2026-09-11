@@ -165,3 +165,58 @@ def test_real_child_reports_validation_error():
     assert res.ok is False
     assert res.error_type == "ValidationError"
     assert "candidate_count" in (res.error or "")
+
+
+# ── Windows 인코딩 회귀 (2026-09-11 폐쇄망 실측) ──────────
+
+def test_default_runner_forces_utf8_on_child(monkeypatch):
+    """★ 자식에게 `PYTHONIOENCODING=utf-8`을 준다.
+
+    이것이 없으면 Windows 콘솔 코드페이지(cp949)와 어긋나 `subprocess`의 리더 스레드가
+    죽고, `capture_output=True`인데도 stdout이 None이 된다. 우리 판정에서는 "에코 없음"이
+    되어 **인코딩 문제가 설정 문제로 오판**된다.
+    """
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return _proc(stdout=_echo_line({"ok": True, "config": {}}))
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+    probe.echo_config({"K": "1"}, base_env={})
+    assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert seen["encoding"] == "utf-8"
+    assert seen["errors"] == "replace", "깨진 바이트에 죽지 않고 치환해야 한다"
+
+
+def test_default_runner_preserves_caller_env(monkeypatch):
+    """인코딩을 주입하면서 호출자의 env를 잃지 않는다."""
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return _proc(stdout=_echo_line({"ok": True, "config": {}}))
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+    probe.echo_config({"MY_KEY": "v"}, base_env={"KEEP": "y"})
+    assert seen["env"]["MY_KEY"] == "v" and seen["env"]["KEEP"] == "y"
+
+
+def test_echo_survives_none_stdout():
+    """리더 스레드가 죽어 stdout이 None으로 와도 예외를 던지지 않는다.
+
+    사용자 화면의 `AttributeError: 'NoneType' object has no attribute 'strip'`이
+    바로 이 상황에서 났다(다른 모듈에서). 우리 쪽은 데이터로 돌려준다.
+    """
+    def run(env, timeout):
+        return subprocess.CompletedProcess(args=["x"], returncode=1, stdout=None, stderr=None)
+
+    res = probe.echo_config(runner=run)
+    assert res.ok is False and res.error_type == "NoEcho"
+
+
+def test_echo_handles_replacement_characters():
+    """`errors="replace"`가 남긴 치환 문자가 섞여도 마커 줄은 파싱된다."""
+    line = _echo_line({"ok": True, "config": {"a": 1}})
+    res = probe.echo_config(runner=_runner(stdout="\ufffd\ufffd 깨진앞줄\n" + line))
+    assert res.ok and res.config == {"a": 1}

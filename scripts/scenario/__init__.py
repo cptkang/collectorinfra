@@ -20,8 +20,10 @@
 
 from __future__ import annotations
 
-__all__ = ["REPO_ROOT", "utf8_open"]
+__all__ = ["REPO_ROOT", "utf8_open", "run_capture"]
 
+import locale
+import subprocess
 from pathlib import Path
 from typing import IO, Any
 
@@ -40,3 +42,37 @@ def utf8_open(path: Path, mode: str = "r") -> IO[Any]:
     if any(flag in mode for flag in ("w", "a", "x")):
         path.parent.mkdir(parents=True, exist_ok=True)
     return open(path, mode, encoding="utf-8", newline="\n")
+
+
+def run_capture(cmd: list[str], timeout: float = 10.0) -> str:
+    """외부 명령의 표준출력을 문자열로 받는다. **절대 예외를 던지지 않는다.**
+
+    Windows 도구(powercfg·netsh)와 git 은 **콘솔 코드페이지**로 쓴다(한국어 Windows = cp949).
+    그런데 이 하네스는 한글 출력을 위해 `PYTHONUTF8=1` 을 요구하고, 그러면 `text=True` 의
+    기본 디코딩이 UTF-8 이 되어 cp949 바이트에서 UnicodeDecodeError 가 난다.
+
+    더 나쁜 것은 **그 디코딩이 subprocess 의 reader 스레드에서 일어난다**는 점이다. 예외가
+    거기서 터지므로 `except (OSError, subprocess.SubprocessError)` 로는 잡히지 않고,
+    호출부가 받는 `completed.stdout` 은 조용히 `None` 이 된다. 그 다음 `.strip()` 이
+    AttributeError 로 런 전체를 죽인다 (실측 2026-09-11 폐쇄망 Windows - 시나리오 한 건도
+    실행되기 전에 사망).
+
+    그래서 **바이트로 받아 직접 디코딩한다.** provenance 수집 실패가 런을 죽이면 안 된다.
+    """
+    try:
+        completed = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    raw = completed.stdout or b""
+    if not raw:
+        return ""
+    candidates = ["utf-8"]
+    preferred = locale.getpreferredencoding(False)
+    if preferred and preferred.lower() not in candidates:
+        candidates.append(preferred)
+    for name in candidates + ["cp949"]:
+        try:
+            return raw.decode(name)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")

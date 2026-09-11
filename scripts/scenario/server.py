@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import REPO_ROOT, utf8_open
+from . import REPO_ROOT, run_capture, utf8_open
 from .client import ClientConfig, ScenarioClient
 
 IS_WINDOWS = os.name == "nt"
@@ -71,13 +71,10 @@ def windows_excluded_ports() -> list[tuple[int, int]]:
     """
     if not IS_WINDOWS:
         return []
-    try:
-        out = subprocess.run(
-            ["netsh", "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
-            capture_output=True, text=True, timeout=10,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
+    # 출력은 콘솔 코드페이지(cp949)다. text=True 로 받으면 PYTHONUTF8=1 하에서 깨진다.
+    out = run_capture(
+        ["netsh", "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"]
+    )
     ranges: list[tuple[int, int]] = []
     for line in out.splitlines():
         parts = line.split()
@@ -105,22 +102,32 @@ def pick_port(preferred: Optional[int] = None, excluded: Optional[list[tuple[int
 
 
 def platform_provenance() -> dict[str, str]:
-    """측정 조건을 나중에 재구성할 수 있게 남긴다 (W6 · 부록 A.2)."""
-    info = {
-        "os": platform.system(),
-        "os_release": platform.release(),
-        "python": platform.python_version(),
-        "encoding": sys.stdout.encoding or "unknown",
-        "pythonutf8": os.environ.get("PYTHONUTF8", "(미설정)"),
-    }
+    """측정 조건을 나중에 재구성할 수 있게 남긴다 (W6 · 부록 A.2).
+
+    **이 함수는 절대 예외를 던지지 않는다.** provenance 는 부가 정보인데, 여기서 던진
+    예외가 런 전체를 죽인 사고가 있었다(2026-09-11 폐쇄망 Windows - powercfg 의 cp949
+    출력이 PYTHONUTF8=1 하에서 UnicodeDecodeError 를 내고 stdout 이 None 이 됐다).
+    측정을 돕는 장치가 측정을 막으면 안 된다.
+    """
+    info: dict[str, str] = {}
+    try:
+        info.update({
+            "os": platform.system(),
+            "os_release": platform.release(),
+            "python": platform.python_version(),
+            "encoding": sys.stdout.encoding or "unknown",
+            "pythonutf8": os.environ.get("PYTHONUTF8", "(미설정)"),
+        })
+    except Exception as exc:  # 플랫폼 조회조차 실패하면 그 사실을 남긴다
+        info["error"] = f"{type(exc).__name__}: {exc}"
     if IS_WINDOWS:
         try:
-            out = subprocess.run(
-                ["powercfg", "/getactivescheme"], capture_output=True, text=True, timeout=10
-            ).stdout.strip()
-            info["power_plan"] = out or "(조회 실패)"
-        except (OSError, subprocess.SubprocessError):
-            info["power_plan"] = "(조회 실패)"
+            info["power_plan"] = (
+                run_capture(["powercfg", "/getactivescheme"]).strip() or "(조회 실패)"
+            )
+            info["console_codepage"] = run_capture(["cmd", "/c", "chcp"]).strip() or "(조회 실패)"
+        except Exception as exc:  # 측정을 돕는 장치가 측정을 막으면 안 된다
+            info["power_plan"] = f"(조회 실패: {type(exc).__name__})"
         # 바이러스 검사 제외 여부는 관리자 권한이 필요해 조회하지 않는다.
         # 확인하지 않았다는 사실 자체를 남긴다 - 숨기지 않는 것이 요점이다(부록 A.2).
         info["av_exclusion"] = "미확인"
