@@ -1,0 +1,143 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: F
+  name: "존 선택 HITL/멀티DB"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  # ★ 단언 이관 완료 사례 (plans/94 §3.2 정본 예시).
+  #   HITL 은 자동화된다 - 역질문은 응답 `clarification`(schemas.py:115)으로 오고 답은
+  #   자연어가 아니라 구조화 필드 `selected_db_ids`(:43)로 보낸다. docs/29 가 F군을
+  #   수동으로 둔 전제는 이미 깨져 있다(§0.3-2).
+  - id: F-01
+    plans: [82, 90, 75]
+    title: "존 선택 역질문 -> 단일 존 선택"
+    kind: normal
+    env: closed
+    profile: baseline
+    cache_state: warm
+    endpoint: stream
+    response_modes: [clarify, answer]
+    turns:
+      - send:
+          query: "전체 서버 OS 종류 알려줘"
+        expect:
+          status: clarification
+          clarification: {kind: zone_select, options_len: 3}
+      - send:
+          selected_db_ids: ["polestar_cm_gp"]
+        expect:
+          status: completed
+          sql_must_match: ["(?i)limit\\s+100000"]
+          sql_must_not_match: ["(?i)여의도"]
+          row_count: {min: 1}
+    perf: {target_ms: 30000, applies_to_turn: 2}
+    teardown: [drop_thread]
+    notes: "D-154 - 원문의 '여의도' 언급이 WHERE 로 새지 않는다"
+    # 무과금 모의 실행에서 이 시나리오가 HITL 2턴을 실제로 왕복하는지 검증한다(V6).
+    mock:
+      turns:
+        - response: "어느 존을 조회할까요?"
+          executed_sql: null
+          row_count: null
+          clarification:
+            kind: zone_select
+            question: "어느 존을 조회할까요?"
+            options:
+              - {db_id: polestar_b0, label: "은행존"}
+              - {db_id: polestar_cm_gp, label: "공동존(김포)"}
+              - {db_id: polestar_cm_yd, label: "공동존(여의도)"}
+        - response: "김포 공동존 서버 OS 종류입니다."
+          executed_sql: "SELECT hostname, os_type FROM polestar.cmm_resource LIMIT 100000"
+          row_count: 12
+          processing_time_ms: 8200
+  - id: F-02
+    plans: [82, 90, 75]
+    title: "전체 서버 OS 종류 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "전체 서버 OS 종류 알려줘"
+        expect:
+          manual_review: "동일 / `[polestar_cm_gp, polestar_cm_yd]` / 두 DB 결과 병합, 존 라벨 구분"
+  - id: F-03
+    plans: [82, 90, 75]
+    title: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
+        expect:
+          manual_review: "**상호배타 재질문**(`group_exclusive`) / b0 선택 / b0만; 원문 '여의도' 언급이 WHERE로 새지 않음(D-154)"
+  - id: F-04
+    plans: [82, 90, 75]
+    title: "ㅇㅇ존 서버 CPU 사용률"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "ㅇㅇ존 서버 CPU 사용률"
+        expect:
+          manual_review: "항상 재질문 / yd / 원문 `ㅇㅇ존`→'공동존 여의도' 치환 후 실행"
+  - id: F-05
+    plans: [82, 90, 75]
+    title: "호스트명이 sbhdbo53인 서버의 CPU"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "호스트명이 sbhdbo53인 서버의 CPU"
+        expect:
+          manual_review: "**재질문 없음**(식별자 필터 억제) / — / 기본 DB 실행"
+  - id: F-06
+    plans: [82, 90, 75]
+    title: "(F-01 완료 후) 그 서버들의 메모리도"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "(F-01 완료 후) 그 서버들의 메모리도"
+        expect:
+          manual_review: "재질문 없음 — 이전 DB 승계 / — / 같은 db_ids"
+  - id: F-07
+    plans: [82, 90, 75]
+    title: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
+        expect:
+          manual_review: "재질문 없이 gp+yd / — / 멀티 경로 토큰 예산(D-159) 내, 비교 표"
+  - id: F-08
+    plans: [82, 90, 75]
+    title: "공동존 전체 서버 수"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "공동존 전체 서버 수"
+        expect:
+          manual_review: "gp+yd 합산 / — / 두 COUNT 합"

@@ -30,7 +30,11 @@ src/orchestration/task_progress.py     emit_task_progress(task, phase, *, result
 src/orchestration/agent_orchestrator.py  레벨 루프 start/end 호출 2줄
 src/orchestration/deepagents_tools.py    _run_subagent_tool start/end 호출 2줄
 src/orchestration/deep_agent.py          emit_step("agent.resume"/"agent.aggregate") 마일스톤
+src/utils/progress_events.py             dispatch_progress_event · emit_step — 발행 공통부(utils 계층, T4)
+src/nodes/schema_analyzer.py             _collect_live_samples: schema.sample start(k/n)·end (T4)
+src/orchestration/subagents.py           pipeline.schema/generate/validate/execute/multi_db/organize start/end (T4)
 tests/test_orchestration/test_task_progress.py
+tests/test_orchestration/test_handler_milestones.py
 ```
 
 ## 계약 (`on_custom_event` name=`"task"` data)
@@ -44,7 +48,7 @@ tests/test_orchestration/test_task_progress.py
 - `status`는 task dict의 값을 그대로 낸다(88이 `skipped`를 넣으면 그대로 흐른다).
 - `row_count`는 결과의 `rows`/`query_results`/`organized_data.rows` 중 첫 리스트 길이(없으면 생략).
 - `verdict`가 주어지면 `scope_col/scope_size/truncated/truncated_count/reason`을 같은 이름으로 복사한다.
-- name=`"step"` data: `{name, phase, label?}` — deep_agent 재개/합성 마일스톤.
+- name=`"step"` data: `{name, phase, label?}` — deep_agent 재개/합성 마일스톤. **T4 추가**: `schema.sample`(테이블마다 start `샘플 수집 k/n` · end 1회 `샘플 수집 완료 done/n`) · `pipeline.<stage>`(`schema`·`generate`(`SQL 재생성 k회차`)·`validate`·`execute`·`multi_db`(`멀티 DB 조회 N곳`)·`organize` — 실행된 단계만, start/end 쌍). end에는 label이 없을 수 있다(UI는 `stepLabels` 사전으로 보완).
 
 ## Code Style
 

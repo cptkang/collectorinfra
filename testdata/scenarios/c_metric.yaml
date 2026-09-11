@@ -1,0 +1,169 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: C
+  name: "성능 통계 - 기간 파싱/집계"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: C-01
+    plans: [61, 69]
+    title: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+        expect:
+          manual_review: "`= '202607'` / 서버당 1행, avg/max 열"
+  - id: C-02
+    plans: [61, 69]
+    title: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+        expect:
+          manual_review: "`BETWEEN '202605' AND '202607'` / 서버×월 행"
+  - id: C-03
+    plans: [61, 69]
+    title: "2026년 상반기 서버별 CPU 사용률 평균"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 상반기 서버별 CPU 사용률 평균"
+        expect:
+          manual_review: "`BETWEEN '202601' AND '202606'`"
+  - id: C-04
+    plans: [61, 69]
+    title: "2026년 1월부터 6월까지 메모리 사용률 최대값"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 1월부터 6월까지 메모리 사용률 최대값"
+        expect:
+          manual_review: "동일 범위 / 절대 월 범위 정규식(D-176)"
+  - id: C-05
+    plans: [61, 69]
+    title: "11월부터 2월까지 CPU 사용률"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "11월부터 2월까지 CPU 사용률"
+        expect:
+          manual_review: "`202511~202602`(연도 넘김)"
+  - id: C-06
+    plans: [61, 69]
+    title: "이번 달 CPU 사용률"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "이번 달 CPU 사용률"
+        expect:
+          manual_review: "`= '202608'` / 진행 중 월"
+  - id: C-07
+    plans: [61, 69]
+    title: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+        expect:
+          manual_review: "기간 무제한, `max_val > 90` / '이용률' 동의어, '~한 적이 있는'"
+  - id: C-08
+    plans: [61, 69]
+    title: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
+        expect:
+          manual_review: "avg_val ASC / '가동률' 의역 — coverage=outside, 실패 허용 기록"
+  - id: C-09
+    plans: [61, 69]
+    title: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+        expect:
+          manual_review: "기간 self-join / 복합"
+  - id: C-10
+    plans: [61, 69]
+    title: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+        expect:
+          manual_review: "GROUP BY + HAVING"
+  - id: C-11
+    plans: [61, 69]
+    title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+        expect:
+          manual_review: "스칼라 서브쿼리"
+  - id: C-12
+    plans: [61, 69]
+    title: "지금 CPU 사용률 높은 서버 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "지금 CPU 사용률 높은 서버 알려줘"
+        expect:
+          manual_review: "플래그 off: 통계 테이블 / on: 실시간 REST / 원문 기준 `is_realtime_usage_query` 판정"
+  - id: C-13
+    plans: [61, 69]
+    title: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
+        expect:
+          manual_review: "전역 집계(GROUP BY 없음) / 1행 1값 — `scope.global_aggregate_drop` 가드 계측 확인"

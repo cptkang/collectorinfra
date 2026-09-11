@@ -1,0 +1,85 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: D
+  name: "알람 조회"
+  latency_target_ms: 10000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: D-01
+    plans: [44, 45]
+    title: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
+        expect:
+          manual_review: "`cmm_alarm_active`, `alarmseverity = 3`, `CR.DTIME IS NULL` / 9열 표준 알람 뷰"
+  - id: D-02
+    plans: [44, 45]
+    title: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
+        expect:
+          manual_review: "`severity >= 2 ORDER BY ctime DESC`, **LIMIT 100** / 정확히 100행"
+  - id: D-03
+    plans: [44, 45]
+    title: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+        expect:
+          manual_review: "COUNT + ctime 범위 / 1값"
+  - id: D-04
+    plans: [44, 45]
+    title: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
+        expect:
+          manual_review: "GROUP BY + ORDER BY COUNT DESC LIMIT 10 / 10행"
+  - id: D-05
+    plans: [44, 45]
+    title: "이번 달 CPU 임계값 초과 알람 이력 조회"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "이번 달 CPU 임계값 초과 알람 이력 조회"
+        expect:
+          manual_review: "alarm_def 조인"
+  - id: D-06
+    plans: [44, 45]
+    title: "담당자 없는 미확인 알람"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "담당자 없는 미확인 알람"
+        expect:
+          manual_review: "통보 다단 조인(yd-006 계열) / outside — 실패 허용 기록"

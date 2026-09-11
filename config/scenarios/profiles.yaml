@@ -1,0 +1,34 @@
+# 플래그 프로파일 — plans/94 §3.5
+#
+# 프로파일 1개 = 서버 기동 1회다. 플래그는 기동 시 1회 해석되고 사다리는 빌드 타임에
+# 배타 확정되므로(CLAUDE.md 「실행 경로」), 요청 시점 변경은 측정값을 거짓으로 만든다.
+#
+# 값은 전부 문자열이다 — 자식 프로세스의 환경변수로 그대로 주입된다.
+# `.env`는 수정하지 않는다. 신규 config 필드 0 · 신규 enable_* 플래그 0 (D-162).
+#
+# 여기 없는 키를 쓰면 로더가 거부하지 않는다(오타는 잡히지 않는다) — 대신 러너가
+# 기동 후 GET /api/v1/admin/settings/schema 로 실효값을 에코 대조해 "주입이 먹었는지"를
+# 확인한다. 미반영이면 그 프로파일은 INVALID이고 결과를 합격으로 세지 않는다(§4.5).
+
+profiles:
+  # 운영 .env 그대로. 아무것도 주입하지 않는다.
+  baseline: {}
+
+  # 질의 경로 옵트인 — 기본 off라 baseline에서는 "테스트되지 않은 채 합격"으로 보인다(R3).
+  optin_query:
+    TEXT2SQL_MULTI_CANDIDATE: "true"
+    ROUTER_TWO_STAGE_ENABLED: "true"
+    ROUTER_UNKNOWN_ENABLED: "true"
+
+  # 장애 조사 — 별도 프로세스(sre_agent) 의존. 프롬프트 진입까지만 측정한다(§3.6).
+  optin_invest:
+    NOISE_FAULT_DIAGNOSIS_ENABLED: "true"
+    COMPOSITE_INVESTIGATION_ENABLED: "true"
+
+  # 실시간 사용률 — 폴스타 REST 의존(plans/71 기본 off).
+  optin_realtime:
+    POLESTAR_REST_REALTIME_USAGE_ENABLED: "true"
+
+  # 알람 결정적 경로(plans/44·45 기본 off).
+  optin_alarm:
+    TEXT2SQL_ALARM_DETERMINISTIC: "true"

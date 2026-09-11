@@ -1,0 +1,373 @@
+# R4 - 착각 (plans/94 §3.7)
+#
+# **실사례를 가진 유일한 축이다.** D-200("가동률"은 가용성 계열이며 CPU 사용률 매핑 금지)과
+# D-201("이번 달" = cmm_metric_stat_d 당월 1일~어제)은 둘 다 사용자의 말과 시스템의 해석이
+# 어긋난 지점에서 나온 결정이다. 그래서 G-11 에서 1차 실행 우선순위가 가장 높다.
+#
+# 단언은 부정 단언(column_must_not_map / sql_must_not_match)이 주력이다 -
+# 거부와 되묻기는 사용자가 알아차리지만 조용한 오답은 알아차리지 못한다.
+version: 1
+group:
+  id: R4
+  name: "착각"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "plans/94 §3.7 R4"
+scenarios:
+  - id: R4-01
+    plans: [37, 61, 77]
+    title: "용어 오해 - 가동률 (D-200 실사례)"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-01C
+    response_modes: [clarify, answer, guide]
+    turns:
+      - send: {query: "서버 가동률 보여줘"}
+        expect:
+          column_must_not_map: ["cpu_usage", "cpu_util"]
+          sql_must_not_match: ["(?i)cpu_usage"]
+          manual_review: "가용성 계열로 해석했는가. 모호하면 되묻는가. CPU 사용률로 답하면 silent_wrong 이다"
+    teardown: [drop_thread]
+    notes: "D-200 - 의미 확정 결정이 회귀하지 않는지 감시"
+  - id: R4-01C
+    plans: [61]
+    title: "[대조군] CPU 사용률 - 정상 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-01
+    response_modes: [answer]
+    turns:
+      - send: {query: "서버 CPU 사용률 보여줘"}
+        expect:
+          status: completed
+          row_count: {min: 1}
+          manual_review: "금지 매핑 가드가 정상 CPU 조회까지 막지 않는가(과잉 거부 감시)"
+    teardown: [drop_thread]
+
+  - id: R4-02
+    plans: [61, 69]
+    title: "시제 오해 - 이번 달 (D-201 실사례)"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-02C
+    response_modes: [answer, clarify]
+    turns:
+      - send: {query: "이번 달 CPU 평균 알려줘"}
+        expect:
+          sql_must_match: ["(?i)cmm_metric_stat_d"]
+          manual_review: "당월 1일~어제 집계임을 응답에 명시하는가(D-201). 오늘이 포함된 것처럼 말하지 않는가"
+    teardown: [drop_thread]
+  - id: R4-02C
+    plans: [61, 69]
+    title: "[대조군] 기간을 명시한 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-02
+    response_modes: [answer]
+    turns:
+      - send: {query: "지난 30일 CPU 평균 알려줘"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R4-03
+    plans: [71, 81]
+    title: "실시간 착각 - 지금 이 순간 CPU"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-03C
+    response_modes: [answer, guide, clarify]
+    turns:
+      - send: {query: "지금 이 순간 CPU 몇 %야?"}
+        expect:
+          manual_review: "통계 테이블 기반이면 집계 시점을 명시하는가. 실시간 API 미가용이면 안내하는가(plans/71 기본 off)"
+    teardown: [drop_thread]
+  - id: R4-03C
+    plans: [61]
+    title: "[대조군] 최근 집계 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-03
+    response_modes: [answer]
+    turns:
+      - send: {query: "최근 1시간 CPU 사용률 평균"}
+        expect: {manual_review: "정상 조회"}
+    teardown: [drop_thread]
+
+  - id: R4-04
+    plans: [87, 92]
+    title: "데이터 범위 착각 - 웹 응답시간(APM 미구현)"
+    kind: misconception
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-04C
+    response_modes: [guide, clarify]
+    turns:
+      - send: {query: "이 서버 웹 응답시간 보여줘"}
+        expect:
+          manual_review: "폴스타 수집 범위 밖임을 말하는가. 있는 척 그럴듯한 수치를 내지 않는가"
+    teardown: [drop_thread]
+  - id: R4-04C
+    plans: [61]
+    title: "[대조군] 수집 범위 안의 지표"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-04
+    response_modes: [answer]
+    turns:
+      - send: {query: "이 서버 CPU 사용률 보여줘"}
+        expect: {manual_review: "정상 조회 - 범위 밖 안내가 정상 지표까지 막지 않는가"}
+    teardown: [drop_thread]
+
+  - id: R4-05
+    plans: [87, 92]
+    title: "데이터 범위 착각 - 네트워크 패킷 손실률"
+    kind: misconception
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-05C
+    response_modes: [guide, clarify]
+    turns:
+      - send: {query: "네트워크 패킷 손실률 알려줘"}
+        expect:
+          manual_review: "수집하지 않는 지표임을 사유와 함께 말하는가"
+    teardown: [drop_thread]
+  - id: R4-05C
+    plans: [61]
+    title: "[대조군] 수집하는 네트워크 지표"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-05
+    response_modes: [answer, guide]
+    turns:
+      - send: {query: "서버 네트워크 정보 보여줘"}
+        expect: {manual_review: "수집 범위 안의 항목은 정상 응답되는가"}
+    teardown: [drop_thread]
+
+  - id: R4-06
+    plans: [55, 92]
+    title: "기능 존재 착각 - 조건 알림 등록"
+    kind: misconception
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-06C
+    response_modes: [guide, refuse]
+    turns:
+      - send: {query: "CPU 90% 넘으면 알림 보내줘"}
+        expect:
+          manual_review: "없는 기능을 있는 것처럼 답하지 않는가. 등록됐다고 말하면 silent_wrong 이다"
+    teardown: [drop_thread]
+  - id: R4-06C
+    plans: [44, 45]
+    title: "[대조군] 기존 알람 조회"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-06
+    response_modes: [answer]
+    turns:
+      - send: {query: "현재 활성 상태인 심각 알람 목록 보여줘"}
+        expect: {manual_review: "정상 조회"}
+    teardown: [drop_thread]
+
+  - id: R4-07
+    plans: [55, 92]
+    title: "기능 존재 착각 - 정기 메일 발송"
+    kind: misconception
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-07C
+    response_modes: [guide, refuse]
+    turns:
+      - send: {query: "이 리포트 매일 아침에 메일로 보내줘"}
+        expect:
+          manual_review: "예약/발송 기능이 없음을 말하는가"
+    teardown: [drop_thread]
+  - id: R4-07C
+    plans: [10, 19]
+    title: "[대조군] 1회 산출물 생성"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-07
+    response_modes: [answer]
+    turns:
+      - send: {query: "전체 서버 목록을 엑셀로 만들어줘"}
+        expect: {has_file: true, manual_review: "정상 산출"}
+    perf: {target_ms: 60000}
+    teardown: [drop_thread]
+
+  - id: R4-08
+    plans: [50]
+    title: "지시어 착각 - 첫 턴에 '그 장비' (docs/29 G-03-1)"
+    kind: misconception
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-08C
+    response_modes: [clarify, guide]
+    turns:
+      - send: {query: "그 장비 정보 보여줘"}
+        expect:
+          manual_review: "에러가 아니라 되묻기인가. 식별자 없음을 500 으로 만들지 않는가"
+    teardown: [drop_thread]
+  - id: R4-08C
+    plans: [50]
+    title: "[대조군] 식별자를 준 첫 턴"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-08
+    response_modes: [answer]
+    turns:
+      - send: {query: "cocm-hdkapp01 장비 정보 보여줘"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R4-09
+    plans: [82]
+    title: "존 착각 - 공동존 서버를 은행존으로 지칭"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-09C
+    response_modes: [correct, clarify, guide]
+    turns:
+      - send: {query: "은행존의 cocm-hdkapp01 서버 사양 보여줘"}
+        expect:
+          manual_review: "실제 소재를 알려주는가(plans/82 소재 탐색). 은행존에서 0건으로 끝내지 않는가"
+    teardown: [drop_thread]
+  - id: R4-09C
+    plans: [82]
+    title: "[대조군] 존을 정확히 지칭"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-09
+    response_modes: [answer]
+    turns:
+      - send: {query: "공동존의 cocm-hdkapp01 서버 사양 보여줘"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R4-10
+    plans: [37, 61]
+    title: "단위 착각 - 메모리 64기가 (TB/GB/MB 혼재 문자열 · D-199)"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-10C
+    response_modes: [answer]
+    turns:
+      - send: {query: "메모리 64기가 넘는 서버 보여줘"}
+        expect:
+          row_count: {min: 1}
+          manual_review: "GB 기준 환산 정규화가 동작하는가. TB 서버가 빠지거나 MB 서버가 섞이지 않는가(D-199)"
+    teardown: [drop_thread]
+    notes: "D-199 - 로컬 픽스처는 순수 숫자 MB, 운영 3존은 단위 문자열 혼재. 샌드박스 통과가 폐쇄망을 보증하지 않는다"
+  - id: R4-10C
+    plans: [37, 61]
+    title: "[대조군] 단위 없는 수치 조건"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-10
+    response_modes: [answer]
+    turns:
+      - send: {query: "논리코어가 8개 이상인 서버 보여줘"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R4-11
+    plans: [61, 69]
+    title: "집계 의미 착각 - 평균을 최댓값으로 오해"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-11C
+    response_modes: [answer, clarify]
+    turns:
+      - send: {query: "어제 CPU 사용률이 제일 높았던 값 알려줘"}
+        expect:
+          manual_review: "평균/최대 중 무엇을 냈는지 응답에 명시하는가. 둘을 섞지 않는가"
+    teardown: [drop_thread]
+  - id: R4-11C
+    plans: [61, 69]
+    title: "[대조군] 집계 함수를 명시한 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-11
+    response_modes: [answer]
+    turns:
+      - send: {query: "어제 CPU 사용률 최댓값 알려줘"}
+        expect: {status: completed}
+    teardown: [drop_thread]
+
+  - id: R4-12
+    plans: [82, 90]
+    title: "범위 착각 - '전체'가 어느 존까지인지"
+    kind: misconception
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R4-12C
+    response_modes: [clarify, answer]
+    turns:
+      - send: {query: "전체 서버 몇 대야?"}
+        expect:
+          manual_review: "어느 존을 셌는지 응답에 명시하는가. 한 존만 세고 '전체'라고 말하면 silent_wrong 이다"
+    teardown: [drop_thread]
+  - id: R4-12C
+    plans: [82, 90]
+    title: "[대조군] 존을 명시한 개수 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R4-12
+    response_modes: [answer]
+    turns:
+      - send: {query: "김포 공동존 서버 몇 대야?"}
+        expect: {status: completed}
+    teardown: [drop_thread]

@@ -29,6 +29,7 @@ from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
 from src.utils.json_extract import coerce_content_text, strip_code_fence
+from src.utils.progress_events import emit_step
 from src.utils.schema_utils import cap_sample_rows
 
 logger = logging.getLogger(__name__)
@@ -422,6 +423,60 @@ async def _collect_structure_samples(
 
     schema_dict["_structure_meta"] = structure_meta
     return schema_dict
+
+
+async def _collect_live_samples(
+    client: Any,
+    schema_dict: dict,
+    relevant: list[str],
+    db_id: Optional[str],
+) -> None:
+    """샘플이 없는 관련 테이블의 라이브 샘플을 수집해 schema_dict에 붙인다(제자리 갱신).
+
+    호출당 `_SAMPLE_FETCH_TIMEOUT_SEC`·총량 `_SAMPLE_TOTAL_BUDGET_SEC` 타임박스(D-154).
+    시작/완료 INFO 로그는 SSE 무이벤트 구간 진단용 계측을 겸하고, 테이블마다
+    `schema.sample` 마일스톤(`label="샘플 수집 k/n"`)을 내 상태줄이 이 구간에서 멈추지 않게 한다
+    (plans/89 §3.2-③ · T4 — D-154 타임박스는 *죽지 않게* 했지 *보이게* 하진 않았다).
+    """
+    pending = [
+        t for t in relevant
+        if not schema_dict["tables"].get(t, {}).get("sample_data")
+    ]
+    if not pending:
+        return
+    total = len(pending)
+    logger.info("라이브 샘플 수집 시작: %d개 테이블 (db_id=%s)", total, db_id)
+    started = time.monotonic()
+    budget_skipped: list[str] = []
+    for idx, table_name in enumerate(pending, start=1):
+        if time.monotonic() - started > _SAMPLE_TOTAL_BUDGET_SEC:
+            budget_skipped.append(table_name)
+            continue
+        await emit_step("schema.sample", "start", label=f"샘플 수집 {idx}/{total}")
+        try:
+            samples = await asyncio.wait_for(
+                client.get_sample_data(table_name, limit=5),
+                timeout=_SAMPLE_FETCH_TIMEOUT_SEC,
+            )
+            schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(samples)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "샘플 데이터 조회 타임아웃(%.0fs 초과) — 스킵: %s",
+                _SAMPLE_FETCH_TIMEOUT_SEC, table_name,
+            )
+        except Exception as e:
+            logger.warning(f"샘플 데이터 조회 실패 ({table_name}): {e}")
+    if budget_skipped:
+        logger.warning(
+            "샘플 수집 총량 예산(%.0fs) 소진 — %d개 테이블 스킵: %s",
+            _SAMPLE_TOTAL_BUDGET_SEC, len(budget_skipped), budget_skipped,
+        )
+    elapsed = time.monotonic() - started
+    await emit_step(
+        "schema.sample", "end",
+        label=f"샘플 수집 완료 {total - len(budget_skipped)}/{total}",
+    )
+    logger.info("라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)", elapsed, db_id)
 
 
 def _format_structure_approval_summary(structure_meta: dict) -> str:
@@ -1014,46 +1069,7 @@ async def schema_analyzer(
                         )
 
             # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-154, 상수 주석 참조).
-            # 시작/완료 INFO 로그는 SSE 무이벤트 구간 진단용 계측을 겸한다(끊긴 지점 확정).
-            _pending_samples = [
-                t for t in relevant
-                if not schema_dict["tables"].get(t, {}).get("sample_data")
-            ]
-            if _pending_samples:
-                logger.info(
-                    "라이브 샘플 수집 시작: %d개 테이블 (db_id=%s)",
-                    len(_pending_samples), db_id,
-                )
-                _sample_started = time.monotonic()
-                _budget_skipped: list[str] = []
-                for table_name in _pending_samples:
-                    if time.monotonic() - _sample_started > _SAMPLE_TOTAL_BUDGET_SEC:
-                        _budget_skipped.append(table_name)
-                        continue
-                    try:
-                        samples = await asyncio.wait_for(
-                            client.get_sample_data(table_name, limit=5),
-                            timeout=_SAMPLE_FETCH_TIMEOUT_SEC,
-                        )
-                        schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(
-                            samples
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "샘플 데이터 조회 타임아웃(%.0fs 초과) — 스킵: %s",
-                            _SAMPLE_FETCH_TIMEOUT_SEC, table_name,
-                        )
-                    except Exception as e:
-                        logger.warning(f"샘플 데이터 조회 실패 ({table_name}): {e}")
-                if _budget_skipped:
-                    logger.warning(
-                        "샘플 수집 총량 예산(%.0fs) 소진 — %d개 테이블 스킵: %s",
-                        _SAMPLE_TOTAL_BUDGET_SEC, len(_budget_skipped), _budget_skipped,
-                    )
-                logger.info(
-                    "라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)",
-                    time.monotonic() - _sample_started, db_id,
-                )
+            await _collect_live_samples(client, schema_dict, relevant, db_id)
 
             # 구조 분석: 수동 프로필 -> Redis 캐시 -> LLM 분석 -> HITL 승인 -> 자동 저장
             structure_meta: Optional[dict] = None

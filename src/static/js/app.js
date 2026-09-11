@@ -453,7 +453,13 @@
         edit_file: "작업 메모 수정",
         ls: "작업 메모 확인",
     };
-    var stepLabels = { "agent.resume": "에이전트 재개", "agent.aggregate": "최종 응답 합성" };
+    var stepLabels = {
+        "agent.resume": "에이전트 재개", "agent.aggregate": "최종 응답 합성",
+        // 핸들러 내부 마일스톤(plans/89 T4) — 서버가 label을 실어 보내면 그쪽이 우선한다
+        "schema.sample": "샘플 수집", "pipeline.schema": "스키마 분석", "pipeline.generate": "SQL 생성",
+        "pipeline.validate": "SQL 검증", "pipeline.execute": "SQL 실행", "pipeline.multi_db": "멀티 DB 조회",
+        "pipeline.organize": "결과 정리"
+    };
 
     function toolLabel(name) { return toolLabels[name] || ("도구 실행: " + name); }
     function agentLabel(agent) { return agentLabels[agent] || agent || "작업"; }

@@ -1,0 +1,325 @@
+"""프로파일별 서버 기동·검증·종료 (plans/94 §4.2 · §4.5 · 부록 A.5 W1~W9).
+
+프로파일 1개 = 서버 기동 1회다. 플래그는 기동 시 1회 해석되고 사다리는 빌드 타임에 배타
+확정되므로, 요청 시점에 바꾼 설정으로 잰 값은 거짓이다.
+
+기동 후 **세 가지를 대조**한 뒤에야 그 프로파일의 결과를 합격으로 센다:
+  1. 헬스 200
+  2. 기동 로그의 사다리 단 (조용한 강등 차단)
+  3. 실효 설정 에코 (주입이 조용히 무시되는 것을 차단 - D-129)
+하나라도 확인되지 않으면 그 프로파일은 INVALID 이고, 사유가 리포트 10절에 남는다.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import re
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from . import REPO_ROOT, utf8_open
+from .client import ClientConfig, ScenarioClient
+
+IS_WINDOWS = os.name == "nt"
+
+_LADDER_RE = re.compile(
+    r"오케스트레이션 사다리 확정:\s*tier=(?P<tier>\S+)\s+degraded_reason=(?P<reason>\S+)"
+)
+HEALTH_WAIT_SEC = 90.0
+
+
+@dataclass
+class ProfileStatus:
+    """기동 1회의 유효성. 사유 없는 INVALID 는 만들지 않는다."""
+
+    name: str
+    port: int
+    valid: bool = False
+    tier: Optional[str] = None
+    degraded_reason: Optional[str] = None
+    echo_ok: Optional[bool] = None          # None = 확인 못 함(토큰 없음 등)
+    echo_mismatch: dict[str, dict[str, str]] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "port": self.port,
+            "valid": self.valid,
+            "tier": self.tier,
+            "degraded_reason": self.degraded_reason,
+            "echo_ok": self.echo_ok,
+            "echo_mismatch": self.echo_mismatch,
+            "reasons": self.reasons,
+        }
+
+
+def windows_excluded_ports() -> list[tuple[int, int]]:
+    """Windows 예약 제외 대역을 읽는다 (부록 A.1-6 · W3).
+
+    Hyper-V·WSL2·Docker Desktop 이 대역을 선점하면 빈 포트를 골라도 바인딩이
+    "forbidden by its access permissions" 로 실패한다. 실패를 INVALID 로 오판하지
+    않으려면 고르기 전에 피해야 한다.
+    """
+    if not IS_WINDOWS:
+        return []
+    try:
+        out = subprocess.run(
+            ["netsh", "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    ranges: list[tuple[int, int]] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            ranges.append((int(parts[0]), int(parts[1])))
+    return ranges
+
+
+def pick_port(preferred: Optional[int] = None, excluded: Optional[list[tuple[int, int]]] = None) -> int:
+    """바인딩 가능한 포트를 고른다. Windows 제외 대역은 피한다."""
+    ranges = windows_excluded_ports() if excluded is None else excluded
+
+    def blocked(port: int) -> bool:
+        return any(low <= port <= high for low, high in ranges)
+
+    if preferred and not blocked(preferred):
+        return preferred
+    for _ in range(50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        if not blocked(port):
+            return port
+    raise RuntimeError("제외 대역 밖에서 빈 포트를 찾지 못했다")
+
+
+def platform_provenance() -> dict[str, str]:
+    """측정 조건을 나중에 재구성할 수 있게 남긴다 (W6 · 부록 A.2)."""
+    info = {
+        "os": platform.system(),
+        "os_release": platform.release(),
+        "python": platform.python_version(),
+        "encoding": sys.stdout.encoding or "unknown",
+        "pythonutf8": os.environ.get("PYTHONUTF8", "(미설정)"),
+    }
+    if IS_WINDOWS:
+        try:
+            out = subprocess.run(
+                ["powercfg", "/getactivescheme"], capture_output=True, text=True, timeout=10
+            ).stdout.strip()
+            info["power_plan"] = out or "(조회 실패)"
+        except (OSError, subprocess.SubprocessError):
+            info["power_plan"] = "(조회 실패)"
+        # 바이러스 검사 제외 여부는 관리자 권한이 필요해 조회하지 않는다.
+        # 확인하지 않았다는 사실 자체를 남긴다 - 숨기지 않는 것이 요점이다(부록 A.2).
+        info["av_exclusion"] = "미확인"
+    return info
+
+
+class ServerHandle:
+    """자식 서버 1개의 수명. 기동 로그를 읽어 사다리 단을 확정한다."""
+
+    def __init__(
+        self,
+        profile: str,
+        env_overrides: dict[str, str],
+        port: int,
+        log_path: Path,
+        mock: bool = False,
+    ) -> None:
+        self.profile = profile
+        self.port = port
+        self.log_path = log_path
+        self.mock = mock
+        self._env = self._build_env(env_overrides, port)
+        self._proc: Optional[subprocess.Popen] = None
+        self._ladder: Optional[tuple[str, str]] = None
+        self._reader: Optional[threading.Thread] = None
+
+    @staticmethod
+    def _build_env(overrides: dict[str, str], port: int) -> dict[str, str]:
+        """자식 프로세스 환경만 만든다. `.env` 는 수정하지 않는다(§4.4)."""
+        env = os.environ.copy()
+        env.update(overrides)
+        env["API_PORT"] = str(port)
+        # 한글 출력에서 런이 죽지 않게 - cp949 콘솔 대응(W5 · 부록 A.1-3)
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
+        return env
+
+    def start(self) -> None:
+        module = "scripts.scenario.mockserver" if self.mock else "scripts.scenario._serve"
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
+        self._proc = subprocess.Popen(
+            [sys.executable, "-m", module],
+            cwd=str(REPO_ROOT),
+            env=self._env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=creation_flags,
+            start_new_session=not IS_WINDOWS,
+        )
+        self._reader = threading.Thread(target=self._pump_log, daemon=True)
+        self._reader.start()
+
+    def _pump_log(self) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        with utf8_open(self.log_path, "w") as sink:
+            for line in self._proc.stdout:
+                sink.write(line)
+                sink.flush()
+                match = _LADDER_RE.search(line)
+                if match and self._ladder is None:
+                    self._ladder = (match.group("tier"), match.group("reason"))
+
+    @property
+    def ladder(self) -> Optional[tuple[str, str]]:
+        return self._ladder
+
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def wait_healthy(self, timeout_sec: float = HEALTH_WAIT_SEC) -> tuple[bool, str]:
+        client = ScenarioClient(ClientConfig(port=self.port))
+        deadline = time.monotonic() + timeout_sec
+        last = "기동 대기 시작"
+        try:
+            while time.monotonic() < deadline:
+                if not self.alive():
+                    return False, "자식 프로세스가 기동 중 종료됐다 (로그 확인)"
+                ok, detail = client.health()
+                if ok:
+                    return True, "health 200"
+                last = detail
+                time.sleep(1.0)
+        finally:
+            client.close()
+        return False, f"헬스 대기 {timeout_sec:.0f}초 초과 (마지막: {last})"
+
+    def stop(self, grace_sec: float = 5.0) -> None:
+        """종료한다. 고아 프로세스를 남기지 않는 것이 목적이다 (W1 · V20)."""
+        if self._proc is None or self._proc.poll() is not None:
+            return
+        pid = self._proc.pid
+        try:
+            if IS_WINDOWS:
+                # Windows 에는 SIGTERM/SIGKILL 이 없다.
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
+        try:
+            self._proc.wait(timeout=grace_sec)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+        try:
+            if IS_WINDOWS:
+                # /T = 자식까지. 리로더 없이 띄웠어도 워커가 남을 수 있다.
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, timeout=15,
+                )
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, subprocess.SubprocessError):
+            pass
+        try:
+            self._proc.wait(timeout=grace_sec)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def port_released(self, timeout_sec: float = 10.0) -> bool:
+        """포트가 실제로 회수됐는지 확인한다 (V20)."""
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind(("127.0.0.1", self.port))
+                    return True
+                except OSError:
+                    time.sleep(0.5)
+        return False
+
+
+def verify_profile(
+    handle: ServerHandle,
+    overrides: dict[str, str],
+    token: Optional[str],
+    expected_tier: Optional[str] = None,
+) -> ProfileStatus:
+    """기동 검증 3종. 확인하지 못한 것을 통과로 세지 않는다."""
+    status = ProfileStatus(name=handle.profile, port=handle.port)
+
+    healthy, detail = handle.wait_healthy()
+    if not healthy:
+        status.reasons.append(f"헬스 실패: {detail}")
+        return status
+
+    if handle.mock:
+        # 모의 서버는 사다리도 설정 카탈로그도 갖지 않는다. 배관 검증 전용이므로
+        # 유효로 보되 그 사실을 사유로 남긴다 - 리포트가 실행 성격을 감추지 않게 한다.
+        status.valid = True
+        status.tier = "mock"
+        status.reasons.append("모의 실행 - 사다리·설정 에코 대조 없음 (무과금 배관 검증)")
+        return status
+
+    ladder = handle.ladder
+    if ladder is None:
+        status.reasons.append(
+            "기동 로그에서 사다리 확정 1줄을 찾지 못했다 - 어느 경로를 쟀는지 알 수 없다"
+        )
+    else:
+        status.tier, status.degraded_reason = ladder
+        if expected_tier and status.tier != expected_tier:
+            status.reasons.append(
+                f"조용한 강등: 의도 {expected_tier} 인데 {status.tier} 로 확정됐다"
+            )
+
+    client = ScenarioClient(ClientConfig(port=handle.port, token=token))
+    try:
+        effective, echo_error = client.effective_settings()
+    finally:
+        client.close()
+
+    if effective is None:
+        status.echo_ok = None
+        status.reasons.append(echo_error or "설정 에코 미확인")
+    else:
+        mismatch = {
+            key: {"injected": value, "effective": effective.get(key, "(키 없음)")}
+            for key, value in overrides.items()
+            if effective.get(key, "").strip().lower() != value.strip().lower()
+        }
+        status.echo_mismatch = mismatch
+        status.echo_ok = not mismatch
+        if mismatch:
+            status.reasons.append(
+                f"주입이 실효값에 반영되지 않았다 ({len(mismatch)}건) - "
+                "OS env·.encenv 우선순위 확인 (D-129)"
+            )
+
+    status.valid = not any(
+        reason.startswith(("헬스 실패", "조용한 강등", "주입이")) for reason in status.reasons
+    )
+    return status

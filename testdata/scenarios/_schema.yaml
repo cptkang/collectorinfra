@@ -1,0 +1,81 @@
+# 시나리오 카탈로그 스키마 — 사람이 읽는 계약 (plans/94 §3.2)
+#
+# 밑줄로 시작하는 파일은 로더가 읽지 않는다(catalog.load_catalog 의 glob 규칙).
+# 정본 검증은 scripts/scenario/catalog.py 이며, 이 파일은 그 규칙의 서술본이다.
+# 둘이 갈라지면 코드가 맞다.
+
+version: 1
+
+# --- 군 헤더 (파일당 1개) ---
+group:
+  id: F                        # 필수. 군 문자. docs/29 의 A~K 를 승계하고 신규는 L 부터
+  name: "존 선택 HITL/멀티DB"   # 필수
+  latency_target_ms: 30000     # 필수. 없으면 로더가 거부한다 — 목표 없는 군은 성능 판정이
+                               #   전부 n/a 가 되어 불합격이 사라진다(V2)
+  policy_confirmed: false      # 선택(기본 false). R군 대응 등급 정책이 사용자 확정(G-10)되기
+                               #   전에는 false 로 둔다. false 면 선언 밖 등급이 나와도
+                               #   불합격이 아니라 manual(관측)이다. 금지 3종은 항상 불합격
+  source: "docs/29"            # 선택. 이관 출처
+
+scenarios:
+  - id: F-01                   # 필수. 고유. 중복이면 거부(V2) — 재개 키가 충돌해 한 건이 사라진다
+    plans: [82, 90, 75]        # 필수. **빈 리스트 금지**(V1). 계획서 역추적의 유일한 출처이며
+                               #   이 필드가 "plans 폴더의 기능들을 테스트" 요건을 검증 가능하게 만든다
+    title: "존 선택 역질문 -> 단일 존 선택"
+    kind: normal               # normal | compound | misuse | mistake | misconception | control
+                               #   misuse/mistake/misconception 은 pair_with 필수(V16)
+    env: closed                # closed | sandbox | both. --env 와 안 맞으면 사유와 함께 건너뛴다
+    profile: baseline          # config/scenarios/profiles.yaml 의 키. 미정의면 거부(V2)
+    cache_state: warm          # cold | warm. cold 는 군 맨 앞에 배치된다(순서가 결과를 바꾼다)
+    endpoint: stream           # stream | plain | file | file_stream
+                               #   stream 이 측정 정본이다 — 성공 건의 노드별 지연을 주는 유일한 경로
+    upload: null               # file/file_stream 이면 필수. 저장소 루트 기준 상대 경로
+    repeat: null               # 선택. 미지정 시 R군은 3, 나머지는 --repeat 값
+
+    turns:                     # 필수. 비면 거부
+      - send:                  # 요청 본문. thread_id 는 러너가 자동으로 채운다
+          query: "전체 서버 OS 종류 알려줘"
+        expect:
+          # --- L1 결정적 ---
+          status: clarification          # completed | clarification | error | awaiting_approval
+          http_status: 200
+          intent: data_query
+          db_ids: ["polestar_cm_gp"]
+          row_count: {min: 1, max: 100, eq: null}
+          has_file: false
+          response_must_contain: ["김포"]
+          response_must_not_contain: ["여의도"]
+          clarification: {kind: zone_select, options_len: 3}
+          file: {sheets: ["Sheet1"], columns: ["호스트명"], filled_rows: {min: 1}}
+
+      - send: {selected_db_ids: ["polestar_cm_gp"]}   # HITL 응답은 자연어가 아니라 구조화 필드다
+        expect:
+          # --- L2 구조 ---
+          sql_must_match: ["(?i)limit\\s+100000"]
+          sql_must_not_match: ["(?i)여의도"]
+          column_must_not_map: ["cpu_usage"]   # D-200형 회귀 탐지. 실행 SQL 과 매핑 산출물을 대조
+          node_path: ["field_mapper"]
+          sse_events: ["node_start", "done"]
+          llm_calls: {max: 10}
+          retries: {max: 3}
+          gold_sql: null                       # EX 동등성은 eval_text2sql 로 별도 판정(수동으로 넘어간다)
+
+          # --- L3 유보 ---
+          manual_review: "무엇을 눈으로 봐야 하는가"
+          # 이 키가 남아 있으면 기계 단언이 전부 통과해도 **합격이 아니라 manual** 이다.
+          # 옮긴 만큼만 자동 판정 대상이 된다(§3.4).
+
+    perf: {target_ms: 30000, applies_to_turn: 2}
+    response_modes: [clarify, answer]   # 허용 대응 등급(§3.8).
+                                        #   answer correct clarify guide partial refuse error
+                                        #   금지 3종(silent_wrong hang crash)은 선언과 무관하게 불합격
+    pair_with: null                     # R군 대조군 짝. 서로를 가리켜야 하고 짝의 kind 는 control(V16)
+    depends_on: []                      # 선행 시나리오 ID
+    teardown: [drop_thread]             # drop_thread 는 실행마다 새 thread_id 로 보장된다.
+                                        #   그 밖의 값은 미지원으로 기록되어 리포트 10절에 노출된다
+    notes: "D-154 — 원문 '여의도' 언급이 WHERE 로 새지 않는다"
+
+    mock:                               # 선택. --mock 에서 모의 서버가 돌려줄 응답
+      turns:
+        - {response: "...", clarification: {kind: zone_select, options: [1, 2, 3]}}
+        - {response: "...", executed_sql: "SELECT ...", row_count: 5, delay_ms: 300}

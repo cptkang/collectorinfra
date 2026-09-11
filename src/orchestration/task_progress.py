@@ -7,8 +7,8 @@
 
 - 판정 로직은 없다 — plans/88의 `DependencyVerdict`/`skip_result` 값을 **같은 필드명**으로 실어
   나를 뿐이다(실행 중 표시와 사후 경과 블록이 같은 값에서 나오게 하는 불변식).
-- 부모 run이 없는 컨텍스트(단위 테스트·CLI 직접 호출)에서는 `RuntimeError`가 나므로 삼키고
-  debug 로그만 남긴다. 진행 표시 실패는 질의를 죽이지 않는다.
+- 발행 공통부(`dispatch_progress_event`·`emit_step`)는 `src/utils/progress_events.py`에 있다 —
+  nodes(application)도 같은 함수를 쓰기 위해 utils 계층으로 내렸다(plans/89 T4). 여기서는 재노출한다.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from langchain_core.callbacks.manager import adispatch_custom_event
+from src.utils.progress_events import dispatch_progress_event, emit_step  # noqa: F401 — 재노출
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +98,5 @@ async def emit_task_progress(
     await _dispatch(TASK_EVENT, payload)
 
 
-async def emit_step(name: str, phase: str = "start", *, label: Optional[str] = None) -> None:
-    """노드 내부 마일스톤(예: deep_agent 재개·최종 합성)을 custom event로 낸다."""
-    data: dict[str, Any] = {"phase": phase}
-    if label:
-        data["label"] = label
-    await _dispatch(name, data)
-
-
 async def _dispatch(name: str, data: dict) -> None:
-    try:
-        await adispatch_custom_event(name, data)
-    except RuntimeError as e:  # 부모 run 없음(그래프 밖 호출) — 진행 표시만 생략
-        logger.debug("progress event 생략(%s): %s", name, e)
-    except Exception as e:  # noqa: BLE001 — 표시 실패가 질의를 죽이면 안 된다
-        logger.warning("progress event 발행 실패(%s): %s", name, e)
+    await dispatch_progress_event(name, data)

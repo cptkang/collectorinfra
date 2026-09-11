@@ -1,0 +1,362 @@
+# R3 - 실수 (plans/94 §3.7)
+#
+# 오타/잘못된 값/없는 대상/자기모순. 선의의 어긋남이며 지금 스위트에 0건인 축이다.
+# 단언은 **부정 단언이 주력**이다 - 조용한 유사 대체(silent_wrong)가 이 축의 주적이다.
+version: 1
+group:
+  id: R3
+  name: "실수"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "plans/94 §3.7 R3"
+scenarios:
+  - id: R3-01
+    plans: [61, 37]
+    title: "호스트명 오타 - cocm-hdkapp1 (실제 cocm-hdkapp01)"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-01C
+    response_modes: [correct, clarify, guide]
+    turns:
+      - send: {query: "cocm-hdkapp1 서버의 OS"}
+        expect:
+          manual_review: "교정했다면 교정 사실을 밝혔는가. 조용히 유사 서버로 대체하지 않았는가"
+    teardown: [drop_thread]
+  - id: R3-01C
+    plans: [61, 37]
+    title: "[대조군] 정확한 호스트명"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-01
+    response_modes: [answer]
+    turns:
+      - send: {query: "cocm-hdkapp01 서버의 OS"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R3-02
+    plans: [37, 61]
+    title: "지표명 오타/변형 - 씨피유 사용율"
+    kind: mistake
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-02C
+    response_modes: [correct, answer, clarify]
+    turns:
+      - send: {query: "씨피유 사용율 상위 5대"}
+        expect:
+          manual_review: "유사어 경로로 CPU 사용률에 닿는가"
+    teardown: [drop_thread]
+  - id: R3-02C
+    plans: [37, 61]
+    title: "[대조군] 표준 지표명"
+    kind: control
+    env: both
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-02
+    response_modes: [answer]
+    turns:
+      - send: {query: "CPU 사용률 상위 5대"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R3-03
+    plans: [82, 75]
+    title: "없는 존 - 판교존"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-03C
+    response_modes: [guide, clarify]
+    turns:
+      - send: {query: "판교존 서버 목록"}
+        expect:
+          row_count: {max: 0}
+          manual_review: "0건 응답이 아니라 '그런 존이 없다'고 말하는가"
+    teardown: [drop_thread]
+  - id: R3-03C
+    plans: [82, 75]
+    title: "[대조군] 실제 존"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-03
+    response_modes: [answer, clarify]
+    turns:
+      - send: {query: "은행존 서버 목록"}
+        expect: {manual_review: "정상 조회 또는 존 선택 역질문"}
+    teardown: [drop_thread]
+
+  - id: R3-04
+    plans: [82]
+    title: "없는 서버 - nonexistent-01"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-04C
+    response_modes: [guide, clarify]
+    turns:
+      - send: {query: "nonexistent-01 서버 사양"}
+        expect:
+          manual_review: "대상 부재를 말하는가. 0건을 '조건 과잉'과 섞지 않는가(§6.2-5)"
+    teardown: [drop_thread]
+  - id: R3-04C
+    plans: [82]
+    title: "[대조군] 존재하는 서버 사양"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-04
+    response_modes: [answer]
+    turns:
+      - send: {query: "cocm-hdkapp01 서버 사양"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R3-05
+    plans: [61, 69]
+    title: "없는 기간 - 지난 13월"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-05C
+    response_modes: [clarify, guide]
+    turns:
+      - send: {query: "지난 13월 CPU 사용률"}
+        expect:
+          manual_review: "비존재 구간을 조용히 0건으로 만들지 않는가"
+    teardown: [drop_thread]
+  - id: R3-05C
+    plans: [61, 69]
+    title: "[대조군] 정상 기간"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-05
+    response_modes: [answer]
+    turns:
+      - send: {query: "지난 1개월 CPU 사용률"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R3-06
+    plans: [61, 69]
+    title: "미래 기간 - 2030년 1월 알람"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-06C
+    response_modes: [guide, clarify]
+    turns:
+      - send: {query: "2030년 1월 알람 보여줘"}
+        expect:
+          manual_review: "미래 구간임을 지적하는가. 빈 결과만 돌려주지 않는가"
+    teardown: [drop_thread]
+  - id: R3-06C
+    plans: [44, 45]
+    title: "[대조군] 과거 기간 알람"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-06
+    response_modes: [answer]
+    turns:
+      - send: {query: "지난주 알람 보여줘"}
+        expect: {manual_review: "정상 조회"}
+    teardown: [drop_thread]
+
+  - id: R3-07
+    plans: [61, 88]
+    title: "자기모순 조건 - 90% 초과이면서 10% 미만"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-07C
+    response_modes: [guide, clarify]
+    turns:
+      - send: {query: "CPU가 90% 넘으면서 10% 미만인 서버"}
+        expect:
+          manual_review: "조건 충돌을 지적하는가. 0건 반환만으로 끝내지 않는가"
+    teardown: [drop_thread]
+  - id: R3-07C
+    plans: [61]
+    title: "[대조군] 성립하는 범위 조건"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-07
+    response_modes: [answer]
+    turns:
+      - send: {query: "CPU가 10% 넘고 90% 미만인 서버"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R3-08
+    plans: [7, 41]
+    title: "붙여넣기 사고 - SQL 원문을 통째로"
+    kind: mistake
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-08C
+    response_modes: [clarify, guide, refuse]
+    turns:
+      - send: {query: "SELECT * FROM cmm_resource WHERE 1=1; -- 이거 좀 돌려줘"}
+        expect:
+          sql_must_not_match: ["1=1", "--"]
+          manual_review: "붙여넣은 SQL을 그대로 실행하지 않는가. 의도를 확인하는가"
+    teardown: [drop_thread]
+  - id: R3-08C
+    plans: [7]
+    title: "[대조군] 자연어로 같은 요구"
+    kind: control
+    env: both
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-08
+    response_modes: [answer]
+    turns:
+      - send: {query: "서버 자원 목록 전체 보여줘"}
+        expect: {manual_review: "정상 조회"}
+    teardown: [drop_thread]
+
+  - id: R3-09
+    plans: [9, 79]
+    title: "잘린 입력 - 김포 서버 CP"
+    kind: mistake
+    env: both
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-09C
+    response_modes: [clarify, correct, answer]
+    turns:
+      - send: {query: "김포 서버 CP"}
+        expect:
+          manual_review: "무엇을 물었는지 되묻는가. 임의로 CPU로 단정했다면 그 사실을 밝히는가"
+    teardown: [drop_thread]
+  - id: R3-09C
+    plans: [9, 79]
+    title: "[대조군] 완전한 입력"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-09
+    response_modes: [answer]
+    turns:
+      - send: {query: "김포 서버 CPU 사용률"}
+        expect: {manual_review: "정상 조회"}
+    teardown: [drop_thread]
+
+  - id: R3-10
+    plans: [9, 79]
+    title: "언어 혼용 - show me 김포 서버 cpu usage"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-10C
+    response_modes: [answer]
+    turns:
+      - send: {query: "show me 김포 서버 cpu usage"}
+        expect:
+          status: completed
+          manual_review: "정상 처리되는가 - 회귀 감시 항목이다"
+    teardown: [drop_thread]
+  - id: R3-10C
+    plans: [9, 79]
+    title: "[대조군] 순수 한국어 동일 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-10
+    response_modes: [answer]
+    turns:
+      - send: {query: "김포 서버 cpu 사용률 보여줘"}
+        expect: {status: completed}
+    teardown: [drop_thread]
+
+  - id: R3-11
+    plans: [37, 61]
+    title: "단위 오기 - 메모리 64메가 넘는 서버"
+    kind: mistake
+    env: closed
+    profile: baseline
+    endpoint: stream
+    repeat: 3
+    pair_with: R3-11C
+    response_modes: [answer, clarify, correct]
+    turns:
+      - send: {query: "메모리 64메가 넘는 서버 보여줘"}
+        expect:
+          manual_review: "64MB 로 곧이곧대로 해석해 전건을 반환하고 끝내지 않는가"
+    teardown: [drop_thread]
+  - id: R3-11C
+    plans: [37, 61]
+    title: "[대조군] 단위가 맞는 요구"
+    kind: control
+    env: closed
+    profile: baseline
+    endpoint: stream
+    pair_with: R3-11
+    response_modes: [answer]
+    turns:
+      - send: {query: "메모리 64기가 넘는 서버 보여줘"}
+        expect: {status: completed, row_count: {min: 1}}
+    teardown: [drop_thread]
+
+  - id: R3-12
+    plans: [50]
+    title: "빈 지시 - 응답 없이 공백만"
+    kind: mistake
+    env: both
+    profile: baseline
+    endpoint: plain
+    repeat: 3
+    pair_with: R3-12C
+    response_modes: [error, clarify]
+    turns:
+      - send: {query: " "}
+        expect:
+          manual_review: "min_length=1 검증이 422 로 구조화되어 나오는가. 스택트레이스가 새지 않는가"
+    teardown: [drop_thread]
+  - id: R3-12C
+    plans: [50]
+    title: "[대조군] 짧지만 유효한 지시"
+    kind: control
+    env: both
+    profile: baseline
+    endpoint: plain
+    pair_with: R3-12
+    response_modes: [answer, clarify]
+    turns:
+      - send: {query: "서버"}
+        expect: {manual_review: "저신뢰 입력이 되묻기 또는 정상 처리로 가는가"}
+    teardown: [drop_thread]

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.orchestration import task_progress as tp
+from src.utils import progress_events as pe
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "orchestration"
 
@@ -25,7 +26,7 @@ def captured(monkeypatch):
     async def _fake(name, data, *, config=None):
         events.append((name, data))
 
-    monkeypatch.setattr(tp, "adispatch_custom_event", _fake)
+    monkeypatch.setattr(pe, "adispatch_custom_event", _fake)  # 발행 공통부는 utils(T4 이관)
     return events
 
 

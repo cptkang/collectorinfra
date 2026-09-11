@@ -1,0 +1,133 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: K
+  name: "부하/성능"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: K-01
+    plans: [67, 84]
+    title: "B-01~B-06 각 5회 반복(캐시 warm)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "B-01~B-06 각 5회 반복(캐시 warm)"
+        expect:
+          manual_review: "p50/p95 / p95 ≤10s"
+  - id: K-02
+    plans: [67, 84]
+    title: "동일 질의 첫 호출(스키마 캐시 cold, `캐시 삭제` 후)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "동일 질의 첫 호출(스키마 캐시 cold, `캐시 삭제` 후)"
+        expect:
+          manual_review: "1회 / ≤30s, 이후 warm 회귀"
+  - id: K-03
+    plans: [67, 84]
+    title: "C-02, C-09~C-11 각 3회"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "C-02, C-09~C-11 각 3회"
+        expect:
+          manual_review: "p95 / ≤30s"
+  - id: K-04
+    plans: [67, 84]
+    title: "H-10, H-17(b0 2,328행) 각 3회"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "H-10, H-17(b0 2,328행) 각 3회"
+        expect:
+          manual_review: "전체·`fill` 단계 / ≤60s"
+  - id: K-05
+    plans: [67, 84]
+    title: "/query/stream` SSE로 B-01"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "/query/stream` SSE로 B-01"
+        expect:
+          manual_review: "첫 `node_start`까지 지연, `done`까지 총합 / 토큰 스트림 끊김 없음, 전체 타임아웃(`query_timeout` 60s) 가드 작동"
+  - id: K-06
+    plans: [67, 84]
+    title: "동시 5·10 세션(thread_id 별도)로 B-01·C-01 혼합"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "동시 5·10 세션(thread_id 별도)로 B-01·C-01 혼합"
+        expect:
+          manual_review: "p95, 에러율 / 에러 0, p95 ≤2× 단독"
+  - id: K-07
+    plans: [67, 84]
+    title: "F-07(gp+yd) + 은행존 B-10 동시"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "F-07(gp+yd) + 은행존 B-10 동시"
+        expect:
+          manual_review: "토큰 예산 초과 여부 / `db_errors`에 \"input tokens must be\" 0건"
+  - id: K-08
+    plans: [67, 84]
+    title: "30초 초과 유도(C-10을 24개월 범위)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "30초 초과 유도(C-10을 24개월 범위)"
+        expect:
+          manual_review: "타임아웃 응답 / 무한 대기 없음, 구조화 에러"
+  - id: K-09
+    plans: [67, 84]
+    title: "10,000행 초과 결과(전체 서버×시간 grain `cmm_metric_stat_h`)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "10,000행 초과 결과(전체 서버×시간 grain `cmm_metric_stat_h`)"
+        expect:
+          manual_review: "max_rows 절단 / 절단 사실 응답에 명시"
+  - id: K-10
+    plans: [67, 84]
+    title: "재시도 예산 소진(고의 오매핑 유사어 등록 후 조회)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "재시도 예산 소진(고의 오매핑 유사어 등록 후 조회)"
+        expect:
+          manual_review: "retry ≤3, 실패 사유 / trace 파일 생성 확인"

@@ -1,0 +1,97 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: E
+  name: "복합/멀티인텐트"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: E-01
+    plans: [88, 82, 80, 78]
+    title: "polestar DB 캐시를 갱신하고 서버 목록도 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "polestar DB 캐시를 갱신하고 서버 목록도 조회해줘"
+        expect:
+          manual_review: "t1 cache_management ∥ t2 data_query (병렬) / 두 결과 합산 응답"
+  - id: E-02
+    plans: [88, 82, 80, 78]
+    title: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
+        expect:
+          manual_review: "t1 alarm_query → t2 data_query(`input_from=t1`) / t1 호스트 집합이 t2 WHERE IN으로 전달"
+  - id: E-03
+    plans: [88, 82, 80, 78]
+    title: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
+        expect:
+          manual_review: "t1 data_query → t2 process_query / 프로세스 API 대상 = t1 결과"
+  - id: E-04
+    plans: [88, 82, 80, 78]
+    title: "김포 서버 목록과 여의도 서버 목록을 각각 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포 서버 목록과 여의도 서버 목록을 각각 알려줘"
+        expect:
+          manual_review: "위치어 보존, DB별 실행 / 두 표"
+  - id: E-05
+    plans: [88, 82, 80, 78]
+    title: "해당 서버 프로세스 이력 지난 7일 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "해당 서버 프로세스 이력 지난 7일 보여줘"
+        expect:
+          manual_review: "process_query 아님 → data_query(이력 키워드 거부)"
+  - id: E-06
+    plans: [88, 82, 80, 78]
+    title: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+        expect:
+          manual_review: "단일 SQL NOT EXISTS 또는 2태스크 / 결과 집합 동일해야 함"
+  - id: E-07
+    plans: [88, 82, 80, 78]
+    title: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
+        expect:
+          manual_review: "3도메인 조인"

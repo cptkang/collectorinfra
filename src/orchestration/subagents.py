@@ -49,6 +49,7 @@ from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
+from src.utils.progress_events import emit_step
 from src.utils.query_gen_common import (
     build_zone_clarification,
     has_host_identifier_filter,
@@ -547,18 +548,27 @@ async def _run_single_db_pipeline(
     # SQL 재생성 재시도 예산 — config 단일 출처 (D-099, Plan 69 P0-⑧)
     _max_retry = app_config.query.max_retry_count if app_config else 3
 
+    # 단계 마일스톤(plans/89 T4): 서브에이전트 안에서는 노드가 함수로 불려 바깥 그래프에
+    # node 이벤트가 없다 — 각 단계 앞뒤에 `pipeline.<stage>` custom event를 내 상태줄이 따라온다.
     # 1) 스키마 분석 (1회)
+    await emit_step("pipeline.schema", "start", label="스키마 분석")
     state.update(await schema_analyzer(state, llm=llm, app_config=app_config))
+    await emit_step("pipeline.schema", "end")
 
     steps = 0
     while steps < _MAX_PIPELINE_STEPS:
         steps += 1
 
         # 2) SQL 생성
+        _gen_label = "SQL 생성" if steps == 1 else f"SQL 재생성 {steps - 1}회차"
+        await emit_step("pipeline.generate", "start", label=_gen_label)
         state.update(await query_generator(state, llm=llm, app_config=app_config))
+        await emit_step("pipeline.generate", "end")
 
         # 3) 검증
+        await emit_step("pipeline.validate", "start", label="SQL 검증")
         state.update(await query_validator(state, app_config=app_config))
+        await emit_step("pipeline.validate", "end")
         if not state["validation_result"]["passed"]:
             if state.get("retry_count", 0) >= _max_retry:
                 # 검증 실패 + 재시도 초과 → 에러 종료
@@ -571,7 +581,9 @@ async def _run_single_db_pipeline(
             continue
 
         # 4) 실행
+        await emit_step("pipeline.execute", "start", label="SQL 실행")
         state.update(await query_executor(state, app_config=app_config))
+        await emit_step("pipeline.execute", "end")
         if state.get("error_message"):
             if state.get("retry_count", 0) >= _max_retry:
                 break
@@ -1144,13 +1156,17 @@ async def run_data_query_pipeline(
 
     # 2) 실행 — 단일/멀티 분기
     if is_multi_db:
+        await emit_step("pipeline.multi_db", "start", label=f"멀티 DB 조회 {len(targets)}곳")
         s.update(await multi_db_executor(s, llm=llm, app_config=app_config))
         s.update(await result_merger(s, app_config=app_config))
+        await emit_step("pipeline.multi_db", "end")
     else:
         s.update(await _run_single_db_pipeline(s, llm, app_config))
 
     # 3) 결과 정리
+    await emit_step("pipeline.organize", "start", label="결과 정리")
     s.update(await result_organizer(s, llm=llm, app_config=app_config))
+    await emit_step("pipeline.organize", "end")
 
     result: dict = {
         "organized_data": s.get("organized_data"),

@@ -50,3 +50,9 @@ sre_agent/.data/
 eval_results/
 # DRM 연동 가이드(내부 정보 포함 — 저장소 반입 금지, 로컬 별도 보관)
 docs/servicelinker_guide/
+
+# 벤치마크 산출물 (plans/93 · D-211) — 실행마다 쌓이는 생성물이라 추적하지 않는다
+results/bench/
+
+# 시나리오 스위트 산출물 (plans/94 · D-212) — raw.jsonl·리포트·분석은 실행 생성물이다
+results/scenario/

@@ -1,0 +1,117 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: I
+  name: "폼필 HITL/기억"
+  latency_target_ms: 60000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: I-01
+    plans: [73, 58]
+    title: "H-04 양식에 `담당자` 열 추가 → 채워줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "H-04 양식에 `담당자` 열 추가 → 채워줘"
+        expect:
+          manual_review: "`form_fill_clarification{fields:[담당자], candidates(라이브 스키마)}` — 모든 열이 0이면 재질문 아님"
+  - id: I-02
+    plans: [73, 58]
+    title: "답변 턴: `form_fill_answers={\"담당자\":{\"kind\":\"literal\",\"value\":\"인프라팀\"}}`, `"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "답변 턴: `form_fill_answers={\"담당자\":{\"kind\":\"literal\",\"value\":\"인프라팀\"}}`, `form_fill_remember=true`, 파일 재첨부 없음"
+        expect:
+          manual_review: "원본 바이트 재생, **존 유지**(D-177 — 로그 `폼필 답변 턴(D-151): … 존 복원=[...]`), 담당자 열 전행 '인프라팀', `[사용자 답변 적용 내역]`"
+  - id: I-03
+    plans: [73, 58]
+    title: "같은 양식 재업로드 + 채워줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "같은 양식 재업로드 + 채워줘"
+        expect:
+          manual_review: "저장값 자동 적용 `[확인 이력 적용]`, 재질문 없음"
+  - id: I-04
+    plans: [73, 58]
+    title: "?"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "?"
+        expect:
+          manual_review: "저장 값 패널(`form_memory_panel`), LLM 미호출"
+  - id: I-05
+    plans: [73, 58]
+    title: "이 양식에 저장된 내용은?"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "이 양식에 저장된 내용은?"
+        expect:
+          manual_review: "동일 패널"
+  - id: I-06
+    plans: [73, 58]
+    title: "기억한 값으로 채워줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "기억한 값으로 채워줘"
+        expect:
+          manual_review: "기억 명령 **아님** → 채움 실행"
+  - id: I-07
+    plans: [73, 58]
+    title: "패널에서 담당자 삭제(`form_memory_delete`) → 재업로드"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "패널에서 담당자 삭제(`form_memory_delete`) → 재업로드"
+        expect:
+          manual_review: "담당자 재질문 부활"
+  - id: I-08
+    plans: [73, 58]
+    title: "월 시리즈 열에 답변으로 덮어쓰기 시도"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    turns:
+      - send:
+          query: "월 시리즈 열에 답변으로 덮어쓰기 시도"
+        expect:
+          manual_review: "거부 사유 \"구조 채움 필드는 답변으로 변경할 수 없습니다\""

@@ -1,6 +1,6 @@
 # Plan 89 구현 계획 — 스트리밍 진행 상태 (D-204)
 
-근거: `plans/89-WIP-streaming-progress-status-line.md` v2 · `CAPABILITY-MAP-89.md` · SPEC 3건.
+근거: `plans/89-streaming-progress-status-line.md` v2 · `CAPABILITY-MAP-89.md` · SPEC 3건.
 게이트 G-1~G-5는 권고안을 가정으로 채택(사용자 지시 2026-09-09 "구현을 진행하라").
 
 ## 순서와 검증 체크포인트

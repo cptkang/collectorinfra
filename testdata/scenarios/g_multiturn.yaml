@@ -1,0 +1,87 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: G
+  name: "멀티턴 - 지시어/승계"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: G-01
+    plans: [50]
+    title: "cocm-hdkapp01 서버의 OS 확인"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "cocm-hdkapp01 서버의 OS 확인"
+        expect:
+          manual_review: "1행"
+      - send:
+          query: "해당 서버의 최근 1개월 CPU 사용률 평균/최대"
+        expect:
+          manual_review: "`previous_entities`로 hostname 승계, stat 테이블"
+      - send:
+          query: "네 그럼 메모리도 보여줘"
+        expect:
+          manual_review: "같은 서버 유지"
+      - send:
+          query: "해당 서버 프로세스 보여줘"
+        expect:
+          manual_review: "process_query, 대상 DB 승계"
+      - send:
+          query: "지난 한 달 동안 해당 서버의 알람을 분석해줘"
+        expect:
+          manual_review: "alarm_query, hostname 필터"
+    teardown: [drop_thread]
+  - id: G-02
+    plans: [50]
+    title: "CPU 사용률 상위 3대 서버"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "CPU 사용률 상위 3대 서버"
+        expect:
+          manual_review: "3행"
+      - send:
+          query: "그 서버들의 제조사와 모델"
+        expect:
+          manual_review: "3대 IN 필터"
+      - send:
+          query: "전체 서버 제조사 분포"
+        expect:
+          manual_review: "**승계 해제**(전체 키워드 우선) — 3대로 좁혀지지 않음"
+    teardown: [drop_thread]
+  - id: G-03
+    plans: [50]
+    title: "그 장비 정보 (첫 턴, 이전 컨텍스트 없음)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "그 장비 정보 (첫 턴, 이전 컨텍스트 없음)"
+        expect:
+          manual_review: "식별자 없음 → 재질문 또는 안내, 에러 아님"
+  - id: G-04
+    plans: [50]
+    title: "(G-01 진행 중) 프로세스 결과에 `name=mysql` 행이 있는 상태에서 \"해당 서버 OS\""
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "(G-01 진행 중) 프로세스 결과에 `name=mysql` 행이 있는 상태에서 \"해당 서버 OS\""
+        expect:
+          manual_review: "프로세스 행이 서버로 수확되지 않음"

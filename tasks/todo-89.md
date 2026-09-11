@@ -30,5 +30,7 @@
   - Verify: `grep -n "D-204" docs/02_decision.md` 3표 모두
   - Files: docs/02_decision.md, plans/INDEX.md, plans/89-*.md
 - [x] 회귀(2026-09-09: 1215 passed · 신규 52 · arch 0 · overfit 0; ruff 미설치로 생략) — `pytest tests/test_api tests/test_multiturn tests/test_orchestration tests/test_composite -q` · `arch_check --ci` · `overfit_check --ci` · `ruff check`
-- [ ] T4 핸들러 마일스톤(schema_analyzer 샘플 수집) — 체감 확인 뒤 필요 시(계획서 §5 순서대로 보류)
+- [x] T4 핸들러 마일스톤 — `schema.sample` k/n(`_collect_live_samples`) · `pipeline.<stage>` 6종(subagents) · `stepLabels` 보강 (2026-09-10 · 사용자 지시로 보류 해제)
+  - Verify: `pytest tests/test_orchestration/test_handler_milestones.py -q` · `arch_check --ci`
+  - Files: src/utils/progress_events.py, src/nodes/schema_analyzer.py, src/orchestration/subagents.py, src/orchestration/task_progress.py, src/static/js/app.js
 - [x] D-번호 재부여 반영 — 병렬 세션이 D-199→D-204 일괄 치환(2026-09-09 완료 · 본문 등재는 이 세션)

@@ -1,7 +1,7 @@
 # 89. 스트리밍 응답 진행 상태 표시 — 커서 아래 현재 단계·경과 시간 · 무이벤트 구간 계측
 
 > **작성일**: 2026-09-09
-> **성격**: 구현 계획(implementation-ready) · **상태: 구현 중(-WIP, 2026-09-09) — T0~T3·T5·T7·T9 랜딩, 잔여 T4(schema_analyzer 샘플 수집 마일스톤)·실 브라우저 체감 확인(과금 승인). T8 완료 — D-204 본문 등재(2026-09-09) · 회귀 1265 passed** ·
+> **성격**: 구현 계획(implementation-ready) · **상태: 완료(2026-09-10 · 태그 해제) — T0~T9 전건 랜딩(T4 핸들러 마일스톤 2026-09-10 · v4) · D-204 본문 등재 · 코드 잔여 0. 후속(코드 아님 · D-127 승인 대기): 실 브라우저 체감 확인 1회 · `RUN_E2E=1` playwright 실행 · 소요시간 분포 계측 착수 여부(§8)** ·
 > v2(2026-09-09): `plans/88` 연계 — 복합 질의 단계 표시(§1.4 · §3.4 · T9 · G-5) 추가 ·
 > v3(2026-09-09): 구현 랜딩 — 게이트 G-1~G-5는 권고안을 가정으로 채택(사용자 지시 "구현을 진행하라"), SDD 산출물
 > `CAPABILITY-MAP-89.md` · `SPEC-sse-progress-contract.md` · `SPEC-composite-task-progress.md` · `SPEC-stream-status-ui.md` ·
@@ -396,7 +396,7 @@ T4는 T5 뒤로 미룬 이유: ①②④만으로 1단 경로의 침묵이 "도�
 - 코드: §5 파일 목록. 신규 테스트 예상 16~24건(T9 포함).
 - 문서: D-204 본문(`docs/02_decision.md`) · `plans/INDEX.md` 89행 상태 · SSE 이벤트 계약 문서.
 - 잔여(구현 후): 실 브라우저 체감 확인 1회(과금 승인) · `RUN_E2E=1` playwright 실행(승인) ·
-  소요시간 분포 계측 착수 여부.
+  소요시간 분포 계측 착수 여부. **(2026-09-10) 코드 잔여 0 — 위 3건은 전부 사용자 승인 사항이라 태그 해제.**
 
 ---
 
@@ -414,3 +414,10 @@ T4는 T5 뒤로 미룬 이유: ①②④만으로 1단 경로의 침묵이 "도�
   F2 취지는 `finally`의 유한 대기(`_PRODUCER_CANCEL_GRACE_SEC`=1s)로 반영. 상류 헬퍼는 `test_stream_guard.py`가
   임포트해 정의만 유지. ★상류가 D-203~D-202를 선점해 본 계획의 D-204는 **D-204로 재부여**(병렬 세션 일괄 치환).
   잔여: T4 · T8 · 실 브라우저 확인.
+- v4(2026-09-10) — **T4 핸들러 마일스톤 랜딩**(사용자 지시 "다음 계획을 구현하라"). 발행 공통부를 `src/utils/progress_events.py`로 내려
+  nodes(application)·orchestration이 같은 `emit_step`을 쓴다(계층 위반 없이 — `task_progress`는 재노출). ①`schema_analyzer` 라이브
+  샘플 수집 루프를 `_collect_live_samples` 헬퍼로 추출하고 테이블마다 `schema.sample` start(`샘플 수집 k/n`) + 종료 1회(예산 소진
+  스킵은 완료 수에서 뺀다) ②`subagents._run_single_db_pipeline` 4단계(`pipeline.schema/generate/validate/execute`, 재생성은
+  `SQL 재생성 k회차`) + `run_data_query_pipeline`의 `pipeline.multi_db`(대상 N곳)·`pipeline.organize` start/end ③`app.js`
+  `stepLabels` 7종 보강(서버 label 우선). deep_agent 재개/합성은 T9에서 이미 랜딩. 신규 테스트 13건(`test_handler_milestones.py`) ·
+  실 LLM 0 · arch 0 · overfit 신규 유입 0. §3.2-③ 표의 4구간 전부 배선 완료 → 코드 잔여 0 · `-WIP` 해제.
