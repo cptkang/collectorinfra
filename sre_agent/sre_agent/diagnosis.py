@@ -12,6 +12,7 @@ from holmes.core.prompt import build_initial_ask_messages
 from holmes.core.tool_calling_llm import ToolCallingLLM
 from holmes.core.tools import ToolsetTag
 
+from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import LOAD_GUARD_NOTE, vm_profile
 
@@ -132,6 +133,10 @@ class DiagnosisAgent:
         그대로 유지한다.
         """
         self.settings = settings or AgentSettings()
+        # D-213 후속: holmes 압축 산출물이 Qwen 템플릿(system은 맨 앞만)과 충돌해 조사가
+        # 전건 실패하는 것을 막는다. 교정할 것이 없으면 no-op이라 정상 경로는 비트 동일.
+        if self.settings.system_message_position_fix:
+            install_system_message_guard()
         self._config = Config(
             model=self.settings.model,
             api_key=self.settings.api_key,
