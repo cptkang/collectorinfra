@@ -590,3 +590,18 @@ def test_비용축은_LLM호출이_없으면_노드수로_잰다() -> None:
 
     assert "노드 수 +4.00" in v.sentence
     assert "LLM 호출" not in v.sentence, "재지 못한 것을 쟀다고 말하지 않는다"
+
+
+def test_판정_가능_집계는_러너가_건너뛰는_시나리오를_뺀다() -> None:
+    """A-05·A-10 은 teardown 미지원(상태 오염)으로 매 arm 에서 건너뛴다 — 실행 대상이 아니다."""
+    catalog = sweep.load_normal_catalog(env="closed")
+    judged, runnable = sweep.judgeable_count(catalog)
+
+    # 러너 규칙과 독립적으로 다시 센다(오라클).
+    skipped = {s.id for s in catalog.scenarios
+               if not s.prompt_authored or [a for a in s.teardown if a != "drop_thread"]}
+
+    assert {"A-05", "A-10"} <= skipped
+    assert runnable == len(catalog.scenarios) - len(skipped)
+    assert judged <= runnable
+    assert f"{len(skipped)}건은 러너가 건너뛴다" in sweep.workload_summary(catalog)

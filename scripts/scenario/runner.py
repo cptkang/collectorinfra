@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import platform
+import signal
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +30,17 @@ RESULTS_ROOT = REPO_ROOT / "results" / "scenario"
 # --estimate 의 LLM 호출 가정치. 실측이 아니라 **가정**이므로 출력에 그 사실을 함께 적는다.
 # 1단 deep_agent 경로의 턴당 호출 수는 아직 측정되지 않았다 - S5 이후 이 값을 실측으로 바꾼다.
 ASSUMED_LLM_CALLS_PER_TURN = 6
+
+#: 모든 프로파일에 **똑같이** 주입하는 격리 설정. 측정 축이 아니다.
+#:
+#: `ALARM_ENABLED=true` 인 환경(폐쇄망 운영 `.env`)에서 기동한 프로파일 서버는 in-process
+#: 알람 워커를 띄워 운영 스트림 `alarm:raw` 를 **운영과 같은 consumer group**
+#: (`alarm-workers`)으로 XREADGROUP 한다. 그룹 안에서 메시지는 소비자끼리 나눠 가지므로
+#: 벤치마크가 도는 동안 운영 알람 일부를 벤치 서버가 가져간다(2026-09-14 폐쇄망 스위프
+#: 기동 로그 실측: "알람 워커 시작 … group=alarm-workers").
+#: 이 플래그는 서버 기동·설정 재적용·워커 자신에서만 읽혀 질의 경로에 닿지 않는다.
+#: 프로파일이 같은 키를 명시하면 프로파일 값이 이긴다(알람 자체를 시험하는 프로파일).
+ISOLATION_ENV: dict[str, str] = {"ALARM_ENABLED": "false"}
 
 
 @dataclass
@@ -312,8 +326,50 @@ def acquire_tokens(
     return user_token, admin_token, reasons
 
 
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """SIGTERM(·SIGBREAK)을 SystemExit 으로 바꿔 프로파일별 `finally` 가 돌게 한다.
+
+    프로파일 서버는 `start_new_session=True` 로 **별도 세션**에 띄운다(Ctrl+C 가 자식에게
+    번지지 않게). 그 대가로 부모가 SIGTERM 에 죽으면 — `kill <pid>`, `timeout`, 작업
+    스케줄러 종료 — 파이썬 기본 동작은 `finally` 없이 즉시 종료라 **자식이 고아로 남는다**.
+    Ctrl+C(SIGINT)는 KeyboardInterrupt 라 괜찮았지만, nohup 장시간 런을 멈추는 방법은 kill 이다.
+    2026-09-14 실측: 강제 종료된 런들에서 모의 서버 7개가 ppid=1 로 남아 있었다. 실 모드였다면
+    Redis·DB 연결을 쥔 앱 서버다.
+
+    첫 신호를 받으면 같은 신호를 무시로 돌려 **정리 도중 두 번째 kill 에 끊기지 않게** 한다.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        # signal.signal 은 메인 스레드에서만 걸린다 - 다른 스레드에서는 종전 동작 그대로.
+        yield
+        return
+    names = ["SIGTERM"] + (["SIGBREAK"] if hasattr(signal, "SIGBREAK") else [])
+    previous: dict[int, Any] = {}
+
+    def _raise(signum: int, _frame: Any) -> None:
+        signal.signal(signum, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+
+    for name in names:
+        sig = getattr(signal, name)
+        previous[sig] = signal.signal(sig, _raise)
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
-    """런 1회를 수행하고 산출 디렉터리 경로·요약을 돌려준다."""
+    """런 1회를 수행하고 산출 디렉터리 경로·요약을 돌려준다.
+
+    kill 로 멈춰도 그때까지의 원시 로그는 남고(추가 기록식) 같은 명령으로 이어받는다.
+    """
+    with _terminate_as_exit():
+        return _execute(catalog, config)
+
+
+def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     meta = run_meta(config, catalog)
     out_dir = RESULTS_ROOT / meta["run_id"]
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -326,7 +382,10 @@ def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     executed = 0
 
     for profile, scenarios in iter_executions(catalog, config):
-        overrides = dict(catalog.profiles.get(profile, {}))
+        # 주입하는 것은 전부 에코로 확인한다 - 격리 설정도 예외가 아니다(.encenv 우선순위로
+        # 조용히 무시되면 격리한 줄 알고 운영 알람을 계속 나눠 가진다).
+        expected = {**ISOLATION_ENV, **catalog.profiles.get(profile, {})}
+        overrides = dict(expected)
         # 운영 checkpoints.db(실측 82MB) 오염 금지 - 런 전용 체크포인트로 격리한다(§2-3).
         overrides["CHECKPOINT_DB_URL"] = str(out_dir / f"checkpoints-{profile}.db")
         port = pick_port(config.port)
@@ -342,10 +401,15 @@ def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
             handle.start()
             from .server import verify_profile
 
+            # 로그인은 서버가 뜬 뒤에만 성립한다. 기동 중인 포트에 붙으면 ConnectError
+            # (WinError 10061)로 토큰을 못 받아 설정 에코 401 -> 프로파일 INVALID 가 된다
+            # (2026-09-14 폐쇄망 런 20260914-150834). 헬스 실패면 로그인하지 않는다 -
+            # 사유는 verify_profile 의 "헬스 실패" 하나만 남아야 원인이 가려지지 않는다.
+            healthy = handle.mock or handle.wait_healthy()[0]
             user_token, admin_token, login_reasons = (
-                (None, None, []) if handle.mock else acquire_tokens(port, config)
+                acquire_tokens(port, config) if healthy and not handle.mock else (None, None, [])
             )
-            status = verify_profile(handle, catalog.profiles.get(profile, {}), admin_token)
+            status = verify_profile(handle, expected, admin_token)
             status.reasons.extend(login_reasons)
             if status.auth_enabled and not user_token:
                 # 여기서 끊지 않으면 시나리오 전건이 401 을 받아 "실행됐지만 전부 오류"인
@@ -419,11 +483,13 @@ def _run_profile(
     with ScenarioClient(client_config) as client:
         for scenario in scenarios:
             if not scenario.prompt_authored:
-                # 원문이 산문이라 보낼 프롬프트가 없다. 실행하면 무의미한 결과에 돈만 나간다.
+                # 보낼 프롬프트가 없거나(원문이 산문) 러너가 그 흐름을 표현하지 못한다
+                # (반복·동시성·쓰기 선행 조건). 원인을 여기서 단정하지 않는다 - 사유는
+                # 시나리오 파일의 해당 항목 주석에 적는다(k_load.yaml 선례).
                 skipped.append({
                     "scenario_id": scenario.id,
-                    "reason": "프롬프트 미작성 - 원문이 산문(시나리오/방법 서술)이라 "
-                              "사람이 실제 프롬프트로 고쳐 써야 한다",
+                    "reason": "prompt_authored: false - 실행 불가 사유는 시나리오 파일의 "
+                              "해당 항목 주석에 있다",
                 })
                 continue
             repeats = scenario.repeat or (3 if scenario.is_r_group else config.repeat)

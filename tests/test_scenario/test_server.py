@@ -196,3 +196,27 @@ def test_W3_netsh_출력_형식을_파싱한다(monkeypatch: pytest.MonkeyPatch)
     if server_mod.IS_WINDOWS:
         pytest.skip("POSIX 전용 단언")
     assert server_mod.windows_excluded_ports() == []
+
+
+# --- 헬스 대기는 기동 1회당 한 번 (2026-09-14) ----------------------------
+
+def test_헬스_대기는_기동_1회당_한_번만_돈다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """러너(로그인 전)와 verify_profile 이 둘 다 헬스를 묻는다.
+
+    살아 있지만 뜨지 않는 서버에서 대기가 두 번 돌면 arm 당 180초가 된다 — 환경이 깨진
+    62 arm 런이면 약 1.5시간을 더 태운 뒤에야 전부 INVALID 가 드러난다.
+    """
+    handle = ServerHandle(profile="p", env_overrides={}, port=1, log_path=tmp_path / "s.log")
+    polls: list[float] = []
+
+    def fake_poll(timeout_sec: float) -> tuple[bool, str]:
+        polls.append(timeout_sec)
+        return False, "헬스 대기 90초 초과 (마지막: ConnectError)"
+
+    monkeypatch.setattr(handle, "_poll_health", fake_poll)
+
+    first = handle.wait_healthy()
+    second = handle.wait_healthy()
+
+    assert first == second == (False, "헬스 대기 90초 초과 (마지막: ConnectError)")
+    assert len(polls) == 1, "두 번째 호출은 기억한 결과를 돌려줘야 한다"

@@ -260,6 +260,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         else:
             say("  접속: AUTH_ENABLED=false 를 모든 arm에 동일 주입 — 인증은 측정 축이 "
                 "아니므로 비교에 영향 없음. 인증을 켠 채로 재려면 --user/--password 를 주세요.")
+        # 러너가 모든 프로파일에 주입한다(runner.ISOLATION_ENV). 화면에도 적는다 —
+        # 운영 스트림을 건드리지 않는다는 사실은 실행하는 사람이 알아야 한다.
+        say("  격리: ALARM_ENABLED=false 를 모든 arm에 동일 주입 — 벤치 서버가 운영 알람 "
+            "스트림을 같은 consumer group으로 나눠 소비하지 않게 한다.")
         if not (creds.admin_user and creds.admin_password):
             say("  ※ 운영자 크레덴셜을 찾지 못했습니다(ADMIN_USERNAME/ADMIN_PASSWORD). "
                 "인증이 켜진 서버라면 설정 에코 검증이 실패해 arm이 전부 INVALID 가 됩니다.")

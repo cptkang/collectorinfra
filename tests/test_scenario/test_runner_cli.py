@@ -103,7 +103,8 @@ def test_프롬프트_미작성_시나리오는_사유와_함께_건너뛴다(
     monkeypatch.setattr(runner_mod, "RESULTS_ROOT", tmp_path)
     summary = execute(catalog, RunConfig(mode="mock", env="sandbox", only=["T-99"]))
     assert summary["executed_turns"] == 0
-    assert any("프롬프트 미작성" in s["reason"] for s in summary["skipped"])
+    # 사유 문구는 원인을 단정하지 않는다(산문일 수도, 러너가 표현 못 할 수도) - 필드명으로 본다.
+    assert any("prompt_authored: false" in s["reason"] for s in summary["skipped"])
 
 
 def test_기동이_실패해도_프로파일이_리포트에서_사라지지_않는다(

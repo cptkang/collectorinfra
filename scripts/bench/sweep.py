@@ -201,7 +201,13 @@ def judgeable_count(catalog) -> tuple[int, int]:
     판정기가 보류로 남기고 93이 정확도 비교에서 제외하기 때문이다. 이 비율이 낮으면
     스위프는 완주율·지연만 재는 것이고, 그 사실이 실행 전에 보여야 한다.
     """
-    runnable = [s for s in catalog.scenarios if s.prompt_authored]
+    # 러너가 건너뛰는 것은 실행 대상이 아니다 — 프롬프트 미작성과 teardown 미지원(상태 오염).
+    # 종전에는 앞의 것만 빼서 A-05·A-10(캐시 갱신·유사어 등록)을 실행 대상으로 셌다
+    # (2026-09-14 모의 스위프: 두 건은 매 arm 에서 teardown 사유로 건너뛰었다).
+    # 판정은 러너의 `_teardown` 을 그대로 쓴다 — 여기서 규칙을 따로 두면 한쪽만 낡는다.
+    _, sc_runner = scenario_harness()
+    runnable = [s for s in catalog.scenarios
+                if s.prompt_authored and not sc_runner._teardown(s)]
     judged = sum(
         1 for s in runnable
         if any(set(t.expect) - {"manual_review"} for t in s.turns)
@@ -214,13 +220,14 @@ def workload_summary(catalog) -> str:
     import collections
 
     groups = collections.Counter(s.group for s in catalog.scenarios)
-    unauthored = sum(1 for s in catalog.scenarios if not s.prompt_authored)
     names = ", ".join(
         f"{key}({count})" for key, count in sorted(groups.items())
     ) or "없음"
     judged, runnable = judgeable_count(catalog)
     pct = (judged / runnable * 100.0) if runnable else 0.0
-    tail = f" · 프롬프트 미작성 {unauthored}건은 건너뛴다" if unauthored else ""
+    skipped = len(catalog.scenarios) - runnable
+    tail = (f" · {skipped}건은 러너가 건너뛴다(프롬프트 미작성·teardown 미지원)"
+            if skipped else "")
     return (f"시나리오 {len(catalog.scenarios)}건 — 그룹 {names}{tail}\n"
             f"            정확도 판정 가능 {judged}/{runnable}건({pct:.0f}%) "
             f"— 나머지는 완주율·지연만 잰다")

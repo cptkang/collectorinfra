@@ -315,3 +315,93 @@ def test_회귀가_없으면_재시도는_0이다(client) -> None:
     client._consume_sse(_Resp(events), obs, started=_time.perf_counter())
 
     assert obs.retries == 0 and obs.node_count == 2
+
+
+# --- kill 로 멈춰도 서버를 남기지 않는다 (2026-09-14) ----------------------
+#
+# 프로파일 서버는 별도 세션에 뜬다. 부모가 SIGTERM 에 죽으면 파이썬 기본 동작은
+# `finally` 없이 종료라 자식이 고아로 남았다 — 강제 종료된 런들에서 모의 서버 7개가
+# ppid=1 로 남아 있었다. nohup 장시간 런을 멈추는 방법이 kill 이다.
+
+def _one_scenario_catalog():
+    from scripts.scenario.catalog import Catalog, Group, Scenario, Turn
+
+    return Catalog(
+        groups={"T": Group(id="T", name="t", latency_target_ms=10000)},
+        scenarios=[Scenario(id="T-01", group="T", plans=[94], title="t",
+                            turns=[Turn(send={"query": "q"}, expect={})],
+                            profile="baseline")],
+        profiles={"baseline": {"TEXT2SQL_X": "true"}},
+    )
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX 신호 전달 경로")
+def test_SIGTERM_을_받아도_프로파일_서버를_정리한다(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import signal as _signal
+    import time as _time
+
+    stopped: list[str] = []
+
+    class _KilledDuringStart(_StubHandle):
+        def start(self) -> None:
+            os.kill(os.getpid(), _signal.SIGTERM)   # 기동 도중 kill 이 들어온다
+            _time.sleep(1.0)
+
+        def stop(self) -> None:
+            stopped.append(self.profile)
+
+    monkeypatch.setattr(runner_mod, "RESULTS_ROOT", tmp_path)
+    monkeypatch.setattr(runner_mod, "ServerHandle", _KilledDuringStart)
+    monkeypatch.setattr(runner_mod, "pick_port", lambda port=None: 5097)
+    before = _signal.getsignal(_signal.SIGTERM)
+
+    with pytest.raises(SystemExit) as exited:
+        runner_mod.execute(_one_scenario_catalog(),
+                           runner_mod.RunConfig(mode="mock", env="sandbox", run_id="sigterm"))
+
+    assert stopped == ["baseline"], "finally 가 돌지 않으면 서버가 고아로 남는다"
+    assert exited.value.code == 128 + _signal.SIGTERM
+    assert _signal.getsignal(_signal.SIGTERM) == before, "런이 끝나면 신호 처리를 되돌린다"
+
+
+def test_알람_워커는_모든_프로파일에서_끄고_에코로_확인한다(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """운영 `alarm:raw` 를 같은 consumer group 으로 나눠 소비하지 않게 한다."""
+    from scripts.scenario.server import ProfileStatus
+
+    seen: dict[str, dict[str, str]] = {}
+
+    class _Capture(_StubHandle):
+        def __init__(self, profile, env_overrides, port, log_path, mock):
+            super().__init__(profile, env_overrides, port, log_path, mock)
+            seen["env"] = dict(env_overrides)
+
+    def fake_verify(handle, overrides, admin_token, expected_tier=None):
+        seen["verified"] = dict(overrides)
+        status = ProfileStatus(name=handle.profile, port=handle.port)
+        status.reasons.append("테스트 - 기동 검증에서 멈춘다")
+        return status
+
+    monkeypatch.setattr(runner_mod, "RESULTS_ROOT", tmp_path)
+    monkeypatch.setattr(runner_mod, "ServerHandle", _Capture)
+    monkeypatch.setattr(runner_mod, "pick_port", lambda port=None: 5096)
+    monkeypatch.setattr(runner_mod, "acquire_tokens", lambda port, config: (None, None, []))
+    monkeypatch.setattr("scripts.scenario.server.verify_profile", fake_verify)
+
+    runner_mod.execute(_one_scenario_catalog(),
+                       runner_mod.RunConfig(mode="run", env="sandbox", run_id="isolate"))
+
+    assert seen["env"]["ALARM_ENABLED"] == "false"
+    assert seen["verified"]["ALARM_ENABLED"] == "false", "주입했으면 에코로 확인해야 한다"
+    assert seen["verified"]["TEXT2SQL_X"] == "true", "프로파일 값은 그대로 실린다"
+    assert "CHECKPOINT_DB_URL" not in seen["verified"], "런 전용 경로는 에코 대조 대상이 아니다"
+
+
+def test_프로파일이_알람을_명시하면_프로파일이_이긴다() -> None:
+    """알람 자체를 시험하는 프로파일은 격리 기본값에 막히면 안 된다."""
+    merged = {**runner_mod.ISOLATION_ENV, **{"ALARM_ENABLED": "true"}}
+    assert merged["ALARM_ENABLED"] == "true"

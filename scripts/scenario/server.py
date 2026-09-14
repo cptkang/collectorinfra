@@ -155,6 +155,7 @@ class ServerHandle:
         self._proc: Optional[subprocess.Popen] = None
         self._ladder: Optional[tuple[str, str]] = None
         self._reader: Optional[threading.Thread] = None
+        self._health: Optional[tuple[bool, str]] = None
 
     @staticmethod
     def _build_env(overrides: dict[str, str], port: int) -> dict[str, str]:
@@ -170,6 +171,7 @@ class ServerHandle:
 
     def start(self) -> None:
         module = "scripts.scenario.mockserver" if self.mock else "scripts.scenario._serve"
+        self._health = None   # 기동마다 새로 판정한다
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
         self._proc = subprocess.Popen(
             [sys.executable, "-m", module],
@@ -205,6 +207,19 @@ class ServerHandle:
         return self._proc is not None and self._proc.poll() is None
 
     def wait_healthy(self, timeout_sec: float = HEALTH_WAIT_SEC) -> tuple[bool, str]:
+        """헬스 200 을 기다린다. **기동 1회당 한 번만 기다리고** 결과를 기억한다.
+
+        러너는 로그인 전에 헬스를 확인하고(2026-09-14 폐쇄망 WinError 10061 대응), 기동 검증
+        (`verify_profile`)이 다시 확인한다. 기억하지 않으면 살아 있지만 뜨지 않는 서버에서
+        대기가 두 번 돌아 arm 당 최대 180초가 된다 — 환경이 깨진 62 arm 런이면 약 1.5시간을
+        더 태운 뒤에야 전부 INVALID 가 드러난다. 판정은 기동 사이에 바뀌지 않으므로
+        기억해도 잃는 정보가 없다(`start()` 가 초기화한다).
+        """
+        if self._health is None:
+            self._health = self._poll_health(timeout_sec)
+        return self._health
+
+    def _poll_health(self, timeout_sec: float) -> tuple[bool, str]:
         client = ScenarioClient(ClientConfig(port=self.port))
         deadline = time.monotonic() + timeout_sec
         last = "기동 대기 시작"

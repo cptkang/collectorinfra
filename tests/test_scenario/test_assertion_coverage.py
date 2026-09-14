@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.scenario import runner as runner_mod
 from scripts.scenario.catalog import ENDPOINTS, load_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +38,9 @@ def _normal_closed(catalog):
 
 def test_정상군_대부분이_기계_판정_대상이다(catalog) -> None:
     """판정 가능 비율이 떨어지면 스위프는 완주율만 재게 된다."""
-    runnable = [s for s in _normal_closed(catalog) if s.prompt_authored]
+    # 러너가 건너뛰는 것(프롬프트 미작성·teardown 미지원)은 실행 대상이 아니다.
+    runnable = [s for s in _normal_closed(catalog)
+                if s.prompt_authored and not runner_mod._teardown(s)]
     judged = [s for s in runnable
               if any(set(t.expect) - {"manual_review"} for t in s.turns)]
 
