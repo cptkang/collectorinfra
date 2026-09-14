@@ -68,6 +68,15 @@ class AgentSettings(BaseSettings):
     investigation_max_concurrent: int = 2
     # 시간당 조사 횟수 상한. None이면 예산 가드 off. 초과 시 신규 조사 거부.
     investigation_hourly_budget: int | None = None
+    # ── 비선두 system 메시지 강등 가드 (D-213 후속) — **기본 on(명시적 예외)** ──
+    # Qwen 채팅 템플릿(vLLM)은 system을 맨 앞에만 허용하는데, holmes 컨텍스트 압축이
+    # 압축 결과 말미에 role="system" 안내를 붙여 `System message must be at the beginning.`
+    # (BadRequestError)으로 조사가 전건 실패한다(폐쇄망 실측 2026-09-11 — 압축이 발동하는
+    # 모든 조사에서 재현). 가드는 0번이 아닌 system의 role만 user로 바꾸고 content는 보존한다.
+    # **기본 off가 아닌 이유**(plans/80 §5.4-③ 예외): 교정할 것이 없으면 원본 객체를 그대로
+    # 통과시키는 no-op이라 정상 경로가 비트 동일하고, off는 곧 "계속 실패"를 뜻한다.
+    # **만료일 2027-03-11**(D-161 C1) — holmes 수정·모델 교체 시 유지/삭제를 그때 판정한다.
+    system_message_position_fix: bool = True
     # 중요도 2차 판정(severity_judge) 활성화. 기본 off — 켜야 도구 원시 출력
     # 시그니처 매칭을 수행한다(escalate-only). off면 게이트 판정을 그대로 승계.
     severity_judge_enabled: bool = False

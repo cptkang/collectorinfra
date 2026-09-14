@@ -26,6 +26,10 @@ ADMIN_JWT_SECRET=
 # 사용자 토큰 JWT 시크릿 (운영 모드 필수, ADMIN_JWT_SECRET과 반드시 다른 값 — 시크릿 분리로 권한 상승 차단)
 AUTH_JWT_SECRET=
 
+# deepagents 오케스트레이터(vLLM/gemini) API 키 (선택 — vLLM은 보통 불필요.
+# gemini 테스트 모드에서 미설정이면 LLM_GEMINI_API_KEY로 폴백)
+ORCHESTRATOR_API_KEY=
+
 # Redis 비밀번호
 REDIS_PASSWORD=
 

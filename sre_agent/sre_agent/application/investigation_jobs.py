@@ -109,6 +109,16 @@ class InvestigationJob:
 Executor = Callable[[InvestigationJob], None]
 
 
+def default_audit_path() -> Path:
+    """감사 JSONL 기본 경로(JobStore·dispatcher 공용).
+
+    **두 생산자가 같은 파일을 써야 한다** — JobStore는 accepted/running/terminal/restart_failed를,
+    dispatcher는 done/timeout/failed를 남긴다. 갈라지면 잡의 전반부만 파일에 남아 운영자가
+    결과를 추적할 수 없고, `recover_on_start`가 완료된 잡까지 active로 오인한다(D-213 후속).
+    """
+    return _DEFAULT_AUDIT_PATH
+
+
 def validate_payload(payload: object) -> tuple[bool, str | None]:
     """트리거 페이로드 계약(Plan 05 §4)을 검증한다.
 
@@ -201,6 +211,34 @@ class JobStore:
     def _sweep(self) -> None:
         """terminal 잡을 TTL·최대 개수 기준으로 제거한다(active 잡은 보존)."""
         now = self._clock()
+
+        # ── 낑긴 active 잡 워치독 (D-213 후속) ────────────────────────────
+        # dispatcher 전체 타임아웃이 어떤 이유로든 발화하지 못해도(폐쇄망 실측:
+        # 타임박스 밖 구간 wedge — 2026-09-10, 새 코드에서도 3.9h running 잔류)
+        # 잡이 영원히 running으로 남지 않도록, updated_at이 임계(타임아웃×2,
+        # 최소 600s)를 넘긴 active 잡을 failed로 확정한다(침묵 잔류 금지).
+        # submit/get/list 경로에 편승 — 별도 스레드 없음. 매달린 워커가 훗날
+        # 돌아와 덮어써도 감사 이력에는 두 이벤트가 모두 남는다.
+        stuck_after = max(600.0, 2.0 * float(self._settings.investigation_timeout_seconds))
+        for job in self._jobs.values():
+            if job.status in ACTIVE_STATUSES and (now - job.updated_at) > stuck_after:
+                job.status = "failed"
+                job.reason = "stuck_watchdog"
+                job.error = (
+                    f"워치독 확정: active {stuck_after:.0f}s 초과 — "
+                    "dispatcher 타임아웃 미발화(wedge 의심). 스택은 SIGUSR1 덤프로 실측"
+                )
+                job.updated_at = now
+                self._audit(
+                    {
+                        "investigation_id": job.investigation_id,
+                        "event": "stuck_watchdog",
+                        "status": "failed",
+                        "reason": "stuck_watchdog",
+                        "stuck_after_s": stuck_after,
+                    }
+                )
+
         expired = [
             jid
             for jid, job in self._jobs.items()
@@ -232,9 +270,12 @@ class JobStore:
         self._audit({"investigation_id": job.investigation_id, "event": "running", "status": "running"})
         try:
             self._executor(job)
-        except Exception as exc:  # noqa: BLE001 — 실패 사유를 구조화해 노출
+        except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 CancelledError가 새어나간다
+            # dispatcher `_worker`와 같은 이유로 BaseException이다(D-213 근본원인).
+            # 여기서 예외가 새면 바로 위에서 `running`으로 올려둔 잡이 그대로 남은 채
+            # 예외만 submit 호출자에게 전파된다 — 잡은 영원히 active, 감사에는 아무 기록도 없다.
             job.status = "failed"
-            job.error = f"executor 예외: {exc}"
+            job.error = f"executor 예외: {type(exc).__name__}: {exc}"
             logger.exception("executor 예외: investigation_id=%s", job.investigation_id)
         job.updated_at = self._clock()
         if job.status not in ACTIVE_STATUSES:
