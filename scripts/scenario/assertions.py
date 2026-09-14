@@ -34,6 +34,26 @@ _CRASH_MARKERS = ("Traceback (most recent call last)", "Internal Server Error")
 # 부정 단언 - 위반이 곧 silent_wrong 후보다(§3.8).
 _NEGATIVE_KEYS = frozenset({"sql_must_not_match", "response_must_not_contain", "column_must_not_map"})
 
+# 모의 실행에서 **적용하지 않는** 단언.
+#
+# 모의 서버는 시나리오에 `mock:` 블록이 없으면 canned 응답(`SELECT hostname FROM
+# cmm_resource LIMIT 5`)을 돌려준다. 여기에 실제 SQL 구조 단언을 걸면 전건이 불합격이
+# 되는데, 그것은 시스템이 아니라 **모의 서버를 판정한 결과**다. 모의 실행의 목적은 배관
+# 검증이므로(server.verify_profile 의 "무과금 배관 검증") 내용 단언은 사유와 함께
+# 보류로 넘긴다.
+#
+# **`mock:` 블록이 있으면 적용한다.** 작성자가 응답 내용을 직접 정했다는 뜻이고, 그때의
+# 단언은 "SQL·행수가 끝까지 전달되는가"라는 배관을 실제로 검증한다(F-01 선례).
+# 상태·역질문·SSE 는 어느 경우에도 `mock:` 블록이 정하므로 그대로 판정한다.
+# 모의 실행에서 **판정할 수 있는** 단언. 이 셋만 남기고 나머지는 보류한다.
+#
+# 처음에는 "내용 단언만" 보류했는데 그것으로 부족했다(2026-09-14 모의 실행 실측:
+# F-03·F-04 는 `status: clarification` 에서, H-01 은 `has_file: true` 에서 불합격이었다).
+# `mock:` 블록이 없으면 canned 응답이 **상태·역질문·산출물까지 전부** 정하므로, 남겨 둔
+# 키도 결국 모의 서버를 판정한다. 모의가 실제로 증명하는 것은 배관뿐이다 -
+# 요청이 나갔고, SSE 가 흘렀고, 노드를 밟았고, 200 이 돌아왔다.
+_MOCK_VERIFIABLE = frozenset({"sse_events", "node_path", "http_status"})
+
 
 @dataclass
 class Observation:
@@ -58,9 +78,10 @@ class Observation:
     node_path: list[str] = field(default_factory=list)
     sse_events: list[str] = field(default_factory=list)
     progress_events: list[dict] = field(default_factory=list)
-    llm_calls: Optional[int] = None
-    tokens: Optional[int] = None
-    retries: Optional[int] = None
+    llm_calls: Optional[int] = None   # 스트림에 없다 - 구조적 측정 불가(client 주석 참조)
+    tokens: Optional[int] = None      # 동일
+    retries: Optional[int] = None     # node_start 재진입으로 실측한다
+    node_count: Optional[int] = None  # 실행 노드 수 - 비용 대리 지표
     column_mapping: dict[str, Any] = field(default_factory=dict)
     artifacts: list[str] = field(default_factory=list)
     # 무이벤트 구간이 하트비트 간격을 크게 넘겼거나 done 없이 끊긴 경우 True (금지 등급 hang).
@@ -242,13 +263,33 @@ def _check_column_mapping(spec: Any, obs: Observation, failures: list[Failure]) 
 
 
 def evaluate_turn(
-    scenario: Scenario, turn_index: int, turn: Turn, obs: Observation, group: Group
+    scenario: Scenario,
+    turn_index: int,
+    turn: Turn,
+    obs: Observation,
+    group: Group,
+    *,
+    mock: bool = False,
 ) -> Verdict:
-    """턴 1회를 판정한다. 단언이 없으면 합격이 아니라 `manual`이다."""
+    """턴 1회를 판정한다. 단언이 없으면 합격이 아니라 `manual`이다.
+
+    `mock=True` 면 내용 단언(`_CONTENT_KEYS`)을 적용하지 않고 보류로 남긴다 -
+    모의 서버의 canned 응답을 시스템의 답으로 판정하면 전건이 거짓 불합격이 된다.
+    """
     verdict = Verdict()
     failures: list[Failure] = []
     manual: list[str] = []
-    expect = turn.expect
+    expect = dict(turn.expect)
+
+    if mock and not scenario.mock:
+        skipped = sorted(k for k in expect if k not in _MOCK_VERIFIABLE | {"manual_review"})
+        for key in skipped:
+            expect.pop(key)
+        if skipped:
+            manual.append(
+                f"모의 실행(canned 응답) - 단언 {len(skipped)}종을 적용하지 않았다"
+                f"({', '.join(skipped)}). 모의가 증명하는 것은 배관뿐이다 - 실 모드에서 판정한다"
+            )
 
     if expect.get("manual_review"):
         manual.append(str(expect["manual_review"]))
@@ -257,8 +298,17 @@ def evaluate_turn(
         failures.append(Failure("status", expect["status"], obs.status))
     if "http_status" in expect and obs.http_status != int(expect["http_status"]):
         failures.append(Failure("http_status", expect["http_status"], obs.http_status))
-    if "intent" in expect and obs.intent != expect["intent"]:
-        failures.append(Failure("intent", expect["intent"], obs.intent))
+    if "intent" in expect:
+        if obs.intent is None:
+            # **관측되지 않는 값으로 불합격을 만들지 않는다.** `/query/stream` 의 done
+            # 페이로드에 intent 가 없어(query.py 의 done 키 목록) 이 필드는 영영 None 이다.
+            # 그대로 대조하면 전건이 거짓 불합격이 된다 - 라우팅은 `db_ids` 로 본다.
+            manual.append(
+                f"intent={expect['intent']} 를 확인하지 못했다 "
+                "(응답에 intent 가 실리지 않는다 - db_ids 로 라우팅을 본다)"
+            )
+        elif obs.intent != expect["intent"]:
+            failures.append(Failure("intent", expect["intent"], obs.intent))
     if "db_ids" in expect and sorted(obs.db_ids) != sorted(expect["db_ids"]):
         failures.append(Failure("db_ids", expect["db_ids"], obs.db_ids))
     if "has_file" in expect and obs.has_file != bool(expect["has_file"]):
@@ -293,8 +343,15 @@ def evaluate_turn(
             failures.append(Failure("sse_events", event, sorted(set(obs.sse_events))))
 
     budget = expect.get("llm_calls")
-    if isinstance(budget, dict) and "max" in budget and obs.llm_calls is not None:
-        if obs.llm_calls > int(budget["max"]):
+    if isinstance(budget, dict) and "max" in budget:
+        if obs.llm_calls is None:
+            # **확인 못 한 예산을 통과로 세지 않는다.** `done` 페이로드에 LLM 호출 수가
+            # 없어 이 단언은 영영 발화하지 않는다 - 조용히 건너뛰면 "예산을 지켰다"로 읽힌다.
+            manual.append(
+                f"llm_calls.max={budget['max']} 예산을 확인하지 못했다 "
+                "(스트림에 LLM 호출 수가 실리지 않는다 - 노드 수 `node_count` 로 대신 본다)"
+            )
+        elif obs.llm_calls > int(budget["max"]):
             failures.append(Failure("llm_calls.max", budget["max"], obs.llm_calls))
     budget = expect.get("retries")
     if isinstance(budget, dict) and "max" in budget and obs.retries is not None:

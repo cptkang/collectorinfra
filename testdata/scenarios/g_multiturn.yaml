@@ -22,23 +22,29 @@ scenarios:
       - send:
           query: "cocm-hdkapp01 서버의 OS 확인"
         expect:
-          manual_review: "1행"
+          status: completed
+          sql_must_match: ["(?i)hostname\\s*=", "(?i)cocm-hdkapp01"]
+          row_count: {eq: 1}
       - send:
           query: "해당 서버의 최근 1개월 CPU 사용률 평균/최대"
         expect:
-          manual_review: "`previous_entities`로 hostname 승계, stat 테이블"
+          status: completed
+          sql_must_match: ["(?i)cocm-hdkapp01", "(?i)cmm_metric_stat_"]
       - send:
           query: "네 그럼 메모리도 보여줘"
         expect:
-          manual_review: "같은 서버 유지"
+          status: completed
+          sql_must_match: ["(?i)cocm-hdkapp01"]
       - send:
           query: "해당 서버 프로세스 보여줘"
         expect:
-          manual_review: "process_query, 대상 DB 승계"
+          status: completed
+          manual_review: "프로세스 조회가 대상 DB 를 승계했는지 — 프로세스는 SQL 경로가 아니다"
       - send:
           query: "지난 한 달 동안 해당 서버의 알람을 분석해줘"
         expect:
-          manual_review: "alarm_query, hostname 필터"
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_alarm\\w*\\b", "(?i)cocm-hdkapp01"]
     teardown: [drop_thread]
   - id: G-02
     plans: [50]
@@ -51,15 +57,21 @@ scenarios:
       - send:
           query: "CPU 사용률 상위 3대 서버"
         expect:
-          manual_review: "3행"
+          status: completed
+          sql_must_match: ["(?i)\\blimit\\s+3\\b"]
+          row_count: {eq: 3}
       - send:
           query: "그 서버들의 제조사와 모델"
         expect:
-          manual_review: "3대 IN 필터"
+          status: completed
+          sql_must_match: ["(?i)\\bin\\s*\\("]
+          row_count: {max: 3}
       - send:
           query: "전체 서버 제조사 분포"
         expect:
-          manual_review: "**승계 해제**(전체 키워드 우선) — 3대로 좁혀지지 않음"
+          status: completed
+          sql_must_match: ["(?i)\\blimit\\s+10000\\b"]
+          sql_must_not_match: ["(?i)\\bin\\s*\\("]
     teardown: [drop_thread]
   - id: G-03
     plans: [50]
@@ -72,16 +84,24 @@ scenarios:
       - send:
           query: "그 장비 정보 (첫 턴, 이전 컨텍스트 없음)"
         expect:
-          manual_review: "식별자 없음 → 재질문 또는 안내, 에러 아님"
+          http_status: 200
+          manual_review: "재질문 또는 안내로 처리됐는지(에러 아님)"
   - id: G-04
     plans: [50]
-    title: "(G-01 진행 중) 프로세스 결과에 `name=mysql` 행이 있는 상태에서 \"해당 서버 OS\""
+    title: "프로세스 결과 행이 서버 식별자로 수확되지 않는다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "(G-01 진행 중) 프로세스 결과에 `name=mysql` 행이 있는 상태에서 \"해당 서버 OS\""
+          query: "cocm-hdkapp01 서버의 프로세스 보여줘"
         expect:
-          manual_review: "프로세스 행이 서버로 수확되지 않음"
+          status: completed
+      - send:
+          query: "해당 서버 OS"
+        expect:
+          status: completed
+          # 앞 턴의 프로세스 행(name=mysql 등)이 서버 식별자로 수확되면 안 된다.
+          sql_must_match: ["(?i)cocm-hdkapp01"]
+          sql_must_not_match: ["(?i)\\bmysql\\b"]

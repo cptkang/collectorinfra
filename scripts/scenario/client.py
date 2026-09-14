@@ -26,6 +26,12 @@ from .assertions import Observation
 # 서버 하트비트 간격의 배수로 잡는다 - 하트비트가 꺼져 있어도 이 상한은 유효하다.
 DEFAULT_HANG_GAP_MS = 120_000.0
 
+#: 재시도 예산(`QUERY_MAX_RETRY_COUNT`)이 걸리는 회귀 지점.
+#: `query_validator` 실패·`query_executor` SQL 에러·`result_organizer` 데이터 부족이
+#: 전부 이 노드로 되돌아온다(CLAUDE.md 「LangGraph 노드」). 스트림의 `node_start` 를 세면
+#: **서버를 고치지 않고** 재시도 횟수를 얻는다.
+RETRY_ENTRY_NODE = "query_generator"
+
 
 @dataclass
 class ClientConfig:
@@ -33,6 +39,7 @@ class ClientConfig:
 
     port: int
     token: Optional[str] = None
+    admin_token: Optional[str] = None
     timeout_sec: float = 360.0
     hang_gap_ms: float = DEFAULT_HANG_GAP_MS
     artifact_dir: Optional[Path] = None
@@ -44,6 +51,32 @@ class ClientConfig:
     @property
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    @property
+    def admin_headers(self) -> dict[str, str]:
+        """설정 에코 전용 헤더.
+
+        **질의 토큰과 같은 것이 아니다.** `/query/*` 는 `require_user`(auth.jwt_secret)를
+        타고 `/admin/settings/schema` 는 `require_admin_user`(admin.jwt_secret 또는
+        role=admin 사용자)를 탄다 - D-070 으로 두 시크릿이 분리돼 있어 한쪽 토큰을
+        다른 쪽에 쓰면 401 이다. 하나로 합치면 "질의는 되는데 주입 검증만 조용히
+        건너뛰는" 상태가 만들어진다(2026-09-14 실측: 1984건 전량 401).
+        """
+        return {"Authorization": f"Bearer {self.admin_token}"} if self.admin_token else {}
+
+
+def _http_error(status_code: int, body: str) -> str:
+    """HTTP 실패를 관측치의 `error` 로 옮긴다.
+
+    **여기서 error 를 채우지 않으면 판정기가 그 턴을 `manual` 로 남긴다** -
+    `evaluate_turn` 은 `obs.error` 가 비고 단언 실패도 없으면 "옮기지 않은 기대값이
+    남았다"로 읽기 때문이다(assertions.py:337). 그래서 401 이 1984건 나도 리포트에는
+    "판정 불가"만 찍히고 실패로는 한 건도 세지 않았다(2026-09-14 실측).
+    """
+    hint = ""
+    if status_code in (401, 403):
+        hint = " - 토큰 없음/만료. 러너에 크레덴셜을 넘겼는지 확인"
+    return f"http {status_code}{hint}: {body[:300]}"
 
 
 def _derive_status(payload: dict[str, Any]) -> str:
@@ -111,7 +144,7 @@ class ScenarioClient:
         """
         url = f"{self._config.base_url}/admin/settings/schema"
         try:
-            resp = self._client.get(url, headers=self._config.headers, timeout=20.0)
+            resp = self._client.get(url, headers=self._config.admin_headers, timeout=20.0)
         except httpx.HTTPError as exc:
             return None, f"설정 에코 요청 실패: {type(exc).__name__}: {exc}"
         if resp.status_code in (401, 403):
@@ -129,19 +162,41 @@ class ScenarioClient:
                     )
         return values, None
 
-    def login(self, username: str, password: str) -> tuple[Optional[str], Optional[str]]:
-        url = f"{self._config.base_url}/auth/login"
+    def login(self, user_id: str, password: str) -> tuple[Optional[str], Optional[str]]:
+        """사용자 로그인 - `/query/*` 용 토큰을 받는다.
+
+        본문 키는 **`user_id`** 다(`UserLoginRequest`, schemas.py:185). `username` 으로
+        보내면 로그인 실패가 아니라 422 가 돌아온다 - 둘은 다른 사고이므로 사유도 달라야 한다.
+        """
+        return self._post_login("/auth/login", {"user_id": user_id, "password": password})
+
+    def admin_login(self, username: str, password: str) -> tuple[Optional[str], Optional[str]]:
+        """운영자 로그인 - 설정 에코(`/admin/settings/schema`) 용 토큰을 받는다.
+
+        운영자 크레덴셜은 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 를 그대로 대조하므로
+        (admin_auth.py:164) 인증 DB 없이도 성립한다. 본문 키는 **`username`** 이다 -
+        사용자 로그인과 반대라 한 함수로 합칠 수 없다.
+        """
+        return self._post_login("/admin/login", {"username": username, "password": password})
+
+    def _post_login(
+        self, path: str, body: dict[str, str]
+    ) -> tuple[Optional[str], Optional[str]]:
+        url = f"{self._config.base_url}{path}"
         try:
-            resp = self._client.post(
-                url, json={"username": username, "password": password}, timeout=20.0
-            )
+            resp = self._client.post(url, json=body, timeout=20.0)
         except httpx.HTTPError as exc:
-            return None, f"로그인 실패: {type(exc).__name__}: {exc}"
+            return None, f"{path} 로그인 실패: {type(exc).__name__}: {exc}"
         if resp.status_code != 200:
-            return None, f"로그인 실패 (http {resp.status_code})"
-        body = resp.json()
-        token = body.get("access_token") or body.get("token")
-        return (str(token), None) if token else (None, "로그인 응답에 토큰이 없다")
+            # 본문을 붙인다. 401(크레덴셜 불일치)·422(본문 계약 어긋남)·503(인증 DB 없음)은
+            # 조치가 전부 달라서 상태코드만으로는 다음 행동이 정해지지 않는다.
+            return None, f"{path} 로그인 실패 (http {resp.status_code}): {resp.text[:200]}"
+        try:
+            payload = resp.json()
+        except ValueError:
+            return None, f"{path} 로그인 응답이 JSON 이 아니다"
+        token = payload.get("access_token") or payload.get("token")
+        return (str(token), None) if token else (None, f"{path} 로그인 응답에 토큰이 없다")
 
     # --- 질의 -----------------------------------------------------------
 
@@ -176,6 +231,7 @@ class ScenarioClient:
         if resp.status_code >= 400:
             obs.status = "error"
             obs.response = resp.text[:4000]
+            obs.error = _http_error(resp.status_code, resp.text)
             return obs
         _apply_done(obs, resp.json())
         return obs
@@ -224,6 +280,15 @@ class ScenarioClient:
                 _apply_done(obs, payload)
 
         obs.max_event_gap_ms = round(max_gap, 1)
+        # 비용 축은 스트림에서 나오는 것만 센다.
+        #
+        # `done` 페이로드에는 LLM 호출 수도 토큰 수도 없다(query.py 의 done 이벤트 키 목록).
+        # 그래서 `llm_calls`·`tokens` 는 **구조적으로 측정 불가**이며 여기서 추정하지 않는다 -
+        # 추정치를 넣으면 리포트가 "쟀다"고 말하게 된다. 대신 실제로 세지는 둘을 남긴다:
+        #   `retries`    회귀 지점 재진입 수 (재시도 예산의 실측)
+        #   `node_count` 실행된 노드 수 (파이프라인이 한 일의 양 - 비용 대리 지표)
+        obs.node_count = len(obs.node_path)
+        obs.retries = max(0, obs.node_path.count(RETRY_ENTRY_NODE) - 1)
         if not obs.response and tokens:
             obs.response = "".join(tokens)
         if not saw_done:
@@ -249,6 +314,7 @@ class ScenarioClient:
                     resp.read()
                     obs.status = "error"
                     obs.response = resp.text[:4000]
+                    obs.error = _http_error(resp.status_code, resp.text)
                     obs.wall_ms = (time.perf_counter() - started) * 1000
                     return obs
                 self._consume_sse(resp, obs, started)
@@ -291,6 +357,7 @@ class ScenarioClient:
                     if resp.status_code >= 400:
                         obs.status = "error"
                         obs.response = resp.text[:4000]
+                        obs.error = _http_error(resp.status_code, resp.text)
                         return obs
                     _apply_done(obs, resp.json())
                 else:
@@ -302,6 +369,7 @@ class ScenarioClient:
                             resp.read()
                             obs.status = "error"
                             obs.response = resp.text[:4000]
+                            obs.error = _http_error(resp.status_code, resp.text)
                             obs.wall_ms = (time.perf_counter() - started) * 1000
                             return obs
                         self._consume_sse(resp, obs, started)

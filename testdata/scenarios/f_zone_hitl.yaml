@@ -34,7 +34,7 @@ scenarios:
           selected_db_ids: ["polestar_cm_gp"]
         expect:
           status: completed
-          sql_must_match: ["(?i)limit\\s+100000"]
+          sql_must_match: ["(?i)\\blimit\\s+10000\\b"]
           sql_must_not_match: ["(?i)여의도"]
           row_count: {min: 1}
     perf: {target_ms: 30000, applies_to_turn: 2}
@@ -54,7 +54,7 @@ scenarios:
               - {db_id: polestar_cm_gp, label: "공동존(김포)"}
               - {db_id: polestar_cm_yd, label: "공동존(여의도)"}
         - response: "김포 공동존 서버 OS 종류입니다."
-          executed_sql: "SELECT hostname, os_type FROM polestar.cmm_resource LIMIT 100000"
+          executed_sql: "SELECT hostname, os_type FROM polestar.cmm_resource LIMIT 10000"
           row_count: 12
           processing_time_ms: 8200
   - id: F-02
@@ -64,14 +64,21 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
+    response_modes: [clarify, answer]
     turns:
       - send:
           query: "전체 서버 OS 종류 알려줘"
         expect:
-          manual_review: "동일 / `[polestar_cm_gp, polestar_cm_yd]` / 두 DB 결과 병합, 존 라벨 구분"
+          status: clarification
+          clarification: {kind: zone_select}
+      - send:
+          selected_db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          row_count: {min: 1}
+          manual_review: "두 DB 결과가 존 라벨로 구분돼 병합됐는지"
+    teardown: [drop_thread]
   - id: F-03
     plans: [82, 90, 75]
     title: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
@@ -79,14 +86,21 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
+    response_modes: [clarify, answer]
     turns:
       - send:
           query: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
         expect:
-          manual_review: "**상호배타 재질문**(`group_exclusive`) / b0 선택 / b0만; 원문 '여의도' 언급이 WHERE로 새지 않음(D-154)"
+          status: clarification
+          manual_review: "재질문 종류가 group_exclusive 인지(존 그룹 상호배타)"
+      - send:
+          selected_db_ids: ["polestar_b0"]
+        expect:
+          status: completed
+          db_ids: ["polestar_b0"]
+          # D-154 - 선택에서 빠진 존의 원문 표면어가 WHERE 로 새면 안 된다.
+          sql_must_not_match: ["(?i)여의도"]
+    teardown: [drop_thread]
   - id: F-04
     plans: [82, 90, 75]
     title: "ㅇㅇ존 서버 CPU 사용률"
@@ -94,14 +108,21 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
+    response_modes: [clarify, answer]
     turns:
       - send:
           query: "ㅇㅇ존 서버 CPU 사용률"
         expect:
-          manual_review: "항상 재질문 / yd / 원문 `ㅇㅇ존`→'공동존 여의도' 치환 후 실행"
+          status: clarification
+          clarification: {kind: zone_select}
+      - send:
+          selected_db_ids: ["polestar_cm_yd"]
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_yd"]
+          # 식별 불가 표면어가 필터로 새면 안 된다.
+          sql_must_not_match: ["(?i)ㅇㅇ존"]
+    teardown: [drop_thread]
   - id: F-05
     plans: [82, 90, 75]
     title: "호스트명이 sbhdbo53인 서버의 CPU"
@@ -113,19 +134,33 @@ scenarios:
       - send:
           query: "호스트명이 sbhdbo53인 서버의 CPU"
         expect:
-          manual_review: "**재질문 없음**(식별자 필터 억제) / — / 기본 DB 실행"
+          status: completed
+          sql_must_match: ["(?i)hostname\\s*=", "(?i)sbhdbo53"]
   - id: F-06
     plans: [82, 90, 75]
-    title: "(F-01 완료 후) 그 서버들의 메모리도"
+    title: "존 선택 후 후속 턴이 DB 를 승계한다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
+    response_modes: [clarify, answer]
     turns:
       - send:
-          query: "(F-01 완료 후) 그 서버들의 메모리도"
+          query: "전체 서버 OS 종류 알려줘"
         expect:
-          manual_review: "재질문 없음 — 이전 DB 승계 / — / 같은 db_ids"
+          status: clarification
+      - send:
+          selected_db_ids: ["polestar_cm_gp"]
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_gp"]
+      - send:
+          query: "그 서버들의 메모리도"
+        expect:
+          # 재질문 없이 앞 턴의 존을 그대로 쓴다 - clarification 이 오면 승계 회귀다.
+          status: completed
+          db_ids: ["polestar_cm_gp"]
+    teardown: [drop_thread]
   - id: F-07
     plans: [82, 90, 75]
     title: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
@@ -137,7 +172,9 @@ scenarios:
       - send:
           query: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
         expect:
-          manual_review: "재질문 없이 gp+yd / — / 멀티 경로 토큰 예산(D-159) 내, 비교 표"
+          status: completed
+          db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          manual_review: "멀티 경로 토큰 예산(D-159) 안에서 비교 표가 나왔는지"
   - id: F-08
     plans: [82, 90, 75]
     title: "공동존 전체 서버 수"
@@ -149,4 +186,6 @@ scenarios:
       - send:
           query: "공동존 전체 서버 수"
         expect:
-          manual_review: "gp+yd 합산 / — / 두 COUNT 합"
+          status: completed
+          db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          sql_must_match: ["(?i)count\\s*\\("]

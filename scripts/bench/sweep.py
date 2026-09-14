@@ -55,7 +55,62 @@ class Observation:
     llm_calls: Optional[int]
     tokens: Optional[int]
     retries: Optional[int]
-    manual: bool = False        # mock 판정 보류 — 정확도 비교에서 제외한다
+    node_count: Optional[int] = None  # 실행 노드 수 — 비용 대리 지표(LLM 호출 수는 못 잰다)
+    manual: bool = False        # 판정 보류 — 정확도 비교에서 제외한다
+    completed: bool = True      # 오류·크래시·행 없이 끝났는가
+    sql_generated: bool = False # executed_sql 이 실제로 나왔는가
+
+
+@dataclass(frozen=True)
+class Credentials:
+    """스위프가 서버에 붙는 방법.
+
+    둘 중 하나로만 성립한다 — 로그인하거나, 인증을 끄거나.
+    **아무것도 하지 않으면 전건 401 이다**(2026-09-14 실측: 1984건 전량).
+    """
+
+    user_id: Optional[str] = None
+    user_password: Optional[str] = None
+    admin_user: Optional[str] = None
+    admin_password: Optional[str] = None
+
+    @property
+    def can_login(self) -> bool:
+        return bool(self.user_id and self.user_password)
+
+
+def resolve_credentials(
+    user_id: Optional[str] = None,
+    user_password: Optional[str] = None,
+    admin_user: Optional[str] = None,
+    admin_password: Optional[str] = None,
+) -> Credentials:
+    """크레덴셜을 모은다. 개발자가 아무것도 타이핑하지 않아도 되는 것이 기본이다(§0.4).
+
+    운영자 크레덴셜은 `.env`/`.encenv` 에 이미 있으므로 설정에서 읽는다. 사용자
+    크레덴셜은 설정에 없다(인증 DB 소관) — 그래서 사용자가 명시하지 않으면 스위프는
+    로그인 대신 **인증 우회 주입**(`auth_bypass_env`)으로 간다.
+    """
+    _, runner_mod = scenario_harness()
+    admin_user, admin_password = runner_mod.resolve_admin_credentials(
+        admin_user, admin_password
+    )
+    return Credentials(
+        user_id=user_id,
+        user_password=user_password,
+        admin_user=admin_user,
+        admin_password=admin_password,
+    )
+
+
+def auth_bypass_env() -> dict[str, str]:
+    """로그인하지 않을 때 모든 arm에 **똑같이** 주입하는 값.
+
+    인증은 측정 축이 아니고(축 선정 결과 50개 중 `AUTH_*` 0개) arm 전체에 동일하게
+    걸리므로 비교의 신호를 흔들지 않는다. 다만 **조용히 끄지는 않는다** — arm env에
+    실어 두면 94의 에코 검증이 이 주입까지 대조하므로, 꺼졌다는 사실이 리포트에 남는다.
+    """
+    return {"AUTH_ENABLED": "false"}
 
 
 def scenario_harness():
@@ -93,7 +148,38 @@ def build_arms(
     ]
 
 
-def load_normal_catalog(*, env: str = "sandbox"):
+#: 로컬 도커 샌드박스의 db_id. 이것 말고 다른 id가 활성이면 실 관측 DB를 보고 있다는 뜻이다.
+SANDBOX_DB_IDS = frozenset({"polestar"})
+
+
+def resolve_env(explicit: Optional[str] = None) -> tuple[str, str]:
+    """워크로드 환경을 정한다. (env, 사유)를 돌려준다.
+
+    **기본값이 틀리면 벤치마크가 통째로 빗나간다.** 94 카탈로그의 정상군 139건은
+    `env` 로 갈려 있다 — `closed` 에 그룹 A~K 107건(실 질의 워크로드)이, `sandbox` 에
+    그룹 L 32건(유사어·용어)이 들어 있다. 종전 기본값이 `sandbox` 여서 실 스위프가
+    **유사어 32건만 재고 실 질의 워크로드를 한 건도 건드리지 않았다**(실측 2026-09-14).
+
+    자동 판정은 활성 DB로 한다 — 로컬 샌드박스(`polestar`)만 붙어 있으면 `sandbox`,
+    폴스타 실 DB가 하나라도 활성이면 `closed`. 근거가 없으면 추측하지 않고 사유를 적는다.
+    """
+    if explicit and explicit != "auto":
+        return explicit, f"--env {explicit} 로 지정됨"
+    try:
+        from src.config import load_config
+
+        active = [d for d in load_config().multi_db.get_active_db_ids() if d]
+    except Exception as exc:
+        return "closed", f"활성 DB를 읽지 못했다({type(exc).__name__}) — 폐쇄망 전제로 closed"
+    if not active:
+        return "closed", "ACTIVE_DB_IDS 미설정 — 폐쇄망 전제로 closed(§1.4)"
+    real = [d for d in active if d not in SANDBOX_DB_IDS]
+    if real:
+        return "closed", f"실 관측 DB 활성({', '.join(real)}) — closed"
+    return "sandbox", f"로컬 샌드박스만 활성({', '.join(active)}) — sandbox"
+
+
+def load_normal_catalog(*, env: str = "closed"):
     """94 카탈로그에서 **정상 군만** 고른 사본을 만든다.
 
     R군을 빼는 것이 계약이다(§1.5) — 그것은 94가 답하는 질문이지 93이 답하는 질문이 아니다.
@@ -106,6 +192,38 @@ def load_normal_catalog(*, env: str = "sandbox"):
         scenarios=list(normal),
         profiles={},   # arm으로 채운다
     )
+
+
+def judgeable_count(catalog) -> tuple[int, int]:
+    """(기계 단언이 있는 시나리오 수, 실행 대상 수).
+
+    `manual_review` 뿐인 시나리오는 아무리 돌려도 **정확도 판정이 나오지 않는다** -
+    판정기가 보류로 남기고 93이 정확도 비교에서 제외하기 때문이다. 이 비율이 낮으면
+    스위프는 완주율·지연만 재는 것이고, 그 사실이 실행 전에 보여야 한다.
+    """
+    runnable = [s for s in catalog.scenarios if s.prompt_authored]
+    judged = sum(
+        1 for s in runnable
+        if any(set(t.expect) - {"manual_review"} for t in s.turns)
+    )
+    return judged, len(runnable)
+
+
+def workload_summary(catalog) -> str:
+    """돌릴 워크로드를 한 줄로 적는다. **무엇을 재는지 보이지 않으면 빗나가도 모른다.**"""
+    import collections
+
+    groups = collections.Counter(s.group for s in catalog.scenarios)
+    unauthored = sum(1 for s in catalog.scenarios if not s.prompt_authored)
+    names = ", ".join(
+        f"{key}({count})" for key, count in sorted(groups.items())
+    ) or "없음"
+    judged, runnable = judgeable_count(catalog)
+    pct = (judged / runnable * 100.0) if runnable else 0.0
+    tail = f" · 프롬프트 미작성 {unauthored}건은 건너뛴다" if unauthored else ""
+    return (f"시나리오 {len(catalog.scenarios)}건 — 그룹 {names}{tail}\n"
+            f"            정확도 판정 가능 {judged}/{runnable}건({pct:.0f}%) "
+            f"— 나머지는 완주율·지연만 잰다")
 
 
 def fanout_scenarios(catalog, arms: Sequence[ArmSpec]):
@@ -132,15 +250,19 @@ def run_arms(
     arms: Sequence[ArmSpec],
     *,
     mode: str = "mock",
-    env: str = "sandbox",
+    env: str = "closed",
     repeat: int = 1,
     run_id: str = "",
     groups: Optional[list[str]] = None,
+    credentials: Optional[Credentials] = None,
 ) -> dict[str, Any]:
     """arm 전체를 94 러너로 돌린다. 산출은 94 형식 그대로다(재분석 호환)."""
     sc_catalog, sc_runner = scenario_harness()
+    creds = credentials or Credentials()
+    extra = {} if creds.can_login else auth_bypass_env()
+
     catalog = load_normal_catalog(env=env)
-    catalog.profiles = {arm.arm_id: dict(arm.env) for arm in arms}
+    catalog.profiles = {arm.arm_id: {**extra, **arm.env} for arm in arms}
     catalog.scenarios = fanout_scenarios(catalog, arms)
 
     config = sc_runner.RunConfig(
@@ -150,6 +272,10 @@ def run_arms(
         groups=list(groups or []),
         profiles=[arm.arm_id for arm in arms],
         run_id=run_id,
+        user_id=creds.user_id,
+        user_password=creds.user_password,
+        admin_user=creds.admin_user,
+        admin_password=creds.admin_password,
     )
     return sc_runner.execute(catalog, config)
 
@@ -173,16 +299,29 @@ def read_observations(raw_path: Path) -> list[Observation]:
             continue
         key = (str(row.get("profile")), str(row.get("scenario_id")), int(row.get("repeat", 0)))
         cell = folded.setdefault(key, {"passed": True, "manual": False, "wall_ms": 0.0,
-                                       "llm_calls": 0, "tokens": 0, "retries": 0, "seen": 0})
+                                       "llm_calls": 0, "tokens": 0, "retries": 0, "seen": 0,
+                                       "node_count": 0,
+                                       "completed": True, "sql_generated": False})
         cell["seen"] += 1
         verdict = str(row.get("func_verdict"))
         if verdict == "manual":
-            # mock 모드는 실제 응답이 없어 판정을 사람에게 남긴다 — 정확도 비교의 재료가 아니다.
+            # 판정을 사람에게 남긴 턴 — 정확도 비교의 재료가 아니다.
             cell["manual"] = True
         elif verdict != "pass":
             cell["passed"] = False
+
+        # **정확도와 별개로 항상 잴 수 있는 두 신호.**
+        # 정상군 시나리오 32건은 전부 `manual_review` 뿐이라(실측 2026-09-14) 기계 단언이
+        # 0개다 — 그 상태로는 정확도 쌍이 언제나 0쌍이고, 성공한 런조차 "판정 불가"만 낸다.
+        # 완주 여부와 SQL 생성 여부는 사람이 옮겨 적지 않아도 원시 로그에 이미 있고,
+        # **설정 축이 실제로 흔드는 것**이다(재시도 폭주·생성 실패·조기 종료).
+        if verdict in ("error", "fail") or row.get("response_mode") in ("error", "crash", "hang"):
+            cell["completed"] = False
+        if str(row.get("executed_sql") or "").strip():
+            cell["sql_generated"] = True
         for src, dst in (("wall_ms", "wall_ms"), ("llm_calls", "llm_calls"),
-                         ("tokens", "tokens"), ("retries", "retries")):
+                         ("tokens", "tokens"), ("retries", "retries"),
+                         ("node_count", "node_count")):
             value = row.get(src)
             if isinstance(value, (int, float)):
                 cell[dst] += value
@@ -196,9 +335,78 @@ def read_observations(raw_path: Path) -> list[Observation]:
             llm_calls=int(cell["llm_calls"]) or None,
             tokens=int(cell["tokens"]) or None,
             retries=int(cell["retries"]) or None,
+            node_count=int(cell["node_count"]) or None,
+            completed=bool(cell["completed"]),
+            sql_generated=bool(cell["sql_generated"]),
         )
         for (arm, scenario, repeat), cell in sorted(folded.items())
     ]
+
+
+@dataclass(frozen=True)
+class RunHealth:
+    """런이 **판정할 자격이 있는가**. 통계 이전에 답해야 하는 질문이다."""
+
+    valid_profiles: int
+    invalid_profiles: list[tuple[str, str]]
+    turns: int
+    verdicts: dict[str, int]
+    evidence: list[tuple[str, int]]
+
+    @property
+    def error_turns(self) -> int:
+        return self.verdicts.get("error", 0)
+
+    @property
+    def error_rate(self) -> float:
+        return (self.error_turns / self.turns) if self.turns else 0.0
+
+    def blocking_reason(self) -> Optional[str]:
+        """판정을 내면 안 되는 사유. 없으면 None."""
+        if self.valid_profiles == 0:
+            return "유효한 프로파일이 0개다 — 어떤 arm도 검증을 통과하지 못했다"
+        if self.turns == 0:
+            return "실행된 턴이 0건이다"
+        if self.error_rate >= 0.5:
+            return (f"턴 {self.turns}건 중 {self.error_turns}건"
+                    f"({self.error_rate:.0%})이 오류다 — 측정이 아니라 사고다")
+        return None
+
+
+def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
+    """원시 로그와 프로파일 상태를 읽어 런의 건전성을 낸다.
+
+    93이 이것을 먼저 보지 않으면, 전건 401 같은 사고가 "판정 불가 62건"이라는
+    **정상처럼 보이는 리포트**로 나온다(2026-09-14 실측). 오류율은 통계의 입력이
+    아니라 통계를 낼지 말지를 정하는 관문이다.
+    """
+    profiles = result.get("profiles") or []
+    valid = sum(1 for p in profiles if p.get("valid"))
+    invalid = [(str(p.get("name")), "; ".join(p.get("reasons") or []) or "(사유 없음)")
+               for p in profiles if not p.get("valid")]
+
+    verdicts: dict[str, int] = {}
+    evidence: dict[str, int] = {}
+    turns = 0
+    if raw_path.exists():
+        for line in raw_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            turns += 1
+            verdicts[str(row.get("func_verdict"))] = verdicts.get(
+                str(row.get("func_verdict")), 0) + 1
+            mark = str(row.get("mode_evidence") or row.get("error") or "")[:80]
+            if row.get("response_mode") in ("error", "crash", "hang") and mark:
+                evidence[mark] = evidence.get(mark, 0) + 1
+
+    top = sorted(evidence.items(), key=lambda kv: -kv[1])[:5]
+    return RunHealth(valid_profiles=valid, invalid_profiles=invalid[:5],
+                     turns=turns, verdicts=verdicts, evidence=top)
 
 
 def group_by_arm(observations: Iterable[Observation]) -> dict[str, list[Observation]]:

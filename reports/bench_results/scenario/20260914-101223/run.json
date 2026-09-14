@@ -1,0 +1,771 @@
+{
+  "meta": {
+    "run_id": "20260914-101223",
+    "mode": "run",
+    "env": "sandbox",
+    "provider": "fabrix",
+    "commit": "caa975ad4bd2e6b368c11b8ff53c5f34cb5d8ff3",
+    "dirty": false,
+    "started_at": "2026-09-14T01:12:23+00:00",
+    "repeat": 1,
+    "scenario_total": 1984,
+    "platform": {
+      "os": "Linux",
+      "os_release": "5.14.0-570.112.1.el9_6.x86_64",
+      "python": "3.12.9",
+      "encoding": "utf-8",
+      "pythonutf8": "(미설정)"
+    },
+    "host": "nclago01"
+  },
+  "profiles": [
+    {
+      "name": "S2-COMPOSITE_AVAILABILITY_PRECHECK_ENABLED-false",
+      "port": 54442,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_AVAILABILITY_PRECHECK_ENABLED-true",
+      "port": 33784,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_DISCOVERY_EARLY_EXIT-false",
+      "port": 29660,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_DISCOVERY_EARLY_EXIT-true",
+      "port": 39812,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_FANOUT_CONCURRENCY-1",
+      "port": 51180,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_FANOUT_CONCURRENCY-3",
+      "port": 55896,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_FANOUT_CONCURRENCY-6",
+      "port": 60830,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_HOST_DISCOVERY_ENABLED-false",
+      "port": 53518,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_HOST_DISCOVERY_ENABLED-true",
+      "port": 24870,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED-false",
+      "port": 23026,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED-true",
+      "port": 25956,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_PRIOR_SCOPE_LATEST_ONLY-false",
+      "port": 47858,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_PRIOR_SCOPE_LATEST_ONLY-true",
+      "port": 35914,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_PRIOR_TARGETS_ENABLED-false",
+      "port": 39746,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_PRIOR_TARGETS_ENABLED-true",
+      "port": 24390,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SCOPE_POSTCHECK_ENABLED-false",
+      "port": 40612,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SCOPE_POSTCHECK_ENABLED-true",
+      "port": 47886,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED-false",
+      "port": 26552,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED-true",
+      "port": 24920,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SEQUENTIAL_GATE_ENABLED-false",
+      "port": 47346,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SEQUENTIAL_GATE_ENABLED-true",
+      "port": 59196,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SEQUENTIAL_REPLAN_ENABLED-false",
+      "port": 25962,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_SEQUENTIAL_REPLAN_ENABLED-true",
+      "port": 48990,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_TARGET_COLUMN_LLM_ENABLED-false",
+      "port": 40580,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-COMPOSITE_TARGET_COLUMN_LLM_ENABLED-true",
+      "port": 37888,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-QUERY_INTENT_LLM_ASSIST-false",
+      "port": 51148,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-QUERY_INTENT_LLM_ASSIST-true",
+      "port": 57756,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-ROUTER_TWO_STAGE_ENABLED-false",
+      "port": 57820,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-ROUTER_TWO_STAGE_ENABLED-true",
+      "port": 53876,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS-false",
+      "port": 41018,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS-true",
+      "port": 43140,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-SCHEMA_CACHE_BACKEND-file",
+      "port": 28716,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-SCHEMA_CACHE_BACKEND-redis",
+      "port": 59020,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-SCHEMA_CACHE_ENABLED-false",
+      "port": 47150,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-SCHEMA_CACHE_ENABLED-true",
+      "port": 20842,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_CANDIDATE_COUNT-1",
+      "port": 27142,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_CANDIDATE_COUNT-3",
+      "port": 44572,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_CANDIDATE_COUNT-6",
+      "port": 30332,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_CANDIDATE_STRATEGIES-multi_prompt",
+      "port": 57438,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_CANDIDATE_STRATEGIES-temperature",
+      "port": 22682,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_COMPLEXITY_GATE-false",
+      "port": 40536,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_COMPLEXITY_GATE-true",
+      "port": 46548,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_MULTI_CANDIDATE-false",
+      "port": 44796,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_MULTI_CANDIDATE-true",
+      "port": 54964,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_PROMPT_KNOWLEDGE_RENDER-false",
+      "port": 52970,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_PROMPT_KNOWLEDGE_RENDER-true",
+      "port": 31626,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_QUERY_HISTORY_FEWSHOT-false",
+      "port": 30582,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_QUERY_HISTORY_FEWSHOT-true",
+      "port": 46644,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_QUERY_HISTORY_TOP_K-1",
+      "port": 46782,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_QUERY_HISTORY_TOP_K-3",
+      "port": 23090,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_QUERY_HISTORY_TOP_K-6",
+      "port": 21582,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SELECTION-consistency",
+      "port": 48802,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SELECTION-hybrid",
+      "port": 58004,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SELECTION-llm",
+      "port": 31960,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SEMANTIC_COMPOSE-false",
+      "port": 31564,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SEMANTIC_COMPOSE-true",
+      "port": 37842,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SEMANTIC_FALLBACK-candidate_then_human",
+      "port": 40468,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SEMANTIC_FALLBACK-human",
+      "port": 29116,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-TEXT2SQL_SEMANTIC_FALLBACK-llm",
+      "port": 60488,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-ZONE_GROUP_EXCLUSIVE-false",
+      "port": 53200,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "S2-ZONE_GROUP_EXCLUSIVE-true",
+      "port": 43918,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    },
+    {
+      "name": "baseline",
+      "port": 36742,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "flag_off",
+      "echo_ok": null,
+      "echo_mismatch": {},
+      "reasons": [
+        "설정 에코 미확인 (http 401 - 관리자 토큰 필요)"
+      ]
+    }
+  ],
+  "executed_turns": 1984,
+  "skipped": [],
+  "raw_path": "/fsapp/infra-collector-agent/results/scenario/20260914-101223/raw.jsonl",
+  "out_dir": "/fsapp/infra-collector-agent/results/scenario/20260914-101223"
+}

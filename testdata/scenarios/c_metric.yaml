@@ -22,7 +22,10 @@ scenarios:
       - send:
           query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
         expect:
-          manual_review: "`= '202607'` / 서버당 1행, avg/max 열"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'20\\d{4}'"]
+          row_count: {min: 1}
+          manual_review: "지난달 월(YYYYMM)이 실행 시점 기준으로 맞는지 · 서버당 1행 · avg/max 열"
   - id: C-02
     plans: [61, 69]
     title: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
@@ -34,7 +37,10 @@ scenarios:
       - send:
           query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
         expect:
-          manual_review: "`BETWEEN '202605' AND '202607'` / 서버×월 행"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)between\\s+'20\\d{4}'\\s+and\\s+'20\\d{4}'"]
+          row_count: {min: 1}
+          manual_review: "3개월 범위가 실행 시점 기준으로 맞는지 · 서버×월 행"
   - id: C-03
     plans: [61, 69]
     title: "2026년 상반기 서버별 CPU 사용률 평균"
@@ -46,7 +52,9 @@ scenarios:
       - send:
           query: "2026년 상반기 서버별 CPU 사용률 평균"
         expect:
-          manual_review: "`BETWEEN '202601' AND '202606'`"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'202601'", "(?i)'202606'"]
+          row_count: {min: 1}
   - id: C-04
     plans: [61, 69]
     title: "2026년 1월부터 6월까지 메모리 사용률 최대값"
@@ -58,7 +66,10 @@ scenarios:
       - send:
           query: "2026년 1월부터 6월까지 메모리 사용률 최대값"
         expect:
-          manual_review: "동일 범위 / 절대 월 범위 정규식(D-176)"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'202601'", "(?i)'202606'"]
+          sql_must_not_match: ["(?i)'202607'"]
+          row_count: {min: 1}
   - id: C-05
     plans: [61, 69]
     title: "11월부터 2월까지 CPU 사용률"
@@ -70,7 +81,9 @@ scenarios:
       - send:
           query: "11월부터 2월까지 CPU 사용률"
         expect:
-          manual_review: "`202511~202602`(연도 넘김)"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'\\d{4}11'", "(?i)'\\d{4}02'"]
+          manual_review: "연도 넘김이 맞는지 - 11월의 연도가 2월보다 1년 앞서야 한다"
   - id: C-06
     plans: [61, 69]
     title: "이번 달 CPU 사용률"
@@ -82,7 +95,9 @@ scenarios:
       - send:
           query: "이번 달 CPU 사용률"
         expect:
-          manual_review: "`= '202608'` / 진행 중 월"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'20\\d{4}'"]
+          manual_review: "진행 중 월이 실행 시점 기준으로 맞는지"
   - id: C-07
     plans: [61, 69]
     title: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
@@ -94,7 +109,9 @@ scenarios:
       - send:
           query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
         expect:
-          manual_review: "기간 무제한, `max_val > 90` / '이용률' 동의어, '~한 적이 있는'"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)max_val\\s*>\\s*90"]
+          manual_review: "'이용률' 동의어와 '~한 적이 있는'(기간 무제한)이 해석됐는지"
   - id: C-08
     plans: [61, 69]
     title: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
@@ -106,7 +123,7 @@ scenarios:
       - send:
           query: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
         expect:
-          manual_review: "avg_val ASC / '가동률' 의역 — coverage=outside, 실패 허용 기록"
+          manual_review: "'가동률' 의역 - coverage=outside. avg_val ASC 정렬이면 성공, 실패해도 기록만 한다(기계 판정하지 않는다)"
   - id: C-09
     plans: [61, 69]
     title: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
@@ -118,7 +135,10 @@ scenarios:
       - send:
           query: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
         expect:
-          manual_review: "기간 self-join / 복합"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'202605'", "(?i)'202606'"]
+          row_count: {min: 1}
+          manual_review: "자기조인 또는 조건부 집계로 상승폭이 나왔는지"
   - id: C-10
     plans: [61, 69]
     title: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
@@ -130,7 +150,9 @@ scenarios:
       - send:
           query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
         expect:
-          manual_review: "GROUP BY + HAVING"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)group\\s+by", "(?i)having"]
+          manual_review: "HAVING 조건이 '2개월 이상'을 정확히 표현했는지"
   - id: C-11
     plans: [61, 69]
     title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
@@ -142,7 +164,9 @@ scenarios:
       - send:
           query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
         expect:
-          manual_review: "스칼라 서브쿼리"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'202606'", "(?i)select[\\s\\S]*\\(\\s*select"]
+          manual_review: "스칼라 서브쿼리가 전체 평균을 계산하는지"
   - id: C-12
     plans: [61, 69]
     title: "지금 CPU 사용률 높은 서버 알려줘"
@@ -154,7 +178,7 @@ scenarios:
       - send:
           query: "지금 CPU 사용률 높은 서버 알려줘"
         expect:
-          manual_review: "플래그 off: 통계 테이블 / on: 실시간 REST / 원문 기준 `is_realtime_usage_query` 판정"
+          manual_review: "플래그 의존 - off 면 통계 테이블, on 이면 실시간 REST. 설정에 따라 정답이 갈려 기계 판정하지 않는다"
   - id: C-13
     plans: [61, 69]
     title: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
@@ -166,4 +190,8 @@ scenarios:
       - send:
           query: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
         expect:
-          manual_review: "전역 집계(GROUP BY 없음) / 1행 1값 — `scope.global_aggregate_drop` 가드 계측 확인"
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)avg\\s*\\("]
+          sql_must_not_match: ["(?i)group\\s+by"]
+          row_count: {eq: 1}
+          manual_review: "scope.global_aggregate_drop 가드 계측이 남았는지"

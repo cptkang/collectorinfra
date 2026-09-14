@@ -104,6 +104,9 @@ def cmd_mock(args: argparse.Namespace) -> int:
         mode="mock", env=args.env, repeat=args.repeat, groups=args.group,
         only=args.only, profiles=args.profile, port=args.port,
         token=args.token, timeout_sec=args.timeout, resume_from=args.resume,
+        admin_token=args.admin_token,
+        user_id=args.user, user_password=args.password,
+        admin_user=args.admin_user, admin_password=args.admin_password,
     )
     summary = execute(catalog, config)
     run_dir = Path(summary["out_dir"])
@@ -140,6 +143,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         mode="run", env=args.env, repeat=args.repeat, groups=args.group,
         only=args.only, profiles=args.profile, port=args.port,
         token=args.token, timeout_sec=args.timeout, resume_from=args.resume,
+        admin_token=args.admin_token,
+        user_id=args.user, user_password=args.password,
+        admin_user=args.admin_user, admin_password=args.admin_password,
     )
     result = estimate(catalog, config)
     print("[4단] 실 실행 - 과금 경로")
@@ -221,7 +227,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="대상 환경 선언")
     select.add_argument("--resume", metavar="RUN_ID", help="중단된 런을 이어서")
     select.add_argument("--port", type=int, help="자식 서버 포트 (미지정 시 자동)")
-    select.add_argument("--token", help="관리자 토큰 (AUTH_ENABLED=true 인 환경)")
+    select.add_argument("--token", help="질의용 사용자 토큰 (직접 주입 시)")
+    select.add_argument("--admin-token", help="설정 에코용 운영자 토큰 (직접 주입 시)")
+    # 토큰 대신 크레덴셜을 받는 것이 정본이다 - JWT 시크릿이 `.env` 에 명시돼 있지
+    # 않으면 기동마다 난수라(config.py `model_post_init`) 미리 받은 토큰은 두 번째
+    # 프로파일부터 401 이다. 크레덴셜을 주면 러너가 프로파일마다 다시 로그인한다.
+    select.add_argument("--user", help="질의용 사용자 ID (AUTH_ENABLED=true 인 환경)")
+    select.add_argument("--password", help="질의용 사용자 비밀번호")
+    select.add_argument("--admin-user", help="운영자 ID (미지정 시 설정에서 읽는다)")
+    select.add_argument("--admin-password", help="운영자 비밀번호 (미지정 시 설정에서 읽는다)")
     select.add_argument("--timeout", type=float, default=360.0, help="시나리오당 상한(초)")
     select.add_argument("--yes", action="store_true", help="--run 의 승인 프롬프트 생략")
     return parser

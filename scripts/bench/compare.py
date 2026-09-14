@@ -74,6 +74,9 @@ class AxisVerdict:
     latency: Optional[PairedMetric]
     llm_calls: Optional[PairedMetric]
     sentence: str
+    signal: str = "정확도"                        # 판정의 근거가 된 이진 신호
+    completion: Optional[PairedAccuracy] = None   # 완주율 쌍체
+    sql_rate: Optional[PairedAccuracy] = None     # SQL 생성률 쌍체
 
 
 def _index(observations: Sequence[Observation]) -> dict[tuple[str, int], Observation]:
@@ -89,17 +92,39 @@ def _scored(observations: Sequence[Observation]) -> list[Observation]:
     return [o for o in observations if not o.manual]
 
 
-def paired_accuracy(baseline: Sequence[Observation], variant: Sequence[Observation]) -> PairedAccuracy:
-    """McNemar — 불일치 쌍만 본다. 둘 다 맞거나 둘 다 틀린 쌍은 정보가 없다."""
-    base_idx, var_idx = _index(_scored(baseline)), _index(_scored(variant))
+def paired_binary(
+    baseline: Sequence[Observation],
+    variant: Sequence[Observation],
+    signal: str,
+    *,
+    drop_manual: bool = True,
+) -> PairedAccuracy:
+    """임의의 이진 신호에 대한 McNemar — 불일치 쌍만 본다.
+
+    `signal` 은 관측치의 불리언 속성 이름이다(`passed`·`completed`·`sql_generated`).
+    `drop_manual` 은 **정확도에만** 해당한다 — 완주·SQL 생성은 사람의 판정과 무관하게
+    원시 로그에서 바로 읽히므로 보류 건도 그대로 센다.
+    """
+    pool_b = _scored(baseline) if drop_manual else list(baseline)
+    pool_v = _scored(variant) if drop_manual else list(variant)
+    base_idx, var_idx = _index(pool_b), _index(pool_v)
     keys = sorted(set(base_idx) & set(var_idx))
-    b = sum(1 for k in keys if base_idx[k].passed and not var_idx[k].passed)
-    c = sum(1 for k in keys if not base_idx[k].passed and var_idx[k].passed)
+    b = sum(1 for k in keys
+            if getattr(base_idx[k], signal) and not getattr(var_idx[k], signal))
+    c = sum(1 for k in keys
+            if not getattr(base_idx[k], signal) and getattr(var_idx[k], signal))
     delta = ((c - b) / len(keys) * 100.0) if keys else 0.0
     return PairedAccuracy(
         n_pairs=len(keys), only_baseline_passed=b, only_variant_passed=c,
         delta_pp=round(delta, 2), p_value=_exact_binomial_p(b, c),
     )
+
+
+def paired_accuracy(
+    baseline: Sequence[Observation], variant: Sequence[Observation]
+) -> PairedAccuracy:
+    """쌍체 정확도 — 기계 단언이 옮겨진 시나리오만 대상이다."""
+    return paired_binary(baseline, variant, "passed")
 
 
 def _exact_binomial_p(b: int, c: int) -> Optional[float]:
@@ -165,61 +190,76 @@ def judge(
     """판정 5어휘 중 하나와 **문장**을 낸다. 개발자가 통계를 읽지 않게 하는 지점이다."""
     acc = paired_accuracy(baseline, variant)
     latency = paired_metric(baseline, variant, "wall_ms")
+    # 비용 축은 **잴 수 있는 것으로** 잰다. LLM 호출 수는 `done` 페이로드에 없어
+    # 구조적으로 측정 불가이므로, 없으면 노드 실행 수(파이프라인이 한 일의 양)로 대신한다.
     calls = paired_metric(baseline, variant, "llm_calls")
+    cost_label = "LLM 호출"
+    if calls is None:
+        calls = paired_metric(baseline, variant, "node_count")
+        cost_label = "노드 수"
+    run = paired_binary(baseline, variant, "completed", drop_manual=False)
+    sql = paired_binary(baseline, variant, "sql_generated", drop_manual=False)
 
-    if acc.n_pairs == 0:
-        manual_only = bool(baseline) and all(o.manual for o in baseline)
-        if manual_only:
-            # 정확도는 못 재도 **비용 축은 잰다** — mock 실행의 가치가 여기 있다.
-            bits = ["정확도 판정 없음(mock `manual`)"]
-            if latency:
-                bits.append(f"지연 {latency.mean_delta:+.0f}ms "
-                            f"[{latency.ci_low:+.0f}, {latency.ci_high:+.0f}]")
-            if calls:
-                bits.append(f"LLM 호출 {calls.mean_delta:+.2f}회")
-            detail = " · ".join(bits) + " — 실 모드에서 정확도를 다시 잰다."
-        else:
-            detail = "비교할 쌍이 없다 — arm이 무효이거나 워크로드가 겹치지 않는다."
-        return AxisVerdict(arm_id, axis, level, UNDERPOWERED, acc, latency, calls, detail)
+    # **판정 신호를 고른다.** 정확도가 1순위지만, 정상군 시나리오에 기계 단언이 하나도
+    # 옮겨져 있지 않으면(실측 2026-09-14: 32건 전부 `manual_review` 뿐) 정확도 쌍은 항상
+    # 0쌍이다. 그 상태에서 UNDERPOWERED 만 내면 성공한 런과 전건 401 인 런이 **같은 문장**
+    # 으로 나온다. 완주 여부는 사람이 옮겨 적지 않아도 원시 로그에 있고 설정 축이 실제로
+    # 흔드는 값이므로, 정확도가 없을 때의 대체 신호로 쓴다 — 이름을 바꿔 적어 혼동을 막는다.
+    if acc.n_pairs > 0:
+        primary, label = acc, "정확도"
+    elif run.n_pairs > 0:
+        primary, label = run, "완주율"
+    else:
+        detail = "비교할 쌍이 없다 — arm이 무효이거나 워크로드가 겹치지 않는다."
+        return AxisVerdict(arm_id, axis, level, UNDERPOWERED, acc, latency, calls, detail,
+                           signal="없음", completion=run, sql_rate=sql)
+
+    acc_unavailable = (
+        "정확도 미측정(시나리오에 기계 단언 없음) · " if label == "완주율" else ""
+    )
+    sql_txt = f" · SQL 생성률 {sql.delta_pp:+.1f}%p" if sql.n_pairs else ""
 
     threshold = max(MIN_MEANINGFUL_PP, noise_floor_pp)
-    significant = acc.p_value is not None and acc.p_value < alpha
-    meaningful = abs(acc.delta_pp) >= threshold
+    significant = primary.p_value is not None and primary.p_value < alpha
+    meaningful = abs(primary.delta_pp) >= threshold
 
     # ★ 불일치 쌍이 적으면 **효과가 커 보여도** 판정하지 않는다.
     #   20건 표본에서 1건 차이는 5%p다 — 임계를 넘지만 정보는 1건뿐이다.
     #   이 가드가 없으면 작은 표본에서 큰 효과가 만들어진다(§2-②의 정확한 실패 유형).
-    if acc.discordant < MIN_DISCORDANT and not significant:
-        return AxisVerdict(arm_id, axis, level, UNDERPOWERED, acc, latency, calls,
-                           f"불일치 쌍 {acc.discordant}건 — 차이를 판정할 표본이 부족하다"
-                           f"(정확도 {acc.delta_pp:+.1f}%p는 우연과 구분되지 않는다). "
-                           f"성능 근거 없이 정적 규칙으로 판정한다.")
+    def _verdict(kind: str, detail: str) -> AxisVerdict:
+        return AxisVerdict(arm_id, axis, level, kind, acc, latency, calls, detail,
+                           signal=label, completion=run, sql_rate=sql)
 
-    lat_txt = (
-        f"지연 {latency.mean_delta:+.0f}ms" if latency else "지연 미측정"
-    )
-    acc_txt = f"정확도 {acc.delta_pp:+.1f}%p"
+    lat_txt = f"지연 {latency.mean_delta:+.0f}ms" if latency else "지연 미측정"
+    call_txt = f" · {cost_label} {calls.mean_delta:+.2f}" if calls else ""
+    main_txt = f"{acc_unavailable}{label} {primary.delta_pp:+.1f}%p"
+
+    if primary.discordant < MIN_DISCORDANT and not significant:
+        return _verdict(UNDERPOWERED,
+                        f"불일치 쌍 {primary.discordant}건 — 차이를 판정할 표본이 부족하다"
+                        f"({main_txt}는 우연과 구분되지 않는다){sql_txt} · {lat_txt}{call_txt}. "
+                        f"성능 근거 없이 정적 규칙으로 판정한다.")
 
     if not meaningful and not significant:
-        return AxisVerdict(arm_id, axis, level, NO_DIFFERENCE, acc, latency, calls,
-                           f"{acc_txt} · {lat_txt} — 노이즈 상한 이하다. 처분 규칙 6조 대상.")
+        return _verdict(NO_DIFFERENCE,
+                        f"{main_txt} · {lat_txt}{sql_txt} — 노이즈 상한 이하다. 처분 규칙 6조 대상.")
 
-    if acc.delta_pp < 0 and significant:
-        return AxisVerdict(arm_id, axis, level, REJECT, acc, latency, calls,
-                           f"{acc_txt}로 나빠진다 · {lat_txt}. 기본값을 유지하고 '권장하지 않음'을 적는다.")
+    if primary.delta_pp < 0 and significant:
+        return _verdict(REJECT,
+                        f"{main_txt}로 나빠진다 · {lat_txt}{sql_txt}. "
+                        f"기본값을 유지하고 '권장하지 않음'을 적는다.")
 
     worse_latency = latency is not None and latency.ci_low > 0
-    if acc.delta_pp > 0 and worse_latency:
-        return AxisVerdict(arm_id, axis, level, CONDITIONAL, acc, latency, calls,
-                           f"{acc_txt} 좋아지지만 {lat_txt} 느려진다 — 정확도와 지연을 맞바꾼다. "
-                           f"기본값은 바꾸지 않고 권고값만 병기한다.")
+    if primary.delta_pp > 0 and worse_latency:
+        return _verdict(CONDITIONAL,
+                        f"{main_txt} 좋아지지만 {lat_txt} 느려진다 — {label}와 지연을 맞바꾼다. "
+                        f"기본값은 바꾸지 않고 권고값만 병기한다.")
 
-    if acc.delta_pp > 0:
-        return AxisVerdict(arm_id, axis, level, ADOPT, acc, latency, calls,
-                           f"{acc_txt} · {lat_txt} — 기준선보다 낫고 부작용이 없다. 채택 권고.")
+    if primary.delta_pp > 0:
+        return _verdict(ADOPT,
+                        f"{main_txt} · {lat_txt}{sql_txt} — 기준선보다 낫고 부작용이 없다. 채택 권고.")
 
-    return AxisVerdict(arm_id, axis, level, NO_DIFFERENCE, acc, latency, calls,
-                       f"{acc_txt} · {lat_txt} — 방향이 뚜렷하지 않다.")
+    return _verdict(NO_DIFFERENCE, f"{main_txt} · {lat_txt}{sql_txt} — 방향이 뚜렷하지 않다.")
 
 
 def noise_floor(baseline_repeats: Sequence[Sequence[Observation]]) -> float:

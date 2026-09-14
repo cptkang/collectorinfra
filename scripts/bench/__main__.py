@@ -221,18 +221,48 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     # 규모를 먼저 말한다. arm 1개 = 서버 기동 1회이므로 arm 수가 곧 시간이다(§4.4).
     # 승인용이 아니라 **운영 시간대를 피할 판단 재료**다 — 내부망은 승인 없이 진행한다.
+    env, env_reason = sweep_mod.resolve_env(args.env)
+    say(f"  환경: {env} — {env_reason}")
+
     if args.mode != "dry":
         try:
-            scenarios = len(sweep_mod.load_normal_catalog().scenarios)
-        except Exception:
+            workload = sweep_mod.load_normal_catalog(env=env)
+            scenarios = len(workload.scenarios)
+            # **무엇을 재는지 화면에 적는다.** 종전에는 기본값이 sandbox 라 유사어 32건만
+            # 돌고 있었는데 출력 어디에도 그 사실이 없었다(실측 2026-09-14).
+            say(f"  워크로드: {sweep_mod.workload_summary(workload)}")
+        except Exception as exc:
             scenarios = 0
+            say(f"  워크로드: 확인 실패 ({type(exc).__name__}: {exc})")
         runs = len(arms) * scenarios * max(1, args.repeat)
-        per_arm_min = 1.0 if args.mode == "mock" else 12.0
         say(f"  규모: 시나리오 {scenarios}건 × arm {len(arms)} × 반복 {args.repeat} = {runs}회 실행")
-        say(f"  예상: 약 {len(arms) * per_arm_min / 60:.1f}시간 "
-              f"(arm 1개 = 서버 기동 1회 · {args.mode} 기준)")
-        if len(arms) > 30:
-            say(f"  ※ arm이 {len(arms)}개입니다. 먼저 --scale smoke로 파이프라인을 확인하는 것을 권합니다.")
+        # **턴 수에 비례시킨다.** 종전에는 arm 수만 곱해서, 워크로드가 32건이든 107건이든
+        # 같은 시간을 예고했다(실측 2026-09-14: 3배 차이인데 같은 숫자였다).
+        boot_sec = len(arms) * 30.0                      # arm 1개 = 서버 기동 1회
+        per_turn_sec = 0.2 if args.mode == "mock" else 20.0
+        hours = (boot_sec + runs * per_turn_sec) / 3600.0
+        say(f"  예상: 약 {hours:.1f}시간 "
+            f"(기동 {len(arms)}회 + 턴 {runs}회 × {per_turn_sec:g}초 · {args.mode} 기준)")
+        if len(arms) > 30 or hours > 12:
+            say(f"  ※ arm {len(arms)}개 · 약 {hours:.0f}시간입니다. "
+                f"먼저 --scale smoke로 파이프라인을 확인하고, 중단되면 같은 명령으로 이어받으세요.")
+
+    creds = sweep_mod.resolve_credentials(
+        user_id=args.user or os.environ.get("BENCH_USER_ID"),
+        user_password=args.password or os.environ.get("BENCH_USER_PASSWORD"),
+        admin_user=args.admin_user,
+        admin_password=args.admin_password,
+    )
+    if args.mode != "dry":
+        # 접속 방식을 **먼저** 말한다. 전건 401 은 한 시간을 태운 뒤에야 드러났다.
+        if creds.can_login:
+            say(f"  접속: 사용자 `{creds.user_id}` 로 로그인 (AUTH_ENABLED 유지)")
+        else:
+            say("  접속: AUTH_ENABLED=false 를 모든 arm에 동일 주입 — 인증은 측정 축이 "
+                "아니므로 비교에 영향 없음. 인증을 켠 채로 재려면 --user/--password 를 주세요.")
+        if not (creds.admin_user and creds.admin_password):
+            say("  ※ 운영자 크레덴셜을 찾지 못했습니다(ADMIN_USERNAME/ADMIN_PASSWORD). "
+                "인증이 켜진 서버라면 설정 에코 검증이 실패해 arm이 전부 INVALID 가 됩니다.")
 
     if args.mode == "run":
         echo = probe.echo_config()
@@ -250,7 +280,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        result = sweep_mod.run_arms(arms, mode=args.mode, repeat=args.repeat)
+        result = sweep_mod.run_arms(
+            arms, mode=args.mode, env=env, repeat=args.repeat, credentials=creds)
     except sweep_mod.SweepUnavailable as exc:
         say(f"스위프를 돌릴 수 없습니다: {exc}")
         return 2
@@ -259,6 +290,23 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     raw = (out_dir / "raw.jsonl") if out_dir else None
     if not raw or not raw.exists():
         say("원시 로그를 찾지 못했습니다. 94 러너 산출을 확인하세요.")
+        return 1
+
+    health = sweep_mod.scan_health(result, raw)
+    say()
+    say(f"건전성 — 유효 프로파일 {health.valid_profiles}/{len(arms)} · 턴 {health.turns}건 "
+        f"· 판정 {dict(sorted(health.verdicts.items()))}")
+    for name, reason in health.invalid_profiles:
+        say(f"  INVALID {name}: {reason}")
+    for mark, count in health.evidence:
+        say(f"  오류 표지 {count}건: {mark}")
+
+    blocking = health.blocking_reason()
+    if blocking:
+        # 여기서 멈추지 않으면 사고가 "판정 불가"라는 정상 얼굴의 리포트로 나간다.
+        say()
+        say(f"판정을 내지 않습니다 — {blocking}")
+        say("  원인을 고친 뒤 다시 실행하세요. 위 INVALID 사유·오류 표지가 출발점입니다.")
         return 1
 
     observations = sweep_mod.read_observations(raw)
@@ -351,6 +399,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("dry", "mock", "run"), default="mock",
                         help="dry: 전개만 · mock: 무과금 · run: 실 LLM")
     parser.add_argument("--repeat", type=int, default=1, help="시나리오 반복 수")
+    parser.add_argument("--env", choices=("auto", "closed", "sandbox"), default="auto",
+                        help="워크로드 환경 (기본 auto — 활성 DB로 판정)")
+    parser.add_argument("--user", help="질의용 사용자 ID (미지정 시 AUTH_ENABLED=false 주입)")
+    parser.add_argument("--password", help="질의용 사용자 비밀번호")
+    parser.add_argument("--admin-user", help="운영자 ID (미지정 시 설정에서 읽는다)")
+    parser.add_argument("--admin-password", help="운영자 비밀번호 (미지정 시 설정에서 읽는다)")
     return parser
 
 

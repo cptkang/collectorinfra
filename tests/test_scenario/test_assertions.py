@@ -210,11 +210,17 @@ def test_응답_부정_단언_위반도_silent_wrong_후보다() -> None:
     assert verdict.func == "fail"
 
 
-def test_예산_단언은_측정치가_없으면_판정하지_않는다() -> None:
-    """llm_calls 는 응답에 실리지 않는다 - None 을 0 으로 보면 전건 통과가 된다."""
+def test_예산_단언은_측정치가_없으면_manual_이다() -> None:
+    """llm_calls 는 응답에 실리지 않는다 - 없는 측정치를 0 으로 보면 전건 통과가 된다.
+
+    그렇다고 `pass` 로 세도 안 된다. 시나리오는 예산을 선언했는데 리포트에 `pass` 가
+    찍히면 "예산을 지켰다"로 읽힌다 — 실제로는 한 번도 확인하지 않았다. 모듈 원칙
+    그대로 **판정할 수 없는 것은 판정하지 않고 `manual` 로 남긴다**(2026-09-14 정정).
+    """
     scenario = _scenario(turns=[Turn({"query": "q"}, {"llm_calls": {"max": 0}})])
     verdict = _eval(scenario, Observation(status="completed", executed_sql="SELECT 1"))
-    assert verdict.func == "pass"      # 판정 재료가 없으면 단언을 적용하지 않는다
+    assert verdict.func == "manual"
+    assert any("확인하지 못했다" in note for note in verdict.manual_notes)
 
 
 def test_역질문_옵션_개수를_본다() -> None:
@@ -281,3 +287,84 @@ def test_적용_턴이_아니면_성능을_판정하지_않는다() -> None:
     obs = Observation(status="completed", executed_sql="SELECT 1", processing_time_ms=99999)
     verdict = evaluate_turn(scenario, 1, scenario.turns[0], obs, _group())
     assert verdict.perf == "n/a"
+
+
+# --- 모의 실행은 canned 응답을 판정하지 않는다 (2026-09-14) ----------------
+
+def test_모의_실행은_배관_외의_단언을_적용하지_않는다() -> None:
+    """canned 응답은 SQL 뿐 아니라 상태·역질문·산출물까지 전부 정한다.
+
+    2026-09-14 모의 실행에서 F-03·F-04 가 `status: clarification` 에서, H-01 이
+    `has_file: true` 에서 불합격이었다 — 전부 모의 서버를 판정한 결과였다.
+    """
+    scenario = _scenario(turns=[Turn({"query": "q"}, {
+        "status": "clarification",
+        "has_file": True,
+        "sql_must_match": ["(?i)cmm_metric_stat_m"],
+        "row_count": {"eq": 5},
+    })])
+    obs = Observation(status="completed", executed_sql="SELECT 1", row_count=999)
+
+    verdict = evaluate_turn(scenario, 1, scenario.turns[0], obs, _group(), mock=True)
+
+    assert verdict.func == "manual"
+    assert not verdict.failures, "모의가 정하는 값으로 불합격을 만들면 안 된다"
+    assert any("모의 실행" in note for note in verdict.manual_notes)
+
+
+def test_모의_실행도_배관은_판정한다() -> None:
+    """모의가 실제로 증명하는 것 — SSE 가 흘렀고 노드를 밟았고 200 이 왔다."""
+    scenario = _scenario(turns=[Turn({"query": "q"}, {
+        "sse_events": ["node_start", "done"],
+        "http_status": 200,
+    })])
+    broken = Observation(status="completed", http_status=500)
+    broken.sse_events = []
+
+    verdict = evaluate_turn(scenario, 1, scenario.turns[0], broken, _group(), mock=True)
+
+    assert verdict.func == "fail"
+    assert {f.key for f in verdict.failures} >= {"http_status"}
+
+
+def test_모의_블록이_있으면_내용_단언을_적용한다() -> None:
+    """작성자가 응답을 직접 정했다면 그 단언은 배관(SQL·행수 전달)을 실제로 검증한다."""
+    scenario = _scenario(
+        turns=[Turn({"query": "q"}, {"sql_must_match": ["(?i)cmm_resource"]})],
+        mock={"turns": [{"executed_sql": "SELECT 1 FROM cmm_resource"}]},
+    )
+    ok = Observation(status="completed", executed_sql="SELECT 1 FROM cmm_resource")
+    bad = Observation(status="completed", executed_sql="SELECT 1")
+
+    assert evaluate_turn(scenario, 1, scenario.turns[0], ok, _group(), mock=True).func == "pass"
+    assert evaluate_turn(scenario, 1, scenario.turns[0], bad, _group(), mock=True).func == "fail"
+
+
+def test_실_모드는_모의와_무관하게_내용을_판정한다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {
+        "sql_must_match": ["(?i)cmm_metric_stat_m"],
+    })])
+    obs = Observation(status="completed", executed_sql="SELECT 1")
+
+    verdict = evaluate_turn(scenario, 1, scenario.turns[0], obs, _group(), mock=False)
+
+    assert verdict.func == "fail"
+
+
+def test_관측되지_않는_intent_로_불합격을_만들지_않는다() -> None:
+    """done 페이로드에 intent 가 없다 - 그대로 대조하면 전건 거짓 불합격이다."""
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"intent": "data_query"})])
+    obs = Observation(status="completed", executed_sql="SELECT 1")
+
+    verdict = evaluate_turn(scenario, 1, scenario.turns[0], obs, _group())
+
+    assert verdict.func == "manual"
+    assert not verdict.failures
+    assert any("db_ids" in note for note in verdict.manual_notes)
+
+
+def test_intent_가_관측되면_정상_대조한다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"intent": "data_query"})])
+    obs = Observation(status="completed", intent="alarm_query", executed_sql="SELECT 1")
+
+    assert evaluate_turn(scenario, 1, scenario.turns[0], obs, _group()).func == "fail"

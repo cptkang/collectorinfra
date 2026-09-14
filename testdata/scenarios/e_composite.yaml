@@ -22,7 +22,9 @@ scenarios:
       - send:
           query: "polestar DB 캐시를 갱신하고 서버 목록도 조회해줘"
         expect:
-          manual_review: "t1 cache_management ∥ t2 data_query (병렬) / 두 결과 합산 응답"
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_resource\\b"]
+          manual_review: "캐시 갱신과 조회 두 태스크가 병렬로 돌고 결과가 합산됐는지"
   - id: E-02
     plans: [88, 82, 80, 78]
     title: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
@@ -34,7 +36,8 @@ scenarios:
       - send:
           query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
         expect:
-          manual_review: "t1 alarm_query → t2 data_query(`input_from=t1`) / t1 호스트 집합이 t2 WHERE IN으로 전달"
+          status: completed
+          manual_review: "t1 알람 조회의 호스트 집합이 t2 WHERE IN 으로 전달됐는지 — 복합 경로는 executed_sql 에 마지막 태스크만 남아 기계로 못 본다"
   - id: E-03
     plans: [88, 82, 80, 78]
     title: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
@@ -46,7 +49,8 @@ scenarios:
       - send:
           query: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
         expect:
-          manual_review: "t1 data_query → t2 process_query / 프로세스 API 대상 = t1 결과"
+          status: completed
+          manual_review: "프로세스 API 대상이 t1 결과 서버인지 — 프로세스는 SQL 경로가 아니다"
   - id: E-04
     plans: [88, 82, 80, 78]
     title: "김포 서버 목록과 여의도 서버 목록을 각각 알려줘"
@@ -58,7 +62,9 @@ scenarios:
       - send:
           query: "김포 서버 목록과 여의도 서버 목록을 각각 알려줘"
         expect:
-          manual_review: "위치어 보존, DB별 실행 / 두 표"
+          status: completed
+          db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          manual_review: "두 표가 존 라벨로 구분돼 나오는지"
   - id: E-05
     plans: [88, 82, 80, 78]
     title: "해당 서버 프로세스 이력 지난 7일 보여줘"
@@ -70,7 +76,8 @@ scenarios:
       - send:
           query: "해당 서버 프로세스 이력 지난 7일 보여줘"
         expect:
-          manual_review: "process_query 아님 → data_query(이력 키워드 거부)"
+          status: completed
+          sql_must_match: ["(?i)\\bselect\\b"]
   - id: E-06
     plans: [88, 82, 80, 78]
     title: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
@@ -82,7 +89,8 @@ scenarios:
       - send:
           query: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
         expect:
-          manual_review: "단일 SQL NOT EXISTS 또는 2태스크 / 결과 집합 동일해야 함"
+          status: completed
+          manual_review: "단일 SQL NOT EXISTS 든 2태스크든 결과 집합이 같아야 한다"
   - id: E-07
     plans: [88, 82, 80, 78]
     title: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
@@ -94,4 +102,6 @@ scenarios:
       - send:
           query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
         expect:
-          manual_review: "3도메인 조인"
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_alarm\\w*\\b", "(?i)\\bcmm_resource\\b",
+                          "(?i)\\bcore_config_prop\\b"]

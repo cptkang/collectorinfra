@@ -22,7 +22,10 @@ scenarios:
       - send:
           query: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
         expect:
-          manual_review: "`cmm_alarm_active`, `alarmseverity = 3`, `CR.DTIME IS NULL` / 9열 표준 알람 뷰"
+          status: completed
+          sql_must_match: ["(?i)cmm_alarm_active", "(?i)alarmseverity\\s*=\\s*3",
+                          "(?i)dtime\\s+is\\s+null"]
+          manual_review: "9열 표준 알람 뷰인지"
   - id: D-02
     plans: [44, 45]
     title: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
@@ -34,7 +37,10 @@ scenarios:
       - send:
           query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
         expect:
-          manual_review: "`severity >= 2 ORDER BY ctime DESC`, **LIMIT 100** / 정확히 100행"
+          status: completed
+          sql_must_match: ["(?i)\\blimit\\s+100\\b",
+                          "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
+          row_count: {max: 100}
   - id: D-03
     plans: [44, 45]
     title: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
@@ -46,7 +52,9 @@ scenarios:
       - send:
           query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
         expect:
-          manual_review: "COUNT + ctime 범위 / 1값"
+          status: completed
+          sql_must_match: ["(?i)count\\s*\\(", "(?i)202607"]
+          row_count: {eq: 1}
   - id: D-04
     plans: [44, 45]
     title: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
@@ -58,7 +66,10 @@ scenarios:
       - send:
           query: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
         expect:
-          manual_review: "GROUP BY + ORDER BY COUNT DESC LIMIT 10 / 10행"
+          status: completed
+          sql_must_match: ["(?i)group\\s+by", "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
+                          "(?i)\\blimit\\s+10\\b"]
+          row_count: {max: 10}
   - id: D-05
     plans: [44, 45]
     title: "이번 달 CPU 임계값 초과 알람 이력 조회"
@@ -70,7 +81,9 @@ scenarios:
       - send:
           query: "이번 달 CPU 임계값 초과 알람 이력 조회"
         expect:
-          manual_review: "alarm_def 조인"
+          status: completed
+          sql_must_match: ["(?i)cmm_alarm_def"]
+          manual_review: "이번 달 범위가 실행 시점 기준으로 맞는지"
   - id: D-06
     plans: [44, 45]
     title: "담당자 없는 미확인 알람"
@@ -82,4 +95,4 @@ scenarios:
       - send:
           query: "담당자 없는 미확인 알람"
         expect:
-          manual_review: "통보 다단 조인(yd-006 계열) / outside — 실패 허용 기록"
+          manual_review: "통보 다단 조인(yd-006 계열) - coverage=outside. 실패 허용 기록"

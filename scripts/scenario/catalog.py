@@ -56,10 +56,17 @@ class CatalogError(Exception):
 
 @dataclass(frozen=True)
 class Turn:
-    """시나리오 1턴. `send`는 요청 본문, `expect`는 단언 선언."""
+    """시나리오 1턴. `send`는 요청 본문, `expect`는 단언 선언.
+
+    `endpoint`는 **턴 단위 재지정**이다(기본은 시나리오 값). 폼필 HITL 은 1턴이 파일
+    업로드(`file_stream`)이고 답변 턴은 JSON(`stream`)으로 `form_fill_answers`를 보낸다 -
+    `/query/file` 은 그 필드를 Form 파라미터로 받지 않기 때문이다(query.py 의 Form 목록).
+    턴마다 엔드포인트를 못 바꾸면 I군(폼필 HITL) 8건은 표현 자체가 불가능하다.
+    """
 
     send: dict[str, Any]
     expect: dict[str, Any]
+    endpoint: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -206,7 +213,14 @@ def _parse_turns(raw_turns: Any, scenario_id: str, errors: list[str]) -> list[Tu
         if not isinstance(expect, dict):
             errors.append(f"{scenario_id} 턴{index}: 'expect'가 매핑이 아니다")
             continue
-        turns.append(Turn(send=send, expect=expect))
+        turn_endpoint = item.get("endpoint")
+        if turn_endpoint is not None and turn_endpoint not in ENDPOINTS:
+            errors.append(
+                f"{scenario_id} 턴{index}: endpoint '{turn_endpoint}' 는 정의 밖이다 "
+                f"({', '.join(sorted(ENDPOINTS))})"
+            )
+            turn_endpoint = None
+        turns.append(Turn(send=send, expect=expect, endpoint=turn_endpoint))
     return turns
 
 

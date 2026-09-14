@@ -39,7 +39,8 @@ scenarios:
           # --- L1 결정적 ---
           status: clarification          # completed | clarification | error | awaiting_approval
           http_status: 200
-          intent: data_query
+          intent: data_query             # **관측되지 않는다** - done 페이로드에 없어
+                                         #   대조 대신 사유를 남긴다. 라우팅은 db_ids 로 본다
           db_ids: ["polestar_cm_gp"]
           row_count: {min: 1, max: 100, eq: null}
           has_file: false
@@ -49,15 +50,19 @@ scenarios:
           file: {sheets: ["Sheet1"], columns: ["호스트명"], filled_rows: {min: 1}}
 
       - send: {selected_db_ids: ["polestar_cm_gp"]}   # HITL 응답은 자연어가 아니라 구조화 필드다
+        endpoint: stream           # 선택. 턴 단위 재지정(기본은 시나리오 값).
+                                   #   폼필 답변 턴은 `/query/file` 이 form_fill_answers 를
+                                   #   Form 으로 받지 않아 JSON 경로로 보내야 한다
         expect:
           # --- L2 구조 ---
-          sql_must_match: ["(?i)limit\\s+100000"]
+          sql_must_match: ["(?i)\\blimit\\s+10000\\b"]   # "전체" 상향값은 10,000 이다
           sql_must_not_match: ["(?i)여의도"]
           column_must_not_map: ["cpu_usage"]   # D-200형 회귀 탐지. 실행 SQL 과 매핑 산출물을 대조
           node_path: ["field_mapper"]
           sse_events: ["node_start", "done"]
-          llm_calls: {max: 10}
-          retries: {max: 3}
+          llm_calls: {max: 10}                 # **측정 불가** - 응답에 호출 수가 없다.
+                                               #   선언하면 pass 가 아니라 manual 이 된다
+          retries: {max: 3}                    # node_start 의 query_generator 재진입 수
           gold_sql: null                       # EX 동등성은 eval_text2sql 로 별도 판정(수동으로 넘어간다)
 
           # --- L3 유보 ---
@@ -75,6 +80,11 @@ scenarios:
                                         #   그 밖의 값은 미지원으로 기록되어 리포트 10절에 노출된다
     notes: "D-154 — 원문 '여의도' 언급이 WHERE 로 새지 않는다"
 
+    # --mock 에서의 판정 규칙:
+    #   `mock:` 블록이 **없으면** canned 응답이 상태·역질문·산출물까지 전부 정하므로
+    #   `sse_events`·`node_path`·`http_status`(배관) 외의 단언은 보류로 남긴다 -
+    #   모의 서버를 판정한 결과는 시스템의 품질이 아니다.
+    #   `mock:` 블록이 **있으면** 작성자가 내용을 정했다는 뜻이라 전부 판정한다.
     mock:                               # 선택. --mock 에서 모의 서버가 돌려줄 응답
       turns:
         - {response: "...", clarification: {kind: zone_select, options: [1, 2, 3]}}

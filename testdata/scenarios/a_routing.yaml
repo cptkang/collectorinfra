@@ -22,7 +22,10 @@ scenarios:
       - send:
           query: "여의도 개발 서버들의 CPU 사용률을 보여줘"
         expect:
-          manual_review: "data_query / polestar_cm_yd / 위치어 결정적 힌트"
+          status: completed
+          db_ids: ["polestar_cm_yd"]
+          sql_must_not_match: ["(?i)여의도"]
+          manual_review: "위치어 결정적 힌트가 적용됐는지 기동 로그 확인"
   - id: A-02
     plans: [9, 79]
     title: "은행존 서버의 디스크 사용량 조회"
@@ -34,7 +37,9 @@ scenarios:
       - send:
           query: "은행존 서버의 디스크 사용량 조회"
         expect:
-          manual_review: "data_query / polestar_b0 / DB2 경로 진입"
+          status: completed
+          db_ids: ["polestar_b0"]
+          sql_must_not_match: ["(?i)\\blimit\\s+\\d"]
   - id: A-03
     plans: [9, 79]
     title: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
@@ -46,7 +51,9 @@ scenarios:
       - send:
           query: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
         expect:
-          manual_review: "data_query / gp + yd (≥2) / **멀티DB 축소 회귀 감시 항목**"
+          status: completed
+          db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          manual_review: "멀티DB 축소 회귀 감시 - 한쪽으로 좁혀지지 않았는지"
   - id: A-04
     plans: [9, 79]
     title: "현재 활성 상태인 심각 알람 목록 보여줘"
@@ -58,7 +65,8 @@ scenarios:
       - send:
           query: "현재 활성 상태인 심각 알람 목록 보여줘"
         expect:
-          manual_review: "alarm_query / polestar_*"
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_alarm(_active)?\\b"]
   # 쓰기 시나리오 - 스키마 캐시를 갱신한다. cache_state 선언과 순서 고정이 필요하다(§2-3).
   - id: A-05
     plans: [9, 79]
@@ -71,7 +79,9 @@ scenarios:
       - send:
           query: "polestar DB의 스키마 캐시를 갱신해줘"
         expect:
-          manual_review: "cache_management / 없음 / DB 선택 단계 스킵"
+          status: completed
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          has_file: false
     cache_state: cold
     teardown: [drop_thread, clear_schema_cache]
   - id: A-06
@@ -85,7 +95,9 @@ scenarios:
       - send:
           query: "조회 가능한 DB 목록과 설명을 알려줘"
         expect:
-          manual_review: "cache_management(db-guide) / 없음"
+          status: completed
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          has_file: false
   - id: A-07
     plans: [9, 79]
     title: "안녕하세요, 오늘 날씨 어때요?"
@@ -97,7 +109,10 @@ scenarios:
       - send:
           query: "안녕하세요, 오늘 날씨 어때요?"
         expect:
-          manual_review: "general_inference / `[]`"
+          status: completed
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          db_ids: []
+          manual_review: "일반 추론 응답인지 - 관측 데이터를 지어내지 않았는지"
   - id: A-08
     plans: [9, 79]
     title: "쿠버네티스란 뭐야?"
@@ -109,7 +124,9 @@ scenarios:
       - send:
           query: "쿠버네티스란 뭐야?"
         expect:
-          manual_review: "general_inference / `[]` / 외부 IT 개념"
+          status: completed
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          db_ids: []
   - id: A-09
     plans: [9, 79]
     title: "서버 상태 좀 확인해줘"
@@ -121,7 +138,7 @@ scenarios:
       - send:
           query: "서버 상태 좀 확인해줘"
         expect:
-          manual_review: "data_query / ≥1 / 저신뢰 프로브 — `relevance_score` 분포 확인(0.3 게이트)"
+          manual_review: "저신뢰 프로브 - relevance_score 분포 확인(0.3 게이트). 재질문·안내·조회 어느 쪽도 정답일 수 있어 기계 판정하지 않는다"
   - id: A-10
     plans: [9, 79]
     title: "vcore, cpu, core은 동의어이다. 캐시에 등록하라."
@@ -133,7 +150,9 @@ scenarios:
       - send:
           query: "vcore, cpu, core은 동의어이다. 캐시에 등록하라."
         expect:
-          manual_review: "cache_management(결정적 pre-gate) / — / LLM 미호출 확인"
+          status: completed
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          manual_review: "LLM 미호출 확인 - 유사어 등록이 결정적 경로로 처리됐는지"
     # 쓰기 시나리오 - 유사어 사전(Redis)에 등록한다. 정리하지 않으면 뒤 시나리오의
     # 매핑이 바뀐다(유사어 오염 자기강화 - Known Mistakes). 러너가 아직 이 정리를
     # 수행하지 못하므로 teardown_unsupported 로 기록되어 리포트 10절에 노출된다.
@@ -149,7 +168,7 @@ scenarios:
       - send:
           query: "○○ 서버 왜 느려? 원인 분석해줘"
         expect:
-          manual_review: "flag off: data_query로 강등 / on: fault_diagnosis / — / 플래그 양쪽 실행"
+          manual_review: "플래그 양쪽 실행 - off 면 data_query 강등, on 이면 fault_diagnosis. 설정에 따라 정답이 갈려 기계 판정하지 않는다"
   - id: A-12
     plans: [9, 79]
     title: "서버 목록 양식 채워줘 (파일 없이)"
@@ -161,4 +180,7 @@ scenarios:
       - send:
           query: "서버 목록 양식 채워줘 (파일 없이)"
         expect:
-          manual_review: "결정적 안내문 반환 / — / `_FORM_FILL_NO_FILE_GUIDANCE`, LLM 미호출"
+          status: completed
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          has_file: false
+          response_must_contain: ["양식 파일이 첨부되지 않아"]

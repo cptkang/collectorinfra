@@ -1,8 +1,16 @@
-# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+# 폼필 역질문·기억 (plans/73 D-151 · D-177 · D-187)
 #
-# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
-# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
-# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+# 2026-09-14 재작성. 종전에는 8건 전부 `prompt_authored: false` 라 러너가 건너뛰었다 -
+# 원문이 "답변 턴: form_fill_answers={...}" 같은 **절차 서술**이었기 때문이다.
+#
+# 두 가지가 막고 있었다.
+#   1. 답변 턴은 `/query/stream`(JSON)으로 `form_fill_answers` 를 보내야 하는데
+#      `/query/file` 은 그 필드를 Form 파라미터로 받지 않는다. 턴마다 엔드포인트를
+#      바꿀 수 없어 표현 자체가 불가능했다 → `turns[].endpoint` 신설로 해소.
+#   2. 각 시나리오가 앞 시나리오의 스레드를 전제했는데 러너는 실행마다 새 thread_id 를
+#      준다 → 각 시나리오를 자기 완결 멀티턴으로 다시 썼다.
+#
+# 답변 본문 키는 **`action`** 이다(state.py:149). docs/29 원문의 `kind` 는 오기다.
 version: 1
 group:
   id: I
@@ -13,129 +21,209 @@ group:
 scenarios:
   - id: I-01
     plans: [73, 58]
-    title: "H-04 양식에 `담당자` 열 추가 → 채워줘"
+    title: "매핑되지 않는 열이 있으면 폼필 역질문이 뜬다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "testdata/scenarios/fixtures/adhoc_owner_column.xlsx"
+    response_modes: [clarify]
     turns:
       - send:
-          query: "H-04 양식에 `담당자` 열 추가 → 채워줘"
+          query: "김포 서버로 채워줘"
         expect:
-          manual_review: "`form_fill_clarification{fields:[담당자], candidates(라이브 스키마)}` — 모든 열이 0이면 재질문 아님"
+          # '담당자' 한 열만 후보가 없다. 모든 열이 매핑되면 역질문은 뜨지 않는다.
+          clarification: {options_len: 1}
+          manual_review: "후보 목록이 라이브 스키마에서 왔는지(고정 목록이 아닌지)"
+    teardown: [drop_thread]
+
   - id: I-02
     plans: [73, 58]
-    title: "답변 턴: `form_fill_answers={\"담당자\":{\"kind\":\"literal\",\"value\":\"인프라팀\"}}`, `"
+    title: "구조화 답변이 적용되고 존이 유지된다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "testdata/scenarios/fixtures/adhoc_owner_column.xlsx"
+    response_modes: [clarify, answer]
     turns:
       - send:
-          query: "답변 턴: `form_fill_answers={\"담당자\":{\"kind\":\"literal\",\"value\":\"인프라팀\"}}`, `form_fill_remember=true`, 파일 재첨부 없음"
+          query: "김포 서버로 채워줘"
         expect:
-          manual_review: "원본 바이트 재생, **존 유지**(D-177 — 로그 `폼필 답변 턴(D-151): … 존 복원=[...]`), 담당자 열 전행 '인프라팀', `[사용자 답변 적용 내역]`"
+          clarification: {options_len: 1}
+      - send:
+          form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
+          form_fill_remember: true
+        # 답변 턴은 JSON 이다 - 파일을 다시 올리지 않는다(체크포인터가 양식을 복원한다).
+        endpoint: stream
+        expect:
+          status: completed
+          has_file: true
+          db_ids: ["polestar_cm_gp"]          # D-177 존 복원
+          response_must_contain: ["[사용자 답변 적용 내역]"]
+          file: {columns: ["서버명", "호스트명", "IP", "OS버전", "메모리용량", "비고", "담당자"],
+                 filled_rows: {min: 1}}
+          manual_review: "담당자 열 전행이 '인프라팀'인지 · 원본 바이트가 재생됐는지"
+    teardown: [drop_thread]
+
   - id: I-03
     plans: [73, 58]
-    title: "같은 양식 재업로드 + 채워줘"
+    title: "기억한 답변이 재업로드에서 자동 적용된다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "testdata/scenarios/fixtures/adhoc_owner_column.xlsx"
+    response_modes: [clarify, answer]
     turns:
       - send:
-          query: "같은 양식 재업로드 + 채워줘"
+          query: "김포 서버로 채워줘"
         expect:
-          manual_review: "저장값 자동 적용 `[확인 이력 적용]`, 재질문 없음"
+          clarification: {options_len: 1}
+      - send:
+          form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
+          form_fill_remember: true
+        endpoint: stream
+        expect:
+          status: completed
+      - send:
+          query: "김포 서버로 채워줘"
+        expect:
+          # 같은 양식 시그니처라 저장값이 자동 적용된다 - 다시 물으면 회귀다.
+          status: completed
+          has_file: true
+          response_must_contain: ["[확인 이력 적용]"]
+    teardown: [drop_thread]
+
   - id: I-04
     plans: [73, 58]
-    title: "?"
+    title: "저장 값 패널은 파이프라인 없이 결정적으로 응답한다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "testdata/scenarios/fixtures/adhoc_owner_column.xlsx"
+    response_modes: [answer, guide]
     turns:
       - send:
-          query: "?"
+          query: "김포 서버로 채워줘"
         expect:
-          manual_review: "저장 값 패널(`form_memory_panel`), LLM 미호출"
-  - id: I-05
-    plans: [73, 58]
-    title: "이 양식에 저장된 내용은?"
-    kind: normal
-    env: closed
-    profile: baseline
-    endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
-    turns:
+          clarification: {options_len: 1}
+      - send:
+          form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
+          form_fill_remember: true
+        endpoint: stream
+        expect:
+          status: completed
       - send:
           query: "이 양식에 저장된 내용은?"
+        endpoint: stream
         expect:
-          manual_review: "동일 패널"
-  - id: I-06
+          status: completed
+          # 결정적 경로다 - SQL 도 LLM 도 타지 않는다.
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+          manual_review: "form_memory_panel 이 실렸는지 · LLM 미호출인지"
+    teardown: [drop_thread]
+
+  - id: I-05
     plans: [73, 58]
-    title: "기억한 값으로 채워줘"
+    title: "'기억한 값으로 채워줘'는 기억 명령이 아니라 채움 명령이다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "testdata/scenarios/fixtures/adhoc_owner_column.xlsx"
+    response_modes: [clarify, answer]
     turns:
+      - send:
+          query: "김포 서버로 채워줘"
+        expect:
+          clarification: {options_len: 1}
+      - send:
+          form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
+          form_fill_remember: true
+        endpoint: stream
+        expect:
+          status: completed
       - send:
           query: "기억한 값으로 채워줘"
         expect:
-          manual_review: "기억 명령 **아님** → 채움 실행"
+          # 패널 조회로 새면 산출물이 안 나온다.
+          status: completed
+          has_file: true
+    teardown: [drop_thread]
+
+  - id: I-06
+    plans: [73, 58]
+    title: "저장 값을 지우면 역질문이 되살아난다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: file_stream
+    upload: "testdata/scenarios/fixtures/adhoc_owner_column.xlsx"
+    response_modes: [clarify, answer]
+    turns:
+      - send:
+          query: "김포 서버로 채워줘"
+        expect:
+          clarification: {options_len: 1}
+      - send:
+          form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
+          form_fill_remember: true
+        endpoint: stream
+        expect:
+          status: completed
+      - send:
+          form_memory_delete: {"fields": ["담당자"]}
+        endpoint: stream
+        expect:
+          status: completed
+          manual_review: "삭제가 같은 세션의 양식 시그니처에만 적용됐는지(임의 삭제 차단)"
+      - send:
+          query: "김포 서버로 채워줘"
+        expect:
+          clarification: {options_len: 1}
+    teardown: [drop_thread]
+
   - id: I-07
     plans: [73, 58]
-    title: "패널에서 담당자 삭제(`form_memory_delete`) → 재업로드"
+    title: "구조 채움 필드는 답변으로 덮어쓸 수 없다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "tests/fixtures/forms/CPU_양식.xlsx"
+    response_modes: [refuse, guide, answer]
     turns:
       - send:
-          query: "패널에서 담당자 삭제(`form_memory_delete`) → 재업로드"
+          query: "2026년 6월 기준으로 채워줘"
         expect:
-          manual_review: "담당자 재질문 부활"
+          status: completed
+      - send:
+          form_fill_answers: {"월중평균사용률(최근 6개월간)": {"action": "literal", "value": "99"}}
+        endpoint: stream
+        expect:
+          status: completed
+          response_must_contain: ["구조 채움 필드는 답변으로 변경할 수 없습니다"]
+    teardown: [drop_thread]
+
   - id: I-08
     plans: [73, 58]
-    title: "월 시리즈 열에 답변으로 덮어쓰기 시도"
+    title: "모든 열이 매핑되면 역질문하지 않는다"
     kind: normal
     env: closed
     profile: baseline
     endpoint: file_stream
-    # 원문이 프롬프트가 아니라 산문(시나리오/방법 서술)이다.
-    # 사람이 실제 프롬프트로 고쳐 쓰고 이 줄을 지울 때까지 러너가 건너뛴다.
-    prompt_authored: false
-    upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    upload: "testdata/scenarios/fixtures/adhoc_server_info.xlsx"
+    response_modes: [answer]
     turns:
       - send:
-          query: "월 시리즈 열에 답변으로 덮어쓰기 시도"
+          query: "김포 서버로 채워줘"
         expect:
-          manual_review: "거부 사유 \"구조 채움 필드는 답변으로 변경할 수 없습니다\""
+          # 대조군 - I-01 과 같은 양식에서 '담당자' 열만 뺐다. 여기서 역질문이 뜨면
+          # 역질문 조건이 '매핑 실패'가 아니라 다른 것에 걸려 있다는 뜻이다.
+          status: completed
+          has_file: true
+          file: {columns: ["서버명", "호스트명", "IP", "OS버전", "메모리용량", "비고"],
+                 filled_rows: {min: 1}}
+    teardown: [drop_thread]

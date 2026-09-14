@@ -40,7 +40,12 @@ class RunConfig:
     only: list[str] = field(default_factory=list)
     profiles: list[str] = field(default_factory=list)
     port: Optional[int] = None
-    token: Optional[str] = None
+    token: Optional[str] = None           # 질의용 사용자 토큰(직접 주입 시)
+    admin_token: Optional[str] = None     # 설정 에코용 운영자 토큰(직접 주입 시)
+    user_id: Optional[str] = None         # 없으면 토큰을 로그인으로 받는다
+    user_password: Optional[str] = None
+    admin_user: Optional[str] = None
+    admin_password: Optional[str] = None
     timeout_sec: float = 360.0
     run_id: str = ""
     resume_from: Optional[str] = None
@@ -207,6 +212,7 @@ def _row(
         "llm_calls": obs.llm_calls,
         "tokens": obs.tokens,
         "retries": obs.retries,
+        "node_count": obs.node_count,
         "artifacts": obs.artifacts,
         "error": obs.error,
     }
@@ -249,6 +255,63 @@ def iter_executions(
         yield profile, ordered
 
 
+def resolve_admin_credentials(
+    user: Optional[str], password: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """운영자 크레덴셜을 채운다 - 명시값이 없으면 설정에서 읽는다.
+
+    `ADMIN_USERNAME`/`ADMIN_PASSWORD` 는 이미 `.env`/`.encenv` 에 있다(운영 모드에서는
+    없으면 기동 자체가 거부된다 - `_validate_production_secrets`). 개발자가 다시 타이핑할
+    이유가 없다. **여기 한 곳에만 둔다** - 진입점마다 따로 읽으면 한쪽만 낡는다.
+    """
+    if user and password:
+        return user, password
+    try:
+        from src.config import load_config
+
+        admin = load_config().admin
+        return (user or (admin.username or None), password or (admin.password or None))
+    except Exception:
+        # 설정 로드 실패는 치명상이 아니다 - 인증이 꺼진 서버는 토큰 없이 성립한다.
+        return user, password
+
+
+def acquire_tokens(
+    port: int, config: RunConfig
+) -> tuple[Optional[str], Optional[str], list[str]]:
+    """이 기동에 쓸 (사용자 토큰, 운영자 토큰, 진단 사유)를 만든다.
+
+    **프로파일마다 다시 받는다.** `AUTH_JWT_SECRET`/`ADMIN_JWT_SECRET` 이 `.env` 에
+    명시돼 있지 않으면 설정 객체가 기동마다 난수로 만들어내므로(config.py 의
+    `model_post_init`), 앞 프로파일에서 받은 토큰은 다음 프로파일에서 401 이다.
+    런 1회에 한 번만 받는 설계는 arm 62개 중 1개만 맞는다.
+
+    두 토큰은 **다른 시크릿으로 서명된다**(D-070). 질의(`require_user`)와 설정
+    에코(`require_admin_user`)는 각자의 토큰을 요구하므로 한쪽만 받아서는 안 된다.
+    """
+    reasons: list[str] = []
+    user_token, admin_token = config.token, config.admin_token
+    if user_token and admin_token:
+        return user_token, admin_token, reasons
+
+    admin_user, admin_password = resolve_admin_credentials(
+        config.admin_user, config.admin_password
+    )
+    client = ScenarioClient(ClientConfig(port=port))
+    try:
+        if not admin_token and admin_user and admin_password:
+            admin_token, error = client.admin_login(admin_user, admin_password)
+            if error:
+                reasons.append(error)
+        if not user_token and config.user_id and config.user_password:
+            user_token, error = client.login(config.user_id, config.user_password)
+            if error:
+                reasons.append(error)
+    finally:
+        client.close()
+    return user_token, admin_token, reasons
+
+
 def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     """런 1회를 수행하고 산출 디렉터리 경로·요약을 돌려준다."""
     meta = run_meta(config, catalog)
@@ -279,7 +342,20 @@ def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
             handle.start()
             from .server import verify_profile
 
-            status = verify_profile(handle, catalog.profiles.get(profile, {}), config.token)
+            user_token, admin_token, login_reasons = (
+                (None, None, []) if handle.mock else acquire_tokens(port, config)
+            )
+            status = verify_profile(handle, catalog.profiles.get(profile, {}), admin_token)
+            status.reasons.extend(login_reasons)
+            if status.auth_enabled and not user_token:
+                # 여기서 끊지 않으면 시나리오 전건이 401 을 받아 "실행됐지만 전부 오류"인
+                # 원시 로그가 쌓인다 - 실행되지 않은 것과 구별되지 않아 리포트가 거짓이 된다.
+                status.valid = False
+                status.reasons.append(
+                    "AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다 - "
+                    "/query 요청이 전건 401 로 끝난다. 크레덴셜을 넘기거나 "
+                    "이 런에 AUTH_ENABLED=false 를 주입할 것"
+                )
             if not status.valid:
                 for scenario in scenarios:
                     skipped.append(
@@ -290,7 +366,8 @@ def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
                     )
                 continue
             executed += _run_profile(
-                catalog, config, meta, profile, scenarios, port, raw, out_dir, skipped
+                catalog, config, meta, profile, scenarios, port, raw, out_dir, skipped,
+                token=user_token,
             )
         except Exception as exc:
             # 기동 자체가 실패하면 그 프로파일이 리포트에서 통째로 사라진다 -
@@ -330,11 +407,12 @@ def _run_profile(
     raw: RawLog,
     out_dir: Path,
     skipped: list[dict[str, Any]],
+    token: Optional[str] = None,
 ) -> int:
     executed = 0
     client_config = ClientConfig(
         port=port,
-        token=config.token,
+        token=token or config.token,
         timeout_sec=config.timeout_sec,
         artifact_dir=out_dir / "artifacts",
     )
@@ -379,10 +457,17 @@ def _run_once(
             continue
         payload = dict(turn.send)
         payload["thread_id"] = thread_id
-        upload = (REPO_ROOT / scenario.upload) if scenario.upload else None
+        endpoint = turn.endpoint or scenario.endpoint
+        # 파일은 업로드 엔드포인트일 때만 싣는다. 답변 턴(JSON)에 파일을 다시 붙이면
+        # 체크포인터에 복원된 양식 대신 새 업로드로 취급돼 역질문 상태가 끊긴다.
+        upload = (
+            (REPO_ROOT / scenario.upload)
+            if (scenario.upload and endpoint in ("file", "file_stream"))
+            else None
+        )
         started = time.perf_counter()
         try:
-            obs = client.send(scenario.endpoint, payload, upload)
+            obs = client.send(endpoint, payload, upload)
         except Exception as exc:  # 한 건의 예외가 스위트를 멈추지 않는다
             obs = Observation(
                 status="error",
@@ -400,7 +485,8 @@ def _run_once(
                 if saved:
                     obs.artifacts.append(str(saved))
 
-        verdict = evaluate_turn(scenario, index, turn, obs, group)
+        verdict = evaluate_turn(scenario, index, turn, obs, group,
+                                mock=(config.mode == "mock"))
         extras: dict[str, Any] = {}
         if unsupported:
             extras["teardown_unsupported"] = unsupported

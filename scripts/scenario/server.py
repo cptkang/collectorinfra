@@ -47,6 +47,7 @@ class ProfileStatus:
     degraded_reason: Optional[str] = None
     echo_ok: Optional[bool] = None          # None = 확인 못 함(토큰 없음 등)
     echo_mismatch: dict[str, dict[str, str]] = field(default_factory=dict)
+    auth_enabled: Optional[bool] = None     # 이 기동의 AUTH_ENABLED 실효값(에코에서 읽는다)
     reasons: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -58,6 +59,7 @@ class ProfileStatus:
             "degraded_reason": self.degraded_reason,
             "echo_ok": self.echo_ok,
             "echo_mismatch": self.echo_mismatch,
+            "auth_enabled": self.auth_enabled,
             "reasons": self.reasons,
         }
 
@@ -272,10 +274,14 @@ class ServerHandle:
 def verify_profile(
     handle: ServerHandle,
     overrides: dict[str, str],
-    token: Optional[str],
+    admin_token: Optional[str],
     expected_tier: Optional[str] = None,
 ) -> ProfileStatus:
-    """기동 검증 3종. 확인하지 못한 것을 통과로 세지 않는다."""
+    """기동 검증 3종. 확인하지 못한 것을 통과로 세지 않는다.
+
+    `admin_token` 은 **설정 에코 전용**이다 - `/admin/settings/schema` 는
+    `require_admin_user` 를 타므로 질의용 사용자 토큰으로는 열리지 않는다(D-070).
+    """
     status = ProfileStatus(name=handle.profile, port=handle.port)
 
     healthy, detail = handle.wait_healthy()
@@ -303,16 +309,20 @@ def verify_profile(
                 f"조용한 강등: 의도 {expected_tier} 인데 {status.tier} 로 확정됐다"
             )
 
-    client = ScenarioClient(ClientConfig(port=handle.port, token=token))
+    client = ScenarioClient(ClientConfig(port=handle.port, admin_token=admin_token))
     try:
         effective, echo_error = client.effective_settings()
     finally:
         client.close()
 
     if effective is None:
-        status.echo_ok = None
-        status.reasons.append(echo_error or "설정 에코 미확인")
+        status.echo_ok = False
+        status.reasons.append(
+            f"설정 에코 미확인: {echo_error or '(사유 없음)'} - "
+            "주입이 실효값에 반영됐는지 확인하지 못했으므로 이 프로파일은 재지 않는다"
+        )
     else:
+        status.auth_enabled = effective.get("AUTH_ENABLED", "").strip().lower() == "true"
         mismatch = {
             key: {"injected": value, "effective": effective.get(key, "(키 없음)")}
             for key, value in overrides.items()
@@ -326,7 +336,12 @@ def verify_profile(
                 "OS env·.encenv 우선순위 확인 (D-129)"
             )
 
-    status.valid = not any(
-        reason.startswith(("헬스 실패", "조용한 강등", "주입이")) for reason in status.reasons
+    # 유효 판정은 **확인된 사실**로만 내린다.
+    #
+    # 종전에는 사유 문자열의 접두사 목록으로 판정했는데, 목록에 없는 사유("설정 에코
+    # 미확인")가 통과로 새어 62개 프로파일이 전부 valid=true 로 기록됐다(2026-09-14 실측).
+    # 문자열 매칭은 새 사유가 생길 때마다 조용히 뚫린다 - 상태 플래그로 못박는다.
+    status.valid = bool(status.echo_ok) and not any(
+        reason.startswith(("헬스 실패", "조용한 강등")) for reason in status.reasons
     )
     return status

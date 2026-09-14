@@ -62,7 +62,7 @@ def patch_client(monkeypatch: pytest.MonkeyPatch):
 def test_V4_주입이_실효값에_반영되면_유효하다(patch_client) -> None:
     patch_client({"TEXT2SQL_MULTI_CANDIDATE": "true"})
     status = verify_profile(
-        FakeHandle(), {"TEXT2SQL_MULTI_CANDIDATE": "true"}, token=None
+        FakeHandle(), {"TEXT2SQL_MULTI_CANDIDATE": "true"}, admin_token=None
     )
     assert status.valid is True
     assert status.echo_ok is True
@@ -73,7 +73,7 @@ def test_V4_주입이_무시되면_INVALID_다(patch_client) -> None:
     """OS env/.encenv 우선순위로 주입이 조용히 무시되면 '기능 off 인데 합격'으로 오독된다(D-129)."""
     patch_client({"TEXT2SQL_MULTI_CANDIDATE": "false"})
     status = verify_profile(
-        FakeHandle(), {"TEXT2SQL_MULTI_CANDIDATE": "true"}, token=None
+        FakeHandle(), {"TEXT2SQL_MULTI_CANDIDATE": "true"}, admin_token=None
     )
     assert status.valid is False
     assert status.echo_ok is False
@@ -85,23 +85,29 @@ def test_V4_주입이_무시되면_INVALID_다(patch_client) -> None:
 
 def test_V4_에코에_키가_아예_없어도_불일치로_잡는다(patch_client) -> None:
     patch_client({})
-    status = verify_profile(FakeHandle(), {"ROUTER_TWO_STAGE_ENABLED": "true"}, token=None)
+    status = verify_profile(FakeHandle(), {"ROUTER_TWO_STAGE_ENABLED": "true"}, admin_token=None)
     assert status.valid is False
     assert status.echo_mismatch["ROUTER_TWO_STAGE_ENABLED"]["effective"] == "(키 없음)"
 
 
 def test_대소문자_차이는_불일치로_보지_않는다(patch_client) -> None:
     patch_client({"ENABLE_X": "True"})
-    status = verify_profile(FakeHandle(), {"ENABLE_X": "true"}, token=None)
+    status = verify_profile(FakeHandle(), {"ENABLE_X": "true"}, admin_token=None)
     assert status.echo_ok is True
 
 
-def test_G3_토큰이_없어_에코를_못_읽으면_미확인이지_실패가_아니다(patch_client) -> None:
-    """확인하지 못한 것을 통과로도 실패로도 세지 않는다 - 사유가 리포트 10절에 남는다."""
+def test_G3_에코를_못_읽으면_INVALID_다(patch_client) -> None:
+    """확인하지 못한 것을 통과로 세지 않는다.
+
+    종전에는 이 경우를 valid=True 로 뒀다. 그 결과 2026-09-14 실 스위프에서 관리자
+    토큰이 없어 에코가 전부 401 이었는데도 62개 프로파일이 **전부 valid** 로 기록되고,
+    주입이 실제로 먹었는지 한 번도 확인되지 않은 채 1984턴이 돌았다. 주입 검증은 이
+    러너의 존재 이유이므로, 그것을 못 하면 그 프로파일은 재지 않는다.
+    """
     patch_client(None, "설정 에코 미확인 (http 403 - 관리자 토큰 필요)")
-    status = verify_profile(FakeHandle(), {"ENABLE_X": "true"}, token=None)
-    assert status.echo_ok is None
-    assert status.valid is True          # INVALID 로 단정하지 않는다
+    status = verify_profile(FakeHandle(), {"ENABLE_X": "true"}, admin_token=None)
+    assert status.echo_ok is False
+    assert status.valid is False
     assert any("미확인" in reason for reason in status.reasons)
 
 
@@ -111,7 +117,7 @@ def test_V5_사다리_단이_의도와_다르면_INVALID_다(patch_client) -> No
     patch_client({})
     status = verify_profile(
         FakeHandle(ladder=("semantic_router", "deepagents_unavailable")),
-        {}, token=None, expected_tier="deep_agent",
+        {}, admin_token=None, expected_tier="deep_agent",
     )
     assert status.valid is False
     assert status.tier == "semantic_router"
@@ -121,20 +127,20 @@ def test_V5_사다리_단이_의도와_다르면_INVALID_다(patch_client) -> No
 def test_V5_사다리_로그를_못_찾으면_사유를_남긴다(patch_client) -> None:
     """어느 경로를 쟀는지 모르면 node_path 를 해석할 기준이 없다."""
     patch_client({})
-    status = verify_profile(FakeHandle(ladder=None), {}, token=None)
+    status = verify_profile(FakeHandle(ladder=None), {}, admin_token=None)
     assert any("사다리 확정" in reason for reason in status.reasons)
 
 
 def test_사다리_단이_의도와_같으면_유효하다(patch_client) -> None:
     patch_client({})
-    status = verify_profile(FakeHandle(), {}, token=None, expected_tier="deep_agent")
+    status = verify_profile(FakeHandle(), {}, admin_token=None, expected_tier="deep_agent")
     assert status.valid is True
     assert status.tier == "deep_agent"
 
 
 def test_헬스가_실패하면_이후_대조를_하지_않는다(patch_client) -> None:
     patch_client({})
-    status = verify_profile(FakeHandle(healthy=False), {}, token=None)
+    status = verify_profile(FakeHandle(healthy=False), {}, admin_token=None)
     assert status.valid is False
     assert status.echo_ok is None
     assert status.reasons[0].startswith("헬스 실패")
@@ -143,7 +149,7 @@ def test_헬스가_실패하면_이후_대조를_하지_않는다(patch_client) 
 def test_모의_서버는_사다리_에코_대조_없음을_사유로_남긴다(patch_client) -> None:
     """리포트가 실행 성격을 감추지 않게 한다."""
     patch_client({})
-    status = verify_profile(FakeHandle(mock=True), {}, token=None)
+    status = verify_profile(FakeHandle(mock=True), {}, admin_token=None)
     assert status.valid is True
     assert status.tier == "mock"
     assert any("모의 실행" in reason for reason in status.reasons)
