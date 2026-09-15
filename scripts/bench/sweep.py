@@ -65,8 +65,9 @@ class Observation:
 class Credentials:
     """스위프가 서버에 붙는 방법.
 
-    둘 중 하나로만 성립한다 — 로그인하거나, 인증을 끄거나.
-    **아무것도 하지 않으면 전건 401 이다**(2026-09-14 실측: 1984건 전량).
+    인증이 켜진 서버는 **전용 벤치 계정으로 로그인해야만** 잰다(plans/94 G-3 · 사용자 확정
+    2026-09-15). 인증을 끄고 재면 인증 미들웨어와 사용자별 DB 범위가 빠져 운영과 다른 경로를
+    잰다. **아무것도 하지 않으면 전건 401 이다**(2026-09-14 실측: 1984건 전량).
     """
 
     user_id: Optional[str] = None
@@ -88,8 +89,9 @@ def resolve_credentials(
     """크레덴셜을 모은다. 개발자가 아무것도 타이핑하지 않아도 되는 것이 기본이다(§0.4).
 
     운영자 크레덴셜은 `.env`/`.encenv` 에 이미 있으므로 설정에서 읽는다. 사용자
-    크레덴셜은 설정에 없다(인증 DB 소관) — 그래서 사용자가 명시하지 않으면 스위프는
-    로그인 대신 **인증 우회 주입**(`auth_bypass_env`)으로 간다.
+    크레덴셜은 설정에 없다(인증 DB 소관) — 인증이 켜진 서버라면 `--user`/`--password`
+    또는 OS 환경변수 `BENCH_USER_ID`/`BENCH_USER_PASSWORD` 로 줘야 하고, 없으면
+    스위프는 서버를 띄우기 전에 멈춘다(G-3).
     """
     _, runner_mod = scenario_harness()
     admin_user, admin_password = runner_mod.resolve_admin_credentials(
@@ -103,14 +105,20 @@ def resolve_credentials(
     )
 
 
-def auth_bypass_env() -> dict[str, str]:
-    """로그인하지 않을 때 모든 arm에 **똑같이** 주입하는 값.
+def server_auth_enabled() -> Optional[bool]:
+    """프로파일 서버가 인증을 켠 채로 뜨는가. 읽지 못하면 None.
 
-    인증은 측정 축이 아니고(축 선정 결과 50개 중 `AUTH_*` 0개) arm 전체에 동일하게
-    걸리므로 비교의 신호를 흔들지 않는다. 다만 **조용히 끄지는 않는다** — arm env에
-    실어 두면 94의 에코 검증이 이 주입까지 대조하므로, 꺼졌다는 사실이 리포트에 남는다.
+    프로파일 서버는 이 프로세스의 OS 환경변수를 물려받고 같은 `.env`·`.encenv` 를 읽으며,
+    arm 은 `AUTH_*` 를 주입하지 않는다(축 선정 결과 0개 · 격리 설정은 `ALARM_ENABLED` 뿐) —
+    그래서 여기서 읽은 값이 곧 서버의 값이다. **서버를 띄우기 전에** 알아야 계정 없는 런을
+    62 arm 기동 전에 멈출 수 있다.
     """
-    return {"AUTH_ENABLED": "false"}
+    try:
+        from src.config import load_config
+
+        return bool(load_config().auth.enabled)
+    except Exception:
+        return None
 
 
 def scenario_harness():
@@ -266,10 +274,10 @@ def run_arms(
     """arm 전체를 94 러너로 돌린다. 산출은 94 형식 그대로다(재분석 호환)."""
     sc_catalog, sc_runner = scenario_harness()
     creds = credentials or Credentials()
-    extra = {} if creds.can_login else auth_bypass_env()
 
     catalog = load_normal_catalog(env=env)
-    catalog.profiles = {arm.arm_id: {**extra, **arm.env} for arm in arms}
+    # 인증 설정은 arm 에 싣지 않는다 — 인증이 켜진 서버는 벤치 계정으로 로그인한다(G-3).
+    catalog.profiles = {arm.arm_id: dict(arm.env) for arm in arms}
     catalog.scenarios = fanout_scenarios(catalog, arms)
 
     config = sc_runner.RunConfig(

@@ -417,8 +417,8 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
                 status.valid = False
                 status.reasons.append(
                     "AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다 - "
-                    "/query 요청이 전건 401 로 끝난다. 크레덴셜을 넘기거나 "
-                    "이 런에 AUTH_ENABLED=false 를 주입할 것"
+                    "/query 요청이 전건 401 로 끝난다. 전용 벤치 계정을 --user/--password "
+                    "로 넘길 것(인증을 끄고 재지 않는다 - plans/94 G-3)"
                 )
             if not status.valid:
                 for scenario in scenarios:

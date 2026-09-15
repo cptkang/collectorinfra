@@ -321,8 +321,8 @@ def test_write_proposals_does_not_touch_repo_config(tmp_path):
 # 사고가 정상 얼굴로 나가지 않게 하는 두 장치를 여기서 못박는다.
 
 
-def test_크레덴셜이_없으면_모든_arm에_인증우회를_같은_값으로_주입한다(monkeypatch) -> None:
-    """arm마다 다르면 비교가 깨진다. 같은 값이어야 축의 신호가 보존된다."""
+def test_크레덴셜이_없어도_arm에_인증을_끄는_값을_싣지_않는다(monkeypatch) -> None:
+    """인증을 끄고 재지 않는다(plans/94 G-3 · 사용자 확정 2026-09-15) — arm env 는 축 값뿐이다."""
     captured: dict = {}
 
     class FakeRunner:
@@ -368,8 +368,8 @@ def test_크레덴셜이_없으면_모든_arm에_인증우회를_같은_값으�
     ]
     sweep.run_arms(arms, credentials=sweep.Credentials())
 
-    assert captured["profiles"]["baseline"] == {"AUTH_ENABLED": "false"}
-    assert captured["profiles"]["A-1"] == {"AUTH_ENABLED": "false", "A": "1"}
+    assert captured["profiles"]["baseline"] == {}
+    assert captured["profiles"]["A-1"] == {"A": "1"}
 
 
 def test_로그인_크레덴셜이_있으면_인증을_끄지_않는다(monkeypatch) -> None:
@@ -605,3 +605,97 @@ def test_판정_가능_집계는_러너가_건너뛰는_시나리오를_뺀다()
     assert runnable == len(catalog.scenarios) - len(skipped)
     assert judged <= runnable
     assert f"{len(skipped)}건은 러너가 건너뛴다" in sweep.workload_summary(catalog)
+
+
+# --- 인증 on 서버는 벤치 계정으로만 (D-215 · plans/94 G-3) ----------------
+#
+# 계정이 없으면 모든 arm 에 AUTH_ENABLED=false 를 주입하던 경로를 철회했다. 인증을 끄면
+# 토큰 검증·사용자 조회가 빠지고 익명 사용자는 DB 범위 제한이 없어 운영 경로와 다르다.
+
+def _sweep_args(**overrides):
+    import argparse
+
+    base = dict(scale="smoke", mode="run", repeat=1, env="closed", user=None,
+                password=None, admin_user=None, admin_password=None, yes=False)
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+@pytest.fixture()
+def gate(monkeypatch):
+    """게이트 뒤의 실행을 전부 가로챈다 — 서버를 띄우지도, 실 호출하지도 않는다."""
+    from scripts.bench import __main__ as cli
+
+    seen = {"run_arms": [], "echo": 0}
+    monkeypatch.delenv("BENCH_USER_ID", raising=False)
+    monkeypatch.delenv("BENCH_USER_PASSWORD", raising=False)
+    monkeypatch.setattr(sweep, "build_arms",
+                        lambda limit=None: [sweep.ArmSpec(arm_id="baseline", axis=None, level=None)])
+
+    def fake_echo():
+        seen["echo"] += 1
+        return object()
+
+    def fake_run(arms, **kwargs):
+        seen["run_arms"].append(kwargs)
+        raise sweep.SweepUnavailable("테스트 — 게이트 통과 확인 후 중단")
+
+    monkeypatch.setattr(cli.probe, "echo_config", fake_echo)
+    monkeypatch.setattr(cli, "_provider_of", lambda echo: "fabrix")
+    monkeypatch.setattr(cli, "approval_policy", lambda provider: (False, "내부망"))
+    monkeypatch.setattr(sweep, "run_arms", fake_run)
+    return cli, seen
+
+
+def test_인증_켜진_서버에서_계정이_없으면_서버를_띄우기_전에_멈춘다(gate, monkeypatch, capsys) -> None:
+    cli, seen = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: True)
+
+    rc = cli.cmd_sweep(_sweep_args())
+
+    assert rc == 2
+    assert seen["run_arms"] == [], "계정 없이 서버를 띄우면 안 된다"
+    assert seen["echo"] == 0, "게이트는 설정 에코·승인 확인보다 먼저다"
+    out = capsys.readouterr().out
+    assert "벤치 계정이 없습니다" in out and "BENCH_USER_ID" in out
+    assert "AUTH_ENABLED=false 를 모든 arm" not in out, "인증을 끄는 경로는 철회됐다"
+
+
+def test_인증_설정을_읽지_못해도_계정_없이는_시작하지_않는다(gate, monkeypatch, capsys) -> None:
+    """확인하지 못한 것을 통과로 세지 않는다."""
+    cli, seen = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: None)
+
+    assert cli.cmd_sweep(_sweep_args()) == 2
+    assert seen["run_arms"] == []
+    assert "읽지 못했고" in capsys.readouterr().out
+
+
+def test_계정을_주면_인증_켜진_서버에서_진행한다(gate, monkeypatch) -> None:
+    cli, seen = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: True)
+
+    cli.cmd_sweep(_sweep_args(user="bench01", password="pw"))
+
+    assert len(seen["run_arms"]) == 1
+    assert seen["run_arms"][0]["credentials"].user_id == "bench01"
+
+
+def test_OS_환경변수로_준_계정도_받는다(gate, monkeypatch) -> None:
+    cli, seen = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: True)
+    monkeypatch.setenv("BENCH_USER_ID", "bench02")
+    monkeypatch.setenv("BENCH_USER_PASSWORD", "pw")
+
+    cli.cmd_sweep(_sweep_args())
+
+    assert seen["run_arms"][0]["credentials"].user_id == "bench02"
+
+
+def test_인증_꺼진_서버는_계정_없이_진행한다(gate, monkeypatch) -> None:
+    cli, seen = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: False)
+
+    cli.cmd_sweep(_sweep_args())
+
+    assert len(seen["run_arms"]) == 1

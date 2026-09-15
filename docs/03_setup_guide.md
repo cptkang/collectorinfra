@@ -155,13 +155,16 @@ LLM_API_KEY=
 # Gemini API 키 (LLM_PROVIDER=gemini 시)
 LLM_GEMINI_API_KEY=
 
-# FabriX 키 (LLM_PROVIDER=fabrix 시)
-FABRIX_API_KEY=
-FABRIX_CLIENT_KEY=
+# FabriX 키 (LLM_PROVIDER=fabrix 시) — 반드시 LLM_ 접두
+# 접두 없는 FABRIX_API_KEY 는 OS 환경변수로만 읽혀, 이 파일에 적으면 무시된다
+LLM_FABRIX_API_KEY=
+LLM_FABRIX_CLIENT_KEY=
 
-# 운영자 인증
-ADMIN_PASSWORD=admin123
+# 운영자·사용자 인증 — AUTH_ENABLED=true 면 셋 다 필수 (3.5 참조)
+# 기본 크레덴셜은 없다(D-071). 두 시크릿은 서로 다른 값이어야 한다(D-070)
+ADMIN_PASSWORD=
 ADMIN_JWT_SECRET=
+AUTH_JWT_SECRET=
 
 # Redis 비밀번호 (설정 시)
 REDIS_PASSWORD=
@@ -180,6 +183,121 @@ API_CORS_ORIGINS=["*"]
 # 잘못된 예 (쉼표 구분 문자열 — 파싱 에러 발생)
 SECURITY_SENSITIVE_COLUMNS=password,secret,token
 ```
+
+`.env`·`.encenv`에는 **인라인 주석을 쓰지 않는다**(`KEY=value  # 설명` 금지). 주석은 별도 줄에 둔다.
+
+### 3.4 설정 우선순위 — "바꿨는데 안 바뀐다"의 1순위 원인
+
+같은 키가 여러 곳에 있으면 **OS 환경변수가 항상 이긴다.** 파일끼리는 **설정 그룹마다 읽는 파일이 다르다** —
+`.encenv`를 읽는 설정 클래스는 24개 중 **6개뿐**이다(`src/config.py`의 클래스별 `env_file`).
+
+| 그룹(접두) | 읽는 파일 | 같은 키가 `.env`·`.encenv` 둘 다에 있으면 |
+|---|---|---|
+| `ADMIN_`·`AUTH_`·`LLM_`·`ORCHESTRATOR_`·`REDIS_`·`WORKB_` | `.env` + `.encenv` | `.encenv`가 이긴다 |
+| 나머지 18개 — `ALARM_`·`API_`·`AUDIT_`·`COMPOSITE_`·`DBHUB_`·`DRM_`·`MULTI_DB_`·`NOISE_` 등 | `.env`만 | **`.encenv`의 값은 무시된다** |
+
+그래서 **시크릿이 아닌 설정은 `.env`에 둔다.** `.encenv`는 위 6개 그룹의 시크릿 전용이다.
+실측(2026-09-15): `.env`=false · `.encenv`=true 일 때 `AUTH_ENABLED`는 `true`, `ALARM_ENABLED`·`TEXT2SQL_MULTI_CANDIDATE`는 `false`.
+
+| 상황 | 실제 적용값 |
+|---|---|
+| `.env`에 `AUTH_ENABLED=false`, `.encenv`에 `AUTH_ENABLED=true` | `true` |
+| 셸에 `export AUTH_ENABLED=true`(PowerShell `$env:AUTH_ENABLED="true"`)가 남아 있음 | 파일 값과 무관하게 `true` |
+
+- 설정 파일은 **서버 기동 시 1회** 읽는다. 값을 바꾸면 서버를 재시작한다.
+- `.env`·`.encenv`는 **현재 작업 디렉터리 기준**으로 찾는다. 서버·스크립트는 프로젝트 루트에서 실행한다.
+- PowerShell의 `$env:` 값은 **그 창을 닫을 때까지 남는다.** 앞서 설정한 값이 다음 실행을 조용히 덮는 일이 잦다.
+  지울 때: `Remove-Item Env:AUTH_ENABLED` (POSIX: `unset AUTH_ENABLED`).
+- **실제 적용값 확인**: 관리자 화면의 「환경변수 설정」 탭이 키마다 실효값과 출처(OS env·`.encenv` 덮어쓰기)를 표시한다.
+- 파일 값은 OS 환경변수에 주입되지 않는다. 그래서 **OS 환경변수로만 읽는 키**는 `.env`·`.encenv`에 적어도
+  효과가 없다 — 예: 접두 없는 `FABRIX_API_KEY`, 벤치 스위프의 `BENCH_USER_ID`/`BENCH_USER_PASSWORD`.
+
+### 3.5 인증 설정 (AUTH_ENABLED)
+
+`AUTH_ENABLED` 하나로 **개발 모드와 운영 모드**가 갈린다. 폐쇄망 운영 서버는 운영 모드다.
+
+| | `AUTH_ENABLED=false` (기본 · 개발) | `AUTH_ENABLED=true` (운영) |
+|---|---|---|
+| 웹·API 접근 | 로그인 없이 전 기능 사용(익명 사용자) | 로그인 필수. 토큰 없는 요청은 401 |
+| 시크릿 미설정 | 기동마다 난수 시크릿을 만든다(재시작하면 기존 토큰 무효) | **기동 거부** |
+| 사용자 계정 | 불필요 | 인증 DB에 있어야 한다 |
+
+#### 3.5.1 키와 두는 파일
+
+비밀값은 `.encenv`, 나머지는 `.env`에 둔다(두 파일 모두 읽히지만 비밀값을 `.env`에 섞지 않는다).
+
+| 키 | 파일 | 운영 모드 | 설명 |
+|---|---|---|---|
+| `AUTH_ENABLED` | `.env` | — | `true` = 운영 모드. 미설정이면 `false` |
+| `ADMIN_USERNAME` | `.env` | **필수** | 운영자(break-glass) 아이디 |
+| `ADMIN_PASSWORD` | `.encenv` | **필수** | 운영자 비밀번호. 기본값 없음 |
+| `ADMIN_JWT_SECRET` | `.encenv` | **필수** | 운영자 토큰 서명 키 |
+| `AUTH_JWT_SECRET` | `.encenv` | **필수** | 사용자 토큰 서명 키. **`ADMIN_JWT_SECRET`과 다른 값** |
+| `AUTH_AUTH_DB_URL` | `.env` | 사실상 필수 | 사용자 계정 DB(PostgreSQL). 비우면 `DB_CONNECTION_STRING`을 쓴다. `DB_BACKEND=dbhub`라 `DB_CONNECTION_STRING`도 비어 있으면 **사용자 로그인이 전부 503** |
+| `ADMIN_JWT_EXPIRE_HOURS` / `AUTH_JWT_EXPIRE_HOURS` | `.env` | | 토큰 유효시간(기본 24 / 8시간) |
+| `AUTH_MAX_LOGIN_ATTEMPTS` / `AUTH_LOCKOUT_MINUTES` | `.env` | | 연속 실패 잠금(기본 5회 / 30분) |
+| `AUTH_PASSWORD_MIN_LENGTH` | `.env` | | 가입 비밀번호 최소 길이(기본 8) |
+
+#### 3.5.2 설정 예 (운영 모드)
+
+```dotenv
+# .env
+AUTH_ENABLED=true
+ADMIN_USERNAME=admin
+AUTH_AUTH_DB_URL=postgresql://infra_user:password@localhost:5432/infra_db
+```
+
+```dotenv
+# .encenv
+ADMIN_PASSWORD=<운영자 비밀번호>
+ADMIN_JWT_SECRET=<시크릿 A>
+AUTH_JWT_SECRET=<시크릿 B — A와 다른 값>
+```
+
+시크릿 생성(두 번 실행해 서로 다른 값을 쓴다):
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+#### 3.5.3 기동 시 일어나는 일
+
+1. **필수 키 확인** — 하나라도 없으면 서버가 뜨지 않고 로그에
+   `운영 모드(AUTH_ENABLED=true) 기동 거부 — 다음을 .env/.encenv에 설정하세요: …`가 남는다.
+2. **인증 DB 연결** — 사용자·감사 테이블이 없으면 자동 생성한다. 연결에 실패하면 서버는 뜨지만
+   `인증 DB 초기화 실패 (인증 기능 비활성)` 경고가 남고 사용자 로그인은 503이 된다.
+3. **관리자 계정 자동 생성** — DB에 활성 관리자가 한 명도 없으면 `ADMIN_USERNAME`/`ADMIN_PASSWORD`로
+   관리자 계정 1개를 만든다(로그 `seed admin 생성 완료`). **최초 1회만** 만들며, 나중에 `ADMIN_PASSWORD`를
+   바꿔도 이 DB 계정의 비밀번호는 바뀌지 않는다.
+
+#### 3.5.4 계정 두 종류
+
+| | 운영자(break-glass) | 사용자 |
+|---|---|---|
+| 로그인 화면 | `/admin/login` | `/login` |
+| API | `POST /api/v1/admin/login` · 본문 `{"username", "password"}` | `POST /api/v1/auth/login` · 본문 **`{"user_id", "password"}`** |
+| 대조 대상 | 설정의 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 그대로(DB 불필요) | 인증 DB의 계정 |
+| 쓰임 | 관리자 화면·설정 조회(DB 장애 시 비상 진입) | 질의(`/api/v1/query/*`) |
+| 계정 만들기 | 설정 파일에 적는다 | `/register` 화면 가입(즉시 활성·일반 권한) 또는 `POST /api/v1/auth/register` `{"user_id", "username", "password"}`. 3.5.3-3에서 생성된 관리자 계정(아이디 = `ADMIN_USERNAME`)도 쓸 수 있다 |
+
+두 토큰은 서로 다른 시크릿으로 서명되므로 **운영자 토큰으로는 질의할 수 없다.**
+
+#### 3.5.5 자주 겪는 문제
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| 서버가 뜨지 않고 로그에 `기동 거부 — 다음을 … 설정하세요` | 필수 키 누락 | 메시지에 나열된 키를 3.5.1의 파일에 추가 |
+| 로그인 503 `인증 서비스를 사용할 수 없습니다` | 인증 DB 없음·연결 실패 | `AUTH_AUTH_DB_URL` 확인 · 기동 로그의 `인증 DB 초기화 실패` |
+| 로그인 401 `ID 또는 비밀번호가 올바르지 않습니다` | 계정 없음·비밀번호 불일치·비활성 계정 | `/register` 가입 또는 비밀번호 확인 |
+| 로그인 423 `계정이 잠겼습니다` | 연속 실패(기본 5회) | 잠금 시간(기본 30분)이 지난 뒤 로그인하면 풀린다 |
+| 로그인 422 | 본문 키 오류(사용자 로그인에 `username`을 보냄) | 3.5.4의 본문 키 |
+| `.env`를 고쳤는데 그대로 | OS 환경변수·`.encenv`가 덮음 / 재시작 안 함 | 3.4 |
+
+#### 3.5.6 테스트 러너의 인증
+
+시나리오 러너(`python -m scripts.scenario`)와 벤치 스위프(`python -m scripts.bench --sweep`)는 프로파일마다
+서버를 새로 띄워 **스스로 로그인한다.** 사용자 계정을 넘기는 방법이 둘이 다르므로 각 가이드를 따른다 —
+`plans/94-WIP-feature-perf-scenario-suite.md` 「▶ 실행 가이드」 ⑨ · `plans/93-WIP-benchmark-driven-config-simplification.md` 「실행 가이드 ① 퀵」 2절.
 
 ---
 

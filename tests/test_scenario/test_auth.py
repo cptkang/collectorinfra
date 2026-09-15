@@ -172,7 +172,7 @@ def test_운영자_크레덴셜은_설정에서_읽고_사용자_것은_읽지_�
     """`ADMIN_USERNAME`/`ADMIN_PASSWORD` 는 `.env` 에 이미 있다 - 다시 타이핑시키지 않는다.
 
     사용자 크레덴셜은 설정에 없다(인증 DB 소관). 그래서 사용자 토큰은 명시해야만 생기고,
-    없으면 스위프가 `AUTH_ENABLED=false` 주입으로 간다.
+    인증이 켜진 서버에서 계정이 없으면 스위프는 서버를 띄우기 전에 멈춘다(G-3).
     """
     FakeLoginClient.created = []
     monkeypatch.setattr(runner_mod, "ScenarioClient", FakeLoginClient)

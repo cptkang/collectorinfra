@@ -2100,12 +2100,24 @@
 - **검증(2026-09-11)**: 신규 회귀 3건 — `test_base_exception_from_investigation_finalizes_job`(**옛 코드에서 실패함을 실측 확인** — 임시 원복 후 FAILED 재현) · `test_timeout_fires_even_when_investigation_thread_hangs`(영구 hang 대역) · `test_stuck_active_job_finalized_by_watchdog`. sre_agent 전체 **374 passed / 3 skipped**(⑦ 가드 11건 포함 — 가드 무력화 시 4건 실패 실측) · 실 LLM 0. 폐쇄망 재검증(정상 완주 · mcp 강제 종료 시 failed 확정)은 반입 후 잔여.
 - **관련**: D-198(본체 SSE wedge — 계열은 유사하나 기전이 다르다: 그쪽은 실제 대기, 이쪽은 스레드 사망) · D-123(submit/poll 계약) · docs/26 §5.4(조사 프로파일 인스턴스)
 
+## D-215. 폐쇄망 인증 서버의 벤치마크는 전용 벤치 계정으로만 잰다 — **`AUTH_ENABLED=false` 자동 주입 철회 (plans/94 G-3 확정)**
+
+- **결정일**: 2026-09-15 | **상태**: 확정 (구현 완료) | **번호**: `## D-` 헤더 최댓값 D-213 · 「채번 이력」 D-214(`plans/95` 예약) 대조 → **D-215**
+- **배경**: plans/93 트랙 A 인증 수정(2026-09-14, `f4afaed`)이 크레덴셜이 없으면 모든 arm 에 `AUTH_ENABLED=false`를 동일 주입하도록 만들었다. 같은 러너를 쓰는 `plans/94`의 게이트 **G-3 는 이 방식을 이미 기각**해 두었다 — 계획서 게이트라 D-번호가 없어 결정 grep 에 걸리지 않았고, plans/94 안에서도 "확정"(R10)과 "미확정"(설정 에코 주석)이 엇갈려 있었다.
+- **결정**: ①인증이 켜진 서버(`AUTH_ENABLED=true`)는 **전용 벤치 계정으로 로그인해서만** 잰다(93 스위프·94 스위트 공통). ②93 스위프는 계정이 없으면 **프로파일 서버를 띄우기 전에** 종료 코드 2로 멈추고 계정 주는 법(`--user`/`--password` 또는 OS 환경변수 `BENCH_USER_ID`/`BENCH_USER_PASSWORD`)을 출력한다. 서버 인증 설정을 읽지 못해도 멈춘다(확인 못 한 것을 통과로 세지 않는다). ③인증이 꺼진 서버·모의 실행은 계정 없이 진행한다. ④plans/94 G-3 를 **확정**으로 표기하고 엇갈린 주석을 정정한다.
+- **근거**: 인증을 끄면 `require_user` 의 토큰 검증·사용자 조회가 빠지고, 익명 사용자는 `allowed_db_ids` 제한이 없어 **전용 계정과 조회 범위가 달라질 수 있다** — 운영 경로와 다른 것을 잰다. 93 의 arm 간 상대 비교에는 영향이 작지만 94 의 절대 측정과 같은 러너·결과를 공유하므로 한 기준으로 맞춘다(사용자 확정 2026-09-15).
+- **대안(기각)**: 크레덴셜이 없으면 인증 끄기 유지(93 상대 비교에는 무해하나 G-3·운영 경로와 불일치) · 인증 우회 경로 신설(보안 경계 훼손 — G-3 (c))
+- **구현**: `scripts/bench/sweep.py`(`auth_bypass_env` 제거 · `server_auth_enabled()` 신설 · arm env 에 인증 키 미적재) · `scripts/bench/__main__.py`(서버 기동 전 게이트) · `scripts/scenario/runner.py`(INVALID 안내 문구) · `tests/test_scripts/test_bench_sweep.py`(게이트 5건) · `plans/93` 퀵 가이드·v11 · `plans/94` G-3·R10·설정 에코 주석
+- **주의**: `BENCH_USER_*` 는 **OS 환경변수로만** 읽힌다(`.env`·`.encenv` 에 적으면 무효). 94 CLI(`python -m scripts.scenario`)는 이 변수를 읽지 않고 `--user`/`--password` 만 받는다. 벤치 계정의 `allowed_db_ids` 가 좁으면 시나리오의 대상 DB 가 빠질 수 있다 — 계정 준비 시 확인(`docs/03` §3.5).
+- **관련**: D-212(plans/94 하네스 · G-3) · D-211(plans/93) · D-070(사용자·운영자 시크릿 분리) · D-069(통합 RBAC) · D-127(과금 게이트)
+
 ## 변경 이력
 
 > 각 변경의 상세 전문은 `docs/02_decision_full.md`(2026-07-16 아카이브) 참조.
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-09-15 | **D-215** | **폐쇄망 인증 서버 벤치마크 = 전용 벤치 계정 전용 (plans/94 G-3 확정)** — 93 스위프의 '크레덴셜 없으면 `AUTH_ENABLED=false` 동일 주입'(2026-09-14)을 철회: 인증 on 서버에서 계정이 없으면 서버 기동 전 종료(코드 2)·계정 안내, 인증 설정 판독 실패도 중단, 인증 off·모의는 진행. 근거: 인증을 끄면 토큰 검증·사용자 조회가 빠지고 익명 사용자는 DB 범위 제한이 없어 운영 경로와 다르다. G-3 가 계획서 게이트라 D-번호가 없어 대조에서 빠졌던 것을 결정으로 승격. 최댓값 D-214(예약)→**D-215**. |
 | 2026-09-10 | **D-204** (후속) | **`plans/89` T4 핸들러 마일스톤 구현 → 코드 잔여 0·태그 해제**(v4). 발행 공통부를 `src/utils/progress_events.py`로 내려 nodes·orchestration 공용(계층 위반 0). `schema_analyzer` 라이브 샘플 루프 → `_collect_live_samples` + `schema.sample` k/n · `subagents` 파이프라인 `pipeline.<stage>` 6종 start/end(재생성 회차 라벨) · `app.js` `stepLabels` 7종. 신규 테스트 13건 · 실 LLM 0 · arch/overfit 0. 잔여는 D-127 승인 사항(실 브라우저·playwright). |
 | 2026-09-10 | **D-128** (확정) | **Plan 67 E1 A/B 재측정 실행(D-127 승인) → stepwise 기본 OFF 확정·Plan 67 종결(`-WIP` 해제)**. 동일 커밋 09183c8·caffeinate·슬립 0 실증. EX 11/15 vs 9/15, 승 0·패 2(과포함 계열), 지연 12.7s vs 24.1s. gp-015 429 1건은 양 팔 FAIL 항목이라 판정 불변. 후속 별건 3건은 범위 밖 유지. |
 | 2026-09-10 | **D-203** (부기 8) | **순차 의존 계약 플래그 7종 코드 기본값 on**(사용자 지시 — `.env` 미추적 대비). `CompositeConfig` `False → True` · `plans/80` §5.4-③ 명시적 예외(근거 4항 config 주석) · off 전제 테스트 3건 명시 고정 · 도움말 라벨 정정 · `.env.example` 주석. `PATH_PARITY` 기본 false 불변. |

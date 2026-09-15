@@ -66,9 +66,13 @@ python -m scripts.scenario --analyze        # ④ 분석·대안 수립 (무과�
 | **인코딩** | (불필요) | **`$env:PYTHONUTF8="1"`** — 없으면 한글 출력에서 런이 죽는다 |
 | 의존 서비스 | Redis·PostgreSQL 기동 | `docker compose -f redis\docker-compose.yml up -d` 등 |
 | 설정 확인 | `.env`의 `LLM_PROVIDER`·`ACTIVE_DB_IDS` 확인 | 동일 |
+| **인증 확인** | `.env`·`.encenv`의 `AUTH_ENABLED` — **`true`면 질의용 사용자 계정이 필요하다**(⑨) | 동일 · 세션에 남은 `$env:AUTH_ENABLED`도 확인(부록 A.3-⑦) |
 
 **폐쇄망에서는 `LLM_PROVIDER=fabrix`여야 한다.** 개발망 값(`gemini`)으로 돌린 결과는 배관 확인용이지
 운영 판정 근거가 아니다(§2-⑤ · G-1). Windows 상세는 **부록 A.3**.
+
+**폐쇄망 서버는 보통 `AUTH_ENABLED=true`다.** 이때 `--user`/`--password` 없이 `--run`을 돌리면 프로파일이 전부
+`INVALID`가 되어 **턴 0회**로 끝난다. 인증 설정·계정 준비·실패 메시지 대응은 **⑨**.
 
 ### ③ 단계별 — 무과금에서 과금으로 올라가는 4단
 
@@ -88,6 +92,8 @@ python -m scripts.scenario --analyze        # ④ 분석·대안 수립 (무과�
 4단  RUN_E2E=1 python -m scripts.scenario --run --profile baseline
      실 LLM·실 DB로 전 스위트를 돌린다. 승인 프롬프트가 1회 뜬다.
      Windows: $env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline
+     폐쇄망(인증 on · 폐쇄망 시나리오 포함) - ⑨:
+       $env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline --env closed --user <ID> --password '<PW>'
 ```
 
 **`RUN_E2E=1`이 없으면 4단은 즉시 종료된다**(`eval_routing.py:46`과 같은 하드 게이트). 키가 있다는
@@ -101,9 +107,14 @@ python -m scripts.scenario --analyze        # ④ 분석·대안 수립 (무과�
 | `--group <문자>` | 군만 골라 실행 | `--group C` · `--group R4` |
 | `--only <ID,…>` | 개별 시나리오만 | `--only C-02,C-10` |
 | `--repeat <n>` | 반복 횟수. R군·성능 군 기본 3 | `--repeat 3` |
-| `--env closed\|sandbox` | 대상 환경 선언. 시나리오의 `env`와 안 맞으면 건너뛴다 | `--env closed` |
+| `--env closed\|sandbox` | 대상 환경 선언. 시나리오의 `env`와 안 맞으면 건너뛴다. **기본값은 `sandbox`** — 폐쇄망에서는 반드시 `--env closed`(시나리오 158건이 `closed` 전용이라 빠진다) | `--env closed` |
 | `--resume <run_id>` | 중단된 런을 이어서 | 폐쇄망 장시간 실행의 기본 |
 | `--port <n>` | 자식 서버 포트 지정(미지정 시 자동) | Windows 제외 대역 회피용(부록 A.1-6) |
+| `--user <ID>` `--password <PW>` | 질의용 **사용자** 계정. `AUTH_ENABLED=true`면 필수. **명령행으로만** 받는다(`.env`·환경변수 불가) | `--user bench01 --password '…'` |
+| `--admin-user` `--admin-password` | 설정 에코용 **운영자** 계정. 생략하면 `ADMIN_USERNAME`(`.env`)·`ADMIN_PASSWORD`(`.encenv`)를 자동으로 읽는다 | 보통 생략 |
+| `--token` `--admin-token` | 로그인 대신 미리 받은 토큰을 넣는다. **둘 다** 주면 러너는 로그인하지 않는다(⑨-4) | 로그인이 막혔을 때 |
+| `--yes` | 4단 승인 프롬프트 생략(비대화 실행용) | nohup · 작업 스케줄러 |
+| `--timeout <초>` | 시나리오당 상한(기본 360) | `--timeout 600` |
 
 ### ⑤ 결과는 어디에 나오고 무엇부터 보나
 
@@ -130,7 +141,7 @@ results/scenario/<run_id>/
 `report.md`에 **`silent_wrong` 건수가 0이 아니면 맨 위 요약으로 올라온다** — 조용한 오답은 사용자가
 알아차릴 수 없는 실패라 가장 먼저 봐야 한다(§3.8).
 
-### ⑥ 실행 전 5줄 점검
+### ⑥ 실행 전 점검
 
 ```
 [ ] LLM_PROVIDER 가 대상 환경과 맞는가 (폐쇄망=fabrix)
@@ -138,6 +149,8 @@ results/scenario/<run_id>/
 [ ] 3단 --estimate 출력을 승인권자에게 보여줬는가
 [ ] 기동 로그에 "오케스트레이션 사다리 확정: tier=" 가 의도한 단으로 찍히는가
 [ ] (Windows) PYTHONUTF8=1 · 이전 세션에 남은 $env 플래그 없음
+[ ] AUTH_ENABLED 가 true 면 --user/--password 를 붙였고, 그 계정으로 웹 /login 1회 성공했는가 (⑨)
+[ ] 폐쇄망이면 --env closed 를 붙였는가 (기본값 sandbox)
 ```
 
 ### ⑦ 막혔을 때 첫 대응
@@ -151,12 +164,93 @@ results/scenario/<run_id>/
 | 전 건이 타임아웃 | LLM 접속·`LLM_FABRIX_TOTAL_TIMEOUT` | 프로바이더 설정 · 폐쇄망 경로 |
 | 한글이 깨지거나 런이 죽음 | 콘솔 코드페이지 | (Windows) `PYTHONUTF8=1` 미설정 |
 | 런 중단 후 포트가 안 풀림 | 남은 프로세스 | 고아 워커 — (Windows) `taskkill /T /F`(부록 A.1-1·2) |
+| **`완료 - 턴 0회`** | `report.md` 1절 「프로파일별 기동 결과」의 **사유** 칸 | 프로파일이 전부 `INVALID`. 사유에 `로그인`·`401`·`ConnectError`가 있으면 **인증**(⑨-5) |
+| 로그인 실패 · 설정 에코 401 | 같은 사유 칸의 `/admin/login`·`/auth/login` 문구 | ⑨-5 메시지별 표 |
 
 ### ⑧ 지켜야 할 규칙 세 줄
 
 1. **실 실행은 건별이 아니라 스위트 1회 = 승인 1건**이다. 승인 없이 4단을 돌리지 않는다(D-127 · G-4).
 2. **DB는 읽기 전용**이다. 러너가 쓰기를 하는 경로는 없다(D-003).
 3. **`.env`를 수정하지 않는다.** 프로파일은 자식 프로세스 환경에만 주입된다 — 병행 세션·작업 트리를 오염시키지 않는다.
+
+### ⑨ 인증 — `AUTH_ENABLED=true` 서버에서 돌리기 *(2026-09-14 추가 · 폐쇄망 로그인 실패 대응)*
+
+러너는 **프로파일마다 서버를 새로 띄우고, 헬스 확인이 끝나면 스스로 로그인한다.** 로그인은 두 가지이고
+크레덴셜을 받는 경로가 다르다. 설정 키의 정의·파일 배치·계정 생성은 **`docs/03_setup_guide.md` §3.5가 정본**이다.
+
+**⑨-1 먼저 판별한다**
+
+| 대상 서버의 `AUTH_ENABLED` | 러너에 줄 것 |
+|---|---|
+| `false` 또는 미설정(개발 PC 기본) | **없음.** 토큰 없이 질의·설정 에코가 통과한다 |
+| `true`(폐쇄망 운영 설정) | **질의용 사용자 계정**(`--user`/`--password`). 운영자 계정은 설정에서 자동으로 읽는다 |
+
+`.env`만 보지 않는다 — 인증 키(`AUTH_`·`ADMIN_`)의 우선순위는 **OS 환경변수 > `.encenv` > `.env`**다(`docs/03` §3.4 — `.encenv`를 읽는 설정 그룹은 일부뿐이라 다른 키에 그대로 옮기면 틀린다).
+Windows 확인 명령은 부록 A.3-⑦.
+
+**⑨-2 러너가 하는 로그인 두 가지**
+
+| | 운영자 로그인 | 사용자 로그인 |
+|---|---|---|
+| 용도 | 설정 에코(`/admin/settings/schema`) — 주입이 실제로 먹었는지 확인 | 질의(`/api/v1/query/*`) |
+| 엔드포인트 | `POST /api/v1/admin/login` | `POST /api/v1/auth/login` |
+| 크레덴셜 출처 | **자동** — `ADMIN_USERNAME`·`ADMIN_PASSWORD`를 설정(`.env`·`.encenv`·OS 환경변수)에서 읽는다. 덮어쓰기 `--admin-user`/`--admin-password` | **명령행만** — `--user`/`--password`. 설정 파일·환경변수로는 넣을 수 없다(`BENCH_USER_ID`는 93 스위프 전용) |
+| 없거나 틀리면 | 설정 에코 401 → 프로파일 `INVALID` | `AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다` → 프로파일 `INVALID` |
+
+두 토큰은 서로 다른 시크릿으로 서명돼(D-070) **한쪽 토큰으로 다른 쪽을 열 수 없다.**
+
+**⑨-3 준비 (인증 on 서버)**
+
+```
+[ ] 서버가 뜨는가 - .encenv 에 ADMIN_PASSWORD · ADMIN_JWT_SECRET · AUTH_JWT_SECRET, .env 에 ADMIN_USERNAME
+    (하나라도 없으면 기동 거부 -> 리포트 사유 "헬스 실패", logs/server-<profile>.log 에 "기동 거부")
+[ ] 인증 DB 가 연결되는가 - AUTH_AUTH_DB_URL (비우면 DB_CONNECTION_STRING · PostgreSQL)
+[ ] 질의용 계정이 있는가 - 웹 /register 가입(즉시 활성) 또는 기동 시 자동 생성된 관리자 계정
+    (아이디 = ADMIN_USERNAME · 활성 관리자가 없던 최초 기동 때만 생긴다)
+[ ] 그 계정으로 웹 /login 에 한 번 로그인해 본다
+    - 비밀번호가 틀리면 러너가 프로파일마다 다시 시도해 5회째에 계정이 잠긴다(30분)
+```
+
+**⑨-4 실행**
+
+```bash
+# POSIX
+RUN_E2E=1 python -m scripts.scenario --run --env closed --profile baseline --user bench01 --password '<PW>'
+```
+
+```powershell
+# Windows
+$env:RUN_E2E = "1"
+python -m scripts.scenario --run --env closed --profile baseline --user bench01 --password '<PW>'
+```
+
+로그인이 막혔는데 당장 돌려야 하면 **토큰을 미리 받아 넣는다.** 떠 있는 본체 서버에서 받는다. 인증 on 서버는
+JWT 시크릿이 `.encenv`에 고정돼 있어 프로파일마다 서버가 바뀌어도 토큰이 유효하다(유효시간: 사용자 8h · 운영자 24h).
+두 토큰을 **모두** 주면 러너는 로그인하지 않는다.
+
+```powershell
+$base = "http://127.0.0.1:<본체 서버 포트>/api/v1"
+$a = Invoke-RestMethod -Method Post "$base/admin/login" -ContentType 'application/json' -Body '{"username":"<ADMIN_USERNAME>","password":"<ADMIN_PASSWORD>"}'
+$u = Invoke-RestMethod -Method Post "$base/auth/login" -ContentType 'application/json' -Body '{"user_id":"<ID>","password":"<PW>"}'
+python -m scripts.scenario --run --env closed --token $u.access_token --admin-token $a.access_token
+```
+
+인증을 끄고 돌리는 방법(`$env:AUTH_ENABLED="false"` 후 실행)도 동작하지만 **권장하지 않는다** — 인증 미들웨어가
+빠져 지연이 운영과 달라진다(G-3). 썼다면 끝난 뒤 `Remove-Item Env:AUTH_ENABLED`로 지운다(창을 닫을 때까지 남는다).
+
+**⑨-5 실패 메시지별 대응** — `report.md` 1절 「프로파일별 기동 결과」의 **사유** 칸에 찍힌다
+
+| 사유에 찍힌 말 | 원인 | 조치 |
+|---|---|---|
+| `/admin/login 로그인 실패: ConnectError: [WinError 10061]` (POSIX: `Connection refused`) | **러너 버그** — 서버 기동 전에 로그인했다(`246938a`에서 수정) | 최신 코드로 갱신(`git pull`) |
+| `설정 에코 미확인 (http 401 - 관리자 토큰 필요)` | 운영자 토큰이 없다. 원인은 같은 칸의 `/admin/login` 사유 | 그 사유의 행을 본다 |
+| `/admin/login 로그인 실패 (http 401)` | `ADMIN_USERNAME`/`ADMIN_PASSWORD`가 서버 설정과 다르다 | `.env`·`.encenv`·셸 환경변수 값 확인. `--admin-password`를 줬다면 그 값 |
+| `AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다` | `--user`/`--password`를 안 줬다 | ⑨-4 |
+| `/auth/login 로그인 실패 (http 401)` | 계정이 없거나 비밀번호가 틀렸다·비활성 계정 | 웹 `/login`으로 확인 · `/register` 가입 |
+| `/auth/login 로그인 실패 (http 423)` | 연속 실패로 계정 잠김(기본 5회 · 30분) | 30분 뒤 비밀번호를 고쳐 재실행 |
+| `/auth/login 로그인 실패 (http 503)` | 인증 DB가 없거나 연결 실패 | `AUTH_AUTH_DB_URL` · 서버 로그의 `인증 DB 초기화 실패` |
+| `/auth/login 로그인 실패 (http 422)` | 요청 본문 계약 어긋남 | 러너 버그 — 보고 |
+| `헬스 실패: 자식 프로세스가 기동 중 종료됐다` | 서버가 뜨지 않았다. 인증 on이면 시크릿 누락이 흔하다 | `logs/server-<profile>.log`에서 `기동 거부` 확인 → ⑨-3 첫 줄 |
 
 ---
 
@@ -705,8 +799,9 @@ results/scenario/<run_id>/
 > (`admin.py:566`)이며, `build_catalog`가 `effective_value`와 **`override="os"`**까지 준다
 > (`settings_catalog.py:1029`) — 주입이 실제로 먹었는지가 응답에 드러난다.
 > 두 엔드포인트 모두 `require_admin_user`이고 `AUTH_ENABLED=false`면 무인증 통과한다(`dependencies.py:203`).
-> 켜져 있는데 토큰이 없으면 러너는 **`echo=미확인`으로 남기고 INVALID로 단정하지 않는다**(G-3 미확정 상태).
-> 확인하지 못한 것을 통과로도 실패로도 세지 않는 것이 이 장치의 요점이다.
+> 켜져 있는데 토큰이 없으면 러너는 그 프로파일을 **INVALID로 멈춘다** — 확인하지 못한 주입을 통과로 세지 않는다
+> *(2026-09-14 정정: 종전의 "미확인이면 INVALID로 단정하지 않는다"가 62개 프로파일이 주입 검증 없이 돈 원인이었다)*.
+> 확인하지 못한 것을 **통과로 세지 않는** 것이 이 장치의 요점이다. 인증 처리는 G-3 **확정**(전용 계정).
 
 **실패해도 스위트를 멈추지 않는다.** 한 시나리오의 예외는 그 건만 `ERROR`로 적재하고 다음으로 넘어간다.
 **재개(resume)**: `raw.jsonl`에 이미 있는 `(profile, scenario_id, turn, repeat)`은 건너뛴다 — 폐쇄망에서
@@ -1008,7 +1103,7 @@ results/scenario/<run_id>/
 | R7 | 부하 군(K-06·K-07)이 운영 DB·LLM에 부담 | 운영 영향 | 폐쇄망 실행 창 합의(G-4) · 동시성 상한 선언 · 읽기 전용 |
 | R8 | `docs/29`와 카탈로그가 갈라진다 | 두 정본 문제 | S7에서 `docs/29`를 **카탈로그에서 생성**으로 전환(G-7). 손 동기화 금지 |
 | R9 | 93과 러너를 각자 만든다 | 중복·분기 | §8 경계표를 양쪽 계획서에 **상호 링크**로 고정 |
-| R10 | 인증이 켜진 폐쇄망에서 러너가 못 돈다 | 실행 불가 | G-3에서 전용 계정 방식 확정. `AUTH_ENABLED=false` 주입은 **미들웨어 경로를 바꿔 지연 측정을 왜곡**하므로 비권장 |
+| R10 | 인증이 켜진 폐쇄망에서 러너가 못 돈다 | 실행 불가 | G-3에서 전용 계정 방식 **확정(사용자 2026-09-15)** — 93 스위프도 따른다. `AUTH_ENABLED=false` 주입은 **미들웨어 경로를 바꿔 지연 측정을 왜곡**하므로 쓰지 않는다 |
 | R11 | **R군 기대값을 우리가 임의로 정한다** — *"이때는 되물어야 한다"* 가 설계 합의가 아니면 시나리오가 시스템을 잘못 재단한다 | 거짓 불합격 · 엉뚱한 처방 | **G-10에서 대응 등급 정책을 사용자 확정**한 뒤 판정한다. 확정 전 케이스는 `manual_review`로 두고 합격/불합격을 매기지 않는다 |
 | R12 | R군 가드를 넣다가 **정상 동작을 함께 막는다**(과잉 거부) | 기능 퇴행 | 대조군 쌍 강제(V16) · 리포트가 쌍 동반 실패를 별도 표기 · 처방 우선순위에서 과잉 거부를 3위로 |
 | R13 | R군이 **실행 비용을 배로 키운다**(반복 3회 × 대조군) | 스위트 예산 초과 | `--estimate`에서 R군 분리 산정 · 1차는 R4 전건 + 나머지 표본(G-11) |
@@ -1021,7 +1116,7 @@ results/scenario/<run_id>/
 |---|---|---|---|
 | **G-1** | 정본 실행 환경 | (a) 폐쇄망 FabriX (b) 개발망 Gemini (c) 둘 다 | **(a)** — 요청 원문이 *"내부망 fabrix"* 다. (b)는 S5 배관 확인용으로만. (c)는 비교 금지 조건에서만 |
 | **G-2** | 커버리지 범위 | (a) 프롬프트 트리거 기능만 (b) + 알람·UI 트랙 리포트 통합 (c) 전 계획서 | **(b)** — (a)는 요청의 *"plans 폴더의 기능들"* 을 좁게 읽는다. (c)는 로드맵·리팩토링까지 포함돼 의미가 없다 |
-| **G-3** | 폐쇄망 인증 처리 | (a) 전용 벤치 계정으로 로그인 (b) `AUTH_ENABLED=false` 주입 (c) 인증 우회 경로 신설 | **(a)** — (b)는 미들웨어가 빠져 지연이 운영과 달라진다. (c)는 보안 경계 훼손 |
+| **G-3** | 폐쇄망 인증 처리 | (a) 전용 벤치 계정으로 로그인 (b) `AUTH_ENABLED=false` 주입 (c) 인증 우회 경로 신설 | **(a) · 확정(사용자 2026-09-15)** — (b)는 미들웨어가 빠져 지연이 운영과 달라진다. (c)는 보안 경계 훼손. 93 스위프도 계정이 없으면 서버를 띄우기 전에 멈춘다 |
 | **G-4** | 과금 승인 단위 | (a) 스위트 1회 = 승인 1건(예상치 사전 제시) (b) 군마다 승인 (c) 시나리오마다 승인 | **(a)** — (c)는 145회 승인이라 실행 불가. 단 (a)는 D-127 *"건마다 승인"* 의 해석 확장이므로 **명시 동의 필요** |
 | **G-5** | 서술 품질 판정 | (a) 수동 검토로 유보 (b) LLM-as-judge 도입 | **(a)** — (b)는 과금 배증 + 판정기 자체가 비결정적 + D-035와 충돌. 필요해지면 별건으로 |
 | **G-6** | `plans/93`과의 순서 | (a) 94 먼저(93이 94의 카탈로그·실행 원자 소비) (b) 93 먼저 (c) 병행 | **(a)** — 93 §0.1의 선행 P가 94 S1로 해소된다. 93의 축 선별(B0)만 병행 |
@@ -1173,6 +1268,14 @@ icacls results\scenario /inheritance:r /grant:r "$env:USERNAME:(OI)(CI)F" | Out-
 # ⑥ 로컬 샌드박스(선택) — setup.sh 대신 compose 직접 (A.1-⑨)
 docker compose -f db\docker-compose.yml up -d
 docker compose -f redis\docker-compose.yml up -d
+
+# ⑦ 인증 설정 확인 (실행 가이드 ⑨) — 비밀값은 출력하지 않고 키 이름만 본다
+#    AUTH_ENABLED=true 가 보이면 --user/--password 가 필요하다
+Select-String -Path .env, .encenv -Pattern '^AUTH_ENABLED=' -ErrorAction SilentlyContinue
+Select-String -Path .env, .encenv -Pattern '^(ADMIN_USERNAME|ADMIN_PASSWORD|ADMIN_JWT_SECRET|AUTH_JWT_SECRET|AUTH_AUTH_DB_URL)=.+' -ErrorAction SilentlyContinue |
+    ForEach-Object { "{0}  <- {1}" -f ($_.Line -split '=')[0], $_.Filename }
+#    세션에 남은 값은 파일 값을 덮는다 — 이름이 나오면 의도한 값인지 확인
+Get-ChildItem Env: | Where-Object Name -Match '^(AUTH|ADMIN|BENCH_USER)_' | Select-Object Name
 ```
 
 **DB2(`polestar_b0`) 대상 실행 전에는 `ibm-db` 설치 여부를 확인한다.** 루트 venv에는 없고
@@ -1196,6 +1299,7 @@ python -c "import ibm_db" ; if ($LASTEXITCODE -ne 0) { python -m pip install "ib
 | 헬스 프로브 | (없음) | `powershell -ExecutionPolicy Bypass -File scripts\health_probe.ps1` |
 | **시나리오 스위트(무과금·기본)** | `python -m scripts.scenario` | `python -m scripts.scenario` |
 | **시나리오 스위트(실 실행·과금)** | `RUN_E2E=1 python -m scripts.scenario --run --profile baseline` | `$env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline` |
+| **시나리오 스위트(폐쇄망·인증 on)** | `RUN_E2E=1 python -m scripts.scenario --run --env closed --user <ID> --password '<PW>'` | `$env:RUN_E2E="1"; python -m scripts.scenario --run --env closed --user <ID> --password '<PW>'` |
 | 리포트 재생성 | `python -m scripts.scenario --report <run_id>` | 동일 |
 | 분석·대안 수립 | `python -m scripts.scenario --analyze` | 동일 |
 
@@ -1226,6 +1330,9 @@ python -c "import ibm_db" ; if ($LASTEXITCODE -ne 0) { python -m pip install "ib
 ```
 [ ] $env:PYTHONUTF8="1" 설정  (미설정 시 한글 출력에서 런이 죽는다)
 [ ] 이전 세션에 남은 $env:* 플래그 값 확인 — 프로파일 오염의 1순위 원인
+[ ] AUTH_ENABLED 확인(A.3-⑦) — true 면 --user/--password 준비 · 그 계정으로 웹 /login 1회 성공
+[ ] Env:AUTH_* / Env:ADMIN_* 세션 잔존값 없음 (있으면 .env/.encenv 값을 덮는다)
+[ ] 폐쇄망이면 --env closed (기본값 sandbox)
 [ ] 127.0.0.1 로 헬스 응답 확인 (localhost 아님)
 [ ] netsh 제외 대역 밖 포트인지 확인
 [ ] powercfg 절전 0 설정 · 런 후 원복 예정 메모

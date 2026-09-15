@@ -255,18 +255,31 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     )
     if args.mode != "dry":
         # 접속 방식을 **먼저** 말한다. 전건 401 은 한 시간을 태운 뒤에야 드러났다.
-        if creds.can_login:
-            say(f"  접속: 사용자 `{creds.user_id}` 로 로그인 (AUTH_ENABLED 유지)")
+        auth_on = sweep_mod.server_auth_enabled() if args.mode == "run" else False
+        if args.mode == "mock":
+            say("  접속: 모의 서버 — 인증 없음")
+        elif creds.can_login:
+            say(f"  접속: 벤치 계정 `{creds.user_id}` 로 로그인")
+        elif auth_on is False:
+            say("  접속: 인증이 꺼진 서버(AUTH_ENABLED=false) — 계정 없이 진행")
         else:
-            say("  접속: AUTH_ENABLED=false 를 모든 arm에 동일 주입 — 인증은 측정 축이 "
-                "아니므로 비교에 영향 없음. 인증을 켠 채로 재려면 --user/--password 를 주세요.")
+            # 인증을 끄고 재지 않는다(plans/94 G-3 · 사용자 확정 2026-09-15) — 인증 미들웨어와
+            # 사용자별 DB 범위가 빠지면 운영과 다른 경로를 잰다. 서버를 띄우기 **전에** 멈춘다.
+            if auth_on:
+                say("  접속: 인증이 켜진 서버(AUTH_ENABLED=true)인데 벤치 계정이 없습니다 — 시작하지 않습니다.")
+            else:
+                say("  접속: 서버 인증 설정을 읽지 못했고 벤치 계정도 없습니다 — 시작하지 않습니다.")
+            say("     전용 계정을 주세요: --user <ID> --password <PW>")
+            say("     또는 OS 환경변수 BENCH_USER_ID / BENCH_USER_PASSWORD "
+                "(.env·.encenv 에 적으면 읽히지 않습니다)")
+            return 2
         # 러너가 모든 프로파일에 주입한다(runner.ISOLATION_ENV). 화면에도 적는다 —
         # 운영 스트림을 건드리지 않는다는 사실은 실행하는 사람이 알아야 한다.
         say("  격리: ALARM_ENABLED=false 를 모든 arm에 동일 주입 — 벤치 서버가 운영 알람 "
             "스트림을 같은 consumer group으로 나눠 소비하지 않게 한다.")
-        if not (creds.admin_user and creds.admin_password):
+        if auth_on and not (creds.admin_user and creds.admin_password):
             say("  ※ 운영자 크레덴셜을 찾지 못했습니다(ADMIN_USERNAME/ADMIN_PASSWORD). "
-                "인증이 켜진 서버라면 설정 에코 검증이 실패해 arm이 전부 INVALID 가 됩니다.")
+                "설정 에코 검증이 실패해 arm이 전부 INVALID 가 됩니다.")
 
     if args.mode == "run":
         echo = probe.echo_config()
@@ -405,8 +418,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeat", type=int, default=1, help="시나리오 반복 수")
     parser.add_argument("--env", choices=("auto", "closed", "sandbox"), default="auto",
                         help="워크로드 환경 (기본 auto — 활성 DB로 판정)")
-    parser.add_argument("--user", help="질의용 사용자 ID (미지정 시 AUTH_ENABLED=false 주입)")
-    parser.add_argument("--password", help="질의용 사용자 비밀번호")
+    parser.add_argument("--user", help="질의용 벤치 계정 ID (인증이 켜진 서버에서 필수 · OS 환경변수 BENCH_USER_ID 로도 준다)")
+    parser.add_argument("--password", help="질의용 벤치 계정 비밀번호 (OS 환경변수 BENCH_USER_PASSWORD 로도 준다)")
     parser.add_argument("--admin-user", help="운영자 ID (미지정 시 설정에서 읽는다)")
     parser.add_argument("--admin-password", help="운영자 비밀번호 (미지정 시 설정에서 읽는다)")
     return parser
