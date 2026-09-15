@@ -27,6 +27,9 @@
 ## ▶ 실행 가이드 — 이 절만 보면 돌릴 수 있다
 
 > **무과금 명령 4종은 지금 동작한다**(Wave S2·S3·S4 랜딩 · 2026-09-11). 과금 경로만 승인 대기다.
+> **★ 2026-09-15 개정(D-216) — 폐쇄망에서는 `python -m scripts.scenario` 한 줄이면 된다.** 인자 없는 실행이 **내부망 프로바이더(fabrix·ollama)면 전 시나리오 실 실행**이다(외부 프로바이더는 종전대로 무과금 점검). `--env` 기본값은 없어졌고(서버 활성 DB로 판정 · 환경이 다른 시나리오는 실행하되 데이터 의존 단언 보류), 역질문은 러너가 자동으로 답하며(`config/scenarios/auto_answer.yaml` — 존=김포 · 폼필=공란 · 승인=`승인`, 무엇에 답했는지는 `raw.jsonl`의 `auto_answers`), 인증이 켜진 서버에서 계정을 안 주면 내장 테스트 계정으로 로그인한다. **아래 본문 중 이와 다른 서술(`--env closed` 필수 · `RUN_E2E=1` · `--user` 필수)은 이 개정이 이긴다.**
+> **★ 2026-09-15 개정 2(D-217) — 미작성 초안 0건.** 실행 SQL 은 서버 감사 로그 `query_executed`에서 모아 `raw.jsonl`의 `executed_sqls`에 남고 SQL 단언이 SQL 별로 판정된다. K군 7건은 러너 동작으로 돈다 — `replay`(K-01·K-03·K-04 반복, K-02 는 캐시 삭제 없이 서버 기동 직후 첫 요청으로 cold 근사) · `concurrent`(K-06·K-07 동시 세션) · `setup`(K-10 조어 유사어를 Redis 에 등록 후 그 단어만 삭제). SYN-F-05 는 러너가 활성 DB 시드를 두 번 적재해 멱등성·무손실을 판정한다(모의 실행에서는 건너뜀). 노드 지연은 회차 누적(`node_calls`)이고 재시도는 진행 이벤트·감사 로그로 실측한다(멀티 DB 는 하한).
+> **▶ 개정 후 테스트 진행 순서(개발 PC 검증 → 폐쇄망 사전 확인 → 스모크 → 전체 실행 → 결과 검수 → Redis 사후 확인)는 ⑩이 정본이다.**
 > 본문 §0~§14는 설계 근거이고, 부록 A는 Windows 상세다.
 >
 > | 명령 | 상태 |
@@ -34,22 +37,20 @@
 > | `--dry-run` · `--mock` (무과금) | **동작** (Wave S2) |
 > | `--report` | **동작** (Wave S3) |
 > | `--analyze` | **동작** (Wave S4) |
-> | `--run` (실 LLM · 과금) | **미실행** — Wave S5 이후 + **사용자 승인**(D-127) |
+> | `--run` (실 LLM) | **동작** — 내부망(fabrix·ollama)은 승인 없이 · 외부 프로바이더만 `RUN_E2E=1` + **사용자 승인**(D-127 · D-216) |
 >
-> ※ 시나리오 **217건 중 139건은 `expect` 단언이 아직 `manual_review` 원문**이다(§3.4의 사람 작업).
-> 옮긴 만큼만 자동 판정되고 나머지는 리포트 9절에 계속 남는다 — **합격으로 세지 않는다**.
-> ※ 그중 **21건(F 3 · I 8 · K 10)은 `prompt_authored: false`** — 원문이 프롬프트가 아니라
-> 산문(I군 「시나리오」)이거나 실행 방법(K군 「방법」: *"B-01~B-06 각 5회 반복"*)이라
-> **러너가 사유와 함께 건너뛴다.** 산문을 LLM 에 보내면 무의미한 결과에 돈만 나간다.
+> ※ 2026-09-15 기준 시나리오 **218건 · `prompt_authored: false` 0건** — 전 건이 실행 대상이다(모의 실행에서만 Redis 에 쓰는 SYN-F-05 를 제외).
+> `expect`에 `manual_review`만 있는 턴은 리포트 9절에 남고 **합격으로 세지 않는다**(§3.4 이관 작업의 잔여).
+> ※ 종전에 건너뛰던 21건(I군 산문 · K군 「방법」)은 D-216·D-217로 해소됐다 — I군은 프롬프트로 재작성했고, K군은 러너 동작(`replay`·`concurrent`·`setup`)으로 돈다.
 
 ### ① 30초 요약 — 명령은 네 개뿐이다
 
 진입점은 **`python -m scripts.scenario` 하나**이고, 인자로 무엇을 할지 고른다.
-**기본 동작(인자 없음)은 무과금**이다 — 아무것도 모르고 실행해도 돈이 나가지 않는다.
+**기본 동작(인자 없음)은 프로바이더가 정한다**(D-216) — 내부망(fabrix)이면 옵션 없이 전 시나리오 실 실행, 외부 프로바이더면 무과금 점검이라 아무것도 모르고 실행해도 돈이 나가지 않는다.
 
 ```bash
-python -m scripts.scenario                  # ① 사전 점검 (무과금·기본) — 카탈로그 검증 + 모의 실행 + 예상 비용
-python -m scripts.scenario --run            # ② 실 실행   (과금 · 승인 프롬프트 1회)
+python -m scripts.scenario                  # ① 기본 — 내부망: 전 시나리오 실 실행 / 외부: 카탈로그 검증 + 모의 실행 + 예상 비용
+python -m scripts.scenario --run            # ② 실 실행   (외부 프로바이더만 RUN_E2E=1 + 승인 프롬프트 1회)
 python -m scripts.scenario --report <run>   # ③ 리포트 재생성 (무과금)
 python -m scripts.scenario --analyze        # ④ 분석·대안 수립 (무과금)
 ```
@@ -83,21 +84,22 @@ python -m scripts.scenario --analyze        # ④ 분석·대안 수립 (무과�
 
 2단  python -m scripts.scenario --mock
      MockGraph로 서버를 띄워 전 경로를 돌린다. LLM·DB를 부르지 않는다.
-     → 러너·단언기·리포트 배관이 실제로 도는지 확인한다. 여기까지가 기본 동작이다.
+     → 러너·단언기·리포트 배관이 실제로 도는지 확인한다. 외부 프로바이더에서는 여기까지(+3단)가 기본 동작이다.
 
 3단  python -m scripts.scenario --estimate
      실행할 시나리오 수 · 예상 LLM 호출 수 · 예상 토큰 · 예상 소요 시간을 출력한다.
      → 이 출력이 곧 D-127 승인 요청의 근거다. 사람에게 보여주고 승인을 받는다.
 
-4단  RUN_E2E=1 python -m scripts.scenario --run --profile baseline
-     실 LLM·실 DB로 전 스위트를 돌린다. 승인 프롬프트가 1회 뜬다.
-     Windows: $env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline
-     폐쇄망(인증 on · 폐쇄망 시나리오 포함) - ⑨:
-       $env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline --env closed --user <ID> --password '<PW>'
+4단  python -m scripts.scenario --run
+     실 LLM·실 DB로 전 스위트를 돌린다.
+     내부망(fabrix·ollama): 승인·RUN_E2E 없이 바로 실행 - 인자 없는 실행과 같다(D-216 · ⑩)
+     외부(gemini 등)      : RUN_E2E=1 + 승인 프롬프트 1회
+       POSIX  : RUN_E2E=1 python -m scripts.scenario --run --profile baseline
+       Windows: $env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline
 ```
 
-**`RUN_E2E=1`이 없으면 4단은 즉시 종료된다**(`eval_routing.py:46`과 같은 하드 게이트). 키가 있다는
-이유만으로 실행되지 않는다.
+**외부 프로바이더에서 `RUN_E2E=1`이 없으면 4단은 즉시 종료된다**(`eval_routing.py:46`과 같은 하드 게이트). 키가 있다는
+이유만으로 실행되지 않는다. 폐쇄망 진행 순서는 **⑩**.
 
 ### ④ 자주 쓰는 선택지
 
@@ -107,13 +109,13 @@ python -m scripts.scenario --analyze        # ④ 분석·대안 수립 (무과�
 | `--group <문자>` | 군만 골라 실행 | `--group C` · `--group R4` |
 | `--only <ID,…>` | 개별 시나리오만 | `--only C-02,C-10` |
 | `--repeat <n>` | 반복 횟수. R군·성능 군 기본 3 | `--repeat 3` |
-| `--env closed\|sandbox` | 대상 환경 선언. 시나리오의 `env`와 안 맞으면 건너뛴다. **기본값은 `sandbox`** — 폐쇄망에서는 반드시 `--env closed`(시나리오 158건이 `closed` 전용이라 빠진다) | `--env closed` |
+| `--env closed\|sandbox` | 대상 환경을 **강제로 좁힌다**(맞지 않는 시나리오는 건너뛴다). **미지정(기본)이면** 서버 활성 DB로 환경을 판정하고 전 시나리오를 돌며, 환경이 다른 시나리오는 데이터 의존 단언을 보류한다(D-216 — 종전 기본값 `sandbox`는 폐쇄망에서 closed 158건을 뺐다) | 보통 생략 |
 | `--resume <run_id>` | 중단된 런을 이어서 | 폐쇄망 장시간 실행의 기본 |
 | `--port <n>` | 자식 서버 포트 지정(미지정 시 자동) | Windows 제외 대역 회피용(부록 A.1-6) |
-| `--user <ID>` `--password <PW>` | 질의용 **사용자** 계정. `AUTH_ENABLED=true`면 필수. **명령행으로만** 받는다(`.env`·환경변수 불가) | `--user bench01 --password '…'` |
+| `--user <ID>` `--password <PW>` | 질의용 **사용자** 계정. 생략하면 `AUTH_ENABLED=true` 서버에서 **내장 테스트 계정**(`runner.py` `DEFAULT_USER_ID`)으로 로그인한다(D-216). `.env`·환경변수로는 받지 않는다 | 다른 계정으로 잴 때 |
 | `--admin-user` `--admin-password` | 설정 에코용 **운영자** 계정. 생략하면 `ADMIN_USERNAME`(`.env`)·`ADMIN_PASSWORD`(`.encenv`)를 자동으로 읽는다 | 보통 생략 |
 | `--token` `--admin-token` | 로그인 대신 미리 받은 토큰을 넣는다. **둘 다** 주면 러너는 로그인하지 않는다(⑨-4) | 로그인이 막혔을 때 |
-| `--yes` | 4단 승인 프롬프트 생략(비대화 실행용) | nohup · 작업 스케줄러 |
+| `--yes` | 외부 프로바이더 4단 승인 프롬프트 생략(내부망은 묻지 않는다) | nohup · 작업 스케줄러 |
 | `--timeout <초>` | 시나리오당 상한(기본 360) | `--timeout 600` |
 
 ### ⑤ 결과는 어디에 나오고 무엇부터 보나
@@ -146,11 +148,11 @@ results/scenario/<run_id>/
 ```
 [ ] LLM_PROVIDER 가 대상 환경과 맞는가 (폐쇄망=fabrix)
 [ ] 1단·2단(무과금)을 통과했는가
-[ ] 3단 --estimate 출력을 승인권자에게 보여줬는가
+[ ] (외부 프로바이더만) 3단 --estimate 출력을 승인권자에게 보여줬는가
 [ ] 기동 로그에 "오케스트레이션 사다리 확정: tier=" 가 의도한 단으로 찍히는가
 [ ] (Windows) PYTHONUTF8=1 · 이전 세션에 남은 $env 플래그 없음
-[ ] AUTH_ENABLED 가 true 면 --user/--password 를 붙였고, 그 계정으로 웹 /login 1회 성공했는가 (⑨)
-[ ] 폐쇄망이면 --env closed 를 붙였는가 (기본값 sandbox)
+[ ] AUTH_ENABLED 가 true 면 내장 테스트 계정(또는 --user)으로 웹 /login 1회 성공했는가 (⑨)
+[ ] (D-216) --env 는 붙이지 않는다 - 실행 후 run.json 의 env 가 closed 로 판정됐는가
 ```
 
 ### ⑦ 막혔을 때 첫 대응
@@ -183,7 +185,7 @@ results/scenario/<run_id>/
 | 대상 서버의 `AUTH_ENABLED` | 러너에 줄 것 |
 |---|---|
 | `false` 또는 미설정(개발 PC 기본) | **없음.** 토큰 없이 질의·설정 에코가 통과한다 |
-| `true`(폐쇄망 운영 설정) | **질의용 사용자 계정**(`--user`/`--password`). 운영자 계정은 설정에서 자동으로 읽는다 |
+| `true`(폐쇄망 운영 설정) | **기본은 없음** — 러너가 내장 테스트 계정으로 로그인한다(D-216 · 그 계정이 서버 인증 DB에 있어야 한다 — ⑩-3). 다른 계정은 `--user`/`--password`. 운영자 계정은 설정에서 자동으로 읽는다 |
 
 `.env`만 보지 않는다 — 인증 키(`AUTH_`·`ADMIN_`)의 우선순위는 **OS 환경변수 > `.encenv` > `.env`**다(`docs/03` §3.4 — `.encenv`를 읽는 설정 그룹은 일부뿐이라 다른 키에 그대로 옮기면 틀린다).
 Windows 확인 명령은 부록 A.3-⑦.
@@ -194,8 +196,8 @@ Windows 확인 명령은 부록 A.3-⑦.
 |---|---|---|
 | 용도 | 설정 에코(`/admin/settings/schema`) — 주입이 실제로 먹었는지 확인 | 질의(`/api/v1/query/*`) |
 | 엔드포인트 | `POST /api/v1/admin/login` | `POST /api/v1/auth/login` |
-| 크레덴셜 출처 | **자동** — `ADMIN_USERNAME`·`ADMIN_PASSWORD`를 설정(`.env`·`.encenv`·OS 환경변수)에서 읽는다. 덮어쓰기 `--admin-user`/`--admin-password` | **명령행만** — `--user`/`--password`. 설정 파일·환경변수로는 넣을 수 없다(`BENCH_USER_ID`는 93 스위프 전용) |
-| 없거나 틀리면 | 설정 에코 401 → 프로파일 `INVALID` | `AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다` → 프로파일 `INVALID` |
+| 크레덴셜 출처 | **자동** — `ADMIN_USERNAME`·`ADMIN_PASSWORD`를 설정(`.env`·`.encenv`·OS 환경변수)에서 읽는다. 덮어쓰기 `--admin-user`/`--admin-password` | `--user`/`--password` → **생략하면 내장 테스트 계정**(`scripts/scenario/runner.py`의 `DEFAULT_USER_ID`·`DEFAULT_USER_PASSWORD`, D-216). 설정 파일·환경변수로는 넣을 수 없다(`BENCH_USER_ID`는 93 스위프 전용) |
+| 없거나 틀리면 | 설정 에코 401 → 프로파일 `INVALID` | `내장 테스트 계정(…) 로그인 실패: …` + `AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다` → 프로파일 `INVALID` |
 
 두 토큰은 서로 다른 시크릿으로 서명돼(D-070) **한쪽 토큰으로 다른 쪽을 열 수 없다.**
 
@@ -205,23 +207,20 @@ Windows 확인 명령은 부록 A.3-⑦.
 [ ] 서버가 뜨는가 - .encenv 에 ADMIN_PASSWORD · ADMIN_JWT_SECRET · AUTH_JWT_SECRET, .env 에 ADMIN_USERNAME
     (하나라도 없으면 기동 거부 -> 리포트 사유 "헬스 실패", logs/server-<profile>.log 에 "기동 거부")
 [ ] 인증 DB 가 연결되는가 - AUTH_AUTH_DB_URL (비우면 DB_CONNECTION_STRING · PostgreSQL)
-[ ] 질의용 계정이 있는가 - 웹 /register 가입(즉시 활성) 또는 기동 시 자동 생성된 관리자 계정
-    (아이디 = ADMIN_USERNAME · 활성 관리자가 없던 최초 기동 때만 생긴다)
+[ ] 질의용 계정이 있는가 - 기본은 내장 테스트 계정(runner.py DEFAULT_USER_ID)이다(D-216)
+    없으면 웹 /register 로 그 ID 를 가입(즉시 활성)하거나 다른 계정을 --user/--password 로 준다
+    (기동 시 자동 생성되는 관리자 계정: 아이디 = ADMIN_USERNAME · 활성 관리자가 없던 최초 기동 때만 생긴다)
 [ ] 그 계정으로 웹 /login 에 한 번 로그인해 본다
     - 비밀번호가 틀리면 러너가 프로파일마다 다시 시도해 5회째에 계정이 잠긴다(30분)
 ```
 
 **⑨-4 실행**
 
-```bash
-# POSIX
-RUN_E2E=1 python -m scripts.scenario --run --env closed --profile baseline --user bench01 --password '<PW>'
-```
-
 ```powershell
-# Windows
-$env:RUN_E2E = "1"
-python -m scripts.scenario --run --env closed --profile baseline --user bench01 --password '<PW>'
+# 내부망(fabrix) - 내장 테스트 계정으로 로그인한다. RUN_E2E · --env · --user 불필요(D-216). POSIX 도 같다
+python -m scripts.scenario
+# 다른 계정으로 잴 때
+python -m scripts.scenario --user bench01 --password '<PW>'
 ```
 
 로그인이 막혔는데 당장 돌려야 하면 **토큰을 미리 받아 넣는다.** 떠 있는 본체 서버에서 받는다. 인증 on 서버는
@@ -232,7 +231,7 @@ JWT 시크릿이 `.encenv`에 고정돼 있어 프로파일마다 서버가 바�
 $base = "http://127.0.0.1:<본체 서버 포트>/api/v1"
 $a = Invoke-RestMethod -Method Post "$base/admin/login" -ContentType 'application/json' -Body '{"username":"<ADMIN_USERNAME>","password":"<ADMIN_PASSWORD>"}'
 $u = Invoke-RestMethod -Method Post "$base/auth/login" -ContentType 'application/json' -Body '{"user_id":"<ID>","password":"<PW>"}'
-python -m scripts.scenario --run --env closed --token $u.access_token --admin-token $a.access_token
+python -m scripts.scenario --run --token $u.access_token --admin-token $a.access_token
 ```
 
 인증을 끄고 돌리는 방법(`$env:AUTH_ENABLED="false"` 후 실행)도 동작하지만 **권장하지 않는다** — 인증 미들웨어가
@@ -245,12 +244,198 @@ python -m scripts.scenario --run --env closed --token $u.access_token --admin-to
 | `/admin/login 로그인 실패: ConnectError: [WinError 10061]` (POSIX: `Connection refused`) | **러너 버그** — 서버 기동 전에 로그인했다(`246938a`에서 수정) | 최신 코드로 갱신(`git pull`) |
 | `설정 에코 미확인 (http 401 - 관리자 토큰 필요)` | 운영자 토큰이 없다. 원인은 같은 칸의 `/admin/login` 사유 | 그 사유의 행을 본다 |
 | `/admin/login 로그인 실패 (http 401)` | `ADMIN_USERNAME`/`ADMIN_PASSWORD`가 서버 설정과 다르다 | `.env`·`.encenv`·셸 환경변수 값 확인. `--admin-password`를 줬다면 그 값 |
-| `AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다` | `--user`/`--password`를 안 줬다 | ⑨-4 |
+| `내장 테스트 계정(…) 로그인 실패: /auth/login 로그인 실패 (http 401)` | 내장 테스트 계정이 서버 인증 DB에 없거나 비밀번호가 다르다(D-216) | 그 ID로 `/register` 가입 또는 `--user`/`--password`로 다른 계정. http 423·503은 아래 `/auth/login` 행과 같다 |
+| `AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다` | 내장 계정·`--user` 로그인이 모두 실패했다 | 같은 칸의 `로그인 실패` 사유 행을 본다 |
 | `/auth/login 로그인 실패 (http 401)` | 계정이 없거나 비밀번호가 틀렸다·비활성 계정 | 웹 `/login`으로 확인 · `/register` 가입 |
 | `/auth/login 로그인 실패 (http 423)` | 연속 실패로 계정 잠김(기본 5회 · 30분) | 30분 뒤 비밀번호를 고쳐 재실행 |
 | `/auth/login 로그인 실패 (http 503)` | 인증 DB가 없거나 연결 실패 | `AUTH_AUTH_DB_URL` · 서버 로그의 `인증 DB 초기화 실패` |
 | `/auth/login 로그인 실패 (http 422)` | 요청 본문 계약 어긋남 | 러너 버그 — 보고 |
 | `헬스 실패: 자식 프로세스가 기동 중 종료됐다` | 서버가 뜨지 않았다. 인증 on이면 시크릿 누락이 흔하다 | `logs/server-<profile>.log`에서 `기동 거부` 확인 → ⑨-3 첫 줄 |
+
+### ⑩ 개정 후 테스트 방법 — D-216·D-217 반영 *(2026-09-15 추가 · ①~⑨와 다르면 이 절이 이긴다)*
+
+폐쇄망(fabrix)에서는 **옵션 없이 `python -m scripts.scenario` 한 줄로 218건이 전부 돈다.** 역질문 응답·실행 SQL 수집·
+K군 반복/동시 부하·유사어 선행 등록과 정리·시드 재적재는 러너가 한다. 사람이 할 일은 여섯 단계다.
+
+```
+⑩-2 개발 PC 무과금 검증 -> ⑩-3 폐쇄망 사전 확인 3가지 -> ⑩-4 스모크
+    -> ⑩-5 전체 실행 -> ⑩-6 결과 검수 -> ⑩-7 Redis 사후 확인
+```
+
+**⑩-1 사람이 하던 일 → 러너가 하는 일**
+
+| 종전(사람이 하거나 막히던 것) | 지금 러너가 하는 일 | 확인 위치 |
+|---|---|---|
+| `--env closed`·`RUN_E2E=1`·`--user` 붙이기 | 프로바이더로 실 실행 여부, 서버 활성 DB로 환경(closed/sandbox), 계정이 없으면 내장 테스트 계정으로 로그인 | `run.json` `meta.env`·`meta.env_source` · `report.md` 1절 |
+| 존 선택·범위 선택·폼필·승인 역질문에 손으로 답하기 | 자동 응답 — 존=김포(`polestar_cm_gp`) 1개 · 폼필 미해결 필드=전부 공란 · 승인=`승인` | `raw.jsonl` `auto_answers` |
+| 실행 SQL 확인(오케스트레이션 단은 done 에 SQL 이 없다) | 서버 로그의 감사 로그 `query_executed`를 thread_id 로 모아 **SQL 별로** 판정 | `raw.jsonl` `executed_sqls` |
+| K-01·02·03·04 반복, K-06·07 동시 세션 | `replay`(회차마다 새 스레드) · `concurrent`(세션마다 별도 클라이언트) | `raw.jsonl` `replay_of`·`concurrent_of`·`sessions` |
+| K-10 오매핑 유사어 선행 등록·삭제 | 턴 전 Redis 등록 → 턴 후(예외 포함) **그 단어만** 삭제 → 다음 실행 시작 때 잔여 재삭제 | `raw.jsonl` `setup` · `run.json` `meta.setup_cleanup` |
+| SYN-F-05 시드 재적재(운영 절차) | 활성 DB 시드를 두 번 적재해 멱등성·무손실 판정 | `raw.jsonl` `seed_reload` |
+| A-10 이 등록한 동의어 정리 | 턴 전후 유사어 사전 스냅샷의 **차이만** 삭제 | `run.json` `meta.teardown_log` |
+| I-06 저장 값 삭제의 양식 서명 | 직전 턴 저장 값 패널의 `signature`를 채워 보낸다 | I-06 4턴 응답 `삭제했습니다` |
+
+새 필드는 `report.md`에 표로 나오지 않는다 — `raw.jsonl`·`run.json`에서 본다(⑩-6 명령).
+
+**⑩-2 개발 PC — 무과금 검증** (코드를 받은 직후 1회 · 약 1분 · LLM·DB·Redis 미호출. Windows 는 먼저 `$env:PYTHONUTF8="1"`)
+
+```bash
+pytest tests/test_scenario tests/test_scripts/test_bench_sweep.py -q
+python -m scripts.scenario --dry-run
+python -m scripts.scenario --mock --only F-09,K-01,K-06,K-10,SYN-F-05,I-06,A-10
+```
+
+| 명령 | 정상 출력 (2026-09-15 실측) |
+|---|---|
+| pytest | `421 passed, 2 skipped` — skip 2건은 Windows 전용 V19 |
+| `--dry-run` | `시나리오 218건` · `선택: 218건 (env=자동 판정 - 전 시나리오)` |
+| `--mock --only …` | `턴 53회` · `제외 1건`(SYN-F-05 — `모의 실행 - 러너 동작(Redis 쓰기)은 실 모드에서만 수행한다`). K-01 30행 · K-06 15행 · F-09 `auto_answers`에 `selected_db_ids: ['polestar_cm_gp']` · K-10 `setup`에 `모의 실행 - setup 미수행` |
+
+모의 판정은 대부분 `manual`이다 — 모의 서버에는 내용을 검증할 데이터가 없어 내용 단언을 보류한다(정상).
+인자 없이 `python -m scripts.scenario --mock`으로 전체를 돌려도 제외는 SYN-F-05 1건, 불합격·오류는 0건이어야 한다.
+
+**⑩-3 폐쇄망 — 실행 전 확인 3가지**
+
+```
+[ ] 1. LLM_PROVIDER=fabrix 인가
+       아니면(gemini 등) 인자 없는 실행은 실 실행이 아니라 무과금 점검(dry-run -> mock -> estimate)만 한다
+[ ] 2. AUTH_ENABLED=true 면 내장 테스트 계정이 그 서버의 인증 DB 에 활성 상태로 있는가
+       - ID·비밀번호: scripts/scenario/runner.py 의 DEFAULT_USER_ID · DEFAULT_USER_PASSWORD
+       - 웹 /login 으로 1회 로그인해 본다 (틀린 비밀번호 5회면 30분 잠긴다)
+       - 계정의 허용 DB(allowed_db_ids)가 좁으면 대상 DB 가 빠진다 - polestar_cm_gp 등 대상 DB 포함 확인
+       - 다른 계정으로 돌리려면 --user/--password
+[ ] 3. 러너가 접속하는 Redis(.env 의 Redis 접속 설정)가 운영 서버와 같은 Redis 인가
+       같으면 운영 담당자에게 실행 시간을 알린다 - 러너는 Redis 에 세 번 쓴다 (⑩-7)
+```
+
+**⑩-4 폐쇄망 — 스모크** (전체 실행 전 권장 · 수 분)
+
+고친 경로를 몇 건만 먼저 돌려 배관을 확인한다. 내부망이면 `--only`만 붙여도 실 실행이다(외부 프로바이더면 모의 점검만 한다).
+
+```powershell
+$env:PYTHONUTF8 = "1"
+python -m scripts.scenario --only B-01,F-09,I-06,R2-10,K-10
+# 감사 로그 수집 확인 - 0 이면 SQL 수집이 안 된다 (POSIX: grep -c query_executed results/scenario/<run_id>/logs/server-baseline.log)
+(Select-String -Path results\scenario\<run_id>\logs\server-baseline.log -Pattern 'query_executed').Count
+```
+
+| 확인 | 정상 | 이상하면 |
+|---|---|---|
+| 콘솔 | `프로바이더 fabrix - 내부망이라 승인 없이 진행합니다 (D-216)` | `외부 과금 경로입니다` → ⑩-3 1번 |
+| `report.md` 1절 | 대상 환경 `closed` · 프로파일 유효 `O` · 사유 `-` | 사유 칸 → ⑨-5 · ⑩-8 |
+| `query_executed` 줄 수 | 1 이상 | 0이면 서버 감사 로그가 표준출력에 나오지 않는 설정이다. 이대로 전체를 돌리면 SQL 단언이 불합격이나 수동 검토로 떨어지므로 먼저 로그 설정을 확인한다 |
+| B-01 | `executed_sqls`가 있고 `sql_must_match`가 판정됐다 | `executed_sqls` 없음 → 윗줄 |
+| F-09 | `auto_answers[0].selected_db_ids`=`['polestar_cm_gp']` · `db_ids`에 `polestar_cm_gp` | 같은 역질문이 되풀이되면 러너가 멈추고 그 역질문으로 판정한다(6절) |
+| I-06 | 5턴 전부 합격 — 4턴 응답에 `삭제했습니다` | 4턴이 거부되면 3턴 응답에 저장 값 패널(`form_memory_panel`)이 왔는지 본다. 안 왔으면 서명을 채울 수 없다 |
+| R2-10 | `http_status` 422 합격 | |
+| K-10 | `setup`=`['등록 polestar_cm_gp polestar.cmm_resource.hostname [...]: 완료']` · 끝난 뒤 ⑩-7 잔여 확인이 `clean` | 10절 `setup 실패` → 러너 PC에서 Redis 접속 불가 |
+
+**⑩-5 폐쇄망 — 전체 실행**
+
+```powershell
+python -m scripts.scenario
+```
+
+러너가 하는 순서:
+
+1. 카탈로그 검증(1단). 실패하면 아무것도 시작하지 않는다
+2. 서버 기동(프로파일 `baseline` 1회) → 헬스 → 운영자·사용자 로그인 → 설정 에코
+3. 강제 종료로 남았을 수 있는 K-10 유사어를 먼저 삭제한다(`meta.setup_cleanup`)
+4. **K-02를 가장 먼저 돈다** — 서버 기동 직후 첫 요청이 cold 근사다
+5. 나머지를 군·ID 순으로 돈다. 턴마다 역질문 자동 응답과 감사 로그 SQL 수집이 붙는다
+6. 끝나면 `report.md`·`summary.json`과 분석 산출(`countermeasures.md` 등)을 만든다
+
+| 항목 | 값 |
+|---|---|
+| 규모 | 218건 · 예상 402턴(`--estimate`) — 그중 K군 71턴(K-01 30 · K-06 15 · K-03 12 · K-04 6 …) |
+| 소요 | `--estimate` 상한은 12,240초지만 군 목표치의 합일 뿐이다. 지난 폐쇄망 run의 실측은 턴당 67.5초(93턴 6,278초 · 그중 48턴은 역질문에서 조기 종료)라 **7시간 이상**을 잡는다. 역질문 자동 응답 왕복은 예상치에 들어 있지 않다. 장시간이므로 절전을 억제한다(부록 A.3-④) |
+| 중단됐을 때 | `python -m scripts.scenario --resume <run_id>` — 끝난 턴은 건너뛴다. K-10 도중에 끊겼어도 재개 시작 때 잔여 유사어를 먼저 지운다 |
+| 일부만 | `--group K` · `--group L` · `--only K-10,SYN-F-05` |
+
+**⑩-6 결과 검수 — 무엇을 어디서 보나**
+
+읽는 순서는 `report.md` 1절(환경·기동) → 2·6절(불합격) → 9절(수동 검토 — 새 메모는 ⑩-8) → 10절(제외 — 새 사유는 ⑩-8)이다.
+새 필드는 아래 두 명령으로 요약한다(POSIX 는 경로 구분자만 `/`).
+
+```powershell
+# raw.jsonl - 판정 분포 · 자동 응답 턴 · SQL 수집 턴 · 환경 불일치 턴 · 부하 묶음 행 · 실패 트레이스 턴
+python -c "import json,sys,collections as c; rows=[json.loads(l) for l in open(sys.argv[1],encoding='utf-8') if l.strip()]; print('rows', len(rows)); print('verdict', dict(c.Counter(r['func_verdict'] for r in rows))); print('auto_answers', sum(1 for r in rows if r.get('auto_answers'))); print('executed_sqls', sum(1 for r in rows if r.get('executed_sqls'))); print('env_mismatch', sum(1 for r in rows if r.get('env_mismatch'))); print('bundle_rows', dict(c.Counter(r['scenario_id'] for r in rows if r.get('replay_of') or r.get('concurrent_of')))); print('trace_files', sum(1 for r in rows if r.get('trace_files')))" results\scenario\<run_id>\raw.jsonl
+
+# run.json - 환경 판정 · 유사어 정리 기록 · 제외 사유
+python -c "import json,sys; s=json.load(open(sys.argv[1],encoding='utf-8')); m=s['meta']; print('env', m.get('env'), m.get('env_source')); print('setup_cleanup', m.get('setup_cleanup')); print('teardown_log', m.get('teardown_log')); [print('skipped', k['scenario_id'], k.get('reason')) for k in s['skipped']]" results\scenario\<run_id>\run.json
+```
+
+| 항목 | 볼 곳 | 정상 | 이상하면 |
+|---|---|---|---|
+| 환경 판정 | run.json `env`·`env_source` | `closed auto` | `판정 불가: …` → `ACTIVE_DB_IDS` 확인. 이 상태로는 closed 시나리오의 데이터 의존 단언이 전부 보류된다 |
+| 환경 불일치 | raw 요약 `env_mismatch` | 샌드박스 전용 시나리오(L군 등)의 턴 수. 9절에 `환경 불일치 - …보류` | closed 시나리오까지 잡히면 환경 판정 오류다 |
+| 역질문 자동 응답 | raw `auto_answers` | 존 질문 `selected_db_ids: ['polestar_cm_gp']` · 폼필 `fields` · 승인 `승인` | 원래 **물으면 안 되는** 턴에 `auto_answers`가 붙었으면 제품 회귀 후보다 — 그 턴에 `auto_answer: false`를 달아 역질문을 그대로 판정한다 |
+| 실행 SQL | raw 요약 `executed_sqls` | SQL을 실행하는 턴 대부분 | 0이면 감사 로그 미수집(⑩-4). 9절 `행이 나왔지만 실행 SQL 을 관측하지 못했다`가 그 턴들이다 |
+| 대응 등급 | 5절 | 데이터 표에 진단 절이 붙은 응답이 `refuse`로 잡히지 않는다(지난 run SYN-F-03 오분류) | |
+| 노드 지연 | 7절 · raw `node_elapsed_ms`·`node_calls` | 노드 합계 ≤ 턴 전체 소요. `node_calls` 2 이상은 재계획 루프다 | **이전 run과 노드 지연을 비교하지 않는다** — 의미가 "첫 시작~마지막 완료"에서 "회차 누적"으로 바뀌었다 |
+| 재시도 | raw `retries` · 9절 | 예산 3 이내. 9절 `retries=N 는 하한이다`는 멀티 DB 경로라 확정하지 않았다는 뜻이고 불합격이 아니다 | 하한이어도 3을 넘으면 불합격이다 |
+| K-01·K-03·K-04 반복 | 2·3절 K군 · raw `replay_of` | K-01 30행(6건×5) · K-03 12행 · K-04 6행, 3절에 p50/p95 | 행이 모자라면 10절 사유 |
+| K-02 cold 근사 | `raw.jsonl` **첫 줄** · `bundle_note` | 첫 줄이 K-02이고 1회차 `wall_ms`가 2회차보다 크다 | Redis·파일 캐시는 warm이라 **진짜 cold가 아니다** — 인용할 때 근사임을 적는다 |
+| K-06·K-07 동시 | raw `concurrent_of`·`sessions` | K-06 5세션+10세션=15행 · K-07 2행, `error` 0 | `trace_files`는 세션 간에 섞일 수 있다 |
+| K-10 | raw `setup`·`retries`·`trace_files` · run.json `setup_cleanup` | `setup` 등록 `완료`, `retries` ≤3, 실패 사유가 응답에 드러난다 | 10절 `setup 되돌리기 실패` → ⑩-7 수동 삭제 |
+| SYN-F-05 | raw `seed_reload` · 2·6절 | `words`가 before ≤ first = second, 불합격 키 없음 | `seed_reload.load`(적재 오류) · `seed_reload.idempotent`(2회차에 또 바뀜) · `seed_reload.lossless`(기존 단어 소실 — 표본 20건) |
+| A-10 | run.json `teardown_log` | `unregister_synonym`에 A-10이 더한 단어의 `삭제 … 완료` 목록 | 빈 목록이면 등록 자체가 일어나지 않았다(기능 확인) · 10절 `유사어 기준선을 뜨지 못해` → Redis 접속 |
+| I-06 | 2·6절 | 5턴 전부 합격 — 4턴 `삭제했습니다`, 5턴에서 역질문이 되살아난다 | ⑩-4 I-06 행 |
+| R2-10 · R2-08 | 5·6절 | R2-10 422 · R2-08 400 | |
+
+**⑩-7 Redis 쓰기 — 사후 확인** (공유 Redis면 필수)
+
+| 시나리오 | 무엇을 쓰나 | 되돌림 | 실행 중 영향 |
+|---|---|---|---|
+| K-10 | `schema:polestar_cm_gp:synonyms` 해시의 `polestar.cmm_resource.hostname`에 조어 `검증용사용률` | 턴 후 그 단어만 삭제 · 다음 실행 시작 때 잔여 재삭제 | 같은 Redis를 쓰는 서버가 그동안 `검증용사용률`을 hostname으로 매핑한다(조어라 실사용 영향은 작다) |
+| A-10 | 질의 "vcore, cpu, core은 동의어이다…"가 등록한 동의어(글로벌·활성 DB별 사전) | 턴 전후 스냅샷 **차이 전체** 삭제 | 그 턴 동안 **다른 서버·운영자가 같은 Redis에 더한 단어도 차이에 들어가 함께 지워진다** — 운영 중 유사어 등록 작업과 겹치지 않게 돌린다 |
+| SYN-F-05 | 활성 DB 운영 시드를 합집합으로 병합 | 없다(삭제하지 않는다 — 시드가 정본) | 시드에는 있는데 Redis에 없던 단어가 추가된다 |
+
+```powershell
+# K-10 잔여 확인 - clean 이면 정상
+python -c "from scripts.scenario.runner import _with_redis; w=_with_redis(lambda c, _: c.load_synonyms('polestar_cm_gp')).get('polestar.cmm_resource.hostname') or []; print('LEFTOVER' if '검증용사용률' in w else 'clean')"
+# LEFTOVER 면 수동 삭제 - 그 단어만 지운다. 출력: 삭제 polestar_cm_gp polestar.cmm_resource.hostname ['검증용사용률']: 완료
+python -c "from scripts.scenario.catalog import load_catalog; from scripts.scenario.runner import apply_synonym_setup; print(apply_synonym_setup(load_catalog().by_id('K-10').setup, remove=True))"
+```
+
+**⑩-8 새로 생긴 메모·사유 읽는 법**
+
+| 나오는 곳 | 문구(앞부분) | 뜻 | 할 일 |
+|---|---|---|---|
+| 9절 | `환경 불일치 - 시나리오 env=…, 실행 env=…. 데이터 의존 단언 N종 보류` | 다른 환경용 기대값이라 배관·안전 단언만 판정했다 | 응답을 눈으로 본다. 불합격이 아니다 |
+| 9절 | `행이 나왔지만 실행 SQL 을 관측하지 못했다` | 감사 로그에서 SQL을 모으지 못했다 | 서버 로그의 `query_executed` 확인(⑩-4) |
+| 9절 | `retries=N 는 하한이다` | 멀티 DB 경로라 재시도 일부가 보이지 않는다 | 예산 초과가 아니면 보류로 둔다 |
+| 9절 | `활성 DB [...] 에 시드 파일이 없어 적재하지 않았다` | SYN-F-05 대상 시드가 없다 | `config/synonym_seeds/{db_id}.yaml` 확인 |
+| 10절 | `모의 실행 - 러너 동작(Redis 쓰기)은 실 모드에서만 수행한다` | 모의 실행의 SYN-F-05 | 정상 |
+| 10절 | `setup 실패 - 선행 상태를 만들지 못해 실행하지 않았다` | K-10 등록 실패(Redis) | Redis 접속 확인 후 `--only K-10` |
+| 10절 | `setup 되돌리기 실패 - 다음 실행 시작 때 다시 지운다` | K-10 단어가 남았을 수 있다 | ⑩-7 확인·수동 삭제 |
+| 10절 | `유사어 기준선을 뜨지 못해 쓰기 시나리오를 실행하지 않았다` | 되돌릴 수 없어 A-10을 돌리지 않았다 | Redis 접속 확인 후 `--only A-10` |
+| 10절 | `유사어 되돌리기 실패 - 유사어 사전을 수동으로 확인할 것` | A-10이 등록한 단어가 남았을 수 있다 | 운영자 유사어 관리 화면에서 확인 |
+| 1절 사유 | `내장 테스트 계정(…) 로그인 실패: …` | 내장 계정 로그인 실패 | ⑩-3 2번 · http 코드는 ⑨-5 표와 같다 |
+| raw `bundle_note` | `… cold 는 근사다(Redis·파일 캐시 warm)` | K-02 | 인용할 때 근사임을 적는다 |
+
+**⑩-9 시나리오를 고치거나 추가할 때 — 새 YAML 어휘**
+
+| 키 | 위치 | 형식 | 쓰임 |
+|---|---|---|---|
+| `auto_answer` | 시나리오 | `{selected_db_ids: [...], form_fill_answers: {...}, approval: "..."}` | 기본 자동 응답 대신 이 값으로 답한다. 정의 밖 키는 로더가 거부한다 |
+| `auto_answer: false` | 턴 | bool | 역질문에 답하지 않고 그대로 판정한다("물으면 안 되는" 턴 — F-06 3턴) |
+| `replay` | 시나리오 | `{scenarios: [ID, …], repeat: n}` | 반복 측정. 참조는 질의 시나리오여야 한다 |
+| `concurrent` | 시나리오 | `{scenarios: [ID, …], sessions: [n, …]}` | 동시 세션. 세션마다 참조를 번갈아 배정한다 |
+| `action` | 시나리오 | `{kind: seed_reload_idempotency}` | 질의가 아닌 러너 동작 |
+| `setup` | 시나리오 | `[{kind: synonym_add, db_id, column, words}]` | 턴 전 유사어 등록 · 턴 후 그 단어만 삭제 |
+| `teardown` | 시나리오 | `[drop_thread, unregister_synonym]` | 그 밖의 값은 10절 `teardown 미지원`으로 남는다 |
+| `answer` | `mock` 의 턴 정의 안 | 응답 본문 | 모의 서버가 자동 응답 뒤에 돌려줄 응답 |
+
+`replay`·`concurrent`·`action`은 하나만 선언한다. 이런 시나리오의 `turns`는 보내지 않고 판정 메모(`bundle_note`)로만 쓴다.
+고친 뒤에는 `--dry-run`(로더 검증) → `--mock --only <ID>` → `pytest tests/test_scenario -q` 순으로 확인한다.
+벤치 스위프(`plans/93`) 워크로드는 `replay`·`concurrent`·`action`·`setup` 시나리오를 자동으로 제외한다.
+
+**⑩-10 알고 돌릴 것**
+
+- 내장 테스트 계정의 비밀번호가 코드에 평문으로 있다 — 원격에 푸시하면 이력에 남는다. 테스트 전용 계정으로만 쓴다.
+- 이번 개정은 **판정을 정확하게 만든 것**이지 제품 결함을 고친 것이 아니다. 지난 run에서 찾은 제품 결함(SYN-I-06 조용한 오답 등)은 이번 run에서도 불합격으로 나와야 정상이다.
+- 지난 run(`20260914-154940`)과 합격 수·노드 지연을 직접 비교하지 않는다 — 그 run은 closed 158건이 빠졌고, 93턴 중 48턴이 역질문에서 끝났으며, SQL이 수집되지 않았다(8절 회귀 표를 읽을 때도 같다).
 
 ---
 
@@ -1270,7 +1455,7 @@ docker compose -f db\docker-compose.yml up -d
 docker compose -f redis\docker-compose.yml up -d
 
 # ⑦ 인증 설정 확인 (실행 가이드 ⑨) — 비밀값은 출력하지 않고 키 이름만 본다
-#    AUTH_ENABLED=true 가 보이면 --user/--password 가 필요하다
+#    AUTH_ENABLED=true 가 보이면 내장 테스트 계정이 서버에 있는지 확인한다(없으면 --user/--password)
 Select-String -Path .env, .encenv -Pattern '^AUTH_ENABLED=' -ErrorAction SilentlyContinue
 Select-String -Path .env, .encenv -Pattern '^(ADMIN_USERNAME|ADMIN_PASSWORD|ADMIN_JWT_SECRET|AUTH_JWT_SECRET|AUTH_AUTH_DB_URL)=.+' -ErrorAction SilentlyContinue |
     ForEach-Object { "{0}  <- {1}" -f ($_.Line -split '=')[0], $_.Filename }
@@ -1297,9 +1482,9 @@ python -c "import ibm_db" ; if ($LASTEXITCODE -ne 0) { python -m pip install "ib
 | 전체 회귀 | `pytest` | `$env:PYTHONUTF8="1"; pytest` |
 | 품질 게이트 | `python scripts/arch_check.py --ci` | `python scripts\arch_check.py --ci` |
 | 헬스 프로브 | (없음) | `powershell -ExecutionPolicy Bypass -File scripts\health_probe.ps1` |
-| **시나리오 스위트(무과금·기본)** | `python -m scripts.scenario` | `python -m scripts.scenario` |
-| **시나리오 스위트(실 실행·과금)** | `RUN_E2E=1 python -m scripts.scenario --run --profile baseline` | `$env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline` |
-| **시나리오 스위트(폐쇄망·인증 on)** | `RUN_E2E=1 python -m scripts.scenario --run --env closed --user <ID> --password '<PW>'` | `$env:RUN_E2E="1"; python -m scripts.scenario --run --env closed --user <ID> --password '<PW>'` |
+| **시나리오 스위트(기본)** | `python -m scripts.scenario` — 내부망이면 전 시나리오 실 실행, 외부면 무과금 점검(D-216) | 동일 |
+| **시나리오 스위트(외부 프로바이더 실 실행·과금)** | `RUN_E2E=1 python -m scripts.scenario --run --profile baseline` | `$env:RUN_E2E="1"; python -m scripts.scenario --run --profile baseline` |
+| **시나리오 스위트(폐쇄망·인증 on)** | `python -m scripts.scenario` (내장 테스트 계정 · 다른 계정은 `--user <ID> --password '<PW>'`) | 동일 |
 | 리포트 재생성 | `python -m scripts.scenario --report <run_id>` | 동일 |
 | 분석·대안 수립 | `python -m scripts.scenario --analyze` | 동일 |
 
@@ -1330,9 +1515,9 @@ python -c "import ibm_db" ; if ($LASTEXITCODE -ne 0) { python -m pip install "ib
 ```
 [ ] $env:PYTHONUTF8="1" 설정  (미설정 시 한글 출력에서 런이 죽는다)
 [ ] 이전 세션에 남은 $env:* 플래그 값 확인 — 프로파일 오염의 1순위 원인
-[ ] AUTH_ENABLED 확인(A.3-⑦) — true 면 --user/--password 준비 · 그 계정으로 웹 /login 1회 성공
+[ ] AUTH_ENABLED 확인(A.3-⑦) — true 면 내장 테스트 계정(또는 --user)으로 웹 /login 1회 성공 (⑩-3)
 [ ] Env:AUTH_* / Env:ADMIN_* 세션 잔존값 없음 (있으면 .env/.encenv 값을 덮는다)
-[ ] 폐쇄망이면 --env closed (기본값 sandbox)
+[ ] (D-216) --env 생략 - run.json env 가 closed 로 판정됐는지 확인
 [ ] 127.0.0.1 로 헬스 응답 확인 (localhost 아님)
 [ ] netsh 제외 대역 밖 포트인지 확인
 [ ] powercfg 절전 0 설정 · 런 후 원복 예정 메모

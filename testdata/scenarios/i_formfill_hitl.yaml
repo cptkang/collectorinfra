@@ -173,11 +173,19 @@ scenarios:
         endpoint: stream
         expect:
           status: completed
+      # 삭제는 세션이 조회한 양식 시그니처가 있어야 수행된다(D-187). 패널을 먼저 받아 두면
+      # 러너가 다음 턴의 form_memory_delete.signature 를 패널 값으로 채운다(웹 UI 와 같다).
+      - send:
+          query: "이 양식에 저장된 내용은?"
+        endpoint: stream
+        expect:
+          status: completed
       - send:
           form_memory_delete: {"fields": ["담당자"]}
         endpoint: stream
         expect:
           status: completed
+          response_must_contain: ["삭제했습니다"]
           manual_review: "삭제가 같은 세션의 양식 시그니처에만 적용됐는지(임의 삭제 차단)"
       - send:
           query: "김포 서버로 채워줘"

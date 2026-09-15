@@ -278,12 +278,18 @@ def test_재시도는_회귀_노드_재진입으로_실측된다(client) -> None
                 yield f"data: {_json.dumps(item, ensure_ascii=False)}"
                 yield ""
 
-    events = [{"type": "node_start", "node": n, "timestamp_ms": i * 10}
-              for i, n in enumerate([
-                  "schema_analyzer", "query_generator", "query_validator",
-                  "query_generator", "query_validator",     # 1회 회귀
-                  "query_generator", "query_executor",      # 2회 회귀
-                  "result_organizer", "output_generator"])]
+    # 서버는 node_start 를 노드마다 **한 번만** 보내고 node_complete 는 회차마다 보낸다
+    # (query.py `_seen_nodes`). 회귀 회차는 query_generator 의 완료 횟수로 드러난다.
+    events = []
+    for i, (kind, n) in enumerate([
+            ("node_start", "schema_analyzer"), ("node_complete", "schema_analyzer"),
+            ("node_start", "query_generator"), ("node_complete", "query_generator"),
+            ("node_start", "query_validator"), ("node_complete", "query_validator"),
+            ("node_complete", "query_generator"), ("node_complete", "query_validator"),  # 1회 회귀
+            ("node_complete", "query_generator"),                                         # 2회 회귀
+            ("node_start", "query_executor"), ("node_complete", "query_executor"),
+            ("node_start", "result_organizer"), ("node_start", "output_generator")]):
+        events.append({"type": kind, "node": n, "timestamp_ms": i * 10})
     events.append({"type": "done", "response": "ok", "executed_sql": "SELECT 1"})
 
     obs = Observation()
@@ -307,8 +313,11 @@ def test_회귀가_없으면_재시도는_0이다(client) -> None:
                 yield f"data: {_json.dumps(item, ensure_ascii=False)}"
                 yield ""
 
-    events = [{"type": "node_start", "node": n, "timestamp_ms": 0}
-              for n in ("query_generator", "query_executor")]
+    events = [
+        {"type": "node_start", "node": "query_generator", "timestamp_ms": 0},
+        {"type": "node_complete", "node": "query_generator", "timestamp_ms": 5},
+        {"type": "node_start", "node": "query_executor", "timestamp_ms": 5},
+    ]
     events.append({"type": "done", "response": "ok"})
 
     obs = Observation()
@@ -405,3 +414,29 @@ def test_프로파일이_알람을_명시하면_프로파일이_이긴다() -> N
     """알람 자체를 시험하는 프로파일은 격리 기본값에 막히면 안 된다."""
     merged = {**runner_mod.ISOLATION_ENV, **{"ALARM_ENABLED": "true"}}
     assert merged["ALARM_ENABLED"] == "true"
+
+
+def test_회귀_노드가_스트림에_없으면_재시도는_측정_불가다(client) -> None:
+    """intent_orchestration 단은 SQL 생성이 하위 에이전트 안에서 돌아 상위 스트림에 보이지 않는다."""
+    import json as _json
+    import time as _time
+
+    class _Resp:
+        def __init__(self, lines):
+            self._lines = lines
+
+        def iter_lines(self):
+            for item in self._lines:
+                yield f"data: {_json.dumps(item, ensure_ascii=False)}"
+                yield ""
+
+    events = [{"type": "node_start", "node": n, "timestamp_ms": 0}
+              for n in ("context_resolver", "input_parser", "field_mapper", "intent_planner",
+                        "agent_orchestrator", "replanner", "result_aggregator")]
+    events.append({"type": "done", "response": "ok"})
+
+    obs = Observation()
+    client._consume_sse(_Resp(events), obs, started=_time.perf_counter())
+
+    assert obs.retries is None, "0 은 '재시도 없음'이다 — 보지 못한 것을 0 으로 적지 않는다"
+    assert obs.node_count == 7

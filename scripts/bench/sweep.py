@@ -194,7 +194,12 @@ def load_normal_catalog(*, env: str = "closed"):
     """
     sc_catalog, _ = scenario_harness()
     catalog = sc_catalog.load_catalog()
-    normal = catalog.select(kinds=["normal"], env=env)
+    # 러너 동작 시나리오(D-217)는 워크로드가 아니다 - 부하 묶음(K-01·K-06 등)은 arm 마다 수십 턴을
+    # 다시 돌리고, 시드 재적재(SYN-F-05)·고의 오매핑 유사어(K-10)는 공유 Redis 에 쓴다.
+    normal = [
+        s for s in catalog.select(kinds=["normal"], env=env)
+        if not (s.is_bundle or s.action or s.setup)
+    ]
     return sc_catalog.Catalog(
         groups=dict(catalog.groups),
         scenarios=list(normal),

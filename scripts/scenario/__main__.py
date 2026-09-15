@@ -1,13 +1,16 @@
-"""단일 진입점 (plans/94 「실행 가이드」 · §4.4).
+"""단일 진입점 (plans/94 「실행 가이드」 · §4.4 · D-216).
 
-    python -m scripts.scenario                  # (1) 사전 점검 - 무과금 · 기본
-    python -m scripts.scenario --run            # (2) 실 실행   - 과금 · 승인 필요
+    python -m scripts.scenario                  # (1) 기본 - 내부망이면 전 시나리오 실 실행, 외부면 무과금 점검
+    python -m scripts.scenario --run            # (2) 실 실행   - 외부 프로바이더는 승인 필요
     python -m scripts.scenario --report <run>   # (3) 리포트 재생성 - 무과금
     python -m scripts.scenario --analyze        # (4) 분석/대안 수립 - 무과금
 
-**인자 없는 기본 동작이 무과금이다.** 카탈로그 검증 -> 모의 실행 -> 예상치를 차례로
-수행한다. 아무것도 모르고 이 명령을 쳐도 돈이 나가지 않는 것이 D-127 을 코드로 지키는
-방식이다. 실 LLM 경로는 `--run` + `RUN_E2E=1` 뒤에만 열린다.
+**인자 없는 기본 동작은 LLM 프로바이더가 정한다**(D-216 - D-212 ⑨ 개정 · D-211 ⑪ 선례).
+`LLM_PROVIDER` 가 내부망(fabrix·ollama)이면 옵션 없이 전 시나리오를 실제로 돌린다 - 외부 과금
+API 가 아니고 데이터가 밖으로 나가지 않는다(D-120). 외부 프로바이더(gemini 등)면 종전대로
+카탈로그 검증 -> 모의 실행 -> 예상치만 수행하고, 실 LLM 경로는 `--run` + `RUN_E2E=1` + 승인
+뒤에만 열린다(D-127). 판정은 코드가 하며 개발자는 구분하지 않는다. 설정을 못 읽으면 내부망으로
+가정하지 않는다 - 과금 게이트가 그대로 산다.
 
 콘솔 출력은 ASCII 구두점만 쓴다 - cp949 콘솔에서 em-dash 가 UnicodeEncodeError 로
 런을 죽인다(docs/18:82 · 부록 A.1-3 · W5).
@@ -26,16 +29,30 @@ from .catalog import Catalog, CatalogError, load_catalog
 from .report import write_report
 from .runner import RESULTS_ROOT, RunConfig, estimate, execute, latest_run
 
+#: 승인 없이 실 실행하는 프로바이더. 벤치마크 스위프와 같은 집합이다
+#: (D-211 ⑪ · scripts/bench/__main__.py `_INTERNAL_PROVIDERS`).
+INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama"})
+
+
+def llm_provider() -> str:
+    """이 프로세스가 읽는 LLM 프로바이더. 자식 서버도 같은 `.env`/`.encenv` 를 읽는다."""
+    try:
+        from src.config import load_config
+
+        return str(load_config().llm.provider or "unknown").strip().lower()
+    except Exception as exc:  # 설정을 못 읽으면 외부로 본다 - 과금 게이트를 열지 않는다
+        return f"unknown({type(exc).__name__})"
+
 
 def _require_optin() -> None:
-    """D-127 하드 게이트. 옵트인 없이는 어떤 실 호출도 하지 않는다.
+    """D-127 하드 게이트. 외부 프로바이더는 옵트인 없이 어떤 실 호출도 하지 않는다.
 
     `scripts/eval_routing.py:46` 의 `_require_optin` 과 같은 패턴이다. 키가 존재한다는
     이유만으로 실행되는 게이팅은 금지다 - 키는 `.encenv` 에 상존한다는 전제이기 때문이다.
     """
     if os.getenv("RUN_E2E") != "1":
         print(
-            "거부: 실 LLM 호출은 D-127 건별 사용자 승인 대상입니다.\n"
+            "거부: 외부 프로바이더의 실 LLM 호출은 D-127 건별 사용자 승인 대상입니다.\n"
             "  승인 후에만 RUN_E2E=1 을 설정해 재실행하세요.\n"
             "  (호출 없이 점검만 하려면 인자 없이 실행: python -m scripts.scenario)",
             file=sys.stderr,
@@ -55,13 +72,17 @@ def _load(strict: bool = True) -> Optional[Catalog]:
         return None
 
 
+def _env_label(env: Optional[str]) -> str:
+    return env or "자동 판정 - 전 시나리오"
+
+
 def cmd_dry_run(args: argparse.Namespace) -> int:
     """1단 - 카탈로그만 검증한다. 서버를 띄우지 않는다."""
     catalog = _load()
     assert catalog is not None
     selected = catalog.select(args.group, args.only, args.env)
     print(f"[1단] 카탈로그 OK - 군 {len(catalog.groups)}개, 시나리오 {len(catalog.scenarios)}건")
-    print(f"       선택: {len(selected)}건 (env={args.env})")
+    print(f"       선택: {len(selected)}건 (env={_env_label(args.env)})")
     groups: dict[str, int] = {}
     for scenario in selected:
         groups[scenario.group] = groups.get(scenario.group, 0) + 1
@@ -92,6 +113,17 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_config(args: argparse.Namespace, mode: str) -> RunConfig:
+    return RunConfig(
+        mode=mode, env=args.env, repeat=args.repeat, groups=args.group,
+        only=args.only, profiles=args.profile, port=args.port,
+        token=args.token, timeout_sec=args.timeout, resume_from=args.resume,
+        admin_token=args.admin_token,
+        user_id=args.user, user_password=args.password,
+        admin_user=args.admin_user, admin_password=args.admin_password,
+    )
+
+
 def cmd_mock(args: argparse.Namespace) -> int:
     """2단 - MockGraph 서버로 전 경로를 돈다. LLM/DB 미호출."""
     problem = _check_resume(args)
@@ -100,15 +132,7 @@ def cmd_mock(args: argparse.Namespace) -> int:
         return 1
     catalog = _load()
     assert catalog is not None
-    config = RunConfig(
-        mode="mock", env=args.env, repeat=args.repeat, groups=args.group,
-        only=args.only, profiles=args.profile, port=args.port,
-        token=args.token, timeout_sec=args.timeout, resume_from=args.resume,
-        admin_token=args.admin_token,
-        user_id=args.user, user_password=args.password,
-        admin_user=args.admin_user, admin_password=args.admin_password,
-    )
-    summary = execute(catalog, config)
+    summary = execute(catalog, _run_config(args, "mock"))
     run_dir = Path(summary["out_dir"])
     paths = write_report(run_dir, catalog)
     print(f"[2단] 모의 실행 완료 - 턴 {summary['executed_turns']}회")
@@ -131,27 +155,28 @@ def _check_resume(args: argparse.Namespace) -> Optional[str]:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """4단 - 실 LLM/실 DB. 옵트인 뒤에만 열린다."""
-    _require_optin()
+    """4단 - 실 LLM/실 DB. 외부 프로바이더는 옵트인·승인 뒤에만 열린다."""
+    provider = llm_provider()
+    internal = provider in INTERNAL_PROVIDERS
+    if not internal:
+        _require_optin()
     problem = _check_resume(args)
     if problem:
         print(problem, file=sys.stderr)
         return 1
     catalog = _load()
     assert catalog is not None
-    config = RunConfig(
-        mode="run", env=args.env, repeat=args.repeat, groups=args.group,
-        only=args.only, profiles=args.profile, port=args.port,
-        token=args.token, timeout_sec=args.timeout, resume_from=args.resume,
-        admin_token=args.admin_token,
-        user_id=args.user, user_password=args.password,
-        admin_user=args.admin_user, admin_password=args.admin_password,
-    )
+    config = _run_config(args, "run")
     result = estimate(catalog, config)
-    print("[4단] 실 실행 - 과금 경로")
-    print(f"       예상 LLM 호출 {result['estimated_llm_calls']}회 "
+    print("[4단] 실 실행")
+    if internal:
+        print(f"       프로바이더 {provider} - 내부망이라 승인 없이 진행합니다 (D-216)")
+    else:
+        print(f"       프로바이더 {provider} - 외부 과금 경로입니다 (D-127)")
+    print(f"       대상 {result['scenarios']}건 / 턴 {result['turns']}회, "
+          f"예상 LLM 호출 {result['estimated_llm_calls']}회 "
           f"(가정: 턴당 {result['assumed_llm_calls_per_turn']}회)")
-    if not args.yes:
+    if not internal and not args.yes:
         try:
             answer = input("       이 스위트 1회 실행을 승인합니까? [y/N] ").strip().lower()
         except EOFError:
@@ -205,26 +230,34 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.scenario",
-        description="기능/성능 시나리오 자동 실행 하네스 (plans/94). 기본 동작은 무과금입니다.",
+        description=(
+            "기능/성능 시나리오 자동 실행 하네스 (plans/94). 인자 없는 기본 동작: "
+            "LLM_PROVIDER 가 내부망(fabrix/ollama)이면 전 시나리오 실 실행, "
+            "외부 프로바이더면 무과금 점검입니다."
+        ),
     )
-    mode = parser.add_argument_group("동작 (미지정 시 무과금 기본: dry-run -> mock -> estimate)")
+    mode = parser.add_argument_group(
+        "동작 (미지정 시: 내부망 = 전 시나리오 실 실행 / 외부 = 무과금 dry-run -> mock -> estimate)"
+    )
     mode.add_argument("--dry-run", action="store_true", help="1단 카탈로그만 검증 (무과금)")
     mode.add_argument("--mock", action="store_true", help="2단 모의 서버로 전 경로 (무과금)")
     mode.add_argument("--estimate", action="store_true", help="3단 예상치 출력 (무과금)")
-    mode.add_argument("--run", action="store_true", help="4단 실 LLM 실행 (과금 · RUN_E2E=1 필요)")
+    mode.add_argument("--run", action="store_true",
+                      help="4단 실 LLM 실행 (외부 프로바이더는 RUN_E2E=1 + 승인 필요)")
     mode.add_argument("--report", nargs="?", const=True, metavar="RUN_ID",
                       help="리포트 재생성 (무과금)")
     mode.add_argument("--analyze", nargs="?", const=True, metavar="RUN_ID",
                       help="분석/대안 수립 (무과금)")
 
-    select = parser.add_argument_group("선택")
+    select = parser.add_argument_group("선택 (전부 생략 가능 - 기본은 전 시나리오)")
     select.add_argument("--profile", action="append", default=[], help="플래그 프로파일 (반복 가능)")
     select.add_argument("--group", action="append", default=[], help="군 문자 (예: C · R4)")
     select.add_argument("--only", default=[], type=lambda v: v.split(","),
                         help="시나리오 ID 목록 (쉼표 구분)")
     select.add_argument("--repeat", type=int, default=1, help="반복 횟수 (R군은 기본 3)")
-    select.add_argument("--env", choices=["closed", "sandbox"], default="sandbox",
-                        help="대상 환경 선언")
+    select.add_argument("--env", choices=["closed", "sandbox"], default=None,
+                        help="대상 환경을 강제로 좁힌다. 미지정 시 서버 활성 DB로 판정하고 "
+                             "전 시나리오를 돌며, 환경이 다른 시나리오는 데이터 의존 단언을 보류한다")
     select.add_argument("--resume", metavar="RUN_ID", help="중단된 런을 이어서")
     select.add_argument("--port", type=int, help="자식 서버 포트 (미지정 시 자동)")
     select.add_argument("--token", help="질의용 사용자 토큰 (직접 주입 시)")
@@ -232,12 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
     # 토큰 대신 크레덴셜을 받는 것이 정본이다 - JWT 시크릿이 `.env` 에 명시돼 있지
     # 않으면 기동마다 난수라(config.py `model_post_init`) 미리 받은 토큰은 두 번째
     # 프로파일부터 401 이다. 크레덴셜을 주면 러너가 프로파일마다 다시 로그인한다.
-    select.add_argument("--user", help="질의용 사용자 ID (AUTH_ENABLED=true 인 환경)")
-    select.add_argument("--password", help="질의용 사용자 비밀번호")
+    select.add_argument("--user", help="질의용 사용자 ID (미지정 시 인증이 켜진 서버에서 내장 테스트 계정)")
+    select.add_argument("--password", help="질의용 사용자 비밀번호 (미지정 시 내장 테스트 계정)")
     select.add_argument("--admin-user", help="운영자 ID (미지정 시 설정에서 읽는다)")
     select.add_argument("--admin-password", help="운영자 비밀번호 (미지정 시 설정에서 읽는다)")
     select.add_argument("--timeout", type=float, default=360.0, help="시나리오당 상한(초)")
-    select.add_argument("--yes", action="store_true", help="--run 의 승인 프롬프트 생략")
+    select.add_argument("--yes", action="store_true", help="외부 프로바이더 --run 의 승인 프롬프트 생략")
     return parser
 
 
@@ -258,8 +291,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.estimate:
         return cmd_estimate(args)
 
-    # 인자 없음 = 무과금 기본 동작. 1단을 통과하지 못하면 2단은 시작되지 않는다.
-    print("무과금 기본 동작: 1단 카탈로그 검증 -> 2단 모의 실행 -> 3단 예상치")
+    # 인자 없음. 1단(카탈로그)을 통과하지 못하면 어떤 실행도 시작되지 않는다.
+    provider = llm_provider()
+    if provider in INTERNAL_PROVIDERS:
+        print(f"기본 동작 - 내부망 프로바이더({provider}): 1단 카탈로그 검증 -> 4단 전 시나리오 실 실행")
+        print("역질문은 스크립트가 자동으로 답합니다 (config/scenarios/auto_answer.yaml).\n")
+        code = cmd_dry_run(args)
+        if code != 0:
+            return code
+        print()
+        return cmd_run(args)
+
+    print(f"무과금 기본 동작 - 외부 프로바이더({provider}): "
+          "1단 카탈로그 검증 -> 2단 모의 실행 -> 3단 예상치")
     print("실 LLM 실행은 --run (RUN_E2E=1 필요) 입니다.\n")
     code = cmd_dry_run(args)
     if code != 0:

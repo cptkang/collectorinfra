@@ -127,22 +127,22 @@ def _catalog() -> Catalog:
 def test_1턴은_질의로_2턴은_스레드로_되짚는다() -> None:
     """구조화 필드만 보내는 턴에는 질의 문자열이 없다."""
     resolver = _Resolver(_catalog())
-    scenario, turn = resolver.resolve("전체 서버 OS", "t1")
+    scenario, turn, _ = resolver.resolve("전체 서버 OS", "t1")
     assert scenario is not None and scenario.id == "F-01" and turn == 1
-    scenario, turn = resolver.resolve(None, "t1")
+    scenario, turn, _ = resolver.resolve(None, "t1")
     assert scenario is not None and scenario.id == "F-01" and turn == 2
 
 
 def test_스레드가_다르면_다시_1턴이다() -> None:
     resolver = _Resolver(_catalog())
     resolver.resolve("전체 서버 OS", "t1")
-    _scenario, turn = resolver.resolve("전체 서버 OS", "t2")
+    _scenario, turn, _ = resolver.resolve("전체 서버 OS", "t2")
     assert turn == 1
 
 
 def test_모르는_질의는_canned_응답으로_떨어진다() -> None:
     resolver = _Resolver(_catalog())
-    scenario, turn = resolver.resolve("처음 보는 질의", "t9")
+    scenario, turn, _ = resolver.resolve("처음 보는 질의", "t9")
     assert scenario is None and turn == 1
     payload = _payload_for(None, 1, "처음 보는 질의")
     assert payload["row_count"] == 5 and "[mock]" in payload["response"]
@@ -157,4 +157,4 @@ def test_턴별_mock_블록이_적용된다() -> None:
 def test_카탈로그가_없어도_해석기는_죽지_않는다() -> None:
     """카탈로그가 깨져도 모의 서버는 떠야 사유를 볼 수 있다."""
     resolver = _Resolver(None)
-    assert resolver.resolve("무엇이든", "t") == (None, 1)
+    assert resolver.resolve("무엇이든", "t") == (None, 1, False)

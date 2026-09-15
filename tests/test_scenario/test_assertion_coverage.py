@@ -32,8 +32,11 @@ def catalog():
 
 
 def _normal_closed(catalog):
+    # 러너 동작 시나리오(부하 묶음·시드 재적재·선행 상태, D-217)는 자기 턴을 판정하지 않는다 -
+    # 묶음은 참조 시나리오의 단언으로, 러너 동작은 러너가 판정한다. 질의 시나리오만 센다.
     return [s for s in catalog.scenarios
-            if s.kind == "normal" and s.env in ("closed", "both")]
+            if s.kind == "normal" and s.env in ("closed", "both")
+            and not (s.is_bundle or s.action)]
 
 
 def test_정상군_대부분이_기계_판정_대상이다(catalog) -> None:
@@ -108,10 +111,15 @@ def test_폼필_답변턴은_JSON_경로로_간다(catalog) -> None:
 
 
 def test_미작성_시나리오는_사유를_남긴다() -> None:
-    """'원문이 산문이다'로는 다음 사람이 무엇을 해야 할지 알 수 없다."""
+    """'원문이 산문이다'로는 다음 사람이 무엇을 해야 할지 알 수 없다.
+
+    K군 7건은 2026-09-15 러너 동작(replay·concurrent·setup)으로 실행 가능해져 미작성이 0건이다(D-217).
+    다시 미작성이 생기면 건마다 구체 사유(`# 실행 불가:`)가 붙어야 한다.
+    """
     text = (REPO_ROOT / "testdata" / "scenarios" / "k_load.yaml").read_text(encoding="utf-8")
     generic = text.count("원문이 프롬프트가 아니라 산문")
     specific = text.count("# 실행 불가:")
-    assert generic == 0 and specific >= 7, (
-        f"구체 사유 {specific}건 · 일반 문구 {generic}건"
+    unauthored = [s for s in load_catalog().scenarios if s.group == "K" and not s.prompt_authored]
+    assert generic == 0 and specific >= len(unauthored), (
+        f"구체 사유 {specific}건 · 일반 문구 {generic}건 · 미작성 {len(unauthored)}건"
     )

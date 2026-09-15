@@ -178,8 +178,10 @@ def test_프롬프트_미작성_시나리오는_사유를_갖는다() -> None:
     """산문을 프롬프트로 실행하지 않는다 - 다만 조용히 사라지지도 않는다."""
     catalog = load_catalog()
     unauthored = [s for s in catalog.scenarios if not s.prompt_authored]
-    assert unauthored, "미작성 표본이 없다 - 전건 작성됐다면 이 테스트를 갱신할 것"
-    assert {s.group for s in unauthored} <= {"F", "I", "K"}
+    # F·I 는 2026-09-14, K군(반복·동시성·쓰기 선행)과 SYN-F-05(시드 재적재 절차)는 2026-09-15
+    # 러너 동작(replay·concurrent·setup·action)으로 전건 실행 가능해졌다(D-217). 새로 미작성 초안이
+    # 생기면 사유 주석과 함께 이 목록을 다시 연다.
+    assert not unauthored, f"미작성 초안이 다시 생겼다: {[s.id for s in unauthored]}"
 
 
 def test_실제_저장소_카탈로그가_로드된다() -> None:

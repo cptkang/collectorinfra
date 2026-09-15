@@ -42,6 +42,10 @@ ENDPOINTS: frozenset[str] = frozenset({"stream", "plain", "file", "file_stream"}
 ENVS: frozenset[str] = frozenset({"closed", "sandbox", "both"})
 CACHE_STATES: frozenset[str] = frozenset({"cold", "warm"})
 
+# 러너 동작 어휘(D-217). 질의로는 만들 수 없는 절차·선행 상태를 러너가 직접 수행한다.
+ACTION_KINDS: frozenset[str] = frozenset({"seed_reload_idempotency"})
+SETUP_KINDS: frozenset[str] = frozenset({"synonym_add"})
+
 # ID 형식: 군 문자 + 일련번호. docs/29 의 A-01 · SYN-A-01 · 대조군 접미 R4-01C 를 모두 받는다.
 _ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+[a-z]?){1,2}$")
 
@@ -67,6 +71,9 @@ class Turn:
     send: dict[str, Any]
     expect: dict[str, Any]
     endpoint: Optional[str] = None
+    # 역질문 자동 응답(D-216) 허용 여부. `false` 면 역질문을 답하지 않고 그대로 판정한다 -
+    # "여기서 물으면 회귀"인 턴(F-06 3턴 존 승계)에서 자동 응답이 회귀를 가리지 않게 한다.
+    auto_answer: bool = True
 
 
 @dataclass(frozen=True)
@@ -109,6 +116,17 @@ class Scenario:
     notes: Optional[str] = None
     # 무과금 모의 실행(--mock)에서 서버가 돌려줄 응답. 없으면 일반 canned 응답이 나간다.
     mock: Optional[dict[str, Any]] = None
+    # 역질문 자동 응답의 명시값(D-216). 키: selected_db_ids · form_fill_answers · approval.
+    # 없으면 config/scenarios/auto_answer.yaml 의 기본 정책을 쓴다.
+    auto_answer: dict[str, Any] = field(default_factory=dict)
+    # 부하 묶음(K군 · D-217). 자기 턴 대신 참조 시나리오를 새 스레드로 반복(replay)하거나
+    # 동시에(concurrent) 돈다. 이때 `turns` 는 보내지 않고 판정 메모로만 남는다.
+    replay: dict[str, Any] = field(default_factory=dict)      # {scenarios: [ID], repeat: n}
+    concurrent: dict[str, Any] = field(default_factory=dict)  # {scenarios: [ID], sessions: [n]}
+    # 질의가 아닌 러너 동작(SYN-F-05 시드 재적재 멱등성). 있으면 턴을 보내지 않는다.
+    action: dict[str, Any] = field(default_factory=dict)
+    # 턴 전에 러너가 만드는 선행 상태(K-10 고의 오매핑 유사어). 끝나면 같은 것만 되돌린다.
+    setup: list[dict[str, Any]] = field(default_factory=list)
     source_file: Optional[str] = None
 
     @property
@@ -119,6 +137,11 @@ class Scenario:
     @property
     def is_r_group(self) -> bool:
         return self.kind in {"compound", "misuse", "mistake", "misconception"}
+
+    @property
+    def is_bundle(self) -> bool:
+        """자기 턴을 보내지 않고 참조 시나리오를 도는 부하 묶음인가."""
+        return bool(self.replay or self.concurrent)
 
 
 @dataclass
@@ -220,7 +243,15 @@ def _parse_turns(raw_turns: Any, scenario_id: str, errors: list[str]) -> list[Tu
                 f"({', '.join(sorted(ENDPOINTS))})"
             )
             turn_endpoint = None
-        turns.append(Turn(send=send, expect=expect, endpoint=turn_endpoint))
+        auto_answer = item.get("auto_answer", True)
+        if not isinstance(auto_answer, bool):
+            errors.append(
+                f"{scenario_id} 턴{index}: auto_answer 는 true|false 여야 한다 (현재 {auto_answer!r})"
+            )
+            auto_answer = True
+        turns.append(
+            Turn(send=send, expect=expect, endpoint=turn_endpoint, auto_answer=auto_answer)
+        )
     return turns
 
 
@@ -244,6 +275,58 @@ def _validate_patterns(turns: list[Turn], scenario_id: str, errors: list[str]) -
                     errors.append(
                         f"{scenario_id} 턴{index} {key}: 정규식 컴파일 실패 - {pattern!r} ({exc})"
                     )
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _id_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(str(v).strip() for v in value)
+
+
+def _parse_runner_steps(raw: dict[str, Any], scenario_id: str, errors: list[str]) -> dict[str, Any]:
+    """replay·concurrent·action·setup 을 읽는다(D-217). 틀린 선언은 조용히 무시하지 않는다."""
+    parsed: dict[str, Any] = {}
+    for key in ("replay", "concurrent", "action"):
+        value = raw.get(key) or {}
+        if not isinstance(value, dict):
+            errors.append(f"{scenario_id}: {key} 가 매핑이 아니다")
+            value = {}
+        parsed[key] = value
+    replay, concurrent, action = parsed["replay"], parsed["concurrent"], parsed["action"]
+    if replay:
+        if not _id_list(replay.get("scenarios")):
+            errors.append(f"{scenario_id}: replay.scenarios 가 비었다")
+        if not _positive_int(replay.get("repeat", 1)):
+            errors.append(f"{scenario_id}: replay.repeat 는 1 이상의 정수여야 한다")
+    if concurrent:
+        if not _id_list(concurrent.get("scenarios")):
+            errors.append(f"{scenario_id}: concurrent.scenarios 가 비었다")
+        sessions = concurrent.get("sessions")
+        if not (isinstance(sessions, list) and sessions and all(_positive_int(n) for n in sessions)):
+            errors.append(f"{scenario_id}: concurrent.sessions 는 1 이상의 정수 목록이어야 한다")
+    if action and action.get("kind") not in ACTION_KINDS:
+        errors.append(
+            f"{scenario_id}: action.kind '{action.get('kind')}' 는 정의 밖이다 "
+            f"({', '.join(sorted(ACTION_KINDS))})"
+        )
+    if sum(bool(v) for v in (replay, concurrent, action)) > 1:
+        errors.append(f"{scenario_id}: replay·concurrent·action 은 하나만 선언한다")
+
+    setup = raw.get("setup") or []
+    if not isinstance(setup, list):
+        errors.append(f"{scenario_id}: setup 이 목록이 아니다")
+        setup = []
+    for index, step in enumerate(setup, start=1):
+        if not isinstance(step, dict) or step.get("kind") not in SETUP_KINDS:
+            errors.append(
+                f"{scenario_id} setup{index}: kind 는 {', '.join(sorted(SETUP_KINDS))} 이어야 한다"
+            )
+        elif not (step.get("db_id") and step.get("column") and _id_list(step.get("words"))):
+            errors.append(f"{scenario_id} setup{index}: synonym_add 는 db_id·column·words 가 필요하다")
+    parsed["setup"] = [dict(step) for step in setup if isinstance(step, dict)]
+    return parsed
 
 
 def _parse_scenario(
@@ -320,6 +403,20 @@ def _parse_scenario(
     if endpoint in ("file", "file_stream") and not upload:
         errors.append(f"{scenario_id}: endpoint={endpoint} 인데 'upload'(양식 파일 경로)가 없다")
 
+    # 역질문 자동 응답 명시값(D-216). 오타 키는 조용히 무시되면 기본 정책으로 답해 버린다.
+    auto_answer = raw.get("auto_answer") or {}
+    if not isinstance(auto_answer, dict):
+        errors.append(f"{scenario_id}: auto_answer 가 매핑이 아니다")
+        auto_answer = {}
+    allowed_answer_keys = ("selected_db_ids", "form_fill_answers", "approval")
+    unknown_answer_keys = sorted(set(auto_answer) - set(allowed_answer_keys))
+    if unknown_answer_keys:
+        errors.append(
+            f"{scenario_id}: auto_answer 의 정의 밖 키 {unknown_answer_keys} - "
+            f"허용: {', '.join(allowed_answer_keys)}"
+        )
+    steps = _parse_runner_steps(raw, scenario_id, errors)
+
     return Scenario(
         id=scenario_id,
         group=group_id,
@@ -341,6 +438,11 @@ def _parse_scenario(
         prompt_authored=bool(raw.get("prompt_authored", True)),
         notes=(str(raw["notes"]) if raw.get("notes") else None),
         mock=(raw.get("mock") if isinstance(raw.get("mock"), dict) else None),
+        auto_answer=dict(auto_answer),
+        replay=dict(steps["replay"]),
+        concurrent=dict(steps["concurrent"]),
+        action=dict(steps["action"]),
+        setup=steps["setup"],
         source_file=source.name,
     )
 
@@ -409,6 +511,15 @@ def _cross_validate(catalog: Catalog, errors: list[str]) -> None:
         for dep in scenario.depends_on:
             if catalog.by_id(dep) is None:
                 errors.append(f"{scenario.id}: depends_on '{dep}' 가 카탈로그에 없다")
+
+        # 부하 묶음의 참조는 실재하는 **질의 시나리오**여야 한다 - 묶음이 묶음을 부르면 끝이 없다.
+        for key in ("replay", "concurrent"):
+            for ref_id in (getattr(scenario, key).get("scenarios") or []):
+                ref = catalog.by_id(str(ref_id))
+                if ref is None:
+                    errors.append(f"{scenario.id}: {key} 참조 '{ref_id}' 가 카탈로그에 없다")
+                elif ref.is_bundle or ref.action or not ref.prompt_authored:
+                    errors.append(f"{scenario.id}: {key} 참조 '{ref_id}' 는 질의 시나리오가 아니다")
 
     # V16 - 대조군 쌍 강제.
     for scenario in catalog.scenarios:

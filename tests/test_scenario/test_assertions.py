@@ -368,3 +368,37 @@ def test_intent_가_관측되면_정상_대조한다() -> None:
     obs = Observation(status="completed", intent="alarm_query", executed_sql="SELECT 1")
 
     assert evaluate_turn(scenario, 1, scenario.turns[0], obs, _group()).func == "fail"
+
+
+# --- 기대한 오류는 오류 판정이 아니다 (2026-09-15 · R2-08 회귀) ----------------
+
+def test_기대한_4xx_는_error_로_떨어지지_않는다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"http_status": 400})])
+    obs = Observation(status="error", http_status=400, error="http 400: 거부")
+
+    assert _eval(scenario, obs).func == "pass"
+
+
+def test_기대와_다른_4xx_는_불합격이다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"http_status": 200})])
+    obs = Observation(status="error", http_status=400, error="http 400: 거부")
+
+    assert _eval(scenario, obs).func == "fail"
+
+
+def test_기대값이_없는_오류는_여전히_error_다() -> None:
+    """401 이 manual 로 새던 회귀를 다시 열지 않는다."""
+    scenario = _scenario(turns=[Turn({"query": "q"}, {})])
+    obs = Observation(status="error", http_status=401, error="http 401 - 토큰 없음")
+
+    assert _eval(scenario, obs).func == "error"
+
+
+def test_재시도를_셀_수_없으면_예산_단언은_manual_이다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"retries": {"max": 1}})])
+    obs = Observation(status="completed", executed_sql="SELECT 1")   # retries=None
+
+    verdict = _eval(scenario, obs)
+
+    assert verdict.func == "manual"
+    assert any("retries.max" in note for note in verdict.manual_notes)

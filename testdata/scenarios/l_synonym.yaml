@@ -248,9 +248,13 @@ scenarios:
     plans: [37, 61]
     title: "(프롬프트 아님) `python scripts/synonym_seeds.py load --db polestar` 재실행"
     kind: normal
-    env: sandbox
+    env: both
     profile: baseline
     endpoint: stream
+    # 질의가 아니라 운영 절차다(`synonym_seeds.py load`) - 문장을 질의로 보내면 서버가 LLM 유사어 생성을
+    # 돌려 공유 Redis 에 쓴다(2026-09-14 폐쇄망 런). 러너가 직접 **활성 DB 시드를 두 번 적재**해
+    # 멱등성(2회차 뒤 개수 불변)·무손실(기존 단어 보존)을 본다(D-217 · 사용자 확정). turns 는 보내지 않는다.
+    action: {kind: seed_reload_idempotency}
     turns:
       - send:
           query: "(프롬프트 아님) `python scripts/synonym_seeds.py load --db polestar` 재실행"

@@ -79,6 +79,29 @@ def _http_error(status_code: int, body: str) -> str:
     return f"http {status_code}{hint}: {body[:300]}"
 
 
+def _count_retries(obs: Observation) -> tuple[Optional[int], bool]:
+    """재생성 회차를 센다. (회차, 하한 여부). 볼 수 있는 신호가 없으면 None 이다.
+
+    - 단일 그래프 경로: 회귀 노드 `query_generator` 의 **완료 횟수 - 1**. node_start 는 노드마다
+      한 번만 오므로(query.py `_seen_nodes`) 시작을 세면 늘 0 이었다.
+    - 서브에이전트 경로(intent_orchestration·deep_agent): 진행 이벤트 `pipeline.generate` 시작 수에서
+      파이프라인 수(`pipeline.schema` 시작)를 뺀다(subagents.py - 회차마다 generate 가 다시 시작한다).
+    - 멀티 DB 경로(`pipeline.multi_db`)는 존별 검증 거부 재시도가 스트림에 없다 - 하한으로 표시한다.
+    러너가 감사 로그의 `retry_attempt` 로 이 값을 보강한다.
+    """
+    counts: dict[str, int] = {}
+    for event in obs.progress_events:
+        if str(event.get("phase") or "start") == "start":
+            name = str(event.get("name") or "")
+            counts[name] = counts.get(name, 0) + 1
+    partial = counts.get("pipeline.multi_db", 0) > 0
+    if obs.node_calls.get(RETRY_ENTRY_NODE):
+        return max(0, obs.node_calls[RETRY_ENTRY_NODE] - 1), partial
+    if counts.get("pipeline.generate"):
+        return max(0, counts["pipeline.generate"] - counts.get("pipeline.schema", 0)), partial
+    return (0 if partial else None), partial
+
+
 def _derive_status(payload: dict[str, Any]) -> str:
     """SSE done 이벤트에는 status 키가 없다 - 존재하는 키로 상태를 유도한다.
 
@@ -101,6 +124,7 @@ def _apply_done(obs: Observation, payload: dict[str, Any]) -> None:
     obs.file_name = payload.get("file_name")
     obs.clarification = payload.get("clarification")
     obs.form_fill_clarification = payload.get("form_fill_clarification")
+    obs.form_memory_panel = payload.get("form_memory_panel")
     obs.processing_time_ms = payload.get("processing_time_ms")
     obs.status = _derive_status(payload)
     scope = payload.get("db_scope") or {}
@@ -239,7 +263,11 @@ class ScenarioClient:
     def _consume_sse(self, response: httpx.Response, obs: Observation, started: float) -> None:
         """SSE 라인을 소비하며 노드 지연·무이벤트 간격을 측정한다."""
         last_event = started
-        node_start: dict[str, float] = {}
+        # 노드 구간의 시작 경계. 서버는 node_start 를 노드마다 **한 번만** 보내고(query.py
+        # `_seen_nodes`) node_complete 는 회차마다 보낸다. 최상위 노드는 순차로 돌므로, 재진입한
+        # 회차는 직전 완료 시각에 시작한 것이다. 종전의 "마지막 완료 - 첫 시작" 은 재계획 루프에서
+        # 구간이 겹쳐 노드 합계가 전체 소요를 넘었다(run 20260914-154940: 7,700s > 6,278s).
+        boundary_ms: Optional[float] = None
         max_gap = 0.0
         saw_done = False
         tokens: list[str] = []
@@ -259,15 +287,20 @@ class ScenarioClient:
 
             if kind == "node_start":
                 name = str(payload.get("node") or "")
-                node_start[name] = float(payload.get("timestamp_ms") or 0.0)
+                start_ms = float(payload.get("timestamp_ms") or 0.0)
+                boundary_ms = start_ms if boundary_ms is None else max(boundary_ms, start_ms)
                 obs.node_path.append(name)
                 if obs.ttfb_ms is None:
                     obs.ttfb_ms = (now - started) * 1000
             elif kind == "node_complete":
                 name = str(payload.get("node") or "")
                 end_ms = float(payload.get("timestamp_ms") or 0.0)
-                if name in node_start:
-                    obs.node_elapsed_ms[name] = round(end_ms - node_start[name], 1)
+                begin_ms = end_ms if boundary_ms is None else boundary_ms
+                obs.node_elapsed_ms[name] = round(
+                    obs.node_elapsed_ms.get(name, 0.0) + max(0.0, end_ms - begin_ms), 1
+                )
+                obs.node_calls[name] = obs.node_calls.get(name, 0) + 1
+                boundary_ms = max(begin_ms, end_ms)
             elif kind == "progress":
                 obs.progress_events.append(payload)
             elif kind == "token":
@@ -287,8 +320,15 @@ class ScenarioClient:
         # 추정치를 넣으면 리포트가 "쟀다"고 말하게 된다. 대신 실제로 세지는 둘을 남긴다:
         #   `retries`    회귀 지점 재진입 수 (재시도 예산의 실측)
         #   `node_count` 실행된 노드 수 (파이프라인이 한 일의 양 - 비용 대리 지표)
-        obs.node_count = len(obs.node_path)
-        obs.retries = max(0, obs.node_path.count(RETRY_ENTRY_NODE) - 1)
+        # 실행된 노드 **회차** 수. 완료 이벤트는 회차마다 오고 시작은 노드마다 한 번이라, 완료 회차에
+        # 끝나지 않은(완료 이벤트가 없는) 시작을 더한다 - 시작만 세면 재계획·재시도 루프가 사라진다.
+        obs.node_count = sum(obs.node_calls.values()) + sum(
+            1 for name in obs.node_path if name not in obs.node_calls
+        )
+        # 회귀 노드가 스트림에 보일 때만 센다. intent_orchestration·deep_agent 단은 SQL 생성이
+        # 하위 에이전트 안에서 돌아 query_generator 의 node_start 가 상위 스트림에 나오지 않는다
+        # (2026-09-14 폐쇄망 런: 93턴 전부 상위 노드 7개 · 재진입 0) — 0 이 아니라 "못 봤다"다.
+        obs.retries, obs.retries_partial = _count_retries(obs)
         if not obs.response and tokens:
             obs.response = "".join(tokens)
         if not saw_done:

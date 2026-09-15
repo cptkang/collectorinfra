@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.scenario import __main__ as cli
 from scripts.scenario import runner as runner_mod
 from scripts.scenario.__main__ import main
 from scripts.scenario.catalog import Catalog, Group, Scenario, Turn
@@ -138,7 +139,8 @@ def test_기동이_실패해도_프로파일이_리포트에서_사라지지_않
 
 # --- D-127 과금 게이트 ---------------------------------------------------
 
-def test_D127_옵트인_없이는_실행이_즉시_거부된다(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_D127_외부_프로바이더는_옵트인_없이_실행이_즉시_거부된다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
     monkeypatch.delenv("RUN_E2E", raising=False)
     with pytest.raises(SystemExit) as exc:
         main(["--run"])
@@ -147,8 +149,43 @@ def test_D127_옵트인_없이는_실행이_즉시_거부된다(monkeypatch: pyt
 
 def test_D127_키_존재만으로는_실행되지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
     """키는 .encenv 에 상존한다는 전제다 - 키 게이팅은 금지다."""
+    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
     monkeypatch.delenv("RUN_E2E", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "sk-fake")
+    with pytest.raises(SystemExit) as exc:
+        main(["--run"])
+    assert exc.value.code == 2
+
+
+def test_D216_내부망_프로바이더는_옵트인과_승인_없이_실행된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "llm_provider", lambda: "fabrix")
+    monkeypatch.delenv("RUN_E2E", raising=False)
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("내부망에서 승인을 묻지 않는다"))
+    executed: list[RunConfig] = []
+
+    def fake_execute(_catalog, config):
+        executed.append(config)
+        return {"out_dir": str(tmp_path), "executed_turns": 0, "skipped": []}
+
+    monkeypatch.setattr(cli, "execute", fake_execute)
+    monkeypatch.setattr(cli, "write_report", lambda *_: {"report": tmp_path / "report.md"})
+    monkeypatch.setattr(cli, "analyze", lambda *_: [])
+
+    assert main(["--run"]) == 0
+    assert executed and executed[0].env is None, "옵션 없이 돌리면 환경을 좁히지 않는다"
+
+
+def test_D216_설정을_못_읽으면_외부로_보고_과금_게이트가_산다(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.config
+
+    def boom():
+        raise RuntimeError("설정 없음")
+
+    monkeypatch.setattr(src.config, "load_config", boom)
+    monkeypatch.delenv("RUN_E2E", raising=False)
+    assert cli.llm_provider().startswith("unknown")
     with pytest.raises(SystemExit) as exc:
         main(["--run"])
     assert exc.value.code == 2

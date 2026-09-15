@@ -41,6 +41,9 @@ class _Resolver:
     def __init__(self, catalog: Optional[Catalog]) -> None:
         self._by_query: dict[str, Scenario] = {}
         self._threads: dict[str, tuple[str, int]] = {}
+        # 역질문을 돌려준 뒤 답을 기다리는 스레드(D-216). 러너의 자동 응답은 시나리오 턴을
+        # 넘기지 않으므로, 모의 턴에 `answer` 가 있으면 다음 요청을 같은 턴의 답으로 받는다.
+        self._pending: set[str] = set()
         self._catalog = catalog
         if catalog is None:
             return
@@ -49,21 +52,51 @@ class _Resolver:
             if first:
                 self._by_query.setdefault(str(first), scenario)
 
-    def resolve(self, query: Optional[str], thread_id: Optional[str]) -> tuple[Optional[Scenario], int]:
+    def resolve(
+        self, query: Optional[str], thread_id: Optional[str]
+    ) -> tuple[Optional[Scenario], int, bool]:
+        """(시나리오, 턴, 자동 응답 여부)를 돌려준다."""
         if thread_id and thread_id in self._threads:
             scenario_id, turn = self._threads[thread_id]
+            scenario = self._catalog.by_id(scenario_id) if self._catalog else None
+            if thread_id in self._pending and _mock_turn(scenario, turn).get("answer"):
+                self._pending.discard(thread_id)
+                return scenario, turn, True
             turn += 1
             self._threads[thread_id] = (scenario_id, turn)
-            scenario = self._catalog.by_id(scenario_id) if self._catalog else None
-            return scenario, turn
+            return scenario, turn, False
         scenario = self._by_query.get(str(query or ""))
         if scenario and thread_id:
             self._threads[thread_id] = (scenario.id, 1)
-        return scenario, 1
+        return scenario, 1, False
+
+    def settle(self, thread_id: Optional[str], payload: dict[str, Any]) -> None:
+        """응답이 역질문이면 그 스레드를 답 대기로 표시한다."""
+        if not thread_id:
+            return
+        if payload.get("clarification") or payload.get("form_fill_clarification") \
+                or payload.get("awaiting_approval"):
+            self._pending.add(thread_id)
+        else:
+            self._pending.discard(thread_id)
 
 
-def _payload_for(scenario: Optional[Scenario], turn: int, query: str) -> dict[str, Any]:
-    """done 이벤트 본문을 만든다."""
+def _mock_turn(scenario: Optional[Scenario], turn: int) -> dict[str, Any]:
+    """시나리오 `mock:` 블록에서 이 턴의 응답 정의를 꺼낸다. 없으면 빈 매핑."""
+    if not (scenario and scenario.mock):
+        return {}
+    turns = scenario.mock.get("turns")
+    if isinstance(turns, list):
+        if len(turns) >= turn and isinstance(turns[turn - 1], dict):
+            return turns[turn - 1]
+        return {}
+    return scenario.mock
+
+
+def _payload_for(
+    scenario: Optional[Scenario], turn: int, query: str, answered: bool = False
+) -> dict[str, Any]:
+    """done 이벤트 본문을 만든다. `answered` 면 그 턴의 `answer`(역질문에 답한 뒤 응답)를 쓴다."""
     base: dict[str, Any] = {
         "response": f"[mock] '{query}' 조회 결과 5건",
         "executed_sql": "SELECT hostname FROM cmm_resource LIMIT 5",
@@ -71,26 +104,18 @@ def _payload_for(scenario: Optional[Scenario], turn: int, query: str) -> dict[st
         "has_file": False,
         "processing_time_ms": 1200.0,
     }
-    if scenario and scenario.mock:
-        turns = scenario.mock.get("turns")
-        override: Any = None
-        if isinstance(turns, list) and len(turns) >= turn:
-            override = turns[turn - 1]
-        elif not turns:
-            override = scenario.mock
-        if isinstance(override, dict):
-            base.update({k: v for k, v in override.items() if k not in ("delay_ms", "http_status")})
+    override = _mock_control(scenario, turn, answered)
+    base.update({k: v for k, v in override.items() if k not in ("delay_ms", "http_status", "answer")})
     return base
 
 
-def _mock_control(scenario: Optional[Scenario], turn: int) -> dict[str, Any]:
-    """지연·HTTP 상태 같은 실행 제어값만 따로 뽑는다."""
-    if not (scenario and scenario.mock):
-        return {}
-    turns = scenario.mock.get("turns")
-    if isinstance(turns, list) and len(turns) >= turn and isinstance(turns[turn - 1], dict):
-        return turns[turn - 1]
-    return scenario.mock
+def _mock_control(scenario: Optional[Scenario], turn: int, answered: bool = False) -> dict[str, Any]:
+    """지연·HTTP 상태 같은 실행 제어값을 포함한 이 턴의 응답 정의."""
+    definition = _mock_turn(scenario, turn)
+    if answered:
+        answer = definition.get("answer")
+        return answer if isinstance(answer, dict) else {}
+    return definition
 
 
 def create_app() -> FastAPI:
@@ -108,10 +133,15 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "healthy", "mode": "mock"}
 
-    def _respond(body: dict[str, Any], scenario: Optional[Scenario], turn: int) -> dict[str, Any]:
-        payload = _payload_for(scenario, turn, str(body.get("query") or ""))
+    def _respond(
+        body: dict[str, Any], scenario: Optional[Scenario], turn: int, answered: bool = False
+    ) -> dict[str, Any]:
+        payload = _payload_for(scenario, turn, str(body.get("query") or ""), answered)
         payload["query_id"] = str(uuid.uuid4())
         payload["thread_id"] = body.get("thread_id")
+        # 받은 존 선택을 스코프로 돌려준다 - db_ids 단언이 러너가 실제로 보낸 값을 검증하게 된다.
+        if body.get("selected_db_ids") and "db_scope" not in payload:
+            payload["db_scope"] = {"db_ids": list(body["selected_db_ids"])}
         if payload.get("clarification"):
             payload["status"] = "clarification"
         else:
@@ -119,28 +149,33 @@ def create_app() -> FastAPI:
         if payload.get("has_file"):
             artifacts[payload["query_id"]] = _sample_xlsx(payload.get("file_columns"))
             payload.setdefault("file_name", "mock_result.xlsx")
+        resolver.settle(body.get("thread_id"), payload)
         return payload
 
     @app.post("/api/v1/query")
     async def query(request: Request) -> JSONResponse:
         body = await request.json()
-        scenario, turn = resolver.resolve(body.get("query"), body.get("thread_id"))
-        control = _mock_control(scenario, turn)
+        scenario, turn, answered = resolver.resolve(body.get("query"), body.get("thread_id"))
+        control = _mock_control(scenario, turn, answered)
         if control.get("delay_ms"):
             await asyncio.sleep(float(control["delay_ms"]) / 1000.0)
         status_code = int(control.get("http_status") or 200)
-        payload = _respond(body, scenario, turn)
+        payload = _respond(body, scenario, turn, answered)
         return JSONResponse(payload, status_code=status_code)
 
     @app.post("/api/v1/query/stream")
     async def query_stream(request: Request) -> StreamingResponse:
         body = await request.json()
-        scenario, turn = resolver.resolve(body.get("query"), body.get("thread_id"))
-        control = _mock_control(scenario, turn)
-        payload = _respond(body, scenario, turn)
+        scenario, turn, answered = resolver.resolve(body.get("query"), body.get("thread_id"))
+        control = _mock_control(scenario, turn, answered)
+        payload = _respond(body, scenario, turn, answered)
         return StreamingResponse(
             _sse(payload, control), media_type="text/event-stream"
         )
+
+    def _form_body(query: str, thread_id: Optional[str], selected_db_ids: Optional[str]) -> dict[str, Any]:
+        ids = [d for d in (selected_db_ids or "").split(",") if d]
+        return {"query": query, "thread_id": thread_id, "selected_db_ids": ids}
 
     @app.post("/api/v1/query/file")
     async def query_file(
@@ -150,9 +185,11 @@ def create_app() -> FastAPI:
         selected_db_ids: Optional[str] = Form(None),
     ) -> JSONResponse:
         await file.read()
-        scenario, turn = resolver.resolve(query, thread_id)
-        payload = _respond({"query": query, "thread_id": thread_id}, scenario, turn)
-        return JSONResponse(payload)
+        scenario, turn, answered = resolver.resolve(query, thread_id)
+        control = _mock_control(scenario, turn, answered)
+        payload = _respond(_form_body(query, thread_id, selected_db_ids), scenario, turn, answered)
+        # 업로드 가드(형식·크기)의 4xx 도 모사한다 - 없으면 R2-08 의 400 기대가 모의에서 늘 깨진다.
+        return JSONResponse(payload, status_code=int(control.get("http_status") or 200))
 
     @app.post("/api/v1/query/file/stream")
     async def query_file_stream(
@@ -160,11 +197,14 @@ def create_app() -> FastAPI:
         file: UploadFile = File(...),
         thread_id: Optional[str] = Form(None),
         selected_db_ids: Optional[str] = Form(None),
-    ) -> StreamingResponse:
+    ) -> Any:
         await file.read()
-        scenario, turn = resolver.resolve(query, thread_id)
-        control = _mock_control(scenario, turn)
-        payload = _respond({"query": query, "thread_id": thread_id}, scenario, turn)
+        scenario, turn, answered = resolver.resolve(query, thread_id)
+        control = _mock_control(scenario, turn, answered)
+        payload = _respond(_form_body(query, thread_id, selected_db_ids), scenario, turn, answered)
+        status_code = int(control.get("http_status") or 200)
+        if status_code >= 400:
+            return JSONResponse(payload, status_code=status_code)
         return StreamingResponse(_sse(payload, control), media_type="text/event-stream")
 
     @app.get("/api/v1/query/{query_id}/download")

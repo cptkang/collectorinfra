@@ -176,39 +176,30 @@ T1·T2·T3·T5는 스키마 없이도 지금 판단 가능하다. T4만 지식 �
 | 테이블 | `TCDMSIF80`(68컬럼) · `TCDMSIF79`(9컬럼) | ✔ |
 | APP 코드 / 등록 | `DMS` / 2026-07-23 등록 | ✔ |
 
-### 3.2 `TCDMSIF79` — 서버 지원종료일(EOS/EOL) · 9컬럼
+### 3.2 전사 정본 — `testdata/itam/schema.yaml`
 
-| # | 변수명 | 컬럼 정의 | 타입 | PK | Null |
-|---|---|---|---|---|---|
-| 1 | `groupCoCd` | 그룹회사코드 | `CHAR(3)` | **PK1** | NOT NULL |
-| 2 | `sevrHostName` | 서버호스트명 | `VARCHAR(300)` | **PK2** | NOT NULL |
-| 3 | `iPCtnt` | IP주소내용 | `VARCHAR(255)` | **PK3** | NOT NULL |
-| 4 | `hWSportEndYmd` | 하드웨어 지원 종료일자 | `CHAR(8)` | | NULLABLE |
-| 5 | `sWSportEndYmd` | 소프트웨어 지원 종료일자 | `CHAR(8)` | | NULLABLE |
-| 6~9 | `sysRegiUno` `sysRegiPrcssYMS` `sysLastUno` `sysLastPrcssYMS` | 시스템 등록/최종 사용자·일시 | `CHAR(7)` / `CHAR(20)` | | NOT NULL |
+**판독 결과의 단일 출처는 계획서가 아니라 스키마 파일이다**(사본 금지 — 두 곳에 적으면 한 곳이 늙는다).
 
-### 3.3 `TCDMSIF80` — 서버 현황·자산 상세 · 68컬럼
+- 파일: [`testdata/itam/schema.yaml`](../testdata/itam/schema.yaml) — 68+9컬럼 **전수** · 표준 코드 도메인 10종 ·
+  조인 키 · 민감 컬럼 · 공통 규약 · `unresolved` 8건(§3.4 및 §8 게이트에 대응 — 제약·인덱스 2건은 게이트 없이 파일에만 있다).
+- 성격: **전사본이지 정본(profile)이 아니다.** 런타임은 이 파일을 읽지 않는다 — 구조 정본 `config/db_profiles/itam.yaml`은
+  물리 컬럼 식별자가 확정된 뒤(G-4) 이 파일을 재료로 만든다(W-6).
+- 위치 근거: 비폴스타 DB 스키마 파일의 선례는 `testdata/generic_mon/schema.json`이다(Plan 63 P4-2). 형식만 YAML로 —
+  한국어 컬럼 정의·미확정 표기·코드 도메인 주석을 담아야 하는데 JSON은 주석을 못 쓴다.
+- 무결성 검증 완료(로드 후 단언): 컬럼 수 68/9 · 시트 순번 연속 · `var` 중복 0 · PK 순서 일치 ·
+  코드 도메인 참조 무결 · 조인/민감/교차키 컬럼 실존.
 
-**PK(3열 복합)**: `groupCoCd` + `sevrHostName` + `iPCtnt` — **`TCDMSIF79`와 동일 키**(조인 가능).
+| 테이블 | 컬럼 | PK(3열 복합) | 담는 축 |
+|---|---|---|---|
+| `TCDMSIF80` | 68 | `groupCoCd` + `sevrHostName` + `iPCtnt` | 서버 현황·자산 상세 — 가상화·OS·분류·**사양/사용률 11**·담당(PII)·물품·구매·유지보수·자산 회계·자산 분류·무상·시리얼·감사 |
+| `TCDMSIF79` | 9 | **동일 키**(조인 가능) | HW/SW **지원 종료일(EOS/EOL)** — `hWSportEndYmd`·`sWSportEndYmd` |
 
-| 군 | 변수명 → 컬럼 정의 (타입) |
-|---|---|
-| **식별(PK)** | `groupCoCd` 그룹회사코드 `CHAR(3)` · `sevrHostName` 서버호스트명 `VARCHAR(300)` · `iPCtnt` IP주소내용 `VARCHAR(255)` |
-| **가상화·군집** | `vrtlMgtSevrID` 가상화관리서버ID `VARCHAR(100)` · `clstRefID` 군집참조ID `VARCHAR(100)` · `vrtlSevrRefID` 가상화서버참조ID `VARCHAR(100)` · `vrtlSevrMapngYn` 가상화서버매핑여부 `CHAR(1)`〔코드 102132000 여부〕 |
-| **OS·벤더** | `oSTypzCtnt` 운영체제타입내용 `VARCHAR(255)` · `vndrCtnt` 벤더내용 `VARCHAR(255)` · `oSVsnCtnt` 운영체제버전내용 `VARCHAR(255)` |
-| **분류·위치** | `sevrPtrnDstcd` 서버유형구분코드 `CHAR(1)`〔145354000〕 · `inttAreaCtnt` 설치지역내용 `VARCHAR(255)` · `sevrMdelName` 서버모델명 `VARCHAR(75)` · `asstMdelName` 자산모델명 `VARCHAR(75)` |
-| **★사양·사용률(11)** | `cPUCnt` CPU개수 `DECIMAL(3,0)` · `cPUSocktCnt` CPU소켓개수 `DECIMAL(3,0)` · `sevrCPUSped` 서버CPU속도 `DECIMAL(12,2)` · `sevrCPUUseQanty` CPU사용량 `DECIMAL(12,2)` · **`sevrCPUUseRt` CPU사용률 `DECIMAL(5,2)`** · `sevrMmryCapc` 메모리용량 `DECIMAL(12,2)` · `sevrMmryUseQanty` 메모리사용량 `DECIMAL(12,2)` · **`sevrMmryUseRt` 메모리사용률 `DECIMAL(5,2)`** · `wholStrgeCapc` 전체스토리지용량 `DECIMAL(12,2)` · `wholStrgeUseQanty` 스토리지사용량 `DECIMAL(12,2)` · **`wholStrgeUseRt` 스토리지사용률 `DECIMAL(5,2)`** |
-| **담당(PII)** | `rspblPsnEmpid` 담당자직원번호 `CHAR(7)` · **`rspblPsnEmnm` 담당자직원명 `VARCHAR(50)` — 시트상 암호화/변환 항목구분 「성명」** · `rspblBrncd` 담당부점코드 `CHAR(4)`〔101370000〕 · `rspblBrnName` 담당부점명 `VARCHAR(75)` |
-| **물품** | `cmdtsClsfiNo` 물품분류번호 `CHAR(8)` · `cmdtsUniqno` 물품고유번호 `CHAR(7)` · `cmdtsName` 물품명 `VARCHAR(75)` · `cmdtsUseUsagCtnt` 물품사용용도내용 `VARCHAR(255)` |
-| **구매·취득(금액)** | `byCtrcNo` 구매계약번호 `CHAR(11)` · `byCtrcName` 구매계약명 `VARCHAR(300)` · `byCmdtsDtalsSerno` 구매물품세부일련번호 `DECIMAL(5,0)` · **`acqsiAmt` 취득금액 `DECIMAL(15,0)`** · `acqsiYmd` 취득년월일 `CHAR(8)` |
-| **유지보수(금액·기간)** | `asstManmenDstcd` 자산유지보수구분코드 `CHAR(1)`〔133673000〕 · **`manmenCnpr` 유지보수계약금액 `DECIMAL(15,0)`** · `manmenCtrcStartYmd`/`manmenCtrcEndYmd`/`manmenCtrcTermiYmd` 계약 시작/종료/해지년월일 `CHAR(8)` · `sevrManmenCtrcNo` 서버유지보수계약번호 `CHAR(11)` · `manmenCtrcName` 유지보수계약명 `VARCHAR(300)` · `manmenCmdtsDtalsSerno` 유지보수물품세부일련번호 `DECIMAL(5,0)` · `manmenHopeYm` 유지보수희망년월 `CHAR(6)` |
-| **운영환경·노후화** | `sevrOperEvirnDstcd` 서버운영환경구분코드 `CHAR(2)`〔145328000〕 · `elapsNoy` 경과년수 `DECIMAL(3,0)` · `osoaRplacMchtlDstcd` 노후교체기기구분코드 `CHAR(2)`〔145476000〕 · `asstStusDstcd` 자산상태구분코드 `CHAR(1)`〔102739000〕 |
-| **자산 회계** | `asstMapngYn` 자산매핑여부 `CHAR(1)` · `asstHoldBrncd` 자산보유부점코드 `CHAR(4)` · `asstHoldBrnName` 자산보유부점명 `VARCHAR(300)` · **`rmainAcbkAmt` 잔존장부금액 `DECIMAL(15,0)`** · `stohusAsstYn` 창고자산여부 `CHAR(1)` |
-| **자산 분류** | `asstClsfiDstcd` 자산분류구분코드 `CHAR(2)`〔102738000〕 · `asstClsfiDsticName` 자산분류구분명 `VARCHAR(75)` · `dtalsAsstClsfiDstcd` 세부자산분류구분코드 `CHAR(3)`〔114287000〕 · `dtalsAsstClsfiDsticName` 세부자산분류구분명 `VARCHAR(75)` |
-| **무상·시리얼** | `grttStartYmd`/`grttEndYmd` 무상 시작/종료년월일 `CHAR(8)` · `srialNoCtnt` 시리얼번호내용 `VARCHAR(255)` · `cnfgItemDescCtnt` 구성항목설명내용 `VARCHAR(255)` |
-| **감사** | `sysRegiUno` `CHAR(7)` · `sysRegiPrcssYMS` `CHAR(20)` · `sysLastUno` `CHAR(7)` · `sysLastPrcssYMS` `CHAR(20)` |
+> **전사 중 밟은 YAML 함정 3건** — `no:`·`on:`이 YAML 1.1 **불리언 키**로 파싱되고(→ `seq:`·`on_columns:`),
+> flow 매핑 안의 `type: DECIMAL(12,2)`는 **쉼표가 항목 구분자로 먹혀** 값이 잘린다(인용 필수).
+> 셋 다 **파일은 정상 로드되고 값만 조용히 틀어지는** 부류라, 스키마 파일은 반드시 로드 후 무결성 단언으로 검증한다
+> (`docs/18_known_mistakes.md` 등재).
 
-### 3.4 이 스키마가 만든 결정적 규칙 5건 (프로필 `query_guide`에 그대로 들어간다)
+### 3.3 이 스키마가 만든 결정적 규칙 5건 (프로필 `query_guide`에 그대로 들어간다)
 
 1. **날짜는 전부 `CHAR(8)` `YYYYMMDD` 문자열**이고 일시는 `CHAR(20)`이다 — DATE 타입이 아니다.
    기간 비교는 문자열 비교(`manmenCtrcEndYmd <= '20261231'`)로 하거나 `STR_TO_DATE()`를 쓴다.
@@ -223,14 +214,14 @@ T1·T2·T3·T5는 스키마 없이도 지금 판단 가능하다. T4만 지식 �
 5. **`sevrHostName`이 `VARCHAR(300)`**이다 — 호스트명 치고 비정상적으로 길다. 실제로 FQDN·별칭·설명이 섞여 들어갔을
    가능성이 있고, 그렇다면 폴스타 `cmm_resource.hostname`과의 **정확 일치 조인이 실패**한다(G-6 — 교차 질의의 성패).
 
-### 3.5 아직 없는 것 (✖ — 게이트 대상)
+### 3.4 아직 없는 것 (✖ — 게이트 대상)
 
 | # | 없는 것 | 왜 필요한가 |
 |---|---|---|
 | a | **물리 컬럼명** — 시트는 「컬럼명(한글)」과 「변수명(camelCase)」만 준다. 실 DDL 식별자가 `sevrHostName`인지 `SEVR_HOST_NAME`인지 한글인지 불명 | SQL을 못 쓴다. **G-4 최우선** |
 | b | **테이블명 대소문자** — 파일명은 `tcdmsif80`, 시트 값은 `TCDMSIF80`. Linux MariaDB는 `lower_case_table_names=0`이면 **대소문자를 구분**한다 | DB2 `POLESTAR` 대문자 사건(D-057)과 같은 계열. 틀리면 전 질의가 "테이블 없음" |
 | c | **database(스키마)명** — `INST1`이 실 database명인지 | `db_schema` 값 |
-| d | **코드값 목록/코드 마스터 테이블** | §3.4-③ |
+| d | **코드값 목록/코드 마스터 테이블** | §3.3-③ |
 | e | **서버현황조회 쿼리문** — 제공 이미지 6장은 **전부 컬럼 정의 시트**였고 쿼리문은 보이지 않았다 | 실제 조회 패턴(조인·필터·정렬)이 프로필 `query_examples`의 최상급 재료다. **재요청 필요** |
 | f | **행수·갱신 주기** — `TCDMSIF*`의 `IF`가 연계(interface) 테이블을 시사한다. 원장이 따로 있는지, 적재 주기가 언제인지 | 사용률 데이터의 신선도 → T5 우선순위 판단의 근거 |
 | g | 그 외 테이블 목록 | 지금 아는 것은 2개뿐. 자산 대장 전체를 답하려면 더 필요할 수 있다 |
@@ -284,7 +275,7 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 
 | 축 | 자산(`TCDMSIF80`) | 폴스타(`cmm_resource`) | 위험 |
 |---|---|---|---|
-| 호스트명 | `sevrHostName` `VARCHAR(300)` | `hostname` / `name` | 길이 300은 FQDN·별칭 혼입 가능(§3.4-⑤) |
+| 호스트명 | `sevrHostName` `VARCHAR(300)` | `hostname` / `name` | 길이 300은 FQDN·별칭 혼입 가능(§3.3-⑤) |
 | IP | `iPCtnt` `VARCHAR(255)` | `ipaddress` | 다중 IP가 한 칸에 들어갔을 수 있음 |
 
 **G-6의 답이 트랙 E의 존재 여부를 결정한다.** 정합하지 않으면 트랙 E를 별건으로 분리하고 단독 질의부터 서빙한다.
@@ -297,7 +288,7 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 ### 4.5 마스킹·PII
 
 현재 마스킹 기본값은 비밀·토큰·카드번호 계열 13종(`src/config.py:400-412`)이고 `mask_ip`·`mask_email`은 기본 off다.
-자산 DB는 **금액 4종 + 성명 1종**을 실제로 갖고 있으며(§3.4-④), 이는 ①화면 노출 ②**FabriX PII 필터 차단**
+자산 DB는 **금액 4종 + 성명 1종**을 실제로 갖고 있으며(§3.3-④), 이는 ①화면 노출 ②**FabriX PII 필터 차단**
 (`src/security/pii_filter.py` · `docs/pii_filtering_rules.md`) 양쪽에 걸린다 — 후자는 질의가 **응답 없이 막히는** 증상이다.
 `rspblPsnEmnm`은 원천에서 암호화 대상으로 표시돼 있으므로 **조회 계정이 평문을 보는지 자체가 확인 대상**이다(G-9).
 
@@ -313,7 +304,7 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 | **W-3** | `tools.py` — `_mysql_search_objects_sql`·`_get_columns`·`_get_primary_keys`·`_get_foreign_keys` | W-1 | `information_schema` 질의 결과 shape가 PG/DB2 헬퍼와 **동형**임을 단언 |
 | **W-4** | `config.py` 타입 허용 + `config.toml` 소스 + `mcp_server/.env` 연결 | W-2·W-3 · G-2·G-3 | 기동 로그 소스 등재 · `list_sources`에 `itam` · `describe_table TCDMSIF80` 68컬럼 반환 |
 | **W-5** | 레지스트리 `engine: mariadb` · `db_schema` 확정 | G-2 | `pytest tests/test_semantic_routing/test_registry_config.py` 그린 |
-| **W-6** | `config/db_profiles/itam.yaml` 작성(§3 + 방언 규칙 블록 + 결정적 규칙 5건) | G-4·G-5 · W-4 | 실 DB `information_schema` 대조로 **컬럼 전수 일치**(미리보기 일부 금지) |
+| **W-6** | `config/db_profiles/itam.yaml` 작성 — 재료는 `testdata/itam/schema.yaml`(§3.2) + 방언 규칙 블록 + 결정적 규칙 5건 | G-4·G-5 · W-4 | 실 DB `information_schema` 대조로 **컬럼 전수 일치**(미리보기 일부 금지) |
 | **W-7** | `knowledge/itam/catalog.yaml` + `synonym_seeds/itam.yaml` | W-6 | `scripts/catalog_diff.py` 동등 · 시드 로드 건수 |
 | **W-8** | 트랙 C — `description` 재작성 + 경계 골든셋 | G-8 | 경계 케이스에서 기대 DB 선택 |
 | **W-9** | T2 처분 — 존 미배정 DB의 실행 그룹 취급 | G-7 | 폴스타+itam 대상에서 **itam 미탈락** 단언 |
@@ -349,9 +340,9 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 | 위험 | 완화 |
 |---|---|
 | MariaDB 드라이버 선정(폐쇄망 반입·라이선스·비동기 지원) | W-1을 독립 WU로 분리. 반입 불가 시 동기 드라이버 + `asyncio.to_thread` 래핑(DB2 선례 `db.py:56`)로 폴백 |
-| 물리 컬럼명 미확정(§3.5-a) | **G-4 없이 W-6 착수 금지.** 한글 컬럼명으로 SQL을 쓰면 인용 규칙까지 얽힌다 |
-| 테이블명 대소문자(§3.5-b) | D-057 선례대로 **실 DB 조회로 확정**하고 프로필에 못 박는다 |
-| 코드값 미확보(§3.5-d) | 코드 마스터 테이블이 있으면 조인, 없으면 프로필 `column_values`에 수기 등재. 없으면 코드 컬럼 필터 질의는 비범위 |
+| 물리 컬럼명 미확정(§3.4-a) | **G-4 없이 W-6 착수 금지.** 한글 컬럼명으로 SQL을 쓰면 인용 규칙까지 얽힌다 |
+| 테이블명 대소문자(§3.4-b) | D-057 선례대로 **실 DB 조회로 확정**하고 프로필에 못 박는다 |
+| 코드값 미확보(§3.4-d) | 코드 마스터 테이블이 있으면 조인, 없으면 프로필 `column_values`에 수기 등재. 없으면 코드 컬럼 필터 질의는 비범위 |
 | T5 경계 미확정으로 답이 흔들림 | G-8을 **활성화(W-12) 전에** 반드시 닫는다 |
 | 폴스타 질의 품질 희석 | 라우팅 후보가 늘면 오분류 가능. W-8 골든셋에 **경계 혼동 케이스**를 반드시 포함 |
 | 자산 DB 부하 | MCP 소스 `query_timeout`·`max_rows`가 서버측 상한(클라이언트 설정 아님). 초기값은 기존 소스와 동일(30s/10000행) |
@@ -363,7 +354,7 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 - 자산 데이터 쓰기·동기화(읽기 전용만, D-003).
 - 루트 `.env`의 `ITAM_DB_CONNECTION` 채우기(실측 ② — 읽는 코드 0건).
 - `cloud_portal` 서빙 개방 · 자산 기반 자동 조치.
-- `TCDMSIF79`·`TCDMSIF80` 외 테이블(§3.5-g — 제공 시 범위 확장).
+- `TCDMSIF79`·`TCDMSIF80` 외 테이블(§3.4-g — 제공 시 범위 확장).
 
 ---
 
@@ -375,14 +366,14 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 |---|---|---|---|
 | **G-2** | 실 **database(스키마)명**은? 시트의 `INST1`이 그것인가, 아니면 논리 인스턴스명인가? MariaDB **버전**은? | `db_schema` 값 · 드라이버 호환 | 없음 — 답 없이 연결 불가 |
 | **G-3** | **읽기 전용 계정** 발급과 `mcp_server` VM → 자산 DB **네트워크 경로**가 가능한가? | D-003 · 폐쇄망 방화벽 | 열려 있다고 가정하지 않는다 |
-| **G-4** | **물리 컬럼·테이블 식별자**는? (`sevrHostName` / `SEVR_HOST_NAME` / 한글 중 무엇인가, 테이블명은 대문자인가) | §3.5-a·b — **SQL을 못 쓴다** | 없음 — **W-6 착수 불가**. `SHOW CREATE TABLE TCDMSIF80` 한 줄이면 끝난다 |
-| **G-5** | **코드값 목록**(9종 코드 컬럼) 또는 코드 마스터 테이블은? | §3.4-③ — WHERE 조건을 못 만든다 | 코드 필터 질의는 1차 비범위 |
+| **G-4** | **물리 컬럼·테이블 식별자**는? (`sevrHostName` / `SEVR_HOST_NAME` / 한글 중 무엇인가, 테이블명은 대문자인가) | §3.4-a·b — **SQL을 못 쓴다** | 없음 — **W-6 착수 불가**. `SHOW CREATE TABLE TCDMSIF80` 한 줄이면 끝난다 |
+| **G-5** | **코드값 목록**(9종 코드 컬럼) 또는 코드 마스터 테이블은? | §3.3-③ — WHERE 조건을 못 만든다 | 코드 필터 질의는 1차 비범위 |
 | **G-6** | 자산 `sevrHostName`/`iPCtnt`가 폴스타 `hostname`/`ipaddress`와 **정확 일치**하는가? (샘플 5건 대조 요청) | 교차 질의(트랙 E)의 전제 | 불일치 가정 → 단독 질의만 1차 서빙 |
 | **G-7** | 자산 DB는 **존 무관**인가? 존 RBAC에서 누가 볼 수 있는가? | T2·T3 처분 방향 | 존 무관 유지 + T2는 "잔여 그룹으로 실어 탈락 방지" |
 | **G-8** | **★T5 경계** — "서버 CPU 사용률"을 물으면 폴스타와 자산 중 어디가 답해야 하는가? (§4.1 (가)/(나)/(다)) | 답이 조용히 달라진다 | **(가) 폴스타 우선 · 자산은 계약·금액·EOL·자산상태 축만** |
 | **G-9** | **민감 컬럼 취급** — 금액 4종(`acqsiAmt`·`manmenCnpr`·`rmainAcbkAmt`·계약명)·성명(`rspblPsnEmnm`)을 조회 결과에 노출하는가? 조회 계정이 `rspblPsnEmnm` 평문을 보는가? | 마스킹·PII 필터 차단(§4.5) | 성명 마스킹 · 금액은 노출하되 감사 로그 강화 |
 | **G-10** | **서버현황조회 쿼리문** 재제공 — 첨부 6장은 전부 컬럼 정의 시트였고 쿼리문은 보이지 않았다 | 실제 조회 패턴이 `query_examples`의 최상급 재료 | 없으면 우리가 §6-1의 3종으로 대체 |
-| **G-11** | `TCDMSIF*`의 **IF**는 연계 테이블인가? 적재 주기와 행수는? 원장 테이블이 따로 있는가? | 사용률 신선도 → G-8 판단 근거 · §3.5-f | 연계 스냅샷으로 가정(→ G-8 (가) 보강) |
+| **G-11** | `TCDMSIF*`의 **IF**는 연계 테이블인가? 적재 주기와 행수는? 원장 테이블이 따로 있는가? | 사용률 신선도 → G-8 판단 근거 · §3.4-f | 연계 스냅샷으로 가정(→ G-8 (가) 보강) |
 | **G-12** | 활성화 범위 — `ACTIVE_DB_IDS`에 `itam`을 운영에 바로 넣는가, 스테이징 선행인가? | 멀티 DB 모드 전환의 폴스타 회귀 위험 | **스테이징/로컬 선행 후 운영** |
 
 ---
@@ -410,4 +401,5 @@ DB 간 SQL 조인은 불가능하다(서로 다른 인스턴스). 교차 질의�
 | 버전 | 날짜 | 내용 |
 |---|---|---|
 | v1 | 2026-09-11 | 최초 작성. 해석 정정(등록은 완료 — 막힌 것은 MCP 소스·스키마 지식·활성화) · 실측 6건 · 함정 T1~T4 · 인테이크 양식 · 트랙 A~F · 게이트 G-1~G-9 · D-214 예약 |
-| **v2** | 2026-09-11 | **사용자 제공 스키마 반영** — ①**엔진 MariaDB 확정**(G-1 종결) → 트랙 **A0(세 번째 엔진 지원)** 신설·계획 성격 변경 ②`TCDMSIF80` 68컬럼·`TCDMSIF79` 9컬럼 전수 판독(§3) ③**함정 T5 신설**(자산 DB에도 CPU·메모리·스토리지 사용률이 있어 폴스타와 답변 영역 충돌) ④스키마가 만든 결정적 규칙 5건(§3.4 — `CHAR(8)` 날짜 · 3열 복합 PK · 코드값 부재 · 금액/성명 민감 · `VARCHAR(300)` 호스트명) ⑤미제공 7건(§3.5) → 게이트 G-2~G-12로 재구성(물리 컬럼명 G-4 · 코드값 G-5 · 경계 G-8 · 쿼리문 재요청 G-10 · IF 테이블 성격 G-11) ⑥WU 15건으로 재분해 |
+| **v2** | 2026-09-11 | **사용자 제공 스키마 반영** — ①**엔진 MariaDB 확정**(G-1 종결) → 트랙 **A0(세 번째 엔진 지원)** 신설·계획 성격 변경 ②`TCDMSIF80` 68컬럼·`TCDMSIF79` 9컬럼 전수 판독(§3) ③**함정 T5 신설**(자산 DB에도 CPU·메모리·스토리지 사용률이 있어 폴스타와 답변 영역 충돌) ④스키마가 만든 결정적 규칙 5건(§3.3 — `CHAR(8)` 날짜 · 3열 복합 PK · 코드값 부재 · 금액/성명 민감 · `VARCHAR(300)` 호스트명) ⑤미제공 7건(§3.4) → 게이트 G-2~G-12로 재구성(물리 컬럼명 G-4 · 코드값 G-5 · 경계 G-8 · 쿼리문 재요청 G-10 · IF 테이블 성격 G-11) ⑥WU 15건으로 재분해 |
+| **v3** | 2026-09-15 | **스키마 전사본 분리** — 제공 이미지 판독 결과를 계획서 표에서 떼어 `testdata/itam/schema.yaml`로 정본화(68+9컬럼 전수 · 코드 도메인 10종 · 조인/민감/교차키 · `unresolved` 8건). 종전 §3.2·§3.3 두 표를 포인터 + 요약으로 축약(사본 금지)하고 이하 절 번호를 한 칸씩 당김. W-6 재료 명시. 전사 중 발견한 YAML 함정 3건(`no:`/`on:` 불리언 키 · flow 매핑 쉼표) `docs/18` 등재. ※D-213→**D-214** 재부여는 2026-09-14 원격 병합분(본 개정과 무관) |

@@ -574,7 +574,8 @@ def test_워크로드_요약이_그룹_구성을_숨기지_않는다() -> None:
     assert "L(" not in line, "closed 워크로드에 샌드박스 전용 그룹이 섞이면 안 된다"
 
     sandbox = sweep.load_normal_catalog(env="sandbox")
-    assert "그룹 L(32)" in sweep.workload_summary(sandbox)
+    # L 32건 중 SYN-F-05 는 시드 재적재 러너 동작(D-217)이라 워크로드에서 뺀다 - arm 마다 공유 Redis 에 쓴다.
+    assert "그룹 L(31)" in sweep.workload_summary(sandbox)
 
 
 def test_비용축은_LLM호출이_없으면_노드수로_잰다() -> None:
@@ -593,18 +594,27 @@ def test_비용축은_LLM호출이_없으면_노드수로_잰다() -> None:
 
 
 def test_판정_가능_집계는_러너가_건너뛰는_시나리오를_뺀다() -> None:
-    """A-05·A-10 은 teardown 미지원(상태 오염)으로 매 arm 에서 건너뛴다 — 실행 대상이 아니다."""
+    """러너가 정리하지 못하는 teardown(상태 오염)이 남은 시나리오는 실행 대상이 아니다.
+
+    A-05(캐시 갱신 — 되돌릴 상태 없음)·A-10(유사어 등록 — 러너가 더한 단어만 지운다)은
+    2026-09-15 정리 가능해져 실행 대상이 됐다(D-217).
+    """
     catalog = sweep.load_normal_catalog(env="closed")
     judged, runnable = sweep.judgeable_count(catalog)
 
     # 러너 규칙과 독립적으로 다시 센다(오라클).
+    supported = {"drop_thread", "unregister_synonym"}
     skipped = {s.id for s in catalog.scenarios
-               if not s.prompt_authored or [a for a in s.teardown if a != "drop_thread"]}
+               if not s.prompt_authored or [a for a in s.teardown if a not in supported]}
 
-    assert {"A-05", "A-10"} <= skipped
+    assert not ({"A-05", "A-10"} & skipped)
     assert runnable == len(catalog.scenarios) - len(skipped)
     assert judged <= runnable
-    assert f"{len(skipped)}건은 러너가 건너뛴다" in sweep.workload_summary(catalog)
+    summary = sweep.workload_summary(catalog)
+    if skipped:
+        assert f"{len(skipped)}건은 러너가 건너뛴다" in summary
+    else:
+        assert "러너가 건너뛴다" not in summary
 
 
 # --- 인증 on 서버는 벤치 계정으로만 (D-215 · plans/94 G-3) ----------------

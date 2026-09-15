@@ -64,23 +64,33 @@ class Observation:
     status: str = "unknown"          # completed | clarification | error | awaiting_approval
     response: str = ""
     executed_sql: Optional[str] = None
+    # 이 턴에 실제로 실행된 SQL 전부. 오케스트레이션·멀티 DB 경로는 done 에 SQL 이 실리지 않아
+    # (`executed_sql`=None · run 20260914-154940 93턴 전부) 러너가 서버 감사 로그 `query_executed`
+    # 에서 thread_id 로 모은다. SQL 단언은 이 목록을 SQL 별로 본다(`observed_sqls`).
+    executed_sqls: list[str] = field(default_factory=list)
     row_count: Optional[int] = None
     has_file: bool = False
     file_name: Optional[str] = None
     clarification: Optional[dict] = None
     form_fill_clarification: Optional[dict] = None
+    # 저장 값 패널(D-187). 삭제 턴의 signature 를 여기서 얻는다(I-06).
+    form_memory_panel: Optional[dict] = None
     db_ids: list[str] = field(default_factory=list)
     intent: Optional[str] = None
     processing_time_ms: Optional[float] = None
     wall_ms: float = 0.0
     ttfb_ms: Optional[float] = None
+    # 노드별 **누적** 실행 시간. 재계획 루프로 같은 노드가 여러 번 돌면 회차를 합친다.
     node_elapsed_ms: dict[str, float] = field(default_factory=dict)
+    node_calls: dict[str, int] = field(default_factory=dict)  # 노드별 완료 횟수(루프 회차)
     node_path: list[str] = field(default_factory=list)
     sse_events: list[str] = field(default_factory=list)
     progress_events: list[dict] = field(default_factory=list)
     llm_calls: Optional[int] = None   # 스트림에 없다 - 구조적 측정 불가(client 주석 참조)
     tokens: Optional[int] = None      # 동일
-    retries: Optional[int] = None     # node_start 재진입으로 실측한다
+    retries: Optional[int] = None     # 재생성 회차 실측(스트림 진행 이벤트 + 감사 로그 retry_attempt)
+    # True 면 retries 는 **하한**이다 - 멀티 DB 경로는 검증 거부 재시도가 스트림·감사 로그에 안 보인다.
+    retries_partial: bool = False
     node_count: Optional[int] = None  # 실행 노드 수 - 비용 대리 지표
     column_mapping: dict[str, Any] = field(default_factory=dict)
     artifacts: list[str] = field(default_factory=list)
@@ -122,6 +132,13 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> Optional[str]:
     return None
 
 
+def observed_sqls(obs: Observation) -> list[str]:
+    """이 턴에 관측된 SQL 전부. 감사 로그 수집분이 있으면 그것, 없으면 done 페이로드 1건."""
+    if obs.executed_sqls:
+        return list(obs.executed_sqls)
+    return [obs.executed_sql] if obs.executed_sql else []
+
+
 def classify_mode(obs: Observation) -> tuple[str, Optional[str]]:
     """대응 등급을 고른다. 먼저 맞는 것을 적용한다. (등급, 근거 표지)를 돌려준다."""
     if obs.http_status >= 500:
@@ -135,7 +152,10 @@ def classify_mode(obs: Observation) -> tuple[str, Optional[str]]:
         return "clarify", "clarification"
     if obs.status == "error" or obs.http_status >= 400:
         return "error", f"status={obs.status} http={obs.http_status}"
-    if not obs.executed_sql:
+    # 거부·안내 표지는 **데이터를 돌려주지 않은 응답**에만 적용한다. 데이터 표에 붙은 진단 절
+    # ("[일부 존 조회 실패] ... 허용되지 않은 테이블")이 거부로 분류되던 오분류(SYN-F-03)를 막는다 -
+    # 종전에는 오케스트레이션 경로의 executed_sql 이 늘 None 이라 모든 응답이 이 검사를 탔다.
+    if not observed_sqls(obs) and not (obs.row_count or 0):
         marker = _contains_any(obs.response, _REFUSE_MARKERS)
         if marker:
             return "refuse", marker
@@ -253,12 +273,12 @@ def _check_column_mapping(spec: Any, obs: Observation, failures: list[Failure]) 
     if not isinstance(spec, list):
         return
     mapped = {str(v) for v in obs.column_mapping.values()} if obs.column_mapping else set()
-    sql = (obs.executed_sql or "").lower()
+    sqls = [sql.lower() for sql in observed_sqls(obs)]
     for column in spec:
         name = str(column)
         if name in mapped:
             failures.append(Failure("column_must_not_map", name, "column_mapping 에 존재"))
-        elif name and re.search(rf"\b{re.escape(name.lower())}\b", sql):
+        elif name and any(re.search(rf"\b{re.escape(name.lower())}\b", sql) for sql in sqls):
             failures.append(Failure("column_must_not_map", name, "실행 SQL 에 존재"))
 
 
@@ -324,13 +344,19 @@ def evaluate_turn(
         if str(needle) in obs.response:
             failures.append(Failure("response_must_not_contain", needle, "응답에 있음"))
 
-    sql = obs.executed_sql or ""
+    # SQL 별로 판정한다 - 이어붙여 검색하면 두 SQL 경계를 넘는 거짓 일치가 난다.
+    # 멀티 DB 는 존마다, 재계획은 라운드마다 SQL 이 따로 나간다(SYN-A-01: 한 턴 12건).
+    sqls = observed_sqls(obs)
     for pattern in expect.get("sql_must_match") or []:
-        if not re.search(str(pattern), sql):
-            failures.append(Failure("sql_must_match", pattern, sql[:200] or None))
+        if not any(re.search(str(pattern), sql) for sql in sqls):
+            failures.append(Failure("sql_must_match", pattern, (sqls[0][:200] if sqls else None)))
     for pattern in expect.get("sql_must_not_match") or []:
-        if re.search(str(pattern), sql):
-            failures.append(Failure("sql_must_not_match", pattern, sql[:200]))
+        hit = next((sql for sql in sqls if re.search(str(pattern), sql)), None)
+        if hit is not None:
+            failures.append(Failure("sql_must_not_match", pattern, hit[:200]))
+    if expect.get("sql_must_not_match") and not sqls and (obs.row_count or 0) > 0:
+        # 데이터는 나왔는데 SQL 을 하나도 보지 못했다 - 부정 단언을 통과로 세지 않는다.
+        manual.append("행이 나왔지만 실행 SQL 을 관측하지 못했다 - sql_must_not_match 확인 불가")
 
     _check_column_mapping(expect.get("column_must_not_map"), obs, failures)
     _check_file(expect.get("file"), obs, failures, manual)
@@ -354,9 +380,21 @@ def evaluate_turn(
         elif obs.llm_calls > int(budget["max"]):
             failures.append(Failure("llm_calls.max", budget["max"], obs.llm_calls))
     budget = expect.get("retries")
-    if isinstance(budget, dict) and "max" in budget and obs.retries is not None:
-        if obs.retries > int(budget["max"]):
+    if isinstance(budget, dict) and "max" in budget:
+        if obs.retries is None:
+            # 회귀 노드가 상위 스트림에 보이지 않는 단(intent_orchestration·deep_agent)에서는
+            # 재시도를 셀 수 없다 - 통과로 세지 않는다(llm_calls 와 같은 규칙).
+            manual.append(
+                f"retries.max={budget['max']} 예산을 확인하지 못했다 "
+                "(query_generator 가 상위 스트림에 나오지 않는 실행 단)"
+            )
+        elif obs.retries > int(budget["max"]):
             failures.append(Failure("retries.max", budget["max"], obs.retries))
+        elif obs.retries_partial:
+            manual.append(
+                f"retries={obs.retries} 는 하한이다(멀티 DB 경로의 검증 거부 재시도는 관측되지 않는다) - "
+                f"max={budget['max']} 이내인지 확정하지 못했다"
+            )
 
     if expect.get("gold_sql"):
         # EX 결과집합 동등성은 골드 SQL 실행이 필요하다 - 러너는 DB 쓰기 경로를 갖지 않고
@@ -390,7 +428,15 @@ def evaluate_turn(
     verdict.failures = failures
     verdict.manual_notes = manual
 
-    if obs.error and not failures:
+    # 기대한 오류는 오류 판정이 아니다. 클라이언트가 HTTP 4xx 를 obs.error 로 옮기므로
+    # (2026-09-14 — 401 이 manual 로 새던 것을 막은 변경) 400 을 **기대하는** 가드 시나리오
+    # (R2-08)까지 error 로 떨어졌다. 기대값과 일치한 오류는 단언이 판정한다.
+    expected_error = (
+        ("http_status" in expect and obs.http_status >= 400
+         and obs.http_status == int(expect["http_status"]))
+        or (expect.get("status") == "error" and obs.status == "error")
+    )
+    if obs.error and not failures and not expected_error:
         verdict.func = "error"
     elif verdict.forbidden_mode:
         verdict.func = "fail"

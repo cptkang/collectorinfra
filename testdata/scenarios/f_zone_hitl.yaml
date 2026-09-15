@@ -156,6 +156,8 @@ scenarios:
           db_ids: ["polestar_cm_gp"]
       - send:
           query: "그 서버들의 메모리도"
+        # 여기서 역질문이 오면 승계 회귀다 - 자동 응답이 답해 버리면 회귀가 가려진다(D-216).
+        auto_answer: false
         expect:
           # 재질문 없이 앞 턴의 존을 그대로 쓴다 - clarification 이 오면 승계 회귀다.
           status: completed
@@ -189,3 +191,39 @@ scenarios:
           status: completed
           db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
           sql_must_match: ["(?i)count\\s*\\("]
+  # 역질문 자동 응답(D-216). 턴이 역질문을 기대하지 않으므로 러너가 존 선택에 스스로 답하고
+  # (config/scenarios/auto_answer.yaml 우선 존 = 김포) 답을 받은 뒤의 응답으로 판정한다.
+  - id: F-09
+    plans: [82, 90, 75, 94]
+    title: "존 역질문에 스크립트가 자동 응답해 완료까지 간다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    response_modes: [answer]
+    turns:
+      - send:
+          query: "전체 서버 수 알려줘"
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_gp"]
+          row_count: {min: 1}
+    teardown: [drop_thread]
+    mock:
+      turns:
+        - response: "조회할 존이 지정되지 않았습니다."
+          executed_sql: null
+          row_count: null
+          clarification:
+            kind: zone_select
+            question: "조회할 존이 지정되지 않았습니다."
+            original_query: "전체 서버 수 알려줘"
+            options:
+              - {db_id: polestar_b0, label: "은행존"}
+              - {db_id: polestar_cm_gp, label: "공동존(김포)"}
+              - {db_id: polestar_cm_yd, label: "공동존(여의도)"}
+          # 러너가 답한 뒤의 응답. db_scope 는 모의 서버가 받은 selected_db_ids 로 채운다.
+          answer:
+            response: "김포 공동존 서버는 12대입니다."
+            executed_sql: "SELECT COUNT(*) FROM polestar.cmm_resource"
+            row_count: 1

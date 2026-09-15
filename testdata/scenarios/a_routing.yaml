@@ -83,7 +83,10 @@ scenarios:
           sql_must_not_match: ["(?i)\\bselect\\b"]
           has_file: false
     cache_state: cold
-    teardown: [drop_thread, clear_schema_cache]
+    # 되돌릴 상태가 없다 - 갱신은 같은 스키마를 다시 수집할 뿐이다(cache_management `_handle_generate`
+    # -> refresh_cache). 종전 `clear_schema_cache` 는 수행하면 오히려 파괴적이다: 서버 캐시 삭제
+    # (invalidate)는 config/db_profiles 정본 파일과 DB별 LLM 유사어·설명까지 지운다(D-217).
+    teardown: [drop_thread]
   - id: A-06
     plans: [9, 79]
     title: "조회 가능한 DB 목록과 설명을 알려줘"
@@ -154,8 +157,8 @@ scenarios:
           sql_must_not_match: ["(?i)\\bselect\\b"]
           manual_review: "LLM 미호출 확인 - 유사어 등록이 결정적 경로로 처리됐는지"
     # 쓰기 시나리오 - 유사어 사전(Redis)에 등록한다. 정리하지 않으면 뒤 시나리오의
-    # 매핑이 바뀐다(유사어 오염 자기강화 - Known Mistakes). 러너가 아직 이 정리를
-    # 수행하지 못하므로 teardown_unsupported 로 기록되어 리포트 10절에 노출된다.
+    # 매핑이 바뀐다(유사어 오염 자기강화 - Known Mistakes). 러너가 턴 전후 유사어 사전
+    # 스냅샷을 떠 **이 시나리오가 더한 단어만** 지운다(D-217 - 원래 있던 단어는 건드리지 않는다).
     teardown: [drop_thread, unregister_synonym]
   - id: A-11
     plans: [9, 79]

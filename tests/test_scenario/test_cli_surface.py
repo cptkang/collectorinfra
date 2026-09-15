@@ -44,23 +44,50 @@ def fake_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 # --- 무과금 기본 동작 순서 ------------------------------------------------
 
-def test_인자가_없으면_1단_2단_3단_순서로_돈다(monkeypatch: pytest.MonkeyPatch) -> None:
+def _record_stages(monkeypatch: pytest.MonkeyPatch, dry_code: int = 0) -> list[str]:
     calls: list[str] = []
-    monkeypatch.setattr(cli, "cmd_dry_run", lambda a: (calls.append("dry"), 0)[1])
+    monkeypatch.setattr(cli, "cmd_dry_run", lambda a: (calls.append("dry"), dry_code)[1])
     monkeypatch.setattr(cli, "cmd_mock", lambda a: (calls.append("mock"), 0)[1])
     monkeypatch.setattr(cli, "cmd_estimate", lambda a: (calls.append("est"), 0)[1])
     monkeypatch.setattr(cli, "cmd_run", lambda a: (calls.append("run"), 0)[1])
+    return calls
+
+
+def test_외부_프로바이더면_인자가_없을_때_1단_2단_3단_순서로_돈다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
+    calls = _record_stages(monkeypatch)
 
     assert main([]) == 0
     assert calls == ["dry", "mock", "est"]
-    assert "run" not in calls, "기본 동작이 과금 경로를 건드렸다"
+    assert "run" not in calls, "외부 프로바이더에서 기본 동작이 과금 경로를 건드렸다"
 
 
-def test_1단을_통과하지_못하면_2단은_시작되지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(cli, "cmd_dry_run", lambda a: (calls.append("dry"), 1)[1])
-    monkeypatch.setattr(cli, "cmd_mock", lambda a: (calls.append("mock"), 0)[1])
-    monkeypatch.setattr(cli, "cmd_estimate", lambda a: (calls.append("est"), 0)[1])
+@pytest.mark.parametrize("provider", ["fabrix", "ollama"])
+def test_내부망_프로바이더면_인자_없이_전_시나리오를_실_실행한다(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    """D-216 - 옵션 없이 돌려도 전 기능이 실행된다(D-211 ⑪ 선례)."""
+    monkeypatch.setattr(cli, "llm_provider", lambda: provider)
+    calls = _record_stages(monkeypatch)
+
+    assert main([]) == 0
+    assert calls == ["dry", "run"]
+
+
+def test_설정을_못_읽은_프로바이더는_내부망으로_보지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "llm_provider", lambda: "unknown(ValidationError)")
+    calls = _record_stages(monkeypatch)
+
+    assert main([]) == 0
+    assert "run" not in calls
+
+
+@pytest.mark.parametrize("provider", ["gemini", "fabrix"])
+def test_1단을_통과하지_못하면_다음_단은_시작되지_않는다(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    monkeypatch.setattr(cli, "llm_provider", lambda: provider)
+    calls = _record_stages(monkeypatch, dry_code=1)
 
     assert main([]) == 1
     assert calls == ["dry"]
@@ -143,10 +170,20 @@ def test_env_불일치_시나리오는_선택에서_빠진다(capsys) -> None:
     assert "선택: 0건" in capsys.readouterr().out
 
 
+def test_env_를_주지_않으면_전_시나리오를_고른다(capsys) -> None:
+    """D-216 - 종전 기본값 sandbox 는 폐쇄망에서 closed 전용 158건을 조용히 뺐다."""
+    from scripts.scenario.catalog import load_catalog
+
+    total = len(load_catalog().scenarios)
+    assert main(["--dry-run"]) == 0
+    assert f"선택: {total}건" in capsys.readouterr().out
+
+
 def test_비대화_환경에서는_승인_없이_과금_경로를_열지_않는다(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     """CI/파이프에서 input() 은 EOFError 다. 승인을 못 받으면 멈추는 것이 맞다(D-127)."""
+    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
     monkeypatch.setenv("RUN_E2E", "1")
 
     def no_tty(_prompt: str = "") -> str:

@@ -141,3 +141,42 @@ def test_V11_같은_런을_다시_돌리면_중복_적재가_없다(mock_run: di
     finally:
         runner_mod.RESULTS_ROOT = original
     assert len(_rows(run_dir)) == before
+
+
+# --- D-216 역질문 자동 응답 ----------------------------------------------
+
+def test_D216_존_역질문에_스크립트가_자동_응답해_완료까지_간다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-09 는 역질문을 기대하지 않는다 - 러너가 김포로 답하고 답을 받은 뒤의 응답으로 판정한다.
+
+    모의 서버는 받은 selected_db_ids 를 db_scope 로 돌려주므로, db_ids 단언이 러너가
+    실제로 보낸 존을 검증한다.
+    """
+    monkeypatch.setattr(runner_mod, "RESULTS_ROOT", tmp_path / "results")
+    catalog = load_catalog()
+    summary = execute(catalog, RunConfig(mode="mock", env="closed", only=["F-09"]))
+    rows = _rows(Path(summary["out_dir"]))
+
+    assert summary["executed_turns"] == 1
+    (row,) = rows
+    assert row["func_verdict"] == "pass", row["failed_assertions"]
+    assert row["db_ids"] == ["polestar_cm_gp"]
+    assert row["auto_answers"] == [{
+        "kind": "zone_select", "selected_db_ids": ["polestar_cm_gp"], "endpoint": "stream",
+        "question_status": "clarification", "question_wall_ms": row["auto_answers"][0]["question_wall_ms"],
+    }]
+
+
+def test_D217_업로드_형식_가드의_400이_모의에서도_판정까지_전달된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """모의 서버 파일 경로가 http_status 지정을 무시해 R2-08 이 모의에서 늘 불합격이었다."""
+    monkeypatch.setattr(runner_mod, "RESULTS_ROOT", tmp_path / "results")
+    summary = execute(load_catalog(), RunConfig(mode="mock", env="both", only=["R2-08"]))
+    rows = _rows(Path(summary["out_dir"]))
+
+    assert len(rows) == 3, "R군은 3회 반복한다"
+    assert {row["func_verdict"] for row in rows} == {"manual"}, [r["failed_assertions"] for r in rows]
+    assert all(row["failed_assertions"] == [] for row in rows)
+    assert {row["response_mode"] for row in rows} == {"error"}

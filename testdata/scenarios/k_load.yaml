@@ -18,8 +18,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: 반복 측정 프로토콜(B-01~B-06 각 5회)이다. 단일 질의가 아니라 러너의 --repeat 와 군 단위 집계로 표현해야 한다.
-    prompt_authored: false
+    # 반복 측정(D-217): 참조 시나리오를 각 5회 새 스레드로 돈다. turns 는 보내지 않고 판정 메모로만 쓴다.
+    replay: {scenarios: [B-01, B-02, B-03, B-04, B-05, B-06], repeat: 5}
+    perf: {target_ms: 10000}
     turns:
       - send:
           query: "B-01~B-06 각 5회 반복(캐시 warm)"
@@ -32,13 +33,17 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: cold 캐시 조건을 만들려면 실행 전 캐시 삭제가 필요하다. teardown 어휘에 cache_flush 가 없어 재현하지 못한다.
-    prompt_authored: false
+    # cold 근사(D-217 · 사용자 확정): 캐시를 지우지 않는다 - 서버 캐시 삭제는 db_profiles 정본 파일까지 지운다.
+    # 대신 서버 기동 직후 **첫 요청**으로 돈다(러너가 cold 시나리오를 프로파일 맨 앞에 둔다).
+    # 1회차 = cold 근사(프로세스 메모리 캐시만 빈 상태, Redis·파일 캐시는 warm), 2회차 = warm 회귀.
+    cache_state: cold
+    replay: {scenarios: [B-01], repeat: 2}
+    perf: {target_ms: 30000}
     turns:
       - send:
           query: "동일 질의 첫 호출(스키마 캐시 cold, `캐시 삭제` 후)"
         expect:
-          manual_review: "1회 / ≤30s, 이후 warm 회귀"
+          manual_review: "1회 / ≤30s, 이후 warm 회귀 - cold 는 근사다(Redis·파일 캐시 warm)"
   - id: K-03
     plans: [67, 84]
     title: "C-02, C-09~C-11 각 3회"
@@ -46,8 +51,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: 반복 측정 프로토콜(C-02·C-09~C-11 각 3회)이다. K-01 과 같은 이유.
-    prompt_authored: false
+    # 반복 측정(D-217): 참조 시나리오를 각 3회 새 스레드로 돈다.
+    replay: {scenarios: [C-02, C-09, C-10, C-11], repeat: 3}
+    perf: {target_ms: 30000}
     turns:
       - send:
           query: "C-02, C-09~C-11 각 3회"
@@ -60,8 +66,9 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: 반복 측정 프로토콜(H-10·H-17 각 3회)이다. K-01 과 같은 이유.
-    prompt_authored: false
+    # 반복 측정(D-217): 참조 폼필 시나리오를 각 3회 새 스레드로 돈다.
+    replay: {scenarios: [H-10, H-17], repeat: 3}
+    perf: {target_ms: 60000}
     turns:
       - send:
           query: "H-10, H-17(b0 2,328행) 각 3회"
@@ -90,8 +97,8 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: 동시 세션 부하(5·10 세션 혼합)다. 러너는 프로파일당 순차 실행이라 동시성을 만들지 못한다.
-    prompt_authored: false
+    # 동시 부하(D-217): 세션 5개, 이어서 10개를 동시에 띄워 B-01·C-01 을 번갈아 배정한다(세션마다 새 스레드).
+    concurrent: {scenarios: [B-01, C-01], sessions: [5, 10]}
     turns:
       - send:
           query: "동시 5·10 세션(thread_id 별도)로 B-01·C-01 혼합"
@@ -104,8 +111,8 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: 두 질의를 동시에 보내는 부하다. K-06 과 같은 이유.
-    prompt_authored: false
+    # 동시 부하(D-217): F-07(gp+yd)과 B-10(은행존)을 동시에 보낸다.
+    concurrent: {scenarios: [F-07, B-10], sessions: [2]}
     turns:
       - send:
           query: "F-07(gp+yd) + 은행존 B-10 동시"
@@ -147,10 +154,18 @@ scenarios:
     env: closed
     profile: baseline
     endpoint: stream
-    # 실행 불가: 고의 오매핑 유사어를 먼저 등록해야 한다. 쓰기 선행 조건이라 읽기 전용 하네스로는 만들 수 없다.
-    prompt_authored: false
+    # 고의 오매핑(D-217 · 사용자 확정 "폐쇄망 포함"): 러너가 Redis 에 문자열 칼럼(hostname)을 수치
+    # 지표어로 등록한 뒤 조회하고, 끝나면 **그 단어만** 지운다. 강제 종료로 남아도 다음 실행 시작 때
+    # 먼저 지운다. 실사용자가 치지 않는 조어를 써서 남아 있는 동안의 영향 면적을 줄였다.
+    setup:
+      - kind: synonym_add
+        db_id: polestar_cm_gp
+        column: polestar.cmm_resource.hostname
+        words: ["검증용사용률"]
     turns:
       - send:
-          query: "재시도 예산 소진(고의 오매핑 유사어 등록 후 조회)"
+          query: "김포 서버별 검증용사용률 평균을 높은 순으로 보여줘"
         expect:
-          manual_review: "retry ≤3, 실패 사유 / trace 파일 생성 확인"
+          http_status: 200
+          retries: {max: 3}
+          manual_review: "재시도 예산(3) 안에서 끝났는지 · 실패 사유가 응답에 드러났는지 · 실패 트레이스가 생겼는지(원시 로그 trace_files)"
