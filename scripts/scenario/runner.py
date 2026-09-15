@@ -736,19 +736,50 @@ def snapshot_synonyms() -> dict[str, dict[str, list[str]]]:
     return _with_redis(work)
 
 
-def remove_synonym_additions(before: dict[str, dict[str, list[str]]]) -> list[str]:
-    """기준선 이후 더해진 단어만 지운다 - 시나리오가 등록한 동의어를 되돌린다(A-10)."""
+def split_owned_additions(
+    additions: dict[str, dict[str, list[str]]], words: list[str]
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, list[str]]]]:
+    """더해진 단어를 (시나리오가 선언한 단어, 그 밖)으로 나눈다. 비교는 공백·대소문자를 무시한다.
+
+    스냅샷 차이에는 같은 턴 동안 **다른 서버·운영자가 공유 Redis 에 더한 단어**도 들어온다.
+    선언한 단어만 지워야 남의 등록을 지우지 않는다. 서버는 입력 표기를 그대로 저장한다
+    (동의어 집합 등록은 공백·대소문자 중복만 정리한다).
+    """
+    declared = {word.strip().casefold() for word in words}
+    owned: dict[str, dict[str, list[str]]] = {}
+    foreign: dict[str, dict[str, list[str]]] = {}
+    for area, keys in additions.items():
+        for key, added in keys.items():
+            mine = [word for word in added if word.strip().casefold() in declared]
+            others = [word for word in added if word.strip().casefold() not in declared]
+            if mine:
+                owned.setdefault(area, {})[key] = mine
+            if others:
+                foreign.setdefault(area, {})[key] = others
+    return owned, foreign
+
+
+def remove_synonym_additions(before: dict[str, dict[str, list[str]]], words: list[str]) -> list[str]:
+    """기준선 이후 더해진 단어 중 **시나리오가 선언한 단어만** 지운다(A-10 `unregister_words`).
+
+    선언 밖 단어는 지우지 않고 `남김` 으로 기록한다 - 같은 시각 다른 출처의 등록이거나, 서버가
+    선언과 다른 표기로 저장한 경우다. 후자면 시나리오 선언을 고친다(조용히 넘기지 않는다).
+    """
 
     async def work(cache: Any, config: Any) -> list[str]:
         after = await _synonym_shot(cache, list(config.multi_db.get_active_db_ids()))
+        owned, foreign = split_owned_additions(synonym_additions(before, after), words)
         results: list[str] = []
-        for area, keys in synonym_additions(before, after).items():
-            for key, words in keys.items():
+        for area, keys in owned.items():
+            for key, removed in keys.items():
                 if area == "global":
-                    ok = await cache.remove_global_synonym(key, words)
+                    ok = await cache.remove_global_synonym(key, removed)
                 else:
-                    ok = await cache.remove_synonyms(area.split(":", 1)[1], key, words)
-                results.append(f"삭제 {area} {key} {words}: {'완료' if ok else '실패'}")
+                    ok = await cache.remove_synonyms(area.split(":", 1)[1], key, removed)
+                results.append(f"삭제 {area} {key} {removed}: {'완료' if ok else '실패'}")
+        for area, keys in foreign.items():
+            for key, kept in keys.items():
+                results.append(f"남김 {area} {key} {kept}: 선언한 단어가 아니다")
         return results
 
     return _with_redis(work)
@@ -1243,7 +1274,8 @@ def _run_once(
             try:
                 meta.setdefault("teardown_log", []).append({
                     "scenario_id": scenario.id, "repeat": repeat,
-                    "unregister_synonym": remove_synonym_additions(synonym_baseline),
+                    "unregister_synonym": remove_synonym_additions(synonym_baseline,
+                                                                   scenario.unregister_words),
                 })
             except Exception as exc:
                 skipped.append({

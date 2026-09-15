@@ -272,7 +272,7 @@ K군 반복/동시 부하·유사어 선행 등록과 정리·시드 재적재�
 | K-01·02·03·04 반복, K-06·07 동시 세션 | `replay`(회차마다 새 스레드) · `concurrent`(세션마다 별도 클라이언트) | `raw.jsonl` `replay_of`·`concurrent_of`·`sessions` |
 | K-10 오매핑 유사어 선행 등록·삭제 | 턴 전 Redis 등록 → 턴 후(예외 포함) **그 단어만** 삭제 → 다음 실행 시작 때 잔여 재삭제 | `raw.jsonl` `setup` · `run.json` `meta.setup_cleanup` |
 | SYN-F-05 시드 재적재(운영 절차) | 활성 DB 시드를 두 번 적재해 멱등성·무손실 판정 | `raw.jsonl` `seed_reload` |
-| A-10 이 등록한 동의어 정리 | 턴 전후 유사어 사전 스냅샷의 **차이만** 삭제 | `run.json` `meta.teardown_log` |
+| A-10 이 등록한 동의어 정리 | 턴 전후 유사어 사전 스냅샷 차이 중 **A-10 이 선언한 단어(`unregister_words`)만** 삭제 | `run.json` `meta.teardown_log` |
 | I-06 저장 값 삭제의 양식 서명 | 직전 턴 저장 값 패널의 `signature`를 채워 보낸다 | I-06 4턴 응답 `삭제했습니다` |
 
 새 필드는 `report.md`에 표로 나오지 않는다 — `raw.jsonl`·`run.json`에서 본다(⑩-6 명령).
@@ -379,7 +379,7 @@ python -c "import json,sys; s=json.load(open(sys.argv[1],encoding='utf-8')); m=s
 | K-06·K-07 동시 | raw `concurrent_of`·`sessions` | K-06 5세션+10세션=15행 · K-07 2행, `error` 0 | `trace_files`는 세션 간에 섞일 수 있다 |
 | K-10 | raw `setup`·`retries`·`trace_files` · run.json `setup_cleanup` | `setup` 등록 `완료`, `retries` ≤3, 실패 사유가 응답에 드러난다 | 10절 `setup 되돌리기 실패` → ⑩-7 수동 삭제 |
 | SYN-F-05 | raw `seed_reload` · 2·6절 | `words`가 before ≤ first = second, 불합격 키 없음 | `seed_reload.load`(적재 오류) · `seed_reload.idempotent`(2회차에 또 바뀜) · `seed_reload.lossless`(기존 단어 소실 — 표본 20건) |
-| A-10 | run.json `teardown_log` | `unregister_synonym`에 A-10이 더한 단어의 `삭제 … 완료` 목록 | 빈 목록이면 등록 자체가 일어나지 않았다(기능 확인) · 10절 `유사어 기준선을 뜨지 못해` → Redis 접속 |
+| A-10 | run.json `teardown_log` | `unregister_synonym`에 `vcore`·`cpu`·`core` 중 새로 더해진 단어의 `삭제 … 완료` 목록 | 빈 목록이면 등록 자체가 일어나지 않았다(기능 확인) · `남김 … 선언한 단어가 아니다`는 같은 턴 동안 다른 출처가 더한 단어이거나 서버가 다른 표기로 저장한 단어다 — 후자면 A-10 `unregister_words`를 고친다 · 10절 `유사어 기준선을 뜨지 못해` → Redis 접속 |
 | I-06 | 2·6절 | 5턴 전부 합격 — 4턴 `삭제했습니다`, 5턴에서 역질문이 되살아난다 | ⑩-4 I-06 행 |
 | R2-10 · R2-08 | 5·6절 | R2-10 422 · R2-08 400 | |
 
@@ -388,7 +388,7 @@ python -c "import json,sys; s=json.load(open(sys.argv[1],encoding='utf-8')); m=s
 | 시나리오 | 무엇을 쓰나 | 되돌림 | 실행 중 영향 |
 |---|---|---|---|
 | K-10 | `schema:polestar_cm_gp:synonyms` 해시의 `polestar.cmm_resource.hostname`에 조어 `검증용사용률` | 턴 후 그 단어만 삭제 · 다음 실행 시작 때 잔여 재삭제 | 같은 Redis를 쓰는 서버가 그동안 `검증용사용률`을 hostname으로 매핑한다(조어라 실사용 영향은 작다) |
-| A-10 | 질의 "vcore, cpu, core은 동의어이다…"가 등록한 동의어(글로벌·활성 DB별 사전) | 턴 전후 스냅샷 **차이 전체** 삭제 | 그 턴 동안 **다른 서버·운영자가 같은 Redis에 더한 단어도 차이에 들어가 함께 지워진다** — 운영 중 유사어 등록 작업과 겹치지 않게 돌린다 |
+| A-10 | 질의 "vcore, cpu, core은 동의어이다…"가 등록한 동의어(글로벌·활성 DB별 사전) | 턴 전후 스냅샷 차이 중 **선언한 단어(`vcore`·`cpu`·`core`)만** 삭제. 다른 출처가 더한 단어는 지우지 않고 `남김`으로 기록한다 | 등록돼 있는 동안 `vcore`·`core`가 기준 컬럼으로 매핑된다. 같은 턴에 다른 출처가 **같은 키에 같은 단어**를 더하면 구별하지 못해 함께 지운다 |
 | SYN-F-05 | 활성 DB 운영 시드를 합집합으로 병합 | 없다(삭제하지 않는다 — 시드가 정본) | 시드에는 있는데 Redis에 없던 단어가 추가된다 |
 
 ```powershell
@@ -425,6 +425,7 @@ python -c "from scripts.scenario.catalog import load_catalog; from scripts.scena
 | `action` | 시나리오 | `{kind: seed_reload_idempotency}` | 질의가 아닌 러너 동작 |
 | `setup` | 시나리오 | `[{kind: synonym_add, db_id, column, words}]` | 턴 전 유사어 등록 · 턴 후 그 단어만 삭제 |
 | `teardown` | 시나리오 | `[drop_thread, unregister_synonym]` | 그 밖의 값은 10절 `teardown 미지원`으로 남는다 |
+| `unregister_words` | 시나리오 | `[단어, …]` | `unregister_synonym`이 지울 단어(이 시나리오가 등록하는 단어). `unregister_synonym`에는 필수이고, 그 밖에는 쓸 수 없다 |
 | `answer` | `mock` 의 턴 정의 안 | 응답 본문 | 모의 서버가 자동 응답 뒤에 돌려줄 응답 |
 
 `replay`·`concurrent`·`action`은 하나만 선언한다. 이런 시나리오의 `turns`는 보내지 않고 판정 메모(`bundle_note`)로만 쓴다.

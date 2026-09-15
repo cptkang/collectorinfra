@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -401,6 +402,48 @@ def test_더해진_단어만_되돌릴_대상으로_고른다() -> None:
     assert runner_mod.synonym_additions(before, after) == {"global": {"cpu": ["vcore"], "memory": ["mem"]}}
 
 
+def test_선언한_단어만_지울_대상이고_다른_출처의_단어는_남긴다() -> None:
+    """공유 Redis 에서 같은 턴 동안 다른 서버가 더한 단어(mem·램)를 A-10 이 지우면 안 된다."""
+    additions = {"global": {"cpu": ["vcore", "Core", "mem"]},
+                 "per_db:polestar_cm_gp": {"t.cpu": ["vcore"], "t.memory": ["램"]}}
+    owned, foreign = runner_mod.split_owned_additions(additions, ["vcore", "cpu", "core"])
+    assert owned == {"global": {"cpu": ["vcore", "Core"]}, "per_db:polestar_cm_gp": {"t.cpu": ["vcore"]}}
+    assert foreign == {"global": {"cpu": ["mem"]}, "per_db:polestar_cm_gp": {"t.memory": ["램"]}}
+
+
+def test_되돌리기는_선언한_단어만_삭제하고_나머지는_남김으로_기록한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    removed: list = []
+
+    class FakeCache:
+        async def load_global_synonyms(self) -> dict:
+            return {"cpu": ["vcore", "core", "mem"]}
+
+        async def load_synonyms(self, _db_id: str) -> dict:
+            return {"t.cpu": ["core"]}
+
+        async def remove_global_synonym(self, key: str, words: list) -> bool:
+            removed.append(("global", key, words))
+            return True
+
+        async def remove_synonyms(self, db_id: str, key: str, words: list) -> bool:
+            removed.append((db_id, key, words))
+            return True
+
+    class FakeMultiDb:
+        @staticmethod
+        def get_active_db_ids() -> list[str]:
+            return ["polestar_cm_gp"]
+
+    class FakeConfig:
+        multi_db = FakeMultiDb()
+
+    monkeypatch.setattr(runner_mod, "_with_redis", lambda work: asyncio.run(work(FakeCache(), FakeConfig())))
+    log = runner_mod.remove_synonym_additions({"global": {}, "per_db:polestar_cm_gp": {}},
+                                              ["vcore", "cpu", "core"])
+    assert removed == [("global", "cpu", ["core", "vcore"]), ("polestar_cm_gp", "t.cpu", ["core"])]
+    assert log[-1] == "남김 global cpu ['mem']: 선언한 단어가 아니다"
+
+
 def test_unregister_synonym_은_러너가_지원하는_teardown이다() -> None:
     scenario = _scenario("A-10", teardown=["drop_thread", "unregister_synonym", "모르는_정리"])
     assert runner_mod._teardown(scenario) == ["모르는_정리"]
@@ -410,7 +453,8 @@ def _record_restore(monkeypatch: pytest.MonkeyPatch, calls: list) -> None:
     monkeypatch.setattr(runner_mod, "snapshot_synonyms",
                         lambda: (calls.append("snapshot"), {"global": {}})[1])
     monkeypatch.setattr(runner_mod, "remove_synonym_additions",
-                        lambda before: (calls.append(("restore", before)), ["삭제 global cpu ['vcore']: 완료"])[1])
+                        lambda before, words: (calls.append(("restore", before, words)),
+                                               ["삭제 global cpu ['vcore']: 완료"])[1])
 
 
 def test_유사어_쓰기_시나리오는_기준선을_뜨고_끝나면_더한_단어만_지운다(
@@ -419,14 +463,15 @@ def test_유사어_쓰기_시나리오는_기준선을_뜨고_끝나면_더한_�
     calls: list = []
     _record_restore(monkeypatch, calls)
     scenario = _scenario("A-10", "vcore, cpu, core은 동의어이다. 캐시에 등록하라.",
-                         teardown=["drop_thread", "unregister_synonym"])
+                         teardown=["drop_thread", "unregister_synonym"],
+                         unregister_words=["vcore", "cpu", "core"])
     client = FakeClient(lambda _e, p: (calls.append("send"),
                                        Observation(http_status=200, status="completed"))[1])
     meta = dict(META)
     runner_mod._run_once(_catalog(scenario), RunConfig(mode="run"), meta, "baseline", scenario, 0,
                          client, RawLog(tmp_path / "raw.jsonl"), tmp_path, [], preference=[])
 
-    assert calls == ["snapshot", "send", ("restore", {"global": {}})]
+    assert calls == ["snapshot", "send", ("restore", {"global": {}}, ["vcore", "cpu", "core"])]
     assert meta["teardown_log"] == [{"scenario_id": "A-10", "repeat": 0,
                                      "unregister_synonym": ["삭제 global cpu ['vcore']: 완료"]}]
     assert "teardown_unsupported" not in _rows(tmp_path / "raw.jsonl")[0]
@@ -465,7 +510,7 @@ def test_모의_실행에서는_유사어_사전을_건드리지_않는다(
 ) -> None:
     monkeypatch.setattr(runner_mod, "snapshot_synonyms", lambda: pytest.fail("Redis 를 쓰면 안 된다"))
     monkeypatch.setattr(runner_mod, "remove_synonym_additions",
-                        lambda _b: pytest.fail("Redis 를 쓰면 안 된다"))
+                        lambda _b, _w: pytest.fail("Redis 를 쓰면 안 된다"))
     scenario = _scenario("A-10", teardown=["drop_thread", "unregister_synonym"])
     runner_mod._run_once(_catalog(scenario), RunConfig(mode="mock"), dict(META), "baseline", scenario, 0,
                          FakeClient(), RawLog(tmp_path / "raw.jsonl"), tmp_path, [], preference=[])
@@ -476,4 +521,27 @@ def test_저장소_카탈로그의_A_05_A_10은_정리_가능한_teardown만_남
     catalog = load_catalog()
     assert catalog.by_id("A-05").teardown == ["drop_thread"]
     assert runner_mod._teardown(catalog.by_id("A-10")) == []
+    assert catalog.by_id("A-10").unregister_words == ["vcore", "cpu", "core"]
     assert not [s.id for s in catalog.scenarios if runner_mod._teardown(s)], "정리하지 못하는 시나리오가 남았다"
+
+
+def test_unregister_synonym_은_지울_단어_선언이_있어야_한다(scenario_dir: Path, profiles_path: Path) -> None:
+    write(scenario_dir / "t.yaml", """version: 1
+group: {id: T, name: "테스트군", latency_target_ms: 10000}
+scenarios:
+  - id: T-01
+    plans: [94]
+    title: "선언 없음"
+    teardown: [drop_thread, unregister_synonym]
+    turns: [{send: {query: "a"}, expect: {}}]
+  - id: T-02
+    plans: [94]
+    title: "teardown 없이 선언"
+    unregister_words: [vcore]
+    turns: [{send: {query: "b"}, expect: {}}]
+""")
+    with pytest.raises(CatalogError) as exc:
+        load_catalog(scenario_dir, profiles_path)
+    text = "\n".join(exc.value.errors)
+    assert "T-01: teardown unregister_synonym 에는 지울 단어 목록 unregister_words 가 필요하다" in text
+    assert "T-02: unregister_words 는 teardown unregister_synonym 과 함께만 쓴다" in text

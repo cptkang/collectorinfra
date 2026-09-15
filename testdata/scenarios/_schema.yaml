@@ -77,7 +77,9 @@ scenarios:
     pair_with: null                     # R군 대조군 짝. 서로를 가리켜야 하고 짝의 kind 는 control(V16)
     depends_on: []                      # 선행 시나리오 ID
     teardown: [drop_thread]             # drop_thread 는 실행마다 새 thread_id 로 보장된다.
+                                        #   unregister_synonym 은 턴 전후 유사어 사전 차이 중 unregister_words 만 지운다.
                                         #   그 밖의 값은 미지원으로 기록되어 리포트 10절에 노출된다
+    # unregister_words: [vcore, cpu, core]   # unregister_synonym 에 필수 - 이 시나리오가 등록하는 단어
     notes: "D-154 — 원문 '여의도' 언급이 WHERE 로 새지 않는다"
 
     # --mock 에서의 판정 규칙:

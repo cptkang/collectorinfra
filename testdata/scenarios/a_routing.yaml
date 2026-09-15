@@ -158,8 +158,10 @@ scenarios:
           manual_review: "LLM 미호출 확인 - 유사어 등록이 결정적 경로로 처리됐는지"
     # 쓰기 시나리오 - 유사어 사전(Redis)에 등록한다. 정리하지 않으면 뒤 시나리오의
     # 매핑이 바뀐다(유사어 오염 자기강화 - Known Mistakes). 러너가 턴 전후 유사어 사전
-    # 스냅샷을 떠 **이 시나리오가 더한 단어만** 지운다(D-217 - 원래 있던 단어는 건드리지 않는다).
+    # 스냅샷을 떠 차이 중 **아래 선언한 단어만** 지운다(D-217 - 원래 있던 단어는 건드리지 않는다).
+    # 공유 Redis 에서 같은 턴 동안 다른 서버·운영자가 더한 단어는 지우지 않고 run.json 에 `남김`으로 남긴다.
     teardown: [drop_thread, unregister_synonym]
+    unregister_words: [vcore, cpu, core]
   - id: A-11
     plans: [9, 79]
     title: "○○ 서버 왜 느려? 원인 분석해줘"

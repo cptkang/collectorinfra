@@ -127,6 +127,9 @@ class Scenario:
     action: dict[str, Any] = field(default_factory=dict)
     # 턴 전에 러너가 만드는 선행 상태(K-10 고의 오매핑 유사어). 끝나면 같은 것만 되돌린다.
     setup: list[dict[str, Any]] = field(default_factory=list)
+    # teardown unregister_synonym 이 지울 단어(A-10). 유사어 사전 스냅샷 차이 중 이 단어만 지운다 -
+    # 공유 Redis 에서 같은 시각 다른 출처가 더한 단어까지 지우지 않기 위해서다.
+    unregister_words: list[str] = field(default_factory=list)
     source_file: Optional[str] = None
 
     @property
@@ -286,7 +289,7 @@ def _id_list(value: Any) -> bool:
 
 
 def _parse_runner_steps(raw: dict[str, Any], scenario_id: str, errors: list[str]) -> dict[str, Any]:
-    """replay·concurrent·action·setup 을 읽는다(D-217). 틀린 선언은 조용히 무시하지 않는다."""
+    """replay·concurrent·action·setup·unregister_words 를 읽는다(D-217). 틀린 선언은 조용히 무시하지 않는다."""
     parsed: dict[str, Any] = {}
     for key in ("replay", "concurrent", "action"):
         value = raw.get(key) or {}
@@ -326,6 +329,16 @@ def _parse_runner_steps(raw: dict[str, Any], scenario_id: str, errors: list[str]
         elif not (step.get("db_id") and step.get("column") and _id_list(step.get("words"))):
             errors.append(f"{scenario_id} setup{index}: synonym_add 는 db_id·column·words 가 필요하다")
     parsed["setup"] = [dict(step) for step in setup if isinstance(step, dict)]
+
+    words = raw.get("unregister_words")
+    wants_unregister = "unregister_synonym" in (raw.get("teardown") or [])
+    if wants_unregister and not _id_list(words):
+        errors.append(
+            f"{scenario_id}: teardown unregister_synonym 에는 지울 단어 목록 unregister_words 가 필요하다"
+        )
+    elif words is not None and not wants_unregister:
+        errors.append(f"{scenario_id}: unregister_words 는 teardown unregister_synonym 과 함께만 쓴다")
+    parsed["unregister_words"] = [str(word).strip() for word in words] if _id_list(words) else []
     return parsed
 
 
@@ -443,6 +456,7 @@ def _parse_scenario(
         concurrent=dict(steps["concurrent"]),
         action=dict(steps["action"]),
         setup=steps["setup"],
+        unregister_words=steps["unregister_words"],
         source_file=source.name,
     )
 
