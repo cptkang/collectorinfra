@@ -4,6 +4,7 @@
 > **성격**: 실험 설계 · **상태: 설계(실행 전 · 사용자 승인 대기)** — 파일명 `-TODO`
 > **선행 계획**: `plans/96`(분석 정본 · W2 가 이 문서다) · `plans/94` §15~§18(하네스 · X-1~X-4·Y·O·V21~V27) · `plans/98`(제품 수정 · CU-1~CU-18)
 > **관련 결정**: **D-218**(측정 신뢰성 계약) · **D-220**(게이트 4건 확정 후속) · D-217·D-216(하네스) · **D-127**(과금 승인) · D-211 ⑪(내부망 승인 면제) · D-003(읽기 전용)
+> **▶ 돌리는 방법만 필요하면 §3.5 「실행 가이드」 한 절만 읽으면 된다.** §0~§3.4 는 설계 근거, §4~§8 은 점검·판정·제약이다.
 > **실측 기준**: 소요·턴 수는 run `20260915-131903` 의 `raw.jsonl` **유효 280턴**을 직접 집계했다. 무효 103턴은 분모에서 뺐다.
 
 ---
@@ -166,6 +167,102 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 4. E-3 전 시나리오    → §0 질문 1~5
 5. 분석 · 회귀 기준선 선언
 ```
+
+---
+
+## 3.5 ▶ 실행 가이드 — 이 절만 보고 돌린다
+
+> 커밋 `12093ea`·`e2c3b79`·`56274a7`·`dfcdd7e`(2026-09-16) 기준. **명령은 전부 저장소 루트에서 돈다.**
+> 하네스 자체의 일반 사용법은 `plans/94` 「실행 가이드」가 정본이고, 여기는 **이 실험을 돌리는 절차**다.
+
+### 0단계 — 무과금 사전 점검 (LLM 0 · 서버 0)
+
+```bash
+python -m scripts.scenario --dry-run          # 카탈로그 218건 · 군 16개
+pytest tests/test_scenario tests/test_scripts -q
+python scripts/arch_check.py --ci && python scripts/overfit_check.py --ci
+```
+
+기준선(2026-09-16 실측): `--dry-run` **218건** · `pytest` **669 passed / 2 skipped** · 게이트 **둘 다 exit 0**.
+**여기서 어긋나면 폐쇄망에 가기 전에 멈춘다.**
+
+### 1단계 — E-0 사전 점검 (폐쇄망 · §4)
+
+```bash
+# E-0-1 사다리 단 — 이 한 줄이 판정표 전체의 해석을 바꾼다
+grep -E "^(ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL)=" .env
+python -m src.main --server   # 기동 로그의 "오케스트레이션 사다리 확정: tier=... degraded_reason=..."
+
+# E-0-3 분할 실행 실동작 (무과금)
+python -m scripts.scenario --mock --group D --segment 2
+python -m scripts.scenario --mock --resume-failed <직전_RUN_ID>
+
+# E-0-6 디스크 — 지난 run 이 체크포인트 1.49GB + 산출물
+df -h .
+```
+
+`tier=deep_agent` 가 아니면 **정본 1단은 이번에도 측정되지 않는다**(§0). `degraded_reason` 을 기록하고 H-2 를 먼저 정한다.
+
+### 2단계 — E-1 DB 조회 2건 (수 분 · 읽기 전용 · LLM 0)
+
+§1 의 SQL 2개를 그대로 돌린다. **게이트 G-5·G-8 이 닫힌다.**
+
+### 3단계 — E-2 표적 재현 3건 (약 10분 · 실 LLM)
+
+```bash
+python -m scripts.scenario --only H-10    # J-1 월 피벗: 미진입인가 폴백인가
+python -m scripts.scenario --only B-06    # J-2 455초가 왜 타임아웃 가드에 안 걸렸나
+python -m scripts.scenario --only G-01    # J-3 승계 실패: 승격 부재인가 덮어쓰기인가
+```
+
+**전 스위트가 아니다.** 폐쇄망 `fabrix` 라 승인은 면제지만(D-211 ⑪) 시간·서버 부하는 실재한다.
+
+### 4단계 — E-3 전 시나리오 재측정 (8~11시간)
+
+```bash
+# 권장 — 군별로 끊어 검수하며 진행(중간에 멈춰도 --resume 으로 이어진다)
+python -m scripts.scenario --group A --group B --group C --group D
+python -m scripts.scenario --group E --group F --group G --group H --group I --group J
+python -m scripts.scenario --group K --group L
+python -m scripts.scenario --group R1 --group R2 --group R3 --group R4
+
+# 또는 완주 — 세그먼트로 실패 반경만 줄인다
+python -m scripts.scenario --segment 40
+```
+
+> **`--segment` 는 만료 방어 수단이 아니다.** 토큰 만료는 **T-b**(수명 80% 시점 턴 경계 선제 갱신)가 막는다.
+> `--segment` 의 값은 실패 반경·진행 가시성·명시적 재개점이고, 크기 기준은 **시나리오 수**다(`plans/94` ⑩-0 근거).
+> 균등 소요가 필요하면 `--segment` 가 아니라 **`--group`** 을 쓴다 — 군별 턴당 소요가 0.7분(F)~3.0분(R1)으로 4배 벌어진다.
+
+### 5단계 — 중단·복구
+
+```bash
+python -m scripts.scenario --resume <RUN_ID>          # 성공 턴은 건너뛰고 이어서
+python -m scripts.scenario --resume-failed <RUN_ID>   # 무효·오류만 새 run 으로
+```
+
+**`--resume-failed` 는 구 형식 적재본도 복구한다** — `invalid` 판정이 없던 시절의 `error`/`fail` 행을 `\bhttp\s+(401|403)\b` 로 식별한다(X-1). run `20260915-131903` 의 103턴이 그 대상이다.
+
+### 6단계 — 리포트·분석 (무과금)
+
+```bash
+python -m scripts.scenario --report <RUN_ID>
+python -m scripts.scenario --analyze <RUN_ID>
+```
+
+**리포트에서 가장 먼저 볼 것 3가지**
+
+| 순서 | 볼 것 | 어긋나면 |
+|---|---|---|
+| 1 | 최상단 **무효 턴 경고**(T-e) | 5% 초과면 그 run 은 회귀 비교 대상이 아니다 |
+| 2 | 1절 위 **사다리 강등 경고**(O-c) | 정본 1단이 아니면 판정표 해석이 달라진다 |
+| 3 | `bottleneck.md` 의 **llm_calls 불가 문구**(O-b) | 문구가 사라졌으면 `plans/56` 이 뚫린 것 — 고정 문구를 고쳐야 한다 |
+
+### 실행 중 금지
+
+- **`.env` 를 실험이 임의로 바꾸지 않는다** — H-2 는 사람 결정이다(§7)
+- **결과로 자동 조치하지 않는다** — 분석기는 제안 문서만 낸다(D-212 ⑥)
+- **1회 관측으로 처방하지 않는다** — 반복 대상은 §3.2 가 정한다
 
 ---
 
