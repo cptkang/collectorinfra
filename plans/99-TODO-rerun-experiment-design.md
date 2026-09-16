@@ -4,7 +4,8 @@
 > **성격**: 실험 설계 · **상태: 설계(실행 전 · 사용자 승인 대기)** — 파일명 `-TODO`
 > **선행 계획**: `plans/96`(분석 정본 · W2 가 이 문서다) · `plans/94` §15~§18(하네스 · X-1~X-4·Y·O·V21~V27) · `plans/98`(제품 수정 · CU-1~CU-18)
 > **관련 결정**: **D-218**(측정 신뢰성 계약) · **D-220**(게이트 4건 확정 후속) · D-217·D-216(하네스) · **D-127**(과금 승인) · D-211 ⑪(내부망 승인 면제) · D-003(읽기 전용)
-> **▶ 돌리는 방법만 필요하면 §3.5 「실행 가이드」 한 절만 읽으면 된다.** §0~§3.4 는 설계 근거, §4~§8 은 점검·판정·제약이다.
+> **▶ 돌리는 방법만 필요하면 §3.5 「실행 가이드」 한 절만 읽으면 된다** — **`.env` 사전 설정** · 0~6단계 명령 · **Windows 편**이 그 안에 있다. §0~§3.4 는 설계 근거, §4~§8 은 점검·판정·제약이다.
+> Windows 일반 준비(venv·인코딩·포트 제외 대역·ACL·`ibm-db`)는 **`plans/94` 부록 A** 가 정본이고, §3.5 의 Windows 편은 **이 실험에 고유한 것만** 다룬다.
 > **실측 기준**: 소요·턴 수는 run `20260915-131903` 의 `raw.jsonl` **유효 280턴**을 직접 집계했다. 무효 103턴은 분모에서 뺐다.
 
 ---
@@ -175,6 +176,59 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 > 커밋 `12093ea`·`e2c3b79`·`56274a7`·`dfcdd7e`(2026-09-16) 기준. **명령은 전부 저장소 루트에서 돈다.**
 > 하네스 자체의 일반 사용법은 `plans/94` 「실행 가이드」가 정본이고, 여기는 **이 실험을 돌리는 절차**다.
 
+### `.env` 사전 설정 — 러너가 대신 해주지 않는 것
+
+> **원칙: 러너가 주입하는 것은 건드리지 말고, 러너가 못 정하는 것만 사람이 정한다.**
+> 러너는 기동할 때마다 아래를 **자기가 주입한다** — `.env` 에 쓰지 마라(써도 러너 값이 이긴다).
+> `ALARM_ENABLED=false`(`runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리 · 운영 `checkpoints.db` 오염 방지) ·
+> 프로파일 플래그(`config/scenarios/profiles.yaml` — 예: `optin_alarm` 의 `TEXT2SQL_ALARM_DETERMINISTIC`).
+
+#### 반드시 확인할 것 (없으면 run 이 헛돈다)
+
+| 키 | 값 | 왜 |
+|---|---|---|
+| `LLM_PROVIDER` | `fabrix`(폐쇄망) | **`fabrix`·`ollama` 면 승인·`RUN_E2E` 없이 실 실행**된다(D-216·D-211 ⑪). `gemini` 등 외부면 `RUN_E2E=1` + **건별 사용자 승인**이 필요하다(D-127) |
+| `ACTIVE_DB_IDS` | 측정 대상 DB | 러너가 이 값으로 `closed`/`sandbox` 를 자동 판정한다. 비어 있으면 환경 판정이 어긋나 시나리오가 통째로 보류된다 |
+| `AUTH_ENABLED` | `true`(운영) | **`true` 인데 계정이 없으면 프로파일이 INVALID** 로 서고 run 이 시작도 못 한다(`runner.py:542`). 내장 테스트 계정이 서버에 없으면 `--user`/`--password` 를 넘긴다 |
+| `AUTH_JWT_EXPIRE_HOURS` | 기본 `8` | **T-b 선제 갱신의 유일한 근거다.** 러너가 `AuthConfig.jwt_expire_hours` 를 읽어 그 **80% 경과 시** 턴 경계에서 재발급한다(`runner.py:569 jwt_lifetime_sec`). **읽지 못하면 선제 갱신을 아예 하지 않는다** — 모르는 채로 주기를 정하는 것 자체가 추정이기 때문이다. 이 값이 실제 서버 발급 수명과 다르면 8시간 넘는 run 에서 또 401 이 난다 |
+| `DB_BACKEND` | `dbhub`(운영) | `dbhub` 면 **MCP 서버가 따로 떠 있어야** 한다(별도 프로세스·별도 cwd). 안 떠 있으면 전 시나리오가 조회 실패다 |
+
+#### 사다리 단을 정하는 3종 — **E-0-1 의 대상**
+
+| 키 | 1단(`deep_agent`)을 원하면 | 비고 |
+|---|---|---|
+| `ENABLE_DEEPAGENTS_PACKAGE` | `true` | **이것만으로는 부족하다** |
+| `ORCHESTRATOR_PROVIDER` | `vllm` 또는 `gemini` | `vllm` 이면 `ORCHESTRATOR_BASE_URL` 의 `/v1/models` 헬스체크를 통과해야 한다. **`gemini` 면 외부 과금 API 라 D-127 승인 대상**이다 |
+| `ORCHESTRATOR_BASE_URL` | vLLM 서빙 주소 | `vllm` 일 때만 |
+
+> **run `20260915-131903` 은 `degraded_reason=flag_off` 로 2단에 머물렀다** — 첫 줄에서 떨어졌다는 뜻이다.
+> 플래그를 켜도 오케스트레이터가 없으면 `orchestrator_unavailable`·`package_missing` 으로 **결국 2단으로 강등된다**(`src/observability/ladder.py:70-86`).
+> **`deepagents` 패키지 자체는 설치돼 있다**(0.6.10 실측). 2·3단 플래그(`ENABLE_INTENT_ORCHESTRATION`·`ENABLE_SEMANTIC_ROUTING`)는 **tri-state** 라 미입력이면 `ACTIVE_DB_IDS` 등록 여부로 자동 결정된다 — 고정하려면 명시한다.
+
+#### 쓰는 방법 — 함정 3가지
+
+1. **인라인 주석 금지.** `.env` 계열은 `KEY=value  # 설명` 을 파싱하지 못한다. 주석은 **별도 줄**에 쓰고, **특히 빈 값 뒤에 붙이지 마라**
+2. **list/dict 는 JSON 배열.** `ACTIVE_DB_IDS=["polestar_cm_gp","polestar_b0"]` — 쉼표 구분 문자열은 파싱 에러다
+3. **OS 환경변수가 `.env` 를 덮는다.** 셸에 남은 값이 파일 값을 이긴다. Windows PowerShell 에서 `Get-ChildItem Env:` 로, POSIX 에서 `env | grep` 로 확인하라 — **파일만 고치고 왜 안 먹는지 헤매는 것이 가장 흔한 함정이다**
+
+#### 확인 명령
+
+```bash
+# POSIX — 값이 아니라 키만 본다(비밀값 노출 방지)
+grep -nE "^(LLM_PROVIDER|ACTIVE_DB_IDS|AUTH_ENABLED|AUTH_JWT_EXPIRE_HOURS|DB_BACKEND|ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL|ENABLE_INTENT_ORCHESTRATION|ENABLE_SEMANTIC_ROUTING)=" .env
+env | grep -E "^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)" || echo "셸 오염 없음"
+```
+
+```powershell
+# Windows — 같은 확인
+Select-String -Path .env -Pattern '^(LLM_PROVIDER|ACTIVE_DB_IDS|AUTH_ENABLED|AUTH_JWT_EXPIRE_HOURS|DB_BACKEND|ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL|ENABLE_INTENT_ORCHESTRATION|ENABLE_SEMANTIC_ROUTING)='
+Get-ChildItem Env: | Where-Object Name -Match '^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)' | Select-Object Name, Value
+```
+
+> **`.env` 를 실험이 임의로 바꾸지 않는다.** 사다리 플래그 변경(H-2)은 **사람 결정**이고, 바꿨으면 그 사실을 run 기록에 남긴다 — 설정이 다른 run 끼리는 회귀 비교가 성립하지 않는다.
+
+---
+
 ### 0단계 — 무과금 사전 점검 (LLM 0 · 서버 0)
 
 ```bash
@@ -257,6 +311,61 @@ python -m scripts.scenario --analyze <RUN_ID>
 | 1 | 최상단 **무효 턴 경고**(T-e) | 5% 초과면 그 run 은 회귀 비교 대상이 아니다 |
 | 2 | 1절 위 **사다리 강등 경고**(O-c) | 정본 1단이 아니면 판정표 해석이 달라진다 |
 | 3 | `bottleneck.md` 의 **llm_calls 불가 문구**(O-b) | 문구가 사라졌으면 `plans/56` 이 뚫린 것 — 고정 문구를 고쳐야 한다 |
+
+### Windows 에서 돌릴 때 — 달라지는 것만
+
+> **일반 준비(venv · 인코딩 · 포트 제외 대역 · 절전 억제 · ACL · `ibm-db`)는 `plans/94` 부록 A.3 이 정본이다.** 여기는 **이 실험의 명령**을 Windows 로 옮긴 것과 **이 실험에 고유한 주의**만 적는다.
+
+#### 실험 전 한 번 — 이 세 줄이 없으면 한글 출력에서 run 이 죽는다
+
+```powershell
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+chcp 65001
+```
+
+run `20260915-131903` 의 provenance 가 **`pythonutf8: (미설정)` · `console_codepage: 활성 코드 페이지: 949`** 였다. 그 run 은 살아남았지만 **다음 run 도 그러리라는 보장은 없다** — cp949 콘솔에서 em-dash 하나가 `UnicodeEncodeError` 로 8시간짜리를 죽인다.
+
+#### 단계별 명령 대조
+
+| 단계 | POSIX | Windows (PowerShell) |
+|---|---|---|
+| 0단계 점검 | `python -m scripts.scenario --dry-run` | 동일 |
+| | `pytest tests/test_scenario tests/test_scripts -q` | 동일 |
+| 1단계 `.env` 확인 | `grep -nE "^(LLM_PROVIDER\|...)=" .env` | `Select-String -Path .env -Pattern '^(LLM_PROVIDER\|...)='` |
+| | `env \| grep -E "^(LLM_\|AUTH_\|...)"` | `Get-ChildItem Env: \| Where-Object Name -Match '^(LLM_\|AUTH_\|...)'` |
+| 1단계 서버 기동 | `python -m src.main --server` | 동일 (**`Ctrl+C` 대신 `Ctrl+Break`**) |
+| 1단계 디스크 | `df -h .` | `Get-PSDrive C \| Select-Object Used, Free` |
+| 2~4단계 실행 | `python -m scripts.scenario ...` | 동일 |
+| 중단 | `Ctrl+C` | **`Ctrl+Break`** — `Ctrl+C` 는 자식 서버를 남긴다 |
+| 잔여 프로세스 정리 | `pkill -f "src.main"` | `taskkill /IM python.exe /T /F` (**같은 PC 의 다른 python 도 죽는다 — PID 확인 후 쓸 것**) |
+
+#### 이 실험에 고유한 Windows 주의 5가지
+
+| # | 주의 | 근거 |
+|---|---|---|
+| 1 | **절전이 8~11시간 run 을 끊는다.** `powercfg /change standby-timeout-ac 0` 로 억제하고 **run 뒤 원복**한다. 지난 run 의 provenance 는 전원 구성표가 **「균형 조정」** 이었다 | A.2 · `run.json` 실측 |
+| 2 | **바이러스 검사 제외를 걸어라.** 실시간 검사가 `results/scenario/` 의 잦은 쓰기(체크포인트 **1.49 GB** · xlsx 수십 개)를 훑으면 측정이 흔들린다. 지난 run 은 `av_exclusion: 미확인` 이었다 | A.2 · `run.json` 실측 |
+| 3 | **경로 길이 260자.** `results/scenario/<run_id>/artifacts/<시나리오>-<턴>-result_<타임스탬프>.xlsx` 가 깊다. 저장소를 `C:\AIOps\...` 처럼 **얕은 경로**에 둔다 | A.2 · 지난 run 산출물 경로 실측 |
+| 4 | **`--segment` 는 Windows 에서 더 유용하다.** 콘솔 창이 닫히거나 원격 세션이 끊겨도 세그먼트 경계가 명시적 재개점이 된다. 다만 **만료 방어는 여전히 T-b 소관**이다 | ⑩-0 |
+| 5 | **DB2(`polestar_b0`) 대상이면 `ibm-db` 를 먼저 확인한다.** 루트 venv 에 없고 `mcp_server/pyproject.toml` 에만 선언돼 있다 | A.3 · CLAUDE.md |
+
+```powershell
+# 1·2·3 한 번에 점검
+powercfg /query SCHEME_CURRENT | Select-String "전원 구성표 GUID"
+Get-MpPreference | Select-Object -ExpandProperty ExclusionPath   # 없으면 빈 출력
+(Resolve-Path .).Path.Length                                      # 여유 있게 40자 이하 권장
+python -c "import ibm_db" 2>$null; if ($LASTEXITCODE -ne 0) { "ibm-db 미설치 — DB2 대상이면 설치 필요" }
+```
+
+#### run 뒤 원복
+
+```powershell
+powercfg /change standby-timeout-ac 30    # 원래 값으로
+powercfg /change monitor-timeout-ac 10
+```
+
+---
 
 ### 실행 중 금지
 
