@@ -16,12 +16,75 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import utf8_open
+from .assertions import INVALID_VERDICT, row_is_invalid
 from .catalog import Catalog
 
 # 표본이 이보다 적으면 p95 를 내지 않는다 (§5.3 · group_metrics.py 와 같은 철학).
 P95_MIN_SAMPLE = 20
 
 _VERDICT_ORDER = ("fail", "error", "manual", "pass")
+
+#: 무효 턴 비율이 이 값을 넘으면 리포트 최상단 경고 + 회귀 비교 제외 (T-e · D-218).
+#: run 20260915-131903 은 26.9% 였는데 리포트 어디에도 그 사실이 없었다.
+INVALID_RATIO_WARN = 0.05
+
+
+#: 정본 실행 단. 이것이 아니면 리포트 최상단에 경고를 올린다(O-c).
+CANONICAL_TIER = "deep_agent"
+
+
+def _degraded_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """정본 단이 아닌 단으로 돈 프로파일 (O-c).
+
+    `tier` 를 **읽지 못한 경우는 경고하지 않는다** - 모의 실행(`tier="mock"`)과
+    기동 로그 미확인은 강등이 아니라 미관측이다. 미관측을 강등으로 세면 경고가 상시
+    켜져 사람이 읽지 않게 된다.
+    """
+    out: list[dict[str, Any]] = []
+    for profile in summary.get("profiles", []) or []:
+        tier = profile.get("tier")
+        if not tier or tier in (CANONICAL_TIER, "mock"):
+            continue
+        out.append(profile)
+    return out
+
+
+def valid_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """기능 판정의 **분모**. 무효 턴은 여기서 빠진다(T-c)."""
+    return [row for row in rows if not row_is_invalid(row)]
+
+
+def invalid_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """무효 턴의 건수·비율·구간(T-c·T-e).
+
+    **구간을 명시한다.** run 20260915-131903 의 103턴은 실행 순서 280번째부터 마지막까지
+    연속이었고, 그 사실이 곧 원인(토큰 만료)이었다. 흩어진 무효와 연속된 무효는 다른 사고다.
+    """
+    invalid = [
+        {
+            "index": index,
+            "scenario_id": row.get("scenario_id"),
+            "turn": row.get("turn"),
+            "repeat": row.get("repeat"),
+            "group": row.get("group"),
+            "reason": row.get("invalid_reason") or row.get("error"),
+        }
+        for index, row in enumerate(rows, start=1)
+        if row_is_invalid(row)
+    ]
+    total = len(rows)
+    by_group: Counter[str] = Counter(str(item["group"]) for item in invalid)
+    return {
+        "count": len(invalid),
+        "total_turns": total,
+        "ratio": round(len(invalid) / total, 4) if total else 0.0,
+        "over_threshold": bool(total) and (len(invalid) / total) > INVALID_RATIO_WARN,
+        "by_group": dict(sorted(by_group.items())),
+        "first_index": invalid[0]["index"] if invalid else None,
+        "last_index": invalid[-1]["index"] if invalid else None,
+        "first_scenario": invalid[0]["scenario_id"] if invalid else None,
+        "turns": invalid,
+    }
 
 
 def load_rows(run_dir: Path) -> list[dict[str, Any]]:
@@ -59,12 +122,20 @@ def scenario_verdicts(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """시나리오별 판정. 반복 간 결과가 갈리면 `불안정` 이다(§2-4).
 
     불안정은 합격으로도 불합격으로도 세지 않는다 - 갈리는 것 자체가 보고할 사실이다.
+
+    **무효 턴(T-c)은 분모에서 뺀다.** 유효 턴이 하나도 없는 시나리오만 `invalid` 이고,
+    일부만 무효인 시나리오는 **남은 유효 턴으로** 판정한다 - 401 한 번에 시나리오 전체가
+    불합격이 되던 것이 「과잉 거부 의심」 26건 허위의 절반이었다.
     """
     per_repeat: dict[tuple[str, int], list[str]] = defaultdict(list)
+    invalid_repeats: set[tuple[str, int]] = set()
     info: dict[str, dict[str, Any]] = {}
     for row in rows:
         key = (row["scenario_id"], int(row.get("repeat", 0)))
-        per_repeat[key].append(row.get("func_verdict", "error"))
+        if row_is_invalid(row):
+            invalid_repeats.add(key)
+        else:
+            per_repeat[key].append(row.get("func_verdict", "error"))
         info.setdefault(
             row["scenario_id"],
             {
@@ -79,9 +150,21 @@ def scenario_verdicts(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     by_scenario: dict[str, list[str]] = defaultdict(list)
     for (scenario_id, _repeat), verdicts in per_repeat.items():
         by_scenario[scenario_id].append(_worst(verdicts))
+    invalid_counts: Counter[str] = Counter(sid for sid, _repeat in invalid_repeats)
 
     result: dict[str, dict[str, Any]] = {}
-    for scenario_id, verdicts in by_scenario.items():
+    for scenario_id in info:
+        verdicts = by_scenario.get(scenario_id, [])
+        if not verdicts:
+            # 유효 턴이 0개다 - 판정한 적이 없는 시나리오를 불합격으로 세지 않는다.
+            result[scenario_id] = {
+                **info[scenario_id],
+                "verdict": INVALID_VERDICT,
+                "repeats": 0,
+                "distinct": [],
+                "invalid_repeats": invalid_counts.get(scenario_id, 0),
+            }
+            continue
         distinct = set(verdicts)
         flaky = len(distinct) > 1 and "pass" in distinct and {"fail", "error"} & distinct
         result[scenario_id] = {
@@ -89,6 +172,7 @@ def scenario_verdicts(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             "verdict": "flaky" if flaky else _worst(verdicts),
             "repeats": len(verdicts),
             "distinct": sorted(distinct),
+            "invalid_repeats": invalid_counts.get(scenario_id, 0),
         }
     return result
 
@@ -121,6 +205,9 @@ def build_summary(
     rows = load_rows(run_dir)
     run = load_run_meta(run_dir)
     verdicts = scenario_verdicts(rows)
+    invalid = invalid_summary(rows)
+    # 성능·판정·R군 집계는 전부 **유효 턴**만 본다(T-c·T-d). 무효 턴은 별도 절에서 센다.
+    live_rows = valid_rows(rows)
 
     groups: dict[str, dict[str, Any]] = {}
     for group_id in sorted({v["group"] for v in verdicts.values() if v.get("group")}):
@@ -128,11 +215,11 @@ def build_summary(
         counts = Counter(v["verdict"] for v in members)
         latencies = [
             row.get("processing_time_ms")
-            for row in rows
+            for row in live_rows
             if row.get("group") == group_id and row.get("processing_time_ms") is not None
         ]
         perf = Counter(
-            row.get("perf_verdict") for row in rows if row.get("group") == group_id
+            row.get("perf_verdict") for row in live_rows if row.get("group") == group_id
         )
         target = (
             catalog.groups[group_id].latency_target_ms
@@ -146,6 +233,7 @@ def build_summary(
             "error": counts.get("error", 0),
             "manual": counts.get("manual", 0),
             "flaky": counts.get("flaky", 0),
+            "invalid": counts.get(INVALID_VERDICT, 0),
             "target_ms": target,
             "latency": _latency_stats([float(v) for v in latencies]),
             "perf_pass": perf.get("pass", 0),
@@ -166,8 +254,10 @@ def build_summary(
 
     misuse: dict[str, dict[str, Any]] = {}
     for kind_group in ("R1", "R2", "R3", "R4"):
+        # T-d: 대응 등급·`control_broken` 은 **유효 턴에서만** 센다. 401 구간의 R3·R4 96턴은
+        # 본군과 대조군이 함께 401 이라 「과잉 거부 의심」 26건으로 올라갔었다 - 전건 허위였다.
         members = [
-            row for row in rows if str(row.get("group", "")).upper() == kind_group
+            row for row in live_rows if str(row.get("group", "")).upper() == kind_group
         ]
         if not members:
             continue
@@ -193,12 +283,12 @@ def build_summary(
             "failed_assertions": row.get("failed_assertions", []),
             "forbidden_mode": row.get("forbidden_mode"),
         }
-        for row in rows
+        for row in live_rows
         if row.get("func_verdict") in ("fail", "error")
     ]
 
     silent_wrong = sum(
-        1 for row in rows if row.get("forbidden_mode") == "silent_wrong"
+        1 for row in live_rows if row.get("forbidden_mode") == "silent_wrong"
     )
 
     return {
@@ -211,6 +301,7 @@ def build_summary(
         "skipped": run.get("skipped", []),
         "silent_wrong_total": silent_wrong,
         "scenario_verdicts": verdicts,
+        "invalid": invalid,
     }
 
 
@@ -231,7 +322,14 @@ def _broken_pairs(verdicts: dict[str, dict[str, Any]], group_id: str) -> list[li
 
 
 def classify_failure(row: dict[str, Any]) -> str:
-    """실패 분류 10규칙 (§6.2). 위에서부터 먼저 맞는 것을 적용한다."""
+    """실패 분류 13규칙 (§6.2 · Y-7). 위에서부터 먼저 맞는 것을 적용한다.
+
+    `clarify`·`volume`·`contract` 세 유형은 run 20260915-131903 의 `unclassified` 12건을
+    보고 추가했다. 그 12건은 분류 체계의 갭이 아니라 **판정 계약 결함의 그림자**였다 -
+    `row_count`(D-02·D-04 팬아웃 합계) · `clarification.options_len`(I-01~I-06 미매핑 열
+    2개) · `response_must_contain`(H-06·H-12·H-13·I-07 안내 문구)이 전부였다.
+    유형을 갈라 놓아야 "계약을 고칠 것"과 "제품을 고칠 것"이 섞이지 않는다.
+    """
     keys = {f.get("key") for f in row.get("failed_assertions", [])}
     status_error = row.get("error") or row.get("forbidden_mode") in ("crash",)
 
@@ -248,9 +346,18 @@ def classify_failure(row: dict[str, Any]) -> str:
         return "empty_result"
     if {"file.columns", "file.sheets", "file.filled_rows.min", "has_file"} & keys:
         return "document"
+    if any(str(key).startswith("clarification") for key in keys):
+        # 되물었는가 · 무엇을 되물었는가. 조회 단계 이전의 실패다.
+        return "clarify"
+    if any(str(key).startswith("row_count") for key in keys):
+        # 행 수가 기대와 다르다. **어느 축으로 쟀는지**를 먼저 확인할 것(단일 DB vs 팬아웃).
+        return "volume"
+    if "response_must_contain" in keys:
+        # 처리는 했는데 사유·안내를 말하지 않았다(침묵 처리). 응답 계약 위반이다.
+        return "contract"
     if "retries.max" in keys:
         return "retry_exhaustion"
-    if "sql_must_match" in keys:
+    if {"sql_must_match", "period_covers"} & keys:
         return "semantics"
     if status_error:
         return "execution"
@@ -279,6 +386,37 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         add(
             "> **모의 실행(--mock)이다.** LLM도 DB도 호출하지 않았다. 기능 판정은 러너·단언기·"
             "리포트 배관이 도는지를 본 것이고 **시스템 품질의 근거가 아니다.**"
+        )
+        add("")
+    degraded = _degraded_profiles(summary)
+    if degraded:
+        # O-c: **정본 단이 아닌 단으로 측정됐다**는 사실은 판정표 전체의 해석을 바꾼다.
+        # run 20260915-131903 은 2단(`intent_orchestration`)으로 강등돼 돌았는데
+        # (`degraded_reason=flag_off`) 그 사실이 1절 표의 한 칸에만 있었다 -
+        # 정본 1단(`deep_agent`)은 그 run 에서 한 턴도 측정되지 않았다.
+        add(
+            "> **[경고] 정본 단이 아닌 실행 단으로 측정됐다.** "
+            + " · ".join(
+                f"`{p.get('name')}` = **{p.get('tier')}**(사유 `{p.get('degraded_reason')}`)"
+                for p in degraded
+            )
+            + ". 사다리는 1 정본 + 3 폴백의 강등 구조이고 단마다 노드 구성·지연 특성이 다르다"
+            "(`docs/21_orchestration_ladder.md`) - **아래 판정·지연을 정본 단의 성능으로 읽지 "
+            "말 것.** 의도한 강등이면 그 사실을 run 기록에 남기고, 아니면 `.env` 플래그를 "
+            "확인한 뒤 다시 측정한다."
+        )
+        add("")
+    invalid = summary.get("invalid") or {}
+    if invalid.get("over_threshold"):
+        # T-e: 무효율이 5% 를 넘으면 **판정표를 읽기 전에** 이 사실을 본다.
+        # run 20260915-131903 은 26.9% 였는데 리포트 어디에도 그 사실이 없어,
+        # 「R3·R4 전건 error」가 제품 결함으로 읽혔다.
+        add(
+            f"> **[경고] 무효 턴 {invalid['count']}건 / {invalid['total_turns']}턴 "
+            f"({invalid['ratio']:.1%}).** 러너 자신의 인증 실패로 측정이 성립하지 않은 구간이 "
+            f"5%를 넘는다 - **이 run 은 회귀 비교 대상에서 제외한다.** "
+            f"구간은 실행 순서 {invalid.get('first_index')}~{invalid.get('last_index')}번째 턴이고 "
+            f"건수·사유는 10절에 있다. 아래 판정표는 무효 턴을 **뺀** 분모다."
         )
         add("")
     if summary.get("silent_wrong_total"):
@@ -329,13 +467,18 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     add("## 2. 기능 판정 요약")
     add("")
     add("한 칸도 비우지 않는다. `불안정`은 합격으로도 불합격으로도 세지 않는다.")
+    add(
+        "`무효`는 러너 자신의 인증 실패로 **측정이 성립하지 않은** 시나리오다(T-c) - "
+        "합격률의 분모에 넣지 않는다. 사유는 10절."
+    )
     add("")
     add(_table(
-        ["군", "합격", "불합격", "오류", "수동 검토", "불안정", "계"],
+        ["군", "합격", "불합격", "오류", "수동 검토", "불안정", "무효", "계"],
         [
-            [g, v["pass"], v["fail"], v["error"], v["manual"], v["flaky"], v["total"]]
+            [g, v["pass"], v["fail"], v["error"], v["manual"], v["flaky"],
+             v.get("invalid", 0), v["total"]]
             for g, v in sorted(summary.get("groups", {}).items())
-        ] or [["(없음)", 0, 0, 0, 0, 0, 0]],
+        ] or [["(없음)", 0, 0, 0, 0, 0, 0, 0]],
     ))
     add("")
 
@@ -456,6 +599,10 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     # 10
     add("## 10. 제외·무효 목록")
     add("")
+    add(_render_invalid(summary.get("invalid") or {}))
+    add("")
+    add("### 실행하지 않은 것(제외)")
+    add("")
     skipped = summary.get("skipped", [])
     add(_table(
         ["시나리오", "턴", "사유"],
@@ -474,8 +621,57 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     return "\n".join(out) + "\n"
 
 
+def _render_invalid(invalid: dict[str, Any]) -> str:
+    """무효 턴 절 (T-c 수용 기준 - 「무효 턴 N건(사유)」).
+
+    **건수와 구간을 함께 낸다.** 연속 구간은 원인이 하나(토큰 만료)라는 신호이고,
+    흩어져 있으면 다른 사고다 - 둘을 같은 숫자로 보고하면 처방이 갈리지 않는다.
+    """
+    count = int(invalid.get("count") or 0)
+    if not count:
+        return "### 무효 턴(측정 미성립)\n\n무효 0건."
+    lines = [
+        "### 무효 턴(측정 미성립)",
+        "",
+        f"**{count}건 / {invalid.get('total_turns')}턴 ({float(invalid.get('ratio') or 0):.1%})** - "
+        "러너 자신의 인증 실패(401/403)로 측정이 성립하지 않았다. "
+        "판정표·실패 분류·대안 수립의 **분모에서 제외**했고, 여기에만 센다.",
+        "",
+        f"- 실행 순서 구간: **{invalid.get('first_index')}~{invalid.get('last_index')}번째 턴** "
+        f"(첫 무효 시나리오 `{invalid.get('first_scenario')}`)",
+        f"- 군별: {', '.join(f'{g}:{c}' for g, c in (invalid.get('by_group') or {}).items()) or '-'}",
+        "",
+        "재개하면 **이 턴들만** 다시 돈다(X-1 - `already()` 는 「기록됨」이 아니라 「성공」을 본다):",
+        "",
+        "```bash",
+        "python -m scripts.scenario --resume <RUN_ID>",
+        "```",
+        "",
+    ]
+    lines.append(_table(
+        ["순서", "시나리오", "턴", "반복", "사유"],
+        [[t.get("index"), t.get("scenario_id"), t.get("turn"), t.get("repeat"),
+          str(t.get("reason") or "")[:160]] for t in (invalid.get("turns") or [])[:50]],
+    ))
+    if count > 50:
+        lines.append("")
+        lines.append(f"(상위 50건만 표기 - 전체 {count}건은 `raw.jsonl` 의 `invalid_reason` 참조)")
+    return "\n".join(lines)
+
+
 def _regression_section(run_dir: Path, summary: dict[str, Any]) -> str:
-    """직전 run 과 비교한다. **같은 프로파일·같은 환경**하고만 비교한다(§5.3)."""
+    """직전 run 과 비교한다. **같은 프로파일·같은 환경**하고만 비교한다(§5.3).
+
+    **무효율이 5% 를 넘는 run 은 비교하지 않는다**(T-e) - 판정이 바뀐 것인지 측정되지
+    않은 것인지 구별되지 않는다.
+    """
+    invalid = summary.get("invalid") or {}
+    if invalid.get("over_threshold"):
+        return (
+            f"회귀 비교 **제외** - 무효 턴 {invalid.get('count')}건"
+            f"({float(invalid.get('ratio') or 0):.1%})으로 5% 상한을 넘겼다(T-e). "
+            "무효 구간을 재개(`--resume`)로 복구한 뒤 다시 비교한다."
+        )
     parent = run_dir.parent
     others = sorted(
         (p for p in parent.iterdir() if p.is_dir() and p.name < run_dir.name), reverse=True
@@ -485,6 +681,9 @@ def _regression_section(run_dir: Path, summary: dict[str, Any]) -> str:
         prev = build_summary(candidate, None)
         prev_meta = prev.get("meta", {})
         if prev_meta.get("env") != meta.get("env") or prev_meta.get("mode") != meta.get("mode"):
+            continue
+        if (prev.get("invalid") or {}).get("over_threshold"):
+            # 직전 run 이 무효투성이면 "판정이 바뀌었다"가 아니라 "저쪽이 측정되지 않았다"다.
             continue
         lines = [f"직전 비교 대상: `{candidate.name}` (같은 환경 `{meta.get('env')}` · 같은 성격 `{meta.get('mode')}`)", ""]
         current = summary.get("scenario_verdicts", {})

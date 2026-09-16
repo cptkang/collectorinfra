@@ -24,7 +24,15 @@ from typing import Any, Awaitable, Callable, Iterator, Optional
 import yaml
 
 from . import REPO_ROOT, clarify, run_capture, utf8_open
-from .assertions import Failure, Observation, Verdict, evaluate_turn
+from .assertions import (
+    INVALID_VERDICT,
+    Failure,
+    Observation,
+    Verdict,
+    option_labels,
+    evaluate_turn,
+    row_is_invalid,
+)
 from .catalog import Catalog, Scenario, Turn
 from .client import ClientConfig, ScenarioClient
 from .server import ProfileStatus, ServerHandle, pick_port, platform_provenance
@@ -93,6 +101,12 @@ class RunConfig:
     timeout_sec: float = 360.0
     run_id: str = ""
     resume_from: Optional[str] = None
+    #: 시나리오 N건마다 토큰을 새로 잡는다(X-2). 0/None 이면 분할하지 않는다.
+    segment: Optional[int] = None
+    #: 직전 run 의 무효·오류 시나리오만 **새 run_id** 로 다시 돈다(X-3).
+    resume_failed: Optional[str] = None
+    #: `resume_failed` 선택 근거(원본 행 수·무효/오류 턴 수·시나리오 수). run.json 에 남는다.
+    rerun_stats: dict[str, Any] = field(default_factory=dict)
 
     def resolved_run_id(self) -> str:
         if self.resume_from:
@@ -135,6 +149,63 @@ def run_meta(config: RunConfig, catalog: Catalog) -> dict[str, Any]:
         "platform": platform_provenance(),
         "host": platform.node(),
     }
+
+
+def segments(scenarios: list[Scenario], size: Optional[int]) -> list[list[Scenario]]:
+    """시나리오를 세그먼트로 끊는다(X-2). 크기가 없으면 통째로 1개.
+
+    **경계는 시나리오 경계다 — 턴 경계가 아니다.** 멀티턴 시나리오가 세그먼트에 쪼개지면
+    승계(thread_id·이전 턴 DB)가 끊겨 측정이 아니라 다른 것을 재게 된다(§15.4-1).
+
+    입력 순서를 보존하므로 `_execution_order` 가 맨 앞에 둔 **cold 묶음이 항상 첫
+    세그먼트**에 남는다(§15.4-2 · K-02 는 "서버 기동 직후 첫 요청"으로 cold 를 근사한다).
+    """
+    if not size or size < 1:
+        return [list(scenarios)]
+    return [list(scenarios[i:i + size]) for i in range(0, len(scenarios), size)]
+
+
+def failed_scenarios(run_id: str) -> tuple[list[str], dict[str, Any]]:
+    """직전 run 에서 **다시 돌아야 하는** 시나리오 ID 와 근거 통계 (X-3).
+
+    대상은 **무효**(러너 인증 실패 — `row_is_invalid`)와 **오류**(`func_verdict == "error"`)다.
+    불합격(`fail`)은 제외한다 — 그건 측정이 성립한 결과이고, 다시 돌린다고 달라지지 않는다.
+
+    **판정에 `row_is_invalid` 를 쓴다.** `func_verdict == "invalid"` 만 보면 T-c 이전에
+    적재된 run 이 통째로 빠진다 — run 20260915-131903 의 103턴이 정확히 그 형태다(`error`/`fail`
+    로 적재됨). X-3 이 존재하는 이유가 그 run 의 복구이므로 여기서 틀리면 기능이 무의미해진다.
+
+    **턴이 아니라 시나리오 단위로 돌려준다.** 새 run 은 `raw.jsonl` 이 비어 있어 재개 스킵이
+    걸리지 않고, 멀티턴은 1턴부터 새 thread 로 가야 승계가 성립한다. "턴만 고른다"는 표현은
+    새 run 에서는 성립하지 않는다.
+
+    Returns:
+        (시나리오 ID 목록(실행 순서 보존), 근거 통계)
+    """
+    path = RESULTS_ROOT / run_id / "raw.jsonl"
+    if not path.exists():
+        raise FileNotFoundError(f"원본 run 의 raw.jsonl 이 없다: {path}")
+    ids: list[str] = []
+    stats = {"rows": 0, "invalid_turns": 0, "error_turns": 0, "scenarios": 0}
+    for line in utf8_open(path, "r"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stats["rows"] += 1
+        invalid = row_is_invalid(row)
+        errored = str(row.get("func_verdict")) == "error"
+        if not (invalid or errored):
+            continue
+        stats["invalid_turns" if invalid else "error_turns"] += 1
+        scenario_id = str(row.get("scenario_id") or "")
+        if scenario_id and scenario_id not in ids:
+            ids.append(scenario_id)
+    stats["scenarios"] = len(ids)
+    return ids, stats
 
 
 def zoned_db_ids(path: Path = DB_REGISTRY_PATH) -> set[str]:
@@ -244,6 +315,16 @@ def estimate(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     }
 
 
+def row_key(row: dict[str, Any]) -> tuple[str, str, int, int]:
+    """재개 키. 한 턴을 유일하게 가리킨다."""
+    return (
+        str(row.get("profile")),
+        str(row.get("scenario_id")),
+        int(row.get("turn", 0)),
+        int(row.get("repeat", 0)),
+    )
+
+
 class RawLog:
     """raw.jsonl 적재기. 재개(resume)의 원본이다."""
 
@@ -262,14 +343,17 @@ class RawLog:
                         row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    self._done.add(
-                        (
-                            str(row.get("profile")),
-                            str(row.get("scenario_id")),
-                            int(row.get("turn", 0)),
-                            int(row.get("repeat", 0)),
-                        )
-                    )
+                    self._remember(row)
+
+    def _remember(self, row: dict[str, Any]) -> None:
+        # **「기록됨」이 아니라 「성공」이 재개 기준이다**(X-1). 무효 턴은 다시 돈다.
+        # 같은 키가 여러 번 나오면(재개 run) **뒤에 적재된 행이 결과**다 - 파일 순서가
+        # 곧 시간 순서이므로 마지막 것을 반영한다.
+        key = row_key(row)
+        if row_is_invalid(row):
+            self._done.discard(key)
+        else:
+            self._done.add(key)
 
     def already(self, profile: str, scenario_id: str, turn: int, repeat: int) -> bool:
         return (profile, scenario_id, turn, repeat) in self._done
@@ -279,9 +363,36 @@ class RawLog:
         with self._lock:
             with utf8_open(self.path, "a") as handle:
                 handle.write(line)
-            self._done.add(
-                (str(row["profile"]), str(row["scenario_id"]), int(row["turn"]), int(row["repeat"]))
-            )
+            self._remember(row)
+
+
+#: `raw.jsonl` 에 싣는 응답 본문의 상한(O-a). 표가 붙은 답변은 수만 자가 되므로 절단한다 -
+#: 판정에 필요한 것은 앞부분의 서술·안내 문구다. 절단 여부는 `response_truncated` 로 남는다.
+RESPONSE_TEXT_MAX = 4000
+
+
+def _clarification_snapshot(obs: Observation) -> Optional[dict[str, Any]]:
+    """역질문 선택지의 사후 판독본(O-a).
+
+    `clarification`/`form_fill_clarification` 원본을 통째로 싣지 않는다 - 폼필의
+    `candidates` 는 한 열에 86개가 붙어(P-14) 행을 부풀린다. **무엇을 몇 개 물었는가**만 남긴다.
+    """
+    payload = obs.clarification or obs.form_fill_clarification
+    if not payload:
+        return None
+    labels = option_labels(payload)
+    snapshot: dict[str, Any] = {
+        "kind": payload.get("kind") or ("form_fill" if obs.form_fill_clarification else None),
+        "options_len": len(labels),
+        "options": labels[:50],
+        "question": str(payload.get("question") or "")[:500],
+    }
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list):
+        # 후보 목록 자체가 판정 대상이다(P-14 - 원시 스키마 순서 86개 노출).
+        snapshot["candidates_len"] = len(candidates)
+        snapshot["candidates_head"] = [str(c) for c in candidates[:10]]
+    return snapshot
 
 
 def _row(
@@ -307,6 +418,10 @@ def _row(
         "kind": scenario.kind,
         "pair_id": scenario.pair_with,
         "func_verdict": verdict.func,
+        # 무효 턴(T-c)의 사유. 판정표·실패 분류의 분모에서 빠지는 대신 리포트가 여기서 건수와
+        # 구간을 만든다 - 무효를 세지 않으면 "측정하지 못한 것"이 "측정했는데 통과"가 된다.
+        "invalid_reason": verdict.invalid_reason,
+        "auth_retried": obs.auth_retried,
         "perf_verdict": verdict.perf,
         "response_mode": verdict.response_mode,
         "forbidden_mode": verdict.forbidden_mode,
@@ -324,6 +439,15 @@ def _row(
         "progress_events": len(obs.progress_events),
         "executed_sql": obs.executed_sql,
         "row_count": obs.row_count,
+        "row_counts_by_db": obs.row_counts_by_db,
+        # O-a: **사후 판정의 재료**. 유효 280턴 중 185턴(66%)이 수동 검토인데 `raw.jsonl` 에
+        # 응답 본문이 없어(`"response"` 키 0건 실측) 그 185턴을 사후에 판정할 방법이 없었다.
+        # I군 원인('비고')도 1.49 GB 체크포인트를 msgpack 수준에서 파싱해서야 확인했다.
+        # 상한을 두고 절단하되 **절단했다는 사실을 남긴다** - 조용히 자르면 판독이 또 막힌다.
+        "response_text": obs.response[:RESPONSE_TEXT_MAX] if obs.response else "",
+        "response_truncated": len(obs.response or "") > RESPONSE_TEXT_MAX,
+        "clarification_options": _clarification_snapshot(obs),
+        "column_mapping": obs.column_mapping or {},
         # db_ids 단언이 실제로 무엇과 대조됐는지 원시 로그에 남긴다 — 없으면 판정을 검증할 수 없다
         # (2026-09-15: 이 칸이 없어 "db_ids 가 비었다"는 오판을 원시 로그로 반박하지 못했다).
         "db_ids": obs.db_ids,
@@ -438,6 +562,139 @@ def acquire_tokens(
     return user_token, admin_token, reasons
 
 
+#: 토큰 수명의 몇 %가 지나면 선제 갱신하는가(T-b). 8시간 수명이면 6.4시간에 한 번이다.
+TOKEN_REFRESH_RATIO = 0.8
+
+
+def jwt_lifetime_sec() -> Optional[float]:
+    """서버가 발급하는 사용자 토큰의 수명(초). 읽지 못하면 None.
+
+    **설정을 읽는다 - 추정하지 않는다.** `AuthConfig.jwt_expire_hours`(기본 8)가 정본이고,
+    러너가 그 값을 모르면 선제 갱신을 하지 않는다(모르는 채로 주기를 정하면 그 자체가 추정이다).
+    """
+    try:
+        from src.config import load_config
+
+        hours = int(load_config().auth.jwt_expire_hours)
+    except Exception:
+        return None
+    return float(hours) * 3600.0 if hours > 0 else None
+
+
+class TokenSource:
+    """질의 토큰의 수명 관리자(T-a·T-b · D-218).
+
+    run 20260915-131903 은 **280번째 턴부터 마지막까지 103턴(26.9%)이 전건 401** 이었다.
+    러너가 프로파일 기동 시 토큰을 한 번 받고(`acquire_tokens`) 재발급 경로가 없었기 때문이다.
+    첫 401 시점의 누적 턴 wall 은 7.52시간 - `jwt_expire_hours = 8` 을 벽시계로 넘긴 지점이다.
+
+    두 갈래로 막는다:
+      - **T-b 선제 갱신** — 발급 시각을 기억하고 수명의 80% 가 지나면 **턴 경계에서** 다시 받는다.
+        턴 중간에 재발급하면 멀티턴 승계·역질문 왕복이 토큰 교체와 겹친다.
+      - **T-a 반응 재시도** — 그래도 401 이 오면 재로그인 후 그 요청만 1회 다시 보낸다.
+
+    **주입 토큰(`--token`)은 선제 갱신할 수 없다** - 언제 발급됐는지 러너가 모른다.
+    크레덴셜을 함께 넘겼으면 T-a 는 살아 있고, 아니면 재발급 경로 자체가 없다(그 사실을
+    프로파일 사유로 남긴다 - 조용히 8시간 뒤에 깨지지 않게).
+    """
+
+    def __init__(
+        self,
+        token: Optional[str],
+        relogin: Optional[Callable[[], tuple[Optional[str], Optional[str]]]] = None,
+        lifetime_sec: Optional[float] = None,
+        issued_at: Optional[float] = None,
+    ) -> None:
+        self._token = token
+        self._relogin = relogin
+        self._lifetime_sec = lifetime_sec
+        self._issued_at = issued_at
+        self._lock = threading.Lock()
+        #: (시각, 사유) - 리포트·run.json 이 "언제 몇 번 다시 받았나"를 말할 수 있게.
+        self.refreshes: list[dict[str, Any]] = []
+        self.failures: list[str] = []
+
+    @property
+    def token(self) -> Optional[str]:
+        return self._token
+
+    @property
+    def can_refresh(self) -> bool:
+        return self._relogin is not None
+
+    @property
+    def can_preempt(self) -> bool:
+        """선제 갱신이 가능한가 - 재로그인 경로 + 발급 시각 + 수명이 모두 있어야 한다."""
+        return self.can_refresh and self._issued_at is not None and bool(self._lifetime_sec)
+
+    def refresh(self, reason: str = "401") -> Optional[str]:
+        """재로그인해 새 토큰을 받는다. 못 받으면 None."""
+        if self._relogin is None:
+            return None
+        with self._lock:
+            token, error = self._relogin()
+            now = time.monotonic()
+            if token:
+                self._token = token
+                self._issued_at = now
+                self.refreshes.append({"reason": reason, "at_monotonic": round(now, 1)})
+                return token
+            # **조용히 넘기지 않는다.** 재발급 실패는 그 뒤 전 턴이 무효가 된다는 뜻이다.
+            self.failures.append(f"{reason}: 재로그인 실패 - {error or '사유 미상'}")
+            return None
+
+    def maybe_refresh(self) -> Optional[str]:
+        """턴 경계에서 호출한다. 수명의 80% 가 지났으면 미리 받아 둔다(T-b)."""
+        if not self.can_preempt:
+            return None
+        assert self._issued_at is not None and self._lifetime_sec is not None
+        elapsed = time.monotonic() - self._issued_at
+        if elapsed < self._lifetime_sec * TOKEN_REFRESH_RATIO:
+            return None
+        return self.refresh(reason=f"선제 갱신(경과 {elapsed / 3600:.1f}h)")
+
+
+def user_relogin(port: int, user_id: str, password: str) -> Callable[
+    [], tuple[Optional[str], Optional[str]]
+]:
+    """재로그인 클로저. **연결을 새로 연다** - 만료 시점의 연결 상태에 기대지 않는다."""
+
+    def _login() -> tuple[Optional[str], Optional[str]]:
+        client = ScenarioClient(ClientConfig(port=port))
+        try:
+            return client.login(user_id, password)
+        finally:
+            client.close()
+
+    return _login
+
+
+def build_token_source(port: int, config: RunConfig, token: Optional[str]) -> TokenSource:
+    """프로파일 1개에 쓸 토큰 수명 관리자를 만든다.
+
+    크레덴셜 우선순위는 `acquire_tokens`·`login_default_user` 와 **같아야 한다** -
+    다른 계정으로 재로그인하면 8시간 뒤에 권한이 조용히 바뀐다.
+
+    **`--token` 만 주입하고 크레덴셜이 없으면 재발급 경로를 만들지 않는다.** 그 토큰이
+    누구 것인지 러너가 모르는데 내장 테스트 계정으로 다시 로그인하면 신원이 바뀐다
+    (D-215 의 전용 벤치 계정이 정확히 이 경우다).
+    """
+    named = bool(config.user_id and config.user_password)
+    if config.token and not named:
+        return TokenSource(token=token, relogin=None)
+    user_id = config.user_id if named else DEFAULT_USER_ID
+    password = config.user_password if named else DEFAULT_USER_PASSWORD
+    relogin = user_relogin(port, str(user_id), str(password))
+    # 주입 토큰은 발급 시각을 모른다 - 선제 갱신 대상이 아니다(T-a 만 작동).
+    issued_at = None if config.token else time.monotonic()
+    return TokenSource(
+        token=token,
+        relogin=relogin,
+        lifetime_sec=jwt_lifetime_sec(),
+        issued_at=issued_at,
+    )
+
+
 def login_default_user(port: int) -> tuple[Optional[str], Optional[str]]:
     """내장 테스트 계정으로 로그인한다(D-216). (토큰, 실패 사유)."""
     client = ScenarioClient(ClientConfig(port=port))
@@ -494,6 +751,11 @@ def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
 def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     meta = run_meta(config, catalog)
     meta["env"], meta["env_source"] = resolve_env(config)
+    if config.resume_failed:
+        # X-3: 원본 run 은 **건드리지 않는다** - 새 run_id 로 돌고 출처만 남긴다.
+        # 원본을 덮어쓰면 "무엇이 무효였는지"가 사라져 복구 자체를 검증할 수 없다.
+        meta["rerun_of"] = config.resume_failed
+        meta["rerun_selection"] = config.rerun_stats or {}
     out_dir = RESULTS_ROOT / meta["run_id"]
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "logs").mkdir(exist_ok=True)
@@ -557,10 +819,31 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
                         }
                     )
                 continue
+            token_source = build_token_source(port, config, user_token)
+            if status.auth_enabled and not token_source.can_refresh:
+                # 8시간을 넘기는 run 에서 이 상태는 **반드시 401 로 끝난다**(T-a·T-b 둘 다 불가).
+                # 끝나고 나서 103턴 무효를 발견하지 않도록 기동 시점에 말한다.
+                lifetime = jwt_lifetime_sec()
+                status.reasons.append(
+                    "주입 토큰(--token)이고 --user/--password 가 없어 만료 시 재발급 경로가 없다 - "
+                    + (f"수명 {lifetime / 3600:.0f}시간" if lifetime else "토큰 수명")
+                    + "을 넘기는 run 은 전건 401 로 끝난다"
+                )
+            elif status.auth_enabled and not token_source.can_preempt:
+                status.reasons.append(
+                    "토큰 발급 시각을 몰라 선제 갱신(T-b)을 하지 않는다 - 401 재시도(T-a)로만 막힌다"
+                )
             executed += _run_profile(
                 catalog, config, meta, profile, scenarios, port, raw, out_dir, skipped,
-                token=user_token,
+                token=user_token, token_source=token_source,
             )
+            if token_source.refreshes or token_source.failures:
+                meta.setdefault("token_refresh", []).append({
+                    "profile": profile,
+                    "refreshes": token_source.refreshes,
+                    "failures": token_source.failures,
+                })
+                status.reasons.extend(token_source.failures)
         except Exception as exc:
             # 기동 자체가 실패하면 그 프로파일이 리포트에서 통째로 사라진다 -
             # 사라진 프로파일은 "돌지 않았다"가 아니라 "없었다"로 읽힌다.
@@ -648,13 +931,23 @@ class SqlAuditTail:
 
 
 def _apply_sql_audit(obs: Observation, entries: list[dict[str, Any]]) -> None:
-    """감사 로그 수집분을 관측치에 얹는다 - SQL 목록과 재시도 회차(retry_attempt 최댓값)."""
+    """감사 로그 수집분을 관측치에 얹는다 - SQL 목록·재시도 회차·**DB 별 행 수**.
+
+    DB 별 행 수는 **마지막 성공 실행**의 값을 쓴다(Y-4). 합산하면 재시도 회차가 중복으로
+    더해져 "각 DB 100행"이 200행으로 보인다 - 사용자가 받은 것은 마지막 성공분이다.
+    """
     if not entries:
         return
     obs.executed_sqls = [entry["sql"] for entry in entries if entry["sql"]]
     attempts = [e["retry_attempt"] for e in entries if isinstance(e.get("retry_attempt"), int)]
     if attempts:
         obs.retries = max(obs.retries or 0, max(attempts))
+    per_db: dict[str, int] = {}
+    for entry in entries:
+        source, count = entry.get("source"), entry.get("row_count")
+        if source and isinstance(count, int) and entry.get("success") is not False:
+            per_db[str(source)] = count
+    obs.row_counts_by_db = per_db
 
 
 def _trace_files() -> set[str]:
@@ -1007,6 +1300,7 @@ def _run_profile(
     out_dir: Path,
     skipped: list[dict[str, Any]],
     token: Optional[str] = None,
+    token_source: Optional[TokenSource] = None,
 ) -> int:
     executed = 0
     client_config = ClientConfig(
@@ -1014,48 +1308,97 @@ def _run_profile(
         token=token or config.token,
         timeout_sec=config.timeout_sec,
         artifact_dir=out_dir / "artifacts",
+        token_source=token_source,
     )
     live = config.mode != "mock"
     kwargs: dict[str, Any] = {
         "preference": clarify.load_zone_preference(),
         "sql_tail": SqlAuditTail(out_dir / "logs" / f"server-{profile}.log") if live else None,
+        "token_source": token_source,
     }
     if live:
         cleanup = _cleanup_leftover_setup(scenarios, meta.get("env"))
         if cleanup:
             meta.setdefault("setup_cleanup", []).extend(cleanup)
     with ScenarioClient(client_config) as client:
-        for scenario in scenarios:
-            if not scenario.prompt_authored:
-                # 보낼 프롬프트가 없거나(원문이 산문) 러너가 그 흐름을 표현하지 못한다
-                # (반복·동시성·쓰기 선행 조건). 원인을 여기서 단정하지 않는다 - 사유는
-                # 시나리오 파일의 해당 항목 주석에 적는다(k_load.yaml 선례).
-                skipped.append({
-                    "scenario_id": scenario.id,
-                    "reason": "prompt_authored: false - 실행 불가 사유는 시나리오 파일의 "
-                              "해당 항목 주석에 있다",
-                })
-                continue
-            if scenario.action:
-                executed += _run_action(config, meta, profile, scenario, raw, skipped)
-                continue
-            if scenario.replay:
-                executed += _run_replay(
-                    catalog, config, meta, profile, scenario, client, raw, out_dir, skipped, **kwargs
+        # X-2: 세그먼트마다 **토큰만** 새로 잡는다. 서버는 재기동하지 않고(프로파일 1개 =
+        # 서버 기동 1회 · §3.5), 체크포인트 DB·`raw.jsonl` 도 그대로 공유한다(§15.4-3·4).
+        # teardown 은 세그먼트가 아니라 run 단위라 여기서 손대지 않는다(§15.4-5 · D-217 ⑦·⑪).
+        chunks = segments(scenarios, config.segment)
+        total_segments = len(chunks)
+        for index, chunk in enumerate(chunks):
+            # 토큰을 쓰지 않는 프로파일(인증 off·모의 서버)은 갱신할 것이 없다 -
+            # 시도하면 세그먼트마다 허위 경고가 나서 진짜 경고를 덮는다.
+            if index > 0 and token_source is not None and token_source.token:
+                refreshed = token_source.refresh(reason=f"세그먼트 {index + 1} 시작")
+                if refreshed is None and token_source.can_refresh:
+                    # 조용히 넘기면 이 세그먼트 전체가 401 로 무효가 된다.
+                    print(
+                        f"       [경고] 세그먼트 {index + 1} 토큰 재발급 실패 - "
+                        "이후 턴이 무효로 적재될 수 있다",
+                        flush=True,
+                    )
+            if config.segment:
+                # 콘솔은 ASCII 구두점만 쓴다(cp949 - 모듈 독스트링).
+                print(
+                    f"       [세그먼트 {index + 1}/{total_segments}] "
+                    f"시나리오 {len(chunk)}건: {', '.join(s.id for s in chunk[:3])}"
+                    f"{' ...' if len(chunk) > 3 else ''}",
+                    flush=True,
                 )
-                continue
-            if scenario.concurrent:
-                executed += _run_concurrent(
-                    catalog, config, meta, profile, scenario, client_config, raw, out_dir,
-                    skipped, **kwargs,
-                )
-                continue
-            repeats = scenario.repeat or (3 if scenario.is_r_group else config.repeat)
-            for repeat in range(repeats):
-                executed += _run_once(
-                    catalog, config, meta, profile, scenario, repeat, client, raw, out_dir, skipped,
-                    **kwargs,
-                )
+            executed += _run_segment(
+                catalog, config, meta, profile, chunk, client, client_config,
+                raw, out_dir, skipped, kwargs,
+            )
+    return executed
+
+
+def _run_segment(
+    catalog: Catalog,
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    scenarios: list[Scenario],
+    client: ScenarioClient,
+    client_config: ClientConfig,
+    raw: RawLog,
+    out_dir: Path,
+    skipped: list[dict[str, Any]],
+    kwargs: dict[str, Any],
+) -> int:
+    """세그먼트 1개(시나리오 목록)를 순서대로 실행한다. 분할이 없으면 전체가 1 세그먼트다."""
+    executed = 0
+    for scenario in scenarios:
+        if not scenario.prompt_authored:
+            # 보낼 프롬프트가 없거나(원문이 산문) 러너가 그 흐름을 표현하지 못한다
+            # (반복·동시성·쓰기 선행 조건). 원인을 여기서 단정하지 않는다 - 사유는
+            # 시나리오 파일의 해당 항목 주석에 적는다(k_load.yaml 선례).
+            skipped.append({
+                "scenario_id": scenario.id,
+                "reason": "prompt_authored: false - 실행 불가 사유는 시나리오 파일의 "
+                          "해당 항목 주석에 있다",
+            })
+            continue
+        if scenario.action:
+            executed += _run_action(config, meta, profile, scenario, raw, skipped)
+            continue
+        if scenario.replay:
+            executed += _run_replay(
+                catalog, config, meta, profile, scenario, client, raw, out_dir, skipped, **kwargs
+            )
+            continue
+        if scenario.concurrent:
+            executed += _run_concurrent(
+                catalog, config, meta, profile, scenario, client_config, raw, out_dir,
+                skipped, **kwargs,
+            )
+            continue
+        repeats = scenario.repeat or (3 if scenario.is_r_group else config.repeat)
+        for repeat in range(repeats):
+            executed += _run_once(
+                catalog, config, meta, profile, scenario, repeat, client, raw, out_dir, skipped,
+                **kwargs,
+            )
     return executed
 
 
@@ -1145,6 +1488,7 @@ def _run_once(
     skipped: list[dict[str, Any]],
     preference: Optional[list[str]] = None,
     sql_tail: Optional[SqlAuditTail] = None,
+    token_source: Optional[TokenSource] = None,
     turn_offset: int = 0,
     extras_base: Optional[dict[str, Any]] = None,
 ) -> int:
@@ -1195,6 +1539,10 @@ def _run_once(
             turn_no = turn_offset + index
             if raw.already(profile, scenario.id, turn_no, repeat):
                 continue
+            if token_source is not None:
+                # T-b: 재발급은 **턴 경계에서만** 한다. 턴 중간(역질문 왕복·멀티턴 승계)에
+                # 토큰이 바뀌면 교체와 승계가 겹쳐 무엇이 깨졌는지 구별되지 않는다.
+                token_source.maybe_refresh()
             payload = clarify.complete_payload(dict(turn.send), last_obs, last_query)
             payload["thread_id"] = thread_id
             endpoint = turn.endpoint or scenario.endpoint
@@ -1249,14 +1597,20 @@ def _run_once(
             raw.append(_row(meta, profile, scenario, turn_no, repeat, obs, verdict, extras))
             executed += 1
 
-            if verdict.func in ("fail", "error") and index < len(scenario.turns):
+            if verdict.func in ("fail", "error", INVALID_VERDICT) and index < len(scenario.turns):
                 # 앞 턴이 깨지면 뒤 턴의 판정은 의미가 없다. 건너뛴 사실을 남긴다.
+                # 무효(T-c)도 여기 포함한다 - 인증이 죽은 채로 뒤 턴을 보내 봐야 401 이 늘 뿐이다.
+                reason = (
+                    f"선행 턴 {turn_no} 이 무효(러너 인증 실패) - 재개(--resume) 대상"
+                    if verdict.func == INVALID_VERDICT
+                    else f"선행 턴 {turn_no} 이 {verdict.func} - 후속 턴 판정 불가"
+                )
                 for remaining in range(index + 1, len(scenario.turns) + 1):
                     skipped.append(
                         {
                             "scenario_id": scenario.id,
                             "turn": turn_offset + remaining,
-                            "reason": f"선행 턴 {turn_no} 이 {verdict.func} - 후속 턴 판정 불가",
+                            "reason": reason,
                         }
                     )
                 break

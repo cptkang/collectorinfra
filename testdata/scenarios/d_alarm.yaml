@@ -10,13 +10,26 @@ group:
   latency_target_ms: 10000
   policy_confirmed: false
   source: "docs/29"
+# ★ 프로파일 이전 (V-a · G-1 확정 2026-09-16) — baseline → optin_alarm
+#
+# D군은 `cmm_alarm_def` 조인·LIMIT 준수 같은 **결정적 알람 경로의 동작**을 단언하는데
+# 종전에는 그 경로가 꺼진 baseline 에서 돌았다(`TEXT2SQL_ALARM_DETERMINISTIC` 기본 false).
+# G-1 은 "기본값을 올리기 전에 먼저 측정한다"로 확정됐으므로 **시나리오를 옮긴다** —
+# `config/scenarios/profiles.yaml` 의 optin_alarm 은 그 플래그 하나만 켠다.
+#
+# 아래 단언은 결정적 조립이 실제로 내는 SQL 을 **직접 뽑아 대조**했다(2026-09-16 ·
+# `try_deterministic_alarm_sql` 무과금 호출). 그 결과 셋으로 갈렸다:
+#   ① 통과 확인 — D-01
+#   ② 하네스 계약 결함이라 단언을 고침 — D-03(표기 단언 → 기간 의미 단언)
+#   ③ **제품 결함이라 단언을 그대로 둠** — D-02·D-04(사용자가 말한 건수를 버리고
+#      설정 상한을 쓴다) · D-05(임계값 조인 없음). 불합격이 나야 맞는 자리다.
 scenarios:
   - id: D-01
     plans: [44, 45]
     title: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optin_alarm
     endpoint: stream
     turns:
       - send:
@@ -31,57 +44,72 @@ scenarios:
     title: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optin_alarm
     endpoint: stream
     turns:
       - send:
           query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
         expect:
           status: completed
+          # ★ 이 두 단언은 **일부러 남긴다** — 결정적 조립 실측(2026-09-16)에서
+          #   사용자가 말한 "100건"이 버려지고 설정 상한(LIMIT 1000)이 붙었다.
+          #   요건 침묵 누락이라 불합격이 나야 맞다(하네스 계약 결함이 아니다).
           sql_must_match: ["(?i)\\blimit\\s+100\\b",
                           "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
-          row_count: {max: 100}
+          # 행 수는 DB별로 본다(Y-4) — 존 역질문 확대(CU-3) 전에는 3-DB 합산이 300이라
+          # per-DB 기대값과 비교돼 허위 불합격이었다.
+          row_count_per_db: {max: 100}
   - id: D-03
     plans: [44, 45]
     title: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optin_alarm
     endpoint: stream
     turns:
       - send:
           query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)count\\s*\\(", "(?i)202607"]
-          row_count: {eq: 1}
+          # 기간은 **표기가 아니라 의미**로 본다(Y-5) — 결정적 조립은
+          #   `ctime >= TIMESTAMP '2026-07-01' AND ctime < TIMESTAMP '2026-08-01'` 을 낸다.
+          #   종전 `(?i)202607` 은 기간이 정확한데도 불합격이었다(허위 불합격).
+          sql_must_match: ["(?i)count\\s*\\("]
+          period_covers: {from: "2026-07-01", to: "2026-08-01"}
+          row_count_per_db: {eq: 1}
   - id: D-04
     plans: [44, 45]
     title: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optin_alarm
     endpoint: stream
     turns:
       - send:
           query: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
         expect:
           status: completed
+          # ★ `limit 10` 단언도 **일부러 남긴다** — 실측상 "상위 10개"가 버려지고
+          #   LIMIT 1000 이 붙는다(D-02와 같은 요건 침묵 누락).
           sql_must_match: ["(?i)group\\s+by", "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
                           "(?i)\\blimit\\s+10\\b"]
-          row_count: {max: 10}
+          row_count_per_db: {max: 10}
   - id: D-05
     plans: [44, 45]
     title: "이번 달 CPU 임계값 초과 알람 이력 조회"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optin_alarm
     endpoint: stream
     turns:
       - send:
           query: "이번 달 CPU 임계값 초과 알람 이력 조회"
         expect:
           status: completed
+          # ★ **결정적 경로를 켜도 이 조인은 생기지 않는다**(2026-09-16 실측) —
+          #   조립본도 `res.resource_type IN ('server.Cpus')` 로 대체하고 임계값 정의를
+          #   조인하지 않는다. `plans/98` CU-7 이 "플래그가 꺼져 LLM 경로로 갔기 때문"이라고
+          #   본 전제가 틀렸다. 단언은 유지한다 — 불합격이 나야 맞는 자리다.
           sql_must_match: ["(?i)cmm_alarm_def"]
           manual_review: "이번 달 범위가 실행 시점 기준으로 맞는지"
   - id: D-06
@@ -89,7 +117,7 @@ scenarios:
     title: "담당자 없는 미확인 알람"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optin_alarm
     endpoint: stream
     turns:
       - send:

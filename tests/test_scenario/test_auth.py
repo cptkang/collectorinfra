@@ -17,7 +17,7 @@ from typing import Any, Optional
 import pytest
 
 from scripts.scenario import runner as runner_mod
-from scripts.scenario.assertions import Observation, evaluate_turn
+from scripts.scenario.assertions import INVALID_VERDICT, Observation, evaluate_turn
 from scripts.scenario.catalog import Group, Scenario, Turn
 from scripts.scenario.client import ClientConfig, ScenarioClient
 
@@ -113,8 +113,14 @@ def test_설정_에코는_운영자_토큰을_쓴다(monkeypatch: pytest.MonkeyP
 
 # --- 4xx 는 오류다, 보류가 아니다 ----------------------------------------
 
-def test_401_은_manual_이_아니라_error_로_판정된다() -> None:
-    """종전에는 obs.error 가 비어 판정기가 `manual` 을 줬다 - 1984건이 전부 그렇게 샜다."""
+def test_401_은_manual_이_아니라_무효로_판정된다() -> None:
+    """종전에는 obs.error 가 비어 판정기가 `manual` 을 줬다 - 1984건이 전부 그렇게 샜다.
+
+    **T-c(D-218): `error` 가 아니라 `invalid` 다.** D-217 이 401 을 보이게 만들었더니
+    이번에는 `http_status` 단언이 기대 200 vs 실제 401 을 **기능 불합격**으로 세어,
+    run 20260915-131903 에서 불합격 31건·「과잉 거부 의심」 26건이 전건 허위가 됐다.
+    401 은 보이되 **기능 판정의 분모에서는 빠져야** 한다.
+    """
     scenario = Scenario(
         id="X-1", group="T", plans=[93], title="t",
         turns=[Turn(send={"query": "q"}, expect={})],
@@ -125,8 +131,38 @@ def test_401_은_manual_이_아니라_error_로_판정된다() -> None:
 
     verdict = evaluate_turn(scenario, 1, scenario.turns[0], obs, group)
 
-    assert verdict.func == "error"
+    assert verdict.func == INVALID_VERDICT
+    assert verdict.func not in ("manual", "pass")
     assert verdict.response_mode == "error"
+    assert "401" in (verdict.invalid_reason or "")
+
+
+def test_V24_401_은_기능_단언을_불합격으로_남기지_않는다() -> None:
+    """기대 200 vs 실제 401 을 기능 불합격으로 세면 판정표가 통째로 거짓이 된다(T-c)."""
+    scenario = Scenario(
+        id="X-2", group="T", plans=[94], title="t",
+        turns=[Turn(send={"query": "q"}, expect={"http_status": 200, "row_count": {"min": 1}})],
+    )
+    group = Group(id="T", name="t", latency_target_ms=10000)
+    obs = Observation(status="error", http_status=401, error="http 401 - 토큰이 만료되었습니다")
+
+    verdict = evaluate_turn(scenario, 1, scenario.turns[0], obs, group)
+
+    assert verdict.func == INVALID_VERDICT
+    assert verdict.failures == []          # http_status·row_count 가 401 의 그림자로 세이지 않는다
+    assert verdict.perf == "n/a"           # 인증에 튕긴 왕복을 지연 표본으로 쓰지 않는다
+
+
+def test_401_을_기대하는_턴은_무효가_아니다() -> None:
+    """기대한 오류는 측정이 성립한 것이다 - 가드 시나리오를 무효로 지우지 않는다."""
+    scenario = Scenario(
+        id="X-3", group="T", plans=[94], title="t",
+        turns=[Turn(send={"query": "q"}, expect={"http_status": 401})],
+    )
+    group = Group(id="T", name="t", latency_target_ms=10000)
+    obs = Observation(status="error", http_status=401, error="http 401: 인증 필요")
+
+    assert evaluate_turn(scenario, 1, scenario.turns[0], obs, group).func == "pass"
 
 
 # --- 기동마다 다시 받는다 ------------------------------------------------

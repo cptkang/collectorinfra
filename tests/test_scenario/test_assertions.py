@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.scenario.assertions import Observation, classify_mode, evaluate_turn
+from scripts.scenario.assertions import (
+    INVALID_VERDICT,
+    Observation,
+    classify_mode,
+    evaluate_turn,
+)
 from scripts.scenario.catalog import Group, Scenario, Turn
 
 
@@ -387,9 +392,25 @@ def test_기대와_다른_4xx_는_불합격이다() -> None:
 
 
 def test_기대값이_없는_오류는_여전히_error_다() -> None:
-    """401 이 manual 로 새던 회귀를 다시 열지 않는다."""
+    """401 이 manual 로 새던 회귀를 다시 열지 않는다.
+
+    **T-c(D-218) 로 판정값이 `error` → `invalid` 로 바뀌었다.** 바뀐 것은 이름이 아니라
+    분모다 - 러너 자신의 인증 실패는 기능 판정에 넣지 않는다. 지켜야 하는 원래 계약
+    (`manual` 로 새지 않는다)은 그대로다.
+    """
     scenario = _scenario(turns=[Turn({"query": "q"}, {})])
     obs = Observation(status="error", http_status=401, error="http 401 - 토큰 없음")
+    verdict = _eval(scenario, obs)
+
+    assert verdict.func == INVALID_VERDICT
+    assert verdict.func != "manual"
+    assert "401" in (verdict.invalid_reason or "")
+
+
+def test_인증과_무관한_오류는_여전히_error_다() -> None:
+    """T-c 가 **모든** 오류를 무효로 바꾸지는 않는다 - 500 은 제품 실패다."""
+    scenario = _scenario(turns=[Turn({"query": "q"}, {})])
+    obs = Observation(status="error", http_status=500, error="http 500: 내부 오류")
 
     assert _eval(scenario, obs).func == "error"
 
@@ -402,3 +423,73 @@ def test_재시도를_셀_수_없으면_예산_단언은_manual_이다() -> None
 
     assert verdict.func == "manual"
     assert any("retries.max" in note for note in verdict.manual_notes)
+
+
+# --- SQL 은 하나씩 본다 · 못 본 것과 없는 것을 구별한다 (2026-09-15) ---------
+
+def _sql_obs(*sqls: str, status: str = "completed") -> Observation:
+    obs = Observation(status=status)
+    obs.executed_sqls = list(sqls)
+    return obs
+
+
+def test_must_match_는_SQL_하나라도_맞으면_통과다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"sql_must_match": ["(?i)cmm_alarm"]})])
+    obs = _sql_obs("SELECT 1 FROM cmm_resource", "SELECT 1 FROM cmm_alarm_active")
+
+    assert _eval(scenario, obs).func == "pass"
+
+
+def test_SQL_경계를_넘는_거짓_일치를_만들지_않는다() -> None:
+    """앞 SQL 의 ORDER BY 와 뒤 SQL 의 DESC 가 이어붙으면 맞는 것처럼 보인다."""
+    scenario = _scenario(turns=[Turn({"query": "q"}, {
+        "sql_must_match": ["(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]})])
+    obs = _sql_obs("SELECT a FROM x ORDER BY a", "SELECT b FROM y WHERE c = 'desc'")
+    obs.executed_sqls[1] = "SELECT b FROM y ORDER BY b ASC"
+    obs.executed_sqls.append("SELECT 'DESC' AS label FROM z")
+
+    assert _eval(scenario, obs).func == "fail"
+
+
+def test_must_not_match_는_SQL_하나라도_맞으면_위반이다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"sql_must_not_match": ["(?i)여의도"]})])
+    obs = _sql_obs("SELECT 1 FROM cmm_resource", "SELECT 1 FROM cmm_resource WHERE loc = '여의도'")
+
+    verdict = _eval(scenario, obs)
+
+    assert verdict.func == "fail"
+    assert verdict.failures[0].actual.endswith("'여의도'")
+
+
+
+
+def test_완료됐는데_SQL_이_없다고_관측되면_불합격이다() -> None:
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"sql_must_match": ["(?i)select"]})])
+
+    assert _eval(scenario, _sql_obs()).func == "fail"
+
+
+# --- Y-9 · 못 본 SQL 과 안 만든 SQL 을 가른다 (plans/94 §16 · 2026-09-16) -----
+
+def test_역질문으로_끝나_SQL_이_없으면_보류다() -> None:
+    """존 역질문은 아직 조회 단계가 아니다 - 불합격으로 세면 'SQL 미생성'으로 읽힌다."""
+    scenario = _scenario(turns=[Turn({"query": "q"}, {"sql_must_match": ["(?i)select"]})])
+
+    verdict = _eval(scenario, _sql_obs(status="clarification"))
+
+    assert verdict.func == "manual"
+    assert any("역질문" in note for note in verdict.manual_notes)
+
+
+def test_모의_실행은_SQL_수집기가_없어_보류다() -> None:
+    """감사 로그 tail 은 실 모드에만 붙는다 - 수집기 부재를 미생성으로 세지 않는다."""
+    scenario = _scenario(
+        turns=[Turn({"query": "q"}, {"sql_must_match": ["(?i)select"]})],
+        mock={"turns": [{"response": "ok"}]},
+    )
+
+    verdict = evaluate_turn(scenario, 1, scenario.turns[0],
+                            Observation(status="completed"), _group(), mock=True)
+
+    assert verdict.func == "manual"
+    assert any("수집기" in note for note in verdict.manual_notes)

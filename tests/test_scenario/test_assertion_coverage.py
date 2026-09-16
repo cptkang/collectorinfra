@@ -23,6 +23,8 @@ KNOWN_KEYS = {
     "response_must_contain", "response_must_not_contain", "clarification", "file",
     "sql_must_match", "sql_must_not_match", "column_must_not_map",
     "node_path", "sse_events", "llm_calls", "retries", "gold_sql", "manual_review",
+    # 판정 계약 교정 (Y-4·Y-5 · D-218). `row_count` 는 단일 DB 턴 전용이 됐다.
+    "row_count_per_db", "row_count_total", "period_covers",
 }
 
 

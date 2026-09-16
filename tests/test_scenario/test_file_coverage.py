@@ -58,7 +58,12 @@ def test_V7_일부_칼럼만_채운_행은_채워진_것으로_세지_않는다(
     )
     assert verdict.func == "fail"
     assert verdict.failures[0].key == "file.filled_rows.min"
-    assert verdict.failures[0].actual == 0
+    # Y-3: 「기대 3 실제 0」만으로는 *빈 파일*로 읽힌다. **어느 열이 몇 행 비었는지**를 싣는다 -
+    # H-04 의 실체는 2338행 중 5열이 2337행 채워지고 '비고' 한 열만 전 행 공란인 정상 산출물이었다.
+    actual = verdict.failures[0].actual
+    assert actual["filled_rows"] == 0
+    assert actual["data_rows"] == 3
+    assert actual["empty_by_column"] == {"호스트명": "0/3", "OS종류": "0/3", "벤더": "3/3"}
 
 
 def test_V7_선언한_칼럼이_없으면_불합격이다(tmp_path: Path) -> None:

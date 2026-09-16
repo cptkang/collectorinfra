@@ -27,7 +27,14 @@ from typing import Optional
 from .analyze import analyze
 from .catalog import Catalog, CatalogError, load_catalog
 from .report import write_report
-from .runner import RESULTS_ROOT, RunConfig, estimate, execute, latest_run
+from .runner import (
+    RESULTS_ROOT,
+    RunConfig,
+    estimate,
+    execute,
+    failed_scenarios,
+    latest_run,
+)
 
 #: 승인 없이 실 실행하는 프로바이더. 벤치마크 스위프와 같은 집합이다
 #: (D-211 ⑪ · scripts/bench/__main__.py `_INTERNAL_PROVIDERS`).
@@ -121,6 +128,8 @@ def _run_config(args: argparse.Namespace, mode: str) -> RunConfig:
         admin_token=args.admin_token,
         user_id=args.user, user_password=args.password,
         admin_user=args.admin_user, admin_password=args.admin_password,
+        segment=getattr(args, "segment", None),
+        resume_failed=getattr(args, "resume_failed", None),
     )
 
 
@@ -132,7 +141,12 @@ def cmd_mock(args: argparse.Namespace) -> int:
         return 1
     catalog = _load()
     assert catalog is not None
-    summary = execute(catalog, _run_config(args, "mock"))
+    config = _run_config(args, "mock")
+    problem = _apply_resume_failed(config)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
+    summary = execute(catalog, config)
     run_dir = Path(summary["out_dir"])
     paths = write_report(run_dir, catalog)
     print(f"[2단] 모의 실행 완료 - 턴 {summary['executed_turns']}회")
@@ -144,13 +158,43 @@ def cmd_mock(args: argparse.Namespace) -> int:
 
 
 def _check_resume(args: argparse.Namespace) -> Optional[str]:
-    """--resume 대상이 실제로 있는지 본다.
+    """--resume/--resume-failed 대상이 실제로 있는지 본다.
 
     없는 run_id 를 주면 이어붙이는 대신 **같은 이름의 새 런**이 생겨, 이어서 돌린 줄 알고
     처음부터 다시 도는 사고가 난다. 폐쇄망 장시간 실행에서 비용이 가장 큰 실수다.
     """
     if args.resume and not (RESULTS_ROOT / args.resume).exists():
         return f"--resume 대상이 없습니다: {RESULTS_ROOT / args.resume}"
+    failed = getattr(args, "resume_failed", None)
+    if failed and not (RESULTS_ROOT / failed).exists():
+        return f"--resume-failed 대상이 없습니다: {RESULTS_ROOT / failed}"
+    if failed and args.resume:
+        # 하나는 같은 run 에 이어 쓰고 하나는 새 run 을 만든다 - 함께 주면 어느 쪽인지 모른다.
+        return "--resume 과 --resume-failed 는 함께 쓸 수 없습니다 (이어쓰기 vs 새 run)."
+    return None
+
+
+def _apply_resume_failed(config: RunConfig) -> Optional[str]:
+    """X-3: 원본 run 에서 다시 돌 시나리오를 골라 선택 범위를 좁힌다.
+
+    **원본은 읽기만 한다.** 새 run_id 로 돌고 `meta.rerun_of` 에 출처를 남긴다.
+    """
+    if not config.resume_failed:
+        return None
+    try:
+        ids, stats = failed_scenarios(config.resume_failed)
+    except FileNotFoundError as exc:
+        return str(exc)
+    if not ids:
+        return (f"--resume-failed: {config.resume_failed} 에 다시 돌 턴이 없습니다 "
+                f"(무효 0 · 오류 0 / 원본 {stats['rows']}행). 재실행할 것이 없습니다.")
+    # 사용자가 --only 를 함께 줬으면 교집합으로 좁힌다(둘 다 존중).
+    config.only = [i for i in ids if i in config.only] if config.only else ids
+    config.rerun_stats = {**stats, "source_run": config.resume_failed,
+                          "selected": list(config.only)}
+    print(f"       재실행 대상: 시나리오 {len(config.only)}건 "
+          f"(원본 {stats['rows']}행 중 무효 {stats['invalid_turns']}턴 · "
+          f"오류 {stats['error_turns']}턴)")
     return None
 
 
@@ -167,6 +211,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     catalog = _load()
     assert catalog is not None
     config = _run_config(args, "run")
+    problem = _apply_resume_failed(config)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     result = estimate(catalog, config)
     print("[4단] 실 실행")
     if internal:
@@ -258,7 +306,14 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--env", choices=["closed", "sandbox"], default=None,
                         help="대상 환경을 강제로 좁힌다. 미지정 시 서버 활성 DB로 판정하고 "
                              "전 시나리오를 돌며, 환경이 다른 시나리오는 데이터 의존 단언을 보류한다")
-    select.add_argument("--resume", metavar="RUN_ID", help="중단된 런을 이어서")
+    select.add_argument("--resume", metavar="RUN_ID", help="중단된 런을 이어서 "
+                        "(무효 턴은 다시 돈다 - 재개 기준은 「기록됨」이 아니라 「성공」이다)")
+    select.add_argument("--resume-failed", metavar="RUN_ID",
+                        help="직전 런의 무효(러너 인증 실패)·오류 시나리오만 "
+                             "**새 run_id** 로 다시 돈다. 원본은 건드리지 않는다")
+    select.add_argument("--segment", type=int, metavar="N",
+                        help="시나리오 N건마다 토큰을 새로 잡는다(장시간 런). "
+                             "경계는 시나리오 경계이고 서버는 재기동하지 않는다")
     select.add_argument("--port", type=int, help="자식 서버 포트 (미지정 시 자동)")
     select.add_argument("--token", help="질의용 사용자 토큰 (직접 주입 시)")
     select.add_argument("--admin-token", help="설정 에코용 운영자 토큰 (직접 주입 시)")

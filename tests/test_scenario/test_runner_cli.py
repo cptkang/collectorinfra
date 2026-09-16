@@ -216,8 +216,12 @@ def test_콘솔_출력에_비ASCII_구두점이_없다(monkeypatch: pytest.Monke
 # --- 플랫폼 (부록 A.5) --------------------------------------------------
 
 def test_W3_제외_대역_밖에서_포트를_고른다() -> None:
-    port = pick_port(preferred=50000, excluded=[(49000, 51000)])
-    assert not 49000 <= port <= 51000
+    # 제외 대역은 OS 임시 포트 범위 **밖**으로 둔다. 종전 (49000, 51000)은 macOS 임시
+    # 포트 범위(49152-65535)와 겹쳐, OS 할당 커서가 그 구간에 있으면 pick_port의 시도가
+    # 전부 막혀 RuntimeError가 났다(2026-09-16 실측 3/3 실패 · plans/94 §18).
+    # 검사 대상은 "제외 대역을 피하는가"이지 "어느 대역이냐"가 아니므로 대역만 옮긴다.
+    port = pick_port(preferred=2000, excluded=[(1024, 2048)])
+    assert not 1024 <= port <= 2048
 
 
 def test_지정_포트가_제외_대역_밖이면_그대로_쓴다() -> None:

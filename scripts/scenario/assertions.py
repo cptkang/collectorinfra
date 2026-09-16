@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -69,6 +70,10 @@ class Observation:
     # 에서 thread_id 로 모은다. SQL 단언은 이 목록을 SQL 별로 본다(`observed_sqls`).
     executed_sqls: list[str] = field(default_factory=list)
     row_count: Optional[int] = None
+    #: DB 별 반환 행 수(감사 로그 `query_executed` 의 `source_name`·`row_count`).
+    #: **`row_count` 는 멀티 DB 팬아웃의 합계다** - D-02 는 100×3=300 이었는데 단언은
+    #: per-DB `max: 100` 이었다. 각 DB 는 정확히 100행을 냈는데 판정 축이 틀렸다(Y-4).
+    row_counts_by_db: dict[str, int] = field(default_factory=dict)
     has_file: bool = False
     file_name: Optional[str] = None
     clarification: Optional[dict] = None
@@ -98,6 +103,9 @@ class Observation:
     hang: bool = False
     max_event_gap_ms: Optional[float] = None
     error: Optional[str] = None
+    # 401/403 을 받아 재로그인 후 1회 재시도했다(T-a). 재시도가 성공했어도 남긴다 -
+    # "8시간 run 에서 토큰이 언제 죽었는가"는 재시도가 삼키면 관측되지 않는다.
+    auth_retried: bool = False
 
 
 @dataclass
@@ -112,17 +120,31 @@ class Failure:
         return {"key": self.key, "expected": self.expected, "actual": self.actual}
 
 
+#: 러너 자신의 인증 실패로 끝난 턴의 판정값(T-c · D-218).
+#:
+#: **기능 판정이 아니다.** 측정이 성립하지 않은 턴이므로 판정표·실패 분류·대안 수립의
+#: 분모에서 빠지고, 리포트는 건수·구간을 별도 절에 명시한다. `fail` 로 세면 `http_status`
+#: 단언의 기대 200 vs 실제 401 이 **기능 불합격**으로 집계되고(run 20260915-131903 에서
+#: 31건), 대조군도 함께 401 이라 「과잉 거부 의심」 26건이 전건 허위로 올라갔다.
+INVALID_VERDICT = "invalid"
+
+#: 러너 인증 실패로 보는 HTTP 상태.
+AUTH_FAILURE_STATUSES = frozenset({401, 403})
+
+
 @dataclass
 class Verdict:
     """턴 1회의 판정."""
 
-    func: str = "pass"               # pass | fail | error | manual | skipped
+    func: str = "pass"               # pass | fail | error | manual | invalid | skipped
     perf: str = "n/a"                # pass | fail | n/a
     response_mode: str = "answer"
     forbidden_mode: Optional[str] = None
     mode_evidence: Optional[str] = None
     failures: list[Failure] = field(default_factory=list)
     manual_notes: list[str] = field(default_factory=list)
+    #: `func == "invalid"` 일 때만 채운다. 무엇이 측정을 무효로 만들었는지 한 줄.
+    invalid_reason: Optional[str] = None
 
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> Optional[str]:
@@ -137,6 +159,52 @@ def observed_sqls(obs: Observation) -> list[str]:
     if obs.executed_sqls:
         return list(obs.executed_sqls)
     return [obs.executed_sql] if obs.executed_sql else []
+
+
+#: 전송 계층 인증 실패를 **원시 로그 문자열에서** 알아보는 표지.
+#: `client._http_error` 가 `http 401 ...` / `http 403 ...` 형태로 적는다.
+_AUTH_ERROR_RE = re.compile(r"\bhttp\s+(401|403)\b", re.IGNORECASE)
+
+
+def is_auth_failure_error(error: Optional[str]) -> bool:
+    """`obs.error`(=`raw.jsonl` 의 `error`)가 러너 인증 실패인가.
+
+    **`func_verdict` 가 아니라 오류 문자열을 본다.** T-c 이전에 적재된 run 은 401 턴을
+    `error`/`fail` 로 기록했으므로(run 20260915-131903 의 103턴), 판정값만 보면 그 run 은
+    영영 무효로 식별되지 않는다 - 재개(X-1)가 바로 그 턴들을 건너뛴다.
+    """
+    return bool(error) and bool(_AUTH_ERROR_RE.search(str(error)))
+
+
+def row_is_invalid(row: dict[str, Any]) -> bool:
+    """`raw.jsonl` 의 행 1개가 **측정이 성립하지 않은 턴**인가(T-c).
+
+    두 가지를 함께 본다:
+      - `func_verdict == "invalid"` — T-c 이후에 적재된 행.
+      - `error` 가 `http 401`/`http 403` — **T-c 이전에 적재된 행**. run 20260915-131903 의
+        103턴이 여기 해당한다. 판정값만 보면 그 run 은 영영 무효로 식별되지 않아 재개가
+        바로 그 턴들을 건너뛴다(X-1 이 풀려는 문제 자체다).
+    """
+    if str(row.get("func_verdict")) == INVALID_VERDICT:
+        return True
+    return is_auth_failure_error(row.get("error"))
+
+
+def is_runner_auth_failure(obs: Observation, expect: Optional[dict[str, Any]] = None) -> bool:
+    """이 턴이 **러너 자신의** 인증 실패로 끝났는가(T-c).
+
+    401/403 을 **기대하는** 가드 시나리오는 제외한다 - 기대한 오류는 측정이 성립한 것이다.
+    (2026-09-16 실측: 현 카탈로그에 401/403 을 기대하는 턴은 없다. R2 의 가드는 400·422 다.)
+    """
+    if expect and "http_status" in expect:
+        try:
+            if int(expect["http_status"]) in AUTH_FAILURE_STATUSES:
+                return False
+        except (TypeError, ValueError):
+            pass
+    if obs.http_status in AUTH_FAILURE_STATUSES:
+        return True
+    return obs.http_status == 0 and is_auth_failure_error(obs.error)
 
 
 def classify_mode(obs: Observation) -> tuple[str, Optional[str]]:
@@ -171,15 +239,89 @@ def classify_mode(obs: Observation) -> tuple[str, Optional[str]]:
     return "answer", None
 
 
-def _check_row_count(spec: Any, actual: Optional[int], failures: list[Failure]) -> None:
+def _check_row_count(
+    spec: Any, actual: Optional[int], failures: list[Failure], key: str = "row_count"
+) -> None:
     if not isinstance(spec, dict):
         return
     if "eq" in spec and actual != int(spec["eq"]):
-        failures.append(Failure("row_count.eq", spec["eq"], actual))
+        failures.append(Failure(f"{key}.eq", spec["eq"], actual))
     if "min" in spec and (actual is None or actual < int(spec["min"])):
-        failures.append(Failure("row_count.min", spec["min"], actual))
+        failures.append(Failure(f"{key}.min", spec["min"], actual))
     if "max" in spec and (actual is None or actual > int(spec["max"])):
-        failures.append(Failure("row_count.max", spec["max"], actual))
+        failures.append(Failure(f"{key}.max", spec["max"], actual))
+
+
+def _check_row_count_axes(
+    expect: dict[str, Any], obs: Observation, failures: list[Failure], manual: list[str]
+) -> None:
+    """행 수 판정 3축 (Y-4).
+
+    | 키 | 본다 | 언제 쓰나 |
+    |---|---|---|
+    | `row_count` | 응답의 합계 | **단일 DB 턴에서만** |
+    | `row_count_total` | 응답의 합계 | 팬아웃 합계를 재고 싶을 때 |
+    | `row_count_per_db` | **DB 별** 행 수 | 팬아웃 턴의 기본 축 |
+
+    D-02("100건 조회")는 b0 100 + cm_gp 100 + cm_yd 100 = 300 을 냈고 **각 DB 는 정확히
+    100행**이었는데, 단언이 `row_count.max: 100` 이라 불합격으로 세어졌다. 판정 축이 틀렸다.
+    그래서 멀티 DB 턴에서 `row_count` 는 **불합격이 아니라 보류**다 - 틀린 축으로 재단하지 않는다.
+    """
+    per_db = obs.row_counts_by_db
+    multi_db = len(per_db) > 1 or len(set(obs.db_ids)) > 1
+
+    if "row_count" in expect:
+        if multi_db:
+            manual.append(
+                f"row_count 는 단일 DB 턴 전용이다 - 이 턴은 {len(per_db) or len(set(obs.db_ids))}개 DB "
+                f"팬아웃이라 합계({obs.row_count})와 per-DB 기대값을 비교하게 된다. "
+                f"row_count_per_db / row_count_total 로 선언할 것 (DB별 실측: {per_db or '미관측'})"
+            )
+        else:
+            _check_row_count(expect["row_count"], obs.row_count, failures)
+
+    _check_row_count(expect.get("row_count_total"), obs.row_count, failures, "row_count_total")
+
+    spec = expect.get("row_count_per_db")
+    if isinstance(spec, dict):
+        if not per_db:
+            # 감사 로그 tail 이 없으면 DB 별 행 수를 모른다 - 통과로도 불합격으로도 세지 않는다.
+            manual.append(
+                "row_count_per_db 를 확인하지 못했다 - DB 별 행 수는 감사 로그 "
+                "`query_executed` 에서만 나온다(모의 실행·tail 미가동이면 관측 0건)"
+            )
+        else:
+            for db_id, count in sorted(per_db.items()):
+                offenders: list[Failure] = []
+                _check_row_count(spec, count, offenders, "row_count_per_db")
+                for failure in offenders:
+                    failures.append(Failure(failure.key, failure.expected, f"{db_id}={count}"))
+
+
+def option_labels(clarification: dict[str, Any]) -> list[str]:
+    """선택지의 표시 이름. 존 선택은 `options`, 폼필은 `fields` 다."""
+    labels: list[str] = []
+    for item in clarification.get("options") or clarification.get("fields") or []:
+        if isinstance(item, dict):
+            picked = next(
+                (str(item[k]) for k in ("name", "label", "value", "db_id", "id") if item.get(k)),
+                None,
+            )
+            labels.append(picked if picked is not None else str(item))
+        elif item is not None:
+            labels.append(str(item))
+    return labels
+
+
+def _option_haystack(clarification: dict[str, Any]) -> set[str]:
+    """선택지가 담은 모든 스칼라 값. `options_contains` 는 이것과 대조한다."""
+    values: set[str] = set()
+    for item in clarification.get("options") or clarification.get("fields") or []:
+        if isinstance(item, dict):
+            values.update(str(v) for v in item.values() if isinstance(v, (str, int, float)))
+        elif item is not None:
+            values.add(str(item))
+    return values
 
 
 def _check_clarification(spec: Any, obs: Observation, failures: list[Failure]) -> None:
@@ -191,12 +333,17 @@ def _check_clarification(spec: Any, obs: Observation, failures: list[Failure]) -
         return
     if "kind" in spec and actual.get("kind") != spec["kind"]:
         failures.append(Failure("clarification.kind", spec["kind"], actual.get("kind")))
-    if "options_len" in spec:
-        options = actual.get("options") or actual.get("fields") or []
-        if len(options) != int(spec["options_len"]):
-            failures.append(
-                Failure("clarification.options_len", spec["options_len"], len(options))
-            )
+    labels = option_labels(actual)
+    if "options_len" in spec and len(labels) != int(spec["options_len"]):
+        # **깨지기 쉬운 단언이다.** 열이 하나 늘면 제품이 옳아도 불합격이 된다 -
+        # I-01~I-06 6턴 + 후속 13턴 skip = 19턴이 정확히 이것으로 무효가 됐다(Y-1).
+        # 선택지의 "개수"가 계약인 경우에만 쓰고, 그 밖에는 options_contains 를 쓴다.
+        failures.append(Failure("clarification.options_len", spec["options_len"], len(labels)))
+    if "options_contains" in spec:
+        haystack = _option_haystack(actual)
+        for needle in spec["options_contains"] or []:
+            if str(needle) not in haystack:
+                failures.append(Failure("clarification.options_contains", needle, labels))
 
 
 def _read_xlsx(path: Path) -> tuple[Optional[dict[str, list[list[Any]]]], Optional[str]]:
@@ -214,6 +361,25 @@ def _read_xlsx(path: Path) -> tuple[Optional[dict[str, list[list[Any]]]], Option
         for name in book.sheetnames
     }
     return sheets, None
+
+
+def _empty_by_column(
+    target_rows: list[list[Any]], header: list[str], columns: list[str]
+) -> dict[str, str]:
+    """열별 공란 수 `"2338/2338"`. 어느 열이 산출물을 깎았는지 한 눈에 보이게 한다(Y-3)."""
+    total = max(0, len(target_rows) - 1)
+    counts: dict[str, str] = {}
+    for column in columns:
+        if column not in header:
+            counts[column] = f"헤더에 없음/{total}"
+            continue
+        index = header.index(column)
+        empty = sum(
+            1 for row in target_rows[1:]
+            if index >= len(row) or row[index] in (None, "")
+        )
+        counts[column] = f"{empty}/{total}"
+    return counts
 
 
 def _check_file(
@@ -246,7 +412,16 @@ def _check_file(
 
     filled = spec.get("filled_rows")
     if isinstance(filled, dict) and "min" in filled:
-        wanted_columns = [str(c) for c in (spec.get("columns") or [])]
+        # 채워져야 하는 열. `filled_columns` 가 있으면 그것, 없으면 선언한 `columns` 전부에서
+        # `optional_columns`(공란이 정답인 자유 서술 열)를 뺀다.
+        #
+        # **`optional_columns` 는 기본값이 없다** - 선언하지 않으면 종전과 비트 동일하게 동작한다.
+        # '비고' 같은 열을 공란 정답으로 볼지 `[미작성 항목]` 안내 대상으로 볼지는 사람 확정
+        # 사항이라(G-4 · plans/96 §8) 카탈로그에 미리 적어 두지 않는다 - 여기서는 **표현 수단만**
+        # 마련한다.
+        optional = {str(c) for c in (spec.get("optional_columns") or [])}
+        declared = [str(c) for c in (spec.get("filled_columns") or spec.get("columns") or [])]
+        wanted_columns = [c for c in declared if c not in optional]
         if wanted_columns:
             # **전 칼럼을 본다**(V7). 선언한 칼럼 중 하나라도 비어 있으면 그 행은 채워진 것이
             # 아니다 - "아무 칸이나 차 있으면 통과"로 세면 일부만 채운 산출물이 합격한다.
@@ -261,7 +436,85 @@ def _check_file(
         else:
             data_rows = [r for r in target_rows[1:] if any(c not in (None, "") for c in r)]
         if len(data_rows) < int(filled["min"]):
-            failures.append(Failure("file.filled_rows.min", filled["min"], len(data_rows)))
+            # Y-3: **어느 열이 몇 행 비었는지**를 싣는다. 「기대 1 실제 0」은 *빈 파일*로
+            # 읽히는데 H-04 의 실체는 2338행 중 5열이 2337행 채워지고 '비고' 한 열만
+            # 전 행 공란인 정상 산출물이었다. 열 단위 수치가 없으면 산출물을 직접
+            # 열어보기 전에는 진단이 불가능하다.
+            failures.append(Failure(
+                "file.filled_rows.min", filled["min"],
+                {
+                    "filled_rows": len(data_rows),
+                    "data_rows": max(0, len(target_rows) - 1),
+                    "empty_by_column": _empty_by_column(target_rows, header, wanted_columns),
+                    "optional_columns": sorted(optional) or None,
+                },
+            ))
+
+
+#: SQL 안의 날짜 리터럴. `2026-07-01` · `20260701` · `202607`(월 파티션) 세 표기를 본다.
+_DATE_LITERAL_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{4})(\d{2})(\d{2})\b|\b(\d{4})(\d{2})\b")
+
+
+def sql_period_bounds(sqls: list[str]) -> tuple[Optional[date], Optional[date]]:
+    """SQL 이 실제로 건드린 기간의 (최소 경계, 최대 경계). 날짜가 없으면 (None, None).
+
+    월 파티션 리터럴(`'202607'`)은 **경계 두 개**로 편다 - 그 달을 요구한 것은 7/1 부터
+    8/1 까지를 요구한 것이다. 표기가 아니라 의미를 본다.
+    """
+    bounds: list[date] = []
+    for sql in sqls:
+        for match in _DATE_LITERAL_RE.finditer(sql):
+            try:
+                if match.group(1):
+                    bounds.append(date(int(match.group(1)), int(match.group(2)), int(match.group(3))))
+                elif match.group(4):
+                    bounds.append(date(int(match.group(4)), int(match.group(5)), int(match.group(6))))
+                else:
+                    year, month = int(match.group(7)), int(match.group(8))
+                    start = date(year, month, 1)
+                    bounds.extend([start, _next_month(start)])
+            except ValueError:
+                # 날짜가 아닌 8자리 숫자(식별자 등)는 경계가 아니다.
+                continue
+    return (min(bounds), max(bounds)) if bounds else (None, None)
+
+
+def _next_month(day: date) -> date:
+    return date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
+
+
+def _check_period(
+    spec: Any, sqls: list[str], failures: list[Failure], manual: list[str]
+) -> None:
+    """`period_covers: {from, to}` - **표기가 아니라 기간**을 본다(Y-5).
+
+    D-03 은 기대 `(?i)202607` · 실제
+    `ctime >= TIMESTAMP '2026-07-01' AND ctime < TIMESTAMP '2026-08-01'` 이었다.
+    **기간은 정확한데 표기가 달라서** 불합격이 났다. 같은 함정이 `202601`·`202606`·
+    `'20\\d{4}'` 계열 단언 전반에 있다.
+
+    `to` 는 **배타 경계**다(`< to`). 포함 경계 표기(`<= to-1`)도 같은 기간이므로 통과시킨다.
+    """
+    if not isinstance(spec, dict) or not spec.get("from") or not spec.get("to"):
+        return
+    try:
+        wanted_from = date.fromisoformat(str(spec["from"]))
+        wanted_to = date.fromisoformat(str(spec["to"]))
+    except ValueError:
+        failures.append(Failure("period_covers", spec, "from/to 가 YYYY-MM-DD 가 아니다"))
+        return
+    if not sqls:
+        manual.append(f"period_covers {spec} 를 확인하지 못했다 - 실행 SQL 을 관측하지 못했다")
+        return
+    low, high = sql_period_bounds(sqls)
+    if low is None or high is None:
+        failures.append(Failure("period_covers", spec, "SQL 에 날짜 리터럴이 없다"))
+        return
+    if low > wanted_from or high < wanted_to - timedelta(days=1):
+        failures.append(Failure(
+            "period_covers", spec,
+            {"sql_period": f"{low.isoformat()}~{high.isoformat()}"},
+        ))
 
 
 def _check_column_mapping(spec: Any, obs: Observation, failures: list[Failure]) -> None:
@@ -334,7 +587,7 @@ def evaluate_turn(
     if "has_file" in expect and obs.has_file != bool(expect["has_file"]):
         failures.append(Failure("has_file", expect["has_file"], obs.has_file))
 
-    _check_row_count(expect.get("row_count"), obs.row_count, failures)
+    _check_row_count_axes(expect, obs, failures, manual)
     _check_clarification(expect.get("clarification"), obs, failures)
 
     for needle in expect.get("response_must_contain") or []:
@@ -347,9 +600,25 @@ def evaluate_turn(
     # SQL 별로 판정한다 - 이어붙여 검색하면 두 SQL 경계를 넘는 거짓 일치가 난다.
     # 멀티 DB 는 존마다, 재계획은 라운드마다 SQL 이 따로 나간다(SYN-A-01: 한 턴 12건).
     sqls = observed_sqls(obs)
-    for pattern in expect.get("sql_must_match") or []:
-        if not any(re.search(str(pattern), sql) for sql in sqls):
-            failures.append(Failure("sql_must_match", pattern, (sqls[0][:200] if sqls else None)))
+    must_match = expect.get("sql_must_match") or []
+    if must_match and not sqls:
+        # Y-9: **못 본 것**과 **안 만든 것**을 가른다(plans/94 §16).
+        # 둘을 같은 불합격으로 세면 수집 실패가 "SQL 미생성" 제품 결함으로 읽힌다
+        # (plans/96 P-13 → plans/98 J-5 로 내려간 사례). 부정 단언 쪽 가드와 대칭이다.
+        if obs.status == "clarification" or obs.clarification or obs.form_fill_clarification:
+            # 역질문은 아직 조회 단계가 아니다 - 사용자가 답해야 SQL 이 나온다.
+            manual.append("sql_must_match: 역질문으로 끝난 턴이라 SQL 이 없다(판정 보류)")
+        elif mock:
+            # 감사 로그 tail 은 실 모드에만 붙는다(runner: sql_tail = ... if live else None).
+            manual.append("sql_must_match: 모의 실행은 SQL 수집기가 없다(판정 보류)")
+        else:
+            # 실 모드에서 완료됐는데 SQL 0건이면 그것은 관측이다 - 불합격으로 센다.
+            for pattern in must_match:
+                failures.append(Failure("sql_must_match", pattern, None))
+    else:
+        for pattern in must_match:
+            if not any(re.search(str(pattern), sql) for sql in sqls):
+                failures.append(Failure("sql_must_match", pattern, (sqls[0][:200] if sqls else None)))
     for pattern in expect.get("sql_must_not_match") or []:
         hit = next((sql for sql in sqls if re.search(str(pattern), sql)), None)
         if hit is not None:
@@ -357,6 +626,7 @@ def evaluate_turn(
     if expect.get("sql_must_not_match") and not sqls and (obs.row_count or 0) > 0:
         # 데이터는 나왔는데 SQL 을 하나도 보지 못했다 - 부정 단언을 통과로 세지 않는다.
         manual.append("행이 나왔지만 실행 SQL 을 관측하지 못했다 - sql_must_not_match 확인 불가")
+    _check_period(expect.get("period_covers"), sqls, failures, manual)
 
     _check_column_mapping(expect.get("column_must_not_map"), obs, failures)
     _check_file(expect.get("file"), obs, failures, manual)
@@ -436,6 +706,21 @@ def evaluate_turn(
          and obs.http_status == int(expect["http_status"]))
         or (expect.get("status") == "error" and obs.status == "error")
     )
+    if is_runner_auth_failure(obs, expect):
+        # T-c: **전송 계층 실패를 기능 판정에 넣지 않는다.** 단언은 전부 401 의 그림자다 -
+        # 기대 200 vs 실제 401 을 기능 불합격으로 세면 판정표·실패 분류·대안 수립이 통째로
+        # 거짓이 된다(run 20260915-131903: 불합격 31건 · 「과잉 거부 의심」 26건 전건 허위).
+        # 원본 사유는 행의 `error` 에 그대로 남는다 - 지우는 것은 **판정**뿐이다.
+        verdict.func = INVALID_VERDICT
+        verdict.failures = []
+        verdict.manual_notes = []
+        verdict.invalid_reason = (
+            f"러너 인증 실패 - {obs.error or f'http {obs.http_status}'}"
+            + ("  (재로그인 후 1회 재시도했으나 다시 거부됐다)" if obs.auth_retried else "")
+        )
+        verdict.perf = "n/a"
+        return verdict
+
     if obs.error and not failures and not expected_error:
         verdict.func = "error"
     elif verdict.forbidden_mode:

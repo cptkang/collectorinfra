@@ -42,12 +42,23 @@ scenarios:
           intent: data_query             # **관측되지 않는다** - done 페이로드에 없어
                                          #   대조 대신 사유를 남긴다. 라우팅은 db_ids 로 본다
           db_ids: ["polestar_cm_gp"]
-          row_count: {min: 1, max: 100, eq: null}
+          row_count: {min: 1, max: 100, eq: null}   # **단일 DB 턴 전용** — 멀티 DB 팬아웃
+                                         #   턴에서는 보류(manual)가 된다. 합계와 per-DB
+                                         #   기대값을 비교하면 D-02(100×3=300)처럼 제품이
+                                         #   옳은데 불합격이 난다(Y-4)
+          row_count_per_db: {max: 100}   # DB **하나하나**를 본다. 팬아웃 턴의 기본 축
+          row_count_total: {eq: 300}     # 팬아웃 합계를 재고 싶을 때
           has_file: false
           response_must_contain: ["김포"]
           response_must_not_contain: ["여의도"]
           clarification: {kind: zone_select, options_len: 3}
+          #   options_len 은 **개수가 계약일 때만** 쓴다. 열·존이 하나 늘면 제품이 옳아도
+          #   깨진다(I군 19턴 무효 — Y-1). 그 밖에는 부분 단언을 쓴다:
+          clarification: {options_contains: ["담당자"]}
           file: {sheets: ["Sheet1"], columns: ["호스트명"], filled_rows: {min: 1}}
+          #   filled_columns: 반드시 채워져야 하는 열(없으면 columns 전부)
+          #   optional_columns: **공란이 정답인** 자유 서술 열 — filled_rows 를 깎지 않는다
+          #     (선언하지 않으면 종전과 동일. '비고' 같은 열의 처분은 G-4 사람 확정 사항)
 
       - send: {selected_db_ids: ["polestar_cm_gp"]}   # HITL 응답은 자연어가 아니라 구조화 필드다
         endpoint: stream           # 선택. 턴 단위 재지정(기본은 시나리오 값).
@@ -56,7 +67,15 @@ scenarios:
         expect:
           # --- L2 구조 ---
           sql_must_match: ["(?i)\\blimit\\s+10000\\b"]   # "전체" 상향값은 10,000 이다
+                                         #   SQL 을 하나도 관측하지 못한 턴(역질문 종료·
+                                         #   모의 실행)은 불합격이 아니라 보류다(Y-9)
           sql_must_not_match: ["(?i)여의도"]
+          period_covers: {from: "2026-07-01", to: "2026-08-01"}
+                                         # **표기가 아니라 기간**을 본다(Y-5). `to` 는 배타
+                                         #   경계다. `'202607'` 도 `TIMESTAMP '2026-07-01'
+                                         #   … < '2026-08-01'` 도 같은 기간으로 통과한다 —
+                                         #   D-03 은 기간이 정확한데 `(?i)202607` 표기가
+                                         #   달라서 불합격했다
           column_must_not_map: ["cpu_usage"]   # D-200형 회귀 탐지. 실행 SQL 과 매핑 산출물을 대조
           node_path: ["field_mapper"]
           sse_events: ["node_start", "done"]

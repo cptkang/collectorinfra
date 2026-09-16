@@ -73,6 +73,10 @@ scenarios:
           status: completed
           has_file: true
           file: {columns: ["서버명", "호스트명", "IP", "OS버전", "메모리용량", "비고"],
+                 optional_columns: ["비고"],
+                 # G-4 확정(2026-09-16): '비고'는 DB 대응 컬럼이 없는 자유 서술 열이라
+                 # **공란이 정답**이다 — filled_rows 를 깎지 않는다(Y-2). 왜 비었는지는
+                 # 응답에 사유로 실린다(CU-9). 픽스처 헤더 실측 2026-09-16.
                  filled_rows: {min: 1}}
           sql_must_not_match: ["(?i)\\blimit\\s+\\d"]
           manual_review: "서버명(cmm_resource.name)과 호스트명 열의 값이 서로 다른지 — 같으면 EAV Hostname 으로 잘못 매핑된 것이다(D-148)"

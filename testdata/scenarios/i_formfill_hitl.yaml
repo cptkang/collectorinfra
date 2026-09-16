@@ -32,8 +32,12 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          # '담당자' 한 열만 후보가 없다. 모든 열이 매핑되면 역질문은 뜨지 않는다.
-          clarification: {options_len: 1}
+          # 픽스처 헤더는 (서버명·호스트명·IP·OS버전·메모리용량·비고·담당자)이고
+          # **'비고'와 '담당자' 둘 다 DB 대응 컬럼이 없다**(2026-09-16 픽스처 실측).
+          # 종전 `options_len: 1` 은 '비고'를 빠뜨린 작성 오류였고, 제품이 옳게 2건을
+          # 되물었는데 I-01~I-06 6턴이 불합격 + 후속 13턴 skip = 19턴이 무효가 됐다(Y-1).
+          # 개수가 아니라 **무엇을 되물었는가**를 본다 - 열이 늘어도 깨지지 않는다.
+          clarification: {options_contains: ["담당자"]}
           manual_review: "후보 목록이 라이브 스키마에서 왔는지(고정 목록이 아닌지)"
     teardown: [drop_thread]
 
@@ -50,7 +54,7 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          clarification: {options_len: 1}
+          clarification: {options_contains: ["담당자"]}
       - send:
           form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
           form_fill_remember: true
@@ -62,6 +66,12 @@ scenarios:
           db_ids: ["polestar_cm_gp"]          # D-177 존 복원
           response_must_contain: ["[사용자 답변 적용 내역]"]
           file: {columns: ["서버명", "호스트명", "IP", "OS버전", "메모리용량", "비고", "담당자"],
+                 optional_columns: ["비고"],
+                 # G-4 확정(2026-09-16): '비고'는 DB 대응 컬럼이 없는 자유 서술 열이라
+                 # **공란이 정답**이다 — filled_rows 를 깎지 않는다(Y-2). 왜 비었는지는
+                 # 응답에 사유로 실린다(CU-9). 픽스처 헤더 실측 2026-09-16.
+                 # '담당자'는 **빼지 않는다** — 이 턴이 literal 답변으로 채운 열이라
+                 # 공란이면 답변이 적용되지 않은 것이다(판정의 핵심).
                  filled_rows: {min: 1}}
           manual_review: "담당자 열 전행이 '인프라팀'인지 · 원본 바이트가 재생됐는지"
     teardown: [drop_thread]
@@ -79,7 +89,7 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          clarification: {options_len: 1}
+          clarification: {options_contains: ["담당자"]}
       - send:
           form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
           form_fill_remember: true
@@ -108,7 +118,7 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          clarification: {options_len: 1}
+          clarification: {options_contains: ["담당자"]}
       - send:
           form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
           form_fill_remember: true
@@ -138,7 +148,7 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          clarification: {options_len: 1}
+          clarification: {options_contains: ["담당자"]}
       - send:
           form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
           form_fill_remember: true
@@ -166,7 +176,7 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          clarification: {options_len: 1}
+          clarification: {options_contains: ["담당자"]}
       - send:
           form_fill_answers: {"담당자": {"action": "literal", "value": "인프라팀"}}
           form_fill_remember: true
@@ -190,7 +200,7 @@ scenarios:
       - send:
           query: "김포 서버로 채워줘"
         expect:
-          clarification: {options_len: 1}
+          clarification: {options_contains: ["담당자"]}
     teardown: [drop_thread]
 
   - id: I-07
@@ -233,5 +243,9 @@ scenarios:
           status: completed
           has_file: true
           file: {columns: ["서버명", "호스트명", "IP", "OS버전", "메모리용량", "비고"],
+                 optional_columns: ["비고"],
+                 # G-4 확정(2026-09-16): '비고'는 DB 대응 컬럼이 없는 자유 서술 열이라
+                 # **공란이 정답**이다 — filled_rows 를 깎지 않는다(Y-2). 왜 비었는지는
+                 # 응답에 사유로 실린다(CU-9). 픽스처 헤더 실측 2026-09-16.
                  filled_rows: {min: 1}}
     teardown: [drop_thread]

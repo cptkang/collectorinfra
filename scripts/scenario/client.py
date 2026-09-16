@@ -16,11 +16,11 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, runtime_checkable
 
 import httpx
 
-from .assertions import Observation
+from .assertions import AUTH_FAILURE_STATUSES, Observation
 
 # 무이벤트 구간이 이 값을 넘으면 hang 후보로 본다(§3.8 · D-198 계열).
 # 서버 하트비트 간격의 배수로 잡는다 - 하트비트가 꺼져 있어도 이 상한은 유효하다.
@@ -33,6 +33,21 @@ DEFAULT_HANG_GAP_MS = 120_000.0
 RETRY_ENTRY_NODE = "query_generator"
 
 
+@runtime_checkable
+class TokenProvider(Protocol):
+    """질의 토큰의 수명 관리자(T-a·T-b). 구현은 러너의 `TokenSource` 다.
+
+    클라이언트가 러너를 import 하면 순환이므로 **계약만** 여기에 둔다.
+    """
+
+    @property
+    def token(self) -> Optional[str]:
+        """지금 써야 할 토큰."""
+
+    def refresh(self) -> Optional[str]:
+        """재로그인해 새 토큰을 받는다. 못 받으면 None."""
+
+
 @dataclass
 class ClientConfig:
     """클라이언트 설정. 포트는 러너가 프로파일별로 정한다."""
@@ -43,14 +58,23 @@ class ClientConfig:
     timeout_sec: float = 360.0
     hang_gap_ms: float = DEFAULT_HANG_GAP_MS
     artifact_dir: Optional[Path] = None
+    #: 있으면 **토큰의 정본**이다(T-a·T-b). `token` 필드는 폴백으로만 남는다 -
+    #: 동시 부하(K-06·K-07)는 같은 ClientConfig 로 세션마다 클라이언트를 새로 만들므로,
+    #: 토큰을 값으로 복사해 두면 한 세션의 재발급이 다른 세션에 닿지 않는다.
+    token_source: Optional[TokenProvider] = None
 
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/api/v1"
 
     @property
+    def current_token(self) -> Optional[str]:
+        return self.token_source.token if self.token_source is not None else self.token
+
+    @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        token = self.current_token
+        return {"Authorization": f"Bearer {token}"} if token else {}
 
     @property
     def admin_headers(self) -> dict[str, str]:
@@ -226,6 +250,30 @@ class ScenarioClient:
 
     def send(
         self, endpoint: str, payload: dict[str, Any], upload: Optional[Path] = None
+    ) -> Observation:
+        """턴 1회의 요청. **401/403 이면 재로그인 후 1회만 다시 보낸다**(T-a).
+
+        run 20260915-131903 은 8시간을 넘기는 순간(`AuthConfig.jwt_expire_hours = 8`)
+        280번째 턴부터 마지막까지 **103턴 전건이 401** 이었다. 러너가 프로파일 기동 시
+        한 번만 토큰을 받고 재발급 경로가 없었기 때문이다.
+
+        재시도는 **1회뿐**이다. 크레덴셜이 틀려서 나는 401 을 무한히 두드리면
+        `max_login_attempts`(기본 5)에 걸려 계정이 잠긴다.
+        """
+        obs = self._dispatch(endpoint, payload, upload)
+        if obs.http_status not in AUTH_FAILURE_STATUSES:
+            return obs
+        source = self._config.token_source
+        if source is None or source.refresh() is None:
+            # 재발급 경로가 없다(주입 토큰 · 크레덴셜 부재 · 재로그인 실패).
+            # 조용히 넘기지 않는다 - 판정기가 이 턴을 `invalid` 로 적재한다(T-c).
+            return obs
+        retried = self._dispatch(endpoint, payload, upload)
+        retried.auth_retried = True
+        return retried
+
+    def _dispatch(
+        self, endpoint: str, payload: dict[str, Any], upload: Optional[Path]
     ) -> Observation:
         if endpoint == "plain":
             return self._post_plain(payload)

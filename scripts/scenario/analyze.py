@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from . import REPO_ROOT, utf8_open
 from .catalog import Catalog
-from .report import build_summary, load_rows
+from .report import build_summary, load_rows, valid_rows
 
 COVERAGE_DOC = REPO_ROOT / "docs" / "30_scenario_coverage.md"
 
@@ -51,6 +51,28 @@ _PRESCRIPTIONS: list[tuple[str, str, str, str]] = [
 
 # 처방 우선순위 (§6.5). 조용한 오답이 항상 맨 위다.
 _PRIORITY = ["silent_wrong", "hang", "crash", "control_broken", "clarify_missing"]
+
+
+#: `llm_calls`·`tokens` 표본이 0 일 때 **고정으로 싣는 사유**(O-b).
+#:
+#: 표본 0 을 그냥 두면 *"측정했는데 0"* 으로 읽힌다 - run 20260915-131903 리포트에서
+#: 「호출 수와 지연의 분리」 절이 정확히 그렇게 비어 있었다. **왜 못 재는지**를 적는다.
+#: 2026-09-16 실측으로 확인한 사슬이며, 하나라도 바뀌면 이 문구를 고쳐야 한다.
+LLM_COST_UNMEASURABLE = """> **`llm_calls`·`tokens` 는 측정했는데 0 인 것이 아니라 «측정할 수 없다».**
+> 표본 0 을 값 0 으로 읽지 말 것. 2026-09-16 실측 기준 수집 경로가 **네 지점 모두** 끊겨 있다:
+>
+> 1. **감사 로그에 LLM 이벤트가 없다** — `src/security/audit_logger.py` 가 내는 이벤트는
+>    `query_execution`·`user_request`·`drm_decrypt`·`silence_change`·`host_investigation` 뿐이다.
+>    D-217 이 `executed_sqls` 를 가져온 `query_executed` 와 같은 자리가 LLM 쪽에는 없다.
+> 2. **`src/llm.py` 가 `usage_metadata` 를 수집하지 않는다** — 프로바이더 응답의 토큰 사용량이
+>    어디에도 적재되지 않는다.
+> 3. **`AgentState.llm_calls` 는 선언만 있고 쓰는 곳이 없다**(`src/state.py:58`). 초기화도
+>    되지 않는다 — `column_deriver` 의 동명 필드는 그 노드 내부 집계라 상태로 올라오지 않는다.
+> 4. **`done` SSE 페이로드에 호출 수·토큰 키가 없다** — 하네스가 읽을 표면 자체가 없다.
+>
+> 즉 이것은 하네스의 결함이 아니라 **제품의 관측성 갭**이고, 소유는 `plans/56`(LLM 관측성)이다.
+> 그때까지 「느린 것」과 「여러 번 부르는 것」은 구별되지 않는다 — 대신 `retries`(재생성 회차)와
+> `node_count`(실행 노드 회차)를 비용 대리 지표로 쓴다."""
 
 
 def _table(header: list[str], rows: list[list[Any]]) -> str:
@@ -90,7 +112,8 @@ def parse_coverage_doc(path: Path = COVERAGE_DOC) -> list[dict[str, str]]:
 
 def bottleneck(run_dir: Path, rows: list[dict[str, Any]]) -> str:
     out = ["# 성능 병목 귀속", "",
-           "표본 5건 미만인 노드는 순위에 올리지 않는다 - `판정 불가` 다(§6.3).", ""]
+           "표본 5건 미만인 노드는 순위에 올리지 않는다 - `판정 불가` 다(§6.3).",
+           "무효 턴(러너 인증 실패 · T-c)은 분모에서 빠져 있다 - 건수는 리포트 10절.", ""]
     per_node: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         for node, elapsed in (row.get("node_elapsed_ms") or {}).items():
@@ -119,17 +142,23 @@ def bottleneck(run_dir: Path, rows: list[dict[str, Any]]) -> str:
     out.append('"느린 것"과 "여러 번 부르는 것"은 다른 처방이다.')
     out.append("")
     calls = [r.get("llm_calls") for r in rows if r.get("llm_calls") is not None]
+    tokens = [r.get("tokens") for r in rows if r.get("tokens") is not None]
     retries = [r.get("retries") for r in rows if r.get("retries") is not None]
     out.append(_table(
         ["지표", "표본", "합계", "비고"],
         [
             ["llm_calls", len(calls), sum(calls) if calls else 0,
-             "-" if calls else "응답에 실리지 않는다 - 트레이스·감사 로그 대조가 필요하다"],
+             "-" if calls else "**측정 불가** - 사유는 아래"],
+            ["tokens", len(tokens), sum(tokens) if tokens else 0,
+             "-" if tokens else "**측정 불가** - 사유는 아래"],
             ["retries", len(retries), sum(retries) if retries else 0,
-             "-" if retries else "동일"],
+             "-" if retries else "회귀 노드가 상위 스트림에 보이지 않는 실행 단"],
         ],
     ))
     out.append("")
+    if not calls or not tokens:
+        out.append(LLM_COST_UNMEASURABLE)
+        out.append("")
 
     cold = [r["processing_time_ms"] for r in rows
             if r.get("cache_state") == "cold" and r.get("processing_time_ms")]
@@ -225,6 +254,16 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
     out = ["# 회귀", "",
            "같은 프로파일·같은 환경하고만 비교한다. 개발망 run 과 폐쇄망 run 은 비교하지 않는다(§5.3).", ""]
     meta = summary.get("meta", {})
+    invalid = summary.get("invalid") or {}
+    if invalid.get("over_threshold"):
+        # T-e: 무효율 5% 초과 run 은 회귀 기준선이 될 수 없다.
+        out.append(
+            f"회귀 비교 **제외** - 무효 턴 {invalid.get('count')}건"
+            f"({float(invalid.get('ratio') or 0):.1%})으로 5% 상한을 넘겼다(T-e). "
+            "판정이 바뀐 것인지 측정되지 않은 것인지 구별되지 않는다."
+        )
+        out.append("")
+        return "\n".join(out) + "\n"
     if int(meta.get("repeat") or 1) < MIN_REPEAT_FOR_PRESCRIPTION:
         out.append(
             f"지연 회귀 **판정 불가** - 반복 {meta.get('repeat')}회는 반복 간 편차와 구별되지 않는다."
@@ -237,6 +276,8 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
     for candidate in candidates:
         prev = build_summary(candidate, None)
         if prev.get("meta", {}).get("env") != meta.get("env"):
+            continue
+        if (prev.get("invalid") or {}).get("over_threshold"):
             continue
         current = summary.get("scenario_verdicts", {})
         previous = prev.get("scenario_verdicts", {})
@@ -253,14 +294,52 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+def deterministic_failures(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """**시나리오 자체의 반복**이 ≥3 이고 전건 동일 실패인 것(Y-6).
+
+    종전 규칙은 run 단위 `--repeat` 만 보고 전건을 `불안정·보류` 로 내렸다. 그래서
+    K-01 **5/5** · K-04 **3/3** · R1-03 **3/3** 동일 실패가 전부 보류로 떨어졌다 -
+    부하 묶음(`replay`, D-217)이 시나리오 안에서 이미 여러 번 돌았는데 그 반복을 보지 않았다.
+
+    **같은 실패인가**는 깨진 단언 키 집합으로 본다. 회차마다 다른 곳이 깨지면 그것은
+    흔들림이고, 같은 곳이 3회 이상 깨지면 설계 결함이다.
+    """
+    by_scenario: dict[str, dict[int, tuple[str, tuple[str, ...]]]] = defaultdict(dict)
+    for row in rows:
+        verdict = str(row.get("func_verdict"))
+        signature = tuple(sorted(
+            str(f.get("key")) for f in (row.get("failed_assertions") or [])
+        ))
+        repeat = int(row.get("repeat", 0))
+        # 멀티턴은 한 반복에 여러 턴이다 - **깨진 턴**을 그 반복의 대표로 삼는다.
+        if repeat not in by_scenario[str(row.get("scenario_id"))] or verdict in ("fail", "error"):
+            by_scenario[str(row.get("scenario_id"))][repeat] = (verdict, signature)
+
+    result: dict[str, dict[str, Any]] = {}
+    for scenario_id, per_repeat in by_scenario.items():
+        outcomes = list(per_repeat.values())
+        if len(outcomes) < MIN_REPEAT_FOR_PRESCRIPTION:
+            continue
+        verdicts = {verdict for verdict, _sig in outcomes}
+        signatures = {sig for _verdict, sig in outcomes}
+        if verdicts <= {"fail", "error"} and len(signatures) == 1:
+            result[scenario_id] = {
+                "repeats": len(outcomes),
+                "verdict": sorted(verdicts)[0],
+                "keys": list(next(iter(signatures))),
+            }
+    return result
+
+
 def countermeasures(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    """R군 관측을 처방 축으로 옮긴다 (§6.5)."""
+    """R군 관측을 처방 축으로 옮긴다 (§6.5 · Y-6 개정)."""
     meta = summary.get("meta", {})
     repeat = int(meta.get("repeat") or 1)
+    deterministic = deterministic_failures(rows)
     out = ["# 대안 수립 - 오용·실수·착각 처방 축", "",
            "관측을 처방 **축**으로 지목할 뿐이고 문구·임계값·플래그 결정은 사람이 한다.", ""]
 
-    if repeat < MIN_REPEAT_FOR_PRESCRIPTION:
+    if repeat < MIN_REPEAT_FOR_PRESCRIPTION and not deterministic:
         out.append(
             f"> **전건 `불안정·보류`.** 반복 {repeat}회로는 LLM 흔들림과 설계 결함을 구별할 수 없다. "
             f"처방 제안은 반복 {MIN_REPEAT_FOR_PRESCRIPTION}회 이상에서만 낸다(§6.5 · V18)."
@@ -268,27 +347,50 @@ def countermeasures(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         out.append("")
 
     observations: Counter[str] = Counter()
+    #: 결정적으로 확정된 시나리오에서 나온 신호. 보류 대상이 아니다(Y-6).
+    firm: set[str] = set()
+
+    def observe(signal: str, row: dict[str, Any]) -> None:
+        observations[signal] += 1
+        if str(row.get("scenario_id")) in deterministic:
+            firm.add(signal)
+
     for row in rows:
         if row.get("forbidden_mode"):
-            observations[row["forbidden_mode"]] += 1
+            observe(str(row["forbidden_mode"]), row)
         for failed in row.get("failed_assertions", []):
             key = failed.get("key")
             if key == "column_must_not_map":
-                observations["column_must_not_map"] += 1
+                observe("column_must_not_map", row)
             elif key == "response_modes":
                 expected = failed.get("expected") or []
                 actual = failed.get("actual")
                 if "clarify" in expected and actual == "answer":
-                    observations["clarify_missing"] += 1
+                    observe("clarify_missing", row)
                 elif "guide" in expected and actual == "answer":
-                    observations["guide_missing"] += 1
+                    observe("guide_missing", row)
                 elif "correct" in expected:
-                    observations["correct_missing"] += 1
+                    observe("correct_missing", row)
             elif key == "row_count.min" and row.get("row_count") == 0:
-                observations["empty_result"] += 1
+                observe("empty_result", row)
     for group in summary.get("misuse", {}).values():
         if group.get("control_broken"):
             observations["control_broken"] += group["control_broken"]
+
+    if deterministic:
+        out.append("## 결정적으로 확정된 실패 (Y-6)")
+        out.append("")
+        out.append(
+            f"시나리오 자체의 반복이 {MIN_REPEAT_FOR_PRESCRIPTION}회 이상이고 **전건 동일 실패**다 - "
+            "LLM 흔들림과 구별된다. run 단위 `--repeat` 이 1회여도 보류하지 않는다."
+        )
+        out.append("")
+        out.append(_table(
+            ["시나리오", "반복", "판정", "깨진 단언"],
+            [[sid, info["repeats"], info["verdict"], ", ".join(info["keys"]) or "-"]
+             for sid, info in sorted(deterministic.items())],
+        ))
+        out.append("")
 
     out.append("## 관측 -> 처방 축")
     out.append("")
@@ -298,7 +400,10 @@ def countermeasures(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         if observations.get(signal)
     ]
     if repeat < MIN_REPEAT_FOR_PRESCRIPTION:
-        prescribed = [[*row[:2], row[2], "보류 (반복 부족)", row[4]] for row in prescribed]
+        prescribed = [
+            row if row[0] in firm else [*row[:3], "보류 (반복 부족)", row[4]]
+            for row in prescribed
+        ]
     out.append(_table(["관측 신호", "건수", "처방 축", "후보 조치", "소유 계획서"], prescribed)
                if prescribed else "처방 축으로 옮길 관측이 없다.")
     out.append("")
@@ -313,6 +418,10 @@ def countermeasures(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     out.append("## 제약")
     out.append("")
     out.append("- 1회 관측으로 처방하지 않는다. 3회 중 1회만 어긋난 건은 `불안정`으로 제외한다.")
+    out.append(
+        f"- **단, 시나리오 반복 {MIN_REPEAT_FOR_PRESCRIPTION}회 이상 전건 동일 실패는 결정적이다**(Y-6) - "
+        "run 단위 반복이 1회여도 보류하지 않는다."
+    )
     out.append("- 신규 `enable_*` 추가가 불가피하다고 판단되면 **그 사실 자체를 사람 판단 항목으로 올린다**(D-162).")
     out.append("")
     return "\n".join(out) + "\n"
@@ -320,9 +429,12 @@ def countermeasures(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
 
 def improvement_backlog(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     """빈도 x 심각도 우선순위. docs/17 의 FI 후보이며 **자동 등재하지 않는다**(G-9)."""
+    # Y-7 신설 3종: `volume` 은 3(D-05 의 22,813행처럼 상한 위반이 곧 가드 실패다),
+    # `clarify`·`contract` 는 2(되묻기·안내 문구는 사용자가 알아차린다 - 조용한 오답이 아니다).
     severity = {"silent_wrong": 5, "crash": 5, "hang": 4, "guard": 4, "routing": 3,
-                "timeout": 3, "document": 3, "semantics": 3, "empty_result": 2,
-                "generation": 2, "execution": 2, "retry_exhaustion": 2, "unclassified": 1}
+                "timeout": 3, "document": 3, "semantics": 3, "volume": 3, "empty_result": 2,
+                "generation": 2, "execution": 2, "retry_exhaustion": 2,
+                "clarify": 2, "contract": 2, "unclassified": 1}
     counts = Counter(f["kind"] for f in summary.get("failures", []))
     for row in rows:
         if row.get("forbidden_mode"):
@@ -354,8 +466,13 @@ def improvement_backlog(summary: dict[str, Any], rows: list[dict[str, Any]]) -> 
 
 
 def analyze(run_dir: Path, catalog: Optional[Catalog] = None) -> list[Path]:
-    """제안 문서 6종을 run 디렉터리 안에만 쓴다."""
-    rows = load_rows(run_dir)
+    """제안 문서 6종을 run 디렉터리 안에만 쓴다.
+
+    **분석의 분모는 유효 턴이다**(T-c). 무효 턴을 섞으면 병목·실패 분류·처방 축이 전부
+    401 구간의 그림자를 센다 - run 20260915-131903 에서 `generation` 108건이 백로그
+    1순위(점수 216)로 올라간 것이 그 예다.
+    """
+    rows = valid_rows(load_rows(run_dir))
     summary_path = run_dir / "summary.json"
     if summary_path.exists():
         with utf8_open(summary_path, "r") as handle:

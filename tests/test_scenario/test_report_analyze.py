@@ -198,3 +198,30 @@ def test_V10_분석기는_저장소_파일을_수정하지_않는다(tmp_path: P
     assert before == after
     assert all(path.parent == run_dir for path in written)
     assert len(written) == 6
+
+
+# ──────────────────────────────────────────────
+# O-b: 표본 0 을 "측정했는데 0" 으로 읽히게 두지 않는다
+# ──────────────────────────────────────────────
+
+def test_Ob_측정_불가_사유가_고정_문구로_실린다(tmp_path: Path) -> None:
+    """지난 run 의 `bottleneck.md` 는 표본 0 으로만 비어 있어 오독됐다."""
+    from scripts.scenario.analyze import LLM_COST_UNMEASURABLE, bottleneck
+
+    body = bottleneck(tmp_path, [_row(llm_calls=None, tokens=None)])
+
+    assert LLM_COST_UNMEASURABLE in body
+    assert "측정할 수 없다" in body
+    # 왜 못 재는지 — 네 지점이 다 적혀야 한다(하나라도 뚫리면 문구를 고쳐야 한다)
+    assert "audit_logger.py" in body and "usage_metadata" in body
+    assert "src/state.py:58" in body and "done" in body
+    assert "plans/56" in body                     # 소유가 어디인지
+
+
+def test_Ob_표본이_있으면_사유를_붙이지_않는다(tmp_path: Path) -> None:
+    from scripts.scenario.analyze import LLM_COST_UNMEASURABLE, bottleneck
+
+    body = bottleneck(tmp_path, [_row(llm_calls=4, tokens=1200)])
+
+    assert LLM_COST_UNMEASURABLE not in body
+    assert "llm_calls" in body
