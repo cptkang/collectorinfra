@@ -1073,16 +1073,71 @@ def _append_unavailable_metric_notes(response: str, state: AgentState) -> str:
     return response + "\n\n" + "\n".join(f"[안내] {n}" for n in notes)
 
 
-def _append_limit_truncation_note(response: str, state: AgentState) -> str:
-    """LIMIT 도달 절단을 결정적으로 명시한다(K-09 — 절단 사실 응답 명시).
+_ROW_LIMIT_PATTERNS = (
+    re.compile(r"\blimit\s+(\d+)", re.IGNORECASE),                        # PostgreSQL
+    re.compile(r"\bfetch\s+first\s+(\d+)\s+rows?\s+only", re.IGNORECASE),  # DB2
+)
 
-    행 수가 resolved_limit에 도달했다는 것은 그 이후가 잘렸을 개연성이 높다는 뜻인데,
-    2차 실측(C-02 B0: 10,000행 도달)에서 응답이 이를 말하지 않았다. LLM 지시는
-    누락되므로 코드가 붙인다. resolved_limit 미승격 경로는 no-op(오탐 없음).
+
+def _applied_row_limit(state: AgentState) -> Optional[int]:
+    """이 턴에 **실제로 적용된** 행 상한. 승격값이 없으면 실행 SQL에서 읽는다.
+
+    `resolved_limit`은 라우트가 폼필 턴과 존 재선택 턴에만 싣는다(`api/routes/query.py`의
+    두 지점). 파이프라인은 그 값을 읽기만 하고 쓰지 않으므로 **평범한 조회에서는 None**이다 —
+    이 값에만 기대면 절단이 조용히 지나간다(CU-8: 알람 질의는 존 역질문을 건너뛰어
+    승격 기회 자체가 없고, 그 경로가 3-DB 팬아웃이라 절단이 가장 잘 난다).
+
+    실행 SQL은 단일·멀티 양쪽이 `query_attempts`로 남긴다(`query_executor`는 시도마다
+    누적, `multi_db_executor`는 반환 dict에 싣는다) — 거기서 읽으면 승격 여부와 무관하다.
+    재시도가 있었으면 **마지막** 시도의 상한이 실제 적용값이다.
     """
-    limit = state.get("resolved_limit")
-    if not isinstance(limit, int) or limit <= 0:
+    promoted = state.get("resolved_limit")
+    if isinstance(promoted, int) and promoted > 0:
+        return promoted
+    found: Optional[int] = None
+    for attempt in state.get("query_attempts") or []:
+        sql = attempt.get("sql") if isinstance(attempt, dict) else getattr(attempt, "sql", None)
+        if not sql:
+            continue
+        for pattern in _ROW_LIMIT_PATTERNS:
+            hit = pattern.search(str(sql))
+            if hit:
+                found = int(hit.group(1))
+    return found
+
+
+def _append_limit_truncation_note(response: str, state: AgentState) -> str:
+    """LIMIT 도달 절단을 결정적으로 명시한다(K-09 · CU-8 — 절단 사실 응답 명시).
+
+    행 수가 적용 상한에 도달했다는 것은 그 이후가 잘렸을 개연성이 높다는 뜻인데,
+    2차 실측(C-02 B0: 10,000행 도달)에서 응답이 이를 말하지 않았다. LLM 지시는
+    누락되므로 코드가 붙인다.
+
+    **멀티 DB는 존별로 본다.** 종전에는 병합 총행수를 DB 하나치 상한과 비교해 두 방향으로
+    틀렸다 — 3-DB × 4,000행이면 절단이 없는데도 12,000 ≥ 10,000으로 경고했고, 반대로
+    어느 존이 잘렸는지는 말하지 못했다(P-4 실측: 10,000 / 2,813 / 10,000 — 잘린 것은 둘뿐).
+    상한을 판독하지 못하면 no-op(오탐 없음).
+    """
+    limit = _applied_row_limit(state)
+    if not limit:
         return response
+
+    summary = state.get("db_result_summary") or {}
+    if summary:
+        truncated = [
+            str((info or {}).get("display_name") or db_id)
+            for db_id, info in summary.items()
+            if int((info or {}).get("row_count") or 0) >= limit
+        ]
+        if not truncated:
+            return response
+        return (
+            response
+            + f"\n\n[안내] {' · '.join(truncated)} 조회가 상한(LIMIT {limit:,})에 도달해 "
+            "이후 행이 절단되었을 수 있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 "
+            "확인할 수 있습니다."
+        )
+
     rows = state.get("query_results") or []
     if len(rows) < limit:
         return response

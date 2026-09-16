@@ -644,3 +644,88 @@ class TestAlarmHeadline:
             "query_results": [],
         }
         assert _prepend_alarm_headline("0건 안내", state, self._cfg()) == "0건 안내"
+
+
+# --- CU-8 · LIMIT 도달 절단 고지 (P-4 부수 · 2026-09-16) ---------------------
+#
+# 고지 기능 자체는 있었지만 `resolved_limit` 승격에만 의존해 평범한 조회에서는
+# 발화하지 못했다(라우트가 폼필·존 재선택 턴에만 싣는다). 멀티 DB는 병합 총행수를
+# DB 하나치 상한과 비교해 잘린 존을 지목하지 못했고 거짓 경고도 냈다.
+
+from src.nodes.output_generator import (  # noqa: E402
+    _append_limit_truncation_note,
+    _applied_row_limit,
+)
+
+
+def _attempt(sql: str) -> dict:
+    return {"sql": sql, "success": True, "error": None, "row_count": 0, "execution_time_ms": 1.0}
+
+
+def test_승격이_없어도_실행SQL에서_상한을_읽는다() -> None:
+    """평범한 조회는 resolved_limit이 None이다 — 그 값에만 기대면 절단이 조용히 지나간다."""
+    state = {"query_attempts": [_attempt("SELECT 1 FROM cmm_resource LIMIT 1000")]}
+
+    assert _applied_row_limit(state) == 1000
+
+
+def test_DB2_FETCH_FIRST_도_읽는다() -> None:
+    state = {"query_attempts": [_attempt("SELECT 1 FROM POLESTAR.CMM_RESOURCE FETCH FIRST 500 ROWS ONLY")]}
+
+    assert _applied_row_limit(state) == 500
+
+
+def test_승격된_상한이_있으면_그것을_쓴다() -> None:
+    """폼필·존 재선택 턴의 기존 동작 보존."""
+    state = {"resolved_limit": 10000, "query_attempts": [_attempt("... LIMIT 20")]}
+
+    assert _applied_row_limit(state) == 10000
+
+
+def test_단일_조회가_상한에_도달하면_고지한다() -> None:
+    state = {
+        "query_attempts": [_attempt("SELECT 1 FROM cmm_resource LIMIT 3")],
+        "query_results": [{"a": 1}, {"a": 2}, {"a": 3}],
+    }
+
+    out = _append_limit_truncation_note("본문", state)
+
+    assert "[안내]" in out and "LIMIT 3" in out
+
+
+def test_멀티DB는_잘린_존만_지목한다() -> None:
+    """P-4 실측 그대로 — 10,000 / 2,813 / 10,000 중 잘린 것은 둘이다."""
+    state = {
+        "query_attempts": [_attempt("SELECT 1 FROM cmm_alarm LIMIT 10000")],
+        "db_result_summary": {
+            "polestar_b0": {"display_name": "은행존", "row_count": 10000},
+            "polestar_cm_gp": {"display_name": "공동존 김포", "row_count": 2813},
+            "polestar_cm_yd": {"display_name": "공동존 여의도", "row_count": 10000},
+        },
+    }
+
+    out = _append_limit_truncation_note("본문", state)
+
+    assert "은행존" in out and "공동존 여의도" in out
+    assert "공동존 김포" not in out, "잘리지 않은 존을 지목하면 오독을 만든다"
+
+
+def test_존별로는_미달인데_합계가_넘으면_고지하지_않는다() -> None:
+    """3-DB × 4,000행 = 12,000 ≥ 10,000 — 종전 비교식이 만들던 거짓 경고."""
+    state = {
+        "query_attempts": [_attempt("SELECT 1 FROM cmm_resource LIMIT 10000")],
+        "query_results": [{"a": i} for i in range(12000)],
+        "db_result_summary": {
+            "polestar_b0": {"display_name": "은행존", "row_count": 4000},
+            "polestar_cm_gp": {"display_name": "공동존 김포", "row_count": 4000},
+            "polestar_cm_yd": {"display_name": "공동존 여의도", "row_count": 4000},
+        },
+    }
+
+    assert _append_limit_truncation_note("본문", state) == "본문"
+
+
+def test_상한을_못_읽으면_no_op() -> None:
+    state = {"query_attempts": [_attempt("SELECT 1 FROM cmm_resource")], "query_results": [{"a": 1}]}
+
+    assert _append_limit_truncation_note("본문", state) == "본문"

@@ -343,6 +343,27 @@ def month_anchor_payload(ms: MonthSeries) -> dict:
 # 불가할 때 결정적 피벗에 허용하는 안전 화이트리스트(어댑터 지식, D-089 계층).
 _ENTITY_SAFE_DIRECT_COLUMNS = frozenset({"id", "name", "hostname", "ipaddress", "description"})
 
+# 폼필 역질문 드롭다운에서 **사람이 고를 수 없는** 내부·감사 칼럼 (P-14 · CU-10).
+# 실측: 미매핑 열 하나에 후보가 86개 실렸고 원시 스키마 순서 그대로라 선두 10개가
+# dtype · id · acl_id · acl_manager_group_id · acl_manager_id · haschildren ·
+# inheritstatus · inventorypollinginterval · longpollinginterval · mesurementpollinginterval
+# 이었다. 후보는 **사람이 고르는 목록**이므로 조립 가능성(값이 있는가)만으로는 부족하다.
+_CANDIDATE_NOISE_EXACT = frozenset({
+    "id", "dtype", "dtime", "mtime", "ctime", "inheritstatus", "haschildren",
+})
+_CANDIDATE_NOISE_SUFFIXES = ("_id", "pollinginterval")
+_CANDIDATE_NOISE_PREFIXES = ("acl_",)
+
+
+def _is_candidate_noise(column: str) -> bool:
+    """역질문 후보에서 감출 내부·감사 칼럼인가."""
+    name = column.strip().lower()
+    if not name:
+        return True
+    if name in _CANDIDATE_NOISE_EXACT:
+        return True
+    return name.startswith(_CANDIDATE_NOISE_PREFIXES) or name.endswith(_CANDIDATE_NOISE_SUFFIXES)
+
 
 def filter_pivot_regular_entries(
     regular_entries: list[tuple[str, str]],
@@ -444,7 +465,10 @@ def build_form_fill_candidates(
         break
     if not cols:
         cols = sorted(_ENTITY_SAFE_DIRECT_COLUMNS)
-    for col in cols:
+    # 내부·감사 칼럼은 감춘다(CU-10 ①). 전부 걸러지면 거르지 않는다 — 빈 드롭다운은
+    # 사람이 아무것도 못 고르게 만들어 시끄러운 드롭다운보다 나쁘다.
+    visible = [c for c in cols if c and not _is_candidate_noise(str(c))]
+    for col in (visible or [c for c in cols if c]):
         if not col:
             continue
         desc = col_desc.get(str(col).lower(), "")
