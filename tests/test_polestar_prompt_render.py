@@ -31,7 +31,12 @@ from src.schema_cache.catalog_builder import (
 )
 
 #: 전환 전(2026-07-30 HEAD) 프롬프트 텍스트의 sha256 — 플래그 OFF 렌더가 이 값이어야 한다.
-_SHA_BEFORE_DATA = "9ff6d21fee8e466d1ad0ed2ba90d4c2e1bff7be43c4c0d4c1f9fdaf251ecef7b"
+#: 2026-09-16 갱신(plans/98 CU-12 — **의도한 프롬프트 변경**): Template A/B의 EAV 숫자 속성
+#: (LOGICALCORE·PHYSICALCORE·PHYSICALCPU) 예시가 `cc.stringvalue_short`를 캐스트 없이 보여
+#: LLM이 문자열 비교·합계를 따라 생성했다(B-07·B-08 2/2). 예시를 `CAST(... AS NUMERIC)`으로
+#: 고치고 방언 주석(PostgreSQL NUMERIC / DB2 DECIMAL)을 더했다. 알람 템플릿은 EAV 블록을 쓰지
+#: 않아 sha 불변 — 그 사실 자체가 변경 범위가 데이터 템플릿에 한정됐다는 근거다.
+_SHA_BEFORE_DATA = "0ca62e8e345ab1614fcca7c050eba17f02f173b467a08e1d27c6878d80cf7674"
 _SHA_BEFORE_ALARM = "81590b5335688931b9b4e491024828504b2cb367c294b298c1bd3230220d367c"
 
 _POLESTAR_DB_IDS = ("polestar_cm_gp", "polestar_cm_yd", "polestar_b0")
@@ -128,6 +133,54 @@ def test_sql_examples_read_hostname_and_ip_from_direct_columns():
         assert "'IPaddress'" not in body
         assert "THEN c.hostname END) AS hostname" in body
         assert "THEN c.ipaddress END) AS ipaddress" in body
+
+
+#: 값이 순수 숫자 문자열인 EAV 속성 — 예제가 캐스트를 보여야 한다(plans/98 CU-12).
+_NUMERIC_EAV_ATTRS = ("LOGICALCORE", "PHYSICALCORE", "PHYSICALCPU")
+#: 값에 단위·문자열이 섞이는 속성 — 캐스트하면 실행 오류이거나 무의미하다.
+_NON_NUMERIC_EAV_ATTRS = ("TotalSize", "Model", "MODEL", "OSType", "OSVerson", "PatchLevel")
+
+
+@pytest.mark.parametrize("knowledge_render", [False, True])
+def test_eav_numeric_attribute_examples_cast_before_aggregation(knowledge_render):
+    """숫자 EAV 속성 예시는 집계 함수 안에서 NUMERIC 캐스트를 보여야 한다(plans/98 CU-12).
+
+    B-07·B-08이 2/2로 캐스트 없는 문자열 비교·합계를 생성했다. 원인은 프롬프트 예제가
+    `cc.stringvalue_short`를 캐스트 없이 보여준 것이다 — 지시를 덧붙이기 전에 **예제부터**
+    고친다(프롬프트 강제가 few-shot 예시와 경쟁하면 반복 실패한다).
+    """
+    rendered = render_system_template(knowledge_render=knowledge_render)
+    for attribute in _NUMERIC_EAV_ATTRS:
+        for line in rendered.splitlines():
+            if f"'{attribute}'" not in line or "MAX(CASE WHEN" not in line:
+                continue
+            assert "CAST(cc.stringvalue_short AS NUMERIC)" in line, (
+                f"{attribute} 예시가 캐스트 없이 값 컬럼을 노출한다: {line}"
+            )
+            # 캐스트는 집계 **안쪽**이어야 한다(CLAUDE.md: 반드시 집계 전 캐스트).
+            assert line.index("MAX(") < line.index("CAST("), line
+
+
+@pytest.mark.parametrize("knowledge_render", [False, True])
+def test_non_numeric_eav_attribute_examples_stay_uncast(knowledge_render):
+    """문자열·단위 포함 속성(OS 종류·모델·메모리 '62.1 GB')에는 캐스트를 넣지 않는다."""
+    rendered = render_system_template(knowledge_render=knowledge_render)
+    for attribute in _NON_NUMERIC_EAV_ATTRS:
+        for line in rendered.splitlines():
+            if f"'{attribute}'" not in line or "MAX(CASE WHEN" not in line:
+                continue
+            assert "CAST(" not in line, f"{attribute}는 숫자 속성이 아니다: {line}"
+
+
+@pytest.mark.parametrize("knowledge_render", [False, True])
+def test_eav_cast_note_covers_both_dialects(knowledge_render):
+    """캐스트 주석이 PostgreSQL·DB2 양 방언을 모두 적는다(방언 분기 필수)."""
+    rendered = render_system_template(knowledge_render=knowledge_render)
+    note = next(
+        (ln for ln in rendered.splitlines() if "AS DECIMAL" in ln), None
+    )
+    assert note is not None, "DB2 캐스트 방언 안내가 없다"
+    assert "AS NUMERIC" in note and "PostgreSQL" in note and "DB2" in note, note
 
 
 def test_rendered_template_keeps_format_placeholders():

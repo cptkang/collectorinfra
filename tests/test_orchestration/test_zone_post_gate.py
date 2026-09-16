@@ -108,12 +108,28 @@ class TestZonePostGateTask:
         assert self._call(db_pinned=True) is None
         assert self._call(db_succeeded=True) is None
 
-    def test_composite_plan_skips(self):
-        assert self._call(isolated=_isolated(is_composite=True)) is None
+    def test_composite_plan_also_asks(self):
+        """**G-3 확정(2026-09-16)으로 뒤집힌 계약.** 복합 계획도 존을 되묻는다.
 
-    def test_alarm_query_skips(self):
+        종전에는 *"중간 task 역질문은 UX 어색"* 을 이유로 복합을 제외했는데, 그 결과
+        복합 질의가 역질문 없이 3-DB 로 팬아웃했다(run 20260915-131903: 유효 280턴 중
+        66턴 · 팬아웃 p50 131.5초 vs 단일 59.9초). UX 우려는 **턴당 1회로 묶는 것**으로
+        해소한다 — `result_aggregator._zone_clarification_from_tasks` 가 그 지점이다.
+        """
+        payload = self._call(isolated=_isolated(is_composite=True))
+        assert payload is not None and payload.get("question")
+
+    def test_alarm_query_also_asks(self):
+        """**G-3 확정으로 뒤집힌 계약.** 알람도 존 단위로 데이터가 갈린다."""
         task = {"task_id": "t1", "agent": "alarm_query", "sub_query": "알람 조회"}
-        assert self._call(task=task) is None
+        payload = self._call(task=task)
+        assert payload is not None and payload.get("question")
+
+    def test_zone_scope_가_없는_agent는_여전히_비발동이다(self):
+        """확대는 **열거로 좁게** 유지한다 — 존 스코프 개념이 다른 agent 까지 열지 않는다."""
+        for agent in ("process_query", "direct_response", "document_fill"):
+            task = {"task_id": "t1", "agent": agent, "sub_query": "조회"}
+            assert self._call(task=task) is None, agent
 
     def test_no_query_targets_skips(self):
         """조회 대상 필드 미파싱(잡담성 오분류) — 과잉 역질문 방지."""

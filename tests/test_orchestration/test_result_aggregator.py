@@ -691,3 +691,85 @@ async def test_result_aggregator_merges_and_shows_all_items(mock_config):
     assert set(captured["rows"][0]) == {"server_name", "alarm_name", "severity", "Vendor", "SerialNumber", "cpus_avg"}
     # 병합 rows가 top-level query_results로 승격
     assert out["query_results"] == captured["rows"]
+
+
+# ──────────────────────────────────────────────
+# 존 역질문 턴당 1회 (G-3 확정 2026-09-16 · D-143 후속2 확대)
+# ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_존_역질문은_복합_계획에서도_턴당_1회로_묶인다(mock_config):
+    """G-3 로 복합 계획에 게이트가 열리면서 task 마다 같은 질문이 나올 수 있게 됐다.
+
+    `result_aggregator` 가 하나만 취해 턴당 1회로 묶고 나머지 task 결과를 버린다 —
+    종전 주석의 "중간 task 역질문은 UX 어색" 우려를 여기서 해소한다.
+    """
+    question = "어느 존의 데이터를 조회할까요?"
+    payload = {"kind": "zone_select", "question": question, "options": [{"db_id": "polestar_cm_gp"}]}
+    tasks = [
+        {"task_id": "t1", "agent": "data_query", "sub_query": "q1", "order": 1, "status": "completed"},
+        {"task_id": "t2", "agent": "alarm_query", "sub_query": "q2", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="복합 질의")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"final_response": question, "zone_clarification": payload, "source": []},
+        "t2": {"final_response": question, "zone_clarification": payload, "source": []},
+    }
+
+    out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    assert out["zone_clarification"] == payload
+    assert out["final_response"] == question          # 질문 2개가 이어붙지 않는다
+    assert out["final_response"].count(question) == 1
+
+
+@pytest.mark.asyncio
+async def test_복합_경로가_존_역질문을_본문으로_삼키지_않는다(mock_config):
+    """**두 줄만 지웠다면 여기서 깨진다.**
+
+    `_merge_finalized`·`_synthesize_finalized` 는 `zone_clarification` 키를 옮기지 않는다.
+    단락이 없으면 질문이 본문 텍스트로만 합쳐져 API 응답의 `clarification` 이 비고,
+    사용자는 구조화 응답(존 선택)을 할 수 없다 — 침묵 강등이다.
+    """
+    payload = {"kind": "zone_select", "question": "어느 존?", "options": []}
+    tasks = [
+        {"task_id": "t1", "agent": "data_query", "sub_query": "q1", "order": 1, "status": "completed"},
+        {"task_id": "t2", "agent": "data_query", "sub_query": "q2", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="복합 질의")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        "t1": {"final_response": "어느 존?", "zone_clarification": payload, "source": []},
+        "t2": {"organized_data": {"summary": "3대", "rows": [{"hostname": "web-01"}], "is_sufficient": True}},
+    }
+
+    out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    assert out["zone_clarification"] == payload
+    assert out["query_results"] == []                  # 부분 결과를 답변으로 내지 않는다
+    assert "3대" not in out["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_존_역질문_턴은_DB_승계를_오염시키지_않는다(mock_config):
+    """임의 분류 결과가 `previous_db_ids` 로 새면 다음 턴 승계가 틀어진다(요청 스코프 원칙)."""
+    payload = {"kind": "zone_select", "question": "어느 존?", "options": []}
+    tasks = [
+        {"task_id": "t1", "agent": "data_query", "sub_query": "q1", "order": 1, "status": "completed"},
+        {"task_id": "t2", "agent": "data_query", "sub_query": "q2", "order": 2, "status": "completed"},
+    ]
+    state = create_initial_state(user_query="복합 질의")
+    state["task_plan"] = tasks
+    state["task_results"] = {
+        # 역질문 task 는 target_db_ids 를 남기지 않지만, **다른 task 는 남긴다** —
+        # 복합 경로에서 그것이 승격되면 안 된다.
+        "t1": {"final_response": "어느 존?", "zone_clarification": payload, "source": []},
+        "t2": {"target_db_ids": ["polestar_b0", "polestar_cm_gp"], "db_origin": "classified"},
+    }
+
+    out = await result_aggregator(state, llm=AsyncMock(), app_config=mock_config)
+
+    assert "active_db_id" not in out
+    assert "target_databases" not in out
+    assert "db_scope_source" not in out
