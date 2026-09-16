@@ -36,30 +36,22 @@
 
 | ID | 실험 | 비용 | 무엇을 푸는가 | 선행 |
 |---|---|---|---|---|
-| **E-1** | **DB 단순 조회 2건** | 수 분 · 읽기 전용 · LLM 0 | **G-5 · G-8** 게이트 | 폐쇄망 DB 접근 |
+| **E-1** | **`--preflight` 가 함께 돌린다** | 수 초 · 읽기 전용 · LLM 0 | **G-5 · G-8** 게이트 | 폐쇄망 DB 접근 |
 | **E-2** | **표적 재현 3건**(`--only` 1건씩) | 약 10분 | **조사 J-1·J-2·J-3** | 로그 레벨 상향 |
 | **E-3** | **전 시나리오 재측정** | **약 8~11시간** | §0 의 질문 1~5 | W1-c 랜딩 · E-1·E-2 결론 |
 
 ### E-1 — DB 조회 2건 (G-5·G-8)
 
-읽기 전용 SQL 2개다. 결과만 있으면 게이트 2건이 닫힌다.
+**`python -m scripts.scenario --preflight` 가 돌린다**(§3.5). 사람이 SQL 을 옮겨 붙일 일이 없다.
 
-```sql
--- G-5: LOB 속성의 stringvalue NULL 비율. 0% 면 stringvalue 단독이 안전하고,
---      0% 가 아니면 COALESCE 가 필요하다(= B-09 단언이 과하다).
-SELECT COUNT(*) AS total,
-       SUM(CASE WHEN stringvalue IS NULL THEN 1 ELSE 0 END) AS null_cnt
-FROM   polestar.core_config_prop
-WHERE  name = 'OSParameter';
+| 조회 | 판정 | 닫히는 게이트 |
+|---|---|---|
+| `core_config_prop` 의 `OSParameter` 행에서 `stringvalue` NULL 비율 | NULL 0건 → `stringvalue` 단독 안전 / 있으면 COALESCE 필요 | **G-5**(CU-13) |
+| 은행존 `cmm_resource.name` 에 LIKE 와일드카드(`_`·`%`) 존재 여부 | 0건 → ESCAPE 불필요 / 1건 이상 → CU-1 OR 3분기에 ESCAPE 추가 | **G-8** |
 
--- G-8: 은행존 장비명에 LIKE 와일드카드(_ %)가 있는가. 있으면 OR 3분기에 ESCAPE 절이 필요하다.
-SELECT COUNT(*) AS wildcard_names
-FROM   POLESTAR.cmm_resource
-WHERE  resource_type = 'server.Server' AND dtime IS NULL
-  AND  (name LIKE '%\_%' ESCAPE '\' OR name LIKE '%\%%' ESCAPE '\');
-```
+**읽기 전용 SELECT 2건**이고(D-003) LLM 을 타지 않는다. 대상 DB 가 `ACTIVE_DB_IDS` 에 없으면 `[판정불가]` 로 남기고 **추정하지 않는다** — 그러면 그 게이트는 미결이다.
 
-> G-5 는 `polestar_cm_gp`(PostgreSQL), G-8 은 `polestar_b0`(DB2)다. **G-8 은 0건이면 그대로 두면 되고, 1건 이상이면 CU-1 의 OR 3분기에 `ESCAPE` 를 추가한다.**
+> SQL 원문은 `scripts/scenario/preflight.py` 의 `SQL_G5`·`SQL_G8` 이다. 스키마 한정은 `get_schema_prefix` 단일 출처를 쓰므로 DB2 대문자 `POLESTAR.` 도 자동이다.
 
 ### E-2 — 표적 재현 3건 (J-1·J-2·J-3)
 
@@ -176,119 +168,71 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 > 커밋 `12093ea`·`e2c3b79`·`56274a7`·`dfcdd7e`(2026-09-16) 기준. **명령은 전부 저장소 루트에서 돈다.**
 > 하네스 자체의 일반 사용법은 `plans/94` 「실행 가이드」가 정본이고, 여기는 **이 실험을 돌리는 절차**다.
 
-### `.env` 사전 설정 — 러너가 대신 해주지 않는 것
-
-> **원칙: 러너가 주입하는 것은 건드리지 말고, 러너가 못 정하는 것만 사람이 정한다.**
-> 러너는 기동할 때마다 아래를 **자기가 주입한다** — `.env` 에 쓰지 마라(써도 러너 값이 이긴다).
-> `ALARM_ENABLED=false` · **`AUTH_JWT_EXPIRE_HOURS=8`**(둘 다 `runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리 · 운영 `checkpoints.db` 오염 방지) ·
-> 프로파일 플래그(`config/scenarios/profiles.yaml` — 예: `optin_alarm` 의 `TEXT2SQL_ALARM_DETERMINISTIC`).
-
-#### 확인 → 판정 → 조치 (4키)
-
-> **표의 「보이는 값」을 그대로 찾고, 같은 행의 조치를 한다.** 어느 행에도 안 맞으면 **거기서 멈추고 물어본다** — 모르는 상태로 8시간을 돌리지 않는다.
-
-**① `LLM_PROVIDER` — 과금·승인이 갈린다**
-
-| 보이는 값 | 판정 | 조치 |
-|---|---|---|
-| `fabrix` · `ollama` | 내부망 | **그대로 진행.** 승인·`RUN_E2E` 불필요(D-216·D-211 ⑪) |
-| `gemini` 등 외부 | 외부 과금 | **멈춘다.** 폐쇄망에서 이 값이 나오면 **환경을 잘못 잡은 것**이다(다른 PC·다른 `.env`). 의도한 것이라면 `RUN_E2E=1` + **건별 사용자 승인**을 먼저 받는다(D-127) |
-| 없음 · 빈 값 | 판정 불가 | 러너가 **외부로 간주**해 과금 게이트가 산다(`--run` 이 거부됨). `.env` 에 명시한다 |
-
-**② `ACTIVE_DB_IDS` — 환경 판정이 여기서 나온다**
-
-| 보이는 값 | 판정 | 조치 |
-|---|---|---|
-| 폴스타 존 DB 포함(`polestar_cm_gp` 등) | `closed` | **그대로 진행** |
-| `polestar` 만 | `sandbox` | 로컬 도커 샌드박스다. **폐쇄망 측정이 목적이면 잘못된 환경**이다 |
-| 없음 · 빈 값 | 판정 불가 | **환경 판정이 어긋나 시나리오가 통째로 보류된다.** 실행 전에 채운다 |
-| 쉼표 구분 문자열 | **파싱 에러** | JSON 배열로 고친다 — `["polestar_cm_gp","polestar_b0"]`(함정 ②) |
-
-**③ `AUTH_ENABLED` — 401 의 근원**
-
-| 보이는 값 | 판정 | 조치 |
-|---|---|---|
-| `true` | 인증 켜짐 | **내장 테스트 계정으로 먼저 시도한다.** 0단계 `--mock` 이 통과하면 그대로 진행 |
-| `true` + 로그인 실패 | 계정 없음 | **`--user <ID> --password <PW>` 를 넘긴다.** 안 넘기면 **프로파일이 INVALID 로 서서 run 이 시작도 못 한다**(`runner.py:542`) — 이건 **의도된 차단**이다. 전건 401 인 원시 로그를 쌓는 것보다 낫다 |
-| `false` | 인증 꺼짐 | 로그인 자체를 하지 않는다. **토큰 만료 문제가 없다** — T-a·T-b 가 무의미해진다. 운영과 다른 조건이므로 **그 사실을 run 기록에 남긴다** |
-
-**④ `DB_BACKEND` — 조회가 되느냐**
-
-| 보이는 값 | 판정 | 조치 |
-|---|---|---|
-| `dbhub` | MCP 경유 | **MCP 서버가 따로 떠 있어야 한다**(별도 프로세스·별도 cwd). 안 떠 있으면 **전 시나리오가 조회 실패**다. 기동: `cd mcp_server && python -m mcp_server` |
-| `direct` | asyncpg 직결 | MCP 불필요. 운영과 다른 경로이므로 **run 기록에 남긴다** |
-| 없음 | 코드 기본값 | `src/config.py` 기본을 따른다. 어느 쪽인지 확인하고 위 행으로 간다 |
-
-**DB2(`polestar_b0`)가 대상이면 추가로**: 루트 venv 에 `ibm-db` 가 없다(`mcp_server/pyproject.toml` 에만 선언). `python -c "import ibm_db"` 로 확인하고 없으면 설치한다.
-
-> **토큰 수명은 확인할 필요가 없다 — 러너가 정한다**(2026-09-16 개정). 종전에는 러너가 `AuthConfig.jwt_expire_hours` 를 **읽어서 맞혔다.** 그러면 OS env·`.encenv` 우선순위로 실효값이 달라져도 **러너는 자기가 맞다고 믿고 엉뚱한 시점에 갱신한다.** 지금은 `ISOLATION_ENV` 로 **`AUTH_JWT_EXPIRE_HOURS=8` 을 주입**하고(`runner.SERVER_JWT_EXPIRE_HOURS`), 그 값이 그대로 **설정 에코 대조를 받는다**(`settings_catalog.RELOADABLE_KEYS` 에 있다) — **주입이 먹지 않으면 프로파일이 INVALID 로 서서 run 이 시작도 못 한다.** 값은 코드 기본값과 같은 8 이라 동작은 종전과 비트 동일하다. **수명을 늘려 만료를 회피하는 것이 아니다**(D-218 대안 기각).
-> 예외는 하나 — `--port` 로 **남이 띄운 서버**에 붙으면 러너가 수명을 정할 수 없어 설정을 읽어 근사하고, 그것도 실패하면 선제 갱신을 하지 않는다(T-a 반응 재시도만 남는다).
-
-#### ⑤ 사다리 단 — **기동 로그를 보고 판정한다**
-
-`.env` 를 보는 것만으로는 단을 알 수 없다. **서버를 띄우고 기동 로그 한 줄을 읽는 것이 유일한 판정**이다:
-
-```
-오케스트레이션 사다리 확정: tier=<단> degraded_reason=<사유> resolved_by=<...>
-```
-
-| `tier` / `degraded_reason` | 판정 | 조치 |
-|---|---|---|
-| `tier=deep_agent` | **정본 1단** | **그대로 진행.** 목표 9 달성 |
-| `tier=intent_orchestration` `reason=flag_off` | `ENABLE_DEEPAGENTS_PACKAGE` 가 off | **H-2 를 먼저 정한다.** 1단을 재려면 `true` 로 바꾸고 **재기동**한다. 안 바꾸면 지난 run 과 같은 2단 측정이다(그것도 유효한 선택이다 — **대신 §0 의 「답하지 못하는 것」에 1단이 남는다**) |
-| `reason=orchestrator_unavailable` | 플래그는 켰는데 오케스트레이터 미가용 | `ORCHESTRATOR_PROVIDER` 를 본다. `vllm` 이면 **서빙 여부**와 `ORCHESTRATOR_BASE_URL` 의 `/v1/models` 를, `gemini` 면 **api_key 와 D-127 승인**을 확인한다 |
-| `reason=package_missing` | 백엔드는 골랐으나 조립 실패 | `deepagents` 설치 확인(`python -c "import deepagents"`). **개발 PC 에는 0.6.10 이 있다** — 폐쇄망은 wheel 반입 여부를 본다 |
-| `tier=semantic_router` · `legacy` | 2단도 아님 | `ENABLE_INTENT_ORCHESTRATION` 이 off 다. 지난 run 과 조건이 달라져 **회귀 비교가 성립하지 않는다** — 맞추거나, 다르다는 사실을 기록한다 |
-
-> **어느 단이든 run 은 돈다.** 단을 맞추는 것보다 **어느 단으로 돌았는지 아는 것**이 중요하다 — 리포트 1절 경고(O-c)가 그걸 싣는다.
-> 2·3단 플래그(`ENABLE_INTENT_ORCHESTRATION`·`ENABLE_SEMANTIC_ROUTING`)는 **tri-state** 라 미입력이면 `ACTIVE_DB_IDS` 등록 여부로 자동 결정된다 — **run 끼리 비교하려면 명시해 고정한다.**
-> 바꿨으면 **그 사실을 run 기록에 남긴다.** 설정이 다른 run 끼리는 회귀 비교가 성립하지 않는다(H-2 는 사람 결정이다).
-
-#### 쓰는 방법 — 함정 3가지
-
-1. **인라인 주석 금지.** `.env` 계열은 `KEY=value  # 설명` 을 파싱하지 못한다. 주석은 **별도 줄**에 쓰고, **특히 빈 값 뒤에 붙이지 마라**
-2. **list/dict 는 JSON 배열.** `ACTIVE_DB_IDS=["polestar_cm_gp","polestar_b0"]` — 쉼표 구분 문자열은 파싱 에러다
-3. **OS 환경변수가 `.env` 를 덮는다.** 셸에 남은 값이 파일 값을 이긴다. Windows PowerShell 에서 `Get-ChildItem Env:` 로, POSIX 에서 `env | grep` 로 확인하라 — **파일만 고치고 왜 안 먹는지 헤매는 것이 가장 흔한 함정이다**
-
-#### 확인 명령 — **출력을 위 ①~⑤ 표에서 찾는다**
-
-> 이 명령들은 **읽기만 한다.** 출력의 각 키를 위 표의 「보이는 값」에서 찾아 같은 행의 조치를 하고, 표에 없는 값이 나오면 **거기서 멈춘다.**
+### 사전 점검 — **명령 하나로 끝난다**
 
 ```bash
-# POSIX — 값이 아니라 키만 본다(비밀값 노출 방지)
-grep -nE "^(LLM_PROVIDER|ACTIVE_DB_IDS|AUTH_ENABLED|AUTH_JWT_EXPIRE_HOURS|DB_BACKEND|ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL|ENABLE_INTENT_ORCHESTRATION|ENABLE_SEMANTIC_ROUTING)=" .env
-env | grep -E "^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)" || echo "셸 오염 없음"
+python -m scripts.scenario --preflight
 ```
 
+**사람이 `.env` 를 grep 하고 표에서 행을 찾던 일을 코드가 한다.** 출력이 이렇게 나온다:
+
+```
+[사전 점검] plans/99 E-0 + E-1 - 읽기만 합니다(설정 변경 0 - LLM 호출 0)
+
+  [OK]      LLM_PROVIDER   fabrix
+                        -> 그대로 진행한다. 승인·RUN_E2E 불필요(D-216).
+  [중단]     ACTIVE_DB_IDS  (비어 있음)
+                        -> 실행 전에 채운다. 환경 판정이 어긋나 시나리오가 통째로 보류된다.
+  [주의]     사다리 단        intent_orchestration (degraded_reason=flag_off)
+                        -> H-2 를 먼저 정한다. 1단을 재려면 ENABLE_DEEPAGENTS_PACKAGE=true 로 ...
+
+판정: 중단. 아래를 먼저 해결하십시오 -
+  - ACTIVE_DB_IDS: 실행 전에 채운다. ...
+```
+
+| 표지 | 뜻 | 할 일 |
+|---|---|---|
+| `[OK]` | 넘어가도 된다 | 없음 |
+| `[주의]` | 돌긴 하는데 **알고 있어야 한다** | 조치를 읽고 **의도한 것인지 확인**. 그대로 가도 된다 |
+| `[중단]` | 여기서 멈춘다 | 조치를 하고 **다시 돌린다**. 종료 코드 1 |
+| `[판정불가]` | **추정하지 않았다** | 그 항목이 막는 게이트는 **미결로 남는다**. 풀려면 사유를 먼저 해결한다 |
+
+**점검하는 것**: `LLM_PROVIDER`(과금·승인) · `ACTIVE_DB_IDS`(환경 판정) · `AUTH_ENABLED`(401 의 근원) · `DB_BACKEND`(조회 도달) · **사다리 단**(기동 로그와 같은 판정 함수) · 디스크 여유 · **E-1 DB 조회 2건**(게이트 G-5·G-8).
+
+`--no-db` 를 붙이면 DB 조회 2건을 건너뛴다(설정만 빠르게 볼 때).
+
+> **왜 `grep` 보다 나은가** — `.env` 를 grep 하면 **OS 환경변수가 파일을 덮는 경우를 못 본다**(아래 함정 ③). 셸에 남은 값이 이기는데 파일만 고치고 왜 안 먹는지 헤매는 것이 가장 흔한 함정이다. `--preflight` 는 `load_config()` 로 **실효값**을 본다.
+> **고치지는 않는다.** 사다리 플래그 변경(H-2)은 사람 결정이고, 바꾼 사실이 run 기록에 남아야 회귀 비교가 성립한다.
+> **읽기 전용이다**(D-003). SELECT 2건 외에 DB 를 건드리지 않고 LLM 을 호출하지 않는다.
+
+#### 러너가 주입하므로 `.env` 에 쓰지 않을 것
+
+`ALARM_ENABLED=false` · `AUTH_JWT_EXPIRE_HOURS=8`(둘 다 `runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리) · 프로파일 플래그(`config/scenarios/profiles.yaml`).
+**써도 러너 값이 이긴다.** 주입이 먹지 않으면 설정 에코 대조가 잡아 프로파일이 INVALID 로 선다.
+
+#### `.env` 를 고칠 때 함정 3가지
+
+1. **인라인 주석 금지.** `KEY=value  # 설명` 을 파싱하지 못한다. 주석은 **별도 줄**에, **특히 빈 값 뒤에 붙이지 마라**
+2. **list/dict 는 JSON 배열.** `ACTIVE_DB_IDS=["polestar_cm_gp","polestar_b0"]` — 쉼표 구분 문자열은 파싱 에러다
+3. **OS 환경변수가 `.env` 를 덮는다.** `--preflight` 는 실효값을 보므로 이 함정에 걸리지 않지만, **고칠 때는 셸에 남은 값을 먼저 지워야** 한다
+
+```bash
+env | grep -E "^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)" || echo "셸 오염 없음"
+```
 ```powershell
-# Windows — 같은 확인
-Select-String -Path .env -Pattern '^(LLM_PROVIDER|ACTIVE_DB_IDS|AUTH_ENABLED|AUTH_JWT_EXPIRE_HOURS|DB_BACKEND|ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL|ENABLE_INTENT_ORCHESTRATION|ENABLE_SEMANTIC_ROUTING)='
 Get-ChildItem Env: | Where-Object Name -Match '^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)' | Select-Object Name, Value
 ```
 
-⑤(사다리 단)는 `.env` 만으로 판정되지 않는다 — **서버를 띄워 로그 한 줄을 본다**:
+#### 사다리 단이 `[주의]` 로 나왔을 때
 
-```bash
-python -m src.main --server 2>&1 | grep "오케스트레이션 사다리 확정"
-```
-```powershell
-python -m src.main --server 2>&1 | Select-String "오케스트레이션 사다리 확정"
-```
+`--preflight` 가 `degraded_reason` 별 조치를 같이 낸다. 배경은 이렇다:
 
-**이 한 줄이 판정표 전체의 해석을 바꾼다.** 기록해 두고 run 이 끝난 뒤 리포트 1절 경고(O-c)와 대조한다.
+- **`flag_off`** — `ENABLE_DEEPAGENTS_PACKAGE` 가 off. run `20260915-131903` 이 여기였다
+- **`orchestrator_unavailable`** — 플래그는 켰는데 오케스트레이터 미가용. `vllm` 이면 서빙, `gemini` 면 **D-127 승인**
+- **`package_missing`** — 조립 실패. 개발 PC 에는 `deepagents` 0.6.10 이 있다(폐쇄망은 wheel 반입 확인)
 
-#### 여기까지 하고 나면 — 넘어가도 되는 조건
-
-아래 5줄에 **전부 답할 수 있으면** 0단계로 넘어간다. 하나라도 「모르겠다」면 **거기서 멈춘다.**
-
-- [ ] `LLM_PROVIDER` 가 내부망인가, 아니면 **승인을 받았는가**
-- [ ] `ACTIVE_DB_IDS` 가 **의도한 환경**(`closed`/`sandbox`)을 가리키는가
-- [ ] 인증이 켜져 있다면 **로그인이 실제로 되는가**(0단계 `--mock` 으로 확인)
-- [ ] `DB_BACKEND=dbhub` 라면 **MCP 서버가 떠 있는가**
-- [ ] 기동 로그의 **`tier` 와 `degraded_reason` 을 적어 뒀는가**
-
-> **`.env` 를 실험이 임의로 바꾸지 않는다.** 사다리 플래그 변경(H-2)은 **사람 결정**이고, 바꿨으면 그 사실을 run 기록에 남긴다 — 설정이 다른 run 끼리는 회귀 비교가 성립하지 않는다.
+> **어느 단이든 run 은 돈다.** 단을 맞추는 것보다 **어느 단으로 돌았는지 아는 것**이 중요하다 — 리포트 1절 경고(O-c)가 그걸 싣는다.
+> 2·3단 플래그는 **tri-state** 라 미입력이면 `ACTIVE_DB_IDS` 등록 여부로 자동 결정된다 — run 끼리 비교하려면 명시해 고정한다.
 
 ---
 
@@ -303,26 +247,20 @@ python scripts/arch_check.py --ci && python scripts/overfit_check.py --ci
 기준선(2026-09-16 실측): `--dry-run` **218건** · `pytest` **669 passed / 2 skipped** · 게이트 **둘 다 exit 0**.
 **여기서 어긋나면 폐쇄망에 가기 전에 멈춘다.**
 
-### 1단계 — E-0 사전 점검 (폐쇄망 · §4)
+### 1~2단계 — 사전 점검 + E-1 (명령 하나 · 폐쇄망)
 
 ```bash
-# E-0-1 사다리 단 — 이 한 줄이 판정표 전체의 해석을 바꾼다
-grep -E "^(ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL)=" .env
-python -m src.main --server   # 기동 로그의 "오케스트레이션 사다리 확정: tier=... degraded_reason=..."
-
-# E-0-3 분할 실행 실동작 (무과금)
-python -m scripts.scenario --mock --group D --segment 2
-python -m scripts.scenario --mock --resume-failed <직전_RUN_ID>
-
-# E-0-6 디스크 — 지난 run 이 체크포인트 1.49GB + 산출물
-df -h .
+python -m scripts.scenario --preflight
 ```
 
-`tier=deep_agent` 가 아니면 **정본 1단은 이번에도 측정되지 않는다**(§0). `degraded_reason` 을 기록하고 H-2 를 먼저 정한다.
+**E-0(설정·사다리·디스크)과 E-1(DB 조회 2건)을 함께 한다.** 위 「사전 점검」 절의 표지대로 처리한다.
+`[중단]` 이 없고 `[판정불가]` 도 없으면 3단계로 간다. `[판정불가]` 가 남으면 **그 항목이 막는 게이트는 미결**이다(G-5·G-8).
 
-### 2단계 — E-1 DB 조회 2건 (수 분 · 읽기 전용 · LLM 0)
+**추가로 확인할 것 하나** — `--resume-failed` 실동작(E-0-3):
 
-§1 의 SQL 2개를 그대로 돌린다. **게이트 G-5·G-8 이 닫힌다.**
+```bash
+python -m scripts.scenario --mock --resume-failed <직전_RUN_ID>
+```
 
 ### 3단계 — E-2 표적 재현 3건 (약 10분 · 실 LLM)
 

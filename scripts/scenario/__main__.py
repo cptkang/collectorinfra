@@ -243,6 +243,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """0단 - 실험 사전 점검(plans/99 E-0 + E-1). 읽기만 한다.
+
+    사람이 `.env` 를 grep 해서 표에서 행을 찾던 일을 코드가 대신한다. grep 보다 정확하다 -
+    OS 환경변수가 `.env` 를 덮는 경우(함정 (3))를 grep 은 못 보지만 `load_config()` 는 본다.
+    설정을 **고치지는 않는다** - 사다리 플래그 변경(H-2)은 사람 결정이고, 바꾼 사실이
+    run 기록에 남아야 회귀 비교가 성립한다.
+    """
+    from .preflight import format_report, run_preflight
+
+    report = run_preflight(with_db=not args.no_db)
+    print(format_report(report))
+    return 1 if report.stops else 0
+
+
 def _resolve_run_dir(name: Optional[str]) -> Optional[Path]:
     if name:
         path = RESULTS_ROOT / name
@@ -287,6 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_argument_group(
         "동작 (미지정 시: 내부망 = 전 시나리오 실 실행 / 외부 = 무과금 dry-run -> mock -> estimate)"
     )
+    mode.add_argument("--preflight", action="store_true",
+                      help="0단 실험 사전 점검 - 설정 실효값·사다리 단·디스크 + DB 조회 2건 (무과금·읽기 전용)")
     mode.add_argument("--dry-run", action="store_true", help="1단 카탈로그만 검증 (무과금)")
     mode.add_argument("--mock", action="store_true", help="2단 모의 서버로 전 경로 (무과금)")
     mode.add_argument("--estimate", action="store_true", help="3단 예상치 출력 (무과금)")
@@ -298,6 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="분석/대안 수립 (무과금)")
 
     select = parser.add_argument_group("선택 (전부 생략 가능 - 기본은 전 시나리오)")
+    select.add_argument("--no-db", action="store_true",
+                        help="--preflight 에서 DB 조회 2건(E-1)을 건너뛴다")
     select.add_argument("--profile", action="append", default=[], help="플래그 프로파일 (반복 가능)")
     select.add_argument("--group", action="append", default=[], help="군 문자 (예: C · R4)")
     select.add_argument("--only", default=[], type=lambda v: v.split(","),
@@ -332,6 +351,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.preflight:
+        return cmd_preflight(args)
     if args.report:
         args.report = None if args.report is True else args.report
         return cmd_report(args)
