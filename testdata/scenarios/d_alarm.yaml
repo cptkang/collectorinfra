@@ -106,12 +106,17 @@ scenarios:
           query: "이번 달 CPU 임계값 초과 알람 이력 조회"
         expect:
           status: completed
-          # ★ **결정적 경로를 켜도 이 조인은 생기지 않는다**(2026-09-16 실측) —
-          #   조립본도 `res.resource_type IN ('server.Cpus')` 로 대체하고 임계값 정의를
-          #   조인하지 않는다. `plans/98` CU-7 이 "플래그가 꺼져 LLM 경로로 갔기 때문"이라고
-          #   본 전제가 틀렸다. 단언은 유지한다 — 불합격이 나야 맞는 자리다.
-          sql_must_match: ["(?i)cmm_alarm_def"]
-          manual_review: "이번 달 범위가 실행 시점 기준으로 맞는지"
+          # ★ 2026-09-16 교정 — 종전 단언 `cmm_alarm_def` 는 **D-202 4차 결정과 어긋났다.**
+          #   그 결정은 `scripts/diag_alarm_definitions.sql` 실측(판정 기준 b)에 근거한다:
+          #     - 정의명(cmm_alarm_def.name)은 센터별 임의 등록이라 필터 축으로 부적합
+          #     - res.resource_type 이 3존 공통 안정 축 (CPU=server.Cpus: B0 834K·GP 27K·YD 29K)
+          #   그리고 **"임계값/사용률"은 유형어를 동반하면 의미 잉여다 — 폴스타 알람 자체가
+          #   임계 이벤트이기 때문이다.** 즉 "CPU 임계값 초과 알람" = "CPU 알람"이고
+          #   cmm_alarm_def 조인은 필요 없다. 제품이 옳고 단언이 틀렸다.
+          sql_must_match: ["(?i)resource_type", "(?i)server\\.Cpus"]
+          # 정의명 축으로 되돌아가면 D-202 4차를 조용히 뒤집는 것이다.
+          sql_must_not_match: ["(?i)cmm_alarm_def\\.name", "(?i)d\\.name\\s+(?i:i?like)"]
+          manual_review: "이번 달 범위가 실행 시점 기준으로 맞는지 · 절단 고지(CU-8)가 응답에 실렸는지"
   - id: D-06
     plans: [44, 45]
     title: "담당자 없는 미확인 알람"
