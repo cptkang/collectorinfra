@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +50,10 @@ class Check:
     verdict: str
     action: str
     detail: str = ""
+    #: 값의 출처. `"os"` 는 **셸 환경변수가 `.env` 를 덮고 있다**는 뜻이라 고치는 방법이
+    #: 달라진다(파일이 아니라 셸을 고쳐야 한다). 종전에는 이걸 사람이 `env | grep` 으로
+    #: 따로 확인하고 머릿속에서 대조했다 - 그 일이 불필요했다(2026-09-16 사용자 지적).
+    source: str = ""
 
 
 @dataclass
@@ -56,7 +61,13 @@ class Report:
     checks: list[Check] = field(default_factory=list)
 
     def add(self, *args: Any, **kwargs: Any) -> None:
-        self.checks.append(Check(*args, **kwargs))
+        check = Check(*args, **kwargs)
+        # 출처는 항목 이름으로 자동 판정한다 - 호출부가 매번 챙기면 빠뜨린다.
+        if not check.source:
+            check.source = _source_of(check.key)
+        if check.source == "os":
+            check.action += _shell_override_note(check.key)
+        self.checks.append(check)
 
     @property
     def stops(self) -> list[Check]:
@@ -65,6 +76,36 @@ class Report:
     @property
     def unknowns(self) -> list[Check]:
         return [c for c in self.checks if c.verdict == VERDICT_UNKNOWN]
+
+
+#: 점검 항목 -> 대응 환경변수 키. 출처 판정에만 쓴다.
+_ENV_KEY = {
+    "LLM_PROVIDER": "LLM_PROVIDER",
+    "ACTIVE_DB_IDS": "ACTIVE_DB_IDS",
+    "AUTH_ENABLED": "AUTH_ENABLED",
+    "DB_BACKEND": "DB_BACKEND",
+}
+
+
+def _source_of(key: str) -> str:
+    """값이 어디서 왔나. `"os"` 면 셸 환경변수가 `.env` 를 덮고 있다.
+
+    `settings_catalog.py:1030-1033` 과 같은 판정이다 - `os.environ` 에 있으면 그 값이
+    파일을 이긴다. `.env` 로딩은 `os.environ` 에 주입되지 않으므로(Known Mistakes
+    2026-06-10) 여기 있다는 것은 **셸에서 왔다**는 뜻이다.
+    """
+    env_key = _ENV_KEY.get(key)
+    return "os" if env_key and env_key in os.environ else ""
+
+
+def _shell_override_note(key: str) -> str:
+    """셸이 덮고 있으면 조치 문구에 덧붙일 한 줄. 아니면 빈 문자열."""
+    if _source_of(key) != "os":
+        return ""
+    env_key = _ENV_KEY[key]
+    return (f" **이 값은 셸 환경변수 {env_key} 에서 왔다 - .env 를 고쳐도 먹지 않는다.** "
+            f"먼저 셸에서 지운다(POSIX `unset {env_key}` / PowerShell "
+            f"`Remove-Item Env:{env_key}`).")
 
 
 # --- E-0: 설정 실효값 --------------------------------------------------------
@@ -343,7 +384,8 @@ def format_report(report: Report) -> str:
     lines = ["[사전 점검] plans/99 E-0 + E-1 - 읽기만 합니다(설정 변경 0 - LLM 호출 0)", ""]
     width = max((len(c.key) for c in report.checks), default=10)
     for check in report.checks:
-        lines.append(f"  {_MARK[check.verdict]:<9} {check.key:<{width}}  {check.observed}")
+        origin = "  (<- 셸 환경변수)" if check.source == "os" else ""
+        lines.append(f"  {_MARK[check.verdict]:<9} {check.key:<{width}}  {check.observed}{origin}")
         lines.append(f"  {'':<9} {'':<{width}}  -> {check.action}")
         if check.detail:
             lines.append(f"  {'':<9} {'':<{width}}     ({check.detail[:160]})")

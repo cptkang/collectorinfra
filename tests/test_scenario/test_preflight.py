@@ -165,3 +165,32 @@ def test_모든_조치_문구가_ASCII_구두점이다() -> None:
     for call in re.findall(r"report\.add\((.*?)\)\n", source, re.S):
         for ch in _NON_ASCII_PUNCT:
             assert ch not in call, f"report.add 문구에 {ch!r} 가 있다: {call[:80]}"
+
+
+# --- 출처 판정: 셸 오염을 사람이 따로 확인하지 않는다 -----------------------
+
+def test_셸_환경변수가_덮으면_출처를_밝힌다(monkeypatch) -> None:
+    """종전에는 `env | grep` 을 따로 돌려 머릿속에서 대조했다(사용자 지적 2026-09-16).
+
+    `.env` 로딩은 os.environ 에 주입되지 않으므로(Known Mistakes 2026-06-10)
+    os.environ 에 있다는 것은 **셸에서 왔다**는 뜻이고, 그러면 .env 를 고쳐도 안 먹는다.
+    """
+    monkeypatch.setenv("LLM_PROVIDER", "fabrix")
+    report = pf.Report()
+    pf._check_provider(_cfg(llm=SimpleNamespace(provider="fabrix")), report)
+    check = report.checks[0]
+    assert check.source == "os"
+    assert ".env 를 고쳐도 먹지 않는다" in check.action
+    assert "unset LLM_PROVIDER" in check.action
+    assert "셸 환경변수" in pf.format_report(report)
+
+
+def test_셸이_깨끗하면_출처를_붙이지_않는다(monkeypatch) -> None:
+    """정상 경로에 잡음을 더하지 않는다 - 상시 경고는 진짜 경고를 덮는다."""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    report = pf.Report()
+    pf._check_provider(_cfg(llm=SimpleNamespace(provider="fabrix")), report)
+    check = report.checks[0]
+    assert check.source == ""
+    assert "셸 환경변수" not in check.action
+    assert "셸 환경변수" not in pf.format_report(report)

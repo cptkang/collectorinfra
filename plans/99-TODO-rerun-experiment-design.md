@@ -201,7 +201,8 @@ python -m scripts.scenario --preflight
 
 `--no-db` 를 붙이면 DB 조회 2건을 건너뛴다(설정만 빠르게 볼 때).
 
-> **왜 `grep` 보다 나은가** — `.env` 를 grep 하면 **OS 환경변수가 파일을 덮는 경우를 못 본다**(아래 함정 ③). 셸에 남은 값이 이기는데 파일만 고치고 왜 안 먹는지 헤매는 것이 가장 흔한 함정이다. `--preflight` 는 `load_config()` 로 **실효값**을 본다.
+> **왜 `grep` 보다 나은가** — `.env` grep 은 **OS 환경변수가 파일을 덮는 경우를 못 본다.** 셸에 남은 값이 이기는데 파일만 고치고 왜 안 먹는지 헤매는 것이 가장 흔한 함정이다.
+> `--preflight` 는 `load_config()` 로 **실효값**을 보고, 값이 셸에서 왔으면 **`(<- 셸 환경변수)` 를 붙이고 「.env 를 고쳐도 먹지 않는다 - 먼저 셸에서 지운다」를 조치에 적는다.** 고치는 방법까지 갈라 준다.
 > **고치지는 않는다.** 사다리 플래그 변경(H-2)은 사람 결정이고, 바꾼 사실이 run 기록에 남아야 회귀 비교가 성립한다.
 > **읽기 전용이다**(D-003). SELECT 2건 외에 DB 를 건드리지 않고 LLM 을 호출하지 않는다.
 
@@ -210,18 +211,14 @@ python -m scripts.scenario --preflight
 `ALARM_ENABLED=false` · `AUTH_JWT_EXPIRE_HOURS=8`(둘 다 `runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리) · 프로파일 플래그(`config/scenarios/profiles.yaml`).
 **써도 러너 값이 이긴다.** 주입이 먹지 않으면 설정 에코 대조가 잡아 프로파일이 INVALID 로 선다.
 
-#### `.env` 를 고칠 때 함정 3가지
+#### `.env` 를 고칠 때 함정 2가지
 
 1. **인라인 주석 금지.** `KEY=value  # 설명` 을 파싱하지 못한다. 주석은 **별도 줄**에, **특히 빈 값 뒤에 붙이지 마라**
 2. **list/dict 는 JSON 배열.** `ACTIVE_DB_IDS=["polestar_cm_gp","polestar_b0"]` — 쉼표 구분 문자열은 파싱 에러다
-3. **OS 환경변수가 `.env` 를 덮는다.** `--preflight` 는 실효값을 보므로 이 함정에 걸리지 않지만, **고칠 때는 셸에 남은 값을 먼저 지워야** 한다
 
-```bash
-env | grep -E "^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)" || echo "셸 오염 없음"
-```
-```powershell
-Get-ChildItem Env: | Where-Object Name -Match '^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)' | Select-Object Name, Value
-```
+> **종전에 셋째 함정으로 적었던 「OS 환경변수가 `.env` 를 덮는다」는 이제 사람이 확인하지 않는다.**
+> `--preflight` 가 값 옆에 `(<- 셸 환경변수)` 를 붙이고 조치에 *"`.env` 를 고쳐도 먹지 않는다 - 먼저 셸에서 지운다"* 를 적는다.
+> `env | grep` 을 따로 돌려 머릿속에서 대조하던 일이 없어졌다(2026-09-16).
 
 #### 사다리 단이 `[주의]` 로 나왔을 때
 
@@ -333,12 +330,11 @@ run `20260915-131903` 의 provenance 가 **`pythonutf8: (미설정)` · `console
 |---|---|---|
 | 0단계 점검 | `python -m scripts.scenario --dry-run` | 동일 |
 | | `pytest tests/test_scenario tests/test_scripts -q` | 동일 |
-| 1단계 `.env` 확인 | `grep -nE "^(LLM_PROVIDER\|...)=" .env` | `Select-String -Path .env -Pattern '^(LLM_PROVIDER\|...)='` |
-| | `env \| grep -E "^(LLM_\|AUTH_\|...)"` | `Get-ChildItem Env: \| Where-Object Name -Match '^(LLM_\|AUTH_\|...)'` |
-| 1단계 서버 기동 | `python -m src.main --server` | 동일 (**`Ctrl+C` 대신 `Ctrl+Break`**) |
-| 1단계 디스크 | `df -h .` | `Get-PSDrive C \| Select-Object Used, Free` |
+| **1~2단계 전부** | `python -m scripts.scenario --preflight` | **동일** |
 | 2~4단계 실행 | `python -m scripts.scenario ...` | 동일 |
 | 중단 | `Ctrl+C` | **`Ctrl+Break`** — `Ctrl+C` 는 자식 서버를 남긴다 |
+
+> **1~2단계에 플랫폼 차이가 없다.** 종전에는 `.env` grep · 셸 오염 확인 · 서버 기동 · 디스크를 **따로 네 번** 돌리고 OS 별로 명령이 달랐다. `--preflight` 가 그걸 전부 하므로 **Windows 에서도 같은 한 줄**이다.
 | 잔여 프로세스 정리 | `pkill -f "src.main"` | `taskkill /IM python.exe /T /F` (**같은 PC 의 다른 python 도 죽는다 — PID 확인 후 쓸 것**) |
 
 #### 이 실험에 고유한 Windows 주의 5가지
