@@ -584,3 +584,46 @@ def test_Oc_미관측은_강등이_아니다(tier, tmp_path: Path) -> None:
     """미관측을 강등으로 세면 경고가 상시 켜져 사람이 읽지 않게 된다."""
     head = render_markdown(_summary_with_tier(tier), tmp_path, None).split("## 1.")[0]
     assert "정본 단이 아닌" not in head
+
+
+# --- T-b 토큰 수명: 읽지 않고 주입한다 (2026-09-16 개정) -------------------
+
+def test_토큰_수명은_주입값이라_env_를_읽지_않는다(monkeypatch) -> None:
+    """러너가 서버를 직접 띄우므로 수명은 추정 대상이 아니라 러너가 정한 값이다.
+
+    종전에는 `AuthConfig.jwt_expire_hours` 를 읽어 맞혔다. 그러면 OS env·.encenv
+    우선순위로 실효값이 달라져도 러너는 자기가 맞다고 믿고 엉뚱한 시점에 갱신한다.
+    """
+    import src.config
+
+    def boom():
+        raise RuntimeError("설정을 못 읽는 상황")
+
+    monkeypatch.setattr(src.config, "load_config", boom)
+    # 설정을 못 읽어도 주입값이 있으므로 선제 갱신은 살아 있다.
+    assert runner_mod.jwt_lifetime_sec() == runner_mod.SERVER_JWT_EXPIRE_HOURS * 3600.0
+
+
+def test_주입_수명은_서버에_실제로_주입되고_에코_대상이다() -> None:
+    """주입하지 않으면 T-b 의 근거가 추정으로 돌아간다.
+
+    `ISOLATION_ENV` 는 `expected` 로도 쓰여(runner `_execute`) 설정 에코 대조를 받는다 —
+    주입이 먹지 않으면 프로파일이 INVALID 로 선다. `AUTH_JWT_EXPIRE_HOURS` 가
+    `src/api/settings_catalog.py` 의 노출 목록에 있어야 이 대조가 성립한다.
+    """
+    assert runner_mod.ISOLATION_ENV["AUTH_JWT_EXPIRE_HOURS"] == str(
+        runner_mod.SERVER_JWT_EXPIRE_HOURS
+    )
+    from src.api import settings_catalog
+
+    assert "AUTH_JWT_EXPIRE_HOURS" in settings_catalog.RELOADABLE_KEYS
+
+
+def test_외부_서버에_붙으면_주입이_성립하지_않아_읽는다(monkeypatch) -> None:
+    """`--port` 로 남이 띄운 서버에 붙으면 러너가 수명을 정하지 못한다."""
+    import src.config
+
+    monkeypatch.setattr(
+        src.config, "load_config", lambda: type("C", (), {"auth": type("A", (), {"jwt_expire_hours": 3})()})()
+    )
+    assert runner_mod.jwt_lifetime_sec(injected=False) == 3 * 3600.0

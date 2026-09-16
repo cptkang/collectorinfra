@@ -1571,7 +1571,7 @@ W2    전 시나리오 재실행(반복 ≥3 권장) → 이 run 이 회귀 기�
 |---|---|---|
 | **X-1** | **랜딩** | `runner.py` `RawLog._remember` — 무효 턴은 `_done` 에서 빠진다. **판정값뿐 아니라 `error` 의 `http 401/403` 도 본다**(아래 ★) |
 | **T-a** | **랜딩** | `client.py` `send()` → `_dispatch()` 분리 후 401/403 이면 `token_source.refresh()` 후 **1회만** 재시도. `Observation.auth_retried` 로 관측 |
-| **T-b** | **랜딩** | `runner.py` `TokenSource.maybe_refresh()` — `jwt_lifetime_sec()`(설정 실측)의 80% 경과 시 **턴 경계**(`_run_once` 루프 선두)에서 재발급 |
+| **T-b** | **랜딩** | `runner.py` `TokenSource.maybe_refresh()` — `jwt_lifetime_sec()`(설정 실측)의 80% 경과 시 **턴 경계**(`_run_once` 루프 선두)에서 재발급 **★ 2026-09-16 개정: 읽지 않고 주입한다.** 러너가 서버를 **직접 띄우므로** 수명은 추정 대상이 아니다 — `ISOLATION_ENV` 로 `AUTH_JWT_EXPIRE_HOURS=8`(`SERVER_JWT_EXPIRE_HOURS`)을 주입하고 **설정 에코 대조를 받는다**. 주입이 먹지 않으면 프로파일 INVALID 로 드러난다. 종전 「설정을 읽어 맞히는」 방식은 OS env·`.encenv` 우선순위로 실효값이 어긋나도 러너가 알 수 없었다. `--port` 로 외부 서버에 붙을 때만 읽어서 근사한다 |
 | **T-c** | **랜딩** | `assertions.INVALID_VERDICT` · `evaluate_turn` 조기 반환(단언 실패·manual·perf 전부 비운다) · `Verdict.invalid_reason` · `raw.jsonl` `invalid_reason`·`auth_retried` |
 | **T-d** | **랜딩** | `report.build_summary` 의 `misuse` 가 `live_rows` 만 본다 · `scenario_verdicts` 가 무효 반복을 분리 |
 | **T-e** | **랜딩** | `report.INVALID_RATIO_WARN = 0.05` · 최상단 경고 · 10절 「무효 턴(측정 미성립)」 절(건수·실행 순서 구간·군별) · `_regression_section`·`analyze.regression` **양방향 제외** |

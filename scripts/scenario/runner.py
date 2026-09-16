@@ -52,7 +52,18 @@ ASSUMED_LLM_CALLS_PER_TURN = 6
 #: 기동 로그 실측: "알람 워커 시작 … group=alarm-workers").
 #: 이 플래그는 서버 기동·설정 재적용·워커 자신에서만 읽혀 질의 경로에 닿지 않는다.
 #: 프로파일이 같은 키를 명시하면 프로파일 값이 이긴다(알람 자체를 시험하는 프로파일).
-ISOLATION_ENV: dict[str, str] = {"ALARM_ENABLED": "false"}
+#: 러너가 띄우는 서버에 **주입**하는 값. `expected` 로도 쓰여 설정 에코로 반영을 확인한다.
+#: `AUTH_JWT_EXPIRE_HOURS` 를 여기 두는 이유(D-218 후속 · 2026-09-16): 러너가 서버를
+#: **직접 띄우므로** 수명을 `.env` 에서 읽어 맞히는 것이 아니라 **자기가 정하면 된다**.
+#: 읽어서 맞히는 방식은 OS env·`.encenv` 우선순위로 실효값이 달라지면 T-b 가 엉뚱한
+#: 시점에 갱신하고, 그래도 러너는 자기가 맞다고 믿는다. 주입하면 그 간극이 사라지고
+#: 에코 불일치는 프로파일 INVALID 로 드러난다. 값은 **코드 기본값과 같은 8** 이라
+#: 동작은 종전과 비트 동일하다 - 수명을 **늘려 만료를 회피하는 것이 아니다**(D-218 대안 기각).
+SERVER_JWT_EXPIRE_HOURS = 8
+ISOLATION_ENV: dict[str, str] = {
+    "ALARM_ENABLED": "false",
+    "AUTH_JWT_EXPIRE_HOURS": str(SERVER_JWT_EXPIRE_HOURS),
+}
 
 #: 인증이 켜진 서버에서 `--user`/`--password` 가 없을 때 쓰는 내장 테스트 계정(사용자 확정
 #: 2026-09-15 · D-216 - D-215 의 "94 CLI 는 --user/--password 만 받는다"를 개정). 옵션 없이
@@ -566,12 +577,20 @@ def acquire_tokens(
 TOKEN_REFRESH_RATIO = 0.8
 
 
-def jwt_lifetime_sec() -> Optional[float]:
-    """서버가 발급하는 사용자 토큰의 수명(초). 읽지 못하면 None.
+def jwt_lifetime_sec(*, injected: bool = True) -> Optional[float]:
+    """러너가 띄운 서버가 발급하는 사용자 토큰의 수명(초).
 
-    **설정을 읽는다 - 추정하지 않는다.** `AuthConfig.jwt_expire_hours`(기본 8)가 정본이고,
-    러너가 그 값을 모르면 선제 갱신을 하지 않는다(모르는 채로 주기를 정하면 그 자체가 추정이다).
+    **읽어서 맞히지 않는다 - 주입한 값을 그대로 쓴다**(2026-09-16 개정). 러너가 서버를
+    직접 띄우고 `ISOLATION_ENV` 로 `AUTH_JWT_EXPIRE_HOURS` 를 주입하므로, 수명은 추정
+    대상이 아니라 **러너가 정한 값**이다. 주입이 먹지 않았으면 설정 에코가 불일치를 잡아
+    프로파일이 INVALID 로 선다 - 조용히 어긋난 주기로 갱신하는 경우가 없다.
+
+    Args:
+        injected: 러너가 띄운 서버인가. False 면(외부 서버에 `--port` 로 붙는 등 주입이
+            성립하지 않는 경우) 설정을 읽어 근사하고, 그것도 실패하면 None 이다.
     """
+    if injected:
+        return float(SERVER_JWT_EXPIRE_HOURS) * 3600.0
     try:
         from src.config import load_config
 
@@ -690,7 +709,8 @@ def build_token_source(port: int, config: RunConfig, token: Optional[str]) -> To
     return TokenSource(
         token=token,
         relogin=relogin,
-        lifetime_sec=jwt_lifetime_sec(),
+        # 러너가 띄운 서버면 주입값이 정본이다. 외부 서버에 붙었으면 읽어서 근사한다.
+        lifetime_sec=jwt_lifetime_sec(injected=config.port is None),
         issued_at=issued_at,
     )
 

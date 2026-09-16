@@ -180,7 +180,7 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 
 > **원칙: 러너가 주입하는 것은 건드리지 말고, 러너가 못 정하는 것만 사람이 정한다.**
 > 러너는 기동할 때마다 아래를 **자기가 주입한다** — `.env` 에 쓰지 마라(써도 러너 값이 이긴다).
-> `ALARM_ENABLED=false`(`runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리 · 운영 `checkpoints.db` 오염 방지) ·
+> `ALARM_ENABLED=false` · **`AUTH_JWT_EXPIRE_HOURS=8`**(둘 다 `runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리 · 운영 `checkpoints.db` 오염 방지) ·
 > 프로파일 플래그(`config/scenarios/profiles.yaml` — 예: `optin_alarm` 의 `TEXT2SQL_ALARM_DETERMINISTIC`).
 
 #### 반드시 확인할 것 (없으면 run 이 헛돈다)
@@ -190,8 +190,10 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 | `LLM_PROVIDER` | `fabrix`(폐쇄망) | **`fabrix`·`ollama` 면 승인·`RUN_E2E` 없이 실 실행**된다(D-216·D-211 ⑪). `gemini` 등 외부면 `RUN_E2E=1` + **건별 사용자 승인**이 필요하다(D-127) |
 | `ACTIVE_DB_IDS` | 측정 대상 DB | 러너가 이 값으로 `closed`/`sandbox` 를 자동 판정한다. 비어 있으면 환경 판정이 어긋나 시나리오가 통째로 보류된다 |
 | `AUTH_ENABLED` | `true`(운영) | **`true` 인데 계정이 없으면 프로파일이 INVALID** 로 서고 run 이 시작도 못 한다(`runner.py:542`). 내장 테스트 계정이 서버에 없으면 `--user`/`--password` 를 넘긴다 |
-| `AUTH_JWT_EXPIRE_HOURS` | 기본 `8` | **T-b 선제 갱신의 유일한 근거다.** 러너가 `AuthConfig.jwt_expire_hours` 를 읽어 그 **80% 경과 시** 턴 경계에서 재발급한다(`runner.py:569 jwt_lifetime_sec`). **읽지 못하면 선제 갱신을 아예 하지 않는다** — 모르는 채로 주기를 정하는 것 자체가 추정이기 때문이다. 이 값이 실제 서버 발급 수명과 다르면 8시간 넘는 run 에서 또 401 이 난다 |
 | `DB_BACKEND` | `dbhub`(운영) | `dbhub` 면 **MCP 서버가 따로 떠 있어야** 한다(별도 프로세스·별도 cwd). 안 떠 있으면 전 시나리오가 조회 실패다 |
+
+> **토큰 수명은 확인할 필요가 없다 — 러너가 정한다**(2026-09-16 개정). 종전에는 러너가 `AuthConfig.jwt_expire_hours` 를 **읽어서 맞혔다.** 그러면 OS env·`.encenv` 우선순위로 실효값이 달라져도 **러너는 자기가 맞다고 믿고 엉뚱한 시점에 갱신한다.** 지금은 `ISOLATION_ENV` 로 **`AUTH_JWT_EXPIRE_HOURS=8` 을 주입**하고(`runner.SERVER_JWT_EXPIRE_HOURS`), 그 값이 그대로 **설정 에코 대조를 받는다**(`settings_catalog.RELOADABLE_KEYS` 에 있다) — **주입이 먹지 않으면 프로파일이 INVALID 로 서서 run 이 시작도 못 한다.** 값은 코드 기본값과 같은 8 이라 동작은 종전과 비트 동일하다. **수명을 늘려 만료를 회피하는 것이 아니다**(D-218 대안 기각).
+> 예외는 하나 — `--port` 로 **남이 띄운 서버**에 붙으면 러너가 수명을 정할 수 없어 설정을 읽어 근사하고, 그것도 실패하면 선제 갱신을 하지 않는다(T-a 반응 재시도만 남는다).
 
 #### 사다리 단을 정하는 3종 — **E-0-1 의 대상**
 
