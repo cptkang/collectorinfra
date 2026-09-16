@@ -183,29 +183,67 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 > `ALARM_ENABLED=false` · **`AUTH_JWT_EXPIRE_HOURS=8`**(둘 다 `runner.ISOLATION_ENV`) · `CHECKPOINT_DB_URL`(run 전용 격리 · 운영 `checkpoints.db` 오염 방지) ·
 > 프로파일 플래그(`config/scenarios/profiles.yaml` — 예: `optin_alarm` 의 `TEXT2SQL_ALARM_DETERMINISTIC`).
 
-#### 반드시 확인할 것 (없으면 run 이 헛돈다)
+#### 확인 → 판정 → 조치 (4키)
 
-| 키 | 값 | 왜 |
+> **표의 「보이는 값」을 그대로 찾고, 같은 행의 조치를 한다.** 어느 행에도 안 맞으면 **거기서 멈추고 물어본다** — 모르는 상태로 8시간을 돌리지 않는다.
+
+**① `LLM_PROVIDER` — 과금·승인이 갈린다**
+
+| 보이는 값 | 판정 | 조치 |
 |---|---|---|
-| `LLM_PROVIDER` | `fabrix`(폐쇄망) | **`fabrix`·`ollama` 면 승인·`RUN_E2E` 없이 실 실행**된다(D-216·D-211 ⑪). `gemini` 등 외부면 `RUN_E2E=1` + **건별 사용자 승인**이 필요하다(D-127) |
-| `ACTIVE_DB_IDS` | 측정 대상 DB | 러너가 이 값으로 `closed`/`sandbox` 를 자동 판정한다. 비어 있으면 환경 판정이 어긋나 시나리오가 통째로 보류된다 |
-| `AUTH_ENABLED` | `true`(운영) | **`true` 인데 계정이 없으면 프로파일이 INVALID** 로 서고 run 이 시작도 못 한다(`runner.py:542`). 내장 테스트 계정이 서버에 없으면 `--user`/`--password` 를 넘긴다 |
-| `DB_BACKEND` | `dbhub`(운영) | `dbhub` 면 **MCP 서버가 따로 떠 있어야** 한다(별도 프로세스·별도 cwd). 안 떠 있으면 전 시나리오가 조회 실패다 |
+| `fabrix` · `ollama` | 내부망 | **그대로 진행.** 승인·`RUN_E2E` 불필요(D-216·D-211 ⑪) |
+| `gemini` 등 외부 | 외부 과금 | **멈춘다.** 폐쇄망에서 이 값이 나오면 **환경을 잘못 잡은 것**이다(다른 PC·다른 `.env`). 의도한 것이라면 `RUN_E2E=1` + **건별 사용자 승인**을 먼저 받는다(D-127) |
+| 없음 · 빈 값 | 판정 불가 | 러너가 **외부로 간주**해 과금 게이트가 산다(`--run` 이 거부됨). `.env` 에 명시한다 |
+
+**② `ACTIVE_DB_IDS` — 환경 판정이 여기서 나온다**
+
+| 보이는 값 | 판정 | 조치 |
+|---|---|---|
+| 폴스타 존 DB 포함(`polestar_cm_gp` 등) | `closed` | **그대로 진행** |
+| `polestar` 만 | `sandbox` | 로컬 도커 샌드박스다. **폐쇄망 측정이 목적이면 잘못된 환경**이다 |
+| 없음 · 빈 값 | 판정 불가 | **환경 판정이 어긋나 시나리오가 통째로 보류된다.** 실행 전에 채운다 |
+| 쉼표 구분 문자열 | **파싱 에러** | JSON 배열로 고친다 — `["polestar_cm_gp","polestar_b0"]`(함정 ②) |
+
+**③ `AUTH_ENABLED` — 401 의 근원**
+
+| 보이는 값 | 판정 | 조치 |
+|---|---|---|
+| `true` | 인증 켜짐 | **내장 테스트 계정으로 먼저 시도한다.** 0단계 `--mock` 이 통과하면 그대로 진행 |
+| `true` + 로그인 실패 | 계정 없음 | **`--user <ID> --password <PW>` 를 넘긴다.** 안 넘기면 **프로파일이 INVALID 로 서서 run 이 시작도 못 한다**(`runner.py:542`) — 이건 **의도된 차단**이다. 전건 401 인 원시 로그를 쌓는 것보다 낫다 |
+| `false` | 인증 꺼짐 | 로그인 자체를 하지 않는다. **토큰 만료 문제가 없다** — T-a·T-b 가 무의미해진다. 운영과 다른 조건이므로 **그 사실을 run 기록에 남긴다** |
+
+**④ `DB_BACKEND` — 조회가 되느냐**
+
+| 보이는 값 | 판정 | 조치 |
+|---|---|---|
+| `dbhub` | MCP 경유 | **MCP 서버가 따로 떠 있어야 한다**(별도 프로세스·별도 cwd). 안 떠 있으면 **전 시나리오가 조회 실패**다. 기동: `cd mcp_server && python -m mcp_server` |
+| `direct` | asyncpg 직결 | MCP 불필요. 운영과 다른 경로이므로 **run 기록에 남긴다** |
+| 없음 | 코드 기본값 | `src/config.py` 기본을 따른다. 어느 쪽인지 확인하고 위 행으로 간다 |
+
+**DB2(`polestar_b0`)가 대상이면 추가로**: 루트 venv 에 `ibm-db` 가 없다(`mcp_server/pyproject.toml` 에만 선언). `python -c "import ibm_db"` 로 확인하고 없으면 설치한다.
 
 > **토큰 수명은 확인할 필요가 없다 — 러너가 정한다**(2026-09-16 개정). 종전에는 러너가 `AuthConfig.jwt_expire_hours` 를 **읽어서 맞혔다.** 그러면 OS env·`.encenv` 우선순위로 실효값이 달라져도 **러너는 자기가 맞다고 믿고 엉뚱한 시점에 갱신한다.** 지금은 `ISOLATION_ENV` 로 **`AUTH_JWT_EXPIRE_HOURS=8` 을 주입**하고(`runner.SERVER_JWT_EXPIRE_HOURS`), 그 값이 그대로 **설정 에코 대조를 받는다**(`settings_catalog.RELOADABLE_KEYS` 에 있다) — **주입이 먹지 않으면 프로파일이 INVALID 로 서서 run 이 시작도 못 한다.** 값은 코드 기본값과 같은 8 이라 동작은 종전과 비트 동일하다. **수명을 늘려 만료를 회피하는 것이 아니다**(D-218 대안 기각).
 > 예외는 하나 — `--port` 로 **남이 띄운 서버**에 붙으면 러너가 수명을 정할 수 없어 설정을 읽어 근사하고, 그것도 실패하면 선제 갱신을 하지 않는다(T-a 반응 재시도만 남는다).
 
-#### 사다리 단을 정하는 3종 — **E-0-1 의 대상**
+#### ⑤ 사다리 단 — **기동 로그를 보고 판정한다**
 
-| 키 | 1단(`deep_agent`)을 원하면 | 비고 |
+`.env` 를 보는 것만으로는 단을 알 수 없다. **서버를 띄우고 기동 로그 한 줄을 읽는 것이 유일한 판정**이다:
+
+```
+오케스트레이션 사다리 확정: tier=<단> degraded_reason=<사유> resolved_by=<...>
+```
+
+| `tier` / `degraded_reason` | 판정 | 조치 |
 |---|---|---|
-| `ENABLE_DEEPAGENTS_PACKAGE` | `true` | **이것만으로는 부족하다** |
-| `ORCHESTRATOR_PROVIDER` | `vllm` 또는 `gemini` | `vllm` 이면 `ORCHESTRATOR_BASE_URL` 의 `/v1/models` 헬스체크를 통과해야 한다. **`gemini` 면 외부 과금 API 라 D-127 승인 대상**이다 |
-| `ORCHESTRATOR_BASE_URL` | vLLM 서빙 주소 | `vllm` 일 때만 |
+| `tier=deep_agent` | **정본 1단** | **그대로 진행.** 목표 9 달성 |
+| `tier=intent_orchestration` `reason=flag_off` | `ENABLE_DEEPAGENTS_PACKAGE` 가 off | **H-2 를 먼저 정한다.** 1단을 재려면 `true` 로 바꾸고 **재기동**한다. 안 바꾸면 지난 run 과 같은 2단 측정이다(그것도 유효한 선택이다 — **대신 §0 의 「답하지 못하는 것」에 1단이 남는다**) |
+| `reason=orchestrator_unavailable` | 플래그는 켰는데 오케스트레이터 미가용 | `ORCHESTRATOR_PROVIDER` 를 본다. `vllm` 이면 **서빙 여부**와 `ORCHESTRATOR_BASE_URL` 의 `/v1/models` 를, `gemini` 면 **api_key 와 D-127 승인**을 확인한다 |
+| `reason=package_missing` | 백엔드는 골랐으나 조립 실패 | `deepagents` 설치 확인(`python -c "import deepagents"`). **개발 PC 에는 0.6.10 이 있다** — 폐쇄망은 wheel 반입 여부를 본다 |
+| `tier=semantic_router` · `legacy` | 2단도 아님 | `ENABLE_INTENT_ORCHESTRATION` 이 off 다. 지난 run 과 조건이 달라져 **회귀 비교가 성립하지 않는다** — 맞추거나, 다르다는 사실을 기록한다 |
 
-> **run `20260915-131903` 은 `degraded_reason=flag_off` 로 2단에 머물렀다** — 첫 줄에서 떨어졌다는 뜻이다.
-> 플래그를 켜도 오케스트레이터가 없으면 `orchestrator_unavailable`·`package_missing` 으로 **결국 2단으로 강등된다**(`src/observability/ladder.py:70-86`).
-> **`deepagents` 패키지 자체는 설치돼 있다**(0.6.10 실측). 2·3단 플래그(`ENABLE_INTENT_ORCHESTRATION`·`ENABLE_SEMANTIC_ROUTING`)는 **tri-state** 라 미입력이면 `ACTIVE_DB_IDS` 등록 여부로 자동 결정된다 — 고정하려면 명시한다.
+> **어느 단이든 run 은 돈다.** 단을 맞추는 것보다 **어느 단으로 돌았는지 아는 것**이 중요하다 — 리포트 1절 경고(O-c)가 그걸 싣는다.
+> 2·3단 플래그(`ENABLE_INTENT_ORCHESTRATION`·`ENABLE_SEMANTIC_ROUTING`)는 **tri-state** 라 미입력이면 `ACTIVE_DB_IDS` 등록 여부로 자동 결정된다 — **run 끼리 비교하려면 명시해 고정한다.**
+> 바꿨으면 **그 사실을 run 기록에 남긴다.** 설정이 다른 run 끼리는 회귀 비교가 성립하지 않는다(H-2 는 사람 결정이다).
 
 #### 쓰는 방법 — 함정 3가지
 
@@ -213,7 +251,9 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 2. **list/dict 는 JSON 배열.** `ACTIVE_DB_IDS=["polestar_cm_gp","polestar_b0"]` — 쉼표 구분 문자열은 파싱 에러다
 3. **OS 환경변수가 `.env` 를 덮는다.** 셸에 남은 값이 파일 값을 이긴다. Windows PowerShell 에서 `Get-ChildItem Env:` 로, POSIX 에서 `env | grep` 로 확인하라 — **파일만 고치고 왜 안 먹는지 헤매는 것이 가장 흔한 함정이다**
 
-#### 확인 명령
+#### 확인 명령 — **출력을 위 ①~⑤ 표에서 찾는다**
+
+> 이 명령들은 **읽기만 한다.** 출력의 각 키를 위 표의 「보이는 값」에서 찾아 같은 행의 조치를 하고, 표에 없는 값이 나오면 **거기서 멈춘다.**
 
 ```bash
 # POSIX — 값이 아니라 키만 본다(비밀값 노출 방지)
@@ -226,6 +266,27 @@ env | grep -E "^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)" ||
 Select-String -Path .env -Pattern '^(LLM_PROVIDER|ACTIVE_DB_IDS|AUTH_ENABLED|AUTH_JWT_EXPIRE_HOURS|DB_BACKEND|ENABLE_DEEPAGENTS_PACKAGE|ORCHESTRATOR_PROVIDER|ORCHESTRATOR_BASE_URL|ENABLE_INTENT_ORCHESTRATION|ENABLE_SEMANTIC_ROUTING)='
 Get-ChildItem Env: | Where-Object Name -Match '^(LLM_|AUTH_|ADMIN_|ORCHESTRATOR_|ENABLE_|ACTIVE_|DB_BACKEND)' | Select-Object Name, Value
 ```
+
+⑤(사다리 단)는 `.env` 만으로 판정되지 않는다 — **서버를 띄워 로그 한 줄을 본다**:
+
+```bash
+python -m src.main --server 2>&1 | grep "오케스트레이션 사다리 확정"
+```
+```powershell
+python -m src.main --server 2>&1 | Select-String "오케스트레이션 사다리 확정"
+```
+
+**이 한 줄이 판정표 전체의 해석을 바꾼다.** 기록해 두고 run 이 끝난 뒤 리포트 1절 경고(O-c)와 대조한다.
+
+#### 여기까지 하고 나면 — 넘어가도 되는 조건
+
+아래 5줄에 **전부 답할 수 있으면** 0단계로 넘어간다. 하나라도 「모르겠다」면 **거기서 멈춘다.**
+
+- [ ] `LLM_PROVIDER` 가 내부망인가, 아니면 **승인을 받았는가**
+- [ ] `ACTIVE_DB_IDS` 가 **의도한 환경**(`closed`/`sandbox`)을 가리키는가
+- [ ] 인증이 켜져 있다면 **로그인이 실제로 되는가**(0단계 `--mock` 으로 확인)
+- [ ] `DB_BACKEND=dbhub` 라면 **MCP 서버가 떠 있는가**
+- [ ] 기동 로그의 **`tier` 와 `degraded_reason` 을 적어 뒀는가**
 
 > **`.env` 를 실험이 임의로 바꾸지 않는다.** 사다리 플래그 변경(H-2)은 **사람 결정**이고, 바꿨으면 그 사실을 run 기록에 남긴다 — 설정이 다른 run 끼리는 회귀 비교가 성립하지 않는다.
 
