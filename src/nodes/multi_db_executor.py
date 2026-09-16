@@ -525,13 +525,13 @@ async def _generate_validated_sql(
     if error_context is None:
         det_sql = _deterministic_alarm_sql_or_none(run, db_engine=db_engine, db_id=db_id)
         if det_sql is not None:
-            det_error = _validate_sql(
+            det_error, det_fixed = _validate_sql(
                 det_sql, schema_info, db_id=db_id, db_engine=db_engine,
                 user_query=run.state.get("user_query", ""), app_config=run.app_config,
             )
             if not det_error:
                 logger.info("[알람조립] db=%s 결정적 SQL 사용(LLM 미호출)", db_id)
-                return det_sql, None
+                return (det_fixed or det_sql), None
             logger.warning(
                 "[알람조립] db=%s 조립 SQL 검증 실패 — LLM 폴백: %s", db_id, det_error
             )
@@ -564,10 +564,12 @@ async def _generate_validated_sql(
     # 대칭 — D-153 후속1). 동일 스키마 복구원이 없는 조합(b0+gp 등)은 소급 복구가
     # 불가하므로 재생성 횟수가 유일한 방어선이다. 산출 head를 로그로 남겨 폐쇄망에서
     # 비-SQL 산출의 실제 형태(산문/거절/오류문)를 특정할 수 있게 한다(폼필 진단 프로토콜).
-    validation_error = _validate_sql(
+    validation_error, _fixed = _validate_sql(
         sql, schema_info, db_id=db_id, db_engine=db_engine,
         user_query=run.state.get("user_query", ""), app_config=run.app_config,
     )
+    # 보정본(행 상한 자동 추가)이 오면 갈아탄다 — 버리면 검증이 "통과만" 하고 끝난다(CU-16).
+    sql = _fixed or sql
     for _retry in range(1, 3):
         if not validation_error:
             break
@@ -613,10 +615,11 @@ async def _generate_validated_sql(
             mapping_sources=run.mapping_sources,
             form_fill_answers=run.form_fill_answers,
         )
-        validation_error = _validate_sql(
+        validation_error, _fixed = _validate_sql(
             sql, schema_info, db_id=db_id, db_engine=db_engine,
             user_query=run.state.get("user_query", ""), app_config=run.app_config,
         )
+        sql = _fixed or sql
     return sql, validation_error
 
 
@@ -1305,10 +1308,13 @@ async def _invoke_llm_for_sql(
         from src.nodes.candidate_selector import run_candidate_pipeline
 
         async def _validate(sql: str):
+            # `run_candidate_pipeline`의 validate 계약은 Optional[str](에러)다 — 보정본은
+            # 여기서 채택할 자리가 없다(후보를 고른 뒤 실행까지 그 파이프라인이 한다).
+            # 후보 경로는 옵트인이고 CU-16 범위 밖이라 에러만 넘긴다.
             return _validate_sql(
                 sql, schema_info, db_id=db_id, db_engine=db_engine,
                 user_query=sub_query_context, app_config=app_config,
-            )
+            )[0]
 
         selection = await run_candidate_pipeline(
             llm, system_prompt, user_prompt,
@@ -2271,6 +2277,31 @@ def _build_multi_user_prompt(
         )
 
     return "\n\n".join(user_parts), None
+def _auto_limit_or_none(
+    sql: str, db_engine: str, user_query: str, app_config: Optional[AppConfig]
+) -> Optional[str]:
+    """행 제한 절이 없으면 붙인 SQL을, 이미 있으면 None을 돌려준다 (plans/98 CU-16).
+
+    **단일 경로(`sql_validation.validate_sql` 7번 검사)와 같은 함수·같은 경계값을 쓴다.**
+    그래야 "같은 질의가 단일 조회에선 상한이 붙고 멀티 조회에선 안 붙는" 비대칭이 생기지
+    않는다(D-066 경로 비대칭 방지와 같은 사유). D-176이 방언 그물을 놓으면서 *"행 제한 절
+    부재는 문제로 보지 않는다 — 상향은 별 관심사"*로 남겨 둔 바로 그 구멍이다.
+
+    - 전체 조회 질의는 생략이 아니라 **상향**이다(CU-2와 동일 판정·동일 상수).
+    - 방언은 `_add_limit_clause`가 처리한다(DB2 `FETCH FIRST n ROWS ONLY`).
+    - 이 함수는 **부재일 때만** 손댄다 — 이미 있는 절의 치환은 하지 않는다(D-176 근거:
+      중첩·`OFFSET` 동반 형태에서 문자열 치환이 틀린다. 그 경우는 방언 검사가 거부한다).
+    """
+    from src.sql_validation import _add_limit_clause, _has_limit_clause
+    from src.utils.query_gen_common import _ALL_QUERY_LIMIT, has_all_scope_keyword
+
+    if not sql or _has_limit_clause(sql):
+        return None
+    default_limit = getattr(getattr(app_config, "query", None), "default_limit", 1000)
+    limit = _ALL_QUERY_LIMIT if has_all_scope_keyword(user_query) else default_limit
+    return _add_limit_clause(sql, limit, db_engine)
+
+
 def _validate_sql(
     sql: str,
     schema_info: dict,
@@ -2279,20 +2310,31 @@ def _validate_sql(
     db_engine: str = "postgresql",
     user_query: str = "",
     app_config: Optional[AppConfig] = None,
-) -> Optional[str]:
-    """멀티 DB 경로 검증 심 (Plan 69 P4-3).
+) -> tuple[Optional[str], Optional[str]]:
+    """멀티 DB 경로 검증 심 (Plan 69 P4-3 · CU-16으로 반환 계약 변경).
 
     기본은 종전 간이 검증(동작 불변). ``TEXT2SQL_MULTI_FULL_VALIDATION`` ON이면 단일
     경로와 같은 full validator(테이블·컬럼 존재, EAV 금지 조인, 어댑터 훅)를 소비한다 —
     같은 폴스타 DB가 단일 조회에선 차단되고 멀티 조회에선 통과하던 방어 비대칭의 해소.
     거부 사유는 로그로 계측한다(위양성 실측 → 기본 전환 별도 판단, §0.3-4).
+
+    Returns:
+        ``(에러 사유 또는 None, 보정된 SQL 또는 None)``.
+
+        **보정본을 버리지 않는 것이 CU-16이다.** 종전에는 full validation을 켜도
+        ``outcome.auto_fixed_sql``(행 제한 자동 추가분)을 읽지 않아 **켜나 마나 상한이
+        붙지 않았다**. 호출부는 보정본이 오면 그것으로 갈아탄다.
     """
     if not getattr(
         getattr(app_config, "text2sql", None), "multi_full_validation", False
     ):
         # 간이 검증에도 엔진 방언 그물을 씌운다(D-176) — full validation을 켜지 않아도
         # DB2 대상의 LIMIT은 잡아야 한다(위양성이 구조적으로 없는 부분집합만 기본 ON).
-        return _validate_sql_simple(sql, schema_info, db_engine=db_engine)
+        error = _validate_sql_simple(sql, schema_info, db_engine=db_engine)
+        if error:
+            return error, None
+        # 기본 경로에도 행 상한을 건다(CU-16) — `multi_full_validation` 기본값은 그대로다.
+        return None, _auto_limit_or_none(sql, db_engine, user_query, app_config)
     from src.db_adapters import get_adapter
     from src.nodes.query_validator import validate_sql
 
@@ -2310,8 +2352,8 @@ def _validate_sql(
     if outcome.errors:
         reason = "; ".join(outcome.errors[:5])
         logger.info("[멀티검증강화] 거부(db=%s): %s", db_id, reason)
-        return reason
-    return None
+        return reason, None
+    return None, outcome.auto_fixed_sql
 
 
 def _validate_sql_simple(

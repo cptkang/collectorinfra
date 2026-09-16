@@ -48,11 +48,20 @@ class TestValidateSqlCore:
         )
         assert "FETCH FIRST 7 ROWS ONLY" in outcome.auto_fixed_sql
 
-    def test_all_query_skips_auto_limit(self, schema_info):
+    def test_all_query_raises_auto_limit(self, schema_info):
+        """전체 조회 질의는 보정을 **생략**하지 않고 전체 조회 상한으로 **상향**한다(plans/98 CU-2).
+
+        종전 단언("auto_fixed_sql is None")은 버그를 정답으로 굳혔다 — 같은 판정을 쓰는
+        `resolve_query_limit`은 `_ALL_QUERY_LIMIT`으로 상향하는데 검증 코어만 보정을 건너뛰어,
+        LLM이 LIMIT을 빼면 무제한 실행됐다(J-03 실측 1,668행).
+        """
+        from src.utils.query_gen_common import _ALL_QUERY_LIMIT
+
         outcome = validate_sql(
             "SELECT hostname FROM host;", schema_info, user_query="모든 서버 조회"
         )
-        assert outcome.auto_fixed_sql is None
+        assert outcome.auto_fixed_sql is not None
+        assert f"LIMIT {_ALL_QUERY_LIMIT};" in outcome.auto_fixed_sql
 
     def test_adapter_checks_injected(self, schema_info):
         outcome = validate_sql(

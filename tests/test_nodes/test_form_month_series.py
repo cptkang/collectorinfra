@@ -2303,3 +2303,56 @@ class TestWriterShortKeySubstringGuard:
         assert result is not None
         assert "비고" not in result["sql"]
         assert result["mapping_updates"]["비고"] is None
+
+
+class TestG4FreeTextColumnNotice:
+    """G-4 확정(2026-09-16): **공란 허용 + 응답에 사유 고지** (plans/98 CU-9).
+
+    P-11은 *"안내 문구 부재"*로 보고됐지만 실측은 다르다 — 문구는 `output_generator`
+    `_append_form_fill_notes`에 **이미 구현돼 있고** '비고'형 자유 서술 열을 정확히 집는다.
+    G-4가 요구하는 계약(왜 비었는지를 응답에 싣는다)이 성립함을 여기서 고정한다.
+    하네스 쪽 짝은 `optional_columns` 선언이다(Y-2 — 판정에서 빼되 사유는 응답에 남긴다).
+    """
+
+    def test_비고형_미매핑_열은_사유와_함께_고지된다(self):
+        """판정은 매핑 유무가 아니라 **writer의 실제 채움 통계**로 한다(라이브 실측 교정)."""
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        state = {"form_month_anchor": {}, "column_mapping": {}}
+        out = _append_form_fill_notes(
+            "서버 2,338건을 채웠습니다.", state,
+            fill_stats={"서버명": 2337, "호스트명": 2337, "IP": 2337, "비고": 0},
+        )
+
+        assert "[미작성 항목]" in out
+        assert "비고" in out
+        assert "수집 데이터에 해당 항목이 없어" in out      # **왜** 비었는지가 있다
+        assert "임의 기재 금지" in out
+        assert "서버 2,338건을 채웠습니다." in out          # 본문을 덮지 않는다
+        assert "서버명" not in out.split("[미작성 항목]")[1]  # 채워진 열은 안 나온다
+
+    def test_사용자가_공란을_지정한_열은_중복_고지되지_않는다(self):
+        """역질문에 '공란 유지'로 답한 열은 적용 내역에만 나온다 — 두 번 말하지 않는다."""
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        state = {
+            "form_month_anchor": {},
+            "column_mapping": {},
+            "form_fill_overrides": {
+                "비고": {"applied": True, "action": "blank", "origin": "answer"},
+            },
+        }
+        out = _append_form_fill_notes("본문", state, fill_stats={"비고": 0, "호스트명": 10})
+
+        assert "[사용자 답변 적용 내역]" in out and "공란 유지" in out
+        assert "[미작성 항목]" not in out
+
+    def test_전부_채워졌으면_고지하지_않는다(self):
+        """고지가 상시 노이즈가 되면 사람이 읽지 않는다."""
+        from src.nodes.output_generator import _append_form_fill_notes
+
+        out = _append_form_fill_notes(
+            "본문", {"form_month_anchor": {}, "column_mapping": {}},
+            fill_stats={"서버명": 10, "호스트명": 10},
+        )
+        assert out == "본문"

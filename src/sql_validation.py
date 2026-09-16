@@ -27,6 +27,7 @@ import sqlparse
 from src.security.sql_guard import FORBIDDEN_SQL_KEYWORDS, INJECTION_PATTERNS, SQLGuard
 from src.utils.sql_dialect import is_db2, row_limit_clause
 from src.utils.query_gen_common import (
+    _ALL_QUERY_LIMIT,
     MISSING_DTIME_ERROR,
     has_all_scope_keyword,
     missing_dtime_filter,
@@ -78,7 +79,7 @@ def validate_sql(
         sql: 검증 대상 SQL
         schema_info: 스키마 정보(tables·_structure_meta 포함)
         db_engine: DB 엔진 타입("postgresql"·"db2" 등 — 행 제한 절 방언 결정)
-        user_query: 사용자 원문 질의("모든/전체" 조회면 LIMIT 자동 추가 생략)
+        user_query: 사용자 원문 질의("모든/전체" 조회면 행 제한을 ``_ALL_QUERY_LIMIT``으로 상향)
         default_limit: 행 제한 절 자동 추가 시 사용할 기본값
         adapter_checks: DB 어댑터 전용 검증 함수들(SQL → 오류 메시지 목록)
 
@@ -185,20 +186,39 @@ def validate_sql(
     # 7. LIMIT 절 존재 여부
     # LIMIT 상향(resolve_query_limit)과 동일한 경계 판정을 공유한다 — 종전 인라인 부분문자열
     # 튜플은 "전체적으로 …"를 전체 조회로 오탐해 LIMIT 자동 추가를 건너뛰었다(Plan 67 R3-(iii)).
+    # 전체 조회 질의는 **생략이 아니라 상향**이다(plans/98 CU-2). 종전에는 자동 추가를 통째로
+    # 건너뛰어, LLM이 LIMIT을 빼고 생성하면 아무도 되돌려 놓지 않았다(무제한 실행 — J-03 실측
+    # 1,668행). 상향이라고 말하는 `resolve_query_limit`(_ALL_QUERY_LIMIT=10,000)과 정반대로
+    # 동작했고 spec.md '최대 반환 행 수 10,000행'과도 어긋났다. 상한 값은 그 상수를 재사용한다.
     is_all_query = has_all_scope_keyword(user_query)
     if not _has_limit_clause(sql):
+        limit = _ALL_QUERY_LIMIT if is_all_query else default_limit
+        auto_fixed_sql = _add_limit_clause(sql, limit, db_engine)
         if is_all_query:
-            # 모든/전체 결과 조회 질의의 경우 LIMIT 자동 추가 생략
-            logger.info("모든/전체 결과 조회 질의이므로 LIMIT 자동 추가를 건너뜁니다.")
-        else:
-            auto_fixed_sql = _add_limit_clause(sql, default_limit, db_engine)
+            # 상향분은 기본 상한과 구별해 남긴다(침묵 보정 금지).
+            logger.info(
+                "모든/전체 결과 조회 질의라 행 제한을 기본 %s → %s로 상향해 자동 추가합니다.",
+                default_limit,
+                limit,
+            )
             if is_db2(db_engine):
                 warnings.append(
-                    f"행 제한 절이 없어 자동으로 FETCH FIRST {default_limit} ROWS ONLY를 추가했습니다."
+                    f"행 제한 절이 없어 전체 조회 상한으로 FETCH FIRST {limit} ROWS ONLY를"
+                    f" 자동 추가했습니다(기본 상한 {default_limit}에서 상향)."
                 )
             else:
                 warnings.append(
-                    f"LIMIT 절이 없어 자동으로 LIMIT {default_limit}을 추가했습니다."
+                    f"LIMIT 절이 없어 전체 조회 상한으로 LIMIT {limit}을 자동 추가했습니다"
+                    f"(기본 상한 {default_limit}에서 상향)."
+                )
+        else:
+            if is_db2(db_engine):
+                warnings.append(
+                    f"행 제한 절이 없어 자동으로 FETCH FIRST {limit} ROWS ONLY를 추가했습니다."
+                )
+            else:
+                warnings.append(
+                    f"LIMIT 절이 없어 자동으로 LIMIT {limit}을 추가했습니다."
                 )
 
     # 8. 성능 위험 패턴

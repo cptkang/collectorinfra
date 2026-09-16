@@ -185,8 +185,15 @@ async def test_dotless_schema_fallback(dotless_schema_info):
 
 
 @pytest.mark.asyncio
-async def test_all_query_skips_limit_addition(dotless_schema_info):
-    """사용자 질의에 '모든'이 들어간 경우 LIMIT 자동 추가가 생략되는지 테스트."""
+async def test_all_query_raises_limit_instead_of_skipping(dotless_schema_info):
+    """'모든' 질의는 LIMIT 자동 추가를 생략하지 않고 전체 조회 상한으로 상향한다(CU-2).
+
+    종전 이 테스트는 "LIMIT이 붙지 않는다"를 정답으로 굳혀 무제한 실행(J-03 실측 1,668행)을
+    통과시켰다. `resolve_query_limit`은 같은 판정에서 `_ALL_QUERY_LIMIT`으로 **상향**하므로
+    두 경로가 반대였다 — 상향이 정답이다.
+    """
+    from src.utils.query_gen_common import _ALL_QUERY_LIMIT
+
     state = create_initial_state(user_query="모든 서버 조회")
     state["schema_info"] = dotless_schema_info
     # LIMIT 절이 없는 쿼리
@@ -199,7 +206,8 @@ async def test_all_query_skips_limit_addition(dotless_schema_info):
         result = await query_validator(state)
 
     assert result["validation_result"]["passed"] is True
-    # LIMIT 1000이 생성된 SQL에 자동으로 덧붙지 않아야 함
-    assert "LIMIT" not in result["generated_sql"]
+    # 기본 상한(1000)이 아니라 전체 조회 상한(10,000)이 붙는다
+    assert f"LIMIT {_ALL_QUERY_LIMIT};" in result["generated_sql"]
+    assert "LIMIT 1000;" not in result["generated_sql"]
 
 

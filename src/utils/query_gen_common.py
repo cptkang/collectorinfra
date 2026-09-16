@@ -419,8 +419,10 @@ _ALL_SCOPE_DERIV_SUFFIXES: tuple[str, ...] = ("적", "화")
 def has_all_scope_keyword(text: str | None) -> bool:
     """질의가 "전체/모든/모두" 스코프 지시를 담고 있는지 조사·파생 경계까지 보고 판정한다.
 
-    LIMIT 상향(`resolve_query_limit`)과 LIMIT 자동 추가 스킵(`query_validator`)이 같은
-    판정을 공유하도록 단일 출처로 둔다(종전에는 두 곳이 각자 부분문자열 매칭 튜플을 들고 있었다).
+    LIMIT 상향(`resolve_query_limit`)과 검증기의 행 제한 **상향**(`query_validator`·멀티 경로
+    `_auto_limit_or_none`)이 같은 판정을 공유하도록 단일 출처로 둔다(종전에는 두 곳이 각자
+    부분문자열 매칭 튜플을 들고 있었다). **「스킵」이 아니라 「상향」이다** — 종전 검증기는
+    전체 조회에서 자동 추가를 통째로 건너뛰어 두 경로가 반대로 말했다(plans/98 CU-2).
 
     Args:
         text: 사용자 원문 질의

@@ -129,7 +129,7 @@ def test_prior_for_db_with_partition_picks_bucket():
 async def test_generate_validated_sql_passes_db_specific_scope():
     run = _run(TAGGED, collect_prior_identity_values_by_db(TAGGED))
     gen = AsyncMock(return_value="SELECT 1")
-    with patch.object(mod, "_generate_sql", gen), patch.object(mod, "_validate_sql", return_value=None), \
+    with patch.object(mod, "_generate_sql", gen), patch.object(mod, "_validate_sql", return_value=(None, None)), \
          patch.object(mod, "is_scrub_samples_enabled", return_value=False):
         await mod._generate_validated_sql(run, MagicMock(), {}, "q", {}, db_engine="postgresql", db_id=GP)
     kwargs = gen.call_args.kwargs

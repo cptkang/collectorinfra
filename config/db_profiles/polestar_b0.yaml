@@ -224,6 +224,24 @@ query_guide: |
   **둘은 다른 값이므로 반드시 구분**하세요. "서버 이름"과 "호스트네임"을 함께 요청받으면 각각 r.name, r.hostname으로 출력합니다.
   **호스트명·IP는 직접 컬럼(r.hostname / r.ipaddress)** 을 사용하세요 — 은행존은 두 컬럼에 클린 값이 들어 있음(실측 확인). (EAV Hostname/IPaddress 속성에도 동일 값이 있으나 직접 컬럼이 단순.)
 
+  [★ filter_conditions 필드명 재매핑 — 은행존 전용]
+  input_parser가 생성한 filter_conditions의 field 값이 무엇이든, 사용자의 원문이 "서버 이름", "서버명", "장비명", "장비 이름"에 해당하면
+  SQL에서 cmm_resource.name 컬럼으로 매핑한다. filter_conditions.field = "hostname"이 전달되더라도 예외 없이 적용한다.
+  **사용자가 "<값> 서버"(예: "cob0-bnndbp01 서버")처럼 값으로 서버를 지칭하면 그 값은 장비명이므로 아래 [장비명 비교 형태]로 거른다.**
+  **출력 컬럼으로 "호스트네임/IP"를 함께 요청하더라도 서버 식별 필터는 절대 hostname 으로 하지 말 것 (필터=r.name, 출력=r.hostname 은 별개).**
+  단, 사용자가 명시적으로 "호스트명/호스트네임이 XXX인 서버"처럼 호스트명 자체로 필터하라고 한 경우에만 cmm_resource.hostname 을 사용한다.
+  예: filter_conditions = [{"field": "hostname", "op": "=", "value": "cob0-bnndbp01"}] + 원문 "장비명이 cob0-bnndbp01인"
+      → 아래 OR 3분기로 r.name 을 거른다 (r.hostname 이 아님)
+
+  [★★ 장비명 비교 형태 — 은행존 전용 OR 3분기 고정]
+  은행존의 name은 "<호스트명>(<설명>)" 구조가 섞여 있어 **등호 단독 비교는 0건**을 반환한다.
+  장비명 값 `<값>`으로 서버를 거를 때는 **반드시** 아래 세 분기를 그대로 쓴다(괄호 포함):
+    WHERE (r.name = '<값>' OR r.name LIKE '<값> (%' OR r.name LIKE '<값>(%')
+  - 등호 분기: 설명이 붙지 않은 등록명을 잡는다(등호 결과의 초집합이므로 종전보다 나빠지지 않는다).
+  - LIKE 두 분기: 여는 괄호 앞 경계를 못 박아 'sicwso01'이 'sicwso011'을 함께 잡는 접두 충돌을 막는다.
+  - **`LIKE '<값>%'`(경계 없는 접두 매칭)은 금지** — 다른 서버를 섞어 잡는다.
+  - 값에 이미 "(설명)"이 붙어 있으면 등호 분기만으로 충분하다(세 분기를 써도 결과는 같다).
+
   [avail_status 값 의미]
   cmm_resource.avail_status 컬럼의 정수 값:
     - 0 = 정상 (UP)
@@ -243,12 +261,12 @@ query_guide: |
   OSParameter(커널 파라미터, 시스템 파라미터 등)는 LOB 값으로 core_config_prop.stringvalue에 저장됩니다.
     - COALESCE(cc.stringvalue, cc.stringvalue_short) 사용 — OSParameter는 LOB로 저장될 수 있어 stringvalue_short가 빈 값일 수 있음
     - 필터: core_config_prop.name = 'OSParameter'
-  예시:
-    SELECT r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
+  예시 (은행존 — 장비명으로 필터):
+    SELECT r.name AS server_name, r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
     FROM POLESTAR.cmm_resource r
     JOIN POLESTAR.core_config_prop cc ON r.resource_conf_id = cc.configuration_id
     WHERE r.resource_type = 'server.Server'
-      AND r.hostname = '조회할_서버명'
+      AND (r.name = '조회할_장비명' OR r.name LIKE '조회할_장비명 (%' OR r.name LIKE '조회할_장비명(%')
       AND cc.name = 'OSParameter'
 
       AND r.dtime IS NULL;
@@ -300,6 +318,16 @@ query_guide: |
   한 서버의 서버정보 + CPU + 메모리를 한 행으로 조회하려면:
     GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계하고,
     MAX(CASE WHEN resource_type = '...' AND name = '...' THEN stringvalue_short END)로 피벗합니다.
+
+  [★ 단일 서버 피벗 — 서버 식별은 HAVING, WHERE 금지]
+  위 피벗에서 **서버 식별 조건을 WHERE에 두면 server.Cpus/server.Memory 행이 GROUP BY 전에 제거되어
+  CPU·메모리가 전부 NULL이 됩니다.** 서버 식별은 반드시 **집계 후 HAVING**(server.Server 행 기준)으로 겁니다.
+  비교 형태는 위 [★★ 장비명 비교 형태]와 같은 OR 3분기입니다:
+    GROUP BY COALESCE(c.platform_resource_id, c.id)
+    HAVING (MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '<값>'
+         OR MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) LIKE '<값> (%'
+         OR MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) LIKE '<값>(%')
+  장비명이 아니라 "호스트명/호스트네임이 XXX인"이라고 명시한 경우에만 HAVING의 c.name을 c.hostname으로 바꾸고 등호 단독을 씁니다.
 
   [EAV 숫자 값 캐스트 규칙 — 정수 캐스트 금지]
   core_config_prop의 숫자 속성 값(stringvalue/stringvalue_short)은 부동소수 표기 문자열입니다(예: LOGICALCORE = '4.0').
@@ -386,6 +414,27 @@ query_examples:
       FETCH FIRST 1 ROWS ONLY;
     explanation: "EAV 조인이 필요 없는 단순 집계 — cmm_resource만 사용"
 
+  - question: "장비명이 'cob0-bnndbp01'인 서버의 가용성 상태와 IP를 조회해줘"
+    sql: |
+      -- ★ 은행존: 장비명 필터는 r.name(등록명) — r.hostname 이 아니다
+      -- ★ 등록명이 "<호스트명>(<설명>)" 구조라 등호 단독은 0건 → OR 3분기 고정('(' 앞 경계로 접두 충돌 차단)
+      SELECT
+        r.name AS server_name,
+        r.hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM POLESTAR.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND (r.name = 'cob0-bnndbp01'
+             OR r.name LIKE 'cob0-bnndbp01 (%'
+             OR r.name LIKE 'cob0-bnndbp01(%')
+        AND r.dtime IS NULL
+      FETCH FIRST 100 ROWS ONLY;
+    explanation: |
+      장비명(서버명)으로 서버를 특정하는 기본형. 필터 컬럼은 cmm_resource.name 이고,
+      호스트명·IP는 출력 컬럼으로만 쓴다(필터=r.name, 출력=r.hostname 은 별개).
+      은행존 등록명에 "(설명)"이 붙는 경우가 있어 등호 단독이면 0건이 되므로 OR 3분기를 그대로 쓴다.
+
   - question: "서버별 서버이름, 호스트네임, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
     sql: |
       -- ★ 은행존: 서버이름=등록명(c.name, "<호스트명>(<설명>)"), 호스트네임=클린 OS 호스트명(c.hostname 직접 컬럼) — 둘은 다른 값
@@ -420,11 +469,19 @@ query_examples:
       FROM POLESTAR.cmm_resource parent
       JOIN POLESTAR.cmm_resource child
         ON child.parent_resource_id = parent.id
-      WHERE parent.hostname = '서버명'
+      -- ★ 장비명 필터는 parent.name(등록명)이다 — parent.hostname 이 아니다.
+      -- ★ 은행존 등록명은 "<호스트명>(<설명>)" 구조가 섞여 있어 등호 단독은 0건 →
+      --    [★★ 장비명 비교 형태]의 OR 3분기를 그대로 쓴다.
+      WHERE (parent.name = '장비명'
+             OR parent.name LIKE '장비명 (%'
+             OR parent.name LIKE '장비명(%')
         AND child.resource_type = 'server.Cpu'
         AND child.dtime IS NULL
       FETCH FIRST 100 ROWS ONLY;
-    explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인"
+    explanation: |
+      계층 구조 조회 — parent_resource_id로 자기참조 조인.
+      ★ 필터 컬럼에 주의: 장비명(서버명)은 cmm_resource.name 이다. 이 예시가 hostname 으로
+      거르면 그것이 그대로 학습돼 "장비명 -> hostname" 오매핑을 재생산한다(P-1).
 
   - question: "서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘"
     sql: |

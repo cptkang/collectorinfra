@@ -337,6 +337,7 @@ Claude Code 스킬: `/arch-check` 로 호출 가능 (`.claude/skills/arch-check.
 **단일/멀티 경로 대칭 · 멀티 엔진 방언**
 - 프롬프트 블록·스키마 메타(`_structure_meta`)·엔진/스키마 규칙은 단일 DB·멀티 DB 경로 **양쪽에 실제 주입됐는지 실측**(한쪽만 고치는 비대칭이 반복 원인)
 - PostgreSQL/DB2 방언 분기 필수: LIMIT vs FETCH FIRST, `::numeric` vs `CAST(… AS DECIMAL)`(반드시 집계 **전** 캐스트), DB2 결과 칼럼 라틴 소문자화, 스키마 한정(대문자 POLESTAR)
+  - **단, EAV 숫자 속성은 양 엔진 모두 `CAST(… AS NUMERIC)`을 쓴다**(2026-09-16 사용자 확정 G-7). 폐쇄망 실측(`config/db_profiles/polestar_cm_yd.yaml:436`, 2026-08-21)이 *"DB2에서 `CAST(… AS NUMERIC)`만 유효, INT/BIGINT는 `'4.0'` 파싱 오류"*로 기록하고, DB2가 NUMERIC을 DECIMAL 동의어로 수용한다. 시나리오 단언(B-07·B-08 `sql_must_match: (?i)\bnumeric\b`)도 이 형태를 요구한다 — **`AS DECIMAL`을 강제하면 그 단언이 깨진다.** 위 `DECIMAL` 표기는 일반 수치 캐스트에 대한 것이고, 충돌하면 실측이 이긴다
 - 새 DB 편입 체크리스트: ①위치 힌트(`_LOCATION_DB_HINTS`) ②런타임 `.env` base_url ③엔진 방언 ④스키마 한정(db_schema)
 
 **멀티턴 / 상태 관리**

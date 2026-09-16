@@ -84,9 +84,13 @@ def test_profile_entries_use_filename_stem_as_db_id():
 
 
 def test_collect_entries_merges_both_sources():
-    """두 원천이 db_id별로 합쳐진다(실측 69건 = 골드 26 + 프로필 43 · 2026-09-10 샌드박스 프로필 복원 반영)."""
+    """두 원천이 db_id별로 합쳐진다(실측 70건 = 골드 26 + 프로필 44).
+
+    2026-09-10 샌드박스 프로필 복원으로 69건 → 2026-09-16 plans/98 CU-1로 `polestar_b0`에
+    장비명 필터 예시 1건을 더해 70건. 수치는 프로필 예시 수를 그대로 따라간다.
+    """
     merged = _SEED.collect_entries(verified_at=_FIXED_TS)
-    assert sum(len(v) for v in merged.values()) == 69
+    assert sum(len(v) for v in merged.values()) == 70
     sources = {e["source"] for entries in merged.values() for e in entries}
     assert sources == {"gold", "profile_example"}
 
@@ -208,7 +212,7 @@ async def test_load_writes_via_store(monkeypatch, capsys):
     monkeypatch.setattr(_SEED, "_open_store", _open)
     rc = await _SEED.cmd_load("polestar_b0", replace=True, dry_run=False)
     assert rc == 0
-    assert saved == {"polestar_b0": 12}  # 골드 5 + 프로필 7
+    assert saved == {"polestar_b0": 13}  # 골드 5 + 프로필 8(CU-1 장비명 예시 추가분 포함)
     assert "[ok] polestar_b0" in capsys.readouterr().out
 
 

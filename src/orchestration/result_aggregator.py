@@ -86,6 +86,24 @@ async def result_aggregator(
     # 없어 위치 힌트로도 못 잡음). 실행된 task들의 target_db_ids를 top-level로 승격한다.
     db_promotion = _collect_db_promotion(tasks, task_results)
 
+    # 존 역질문(D-143 후속2 · G-3 확대)은 **이번 턴의 최종 응답**이다 — 마감 루프보다 먼저 끊는다.
+    #
+    # G-3 로 복합 계획에도 게이트가 열리면서 한 턴에 여러 task 가 각자 같은 페이로드를 낼 수
+    # 있게 됐다. 여기서 하나만 취해 **턴당 1회**로 묶는다(중복 질문 차단).
+    # 아래 복합 경로(`_merge_finalized`·`_synthesize_finalized`)는 `zone_clarification` 키를
+    # 옮기지 않으므로, 이 단락이 없으면 질문이 **본문 텍스트로만 합쳐져** API 응답의
+    # `clarification` 이 비고 사용자는 구조화 응답을 할 수 없다(침묵 강등 — CLAUDE.md).
+    # `db_promotion` 은 의도적으로 붙이지 않는다: 임의 분류 결과를 `previous_db_ids` 로
+    # 남기면 다음 턴 승계가 오염된다(subagents 반환부가 `target_db_ids` 를 비우는 것과 같은 사유).
+    zone_q = _zone_clarification_from_tasks(ordered_tasks, task_results)
+    if zone_q:
+        return _with_answer_history(_apply_incomplete_notice({
+            "final_response": zone_q["question"],
+            "zone_clarification": zone_q,
+            "current_node": "result_aggregator",
+            "query_results": [],
+        }, state))
+
     # 합성 모드 + 복합 task일 때만 per-task 마감의 토큰 스트리밍을 억제한다.
     # (최종 합성 1회에만 USER_RESPONSE_TAG를 부여하여 중간 답변 토큰 누출 방지 — D-062/D-009)
     suppress_stream = synthesize and len(ordered_tasks) > 1
@@ -407,6 +425,22 @@ def _with_answer_history(result: dict) -> dict:
     if not text:
         return result
     return {**result, "messages": [AIMessage(content=text)]}
+
+
+def _zone_clarification_from_tasks(
+    ordered_tasks: list[dict], task_results: dict[str, dict]
+) -> Optional[dict]:
+    """이번 턴의 존 역질문 페이로드 1개. 없으면 None (G-3 · D-143 후속2).
+
+    한 턴의 task 들은 같은 원문·같은 존 신호를 보므로 **같은 페이로드**를 만든다.
+    order 순으로 첫 번째 것을 취해 턴당 1회로 묶는다 — 복합 계획에서 task 수만큼 같은
+    질문이 쌓이는 것을 막는 지점이다.
+    """
+    for task in ordered_tasks:
+        result = task_results.get(task.get("task_id"), {})
+        if isinstance(result, dict) and result.get("zone_clarification"):
+            return result["zone_clarification"]
+    return None
 
 
 def _collect_db_promotion(

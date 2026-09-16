@@ -203,6 +203,12 @@ def _has_new_location_db_signal(text: str) -> bool:
     return any(sig.lower() in lowered for sig in _LOCATION_DB_SIGNALS)
 
 
+#: 존 선택이 결과를 바꾸는 agent (G-3 확정 2026-09-16).
+#: 존 그룹별로 다른 DB 를 조회하는 SQL 계열만 넣는다 — 목록을 넓히기 전에 그 agent 가
+#: `targets` 로 폴스타 존을 받는지 먼저 확인할 것(게이트 후단이 그 조건을 다시 검사한다).
+_ZONE_SCOPED_AGENTS: frozenset[str] = frozenset({"data_query", "alarm_query"})
+
+
 def _zone_clarification_or_none_task(
     task: dict,
     isolated: dict,
@@ -234,12 +240,23 @@ def _zone_clarification_or_none_task(
     # 채널 게이트: 대화형 텍스트 라우트만 허용(§4.3-3 — 배치·평가·API 직접 호출 보호)
     if not isolated.get("zone_clarification_allowed"):
         return None
-    # data_query 전용 (alarm_query 등은 기존 폴백 유지 — 스코프 최소화)
-    if task.get("agent", "data_query") != "data_query":
+    # 존 스코프가 결과를 바꾸는 agent 만 (G-3 확정 2026-09-16 — 종전 data_query 전용에서 확대).
+    #
+    # 알람 조회도 존 단위로 데이터가 갈리므로 "어느 존이냐"가 결과를 바꾼다. 종전에는
+    # `alarm_query` 가 게이트를 건너뛰어 LLM 임의 팬아웃(3개 존 전체)으로 흘렀다 —
+    # run 20260915-131903 실측: 유효 280턴 중 66턴(24%)이 역질문 없이 3-DB 팬아웃이고
+    # 팬아웃 턴 p50 131.5초 vs 단일 DB 59.9초(2.2배)다.
+    # **열거로 좁게 유지한다** — process_query(폴스타 REST)·direct_response 등은 SQL 존
+    # 스코프 개념이 달라 같은 역질문이 성립하지 않는다.
+    if task.get("agent", "data_query") not in _ZONE_SCOPED_AGENTS:
         return None
-    # 복합 계획 제외(중간 task 역질문은 UX 어색 + 전역 판정 부정확 — 핀 게이트와 동일 사유)
-    if isolated.get("is_composite"):
-        return None
+    # **복합 계획 제외는 풀었다**(G-3). 종전 주석의 우려 두 가지는 아래처럼 처리한다:
+    #   ① "중간 task 역질문은 UX 어색" → 한 턴의 task 들은 같은 원문·같은 존 신호를 보므로
+    #      **같은 페이로드**를 만든다. `result_aggregator` 가 그중 하나만 취해 턴당 1회로
+    #      묶고 나머지 task 결과를 버린다(`_zone_clarification_from_tasks`).
+    #   ② "전역 판정 부정확" → 역질문 턴은 `target_db_ids` 를 남기지 않아(아래 반환부)
+    #      `_collect_db_promotion` 이 빈 dict 를 돌려주므로 임의 분류 결과가 다음 턴
+    #      승계로 새지 않는다. 복합 경로도 db 승격을 붙이지 않는다.
     # 위치 힌트 고정·승계가 발동했으면 존은 이미 결정적(§4.2 승계 우선)
     if db_pinned or db_succeeded:
         return None

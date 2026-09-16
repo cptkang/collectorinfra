@@ -29,7 +29,7 @@ def validate_sql_draft(
         sql: 검증할 SQL 초안
         schema_info: 스키마 정보(tables·구조 메타 포함)
         db_engine: DB 엔진 타입(행 제한 절 방언 결정)
-        user_query: 사용자 원문 질의("모든/전체" 조회면 행 제한 자동 추가 생략)
+        user_query: 사용자 원문 질의("모든/전체" 조회면 행 제한을 전체 조회 상한으로 **상향**)
         default_limit: 행 제한 자동 추가 시 기본값
         db_id: 대상 DB 식별자(어댑터 디스패치용)
         adapter_db_ids: 어댑터 담당 db_id 집합(런타임 설정에서 주입)

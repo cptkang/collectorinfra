@@ -76,9 +76,9 @@ _FALLBACK_BLOCKS: dict[str, str] = {
     _M_EAV_ATTRIBUTE_LINES: """    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
     MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
-    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCPU'  THEN cc.stringvalue_short END) AS coresocket,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN CAST(cc.stringvalue_short AS NUMERIC) END) AS logicalcore,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN CAST(cc.stringvalue_short AS NUMERIC) END) AS physicalcore,
+    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCPU'  THEN CAST(cc.stringvalue_short AS NUMERIC) END) AS coresocket,
     MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'       THEN cc.stringvalue_short END) AS ostype,
     MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'     THEN cc.stringvalue_short END) AS osversion,
@@ -90,7 +90,7 @@ _FALLBACK_BLOCKS: dict[str, str] = {
         "\n        MAX(CASE WHEN c.resource_type = 'server.Server' "
         "THEN c.ipaddress END) AS ipaddress,"
     ),
-    _M_HI_ATTRIBUTE_LINES: """        MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
+    _M_HI_ATTRIBUTE_LINES: """        MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN CAST(cc.stringvalue_short AS NUMERIC) END) AS logicalcore,
         MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size""",
     _M_HI_JOIN_CONDITION: "svr.ipaddress = hi.ipaddress",
     _M_SEVERITY_CASE_12: """            CASE
@@ -162,6 +162,9 @@ SELECT
     -- (해당 EAV 속성은 실측상 비어 있어 EAV로 읽으면 NULL이 된다 — D-058/D-061).
     MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,
     MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,
+    -- EAV 숫자 속성(코어 수·소켓 수) 값은 '4.0' 같은 문자열이라 비교·집계 **전에** 캐스트한다:
+    --   PostgreSQL CAST(... AS NUMERIC) / DB2 CAST(... AS DECIMAL). 정수 캐스트는 파싱 오류.
+    --   단위가 붙는 값(TotalSize='62.1 GB')·문자열 속성(OS·모델)은 캐스트하지 않는다.
 [[eav_attribute_lines]]
 FROM polestar.cmm_resource c
 LEFT JOIN polestar.core_config_prop cc
@@ -993,6 +996,15 @@ _HI_ATTRIBUTE_ALIASES: tuple[tuple[str, str], ...] = (
     ("TotalSize", "mem_size"),
 )
 
+#: 값이 **순수 숫자 문자열**인 EAV 속성 — 예제가 집계·비교 **전** 캐스트를 보여야 하는 대상
+#: (plans/98 CU-12). 종전 예제는 이 셋도 캐스트 없이 `cc.stringvalue_short`를 그대로 보여
+#: LLM이 문자열 비교·합계를 따라 생성했다(B-07·B-08 2/2 재현).
+#: 단위 접미사가 붙는 값(`TotalSize` = '62.1 GB')·문자열 속성(OS·모델)은 캐스트하면 실행
+#: 오류이거나 무의미하므로 **제외한다**.
+_NUMERIC_EAV_ATTRIBUTES: frozenset[str] = frozenset(
+    {"LOGICALCORE", "PHYSICALCORE", "PHYSICALCPU"}
+)
+
 #: measure 별 출력 컬럼 접두사(표현). 미등록 resource_type은 타입 접미사를 소문자로 쓴다.
 _MEASURE_ALIAS_PREFIX: dict[str, str] = {
     "server.Cpus": "cpu",
@@ -1116,6 +1128,10 @@ def render_eav_attribute_lines(
 ) -> str:
     """EAV 피벗 SELECT 줄을 정본에서 렌더한다(정본에 없는 속성은 생략).
 
+    숫자 속성(`_NUMERIC_EAV_ATTRIBUTES`)은 집계 함수 **안쪽**에서 NUMERIC으로 캐스트한
+    형태를 보인다 — EAV 값이 부동소수 표기 문자열('4.0')이라 캐스트 없이 비교·합계하면
+    문자열 연산이 된다(plans/98 CU-12).
+
     Args:
         catalog: pattern_a(eav·dimensions) 보유 카탈로그
         specs: (속성명, 출력 별칭) 순서쌍 — 예제가 노출할 속성과 표현
@@ -1140,10 +1156,13 @@ def render_eav_attribute_lines(
             continue
         rt_literal = f"'{dim['resource_type']}'".ljust(rt_width)
         attr_literal = f"'{attribute}'".ljust(attr_width)
+        value_expr = f"cc.{value_column}"
+        if attribute in _NUMERIC_EAV_ATTRIBUTES:
+            value_expr = f"CAST({value_expr} AS NUMERIC)"
         lines.append(
             f"{pad}MAX(CASE WHEN c.resource_type = {rt_literal} "
             f"AND cc.{attribute_column} = {attr_literal} "
-            f"THEN cc.{value_column} END) AS {alias},"
+            f"THEN {value_expr} END) AS {alias},"
         )
     return "\n".join(lines).rstrip(",")
 
