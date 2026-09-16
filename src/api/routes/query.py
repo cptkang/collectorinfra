@@ -1114,6 +1114,21 @@ def _zone_clarification_or_none(
     )
 
 
+def _exceeded_total_timeout(start_time: float, limit: float) -> bool:
+    """이 요청이 전체 경과 상한을 넘겼는가 (CU-11 · P-16).
+
+    SSE 경로에는 `idle_timeout`이 이미 있지만 그것은 **무이벤트 구간**만 끊는다.
+    진행 이벤트·하트비트가 계속 나오는 한 영영 걸리지 않아, 실측에서 B-06 455초 ·
+    K-10 251초가 상한을 넘겨 계속 돌았다(hang 7건 중 2건). `CLAUDE.md` 「장시간 실행
+    경로는 전체 타임아웃 가드 필수 — per-call 타임아웃만으론 무력화됨」이 이 경우다.
+
+    limit이 0 이하면 상한 없음으로 본다(설정으로 끌 수 있게 — 기존 동작 보존).
+    """
+    if limit <= 0:
+        return False
+    return (time.time() - start_time) > limit
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -1382,6 +1397,13 @@ async def process_query_stream(
                         idle_timeout=effective_timeout, heartbeat_interval=_hb,
                     )) as _events:
                         async for _ev_kind, _ev_payload in _events:
+                            # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
+                            if _exceeded_total_timeout(start_time, effective_timeout):
+                                yield _sse_event({
+                                    "type": "error",
+                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                })
+                                return
                             if _ev_kind == "timeout":
                                 yield _sse_event({
                                     "type": "error",
@@ -2016,6 +2038,13 @@ async def process_file_query_stream(
                         idle_timeout=config.server.file_query_timeout, heartbeat_interval=_hb,
                     )) as _events:
                         async for _ev_kind, _ev_payload in _events:
+                            # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
+                            if _exceeded_total_timeout(start_time, config.server.file_query_timeout):
+                                yield _sse_event({
+                                    "type": "error",
+                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                })
+                                return
                             if _ev_kind == "timeout":
                                 yield _sse_event({
                                     "type": "error",
