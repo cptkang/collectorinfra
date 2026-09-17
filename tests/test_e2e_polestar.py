@@ -66,7 +66,7 @@ def _make_polestar_config() -> AppConfig:
         db_backend="direct",
         db_connection_string=POLESTAR_DSN,
         redis=RedisConfig(host=REDIS_HOST, port=REDIS_PORT, db=0, password=""),
-        schema_cache=SchemaCacheConfig(backend="redis", auto_generate_descriptions=True),
+        schema_cache=SchemaCacheConfig(backend="redis"),
         checkpoint_backend="sqlite",
         checkpoint_db_url=":memory:",
         enable_semantic_routing=False,

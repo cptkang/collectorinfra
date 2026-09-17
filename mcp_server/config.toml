@@ -127,3 +127,14 @@ query_timeout = 30
 max_rows = 10000
 pool_min_size = 1
 pool_max_size = 3
+
+# === 자산관리 ITAM (MariaDB — plans/95 · 개발: Docker :3307 testdata/itam / 운영: 게이트 G-2·G-3 확정 후) ===
+# 로컬 샌드박스와 운영이 소스명 하나를 공유한다(polestar 선례). 연결 계정은 SELECT 전용이어야 한다(D-003).
+[[sources]]
+name = "itam"       # → mcp_server/.env: ITAM_CONNECTION
+type = "mariadb"
+readonly = true
+query_timeout = 30
+max_rows = 10000
+pool_min_size = 1
+pool_max_size = 3

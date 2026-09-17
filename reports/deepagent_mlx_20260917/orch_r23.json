@@ -1,0 +1,472 @@
+[
+ {
+  "key": "S1_single",
+  "round": 1,
+  "query": "CPU 사용률 상위 3개 서버를 알려줘",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\n2026 년 9 월 기준, 서버별 CPU 사용률 상위 3 개를 조회했습니다. web-01 서버가 96.3% 로 가장 높은 사용률을 보이며 주의가 필요합니다.\n\n| hostname | cpu_usage |\n|---|---|\n| web-01 | 96.3 |\n| web-02 | 88.1 |\n| web-03 | 71.4 |\n\n참고사항\n- **이상 징후**: web-01 서버의 CPU 사용률 (96.3%) 이 90% 임계치를 초과하여 고부하 상태입니다.\n- **단위**: cpu_usage 는 비율 (%) 입니다.",
+  "elapsed_s": 10.3,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   5.1
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 4,
+  "orchestrator_last_text": "CPU 사용률 상위 3개 서버는 다음과 같습니다:\n\n| 순위 | 서버명 | CPU 사용률 |\n|------|--------|-----------|\n| 1 | web-01 | 96.3% |\n| 2 | web-02 | 88.1% |\n| 3 | web-03 | 71.4% |\n\n가장 높은 CPU 사용률을 보이고 있는 **web-01** 서버가 96.3%로 정상적인 운영 범위를 초과한 상태입니다. 추가적인 성능 분석이 필요하시면 말씀해 주세요."
+ },
+ {
+  "key": "S2_independent",
+  "round": 1,
+  "query": "CPU 사용률 상위 3개 서버와 메모리 사용률 상위 3개 서버를 각각 알려줘",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\nCPU 사용률 기준 상위 3개 서버는 web-01(96.3%), web-02(88.1%), web-03(71.4%)이며, 메모리 사용률 데이터는 조회되지 않았습니다.\n\n| hostname | cpu_usage | mem_usage |\n|---|---|---|\n| web-01 | 96.3 | null |\n| web-02 | 88.1 | null |\n| web-03 | 71.4 | null |\n\n참고사항\n- CPU 사용률이 96.3%인 web-01 서버가 임계치를 초과하는 높은 사용률을 보입니다.\n- 메모리 사용률(mem_usage) 데이터는 조회 결과에 포함되어 있지 않습니다.",
+  "elapsed_s": 22.2,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, server_id, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   },
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, server_id, AVG(memory_usage) as avg_memory_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_memory_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   6.3
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, server_id, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   },
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, server_id, AVG(memory_usage) as avg_memory_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_memory_usage DESC LIMIT 3"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 5,
+  "orchestrator_last_text": "**CPU 사용률 상위 3개 서버:**\n1. web-01: 96.3%\n2. web-02: 88.1%\n3. web-03: 71.4%\n\n**메모리 사용률 상위 3개 서버:**\n1. db-01: 93.0%\n2. db-02: 90.4%\n3. db-03: 87.9%"
+ },
+ {
+  "key": "S3_data_dependent",
+  "round": 1,
+  "query": "CPU 사용률이 90% 이상인 서버를 찾아서, 그 서버들의 최근 알람 이력을 조회해줘",
+  "variant": "90",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\nCPU 사용률이 90% 이상인 서버 2 건에 대한 최근 알람 이력이 조회되었습니다. web-01 서버에서 CPU 사용률 임계 초과 (95.2%) 가, web-02 서버에서 응답 지연 (91.0%) 이 발생했습니다.\n\n| hostname | cpu_usage | severity | alarm_msg | occurred_at |\n|---|---|---|---|---|\n| web-01 | 95.2 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n| web-02 | 91.0 | 2 | 응답 지연 | 2026-09-17 08:40 |\n\n참고사항\n- CPU 사용률 평균 93.1% 로 전체 서버가 고부하 상태입니다.\n- web-01 서버는 심각도 3(최고) 으로 CPU 사용률이 95.2% 로 임계치를 초과했습니다.\n- web-02 서버는 심각도 2 로 응답 지연이 발생했으며, CPU 사용률 91.0% 로 90% 임계선을 넘었습니다.\n\n---\n## 순차 처리 경과\n- [tool_alarm_query_2] 선행 작업(tool_data_query_1) 결과 2대(hostname)로 대상을 한정했습니다.",
+  "elapsed_s": 27.6,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, cpu_usage FROM server_metrics WHERE cpu_usage >= 90 ORDER BY cpu_usage DESC",
+    "input_from": [],
+    "prior_rows_keys": null
+   },
+   {
+    "agent": "alarm_query",
+    "sub_query": "SELECT * FROM alarm_history WHERE server_name IN ('web-01', 'web-02') ORDER BY event_time DESC LIMIT 20",
+    "input_from": [
+     "tool_data_query_1"
+    ],
+    "prior_rows_keys": [
+     "tool_data_query_1"
+    ]
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   10.0
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, cpu_usage FROM server_metrics WHERE cpu_usage >= 90 ORDER BY cpu_usage DESC"
+    }
+   },
+   {
+    "name": "query_alarm",
+    "args": {
+     "sub_query": "SELECT * FROM alarm_history WHERE server_name IN ('web-01', 'web-02') ORDER BY event_time DESC LIMIT 20"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 6,
+  "orchestrator_last_text": "## 결과\n\n**CPU 사용률 90% 이상인 서버:**\n- **web-01**: 95.2%\n- **web-02**: 91.0%\n\n**각 서버의 최근 알람 이력:**\n\n| 서버 | 심각도 | 알람 메시지 | 발생 시간 |\n|------|--------|-------------|----------|\n| web-01 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n| web-02 | 2 | 응답 지연 | 2026-09-17 08:40 |\n\n두 서버 모두 최근 CPU 관련 또는 성능 관련 알람이 발생했습니다. web-01은 CPU 사용률 임계 초과 (심각도 3) 알람이, web-02는 응답 지연 (심각도 2) 알람이 기록되어 있습니다."
+ },
+ {
+  "key": "S4a_conditional_pos",
+  "round": 1,
+  "query": "CPU 사용률 상위 3개 서버를 조회하고, 그중 사용률이 90%를 넘는 서버가 있으면 그 서버의 최근 알람 이력도 조회해줘",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\nCPU 사용률 상위 3 개 서버 중 90% 를 초과하는 서버는 **web-01** (96.3%) 입니다. 해당 서버의 최근 알람 이력은 심각도 3 의 'CPU 사용률 임계 초과'가 2026 년 9 월 17 일 09:12 에 발생했습니다.\n\n| hostname | cpu_usage | severity | alarm_msg | occurred_at |\n|---|---|---|---|---|\n| web-01 | 96.3 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n\n참고사항\n- cpu_usage 96.3 은 90% 임계치를 초과하여 주의가 필요합니다.\n- 기준 연도는 2026 년입니다.\n\n---\n## 순차 처리 경과\n- [tool_alarm_query_2] 선행 작업(tool_data_query_1) 결과 3대(hostname)로 대상을 한정했습니다.\n- [tool_alarm_query_2] 선별 서버 중 2대는 결과가 없습니다(web-02, web-03).",
+  "elapsed_s": 23.7,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   },
+   {
+    "agent": "alarm_query",
+    "sub_query": "SELECT * FROM alarm_history WHERE server_name = 'web-01' ORDER BY event_time DESC LIMIT 10",
+    "input_from": [
+     "tool_data_query_1"
+    ],
+    "prior_rows_keys": [
+     "tool_data_query_1"
+    ]
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   8.9
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   },
+   {
+    "name": "query_alarm",
+    "args": {
+     "sub_query": "SELECT * FROM alarm_history WHERE server_name = 'web-01' ORDER BY event_time DESC LIMIT 10"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 6,
+  "orchestrator_last_text": "## 결과 요약\n\n**CPU 사용률 상위 3개 서버:**\n1. web-01: 96.3%\n2. web-02: 88.1%\n3. web-03: 71.4%\n\n**90% 이상 CPU 사용률 서버:**\n- **web-01** (96.3%)\n\n**web-01 서버의 최근 알람 이력:**\n| 서버 | 심각도 | 알람 메시지 | 발생 시간 |\n|------|--------|-------------|----------|\n| web-01 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n\nweb-01 서버는 CPU 사용률이 90%를 초과하여 임계값을 초과한 알람이 발생했습니다."
+ },
+ {
+  "key": "S4b_conditional_neg",
+  "round": 1,
+  "query": "CPU 사용률 상위 3개 서버를 조회하고, 그중 사용률이 90%를 넘는 서버가 있으면 그 서버의 최근 알람 이력도 조회해줘",
+  "variant": "cool",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\n2026-09-17 기준, CPU 사용률이 높은 서버 3 대를 조회했습니다. 전체 평균 사용률은 66.23%이며, 최대 사용률은 72.0%로 높은 부하가 감지됩니다.\n\n| hostname | cpu_usage |\n|---|---|\n| web-01 | 72.0 |\n| web-02 | 65.5 |\n| web-03 | 61.2 |\n\n참고사항\n- cpu_usage 값은 % 단위를 의미합니다.",
+  "elapsed_s": 8.3,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   4.2
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 4,
+  "orchestrator_last_text": "상위 3개 서버의 CPU 사용률은 다음과 같습니다:\n- web-01: 72.0%\n- web-02: 65.5%\n- web-03: 61.2%\n\n90%를 넘는 서버는 없습니다. 따라서 추가 알람 이력 조회가 필요하지 않습니다.\n\n**결과:** CPU 사용률 상위 3개 서버 중 90%를 넘는 서버는 없습니다."
+ },
+ {
+  "key": "S6_general",
+  "round": 1,
+  "query": "이 시스템으로 어떤 조회를 할 수 있어?",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "[스텁 general_answer] 서버 사양·사용량·성능 통계, 알람 이력, 실시간 프로세스를 조회할 수 있습니다.",
+  "elapsed_s": 4.1,
+  "stub_calls": [
+   {
+    "agent": "general_inference",
+    "sub_query": "시스템 조회 가능 기능 안내",
+    "input_from": []
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   4.0
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "general_answer",
+    "args": {
+     "sub_query": "시스템 조회 가능 기능 안내"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 4,
+  "orchestrator_last_text": "이 시스템으로 다음 조회를 할 수 있습니다:\n\n1. **서버 사양·사용량·성능 통계** - 인프라 DB를 통한 서버 정보, 리소스 사용량, 성능 지표 조회\n2. **알람/모니터링 이벤트** - 알람 이력, event 발생 서버, alert 조회\n3. **실시간 프로세스** - 특정 서버의 현재 프로세스 리스트 조회\n4. **OS 구성·자원 현황·메트릭** - 특정 서버의 상세 정보 조회\n\n구체적으로 어떤 정보를 조회하시겠습니까?"
+ },
+ {
+  "key": "S1_single",
+  "round": 2,
+  "query": "CPU 사용률 상위 3개 서버를 알려줘",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\n2026 년 9 월 기준, 서버별 CPU 사용률 상위 3 개를 조회했습니다. web-01 서버가 96.3% 로 가장 높은 사용률을 보이며 주의가 필요합니다.\n\n| hostname | cpu_usage |\n|---|---|\n| web-01 | 96.3 |\n| web-02 | 88.1 |\n| web-03 | 71.4 |\n\n참고사항\n- **이상 징후**: web-01 서버의 CPU 사용률 (96.3%) 이 90% 임계치를 초과하여 고부하 상태입니다.\n- **단위**: cpu_usage 는 비율 (%) 입니다.",
+  "elapsed_s": 9.7,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   5.0
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 4,
+  "orchestrator_last_text": "CPU 사용률 상위 3개 서버는 다음과 같습니다:\n\n| 순위 | 서버명 | CPU 사용률 |\n|------|--------|-----------|\n| 1 | web-01 | 96.3% |\n| 2 | web-02 | 88.1% |\n| 3 | web-03 | 71.4% |\n\n가장 높은 CPU 사용률을 보이고 있는 **web-01** 서버가 96.3%로 정상적인 운영 범위를 초과한 상태입니다. 추가적인 성능 분석이 필요하시면 말씀해 주세요."
+ },
+ {
+  "key": "S2_independent",
+  "round": 2,
+  "query": "CPU 사용률 상위 3개 서버와 메모리 사용률 상위 3개 서버를 각각 알려줘",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\nCPU 사용률 기준 상위 3개 서버는 web-01(96.3%), web-02(88.1%), web-03(71.4%)이며, 메모리 사용률 데이터는 조회되지 않았습니다.\n\n| hostname | cpu_usage | mem_usage |\n|---|---|---|\n| web-01 | 96.3 | null |\n| web-02 | 88.1 | null |\n| web-03 | 71.4 | null |\n\n참고사항\n- CPU 사용률이 96.3%인 web-01 서버가 임계치를 초과하는 높은 사용률을 보입니다.\n- 메모리 사용률(mem_usage) 데이터는 조회 결과에 포함되어 있지 않습니다.",
+  "elapsed_s": 22.0,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, server_id, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   },
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, server_id, AVG(memory_usage) as avg_memory_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_memory_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   6.4
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, server_id, AVG(cpu_usage) as avg_cpu_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   },
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, server_id, AVG(memory_usage) as avg_memory_usage FROM server_metrics GROUP BY server_name, server_id ORDER BY avg_memory_usage DESC LIMIT 3"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 5,
+  "orchestrator_last_text": "**CPU 사용률 상위 3개 서버:**\n1. web-01: 96.3%\n2. web-02: 88.1%\n3. web-03: 71.4%\n\n**메모리 사용률 상위 3개 서버:**\n1. db-01: 93.0%\n2. db-02: 90.4%\n3. db-03: 87.9%"
+ },
+ {
+  "key": "S3_data_dependent",
+  "round": 2,
+  "query": "CPU 사용률이 90% 이상인 서버를 찾아서, 그 서버들의 최근 알람 이력을 조회해줘",
+  "variant": "90",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\nCPU 사용률이 90% 이상인 서버 2 건에 대한 최근 알람 이력이 조회되었습니다. web-01 서버에서 CPU 사용률 임계 초과 (95.2%) 가, web-02 서버에서 응답 지연 (91.0%) 이 발생했습니다.\n\n| hostname | cpu_usage | severity | alarm_msg | occurred_at |\n|---|---|---|---|---|\n| web-01 | 95.2 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n| web-02 | 91.0 | 2 | 응답 지연 | 2026-09-17 08:40 |\n\n참고사항\n- CPU 사용률 평균 93.1% 로 전체 서버가 고부하 상태입니다.\n- web-01 서버는 심각도 3(최고) 으로 CPU 사용률이 95.2% 로 임계치를 초과했습니다.\n- web-02 서버는 심각도 2 로 응답 지연이 발생했으며, CPU 사용률 91.0% 로 90% 임계선을 넘었습니다.\n\n---\n## 순차 처리 경과\n- [tool_alarm_query_2] 선행 작업(tool_data_query_1) 결과 2대(hostname)로 대상을 한정했습니다.",
+  "elapsed_s": 27.8,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, cpu_usage FROM server_metrics WHERE cpu_usage >= 90 ORDER BY cpu_usage DESC",
+    "input_from": [],
+    "prior_rows_keys": null
+   },
+   {
+    "agent": "alarm_query",
+    "sub_query": "SELECT * FROM alarm_history WHERE server_name IN ('web-01', 'web-02') ORDER BY event_time DESC LIMIT 20",
+    "input_from": [
+     "tool_data_query_1"
+    ],
+    "prior_rows_keys": [
+     "tool_data_query_1"
+    ]
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   9.9
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, cpu_usage FROM server_metrics WHERE cpu_usage >= 90 ORDER BY cpu_usage DESC"
+    }
+   },
+   {
+    "name": "query_alarm",
+    "args": {
+     "sub_query": "SELECT * FROM alarm_history WHERE server_name IN ('web-01', 'web-02') ORDER BY event_time DESC LIMIT 20"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 6,
+  "orchestrator_last_text": "## 결과\n\n**CPU 사용률 90% 이상인 서버:**\n- **web-01**: 95.2%\n- **web-02**: 91.0%\n\n**각 서버의 최근 알람 이력:**\n\n| 서버 | 심각도 | 알람 메시지 | 발생 시간 |\n|------|--------|-------------|----------|\n| web-01 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n| web-02 | 2 | 응답 지연 | 2026-09-17 08:40 |\n\n두 서버 모두 최근 CPU 관련 또는 성능 관련 알람이 발생했습니다. web-01은 CPU 사용률 임계 초과 (심각도 3) 알람이, web-02는 응답 지연 (심각도 2) 알람이 기록되어 있습니다."
+ },
+ {
+  "key": "S4a_conditional_pos",
+  "round": 2,
+  "query": "CPU 사용률 상위 3개 서버를 조회하고, 그중 사용률이 90%를 넘는 서버가 있으면 그 서버의 최근 알람 이력도 조회해줘",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\nCPU 사용률 상위 3 개 서버 중 90% 를 초과하는 서버는 **web-01** (96.3%) 입니다. 해당 서버의 최근 알람 이력은 심각도 3 의 'CPU 사용률 임계 초과'가 2026 년 9 월 17 일 09:12 에 발생했습니다.\n\n| hostname | cpu_usage | severity | alarm_msg | occurred_at |\n|---|---|---|---|---|\n| web-01 | 96.3 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n\n참고사항\n- cpu_usage 96.3 은 90% 임계치를 초과하여 주의가 필요합니다.\n- 기준 연도는 2026 년입니다.\n\n---\n## 순차 처리 경과\n- [tool_alarm_query_2] 선행 작업(tool_data_query_1) 결과 3대(hostname)로 대상을 한정했습니다.\n- [tool_alarm_query_2] 선별 서버 중 2대는 결과가 없습니다(web-02, web-03).",
+  "elapsed_s": 25.4,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   },
+   {
+    "agent": "alarm_query",
+    "sub_query": "SELECT * FROM alarm_history WHERE server_name = 'web-01' ORDER BY event_time DESC LIMIT 10",
+    "input_from": [
+     "tool_data_query_1"
+    ],
+    "prior_rows_keys": [
+     "tool_data_query_1"
+    ]
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   9.1
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   },
+   {
+    "name": "query_alarm",
+    "args": {
+     "sub_query": "SELECT * FROM alarm_history WHERE server_name = 'web-01' ORDER BY event_time DESC LIMIT 10"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 6,
+  "orchestrator_last_text": "## 결과 요약\n\n**CPU 사용률 상위 3개 서버:**\n1. web-01: 96.3%\n2. web-02: 88.1%\n3. web-03: 71.4%\n\n**90% 이상 CPU 사용률 서버:**\n- **web-01** (96.3%)\n\n**web-01 서버의 최근 알람 이력:**\n| 서버 | 심각도 | 알람 메시지 | 발생 시간 |\n|------|--------|-------------|----------|\n| web-01 | 3 | CPU 사용률 임계 초과 | 2026-09-17 09:12 |\n\nweb-01 서버는 CPU 사용률이 90%를 초과하여 임계값을 초과한 알람이 발생했습니다."
+ },
+ {
+  "key": "S4b_conditional_neg",
+  "round": 2,
+  "query": "CPU 사용률 상위 3개 서버를 조회하고, 그중 사용률이 90%를 넘는 서버가 있으면 그 서버의 최근 알람 이력도 조회해줘",
+  "variant": "cool",
+  "gate": "waited=0s others=[]",
+  "final_response": "조회 결과\n\n2026-09-17 기준, CPU 사용률이 높은 서버 3 대를 조회했습니다. 전체 평균 사용률은 66.23%이며, 최대 사용률은 72.0%로 높은 부하가 감지됩니다.\n\n| hostname | cpu_usage |\n|---|---|\n| web-01 | 72.0 |\n| web-02 | 65.5 |\n| web-03 | 61.2 |\n\n참고사항\n- cpu_usage 값은 % 단위를 의미합니다.",
+  "elapsed_s": 9.0,
+  "stub_calls": [
+   {
+    "agent": "data_query",
+    "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3",
+    "input_from": [],
+    "prior_rows_keys": null
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   4.4
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "query_infra_db",
+    "args": {
+     "sub_query": "SELECT server_name, avg_cpu_usage FROM server_metrics ORDER BY avg_cpu_usage DESC LIMIT 3"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 4,
+  "orchestrator_last_text": "상위 3개 서버의 CPU 사용률은 다음과 같습니다:\n- web-01: 72.0%\n- web-02: 65.5%\n- web-03: 61.2%\n\n90%를 넘는 서버는 없습니다. 따라서 추가 알람 이력 조회가 필요하지 않습니다.\n\n**결과:** CPU 사용률 상위 3개 서버 중 90%를 넘는 서버는 없습니다."
+ },
+ {
+  "key": "S6_general",
+  "round": 2,
+  "query": "이 시스템으로 어떤 조회를 할 수 있어?",
+  "variant": "hot",
+  "gate": "waited=0s others=[]",
+  "final_response": "[스텁 general_answer] 서버 사양·사용량·성능 통계, 알람 이력, 실시간 프로세스를 조회할 수 있습니다.",
+  "elapsed_s": 4.1,
+  "stub_calls": [
+   {
+    "agent": "general_inference",
+    "sub_query": "시스템 조회 가능 기능 안내",
+    "input_from": []
+   }
+  ],
+  "ainvoke_count": 1,
+  "ainvoke_s": [
+   4.1
+  ],
+  "orchestrator_tool_calls": [
+   {
+    "name": "general_answer",
+    "args": {
+     "sub_query": "시스템 조회 가능 기능 안내"
+    }
+   }
+  ],
+  "todos": null,
+  "message_count": 4,
+  "orchestrator_last_text": "이 시스템으로 다음 조회를 할 수 있습니다:\n\n1. **서버 사양·사용량·성능 통계** - 인프라 DB를 통한 서버 정보, 리소스 사용량, 성능 지표 조회\n2. **알람/모니터링 이벤트** - 알람 이력, event 발생 서버, alert 조회\n3. **실시간 프로세스** - 특정 서버의 현재 프로세스 리스트 조회\n4. **OS 구성·자원 현황·메트릭** - 특정 서버의 상세 정보 조회\n\n구체적으로 어떤 정보를 조회하시겠습니까?"
+ }
+]

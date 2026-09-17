@@ -345,7 +345,8 @@ class TestCallSiteBehaviourUnchanged:
         assert parse_smq_response("JSON 없음") is None
 
     def test_schema_analyzer_parse_llm_json(self):
-        from src.nodes.schema_analyzer import _parse_llm_json
+        # plans/104: 구조 분석 공용 모듈로 이동 — 같은 함수를 호출부 별칭으로 검증한다
+        from src.schema_cache.structure_analysis import parse_llm_json as _parse_llm_json
 
         assert _parse_llm_json('```json\n{"a": 1}\n```') == {"a": 1}
         assert _parse_llm_json('```\n["SELECT 1"]\n```') == ["SELECT 1"]

@@ -17,6 +17,12 @@ from langchain_core.language_models import BaseChatModel
 
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.nodes.key_bridge import (
+    BridgeContext,
+    apply_bridge_postcheck,
+    key_bridge_enabled,
+    resolve_gate_identity,
+)
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
     SubAgentSpec,
@@ -87,9 +93,15 @@ async def agent_orchestrator(
     postcheck_on = _scope_postcheck_on(app_config)
     notes: list[dict] = []
     verdicts: dict[str, DependencyVerdict] = {}
+    # 값 기반 키 브리지(plans/102 §3.3 · D-224): on이면 게이트 키를 값으로 고르고,
+    # 그 키로 고른 task는 사후 대조 대신 매칭 등급 판정을 받는다.
+    # off면 None — 게이트·대조 호출이 종전과 같다.
+    bridges: dict[str, BridgeContext] | None = {} if key_bridge_enabled(app_config) else None
 
     for level in topological_levels(pending):
-        runnable = _gate_level(level, results, gate_on=gate_on, notes=notes, verdicts=verdicts)
+        runnable = _gate_level(
+            level, results, gate_on=gate_on, notes=notes, verdicts=verdicts, bridges=bridges,
+        )
         # 단계 진행 이벤트(plans/89 §3.4 · D-204) — 게이트가 건너뛴 task는 end(skipped)만 낸다
         for t in level:
             if t not in runnable:
@@ -110,7 +122,9 @@ async def agent_orchestrator(
             # 사후 대조(D-203 · plans/88 §4.3): 선행 스코프 밖 서버 행 제거·미조회 서버 표기.
             if task.get("agent") in POSTCHECK_AGENTS:
                 tid = task.get("task_id", "")
-                if postcheck_on:
+                if bridges is not None and tid in bridges:
+                    norm = apply_bridge_postcheck(bridges[tid], verdicts.get(tid), norm, tid)
+                elif postcheck_on:
                     norm = apply_scope_postcheck(verdicts.get(tid), norm, tid)
                 else:
                     observe_scope_postcheck(verdicts.get(tid), norm, tid)  # off = 로그만(결과 불변)
@@ -179,6 +193,7 @@ def _scope_postcheck_on(app_config: object) -> bool:
 def _gate_level(
     level: list[dict], results: dict[str, dict], *, gate_on: bool, notes: list[dict],
     verdicts: Optional[dict[str, DependencyVerdict]] = None,
+    bridges: dict[str, BridgeContext] | None = None,
 ) -> list[dict]:
     """레벨의 task를 선행 결과 게이트로 거른다 (D-203 · plans/88 §4.1).
 
@@ -186,12 +201,23 @@ def _gate_level(
     마감하고 결과에 사유를 실어 실행하지 않는다. off면 판정을 로그로만 남긴다(비트 동일 —
     발동률 관측이 on 전환의 근거다).
 
+    `bridges`(키 브리지 on일 때만 dict)가 주어지면 선행 키를 값으로 골라 판정에 넘기고, 값으로 고른
+    task의 문맥을 기록한다(plans/102 §3.3-② — 값으로 안 잡히면 종전 컬럼명 판정 + 사유 보강).
+
     Returns:
         실행할 task 목록(원 순서 유지)
     """
     runnable: list[dict] = []
     for task in level:
-        verdict = assess_prior_dependency(task, results)
+        if bridges is not None and task.get("input_from"):
+            gate = resolve_gate_identity(task, results)
+            verdict = assess_prior_dependency(
+                task, results, identity=gate.identity, no_identity_hint=gate.no_identity_hint,
+            )
+            if gate.context is not None:
+                bridges[task.get("task_id", "")] = gate.context
+        else:
+            verdict = assess_prior_dependency(task, results)
         if verdict is None:
             runnable.append(task)
             continue

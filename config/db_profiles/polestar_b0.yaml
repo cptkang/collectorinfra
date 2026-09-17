@@ -594,3 +594,16 @@ column_synonyms:
   cmm_resource.hostname:
     words: ["호스트명", "호스트네임", "호스트 이름", "hostname", "OS호스트명"]
     description: "OS 호스트명. 은행존에서 등록명(name)과 다르며, 클린 호스트명 출력이 필요."
+
+# 서버 엔터티 키 매니페스트 (plans/102 §3.3-① · D-224 ③) — 시스템 간 키 브리지가 이 DB를 **대상**으로
+# 조회할 때 선행 결과의 서버 키를 어느 컬럼에 어떤 방식으로 비교할지 정한다
+# (`CROSS_SYSTEM_KEY_BRIDGE_ENABLED` on일 때만 읽힌다 · off면 소비처 0).
+# - hostname: OS 호스트명 — 대소문자 무시(casefold) 비교, FQDN은 단축명 비교를 병행한다.
+# - ipaddress: 2순위 보조 키(IP는 변할 수 있는 속성 — P4).
+# - name(등록명)은 hostname이 아니다(D-061) — 브리지 키로 쓰지 않는다(G-3 기본 가정: hostname만).
+entity_keys:
+  entity: server
+  table: cmm_resource
+  keys:
+    - {type: hostname, column: hostname, priority: 1, compare: casefold}
+    - {type: ip, column: ipaddress, priority: 2}

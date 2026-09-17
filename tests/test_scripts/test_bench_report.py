@@ -167,19 +167,37 @@ def test_write_report_does_not_touch_repo_config(tmp_path):
 
 # ── CLI 승인 정책 ─────────────────────────────────────────
 
-@pytest.mark.parametrize("provider,need", [
-    ("fabrix", False), ("ollama", False), ("gemini", True), ("unknown", True),
+@pytest.mark.parametrize("worker,orchestrator,need", [
+    ("fabrix", "vllm", False), ("ollama", "vllm", False),
+    ("mlx", "mlx", False), ("fabrix", "mlx", False),
+    ("gemini", "vllm", True), ("unknown", "vllm", True),
+    # D-222(G-3): 오케스트레이터 평면도 판정한다 — 워커가 내부망이어도
+    # gemini 오케스트레이터는 승인 대상
+    ("mlx", "gemini", True), ("ollama", "gemini", True), ("fabrix", "unknown", True),
 ])
-def test_approval_policy(provider, need):
+def test_approval_policy(worker, orchestrator, need):
     """내부망 면제는 **내부망에만** 적용된다 — 외부는 D-127이 그대로 산다(§4.4)."""
-    required, reason = cli.approval_policy(provider)
+    required, reason = cli.approval_policy(worker, orchestrator)
     assert required is need
-    assert provider in reason
+    if need:
+        # 사유에는 **승인이 필요한 평면**이 적힌다
+        assert (f"LLM_PROVIDER={worker}" in reason
+                or f"ORCHESTRATOR_PROVIDER={orchestrator}" in reason)
+    else:
+        assert worker in reason and orchestrator in reason
 
 
 def test_approval_reason_is_human_readable():
-    _, reason = cli.approval_policy("fabrix")
+    _, reason = cli.approval_policy("fabrix", "vllm")
     assert "승인 없이" in reason
+
+
+def test_approval_policy_reads_both_planes_from_echo():
+    """에코가 설정 전체를 평탄화하므로 오케스트레이터 provider도 실려 있다(plans/100 J-4)."""
+    echo = cli.probe.EchoResult(
+        ok=True, config={"llm.provider": "mlx", "orchestrator.provider": "gemini"}
+    )
+    assert cli._providers_of(echo) == ("mlx", "gemini")
 
 
 def test_cli_sweep_dry_run_expands_arms(capsys):
@@ -192,7 +210,7 @@ def test_cli_sweep_dry_run_expands_arms(capsys):
 
 def test_cli_sweep_run_mode_blocks_external_provider_without_approval(monkeypatch, capsys):
     """★ 내부망 면제는 내부망에만 — 외부 프로바이더는 승인 없이 실행하지 않는다(D-127)."""
-    monkeypatch.setattr(cli, "_provider_of", lambda echo: "gemini")
+    monkeypatch.setattr(cli, "_providers_of", lambda echo: ("gemini", "vllm"))
     rc = cli.main(["--sweep", "--mode", "run", "--scale", "smoke"])
     out = capsys.readouterr().out
     assert rc == 2
@@ -201,7 +219,7 @@ def test_cli_sweep_run_mode_blocks_external_provider_without_approval(monkeypatc
 
 def test_cli_sweep_run_mode_allows_internal_provider(monkeypatch):
     """내부망이면 승인 프롬프트 없이 통과한다(이후 실행은 하네스 몫)."""
-    monkeypatch.setattr(cli, "_provider_of", lambda echo: "fabrix")
+    monkeypatch.setattr(cli, "_providers_of", lambda echo: ("fabrix", "vllm"))
     calls = {}
 
     def fake_run(arms, **kwargs):
@@ -212,6 +230,20 @@ def test_cli_sweep_run_mode_allows_internal_provider(monkeypatch):
     rc = cli.main(["--sweep", "--mode", "run", "--scale", "smoke"])
     assert calls.get("n", 0) > 0, "내부망인데 승인에서 막혔다"
     assert rc == 2  # SweepUnavailable로 멈춘 것
+
+
+def test_cli_sweep_run_mode_stops_when_mlx_cannot_generate(monkeypatch, capsys):
+    """arm 서버를 띄우기 전에 로컬 MLX 가 생성하는지 본다 — 죽은 서버면 arm 전부가 무효다."""
+    from scripts.scenario.preflight import VERDICT_STOP, Check
+
+    monkeypatch.setattr(cli, "_providers_of", lambda echo: ("mlx", "mlx"))
+    monkeypatch.setattr(cli, "mlx_run_blockers", lambda: [
+        Check("MLX 생성(워커)", "응답 없음", VERDICT_STOP, "서버를 내리고 다시 띄운다")])
+    monkeypatch.setattr(cli.sweep_mod, "run_arms",
+                        lambda *a, **k: pytest.fail("MLX 가 준비되지 않았는데 arm 을 돌렸다"))
+    rc = cli.main(["--sweep", "--mode", "run", "--scale", "smoke"])
+    assert rc == 2
+    assert "MLX 생성(워커)" in capsys.readouterr().out
 
 
 def test_cli_parser_defaults():

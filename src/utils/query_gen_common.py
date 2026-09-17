@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from typing import Any
 
 from src.utils.json_extract import coerce_content_text
 
@@ -337,8 +338,30 @@ def normalize_stat_month(stat_month: StatMonth) -> tuple[str, str] | None:
     start, end = stat_month
     return (start, end)
 
+
+def current_month_daily_range(
+    stat_month: StatMonth, today: date | None = None
+) -> tuple[str, str] | None:
+    """기간이 정확히 진행 중인 달 하나면 일간 통계 범위 (당월 1일, 어제) YYYYMMDD를 돌려준다(D-201).
+
+    월간 통계는 직전월까지만 집계돼 진행 중인 달을 월간 통계로 조회하면 전부 null이다. 검증기
+    (`check_current_month_stat_table`)는 그 SQL을 반려하는데, 결정적 컴파일러와 폴백 기간 블록은
+    월간 통계를 강제하고 있어 재시도가 같은 SQL을 반복하다 예산을 소진했다(2026-09-17 로컬 C-06 재현).
+    세 곳이 같은 판정을 쓰도록 여기 둔다. 범위(시작≠끝)는 대상이 아니다(검증기와 동일).
+    매월 1일에는 끝(어제)이 시작보다 앞서 0행이 되며, 그것이 D-201의 정답이다.
+    """
+    rng = _normalize_stat_month(stat_month)
+    ref = today or date.today()
+    cur = ref.strftime("%Y%m")
+    if rng != (cur, cur):
+        return None
+    return (f"{cur}01", (ref - timedelta(days=1)).strftime("%Y%m%d"))
+
+
 def build_stat_month_block(
-    stat_month: StatMonth = None, metric_table: str = "cmm_metric_stat_m"
+    stat_month: StatMonth = None,
+    metric_table: str = "cmm_metric_stat_m",
+    today: date | None = None,
 ) -> str:
     """질의 기간 표현의 결정적 해석(YYYYMM 단일 월)을 LLM 폴백 프롬프트에 강제하는 블록.
 
@@ -353,6 +376,7 @@ def build_stat_month_block(
         stat_month: resolve_stat_month_range 결과 (시작, 끝) 범위 또는 단일 월 YYYYMM 문자열
             (None이면 기간 표현 없음 → 빈 문자열)
         metric_table: 월별 통계 테이블명
+        today: 진행 중인 달 판정 기준일(기본 오늘 — 테스트 주입용)
 
     Returns:
         프롬프트에 덧붙일 섹션 텍스트(선행 개행 없음). stat_month가 없으면 "".
@@ -360,6 +384,19 @@ def build_stat_month_block(
     rng = _normalize_stat_month(stat_month)
     if not rng:
         return ""
+    daily = current_month_daily_range(rng, today)
+    if daily:
+        # D-201: 진행 중인 달은 월간 통계를 강제하면 검증기 반려와 정면으로 부딪친다.
+        return (
+            "## 기간 조건 (시스템이 결정적으로 해석 — 최우선 준수)\n"
+            f"질의의 기간은 진행 중인 달({rng[0]})입니다. 월간 통계({metric_table})는 직전월까지만 "
+            "집계되어 이번 달 값이 없으므로 사용하지 마세요.\n"
+            "- 스키마 규칙의 '이번 달' 분기대로 **일간 통계**를 "
+            f"`s.stat_date BETWEEN '{daily[0]}' AND '{daily[1]}'`"
+            "(당월 1일~어제, YYYYMMDD)로 조회하세요.\n"
+            "- 서버별 GROUP BY로 AVG(s.avg_val)=월중 평균, MAX(s.max_val)=월중 최대를 집계하세요.\n"
+            "- 이 값은 시스템이 계산해 주입한 것으로 하드코딩이 아닙니다(위 값 그대로 사용)."
+        )
     start, end = rng
     if start == end:
         filter_line = f"`s.stat_date = '{start}'` (단일 월 등호 필터)"
@@ -1311,7 +1348,12 @@ def collect_prior_identity_values_by_db(prior_rows: dict | None) -> dict[str, tu
     return out
 
 
-def build_prior_rows_block(prior_rows: dict | None, *, db_id: str | None = None) -> str:
+def build_prior_rows_block(
+    prior_rows: dict | None,
+    *,
+    db_id: str | None = None,
+    target_scope: dict[str, Any] | None = None,
+) -> str:
     """선행 task 결과 서버 목록을 SQL 스코프 강제 블록으로 렌더링한다(없으면 빈 문자열).
 
     orchestration 데이터 의존(input_from) 경로에서 선행 task가 선별한 서버들로
@@ -1322,6 +1364,13 @@ def build_prior_rows_block(prior_rows: dict | None, *, db_id: str | None = None)
     Args:
         prior_rows: {task_id: [식별 키 행, ...]} (subagents._make_isolated_input 산출)
         db_id: 주어지면 그 DB 소속 행(+태그 없는 행)만 렌더한다(D-203 DB별 분할). None=현행(전체).
+        target_scope: 값 기반 키 브리지(plans/102 §3.3-③ · `nodes.key_bridge`)가
+            **이미 계산한** 스코프. 주어지면 컬럼명 판정 대신 이 값으로 렌더한다
+            (이 모듈은 값 판정·매니페스트를 모른다 — utils 계층).
+            필수 키: `source_col`·`values`(상한 적용 정규형)·`key_type`.
+            `condition`(코드가 확정한 SQL 조건)·`target_col`·`target_table`이 있으면
+            대상 컬럼 확정 블록, 없으면 대상 매니페스트 부재 — 종전 위임 문구로 렌더.
+            `total`·`truncated_count`는 절단 표기용. None=현행.
 
     Returns:
         프롬프트에 덧붙일 스코프 강제 블록(유효한 식별 값이 없으면 "")
@@ -1332,10 +1381,72 @@ def build_prior_rows_block(prior_rows: dict | None, *, db_id: str | None = None)
         prior_rows = filter_prior_rows_for_db(prior_rows, db_id)
         if not prior_rows:
             return ""
+    if target_scope is not None:
+        return _render_target_scope_block(target_scope)
     col, values = _collect_prior_identity_values(prior_rows)
     if not values:
         return ""
-    quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in values)
+    return _render_prior_scope_block(col, values)
+
+
+def _quote_scope_values(values: list[str]) -> str:
+    return ", ".join("'" + str(v).replace("'", "''") + "'" for v in values)
+
+
+def _render_target_scope_block(scope: dict[str, Any]) -> str:
+    """키 브리지 스코프 블록 — 대상 컬럼·조건이 확정됐으면 LLM에 대응을 맡기지 않는다(X-T2)."""
+    values = [str(v) for v in (scope.get("values") or []) if str(v).strip()]
+    source_col = str(scope.get("source_col") or "")
+    if not values or not source_col:
+        return ""
+    condition = str(scope.get("condition") or "")
+    target_col = str(scope.get("target_col") or "")
+    if not (condition and target_col):
+        return _render_prior_scope_block(source_col, values)
+    target_table = str(scope.get("target_table") or "")
+    key_type = str(scope.get("key_type") or "")
+    quoted = _quote_scope_values(values)
+    shown_col = f"{target_table}.{target_col}" if target_table else target_col
+    lines = [
+        "## 선행 작업 결과 서버 스코프 (필수 준수)",
+        "이번 조회 대상은 선행 작업에서 이미 선별된 아래 서버들로 **한정**합니다.",
+        f"- 대상 서버 (선행 결과 `{source_col}` 컬럼의 {key_type} 값 · 정규형): {quoted}",
+        f"- 대상 컬럼 (키 매니페스트로 확정): `{shown_col}`",
+    ]
+    truncated = int(scope.get("truncated_count") or 0)
+    if truncated:
+        total = int(scope.get("total") or len(values) + truncated)
+        lines.append(
+            f"- 선행 결과 {total}대 중 상한 {len(values)}대만 "
+            f"대상입니다(초과 {truncated}대 제외)."
+        )
+    lines += [
+        "규칙:",
+        f"1. SQL에 서버 한정 조건 `{condition}` 을 그대로 포함하세요 "
+        "(대상 컬럼은 코드가 확정했습니다 — 다른 컬럼으로 바꾸지 마세요. "
+        "테이블 별칭을 쓰면 컬럼을 그 별칭으로 한정하고, "
+        "GROUP BY 피벗 쿼리면 기존 규칙대로 HAVING의 집계 CASE WHEN으로 적용).",
+        _PRIOR_SCOPE_RULE_NO_RESELECT,
+        "3. 위 목록 외의 서버가 결과에 포함되어서는 안 됩니다.",
+        f"4. 결과의 각 행이 어느 서버의 값인지 판정할 수 있도록 `{target_col}` 컬럼을 "
+        "**별칭 없이 원래 이름 그대로** SELECT에 반드시 포함하세요 "
+        "(GROUP BY 피벗 쿼리면 집계 CASE WHEN으로 포함).",
+    ]
+    return "\n".join(lines)
+
+
+# 규칙 2 — 종전 블록(`_render_prior_scope_block`)과 같은 문장(선별 조건 재표현·환각 금지).
+_PRIOR_SCOPE_RULE_NO_RESELECT = (
+    "2. 서버를 선별했던 조건(알람 발생·심각도·활성 상태 등)은 "
+    "선행 작업에서 이미 처리 완료되었습니다 — "
+    "선별에 사용한 테이블·컬럼·조건(알람/이벤트 등)을 이 SQL에서 다시 표현하지 마세요. "
+    "대상 DB에 존재하지 않는 테이블/컬럼/값으로 선별 조건을 지어내지 마세요(환각 금지)."
+)
+
+
+def _render_prior_scope_block(col: str, values: list[str]) -> str:
+    """종전 스코프 블록(컬럼명 판정 · 대상 컬럼 대응은 LLM 위임)."""
+    quoted = _quote_scope_values(values)
     return (
         "## 선행 작업 결과 서버 스코프 (필수 준수)\n"
         "이번 조회 대상은 선행 작업에서 이미 선별된 아래 서버들로 **한정**합니다.\n"

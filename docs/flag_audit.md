@@ -66,7 +66,7 @@ git log --reverse -1 --format='%ad|%h' --date=short -S'<flag>' -- <참조 파일
 | 20 | `orchestrator.enable_thinking`<br>`ORCHESTRATOR_ENABLE_THINKING` | D-042 | `False` | *(미명시)* | 4 | 2026-06-26 `a896de6` | 2026-06-26 `a896de6` | **존치** | 프로덕션 참조 4건 — 실 게이트로 배선됨 |
 | 21 | `enable_intent_orchestration`<br>`ENABLE_INTENT_ORCHESTRATION` | D-129 | `None` | `true` | 5 | 2026-06-17 `475960b` | 2026-08-20 `3859917` | **존치** | `.env`가 코드 기본값을 뒤집음 — 운영이 실제로 쓰는 레버 |
 | 22 | `enable_deepagents_package`<br>`ENABLE_DEEPAGENTS_PACKAGE` | — | `False` | `true` | 5 | 2026-06-17 `475960b` | 2026-08-20 `3859917` | **존치** | `.env`가 코드 기본값을 뒤집음 — 운영이 실제로 쓰는 레버 |
-| 23 | `enable_structure_approval`<br>`ENABLE_STRUCTURE_APPROVAL` | D-020 | `True` | *(미명시)* | 5 | 2026-03-31 `f994ceb` | 2026-03-31 `f994ceb` | **존치** | 프로덕션 참조 5건 — 실 게이트로 배선됨 |
+| 23 | `enable_structure_approval`<br>`ENABLE_STRUCTURE_APPROVAL` | D-020 | `True` | *(미명시)* | 5 | 2026-03-31 `f994ceb` | 2026-03-31 `f994ceb` | ~~존치~~ **삭제(2026-09-17 · D-227)** | 프로덕션 참조 5건 — 실 게이트로 배선됨 → 관리자 「DB 구조」 탭 승인으로 대체하며 같은 결정 안에서 삭제(D-161 ① · ② 4항 실측은 D-227 기록) |
 | 24 | `noise_gate.investigation_followup_enabled`<br>`NOISE_INVESTIGATION_FOLLOWUP_ENABLED` | D-137 | `False` | *(미명시)* | 5 | 2026-08-05 `b7ccc20` | 2026-08-05 `b7ccc20`<br>*(D-139 이전 제외)* | **존치** | 프로덕션 참조 5건 — 실 게이트로 배선됨 |
 | 25 | `observability.trace_enabled`<br>`OBS_TRACE_ENABLED` | D-141 | `True` | *(미명시)* | 5 | 2026-08-19 `7fc3513` | 2026-08-19 `8c42332` | **존치** | 프로덕션 참조 5건 — 실 게이트로 배선됨 |
 | 26 | `alarm.process_enrich_enabled`<br>`ALARM_PROCESS_ENRICH_ENABLED` | D-036 | `True` | *(미명시)* | 6 | 2026-06-16 `e649d63` | 2026-07-22 `e530c73`<br>*(D-139 이전 제외)* | **존치** | 프로덕션 참조 6건 — 실 게이트로 배선됨 |

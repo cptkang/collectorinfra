@@ -5,11 +5,15 @@ Redis에 영구 저장하며, fingerprint 기반 변경 감지를 수행한다.
 
 키 네이밍:
   schema:db_descriptions        -> Hash (db_id -> DB 설명, 한국어)
+  schema:db_description_origin  -> Hash (db_id -> "manual" | "llm", plans/104 S5)
   schema:{db_id}:meta          -> Hash (fingerprint, cached_at, ...)
   schema:{db_id}:tables        -> Hash (table_name -> JSON)
   schema:{db_id}:relationships -> String (JSON array)
   schema:{db_id}:descriptions  -> Hash (table.column -> description)
   schema:{db_id}:synonyms      -> Hash (table.column -> JSON array)
+
+관리자 자산 키(plans/104 — JSON String, `StructureStore`가 쓴다)는
+`ADMIN_ASSET_SUFFIXES` 참조. 이 키들은 `invalidate_all()`이 지우지 않는다.
 """
 
 from __future__ import annotations
@@ -23,6 +27,17 @@ logger = logging.getLogger(__name__)
 
 # 캐시 포맷 버전 (Redis 구조 변경 시 증가)
 CACHE_FORMAT_VERSION = 1
+
+# 관리자가 만든 자산 키 접미사(plans/104 §3.3) — 런타임 캐시가 아니므로 전체 무효화에서 보존한다.
+# 적용본(`structure_meta`)은 여기에 없다: 버전 목록·파일 백업에서 복원된다.
+ADMIN_ASSET_SUFFIXES = frozenset({
+    "structure_versions",
+    "structure_drafts",
+    "schema_snapshot",
+    "check_result",
+    "registration",
+    "description_drafts",
+})
 
 
 class RedisSchemaCache:
@@ -106,6 +121,70 @@ class RedisSchemaCache:
         except Exception:
             self._connected = False
             return False
+
+    @property
+    def connected(self) -> bool:
+        """마지막으로 확인된 연결 상태(네트워크 확인 없음)."""
+        return self._connected and self._redis is not None
+
+    async def ensure_connected(self) -> bool:
+        """연결을 확인하고 끊겨 있으면 다시 연결한다. 실패는 False(예외를 던지지 않는다)."""
+        try:
+            if not await self.health_check():
+                await self.connect()
+            return True
+        except Exception:
+            return False
+
+    # === 범용 JSON 헬퍼 (plans/104 관리자 자산·잡 상태) ===
+
+    async def get_json(self, key: str) -> Any:
+        """JSON 문자열 키를 읽어 파싱한다.
+
+        미연결·키 없음·파싱 실패(WARNING 로그)는 None. Redis 명령 오류는 호출자에게 전파한다.
+        """
+        if not self._connected or self._redis is None:
+            return None
+        raw = await self._redis.get(key)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError) as e:
+            logger.warning("Redis JSON 파싱 실패 (key=%s): %s", key, e)
+            return None
+
+    async def set_json(
+        self,
+        key: str,
+        value: Any,
+        *,
+        ex: int | None = None,
+        nx: bool = False,
+    ) -> bool:
+        """값을 JSON 문자열로 저장한다.
+
+        Args:
+            key: Redis 키
+            value: JSON 직렬화 가능한 값
+            ex: 만료 초(None이면 만료 없음)
+            nx: True면 키가 없을 때만 저장(락 획득용)
+
+        Returns:
+            저장했으면 True. 미연결이거나 `nx`로 저장하지 않았으면 False.
+            직렬화 오류·Redis 명령 오류는 호출자에게 전파한다.
+        """
+        if not self._connected or self._redis is None:
+            return False
+        payload = json.dumps(value, ensure_ascii=False)
+        result = await self._redis.set(key, payload, ex=ex, nx=nx)
+        return bool(result)
+
+    async def delete_keys(self, *keys: str) -> int:
+        """키를 삭제하고 삭제된 수를 반환한다. 미연결이면 0. Redis 명령 오류는 전파한다."""
+        if not keys or not self._connected or self._redis is None:
+            return 0
+        return int(await self._redis.delete(*keys) or 0)
 
     def _key(self, db_id: str, suffix: str) -> str:
         """Redis 키를 생성한다."""
@@ -491,17 +570,24 @@ class RedisSchemaCache:
     # 키: db_id, 값: 한국어 DB 설명 문자열
 
     DB_DESCRIPTIONS_KEY = "schema:db_descriptions"
+    # DB 설명의 출처(plans/104 S5) — field=db_id, value="manual" | "llm"
+    DB_DESCRIPTION_ORIGIN_KEY = "schema:db_description_origin"
 
     async def save_db_description(
         self,
         db_id: str,
         description: str,
+        origin: str = "manual",
     ) -> bool:
-        """특정 DB의 설명을 Redis에 저장한다.
+        """특정 DB의 설명을 출처와 함께 Redis에 저장한다.
+
+        설명과 출처는 한 트랜잭션(pipeline)으로 기록한다. 출처 보존 판정(LLM이 수동
+        설명을 덮지 않음)은 호출자인 `SchemaCacheManager.save_db_description`이 한다.
 
         Args:
             db_id: DB 식별자
             description: DB 설명 (한국어)
+            origin: 설명 출처 ("manual" | "llm")
 
         Returns:
             저장 성공 여부
@@ -510,16 +596,39 @@ class RedisSchemaCache:
             return False
 
         try:
-            await self._redis.hset(self.DB_DESCRIPTIONS_KEY, db_id, description)
+            pipe = self._redis.pipeline()
+            pipe.hset(self.DB_DESCRIPTIONS_KEY, db_id, description)
+            pipe.hset(self.DB_DESCRIPTION_ORIGIN_KEY, db_id, origin)
+            await pipe.execute()
             logger.info(
-                "Redis DB 설명 저장: db_id=%s, description=%s",
+                "Redis DB 설명 저장: db_id=%s, origin=%s, description=%s",
                 db_id,
+                origin,
                 description[:50],
             )
             return True
         except Exception as e:
             logger.error("Redis DB 설명 저장 실패: %s", e)
             return False
+
+    async def get_db_description_origin(self, db_id: str) -> str | None:
+        """특정 DB 설명의 출처를 반환한다(기록 없음·미연결이면 None).
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            "manual" | "llm" | None
+        """
+        if not self._connected or self._redis is None:
+            return None
+
+        try:
+            origin = await self._redis.hget(self.DB_DESCRIPTION_ORIGIN_KEY, db_id)
+            return origin if isinstance(origin, str) else None
+        except Exception as e:
+            logger.warning("Redis DB 설명 출처 조회 실패 (db_id=%s): %s", db_id, e)
+            return None
 
     async def load_db_descriptions(self) -> dict[str, str]:
         """모든 DB 설명을 Redis에서 로드한다.
@@ -554,7 +663,7 @@ class RedisSchemaCache:
             return None
 
     async def delete_db_description(self, db_id: str) -> bool:
-        """특정 DB의 설명을 삭제한다.
+        """특정 DB의 설명과 그 출처 기록을 삭제한다.
 
         Args:
             db_id: DB 식별자
@@ -566,7 +675,10 @@ class RedisSchemaCache:
             return False
 
         try:
-            await self._redis.hdel(self.DB_DESCRIPTIONS_KEY, db_id)
+            pipe = self._redis.pipeline()
+            pipe.hdel(self.DB_DESCRIPTIONS_KEY, db_id)
+            pipe.hdel(self.DB_DESCRIPTION_ORIGIN_KEY, db_id)
+            await pipe.execute()
             return True
         except Exception as e:
             logger.error("Redis DB 설명 삭제 실패: %s", e)
@@ -586,6 +698,11 @@ class RedisSchemaCache:
         - list[str]: 하위 호환용 (source 파라미터로 태깅)
         - dict {"words": [...], "sources": {...}}: source 태깅 포함
 
+        list[str] 값을 ``source="llm"``으로 저장하면 컬럼별로 **병합**한다(plans/104 S5 · R10):
+        기존 항목에서 출처가 ``llm``이 아닌 단어(``operator`` 등)와 그 태그를 보존하고,
+        ``llm`` 단어만 새 목록으로 교체한다. 같은 단어가 양쪽에 있으면 기존 비-llm 태그가 이긴다.
+        dict 값이거나 ``source``가 ``llm``이 아니면 종전대로 호출자가 준 항목으로 치환한다.
+
         Args:
             db_id: DB 식별자
             synonyms: {table.column: words_or_dict} 매핑
@@ -602,6 +719,14 @@ class RedisSchemaCache:
             # governance ON일 때만 word별 메타를 병기한다 (OFF 시 바이트 무변경).
             governance = self._governance_enabled()
             now = time.time() if governance else None
+            merge_llm = source == "llm" and any(
+                not (isinstance(v, dict) and "words" in v) for v in synonyms.values()
+            )
+            existing_raw: Any = (
+                await self._redis.hgetall(key) if merge_llm else {}
+            )
+            if not isinstance(existing_raw, dict):
+                existing_raw = {}
             mapping = {}
             for col, value in synonyms.items():
                 if isinstance(value, dict) and "words" in value:
@@ -614,10 +739,15 @@ class RedisSchemaCache:
                 else:
                     # list[str] 형태 -> source 태깅 변환
                     words = value if isinstance(value, list) else list(value)
-                    tagged = {
-                        "words": words,
-                        "sources": {w: source for w in words},
-                    }
+                    if merge_llm:
+                        tagged = self._merge_llm_words(
+                            existing_raw.get(col), words, keep_meta=governance
+                        )
+                    else:
+                        tagged = {
+                            "words": words,
+                            "sources": {w: source for w in words},
+                        }
                     if governance:
                         self._ensure_meta(tagged, now)
                     mapping[col] = json.dumps(tagged, ensure_ascii=False)
@@ -632,6 +762,49 @@ class RedisSchemaCache:
         except Exception as e:
             logger.error("Redis 유사 단어 저장 실패: %s", e)
             return False
+
+    @staticmethod
+    def _merge_llm_words(
+        existing_raw: Any, words: list[str], *, keep_meta: bool
+    ) -> dict[str, Any]:
+        """기존 컬럼 항목의 비-llm 단어를 보존하고 llm 단어만 `words`로 교체한 항목을 만든다.
+
+        기존 항목이 없거나 레거시 list·파싱 불가 형태면(전부 llm 취급) 종전 치환과 같은
+        ``{"words": words, "sources": {w: "llm"}}``를 돌려준다. 보존 단어의 governance 메타는
+        ``keep_meta``(governance ON)일 때만 이어 붙인다(OFF 시 메타 키를 쓰지 않는 종전 동작 유지).
+        """
+        preserved_words: list[str] = []
+        preserved_sources: dict[str, str] = {}
+        preserved_meta: dict[str, Any] = {}
+        if isinstance(existing_raw, str):
+            try:
+                parsed = json.loads(existing_raw)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and isinstance(parsed.get("words"), list):
+                sources = parsed.get("sources")
+                sources = sources if isinstance(sources, dict) else {}
+                meta = parsed.get("meta")
+                meta = meta if isinstance(meta, dict) else {}
+                for w in parsed["words"]:
+                    tag = sources.get(w, "llm")
+                    if tag != "llm" and w not in preserved_sources:
+                        preserved_words.append(w)
+                        preserved_sources[w] = tag
+                        if w in meta:
+                            preserved_meta[w] = meta[w]
+
+        if not preserved_words:
+            return {"words": words, "sources": {w: "llm" for w in words}}
+
+        new_words = [w for w in words if w not in preserved_sources]
+        merged: dict[str, Any] = {
+            "words": preserved_words + new_words,
+            "sources": {**preserved_sources, **{w: "llm" for w in new_words}},
+        }
+        if preserved_meta and keep_meta:
+            merged["meta"] = preserved_meta
+        return merged
 
     async def load_synonyms(self, db_id: str) -> dict[str, list[str]]:
         """Redis에서 유사 단어를 로드한다 (단어 목록만 반환).
@@ -1420,8 +1593,10 @@ class RedisSchemaCache:
     async def invalidate(self, db_id: str) -> bool:
         """특정 DB의 캐시를 삭제한다.
 
-        DB별 데이터를 전체 삭제하며, 글로벌 사전(synonyms:global 등)만 보존한다.
+        DB별 런타임 캐시를 전체 삭제하며, 글로벌 사전(synonyms:global 등)은 보존한다.
         글로벌 사전을 삭제하려면 delete_global_synonyms()를 사용한다.
+        관리자 자산 키(`ADMIN_ASSET_SUFFIXES`)는 삭제 목록에 없다 — 적용본 `structure_meta`는
+        지워지지만 버전 목록·파일 백업에서 복원된다(plans/104).
 
         Args:
             db_id: DB 식별자
@@ -1464,8 +1639,10 @@ class RedisSchemaCache:
         - synonyms:resource_types (RESOURCE_TYPE_SYNONYMS_KEY)
         - synonyms:eav_names (EAV_NAME_SYNONYMS_KEY)
         - schema:db_descriptions (DB_DESCRIPTIONS_KEY)
+        - schema:db_description_origin (DB_DESCRIPTION_ORIGIN_KEY)
 
-        DB별 synonyms도 삭제 대상에 포함된다.
+        관리자 자산 키 `schema:{db_id}:{ADMIN_ASSET_SUFFIXES}`(버전·초안·스냅샷·점검 결과·
+        등록 상태 — plans/104)도 보존한다. DB별 synonyms는 삭제 대상에 포함된다.
 
         Returns:
             삭제된 키 수
@@ -1480,11 +1657,15 @@ class RedisSchemaCache:
                 self.RESOURCE_TYPE_SYNONYMS_KEY,
                 self.EAV_NAME_SYNONYMS_KEY,
                 self.DB_DESCRIPTIONS_KEY,
+                self.DB_DESCRIPTION_ORIGIN_KEY,
                 self.COLUMN_VALUE_SYNONYMS_KEY,
             }
             count = 0
             async for key in self._redis.scan_iter(match="schema:*"):
                 if key in preserved_keys:
+                    continue
+                parts = key.split(":")
+                if len(parts) == 3 and parts[2] in ADMIN_ASSET_SUFFIXES:
                     continue
                 await self._redis.delete(key)
                 count += 1

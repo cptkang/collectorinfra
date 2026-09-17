@@ -45,6 +45,14 @@ from src.orchestration.process_query import (
     run_process_query,
 )
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT, run_host_inspect
+from src.routing.capability_ownership import (
+    REASON_LLM_ERROR,
+    REASON_NO_CLASSIFICATION,
+    owner_inactive_note,
+    resolve_capability_owner,
+    restrict_targets_to_owner,
+    routing_fallback_note,
+)
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
@@ -156,6 +164,7 @@ async def classify_dbs(
     except Exception as e:
         logger.debug("classify_dbs DB 설명 로드 실패 (분류 계속): %s", e)
 
+    llm_error: str | None = None
     try:
         classified = await _llm_classify(
             llm, sub_query, active_domains, db_descriptions=db_descriptions
@@ -163,6 +172,7 @@ async def classify_dbs(
     except Exception as e:
         logger.error("classify_dbs LLM 분류 실패, 첫 활성 DB 폴백: %s", e)
         classified = {"intent": "data_query", "databases": []}
+        llm_error = type(e).__name__
 
     databases = classified.get("databases", []) if isinstance(classified, dict) else []
 
@@ -181,8 +191,24 @@ async def classify_dbs(
                 "reason": "DB 분류 결과 없음, 기본 DB 사용",
             }
         ]
+        if _capability_ownership_on(app_config):
+            # X-T3(plans/102) — 폴백 사실을 구조화 표지로 싣는다. `run_data_query_pipeline`이
+            # 떼어 내 경과 노트로 올린다(대상 dict에 남겨 두지 않는다).
+            targets[0][_ROUTING_FALLBACK_KEY] = {
+                "reason": REASON_LLM_ERROR if llm_error else REASON_NO_CLASSIFICATION,
+                "cause": llm_error or "",
+            }
 
     return targets
+
+
+#: classify_dbs 폴백 표지 키(plans/102 X-T3) — 소유 플래그 on에서만 붙는다.
+_ROUTING_FALLBACK_KEY = "routing_fallback"
+
+
+def _capability_ownership_on(app_config: AppConfig) -> bool:
+    """답변 영역 소유 플래그(plans/102 X-7) — 호출부가 넘긴 설정에서 읽는다(기동 시 1회 해석)."""
+    return bool(getattr(getattr(app_config, "router", None), "capability_ownership_enabled", False))
 
 
 def _has_new_location_db_signal(text: str) -> bool:
@@ -637,6 +663,21 @@ def _extract_identity_rows(rows: list[dict]) -> list[dict]:
     if not isinstance(first, dict):
         return limited
 
+    # 값 기반 키 브리지(plans/102 §3.3-② · D-224): 키 컬럼을 이름이 아니라
+    # 값(호스트명·FQDN·IP)으로도 판정해 남기고, 출처 태그는 대상 DB별 스코프·판정에
+    # 쓰이므로 있으면 유지한다. off면 아래 종전 경로.
+    from src.nodes.key_bridge import identity_columns, key_bridge_enabled
+
+    if key_bridge_enabled(load_config()):
+        bridge_cols = identity_columns(limited)
+        if not bridge_cols:
+            return limited
+        if SOURCE_DB_KEY in first:
+            bridge_cols = [*bridge_cols, SOURCE_DB_KEY]
+        return [
+            {col: row.get(col) for col in bridge_cols} for row in limited if isinstance(row, dict)
+        ]
+
     # 식별 키 컬럼 식별 — 서버 식별 컬럼만 엄격 선택(alarm_name 등 비서버 컬럼 배제 — D-100).
     # 선행 조회가 서버명 외 컬럼(알람명·심각도 등)도 반환하면서 "name" 부분매칭이 alarm_name을
     # 서버 식별로 오수집해 후속 스코프 HAVING이 오염됐다(실측).
@@ -1043,6 +1084,30 @@ async def run_data_query_pipeline(
     """
     sub_query = task.get("sub_query", isolated.get("user_query", ""))
 
+    # (plans/102 X-7) 소유 검증 지점 ② — 분해 task의 답변 영역(LLM 구조화 출력 · D-004 원문
+    # 스캔 0)으로 대상 시스템을 맞춘다. 플래그 off거나 task에 답변 영역이 없으면 종전 경로 그대로다.
+    #   단일 DB 시스템 소유 → `db_ids` 고정(classify_dbs 재분류를 건너뛰는 기존 우선 배관)
+    #   다중 존 시스템 소유 → 고정하지 않는다. 분류·위치 힌트 고정·승계 뒤 소유 DB 집합으로
+    #                         **제한만**(고정하면 원문의 존 한정이 사라진다 — X-T13)
+    # 이미 DB가 정해진 task(`db_ids`)·존 선택 재개 턴(`selected_db_ids`)은 건드리지 않는다.
+    ownership_notes: list[dict[str, Any]] = []
+    task_owner = None
+    if (
+        _capability_ownership_on(app_config)
+        and task.get("capability")
+        and not task.get("db_ids")
+        and not isolated.get("selected_db_ids")
+    ):
+        task_owner = resolve_capability_owner(
+            str(task["capability"]), active_db_ids=app_config.multi_db.get_active_db_ids()
+        )
+        if task_owner is not None and not task_owner.active_db_ids:
+            ownership_notes.append(owner_inactive_note(task_owner, task_id=task.get("task_id")))
+            task_owner = None
+        elif task_owner is not None and task_owner.pinned_db_id:
+            task = {**task, "db_ids": [task_owner.pinned_db_id]}
+            task_owner = None
+
     # 1) DB 선택 — db_ids 고정(②mapped_db_ids)이 있으면 우선, 없으면 classify_dbs.
     #    classify_dbs 후, 이번 턴에 새 위치/DB 신호가 없으면 직전 턴 DB를 승계한다(③, M2).
     #    selected_db_ids(존 선택 역질문, Plan 75 §4)는 복합 계획의 개별 task에도 적용되도록
@@ -1054,6 +1119,17 @@ async def run_data_query_pipeline(
         targets = _normalize_targets(raw_targets, sub_query)
     else:
         targets = await classify_dbs(llm, sub_query, app_config)
+        # X-T3(plans/102) — classify_dbs 폴백 표지(소유 플래그 on에서만 붙는다)를 떼어
+        # 경과 노트로 올린다.
+        for _target in targets:
+            _mark = _target.pop(_ROUTING_FALLBACK_KEY, None)
+            if isinstance(_mark, dict):
+                ownership_notes.append(routing_fallback_note(
+                    str(_mark.get("reason") or REASON_NO_CLASSIFICATION),
+                    db_id=str(_target.get("db_id") or ""),
+                    cause=str(_mark.get("cause") or ""),
+                    task_id=task.get("task_id"),
+                ))
         # ① 이번 턴 원문 위치 힌트가 해소되면 DB 집합을 결정적으로 고정한다
         #    (LLM 분해/분류가 직전 턴 위치를 병합해도 원문 힌트가 이긴다 — 2026-07-16).
         targets, db_pinned = _apply_turn_hint_pinning(
@@ -1070,6 +1146,13 @@ async def run_data_query_pipeline(
                     getattr(app_config.multi_db, "zone_group_exclusive", True) is False
                 ),
             )
+        if task_owner is not None:
+            # 다중 존 시스템 소유 — 위치 힌트 고정·승계가 남긴 존 한정 위에서 소유 DB 집합으로
+            # 제한만 한다.
+            targets, _restricted = restrict_targets_to_owner(
+                targets, task_owner, sub_query=sub_query, task_id=task.get("task_id"),
+            )
+            ownership_notes.extend(_restricted)
 
     # D-205 스코프 출처(구조화 키) — 처리현황 note 문자열이 아니라 이 값을 승격·보고한다.
     if task.get("db_ids"):
@@ -1128,12 +1211,17 @@ async def run_data_query_pipeline(
                 thread_id=isolated.get("thread_id"),
             )
             if rt is not None:
-                return {
+                rt_result = {
                     **rt,
                     "target_databases": targets,
                     "is_multi_db": len(targets) > 1,
                     "active_db_id": targets[0]["db_id"],
                 }
+                if ownership_notes:
+                    rt_result["dependency_notes"] = (
+                        list(rt_result.get("dependency_notes") or []) + ownership_notes
+                    )
+                return rt_result
             logger.info("realtime_usage 폴백 — 기존 SQL 파이프라인으로 진행")
         else:
             logger.info(
@@ -1181,6 +1269,11 @@ async def run_data_query_pipeline(
         s.update(await _run_single_db_pipeline(s, llm, app_config))
 
     # 3) 결과 정리
+    # 실행 단계의 실패 사유(검증·실행 재시도 소진 · 전 DB 실패)는 결과 정리가 덮지 못하게 먼저 잡는다.
+    # result_organizer는 0건이어도 `error_message: None`을 돌려줘, 실패가 "0건 완료"로 바뀌고 후속
+    # 게이트·집계기가 "데이터가 없습니다"로 답했다(P-13 — 2026-09-17 로컬 C-06 재현, 그래프 경로는
+    # 같은 실패를 error_response로 보낸다).
+    pipeline_error = s.get("error_message")
     await emit_step("pipeline.organize", "start", label="결과 정리")
     s.update(await result_organizer(s, llm=llm, app_config=app_config))
     await emit_step("pipeline.organize", "end")
@@ -1190,13 +1283,17 @@ async def run_data_query_pipeline(
         "query_results": s.get("query_results"),
         "source": targets,
     }
-    if s.get("error_message"):
-        result["error"] = s["error_message"]
+    error = pipeline_error or s.get("error_message")
+    if error:
+        result["error"] = error
     # DB별 스코프 분할 경과(D-203) — multi_db_executor가 낸 미조회 DB·노트를 task 결과로 승격한다.
     # group_results(D-206 존 순차 실행 경과)도 처리현황에 실린다.
     for _dk in ("dependency_notes", "skipped_dbs", "group_results"):
         if s.get(_dk):
             result[_dk] = s[_dk]
+    if ownership_notes:
+        # 답변 영역 소유 교정·분류 폴백 경과(plans/102 X-7·X-T3) — 같은 채널로 집계기·API에 닿는다.
+        result["dependency_notes"] = list(result.get("dependency_notes") or []) + ownership_notes
 
     # 폼필 산출물 승격(D-146/D-151): orchestration에서 output_generator는 파이프라인
     # 내부 state(s)가 아니라 result_aggregator의 _build_output_state 입력을 받으므로,

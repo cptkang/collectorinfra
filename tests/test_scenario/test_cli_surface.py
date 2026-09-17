@@ -54,7 +54,7 @@ def _record_stages(monkeypatch: pytest.MonkeyPatch, dry_code: int = 0) -> list[s
 
 
 def test_외부_프로바이더면_인자가_없을_때_1단_2단_3단_순서로_돈다(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("gemini", "vllm"))
     calls = _record_stages(monkeypatch)
 
     assert main([]) == 0
@@ -62,31 +62,52 @@ def test_외부_프로바이더면_인자가_없을_때_1단_2단_3단_순서로
     assert "run" not in calls, "외부 프로바이더에서 기본 동작이 과금 경로를 건드렸다"
 
 
-@pytest.mark.parametrize("provider", ["fabrix", "ollama"])
+@pytest.mark.parametrize("providers", [
+    ("fabrix", "vllm"), ("ollama", "vllm"), ("mlx", "mlx"), ("fabrix", "mlx"),
+])
 def test_내부망_프로바이더면_인자_없이_전_시나리오를_실_실행한다(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    monkeypatch: pytest.MonkeyPatch, providers: tuple[str, str]
 ) -> None:
-    """D-216 - 옵션 없이 돌려도 전 기능이 실행된다(D-211 ⑪ 선례)."""
-    monkeypatch.setattr(cli, "llm_provider", lambda: provider)
+    """D-216 - 옵션 없이 돌려도 전 기능이 실행된다(D-211 ⑪ 선례). mlx 는 로컬이다(D-222)."""
+    monkeypatch.setattr(cli, "llm_providers", lambda: providers)
     calls = _record_stages(monkeypatch)
 
     assert main([]) == 0
     assert calls == ["dry", "run"]
 
 
+@pytest.mark.parametrize("providers", [
+    ("mlx", "gemini"), ("ollama", "gemini"), ("fabrix", "gemini"),
+])
+def test_워커가_내부망이어도_오케스트레이터가_외부면_실_실행하지_않는다(
+    monkeypatch: pytest.MonkeyPatch, providers: tuple[str, str]
+) -> None:
+    """D-222(G-3) - 오케스트레이터 평면을 항상 본다.
+
+    종전에는 워커만 봐서 Gemini 오케스트레이터가 승인 없이 불렸다.
+
+    `ollama` + `gemini` 는 종전 무승인 실행이었다 - 이 판정 변경은 의도된 행동 변화다.
+    """
+    monkeypatch.setattr(cli, "llm_providers", lambda: providers)
+    calls = _record_stages(monkeypatch)
+
+    assert main([]) == 0
+    assert calls == ["dry", "mock", "est"]
+
+
 def test_설정을_못_읽은_프로바이더는_내부망으로_보지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "llm_provider", lambda: "unknown(ValidationError)")
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("unknown(ValidationError)",) * 2)
     calls = _record_stages(monkeypatch)
 
     assert main([]) == 0
     assert "run" not in calls
 
 
-@pytest.mark.parametrize("provider", ["gemini", "fabrix"])
+@pytest.mark.parametrize("providers", [("gemini", "vllm"), ("fabrix", "vllm")])
 def test_1단을_통과하지_못하면_다음_단은_시작되지_않는다(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    monkeypatch: pytest.MonkeyPatch, providers: tuple[str, str]
 ) -> None:
-    monkeypatch.setattr(cli, "llm_provider", lambda: provider)
+    monkeypatch.setattr(cli, "llm_providers", lambda: providers)
     calls = _record_stages(monkeypatch, dry_code=1)
 
     assert main([]) == 1
@@ -183,7 +204,7 @@ def test_비대화_환경에서는_승인_없이_과금_경로를_열지_않는�
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     """CI/파이프에서 input() 은 EOFError 다. 승인을 못 받으면 멈추는 것이 맞다(D-127)."""
-    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("gemini", "vllm"))
     monkeypatch.setenv("RUN_E2E", "1")
 
     def no_tty(_prompt: str = "") -> str:

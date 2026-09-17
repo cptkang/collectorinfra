@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import admin, admin_auth, alarm, conversation, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
+from src.api.routes import admin, admin_auth, alarm, conversation, db_structure, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
@@ -623,6 +623,10 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     )
     application.include_router(
         schema_cache.router, prefix="/api/v1", tags=["schema-cache"]
+    )
+    # (plans/104) 관리자 「DB 구조」 — MCP 소스 목록·점검·구조 초안 승인·신규 연동 등록
+    application.include_router(
+        db_structure.router, prefix="/api/v1", tags=["db-structure"]
     )
     application.include_router(
         conversation.router, prefix="/api/v1", tags=["conversation"]

@@ -55,6 +55,39 @@ class TestGoldsetIntegrity:
             assert it["expect"]["min_databases"] >= 2
 
 
+class TestBoundaryForbid:
+    """관측/자산 경계(plans/95 W-8) — 금지 DB 선택은 리콜과 무관하게 실패여야 한다."""
+
+    _ITEM = {
+        "id": "t-boundary",
+        "query": "q",
+        "expect": {"intent": "data_query", "forbid_databases": ["itam"], "min_databases": 1},
+    }
+
+    def test_forbidden_db_selected_fails(self):
+        got = {"intent": "data_query", "databases": [{"db_id": "polestar_b0"}, {"db_id": "itam"}]}
+        r = H.judge(self._ITEM, got)
+        assert r["db_forbidden"] == ["itam"]
+        assert r["passed"] is False
+
+    def test_forbidden_db_absent_passes(self):
+        got = {"intent": "data_query", "databases": [{"db_id": "polestar_b0"}]}
+        assert H.judge(self._ITEM, got)["passed"] is True
+
+    def test_goldset_has_boundary_cases_in_both_directions(self):
+        boundary = [i for i in H.load_gold() if i.get("critical") == "boundary"]
+        assert any("itam" in (i["expect"].get("forbid_databases") or []) for i in boundary)
+        assert any("itam" in (i["expect"].get("databases") or []) for i in boundary)
+
+    def test_unknown_forbidden_db_rejected_by_validation(self):
+        item = {
+            "id": "t-x",
+            "query": "q",
+            "expect": {"intent": "data_query", "forbid_databases": ["nope"]},
+        }
+        assert H.validate_gold([item])
+
+
 class TestCleanBaseline:
     def test_clean_mock_passes_everything(self):
         """정상 응답에 오탐을 내면 게이트를 신뢰할 수 없다."""
@@ -123,3 +156,102 @@ class TestGuardsWorkThroughRealClientPath:
         assert s["multi_db_preserved"] > 0, (
             "형식 오류 하나로 멀티 DB가 전멸했다 — 종전 '분류 전체 폐기' 동작이 남아 있다"
         )
+
+
+# ──────────────────────────────────────────────
+# 교차 시스템 케이스 (plans/102 X-9 · H-1)
+# ──────────────────────────────────────────────
+
+def _run_ownership(monkeypatch, fault: str) -> dict:
+    """소유 플래그 on 목업 실행.
+
+    라우터 프롬프트에 소유표가 실려야 목업이 capabilities·chain을 낸다.
+    """
+    from src.config import load_config
+
+    monkeypatch.setenv("ROUTER_CAPABILITY_OWNERSHIP_ENABLED", "true")
+    load_config.cache_clear()
+    try:
+        return _run(fault)
+    finally:
+        monkeypatch.delenv("ROUTER_CAPABILITY_OWNERSHIP_ENABLED", raising=False)
+        load_config.cache_clear()
+
+
+class TestCrossSystemGold:
+    _CHAIN_ITEM = {
+        "id": "t-chain", "query": "q",
+        "expect": {
+            "intent": "data_query", "min_databases": 0,
+            "chain": ["server_usage", "asset_contract"],
+            "key_type": "hostname", "probe": True,
+        },
+    }
+
+    def test_goldset_covers_requirement_groups(self):
+        """R1·R2·R3·R4·R5·R6·G-1 — 교차 시스템 케이스가 모두 있고 두 방향 체인이 다 있다."""
+        from src.routing.registry import get_registry
+
+        reg = get_registry()
+        cross = [i for i in H.load_gold() if i.get("critical") == "cross_system"]
+        assert len(cross) >= 7
+        chains = [i["expect"]["chain"] for i in cross if i["expect"].get("chain")]
+        first_owner = {reg.capability_owners(c[0])[0] for c in chains}
+        assert len(first_owner) >= 2, f"교차 체인이 한 방향뿐이다: {chains}"
+        assert {i["expect"].get("key_type") for i in cross} >= {"ipv4", "hostname"}
+        assert any(i["expect"].get("probe") is True for i in cross)
+        assert any("itam" in (i["expect"].get("forbid_databases") or []) for i in cross)  # R2
+        assert any(i["expect"].get("databases") == ["itam"] and i["expect"].get("forbid_databases")
+                   for i in cross)  # R1
+
+    @pytest.mark.parametrize("patch,needle", [
+        ({"chain": ["nope"]}, "답변 영역"),
+        ({"chain": "server_usage"}, "expect.chain"),
+        ({"key_type": "mac"}, "key_type"),
+        ({"probe": "yes"}, "probe"),
+    ])
+    def test_invalid_cross_system_fields_rejected(self, patch, needle):
+        item = {"id": "t-x", "query": "q", "expect": {"intent": "data_query", **patch}}
+        errs = H.validate_gold([item])
+        assert errs and needle in errs[0]
+
+    def test_chain_match_passes_and_mismatch_fails(self):
+        base = {"intent": "data_query", "databases": []}
+        ok = H.judge(self._CHAIN_ITEM, {**base, "chain": ["server_usage", "asset_contract"]})
+        bad = H.judge(self._CHAIN_ITEM, {**base, "chain": ["asset_contract", "server_usage"]})
+        assert ok["chain_scored"] and ok["chain_match"] and ok["passed"]
+        assert bad["chain_scored"] and bad["chain_match"] is False and bad["passed"] is False
+
+    def test_chain_is_unscored_not_passed_when_router_emits_none(self):
+        """★ 거짓 통과 금지 — 라우터가 chain을 내지 않으면(플래그 off) 채점 불가로 **표기**한다."""
+        r = H.judge(self._CHAIN_ITEM, {"intent": "data_query", "databases": []})
+        assert r["chain_scored"] is False and r["chain_match"] is None
+        assert "채점 불가" in r["chain_unscored_reason"]
+        s = H.summarize([r])
+        assert s["chain_cases"] == 1 and s["chain_scored"] == 0 and s["chain_matched"] == 0
+
+    def test_key_type_and_probe_are_marked_router_unscored(self):
+        got = {"intent": "data_query", "databases": [], "chain": ["server_usage", "asset_contract"]}
+        r = H.judge(self._CHAIN_ITEM, got)
+        assert r["router_unscored"] == {
+            "key_type": "hostname", "probe": True, "reason": "라우터 단계 채점 불가(H-2 소관)",
+        }
+        assert H.summarize([r])["router_unscored_cases"] == 1
+
+    def test_off_mock_reports_chain_unscored_without_regression(self):
+        s = _run(fx.FAULT_NONE)
+        assert s["passed"] == s["total"]
+        assert s["chain_cases"] >= 7 and s["chain_scored"] == 0
+        assert H._verdict(s) == 0
+
+    def test_on_mock_scores_every_chain_case(self, monkeypatch):
+        s = _run_ownership(monkeypatch, fx.FAULT_NONE)
+        assert s["passed"] == s["total"], s
+        assert s["chain_scored"] == s["chain_cases"] == s["chain_matched"]
+        assert H._verdict(s) == 0
+
+    def test_on_mock_detects_reversed_chain(self, monkeypatch):
+        """★ chain 순서가 뒤집히면 게이트가 잡는다(D8 센서 검출력)."""
+        s = _run_ownership(monkeypatch, fx.FAULT_CHAIN_REVERSED)
+        assert s["chain_matched"] < s["chain_scored"]
+        assert H._verdict(s) == 1

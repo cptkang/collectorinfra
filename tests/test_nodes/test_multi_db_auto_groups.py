@@ -101,3 +101,79 @@ class TestClosed:
                  "execution_groups": partition_execution_groups([_B0, _GP])}
         out, _, runs = _run(state, _cfg(True))
         assert len(runs) == 2 and "group_results" in out
+
+
+class TestUnzonedResidualGroup:
+    """존 미배정 DB는 마지막 잔여 그룹으로 실행한다 (plans/95 W-9 · D-214 ④).
+
+    자산관리(`itam`)는 존이 없고 한 시스템이 전 존의 자산을 관리한다(사용자 확인 2026-09-17).
+    종전에는 존 그룹이 둘 이상이면 그룹에 들지 않은 대상이 사유 없이 빠졌다.
+    """
+
+    _ITAM, _SANDBOX = "itam", "polestar"
+
+    def test_unzoned_target_runs_last_instead_of_being_dropped(self):
+        state = {"user_query": "q", "target_databases": _targets(_B0, _GP, _YD, self._ITAM)}
+        out, seen, runs = _run(state, _cfg(False))
+        assert seen == [_B0, _GP, _YD, self._ITAM]
+        assert set(out["db_results"]) == {_B0, _GP, _YD, self._ITAM}
+        assert list(out["group_results"]) == ["polestar:bank", "polestar:common", "unzoned"]
+        assert out["group_results"]["unzoned"]["db_ids"] == [self._ITAM]
+        assert out["group_packets"][-1]["label"] == "존 무관"
+        assert len(runs) == 3, "잔여 그룹도 자기 run으로 격리된다"
+
+    def test_residual_stays_last_regardless_of_input_order(self):
+        state = {"user_query": "q",
+                 "target_databases": _targets(self._ITAM, _YD, self._SANDBOX, _B0, _GP)}
+        out, seen, _ = _run(state, _cfg(False))
+        # 잔여 그룹 내부도 레지스트리 선언 순
+        assert seen == [_B0, _GP, _YD, self._SANDBOX, self._ITAM]
+        assert list(out["group_results"])[-1] == "unzoned"
+
+    def test_explicit_groups_do_not_drop_uncovered_targets(self):
+        from src.routing.execution_groups import partition_execution_groups
+
+        state = {"user_query": "q", "target_databases": _targets(_B0, _GP, self._ITAM),
+                 "execution_groups": partition_execution_groups([_B0, _GP, self._ITAM])}
+        out, seen, _ = _run(state, _cfg(True))
+        assert seen == [_B0, _GP, self._ITAM]
+        assert list(out["group_results"]) == ["polestar:bank", "polestar:common", "unzoned"]
+
+
+class TestUnzonedBitIdentical:
+    """잔여 그룹이 끼어들지 않는 조합은 종전과 같다 — 현 운영(`b0·gp·yd`)·로컬 샌드박스 포함."""
+
+    def test_no_unzoned_target_returns_same_groups_object(self):
+        from src.nodes.multi_db_executor import _auto_execution_groups, _with_unzoned_group
+
+        targets = _targets(_B0, _GP, _YD)
+        groups = _auto_execution_groups(targets)
+        assert _with_unzoned_group(groups, targets) is groups
+
+    def test_single_zone_group_with_unzoned_keeps_legacy_path(self):
+        """존 그룹이 하나면 종전처럼 전 대상 실행 — 잔여 그룹으로 경로를 바꾸지 않는다."""
+        state = {"user_query": "q", "target_databases": _targets(_GP, _YD, "itam")}
+        out, seen, runs = _run(state, _cfg(False))
+        assert seen == [_GP, _YD, "itam"] and len(runs) == 1
+        assert "group_results" not in out
+
+    def test_sandbox_with_unzoned_keeps_legacy_path(self):
+        state = {"user_query": "q", "target_databases": _targets("polestar", "itam")}
+        out, seen, runs = _run(state, _cfg(False))
+        assert seen == ["polestar", "itam"] and len(runs) == 1
+        assert "group_results" not in out
+
+    def test_exclusive_default_keeps_legacy_path_with_unzoned(self):
+        state = {"user_query": "q", "target_databases": _targets("itam", _YD, _B0, _GP)}
+        out, seen, runs = _run(state, _cfg(True))
+        assert seen == ["itam", _YD, _B0, _GP] and len(runs) == 1
+        assert "group_results" not in out
+
+    def test_shared_partition_still_excludes_unzoned(self):
+        """공용 분할·호스트 탐색 순서는 그대로다 — 잔여 그룹은 실행기 한정."""
+        from src.orchestration.host_sweep import sweep_order
+        from src.routing.execution_groups import partition_execution_groups
+
+        ids = [_B0, _GP, _YD, "itam", "polestar"]
+        assert [g["db_ids"] for g in partition_execution_groups(ids)] == [[_B0], [_GP, _YD]]
+        assert sweep_order(ids) == [_B0, _GP, _YD]

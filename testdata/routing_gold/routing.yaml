@@ -9,6 +9,11 @@
 #   db_recall        : expect.databases ⊆ 산출 db_id 집합            ← 축소 감지의 본체
 #   db_precision     : 산출 db_id 집합 ⊆ expect.databases ∪ allow_extra
 #   multi_preserved  : expect.min_databases 이상이 살아남았는가
+#   db_forbidden     : 산출 db_id 집합 ∩ expect.forbid_databases = ∅   ← 답변 영역 충돌(T5) 감지
+#   chain            : 산출 chain == expect.chain(답변 영역 순서)      ← 교차 체인 신호(plans/102 D8)
+#                      라우터 chain은 ROUTER_CAPABILITY_OWNERSHIP_ENABLED on일 때만 출력된다 — off면
+#                      채점하지 않고 결과·요약에 「채점 불가」로 남긴다(통과로 세지 않음)
+#   key_type · probe : 값 유효성만 검증 — 라우터 출력에 없어 「라우터 단계 채점 불가(H-2 소관)」로 표기
 #
 # ⚠ 실 LLM 호출은 **D-127 건별 승인 + RUN_E2E=1** 이후에만.
 #
@@ -17,6 +22,11 @@
 #   - **멀티 DB 3건**(불변식 ⑩ 직접 감시) — 위치 분기 · 도메인 교차 · 명시 복수 지정
 #   - 의도 분기 전부(alarm_query · cache_management · general_inference)
 #   - A-1 노출 확대 케이스(모호 질의 — 저신뢰 후보가 실제로 출력되는지)
+#   - 관측/자산 경계 케이스(plans/95 W-8 · G-8 기본 가정 (가)) — 사양·사용률은 폴스타,
+#     계약·금액·지원 종료·자산 상태는 자산관리. 자산 DB에도 사용률 컬럼이 있어 오선택이 조용하다
+#   - 교차 시스템 케이스(plans/102 H-1 · critical: cross_system) — 자산 단독(R1) · 모니터링 단독(R2) ·
+#     폴스타→자산(R3) · 자산→폴스타(R4) · IP 앵커(R5) · 식별자 프로브(R6) · 소유 모호(G-1 server_spec).
+#     질의 문장은 라우터·분해 프롬프트 예시와 **다르게** 둔다(few-shot 복사로 통과하는 것을 막는다)
 
 version: 1
 items:
@@ -124,3 +134,134 @@ items:
       min_databases: 1
     critical: low_confidence
     note: "지시어 질의. 후보가 0건이면 기본 DB 폴백으로 떨어지는지 관측."
+
+  # ── 관측/자산 경계 (plans/95 W-8 · 함정 T5 · G-8 기본 가정 (가)) ─────────
+  - id: r-060
+    query: "서버 CPU 사용률 상위 10대 보여줘"
+    expect:
+      intent: data_query
+      forbid_databases: [itam]
+      min_databases: 1
+    critical: boundary
+    note: >
+      자산 DB(TCDMSIF80)에도 CPU 사용률 컬럼이 있어 두 DB 모두 정당한 후보다. G-8 (가)는 관측 DB가 정본 —
+      itam이 선택되면 연계 스냅샷 숫자가 나와 답이 조용히 달라진다.
+
+  - id: r-061
+    query: "서버별 메모리 용량과 CPU 코어 수를 알려줘"
+    expect:
+      intent: data_query
+      forbid_databases: [itam]
+      min_databases: 1
+    critical: boundary
+    note: "사양 축도 관측 DB 정본(G-8 (가)). 자산 DB의 용량 컬럼으로 새면 안 된다."
+
+  - id: r-062
+    query: "유지보수 계약이 이번 분기에 만료되는 서버 목록"
+    expect:
+      intent: data_query
+      databases: [itam]
+      min_databases: 1
+    critical: boundary
+    note: "자산 축(유지보수 계약 만료) — plans/95 §6-1 ②."
+
+  - id: r-063
+    query: "하드웨어 지원 종료일(EOL)이 6개월 이내인 서버 알려줘"
+    expect:
+      intent: data_query
+      databases: [itam]
+      min_databases: 1
+    critical: boundary
+    note: "자산 축(EOS/EOL) — plans/95 §6-1 ①."
+
+  - id: r-064
+    query: "경과년수 5년 이상 노후 서버의 취득금액 보여줘"
+    expect:
+      intent: data_query
+      databases: [itam]
+      min_databases: 1
+    critical: boundary
+    note: "자산 축(경과년수·취득금액) — plans/95 §6-1 ③."
+
+  # ── 교차 시스템 (plans/102 H-1 · §3.1 소유표 · D8 체인) ─────────────────────
+  - id: r-070
+    query: "DB 서버들의 자산 담당자와 담당 부점 목록 알려줘"
+    expect:
+      intent: data_query
+      databases: [itam]
+      forbid_databases: [polestar, polestar_b0, polestar_cm_gp, polestar_cm_yd]
+      min_databases: 1
+      chain: []
+    critical: cross_system
+    note: "R1 자산 단독(asset_owner) — 자산 축 질의는 자산관리만 조회한다."
+
+  - id: r-071
+    query: "여의도 개발 서버들의 가용 상태와 OS 버전 현황"
+    expect:
+      intent: data_query
+      databases: [polestar_cm_yd]
+      forbid_databases: [itam]
+      min_databases: 1
+      chain: []
+    critical: cross_system
+    note: "R2 모니터링 단독(server_status) — 자산관리를 조회하지 않는다."
+
+  - id: r-072
+    query: "김포 운영 서버 중 메모리 사용률이 85% 이상인 서버들의 무상 보증 만료일"
+    expect:
+      intent: data_query
+      databases: [polestar_cm_gp, itam]
+      min_databases: 2
+      chain: [server_usage, asset_contract]
+    critical: cross_system
+    note: "R3 폴스타→자산 — 사용률 조건이 자산 조회 대상을 정한다(순서 있는 chain)."
+
+  - id: r-073
+    query: "하드웨어 지원 종료일이 이미 지난 은행존 서버들에 현재 발생 중인 알람"
+    expect:
+      intent: alarm_query
+      databases: [itam, polestar_b0]
+      min_databases: 2
+      chain: [asset_lifecycle, alarm]
+    critical: cross_system
+    note: "R4 자산→폴스타 — 지원 종료 조건이 알람 조회 대상을 정한다. 원문 순차 표지 없음(X-T9)."
+
+  - id: r-074
+    query: "10.20.30.41 서버의 유지보수 계약 금액과 계약 기간"
+    expect:
+      intent: data_query
+      databases: [itam]
+      min_databases: 1
+      chain: []
+      key_type: ipv4
+      probe: false
+    critical: cross_system
+    note: "R5 IP 앵커 — 사용자가 준 IP가 키다. 단일 소유 영역이라 프로브 발동 조건(§3.4 a·c) 불성립."
+
+  - id: r-075
+    query: "svr-web-01 서버의 자산 상태와 최근 1시간 CPU 사용률을 같이 보여줘"
+    expect:
+      intent: data_query
+      databases: [itam]
+      min_databases: 2
+      chain: []
+      key_type: hostname
+      probe: true
+    critical: cross_system
+    note: >
+      R6 식별자 프로브 — 필요한 영역이 두 시스템에 걸치고(§3.4 발동 조건 a) 명시 식별자가 있다.
+      두 영역은 같은 식별자로 각각 조회할 뿐 서로의 대상을 정하지 않으므로 chain은 빈 목록이다.
+
+  - id: r-076
+    query: "svr-db-02 서버의 메모리 용량과 CPU 코어 수"
+    expect:
+      intent: data_query
+      forbid_databases: [itam]
+      min_databases: 1
+      chain: []
+      key_type: hostname
+      probe: true
+    critical: cross_system
+    note: >
+      G-1 소유 모호(server_spec) — **사용자 미확정 · 기본 가정(폴스타) 기준**. G-1이 확정되면 expect를
+      갱신한다. 명시 식별자 + 소유 모호 영역이라 프로브 발동 조건(§3.4 c) 성립.

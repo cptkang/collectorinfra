@@ -493,11 +493,11 @@ settings:
   COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED:
     example: >-
       의도 오케스트레이션과 deepagents가 둘 다 꺼진 기동(3·4단)에서 '높은 서버를 찾아 그 서버들의…'는 원래 SQL 한 번으로 처리된다. 켜면 두 단계로 나눠
-      앞 결과를 뒤 조회의 대상으로 넘긴다. 단, 구조 승인이나 SQL 승인이 켜져 있으면 승인 단계를 건너뛰게 되므로 진입하지 않는다.
-    summary: 순차 처리가 없는 3·4단 실행 경로에 두 단계 순차 노드를 붙일지. 승인 기능이 켜져 있으면 동작하지 않는다.
+      앞 결과를 뒤 조회의 대상으로 넘긴다. 단, SQL 승인이 켜져 있으면 승인 단계를 건너뛰게 되므로 진입하지 않는다.
+    summary: 순차 처리가 없는 3·4단 실행 경로에 두 단계 순차 노드를 붙일지. SQL 승인이 켜져 있으면 동작하지 않는다.
     behavior: >-
       semantic_router 또는 legacy 경로로 확정된 기동에서만 노드가 등록된다. 순차 표지 + 데이터 조회 의도 +
-      ENABLE_STRUCTURE_APPROVAL·ENABLE_SQL_APPROVAL 둘 다 off + 양식 아님이 전부 성립할 때만 진입한다.
+      ENABLE_SQL_APPROVAL off + 양식 아님이 전부 성립할 때만 진입한다.
       분해가 순차로 나오지 않으면 단일 조회로 실행하고 사유를 남긴다.
     options:
       - value: "false"
@@ -507,9 +507,9 @@ settings:
         label: 기본
         effect: 3·4단 빌드에 노드가 추가된다. 1·2단 기동에서는 아무 영향이 없다.
     performance: 진입한 질의는 조회가 두 번 돈다(분해 LLM 1회 + 조회 2회).
-    stability: 승인 기능이 켜진 상태에서는 절대 진입하지 않는다 — 운영 기본(구조 승인 on)에서는 켜도 동작하지 않으며, 미진입 사유가 로그에 남는다.
-    recommendation: 기본 켬(2026-09-10 실 실행 후 사용자 확정). 운영 1·2단 기동에서는 노드가 등록되지 않아 실효가 없고, 강등 기동에서도 승인 기능이 켜져 있으면 진입하지 않는다.
-    related: [ENABLE_STRUCTURE_APPROVAL, ENABLE_SQL_APPROVAL, ENABLE_INTENT_ORCHESTRATION, ENABLE_DEEPAGENTS_PACKAGE]
+    stability: SQL 승인이 켜진 상태에서는 절대 진입하지 않는다(승인 게이트 우회 금지).
+    recommendation: 기본 켬(2026-09-10 실 실행 후 사용자 확정). 운영 1·2단 기동에서는 노드가 등록되지 않아 실효가 없고, 강등 기동에서도 SQL 승인이 켜져 있으면 진입하지 않는다.
+    related: [ENABLE_SQL_APPROVAL, ENABLE_INTENT_ORCHESTRATION, ENABLE_DEEPAGENTS_PACKAGE]
     references:
       - docs/02_decision.md (D-203)
       - plans/88 §4.7

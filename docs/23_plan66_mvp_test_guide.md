@@ -1030,25 +1030,25 @@ PY
 검증(2026-08-25): `AgentSettings(api_base=…)` → `DiagnosisAgent._config.api_base` 도달 확인 ·
 `sre_agent/tests` **164 passed·2 skipped**(기준선 불변) · `arch_check --ci` exit 0.
 
-**스텁 게이트 주의(§2.3).** dispatcher가 실 조사를 도는 조건은 `gemini_api_key is None`이 아닌
-경우 **하나뿐**이다(`investigation_dispatcher.py:142`). vLLM은 키가 필요 없을 수 있으나
-**이 필드가 비면 조사가 스텁으로 떨어진다.** 당장은 아무 값이나 넣어 통과시킨다:
+**스텁 게이트(§2.3) — 2026-09-17 D-230으로 교체.** 종전에는 실 조사 조건이 `gemini_api_key is None`이
+아닌 경우 하나뿐이라 vLLM에도 `GEMINI_API_KEY=dummy`가 필요했다. 지금은 **`INVESTIGATION_LLM_ENABLED=true`로
+키 없이 게이트를 연다**:
 
 ```bash
 # [서버 A · 조사 서비스 기동 명령에 붙이는 env]
-GEMINI_API_KEY=dummy   # 사실상 "조사 LLM 사용 가능" 플래그로 쓰이고 있음
+INVESTIGATION_LLM_ENABLED=true
 ```
 
-> 이름과 의미가 어긋난 상태다. 정공법은 게이트 조건을 `investigation_api_key` 같은 **백엔드
-> 중립 이름**으로 바꾸고 구 이름을 별칭 + 폐기 기한(**D-161 ①**)으로 두는 것이며,
-> 이는 신규 결정 등재 대상이다(별건 작업).
+> 미설정(None)이면 종전대로 키 유무로 판정하고, `false`면 항상 스텁이다. **빈 값(`INVESTIGATION_LLM_ENABLED=`)은
+> 설정 로드 실패**이므로 미설정은 줄을 두지 않는다. 종전의 "중립 이름 개명" 과제는 **개명 없이 스위치를 분리**하는
+> 것으로 종결됐다(D-230 — `gemini_api_key`는 Gemini 개발 경로 키로 남는다). 상세는 `docs/26_sre_agent_guide.md` §5.6.8.
 
 #### 7-V.4 조사 서비스 기동
 
 ```bash
 # [서버 A · CWD=레포 루트 · sre_agent/.venv]
 cd /Users/cptkang/AIOps/collectorinfra
-GEMINI_API_KEY=dummy \
+INVESTIGATION_LLM_ENABLED=true \
 MODEL="openai/Qwen3.5-9B" \
 API_BASE="http://<vllm-host>:8000/v1" \
 API_KEY=dummy \
@@ -1064,7 +1064,7 @@ sre_agent/.venv/bin/python -m sre_agent.run_service
 | `MODEL` | `openai/<served-model-name>` | **`openai/` 접두사 필수** — litellm이 OpenAI 호환 경로로 보낸다. **`INVESTIGATION_LLM_MODEL`이 아니다**(아래 정정) |
 | `API_KEY` | 아무 값 | `None`이면 litellm이 인증 헤더 없이 보내 400이 날 수 있다 |
 | `API_BASE` | `http://<vllm-host>:8000/v1` | `/v1`까지 포함 |
-| `GEMINI_API_KEY` | 아무 값 | 스텁 게이트 통과용(§7-V.3) |
+| `INVESTIGATION_LLM_ENABLED` | `true` | 실 조사 게이트를 키 없이 연다(§7-V.3 · D-230) |
 | `MAX_STEPS` | 40(기본) | 소용량 모델은 상한 도달이 잦다 — 미완주는 graceful |
 
 > **정정(2026-08-28 · 실측)**: 종전 이 명령은 `INVESTIGATION_LLM_MODEL`을 지정했으나
@@ -1083,13 +1083,17 @@ sre_agent/.venv/bin/python -m sre_agent.run_service
 §7-V.2는 **왕복 1회**만 본다. ReAct 다단계 완주는 별개이므로 실제 조사로 확인한다.
 
 ```bash
-# [서버 A · CWD=레포 루트 · sre_agent/.venv]
+# [서버 A · CWD=sre_agent · sre_agent/.venv] — 루트 CWD는 수집 단계에서 죽는다(docs/18 2026-09-10)
 # 픽스처 데이터 대상 실 조사 e2e (외부 과금 없음 — vLLM은 사내)
-RUN_E2E=1 sre_agent/.venv/bin/python -m pytest sre_agent/tests/test_investigation_e2e.py -v
+cd sre_agent && RUN_E2E=1 LLM_GEMINI_API_KEY= GEMINI_API_KEY= .venv/bin/python -m pytest tests/test_investigation_e2e.py -v
 ```
 
-> 이 테스트는 `_gemini_ready()`로 게이팅되므로 §7-V.3대로 `GEMINI_API_KEY`가 채워져 있어야
-> 실행된다. 그리고 `mcp_server`(조사 프로파일)가 도달 가능해야 한다.
+> **정정(2026-09-17 · 실측)**: 종전 이 테스트는 `_gemini_ready()`로 게이팅되고 `API_BASE`를 줘도
+> `investigation_llm_model`(Gemini)·`gemini_api_key`로 조립돼 **vLLM을 검증하지 못했다**. 지금은
+> `API_BASE`가 설정돼 있으면 §7-V.3 운영 배선(`MODEL`·`API_BASE`·`API_KEY` + 토큰 예산
+> `OVERRIDE_MAX_CONTENT_SIZE`·`OVERRIDE_MAX_OUTPUT_TOKEN`)으로 조사하고, 게이트는 테스트가
+> `investigation_llm_enabled=True`로 연다(D-230) — e2e에는 `GEMINI_API_KEY`가 필요 없다(위처럼 비워 둔다). `mcp_server`(조사 프로파일)는
+> 도달 가능해야 한다. 상세는 `docs/26_sre_agent_guide.md` §5.6.4·§5.6.6.
 
 **판정 기준**
 
@@ -1442,7 +1446,7 @@ NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT=8
 | `--path redis`로 넣었는데 무반응 | 목업의 `--redis-url` 기본이 **6379** | `--redis-url redis://localhost:6380/0` 명시 |
 | 조사가 계속 `incomplete` | 모델이 ReAct를 못 끌고 감(소용량) | 모델 상향 · `--max-model-len` 확인 → 안 되면 §7-V.6 B안 |
 | `tool_calls`가 안 나온다 | **`--enable-auto-tool-choice` 누락 · 파서 불일치** | §7-V.2 판정표 |
-| vLLM을 붙였는데 `status="stub"` | 스텁 게이트 조건이 `gemini_api_key` **단일** | §7-V.3 — `GEMINI_API_KEY=dummy` |
+| vLLM을 붙였는데 `status="stub"` | 조사 LLM 게이트가 닫힘 — `verdict`로 사유 구분(`LLM 키 부재` = 플래그 미설정 · `조사 LLM 비활성` = `false`) | §7-V.3 — `INVESTIGATION_LLM_ENABLED=true`(D-230) |
 | 브리핑 본문이 비어 온다 | 사내 게이트웨이 PII 필터 차단 | `docs/pii_filtering_rules.md` · 게이트웨이 로그 |
 | 브리핑에 인용이 없다 | 도구를 안 부르고 지어냄 | 인용 마커(`←`·`출처`·도구명) 확인 → §7-V.2 재판정 |
 | **(실연동)** 도구는 성공인데 메트릭이 **빈 배열** | `nodename` 라벨 부재·값 불일치 | §8.2.2 ②③④ — 라벨 표준화는 P0-3 협의 |
@@ -1566,7 +1570,7 @@ Plan 66 §1.5 기준 — 전부 **코드 외 선행조건**이라 현 환경에�
 - **백엔드 판정 근거**: `src/clients/fabrix_client.py`(`_build_payload`가 `tools` 미전송 ·
   `_parse_response`의 Few-shot JSON 파싱) · `docs/02_decision.md` **D-037**(tool-calling 블로커 ↔
   vLLM 제어평면/FabriX 데이터평면 분리) · `sre_agent/sre_agent/diagnosis.py`(`Config` 생성부) ·
-  `sre_agent/sre_agent/application/investigation_dispatcher.py:142`(스텁 게이트) ·
+  `sre_agent/sre_agent/settings.py` `investigation_llm_stub_reason`(스텁 게이트 — D-230 · 종전 `investigation_dispatcher.py:142`) ·
   `sre_agent/scripts/smoke_llm.py`(Gemini 2단계 스모크 — vLLM판은 §7-V.2 스니펫) ·
   **`src/clients/fabrix_kbgenai.py`**(사내 FabriX 실제 클라이언트 — OpenAI 비호환 근거) · `src/llm.py:266`(클라이언트 분기)
 - 버전 실측(2026-08-25): holmesgpt **0.36.0** · litellm **1.89.0** ·

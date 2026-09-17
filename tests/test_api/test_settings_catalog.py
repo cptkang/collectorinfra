@@ -116,7 +116,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 335
+    assert len(items) == 343
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -194,6 +194,16 @@ def test_t2_group_and_field_counts():
     → 2026-09-09 **325**: D-203 2차 COMPOSITE_{PLAN_DAG_VALIDATION,SEQUENTIAL_REPLAN,SEQUENTIAL_FALLBACK_TIERS}_ENABLED(+3).
     → 2026-09-09 원격 `multiintent` 병합(`b45ac9e` · TEXT2SQL_ALARM_DETERMINISTIC·LLM_FABRIX_TOTAL_TIMEOUT +2)과 합산 **327** → 2026-09-10 plans/91 1-6 E8 post-gate L3 플래그 7건(`NOISE_L3_*`) +7 = **334** → 2026-09-10 plans/88 R-E `COMPOSITE_PRIOR_SCOPE_LATEST_ONLY` +1 = **335**.
       그룹 수 불변 — 원격 314 + 로컬 13(plans/54 5 · 88 1차 3 · 89 2 · 88 2차 3), **실측으로 확정**했다.
+    → 2026-09-17 plans/100 MLX provider
+      `LLM_MLX_{BASE_URL,MODEL,MAX_TOKENS,TIMEOUT,ENABLE_THINKING}` +5 = **340**.
+      그룹 수 불변(llm 기존 그룹) — 작업 직전 335 실측 후 가산.
+    → 2026-09-17 plans/104 작업 직전 실측 **343**(병행 plans/102
+      `CROSS_SYSTEM_{KEY_BRIDGE,PROBE}_ENABLED`·`ROUTER_CAPABILITY_OWNERSHIP_ENABLED`
+      +3 미기재분 포함 · general 20) − 구조 승인 HITL 플래그(삭제 · general)
+      + `SCHEMA_CACHE_{ADMIN_LLM_CONCURRENCY,STRUCTURE_GROUP_MAX_TABLES}` +2
+      = **344** · general **19**.
+    → 2026-09-17 plans/104 B-6 작업 직전 실측 **344** − 컬럼 설명 자동 생성 플래그(schema_cache
+      그룹 · 질의 경로 지연 LLM 설명 생성 제거 · D-161 ① 같은 결정 안 삭제) = **343** · 그룹 수 불변.
 
     ⚠ 이 숫자 단언은 **본질적으로 취약하다** — 설정을 추가할 때마다 갱신해야 한다.
     회귀를 실제로 막는 것은 아래 파생 등가성 가드이며, 이 단언은 "얼마나 늘었는지"를
@@ -202,8 +212,8 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 24
-    assert len(index) == 335
-    assert len([s for s in index.values() if s.group_key == "general"]) == 18
+    assert len(index) == 343
+    assert len([s for s in index.values() if s.group_key == "general"]) == 19
 
 
 def test_t2_group_order_covers_every_config_group():
@@ -243,7 +253,8 @@ def test_t2_type_detection():
     assert index["SECURITY_MASK_IP"].type == "bool"
     assert index["ENABLE_INTENT_ORCHESTRATION"].type == "tristate"
     assert index["LLM_PROVIDER"].type == "enum"
-    assert index["LLM_PROVIDER"].enum_choices == ["ollama", "fabrix", "gemini"]
+    assert index["LLM_PROVIDER"].enum_choices == ["ollama", "fabrix", "gemini", "mlx"]
+    assert index["ORCHESTRATOR_PROVIDER"].enum_choices == ["vllm", "gemini", "mlx"]
     assert index["LOG_LEVEL"].enum_choices == ["DEBUG", "INFO", "WARNING", "ERROR"]
     assert index["SCHEMA_CACHE_BACKEND"].enum_choices == ["redis", "file"]  # 수동 choices 보강
     assert index["LLM_OLLAMA_TIMEOUT"].type == "int"

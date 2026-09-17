@@ -23,6 +23,7 @@ from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
+from src.utils.prior_dependency import ADMIN_ASSET_NOTE_KINDS, CROSS_SYSTEM_NOTE_KINDS
 from src.utils.query_gen_common import FORM_MEMORY_SHORTCUT_HINT, resolve_stat_month_range
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,8 @@ async def _run_output_generator(
         response = _append_current_month_partial_note(response, state)
         response = _append_unavailable_metric_notes(response, state)
         response = _append_limit_truncation_note(response, state)
+        response = append_structure_missing_note(response, state)
+        response = _append_cross_system_notes(response, state)
         response = _prepend_alarm_headline(response, state, app_config)
         return {
             "final_response": response,
@@ -130,6 +133,8 @@ async def _run_output_generator(
             text_response = _append_scope_note(text_response, state)
             text_response = _append_zone_coverage_notes(text_response, state)
             text_response = _append_unavailable_metric_notes(text_response, state)
+            text_response = append_structure_missing_note(text_response, state)
+            text_response = _append_cross_system_notes(text_response, state)
             # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
             # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
             text_response = _append_form_fill_notes(
@@ -1146,6 +1151,63 @@ def _append_limit_truncation_note(response: str, state: AgentState) -> str:
         + f"\n\n[안내] 결과가 조회 상한(LIMIT {limit:,})에 도달해 이후 행이 절단되었을 수 "
         "있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 확인할 수 있습니다."
     )
+
+
+def append_structure_missing_note(response: str, state: AgentState) -> str:
+    """관리자 등록이 필요한 DB 자산 부재 사유를 응답 말미에 **결정적으로** 덧붙인다(plans/104).
+
+    사유는 `dependency_notes`(D-203 채널)의 `ADMIN_ASSET_NOTE_KINDS` 노트다 — 구조 정보 없음
+    (G-1 (a))·컬럼 설명 미등록(§3.8.5 · G-9 (a)). 웹 UI는 이 채널을 따로 렌더하지 않으므로
+    3단 그래프 경로(단일·멀티 DB)는 본문에 싣는다 — 침묵 강등 금지. 같은 문구는 한 번만 싣는다.
+    오케스트레이션 경로(1·2단·순차 러너)는 `result_aggregator`가 같은 노트를 경과 블록으로 붙이고,
+    그 경로가 이 함수에 넘기는 입력(`_build_output_state`)에는 노트가 없어 **두 번 나오지 않는다**.
+    """
+    details: list[str] = []
+    for note in state.get("dependency_notes") or []:
+        if not isinstance(note, dict) or note.get("kind") not in ADMIN_ASSET_NOTE_KINDS:
+            continue
+        detail = note.get("detail")
+        if detail and detail not in details:
+            details.append(detail)
+    if not details:
+        return response
+    return response + "\n\n" + "\n".join(f"[안내] {d}" for d in details)
+
+
+_CROSS_SYSTEM_NOTES_TITLE = "**[조회 시스템 경과]**"
+
+
+def _append_cross_system_notes(response: str, state: AgentState) -> str:
+    """교차 시스템 경과를 응답 말미에 **결정적으로** 덧붙인다(plans/102 · D-224).
+
+    `dependency_notes` 중 `CROSS_SYSTEM_NOTE_KINDS`(답변 영역 소유 교정 · 분류 폴백 ·
+    키 브리지 매칭 · 식별자 소재 프로브)만 렌더한다. LLM 합성에 맡기면 누락된다
+    (`_append_spike_notes`와 같은 이유 — "다른 시스템으로 바꿔 조회했다"·"분류에 실패해 기본 DB로
+    갔다"는 반드시 보여야 한다).
+
+    - **D-203 순차 경과 노트는 렌더하지 않는다** — 그 노트는 오케스트레이션 경로의
+      `result_aggregator`가 「순차 처리 경과」로 붙인다. 그 경로가 이 노드에 넘기는 입력
+      (`_build_output_state`)에는 `dependency_notes`가 없어 두 번 나오지 않는다.
+    - 각 플래그가 꺼져 있으면 이 종류의 노트가 생기지 않으므로 응답은 종전과 바이트 동일하다.
+    - 텍스트 응답·파일 응답 두 경로가 같은 함수를 부른다(대칭).
+    """
+    lines: list[str] = []
+    seen: set[tuple[Any, Any, Any]] = set()
+    for note in state.get("dependency_notes") or []:
+        if not isinstance(note, dict) or note.get("kind") not in CROSS_SYSTEM_NOTE_KINDS:
+            continue
+        detail = note.get("detail")
+        if not detail:
+            continue
+        key = (note.get("kind"), note.get("task_id"), detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        task_id = note.get("task_id")
+        lines.append(f"- [{task_id}] {detail}" if task_id else f"- {detail}")
+    if not lines:
+        return response
+    return (response or "") + "\n\n" + "\n".join([_CROSS_SYSTEM_NOTES_TITLE, *lines])
 
 
 def _append_spike_notes(response: str, state: AgentState) -> str:

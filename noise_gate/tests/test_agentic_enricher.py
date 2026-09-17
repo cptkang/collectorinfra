@@ -162,6 +162,24 @@ class TestBackendSelection:
         )
         assert _select_backend(gate, cfg) == "track_b"
 
+    def test_mlx_provider_uses_health_check(self, monkeypatch):
+        # plans/100 T-8: provider="mlx"는 gemini 분기를 타지 않고 base_url health check로 판정한다.
+        calls = []
+
+        def _healthy(url, t):
+            calls.append(url)
+            return True
+
+        monkeypatch.setattr(enricher_mod, "vllm_healthy", _healthy)
+        gate = make_gate_cfg()
+        cfg = make_app_cfg(
+            gate,
+            orchestrator=make_orchestrator(provider="mlx", base_url="http://127.0.0.1:8080/v1"),
+            gemini_api_key="k-should-not-matter",
+        )
+        assert _select_backend(gate, cfg) == "track_b"
+        assert calls == ["http://127.0.0.1:8080/v1"]
+
     def test_vllm_healthy_empty_url_false(self):
         # health check는 base_url 미설정 시 네트워크 호출 없이 False.
         assert vllm_healthy("", 3) is False

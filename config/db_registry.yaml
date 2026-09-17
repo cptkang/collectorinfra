@@ -53,7 +53,8 @@ solutions:
     order: 10
     backend: sql
     family: polestar
-    capabilities: [server_spec, server_usage, alarm, host_location, process_list]
+    # server_status: plans/102 §3.1 답변 영역 소유표(D-224 ①) — 가용 상태·호스트·IP·OS 구성
+    capabilities: [server_status, server_spec, server_usage, alarm, host_location, process_list]
 
   # 향후 편입 예시 (현재 미등록 — plans/55 · plans/78 W7-2 소관):
   # - code: apm
@@ -68,6 +69,34 @@ solutions:
   #   backend: rest
   #   capabilities: [db_session, slow_query, lock_wait]
   #   requires: [host_location]
+
+# ── 답변 영역(capability) 카탈로그 (plans/102 §3.1 · D-224 ①).
+#    **소유는 여기 적지 않는다** — 정본은 다중 존 시스템이면 `solutions[].capabilities`, 존이 없는
+#    단일 DB 시스템이면 `databases[].capabilities`다(두 번째 출처 금지 · D-053). 이 목록은 라우터·분해
+#    프롬프트의 소유표 렌더 재료(설명)뿐이며, 선언 순서가 렌더 순서다. 소유표는
+#    `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`가 켜졌을 때만 프롬프트에 들어간다.
+#    server_spec의 정본은 G-1 기본 가정(폴스타 — 현재 구성 실측값)이다 · 사용자 미확정.
+capabilities:
+  - code: asset_inventory
+    label: HW/SW 자산 분류·물품 분류·시리얼 번호·자산 상태·자산 보유 부점
+  - code: asset_contract
+    label: 구매·유지보수 계약(기간·만료일·금액)·무상 보증 기간·취득금액
+  - code: asset_owner
+    label: 자산 담당자·담당 부점
+  - code: asset_lifecycle
+    label: HW/SW 지원 종료일(EOS/EOL)·경과년수·노후 교체 대상
+  - code: server_status
+    label: 서버 가용 상태·호스트명·IP·OS 구성
+  - code: server_spec
+    label: 서버 사양(CPU 코어·메모리·디스크 용량 — 현재 구성 실측값)
+  - code: server_usage
+    label: CPU·메모리·디스크 사용률(모니터링 시계열)
+  - code: alarm
+    label: 모니터링 알람 현황·이력
+  - code: process_list
+    label: 서버 프로세스 목록
+  - code: host_location
+    label: 서버가 어느 존·인스턴스에 등록돼 있는지
 
 # ── 존 그룹(zone_group) — 솔루션 내부의 2차 축. 담당 조직·DB 엔진이 갈리는 경계다.
 #    query_order가 **조회 순서의 정본**이다 — 사용자 요구(2026-08-28): 은행존을 먼저
@@ -240,16 +269,30 @@ databases:
     db_schema: ""
     signal_terms: ["itsm"]
 
+  # 자산관리 DB(plans/95). 엔진은 벤더 스키마 시트의 DBMS구분 = MARIADB(D-214 예약).
+  # db_schema는 실 database명 미확정(G-2)이라 비워 둔다. 활성화(ACTIVE_DB_IDS)는 구조 정본
+  # config/db_profiles/itam.yaml(G-4 대기) 이후 — plans/95 §5 순서 불변식.
+  # description은 자산 축(계약·금액·지원 종료·자산 상태·분류·담당)만 적는다. 자산 DB에도 CPU·메모리·
+  # 스토리지 사용률·용량 컬럼이 있지만 사양·사용률은 관측 DB가 정본이다(G-8 기본 가정 (가) · 함정 T5) —
+  # 그 어휘를 여기 쓰면 "서버 CPU 사용률" 질의가 두 DB에 정당하게 매칭돼 답이 조용히 갈린다.
+  # 경계는 키워드 사전이 아니라 이 설명으로 푼다(D-004). 설명은 활성 DB만 프롬프트에 렌더된다.
   - db_id: itam
     enabled: true
     display_name: ITAM DB
     description: >-
-      IT 자산 관리 데이터.
-      IT 자산 목록, 자산 라이프사이클, 계약 정보,
-      소프트웨어 라이선스, 하드웨어 자산 등
+      IT 자산 관리(자산 원장) 데이터.
+      서버 자산의 구매 계약·취득일·취득금액·잔존 장부금액,
+      유지보수 계약(계약명·기간·만료일·계약금액)과 무상 보증 기간,
+      하드웨어/소프트웨어 지원 종료일(EOS/EOL),
+      자산 상태·자산 분류·경과년수·노후 교체 대상,
+      담당자·담당 부점·자산 보유 부점, 물품 분류·시리얼 번호 등
     aliases: ["itam", "ITAM", "ITAM DB", "자산관리", "자산관리 DB"]
     env_connection_key: ITAM_DB_CONNECTION
     env_type_key: ITAM_DB_TYPE
-    engine: postgresql
+    engine: mariadb
     db_schema: ""
     signal_terms: ["itam"]
+    # 답변 영역 소유(plans/102 §3.1 · D-224 ①). 존이 없는 단일 시스템(D-214 ④)이라 `solutions`가 아니라
+    # DB 항목에 선언한다 — `solutions` 등재는 D-214 ④에서 기각됐다(G-4 기본 가정 이탈 · 사용자 미확정).
+    # asset_owner(담당자 성명)는 plans/95 G-9 확정(마스킹 없이 노출)으로 비활성 사유가 없다.
+    capabilities: [asset_inventory, asset_contract, asset_owner, asset_lifecycle]

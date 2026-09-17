@@ -57,6 +57,7 @@ from src.utils.query_gen_common import (
     resolve_stat_month_range,
     template_context_text,
 )
+from src.nodes.key_bridge import bridge_prior_rows_block, key_bridge_enabled
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
@@ -665,6 +666,7 @@ async def _try_semantic(
         app_config=ctx.app_config,
         stepwise_deps=_build_stepwise_deps(state, ctx.app_config, ctx.limit_value),
         derivation_sink=derivation_sink,
+        parsed_filters=(state.get("parsed_requirements") or {}).get("filter_conditions"),
     )
     if semantic_sql:
         logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", semantic_sql[:500])
@@ -788,7 +790,12 @@ async def _build_fallback_prompts(
     # 선행 task 결과 서버 스코프 강제 — orchestration 데이터 의존(input_from) 경로(D-086).
     # prior_rows는 생성만 되고 소비처가 없던 죽은 배선이었다(2026-07-18 실측: 의존 task가
     # 알람 조건을 재표현하다 resource_type='alarm.Alarm' 환각으로 0건).
-    _pr_block = build_prior_rows_block(state.get("prior_rows"))
+    # 값 기반 키 브리지(plans/102 §3.3-③) on이면 대상 DB 매니페스트로
+    # 대상 컬럼·조건을 코드가 확정한다.
+    if key_bridge_enabled(app_config):
+        _pr_block = bridge_prior_rows_block(state.get("prior_rows"), state.get("active_db_id"))
+    else:
+        _pr_block = build_prior_rows_block(state.get("prior_rows"))
     if _pr_block:
         # 실행 결과 라이브 행이므로 PII 스크럽(D-155 후속3 — 멀티 경로와 대칭)
         if is_scrub_samples_enabled():

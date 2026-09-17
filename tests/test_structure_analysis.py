@@ -5,6 +5,8 @@ DB의 EAV(Entity-Attribute-Value) 비정규화 테이블 쿼리 지원 기능,
 DB 연결 없이 단위 테스트로 실행 가능하다.
 
 Plan 27 리팩토링 이후: polestar 하드코딩 제거, _structure_meta 기반으로 전환.
+plans/104 이후: 구조 분석 함수는 `src.schema_cache.structure_analysis`로 이동했고(질의 경로 밖),
+질의 경로의 구조 프로필 파일 자동 기록은 삭제됐다.
 """
 
 import copy
@@ -22,10 +24,12 @@ from src.nodes.query_validator import (
     _has_limit_clause,
     _validate_forbidden_joins,
 )
-from src.nodes.schema_analyzer import (
-    _format_schema_for_analysis,
-    _parse_llm_json,
-    _validate_sample_sql,
+from src.schema_cache.structure_analysis import (
+    analyze_structure,
+    format_schema_for_analysis,
+    generate_structure_samples,
+    parse_llm_json,
+    validate_sample_sql,
 )
 from src.routing.domain_config import get_domain_by_id
 
@@ -409,40 +413,40 @@ class TestQueryGeneratorEavMapping:
 
 
 # ---------------------------------------------------------------------------
-# 9. _validate_sample_sql 안전성 검증
+# 9. validate_sample_sql 안전성 검증
 # ---------------------------------------------------------------------------
 
 class TestValidateSampleSql:
-    """_validate_sample_sql 안전성 검증 테스트."""
+    """validate_sample_sql 안전성 검증 테스트."""
 
     def test_valid_select_with_limit(self):
-        assert _validate_sample_sql("SELECT * FROM t LIMIT 10") is True
+        assert validate_sample_sql("SELECT * FROM t LIMIT 10") is True
 
     def test_valid_select_with_fetch_first(self):
-        assert _validate_sample_sql("SELECT * FROM t FETCH FIRST 10 ROWS ONLY") is True
+        assert validate_sample_sql("SELECT * FROM t FETCH FIRST 10 ROWS ONLY") is True
 
     def test_reject_insert(self):
-        assert _validate_sample_sql("INSERT INTO t VALUES (1)") is False
+        assert validate_sample_sql("INSERT INTO t VALUES (1)") is False
 
     def test_reject_delete(self):
-        assert _validate_sample_sql("DELETE FROM t WHERE id = 1") is False
+        assert validate_sample_sql("DELETE FROM t WHERE id = 1") is False
 
     def test_reject_no_limit(self):
-        assert _validate_sample_sql("SELECT * FROM t") is False
+        assert validate_sample_sql("SELECT * FROM t") is False
 
     def test_reject_update(self):
-        assert _validate_sample_sql("UPDATE t SET x = 1") is False
+        assert validate_sample_sql("UPDATE t SET x = 1") is False
 
     def test_reject_drop(self):
-        assert _validate_sample_sql("DROP TABLE t") is False
+        assert validate_sample_sql("DROP TABLE t") is False
 
 
 # ---------------------------------------------------------------------------
-# 10. _format_schema_for_analysis 변환 테스트
+# 10. format_schema_for_analysis 변환 테스트
 # ---------------------------------------------------------------------------
 
 class TestFormatSchemaForAnalysis:
-    """_format_schema_for_analysis 변환 테스트."""
+    """format_schema_for_analysis 변환 테스트."""
 
     def test_basic_format(self):
         schema_dict = {
@@ -455,7 +459,7 @@ class TestFormatSchemaForAnalysis:
                 }
             }
         }
-        result = _format_schema_for_analysis(schema_dict)
+        result = format_schema_for_analysis(schema_dict)
         assert "users" in result
         assert "id: int" in result
         assert "PK" in result
@@ -472,29 +476,29 @@ class TestFormatSchemaForAnalysis:
             },
             "relationships": [{"from": "t.id", "to": "other.id"}],
         }
-        result = _format_schema_for_analysis(schema_dict)
+        result = format_schema_for_analysis(schema_dict)
         assert "FK" in result
         assert "FK 관계" in result
 
 
 # ---------------------------------------------------------------------------
-# 11. _parse_llm_json JSON 추출 테스트
+# 11. parse_llm_json JSON 추출 테스트
 # ---------------------------------------------------------------------------
 
 class TestParseLlmJson:
-    """_parse_llm_json JSON 추출 테스트."""
+    """parse_llm_json JSON 추출 테스트."""
 
     def test_plain_json(self):
-        result = _parse_llm_json('{"key": "value"}')
+        result = parse_llm_json('{"key": "value"}')
         assert result == {"key": "value"}
 
     def test_markdown_wrapped(self):
-        result = _parse_llm_json('```json\n{"key": "value"}\n```')
+        result = parse_llm_json('```json\n{"key": "value"}\n```')
         assert result == {"key": "value"}
 
     def test_invalid_json(self):
         with pytest.raises(ValueError):
-            _parse_llm_json("not json at all")
+            parse_llm_json("not json at all")
 
 
 # ---------------------------------------------------------------------------
@@ -527,102 +531,30 @@ class TestGetEavPattern:
 # Plan 26 캐시 통합 테스트
 # ===========================================================================
 
-import os
-import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from src.nodes.schema_analyzer import (
-    _save_structure_profile,
-    _analyze_db_structure,
-    _llm_select_relevant_tables,
-    _collect_structure_samples,
-)
+from src.nodes.schema_analyzer import _llm_select_relevant_tables
 from src.dbhub.models import SchemaInfo, TableInfo, ColumnInfo
 
 
 # ---------------------------------------------------------------------------
-# 14. _save_structure_profile YAML/JSON 자동 생성 테스트
-# ---------------------------------------------------------------------------
-
-class TestSaveStructureProfile:
-    """_save_structure_profile YAML/JSON 자동 생성 테스트."""
-
-    @pytest.mark.asyncio
-    async def test_yaml_file_created(self, tmp_path):
-        """YAML 파일이 자동 생성되는지 확인"""
-        structure_meta = {
-            "patterns": [{"type": "eav", "entity_table": "T1", "config_table": "T2"}],
-            "query_guide": "test guide"
-        }
-        cache_mgr = AsyncMock()
-        cache_mgr.save_schema = AsyncMock()
-
-        # 패치 전에 원본 os.path.join 참조를 저장하여 재귀 방지
-        _real_join = os.path.join
-
-        with patch("src.nodes.schema_analyzer.os.path.join", side_effect=lambda *args: _real_join(str(tmp_path), *args[1:])):
-            with patch("src.nodes.schema_analyzer.os.makedirs"):
-                await _save_structure_profile("test_db", structure_meta, cache_mgr)
-
-        # Redis 캐시 저장 호출 확인
-        cache_mgr.save_schema.assert_called_once()
-        call_args = cache_mgr.save_schema.call_args
-        assert call_args[0][0] == "test_db:structure_meta"
-
-    @pytest.mark.asyncio
-    async def test_cache_save_failure_graceful(self):
-        """캐시 저장 실패 시에도 YAML 생성 시도"""
-        structure_meta = {"patterns": [], "query_guide": ""}
-        cache_mgr = AsyncMock()
-        cache_mgr.save_schema = AsyncMock(side_effect=Exception("Redis down"))
-
-        # 예외 없이 정상 완료
-        await _save_structure_profile("test_db", structure_meta, cache_mgr)
-
-    @pytest.mark.asyncio
-    async def test_json_fallback_without_yaml(self):
-        """PyYAML 미설치 시 JSON fallback"""
-        structure_meta = {"patterns": [{"type": "hierarchy"}], "query_guide": "guide"}
-        cache_mgr = AsyncMock()
-        cache_mgr.save_schema = AsyncMock()
-
-        import builtins
-        original_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "yaml":
-                raise ImportError("no yaml")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            with patch("src.nodes.schema_analyzer.os.makedirs"):
-                with patch("builtins.open", MagicMock()):
-                    await _save_structure_profile("test_db", structure_meta, cache_mgr)
-
-        # 예외 없이 정상 완료되면 성공
-
-
-# ---------------------------------------------------------------------------
-# 15. 구조 분석 캐시 흐름 단위 테스트
+# 15. 구조 분석 결과 구분 (analyze_structure — 패턴 없음 ≠ 분석 실패, plans/104 §3.5)
 # ---------------------------------------------------------------------------
 
 class TestStructureMetaCacheFlow:
-    """구조 분석 캐시 흐름 단위 테스트."""
-
-    def test_cache_key_format(self):
-        """캐시 키가 '{db_id}:structure_meta' 형식인지 확인"""
-        assert "test_db:structure_meta" == "test_db:structure_meta"
+    """analyze_structure 결과 상태 테스트."""
 
     @pytest.mark.asyncio
-    async def test_analyze_returns_none_for_empty_patterns(self):
-        """LLM이 빈 patterns를 반환하면 None"""
+    async def test_analyze_returns_no_patterns_for_empty_patterns(self):
+        """LLM이 빈 patterns를 반환하면 실패가 아니라 no_patterns"""
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=MagicMock(
             content='{"patterns": [], "query_guide": ""}'
         ))
 
-        result = await _analyze_db_structure(mock_llm, {"tables": {"t": {"columns": []}}})
-        assert result is None
+        result = await analyze_structure(mock_llm, {"tables": {"t": {"columns": []}}})
+        assert result.status == "no_patterns"
+        assert result.meta == {"patterns": [], "query_guide": ""}
 
     @pytest.mark.asyncio
     async def test_analyze_returns_dict_for_eav_pattern(self):
@@ -632,31 +564,33 @@ class TestStructureMetaCacheFlow:
             content='{"patterns": [{"type": "eav", "entity_table": "E", "config_table": "C", "attribute_column": "NAME", "value_column": "VALUE", "join_condition": "C.FK = E.ID"}], "query_guide": "Use EAV pivot"}'
         ))
 
-        result = await _analyze_db_structure(mock_llm, {"tables": {"E": {"columns": []}, "C": {"columns": []}}})
-        assert result is not None
-        assert len(result["patterns"]) == 1
-        assert result["patterns"][0]["type"] == "eav"
-        assert result["query_guide"] == "Use EAV pivot"
+        schema = {"tables": {"E": {"columns": []}, "C": {"columns": []}}}
+        result = await analyze_structure(mock_llm, schema)
+        assert result.status == "ok"
+        assert len(result.meta["patterns"]) == 1
+        assert result.meta["patterns"][0]["type"] == "eav"
+        assert result.meta["query_guide"] == "Use EAV pivot"
 
     @pytest.mark.asyncio
-    async def test_analyze_returns_none_on_llm_failure(self):
-        """LLM 호출 실패 시 None 반환 (graceful)"""
+    async def test_analyze_returns_failed_on_llm_failure(self):
+        """LLM 호출 실패 시 failed + 사유 (graceful)"""
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(side_effect=Exception("LLM timeout"))
 
-        result = await _analyze_db_structure(mock_llm, {"tables": {}})
-        assert result is None
+        result = await analyze_structure(mock_llm, {"tables": {}})
+        assert result.status == "failed" and result.meta is None
+        assert "LLM timeout" in (result.error or "")
 
     @pytest.mark.asyncio
-    async def test_analyze_returns_none_on_invalid_json(self):
-        """LLM이 잘못된 JSON 반환 시 None"""
+    async def test_analyze_returns_failed_on_invalid_json(self):
+        """LLM이 잘못된 JSON 반환 시 failed"""
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=MagicMock(
             content="이것은 JSON이 아닙니다"
         ))
 
-        result = await _analyze_db_structure(mock_llm, {"tables": {}})
-        assert result is None
+        result = await analyze_structure(mock_llm, {"tables": {}})
+        assert result.status == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -721,11 +655,11 @@ class TestLlmSelectRelevantTables:
 
 
 # ---------------------------------------------------------------------------
-# 17. _collect_structure_samples LLM mock 테스트
+# 17. generate_structure_samples LLM mock 테스트
 # ---------------------------------------------------------------------------
 
 class TestCollectStructureSamples:
-    """_collect_structure_samples LLM mock 테스트."""
+    """generate_structure_samples LLM mock 테스트."""
 
     @pytest.mark.asyncio
     async def test_collects_samples_from_safe_sql(self):
@@ -743,9 +677,9 @@ class TestCollectStructureSamples:
         mock_result.rows = [{"name": "OSType"}, {"name": "Vendor"}]
         mock_client.execute_sql = AsyncMock(return_value=mock_result)
 
-        result = await _collect_structure_samples(mock_llm, mock_client, schema_dict, structure_meta)
-        assert "_structure_meta" in result
-        assert "samples" in result["_structure_meta"]
+        result = await generate_structure_samples(mock_llm, mock_client, schema_dict, structure_meta)
+        assert result.samples == {"EAV names": [{"name": "OSType"}, {"name": "Vendor"}]}
+        assert [a["status"] for a in result.attempts] == ["ok"]
 
     @pytest.mark.asyncio
     async def test_skips_unsafe_sql(self):
@@ -759,12 +693,13 @@ class TestCollectStructureSamples:
         ))
         mock_client = AsyncMock()
 
-        result = await _collect_structure_samples(mock_llm, mock_client, schema_dict, structure_meta)
+        result = await generate_structure_samples(mock_llm, mock_client, schema_dict, structure_meta)
         mock_client.execute_sql.assert_not_called()
+        assert [a["status"] for a in result.attempts] == ["unsafe"]
 
     @pytest.mark.asyncio
-    async def test_llm_failure_returns_original_schema(self):
-        """LLM 실패 시 원본 schema_dict 반환"""
+    async def test_llm_failure_returns_error(self):
+        """LLM 실패 시 시도 없이 사유만 담는다"""
         structure_meta = {"patterns": [], "query_guide": ""}
         schema_dict = {"tables": {"t": {"columns": []}}}
 
@@ -772,8 +707,9 @@ class TestCollectStructureSamples:
         mock_llm.ainvoke = AsyncMock(side_effect=Exception("LLM error"))
         mock_client = AsyncMock()
 
-        result = await _collect_structure_samples(mock_llm, mock_client, schema_dict, structure_meta)
-        assert "tables" in result
+        result = await generate_structure_samples(mock_llm, mock_client, schema_dict, structure_meta)
+        assert result.samples == {} and result.attempts == []
+        assert "LLM error" in (result.error or "")
 
 
 # ===========================================================================

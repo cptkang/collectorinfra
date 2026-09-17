@@ -25,10 +25,15 @@ from src.config import AppConfig, load_config
 from src.db import get_db_client
 from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
-from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
+from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
-from src.utils.json_extract import coerce_content_text, strip_code_fence
+from src.utils.json_extract import coerce_content_text
+from src.utils.prior_dependency import (
+    add_db_note,
+    descriptions_missing_note,
+    structure_missing_note,
+)
 from src.utils.progress_events import emit_step
 from src.utils.schema_utils import cap_sample_rows
 
@@ -202,229 +207,6 @@ def invalidate_schema_cache(db_id: Optional[str] = None) -> None:
         pass  # 캐시 매니저 초기화 전이면 무시
 
 
-def _format_schema_for_analysis(schema_dict: dict) -> str:
-    """스키마 딕셔너리를 LLM 분석용 텍스트로 변환한다.
-
-    각 테이블의 컬럼 정보(이름, 타입, PK, FK, nullable)를 나열하여
-    LLM이 구조적 패턴을 감지할 수 있도록 한다.
-
-    Args:
-        schema_dict: 스키마 딕셔너리 (tables 키 포함)
-
-    Returns:
-        LLM 프롬프트에 삽입할 텍스트
-    """
-    lines: list[str] = []
-    tables = schema_dict.get("tables", {})
-    for table_name, table_data in tables.items():
-        lines.append(f"### {table_name}")
-        columns = table_data.get("columns", [])
-        for col in columns:
-            attrs: list[str] = []
-            if col.get("primary_key"):
-                attrs.append("PK")
-            if col.get("foreign_key"):
-                ref = col.get("references", "")
-                attrs.append(f"FK->{ref}" if ref else "FK")
-            if not col.get("nullable", True):
-                attrs.append("NOT NULL")
-            attr_str = f" ({', '.join(attrs)})" if attrs else ""
-            col_type = col.get("type", "")
-            lines.append(f"  - {col['name']}: {col_type}{attr_str}")
-        lines.append("")
-
-    # 관계 정보가 있으면 추가
-    relationships = schema_dict.get("relationships", [])
-    if relationships:
-        lines.append("### FK 관계")
-        for rel in relationships:
-            from_t = rel.get("from", "")
-            to_t = rel.get("to", "")
-            lines.append(f"  - {from_t} -> {to_t}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def _parse_llm_json(raw_text: str) -> Any:
-    """LLM 응답에서 JSON을 추출하여 파싱한다.
-
-    마크다운 코드 블록(```json ... ```)을 자동 제거한다.
-
-    Args:
-        raw_text: LLM 응답 원문
-
-    Returns:
-        파싱된 Python 객체
-
-    Raises:
-        ValueError: JSON 파싱 실패 시
-    """
-    import json
-
-    # ```json ... ``` 또는 ``` ... ``` 블록 제거
-    text = strip_code_fence(raw_text)
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"LLM 응답 JSON 파싱 실패: {exc}") from exc
-
-
-async def _analyze_db_structure(
-    llm: BaseChatModel,
-    schema_dict: dict,
-) -> Optional[dict]:
-    """LLM을 사용하여 DB 스키마의 구조적 패턴을 분석한다.
-
-    EAV, 계층형, JOIN 관계 등 특수 패턴을 감지하고,
-    쿼리 가이드를 생성한다.
-
-    Args:
-        llm: LLM 인스턴스
-        schema_dict: 스키마 딕셔너리
-
-    Returns:
-        구조 분석 결과 딕셔너리 또는 None (분석 실패 또는 패턴 없음)
-    """
-    from src.prompts.structure_analyzer import STRUCTURE_ANALYSIS_PROMPT
-
-    schema_text = _format_schema_for_analysis(schema_dict)
-    prompt = STRUCTURE_ANALYSIS_PROMPT + "\n\n## DB 스키마\n\n" + schema_text
-    logger.info("LLM 프롬프트 %s",prompt)
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        result = _parse_llm_json(response.content)
-
-        # patterns가 빈 배열이면 특수 구조 없음 -> None 반환
-        if not result.get("patterns"):
-            logger.info("LLM 구조 분석: 특수 패턴 미감지")
-            return None
-
-        logger.info(
-            "LLM 구조 분석 완료: %d개 패턴 감지",
-            len(result["patterns"]),
-        )
-        return result
-
-    except ValueError as e:
-        logger.warning("구조 분석 LLM 응답 파싱 실패: %s", e)
-        return None
-    except Exception as e:
-        logger.warning("구조 분석 LLM 호출 실패: %s", e)
-        return None
-
-
-def _validate_sample_sql(sql: str) -> bool:
-    """샘플 SQL의 안전성을 검증한다.
-
-    SELECT 문만 허용하며, DML/DDL 키워드가 포함되면 거부한다.
-    LIMIT 또는 FETCH FIRST 절이 있는지도 확인한다.
-
-    Args:
-        sql: 검증할 SQL 문자열
-
-    Returns:
-        안전하면 True, 위험하면 False
-    """
-    sql_upper = sql.strip().upper()
-
-    # SELECT 로 시작해야 함
-    if not sql_upper.startswith("SELECT"):
-        return False
-
-    # 위험한 키워드 검사
-    forbidden = [
-        "INSERT ", "UPDATE ", "DELETE ", "DROP ", "CREATE ",
-        "ALTER ", "TRUNCATE ", "GRANT ", "REVOKE ", "EXEC ",
-        "EXECUTE ", "MERGE ",
-    ]
-    for kw in forbidden:
-        if kw in sql_upper:
-            return False
-
-    # LIMIT 또는 FETCH FIRST 절 필수
-    has_limit = "LIMIT " in sql_upper or "FETCH FIRST" in sql_upper
-    if not has_limit:
-        return False
-
-    return True
-
-
-async def _collect_structure_samples(
-    llm: BaseChatModel,
-    client: Any,
-    schema_dict: dict,
-    structure_meta: dict,
-) -> dict:
-    """LLM이 감지한 구조에 맞는 샘플 데이터를 수집한다.
-
-    LLM에 구조 분석 결과와 스키마를 제공하여 샘플 SQL을 생성하고,
-    안전성 검증을 통과한 SQL만 실행한다.
-
-    Args:
-        llm: LLM 인스턴스
-        client: DB 클라이언트
-        schema_dict: 스키마 딕셔너리
-        structure_meta: 구조 분석 결과
-
-    Returns:
-        샘플 데이터가 추가된 schema_dict
-    """
-    import json
-
-    from src.prompts.structure_analyzer import SAMPLE_SQL_GENERATION_PROMPT
-
-    schema_text = _format_schema_for_analysis(schema_dict)
-    structure_text = json.dumps(structure_meta, ensure_ascii=False, indent=2)
-
-    prompt = (
-        SAMPLE_SQL_GENERATION_PROMPT
-        + "\n\n## 구조 분석 결과\n\n"
-        + structure_text
-        + "\n\n## DB 스키마\n\n"
-        + schema_text
-    )
-
-    samples: dict[str, Any] = {}
-
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        sql_list = _parse_llm_json(response.content)
-
-        if not isinstance(sql_list, list):
-            logger.warning("샘플 SQL 생성 결과가 배열이 아님")
-            return schema_dict
-
-        # 최대 3개만 처리
-        for item in sql_list[:3]:
-            purpose = item.get("purpose", "")
-            sql = item.get("sql", "")
-
-            if not sql or not _validate_sample_sql(sql):
-                logger.warning("샘플 SQL 안전성 검증 실패 (skip): %s", purpose)
-                continue
-
-            try:
-                result = await client.execute_sql(sql)
-                if result.rows:
-                    samples[purpose] = result.rows
-                    logger.debug("샘플 수집 성공: %s (%d행)", purpose, len(result.rows))
-            except Exception as e:
-                logger.warning("샘플 SQL 실행 실패 (%s): %s", purpose, e)
-
-    except ValueError as e:
-        logger.warning("샘플 SQL 생성 LLM 응답 파싱 실패: %s", e)
-    except Exception as e:
-        logger.warning("샘플 SQL 생성 LLM 호출 실패: %s", e)
-
-    if samples:
-        structure_meta["samples"] = samples
-
-    schema_dict["_structure_meta"] = structure_meta
-    return schema_dict
-
-
 async def _collect_live_samples(
     client: Any,
     schema_dict: dict,
@@ -477,96 +259,6 @@ async def _collect_live_samples(
         label=f"샘플 수집 완료 {total - len(budget_skipped)}/{total}",
     )
     logger.info("라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)", elapsed, db_id)
-
-
-def _format_structure_approval_summary(structure_meta: dict) -> str:
-    """구조 분석 결과를 사용자가 읽기 쉬운 요약으로 변환한다.
-
-    HITL 승인 요청 시 사용자에게 보여줄 요약 텍스트를 생성한다.
-
-    Args:
-        structure_meta: LLM 구조 분석 결과 딕셔너리
-
-    Returns:
-        승인 요청용 요약 텍스트
-    """
-    lines: list[str] = ["DB 구조 분석 결과를 확인해주세요.\n"]
-    for pattern in structure_meta.get("patterns", []):
-        ptype = pattern.get("type", "unknown")
-        if ptype == "eav":
-            lines.append(
-                f"- EAV 구조: {pattern.get('entity_table', '?')} "
-                f"+ {pattern.get('config_table', '?')}"
-            )
-            join_cond = pattern.get("join_condition")
-            value_joins = pattern.get("value_joins")
-            if value_joins:
-                vj_desc = "; ".join(
-                    f"{vj.get('eav_attribute', '?')} -> {vj.get('entity_column', '?')}"
-                    for vj in value_joins
-                )
-                lines.append(f"  조인: 값 기반 브릿지 ({vj_desc})")
-            elif join_cond:
-                lines.append(f"  조인: {join_cond}")
-            else:
-                lines.append("  조인: (값 기반 조인 참조)")
-        elif ptype == "hierarchy":
-            lines.append(
-                f"- 계층 구조: {pattern.get('table', '?')} "
-                f"(parent: {pattern.get('parent_column', '?')})"
-            )
-        else:
-            lines.append(f"- {ptype}: {pattern.get('description', '?')}")
-    if structure_meta.get("query_guide"):
-        guide_text = structure_meta["query_guide"][:200]
-        lines.append(f"\n쿼리 가이드:\n{guide_text}...")
-    lines.append('\n- 승인: "approve" 또는 "승인"')
-    lines.append('- 거부: "reject" 또는 "거부"')
-    return "\n".join(lines)
-
-
-def _read_existing_profile_source(profiles_dir: str, db_id: str) -> Optional[str]:
-    """기존 프로필 파일의 source 필드를 읽는다.
-
-    YAML 파일 우선, JSON fallback으로 source 값을 반환한다.
-    파일이 없거나 읽기 실패 시 None을 반환한다.
-
-    Args:
-        profiles_dir: 프로필 디렉토리 경로
-        db_id: DB 식별자
-
-    Returns:
-        source 필드 값 ("manual", "auto" 등) 또는 None
-    """
-    import json
-
-    # YAML 시도
-    yaml_path = os.path.join(profiles_dir, f"{db_id}.yaml")
-    try:
-        import yaml
-
-        if os.path.exists(yaml_path):
-            with open(yaml_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            if isinstance(data, dict):
-                return data.get("source")
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # JSON fallback
-    json_path = os.path.join(profiles_dir, f"{db_id}.json")
-    if os.path.exists(json_path):
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return data.get("source")
-        except Exception:
-            pass
-
-    return None
 
 
 def _load_manual_profile(db_id: str) -> Optional[dict]:
@@ -721,77 +413,6 @@ def _supplement_eav_tables(
     return supplemented
 
 
-async def _save_structure_profile(
-    db_id: str,
-    structure_meta: dict,
-    cache_mgr: SchemaCacheManager,
-) -> None:
-    """LLM 분석 결과를 캐시와 YAML 파일에 자동 저장한다.
-
-    Redis 캐시에 구조 분석 결과를 저장하고,
-    config/db_profiles/{db_id}.yaml 파일에도 YAML 형식으로 저장한다.
-    YAML 라이브러리가 없으면 JSON 형식으로 fallback한다.
-
-    기존 파일의 source가 "manual"이면 덮어쓰기를 방지한다.
-    자동 생성 시 source: auto를 YAML에 포함한다.
-
-    Args:
-        db_id: DB 식별자
-        structure_meta: 구조 분석 결과 딕셔너리
-        cache_mgr: 스키마 캐시 매니저
-    """
-    import json
-
-    # 기존 파일의 source가 manual이면 파일 덮어쓰기 방지
-    profiles_dir = os.path.join("config", "db_profiles")
-    existing_source = _read_existing_profile_source(profiles_dir, db_id)
-    if existing_source == "manual":
-        logger.info("manual 프로필 보호: 덮어쓰기 스킵 (db_id=%s)", db_id)
-        # Redis 캐시에는 저장 (성능 최적화)
-        try:
-            await cache_mgr.save_structure_meta(db_id, structure_meta)
-        except Exception as e:
-            logger.warning("구조 분석 결과 캐시 저장 실패: %s", e)
-        return
-
-    # Redis 캐시 저장
-    try:
-        await cache_mgr.save_structure_meta(db_id, structure_meta)
-        logger.info("구조 분석 결과 캐시 저장 완료: db_id=%s", db_id)
-    except Exception as e:
-        logger.warning("구조 분석 결과 캐시 저장 실패: %s", e)
-
-    # 자동 생성 시 source: auto 포함
-    save_data = {**structure_meta, "source": "auto"}
-
-    # YAML/JSON 파일 자동 생성
-    os.makedirs(profiles_dir, exist_ok=True)
-
-    try:
-        import yaml
-
-        file_path = os.path.join(profiles_dir, f"{db_id}.yaml")
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write("# AUTO-GENERATED by structure analyzer\n")
-            f.write(f"# db_id: {db_id}\n\n")
-            yaml.dump(
-                save_data,
-                f,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-        logger.info("구조 프로필 YAML 저장: %s", file_path)
-    except ImportError:
-        # PyYAML 미설치 시 JSON fallback
-        file_path = os.path.join(profiles_dir, f"{db_id}.json")
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(save_data, f, ensure_ascii=False, indent=2)
-        logger.info("구조 프로필 JSON 저장 (YAML fallback): %s", file_path)
-    except Exception as e:
-        logger.warning("구조 프로필 파일 저장 실패: %s", e)
-
-
 async def _get_schema_with_cache(
     client: Any,
     db_id: str,
@@ -868,7 +489,10 @@ async def schema_analyzer(
     1. 3단계 캐시를 활용하여 스키마를 조회한다.
     2. LLM을 사용하여 query_targets 기반으로 관련 테이블을 선택한다.
     3. 관련 테이블의 샘플 데이터를 수집한다.
-    4. 스키마를 영구 캐시에 저장한다.
+    4. 구조 정보를 **읽기만** 한다 — ①수동 프로필 ②관리자 승인 적용본 ③없음(plans/104 R1·R3).
+       질의 중 LLM 구조 분석·승인 대기·프로필 파일 기록은 하지 않는다. 없으면 멈추지 않고
+       `dependency_notes`에 사유를 남긴다(G-1 (a)).
+    5. 컬럼 설명도 읽기만 한다 — 캐시 미스에서 비었으면 사유만 남긴다(plans/104 B-6 · G-9 (a)).
 
     Args:
         state: 현재 에이전트 상태
@@ -879,6 +503,8 @@ async def schema_analyzer(
         업데이트할 State 필드:
         - relevant_tables: 관련 테이블 이름 목록
         - schema_info: 스키마 상세 정보 딕셔너리
+        - dependency_notes: 구조 정보가 없거나 컬럼 설명이 비었을 때만 —
+          기존 노트 + `structure_missing`·`descriptions_missing` 노트(DB당 1건)
         - current_node: "schema_analyzer"
         - error_message: 에러 발생 시 메시지, 정상 시 None
     """
@@ -1071,18 +697,18 @@ async def schema_analyzer(
             # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-154, 상수 주석 참조).
             await _collect_live_samples(client, schema_dict, relevant, db_id)
 
-            # 구조 분석: 수동 프로필 -> Redis 캐시 -> LLM 분석 -> HITL 승인 -> 자동 저장
+            # 구조 정보: ①수동 프로필 ②관리자 승인 적용본 ③없음 (plans/104 §3.3 R3 · D-227).
+            # 질의 경로는 구조를 분석하지 않고 읽기만 한다(R1) — LLM 구조 분석·승인 대기·
+            # 프로필 파일 기록은 관리자 「DB 구조」 탭으로 옮겨졌다.
             structure_meta: Optional[dict] = None
-            manual_profile_loaded = False
 
-            # 1차: 수동 프로필 확인 (Redis 캐시보다 우선)
+            # 1차: 수동 프로필 (승인본보다 우선 — 승인본은 수동 프로필을 덮지 않는다)
             manual_profile = _load_manual_profile(db_id)
             if manual_profile is not None:
                 # source 필드는 메타데이터이므로 structure_meta에서 제거
                 structure_meta = {
                     k: v for k, v in manual_profile.items() if k != "source"
                 }
-                manual_profile_loaded = True
                 # Redis 캐시에도 저장 (성능 최적화)
                 try:
                     await cache_mgr.save_structure_meta(db_id, structure_meta)
@@ -1109,82 +735,35 @@ async def schema_analyzer(
                                 "known_attributes → eav_name_synonyms 동기화 실패: %s", e
                             )
 
-            # 2차: Redis 캐시 확인
+            # 2차: 관리자가 승인한 적용본 (Redis → 없으면 파일 백업에서 복원)
             if structure_meta is None:
                 try:
-                    cached_structure = await cache_mgr.get_structure_meta(
-                        db_id
-                    )
-                    if cached_structure:
-                        structure_meta = cached_structure
-                        logger.info("구조 분석 캐시 히트: db_id=%s", db_id)
+                    applied = await cache_mgr.get_applied_structure_meta(db_id)
+                    if applied:
+                        structure_meta = applied
+                        logger.info("구조 정보 적용본 사용: db_id=%s", db_id)
                 except Exception as e:
-                    logger.warning("구조 분석 캐시 조회 실패: %s", e)
+                    logger.warning("구조 정보 적용본 조회 실패: %s", e)
 
-            # 3차: LLM 분석 (수동 프로필과 캐시 모두 없는 경우)
-            if structure_meta is None:
-                # HITL 재진입 확인: approval_context에 이미 분석 결과가 있으면 승인된 것
-                approval_ctx = state.get("approval_context")
-                if (
-                    approval_ctx
-                    and approval_ctx.get("type") == "structure_analysis"
-                    and state.get("approval_action") == "approve"
-                ):
-                    # 승인됨 -> 저장하고 진행
-                    structure_meta = approval_ctx.get("analysis_result")
-                    if structure_meta:
-                        await _save_structure_profile(
-                            db_id, structure_meta, cache_mgr
-                        )
-                        logger.info(
-                            "구조 분석 HITL 승인 -> 프로필 저장: db_id=%s",
-                            db_id,
-                        )
-                else:
-                    # 새 분석 수행
-                    structure_meta = await _analyze_db_structure(
-                        llm, schema_dict
-                    )
-                    if (
-                        structure_meta
-                        and app_config.enable_structure_approval
-                    ):
-                        # HITL 승인 요청: 중간 결과를 함께 반환
-                        logger.info(
-                            "구조 분석 HITL 승인 요청: db_id=%s", db_id
-                        )
-                        return {
-                            "relevant_tables": relevant,
-                            "schema_info": schema_dict,
-                            "column_descriptions": descriptions,
-                            "column_synonyms": synonyms,
-                            "resource_type_synonyms": {},
-                            "eav_name_synonyms": {},
-                            "awaiting_approval": True,
-                            "approval_context": {
-                                "type": "structure_analysis",
-                                "db_id": db_id,
-                                "analysis_result": structure_meta,
-                                "summary": _format_structure_approval_summary(
-                                    structure_meta
-                                ),
-                            },
-                            "current_node": "schema_analyzer",
-                            "error_message": None,
-                        }
-                    elif structure_meta:
-                        # HITL 비활성화: 바로 저장
-                        await _save_structure_profile(
-                            db_id, structure_meta, cache_mgr
-                        )
-
+            # 3차: 없음 — 멈추지 않고 구조 안내 없이 진행하되 사유를 남긴다
+            # (G-1 (a) · 침묵 강등 금지)
+            asset_notes: list[dict[str, Any]] | None = None
             if structure_meta:
                 schema_dict["_structure_meta"] = structure_meta
-                # 수동 프로필은 이미 완전한 정보를 포함하므로 LLM 샘플 수집 스킵
-                if not manual_profile_loaded:
-                    schema_dict = await _collect_structure_samples(
-                        llm, client, schema_dict, structure_meta
-                    )
+            else:
+                logger.warning(
+                    "구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=%s", db_id
+                )
+                asset_notes = list(state.get("dependency_notes") or [])
+                add_db_note(asset_notes, structure_missing_note(db_id))
+
+            # 컬럼 설명은 질의 경로에서 LLM으로 만들지 않는다(plans/104 B-6 · G-9 (a)). 백업 복원
+            # 뒤에도 비었으면 구조 정보 없음과 같이 질의마다 사유를 남긴다 — 캐시가 데워진 뒤 조용히
+            # 품질이 떨어지지 않게(침묵 강등 금지). 한 응답 안에서는 DB당 1건.
+            if not descriptions:
+                if asset_notes is None:
+                    asset_notes = list(state.get("dependency_notes") or [])
+                add_db_note(asset_notes, descriptions_missing_note(db_id))
 
             # 5. 캐시 미스였던 경우에만 저장 (cache_hit=True면 이미 저장됨)
             # get_schema_or_fetch 내부에서 이미 save_schema를 호출하므로
@@ -1253,6 +832,8 @@ async def schema_analyzer(
                 "schema_cache_source": cache_source,
                 "current_node": "schema_analyzer",
                 "error_message": None,
+                # 구조 정보·컬럼 설명이 있으면 키를 싣지 않는다 — 반환 shape 현행 유지
+                **({"dependency_notes": asset_notes} if asset_notes else {}),
             }
 
     except Exception as e:

@@ -13,15 +13,42 @@ from typing import Any, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from src.config import load_config
 from src.prompts.schema_description import (
+    DB_DESCRIPTION_OWNERSHIP_TEMPLATE,
     DB_DESCRIPTION_SYSTEM_PROMPT,
     DB_DESCRIPTION_USER_TEMPLATE,
     SCHEMA_DESCRIPTION_SYSTEM_PROMPT,
     SCHEMA_DESCRIPTION_USER_TEMPLATE,
 )
+from src.routing.capability_ownership import ownership_guidance_rows
 from src.utils.json_extract import coerce_content_text, extract_json_from_response
 
 logger = logging.getLogger(__name__)
+
+
+def _db_description_ownership_guidance(db_id: str) -> str:
+    """DB 설명 생성 프롬프트에 붙일 답변 영역 소유 안내(plans/102 X-T4).
+
+    `ROUTER_CAPABILITY_OWNERSHIP_ENABLED` off거나, DB에 답변 영역 선언이 없거나, 다른 시스템
+    소유 영역이 없으면 빈 문자열이다(프롬프트 종전 그대로). 설정·레지스트리 읽기 실패는 안내 없이
+    생성하되 경고를 남긴다.
+    """
+    try:
+        if not getattr(load_config().router, "capability_ownership_enabled", False):
+            return ""
+        rows = ownership_guidance_rows(db_id)
+    except Exception as e:  # noqa: BLE001 — 안내 실패가 설명 생성 자체를 막으면 안 된다
+        logger.warning("DB 설명 소유 안내 렌더 실패 — 안내 없이 생성합니다(db_id=%s): %s", db_id, e)
+        return ""
+    if rows is None:
+        return ""
+    system_label, own_rows, other_rows = rows
+    if not other_rows:
+        return ""
+    return DB_DESCRIPTION_OWNERSHIP_TEMPLATE.format(
+        system_label=system_label, own_rows=own_rows or "- (없음)", other_rows=other_rows,
+    )
 
 
 class DescriptionGenerator:
@@ -78,7 +105,7 @@ class DescriptionGenerator:
             db_id=db_id,
             table_count=len(tables),
             tables_info=tables_info,
-        )
+        ) + _db_description_ownership_guidance(db_id)
 
         try:
             response = await self._llm.ainvoke([

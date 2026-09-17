@@ -81,6 +81,19 @@ class SolutionSpec:
 
 
 @dataclass(frozen=True)
+class CapabilitySpec:
+    """답변 영역(capability) 설명 — 소유표 렌더 재료 (plans/102 §3.1 · D-224 ①).
+
+    **소유는 담지 않는다.** 어느 시스템이 정본인지는 `SolutionSpec.capabilities`(다중 존
+    시스템)와 `DBEntry.capabilities`(존 없는 단일 DB 시스템)가 정한다 — 여기에 두면 두 번째
+    출처가 된다(D-053).
+    """
+
+    code: str
+    label: str = ""
+
+
+@dataclass(frozen=True)
 class ZoneGroupSpec:
     """존 그룹 선언 — 솔루션 내부의 2차 축 (D-176).
 
@@ -124,6 +137,13 @@ class DBEntry:
     zone: str = ""
     signal_terms: tuple[str, ...] = ()
     enabled: bool = True
+    #: 존 없는 단일 DB 시스템의 답변 영역 소유 선언(plans/102 §3.1). 비어 있으면 `family`로 찾은
+    #: 솔루션의 capabilities를 쓴다.
+    capabilities: tuple[str, ...] = ()
+    #: true면 라우터 DB 목록에 스키마 캐시의 LLM 생성 「상세」 설명을 덧붙이지 않는다
+    #: (plans/102 X-T4). 생성 설명이 다른 시스템 소유 영역 어휘를 되살려 경계를 무너뜨릴 때 끈다.
+    #: 기본 false = 현행.
+    description_locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,6 +158,7 @@ class DBRegistry:
     environment_terms: tuple[str, ...] = ()
     locations: tuple[LocationSpec, ...] = ()
     databases: tuple[DBEntry, ...] = field(default_factory=tuple)
+    capabilities_: tuple[CapabilitySpec, ...] = ()
 
     # ── DB 조회 ────────────────────────────────────────────
     def get(self, db_id: str) -> DBEntry | None:
@@ -195,6 +216,62 @@ class DBRegistry:
         return tuple(
             s.code for s in self.solutions() if capability in s.capabilities
         )
+
+    # ── 답변 영역 소유 (plans/102 §3.1 · D-224 ①) ─────────
+    # "시스템"은 소유 판정의 단위다 — 다중 존 시스템은 솔루션 코드(폴스타 = DB 여러 개),
+    # 존 없는 단일 DB 시스템은 db_id(자산관리 = DB 하나)다.
+    def capability_specs(self) -> tuple[CapabilitySpec, ...]:
+        """답변 영역 설명을 선언 순서로 반환한다(소유표 렌더 순서)."""
+        return self.capabilities_
+
+    def _solution_of_family(self, family: str) -> SolutionSpec | None:
+        if not family:
+            return None
+        for spec in self.solutions():
+            if spec.family == family:
+                return spec
+        return None
+
+    def system_of(self, db_id: str) -> str | None:
+        """db_id가 속한 소유 시스템 키. 답변 영역 선언이 없는 DB면 None."""
+        entry = self.get(db_id)
+        if entry is None:
+            return None
+        if entry.capabilities:
+            return entry.db_id
+        solution = self._solution_of_family(entry.family)
+        return solution.code if solution and solution.capabilities else None
+
+    def capabilities_of(self, db_id: str) -> tuple[str, ...]:
+        """db_id가 답할 수 있는 답변 영역(DB 항목 선언 우선, 없으면 솔루션 선언)."""
+        entry = self.get(db_id)
+        if entry is None:
+            return ()
+        if entry.capabilities:
+            return entry.capabilities
+        solution = self._solution_of_family(entry.family)
+        return solution.capabilities if solution else ()
+
+    def capability_owners(self, capability: str) -> tuple[str, ...]:
+        """답변 영역을 소유한 시스템 키(선언 순서 · 중복 제거). 정상 구성이면 0~1개다."""
+        owners: list[str] = []
+        for entry in self.databases:
+            system = self.system_of(entry.db_id)
+            if system and system not in owners and capability in self.capabilities_of(entry.db_id):
+                owners.append(system)
+        return tuple(owners)
+
+    def system_db_ids(self, system: str) -> tuple[str, ...]:
+        """소유 시스템에 속한 등록 db_id(레지스트리 선언 순서)."""
+        return tuple(e.db_id for e in self.databases if self.system_of(e.db_id) == system)
+
+    def system_label(self, system: str) -> str:
+        """소유 시스템의 사용자 표시 이름(솔루션 라벨 · DB 표시명 · 없으면 키)."""
+        for spec in self.solutions_:
+            if spec.code == system:
+                return spec.label or system
+        entry = self.get(system)
+        return (entry.display_name or system) if entry else system
 
     # ── 위치·제품 어휘 ─────────────────────────────────────
     def location_terms(self) -> tuple[str, ...]:
@@ -367,6 +444,8 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 family=str(raw.get("family", "")),
                 zone=str(raw.get("zone", "")),
                 signal_terms=_as_str_tuple(raw.get("signal_terms")),
+                capabilities=_as_str_tuple(raw.get("capabilities")),
+                description_locked=bool(raw.get("description_locked", False)),
             )
         )
 
@@ -391,6 +470,12 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                     group.code, zcode,
                 )
 
+    capability_specs = tuple(
+        CapabilitySpec(code=str(raw["code"]), label=str(raw.get("label", "")))
+        for raw in data.get("capabilities") or []
+        if isinstance(raw, dict) and raw.get("code")
+    )
+
     declared_zones = {z.code for z in zones}
     for entry in databases:
         if entry.zone and entry.zone not in declared_zones:
@@ -408,6 +493,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
         environment_terms=_as_str_tuple(data.get("environment_terms")),
         locations=locations,
         databases=tuple(databases),
+        capabilities_=capability_specs,
     )
 
 

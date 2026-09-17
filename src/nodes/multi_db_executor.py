@@ -38,7 +38,13 @@ from src.security.pii_filter import (
     scrub_pii,
 )
 from src.state import AgentState, QueryAttempt
-from src.utils.prior_dependency import scope_db_note
+from src.utils.prior_dependency import (
+    add_db_note,
+    descriptions_missing_note,
+    scope_db_note,
+    structure_missing_note,
+)
+from src.nodes.key_bridge import bridge_prior_rows_block, key_bridge_enabled
 from src.utils.query_gen_common import (
     build_generic_period_hint,
     build_prior_rows_block,
@@ -299,7 +305,18 @@ def _prior_for_db(run: _MultiRun, db_id: str) -> tuple[str | None, tuple[str, li
     """
     # isinstance 검사: 테스트 대역(SimpleNamespace·MagicMock run)에서 분할이 오발동하지 않게 한다.
     by_db = getattr(run, "prior_scope_by_db", None)
-    if not isinstance(by_db, dict) or not by_db:
+    split = isinstance(by_db, dict) and bool(by_db)
+    # 값 기반 키 브리지(plans/102 §3.3-③): 대상 컬럼은 DB마다 매니페스트가 다르므로 run 단위 블록을
+    # 재사용하지 않고 이 DB로 다시 만든다. 결정적 스코프(prior_scope)는 종전 그대로.
+    if key_bridge_enabled(getattr(run, "app_config", None)):
+        rows = run.state.get("prior_rows")
+        if split:
+            rows = filter_prior_rows_for_db(rows, db_id)
+        bridge_block = bridge_prior_rows_block(rows, db_id)
+        if bridge_block and is_scrub_samples_enabled():
+            bridge_block = scrub_pii(bridge_block)
+        return bridge_block, (prior_server_scope(rows) if split else run.prior_scope)
+    if not split:
         return run.prior_block, run.prior_scope
     filtered = filter_prior_rows_for_db(run.state.get("prior_rows"), db_id)
     block = build_prior_rows_block(filtered)
@@ -657,12 +674,18 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                 db_id=db_id, app_config=run.app_config,
                 sub_query_context=sub_context,
                 routing_intent=run.state.get("routing_intent"),
+                dependency_notes=getattr(run, "dependency_notes", None),
             )
             run.db_schemas[db_id] = schema_info
 
             if not schema_info.get("tables"):
                 run.db_errors[db_id] = f"DB '{db_id}'에서 테이블을 찾을 수 없습니다."
                 return
+
+            # 구조 정보(수동 프로필·승인본)가 없으면 멈추지 않고 사유를 남긴다 — 단일 DB 경로와
+            # 같은 노트·같은 채널(plans/104 · G-1 (a) · 단일/멀티 대칭).
+            if not schema_info.get("_structure_meta"):
+                _note_structure_missing(run, db_id)
 
             # 2. SQL 생성 (DB별 column_mapping 전달)
             db_mapping = run.state.get("db_column_mapping", {}).get(db_id, {}) if run.state.get("db_column_mapping") else {}
@@ -872,6 +895,42 @@ def _auto_execution_groups(targets: list[dict]) -> list[dict] | None:
     return groups
 
 
+def _with_unzoned_group(
+    groups: list[dict[str, Any]], targets: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """어느 그룹에도 들지 않은 대상을 **마지막 잔여 그룹**으로 붙인다 (plans/95 W-9 · D-214 ④).
+
+    `partition_execution_groups`는 존 미배정 db_id(존 없이 한 시스템이 전 존을 관리하는 DB)를
+    판정에서 제외하는데, 그룹 실행은 그룹에 든 대상만 돈다 — 그대로 두면 존 그룹이 둘 이상인
+    질의에서 그 대상이 사유 없이 빠진다. 공용 함수는 호스트 탐색·범위 선택도 쓰므로 고치지 않고
+    실행기에서만 보탠다. 그룹이 없는 종전 경로(전 대상 실행)는 이 함수를 타지 않는다.
+    """
+    from src.routing.registry import get_registry
+
+    grouped = {d for g in groups for d in (g.get("db_ids") or [])}
+    rest: list[str] = []
+    for target in targets:
+        db_id = target.get("db_id")
+        if db_id and db_id not in grouped and db_id not in rest:
+            rest.append(db_id)
+    if not rest:
+        return groups
+    # 그룹 내부 순서는 partition_execution_groups와 같이 레지스트리 선언 순(D-035)
+    declared = {db_id: i for i, db_id in enumerate(get_registry().db_ids())}
+    rest.sort(key=lambda d: declared.get(d, len(declared)))
+    logger.info("존 미배정 대상 %s을(를) 마지막 잔여 그룹으로 실행한다(침묵 탈락 방지)", rest)
+    return [*groups, {
+        "group_key": "unzoned",
+        "solution": "",
+        "zone_group": "",
+        "label": "존 무관",
+        "db_ids": rest,
+        "backend": "sql",
+        "order": max((g.get("order") or 0 for g in groups), default=0) + 1,
+        "kind": "peer",
+    }]
+
+
 async def multi_db_executor(
     state: AgentState,
     *,
@@ -907,6 +966,8 @@ async def multi_db_executor(
         # execution_groups를 싣지 않아도(실측: 싣는 코드 0건 — 이 루프는 죽어 있었다) 실행기가
         # 스스로 존 그룹으로 나눠 은행존→공동존 순차 실행한다(D-176). 그룹이 하나면 종전 경로.
         groups = _auto_execution_groups(targets)
+    if groups:
+        groups = _with_unzoned_group(groups, targets)
 
     if not groups:
         # 단일 그룹 폴백 — 종전 경로와 **호출 순서·반환 키가 동일**해야 한다(회귀 0).
@@ -1116,6 +1177,7 @@ async def _analyze_schema(
     *,
     sub_query_context: str = "",
     routing_intent: Optional[str] = None,
+    dependency_notes: list[dict[str, Any]] | None = None,
 ) -> dict:
     """DB 스키마를 분석하여 관련 테이블 정보를 수집한다.
 
@@ -1129,6 +1191,9 @@ async def _analyze_schema(
         app_config: 앱 설정
         sub_query_context: 이 DB 담당 조회 설명 (관련 테이블 게이트 매칭 재료, D-159)
         routing_intent: 라우팅 의도 (alarm_query는 게이트 미적용, D-159)
+        dependency_notes: 사유 노트 채널(`run.dependency_notes`). 컬럼 설명이 비었으면(백업 복원 뒤)
+            `descriptions_missing` 노트를 DB당 1건 더한다(plans/104 B-6 · 단일 DB 경로와 같은 조건).
+            None이면 싣지 않는다.
 
     Returns:
         스키마 정보 딕셔너리
@@ -1144,6 +1209,10 @@ async def _analyze_schema(
     schema_dict, cache_hit, _cache_source, _descriptions, _synonyms = (
         await cache_mgr.get_schema_or_fetch(client, db_id)
     )
+    # 컬럼 설명은 질의 경로에서 LLM으로 만들지 않는다(plans/104 B-6 · G-9 (a)) — 백업 복원 뒤에도
+    # 비었으면 질의마다 사유를 남긴다(단일 DB 경로와 같은 조건 · 한 응답 안에서는 DB당 1건).
+    if not _descriptions and isinstance(dependency_notes, list):
+        add_db_note(dependency_notes, descriptions_missing_note(db_id))
 
     # 수동 프로필은 게이트(D-159)와 구조 메타 부착(D-066)이 함께 쓴다 — 1회만 로드.
     try:
@@ -1189,12 +1258,14 @@ async def _analyze_schema(
     if not schema_dict.get("_structure_meta"):
         structure_meta: Optional[dict] = None
         # 위에서 로드한 수동 프로필 재사용 (게이트·구조 메타 단일 로드, D-159)
+        # 우선순위는 단일 DB 경로와 같다 — ①수동 프로필 ②관리자 승인 적용본 ③없음(plans/104 R3).
         if _manual_prof is not None:
             structure_meta = {k: v for k, v in _manual_prof.items() if k != "source"}
         else:
             try:
-                structure_meta = await cache_mgr.get_structure_meta(db_id)
-            except Exception:
+                structure_meta = await cache_mgr.get_applied_structure_meta(db_id)
+            except Exception as e:
+                logger.warning("multi_db 구조 정보 적용본 조회 실패 (db_id=%s): %s", db_id, e)
                 structure_meta = None
         if structure_meta:
             schema_dict["_structure_meta"] = structure_meta
@@ -1202,8 +1273,23 @@ async def _analyze_schema(
                 "multi_db _analyze_schema: _structure_meta 부착 (db_id=%s, query_examples=%d)",
                 db_id, len(structure_meta.get("query_examples", []) or []),
             )
+        else:
+            logger.warning(
+                "multi_db 구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=%s", db_id
+            )
 
     return schema_dict
+
+
+def _note_structure_missing(run: _MultiRun, db_id: str) -> None:
+    """구조 정보 없음 노트를 `run.dependency_notes`에 한 번만 싣는다 (plans/104 · G-1 (a)).
+
+    노트 문구는 단일 DB 경로와 같은 함수가 만든다. isinstance 검사: 테스트 대역(SimpleNamespace·
+    MagicMock run)에 채널이 없으면 아무것도 하지 않는다(반환 shape 현행 유지).
+    """
+    notes = getattr(run, "dependency_notes", None)
+    if isinstance(notes, list):
+        add_db_note(notes, structure_missing_note(db_id))
 
 
 async def _build_stepwise_deps(
@@ -1436,6 +1522,7 @@ async def _try_semantic_compile(
             schema_info, app_config, db_engine, db_id, default_limit,
         ),
         derivation_sink=derivation_sink,
+        parsed_filters=parsed_requirements.get("filter_conditions"),
     )
     if semantic_sql:
         logger.info(

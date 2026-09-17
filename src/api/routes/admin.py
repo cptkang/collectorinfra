@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from src.api.admin_audit import log_admin_event as _log_settings_event
 from src.api.dependencies import require_admin_user
 from src.api.settings_catalog import (
     FieldError,
@@ -50,6 +52,9 @@ _SENSITIVE_KEYWORDS = {
 }
 
 _MASK_VALUE = "********"
+
+# ACTIVE_DB_IDS 저장 시 준비도 판정 전체 상한(plans/104 B-7) — 넘기면 경고로 알리고 저장은 유지한다
+_READINESS_TIMEOUT_SECONDS = 20.0
 
 
 # --- 요청/응답 모델 ---
@@ -96,6 +101,14 @@ class EnvUpdateResponse(BaseModel):
     applied_immediately_keys: list[str] = Field(default_factory=list)
     ignored_keys: list[str] = Field(
         default_factory=list, description="마스킹 값 수신으로 무시한 키(원값 보존)"
+    )
+    readiness_warnings: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "ACTIVE_DB_IDS에 새로 넣은 DB의 준비도 필수 미충족 항목 "
+            "{db_id: [{code, label, detail}]} · 판정 실패면 {\"_error\": 사유} · "
+            "경고가 없으면 null(plans/104 B-7 — 저장은 그대로 진행)"
+        ),
     )
 
 
@@ -373,76 +386,90 @@ def _atomic_write_env(content: str) -> None:
         raise
 
 
-async def _log_settings_event(
-    request: Request,
-    admin_id: Optional[str],
-    event_value: str,
-    extra: dict,
-) -> bool:
-    """설정 변경/리로드를 감사 로그에 기록한다.
-
-    Returns:
-        기록 성공 여부(둘 다 미구성이면 False — 호출부가 응답에 명시한다)
-    """
-    from src.domain.audit import AuditLogEntry
-
-    entry = AuditLogEntry(
-        event=event_value,
-        user_id=admin_id,
-        client_ip=getattr(request.state, "client_ip", None),
-        request_id=getattr(request.state, "request_id", None),
-        success=True,
-        extra=extra,
-    )
-
-    audit_service = getattr(request.app.state, "audit_service", None)
-    if audit_service:
-        try:
-            await audit_service.log(entry)
-            return True
-        except Exception as e:
-            logger.error("설정 감사 기록 실패, 폴백: %s", e)
-
-    audit_repo = getattr(request.app.state, "audit_repo", None)
-    if audit_repo:
-        try:
-            await audit_repo.log_event({
-                "event_type": event_value,
-                "user_id": admin_id,
-                "ip_address": getattr(request.state, "client_ip", None),
-                "detail": extra,
-            })
-            return True
-        except Exception as e:
-            logger.error("설정 감사 기록 실패: %s", e)
-
-    logger.warning("감사 저장소가 없어 설정 이벤트를 기록하지 못했습니다: %s", event_value)
-    return False
-
-
 async def _log_settings_update(
     request: Request,
     admin_id: Optional[str],
     changes: dict[str, dict[str, Optional[str]]],
     sensitive_keys: list[str],
     reset_keys: list[str],
+    readiness_warnings: dict[str, Any] | None = None,
 ) -> bool:
     """설정 변경을 감사 로그에 기록한다.
 
     비민감 키는 이전값→새값 쌍을, 민감/시크릿 키는 **키 이름만** 남긴다.
+    `ACTIVE_DB_IDS`에 준비도 필수 미충족 DB를 넣었으면 그 경고도 남긴다(plans/104 B-7 · G-7 (a)).
     """
     from src.domain.audit import AuditEvent
 
+    extra: dict[str, Any] = {
+        "changes": changes,
+        "sensitive_keys": sensitive_keys,
+        "reset_keys": reset_keys,
+    }
+    if readiness_warnings:
+        extra["readiness_warnings"] = readiness_warnings
     return await _log_settings_event(
         request,
         admin_id,
         AuditEvent.SETTINGS_UPDATE.value,
-        {
-            "changes": changes,
-            "sensitive_keys": sensitive_keys,
-            "reset_keys": reset_keys,
-        },
+        extra,
     )
+
+
+def _parse_db_ids(value: Optional[str]) -> list[str]:
+    """`ACTIVE_DB_IDS` 값(쉼표 구분)을 순서 보존·중복 제거 목록으로 바꾼다."""
+    return list(dict.fromkeys(
+        part.strip() for part in (value or "").split(",") if part.strip()
+    ))
+
+
+async def _active_db_readiness_warnings(
+    request: Request, added_db_ids: list[str],
+) -> dict[str, Any]:
+    """새로 활성화한 DB의 준비도 필수 미충족 항목을 모은다(plans/104 B-7 · G-7 (a) 경고만).
+
+    판정은 **실행 중 프로세스**의 설정(`app.state.config`)으로 한다(C2 — 레지스트리는 재기동 전까지
+    실행 중인 것이 기준). 판정 자체가 실패하면 저장을 막지 않고 `{"_error": 사유}`를 돌려준다.
+
+    Returns:
+        `{db_id: [{code, label, detail}]}`(필수 미충족이 있는 DB만) 또는 `{"_error": 사유}`
+    """
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        return {"_error": "실행 중 설정을 찾지 못해 준비도를 판정하지 못했습니다"}
+
+    try:
+        from src.api.routes.db_structure import build_registration_service
+
+        service = build_registration_service(config)
+        reports = await asyncio.wait_for(
+            service.readiness_many(added_db_ids),
+            timeout=_READINESS_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning("ACTIVE_DB_IDS 준비도 판정 시간 초과: %s", added_db_ids)
+        return {"_error": f"준비도 판정 시간 초과({_READINESS_TIMEOUT_SECONDS:g}초)"}
+    except Exception as e:
+        logger.warning("ACTIVE_DB_IDS 준비도 판정 실패: %s: %s", added_db_ids, e)
+        return {"_error": f"준비도 판정 실패: {type(e).__name__}: {e}"}
+
+    warnings: dict[str, Any] = {}
+    for db_id in added_db_ids:
+        report = reports.get(db_id)
+        if report is None:
+            warnings[db_id] = [{
+                "code": "unknown",
+                "label": "준비도 판정 결과 없음",
+                "detail": "판정 결과에 이 DB가 없습니다",
+            }]
+            continue
+        unmet = [
+            {"code": item.code, "label": item.label, "detail": item.detail}
+            for item in report.unmet_required()
+        ]
+        if unmet:
+            warnings[db_id] = unmet
+    return warnings
 
 
 def _parse_connection_string(conn_str: str) -> dict[str, str]:
@@ -746,6 +773,18 @@ async def update_settings(
     from src.config import load_config
     load_config.cache_clear()
 
+    # 8-1. (plans/104 B-7 · G-7 (a)) ACTIVE_DB_IDS에 새로 넣은 DB만 준비도를 판정해 경고한다.
+    # 저장은 이미 끝났다 — 경고는 저장을 막지 않고, 추가 입력도 요구하지 않는다.
+    readiness_warnings: dict[str, Any] = {}
+    if "ACTIVE_DB_IDS" in updates or "ACTIVE_DB_IDS" in reset_keys:
+        old_db_ids = _parse_db_ids(before.get("ACTIVE_DB_IDS"))
+        added_db_ids = [
+            db_id for db_id in _parse_db_ids(updates.get("ACTIVE_DB_IDS"))
+            if db_id not in old_db_ids
+        ]
+        if added_db_ids:
+            readiness_warnings = await _active_db_readiness_warnings(request, added_db_ids)
+
     # 9. 감사 로그 — 비민감 키는 old→new 쌍, 민감/시크릿 키는 키 이름만
     changes: dict[str, dict[str, Optional[str]]] = {}
     sensitive_keys: list[str] = []
@@ -757,6 +796,7 @@ async def update_settings(
             changes[key] = {"old": before.get(key), "new": value}
     audit_ok = await _log_settings_update(
         request, _admin.get("sub"), changes, sensitive_keys, reset_keys,
+        readiness_warnings=readiness_warnings,
     )
 
     changed_keys = list(updates) + reset_keys
@@ -779,6 +819,15 @@ async def update_settings(
     )
 
     message = f"{len(changed_keys)}개 설정이 저장되었습니다."
+    if readiness_warnings:
+        if "_error" in readiness_warnings:
+            message += " (활성화 준비도를 판정하지 못했습니다 — 경고 참조)"
+        else:
+            message += (
+                " (활성화 준비도 필수 미충족: "
+                + ", ".join(readiness_warnings)
+                + " — 저장은 완료되었습니다)"
+            )
     if not audit_ok:
         message += " (감사 기록 불가 — 감사 저장소 미구성)"
 
@@ -789,6 +838,7 @@ async def update_settings(
         reload_keys=reload_keys,
         applied_immediately_keys=applied_immediately_keys,
         ignored_keys=ignored_keys,
+        readiness_warnings=readiness_warnings or None,
         message=message,
     )
 

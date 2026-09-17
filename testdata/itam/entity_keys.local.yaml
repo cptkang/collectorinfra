@@ -1,0 +1,20 @@
+# 자산관리(itam) 서버 엔터티 키 매니페스트 — **로컬 하네스 전용** (plans/102 §3.3-① · X-2)
+#
+# ⚠ 가정 표기: 테이블·컬럼 식별자는 벤더 시트 전사본(`schema.yaml`)의 `var`(camelCase)를 그대로 쓴
+#   **G-4(물리 식별자) 미확정 가정**이다. 운영 자산 DB 식별자가 확정되면 정본은
+#   `config/db_profiles/itam.yaml`(plans/95 W-6)의 `entity_keys` 블록에 둔다.
+# ⚠ 파생 금지: 이 파일은 로컬 샌드박스(`init/01_schema.sql` · `init/02_seed.sql`)와 짝을 이루는 테스트 픽스처다.
+#   이 파일을 `config/`로 복사하지 않는다(plans/95 §4.6.2 — 샌드박스에서 운영 정본을 파생하지 않는다).
+#   런타임 로더(`load_entity_key_manifest`)는 이 경로를 보지 않고, 테스트가 `load_manifest_file`로 명시 로드한다.
+#
+# 샌드박스 사실(2026-09-17 실측 · `init/01_schema.sql`):
+# - PK `groupCoCd + sevrHostName + iPCtnt` — 한 서버가 IP마다 행을 가질 수 있다(X-T5) → row_multiplicity: per_ip
+# - `iPCtnt` VARCHAR(255)에 IP 여러 개가 한 칸(`,` 구분)으로 들어간 행이 있다(호스트 키 ④ · X-T6) → multi_value
+# - `sevrHostName` VARCHAR(300)에 대소문자 차이(②)·FQDN(③)이 섞여 있다 → casefold · 단축명 비교
+entity_keys:
+  entity: server
+  table: TCDMSIF80
+  row_multiplicity: per_ip
+  keys:
+    - {type: hostname, column: sevrHostName, priority: 1, compare: casefold}
+    - {type: ip, column: iPCtnt, priority: 2, multi_value: true}

@@ -125,8 +125,8 @@ def build_deep_agent(
     tools = build_tools(worker, config, ambient_state, collector=collector)
 
     logger.info(
-        "deepagents 에이전트 조립: 오케스트레이터=vLLM(%s), 도구 %d개, 워커=%s",
-        config.orchestrator.model, len(tools), config.llm.provider,
+        "deepagents 에이전트 조립: 오케스트레이터=%s(%s), 도구 %d개, 워커=%s",
+        config.orchestrator.provider, config.orchestrator.model, len(tools), config.llm.provider,
     )
     # create_deep_agent의 실측 시그니처는 system_prompt(=instructions 아님, 0.6.10).
     return create_deep_agent(

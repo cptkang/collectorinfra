@@ -99,6 +99,8 @@ class TestDerivationParity:
         assert by_id["polestar_b0"].db_schema == "POLESTAR"
         assert by_id["polestar_cm_gp"].db_schema == "polestar"
         assert by_id["itsm"].db_schema == ""
+        # 자산관리 DB는 MariaDB(plans/95 · 벤더 시트 DBMS구분). DB2가 아니므로 LIMIT 계열.
+        assert by_id["itam"].db_engine == "mariadb"
 
     def test_disabled_entry_is_dropped(self, tmp_path):
         """enabled: false 항목은 등록에서 제외된다."""

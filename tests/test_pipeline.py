@@ -269,10 +269,9 @@ class TestHappyPath:
         }
 
         mock_client = _make_mock_db_client(schema, [])
-        # schema_analyzer: table selection(쉼표 구분) + structure analysis(JSON)
+        # schema_analyzer: table selection(쉼표 구분)만 — 질의 경로 구조 분석 LLM 호출은 없다(plans/104)
         schema_llm_responses = [
             "servers, cpu_metrics",
-            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
         ]
         mock_llm = _make_mock_llm(schema_llm_responses)
 
@@ -430,10 +429,9 @@ class TestHappyPath:
 
         state = create_initial_state(user_query="CPU 사용률이 80% 이상인 서버 목록을 보여줘")
 
-        # LLM 응답: input_parser(1) + schema_analyzer(최대 3: table selection, structure analysis, retry)
+        # LLM 응답: input_parser(1) + schema_analyzer(table selection 1 — 구조 분석 LLM 호출 없음 · plans/104)
         #           + query_generator(1) + output_generator(1)
-        # schema_analyzer table selection은 쉼표 구분 텍스트 기대 (line 995)
-        # schema_analyzer structure analysis는 JSON 기대
+        # schema_analyzer table selection은 쉼표 구분 텍스트 기대
         llm_responses = [
             # 1. input_parser
             json.dumps({
@@ -443,11 +441,9 @@ class TestHappyPath:
             }, ensure_ascii=False),
             # 2. schema_analyzer: table selection (쉼표 구분)
             "servers, cpu_metrics",
-            # 3. schema_analyzer: structure analysis (JSON)
-            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
-            # 4. query_generator
+            # 3. query_generator
             "```sql\nSELECT s.hostname, s.ip_address, c.usage_pct FROM servers s JOIN cpu_metrics c ON s.id = c.server_id WHERE c.usage_pct >= 80 LIMIT 1000;\n```",
-            # 5. output_generator
+            # 4. output_generator
             "CPU 사용률이 80% 이상인 서버 3대를 조회했습니다.",
         ]
         mock_llm = _make_mock_llm(llm_responses)
@@ -727,9 +723,7 @@ class TestEmptyResultFlow:
             }, ensure_ascii=False),
             # 2. schema_analyzer: table selection (쉼표 구분)
             "servers, cpu_metrics",
-            # 3. schema_analyzer: structure analysis (JSON)
-            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
-            # 4. query_generator
+            # 3. query_generator
             "```sql\nSELECT s.hostname, c.usage_pct FROM servers s JOIN cpu_metrics c ON s.id = c.server_id WHERE c.usage_pct >= 99 LIMIT 1000;\n```",
         ]
         mock_llm = _make_mock_llm(llm_responses)

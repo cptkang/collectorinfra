@@ -6,7 +6,7 @@ fakeredis를 사용하여 실제 Redis 없이 테스트한다.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -295,17 +295,44 @@ class TestRedisSchemaDBDescriptions:
         cache._connected = True
         return cache
 
-    async def test_save_db_description(self, connected_cache, mock_redis):
-        """DB 설명 저장이 성공한다."""
+    @pytest.fixture
+    def pipe_mock(self, mock_redis):
+        """설명·출처를 함께 쓰는 pipeline 목."""
+        pipe = MagicMock()
+        pipe.execute = AsyncMock(return_value=[1, 1])
+        mock_redis.pipeline = MagicMock(return_value=pipe)
+        return pipe
+
+    async def test_save_db_description(self, connected_cache, mock_redis, pipe_mock):
+        """DB 설명 저장이 성공하고 출처(기본 manual)를 함께 기록한다(plans/104 S5)."""
         result = await connected_cache.save_db_description(
             "polestar",
             "서버 사양, CPU/메모리/디스크 사용량을 관리하는 인프라 모니터링 DB",
         )
         assert result is True
-        mock_redis.hset.assert_awaited_once_with(
-            RedisSchemaCache.DB_DESCRIPTIONS_KEY,
-            "polestar",
-            "서버 사양, CPU/메모리/디스크 사용량을 관리하는 인프라 모니터링 DB",
+        assert pipe_mock.hset.call_args_list == [
+            call(
+                RedisSchemaCache.DB_DESCRIPTIONS_KEY,
+                "polestar",
+                "서버 사양, CPU/메모리/디스크 사용량을 관리하는 인프라 모니터링 DB",
+            ),
+            call(RedisSchemaCache.DB_DESCRIPTION_ORIGIN_KEY, "polestar", "manual"),
+        ]
+        pipe_mock.execute.assert_awaited_once()
+
+    async def test_save_db_description_llm_origin(self, connected_cache, pipe_mock):
+        """origin 인자가 출처 Hash에 그대로 기록된다."""
+        assert await connected_cache.save_db_description("polestar", "설명", origin="llm") is True
+        pipe_mock.hset.assert_any_call(
+            RedisSchemaCache.DB_DESCRIPTION_ORIGIN_KEY, "polestar", "llm"
+        )
+
+    async def test_get_db_description_origin(self, connected_cache, mock_redis):
+        """출처 조회는 출처 Hash의 db_id 필드를 읽는다."""
+        mock_redis.hget = AsyncMock(return_value="manual")
+        assert await connected_cache.get_db_description_origin("polestar") == "manual"
+        mock_redis.hget.assert_awaited_once_with(
+            RedisSchemaCache.DB_DESCRIPTION_ORIGIN_KEY, "polestar"
         )
 
     async def test_load_db_descriptions(self, connected_cache, mock_redis):
@@ -338,13 +365,15 @@ class TestRedisSchemaDBDescriptions:
         result = await connected_cache.get_db_description("nonexistent")
         assert result is None
 
-    async def test_delete_db_description(self, connected_cache, mock_redis):
-        """DB 설명 삭제가 성공한다."""
+    async def test_delete_db_description(self, connected_cache, pipe_mock):
+        """DB 설명 삭제가 성공하고 출처 기록도 함께 지운다."""
         result = await connected_cache.delete_db_description("polestar")
         assert result is True
-        mock_redis.hdel.assert_awaited_once_with(
-            RedisSchemaCache.DB_DESCRIPTIONS_KEY, "polestar"
-        )
+        assert pipe_mock.hdel.call_args_list == [
+            call(RedisSchemaCache.DB_DESCRIPTIONS_KEY, "polestar"),
+            call(RedisSchemaCache.DB_DESCRIPTION_ORIGIN_KEY, "polestar"),
+        ]
+        pipe_mock.execute.assert_awaited_once()
 
     async def test_not_connected_save_returns_false(self, cache):
         """연결되지 않은 상태에서 save_db_description은 False를 반환한다."""

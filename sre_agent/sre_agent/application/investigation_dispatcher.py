@@ -223,7 +223,7 @@ class InvestigationDispatcher:
 
     def __call__(self, job: JobLike) -> None:
         """JobStore가 호출하는 executor. 동기 가드 → (통과 시) 백그라운드 조사 위임."""
-        # 스텁 경로(조사 불가): LLM 키 부재 또는 조사함수 미주입 → 동기 스텁 확정.
+        # 스텁 경로(조사 불가): 조사 LLM 게이트 차단(D-230) 또는 조사함수 미주입 → 동기 스텁 확정.
         # 스텁도 폭주 가드(dedup·예산)는 그대로 통과시켜야 하므로 가드 판정을 먼저 한다.
         blocked = self._apply_sync_guards(job)
         if blocked is not None:
@@ -235,7 +235,7 @@ class InvestigationDispatcher:
             self._audit({"event": "rejected", "investigation_id": job.investigation_id, "reason": blocked})
             return
 
-        if self._diagnose_fn is None or self._settings.gemini_api_key is None:
+        if self._diagnose_fn is None or self._settings.investigation_llm_stub_reason() is not None:
             self._finalize_stub(job)
             return
 
@@ -526,11 +526,8 @@ class InvestigationDispatcher:
     # ── 스텁(조사 불가) ─────────────────────────────────────────
 
     def _finalize_stub(self, job: JobLike) -> None:
-        """LLM 키 부재 또는 조사함수 미주입 시 명시적 스텁 확정(침묵 금지)."""
-        if self._settings.gemini_api_key is None:
-            message = "조사 미실행 — LLM 키 부재(스텁)"
-        else:
-            message = "조사 미실행 — dispatcher 조사함수 미주입(스텁)"
+        """조사 LLM 게이트 차단(플래그 off·키 부재) 또는 조사함수 미주입 시 명시적 스텁 확정(침묵 금지)."""
+        message = self._settings.investigation_llm_stub_reason() or "조사 미실행 — dispatcher 조사함수 미주입(스텁)"
         job.status = "stub"
         job.verdict = message
         job.briefing = {"stub": True, "message": message, "elements": None}

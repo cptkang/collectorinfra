@@ -38,7 +38,7 @@ _S_DB_LIST = """## 사용 가능한 데이터베이스
 
 {db_list}
 
-"""
+{capability_ownership_section}"""
 
 _S_USER_DB_SPEC = """## 사용자 직접 DB 지정 규칙
 
@@ -89,13 +89,13 @@ _S_OUTPUT_JSON = """## 출력 형식
 ```json
 {{
     "intent": "data_query",
-    "databases": [
+{capability_chain_line}    "databases": [
         {{
             "db_id": "데이터베이스 식별자",
             "relevance_score": 0.9,
             "reason": "선택 이유",
             "sub_query_context": "이 DB에서 조회할 구체적 내용",
-            "user_specified": false
+{capability_field_line}            "user_specified": false
         }}
     ]
 }}
@@ -239,7 +239,7 @@ _S_EXAMPLES = """## 예시
     ]
 }}
 ```
-{unknown_example}
+{unknown_example}{capability_ownership_examples}
 """
 
 _S_DB_GUIDE = """## DB 설명 조회 의도
@@ -444,13 +444,13 @@ _S_STAGE2_OUTPUT = """## 출력 형식
 
 ```json
 {{
-    "databases": [
+{capability_chain_line}    "databases": [
         {{
             "db_id": "데이터베이스 식별자",
             "relevance_score": 0.9,
             "reason": "선택 이유",
             "sub_query_context": "이 DB에서 조회할 구체적 내용",
-            "user_specified": false
+{capability_field_line}            "user_specified": false
         }}
     ]
 }}
@@ -597,3 +597,77 @@ fault_diagnosis로 분류할 질의 패턴(장애·이상 상황 + 원인/진단
 입력: "web-01 CPU 사용률 보여줘"  (← 단순 조회 → data_query)
 출력: {{"intent": "data_query", "databases": [...]}}
 """
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 답변 영역 소유 (plans/102 X-8 · D-224 ① · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) — 옵트인
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 슬롯 4개 — 단일 호출 템플릿과 2단 DB 선택 템플릿이 **같은 절 상수**로 공유한다(D-053 · 대칭):
+#   {capability_ownership_section}  `_S_DB_LIST` 말미 — 소유표 + 출력 필드 정의
+#   {capability_chain_line}         「출력 형식」 JSON의 `databases` 앞 줄
+#   {capability_field_line}         「출력 형식」 JSON 항목의 `user_specified` 앞 줄
+#   {capability_ownership_examples} `_S_EXAMPLES` 말미 — 양방향 교차 예시 2건
+#
+# **off면 네 슬롯 모두 빈 문자열** → 렌더가 바이트 동일(골든 `router_prompt_fd_*.txt`가 강제).
+# **on이면 줄 단위 삽입만** 생긴다 — 기존 줄을 한 글자도 고치지 않는다(삽입 전용 테스트가 강제).
+# 소유표의 **행**(어느 영역을 어느 시스템이 소유하는가)은 여기 적지 않는다 — 레지스트리에서 렌더해
+# `{ownership_rows}`로 넣는다(`src/routing/capability_ownership.render_ownership_rows` · 사본 금지).
+# 렌더는 기동 시 1회다(활성 DB 목록 단위 캐시 — 요청마다 흔들리면 프롬프트 접두 KV 캐시가
+# 무효화된다). 아래 프롬프트 본문 상수의 긴 줄은 렌더 텍스트 그대로다(줄바꿈하면 프롬프트가 바뀐다).
+
+SEMANTIC_ROUTER_OWNERSHIP_HEADING = "## 답변 영역 소유표"
+
+# `.format(ownership_rows=...)`로 채운다 — 이 문자열에 중괄호를 쓰지 말 것.
+SEMANTIC_ROUTER_OWNERSHIP_SECTION_TEMPLATE = SEMANTIC_ROUTER_OWNERSHIP_HEADING + """
+
+질의에 답하는 데 필요한 **답변 영역**을 먼저 판단하고, 각 영역은 아래 표의 **정본 시스템** DB에서 조회하세요.
+여러 시스템의 DB에 비슷한 컬럼이 함께 있어도 그 영역의 조회처는 정본 시스템입니다.
+질의가 여러 영역을 필요로 하면 영역마다 정본 시스템의 DB를 선택합니다(멀티 DB 쿼리 판단 규칙 그대로).
+사용자가 DB를 직접 지정한 경우에는 사용자 직접 DB 지정 규칙을 그대로 따릅니다.
+
+| 답변 영역 코드 | 내용 | 정본 시스템 — DB |
+|---|---|---|
+{ownership_rows}
+
+### 답변 영역 출력 필드
+
+- `databases[].capabilities`: 그 DB에서 답할 답변 영역 코드 목록입니다. **위 표의 코드만** 쓰고, 맞는 영역이 없으면 빈 배열([])로 둡니다.
+- `chain`: 앞 영역의 조회 결과가 뒤 영역의 조회 대상을 정할 때만 답변 영역 코드를 **조회 순서대로** 적습니다(예: 조건에 맞는 서버를 먼저 찾고 그 서버들의 다른 영역 정보를 조회). 영역들이 서로 독립이면 빈 배열([])입니다.
+
+"""  # noqa: E501
+
+SEMANTIC_ROUTER_CAPABILITY_CHAIN_LINE = '    "chain": [],\n'
+
+SEMANTIC_ROUTER_CAPABILITY_FIELD_LINE = (
+    '            "capabilities": ["이 DB에서 답할 답변 영역 코드"],\n'
+)
+
+# 값으로 삽입된다(재포맷 없음) — JSON 중괄호를 한 겹으로 쓴다. db_id 표기는 위 예시 관행을 따른다.
+SEMANTIC_ROUTER_OWNERSHIP_EXAMPLES = """
+입력: "CPU 사용률 90% 넘는 서버들의 유지보수 계약 만료일"
+출력:
+```json
+{
+    "intent": "data_query",
+    "chain": ["server_usage", "asset_contract"],
+    "databases": [
+        {"db_id": "polestar_b0", "relevance_score": 0.9, "reason": "CPU 사용률 조건으로 서버 선별 — 사용률의 정본은 폴스타", "sub_query_context": "CPU 사용률이 90%를 넘는 서버 목록 조회", "capabilities": ["server_usage"], "user_specified": false},
+        {"db_id": "itam", "relevance_score": 0.9, "reason": "선별된 서버의 유지보수 계약 만료일 — 계약의 정본은 자산관리", "sub_query_context": "선별된 서버들의 유지보수 계약 만료일 조회", "capabilities": ["asset_contract"], "user_specified": false}
+    ]
+}
+```
+
+입력: "HW 지원 종료가 6개월 안 남은 서버의 현재 알람"
+출력:
+```json
+{
+    "intent": "alarm_query",
+    "chain": ["asset_lifecycle", "alarm"],
+    "databases": [
+        {"db_id": "itam", "relevance_score": 0.9, "reason": "HW 지원 종료일 조건으로 서버 선별 — 지원 종료의 정본은 자산관리", "sub_query_context": "HW 지원 종료일이 6개월 이내인 서버 목록 조회", "capabilities": ["asset_lifecycle"], "user_specified": false},
+        {"db_id": "polestar_b0", "relevance_score": 0.85, "reason": "선별된 서버의 현재 알람 — 알람의 정본은 폴스타", "sub_query_context": "선별된 서버들의 현재 활성 알람 조회", "capabilities": ["alarm"], "user_specified": false}
+    ]
+}
+```
+"""  # noqa: E501

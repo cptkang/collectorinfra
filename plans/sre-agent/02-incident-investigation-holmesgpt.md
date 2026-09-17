@@ -159,6 +159,7 @@ HolmesGPT의 서술(`result`)과 severity_judge 판정을 6요소 스키마로 �
 - **스모크 하네스** `sre_agent/scripts/smoke_llm.py` (holmesgpt 반입 직후 즉시 실행 가능한 최소 검증):
   1. litellm 단독 tool-calling 왕복 — 함수 호출 1회를 강제하고 호출명·인자 파싱을 확인(HolmesGPT 성립 조건인 tool-calling 자체의 검증).
   2. `DiagnosisAgent` `ask` 1회 — 로컬 mock MCP 픽스처(Plan 04 로컬 PG 픽스처) 대상, 도구 자동 발견→호출→서술 완주 확인.
+     **(2026-09-17 실측 교정)** 구현은 `toolsets={}`였는데 이는 빈 toolset이 아니라 holmes 내장 기본(bash `core` · `fetch_webpage` · `tcp_check`)이 켜진 상태라, 로컬 LLM이 개발 맥에서 `kubectl get`을 실행했다(`docs/18`). 지금은 `no_host_access_profile()`로 만들고 LLM 호출 전에 붙은 도구를 `NO_HOST_ACCESS_TOOLS`(`TodoWrite`·`fetch_skill`)와 대조한다.
 - **용도**: ①tool-calling 성립 검증(§7-1 운영 LLM 판단의 실측 근거 축적) ②D-119 품질 게이트(A/B)의 실행 LLM ③W-A~W-C 개발 루프.
 - **호출 승인(절대 제약 · D-127)**: 실 Gemini 호출은 **사용자 명시 승인 후에만**(건마다 승인·포괄 승인 없음). 실 호출 경로는 전부 `RUN_E2E=1` 옵트인 뒤 — **키 존재만으로 실행되는 게이팅 금지**, 스모크도 미승인 시 보류 종료 가드.
 - **데이터 통제(절대 제약)**: Gemini API는 외부 SaaS — **개발·테스트 전용, 운영 투입 금지**. 외부 송신 입력은 **목업(Plan 65)·로컬 Docker 픽스처 데이터만**, 실 운영(폴스타) 데이터 송신 금지. 결정적 차단: 테스트 환경 `mcp_server` config에는 픽스처 소스만 등록(운영 connection 미설정 → 빈 값 소스 자동 비활성 규약 재사용 — 물리적으로 실 데이터 접근 불가).
@@ -175,6 +176,6 @@ HolmesGPT의 서술(`result`)과 severity_judge 판정을 6요소 스키마로 �
 ## 12. 테스트·수용 기준
 
 - **단위**: severity_judge 시그니처 표(도구 원시 출력 픽스처 → 판정), dispatcher 가드(dedup TTL·동시 상한·전체 타임아웃), 마스킹 유지 확인(args 마스킹 자체는 MCP 서버 측 강제 — Plan 04 §6 테스트 소관, 여기서는 마스킹된 도구 출력이 브리핑에 원문 복원 없이 유지되는지), 브리핑 조립(인용 결여 → 가설 강등).
-- **통합**: toolset이 실 런타임 tool executor에 반영되는지 검증 — `tests/test_vm_profile.py` 전례를 따르되, **prerequisite 캐시 히트 시 config 파싱이 생략되므로 `PrerequisiteCacheMode.DISABLED`로 검증**(기실측 함정).
-- **e2e(옵트인 `RUN_E2E=1`, API 키 필요 — 테스트 LLM은 Gemini, §10.1/D-120)**: mock 이벤트(collectorinfra Plan 65 생성기 — 이관 Plan 03은 대체됨) → 게이트 훅 → `sre_investigate_alarm` submit → 실 HolmesGPT 조사 1건 완주. 입력은 목업·픽스처 데이터만(§10.1 데이터 통제).
+- **통합**: toolset이 실 런타임 tool executor에 반영되는지 검증 — `tests/test_vm_profile.py` 전례를 따르되, **prerequisite 캐시 히트 시 config 파싱이 생략되므로 `PrerequisiteCacheMode.DISABLED`로 검증**(기실측 함정). **(2026-09-17)** 캐시는 파싱 생략뿐 아니라 **`enabled` 설정 자체를 덮었다**(`~/.holmes/toolsets_status.json` — 프로파일의 `enabled: False` 무시). 테스트만 캐시를 끄고 운영 경로(`DiagnosisAgent.llm`)는 켠 채였던 비대칭을 없애 **`DiagnosisAgent.llm` 자체가 `DISABLED` + `enable_all_toolsets_possible=False`**로 만든다. 운영 경로 그대로의 회귀는 `tests/test_toolset_runtime_isolation.py`(tmp 낡은 캐시로 재현).
+- **e2e(옵트인 `RUN_E2E=1`, API 키 필요 — 테스트 LLM은 Gemini, §10.1/D-120 · 2026-09-17부터 `API_BASE`가 있으면 운영 배선(`MODEL`·`API_BASE`·`API_KEY`·토큰 예산)으로 조사해 사내 vLLM 완주 판정에 쓸 수 있다)**: mock 이벤트(collectorinfra Plan 65 생성기 — 이관 Plan 03은 대체됨) → 게이트 훅 → `sre_investigate_alarm` submit → 실 HolmesGPT 조사 1건 완주. 입력은 목업·픽스처 데이터만(§10.1 데이터 통제).
 - **수용 기준**: ① PAGE 1건당 조사 1회(dedup·동시 상한 동작), ② 브리핑 전 항목에 소스 인용 또는 "가설/한계" 표기, ③ 조치 실행 경로 부재가 테스트로 고정, ④ 전체 타임아웃 내 미완주 시 부분 결과 + 사유를 구조화해 전달(침묵 실패 금지), ⑤ `arch_check --ci` 통과.

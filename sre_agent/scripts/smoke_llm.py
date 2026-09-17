@@ -3,7 +3,8 @@
 
 HolmesGPT 위임의 성립 조건(tool-calling)을 두 단계로 최소 검증한다:
   1) litellm 단독 tool-calling 왕복 — 목업 도구 1개를 강제 호출시켜 호출명·인자 파싱 확인.
-  2) DiagnosisAgent.ask 1회 — 외부 폴스타 미연결(빈 toolset) 대상, LLM 왕복 완주 확인.
+  2) DiagnosisAgent.ask 1회 — 외부 폴스타 미연결·호스트 접근 도구 전부 off(no_host_access_profile) 대상,
+     LLM 왕복 완주 확인. 붙은 도구를 LLM 호출 전에 허용목록으로 대조한다.
 
 GEMINI_API_KEY 미설정 시(pydantic 필드 gemini_api_key 로만 판정 — os.getenv 금지)에는
 실 API 왕복 대신 "보류(GEMINI_API_KEY 미설정)"를 명확히 출력하고 graceful 종료(exit 0)한다.
@@ -72,12 +73,26 @@ def smoke_litellm_toolcalling(settings: AgentSettings) -> dict[str, object]:
     }
 
 
+def assert_no_host_access_tools(tool_names) -> None:
+    """LLM에 붙은 도구가 호스트 접근 없는 허용목록 안에 있는지 **LLM 호출 전에** 확인한다.
+
+    허용목록 밖 도구(셸·파일·웹·네트워크 프로브·k8s 등)가 하나라도 있으면 RuntimeError —
+    holmes 상향으로 새 기본 toolset이 생겨도 조용히 실행되지 않게 한다(2026-09-17 사고 재발 방지).
+    """
+    from sre_agent.toolset_profiles import NO_HOST_ACCESS_TOOLS
+
+    extra = sorted(set(tool_names) - NO_HOST_ACCESS_TOOLS)
+    if extra:
+        raise RuntimeError(f"호스트 접근 도구가 LLM에 노출됨 — 실행 중단: {extra}")
+
+
 def smoke_diagnosis_ask(settings: AgentSettings) -> dict[str, object]:
-    """2단계 — DiagnosisAgent.ask 1회. 외부 폴스타 미연결(빈 toolset)로 LLM 왕복 완주만 확인한다.
+    """2단계 — DiagnosisAgent.ask 1회. 외부 데이터·호스트 접근 없이 LLM 왕복 완주만 확인한다.
 
     로컬 mock MCP 픽스처(도구 자동 발견→호출)는 2-C/Plan 04 소관이므로 여기서는 붙이지 않는다.
     """
     from sre_agent.diagnosis import DiagnosisAgent
+    from sre_agent.toolset_profiles import no_host_access_profile
 
     ask_settings = AgentSettings(
         _env_file=None,
@@ -85,8 +100,10 @@ def smoke_diagnosis_ask(settings: AgentSettings) -> dict[str, object]:
         api_key=settings.gemini_api_key,
         max_steps=settings.max_steps,
     )
-    # 외부 데이터 소스를 붙이지 않는다 — 빈 toolset (D-120 데이터 통제).
-    agent = DiagnosisAgent(settings=ask_settings, toolsets={})
+    # 외부 데이터 소스·호스트 접근을 붙이지 않는다(D-120 데이터 통제). `toolsets={}`는 빈 toolset이
+    # 아니라 holmes 내장 기본(bash·internet 등)이 켜진 상태다 — 끌 것을 명시하고 붙은 도구를 대조한다.
+    agent = DiagnosisAgent(settings=ask_settings, toolsets=no_host_access_profile())
+    assert_no_host_access_tools(agent.llm.tool_executor.tools_by_name)
     result = agent.ask("현재 진단 파이프라인이 정상 동작하는지 한 줄로 답하라.")
     return {"answer_len": len(result.answer), "tool_calls": result.tool_calls}
 

@@ -552,7 +552,7 @@ def test_V23_원본이_없으면_조용히_넘기지_않는다(tmp_path: Path, m
 # --- O-c. 사다리 강등 경고 --------------------------------------------------
 
 
-def _summary_with_tier(tier: str, reason: str = "flag_off") -> dict[str, Any]:
+def _summary_with_tier(tier: str, reason: str = "intent_flag_on") -> dict[str, Any]:
     return {
         "meta": {"run_id": "r", "mode": "run"},
         "profiles": [{"name": "baseline", "port": 1, "valid": True,
@@ -565,25 +565,39 @@ def _summary_with_tier(tier: str, reason: str = "flag_off") -> dict[str, Any]:
     }
 
 
-def test_Oc_정본_단이_아니면_최상단에_경고가_뜬다(tmp_path: Path) -> None:
-    """지난 run 은 2단으로 강등돼 돌았는데 그 사실이 1절 표의 한 칸이었다."""
-    summary = _summary_with_tier("intent_orchestration")
+@pytest.mark.parametrize(
+    "tier,reason",
+    [("intent_orchestration", "intent_flag_on"), ("legacy", "semantic_routing_off")],
+)
+def test_Oc_기준_단이_아니면_최상단에_경고가_뜬다(tier: str, reason: str, tmp_path: Path) -> None:
+    """지난 run 은 2단으로 돌았는데 그 사실이 1절 표의 한 칸이었다. 기준 단은 3단이다(D-225)."""
+    summary = _summary_with_tier(tier, reason)
     head = render_markdown(summary, tmp_path, None).split("## 1.")[0]
 
-    assert "[경고] 정본 단이 아닌 실행 단으로 측정됐다" in head
-    assert "intent_orchestration" in head and "flag_off" in head
+    assert "[경고] 기준 단이 아닌 실행 단으로 측정됐다" in head
+    assert tier in head and reason in head
+    assert "[안내]" not in head
 
 
-def test_Oc_정본_단이면_경고하지_않는다(tmp_path: Path) -> None:
-    head = render_markdown(_summary_with_tier("deep_agent", "-"), tmp_path, None).split("## 1.")[0]
-    assert "정본 단이 아닌" not in head
+@pytest.mark.parametrize("tier,notice", [("semantic_router", False), ("deep_agent", True)])
+def test_Oc_기준_단과_부가_경로_단은_경고하지_않는다(
+    tier: str, notice: bool, tmp_path: Path
+) -> None:
+    """기준 3단은 아무것도 올리지 않는다. 1단 opt-in 은 강등이 아니지만, 판정표가 기준 단
+    수치가 아니라는 사실은 **안내**로 남긴다(D-225 ②)."""
+    summary = _summary_with_tier(tier, "none")
+    head = render_markdown(summary, tmp_path, None).split("## 1.")[0]
+    assert "기준 단이 아닌" not in head
+    assert ("[안내] 부가 경로(opt-in) 단으로 측정됐다" in head) is notice
+    assert ("`baseline` = **deep_agent**" in head) is notice
 
 
 @pytest.mark.parametrize("tier", ["mock", None, ""])
 def test_Oc_미관측은_강등이_아니다(tier, tmp_path: Path) -> None:
     """미관측을 강등으로 세면 경고가 상시 켜져 사람이 읽지 않게 된다."""
     head = render_markdown(_summary_with_tier(tier), tmp_path, None).split("## 1.")[0]
-    assert "정본 단이 아닌" not in head
+    assert "기준 단이 아닌" not in head
+    assert "[안내]" not in head
 
 
 # --- T-b 토큰 수명: 읽지 않고 주입한다 (2026-09-16 개정) -------------------

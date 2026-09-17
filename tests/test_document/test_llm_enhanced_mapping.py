@@ -20,6 +20,8 @@ def _make_cache_manager(redis_available: bool = True) -> MagicMock:
     cm.redis_available = redis_available
     cm.add_synonyms = AsyncMock(return_value=True)
     cm.remove_synonyms = AsyncMock(return_value=True)
+    # 전역 등록은 구조 정보(수동 프로필·승인본)가 있는 DB만 — 없으면 DB별(plans/104 G-11 (b))
+    cm.has_structure_authority = AsyncMock(return_value=True)
 
     redis_cache = MagicMock()
     redis_cache.load_eav_name_synonyms = AsyncMock(return_value={})

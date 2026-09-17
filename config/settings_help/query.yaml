@@ -108,7 +108,7 @@ settings:
       승인 판정은 안전 실패(fail-closed)가 원칙이다. LLM이 애매한 대답을 "예"로 읽는
       가능성을 들이는 것이므로, 승인 게이트를 함께 쓰는 환경에서는 신중히 켠다.
     recommendation: 되묻는 횟수가 실제로 불편할 때만 켠다.
-    related: [ENABLE_SQL_APPROVAL, ENABLE_STRUCTURE_APPROVAL]
+    related: [ENABLE_SQL_APPROVAL]
 
   QUERY_FORM_MEMORY_TTL_DAYS:
     example: >-

@@ -140,6 +140,35 @@ MIDDLEWARE_FOCUS_NOTE: str = (
 )
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 호스트 접근 없는 프로파일 — LLM 왕복 검증(스모크·로컬 LLM 점검) 전용 (2026-09-17)
+# ══════════════════════════════════════════════════════════════════════
+#
+# **왜 필요한가**: `toolsets={}`는 "빈 toolset"이 아니다. holmes 0.36.0은 내장 toolset 중
+# bash(`core` 허용목록 — `kubectl get`·`grep`·`head` 포함)·internet(`fetch_webpage`)·
+# connectivity_check(`tcp_check`)·kubernetes/logs를 **기본 활성**으로 둔다. 스모크가 그 상태로
+# 개발 맥에서 돌아 로컬 9B 모델이 `kubectl get`을 실제 실행했다(`docs/18` 2026-09-17).
+# 끌 것을 **명시**하고, 실제로 붙은 도구는 아래 허용목록으로 대조한다(holmes 상향으로 새 기본
+# toolset이 생겨도 조용히 붙지 않게).
+_HOST_ACCESS_TOOLSETS: tuple[str, ...] = ("bash", "internet", "connectivity_check", "kubernetes/logs")
+
+# 위 프로파일에서 LLM에 붙는 도구 전부(holmes 0.36.0 실측) — 할 일 목록·내장 스킬 문서 조회만.
+NO_HOST_ACCESS_TOOLS: frozenset[str] = frozenset({"TodoWrite", "fetch_skill"})
+
+
+def no_host_access_profile() -> dict[str, dict]:
+    """셸·파일·웹·네트워크 프로브·k8s 도구를 모두 끈 프로파일을 반환한다.
+
+    실 데이터가 필요 없는 **LLM 왕복 검증**(스모크 2단계 등)에만 쓴다. 조사 경로는
+    `remote_vm_profile()`/`vm_profile()`을 쓴다. 호출자는 실행 전
+    `llm.tool_executor.tools_by_name`이 `NO_HOST_ACCESS_TOOLS` 안에 있는지 확인해야 한다.
+
+    Returns:
+        Config.toolsets에 넘길 프로파일 dict.
+    """
+    return {name: {"enabled": False} for name in _HOST_ACCESS_TOOLSETS}
+
+
 def middleware_profile(extra_allow: list[str] | None = None) -> dict[str, dict]:
     """미들웨어 조사용 toolset 프로파일을 반환한다 (Plan 78 W7-1 · D-168).
 

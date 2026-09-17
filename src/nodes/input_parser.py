@@ -338,6 +338,9 @@ async def _parse_natural_language_with_csv(
         AIMessage(content="") if is_kbgenai(llm) else None,
         HumanMessage(content=user_query),
     ]
+    # Remove any None entries — KBGenAI 외 provider는 None이 섞이면 "Unsupported message type"으로
+    # 파싱 전체가 실패한다(2026-09-17 로컬 MLX H-10 실측 · _parse_natural_language와 대칭).
+    messages = [m for m in messages if m is not None]
 
     parsed: dict = await _try_structured_requirements(llm, messages) or {}
     for attempt in range(2 if not parsed else 0):  # 구조화 성공 시 생략(대칭)

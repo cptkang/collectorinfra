@@ -45,6 +45,21 @@ NOTE_POSTCHECK = "postcheck"    # 사후 대조(스코프 밖 제거·미조회 
 NOTE_SUFFICIENCY = "sufficiency"  # 78 W5 충족도 미달(병기)
 NOTE_SCOPE_DB = "scope_db"      # DB별 스코프 분할로 미조회한 DB
 NOTE_DECOMPOSE = "decompose"    # 분해 단계 경과(재분해·미적용·DAG 보정·폴백 사유)
+# 교차 시스템 질의(plans/102 · D-224) — 각 플래그가 켜졌을 때만 생긴다(off면 이 종류의 노트 0건).
+NOTE_OWNERSHIP = "ownership"          # 답변 영역 소유 교정(선택 DB ↔ 정본 시스템)
+NOTE_ROUTING_FALLBACK = "routing_fallback"  # 빈 분류·LLM 실패로 첫 활성 DB 폴백
+NOTE_BRIDGE = "bridge"                # 값 기반 키 브리지 매칭 보고(일치·가능·미발견·모호)
+NOTE_PROBE = "probe"                  # 식별자 소재 프로브 판정(미발견 ≠ 확인 못 함)
+#: 3단 단일·멀티 DB 경로(`output_generator`)가 응답 말미에 렌더하는 종류 — D-203 노트는 넣지 않는다
+#: (그 노트는 2단 부품 경로의 `result_aggregator`가 렌더하며, 여기 넣으면 off 경로 응답이 바뀐다).
+CROSS_SYSTEM_NOTE_KINDS: tuple[str, ...] = (
+    NOTE_OWNERSHIP, NOTE_ROUTING_FALLBACK, NOTE_BRIDGE, NOTE_PROBE,
+)
+# 관리자 등록이 필요한 DB 자산 부재(plans/104) — 질의는 멈추지 않고 사유만 남긴다(침묵 강등 금지).
+NOTE_STRUCTURE_MISSING = "structure_missing"        # 구조 정보(수동 프로필·승인본) 없음(G-1 (a))
+NOTE_DESCRIPTIONS_MISSING = "descriptions_missing"  # 컬럼 설명 미등록(질의 중 LLM 생성 0 · G-9)
+#: 3단 단일·멀티 DB 경로(`output_generator`)가 응답 본문 `[안내]`로 렌더하는 종류.
+ADMIN_ASSET_NOTE_KINDS: tuple[str, ...] = (NOTE_STRUCTURE_MISSING, NOTE_DESCRIPTIONS_MISSING)
 
 # 순차 표지(plans/88 §4.2-b) — **판정에만** 쓴다. 코드가 자연어를 쪼개지 않는다. 좁게 못 박아
 # 정상 단일 질의("김포 서버를 찾아줘")의 오탐은 재분해 1회 비용에 그치고 실행 경로는 바뀌지 않는다.
@@ -175,6 +190,8 @@ def extract_selection_basis(sql: Optional[str]) -> str:
 
 def assess_prior_dependency(
     task: dict, prior: dict | None, *, max_values: int = _MAX_PRIOR_SCOPE_VALUES,
+    identity: tuple[str, list[str]] | None = None,
+    no_identity_hint: str = "",
 ) -> Optional[DependencyVerdict]:
     """`input_from` 선행 결과를 결정적으로 판정한다.
 
@@ -182,6 +199,12 @@ def assess_prior_dependency(
         task: 현재 TaskSpec(dict). `input_from`이 비면 판정 대상이 아니다(None).
         prior: 완료된 선행 결과 {task_id: 결과 dict}
         max_values: 스코프 값 상한(현행 `_MAX_PRIOR_SCOPE_VALUES`=100). 초과분은 절단으로 보고한다.
+        identity: 호출부가 **이미 계산한** (키 컬럼, 전체 값 목록).
+            값 기반 키 브리지(plans/102 §3.3-②)가 넘긴다. 주어지면 컬럼명 판정
+            (`collect_prior_identity_values`) 대신 이 값을 쓴다. 이 모듈은 값 판정을
+            하지 않는다(utils는 domain을 import할 수 없다 — 계층 방향). None=현행.
+        no_identity_hint: 식별 키가 없을 때 사유 뒤에 덧붙일 문장
+            (찾은 값 타입 · 대상이 받는 타입). ""=현행.
 
     Returns:
         판정, 또는 `input_from`이 없으면 None
@@ -215,14 +238,19 @@ def assess_prior_dependency(
             detail=f"선행 작업({ids_text})의 결과가 0건이라 이 단계를 실행하지 않았습니다.",
         )
 
-    col, all_values = collect_prior_identity_values({"_": rows}, limit=None)
+    if identity is not None:
+        col, all_values = identity[0], list(identity[1])
+    else:
+        col, all_values = collect_prior_identity_values({"_": rows}, limit=None)
     if not col or not all_values:
+        detail = (
+            f"선행 작업({ids_text}) 결과에 서버 식별 컬럼이 없어 대상을 확정할 수 없습니다 "
+            f"(행 {len(rows)}건)."
+        )
+        if no_identity_hint:
+            detail += f" {no_identity_hint}"
         return DependencyVerdict(
-            ok=False, reason=REASON_PRIOR_NO_IDENTITY, source_task_ids=input_from,
-            detail=(
-                f"선행 작업({ids_text}) 결과에 서버 식별 컬럼이 없어 대상을 확정할 수 없습니다 "
-                f"(행 {len(rows)}건)."
-            ),
+            ok=False, reason=REASON_PRIOR_NO_IDENTITY, source_task_ids=input_from, detail=detail,
         )
 
     kept = all_values[:max_values]
@@ -413,6 +441,43 @@ def scope_db_note(db_id: str, *, label: Optional[str] = None) -> dict:
         "kind": NOTE_SCOPE_DB, "task_id": None, "reason": "no_selected_servers", "db_id": db_id,
         "detail": f"{shown}: 선행 결과에 이 DB의 서버가 없어 조회하지 않았습니다.",
     }
+
+
+def structure_missing_note(db_id: str) -> dict[str, Any]:
+    """구조 정보(수동 프로필·승인본)가 없는 DB의 사유 노트 (plans/104 · G-1 (a)).
+
+    단일 DB(`schema_analyzer`)·멀티 DB(`multi_db_executor`) 경로가 같은 문구를 쓴다 —
+    한쪽만 사유를 알리는 비대칭을 만들지 않는다.
+    """
+    return {
+        "kind": NOTE_STRUCTURE_MISSING, "task_id": None, "db_id": db_id,
+        "detail": (
+            f"{db_id} 구조 정보(수동 프로필·승인본)가 없어 구조 안내 없이 조회했습니다 — "
+            "관리자 「DB 구조」 탭에서 분석·승인이 필요합니다."
+        ),
+    }
+
+
+def descriptions_missing_note(db_id: str) -> dict[str, Any]:
+    """컬럼 설명이 등록되지 않은 DB의 사유 노트 (plans/104 §3.8.5 · G-9 (a)).
+
+    질의 경로는 컬럼 설명을 LLM으로 만들지 않는다 — 비어 있으면 관리자 등록이 필요하다는 사실만
+    알린다. 단일·멀티 DB 경로가 같은 문구를 쓴다.
+    """
+    return {
+        "kind": NOTE_DESCRIPTIONS_MISSING, "task_id": None, "db_id": db_id,
+        "detail": (
+            f"{db_id} 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. "
+            "관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+        ),
+    }
+
+
+def add_db_note(notes: list[dict[str, Any]], note: dict[str, Any]) -> None:
+    """같은 종류·같은 DB 노트가 `notes`에 없을 때만 `note`를 더한다(제자리 변경 · DB당 1건)."""
+    key = (note.get("kind"), note.get("db_id"))
+    if not any(isinstance(n, dict) and (n.get("kind"), n.get("db_id")) == key for n in notes):
+        notes.append(note)
 
 
 # ──────────────────────────────────────────────

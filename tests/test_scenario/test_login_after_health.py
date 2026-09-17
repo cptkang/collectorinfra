@@ -27,7 +27,7 @@ class _BootingHandle:
         self.profile = profile
         self.port = port
         self.mock = mock
-        self.ladder = ("intent_orchestration", "flag_off")
+        self.ladder = ("intent_orchestration", "intent_flag_on")
         self.up = False
         _BootingHandle.instances.append(self)
 

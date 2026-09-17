@@ -189,6 +189,22 @@ def test_orchestrator_available_gemini_by_api_key(mock_config):
     assert orchestrator_available(mock_config) is False
 
 
+def test_orchestrator_available_mlx_uses_health_check(mock_config, monkeypatch):
+    """plans/100 T-7: mlx provider 가용성은 vLLM과 같은 `/v1/models` health check다."""
+    calls = []
+
+    def _healthy(base_url, timeout, **kwargs):
+        calls.append(base_url)
+        return True
+
+    monkeypatch.setattr("src.orchestration.deep_agent.vllm_healthy", _healthy)
+    mock_config.orchestrator = OrchestratorConfig(
+        provider="mlx", base_url="http://127.0.0.1:8080/v1", api_key=""
+    )
+    assert orchestrator_available(mock_config) is True
+    assert calls == ["http://127.0.0.1:8080/v1"]
+
+
 def test_select_backend_gemini_available(mock_config):
     """테스트 모드: 플래그 on + gemini api_key 있으면 vLLM 없이도 deep_agent."""
     mock_config.enable_deepagents_package = True

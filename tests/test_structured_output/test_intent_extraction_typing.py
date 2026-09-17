@@ -178,6 +178,31 @@ class TestRequirementsSymmetry:
             "CSV 경로에 synonym_registration 키가 없다 — 비대칭이 남아 있다."
         )
 
+    @pytest.mark.asyncio
+    async def test_both_parsers_send_no_none_message_to_non_kbgenai(self):
+        """KBGenAI가 아닌 LLM에 None 메시지를 보내지 않는다(두 경로 대칭).
+
+        실 chat 모델은 None이 섞이면 "Unsupported message type"으로 실패한다 — CSV 경로만
+        걸러내지 않아 MLX 로컬 H-10(양식 업로드)의 입력 파싱이 통째로 실패했다(2026-09-17).
+        """
+        from src.nodes.input_parser import (
+            _parse_natural_language,
+            _parse_natural_language_with_csv,
+        )
+
+        class _StrictLLM(_FakeLLM):
+            async def ainvoke(self, messages, **kw):
+                assert all(m is not None for m in messages), "None 메시지가 LLM에 전달됐다"
+                return await super().ainvoke(messages, **kw)
+
+        payload = _md('{"query_targets":["서버"],"output_format":"text"}')
+        a = await _parse_natural_language(_StrictLLM(payload), "서버 조회")
+        b = await _parse_natural_language_with_csv(
+            _StrictLLM(payload), "서버 조회", "col1,col2\n1,2", sheet_name="시트1"
+        )
+        assert a["query_targets"] == ["서버"]
+        assert b["query_targets"] == ["서버"]
+
 
 class TestDecomposedPlanContract:
     def test_empty_plan_is_valid_but_signals(self):

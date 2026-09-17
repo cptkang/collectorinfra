@@ -12,14 +12,14 @@ from __future__ import annotations
 import pytest
 from langgraph.graph import END
 
+import src.graph as graph_module
 from src.graph import (
     _INTENT_ROUTE_MAP,
+    build_graph,
     route_after_approval,
     route_after_orchestrator,
     route_after_replanner,
-    route_after_schema_analyzer,
     route_after_semantic_router,
-    route_after_structure_approval,
 )
 from src.state import create_initial_state
 
@@ -53,47 +53,26 @@ class TestRouteAfterApproval:
         assert route_after_approval(state) == END
 
 
-class TestRouteAfterSchemaAnalyzer:
-    """구조 분석 HITL 회부 — 승인 대기 + 구조 분석 컨텍스트일 때만 승인 게이트로 간다."""
+class TestSchemaAnalyzerGoesStraightToGenerator:
+    """구조 승인 HITL 삭제(plans/104 · D-227) — schema_analyzer 뒤에는 분기가 없다.
 
-    def test_structure_analysis_approval_goes_to_gate(self):
-        state = _state(
-            awaiting_approval=True,
-            approval_context={"type": "structure_analysis"},
+    종전 schema_analyzer 뒤 라우팅 함수 2종은 구조 승인 게이트로 가는 분기만 담당했으므로 게이트와
+    함께 삭제됐다(참조 0 단언은 `tests/test_nodes/test_plan104_query_path.py`). 질의 경로는 구조
+    정보를 읽기만 하고 멈추지 않는다.
+    """
+
+    @pytest.mark.parametrize("semantic_routing", [True, False])
+    def test_schema_analyzer_edge_is_direct(self, mock_config, monkeypatch, semantic_routing):
+        """3단·4단 빌드 모두 schema_analyzer의 나가는 엣지는 query_generator 하나뿐이다."""
+        monkeypatch.setattr(
+            graph_module, "select_orchestration_backend", lambda c: "semantic_router"
         )
-        assert route_after_schema_analyzer(state) == "structure_approval_gate"
-
-    def test_other_approval_context_continues_to_generator(self):
-        """승인 대기라도 컨텍스트 유형이 다르면 그대로 SQL 생성으로 진행한다."""
-        state = _state(
-            awaiting_approval=True,
-            approval_context={"type": "text2sql_low_confidence"},
-        )
-        assert route_after_schema_analyzer(state) == "query_generator"
-
-    def test_empty_context_continues_to_generator(self):
-        """컨텍스트가 빈 dict면 SQL 생성으로 진행한다.
-
-        (approval_context가 None인 조합은 현행 코드가 AttributeError를 내므로 여기서
-        단언하지 않는다 — 안전망이 결함을 정답으로 굳히지 않게 별도 보고 대상.)
-        """
-        state = _state(awaiting_approval=True, approval_context={})
-        assert route_after_schema_analyzer(state) == "query_generator"
-
-    def test_no_approval_goes_to_generator(self):
-        assert route_after_schema_analyzer(_state()) == "query_generator"
-
-
-class TestRouteAfterStructureApproval:
-    """구조 분석 승인 결과 — approve만 재분석으로 되돌아가고 나머지는 계속 진행한다."""
-
-    def test_approve_reenters_schema_analyzer(self):
-        assert route_after_structure_approval(_state(approval_action="approve")) == "schema_analyzer"
-
-    @pytest.mark.parametrize("action", ["reject", None, "modify", "unknown"])
-    def test_non_approve_continues_to_generator(self, action):
-        """구조 메타 없이 진행 — 승인 게이트와 달리 종료가 아니다(현행 동작)."""
-        assert route_after_structure_approval(_state(approval_action=action)) == "query_generator"
+        mock_config.enable_intent_orchestration = False
+        mock_config.enable_deepagents_package = False
+        mock_config.enable_semantic_routing = semantic_routing
+        compiled = build_graph(mock_config)
+        out_edges = {e.target for e in compiled.get_graph().edges if e.source == "schema_analyzer"}
+        assert out_edges == {"query_generator"}
 
 
 class TestRouteAfterSemanticRouter:
@@ -129,21 +108,3 @@ class TestRouteAfterOrchestratorAndReplanner:
     @pytest.mark.parametrize("needs_replan", [False, None])
     def test_replanner_aggregates_when_done(self, needs_replan):
         assert route_after_replanner(_state(needs_replan=needs_replan)) == "result_aggregator"
-
-
-class TestSchemaAnalyzerRouteNoneContext:
-    """awaiting_approval 참 + approval_context None 조합의 방어 (Plan 69 P0-⑪).
-
-    create_initial_state는 approval_context를 None으로 두므로, 컨텍스트 없이 승인
-    대기 플래그만 세워진 상태에서 `.get(key, {})`가 None을 반환해 AttributeError로
-    죽던 결함의 재발 방지(P1 안전망 작성 중 발견 — 당시 결함을 굳히지 않고 보류).
-    """
-
-    def test_awaiting_approval_with_none_context_routes_to_generator(self):
-        from src.graph import route_after_schema_analyzer
-        from src.state import create_initial_state
-
-        state = create_initial_state(user_query="test")
-        state["awaiting_approval"] = True
-        assert state["approval_context"] is None
-        assert route_after_schema_analyzer(state) == "query_generator"

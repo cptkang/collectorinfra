@@ -1,0 +1,4 @@
+{
+ "raised": "openai.APIConnectionError: Connection error.",
+ "elapsed_s": 2.1
+}

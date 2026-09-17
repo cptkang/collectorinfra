@@ -1,7 +1,7 @@
 # 오케스트레이션 사다리 — 실행 경로 단일 출처
 
-> **작성** 2026-08-24 (plans/70 P2-2 / L1) · **대상 코드** `src/graph.py` `build_graph()` ·
-> `src/orchestration/deep_agent.py` · `src/observability/ladder.py`
+> **작성** 2026-08-24 (plans/70 P2-2 / L1) · **개정** 2026-09-17 (plans/102 L-4 · D-225 기준 전환) ·
+> **대상 코드** `src/graph.py` `build_graph()` · `src/orchestration/deep_agent.py` · `src/observability/ladder.py`
 >
 > 이 문서는 "지금 어느 실행 경로로 도는가"의 **단일 출처**다. `graph.py`의 분기 주석과
 > `.env` 주석은 여기로 수렴한다.
@@ -9,34 +9,49 @@
 ## 왜 이 문서가 있는가
 
 `plans/70` v1이 `graph.py`의 `if/elif` 형태만 보고 실행 경로 4종을 **"대등한 4경로 병존"**
-으로 읽고, 그중 일부의 폐기를 권고했다. 실제 구조는 **1 정본 + 3 폴백의 강등 사다리**다.
-그대로 실행했다면 운영 정본 경로가 붕괴한다.
+으로 읽고, 그중 일부의 폐기를 권고했다. 실제 구조는 **빌드 타임에 한 단만 확정되는 사다리**다
+(당시 서술은 "1 정본 + 3 폴백의 강등 사다리"). 그대로 실행했다면 당시 운영 경로가 붕괴했다.
 
 정적 읽기로는 "죽은 경로처럼 보이는 것"과 "실제로 죽은 경로"가 구별되지 않는다.
 이 문서와 기동 로그(아래 §5)가 그 구별을 대신한다.
+
+### 기준 전환 — D-225 (2026-09-17)
+
+사용자 지시 *"기본은 시멘틱 라우터를 사용한다. … deepagents는 부가적으로 사용할 예정"*에 따라
+**기준 경로는 3단 `semantic_router`다.**
+
+- **1단 `deep_agent`는 부가 경로(opt-in)** 다 — 폐기 대상이 아니다(§8). 확정돼도 강등이 아니라
+  opt-in 기록(INFO)이다.
+- **2단 `intent_orchestration` 배선은 기본 off**다. 모듈은 3단 순차 러너가 재사용하므로 유지한다(§7).
+- 종전 서술("1단 정본 + 3 폴백", 사유 `flag_off`)은 이 문서·`ladder.py`·소비처에서 새 기준으로 바꿨다.
+- **운영 `.env`는 아직 1단을 명시한다**(세 플래그 모두 true). 운영 전환은 `plans/102` L-5 —
+  3단 기능 동등성(`plans/103` · D-226) 완료와 사용자 확인 뒤다. 코드 기준만 먼저 바뀌었으므로
+  지금 운영 설정으로 1단이 성립하면 기동 로그는 `tier=deep_agent` 첫 줄에 opt-in 안내(INFO) 1줄을
+  더 낸다(§5). 1단이 성립하지 않으면 opt-in 실패 경고(WARNING)다.
 
 ## 1. 4단 구조
 
 | 단 | 이름 | 진입 배선 | 활성 조건 (앞 단이 전부 불성립일 때) |
 |---:|---|---|---|
-| **1 (정본)** | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 패키지 조립 성공 |
-| 2 | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_deepagent_orchestration` |
-| 3 | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
+| 1 (부가 경로 · opt-in) | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 패키지 조립 성공 |
+| 2 (배선 기본 off) | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration` (미입력 = off, §6) |
+| **3 (기준 경로)** | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
 | 4 | `legacy` | `field_mapper → schema_analyzer` | 위 셋 모두 불성립 (`else`) |
 
-**"앞 단이 전부 불성립일 때"가 핵심이다.** 2·3단의 플래그가 켜져 있어도 1단이 성립하면
-2·3단은 **노드조차 등록되지 않는다**.
+**"앞 단이 전부 불성립일 때"가 핵심이다.** 기준은 3단이지만 확정 순서는 여전히 위에서 아래다 —
+2·3단의 플래그가 켜져 있어도 1단이 성립하면 2·3단은 **노드조차 등록되지 않고**, 2단 플래그가
+켜져 있으면 3단은 등록되지 않는다. 그래서 3단 기준으로 돌리려면 1·2단 플래그가 off여야 한다.
 
 ## 2. 배타성은 런타임이 아니라 빌드 타임이다
 
 노드 등록 자체가 배타적이다 (`src/graph.py`):
 
 ```python
-if use_deep_agent:                                              # 1단
+if use_deep_agent:                                              # 1단 (부가 경로 opt-in)
     graph.add_node("deep_agent", ...)
-if config.enable_deepagent_orchestration and not use_deep_agent:  # 2단
+if config.enable_intent_orchestration and not use_deep_agent:   # 2단 (배선 기본 off)
     graph.add_node("intent_planner", ...); ...
-if config.enable_semantic_routing and not use_deep_agent:         # 3단
+if config.enable_semantic_routing and not use_deep_agent:       # 3단 (기준 경로)
     graph.add_node("semantic_router", ...)
 ```
 
@@ -54,7 +69,8 @@ if config.enable_semantic_routing and not use_deep_agent:         # 3단
 select_orchestration_backend(config)        # ① 플래그 + 오케스트레이터 가용성
     └─ enable_deepagents_package AND orchestrator_available(config)
            ├─ provider=gemini : api_key 유무
-           └─ provider=vllm   : /v1/models health check
+           ├─ provider=vllm   : /v1/models health check
+           └─ provider=mlx    : /v1/models health check (vllm과 같은 경로 — 로컬 mlx_lm.server, plans/100)
 _deep_agent_buildable(config, llm)          # ② 실제 조립 시도(폐쇄망 wheel 반입 확인)
     └─ build_deep_agent()이 RuntimeError면 False
 ```
@@ -62,47 +78,84 @@ _deep_agent_buildable(config, llm)          # ② 실제 조립 시도(폐쇄망
 ②가 따로 있는 이유: ①이 통과해도 deepagents 패키지가 없으면 그래프 빌드가 크래시한다.
 빌드 시점에 조립을 한 번 시도해보고, 실패하면 하위 단으로 안전 폴백한다.
 
-## 4. 강등 사유 4종
+## 4. 확정 사유 5종
 
-`src/observability/ladder.py`가 판정한다. 사유 없는 강등은 진단이 불가능하다.
+`src/observability/ladder.py`가 판정한다. 사유 없는 확정은 진단이 불가능하다.
+로그 필드명은 판독 도구 호환을 위해 `degraded_reason` 그대로다.
 
-| 사유 | 의미 | 대응 |
-|---|---|---|
-| `none` | 정본(1단) 확정 | — |
-| `flag_off` | `enable_deepagents_package`가 off | 운영 선택. 의도한 것인지 확인 |
-| `orchestrator_unavailable` | 플래그는 on인데 오케스트레이터(vLLM/Gemini) 미가용 | health check·api_key 확인 |
-| `package_missing` | 백엔드는 골랐으나 deepagents 조립 실패 | 폐쇄망 wheel 반입 |
+| 사유 | 확정 단 | 의미 | 대응 |
+|---|---|---|---|
+| `none` | 3단 · 1단 | 기준 경로(3단) 확정, 또는 부가 경로(1단) opt-in 확정 | — |
+| `intent_flag_on` | 2단 | 1단 플래그 off · `ENABLE_INTENT_ORCHESTRATION=true`로 2단 확정(운영자 선택) | 의도하지 않았으면 `false` 명시 |
+| `semantic_routing_off` | 4단 | 1단 플래그 off · 2·3단 플래그도 off | 의도하지 않았으면 `ENABLE_SEMANTIC_ROUTING=true` 명시 |
+| `orchestrator_unavailable` | 2·3·4단 | 1단 플래그는 on인데 오케스트레이터(vLLM/Gemini/mlx) 미가용 | health check·api_key 확인 |
+| `package_missing` | 2·3·4단 | 백엔드는 1단을 골랐으나 deepagents 조립 실패 | 폐쇄망 wheel 반입 |
+
+- **opt-in 실패 사유(`orchestrator_unavailable`·`package_missing`)가 하위 단 사유보다 먼저다.** 1단을
+  켰는데 못 올라갔으면 3단(기준)에 떨어져도 의도한 경로가 아니다. 시나리오 러너는 이 두 사유로
+  확정된 프로파일을 INVALID로 본다(`scripts/scenario/server.py` `UNINTENDED_DEGRADATION` =
+  `ladder.py` `OPTIN_FAILURE_REASONS`).
+- **`flag_off`는 D-225로 폐기했다.** 종전에는 "1단 플래그 off"를 뜻했는데, 1단 off가 기준 상태가
+  되면서 그 자체로는 사유가 아니다. 어느 비기준 단으로 갔는지를 `intent_flag_on`·`semantic_routing_off`가
+  대신 말한다. 2026-09-17 이전 run 기록·로그의 `flag_off`는 종전 어휘다 — 새 어휘로는 확정 단에 따라
+  2단 `intent_flag_on` · 3단 `none` · 4단 `semantic_routing_off`에 해당한다.
 
 ## 5. 기동 로그 읽는 법
 
 ```
-INFO  오케스트레이션 사다리 확정: tier=<단> degraded_reason=<사유> resolved_by=<출처>
-WARN  정본 경로(deep_agent)가 아닌 <단> 단으로 확정됐습니다 (사유: <사유>). …   ← 비정본일 때만
+INFO  오케스트레이션 사다리 확정: tier=<단> degraded_reason=<사유> resolved_by=<출처>   ← 항상 1줄 (형식 불변)
+INFO  부가 경로(deep_agent) opt-in으로 확정됐습니다 — …                                 ← 1단 확정일 때만
+WARN  부가 경로(deep_agent) opt-in이 성립하지 않아 <단> 단으로 확정됐습니다 (사유: <사유>). …  ← opt-in 실패일 때만
+WARN  기준 경로(semantic_router)가 아닌 <단> 단으로 확정됐습니다 (사유: <사유>). …        ← 2·4단 확정일 때만
 ```
+
+추가 줄은 **최대 1줄**이다. 3단 확정 + 사유 `none`이면 첫 줄만 남는다.
+첫 줄 형식은 바꾸지 않는다 — `scripts/scenario/server.py`가 정규식으로 읽는다.
 
 - `tier` — 확정된 단 (§1의 이름)
 - `degraded_reason` — §4의 사유
-- `resolved_by` — `explicit_env`(플래그를 명시 설정) / `auto_multidb`(tri-state 자동 해석, §6)
+- `resolved_by` — `explicit_env`(플래그를 명시 설정) / `auto_multidb`(`enable_semantic_routing` 미입력 →
+  멀티 DB 등록 여부로 자동 해석, §6) / `code_default`(`enable_semantic_routing`은 명시했고
+  `enable_intent_orchestration`만 미입력 → 코드 기본값 off, §6)
 
-**실측 (2026-08-20, 운영 `.env`):**
+**D-225 이후 기대 로그 (설정 미입력 + 멀티 DB):**
+
+```
+오케스트레이션 사다리 확정: tier=semantic_router degraded_reason=none resolved_by=auto_multidb
+```
+
+→ 기준 3단 확정 · 추가 줄 없음. `tests/test_observability/test_ladder_startup_log.py`
+`test_unset_flags_with_multi_db_start_on_tier3`가 실제 `build_graph()`로 이 줄을 고정한다.
+
+**실측 (2026-08-20, 운영 `.env` · D-225 이전 어휘):**
 
 ```
 오케스트레이션 사다리 확정: tier=deep_agent degraded_reason=none resolved_by=explicit_env
 ```
 
-→ 정본 1단 확정 · 강등 없음 · 플래그는 명시 설정 · **레거시 4단 미도달**.
+→ 당시 정본으로 본 1단 확정 · 플래그는 명시 설정 · **레거시 4단 미도달**. D-225 이후 같은 설정은
+같은 첫 줄에 "부가 경로(deep_agent) opt-in으로 확정" INFO 1줄이 붙는다(운영 `.env`가 아직 1단이다 — 서두).
 
 확정 결과는 실패 트레이스 헤더의 `ladder` 필드에도 실린다(`logs/trace/<날짜>/<request_id>.jsonl`).
 단이 다르면 노드 구성 자체가 다르므로, 이 값 없이는 `node_path`를 해석할 기준이 없다.
 
 ## 6. tri-state 플래그 주의
 
-`enable_semantic_routing` · `enable_deepagent_orchestration`은 `bool | None`이다.
-`None`이면 **멀티 DB 등록 여부로 자동 결정**된다(`config.py` `model_post_init`).
+`enable_semantic_routing` · `enable_intent_orchestration`은 `bool | None`이다
+(`config.py` `model_post_init`이 `None`을 해석한다). 두 플래그의 `None` 해석이 다르다.
 
-즉 운영 경로가 **DB 등록 상태에 종속**된다. DB를 하나 등록/해제하는 것만으로 확정 단이
-바뀔 수 있다. 자동 해석이 발동했는지는 로그의 `resolved_by=auto_multidb`로만 알 수 있다 —
+| 플래그 | `None`(미입력)일 때 | 기동 경고 |
+|---|---|---|
+| `enable_semantic_routing` (3단) | **멀티 DB 등록 여부로 자동 결정** — 활성 DB가 있으면 on | "멀티 DB 등록 여부로 자동 결정합니다" |
+| `enable_intent_orchestration` (2단) | **항상 off** — DB 등록과 무관 (D-225 ④ · `plans/102` L-1) | "off로 확정합니다 … 2단을 쓰려면 `ENABLE_INTENT_ORCHESTRATION=true`를 명시" |
+
+3단 플래그는 여전히 운영 경로가 **DB 등록 상태에 종속**된다. DB를 하나 등록/해제하는 것만으로
+3단↔4단이 바뀔 수 있다. 자동 해석이 발동했는지는 로그의 `resolved_by=auto_multidb`로만 알 수 있다 —
 `model_post_init`이 `None`을 bool로 덮어쓴 뒤에는 명시 설정과 구별되지 않는다.
+
+2단 플래그는 종전(D-037)에 3단과 같이 "멀티 DB면 자동 on"이었다. 그래서 3단 기준으로 운영하다
+DB를 하나 더 등록하는 순간 2단으로 **조용히** 확정됐다(`plans/102` X-T11). 지금은 미입력이면
+off이고, 3단 플래그를 명시한 채 2단만 미입력이면 `resolved_by=code_default`로 남는다.
 
 ## 7. 모듈 의존 방향 — 상위 단이 하위 단 모듈을 **재사용한다**
 
@@ -123,9 +176,16 @@ WARN  정본 경로(deep_agent)가 아닌 <단> 단으로 확정됐습니다 (�
                                              routing.semantic_router._llm_classify
 ```
 
+**모듈 의존 방향은 D-225 기준 전환으로 바뀌지 않았다.** 바뀐 것은 1단이 정본이 아니라 부가
+경로가 됐다는 사실뿐이다. 3단 순차 러너(`src/orchestration/sequential_runner.py`)도 2단 부품
+(`_llm_decompose`·`agent_orchestrator`·`result_aggregator` — `agent_orchestrator`가
+`subagents.run_data_query_pipeline`을 부른다)을 함수로 재사용하므로, 2단 배선이 기본 off여도
+2단 모듈은 기준 경로의 의존 대상이다.
+
 **따라서:**
 
-- **2단 모듈을 지우면 1단이 import 단계에서 깨진다.** 1단이 정본이므로 운영 전체가 멈춘다.
+- **2단 모듈을 지우면 1단이 import 단계에서 깨진다.** 3단 순차 러너도 같은 부품을 쓰므로
+  기준 경로의 복합 질의까지 멈춘다.
   "2단 배선이 안 쓰인다"는 관찰은 "2단 모듈이 안 쓰인다"를 함의하지 않는다 — 이 구별을
   놓친 것이 `plans/70` v1 오독의 정확한 지점이다.
 - **3단 모듈을 지우면 2단이 깨지고, 연쇄로 1단이 깨진다.**
@@ -138,6 +198,12 @@ WARN  정본 경로(deep_agent)가 아닌 <단> 단으로 확정됐습니다 (�
 
 보존 대상은 **하위 단**이다. 상위 단(1·2단)을 폐기할 근거는 어디에도 없다.
 `plans/49:55` — *"Track-A Phase 2(기 구현)의 성공기준은 **폴백 경로로 유지**된다"*.
+
+**D-225 — 기준 전환은 폐기를 동반하지 않는다.** 3단이 기준 경로로 올라갔지만 1단 `deep_agent`는
+**폐기 대상이 아니다.** D-161 ①(승격-폐기 동반 원칙)의 **명시 예외**다 — 사용자가 1단을 부가
+경로로 쓸 예정임을 밝혔다(부가 사용 형태는 `plans/102` G-9). 2단도 배선만 기본 off이고 모듈은
+3단이 재사용한다(§7). 삭제가 없으므로 아래 D-161 ② 4항 실측은 이번 전환에 해당하지 않는다.
+1단·2단 중 어느 하나라도 지우려면 여전히 그 실측이 필요하다.
 
 경로·모듈 폐기를 제안하려면 **D-161 ② 4항 실측**(운영 `.env` 실제값 / 패키지 실 설치·서빙
 상태 / 브랜치 한정 `git log` 최종 수정일 / 역방향 import)을 첨부해야 한다. 하나라도 빠진
@@ -177,4 +243,7 @@ WARN  정본 경로(deep_agent)가 아닌 <단> 단으로 확정됐습니다 (�
 | 백엔드 선택·가용성 | `src/orchestration/deep_agent.py` |
 | 플래그 전수 감사 | `docs/flag_audit.md` |
 | 폐기 규칙 | `docs/02_decision.md` D-161 |
-| 정본 경로 평가 | `scripts/eval_text2sql.py --path deep_agent` |
+| 기준 경로(3단) 평가 | `scripts/eval_text2sql.py --path semantic_router` — 확정 단이 3단이 아니면 전 항목 스킵 |
+| 부가 경로(1단) 평가 | `scripts/eval_text2sql.py --path deep_agent` — 확정 단이 1단이 아니면 전 항목 스킵 |
+| 시나리오 사전 점검 | `python -m scripts.scenario --preflight` — 3단·1단 OK · 2·4단·opt-in 실패는 주의 + 조치 |
+| 기준 결정 | `docs/02_decision.md` D-225 · `plans/102` §3.7 |

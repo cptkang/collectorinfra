@@ -53,6 +53,25 @@ class DecomposedPlan(BaseModel):
     clarification_needed: Optional[dict] = None
 
 
+# ── 답변 영역 소유(plans/102 X-7 · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) ──
+# 켜졌을 때만 쓰는 서브클래스다. instructor 백엔드는 응답 모델 스키마를 프롬프트에 싣는다.
+# 기존 모델에 필드를 더하면 플래그 off에서도 스키마가 바뀌므로 필드는 서브클래스에만 둔다.
+# 코드 값(카탈로그 대조)은 스키마가 아니라 분해 후 정제(`intent_planner._llm_decompose`)가
+# 검증한다 — 모르는 코드는 빈 문자열(소유 적용 없음)로 떨어진다.
+
+
+class OwnershipTaskSpec(TaskSpec):
+    """sub-task + 그 task가 답할 답변 영역 코드 하나(없으면 빈 문자열)."""
+
+    capability: str = ""
+
+
+class OwnershipDecomposedPlan(DecomposedPlan):
+    """`_llm_decompose` 출력 — task마다 답변 영역 코드를 싣는다."""
+
+    tasks: list[OwnershipTaskSpec] = Field(default_factory=list)
+
+
 def validate_plan_dag(tasks: list[dict]) -> tuple[list[dict], list[str], list[str]]:
     """task DAG를 결정적으로 검증한다 (D-203 · plans/88 §4.8). backend 무관 · LLM 0회.
 

@@ -1,0 +1,373 @@
+{
+  "meta": {
+    "provider": "mlx",
+    "orchestrator_provider": "mlx",
+    "model": "mlx-community/Qwen3.8-27B-4bit",
+    "base_url": "http://127.0.0.1:8080/v1",
+    "max_tokens": 4096,
+    "enable_thinking": false,
+    "classifier": "src.routing.semantic_router._llm_classify (사다리 3단 · 등록 DB 전부 · fault_diagnosis off)",
+    "started_at": "2026-09-17T13:06:20",
+    "prompt_diff_lines_vs_head_registry": [
+      "   - IT 자산 관리(자산 원장) 데이터. 서버 자산의 구매 계약·취득일·취득금액·잔존 장부금액, 유지보수 계약(계약명·기간·만료일·계약금액)과 무상 보증 기간, 하드웨어/소프트웨어 지원 종료일(EOS/EOL), 자산 상태·자산 분류·경과년수·노후 교체 대상, 담당자·담당 부점·자산 보유 부점, 물품 분류·시리얼 번호 등",
+      "   - IT 자산 관리 데이터. IT 자산 목록, 자산 라이프사이클, 계약 정보, 소프트웨어 라이선스, 하드웨어 자산 등"
+    ],
+    "warmup_s": 59.69
+  },
+  "rounds": [
+    [
+      {
+        "id": "r-060",
+        "query": "서버 CPU 사용률 상위 10대 보여줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [],
+        "db_got": [
+          "polestar_b0"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.9
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.02
+      },
+      {
+        "id": "r-061",
+        "query": "서버별 메모리 용량과 CPU 코어 수를 알려줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [],
+        "db_got": [
+          "polestar_b0"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.9
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.54
+      },
+      {
+        "id": "r-062",
+        "query": "유지보수 계약이 이번 분기에 만료되는 서버 목록",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.89
+      },
+      {
+        "id": "r-063",
+        "query": "하드웨어 지원 종료일(EOL)이 6개월 이내인 서버 알려줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.64
+      },
+      {
+        "id": "r-064",
+        "query": "경과년수 5년 이상 노후 서버의 취득금액 보여줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.97
+      }
+    ],
+    [
+      {
+        "id": "r-060",
+        "query": "서버 CPU 사용률 상위 10대 보여줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [],
+        "db_got": [
+          "polestar_b0"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.9
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 6.81
+      },
+      {
+        "id": "r-061",
+        "query": "서버별 메모리 용량과 CPU 코어 수를 알려줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [],
+        "db_got": [
+          "polestar_b0"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.9
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.22
+      },
+      {
+        "id": "r-062",
+        "query": "유지보수 계약이 이번 분기에 만료되는 서버 목록",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.69
+      },
+      {
+        "id": "r-063",
+        "query": "하드웨어 지원 종료일(EOL)이 6개월 이내인 서버 알려줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.38
+      },
+      {
+        "id": "r-064",
+        "query": "경과년수 5년 이상 노후 서버의 취득금액 보여줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.63
+      }
+    ],
+    [
+      {
+        "id": "r-060",
+        "query": "서버 CPU 사용률 상위 10대 보여줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [],
+        "db_got": [
+          "polestar_b0"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.9
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 6.65
+      },
+      {
+        "id": "r-061",
+        "query": "서버별 메모리 용량과 CPU 코어 수를 알려줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [],
+        "db_got": [
+          "polestar_b0"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.9
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.01
+      },
+      {
+        "id": "r-062",
+        "query": "유지보수 계약이 이번 분기에 만료되는 서버 목록",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.65
+      },
+      {
+        "id": "r-063",
+        "query": "하드웨어 지원 종료일(EOL)이 6개월 이내인 서버 알려줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.33
+      },
+      {
+        "id": "r-064",
+        "query": "경과년수 5년 이상 노후 서버의 취득금액 보여줘",
+        "critical": "boundary",
+        "intent_expected": "data_query",
+        "intent_got": "data_query",
+        "intent_match": true,
+        "db_expected": [
+          "itam"
+        ],
+        "db_got": [
+          "itam"
+        ],
+        "db_recall": true,
+        "min_databases": 1,
+        "multi_preserved": true,
+        "db_forbidden": [],
+        "scores": [
+          0.95
+        ],
+        "dropped": [],
+        "passed": true,
+        "elapsed_s": 7.63
+      }
+    ]
+  ]
+}

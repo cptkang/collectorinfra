@@ -361,26 +361,50 @@ settings:
           들고 있어 "새 컬럼을 못 찾는다"로 나타난다.
     performance: 검증은 가벼운 조회지만 주기가 짧으면 누적된다.
     stability: 스키마 변경이 잦은 환경에서는 짧게, 안정적인 환경에서는 길게 잡는다.
-    related: [SCHEMA_CACHE_ENABLED, SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS]
+    related: [SCHEMA_CACHE_ENABLED]
 
-  SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS:
-    summary: 컬럼 설명을 LLM으로 자동 생성해 캐시에 넣을지.
+  SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY:
+    summary: 관리자 「DB 구조」 탭이 컬럼 설명·유사어 초안을 만들 때 동시에 띄우는 LLM 호출 수 상한.
     behavior: >-
-      컬럼 이름만으로는 무슨 데이터인지 모호할 때, LLM이 설명을 만들어 스키마 정보에
-      함께 실어 준다. 이 설명은 SQL 생성 프롬프트의 재료가 된다.
+      신규 DB를 연동하거나 설명을 다시 만들 때 관리자 잡은 테이블마다 LLM을 한 번 부른다.
+      이 값은 그 호출을 몇 개까지 겹쳐 띄울지 정한다. 사용자 질의 경로에는 영향이 없다 —
+      질의는 등록해 둔 설명을 읽기만 한다.
     options:
-      - value: "true"
+      - value: "2"
         label: 기본
-        effect: 캐시를 만들 때 설명도 생성한다. SQL 생성 정확도가 올라간다.
-      - value: "false"
-        effect: 컬럼 이름만 쓴다. LLM 호출이 줄지만 이름이 모호한 컬럼에서 오조회가 늘어난다.
+        effect: 두 테이블씩 겹쳐 생성한다. 순차 생성보다 빠르고 LLM 서버 부하는 제한된다.
+      - value: "1"
+        effect: 한 번에 한 테이블만 생성한다. 가장 느리지만 LLM 서버를 다른 사용자와 나눠 쓸 때 안전하다.
+      - value: "8"
+        effect: >-
+          대형 DB 등록 시간이 크게 줄지만, 같은 LLM 서버를 쓰는 사용자 질의의 응답이
+          그동안 느려지거나 공급자 호출 한도에 걸릴 수 있다.
     example: >-
-      `CMM_RESC_ID` 같은 축약 컬럼명은 이름만으로 용도를 알기 어렵다. 자동 설명이
-      "자원 식별자"라고 붙여 주면 질의어 매칭이 훨씬 정확해진다.
-    performance: >-
-      캐시를 새로 만들 때만 호출된다 — 평상시 질의에는 비용이 없다. 다만 테이블이 많으면
-      최초 생성에 상당한 호출이 일어난다(외부 과금 공급자라면 그만큼 비용이 발생한다).
-    stability: 생성된 설명이 틀리면 매칭이 잘못될 수 있다 — 큐레이션 지식(config/knowledge)이 있으면 그쪽이 우선이다.
-    caveats:
-      - 캐시 재생성 시 LLM 호출이 테이블 수만큼 발생한다 — 외부 과금 공급자에서는 규모를 먼저 확인한다(D-127).
-    related: [SCHEMA_CACHE_ENABLED, LLM_PROVIDER]
+      테이블 394개인 공동존을 등록하면 설명 생성이 394회 호출이다. 2로 두면 순차보다 약 절반의
+      시간에 끝나고, 8로 올리면 더 빨리 끝나지만 그 사이 채팅 응답이 눈에 띄게 늦어질 수 있다.
+    performance: 값이 클수록 등록 잡은 빨라지고, 같은 시간대 LLM 서버 부하는 커진다. 총 호출 수는 변하지 않는다.
+    stability: 과금 공급자라면 총 호출 수만큼 비용이 발생한다 — 동시성은 비용이 아니라 속도만 바꾼다(D-127).
+    related: [SCHEMA_CACHE_STRUCTURE_GROUP_MAX_TABLES, LLM_PROVIDER]
+
+  SCHEMA_CACHE_STRUCTURE_GROUP_MAX_TABLES:
+    summary: 관리자 구조 분석이 한 번의 LLM 분석에 넣는 테이블 수 상한(FK로 연결된 묶음 단위).
+    behavior: >-
+      관리자 「DB 구조」 탭의 구조 분석은 선택한 테이블을 FK로 연결된 묶음으로 나눠 묶음마다
+      LLM을 한 번 부르고 결과를 합친다. 묶음이 이 값보다 크면 이름순으로 잘라 나눈다.
+      사용자 질의 경로에는 영향이 없다 — 질의는 승인된 구조 정보를 읽기만 한다.
+    options:
+      - value: "40"
+        label: 기본
+        effect: 한 번의 분석 프롬프트가 테이블 40개 이내로 유지된다.
+      - value: "10"
+        effect: >-
+          프롬프트가 작아 컨텍스트가 짧은 모델에서도 안전하지만, 연결된 테이블이 여러 묶음으로
+          갈라져 테이블 사이의 구조 패턴을 놓칠 수 있다.
+      - value: "200"
+        effect: 한 번에 넓게 보지만 프롬프트가 커져 공급자 입력 한도에 걸리거나 분석이 부정확해질 수 있다.
+    example: >-
+      테이블 120개를 분석하면 40 기준으로 약 세 번의 분석 호출이 된다. 값을 10으로 내리면 호출이
+      열두 번으로 늘고, 서로 조인되는 테이블이 다른 묶음에 들어가 그 조인이 초안에서 빠질 수 있다.
+    performance: 값이 작을수록 분석 호출 수가 늘고 호출당 프롬프트는 작아진다.
+    stability: 공급자 입력 한도(FabriX 등)를 넘지 않는 선에서 크게 잡는 편이 구조 패턴을 덜 놓친다.
+    related: [SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY, LLM_PROVIDER]

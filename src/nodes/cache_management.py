@@ -14,6 +14,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
+from src.domain.user import UserRole
 from src.llm import create_llm
 from src.prompts.cache_management import CACHE_MANAGEMENT_PARSE_PROMPT
 from src.schema_cache.cache_manager import get_cache_manager
@@ -74,6 +75,19 @@ async def cache_management(
         parsed = await _parse_cache_intent(llm, user_query)
         action = parsed.get("action", "status")
         db_id = parsed.get("db_id")
+
+        # 생성·무효화는 관리자만(plans/104 S2) — 실행 경계에서 판정한다(UI 게이트 ≠ 인가).
+        # 3단 노드·2단 서브에이전트·1단 deep_agent 도구가 모두 이 함수를 지나므로 한 곳이면 된다.
+        if action in _ADMIN_ONLY_ACTIONS and not _is_cache_admin(state, app_config):
+            logger.info(
+                "cache_management: 비관리자 %s 요청 거절 (user_id=%s, role=%s)",
+                action, state.get("user_id"), state.get("user_role"),
+            )
+            return {
+                "final_response": _ADMIN_ONLY_MESSAGE,
+                "current_node": "cache_management",
+                "error_message": None,
+            }
 
         # 멀티턴: db_id가 없으면 이전 턴의 db_id를 자동 추론
         if not db_id:
@@ -191,6 +205,35 @@ async def _parse_cache_intent(
 
     # 파싱 실패 시 기본값
     return {"action": "status", "db_id": None}
+
+
+# 관리자 역할만 수행하는 생성·무효화 작업(plans/104 S2). 조회·유사어 등록·설명 수정 등
+# 나머지 작업은 역할과 무관하게 종전대로 수행한다.
+_ADMIN_ONLY_ACTIONS = (
+    "generate",
+    "generate-descriptions",
+    "generate-synonyms",
+    "generate-global-synonyms",
+    "generate-db-description",
+    "invalidate",
+)
+
+_ADMIN_ONLY_MESSAGE = (
+    "캐시 생성·무효화는 관리자만 할 수 있습니다. "
+    "관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요."
+)
+
+
+def _is_cache_admin(state: AgentState, app_config: AppConfig) -> bool:
+    """캐시 생성·무효화를 수행할 수 있는 요청인지 판정한다 (plans/104 S2).
+
+    인증이 꺼져 있으면(개발 모드) 허용한다 — 관리자 API의 개발 모드 우회(D-069 ①)와 같다.
+    인증이 켜져 있으면 라우트가 검증된 사용자 정보로 주입한 `user_role`이 admin일 때만
+    허용한다. 역할이 없으면 거절한다(fail-closed).
+    """
+    if not app_config.auth.enabled:
+        return True
+    return state.get("user_role") == UserRole.ADMIN.value
 
 
 # db_id 대상 검증·전개를 적용하는 작업 — 대상 DB로 introspection/삭제가 나가는 작업만.
@@ -654,7 +697,11 @@ async def _handle_generate_db_description(
     llm: BaseChatModel,
     db_id: Optional[str],
 ) -> str:
-    """DB 설명을 LLM으로 자동 생성한다."""
+    """DB 설명을 LLM으로 자동 생성한다.
+
+    수동 설정된 설명(출처 `manual`)은 LLM을 부르기 전에 건너뛰고 응답에 보존 사실을
+    밝힌다(plans/104 S5). 저장은 출처 `llm`으로 남긴다.
+    """
     from src.schema_cache.description_generator import DescriptionGenerator
 
     generator = DescriptionGenerator(llm)
@@ -670,17 +717,25 @@ async def _handle_generate_db_description(
 
     results = []
     for did in db_ids:
+        if await cache_mgr.get_db_description_origin(did) == "manual":
+            results.append(f"- {did}: 건너뜀 — 수동 설정 설명 보존(LLM 재생성하지 않음)")
+            continue
+
         schema_dict = await cache_mgr.get_schema(did)
         if schema_dict is None:
             results.append(f"- {did}: 캐시 없음")
             continue
 
         description = await generator.generate_db_description(did, schema_dict)
-        if description:
-            await cache_mgr.save_db_description(did, description)
-            results.append(f"- {did}: {description}")
-        else:
+        if not description:
             results.append(f"- {did}: 설명 생성 실패")
+        elif await cache_mgr.save_db_description(did, description, origin="llm"):
+            results.append(f"- {did}: {description}")
+        elif await cache_mgr.get_db_description_origin(did) == "manual":
+            # 생성 도중 수동 설명이 설정된 경우 — 매니저가 저장을 거부한다
+            results.append(f"- {did}: 저장하지 않음 — 수동 설정 설명 보존")
+        else:
+            results.append(f"- {did}: 설명 저장 실패")
 
     return "DB 설명 생성 결과:\n" + "\n".join(results)
 
@@ -696,7 +751,7 @@ async def _handle_set_db_description(
     if not description:
         return "설명 텍스트를 입력해야 합니다."
 
-    success = await cache_mgr.save_db_description(db_id, description)
+    success = await cache_mgr.save_db_description(db_id, description, origin="manual")
     if success:
         return f"{db_id} DB 설명을 설정했습니다: {description}"
     return f"{db_id} DB 설명 설정에 실패했습니다."

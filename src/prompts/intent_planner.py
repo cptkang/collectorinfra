@@ -209,3 +209,105 @@ INTENT_PLANNER_SYSTEM_TEMPLATE = """당신은 사용자의 인프라 질의를 �
 
 반드시 유효한 JSON만 출력하세요.
 """
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 답변 영역 소유 (plans/102 X-8 · D-224 ① · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) — 옵트인
+# ══════════════════════════════════════════════════════════════════════════
+#
+# **위 템플릿은 한 글자도 바꾸지 않는다** — off는 `INTENT_PLANNER_SYSTEM_TEMPLATE` 그대로다.
+# on 렌더는 `render_intent_planner_ownership_template`이 앵커 두 곳 **앞에 삽입만** 해서 만든다
+# (기존 줄 변경 0 — 삽입 전용 테스트가 강제). 3단 순차 러너가 `_llm_decompose`로 이 프롬프트를
+# 재사용한다.
+#
+# 소유표 **행**은 여기 적지 않는다 — 레지스트리에서 렌더해 `{ownership_rows}`로 넣는다
+# (사본 금지 D-053).
+# 분해 단계는 DB를 고르지 않으므로 행에 db_id를 싣지 않는다.
+#
+# ⚠ 중괄호 표기: 위 템플릿은 `.format()`을 거치지 않고 그대로 SystemMessage가 되므로 예시의
+#   `{{`가 그대로 전달된다. 같은 프롬프트 안의 표기를 맞추려고 아래 예시도 같은 표기를 쓴다.
+#   섹션 템플릿만 `.format()`한다. 프롬프트 본문 상수의 긴 줄은 렌더 텍스트 그대로다.
+
+_OWNERSHIP_SECTION_ANCHOR = "## 출력 형식\n"
+_OWNERSHIP_EXAMPLE_ANCHOR = "### 예시 4 "
+
+# `.format(ownership_rows=...)`로 채운다 — 이 문자열에 다른 중괄호를 쓰지 말 것.
+INTENT_PLANNER_OWNERSHIP_SECTION_TEMPLATE = """## 답변 영역(capability) — 조회 시스템 판정용
+
+각 `data_query`·`alarm_query` task에는 그 task가 답할 **답변 영역 코드 하나**를 `capability`로 적으세요.
+영역마다 정본 시스템이 정해져 있고, 시스템은 이 값으로 task의 조회 대상을 정본 시스템에 맞춥니다.
+**DB는 여전히 고르지 않습니다** — `capability`만 적으세요.
+
+| 답변 영역 코드 | 내용 | 정본 시스템 |
+|---|---|---|
+{ownership_rows}
+
+- task 하나에는 영역 하나만 적습니다. 정본 시스템이 서로 다른 영역이 한 질의에 섞이면 영역별로 task를 나누고,
+  앞 task의 결과가 뒤 task의 조회 대상을 정하면 데이터 의존(`depends_on`·`input_from`)으로 잇습니다.
+- 표에 맞는 영역이 없거나 `data_query`·`alarm_query`가 아닌 task는 `capability`를 빈 문자열("")로 둡니다.
+- 아래 출력 형식의 task 객체에 `"capability": "답변 영역 코드"` 키를 더합니다.
+
+"""  # noqa: E501
+
+INTENT_PLANNER_OWNERSHIP_EXAMPLES = """### 예시 3-2 (교차 시스템 — 앞 시스템의 결과가 뒤 시스템의 조회 대상)
+
+입력: "CPU 사용률이 90%를 넘는 서버들의 유지보수 계약 만료일을 알려줘"
+출력:
+```json
+{{
+    "clarification_needed": null,
+    "tasks": [
+        {{"task_id": "t1", "agent": "data_query", "sub_query": "CPU 사용률이 90%를 넘는 서버 목록 조회",
+         "depends_on": [], "input_from": [], "order": 1, "capability": "server_usage"}},
+        {{"task_id": "t2", "agent": "data_query", "sub_query": "선행 결과의 서버들에 대해 유지보수 계약 만료일 조회",
+         "depends_on": ["t1"], "input_from": ["t1"], "order": 2, "capability": "asset_contract"}}
+    ]
+}}
+```
+
+입력: "HW 지원 종료가 6개월 안 남은 서버들의 현재 알람을 보여줘"
+출력:
+```json
+{{
+    "clarification_needed": null,
+    "tasks": [
+        {{"task_id": "t1", "agent": "data_query", "sub_query": "HW 지원 종료일이 6개월 이내인 서버 목록 조회",
+         "depends_on": [], "input_from": [], "order": 1, "capability": "asset_lifecycle"}},
+        {{"task_id": "t2", "agent": "alarm_query", "sub_query": "선행 결과의 서버들에 대해 현재 활성 알람 조회",
+         "depends_on": ["t1"], "input_from": ["t1"], "order": 2, "capability": "alarm"}}
+    ]
+}}
+```
+(두 영역의 정본 시스템이 다르므로 영역별 task로 나누고 `input_from`으로 잇습니다. 어느 시스템이 먼저인지는
+ 고정돼 있지 않습니다 — 질의에서 대상을 먼저 정하는 쪽이 앞 task입니다.)
+
+"""  # noqa: E501
+
+
+def render_intent_planner_ownership_template(
+    ownership_rows: str, *, with_examples: bool = True
+) -> str:
+    """답변 영역 소유 on 전용 분해 프롬프트를 만든다 — 기본 템플릿에 **삽입만** 한다.
+
+    Args:
+        ownership_rows: 레지스트리에서 렌더한 소유표 행(db_id 없이)
+        with_examples: 교차 시스템 예시를 넣을지(소유 시스템이 둘 이상 활성일 때만 True)
+
+    Returns:
+        소유 섹션이 「출력 형식」 앞에, (선택) 교차 시스템 예시가 「예시 4」 앞에 삽입된 프롬프트
+
+    Raises:
+        RuntimeError: 기본 템플릿의 앵커가 정확히 1회 나타나지 않는다
+            (템플릿이 바뀌어 삽입 위치가 흔들림)
+    """
+    base = INTENT_PLANNER_SYSTEM_TEMPLATE
+    for anchor in (_OWNERSHIP_SECTION_ANCHOR, _OWNERSHIP_EXAMPLE_ANCHOR):
+        if base.count(anchor) != 1:
+            raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {anchor!r}")
+    section = INTENT_PLANNER_OWNERSHIP_SECTION_TEMPLATE.format(ownership_rows=ownership_rows)
+    head, sep, tail = base.partition(_OWNERSHIP_SECTION_ANCHOR)
+    rendered = head + section + sep + tail
+    if not with_examples:
+        return rendered
+    head, sep, tail = rendered.partition(_OWNERSHIP_EXAMPLE_ANCHOR)
+    return head + INTENT_PLANNER_OWNERSHIP_EXAMPLES + sep + tail

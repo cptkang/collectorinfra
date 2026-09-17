@@ -220,3 +220,52 @@ def test_헬스_대기는_기동_1회당_한_번만_돈다(tmp_path: Path, monke
 
     assert first == second == (False, "헬스 대기 90초 초과 (마지막: ConnectError)")
     assert len(polls) == 1, "두 번째 호출은 기억한 결과를 돌려줘야 한다"
+
+
+# --- 가용성 강등은 INVALID · 운영자 선택 강등은 유효 (2026-09-17 plans/100 점검) ----------
+
+@pytest.mark.parametrize("reason", ["orchestrator_unavailable", "package_missing"])
+def test_플래그는_1단인데_가용성으로_강등되면_INVALID_다(patch_client, reason: str) -> None:
+    """러너는 expected_tier 를 넘기지 않는다 - 강등 사유가 "켜졌는데 못 올라갔다"를 말한다.
+
+    MLX 서버가 꺼진 채로 프로파일을 띄우면 1단이 2단으로 내려가 **다른 경로를 재면서** 유효로
+    기록됐다(리포트 상단 경고만 남음).
+    """
+    patch_client({})
+    status = verify_profile(
+        FakeHandle(ladder=("intent_orchestration", reason)), {}, admin_token=None
+    )
+    assert status.valid is False
+    assert any(r.startswith("조용한 강등") and reason in r for r in status.reasons)
+
+
+@pytest.mark.parametrize(
+    "ladder",
+    [("semantic_router", "none"), ("deep_agent", "none"),
+     ("intent_orchestration", "intent_flag_on"), ("legacy", "semantic_routing_off")],
+)
+def test_의도한_단은_유효하다(
+    patch_client, ladder: tuple[str, str]
+) -> None:
+    """3단 기준 경로 · 1단 opt-in · 운영자가 고른 비기준 단(2·4단)은 강등이 아니다(D-225).
+
+    비기준 단은 의도한 선택이다 - D-221 O-c 리포트 경고로만 남긴다.
+    """
+    patch_client({})
+    status = verify_profile(FakeHandle(ladder=ladder), {}, admin_token=None)
+    assert status.valid is True
+    assert status.tier == ladder[0]
+    assert not any("조용한 강등" in r for r in status.reasons)
+
+
+def test_서버_요청_상한을_에코에서_읽는다(patch_client) -> None:
+    patch_client({"API_QUERY_TIMEOUT": "900", "API_FILE_QUERY_TIMEOUT": "1200"})
+    status = verify_profile(FakeHandle(), {}, admin_token=None)
+    assert status.server_timeouts == {
+        "API_QUERY_TIMEOUT": 900.0, "API_FILE_QUERY_TIMEOUT": 1200.0}
+
+
+def test_서버_요청_상한이_없거나_숫자가_아니면_담지_않는다(patch_client) -> None:
+    patch_client({"API_QUERY_TIMEOUT": ""})
+    status = verify_profile(FakeHandle(), {}, admin_token=None)
+    assert status.server_timeouts == {}

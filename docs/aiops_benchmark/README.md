@@ -25,7 +25,13 @@ collectorinfra AIOps 고도화를 위한 선진 솔루션 조사·분석 자료.
 - `aiops_research_dossier.md` — 조사 개요·결론·산출물 인덱스·주제별 출처 120건
 - `aiops_research_sources.csv` — 출처 120건(주제·제목·URL)
 
+## 6. ML 기반 장애 진단·예측·RCA 문헌 (2026-09-17 · `plans/101`)
+- `ml_rca_literature.md` — RCA·장애 진단 49건 + 보조 22건(트레이스 없는 메트릭 RCA·벤치마크 비판·DB/APM 진단·변경 상관·LLM 에이전트), 원문 대조 등급 V1~V3
+- `ml_anomaly_prediction_literature.md` — 이상탐지·장애 예측·용량 예측·시계열 파운데이션 모델 60항목 + 평가 프로토콜 12조
+- `ml_library_vendor_survey.md` — Python 라이브러리 버전·라이선스 실측 · HolmesGPT 확장 지점 · 제니퍼·엑셈·와탭 AI 기능 · 데이터셋
+
 ## 관련 계획
 - `../../plans/60-noise-cancellation-benchmark-refinement.md` — 노이즈 캔슬링 고도화 계획(E1~E5, D-067~071)
+- `../../plans/101-TODO-ml-fault-diagnosis-prediction-rca.md` — ML 기반 장애 진단·예측·RCA 계획(D-223 예약)
 
 > 출처는 벤더 공개 서술 기준. 도입효과 수치는 벤더/고객 발표 기준으로 독립검증 아님.

@@ -67,14 +67,15 @@ agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 3단(semantic_router) 경로의 분기 대상은 `schema_analyzer`(단일 DB) · `multi_db_executor`(멀티 DB) ·
 `cache_management` · `synonym_registrar` · `general_inference` · `fault_diagnosis`(옵트인) · `END`(역질문).
 
-단일 DB 경로: `schema_analyzer → [structure_approval_gate] → query_generator → query_validator →
+단일 DB 경로: `schema_analyzer → query_generator → query_validator →
 [approval_gate] → query_executor → result_organizer → output_generator`
 
 - `query_validator` 실패 → `query_generator` 회귀 (예산 `QUERY_MAX_RETRY_COUNT`, 기본 3)
 - `query_executor` SQL 에러 → `query_generator` 회귀 (에러 컨텍스트 동반)
 - `result_organizer` 데이터 부족 → `query_generator` 회귀
-- HITL 게이트 2종은 `interrupt_before`로 배선된다(`enable_sql_approval` 기본 off /
-  `enable_structure_approval` 기본 **on**)
+- HITL 게이트는 SQL 승인 1종(`approval_gate`, `enable_sql_approval` 기본 off)이며 `interrupt_before`로
+  배선된다. **질의 경로는 DB 구조를 분석하지 않는다**(D-227) — 구조 분석·승인·버전은 관리자 「DB 구조」 탭
+  (`src/api/routes/db_structure.py`)에서 하고, 구조 정보(수동 프로필·승인본)가 없는 DB는 멈추지 않고 사유를 알린다
 - 노드 전체 목록은 `src/nodes/` 참조 — 후보 생성/선택, 단계적 컬럼 도출, 조건 프로브,
   실시간 사용률, 시맨틱 컴파일러 등 옵트인 노드가 다수 있다.
 - **상태**는 `TypedDict`(`AgentState`, `src/state.py`). LangGraph 체크포인터는 **델타만 병합**하므로
@@ -85,7 +86,7 @@ agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 | Component | Technology |
 |-----------|-----------|
 | 에이전트 프레임워크 | LangGraph ≥0.2 (+ 옵트인 `deepagents` extra) |
-| LLM provider | `ollama` / `fabrix`(KBGenAI, 운영) / `gemini` — `LLM_PROVIDER`로 선택. 오케스트레이터는 `ORCHESTRATOR_PROVIDER`로 별도 지정 |
+| LLM provider | `ollama` / `fabrix`(KBGenAI, 운영) / `gemini` / `mlx`(맥북 로컬 테스트 전용 — 앱 밖 `mlx_lm.server`) — `LLM_PROVIDER`로 선택. 오케스트레이터는 `ORCHESTRATOR_PROVIDER`(`vllm`/`gemini`/`mlx`)로 별도 지정. **과금 판정은 두 평면을 모두 본다**(워커 비과금 `fabrix·ollama·mlx` / 오케스트레이터 비과금 `vllm·mlx` — D-222) |
 | DB 접근 | DBHub 계열 MCP 서버(`mcp_server/`, readonly) 또는 direct(asyncpg) — `DB_BACKEND` |
 | DB 엔진 | PostgreSQL · IBM DB2 (방언 분기 필수) |
 | 문서 처리 | openpyxl(Excel) · python-docx(Word) — `document` extra |
@@ -109,6 +110,11 @@ python -m src.main
 
 # 알람 수신부 (독립 프로세스, TCP 9100 → Redis Stream 'alarm:raw')
 python -m noise_gate.alarm_server
+
+# MLX 로컬 LLM 서버 (맥북 테스트 전용 · 루트 venv 밖 설치 · 127.0.0.1 바인딩 필수 — docs/03_setup_guide.md §7.2)
+# .env: LLM_PROVIDER=mlx · ORCHESTRATOR_PROVIDER=mlx · LLM_MLX_MODEL/ORCHESTRATOR_MODEL=서버 모델 ID · *_BASE_URL=http://127.0.0.1:8080/v1
+# 설치(선택): uv tool install "mlx-lm==0.31.3" — 없으면 스크립트가 uvx로 실행한다
+scripts/mlx_server.sh                    # .env 모델·포트로 기동(포그라운드) · --dry-run 점검만 · MLX_ALLOW_DOWNLOAD=1 캐시 외 모델
 
 # MCP 서버 (별도 프로세스·별도 cwd — 자체 venv 없음, 루트 venv로 기동)
 # DB2(polestar_b0) 조회에는 ibm-db가 필요한데 루트 venv에는 미설치다(실측 2026-09-02).
@@ -167,6 +173,7 @@ python scripts/eval_routing.py --help
 | `polestar_cm_gp` | gongjon(공동존·김포 운영/DR) | PostgreSQL | `polestar` |
 | `polestar_cm_yd` | gongjon(공동존·여의도 개발/스테이징) | PostgreSQL | `polestar` |
 | `polestar` | — | PostgreSQL | 로컬 도커 샌드박스(`testdata/pg/init`) |
+| `itam` | — (존 미배정 · 단일 시스템) | MariaDB | 로컬 도커 샌드박스(`testdata/itam` · 3307 · `INST1` 가정) · 구조 정본 미작성(G-4) — plans/95 |
 
 주요 데이터: 서버 사양·사용량(EAV `core_config_prop` 피벗 + `cmm_resource` 직접 컬럼),
 성능지표(`cmm_metric_stat_[h,d,m]`), 알람(`cmm_alarm` / `cmm_alarm_active` / `cmm_alarm_def`),

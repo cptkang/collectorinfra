@@ -211,6 +211,16 @@ class AgentState(TypedDict):
     #   db_scope_reset: 사용자가 스코프 칩에서 "해제"한 턴. context_resolver가 sticky 승계를 건너뛴다.
     db_scope_source: Optional[str]
     db_scope_reset: Optional[bool]
+    # 교차 시스템 질의(plans/102 · D-224) — 전부 **요청 스코프**(라우트가 매 턴 명시 초기화).
+    #   required_capabilities: 라우터 구조화 출력의 답변 영역 합집합
+    #     (`ROUTER_CAPABILITY_OWNERSHIP_ENABLED` on일 때만). 소유 판정의 유일한 입력 —
+    #     질의 원문을 키워드로 보지 않는다(D-004).
+    #   capability_chain: 앞 영역의 결과가 뒤 영역의 조회 대상을 정할 때의 순서(독립이면 []).
+    #   entity_probe: `entity_locator` 소재 프로브 판정 경과
+    #     (`CROSS_SYSTEM_PROBE_ENABLED` on일 때만).
+    required_capabilities: list[str] | None
+    capability_chain: list[str] | None
+    entity_probe: dict[str, Any] | None
 
     # === [Phase 3] 멀티턴 대화 ===
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
@@ -359,6 +369,11 @@ def create_followup_input(
         # 스레드 DB 스코프(D-205) — 요청 스코프. source는 이번 턴 라우터/서브에이전트가 다시 남긴다.
         "db_scope_source": None,
         "db_scope_reset": bool(reset_db_scope),
+        # 교차 시스템 질의(plans/102) — 요청 스코프. 직전 턴 답변 영역·프로브가
+        # 새 턴 판정에 섞이지 않도록.
+        "required_capabilities": None,
+        "capability_chain": None,
+        "entity_probe": None,
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -475,6 +490,10 @@ def create_initial_state(
         zone_clarification=None,
         db_scope_source=None,
         db_scope_reset=False,
+        # 교차 시스템 질의(plans/102) — 요청 스코프
+        required_capabilities=None,
+        capability_chain=None,
+        entity_probe=None,
         # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,

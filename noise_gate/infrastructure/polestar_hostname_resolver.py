@@ -130,6 +130,102 @@ def build_host_status_sql(
     )
 
 
+def build_host_probe_sql(
+    db_id: str,
+    *,
+    names: list[str],
+    prefixes: list[str],
+    ips: list[str],
+    db_engine: str = "postgresql",
+) -> str:
+    """교차 시스템 소재 프로브용 고정 SELECT (plans/102 §3.4 · D-224 ⑤ — 읽기 전용 단일문).
+
+    `build_host_status_sql`(세 진입 경로 공용)과 **별도 함수**다 — 그 SQL의 완전 일치 규약은
+    그대로 두고, 프로브에 필요한 세 가지만 여기 둔다: ①hostname·name **대소문자 무시** 비교
+    (RFC 4343) ②단일 레이블 입력의 FQDN 후보(`LOWER(hostname) LIKE 'x.%'` — 매칭 등급
+    `possible`의 재료) ③**IP** 일치. 최종 판정(일치·가능·모호)은 호출부가 행을 받아 코드로
+    확정한다 — SQL은 넓게 좁히기만 한다.
+
+    Args:
+        db_id: 조회 대상 인스턴스
+        names: 소문자 정규형 이름 후보(hostname·name 대조) — 호출부가 키 판정·정규화한 값
+        prefixes: FQDN 후보를 찾을 단일 레이블 이름(소문자)
+        ips: IP 문자열 후보
+        db_engine: 대상 DB 엔진(DB2면 무스키마 참조 규칙 — `_table`)
+
+    Returns:
+        읽기 전용 단일 SELECT 문자열
+
+    Raises:
+        ValueError: 후보가 하나도 없을 때(조건 없는 전수 조회를 만들지 않는다)
+    """
+    conditions: list[str] = []
+    if names:
+        literals = ", ".join(_sql_literal(v) for v in names)
+        conditions.append(f"LOWER(r.hostname) IN ({literals})")
+        conditions.append(f"LOWER(r.name) IN ({literals})")
+    for prefix in prefixes:
+        conditions.append(f"LOWER(r.hostname) LIKE {_sql_literal(prefix + '.%')}")
+    if ips:
+        conditions.append(f"r.ipaddress IN ({', '.join(_sql_literal(v) for v in ips)})")
+    if not conditions:
+        raise ValueError("소재 프로브 후보가 비었습니다")
+    t_resource = _table(db_id, "cmm_resource", db_engine)
+    return (
+        "SELECT r.hostname AS hostname, r.name AS name, r.ipaddress AS ipaddress\n"
+        f"FROM {t_resource} r\n"
+        "WHERE r.resource_type = 'server.Server'\n"
+        "  AND r.dtime IS NULL\n"
+        f"  AND ({' OR '.join(conditions)})"
+    )
+
+
+async def probe_hosts(
+    app_config: Any,  # AppConfig — 이 모듈의 다른 진입 함수와 같이 설정 타입을 import하지 않는다
+    db_id: str,
+    *,
+    names: list[str],
+    prefixes: list[str],
+    ips: list[str],
+) -> list[dict[str, Any]]:
+    """인스턴스 1개에서 소재 프로브 후보에 걸리는 서버 행을 **1쿼리**로 읽는다 (plans/102 §3.4).
+
+    `lookup_host(s)`와 달리 **fail-open이 아니다** — 조회 실패·미등록 db_id는 예외로 올린다.
+    프로브는 "없다"와 "확인하지 못했다"를 구분해야 하므로(D7) 실패를 빈 결과로 바꾸면 안 된다.
+    호출부(`src/orchestration/entity_locator.py`)가 DB별로 잡아 "확인하지 못함"으로 기록한다.
+
+    Returns:
+        `[{"hostname", "name", "ipaddress"}]` — 드라이버별 키 대소문자를 정규화한 행
+    """
+    from src.routing.db_registry import DBRegistry
+
+    registry = DBRegistry(app_config)
+    if not registry.is_registered(db_id):
+        raise LookupError(f"활성 DB가 아닙니다: {db_id}")
+    domain = get_domain_by_id(db_id)
+    db_engine = domain.db_engine if domain else "postgresql"
+    sql = build_host_probe_sql(db_id, names=names, prefixes=prefixes, ips=ips, db_engine=db_engine)
+    try:
+        async with registry.get_client(db_id) as client:
+            result = await client.execute_sql(sql)
+    except Exception as exc:
+        logger.warning(
+            "소재 프로브 조회 실패: db_id=%s engine=%s err=%s sql=%s", db_id, db_engine, exc, sql,
+        )
+        raise
+    rows = [
+        {
+            "hostname": _row_value(row, "hostname"),
+            "name": _row_value(row, "name"),
+            "ipaddress": _row_value(row, "ipaddress"),
+        }
+        for row in result.rows
+        if isinstance(row, dict)
+    ]
+    logger.info("소재 프로브 조회: db_id=%s 행=%d", db_id, len(rows))
+    return rows
+
+
 def build_server_identity_sql(db_id: str, hostname: str, db_engine: str = "postgresql") -> str:
     """hostname → 등록 서버명·IP 역조회 고정 SELECT를 조립한다 (D-188 · 읽기 전용 단일문).
 

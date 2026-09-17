@@ -856,6 +856,7 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
             executed += _run_profile(
                 catalog, config, meta, profile, scenarios, port, raw, out_dir, skipped,
                 token=user_token, token_source=token_source,
+                server_timeouts=status.server_timeouts,
             )
             if token_source.refreshes or token_source.failures:
                 meta.setdefault("token_refresh", []).append({
@@ -1321,6 +1322,7 @@ def _run_profile(
     skipped: list[dict[str, Any]],
     token: Optional[str] = None,
     token_source: Optional[TokenSource] = None,
+    server_timeouts: Optional[dict[str, float]] = None,
 ) -> int:
     executed = 0
     client_config = ClientConfig(
@@ -1329,6 +1331,7 @@ def _run_profile(
         timeout_sec=config.timeout_sec,
         artifact_dir=out_dir / "artifacts",
         token_source=token_source,
+        server_timeouts=dict(server_timeouts or {}),
     )
     live = config.mode != "mock"
     kwargs: dict[str, Any] = {

@@ -14,9 +14,10 @@ Redis 장애 시 파일 캐시로 graceful fallback한다.
 from __future__ import annotations
 
 import logging
-import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from src.config import AppConfig
@@ -27,6 +28,7 @@ from src.schema_cache.fingerprint import (
 )
 from src.schema_cache.persistent_cache import PersistentSchemaCache
 from src.schema_cache.redis_cache import RedisSchemaCache
+from src.schema_cache.structure_store import StructureStore
 from src.utils.json_extract import (
     extract_json_array_from_response,
     extract_json_from_response,
@@ -61,6 +63,17 @@ def _validate_column_keys(data: dict, label: str) -> dict:
         else:
             logger.warning("%s 키 형식 오류 무시: %s", label, key)
     return valid
+
+
+def _has_manual_profile(db_id: str) -> bool:
+    """`config/db_profiles/{db_id}.yaml`이 수동 프로필(`source: manual`)인지 판정한다.
+
+    판정 기준은 schema_analyzer의 수동 프로필 로더(`_load_manual_profile`)와 같다.
+    """
+    from src.schema_cache.catalog_builder import load_structure_profile
+
+    profile = load_structure_profile(db_id)
+    return isinstance(profile, dict) and profile.get("source") == "manual"
 
 
 class SchemaMemoryCache:
@@ -168,6 +181,7 @@ class SchemaCacheManager:
         )
         self._redis_available = False
         self._memory_cache = SchemaMemoryCache(ttl_seconds=300)
+        self._structure_store: StructureStore | None = None
 
         if self._backend == "redis":
             self._redis_cache = RedisSchemaCache(
@@ -384,6 +398,61 @@ class SchemaCacheManager:
             return await self._redis_cache.load_structure_meta(db_id)
         return None
 
+    @property
+    def structure_store(self) -> StructureStore:
+        """관리자 DB 구조 자산 저장소(지연 생성 · 매니저당 1개, plans/104).
+
+        백업 루트는 스키마 파일 캐시 디렉터리의 형제 `structure`(기본 `.cache/structure`)다.
+        """
+        store = self._structure_store
+        if store is None or store.redis_cache is not self._redis_cache:
+            backup_root = Path(self._config.schema_cache.cache_dir).parent / "structure"
+            store = StructureStore(self._redis_cache, backup_root)
+            self._structure_store = store
+        return store
+
+    async def get_applied_structure_meta(self, db_id: str) -> dict[str, Any] | None:
+        """적용본 구조 정보를 반환한다(plans/104 §3.3 — 관리자 승인 버전).
+
+        `StructureStore.restore_applied(db_id)`만 본다 — 최신 승인 버전(approved·rollback) 프로필을
+        Redis `structure_meta` 캐시에 다시 쓰고 반환한다(파일 쓰기 없음). Redis `structure_meta`
+        원시 값은 먼저 읽지 않는다: 승인 버전 없는 값(예전 질의 경로 LLM 분석본 · 수동 프로필의
+        Redis 사본)은 적용본이 아니다(2026-09-17 사용자 확정 — `has_structure_authority`와 대칭).
+        수동 프로필은 보지 않는다(호출부가 1순위로 처리). 실패는 WARNING 로그 후 None.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            적용본 구조 딕셔너리 또는 None(승인 버전 없음)
+        """
+        try:
+            return await self.structure_store.restore_applied(db_id)
+        except Exception as e:
+            logger.warning("적용본 구조 정보 조회 실패 (db_id=%s): %s", db_id, e)
+            return None
+
+    async def has_structure_authority(self, db_id: str) -> bool:
+        """구조 정본이 있는 DB인지 — 수동 프로필(`source: manual`) 또는 승인 버전.
+
+        승인 버전은 `StructureStore.has_approved_version`(버전 파일 중 approved·rollback)으로
+        판정한다 — baseline·external_change만 있거나 Redis `structure_meta`만 있으면 정본이 아니다
+        (`get_applied_structure_meta`와 대칭). 조회 실패는 WARNING 로그 후 없음으로 본다.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            수동 프로필 또는 승인 버전이 있으면 True
+        """
+        if _has_manual_profile(db_id):
+            return True
+        try:
+            return bool(self.structure_store.has_approved_version(db_id))
+        except Exception as e:
+            logger.warning("구조 승인본 확인 실패 (db_id=%s): %s", db_id, e)
+            return False
+
     # === DB 설명 ===
 
     async def get_db_descriptions(self) -> dict[str, str]:
@@ -426,17 +495,22 @@ class SchemaCacheManager:
         self,
         db_id: str,
         description: str,
+        origin: str = "manual",
     ) -> bool:
-        """DB 설명을 저장한다.
+        """DB 설명을 출처와 함께 저장한다.
 
         Redis와 파일 캐시 모두에 저장한다 (이중 저장으로 폴백 보장).
+        LLM 생성값(`origin="llm"`)은 기존 설명의 출처가 `manual`이면 저장하지 않는다 —
+        사람이 쓴 설명을 재생성이 덮지 않는다(plans/104 S5 · R10). 출처 기록이 없는
+        레거시 값은 `manual`이 아니므로 LLM 재생성 대상이다.
 
         Args:
             db_id: DB 식별자
             description: DB 설명 (한국어)
+            origin: 설명 출처 ("manual" | "llm")
 
         Returns:
-            저장 성공 여부
+            저장 성공 여부 (수동 설명 보존으로 건너뛰면 False)
         """
         # 유효성 검증: 빈 문자열이면 저장 거부
         if not description:
@@ -445,18 +519,49 @@ class SchemaCacheManager:
             )
             return False
 
+        if origin == "llm" and await self.get_db_description_origin(db_id) == "manual":
+            logger.info(
+                "DB 설명 LLM 저장 건너뜀: db_id=%s (수동 설정 설명 보존)", db_id
+            )
+            return False
+
         saved = False
 
         # Redis 저장
         if self._backend == "redis" and await self.ensure_redis_connected():
-            if await self._redis_cache.save_db_description(db_id, description):
+            if await self._redis_cache.save_db_description(
+                db_id, description, origin=origin
+            ):
                 saved = True
 
         # 파일 캐시에도 저장 (기존 캐시 파일의 _db_description 필드 업데이트)
         if self._file_cache.update_field(db_id, "_db_description", description):
+            self._file_cache.update_field(db_id, "_db_description_origin", origin)
             saved = True
 
         return saved
+
+    async def get_db_description_origin(self, db_id: str) -> str | None:
+        """DB 설명의 출처("manual" | "llm")를 반환한다. 기록이 없으면 None.
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            출처 문자열 또는 None
+        """
+        redis_cache = self._redis_cache
+        if (
+            self._backend == "redis"
+            and redis_cache is not None
+            and await self.ensure_redis_connected()
+        ):
+            return await redis_cache.get_db_description_origin(db_id)
+
+        # 파일 캐시 폴백
+        data = self._file_cache.load(db_id)
+        origin = data.get("_db_description_origin") if data else None
+        return origin if isinstance(origin, str) else None
 
     async def delete_db_description(self, db_id: str) -> bool:
         """DB 설명을 삭제한다.
@@ -473,8 +578,9 @@ class SchemaCacheManager:
         if self._backend == "redis" and await self.ensure_redis_connected():
             if await self._redis_cache.delete_db_description(db_id):
                 success = True
-        # 파일 캐시의 _db_description 필드도 삭제
+        # 파일 캐시의 _db_description 필드(와 출처)도 삭제
         if self._file_cache.delete_field(db_id, "_db_description"):
+            self._file_cache.delete_field(db_id, "_db_description_origin")
             success = True
         return success
 
@@ -554,7 +660,7 @@ class SchemaCacheManager:
     async def save_synonyms(
         self,
         db_id: str,
-        synonyms: dict[str, list[str]],
+        synonyms: Mapping[str, list[str] | dict[str, Any]],
         source: str = "llm",
     ) -> bool:
         """유사 단어를 저장한다.
@@ -563,17 +669,19 @@ class SchemaCacheManager:
 
         Args:
             db_id: DB 식별자
-            synonyms: {table.column: [synonym, ...]} 매핑
+            synonyms: {table.column: [synonym, ...]} 매핑. 출처 태그 항목
+                `{"words": [...], "sources": {...}}`도 받는다(설명 백업 복원 — plans/104 B-6):
+                Redis에는 태그 그대로, 파일 캐시에는 단어 목록만 저장한다.
             source: source 태그 ("llm" | "operator")
 
         Returns:
             저장 성공 여부 (하나라도 성공하면 True)
         """
         # 유효성 검증: table.column 형식이 아닌 키 필터링
-        synonyms = _validate_column_keys(synonyms, "synonyms")
+        valid = _validate_column_keys(dict(synonyms), "synonyms")
         # 빈 리스트 값 제거
-        synonyms = {k: v for k, v in synonyms.items() if v}
-        if not synonyms:
+        valid = {k: v for k, v in valid.items() if v}
+        if not valid:
             logger.warning(
                 "synonyms 저장 거부: 유효한 항목이 없음 (db_id=%s)", db_id
             )
@@ -582,11 +690,15 @@ class SchemaCacheManager:
         saved = False
         if self._backend == "redis" and await self.ensure_redis_connected():
             if await self._redis_cache.save_synonyms(
-                db_id, synonyms, source=source
+                db_id, valid, source=source
             ):
                 saved = True
-        # 파일 캐시에도 저장 (폴백 보장)
-        if self._file_cache.save_synonyms(db_id, synonyms):
+        # 파일 캐시에도 저장 (폴백 보장) — 파일 형식은 단어 목록뿐이다
+        file_synonyms = {
+            k: list(v.get("words") or []) if isinstance(v, dict) else v
+            for k, v in valid.items()
+        }
+        if self._file_cache.save_synonyms(db_id, file_synonyms):
             saved = True
         return saved
 
@@ -1071,7 +1183,10 @@ class SchemaCacheManager:
             return None
 
     async def get_structure_meta_or_profile(self, db_id: str) -> Optional[dict]:
-        """구조 선언을 캐시에서 조회하고, 없으면 수동 프로필로 폴백한다.
+        """구조 선언을 관리자 승인 적용본에서 조회하고, 없으면 프로필 파일로 폴백한다.
+
+        적용본은 `get_applied_structure_meta`(승인 버전)다 — Redis `structure_meta` 원시 값은
+        보지 않는다(승인 버전 없는 레거시 값은 적용본이 아니다).
 
         Args:
             db_id: DB 식별자
@@ -1080,7 +1195,7 @@ class SchemaCacheManager:
             구조 선언 딕셔너리 또는 None(선언 없음)
         """
         try:
-            meta = await self.get_structure_meta(db_id)
+            meta = await self.get_applied_structure_meta(db_id)
             if isinstance(meta, dict) and meta:
                 return meta
         except Exception as e:  # noqa: BLE001
@@ -1216,7 +1331,8 @@ class SchemaCacheManager:
           1차: 메모리 캐시 (TTL 기반)
           2차-A: Redis/파일 캐시 (fingerprint TTL 유효 시)
           2차-B: fingerprint TTL 만료 시 DB fingerprint 재검증
-          3차: DB 전체 스키마 조회 (캐시 미스)
+          3차: DB 전체 스키마 조회 (캐시 미스) — 스키마 저장까지만(LLM 0 · plans/104 B-6).
+               컬럼 설명이 비었으면 설명 백업에서만 복원한다.
 
         Args:
             client: DB 클라이언트 (execute_sql, get_full_schema 메서드 필요)
@@ -1322,37 +1438,20 @@ class SchemaCacheManager:
         # stale entry 정리
         await self.cleanup_stale_entries(db_id, schema_dict)
 
-        # descriptions/synonyms 자동 생성 (캐시 미스 시)
+        # 컬럼 설명·유사어는 질의 경로에서 LLM으로 만들지 않는다(plans/104 B-6 · R8 · G-9 (a)) —
+        # 등록은 관리자 「DB 구조」 탭(O-4)이 한다. 비어 있으면 관리자 적용 시 남긴 파일 백업에서만
+        # 복원하고(Redis 유실 대비), 그래도 비면 사유는 호출 노드가 `dependency_notes`로 알린다.
+        # 자동 생성이 없으므로 이 경로는 전역 사전(`synonyms:global`)에도 쓰지 않는다
+        # (D-228 가드 불요 · B-8 ②).
         descriptions = await self.get_descriptions(db_id)
         if not descriptions:
-            try:
-                from src.schema_cache.description_generator import (
-                    DescriptionGenerator,
-                )
-                from src.llm import create_llm
-                from src.config import load_config
-
-                config = load_config()
-                if config.schema_cache.auto_generate_descriptions:
-                    llm = create_llm(config)
-                    generator = DescriptionGenerator(llm)
-                    descriptions, gen_synonyms = (
-                        await generator.generate_for_db(schema_dict)
-                    )
-                    await self.save_descriptions(db_id, descriptions)
-                    await self.save_synonyms(db_id, gen_synonyms)
-                    await self.sync_global_synonyms(db_id)
-                    logger.info(
-                        "스키마 최초 조회 시 descriptions/synonyms 자동 생성: "
-                        "db_id=%s, descriptions=%d, synonyms=%d",
-                        db_id,
-                        len(descriptions),
-                        len(gen_synonyms),
-                    )
-            except Exception as e:
-                logger.warning(
-                    "descriptions/synonyms 자동 생성 실패 (%s): %s", db_id, e
-                )
+            descriptions = await self._restore_descriptions_backup(db_id, schema_dict)
+        if not descriptions:
+            logger.warning(
+                "컬럼 설명 미등록 — 질의 경로는 LLM으로 생성하지 않는다"
+                "(관리자 등록 필요): db_id=%s",
+                db_id,
+            )
 
         synonyms = await self.load_synonyms_with_global_fallback(
             db_id, schema_dict
@@ -1364,6 +1463,65 @@ class SchemaCacheManager:
             len(tables_dict),
         )
         return schema_dict, False, "DB 직접 조회", descriptions, synonyms
+
+    async def _restore_descriptions_backup(
+        self, db_id: str, schema_dict: dict[str, Any]
+    ) -> dict[str, str]:
+        """설명 백업(`StructureStore.load_descriptions_backup`)으로 빈 설명·유사어를 복원한다.
+
+        plans/104 B-6 — Redis 유실 대비이며 LLM은 부르지 않는다. 현재 스키마에 없는 컬럼은
+        복원하지 않는다. 유사어는 출처 태그 항목 그대로(`operator` 등 보존) 되살리되, 캐시에 이미
+        항목이 있는 컬럼은 건드리지 않는다(백업 뒤에 등록된 항목을 덮지 않는다).
+
+        Args:
+            db_id: DB 식별자
+            schema_dict: 방금 수집한 스키마 딕셔너리
+
+        Returns:
+            복원한 `{table.column: description}` — 백업이 없거나 복원할 항목이 없으면 빈 dict
+        """
+        try:
+            backup = self.structure_store.load_descriptions_backup(db_id)
+        except Exception as e:
+            logger.warning("컬럼 설명 백업 조회 실패 (db_id=%s): %s", db_id, e)
+            return {}
+        if not backup:
+            return {}
+
+        valid_keys = {
+            f"{table_name}.{col.get('name')}"
+            for table_name, table_data in schema_dict.get("tables", {}).items()
+            for col in table_data.get("columns", [])
+        }
+        descriptions = {
+            key: text
+            for key, text in (backup.get("descriptions") or {}).items()
+            if key in valid_keys and isinstance(text, str) and text
+        }
+        if not descriptions:
+            return {}
+        if not await self.save_descriptions(db_id, descriptions):
+            logger.warning("백업 설명 저장 실패 — 이번 조회에만 사용 (db_id=%s)", db_id)
+
+        existing_synonyms = await self.get_synonyms(db_id)
+        tagged_synonyms = {
+            key: entry
+            for key, entry in (backup.get("synonyms") or {}).items()
+            if key in valid_keys
+            and key not in existing_synonyms
+            and isinstance(entry, dict)
+            and entry.get("words")
+        }
+        if tagged_synonyms:
+            await self.save_synonyms(db_id, tagged_synonyms)
+        logger.info(
+            "컬럼 설명 백업 복원: db_id=%s, descriptions=%d, synonyms=%d, saved_at=%s",
+            db_id,
+            len(descriptions),
+            len(tagged_synonyms),
+            backup.get("saved_at"),
+        )
+        return descriptions
 
     async def cleanup_stale_entries(
         self,
@@ -1547,9 +1705,11 @@ class SchemaCacheManager:
     # === 관리 ===
 
     async def invalidate(self, db_id: str) -> bool:
-        """특정 DB 캐시를 삭제한다 (메모리 + Redis + 파일 + db_profile).
+        """특정 DB 캐시를 삭제한다 (메모리 + Redis + 파일 캐시).
 
-        DB별 데이터를 전체 삭제하며, 글로벌 사전만 보존한다.
+        DB별 런타임 캐시를 삭제하며, 글로벌 사전은 보존한다.
+        `config/db_profiles/`의 프로필 파일은 사람이 관리하는 정본이므로
+        건드리지 않는다(plans/104 S1 · R11).
 
         Args:
             db_id: DB 식별자
@@ -1564,7 +1724,6 @@ class SchemaCacheManager:
                 success = True
         if self._file_cache.invalidate(db_id):
             success = True
-        self._delete_db_profile(db_id)
         return success
 
     async def invalidate_all(self) -> int:
@@ -1581,24 +1740,6 @@ class SchemaCacheManager:
             count += await self._redis_cache.invalidate_all()
         count += self._file_cache.invalidate_all()
         return count
-
-    def _delete_db_profile(self, db_id: str) -> None:
-        """config/db_profiles/{db_id} 파일을 삭제한다.
-
-        Args:
-            db_id: DB 식별자
-        """
-        for ext in (".yaml", ".json"):
-            safe_id = "".join(
-                c if c.isalnum() or c in ("_", "-") else "_" for c in db_id
-            )
-            profile_path = os.path.join("config", "db_profiles", f"{safe_id}{ext}")
-            try:
-                if os.path.exists(profile_path):
-                    os.unlink(profile_path)
-                    logger.info("db_profile 삭제: %s", profile_path)
-            except OSError as e:
-                logger.warning("db_profile 삭제 실패 (%s): %s", profile_path, e)
 
     async def get_status(self, db_id: str) -> CacheStatus:
         """특정 DB의 캐시 상태를 반환한다.
@@ -1653,12 +1794,18 @@ class SchemaCacheManager:
             for db_info in redis_dbs:
                 db_id = db_info["db_id"]
                 seen_db_ids.add(db_id)
+                # 설명·유사어 건수는 Redis 실제 건수(HLEN)로 채운다(plans/104 B-1 · N2)
+                detail = (
+                    await self._redis_cache.get_status(db_id) if self._redis_cache else {}
+                )
                 statuses.append(CacheStatus(
                     db_id=db_id,
                     fingerprint=db_info.get("fingerprint", ""),
                     cached_at=db_info.get("cached_at", ""),
                     table_count=db_info.get("table_count", 0),
                     description_status=db_info.get("description_status", "pending"),
+                    description_count=int(detail.get("description_count", 0) or 0),
+                    synonym_count=int(detail.get("synonym_count", 0) or 0),
                     backend="redis",
                 ))
 

@@ -29,12 +29,16 @@ _VERDICT_ORDER = ("fail", "error", "manual", "pass")
 INVALID_RATIO_WARN = 0.05
 
 
-#: 정본 실행 단. 이것이 아니면 리포트 최상단에 경고를 올린다(O-c).
-CANONICAL_TIER = "deep_agent"
+#: 기준 실행 단(D-225 ① - 3단). 이것이 아니면 리포트 최상단에 경고를 올린다(O-c).
+CANONICAL_TIER = "semantic_router"
+
+#: 부가 경로 단(D-225 ② - 1단 opt-in). 강등이 아니므로 경고하지 않고 **안내**만 올린다 -
+#: 판정표가 기준 단의 수치가 아니라는 사실은 여전히 해석을 바꾸기 때문이다.
+OPTIN_TIER = "deep_agent"
 
 
 def _degraded_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
-    """정본 단이 아닌 단으로 돈 프로파일 (O-c).
+    """기준 단도 부가 경로 단도 아닌 단으로 돈 프로파일 (O-c).
 
     `tier` 를 **읽지 못한 경우는 경고하지 않는다** - 모의 실행(`tier="mock"`)과
     기동 로그 미확인은 강등이 아니라 미관측이다. 미관측을 강등으로 세면 경고가 상시
@@ -43,7 +47,7 @@ def _degraded_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for profile in summary.get("profiles", []) or []:
         tier = profile.get("tier")
-        if not tier or tier in (CANONICAL_TIER, "mock"):
+        if not tier or tier in (CANONICAL_TIER, OPTIN_TIER, "mock"):
             continue
         out.append(profile)
     return out
@@ -390,20 +394,33 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         add("")
     degraded = _degraded_profiles(summary)
     if degraded:
-        # O-c: **정본 단이 아닌 단으로 측정됐다**는 사실은 판정표 전체의 해석을 바꾼다.
-        # run 20260915-131903 은 2단(`intent_orchestration`)으로 강등돼 돌았는데
-        # (`degraded_reason=flag_off`) 그 사실이 1절 표의 한 칸에만 있었다 -
-        # 정본 1단(`deep_agent`)은 그 run 에서 한 턴도 측정되지 않았다.
+        # O-c: **기준 단이 아닌 단으로 측정됐다**는 사실은 판정표 전체의 해석을 바꾼다.
+        # run 20260915-131903 은 2단(`intent_orchestration`)으로 돌았는데 그 사실이
+        # 1절 표의 한 칸에만 있었다. 기준 단은 D-225(2026-09-17)부터 3단 `semantic_router`다
+        # (그 run 당시 기록 어휘는 1단 정본 기준의 `degraded_reason=flag_off`).
         add(
-            "> **[경고] 정본 단이 아닌 실행 단으로 측정됐다.** "
+            "> **[경고] 기준 단이 아닌 실행 단으로 측정됐다.** "
             + " · ".join(
                 f"`{p.get('name')}` = **{p.get('tier')}**(사유 `{p.get('degraded_reason')}`)"
                 for p in degraded
             )
-            + ". 사다리는 1 정본 + 3 폴백의 강등 구조이고 단마다 노드 구성·지연 특성이 다르다"
-            "(`docs/21_orchestration_ladder.md`) - **아래 판정·지연을 정본 단의 성능으로 읽지 "
-            "말 것.** 의도한 강등이면 그 사실을 run 기록에 남기고, 아니면 `.env` 플래그를 "
+            + ". 기준 경로는 사다리 3단 `semantic_router`이고(D-225) 단마다 노드 구성·지연 특성이 "
+            "다르다(`docs/21_orchestration_ladder.md`) - **아래 판정·지연을 기준 단의 성능으로 "
+            "읽지 말 것.** 의도한 구성이면 그 사실을 run 기록에 남기고, 아니면 `.env` 플래그를 "
             "확인한 뒤 다시 측정한다."
+        )
+        add("")
+    optin = [
+        p for p in summary.get("profiles", []) or [] if p.get("tier") == OPTIN_TIER
+    ]
+    if optin:
+        # 1단은 강등이 아니라 부가 경로 opt-in 이라 경고하지 않는다(D-225 ②). 다만 판정표가
+        # 기준 단(3단)의 수치가 아니라는 사실은 남긴다 - 안 남기면 두 단의 run 이 섞여 비교된다.
+        add(
+            "> **[안내] 부가 경로(opt-in) 단으로 측정됐다.** "
+            + " · ".join(f"`{p.get('name')}` = **{p.get('tier')}**" for p in optin)
+            + ". 기준 경로는 사다리 3단 `semantic_router`다(D-225) - 아래 판정·지연은 "
+            "부가 경로의 수치이므로 기준 단 run 과 섞어 비교하지 말 것."
         )
         add("")
     invalid = summary.get("invalid") or {}

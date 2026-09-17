@@ -12,13 +12,13 @@ group: general
 settings:
 
   ENABLE_DEEPAGENTS_PACKAGE:
-    summary: 실행 경로 사다리의 1단(deep_agent)을 켠다 — 성립하면 아래 단들은 배선조차 되지 않는다.
+    summary: 실행 경로 사다리의 1단(deep_agent · 부가 경로)을 opt-in한다 — 성립하면 아래 단들은 배선조차 되지 않는다.
     behavior: >-
       질문을 처리하는 경로는 네 가지가 있고, 이들은 나란히 있는 선택지가 아니라 위에서부터
-      성립하는 것 하나만 쓰이는 사다리다. 이 값이 켜져 있고 오케스트레이터(vLLM)가 실제로
-      응답하며 조립까지 성공하면 1단 deep_agent가 확정된다. 셋 중 하나라도 어긋나면 조용히
-      다음 단으로 내려간다. 판정은 서버가 뜰 때 딱 한 번 일어나며, 그 결과는 기동 로그
-      한 줄로만 확인할 수 있다.
+      성립하는 것 하나만 쓰이는 사다리다. 기준 경로는 3단(시멘틱 라우터)이고 1단은 부가 경로다
+      (D-225). 이 값이 켜져 있고 오케스트레이터가 실제로 응답하며 조립까지 성공하면 1단
+      deep_agent가 확정된다. 셋 중 하나라도 어긋나면 다음 단으로 내려가고 opt-in 실패 경고를
+      남긴다. 판정은 서버가 뜰 때 딱 한 번 일어나며, 그 결과는 기동 로그로만 확인할 수 있다.
     options:
       - value: "true"
         label: 1단 시도
@@ -27,10 +27,10 @@ settings:
           vLLM 인프라가 없거나 응답하지 않으면 경고를 남기고 2단 이하로 내려간다 —
           켰다고 해서 반드시 1단으로 도는 것은 아니다.
       - value: "false"
-        label: 1단 건너뜀
+        label: 1단 건너뜀 (기본)
         effect: >-
-          1단을 아예 시도하지 않고 2단(의도 분해) 이하에서 경로를 정한다. vLLM을
-          운영하지 않는 환경의 정상 상태다.
+          1단을 아예 시도하지 않는다. 2단 플래그가 꺼져 있으면 기준 경로인 3단으로 확정된다.
+          오케스트레이터를 운영하지 않는 환경의 정상 상태다.
     example: >-
       운영 .env는 이 값이 true다. 그런데 vLLM 서버를 내리고 애플리케이션을 재시작하면,
       설정은 그대로인데 실제 경로는 2단으로 내려간다. "설정을 바꾼 적이 없는데 응답 형태가
@@ -44,29 +44,30 @@ settings:
       경로가 통째로 바뀐다. 경로가 바뀌면 응답 형식·지연·품질이 함께 달라지므로, 이 값을
       켜서 쓸 생각이면 오케스트레이터 가용성 자체를 감시 대상에 넣어야 한다.
     recommendation: >-
-      vLLM 오케스트레이터를 실제로 운영하는 환경에서만 true로 둔다. 그렇지 않다면 false로
-      명시해 두는 편이 낫다 — 켜 두고 못 쓰는 상태는 기동 로그를 볼 때까지 드러나지 않는다.
+      기준 경로(3단)로 운영하려면 false를 명시한다. 1단은 오케스트레이터를 실제로 운영하고
+      부가 경로를 쓸 이유가 있을 때만 true로 둔다 — 켜 두고 못 쓰는 상태는 기동 로그를 볼
+      때까지 드러나지 않는다. 운영 .env는 아직 true이며 3단 전환은 plans/102 L-5(사용자 확인)다.
     caveats:
       - 사다리 상위 단이 성립하면 ENABLE_INTENT_ORCHESTRATION이 true여도 2단 노드는 등록되지 않는다.
       - 확정은 기동당 1회다. 요청 중에 값을 바꿔도 그 요청의 경로는 바뀌지 않는다.
     related: [ENABLE_INTENT_ORCHESTRATION, ENABLE_SEMANTIC_ROUTING, WORKER_PROVIDER_OVERRIDE]
     references:
       - docs/21_orchestration_ladder.md
-      - docs/02_decision.md (D-037 트랙 A/B · D-162)
+      - docs/02_decision.md (D-037 트랙 A/B · D-162 · D-225)
 
   ENABLE_INTENT_ORCHESTRATION:
     summary: 사다리 2단(의도 분해 → 에이전트 오케스트레이션 → 재계획 루프)을 켠다.
     behavior: >-
       한 문장에 여러 의도가 섞인 질문을 쪼개서 각각 실행하고 결과를 합치는 경로다.
-      미설정(자동)이면 멀티 DB 환경일 때 스스로 켜진다 — 즉 이 값을 건드리지 않아도
-      등록된 DB 구성에 따라 동작이 달라진다. 상위 단인 deep_agent가 성립하면 이 값이
-      true여도 2단은 배선되지 않는다.
+      기준 경로는 3단(시멘틱 라우터)이라 미설정이면 꺼진다(D-225). 종전에는 멀티 DB
+      환경에서 스스로 켜졌으나, DB 하나를 더 등록하는 것만으로 경로가 바뀌어 폐지했다.
+      상위 단인 deep_agent가 성립하면 이 값이 true여도 2단은 배선되지 않는다.
     options:
       - value: "(미설정)"
-        label: 자동
+        label: 끔 (기본)
         effect: >-
-          멀티 DB 환경이면 켜지고 단일·레거시면 꺼진다. 편한 대신, 실행 경로가 DB 등록
-          상태에 따라 조용히 바뀐다 — 나중에 DB를 하나 더 붙이는 순간 경로가 달라진다.
+          DB 구성과 무관하게 꺼진다. 3단 시멘틱 라우터가 복합 질의도 순차 러너로 처리한다
+          — 2단 부품(분해·오케스트레이터·집계)을 함수로 재사용하므로 모듈은 그대로 쓰인다.
       - value: "true"
         label: 항상 켬
         effect: >-
@@ -83,22 +84,22 @@ settings:
       의도 분해에 LLM 호출이 추가되고, 재계획이 돌면 그만큼 더 늘어난다. 반복 상한은
       MAX_REPLAN이다. 단순 질의에 대해서는 순수 오버헤드다.
     stability: >-
-      미설정(자동)으로 두는 것이 이 항목의 가장 흔한 함정이다. 실행 경로가 ACTIVE_DB_IDS
-      등록 상태에 종속되므로, DB를 추가·제거하는 작업이 의도치 않게 처리 경로를 바꾼다.
-      고정하려면 true 또는 false를 명시한다.
+      true로 두면 3단 기준 경로 대신 2단이 확정되고 기동 로그에 경고가 남는다. 종전처럼
+      미설정에 기대 멀티 DB 환경에서 2단을 쓰던 곳은 이제 3단으로 확정되므로, 2단을 계속
+      쓰려면 true를 명시해야 한다.
     recommendation: >-
-      운영에서는 자동에 맡기지 말고 명시한다. 운영 .env는 true다. 어느 쪽이든 값을 적어
-      두면 DB 구성을 바꿔도 경로가 흔들리지 않는다.
+      기준 경로(3단)를 쓰려면 false를 명시하거나 비워 둔다. 운영 .env는 아직 true이며,
+      3단 전환은 plans/103 동등성 판정 뒤 사용자 확인으로 한다(plans/102 L-5).
     caveats:
       - 구 환경변수명 ENABLE_DEEPAGENT_ORCHESTRATION도 아직 인식하지만 2027-02-20 폐기 예정이다.
       - 이름과 달리 1단(deepagents 패키지)과는 다른 층이다 — 1단은 ENABLE_DEEPAGENTS_PACKAGE다.
     related: [ENABLE_DEEPAGENTS_PACKAGE, ENABLE_SEMANTIC_ROUTING, MAX_REPLAN, ACTIVE_DB_IDS]
     references:
       - docs/21_orchestration_ladder.md
-      - docs/02_decision.md (D-037 · D-162)
+      - docs/02_decision.md (D-037 · D-162 · D-225)
 
   ENABLE_SEMANTIC_ROUTING:
-    summary: 사다리 3단(시멘틱 라우터)을 켠다 — 질문을 분류해 알맞은 처리 노드로 보낸다.
+    summary: 사다리 3단(시멘틱 라우터 · 기준 경로)을 켠다 — 질문을 분류해 알맞은 처리 노드로 보낸다.
     behavior: >-
       질문의 의도를 분류해 단일 DB 조회·멀티 DB 조회·캐시 관리·유사어 등록·일반 추론·
       역질문 중 어디로 보낼지 정하는 단계다. 미설정(자동)이면 ACTIVE_DB_IDS에 DB가 하나라도
@@ -125,10 +126,13 @@ settings:
       과거에 이 값이 .env에 false로 적혀 있어도 무시되고 강제 활성화되던 결함이 있었다.
       지금은 .env·OS 환경변수 모두 반영된다. 자동(미설정)으로 두면 DB 등록 상태 변화가
       곧 경로 변화이므로, 재현 가능한 운영을 원하면 명시한다.
-    recommendation: 운영 .env는 true다. 자동에 맡기지 말고 명시하는 쪽을 권한다.
+    recommendation: >-
+      기준 경로이므로 true를 명시하는 쪽을 권한다(D-225). 운영 .env는 true다. 3단으로 확정되려면
+      ENABLE_DEEPAGENTS_PACKAGE·ENABLE_INTENT_ORCHESTRATION이 꺼져 있어야 한다.
     related: [ENABLE_INTENT_ORCHESTRATION, ENABLE_DEEPAGENTS_PACKAGE, ACTIVE_DB_IDS]
     references:
       - docs/21_orchestration_ladder.md
+      - docs/02_decision.md (D-225)
 
   MAX_REPLAN:
     example: >-
@@ -159,34 +163,63 @@ settings:
     recommendation: 기본 3을 유지한다. 응답이 느리다는 민원이 잦으면 2로 줄여 실패를 빨리 드러내는 편이 낫다.
     related: [ENABLE_INTENT_ORCHESTRATION, QUERY_MAX_RETRY_COUNT]
 
-  ENABLE_STRUCTURE_APPROVAL:
-    summary: 구조 분석 결과를 사용자에게 확인받고 진행할지 — 기본으로 켜져 있는 승인 게이트다.
+  CROSS_SYSTEM_KEY_BRIDGE_ENABLED:
+    summary: 앞 조회 결과의 서버 키를 컬럼 이름이 아니라 값(호스트명·FQDN·IP)으로 판정해 다른 시스템 조회에 넘길지.
     behavior: >-
-      질문을 어떤 테이블·컬럼으로 풀지 정한 뒤, 실행에 들어가기 전에 그 해석이 맞는지
-      사용자에게 묻는다. 사용자가 승인해야 다음 노드로 넘어간다.
+      "앞 조회 결과의 서버들로 뒤 조회를 한정"하는 순차 질의에서, 어느 컬럼이 서버 키인지를
+      값의 형태로 판정한다. 대상 DB에서 어느 컬럼과 비교할지는 DB별 프로필의 entity_keys가
+      정하고, 대소문자·FQDN·다중 IP 차이를 정규화해 비교한다. 결과마다 일치·가능한 일치·
+      미발견·모호 건수를 경과 노트로 남긴다.
     options:
-      - value: "true"
-        label: 확인 후 진행 (기본)
-        effect: >-
-          구조 분석 결과를 화면에 보여 주고 사용자의 승인을 기다린다. 해석이 틀렸을 때
-          엉뚱한 조회가 실행되기 전에 바로잡을 수 있다.
       - value: "false"
-        label: 곧바로 진행
-        effect: 확인 없이 조회까지 한 번에 간다. 응답이 빨라지지만, 해석이 틀려도 그대로 실행된다.
+        label: 기본
+        effect: >-
+          종전 그대로 컬럼 이름 목록(hostname·server_name 등)으로만 서버 키를 인정하고, 대상 DB
+          컬럼 대응은 SQL 생성 모델에 맡긴다. 이름이 다른 자산 DB 결과는 "식별 컬럼 없음"으로
+          후속 조회가 건너뛰어진다.
+      - value: "true"
+        effect: >-
+          자산관리 결과(sevrHostName 같은 이름)로도 폴스타 조회를 이어 가고, IP도 키로 쓴다.
+          대상 컬럼을 코드가 확정하므로 "동등한 식별 컬럼" 추측으로 0건이 나는 일이 줄어든다.
     example: >-
-      "서버 사용량"이라는 말이 CPU인지 메모리인지 디스크인지 애매한 질문에서, 게이트가
-      켜져 있으면 "메모리 사용률로 해석했습니다 — 맞습니까?"를 먼저 묻는다. 꺼져 있으면
-      메모리로 조회한 결과가 그대로 나가고, 사용자는 그게 해석의 결과라는 것을 모른다.
-    performance: 사용자가 응답할 때까지 대화가 멈춘다. 시스템 자원은 거의 쓰지 않지만 체감 완료 시간은 사용자 응답 속도에 달린다.
+      "HW 지원 종료가 6개월 안 남은 서버의 현재 알람"은 자산관리에서 서버를 뽑고 폴스타에서 알람을
+      본다. 꺼져 있으면 자산 결과 컬럼 이름이 식별 컬럼 목록에 없어 알람 조회가 실행되지 않는다.
+      켜면 호스트명 값으로 키를 인정해 폴스타 hostname으로 한정한 조회가 이어진다.
+    performance: 추가 조회·LLM 호출이 없다. 선행 결과 값의 형태 판정(최대 50개 표본)만 더해진다.
     stability: >-
-      이 값을 바꾼 뒤 설정 리로드를 하면 승인 대기 중이던 대화가 재개 불능이 될 수 있다.
-      대기 중인 승인이 없는 시점에 바꾸는 것이 안전하다.
-    recommendation: >-
-      기본값 true를 유지한다. 잘못된 해석이 조용히 실행되는 것보다 한 번 묻는 편이 낫다.
-      질문 유형이 정형화된 자동화 용도라면 false를 검토할 만하다.
-    caveats:
-      - 이 값을 바꾼 리로드는 대기 중인 승인 스레드를 재개 불능으로 만들 수 있다(D-131 주의 ①).
-    related: [ENABLE_SQL_APPROVAL]
+      폴스타 단독 순차 질의의 스코프 판정도 값 기반으로 바뀐다. 켜기 전에 D-203 순차 질의
+      시나리오를 다시 재는 것이 안전하다(plans/102 §4 순서 불변식).
+    recommendation: 기본 false. 자산관리 DB를 활성화하고 교차 질의 시나리오를 확인한 뒤 켠다.
+    related: [CROSS_SYSTEM_PROBE_ENABLED, ROUTER_CAPABILITY_OWNERSHIP_ENABLED, COMPOSITE_SEQUENTIAL_GATE_ENABLED]
+    references:
+      - plans/102-WIP-polestar-itam-cross-system-routing.md
+      - docs/02_decision.md (D-224)
+
+  CROSS_SYSTEM_PROBE_ENABLED:
+    summary: 질의에 서버 식별자가 있으면 어느 시스템(폴스타·자산관리)이 그 서버를 아는지 먼저 확인할지.
+    behavior: >-
+      3단 시멘틱 라우터 바로 뒤에 소재 확인 노드(entity_locator)를 배선한다. 질의에 호스트명이나
+      IP가 명시돼 있고 필요한 정보가 두 시스템에 걸치거나 소유 시스템에서 못 찾았을 때만,
+      시스템마다 고정 조회 1회로 식별자 소재를 확인하고 조회 대상을 좁힌다. "없다"와
+      "확인하지 못했다"를 구분해 안내한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 노드와 엣지를 등록하지 않는다. 3단 그래프 구성이 종전과 같다.
+      - value: "true"
+        effect: >-
+          식별자 질의에서 소재 확인 조회가 시스템당 1회 추가된다. 자산관리에 없는 서버를 물으면
+          조회 대신 "자산관리에 등록되지 않은 서버입니다" 같은 사유를 먼저 받는다.
+    example: >-
+      "svr-web-03의 유지보수 계약 만료일"에서 자산관리에 그 서버가 없으면, 꺼져 있을 때는 빈 결과가
+      "데이터 없음"으로 나간다. 켜면 "자산관리에 등록되지 않은 서버입니다(폴스타에는 있음)"로 답한다.
+    performance: 프로브가 발동한 질의만 시스템(폴스타는 인가 존)당 SELECT 1회가 더해진다. LLM 호출은 늘지 않는다.
+    stability: 3단(시멘틱 라우터)으로 확정된 기동에서만 배선된다. 1·2단 기동에는 영향이 없다.
+    recommendation: 기본 false. 자산관리 DB를 활성화한 환경에서 식별자 질의 안내를 확인한 뒤 켠다.
+    related: [CROSS_SYSTEM_KEY_BRIDGE_ENABLED, ROUTER_CAPABILITY_OWNERSHIP_ENABLED, ENABLE_SEMANTIC_ROUTING]
+    references:
+      - plans/102-WIP-polestar-itam-cross-system-routing.md
+      - docs/02_decision.md (D-224)
 
   ENABLE_SQL_APPROVAL:
     example: >-
@@ -195,7 +228,7 @@ settings:
     summary: 생성된 SQL을 실행 전에 사용자에게 보여 주고 승인받을지 여부.
     behavior: >-
       SQL을 만든 뒤 실행 직전에 멈춰 그 문장을 사용자에게 보여 준다. 승인해야 실행한다.
-      구조 승인(ENABLE_STRUCTURE_APPROVAL)보다 한 단계 뒤, 더 기술적인 게이트다.
+      질의 도중 사람이 개입하는 유일한 승인 게이트다(구조 분석 승인은 관리자 페이지 「DB 구조」 탭으로 옮겨졌다).
     options:
       - value: "true"
         label: SQL 확인 후 실행
@@ -217,7 +250,7 @@ settings:
       환경에서 한시적으로 켜는 용도로 본다.
     caveats:
       - 이 값을 바꾼 리로드는 대기 중인 승인 스레드를 재개 불능으로 만들 수 있다(D-131 주의 ①).
-    related: [ENABLE_STRUCTURE_APPROVAL, QUERY_DEFAULT_LIMIT]
+    related: [QUERY_DEFAULT_LIMIT]
 
   DB_BACKEND:
     example: >-

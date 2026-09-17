@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -25,6 +25,9 @@ from .assertions import AUTH_FAILURE_STATUSES, Observation
 # 무이벤트 구간이 이 값을 넘으면 hang 후보로 본다(§3.8 · D-198 계열).
 # 서버 하트비트 간격의 배수로 잡는다 - 하트비트가 꺼져 있어도 이 상한은 유효하다.
 DEFAULT_HANG_GAP_MS = 120_000.0
+
+#: 비스트리밍 요청은 서버 상한보다 이만큼 더 기다린다 - 서버의 타임아웃 응답이 먼저 도착하게 한다.
+NONSTREAM_TIMEOUT_MARGIN_SEC = 30.0
 
 #: 재시도 예산(`QUERY_MAX_RETRY_COUNT`)이 걸리는 회귀 지점.
 #: `query_validator` 실패·`query_executor` SQL 에러·`result_organizer` 데이터 부족이
@@ -62,6 +65,8 @@ class ClientConfig:
     #: 동시 부하(K-06·K-07)는 같은 ClientConfig 로 세션마다 클라이언트를 새로 만들므로,
     #: 토큰을 값으로 복사해 두면 한 세션의 재발급이 다른 세션에 닿지 않는다.
     token_source: Optional[TokenProvider] = None
+    #: 서버 실효 요청 상한(초) - 프로파일 기동 때 설정 에코로 읽는다(`server.SERVER_TIMEOUT_KEYS`).
+    server_timeouts: dict[str, float] = field(default_factory=dict)
 
     @property
     def base_url(self) -> str:
@@ -283,14 +288,31 @@ class ScenarioClient:
             return self._post_file(endpoint, payload, upload)
         raise ValueError(f"알 수 없는 endpoint: {endpoint}")
 
+    def _nonstream_timeout(self, server_key: str) -> float:
+        """비스트리밍 요청의 대기 상한(초).
+
+        응답 본문이 처리가 끝난 뒤 한 번에 오므로 read 타임아웃이 곧 전체 상한이다. 서버 자신의
+        상한보다 먼저 끊으면 서버는 정상 처리 중인데 러너가 `hang`(무조건 불합격)으로 판정한다 -
+        로컬 MLX 27B 1턴 420~900초 대 기본 360초(2026-09-17 실측). 스트리밍은 하트비트가 오므로
+        `timeout_sec`(청크 간격 상한)를 그대로 쓴다.
+        """
+        server = self._config.server_timeouts.get(server_key)
+        if server is None:
+            return self._config.timeout_sec
+        return max(self._config.timeout_sec, server + NONSTREAM_TIMEOUT_MARGIN_SEC)
+
     def _post_plain(self, payload: dict[str, Any]) -> Observation:
         obs = Observation()
         started = time.perf_counter()
+        # 서버는 폼필 답변 턴에 파일 질의 상한을 쓴다(src/api/routes/query.py).
+        server_key = ("API_FILE_QUERY_TIMEOUT" if payload.get("form_fill_answers")
+                      else "API_QUERY_TIMEOUT")
         try:
             resp = self._client.post(
                 f"{self._config.base_url}/query",
                 json=payload,
                 headers=self._config.headers,
+                timeout=self._nonstream_timeout(server_key),
             )
         except httpx.HTTPError as exc:
             obs.wall_ms = (time.perf_counter() - started) * 1000
@@ -438,7 +460,8 @@ class ScenarioClient:
                 files = {"file": (path.name, handle, "application/octet-stream")}
                 if endpoint == "file":
                     resp = self._client.post(
-                        url, data=form, files=files, headers=self._config.headers
+                        url, data=form, files=files, headers=self._config.headers,
+                        timeout=self._nonstream_timeout("API_FILE_QUERY_TIMEOUT"),
                     )
                     obs.http_status = resp.status_code
                     obs.wall_ms = (time.perf_counter() - started) * 1000

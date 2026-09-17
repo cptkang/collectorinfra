@@ -1,8 +1,10 @@
-"""tri-state 암묵 활성 경고 테스트 (plans/70 L3).
+"""tri-state 암묵 활성 경고 테스트 (plans/70 L3 · plans/102 L-1 / D-225 ④).
 
 `enable_semantic_routing` · `enable_intent_orchestration`은 `bool | None`이다.
-`None`이면 "멀티 DB 등록 여부"로 자동 결정되므로, **운영 실행 경로가 DB 등록 상태에
-종속**된다 — DB를 하나 등록/해제하는 것만으로 확정 단이 바뀔 수 있다.
+`enable_semantic_routing`이 `None`이면 "멀티 DB 등록 여부"로 자동 결정되므로, **운영 실행
+경로가 DB 등록 상태에 종속**된다 — DB를 하나 등록/해제하는 것만으로 확정 단이 바뀔 수 있다.
+`enable_intent_orchestration`이 `None`이면 D-225 ④ 이후 DB 등록과 무관하게 **항상 off**다
+(종전에는 멀티 DB면 자동 on이라 DB 등록만으로 2단이 조용히 확정됐다 — X-T11).
 
 `model_post_init`이 `None`을 bool로 덮어쓰고 나면 명시 설정과 구별할 수 없다.
 따라서 발동 사실은 **덮어쓰는 그 자리에서만** 남길 수 있다.
@@ -14,7 +16,8 @@ import logging
 
 import pytest
 
-from src.config import AppConfig
+from src.config import AppConfig, MultiDBConfig
+from src.observability.ladder import LadderTier, resolve_ladder_tier
 
 
 def _cfg(**kwargs) -> AppConfig:
@@ -77,3 +80,67 @@ class TestExplicitValuesUntouched:
     def test_resolved_by_marks_auto_resolution(self):
         assert _cfg(enable_semantic_routing=None)._orchestration_resolved_by == "auto_multidb"
         assert _cfg()._orchestration_resolved_by == "explicit_env"
+
+
+def _multi_db_cfg(**kwargs) -> AppConfig:
+    """멀티 DB(활성 2건)가 연결된 설정. `.env` 누수를 끊고 1단 플래그는 off로 고정한다."""
+    kwargs.setdefault("enable_deepagents_package", False)
+    return AppConfig(
+        _env_file=None,
+        multi_db=MultiDBConfig(_env_file=None, active_db_ids_csv="db_a,db_b"),
+        **kwargs,
+    )
+
+
+class TestIntentOrchestrationCodeDefault:
+    """plans/102 L-1 · D-225 ④ — 2단 플래그 미입력은 멀티 DB여도 off이고 3단으로 확정된다."""
+
+    def test_none_is_off_even_with_multi_db(self):
+        cfg = _multi_db_cfg(enable_semantic_routing=True, enable_intent_orchestration=None)
+
+        assert cfg.multi_db.get_active_db_ids() == ["db_a", "db_b"]
+        assert cfg.enable_intent_orchestration is False
+
+    def test_resolved_by_is_code_default_when_only_intent_is_unset(self):
+        cfg = _multi_db_cfg(enable_semantic_routing=True, enable_intent_orchestration=None)
+
+        assert cfg._orchestration_resolved_by == "code_default"
+
+    def test_unset_intent_resolves_to_tier3(self):
+        cfg = _multi_db_cfg(enable_semantic_routing=True, enable_intent_orchestration=None)
+
+        got = resolve_ladder_tier(cfg, backend="semantic_router", buildable=False)
+
+        assert got == (LadderTier.SEMANTIC_ROUTER, "none")
+
+    def test_both_unset_with_multi_db_resolves_to_tier3(self):
+        """설정 미입력 + 멀티 DB(성공 기준 11) — 3단 자동 on · 2단 off · 출처는 auto_multidb."""
+        cfg = _multi_db_cfg(enable_semantic_routing=None, enable_intent_orchestration=None)
+
+        assert (cfg.enable_semantic_routing, cfg.enable_intent_orchestration) == (True, False)
+        assert cfg._orchestration_resolved_by == "auto_multidb"
+        assert resolve_ladder_tier(cfg, backend="semantic_router", buildable=False) == (
+            LadderTier.SEMANTIC_ROUTER, "none"
+        )
+
+    def test_explicit_true_still_confirms_tier2(self):
+        """명시 true는 코드 기본값이 덮지 않는다 — 운영자가 고른 2단이다."""
+        cfg = _multi_db_cfg(enable_semantic_routing=True, enable_intent_orchestration=True)
+
+        assert cfg.enable_intent_orchestration is True
+        assert cfg._orchestration_resolved_by == "explicit_env"
+        assert resolve_ladder_tier(cfg, backend="semantic_router", buildable=False) == (
+            LadderTier.INTENT_ORCHESTRATION, "intent_flag_on"
+        )
+
+    def test_warning_says_off_and_how_to_opt_in(self, caplog):
+        """경고는 '멀티 DB로 자동 결정'이 아니라 'off 확정 + 켜는 방법'을 말해야 한다."""
+        with caplog.at_level(logging.WARNING, logger="src.config"):
+            _multi_db_cfg(enable_semantic_routing=True, enable_intent_orchestration=None)
+
+        msgs = [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING and "enable_intent_orchestration" in r.getMessage()]
+        assert len(msgs) == 1, msgs
+        assert "off로 확정" in msgs[0]
+        assert "ENABLE_INTENT_ORCHESTRATION=true" in msgs[0]
+        assert "멀티 DB" not in msgs[0]

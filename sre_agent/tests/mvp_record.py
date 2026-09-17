@@ -50,6 +50,8 @@ def env_fingerprint() -> dict:
         s = AgentSettings()
         fp["llm"] = {
             "investigation_llm_model": s.investigation_llm_model,
+            # e2e가 실제로 쓰는 모델 — API_BASE가 있으면 운영 배선 MODEL(test_investigation_e2e._llm_wiring)
+            "model": s.model if s.api_base else s.investigation_llm_model,
             "api_base": s.api_base or "(미설정 — 프로바이더 기본)",
             "backend": "vllm/사내" if s.api_base else "gemini/외부",
             "api_key_set": s.gemini_api_key is not None,   # 값은 남기지 않는다

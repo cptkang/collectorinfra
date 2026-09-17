@@ -41,14 +41,25 @@ class TestLLMConfigGemini:
         with pytest.raises(Exception):
             LLMConfig(provider="invalid_provider")
 
-    def test_gemini_api_key_default_empty(self):
+    @pytest.fixture
+    def _no_gemini_env(self, monkeypatch):
+        """기본값 단언은 설정 파일·셸 값과 분리한다.
+
+        `.env`의 `LLM_GEMINI_MODEL`·`.encenv`의 `LLM_GEMINI_API_KEY`가 새어 들어와
+        기본값 테스트가 개발 PC에서 늘 실패했다(2026-09-17 귀속 실측 — 파일이 없으면 통과).
+        `GOOGLE_API_KEY`는 `model_post_init`이 `os.getenv`로 폴백해 읽으므로 함께 지운다.
+        """
+        for key in ("LLM_GEMINI_API_KEY", "LLM_GEMINI_MODEL", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_gemini_api_key_default_empty(self, _no_gemini_env):
         """gemini_api_key의 기본값은 빈 문자열이어야 한다."""
-        cfg = LLMConfig(provider="gemini")
+        cfg = LLMConfig(_env_file=None, provider="gemini")
         assert cfg.gemini_api_key == ""
 
-    def test_gemini_model_default_empty(self):
+    def test_gemini_model_default_empty(self, _no_gemini_env):
         """gemini_model의 기본값은 빈 문자열이어야 한다."""
-        cfg = LLMConfig(provider="gemini")
+        cfg = LLMConfig(_env_file=None, provider="gemini")
         assert cfg.gemini_model == ""
 
     def test_gemini_api_key_direct_setting(self):
@@ -172,9 +183,12 @@ class TestCreateGeminiFactory:
 class TestCreateGeminiValidation:
     """_create_gemini()의 입력 검증 로직 테스트."""
 
-    def test_missing_api_key_raises_value_error(self):
+    def test_missing_api_key_raises_value_error(self, monkeypatch):
         """gemini_api_key가 비어있으면 ValueError가 발생해야 한다."""
         from src.llm import _create_gemini
+
+        # 빈 키를 명시해도 model_post_init이 셸 GOOGLE_API_KEY로 폴백한다 — 셸 값 누수 차단
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         config = AppConfig(
             llm=LLMConfig(provider="gemini", gemini_api_key=""),

@@ -272,15 +272,16 @@ def create_service(
         """서비스 상태를 반환한다(§3 — collectorinfra health_check_tool 지정 대상).
 
         반환(JSON): {status, version, contract_version, holmes_ready,
-        polestar_mcp_reachable}. holmes_ready는 조사 실행 가능성(LLM 키 존재)을
-        정직하게 반영한다. polestar_mcp_reachable 라이브 프로브는 2-D 소관 → 미확인(None).
+        polestar_mcp_reachable}. holmes_ready는 조사 실행 가능성(조사 LLM 게이트 통과 —
+        `investigation_llm_stub_reason() is None` · D-230)을 정직하게 반영한다. 엔드포인트 도달성은
+        보지 않는다. polestar_mcp_reachable 라이브 프로브는 2-D 소관 → 미확인(None).
         """
         return json.dumps(
             {
                 "status": "ok",
                 "version": __version__,
                 "contract_version": CONTRACT_VERSION,
-                "holmes_ready": settings.gemini_api_key is not None,
+                "holmes_ready": settings.investigation_llm_stub_reason() is None,
                 "polestar_mcp_reachable": None,
             },
             ensure_ascii=False,

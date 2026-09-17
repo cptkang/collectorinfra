@@ -1,12 +1,16 @@
-"""오케스트레이션 사다리 확정 판정과 기동 로그 (D-161 / plans/70 P0-1).
+"""오케스트레이션 사다리 확정 판정과 기동 로그 (D-161 / plans/70 P0-1 · D-225 기준 개정).
 
 ## 왜 필요한가
 
-실행 경로 4종은 **대등하게 병존하지 않는다** — 1 정본 + 3 폴백의 강등 사다리다.
+실행 경로 4종은 **대등하게 병존하지 않는다** — 빌드 타임에 한 단만 확정되는 사다리다.
 그런데 그 구조가 코드·설정·문서 어디에도 명시되지 않아, `plans/70` v1이 `graph.py`의
-`if/elif` 형태만 보고 "4경로 병존"으로 오독해 정본을 붕괴시킬 폐기를 권고했다.
+`if/elif` 형태만 보고 "4경로 병존"으로 오독해 운영 경로를 붕괴시킬 폐기를 권고했다.
 
-이 모듈은 **기동 시 확정된 단과 강등 사유를 로그 1줄로 판독 가능**하게 만든다.
+**기준 경로는 3단 `semantic_router`다**(D-225 ①, 2026-09-17). 1단 `deep_agent`는 폐기 대상이
+아닌 **부가 경로(opt-in)** 이고(D-225 ②), 2단 `intent_orchestration`·4단 `legacy`는 기준이 아닌
+단이다. 종전(D-161)에는 1단을 정본으로 보고 나머지를 "강등"으로 기록했다.
+
+이 모듈은 **기동 시 확정된 단과 그 사유를 로그 1줄로 판독 가능**하게 만든다.
 
 ## 왜 요청별 카운터가 아닌가
 
@@ -27,26 +31,40 @@ logger = logging.getLogger(__name__)
 class LadderTier(str, Enum):
     """사다리 단. 값이 곧 로그 표기다."""
 
-    DEEP_AGENT = "deep_agent"                    # 1단(정본) — deepagents 패키지
-    INTENT_ORCHESTRATION = "intent_orchestration"  # 2단 — 의도 분해(트랙 A)
-    SEMANTIC_ROUTER = "semantic_router"          # 3단 — 시멘틱 라우팅
+    DEEP_AGENT = "deep_agent"                    # 1단(부가 경로 opt-in) — deepagents 패키지
+    INTENT_ORCHESTRATION = "intent_orchestration"  # 2단 — 의도 분해(트랙 A) · 배선 기본 off
+    SEMANTIC_ROUTER = "semantic_router"          # 3단(기준 경로) — 시멘틱 라우팅
     LEGACY = "legacy"                            # 4단 — field_mapper → schema_analyzer 직행
 
     @property
     def is_canonical(self) -> bool:
-        """정본 단인지."""
+        """기준 경로 단인지 (D-225 ① — 3단 `semantic_router`)."""
+        return self is LadderTier.SEMANTIC_ROUTER
+
+    @property
+    def is_optin(self) -> bool:
+        """부가 경로(opt-in) 단인지 (D-225 ② — 1단 `deep_agent`). 강등이 아니다."""
         return self is LadderTier.DEEP_AGENT
 
 
-#: 강등 사유. 정본이 아닐 때 **왜**인지를 구분한다 — 사유 없는 강등은 진단이 안 된다.
-#: - none: 정본 확정
-#: - flag_off: `enable_deepagents_package`가 off (운영 선택)
-#: - orchestrator_unavailable: 플래그는 on인데 오케스트레이터(vLLM/Gemini) 미가용
-#: - package_missing: 백엔드는 골랐으나 deepagents 조립 실패(폐쇄망 wheel 미반입 등)
+#: 확정 사유. 기준 단(3단)이 아니거나 opt-in이 성립하지 않았을 때 **왜**인지를 구분한다 —
+#: 사유 없는 확정은 진단이 안 된다. 로그 필드명(`degraded_reason`)은 판독 도구 호환을 위해 유지한다.
+#: - none: 기준 경로(3단) 확정, 또는 부가 경로(1단) opt-in 확정
+#: - orchestrator_unavailable: 1단 플래그는 on인데 오케스트레이터(vLLM/Gemini/mlx) 미가용
+#: - package_missing: 백엔드는 1단을 골랐으나 deepagents 조립 실패(폐쇄망 wheel 미반입 등)
+#: - intent_flag_on: 1단 플래그 off · `ENABLE_INTENT_ORCHESTRATION=true`로 2단 확정(운영자 선택)
+#: - semantic_routing_off: 1단 플래그 off · 2·3단 플래그도 off라 4단 확정
+#: 종전 `flag_off`(1단 플래그 off)는 D-225로 폐기했다 — 1단 off가 기준 상태가 됐으므로
+#: 그 자체로는 사유가 아니고, 실제로 어느 비기준 단으로 갔는지를 위 두 어휘가 대신 말한다.
 _REASON_NONE = "none"
-_REASON_FLAG_OFF = "flag_off"
 _REASON_ORCHESTRATOR_UNAVAILABLE = "orchestrator_unavailable"
 _REASON_PACKAGE_MISSING = "package_missing"
+_REASON_INTENT_FLAG_ON = "intent_flag_on"
+_REASON_SEMANTIC_ROUTING_OFF = "semantic_routing_off"
+
+#: 1단 opt-in(플래그 on)이 성립하지 않은 사유 — 의도하지 않은 경로로 확정됐다는 뜻이다.
+#: 시나리오 러너의 `scripts/scenario/server.py` `UNINTENDED_DEGRADATION`과 같은 집합이어야 한다.
+OPTIN_FAILURE_REASONS = frozenset({_REASON_ORCHESTRATOR_UNAVAILABLE, _REASON_PACKAGE_MISSING})
 
 
 def resolve_ladder_tier(
@@ -55,7 +73,7 @@ def resolve_ladder_tier(
     backend: str,
     buildable: bool,
 ) -> tuple[LadderTier, str]:
-    """확정된 단과 강등 사유를 판정한다.
+    """확정된 단과 그 사유를 판정한다.
 
     분기 순서는 `build_graph()`의 노드 등록 순서와 일치해야 한다 —
     여기서만 순서가 달라지면 로그가 실제 경로와 어긋난다.
@@ -66,32 +84,37 @@ def resolve_ladder_tier(
         buildable: `_deep_agent_buildable()` 결과
 
     Returns:
-        (확정 단, 강등 사유)
+        (확정 단, 사유) — 사유 어휘는 모듈 상단 `_REASON_*` 주석 참조
     """
     if backend == "deep_agent" and buildable:
         return LadderTier.DEEP_AGENT, _REASON_NONE
 
-    # 정본이 아닌 이유를 구분한다.
-    if not getattr(config, "enable_deepagents_package", False):
-        reason = _REASON_FLAG_OFF
-    elif backend != "deep_agent":
-        reason = _REASON_ORCHESTRATOR_UNAVAILABLE
-    else:
-        reason = _REASON_PACKAGE_MISSING
+    # 1단 opt-in이 켜졌는데 성립하지 않았으면 그 실패가 사유다 — 어느 하위 단으로 갔든
+    # 운영자가 고른 경로가 아니므로 opt-in 실패를 먼저 말한다.
+    optin_failure: str | None = None
+    if getattr(config, "enable_deepagents_package", False):
+        optin_failure = (
+            _REASON_ORCHESTRATOR_UNAVAILABLE if backend != "deep_agent"
+            else _REASON_PACKAGE_MISSING
+        )
 
     if getattr(config, "enable_intent_orchestration", False):
-        return LadderTier.INTENT_ORCHESTRATION, reason
+        return LadderTier.INTENT_ORCHESTRATION, optin_failure or _REASON_INTENT_FLAG_ON
     if getattr(config, "enable_semantic_routing", False):
-        return LadderTier.SEMANTIC_ROUTER, reason
-    return LadderTier.LEGACY, reason
+        return LadderTier.SEMANTIC_ROUTER, optin_failure or _REASON_NONE
+    return LadderTier.LEGACY, optin_failure or _REASON_SEMANTIC_ROUTING_OFF
 
 
 def resolve_flag_origin(flag_value: bool | None) -> str:
     """플래그 값이 명시 설정인지 암묵 활성인지 판정한다.
 
-    `enable_semantic_routing`·`enable_intent_orchestration`은 tri-state다 —
-    `None`이면 "멀티 DB 등록 여부"로 자동 결정된다. 운영 경로가 DB 상태에 종속되므로
-    그 사실이 로그에 드러나야 한다.
+    `enable_semantic_routing`은 tri-state다 — `None`이면 "멀티 DB 등록 여부"로 자동
+    결정된다. 운영 경로가 DB 상태에 종속되므로 그 사실이 로그에 드러나야 한다.
+
+    `enable_intent_orchestration`도 tri-state지만 D-225 ④ 이후 `None`은 DB 등록과 무관하게
+    **항상 off**다 — 이 함수가 돌려주는 `auto_multidb`에 해당하지 않는다. 기동 로그의 실제
+    `resolved_by`(`auto_multidb` / `code_default` / `explicit_env`)는 두 플래그를 함께 보는
+    `src/config.py` `model_post_init`의 `_orchestration_resolved_by`가 정한다.
 
     Note:
         `model_post_init`이 `None`을 bool로 덮어쓰므로, 호출부는 **덮어쓰기 전 원본**을
@@ -108,16 +131,34 @@ def log_ladder_resolution(
 ) -> None:
     """확정 단을 기동 로그로 남긴다.
 
-    정본이 아니면 경고를 **1회** 추가한다. 빌드 시 1회 호출이므로 스팸이 되지 않는다.
+    첫 줄(INFO) 형식은 바꾸지 않는다 — `scripts/scenario/server.py`가 정규식으로 읽는다.
+    추가 줄은 **최대 1줄**이다(빌드 시 1회 호출이므로 스팸이 되지 않는다):
+      - 1단 opt-in 실패(`OPTIN_FAILURE_REASONS`) → WARNING
+      - 1단 opt-in 확정 → INFO (부가 경로 선택은 강등이 아니다 — D-225 ②)
+      - 2단·4단 확정 → WARNING (기준 경로가 아니다)
+      - 3단 확정 + 사유 없음 → 추가 줄 없음
     """
     logger.info(
         "오케스트레이션 사다리 확정: tier=%s degraded_reason=%s resolved_by=%s",
         tier.value, reason, flag_origin,
     )
-    if not tier.is_canonical:
+    if reason in OPTIN_FAILURE_REASONS:
         logger.warning(
-            "정본 경로(deep_agent)가 아닌 %s 단으로 확정됐습니다 (사유: %s). "
-            "의도한 구성인지 확인하세요 — docs/21_orchestration_ladder.md",
+            "부가 경로(deep_agent) opt-in이 성립하지 않아 %s 단으로 확정됐습니다 (사유: %s). "
+            "ENABLE_DEEPAGENTS_PACKAGE=true인데 오케스트레이터 가용성 또는 deepagents 조립이 "
+            "실패했습니다 — docs/21_orchestration_ladder.md §4",
+            tier.value, reason,
+        )
+    elif tier.is_optin:
+        logger.info(
+            "부가 경로(deep_agent) opt-in으로 확정됐습니다 — 기준 경로는 semantic_router(3단)이며 "
+            "1단은 ENABLE_DEEPAGENTS_PACKAGE=true일 때만 선택됩니다(D-225) — "
+            "docs/21_orchestration_ladder.md",
+        )
+    elif not tier.is_canonical:
+        logger.warning(
+            "기준 경로(semantic_router)가 아닌 %s 단으로 확정됐습니다 (사유: %s). "
+            "의도한 구성인지 확인하세요 — docs/21_orchestration_ladder.md §4",
             tier.value, reason,
         )
 

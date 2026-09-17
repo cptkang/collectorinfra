@@ -693,7 +693,7 @@ DBHUB_MCP_CALL_TIMEOUT=60
 
 ## 7. LLM 설정
 
-세 가지 LLM 제공자를 지원한다.
+네 가지 LLM 제공자를 지원한다.
 
 ### 7.1 Ollama (로컬 LLM, 기본값)
 
@@ -719,7 +719,107 @@ LLM_OLLAMA_BASE_URL=http://localhost:11434
 LLM_OLLAMA_TIMEOUT=180
 ```
 
-### 7.2 Gemini
+### 7.2 MLX (맥북 Apple Silicon 로컬 테스트 — plans/100)
+
+과금 없이 맥북에서 워커와 1단(`deep_agent`) 오케스트레이터를 함께 돌려 보는 설정이다.
+MLX 모델은 앱 프로세스에 올리지 않는다. `mlx_lm.server`(OpenAI 호환 HTTP)를 따로 띄우고,
+앱은 vLLM 오케스트레이터와 같은 `ChatOpenAI` 경로로 붙는다.
+
+- **로컬 테스트 전용이다.** 워커가 FabriX가 아니라 9B 4bit 모델이므로 정확도·지연 수치를 운영 기준선으로 인용하지 않는다(D-174 부기). 서버 스스로도 운영 부적합을 경고한다.
+- **과금 경로가 아니다.** `mlx`는 워커·오케스트레이터 모두 비과금 집합에 들어 있어 시나리오·벤치 하네스가 승인 없이 실행한다. 단 두 평면 중 **하나라도** `gemini`면 승인 대상이다(D-222 — `LLM_PROVIDER=mlx` + `ORCHESTRATOR_PROVIDER=gemini`도 과금 경로).
+- 앱에 플랫폼 자동 감지는 없다. `LLM_PROVIDER=mlx`를 명시해야 켜진다.
+
+**1회 설치** — 루트 venv에 넣지 않는다(공유 venv 의존성 파손 예방 · D-181 유형).
+
+```bash
+uv tool install "mlx-lm==0.31.3"
+# 설치 없이 한 번만 돌려 보려면: uvx --from "mlx-lm==0.31.3" mlx_lm.server ...
+```
+
+앱 쪽에는 `langchain-openai`가 필요하다. 워커만 `mlx`로 쓸 때도 마찬가지다.
+
+```bash
+pip install -e ".[dev,document,deepagents]"
+```
+
+**서버 기동** — 테스트할 때 별도 터미널에서 기동 스크립트로 직접 띄운다(포그라운드 · `Ctrl+C`로 종료). 앱(`python -m src.main --server`)은 그 뒤에 다른 터미널에서 띄운다.
+
+```bash
+scripts/mlx_server.sh              # .env의 LLM_MLX_MODEL · LLM_MLX_BASE_URL 포트로 127.0.0.1에 기동
+scripts/mlx_server.sh --dry-run    # 점검만 하고 실행할 명령을 출력
+scripts/mlx_server.sh --help
+```
+
+- 모델·포트는 앱과 같은 설정 키(`LLM_MLX_MODEL` · `LLM_MLX_BASE_URL`, 오케스트레이터 점검은 `ORCHESTRATOR_*`)에서 앱과 같은 순서(셸 환경변수 > `.env`)로 읽는다. `LLM_MLX_BASE_URL`에는 포트를 명시해야 한다(없으면 중단). 스크립트 전용 `MLX_MODEL` · `MLX_PORT` · `MLX_MAX_TOKENS` · `MLX_PROMPT_CACHE_BYTES`를 주면 그 값이 가장 우선하며, 앱 설정과 달라지면 경고한다.
+- PATH에 `mlx_lm.server`가 없으면(위 1회 설치를 건너뛴 경우) `uvx --from "mlx-lm==0.31.3"`로 실행한다(`MLX_LM_VERSION`으로 변경).
+- 기동 전에 점검한다: Apple Silicon이 아니거나, 포트에 이미 서버가 떠 있거나, 모델이 로컬 HF 캐시에 없으면 **중단**한다. 캐시에 있는 MLX 모델 목록을 함께 보여 준다. `.env`의 워커·오케스트레이터 모델 ID나 포트가 기동 값과 다르면 **경고**한다.
+- 캐시에 없는 모델을 받으려면 `MLX_ALLOW_DOWNLOAD=1 scripts/mlx_server.sh`로 실행한다. 기본은 오프라인이다.
+- 바인딩은 항상 `127.0.0.1`이다(서버는 무인증이고 CORS 기본값이 `*`다).
+
+스크립트가 내부에서 실행하는 명령은 아래와 같다(참고용 — 직접 실행해도 동작은 같다).
+
+```bash
+HF_HUB_OFFLINE=1 mlx_lm.server \
+  --model mlx-community/Qwen3.5-9B-OptiQ-4bit \
+  --host 127.0.0.1 --port 8080 \
+  --max-tokens 4096 \
+  --chat-template-args '{"enable_thinking":false}' \
+  --prompt-cache-bytes 6GB
+```
+
+| 플래그 | 두는 이유 |
+|---|---|
+| `HF_HUB_OFFLINE=1` | 모델 ID를 잘못 적었을 때 수 GB를 조용히 내려받지 않고 첫 요청에서 바로 404로 실패시킨다 |
+| `--max-tokens` · `--chat-template-args` | 이중 안전장치다. 정본은 앱이 요청마다 보내는 값(`LLM_MLX_MAX_TOKENS` · `LLM_MLX_ENABLE_THINKING`)이다. 둘 다 보내지 않으면 응답이 512토큰에서 잘리거나, Qwen3.5가 생성 예산을 전부 추론에 써서 본문이 빈다 |
+| `--prompt-cache-bytes 6GB` | 상한이 없으면 프롬프트 캐시가 13GB까지 커졌다(32GB 장비). 너무 낮추면 축출된 시스템 프롬프트가 다시 콜드 처리된다(27B·3GB에서 16K토큰 프롬프트 두 개를 번갈아 보내면 4건 중 2건이 콜드로 돌아갔다). 상한은 요청이 끝난 뒤 적용돼 요청 중에는 9GB 가까이 커진다 |
+
+**모델 선택** — 맥의 메모리로 고른다(2026-09-17 M1 Max 32GB 실측 · Metal 권장 작업 메모리 26.8GB · mlx-lm 0.31.3).
+
+| 모델 ID | 크기 | 실측 | 판정 |
+|---|---|---|---|
+| **`mlx-community/Qwen3.5-9B-OptiQ-4bit`** | 5.6GB | 생성 47.6토큰/초 · 콜드 prefill 약 350토큰/초(16K토큰 44초) · 도구 1개 호출 5/5 | **32GB 맥북 권장(기본).** 여러 도구 질의에서 결과 누락·SQL 절단이 관측됐다(plans/100 Phase 4) |
+| `mlx-community/Qwen3.8-27B-4bit` | 16.1GB | 생성 17.5토큰/초 · 콜드 prefill 107토큰/초(16K토큰 151초) · 도구 2종 동시 호출 3/3 · 폴스타 SQL 정확 · **파이프라인 1턴 420~900초** | **32GB에서는 쓰지 않는다.** plans/93·94 실 실행 중 Metal 메모리 부족 1회(생성 스레드 사망)와 시스템 메모리 부족 강제 종료 1회가 났다. 더 큰 메모리 장비는 미실측 |
+
+Qwen3.8에는 27B보다 작은 모델이 없고, 다른 크기(Flash-Next 4bit 111.5GB · 2.4T-A95B)는 맥북에 올라가지 않는다. 27B와 9B 사이의 공식 모델은 MoE `Qwen3.6-35B-A3B`(4bit 20.4GB)뿐인데 27B보다 메모리를 더 쓴다(미실측). `mlx-community`의 "Uncensored"·"OBLITERATED" 등 파생 모델은 쓰지 않는다.
+
+`.env` — 한 서버·한 모델로 두 평면을 모두 태운다(두 평면의 모델 ID가 다르면 요청마다 가중치를 재적재한다):
+
+```dotenv
+LLM_PROVIDER=mlx
+LLM_MLX_BASE_URL=http://127.0.0.1:8080/v1
+LLM_MLX_MODEL=mlx-community/Qwen3.5-9B-OptiQ-4bit
+ORCHESTRATOR_PROVIDER=mlx
+ORCHESTRATOR_BASE_URL=http://127.0.0.1:8080/v1
+ORCHESTRATOR_MODEL=mlx-community/Qwen3.5-9B-OptiQ-4bit
+```
+
+선택 키: `LLM_MLX_MAX_TOKENS`(기본 4096) · `LLM_MLX_TIMEOUT`(기본 600초) · `LLM_MLX_ENABLE_THINKING`(기본 false).
+오케스트레이터 요청 타임아웃은 기존 `ORCHESTRATOR_TIMEOUT`(기본 120초)을 쓴다.
+**스트리밍 청크 대기 상한도 이 두 타임아웃을 따른다** — `mlx_lm.server`는 prefill이 끝나야 첫 청크를 보내는데,
+langchain-openai 기본값(120초)에 두면 긴 프롬프트 호출이 첫 청크 전에 끊겨 폴백으로 넘어간다(`src/clients/mlx_client.py`).
+느린 모델(27B 등)을 쓰면 `LLM_MLX_TIMEOUT=900` · `ORCHESTRATOR_TIMEOUT=300` · `API_QUERY_TIMEOUT=900` · `API_FILE_QUERY_TIMEOUT=1200`으로 올린다.
+
+**사전 점검** — 서버 도달·모델 ID·**1토큰 생성**·재적재 위험·루프백 바인딩을 코드가 판정한다(질의 전 실행). `/health`·`/v1/models`는 생성 스레드가 죽어도 200이라 생성까지 본다.
+시나리오·벤치 하네스의 실 실행(`python -m scripts.scenario --run` · `python -m scripts.bench --sweep --mode run`)은 이 MLX 점검을 **자동으로 먼저** 돌고, 막히면 앱 서버를 띄우기 전에 멈춘다(하네스 쪽 안내는 `plans/94` ⑪ · `plans/93` 퀵 가이드 7).
+
+```bash
+python -m scripts.scenario --preflight --no-db
+```
+
+**워밍업** — 서버 기동 직후 첫 질의는 노드마다 시스템 프롬프트를 처음 읽으므로(콜드 prefill — 9B 초당 약 350토큰, 27B 초당 약 107토큰)
+노드당 수십 초(9B)~수 분(27B)씩 걸린다. `API_QUERY_TIMEOUT`에 걸릴 수 있으니 질의를 한 번 돌려 캐시를 채운 뒤 검증한다.
+시스템 프롬프트가 같으면 질문이 달라도 앞부분이 캐시에서 재사용돼 9B는 1초, 27B는 2~3초 안에 prefill이 끝난다.
+
+| 증상 | 원인 · 조치 |
+|---|---|
+| 기동은 되는데 질의가 연결 오류 | 서버 미기동 또는 포트 불일치. 사전 점검이 `[중단] MLX 서버`로 알려 준다 |
+| `/health`는 200인데 질의가 끝없이 멎는다 | 서버 로그에 `Insufficient Memory`·`Exception in thread (_generate)`가 있으면 Metal 메모리 부족으로 생성 스레드가 죽은 상태다. 사전 점검이 `[중단] MLX 생성`으로 알려 준다. 서버를 내리고 다시 띄우며, 반복되면 더 작은 모델로 바꾼다 |
+| 앱 로그에 `No streaming chunk received for 120.0s` | 청크 대기 상한이 라이브러리 기본값이다. 2026-09-17 이후 코드는 `LLM_MLX_TIMEOUT`·`ORCHESTRATOR_TIMEOUT`을 따른다 — 그 뒤에도 나오면 두 값을 올린다 |
+| 첫 요청이 `404 Cannot find an appropriate cached snapshot` | 모델 ID가 HF 캐시에 없다. `LLM_MLX_MODEL`·`ORCHESTRATOR_MODEL`을 서버 `--model`과 맞춘다 |
+| 요청마다 3~5초씩 더 걸린다 | 두 평면의 모델 ID가 달라 서버가 가중치를 교대 재적재한다. 한 모델로 맞춘다 |
+| 1단이 아니라 3단으로 확정된다 | 기동 로그 `오케스트레이션 사다리 확정` 줄의 사유를 본다. `orchestrator_unavailable`이면 `ORCHESTRATOR_BASE_URL`의 `/models`가 200인지 확인한다 |
+
+### 7.3 Gemini
 
 ```dotenv
 LLM_PROVIDER=gemini
@@ -738,7 +838,7 @@ LLM_GEMINI_API_KEY=your-gemini-api-key
 pip install -e ".[gemini]"
 ```
 
-### 7.3 FabriX
+### 7.4 FabriX
 
 ```dotenv
 LLM_PROVIDER=fabrix

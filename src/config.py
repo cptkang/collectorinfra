@@ -20,13 +20,27 @@ logger = logging.getLogger(__name__)
 class LLMConfig(BaseSettings):
     """LLM 관련 설정."""
 
-    provider: Literal["ollama", "fabrix", "gemini"] = "ollama"
+    provider: Literal["ollama", "fabrix", "gemini", "mlx"] = "ollama"
     model: str = "llama3.1:8b"
 
     # Ollama 설정
     ollama_base_url: str = "http://localhost:11434"
     ollama_api_key: str = ""
     ollama_timeout: int = 180
+
+    # MLX 설정 (plans/100 — Apple Silicon 로컬 테스트 전용)
+    # 앱 밖 `mlx_lm.server`에 OpenAI 호환으로 붙는다.
+    # provider가 mlx가 아니면 읽히지 않는다. ORCHESTRATOR_PROVIDER=mlx도 mlx_max_tokens를 공유한다.
+    mlx_base_url: str = "http://127.0.0.1:8080/v1"
+    # 빈 값이면 "default_model"을 보내 서버 --model로 매핑된다(이름 불일치 재적재 회피)
+    mlx_model: str = ""
+    # 서버 기본값 512토큰에서 finish_reason=length로 절단된다(plans/100 J-1 ①) — 반드시 보낸다
+    mlx_max_tokens: int = 4096
+    # 콜드 prefill 320~370 tok/s 실측 기준 최악(프롬프트 약 10만 토큰 + 생성 4096)
+    # 약 400초(plans/100 §3.3)
+    mlx_timeout: int = 600
+    # 미전송이면 Qwen3.5가 생성 예산 전부를 reasoning에 쓰고 content가 빈다(plans/100 J-1 ②)
+    mlx_enable_thinking: bool = False
 
     # Gemini 설정
     gemini_api_key: str = ""
@@ -100,7 +114,8 @@ class OrchestratorConfig(BaseSettings):
     """
 
     # provider: vllm(운영, OpenAI 호환) | gemini(테스트/PoC 전용 — egress 필요, Plan 49 §4.7)
-    provider: Literal["vllm", "gemini"] = "vllm"
+    #         | mlx(Apple Silicon 로컬 테스트 전용 — vLLM 경로 재사용 + max_tokens 명시, plans/100)
+    provider: Literal["vllm", "gemini", "mlx"] = "vllm"
     base_url: str = ""            # vLLM /v1 엔드포인트 (예: http://vllm-host:8000/v1)
     model: str = "Qwen3.5-9B"     # vLLM 서빙 모델 (gemini 사용 시 gemini 모델명으로 설정)
     api_key: str = ""             # vLLM은 보통 불필요 / gemini는 미설정 시 LLM_GEMINI_API_KEY 폴백
@@ -626,8 +641,12 @@ class SchemaCacheConfig(BaseSettings):
     cache_dir: str = ".cache/schema"
     enabled: bool = True
     backend: str = "redis"  # "redis" | "file"
-    auto_generate_descriptions: bool = True
     fingerprint_ttl_seconds: int = 1800  # fingerprint 검증 주기 (기본 30분)
+    # ── plans/104 관리자 「DB 구조」 기능의 상한 — 플래그가 아니다(질의 경로 동작 불변) ──
+    # 관리자 잡이 컬럼 설명·유사어 초안을 만들 때 동시에 띄우는 LLM 호출 수 상한(테이블당 1회 호출)
+    admin_llm_concurrency: int = 2
+    # 구조 분석을 FK 연결 묶음 단위로 나눌 때 한 번의 LLM 분석에 넣는 테이블 수 상한
+    structure_group_max_tables: int = 40
 
     model_config = {"env_prefix": "SCHEMA_CACHE_", "env_file": ".env", "extra": "ignore"}
 
@@ -1051,6 +1070,12 @@ class RouterConfig(BaseSettings):
     # **되묻는다**(기존 `status="clarification"` 규약 재사용 — 신규 UI 0).
     unknown_enabled: bool = False
 
+    # plans/102 §3.1 · D-224 ① — 답변 영역(capability) 소유. **기본 off = 프롬프트·라우팅이 현행과
+    # 바이트 동일**이다. 켜면 라우터·분해 프롬프트에 소유표와 `capabilities`·`chain` 출력 필드가
+    # 렌더되고, 코드가 LLM 구조화 출력의 답변 영역만 보고 정본 시스템을 판정·교정한다(D-004 —
+    # 질의 원문 키워드 스캔 없음). 빈 분류·LLM 실패 폴백도 사유를 응답에 표기한다.
+    capability_ownership_enabled: bool = False
+
     model_config = {"env_prefix": "ROUTER_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -1226,7 +1251,8 @@ class AppConfig(BaseSettings):
     enable_semantic_routing: bool | None = None
 
     # 의도 분해 오케스트레이션(사다리 2단 = 트랙 A) 활성화 여부 (Plan 48 / D-037)
-    # None(미입력) = 멀티 DB 환경이면 신규 경로를 기본 활성화(신규 경로가 기본 동작), 단일/레거시면 비활성
+    # None(미입력) = off — 기준 경로는 3단 semantic_router다(D-225 ④ · plans/102 L-1). 종전의
+    # "멀티 DB 환경이면 자동 on"은 DB 등록만으로 2단이 조용히 확정되는 경로라 폐지했다(X-T11).
     # True/False = 명시적 강제(.env·OS env 모두 반영). 사다리 상위 단(deep_agent)이 성립하면
     # 이 플래그가 true여도 2단 노드는 등록되지 않는다 — docs/21_orchestration_ladder.md §1·§2
     #
@@ -1244,6 +1270,16 @@ class AppConfig(BaseSettings):
 
     # 결과 기반 재계획 최대 반복 (무한 루프 방지, R-A3/R-11)
     max_replan: int = 3
+
+    # ── 교차 시스템 질의 (plans/102 · D-224) — 둘 다 **기본 off = 현행과 비트 동일** ──────
+    # 기동 시 1회 해석한다(요청 시점 변경 금지 — 그래프 노드 구성·프롬프트 접두가 흔들린다).
+    # 값 기반 키 브리지(§3.2·§3.3): 선행 결과의 서버 키를 컬럼명이 아니라 값(호스트명·FQDN·IP)으로
+    # 판정하고, 대상 DB 매니페스트(`config/db_profiles/{db_id}.yaml` `entity_keys`)로 대상 컬럼을
+    # 코드가 확정한다. off면 종전 컬럼명 판정(D-100)과 "동등한 식별 컬럼" 위임 문구 그대로다.
+    cross_system_key_bridge_enabled: bool = False
+    # 식별자 소재 프로브(§3.4): 3단 `semantic_router` 직후에 `entity_locator` 노드를 등록해
+    # 명시 식별자가 어느 시스템에 있는지 고정 조회로 먼저 확인한다. off면 노드·엣지 미등록.
+    cross_system_probe_enabled: bool = False
 
     # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 활성화 여부.
     # 명시적 opt-in(기본 False) — vLLM 인프라가 필요하므로 자동 활성화하지 않는다.
@@ -1292,7 +1328,6 @@ class AppConfig(BaseSettings):
 
     # Phase 3: 멀티턴 대화 / Human-in-the-loop
     enable_sql_approval: bool = False         # SQL 승인 기능 활성화
-    enable_structure_approval: bool = True    # 구조 분석 HITL 승인 (기본 활성화)
     conversation_max_turns: int = 20          # 대화 최대 턴 수
     conversation_ttl_hours: int = 24          # 대화 세션 유효 시간
 
@@ -1313,8 +1348,9 @@ class AppConfig(BaseSettings):
         object.__setattr__(
             self,
             "_orchestration_resolved_by",
-            "auto_multidb"
-            if (self.enable_semantic_routing is None or self.enable_intent_orchestration is None)
+            # 2단 플래그만 미입력이면 DB 등록 상태와 무관하게 코드 기본값(off)이다(D-225 ④).
+            "auto_multidb" if self.enable_semantic_routing is None
+            else "code_default" if self.enable_intent_orchestration is None
             else "explicit_env",
         )
 
@@ -1353,31 +1389,33 @@ class AppConfig(BaseSettings):
         # 자동 해석이 발동하면 경고를 남긴다(plans/70 L3). 덮어쓰고 나면 명시 설정과
         # 구별할 수 없으므로 여기가 유일한 기회다. 값만 알려주는 경고는 조치로 이어지지
         # 않으므로, "무엇이 무엇에 종속되는가"를 함께 말한다.
-        _auto = [
-            name for name, value in (
-                ("enable_semantic_routing", self.enable_semantic_routing),
-                ("enable_intent_orchestration", self.enable_intent_orchestration),
-            )
-            if value is None
-        ]
-        if _auto:
+        if self.enable_semantic_routing is None:
             logger.warning(
-                "%s 미입력 → 멀티 DB 등록 여부로 자동 결정합니다(등록 %d건 → %s). "
+                "enable_semantic_routing 미입력 → 멀티 DB 등록 여부로 자동 결정합니다"
+                "(등록 %d건 → %s). "
                 "실행 경로가 DB 등록 상태에 종속되므로, 고정하려면 .env에 명시하세요 "
                 "— docs/21_orchestration_ladder.md §6",
-                "·".join(_auto),
                 len(self.multi_db.get_active_db_ids()),
                 bool(self.multi_db.get_active_db_ids()),
+            )
+        if self.enable_intent_orchestration is None:
+            logger.warning(
+                "enable_intent_orchestration 미입력 → off로 확정합니다(3단 기준 · D-225). "
+                "2단을 쓰려면 .env에 ENABLE_INTENT_ORCHESTRATION=true를 명시하세요 "
+                "— docs/21_orchestration_ladder.md §6",
             )
 
         if self.enable_semantic_routing is None:
             self.enable_semantic_routing = bool(self.multi_db.get_active_db_ids())
 
-        # Plan 48 / D-037: 플래그 미입력(None)이면 멀티 DB 환경에서 신규 오케스트레이션 경로를
-        # 기본 활성화한다(신규 경로가 기본 동작). 명시적 true/false는 pydantic-settings가 .env·OS env에서
-        # 필드로 직접 읽어 그대로 존중한다(os.getenv 미사용 — .env-only 설정도 반영, Known Mistakes 2026-06-10).
+        # D-225 ④(plans/102 L-1): 플래그 미입력(None)이면 **항상 off**다 — 기준 경로는 3단
+        # semantic_router이고 2단 배선은 기본 off다. 종전(Plan 48 / D-037)에는 멀티 DB 환경에서
+        # 자동 on이라, 3단 기준으로 운영하다 DB를 하나 더 등록하는 순간 2단으로 조용히
+        # 확정됐다(X-T11).
+        # 명시적 true/false는 pydantic-settings가 .env·OS env에서 필드로 직접 읽어 그대로 존중한다
+        # (os.getenv 미사용 — .env-only 설정도 반영, Known Mistakes 2026-06-10).
         if self.enable_intent_orchestration is None:
-            self.enable_intent_orchestration = bool(self.multi_db.get_active_db_ids())
+            self.enable_intent_orchestration = False
 
 
 @lru_cache(maxsize=1)

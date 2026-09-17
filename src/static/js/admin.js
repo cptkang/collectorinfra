@@ -140,6 +140,15 @@
         setTimeout(function () { alertSuccess.classList.remove("active"); }, 5000);
     }
 
+    // (plans/104) 「DB 구조」 탭 스크립트(admin-db-structure.js)가 같은 토큰·401 처리·알림을 쓰도록
+    // 최소 헬퍼만 노출한다. 인증 게이트에서 return하면 이 줄에 도달하지 않아 탭 스크립트도 멈춘다.
+    window.AdminApi = {
+        request: apiRequest,
+        showError: showError,
+        showSuccess: showSuccess,
+        errorMessage: errorMessage,
+    };
+
     // --- 탭 전환 ---
 
     var tabs = document.querySelectorAll(".tab");
@@ -1171,6 +1180,7 @@
             closeDiffModal();
             showSuccess(data.message);
             showRestartBanner(data);
+            showReadinessWarnings(data);
             pendingChanges = null;
             settingsEdits = {};
             await loadSettings();
@@ -1236,6 +1246,41 @@
             ignoredLine.textContent = "마스킹 값이 그대로 전송되어 무시했습니다(원값 보존): " + ignoredKeys.join(", ");
             banner.appendChild(ignoredLine);
         }
+        banner.style.display = "block";
+    }
+
+    // (plans/104 B-7 · G-7 (a)) ACTIVE_DB_IDS에 준비도 필수 미충족 DB를 넣으면 경고만 보인다 — 저장은 이미 끝났다.
+    function showReadinessWarnings(data) {
+        var banner = document.getElementById("readinessBanner");
+        if (!banner) return;
+        banner.textContent = "";
+        var warnings = data.readiness_warnings;
+        if (!warnings || !Object.keys(warnings).length) {
+            banner.style.display = "none";
+            return;
+        }
+        var title = document.createElement("div");
+        title.textContent = "⚠ 활성화 준비도 경고 — 저장은 완료되었습니다. 아래 DB는 「DB 구조」 탭에서 필수 항목을 채우세요.";
+        banner.appendChild(title);
+        if (warnings._error) {
+            var errorLine = document.createElement("div");
+            errorLine.textContent = "준비도를 판정하지 못했습니다: " + warnings._error;
+            banner.appendChild(errorLine);
+        }
+        Object.keys(warnings).forEach(function (dbId) {
+            if (dbId === "_error") return;
+            var items = Array.isArray(warnings[dbId]) ? warnings[dbId] : [];
+            var line = document.createElement("div");
+            var code = document.createElement("code");
+            code.textContent = dbId;
+            line.appendChild(code);
+            line.appendChild(document.createTextNode(
+                " — 필수 미충족 " + items.length + "건: " + items.map(function (item) {
+                    return item.label + (item.detail ? " (" + item.detail + ")" : "");
+                }).join(" · ")
+            ));
+            banner.appendChild(line);
+        });
         banner.style.display = "block";
     }
 

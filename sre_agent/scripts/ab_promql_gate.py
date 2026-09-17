@@ -152,7 +152,9 @@ def _run_arm_a(base, max_steps: int, model: str | None = None):
         },
     }
     agent = DiagnosisAgent(settings=_make_settings(base, max_steps, model), toolsets=toolsets)
-    # DiagnosisAgent.llm은 캐시 기본값(ENABLED)으로 만든다 — A안만 명시적으로 다시 만든다.
+    # 2026-08-06 게이트 당시 DiagnosisAgent.llm은 캐시 기본값(ENABLED)이라 A안만 캐시를 끄고 다시 만들었다.
+    # 2026-09-17부터 DiagnosisAgent.llm 자체가 캐시 off·enable_all=False다(B안 포함). 아래 재생성은 당시
+    # 측정 재현을 위해 남긴다(enable_all은 holmes 기본 True — 호스트 CLI toolset 선행검사가 함께 돈다).
     agent._llm = agent._config.create_toolcalling_llm(
         toolset_tag_filter=[ToolsetTag.CORE, ToolsetTag.CLI],
         prerequisite_cache=PrerequisiteCacheMode.DISABLED,

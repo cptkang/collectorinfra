@@ -34,6 +34,22 @@ def _load_harness():
 H = _load_harness()
 
 
+@pytest.fixture(autouse=True)
+def _restore_structlog_config():
+    """`H.main()`이 바꾸는 전역 structlog 설정을 테스트마다 되돌린다.
+
+    `main()`은 감사 로그를 `sys.stderr`로 옮기는데, `capsys` 아래에서는 그 객체가 테스트 종료 때
+    닫히는 캡처 스트림이다. 되돌리지 않으면 뒤에 도는 테스트의 감사 로그(`query_validator` 차단
+    기록 등)가 닫힌 파일에 써 `ValueError: I/O operation on closed file`로 실패한다
+    (전체 스위트 순서 의존 실패 14건 — 2026-09-17 파일 단위 이분 탐색으로 확정).
+    """
+    import structlog
+
+    saved = structlog.get_config()
+    yield
+    structlog.configure(**saved)
+
+
 # ──────────────────────────────────────────────
 # execution_match — EX 채점 순수 로직
 # ──────────────────────────────────────────────
@@ -383,6 +399,74 @@ class TestPipelineAdapter:
         res = H.UnavailablePredictor("closed net").predict(item, {})
         assert res.skipped is True
         assert res.sql is None
+
+
+class TestLadderCheckedPaths:
+    """`--path semantic_router|deep_agent`는 확정 단이 경로 이름과 같을 때만 잰다 (D-225).
+
+    그래프·LLM·설정 로더를 대역으로 바꾼다 — 네트워크·과금 호출 0.
+    """
+
+    @pytest.fixture
+    def fake_pipeline(self, monkeypatch):
+        import asyncio
+
+        import src.config
+        import src.graph
+        import src.llm
+        from src.observability import ladder as ld
+
+        calls: list[str] = []
+
+        class _Graph:
+            async def ainvoke(self, state, config=None):
+                calls.append("ainvoke")
+                return {"generated_sql": "SELECT 1"}
+
+        def _use_tier(tier: str) -> None:
+            def fake_build(cfg, checkpointer=None):
+                ld.record_ladder_resolution(ld.LadderTier(tier), "none")
+                return _Graph()
+
+            monkeypatch.setattr(src.graph, "build_graph", fake_build)
+
+        monkeypatch.setattr(src.config, "load_config", lambda: object())
+        monkeypatch.setattr(src.llm, "create_llm", lambda cfg: object())
+        monkeypatch.setattr(H, "_run_async", lambda coro: asyncio.run(coro))
+        ld.reset_ladder()
+        yield _use_tier, calls
+        ld.reset_ladder()
+
+    def test_semantic_router_path_is_registered(self):
+        assert "semantic_router" in H.PATHS
+        assert H.PipelinePredictor("semantic_router").path == "semantic_router"
+
+    @pytest.mark.parametrize(
+        "path,tier",
+        [("semantic_router", "deep_agent"), ("semantic_router", "intent_orchestration"),
+         ("deep_agent", "semantic_router")],
+    )
+    def test_skips_when_confirmed_tier_differs(self, fake_pipeline, path, tier):
+        use_tier, calls = fake_pipeline
+        use_tier(tier)
+        item = H.GoldItem("x", "q", "d", "SELECT 1", "server_config", "inside")
+
+        res = H.PipelinePredictor(path).predict(item, {})
+
+        assert res.skipped is True and res.sql is None
+        assert f"사다리 {path} 미확정" in res.error and f"tier={tier}" in res.error
+        assert calls == [], "다른 단을 잰 결과를 그 단의 수치로 내면 안 된다"
+
+    @pytest.mark.parametrize("path", ["semantic_router", "deep_agent"])
+    def test_runs_when_confirmed_tier_matches(self, fake_pipeline, path):
+        use_tier, calls = fake_pipeline
+        use_tier(path)
+        item = H.GoldItem("x", "q", "d", "SELECT 1", "server_config", "inside")
+
+        res = H.PipelinePredictor(path).predict(item, {})
+
+        assert res.skipped is False and res.sql == "SELECT 1"
+        assert calls == ["ainvoke"]
 
 
 # ──────────────────────────────────────────────

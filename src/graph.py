@@ -8,6 +8,7 @@ LLM 인스턴스를 한 번 생성하여 partial로 노드에 주입한다.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
 from functools import partial
 
@@ -25,14 +26,13 @@ from src.nodes.general_inference import general_inference as general_inference_n
 from src.nodes.field_mapper import field_mapper
 from src.nodes.input_parser import input_parser
 from src.nodes.multi_db_executor import multi_db_executor
-from src.nodes.output_generator import output_generator
+from src.nodes.output_generator import append_structure_missing_note, output_generator
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import query_validator
 from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
-from src.nodes.structure_approval_gate import structure_approval_gate
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability.graph_proxy import TracedGraph
 from src.observability.investigation_metrics import log_investigation_startup
@@ -45,6 +45,7 @@ from src.orchestration import (
     run_deep_agent,
     select_orchestration_backend,
 )
+from src.orchestration.entity_locator import entity_locator, probe_halted
 from src.orchestration.sequential_runner import sequential_entry, sequential_runner
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
@@ -163,6 +164,17 @@ def route_after_semantic_router_sequential(state: AgentState, *, config: AppConf
     return route_after_semantic_router(state)
 
 
+def route_after_entity_locator(state: AgentState, *, delegate: Callable[[AgentState], str]) -> str:
+    """3단 + `entity_locator` 등록 시의 라우팅 (plans/102 §3.4 · D-224 ⑤).
+
+    소재 프로브가 "조회하지 않고 사유 노출"로 끝냈으면 END, 아니면 `semantic_router` 뒤에 있던
+    분기 함수(`delegate`)를 그대로 부른다 — 프로브는 대상 DB를 좁힐 뿐 분기 규칙을 바꾸지 않는다.
+    """
+    if probe_halted(state):
+        return END
+    return delegate(state)
+
+
 def route_after_field_mapper_legacy(state: AgentState, *, config: AppConfig) -> str:
     """4단(legacy) + `sequential_runner` 등록 시: field_mapper → sequential_runner | schema_analyzer."""
     if sequential_entry(state, config):
@@ -190,33 +202,6 @@ def route_after_replanner(state: AgentState) -> str:
     return "result_aggregator"
 
 
-def route_after_schema_analyzer(state: AgentState) -> str:
-    """schema_analyzer 이후 라우팅을 결정한다.
-
-    - 구조 분석 HITL 승인 대기: structure_approval_gate로 진행
-    - 그 외: query_generator로 진행
-    """
-    if state.get("awaiting_approval"):
-        # 키가 있고 값이 None이면 .get(key, {})는 None을 돌려준다 — create_initial_state가
-        # approval_context=None으로 두므로 or-폴백이 없으면 AttributeError (Plan 69 P0-⑪).
-        ctx = state.get("approval_context") or {}
-        if ctx.get("type") == "structure_analysis":
-            return "structure_approval_gate"
-    return "query_generator"
-
-
-def route_after_structure_approval(state: AgentState) -> str:
-    """structure_approval_gate 이후 라우팅을 결정한다.
-
-    - approve: schema_analyzer로 재진입 (승인된 결과로 캐시 저장 후 계속)
-    - reject: query_generator로 진행 (구조 메타 없이)
-    """
-    action = state.get("approval_action")
-    if action == "approve":
-        return "schema_analyzer"
-    return "query_generator"
-
-
 def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
     error_msg = state.get("error_message") if state.get("error_message") is not None else "알 수 없는 에러가 발생했습니다."
@@ -225,6 +210,9 @@ def _error_response_node(state: AgentState) -> dict:
         f"에러 내용: {error_msg}\n"
         f"재시도 횟수가 최대({state['retry_count']}회)에 도달하여 처리를 중단합니다."
     )
+    # 구조 정보 없이 조회하다 실패했다면 그 사유가 가장 필요한 자리다 — 정상 응답과 같은 노트
+    # (plans/104).
+    response = append_structure_missing_note(response, state)
     # 답변을 대화 이력에 누적한다(②, 멀티턴 후속 턴이 직전 상황을 인지하도록).
     return {
         "final_response": response,
@@ -352,8 +340,10 @@ def build_graph(config: AppConfig, checkpointer=None):
 
     # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
     # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"(§4.6).
-    # 실행 경로 4종은 대등한 병존이 아니라 **1 정본 + 3 폴백 사다리**다 —
-    # 구조·활성 조건·강등 사유·모듈 의존 방향은 docs/21_orchestration_ladder.md가 단일 출처다.
+    # 실행 경로 4종은 대등한 병존이 아니라 위에서부터 성립하는 한 단만 확정되는
+    # 사다리다 — 기준 경로는 3단 semantic_router, 1단 deep_agent는 부가 경로(opt-in)다
+    # (D-225). 구조·활성 조건·확정 사유·모듈 의존 방향은
+    # docs/21_orchestration_ladder.md가 단일 출처다.
     # 특히 §7: 배선은 배타적이지만 모듈 의존은 아니다(1단이 2·3단 모듈을 재사용).
     # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
     # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
@@ -480,6 +470,20 @@ def build_graph(config: AppConfig, checkpointer=None):
             partial(sequential_runner, llm=llm, app_config=config),
         )
 
+    # plans/102 §3.4 (D-224 ⑤): 3단 전용 식별자 소재 프로브 — 플래그 on일 때만 등록한다(LLM 미주입).
+    # off거나 1·2·4단이면 노드·엣지·분기 함수가 현행과 같다.
+    probe_tier = (
+        bool(getattr(config, "cross_system_probe_enabled", False))
+        and config.enable_semantic_routing
+        and not use_deep_agent
+        and not config.enable_intent_orchestration
+    )
+    if probe_tier:
+        graph.add_node(
+            "entity_locator",
+            partial(entity_locator, app_config=config),
+        )
+
     graph.add_node(
         "schema_analyzer",
         partial(schema_analyzer, llm=llm, app_config=config),
@@ -496,10 +500,6 @@ def build_graph(config: AppConfig, checkpointer=None):
     # Phase 3: approval_gate (SQL 승인 활성화 시)
     if config.enable_sql_approval:
         graph.add_node("approval_gate", approval_gate)
-
-    # 구조 분석 HITL 승인 (활성화 시)
-    if config.enable_structure_approval:
-        graph.add_node("structure_approval_gate", structure_approval_gate)
 
     graph.add_node(
         "query_executor",
@@ -566,19 +566,27 @@ def build_graph(config: AppConfig, checkpointer=None):
         }
         if fault_dx_enabled:
             _router_targets["fault_diagnosis"] = "fault_diagnosis"
+        _router_route: Callable[[AgentState], str]
         if sequential_tier:
             # D-203: 진입 조건이 성립할 때만 순차 러너로 — 불성립이면 현행 분기 함수 그대로 위임.
             _router_targets["sequential_runner"] = "sequential_runner"
+            _router_route = partial(route_after_semantic_router_sequential, config=config)
+            graph.add_edge("sequential_runner", END)
+        else:
+            _router_route = route_after_semantic_router
+        if probe_tier:
+            # plans/102 §3.4: semantic_router → entity_locator → (위 분기 함수 그대로).
+            # 사유 노출 행만 END(END는 이미 대상에 있다 — 존 역질문).
+            graph.add_edge("semantic_router", "entity_locator")
             graph.add_conditional_edges(
-                "semantic_router",
-                partial(route_after_semantic_router_sequential, config=config),
+                "entity_locator",
+                partial(route_after_entity_locator, delegate=_router_route),
                 _router_targets,
             )
-            graph.add_edge("sequential_runner", END)
         else:
             graph.add_conditional_edges(
                 "semantic_router",
-                route_after_semantic_router,
+                _router_route,
                 _router_targets,
             )
 
@@ -610,26 +618,10 @@ def build_graph(config: AppConfig, checkpointer=None):
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")
 
-    # 단일 DB 경로: schema_analyzer -> (조건부) -> query_generator
-    if config.enable_structure_approval:
-        graph.add_conditional_edges(
-            "schema_analyzer",
-            route_after_schema_analyzer,
-            {
-                "structure_approval_gate": "structure_approval_gate",
-                "query_generator": "query_generator",
-            },
-        )
-        graph.add_conditional_edges(
-            "structure_approval_gate",
-            route_after_structure_approval,
-            {
-                "schema_analyzer": "schema_analyzer",
-                "query_generator": "query_generator",
-            },
-        )
-    else:
-        graph.add_edge("schema_analyzer", "query_generator")
+    # 단일 DB 경로: schema_analyzer -> query_generator 직행.
+    # 구조 승인 HITL 게이트 노드는 plans/104(D-227)에서 삭제됐다 — 질의 경로는
+    # 구조를 분석하지 않고 수동 프로필·관리자 승인본을 읽기만 한다(없으면 사유 노트).
+    graph.add_edge("schema_analyzer", "query_generator")
     graph.add_edge("query_generator", "query_validator")
 
     # query_validator 이후: 조건부 라우팅
@@ -697,8 +689,6 @@ def build_graph(config: AppConfig, checkpointer=None):
     interrupt_before = []
     if config.enable_sql_approval:
         interrupt_before.append("approval_gate")
-    if config.enable_structure_approval:
-        interrupt_before.append("structure_approval_gate")
 
     compiled = graph.compile(
         checkpointer=checkpointer,
@@ -706,15 +696,15 @@ def build_graph(config: AppConfig, checkpointer=None):
     )
 
     logger.info(
-        "에이전트 그래프 빌드 완료 (orchestration=%s, semantic_routing=%s, sql_approval=%s, structure_approval=%s)",
+        "에이전트 그래프 빌드 완료 (orchestration=%s, semantic_routing=%s, sql_approval=%s)",
         config.enable_intent_orchestration,
         config.enable_semantic_routing,
         config.enable_sql_approval,
-        config.enable_structure_approval,
     )
 
-    # 확정된 사다리 단과 강등 사유를 기록한다(D-161 / plans/70 P0-1).
-    # 경로 4종은 병존이 아니라 1 정본 + 3 폴백이며, 확정은 여기서 1회 일어난다.
+    # 확정된 사다리 단과 그 사유를 기록한다(D-161 / plans/70 P0-1 · D-225 기준 개정).
+    # 경로 4종은 병존이 아니라 한 단만 확정되는 사다리(기준 3단 · 1단 부가)이며,
+    # 확정은 여기서 1회 일어난다.
     # 이 로그가 "레거시 4단이 실제로 쓰이는가"를 판정하는 유일한 근거다.
     _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
     record_ladder_resolution(

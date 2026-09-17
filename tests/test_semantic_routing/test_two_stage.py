@@ -488,6 +488,9 @@ def test_stage_templates_declare_only_the_keys_they_need():
         # `unknown` 예시는 `_S_EXAMPLES`에 있고 그 블록이 STAGE2 조립에 속한다.
         # 2단 모드에서 자리가 어긋나는 것은 알려진 한계다(2단은 기본 off · 미검증).
         "unknown_example",
+        # plans/102 X-8 — 답변 영역 소유 슬롯. 단일 호출 템플릿과 같은 절 상수를 공유한다(대칭).
+        "capability_ownership_section", "capability_chain_line",
+        "capability_field_line", "capability_ownership_examples",
     }
 
 

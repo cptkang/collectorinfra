@@ -216,3 +216,60 @@ def test_역질문_done_은_clarification_상태가_된다(client: ScenarioClien
     assert obs.status == "clarification"
     assert obs.clarification is not None
     assert "done" in obs.sse_events
+
+
+# --- 비스트리밍 대기 상한은 서버 상한을 넘는다 (2026-09-17 plans/100 점검) ------------------
+
+def _capturing_client(config: ClientConfig) -> tuple[ScenarioClient, list[tuple[str, dict]]]:
+    """요청마다 (경로, httpx timeout 확장값)을 기록한다(네트워크 0)."""
+    import httpx
+
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.extensions.get("timeout") or {}))
+        return httpx.Response(200, json={"response": "ok"})
+
+    instance = ScenarioClient(config)
+    instance._client.close()
+    instance._client = httpx.Client(timeout=config.timeout_sec, transport=httpx.MockTransport(handler))
+    return instance, seen
+
+
+def test_비스트리밍_질의는_서버_상한보다_오래_기다린다() -> None:
+    """360초에서 끊으면 서버는 정상 처리 중인데 러너가 hang(무조건 불합격)으로 판정한다."""
+    instance, seen = _capturing_client(ClientConfig(
+        port=1, server_timeouts={"API_QUERY_TIMEOUT": 900.0, "API_FILE_QUERY_TIMEOUT": 1200.0}))
+    try:
+        instance.send("plain", {"query": "q"})
+        instance.send("plain", {"query": "q", "form_fill_answers": {"a": "b"}})
+    finally:
+        instance.close()
+    assert [(path, t["read"]) for path, t in seen] == [
+        ("/api/v1/query", 930.0), ("/api/v1/query", 1230.0)]
+
+
+def test_파일_질의는_파일_질의_상한을_따른다(tmp_path) -> None:
+    upload = tmp_path / "form.xlsx"
+    upload.write_bytes(b"x")
+    instance, seen = _capturing_client(ClientConfig(
+        port=1, server_timeouts={"API_FILE_QUERY_TIMEOUT": 1200.0}))
+    try:
+        instance.send("file", {"query": "q"}, upload=upload)
+    finally:
+        instance.close()
+    assert [(path, t["read"]) for path, t in seen] == [("/api/v1/query/file", 1230.0)]
+
+
+def test_서버_상한을_모르거나_더_짧으면_timeout_sec_그대로다() -> None:
+    instance, seen = _capturing_client(ClientConfig(port=1))
+    short, seen_short = _capturing_client(ClientConfig(
+        port=1, server_timeouts={"API_QUERY_TIMEOUT": 60.0}))
+    try:
+        instance.send("plain", {"query": "q"})
+        short.send("plain", {"query": "q"})
+    finally:
+        instance.close()
+        short.close()
+    assert seen[0][1]["read"] == 360.0
+    assert seen_short[0][1]["read"] == 360.0

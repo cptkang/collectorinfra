@@ -242,7 +242,7 @@ class _StubHandle:
         self.profile = profile
         self.port = port
         self.mock = mock
-        self.ladder = ("intent_orchestration", "flag_off")
+        self.ladder = ("intent_orchestration", "intent_flag_on")
         _StubHandle.instances.append(self)
 
     def start(self) -> None:

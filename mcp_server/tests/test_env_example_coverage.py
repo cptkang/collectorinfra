@@ -110,7 +110,7 @@ def test_every_override_key_is_documented():
     )
 
 
-@pytest.mark.parametrize("name", ["polestar_cm_gp", "polestar_cm_yd", "polestar_b0"])
+@pytest.mark.parametrize("name", ["polestar_cm_gp", "polestar_cm_yd", "polestar_b0", "itam"])
 def test_defined_sources_have_documented_connection_key(name):
     """`config.toml`이 정의한 소스의 연결 키가 문서화돼 있어야 한다.
 

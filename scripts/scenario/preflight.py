@@ -10,17 +10,21 @@
 그래서 이 모듈은 **읽기만 하고 판정과 조치를 출력한다.** 고치지는 않는다 - 설정 변경은
 사람 결정이고(H-2), 바꾼 사실이 run 기록에 남아야 회귀 비교가 성립한다.
 
-**읽기 전용이다**(D-003). SELECT 2건 외에 DB 를 건드리지 않고, LLM 을 호출하지 않는다.
+**읽기 전용이다**(D-003). SELECT 2건 외에 DB 를 건드리지 않고, 외부 LLM 을 호출하지 않는다.
+(provider 가 mlx 면 로컬 서버에 모델 목록 GET 1건과 **1토큰 생성 요청 1건**을 보낸다 - 로컬이라
+과금이 없고, `/health`·`/v1/models` 는 생성 스레드가 죽어도 200 이라 생성까지 봐야 한다.)
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,8 +37,28 @@ VERDICT_UNKNOWN = "unknown"
 
 _MARK = {VERDICT_OK: "[OK]", VERDICT_WARN: "[주의]", VERDICT_STOP: "[중단]", VERDICT_UNKNOWN: "[판정불가]"}
 
-#: 내부망 프로바이더 - 승인·RUN_E2E 없이 실 실행한다(D-216 · D-211 (11)).
-INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama"})
+#: 승인·RUN_E2E 없이 실 실행하는 프로바이더(D-216 · D-211 (9) · D-222). **평면별로 둔다.**
+#: 워커(`LLM_PROVIDER`)와 오케스트레이터(`ORCHESTRATOR_PROVIDER`)는 따로 호출되고 따로 과금된다.
+#: 워커만 보면 `LLM_PROVIDER=mlx` + `ORCHESTRATOR_PROVIDER=gemini` 가 승인 없이 Gemini 를 부른다
+#: (plans/100 3.4). 오케스트레이터는 `ENABLE_DEEPAGENTS_PACKAGE` 와 무관하게 **항상** 본다 -
+#: noise_gate enricher 트랙 B 도 같은 오케스트레이터를 쓴다. scenario·bench 판정은 전부 여기를 쓴다.
+WORKER_INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama", "mlx"})
+ORCHESTRATOR_INTERNAL_PROVIDERS = frozenset({"vllm", "mlx"})
+
+
+def external_planes(worker: str, orchestrator: str) -> list[str]:
+    """비과금 집합 밖인 평면을 `"LLM_PROVIDER=gemini"` 꼴로 돌려준다. 비었으면 승인 불요다.
+
+    **판정의 유일한 정의다.** 설정을 못 읽은 값(`unknown(...)`)은 어느 집합에도 없으므로
+    외부로 판정된다 - 과금 게이트를 열지 않는 쪽이 기본이다.
+    """
+    planes = []
+    if worker not in WORKER_INTERNAL_PROVIDERS:
+        planes.append(f"LLM_PROVIDER={worker}")
+    if orchestrator not in ORCHESTRATOR_INTERNAL_PROVIDERS:
+        planes.append(f"ORCHESTRATOR_PROVIDER={orchestrator}")
+    return planes
+
 
 #: E-3 이 쓰는 디스크 하한(GB). 지난 run 이 체크포인트 1.49GB + 산출물이었고
 #: 반복 대상이 늘면 더 커진다(plans/99 E-0-6).
@@ -81,6 +105,7 @@ class Report:
 #: 점검 항목 -> 대응 환경변수 키. 출처 판정에만 쓴다.
 _ENV_KEY = {
     "LLM_PROVIDER": "LLM_PROVIDER",
+    "ORCHESTRATOR_PROVIDER": "ORCHESTRATOR_PROVIDER",
     "ACTIVE_DB_IDS": "ACTIVE_DB_IDS",
     "AUTH_ENABLED": "AUTH_ENABLED",
     "DB_BACKEND": "DB_BACKEND",
@@ -110,9 +135,14 @@ def _shell_override_note(key: str) -> str:
 
 # --- E-0: 설정 실효값 --------------------------------------------------------
 
+def _plane_provider(plane_cfg: Any) -> str:
+    return str(getattr(plane_cfg, "provider", "") or "").strip().lower()
+
+
 def _check_provider(cfg: Any, report: Report) -> None:
-    provider = str(getattr(cfg.llm, "provider", "") or "").strip().lower()
-    if provider in INTERNAL_PROVIDERS:
+    """두 평면을 각각 판정한다. 하나라도 집합 밖이면 그 평면이 중단이다(D-222)."""
+    provider = _plane_provider(getattr(cfg, "llm", None))
+    if provider in WORKER_INTERNAL_PROVIDERS:
         report.add("LLM_PROVIDER", provider, VERDICT_OK,
                    "그대로 진행한다. 승인·RUN_E2E 불필요(D-216).")
     elif not provider:
@@ -123,11 +153,193 @@ def _check_provider(cfg: Any, report: Report) -> None:
                    "폐쇄망이면 환경을 잘못 잡은 것이다(다른 PC·다른 .env). "
                    "의도한 것이면 RUN_E2E=1 + 건별 사용자 승인을 먼저 받는다(D-127).")
 
+    orchestrator = _plane_provider(getattr(cfg, "orchestrator", None))
+    if orchestrator in ORCHESTRATOR_INTERNAL_PROVIDERS:
+        report.add("ORCHESTRATOR_PROVIDER", orchestrator, VERDICT_OK,
+                   "그대로 진행한다. 제어 평면도 과금 경로가 아니다(D-222).")
+    else:
+        report.add("ORCHESTRATOR_PROVIDER", orchestrator or "(미설정)", VERDICT_STOP,
+                   "제어 평면(1단 deep_agent·알람 enricher 트랙 B)이 외부 과금 경로다. 워커가 내부망이어도 "
+                   "ENABLE_DEEPAGENTS_PACKAGE 와 무관하게 승인 대상이다(D-222). 과금 없이 돌리려면 "
+                   "vllm(서빙 중) 또는 mlx(로컬)로 바꾼다. 의도한 것이면 RUN_E2E=1 + 건별 사용자 승인을 "
+                   "먼저 받는다(D-127).")
+
+
+# --- MLX 로컬 서버 (plans/100 CU-5) -------------------------------------------
+
+#: 서버 기동 명령 - 조치 문구에 그대로 싣는다(docs/03_setup_guide.md MLX 절의 정본 기동 수단).
+#: 모델 ID 를 문구에 박지 않는다 - 스크립트가 `.env` 의 `LLM_MLX_MODEL`·포트를 읽어 127.0.0.1 에
+#: 띄우므로 설정을 바꿔도 안내가 낡지 않는다(종전 문구는 모델을 바꾼 뒤에도 9B 명령을 권했다).
+MLX_SERVER_COMMAND = "scripts/mlx_server.sh"
+
+#: 서버가 자기 `--model` 로 매핑하는 별칭. 모델 목록에 없어도 유효하다.
+MLX_DEFAULT_MODEL = "default_model"
+
+
+def _mlx_planes(cfg: Any) -> list[tuple[str, str, str]]:
+    """provider 가 mlx 인 평면의 (평면, base_url, 요청 모델 ID). 팩토리(`src/llm.py`)가 읽는 값과 같다."""
+    planes = []
+    llm = getattr(cfg, "llm", None)
+    if _plane_provider(llm) == "mlx":
+        planes.append(("워커", str(getattr(llm, "mlx_base_url", "") or ""),
+                       str(getattr(llm, "mlx_model", "") or "") or MLX_DEFAULT_MODEL))
+    orchestrator = getattr(cfg, "orchestrator", None)
+    if _plane_provider(orchestrator) == "mlx":
+        planes.append(("오케스트레이터", str(getattr(orchestrator, "base_url", "") or ""),
+                       str(getattr(orchestrator, "model", "") or "")))
+    return planes
+
+
+def _fetch_mlx_models(base_url: str, timeout: float = 3.0) -> tuple[Optional[list[str]], str]:
+    """`GET {base_url}/models` -> (모델 ID 목록, 사유). 목록이 None 이면 도달하지 못했다."""
+    if not base_url:
+        return None, "base_url 미설정"
+    import requests
+
+    url = base_url.rstrip("/") + "/models"
+    try:
+        resp = requests.get(url, timeout=timeout)
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code} ({url})"
+    try:
+        return [str(m.get("id")) for m in resp.json().get("data", []) if isinstance(m, dict)], ""
+    except Exception as exc:
+        return [], f"모델 목록 해석 실패({type(exc).__name__})"
+
+
+#: 1토큰 생성 점검 상한(초). 9B·27B 모두 수 초면 끝난다(2026-09-17 실측 4.5초 이하).
+MLX_GENERATION_PROBE_SEC = 30.0
+
+
+def _probe_mlx_generation(base_url: str, timeout: float = MLX_GENERATION_PROBE_SEC) -> tuple[bool, str]:
+    """`POST {base_url}/chat/completions` 1토큰 -> (성공 여부, 사유).
+
+    Metal 메모리 부족으로 생성 스레드가 죽으면 서버는 `/health`·`/v1/models` 에 계속 200 을 주면서
+    생성 요청에는 영원히 응답하지 않는다(2026-09-17 Qwen3.8-27B 실측 - 로그
+    `Insufficient Memory` 뒤 20초 무응답). 목록 조회만으로는 이 상태를 통과로 판정한다.
+
+    모델은 `default_model` 별칭으로 보낸다 - 서버 `--model` 로 매핑되므로 점검이 다른 모델을
+    적재하게 만들지 않는다(설정 모델 ID 가 캐시에 있는 다른 모델이면 서버가 그것을 적재한다).
+    """
+    import requests
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    body = {
+        "model": MLX_DEFAULT_MODEL,
+        "messages": [{"role": "user", "content": "1"}],
+        "max_tokens": 1,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    try:
+        resp = requests.post(url, json=body, timeout=timeout)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if resp.status_code != 200:
+        return False, f"HTTP {resp.status_code} ({url})"
+    return True, ""
+
+
+def mlx_run_blockers(cfg: Any = None) -> list[Check]:
+    """실 실행 직전 MLX 로컬 서버 점검 - 중단 항목만 돌려준다. provider 가 mlx 인 평면이 없으면 빈 목록.
+
+    `--run`·`--sweep --mode run` 은 사전 점검(`--preflight`)을 호출하지 않아, 서버가 꺼져 있거나
+    생성 스레드가 죽은 채로 프로파일을 띄우면 오케스트레이터 미가용으로 1단에서 조용히 강등되거나
+    전 턴이 LLM 오류로 끝났다(2026-09-17 점검). DB 조회 없이 MLX 점검만 돈다.
+    """
+    if cfg is None:
+        from src.config import load_config
+
+        cfg = load_config()
+    report = Report()
+    _check_mlx(cfg, report)
+    return report.stops
+
+
+def _is_loopback(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _check_mlx(cfg: Any, report: Report) -> None:
+    """provider 가 mlx 인 평면마다 로컬 서버를 점검한다(plans/100 3.5). mlx 가 없으면 아무것도 싣지 않는다.
+
+    `/v1/models` 는 모델 적재 전에도 200 이라 **도달성까지만** 판정한다. 생성이 되는지는 1토큰 요청으로
+    따로 본다(`_probe_mlx_generation`) - 같은 서버는 한 번만 보낸다.
+    """
+    planes = _mlx_planes(cfg)
+    fetched: dict[str, tuple[Optional[list[str]], str]] = {}
+    probed: dict[str, tuple[bool, str]] = {}
+    for plane, base_url, model in planes:
+        if base_url not in fetched:
+            fetched[base_url] = _fetch_mlx_models(base_url)
+        models, reason = fetched[base_url]
+        if models is None:
+            report.add(f"MLX 서버({plane})", f"도달 실패 ({base_url or '미설정'})", VERDICT_STOP,
+                       f"서버를 띄운다: {MLX_SERVER_COMMAND} (.env 의 모델과 포트로 127.0.0.1 에 기동 - "
+                       "mlx_lm.server 가 없으면 uvx 로 실행한다). 다른 주소에 띄웠다면 base_url 을 그 /v1 로 맞춘다.",
+                       detail=reason)
+            continue
+        report.add(f"MLX 서버({plane})", base_url, VERDICT_OK,
+                   "그대로 진행한다. 서버 기동 직후 첫 질의는 콜드 prefill 이라 느리다 - 한 번 돌려 캐시를 채운 뒤 잰다.")
+        if reason:
+            report.add(f"MLX 모델({plane})", model, VERDICT_UNKNOWN,
+                       "모델 목록을 읽지 못했다. 서버 --model 과 설정 모델 ID 가 같은지 직접 확인한다.", detail=reason)
+        elif model == MLX_DEFAULT_MODEL or model in models:
+            report.add(f"MLX 모델({plane})", model, VERDICT_OK, "그대로 진행한다.")
+        else:
+            report.add(f"MLX 모델({plane})", model, VERDICT_WARN,
+                       "서버 --model 과 같은 값으로 맞춘다(워커 LLM_MLX_MODEL / 오케스트레이터 ORCHESTRATOR_MODEL). "
+                       "로컬 경로로 띄웠다면 목록에 없어도 정상일 수 있다. 틀린 ID 는 첫 요청이 404 로 실패한다.",
+                       detail="서버 목록: " + ", ".join(models[:5]))
+        if base_url not in probed:
+            probed[base_url] = _probe_mlx_generation(base_url)
+        generated, probe_reason = probed[base_url]
+        if generated:
+            report.add(f"MLX 생성({plane})", "1토큰 응답", VERDICT_OK, "그대로 진행한다.")
+        else:
+            report.add(f"MLX 생성({plane})", "응답 없음", VERDICT_STOP,
+                       f"서버는 떠 있는데 1토큰 생성이 {MLX_GENERATION_PROBE_SEC:.0f}초 안에 끝나지 않았다. "
+                       "서버 로그에 Insufficient Memory 또는 Exception in thread 가 있으면 생성 스레드가 죽은 "
+                       f"상태다 - 서버를 내리고 다시 띄운다: {MLX_SERVER_COMMAND} . "
+                       "다른 작업이 서버를 쓰는 중이면 끝난 뒤 다시 점검한다.",
+                       detail=probe_reason)
+        if not _is_loopback(base_url):
+            report.add(f"MLX 바인딩({plane})", base_url, VERDICT_WARN,
+                       "MLX 서버는 무인증이고 CORS 가 * 다. 원격 주소면 신뢰 구간인지 확인한다 "
+                       "(같은 장비면 127.0.0.1 로 띄운다).")
+
+    # 같은 서버에 서로 다른 모델 ID 를 보내면 요청마다 가중치를 교대 재적재한다(J-1 6: 3.6~5.3초).
+    # `default_model` 은 서버 --model 로 매핑돼 실제 ID 를 알 수 없으므로 비교하지 않는다.
+    if len(planes) == 2:
+        (_, worker_url, worker_model), (_, orch_url, orch_model) = planes
+        explicit = MLX_DEFAULT_MODEL not in (worker_model, orch_model)
+        if worker_url and worker_url.rstrip("/") == orch_url.rstrip("/") and explicit and worker_model != orch_model:
+            report.add("MLX 재적재", f"{worker_model} / {orch_model}", VERDICT_WARN,
+                       "워커와 오케스트레이터가 같은 서버에 다른 모델을 보낸다 - 요청마다 3.6~5.3초 재적재가 붙는다. "
+                       "LLM_MLX_MODEL 과 ORCHESTRATOR_MODEL 을 한 모델로 맞추거나 서버 포트를 나눈다.")
+
+
+def _active_db_ids(cfg: Any) -> list[str]:
+    """활성 DB 목록. 정본은 `cfg.multi_db.get_active_db_ids()`(`ACTIVE_DB_IDS` - src/config.py)다.
+
+    `getattr(cfg, "active_db_ids", None)` 으로 읽으면 안 된다 - `AppConfig` 에 그 속성이 없어
+    **늘 빈 목록**이 되고, 설정이 채워져 있어도 `ACTIVE_DB_IDS` 가 중단으로 나왔다(2026-09-17 실측).
+    속성 이름이 틀리면 조용히 비지 않고 여기서 예외가 나도록 직접 접근한다.
+    """
+    return list(cfg.multi_db.get_active_db_ids())
+
 
 def _check_active_dbs(cfg: Any, report: Report) -> None:
     from .runner import SANDBOX_DB_ID
 
-    ids = list(getattr(cfg, "active_db_ids", None) or [])
+    ids = _active_db_ids(cfg)
     if not ids:
         report.add("ACTIVE_DB_IDS", "(비어 있음)", VERDICT_STOP,
                    "실행 전에 채운다. 환경 판정이 어긋나 시나리오가 통째로 보류된다.")
@@ -192,15 +404,26 @@ def _check_ladder(cfg: Any, report: Report) -> None:
     tier, reason = resolve_ladder_tier(cfg, backend=backend, buildable=buildable)
     tier_value = getattr(tier, "value", str(tier))
 
+    # 기준 경로는 3단이고 1단은 부가 경로 opt-in 이다(D-225). 둘 다 의도한 단이라 OK 다.
+    if tier_value == "semantic_router" and reason == "none":
+        report.add("사다리 단", "semantic_router (3단 기준 경로)", VERDICT_OK,
+                   "그대로 진행한다(기준 경로 D-225). 1단(부가 경로)도 재야 하면 "
+                   "ENABLE_DEEPAGENTS_PACKAGE=true 로 바꾸고 재기동한다 - 안 바꾸면 "
+                   "plans/99 §0 「답하지 못하는 것」에 1단이 남는다.")
+        return
     if tier_value == "deep_agent":
-        report.add("사다리 단", "deep_agent (1단)", VERDICT_OK,
-                   "그대로 진행한다. plans/99 목표 9 달성.")
+        report.add("사다리 단", "deep_agent (1단 부가 경로)", VERDICT_OK,
+                   "그대로 진행한다. 부가 경로 opt-in 이라 기준 경로(3단 semantic_router) 수치가 "
+                   "아니다 - run 기록에 남긴다. plans/99 목표 9 달성.")
         return
 
     actions = {
-        "flag_off": "H-2 를 먼저 정한다. 1단을 재려면 ENABLE_DEEPAGENTS_PACKAGE=true 로 바꾸고 재기동한다. "
-                    "안 바꿔도 run 은 돈다 - 대신 plans/99 §0 「답하지 못하는 것」에 1단이 남는다.",
-        "orchestrator_unavailable": "ORCHESTRATOR_PROVIDER 를 본다. vllm 이면 서빙 여부와 "
+        "intent_flag_on": "기준 경로는 3단이다(D-225). 2단을 의도하지 않았으면 "
+                          "ENABLE_INTENT_ORCHESTRATION=false 를 명시하고 재기동한다. "
+                          "의도했으면 run 기록에 남긴다.",
+        "semantic_routing_off": "기준 경로는 3단이다(D-225). ENABLE_SEMANTIC_ROUTING=true 를 "
+                                "명시하고 재기동한다. 4단(legacy)을 의도했으면 run 기록에 남긴다.",
+        "orchestrator_unavailable": "ORCHESTRATOR_PROVIDER 를 본다. vllm·mlx 면 서빙 여부와 "
                                     "ORCHESTRATOR_BASE_URL 의 /v1/models 를, gemini 면 api_key 와 D-127 승인을 확인한다.",
         "package_missing": "deepagents 조립이 실패했다. 폐쇄망 wheel 반입 여부를 확인한다.",
     }
@@ -353,6 +576,7 @@ def run_preflight(*, with_db: bool = True, b0_db_id: str = "polestar_b0",
         return report
 
     _check_provider(cfg, report)
+    _check_mlx(cfg, report)
     _check_active_dbs(cfg, report)
     _check_auth(cfg, report)
     _check_db_backend(cfg, report)
@@ -360,7 +584,7 @@ def run_preflight(*, with_db: bool = True, b0_db_id: str = "polestar_b0",
     _check_disk(report)
 
     if with_db:
-        active = set(getattr(cfg, "active_db_ids", None) or [])
+        active = set(_active_db_ids(cfg))
         asyncio.run(_run_db_checks(cfg, report, active, b0_db_id, gp_db_id))
     return report
 
@@ -381,7 +605,7 @@ async def _run_db_checks(cfg: Any, report: Report, active: set[str],
 
 def format_report(report: Report) -> str:
     """콘솔 출력. ASCII 구두점만 쓴다(cp949 콘솔 보호 - W5)."""
-    lines = ["[사전 점검] plans/99 E-0 + E-1 - 읽기만 합니다(설정 변경 0 - LLM 호출 0)", ""]
+    lines = ["[사전 점검] plans/99 E-0 + E-1 - 읽기만 합니다(설정 변경 0 - 외부 LLM 호출 0)", ""]
     width = max((len(c.key) for c in report.checks), default=10)
     for check in report.checks:
         origin = "  (<- 셸 환경변수)" if check.source == "os" else ""

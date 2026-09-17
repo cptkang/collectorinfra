@@ -219,10 +219,16 @@ async def cmd_db_description(args: argparse.Namespace) -> None:
                 print(f"  캐시 없음. 먼저 generate 명령을 실행하세요.")
                 continue
 
+            if await cache_mgr.get_db_description_origin(db_id) == "manual":
+                print("  건너뜀: 수동 설정된 설명이 있어 LLM 생성으로 덮지 않습니다.")
+                continue
+
             description = await generator.generate_db_description(db_id, schema_dict)
             if description:
-                await cache_mgr.save_db_description(db_id, description)
-                print(f"  설명: {description}")
+                if await cache_mgr.save_db_description(db_id, description, origin="llm"):
+                    print(f"  설명: {description}")
+                else:
+                    print("  저장 실패 또는 수동 설정 설명 보존으로 건너뜀")
             else:
                 print(f"  생성 실패")
 
@@ -232,7 +238,9 @@ async def cmd_db_description(args: argparse.Namespace) -> None:
             print("--db-id 옵션이 필요합니다.")
             await cache_mgr.disconnect()
             return
-        success = await cache_mgr.save_db_description(args.db_id, args.set)
+        success = await cache_mgr.save_db_description(
+            args.db_id, args.set, origin="manual"
+        )
         if success:
             print(f"DB 설명 설정 완료: {args.db_id} -> {args.set}")
         else:

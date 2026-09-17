@@ -1,7 +1,7 @@
 # 57. 폴스타 b0 자원조회 토큰 폭증 + 재계획 오진 분석 및 해결
 
 > 작성일: 2026-06-30
-> 상위/관련 계획: `plans/48-deepagents-intent-orchestration.md`, `plans/49-phase2-dynamic-replanning.md`, `plans/50-multiturn-context-and-control-plane-token.md`
+> 상위/관련 계획: `plans/48-deepagents-intent-orchestration.md`, `plans/49-WIP-phase2-dynamic-replanning.md`, `plans/50-multiturn-context-and-control-plane-token.md`
 > 관련 결정: D-037(deepagents 이원 백엔드), D-042(제어 평면 예산·평면 분리), D-063(무의미 재시도 가드), D-050(EAV 피벗 HAVING)
 > 신규 결정(본 계획에서 부여): **D-051**(데이터 평면 토큰 예산 가드 — FabriX도 ~95K 입력 한도), **D-052**(재계획 인프라성 에러 가드 + b0 hostname 권위)
 > ※ 번호 정정 규칙(Known Mistakes 2026-06-25): `grep -roE "D-0[0-9]{2}"`로 변경 이력 표까지 확인한 결과 최댓값 D-050 → 다음 빈 번호 D-051/D-052 부여.

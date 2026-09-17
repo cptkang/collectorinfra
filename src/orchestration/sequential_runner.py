@@ -6,8 +6,9 @@
 모듈 의존은 배타적이지 않다). 새 실행 엔진은 없다.
 
 진입 조건(`sequential_entry` — 전부 AND · 결정적)은 그래프 라우팅이 판정한다:
-  플래그 on · 순차 표지 · 데이터 조회 의도 · **HITL 승인 플래그 둘 다 off**(`run_data_query_pipeline`은
+  플래그 on · 순차 표지 · 데이터 조회 의도 · **SQL 승인 플래그 off**(`run_data_query_pipeline`은
   그래프 밖에서 노드 함수를 직접 부르므로 승인 게이트를 거치지 않는다 — 우회 금지) · 폼필 아님.
+  (구조 승인 조건은 plans/104에서 게이트째 삭제됐다 — 질의 경로에 구조 승인이 더 이상 없다.)
 불성립이면 노드는 등록만 되고 도달하지 않는다(현행 경로 바이트 동일).
 
 분해 결과가 순차(2개 이상 + `input_from` 배선)가 아니면 **단일 task로 실행**하고 `sequential_not_applied`
@@ -41,8 +42,8 @@ def sequential_entry(state: dict, config: AppConfig) -> bool:
     composite = getattr(config, "composite", None)
     if not bool(getattr(composite, "sequential_fallback_tiers_enabled", False)):
         return False
-    # HITL 우회 금지 — 승인 플래그가 켜져 있으면 진입하지 않는다(운영 기본 structure_approval=on).
-    if bool(getattr(config, "enable_structure_approval", False)) or bool(getattr(config, "enable_sql_approval", False)):
+    # HITL 우회 금지 — SQL 승인 플래그가 켜져 있으면 진입하지 않는다.
+    if bool(getattr(config, "enable_sql_approval", False)):
         return False
     if state.get("routing_intent") not in _DATA_INTENTS:
         return False

@@ -6,8 +6,9 @@
     python -m scripts.scenario --analyze        # (4) 분석/대안 수립 - 무과금
 
 **인자 없는 기본 동작은 LLM 프로바이더가 정한다**(D-216 - D-212 ⑨ 개정 · D-211 ⑪ 선례).
-`LLM_PROVIDER` 가 내부망(fabrix·ollama)이면 옵션 없이 전 시나리오를 실제로 돌린다 - 외부 과금
-API 가 아니고 데이터가 밖으로 나가지 않는다(D-120). 외부 프로바이더(gemini 등)면 종전대로
+`LLM_PROVIDER` 가 내부망·로컬(fabrix·ollama·mlx)**이고** `ORCHESTRATOR_PROVIDER` 가 vllm·mlx 면
+옵션 없이 전 시나리오를 실제로 돌린다 - 외부 과금 API 가 아니고 데이터가 밖으로 나가지 않는다
+(D-120). 오케스트레이터는 1단 플래그와 무관하게 항상 본다(D-222). 둘 중 하나라도 외부면 종전대로
 카탈로그 검증 -> 모의 실행 -> 예상치만 수행하고, 실 LLM 경로는 `--run` + `RUN_E2E=1` + 승인
 뒤에만 열린다(D-127). 판정은 코드가 하며 개발자는 구분하지 않는다. 설정을 못 읽으면 내부망으로
 가정하지 않는다 - 과금 게이트가 그대로 산다.
@@ -26,6 +27,7 @@ from typing import Optional
 
 from .analyze import analyze
 from .catalog import Catalog, CatalogError, load_catalog
+from .preflight import external_planes, mlx_run_blockers
 from .report import write_report
 from .runner import (
     RESULTS_ROOT,
@@ -36,19 +38,43 @@ from .runner import (
     latest_run,
 )
 
-#: 승인 없이 실 실행하는 프로바이더. 벤치마크 스위프와 같은 집합이다
-#: (D-211 ⑪ · scripts/bench/__main__.py `_INTERNAL_PROVIDERS`).
-INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama"})
 
+def llm_providers() -> tuple[str, str]:
+    """이 프로세스가 읽는 (워커, 오케스트레이터) 프로바이더. 자식 서버도 같은 `.env`/`.encenv` 를 읽는다.
 
-def llm_provider() -> str:
-    """이 프로세스가 읽는 LLM 프로바이더. 자식 서버도 같은 `.env`/`.encenv` 를 읽는다."""
+    승인 판정은 `preflight.external_planes` 한 곳이 한다(벤치마크 스위프와 같은 규칙 - D-222).
+    """
     try:
         from src.config import load_config
 
-        return str(load_config().llm.provider or "unknown").strip().lower()
+        cfg = load_config()
+        return (str(cfg.llm.provider or "unknown").strip().lower(),
+                str(cfg.orchestrator.provider or "unknown").strip().lower())
     except Exception as exc:  # 설정을 못 읽으면 외부로 본다 - 과금 게이트를 열지 않는다
-        return f"unknown({type(exc).__name__})"
+        unknown = f"unknown({type(exc).__name__})"
+        return unknown, unknown
+
+
+def _mlx_not_ready(worker: str, orchestrator: str) -> Optional[str]:
+    """provider 가 mlx 인 평면이 있으면 로컬 서버가 실제로 생성하는지 본다. 막히면 출력할 문구.
+
+    실 실행은 사전 점검(`--preflight`)을 부르지 않는다. 서버가 꺼졌거나 생성 스레드가 죽은 채로
+    프로파일을 띄우면 1단이 오케스트레이터 미가용으로 강등되거나 전 턴이 LLM 오류로 끝난다.
+    """
+    if "mlx" not in (worker, orchestrator):
+        return None
+    blockers = mlx_run_blockers()
+    if not blockers:
+        return None
+    lines = ["[4단] 중단 - MLX 로컬 서버가 준비되지 않아 서버를 띄우기 전에 멈춥니다"]
+    for check in blockers:
+        detail = f" ({check.detail})" if check.detail else ""
+        lines.append(f"  - {check.key}: {check.observed} - {check.action}{detail}")
+    return "\n".join(lines)
+
+
+def _provider_label(worker: str, orchestrator: str) -> str:
+    return f"워커 {worker}, 오케스트레이터 {orchestrator}"
 
 
 def _require_optin() -> None:
@@ -200,10 +226,15 @@ def _apply_resume_failed(config: RunConfig) -> Optional[str]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """4단 - 실 LLM/실 DB. 외부 프로바이더는 옵트인·승인 뒤에만 열린다."""
-    provider = llm_provider()
-    internal = provider in INTERNAL_PROVIDERS
+    worker, orchestrator = llm_providers()
+    external = external_planes(worker, orchestrator)
+    internal = not external
     if not internal:
         _require_optin()
+    problem = _mlx_not_ready(worker, orchestrator)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     problem = _check_resume(args)
     if problem:
         print(problem, file=sys.stderr)
@@ -218,9 +249,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     result = estimate(catalog, config)
     print("[4단] 실 실행")
     if internal:
-        print(f"       프로바이더 {provider} - 내부망이라 승인 없이 진행합니다 (D-216)")
+        print(f"       프로바이더 {_provider_label(worker, orchestrator)} - "
+              "내부망/로컬이라 승인 없이 진행합니다 (D-216)")
     else:
-        print(f"       프로바이더 {provider} - 외부 과금 경로입니다 (D-127)")
+        print(f"       프로바이더 {', '.join(external)} - 외부 과금 경로입니다 (D-127)")
     print(f"       대상 {result['scenarios']}건 / 턴 {result['turns']}회, "
           f"예상 LLM 호출 {result['estimated_llm_calls']}회 "
           f"(가정: 턴당 {result['assumed_llm_calls_per_turn']}회)")
@@ -295,8 +327,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m scripts.scenario",
         description=(
             "기능/성능 시나리오 자동 실행 하네스 (plans/94). 인자 없는 기본 동작: "
-            "LLM_PROVIDER 가 내부망(fabrix/ollama)이면 전 시나리오 실 실행, "
-            "외부 프로바이더면 무과금 점검입니다."
+            "LLM_PROVIDER 가 내부망/로컬(fabrix/ollama/mlx)이고 ORCHESTRATOR_PROVIDER 가 "
+            "vllm/mlx 면 전 시나리오 실 실행, 둘 중 하나라도 외부 프로바이더면 무과금 점검입니다."
         ),
     )
     mode = parser.add_argument_group(
@@ -368,9 +400,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_estimate(args)
 
     # 인자 없음. 1단(카탈로그)을 통과하지 못하면 어떤 실행도 시작되지 않는다.
-    provider = llm_provider()
-    if provider in INTERNAL_PROVIDERS:
-        print(f"기본 동작 - 내부망 프로바이더({provider}): 1단 카탈로그 검증 -> 4단 전 시나리오 실 실행")
+    worker, orchestrator = llm_providers()
+    external = external_planes(worker, orchestrator)
+    if not external:
+        print(f"기본 동작 - 내부망/로컬 프로바이더({_provider_label(worker, orchestrator)}): "
+              "1단 카탈로그 검증 -> 4단 전 시나리오 실 실행")
         print("역질문은 스크립트가 자동으로 답합니다 (config/scenarios/auto_answer.yaml).\n")
         code = cmd_dry_run(args)
         if code != 0:
@@ -378,7 +412,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print()
         return cmd_run(args)
 
-    print(f"무과금 기본 동작 - 외부 프로바이더({provider}): "
+    print(f"무과금 기본 동작 - 외부 프로바이더({', '.join(external)}): "
           "1단 카탈로그 검증 -> 2단 모의 실행 -> 3단 예상치")
     print("실 LLM 실행은 --run (RUN_E2E=1 필요) 입니다.\n")
     code = cmd_dry_run(args)

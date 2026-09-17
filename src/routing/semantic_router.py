@@ -13,6 +13,7 @@ v2 변경:
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -35,12 +36,33 @@ from src.prompts.semantic_router import (
     SEMANTIC_ROUTER_SYSTEM_PROMPT_TEMPLATE,
     SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE,
     SEMANTIC_ROUTER_UNKNOWN_EXAMPLE,
+    SEMANTIC_ROUTER_CAPABILITY_CHAIN_LINE,
+    SEMANTIC_ROUTER_CAPABILITY_FIELD_LINE,
+    SEMANTIC_ROUTER_OWNERSHIP_EXAMPLES,
+    SEMANTIC_ROUTER_OWNERSHIP_SECTION_TEMPLATE,
+)
+from src.routing.capability_ownership import (
+    REASON_LLM_ERROR,
+    REASON_NO_CLASSIFICATION,
+    active_owner_system_count,
+    enforce_target_ownership,
+    known_capability_codes,
+    render_ownership_rows,
+    required_capabilities,
+    routing_fallback_note,
+    sanitize_capability_list,
 )
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
 from src.routing.registry import get_registry
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
-from src.routing.schemas import DatabaseSelection, IntentDecision, RouterDecision
+from src.routing.schemas import (
+    DatabaseSelection,
+    IntentDecision,
+    OwnershipDatabaseSelection,
+    OwnershipRouterDecision,
+    RouterDecision,
+)
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import (
     ZONE_SKIP_SIGNAL_TERMS,
@@ -238,8 +260,14 @@ async def semantic_router(
     fault_dx_on = bool(
         getattr(getattr(app_config, "noise_gate", None), "fault_diagnosis_enabled", False)
     )
+    # (plans/102 X-7) 답변 영역 소유 — off면 아래 소유 분기가 전부 건너뛰어져 반환이 종전과 같다.
+    ownership_on = _ownership_enabled()
+    ownership_notes: list[dict[str, Any]] = []
 
     # LLM 기반 분류 (사용자 직접 지정 감지 포함)
+    # `_llm_classify`는 dict를 돌려주지만 아래 실패 분기가 같은 이름에 목록을 넣는다
+    # (종전 구조 유지).
+    llm_results: Any
     try:
         llm_results = await _llm_classify(
             llm, user_query, active_domains,
@@ -258,12 +286,19 @@ async def semantic_router(
                 "reason": f"LLM 분류 실패로 기본 DB 사용: {e}",
             }
         ]
+        if ownership_on:
+            # X-T3 — 폴백 사실을 응답에 표기한다(침묵 강등 금지). 예외 원문은 로그에만 둔다.
+            ownership_notes.append(routing_fallback_note(
+                REASON_LLM_ERROR, db_id=active_db_ids[0], cause=type(e).__name__,
+            ))
 
     # 캐시 관리 의도 확인
     intent = "data_query"
+    capability_chain: list[str] = []
     if isinstance(llm_results, dict):
         # _llm_classify가 dict를 반환한 경우 (intent 포함)
         intent = llm_results.get("intent", "data_query")
+        capability_chain = list(llm_results.get("chain") or [])
         llm_results = llm_results.get("databases", [])
 
     # (Plan 64 CW-B) 옵트인 off인데 LLM이 fault_diagnosis를 산출했다면(할루시네이션 방어)
@@ -345,6 +380,17 @@ async def semantic_router(
                 "reason": "LLM 분류 결과 없음, 기본 DB 사용",
             }
         ]
+        if ownership_on:
+            ownership_notes.append(routing_fallback_note(
+                REASON_NO_CLASSIFICATION, db_id=active_db_ids[0],
+            ))
+
+    # (plans/102 X-7) 소유 검증 지점 ① — LLM이 낸 답변 영역만 입력으로 정본 시스템을
+    # 확인·교정한다(D-004: 질의 원문을 보지 않는다). 존 역질문 게이트보다 앞이다 — 교정으로
+    # 폴스타 DB 전체가 들어오면 그 존 한정은 아래 기존 게이트가 맡는다(X-T13).
+    if ownership_on:
+        targets, corrections = enforce_target_ownership(targets, active_db_ids=active_db_ids)
+        ownership_notes.extend(corrections)
 
     # 사용자 직접 지정 DB 확인
     user_specified_db = None
@@ -364,7 +410,7 @@ async def semantic_router(
             "존 역질문 후단 게이트 발동(D-143 후속2, 레거시 경로): targets=%s",
             [t["db_id"] for t in targets],
         )
-        return {
+        clarification_out: dict[str, Any] = {
             "target_databases": [],
             "is_multi_db": False,
             "active_db_id": None,
@@ -374,6 +420,11 @@ async def semantic_router(
             "final_response": zone_q["question"],
             "current_node": "semantic_router",
         }
+        if ownership_on:
+            clarification_out.update(
+                _ownership_state_fields(state, targets, capability_chain, ownership_notes)
+            )
+        return clarification_out
 
     is_multi_db = len(targets) > 1
     active_db_id = targets[0]["db_id"]
@@ -385,7 +436,7 @@ async def semantic_router(
         user_specified_db,
     )
 
-    return {
+    routed: dict[str, Any] = {
         "target_databases": targets,
         "is_multi_db": is_multi_db,
         "active_db_id": active_db_id,
@@ -395,6 +446,37 @@ async def semantic_router(
         "db_scope_source": "hint" if user_specified_db else "classified",
         "current_node": "semantic_router",
     }
+    if ownership_on:
+        routed.update(_ownership_state_fields(state, targets, capability_chain, ownership_notes))
+    return routed
+
+
+def _ownership_enabled() -> bool:
+    """답변 영역 소유 플래그(plans/102 X-7). `load_config` 캐시라 기동 시 1회 해석된다."""
+    try:
+        return bool(getattr(load_config().router, "capability_ownership_enabled", False))
+    except Exception:  # noqa: BLE001 — 설정 부재가 라우팅을 막으면 안 된다(off = 현행)
+        return False
+
+
+def _ownership_state_fields(
+    state: AgentState,
+    targets: list[dict[str, Any]],
+    chain: list[str],
+    notes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """소유 플래그 on 전용 노드 출력 — 답변 영역 합집합·체인·경과 노트.
+
+    `dependency_notes`는 이번 요청의 기존 노트 뒤에 잇는다(요청 스코프 — 라우트가 매 턴 초기화).
+    노트가 없으면 키를 싣지 않는다(다른 노드가 남긴 노트를 비우지 않도록).
+    """
+    out: dict[str, Any] = {
+        "required_capabilities": required_capabilities(targets, chain),
+        "capability_chain": list(chain),
+    }
+    if notes:
+        out["dependency_notes"] = list(state.get("dependency_notes") or []) + list(notes)
+    return out
 
 
 def _zone_clarification_or_none_router(
@@ -523,7 +605,7 @@ async def _llm_classify(
     *,
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
-) -> list[dict]:
+) -> dict[str, Any]:
     """LLM을 사용하여 질의의 대상 DB를 분류한다.
 
     활성 도메인 목록을 기반으로 동적 프롬프트를 구성하여 LLM에 전달한다.
@@ -537,7 +619,9 @@ async def _llm_classify(
             프롬프트에 fault_diagnosis 의도 섹션을 노출한다(off면 비트동일).
 
     Returns:
-        분류 결과 목록
+        분류 결과 dict — `{intent, databases, dropped}`. 답변 영역 소유 플래그
+        (`ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) on이면 각 DB 항목에 `capabilities`
+        (카탈로그 코드만)가, 결과에 `chain`이 더해진다. off면 키 추가 없음(종전 계약 그대로).
     """
     # 2단 분리 위임 (Plan 79 트랙 B / WU-D2). **기본 off** — off면 아래 단일 호출 경로가
     # 종전과 비트동일하게 실행된다. 켜는 판정은 S-1·S-2 이후다(SPEC 「미검증으로 남는 것」).
@@ -548,6 +632,7 @@ async def _llm_classify(
             fault_diagnosis_enabled=fault_diagnosis_enabled,
         )
 
+    ownership_on = _ownership_enabled()
     system_prompt = _build_router_prompt(
         domains,
         db_descriptions=db_descriptions,
@@ -561,10 +646,11 @@ async def _llm_classify(
 
     # 구조화 출력 경로 (E-3b · D-169). off면 None → 기존 파싱으로 강등.
     # E-1·E-2 코드 가드를 **대체하지 않는다** — off 경로가 상시 존재하고 거기엔 F1·F2가 그대로다.
+    # 소유 플래그 on이면 필드가 더해진 서브클래스를 넘긴다 — off 스키마는 종전 그대로(`schemas.py`).
     parsed: Optional[dict] = None
     try:
         model = await try_structured_call(
-            llm, messages, RouterDecision,
+            llm, messages, OwnershipRouterDecision if ownership_on else RouterDecision,
             backend=_structured_backend(),
             max_retries=_structured_max_retries(),
         )
@@ -580,6 +666,8 @@ async def _llm_classify(
         parsed = extract_json_from_response(response.content)
 
     if not parsed:
+        if ownership_on:
+            return {"intent": "data_query", "databases": [], "dropped": [], "chain": []}
         return {"intent": "data_query", "databases": []}
 
     # 의도 추출 — 허용 집합과 대조한다 (E-1 · Plan 79 §3.6 발견 ⑦).
@@ -591,14 +679,44 @@ async def _llm_classify(
     )
 
     if "databases" not in parsed:
+        if ownership_on:
+            return _with_capability_chain(
+                {"intent": intent, "databases": [], "dropped": []}, parsed.get("chain")
+            )
         return {"intent": intent, "databases": []}
 
+    if ownership_on:
+        results, dropped = _validate_db_entries(
+            parsed["databases"], domains, query, capability_codes=known_capability_codes()
+        )
+        return _with_capability_chain(
+            {"intent": intent, "databases": results, "dropped": dropped}, parsed.get("chain")
+        )
     results, dropped = _validate_db_entries(parsed["databases"], domains, query)
     return {"intent": intent, "databases": results, "dropped": dropped}
 
 
+def _with_capability_chain(result: dict[str, Any], raw_chain: Any) -> dict[str, Any]:
+    """소유 플래그 on 전용 — 반환 계약에 `chain`(카탈로그 코드만 · 순서 유지)을 싣는다.
+
+    카탈로그 밖 코드는 버리고 `dropped`에 `unknown_chain_capability`로 남긴다(침묵 탈락 금지).
+    단일 호출·2단 분리 경로가 **이 함수 하나**를 쓴다(대칭).
+    """
+    chain, unknown = sanitize_capability_list(raw_chain, known_capability_codes())
+    dropped = list(result.get("dropped") or [])
+    if unknown:
+        extra = [{"db_id": "", "reason": "unknown_chain_capability", "raw": u} for u in unknown]
+        logger.warning("라우터 chain 탈락 %d건: %s", len(extra), extra)
+        dropped.extend(extra)
+    return {**result, "dropped": dropped, "chain": chain}
+
+
 def _validate_db_entries(
-    entries: Any, domains: list[DBDomainConfig], query: str
+    entries: Any,
+    domains: list[DBDomainConfig],
+    query: str,
+    *,
+    capability_codes: frozenset[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """DB 후보 항목을 활성 도메인 기준으로 검증한다 (E-2 · Plan 79 §3.6 발견 ⑧).
 
@@ -613,6 +731,10 @@ def _validate_db_entries(
         entries: LLM이 낸 databases 목록(형태 미검증)
         domains: 활성 DB 도메인 목록
         query: 사용자 질의(sub_query_context 기본값)
+        capability_codes: 답변 영역 카탈로그(plans/102 X-7 — 소유 플래그 on일 때만 넘긴다). 주면
+            항목마다 `capabilities`를 카탈로그 코드만 남겨 싣고, 모르는 코드는 버린 뒤
+            `unknown_capability`로 보고한다(그 DB 항목 자체는 유지 — E-2 항목 단위 격리).
+            None이면 종전과 동일(키 추가 없음).
 
     Returns:
         (검증 통과 항목, 탈락 항목 `{db_id, reason, ...}`)
@@ -639,13 +761,22 @@ def _validate_db_entries(
             })
             continue
 
-        results.append({
+        item = {
             "db_id": db_id,
             "relevance_score": score,
             "sub_query_context": db_entry.get("sub_query_context", query),
             "user_specified": bool(db_entry.get("user_specified", False)),
             "reason": db_entry.get("reason", ""),
-        })
+        }
+        if capability_codes is not None:
+            caps, unknown_caps = sanitize_capability_list(
+                db_entry.get("capabilities"), capability_codes
+            )
+            item["capabilities"] = caps
+            dropped.extend(
+                {"db_id": db_id, "reason": "unknown_capability", "raw": u} for u in unknown_caps
+            )
+        results.append(item)
 
     if dropped:
         # 침묵 탈락 금지 — "모델이 못 골랐다"와 "모델이 환각했다"를 구분할 수 있어야 한다.
@@ -809,6 +940,11 @@ async def _llm_classify_two_stage(
         "confidence_source": cfg.confidence_source,
         "stage2_called": False,
     }
+    # (plans/102 X-7) 답변 영역 소유 — 단일 호출 경로와 같은 반환 계약
+    # (DB 선택이 없으면 chain도 빈 목록).
+    ownership_on = _ownership_enabled()
+    if ownership_on:
+        meta["chain"] = []
 
     # ── 2단계 진입 판정 ──────────────────────────────────────────────
     # ① DB를 고를 대상이 아예 없는 의도 — 신뢰도와 무관하게 확실한 근거다(Q3).
@@ -847,6 +983,8 @@ async def _llm_classify_two_stage(
         unknown_example=(
             SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if cfg.unknown_enabled else ""
         ),
+        # (plans/102 X-8) 단일 호출 템플릿과 같은 슬롯·같은 렌더(대칭) — off면 전부 빈 문자열.
+        **_ownership_prompt_slots(domains),
     )
     messages2: list[BaseMessage] = [SystemMessage(content=stage2_prompt)]
     if isinstance(llm, KBGenAIChat):
@@ -857,7 +995,8 @@ async def _llm_classify_two_stage(
     parsed2: Optional[dict] = None
     try:
         selection = await try_structured_call(
-            llm, messages2, DatabaseSelection,
+            llm, messages2,
+            OwnershipDatabaseSelection if ownership_on else DatabaseSelection,
             backend=_structured_backend(),
             max_retries=_structured_max_retries(),
         )
@@ -873,6 +1012,14 @@ async def _llm_classify_two_stage(
 
     # 항목 단위 검증은 단일 경로와 **같은 함수**를 쓴다 — 두 경로가 갈라지면 E-2가 한쪽에만
     # 적용된다(Known Mistakes: 단일/멀티 경로 비대칭이 반복 원인).
+    if ownership_on:
+        databases, dropped = _validate_db_entries(
+            parsed2.get("databases"), domains, query, capability_codes=known_capability_codes()
+        )
+        return _with_capability_chain(
+            {"intent": intent, "databases": databases, "dropped": dropped, **meta},
+            parsed2.get("chain"),
+        )
     databases, dropped = _validate_db_entries(parsed2.get("databases"), domains, query)
     return {"intent": intent, "databases": databases, "dropped": dropped, **meta}
 
@@ -920,12 +1067,71 @@ def _render_db_list(
             f"   - 별칭: {aliases_str}\n"
             f"   - {domain.description}"
         )
-        # Redis 캐시에서 로드한 DB 상세 설명 추가
-        if db_descriptions and domain.db_id in db_descriptions:
+        # Redis 캐시에서 로드한 DB 상세 설명 추가 — 레지스트리 `description_locked`면 붙이지 않는다
+        # (plans/102 X-T4: LLM 생성 설명이 다른 시스템 소유 영역 어휘를 되살리는 경로 차단 ·
+        # 기본 false).
+        if (
+            db_descriptions
+            and domain.db_id in db_descriptions
+            and not _description_locked(domain.db_id)
+        ):
             cached_desc = db_descriptions[domain.db_id]
             entry += f"\n   - 상세: {cached_desc}"
         db_desc_list.append(entry)
     return "\n\n".join(db_desc_list)
+
+
+def _description_locked(db_id: str) -> bool:
+    """레지스트리 DB 항목의 `description_locked`(plans/102 X-T4). 미등록 DB는 False."""
+    entry = get_registry().get(db_id)
+    return bool(entry is not None and entry.description_locked)
+
+
+def _ownership_prompt_slots(domains: list[DBDomainConfig]) -> dict[str, str]:
+    """라우터 프롬프트의 답변 영역 소유 슬롯 4개(plans/102 X-8).
+
+    off면 전부 빈 문자열 — 렌더가 종전과 바이트 동일하다. on이면 프롬프트에 실리는 DB(=활성 도메인)
+    기준으로 레지스트리에서 렌더한 값을 준다. 렌더는 DB 목록 단위로 캐시한다(기동 시 1회 — 요청마다
+    흔들리면 프롬프트 접두 KV 캐시가 무효화된다).
+    """
+    if not _ownership_enabled():
+        return {
+            "capability_ownership_section": "",
+            "capability_chain_line": "",
+            "capability_field_line": "",
+            "capability_ownership_examples": "",
+        }
+    return dict(_render_ownership_slots(tuple(d.db_id for d in domains)))
+
+
+@lru_cache(maxsize=8)
+def _render_ownership_slots(db_ids: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    """소유 슬롯 렌더(캐시). 활성 DB가 있는 시스템이 소유한 영역이 하나도 없으면 전부 빈 문자열.
+
+    교차 예시는 **소유 시스템이 둘 이상 활성일 때만** 싣는다 — 한 시스템만 활성이면 교차 질의가
+    성립하지 않고, 예시가 비활성 DB를 가리켜 LLM이 고를 수 없는 db_id를 내게 된다.
+    """
+    rows = render_ownership_rows(db_ids, with_db_ids=True)
+    if not rows:
+        logger.warning(
+            "답변 영역 소유 플래그가 켜졌으나 활성 DB에 소유 선언이 없다 — 소유표 미렌더: %s",
+            db_ids,
+        )
+        return (
+            ("capability_ownership_section", ""),
+            ("capability_chain_line", ""),
+            ("capability_field_line", ""),
+            ("capability_ownership_examples", ""),
+        )
+    cross_system = active_owner_system_count(db_ids) >= 2
+    return (
+        ("capability_ownership_section",
+         SEMANTIC_ROUTER_OWNERSHIP_SECTION_TEMPLATE.format(ownership_rows=rows)),
+        ("capability_chain_line", SEMANTIC_ROUTER_CAPABILITY_CHAIN_LINE),
+        ("capability_field_line", SEMANTIC_ROUTER_CAPABILITY_FIELD_LINE),
+        ("capability_ownership_examples",
+         SEMANTIC_ROUTER_OWNERSHIP_EXAMPLES if cross_system else ""),
+    )
 
 
 def _build_router_prompt(
@@ -969,6 +1175,8 @@ def _build_router_prompt(
         fault_diagnosis_section=fault_section,
         unknown_class_line=SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE if unknown_on else "",
         unknown_example=SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if unknown_on else "",
+        # (plans/102 X-8) 답변 영역 소유 — off면 네 슬롯 모두 빈 문자열(바이트 동일).
+        **_ownership_prompt_slots(domains),
     )
 
 

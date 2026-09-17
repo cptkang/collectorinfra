@@ -245,3 +245,38 @@ def test_change_after_first_alarm_adds_no_hypothesis():
     corr = {**CORR, "change_finding": {"count": 1, "last_change_offset_min": -3, "before_first_alarm": False, "descriptions": ["d"]}}
     b = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"], correlation=corr)
     assert not any(h["cause"].startswith("변경 직후") for h in b["root_cause_hypotheses"])
+
+
+# ── 도구 출력 0건이면 인용 마커가 있어도 인용이 아니다 (2026-09-17 MLX e2e 실측) ──
+
+
+def _incomplete_answer() -> str:
+    """DiagnosisAgent.ask가 step 상한에서 돌려주는 실제 미완주 서술(문구에 인용 마커 '근거' 포함)."""
+    from unittest.mock import MagicMock, patch
+
+    from sre_agent.diagnosis import DiagnosisAgent
+    from sre_agent.settings import AgentSettings
+
+    agent = DiagnosisAgent(settings=AgentSettings(_env_file=None, model="test/model", max_steps=40), toolsets={})
+    agent._llm = MagicMock()
+    agent._llm.call.side_effect = Exception("Too many LLM calls - exceeded max_steps: 40/40")
+    with patch("sre_agent.diagnosis.build_initial_ask_messages", return_value=[]):
+        r = agent.ask("q")
+    assert r.incomplete and r.tool_outputs == []
+    return r.answer
+
+
+def test_incomplete_notice_is_not_treated_as_citation():
+    """미완주 안내는 도구 근거가 아니다 — 원인은 가설 강등, 타임라인은 '근거 없음'(상관 on·off 모두)."""
+    answer = _incomplete_answer()
+    empty_corr = {"timeline": [], "metric_findings": {}, "alarm_summary": {"count": 0}, "leading_signal": None,
+                  "notes": ["사건 구간 알람 0건"]}
+
+    off = build_briefing(answer=answer, verdict=_verdict(), tool_names=[])
+    on = build_briefing(answer=answer, verdict=_verdict(), tool_names=[], correlation=empty_corr)
+
+    assert off["cause"].startswith(HYPOTHESIS_PREFIX)
+    assert off["timeline"] == ["타임라인 근거 없음(도구 출력 인용 결여)"]
+    assert on["cause"].startswith(HYPOTHESIS_PREFIX)
+    assert on["timeline"] == ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
+    assert on["citations_verified"] is False

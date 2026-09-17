@@ -180,28 +180,107 @@ class DBHubClient:
         if cancelled is not None:
             raise cancelled
 
-    async def health_check(self) -> bool:
+    async def health_check(self, source: str | None = None) -> bool:
         """연결 상태를 확인한다. 5초 이내 응답하지 않으면 실패로 판단한다.
+
+        Args:
+            source: 확인할 소스(plans/104 A-2). 없으면 설정된 source_name — 종전과 동일하다.
 
         Returns:
             연결 정상 여부
         """
+        target = source or self._config.source_name
         try:
             result = await asyncio.wait_for(
                 self._call_tool(
                     "health_check",
-                    {"source": self._config.source_name},
+                    {"source": target},
                 ),
                 timeout=self.HEALTH_CHECK_TIMEOUT,
             )
             parsed = self._parse_json_result(result)
             status = parsed.get("status")
             if status != "healthy":
-                logger.warning("health_check 비정상 (source=%s): %s", self._config.source_name, parsed)
+                logger.warning("health_check 비정상 (source=%s): %s", target, parsed)
             return status == "healthy"
         except Exception as e:
-            logger.warning("health_check 실패 (source=%s): %s: %s", self._config.source_name, type(e).__name__, e)
+            logger.warning("health_check 실패 (source=%s): %s: %s", target, type(e).__name__, e)
             return False
+
+    async def health_check_detail(self, source: str) -> dict[str, Any]:
+        """소스 1개의 연결 상태를 사유·지연과 함께 돌려준다(plans/104 A-2 · 관리자 목록).
+
+        `health_check`와 같은 도구·타임아웃을 쓰되 실패를 삼키지 않고 사유로 남긴다.
+
+        Args:
+            source: 확인할 MCP 소스명
+
+        Returns:
+            ``{"source", "healthy": bool, "latency_ms": float(클라이언트 왕복 시간),
+            "error": str | None}``
+        """
+        start = time.monotonic()
+        healthy = False
+        error: str | None = None
+        try:
+            result = await asyncio.wait_for(
+                self._call_tool("health_check", {"source": source}),
+                timeout=self.HEALTH_CHECK_TIMEOUT,
+            )
+            parsed = self._parse_json_result(result)
+            status = parsed.get("status")
+            healthy = status == "healthy"
+            if not parsed:
+                error = "health_check 응답을 해석하지 못했습니다"
+            elif not healthy:
+                error = str(parsed.get("message") or parsed.get("error") or f"status={status}")
+        except TimeoutError:
+            error = f"응답 없음({self.HEALTH_CHECK_TIMEOUT}초 초과)"
+        except Exception as e:  # noqa: BLE001 — 사유로 돌려준다(침묵 금지)
+            error = f"{type(e).__name__}: {e}"
+        latency_ms = round((time.monotonic() - start) * 1000, 2)
+        if error:
+            logger.warning("health_check_detail 실패 (source=%s): %s", source, error)
+        return {"source": source, "healthy": healthy, "latency_ms": latency_ms, "error": error}
+
+    async def list_sources(self) -> list[dict[str, Any]]:
+        """MCP 서버의 활성 데이터소스 목록을 조회한다(plans/104 A-2).
+
+        Returns:
+            ``[{"name", "type", "readonly", "query_timeout", "max_rows"}]`` — 서버 반환 순서
+
+        Raises:
+            DBConnectionError: 연결되지 않은 경우
+            DBHubError: 도구 오류·응답 파싱 실패
+        """
+        self._ensure_connected()
+        try:
+            raw = await self._call_tool("list_sources", {})
+        except Exception as e:
+            raise DBHubError(f"소스 목록 조회 실패: {e}") from e
+        text = self._result_text(raw)
+        if getattr(raw, "isError", False) is True:
+            raise DBHubError(f"소스 목록 조회 실패: {text or 'MCP 도구 오류(상세 없음)'}")
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise DBHubError(f"소스 목록 응답 파싱 실패: {e}") from e
+        if isinstance(parsed, dict) and "error" in parsed:
+            raise DBHubError(f"소스 목록 조회 실패: {parsed['error']}")
+        if not isinstance(parsed, list):
+            raise DBHubError(f"소스 목록 응답이 배열이 아님: {type(parsed).__name__}")
+        sources: list[dict[str, Any]] = []
+        for entry in parsed:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                raise DBHubError(f"소스 목록 항목 형식 오류: {entry!r}")
+            sources.append({
+                "name": str(entry["name"]),
+                "type": str(entry.get("type") or ""),
+                "readonly": bool(entry.get("readonly", True)),
+                "query_timeout": entry.get("query_timeout"),
+                "max_rows": entry.get("max_rows"),
+            })
+        return sources
 
     async def _ensure_connected_with_retry(self) -> None:
         """연결 상태를 확인하고 필요 시 재연결한다.
@@ -279,6 +358,23 @@ class DBHubClient:
         Raises:
             DBHubError: 조회 실패 시
         """
+        table, _foreign_keys = await self._get_table_schema_with_fks(table_name)
+        return table
+
+    async def _get_table_schema_with_fks(
+        self, table_name: str
+    ) -> tuple[TableInfo, list[dict[str, Any]]]:
+        """`get_table_schema` 1회 호출로 TableInfo와 FK 응답 원본을 함께 돌려준다.
+
+        TableInfo의 컬럼 `references`는 컬럼당 1개만 담는다(같은 컬럼의 FK가 여럿이면 마지막 것).
+        관계 파생(plans/104 B-2)은 원본 FK 행 전부가 필요해 따로 돌려준다.
+
+        Returns:
+            (테이블 상세 정보, ``[{from_column, to_table, to_column}]``)
+
+        Raises:
+            DBHubError: 조회 실패 시
+        """
         self._ensure_connected()
         # 테이블명 화이트리스트 검증 (SQL 인젝션 방어, 스키마 수식 허용)
         if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", table_name):
@@ -291,7 +387,11 @@ class DBHubClient:
                     "table_name": table_name,
                 },
             )
-            return self._parse_table_schema(result)
+            table = self._parse_table_schema(result)
+            fk_rows: list[dict[str, Any]] = (
+                self._parse_json_result(result).get("foreign_keys") or []
+            )
+            return table, fk_rows
         except Exception as e:
             raise DBHubError(f"테이블 스키마 조회 실패 ({table_name}): {e}") from e
 
@@ -441,19 +541,90 @@ class DBHubClient:
     async def get_full_schema(self) -> SchemaInfo:
         """전체 DB 스키마를 수집한다.
 
+        관계는 테이블마다 받은 `get_table_schema`의 FK 응답에서 파생한다(plans/104 B-2) —
+        MCP 서버가 엔진별(PG·DB2·MariaDB) FK 조회를 이미 하므로 추가 호출이 없다. 종전의
+        `information_schema` 전용 FK SQL은 DB2·MariaDB에서 실패해 관계가 늘 비었다.
+        `search_objects`의 스키마명은 `TableInfo.schema_name`에 보존한다.
+
         Returns:
             전체 스키마 정보 (테이블, 컬럼, FK 관계)
         """
         tables_list = await self.search_objects()
         schema = SchemaInfo()
+        fk_rows: dict[str, list[dict[str, Any]]] = {}
 
         for table_brief in tables_list:
-            table_detail = await self.get_table_schema(table_brief.name)
+            table_detail, table_fks = await self._get_table_schema_with_fks(table_brief.name)
+            table_detail.schema_name = table_brief.schema_name
             schema.tables[table_detail.name] = table_detail
+            fk_rows[table_detail.name] = table_fks
 
-        # FK 관계 수집
-        schema.relationships = await self._get_foreign_keys()
+        schema.relationships = self._derive_relationships(fk_rows)
         return schema
+
+    @staticmethod
+    def _resolve_fk_table(table_keys: list[str], from_table: str, to_table: str) -> str:
+        """FK 대상 테이블 이름을 `schema.tables` 키 표기로 맞춘다.
+
+        MCP FK 응답의 `to_table`은 엔진 공통으로 스키마 접두 없는 이름이다(PG `ccu.table_name` ·
+        DB2 `REFTABNAME` · MariaDB `referenced_table_name`). 테이블 키는 PG 비 public 스키마·
+        MariaDB 비기본 database면 `schema.table`이다(`search_objects`). 앞에서부터 첫 일치:
+
+        1. 참조하는 테이블 키에 접두가 있으면 같은 접두를 붙인 이름이 키에 있을 때
+           (PG FK 조회는 같은 스키마로 한정된다)
+        2. 접두 없는 이름이 그대로 키에 있을 때
+        3. 1·2를 대소문자 무시로 다시 찾아 키가 하나만 걸릴 때
+        4. 목록 밖 테이블이면 1의 접두 표기(접두가 없으면 받은 이름 그대로)
+
+        Args:
+            table_keys: `schema.tables` 키 목록
+            from_table: FK를 가진 테이블 키
+            to_table: FK 응답의 대상 테이블 이름
+
+        Returns:
+            관계 `to`에 쓸 테이블 이름
+        """
+        prefixed = f"{from_table.rsplit('.', 1)[0]}.{to_table}" if "." in from_table else ""
+        candidates = [c for c in (prefixed, to_table) if c]
+        for candidate in candidates:
+            if candidate in table_keys:
+                return candidate
+        for candidate in candidates:
+            folded = candidate.casefold()
+            matches = [k for k in table_keys if k.casefold() == folded]
+            if len(matches) == 1:
+                return matches[0]
+        return candidates[0]
+
+    @classmethod
+    def _derive_relationships(
+        cls, fk_rows: dict[str, list[dict[str, Any]]]
+    ) -> list[dict[str, str]]:
+        """테이블별 FK 응답 원본에서 관계 목록을 만든다(테이블 수집 순서 · 중복 제거).
+
+        Args:
+            fk_rows: 테이블 키 → ``[{from_column, to_table, to_column}]``
+
+        Returns:
+            ``[{"from": "<테이블 키>.<컬럼>", "to": "<대상 테이블 키 표기>.<컬럼>"}]``
+        """
+        table_keys = list(fk_rows)
+        relationships: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for table_key, rows in fk_rows.items():
+            for fk in rows:
+                from_column = str(fk.get("from_column") or "").strip()
+                to_table = str(fk.get("to_table") or "").strip()
+                to_column = str(fk.get("to_column") or "").strip()
+                if not (from_column and to_table and to_column):
+                    continue
+                target = cls._resolve_fk_table(table_keys, table_key, to_table)
+                pair = (f"{table_key}.{from_column}", f"{target}.{to_column}")
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                relationships.append({"from": pair[0], "to": pair[1]})
+        return relationships
 
     async def get_sample_data(
         self,
@@ -580,38 +751,6 @@ class DBHubClient:
 
         result = await self._mcp_session.call_tool(tool_name, arguments)
         return result
-
-    async def _get_foreign_keys(self) -> list[dict[str, str]]:
-        """전체 FK 관계를 조회한다.
-
-        Returns:
-            FK 관계 목록
-        """
-        fk_sql = """
-            SELECT
-                tc.table_name AS from_table,
-                kcu.column_name AS from_column,
-                ccu.table_name AS to_table,
-                ccu.column_name AS to_column
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-            JOIN information_schema.constraint_column_usage ccu
-                ON tc.constraint_name = ccu.constraint_name
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-        """
-        try:
-            result = await self.execute_sql(fk_sql)
-            return [
-                {
-                    "from": f"{row['from_table']}.{row['from_column']}",
-                    "to": f"{row['to_table']}.{row['to_column']}",
-                }
-                for row in result.rows
-            ]
-        except Exception:
-            logger.warning("FK 관계 조회 실패, 빈 목록 반환")
-            return []
 
     @staticmethod
     def _result_text(raw_result: Any) -> str:

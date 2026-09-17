@@ -13,10 +13,13 @@
     S7  content가 콘텐츠 블록 리스트여도 파싱된다
     S8  ChatOpenAI 계열이면 TOOLS, 평문 계열이면 MD_JSON
     S9  재시도 소진 시 구조화된 예외가 오르고 삼켜지지 않는다
+    S10 TOOLS 모드는 스키마를 tools로 전송하고 tool_call 인자를 파싱한다(B-3 · 2026-09-17)
+    S11 TOOLS 재질의가 `_Msg.role` 누락으로 깨지지 않는다(B-3)
 """
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 import pytest
@@ -217,3 +220,96 @@ class TestRetryExhaustion:
         err = ei.value
         assert err.attempts >= 2, f"재시도가 일어나지 않았다: attempts={err.attempts}"
         assert "confidence" in str(err), "마지막 오류 내용이 예외에 실리지 않았다"
+
+
+# ─────────────── S10·S11 — TOOLS 모드 배선 (B-3 · 2026-09-17) ───────────────
+
+def _openai_completion(*, tool_args: str | None = None, content: str = "") -> dict:
+    message: dict = {"role": "assistant", "content": content}
+    if tool_args is not None:
+        message["tool_calls"] = [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "Intent", "arguments": tool_args},
+        }]
+    return {
+        "id": "chatcmpl-test", "object": "chat.completion", "created": 0, "model": "m",
+        "choices": [{"index": 0, "message": message,
+                     "finish_reason": "tool_calls" if tool_args else "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+def _mock_chat_openai(responses: list[dict]):
+    """실 `ChatOpenAI` + httpx MockTransport — 요청 바디를 기록한다(소켓 0)."""
+    import httpx
+
+    chat_openai_cls = pytest.importorskip("langchain_openai").ChatOpenAI
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=responses[min(len(bodies) - 1, len(responses) - 1)])
+
+    llm = chat_openai_cls(
+        base_url="http://127.0.0.1:9/v1", api_key="test", model="m", max_retries=0,
+        http_async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    return llm, bodies
+
+
+class TestToolsMode:
+    @pytest.mark.asyncio
+    async def test_tools_are_forwarded_and_tool_call_is_parsed(self):
+        """S10 — TOOLS 모드는 스키마를 `tools`로 실제 요청에 싣고, tool_call 인자를 파싱한다.
+
+        종전 `_lc_create`는 tools를 버리고 텍스트만 돌려 `ChatOpenAI` 계열이 **항상**
+        "No tool calls"로 실패했다(D-169의 vLLM=TOOLS 의도가 동작하지 않음).
+        """
+        llm, bodies = _mock_chat_openai(
+            [_openai_completion(tool_args='{"intent":"data_query","confidence":0.85}')]
+        )
+        assert ia.select_mode(llm) == ia.MODE_TOOLS
+        out = await ia.try_structured_call(llm, _msgs(), Intent, backend="instructor")
+
+        assert out is not None and out.intent == "data_query" and out.confidence == 0.85
+        assert len(bodies) == 1
+        tools = bodies[0].get("tools") or []
+        names = [t["function"]["name"] for t in tools]
+        assert names == ["Intent"], "스키마가 tools로 전송되지 않았다"
+        assert bodies[0]["tool_choice"] == {"type": "function", "function": {"name": "Intent"}}
+
+    @pytest.mark.asyncio
+    async def test_tools_reask_recovers_without_role_error(self):
+        """S11 — TOOLS 재질의가 `'_Msg' object has no attribute 'role'`로 깨지지 않고 복구된다."""
+        llm, bodies = _mock_chat_openai([
+            _openai_completion(tool_args='{"intent":"data_query","confidence":"높음"}'),
+            _openai_completion(tool_args='{"intent":"data_query","confidence":0.85}'),
+        ])
+        out = await ia.try_structured_call(
+            llm, _msgs(), Intent, backend="instructor", max_retries=1,
+        )
+        assert out is not None and out.confidence == 0.85, "재질의 후 복구되지 않았다"
+        assert len(bodies) == 2, f"재질의가 일어나지 않았다: {len(bodies)}회 요청"
+        reask = json.dumps(bodies[1]["messages"], ensure_ascii=False)
+        assert "confidence" in reask and "높음" in reask, "재질의에 실패 필드·받은 값이 없다"
+
+    @pytest.mark.asyncio
+    async def test_tools_mode_without_tool_call_retries_then_raises(self):
+        """도구 호출 없이 텍스트만 오면 재시도 뒤 구조화 예외로 오른다(크래시·침묵 없음)."""
+        llm, bodies = _mock_chat_openai([_openai_completion(content="분류할 수 없습니다")])
+        with pytest.raises(ia.StructuredOutputError) as ei:
+            await ia.try_structured_call(
+                llm, _msgs(), Intent, backend="instructor", max_retries=1,
+            )
+        assert len(bodies) == 2, "재질의 단계에서 깨져 두 번째 요청이 나가지 않았다"
+        assert "role" not in str(ei.value), "재질의가 _Msg.role 누락으로 깨졌다"
+
+    @pytest.mark.asyncio
+    async def test_md_json_reask_unchanged_for_plain_llm(self):
+        """운영 경로(평문 계열 · MD_JSON)의 재질의는 tools 없이 그대로다(B-3 회귀 방어)."""
+        llm = _FakeLLM("분류할 수 없습니다", GOOD)
+        out = await ia.try_structured_call(
+            llm, _msgs(), Intent, backend="instructor", max_retries=1,
+        )
+        assert out is not None and out.confidence == 0.85
+        assert len(llm.seen) == 2

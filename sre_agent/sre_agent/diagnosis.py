@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from holmes.config import Config
 from holmes.core.prompt import build_initial_ask_messages
 from holmes.core.tool_calling_llm import ToolCallingLLM
-from holmes.core.tools import ToolsetTag
+from holmes.core.tools import PrerequisiteCacheMode, ToolsetTag
 
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.settings import AgentSettings
@@ -87,6 +87,24 @@ class DiagnosisResult:
     incomplete: bool = False
 
 
+def _apply_token_budget(llm, settings: AgentSettings) -> None:
+    """설정된 토큰 예산을 holmes `DefaultLLM` 인스턴스에 적용한다 (미설정이면 아무것도 안 함).
+
+    holmesgpt 0.36.0 실측 경로:
+    - 컨텍스트 창: `get_context_window_size()`가 인스턴스 속성 `max_context_size`를 가장 먼저 본다
+      (모델 목록 `custom_args.max_context_size`가 채우는 바로 그 속성).
+    - 출력 상한: `get_maximum_output_token()`은 프로세스 env 또는 litellm 모델표만 보므로 인스턴스에서
+      대체한다. 이 한 값이 요청 `max_tokens`(completion의 setdefault)와 압축·초과 판정의 출력 예약분에
+      함께 쓰여, 둘이 어긋나지 않는다. litellm 전역 모델표 등록(`litellm.register_model`)은 프로세스
+      전역 변경이고 holmes env에 밀려 필드가 조용히 무시될 수 있어 쓰지 않는다.
+    """
+    if settings.override_max_content_size is not None:
+        llm.max_context_size = settings.override_max_content_size
+    if settings.override_max_output_token is not None:
+        limit = settings.override_max_output_token
+        llm.get_maximum_output_token = lambda: limit
+
+
 def _with_load_guard_note(additions: str | None) -> str:
     """조사 지침에 **부하 가드 안내를 항상** 덧붙인다 (Plan 78 W2-6 · `docs/25`).
 
@@ -153,7 +171,16 @@ class DiagnosisAgent:
         if self._llm is None:
             self._llm = self._config.create_toolcalling_llm(
                 toolset_tag_filter=[ToolsetTag.CORE, ToolsetTag.CLI],
+                # 활성 정본 = 넘긴 프로파일(toolsets dict) + holmes 내장 기본값 (2026-09-17 실측).
+                # holmes 기본값(캐시 ENABLED · enable_all=True)은 ① `~/.holmes/toolsets_status.json`이
+                # 있으면 그 enabled로 프로파일을 덮고(`enabled: False`가 무시됨) ② 캐시가 없으면 호스트에
+                # 깔린 CLI(kubectl·docker·helm…)의 toolset까지 켠다. 조사 도구가 호스트 상태에 따라
+                # 달라지므로 둘 다 끈다. 비용: 기본 toolset 선행검사는 config 파싱뿐이라 생성 시간 차이
+                # 없음(0.17s 대 0.17s 실측) · MCP 서버는 캐시 모드에서도 매번 검사한다.
+                enable_all_toolsets_possible=False,
+                prerequisite_cache=PrerequisiteCacheMode.DISABLED,
             )
+            _apply_token_budget(self._llm.llm, self.settings)
         return self._llm
 
     def ask(self, question: str, system_prompt_additions: str | None = None) -> DiagnosisResult:

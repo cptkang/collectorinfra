@@ -637,13 +637,24 @@ query_guide: |
 
 ### 새 DB 추가 전체 절차
 
-1. **Docker 컨테이너 준비** (또는 운영 DB 접속 확인)
-2. **MCP 서버 config.toml**: `[[sources]]` 블록 추가
-3. **MCP 서버 .env**: `{NAME}_CONNECTION` 환경변수 추가
-4. **MCP 서버 재시작**
-5. **루트 .env**: `ACTIVE_DB_IDS`에 소스명 추가 (멀티 DB 시)
-6. **domain_config.py**: `DB_DOMAINS`에 도메인 설정 추가 (시멘틱 라우팅 시)
-7. **(선택)** `config/db_profiles/`에 프로필 YAML 작성 (EAV 등 특수 구조가 있을 때)
+> 2026-09-17 개정(plans/104 · D-227) — 종전 절차의 "`domain_config.py`의 `DB_DOMAINS` 직접 편집"은 낡았다(레지스트리 파생 — D-131). 구조 조사·스키마 캐시·설명·구조 정보 작성은 사람이 하지 않고 **관리자 「DB 구조」 탭**이 MCP로 수집·초안·승인한다. DB 정보를 사용자에게 묻지 않는다.
+
+**사람이 하는 전제(MCP 경계 — 비밀·재기동)**
+1. **Docker 컨테이너 준비** (또는 운영 DB 접속 확인). 엔진이 PostgreSQL·DB2·MariaDB가 아니면 `mcp_server`에 드라이버·인트로스펙션 구현이 먼저 필요하다(D-214 ①).
+2. **`mcp_server/config.toml`**: `[[sources]]` 블록 추가 · **`mcp_server/.env`**: `{NAME}_CONNECTION` 추가(+ `.env.example` 등재)
+3. **MCP 서버 재기동** — 핫 리로드 없음
+
+**관리자 「DB 구조」 탭(`/admin`)에서 하는 일 — 신규 연동 단계 표시줄 O-1~O-9**
+4. **O-1 발견·연결 확인**: 목록에 `MCP에만 있음` 소스가 보인다 → 「신규 연동」 → 연결·엔진·서버 변수 확인
+5. **O-2 스키마 수집·캐시 등록**: MCP 수집 1회로 스키마 캐시 + 변경 점검 기준 스냅샷(활성화 전 · 첫 질의가 수집하지 않게)
+6. **O-3~O-5 설명**: 범위·예상 LLM 호출 수·provider 확인 → 컬럼 설명·유사어 **초안** → 테이블 단위 검토 → 적용 · DB 상세 설명 초안 → 적용(또는 직접 입력)
+7. **O-6 구조 분석**: 초안(패턴·쿼리 가이드·샘플 + 결정적 검증 4종 · 필드별 diff) → 승인하면 `config/db_profiles/{db_id}.yaml`에 적용(적용 직전 현행 파일은 버전으로 자동 보관 · 되돌리기 가능 · 로컬 샌드박스면 `environment: local_sandbox` 표기 — 그 표기 프로필은 커밋 금지)
+8. **O-7 부속 등록**: 유사어 시드(`config/synonym_seeds/{db_id}.yaml` 배포돼 있으면) · EAV면 값 인덱스
+9. **O-8 설정 조각 내보내기**: `config/db_registry.yaml` 항목 조각(`db_id`·`engine`·`db_schema` 후보·`description` 초안)을 내려받아 **사람이 PR로 반영 → 앱 재기동**(레지스트리 핫 리로드 없음)
+10. **O-9 준비도 확인 → 활성화**: 필수 C1~C7 충족 확인 후 **설정 탭**에서 `ACTIVE_DB_IDS`에 추가·리로드(미충족이면 경고가 뜨지만 저장은 된다 — G-7 (a)) · 사용자 허용 DB(`allowed_db_ids`) 확인
+11. 승인 적용된 프로필 파일(`config/db_profiles/{db_id}.yaml`)은 **사람이 검토해 git 커밋**한다(앱은 커밋하지 않는다).
+
+**운영 반영 전 체크항목(G-9)**: 질의 경로는 더 이상 컬럼 설명을 LLM으로 만들지 않는다. 배포 전 운영 Redis의 DB별 `schema:{db_id}:descriptions` 건수를 확인하고 비었거나 부족한 DB는 6번(O-4)으로 먼저 채운다. 운영 `.env`의 `SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS` 줄은 삭제된 설정이므로 지운다.
 
 ---
 

@@ -83,7 +83,6 @@ src/
 │   ├── query_generator.py   #   SQL 생성 (LLM)
 │   ├── query_validator.py   #   SQL 검증 (규칙 기반)
 │   ├── approval_gate.py     #   SQL 승인 게이트 (HITL)
-│   ├── structure_approval_gate.py  # 구조분석 승인 (HITL)
 │   ├── query_executor.py    #   SQL 실행 (MCP/Direct)
 │   ├── multi_db_executor.py #   멀티 DB 병렬 실행
 │   ├── result_merger.py     #   멀티 DB 결과 병합
@@ -456,7 +455,6 @@ DataMasker (src/security/data_masker.py)
 | query_generator | nodes/query_generator.py | O | SQL SELECT 생성 |
 | query_validator | nodes/query_validator.py | - | 규칙 기반 SQL 검증 |
 | approval_gate | nodes/approval_gate.py | - | SQL 승인 (HITL, 선택) |
-| structure_approval_gate | nodes/structure_approval_gate.py | - | 구조분석 승인 (HITL, 선택) |
 | query_executor | nodes/query_executor.py | - | SQL 실행 (MCP/Direct) |
 | multi_db_executor | nodes/multi_db_executor.py | O | 멀티 DB 파이프라인 |
 | result_merger | nodes/result_merger.py | - | 멀티 DB 결과 병합 |
@@ -471,8 +469,6 @@ DataMasker (src/security/data_masker.py)
 | 함수 | 위치 | 분기 조건 |
 |------|------|----------|
 | route_after_semantic_router | semantic_router 이후 | intent별 (cache/synonym/multi_db/single) |
-| route_after_schema_analyzer | schema_analyzer 이후 | 구조 승인 대기 여부 |
-| route_after_structure_approval | structure_approval_gate 이후 | approve → schema_analyzer, reject → query_generator |
 | route_after_validation | query_validator 이후 | passed/실패+재시도/실패+초과 |
 | route_after_validation_with_approval | query_validator 이후 (승인 활성) | passed → approval_gate |
 | route_after_approval | approval_gate 이후 | approve/reject/modify |
@@ -485,7 +481,8 @@ DataMasker (src/security/data_masker.py)
 |------|--------|------|
 | `enable_semantic_routing` | 자동 (멀티DB 있으면 true) | semantic_router, multi_db_executor, cache_management, synonym_registrar 노드 활성화 |
 | `enable_sql_approval` | false | approval_gate 노드 및 interrupt_before 활성화 |
-| `enable_structure_approval` | true | structure_approval_gate 노드 및 interrupt_before 활성화 |
+
+> 2026-09-17(D-227 · plans/104): `structure_approval_gate` 노드·`route_after_schema_analyzer`·`route_after_structure_approval`·`enable_structure_approval`을 삭제했다 — `schema_analyzer → query_generator` 직행. 구조 분석·승인은 관리자 「DB 구조」 탭으로 이관.
 
 ---
 

@@ -20,6 +20,8 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from src.prompts.semantic_router import SEMANTIC_ROUTER_OWNERSHIP_HEADING
+
 # 질의 → (intent, [(db_id, score), ...]) 정답 대본.
 # `testdata/routing_gold/routing.yaml`의 expect와 정합해야 한다.
 SCRIPT: dict[str, tuple[str, list[tuple[str, float]]]] = {
@@ -41,6 +43,42 @@ SCRIPT: dict[str, tuple[str, list[tuple[str, float]]]] = {
     # A-1 노출 확대 — 저신뢰 대역이 실제로 나오는지 관측하는 케이스
     "서버 상태 좀 확인해줘": ("data_query", [("polestar_b0", 0.45), ("polestar_cm_gp", 0.38)]),
     "그 장비 정보": ("data_query", [("polestar_b0", 0.35)]),
+    # 관측/자산 경계(plans/95 W-8)
+    "서버 CPU 사용률 상위 10대 보여줘": ("data_query", [("polestar_b0", 0.8)]),
+    "서버별 메모리 용량과 CPU 코어 수를 알려줘": ("data_query", [("polestar_b0", 0.8)]),
+    "유지보수 계약이 이번 분기에 만료되는 서버 목록": ("data_query", [("itam", 0.9)]),
+    "하드웨어 지원 종료일(EOL)이 6개월 이내인 서버 알려줘": ("data_query", [("itam", 0.9)]),
+    "경과년수 5년 이상 노후 서버의 취득금액 보여줘": ("data_query", [("itam", 0.9)]),
+    # 교차 시스템(plans/102 H-1) — 답변 영역·chain은 아래 OWNERSHIP_SCRIPT
+    "DB 서버들의 자산 담당자와 담당 부점 목록 알려줘": ("data_query", [("itam", 0.92)]),
+    "여의도 개발 서버들의 가용 상태와 OS 버전 현황": ("data_query", [("polestar_cm_yd", 0.93)]),
+    "김포 운영 서버 중 메모리 사용률이 85% 이상인 서버들의 무상 보증 만료일": (
+        "data_query", [("polestar_cm_gp", 0.9), ("itam", 0.88)]),
+    "하드웨어 지원 종료일이 이미 지난 은행존 서버들에 현재 발생 중인 알람": (
+        "alarm_query", [("polestar_b0", 0.9), ("itam", 0.88)]),
+    "10.20.30.41 서버의 유지보수 계약 금액과 계약 기간": ("data_query", [("itam", 0.9)]),
+    "svr-web-01 서버의 자산 상태와 최근 1시간 CPU 사용률을 같이 보여줘": (
+        "data_query", [("itam", 0.88), ("polestar_b0", 0.85)]),
+    "svr-db-02 서버의 메모리 용량과 CPU 코어 수": ("data_query", [("polestar_b0", 0.85)]),
+}
+
+# 교차 시스템 답변 영역 대본(plans/102 X-9) — 질의 → ({db_id: [답변 영역 코드]}, chain).
+# **라우터 프롬프트에 소유표가 실렸을 때만**(`ROUTER_CAPABILITY_OWNERSHIP_ENABLED` on) 응답에
+# 싣는다 — 소유표 없는 프롬프트에 이 필드를 내면 실 LLM이 낼 수 없는 출력을 흉내 내 off 채점이
+# 오염된다.
+OWNERSHIP_SCRIPT: dict[str, tuple[dict[str, list[str]], list[str]]] = {
+    "DB 서버들의 자산 담당자와 담당 부점 목록 알려줘": ({"itam": ["asset_owner"]}, []),
+    "여의도 개발 서버들의 가용 상태와 OS 버전 현황": ({"polestar_cm_yd": ["server_status"]}, []),
+    "김포 운영 서버 중 메모리 사용률이 85% 이상인 서버들의 무상 보증 만료일": (
+        {"polestar_cm_gp": ["server_usage"], "itam": ["asset_contract"]},
+        ["server_usage", "asset_contract"]),
+    "하드웨어 지원 종료일이 이미 지난 은행존 서버들에 현재 발생 중인 알람": (
+        {"itam": ["asset_lifecycle"], "polestar_b0": ["alarm"]},
+        ["asset_lifecycle", "alarm"]),
+    "10.20.30.41 서버의 유지보수 계약 금액과 계약 기간": ({"itam": ["asset_contract"]}, []),
+    "svr-web-01 서버의 자산 상태와 최근 1시간 CPU 사용률을 같이 보여줘": (
+        {"itam": ["asset_inventory"], "polestar_b0": ["server_usage"]}, []),
+    "svr-db-02 서버의 메모리 용량과 CPU 코어 수": ({"polestar_b0": ["server_spec"]}, []),
 }
 
 # ── 결함 주입 모드 ───────────────────────────────────────────────────
@@ -50,6 +88,8 @@ FAULT_BAD_INTENT = "bad_intent"           # 오타 intent 산출 (F1)
 FAULT_BAD_SCORE = "bad_score"             # relevance_score를 "높음"으로 (F2)
 FAULT_MALFORMED = "malformed"             # JSON이 아닌 응답
 FAULT_ERROR_STATUS = "error_status"       # status != SUCCESS
+# chain 순서 뒤집기 (plans/102 D8 — 소유표가 실린 프롬프트에서만 의미)
+FAULT_CHAIN_REVERSED = "chain_reversed"
 
 
 def _extract_query(payload: dict) -> str:
@@ -62,8 +102,12 @@ def _extract_query(payload: dict) -> str:
     return ""
 
 
-def build_body(query: str, *, fault: str = FAULT_NONE) -> dict:
-    """질의 하나에 대한 KBGenAI 응답 본문을 만든다."""
+def build_body(query: str, *, fault: str = FAULT_NONE, ownership: bool = False) -> dict:
+    """질의 하나에 대한 KBGenAI 응답 본문을 만든다.
+
+    `ownership`: 시스템 프롬프트에 답변 영역 소유표가 실렸는가 — True일 때만 `OWNERSHIP_SCRIPT`의
+    `capabilities`·`chain`을 싣는다.
+    """
     if fault == FAULT_ERROR_STATUS:
         return {"status": "ERROR", "content": ""}
 
@@ -90,7 +134,15 @@ def build_body(query: str, *, fault: str = FAULT_NONE) -> dict:
     if fault == FAULT_MALFORMED:
         return {"status": "SUCCESS", "content": "죄송합니다, 응답을 생성할 수 없습니다."}
 
-    body = json.dumps({"intent": intent, "databases": entries}, ensure_ascii=False)
+    response: dict[str, Any] = {"intent": intent, "databases": entries}
+    if ownership and query in OWNERSHIP_SCRIPT:
+        caps_by_db, chain = OWNERSHIP_SCRIPT[query]
+        for entry in entries:
+            if entry["db_id"] in caps_by_db:
+                entry["capabilities"] = list(caps_by_db[entry["db_id"]])
+        response["chain"] = list(reversed(chain)) if fault == FAULT_CHAIN_REVERSED else list(chain)
+
+    body = json.dumps(response, ensure_ascii=False)
     return {"status": "SUCCESS", "content": f"```json\n{body}\n```"}
 
 
@@ -103,7 +155,11 @@ def make_handler(
         payload = json.loads(request.content.decode("utf-8"))
         if on_request is not None:
             on_request(payload)
-        return httpx.Response(200, json=build_body(_extract_query(payload), fault=fault))
+        # 소유표가 실제로 프롬프트에 실렸는지로 판정한다 — 플래그가 아니라 배선 결과를 본다.
+        ownership = SEMANTIC_ROUTER_OWNERSHIP_HEADING in str(payload.get("systemPrompt") or "")
+        return httpx.Response(
+            200, json=build_body(_extract_query(payload), fault=fault, ownership=ownership)
+        )
 
     return handler
 

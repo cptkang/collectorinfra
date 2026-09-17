@@ -1,7 +1,7 @@
 """LLM 인스턴스 생성 모듈.
 
 설정에 따라 적절한 LLM 백엔드를 생성하는 팩토리 함수를 제공한다.
-지원 프로바이더: ollama, fabrix, gemini
+지원 프로바이더: ollama, fabrix, gemini, mlx(로컬 테스트 전용 — plans/100)
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import logging
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
+from pydantic import SecretStr
 
 from src.config import AppConfig
 from src.utils.json_extract import coerce_content_text
@@ -99,6 +100,8 @@ def create_llm(
         return _create_fabrix(config, purpose=purpose)
     elif provider == "gemini":
         return _create_gemini(config)
+    elif provider == "mlx":
+        return _create_mlx(config)
     else:
         raise ValueError(f"지원하지 않는 LLM 프로바이더: {provider}")
 
@@ -109,6 +112,7 @@ def create_orchestrator_llm(config: AppConfig) -> BaseChatModel:
     provider로 오케스트레이터를 선택한다:
     - "vllm"(기본·운영): vLLM의 OpenAI 호환 `/v1`에 `ChatOpenAI`로 연결, 네이티브 bind_tools 사용.
     - "gemini"(테스트/PoC 전용 — §4.7): `ChatGoogleGenerativeAI`. 외부 egress 필요, 폐쇄망 운영 부적합.
+    - "mlx"(로컬 테스트 전용 — plans/100): vLLM 경로를 재사용한다(`mlx_lm.server`도 OpenAI 호환).
 
     (FabriX 워커는 create_llm으로 별도 생성 — 실질 응답처리 담당. provider와 무관하게 동일.)
 
@@ -145,8 +149,14 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
     # 주의(실측): ChatOpenAI는 model_kwargs 안의 extra_body를 전용 extra_body 인자로 끌어내며
     # UserWarning을 낸다 → langchain_openai 0.x 기준 extra_body는 **전용 생성자 인자**로 직접
     # 전달한다(요청 바디에 동일하게 실려 vLLM chat template로 전파됨, 경고 없음).
+    #
+    # provider=mlx(plans/100)는 모델명과 무관하게 부착한다 — 미전송이면 Qwen3.5가 생성 예산
+    # 전부를 reasoning에 쓰고 content가 빈다. `default_model` 별칭이면 위 qwen 가드가 빗나가
+    # 정확히 그 상태가 된다(J-1 ②). 템플릿이 이 변수를 쓰지 않는 모델에 보내도 무해함을
+    # 실측했다(J-1 ⑥).
+    is_mlx = config.orchestrator.provider == "mlx"
     extra_body: dict | None = None
-    if "qwen" in config.orchestrator.model.lower():
+    if is_mlx or "qwen" in config.orchestrator.model.lower():
         extra_body = {
             "chat_template_kwargs": {
                 "enable_thinking": config.orchestrator.enable_thinking
@@ -154,7 +164,8 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
         }
 
     logger.info(
-        "오케스트레이터 LLM(vLLM) 초기화: base_url=%s, model=%s, enable_thinking=%s, extra_body=%s",
+        "오케스트레이터 LLM(%s) 초기화: base_url=%s, model=%s, enable_thinking=%s, extra_body=%s",
+        "MLX" if is_mlx else "vLLM",
         config.orchestrator.base_url,
         config.orchestrator.model,
         config.orchestrator.enable_thinking,
@@ -169,6 +180,9 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
     }
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
+    if is_mlx:
+        # mlx_lm.server는 미전송 시 512토큰에서 절단한다(J-1 ①). vllm 경로는 미전송을 유지한다.
+        kwargs["max_tokens"] = config.llm.mlx_max_tokens
 
     # D-060: 목적지 vLLM이 443을 listen하되 유효 인증서를 쓰지 않는 폐쇄망에서는
     # SSL 검증을 끈다. health check(vllm_healthy)만 끄면 실제 tool-calling 요청이 SSL로
@@ -183,6 +197,14 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
         kwargs["http_client"] = httpx.Client(verify=False)
         kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
 
+    if is_mlx:
+        # 워커와 같은 서브클래스 — max_tokens 절단(finish_reason=length)을 경고로 남긴다.
+        # 오케스트레이터 LLM은 구조화 출력(instructor)에 들어가지 않으므로 클래스명 기반
+        # 모드 선택(MD_JSON)의 영향이 없다(호출부는 전부 워커 llm).
+        from src.clients.mlx_client import MLXChatOpenAI, stream_chunk_timeout_kwargs
+
+        kwargs.update(stream_chunk_timeout_kwargs(config.orchestrator.timeout))
+        return MLXChatOpenAI(**kwargs)
     return ChatOpenAI(**kwargs)
 
 
@@ -228,6 +250,45 @@ def _create_ollama(config: AppConfig) -> BaseChatModel:
         api_key=config.llm.ollama_api_key or None,
         timeout=config.llm.ollama_timeout,
         temperature=0.0,
+    )
+
+
+def _create_mlx(config: AppConfig) -> BaseChatModel:
+    """MLX 로컬 서버(`mlx_lm.server`) 워커 LLM을 생성한다 (plans/100 — 로컬 테스트 전용).
+
+    `ChatOpenAI` 대신 서브클래스 `MLXChatOpenAI`를 쓴다 — 구조화 출력 어댑터가 클래스명으로
+    모드를 고르기 때문이다(`src/clients/mlx_client.py` 참조).
+    """
+    try:
+        from src.clients.mlx_client import MLXChatOpenAI, stream_chunk_timeout_kwargs
+    except ImportError as e:
+        raise ValueError(
+            "LLM_PROVIDER=mlx에는 langchain-openai가 필요합니다. "
+            'pip install -e ".[deepagents]"로 설치하세요.'
+        ) from e
+
+    model = config.llm.mlx_model or "default_model"
+    logger.info(
+        "MLX LLM 초기화: base_url=%s, model=%s, max_tokens=%s, enable_thinking=%s",
+        config.llm.mlx_base_url,
+        model,
+        config.llm.mlx_max_tokens,
+        config.llm.mlx_enable_thinking,
+    )
+    return MLXChatOpenAI(
+        base_url=config.llm.mlx_base_url,
+        api_key=SecretStr("EMPTY"),
+        model=model,
+        temperature=0.0,
+        # 서버 기본 512토큰 절단 방지(J-1 ①). ChatOpenAI `max_tokens` 필드의 alias로 넘긴다
+        max_completion_tokens=config.llm.mlx_max_tokens,
+        timeout=config.llm.mlx_timeout,
+        # prefill이 끝나야 첫 청크가 온다 — 청크 대기 상한 120초 기본값에 끊기지 않게 한다
+        **stream_chunk_timeout_kwargs(config.llm.mlx_timeout),
+        # 모델명과 무관하게 부착한다 — 미전송이면 content가 빈다(J-1 ②)
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": config.llm.mlx_enable_thinking}
+        },
     )
 
 

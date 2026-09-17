@@ -1,7 +1,7 @@
 [project]
 name = "dbhub-mcp-server"
 version = "0.1.0"
-description = "인프라 DB 접근용 MCP 서버 (PostgreSQL + DB2)"
+description = "인프라 DB 접근용 MCP 서버 (PostgreSQL + DB2 + MariaDB)"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -9,6 +9,8 @@ dependencies = [
                             # <2 고정 — 2.x는 FastMCP를 MCPServer로 개명(D-181)
     "asyncpg>=0.29.0",       # PostgreSQL async 드라이버
     "ibm-db>=3.2.0",         # DB2 드라이버 (동기, asyncio.to_thread로 래핑)
+    "aiomysql>=0.3.2",       # MariaDB async 드라이버 — 순수 파이썬 wheel(+PyMySQL)·MIT,
+                            # 폐쇄망 반입이 wheel 2개로 끝난다(plans/95 W-1)
     "sqlparse>=0.5.0",       # SQL 파싱 (읽기 전용 검증)
     "uvicorn",               # SSE ASGI 앱 서빙 (전송 인증 미들웨어 조립 — Plan 04 §6-4)
 ]

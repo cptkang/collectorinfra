@@ -31,6 +31,22 @@ DB_DESCRIPTION_USER_TEMPLATE = """다음 DB의 설명을 한국어 1문장으로
 위 정보를 분석하여, 이 DB가 어떤 데이터를 보유하고 어떤 용도인지 한국어 1문장으로 설명하세요.
 """
 
+# 답변 영역 소유 안내 (plans/102 X-T4 · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) — 켜졌을 때만
+# 위 user 프롬프트 말미에 덧붙인다(off면 프롬프트 바이트 동일). 생성 설명은 라우터 DB 목록의
+# 「상세」로 들어가므로, 테이블에 다른 시스템이 정본인 영역과 비슷한 컬럼이 있으면 설명이 그 어휘를
+# 되살려 라우팅 경계를 무너뜨린다. 영역 행은 레지스트리에서 렌더해 넣는다
+# (사본 금지 · `src/routing/capability_ownership.ownership_guidance_rows`).
+DB_DESCRIPTION_OWNERSHIP_TEMPLATE = """
+## 답변 영역 소유 (반드시 반영)
+이 DB는 **{system_label}** 시스템에 속합니다. 설명에는 이 시스템이 정본인 답변 영역의 어휘를 쓰세요.
+
+이 시스템이 정본인 답변 영역:
+{own_rows}
+
+다른 시스템이 정본인 답변 영역 — 테이블에 비슷한 컬럼이 있어도 이 영역의 어휘는 설명에 넣지 마세요:
+{other_rows}
+"""
+
 SCHEMA_DESCRIPTION_SYSTEM_PROMPT = """당신은 데이터베이스 스키마 전문가입니다.
 주어진 테이블의 컬럼 정보와 샘플 데이터를 분석하여, 각 컬럼에 대해:
 1. 한국어 설명 (description): 컬럼의 의미를 간결하게 설명

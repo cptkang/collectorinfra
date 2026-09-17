@@ -1,7 +1,7 @@
 # 50. 멀티턴 컨텍스트 전파 개선 + 제어 평면(vLLM) 토큰 한계 대응
 
 > 작성일: 2026-06-25
-> 상위/관련 계획: `plans/48-deepagents-intent-orchestration.md`, `plans/49-phase2-dynamic-replanning.md`, `plans/multiturn_plan.md`
+> 상위/관련 계획: `plans/48-deepagents-intent-orchestration.md`, `plans/49-WIP-phase2-dynamic-replanning.md`, `plans/multiturn_plan.md`
 > 관련 결정: D-013(멀티턴+HITL), D-037(deepagents 이원 백엔드), D-009(SSE), D-047-1/Plan 47-1(폴스타 프로세스 API)
 > 신규 결정(기록 완료): **D-041**(멀티턴 컨텍스트 전파·엔티티 보존), **D-042**(제어 평면 컨텍스트 예산·평면 분리·Qwen no-think). ※ 당초 D-039/D-040을 의도했으나 두 번호는 `docs/02_decision.md` **변경 이력 표에서 이미 선점**(2026-06-23/24 처리현황·replanner 작업, 교차참조 존재)되어 다음 빈 번호 D-041/D-042를 부여함.
 

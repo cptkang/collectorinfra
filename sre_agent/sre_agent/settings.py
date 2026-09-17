@@ -3,6 +3,11 @@
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# 실 조사 LLM 게이트의 스텁 사유 — 사용자·감사에 그대로 노출된다(침묵 금지 · D-123 ⑦ · D-230).
+# 키 부재 문구는 종전 그대로다(본체 `tests/test_briefing_contract.py`가 같은 리터럴을 쓴다).
+STUB_LLM_KEY_ABSENT = "조사 미실행 — LLM 키 부재(스텁)"
+STUB_LLM_DISABLED = "조사 미실행 — 조사 LLM 비활성(INVESTIGATION_LLM_ENABLED=false · 스텁)"
+
 
 class AgentSettings(BaseSettings):
     # env_file은 CWD 기준 (".env", ".encenv") — 레포 루트에서 기동하면 collectorinfra
@@ -43,12 +48,48 @@ class AgentSettings(BaseSettings):
         validation_alias=AliasChoices("GEMINI_API_KEY", "LLM_GEMINI_API_KEY"),
     )
 
+    # ── 실 조사 LLM 게이트 (D-230 · D-123 ⑦ 개정) — tri-state ──
+    # None(기본) = 종전 판정 그대로(`gemini_api_key`가 있어야 실 조사 · 비트 동일)
+    # True       = 키 없이도 실 조사(사내 vLLM 등 — 종전의 `GEMINI_API_KEY=dummy` 우회를 대체)
+    # False      = 키가 있어도 항상 명시 스텁
+    # 판정은 `investigation_llm_stub_reason()` 한 곳이다(dispatcher 2 · stub executor 1 · `holmes_ready` 1).
+    # ⚠ `.env`에 빈 값(INVESTIGATION_LLM_ENABLED=)·`null`을 두면 None이 아니라 로드 실패다 — 줄을 두지 않는다.
+    # **None(키 추론) 경로 만료일 2027-03-17**(D-161 ① · 6개월) — 운영·개발 배선이 전부 명시값으로 옮겨졌는지
+    # 보고 None 경로 삭제(명시 필수화) 또는 사유부 연장을 판정한다. True/False 자체는 상시 운영 스위치다.
+    investigation_llm_enabled: bool | None = None
+
     # 사내 OpenAI 호환 엔드포인트(vLLM 등)의 base_url — litellm `api_base`로 전달된다.
     # None이면 프로바이더 기본 경로(Gemini 등 SaaS)를 쓴다. 사내 FabriX(KBGenAIChat)는
     # OpenAI 비호환이라 여기 넣을 수 없다 — 조사 LLM은 tool-calling 되는 엔드포인트여야 한다
     # (holmes ToolCallingLLM이 매 호출에 tools/tool_choice를 싣고 폴백이 없다).
     # env: API_BASE. holmes 0.36.0 Config가 api_base 필드를 보유함을 실측 확인했다.
     api_base: str | None = None
+
+    # ── holmes 토큰 예산 — 출력 상한·컨텍스트 창 (2026-09-17 실측) ──
+    # litellm 목록에 없는 모델(사내 vLLM·로컬 OpenAI 호환 서버의 served name)이면 holmes가 출력 상한을
+    # max(64000, 컨텍스트×12%) · 컨텍스트를 200000으로 잡고 **매 요청 max_tokens=64000**을 보낸다
+    # (`holmes/core/llm.py` get_maximum_output_token·completion). OpenAI 호환 서버는 요청값이 서버 기본
+    # 상한보다 우선하므로 퇴행 루프 한 번이 64000토큰 생성을 붙든다. 컨텍스트가 실제 창보다 크면 압축이
+    # 늦게 발동해 서버 초과 오류로 끝난다(D-213 실패 유형).
+    # holmes 자체 조정 수단은 같은 이름의 **프로세스 환경변수**(임포트 시 1회 읽음)뿐이라 `.env`에 적으면
+    # 먹지 않는다(env_file은 os.environ 미주입). 필드 이름을 holmes env와 같게 두어 셸 env·`.env`
+    # 어느 쪽에 적어도 같은 값이 들어오고, 설정되면 DiagnosisAgent가 인스턴스에 적용한다(holmes env보다 우선).
+    # None(기본) = holmes 동작 그대로(비트 동일). 둘은 함께 준다 — 출력 예약분이 컨텍스트 이상이면
+    # holmes가 매 호출을 컨텍스트 초과로 거부한다. vLLM은 입력+출력 ≤ --max-model-len이어야 한다(D-213).
+    override_max_content_size: int | None = Field(default=None, gt=0)
+    override_max_output_token: int | None = Field(default=None, gt=0)
+
+    def investigation_llm_stub_reason(self) -> str | None:
+        """실 조사 LLM 게이트 — 스텁 사유를 돌려준다(None이면 실 조사 가능).
+
+        게이트 4곳이 이 함수 하나만 본다. 조사함수 미주입·dispatcher 미배선은 호출부 고유 사유라
+        여기서 판정하지 않는다(이 함수가 None일 때만 호출부가 자기 사유를 붙인다).
+        """
+        if self.investigation_llm_enabled is False:
+            return STUB_LLM_DISABLED
+        if self.investigation_llm_enabled is None and self.gemini_api_key is None:
+            return STUB_LLM_KEY_ABSENT
+        return None
 
     # 조사 서비스(interface/mcp_service) 정적 Bearer 토큰 (Plan 05 §5-인증).
     # None이면 무인증(로컬/개발). SecretStr로 pydantic 필드로만 판정한다

@@ -14,7 +14,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from functools import lru_cache
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -23,10 +24,23 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.input_parser import LOCATION_HINT_TERMS
-from src.prompts.intent_planner import INTENT_PLANNER_SYSTEM_TEMPLATE
+from src.prompts.intent_planner import (
+    INTENT_PLANNER_SYSTEM_TEMPLATE,
+    render_intent_planner_ownership_template,
+)
+from src.routing.capability_ownership import (
+    active_owner_system_count,
+    known_capability_codes,
+    render_ownership_rows,
+    sanitize_capability_code,
+)
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
-from src.orchestration.schemas import DecomposedPlan, validate_plan_dag
+from src.orchestration.schemas import (
+    DecomposedPlan,
+    OwnershipDecomposedPlan,
+    validate_plan_dag,
+)
 from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_DECOMPOSE, has_sequential_marker
 from src.utils.synonym_set_parser import parse_synonym_set
@@ -707,7 +721,7 @@ async def _llm_decompose(
     human_content = f"{context_block}{user_query}" if context_block else user_query
 
     messages: list[BaseMessage] = [
-        SystemMessage(content=INTENT_PLANNER_SYSTEM_TEMPLATE)
+        SystemMessage(content=_planner_system_prompt(app_config))
     ]
     if isinstance(llm, KBGenAIChat):
         messages.append(AIMessage(content=""))
@@ -715,7 +729,59 @@ async def _llm_decompose(
 
     result = await _decompose_once(llm, messages, user_query, app_config, fallback)
     # 분해 계약(D-203 · plans/88 §4.2-b·§4.8): DAG 검증·순차 표지 — 플래그 off면 no-op(바이트 동일).
-    return await _enforce_plan_contract(llm, messages, user_query, app_config, fallback, result)
+    result = await _enforce_plan_contract(llm, messages, user_query, app_config, fallback, result)
+    if _capability_ownership_on(app_config):
+        _sanitize_task_capabilities(result)
+    return result
+
+
+def _capability_ownership_on(app_config: AppConfig) -> bool:
+    """답변 영역 소유 플래그(plans/102 X-7) — 호출부가 넘긴 설정에서 읽는다(기동 시 1회 해석)."""
+    return bool(getattr(getattr(app_config, "router", None), "capability_ownership_enabled", False))
+
+
+def _planner_system_prompt(app_config: AppConfig) -> str:
+    """분해 시스템 프롬프트.
+
+    off면 기본 템플릿 그대로(바이트 동일), on이면 소유표·교차 예시 삽입본이다.
+    """
+    if not _capability_ownership_on(app_config):
+        return INTENT_PLANNER_SYSTEM_TEMPLATE
+    return _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
+
+
+@lru_cache(maxsize=8)
+def _render_planner_ownership_prompt(active_db_ids: tuple[str, ...]) -> str:
+    """활성 DB 목록 단위 캐시 — 기동 시 1회 렌더(프롬프트 접두 고정 · KV 캐시)."""
+    rows = render_ownership_rows(active_db_ids, with_db_ids=False)
+    if not rows:
+        logger.warning(
+            "답변 영역 소유 플래그 on이나 활성 DB에 소유 선언이 없다 — 기본 분해 프롬프트 사용"
+        )
+        return INTENT_PLANNER_SYSTEM_TEMPLATE
+    # 교차 예시는 소유 시스템이 둘 이상 활성일 때만(라우터 프롬프트와 같은 규칙)
+    return render_intent_planner_ownership_template(
+        rows, with_examples=active_owner_system_count(active_db_ids) >= 2,
+    )
+
+
+def _sanitize_task_capabilities(result: dict[str, Any]) -> None:
+    """분해 task의 `capability`를 카탈로그 코드로 정제한다(모르는 코드·형식 오류 → 빈 문자열).
+
+    구조화·JSON 파싱·재요청·폴백 모든 경로의 결과에 같은 규칙을 적용하려고 분해의 마지막
+    한 곳에서 한다.
+    빈 문자열은 "소유 적용 없음"이다 — 실행부가 종전 분류 경로를 그대로 탄다.
+    """
+    known = known_capability_codes()
+    for task in result.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        raw = task.get("capability")
+        code = sanitize_capability_code(raw, known)
+        if raw not in (None, "") and not code:
+            logger.warning("분해 task 답변 영역 탈락(카탈로그 밖): task=%s capability=%r",
+                           task.get("task_id"), raw)
+        task["capability"] = code
 
 
 def _degraded(reason: str, detail: str, *, attempts: int = 1) -> dict:
@@ -814,9 +880,11 @@ async def _decompose_once(
     # 구조화 출력 경로 (E-3a · D-169). 플래그 off면 None을 돌려받아 기존 파싱으로 내려간다 —
     # 기존 경로를 지우지 않는다(off가 상시 존재한다).
     parsed: dict | None = None
+    ownership_on = _capability_ownership_on(app_config)
     try:
         model = await try_structured_call(
-            llm, messages, DecomposedPlan,
+            # 소유 플래그 on이면 `capability` 필드가 있는 서브클래스 — off 스키마는 종전 그대로.
+            llm, messages, OwnershipDecomposedPlan if ownership_on else DecomposedPlan,
             backend=getattr(app_config, "structured_output_backend", "none"),
             max_retries=getattr(app_config, "structured_output_max_retries", 1),
         )
@@ -859,6 +927,10 @@ async def _decompose_once(
             "order": raw.get("order", i),
             "status": "pending",
         }
+        if ownership_on:
+            # 고정 키로 새 dict를 만드는 경로라 명시적으로 보존한다
+            # (정제는 `_sanitize_task_capabilities`).
+            task["capability"] = raw.get("capability", "")
         tasks.append(task)
 
     if not tasks:

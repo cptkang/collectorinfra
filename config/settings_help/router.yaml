@@ -113,3 +113,31 @@ settings:
     performance: 되묻기는 조회를 하지 않으므로 오히려 가볍다. 다만 사용자의 왕복이 한 번 늘어난다.
     stability: 되묻기가 잦아지면 사용성이 떨어진다 — 실제 분류 실패율을 보고 판단한다.
     related: [ENABLE_SEMANTIC_ROUTING, QUERY_INTENT_LLM_ASSIST]
+
+  ROUTER_CAPABILITY_OWNERSHIP_ENABLED:
+    summary: 필요한 정보 종류(답변 영역)로 정본 시스템을 코드가 정할지 — 자산관리와 폴스타의 조회 경계.
+    behavior: >-
+      켜면 라우터·분해 프롬프트에 답변 영역 소유표(자산·계약·담당자·지원 종료는 자산관리, 서버
+      현황·사용률·알람은 폴스타)가 들어가고, 모델은 DB와 함께 필요한 답변 영역을 낸다. 코드는
+      그 답변 영역의 소유 시스템과 선택된 DB가 어긋나면 정본 시스템으로 교정하고 경과 노트를 남긴다.
+      분류가 비거나 LLM이 실패해 첫 활성 DB로 폴백하면 그 사실도 응답에 적는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 프롬프트가 현행과 바이트 단위로 같다. 시스템 선택은 DB 설명문과 모델 판단에만 달려 있다.
+      - value: "true"
+        effect: >-
+          모니터링 질의가 자산관리로, 계약 질의가 폴스타로 가는 오선택을 코드가 바로잡는다.
+          프롬프트가 소유표·예시만큼 길어진다.
+    example: >-
+      "서버 CPU 사용률 상위 10대"는 자산관리 DB에도 사용률 컬럼이 있어 모델이 자산관리를 고를 수 있다.
+      꺼져 있으면 연계 스냅샷 숫자가 조용히 답이 된다. 켜면 server_usage 영역의 정본인 폴스타로 교정된다.
+    performance: LLM 호출 수는 같다. 프롬프트 접두가 소유표만큼 늘어난다(기동 시 1회 렌더라 캐시는 유지된다).
+    stability: >-
+      교정 입력은 모델이 낸 답변 영역뿐이다(질의 원문 키워드를 보지 않는다 — D-004). 모델이 답변
+      영역을 비워 내면 교정하지 않고 종전 선택을 따른다.
+    recommendation: 기본 false. 자산관리 DB를 활성화한 환경에서 라우팅 골든셋 경계 케이스를 확인한 뒤 켠다.
+    related: [ENABLE_SEMANTIC_ROUTING, CROSS_SYSTEM_KEY_BRIDGE_ENABLED, CROSS_SYSTEM_PROBE_ENABLED]
+    references:
+      - plans/102-WIP-polestar-itam-cross-system-routing.md
+      - docs/02_decision.md (D-224)

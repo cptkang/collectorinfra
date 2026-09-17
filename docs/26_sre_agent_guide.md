@@ -176,7 +176,8 @@ sre_agent/
 | `sre_health` | — | `{status, version, contract_version, holmes_ready, polestar_mcp_reachable}` |
 
 `sre_health`는 collectorinfra 클라이언트의 `health_check_tool` 지정 대상이다.
-`holmes_ready`는 **LLM 키 존재 여부를 정직하게 반영**한다(키 없으면 조사는 스텁으로 떨어진다).
+`holmes_ready`는 **조사 LLM 게이트 통과 여부를 정직하게 반영**한다(D-230 — `INVESTIGATION_LLM_ENABLED` 미설정이면 LLM 키 유무,
+`true`면 키 없이 준비, `false`면 항상 스텁). 엔드포인트 도달성은 보지 않는다.
 
 **잡 상태 전이**
 
@@ -184,7 +185,7 @@ sre_agent/
 accepted ─► running ─┬─► done      조사 완주 + 후처리 완료(브리핑·verdict 포함)
                      ├─► timeout   investigation_timeout_seconds 초과(사유 구조화)
                      ├─► failed    워커 예외 또는 재기동 중단(reason="restart")
-                     └─► stub      LLM 키 부재 / 조사함수 미주입 — 침묵하지 않고 명시
+                     └─► stub      조사 LLM 비활성 / LLM 키 부재 / 조사함수 미주입 — 침묵하지 않고 사유 구분
          └─► rejected              계약 위반 · dedup · 예산 초과 · 호스트 in-flight
 ```
 
@@ -230,14 +231,21 @@ accepted ─► running ─┬─► done      조사 완주 + 후처리 완료(
   매칭하기 때문에 필수다.
 - 부하 가드 안내(`LOAD_GUARD_NOTE`)는 `ask()`가 **항상 주입**한다. 호출자가 준
   `system_prompt_additions`는 덮어쓰지 않고 뒤에 덧붙인다.
+- **toolset 활성 정본 = 넘긴 프로파일**(2026-09-17). `DiagnosisAgent.llm`은 holmes 선행검사 캐시를 끄고
+  (`PrerequisiteCacheMode.DISABLED`) 설치된 CLI 자동 활성도 끈다(`enable_all_toolsets_possible=False`).
+  종전 holmes 기본값에서는 `~/.holmes/toolsets_status.json`이 프로파일의 `enabled: False`를 덮고,
+  캐시가 없는 호스트에선 kubectl·docker 같은 CLI toolset까지 켜져 **조사 도구가 호스트 상태에 따라 달라졌다**.
+- `toolsets={}`는 **빈 toolset이 아니다** — holmes 내장 기본(bash `core` 허용목록 · `fetch_webpage` ·
+  `tcp_check` · `fetch_pod_logs`)이 켜진다. 실 데이터 없이 LLM 왕복만 볼 때는 `no_host_access_profile()`을 쓴다.
 
-### 3.4 toolset 프로파일 3종 + 부하 가드
+### 3.4 toolset 프로파일 4종 + 부하 가드
 
 | 프로파일 | 용도 | bash allowlist | 대상 데이터 |
 |---|---|---|---|
 | `vm_profile()` | 로컬 VM 진단 | `VM_DIAG_ALLOW`(확장) | 로컬 셸 |
 | `remote_vm_profile()` | **원격 VM 진단(운영 경로)** | `[]` + `builtin_allowlist="core"` | 폴스타 MCP + PromQL(9099) |
 | `middleware_profile()` | 미들웨어 조사(D-168) | `vm_profile`과 **동일**(확장 0) | 로컬 셸 |
+| `no_host_access_profile()` | LLM 왕복 검증(스모크 2단계) | bash **off**(internet·connectivity_check·kubernetes/logs도 off) | 없음 — 붙는 도구는 `TodoWrite`·`fetch_skill`뿐(`NO_HOST_ACCESS_TOOLS`) |
 
 `middleware_profile`이 별도로 존재하는 이유는 allowlist가 아니라 **조사 초점**이다
 (`MIDDLEWARE_FOCUS_NOTE`): `ps`로 대상을 좁힌 뒤 **해당 pid에 한해** `pidstat`·`ss`를 보고,
@@ -309,6 +317,8 @@ escalate = level > baseline                  # 엄밀 상향일 때만 True
 
 - **인용 검증**: 도구명 언급 또는 인용 마커(`←`·`출처`·`근거`·`[원문` 등)가 없는 단정은
   `[가설]` 접두로 강등하고 `hypotheses` 배열에 모은다. `citations_verified`가 그 결과다.
+  **도구 출력이 0건이면 마커가 있어도 인용이 아니다**(2026-09-17) — 미완주 안내("수집된 근거가 불충분…")가
+  마커에 걸려 원인·타임라인에 근거처럼 실리던 결함을 막는다.
 - **한계 서술 강제**: "조사 시점 단면" 문구는 항상 붙고, 증거 불충분·인용 결여는 자동 추가된다.
 - **권고는 항상 human-gated 문구 병기**: `※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)`.
 - 조사 미실행 시에는 6요소 대신 `{"stub": true, "message": <사유>, "elements": null}`을 낸다.
@@ -357,8 +367,11 @@ escalate = level > baseline                  # 엄밀 상향일 때만 True
 | `api_key` | `API_KEY` | `None` | 운영 LLM 키(SecretStr) |
 | `api_base` | `API_BASE` | `None` | 사내 OpenAI 호환 엔드포인트(vLLM 등) |
 | `max_steps` | `MAX_STEPS` | `40` | ReAct step 상한 |
+| `override_max_content_size` | `OVERRIDE_MAX_CONTENT_SIZE` | `None` | holmes 컨텍스트 창(압축·초과 판정 기준). None이면 holmes 기본(모르는 모델 200000) |
+| `override_max_output_token` | `OVERRIDE_MAX_OUTPUT_TOKEN` | `None` | 요청 `max_tokens` = 출력 예약분. None이면 holmes 기본(모르는 모델 **64000**) — §5.6.4 |
 | `investigation_llm_model` | `INVESTIGATION_LLM_MODEL` | `gemini/gemini-3.5-flash` | 개발·테스트 LLM(D-120) |
-| `gemini_api_key` | `GEMINI_API_KEY` \| `LLM_GEMINI_API_KEY` | `None` | **이 값이 None이면 조사는 스텁** |
+| `gemini_api_key` | `GEMINI_API_KEY` \| `LLM_GEMINI_API_KEY` | `None` | Gemini 개발 경로 키. `INVESTIGATION_LLM_ENABLED` 미설정이면 **None일 때 조사는 스텁** |
+| `investigation_llm_enabled` | `INVESTIGATION_LLM_ENABLED` | `None` | 실 조사 게이트(D-230). None=키 유무로 판정(종전) · `true`=키 없이 실 조사 · `false`=항상 스텁. **빈 값(`KEY=`)은 로드 실패** — 미설정은 줄을 두지 않는다 |
 | `polestar_mcp_url` | `POLESTAR_MCP_URL` | `http://localhost:9099/sse` | mcp_server SSE 엔드포인트 |
 | `polestar_mcp_token` | `POLESTAR_MCP_TOKEN` | `None` | mcp_server Bearer(D-125) |
 | `service_bearer_token` | `SERVICE_BEARER_TOKEN` | `None` | 조사 서비스 자체 인증. None이면 무인증 |
@@ -439,11 +452,12 @@ sre_agent/.venv/bin/python -c \
 과금 없는 배관 검증을 의도한다면 `cd sre_agent` 후 기동하거나 키를 명시적으로 비운다:
 
 ```bash
-GEMINI_API_KEY= LLM_GEMINI_API_KEY= .venv/bin/python -m sre_agent.run_service   # 강제 스텁
+INVESTIGATION_LLM_ENABLED=false .venv/bin/python -m sre_agent.run_service   # 강제 스텁 — 키 유무와 무관(D-230)
 ```
 
-스텁은 침묵하지 않는다 — `status="stub"`, `verdict="조사 미실행 — LLM 키 부재(스텁)"`로
-감사에 남는다(`investigation_dispatcher.py` `_finalize_stub`).
+스텁은 침묵하지 않는다 — `status="stub"`, `verdict`에 사유가 구분돼 감사에 남는다
+(`조사 미실행 — LLM 키 부재(스텁)` · `조사 미실행 — 조사 LLM 비활성(INVESTIGATION_LLM_ENABLED=false · 스텁)` ·
+조사함수 미주입 — `investigation_dispatcher.py` `_finalize_stub`).
 
 > 과금이 발생하는 외부 API 호출은 **실행 건마다 사용자 승인**이 필요하다(D-127·포괄 승인 없음).
 > `RUN_E2E=1` 설정 자체도 승인 후에만 한다.
@@ -637,7 +651,9 @@ PY
 MODEL=openai/Qwen3.5-9B
 API_BASE=http://<vllm-host>:8000/v1
 API_KEY=dummy
-GEMINI_API_KEY=dummy
+INVESTIGATION_LLM_ENABLED=true
+OVERRIDE_MAX_CONTENT_SIZE=30000
+OVERRIDE_MAX_OUTPUT_TOKEN=2048
 ```
 
 | env | 값 | 설명 |
@@ -645,7 +661,16 @@ GEMINI_API_KEY=dummy
 | `MODEL` | `openai/<served-model-name>` | **`openai/` 접두사 필수** — litellm이 OpenAI 호환 경로로 보내게 하는 신호다. 붙이지 않으면 프로바이더를 못 고른다 |
 | `API_BASE` | `http://<host>:8000/v1` | **`/v1`까지** 포함 |
 | `API_KEY` | 아무 값 | vLLM 무인증이면 미검증. 다만 `None`이면 litellm이 인증 헤더 없이 보내 400이 날 수 있다 |
-| `GEMINI_API_KEY` | 아무 값 | **스텁 게이트 통과용** — 함정 1 참조. vLLM 경로에서 Gemini를 호출하지는 않는다 |
+| `INVESTIGATION_LLM_ENABLED` | `true` | **실 조사 게이트를 키 없이 연다**(D-230) — 함정 1 참조. 종전의 `GEMINI_API_KEY=dummy` 우회는 쓰지 않는다 |
+| `OVERRIDE_MAX_CONTENT_SIZE` · `OVERRIDE_MAX_OUTPUT_TOKEN` | 입력 상한 · 출력 상한 | **둘을 합쳐 `--max-model-len` 이하**(32768이면 30000·2048 — D-213). 아래 설명 |
+
+**토큰 예산을 왜 주는가** (2026-09-17 실측): served name은 litellm 모델표에 없어서 holmes가 출력 상한을
+`max(64000, 컨텍스트×12%)`, 컨텍스트를 200000으로 잡고 **매 요청 `max_tokens=64000`을 보낸다**.
+OpenAI 호환 서버는 요청값이 서버 기본 상한보다 우선하므로, 모델이 퇴행해 같은 출력을 반복하면 요청 한 건이
+6만 토큰 생성을 붙든다(litellm은 600초에 끊어도 서버는 계속 생성한다). 컨텍스트를 실제 창보다 크게 알면
+압축이 늦게 발동해 `ContextWindowExceeded`로 끝난다. 두 값은 `AgentSettings` 필드라 **`.env`에 적어도
+적용된다** — holmes 자체는 같은 이름을 프로세스 환경변수로만 읽으므로(임포트 시 1회) 종전에는 `.env` 기재가
+먹지 않았다. 둘은 함께 준다 — 출력 예약분이 컨텍스트 이상이면 holmes가 매 호출을 초과로 거부한다.
 
 **배선 도달 확인** — 설정이 실제로 holmes `Config`까지 갔는지 본다(추정 금지).
 
@@ -679,14 +704,14 @@ cd sre_agent
 MODEL="openai/Qwen3.5-9B" \
 API_BASE="http://<vllm-host>:8000/v1" \
 API_KEY=dummy \
-GEMINI_API_KEY=dummy \
-LLM_GEMINI_API_KEY= \
+INVESTIGATION_LLM_ENABLED=true \
 POLESTAR_MCP_URL=http://localhost:9097/sse \
 MAX_STEPS=40 \
 sre_agent/.venv/bin/python -m sre_agent.run_service
 ```
 
-`LLM_GEMINI_API_KEY=`로 비우는 것은 `.encenv` 키가 함께 잡히는 것을 막기 위해서다(§5.3).
+레포 루트에서 띄우면 `.encenv`의 `LLM_GEMINI_API_KEY`도 잡히지만, 게이트는 `INVESTIGATION_LLM_ENABLED=true`로 이미 열려 있고
+조사 호출은 `MODEL`·`API_BASE`·`API_KEY`만 쓰므로 Gemini로 나가지 않는다(§5.6.9·§5.6.10).
 `POLESTAR_MCP_URL`은 **조사 프로파일 인스턴스**(9097 권장)를 가리켜야 한다 — 본체용 9099를
 그대로 쓰면 `execute_sql`이 노출돼 LLM이 raw SQL 방언 오류로 step을 소진한다(D-122).
 
@@ -695,11 +720,19 @@ sre_agent/.venv/bin/python -m sre_agent.run_service
 §5.6.3은 **왕복 1회**만 본 것이다. ReAct 다단계 완주는 별개다.
 
 ```bash
-# [서버 A · CWD=레포 루트 · sre_agent/.venv] — 픽스처 대상. vLLM은 사내라 외부 과금 없음
-RUN_E2E=1 sre_agent/.venv/bin/python -m pytest sre_agent/tests/test_investigation_e2e.py -v
+# [서버 A · CWD=sre_agent · sre_agent/.venv] — 픽스처 대상. vLLM은 사내라 외부 과금 없음
+# 루트 CWD에서는 conftest의 tests.mvp_record가 루트 tests/와 충돌해 수집 단계에서 죽는다(docs/18 2026-09-10)
+cd sre_agent && RUN_E2E=1 LLM_GEMINI_API_KEY= GEMINI_API_KEY= .venv/bin/python -m pytest tests/test_investigation_e2e.py -v
 ```
 
-`mcp_server`(조사 프로파일)가 도달 가능해야 하고, 게이팅 때문에 `GEMINI_API_KEY`가 채워져 있어야 한다.
+`mcp_server`(조사 프로파일)가 도달 가능해야 한다. **`API_BASE`가 설정돼 있으면 e2e는 §5.6.4의 운영 배선
+(`MODEL`·`API_BASE`·`API_KEY`·토큰 예산)으로 조사하고**, `API_BASE`가 없을 때만 Gemini(`INVESTIGATION_LLM_MODEL`
+· `GEMINI_API_KEY`)로 조립한다(`test_investigation_e2e._llm_wiring`). 운영 배선이면 테스트가 `investigation_llm_enabled=True`로
+게이트를 열므로 e2e에는 `GEMINI_API_KEY`가 필요 없다 — 위처럼 비워 두면 Gemini로 샐 여지 자체가 없다.
+
+> **정정(2026-09-17 · 실측)**: 종전 e2e는 `API_BASE`를 줘도 `model=investigation_llm_model`(Gemini)·
+> `api_key=gemini_api_key`로 조립했다 — 이 절차로는 **vLLM을 검증하지 못했고**, 키가 잡히는 환경이면
+> 외부 Gemini(과금)로 나갔다. 지금은 조립된 모델이 대장 지문(`mvp_record` `llm.model`)에 남는다.
 
 | 관측 | 의미 · 조치 |
 |---|---|
@@ -726,13 +759,22 @@ NOISE_INVESTIGATION_TOTAL_TIMEOUT_SECONDS=45.0
 전체 타임아웃 기본 45초는 **실 LLM 조사에는 짧다**(§5.6.6 기준치 161초). 즉시 통보를 유지하려면
 타임아웃을 늘리는 대신 `NOISE_INVESTIGATION_FOLLOWUP_ENABLED=true`로 **후속 발송**을 쓴다.
 
-#### 5.6.8 ★ 함정 1 — `GEMINI_API_KEY`가 비면 vLLM이 멀쩡해도 조사가 안 돈다
+#### 5.6.8 ★ 함정 1(해소 · D-230) — 실 조사 on/off는 `INVESTIGATION_LLM_ENABLED`로 정한다
 
-스텁 게이트가 **`gemini_api_key is None` 단일 조건**이다
-(`application/investigation_dispatcher.py:216`·`:434`). 백엔드를 vLLM으로 바꿔도 이 필드는
-"실 조사를 켜는 스위치" 역할로 남아 있어서, 비어 있으면 `status="stub"`으로 떨어진다.
-**값 자체는 조사에 쓰이지 않으므로 아무 문자열이면 된다** — vLLM 경로에서는 Gemini를 호출하지
-않는다. 중립 이름(`investigation_api_key`) 개명은 별건 결정으로 미뤄져 있다(Plan 66 §7-1 부기).
+**종전**: 스텁 게이트가 **`gemini_api_key is None` 단일 조건**이라 백엔드를 vLLM으로 바꿔도 이 필드가
+"실 조사를 켜는 스위치" 역할로 남았고, 비어 있으면 `status="stub"`으로 떨어져 `GEMINI_API_KEY=dummy` 우회가 필요했다.
+
+**지금(2026-09-17)**: 게이트 4곳(dispatcher 진입·`_finalize_stub` · `make_stub_executor` · `sre_health.holmes_ready`)이
+`AgentSettings.investigation_llm_stub_reason()` 하나를 본다.
+
+| `INVESTIGATION_LLM_ENABLED` | `GEMINI_API_KEY` 없음 | `GEMINI_API_KEY` 있음 |
+|---|---|---|
+| 미설정(None · 기본) | 스텁 — `LLM 키 부재` | 실 조사 (종전과 같음) |
+| `true` | **실 조사** (vLLM 권장값) | 실 조사 |
+| `false` | 스텁 — `조사 LLM 비활성` | 스텁 — `조사 LLM 비활성` |
+
+- **빈 값 금지**: `INVESTIGATION_LLM_ENABLED=`(또는 `null`)은 None이 아니라 **설정 로드 실패**다(pydantic 실측) — 미설정으로 두려면 줄을 두지 않는다.
+- 이름은 바꾸지 않았다 — `gemini_api_key`는 Gemini 개발 경로의 키로 남는다. 미설정(None) 경로는 **만료일 2027-03-17**(D-161 ①)에 명시 필수화 여부를 판정한다.
 
 #### 5.6.9 ★ 함정 2 — `INVESTIGATION_LLM_MODEL`은 조사 모델이 아니다
 
@@ -758,7 +800,7 @@ vLLM 엔드포인트에 붙으려다 실패한다. `MODEL`로 주면 `Config.mod
 |---|---|
 | **실제 조사가 쓰는 모델** | `MODEL` (+ `API_BASE` · `API_KEY`) |
 | `scripts/smoke_llm.py` 스모크 모델 | `INVESTIGATION_LLM_MODEL` |
-| 실 조사 on/off(스텁 여부) | `GEMINI_API_KEY` 유무 |
+| 실 조사 on/off(스텁 여부) | `INVESTIGATION_LLM_ENABLED` (미설정이면 `GEMINI_API_KEY` 유무 — §5.6.8) |
 
 #### 5.6.10 개발·테스트(Gemini) 배선 — `.encenv` 키만으로는 조사가 돌지 않는다 (2026-08-28 실측)
 
@@ -830,7 +872,7 @@ print(store.get(res["investigation_id"]))    # status/briefing/verdict/tokens/co
 ```
 
 기동한 서비스를 네트워크로 확인하려면 `sre_health`를 부른다 — `holmes_ready=false`면
-LLM 키가 없어 조사가 스텁으로 떨어지는 상태다.
+조사 LLM 게이트가 닫혀(`INVESTIGATION_LLM_ENABLED=false`, 또는 미설정이면서 LLM 키 없음) 조사가 스텁으로 떨어지는 상태다.
 
 ### 6.4 조사 결과 스키마
 

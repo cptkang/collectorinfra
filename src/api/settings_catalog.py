@@ -235,8 +235,7 @@ IMMEDIATE_KEYS: frozenset[str] = frozenset({
     "SYNONYM_SEMANTIC_CONFIDENCE_MIN",
     "SYNONYM_MATCH_CONFIDENCE_MIN",
     "SYNONYM_GOVERNANCE",                        # (c) redis_cache.py
-    "SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS",   # (c) cache_manager.py
-    "UI_DEFAULT_THEME",                          # (c) routes/ui.py 요청 시 fresh load_config
+    "UI_DEFAULT_THEME",                         # (c) routes/ui.py 요청 시 fresh load_config
 })
 
 #: 저장 후 **설정 리로드**(`POST /admin/settings/reload` — app.state.config 교체 + 그래프
@@ -257,7 +256,6 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "WORKER_PROVIDER_OVERRIDE",
     "POLESTAR_DB_IDS",
     "ENABLE_SQL_APPROVAL",
-    "ENABLE_STRUCTURE_APPROVAL",
     "ACTIVE_DB_IDS",            # ※알람 비대칭
     "LOG_LEVEL",                # 리로드가 setup_logging을 재호출
     # --- server: 라우트 요청 시점 판독 (state.config 교체로 반영) ---
@@ -276,6 +274,11 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "LLM_MODEL",
     "LLM_OLLAMA_BASE_URL",
     "LLM_OLLAMA_TIMEOUT",
+    "LLM_MLX_BASE_URL",
+    "LLM_MLX_MODEL",
+    "LLM_MLX_MAX_TOKENS",
+    "LLM_MLX_TIMEOUT",
+    "LLM_MLX_ENABLE_THINKING",
     "LLM_GEMINI_MODEL",
     "LLM_FABRIX_BASE_URL",
     "LLM_FABRIX_CHAT_MODEL",
@@ -334,6 +337,9 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "SCHEMA_CACHE_CACHE_DIR",
     "SCHEMA_CACHE_ENABLED",
     "SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS",
+    # plans/104 관리자 「DB 구조」 잡의 상한 — 잡 시작 시점 config로 판독(기동 캡처 없음)
+    "SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY",
+    "SCHEMA_CACHE_STRUCTURE_GROUP_MAX_TABLES",
     # --- redis: 소비처가 두 싱글톤(스키마 캐시·질의 이력)뿐인 필드만 ---
     "REDIS_SSL",
     "REDIS_SOCKET_TIMEOUT",

@@ -55,19 +55,19 @@ class TestLadderQuery:
 
     def test_records_tier_reason_and_origin(self):
         ld.record_ladder_resolution(
-            ld.LadderTier.SEMANTIC_ROUTER, "flag_off", flag_origin="auto_multidb"
+            ld.LadderTier.SEMANTIC_ROUTER, "none", flag_origin="auto_multidb"
         )
 
         snap = ld.current_ladder()
         assert snap == {
             "tier": "semantic_router",
-            "degraded_reason": "flag_off",
+            "degraded_reason": "none",
             "resolved_by": "auto_multidb",
         }
 
     def test_rebuild_overwrites(self):
         """그래프 재빌드 시 최신 확정만 유효하다 (누적 아님)."""
-        ld.record_ladder_resolution(ld.LadderTier.LEGACY, "flag_off")
+        ld.record_ladder_resolution(ld.LadderTier.LEGACY, "semantic_routing_off")
         ld.record_ladder_resolution(ld.LadderTier.DEEP_AGENT, "none")
 
         assert ld.current_ladder()["tier"] == "deep_agent"
@@ -89,7 +89,7 @@ class TestLadderQuery:
 
     def test_non_canonical_warns_once(self, caplog):
         with caplog.at_level(logging.WARNING):
-            ld.record_ladder_resolution(ld.LadderTier.LEGACY, "flag_off")
+            ld.record_ladder_resolution(ld.LadderTier.LEGACY, "semantic_routing_off")
 
         assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
 

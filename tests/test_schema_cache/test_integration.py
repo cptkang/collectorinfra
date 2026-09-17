@@ -116,7 +116,6 @@ class TestFileCacheFallbackIntegration:
         config.schema_cache.backend = "file"
         config.schema_cache.cache_dir = str(tmp_path)
         config.schema_cache.enabled = True
-        config.schema_cache.auto_generate_descriptions = False
         config.redis.host = "localhost"
         config.redis.port = 6379
         config.redis.db = 0
@@ -205,7 +204,6 @@ class TestConfigIntegration:
         from src.config import SchemaCacheConfig
         config = SchemaCacheConfig()
         assert config.backend == "redis"
-        assert config.auto_generate_descriptions is True
 
     def test_schema_cache_backend_file_option(self):
         """SchemaCacheConfig backend을 file로 설정할 수 있다."""

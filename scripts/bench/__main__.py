@@ -26,6 +26,7 @@ if str(_ROOT) not in sys.path:
 from scripts.bench import axes as axes_mod  # noqa: E402
 from scripts.bench import catalog, compare, optimize, probe  # noqa: E402
 from scripts.bench import report as report_mod, sweep as sweep_mod, validate  # noqa: E402
+from scripts.scenario.preflight import external_planes, mlx_run_blockers  # noqa: E402
 
 
 def say(message: str = "") -> None:
@@ -38,26 +39,29 @@ def say(message: str = "") -> None:
 
 _RESULTS_DIR = _ROOT / "results" / "bench"
 
-#: 내부망 프로바이더 — 승인·옵트인 없이 실행한다(plans/93 §4.4 · 사용자 확정 2026-09-11).
-_INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama"})
+
+def _providers_of(echo: probe.EchoResult) -> tuple[str, str]:
+    """(워커, 오케스트레이터) 프로바이더. 에코가 설정 전체를 평탄화하므로 둘 다 실려 있다."""
+    return (str(echo.value_of("llm.provider") or "unknown"),
+            str(echo.value_of("orchestrator.provider") or "unknown"))
 
 
-def _provider_of(echo: probe.EchoResult) -> str:
-    return str(echo.value_of("llm.provider") or "unknown")
-
-
-def approval_policy(provider: str) -> tuple[bool, str]:
+def approval_policy(worker: str, orchestrator: str) -> tuple[bool, str]:
     """실 LLM 실행에 승인이 필요한가.
 
     내부망 면제는 **내부망에만** 적용된다 — 외부 프로바이더에서는 D-127이 그대로 산다.
-    개발자가 구분할 필요는 없고 여기가 대신 판정한다.
+    워커와 오케스트레이터를 **둘 다** 본다(D-222) — 판정 정의는 시나리오 하네스와 같은
+    `scripts.scenario.preflight.external_planes` 한 곳이다(plans/93 §4.4 · 사용자 확정 2026-09-11).
 
     Returns:
         (승인 필요 여부, 사람이 읽을 사유)
     """
-    if provider in _INTERNAL_PROVIDERS:
-        return False, f"내부망 프로바이더({provider}) — 승인 없이 진행합니다"
-    return True, f"외부 프로바이더({provider}) — 실 LLM 호출에는 승인이 필요합니다(D-127)"
+    external = external_planes(worker, orchestrator)
+    if not external:
+        return False, (f"내부망/로컬 프로바이더(워커 {worker}, 오케스트레이터 {orchestrator}) — "
+                       "승인 없이 진행합니다")
+    return True, (f"외부 프로바이더({', '.join(external)}) — "
+                  "실 LLM 호출에는 승인이 필요합니다(D-127)")
 
 
 def _run_id() -> str:
@@ -76,12 +80,11 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         return 1
 
     knobs = catalog.load_knobs()
-    provider = _provider_of(echo)
-    need_approval, reason = approval_policy(provider)
+    need_approval, reason = approval_policy(*_providers_of(echo))
 
     say(f"[OK]   venv          python {sys.version.split()[0]}")
     say(f"[OK]   config        {len(knobs)} 필드 로드 · 에코 {len(echo.config)} 경로")
-    say(f"[OK]   provider      {provider} — {reason}")
+    say(f"[OK]   provider      {reason}")
 
     nd = probe.detect_nondeterministic_keys()
     if nd:
@@ -124,9 +127,9 @@ def cmd_show_env(args: argparse.Namespace) -> int:
     if not echo.ok:
         say(f"설정을 읽지 못했습니다: {echo.error_type}: {echo.error}")
         return 1
-    provider = _provider_of(echo)
-    need, reason = approval_policy(provider)
-    say(f"프로바이더   : {provider}")
+    worker, orchestrator = _providers_of(echo)
+    need, reason = approval_policy(worker, orchestrator)
+    say(f"프로바이더   : 워커 {worker} / 오케스트레이터 {orchestrator}")
     say(f"승인 정책    : {'필요' if need else '불요'} — {reason}")
     say(f"활성 DB      : {echo.value_of('multi_db.active_db_ids_csv')}")
     say(f"DB 백엔드    : {echo.value_of('db_backend')}")
@@ -283,13 +286,22 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     if args.mode == "run":
         echo = probe.echo_config()
-        provider = _provider_of(echo)
-        need, reason = approval_policy(provider)
+        providers = _providers_of(echo)
+        need, reason = approval_policy(*providers)
         say(f"  프로바이더: {reason}")
         if need and not args.yes:
             say("  → 외부 프로바이더입니다. 승인 없이 실 호출하지 않습니다(D-127).")
             say("     내부망에서 실행하거나, 승인을 받았다면 --yes를 붙이세요.")
             return 2
+        if "mlx" in providers:
+            # arm 마다 서버를 띄우기 전에 로컬 MLX 가 실제로 생성하는지 본다 — 죽은 서버로
+            # 스위프를 돌리면 arm 전부가 1단 강등(INVALID)이거나 LLM 오류로 끝난다.
+            blockers = mlx_run_blockers()
+            if blockers:
+                say("  → MLX 로컬 서버가 준비되지 않았습니다 — arm 서버를 띄우기 전에 멈춥니다.")
+                for check in blockers:
+                    say(f"     {check.key}: {check.observed} — {check.action}")
+                return 2
 
     if args.mode == "dry":
         for arm in arms:

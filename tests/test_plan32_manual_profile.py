@@ -1,7 +1,8 @@
 """Plan 32: EAV 수동 프로필 설정 통합 검증 테스트.
 
 검증 대상:
-- Stream A: _load_manual_profile() 수동 프로필 로드 + 저장 보호
+- Stream A: _load_manual_profile() 수동 프로필 로드
+  + 질의 경로가 프로필 디렉터리에 쓰지 않음(plans/104)
 - Stream B: _format_structure_guide() / _generate_sql() value_joins 프롬프트 연동
 - Stream C: sync_known_attributes_to_eav_synonyms() Redis 동기화
 - 스트림 간 연동: known_attributes_detail 포맷 정합성, value_joins 프롬프트 삽입
@@ -9,19 +10,15 @@
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.nodes.query_generator import _format_structure_guide
-from src.nodes.schema_analyzer import (
-    _load_manual_profile,
-    _read_existing_profile_source,
-    _save_structure_profile,
-)
+from src.nodes.schema_analyzer import _load_manual_profile, schema_analyzer
+from src.state import create_initial_state
 
 
 # ===========================================================================
@@ -125,92 +122,73 @@ class TestLoadManualProfile:
 
 
 # ===========================================================================
-# 2. Stream A: _save_structure_profile 저장 보호
+# 2. Stream A: 질의 경로는 프로필 디렉터리에 쓰지 않는다 (plans/104 · D-227 · R11)
 # ===========================================================================
 
 
-class TestSaveStructureProfileProtection:
-    """_save_structure_profile의 manual 프로필 보호 테스트."""
+class _NoStructureCacheMgr:
+    """구조 정보(적용본)가 없는 캐시 매니저 대역 — 쓰기 메서드 호출을 기록한다."""
+
+    redis_available = False
+
+    def __init__(self) -> None:
+        self.saved_structure: list[tuple[str, dict]] = []
+
+    async def get_schema_or_fetch(self, client, db_id):
+        schema = {
+            "tables": {"items": {"columns": [{"name": "id", "type": "int"}]}},
+            "relationships": [],
+        }
+        # 컬럼 설명은 등록된 상태 — 이 테스트는 구조 정보 경로만 본다
+        return schema, True, "메모리", {"items.id": "항목 식별자"}, {}
+
+    async def get_applied_structure_meta(self, db_id):
+        return None
+
+    async def save_structure_meta(self, db_id, meta):
+        self.saved_structure.append((db_id, meta))
+        return True
+
+
+class TestQueryPathDoesNotWriteProfiles:
+    """종전 질의 경로는 LLM 구조 분석 결과를 `config/db_profiles/{db_id}.yaml`(source: auto)로
+    기록했다.
+
+    그 기록은 git 정본에 자동 산출물을 섞었다(N9 — `test_db.yaml` 커밋 흔적). 이제 질의 경로는
+    구조 정보가 없어도 **어떤 파일도 쓰지 않고** 사유만 남긴다.
+    """
 
     @pytest.mark.asyncio
-    async def test_manual_profile_not_overwritten(self, tmp_path):
-        """source: manual인 기존 파일은 덮어쓰지 않음."""
-        import yaml
+    async def test_schema_analyzer_writes_nothing_under_profiles_dir(
+        self, tmp_path, monkeypatch, mock_config
+    ):
+        profiles_dir = tmp_path / "config" / "db_profiles"
+        profiles_dir.mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)  # 프로필 로더·기록기의 상대 경로 기준을 임시 디렉터리로
 
-        profiles_dir = tmp_path / "db_profiles"
-        profiles_dir.mkdir()
-        yaml_path = profiles_dir / "test_db.yaml"
-        yaml_path.write_text(
-            yaml.dump({"source": "manual", "patterns": [{"type": "eav"}]})
-        )
+        mock_client = AsyncMock()
+        mock_client.get_sample_data = AsyncMock(return_value=[])
 
-        structure_meta = {
-            "patterns": [{"type": "eav", "entity_table": "NEW_TABLE"}],
-            "query_guide": "new guide",
-        }
-        cache_mgr = AsyncMock()
-        cache_mgr.save_schema = AsyncMock()
+        @asynccontextmanager
+        async def _db_ctx(*_a, **_kw):
+            yield mock_client
 
-        _real_join = os.path.join
+        cache_mgr = _NoStructureCacheMgr()
+        llm = AsyncMock()
+        state = create_initial_state(user_query="항목 목록")
+        state["active_db_id"] = "new_db"
+        state["parsed_requirements"] = {"query_targets": [], "original_query": "항목 목록"}
 
-        with patch(
-            "src.nodes.schema_analyzer.os.path.join",
-            side_effect=lambda *args: _real_join(str(tmp_path), *args[1:]),
-        ):
-            with patch("src.nodes.schema_analyzer.os.makedirs"):
-                await _save_structure_profile("test_db", structure_meta, cache_mgr)
+        with patch("src.nodes.schema_analyzer.get_db_client", side_effect=_db_ctx), \
+             patch("src.nodes.schema_analyzer.get_cache_manager", return_value=cache_mgr):
+            result = await schema_analyzer(state, llm=llm, app_config=mock_config)
 
-        # YAML 파일이 변경되지 않았는지 확인
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
-        assert data["source"] == "manual"
-        # NEW_TABLE이 아닌 원래 내용 유지
-        assert data["patterns"][0].get("entity_table") is None
-
-    @pytest.mark.asyncio
-    async def test_auto_profile_overwritten(self, tmp_path):
-        """source: auto인 기존 파일은 덮어쓸 수 있음."""
-        import yaml
-
-        # _save_structure_profile은 os.path.join("config", "db_profiles")를 사용
-        # 이를 tmp_path로 리다이렉트
-        profiles_dir = str(tmp_path)
-        yaml_path = tmp_path / "test_db.yaml"
-        yaml_path.write_text(
-            yaml.dump({"source": "auto", "patterns": [{"type": "eav"}]})
-        )
-
-        structure_meta = {
-            "patterns": [{"type": "eav", "entity_table": "NEW_TABLE"}],
-            "query_guide": "new guide",
-        }
-        cache_mgr = AsyncMock()
-        cache_mgr.save_schema = AsyncMock()
-
-        _real_join = os.path.join
-
-        def _redirect_join(*args):
-            # "config" + "db_profiles" -> tmp_path, db_id.yaml -> tmp_path/db_id.yaml
-            result = _real_join(*args)
-            if "config" in args and "db_profiles" in args:
-                return profiles_dir
-            if result.endswith(".yaml") or result.endswith(".json"):
-                filename = os.path.basename(result)
-                return _real_join(profiles_dir, filename)
-            return result
-
-        with patch(
-            "src.nodes.schema_analyzer.os.path.join",
-            side_effect=_redirect_join,
-        ):
-            with patch("src.nodes.schema_analyzer.os.makedirs"):
-                await _save_structure_profile("test_db", structure_meta, cache_mgr)
-
-        # YAML 파일이 갱신되었는지 확인
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
-        assert data["source"] == "auto"
-        assert data["patterns"][0]["entity_table"] == "NEW_TABLE"
+        assert result["error_message"] is None
+        assert list(profiles_dir.iterdir()) == []            # 파일 쓰기 0
+        assert cache_mgr.saved_structure == []                # 적용본 없음 → 구조 캐시 쓰기도 0
+        assert "_structure_meta" not in result["schema_info"]
+        assert [n["kind"] for n in result["dependency_notes"]] == ["structure_missing"]
+        llm.ainvoke.assert_not_called()                       # query_targets 없음 → LLM 호출 0
 
 
 # ===========================================================================

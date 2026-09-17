@@ -1,6 +1,7 @@
 """DB 연결 관리 모듈.
 
-PostgreSQL(asyncpg 풀)과 DB2(ibm_db, asyncio.to_thread 래핑)를 통합 관리한다.
+PostgreSQL(asyncpg 풀) · DB2(ibm_db, asyncio.to_thread 래핑) · MariaDB(aiomysql 풀)를
+통합 관리한다.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit
 
 from mcp_server import sql_log
 from mcp_server.config import SourceConfig
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 class DBPoolManager:
     """데이터소스별 DB 연결 관리.
 
-    PostgreSQL은 asyncpg 풀, DB2는 ibm_db 요청별 연결을 사용한다.
+    PostgreSQL은 asyncpg 풀, DB2는 ibm_db 요청별 연결, MariaDB는 aiomysql 풀을 사용한다.
     """
 
     def __init__(self, sources: list[SourceConfig]) -> None:
@@ -30,6 +32,7 @@ class DBPoolManager:
         }
         self._pg_pools: dict[str, Any] = {}  # asyncpg.Pool
         self._db2_configs: dict[str, SourceConfig] = {}
+        self._mariadb_pools: dict[str, Any] = {}  # aiomysql.Pool
 
     async def initialize(self) -> None:
         """활성 소스에 대해 연결을 초기화한다."""
@@ -56,13 +59,38 @@ class DBPoolManager:
             elif src.type == "db2":
                 self._db2_configs[name] = src
                 logger.info("DB2 소스 등록: %s (요청별 연결)", name)
+            elif src.type == "mariadb":
+                try:
+                    import aiomysql
+
+                    pool = await aiomysql.create_pool(
+                        minsize=src.pool_min_size,
+                        maxsize=src.pool_max_size,
+                        connect_timeout=src.query_timeout,
+                        # SELECT만 해도 트랜잭션이 열리고, aiomysql은 트랜잭션이 열린 연결을
+                        # 풀에 돌려받을 때 닫는다 — autocommit 없이는 풀이 매 요청 재연결로
+                        # 퇴화한다.
+                        autocommit=True,
+                        # 문장 타임아웃을 서버가 강제한다(MariaDB 세션 변수 · 초 단위).
+                        init_command=f"SET SESSION max_statement_time={src.query_timeout}",
+                        **_mariadb_connect_kwargs(src.connection),
+                    )
+                    self._mariadb_pools[name] = pool
+                    logger.info(
+                        "MariaDB 풀 초기화 성공: %s (풀 %d-%d)",
+                        name,
+                        src.pool_min_size,
+                        src.pool_max_size,
+                    )
+                except Exception as e:
+                    logger.error("MariaDB 풀 초기화 실패 (%s): %s", name, e)
             else:
                 logger.warning("지원하지 않는 DB 타입: %s (%s)", src.type, name)
 
     async def execute(self, source_name: str, sql: str) -> list[dict[str, Any]]:
         """소스 타입에 따라 적절한 드라이버로 쿼리를 실행한다.
 
-        실행된 SQL은 성공·실패 모두 `logs/sql/`에 기록한다(D-140). PG·DB2 분기가
+        실행된 SQL은 성공·실패 모두 `logs/sql/`에 기록한다(D-140). 엔진 분기가
         여기 한 곳으로 모이므로 로깅도 여기서 한 번만 건다(경로 대칭).
 
         Args:
@@ -79,6 +107,8 @@ class DBPoolManager:
             runner = self._execute_pg
         elif source_name in self._db2_configs:
             runner = self._execute_db2
+        elif source_name in self._mariadb_pools:
+            runner = self._execute_mariadb
         else:
             raise ValueError(
                 f"알 수 없는 소스: {source_name}. "
@@ -117,6 +147,22 @@ class DBPoolManager:
         return await asyncio.to_thread(
             self._execute_db2_sync, src.connection, sql
         )
+
+    async def _execute_mariadb(
+        self, source_name: str, sql: str
+    ) -> list[dict[str, Any]]:
+        """MariaDB 쿼리를 실행한다.
+
+        인자 없이 실행하므로 드라이버가 `%`를 포맷 지시자로 해석하지 않는다(`LIKE 'a%'` 안전).
+        """
+        import aiomysql
+
+        pool = self._mariadb_pools[source_name]
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(sql)
+                rows = await cur.fetchall()
+                return [_normalize_row(dict(r)) for r in rows]
 
     @staticmethod
     def _execute_db2_sync(conn_str: str, sql: str) -> list[dict[str, Any]]:
@@ -166,13 +212,16 @@ class DBPoolManager:
                     source_name, "SELECT 1 AS ok FROM SYSIBM.SYSDUMMY1"
                 )
                 return len(rows) > 0
+            elif source_name in self._mariadb_pools:
+                rows = await self._execute_mariadb(source_name, "SELECT 1 AS ok")
+                return len(rows) > 0
             return False
         except Exception as e:
             logger.warning("헬스체크 실패 (%s): %s", source_name, e)
             return False
 
     async def close_all(self) -> None:
-        """모든 PostgreSQL 풀을 종료한다.
+        """모든 PostgreSQL·MariaDB 풀을 종료한다.
 
         DB2는 요청별 연결이므로 별도 종료가 불필요하다.
         """
@@ -183,6 +232,43 @@ class DBPoolManager:
             except Exception as e:
                 logger.warning("PostgreSQL 풀 종료 실패 (%s): %s", name, e)
         self._pg_pools.clear()
+        for name, pool in self._mariadb_pools.items():
+            try:
+                pool.close()
+                await pool.wait_closed()
+                logger.info("MariaDB 풀 종료: %s", name)
+            except Exception as e:
+                logger.warning("MariaDB 풀 종료 실패 (%s): %s", name, e)
+        self._mariadb_pools.clear()
+
+
+def _mariadb_connect_kwargs(dsn: str) -> dict[str, Any]:
+    """`mariadb://user:password@host:port/database` 연결 문자열을 aiomysql 접속 인자로 푼다.
+
+    aiomysql은 DSN 문자열을 받지 않고 키워드 인자만 받는다. 사용자·비밀번호의 특수문자는
+    퍼센트 인코딩으로 적는다. 쿼리 옵션(`?…`)은 해석하지 않으므로 조용히 버리지 않고 거부한다.
+    오류 메시지에는 연결 문자열을 싣지 않는다(비밀번호 노출 방지).
+
+    Raises:
+        ValueError: 스킴·호스트·database 누락 또는 쿼리 옵션 포함
+    """
+    parts = urlsplit(dsn)
+    if parts.scheme not in ("mariadb", "mysql"):
+        raise ValueError(
+            "MariaDB 연결 문자열은 mariadb:// 또는 mysql:// 형식이어야 한다"
+        )
+    if parts.query:
+        raise ValueError("MariaDB 연결 문자열의 쿼리 옵션(?…)은 지원하지 않는다")
+    database = unquote(parts.path.lstrip("/"))
+    if not parts.hostname or not database:
+        raise ValueError("MariaDB 연결 문자열에 host와 database가 필요하다")
+    return {
+        "host": parts.hostname,
+        "port": parts.port or 3306,
+        "user": unquote(parts.username or ""),
+        "password": unquote(parts.password or ""),
+        "db": database,
+    }
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:

@@ -1061,24 +1061,109 @@ async def _apply_llm_synonym_discovery(
 
     # 글로벌 synonym 자동 등록
     await _register_llm_synonym_discoveries_to_redis(
-        cache_manager, mapped_fields, eav_name_synonyms
+        cache_manager, mapped_fields, eav_name_synonyms, eav_db_id=eav_db_id
     )
+
+
+_NO_STRUCTURE_REASON = "수동 프로필·승인본 없음"
+_AUTHORITY_UNKNOWN_REASON = "구조 정보 판정 실패"
+_DB_SCOPE_REGISTERED_LOG = (
+    "양식 LLM 매핑 DB별 등록: db_id=%s, field=%s, column=%s (%s — 전역 대신 DB별)"
+)
+_DB_SCOPE_EAV_SKIPPED_LOG = (
+    "양식 LLM 매핑 EAV 등록 건너뜀: db_id=%s, field=%s, column=%s "
+    "(%s — EAV 매핑은 구조 정보가 있는 DB에서만 성립해 DB별로도 등록하지 않음)"
+)
+_NO_TARGET_DB_LOG = (
+    "양식 LLM 매핑 등록 건너뜀: field=%s, column=%s "
+    "(대상 db_id 없음 — 전역·DB별 모두 등록하지 않음)"
+)
+
+
+async def _structure_authority(
+    cache_manager: Any,
+    db_id: str,
+    memo: dict[str, bool | None],
+) -> bool | None:
+    """양식 LLM 매핑 대상 DB에 구조 정보(수동 프로필·승인본)가 있는지 판정한다 (plans/104 G-11 (b)).
+
+    전역 사전은 DB에 귀속되지 않아, 구조 정보가 없는 DB에서 나온 검증 안 된 LLM 매핑이
+    다른 DB의 매핑 재료로 번진다. 호출부는 참일 때만 전역에 쓰고, 그 밖에는 DB별 캐시에 쓴다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스
+        db_id: 매핑 대상 DB 식별자 (비어 있지 않아야 한다)
+        memo: 한 번의 등록 호출 안에서 db_id별 판정을 재사용하는 저장소
+
+    Returns:
+        True(구조 정보 있음) · False(없음) · None(판정 자체가 실패 — 전역 쓰기 금지)
+    """
+    if db_id not in memo:
+        try:
+            memo[db_id] = bool(await cache_manager.has_structure_authority(db_id))
+        except Exception as e:
+            logger.warning(
+                "구조 정보 판정 실패 — 양식 LLM 매핑은 전역에 쓰지 않고 DB별로 처리: db_id=%s (%s)",
+                db_id, e,
+            )
+            memo[db_id] = None
+    return memo[db_id]
+
+
+async def _register_llm_mapping_to_db_scope(
+    cache_manager: Any,
+    db_id: str,
+    field: str,
+    column: str,
+    reason: str,
+) -> bool:
+    """구조 정보를 확인하지 못한 DB의 양식 LLM 매핑을 그 DB의 유사어 캐시에 등록한다 (G-11 (b)).
+
+    전역 사전(`synonyms:global`·EAV 속성명 유사어)에는 쓰지 않는다. 오염이 그 DB 밖으로
+    번지지 않게 하면서 그 DB의 양식 매핑 학습은 남긴다(출처 태그 `llm`).
+    EAV 매핑(`EAV:` 접두)은 구조 정보(EAV 패턴)가 있는 DB에서만 성립하므로 등록하지 않는다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스
+        db_id: 매핑 대상 DB 식별자
+        field: 양식 필드명
+        column: 매핑된 컬럼(`table.column`) 또는 `EAV:` 접두 속성명
+        reason: 로그에 남길 DB별 처리 사유
+
+    Returns:
+        등록 성공 여부
+    """
+    if column.startswith("EAV:"):
+        logger.warning(_DB_SCOPE_EAV_SKIPPED_LOG, db_id, field, column, reason)
+        return False
+    if not await cache_manager.add_synonyms(db_id, column, [field], source="llm"):
+        logger.warning(
+            "양식 LLM 매핑 DB별 등록 실패: db_id=%s, field=%s, column=%s", db_id, field, column
+        )
+        return False
+    logger.info(_DB_SCOPE_REGISTERED_LOG, db_id, field, column, reason)
+    return True
 
 
 async def _register_llm_synonym_discoveries_to_redis(
     cache_manager: Optional[Any],
     mapped_fields: list[tuple[str, str, str]],
     eav_name_synonyms: dict[str, list[str]] | None = None,
+    *,
+    eav_db_id: str = "",
 ) -> None:
     """Step 2.8에서 발견한 유사어를 Redis에 자동 등록한다.
 
     컬럼 매핑의 경우 add_global_synonym()으로 등록하고,
     EAV 매핑의 경우 eav_name_synonyms에 필드명을 추가하여 저장한다.
+    둘 다 전역 저장소라 대상 DB에 구조 정보(수동 프로필·승인본)가 있을 때만 쓰고,
+    없으면 컬럼 매핑만 그 DB의 유사어 캐시에 등록한다(G-11 (b)).
 
     Args:
         cache_manager: SchemaCacheManager 인스턴스 (None 가능)
         mapped_fields: (field_name, matched_key, type) 튜플 리스트
         eav_name_synonyms: 기존 EAV 속성명 유사어 매핑 (선택)
+        eav_db_id: EAV 매핑의 대상 DB 식별자 (컬럼 매핑은 matched_key의 db_id를 쓴다)
     """
     if not mapped_fields:
         return
@@ -1093,6 +1178,7 @@ async def _register_llm_synonym_discoveries_to_redis(
 
     registered_count = 0
     eav_updated = False
+    authority: dict[str, bool | None] = {}
 
     for field, matched_key, match_type in mapped_fields:
         # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
@@ -1101,8 +1187,24 @@ async def _register_llm_synonym_discoveries_to_redis(
                 "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, matched_key
             )
             continue
+        if match_type == "eav":
+            target_db_id, target_column = eav_db_id, matched_key
+        else:
+            target_db_id, _, target_column = matched_key.partition(":")
+        if not target_db_id:
+            logger.warning(_NO_TARGET_DB_LOG, field, target_column)
+            continue
+        has_structure = await _structure_authority(cache_manager, target_db_id, authority)
         try:
-            if match_type == "eav":
+            if has_structure is not True:
+                reason = (
+                    _NO_STRUCTURE_REASON if has_structure is False else _AUTHORITY_UNKNOWN_REASON
+                )
+                if await _register_llm_mapping_to_db_scope(
+                    cache_manager, target_db_id, field, target_column, reason
+                ):
+                    registered_count += 1
+            elif match_type == "eav":
                 # EAV 매핑: eav_name_synonyms에 필드명 추가 + global에도 등록
                 eav_name = matched_key[4:]  # "EAV:" 접두사 제거
                 redis_cache = getattr(cache_manager, "_redis_cache", None)
@@ -1363,6 +1465,9 @@ async def _register_llm_mappings_to_redis(
     EAV 매핑(EAV: 접두사)은 eav_name_synonyms에 필드명을 추가하여 저장하고,
     일반 매핑은 cache_manager.add_synonyms()로 등록한다.
     cache_manager가 None이거나 redis_available이 False이면 스킵한다.
+    전역(EAV 속성명 사전·`synonyms:global`) 쓰기는 대상 db_id에 구조 정보(수동 프로필·승인본)가
+    있을 때만 하고, 없으면 일반 매핑만 그 DB의 유사어 캐시에 출처 `llm`으로 등록한다
+    (G-11 (b) — EAV는 등록하지 않음).
 
     Args:
         cache_manager: SchemaCacheManager 인스턴스 (None 가능)
@@ -1382,6 +1487,7 @@ async def _register_llm_mappings_to_redis(
 
     registered_count = 0
     eav_updated = False
+    authority: dict[str, bool | None] = {}
 
     for detail in llm_inference_details:
         field = detail.get("field", "")
@@ -1398,8 +1504,21 @@ async def _register_llm_mappings_to_redis(
             )
             continue
 
+        if not db_id:
+            logger.warning(_NO_TARGET_DB_LOG, field, column)
+            continue
+        has_structure = await _structure_authority(cache_manager, db_id, authority)
+
         try:
-            if column.startswith("EAV:"):
+            if has_structure is not True:
+                reason = (
+                    _NO_STRUCTURE_REASON if has_structure is False else _AUTHORITY_UNKNOWN_REASON
+                )
+                if await _register_llm_mapping_to_db_scope(
+                    cache_manager, db_id, field, column, reason
+                ):
+                    registered_count += 1
+            elif column.startswith("EAV:"):
                 # EAV 매핑: eav_name_synonyms + global 양쪽 저장
                 eav_name = column[4:]
                 redis_cache = getattr(cache_manager, "_redis_cache", None)

@@ -124,7 +124,14 @@ def root_cause_hypotheses(correlation: dict | None, llm_cause: str, citations_ve
 
 
 def _is_cited(line: str, tool_names: list[str]) -> bool:
-    """한 라인이 도구 출력 인용을 포함하는지 판정한다(도구명 언급 또는 인용 마커)."""
+    """한 라인이 도구 출력 인용을 포함하는지 판정한다(도구명 언급 또는 인용 마커).
+
+    도구 출력이 0건이면 인용할 대상이 없으므로 마커가 있어도 인용이 아니다 — `DiagnosisAgent`의 미완주
+    안내("수집된 근거가 불충분…")가 마커 `근거`에 걸려 원인·타임라인에 근거처럼 실리던 결함(2026-09-17
+    MLX e2e 실측). `build_briefing` docstring의 "도구 출력 전무 → 가설" 계약을 모든 소비 지점에 같게 적용한다.
+    """
+    if not tool_names:
+        return False
     if any(marker in line for marker in CITATION_MARKERS):
         return True
     return any(name and name in line for name in tool_names)

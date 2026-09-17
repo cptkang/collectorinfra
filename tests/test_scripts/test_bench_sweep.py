@@ -651,8 +651,8 @@ def gate(monkeypatch):
         raise sweep.SweepUnavailable("테스트 — 게이트 통과 확인 후 중단")
 
     monkeypatch.setattr(cli.probe, "echo_config", fake_echo)
-    monkeypatch.setattr(cli, "_provider_of", lambda echo: "fabrix")
-    monkeypatch.setattr(cli, "approval_policy", lambda provider: (False, "내부망"))
+    monkeypatch.setattr(cli, "_providers_of", lambda echo: ("fabrix", "vllm"))
+    monkeypatch.setattr(cli, "approval_policy", lambda worker, orchestrator: (False, "내부망"))
     monkeypatch.setattr(sweep, "run_arms", fake_run)
     return cli, seen
 

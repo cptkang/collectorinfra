@@ -1,8 +1,8 @@
 """3·4단 순차 러너 — `sequential-fallback-runner` (D-203 · plans/88 §4.7 · W9).
 
-핵심 계약: ①1·2단 빌드에는 노드가 없다 ②플래그 off면 그래프 배선 바이트 동일 ③HITL 승인
-플래그가 on이면 진입하지 않는다(우회 금지) ④2단 부품(_llm_decompose·agent_orchestrator·
-result_aggregator)을 재사용한다.
+핵심 계약: ①1·2단 빌드에는 노드가 없다 ②플래그 off면 그래프 배선 바이트 동일 ③SQL 승인
+플래그가 on이면 진입하지 않는다(우회 금지 — 구조 승인은 plans/104에서 게이트째 삭제) ④2단 부품
+(_llm_decompose·agent_orchestrator·result_aggregator)을 재사용한다.
 """
 
 from __future__ import annotations
@@ -21,11 +21,10 @@ sr_mod = importlib.import_module("src.orchestration.sequential_runner")
 SEQ_QUERY = "CPU 사용률이 높은 서버를 찾아 그 서버들의 최근 1개월 CPU 사용률을 보여줘"
 
 
-def _cfg(mock_config, *, runner=True, structure_approval=False, sql_approval=False):
+def _cfg(mock_config, *, runner=True, sql_approval=False):
     cfg = mock_config
     cfg.enable_intent_orchestration = False
     cfg.enable_deepagents_package = False
-    cfg.enable_structure_approval = structure_approval
     cfg.enable_sql_approval = sql_approval
     cfg.composite.sequential_fallback_tiers_enabled = runner
     return cfg
@@ -45,11 +44,17 @@ def test_entry_requires_all_conditions(mock_config):
     assert not sequential_entry(st, _cfg(mock_config, runner=False))                 # 플래그 off
 
 
-def test_entry_refuses_when_hitl_approval_on(mock_config):
-    """★ 승인 게이트 우회 금지 — 운영 기본(structure_approval=on)에서는 진입하지 않는다."""
+def test_entry_refuses_when_sql_approval_on(mock_config):
+    """★ 승인 게이트 우회 금지 — SQL 승인이 켜져 있으면 진입하지 않는다."""
     st = {"user_query": SEQ_QUERY, "routing_intent": None}
-    assert not sequential_entry(st, _cfg(mock_config, structure_approval=True))
+    assert sequential_entry(st, _cfg(mock_config))
     assert not sequential_entry(st, _cfg(mock_config, sql_approval=True))
+
+
+def test_entry_no_longer_waits_for_structure_hitl(mock_config):
+    """plans/104: 구조 승인 설정이 사라져 기본 설정에서 순차 러너가 진입한다(102 X-T8 해소)."""
+    st = {"user_query": SEQ_QUERY, "routing_intent": "data_query"}
+    assert sequential_entry(st, _cfg(mock_config))
 
 
 def test_route_wrappers_delegate_when_not_entering(mock_config):

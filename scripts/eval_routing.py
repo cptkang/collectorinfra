@@ -14,6 +14,8 @@
 사용:
     RUN_E2E=1 .venv/bin/python scripts/eval_routing.py --out reports/routing_s1.json
     .venv/bin/python scripts/eval_routing.py --dry-run     # 호출 없이 골든셋·설정만 점검
+    ROUTER_CAPABILITY_OWNERSHIP_ENABLED=true .venv/bin/python scripts/eval_routing.py --mock
+        # 교차 체인(chain) 채점까지(목업 · plans/102 H-1)
 """
 
 from __future__ import annotations
@@ -62,11 +64,17 @@ def load_gold(path: Path = _GOLD) -> list[dict]:
 
 def validate_gold(items: list[dict]) -> list[str]:
     """골든셋 자체의 정합성 — 실행 전에 잡는다."""
-    from src.routing.domain_config import DB_DOMAINS
+    from src.domain.entity_key import KEY_FQDN, KEY_HOSTNAME, KEY_IPV4, KEY_IPV6
     from src.prompts.semantic_router import allowed_intents
+    from src.routing.capability_ownership import known_capability_codes
+    from src.routing.domain_config import DB_DOMAINS
 
     known_dbs = {d.db_id for d in DB_DOMAINS}
     known_intents = allowed_intents(fault_diagnosis_enabled=True)
+    # 교차 시스템 판정 필드(plans/102 H-1) — 코드·키 타입의 정본은 레지스트리 카탈로그·
+    # entity_key다(사본 금지)
+    known_capabilities = known_capability_codes()
+    known_key_types = {KEY_HOSTNAME, KEY_FQDN, KEY_IPV4, KEY_IPV6}
     errs: list[str] = []
     seen: set[str] = set()
     for it in items:
@@ -77,12 +85,34 @@ def validate_gold(items: list[dict]) -> list[str]:
         exp = it.get("expect") or {}
         if exp.get("intent") not in known_intents:
             errs.append(f"{iid}: 알 수 없는 intent {exp.get('intent')!r}")
-        for db in exp.get("databases") or []:
+        for db in (exp.get("databases") or []) + (exp.get("forbid_databases") or []):
             if db not in known_dbs:
                 errs.append(f"{iid}: 알 수 없는 db_id {db!r}")
+        if "chain" in exp:
+            chain = exp.get("chain")
+            if not isinstance(chain, list):
+                errs.append(f"{iid}: expect.chain은 답변 영역 코드 목록이어야 한다")
+            else:
+                for code in chain:
+                    if code not in known_capabilities:
+                        errs.append(f"{iid}: 알 수 없는 답변 영역 {code!r}(expect.chain)")
+        if "key_type" in exp and exp.get("key_type") not in known_key_types:
+            errs.append(f"{iid}: 알 수 없는 key_type {exp.get('key_type')!r}")
+        if "probe" in exp and not isinstance(exp.get("probe"), bool):
+            errs.append(f"{iid}: expect.probe는 true/false")
         if not it.get("query"):
             errs.append(f"{iid}: query 없음")
     return errs
+
+
+#: 라우터 출력으로 채점할 수 없는 판정 필드(plans/102 H-1) — 값 유효성만 검증하고 결과에 표기한다.
+#: `key_type`(값 기반 키 판정)·`probe`(식별자 소재 프로브 발동)는 라우터 뒤 단계의 산출물이라
+#: `_llm_classify` 출력에 없다. 여기서 통과로 세면 거짓 통과다 — 채점은 시나리오 하네스(H-2) 소관.
+_ROUTER_UNSCORED_FIELDS = ("key_type", "probe")
+_ROUTER_UNSCORED_REASON = "라우터 단계 채점 불가(H-2 소관)"
+_CHAIN_UNSCORED_REASON = (
+    "라우터 출력에 chain 없음 — ROUTER_CAPABILITY_OWNERSHIP_ENABLED off(채점 불가)"
+)
 
 
 def _band(score: float) -> str:
@@ -102,8 +132,17 @@ def judge(item: dict, got: dict) -> dict:
     intent_ok = got.get("intent") == exp.get("intent")
     recall_ok = exp_ids.issubset(set(got_ids)) if exp_ids else True
     multi_ok = len(got_ids) >= min_db
+    # 답변 영역이 겹치는 DB의 오선택(plans/95 T5) — 리콜로는 잡히지 않는다
+    # (기대 DB와 함께 골라도 통과하므로)
+    forbidden = sorted(set(exp.get("forbid_databases") or []) & set(got_ids))
+    # 교차 체인 순서(plans/102 H-1 · D8) — 라우터 `chain`은 소유 플래그 on일 때만 출력된다.
+    # 출력에 키가 없으면 **채점하지 않는다**(통과로 세지 않고 결과·요약에 채점 불가로 남긴다).
+    chain_scored = "chain" in exp and "chain" in got
+    chain_ok: bool | None = (
+        list(got.get("chain") or []) == list(exp.get("chain") or []) if chain_scored else None
+    )
 
-    return {
+    result = {
         "id": item.get("id"),
         "query": item.get("query"),
         "critical": item.get("critical"),
@@ -115,10 +154,24 @@ def judge(item: dict, got: dict) -> dict:
         "db_recall": recall_ok,
         "min_databases": min_db,
         "multi_preserved": multi_ok,
+        "db_forbidden": forbidden,
         "scores": [d.get("relevance_score") for d in got.get("databases", [])],
         "dropped": got.get("dropped") or [],
-        "passed": intent_ok and recall_ok and multi_ok,
+        "passed": (
+            intent_ok and recall_ok and multi_ok and not forbidden and chain_ok is not False
+        ),
     }
+    if "chain" in exp:
+        result["chain_expected"] = list(exp.get("chain") or [])
+        result["chain_got"] = list(got.get("chain") or []) if chain_scored else None
+        result["chain_scored"] = chain_scored
+        result["chain_match"] = chain_ok
+        if not chain_scored:
+            result["chain_unscored_reason"] = _CHAIN_UNSCORED_REASON
+    unscored = {k: exp[k] for k in _ROUTER_UNSCORED_FIELDS if k in exp}
+    if unscored:
+        result["router_unscored"] = {**unscored, "reason": _ROUTER_UNSCORED_REASON}
+    return result
 
 
 async def run(items: list[dict], *, llm=None) -> list[dict]:
@@ -247,6 +300,7 @@ def summarize(results: list[dict]) -> dict:
     scores = [s for r in results for s in (r.get("scores") or []) if isinstance(s, (int, float))]
     dist = Counter(_band(float(s)) for s in scores)
     crit_multi = [r for r in results if r.get("critical") == "multi_db"]
+    chain_cases = [r for r in results if "chain_expected" in r]
     return {
         "total": len(results),
         "passed": sum(1 for r in results if r.get("passed")),
@@ -258,6 +312,11 @@ def summarize(results: list[dict]) -> dict:
         "below_gate": sum(1 for s in scores if float(s) < 0.3),
         "dropped_total": sum(len(r.get("dropped") or []) for r in results),
         "errors": sum(1 for r in results if r.get("error")),
+        # 교차 시스템(plans/102 H-1) — 채점 불가 건수를 숨기지 않는다(거짓 통과 금지).
+        "chain_cases": len(chain_cases),
+        "chain_scored": sum(1 for r in chain_cases if r.get("chain_scored")),
+        "chain_matched": sum(1 for r in chain_cases if r.get("chain_match")),
+        "router_unscored_cases": sum(1 for r in results if r.get("router_unscored")),
     }
 
 
@@ -267,7 +326,8 @@ def main() -> int:
                     help="실 호출 없이 골든셋·설정만 점검한다(게이트 무관)")
     ap.add_argument("--mock", metavar="FAULT", nargs="?", const="none", default=None,
                     help="FabriX KBGenAI 목업으로 실행한다(실 호출 0 · 과금 0 · 게이트 무관). "
-                         "FAULT: none|collapse_multi|bad_intent|bad_score|malformed|error_status")
+                         "FAULT: none|collapse_multi|bad_intent|bad_score|malformed|error_status|"
+                         "chain_reversed(소유 플래그 on에서만 의미)")
     ap.add_argument("--out", help="결과 JSON 저장 경로")
     ap.add_argument("--tolerate", type=int, default=0,
                     help="허용 실패 건수(LLM 비결정성 대비). 기본 0=엄격. "
@@ -314,6 +374,14 @@ def main() -> int:
     for r in results:
         if not r.get("passed"):
             print(f"  ✗ {r.get('id')}: {r.get('error') or r}", file=sys.stderr)
+    # 채점하지 못한 판정은 통과가 아니다 — 건수를 눈에 띄게 남긴다(plans/102 H-1).
+    unscored_chain = summary["chain_cases"] - summary["chain_scored"]
+    if unscored_chain:
+        print(f"  ※ chain 판정 {unscored_chain}건 채점 불가 — {_CHAIN_UNSCORED_REASON}",
+              file=sys.stderr)
+    if summary["router_unscored_cases"]:
+        print(f"  ※ key_type·probe 판정 {summary['router_unscored_cases']}건 — "
+              f"{_ROUTER_UNSCORED_REASON}", file=sys.stderr)
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

@@ -35,6 +35,16 @@ _LADDER_RE = re.compile(
 )
 HEALTH_WAIT_SEC = 90.0
 
+#: 부가 경로 1단(deep_agent)을 플래그로 opt-in 했는데 **가용성 때문에** 성립하지 않은 사유
+#: (`src/observability/ladder.py` `OPTIN_FAILURE_REASONS` 와 같은 집합).
+#: 이 사유로 확정된 프로파일은 의도하지 않은 경로를 재므로 INVALID 다(§4.5 조용한 강등 차단).
+#: 운영자가 플래그로 고른 비기준 단(`intent_flag_on` 2단 · `semantic_routing_off` 4단)은 의도한
+#: 선택이라 여기 넣지 않는다 - 리포트 경고로만 남는다(D-221 O-c · D-225 기준 3단).
+UNINTENDED_DEGRADATION = frozenset({"orchestrator_unavailable", "package_missing"})
+
+#: 비스트리밍 요청의 대기 상한을 정하는 서버 실효값(설정 에코에서 읽는다 - `client._nonstream_timeout`).
+SERVER_TIMEOUT_KEYS = ("API_QUERY_TIMEOUT", "API_FILE_QUERY_TIMEOUT")
+
 
 @dataclass
 class ProfileStatus:
@@ -49,6 +59,8 @@ class ProfileStatus:
     echo_mismatch: dict[str, dict[str, str]] = field(default_factory=dict)
     auth_enabled: Optional[bool] = None     # 이 기동의 AUTH_ENABLED 실효값(에코에서 읽는다)
     reasons: list[str] = field(default_factory=list)
+    #: 서버 자신의 요청 상한(초) - `SERVER_TIMEOUT_KEYS` 중 에코에서 읽힌 것만 담는다.
+    server_timeouts: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -323,6 +335,14 @@ def verify_profile(
             status.reasons.append(
                 f"조용한 강등: 의도 {expected_tier} 인데 {status.tier} 로 확정됐다"
             )
+        elif status.degraded_reason in UNINTENDED_DEGRADATION:
+            # 러너는 expected_tier 를 넘기지 않는다 - 프로파일마다 의도 단을 따로 계산하지 않고,
+            # 기동 로그의 강등 사유가 "플래그는 켜졌는데 못 올라갔다"를 직접 말해 준다.
+            status.reasons.append(
+                f"조용한 강등: 플래그는 1단(deep_agent)인데 {status.tier} 로 확정됐다 "
+                f"(degraded_reason={status.degraded_reason}) - 오케스트레이터 서빙"
+                "(ORCHESTRATOR_BASE_URL 의 /models)과 deepagents 설치를 확인한다"
+            )
 
     client = ScenarioClient(ClientConfig(port=handle.port, admin_token=admin_token))
     try:
@@ -338,6 +358,11 @@ def verify_profile(
         )
     else:
         status.auth_enabled = effective.get("AUTH_ENABLED", "").strip().lower() == "true"
+        for key in SERVER_TIMEOUT_KEYS:
+            try:
+                status.server_timeouts[key] = float(effective.get(key, ""))
+            except ValueError:
+                continue
         mismatch = {
             key: {"injected": value, "effective": effective.get(key, "(키 없음)")}
             for key, value in overrides.items()

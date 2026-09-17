@@ -140,7 +140,7 @@ def test_기동이_실패해도_프로파일이_리포트에서_사라지지_않
 # --- D-127 과금 게이트 ---------------------------------------------------
 
 def test_D127_외부_프로바이더는_옵트인_없이_실행이_즉시_거부된다(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("gemini", "vllm"))
     monkeypatch.delenv("RUN_E2E", raising=False)
     with pytest.raises(SystemExit) as exc:
         main(["--run"])
@@ -149,9 +149,20 @@ def test_D127_외부_프로바이더는_옵트인_없이_실행이_즉시_거부
 
 def test_D127_키_존재만으로는_실행되지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
     """키는 .encenv 에 상존한다는 전제다 - 키 게이팅은 금지다."""
-    monkeypatch.setattr(cli, "llm_provider", lambda: "gemini")
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("gemini", "vllm"))
     monkeypatch.delenv("RUN_E2E", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "sk-fake")
+    with pytest.raises(SystemExit) as exc:
+        main(["--run"])
+    assert exc.value.code == 2
+
+
+def test_D222_로컬_워커와_외부_오케스트레이터는_옵트인_없이_거부된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """워커만 mlx 로 바꾸고 오케스트레이터가 gemini 로 남으면 과금 경로다(plans/100 §3.4)."""
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("mlx", "gemini"))
+    monkeypatch.delenv("RUN_E2E", raising=False)
     with pytest.raises(SystemExit) as exc:
         main(["--run"])
     assert exc.value.code == 2
@@ -160,7 +171,7 @@ def test_D127_키_존재만으로는_실행되지_않는다(monkeypatch: pytest.
 def test_D216_내부망_프로바이더는_옵트인과_승인_없이_실행된다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "llm_provider", lambda: "fabrix")
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("fabrix", "vllm"))
     monkeypatch.delenv("RUN_E2E", raising=False)
     monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("내부망에서 승인을 묻지 않는다"))
     executed: list[RunConfig] = []
@@ -185,7 +196,7 @@ def test_D216_설정을_못_읽으면_외부로_보고_과금_게이트가_산�
 
     monkeypatch.setattr(src.config, "load_config", boom)
     monkeypatch.delenv("RUN_E2E", raising=False)
-    assert cli.llm_provider().startswith("unknown")
+    assert all(p.startswith("unknown") for p in cli.llm_providers())
     with pytest.raises(SystemExit) as exc:
         main(["--run"])
     assert exc.value.code == 2
@@ -226,3 +237,44 @@ def test_W3_제외_대역_밖에서_포트를_고른다() -> None:
 
 def test_지정_포트가_제외_대역_밖이면_그대로_쓴다() -> None:
     assert pick_port(preferred=8123, excluded=[(49000, 51000)]) == 8123
+
+
+def test_MLX_서버가_생성하지_못하면_run_은_실행_전에_멈춘다(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """--run 은 사전 점검을 부르지 않았다 - 죽은 서버로 프로파일을 띄우면 1단이 조용히 강등된다."""
+    from scripts.scenario.preflight import VERDICT_STOP, Check
+
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("mlx", "mlx"))
+    monkeypatch.setattr(cli, "mlx_run_blockers", lambda: [
+        Check("MLX 생성(워커)", "응답 없음", VERDICT_STOP, "서버를 내리고 다시 띄운다", detail="ReadTimeout")])
+    monkeypatch.setattr(cli, "execute", lambda *_: pytest.fail("MLX 가 준비되지 않았는데 실행했다"))
+
+    assert main(["--run"]) == 1
+    err = capsys.readouterr().err
+    assert "MLX 생성(워커)" in err and "ReadTimeout" in err
+
+
+def test_MLX_서버가_준비되면_run_은_그대로_실행한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("mlx", "mlx"))
+    monkeypatch.setattr(cli, "mlx_run_blockers", lambda: [])
+    executed: list[RunConfig] = []
+
+    def fake_execute(_catalog, config):
+        executed.append(config)
+        return {"out_dir": str(tmp_path), "executed_turns": 0, "skipped": []}
+
+    monkeypatch.setattr(cli, "execute", fake_execute)
+    monkeypatch.setattr(cli, "write_report", lambda *_: {"report": tmp_path / "report.md"})
+    monkeypatch.setattr(cli, "analyze", lambda *_: [])
+    assert main(["--run"]) == 0 and executed
+
+
+def test_mlx_가_아니면_MLX_점검을_하지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "llm_providers", lambda: ("fabrix", "vllm"))
+    monkeypatch.setattr(cli, "mlx_run_blockers", lambda: pytest.fail("mlx 가 아닌데 점검했다"))
+    monkeypatch.setattr(cli, "execute", lambda *_: {"out_dir": str(tmp_path), "executed_turns": 0,
+                                                    "skipped": []})
+    monkeypatch.setattr(cli, "write_report", lambda *_: {"report": tmp_path / "report.md"})
+    monkeypatch.setattr(cli, "analyze", lambda *_: [])
+    assert main(["--run"]) == 0

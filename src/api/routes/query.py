@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -463,14 +463,43 @@ async def resolve_approval_action(query: str, config) -> tuple[str, str]:
     return ("reject", "")
 
 
+def _is_legacy_structure_hitl_thread(checkpoint_state: dict[str, Any] | None) -> bool:
+    """구조 분석 승인 대기로 멈춘 **구 스레드**인지 판정한다 (plans/104 · D-135 ①).
+
+    질의 경로의 구조 승인 게이트는 plans/104(D-227)에서 노드째 삭제됐다. 그 게이트 앞에서 멈춘
+    체크포인트(`awaiting_approval` + `approval_context.type == "structure_analysis"`)는 재개할
+    노드가 없으므로 승인 턴으로 보지 않는다 — 다음 턴은 일반 질의로 처리하고 승인 상태를 해제한다.
+    해제하지 않으면 체크포인터가 델타만 병합해 `awaiting_approval`이 매 턴 남는다(실측).
+    """
+    if not checkpoint_state or not checkpoint_state.get("awaiting_approval"):
+        return False
+    ctx = checkpoint_state.get("approval_context") or {}
+    return isinstance(ctx, dict) and ctx.get("type") == "structure_analysis"
+
+
+def _release_legacy_structure_hitl(
+    delta: dict[str, Any], checkpoint_state: dict[str, Any] | None
+) -> dict[str, Any]:
+    """구 구조 승인 대기 스레드면 이번 턴 델타에 승인 상태 해제를 싣는다(아니면 그대로)."""
+    if _is_legacy_structure_hitl_thread(checkpoint_state):
+        logger.info("구조 승인 대기 구 스레드 — 일반 질의 턴으로 처리하고 승인 상태 해제")
+        delta["awaiting_approval"] = False
+        delta["approval_context"] = None
+        delta["approval_action"] = None
+    return delta
+
+
 async def _resolve_turn_approval(
     body: QueryRequest, checkpoint_state: dict | None, config
 ) -> tuple[str, str] | None:
     """승인 대기 턴이면 승인 의사를 해소해 반환한다(그 외 턴은 None).
 
     두 텍스트 라우트가 공유한다 — 한쪽만 LLM 보조를 받는 비대칭을 만들지 않는다(D-066).
+    구조 승인 대기 구 스레드는 승인 턴이 아니다(plans/104 — `_is_legacy_structure_hitl_thread`).
     """
     if not checkpoint_state or not checkpoint_state.get("awaiting_approval"):
+        return None
+    if _is_legacy_structure_hitl_thread(checkpoint_state):
         return None
     return await resolve_approval_action(body.query, config)
 
@@ -711,7 +740,10 @@ def _build_turn_input_state(
     """
     if checkpoint_state is not None:
         # 후속 턴: delta input만 전달
-        if checkpoint_state.get("awaiting_approval"):
+        if (
+            checkpoint_state.get("awaiting_approval")
+            and not _is_legacy_structure_hitl_thread(checkpoint_state)
+        ):
             # SQL 승인 대기 중
             action, modified_sql = approval or _parse_approval(body.query)
             return {
@@ -758,7 +790,7 @@ def _build_turn_input_state(
                     len(body.form_fill_answers), pending_ff.get("file_type"),
                     (original_q or "")[:50], restored_db_ids,
                 )
-                return delta
+                return _release_legacy_structure_hitl(delta, checkpoint_state)
             # pending 없이 답변만 도착 — 침묵 무시 대신 로그 후 일반 질의로 처리
             logger.warning(
                 "form_fill_answers 수신했으나 pending_form_fill 부재 — 일반 질의로 처리"
@@ -781,7 +813,7 @@ def _build_turn_input_state(
         delta["scope_narrowed"] = (
             _scope_narrowed_or_none(body, config, current_user) if config else None
         )
-        return delta
+        return _release_legacy_structure_hitl(delta, checkpoint_state)
     # 첫 턴: 전체 초기화
     return create_initial_state(
         user_query=_substitute_zone_placeholder(body.query, body.selected_db_ids),

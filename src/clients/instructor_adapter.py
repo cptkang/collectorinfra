@@ -180,27 +180,60 @@ def _register_korean_handler() -> None:
 
 # ─────────────────────── 메시지 변환 (어댑터 본체) ───────────────────────
 
-class _Msg:
-    """OpenAI 응답 message 대역."""
+class _Function:
+    def __init__(self, name: str, arguments: str):
+        self.name = name
+        self.arguments = arguments
 
-    def __init__(self, content: str):
+
+class _ToolCall:
+    """OpenAI tool_call 대역 — LangChain `AIMessage.tool_calls` 항목(dict)을 되돌린다."""
+
+    def __init__(self, tc: dict[str, Any]):
+        self.id = tc.get("id") or "call_0"
+        self.type = "function"
+        arguments = json.dumps(tc.get("args") or {}, ensure_ascii=False)
+        self.function = _Function(tc.get("name", ""), arguments)
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "function": {"name": self.function.name, "arguments": self.function.arguments},
+        }
+
+
+class _Msg:
+    """OpenAI 응답 message 대역.
+
+    `role`은 instructor 재질의(`dump_message`)가 읽는다 — 없으면 TOOLS 재질의가
+    `'_Msg' object has no attribute 'role'`로 깨진다. `tool_calls`는 도구 호출이 없어도
+    리스트다(TOOLS 재질의가 None을 순회하다 깨지는 것을 막는다).
+    """
+
+    def __init__(self, content: str, tool_calls: list[_ToolCall] | None = None):
+        self.role = "assistant"
         self.content = content
-        self.tool_calls = None
+        self.tool_calls = tool_calls or []
         self.refusal = None
 
     def model_dump(self) -> dict:
-        return {"role": "assistant", "content": self.content}
+        return {
+            "role": self.role,
+            "content": self.content,
+            "tool_calls": [tc.model_dump() for tc in self.tool_calls],
+        }
 
 
 class _Choice:
-    def __init__(self, content: str):
-        self.message = _Msg(content)
+    def __init__(self, content: str, tool_calls: list[_ToolCall] | None = None):
+        self.message = _Msg(content, tool_calls)
         self.finish_reason = "stop"
 
 
 class _Resp:
-    def __init__(self, content: str, model: str):
-        self.choices = [_Choice(content)]
+    def __init__(self, content: str, model: str, tool_calls: list[_ToolCall] | None = None):
+        self.choices = [_Choice(content, tool_calls)]
         self.usage = None
         self.model = model
         self.id = "lc-adapter"
@@ -230,11 +263,18 @@ def _build_create(llm: Any):
 
     async def _lc_create(*_args: Any, **kwargs: Any):
         lc_messages = _to_lc_messages(kwargs.get("messages", []), kbgenai=kbgenai)
-        response = await llm.ainvoke(lc_messages)
+        # TOOLS 모드(D-169 — 네이티브 tool-calling 계열)는 instructor가 스키마를 `tools`로 넘긴다.
+        # 넘기지 않으면 모델이 도구를 모른 채 텍스트로 답해 매번 "No tool calls"로 실패한다.
+        tools = kwargs.get("tools")
+        target = llm
+        if tools and hasattr(llm, "bind_tools"):
+            target = llm.bind_tools(tools, tool_choice=kwargs.get("tool_choice"))
+        response = await target.ainvoke(lc_messages)
         # 실 모델은 content를 콘텐츠 블록 리스트로 주기도 한다(2026-08-04 E1 실측) —
         # str 가정 시 여기서 깨지므로 반드시 정규화 유틸을 경유한다.
         text = coerce_content_text(getattr(response, "content", ""))
-        return _Resp(text, kwargs.get("model", "lc"))
+        tool_calls = [_ToolCall(tc) for tc in getattr(response, "tool_calls", None) or []]
+        return _Resp(text, kwargs.get("model", "lc"), tool_calls)
 
     return _lc_create
 

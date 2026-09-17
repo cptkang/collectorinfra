@@ -71,7 +71,7 @@ class SourceConfig:
     """데이터소스 설정."""
 
     name: str = ""
-    type: str = "postgresql"  # "postgresql" | "db2"
+    type: str = "postgresql"  # "postgresql" | "db2" | "mariadb"
     connection: str = ""
     readonly: bool = True
     query_timeout: int = 30

@@ -42,6 +42,7 @@ from src.utils.json_extract import extract_json_from_response
 from src.utils.sql_dialect import row_limit_clause
 from src.utils.query_gen_common import (
     StatMonth,
+    current_month_daily_range,
     resolve_query_limit,
     resolve_stat_month_range,
 )
@@ -385,6 +386,15 @@ def _compile_ab(
     metric_tables = pattern_b.get("metric_tables") or {}
     grain = smq.time_grain or pattern_b.get("default_time_grain", "month")
     metric_table = metric_tables.get(grain, "cmm_metric_stat_m")
+    # D-201: 진행 중인 달 단일 기간은 월간 통계에 값이 없고 검증기가 반려한다 — 일간 통계를
+    # 당월 1일~어제로 집계한다. 일간 테이블을 선언하지 않은 모델은 그대로 둔다(검증기가 폴백시킨다).
+    daily = current_month_daily_range(stat_month) if grain == "month" else None
+    if daily and metric_tables.get("day"):
+        logger.info(
+            "시맨틱 컴파일: 진행 중인 달 %s → %s %s~%s 일간 집계(D-201)",
+            stat_month, metric_tables["day"], daily[0], daily[1],
+        )
+        metric_table, stat_month = metric_tables["day"], daily
 
     # 정렬은 IR(S-IR3) 우선, 없으면 표면어("가장 높은/최고") 폴백(NULLS LAST는 조립기 — D-098).
     order_by = _resolve_ir_order_by_ab(smq, dim_index) if smq.order_by else None
@@ -979,6 +989,33 @@ async def _select_smq_stepwise(
     return smq, None
 
 
+#: 결정적 컴파일이 빠뜨리면 전 서버를 반환하는 조용한 오답이 되는 식별 필터 필드
+#: (`context_resolver._IDENTITY_FILTER_FIELDS`와 같은 집합 — 계층상 import하지 않는다).
+_IDENTITY_FILTER_FIELDS = frozenset(
+    {"hostname", "host_name", "name", "server_name", "ip", "ip_address"}
+)
+
+
+def _dropped_identity_filters(sql: str, filters: list | None) -> list[str]:
+    """파싱된 서버 식별 필터 값 중 컴파일 SQL에 없는 값을 돌려준다.
+
+    SMQ는 LLM이 고르므로 입력 파서가 이미 결정적으로 잡은 서버 지목을 빠뜨릴 수 있다 —
+    2026-09-17 로컬 G-01 "cocm-hdkapp01 서버의 OS 확인"이 호스트 조건 없이 조립돼 54대 전체를
+    반환했다(파서 filter_conditions에는 hostname이 있었다). 값의 존재만 본다(대소문자 무시).
+    """
+    lowered = sql.lower()
+    dropped: list[str] = []
+    for cond in filters or []:
+        if not isinstance(cond, dict) or str(cond.get("field") or "").lower() not in _IDENTITY_FILTER_FIELDS:
+            continue
+        raw = cond.get("value")
+        for value in raw if isinstance(raw, (list, tuple)) else [raw]:
+            text = str(value or "").strip().strip("%")
+            if text and text.lower() not in lowered and text.replace("'", "''").lower() not in lowered:
+                dropped.append(text)
+    return dropped
+
+
 def _stamp_coverage(derivation_sink: Optional[list[dict]], covered: Optional[bool]) -> None:
     """직전 도출 레코드에 커버리지 판정 결과를 기록한다(관측 — 1방 경로는 sink 없음)."""
     if derivation_sink:
@@ -1067,6 +1104,7 @@ async def compile_from_nl(
     app_config: Optional["AppConfig"] = None,
     stepwise_deps: Optional["StepwiseDeps"] = None,
     derivation_sink: Optional[list[dict]] = None,
+    parsed_filters: list | None = None,
 ) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
     """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.
 
@@ -1086,6 +1124,8 @@ async def compile_from_nl(
         app_config: 앱 설정 — 단계적 도출 플래그·상한 판정용(없으면 1방 경로)
         stepwise_deps: 경로별 도구 주입 재료(``column_deriver.StepwiseDeps``)
         derivation_sink: 단계적 도출 관측 레코드 적재 리스트(state 노출용)
+        parsed_filters: 입력 파서의 `filter_conditions` — 서버 식별 필터가 컴파일 SQL에 없으면
+            컴파일을 버리고 폴백한다(None이면 검사 없음)
 
     반환:
         (sql, smq, cov) — sql이 있으면 커버리지 내 결정적 조립 성공(LLM SQL 생성 우회).
@@ -1139,6 +1179,20 @@ async def compile_from_nl(
         default_limit=default_limit, stat_month=stat_month,
         server_scope=server_scope,
     )
+    # 선행 스코프가 있으면 식별 필터는 스코프 HAVING으로 대체된 것이다(_apply_server_scope_priority).
+    dropped = (
+        [] if (server_scope and server_scope[1])
+        else _dropped_identity_filters(sql, parsed_filters)
+    )
+    if dropped:
+        cov = CoverageResult(
+            covered=False,
+            reason=f"서버 지목 {dropped}이 컴파일 SQL에 없음(SMQ 필터 누락) - LLM 폴백",
+        )
+        logger.warning("시맨틱 컴파일 폐기(폴백): %s", cov.reason)
+        _stamp_coverage(derivation_sink, False)
+        _stamp_guards(derivation_sink, _guard_delta(guards_before))
+        return None, smq, cov
     logger.info("시맨틱 결정적 컴파일 성공(패턴 %s): %s", smq.pattern, sql[:200])
     _stamp_guards(derivation_sink, _guard_delta(guards_before))
     return sql, smq, cov

@@ -1,5 +1,7 @@
 """smoke_llm 하네스 구조 테스트 — 임포트 가능·키 부재 시 graceful(실 API 호출 없음)."""
 
+import pytest
+
 import smoke_llm
 from sre_agent.settings import AgentSettings
 
@@ -42,6 +44,37 @@ def test_main_holds_without_run_e2e_approval(capsys, monkeypatch):
     assert rc == 0
     out = capsys.readouterr().out
     assert "D-127" in out and "RUN_E2E=1" in out
+
+
+def test_host_access_guard_blocks_before_llm():
+    # 허용목록 밖 도구가 하나라도 붙으면 LLM 호출 전에 끊는다(2026-09-17 kubectl 실행 사고)
+    smoke_llm.assert_no_host_access_tools(["TodoWrite", "fetch_skill"])
+    with pytest.raises(RuntimeError, match="bash"):
+        smoke_llm.assert_no_host_access_tools(["TodoWrite", "bash"])
+
+
+def test_smoke_diagnosis_ask_uses_no_host_profile_and_guards(monkeypatch):
+    # 실 LLM 없이: 스모크 2단계가 호스트 접근 off 프로파일로 에이전트를 만들고, ask 전에 도구를 대조한다.
+    import sre_agent.diagnosis as diagnosis
+    from sre_agent.diagnosis import DiagnosisResult
+    from sre_agent.toolset_profiles import no_host_access_profile
+
+    seen: dict = {}
+
+    class FakeAgent:
+        def __init__(self, settings, toolsets=None, mcp_servers=None):
+            seen["toolsets"] = toolsets
+            self.llm = type("L", (), {"tool_executor": type("E", (), {"tools_by_name": {"bash": 1}})()})()
+
+        def ask(self, question):
+            seen["asked"] = True
+            return DiagnosisResult(answer="ok")
+
+    monkeypatch.setattr(diagnosis, "DiagnosisAgent", FakeAgent)
+    with pytest.raises(RuntimeError):
+        smoke_llm.smoke_diagnosis_ask(_with_key_settings())
+    assert seen["toolsets"] == no_host_access_profile()
+    assert "asked" not in seen   # 노출 도구가 있으면 LLM을 부르지 않는다
 
 
 def test_smoke_tool_definition_single_function():

@@ -143,14 +143,12 @@ def make_stub_executor(settings: AgentSettings) -> Executor:
     """실 dispatcher 미배선 상태의 명시적 스텁 executor(침묵 금지).
 
     조사를 실제로 수행하지 않고 잡을 `stub` 상태로 확정하며, 사유를 briefing/verdict에
-    노출한다. LLM 키(gemini_api_key) 부재를 특히 구분해 명시한다(§10.1 데이터 통제 맥락).
+    노출한다. 조사 LLM 게이트 차단(플래그 off·키 부재 — `investigation_llm_stub_reason`)을 특히 구분해
+    명시한다(§10.1 데이터 통제 맥락 · D-230).
     """
 
     def _stub(job: InvestigationJob) -> None:
-        if settings.gemini_api_key is None:
-            message = "조사 미실행 — LLM 키 부재(스텁)"
-        else:
-            message = "조사 미실행 — dispatcher 미배선(2-D 소관, 스텁)"
+        message = settings.investigation_llm_stub_reason() or "조사 미실행 — dispatcher 미배선(2-D 소관, 스텁)"
         job.status = "stub"
         job.verdict = message
         # 브리핑 6요소(Plan 02 §7) 조립은 2-D 소관 — 여기서는 스텁 표기만.

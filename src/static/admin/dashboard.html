@@ -15,6 +15,31 @@
         #usersTable, #incidentsTable { min-width: max-content; }
         #usersTable th, #usersTable td,
         #incidentsTable th, #incidentsTable td { white-space: nowrap; }
+
+        /* plans/104 「DB 구조」 탭 — 기존 변수·클래스(settings-table·badge·diff-line·settings-banner)를 재사용하고
+           탭 고유 배치만 여기 둔다. */
+        #dbsTable { min-width: max-content; }
+        #dbsTable td { vertical-align: top; }
+        .dbs-cell-stack { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+        .dbs-muted { color: var(--text-muted); font-size: 0.75rem; }
+        .dbs-section { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
+        .dbs-section h3 { font-size: 0.9rem; margin-bottom: 8px; }
+        .dbs-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 8px 0; }
+        .dbs-form label { display: flex; flex-direction: column; gap: 2px; font-size: 0.7rem; color: var(--text-muted); }
+        .dbs-form input[type="text"], .dbs-form select { padding: 6px 8px; font-size: 0.8rem; min-width: 220px; }
+        .dbs-btn { padding: 6px 14px; font-size: 0.78rem; }
+        .dbs-steps { list-style: none; margin: 8px 0; padding: 0; }
+        .dbs-step { display: grid; grid-template-columns: 56px 190px 1fr auto; gap: 10px; align-items: center;
+                    padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 6px; }
+        .dbs-step-code { font-family: var(--font-mono); font-size: 0.75rem; color: var(--accent); }
+        .dbs-unmet { border-left: 3px solid var(--warning); padding: 8px 12px; margin: 8px 0; background: var(--warning-bg); border-radius: var(--radius-sm); font-size: 0.8rem; }
+        .dbs-draft { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 10px; }
+        .dbs-pre { white-space: pre-wrap; word-break: break-all; font-family: var(--font-mono); font-size: 0.72rem;
+                   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; max-height: 320px; overflow: auto; }
+        .dbs-checks { list-style: none; padding: 0; margin: 6px 0; font-size: 0.78rem; }
+        .dbs-checks li { margin-bottom: 3px; }
+        .dbs-textarea { min-height: 90px; font-size: 0.8rem; padding: 8px; }
+        @media (max-width: 900px) { .dbs-step { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body class="admin-dashboard">
@@ -59,6 +84,7 @@
             <div class="tabs">
                 <button class="tab active" data-tab="settings">환경변수 설정</button>
                 <button class="tab" data-tab="dbconfig">DB 연결 설정</button>
+                <button class="tab" data-tab="dbstructure">DB 구조</button>
                 <button class="tab" data-tab="users">사용자 관리</button>
                 <button class="tab" data-tab="auditlogs">감사 로그</button>
                 <button class="tab" data-tab="incidents">열린 사건</button>
@@ -97,6 +123,8 @@
 
                     <div class="settings-banner settings-banner--warn" id="settingsWarnings" style="display: none;"></div>
                     <div class="settings-banner settings-banner--restart" id="restartBanner" style="display: none;"></div>
+                    <!-- plans/104 B-7: ACTIVE_DB_IDS에 준비도 필수 미충족 DB를 넣었을 때의 경고(저장은 그대로) -->
+                    <div class="settings-banner settings-banner--warn" id="readinessBanner" style="display: none;"></div>
 
                     <!-- D-191: 좌(설정 목록) + 우(선택한 설정의 상세 설명). 패널이 닫혀 있으면 1열이다. -->
                     <div class="settings-layout" id="settingsLayout">
@@ -189,6 +217,61 @@
                     </form>
 
                     <div id="dbTestResult" style="display: none; margin-top: 16px;"></div>
+                </div>
+            </div>
+
+            <!-- DB 구조 탭 (plans/104) — 렌더링은 admin-db-structure.js가 createElement/textContent로 한다 -->
+            <div class="tab-content" id="tab-dbstructure">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>DB 구조</h2>
+                        <button class="btn btn-secondary" id="dbsRefreshBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        MCP 서버에 연결된 소스를 앱 레지스트리·ACTIVE_DB_IDS와 대조합니다. 변경 점검·구조 분석·신규 연동 등록은 백그라운드 작업으로 실행되며,
+                        질의는 관리자가 승인한 구조 정보(또는 수동 프로필)만 씁니다. 레지스트리·.env·MCP 설정 파일은 앱이 쓰지 않습니다 — 조각을 내려받아 반영하세요.
+                    </p>
+                    <div class="settings-banner settings-banner--warn" id="dbsMcpBanner" style="display: none;"></div>
+                    <div id="dbsLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">소스 목록을 불러오는 중...</div>
+                    </div>
+                    <div class="users-table-scroll">
+                        <table class="settings-table dbs-table" id="dbsTable" style="display: none;">
+                            <thead>
+                                <tr>
+                                    <th>소스</th>
+                                    <th>엔진</th>
+                                    <th>연결</th>
+                                    <th>등록 · 활성</th>
+                                    <th>불일치</th>
+                                    <th>구조 정보</th>
+                                    <th>마지막 점검</th>
+                                    <th>등록 단계</th>
+                                    <th>준비도</th>
+                                    <th>작업</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dbsBody"></tbody>
+                        </table>
+                    </div>
+                    <p id="dbsEmpty" class="settings-empty" style="display: none;">표시할 소스가 없습니다.</p>
+                </div>
+
+                <div class="card" id="dbsDetail" style="display: none; margin-top: 16px;">
+                    <div class="toolbar">
+                        <h2 id="dbsDetailTitle"></h2>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-secondary" id="dbsDetailReloadBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                            <button class="btn btn-secondary" id="dbsDetailCloseBtn" style="padding: 8px 18px; font-size: 0.8125rem;">닫기</button>
+                        </div>
+                    </div>
+                    <div class="settings-banner settings-banner--restart" id="dbsJobBanner" style="display: none;"></div>
+                    <div id="dbsDetailLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">상세를 불러오는 중...</div>
+                    </div>
+                    <div id="dbsDetailBody"></div>
                 </div>
             </div>
 
@@ -484,6 +567,7 @@
 
     <div class="footer">INFRA QUERY AGENT v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=6"></script>
+    <script src="/static/js/admin.js?v=7"></script>
+    <script src="/static/js/admin-db-structure.js?v=1"></script>
 </body>
 </html>

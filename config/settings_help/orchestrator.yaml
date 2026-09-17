@@ -25,6 +25,12 @@ settings:
         effect: >-
           Gemini를 제어 평면으로 쓴다. vLLM 없이 1단 경로를 검증할 때만 쓰는 설정이며
           **외부 호출·과금 경로**다. API 키가 없으면 LLM_GEMINI_API_KEY로 폴백한다.
+      - value: mlx
+        label: 맥북 로컬 테스트
+        effect: >-
+          같은 맥에 띄운 mlx_lm.server를 vLLM과 같은 방식으로 부른다. 과금 없이 1단 경로를
+          기능 검증할 때 쓴다. ORCHESTRATOR_BASE_URL을 그 서버 /v1로, ORCHESTRATOR_MODEL을
+          서버 --model과 같게 둔다. 로컬 9B 모델이라 도구 호출 신뢰성은 운영과 다를 수 있다.
     example: >-
       운영 .env는 gemini로 되어 있다. 이는 vLLM이 아직 서빙되지 않는 환경에서 1단을
       검증하려는 설정이며, 그대로 두면 질의마다 제어 평면 호출이 외부로 나가 과금된다 —

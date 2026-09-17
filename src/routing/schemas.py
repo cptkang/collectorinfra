@@ -73,3 +73,38 @@ class RouterDecision(BaseModel):
         cls, value: str, *, fault_diagnosis_enabled: bool
     ) -> bool:
         return value in allowed_intents(fault_diagnosis_enabled=fault_diagnosis_enabled)
+
+
+# ── 답변 영역 소유(plans/102 X-7 · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) ──
+# **켜졌을 때만 쓰는 서브클래스**다.
+#
+# `STRUCTURED_OUTPUT_BACKEND=instructor`면 응답 모델의 JSON 스키마가 프롬프트 말미에 그대로
+# 실린다(`instructor_adapter._korean_schema_block` → `model_json_schema()`). 기존 모델에 필드를
+# 더하면 플래그 off에서도 LLM에 전달되는 스키마가 바뀌므로, 필드는 **별도 서브클래스**에만
+# 둔다 — off는 위 모델 그대로다. 코드 값 검증(카탈로그 대조)은 스키마가 아니라
+# `_validate_db_entries`가 한다(한 항목 오류로 전체를 버리지 않는 E-2 원칙 — 스키마에 enum을
+# 걸면 재질의·전체 실패로 번진다).
+
+
+class OwnershipRouterDatabase(RouterDatabase):
+    """선택된 DB 하나 + 그 DB에서 답할 답변 영역 코드."""
+
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class OwnershipRouterDecision(RouterDecision):
+    """라우터 분류 결과 + 교차 체인 신호.
+
+    `chain`: 앞 영역의 결과가 뒤 영역의 조회 대상을 정할 때만 답변 영역 코드를 조회 순서대로
+    담는다. 서로 독립이면 빈 목록이다.
+    """
+
+    databases: list[OwnershipRouterDatabase] = Field(default_factory=list)
+    chain: list[str] = Field(default_factory=list)
+
+
+class OwnershipDatabaseSelection(DatabaseSelection):
+    """2단계(DB 선택) 출력 + 답변 영역 · 교차 체인 신호 — 단일 호출 계약과 대칭."""
+
+    databases: list[OwnershipRouterDatabase] = Field(default_factory=list)
+    chain: list[str] = Field(default_factory=list)
