@@ -476,16 +476,22 @@ WHERE  resource_type = 'server.Server' AND dtime IS NULL
 
 
 async def _run_sql(cfg: Any, db_id: str, sql: str) -> tuple[Optional[list], Optional[str]]:
-    """SELECT 1건을 돌린다. (행, 실패 사유)."""
+    """SELECT 1건을 돌린다. (행, 실패 사유).
+
+    `get_db_client` 는 `@asynccontextmanager` 다 - `async with` 로만 열린다. 종전의
+    `async for` 는 `_AsyncGeneratorContextManager` 를 순회하려다 **조회를 시작하기도 전에**
+    `TypeError` 로 끝났고, 아래 호출부가 모든 예외를 "DB 도달을 먼저 푼다"로 보고해
+    멀쩡한 DB 를 도달 실패로 오진했다(2026-09-18 폐쇄망 실측 - G-5·G-8 동시 판정불가).
+    저장소의 다른 호출부는 전부 `async with` 다(`api/routes/health.py:48` 외).
+    """
     from src.db import get_db_client
 
     try:
-        async for client in get_db_client(cfg, db_id=db_id):
+        async with get_db_client(cfg, db_id=db_id) as client:
             result = await client.execute_sql(sql)
             return list(getattr(result, "rows", None) or []), None
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
-    return None, "클라이언트를 얻지 못했다"
 
 
 def _schema_prefix(db_id: str) -> str:
