@@ -489,6 +489,22 @@ def _release_legacy_structure_hitl(
     return delta
 
 
+def _with_current_identity(
+    delta: dict[str, Any], current_user: dict[str, Any]
+) -> dict[str, Any]:
+    """후속·승인 턴 델타에 **이번 요청 토큰의 인가 정보**를 다시 싣는다(plans/104 C-2).
+
+    체크포인터는 델타만 병합하므로, 재주입이 없으면 스레드 첫 턴의 `user_role`·
+    `allowed_db_ids`가 그대로 승계된다 — 관리자에서 강등된 사용자가 기존 스레드에서는
+    계속 관리자 전용 동작(채팅 캐시 생성·무효화 — plans/104 S2)을 할 수 있었다.
+    권한은 매 요청 DB에서 최신값을 읽으므로(D-069 `require_admin_user`·`require_user`)
+    그 값을 턴마다 덮어쓰면 강등·권한 변경이 즉시 반영된다.
+    """
+    delta["user_role"] = current_user.get("role")
+    delta["allowed_db_ids"] = current_user.get("allowed_db_ids")
+    return delta
+
+
 async def _resolve_turn_approval(
     body: QueryRequest, checkpoint_state: dict | None, config
 ) -> tuple[str, str] | None:
@@ -746,12 +762,12 @@ def _build_turn_input_state(
         ):
             # SQL 승인 대기 중
             action, modified_sql = approval or _parse_approval(body.query)
-            return {
+            return _with_current_identity({
                 "user_query": body.query,
                 "messages": [HumanMessage(content=body.query)],
                 "approval_action": action,
                 "approval_modified_sql": modified_sql if action == "modify" else None,
-            }
+            }, current_user)
         # HITL 폼필 답변 턴(Plan 73 §11, D-151): 구조화 답변 + pending의 원본 파일 복원.
         # input_parser가 template을 재파싱(③.5 단일 task 고정)하고 결정적 조립이 답변을
         # 오버라이드(존재성 검증)로 적용한다. LLM 파싱 없음.
@@ -790,7 +806,9 @@ def _build_turn_input_state(
                     len(body.form_fill_answers), pending_ff.get("file_type"),
                     (original_q or "")[:50], restored_db_ids,
                 )
-                return _release_legacy_structure_hitl(delta, checkpoint_state)
+                return _with_current_identity(
+                    _release_legacy_structure_hitl(delta, checkpoint_state), current_user
+                )
             # pending 없이 답변만 도착 — 침묵 무시 대신 로그 후 일반 질의로 처리
             logger.warning(
                 "form_fill_answers 수신했으나 pending_form_fill 부재 — 일반 질의로 처리"
@@ -813,7 +831,9 @@ def _build_turn_input_state(
         delta["scope_narrowed"] = (
             _scope_narrowed_or_none(body, config, current_user) if config else None
         )
-        return _release_legacy_structure_hitl(delta, checkpoint_state)
+        return _with_current_identity(
+            _release_legacy_structure_hitl(delta, checkpoint_state), current_user
+        )
     # 첫 턴: 전체 초기화
     return create_initial_state(
         user_query=_substitute_zone_placeholder(body.query, body.selected_db_ids),

@@ -220,7 +220,9 @@ _ADMIN_ONLY_ACTIONS = (
 
 _ADMIN_ONLY_MESSAGE = (
     "캐시 생성·무효화는 관리자만 할 수 있습니다. "
-    "관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요."
+    "관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. "
+    "터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 "
+    "(CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다)."
 )
 
 

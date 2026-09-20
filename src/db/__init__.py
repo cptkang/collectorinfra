@@ -9,7 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from src.config import AppConfig, DBHubConfig
+from src.config import AppConfig
 from src.db.client import PostgresClient, get_postgres_client
 from src.db.interface import DBClient
 
@@ -45,13 +45,12 @@ async def get_db_client(
         from src.dbhub.client import DBHubClient
 
         dbhub_config = config.dbhub
-        # db_id가 지정되면 해당 source_name으로 오버라이드
+        # db_id가 지정되면 해당 source_name으로 오버라이드.
+        # 필드를 하나씩 옮겨 적으면 새 필드가 조용히 빠진다 — 실제로 `bearer_token`이
+        # 빠져 소스 지정 연결만 전송 인증 헤더를 잃었다(plans/104 C-5). 나머지 값을
+        # 그대로 복사하고 source_name만 바꾼다.
         if db_id and db_id != dbhub_config.source_name:
-            dbhub_config = DBHubConfig(
-                server_url=dbhub_config.server_url,
-                source_name=db_id,
-                mcp_call_timeout=dbhub_config.mcp_call_timeout,
-            )
+            dbhub_config = dbhub_config.model_copy(update={"source_name": db_id})
         client = DBHubClient(dbhub_config, config.query)
 
     try:
