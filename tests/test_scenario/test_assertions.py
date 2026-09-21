@@ -158,6 +158,12 @@ _PASS_OBS = dict(status="completed", executed_sql="SELECT hostname FROM cmm_reso
                  db_ids=["polestar_cm_gp"], has_file=False, llm_calls=4, retries=1,
                  node_path=["field_mapper", "deep_agent"], sse_events=["node_start", "done"])
 
+# 재작성 감사 레코드(plans/107 §4.9) — Y-11·Y-12 쌍의 관측치
+_TRACE_PASS = {"consumer": "query_generator", "gate": {"needed": False, "reason": "pass_through"},
+               "verify": {"user_query": "pass"}, "slots": {}}
+_TRACE_LEAK = {"consumer": "query_generator", "gate": {"needed": True, "reason": "non_utterance_source"},
+               "verify": {"user_query": "fail:location_leak"}, "slots": {"targets.db_ids": {}}}
+
 
 @pytest.mark.parametrize(
     "expect,override,should_fail,key",
@@ -188,6 +194,13 @@ _PASS_OBS = dict(status="completed", executed_sql="SELECT hostname FROM cmm_reso
         ({"row_count": {"eq": 4}}, {}, True, "row_count.eq"),
         ({"row_count": {"max": 10}}, {}, False, "row_count.max"),
         ({"row_count": {"max": 3}}, {}, True, "row_count.max"),
+        # plans/94 §19.2 Y-11·Y-12 — 재작성 감사 단언
+        ({"rewrite": {"gate": "pass_through"}}, {"rewrite_traces": [_TRACE_PASS]}, False, "rewrite.gate"),
+        ({"rewrite": {"gate": "pass_through"}}, {"rewrite_traces": [_TRACE_LEAK]}, True, "rewrite.gate"),
+        ({"rewrite": {"slots_preserved": True}}, {"rewrite_traces": [_TRACE_PASS]}, False,
+         "rewrite.slots_preserved"),
+        ({"rewrite": {"slots_preserved": True}}, {"rewrite_traces": [_TRACE_LEAK]}, True,
+         "rewrite.slots_preserved"),
     ],
 )
 def test_단언_키가_통과와_불합격을_모두_구별한다(

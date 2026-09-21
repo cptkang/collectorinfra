@@ -243,9 +243,14 @@ accepted ─► running ─┬─► done      조사 완주 + 후처리 완료(
 | 프로파일 | 용도 | bash allowlist | 대상 데이터 |
 |---|---|---|---|
 | `vm_profile()` | 로컬 VM 진단 | `VM_DIAG_ALLOW`(확장) | 로컬 셸 |
-| `remote_vm_profile()` | **원격 VM 진단(운영 경로)** | `[]` + `builtin_allowlist="core"` | 폴스타 MCP + PromQL(9099) |
+| `remote_vm_profile()` | **원격 VM 진단(운영 경로)** | **bash off**(2026-09-21 · D-233 — 종전 `builtin_allowlist="core"`) | 폴스타 MCP + PromQL(9099) |
 | `middleware_profile()` | 미들웨어 조사(D-168) | `vm_profile`과 **동일**(확장 0) | 로컬 셸 |
 | `no_host_access_profile()` | LLM 왕복 검증(스모크 2단계) | bash **off**(internet·connectivity_check·kubernetes/logs도 off) | 없음 — 붙는 도구는 `TodoWrite`·`fetch_skill`뿐(`NO_HOST_ACCESS_TOOLS`) |
+
+**원격에서 bash를 끈 이유(D-233)**: 중앙 호스트의 셸 출력은 대상 VM 정보가 아니고, holmes `core` 목록은
+읽기 전용이 아니다 — `echo x > f`·`grep … >> f`·`sort -o f`·`uniq in out`이 검증을 통과한다(리다이렉트는
+prefix 허용목록으로 막을 수 없다). `core`에 든 `kubectl` 13종도 k8s가 아닌 환경에선 무의미하고, 실 조사에서
+9B 모델이 40 step 중 35를 `kubectl get pods` 반복에 소진했다. 원격 조사 데이터는 MCP 도구로만 온다.
 
 `middleware_profile`이 별도로 존재하는 이유는 allowlist가 아니라 **조사 초점**이다
 (`MIDDLEWARE_FOCUS_NOTE`): `ps`로 대상을 좁힌 뒤 **해당 pid에 한해** `pidstat`·`ss`를 보고,
@@ -262,6 +267,14 @@ VM_DIAG_ALLOW = [*LIGHT_DIAG_COMMANDS, *(guarded(c) for c in HEAVY_DIAG_COMMANDS
 무거운 명령은 **가드 형태로만** allow에 오르므로 가드 없는 형태는 자동 거부된다.
 `top`은 `-n 1`로 고정한다(생략 시 무한 실행 — L-3). deny도 **가드 형태를 함께 등록**한다 —
 `journalctl --vacuum`을 bare로만 막으면 `timeout … nice … journalctl --vacuum`이 비껴간다.
+
+**쓰기 형태 거부 — 허용목록으로는 못 막는다**(2026-09-21 · D-235). holmes 허용목록은 prefix 매칭이라
+`uptime`이 허용이면 `uptime > /tmp/x`도 통과했다(실측). 설정으로 막을 수단이 없어
+(`BashExecutorConfig`는 `allow`·`deny`·`builtin_allowlist`뿐 · `deny`도 prefix)
+`infrastructure/bash_write_guard.py`가 **검증 경계**에서 거부한다 — 출력 리다이렉트(`>`·`>>`·`&>` …
+`/dev/null`·`2>&1` 제외) · `sort -o|--output` · `uniq <입력> <출력>` · `tee` · `dd of=`.
+거부 사유는 도구 결과 `error`로 모델에 전달되고(조용히 막으면 같은 시도를 반복한다), 쓰기 형태가 아니면
+원본 판정 그대로다(no-op). `BASH_WRITE_GUARD_ENABLED=false`로 끌 수 있다(기본 on · 만료 2027-03-21).
 
 ### 3.5 결정적 폭주 방지 가드 5종 (`InvestigationDispatcher`)
 
@@ -379,6 +392,7 @@ escalate = level > baseline                  # 엄밀 상향일 때만 True
 | `investigation_dedup_ttl_seconds` | — | `None` | fingerprint dedup TTL(off) |
 | `investigation_max_concurrent` | — | `2` | 동시 조사 상한 |
 | `investigation_hourly_budget` | — | `None` | 시간당 조사 상한(off) |
+| `bash_write_guard_enabled` | `BASH_WRITE_GUARD_ENABLED` | `True` | bash 쓰기 형태(리다이렉트·`sort -o`·`tee` …) 검증 경계 거부(D-235). 기본 on — off면 읽기 전용 프로파일이 파일을 쓸 수 있다 |
 | `severity_judge_enabled` | — | `False` | 중요도 2차 판정 |
 | `remediation_recommender_enabled` | — | `False` | 조치 권고 |
 

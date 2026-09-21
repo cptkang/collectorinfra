@@ -91,11 +91,6 @@ _DATA_INTENTS: tuple[Any, ...] = (None, "data_query", "alarm_query")
 #: 식별자로 받는 연산자 — 부정·범위·부분 일치는 "그 서버"를 지목하지 않는다.
 _ANCHOR_OPS: frozenset[str] = frozenset({"", "=", "==", "in"})
 
-#: 소유가 모호한 답변 영역(G-1 기본 가정 · 사용자 미확정). 정본은 레지스트리 소유 선언을 따르되,
-#: 필요한 영역이 **전부** 여기 속하면 결정표 "소유 모호" 행을 탄다. 확정되면 레지스트리 선언으로
-#: 옮긴다.
-OWNERSHIP_AMBIGUOUS_CAPABILITIES: frozenset[str] = frozenset({"server_spec"})
-
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 #: 존 순회 조회 주입점 — `(db_id, names, prefixes, ips) -> 행`. 실패는 **예외**로 알린다.
@@ -218,46 +213,110 @@ def _cell_keys(value: Any, family: str, *, multi_value: bool) -> list[TypedKey]:
     return [TypedKey(key_type=kt, normalized=normalize_value(text, kt), raw=text)]
 
 
+def _matched_entities(report: Any, value: str) -> tuple[str, ...]:
+    """등급 보고에서 이 식별자가 걸린 엔터티 — 세 등급 모두 "있다"의 증거다."""
+    return (
+        report.link.get(value)
+        or report.possible.get(value)
+        or report.ambiguous.get(value)
+        or ()
+    )
+
+
+#: 존 순회 조회(`probe_hosts`)가 돌려주는 행의 고정 투영. 이 세 컬럼만 온다.
+_ZONED_HOST_COLUMN = "hostname"
+#: 등록명 — 폴스타에서 hostname이 아니다(D-061). 매니페스트가 선언하지 않으면 **보조 증거**다.
+_ZONED_ALT_HOST_COLUMN = "name"
+_ZONED_IP_COLUMN = "ipaddress"
+#: 보조 컬럼의 사용자 표기 — 결정표 ②′ 사유 문장에 쓴다.
+_ZONED_WEAK_LABEL = "등록명"
+
+
+def zoned_key_columns(
+    db_id: str, manifest_loader: ManifestLoaderFn | None,
+) -> tuple[tuple[tuple[str, bool, bool], ...], tuple[tuple[str, bool, bool], ...]]:
+    """존 순회 행의 키 컬럼과 **선언 여부** — 매니페스트 선언이 1순위다(권고 G).
+
+    투영은 `probe_hosts`가 고정하므로 컬럼 목록 자체는 바뀌지 않는다. 바뀌는 것은 강도다:
+    매니페스트가 키로 선언한 컬럼이 강한 증거이고, 선언에 없는 `name`은 보조 증거다.
+    매니페스트를 읽지 못하면 종전 기본값(hostname·ipaddress가 선언)으로 둔다 — 로더 실패가
+    존 순회 프로브 전체를 "보조 증거뿐"으로 뒤집지 않게 한다.
+    """
+    manifest = None
+    if manifest_loader is not None:
+        try:
+            manifest = manifest_loader(db_id)
+        except Exception as exc:  # noqa: BLE001 — 로더 실패는 강도 판정만 기본값으로 되돌린다
+            logger.warning(
+                "키 매니페스트 로드 실패(존 순회 강도 판정): db_id=%s err=%s", db_id, exc
+            )
+    declared = (
+        {k.column.lower() for k in manifest.keys}
+        if manifest is not None
+        else {_ZONED_HOST_COLUMN, _ZONED_IP_COLUMN}
+    )
+    hosts = tuple(
+        (col, False, col in declared)
+        for col in (_ZONED_HOST_COLUMN, _ZONED_ALT_HOST_COLUMN)
+    )
+    return hosts, ((_ZONED_IP_COLUMN, False, _ZONED_IP_COLUMN in declared),)
+
+
 @dataclass
 class _Entities:
-    """조회 행을 엔터티로 묶은 것 — 계열별 키 집합과 엔터티 → db_id."""
+    """조회 행을 엔터티로 묶은 것 — 계열별 키 집합과 엔터티 → db_id.
+
+    `strong`은 **키 선언 컬럼**으로 얻은 키만 따로 모은 것이다 — 보조 컬럼(폴스타 `name` 등)
+    으로만 맞은 식별자를 "저 시스템에 등록돼 있다"의 근거로 쓰지 않기 위해서다(권고 K · G-3).
+    """
 
     host: dict[str, set[str]]
     ip: dict[str, set[str]]
     db_of: dict[str, str]
+    strong: dict[str, dict[str, set[str]]]
 
     @classmethod
     def empty(cls) -> _Entities:
-        return cls(host={}, ip={}, db_of={})
+        return cls(host={}, ip={}, db_of={}, strong={FAMILY_HOSTNAME: {}, FAMILY_IP: {}})
 
     def add_rows(
         self,
         rows: Sequence[Mapping[str, Any]],
         *,
         db_id: str,
-        host_columns: Sequence[tuple[str, bool]],
-        ip_columns: Sequence[tuple[str, bool]],
+        host_columns: Sequence[tuple[str, bool, bool]],
+        ip_columns: Sequence[tuple[str, bool, bool]],
         per_ip: bool,
         exact_host: bool = False,
     ) -> None:
         """행을 엔터티로 등록한다. `per_ip`면 같은 호스트 값의 행(IP별 행)을 한 엔터티로
         묶는다(X-T5).
 
-        컬럼은 `(이름, multi_value)` 쌍이다.
+        컬럼은 `(이름, multi_value, 선언 컬럼인가)` 3쌍이다.
         """
         for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
                 continue
-            host_keys = {
-                _compare_value(tk, exact_host)
-                for col, multi in host_columns
-                for tk in _cell_keys(_row_get(row, col), FAMILY_HOSTNAME, multi_value=multi)
-            }
-            ip_keys = {
-                tk.normalized
-                for col, multi in ip_columns
-                for tk in _cell_keys(_row_get(row, col), FAMILY_IP, multi_value=multi)
-            }
+            host_keys: set[str] = set()
+            host_strong: set[str] = set()
+            for col, multi, declared in host_columns:
+                found = {
+                    _compare_value(tk, exact_host)
+                    for tk in _cell_keys(_row_get(row, col), FAMILY_HOSTNAME, multi_value=multi)
+                }
+                host_keys |= found
+                if declared:
+                    host_strong |= found
+            ip_keys: set[str] = set()
+            ip_strong: set[str] = set()
+            for col, multi, declared in ip_columns:
+                found = {
+                    tk.normalized
+                    for tk in _cell_keys(_row_get(row, col), FAMILY_IP, multi_value=multi)
+                }
+                ip_keys |= found
+                if declared:
+                    ip_strong |= found
             if per_ip and host_keys:
                 entity_id = f"{db_id}:{sorted(host_keys)[0]}"
             else:
@@ -265,6 +324,8 @@ class _Entities:
             self.db_of[entity_id] = db_id
             self.host.setdefault(entity_id, set()).update(host_keys)
             self.ip.setdefault(entity_id, set()).update(ip_keys)
+            self.strong[FAMILY_HOSTNAME].setdefault(entity_id, set()).update(host_strong)
+            self.strong[FAMILY_IP].setdefault(entity_id, set()).update(ip_strong)
 
     def grade(
         self,
@@ -272,8 +333,8 @@ class _Entities:
         *,
         exact_host: bool = False,
         skip_families: Sequence[str] = (),
-    ) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, int]]]:
-        """식별자별 발견 DB와 계열별 등급 건수.
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, int]], tuple[str, ...]]:
+        """식별자별 발견 DB · 계열별 등급 건수 · **보조 컬럼으로만 맞은 식별자**.
 
         `link`·`possible`·`ambiguous`는 전부 "이 시스템에 있다"다 — 모호는 **어느 엔터티인지**가
         불분명한 것이지 존재가 불분명한 것이 아니다(여러 존에 같은 이름이 있으면 그 존들을
@@ -281,6 +342,7 @@ class _Entities:
         """
         hits: dict[str, tuple[str, ...]] = {}
         grades: dict[str, dict[str, int]] = {}
+        weak: list[str] = []
         families = (
             (FAMILY_HOSTNAME, identifiers.hostnames, self.host),
             (FAMILY_IP, identifiers.ips, self.ip),
@@ -299,18 +361,27 @@ class _Entities:
                 "non_link": len(report.non_link),
                 "ambiguous": len(report.ambiguous),
             }
+            # 선언 컬럼 키만으로 같은 등급 판정을 한 번 더 한다 — 같은 규칙(완전 일치·단축명)을
+            # 써야 "보조 컬럼 때문에 맞은 것"과 "선언 컬럼으로 맞은 것"이 정확히 갈린다.
+            declared = self.strong.get(family) or {}
+            strong_report = grade_matches(
+                [_compare_value(k, exact) for k in keys],
+                [
+                    TargetEntity(entity_id=eid, keys=frozenset(ks))
+                    for eid, ks in declared.items() if ks
+                ],
+                family=family,
+            )
             for key in keys:
                 value = _compare_value(key, exact)
-                entity_ids = (
-                    report.link.get(value)
-                    or report.possible.get(value)
-                    or report.ambiguous.get(value)
-                    or ()
-                )
+                entity_ids = _matched_entities(report, value)
                 db_ids = tuple(dict.fromkeys(self.db_of[e] for e in entity_ids))
-                if db_ids:
-                    hits[key.raw] = db_ids
-        return hits, grades
+                if not db_ids:
+                    continue
+                hits[key.raw] = db_ids
+                if not _matched_entities(strong_report, value):
+                    weak.append(key.raw)
+        return hits, grades, tuple(dict.fromkeys(weak))
 
 
 # ──────────────────────────────────────────────
@@ -426,8 +497,14 @@ async def probe_zoned_system(
     identifiers: ProbeIdentifiers,
     lookup: HostLookupFn,
     db_labels: Mapping[str, str],
+    manifest_loader: ManifestLoaderFn | None = None,
 ) -> ProbeRun:
-    """존 순회 시스템 — 인가된 존마다 고정 조회 1회. 한 존의 실패가 순회를 멈추지 않는다."""
+    """존 순회 시스템 — 인가된 존마다 고정 조회 1회. 한 존의 실패가 순회를 멈추지 않는다.
+
+    조회 SQL은 `hostname`과 `name`을 함께 보지만 **브리지 키는 `hostname`뿐**이다(G-3 · D-061).
+    그래서 매니페스트 선언으로 두 컬럼의 강도를 갈라 두고, `name`으로만 맞은 식별자는
+    결정표 ②(HALT)의 근거로 쓰지 않는다(권고 K).
+    """
     started = time.monotonic()
     names, prefixes = _host_candidates(identifiers.hostnames)
     ips = _ip_candidates(identifiers.ips)
@@ -440,14 +517,15 @@ async def probe_zoned_system(
             logger.warning("소재 프로브 조회 실패: system=%s db_id=%s err=%s", system, db_id, exc)
             errors[db_id] = type(exc).__name__
             continue
+        host_columns, ip_columns = zoned_key_columns(db_id, manifest_loader)
         entities.add_rows(
             rows,
             db_id=db_id,
-            host_columns=(("hostname", False), ("name", False)),
-            ip_columns=(("ipaddress", False),),
+            host_columns=host_columns,
+            ip_columns=ip_columns,
             per_ip=False,
         )
-    hits, grades = entities.grade(identifiers)
+    hits, grades, weak_only = entities.grade(identifiers)
     return ProbeRun(
         probe=SystemProbe(
             system=system,
@@ -457,6 +535,8 @@ async def probe_zoned_system(
             hits=hits,
             errors=errors,
             db_labels=dict(db_labels),
+            weak_only=weak_only,
+            weak_label=_ZONED_WEAK_LABEL,
         ),
         grades=grades,
         latency_ms=(time.monotonic() - started) * 1000,
@@ -507,11 +587,12 @@ async def probe_manifest_system(
             exact_host = exact_host or host_key.compare == "exact"
         if ip_key is not None:
             supported.add(FAMILY_IP)
+        # 여기는 컬럼 자체가 매니페스트 선언이라 전부 강한 증거다(권고 G — 선언이 1순위).
         entities.add_rows(
             rows,
             db_id=db_id,
-            host_columns=((host_key.column, host_key.multi_value),) if host_key else (),
-            ip_columns=((ip_key.column, ip_key.multi_value),) if ip_key else (),
+            host_columns=((host_key.column, host_key.multi_value, True),) if host_key else (),
+            ip_columns=((ip_key.column, ip_key.multi_value, True),) if ip_key else (),
             per_ip=manifest.row_multiplicity == ROW_MULTIPLICITY_PER_IP,
             exact_host=host_key is not None and host_key.compare == "exact",
         )
@@ -519,7 +600,9 @@ async def probe_manifest_system(
     unchecked = tuple(k.raw for k in identifiers.all_keys() if k.family in unsupported)
     if unchecked:
         errors[""] = f"키 매니페스트가 받지 않는 식별자: {', '.join(unchecked)}"
-    hits, grades = entities.grade(identifiers, exact_host=exact_host, skip_families=unsupported)
+    hits, grades, weak_only = entities.grade(
+        identifiers, exact_host=exact_host, skip_families=unsupported
+    )
     return ProbeRun(
         probe=SystemProbe(
             system=system,
@@ -530,6 +613,7 @@ async def probe_manifest_system(
             errors=errors,
             unchecked=unchecked,
             db_labels=dict(db_labels),
+            weak_only=weak_only,
         ),
         grades=grades,
         latency_ms=(time.monotonic() - started) * 1000,
@@ -548,6 +632,9 @@ def required_systems(
 
     `required_capabilities`(라우터 구조화 출력)가 있으면 그 소유 시스템, 비었으면(소유 플래그 off)
     현재 `target_databases`의 시스템 집합으로 대신한다 — 이때는 모호 판정 근거가 없다.
+
+    모호 영역 목록은 **레지스트리 선언**(`capabilities[].ambiguous_owner`)에서 읽는다 — 코드
+    상수로 두면 소유 데이터의 두 번째 출처가 된다(D-053 · G-1).
     """
     capabilities = [
         c for c in (state.get("required_capabilities") or []) if isinstance(c, str) and c
@@ -558,7 +645,8 @@ def required_systems(
             if owner not in owners:
                 owners.append(owner)
     if owners:
-        return tuple(owners), all(c in OWNERSHIP_AMBIGUOUS_CAPABILITIES for c in capabilities)
+        ambiguous_codes = registry.ambiguous_capabilities()
+        return tuple(owners), all(c in ambiguous_codes for c in capabilities)
     for target in state.get("target_databases") or []:
         system = (
             registry.system_of(target.get("db_id", "")) if isinstance(target, Mapping) else None
@@ -829,6 +917,7 @@ async def _probe_system(
             identifiers=identifiers,
             lookup=lookup,
             db_labels=db_labels,
+            manifest_loader=loader,
         )
     return await probe_manifest_system(
         system,

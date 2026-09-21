@@ -368,8 +368,9 @@ class TestRouterNodeOwnership:
         "entry",
         [
             _db("itam", []),  # 답변 영역을 비워 냈다
-            _db("itam", ["server_usage"], user_specified=True),  # 사용자 직접 지정
             _db("cloud_portal", ["server_usage"]),  # 답변 영역 선언이 없는 DB
+            # 직접 지정이지만 그 DB가 **정본인** 영역 — 사유 노트도 없다(권고 C 경계).
+            _db("itam", ["asset_contract"], user_specified=True),
         ],
     )
     async def test_excluded_entries_are_not_corrected(self, monkeypatch, entry):

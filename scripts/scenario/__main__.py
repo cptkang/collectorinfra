@@ -35,7 +35,9 @@ from .runner import (
     estimate,
     execute,
     failed_scenarios,
+    iter_executions,
     latest_run,
+    merge_arm_profiles,
 )
 
 
@@ -109,10 +111,29 @@ def _env_label(env: Optional[str]) -> str:
     return env or "자동 판정 - 전 시나리오"
 
 
+def _check_arms(args: argparse.Namespace, catalog: Catalog) -> Optional[str]:
+    """`--arm` 이름이 프로파일 정본에 있는지 본다.
+
+    오타를 그대로 통과시키면 카탈로그 검증은 지나가고(시나리오의 `profile:` 은 멀쩡하다)
+    **주입만 조용히 빠진 채** 전 arm 이 같은 단으로 도는 run 이 된다 - 6시간을 쓰고 나서
+    `run.json` 을 보고 알게 된다.
+    """
+    unknown = [name for name in getattr(args, "arm", []) if name not in catalog.profiles]
+    if not unknown:
+        return None
+    return (f"--arm 대상이 프로파일 정본에 없습니다: {', '.join(unknown)}\n"
+            f"  정의: config/scenarios/profiles.yaml "
+            f"(현재: {', '.join(sorted(catalog.profiles))})")
+
+
 def cmd_dry_run(args: argparse.Namespace) -> int:
     """1단 - 카탈로그만 검증한다. 서버를 띄우지 않는다."""
     catalog = _load()
     assert catalog is not None
+    problem = _check_arms(args, catalog)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     selected = catalog.select(args.group, args.only, args.env)
     print(f"[1단] 카탈로그 OK - 군 {len(catalog.groups)}개, 시나리오 {len(catalog.scenarios)}건")
     print(f"       선택: {len(selected)}건 (env={_env_label(args.env)})")
@@ -125,16 +146,41 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
               f"  정책확정={header.policy_confirmed}")
     covered = catalog.plans_index()
     print(f"       계획서 역추적: {len(covered)}개 계획서가 최소 1건의 시나리오를 가진다")
+    if args.arm:
+        _print_arm_plan(catalog, _run_config(args, "dry"))
     return 0
+
+
+def _print_arm_plan(catalog: Catalog, config: RunConfig) -> None:
+    """arm 전개를 실행 계획 그대로 보여준다(`110·N-1`).
+
+    여기서 따로 세지 않고 `iter_executions` 가 내놓는 것을 그대로 출력한다 - 따로 세면
+    1단 출력과 실제 실행이 어긋나고, 어긋나는 것을 아무도 확인하지 않는다.
+    """
+    plan = list(iter_executions(catalog, config))
+    bindings = merge_arm_profiles(catalog, catalog.scenarios, config.arms)[1]
+    total = sum(len(scenarios) for _profile, scenarios in plan)
+    print(f"       arm 전개: {', '.join(config.arms)} -> 실행 {total}건 "
+          f"(= 서버 기동 {len(plan)}회)")
+    for profile, scenarios in plan:
+        binding = bindings[profile]
+        base, arm = binding.base_profile, binding.arm
+        injected = catalog.profiles.get(profile, {})
+        print(f"       - {profile:<28} {len(scenarios):>4}건  "
+              f"(시나리오 프로파일 {base} + arm {arm})")
+        print(f"         주입 {len(injected)}키: "
+              f"{', '.join(f'{k}={v}' for k, v in sorted(injected.items())) or '(없음)'}")
 
 
 def cmd_estimate(args: argparse.Namespace) -> int:
     """3단 - 예상치를 낸다. 이 출력이 D-127 승인 요청의 근거다."""
     catalog = _load()
     assert catalog is not None
-    config = RunConfig(mode="run", env=args.env, repeat=args.repeat,
-                       groups=args.group, only=args.only)
-    result = estimate(catalog, config)
+    problem = _check_arms(args, catalog)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
+    result = estimate(catalog, _run_config(args, "run"))
     print("[3단] 예상치 - 이 출력을 승인권자에게 제시한다")
     print(f"       시나리오      : {result['scenarios']}건")
     print(f"       실행 턴       : {result['turns']}회 (R군 {result['r_group_turns']}회 포함)")
@@ -149,7 +195,7 @@ def cmd_estimate(args: argparse.Namespace) -> int:
 def _run_config(args: argparse.Namespace, mode: str) -> RunConfig:
     return RunConfig(
         mode=mode, env=args.env, repeat=args.repeat, groups=args.group,
-        only=args.only, profiles=args.profile, port=args.port,
+        only=args.only, profiles=args.profile, arms=args.arm, port=args.port,
         token=args.token, timeout_sec=args.timeout, resume_from=args.resume,
         admin_token=args.admin_token,
         user_id=args.user, user_password=args.password,
@@ -167,6 +213,10 @@ def cmd_mock(args: argparse.Namespace) -> int:
         return 1
     catalog = _load()
     assert catalog is not None
+    problem = _check_arms(args, catalog)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     config = _run_config(args, "mock")
     problem = _apply_resume_failed(config)
     if problem:
@@ -241,6 +291,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     catalog = _load()
     assert catalog is not None
+    problem = _check_arms(args, catalog)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     config = _run_config(args, "run")
     problem = _apply_resume_failed(config)
     if problem:
@@ -349,7 +403,14 @@ def build_parser() -> argparse.ArgumentParser:
     select = parser.add_argument_group("선택 (전부 생략 가능 - 기본은 전 시나리오)")
     select.add_argument("--no-db", action="store_true",
                         help="--preflight 에서 DB 조회 2건(E-1)을 건너뛴다")
-    select.add_argument("--profile", action="append", default=[], help="플래그 프로파일 (반복 가능)")
+    select.add_argument("--profile", action="append", default=[],
+                        help="플래그 프로파일 **필터** (반복 가능) - "
+                             "시나리오가 선언한 자기 프로파일로 거른다")
+    select.add_argument("--arm", action="append", default=[], metavar="PROFILE",
+                        help="전 시나리오에 **덧씌우는** 측정 축 프로파일 (반복 가능). "
+                             "시나리오 자기 프로파일과 **병합**하고(키 충돌 시 arm 우선) "
+                             "같은 run 에서 arm 마다 한 번씩 돈다. "
+                             "예: --arm tier2_intent --arm tier3_router")
     select.add_argument("--group", action="append", default=[], help="군 문자 (예: C · R4)")
     select.add_argument("--only", default=[], type=lambda v: v.split(","),
                         help="시나리오 ID 목록 (쉼표 구분)")

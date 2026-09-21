@@ -10,6 +10,8 @@
     실 LLM을 호출한다. `RUN_E2E=1` **없이는 실행되지 않는다**(아래 하드 게이트).
     키 존재만으로 실행되게 하지 않는다 — 키는 `.encenv`에 상존한다는 전제이기 때문이다.
     승인은 **실행 건마다** 받는다(포괄 승인 없음).
+    **예외 — 로컬 MLX 모드(D-240 부기)**: 워커·오케스트레이터 두 평면이 모두 `mlx` 이고 둘 다
+    루프백이면 비과금이라 `RUN_E2E` 없이 돈다. 하나라도 아니면 종전대로 `RUN_E2E=1` 이 필요하다.
 
 사용:
     RUN_E2E=1 .venv/bin/python scripts/eval_routing.py --out reports/routing_s1.json
@@ -45,16 +47,57 @@ _BANDS = [
 ]
 
 
+def local_mlx_mode(cfg: Any = None) -> tuple[bool, str]:
+    """두 평면이 모두 **로컬 MLX 루프백**인가 → (RUN_E2E 없이 돌아도 되는가, 사유). D-240 부기.
+
+    과금 판정은 D-222 정본 `scripts.scenario.preflight.external_planes` 한 곳을 그대로 쓰고,
+    그 위에 **더 좁게** 두 평면 `mlx` + 루프백을 요구한다 — 내부망 FabriX·vLLM 은 비과금이지만
+    이 모드의 대상이 아니다(`RUN_E2E=1` 경로 그대로). 설정을 못 읽으면 열지 않는다.
+    """
+    from scripts.scenario.preflight import (
+        _is_loopback,
+        _mlx_planes,
+        _plane_provider,
+        external_planes,
+    )
+
+    try:
+        if cfg is None:
+            from src.config import load_config
+
+            cfg = load_config()
+        worker = _plane_provider(cfg.llm)
+        orchestrator = _plane_provider(cfg.orchestrator)
+    except Exception as exc:
+        return False, f"설정을 읽지 못했다({type(exc).__name__}) — 과금 게이트를 열지 않는다"
+    planes = f"워커 {worker or '?'}, 오케스트레이터 {orchestrator or '?'}"
+    if external_planes(worker, orchestrator):
+        return False, f"과금 평면이 있다({planes})"
+    if (worker, orchestrator) != ("mlx", "mlx"):
+        return False, f"두 평면이 모두 mlx 가 아니다({planes})"
+    remote = [f"{plane} {url or '(base_url 미설정)'}" for plane, url, _ in _mlx_planes(cfg)
+              if not _is_loopback(url)]
+    if remote:
+        return False, f"루프백이 아닌 MLX 평면이 있다: {', '.join(remote)}"
+    return True, f"로컬 MLX 루프백({planes}) — 비과금"
+
+
 def _require_optin() -> None:
-    """D-127 하드 게이트. 옵트인 없이는 어떤 실 호출도 하지 않는다."""
-    if os.getenv("RUN_E2E") != "1":
-        print(
-            "거부: 실 LLM 호출은 D-127 건별 사용자 승인 대상입니다.\n"
-            "  승인 후에만 RUN_E2E=1 을 설정해 재실행하세요.\n"
-            "  (호출 없이 점검만 하려면 --dry-run)",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+    """D-127 하드 게이트. 옵트인 없이는 어떤 실 호출도 하지 않는다(로컬 MLX 모드만 예외)."""
+    if os.getenv("RUN_E2E") == "1":
+        return
+    local, reason = local_mlx_mode()
+    if local:
+        print(f"[local-mlx] {reason} — RUN_E2E 없이 진행합니다(D-240)", file=sys.stderr)
+        return
+    print(
+        "거부: 실 LLM 호출은 D-127 건별 사용자 승인 대상입니다.\n"
+        f"  로컬 MLX 모드 아님: {reason}\n"
+        "  승인 후에만 RUN_E2E=1 을 설정해 재실행하세요.\n"
+        "  (호출 없이 점검만 하려면 --dry-run)",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 
 def load_gold(path: Path = _GOLD) -> list[dict]:

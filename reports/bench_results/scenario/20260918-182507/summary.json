@@ -1,0 +1,8999 @@
+{
+  "meta": {
+    "run_id": "20260918-182507",
+    "mode": "run",
+    "env": "closed",
+    "provider": "fabrix",
+    "commit": "5b093016f3eec3cefed706ebbc664ce71f6160c0",
+    "dirty": true,
+    "started_at": "2026-09-18T09:25:07+00:00",
+    "repeat": 1,
+    "scenario_total": 218,
+    "platform": {
+      "os": "Linux",
+      "os_release": "5.14.0-570.112.1.el9_6.x86_64",
+      "python": "3.12.9",
+      "encoding": "utf-8",
+      "pythonutf8": "1"
+    },
+    "host": "nclago01",
+    "env_source": "auto",
+    "setup_cleanup": [
+      "삭제 polestar_cm_gp polestar.cmm_resource.hostname ['검증용사용률']: 완료"
+    ],
+    "teardown_log": [
+      {
+        "scenario_id": "A-10",
+        "repeat": 0,
+        "unregister_synonym": []
+      }
+    ],
+    "token_refresh": [
+      {
+        "profile": "baseline",
+        "refreshes": [
+          {
+            "reason": "선제 갱신(경과 6.4h)",
+            "at_monotonic": 10650844.4
+          }
+        ],
+        "failures": []
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "name": "baseline",
+      "port": 36888,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "intent_flag_on",
+      "echo_ok": true,
+      "echo_mismatch": {},
+      "auth_enabled": false,
+      "reasons": []
+    },
+    {
+      "name": "optin_alarm",
+      "port": 23220,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "intent_flag_on",
+      "echo_ok": true,
+      "echo_mismatch": {},
+      "auth_enabled": false,
+      "reasons": []
+    }
+  ],
+  "groups": {
+    "A": {
+      "total": 12,
+      "pass": 4,
+      "fail": 3,
+      "error": 2,
+      "manual": 3,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 5000,
+      "latency": {
+        "n": 7,
+        "p50": 33296.7,
+        "max": 59144.6,
+        "p95": null,
+        "note": "표본 부족 (n=7 < 20) - p95 생략"
+      },
+      "perf_pass": 0,
+      "perf_fail": 7,
+      "perf_na": 5
+    },
+    "B": {
+      "total": 12,
+      "pass": 3,
+      "fail": 6,
+      "error": 0,
+      "manual": 3,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 10000,
+      "latency": {
+        "n": 8,
+        "p50": 47950.2,
+        "max": 59312.2,
+        "p95": null,
+        "note": "표본 부족 (n=8 < 20) - p95 생략"
+      },
+      "perf_pass": 0,
+      "perf_fail": 8,
+      "perf_na": 4
+    },
+    "C": {
+      "total": 13,
+      "pass": 0,
+      "fail": 9,
+      "error": 0,
+      "manual": 4,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 4,
+        "p50": 45277.1,
+        "max": 55150.5,
+        "p95": null,
+        "note": "표본 부족 (n=4 < 20) - p95 생략"
+      },
+      "perf_pass": 1,
+      "perf_fail": 3,
+      "perf_na": 9
+    },
+    "D": {
+      "total": 6,
+      "pass": 0,
+      "fail": 5,
+      "error": 1,
+      "manual": 0,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 10000,
+      "latency": {
+        "n": 1,
+        "p50": 52223.3,
+        "max": 52223.3,
+        "p95": null,
+        "note": "표본 부족 (n=1 < 20) - p95 생략"
+      },
+      "perf_pass": 0,
+      "perf_fail": 1,
+      "perf_na": 5
+    },
+    "E": {
+      "total": 7,
+      "pass": 0,
+      "fail": 6,
+      "error": 0,
+      "manual": 1,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 1,
+        "p50": 49767.6,
+        "max": 49767.6,
+        "p95": null,
+        "note": "표본 부족 (n=1 < 20) - p95 생략"
+      },
+      "perf_pass": 0,
+      "perf_fail": 1,
+      "perf_na": 6
+    },
+    "F": {
+      "total": 9,
+      "pass": 3,
+      "fail": 5,
+      "error": 0,
+      "manual": 1,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 5,
+        "p50": 25290.7,
+        "max": 34644.7,
+        "p95": null,
+        "note": "표본 부족 (n=5 < 20) - p95 생략"
+      },
+      "perf_pass": 4,
+      "perf_fail": 1,
+      "perf_na": 10
+    },
+    "G": {
+      "total": 4,
+      "pass": 1,
+      "fail": 2,
+      "error": 1,
+      "manual": 0,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 3,
+        "p50": 44226.8,
+        "max": 51841.3,
+        "p95": null,
+        "note": "표본 부족 (n=3 < 20) - p95 생략"
+      },
+      "perf_pass": 0,
+      "perf_fail": 3,
+      "perf_na": 3
+    },
+    "H": {
+      "total": 17,
+      "pass": 0,
+      "fail": 8,
+      "error": 0,
+      "manual": 9,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 60000,
+      "latency": {
+        "n": 16,
+        "p50": 71900.6,
+        "max": 139502.5,
+        "p95": null,
+        "note": "표본 부족 (n=16 < 20) - p95 생략"
+      },
+      "perf_pass": 4,
+      "perf_fail": 12,
+      "perf_na": 1
+    },
+    "I": {
+      "total": 8,
+      "pass": 1,
+      "fail": 5,
+      "error": 0,
+      "manual": 2,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 60000,
+      "latency": {
+        "n": 9,
+        "p50": 82086.9,
+        "max": 87432.5,
+        "p95": null,
+        "note": "표본 부족 (n=9 < 20) - p95 생략"
+      },
+      "perf_pass": 1,
+      "perf_fail": 8,
+      "perf_na": 1
+    },
+    "J": {
+      "total": 10,
+      "pass": 2,
+      "fail": 1,
+      "error": 1,
+      "manual": 6,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 8,
+        "p50": 31379.5,
+        "max": 56002.2,
+        "p95": null,
+        "note": "표본 부족 (n=8 < 20) - p95 생략"
+      },
+      "perf_pass": 3,
+      "perf_fail": 5,
+      "perf_na": 2
+    },
+    "K": {
+      "total": 10,
+      "pass": 0,
+      "fail": 6,
+      "error": 2,
+      "manual": 2,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 37,
+        "p50": 50273.7,
+        "max": 86884.6,
+        "p95": 79507.3,
+        "note": ""
+      },
+      "perf_pass": 0,
+      "perf_fail": 37,
+      "perf_na": 34
+    },
+    "L": {
+      "total": 32,
+      "pass": 1,
+      "fail": 0,
+      "error": 18,
+      "manual": 13,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 13,
+        "p50": 49846.6,
+        "max": 57012.7,
+        "p95": null,
+        "note": "표본 부족 (n=13 < 20) - p95 생략"
+      },
+      "perf_pass": 1,
+      "perf_fail": 12,
+      "perf_na": 19
+    },
+    "R1": {
+      "total": 10,
+      "pass": 0,
+      "fail": 4,
+      "error": 6,
+      "manual": 0,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 7,
+        "p50": 54951.2,
+        "max": 59703.0,
+        "p95": null,
+        "note": "표본 부족 (n=7 < 20) - p95 생략"
+      },
+      "perf_pass": 0,
+      "perf_fail": 4,
+      "perf_na": 29
+    },
+    "R2": {
+      "total": 20,
+      "pass": 3,
+      "fail": 1,
+      "error": 6,
+      "manual": 10,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 23,
+        "p50": 45388.2,
+        "max": 59551.5,
+        "p95": 58137.0,
+        "note": ""
+      },
+      "perf_pass": 4,
+      "perf_fail": 19,
+      "perf_na": 17
+    },
+    "R3": {
+      "total": 24,
+      "pass": 1,
+      "fail": 9,
+      "error": 13,
+      "manual": 1,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 13,
+        "p50": 41915.1,
+        "max": 55834.6,
+        "p95": null,
+        "note": "표본 부족 (n=13 < 20) - p95 생략"
+      },
+      "perf_pass": 2,
+      "perf_fail": 11,
+      "perf_na": 35
+    },
+    "R4": {
+      "total": 24,
+      "pass": 2,
+      "fail": 7,
+      "error": 12,
+      "manual": 3,
+      "flaky": 0,
+      "invalid": 0,
+      "target_ms": 30000,
+      "latency": {
+        "n": 13,
+        "p50": 29001.3,
+        "max": 58265.9,
+        "p95": null,
+        "note": "표본 부족 (n=13 < 20) - p95 생략"
+      },
+      "perf_pass": 7,
+      "perf_fail": 6,
+      "perf_na": 35
+    }
+  },
+  "plans_coverage": {
+    "7": {
+      "scenarios": 21,
+      "executed": 21,
+      "pass": 5,
+      "scenario_ids": [
+        "J-01",
+        "J-02",
+        "J-03",
+        "J-04",
+        "J-05",
+        "J-06",
+        "J-07",
+        "J-08",
+        "J-09",
+        "J-10",
+        "R2-01",
+        "R2-01C",
+        "R2-02",
+        "R2-02C",
+        "R2-03",
+        "R2-03C",
+        "R2-06",
+        "R2-10",
+        "R2-10C",
+        "R3-08",
+        "R3-08C"
+      ]
+    },
+    "9": {
+      "scenarios": 16,
+      "executed": 16,
+      "pass": 4,
+      "scenario_ids": [
+        "A-01",
+        "A-02",
+        "A-03",
+        "A-04",
+        "A-05",
+        "A-06",
+        "A-07",
+        "A-08",
+        "A-09",
+        "A-10",
+        "A-11",
+        "A-12",
+        "R3-09",
+        "R3-09C",
+        "R3-10",
+        "R3-10C"
+      ]
+    },
+    "10": {
+      "scenarios": 21,
+      "executed": 21,
+      "pass": 0,
+      "scenario_ids": [
+        "H-01",
+        "H-02",
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-10",
+        "H-11",
+        "H-12",
+        "H-13",
+        "H-14",
+        "H-15",
+        "H-16",
+        "H-17",
+        "H-18",
+        "H-20",
+        "H-21",
+        "R1-03",
+        "R2-08",
+        "R2-08C",
+        "R4-07C"
+      ]
+    },
+    "19": {
+      "scenarios": 21,
+      "executed": 21,
+      "pass": 0,
+      "scenario_ids": [
+        "H-01",
+        "H-02",
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-10",
+        "H-11",
+        "H-12",
+        "H-13",
+        "H-14",
+        "H-15",
+        "H-16",
+        "H-17",
+        "H-18",
+        "H-20",
+        "H-21",
+        "R1-03",
+        "R2-08",
+        "R2-08C",
+        "R4-07C"
+      ]
+    },
+    "20": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "21": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "25": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "32": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "33": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "35": {
+      "scenarios": 17,
+      "executed": 17,
+      "pass": 0,
+      "scenario_ids": [
+        "H-01",
+        "H-02",
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-10",
+        "H-11",
+        "H-12",
+        "H-13",
+        "H-14",
+        "H-15",
+        "H-16",
+        "H-17",
+        "H-18",
+        "H-20",
+        "H-21"
+      ]
+    },
+    "37": {
+      "scenarios": 53,
+      "executed": 53,
+      "pass": 5,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12",
+        "SYN-A-01",
+        "SYN-A-02",
+        "SYN-A-03",
+        "SYN-A-04",
+        "SYN-A-05",
+        "SYN-B-01",
+        "SYN-B-02",
+        "SYN-B-03",
+        "SYN-C-01",
+        "SYN-C-02",
+        "SYN-C-03",
+        "SYN-C-04",
+        "SYN-E-01",
+        "SYN-E-02",
+        "SYN-E-03",
+        "SYN-F-01",
+        "SYN-F-02",
+        "SYN-F-03",
+        "SYN-F-04",
+        "SYN-F-05",
+        "SYN-H-01",
+        "SYN-H-02",
+        "SYN-H-03",
+        "SYN-H-04",
+        "SYN-I-01",
+        "SYN-I-02",
+        "SYN-I-03",
+        "SYN-I-03b",
+        "SYN-I-04",
+        "SYN-I-05",
+        "SYN-I-06",
+        "SYN-I-07",
+        "R3-01",
+        "R3-01C",
+        "R3-02",
+        "R3-02C",
+        "R3-11",
+        "R3-11C",
+        "R4-01",
+        "R4-10",
+        "R4-10C"
+      ]
+    },
+    "39": {
+      "scenarios": 2,
+      "executed": 2,
+      "pass": 0,
+      "scenario_ids": [
+        "R2-04",
+        "R2-04C"
+      ]
+    },
+    "40": {
+      "scenarios": 2,
+      "executed": 2,
+      "pass": 0,
+      "scenario_ids": [
+        "R2-04",
+        "R2-04C"
+      ]
+    },
+    "41": {
+      "scenarios": 18,
+      "executed": 18,
+      "pass": 4,
+      "scenario_ids": [
+        "J-01",
+        "J-02",
+        "J-03",
+        "J-04",
+        "J-05",
+        "J-06",
+        "J-07",
+        "J-08",
+        "J-09",
+        "J-10",
+        "R2-01",
+        "R2-01C",
+        "R2-02",
+        "R2-02C",
+        "R2-03",
+        "R2-03C",
+        "R2-04",
+        "R3-08"
+      ]
+    },
+    "42": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "43": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 3,
+      "scenario_ids": [
+        "B-01",
+        "B-02",
+        "B-03",
+        "B-04",
+        "B-05",
+        "B-06",
+        "B-07",
+        "B-08",
+        "B-09",
+        "B-10",
+        "B-11",
+        "B-12"
+      ]
+    },
+    "44": {
+      "scenarios": 11,
+      "executed": 11,
+      "pass": 0,
+      "scenario_ids": [
+        "D-01",
+        "D-02",
+        "D-03",
+        "D-04",
+        "D-05",
+        "D-06",
+        "R1-08",
+        "R2-07",
+        "R2-07C",
+        "R3-06C",
+        "R4-06C"
+      ]
+    },
+    "45": {
+      "scenarios": 11,
+      "executed": 11,
+      "pass": 0,
+      "scenario_ids": [
+        "D-01",
+        "D-02",
+        "D-03",
+        "D-04",
+        "D-05",
+        "D-06",
+        "R1-08",
+        "R2-07",
+        "R2-07C",
+        "R3-06C",
+        "R4-06C"
+      ]
+    },
+    "50": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 1,
+      "scenario_ids": [
+        "G-01",
+        "G-02",
+        "G-03",
+        "G-04",
+        "R1-09",
+        "R1-10",
+        "R2-09",
+        "R2-09C",
+        "R3-12",
+        "R3-12C",
+        "R4-08",
+        "R4-08C"
+      ]
+    },
+    "55": {
+      "scenarios": 2,
+      "executed": 2,
+      "pass": 0,
+      "scenario_ids": [
+        "R4-06",
+        "R4-07"
+      ]
+    },
+    "58": {
+      "scenarios": 25,
+      "executed": 25,
+      "pass": 1,
+      "scenario_ids": [
+        "H-01",
+        "H-02",
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-10",
+        "H-11",
+        "H-12",
+        "H-13",
+        "H-14",
+        "H-15",
+        "H-16",
+        "H-17",
+        "H-18",
+        "H-20",
+        "H-21",
+        "I-01",
+        "I-02",
+        "I-03",
+        "I-04",
+        "I-05",
+        "I-06",
+        "I-07",
+        "I-08"
+      ]
+    },
+    "61": {
+      "scenarios": 68,
+      "executed": 68,
+      "pass": 3,
+      "scenario_ids": [
+        "C-01",
+        "C-02",
+        "C-03",
+        "C-04",
+        "C-05",
+        "C-06",
+        "C-07",
+        "C-08",
+        "C-09",
+        "C-10",
+        "C-11",
+        "C-12",
+        "C-13",
+        "SYN-A-01",
+        "SYN-A-02",
+        "SYN-A-03",
+        "SYN-A-04",
+        "SYN-A-05",
+        "SYN-B-01",
+        "SYN-B-02",
+        "SYN-B-03",
+        "SYN-C-01",
+        "SYN-C-02",
+        "SYN-C-03",
+        "SYN-C-04",
+        "SYN-E-01",
+        "SYN-E-02",
+        "SYN-E-03",
+        "SYN-F-01",
+        "SYN-F-02",
+        "SYN-F-03",
+        "SYN-F-04",
+        "SYN-F-05",
+        "SYN-H-01",
+        "SYN-H-02",
+        "SYN-H-03",
+        "SYN-H-04",
+        "SYN-I-01",
+        "SYN-I-02",
+        "SYN-I-03",
+        "SYN-I-03b",
+        "SYN-I-04",
+        "SYN-I-05",
+        "SYN-I-06",
+        "SYN-I-07",
+        "R1-04",
+        "R3-01",
+        "R3-01C",
+        "R3-02",
+        "R3-02C",
+        "R3-05",
+        "R3-05C",
+        "R3-06",
+        "R3-07",
+        "R3-07C",
+        "R3-11",
+        "R3-11C",
+        "R4-01",
+        "R4-01C",
+        "R4-02",
+        "R4-02C",
+        "R4-03C",
+        "R4-04C",
+        "R4-05C",
+        "R4-10",
+        "R4-10C",
+        "R4-11",
+        "R4-11C"
+      ]
+    },
+    "64": {
+      "scenarios": 1,
+      "executed": 1,
+      "pass": 0,
+      "scenario_ids": [
+        "R2-06"
+      ]
+    },
+    "67": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 0,
+      "scenario_ids": [
+        "K-01",
+        "K-02",
+        "K-03",
+        "K-04",
+        "K-05",
+        "K-06",
+        "K-07",
+        "K-08",
+        "K-09",
+        "K-10",
+        "R2-05",
+        "R2-05C"
+      ]
+    },
+    "69": {
+      "scenarios": 21,
+      "executed": 21,
+      "pass": 1,
+      "scenario_ids": [
+        "C-01",
+        "C-02",
+        "C-03",
+        "C-04",
+        "C-05",
+        "C-06",
+        "C-07",
+        "C-08",
+        "C-09",
+        "C-10",
+        "C-11",
+        "C-12",
+        "C-13",
+        "R1-04",
+        "R3-05",
+        "R3-05C",
+        "R3-06",
+        "R4-02",
+        "R4-02C",
+        "R4-11",
+        "R4-11C"
+      ]
+    },
+    "71": {
+      "scenarios": 1,
+      "executed": 1,
+      "pass": 0,
+      "scenario_ids": [
+        "R4-03"
+      ]
+    },
+    "72": {
+      "scenarios": 18,
+      "executed": 18,
+      "pass": 0,
+      "scenario_ids": [
+        "H-01",
+        "H-02",
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-10",
+        "H-11",
+        "H-12",
+        "H-13",
+        "H-14",
+        "H-15",
+        "H-16",
+        "H-17",
+        "H-18",
+        "H-20",
+        "H-21",
+        "R1-03"
+      ]
+    },
+    "73": {
+      "scenarios": 25,
+      "executed": 25,
+      "pass": 1,
+      "scenario_ids": [
+        "H-01",
+        "H-02",
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-10",
+        "H-11",
+        "H-12",
+        "H-13",
+        "H-14",
+        "H-15",
+        "H-16",
+        "H-17",
+        "H-18",
+        "H-20",
+        "H-21",
+        "I-01",
+        "I-02",
+        "I-03",
+        "I-04",
+        "I-05",
+        "I-06",
+        "I-07",
+        "I-08"
+      ]
+    },
+    "75": {
+      "scenarios": 13,
+      "executed": 13,
+      "pass": 3,
+      "scenario_ids": [
+        "F-01",
+        "F-02",
+        "F-03",
+        "F-04",
+        "F-05",
+        "F-06",
+        "F-07",
+        "F-08",
+        "F-09",
+        "R1-02",
+        "R1-06",
+        "R3-03",
+        "R3-03C"
+      ]
+    },
+    "77": {
+      "scenarios": 1,
+      "executed": 1,
+      "pass": 0,
+      "scenario_ids": [
+        "R4-01"
+      ]
+    },
+    "78": {
+      "scenarios": 8,
+      "executed": 8,
+      "pass": 0,
+      "scenario_ids": [
+        "E-01",
+        "E-02",
+        "E-03",
+        "E-04",
+        "E-05",
+        "E-06",
+        "E-07",
+        "R1-10"
+      ]
+    },
+    "79": {
+      "scenarios": 16,
+      "executed": 16,
+      "pass": 4,
+      "scenario_ids": [
+        "A-01",
+        "A-02",
+        "A-03",
+        "A-04",
+        "A-05",
+        "A-06",
+        "A-07",
+        "A-08",
+        "A-09",
+        "A-10",
+        "A-11",
+        "A-12",
+        "R3-09",
+        "R3-09C",
+        "R3-10",
+        "R3-10C"
+      ]
+    },
+    "80": {
+      "scenarios": 9,
+      "executed": 9,
+      "pass": 0,
+      "scenario_ids": [
+        "E-01",
+        "E-02",
+        "E-03",
+        "E-04",
+        "E-05",
+        "E-06",
+        "E-07",
+        "R1-01",
+        "R1-07"
+      ]
+    },
+    "81": {
+      "scenarios": 3,
+      "executed": 3,
+      "pass": 0,
+      "scenario_ids": [
+        "R1-05",
+        "R2-06C",
+        "R4-03"
+      ]
+    },
+    "82": {
+      "scenarios": 28,
+      "executed": 28,
+      "pass": 4,
+      "scenario_ids": [
+        "E-01",
+        "E-02",
+        "E-03",
+        "E-04",
+        "E-05",
+        "E-06",
+        "E-07",
+        "F-01",
+        "F-02",
+        "F-03",
+        "F-04",
+        "F-05",
+        "F-06",
+        "F-07",
+        "F-08",
+        "F-09",
+        "R1-01",
+        "R1-02",
+        "R1-05",
+        "R1-06",
+        "R3-03",
+        "R3-03C",
+        "R3-04",
+        "R3-04C",
+        "R4-09",
+        "R4-09C",
+        "R4-12",
+        "R4-12C"
+      ]
+    },
+    "84": {
+      "scenarios": 12,
+      "executed": 12,
+      "pass": 0,
+      "scenario_ids": [
+        "K-01",
+        "K-02",
+        "K-03",
+        "K-04",
+        "K-05",
+        "K-06",
+        "K-07",
+        "K-08",
+        "K-09",
+        "K-10",
+        "R2-05",
+        "R2-05C"
+      ]
+    },
+    "87": {
+      "scenarios": 2,
+      "executed": 2,
+      "pass": 0,
+      "scenario_ids": [
+        "R4-04",
+        "R4-05"
+      ]
+    },
+    "88": {
+      "scenarios": 13,
+      "executed": 13,
+      "pass": 0,
+      "scenario_ids": [
+        "E-01",
+        "E-02",
+        "E-03",
+        "E-04",
+        "E-05",
+        "E-06",
+        "E-07",
+        "R1-01",
+        "R1-05",
+        "R1-07",
+        "R1-08",
+        "R1-09",
+        "R3-07"
+      ]
+    },
+    "90": {
+      "scenarios": 15,
+      "executed": 15,
+      "pass": 4,
+      "scenario_ids": [
+        "F-01",
+        "F-02",
+        "F-03",
+        "F-04",
+        "F-05",
+        "F-06",
+        "F-07",
+        "F-08",
+        "F-09",
+        "R1-02",
+        "R1-06",
+        "R2-09",
+        "R2-09C",
+        "R4-12",
+        "R4-12C"
+      ]
+    },
+    "91": {
+      "scenarios": 1,
+      "executed": 1,
+      "pass": 0,
+      "scenario_ids": [
+        "R1-10"
+      ]
+    },
+    "92": {
+      "scenarios": 4,
+      "executed": 4,
+      "pass": 0,
+      "scenario_ids": [
+        "R4-04",
+        "R4-05",
+        "R4-06",
+        "R4-07"
+      ]
+    },
+    "94": {
+      "scenarios": 1,
+      "executed": 1,
+      "pass": 1,
+      "scenario_ids": [
+        "F-09"
+      ]
+    }
+  },
+  "misuse": {
+    "R1": {
+      "total": 10,
+      "mode_dist": {
+        "hang": 26,
+        "answer": 7
+      },
+      "forbidden": {
+        "hang": 26
+      },
+      "control_broken": 0,
+      "control_broken_pairs": []
+    },
+    "R2": {
+      "total": 20,
+      "mode_dist": {
+        "answer": 21,
+        "hang": 11,
+        "correct": 1,
+        "guide": 1,
+        "error": 6
+      },
+      "forbidden": {
+        "hang": 11
+      },
+      "control_broken": 3,
+      "control_broken_pairs": [
+        [
+          "R2-05",
+          "R2-05C"
+        ],
+        [
+          "R2-07",
+          "R2-07C"
+        ],
+        [
+          "R2-09",
+          "R2-09C"
+        ]
+      ]
+    },
+    "R3": {
+      "total": 24,
+      "mode_dist": {
+        "hang": 34,
+        "answer": 13,
+        "crash": 1
+      },
+      "forbidden": {
+        "hang": 34,
+        "crash": 1
+      },
+      "control_broken": 10,
+      "control_broken_pairs": [
+        [
+          "R3-01",
+          "R3-01C"
+        ],
+        [
+          "R3-03",
+          "R3-03C"
+        ],
+        [
+          "R3-04",
+          "R3-04C"
+        ],
+        [
+          "R3-05",
+          "R3-05C"
+        ],
+        [
+          "R3-06",
+          "R3-06C"
+        ],
+        [
+          "R3-07",
+          "R3-07C"
+        ],
+        [
+          "R3-08",
+          "R3-08C"
+        ],
+        [
+          "R3-09",
+          "R3-09C"
+        ],
+        [
+          "R3-10",
+          "R3-10C"
+        ],
+        [
+          "R3-11",
+          "R3-11C"
+        ]
+      ]
+    },
+    "R4": {
+      "total": 24,
+      "mode_dist": {
+        "correct": 3,
+        "hang": 35,
+        "answer": 10
+      },
+      "forbidden": {
+        "hang": 35
+      },
+      "control_broken": 8,
+      "control_broken_pairs": [
+        [
+          "R4-03",
+          "R4-03C"
+        ],
+        [
+          "R4-04",
+          "R4-04C"
+        ],
+        [
+          "R4-05",
+          "R4-05C"
+        ],
+        [
+          "R4-06",
+          "R4-06C"
+        ],
+        [
+          "R4-07",
+          "R4-07C"
+        ],
+        [
+          "R4-08",
+          "R4-08C"
+        ],
+        [
+          "R4-09",
+          "R4-09C"
+        ],
+        [
+          "R4-10",
+          "R4-10C"
+        ]
+      ]
+    }
+  },
+  "failures": [
+    {
+      "scenario_id": "A-01",
+      "turn": 1,
+      "kind": "routing",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_cm_yd"
+          ],
+          "actual": []
+        },
+        {
+          "key": "sql_must_not_match",
+          "expected": "(?i)여의도",
+          "actual": "-- 여의도 개발 서버들의 최근 월간 CPU 사용률 조회\nSELECT\n    COALESCE(svr.name, svr.hostname)               AS server_name,\n    svr.ipaddress                                   AS ipaddress,\n    svr.hostname            "
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "A-02",
+      "turn": 1,
+      "kind": "routing",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_b0"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "A-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "A-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "A-11",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "B-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "B-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "B-07",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bnumeric\\b",
+          "actual": "-- 논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 조회\nSELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server'\n             THEN COALESCE(c.name, c.hostname) END)                                  "
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "B-08",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bnumeric\\b",
+          "actual": "-- 서버별 CPU 논리 코어(vcore) 수 합계\nSELECT\n    COALESCE(svr.name, svr.hostname) AS server_name,\n    SUM(CASE WHEN UPPER(cc.stringvalue_short) LIKE '%TB%' THEN CAST(NULLIF(TRIM(SUBSTR(TRIM(cc.stringvalue_shor"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "B-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bstringvalue\\b",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)OSParameter",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "B-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 2000,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": "-- 이번 달(현재 월) CPU 사용률(평균·최대) – 일간 통계를 이용해 월중 평균·최대값을 구함\nSELECT\n    COALESCE(svr.name, svr.hostname)                         AS server_name,\n    svr.hostname,\n    svr.ipaddress,\n    ROUND(AVG(CASE WHEN"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)'20\\d{4}'",
+          "actual": "-- 이번 달(현재 월) CPU 사용률(평균·최대) – 일간 통계를 이용해 월중 평균·최대값을 구함\nSELECT\n    COALESCE(svr.name, svr.hostname)                         AS server_name,\n    svr.hostname,\n    svr.ipaddress,\n    ROUND(AVG(CASE WHEN"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "C-11",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)'202606'",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)select[\\s\\S]*\\(\\s*select",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "E-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bcmm_resource\\b",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "E-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "E-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "E-04",
+      "turn": 1,
+      "kind": "routing",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_cm_gp",
+            "polestar_cm_yd"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "E-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bselect\\b",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "E-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bcmm_alarm\\w*\\b",
+          "actual": "-- 알람 정보는 사용 가능한 테이블에 존재하지 않으므로, \n-- “심각 알람이 발생한 적이 있는” 조건은 제외하고 조회합니다.\nSELECT\n    COALESCE(r.name, r.hostname) AS server_name,\n    MAX(CASE WHEN r.resource_type = 'server.Server' AND cc.name = 'Vendo"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "F-03",
+      "turn": 2,
+      "kind": "routing",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_b0"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "F-04",
+      "turn": 2,
+      "kind": "routing",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_cm_yd"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "F-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "F-06",
+      "turn": 3,
+      "kind": "routing",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_cm_gp"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "F-07",
+      "turn": 1,
+      "kind": "routing",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_cm_gp",
+            "polestar_cm_yd"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "G-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "G-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "H-03",
+      "turn": 1,
+      "kind": "document",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "file.filled_rows.min",
+          "expected": 1,
+          "actual": {
+            "filled_rows": 0,
+            "data_rows": 0,
+            "empty_by_column": {
+              "서버명": "0/0",
+              "리소스유형": "0/0",
+              "리소스명": "0/0",
+              "상태": "0/0",
+              "설명": "0/0"
+            },
+            "optional_columns": null
+          }
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-04",
+      "turn": 1,
+      "kind": "document",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "file.filled_rows.min",
+          "expected": 1,
+          "actual": {
+            "filled_rows": 0,
+            "data_rows": 0,
+            "empty_by_column": {
+              "서버명": "0/0",
+              "호스트명": "0/0",
+              "IP": "0/0",
+              "OS버전": "0/0",
+              "메모리용량": "0/0"
+            },
+            "optional_columns": [
+              "비고"
+            ]
+          }
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-06",
+      "turn": 1,
+      "kind": "contract",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "response_must_contain",
+          "expected": "[미작성 항목]",
+          "actual": "응답에 없음"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-10",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202601",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202606",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-11",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202601",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202606",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-12",
+      "turn": 1,
+      "kind": "contract",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "response_must_contain",
+          "expected": "[기준월 안내]",
+          "actual": "응답에 없음"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-13",
+      "turn": 1,
+      "kind": "contract",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "response_must_contain",
+          "expected": "[기간 불일치]",
+          "actual": "응답에 없음"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "H-15",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202606",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "I-03",
+      "turn": 1,
+      "kind": "clarify",
+      "plans": [
+        73,
+        58
+      ],
+      "failed_assertions": [
+        {
+          "key": "clarification.options_contains",
+          "expected": "담당자",
+          "actual": [
+            "비고"
+          ]
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "I-04",
+      "turn": 1,
+      "kind": "clarify",
+      "plans": [
+        73,
+        58
+      ],
+      "failed_assertions": [
+        {
+          "key": "clarification.options_contains",
+          "expected": "담당자",
+          "actual": [
+            "비고"
+          ]
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "I-05",
+      "turn": 1,
+      "kind": "clarify",
+      "plans": [
+        73,
+        58
+      ],
+      "failed_assertions": [
+        {
+          "key": "clarification.options_contains",
+          "expected": "담당자",
+          "actual": [
+            "비고"
+          ]
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 1,
+      "kind": "clarify",
+      "plans": [
+        73,
+        58
+      ],
+      "failed_assertions": [
+        {
+          "key": "clarification.options_contains",
+          "expected": "담당자",
+          "actual": [
+            "비고"
+          ]
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "I-07",
+      "turn": 2,
+      "kind": "generation",
+      "plans": [
+        73,
+        58
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "response_must_contain",
+          "expected": "구조 채움 필드는 답변으로 변경할 수 없습니다",
+          "actual": "응답에 없음"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "J-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        7,
+        41
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.max",
+          "expected": 500,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "J-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        7,
+        41
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 201,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 401,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 201,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 401,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 201,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 401,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 201,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\bname\\s*=",
+          "actual": "-- 호스트명 'cob0-bnndbp01'인 서버의 가용성 상태와 IP 주소 조회\nSELECT\n  r.avail_status AS availability_status,\n  r.ipaddress    AS ip_address\nFROM POLESTAR.cmm_resource r\nWHERE r.resource_type = 'server.Server'\n  AND "
+        },
+        {
+          "key": "sql_must_not_match",
+          "expected": "(?i)hostname\\s*=\\s*.?cob0-bnndbp01",
+          "actual": "-- 호스트명 'cob0-bnndbp01'인 서버의 가용성 상태와 IP 주소 조회\nSELECT\n  r.avail_status AS availability_status,\n  r.ipaddress    AS ip_address\nFROM POLESTAR.cmm_resource r\nWHERE r.resource_type = 'server.Server'\n  AND "
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 401,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 201,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.eq",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)hostname\\s*=",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cocm-hdkapp01",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-01",
+      "turn": 401,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 101,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)between\\s+'20\\d{4}'\\s+and\\s+'20\\d{4}'",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)between\\s+'20\\d{4}'\\s+and\\s+'20\\d{4}'",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 101,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)'202605'",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)'202606'",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-03",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-04",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202601",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202606",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "K-04",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202601",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202606",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "K-04",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202601",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)202606",
+          "actual": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.description END) AS \"비고\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.dtype END) AS \"구분|분류\",\n  MAX(CASE WHEN c.resource_type='s"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 101,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_metric_stat_m",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)'20\\d{4}'",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 501,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 701,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 301,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 901,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-06",
+      "turn": 101,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-07",
+      "turn": 1,
+      "kind": "routing",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "db_ids",
+          "expected": [
+            "polestar_cm_gp",
+            "polestar_cm_yd"
+          ],
+          "actual": []
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-07",
+      "turn": 101,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 2000,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.max",
+          "expected": 10000,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "K-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-A-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-A-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-A-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-A-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-A-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-B-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-B-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-C-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-C-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-C-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-F-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-F-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-F-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-H-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-I-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-I-03b",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-I-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "SYN-I-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        82,
+        80
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        10,
+        19,
+        72
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "has_file",
+          "expected": true,
+          "actual": false
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        10,
+        19,
+        72
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "has_file",
+          "expected": true,
+          "actual": false
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        10,
+        19,
+        72
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "has_file",
+          "expected": true,
+          "actual": false
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        81,
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        81,
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        81,
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        75,
+        82,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        75,
+        82,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        75,
+        82,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        80
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        80
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        88,
+        80
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45,
+        88
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45,
+        88
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45,
+        88
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-09",
+      "turn": 2,
+      "kind": "generation",
+      "plans": [
+        50,
+        88
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        78,
+        91,
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        78,
+        91,
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R1-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        78,
+        91,
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        39,
+        40,
+        41
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-05C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        67,
+        84
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-07C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R2-09C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50,
+        90
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        37
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        37
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        37
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-01C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        37
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-03",
+      "turn": 1,
+      "kind": "volume",
+      "plans": [
+        82,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "row_count.max",
+          "expected": 0,
+          "actual": 1690
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "R3-03",
+      "turn": 1,
+      "kind": "volume",
+      "plans": [
+        82,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "row_count.max",
+          "expected": 0,
+          "actual": 1690
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "R3-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82,
+        75
+      ],
+      "failed_assertions": [
+        {
+          "key": "row_count.max",
+          "expected": 0,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-03C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82,
+        75
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-04C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-05C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-06C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        88
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-07C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        7,
+        41
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_not_match",
+          "expected": "--",
+          "actual": "-- 전체 서버 리소스(삭제되지 않은 레코드) 조회\nSELECT *\nFROM polestar.cmm_resource r\nWHERE r.dtime IS NULL\nLIMIT 10000;"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        7,
+        41
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_not_match",
+          "expected": "--",
+          "actual": "-- 모든 정상 서버 레코드 조회 (삭제되지 않은 행만 포함)\nSELECT *\nFROM polestar.cmm_resource r\nWHERE r.dtime IS NULL\n  AND r.resource_type = 'server.Server'\nLIMIT 10000;"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        7,
+        41
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_not_match",
+          "expected": "--",
+          "actual": "-- 전체 cmm_resource 조회 (삭제된 리소스 제외)\nSELECT r.*\nFROM POLESTAR.cmm_resource r\nWHERE r.dtime IS NULL\nFETCH FIRST 10000 ROWS ONLY;"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-08C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        7
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-09C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-10C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        9,
+        79
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-11",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-11",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-11C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R3-12C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "crash"
+    },
+    {
+      "scenario_id": "R4-01C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        71,
+        81
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        71,
+        81
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        71,
+        81
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-03C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        87,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        87,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-04",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        87,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-04C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        87,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        87,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        87,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-05C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        55,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        55,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        55,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-06C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-07",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        55,
+        92
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-07C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        10,
+        19
+      ],
+      "failed_assertions": [
+        {
+          "key": "has_file",
+          "expected": true,
+          "actual": false
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-08",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-08C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        50
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-09",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-09C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        82
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-10",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-10C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        37,
+        61
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "row_count.min",
+          "expected": 1,
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "R4-11C",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        61,
+        69
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "D-01",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)cmm_alarm_active",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)alarmseverity\\s*=\\s*3",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)dtime\\s+is\\s+null",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "D-02",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)\\blimit\\s+100\\b",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "D-03",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)count\\s*\\(",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "D-04",
+      "turn": 1,
+      "kind": "semantics",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)group\\s+by",
+          "actual": "-- 알람(경고 이상) 데이터는 현재 스키마에 존재하지 않으므로\n-- 해당 조건을 생략하고 서버 정보를 조회합니다.\n-- 요청에 포함된 기간(2026‑06‑01 ~ 2026‑08‑31)은 알람 데이터가 없으므로 적용되지 않습니다.\nSELECT\n    COALESCE(r.name, r.hostname) AS server_name,\n    r.ipaddress"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
+          "actual": "-- 알람(경고 이상) 데이터는 현재 스키마에 존재하지 않으므로\n-- 해당 조건을 생략하고 서버 정보를 조회합니다.\n-- 요청에 포함된 기간(2026‑06‑01 ~ 2026‑08‑31)은 알람 데이터가 없으므로 적용되지 않습니다.\nSELECT\n    COALESCE(r.name, r.hostname) AS server_name,\n    r.ipaddress"
+        }
+      ],
+      "forbidden_mode": null
+    },
+    {
+      "scenario_id": "D-05",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [
+        {
+          "key": "status",
+          "expected": "completed",
+          "actual": "error"
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)resource_type",
+          "actual": null
+        },
+        {
+          "key": "sql_must_match",
+          "expected": "(?i)server\\.Cpus",
+          "actual": null
+        }
+      ],
+      "forbidden_mode": "hang"
+    },
+    {
+      "scenario_id": "D-06",
+      "turn": 1,
+      "kind": "generation",
+      "plans": [
+        44,
+        45
+      ],
+      "failed_assertions": [],
+      "forbidden_mode": "hang"
+    }
+  ],
+  "skipped": [
+    {
+      "scenario_id": "G-01",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 4,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 5,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-04",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-03",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-03",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-04",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-04",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-05",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-05",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 4,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 5,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 3,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 3,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 3,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09C",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    }
+  ],
+  "silent_wrong_total": 0,
+  "scenario_verdicts": {
+    "K-02": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 2,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-05": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-01": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-02": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-03": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-04": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-06": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-07": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-08": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-09": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-10": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-11": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "A-12": {
+      "group": "A",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-01": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-02": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-03": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-04": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-05": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-06": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-07": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-08": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-09": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-10": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-11": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "B-12": {
+      "group": "B",
+      "plans": [
+        20,
+        21,
+        25,
+        32,
+        33,
+        37,
+        42,
+        43
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-01": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-02": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-03": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-04": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-05": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-06": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-07": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-08": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-09": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-10": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-11": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-12": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "C-13": {
+      "group": "C",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-01": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-02": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-03": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-04": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-05": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-06": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "E-07": {
+      "group": "E",
+      "plans": [
+        88,
+        82,
+        80,
+        78
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-01": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-02": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-03": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-04": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-05": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-06": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-07": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-08": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "F-09": {
+      "group": "F",
+      "plans": [
+        82,
+        90,
+        75,
+        94
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "G-01": {
+      "group": "G",
+      "plans": [
+        50
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "G-02": {
+      "group": "G",
+      "plans": [
+        50
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "G-03": {
+      "group": "G",
+      "plans": [
+        50
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "G-04": {
+      "group": "G",
+      "plans": [
+        50
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-01": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-02": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-03": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-04": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-05": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-06": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-10": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-11": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-12": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-13": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-14": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-15": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-16": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-17": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-18": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-20": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "H-21": {
+      "group": "H",
+      "plans": [
+        10,
+        19,
+        72,
+        73,
+        58,
+        35
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-01": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-02": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-03": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-04": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-05": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-06": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-07": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "I-08": {
+      "group": "I",
+      "plans": [
+        73,
+        58
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-01": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-02": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-03": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-04": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-05": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-06": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-07": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-08": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-09": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "J-10": {
+      "group": "J",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-01": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 5,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-03": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-04": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-05": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-06": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 2,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-07": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-08": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-09": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "K-10": {
+      "group": "K",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-A-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-A-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-A-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-A-04": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-A-05": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-B-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-B-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-B-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-C-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-C-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-C-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-C-04": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-E-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-E-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-E-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-F-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-F-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-F-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-F-04": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-F-05": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-H-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-H-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-H-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-H-04": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-01": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-02": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-03": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-03b": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-04": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-05": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-06": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "SYN-I-07": {
+      "group": "L",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-01": {
+      "group": "R1",
+      "plans": [
+        88,
+        82,
+        80
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-02": {
+      "group": "R1",
+      "plans": [
+        82,
+        90,
+        75
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-03": {
+      "group": "R1",
+      "plans": [
+        10,
+        19,
+        72
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-04": {
+      "group": "R1",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-05": {
+      "group": "R1",
+      "plans": [
+        88,
+        81,
+        82
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-06": {
+      "group": "R1",
+      "plans": [
+        75,
+        82,
+        90
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-07": {
+      "group": "R1",
+      "plans": [
+        88,
+        80
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-08": {
+      "group": "R1",
+      "plans": [
+        44,
+        45,
+        88
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-09": {
+      "group": "R1",
+      "plans": [
+        50,
+        88
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R1-10": {
+      "group": "R1",
+      "plans": [
+        78,
+        91,
+        50
+      ],
+      "kind": "compound",
+      "pair_id": null,
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-01": {
+      "group": "R2",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-01C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-01C": {
+      "group": "R2",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "control",
+      "pair_id": "R2-01",
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-02": {
+      "group": "R2",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-02C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-02C": {
+      "group": "R2",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "control",
+      "pair_id": "R2-02",
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-03": {
+      "group": "R2",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-03C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-03C": {
+      "group": "R2",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "control",
+      "pair_id": "R2-03",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-04": {
+      "group": "R2",
+      "plans": [
+        39,
+        40,
+        41
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-04C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-04C": {
+      "group": "R2",
+      "plans": [
+        39,
+        40
+      ],
+      "kind": "control",
+      "pair_id": "R2-04",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-05": {
+      "group": "R2",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-05C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-05C": {
+      "group": "R2",
+      "plans": [
+        67,
+        84
+      ],
+      "kind": "control",
+      "pair_id": "R2-05",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-06": {
+      "group": "R2",
+      "plans": [
+        7,
+        64
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-06C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-06C": {
+      "group": "R2",
+      "plans": [
+        81
+      ],
+      "kind": "control",
+      "pair_id": "R2-06",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-07": {
+      "group": "R2",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-07C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-07C": {
+      "group": "R2",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "control",
+      "pair_id": "R2-07",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-08": {
+      "group": "R2",
+      "plans": [
+        10,
+        19
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-08C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-08C": {
+      "group": "R2",
+      "plans": [
+        10,
+        19
+      ],
+      "kind": "control",
+      "pair_id": "R2-08",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 1,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-09": {
+      "group": "R2",
+      "plans": [
+        50,
+        90
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-09C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-09C": {
+      "group": "R2",
+      "plans": [
+        50,
+        90
+      ],
+      "kind": "control",
+      "pair_id": "R2-09",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-10": {
+      "group": "R2",
+      "plans": [
+        7
+      ],
+      "kind": "misuse",
+      "pair_id": "R2-10C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R2-10C": {
+      "group": "R2",
+      "plans": [
+        7
+      ],
+      "kind": "control",
+      "pair_id": "R2-10",
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-01": {
+      "group": "R3",
+      "plans": [
+        61,
+        37
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-01C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-01C": {
+      "group": "R3",
+      "plans": [
+        61,
+        37
+      ],
+      "kind": "control",
+      "pair_id": "R3-01",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-02": {
+      "group": "R3",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-02C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-02C": {
+      "group": "R3",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R3-02",
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-03": {
+      "group": "R3",
+      "plans": [
+        82,
+        75
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-03C",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-03C": {
+      "group": "R3",
+      "plans": [
+        82,
+        75
+      ],
+      "kind": "control",
+      "pair_id": "R3-03",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-04": {
+      "group": "R3",
+      "plans": [
+        82
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-04C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-04C": {
+      "group": "R3",
+      "plans": [
+        82
+      ],
+      "kind": "control",
+      "pair_id": "R3-04",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-05": {
+      "group": "R3",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-05C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-05C": {
+      "group": "R3",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "control",
+      "pair_id": "R3-05",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-06": {
+      "group": "R3",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-06C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-06C": {
+      "group": "R3",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "control",
+      "pair_id": "R3-06",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-07": {
+      "group": "R3",
+      "plans": [
+        61,
+        88
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-07C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-07C": {
+      "group": "R3",
+      "plans": [
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R3-07",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-08": {
+      "group": "R3",
+      "plans": [
+        7,
+        41
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-08C",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-08C": {
+      "group": "R3",
+      "plans": [
+        7
+      ],
+      "kind": "control",
+      "pair_id": "R3-08",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-09": {
+      "group": "R3",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-09C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-09C": {
+      "group": "R3",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "control",
+      "pair_id": "R3-09",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-10": {
+      "group": "R3",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-10C",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-10C": {
+      "group": "R3",
+      "plans": [
+        9,
+        79
+      ],
+      "kind": "control",
+      "pair_id": "R3-10",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-11": {
+      "group": "R3",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-11C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-11C": {
+      "group": "R3",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R3-11",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-12": {
+      "group": "R3",
+      "plans": [
+        50
+      ],
+      "kind": "mistake",
+      "pair_id": "R3-12C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R3-12C": {
+      "group": "R3",
+      "plans": [
+        50
+      ],
+      "kind": "control",
+      "pair_id": "R3-12",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-01": {
+      "group": "R4",
+      "plans": [
+        37,
+        61,
+        77
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-01C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-01C": {
+      "group": "R4",
+      "plans": [
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R4-01",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-02": {
+      "group": "R4",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-02C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-02C": {
+      "group": "R4",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "control",
+      "pair_id": "R4-02",
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-03": {
+      "group": "R4",
+      "plans": [
+        71,
+        81
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-03C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-03C": {
+      "group": "R4",
+      "plans": [
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R4-03",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-04": {
+      "group": "R4",
+      "plans": [
+        87,
+        92
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-04C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-04C": {
+      "group": "R4",
+      "plans": [
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R4-04",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-05": {
+      "group": "R4",
+      "plans": [
+        87,
+        92
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-05C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-05C": {
+      "group": "R4",
+      "plans": [
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R4-05",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-06": {
+      "group": "R4",
+      "plans": [
+        55,
+        92
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-06C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-06C": {
+      "group": "R4",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "control",
+      "pair_id": "R4-06",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-07": {
+      "group": "R4",
+      "plans": [
+        55,
+        92
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-07C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error",
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-07C": {
+      "group": "R4",
+      "plans": [
+        10,
+        19
+      ],
+      "kind": "control",
+      "pair_id": "R4-07",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-08": {
+      "group": "R4",
+      "plans": [
+        50
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-08C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-08C": {
+      "group": "R4",
+      "plans": [
+        50
+      ],
+      "kind": "control",
+      "pair_id": "R4-08",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-09": {
+      "group": "R4",
+      "plans": [
+        82
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-09C",
+      "profile": "baseline",
+      "verdict": "error",
+      "repeats": 3,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-09C": {
+      "group": "R4",
+      "plans": [
+        82
+      ],
+      "kind": "control",
+      "pair_id": "R4-09",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-10": {
+      "group": "R4",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-10C",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 3,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-10C": {
+      "group": "R4",
+      "plans": [
+        37,
+        61
+      ],
+      "kind": "control",
+      "pair_id": "R4-10",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-11": {
+      "group": "R4",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-11C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-11C": {
+      "group": "R4",
+      "plans": [
+        61,
+        69
+      ],
+      "kind": "control",
+      "pair_id": "R4-11",
+      "profile": "baseline",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-12": {
+      "group": "R4",
+      "plans": [
+        82,
+        90
+      ],
+      "kind": "misconception",
+      "pair_id": "R4-12C",
+      "profile": "baseline",
+      "verdict": "manual",
+      "repeats": 3,
+      "distinct": [
+        "manual"
+      ],
+      "invalid_repeats": 0
+    },
+    "R4-12C": {
+      "group": "R4",
+      "plans": [
+        82,
+        90
+      ],
+      "kind": "control",
+      "pair_id": "R4-12",
+      "profile": "baseline",
+      "verdict": "pass",
+      "repeats": 1,
+      "distinct": [
+        "pass"
+      ],
+      "invalid_repeats": 0
+    },
+    "D-01": {
+      "group": "D",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "optin_alarm",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "D-02": {
+      "group": "D",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "optin_alarm",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "D-03": {
+      "group": "D",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "optin_alarm",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "D-04": {
+      "group": "D",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "optin_alarm",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "D-05": {
+      "group": "D",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "optin_alarm",
+      "verdict": "fail",
+      "repeats": 1,
+      "distinct": [
+        "fail"
+      ],
+      "invalid_repeats": 0
+    },
+    "D-06": {
+      "group": "D",
+      "plans": [
+        44,
+        45
+      ],
+      "kind": "normal",
+      "pair_id": null,
+      "profile": "optin_alarm",
+      "verdict": "error",
+      "repeats": 1,
+      "distinct": [
+        "error"
+      ],
+      "invalid_repeats": 0
+    }
+  },
+  "invalid": {
+    "count": 0,
+    "total_turns": 380,
+    "ratio": 0.0,
+    "over_threshold": false,
+    "by_group": {},
+    "first_index": null,
+    "last_index": null,
+    "first_scenario": null,
+    "turns": []
+  }
+}

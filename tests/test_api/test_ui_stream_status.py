@@ -83,8 +83,8 @@ class TestStateMachine:
         assert 'endStreamStatus("done", meta)' in fin
         intr = app_js[app_js.index("function markStreamInterrupted()"):][:200]
         assert 'endStreamStatus("interrupted")' in intr
-        # 후속 스트림과의 ID 충돌 방지 목록에 상태 영역 ID가 포함된다(두 곳)
-        assert app_js.count('"streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"]') == 2
+        # 후속 스트림과의 ID 충돌 방지 목록에 상태 영역 ID가 포함된다(세 곳 — 완료·중단·실패)
+        assert app_js.count('"streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"]') == 3
 
     def test_done_folds_into_one_line_summary(self, app_js):
         """G-2/G-5: 완료 후 한 줄 요약 + 단계 목록은 hidden(클릭 펼침)."""
@@ -164,3 +164,76 @@ class TestCss:
         block = style_css[style_css.index("/* ─── Stream status"):]
         assert "@media (prefers-reduced-motion: reduce)" in block
         assert ".stream-status-spinner" in block[block.index("prefers-reduced-motion"):]
+
+
+class TestStreamErrorInBubble:
+    """스트림 실패는 말풍선 안에 사유·경위·다시 시도로 남는다(2026-09-21 운영 실측 · D-242).
+
+    처리 시간 초과(``query_timeout`` 60s)의 error 이벤트가 8초 토스트로만 표시되고, 빈 말풍선이
+    "완료 · 1단계 · 60.6s"로 접혀 성공처럼 남았다. 텍스트·파일 두 스트림 경로가 대칭이어야 하고,
+    **다시 할지는 사용자가 정한다**(자동 재시도·자동 재실행 없음).
+    """
+
+    def test_both_stream_paths_route_error_before_finalize(self, app_js):
+        assert app_js.count('streamError = event.message || "처리 중 오류가 발생했습니다.";') == 2
+        assert app_js.count("streamErrorDetail = event;   // 경위 필드(D-242)") == 2
+        guard = ("if (streamError) {\n"
+                 "                markStreamFailed(streamError, streamErrorDetail, retry);\n"
+                 "                return;\n            }")
+        assert app_js.count(guard) == 2
+        for start in (app_js.index("async function executeStreamingQuery("),
+                      app_js.index("async function executeFileQuery(")):
+            body = app_js[start:]
+            assert body.index(guard) < body.index("finalizeStreamingMessage(finalText, metaData);")
+
+    def test_http_error_and_disconnect_also_leave_bubble(self, app_js):
+        http = ('markStreamFailed(errData.detail || "처리 중 오류가 발생했습니다.", '
+                '{ http_status: response.status }, retry);')
+        assert app_js.count(http) == 2
+        disconnect = ('markStreamFailed("서버와의 통신에 실패했습니다: " + err.message, '
+                      'null, retry);')
+        assert app_js.count(disconnect) == 2
+
+    def test_no_automatic_reexecution_on_disconnect(self, app_js):
+        """종전: 연결 단절(TypeError) 시 비스트리밍 API로 자동 재실행했다.
+
+        서버가 첫 요청을 계속 처리 중이면 중복 실행이 된다.
+        """
+        # 404/405(스트림 엔드포인트 부재) 폴백만 남는다
+        assert app_js.count("await executeFallbackQuery(") == 1
+        body = app_js[app_js.index("async function executeStreamingQuery("):
+                      app_js.index("function finalizeStreamingMessage(")]
+        assert 'err.name === "TypeError"' not in body
+
+    def test_retry_is_user_triggered_with_same_arguments(self, app_js):
+        assert "executeStreamingQuery.apply(null, retryArgs)" in app_js
+        assert "executeFileQuery.apply(null, retryArgs)" in app_js
+        body = app_js[app_js.index("function markStreamFailed(message, detail, onRetry)"):]
+        body = body[:body.index("// ─── SSE Streaming Query ───")]
+        assert body.count("onRetry()") == 1 and "setTimeout" not in body   # 버튼 클릭에서만
+        assert 'retryBtn.addEventListener("click"' in body and "retryBtn.disabled = true" in body
+        assert "if (isProcessing)" in body   # 처리 중에는 겹쳐 보내지 않는다
+
+    def test_failed_bubble_shows_reason_and_trace(self, app_js):
+        body = app_js[app_js.index("function markStreamFailed(message, detail, onRetry)"):]
+        body = body[:body.index("// ─── SSE Streaming Query ───")]
+        assert 'endStreamStatus("failed")' in body          # "완료" 요약을 만들지 않는다
+        assert 'box.className = "message-error-note"' in body
+        assert 'setAttribute("role", "alert")' in body
+        assert 'streamingMsg.removeAttribute("id")' in body  # 후속 스트림과 ID 충돌 방지
+        assert "removeProcessingMessage();" in body          # 말풍선 전 실패는 단독 말풍선
+        render = app_js[app_js.index("function renderStreamFailure(message, d)"):]
+        render = render[:render.index("function markStreamFailed(")]
+        for needle in ('"멈춘 단계"', '"앞선 실패"', '"응답 코드"', "진행 경위 ", '"상한 "',
+                       "escapeHtml(message)", "d.steps_dropped"):
+            assert needle in render, needle
+        labels = app_js[app_js.index("function failureStepLabel(s)"):][:500]
+        for needle in ("nodeLabels[s.name]", "toolLabel(s.name)", "stepLabels[s.name]"):
+            assert needle in labels, needle
+
+    def test_error_note_style_uses_token(self, style_css):
+        block = style_css[style_css.index("/* 스트림 실패 안내(D-242)"):]
+        block = block[:block.index("/* §13")]
+        assert "var(--error)" in block and "var(--error-bg)" in block
+        no_comments = re.sub(r"/\*.*?\*/", "", block, flags=re.S)
+        assert "#" not in no_comments, "신규 색 리터럴 금지 — 기존 토큰만"

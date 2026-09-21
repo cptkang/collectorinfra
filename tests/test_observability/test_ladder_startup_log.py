@@ -291,7 +291,12 @@ class TestStartupLog:
         assert match.group("reason") == "none"
 
     def test_optin_failure_reasons_match_scenario_runner(self):
-        """러너가 INVALID로 보는 사유와 로그가 경고하는 opt-in 실패 사유는 같은 집합이다."""
+        """러너 사본이 정본과 같은 집합인가 — 묶어야 할 쌍은 이 둘뿐이다.
+
+        정본은 `OPTIN_FAILURE_REASONS`이고 `server.py`의 `UNINTENDED_DEGRADATION`은 러너
+        기동 경로에 다시 적은 **사본**이다. 리포트(`report.py`)는 사본이 아니라 정본을 직접
+        보므로 이 단언의 대상이 아니다(권고 B 후속 · D-053).
+        """
         from scripts.scenario.server import UNINTENDED_DEGRADATION
         from src.observability.ladder import OPTIN_FAILURE_REASONS
 

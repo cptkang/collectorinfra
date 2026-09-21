@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
+from src.nodes.intent_frame_builder import CONSUMER_GENERAL_INFERENCE, get_prompt_query
 from src.routing.domain_config import get_domain_by_id
 from src.routing.registry import get_registry
 from src.state import AgentState
@@ -252,7 +253,10 @@ async def general_inference(
         for msg in prior_messages[-10:]:
             messages.append(msg)
 
-    messages.append(HumanMessage(content=user_query))
+    # 정규 질의 채널(plans/107 W3) — 꺼져 있으면 종전 그대로 원문.
+    messages.append(HumanMessage(content=get_prompt_query(
+        state, app_config, consumer=CONSUMER_GENERAL_INFERENCE, current=user_query,
+    )))
 
     try:
         # 토큰 단위 SSE 스트리밍(D-009)을 위해 .astream()으로 호출하고,

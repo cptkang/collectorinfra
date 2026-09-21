@@ -74,6 +74,45 @@ LLM_COST_UNMEASURABLE = """> **`llm_calls`·`tokens` 는 측정했는데 0 인 �
 > 그때까지 「느린 것」과 「여러 번 부르는 것」은 구별되지 않는다 — 대신 `retries`(재생성 회차)와
 > `node_count`(실행 노드 회차)를 비용 대리 지표로 쓴다."""
 
+#: 재작성 감사 레코드가 한 건도 없을 때 **고정으로 싣는 사유**(O-e · plans/94 §19.3 · V30).
+#:
+#: O-b 와 같은 구조다 — 제품이 싣지 않으면 하네스는 모른다. 레코드 0건을 "게이트 통과 0%" ·
+#: "검증 실패 0건"으로 읽으면 측정하지 않은 것을 잰 것처럼 보고하게 된다.
+REWRITE_TRACE_UNMEASURABLE = """> **재작성 게이트 통과 비율·검증 실패율은 «측정할 수 없다»**
+> — 이 run 에 재작성 감사 레코드(`rewrite_trace`)가 한 건도 없다. 비율 칸을 0 으로 채우지 않는다.
+>
+> 레코드는 서버가 `INTENT_FRAME_ENABLED=true` 일 때만 생긴다(plans/107 — 기본 off).
+> 검증 결과는 추가로 `REWRITE_VERIFY_MODE=shadow` 여야 한다.
+> 둘 다 켠 프로파일로 다시 돌려야 이 절이 채워진다."""
+
+
+def rewrite_trace_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """재작성 감사 집계(O-e) — 레코드가 없으면 ``measured=False`` 이고 비율을 만들지 않는다.
+
+    Returns:
+        ``{measured, turns, traces, pass_through, pass_through_ratio, verified, verify_failures}``
+        (측정되지 않았으면 비율 키는 None)
+    """
+    traces = [
+        t for row in rows for t in (row.get("rewrite_trace") or []) if isinstance(t, dict)
+    ]
+    turns = sum(1 for row in rows if row.get("rewrite_trace"))
+    if not traces:
+        return {"measured": False, "turns": 0, "traces": 0, "pass_through": None,
+                "pass_through_ratio": None, "verified": None, "verify_failures": None}
+    passed = sum(1 for t in traces if (t.get("gate") or {}).get("reason") == "pass_through")
+    results = [r for t in traces for r in (t.get("verify") or {}).values()]
+    failures = Counter(r for r in results if r != "pass")
+    return {
+        "measured": True,
+        "turns": turns,
+        "traces": len(traces),
+        "pass_through": passed,
+        "pass_through_ratio": round(passed / len(traces), 4),
+        "verified": len(results),
+        "verify_failures": dict(failures),
+    }
+
 
 def _table(header: list[str], rows: list[list[Any]]) -> str:
     lines = ["| " + " | ".join(header) + " |",
@@ -159,6 +198,30 @@ def bottleneck(run_dir: Path, rows: list[dict[str, Any]]) -> str:
     if not calls or not tokens:
         out.append(LLM_COST_UNMEASURABLE)
         out.append("")
+
+    out.append("## 재작성 게이트·검증 (plans/107 · O-e)")
+    out.append("")
+    rewrite = rewrite_trace_summary(rows)
+    if not rewrite["measured"]:
+        out.append(REWRITE_TRACE_UNMEASURABLE)
+    else:
+        failed = sum(rewrite["verify_failures"].values())
+        out.append(_table(
+            ["지표", "값", "비고"],
+            [
+                ["레코드(턴)", f"{rewrite['traces']} ({rewrite['turns']}턴)",
+                 "SQL 생성 노드 통과 1회 = 1건"],
+                ["게이트 통과(pass_through)", f"{rewrite['pass_through']} "
+                 f"({rewrite['pass_through_ratio']:.1%})",
+                 "높을수록 현행 무조건 재작성이 헛일하고 있었다는 뜻"],
+                ["검증 대상 채널", rewrite["verified"],
+                 "0 이면 REWRITE_VERIFY_MODE 가 off 였거나 재작성이 없던 턴뿐"],
+                ["검증 실패", failed, ", ".join(
+                    f"{k} {v}" for k, v in sorted(rewrite["verify_failures"].items())
+                ) or "-"],
+            ],
+        ))
+    out.append("")
 
     cold = [r["processing_time_ms"] for r in rows
             if r.get("cache_state") == "cold" and r.get("processing_time_ms")]
@@ -250,9 +313,86 @@ def coverage_gap(summary: dict[str, Any], catalog: Optional[Catalog]) -> str:
     return "\n".join(out) + "\n"
 
 
+#: 회귀 비교 키의 축(순서 고정 · V29 — plans/110 `94·V29 기준선`). 축을 늘릴 때는 끝에 붙인다.
+#: `arm` 은 사다리 단 비교 arm(110·N-1) — 덧씌운 arm 이 없던 옛 run 은 `None` 이다.
+COMPARISON_AXES: tuple[str, ...] = ("env", "tier", "base_profile", "arm")
+
+
+def comparison_keys(summary: dict[str, Any]) -> set[tuple[Any, ...]]:
+    """프로파일별 비교 키 ``(env, tier, base_profile, arm)``.
+
+    ``tier`` 가 없거나 ``mock`` 이면 None(미관측)이다 — 미관측은 강등으로 세지 않는다(O-c).
+    ``base_profile`` 이 없는 옛 run 은 프로파일 이름을 쓴다(``row.get("arm") or row.get("profile")``
+    규약과 같은 폴백).
+    """
+    env = (summary.get("meta") or {}).get("env")
+    keys: set[tuple[Any, ...]] = set()
+    for profile in summary.get("profiles") or []:
+        base = profile.get("base_profile") or profile.get("name")
+        if not base:
+            continue
+        tier = profile.get("tier")
+        keys.add((env, tier if tier and tier != "mock" else None, str(base), profile.get("arm")))
+    return keys
+
+
+def _incompatible(now: set[tuple[Any, ...]], prev: set[tuple[Any, ...]]) -> Optional[str]:
+    """두 run 을 비교할 수 없는 사유(비교 가능하면 None).
+
+    이번 run 의 (base_profile, arm) 조합마다 직전 run 에 같은 조합이 있어야 하고, 둘 다 사다리
+    단이 관측됐다면 같아야 한다. 이번 run 에 프로파일 기록이 없으면(모의·옛 형식) 제약하지 않는다.
+    """
+    prev_by_group: dict[tuple[Any, Any], set[Any]] = defaultdict(set)
+    for _env, tier, base, arm in prev:
+        prev_by_group[(base, arm)].add(tier)
+    for _env, tier, base, arm in now:
+        label = f"{base}+{arm}" if arm else base
+        tiers = prev_by_group.get((base, arm))
+        if tiers is None:
+            return f"프로파일·arm 구성이 다르다({label} 없음)"
+        observed = {t for t in tiers if t is not None}
+        if tier is not None and observed and tier not in observed:
+            return f"사다리 단이 다르다({label}: {sorted(observed)} → {tier})"
+    return None
+
+
+def select_baseline(
+    run_dir: Path, summary: dict[str, Any],
+) -> tuple[Optional[Path], dict[str, Any], dict[str, str]]:
+    """회귀 기준선 run 을 고른다 — 같은 env · 무효율 상한 이내 · 비교 키가 맞는 가장 최근 run.
+
+    Returns:
+        (기준선 run 디렉터리 또는 None, 기준선 요약, {건너뛴 run: 사유}) — env 불일치·무효율
+        초과는 종전처럼 사유 없이 건너뛴다(비교 대상이 될 수 없는 run 이다).
+    """
+    meta = summary.get("meta", {})
+    now = comparison_keys(summary)
+    skipped: dict[str, str] = {}
+    candidates = sorted(
+        (p for p in run_dir.parent.iterdir() if p.is_dir() and p.name < run_dir.name),
+        reverse=True,
+    )
+    for candidate in candidates:
+        prev = build_summary(candidate, None)
+        if prev.get("meta", {}).get("env") != meta.get("env"):
+            continue
+        if (prev.get("invalid") or {}).get("over_threshold"):
+            continue
+        # V29: 2단 run(타임아웃 52%)과 3단 run 의 판정 차이는 코드 변화가 아니라 경로 차이다(O-c).
+        reason = _incompatible(now, comparison_keys(prev)) if now else None
+        if reason:
+            skipped[candidate.name] = reason
+            continue
+        return candidate, prev, skipped
+    return None, {}, skipped
+
+
 def regression(run_dir: Path, summary: dict[str, Any]) -> str:
     out = ["# 회귀", "",
-           "같은 프로파일·같은 환경하고만 비교한다. 개발망 run 과 폐쇄망 run 은 비교하지 않는다(§5.3).", ""]
+           "같은 프로파일·같은 환경하고만 비교한다. 개발망 run 과 폐쇄망 run 은 비교하지 않는다(§5.3).",
+           f"비교 키: `({', '.join(COMPARISON_AXES)})` — "
+           "사다리 단·arm 이 다른 run 과는 비교하지 않는다(V29).",
+           ""]
     meta = summary.get("meta", {})
     invalid = summary.get("invalid") or {}
     if invalid.get("over_threshold"):
@@ -269,29 +409,40 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
             f"지연 회귀 **판정 불가** - 반복 {meta.get('repeat')}회는 반복 간 편차와 구별되지 않는다."
         )
         out.append("")
-    candidates = sorted(
-        (p for p in run_dir.parent.iterdir() if p.is_dir() and p.name < run_dir.name),
-        reverse=True,
-    )
-    for candidate in candidates:
-        prev = build_summary(candidate, None)
-        if prev.get("meta", {}).get("env") != meta.get("env"):
-            continue
-        if (prev.get("invalid") or {}).get("over_threshold"):
-            continue
-        current = summary.get("scenario_verdicts", {})
-        previous = prev.get("scenario_verdicts", {})
-        rows = [[sid, previous[sid]["verdict"], info["verdict"]]
-                for sid, info in sorted(current.items())
-                if sid in previous and previous[sid]["verdict"] != info["verdict"]]
-        out.append(f"직전 비교 대상: `{candidate.name}`")
-        out.append("")
-        out.append(_table(["시나리오", "직전", "이번"], rows) if rows else "판정 전환 없음.")
+    baseline, prev, skipped = select_baseline(run_dir, summary)
+    skipped_note = ", ".join(f"`{name}`({why})" for name, why in skipped.items())
+    if baseline is None:
+        out.append("비교 가능한 직전 run 이 없다.")
+        if skipped_note:
+            out.append(f"(비교 키가 달라 건너뛴 run: {skipped_note})")
         out.append("")
         return "\n".join(out) + "\n"
-    out.append("비교 가능한 직전 run 이 없다.")
+    current = summary.get("scenario_verdicts", {})
+    previous = prev.get("scenario_verdicts", {})
+    rows = [[sid, previous[sid]["verdict"], info["verdict"]]
+            for sid, info in sorted(current.items())
+            if sid in previous and previous[sid]["verdict"] != info["verdict"]]
+    out.append(f"직전 비교 대상: `{baseline.name}`")
+    out.append("")
+    if skipped_note:
+        out.append(f"비교 키가 달라 건너뛴 run: {skipped_note}")
+        out.append("")
+    out.append(_table(["시나리오", "직전", "이번"], rows) if rows else "판정 전환 없음.")
     out.append("")
     return "\n".join(out) + "\n"
+
+
+def baseline_record(run_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    """`summary.meta.regression_baseline` 에 남길 기록(V29) — 고른 기준선 run id·비교 키·건너뛴 run."""
+    baseline, _prev, skipped = select_baseline(run_dir, summary)
+    return {
+        "run_id": baseline.name if baseline else None,
+        "axes": list(COMPARISON_AXES),
+        "keys": sorted(
+            [list(k) for k in comparison_keys(summary)], key=lambda k: [str(v) for v in k]
+        ),
+        "skipped": skipped,
+    }
 
 
 def deterministic_failures(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -434,7 +585,7 @@ def improvement_backlog(summary: dict[str, Any], rows: list[dict[str, Any]]) -> 
     severity = {"silent_wrong": 5, "crash": 5, "hang": 4, "guard": 4, "routing": 3,
                 "timeout": 3, "document": 3, "semantics": 3, "volume": 3, "empty_result": 2,
                 "generation": 2, "execution": 2, "retry_exhaustion": 2,
-                "clarify": 2, "contract": 2, "unclassified": 1}
+                "clarify": 2, "contract": 2, "rewrite": 3, "unclassified": 1}
     counts = Counter(f["kind"] for f in summary.get("failures", []))
     for row in rows:
         if row.get("forbidden_mode"):
@@ -479,6 +630,13 @@ def analyze(run_dir: Path, catalog: Optional[Catalog] = None) -> list[Path]:
             summary = json.load(handle)
     else:
         summary = build_summary(run_dir, catalog)
+
+    # V29: 고른 회귀 기준선을 요약 메타에 남긴다(문서 6종과 별개 — summary.json 이 있을 때만 갱신).
+    if not (summary.get("invalid") or {}).get("over_threshold"):
+        summary.setdefault("meta", {})["regression_baseline"] = baseline_record(run_dir, summary)
+        if summary_path.exists():
+            with utf8_open(summary_path, "w") as handle:
+                json.dump(summary, handle, ensure_ascii=False, indent=2)
 
     documents = {
         "bottleneck.md": bottleneck(run_dir, rows),

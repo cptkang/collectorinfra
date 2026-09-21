@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 원 요구사항: `spec.md` (초기 스펙 — 현 구현은 이보다 훨씬 확장됨)
 - **의사결정 정본: `docs/02_decision.md`** — 작업 전 필독, 작업 후 갱신 (아래 「의사결정 기록」 참조)
-- 계획서 전건 인덱스: `plans/INDEX.md` (93건) — **미완 계획서는 파일명의 번호 바로 뒤에 상태 태그를 단다**(`NN-TODO-slug.md` / `NN-WIP-slug.md`): `TODO`(코드 0건) · `WIP`(잔여 있음) · 무표기(완료·로드맵). 파일을 열기 전에 목록만으로 잔여를 판단할 수 있다(규칙: INDEX 「파일명 상태 접미사」) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
+- 계획서 전건 인덱스: `plans/INDEX.md` (113건) — **미완 계획서는 파일명의 번호 바로 뒤에 상태 태그를 단다**(`NN-TODO-slug.md` / `NN-WIP-slug.md`): `TODO`(코드 0건) · `WIP`(잔여 있음) · 무표기(완료·로드맵). 파일을 열기 전에 목록만으로 잔여를 판단할 수 있다(규칙: INDEX 「파일명 상태 접미사」) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
 - 최근 작업 단위는 `plans/NN-*.md` + 루트 `SPEC-*.md` + `CAPABILITY-MAP-*.md` 조합으로 진행된다.
 
 ## 저장소 지도
@@ -42,22 +42,27 @@ agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 
 ## 실행 경로 — 오케스트레이션 사다리
 
-**실행 경로 4종은 대등하게 병존하지 않는다. 1 정본 + 3 폴백의 강등 사다리다.**
+**실행 경로 4종은 대등하게 병존하지 않는다. 위에서부터 성립하는 한 단만 확정되며, 기준 경로는
+3단 `semantic_router`다(D-225).**
 단일 출처는 `docs/21_orchestration_ladder.md`이며, 판정 코드는 `src/observability/ladder.py`,
 배선은 `src/graph.py`의 `build_graph()`다.
 
 | 단 | 이름 | 배선 | 활성 조건(앞 단이 전부 불성립일 때) |
 |---:|---|---|---|
-| **1 (정본)** | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 조립 성공 |
-| 2 | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration` |
-| 3 | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
+| 1 (부가 경로 · opt-in) | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 조립 성공 |
+| 2 | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration`(미입력 = off) |
+| **3 (기준 경로)** | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
 | 4 | `legacy` | `field_mapper → schema_analyzer` 직행 | 위 셋 모두 불성립 |
 
 - **배타성은 런타임이 아니라 빌드 타임이다** — 상위 단이 성립하면 하위 단은 노드조차 등록되지
   않는다. 확정은 기동당 1회이며, 그 결과는 기동 로그 1줄(`record_ladder_resolution`)로만 판독된다.
-- `enable_semantic_routing`·`enable_intent_orchestration`은 **tri-state**다. 미입력(None)이면
-  `ACTIVE_DB_IDS` 등록 여부로 자동 결정되고 경고를 남긴다 — 실행 경로가 DB 등록 상태에 종속되므로
-  고정하려면 `.env`에 명시한다.
+- `enable_semantic_routing`·`enable_intent_orchestration`은 **tri-state**다. `enable_semantic_routing`
+  미입력(None)은 `ACTIVE_DB_IDS` 등록 여부로 자동 결정되고 경고를 남긴다 — 실행 경로가 DB 등록
+  상태에 종속되므로 고정하려면 `.env`에 명시한다. **`enable_intent_orchestration` 미입력은 항상
+  off**다(`resolved_by=code_default` · D-225 ④ — 미입력 + 멀티 DB가 2단으로 자동 확정되던 것을 막는다).
+- 1단 확정은 강등이 아니라 **부가 경로 opt-in 기록(INFO)**이고, 2·4단 확정과 1단 opt-in 실패
+  (`orchestrator_unavailable`·`package_missing`)가 WARNING이다. 종전 사유 어휘 `flag_off`는
+  **D-225로 폐기**했다 — 2026-09-17 이전 로그·run 기록의 `flag_off`는 옛 어휘다.
 - **"코드에 분기가 남아 있다"는 사실만으로 죽은 경로를 판정하지 말 것.** 어느 단을 지우려면 그
   단이 확정되는 설정 조합이 실제로 쓰이지 않음을 먼저 보여야 한다(D-161 · plans/70 v1 오판 사례).
 
@@ -161,7 +166,9 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
 
 - 운영 실측(`.env`, 2026-08-31): `LLM_PROVIDER=gemini` · `ORCHESTRATOR_PROVIDER=gemini` ·
   `DB_BACKEND=dbhub` · `ACTIVE_DB_IDS=polestar` · 사다리 1·2·3단 플래그 모두 true.
-  **코드 기본값이 아니라 이 실제값을 근거로 판단할 것.**
+  **코드 기본값이 아니라 이 실제값을 근거로 판단할 것.** 세 플래그를 모두 명시하므로 운영은
+  아직 1단으로 확정된다 — 기준 경로(3단)로의 운영 전환(`plans/102` L-5)은 3단 기능 동등성
+  (`plans/103` P5 · D-226) 완료 뒤 사용자 확인 사항이다.
 - 신규 기능 플래그는 **기본 off = 현행 동작과 비트 동일**이 원칙이다(`plans/80` §5.4-③).
   명시적 예외는 근거와 함께 config 주석에 남긴다(예: `COMPOSITE_AVAILABILITY_PRECHECK_ENABLED`,
   `COMPOSITE_HOST_DISCOVERY_ENABLED`, `COMPOSITE_SCOPE_SELECT_ENABLED`, D-203 순차 의존 계약 7종은 기본 on).
@@ -324,7 +331,7 @@ Claude Code 스킬: `/arch-check` 로 호출 가능 (`.claude/skills/arch-check.
 **과금 외부 API 승인 게이트 · 실 LLM 테스트는 로컬 MLX 기준 (D-127 · D-240 개정 — 2026-09-21 사용자 정책)**
 - **실 LLM이 필요한 테스트·스모크·검증은 로컬 MLX로 진행한다** — 워커·오케스트레이터 두 평면이 모두 `mlx`(127.0.0.1 루프백 `mlx_lm.server`)면 비과금이라(D-222) **사용자 승인 없이** 에이전트가 실행한다
   - 실행 전 두 평면이 모두 `mlx`로 해석되는지 설정 해석 출력(`python -m scripts.bench --show-env` · `--preflight`)으로 확인한다. 하나라도 과금 평면(gemini 등)이면 실행하지 않는다(`.encenv`에 Gemini 키가 상존한다)
-  - 진입점: pytest `live_llm`은 `RUN_LOCAL_LLM=1`(외부 차단 가드 유지 — 과금 호출은 구조적으로 나가지 않고 시도하면 차단 실패로 드러난다) · 시나리오 `--run`·벤치 `--mode run`은 두 평면이 비과금이면 이미 승인·`RUN_E2E` 없이 돈다(D-216 · D-222). `RUN_E2E=1` 하드 게이트만 아는 스크립트(`scripts/eval_routing.py` 등)는 로컬 모드가 없어 **여전히 건별 승인 대상**이다
+  - 진입점: pytest `live_llm`은 `RUN_LOCAL_LLM=1`(외부 차단 가드 유지 — 과금 호출은 구조적으로 나가지 않고 시도하면 차단 실패로 드러난다) · 시나리오 `--run`·벤치 `--mode run`은 두 평면이 비과금이면 이미 승인·`RUN_E2E` 없이 돈다(D-216 · D-222). `scripts/eval_routing.py`도 두 평면이 `mlx` 루프백이면 `RUN_E2E` 없이 돈다(`local_mlx_mode()` · D-240 부기) — 하나라도 과금 평면이면 종전대로 `RUN_E2E=1` 과 건별 승인이 필요하다
   - MLX 서버는 캐시 모델로만 기동(다운로드 금지)·127.0.0.1 바인딩·자기가 띄운 PID만 종료한다. MLX 결과는 로직 확인용이다 — 성능(지연) 결론은 내부망 결과로만 낸다
 - Gemini 등 **과금이 발생하는 외부 API는 사용자의 명시 승인 없이 호출 금지** — 실행 건마다 승인을 받는다(포괄 승인 없음). 가드를 끄는 `RUN_E2E=1`은 그 승인 뒤에만 설정한다
 - 실 호출 경로는 전부 옵트인(`RUN_LOCAL_LLM=1` · `RUN_E2E=1`) 뒤에 두고, **키 존재만으로 실행되는 게이팅 금지**(키는 `.encenv`에 상존한다는 전제) — 수동 스크립트도 코드 게이트로 강제

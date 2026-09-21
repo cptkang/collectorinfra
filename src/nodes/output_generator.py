@@ -20,6 +20,7 @@ from src.config import AppConfig, load_config
 from src.domain.empty_answer import from_payload as diagnosis_from_payload
 from src.domain.empty_answer import render_diagnosis
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
+from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
@@ -280,7 +281,11 @@ async def _generate_text_response(
     # prior(2023년)를 적었다(라이브 실측 2026-08-25). 결정적 값(앵커·조회 기간·오늘)을 주입.
     reference_info = _build_reference_info(state)
     user_prompt = _build_response_prompt(
-        original_query=parsed.get("original_query", ""),
+        # 정규 질의 채널(plans/107 W3) — 꺼져 있으면 종전 그대로 R6(task 스코프 질의).
+        original_query=get_prompt_query(
+            state, config, consumer=CONSUMER_OUTPUT_GENERATOR,
+            current=parsed.get("original_query", ""),
+        ),
         summary=organized["summary"],
         rows=organized["rows"],
         reference_info=reference_info,

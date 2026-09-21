@@ -21,7 +21,7 @@ from noise_gate.infrastructure.polestar_process_api import (
     ProcessApiResult,
 )
 from src.config import AlarmConfig
-from noise_gate.tests.test_alarm_enricher import FakeRepo, make_alarm_cfg
+from noise_gate.tests.test_alarm_enricher import FakeRepo, make_alarm_cfg, make_analyzer_cfg
 from noise_gate.tests.test_alarm_pattern import REF, make_entry, make_event
 
 
@@ -261,7 +261,7 @@ class TestAnalyzerProcessSection:
         }, ensure_ascii=False))
         monkeypatch.setattr(analyzer_mod, "create_llm", lambda cfg: llm)
 
-        cfg = SimpleNamespace(alarm=make_alarm_cfg())
+        cfg = make_analyzer_cfg()
         ev = make_event(resource_type="server.Server", alarm_name="메모리 사용률")
         out = await analyzer_mod.alarm_analyzer_node(
             {"alarm_event": ev, "history_stats": None, "process_snapshot": _snapshot()},
@@ -281,7 +281,7 @@ class TestAnalyzerProcessSection:
         }, ensure_ascii=False))
         monkeypatch.setattr(analyzer_mod, "create_llm", lambda cfg: llm)
 
-        cfg = SimpleNamespace(alarm=make_alarm_cfg())
+        cfg = make_analyzer_cfg()
         out = await analyzer_mod.alarm_analyzer_node(
             {"alarm_event": make_event(), "history_stats": None, "process_snapshot": None},
             {"configurable": {"app_config": cfg}},

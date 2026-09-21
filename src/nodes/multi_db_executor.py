@@ -58,8 +58,10 @@ from src.utils.query_gen_common import (
     normalize_eav_unit_casts,
     resolve_effective_limit,
     resolve_stat_month_range,
+    surface_query_for_judgment,
     template_context_text,
 )
+from src.nodes.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
@@ -545,6 +547,7 @@ async def _generate_validated_sql(
             det_error, det_fixed = _validate_sql(
                 det_sql, schema_info, db_id=db_id, db_engine=db_engine,
                 user_query=run.state.get("user_query", ""), app_config=run.app_config,
+                surface_query=surface_query_for_judgment(run.state),
             )
             if not det_error:
                 logger.info("[알람조립] db=%s 결정적 SQL 사용(LLM 미호출)", db_id)
@@ -575,6 +578,7 @@ async def _generate_validated_sql(
         form_intent=run.form_intent,
         mapping_sources=run.mapping_sources,
         form_fill_answers=run.form_fill_answers,
+        surface_query=surface_query_for_judgment(run.state),
     )
 
     # 3. SQL 검증 (간이) — 실패 시 최대 2회 재생성(총 3회 시도, 단일 경로 재시도 3회와
@@ -584,6 +588,7 @@ async def _generate_validated_sql(
     validation_error, _fixed = _validate_sql(
         sql, schema_info, db_id=db_id, db_engine=db_engine,
         user_query=run.state.get("user_query", ""), app_config=run.app_config,
+        surface_query=surface_query_for_judgment(run.state),
     )
     # 보정본(행 상한 자동 추가)이 오면 갈아탄다 — 버리면 검증이 "통과만" 하고 끝난다(CU-16).
     sql = _fixed or sql
@@ -631,10 +636,12 @@ async def _generate_validated_sql(
             form_intent=run.form_intent,
             mapping_sources=run.mapping_sources,
             form_fill_answers=run.form_fill_answers,
+            surface_query=surface_query_for_judgment(run.state),
         )
         validation_error, _fixed = _validate_sql(
             sql, schema_info, db_id=db_id, db_engine=db_engine,
             user_query=run.state.get("user_query", ""), app_config=run.app_config,
+            surface_query=surface_query_for_judgment(run.state),
         )
         sql = _fixed or sql
     return sql, validation_error
@@ -1048,8 +1055,14 @@ async def multi_db_executor(
         result["group_packets"] = group_packets
     # DB별 스코프 분할 경과(D-203) — 발동했을 때만 싣는다(반환 shape 현행 유지). isinstance 검사는
     # 테스트 대역(MagicMock run)이 키를 오발생시키지 않게 한다.
+    # state의 기존 노트(프로브·소유 교정·분류 폴백)를 앞에 이어 붙인다 — 이 키에는 리듀서가 없어
+    # 반환이 곧 덮어쓰기다(plans/102 §4.1.4-1). 단일 DB 경로(`schema_analyzer`)와 같은 병합·중복
+    # 제거 규칙(DB당 1건)이다.
     if isinstance(getattr(run, "dependency_notes", None), list) and run.dependency_notes:
-        result["dependency_notes"] = list(run.dependency_notes)
+        merged_notes = list(state.get("dependency_notes") or [])
+        for _note in run.dependency_notes:
+            add_db_note(merged_notes, _note)
+        result["dependency_notes"] = merged_notes
     if isinstance(getattr(run, "skipped_dbs", None), list) and run.skipped_dbs:
         result["skipped_dbs"] = list(run.skipped_dbs)
     # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
@@ -1067,6 +1080,8 @@ async def multi_db_executor(
         result["form_fill_overrides"] = run.form_fill_out["overrides"]
     if run.form_fill_out.get("literals"):
         result["form_fill_literals"] = run.form_fill_out["literals"]
+    # 의도 프레임·재작성 감사(plans/107 — 섀도 · 단일 경로와 대칭). 꺼져 있으면 빈 dict.
+    result.update(await observe_rewrite(state, run.app_config, consumer=CONSUMER_MULTI_DB))
     return result
 
 
@@ -1489,6 +1504,7 @@ async def _try_semantic_compile(
     derivation_sink: list[dict] | None,
     *,
     parity: bool,
+    surface_query: str | None = None,
 ) -> str | None:
     """트랙 C(D-076) — 커버리지 내 정형 NL 질의를 시맨틱 결정적 컴파일한다(경로 C 이식).
 
@@ -1523,6 +1539,9 @@ async def _try_semantic_compile(
         ),
         derivation_sink=derivation_sink,
         parsed_filters=parsed_requirements.get("filter_conditions"),
+        # 순위·최상급 표면어 판정은 원문 기준(plans/107 W0.5 — 단일 경로와 대칭). _uq(R6)는 SMQ
+        # 선택 LLM 입력이라 그대로 둔다.
+        surface_query=surface_query,
     )
     if semantic_sql:
         logger.info(
@@ -2160,6 +2179,7 @@ async def _generate_sql(
     form_intent: bool = False,
     mapping_sources: dict[str, str] | None = None,
     form_fill_answers: dict[str, dict] | None = None,
+    surface_query: str | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -2199,7 +2219,7 @@ async def _generate_sql(
         semantic_sql = await _try_semantic_compile(
             llm, parsed_requirements, schema_info, default_limit, error_context,
             column_mapping, db_engine, db_id, app_config, prior_block, prior_scope,
-            derivation_sink, parity=_parity,
+            derivation_sink, parity=_parity, surface_query=surface_query,
         )
         if semantic_sql:
             return semantic_sql
@@ -2397,6 +2417,7 @@ def _validate_sql(
     db_engine: str = "postgresql",
     user_query: str = "",
     app_config: Optional[AppConfig] = None,
+    surface_query: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """멀티 DB 경로 검증 심 (Plan 69 P4-3 · CU-16으로 반환 계약 변경).
 
@@ -2411,7 +2432,11 @@ def _validate_sql(
         **보정본을 버리지 않는 것이 CU-16이다.** 종전에는 full validation을 켜도
         ``outcome.auto_fixed_sql``(행 제한 자동 추가분)을 읽지 않아 **켜나 마나 상한이
         붙지 않았다**. 호출부는 보정본이 오면 그것으로 갈아탄다.
+
+    ``surface_query``는 "전체/모든" 행 상한 상향 판정 입력이다(plans/107 W0.5 — 원문 기준).
+    None이면 ``user_query``. 어댑터 검증 훅은 종전대로 ``user_query``를 받는다.
     """
+    limit_text = user_query if surface_query is None else surface_query
     if not getattr(
         getattr(app_config, "text2sql", None), "multi_full_validation", False
     ):
@@ -2421,7 +2446,7 @@ def _validate_sql(
         if error:
             return error, None
         # 기본 경로에도 행 상한을 건다(CU-16) — `multi_full_validation` 기본값은 그대로다.
-        return None, _auto_limit_or_none(sql, db_engine, user_query, app_config)
+        return None, _auto_limit_or_none(sql, db_engine, limit_text, app_config)
     from src.db_adapters import get_adapter
     from src.nodes.query_validator import validate_sql
 
@@ -2432,7 +2457,7 @@ def _validate_sql(
     )
     outcome = validate_sql(
         sql, schema_info,
-        db_engine=db_engine, user_query=user_query,
+        db_engine=db_engine, user_query=limit_text,
         default_limit=app_config.query.default_limit,
         adapter_checks=adapter_checks,
     )

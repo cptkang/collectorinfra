@@ -526,7 +526,7 @@ async def schema_analyzer(
                 await _get_schema_with_cache(client, db_id, app_config)
             )
             # ★ DEBUG[1]: 캐시에서 로드된 전체 테이블 확인
-            logger.warning("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
+            logger.debug("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
 
             # 2. LLM 기반 관련 테이블 선택
             relevant = await _llm_select_relevant_tables(
@@ -537,7 +537,7 @@ async def schema_analyzer(
                 routing_intent=state.get("routing_intent"),
             )
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
-            logger.warning("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
+            logger.debug("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
             # 2-1. EAV 동반 테이블 자동 보충
             relevant = _supplement_eav_tables(
@@ -546,7 +546,7 @@ async def schema_analyzer(
                 db_id,
             )
             # ★ DEBUG[3]: EAV 보충 후 테이블 확인
-            logger.warning("DEBUG[3] after EAV supplement: %s", relevant)
+            logger.debug("DEBUG[3] after EAV supplement: %s", relevant)
 
             # 2-2. allowed_tables 필터링 + 보충 (수동 프로필에 허용 테이블이 정의된 경우)
             # allowed_tables가 정의되면:
@@ -584,9 +584,9 @@ async def schema_analyzer(
                 except Exception as e:
                     logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
                 # ★ DEBUG[4]: 필터링 조건 확인
-                logger.warning("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
-                logger.warning("DEBUG[4] relevant before filter: %s", relevant)
-                logger.warning("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
+                logger.debug("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
+                logger.debug("DEBUG[4] relevant before filter: %s", relevant)
+                logger.debug("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
 
                 # Step 1: LLM 선택 중 allowed_tables에 있는 것만 남김
                 _filtered = [
@@ -612,7 +612,7 @@ async def schema_analyzer(
                             )
 
                 # ★ DEBUG[4]: 필터링+보충 결과
-                logger.warning("DEBUG[4] filtered+supplemented result: %s", _filtered)
+                logger.debug("DEBUG[4] filtered+supplemented result: %s", _filtered)
                 if _filtered:
                     _removed = set(relevant) - set(_filtered)
                     if _removed:
@@ -681,7 +681,7 @@ async def schema_analyzer(
             # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
             schema_dict = schema_to_dict(full_schema, relevant)
             # ★ DEBUG[5]: 최종 schema_dict의 테이블 키 확인
-            logger.warning("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
+            logger.debug("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
 
             # 4. 샘플 데이터 수집 (관련 테이블만)
             # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음 — 부착 시점에 값 절단

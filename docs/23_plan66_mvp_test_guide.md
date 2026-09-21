@@ -901,15 +901,20 @@ sre_agent/.venv/bin/python -m sre_agent.run_service
 **(a) e2e 테스트 — 가장 통제된 경로 (권장)**
 
 ```bash
-# [서버 A · CWD=레포 루트 · sre_agent/.venv]
-# 레포 루트에서 실행해야 .encenv 키가 잡힌다. mcp_server 미도달·키 부재면 skip(침묵 아님).
-RUN_E2E=1 sre_agent/.venv/bin/python -m pytest sre_agent/tests/test_investigation_e2e.py -v
+# [서버 A · CWD=sre_agent · sre_agent/.venv]
+# ★ 루트 CWD에서 돌리면 conftest의 tests.mvp_record가 루트 tests/와 충돌해 수집 단계에서 죽는다
+#   (docs/18 2026-09-10). 그래서 cd sre_agent로 실행하고, 루트 .encenv의 키는 환경변수로 내보낸다.
+#   mcp_server 미도달·키 부재면 skip(침묵 아님).
+cd sre_agent && LLM_GEMINI_API_KEY=$(grep ^LLM_GEMINI_API_KEY= ../.encenv | cut -d= -f2-) \
+  RUN_E2E=1 .venv/bin/python -m pytest tests/test_investigation_e2e.py -v
 ```
 
 - `test_mvp_investigation_completes_or_graceful` — 완주 시 도구 인용·answer, 미완주 시 `incomplete=True`
 - `test_step_limit_forces_graceful_incomplete` — step 상한 도달의 graceful 반환
+- `test_correlation_on_job_briefing_has_hypotheses_timeline_limitations` — 상관 on 브리핑 계약(91 1-17)
 
-승인 없이 실행 조건만 확인하려면 `RUN_E2E` 없이 돌린다 → `2 skipped`(과금 0, 2026-08-25 실측).
+승인 없이 실행 조건만 확인하려면 `RUN_E2E` 없이 돌린다 → `3 skipped`(과금 0 · 2026-09-21 실측 · 파일 전역 게이트).
+**`API_BASE`가 설정돼 있으면 이 경로도 Gemini가 아니라 운영 배선으로 조사한다**(§7-V.5 · D-229).
 
 **(b) 목업 [12] 전 구간 — MVP 그대로.** §5와 동일하되 키가 잡힌 상태.
 `status`가 `stub`이 아니라 `running` → `done`으로 진행하고 브리핑에 6요소가 채워진다.
@@ -1107,6 +1112,68 @@ cd sre_agent && RUN_E2E=1 LLM_GEMINI_API_KEY= GEMINI_API_KEY= .venv/bin/python -
 
 **참고 기준치**(Gemini 3.5-flash, 2026-07-28 실측): 완주 **161초**·PromQL 감사 37건.
 소용량 vLLM은 이보다 느리고 스텝을 더 쓸 가능성이 높다 — 절대 비교가 아니라 **완주 여부**로 본다.
+
+#### 7-V.5.1 `plans/91` 1-17 완주 확인 절차 (내부망에서 사람이 실행)
+
+상관 on 조사 e2e(`test_correlation_on_job_briefing_has_hypotheses_timeline_limitations`)를 **운영 등급 LLM**으로
+끝까지 돌려 1-17을 닫는 절차다. 맥북 로컬 MLX 실행은 **로직 확인용**이고 판정 근거가 아니다(D-174) — 2026-09-17
+로컬 실행은 테스트 결함 2건을 잡아냈을 뿐, 조사 자체는 9B가 step 상한에 걸려 미완주였다.
+
+**0) 전제** — 서버 B vLLM이 §7-V.1~§7-V.2를 통과(`--enable-auto-tool-choice`·파서 일치·`tool_calls` 나옴).
+
+**1) 조사 프로파일 `mcp_server` 기동** (서버 A 또는 C · 본체용 9099와 **별도 인스턴스**)
+
+```bash
+# [CWD=mcp_server · 루트 .venv] — 조사 배치는 raw 도구를 노출하지 않는다(D-122)
+cd mcp_server && SERVER_PORT=9097 SERVER_HOST=127.0.0.1 \
+  EXPOSE_EXECUTE_SQL=false EXPOSE_RAW_PROMQL=false ../.venv/bin/python -m mcp_server
+```
+
+**2) 실행** — 실행 위치는 `sre_agent`다(루트 CWD는 수집 단계에서 죽는다 · `docs/18` 2026-09-10).
+
+```bash
+# [서버 A · CWD=sre_agent · sre_agent/.venv] — 사내 vLLM이라 외부 과금 없음(D-127 승인 불요)
+cd sre_agent && RUN_E2E=1 \
+  MODEL="openai/<served-model-name>" API_BASE="http://<vllm-host>:8000/v1" API_KEY=dummy \
+  INVESTIGATION_LLM_ENABLED=true \
+  OVERRIDE_MAX_CONTENT_SIZE=30000 OVERRIDE_MAX_OUTPUT_TOKEN=2048 \
+  GEMINI_API_KEY= LLM_GEMINI_API_KEY= \
+  POLESTAR_MCP_URL=http://localhost:9097/sse \
+  .venv/bin/python -m pytest tests/test_investigation_e2e.py -k correlation_on_job -v
+```
+
+- 토큰 예산 2종은 **합이 `--max-model-len` 이하**여야 한다(32768이면 30000+2048 — D-213·D-229).
+- `INVESTIGATION_LLM_ENABLED=true`가 게이트를 연다(D-230). Gemini 키는 비워 둔다 — 그래야 외부로 샐 경로가 없다.
+- 실행 전 **배선 도달 확인**(LLM 0회): `docs/26` §5.6.4의 `print('model=', c.model)` 절차로 `Config.model`이
+  `openai/<served-model-name>`인지 본다. `anthropic/claude-sonnet-5`가 나오면 `MODEL`이 안 먹은 것이다(§7-V.4 정정).
+
+**3) 합격 판정** — 아래를 **모두** 만족해야 1-17을 닫는다.
+
+| # | 확인 | 근거 |
+|---|---|---|
+| ① | 테스트 PASS | 상관 브리핑 계약(가설 rank·confidence · `T-` 타임라인 · `상관 ≠ 인과` 한계) |
+| ② | 잡 `status="done"` | 스텁·timeout·failed가 아님 |
+| ③ | 브리핑 6요소 + **도구 인용** | `citations_verified: true` · 인용 없는 단정은 `[가설]`로 강등됨 |
+| ④ | 조사가 **완주**(`incomplete=False`) | step 상한 미도달 — 이것이 로컬 MLX와 갈리는 지점 |
+| ⑤ | 감사 JSONL에 `prefetch` 이벤트 | 사전수집·상관이 실제로 돌았다는 표시(`leading_signal`·`alarms`) |
+
+**4) 실패 시 원인별 조치**
+
+| 관측 | 원인 | 조치 |
+|---|---|---|
+| `3 skipped` | `RUN_E2E` 미설정 · `API_BASE`·Gemini 키 모두 없음 · `mcp_server` 미도달 | skip 사유 문구를 그대로 읽는다(침묵 skip 아님) |
+| `status="stub"` | 조사 LLM 게이트가 닫힘 | `INVESTIGATION_LLM_ENABLED=true`(D-230 · `docs/26` §5.6.8) |
+| `incomplete=True` 반복(④ 실패) | 모델이 ReAct를 못 끌고 감 | 모델 상향 · `MAX_STEPS` 확인 → 그래도 안 되면 §7-V.6 |
+| `ContextWindowExceeded` · `System message must be at the beginning` | 컨텍스트 부족(압축 발동) | 토큰 예산 하향 또는 `--max-model-len` 상향(D-213) |
+| 타임라인·가설이 비고 ⑤ 없음 | 사전수집이 안 돎 | 페이로드 `alarmTime`이 `yyyyMMddHHmmss`인지(D-229) · `POLESTAR_MCP_URL` 도달성 |
+| 도구 호출 0회인데 답변만 장문 | 파서 불일치 | §7-V.2로 되돌아간다 |
+
+**5) 원상복구** — ①`mcp_server`(9097) 종료 ②테스트가 쓴 감사 JSONL은 `tmp_path`라 자동 정리된다(공용
+`sre_agent/.data/`에 남지 않는다 — D-229) ③`.env`를 바꿔 실행했다면 원래 값으로 되돌린다(권장: 위처럼 명령
+앞에 env를 얹어 파일을 건드리지 않는다) ④대장 기록은 `logs/mvp_test/`에 남는다(gitignore — 요지는 `plans/91` 1-17에 옮겨 적는다).
+
+**6) 결과 반영** — 합격이면 `plans/91` 1-17 상태를 「완료」로 바꾸고 모델·소요·도구 호출 수를 적는다.
+④가 실패하면 **모델 문제**이므로 1-17이 아니라 §7-V.6(모델 상향·대안)으로 넘긴다.
 
 #### 7-V.6 미채택 대안 (조건이 바뀌면 재검토)
 

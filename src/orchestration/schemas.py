@@ -72,6 +72,26 @@ class OwnershipDecomposedPlan(DecomposedPlan):
     tasks: list[OwnershipTaskSpec] = Field(default_factory=list)
 
 
+# ── task 프레임 계약(plans/111 C-3 · `COMPOSITE_TASK_FRAME_ENABLED`) ──
+# 켜졌을 때만 쓰는 서브클래스다(위 소유 서브클래스와 같은 이유 — off 스키마 불변).
+# LLM은 `sub_query`를 비워 두고 원문 조각 `spans`만 낸다. `sub_query`는 분해 후 정제
+# (`intent_planner._apply_task_frames`)가 조각으로 만든다. 소유 플래그와 함께 켜질 수 있어
+# `capability`를 물려받는다(소유 off면 빈 문자열 그대로 — 소유 적용 없음).
+
+
+class SpanTaskSpec(OwnershipTaskSpec):
+    """sub-task + 원문 조각(자유문 `sub_query` 대신)."""
+
+    sub_query: str = ""
+    spans: list[str] = Field(default_factory=list)
+
+
+class SpanDecomposedPlan(DecomposedPlan):
+    """`_llm_decompose` 출력 — task마다 원문 조각을 싣는다."""
+
+    tasks: list[SpanTaskSpec] = Field(default_factory=list)
+
+
 def validate_plan_dag(tasks: list[dict]) -> tuple[list[dict], list[str], list[str]]:
     """task DAG를 결정적으로 검증한다 (D-203 · plans/88 §4.8). backend 무관 · LLM 0회.
 

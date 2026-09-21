@@ -9,6 +9,15 @@ SystemMessage/HumanMessage 본문의 sha256을 시나리오별로 채록해
 
     UPDATE_PROMPT_SNAPSHOT=1 python -m pytest tests/test_prompt_render_matrix.py
 
+갱신 이력:
+    - 2026-09-21: 2026-08-24(cb320c1) 이후 쌓인 **의도한** 프롬프트 변경 2건을 뒤늦게 채록.
+      ① EAV 숫자 속성(LOGICALCORE·PHYSICALCORE·PHYSICALCPU) 예제를 `CAST(... AS NUMERIC)`으로
+         고치고 방언 주석을 더했다(plans/98 CU-12 · 56274a7 — 문자열 비교·합계 오답 차단).
+      ② "기준 칼럼 노출·집계 단위 규칙" 절을 추가했다(C군·D군 실측 결함 수정분).
+      직전 커밋 8e95dff가 이 스냅샷 JSON을 깨진 채(병합 충돌 잔재) 커밋했고 cb320c1이 옛 값으로
+      되돌려, 그 뒤 프롬프트 변경이 한 번도 반영되지 않은 상태였다. 갱신 전 클린 HEAD worktree
+      (`.env` 없음)와 작업 트리의 렌더가 바이트 동일함을 확인해 환경 의존이 아님을 못박았다.
+
 결정성 확보(비결정 입력 고정):
     - 질의에 기간 표현을 넣지 않고 `time_range`도 None으로 둬 오늘 날짜 의존(stat_month)을 제거
     - 폴스타 지식 렌더 플래그(`TEXT2SQL_PROMPT_KNOWLEDGE_RENDER`)는 `.env`가 아니라 테스트가

@@ -16,7 +16,9 @@ task `capability`)만 본다.
 
 레지스트리에 답변 영역 선언이 없는 DB(`system_of`가 None)는 판정 밖이다 — 교정하지 않는다.
 사용자가 DB를 직접 지정한 항목(`user_specified`)도 교정하지 않는다
-(라우터 프롬프트의 직접 지정 규칙 유지).
+(라우터 프롬프트의 직접 지정 규칙 유지). 다만 지정 DB가 그 답변 영역의 정본이 아니면
+**사유 노트 1건**을 남긴다 — 자산 DB에도 사용률 컬럼이 있어 지정이 빗나가도 결과는 나오므로
+오답이 조용하다(권고 C · plans/102 §0.2 R2).
 
 ## 켜짐 조건
 `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`가 켜졌을 때만 호출된다. 판정은 호출부가 한다 —
@@ -40,6 +42,8 @@ logger = logging.getLogger(__name__)
 # 노트 사유 코드 — 응답 경과·API(`dependency_notes`)에 그대로 실린다.
 REASON_OWNER_CORRECTED = "owner_corrected"   # 선택 DB를 정본 시스템으로 교정
 REASON_OWNER_INACTIVE = "owner_inactive"     # 정본 시스템이 비활성이라 교정 불가
+#: 사용자가 DB를 직접 지정했고 그 DB가 정본이 아니다 — **교정하지 않고** 사실만 알린다(권고 C).
+REASON_OWNER_USER_SPECIFIED = "owner_user_specified"
 REASON_LLM_ERROR = "llm_error"               # 분류 LLM 호출 실패 → 첫 활성 DB 폴백
 REASON_NO_CLASSIFICATION = "no_classification"  # 유효한 분류 결과 없음 → 첫 활성 DB 폴백
 
@@ -249,6 +253,67 @@ def _inactive_note(
     }
 
 
+def _user_specified_note(
+    reg: DBRegistry,
+    capability: str,
+    owner_system: str,
+    db_id: str,
+    task_id: str | None,
+) -> dict[str, Any]:
+    """직접 지정 DB가 정본이 아닐 때의 사유 노트 — 교정하지 않았다는 사실을 문구에 담는다."""
+    return {
+        "kind": NOTE_OWNERSHIP,
+        "task_id": task_id,
+        "reason": REASON_OWNER_USER_SPECIFIED,
+        "detail": (
+            f"직접 지정하신 {_db_label(reg, db_id)}은(는) 답변 영역 "
+            f"{_capability_label(reg, capability)}의 정본이 아닙니다"
+            f"(정본: {reg.system_label(owner_system)}). "
+            "지정을 존중해 **교정하지 않고 그대로 조회**했으니 결과 해석에 주의해 주세요."
+        ),
+        "capability": capability,
+        "from_db_ids": [db_id],
+        "owner_system": owner_system,
+    }
+
+
+def user_specified_ownership_notes(
+    targets: Sequence[dict[str, Any]],
+    *,
+    registry: DBRegistry | None = None,
+    task_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """직접 지정 대상 중 **정본이 아닌** 것을 사유 노트로 낸다(교정은 하지 않는다 · 권고 C).
+
+    자산 DB에도 사용률 컬럼이 있어 *"ITAM DB에서 CPU 사용률"* 같은 지정은 **결과가 나오므로**
+    오답이 조용하다(plans/102 §0.2 R2 · 95 함정 T5). 지정을 뒤집지 않되 침묵하지도 않는다.
+
+    (대상, 답변 영역) 쌍마다 1건이다. 답변 영역이 없거나 선언 없는 DB는 판정 밖이다.
+    """
+    reg = registry or get_registry()
+    notes: list[dict[str, Any]] = []
+    for entry in targets:
+        if not isinstance(entry, dict) or not entry.get("user_specified"):
+            continue
+        db_id = str(entry.get("db_id") or "")
+        system = reg.system_of(db_id)
+        if system is None:
+            continue
+        for cap in entry.get("capabilities") or []:
+            if not isinstance(cap, str):
+                continue
+            owners = reg.capability_owners(cap)
+            if not owners or system in owners:
+                continue
+            notes.append(_user_specified_note(reg, cap, owners[0], db_id, task_id))
+    if notes:
+        logger.info(
+            "직접 지정 DB가 정본 아님(교정 없음 · task=%s): %s",
+            task_id, [(n["from_db_ids"][0], n["capability"]) for n in notes],
+        )
+    return notes
+
+
 def enforce_target_ownership(
     targets: list[dict[str, Any]],
     *,
@@ -258,7 +323,8 @@ def enforce_target_ownership(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """대상 DB마다 LLM이 붙인 답변 영역의 정본 시스템을 확인하고, 어긋나면 정본으로 교정한다.
 
-    - 답변 영역이 빈 항목·직접 지정 항목·선언 없는 DB는 그대로 둔다.
+    - 답변 영역이 빈 항목·직접 지정 항목·선언 없는 DB는 그대로 둔다. 직접 지정 항목이 정본이
+      아니면 **교정하지 않고 사유 노트만** 남긴다(권고 C — 침묵 금지).
     - 어긋난 영역은 정본 시스템 DB로 옮긴다 — 이미 고른 그 시스템 DB가 있으면 거기에 붙이고, 없으면
       그 시스템의 활성 DB 전체를 원래 항목 자리에 넣는다(단일 DB 시스템이면 그 DB 하나).
     - 옮길 영역만 가진 항목은 뺀다. 정본 시스템이 비활성이면 옮기지 않고 사유 노트만 남긴다.
@@ -274,7 +340,11 @@ def enforce_target_ownership(
     """
     reg = registry or get_registry()
     entries = [dict(t) for t in targets if isinstance(t, dict)]
-    notes: list[dict[str, Any]] = []
+    # 직접 지정은 교정하지 않는다 — 사실만 먼저 알린다(권고 C). 판정 입력은 **입력 목록**이다:
+    # 아래 교정 루프가 직접 지정 항목에 영역을 덧붙이는 경우는 그 DB가 정본일 때뿐이다.
+    notes: list[dict[str, Any]] = user_specified_ownership_notes(
+        entries, registry=reg, task_id=task_id
+    )
 
     i = 0
     while i < len(entries):
@@ -414,14 +484,24 @@ def restrict_targets_to_owner(
         registry: 레지스트리(미지정 시 정본)
 
     Returns:
-        (제한된 대상 목록, NOTE_OWNERSHIP 노트 목록 — 뺀 DB가 없으면 빈 목록)
+        (제한된 대상 목록, NOTE_OWNERSHIP 노트 목록 — 뺀 DB도 직접 지정 위반도 없으면 빈 목록)
     """
     reg = registry or get_registry()
     allowed = set(owner.active_db_ids)
     kept = [t for t in targets if t.get("db_id") in allowed or t.get("user_specified")]
     removed = [t for t in targets if t not in kept]
+    # 소유 시스템 밖인데 직접 지정이라 남긴 대상 — 교정하지 않았다는 사실을 알린다(권고 C).
+    notes = [
+        _user_specified_note(
+            reg, owner.capability, owner.system, str(t.get("db_id") or ""), task_id
+        )
+        for t in kept
+        if t.get("user_specified")
+        and t.get("db_id") not in allowed
+        and reg.system_of(str(t.get("db_id") or "")) is not None
+    ]
     if not removed:
-        return list(targets), []
+        return list(targets), notes
     if not kept:
         template = removed[0]
         kept = [{
@@ -442,7 +522,7 @@ def restrict_targets_to_owner(
         task_id, owner.capability,
         [t.get("db_id") for t in targets], [t.get("db_id") for t in kept],
     )
-    return kept, [note]
+    return kept, notes + [note]
 
 
 # ──────────────────────────────────────────────

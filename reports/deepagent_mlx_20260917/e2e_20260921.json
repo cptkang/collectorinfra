@@ -1,0 +1,61 @@
+{
+ "meta": {
+  "ladder": {
+   "tier": "deep_agent",
+   "degraded_reason": "none",
+   "resolved_by": "explicit_env"
+  },
+  "active_db_ids": [
+   "polestar",
+   "itam"
+  ],
+  "model": [
+   "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+   "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+  ],
+  "recursion_limit": 25,
+  "started_at": "2026-09-21T07:40:51",
+  "finished_at": "2026-09-21T07:45:32"
+ },
+ "records": [
+  {
+   "id": "E3_dependent",
+   "query": "현재 발생 중인 심각(severity 3) 알람이 있는 서버를 찾고, 그 서버들의 IP와 OS 종류를 조회해줘",
+   "thread_id": "da-e2e-E3_dependent-abb4f4be",
+   "gate": "waited=0s others=[]",
+   "elapsed_s": 229.3,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "deep_agent"
+   ],
+   "final_response": "조회 결과\n\n현재 기준 (2026-09-21) 까지 조회된 심각도 3(심각) 알람 발생 서버는 총 2건입니다. 두 서버 모두 CPU 사용률 임계 초과 (90% 초과) 로 인한 ACTIVE 상태의 알람을 기록하고 있으며, OS 종류 정보는 데이터에 포함되지 않았습니다.\n\n| server_name | alarm_name | severity | ctime | conditionlogtext | currentalarmstatus | resource_name | ipaddress | severity_grade | occurred_at | alarm_id | name | OSType |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n| SV-WEB-001 | CPU 사용률 임계 초과 | 3 | 2026-07-13T10:15:00 | CPU Utilization 92% > 90% (5min) | ACTIVE | SV-WEB-001 | 10.61.0.1 | 심각 | 2026-07-13 10:15:00 | 9610001 |  |  |\n| SV-BATCH-009 | CPU 사용률 임계 초과 | 3 | 2026-05-20T07:55:00 | CPU Utilization 94% > 90% (5min) | ACTIVE | SV-BATCH-009 | 10.61.0.4 | 심각 | 2026-05-20 07:55:00 | 9610005 |  |  |\n\n참고사항\n- 조회된 데이터에는 OS 종류 (OSType) 정보가 누락되어 있습니다.\n- 기준 정보 (2026-09-21) 에 연도가 명시되어 있으나, 조회된 알람 발생 시점 (ctime) 은 2026 년 5 월 및 7 월로, 기준일보다 과거입니다.\n\n---\n## 순차 처리 경과\n- [tool_data_query_2] 선행 작업(tool_alarm_query_1) 결과 2대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 CTIME 내림차순 · 상한 1000건.",
+   "task_plan": [],
+   "log": [
+    "INFO src.orchestration.deep_agent: deepagents 에이전트 조립: 오케스트레이터=mlx(mlx-community/Qwen3.5-9B-OptiQ-4bit), 도구 7개, 워커=mlx",
+    "WARNING src.clients.mlx_client: MLX 응답이 max_tokens에서 잘렸다(finish_reason=length): model=mlx-community/Qwen3.5-9B-OptiQ-4bit max_tokens=4096 id=chatcmpl-b3bee743-656d-4498-a3e1-fd2f64e04d00 — 잘린 응답이 그대로 다음 단계로 넘어간다. LLM_MLX_MAX_TOKENS를 확인한다",
+    "INFO src.orchestration.deepagents_tools: deepagents 도구 호출 agent=data_query input_from=['tool_alarm_query_1'] sub_query=\"SELECT server_name, ipaddress, os_type FROM servers WHERE server_name IN ('SV-WEB-001', 'SV-BATCH-009')\"",
+    "INFO src.orchestration.deepagents_tools: deepagents 도구 선행 스코프 주입(D-095): input_from=['tool_alarm_query_1'] (sub_query=\"SELECT server_name, ipaddress, os_type FROM servers WHERE server_name IN ('SV-WEB-001', 'SV-BATCH-009')\")"
+   ]
+  },
+  {
+   "id": "E4_general",
+   "query": "이 시스템으로 어떤 조회를 할 수 있어?",
+   "thread_id": "da-e2e-E4_general-f1fb1dbb",
+   "gate": "waited=0s others=[]",
+   "elapsed_s": 47.8,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "deep_agent"
+   ],
+   "final_response": "안녕하세요! 인프라 관리 시스템의 AI 어시스턴트입니다. 현재 지원하고 있는 데이터 소스와 조회 기능을 안내해 드리겠습니다.\n\n### 📊 현재 지원 가능한 데이터 소스\n1.  **로컬 개발 샌드박스 Polestar**: 로컬 개발 및 테스트 환경의 Polestar 샌드박스 데이터입니다. 운영 폴스타와 동일한 스키마를 따르며, 서버의 물리 사양, 사용량, 모니터링 데이터 등을 포함합니다.\n2.  **ITAM DB**: IT 자산 관리 (자산 원장) 데이터입니다. 서버 자산의 구매 계약, 유지보수 계약, 무상 보증 기간, 하드웨어/소프트웨어 지원 종료일 (EOS/EOL), 자산 상태, 담당자 정보, 물품 분류, 시리얼 번호 등을 관리합니다.\n\n### 🔍 지원 가능한 조회 유형\n*   **서버 사양**: CPU 코어 수, 메모리 용량, 디스크 용량\n*   **서버 사용량**: CPU 사용률 (월 평균/최고), 메모리 사용률, 디스크/파일시스템 사용량\n*   **서버 정보**: hostname, IP 주소, 게이트웨이, OS/커널 파라미터\n*   **프로세스**: 서버에서 동작 중인 프로세스 조회\n*   **모니터링 알람**: 현재 발생 알람, 알람 이력, 심각도 (0: 해소, 1: 주의, 2: 경고, 3: 심각), 담당자, 알람 통계\n*   **양식 채우기**: Excel (.xlsx) 양식 파일을 첨부하고 대상 소스를 지정하면 수집 항목을 자동으로 채워줍니다. 채우지 못한 항목은 선택 패널로 되물으며, '이 답을 기억'을 선택하면 같은 양식에 자동 반영됩니다.\n*   **양식 기억 관리**: 저장된 양식 파일을 첨부하고 \"이 양식에 기억된 답 보여줘\" / \"<필드명> 기억 삭제\" / \"기억 전부 삭제\"로 조회하거나 삭제할 수 있습니다.\n*   **가상화/자산**: VM 대수, 영역별 분포, IT 자산, 라이선스 정보 (소스에 따라 상이)\n\n### 💡 예시 질의\n*   \"여의도 폴스타에 등록된 서버의 CPU 코어 수와 메모리 용량을 알려줘\"\n*   \"김포 운영 폴스타의 디스크 사용량을 조회해줘\"\n*   \"은행 폴스타의 현재 알람 현황을 보여줘\"\n\n어떤 정보를 확인해 드릴까요?",
+   "task_plan": [],
+   "log": [
+    "INFO src.orchestration.deep_agent: deepagents 에이전트 조립: 오케스트레이터=mlx(mlx-community/Qwen3.5-9B-OptiQ-4bit), 도구 7개, 워커=mlx"
+   ]
+  }
+ ]
+}

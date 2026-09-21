@@ -1,0 +1,161 @@
+# Text-to-SQL EX 골드셋 — 복합 질의 · 로컬 샌드박스(polestar) 전용 (plans/111 §6 M-1)
+#
+# 목적: 분해 계약 A/B(자유문 sub_query vs 원문 조각 task 프레임 · `COMPOSITE_TASK_FRAME_ENABLED`)를
+#       로컬 MLX로 상대 비교한다(M-2). 2단(intent_orchestration)만 분해가 있다 — 3단은 참고용 기준선.
+# 채점: 다중 task 계획은 **마지막 task의 SQL**을 채점한다(`scripts/eval_text2sql.py` `_extract_sql`) —
+#       순차 의존 계획의 최종 답을 만드는 task다. 전부 subset(골드 컬럼 값 멀티셋이 pred 어느 컬럼과 일치).
+# 출처: 카탈로그(testdata/scenarios) 복합 시나리오를 샌드박스 데이터에 맞게 옮긴 것 —
+#       cx-01=SYN-H-04 · cx-02=SYN-I-04 · cx-03≈R1-01 · cx-04≈R1-08 · cx-05≈E-03 · cx-06=SYN-I-06 · cx-07=SYN-H-01 · cx-08=SYN-F-04.
+# 골드 SQL은 2026-09-21 샌드박스에서 실행해 확인했다. cx-02는 문서 기대값(1건)과 다르다 —
+#   09_plan67 픽스처가 알람 없는 서버를 보강해 실 데이터는 7건이다(hostapo의 LOGICALCORE '16.0' 포함).
+# 폐쇄망 골드·107 측정 골드(testdata/text2sql_gold_sandbox/)와 섞이지 않게 디렉터리를 나눴다.
+items:
+  - id: cx-01
+    query: "현재 활성 상태인 심각 알람이 있는 서버들의 2026년 7월 CPU 사용률을 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "알람 선별 → 지표(에이전트 교대 — 나눈다). 카탈로그 기대 경로: t1 alarm_query → t2 data_query + prior_rows 스코프(D-086)"
+    gold_sql: |
+      WITH act AS (
+        SELECT DISTINCT COALESCE(ar.platform_resource_id, ar.id) AS sid
+        FROM polestar.cmm_alarm a
+        JOIN polestar.cmm_alarm_active aa ON aa.alarm_id = a.id
+        JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+        WHERE a.alarmseverity = 3)
+      SELECT svr.name
+      FROM polestar.cmm_metric_stat_m s
+      JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE s.definition_name = 'Utilization' AND s.stat_date = '202607' AND svr.id IN (SELECT sid FROM act)
+      GROUP BY svr.name;
+  - id: cx-02
+    query: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "같은 DB 안의 수치 조건 + 안티조인 — 나누지 않는 편이 맞다(plans/111 §2.2 과분해 사례)"
+    gold_sql: |
+      SELECT svr.name
+      FROM polestar.cmm_resource svr
+      JOIN polestar.cmm_resource c ON COALESCE(c.platform_resource_id, c.id) = svr.id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+      JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id AND cc.name = 'LOGICALCORE'
+      WHERE svr.resource_type = 'server.Server' AND svr.dtime IS NULL
+        AND cc.stringvalue_short ~ '^[0-9.]+$' AND CAST(cc.stringvalue_short AS NUMERIC) >= 8
+        AND NOT EXISTS (SELECT 1 FROM polestar.cmm_alarm a JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+                        WHERE COALESCE(ar.platform_resource_id, ar.id) = svr.id);
+  - id: cx-03
+    query: "서버 목록을 보여주고, 그중 2026년 6월 CPU 사용률 평균이 40%를 넘는 서버의 알람 이력도 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "목록 + 지표 조건 → 알람 이력(순차 의존). 마지막 task = 알람 이력"
+    gold_sql: |
+      WITH hot AS (
+        SELECT COALESCE(c.platform_resource_id, c.id) AS sid
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus'
+        WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606'
+        GROUP BY 1 HAVING AVG(s.avg_val) > 40)
+      SELECT svr.name, a.alarmseverity
+      FROM polestar.cmm_alarm a
+      JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(ar.platform_resource_id, ar.id)
+      WHERE svr.id IN (SELECT sid FROM hot);
+  - id: cx-04
+    query: "2026년 6월에 경고 이상 알람이 난 서버의 메모리 용량과 제조사를 같이 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "알람 선별 → EAV 속성(에이전트 교대)"
+    gold_sql: |
+      SELECT svr.name,
+             MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor
+      FROM polestar.cmm_resource svr
+      JOIN polestar.cmm_resource c ON COALESCE(c.platform_resource_id, c.id) = svr.id AND c.dtime IS NULL
+      LEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id
+      WHERE svr.resource_type = 'server.Server' AND svr.dtime IS NULL
+        AND EXISTS (SELECT 1 FROM polestar.cmm_alarm a JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+                    WHERE a.alarmseverity >= 2 AND a.ctime >= '2026-06-01' AND a.ctime < '2026-07-01'
+                      AND COALESCE(ar.platform_resource_id, ar.id) = svr.id)
+      GROUP BY svr.name;
+  - id: cx-05
+    query: "2026년 6월 CPU 사용률 평균이 가장 높았던 서버를 찾아 그 서버의 커널 파라미터를 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "지표 TOP-1 → EAV LOB(순차 표지 '찾아 그 서버의')"
+    gold_sql: |
+      WITH top1 AS (
+        SELECT svr.resource_conf_id
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+        JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+        WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606'
+        GROUP BY svr.resource_conf_id ORDER BY AVG(s.avg_val) DESC LIMIT 1)
+      SELECT cc.stringvalue AS osparameter
+      FROM top1 t JOIN polestar.core_config_prop cc ON cc.configuration_id = t.resource_conf_id AND cc.name = 'OSParameter';
+  - id: cx-06
+    query: "현재 활성 상태인 심각 알람이 있는 서버 중 2026년 6월 CPU 사용률 평균이 가장 높았던 서버의 제조사와 일련번호를 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "알람 상태 → 서버 스코프 → 지표 TOP-1 → EAV 4단 체인(= syn-i06)"
+    gold_sql: |
+      WITH act AS (
+        SELECT DISTINCT COALESCE(ar.platform_resource_id, ar.id) AS sid
+        FROM polestar.cmm_alarm a
+        JOIN polestar.cmm_alarm_active aa ON aa.alarm_id = a.id
+        JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+        WHERE a.alarmseverity = 3),
+      t AS (
+        SELECT svr.resource_conf_id, AVG(s.avg_val) AS a
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+        JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+        WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606' AND svr.id IN (SELECT sid FROM act)
+        GROUP BY svr.resource_conf_id ORDER BY a DESC LIMIT 1)
+      SELECT MAX(CASE WHEN cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor,
+             MAX(CASE WHEN cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serial
+      FROM t JOIN polestar.core_config_prop cc ON cc.configuration_id = t.resource_conf_id;
+  - id: cx-07
+    query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "알람 → 자원 → EAV(= syn-h01)"
+    gold_sql: |
+      SELECT svr.name,
+             MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor
+      FROM polestar.cmm_resource svr
+      JOIN polestar.cmm_resource c ON COALESCE(c.platform_resource_id, c.id) = svr.id AND c.dtime IS NULL
+      LEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id
+      WHERE svr.resource_type = 'server.Server' AND svr.dtime IS NULL
+        AND EXISTS (SELECT 1 FROM polestar.cmm_alarm a JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+                    WHERE a.alarmseverity = 3 AND COALESCE(ar.platform_resource_id, ar.id) = svr.id)
+      GROUP BY svr.name;
+  - id: cx-08
+    query: "2026년 6월 디스크 아이오가 가장 높았던 서버의 제조사와 일련번호를 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: outside
+    scoring: subset
+    notes: "지표 TOP-1 → EAV(한 SQL로 되는 크로스도메인 — 나누지 않아도 된다 · = syn-f04)"
+    gold_sql: |
+      WITH top1 AS (
+        SELECT svr.resource_conf_id
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Disks'
+        JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+        WHERE s.definition_name = 'MaxIORate' AND s.stat_date = '202606'
+        GROUP BY svr.resource_conf_id ORDER BY MAX(s.max_val) DESC LIMIT 1)
+      SELECT MAX(CASE WHEN cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor,
+             MAX(CASE WHEN cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serial
+      FROM top1 t JOIN polestar.core_config_prop cc ON cc.configuration_id = t.resource_conf_id;

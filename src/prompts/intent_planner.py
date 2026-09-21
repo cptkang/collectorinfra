@@ -311,3 +311,81 @@ def render_intent_planner_ownership_template(
         return rendered
     head, sep, tail = rendered.partition(_OWNERSHIP_EXAMPLE_ANCHOR)
     return head + INTENT_PLANNER_OWNERSHIP_EXAMPLES + sep + tail
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# task 프레임 계약 (plans/111 C-3 · `COMPOSITE_TASK_FRAME_ENABLED`) — 옵트인
+# ══════════════════════════════════════════════════════════════════════════
+#
+# off는 위 템플릿(또는 답변 영역 렌더본) 그대로다. on 렌더는 「출력 형식」 앵커 **앞에 삽입만** 한다
+# (기존 줄 변경 0). 이 절은 위의 `sub_query` 작성 규칙보다 **우선**한다고 명시한다 — 예시의
+# `sub_query` 줄을 지우지 않는 대신 우선순위로 덮는다(삽입 전용 원칙).
+#
+# 근거(plans/111 §2.5): run `20260918-182507` 복합 계획의 task 질의에 원문에 없는 리터럴·SQL이
+# 들어갔다("심각(alarm_severity='critical')…" · "(SELECT 문만 사용, WHERE dtime IS NULL …)").
+# 조각만 고르게 하면 발명이 구조적으로 불가능하고, 검증(`src.domain.task_frame`)이 결정적이 된다.
+# 나눌지 말지 규칙은 §2.2 과·미분해 실측에서 뽑았다 — 원문 키워드 판정이 아니라 LLM 지시다(D-004).
+#
+# ⚠ 중괄호: 이 절은 `.format()`을 거치지 않는다 — 예시 JSON의 `{{`는 위 템플릿과 같은 표기다.
+
+INTENT_PLANNER_TASK_FRAME_SECTION = """## task 프레임 계약 — `spans` (이 절이 위의 `sub_query` 작성 규칙보다 우선합니다)
+
+각 task에 `sub_query`를 새로 쓰지 마세요. 대신 **사용자 질의에서 그 task가 다루는 부분을 글자 그대로 복사한** 조각 목록 `spans`를 적으세요.
+- 조각은 사용자 질의(후속 턴이면 "## 이전 대화 맥락" 블록 포함)의 **부분 문자열**이어야 합니다. 바꿔 쓰거나 요약하거나 설명을 덧붙이지 마세요.
+- 질의에 없는 값(심각도 코드·컬럼명·테이블명·SQL 문장)을 조각에 쓰지 마세요.
+- 질의에 나온 숫자(기간·임계값·건수)는 어느 task의 조각에든 **반드시** 들어가야 합니다.
+- 선행 결과를 받는 task는 `depends_on`·`input_from`만 적으세요. "선행 결과의…" 같은 문구는 시스템이 붙입니다.
+- `sub_query`는 빈 문자열 `""`로 두세요 — 시스템이 조각을 이어 만듭니다.
+
+### 나눌지 말지
+- **나눈다**: 담당 agent가 다르다(알람 이력 ↔ 성능·설정 지표 ↔ 실시간 프로세스) · 산출물이 둘이다(파일과 표) · 위치별로 **각각** 결과를 요구한다 · 앞 결과를 보고 뒤 조건을 고른다("차이가 큰 쪽").
+- **나누지 않는다**: 같은 데이터 안의 필터·제외("…중에서 …가 없는")·집계·정렬·상위 N·기간 비교 — 한 task로 두세요.
+
+### 예시 A (나눈다 — 담당 agent가 다름)
+질의: "경고 알람이 난 서버들의 지난달 메모리 사용률 평균을 보여줘"
+```json
+{{
+    "clarification_needed": null,
+    "tasks": [
+        {{"task_id": "t1", "agent": "alarm_query", "sub_query": "", "spans": ["경고 알람이 난 서버들"],
+         "depends_on": [], "input_from": [], "order": 1}},
+        {{"task_id": "t2", "agent": "data_query", "sub_query": "", "spans": ["지난달 메모리 사용률 평균"],
+         "depends_on": ["t1"], "input_from": ["t1"], "order": 2}}
+    ]
+}}
+```
+
+### 예시 B (나누지 않는다 — 같은 데이터 안의 필터·제외)
+질의: "메모리가 64GB 이상인 서버 중에서 OS가 리눅스가 아닌 서버를 알려줘"
+```json
+{{
+    "clarification_needed": null,
+    "tasks": [
+        {{"task_id": "t1", "agent": "data_query", "sub_query": "",
+         "spans": ["메모리가 64GB 이상인 서버 중에서 OS가 리눅스가 아닌 서버"],
+         "depends_on": [], "input_from": [], "order": 1}}
+    ]
+}}
+```
+
+"""
+
+_TASK_FRAME_SECTION_ANCHOR = "## 출력 형식\n"
+
+
+def render_intent_planner_task_frame_template(base: str) -> str:
+    """task 프레임 on 전용 분해 프롬프트 — ``base``의 「출력 형식」 앞에 계약 절을 **삽입만** 한다.
+
+    Args:
+        base: 기본 템플릿 또는 답변 영역 렌더본(두 플래그가 함께 켜질 수 있다)
+
+    Returns:
+        계약 절이 삽입된 프롬프트
+
+    Raises:
+        RuntimeError: 앵커가 정확히 1회 나타나지 않는다(삽입 위치가 흔들림)
+    """
+    if base.count(_TASK_FRAME_SECTION_ANCHOR) != 1:
+        raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {_TASK_FRAME_SECTION_ANCHOR!r}")
+    head, sep, tail = base.partition(_TASK_FRAME_SECTION_ANCHOR)
+    return head + INTENT_PLANNER_TASK_FRAME_SECTION + sep + tail

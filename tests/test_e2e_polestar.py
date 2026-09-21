@@ -49,6 +49,19 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
 # 글로벌 유사단어 사전
 SYNONYMS_YAML = "config/global_synonyms.yaml"
 
+# ---------------------------------------------------------------------------
+# 기반 픽스처 앵커
+# ---------------------------------------------------------------------------
+# 로컬 샌드박스(testdata/pg/init)는 **누적식**이다 — 01~03이 넣은 기반 데이터 위에
+# 06(plan52 노이즈)·07/08(plan61 골드)·09(plan67 E1)가 서버·속성을 계속 더한다.
+# 그래서 "DB 전체 행 수"는 계약이 아니며, 계약은 기반 픽스처 슬라이스다:
+#   - core_config_prop: 03_insert_core_config_prop.sql이 넣은 ID 500001~500360 (30대 x 12설정)
+#   - cmm_resource:     02_insert_cmm_resource.sql이 넣은 svr-(web|was|db)-NN 30대
+# 전체 합계로 단언하던 케이스들이 픽스처가 늘 때마다 깨져 왔다(2026-09-21 정리).
+_BASE_PROP_ID_MIN, _BASE_PROP_ID_MAX = 500001, 500360
+_BASE_PROP_WHERE = f"id BETWEEN {_BASE_PROP_ID_MIN} AND {_BASE_PROP_ID_MAX}"
+_BASE_HOST_WHERE = "hostname ~ '^svr-(web|was|db)-'"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -143,30 +156,31 @@ class TestPhase1DataPreparation:
 
     @pytest.mark.asyncio
     async def test_phase1_03_cmm_resource_count(self, db_client):
-        """CMM_RESOURCE 행 수가 약 700~1200행인지 확인한다."""
+        """CMM_RESOURCE 기반 행이 700행 이상인지 확인한다(상한은 계약 아님 — 픽스처 누적)."""
         result = await db_client.execute_sql(
             "SELECT COUNT(*) AS cnt FROM polestar.cmm_resource"
         )
         cnt = result.rows[0]["cnt"]
-        assert 700 <= cnt <= 1200, f"CMM_RESOURCE 행 수 이상: {cnt}"
+        assert cnt >= 700, f"CMM_RESOURCE 행 수 부족: {cnt} (기대: 700+)"
 
     @pytest.mark.asyncio
     async def test_phase1_04_core_config_prop_count(self, db_client):
-        """CORE_CONFIG_PROP 행 수가 360행인지 확인한다."""
+        """기반 픽스처의 CORE_CONFIG_PROP이 360행 그대로인지 확인한다."""
         result = await db_client.execute_sql(
-            "SELECT COUNT(*) AS cnt FROM polestar.core_config_prop"
+            f"SELECT COUNT(*) AS cnt FROM polestar.core_config_prop WHERE {_BASE_PROP_WHERE}"
         )
         cnt = result.rows[0]["cnt"]
-        assert cnt == 360, f"CORE_CONFIG_PROP 행 수: {cnt} (기대: 360)"
+        assert cnt == 360, f"기반 CORE_CONFIG_PROP 행 수: {cnt} (기대: 360)"
 
     @pytest.mark.asyncio
     async def test_phase1_05_server_count_30(self, db_client):
-        """서버가 30대(HOSTNAME DISTINCT)인지 확인한다."""
+        """기반 픽스처 서버가 30대(svr-web/was/db)인지 확인한다."""
         result = await db_client.execute_sql(
-            "SELECT COUNT(DISTINCT hostname) AS cnt FROM polestar.cmm_resource WHERE hostname IS NOT NULL"
+            "SELECT COUNT(DISTINCT hostname) AS cnt FROM polestar.cmm_resource "
+            f"WHERE {_BASE_HOST_WHERE}"
         )
         cnt = result.rows[0]["cnt"]
-        assert cnt == 30, f"서버 수: {cnt} (기대: 30)"
+        assert cnt == 30, f"기반 서버 수: {cnt} (기대: 30)"
 
     @pytest.mark.asyncio
     async def test_phase1_06_server_groups(self, db_client):
@@ -214,10 +228,11 @@ class TestPhase1DataPreparation:
 
     @pytest.mark.asyncio
     async def test_phase1_09_config_per_server(self, db_client):
-        """각 CONFIGURATION_ID별 12건씩 있는지 확인한다."""
-        result = await db_client.execute_sql("""
+        """기반 픽스처의 각 CONFIGURATION_ID별 12건씩 있는지 확인한다."""
+        result = await db_client.execute_sql(f"""
             SELECT configuration_id, COUNT(*) AS cnt
             FROM polestar.core_config_prop
+            WHERE {_BASE_PROP_WHERE}
             GROUP BY configuration_id
             HAVING COUNT(*) != 12
         """)
@@ -225,14 +240,14 @@ class TestPhase1DataPreparation:
 
     @pytest.mark.asyncio
     async def test_phase1_10_vendor_diversity(self, db_client):
-        """제조사(Vendor)가 3종인지 확인한다."""
-        result = await db_client.execute_sql("""
+        """기반 픽스처의 제조사(Vendor)가 3종인지 확인한다."""
+        result = await db_client.execute_sql(f"""
             SELECT DISTINCT stringvalue_short
             FROM polestar.core_config_prop
-            WHERE name = 'Vendor'
+            WHERE name = 'Vendor' AND {_BASE_PROP_WHERE}
         """)
         vendors = {r["stringvalue_short"] for r in result.rows}
-        assert len(vendors) == 3, f"제조사: {vendors} (기대: 3종)"
+        assert len(vendors) == 3, f"기반 제조사: {vendors} (기대: 3종)"
 
 
 # ===========================================================================
@@ -270,8 +285,12 @@ class TestPhase2CachePipeline:
         """CMM_RESOURCE 테이블의 컬럼 수가 59개인지 확인한다."""
         schema = await cache_manager.get_schema(POLESTAR_DB_ID)
         tables = schema["tables"]
-        # 키 이름은 대소문자 혼재 가능 — cmm_resource 또는 polestar.cmm_resource
-        cmm_key = next((k for k in tables if "cmm_resource" in k.lower()), None)
+        # 키 이름은 대소문자·스키마 접두 혼재 가능 — cmm_resource 또는 polestar.cmm_resource.
+        # 부분 문자열로 찾으면 `cmm_resource_path`(3컬럼)가 먼저 걸린다 —
+        # 테이블명 완전 일치로 찾는다.
+        cmm_key = next(
+            (k for k in tables if k.lower().rsplit(".", 1)[-1] == "cmm_resource"), None
+        )
         assert cmm_key, f"cmm_resource 테이블 키를 찾을 수 없음: {list(tables.keys())}"
         columns = tables[cmm_key].get("columns", [])
         assert len(columns) == 59, f"CMM_RESOURCE 컬럼 수: {len(columns)} (기대: 59)"
@@ -613,10 +632,13 @@ class TestSynonymManagement:
         # "장비명" → HOSTNAME 추가
         await redis_cache.add_global_synonym("HOSTNAME", ["장비명"])
         synonyms = await redis_cache.load_global_synonyms()
-        hostname_key = next(
-            (k for k in synonyms if k.upper() == "HOSTNAME"), None
+        # 전역 사전 해시에는 대소문자 변형 키가 공존한다(실측: 'Hostname'과 'HOSTNAME' 둘 다
+        # 존재). 대소문자 무시로 첫 키를 집으면 **쓰지 않은 쪽**이 잡혀 삽입 순서에 흔들린다 —
+        # 쓴 키를 그대로 조회한다(2026-09-21).
+        hostname_key = "HOSTNAME"
+        assert hostname_key in synonyms, (
+            f"HOSTNAME 키 없음: {[k for k in synonyms if k.lower() == 'hostname']}"
         )
-        assert hostname_key
         words = synonyms[hostname_key]
         if isinstance(words, dict):
             words = words.get("words", [])

@@ -106,6 +106,10 @@ class Observation:
     # 401/403 을 받아 재로그인 후 1회 재시도했다(T-a). 재시도가 성공했어도 남긴다 -
     # "8시간 run 에서 토큰이 언제 죽었는가"는 재시도가 삼키면 관측되지 않는다.
     auth_retried: bool = False
+    # O-e(plans/94 §19.3): 서버가 남긴 재작성 감사 레코드(plans/107 §4.9). 1순위는 완료 done
+    # 페이로드, 없으면 감사 로그(`rewrite_trace` 이벤트). 서버가 INTENT_FRAME_ENABLED 가
+    # 아니면 빈다.
+    rewrite_traces: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -483,6 +487,68 @@ def _next_month(day: date) -> date:
     return date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
 
 
+#: `rewrite.gate` 의 선언값. `pass_through` = 전 레코드가 게이트 통과(원문 무수정),
+#: `rewritten` = 한 레코드 이상이 재작성·병기 대상.
+REWRITE_GATE_EXPECTATIONS: frozenset[str] = frozenset({"pass_through", "rewritten"})
+
+
+def _check_rewrite(
+    spec: Any, obs: Observation, failures: list[Failure], manual: list[str],
+) -> None:
+    """Y-11 `rewrite.gate` · Y-12 `rewrite.slots_preserved` (plans/94 §19.2 · plans/107).
+
+    **관측하지 못한 것을 판정하지 않는다** — 레코드가 없으면(서버가 INTENT_FRAME_ENABLED 가
+    아니거나 SQL 생성 노드를 지나지 않은 턴) 불합격이 아니라 보류다. O-b(`llm_calls`)와 같은
+    구조다: 제품이 싣지 않으면 하네스는 모른다.
+
+    - `gate`: 게이트 판정만 본다. 통과 판정일 때 프롬프트 바이트가 불변인 것은 코드
+      계약이며 `tests/test_nodes/test_plan107_intent_frame.py`가 고정한다.
+    - `slots_preserved`: 검증 결과가 전부 `pass` 여야 한다. 실패 메시지는 채널별 사유를
+      싣는다(Y-3 과 같은 이유 — "기대 1 실제 0" 형 메시지는 원인을 못 짚는다).
+    """
+    if not isinstance(spec, dict) or not spec:
+        return
+    traces = [t for t in obs.rewrite_traces if isinstance(t, dict)]
+    if not traces:
+        manual.append(
+            f"rewrite {sorted(spec)} 를 확인하지 못했다 - 재작성 감사 레코드가 없다"
+            "(서버 INTENT_FRAME_ENABLED·SQL 생성 노드 통과 여부 확인)"
+        )
+        return
+
+    gate = spec.get("gate")
+    if gate is not None:
+        reasons = [str((t.get("gate") or {}).get("reason")) for t in traces]
+        needed = [bool((t.get("gate") or {}).get("needed")) for t in traces]
+        if gate not in REWRITE_GATE_EXPECTATIONS:
+            failures.append(Failure("rewrite.gate", sorted(REWRITE_GATE_EXPECTATIONS), gate))
+        elif gate == "pass_through" and any(needed):
+            failures.append(Failure("rewrite.gate", gate, reasons))
+        elif gate == "rewritten" and not any(needed):
+            failures.append(Failure("rewrite.gate", gate, reasons))
+
+    if spec.get("slots_preserved"):
+        verified = [(t.get("consumer"), t.get("verify") or {}) for t in traces]
+        if not any(v for _, v in verified):
+            manual.append(
+                "rewrite.slots_preserved 를 확인하지 못했다 - 검증 결과가 비었다"
+                "(서버 REWRITE_VERIFY_MODE=shadow 필요 · 재작성이 없던 턴은 검증 대상이 아니다)"
+            )
+        else:
+            broken = {
+                f"{consumer}.{channel}": result
+                for consumer, results in verified
+                for channel, result in results.items()
+                if result != "pass"
+            }
+            if broken:
+                slots = traces[0].get("slots") or {}
+                failures.append(Failure(
+                    "rewrite.slots_preserved", "pass",
+                    {"broken": broken, "frame_slots": sorted(slots)},
+                ))
+
+
 def _check_period(
     spec: Any, sqls: list[str], failures: list[Failure], manual: list[str]
 ) -> None:
@@ -630,6 +696,7 @@ def evaluate_turn(
 
     _check_column_mapping(expect.get("column_must_not_map"), obs, failures)
     _check_file(expect.get("file"), obs, failures, manual)
+    _check_rewrite(expect.get("rewrite"), obs, failures, manual)
 
     for node in expect.get("node_path") or []:
         if node not in obs.node_path:

@@ -306,11 +306,19 @@ def seg(monkeypatch, tmp_path):
 
     calls: list[list[str]] = []
     subs: list[list[str]] = []
+    resumes: list = []
+    interrupts: list = []
     outcomes: list = []
 
-    def fake_run(args, run_arms, *, label, snapshot=None, substituted=()):
+    def fake_run(args, run_arms, *, label, snapshot=None, substituted=(), run_id="",
+                 resume_from=None, on_start=None):
         calls.append([a.arm_id for a in run_arms])
         subs.append([a.arm_id for a in substituted])
+        resumes.append(resume_from)
+        if on_start:
+            on_start()
+        if interrupts:
+            raise interrupts.pop(0)
         out = tmp_path / f"run{len(calls)}"
         out.mkdir()
         rows = [{"profile": a.arm_id, "scenario_id": f"S{i}", "turn": 0, "repeat": 0,
@@ -328,6 +336,8 @@ def seg(monkeypatch, tmp_path):
         return cli.main(["--segment", *argv])
 
     run.subs = subs
+    run.resumes = resumes
+    run.interrupts = interrupts
     return run, calls, outcomes, tmp_path / "bench" / "campaigns"
 
 
@@ -435,3 +445,102 @@ def test_모든_구간이_끝나면_완료를_알린다(seg, capsys) -> None:
     assert "모든 구간이 끝났습니다" in capsys.readouterr().out
     body = (root / "mock-closed" / "campaign_verdicts.md").read_text(encoding="utf-8")
     assert "측정된 축 3/3" in body and "기준선 반복 2회" in body
+
+
+# ── 구간 안 재개 (W-7b · 94 러너 `resume_from` 이어쓰기) ──────────────────────
+
+def test_구간이_끊기면_다음_next_가_같은_run을_잇는다(seg) -> None:
+    run, calls, _, root = seg
+    run.interrupts.append(KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        run("next", "--mode", "mock")
+    path = root / "mock-closed" / "campaign.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    [rec] = state["records"]
+    assert rec["status"] == cm.RUNNING and rec["run_id"], "돌기 전에 run_id 를 남긴다(재개점)"
+
+    assert run("next", "--mode", "mock") == 0
+
+    assert calls[1] == calls[0], "새 구간을 열지 않고 끊긴 구간을 잇는다"
+    assert run.resumes == [None, rec["run_id"]], "같은 run_id 로 이어쓴다"
+    [done] = [r for r in json.loads(path.read_text(encoding="utf-8"))["records"]
+              if r["segment_id"] == rec["segment_id"]]
+    assert done["status"] == cm.DONE and done["resumed"] and done["attempts"] == 2
+
+
+def test_다른_프로세스가_그_구간을_돌고_있으면_멈춘다(seg, monkeypatch) -> None:
+    run, calls, _, root = seg
+    run.interrupts.append(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        run("next", "--mode", "mock")
+    monkeypatch.setattr(cm, "pid_alive", lambda pid: True)
+
+    assert run("next", "--mode", "mock") == 1
+    assert len(calls) == 1, "살아 있는 프로세스의 run 에 두 번째 프로세스가 쓰지 않는다"
+
+
+def test_이어_돈_구간의_경과는_속도_실측에_쓰지_않는다(tmp_path) -> None:
+    camp = cm.Campaign(name="t", path=tmp_path / "c.json", env="closed", mode="run")
+    camp.records["x-1"] = cm.SegmentRecord(
+        segment_id="x-1", category="x", axes=["A"], arm_ids=["S2-A-1"], status=cm.DONE,
+        mode="run", finished_at="2026-09-21T10:00:00", elapsed_sec=100.0, turns=100,
+        resumed=True)
+
+    assert camp.rate(129).sec_per_turn == cm.DEFAULT_SEC_PER_TURN, "마지막 시도분만의 경과다"
+
+
+
+def test_preflight_는_트랙T_폴더만_미완으로_보고_끊긴_구간을_따로_알린다(
+        tmp_path, monkeypatch) -> None:
+    """종전에는 `campaigns/` 도 「미완 실행」으로 잡고 "다음 실행에서 이어집니다"라고 적었다."""
+    from scripts.bench import __main__ as cli
+
+    root = tmp_path / "bench"
+    monkeypatch.setattr(cli, "_RESULTS_DIR", root)
+    (root / "20260921-01").mkdir(parents=True)          # 트랙 T — SUMMARY.md 없음
+    camp = cm.Campaign(name="run-closed", path=root / "campaigns" / "run-closed" / "campaign.json",
+                       env="closed", mode="run")
+    camp.records["x-1"] = cm.SegmentRecord(
+        segment_id="x-1", category="x", axes=["A"], arm_ids=["S2-A-1"], status=cm.RUNNING,
+        mode="run", run_id="20260921-120000")
+    camp.save()
+
+    assert cli._unfinished_run().name == "20260921-01"
+    [(name, record)] = cli._interrupted_segments()
+    assert name == "run-closed" and record.run_id == "20260921-120000"
+
+
+def test_propose_는_캠페인_합산의_축_최적값을_처분_입력으로_쓴다(seg, monkeypatch) -> None:
+    """종전 `--propose` 는 스위프 결과를 읽지 않아 축 최적값이 제안에 이르지 못했다(CS-34)."""
+    from scripts.bench import __main__ as cli
+    from scripts.bench import optimize
+
+    run, calls, _, root = seg
+    assert run("next", "--mode", "mock") == 0            # 축 C 구간 1개 완료
+    seen = {}
+
+    def fake_build(targets, **kw):
+        seen["verdicts"] = kw.get("verdicts")
+        return []
+
+    def fake_write(dispositions, evidences, pin, out_dir, **kw):
+        seen["optima"] = [o.axis for o in kw.get("optima") or []]
+        return {"disposition": out_dir / "knob_disposition.md"}
+
+    monkeypatch.setattr(optimize, "build_from_validation", fake_build)
+    monkeypatch.setattr(optimize, "write_proposals", fake_write)
+
+    assert cli.main(["--propose", "--campaign", "mock-closed"]) == 0
+    assert seen["optima"] == ["C"], "측정된 축만 권고 파일로 간다"
+    assert set(seen["verdicts"]) == {"C"}
+
+
+def test_propose_는_캠페인이_없으면_트랙T_신호만_쓴다(tmp_path, monkeypatch) -> None:
+    from scripts.bench import __main__ as cli
+
+    monkeypatch.setattr(cli, "_RESULTS_DIR", tmp_path / "bench")
+    monkeypatch.setattr(sweep, "resolve_env", lambda explicit=None: ("closed", "테스트"))
+    args = cli.build_parser().parse_args(["--propose"])
+
+    assert cli._propose_campaign_inputs(args) == ("run-closed", [], None)

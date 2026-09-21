@@ -293,6 +293,8 @@ query_guide: |
     2. cmm_resource svr: 서버 행 (r.platform_resource_id = svr.id, svr.resource_type = 'server.Server')
     3. cmm_metric_stat_m s: 성능 통계 (r.id = s.resource_id)
     4. 서브쿼리 hi: 하드웨어 설정 정보 (svr.ipaddress = hi.ipaddress 로 조인)
+    5. 삭제 리소스 제외: 바깥 WHERE에 **r.dtime IS NULL AND svr.dtime IS NULL 둘 다 필수**
+       (hi 서브쿼리를 생략해도 빠뜨리지 말 것 — 빠지면 삭제된 서버·리소스가 결과에 섞인다)
 
   [리소스 타입별 EAV 속성]
   cmm_resource의 resource_type에 따라 서로 다른 configuration_id 그룹을 가집니다.
@@ -584,6 +586,8 @@ query_examples:
       ) hi ON svr.ipaddress = hi.ipaddress
       WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
         AND s.definition_name IN ('Utilization', 'MaxIORate')
+        AND r.dtime IS NULL
+        AND svr.dtime IS NULL
       GROUP BY svr.name, svr.ipaddress, svr.hostname, TO_DATE(s.stat_date || '01', 'YYYYMMDD'), hi.logicalcore, hi.mem_size
       ORDER BY svr.hostname, stat_date
       LIMIT 100;

@@ -1,6 +1,6 @@
 """원격 VM 프로파일·mcp_servers 확장 검증 (Plan 66 Wave 2-B′ R-A · Plan 06 §6·§94).
 
-- remote_vm_profile 형태: bash 미확장(내장 core만)·prometheus/metrics 비활성·
+- remote_vm_profile 형태: bash **비활성**(2026-09-21 D-233 — 종전 내장 core)·prometheus/metrics 비활성·
   kubernetes/logs 비활성·나머지 유지.
 - 로컬 VM 진단 명령(ps 등)이 원격 bash allowlist에 없음을 실 런타임 effective 리스트로 고정
   (수용 기준 #1 — 로컬/원격 프로파일 비대칭이 의도임).
@@ -57,17 +57,15 @@ def test_remote_profile_shape():
     assert profile["kubernetes/logs"]["enabled"] is False
     # (D-119) 내장 prometheus/metrics는 비활성 유지 — PromQL은 mcp_server 도구로 소비
     assert profile["prometheus/metrics"]["enabled"] is False
-    # bash는 확장하지 않는다 — 내장 core 텍스트 유틸만
-    assert profile["bash"]["enabled"] is True
-    assert profile["bash"]["config"]["builtin_allowlist"] == "core"
-    assert profile["bash"]["config"]["allow"] == []
+    # bash는 아예 끈다 (2026-09-21 · D-233) — 종전 `builtin_allowlist="core"`에서 교체
+    assert profile["bash"]["enabled"] is False
+    assert "config" not in profile["bash"]
 
 
 def test_remote_profile_bash_has_no_vm_diag_commands():
-    # 로컬 VM 진단 명령을 원격 bash 설정 allow에 넣지 않는다(확장 안 함)
-    remote_allow = remote_vm_profile()["bash"]["config"]["allow"]
-    for cmd in VM_DIAG_ALLOW:
-        assert cmd not in remote_allow
+    # 로컬 VM 진단 명령이 원격 프로파일에 실릴 여지 자체가 없다(bash off)
+    assert remote_vm_profile()["bash"] == {"enabled": False}
+    assert VM_DIAG_ALLOW  # 로컬 상수는 그대로 존재(로컬 프로파일 전용)
 
 
 def test_remote_shell_note_exists():
@@ -95,7 +93,6 @@ def test_remote_bash_effective_allow_excludes_vm_commands():
     # mock이 아닌 실 tool executor로 effective allowlist를 확인한다.
     # 수용 기준 #1: 원격 프로파일에서 ps 등 로컬 VM 진단 명령이 bash allowlist에 없음.
     from holmes.core.tools import PrerequisiteCacheMode
-    from holmes.plugins.toolsets.bash.validation import get_effective_lists
 
     agent = DiagnosisAgent(settings=make_settings(), toolsets=remote_vm_profile())
     executor = agent._config.create_tool_executor(
@@ -107,13 +104,7 @@ def test_remote_bash_effective_allow_excludes_vm_commands():
     assert by_name["kubernetes/logs"].enabled is False
     assert by_name["prometheus/metrics"].enabled is False
 
-    bash = by_name["bash"]
-    assert bash.enabled is True
-    assert bash.config.builtin_allowlist == "core"
-    allow, _deny = get_effective_lists(bash.config)
-    # CORE에 없는 대표적 VM 진단 명령이 effective allow에서 배제됨을 고정
-    for cmd in ("ps", "free", "vmstat", "iostat", "top -b", "journalctl", "dmesg"):
-        assert cmd not in allow, f"원격 bash allowlist에 {cmd!r}가 있으면 안 됨"
+    assert by_name["bash"].enabled is False
 
     # 대상 무관 toolset은 유지된다
     for name in ("connectivity_check", "core_investigation", "internet", "skills"):
@@ -191,3 +182,70 @@ def test_settings_env_file_none_blocks_leak():
     # _env_file=None + 필드 명시로 .env 값이 새어들지 않는다
     s = make_settings(polestar_mcp_url="http://example.test:9099/sse")
     assert s.polestar_mcp_url == "http://example.test:9099/sse"
+
+
+# ── 원격 bash 제거의 근거·효과 (2026-09-21 · D-233) — LLM 0회·명령 실행 0 ──
+
+
+def _remote_tools() -> set[str]:
+    """운영 경로(`DiagnosisAgent.llm`)가 실제로 LLM에 붙이는 도구 이름.
+
+    `agent.llm`은 holmes가 모델 문자열로 프로바이더를 고르므로 `openai/` 접두를 준다(호출은 하지 않는다).
+    """
+    settings = make_settings(model="openai/test-model", api_key="dummy", api_base="http://127.0.0.1:9/v1")
+    agent = DiagnosisAgent(settings=settings, toolsets=remote_vm_profile())
+    return set(agent.llm.tool_executor.tools_by_name)
+
+
+def test_remote_runtime_has_no_shell_or_local_file_tools():
+    tools = _remote_tools()
+    assert "bash" not in tools and "read_image_file" not in tools
+    # 조사에 쓰는 대상 무관 도구는 남는다(MCP 미등록이라 폴스타 도구는 여기 없다)
+    assert {"TodoWrite", "fetch_skill", "fetch_webpage", "tcp_check"} <= tools
+
+
+# 종전 `core` 허용목록이 통과시키던 형태 — 제거 근거의 실측 고정.
+# holmes가 이 목록을 바꾸면 이 테스트가 먼저 알려 준다(우리 판단의 전제가 흔들리는 지점).
+WRITE_FORMS = (
+    'echo hi > /tmp/holmes_probe',                 # 리다이렉트 생성
+    'grep a /etc/hosts >> /tmp/holmes_probe',      # 리다이렉트 추가
+    'sort -o /tmp/holmes_probe /etc/hosts',        # -o 출력 파일
+    'uniq /etc/hosts /tmp/holmes_probe',           # 두 번째 위치 인자가 출력 파일
+)
+
+
+def test_core_allowlist_would_have_allowed_write_forms_and_kubectl():
+    """왜 지웠는가 — `core`는 읽기 전용이 아니고 k8s 명령을 포함한다(명령은 실행하지 않는다)."""
+    from holmes.plugins.toolsets.bash.validation import (
+        CORE_ALLOW_LIST,
+        ValidationStatus,
+        validate_command,
+    )
+
+    for cmd in WRITE_FORMS:
+        result = validate_command(cmd, [cmd.split()[0]], list(CORE_ALLOW_LIST), [])
+        assert result.status is ValidationStatus.ALLOWED, f"전제 변화: {cmd!r}"
+    assert validate_command("kubectl get pods", ["kubectl get"], list(CORE_ALLOW_LIST), []).status \
+        is ValidationStatus.ALLOWED
+    # 우리 원격 프로파일에는 그 목록을 쓰는 bash 자체가 없다
+    assert "bash" not in _remote_tools()
+
+
+def test_local_profile_still_refuses_change_commands_without_approval():
+    """④ 유지 — 로컬 배치(bash 존재)에서 변경 명령은 허용목록 밖이라 승인 필요(비대화형=미실행).
+
+    로컬 `vm_profile()`은 이번 축소 대상이 아니다(SREAgent D-004 범위). 그 경계가 유지되는지만 고정한다.
+    """
+    from holmes.plugins.toolsets.bash.validation import (
+        ValidationStatus,
+        get_effective_lists,
+        validate_command,
+    )
+    from holmes.plugins.toolsets.bash.common.config import BashExecutorConfig
+
+    allow, deny = get_effective_lists(BashExecutorConfig(**vm_profile()["bash"]["config"]))
+    for cmd, prefix in (("kill -9 1234", "kill"), ("rm -rf /tmp/x", "rm"),
+                        ("systemctl restart nginx", "systemctl restart"),
+                        ("dmesg -C", "dmesg -C")):
+        status = validate_command(cmd, [prefix], allow, deny).status
+        assert status is not ValidationStatus.ALLOWED, f"{cmd!r} 가 허용됐다"

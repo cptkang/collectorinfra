@@ -476,3 +476,61 @@ async def test_run_subagent_tool_no_injection_without_signal(mock_config, monkey
     )
     assert captured["input_from"] == []
     assert captured["prior_rows"] is None
+
+
+# ──────────────────────────────────────────────
+# 도구 호출 순번 · task_id 유일성 (plans/49 §12.3 B-2)
+# ──────────────────────────────────────────────
+
+def _echo_spec(name: str):
+    async def fake_handler(task, isolated, *, llm, app_config):
+        # 실 handler는 DB·LLM I/O로 이벤트 루프에 양보한다. 양보가 없으면 gather가
+        # 사실상 직렬로 돌아 병렬 조건이 성립하지 않으므로 명시적으로 한 번 양보한다.
+        import asyncio
+
+        await asyncio.sleep(0)
+        return {"organized_data": {"summary": name, "rows": [{"hostname": f"h-{name}"}],
+                                   "is_sufficient": True}}
+    return SubAgentSpec(name, f"{name} 설명", fake_handler)
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_calls_get_unique_task_ids(mock_config, monkeypatch):
+    """동시에 시작한 두 도구 호출이 서로 다른 task_id를 받는다(B-2).
+
+    `order`를 collector 길이로 잡으면 collector는 도구 **종료** 시점에만 늘어나므로
+    병렬 호출이 같은 id(`tool_data_query_1`)를 받아 `{task_id: result}`에서 하나가
+    덮어써졌다 — 실 DB E2에서 조회 2건이 모두 성공했는데 응답은 "메모리 없음"이었다.
+    """
+    import asyncio
+
+    monkeypatch.setitem(SUBAGENT_REGISTRY, "data_query", _echo_spec("data_query"))
+    collector: list = []
+    tools = {t.name: t for t in build_tools(None, mock_config, {}, collector=collector)}
+    tool = tools[_TOOL_NAMES["data_query"]]
+
+    await asyncio.gather(
+        tool.coroutine("CPU 사용률 상위 3개 서버"),
+        tool.coroutine("메모리 사용률 상위 3개 서버"),
+    )
+
+    task_ids = [task["task_id"] for task, _ in collector]
+    assert len(collector) == 2
+    assert len(set(task_ids)) == 2, f"병렬 호출 task_id 중복: {task_ids}"
+    # _aggregate_with_fabrix가 쓰는 {task_id: result} 사상에서 결과가 덮어써지지 않는다
+    assert len({task["task_id"]: res for task, res in collector}) == 2
+
+
+@pytest.mark.asyncio
+async def test_sequential_tool_calls_keep_id_form_and_order(mock_config, monkeypatch):
+    """순차 호출에서는 기존 id 형태(`tool_<agent>_<n>`)와 order 의미가 그대로다."""
+    monkeypatch.setitem(SUBAGENT_REGISTRY, "data_query", _echo_spec("data_query"))
+    monkeypatch.setitem(SUBAGENT_REGISTRY, "alarm_query", _echo_spec("alarm_query"))
+    collector: list = []
+    tools = {t.name: t for t in build_tools(None, mock_config, {}, collector=collector)}
+
+    await tools[_TOOL_NAMES["data_query"]].coroutine("서버 목록")
+    await tools[_TOOL_NAMES["alarm_query"]].coroutine("알람 목록")
+
+    assert [task["task_id"] for task, _ in collector] == ["tool_data_query_1", "tool_alarm_query_2"]
+    assert [task["order"] for task, _ in collector] == [1, 2]

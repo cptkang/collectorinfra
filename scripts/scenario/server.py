@@ -53,6 +53,12 @@ class ProfileStatus:
     name: str
     port: int
     valid: bool = False
+    #: arm 조합 기동이면 덧씌운 측정 축(**arm id 원본**)과 시나리오 자기 프로파일(`110·N-1`).
+    #: `name` 은 둘을 합친 조합 이름이다(예: `optin_alarm+tier3_router`).
+    #: arm 없이 돈 기동은 `arm=None` · `base_profile == name` 이다.
+    #: `raw.jsonl` 행의 `arm`·`base_profile` 과 **같은 칸 이름·같은 값 형태**다.
+    arm: Optional[str] = None
+    base_profile: Optional[str] = None
     tier: Optional[str] = None
     degraded_reason: Optional[str] = None
     echo_ok: Optional[bool] = None          # None = 확인 못 함(토큰 없음 등)
@@ -78,6 +84,8 @@ class ProfileStatus:
             "name": self.name,
             "port": self.port,
             "valid": self.valid,
+            "arm": self.arm,
+            "base_profile": self.base_profile,
             "tier": self.tier,
             "degraded_reason": self.degraded_reason,
             "echo_ok": self.echo_ok,

@@ -415,7 +415,7 @@
         agent_orchestrator: "작업 실행",
         replanner: "재계획",
         result_aggregator: "결과 통합",
-        // plans/89 · D-204: 사다리 1단 정본 + 옵트인 노드(서버 화이트리스트 보정과 대칭)
+        // plans/89 · D-204: 사다리 1단(부가 경로 · D-225 ②) + 옵트인 노드(서버 화이트리스트와 대칭)
         deep_agent: "에이전트 실행",
         fault_diagnosis: "장애 진단",
         cache_management: "캐시 관리",
@@ -1386,9 +1386,109 @@
         scrollToBottomIfSticky();
     }
 
+    // 실패 경위(D-242)의 단계 이름 → 사용자 라벨. 서버가 label을 실어 보내면 그쪽이 우선한다.
+    function failureStepLabel(s) {
+        if (s.kind === "task") return "작업: " + (s.label || s.name);
+        if (s.label) return s.label;
+        if (s.kind === "node") return nodeLabels[s.name] || s.name;
+        if (s.kind === "tool") return toolLabel(s.name);
+        return stepLabels[s.name] || s.name;
+    }
+
+    function failureSec(ms) { return (Math.max(0, ms || 0) / 1000).toFixed(1) + "s"; }
+
+    // 오류 사유 + 경위(상한·경과·멈춘 단계·앞선 실패·단계 목록). d는 서버 error 이벤트의 경위 필드.
+    function renderStreamFailure(message, d) {
+        var facts = [];
+        if (d.code === "timeout" && d.limit_sec != null) {
+            facts.push(["시간", "상한 " + d.limit_sec + "초 · 경과 " + failureSec(d.elapsed_ms)]);
+        } else if (d.elapsed_ms != null) {
+            facts.push(["경과", failureSec(d.elapsed_ms)]);
+        }
+        if (d.http_status) facts.push(["응답 코드", String(d.http_status)]);
+        if (d.stage) facts.push(["멈춘 단계", failureStepLabel(d.stage) + " (진행 중 " + failureSec(d.stage.ms) + ")"]);
+        if (d.last_error) facts.push(["앞선 실패", d.last_error]);
+        var html = '<div class="message-error-title">⚠ ' + escapeHtml(message) + '</div>';
+        if (facts.length) {
+            html += '<dl class="message-error-facts">' + facts.map(function (f) {
+                return '<dt>' + escapeHtml(f[0]) + '</dt><dd>' + escapeHtml(f[1]) + '</dd>';
+            }).join("") + '</dl>';
+        }
+        var steps = d.steps || [];
+        if (steps.length) {
+            var marks = { done: "✓", failed: "✗", running: "…", skipped: "–" };
+            html += '<details class="message-error-steps"><summary>진행 경위 ' + steps.length + '단계' +
+                (d.steps_dropped ? ' (앞 ' + d.steps_dropped + '단계 생략)' : '') + '</summary><ol>' +
+                steps.map(function (s) {
+                    var st = marks[s.status] ? s.status : "done";
+                    return '<li class="is-' + st + '"><span class="message-error-step-mark" aria-hidden="true">' + marks[st] + '</span>' +
+                        escapeHtml(failureStepLabel(s)) + ' <span class="message-error-step-ms">' +
+                        (st === "running" ? "진행 중 " : "") + failureSec(s.ms) + '</span>' +
+                        (s.detail ? '<div class="message-error-step-detail">' + escapeHtml(s.detail) + '</div>' : '') + '</li>';
+                }).join("") + '</ol></details>';
+        }
+        return html;
+    }
+
+    // 스트림 실패(처리 시간 초과·서버 예외·HTTP 오류·연결 끊김) — 사유와 경위를 말풍선 안에 남긴다.
+    // 토스트(8초)만 띄우면 사라진 뒤 빈 말풍선이 "완료 · N단계"로 접혀 성공처럼 남았다(2026-09-21
+    // 운영 실측 60.6s). **다시 할지는 사용자가 정한다** — 자동 재시도는 하지 않고 버튼만 둔다(D-242).
+    function markStreamFailed(message, detail, onRetry) {
+        endStreamStatus("failed");   // "완료" 요약 대신 상태 영역을 걷어낸다
+        var cursor = document.getElementById("streamingCursor");
+        if (cursor) cursor.remove();
+        var streamingMsg = document.getElementById("streamingMessage");
+        var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
+        var box = document.createElement("div");
+        box.className = "message-error-note";
+        box.setAttribute("role", "alert");
+        box.innerHTML = renderStreamFailure(message, detail || {});
+        if (onRetry) {
+            var retryBtn = document.createElement("button");
+            retryBtn.type = "button";
+            retryBtn.className = "message-error-retry";
+            retryBtn.textContent = "다시 시도";
+            retryBtn.addEventListener("click", function () {
+                if (isProcessing) { showError("처리 중인 질의가 끝난 뒤 다시 시도해 주세요."); return; }
+                retryBtn.disabled = true;
+                retryBtn.textContent = "다시 시도함";
+                var echoMsg = { role: "user", content: "다시 시도", time: new Date(), file: null };
+                messages.push(echoMsg);
+                renderUserMessage(echoMsg);
+                onRetry();
+            });
+            box.appendChild(retryBtn);
+        }
+        if (bubble) {
+            bubble.appendChild(box);
+            var timeEl = document.getElementById("streamingTime");
+            if (timeEl) timeEl.textContent = formatTime(new Date());
+            streamingMsg.removeAttribute("id");
+            ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function (id) {
+                var e2 = document.getElementById(id);
+                if (e2) e2.removeAttribute("id");
+            });
+        } else {
+            // 스트리밍 말풍선이 생기기 전 실패(HTTP 오류·연결 실패) → 단독 말풍선
+            removeProcessingMessage();
+            var el = document.createElement("div");
+            el.className = "message message--agent";
+            el.innerHTML =
+                '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>' +
+                '<div class="message-content"><div class="message-bubble"></div>' +
+                '<div class="message-time">' + formatTime(new Date()) + '</div></div>';
+            el.querySelector(".message-bubble").appendChild(box);
+            chatMessages.appendChild(el);
+        }
+        scrollToBottomIfSticky();
+    }
+
     // ─── SSE Streaming Query ───
 
     async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope) {
+        // 실패 시 "다시 시도" 버튼이 같은 인자로 다시 보낸다(D-242 — 자동 재시도 없음)
+        var retryArgs = Array.prototype.slice.call(arguments);
+        var retry = function () { executeStreamingQuery.apply(null, retryArgs); };
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -1446,8 +1546,8 @@
                 } catch (_e) {
                     errData = { detail: "처리 중 오류가 발생했습니다." };
                 }
-                removeProcessingMessage();
                 showError(errData.detail || "처리 중 오류가 발생했습니다.");
+                markStreamFailed(errData.detail || "처리 중 오류가 발생했습니다.", { http_status: response.status }, retry);
                 return;
             }
 
@@ -1473,6 +1573,8 @@
             var accumulatedText = "";
             var metaData = {};
             var done = false;
+            var streamError = null;
+            var streamErrorDetail = null;
 
             while (!done) {
                 var chunk = await reader.read();
@@ -1512,7 +1614,9 @@
                                 done = true;
                                 metaData = Object.assign(metaData, event);
                             } else if (event.type === "error") {
-                                showError(event.message || "처리 중 오류가 발생했습니다.");
+                                streamError = event.message || "처리 중 오류가 발생했습니다.";
+                                streamErrorDetail = event;   // 경위 필드(D-242)
+                                showError(streamError);
                                 done = true;
                             }
                         } catch (_parseErr) {
@@ -1520,6 +1624,11 @@
                         }
                     }
                 }
+            }
+
+            if (streamError) {
+                markStreamFailed(streamError, streamErrorDetail, retry);
+                return;
             }
 
             // 권위 있는 최종 응답(서버 final_response)이 있으면 누적 토큰 대신 사용한다.
@@ -1554,13 +1663,9 @@
             if (err.name === "AbortError") {
                 markStreamInterrupted();
             } else {
-                removeProcessingMessage();
-                // Network error - fallback to regular query
-                if (err.name === "TypeError" || err.message.includes("fetch")) {
-                    await executeFallbackQuery(query);
-                } else {
-                    showError("서버와의 통신에 실패했습니다: " + err.message);
-                }
+                // 연결 실패·스트림 단절 — 종전에는 비스트리밍 API로 자동 재실행했다. 서버가 첫 요청을
+                // 계속 처리 중일 수 있어 중복 실행이 되므로, 경위를 보여 주고 재시도는 사용자가 정한다(D-242).
+                markStreamFailed("서버와의 통신에 실패했습니다: " + err.message, null, retry);
             }
         } finally {
             stopStreamStatusTimers();   // plans/89: 경과·정지 타이머 해제(어느 경로로 끝나든)
@@ -2169,6 +2274,8 @@
     // ─── File Query (SSE streaming) ───
 
     async function executeFileQuery(query, file, selectedDbIds) {
+        var retryArgs = Array.prototype.slice.call(arguments);   // "다시 시도"(D-242)
+        var retry = function () { executeFileQuery.apply(null, retryArgs); };
         isProcessing = true;
         currentAbortController = new AbortController();
         setSendButtonMode("stop");
@@ -2209,8 +2316,8 @@
             if (!response.ok) {
                 var errData;
                 try { errData = await response.json(); } catch (_e) { errData = { detail: "처리 중 오류가 발생했습니다." }; }
-                removeProcessingMessage();
                 showError(errData.detail || "처리 중 오류가 발생했습니다.");
+                markStreamFailed(errData.detail || "처리 중 오류가 발생했습니다.", { http_status: response.status }, retry);
                 return;
             }
 
@@ -2238,6 +2345,8 @@
             var accumulatedText = "";
             var metaData = {};
             var done = false;
+            var streamError = null;
+            var streamErrorDetail = null;
 
             while (!done) {
                 var chunk = await reader.read();
@@ -2275,12 +2384,19 @@
                                 done = true;
                                 metaData = Object.assign(metaData, event);
                             } else if (event.type === "error") {
-                                showError(event.message || "처리 중 오류가 발생했습니다.");
+                                streamError = event.message || "처리 중 오류가 발생했습니다.";
+                                streamErrorDetail = event;   // 경위 필드(D-242)
+                                showError(streamError);
                                 done = true;
                             }
                         } catch (_parseErr) {}
                     }
                 }
+            }
+
+            if (streamError) {
+                markStreamFailed(streamError, streamErrorDetail, retry);
+                return;
             }
 
             var finalText = (typeof metaData.response === "string" && metaData.response.length > 0)
@@ -2313,8 +2429,7 @@
             if (err.name === "AbortError") {
                 markStreamInterrupted();
             } else {
-                removeProcessingMessage();
-                showError("서버와의 통신에 실패했습니다: " + err.message);
+                markStreamFailed("서버와의 통신에 실패했습니다: " + err.message, null, retry);
             }
         } finally {
             stopStreamStatusTimers();   // plans/89: 경과·정지 타이머 해제(어느 경로로 끝나든)

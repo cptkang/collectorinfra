@@ -36,6 +36,7 @@ import math
 import os
 import re
 import sys
+import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,6 +121,9 @@ class PredictionResult:
     latency_ms: float = 0.0
     skipped: bool = False
     error: Optional[str] = None
+    # plans/107 재작성 감사(`rewrite_trace`) — INTENT_FRAME_ENABLED일 때만 채워진다
+    # (2·3단 상대 비교용)
+    rewrite_traces: Optional[list] = None
 
 
 @dataclass
@@ -152,6 +156,8 @@ class ItemResult:
     subset_unmatched_cols: Optional[list] = None
     # 의도된 FAIL 사유(골드 known_fail 전사) - FAIL이 정상 상태인 감시 항목 표식
     known_fail: str = ""
+    # plans/107 재작성 감사 레코드(없으면 None)
+    rewrite_traces: Optional[list] = None
 
 
 @dataclass
@@ -715,6 +721,16 @@ class RealExecutor:
             return None
 
 
+def _pop_rewrite_traces(thread_id: str) -> Optional[list]:
+    """plans/107 재작성 감사 보관소에서 이 실행분을 꺼낸다(없거나 꺼져 있으면 None)."""
+    try:
+        from src.nodes.intent_frame_builder import pop_rewrite_traces  # type: ignore
+
+        return pop_rewrite_traces(thread_id) or None
+    except Exception:  # 감사 수거 실패가 채점을 막아선 안 된다
+        return None
+
+
 class _LadderTierMismatchError(RuntimeError):
     """`--path semantic_router|deep_agent`인데 그 단으로 확정되지 않음(graceful 스킵 사유)."""
 
@@ -745,11 +761,15 @@ class PipelinePredictor:
 
             cfg = load_config()
             llm = create_llm(cfg)
+            # 실행마다 고유한 스레드 — 재작성 감사(plans/107)를 항목 단위로 수거하는 키이자,
+            # 스레드 키 캐시가 이전 실행(다른 arm) 상태를 끌어오지 않게 하는 격리 경계다.
+            thread_id = f"eval-{item.id}-{uuid.uuid4().hex[:8]}"
             state = {
                 "user_query": item.query,
                 "active_db_id": item.db_id,
                 "target_databases": [{"db_id": item.db_id}],
                 "retry_count": 0,
+                "thread_id": thread_id,
             }
 
             async def _run() -> dict:
@@ -801,12 +821,13 @@ class PipelinePredictor:
                             f"degraded_reason={snap.get('degraded_reason') or '미상'}"
                         )
                 return await graph.ainvoke(
-                    state, config={"configurable": {"thread_id": f"eval-{item.id}"}}
+                    state, config={"configurable": {"thread_id": thread_id}}
                 )
 
             t0 = time.perf_counter()
             out = _run_async(_run())
             latency = (time.perf_counter() - t0) * 1000.0
+            traces = _pop_rewrite_traces(thread_id)
             # 파이프라인이 검증 실패(재시도 소진)로 끝났으면 그 SQL을 실행하지 않고 사유를
             # 그대로 노출한다 - 실패 SQL을 실행하면 DB 구문 오류가 사유를 덮어써 validator
             # 가드(D-087 등) 발동 여부를 원격에서 구분할 수 없다(폐쇄망 실측 2026-07-20).
@@ -817,16 +838,21 @@ class PipelinePredictor:
                     sql=None, skipped=True,
                     error=f"파이프라인 검증 실패(재시도 소진): {reason}",
                     retries=int(out.get("retry_count", 0) or 0),
+                    latency_ms=latency, rewrite_traces=traces,
                 )
             sql = self._extract_sql(out)
             if not sql:
-                return PredictionResult(sql=None, skipped=True, error="생성 SQL 추출 실패")
+                return PredictionResult(
+                    sql=None, skipped=True, error="생성 SQL 추출 실패",
+                    latency_ms=latency, rewrite_traces=traces,
+                )
             return PredictionResult(
                 sql=sql,
                 retries=int(out.get("retry_count", 0) or 0),
                 llm_calls=len(out.get("query_attempts", []) or []) or 1,
                 tokens=max(1, len(sql) // 4),
                 latency_ms=latency,
+                rewrite_traces=traces,
             )
         except Exception as exc:  # 폐쇄망/미접속 graceful 스킵
             return PredictionResult(sql=None, skipped=True, error=f"{type(exc).__name__}: {exc}")
@@ -847,7 +873,16 @@ class PipelinePredictor:
         # 멀티 경로: 첫 성공 DB의 SQL은 별도 노출이 없어 attempts 우선. 없으면 None.
         if db_results:
             return None
-        return None
+        # 2단(intent_orchestration): SQL은 최상위가 아니라 task 결과 안에 있다. 계획 순서의
+        # **마지막** SQL을 쓴다 — 순차 의존 계획이면 마지막 task가 최종 답을 만든다.
+        task_results = out.get("task_results") or {}
+        order = [t.get("task_id") for t in (out.get("task_plan") or []) if isinstance(t, dict)]
+        order += [tid for tid in task_results if tid not in order]
+        sqls = [
+            str(task_results[tid]["generated_sql"]) for tid in order
+            if isinstance(task_results.get(tid), dict) and task_results[tid].get("generated_sql")
+        ]
+        return sqls[-1] if sqls else None
 
 
 # ──────────────────────────────────────────────
@@ -982,6 +1017,7 @@ def run_batch(
                 ex_subset_pass=ex_subset,
                 subset_unmatched_cols=unmatched_cols,
                 known_fail=item.known_fail,
+                rewrite_traces=pred.rewrite_traces,
             )
         )
     return report
@@ -1035,6 +1071,9 @@ def aggregate(report: BatchReport) -> dict:
                 "cols_pred": r.pred_col_count,
                 "ex_subset_pass": r.ex_subset_pass,
                 "pred_sql": r.pred_sql,
+                "error": r.error,
+                "latency_ms": round(r.latency_ms, 1),
+                "rewrite_traces": r.rewrite_traces,
             }
             for r in items
         ],

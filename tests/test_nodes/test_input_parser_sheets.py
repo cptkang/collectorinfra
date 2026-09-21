@@ -98,3 +98,41 @@ class TestRegexFallbackFalsePositives:
         """LLM 산출물이 전부 무효면 정규식 폴백으로 내려간다."""
         parsed = {"target_sheets": [None, "  "]}
         assert _extract_target_sheets(parsed, "'서버현황' 시트만 채워줘") == ["서버현황"]
+
+
+class TestTargetSheetsValidatedAgainstTemplate:
+    """양식에 없는 시트명은 지목으로 인정하지 않는다 (plans/108 CU-A1).
+
+    run `20260918-182507` 실측: `target_sheets`가 비-None인 4턴 중 **3턴이 양식 시트와
+    무관한 이름**이었고(`['은행존']`·`['리소스 현황']` — 실제 시트는 `서버정보`·`리소스상태`),
+    그중 2턴이 **헤더만 있는 빈 엑셀**로 산출됐다(H-03 759행·H-04 2338행 조회 후 0행 기입).
+    하류 3곳(`field_mapper`·`result_organizer`·`excel_writer`)이 모두 **정확 일치**로
+    거르기 때문에, 이름이 하나도 안 맞으면 대상 시트가 0개가 되어 조용히 아무것도 채우지
+    않는다. 하나도 못 맞히면 지목이 없었던 것으로 되돌린다.
+    """
+
+    def test_unmatched_llm_sheet_is_dropped(self):
+        """LLM이 존 이름을 시트명으로 내놓으면 지목을 버린다(전체 시트 대상)."""
+        parsed = {"target_sheets": ["은행존"]}
+        assert _extract_target_sheets(parsed, "은행존 서버 목록", ["서버정보"]) is None
+
+    def test_matched_sheet_is_kept(self):
+        parsed = {"target_sheets": ["성능요약"]}
+        assert _extract_target_sheets(parsed, "질의", ["성능요약", "표지"]) == ["성능요약"]
+
+    def test_partially_matched_keeps_only_real_sheets(self):
+        parsed = {"target_sheets": ["성능요약", "은행존"]}
+        assert _extract_target_sheets(parsed, "질의", ["성능요약", "표지"]) == ["성능요약"]
+
+    def test_regex_fallback_is_validated_too(self):
+        """정규식 폴백 산출물도 같은 규칙을 받는다."""
+        assert _extract_target_sheets({}, "'서버현황' 시트만 채워줘", ["리소스상태"]) is None
+        assert _extract_target_sheets({}, "'서버현황' 시트만 채워줘", ["서버현황"]) == [
+            "서버현황"
+        ]
+
+    def test_no_available_sheets_keeps_prior_behavior(self):
+        """양식 정보가 없으면(업로드 없음) 종전대로 그대로 통과시킨다."""
+        parsed = {"target_sheets": ["요약"]}
+        assert _extract_target_sheets(parsed, "질의") == ["요약"]
+        assert _extract_target_sheets(parsed, "질의", []) == ["요약"]

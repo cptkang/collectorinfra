@@ -24,6 +24,15 @@ _BOOL_VALUES = ("true", "false")
 _INT_VALUES = ("0", "1", "-1")
 _FLOAT_VALUES = ("0", "1.5", "-1")
 _STR_VALUES = ("", "x")
+#: 미입력(None)은 「주입하지 않음」이라 표본이 아니다 — 켜고 끄는 두 값만 넣는다.
+_TRISTATE_VALUES = ("true", "false")
+#: `list[...]` 필드는 `.env` 에서 JSON 배열이다(pydantic-settings). `x` 는 파싱 오류로 거부된다.
+_JSON_LIST_VALUES = ("[]", '["bench-probe-sentinel"]')
+#: **JSON 객체를 요구하는 문자열**(`LLM_FABRIX_*_CONFIG` — 빈 값 허용을 위해 `str` 로 선언하고
+#: 검증기가 JSON 을 강제한다)은 타입으로 드러나지 않는다. `x` 가 JSON 파싱 오류로 거부되면
+#: 그것은 설정 결함이 아니라 표본값 결함이므로 `{}` 로 한 번 더 넣어 본다(`check_boot`).
+_JSON_OBJECT_VALUE = "{}"
+_JSON_PARSE_MARKS = ("Expecting value", "JSONDecodeError", "JSON 객체")
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,10 @@ def _sample_values(knob: catalog.KnobSpec, *, exhaustive: bool) -> tuple[str, ..
         return tuple(knob.enum_choices) if exhaustive else (knob.enum_choices[0],)
     if knob.type == "bool":
         return _BOOL_VALUES if exhaustive else ("true",)
+    if knob.type == "tristate":
+        return _TRISTATE_VALUES if exhaustive else ("true",)
+    if knob.type == "json_list":
+        return _JSON_LIST_VALUES if exhaustive else (_JSON_LIST_VALUES[1],)
     if knob.type == "int":
         return _INT_VALUES if exhaustive else ("1",)
     if knob.type == "float":
@@ -179,6 +192,11 @@ def check_boot(
     for knob in knobs:
         for value in _sample_values(knob, exhaustive=exhaustive):
             result = probe.echo_config({knob.env_key: value}, base_env=env_base, runner=runner)
+            if (not result.ok and knob.type == "string" and value
+                    and any(mark in (result.error or "") for mark in _JSON_PARSE_MARKS)):
+                # JSON 을 요구하는 문자열이다 — 형식에 맞는 값으로 기동 안전성을 다시 본다.
+                value = _JSON_OBJECT_VALUE
+                result = probe.echo_config({knob.env_key: value}, base_env=env_base, runner=runner)
             findings.append(BootFinding(
                 env_key=knob.env_key,
                 value=value,

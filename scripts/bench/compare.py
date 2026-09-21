@@ -93,8 +93,12 @@ def _scored(observations: Sequence[Observation]) -> list[Observation]:
 
     mock 모드의 `manual` 판정은 "아직 사람이 안 봤다"는 뜻이지 합격도 불합격도 아니다.
     이것을 통과로 세면 모든 arm이 100%가 되어 비교가 무의미해진다.
+
+    **단언이 평가되지 않은 시나리오도 뺀다**(D-241) — 타임아웃·역질문 차단으로 끝난 턴의
+    「불합격」은 기능이 틀렸다는 뜻이 아니다. 완주율·SQL 생성·지연 비교는 이 함수를 거치지
+    않으므로(`drop_manual=False`) 그 신호에는 남는다.
     """
-    return [o for o in observations if not o.manual]
+    return [o for o in observations if not o.manual and not o.unevaluated]
 
 
 def paired_binary(

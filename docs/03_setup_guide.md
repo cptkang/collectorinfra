@@ -297,7 +297,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 시나리오 러너(`python -m scripts.scenario`)와 벤치 스위프(`python -m scripts.bench --sweep`)는 프로파일마다
 서버를 새로 띄워 **스스로 로그인한다.** 사용자 계정을 넘기는 방법이 둘이 다르므로 각 가이드를 따른다 —
-`plans/94-WIP-feature-perf-scenario-suite.md` 「▶ 실행 가이드」 ⑨ · `plans/93-WIP-benchmark-driven-config-simplification.md` 「실행 가이드 ① 퀵」 2절.
+`plans/110-WIP-scenario-test-consolidated.md` 「▶ 실행 가이드」 ③(인증) · `plans/109-WIP-config-simplification-consolidated.md` 「▶ 실행 가이드」 ① 퀵(벤치 계정).
 
 ---
 

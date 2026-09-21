@@ -77,6 +77,14 @@ scenarios:
                                          #   D-03 은 기간이 정확한데 `(?i)202607` 표기가
                                          #   달라서 불합격했다
           column_must_not_map: ["cpu_usage"]   # D-200형 회귀 탐지. 실행 SQL 과 매핑 산출물을 대조
+          rewrite: {gate: pass_through, slots_preserved: true}
+                                         # plans/94 §19.2 Y-11·Y-12 — 서버 재작성 감사(plans/107 §4.9)를
+                                         #   본다. gate: pass_through(전 레코드 원문 무수정) |
+                                         #   rewritten(한 건 이상 재작성·병기 대상).
+                                         #   slots_preserved: 검증 결과가 전부 pass(위치 누출·
+                                         #   스코프 축소·식별자 누락 없음). **레코드가 없으면
+                                         #   불합격이 아니라 보류다** — 서버 INTENT_FRAME_ENABLED
+                                         #   (+ 검증은 REWRITE_VERIFY_MODE=shadow)일 때만 생긴다
           node_path: ["field_mapper"]
           sse_events: ["node_start", "done"]
           llm_calls: {max: 10}                 # **측정 불가** - 응답에 호출 수가 없다.

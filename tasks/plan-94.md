@@ -1,6 +1,6 @@
 # plan-94 — 기능·성능 시나리오 자동 실행 하네스 구현 계획
 
-정본 스펙: `plans/94-WIP-feature-perf-scenario-suite.md`
+정본 스펙: `plans/94-feature-perf-scenario-suite.md`(2026-09-21 종료 · 잔여·실행 가이드는 `plans/110-WIP-scenario-test-consolidated.md`)
 실행 가이드 정본: 같은 문서 맨 앞 「실행 가이드」 절
 
 ## 0. 이번 착수의 범위 경계

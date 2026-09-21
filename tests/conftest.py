@@ -209,6 +209,23 @@ def coverage_llm_for_mode(run_e2e: bool) -> ColumnCoverageStubLLM | None:
     return None if run_e2e else ColumnCoverageStubLLM()
 
 
+@pytest.fixture(autouse=True)
+def _restore_sql_file_logger_globals():
+    """SQL 파일 로거의 모듈 전역을 테스트마다 원복한다.
+
+    `init_sql_file_logger()`는 프로세스 전역(`_SQL_LOG_DIR`·`_enabled`)을 세운다.
+    FastAPI 앱 기동 경로를 밟는 테스트(`tests/test_api/test_routes.py`)가 이를 켠 채
+    두면, 이후 모든 테스트의 SQL 실행이 **저장소의 `logs/sql/`에 쓰인다**. 그래서
+    "tmp 밖에는 아무것도 쓰지 않는다"를 단언하는 테스트가 단독으로는 통과하고 전체
+    실행에서만 깨졌다(2026-09-21 — tests/test_schema_cache/test_plan104_service_registration.py).
+    """
+    from src.utils import sql_file_logger
+
+    saved = (sql_file_logger._SQL_LOG_DIR, sql_file_logger._enabled)
+    yield
+    sql_file_logger._SQL_LOG_DIR, sql_file_logger._enabled = saved
+
+
 @pytest.fixture
 def column_coverage_llm() -> ColumnCoverageStubLLM | None:
     """컬럼 커버리지 판단 LLM(이중 모드) — 스텁 페이로드 단언은 `is not None` 가드 후 수행."""

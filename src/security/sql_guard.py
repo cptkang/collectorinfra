@@ -88,8 +88,10 @@ class SQLGuard:
     ) -> list[str]:
         """SQL 인젝션 패턴을 탐지한다.
 
-        문자열 리터럴과 단일행 주석(--) 내부는 검사 대상에서 제외한다.
-        블록 주석(/* */)은 인젝션 기법이므로 제거하지 않는다.
+        문자열 리터럴과 주석(-- · /* */) 내부는 검사 대상에서 제외한다 — LLM이 생성하는
+        설명 주석이 인젝션으로 오탐되지 않게 하기 위해서다(2026-05-29 결정).
+        주석은 **빈 문자열이 아니라 공백 한 칸**으로 치환한다. 지우면 `UNION/**/SELECT`가
+        `UNIONSELECT`로 붙어 공백을 요구하는 UNION 패턴을 빠져나간다(2026-09-21 실측).
 
         Args:
             sql: SQL 쿼리
@@ -105,8 +107,9 @@ class SQLGuard:
         sql_clean = re.sub(r"'[^']*'", "''", sql)
         # 단일행 주석 제거 (LLM이 생성하는 -- 주석은 안전)
         sql_clean = re.sub(r"--[^\n]*", "", sql_clean)
-        # 블록 주석 제거 (LLM이 생성하는 /* ... */ 주석은 안전 — 내부 위험 패턴은 제거 후 검사)
-        sql_clean = re.sub(r"/\*.*?\*/", "", sql_clean, flags=re.DOTALL)
+        # 블록 주석 → 공백 (LLM이 생성하는 /* ... */ 주석은 안전하나, 토큰을 이어 붙이면
+        # 주석으로 쪼갠 키워드가 패턴을 빠져나간다)
+        sql_clean = re.sub(r"/\*.*?\*/", " ", sql_clean, flags=re.DOTALL)
 
         detected: list[str] = []
         for pattern in patterns:

@@ -1,6 +1,6 @@
 # Capability Map: 93 벤치마크 기반 환경변수 최적화·간소화
 
-> **작성일** 2026-09-11 · **계획서** `plans/93-WIP-benchmark-driven-config-simplification.md` · **결정 예약** D-211
+> **작성일** 2026-09-11 · **계획서** `plans/93-benchmark-driven-config-simplification.md`(2026-09-21 종료 · 잔여는 `plans/109-WIP-config-simplification-consolidated.md`) · **결정 예약** D-211
 > **게이트**: G-1~G-13은 사용자 지시(*"구현을 진행하라"*)에 따라 **계획서 권고안으로 진행**한다(`plans/90` 선례).
 > **범위**: 실 LLM을 호출하지 않는 Wave만 구현한다(T1~T3 · B0~B5). B6 이후는 실행 단계이지 구현 단계가 아니다.
 

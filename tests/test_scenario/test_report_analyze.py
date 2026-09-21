@@ -157,6 +157,47 @@ def test_실패_분류는_위에서부터_먼저_맞는_것을_적용한다() ->
     assert classify_failure(_row(failed_assertions=[{"key": "알수없는키"}])) == "unclassified"
 
 
+def test_타임아웃은_generation_보다_먼저_분류된다() -> None:
+    """run 20260918-182507 회귀 — 타임아웃 199턴이 전건 `generation`/`routing` 으로 잡혔다.
+
+    타임아웃 턴은 `executed_sql` 이 없고 `error` 가 있는 것이 **정상**이라, 종전 규칙 순서에서는
+    `generation` 규칙이 항상 먼저 걸려 `timeout` 규칙에 도달한 적이 없었다. 그 결과
+    `failure_taxonomy.md` 에 타임아웃이 0건으로 나오고 `improvement_backlog.md` 가
+    `generation`(점수 382)을 허위 2순위로 올렸다.
+    """
+    # 서버 문구는 한국어다 - `"timeout" in error` 로는 잡히지 않는다
+    korean = _row(error="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                  executed_sql=None, failed_assertions=[{"key": "status"}])
+    assert classify_failure(korean) == "timeout"
+
+    # 타임아웃이 라우팅 단언과 겹쳐도 타임아웃이 이긴다 - 중단된 턴의 db_ids 는 평가가 성립하지 않는다
+    with_routing = _row(error="처리 시간이 초과되었습니다.", executed_sql=None,
+                        failed_assertions=[{"key": "db_ids"}, {"key": "status"}])
+    assert classify_failure(with_routing) == "timeout"
+
+    assert classify_failure(_row(error="http 504: ...", executed_sql=None)) == "timeout"
+    assert classify_failure(_row(forbidden_mode="hang")) == "timeout"
+
+    # 타임아웃이 아닌 오류는 종전대로 generation 이다
+    assert classify_failure(
+        _row(error="http 500: 처리 중 오류", executed_sql=None)) == "generation"
+
+
+def test_generation_판정은_executed_sqls_복수키도_본다() -> None:
+    """run 20260918-182507 회귀 — `executed_sql`(단수)은 380턴 전건 null 이었다.
+
+    2단·멀티 DB 경로에서 단수 키는 구조적으로 적재되지 않고 실제 SQL 은 `executed_sqls`(복수)에
+    들어간다(같은 run 273턴). 단수만 보면 이 규칙이 "오류면 무조건 generation" 으로 퇴화한다.
+    """
+    executed = _row(error="http 500: 처리 중 오류", executed_sql=None,
+                    executed_sqls=[{"sql": "SELECT 1"}],
+                    failed_assertions=[{"key": "sql_must_match"}])
+    assert classify_failure(executed) != "generation"
+
+    not_executed = _row(error="http 500: 처리 중 오류", executed_sql=None, executed_sqls=[])
+    assert classify_failure(not_executed) == "generation"
+
+
 def test_V18_반복이_부족하면_처방을_제안하지_않는다(tmp_path: Path) -> None:
     rows = [_row(group="R4", kind="misconception", func_verdict="fail",
                  forbidden_mode="silent_wrong",

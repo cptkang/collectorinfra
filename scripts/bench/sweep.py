@@ -15,6 +15,7 @@ R군(복합·오용·실수·착각)은 쓰지 않는다 — 대응 등급은 �
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +109,9 @@ class Observation:
     #: 그래프에 진입했는가(`node_path` 가 비지 않았는가). pre-gate 역질문·422 는 노드를
     #: 한 개도 밟지 않아 **설정 축이 작용할 여지가 없다** — 축 비교의 유효 표본이 아니다.
     entered_graph: bool = False
+    #: 단언이 평가되지 않은 사유(`timeout` · `clarify_blocked` · D-241). **기능 합격률 분모에서만**
+    #: 뺀다 — 완주율·SQL 생성·지연 신호에는 남는다(타임아웃은 성능 축의 사건이다).
+    unevaluated: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -539,29 +543,140 @@ def run_arms(
     run_id: str = "",
     groups: Optional[list[str]] = None,
     credentials: Optional[Credentials] = None,
+    resume_from: Optional[str] = None,
 ) -> dict[str, Any]:
-    """arm 전체를 94 러너로 돌린다. 산출은 94 형식 그대로다(재분석 호환)."""
+    """arm 전체를 94 러너로 돌린다. 산출은 94 형식 그대로다(재분석 호환).
+
+    `resume_from` 은 94 러너의 이어쓰기다 — 같은 run_id·같은 `raw.jsonl` 에 적재하고 **성공한 턴은
+    건너뛰며 무효 턴은 다시 돈다**(`RawLog` · X-1). 구간 캠페인이 끊긴 구간을 이을 때 쓴다.
+    """
     sc_catalog, sc_runner = scenario_harness()
     creds = credentials or Credentials()
 
     catalog = load_normal_catalog(env=env)
     # 인증 설정은 arm 에 싣지 않는다 — 인증이 켜진 서버는 벤치 계정으로 로그인한다(G-3).
-    catalog.profiles = {arm.arm_id: dict(arm.env) for arm in arms}
-    catalog.scenarios = fanout_scenarios(catalog, arms)
+    # **치환이 아니라 병합이다**(`plans/110` `110·N-2`). 종전에는 시나리오의 `profile` 을 arm id 로
+    # 갈아끼워 D군 8건(`optin_alarm`)이 `TEXT2SQL_ALARM_DETERMINISTIC` 을 잃었다. 이제 시나리오 자기
+    # 프로파일을 싣고 arm 을 그 위에 덧씌운다 — 94 러너가 `config.arms` 로 `merge_arm_profiles` 를
+    # 부르고 행에 `arm`·`base_profile` 칸을 싣는다(`arm_of` 가 그 칸을 읽어 D군도 arm 에 묶인다).
+    # arm 을 뒤에 등록한다 — `baseline` 은 시나리오 프로파일과 이름이 같고 둘 다 빈 주입이다.
+    catalog.profiles = {**sc_catalog.load_catalog().profiles,
+                        **{arm.arm_id: dict(arm.env) for arm in arms}}
 
     config = sc_runner.RunConfig(
         mode=mode,
         env=env,
         repeat=repeat,
         groups=list(groups or []),
-        profiles=[arm.arm_id for arm in arms],
+        arms=[arm.arm_id for arm in arms],
         run_id=run_id,
+        # 이어쓰기일 때만 싣는다 — 새 run 은 종전 호출과 인자까지 같다.
+        **({"resume_from": resume_from} if resume_from else {}),
         user_id=creds.user_id,
         user_password=creds.user_password,
         admin_user=creds.admin_user,
         admin_password=creds.admin_password,
     )
     return sc_runner.execute(catalog, config)
+
+
+def turn_key(row: dict[str, Any]) -> tuple[str, str, int, int]:
+    """한 턴을 유일하게 가리키는 키 — 94 러너 `row_key` 와 **같은 정의**다(테스트가 대조한다).
+
+    러너를 임포트하지 않는 이유는 `INVALID_VERDICT` 와 같다 — 94 하네스가 없어도 원시 로그를 읽는다.
+    """
+    return (str(row.get("profile")), str(row.get("scenario_id")),
+            int(row.get("turn", 0)), int(row.get("repeat", 0)))
+
+
+#: 단언이 **평가되지 않은** 턴의 사유 — 기능 합격률 분모에서 뺀다(D-241 · 36 과 합의한 계약 ·
+#: 소유 `plans/110` `108·G-6`). 러너가 행에 `unevaluated_reason` 칸을 실으면 그 값이 정본이고,
+#: 없으면(옛 행 · 러너 쪽 미반영) 아래 규칙으로 도출한다. `func_verdict` 어휘는 늘리지 않는다.
+UNEVALUATED_REASONS = ("invalid", "timeout", "clarify_blocked")
+#: 서버 타임아웃 문구 — 한국어 응답(`처리 시간이 초과`)과 게이트웨이 504.
+_TIMEOUT_TEXT = "처리 시간이 초과"
+_HTTP_504 = re.compile(r"\b504\b")
+
+
+#: 실패한 단언 키가 이 접두로 시작하면 그 턴은 역질문을 **기대했다**(카탈로그가 역질문의 모양을
+#: 단언한다). `status` 는 넣지 않는다 — `response_mode == "clarify"` 인데 `status` 가 실패했다면
+#: 기대값이 `clarification` 이 아니었다는 뜻이다(run 20260914-185540: 2,311건 전부 기대 `completed`).
+_CLARIFY_EXPECT_KEYS = ("clarification", "options_contains")
+
+
+def _expected_question(row: dict[str, Any]) -> bool:
+    """이 턴이 역질문을 기대했는가 — 러너 칸(`expects_question`)이 있으면 그 값, 없으면 실패 단언으로 추정."""
+    if "expects_question" in row:
+        return bool(row.get("expects_question"))
+    for item in row.get("failed_assertions") or []:
+        key = str(item.get("key", "")) if isinstance(item, dict) else str(item)
+        if key.startswith(_CLARIFY_EXPECT_KEYS):
+            return True
+        if isinstance(item, dict) and key == "status" and item.get("expected") == "clarification":
+            return True
+    return False
+
+
+def unevaluated_reason_of(row: dict[str, Any]) -> Optional[str]:
+    """이 턴의 단언이 평가되지 않았다면 그 사유(`invalid`·`timeout`·`clarify_blocked`), 아니면 None.
+
+    - `invalid` — 측정이 성립하지 않았다(`func_verdict == "invalid"` · D-218). 하네스 과실이다
+    - `timeout` — 타임아웃 문구(`처리 시간이 초과`·504)가 있거나 `forbidden_mode == "hang"` 이
+      오류로 끝났다. **제품 성능 축의 사건**이라 완주율·지연 신호에는 그대로 남는다
+    - `clarify_blocked` — 역질문(`response_mode == "clarify"`)으로 끝나 답이 나오지 않았다. 단,
+      합격한 턴과 **역질문을 기대한 턴은 평가된 것이다**. 역질문이 기대 동작인데 모양이 틀렸다면
+      결함이므로 분모에 불합격으로 남긴다(36 합의 · `plans/110` `108·G-6`)
+    """
+    if "unevaluated_reason" in row:
+        reason = row.get("unevaluated_reason")
+        return str(reason) if reason else None
+    verdict = str(row.get("func_verdict"))
+    if verdict == INVALID_VERDICT:
+        return "invalid"
+    evidence = " ".join(str(row.get(k) or "") for k in ("error", "mode_evidence"))
+    text = evidence + " " + str(row.get("response_text") or "")
+    if (_TIMEOUT_TEXT in text or _HTTP_504.search(evidence)
+            or (row.get("forbidden_mode") == "hang"
+                and (verdict in ("fail", "error")
+                     or row.get("response_mode") in ("hang", "error", "crash")))):
+        return "timeout"
+    if row.get("response_mode") == "clarify" and verdict != "pass":
+        return None if _expected_question(row) else "clarify_blocked"
+    return None
+
+
+def unevaluated_counts(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """사유별 턴 수(0 인 사유도 싣는다 — 「없음」과 「안 셌음」을 구별한다)."""
+    counts = {reason: 0 for reason in UNEVALUATED_REASONS}
+    for row in rows:
+        reason = unevaluated_reason_of(row)
+        if reason in counts:
+            counts[reason] += 1
+    return counts
+
+
+def read_raw_rows(raw_path: Path) -> list[dict[str, Any]]:
+    """`raw.jsonl` 을 읽되 **같은 턴은 마지막 행만** 남긴다 — 94 러너의 재개 규칙과 같다.
+
+    끊긴 구간을 `resume_from` 으로 이으면 무효였던 턴이 같은 파일에 한 번 더 적재된다. 러너
+    (`RawLog._remember`)는 *"파일 순서 = 시간 순서, 뒤 행이 결과"* 로 읽는다. 옛 행까지 접으면
+    그 시나리오가 무효로 빠지고 지연이 두 번 더해진다. 키는 러너의 `row_key`(프로파일·시나리오·
+    턴·반복)이고, 순서는 **처음 적재된 위치**를 지킨다(실행 순서 판정이 이것을 쓴다).
+    `turn` 칸이 없는 행(합성·옛 형식)은 접지 않는다.
+    """
+    if not raw_path.exists():
+        return []
+    rows: dict[Any, dict[str, Any]] = {}
+    for index, line in enumerate(raw_path.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows[turn_key(row) if "turn" in row else ("#", index)] = row
+    return list(rows.values())
 
 
 def read_observations(raw_path: Path) -> list[Observation]:
@@ -571,23 +686,20 @@ def read_observations(raw_path: Path) -> list[Observation]:
     축 비교의 단위는 "이 시나리오가 통과했는가"다. 한 턴이라도 실패하면 실패로 본다.
     """
     folded: dict[tuple[str, str, int], dict[str, Any]] = {}
-    if not raw_path.exists():
-        return []
-    for line in raw_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for row in read_raw_rows(raw_path):
         key = (arm_of(row), str(row.get("scenario_id")), int(row.get("repeat", 0)))
         cell = folded.setdefault(key, {"passed": True, "manual": False, "wall_ms": 0.0,
                                        "llm_calls": 0, "tokens": 0, "retries": 0, "seen": 0,
                                        "node_count": 0,
                                        "completed": True, "sql_generated": False,
-                                       "invalid": False, "entered_graph": False})
+                                       "invalid": False, "entered_graph": False,
+                                       "unevaluated": None})
         cell["seen"] += 1
+        reason = unevaluated_reason_of(row)
+        if reason in ("timeout", "clarify_blocked") and cell["unevaluated"] != "timeout":
+            # 한 턴이라도 단언이 평가되지 않았으면 그 시나리오의 합격·불합격은 기능 신호가 아니다.
+            # 타임아웃이 먼저다 — 성능 사건이 역질문 차단보다 드러나야 할 사유다.
+            cell["unevaluated"] = reason
         verdict = str(row.get("func_verdict"))
         if verdict == INVALID_VERDICT:
             # 측정이 성립하지 않은 턴(D-218). 불합격으로 세면 러너 결함이 기능 결함으로
@@ -631,6 +743,7 @@ def read_observations(raw_path: Path) -> list[Observation]:
             sql_generated=bool(cell["sql_generated"]),
             invalid=bool(cell["invalid"]),
             entered_graph=bool(cell["entered_graph"]),
+            unevaluated=cell["unevaluated"],
         )
         for (arm, scenario, repeat), cell in sorted(folded.items())
         if not cell["invalid"]
@@ -662,6 +775,9 @@ class RunHealth:
     auto_answered_turns: int = 0
     #: 기준선 arm 이 몇 번째로 실행됐는가 / 전체 arm 수. 못 찾으면 None.
     baseline_order: Optional[tuple[int, int]] = None
+    #: 단언 미평가 턴 수 — 사유별(`invalid`·`timeout`·`clarify_blocked` · D-241).
+    #: 기능 분모 제외분이다.
+    unevaluated: dict[str, int] = field(default_factory=dict)
 
     @property
     def error_turns(self) -> int:
@@ -788,15 +904,9 @@ def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
     evidence: dict[str, int] = {}
     turns = sql_turns = graph_turns = clarify_turns = auto_turns = 0
     arm_order: list[str] = []
-    if raw_path.exists():
-        for line in raw_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    rows = read_raw_rows(raw_path)
+    if rows:
+        for row in rows:
             turns += 1
             verdicts[str(row.get("func_verdict"))] = verdicts.get(
                 str(row.get("func_verdict")), 0) + 1
@@ -826,7 +936,8 @@ def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
                      clarify_turns=clarify_turns,
                      invalid_turns=verdicts.get(INVALID_VERDICT, 0),
                      auto_answered_turns=auto_turns,
-                     baseline_order=baseline_order)
+                     baseline_order=baseline_order,
+                     unevaluated=unevaluated_counts(rows))
 
 
 def baseline_as(baseline: Sequence[Observation], arm_id: str) -> list[Observation]:

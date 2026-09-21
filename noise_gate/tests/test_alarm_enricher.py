@@ -42,6 +42,22 @@ def make_app_cfg(**alarm_kwargs) -> SimpleNamespace:
     return SimpleNamespace(alarm=make_alarm_cfg(**alarm_kwargs))
 
 
+def make_analyzer_cfg(**alarm_kwargs) -> SimpleNamespace:
+    """alarm_analyzer_node용 설정 대역.
+
+    analyzer는 `cfg.noise_gate`의 상향 게이트 2종을 읽는다(Plan 52 E3 · Plan 60 E3).
+    그룹이 없으면 AttributeError가 광역 except에 삼켜져 "알람 LLM 분석 실패"로만 보이고
+    analysis_result가 통째로 사라진다 — `.env` 누수 없이 명시 OFF로 고정한다(2026-09-21).
+    """
+    return SimpleNamespace(
+        alarm=make_alarm_cfg(**alarm_kwargs),
+        noise_gate=SimpleNamespace(
+            enable_ai_severity_boost=False,
+            dynamic_baseline_enabled=False,
+        ),
+    )
+
+
 class FakeRepo:
     def __init__(self, entries=None, registered=True, error=None, delay=0.0):
         self.entries = entries or []
@@ -317,7 +333,7 @@ class FakeLLM:
 
 class TestAnalyzerHistoryIntegration:
     def _make_cfg(self):
-        return SimpleNamespace(alarm=make_alarm_cfg())
+        return make_analyzer_cfg()
 
     async def test_history_section_injected(self, monkeypatch):
         import noise_gate.application.nodes.alarm_analyzer as analyzer_mod

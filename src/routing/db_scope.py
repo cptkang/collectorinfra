@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Optional, Sequence
 
 from src.routing.registry import get_registry
@@ -43,6 +44,37 @@ def extract_state_db_ids(state: Mapping[str, Any]) -> list[str]:
         if did and did not in db_ids:
             db_ids.append(did)
     return db_ids
+
+
+def zone_selection_db_ids(
+    selected_db_ids: Sequence[str] | None,
+    target_databases: Sequence[Any] | None,
+) -> list[str]:
+    """존 선택 재개 턴의 대상 — 선택한 존 + **이번 턴 라우터가 남긴 존 미배정 DB** (plans/95 W-10).
+
+    존 선택·범위 선택의 선택지는 존 그룹으로 만들어지므로 존 그룹이 없는 DB는 선택에 담길 수
+    없다. 라우터가 그 DB를 대상에 남겼는데 task 고정이 선택값만 보면 같은 침묵 탈락이 순차 러너
+    경로에서 되살아난다 — 3단도 2단 부품을 재사용한다(`docs/21_orchestration_ladder.md` §7).
+
+    선택이 비었으면 빈 목록이다(호출부가 종전대로 분류로 넘어간다).
+
+    Args:
+        selected_db_ids: 사용자가 고른 DB 목록
+        target_databases: 이번 턴 라우터 산출물(`state["target_databases"]`)
+
+    Returns:
+        선택 순서를 유지한 대상 db_id 목록(존 미배정 DB는 뒤에 붙는다)
+    """
+    selected = [d for d in (selected_db_ids or []) if d]
+    if not selected:
+        return []
+    merged = list(dict.fromkeys(selected))
+    reg = get_registry()
+    for target in target_databases or []:
+        db_id = target.get("db_id") if isinstance(target, Mapping) else target
+        if db_id and db_id not in merged and reg.zone_group_of(db_id) is None:
+            merged.append(db_id)
+    return merged
 
 
 def resolve_thread_db_ids(state: Mapping[str, Any]) -> list[str]:
@@ -154,3 +186,72 @@ def scope_axes_options(
             {"axis": "zone_group", "exclusive": bool(group_exclusive), "options": options}
         ]
     }
+
+
+# ── 미등록 존 탐지 (plans/108 CU-B2 · G-3 사용자 확정 2026-09-21) ──────────────────
+#
+# run `20260918-182507` R3-03(3회 전건 동일): "판교존 서버 목록" 에 대해 생성 SQL 이
+# `-- 판교존(지역 힌트는 스키마에 없으므로 무시)` 주석을 달고 전 서버 1,690건을 반환했다.
+# 등록되지 않은 존을 **침묵 무시**한 것이라 「침묵적 폴백 금지」 위반이다.
+#
+# 탐지는 **좁게** 못 박는다 — 오탐(정상 질의를 역질문으로 가로채기)의 대가가 미탐보다 크다.
+#   ① `[가-힣]{2,}존` — 존 앞에 음절이 2개 이상. `기존·보존·공존·의존·잔존` 같은 2음절
+#      낱말(존 앞 1음절)은 이 조건만으로 전부 빠진다.
+#   ② `_NON_ZONE_SUFFIXES` 접미 배제 — `상호의존`·`적자생존` 처럼 ①을 통과하는 합성어를 막는다.
+#   ③ 레지스트리 어휘(위치 표면어·존 라벨·존 그룹 라벨·DB alias)에 등장하는 `…존` 은 제외.
+#      존 이름을 코드에 적지 않는다(리터럴 0 — `overfit_check`).
+# `ㅇㅇ존` 플레이스홀더(D-143)는 자모(ㅇ)라 ①에 걸리지 않는다.
+_ZONE_TOKEN_RE = re.compile(r"[가-힣]{2,}존")
+
+#: `…존` 으로 끝나지만 존(zone)이 아닌 일반 낱말. 접미 일치로 배제한다.
+_NON_ZONE_SUFFIXES: tuple[str, ...] = (
+    "기존", "보존", "공존", "의존", "잔존", "상존", "병존", "현존",
+    "생존", "실존", "자존", "부존", "온존", "엄존",
+)
+
+
+def _registry_zone_vocabulary() -> frozenset[str]:
+    """레지스트리 어휘에 등장하는 `…존` 토큰 집합 (등록된 존 = 탐지 제외 대상).
+
+    캐시하지 않는다 — `get_registry()` 자체가 프로세스 캐시라 비용은 짧은 문자열 ~50개의
+    정규식 스캔뿐이고, 여기서 따로 캐시하면 `reload_registry()`(캐시 무효화) 뒤에 이 집합만
+    낡은 값으로 남는다.
+    """
+    reg = get_registry()
+    sources: list[str] = list(reg.location_terms())
+    for spec in reg.zones:
+        sources.extend(filter(None, (spec.code, spec.label)))
+    for grp in reg.zone_groups():
+        sources.extend(filter(None, (grp.code, grp.label)))
+    for entry in reg.databases:
+        sources.append(entry.display_name or "")
+        sources.extend(entry.aliases or ())
+    known: set[str] = set()
+    for text in sources:
+        known.update(_ZONE_TOKEN_RE.findall(text or ""))
+    return frozenset(known)
+
+
+def find_unregistered_zone_terms(query: str | None) -> list[str]:
+    """질의에서 **레지스트리에 없는** 존 표면어를 등장 순서로 반환한다 (plans/108 CU-B2).
+
+    호출부는 이 결과가 비지 않으면 조용히 진행하지 말고 존 선택 역질문으로 되물어야 한다
+    (G-3 사용자 확정 — "0건 응답"이 아니라 "그런 존이 없다"를 말한다).
+
+    Args:
+        query: 사용자 원문 질의
+
+    Returns:
+        미등록 존 토큰 목록(중복 제거·등장 순서 유지). 없으면 빈 목록.
+    """
+    if not query:
+        return []
+    known = _registry_zone_vocabulary()
+    found: list[str] = []
+    for token in _ZONE_TOKEN_RE.findall(query):
+        if token in known or token in found:
+            continue
+        if any(token.endswith(suffix) for suffix in _NON_ZONE_SUFFIXES):
+            continue
+        found.append(token)
+    return found

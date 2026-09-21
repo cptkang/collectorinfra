@@ -170,6 +170,12 @@ async def semantic_router(
                 }
                 for db_id in selected
             ]
+            # (plans/95 W-10) 선택지가 존 그룹으로 만들어지므로 존 없는 DB는 고를 수 없다 —
+            # 선택으로 좁힌다는 말이 성립하지 않는 대상이라 사유 없이 빼지 않는다. 후보가
+            # 없으면 아래 호출은 분류 없이 빈 목록이고 반환도 종전과 같다.
+            targets += await _keep_zoneless_targets(
+                llm, user_query, active_db_ids, selected, app_config
+            )
             return {
                 "target_databases": targets,
                 "is_multi_db": len(targets) > 1,
@@ -243,22 +249,10 @@ async def semantic_router(
             "current_node": "semantic_router",
         }
 
-    # 활성 도메인만 필터링
-    active_domains = [d for d in DB_DOMAINS if d.db_id in active_db_ids]
-
-    # Redis 캐시에서 DB 설명 로드 (라우팅 프롬프트 보강용)
-    db_descriptions: dict[str, str] = {}
-    try:
-        from src.schema_cache.cache_manager import get_cache_manager
-        cache_mgr = get_cache_manager(app_config)
-        db_descriptions = await cache_mgr.get_db_descriptions()
-    except Exception as e:
-        logger.debug("DB 설명 로드 실패 (라우팅 계속): %s", e)
-
-    # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. off면 프롬프트에 fault_diagnosis 미노출 +
-    # 아래 강등으로 라우팅 비트동일(회귀 0). noise_gate 속성 부재(경량 config)도 안전 처리.
-    fault_dx_on = bool(
-        getattr(getattr(app_config, "noise_gate", None), "fault_diagnosis_enabled", False)
+    # 활성 도메인 · DB 설명(Redis) · 장애 진단 옵트인(Plan 64 CW-B) — 존 선택 재개 턴의
+    # 보존 판정(`_keep_zoneless_targets`)도 같은 재료를 써야 프롬프트가 갈리지 않는다(W-10).
+    active_domains, db_descriptions, fault_dx_on = await _router_prompt_context(
+        app_config, active_db_ids
     )
     # (plans/102 X-7) 답변 영역 소유 — off면 아래 소유 분기가 전부 건너뛰어져 반환이 종전과 같다.
     ownership_on = _ownership_enabled()
@@ -477,6 +471,109 @@ def _ownership_state_fields(
     if notes:
         out["dependency_notes"] = list(state.get("dependency_notes") or []) + list(notes)
     return out
+
+
+async def _router_prompt_context(
+    app_config: AppConfig, active_db_ids: list[str]
+) -> tuple[list[DBDomainConfig], dict[str, str], bool]:
+    """라우팅 프롬프트 재료 — (활성 도메인, DB 설명, 장애 진단 옵트인).
+
+    두 호출부(본 분류 · 존 선택 재개 턴 보존 판정)가 같은 재료를 쓰게 하는 단일 출처다.
+    DB 설명 로드 실패는 라우팅을 막지 않는다(빈 dict로 계속).
+    """
+    active_domains = [d for d in DB_DOMAINS if d.db_id in active_db_ids]
+    db_descriptions: dict[str, str] = {}
+    try:
+        from src.schema_cache.cache_manager import get_cache_manager
+        cache_mgr = get_cache_manager(app_config)
+        db_descriptions = await cache_mgr.get_db_descriptions()
+    except Exception as e:
+        logger.debug("DB 설명 로드 실패 (라우팅 계속): %s", e)
+    # off면 프롬프트에 fault_diagnosis 미노출 + 강등으로 라우팅 비트동일(회귀 0).
+    # noise_gate 속성 부재(경량 config)도 안전 처리.
+    fault_dx_on = bool(
+        getattr(getattr(app_config, "noise_gate", None), "fault_diagnosis_enabled", False)
+    )
+    return active_domains, db_descriptions, fault_dx_on
+
+
+async def _keep_zoneless_targets(
+    llm: BaseChatModel,
+    user_query: str,
+    active_db_ids: list[str],
+    selected: list[str],
+    app_config: AppConfig,
+) -> list[dict[str, Any]]:
+    """존 선택으로 좁혀지지 않는 DB를 분류 결과에서 보존한다 (plans/95 W-10).
+
+    존 선택 역질문·범위 선택의 선택지는 **존 그룹**으로 만들어지므로, 존 그룹이 없는 DB
+    (존 없이 한 시스템이 전부를 관리하는 DB)는 애초에 사용자가 고를 수 없다. 그런데 재개 턴은
+    `selected_db_ids`로 대상을 통째로 고정하므로, 그 DB가 필요한 질의였어도 **사유 없이 빠진다**
+    (`plans/102` 트랙 R 실측 — 자산 task가 폴스타로 간다).
+
+    그래서 후보(= 존 그룹 없는 활성 DB 중 선택에 없는 것)가 있을 때만 원문을 한 번 분류해
+    **후보에 한해** 보존한다. 선택한 존은 호출부가 그대로 고정한다(UI 선택 우선 불변).
+    후보가 없으면 분류 호출 없이 빈 목록이다 — 존 그룹만 활성인 환경은 종전과 비트 동일이다.
+
+    Args:
+        llm: LLM 인스턴스
+        user_query: 원문 질의(재개 턴이 다시 실어 보낸 값)
+        active_db_ids: 활성 DB 목록
+        selected: 사용자가 고른 DB 목록(활성 필터를 이미 거친 값)
+        app_config: 앱 설정
+
+    Returns:
+        보존할 대상 항목 목록(없으면 빈 목록)
+    """
+    from src.routing.registry import get_registry
+
+    reg = get_registry()
+    chosen = set(selected)
+    candidates = [
+        db_id for db_id in active_db_ids
+        if db_id not in chosen and reg.zone_group_of(db_id) is None
+    ]
+    if not candidates:
+        return []
+
+    domains, db_descriptions, fault_dx_on = await _router_prompt_context(
+        app_config, active_db_ids
+    )
+    try:
+        results = await _llm_classify(
+            llm, user_query, domains,
+            db_descriptions=db_descriptions,
+            fault_diagnosis_enabled=fault_dx_on,
+        )
+    except Exception as e:  # noqa: BLE001 — 보존 판정 실패가 선택 존 조회를 막지 않는다
+        logger.warning(
+            "존 미배정 DB 보존 판정 실패 — 선택 존만 조회한다(후보=%s): %s", candidates, e
+        )
+        return []
+
+    rows = results.get("databases", []) if isinstance(results, dict) else results
+    kept: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        db_id = row.get("db_id")
+        if db_id not in candidates or db_id in seen:
+            continue
+        if float(row.get("relevance_score") or 0.0) < MIN_RELEVANCE_SCORE:
+            continue
+        seen.add(db_id)
+        kept.append({
+            **row,
+            "sub_query_context": row.get("sub_query_context") or user_query,
+            "reason": "존 선택 대상이 아닌 시스템 — 분류 결과 보존(plans/95 W-10)",
+        })
+    if kept:
+        logger.info(
+            "존 선택 재개 턴: 존 미배정 DB %s 보존(선택 존=%s)",
+            [k["db_id"] for k in kept], selected,
+        )
+    return kept
 
 
 def _zone_clarification_or_none_router(

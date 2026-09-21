@@ -124,7 +124,7 @@ def _default_diagnose_fn(settings: AgentSettings):
 
     LLM 키가 있을 때만 dispatcher가 호출하므로 agent는 최초 호출 시점에 1회 생성한다
     (create_service 시점의 holmes prerequisite 검사·비용 회피). **원격 프로파일 배선**:
-    `remote_vm_profile()`(로컬 셸 미확장·Prometheus 내장 toolset 비활성) + 폴스타 MCP를
+    `remote_vm_profile()`(로컬 셸 **off**(D-233)·Prometheus 내장 toolset 비활성) + 폴스타 MCP를
     `mcp_servers`로 등록해 조사가 mcp_server 고수준 도구(폴스타 SQL·PromQL)를 소비한다
     (D-119). mcp_server는 조사 배치에서 execute_sql·raw_promql을 비노출로 두어야
     LLM이 raw SQL/PromQL 방언 오류로 step을 소진하지 않는다(D-122 — 배치 config 규약).

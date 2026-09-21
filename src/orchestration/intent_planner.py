@@ -24,9 +24,11 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.input_parser import LOCATION_HINT_TERMS
+from src.domain.task_frame import render_task_query, task_spans, verify_task_frames
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
     render_intent_planner_ownership_template,
+    render_intent_planner_task_frame_template,
 )
 from src.routing.capability_ownership import (
     active_owner_system_count,
@@ -39,6 +41,7 @@ from src.clients.instructor_adapter import StructuredOutputError, try_structured
 from src.orchestration.schemas import (
     DecomposedPlan,
     OwnershipDecomposedPlan,
+    SpanDecomposedPlan,
     validate_plan_dag,
 )
 from src.utils.json_extract import extract_json_from_response
@@ -227,8 +230,43 @@ async def intent_planner(
     *,
     llm: BaseChatModel | None = None,
     app_config: AppConfig | None = None,
+) -> dict[str, Any]:
+    """사용자 질의를 sub-task 목록으로 분해한다(계획 본체 ``_plan_turn`` + 단일 출구 정규화).
+
+    ``COMPOSITE_TASK_FRAME_ENABLED``가 켜져 있으면 **모든 분기의 출구**에서 담당 교정(알람·
+    프로세스)을 다시 적용한다(plans/111 D-1) — 사전 처리 조기 반환(존 선택 재진입 ②.5 등)이
+    교정을 우회하던 구조(111 §2.4 · 27턴)를 닫는다. 꺼져 있으면 ``_plan_turn`` 결과 그대로다.
+    """
+    if app_config is None:
+        app_config = load_config()
+    result = await _plan_turn(state, llm=llm, app_config=app_config)
+    if _task_frame_on(app_config):
+        _normalize_plan_exit(result, state)
+    return result
+
+
+def _normalize_plan_exit(result: dict[str, Any], state: AgentState) -> None:
+    """계획 단일 출구 정규화 — 분기와 무관하게 같은 결정적 교정을 적용한다(in-place).
+
+    교정 함수는 LLM 분해 경로(``_plan_turn``)와 같은 것이다(사본 금지 D-053). LLM 경로는
+    이미 적용됐으므로 멱등이다. ``data_query`` 외 agent(캐시·일반 추론 등)는 건드리지 않는다.
+    양식 채우기 턴은 제외한다 — 양식 단일 task(③·③.5)를 알람 템플릿으로 뒤집으면 양식 경로를 잃는다.
+    """
+    if state.get("template_structure") or state.get("uploaded_file"):
+        return
+    tasks = result.get("task_plan")
+    if not isinstance(tasks, list) or not tasks:
+        return
+    result["task_plan"] = _coerce_alarm_intent(_coerce_process_intent(tasks))
+
+
+async def _plan_turn(
+    state: AgentState,
+    *,
+    llm: BaseChatModel | None = None,
+    app_config: AppConfig | None = None,
 ) -> dict:
-    """사용자 질의를 sub-task 목록으로 분해한다.
+    """계획 본체 — 사전 처리(계층 A) 후 LLM 분해(계층 B).
 
     계층 A pre-check(멀티턴 pending 결합 보존)를 먼저 수행하고, 해당하지 않으면
     계층 B LLM 분해를 수행한다.
@@ -732,6 +770,37 @@ async def _llm_decompose(
     result = await _enforce_plan_contract(llm, messages, user_query, app_config, fallback, result)
     if _capability_ownership_on(app_config):
         _sanitize_task_capabilities(result)
+    if _task_frame_on(app_config):
+        result = _apply_task_frames(result, user_query, context_block, fallback)
+    return result
+
+
+def _apply_task_frames(
+    result: dict[str, Any], user_query: str, context_block: str, fallback: dict[str, Any],
+) -> dict[str, Any]:
+    """원문 조각으로 task 질의를 만들고 계획을 검증한다(plans/111 §5.3 · LLM 0회).
+
+    - 폴백 계획(조각 없는 원문 단일 task)은 그대로 둔다 — 이미 가장 보수적인 형태다.
+    - 검증 통과: 각 task의 ``sub_query``를 조각으로 다시 만든다(LLM이 쓴 문장은 버린다).
+    - 검증 실패: 원문 단일 task로 되돌리고 ``degraded`` 사유를 싣는다(침묵 폴백 금지 —
+      사유는 ``intent_planner``가 ``dependency_notes``로 응답까지 옮긴다).
+    """
+    tasks = [t for t in result.get("tasks") or [] if isinstance(t, dict)]
+    if not any(task_spans(t) for t in tasks):
+        if all(str(t.get("sub_query") or "") == user_query for t in tasks):
+            return result
+    verdict = verify_task_frames(tasks, user_query, context_block)
+    if not verdict.ok:
+        logger.warning(
+            "intent_planner task 프레임 계약 위반 → 원문 단일 task: %s", list(verdict.violations),
+        )
+        degraded = {**fallback, "tasks": [dict(t) for t in fallback["tasks"]]}
+        degraded["degraded"] = list(result.get("degraded") or []) + [_degraded(
+            "task_frame_contract_violation", "; ".join(verdict.violations),
+        )]
+        return degraded
+    for task in tasks:
+        task["sub_query"] = render_task_query(task, user_query)
     return result
 
 
@@ -746,8 +815,27 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
     off면 기본 템플릿 그대로(바이트 동일), on이면 소유표·교차 예시 삽입본이다.
     """
     if not _capability_ownership_on(app_config):
-        return INTENT_PLANNER_SYSTEM_TEMPLATE
-    return _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
+        base = INTENT_PLANNER_SYSTEM_TEMPLATE
+    else:
+        base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
+    if not _task_frame_on(app_config):
+        return base
+    return _render_task_frame_prompt(base)
+
+
+def _task_frame_on(app_config: AppConfig) -> bool:
+    """task 프레임 계약 플래그(plans/111 C-3) — 호출부 설정에서 읽는다(기동 시 1회 해석).
+
+    ``is True``로 판정한다 — MagicMock 설정(테스트)의 속성이 참으로 평가돼 플래그가 켜진 것처럼
+    동작하지 않게 한다.
+    """
+    return getattr(getattr(app_config, "composite", None), "task_frame_enabled", False) is True
+
+
+@lru_cache(maxsize=8)
+def _render_task_frame_prompt(base: str) -> str:
+    """기본(또는 소유) 프롬프트 단위 캐시 — 기동 시 1회 렌더(프롬프트 접두 고정 · KV 캐시)."""
+    return render_intent_planner_task_frame_template(base)
 
 
 @lru_cache(maxsize=8)
@@ -884,7 +972,10 @@ async def _decompose_once(
     try:
         model = await try_structured_call(
             # 소유 플래그 on이면 `capability` 필드가 있는 서브클래스 — off 스키마는 종전 그대로.
-            llm, messages, OwnershipDecomposedPlan if ownership_on else DecomposedPlan,
+            # task 프레임 on이면 원문 조각(`spans`) 서브클래스(소유 필드 포함 — plans/111 C-3).
+            llm, messages,
+            SpanDecomposedPlan if _task_frame_on(app_config)
+            else (OwnershipDecomposedPlan if ownership_on else DecomposedPlan),
             backend=getattr(app_config, "structured_output_backend", "none"),
             max_retries=getattr(app_config, "structured_output_max_retries", 1),
         )
@@ -931,6 +1022,10 @@ async def _decompose_once(
             # 고정 키로 새 dict를 만드는 경로라 명시적으로 보존한다
             # (정제는 `_sanitize_task_capabilities`).
             task["capability"] = raw.get("capability", "")
+        if _task_frame_on(app_config):
+            # 원문 조각 보존 — `sub_query`는 `_apply_task_frames`가 조각으로 다시 만든다
+            # (plans/111 C-3).
+            task["spans"] = raw.get("spans") or []
         tasks.append(task)
 
     if not tasks:

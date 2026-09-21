@@ -773,3 +773,69 @@ async def test_존_역질문_턴은_DB_승계를_오염시키지_않는다(mock_
     assert "active_db_id" not in out
     assert "target_databases" not in out
     assert "db_scope_source" not in out
+
+
+# ──────────────────────────────────────────────
+# 병합 키 정규화 · 겹침 판정 (plans/49 §12.3 B-1/B-1a)
+# ──────────────────────────────────────────────
+
+def test_merge_normalizes_identity_key_forms():
+    """표기형이 다른 식별 값(`SV-WEB-001` ↔ `svweb001`)을 같은 서버로 묶는다(B-1a).
+
+    실측(2026-09-21 E3): 알람 조회는 `server_name='SV-WEB-001'`, 후속 조회는
+    `hostname='svweb001'`을 돌려준다. 원시 값으로 키를 잡으면 두 조회가 갈라져
+    후속 조회 행이 통째로 탈락하고 OSType이 공란이 됐다.
+    """
+    alarm = [
+        {"server_name": "SV-WEB-001", "alarm_name": "CPU 임계", "severity": 3},
+        {"server_name": "SV-BATCH-009", "alarm_name": "CPU 임계", "severity": 3},
+    ]
+    osq = [
+        {"hostname": "svweb001", "ipaddress": "10.61.0.1", "OSType": "LINUX"},
+        {"hostname": "svbatch009", "ipaddress": "10.61.0.4", "OSType": "AIX"},
+    ]
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    merged = _merge_task_results_by_identity(
+        tasks,
+        {"t1": {"organized_data": {"rows": alarm}}, "t2": {"organized_data": {"rows": osq}}},
+    )
+    assert merged is not None and len(merged) == 2
+    by_key = {r["server_name"]: r for r in merged}
+    # 표시 값은 선행 조회 표기형을 유지한다
+    assert set(by_key) == {"SV-WEB-001", "SV-BATCH-009"}
+    assert by_key["SV-WEB-001"]["OSType"] == "LINUX"
+    assert by_key["SV-WEB-001"]["ipaddress"] == "10.61.0.1"
+    assert by_key["SV-BATCH-009"]["OSType"] == "AIX"
+
+
+def test_merge_none_when_sources_share_no_server():
+    """공통 서버가 하나도 없는 독립 조회는 결정적 병합을 포기한다 → LLM 합성 폴백(B-1).
+
+    실측(2026-09-17 E2 계열): CPU 상위 3 + 메모리 상위 3처럼 서로 다른 서버를 가리키는
+    독립 조회를 병합하면 base 절단으로 한쪽이 통째로 사라졌다.
+    """
+    cpu = [{"name": "web-01", "cpu": 90}, {"name": "web-02", "cpu": 80},
+           {"name": "web-03", "cpu": 70}]
+    mem = [{"name": "db-01", "mem": 95}, {"name": "db-02", "mem": 85},
+           {"name": "db-03", "mem": 75}]
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    assert _merge_task_results_by_identity(
+        tasks, {"t1": {"organized_data": {"rows": cpu}}, "t2": {"organized_data": {"rows": mem}}}
+    ) is None
+
+
+def test_merge_keeps_servers_no_other_source_covers():
+    """일부만 겹치는 독립 조회는 절단하지 않는다 — 어느 조회에도 없는 서버를 지우지 않는다.
+
+    절단(D-100 좁히기)은 base 집합이 다른 조회들의 집합 안에 온전히 들어갈 때만 뜻이 있다.
+    """
+    cpu = [{"name": "web-01", "cpu": 90}, {"name": "web-02", "cpu": 80},
+           {"name": "shared-01", "cpu": 70}]
+    mem = [{"name": "shared-01", "mem": 95}, {"name": "db-02", "mem": 85},
+           {"name": "db-03", "mem": 75}]
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    merged = _merge_task_results_by_identity(
+        tasks, {"t1": {"organized_data": {"rows": cpu}}, "t2": {"organized_data": {"rows": mem}}}
+    )
+    assert merged is not None
+    assert {r["name"] for r in merged} == {"web-01", "web-02", "shared-01", "db-02", "db-03"}

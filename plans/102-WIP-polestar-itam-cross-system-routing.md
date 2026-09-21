@@ -1,7 +1,7 @@
 # 102. 폴스타 ↔ 자산관리(ITAM) 교차 시스템 질의 — 답변 영역 라우팅 · 값 기반 키 브리지 · 식별자 소재 프로브
 
 > **작성일**: 2026-09-17
-> **성격**: 구현 계획 + 구현 현황(§4.1) · **상태: 부분 구현(v4 · 사용자 지시로 작업 중지) — X-1~X-9·L-1~L-3 코드 랜딩(플래그 3종 기본 off) · X-12·L-4 문서 일부 · 차단 X-10·X-11·X-13·X-14·L-5 · 미완: D-224·D-225 본문 등재·`docs/18`·멀티 DB 노트 덮어쓰기 수정·전체 스위트(§4.1.4) · G-4 사용자 확정(v4) · G-1~G-3·G-5·G-6·G-9는 기본 가정 적용·사용자 미확정(§7 · G-7은 v2 확정 · G-8→`plans/104` · G-10→`plans/103` v3 해소)** · 파일명 `-WIP`
+> **성격**: 구현 계획 + 구현 현황(§4.1) · **상태: 부분 구현(v6 · 2026-09-21 처분 반영) — X-1~X-9·L-1~L-4·X-12 완료(플래그 3종 기본 off) · 멀티 DB 노트 덮어쓰기 수정 · D-224(부분 확정)·D-225(확정) 등재 · **§4.1.5 사용자 결정 11건 처분 완료**(코드 7 · 기록만 4 — D-224 부기) · 전체 스위트 실행 완료 · 차단 X-10·X-11·X-13·X-14·L-5(`plans/103` P2-1 · D-127 승인 선행) · G-4·G-7 사용자 확정 · G-1~G-3·G-5·G-6·G-9는 기본 가정 적용·사용자 미확정(§7 · G-8→`plans/104` · G-10→`plans/103` v3 해소)** · 파일명 `-WIP` 유지(차단 5건 잔여)
 > **v2**(2026-09-17): **기준 실행 경로를 사다리 3단 `semantic_router`로 재정렬** — 사용자 지시 원문 *"기본은 시멘틱 라우터를 사용한다. 모든 동작은 시멘틱 라우터에서
 > 동작되어야 한다. deepagents는 부가적으로 사용할 예정이라. 기본 동작은 시멘틱 라우팅을 통해 진행되어야 한다. 이 기준에 맞게 계획을 업데이트하라."*
 > → 3단 실행 경로 실측(§1.6) · 함정 X-T8~X-T13 · 3단 배선 재설계(§3.5) · 기준 전환 트랙 L(§3.7) · 게이트 G-8~G-10 · **D-225 예약**(§9.2)
@@ -91,6 +91,20 @@
 | 능력(capability) 축 | `config/db_registry.yaml:43-76` `solutions[].capabilities/requires` · `src/routing/registry.py:193` `capability_providers()` | **선언은 있으나 운영 소비처 0건**(호출은 `tests/test_orchestration/test_execution_groups.py:40`뿐). `apm·dpm`의 `requires: [host_location]` — *"폴스타에서 호스트를 먼저 찾고 APM을 본다"* — 는 R3·R4와 **같은 모양**인데 배선돼 있지 않다 |
 
 → **R1·R2의 실체는 "설명문이 좋기를 바란다"이다.** 선택이 틀려도 결과가 나오므로(두 DB 모두 사용률 컬럼 보유) 틀린 것을 알 길이 없다.
+
+**빈 분류 침묵 폴백의 실측 빈도 (전달받은 값 — 우리가 잰 것이 아니다)**
+
+| 항목 | 값 |
+|---|---|
+| 발동 | **21/380턴 = 5.5%**(`subagents.py:174` *"classify_dbs 결과 없음, 첫 활성 DB 사용: polestar_b0"*) |
+| 원인 분해 | **"분류 결과 없음" 18건** vs **"LLM 호출 자체 실패" 3건**(FabriX `API returned error status: ERROR`) — 뒤의 3건은 분류 품질이 아니라 **가용성** 문제다. 분류에 LLM 1회를 거는 설계의 리스크 |
+| 발동 조건 | 전건 **단일 시스템 질의** · 교차 시스템 0건 · 자산관리 언급 0건. 공통점은 **위치 표면어(김포·여의도·은행존)가 없는 질의** — 같은 로그에 존 역질문 후단 게이트(D-143 후속2) 140회가 함께 찍혀 같은 뿌리로 보인다 |
+| 선택의 임의성 | `polestar_b0`는 `ACTIVE_DB_IDS` 첫 항목일 뿐 질의 내용과 무관하다 |
+| 사용자 노출 | **아무 표시도 없이** 21회 발생 → X-T3 폴백 표기(`NOTE_ROUTING_FALLBACK`)의 필요 근거 |
+
+- **출처**: run `20260918-182507` (`logs/server-baseline.log`·`raw.jsonl`) · 폐쇄망 FabriX · 제공 세션 `collectorinfra-36`(2026-09-21 전달).
+- **한계 4종 — 이 수치로 더 말하지 않는다**: ①**우리가 직접 잰 값이 아니다**(전달받은 실측) ②측정 커밋 `5b093016`은 **이 저장소에 없는 dirty 트리**다 ③**사다리 2단 `intent_orchestration`에서 측정**됐다 — 우리 기준 경로(3단)가 아니다 ④**오답 여부는 측정되지 않았다**: 하네스가 존 역질문에 자동 응답해(380턴 중 221턴 전부 `polestar_cm_gp` 선택) 폴백이 걸린 14턴 중 12턴이 덮였고, 남은 2턴(R2-07)은 "알람 임계치를 바꿔줘"라는 오용 시나리오라 rows=0이 오답인지 단정할 수 없다.
+- **측정 공백**: 침묵 폴백이 실제로 결과를 오염시키는지 재려면 **존 자동응답을 끈 arm**이 필요하다(`plans/99` 실험 설계 소관). 그 결과가 나오기 전까지 `ROUTER_CAPABILITY_OWNERSHIP_ENABLED` 기본값은 **off 유지**다.
 
 ### 1.2 순차 의존 배관과 식별 키 판정 — 컬럼명 목록 기반
 
@@ -298,6 +312,12 @@ entity_keys:
 | `non_link` | 대상에서 못 찾음 | 미포함 + 보고 |
 | `ambiguous` | 한 키가 대상의 **서로 다른 엔터티 2개 이상**에 걸림(같은 엔터티의 IP별 행은 `per_ip`로 묶어 모호로 보지 않음) | **미포함** + 보고(P4 추측 금지) |
 
+**(v6 · 처분 F) 엔터티 경계는 DB(존)를 가른다** — 엔터티 id 는 DB 무관 정규형이라 두 존의 동명 호스트가 한 엔터티로 합쳐졌다. **서로 다른 DB에 같은 이름이 있으면** 그 이름에 한해 id 를 DB로 한정해 별개 엔터티로 만든다 → 같은 키가 엔터티 2개에 걸려 `ambiguous` 가 되고, 결과에서 빠지며 어느 DB들에 중복됐는지가 매칭 노트(`cross_db_entities`)에 남는다. 판정 근거는 행의 `_source_db` 태그다 — 태그가 없으면 종전대로 한 엔터티다. 같은 DB 안의 `per_ip` 묶음은 **한정 대상이 아니다**.
+
+**(v6 · 처분 G) 키 컬럼 선택의 1순위는 출처 DB 매니페스트 선언**이다 — 값 판정은 영문자가 든 단일 레이블을 전부 호스트명 계열로 받으므로 코드값(`Z99`)·심각도(`critical`)·OS명 컬럼도 후보가 된다. 출처 DB가 "이것이 서버 키다"라고 선언했으면 추측보다 그 선언이 이긴다. **선언이 없을 때만** 종전 값·이름 휴리스틱(강한 키 → 값 다양성 → 컬럼 순서)으로 내려간다. 프로브 쪽에도 같은 규칙을 적용한다(§3.4).
+
+**(v6 · 처분 E) 브리지 행 제거와 `COMPOSITE_SCOPE_POSTCHECK_ENABLED` 는 서로 다른 플래그가 소유한다.** 브리지 판정(④)은 브리지 계약의 일부이므로 `CROSS_SYSTEM_KEY_BRIDGE_ENABLED` 가 소유하고, 기존 사후 대조(`apply_scope_postcheck`)는 자기 플래그가 소유한다. 하나로 묶으면 **"브리지 on 인데 판정 결과는 버린다"**는 조합이 생겨 매칭 보고와 실제 행이 어긋난다(D5 센서가 거짓이 된다). 두 플래그가 다 켜지면 대조는 두 번 돌지만 **제거 기준이 같은 스코프**라 결과는 수렴한다 — 순서는 브리지 판정이 뒤다(후속 결과에 대한 최종 판정).
+
 **⑤ 보고(센서 · P6)** — 기존 경과 블록(`prior_dependency.render_dependency_notes` · `## 순차 처리 경과`)에 1건:
 *"선행 N대 → 자산관리: 일치 a · 가능 b · 미발견 c(샘플 …) · 모호 d · 키=hostname"*. **커버리지 = (a+b)/N**을 로그·트레이스에도 남긴다.
 
@@ -330,7 +350,8 @@ entity_keys:
 | 필요한 답변 영역 | 프로브 결과 | 동작 |
 |---|---|---|
 | 한 시스템 소유 | 소유 시스템에서 발견 | 그 시스템만 조회(프로브 결과를 스코프로) |
-| 한 시스템 소유 | 소유 시스템 **미발견** · 다른 시스템 발견 | **조회하지 않고 사유 노출** — *"자산관리에 등록되지 않은 서버입니다(폴스타에는 있음)"* |
+| 한 시스템 소유 | 소유 시스템 **미발견** · 다른 시스템이 **키 선언 컬럼으로** 발견 | **조회하지 않고 사유 노출** — *"자산관리에 등록되지 않은 서버입니다(폴스타에는 있음)"* |
+| 한 시스템 소유 | 소유 시스템 미발견 · 다른 시스템 일치가 **보조 컬럼뿐**(v6 · 처분 K) | **조회를 막지 않는다**(KEEP) + 사유 — *"폴스타에서는 등록명 일치만 있어 호스트명 기준 등록으로 보지 않았습니다"*. 브리지 키는 `hostname`뿐이라(G-3) `name` 일치는 반대 증거가 못 된다 |
 | 두 시스템 모두 | 양쪽 발견 | 양쪽 조회 후 키 병합(§3.3 매칭 보고) |
 | 두 시스템 모두 | 한쪽만 발견 | 발견된 쪽 조회 + 다른 쪽 미등록 사유 |
 | 소유 모호(G-1) | 한쪽만 발견 | **발견된 시스템 선택** + 선택 근거 노출 |
@@ -432,9 +453,10 @@ v1은 운영 `.env`(1단)를 기준으로 삼았다. **v2는 사용자 기준(20
 - **(v2) L-1(tri-state 자동 off)은 95 W-12보다 먼저** 들어가야 한다 — 미입력 환경에서 itam 활성화(멀티 DB)가 2단 자동 확정을 부르는 것을 막는다(X-T11).
 
 
-### 4.1 구현 현황 (v4 · 2026-09-17 — 사용자 지시로 중지한 시점)
+### 4.1 구현 현황 (v5 · 2026-09-21 재개 — 재개 체크리스트 1~7 처리)
 
-> 착수 기준: 작업 트리 `multiintent` HEAD `c64ef98` + 병행 세션 미커밋 변경(plans/95·100·104·D-231 등). **커밋 없음**(사용자가 나중에 일괄 커밋).
+> 착수 기준(v4 · 2026-09-17): 작업 트리 `multiintent` HEAD `c64ef98` + 병행 세션 미커밋 변경.
+> **재개 기준(v5 · 2026-09-21)**: v4 구현분은 전부 커밋됐다 — HEAD **`284137a`**("ITAM, mlx 테스트, 벤치마크 테스트 코드 수정", 256 files · 사용자 일괄 커밋). 재개 시점 작업 트리는 깨끗했고, 기준선 대조는 `git worktree add <scratchpad> HEAD`로 했다. **이번에도 커밋하지 않는다**(사용자가 일괄 커밋).
 > 플래그 3종(`CROSS_SYSTEM_KEY_BRIDGE_ENABLED` · `CROSS_SYSTEM_PROBE_ENABLED` · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`)은 **기본 off = 현행 비트 동일**이고, 운영·로컬 `.env`는 건드리지 않았다(L-5 차단 유지).
 
 #### 4.1.1 WU별 상태
@@ -452,18 +474,18 @@ v1은 운영 `.env`(1단)를 기준으로 삼았다. **v2는 사용자 기준(20
 | **X-9** | ✅ | 골든셋 25건(기존 18 + 신규 7) · `expect.chain`·`key_type`·`probe` · `eval_routing --mock` **off 25/25**(기존 18 무회귀 · chain 채점 불가 7건 명시) · **on 25/25(chain 7/7)** · `chain_reversed` 변이 검출. `key_type`·`probe`는 라우터 출력에 없어 "라우터 단계 채점 불가(H-2 소관)"로 표기(거짓 통과 금지). 목업 결과는 배관 검증이지 모델 품질이 아니다 |
 | **X-13** | ⛔ 차단 | `plans/103` P2-1 미구현(`needs_plan` 코드 0건). `plans/104` A-8은 병행 세션이 구현 완료(구조 승인 HITL 삭제). `sequential_entry` 무수정 |
 | **X-10·X-11·X-14** | ⛔ 차단 | X-10 ← X-13 · X-11 ← X-10 · 자산 프로필(104) · D-127 승인 · X-14 ← X-11 |
-| **X-12** | 부분 | `config/settings_help/{general,router}.yaml`(신규 플래그 3종 · 사다리 플래그 설명) · `.env.example` · `docs/21` 반영. **미완**: D-224·D-225 본문 등재 · `docs/18` · `plans/INDEX.md` 설명 셀 갱신 |
+| **X-12** | ✅ (v5) | `config/settings_help/{general,router}.yaml`(신규 플래그 3종 · 사다리 플래그 설명) · `.env.example` · `docs/21` 반영. **v5 완료**: `docs/02_decision.md` **D-224**(부분 확정 · G-4 확정 원문·기본 가정 6종 미확정 표기)·**D-225**(확정 · 코드 기준 전환 완료 · L-5 대기) 본문 등재 + 안내 라인·「채번 이력」·「변경 이력」 3곳 갱신 · `docs/18` 5건 기록 · `plans/INDEX.md` 102행 갱신 |
 | **L-1** | ✅ | `src/config.py` — `enable_intent_orchestration` 미입력 → **항상 off** · `resolved_by=code_default`(semantic 명시 + intent 미입력) · 경고 문구 · 테스트 고정 |
 | **L-2** | ✅ | `src/observability/ladder.py` — 기준 단 3단 · 1단 opt-in은 INFO · 2·4단·opt-in 실패는 WARNING · 사유 어휘 `none`/`intent_flag_on`/`semantic_routing_off`/`orchestrator_unavailable`/`package_missing`(**`flag_off` 폐기**) · `OPTIN_FAILURE_REASONS` ↔ 시나리오 `UNINTENDED_DEGRADATION` 동기 테스트 · 기동 로그 첫 줄 형식 불변 |
 | **L-3** | ✅ | `scripts/scenario/preflight.py`(`_check_ladder`만) · `report.py`(기준 단 3단 · 1단은 안내) · `server.py`(주석) · `scripts/eval_text2sql.py --path semantic_router` 추가(기본 `orchestration` 유지 — 단일 DB 파이프라인 직접 구동이라 사다리 단 중립) |
-| **L-4** | 부분 | `docs/21` · `src/graph.py` 사다리 주석 · `.env.example` · 설정 도움말 반영. **미반영**: `CLAUDE.md` 사다리 표·운영 실측 문단(main 세션 반영 대상 — 문안은 최종 보고) · 옛 "1단 정본" 주석 `src/api/routes/query.py:142,156` · `src/static/js/app.js:418` · 옛 `flag_off` 서술(D-221·D-222 부기 · `plans/94:506` · `plans/96:274` · `plans/99` 27·186·227·381 — `plans/99:186` preflight 예시는 실제 출력과 다름) |
+| **L-4** | ✅ (v5) | `docs/21` · `src/graph.py` 사다리 주석 · `.env.example` · 설정 도움말 반영. **v5 완료**: `CLAUDE.md` 사다리 절(도입 문장·표 라벨 1 부가 경로/3 기준 경로·tri-state 문단·1단 opt-in INFO/`flag_off` 폐기 문단·운영 실측 문단) · 옛 "1단 정본" 주석 `src/api/routes/query.py`(3곳)·`src/static/js/app.js` · 옛 `flag_off` 서술(D-221 부기 신설 · D-222 부기 2 ② 개정 표기 · `plans/94` 무효 판정 규칙 · `plans/96` O-4 · `plans/99` 5곳 — preflight 예시를 실제 출력(`intent_flag_on`)으로 교정하고 사유 어휘 정의를 새 3종으로 교체). **남긴 것**: `docs/21:26`·`scripts/scenario/report.py:400`의 `flag_off` 언급은 *옛 어휘임을 설명하는 문장 자체*라 유지 |
 | **L-5** | ⛔ 차단 | `plans/103` P5 + 사용자 확인. `.env` 무변경 |
 
 #### 4.1.2 적용한 기본 가정 (사용자 미확정 — 답이 오면 해당 데이터·상수만 바꾼다)
 
 | 게이트 | 적용값 | 바꿀 곳 |
 |---|---|---|
-| G-1 | `server_spec` 정본 폴스타 + 결정표 "소유 모호" 행 | `entity_locator.OWNERSHIP_AMBIGUOUS_CAPABILITIES` · 골든 r-076 |
+| G-1 | `server_spec` 정본 폴스타 + 결정표 "소유 모호" 행 | ~~`entity_locator.OWNERSHIP_AMBIGUOUS_CAPABILITIES`~~ **`config/db_registry.yaml` `capabilities[].ambiguous_owner`**(v6 · 처분 J) · 골든 r-076 |
 | G-2 | 호스트명 → IP 우선 · FQDN 단축명 일치는 **포함 + "가능한 일치" 표기** | 프로필 `entity_keys` priority · `key_bridge` possible 포함 |
 | G-3 | 폴스타 `hostname`만 브리지 키(`name` 제외 · D-061) | 폴스타 프로필 `entity_keys` |
 | G-5 | 조건부 발동(두 시스템 필요 · 소유 시스템 미발견 · 소유 모호) | `host_discovery.plan_probe` |
@@ -482,33 +504,56 @@ v1은 운영 `.env`(1단)를 기준으로 삼았다. **v2는 사용자 기준(20
 - **중지 후 재확인(main 세션 · 2026-09-17 17:5x)**: `LLM_PROVIDER=ollama OLLAMA_BASE_URL=http://127.0.0.1:9 .venv/bin/python -m pytest tests/test_cross_system tests/test_observability tests/test_scenario/test_preflight_ladder.py tests/test_routing_eval tests/test_semantic_routing tests/test_discovery` → **795 passed · 0 failed** · `arch_check --ci` exit 0 · `overfit_check --ci` exit 0. 전체 스위트는 여전히 미실행.
 - `mcp_server` 코드 무변경 → 로컬 MCP 9099 재기동 불필요.
 
-#### 4.1.4 재개 체크리스트 (순서대로)
+**v5 검증 (2026-09-21 재개 · 과금 호출 0 · 실 DB·MCP 0 · 커밋 0)**
 
-1. **[버그 · 정적 확인 · 미수정]** `src/nodes/multi_db_executor.py` 결과 조립(`result["dependency_notes"] = list(run.dependency_notes)` 부근)이 state의 기존 노트를 덮어써 멀티 DB 경로에서 NOTE_PROBE·NOTE_OWNERSHIP·NOTE_ROUTING_FALLBACK이 유실될 수 있다(트랙 P·R 독립 보고) — 재현 테스트 → 병합으로 수정(성공 기준 5 "침묵 0"). 타 세션 미커밋 수정 파일이라 `git diff` 확인 후 외과적으로.
-   - 근거(main 정적 확인 · 2026-09-17 작업 트리): `_MultiRun.dependency_notes`는 빈 목록으로 시작하고(`:297` `default_factory=list`) state 노트를 받아 오지 않는다. 반면 단일 DB 경로는 `schema_analyzer.py:757,765`에서 `state.get("dependency_notes")`를 이어 붙인다(비대칭). `AgentState`에 이 키의 리듀서가 없어 노드 반환이 그대로 덮어쓴다.
-   - 발동 빈도: 덮어쓰기는 `run.dependency_notes`가 비어 있지 않을 때만 일어난다. 그런데 D-203 스코프 분할(`:665`) 외에 plans/104의 구조 정보 없음 노트(`:1285-1292`)와 컬럼 설명 미등록 노트(`:1214-1215`)도 여기에 실린다. **로컬 itam처럼 수동 프로필이 없는 DB가 대상에 끼면 사실상 매번 발동**한다.
-2. 전체 스위트: `LLM_PROVIDER=ollama OLLAMA_BASE_URL=http://127.0.0.1:9 pytest`(공유 8080 호출 차단 — `test_form_month_series::…test_month_anchor_suppresses_retry`가 `.env`의 mlx를 읽는 기존 격리 결함).
-3. `docs/02_decision.md` D-224(부분 확정 · G-4 사용자 확정 원문)·D-225(확정 · 코드 기준 전환 · 운영 전환 대기) 본문 등재 · 「변경 이력」·「채번 이력」 행 상태 · 안내 라인 — 등재 직전 세 곳 재grep.
-4. `docs/18_known_mistakes.md`: ①편집 전 기준선 사본(`scratchpad/pre/`)을 워커가 두 번 덮어씀(트랙 L `config.py` · 트랙 R 15파일) → 워커별 사본 경로 분리·읽기 전용 ②트랙 L 워커가 기준선 worktree에서 `git checkout --` 1회 ③계획서 G-4 기본 가정이 D-214 ④ 기각 대안과 충돌(작성 시 결정 문서 "대안(기각)" 미대조) ④넓은 스위트를 provider 덮어쓰기 없이 시작.
-5. `CLAUDE.md` 사다리 절 갱신(**미반영** — 현재 `CLAUDE.md`는 여전히 "1 정본 + 3 폴백" · `| **1 (정본)** | deep_agent |`) · 옛 "1단 정본"/`flag_off` 서술 정리(§4.1.1 L-4). `plans/INDEX.md` 102행 상태 칸은 v4에서 갱신 완료. 팀 리드 최종 보고의 반영 문안:
-   - 도입 문장: "**실행 경로 4종은 대등하게 병존하지 않는다. 위에서부터 성립하는 한 단만 확정되며, 기준 경로는 3단 `semantic_router`다(D-225).**"
-   - 표: 1단 라벨 `1 (부가 경로 · opt-in)` · 2단 조건 `enable_intent_orchestration`(미입력 = off) · 3단 라벨 `**3 (기준 경로)**`
-   - tri-state 문단: "`enable_semantic_routing` 미입력은 `ACTIVE_DB_IDS` 등록 여부로 자동 결정, `enable_intent_orchestration` 미입력은 항상 off(`resolved_by=code_default`)"
-   - 운영 실측 문단 끝: "3단 전환(L-5)은 plans/103 P5 뒤 사용자 확인"
-6. `arch_check` WARN +2 처분(`key_bridge` 위치).
-7. **관련 계획 후속**: `plans/95` W-10(혼합 질의 존 역질문에서 itam 유지)은 선행 조건 "102 X-7 이후"가 충족됐다(플래그 off 랜딩) — 재개 가능. 트랙 R이 확인한 "존 선택 재개 턴에서 자산 task가 폴스타로 가는 문제"가 W-10 요건(`selected_db_ids` 고정 시 itam 탈락 금지)과 같은 결함이다. `plans/103` P2-1은 이미 `chain` 비어 있지 않음 → `needs_plan` 간주를 명시하고 있어(103 §169행 부근) X-13은 103 구현에 합류하면 된다.
+- **전체 스위트**(`LLM_PROVIDER=ollama OLLAMA_BASE_URL=http://127.0.0.1:9 pytest`, 428초): **8,010 passed · 25 failed · 31 skipped · 5 errors**.
+- **기준선 대조** — `git worktree add <scratchpad> HEAD`(`284137a`)에서 같은 명령으로 전체 스위트: **7,990 passed · 37 failed · 31 skipped · 8 errors**. 실패 집합 `comm` 대조 결과 **우리 쪽에만 있는 실패는 1건**이고, 그 1건(`tests/test_plan31_field_mapping_fix.py::…::test_llm_synonym_counted_in_summary`)은 **기존 `.env` 누수 결함**으로 확정했다 — 로컬 `.env:437 SYNONYM_FUZZY_MATCH=true`(코드 기본값 `False`)면 2단계 퍼지 매칭이 `IP`를 먼저 잡아 2.8단계가 아예 돌지 않는다. `SYNONYM_FUZZY_MATCH=false`를 주면 통과한다. 기준선 worktree는 **`.env`가 untracked라 존재하지 않아** 통과했을 뿐이다. → **우리 변경으로 인한 신규 회귀 0**.
+  - 기준선 쪽에만 있는 실패 16건(`test_query_stream_progress[file]` 4 · `test_unknown_class` 4 · `test_dbhub_integration` 3 · `test_settings_catalog` 2 · `test_alarm_process_enrich` 2 · `test_answer_history_propagation` 1)도 같은 이유(`.env` 부재)와 실행 순서 차이다 — 기준선 worktree는 환경 완전 복제가 아니다.
+  - `tests/test_schema_cache/test_plan104_service_registration.py::…::test_full_admin_flow_never_writes_registry_env_or_mcp_server`는 **두 트리 모두 단독 실행 시 25 passed** — 전체 스위트 실행 순서 의존이다.
+- **좁은 재확인**: `tests/test_cross_system` + `test_observability` + `test_preflight_ladder` + `test_routing_eval` + `test_semantic_routing` + `test_discovery` + `test_prior_scope_by_db` + `test_plan104_query_path` + `test_composite` → **1,197 passed · 0 failed**. 신규 `tests/test_cross_system/test_multi_db_note_merge.py` 5건 포함(수정 전에는 2건 실패로 재현됐다).
+- **게이트**: `arch_check --ci` **exit 0**(error 0 · WARN 80 — `key_bridge` 2건 포함, 처분은 §4.1.4-6) · `overfit_check --ci` **exit 0**(`scripts/overfit_baseline.json` 무변경) · `prompt_render_diff --ci` **exit 0** · ruff(`uvx --offline`) 변경 파일 HEAD 대비 **신규 0**(양쪽 90건 동일) · 신규 테스트 파일 ruff **0** · mypy(`--python-version 3.12`) `multi_db_executor.py` HEAD 대비 **델타 0**(양쪽 110건 동일 — 전체 카운트 차 +2는 병행 세션의 미커밋 `semantic_router.py`에서 난다).
+- **병행 세션 주의(실측 2026-09-21 07:4x~07:5x)**: 작업 트리에 다른 세션의 미커밋 변경이 계속 들어왔다 — `src/routing/semantic_router.py`(+113/-16 · `plans/95` W-10) · `plans/{49,91,INDEX}.md` · `docs/26` · `sre_agent/*`. 공유 파일은 편집 직전 `git diff`로 확인하고 외과적으로만 고쳤다.
 
-#### 4.1.5 사용자 결정 필요 (구현 중 드러난 것)
+#### 4.1.4 재개 결과 (v5 · 2026-09-21 — v4 체크리스트 1~7 처리)
 
-- **자산 매니페스트 런타임 공급** — `plans/104`가 itam 프로필을 만들기 전까지 자산 프로브는 항상 "확인하지 못함", 브리지는 itam 대상 컬럼을 확정하지 못하고 위임 문구로 떨어진다. 로컬 하네스 매니페스트를 런타임에 읽게 할지(설정 경로) · 104를 기다릴지.
-- 사다리: opt-in 실패(`orchestrator_unavailable`·`package_missing`)로 확정된 run은 러너가 INVALID 스킵하고 리포트 10절에만 남는다 — 최상단 경고에도 올릴지.
-- 소유(R): 사용자가 DB를 직접 지정한 경우("ITAM DB에서 CPU 사용률")는 교정하지 않는다 — R2 소유 규칙을 직접 지정보다 우선할지 · `capability` 없는 분해 task는 `classify_dbs` 결과를 검증 없이 쓴다(X-T10 잔여) — 교정을 넣을지.
-- 브리지(K): 브리지 행 제거를 `COMPOSITE_SCOPE_POSTCHECK_ENABLED` 뒤로 둘지 · 같은 hostname이 두 존에 있으면 한 엔터티로 보는 현행 유지 여부 · 코드값·심각도 컬럼의 hostname 계열 오판에 출처 DB 매니페스트 우선 보강을 넣을지 · D-099 결정적 컴파일 경로에서 자산 출처 키면 스코프가 None인데 브리지 on일 때 컴파일을 건너뛸지.
-- 프로브(P): `none_found`를 KEEP(현행)/HALT 중 무엇으로 · G-1 모호 영역 목록을 코드 상수로 둘지 레지스트리 선언으로 옮길지 · 폴스타 `name` 형태 토큰이 자산 소유 질의에서 ② HALT를 오판할 수 있는 문제(G-3 연관).
+| # | 항목 | 결과 |
+|---|---|---|
+| 1 | **멀티 DB 경로 노트 덮어쓰기 수정** | ✅ 재현 테스트(`tests/test_cross_system/test_multi_db_note_merge.py` 5건 — 먼저 2건 실패 재현) → `src/nodes/multi_db_executor.py` 결과 조립에서 `state`의 기존 노트를 앞에 이어 붙이고 이번 노드 노트를 `add_db_note`로 병합(**단일 경로 `schema_analyzer`와 같은 규칙 · DB당 1건**). **반환 shape는 유지** — 이번 노드 노트가 없으면 키를 만들지 않는다(키 부재 = state 보존). 기존 단언 `test_prior_scope_by_db::test_executor_returns_notes_only_when_present` 무변화 |
+| 2 | **전체 스위트** | ✅ 실행(수치는 §4.1.3) · 실패는 HEAD 기준선 대조로 전건 기존 실패 확정 |
+| 3 | **D-224·D-225 본문 등재** | ✅ 등재 직전 세 곳(`## D-` 헤더 최댓값 D-231 · 「변경 이력」 · 「채번 이력」) 재grep — D-224·D-225 헤더 0건·예약 행만 존재 → 예약 번호 그대로 사용. D-224 **부분 확정**(G-4 확정 원문 수록 · 기본 가정 6종을 「사용자 미확정」으로 명시) · D-225 **확정**(코드 기준 전환 완료 · L-5 대기 · `flag_off` 폐기와 새 사유 어휘 · `OPTIN_FAILURE_REASONS`↔`UNINTENDED_DEGRADATION` 동기 · `eval_text2sql --path semantic_router` 추가 및 기본값 `orchestration` 유지 사유). D-221 ⑤에 개정 부기 신설, D-222 부기 2 ②에 개정 표기 |
+| 4 | **`docs/18` 기록** | ✅ 5건 — ①워커별 스크래치 경로 미분리(사본 덮어쓰기) ②기준선 worktree에서 `git checkout --` ③계획 기본 가정이 D-214 ④ 「대안(기각)」과 충돌 ④넓은 스위트를 provider 덮어쓰기 없이 시작 ⑤**(신규)** 리듀서 없는 누적 state 키를 병합 없이 반환(체크리스트 1의 근본 원인) |
+| 5 | **`CLAUDE.md` 사다리 절 + 옛 서술 정리** | ✅ §4.1.1 L-4 참조 |
+| 6 | **`arch_check` WARN +2 처분** | ✅ **`src/nodes/key_bridge.py`를 그대로 둔다.** 근거: ①이 WARN은 `arch_check.py:238` `severity="warning"`으로 **설계상 권고**다(`--ci` exit 0 · error 0) ②같은 종류 WARN이 저장소에 80건 있고 그중 `src/nodes/`의 노드 보조 모듈 교차 import가 `column_deriver`(6)·`query_validator`(5)·`candidate_generator`(4)·`prompt_blocks`(2) 등 **확립된 패턴**이다 — key_bridge만 옮기면 오히려 불일치다 ③`src/schema_cache/`(infrastructure)로 옮기는 것은 의미가 틀리다: 그 패키지는 스키마 캐시·로더 소유이고(매니페스트 **로더**는 이미 거기 있다), key_bridge는 I/O 없는 조립·판정이라 소비처(노드)와 같은 높이다 ④`src/utils/`는 **불가** — `ALLOWED_DEPS["utils"] = set()`이라 `src.domain.entity_key` import가 warning이 아니라 **error**가 된다(구현 시 utils를 인자 확장만 한 것과 같은 이유) |
+| 7 | **`plans/95` W-10** | ⛔ **이번 범위에서 제외 — 95 소관 유지.** 실측(2026-09-21 07:52): **병행 세션이 지금 구현 중**이다 — 작업 트리 `src/routing/semantic_router.py`가 HEAD 대비 +113/-16이고 신규 함수 `_keep_zoneless_targets`(docstring이 `plans/95 W-10`·`plans/102` 트랙 R 실측을 인용)가 `selected_db_ids` 분기(`:176`)에 배선돼 있다. HEAD에는 0건. 중복 구현·충돌을 피해 손대지 않았다. **2단 대칭**(`subagents.py:1101-1106` 소유 고정이 `selected_db_ids` 있으면 건너뜀)은 그 세션 범위에 **포함되지 않았다**(미커밋 diff 실측 — 고친 곳은 게이트 **아래** `raw_targets` 산출부). 다만 이 조건은 결함이 아니라 `:1098` 주석·X-T13 근거로 **의도된 설계**이며, 남은 것은 *"존 선택 재개 턴에서 소유 고정을 건너뛰는 설계가 W-10 이후에도 맞나"* 라는 **미결 설계 판단**이다(§4.1.6 v6 부기 · 사용자 판단 대상 · 95 소관) |
+
+**이번 재개에서 하지 않은 것**: X-13·X-10·X-11·X-14·L-5는 선행(`plans/103` P2-1 `needs_plan` 코드 0건 · D-127 승인)이 여전히 불성립이라 **구현하지 않았다**. §4.1.5 사용자 결정 필요 항목은 **현행 동작을 그대로 두었다**(임의 변경 0). G-1~G-3·G-5·G-6·G-9 기본 가정도 그대로다.
+
+#### 4.1.5 처분 (2026-09-21 사용자 권고 승인 — v6)
+
+> 사용자 지시 *"권고에 맞게 진행하라."* — 구현 중 드러난 「사용자 결정 필요」 11건을 팀 리드 권고대로 처분했다.
+> **새 D-번호는 부여하지 않았다** — 전부 D-224 ①~⑧(B는 D-225) 계약의 판정 경계를 좁히는 것이고 새 계약을 세우지 않는다.
+> 정본 기록은 `docs/02_decision.md` D-224 「부기(2026-09-21)」 표다. **플래그 3종은 기본 off 그대로**이고 off 경로는 비트 동일이다.
+
+| # | 항목 | 처분 | 랜딩 · 테스트 |
+|---|---|---|---|
+| **A** | 자산 매니페스트 런타임 공급 | **기록만** — `plans/104`가 itam 프로필을 만들 때까지 기다린다. `testdata/` 매니페스트를 설정 경로로 읽는 배선을 **추가하지 않는다**: 소비처(X-10 로컬 리그)가 X-13 차단으로 아직 없어 **쓰이지 않는 설정 손잡이만 는다**. 그때까지 자산 프로브가 "확인하지 못함"을 반환하는 것은 정상 동작이다 | 코드 0 |
+| **B** | opt-in 실패 run 의 리포트 표기 | 최상단 **`[안내]` 1줄 + 제외(INVALID) 시나리오 건수**. 경고가 아니다 — 확정 단이 기준 단(3단)이라 측정값 자체는 유효하고, 알려야 할 것은 "그 프로파일은 한 건도 재지 않았다"는 사실이다. 기존 「기준 단이 아님」 경고와 조건·문구를 갈랐다 | `scripts/scenario/report.py` `optin_failure_profiles`·`optin_failure_excluded` · 테스트 3 |
+| **C** | 직접 지정 DB의 소유 위반 | **교정하지 않는 현행 유지 + 사유 노트 1건**. 지정을 뒤집지 않되 침묵하지 않는다(자산 DB에도 사용률 컬럼이 있어 오답이 조용하다 — §0.2 R2 · 95 T5). 노트 문구에 *"교정하지 않고 그대로 조회했다"*가 드러난다. 검증 2지점(라우터 노드 · 분해 task) **대칭** 적용 · 소유 플래그 off면 노트 0 | `capability_ownership.REASON_OWNER_USER_SPECIFIED`·`user_specified_ownership_notes` · 테스트 5 |
+| **D** | `capability` 없는 분해 task | **추가하지 않는다** — 검증 입력(답변 영역)이 없는데 `classify_dbs` 결과를 교정하면 질의 문자열 기반 판정으로 변질된다(D-004). X-11 실측에서 few-shot 누락률을 본 뒤 재검토 | 코드 0 |
+| **E** | 브리지 행 제거 플래그 | `COMPOSITE_SCOPE_POSTCHECK_ENABLED`에 **묶지 않는다**(현행 유지) — 근거와 두 플래그의 상호작용은 §3.3 말미 | 코드 0 |
+| **F** | 다른 존의 동명 호스트 | **`ambiguous`로 판정하고 결과에 넣지 않으며 사유를 매칭 보고에 남긴다**(D-224 ④ 모호 추측 금지). 엔터티 id 를 **충돌한 이름에 한해** DB로 한정해 같은 키가 엔터티 2개에 걸리게 했다 — 같은 DB 안의 `per_ip` 다중 행 묶음은 종전대로 한 엔터티다 | `key_bridge._entity_key`·`_cross_db_entities` · 노트 `cross_db_entities` · 테스트 3 |
+| **G** | 코드값·심각도 컬럼 오판 | **출처 DB 매니페스트 선언 컬럼이 1순위**, 선언이 없을 때만 값·이름 휴리스틱. 출처는 행 `_source_db` → 없으면 선행 결과 `target_db_ids`. 프로브 쪽도 대칭 — 존 순회 행의 컬럼 강도를 매니페스트 선언이 정한다(투영은 `probe_hosts` 고정이라 SQL 무변경) | `entity_key.detect_key_columns(declared=)`·`KeyColumn.declared` · `key_bridge.declared_key_columns` · `entity_locator.zoned_key_columns` · 테스트 7 |
+| **H** | D-099 결정적 컴파일 | 브리지 on + 브리지 스코프 있음 + 종전 스코프 None 이면 **컴파일을 건너뛰고** 브리지 스코프 블록이 실리는 일반 경로로 보낸다(스코프 없이 컴파일하면 LIMIT 절단으로 선행이 지목한 행이 빠진다). 사유는 로그 1줄 + 경과 노트 1건 | `query_generator._bridge_only_scope`·`_try_semantic` · `key_bridge.compile_skip_note` · 테스트 6 |
+| **I** | `none_found` | **KEEP 유지**(HALT 아님) — 프로브는 고정 규칙(완전 일치·단축명·IP)이라 본 조회가 다른 표기로 찾을 여지가 있고 반대 증거도 없다 | 코드 0 |
+| **J** | G-1 모호 소유 영역 | **레지스트리 선언으로 이동** — 최상위 `capabilities[].ambiguous_owner`(기본 false) 1개. 코드 상수 `OWNERSHIP_AMBIGUOUS_CAPABILITIES` 제거(호출부 grep 잔존 0). 소유 선언(누가 정본인가)과 경쟁하지 않아 두 번째 출처가 아니다(D-053). G-1 기본 가정(`server_spec` 정본=폴스타·모호)은 그대로 | `config/db_registry.yaml` · `CapabilitySpec.ambiguous_owner` · `registry.ambiguous_capabilities()` · 테스트 4 |
+| **K** | 프로브 HALT 오판(G-3 연관) | 프로브 SQL은 `hostname`·`name`을 함께 보지만 **브리지 키는 `hostname`뿐**이다(G-3). 어느 컬럼으로 맞았는지를 판정에 실어, 다른 시스템 일치가 `name`뿐이면 **② HALT 대신 KEEP + 사유 노트**(신규 행 `owner_missing_weak_elsewhere`). `hostname` 일치가 하나라도 있으면 종전대로 ② HALT | `host_discovery.SystemProbe.weak_only`·`strong_hits()`·`ROW_WEAK_ELSEWHERE` · `entity_locator._Entities.strong` · 테스트 6 |
+
+**검증(2026-09-21 · 과금 호출 0 · 실 DB·MCP 0 · 커밋 0)** — 신규 `tests/test_cross_system/test_plan102_recommendations.py` **34건**(권고마다 *바뀐 동작 + 반대 케이스*를 함께 고정: F는 정상 link·`per_ip`, K는 `hostname` 일치, G는 선언 부재, H는 플래그 off).
+기존 테스트 **1건 갱신** — `test_ownership_router.py::test_excluded_entries_are_not_corrected` 의 "직접 지정" 파라미터를 **정본을 지정한 경우**로 바꿨다(C 처분으로 정본이 아닌 직접 지정에는 노트가 생기므로 종전 단언이 경계를 잘못 고정한다).
 
 #### 4.1.6 위험 · 기존 결함 (기록만)
 
-1단 부분 영향(X-14 잔여) · IP 비교에 `LOWER` 없음 · 폴스타 IP 단일값 완전 일치 · 게이트웨이 IP 조건도 프로브 발동 · 샌드박스 `resource_type` 필터 실측 필요 · 운영 on 전 D-203 시나리오 재측정 필요 · 존 선택 재개 턴에서 자산 task가 폴스타로 가는 문제(95 W-10) · 기존 라우터 few-shot 9건에 `capabilities`가 없어 실 LLM이 필드를 빠뜨릴 수 있음(X-11 실측 대상) · `tests/test_semantic_routing/test_two_stage.py` 템플릿 키 계약에 슬롯 4개 증가(off 렌더는 빈 문자열 — 골든·`prompt_render_diff` 0으로 확인) · [기존 버그·미수정] `SEMANTIC_ROUTER_UNKNOWN_EXAMPLE`·`SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION`이 `.format()` 값으로 들어가 `{{ }}`가 LLM에 그대로 렌더됨.
+1단 부분 영향(X-14 잔여) · IP 비교에 `LOWER` 없음 · 폴스타 IP 단일값 완전 일치 · 게이트웨이 IP 조건도 프로브 발동 · 샌드박스 `resource_type` 필터 실측 필요 · 운영 on 전 D-203 시나리오 재측정 필요 · 존 선택 재개 턴에서 자산 task가 폴스타로 가는 문제(95 W-10 — **v6 실측(2026-09-21): 병행 세션이 W-10을 ✅ 완료로 기록했다**(95 v14 미커밋 — `_keep_zoneless_targets` · `db_scope.zone_selection_db_ids` · `subagents._make_isolated_input`의 `zone_selection_db_ids` 키 · task 고정 `subagents.py:1124`). **그러나 소유 고정 스킵은 그대로 남아 있다** — `src/orchestration/subagents.py:1101-1106`의 `task_owner` 블록이 여전히 `and not isolated.get("selected_db_ids")`로 게이트돼, 존 선택 재개 턴에서는 답변 영역 소유 고정이 아예 돌지 않는다(W-10 이 고친 것은 `raw_targets` 산출이고 이 게이트는 그 앞이다). **v6 부기(2026-09-21 · collectorinfra-36 지적으로 프레이밍 정정)**: 이 조건은 **빠뜨린 것이 아니라 의도적으로 넣은 것**이다 — 바로 위 `subagents.py:1098` 주석 *"이미 DB가 정해진 task(`db_ids`)·존 선택 재개 턴(`selected_db_ids`)은 건드리지 않는다"* 와 `:1095-1097`의 X-T13 근거(*"다중 존 시스템 소유 → 고정하지 않는다 … 고정하면 원문의 존 한정이 사라진다"*)가 그것이다. 따라서 질문은 "W-10 이 이 줄을 빠뜨렸나"가 아니라 **"존 선택 재개 턴에서 소유 고정·제한을 건너뛰는 설계가 W-10 이후에도 맞나"** 이고, 이는 구현 누락이 아니라 **미결 설계 판단**이다(사용자 판단 대상 · 구현 세션이 임의로 바꿀 사안 아님). 단, X-T13 근거는 **다중 존 시스템(폴스타)** 에 대한 것이고 **단일 DB 시스템 소유(자산 = itam)** 에는 그대로 적용되지 않는다 — W-10 요건(*존 선택과 무관하게 itam 유지*)과 정면으로 맞물리는 지점이 여기다. **95 소관 · 이번 범위에서 손대지 않았다**(같은 파일·인접 라인을 병행 세션이 편집 중 — 충돌 방지). 소유 플래그가 기본 off 라 현재 영향 0) · 기존 라우터 few-shot 9건에 `capabilities`가 없어 실 LLM이 필드를 빠뜨릴 수 있음(X-11 실측 대상) · `tests/test_semantic_routing/test_two_stage.py` 템플릿 키 계약에 슬롯 4개 증가(off 렌더는 빈 문자열 — 골든·`prompt_render_diff` 0으로 확인) · [기존 버그·미수정] `SEMANTIC_ROUTER_UNKNOWN_EXAMPLE`·`SEMANTIC_ROUTER_FAULT_DIAGNOSIS_SECTION`이 `.format()` 값으로 들어가 `{{ }}`가 LLM에 그대로 렌더됨 · **[잔여 · 범위 밖] opt-in 실패 사유 집합의 사본이 둘이다** — 정본 `src/observability/ladder.py:67` `OPTIN_FAILURE_REASONS` ↔ 사본 `scripts/scenario/server.py:43` `UNINTENDED_DEGRADATION`(D-053). 권고 B에서 리포트(`report.py`)는 **정본을 직접 보도록** 했고 둘의 동등성은 동기 테스트가 지킨다. 사본 자체를 지워 정본 하나로 만드는 것은 **러너 기동 경로의 의존이 바뀌므로 이번 범위 밖**이다(2026-09-21 팀 리드 판단).
 
 ---
 
@@ -699,3 +744,5 @@ v1은 운영 `.env`(1단)를 기준으로 삼았다. **v2는 사용자 기준(20
 | v2 | 2026-09-17 | **기준 실행 경로를 사다리 3단 `semantic_router`로 재정렬**(사용자 지시 *"기본은 시멘틱 라우터를 사용한다 … deepagents는 부가적으로 사용할 예정"*). 3단 경로 실측 §1.6 신설(★순차 러너는 구조 승인 HITL 기본 on이라 운영 설정으로 진입하지 않음 · 진입이 원문 표지 문자열 의존 · 라우터 노드+순차 러너 이중 분류 · `host_discovery`·`process_query`·`host_inspect` 3단 미도달 · 사다리 정본 판정이 1단 고정) · 함정 X-T8~X-T13 · 원칙 P10(워크플로 우선 — Anthropic 원문 재확인) · §3.1 소유 검증 2지점·`chain` 필드·단일 DB 시스템만 `db_ids` 고정 · §3.4 3단 노드 `entity_locator` · §3.5 3단 기준 배선표 재작성 · §3.6 D8 체인 진입 · §3.7 트랙 L(기준 전환 L-1~L-6) · WU X-13(3단 체인 진입)·X-14(1단 부가 동등성) · 성공 기준 판정 경로 명시·10·11 · 게이트 G-7 확정(v1 기본 가정 뒤집음)·G-8~G-10 신설 · **D-225 예약** · `plans/95` v7 검증 기준 1단→3단 |
 | v3 | 2026-09-17 | **G-10·G-8을 새 계획으로 확정·해소**(사용자 지시 *"3단 기능도 langgraph 기능을 이용하면 1단의 모든 기능을 구현할 수 있다 … 구조 승인 기능은 admin 페이지에 … 추가하라"*). G-10 → `plans/103`(LangGraph 네이티브 계획·`Send` 팬아웃·재계획 루프·태스크 서브그래프 · D-226 예약) · G-8 → `plans/104`(구조 승인 HITL을 관리자 페이지로 · D-227 예약). X-T8·X-T9·X-T12 해소 경로 표기 · §3.5 호출 자리가 103 `plan`·`dispatch`·`join`으로 옮겨 감(함수 동일) · X-13 진입을 103 `plan` 노드로 이관 · L-5 선행을 103 P5로 · 위험·비범위 갱신 |
 | v4 | 2026-09-17 | **1차 구현 후 사용자 지시로 중지**(구현 지시 *"102번 계획을 구현하라."* · 중지 지시 *"현재 작업 중인 내용을 계획파일에 업데이트하고 우선 현재까지 마무리하고 작업을 중지하라."*). 구현: X-1~X-9(값 기반 키 판정·매니페스트·키 브리지·3단 배선 · 시스템 축 프로브·`entity_locator` · 답변 영역 소유·프롬프트·골든셋) · L-1~L-3(2단 미입력 off · 기준 단 3단·사유 어휘 재정의 · 소비처) · L-4·X-12 문서 일부. 플래그 3종 기본 off 비트 동일(골든·`prompt_render_diff`·노드 목록·D-203 테스트). 차단 유지: X-10·X-11·X-13(103 P2-1)·X-14·L-5. **G-4 사용자 확정**(DB 항목 `capabilities` — 기본 가정 `solutions` 등재가 D-214 ④와 충돌해 이탈안 보고 → 확정). `asset_owner` 비활성 완화 불필요 재판정(95 G-9). 구현 현황·기본 가정·검증·재개 체크리스트·사용자 결정 필요 §4.1 신설. 파일명 `-TODO` → `-WIP`. **v4 보강(main 세션 · 사용자 지시 *"여기서 멈추고 관련 계획파일에 추가 진행해야될 작업을 업데이트하라."*)**: §3.1 G-4 옛 권고(`solutions` 등재)에 폐기 표기 · §4.1.3 중지 후 재확인 795 passed·게이트 exit 0 · §4.1.4-1 멀티 DB 노트 덮어쓰기를 정적 확인(단일 경로 `schema_analyzer`는 병합, 멀티 경로는 미병합 — 수동 프로필 없는 DB가 끼면 사실상 매번 발동) · -5 `CLAUDE.md` 반영 문안 수록(팀 리드 최종 보고에서 옮김) · -7 관련 계획 후속(`plans/95` W-10 선행 충족 · `plans/103` P2-1 `chain` 합류) 추가 · 코드 변경 0 |
+| v5 | 2026-09-21 | **재개(사용자 지시 *"102번 계획을 구현하라."* — 팀 리드 경유) · v4 체크리스트 1~7 처리.** ①멀티 DB 경로 `dependency_notes` 덮어쓰기 **수정**(재현 테스트 먼저 → state 노트 병합 · 단일 경로와 같은 `add_db_note` 규칙 · 반환 shape 유지) ②**전체 스위트 실행**(HEAD `284137a` 기준선 worktree 대조로 실패 전건을 기존 실패로 확정) ③**D-224**(부분 확정)·**D-225**(확정) 본문 등재 + D-221 ⑤ 부기·D-222 부기 2 ② 개정 표기 ④`docs/18` 5건 ⑤`CLAUDE.md` 사다리 절 + 옛 "1단 정본"·`flag_off` 서술 정리(`plans/94`·`96`·`99` 포함 · `plans/99` preflight 예시를 실제 출력으로 교정) ⑥`arch_check` WARN +2 = **`key_bridge` 현 위치 유지**(근거 4항) ⑦`plans/95` W-10은 **병행 세션이 구현 중**임을 실측하고 손대지 않음. **차단 유지**: X-10·X-11·X-13·X-14·L-5. 사용자 결정 필요 항목·기본 가정 **변경 0** · 커밋 0 · `.env` 무변경 · 과금 호출 0 |
+| v6 | 2026-09-21 | **§4.1.5 「사용자 결정 필요」 11건 처분**(사용자 지시 *"권고에 맞게 진행하라."* — 팀 리드 권고 승인 · 팀 리드 경유). §4.1.5를 **처분 표**로 교체하고 §3.3에 E·F·G 근거 문단, §3.4 결정표에 K 행(②′)을 더했다. **코드 7건**: B 리포트 최상단 opt-in 실패 `[안내]`+제외 건수(`scripts/scenario/report.py`) · C 직접 지정이 정본이 아니면 교정 없이 사유 노트(검증 2지점 대칭) · F 다른 DB(존)의 동명 호스트는 `ambiguous`(엔터티 id를 충돌 이름에 한해 DB로 한정 · `per_ip` 불변) · G 출처 DB 매니페스트 선언 컬럼이 1순위(브리지·프로브 대칭 · `detect_key_columns(declared=)`) · H 브리지 스코프만 있으면 D-099 결정적 컴파일 건너뛰고 일반 경로(사유 로그·노트) · J G-1 모호 영역을 `config/db_registry.yaml` `capabilities[].ambiguous_owner`로 이동(코드 상수 제거·잔존 0) · K 다른 시스템 일치가 `name`뿐이면 ② HALT 대신 KEEP(`owner_missing_weak_elsewhere`). **기록만 4건**: A 자산 매니페스트 런타임 공급은 104 대기 · D `capability` 없는 task 교정 추가 안 함(D-004) · E 브리지 행 제거를 `COMPOSITE_SCOPE_POSTCHECK_ENABLED`에 묶지 않음 · I `none_found` KEEP 유지. **검증**: 신규 단위 34건(권고마다 반대 케이스 동반) · 관련 묶음 2,182 passed · 게이트 `arch_check`·`overfit_check`(기준선 무변경)·`prompt_render_diff`·`catalog_diff` 전부 exit 0 · ruff 신규 0 · mypy 신규 0. 플래그 3종 기본 off·`.env` 무변경·커밋 0. **95 W-10 확인**: 병행 세션이 ✅ 완료로 기록했으나 `subagents.py:1101-1106` 소유 고정 스킵은 잔존 — 95 소관(§4.1.6). 차단 유지 X-10·X-11·X-13·X-14·L-5 → 파일명 `-WIP` 유지 |

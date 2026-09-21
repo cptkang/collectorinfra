@@ -141,6 +141,46 @@ def test_boot_exhaustive_tries_every_enum_choice():
     assert len(validate.check_boot([knob], exhaustive=False, runner=runner)) == 1
 
 
+
+@pytest.mark.parametrize(("knob_type", "expected"), [
+    ("tristate", ("true", "false")),                       # 미입력(None)은 표본이 아니다
+    ("json_list", ("[]", '["bench-probe-sentinel"]')),     # `.env` 의 list 는 JSON 배열
+])
+def test_boot_samples_match_the_field_format(knob_type, expected):
+    """`x` 를 넣으면 설정이 **올바르게** 거부해 허위 「기동 실패」가 된다(2026-09-21 6건)."""
+    knob = _knob("K", type=knob_type, default=None)
+    assert validate._sample_values(knob, exhaustive=True) == expected
+    assert validate._sample_values(knob, exhaustive=False)[0] in expected
+
+
+def _json_object_runner():
+    """JSON 객체만 받는 문자열 설정(`LLM_FABRIX_*_CONFIG` 모양)을 흉내 낸다."""
+    def run(env, timeout):
+        value = env.get("K", "")
+        if value and not value.startswith("{"):
+            payload = {"ok": False, "error_type": "ValidationError",
+                       "error": "Value error, Expecting value: line 1 column 1 (char 0)"}
+        else:
+            payload = {"ok": True, "config": {"text2sql.flag_a": value}}
+        return subprocess.CompletedProcess(args=["x"], returncode=0,
+                                           stdout=probe._MARKER + json.dumps(payload), stderr="")
+    return run
+
+
+def test_boot_retries_json_string_with_an_object():
+    """JSON 을 요구하는 문자열은 타입으로 드러나지 않는다 — 파싱 오류면 `{}` 로 다시 본다."""
+    found = validate.check_boot([_knob("K", type="string", default="")],
+                                runner=_json_object_runner())
+    assert [(f.value, f.ok) for f in found] == [("{}", True)]
+
+
+def test_boot_keeps_real_string_failures():
+    """JSON 파싱 오류가 아닌 거부는 그대로 실패다 — 재시도는 그 한 모양에만 건다."""
+    found = validate.check_boot([_knob("K", type="string", default="")],
+                                runner=_fail_runner(message="값이 너무 짧다"))
+    assert [(f.value, f.ok) for f in found] == [("x", False)]
+
+
 # ── L4 소비 실증 ──────────────────────────────────────────
 
 def _consumption(config_for, knobs=None):

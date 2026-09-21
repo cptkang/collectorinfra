@@ -146,6 +146,35 @@ async def log_user_request(
     await _write_audit_file(entry)
 
 
+async def log_rewrite_trace(
+    trace: dict[str, Any],
+    user_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> None:
+    """재작성 감사 레코드를 남긴다(plans/107 §4.9 — `INTENT_FRAME_ENABLED`일 때만 호출된다).
+
+    원문 전문은 싣지 않는다 — 원문은 ``user_request``에만 있고 이 레코드에는 슬롯 값과
+    출처·게이트·검증 결과만 있다(D-183 PII 정책). 시나리오 하네스가 ``thread_id``로
+    이 이벤트를 모아 게이트 통과 비율·검증 실패율을 낸다(plans/94 §19 O-e).
+
+    Args:
+        trace: ``build_rewrite_trace`` 산출물
+        user_id: 사용자 ID
+        thread_id: 세션 ID
+    """
+    entry = AuditEntry(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event="rewrite_trace",
+        rewrite_trace=trace,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+    log_data = {k: v for k, v in entry.to_dict().items() if k != "event"}
+    logger.info("rewrite_trace", **log_data)
+    await _write_audit_file(entry)
+
+
 async def log_drm_decrypt(
     file_name: Optional[str],
     file_size_bytes: int,

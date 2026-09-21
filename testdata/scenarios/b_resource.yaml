@@ -111,7 +111,11 @@ scenarios:
           query: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)cast\\s*\\(", "(?i)\\bnumeric\\b",
+          # 캐스트 타입명은 `numeric|decimal` 양쪽을 인정한다 — EAV 값 컬럼의 숫자 캐스트는
+          # 프롬프트가 `AS NUMERIC`으로 내놓아도 D-199 가드(`normalize_eav_unit_casts`)가
+          # 단위 인지 정규화 식(`CAST(... AS DECIMAL(31, 6))`)으로 **결정적으로 치환**한다.
+          # `numeric`만 요구하면 제품이 옳게 동작해도 불합격이다(run 20260918-182507 B-07·B-08).
+          sql_must_match: ["(?i)cast\\s*\\(", "(?i)\\b(numeric|decimal)\\b",
                           "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
           sql_must_not_match: ["(?i)as\\s+int(eger)?\\b"]
   - id: B-08
@@ -126,7 +130,8 @@ scenarios:
           query: "서버별 CPU 코어(vcore) 수 합계를 조회해줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)\\bnumeric\\b"]
+          # B-07 주석 참조 — D-199 가드가 `AS DECIMAL(31, 6)`으로 치환한다.
+          sql_must_match: ["(?i)\\b(numeric|decimal)\\b"]
           sql_must_not_match: ["(?i)as\\s+int(eger)?\\b"]
           manual_review: "b0에서 '4.0' 값 캐스트 에러가 없는지"
   - id: B-09

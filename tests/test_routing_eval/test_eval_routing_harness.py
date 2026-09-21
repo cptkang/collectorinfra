@@ -255,3 +255,45 @@ class TestCrossSystemGold:
         s = _run_ownership(monkeypatch, fx.FAULT_CHAIN_REVERSED)
         assert s["chain_matched"] < s["chain_scored"]
         assert H._verdict(s) == 1
+
+
+# ── 로컬 MLX 모드(D-240 부기) — 실 호출 없이 게이트 판정만 본다 ──────────────
+
+def _cfg(worker, orchestrator, worker_url="http://127.0.0.1:8080/v1",
+         orch_url="http://127.0.0.1:8080/v1"):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        llm=SimpleNamespace(provider=worker, mlx_base_url=worker_url, mlx_model="m"),
+        orchestrator=SimpleNamespace(provider=orchestrator, base_url=orch_url, model="m"))
+
+
+class TestLocalMlxGate:
+    def test_two_loopback_mlx_planes_open_without_run_e2e(self):
+        ok, reason = H.local_mlx_mode(_cfg("mlx", "mlx"))
+        assert ok, reason
+
+    @pytest.mark.parametrize(("worker", "orchestrator"), [
+        ("mlx", "gemini"),        # 오케스트레이터 과금 — 워커만 보면 무승인 호출(D-222)
+        ("gemini", "mlx"),
+        ("fabrix", "vllm"),       # 비과금이지만 로컬 MLX 가 아니다 — 이 모드의 대상 아님
+        ("mlx", "vllm"),
+    ])
+    def test_any_non_mlx_plane_keeps_run_e2e_gate(self, worker, orchestrator):
+        ok, _ = H.local_mlx_mode(_cfg(worker, orchestrator))
+        assert not ok
+
+    def test_remote_mlx_is_not_local(self):
+        ok, reason = H.local_mlx_mode(_cfg("mlx", "mlx", orch_url="http://10.0.0.5:8080/v1"))
+        assert not ok and "루프백" in reason
+
+    def test_gate_refuses_without_run_e2e_when_not_local(self, monkeypatch):
+        monkeypatch.delenv("RUN_E2E", raising=False)
+        monkeypatch.setattr(H, "local_mlx_mode", lambda cfg=None: (False, "과금 평면이 있다"))
+        with pytest.raises(SystemExit) as exc:
+            H._require_optin()
+        assert exc.value.code == 2
+
+    def test_gate_opens_for_local_mlx_without_run_e2e(self, monkeypatch):
+        monkeypatch.delenv("RUN_E2E", raising=False)
+        monkeypatch.setattr(H, "local_mlx_mode", lambda cfg=None: (True, "로컬 MLX 루프백"))
+        H._require_optin()   # SystemExit 없이 통과

@@ -15,6 +15,17 @@ import pytest
 from src.schema_cache.cache_manager import SchemaCacheManager
 
 
+@pytest.fixture(autouse=True)
+def _isolate_local_yaml_fallback(monkeypatch, tmp_path):
+    """로컬 YAML 폴백을 테스트 밖으로 밀어낸다.
+
+    cache_manager는 Redis 미스 시 **CWD 기준** `config/global_synonyms.yaml`을 읽는다
+    (get_global_synonyms_full 등). 저장소 루트에서 돌리면 실제 사전 20개 컬럼이 섞여
+    "글로벌 사전이 비었을 때"를 검증하는 케이스가 성립하지 않는다(2026-09-21 실측).
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def app_config():
     """테스트용 AppConfig (Redis 백엔드)."""

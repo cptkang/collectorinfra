@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.state import AgentState, OrganizedData, create_initial_state
+from tests.mocks.streaming_llm import attach_astream
 
 
 # ============================================================
@@ -149,8 +150,12 @@ class TestLegacyRegression:
         result = await field_mapper(state, llm=AsyncMock(), app_config=MagicMock())
 
         assert result["current_node"] == "field_mapper"
-        assert "column_mapping" not in result
-        assert "mapped_db_ids" not in result
+        # field_mapper는 스킵 경로에서도 매핑 산출물 키를 전부 None으로 되돌린다 —
+        # LangGraph 체크포인터는 델타만 병합하므로 키를 빼면 직전 턴의 매핑이 그대로
+        # 남는다. "매핑하지 않았다"는 키 부재가 아니라 None으로 표현된다.
+        assert result["column_mapping"] is None
+        assert result["mapped_db_ids"] is None
+        assert result["db_column_mapping"] is None
 
     @pytest.mark.asyncio
     async def test_legacy_map_fields_single_db(self):
@@ -619,7 +624,9 @@ class TestOutputGeneratorMappingDisplay:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.ainvoke.return_value = MagicMock(content="서버 현황 결과입니다.")
+        msg = MagicMock(content="서버 현황 결과입니다.")
+        mock_llm.ainvoke.return_value = msg
+        attach_astream(mock_llm, lambda: msg)
 
         mock_config = MagicMock()
         result = await output_generator(state, llm=mock_llm, app_config=mock_config)
@@ -651,7 +658,9 @@ class TestOutputGeneratorMappingDisplay:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.ainvoke.return_value = MagicMock(content="서버 목록입니다.")
+        msg = MagicMock(content="서버 목록입니다.")
+        mock_llm.ainvoke.return_value = msg
+        attach_astream(mock_llm, lambda: msg)
 
         result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
 

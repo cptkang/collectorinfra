@@ -1,0 +1,183 @@
+{
+  "meta": {
+    "run_id": "20260918-182507",
+    "mode": "run",
+    "env": "closed",
+    "provider": "fabrix",
+    "commit": "5b093016f3eec3cefed706ebbc664ce71f6160c0",
+    "dirty": true,
+    "started_at": "2026-09-18T09:25:07+00:00",
+    "repeat": 1,
+    "scenario_total": 218,
+    "platform": {
+      "os": "Linux",
+      "os_release": "5.14.0-570.112.1.el9_6.x86_64",
+      "python": "3.12.9",
+      "encoding": "utf-8",
+      "pythonutf8": "1"
+    },
+    "host": "nclago01",
+    "env_source": "auto",
+    "setup_cleanup": [
+      "삭제 polestar_cm_gp polestar.cmm_resource.hostname ['검증용사용률']: 완료"
+    ],
+    "teardown_log": [
+      {
+        "scenario_id": "A-10",
+        "repeat": 0,
+        "unregister_synonym": []
+      }
+    ],
+    "token_refresh": [
+      {
+        "profile": "baseline",
+        "refreshes": [
+          {
+            "reason": "선제 갱신(경과 6.4h)",
+            "at_monotonic": 10650844.4
+          }
+        ],
+        "failures": []
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "name": "baseline",
+      "port": 36888,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "intent_flag_on",
+      "echo_ok": true,
+      "echo_mismatch": {},
+      "auth_enabled": false,
+      "reasons": []
+    },
+    {
+      "name": "optin_alarm",
+      "port": 23220,
+      "valid": true,
+      "tier": "intent_orchestration",
+      "degraded_reason": "intent_flag_on",
+      "echo_ok": true,
+      "echo_mismatch": {},
+      "auth_enabled": false,
+      "reasons": []
+    }
+  ],
+  "executed_turns": 380,
+  "skipped": [
+    {
+      "scenario_id": "G-01",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 4,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-01",
+      "turn": 5,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "G-04",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-03",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-03",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-04",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-04",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-05",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-05",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 2,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 3,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 4,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "I-06",
+      "turn": 5,
+      "reason": "선행 턴 1 이 fail - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 3,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 3,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09",
+      "turn": 3,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    },
+    {
+      "scenario_id": "R2-09C",
+      "turn": 2,
+      "reason": "선행 턴 1 이 error - 후속 턴 판정 불가"
+    }
+  ],
+  "raw_path": "/fsapp/infra-collector-agent/results/scenario/20260918-182507/raw.jsonl",
+  "out_dir": "/fsapp/infra-collector-agent/results/scenario/20260918-182507"
+}

@@ -43,6 +43,7 @@ from src.sql_validation import (
     find_bare_hangul_tokens,
     validate_sql,
 )
+from src.utils.query_gen_common import surface_query_for_judgment
 
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
@@ -117,7 +118,8 @@ async def query_validator(
         sql,
         schema_info,
         db_engine=_engine_or_fallback(state),
-        user_query=state.get("user_query", "") or "",
+        # "전체/모든" 행 상한 상향 판정 입력 — 원문 기준(plans/107 W0.5). 3단은 종전과 같다.
+        user_query=surface_query_for_judgment(state),
         default_limit=app_config.query.default_limit,
         adapter_checks=adapter_checks,
     )
@@ -128,10 +130,16 @@ async def query_validator(
     _non_select_errors = [
         e for e in outcome.errors if e.startswith("SELECT 문만 허용됩니다")
     ]
+    #: 생성기가 SQL이 아니라 산문(되물음·불가 사유)을 반환한 경우. PII 차단 변형은 원인이
+    #: 달라 제외한다 — 여기 True면 그래프가 전용 예산(`NON_SQL_RETRY_BUDGET`)으로 조기
+    #: 종결하고 그 산문을 사용자 응답에 싣는다(plans/108 CU-A2).
+    _is_non_sql_prose = False
     if _non_select_errors:
         from src.security.pii_filter import is_filter_blocked
 
-        if is_filter_blocked(raw_text=sql):
+        _pii_blocked = is_filter_blocked(raw_text=sql)
+        _is_non_sql_prose = not _pii_blocked
+        if _pii_blocked:
             # D-155: query_generator가 차단 시점에 산출한 섹션별 로컬 스캔 진단을
             # 에러에 실어 "어느 블록의 어떤 값이 걸렸는지"를 UI에서 바로 읽게 한다
             # (폐쇄망은 로그 접근이 어려워 UI 노출이 1차 진단 채널).
@@ -165,7 +173,7 @@ async def query_validator(
     # 결과 결정
     if outcome.errors:
         logger.warning(f"SQL 검증 실패: {outcome.errors}")
-        return _build_failure_result(outcome.errors)
+        return _build_failure_result(outcome.errors, non_sql=_is_non_sql_prose)
 
     # 자동 보정된 SQL 적용
     auto_fixed_sql = outcome.auto_fixed_sql
@@ -213,11 +221,12 @@ def _engine_or_fallback(state: AgentState) -> str:
     return "postgresql"
 
 
-def _build_failure_result(errors: list[str]) -> dict:
+def _build_failure_result(errors: list[str], *, non_sql: bool = False) -> dict:
     """검증 실패 결과를 구성한다.
 
     Args:
         errors: 에러 메시지 목록
+        non_sql: 생성 산출물이 SQL이 아닌 산문이었는가(그래프 조기 종결 신호)
 
     Returns:
         State 업데이트 딕셔너리
@@ -228,6 +237,7 @@ def _build_failure_result(errors: list[str]) -> dict:
             "passed": False,
             "reason": reason,
             "auto_fixed_sql": None,
+            "non_sql": non_sql,
         },
         "error_message": f"SQL 검증 실패: {reason}",
         "current_node": "query_validator",

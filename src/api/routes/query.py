@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
+from src.api.stream_failure import StreamTrace
 from src.llm import USER_RESPONSE_TAG
 from src.utils.json_extract import coerce_content_text
 from src.routing.db_authz import SELECTION_DENIED_MESSAGE, filter_selected_db_ids
@@ -140,8 +141,8 @@ def _sse_event(data: dict) -> str:
 
 
 # 처리 현황 표시 대상 노드(SSE node_start/node_complete 화이트리스트 · D-039).
-# D-204(plans/89 T1): 사다리 1단 정본 `deep_agent`와 옵트인 노드가 빠져 있어 운영 경로에서
-# field_mapper 이후 최종 토큰까지 이벤트가 0건이던 것을 정정한다.
+# D-204(plans/89 T1): 사다리 1단 `deep_agent`(부가 경로 · D-225 ②)와 옵트인 노드가 빠져 있어
+# 그 경로에서 field_mapper 이후 최종 토큰까지 이벤트가 0건이던 것을 정정한다.
 _STREAM_KNOWN_NODES: frozenset[str] = frozenset({
     "context_resolver", "input_parser",
     "semantic_router", "schema_analyzer",
@@ -154,7 +155,7 @@ _STREAM_KNOWN_NODES: frozenset[str] = frozenset({
     # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
     "intent_planner", "agent_orchestrator",
     "replanner", "result_aggregator",
-    # plans/89 · D-204: 사다리 1단 정본 + 옵트인 노드
+    # plans/89 · D-204: 사다리 1단(부가 경로) + 옵트인 노드
     "deep_agent", "fault_diagnosis", "cache_management",
 })
 
@@ -236,6 +237,23 @@ def _heartbeat_sse_payload(start_time: float, hb: dict) -> dict:
     }
 
 
+def _stream_error_payload(
+    message: str, trace: StreamTrace, *, code: str, start_time: float, limit_sec: float | None
+) -> dict:
+    """SSE ``error`` 이벤트 — 문구(``message``)는 그대로 두고 실패 경위를 덧붙인다 (D-242).
+
+    경위(어느 단계에서·얼마나 걸려·앞서 무슨 실패가 있었는지)는 화면이 그대로 보여 주고,
+    다시 시도할지는 사용자가 정한다. 문구를 바꾸지 않는 이유: 하네스가 문구로 실패 유형을 가른다.
+    """
+    return {
+        "type": "error",
+        "message": message,
+        **trace.failure_fields(
+            code=code, elapsed_ms=(time.time() - start_time) * 1000, limit_sec=limit_sec
+        ),
+    }
+
+
 def _progress_sse_payload(event: dict, current_node: str | None, start_time: float) -> dict | None:
     """도구·커스텀 이벤트를 SSE ``progress``로 변환한다 (plans/89 §3.1 · D-204).
 
@@ -273,6 +291,8 @@ def _progress_sse_payload(event: dict, current_node: str | None, start_time: flo
         base["kind"] = "step"
         if data.get("label"):
             base["label"] = str(data["label"])[:200]
+        if data.get("detail"):  # 단계 실패 사유(D-242) — 있을 때만 싣는다
+            base["detail"] = str(data["detail"])[:300]
     return base
 
 
@@ -724,7 +744,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
             return {"status": "응답 통합 완료"}
 
         elif node_name == "deep_agent":
-            # plans/89 T1: 1단 정본 노드 — 도구 단위 진행은 progress 이벤트가 나른다.
+            # plans/89 T1: 1단(부가 경로) 노드 — 도구 단위 진행은 progress 이벤트가 나른다.
             return {"status": "에이전트 실행 완료"}
 
     except Exception as e:
@@ -832,6 +852,7 @@ def _build_turn_input_state(
             _substitute_zone_placeholder(body.query, body.selected_db_ids),
             selected_db_ids=body.selected_db_ids,
             allow_zone_clarification=True,
+            raw_user_query=_raw_query_seed(body.query, config),
             # 스코프 칩 "해제"(D-205) — 승계 원천 초기화 + context_resolver sticky 차단
             reset_db_scope=bool(getattr(body, "reset_db_scope", False)),
         )
@@ -848,6 +869,7 @@ def _build_turn_input_state(
     # 첫 턴: 전체 초기화
     return create_initial_state(
         user_query=_substitute_zone_placeholder(body.query, body.selected_db_ids),
+        raw_user_query=_raw_query_seed(body.query, config),
         thread_id=thread_id,
         user_id=current_user.get("sub"),
         user_department=current_user.get("department"),
@@ -899,6 +921,28 @@ def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) 
         labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
         return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
     return rewrite_zone_mentions_for_selection(query, selected_db_ids)
+
+
+def _raw_query_seed(query: str, config) -> str | None:
+    """라우트 진입 원문을 상태에 실을지 정한다(plans/107 P-2 · G-7).
+
+    ``INTENT_FRAME_ENABLED``일 때만 원문을 돌려준다 — 꺼져 있으면 None이라 상태·체크포인트에
+    원문·표시문이 실리지 않는다(현행과 비트 동일). ``user_query``는 종전대로 존 표기 치환본이다.
+    """
+    ifc = getattr(config, "intent_frame", None)
+    return query if ifc is not None and ifc.enabled is True else None
+
+
+def _rewrite_trace_fields(thread_id: str | None) -> dict:
+    """완료 ``done`` 이벤트에 붙일 재작성 감사(plans/107 §4.9 → plans/94 §19 O-e).
+
+    이번 턴에 SQL 생성 노드들이 남긴 레코드를 꺼낸다(1·2단 격리 파이프라인 것도 포함).
+    레코드가 없으면(기능 꺼짐 포함) **키 자체를 싣지 않는다** — done 페이로드 바이트 불변.
+    """
+    from src.nodes.intent_frame_builder import pop_rewrite_traces
+
+    traces = pop_rewrite_traces(thread_id)
+    return {"rewrite_trace": traces} if traces else {}
 
 
 def _scope_narrowed_or_none(body, config, current_user: dict | None) -> dict | None:
@@ -1087,6 +1131,11 @@ def _file_zone_clarification_or_none(
         return exclusive
     if selected_db_ids:
         return None  # 선택 재개 턴
+    # 미등록 존 지목(plans/108 CU-B2 · G-3) — 텍스트 경로와 대칭. 종전에도 위치어 미해소라
+    # 역질문은 떴지만 "그 존이 없다"는 사실은 전달되지 않았다.
+    unregistered = _unregistered_zone_clarification_or_none(q, config, has_file=True)
+    if unregistered:
+        return unregistered
     if _ZONE_PLACEHOLDER not in q:
         from src.nodes.input_parser import LOCATION_HINT_TERMS
         if any(t in q for t in LOCATION_HINT_TERMS):
@@ -1143,6 +1192,51 @@ def _zone_group_exclusive_or_none(
     )
 
 
+def _unregistered_zone_clarification_or_none(
+    query: str, config, *, has_file: bool = False
+) -> dict | None:
+    """원문이 **등록되지 않은 존**을 지목하면 존 선택 역질문을 돌려준다 (plans/108 CU-B2 · G-3).
+
+    run `20260918-182507` R3-03(3회 전건 동일): "판교존 서버 목록"에 대해 생성 SQL이
+    `-- 판교존(지역 힌트는 스키마에 없으므로 무시)` 주석을 달고 전 서버 1,690건을 반환했다.
+    사용자가 지목한 스코프를 **조용히 버린** 것이라 「침묵적 폴백 금지」 위반이다.
+
+    탐지는 `find_unregistered_zone_terms`가 좁게 판정한다(레지스트리 어휘 화이트리스트 +
+    `…존` 일반 낱말 접미 배제). 오탐의 대가는 존 선택창 재표시라 막다른 에러가 아니지만,
+    정상 질의를 가로채지 않는 것이 우선이라 미탐 쪽으로 기운 규칙이다.
+
+    Args:
+        query: 사용자 원문 질의
+        config: AppConfig (활성 DB·존 그룹 배타 설정)
+        has_file: 파일(폼필) 경로 여부 — 프론트가 보관 파일과 함께 재전송한다
+
+    Returns:
+        clarification 페이로드 dict. 미등록 존이 없으면 None.
+    """
+    from src.routing.db_scope import find_unregistered_zone_terms
+
+    unknown = find_unregistered_zone_terms(query)
+    if not unknown:
+        return None
+    named = ", ".join(f"'{t}'" for t in unknown)
+    logger.info("미등록 존 지목 감지(plans/108 CU-B2): %s — 존 선택 역질문 발행", named)
+    exclusive = getattr(config.multi_db, "zone_group_exclusive", True)
+    return build_zone_clarification(
+        config.multi_db.get_active_db_ids(),
+        query or "",
+        question=(
+            f"{named}은(는) 등록되지 않은 존입니다. 조회할 수 있는 존은 아래 목록뿐입니다. "
+            + (
+                "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
+                if exclusive
+                else "(복수 선택 가능 — 전체 조회는 모두 선택)"
+            )
+        ),
+        has_file=has_file,
+        group_exclusive=exclusive,
+    )
+
+
 def apply_selection_authorization(
     selected_db_ids: list[str] | None, current_user: dict[str, Any]
 ) -> tuple[list[str] | None, bool]:
@@ -1177,6 +1271,12 @@ def _zone_clarification_or_none(
     if body.selected_db_ids:
         return None  # 선택 재개 턴 — 게이트 통과
     query = body.query or ""
+    # 미등록 존 지목(plans/108 CU-B2 · G-3)은 아래 좁히기 조건("모든/전체"·"서버"·위치어 해소)
+    # 보다 **앞선다** — "판교존 서버 목록"은 대량 조회 표현이 아니라 종전 규칙에 걸리지 않았고,
+    # 그 결과 지목이 조용히 버려졌다. 지목이 틀렸다는 사실 자체가 되물을 이유다.
+    unregistered = _unregistered_zone_clarification_or_none(query, config)
+    if unregistered:
+        return unregistered
     placeholder = _ZONE_PLACEHOLDER in query
     if not placeholder:
         # 후속 턴: previous_entities/DB 승계 우선(§4.2 비발동). 단 스코프 칩 "해제"(reset_db_scope,
@@ -1495,6 +1595,7 @@ async def process_query_stream(
         _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
+        _trace = StreamTrace()   # 실패 시 경위(D-242)
 
         try:
             if hasattr(graph, "astream_events"):
@@ -1513,16 +1614,16 @@ async def process_query_stream(
                         async for _ev_kind, _ev_payload in _events:
                             # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
                             if _exceeded_total_timeout(start_time, effective_timeout):
-                                yield _sse_event({
-                                    "type": "error",
-                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                })
+                                yield _sse_event(_stream_error_payload(
+                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                    _trace, code="timeout", start_time=start_time, limit_sec=effective_timeout,
+                                ))
                                 return
                             if _ev_kind == "timeout":
-                                yield _sse_event({
-                                    "type": "error",
-                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                })
+                                yield _sse_event(_stream_error_payload(
+                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                    _trace, code="timeout", start_time=start_time, limit_sec=effective_timeout,
+                                ))
                                 return
                             if _ev_kind == "heartbeat":
                                 yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
@@ -1532,13 +1633,16 @@ async def process_query_stream(
                             name = event.get("name", "")
 
                             # 도구·커스텀 이벤트 → progress (plans/89 T3)
-                            if _progress_on:
-                                _prog = _progress_sse_payload(event, _current_node, start_time)
-                                if _prog is not None:
+                            _prog = _progress_sse_payload(event, _current_node, start_time)
+                            if _prog is not None:
+                                _trace.observe_progress(_prog)
+                                if _progress_on:
                                     yield _sse_event(_prog)
                                     continue
 
                             # 노드 시작 이벤트 감지
+                            if kind == "on_chain_start" and name in _STREAM_KNOWN_NODES:
+                                _trace.node_started(name, (time.time() - start_time) * 1000)
                             if kind == "on_chain_start" and name and name not in _seen_nodes:
                                 _known_nodes = _STREAM_KNOWN_NODES
                                 if name in _known_nodes:
@@ -1554,6 +1658,7 @@ async def process_query_stream(
                             if kind == "on_chain_end" and name:
                                 node_output = event.get("data", {}).get("output", {})
                                 if isinstance(node_output, dict) and name in _seen_nodes:
+                                    _trace.node_ended(name, node_output, (time.time() - start_time) * 1000)
                                     # query_results를 반환하는 노드에서 추적
                                     if name in ("query_executor", "multi_db_executor", "result_merger"):
                                         node_qr = node_output.get("query_results")
@@ -1659,6 +1764,7 @@ async def process_query_stream(
                                         "db_scope": response_data.get("db_scope"),  # D-205
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                         "clarification": response_data.get("clarification"),
+                                        **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                                     })
                                     return
 
@@ -1736,19 +1842,20 @@ async def process_query_stream(
                 "db_scope": response_data.get("db_scope"),  # D-205
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
+                **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
             })
 
         except asyncio.TimeoutError:
-            yield _sse_event({
-                "type": "error",
-                "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-            })
+            yield _sse_event(_stream_error_payload(
+                "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                _trace, code="timeout", start_time=start_time, limit_sec=effective_timeout,
+            ))
         except Exception as e:
             logger.error(f"SSE 스트리밍 에러: {e}")
-            yield _sse_event({
-                "type": "error",
-                "message": f"처리 중 오류가 발생했습니다: {str(e)}",
-            })
+            yield _sse_event(_stream_error_payload(
+                f"처리 중 오류가 발생했습니다: {str(e)}",
+                _trace, code="exception", start_time=start_time, limit_sec=effective_timeout,
+            ))
 
     return StreamingResponse(
         event_generator(),
@@ -1863,6 +1970,7 @@ async def process_file_query(
 
     initial_state = create_initial_state(
         user_query=_substitute_zone_placeholder(query, selected_list),
+        raw_user_query=_raw_query_seed(query, config),
         uploaded_file=file_bytes,
         file_type=file_ext,
         thread_id=actual_thread_id,
@@ -2149,6 +2257,7 @@ async def process_file_query_stream(
 
     initial_state = create_initial_state(
         user_query=_substitute_zone_placeholder(query, selected_list),
+        raw_user_query=_raw_query_seed(query, config),
         uploaded_file=file_bytes,
         file_type=file_ext,
         thread_id=actual_thread_id,
@@ -2172,6 +2281,7 @@ async def process_file_query_stream(
         _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
+        _trace = StreamTrace()   # 실패 시 경위(D-242)
 
         try:
             if hasattr(graph, "astream_events"):
@@ -2189,16 +2299,16 @@ async def process_file_query_stream(
                         async for _ev_kind, _ev_payload in _events:
                             # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
                             if _exceeded_total_timeout(start_time, config.server.file_query_timeout):
-                                yield _sse_event({
-                                    "type": "error",
-                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                })
+                                yield _sse_event(_stream_error_payload(
+                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                    _trace, code="timeout", start_time=start_time, limit_sec=config.server.file_query_timeout,
+                                ))
                                 return
                             if _ev_kind == "timeout":
-                                yield _sse_event({
-                                    "type": "error",
-                                    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                })
+                                yield _sse_event(_stream_error_payload(
+                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                    _trace, code="timeout", start_time=start_time, limit_sec=config.server.file_query_timeout,
+                                ))
                                 return
                             if _ev_kind == "heartbeat":
                                 yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
@@ -2208,12 +2318,15 @@ async def process_file_query_stream(
                             name = event.get("name", "")
 
                             # 도구·커스텀 이벤트 → progress (plans/89 T3)
-                            if _progress_on:
-                                _prog = _progress_sse_payload(event, _current_node, start_time)
-                                if _prog is not None:
+                            _prog = _progress_sse_payload(event, _current_node, start_time)
+                            if _prog is not None:
+                                _trace.observe_progress(_prog)
+                                if _progress_on:
                                     yield _sse_event(_prog)
                                     continue
 
+                            if kind == "on_chain_start" and name in _STREAM_KNOWN_NODES:
+                                _trace.node_started(name, (time.time() - start_time) * 1000)
                             if kind == "on_chain_start" and name and name not in _seen_nodes:
                                 _known_nodes = _STREAM_KNOWN_NODES
                                 if name in _known_nodes:
@@ -2228,6 +2341,7 @@ async def process_file_query_stream(
                             if kind == "on_chain_end" and name:
                                 node_output = event.get("data", {}).get("output", {})
                                 if isinstance(node_output, dict) and name in _seen_nodes:
+                                    _trace.node_ended(name, node_output, (time.time() - start_time) * 1000)
                                     if name in ("query_executor", "multi_db_executor", "result_merger"):
                                         node_qr = node_output.get("query_results")
                                         if isinstance(node_qr, list):
@@ -2325,6 +2439,7 @@ async def process_file_query_stream(
                                         "form_fill_clarification": response_data.get("form_fill_clarification"),
                                         "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                                         "db_scope": response_data.get("db_scope"),  # D-205
+                                        **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                                     })
                                     return
 
@@ -2393,19 +2508,22 @@ async def process_file_query_stream(
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                 "db_scope": response_data.get("db_scope"),  # D-205
+                **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
             })
 
         except asyncio.TimeoutError:
-            yield _sse_event({
-                "type": "error",
-                "message": "처리 시간이 초과되었습니다.",
-            })
+            yield _sse_event(_stream_error_payload(
+                "처리 시간이 초과되었습니다.",
+                _trace, code="timeout", start_time=start_time,
+                limit_sec=config.server.file_query_timeout,
+            ))
         except Exception as e:
             logger.error(f"파일 SSE 스트리밍 에러: {e}")
-            yield _sse_event({
-                "type": "error",
-                "message": f"처리 중 오류가 발생했습니다: {str(e)}",
-            })
+            yield _sse_event(_stream_error_payload(
+                f"처리 중 오류가 발생했습니다: {str(e)}",
+                _trace, code="exception", start_time=start_time,
+                limit_sec=config.server.file_query_timeout,
+            ))
 
     return StreamingResponse(
         event_generator(),

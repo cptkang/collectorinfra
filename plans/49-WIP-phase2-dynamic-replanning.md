@@ -10,6 +10,8 @@
 > 트랙: **B (tool-calling 필수)** — deepagents 미들웨어를 vLLM 오케스트레이터로 구동
 > **검증: 2026-09-17 — 구현 대조 + 로컬 MLX 실측(§12).** 결과: 성공기준 1·3·4·5·6 동작 확인, 2(`write_todos`·`task`) 미사용, 7 미완.
 > **결정적 결함 2건 발견(B-1 병합 스코프 절단 · B-2 병렬 도구 호출 task_id 중복 — 둘 다 모델 무관 · 미수정)**. 종단 4건 중 2건 실행 후 사용자 지시로 중단.
+> **재개: 2026-09-21(HEAD `284137a`) — 미실행 종단 E3·E4 완료.** 패턴 ②(선행 결과로 후속 조회 스코프 한정)와 일반 안내 위임이 실 DB에서 동작했고, **E3에서 B-1이 새 양상(B-1a — 식별 컬럼·값 표기형 불일치로 후속 조회 행 전체 탈락)으로 재현**됐다.
+> **수정: 2026-09-21 — B-1·B-1a·B-2 수정 완료(D-234).** 병합 키 정규화 · 겹침 0이면 합성 폴백 · 절단은 좁히기일 때만 · 도구 호출 순번 전용 카운터. 실 DB 재실행에서 E2 메모리 3행·E3 `OSType`이 복구됐고 회귀 0. `docs/deepagents_poc_report.md` 작성으로 성공기준 7 부분 충족. 잔여 0이 아니라 `-WIP` 유지(§12.6).
 
 ---
 
@@ -457,14 +459,16 @@ vLLM 인프라 구축(R-B1) 전에 deepagents tool-calling 파이프라인을 �
 
 ---
 
-## 12. 검증 기록 — 2026-09-17 구현 대조 + 로컬 MLX 실측
+## 12. 검증 기록 — 2026-09-17 구현 대조 + 로컬 MLX 실측 (2026-09-21 종단 재개로 완료)
 
-> **지시**: *"deepagent의 구성 계획파일을 검토하고 mlx 기반으로 구현 내용을 테스트를 진행하라"* → 17:47 *"현재까지 마무리하고 작업을 중지하라"*로 중단.
-> **조건**: 브랜치 `multiintent` · HEAD `c64ef98` + 미커밋 작업 트리. 실행 중 병행 세션이 `src/orchestration/*`를 편집하고 있었으므로, 결과는 **실행 시점 작업 트리** 기준이다.
-> 워커·오케스트레이터 모두 `mlx`(`mlx-community/Qwen3.5-9B-OptiQ-4bit`, `127.0.0.1:8080` 공유 서버) · `ACTIVE_DB_IDS=polestar,itam` · `recursion_limit` 25.
-> **과금 0**: Gemini 키 3종을 OS env 빈 값으로 덮고 `external_planes` 가드를 통과시킨 뒤에만 호출했다.
+> **지시**: *"deepagent의 구성 계획파일을 검토하고 mlx 기반으로 구현 내용을 테스트를 진행하라"* → 17:47 *"현재까지 마무리하고 작업을 중지하라"*로 중단. **2026-09-21 재개** — 미실행분(실 DB 종단 E3·E4)만 실행했다.
+> **조건(2026-09-17)**: 브랜치 `multiintent` · HEAD `c64ef98` + 미커밋 작업 트리. 실행 중 병행 세션이 `src/orchestration/*`를 편집하고 있었으므로, 결과는 **실행 시점 작업 트리** 기준이다.
+> **조건(2026-09-21)**: 브랜치 `multiintent` · HEAD **`284137a`** · 작업 트리 clean. 9/17의 미커밋 트리는 같은 날 17:59 `284137a`로 커밋됐다 — 9/17 E1·E2 로그의 조립 문구(`오케스트레이터=mlx(...)`)가 `284137a`가 도입한 형태와 같으므로 실행 당시 `deep_agent.py`는 이미 현 HEAD 형태였다. B-1·B-2의 결함 코드(`result_aggregator._merge_task_results_by_identity` · `deepagents_tools.py:299` `order = len(collector) + 1`)는 HEAD에서도 그대로다.
+> 워커·오케스트레이터 모두 `mlx`(`mlx-community/Qwen3.5-9B-OptiQ-4bit`, `127.0.0.1:8080` 공유 서버 — 9/21은 타 세션 소유 PID 81760) · `ACTIVE_DB_IDS=polestar,itam` · `recursion_limit` 25 · 사다리 `tier=deep_agent`(`resolved_by=explicit_env`).
+> **과금 0**: Gemini 키 3종을 OS env 빈 값으로 덮고 `external_planes`(빈 목록) 가드를 통과시킨 뒤에만 호출했다. 9/21도 동일 가드를 실행 전 재확인했다.
 > MLX 수치는 로직 확인용이며 운영 기준선이 아니다(D-174).
-> **산출물**: `reports/deepagent_mlx_20260917/`(프로브·종단 스크립트 + 결과 JSON).
+> **산출물**: `reports/deepagent_mlx_20260917/`(프로브·종단 스크립트 + 결과 JSON). 9/21 재개·수정 검증은 같은 `da_e2e.py`를 scratchpad에 복사해 실행했다(저장소 산출물 추가 없음). MCP 9099는 9/17 10:39 기동한 **동일 프로세스**라 DB 경계 코드도 세 실행이 모두 같다.
+> **병행 편집 주의**: 9/21 작업 내내 다른 세션이 같은 작업 트리를 편집했고, 수정 검증 실행 중(08:27) `e84b915`가 커밋됐다. 다만 `e84b915`는 `result_aggregator.py`·`deepagents_tools.py`·`graph.py`·`deep_agent.py`를 **건드리지 않는다**(파일 목록 실측) — 본 절의 판정에 영향이 없다. 회귀 판정은 `284137a` 클린 사본 기준이다.
 
 ### 12.1 실행 범위
 
@@ -473,32 +477,56 @@ vLLM 인프라 구축(R-B1) 전에 deepagents tool-calling 파이프라인을 �
 | 단위(네트워크 0) | `tests/test_orchestration` · `tests/test_llm_mlx.py` · `tests/test_observability` · `tests/test_graph*.py` · 구조화 출력 어댑터 · `noise_gate/tests/test_agentic_enricher.py` | 717건 전부 통과(396 + 321). 1 skip은 deepagents 설치 환경이라 건너뛴 케이스 |
 | LLM 0 프로브 | 노출 도구(스파이 모델) · 사다리 변형 4종 · 실행 중 오케스트레이터 장애 | §12.2 · §12.4 |
 | 실 MLX 대역 프로브 | 도구 핸들러만 대역, 오케스트레이터 판단·`run_deep_agent`·`result_aggregator`(워커)는 실물. 8시나리오 × 3회 | 유효 24건 · 도구 호출 36건. 1회차 S5(대역 키워드 불일치)·S7(서버 OOM)은 제외하고 재실행 |
-| 실 DB 종단 | `build_graph()` 1단 확정 그래프 + MCP 9099 로컬 샌드박스 | 4건 중 **2건만 실행**(E1 104초 · E2 236초). E3 진행 중 중단, E4 미실행 |
+| 실 DB 종단 | `build_graph()` 1단 확정 그래프 + MCP 9099 로컬 샌드박스 | **4건 전부 실행 완료.** 9/17: E1 104초 · E2 236초(E3 진행 중 중단, E4 미실행) / **9/21: E3 229.3초 · E4 47.8초**(둘 다 오류·타임아웃 0, 노드 경로는 4건 모두 `context_resolver → input_parser → field_mapper → deep_agent`) |
+
+**9/21 종단 상세**
+
+| ID | 질의 | 도구 호출(순서·task_id) | 결과 |
+|---|---|---|---|
+| **E3** (패턴 ②) | 심각(severity 3) 알람 서버 → 그 서버들의 IP·OS | ① `alarm_query` `tool_alarm_query_1` → ② `data_query` `tool_data_query_2` (**순차**) | ①이 활성 sev-3 알람 2행(`SV-WEB-001`·`SV-BATCH-009` — 샌드박스 실데이터와 일치) 반환 → ②에 선행 스코프 결정적 주입(D-095, `input_from=['tool_alarm_query_1']`) → 생성 SQL이 `HAVING … hostname IN ('svweb001','svbatch009')`로 한정돼 2행(`ipaddress`·`OSType` 포함) 반환, 둘 다 `success=True`. **그런데 최종 응답은 IP만 맞고 OS는 "데이터에 포함되지 않았습니다"** — B-1 재현(§12.3) |
+| **E4** (일반 안내) | "이 시스템으로 어떤 조회를 할 수 있어?" | 도메인 조회 도구 0회 | 워커 `general_inference`가 응답을 만들었다 — 최종 응답 본문이 `src/nodes/general_inference.py`의 `_SUPPORTED_CAPABILITIES` 항목(양식 채우기·양식 기억 관리 등)과 소스 카탈로그(`polestar` 샌드박스 · ITAM)를 그대로 담는다. 오케스트레이터 자유 서술 아님 |
+
+**9/21 수정 후 재실행**(D-234 적용 · 08:20~08:28 · 같은 스크립트·같은 전제 · 과금 0)
+
+| ID | 수정 전 | 수정 후 | 판정 |
+|---|---|---|---|
+| **E2** (독립 2조회) | "메모리 사용률 상위 서버는 조회된 데이터에 포함되어 있지 않습니다" — CPU 3행만(2026-09-17 · 236.0초) | `name`·`cpus_avg`·`memory_avg` 3행 전부 채움(DB-ORA-023 70.33/80.33 · cocm-hdkapp01 47.23/63.07 · SV-WEB-001 38.83/57.0). SQL 2건 각 3행 `success=True` | **메모리 행 유지 — 충족** |
+| **E3** (패턴 ②) | 표의 `name`·`OSType` 공란 · "OS 종류 정보는 데이터에 포함되지 않았습니다"(2026-09-21 오전 · 229.3초) | `OSType` = `Linux`(SV-WEB-001) · `AIX`(SV-BATCH-009), 응답도 "OS는 Linux와 AIX입니다"(228.0초) | **OS 값 채움 — 충족** |
+
+- E2는 **병렬 도구 호출**이었다 — 두 번째 도구 진입 시 collector가 비어 `_dependency_scope` 로그가 남지 않았다. B-2의 발현 조건이 실 DB에서 성립했고, 수정으로 두 결과가 서로 다른 `task_id`로 보존됐다.
+- E3의 OS 값은 샌드박스 실데이터와 일치한다(`OSType` EAV 50건 중 AIX는 1건이고 그것이 SV-BATCH-009).
+- **한계**: 이 샌드박스에서 CPU 상위 3과 메모리 상위 3이 **같은 서버 집합**이라, D-234 ②(겹침 0 → 합성 폴백) 경로는 실 DB에서 타지 않았다 — 단위 테스트로만 검증됐다. E2의 9/17 실패 원인은 B-2였고 B-1 절단은 이 데이터에서 발현 조건이 아니었다.
+- `finish_reason=length`(`LLM_MLX_MAX_TOKENS=4096`) 절단 경고는 E2·E3 각 1회로 여전하다 — 이번 수정 범위 밖.
 
 ### 12.2 성공기준 판정 (§1.3)
 
 | # | 판정 | 근거 |
 |---|---|---|
 | 1 tool_calls 왕복 | **충족(MLX)** | 36건 파싱 실패 0. 시나리오별 도구 순서 3/3 일치 |
-| 2 `write_todos`·`task` 구동 | **미관측** | 24건 모두 `write_todos`·`task`·파일시스템 도구 호출 0. 후속 조회는 ReAct 순차 도구 호출로 이뤄졌다 |
+| 2 `write_todos`·`task` 구동 | **미관측 — 코드 결함 아님(모델 행동 관찰)** | 24건 모두 `write_todos`·`task`·파일시스템 도구 호출 0. 실 DB 종단 4건에서도 0. 후속 조회는 ReAct 순차 도구 호출로 이뤄졌고 그것으로 패턴 ②·③이 성립한다. **강제하지 않는다** — 2026-09-21 사용자 지시 |
 | 3 registry 도구 노출·내부 실행 | **충족** | 도구 **7종**(계획 5종 + `query_live_processes`·`inspect_host`). 선행 결과 주입(D-095)은 S3·S4a에서 `input_from=['tool_data_query_1']` 3/3 |
-| 4 결과 조건부 재계획(패턴 ③) | **충족** | S4a(90% 초과 있음) 알람 조회 3/3 · S4b(없음) 미호출 3/3 · S5(0건) `was` 재조회 3/3 |
-| 5 최종 응답 워커 생성 | **충족, 단 결함 B-1·B-2로 내용 손실** | 오케스트레이터 자유 서술이 최종 응답으로 나간 경우 0/24. S6 일반 질의도 `general_answer`로 위임 3/3 |
+| 4 결과 조건부 재계획(패턴 ③) | **충족** | S4a(90% 초과 있음) 알람 조회 3/3 · S4b(없음) 미호출 3/3 · S5(0건) `was` 재조회 3/3. **9/21 실 DB 보강**: 패턴 ②(E3)도 실 DB에서 충족 — 선행 알람 결과가 후속 조회의 SQL 스코프(`HAVING hostname IN (…)`)로 결정적으로 반영됐다. 수정 후 재실행에서도 동일(228.0초) |
+| 5 최종 응답 워커 생성 | **충족, 단 결함 B-1·B-2로 내용 손실** | 오케스트레이터 자유 서술이 최종 응답으로 나간 경우 0/24. S6 일반 질의도 `general_answer`로 위임 3/3. **9/21 실 DB 보강**: E3·E4 모두 워커 산출(E4는 `general_inference` 본문 일치로 확인) — 실 DB 4건에서도 오케스트레이터 서술 노출 0. **9/21 수정 후(D-234) 단서 해소** — E2는 `cpus_avg`·`memory_avg` 3행 전부, E3는 `OSType` `Linux`·`AIX`가 최종 응답에 실린다. 판정을 **충족**으로 올린다 |
 | 6 가용성 기반 백엔드 선택 | **기동 시 충족 / 런타임 미구현** | 정상 → `deep_agent` · 오케스트레이터 사망 → `intent_orchestration`(2단 on) · 플래그 off → `intent_orchestration` · 사망+2단 off → `semantic_router`. 런타임 장애는 §12.4 G-3 |
-| 7 도입 조건 문서화·검증 | **미완** | `docs/deepagents_poc_report.md`(§7 step 8) 없음. §8 통합 테스트 6종(`test_vllm_bind_tools_roundtrip` 등) 저장소에 0건 |
+| 7 도입 조건 문서화·검증 | **부분 충족**(2026-09-21) | `docs/deepagents_poc_report.md`(§7 step 8) **작성 완료** — §12 실측을 결과·한계·운영 권고 3절로 정리(MLX 수치는 운영 기준선 아님 명시 · D-174). §8 통합 테스트 6종은 **만들지 않기로 했다**(2026-09-21 사용자 지시 — 실 인프라 의존 테스트를 늘리는 대신 §12 실측으로 대체). 폐쇄망 wheel 반입·vLLM 인프라 실검증은 여전히 미완 |
 
-### 12.3 결함 — 결정적 · 모델 무관(내부망 FabriX·vLLM 경로에도 해당) · **미수정**
+### 12.3 결함 — 결정적 · 모델 무관(내부망 FabriX·vLLM 경로에도 해당) · **2026-09-21 수정 완료(D-234)**
 
-| ID | 내용 | 재현 | 영향 범위 |
+> **수정 요지(D-234)**: ①병합 키를 정규화 값으로(`_identity_key` — 소문자 + `[\s_.-]` 제거) ②공통 서버가 0이면 결정적 병합을 포기하고 LLM 합성 폴백 ③base 스코프 절단은 `base_keys ⊆ 다른 조회 키 합집합`일 때만(D-100 좁히기 사례는 비트 동일) ④도구 호출 순번을 collector 길이 대신 `build_tools`가 만든 공유 `itertools.count`로.
+> 플래그 없음 — 종전 동작은 "조회에 성공한 데이터를 사용자에게 말하지 않는 것"이라 되돌릴 값이 아니다.
+> 수정 파일: `src/orchestration/result_aggregator.py` · `src/orchestration/deepagents_tools.py`. 신규 단위 5건(수정 전 실패 확인 후 통과) · 기존 절단 단언 2건·`tool_*_N` id 단언 8파일 15지점 **무수정 통과** · 전체 스위트 실패 집합이 `git worktree add HEAD` 클린 사본과 완전 일치(**회귀 0**) · `arch_check`·`overfit_check` exit 0.
+
+| ID | 내용 | 재현 | 영향 범위 · **수정 결과** |
 |---|---|---|---|
-| **B-1** | `result_aggregator._merge_task_results_by_identity`(D-100)가 병합 표를 **행 수 최소 조회의 서버 집합으로 절단**하고, 동률이면 첫 조회를 기준으로 삼는다. 서로 다른 서버를 가리키는 독립 조회의 결과가 조용히 사라진다(침묵 손실) | LLM 0: CPU 상위 3(web-01~03) + 메모리 상위 3(db-01~03) → 메모리 행 소실. 3+2행이면 CPU 행 소실. 대역 프로브 S2 3/3 동일 증상 | 1단 `deep_agent.py:482` · 2단 `graph.py:414`(둘 다 `synthesize=True`). `plans/100` Phase 4의 "메모리 결과 누락"과 같은 증상 |
-| **B-2** | `_run_subagent_tool`의 `order = len(collector) + 1`이 **도구 시작 시점**에 계산된다. 병렬 도구 호출은 같은 `task_id`(`tool_data_query_1`)를 받고, `_aggregate_with_fabrix`의 `{task_id: res}`에서 하나가 덮어써진다 | LLM 0: `asyncio.gather`로 두 호출 → `task_ids=['tool_data_query_1','tool_data_query_1']` · `task_results` 키 1개. 실 DB E2에서 SQL 2건(메모리 3행·CPU 3행)은 모두 성공했는데 최종 응답은 "메모리 없음"이었다. 두 번째 호출의 진입 로그가 없어 병렬 시작과 정합 | 1단. 선행 스코프 판정(`_dependency_scope`)·진행 이벤트의 task 식별도 같은 id를 쓴다 |
+| **B-1** | `result_aggregator._merge_task_results_by_identity`(D-100)가 병합 표를 **행 수 최소 조회의 서버 집합으로 절단**하고, 동률이면 첫 조회를 기준으로 삼는다. 서로 다른 서버를 가리키는 독립 조회의 결과가 조용히 사라진다(침묵 손실) | LLM 0: CPU 상위 3(web-01~03) + 메모리 상위 3(db-01~03) → 메모리 행 소실. 3+2행이면 CPU 행 소실. 대역 프로브 S2 3/3 동일 증상. **2026-09-21 실 DB E3에서 재현 — 아래 B-1a 양상** | 1단 `deep_agent.py:482` · 2단 `graph.py:414`(둘 다 `synthesize=True`). `plans/100` Phase 4의 "메모리 결과 누락"과 같은 증상. **2026-09-21 수정(D-234 ②③)** — 겹침 0이면 병합을 포기해 LLM 합성이 두 집합을 모두 서술하고, 부분 겹침이면 절단하지 않는다 |
+| **B-1a** (B-1의 새 양상 · 2026-09-21) | 두 조회가 **서로 다른 식별 컬럼**을 고르고(`_IDENTITY_COL_HINTS` 우선순위: 알람 조회는 `server_name`, 후속 조회는 `hostname`) 그 **값 표기형도 다르면**(`SV-WEB-001` vs `svweb001`) `merged`가 2서버가 아니라 4키로 갈라진다. 이어서 base 스코프 절단이 첫 조회의 2키만 남겨 **후속 조회의 행이 통째로 탈락**한다. 컬럼 헤더는 남고 값만 비므로 사용자에게는 "데이터가 없다"로 보인다 | 실 DB E3: `data_query`가 `OSType` 2행을 성공 반환(`success=True`, 120ms)했는데 최종 표의 `name`·`OSType`이 공란이고 응답이 "OS 종류 정보는 데이터에 포함되지 않았습니다". HEAD `284137a`에서 **LLM 0 결정적 재현** — E3 실측 컬럼 형태를 `_merge_task_results_by_identity`에 직접 넣으면 `{'server_name': 'SV-WEB-001', …, 'name': None, 'OSType': None}` | B-1과 동일(1·2단 공용). **제안(미적용 · 사용자 결정 대기)**: ①병합 키를 원시 값이 아니라 정규화 값(소문자 + 구분자 제거, `sv-web-001`↔`svweb001`)으로 잡고 ②base 스코프 절단은 "키가 실제로 겹친 경우"에만 적용한다. 겹침이 0이면 절단 대신 합성 폴백(`None` 반환)이 안전하다. **2026-09-21 수정 완료(D-234 ①③)** — 실 DB E3 재실행에서 `OSType`이 `Linux`·`AIX`로 채워졌다(228.0초) |
+| **B-2** | `_run_subagent_tool`의 `order = len(collector) + 1`이 **도구 시작 시점**에 계산된다. 병렬 도구 호출은 같은 `task_id`(`tool_data_query_1`)를 받고, `_aggregate_with_fabrix`의 `{task_id: res}`에서 하나가 덮어써진다 | LLM 0: `asyncio.gather`로 두 호출 → `task_ids=['tool_data_query_1','tool_data_query_1']` · `task_results` 키 1개. 실 DB E2에서 SQL 2건(메모리 3행·CPU 3행)은 모두 성공했는데 최종 응답은 "메모리 없음"이었다. 두 번째 호출의 진입 로그가 없어 병렬 시작과 정합. **2026-09-21 E3·E4에서는 미재현** — E3는 순차 의존이라 도구가 직렬 호출돼 `tool_alarm_query_1`·`tool_data_query_2`로 갈렸고, E4는 도메인 조회 도구 0회다. 결함이 해소된 것이 아니라 **병렬 호출 조건이 성립하지 않은 것**이었다 | 1단. 선행 스코프 판정(`_dependency_scope`)·진행 이벤트의 task 식별도 같은 id를 쓴다. **2026-09-21 수정 완료(D-234 ④)** — 실 DB E2 재실행은 **병렬 호출**이었고(두 번째 도구 진입 시 collector가 비어 `_dependency_scope` 로그 없음) 두 결과가 모두 살아남아 `cpus_avg`·`memory_avg`가 3행 전부 채워졌다(245.3초) |
 
 ### 12.4 계획 대비 괴리 · 품질 관찰
 
 | ID | 내용 | 비고 |
 |---|---|---|
-| G-1 | 오케스트레이터가 `sub_query`에 자연어 대신 **존재하지 않는 테이블로 지은 SQL**을 넣는다 — 36건 중 30건(자연어는 S6·S7뿐). 도구 인자 스키마에 설명이 없다(`{"sub_query": {"type": "string"}}`) | §4.2는 "자연어 지시" 전제. 같은 Qwen3.5-9B 계열인 내부망 vLLM에서도 확인 필요. `plans/100` Phase 4의 `server_events` SQL 실패와 같은 계열 |
+| G-1 | 오케스트레이터가 `sub_query`에 자연어 대신 **존재하지 않는 테이블로 지은 SQL**을 넣는다 — 36건 중 30건(자연어는 S6·S7뿐). 도구 인자 스키마에 설명이 없다(`{"sub_query": {"type": "string"}}`) | §4.2는 "자연어 지시" 전제. 같은 Qwen3.5-9B 계열인 내부망 vLLM에서도 확인 필요. `plans/100` Phase 4의 `server_events` SQL 실패와 같은 계열. **2026-09-21 실 DB E3에서도 재현** — 2번째 도구의 `sub_query`가 `SELECT server_name, ipaddress, os_type FROM servers WHERE server_name IN ('SV-WEB-001','SV-BATCH-009')`(폴스타에 `servers` 테이블 없음). 워커가 실 스키마로 재생성해 조회 자체는 성공했으나, 도구 인자가 SQL이라는 사실은 그대로다 |
 | G-2 | `create_deep_agent`가 내장 도구 8종(`write_todos`·`task`·파일시스템 6종)을 자동 장착한다. 오케스트레이터에 도구 15개가 노출되고, 도구 정의 20,415자 중 **92%(18,814자)가 내장**이다(도메인 7종은 1,601자) | `plans/48` §2.2는 Filesystem을 "미차용"으로 기술했다. 실사용 0회 |
 | G-3 | R-B10 런타임 graceful fallback **미구현** — 기동 후 오케스트레이터가 죽으면 `run_deep_agent`에서 `openai.APIConnectionError`가 그대로 전파된다(2.1초). `GraphRecursionError` 전용 처리도 없다 | §4.6은 "선택 구현"으로 기술 |
 | G-4 | 본문 서술이 구현과 다르다 — 도구 5종(실제 7) · "미가용 시 semantic_router"(실제로는 2단 on이면 2단 · `vllm_healthy` 로그 문구도 동일 오해) · provider `vllm\|gemini`(실제로는 `mlx` 포함, D-222) · §3.1 버전(설치본 langchain-core 1.6.1 · langgraph 1.2.11) · 테스트명 `test_build_tools_exposes_five_named_tools` | 2026-09-17 사용자 기준 "기본은 3단 semantic_router, deepagents는 부가"(`plans/102` v2 · `plans/103`)도 본 계획의 "주 경로" 서술에 아직 반영되지 않았다 |
@@ -507,9 +535,24 @@ vLLM 인프라 구축(R-B1) 전에 deepagents tool-calling 파이프라인을 �
 
 16:20:21 공유 MLX 서버(다른 세션 소유)가 동시 요청 2건 처리 중 `[METAL] Insufficient Memory`로 생성 스레드를 잃었다. `/health`는 200을 계속 반환하고 생성에는 무응답인 좀비 상태였다. 동시 요청 중 하나는 본 검증의 S7이었을 가능성이 크다. 소유 세션이 17:33 재기동한 뒤, 재실행은 **시나리오마다 타 클라이언트 대기 + 1토큰 생성 생존 확인**을 거쳐 직렬로 수행했다(재실행 중 대기 0초 · 좀비 0).
 
+2026-09-21 재개 시에도 같은 예의 게이트(`mlx_polite_gate`)를 거쳤다 — 두 건 모두 대기 0초 · 타 클라이언트 0 · 좀비 0. 서버는 타 세션 소유(PID 81760)라 종료·재기동하지 않았다. `LLM_MLX_MAX_TOKENS=4096` 절단 경고(`finish_reason=length`)는 9/17 E2에 이어 **9/21 E3에서도 1회** 발생했다(잘린 응답이 그대로 다음 단계로 넘어간다).
+
 ### 12.6 잔여
 
-- 실 DB 종단 E3(심각 알람 서버 → IP·OS, 패턴 ②)·E4(일반 안내) 미실행.
-- B-1·B-2 수정 — 미착수(사용자 결정). 수정 시 1단·2단 공용 경로라 두 경로 테스트를 함께 갱신한다.
-- G-1·G-2 대응(도구 인자 설명 · 내장 도구 축소)은 내부망 vLLM 재현 여부를 먼저 확인한다.
-- 본 계획서에 잔여가 생겨 파일명에 `-WIP` 태그를 달았다(2026-09-17 사용자 지시 · `49-phase2-…` → `49-WIP-phase2-…` · 참조 3파일 갱신: `plans/INDEX.md`·`plans/50`·`plans/57`). 태그를 떼는 시점 = 위 잔여 0.
+**2026-09-21 재판정.** 해소된 항목과, **하지 않기로 결정한** 항목을 구분한다.
+
+**해소**
+- ~~실 DB 종단 E3·E4 미실행~~ → 2026-09-21 완료(종단 4건 전부).
+- ~~B-1·B-1a·B-2 수정 미착수~~ → **수정 완료(D-234)**. 실 DB E2·E3 재실행으로 증상 소멸 확인 · 회귀 0.
+- ~~`docs/deepagents_poc_report.md` 부재~~ → **작성 완료**(§7 step 8 산출물).
+
+**하지 않기로 한 것 (2026-09-21 사용자 지시 · 사유 포함)**
+- **R-B10 런타임 graceful fallback(G-3) 구현하지 않는다** — 기동 후 오케스트레이터가 죽었을 때 조용히 하위 단으로 내려가는 것은 이 저장소의 **침묵적 폴백 금지** 원칙(CLAUDE.md)과 충돌한다. 현재는 `openai.APIConnectionError`가 사용자에게 드러난다(2.1초). 구현하려면 "무엇을 어떻게 알릴지"를 포함한 사용자 결정이 먼저다.
+- **G-1(도구 인자 설명)·G-2(내장 도구 축소) 손대지 않는다** — 둘 다 오케스트레이터 **프롬프트 접두**를 바꾼다. 도구 정의는 컨텍스트 접두부라 목록·설명이 흔들리면 이후 전 턴의 KV 캐시가 무효화되고(78 P14), 내부망 vLLM에서의 재현·영향 확인이 선행 조건이다.
+- **성공기준 2(`write_todos`·`task`)를 강제하지 않는다** — 코드 결함이 아니라 모델 행동 관찰이다. ReAct 순차 도구 호출로 패턴 ②·③이 성립하므로 §12.2에 관찰로만 남긴다.
+- **§8 통합 테스트 6종(`test_vllm_bind_tools_roundtrip` 등)을 만들지 않는다** — 실 인프라 의존 테스트를 새로 늘리는 대신 §12 실측으로 대체하고, 그 결과를 `docs/deepagents_poc_report.md`에 남겼다.
+
+**남은 잔여 (→ `-WIP` 유지)**
+- **폐쇄망 도입 조건의 실검증**(성공기준 7의 나머지) — 3플랫폼 wheel 반입·격리 venv 설치, 내부망 vLLM 기동과 `--tool-call-parser`·thinking 모드 확정, 그 환경에서의 tool_calls 신뢰도(R-B2). 현재 실측은 전부 **로컬 MLX 단일 환경**이며 운영 기준선이 아니다(D-174).
+- **G-1·G-2의 내부망 재현 확인** — 위 "하지 않기로 한 것"의 선행 조건. 재현되면 그때 대응 범위를 정한다.
+- 위 두 건이 끝나야 잔여 0이다. 파일명 `-WIP` 태그는 그때 뗀다(2026-09-17 사용자 지시로 부여 · `49-phase2-…` → `49-WIP-phase2-…` · 참조 3파일: `plans/INDEX.md`·`plans/50`·`plans/57`).

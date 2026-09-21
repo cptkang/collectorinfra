@@ -9,9 +9,11 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import re
+from collections.abc import Iterator
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -266,6 +268,7 @@ async def _run_subagent_tool(
     app_config: AppConfig,
     ambient_state: dict,
     collector: Optional[list] = None,
+    order_seq: Optional[Iterator[int]] = None,
 ) -> str:
     """단일 subagent handler를 도구로 실행하고 결과를 직렬화한다.
 
@@ -283,6 +286,8 @@ async def _run_subagent_tool(
         app_config: 앱 설정
         ambient_state: thread_id/user_id/allowed_db_ids 등 주변 컨텍스트
         collector: (선택) 원본 결과 수집기 — [(task, result), ...]
+        order_seq: (선택) 도구 **호출 시작** 순번 카운터 (`build_tools`가 도구 묶음마다
+            하나씩 만든다). 없으면 단독 호출로 보고 collector 길이에서 센다.
 
     Returns:
         직렬화된 결과 텍스트
@@ -296,7 +301,14 @@ async def _run_subagent_tool(
         )
         agent_name = "alarm_query"
     spec = SUBAGENT_REGISTRY.get(agent_name) or _fallback_spec()
-    order = (len(collector) + 1) if collector is not None else 1
+    # 호출 시작 순번. collector는 도구가 **끝날 때** 늘어나므로 길이로 세면 병렬 호출이
+    # 같은 order(=같은 task_id)를 받아 `{task_id: result}`에서 하나가 덮어써졌다
+    # (plans/49 §12.3 B-2). 전용 카운터는 순차 호출에서 len(collector)+1과 같은 값이라
+    # 기존 id 형태(`tool_<agent>_<n>`)와 order 의미(호출 순서)가 그대로다.
+    if order_seq is not None:
+        order = next(order_seq)
+    else:
+        order = (len(collector) + 1) if collector is not None else 1
     # 선행 결과 스코프 결정적 주입(D-095): 게이트 충족 시 D-086 prior_rows 경로 배선.
     input_from: list[str] = []
     prior: dict[str, Any] = {}
@@ -435,6 +447,8 @@ def build_tools(
     """
     ambient = ambient_state or {}
     tools: list[StructuredTool] = []
+    # 도구 묶음 단위 호출 순번(B-2) — 아래 모든 도구가 이 카운터를 공유한다.
+    order_seq = itertools.count(1)
     # **목록은 고정한다**(78 P14): 조사 경로가 비활성이어도 도구를 빼지 않는다 —
     # 도구 정의는 컨텍스트 접두부라 목록이 흔들리면 이후 전 턴의 KV 캐시가 무효화된다.
     # 가용성 제어는 handler 진입부 게이트가 담당한다(`run_host_inspect` — 구조화 거부).
@@ -450,6 +464,7 @@ def build_tools(
                     app_config=app_config,
                     ambient_state=ambient,
                     collector=collector,
+                    order_seq=order_seq,
                 )
             return _run
 

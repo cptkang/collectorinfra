@@ -439,6 +439,21 @@ class TestRegisterLlmSynonymDiscoveriesToRedis:
 class TestStep28InPerform3StepMapping:
     """perform_3step_mapping() 내 Step 2.8 삽입 위치 검증."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_synonym_ladder_to_defaults(self, monkeypatch):
+        """Step 2.5의 퍼지·임베딩 계단을 코드 기본값(OFF)으로 고정한다.
+
+        perform_3step_mapping은 Step 2.5에서 `load_config().synonym`을 읽는데, 운영
+        `.env`는 `SYNONYM_FUZZY_MATCH=true`다. 그대로 새면 "IP"가 IPADDRESS 컬럼명에
+        퍼지 매칭돼 Step 2.5에서 끝나, Step 2.8(llm_synonym)을 보려던 케이스가
+        성립하지 않는다(2026-09-21 실측 — 클린 worktree에서는 `.env`가 없어 통과했다).
+        """
+        from src.config import load_config
+
+        syn = load_config().synonym
+        monkeypatch.setattr(syn, "fuzzy_match", False)
+        monkeypatch.setattr(syn, "semantic_match", False)
+
     @pytest.mark.asyncio
     async def test_step28_runs_after_synonym_before_llm(self) -> None:
         """Step 2.8은 Step 2.5 이후, Step 3 이전에 실행된다.

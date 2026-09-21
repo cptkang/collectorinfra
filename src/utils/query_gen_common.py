@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -564,6 +565,39 @@ def resolve_effective_limit(
     # 표면어 미매칭이면 input_parser LLM 산출물(parsed_limit)로 2단 폴백(Plan 67 R3-(i)) —
     # 단일/멀티 경로 동일 규칙(한쪽만 폴백하는 비대칭 금지).
     return resolve_query_limit(user_query, default_limit, parsed_limit=parsed_limit)
+
+
+def surface_query_for_judgment(state: Mapping[str, Any], current: str | None = None) -> str:
+    """표면어 결정적 판정(순위·최상급·급증·비교기간·파일시스템·절대임계)에 쓸 질의 문자열.
+
+    오케스트레이션(1·2단)은 단일 DB 파이프라인에 들어가며 ``user_query``를 재작성문
+    (``sub_query_context``·``sub_query``)으로 바꾼다. 재작성이 "상위"·"급증"·"80% 이상" 같은
+    표면어를 탈락·추가하면 결정적 판정이 원문과 달라진다(plans/107 W0.5 — ``resolved_limit``
+    (D-066)·``realtime_usage_intent``(D-066 후속7)와 같은 결함 부류). 상태에 새 필드를 두지
+    않고 **소비 시점에 원문을 다시 읽는다**(CU-8 선례).
+
+    - 원문은 ``_make_isolated_input``이 교체 전 값으로 싣는 ``original_user_query``다.
+      3단 그래프 경로에는 그 키가 없고 ``user_query``가 곧 원문이라 결과가 종전과 같다.
+    - **복합 계획(``is_composite``)이면 원문을 쓰지 않는다** — 원문에 다른 task의 조건이 함께
+      있어 "80% 이상"·"상위" 같은 표면어가 엉뚱한 task로 번진다. 이때는 task 스코프
+      재작성문(현행)을 그대로 쓴다. 1단은 계획 크기를 미리 알 수 없어 ``is_composite``가
+      항상 False다 — 선례(``resolved_limit``)와 같은 한계이며 1단 전용 판정은 두지 않는다
+      (D-225 ⑦).
+
+    Args:
+        state: 에이전트 상태(또는 오케스트레이션 격리 입력)
+        current: 호출부가 이미 쥔 현재 질의(``query_generator``의 ``ctx.user_query``). 없으면
+            ``state["user_query"]``. 원문을 쓰지 않는 경우 이 값을 그대로 돌려준다.
+
+    Returns:
+        판정 입력 문자열(없으면 빈 문자열)
+    """
+    original = state.get("original_user_query")
+    if original and not state.get("is_composite"):
+        return str(original)
+    if current is not None:
+        return current
+    return str(state.get("user_query") or "")
 
 
 # ── '가동률' 미지원 지표 pre-gate (D-200, 2026-09-07) ────────────────────────

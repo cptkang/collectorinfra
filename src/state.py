@@ -127,6 +127,17 @@ class AgentState(TypedDict):
     # 무관하게 보존. None이면 소비부(resolve_effective_limit)가 user_query로 폴백 계산.
     # 요청 스코프 값이므로 매 턴 초기화(create_initial_state/create_followup_input).
     resolved_limit: Optional[int]
+    # === 의도 프레임 (plans/107 · INTENT_FRAME_ENABLED — 꺼져 있으면 전부 None) ===
+    # 전부 **요청 스코프**다(매 턴 create_initial_state/create_followup_input이 초기화).
+    #   raw_user_query: 라우트 진입 원문(body.query) — 어떤 코드도 덮지 않는다(P-2). 존 표기
+    #     치환(R3) 이전 값이다. user_query는 종전 의미(R3 치환본) 그대로 둔다.
+    #   display_query: R3 존 표기 치환본 — 화면 표시·병기 블록 원문 줄(G-7).
+    #   intent_frame: 확정 의도 프레임(IntentFrame.to_dict) — 감사·표시용 섀도 기록.
+    #   rewrite_trace: 재작성 감사 레코드(§4.9) — done 페이로드·감사 로그로 나간다.
+    raw_user_query: Optional[str]
+    display_query: Optional[str]
+    intent_frame: Optional[dict[str, Any]]
+    rewrite_trace: Optional[dict[str, Any]]
 
     # === 실행 이력 ===
     query_attempts: list[QueryAttempt]       # SQL 시도 이력 (디버깅/감사용)
@@ -309,6 +320,7 @@ def create_followup_input(
     selected_db_ids: Optional[list[str]] = None,
     allow_zone_clarification: bool = False,
     reset_db_scope: bool = False,
+    raw_user_query: Optional[str] = None,
 ) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
@@ -374,6 +386,12 @@ def create_followup_input(
         "required_capabilities": None,
         "capability_chain": None,
         "entity_probe": None,
+        # 의도 프레임(plans/107) — 요청 스코프. 직전 턴 프레임·감사가 새 턴에 붙지 않도록.
+        # 원문·표시문은 라우트가 INTENT_FRAME_ENABLED일 때만 싣는다(꺼져 있으면 None).
+        "raw_user_query": raw_user_query,
+        "display_query": user_query if raw_user_query is not None else None,
+        "intent_frame": None,
+        "rewrite_trace": None,
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -398,6 +416,7 @@ def create_initial_state(
     selected_db_ids: Optional[list[str]] = None,
     resolved_limit: Optional[int] = None,
     allow_zone_clarification: bool = False,
+    raw_user_query: Optional[str] = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -413,6 +432,8 @@ def create_initial_state(
         allowed_db_ids: 허용 DB 목록 (선택, None=전체 허용)
         request_id: 요청 추적 ID (선택, 미들웨어에서 주입)
         client_ip: 클라이언트 IP (선택, 미들웨어에서 주입)
+        raw_user_query: 라우트 진입 원문(plans/107 — INTENT_FRAME_ENABLED일 때만 전달).
+            주어지면 ``user_query``(존 표기 치환본)를 ``display_query``로도 기록한다.
 
     Returns:
         초기화된 AgentState
@@ -475,6 +496,10 @@ def create_initial_state(
         # 라우트가 원문 기준으로 승격한 LIMIT 확정값(D-066 후속7). 파일(폼필) 경로는
         # 전량 채움이 기본이라 라우트가 상향값을 명시 전달한다(Plan 71 후속 — 폼필 1000 절단).
         resolved_limit=resolved_limit,
+        raw_user_query=raw_user_query,
+        display_query=user_query if raw_user_query is not None else None,
+        intent_frame=None,
+        rewrite_trace=None,
         query_attempts=[],
         active_db_engine=None,
         routing_intent=None,

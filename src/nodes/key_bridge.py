@@ -30,7 +30,7 @@ plans/102 §3.3 ②~⑤ · D-224 ③④.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,6 +66,26 @@ logger = logging.getLogger(__name__)
 #: 경과 노트 사유 — 등급 판정 완료 / 결과 행에서 대상 키를 찾지 못해 판정 불가(행 유지).
 REASON_BRIDGE_MATCH = "bridge_match"
 REASON_BRIDGE_UNJUDGED = "bridge_unjudged"
+#: 결정적 컴파일(D-099)을 건너뛰고 브리지 스코프가 실리는 일반 경로로 보냈다(권고 H).
+REASON_BRIDGE_COMPILE_SKIPPED = "bridge_compile_skipped"
+
+
+def compile_skip_note() -> dict[str, Any]:
+    """결정적 컴파일을 건너뛴 사유 노트(권고 H) — 침묵 금지.
+
+    종전 스코프 판정(컬럼 **이름**)이 선행 결과의 서버 키를 인정하지 못한 상황이다. 그대로
+    컴파일하면 스코프 없이 조립돼 LIMIT 절단으로 대상이 빠지므로, 키 브리지가 확정한 대상
+    조건을 프롬프트에 실어 보낸다.
+    """
+    return {
+        "kind": NOTE_BRIDGE,
+        "task_id": None,
+        "reason": REASON_BRIDGE_COMPILE_SKIPPED,
+        "detail": (
+            "선행 결과의 서버 키를 컬럼 이름으로는 인식하지 못해 결정적 SQL 조립을 건너뛰고, "
+            "값으로 판정한 키 브리지 조건으로 조회했습니다."
+        ),
+    }
 
 
 def key_bridge_enabled(app_config: object) -> bool:
@@ -122,27 +142,60 @@ def _hostname_named(column: str) -> bool:
     return any(h in str(column).lower() for h in _PRIOR_HOSTNAME_HINTS)
 
 
-def ordered_key_columns(rows: Sequence[Mapping[str, Any]]) -> list[KeyColumn]:
+def declared_key_columns(
+    rows: Sequence[Mapping[str, Any]], default_db_ids: Sequence[str] = (),
+) -> set[str]:
+    """선행 행의 **출처 DB 매니페스트가 키로 선언한** 컬럼(소문자 · 권고 G).
+
+    출처는 행의 `_source_db` 태그가 우선이고, 태그가 하나도 없으면 호출부가 아는 기본 DB
+    (선행 결과의 `target_db_ids` 등)를 쓴다. 매니페스트가 없으면 빈 집합 — 그때만 값·이름
+    휴리스틱이 판정한다.
+    """
+    db_ids: list[str] = []
+    for row in _dict_rows(rows):
+        tag = row.get(PRIOR_SOURCE_DB_KEY)
+        if tag and str(tag) not in db_ids:
+            db_ids.append(str(tag))
+    if not db_ids:
+        db_ids = [str(d) for d in default_db_ids if d]
+    out: set[str] = set()
+    for db_id in db_ids:
+        manifest = load_entity_key_manifest(db_id)
+        if manifest is not None:
+            out.update(key.column.lower() for key in manifest.keys)
+    return out
+
+
+def ordered_key_columns(
+    rows: Sequence[Mapping[str, Any]], *, declared: Iterable[str] = (),
+) -> list[KeyColumn]:
     """값으로 판정한 키 컬럼을 우선순으로 — 도메인 순서에 **호스트명류 이름 우선**만 얹는다.
 
-    호스트명류 우선은 종전 컬럼명 판정의 규칙이다(D-061).
+    호스트명류 우선은 종전 컬럼명 판정의 규칙이다(D-061). 출처 DB가 선언한 키 컬럼은
+    그보다 앞선다(권고 G) — 선언이 없을 때만 값·이름 휴리스틱으로 내려간다.
 
     등록명류(`name`)와 호스트명류가 같은 값·같은 개수를 가져도 호스트명류가 먼저다(안정 정렬).
     출처 태그(`_source_db`)는 키가 아니다.
     """
     found = detect_key_columns(
         _dict_rows(rows), name_hint=is_server_identity_col, exclude=(PRIOR_SOURCE_DB_KEY,),
+        declared=declared,
     )
-    return sorted(found, key=lambda kc: 0 if _hostname_named(kc.column) else 1)
+    return sorted(
+        found, key=lambda kc: (not kc.declared, 0 if _hostname_named(kc.column) else 1)
+    )
 
 
-def identity_columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+def identity_columns(
+    rows: Sequence[Mapping[str, Any]], default_db_ids: Sequence[str] = (),
+) -> list[str]:
     """후속 task에 넘길 식별 컬럼 — 값 판정 키 컬럼 ∪ 이름 판정 식별 컬럼(행에 나온 순서).
 
     이름 판정 컬럼을 함께 남기는 이유: 값으로 키가 안 잡히는 등록명류는 종전 경로가 소비한다(§3.2).
     """
     dict_rows = _dict_rows(rows)
-    value_cols = {kc.column for kc in ordered_key_columns(dict_rows)}
+    declared = declared_key_columns(dict_rows, default_db_ids)
+    value_cols = {kc.column for kc in ordered_key_columns(dict_rows, declared=declared)}
     ordered: list[str] = []
     for row in dict_rows:
         for col in row.keys():
@@ -154,15 +207,26 @@ def identity_columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def select_prior_key(
-    rows: Sequence[Mapping[str, Any]], families: Sequence[str],
+    rows: Sequence[Mapping[str, Any]],
+    families: Sequence[str],
+    *,
+    source_db_ids: Sequence[str] = (),
 ) -> tuple[PriorKeySelection | None, list[KeyColumn]]:
     """계열별 최우선 키 컬럼을 찾고, 대상이 받는 계열 우선순으로 **값이 있는** 첫 계열을 고른다(P4).
+
+    Args:
+        rows: 선행 결과 행
+        families: 대상 DB가 받는 키 계열(우선순)
+        source_db_ids: 행에 출처 태그가 없을 때 쓸 **선행** DB — 그 매니페스트 선언 컬럼이
+            값·이름 휴리스틱보다 앞선다(권고 G)
 
     Returns:
         (선택 또는 None, 값으로 찾은 키 컬럼 전부 — 미선택 사유 서술용)
     """
     dict_rows = _dict_rows(rows)
-    found = ordered_key_columns(dict_rows)
+    found = ordered_key_columns(
+        dict_rows, declared=declared_key_columns(dict_rows, source_db_ids)
+    )
     best: dict[str, KeyColumn] = {}
     for column in found:
         best.setdefault(column.family, column)
@@ -231,12 +295,17 @@ def resolve_gate_identity(
     값으로 키가 안 잡히면 `identity=None` — 종전 컬럼명 판정이 그대로 돈다(§3.2).
     """
     rows: list[Mapping[str, Any]] = []
+    source_db_ids: list[str] = []
     for tid in [str(t) for t in (task.get("input_from") or []) if t]:
         res = (prior or {}).get(tid)
         if isinstance(res, dict) and not res.get("error"):
             rows.extend(extract_result_rows(res))
+            # 출처 태그가 없는 선행 결과의 매니페스트 판정 근거(권고 G).
+            for db_id in res.get("target_db_ids") or []:
+                if db_id and str(db_id) not in source_db_ids:
+                    source_db_ids.append(str(db_id))
     families, label = _accepted_families(_task_db_ids(task))
-    selection, found = select_prior_key(rows, families)
+    selection, found = select_prior_key(rows, families, source_db_ids=source_db_ids)
     if selection is None:
         hint = describe_key_mismatch(found, families, label)
         return BridgeGate(identity=None, no_identity_hint=hint)
@@ -415,8 +484,33 @@ def _row_entity(
     return None
 
 
+def _entity_key(entity: str, db_id: str, cross_db: frozenset[str]) -> str:
+    """대조용 엔터티 id — **다른 DB(존)에 같은 이름이 또 있으면** DB로 한정한다(권고 F).
+
+    현행 엔터티 id는 DB 무관 정규형이라 두 존의 동명 호스트가 한 엔터티로 합쳐졌다. 한정하면
+    같은 키가 서로 다른 엔터티 2개에 걸려 `grade_matches`가 `ambiguous`로 판정한다 —
+    모호 일치를 추측으로 메우지 않는다(D-224 ④). 같은 DB 안의 `per_ip` 다중 행 묶음은
+    한정 대상이 아니라 종전대로 한 엔터티다.
+    """
+    return f"{db_id}::{entity}" if entity in cross_db else entity
+
+
+def _cross_db_entities(grouped: Mapping[tuple[str, str], set[str]]) -> dict[str, tuple[str, ...]]:
+    """(db_id, 엔터티) 묶음에서 **DB가 둘 이상인** 엔터티 → 그 DB들."""
+    dbs_of: dict[str, list[str]] = {}
+    for db_id, entity in grouped:
+        seen = dbs_of.setdefault(entity, [])
+        if db_id not in seen:
+            seen.append(db_id)
+    return {e: tuple(sorted(dbs)) for e, dbs in dbs_of.items() if len(dbs) > 1}
+
+
 def _filter_rows(
-    rows: list[Any], included: set[str], default_db_ids: Sequence[str], family: str,
+    rows: list[Any],
+    included: set[str],
+    default_db_ids: Sequence[str],
+    family: str,
+    cross_db: frozenset[str],
 ) -> tuple[list[Any], int]:
     """포함 엔터티(link·possible)의 행만 남긴다. 판정 불가 행은 유지한다(오제거보다 미제거)."""
     kept: list[Any] = []
@@ -425,7 +519,7 @@ def _filter_rows(
         if isinstance(row, Mapping):
             manifests, _ = _row_manifests(row, default_db_ids)
             entity = _row_entity(row, manifests, family)
-            if entity is not None and entity[0] not in included:
+            if entity is not None and _entity_key(entity[0], entity[2], cross_db) not in included:
                 removed += 1
                 continue
         kept.append(row)
@@ -443,6 +537,8 @@ def apply_bridge_postcheck(
     - 선행 키 N = `verdict.scope_values`(상한 적용 정규형). 등급 합계는 항상 N이다(D5).
     - 대상 엔터티는 결과 행의 대상 키 컬럼으로 만든다 — 매니페스트는 행의 `_source_db`,
       없으면 결과 `target_db_ids`로 고른다.
+    - **서로 다른 DB(존)에 같은 호스트명이 있으면 별개 엔터티로 본다**(권고 F) — 그 키는
+      `ambiguous`가 되어 결과에 넣지 않고 사유를 노트에 싣는다.
     - `ambiguous`·스코프 밖 엔터티의 행은 제거한다. 결과 행은 있는데 대상 키 컬럼 값을
       하나도 못 찾으면 판정하지 않고 행을 그대로 둔 채 `bridge_unjudged` 노트를 남긴다(침묵 금지).
     입력은 변경하지 않는다.
@@ -454,14 +550,14 @@ def apply_bridge_postcheck(
     family = context.family
     default_db_ids = [str(d) for d in (result.get("target_db_ids") or []) if d]
     rows = extract_result_rows(result)
-    grouped: dict[str, set[str]] = {}
+    grouped: dict[tuple[str, str], set[str]] = {}
     judged_dbs: list[str] = []
     for row in rows:
         manifests, _ = _row_manifests(row, default_db_ids)
         entity = _row_entity(row, manifests, family)
         if entity is None:
             continue
-        grouped.setdefault(entity[0], set()).update(entity[1])
+        grouped.setdefault((entity[2], entity[0]), set()).update(entity[1])
         if entity[2] not in judged_dbs:
             judged_dbs.append(entity[2])
     label = ", ".join(_db_label(d) for d in (judged_dbs or default_db_ids)) or "대상"
@@ -480,23 +576,35 @@ def apply_bridge_postcheck(
         }]
         return out
 
-    targets = [TargetEntity(entity_id=eid, keys=frozenset(keys)) for eid, keys in grouped.items()]
+    cross_db_map = _cross_db_entities(grouped)
+    cross_db = frozenset(cross_db_map)
+    targets = [
+        TargetEntity(entity_id=_entity_key(eid, db_id, cross_db), keys=frozenset(keys))
+        for (db_id, eid), keys in grouped.items()
+    ]
     report = grade_matches(verdict.scope_values, targets, family=family)
     included = set(report.included_entities(include_possible=True))
     removed = 0
     for key in ("query_results", "rows"):
         if isinstance(out.get(key), list):
-            out[key], n = _filter_rows(out[key], included, default_db_ids, family)
+            out[key], n = _filter_rows(out[key], included, default_db_ids, family, cross_db)
             removed = max(removed, n)
     organized = out.get("organized_data")
     if isinstance(organized, dict) and isinstance(organized.get("rows"), list):
-        filtered, n = _filter_rows(organized["rows"], included, default_db_ids, family)
+        filtered, n = _filter_rows(organized["rows"], included, default_db_ids, family, cross_db)
         out["organized_data"] = {**organized, "rows": filtered}
         removed = max(removed, n)
 
     detail = render_match_note(report, target_label=label, key_label=family)
     if removed:
         detail += f" · 모호·스코프 밖 행 {removed}건 제외"
+    if cross_db_map:
+        # 침묵 금지: "왜 빠졌는가"가 모호 건수만으로는 읽히지 않는다 — 어느 이름이 어느 DB에
+        # 중복됐는지 매칭 보고에 적는다.
+        detail += " · 동명 호스트가 여러 DB(존)에 있어 모호 처리: " + ", ".join(
+            f"{eid}({', '.join(_db_label(d) for d in dbs)})"
+            for eid, dbs in list(cross_db_map.items())[:10]
+        )
     note: dict[str, Any] = {
         "kind": NOTE_BRIDGE,
         "task_id": task_id,
@@ -513,6 +621,8 @@ def apply_bridge_postcheck(
     }
     if removed:
         note["removed_rows"] = removed
+    if cross_db_map:
+        note["cross_db_entities"] = {eid: list(dbs) for eid, dbs in cross_db_map.items()}
     logger.info(
         "키 브리지 판정 task=%s target=%s key=%s N=%d link=%d possible=%d "
         "non_link=%d ambiguous=%d coverage=%.2f removed_rows=%d",

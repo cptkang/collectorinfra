@@ -25,6 +25,8 @@ KNOWN_KEYS = {
     "node_path", "sse_events", "llm_calls", "retries", "gold_sql", "manual_review",
     # 판정 계약 교정 (Y-4·Y-5 · D-218). `row_count` 는 단일 DB 턴 전용이 됐다.
     "row_count_per_db", "row_count_total", "period_covers",
+    # 재작성 감사 단언 (plans/94 §19.2 Y-11·Y-12 · plans/107). 하위 키 gate·slots_preserved.
+    "rewrite",
 }
 
 

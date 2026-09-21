@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterator, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional, Sequence
 
 import yaml
 
@@ -35,6 +35,9 @@ from .assertions import (
 )
 from .catalog import Catalog, Scenario, Turn
 from .client import ClientConfig, ScenarioClient
+# 판정 계약(`108·G-6`)의 규칙 정본은 report 한 곳이다 - 쓰는 쪽과 읽는 쪽이 같은 규칙을
+# 쓰지 않으면 칸과 재도출값이 갈린다. report 는 runner 를 import 하지 않아 순환이 없다.
+from .report import unevaluated_reason
 from .server import ProfileStatus, ServerHandle, pick_port, platform_provenance
 
 RESULTS_ROOT = REPO_ROOT / "results" / "scenario"
@@ -102,6 +105,8 @@ class RunConfig:
     groups: list[str] = field(default_factory=list)
     only: list[str] = field(default_factory=list)
     profiles: list[str] = field(default_factory=list)
+    #: 전 시나리오에 **덧씌우는** 프로파일(측정 축). 이름은 `catalog.profiles` 의 키다(`110·N-1`).
+    arms: list[str] = field(default_factory=list)
     port: Optional[int] = None
     token: Optional[str] = None           # 질의용 사용자 토큰(직접 주입 시)
     admin_token: Optional[str] = None     # 설정 에코용 운영자 토큰(직접 주입 시)
@@ -156,6 +161,7 @@ def run_meta(config: RunConfig, catalog: Catalog) -> dict[str, Any]:
         "dirty": dirty,
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "repeat": config.repeat,
+        "arms": list(dict.fromkeys(config.arms)),
         "scenario_total": len(catalog.scenarios),
         "platform": platform_provenance(),
         "host": platform.node(),
@@ -287,8 +293,14 @@ def planned_turns(catalog: Catalog, scenario: Scenario, config: RunConfig) -> in
 
 
 def estimate(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
-    """예상치를 낸다. 이 출력이 D-127 승인 요청의 근거다(§4.4 · G-4)."""
-    selected = catalog.select(config.groups, config.only, config.env)
+    """예상치를 낸다. 이 출력이 D-127 승인 요청의 근거다(§4.4 · G-4).
+
+    **실행 계획을 여기서 다시 만들지 않는다** - `iter_executions` 가 내놓는 것을 그대로 센다.
+    따로 세면 arm 전개(`110·N-1`)나 `--profile` 필터를 한쪽만 반영해 승인 근거가 실제 실행과
+    어긋난다(종전에는 `--profile` 필터가 예상치에 반영되지 않았다).
+    """
+    plan = list(iter_executions(catalog, config))
+    selected = [scenario for _profile, scenarios in plan for scenario in scenarios]
     per_group: dict[str, dict[str, Any]] = {}
     total_turns = 0
     total_ms = 0.0
@@ -317,7 +329,7 @@ def estimate(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
         "estimated_llm_calls": total_turns * ASSUMED_LLM_CALLS_PER_TURN,
         "estimated_wall_sec_upper": round(total_ms / 1000.0, 1),
         "per_group": per_group,
-        "profiles": sorted({s.profile for s in selected}),
+        "profiles": [profile for profile, _scenarios in plan],
         "note": (
             "LLM 호출 수는 실측이 아니라 가정치(턴당 "
             f"{ASSUMED_LLM_CALLS_PER_TURN}회)다. 소요 시간은 군 목표치의 합이라 상한에 가깝다. "
@@ -416,9 +428,15 @@ def _row(
     verdict: Verdict,
     extras: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    # 소비자는 조합 이름을 파싱하지 않는다 - `arm`·`base_profile` 칸으로 읽는다(확정 계약).
+    # 덧씌우기가 없으면 `arm=None` 이고 `base_profile == profile` 이라, 벤치의
+    # `arm_of(row) = row.get("arm") or row.get("profile")` 가 옛 행·새 행 모두에서 성립한다.
+    binding = (meta.get("arm_bindings") or {}).get(profile) or {}
     row: dict[str, Any] = {
         "run_id": meta["run_id"],
         "profile": profile,
+        "arm": binding.get("arm"),
+        "base_profile": binding.get("base_profile") or profile,
         "env": meta["env"],
         "mode": meta["mode"],
         "repeat": repeat,
@@ -466,11 +484,24 @@ def _row(
         "tokens": obs.tokens,
         "retries": obs.retries,
         "node_count": obs.node_count,
+        # O-e(plans/94 §19.3): 재작성 감사 — 비어 있으면 None(미측정).
+        # 원문 전문은 싣지 않는다(D-183).
+        "rewrite_trace": obs.rewrite_traces or None,
         "artifacts": obs.artifacts,
         "error": obs.error,
     }
     if extras:
         row.update(extras)
+    # 판정 계약(`108·G-6` · D-241): 단언이 평가되지 않은 턴의 사유. 평가됐으면 None.
+    # **`func_verdict` 에 판정어를 늘리지 않는다** - 어휘를 늘리고 소비처를 안 봐서 생긴
+    # 사고가 이미 있다(docs/18:272). 별도 칸이라 옛 소비자는 그대로 돈다.
+    # 규칙 정본은 `report.unevaluated_reason` 한 곳이고, 여기는 그 규칙에 **턴이 역질문을
+    # 기대했는지**만 넘긴다(기대한 역질문은 그 자체가 판정 대상이라 평가된 것이다).
+    position = (turn_index - 1) % BUNDLE_TURN_STRIDE
+    asked = scenario.turns[position].expect if position < len(scenario.turns) else None
+    row["unevaluated_reason"] = unevaluated_reason(
+        row, expected_question=clarify.expects_question(asked) if asked is not None else None
+    )
     return row
 
 
@@ -500,6 +531,123 @@ def _execution_order(scenario: Scenario) -> tuple[int, str, str]:
     return rank, scenario.group, scenario.id
 
 
+#: arm 조합 프로파일 이름의 구분자. **파일명에 그대로 들어간다**
+#: (`checkpoints-<프로파일>.db` · `logs/server-<프로파일>.log`) - POSIX·Windows 양쪽에서
+#: 안전하고 cp949 콘솔에서 깨지지 않는 ASCII 한 글자여야 한다(부록 A.1-3).
+ARM_SEPARATOR = "+"
+
+
+class ArmError(ValueError):
+    """arm 지정이 성립하지 않는다 - 정의되지 않은 프로파일 이름."""
+
+
+@dataclass(frozen=True)
+class ArmBinding:
+    """조합 프로파일 1개의 출처. `run.json` `profiles[]` 가 이 세 칸을 그대로 싣는다."""
+
+    profile: str        #: 조합 이름 (예: `optin_alarm+tier3_router`)
+    base_profile: str   #: 시나리오가 선언한 자기 프로파일 (예: `optin_alarm`)
+    arm: str            #: 덧씌운 측정 축 — **arm id 원본**이다 (예: `tier3_router`)
+
+
+def arm_profile_name(scenario_profile: str, arm: str) -> str:
+    """시나리오 프로파일 × arm 의 조합 이름. 산출물·리포트·재개 키가 모두 이 이름을 쓴다."""
+    if scenario_profile == arm:
+        # arm 을 자기 프로파일로 선언한 시나리오. 이름을 겹쳐 적지 않는다.
+        return arm
+    return f"{scenario_profile}{ARM_SEPARATOR}{arm}"
+
+
+def split_arm_profile(profile: str, arms: Sequence[str]) -> tuple[str, Optional[str]]:
+    """조합 이름을 `(시나리오 프로파일, arm)` 으로 되돌린다. arm 조합이 아니면 `(그대로, None)`.
+
+    **정상 경로는 이 함수를 쓰지 않는다.** arm 출처의 1차 출처는 `raw.jsonl`·`run.json` 의
+    `arm`·`base_profile` **칸**이고, 소비자(벤치 `arm_of` · 회귀 비교 키)도 파싱하지 않고
+    칸을 읽는다. 이 함수는 **그 칸이 없는 옛 run 을 사후 분석할 때** 쓰는 폴백이다.
+    """
+    for arm in arms:
+        if profile == arm:
+            return arm, arm
+        suffix = ARM_SEPARATOR + arm
+        if profile.endswith(suffix):
+            return profile[: -len(suffix)], arm
+    return profile, None
+
+
+def merge_arm_profiles(
+    catalog: Catalog, scenarios: list[Scenario], arms: Sequence[str]
+) -> tuple[list[Scenario], dict[str, ArmBinding]]:
+    """시나리오 자기 프로파일 **위에** arm 을 덧씌운다 (`plans/110` §3.1 `110·N-1`).
+
+    **치환이 아니라 병합이다.** 실효 env = 시나리오 프로파일 ∪ arm 이고, 같은 키를 양쪽이
+    주면 **arm 이 이긴다**(arm 이 측정 축이다). 치환하면 `optin_alarm` 8건(D군)이
+    `TEXT2SQL_ALARM_DETERMINISTIC` 을 잃는다 - 그 8건은 알람 결정적 경로를 켜야 의미가 있는
+    시나리오라 플래그 없이 돌면 *잘못 측정한 것*이 아니라 **다른 것을 측정한 것**이 된다.
+
+    `catalog.profiles` 에 조합을 등록하고(`_execute` 가 여기서 주입 env 를 읽는다) 시나리오는
+    `profile` 만 갈아끼운 사본으로 복제한다. **id 는 건드리지 않는다** - arm 쌍은 id 로 맺는다.
+
+    두 번째 소비처는 `scripts/bench/sweep.py` 다. 거기 `fanout_scenarios` 와 `run_arms` 는
+    `profile=arm.arm_id` 로 **치환**하고 `catalog.profiles` 를 통째로 갈아 끼워 같은 결함을
+    갖고 있다. 호출부 교체는 그 파일 소유 세션과의 조율 사항이라 보류했다
+    (`plans/110` §3.1 `110·N-2`).
+
+    Returns:
+        (조합 프로파일이 박힌 시나리오 목록, 조합 이름 -> `ArmBinding`)
+    """
+    unique = list(dict.fromkeys(arms))
+    missing = [a for a in unique if a not in catalog.profiles]
+    if missing:
+        raise ArmError(
+            f"arm 프로파일이 정의되지 않았다: {', '.join(missing)} "
+            f"(정의는 config/scenarios/profiles.yaml)"
+        )
+
+    expanded: list[Scenario] = []
+    bindings: dict[str, ArmBinding] = {}
+    for scenario in scenarios:
+        base_env = catalog.profiles.get(scenario.profile, {})
+        for arm in unique:
+            name = arm_profile_name(scenario.profile, arm)
+            if name not in bindings:
+                catalog.profiles[name] = {**base_env, **catalog.profiles[arm]}
+                bindings[name] = ArmBinding(
+                    profile=name, base_profile=scenario.profile, arm=arm
+                )
+            expanded.append(replace(scenario, profile=name))
+    return expanded, bindings
+
+
+def _profile_order(grouped: dict[str, list[Scenario]], config: RunConfig) -> list[str]:
+    """프로파일 실행 순서. 지정이 없으면 종전대로 알파벳 정렬이다(재현성 · D-237).
+
+    **arm 이 있으면 프로파일 major · arm minor** 로 돈다 - 중간에 끊겨도 먼저 끝난 프로파일
+    에서는 arm 이 **둘 다** 남는다. arm major 로 돌면 한 arm 만 완주해 비교 자체가 성립하지
+    않는다. arm 이 실행 시각과 교란되는 것(93 스위프: 전반 61.1초 vs 후반 56.6초)은 같은 run
+    안에 두는 것으로 줄이고, 그 위에서 순서를 이렇게 고정한다.
+    """
+    if config.arms:
+        arms = list(dict.fromkeys(config.arms))
+        bases = config.profiles or sorted(
+            {split_arm_profile(name, arms)[0] for name in grouped}
+        )
+        wanted = [arm_profile_name(base, arm) for base in bases for arm in arms]
+    elif config.profiles:
+        wanted = list(config.profiles)
+    else:
+        return sorted(grouped)
+
+    # 지정 순서를 지키되 중복은 첫 등장만, 카탈로그에 없는 이름은 건너뛴다.
+    order: list[str] = []
+    seen: set[str] = set()
+    for name in wanted:
+        if name in grouped and name not in seen:
+            seen.add(name)
+            order.append(name)
+    order += sorted(p for p in grouped if p not in seen)
+    return order
+
+
 def iter_executions(
     catalog: Catalog, config: RunConfig
 ) -> Iterator[tuple[str, list[Scenario]]]:
@@ -512,27 +660,23 @@ def iter_executions(
     전반 31 arm 61.1초 → 후반 31 arm 56.6초, 축 효과 보고값과 같은 크기대).
     호출부가 순서를 정하면(93은 기준선을 맨 앞에 놓는다) 그 교란이 사라진다.
     지정이 없으면 **종전대로 알파벳 정렬**이다 — 94 단독 실행의 재현성을 위해서다.
+
+    **`config.arms` 가 주어지면 같은 시나리오를 arm 마다 한 번씩 돈다**(`110·N-1`).
+    `--profile` 은 여전히 **필터**이므로 덧씌우기 전에 적용한다 - 필터는 시나리오가 선언한
+    자기 프로파일에 걸고, arm 은 그 위에 병합한다(`merge_arm_profiles`).
     """
     selected = catalog.select(config.groups, config.only, config.env)
     if config.profiles:
         wanted = set(config.profiles)
         selected = [s for s in selected if s.profile in wanted]
+    if config.arms:
+        selected, _bindings = merge_arm_profiles(catalog, selected, config.arms)
+
     grouped: dict[str, list[Scenario]] = {}
     for scenario in selected:
         grouped.setdefault(scenario.profile, []).append(scenario)
 
-    if config.profiles:
-        # 지정 순서를 지키되 중복은 첫 등장만, 카탈로그에 없는 이름은 건너뛴다.
-        order, seen = [], set()
-        for name in config.profiles:
-            if name in grouped and name not in seen:
-                seen.add(name)
-                order.append(name)
-        order += sorted(p for p in grouped if p not in seen)
-    else:
-        order = sorted(grouped)
-
-    for profile in order:
+    for profile in _profile_order(grouped, config):
         ordered = sorted(grouped[profile], key=_execution_order)
         yield profile, ordered
 
@@ -807,6 +951,15 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     skipped: list[dict[str, Any]] = []
     executed = 0
 
+    # arm 출처의 **1차 출처는 기록이지 파싱이 아니다.** 소비자(벤치 `arm_of` · 회귀 비교 키)는
+    # `profile` 문자열을 파싱하지 않고 행의 `arm`·`base_profile` 칸을 읽는다. 그래서 조합
+    # 이름에서 되돌리는 대신 `merge_arm_profiles` 가 정한 바인딩을 여기서 그대로 들고 간다.
+    # (전 시나리오로 한 번 만든다 - 필터로 줄어든 목록보다 상위집합이라 조회에 문제가 없고,
+    #  `iter_executions` 가 다시 부르는 등록은 같은 값이라 멱등이다.)
+    bindings: dict[str, ArmBinding] = (
+        merge_arm_profiles(catalog, catalog.scenarios, config.arms)[1] if config.arms else {}
+    )
+
     for profile, scenarios in iter_executions(catalog, config):
         # 주입하는 것은 전부 에코로 확인한다 - 격리 설정도 예외가 아니다(.encenv 우선순위로
         # 조용히 무시되면 격리한 줄 알고 운영 알람을 계속 나눠 가진다).
@@ -822,7 +975,17 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
             log_path=out_dir / "logs" / f"server-{profile}.log",
             mock=(config.mode == "mock"),
         )
-        status = ProfileStatus(name=profile, port=port)
+        # arm 출처를 `run.json` 과 `raw.jsonl` **양쪽에 같은 칸 이름**으로 남긴다(`110·N-1`).
+        # `arm` 은 **arm id 원본**이다 - 조합 이름을 넣으면 D군(`base_profile=optin_alarm`)이
+        # 기준선 arm 에서 떨어져 나가 쌍체 비교에서 빠진다.
+        binding = bindings.get(profile)
+        arm = binding.arm if binding else None
+        base_profile = binding.base_profile if binding else profile
+        meta.setdefault("arm_bindings", {})[profile] = {
+            "arm": arm, "base_profile": base_profile,
+        }
+        status = ProfileStatus(name=profile, port=port,
+                               arm=arm, base_profile=base_profile)
         try:
             handle.start()
             from .server import verify_profile
@@ -835,7 +998,10 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
             user_token, admin_token, login_reasons = (
                 acquire_tokens(port, config) if healthy and not handle.mock else (None, None, [])
             )
+            # verify_profile 은 **새 객체**를 돌려준다 - 출처 두 칸을 다시 얹지 않으면
+            # 정상 기동한 프로파일에서만 arm 이 사라진다(실패 경로에만 남는다).
             status = verify_profile(handle, expected, admin_token)
+            status.arm, status.base_profile = arm, base_profile
             status.reasons.extend(login_reasons)
             if status.auth_enabled and not user_token:
                 # 계정을 넘기지 않았으면 내장 테스트 계정으로 로그인한다(D-216).
@@ -970,6 +1136,32 @@ class SqlAuditTail:
                 "retry_attempt": record.get("retry_attempt"),
             })
         return entries
+
+    def collect_rewrite_traces(self, since: int, thread_id: str) -> list[dict[str, Any]]:
+        """같은 로그에서 재작성 감사(`rewrite_trace`) 이벤트를 모은다(O-e · plans/94 §19.3).
+
+        완료 done 페이로드가 1순위이고 이것은 폴백이다 — done 에 레코드가 없을 때만 쓴다.
+        ``collect`` 가 로그 펌프 대기를 이미 했으므로 여기서는 다시 기다리지 않는다.
+        """
+        if not self.path.exists():
+            return []
+        with open(self.path, "rb") as handle:
+            handle.seek(since)
+            data = handle.read()
+        traces: list[dict[str, Any]] = []
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line.startswith("{") or thread_id not in line or "rewrite_trace" not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            trace = record.get("rewrite_trace")
+            if record.get("event") == "rewrite_trace" and record.get("thread_id") == thread_id \
+                    and isinstance(trace, dict):
+                traces.append(trace)
+        return traces
 
 
 def _apply_sql_audit(obs: Observation, entries: list[dict[str, Any]]) -> None:
@@ -1608,6 +1800,8 @@ def _run_once(
                 )
             sql_entries = sql_tail.collect(sql_since, thread_id) if sql_tail else []
             _apply_sql_audit(obs, sql_entries)
+            if sql_tail and not obs.rewrite_traces:
+                obs.rewrite_traces = sql_tail.collect_rewrite_traces(sql_since, thread_id)
             last_obs = obs
             last_query = str(payload.get("query") or last_query)
 

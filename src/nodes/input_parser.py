@@ -143,8 +143,17 @@ async def input_parser(
         if template:
             parsed["output_format"] = state["file_type"]
 
-    # 3. 시트명 추출
-    target_sheets = _extract_target_sheets(parsed, state["user_query"])
+    # 3. 시트명 추출 — 이번 턴 파싱본이 없으면 직전 턴 양식 구조를 쓴다(후속 턴 대칭)
+    _template_for_sheets = template or state.get("template_structure")
+    target_sheets = _extract_target_sheets(
+        parsed,
+        state["user_query"],
+        [
+            s.get("name", "")
+            for s in ((_template_for_sheets or {}).get("sheets") or [])
+            if s.get("name")
+        ],
+    )
 
     # time_range를 함께 남긴다(D-185) — 기간 2단 폴백(R3-(i))의 입력값이 로그에 없어
     # 폐쇄망에서 "LLM이 기간을 뽑았는지" 확인이 불가능했다(2026-08-25 실측).
@@ -468,9 +477,47 @@ def _parse_uploaded_file(
         return None
 
 
+def _drop_unmatched_sheets(
+    names: list[str],
+    available: Optional[list[str]],
+) -> Optional[list[str]]:
+    """양식에 실재하는 시트명만 남기고, 하나도 못 맞히면 지목 자체를 버린다.
+
+    시트 지목은 LLM 산출물이라 질의의 존 이름·요약 표현이 그대로 들어온다 —
+    run `20260918-182507` 실측: 비-None 4턴 중 3턴이 양식과 무관한 이름
+    (`['은행존']`·`['리소스 현황']`, 실제 시트는 `서버정보`·`리소스상태`)이었다.
+    하류 소비처 3곳(`field_mapper`·`result_organizer`·`excel_writer`)이 모두
+    **정확 일치**로 거르므로 이름이 어긋나면 대상 시트가 0개가 되고, 조회는 성공했는데
+    **헤더만 있는 빈 양식**이 산출된다(H-03 759행·H-04 2338행 조회 후 0행 기입).
+    부분 불일치는 하류 동작과 동일하게 그 이름만 떨구고, 전건 불일치는 "지목이 없었던 것"
+    으로 되돌린다(침묵 스킵 금지 — WARNING).
+
+    Args:
+        names: 추출된 시트명 목록(비어 있지 않음)
+        available: 업로드 양식이 실제로 가진 시트명. 미상(None·빈 목록)이면 판정하지 않는다.
+
+    Returns:
+        실재 시트명 목록, 또는 None(전체 시트 대상)
+    """
+    if not names:
+        return None
+    if not available:
+        return names
+    matched = [n for n in names if n in available]
+    if matched:
+        return matched
+    logger.warning(
+        "target_sheets %s가 양식 시트 %s와 전건 불일치 — 시트 지목을 무시하고 "
+        "전체 시트를 대상으로 한다",
+        names, available,
+    )
+    return None
+
+
 def _extract_target_sheets(
     parsed: dict,
     user_query: str,
+    available_sheets: Optional[list[str]] = None,
 ) -> Optional[list[str]]:
     """파싱 결과 또는 사용자 질의에서 대상 시트명을 추출한다.
 
@@ -480,9 +527,12 @@ def _extract_target_sheets(
     폴백 정규식은 "시트" 키워드가 따옴표에 인접할 때만 인정한다 — 종전 두 번째 패턴은 `시트`가
     선택이라 조사가 붙은 따옴표 표현("'서울'의 서버")까지 시트명으로 오탐했다.
 
+    산출물은 업로드 양식의 실제 시트명과 대조한다(`_drop_unmatched_sheets`).
+
     Args:
         parsed: LLM 파싱 결과
         user_query: 사용자 원본 질의
+        available_sheets: 업로드 양식의 실제 시트명(미상이면 None — 대조하지 않는다)
 
     Returns:
         시트명 목록 또는 None (전체 시트 대상)
@@ -498,7 +548,7 @@ def _extract_target_sheets(
             if name and name not in cleaned:
                 cleaned.append(name)
         if cleaned:
-            return cleaned
+            return _drop_unmatched_sheets(cleaned, available_sheets)
 
     # 2. 정규식 최후 폴백: 따옴표로 감싼 시트명 — "시트" 키워드가 따옴표 밖/안에 있어야 인정
     patterns = [
@@ -516,7 +566,7 @@ def _extract_target_sheets(
             if name and name not in sheets:
                 sheets.append(name)
 
-    return sheets if sheets else None
+    return _drop_unmatched_sheets(sheets, available_sheets)
 
 
 async def _apply_column_value_synonyms(parsed: dict) -> dict:

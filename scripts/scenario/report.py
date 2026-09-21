@@ -53,6 +53,37 @@ def _degraded_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def optin_failure_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """1단 opt-in 이 가용성 때문에 성립하지 않아 **INVALID 로 제외된** 프로파일 (권고 B).
+
+    러너는 이 프로파일의 시나리오를 통째로 `skipped` 로 돌린다(`server.py`
+    `UNINTENDED_DEGRADATION` → `status.valid = False`). 그 사실이 10절에만 남으면, 리포트를
+    읽는 사람은 **측정하지 않은 시나리오군을 측정한 것으로 읽는다**.
+
+    `_degraded_profiles` 와 겹치지 않는다 - 확정된 단은 기준 단(3단)이라 그 값 자체는 유효하다.
+
+    사유 집합은 **정본**(`src/observability/ladder.py` `OPTIN_FAILURE_REASONS`)에서 읽는다 -
+    `server.py` 의 `UNINTENDED_DEGRADATION` 은 같은 값을 러너 쪽에 다시 적은 사본이다(D-053).
+    **함수 안에서 import** 하는 이유: 리포트는 산출물만 읽는 경로인데 `server.py` 를 통하면
+    `client.py` 의 httpx 까지 딸려 온다(`preflight.py` 와 같은 관행).
+    """
+    from src.observability.ladder import OPTIN_FAILURE_REASONS
+
+    return [
+        p for p in summary.get("profiles", []) or []
+        if p.get("degraded_reason") in OPTIN_FAILURE_REASONS
+    ]
+
+
+def optin_failure_excluded(summary: dict[str, Any], profiles: list[dict[str, Any]]) -> int:
+    """opt-in 실패 프로파일 때문에 제외된 시나리오 건수 - 「몇 건을 못 쟀는가」."""
+    names = {str(p.get("name")) for p in profiles}
+    return sum(
+        1 for item in summary.get("skipped", []) or []
+        if any(f"프로파일 {name} INVALID" in str(item.get("reason") or "") for name in names)
+    )
+
+
 def valid_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """기능 판정의 **분모**. 무효 턴은 여기서 빠진다(T-c)."""
     return [row for row in rows if not row_is_invalid(row)]
@@ -88,6 +119,161 @@ def invalid_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "last_index": invalid[-1]["index"] if invalid else None,
         "first_scenario": invalid[0]["scenario_id"] if invalid else None,
         "turns": invalid,
+    }
+
+
+#: 단언이 평가되지 않은 턴의 사유 3종 (`108·G-6` ≡ `97·G-1` · D-241 · 2026-09-21 사용자 승인).
+#:
+#: **합치지 않는다.** 셋은 귀속처가 다르다 - 합쳐서 한 숫자로 내면 "하네스를 고쳐야 할 것"과
+#: "제품을 고쳐야 할 것"이 구별되지 않는다. 20260918 run 에서 이 규칙은 기능 합격률을
+#: 25.0% -> 66.7%(+41.7%p)로 바꾸지만, 20260914 스위프에서는 12.5% -> 12.8%(+0.3%p)밖에
+#: 움직이지 않는다 - 특정 run 을 좋게 보이려는 규칙이 아니라는 증거다(`plans/110` §3.1 교차 대조).
+UNEVALUATED_REASONS = ("invalid", "timeout", "clarify_blocked")
+
+#: 사유별 **귀속처**. 이 칸이 셋을 합치지 못하게 하는 장치다.
+UNEVALUATED_OWNER = {
+    "invalid": "하네스 과실 - 러너 401 · teardown 오염",
+    "timeout": "제품 성능 축 - 요청 상한 초과",
+    "clarify_blocked": "하네스 구성 - 역질문으로 끝나 단언에 도달하지 못함",
+}
+
+#: 옛 run 폴백에서 "역질문 자체가 판정 대상이었다"를 추정하는 단언 키(보수적 추정).
+#: **`status` 를 넣지 않는다**(2026-09-21 · 109/d9 실측 지적). `response_mode == "clarify"` 인데
+#: `status` 단언이 **실패**했다면 기대값이 `clarification` 이 아니었다는 뜻이다 - 기대가
+#: `clarification` 이었다면 그 단언은 통과했을 것이다. 넣으면 "역질문을 기대하지 않은 질의가
+#: 역질문에 막힌 턴"까지 판정 대상으로 잡혀 제외가 무력해진다(run 20260914 실측: 역질문으로
+#: 끝나고 불합격인 3,453턴 중 **2,311턴**이 `status`(기대 completed · 실제 clarification)였다).
+_CLARIFY_ASSERTION_KEYS = ("clarification", "options_contains")
+
+
+def unevaluated_reason(
+    row: dict[str, Any], *, expected_question: Optional[bool] = None
+) -> Optional[str]:
+    """이 턴에서 **단언이 평가되지 않았나**. 평가됐으면 None (`108·G-6`).
+
+    우선순위는 `invalid` > `timeout` > `clarify_blocked` 다. `invalid` 를 먼저 보는 이유는
+    T-c(D-218)가 이미 그 이름으로 분리하고 있어서다 - 같은 턴이 두 사유로 두 번 세어지면
+    제거 건수의 합이 실제 제거 수와 어긋난다.
+
+    **`clarify_blocked` 는 "역질문이 뜬 턴"이 아니라 "역질문으로 끝난 턴"이다.** 러너는
+    자동 응답 뒤의 관측치로 `obs` 를 갈아끼우므로(`runner._answer_questions`), 자동응답이
+    답을 주고 진행된 턴은 최종 `response_mode` 가 `clarify` 가 아니다. 20260918 run 에서
+    존 자동응답은 380턴 중 221턴(58.2%)에 발동했는데, 그 턴들은 단언이 **평가됐으므로**
+    제외 대상이 아니다 - "역질문이 뜬 모든 턴"으로 잡으면 분모가 절반 넘게 날아간다.
+
+    Args:
+        expected_question: 그 턴이 역질문을 **기대했는지**(`clarify.expects_question`).
+            기대한 역질문은 그 자체가 판정 대상이라 평가된 것이다(R3-03 · I-01~I-06).
+            `None` 이면 칸이 없던 옛 run 으로 보고 실패 단언 키로 보수적으로 추정한다.
+    """
+    if row_is_invalid(row):
+        return "invalid"
+    if _is_timeout(row) or row.get("forbidden_mode") == "hang":
+        return "timeout"
+    if row.get("response_mode") != "clarify":
+        return None
+    if row.get("func_verdict") == "pass":
+        # 역질문으로 끝났지만 판정은 통과했다 - 단언이 평가된 것이다. 합격을 지우지 않는다.
+        return None
+    if expected_question is None:
+        fails = row.get("failed_assertions") or []
+        expected_question = any(
+            str(f.get("key") or "").startswith(_CLARIFY_ASSERTION_KEYS)
+            # `status` 는 기대값이 `clarification` 일 때만 역질문 기대로 본다(위 주석).
+            or (str(f.get("key") or "") == "status"
+                and "clarification" in str(f.get("expected") or ""))
+            for f in fails
+        )
+    return None if expected_question else "clarify_blocked"
+
+
+def clarify_blocked_label(data: dict[str, Any]) -> str:
+    """`역질문 차단 N건 (자동응답 M건 · 발동률 P%)` — **벤치와 같은 표기**(2026-09-21 합의).
+
+    `clarify_blocked` 수치는 자동응답 유무에 따라 의미가 정반대로 읽힌다. 20260918(자동응답
+    있음 · 221/380턴)과 20260914 스위프(자동응답 없음 · 역질문 차단 3,705/6,567)를 나란히
+    놓으면 이 표기 없이는 두 값이 비교되는 것처럼 오해된다.
+
+    발동률의 분모·정의는 벤치 `RunHealth.auto_answered_turns`(`sweep.py` - `auto_answers` 가
+    실린 턴 수 / 전체 턴)와 **같다**. 두 하네스가 다른 분모를 쓰면 통일한 의미가 없다.
+    """
+    blocked = int((data.get("by_reason") or {}).get("clarify_blocked") or 0)
+    auto = int(data.get("auto_answer_turns") or 0)
+    total = int(data.get("total_turns") or 0)
+    if not auto:
+        return f"역질문 차단 {blocked}건 (자동응답 없음)"
+    rate = f"{auto / total:.0%}" if total else "-"
+    return f"역질문 차단 {blocked}건 (자동응답 {auto}건 · 발동률 {rate})"
+
+
+def row_unevaluated(row: dict[str, Any]) -> Optional[str]:
+    """행의 **칸**이 1차 출처다. 칸이 없는 옛 run 만 규칙으로 되살린다.
+
+    `arm`·`base_profile` 과 같은 원칙이다 - 소비자는 재도출하지 않고 칸을 읽는다.
+    """
+    if "unevaluated_reason" in row:
+        return row.get("unevaluated_reason")
+    return unevaluated_reason(row)
+
+
+def scored_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """기능 합격률의 **분모**(`108·G-6`). 무효(T-c)에 더해 단언 미평가 턴을 뺀다.
+
+    `valid_rows` 는 무효만 뺀다 - 그쪽은 성능·대응 등급 집계처럼 "측정은 됐다"를 분모로 쓰는
+    곳이 계속 쓴다. 여기는 **기능 판정 전용**이다.
+    """
+    return [row for row in rows if not row_unevaluated(row)]
+
+
+def unevaluated_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """사유 3종을 **각각** 센다 - 합산 하나로 뭉개지 않는다.
+
+    **제거 사다리**로 만든다: 전체 -> -invalid -> -timeout -> -clarify_blocked -> 분모.
+    각 단계는 `unevaluated_reason` 이 이미 단일 사유를 돌려주므로 한 턴이 한 번만 세어지고,
+    `제거 합 + 분모 == 전체` 가 항상 성립한다. 이중 차감이 구조적으로 불가능하다.
+    """
+    reasons = [row_unevaluated(row) for row in rows]
+    counts = Counter(reason for reason in reasons if reason)
+    scored = sum(1 for reason in reasons if not reason)
+    total = len(rows)
+    passed = sum(
+        1 for row, reason in zip(rows, reasons)
+        if not reason and row.get("func_verdict") == "pass"
+    )
+    legacy = sum(1 for row in rows if "unevaluated_reason" not in row)
+
+    by_group: dict[str, dict[str, Any]] = {}
+    for row, reason in zip(rows, reasons):
+        cell = by_group.setdefault(
+            str(row.get("group")),
+            {"total": 0, "scored": 0, "pass": 0, "pass_rate": None,
+             **{key: 0 for key in UNEVALUATED_REASONS}},
+        )
+        cell["total"] += 1
+        if reason:
+            cell[reason] += 1
+        else:
+            cell["scored"] += 1
+            if row.get("func_verdict") == "pass":
+                cell["pass"] += 1
+    for cell in by_group.values():
+        cell["pass_rate"] = (
+            round(cell["pass"] / cell["scored"], 4) if cell["scored"] else None
+        )
+
+    return {
+        "total_turns": total,
+        "scored": scored,
+        "pass": passed,
+        # 분모가 0이면 비율을 만들지 않는다 - 없는 통계를 만들지 않는다(§5.3).
+        "pass_rate": round(passed / scored, 4) if scored else None,
+        "pass_rate_legacy": round(passed / total, 4) if total else None,
+        "by_reason": {reason: counts.get(reason, 0) for reason in UNEVALUATED_REASONS},
+        "removed": sum(counts.values()),
+        "ladder_ok": sum(counts.values()) + scored == total,
+        "derived_rows": legacy,
+        "auto_answer_turns": sum(1 for row in rows if row.get("auto_answers")),
+        "by_group": dict(sorted(by_group.items())),
     }
 
 
@@ -181,6 +367,53 @@ def scenario_verdicts(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def profile_breakdown(
+    rows: list[dict[str, Any]], run: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """프로파일(= arm 조합)별 판정 집계 - **arm 을 섞지 않는다**(`110·N-1`).
+
+    §2 군별 표는 `scenario_verdicts` 가 시나리오 id 로 접는다. 같은 시나리오를 arm 2개로
+    돌리면 두 프로파일의 판정이 **한 칸으로 합쳐지고 나쁜 쪽이 이긴다**(`_worst`) - 그 표만
+    보면 어느 arm 이 무엇을 냈는지 알 수 없다. 여기서 프로파일별로 갈라 둔다.
+
+    순서는 `run.json` 의 기동 순서를 따른다(실행 순서가 곧 해석 순서다). `run.json` 에 없는
+    프로파일이 원시 로그에 있으면 뒤에 붙인다 - 빠뜨리지 않는 쪽을 택한다.
+    """
+    info = {str(p.get("name")): p for p in (run.get("profiles") or [])}
+    names = [name for name in info if any(str(r.get("profile")) == name for r in rows)]
+    names += [
+        name for name in dict.fromkeys(str(r.get("profile")) for r in rows)
+        if name not in info
+    ]
+
+    out: list[dict[str, Any]] = []
+    for name in names:
+        subset = [row for row in rows if str(row.get("profile")) == name]
+        verdicts = scenario_verdicts(subset)
+        counts = Counter(v["verdict"] for v in verdicts.values())
+        live = valid_rows(subset)
+        meta = info.get(name, {})
+        out.append({
+            "name": name,
+            "arm": meta.get("arm"),
+            "base_profile": meta.get("base_profile"),
+            "tier": meta.get("tier"),
+            "scenarios": len(verdicts),
+            "turns": len(subset),
+            "pass": counts.get("pass", 0),
+            "fail": counts.get("fail", 0),
+            "error": counts.get("error", 0),
+            "manual": counts.get("manual", 0),
+            "flaky": counts.get("flaky", 0),
+            "invalid": counts.get(INVALID_VERDICT, 0),
+            "latency": _latency_stats([
+                float(row["processing_time_ms"]) for row in live
+                if row.get("processing_time_ms") is not None
+            ]),
+        })
+    return out
+
+
 def _latency_stats(values: list[float]) -> dict[str, Any]:
     """지연 통계. 표본이 부족하면 수치를 만들지 않는다."""
     clean = [v for v in values if v is not None]
@@ -210,6 +443,8 @@ def build_summary(
     run = load_run_meta(run_dir)
     verdicts = scenario_verdicts(rows)
     invalid = invalid_summary(rows)
+    unevaluated = unevaluated_summary(rows)
+    by_profile = profile_breakdown(rows, run)
     # 성능·판정·R군 집계는 전부 **유효 턴**만 본다(T-c·T-d). 무효 턴은 별도 절에서 센다.
     live_rows = valid_rows(rows)
 
@@ -298,6 +533,7 @@ def build_summary(
     return {
         "meta": run.get("meta", {}),
         "profiles": run.get("profiles", []),
+        "by_profile": by_profile,
         "groups": groups,
         "plans_coverage": plans_coverage,
         "misuse": misuse,
@@ -306,6 +542,7 @@ def build_summary(
         "silent_wrong_total": silent_wrong,
         "scenario_verdicts": verdicts,
         "invalid": invalid,
+        "unevaluated": unevaluated,
     }
 
 
@@ -325,8 +562,19 @@ def _broken_pairs(verdicts: dict[str, dict[str, Any]], group_id: str) -> list[li
     return broken
 
 
+def _is_timeout(row: dict[str, Any]) -> bool:
+    """턴이 타임아웃으로 끝났는가.
+
+    서버가 내는 문구는 한국어(`처리 시간이 초과되었습니다...`)라 종전의
+    `"timeout" in error` 검사로는 **한 건도 잡히지 않았다**(run 20260918-182507 실측 199건).
+    HTTP 504 와 한국어 문구를 함께 본다.
+    """
+    err = str(row.get("error") or "").lower()
+    return "timeout" in err or "504" in err or "시간이 초과" in err
+
+
 def classify_failure(row: dict[str, Any]) -> str:
-    """실패 분류 13규칙 (§6.2 · Y-7). 위에서부터 먼저 맞는 것을 적용한다.
+    """실패 분류 14규칙 (§6.2 · Y-7 · plans/94 §19 `rewrite`). 위에서부터 먼저 맞는 것을 적용한다.
 
     `clarify`·`volume`·`contract` 세 유형은 run 20260915-131903 의 `unclassified` 12건을
     보고 추가했다. 그 12건은 분류 체계의 갭이 아니라 **판정 계약 결함의 그림자**였다 -
@@ -337,14 +585,27 @@ def classify_failure(row: dict[str, Any]) -> str:
     keys = {f.get("key") for f in row.get("failed_assertions", [])}
     status_error = row.get("error") or row.get("forbidden_mode") in ("crash",)
 
+    # `timeout` 이 맨 위다(2026-09-21 · run 20260918-182507 실측). 종전에는 `generation`
+    # 규칙(`executed_sql` 부재 + 오류)이 위에 있어 **타임아웃이 이 규칙에 도달한 적이 없다** -
+    # 그 run 의 타임아웃 199턴이 전건 `generation` 191 · `routing` 8 로 분류됐고,
+    # `failure_taxonomy.md` 에 타임아웃이 한 건도 나오지 않았다. 그 결과
+    # `improvement_backlog.md` 가 `generation 191`(점수 382)을 2순위 제품 결함으로 올렸는데
+    # 실제로는 전부 60초 벽이었다. 타임아웃 턴은 `executed_sql` 이 없고 오류가 있는 것이
+    # **정상**이므로 두 규칙은 구조적으로 겹친다 - 더 구체적인 쪽(오류 문자열·`hang` 표지로
+    # 확정되는 타임아웃)이 먼저 와야 한다. 타임아웃 턴의 다른 단언은 애초에 평가가 성립하지
+    # 않으므로(중단된 지점까지만 관측된다) 그 단언으로 유형을 매기면 엉뚱한 곳을 고치게 된다.
+    if row.get("forbidden_mode") == "hang" or _is_timeout(row):
+        return "timeout"
     if {"intent", "db_ids"} & keys:
         return "routing"
-    if not row.get("executed_sql") and status_error:
+    # `executed_sql`(단수) 단독으로 보지 않는다(2026-09-21 실측). 2단·멀티 DB 경로에서 그 키는
+    # **구조적으로 항상 null** 이라(run 20260918-182507: 380턴 전건 null · 실제 SQL 은
+    # `executed_sqls` 복수 키에 273턴 적재) 이 규칙이 사실상 "오류면 무조건 generation" 으로
+    # 퇴화해 있었다. SQL 이 실제로 나왔는지는 두 키를 함께 봐야 한다.
+    if not (row.get("executed_sql") or row.get("executed_sqls")) and status_error:
         return "generation"
     if {"sql_must_not_match", "column_must_not_map", "response_must_not_contain"} & keys:
         return "guard"
-    if row.get("forbidden_mode") == "hang" or "timeout" in str(row.get("error") or "").lower():
-        return "timeout"
     if row.get("row_count") == 0 and "row_count.min" in keys:
         # 0건은 데이터 부재일 수도 SQL 오류일 수도 있다. 섞으면 엉뚱한 곳을 고친다.
         return "empty_result"
@@ -359,6 +620,10 @@ def classify_failure(row: dict[str, Any]) -> str:
     if "response_must_contain" in keys:
         # 처리는 했는데 사유·안내를 말하지 않았다(침묵 처리). 응답 계약 위반이다.
         return "contract"
+    if any(str(key).startswith("rewrite") for key in keys):
+        # 재작성문이 확정 해석과 어긋났다(위치 누출·스코프 축소) 또는 게이트 판정이 기대와 다르다
+        # (plans/107 · Y-11·Y-12). SQL 의미 오류(semantics)와 처방 위치가 달라 따로 센다.
+        return "rewrite"
     if "retries.max" in keys:
         return "retry_exhaustion"
     if {"sql_must_match", "period_covers"} & keys:
@@ -377,6 +642,126 @@ def _table(header: list[str], rows: list[list[Any]]) -> str:
     for row in rows:
         lines.append("| " + " | ".join("" if c is None else str(c) for c in row) + " |")
     return "\n".join(lines)
+
+
+def _arm_section(summary: dict[str, Any]) -> str:
+    """프로파일(arm)별 판정. 프로파일이 하나뿐인 run 에서는 §2 와 같은 표라 싣지 않는다.
+
+    **arm 을 쓴 run 에서는 여기가 먼저 읽히는 표다**(`plans/110` 가이드 ⑥ 판독 순서 1~2).
+    사다리 단이 arm 마다 기대한 값인지, 그리고 두 단의 수치가 어떻게 갈리는지를 한 화면에서
+    본다. 아래 §2 는 프로파일을 가로질러 접으므로 arm 비교에 쓰지 않는다.
+    """
+    breakdown = summary.get("by_profile") or []
+    if len(breakdown) < 2:
+        return ""
+    armed = any(row.get("arm") for row in breakdown)
+    lines = ["### 프로파일(arm)별 판정", ""]
+    if armed:
+        lines.append(
+            "arm 은 전 시나리오에 덧씌운 측정 축이다. **`사다리 단` 칸이 arm 마다 기대한 "
+            "값인지 먼저 본다** - 모든 arm 이 같은 단이면 주입이 먹지 않은 것이고 arm 비교는 "
+            "성립하지 않는다. 아래 §2 군별 표는 프로파일을 가로질러 접으므로(같은 시나리오의 "
+            "여러 arm 판정이 한 칸으로 합쳐지고 나쁜 쪽이 이긴다) **arm 비교에는 이 표를 쓴다.**"
+        )
+    else:
+        lines.append("프로파일마다 서버를 따로 띄웠다. §2 는 이들을 합쳐서 센다.")
+    lines.append("")
+    lines.append(_table(
+        ["프로파일", "arm", "사다리 단", "시나리오", "턴", "합격", "불합격", "오류",
+         "수동", "불안정", "무효", "지연 p50(ms)"],
+        [
+            [
+                row.get("name"), row.get("arm") or "-", row.get("tier") or "-",
+                row.get("scenarios"), row.get("turns"),
+                row.get("pass"), row.get("fail"), row.get("error"),
+                row.get("manual"), row.get("flaky"), row.get("invalid"),
+                (row.get("latency") or {}).get("p50"),
+            ]
+            for row in breakdown
+        ],
+    ))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _unevaluated_section(summary: dict[str, Any]) -> str:
+    """판정 계약 — 단언 미평가 턴을 분모에서 빼고 **사유별로 갈라** 보인다(`108·G-6` · D-241).
+
+    ⚠ 여기 `timeout` 은 **제거 사유**이고, 6절 실패 분류의 `timeout` 은 **실패 유형**이다.
+    같은 단어, 다른 축이다 - 그래서 두 절을 갈라 제목에 축을 적는다.
+    """
+    data = summary.get("unevaluated") or {}
+    total = data.get("total_turns") or 0
+    if not total:
+        return ""
+    by_reason = data.get("by_reason") or {}
+    scored = data.get("scored") or 0
+    rate = data.get("pass_rate")
+    legacy_rate = data.get("pass_rate_legacy")
+
+    def pct(value: Optional[float]) -> str:
+        return "-" if value is None else f"{value * 100:.1f}%"
+
+    lines = ["### 판정 분모 (턴 단위 · 제거 축)", ""]
+    lines.append(
+        "**단언이 평가되지 않은 턴은 기능 합격률의 분모에서 뺀다**(`108·G-6` ≡ `97·G-1` · "
+        "2026-09-21 사용자 승인 · D-241). 사유 셋은 **합치지 않는다** - 귀속처가 다르다."
+    )
+    lines.append("")
+    lines.append(_table(
+        ["단계", "사유", "귀속처", "제거", "남은 분모"],
+        _removal_ladder(total, by_reason, scored),
+    ))
+    lines.append("")
+    lines.append(_table(
+        ["지표", "값"],
+        [
+            ["기능 합격 턴", data.get("pass")],
+            ["판정 분모(단언 평가된 턴)", scored],
+            ["**기능 합격률(계약 적용)**", f"**{pct(rate)}**"],
+            ["참고: 전 턴을 분모로 한 값", pct(legacy_rate)],
+            ["제거 합 + 분모 == 전체", "일치" if data.get("ladder_ok") else "**불일치 - 이중 차감**"],
+            ["역질문 차단 · 자동응답", clarify_blocked_label(data)],
+            ["칸 없이 규칙으로 되살린 행(옛 run)", data.get("derived_rows")],
+        ],
+    ))
+    lines.append("")
+    lines.append(
+        "- `timeout` 은 감추는 것이 아니다. 성능 축(3절 `성능 불합격`)과 단 무관 계수 지표가 "
+        "그대로 드러낸다. 여기서 빼는 것은 **기능** 판정의 분모뿐이다."
+    )
+    lines.append(
+        f"- **{clarify_blocked_label(data)}** - 자동응답이 켜진 run 은 역질문이 답을 받고 "
+        "진행하므로 `clarify_blocked` 가 작게 나온다. 자동응답이 없는 run 과 이 수치를 "
+        "**표기 없이** 나란히 놓으면 두 값이 비교되는 것처럼 오해된다(20260918 자동응답 "
+        "221/380턴 대 20260914 스위프 자동응답 없음·역질문 차단 3,705/6,567). 표기 형태와 "
+        "발동률 분모는 벤치와 같다."
+    )
+    lines.append("")
+    lines.append(_table(
+        ["군", "판정 분모", "합격", "합격률", "invalid", "timeout", "clarify_blocked", "전체 턴"],
+        [
+            [g, v["scored"], v["pass"], pct(v["pass_rate"]),
+             v["invalid"], v["timeout"], v["clarify_blocked"], v["total"]]
+            for g, v in (data.get("by_group") or {}).items()
+        ] or [["(없음)", 0, 0, "-", 0, 0, 0, 0]],
+    ))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _removal_ladder(
+    total: int, by_reason: dict[str, Any], scored: int
+) -> list[list[Any]]:
+    """제거 사다리 행. **남은 수를 단계마다 적어** 이중 차감이 눈에 보이게 한다."""
+    rows: list[list[Any]] = [["0", "전체 턴", "-", "-", total]]
+    remaining = total
+    for step, reason in enumerate(UNEVALUATED_REASONS, start=1):
+        removed = int(by_reason.get(reason) or 0)
+        remaining -= removed
+        rows.append([str(step), f"`{reason}`", UNEVALUATED_OWNER[reason], removed, remaining])
+    rows.append(["=", "**판정 분모**", "단언이 평가된 턴", "-", scored])
+    return rows
 
 
 def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Catalog]) -> str:
@@ -408,6 +793,24 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
             "다르다(`docs/21_orchestration_ladder.md`) - **아래 판정·지연을 기준 단의 성능으로 "
             "읽지 말 것.** 의도한 구성이면 그 사실을 run 기록에 남기고, 아니면 `.env` 플래그를 "
             "확인한 뒤 다시 측정한다."
+        )
+        add("")
+    optin_failed = optin_failure_profiles(summary)
+    if optin_failed:
+        # 권고 B: 강등이 **아니다** - 확정 단은 기준 단(3단)이고 그 수치는 유효하다. 다만 이
+        # 프로파일의 시나리오는 한 건도 돌지 않았다(INVALID 제외). 위 「기준 단이 아님」 경고와
+        # 구분되게 [안내]로 올리고, 못 잰 건수를 여기서 바로 말한다.
+        excluded = optin_failure_excluded(summary, optin_failed)
+        add(
+            "> **[안내] 1단(deep_agent) opt-in 이 성립하지 않아 기준 단(3단 "
+            "`semantic_router`)에서 측정됐다.** "
+            + " · ".join(
+                f"`{p.get('name')}`(사유 `{p.get('degraded_reason')}`)" for p in optin_failed
+            )
+            + f". 이 프로파일은 러너가 INVALID 로 제외해 **시나리오 {excluded}건을 재지 않았다** "
+            "(사유·목록은 10절). 기준 단에서 측정된 값 자체는 유효하므로 아래 판정표를 "
+            "그대로 읽되, **제외된 만큼은 커버리지가 아니다** - 1단을 의도했다면 "
+            "오케스트레이터 서빙과 deepagents 설치를 확인한 뒤 다시 잰다."
         )
         add("")
     optin = [
@@ -467,26 +870,35 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     add("### 프로파일별 기동 결과")
     add("")
     add(_table(
-        ["프로파일", "포트", "유효", "사다리 단", "설정 에코", "사유"],
+        ["프로파일", "arm", "포트", "유효", "사다리 단", "설정 에코", "사유"],
         [
             [
-                p.get("name"), p.get("port"), "O" if p.get("valid") else "X",
+                p.get("name"), p.get("arm") or "-", p.get("port"),
+                "O" if p.get("valid") else "X",
                 p.get("tier"),
                 {True: "일치", False: "불일치", None: "미확인"}.get(p.get("echo_ok")),
                 "; ".join(p.get("reasons") or []) or "-",
             ]
             for p in summary.get("profiles", [])
-        ] or [["(없음)", "-", "-", "-", "-", "기동된 프로파일이 없다"]],
+        ] or [["(없음)", "-", "-", "-", "-", "-", "기동된 프로파일이 없다"]],
     ))
     add("")
+    add(_arm_section(summary))
 
     # 2
     add("## 2. 기능 판정 요약")
+    add("")
+    add(_unevaluated_section(summary))
+    add("### 시나리오별 판정 (턴을 접은 값)")
     add("")
     add("한 칸도 비우지 않는다. `불안정`은 합격으로도 불합격으로도 세지 않는다.")
     add(
         "`무효`는 러너 자신의 인증 실패로 **측정이 성립하지 않은** 시나리오다(T-c) - "
         "합격률의 분모에 넣지 않는다. 사유는 10절."
+    )
+    add(
+        "이 표는 시나리오 단위다. **기능 합격률은 위 턴 단위 분모로 읽는다**(`108·G-6`) - "
+        "여기 `합격`/`계`를 나누면 단언이 평가되지 않은 턴이 분모에 남는다."
     )
     add("")
     add(_table(
@@ -556,7 +968,12 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     add("")
 
     # 6
-    add("## 6. 불합격 상세")
+    add("## 6. 불합격 상세 (실패 유형 축)")
+    add("")
+    add(
+        "⚠ 여기 `kind` 의 **`timeout` 은 실패 유형**이고, 2절 「판정 분모」의 `timeout` 은 "
+        "**제거 사유**다. 같은 단어, 다른 축이다 - 두 숫자를 같은 것으로 읽지 말 것."
+    )
     add("")
     failures = summary.get("failures", [])
     if not failures:

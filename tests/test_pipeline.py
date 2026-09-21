@@ -56,6 +56,7 @@ from src.nodes.query_validator import query_validator
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import _schema_cache, schema_analyzer
 from src.state import create_initial_state
+from tests.mocks.streaming_llm import attach_astream
 
 
 # ──────────────────────────────────────────────
@@ -161,15 +162,23 @@ def _make_mock_db_client(
 
 
 def _make_mock_llm(responses: list[str]) -> AsyncMock:
-    """순서대로 응답을 반환하는 mock LLM을 생성한다."""
+    """순서대로 응답을 반환하는 mock LLM을 생성한다.
+
+    `ainvoke`와 `astream`이 같은 큐를 공유한다 — output_generator는 astream_text로
+    스트리밍하므로 ainvoke만 대역하면 `async for`가 코루틴을 받아 깨진다(2026-09-21).
+    """
     llm = AsyncMock()
-    side_effects = []
+    pending = []
     for resp in responses:
         msg = MagicMock()
         msg.content = resp
-        side_effects.append(msg)
-    llm.ainvoke = AsyncMock(side_effect=side_effects)
-    return llm
+        pending.append(msg)
+
+    def _next():
+        return pending.pop(0)
+
+    llm.ainvoke = AsyncMock(side_effect=lambda *a, **kw: _next())
+    return attach_astream(llm, _next)
 
 
 @asynccontextmanager

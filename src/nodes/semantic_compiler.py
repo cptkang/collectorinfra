@@ -243,6 +243,7 @@ def compile_smq(
     default_limit: int = 100,
     stat_month: StatMonth = None,
     server_scope: Optional[tuple[str, list[str]]] = None,
+    surface_query: Optional[str] = None,
 ) -> str:
     """SMQ를 방언별 SQL로 결정적 컴파일한다(패턴 A/B는 기존 엔진 재사용, C는 알람 조립).
 
@@ -255,6 +256,9 @@ def compile_smq(
         stat_month: 성능지표 기간 필터 — 단일 월 YYYYMM 또는 (시작, 끝) 범위(패턴 B, D-102)
         server_scope: 선행 task 결과 서버 한정 (식별컬럼, 값목록) — 패턴 A/B에 HAVING으로
             결정적 적용(D-099). None이면 미적용.
+        surface_query: 표면어 판정 입력(plans/107 W0.5 — 원문 기준). None이면 ``user_query``.
+            순위·최상급 판정과 IR 부재 시의 LIMIT 표면어 해석(``resolve_query_limit``)이 함께 쓴다
+            — 재작성문이 원문에 없던 "서버별·전체"를 얻어 LIMIT이 상향되던 확대 방향 오염(U-10)을 닫는다.
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결)
@@ -273,7 +277,9 @@ def compile_smq(
         limit = int(smq.limit)
         note_guard(GUARD_IR_LIMIT, f"limit={limit}")
     else:
-        limit = resolve_query_limit(user_query, default_limit)
+        limit = resolve_query_limit(
+            user_query if surface_query is None else surface_query, default_limit
+        )
     # 호출부가 결정적으로 해석한 기간이 우선이고, 없을 때만 IR 기간을 쓴다(D-035 결정적 우선).
     if stat_month is None and smq.time_range:
         stat_month = _stat_month_from_ir(smq.time_range)
@@ -283,6 +289,7 @@ def compile_smq(
         return _compile_ab(
             smq, model, db_engine, db_schema, limit, stat_month,
             server_scope=server_scope, user_query=user_query,
+            surface_query=surface_query,
         )
     if smq.pattern == "C":
         return _compile_c(smq, model, db_id, limit, db_engine=db_engine)
@@ -348,6 +355,7 @@ def _compile_ab(
     *,
     server_scope: Optional[tuple[str, list[str]]] = None,
     user_query: str = "",
+    surface_query: Optional[str] = None,
 ) -> str:
     """패턴 A(서버설정)+B(성능지표)를 build_multi_resource_pivot_sql로 조립한다(D-067 재사용).
 
@@ -397,14 +405,17 @@ def _compile_ab(
         metric_table, stat_month = metric_tables["day"], daily
 
     # 정렬은 IR(S-IR3) 우선, 없으면 표면어("가장 높은/최고") 폴백(NULLS LAST는 조립기 — D-098).
+    # 표면어 판정은 원문 기준(plans/107 W0.5) — 재작성문이 "상위"·"가장"을 탈락·추가해도
+    # 흔들리지 않게.
+    rank_text = user_query if surface_query is None else surface_query
     order_by = _resolve_ir_order_by_ab(smq, dim_index) if smq.order_by else None
     if order_by is not None:
         note_guard(GUARD_IR_ORDER_BY, f"{order_by[0]} {order_by[1]}")
         # 최상급 어휘가 있고 상한을 지정하지 않았으면 상위 1건 유지(D-100).
-        if smq.limit is None and _is_superlative(user_query):
+        if smq.limit is None and _is_superlative(rank_text):
             limit = 1
     else:
-        order_by = _resolve_ranking(user_query, explicit_measures)
+        order_by = _resolve_ranking(rank_text, explicit_measures)
         # 최상급 순위("가장 높은/낮은")는 상위 1건만 — 결정적 조립이 default_limit로 전체를 반환하면
         # 병합 시 "가장 높은 서버"가 아닌 대상 전체가 남는다(D-100 실측: 2건 반환).
         if order_by:
@@ -1105,6 +1116,7 @@ async def compile_from_nl(
     stepwise_deps: Optional["StepwiseDeps"] = None,
     derivation_sink: Optional[list[dict]] = None,
     parsed_filters: list | None = None,
+    surface_query: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
     """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.
 
@@ -1126,6 +1138,8 @@ async def compile_from_nl(
         derivation_sink: 단계적 도출 관측 레코드 적재 리스트(state 노출용)
         parsed_filters: 입력 파서의 `filter_conditions` — 서버 식별 필터가 컴파일 SQL에 없으면
             컴파일을 버리고 폴백한다(None이면 검사 없음)
+        surface_query: 표면어 판정 입력(plans/107 W0.5 — 원문 기준). None이면 ``user_query``.
+            순위·최상급과 IR 부재 시 LIMIT 해석이 쓴다(U-10). SMQ 선택 LLM 입력은 종전대로 ``user_query``
 
     반환:
         (sql, smq, cov) — sql이 있으면 커버리지 내 결정적 조립 성공(LLM SQL 생성 우회).
@@ -1177,7 +1191,7 @@ async def compile_from_nl(
     sql = compile_smq(
         smq, db_id, model, user_query=user_query,
         default_limit=default_limit, stat_month=stat_month,
-        server_scope=server_scope,
+        server_scope=server_scope, surface_query=surface_query,
     )
     # 선행 스코프가 있으면 식별 필터는 스코프 HAVING으로 대체된 것이다(_apply_server_scope_priority).
     dropped = (

@@ -159,6 +159,8 @@ def _apply_done(obs: Observation, payload: dict[str, Any]) -> None:
     scope = payload.get("db_scope") or {}
     if isinstance(scope, dict) and scope.get("db_ids"):
         obs.db_ids = [str(d) for d in scope["db_ids"]]
+    # O-e(plans/94 §19.3): 재작성 감사 — 기능이 꺼진 서버는 키 자체를 싣지 않는다.
+    obs.rewrite_traces = [t for t in payload.get("rewrite_trace") or [] if isinstance(t, dict)]
 
 
 class ScenarioClient:

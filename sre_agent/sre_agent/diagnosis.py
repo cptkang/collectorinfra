@@ -12,6 +12,7 @@ from holmes.core.prompt import build_initial_ask_messages
 from holmes.core.tool_calling_llm import ToolCallingLLM
 from holmes.core.tools import PrerequisiteCacheMode, ToolsetTag
 
+from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import LOAD_GUARD_NOTE, vm_profile
@@ -155,6 +156,10 @@ class DiagnosisAgent:
         # 전건 실패하는 것을 막는다. 교정할 것이 없으면 no-op이라 정상 경로는 비트 동일.
         if self.settings.system_message_position_fix:
             install_system_message_guard()
+        # bash를 켜는 프로파일(로컬 vm_profile·middleware_profile)이 파일을 만들지 못하게 한다(D-235).
+        # 프로파일별 분기 없이 여기 한 곳에서 건다 — 단일 출처. 쓰기 형태가 없으면 no-op이다.
+        if self.settings.bash_write_guard_enabled:
+            install_bash_write_guard()
         self._config = Config(
             model=self.settings.model,
             api_key=self.settings.api_key,

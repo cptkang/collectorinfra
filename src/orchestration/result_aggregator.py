@@ -15,7 +15,8 @@ task_results를 통합하여 단일 final_response(또는 output_file)를 생성
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import re
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -172,6 +173,22 @@ async def result_aggregator(
 # 서버 식별 컬럼 후보(병합 키 탐지 우선순위). server_name을 canonical로 선호한다.
 _IDENTITY_COL_HINTS = ("server_name", "hostname", "host_name", "서버명", "name")
 
+#: 병합 키에서 제거하는 표기 구분자 — 같은 서버의 서로 다른 표기형을 한 키로 모은다.
+_IDENTITY_KEY_NOISE = re.compile(r"[\s_.-]")
+
+
+def _identity_key(value: Any) -> str:
+    """식별 값을 병합 키로 정규화한다(소문자 + 구분자 제거).
+
+    실측(plans/49 §12.3 B-1a · 2026-09-21): 알람 조회는 `server_name='SV-WEB-001'`을,
+    이어지는 조회는 `hostname='svweb001'`을 돌려준다. 원시 값을 키로 쓰면 같은 서버가
+    두 키로 갈라져, 뒤이은 base 스코프 절단에서 후속 조회 행이 통째로 탈락했다
+    (컬럼만 남고 값이 비어 "데이터 없음"으로 보였다).
+    """
+    if value is None:
+        return ""
+    return _IDENTITY_KEY_NOISE.sub("", str(value).strip().lower())
+
 
 def _extract_result_rows(res: dict) -> list[dict]:
     """task 결과에서 행 리스트를 추출한다(organized_data.rows 우선, query_results 폴백)."""
@@ -236,6 +253,19 @@ def _merge_task_results_by_identity(
     if len(sources) < 2:
         return None
 
+    # 공통 서버가 하나도 없으면 결정적 병합은 뜻이 없다 — 각 조회가 서로 다른 서버를
+    # 가리키는 독립 조회(예: CPU 상위 3 + 메모리 상위 3)이므로 outer join 표는 절반이
+    # 빈 칸이 되고, 이어지는 base 절단이 한쪽을 통째로 지운다. LLM 합성으로 넘긴다.
+    key_sets = [{_identity_key(r.get(idc)) for r in rows if isinstance(r, dict)} - {""}
+                for rows, idc in sources]
+    shared = {k for k in set().union(*key_sets) if sum(k in s for s in key_sets) >= 2}
+    if not shared:
+        logger.info(
+            "result_aggregator 병합 취소: 조회 %d건이 공통 서버를 하나도 공유하지 않음 "
+            "— LLM 합성으로 폴백", len(sources),
+        )
+        return None
+
     id_cols = {idc for _, idc in sources}
     canonical = "server_name" if "server_name" in id_cols else sources[0][1]
 
@@ -248,7 +278,7 @@ def _merge_task_results_by_identity(
             if not isinstance(row, dict):
                 continue
             raw_key = row.get(idc)
-            key = str(raw_key).strip().lower() if raw_key is not None else ""
+            key = _identity_key(raw_key)
             if not key:
                 keyless += 1  # 식별키 없는 행(전역 COUNT류 등)은 표에 반영 불가
                 continue
@@ -268,18 +298,18 @@ def _merge_task_results_by_identity(
 
     # 기준 서버 집합: 행수가 가장 적은 조회(가장 좁게 스코프됨)의 키만 남긴다.
     # tie(각 1행)면 min이 첫 인덱스=선행 조회를 고른다(선별 기준 우선).
-    base_rows, base_idc = min(sources, key=lambda s: len(s[0]))
-    base_keys = {
-        str(r.get(base_idc)).strip().lower()
-        for r in base_rows
-        if isinstance(r, dict) and r.get(base_idc) is not None
-    }
-    scoped = {k: v for k, v in merged.items() if k in base_keys}
+    base_idx = min(range(len(sources)), key=lambda i: len(sources[i][0]))
+    base_keys = key_sets[base_idx]
+    # 절단은 **좁히기일 때만** 한다 — base 집합이 다른 조회들의 집합 안에 온전히 들어갈 때.
+    # 그렇지 않으면 base에만 있는 서버를 남기려다 다른 조회에만 있는 서버를 지우게 된다
+    # (plans/49 §12.3 B-1 — 침묵 손실).
+    covered = set().union(*(s for i, s in enumerate(key_sets) if i != base_idx))
+    scoped = {k: v for k, v in merged.items() if k in base_keys} if base_keys <= covered else {}
     if scoped:
         if len(scoped) < len(merged):
             logger.info(
                 "result_aggregator 병합: 최소 행수 조회(%d행) 기준 스코프로 %d→%d행 축소",
-                len(base_rows), len(merged), len(scoped),
+                len(sources[base_idx][0]), len(merged), len(scoped),
             )
         merged = scoped
 

@@ -76,6 +76,10 @@ solutions:
 #    프롬프트의 소유표 렌더 재료(설명)뿐이며, 선언 순서가 렌더 순서다. 소유표는
 #    `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`가 켜졌을 때만 프롬프트에 들어간다.
 #    server_spec의 정본은 G-1 기본 가정(폴스타 — 현재 구성 실측값)이다 · 사용자 미확정.
+#
+#    ambiguous_owner: true — **소유가 모호한 영역**(두 시스템이 같은 것을 답할 수 있어 위 정본
+#    선언이 기본값일 뿐이다). 소재 프로브(`CROSS_SYSTEM_PROBE_ENABLED`)가 결정표의 「소유 모호」
+#    행을 타는 조건이고, 소유 선언(누가 정본인가)과 경쟁하지 않는다. 기본값 false.
 capabilities:
   - code: asset_inventory
     label: HW/SW 자산 분류·물품 분류·시리얼 번호·자산 상태·자산 보유 부점
@@ -89,6 +93,9 @@ capabilities:
     label: 서버 가용 상태·호스트명·IP·OS 구성
   - code: server_spec
     label: 서버 사양(CPU 코어·메모리·디스크 용량 — 현재 구성 실측값)
+    # R1 "하드웨어 자산 정보"와 R2 "서버 현황"이 겹친다 — 정본은 폴스타(G-1 기본 가정)지만
+    # 자산관리도 같은 것을 답할 수 있어 식별자 소재로 시스템을 고른다.
+    ambiguous_owner: true
   - code: server_usage
     label: CPU·메모리·디스크 사용률(모니터링 시계열)
   - code: alarm

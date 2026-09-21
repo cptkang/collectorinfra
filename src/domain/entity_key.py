@@ -222,6 +222,8 @@ class KeyColumn:
     #: 이름 힌트(호출부가 넘긴 판정)와 값 계열이 함께 성립하면 True — 강한 키.
     strong: bool
     distinct: int
+    #: 출처 DB 매니페스트가 **키로 선언한** 컬럼인가 — 값·이름 휴리스틱보다 앞선다.
+    declared: bool = False
 
 
 def detect_key_columns(
@@ -229,22 +231,30 @@ def detect_key_columns(
     *,
     name_hint: Any | None = None,
     exclude: Iterable[str] = (),
+    declared: Iterable[str] = (),
 ) -> list[KeyColumn]:
     """행 목록에서 값으로 키 컬럼을 찾아 우선순으로 돌려준다.
 
-    순서: 강한 키(이름 힌트 ∧ 값 계열) → 서로 다른 값 수 내림차순 → 첫 행의 컬럼 순서.
-    같은 값만 반복되는 분류성 컬럼이 서버 키를 밀어내지 않게 하려는 순서다.
+    순서: **선언 키**(출처 DB 매니페스트) → 강한 키(이름 힌트 ∧ 값 계열) → 서로 다른 값 수
+    내림차순 → 첫 행의 컬럼 순서. 같은 값만 반복되는 분류성 컬럼이 서버 키를 밀어내지 않게
+    하려는 순서다.
+
+    **선언이 먼저인 이유**: 값 판정은 영문자가 든 단일 레이블을 전부 호스트명 계열로 받으므로
+    코드값(`Z99`)·심각도(`critical`)·OS명 컬럼도 키 후보가 된다. 출처 DB가 "이것이 서버 키다"
+    라고 선언했으면 추측보다 그 선언이 이긴다. 선언이 없을 때만 값·이름 휴리스틱으로 내려간다.
 
     Args:
         rows: 선행 결과 행
         name_hint: `(column) -> bool` — 이름만으로 서버 식별 컬럼인가(호출부의 D-100 판정).
             도메인은 이름 규칙을 모른다(스키마 리터럴 0).
         exclude: 판정에서 뺄 컬럼(출처 태그 등)
+        declared: 출처 DB 매니페스트가 선언한 키 컬럼(대소문자 무시)
     """
     dict_rows = [r for r in rows if isinstance(r, Mapping)]
     if not dict_rows:
         return []
     skip = set(exclude)
+    declared_lower = {str(c).lower() for c in declared}
     columns: list[str] = []
     for row in dict_rows:
         for col in row.keys():
@@ -262,9 +272,14 @@ def detect_key_columns(
         strong = bool(name_hint(col)) if callable(name_hint) else False
         found.append((
             position,
-            KeyColumn(column=str(col), family=fam, strong=strong, distinct=distinct),
+            KeyColumn(
+                column=str(col), family=fam, strong=strong, distinct=distinct,
+                declared=str(col).lower() in declared_lower,
+            ),
         ))
-    found.sort(key=lambda item: (not item[1].strong, -item[1].distinct, item[0]))
+    found.sort(
+        key=lambda item: (not item[1].declared, not item[1].strong, -item[1].distinct, item[0])
+    )
     return [kc for _, kc in found]
 
 

@@ -87,10 +87,16 @@ class CapabilitySpec:
     **소유는 담지 않는다.** 어느 시스템이 정본인지는 `SolutionSpec.capabilities`(다중 존
     시스템)와 `DBEntry.capabilities`(존 없는 단일 DB 시스템)가 정한다 — 여기에 두면 두 번째
     출처가 된다(D-053).
+
+    `ambiguous_owner`는 "어느 시스템이 소유하는가"가 아니라 **그 영역 자체의 성질**이다
+    (두 시스템이 같은 것을 답할 수 있어 정본 선언이 기본값일 뿐이라는 표시 — G-1). 소유 선언과
+    경쟁하지 않으므로 두 번째 출처가 아니다.
     """
 
     code: str
     label: str = ""
+    #: 소유가 모호한 영역인가 — 소재 프로브 결정표의 "소유 모호" 행 판정 입력(G-1).
+    ambiguous_owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -223,6 +229,14 @@ class DBRegistry:
     def capability_specs(self) -> tuple[CapabilitySpec, ...]:
         """답변 영역 설명을 선언 순서로 반환한다(소유표 렌더 순서)."""
         return self.capabilities_
+
+    def ambiguous_capabilities(self) -> frozenset[str]:
+        """소유가 모호하다고 **레지스트리가 선언한** 답변 영역 코드 (G-1 · plans/102 §3.4).
+
+        소재 프로브가 "소유 모호" 행을 타는 조건이다. 코드 상수로 두면 레지스트리 데이터와
+        두 번째 출처가 되므로 선언에서만 읽는다(D-053).
+        """
+        return frozenset(s.code for s in self.capabilities_ if s.ambiguous_owner)
 
     def _solution_of_family(self, family: str) -> SolutionSpec | None:
         if not family:
@@ -471,7 +485,11 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 )
 
     capability_specs = tuple(
-        CapabilitySpec(code=str(raw["code"]), label=str(raw.get("label", "")))
+        CapabilitySpec(
+            code=str(raw["code"]),
+            label=str(raw.get("label", "")),
+            ambiguous_owner=bool(raw.get("ambiguous_owner", False)),
+        )
         for raw in data.get("capabilities") or []
         if isinstance(raw, dict) and raw.get("code")
     )

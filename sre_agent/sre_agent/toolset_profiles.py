@@ -213,11 +213,19 @@ def remote_vm_profile() -> dict[str, dict]:
 
     로컬 VM 진단 프로파일(vm_profile)과 달리 다음을 지킨다:
 
-    - bash를 확장하지 않는다(내장 core 텍스트 유틸만 · builtin_allowlist="core").
-      중앙 실행 호스트의 셸 출력은 대상 VM 정보가 아니므로 VM_DIAG_ALLOW를 붙이지
-      않는다(로컬/원격 프로파일 비대칭은 의도 — LLM의 대상 오인 방지).
+    - **bash를 끈다**(2026-09-21 · D-233 — 종전 `builtin_allowlist="core"`에서 교체).
+      중앙 실행 호스트의 셸 출력은 대상 VM 정보가 아니므로 애초에 조사 근거가 될 수 없고
+      (로컬/원격 프로파일 비대칭은 의도 — LLM의 대상 오인 방지), holmes `core` 목록은
+      **읽기 전용이 아니었다**: `echo x > f`·`grep … >> f`·`sort -o f`·`uniq in out`이 검증을
+      통과한다(리다이렉트는 prefix 목록으로 막을 수 없다 — 세그먼트가 명령 이름으로 시작한다).
+      `core`에 든 `kubectl` 13종도 k8s가 아닌 환경에서 무의미하다(SREAgent D-004).
+      **실측 근거**: `tool_results_dir`를 넘기는 곳이 0건이라 도구 결과가 디스크로 새지 않고
+      (자동 추가되는 `cat/head/tail/wc/jq <저장경로>` 허용 prefix가 죽은 경로), MCP 출력도
+      파일이 아니라 대화에만 있다 — 가공할 파일이 없다. 2026-09-17 실 조사 42회 bash 호출은
+      kubectl 38 · hostname 3 · psql 시도 1(거부)로 **조사 데이터 가공 0건**이었고, 한 조사는
+      40 step 중 35를 `kubectl get pods` 반복에 소진했다.
       "로컬 셸은 대상 VM 아님" 지침은 REMOTE_VM_SHELL_NOTE로 병기해
-      system_prompt_additions로 주입한다.
+      system_prompt_additions로 주입한다(원격 데이터 경로가 MCP뿐임을 LLM에 명시).
     - kubernetes/logs 비활성(k8s 아님 — D-004).
     - prometheus/metrics 비활성 유지(D-119) — PromQL은 mcp_server 도구로 소비한다
       (내장 toolset A안 복귀 시에만 활성).
@@ -229,11 +237,5 @@ def remote_vm_profile() -> dict[str, dict]:
     return {
         "kubernetes/logs": {"enabled": False},
         "prometheus/metrics": {"enabled": False},
-        "bash": {
-            "enabled": True,
-            "config": {
-                "allow": [],
-                "builtin_allowlist": "core",
-            },
-        },
+        "bash": {"enabled": False},
     }

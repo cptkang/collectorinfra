@@ -59,6 +59,15 @@ _BYTE_IDENTICAL_BLOCKS = (
     "[[alarm_active_join]]",
 )
 
+#: 공유 리터럴과 **달라야 정상인** (db_id, marker) 조합. `_FALLBACK_BLOCKS`는 공동존(cm_gp·cm_yd)
+#: 모양의 사본 하나뿐이라, 실측으로 다른 은행존(b0)까지 바이트 일치를 요구하면 정본이 틀렸다고
+#: 오판한다. b0는 `config/knowledge/polestar_b0/catalog.yaml`이 근거를 갖고 오버라이드한다 —
+#: 파일시스템 통계가 단수형(server.FileSystem) 행만 있고, 디스크 IO(server.Disks/MaxIORate)는
+#: stat_m 0건으로 미수집이다(2d485af C-02~C-12 실측).
+_EXPECTED_DIVERGENCE = {
+    ("polestar_b0", "[[metric_case_lines]]"),
+}
+
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
@@ -214,7 +223,14 @@ class TestKnowledgeBlocks:
         """정본 렌더가 현행 예제와 바이트 일치해야 하는 블록 — 어긋나면 사본 드리프트다."""
         blocks = knowledge_blocks(_profile_catalog(db_id), knowledge_render=True)
         for marker in _BYTE_IDENTICAL_BLOCKS:
-            assert blocks[marker] == polestar_prompts._FALLBACK_BLOCKS[marker], marker
+            literal = polestar_prompts._FALLBACK_BLOCKS[marker]
+            if (db_id, marker) in _EXPECTED_DIVERGENCE:
+                assert blocks[marker] != literal, (
+                    f"{db_id} {marker}: 근거 있는 오버라이드가 사라졌다 — "
+                    "카탈로그가 공유 리터럴로 되돌아갔는지 확인하라"
+                )
+                continue
+            assert blocks[marker] == literal, marker
 
     def test_dropped_attribute_disappears_from_example(self):
         """정본에서 속성이 빠지면 예제 SELECT 줄도 사라진다(D-058형 드리프트 차단)."""

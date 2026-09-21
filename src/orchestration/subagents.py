@@ -53,6 +53,7 @@ from src.routing.capability_ownership import (
     restrict_targets_to_owner,
     routing_fallback_note,
 )
+from src.routing.db_scope import zone_selection_db_ids
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
@@ -611,7 +612,11 @@ async def _run_single_db_pipeline(
         # 3) 검증
         await emit_step("pipeline.validate", "start", label="SQL 검증")
         state.update(await query_validator(state, app_config=app_config))
-        await emit_step("pipeline.validate", "end")
+        # 실패 사유를 단계 종료에 싣는다 — 스트림이 실패로 끝나면 화면 경위에 쓰인다(D-242)
+        await emit_step("pipeline.validate", "end", detail=(
+            None if state["validation_result"]["passed"]
+            else state.get("error_message") or state["validation_result"].get("reason")
+        ))
         if not state["validation_result"]["passed"]:
             if state.get("retry_count", 0) >= _max_retry:
                 # 검증 실패 + 재시도 초과 → 에러 종료
@@ -626,7 +631,7 @@ async def _run_single_db_pipeline(
         # 4) 실행
         await emit_step("pipeline.execute", "start", label="SQL 실행")
         state.update(await query_executor(state, app_config=app_config))
-        await emit_step("pipeline.execute", "end")
+        await emit_step("pipeline.execute", "end", detail=state.get("error_message"))
         if state.get("error_message"):
             if state.get("retry_count", 0) >= _max_retry:
                 break
@@ -764,6 +769,11 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
     Returns:
         필터된 isolated state dict
     """
+    # 원문 기준 판정(LIMIT 승격·실시간 의도)의 입력. 1단(deep_agent)은 격리 입력에 원문이
+    # 실리지 않아(ambient 키에 user_query 없음 — plans/103 N-1) 빈 문자열로 판정하면 LIMIT이
+    # 기본값에 고정되고("모든"이어도 1000) 실시간 의도가 항상 꺼진다. 원문이 없을 때만 task
+    # 질의로 판정한다 — 2단은 원문이 있어 종전과 같다(plans/107 v2.6 · plans/111).
+    judged_query = state.get("user_query") or task.get("sub_query", "")
     # 실행에 필요한 컨텍스트 필드 (얕은 복사)
     base: dict[str, Any] = {
         "user_query": state.get("user_query", ""),
@@ -773,7 +783,7 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 이 시점의 state.user_query(원문)로 계산한 limit이 state 필드로 살아남는다.
         # 실측(2026-07-24): 이 승격 부재로 은행존 "모든" 질의가 LIMIT 1000 절단(2,328→1,000).
         "resolved_limit": state.get("resolved_limit") or resolve_query_limit(
-            state.get("user_query", ""), load_config().query.default_limit
+            judged_query, load_config().query.default_limit
         ),
         # orchestration 경로는 semantic_router를 타지 않아 routing_intent가 항상 None이었고,
         # alarm_query task도 일반 템플릿 + allowed_tables(알람 테이블 제외 필터)로 실행되는
@@ -808,10 +818,15 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 존 선택 고정(Plan 75 §4): intent_planner pre-check가 못 덮는 복합 계획의
         # 개별 task까지 run_data_query_pipeline에서 결정적 고정하도록 전파.
         "selected_db_ids": state.get("selected_db_ids"),
+        # (plans/95 W-10) 존 선택 고정에 쓸 대상 — 선택 존 + 이번 턴 라우터가 남긴 존 미배정 DB.
+        # `target_databases`는 아래에서 task 격리를 위해 비우므로 그 값을 여기서 미리 접는다.
+        "zone_selection_db_ids": zone_selection_db_ids(
+            state.get("selected_db_ids"), state.get("target_databases")
+        ),
         # 실시간 사용률 의도(Plan 71, B안 게이트)는 **원문 기준**으로 판정해 승격 —
         # sub_query/sub_query_context 재작성으로 "실시간" 표면어가 탈락해도 유지
         # (resolved_limit과 동일 원리, D-066 후속7).
-        "realtime_usage_intent": is_realtime_usage_query(state.get("user_query", "")),
+        "realtime_usage_intent": is_realtime_usage_query(judged_query),
         "mapped_db_ids": state.get("mapped_db_ids"),
         "db_column_mapping": state.get("db_column_mapping"),
         "column_mapping": state.get("column_mapping"),
@@ -1112,7 +1127,14 @@ async def run_data_query_pipeline(
     #    classify_dbs 후, 이번 턴에 새 위치/DB 신호가 없으면 직전 턴 DB를 승계한다(③, M2).
     #    selected_db_ids(존 선택 역질문, Plan 75 §4)는 복합 계획의 개별 task에도 적용되도록
     #    task.db_ids 다음 순위로 결합 — LLM 분류(classify_dbs)를 우회한다.
-    raw_targets = task.get("db_ids") or isolated.get("selected_db_ids")
+    # (plans/95 W-10) 존 선택 고정에 이번 턴 라우터가 남긴 존 미배정 DB를 합친다 —
+    # 라우터에서 살린 대상을 여기서 다시 떨어뜨리면 같은 침묵 탈락이 순차 러너 경로에서
+    # 되살아난다(3단도 이 부품을 쓴다 — docs/21 §7). 존 미배정 대상이 없으면 선택값 그대로다.
+    raw_targets = (
+        task.get("db_ids")
+        or isolated.get("zone_selection_db_ids")
+        or isolated.get("selected_db_ids")
+    )
     db_succeeded = False
     db_pinned = False
     if raw_targets:

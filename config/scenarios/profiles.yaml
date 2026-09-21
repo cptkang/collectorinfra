@@ -32,3 +32,63 @@ profiles:
   # 알람 결정적 경로(plans/44·45 기본 off).
   optin_alarm:
     TEXT2SQL_ALARM_DETERMINISTIC: "true"
+
+  # ── 사다리 단 비교 arm (2026-09-21 · plans/110 「▶ 실행 가이드」 ③·④) ──
+  #
+  # **쓰는 법은 `--profile` 이 아니라 `--arm` 이다**(`110·N-1` 랜딩 2026-09-21).
+  #   python -m scripts.scenario --run --arm tier2_intent --arm tier3_router
+  # `--profile` 은 **시나리오 필터**라서(`runner.py` `iter_executions`) 여기에 쓸 수 없다 —
+  # 카탈로그 220건의 `profile:` 은 baseline 212 · optin_alarm 8 뿐이라
+  # `--profile tier2_intent` 는 **선택 0건**이 된다.
+  # `--arm` 은 각 시나리오의 자기 프로파일 **위에 덧씌운다**. 덧씌움은 **치환이 아니라
+  # 병합**이고(키 충돌 시 arm 우선) 조합마다 서버를 따로 띄운다:
+  #   baseline+tier2_intent(212) · baseline+tier3_router(212)
+  #   optin_alarm+tier2_intent(8) · optin_alarm+tier3_router(8)  ← 알람 플래그를 유지한다
+  # 치환했다면 D군 8건이 `TEXT2SQL_ALARM_DETERMINISTIC` 을 잃는다(회귀 테스트:
+  # `tests/test_scenario/test_arm_fanout.py`).
+  # 기록: `raw.jsonl` 행과 `run.json.profiles[]` 가 조합 이름(`profile`)과 함께
+  # `arm`(arm id 원본 · 없으면 null) · `base_profile`(시나리오 자기 프로파일)을 별도 칸으로
+  # 싣는다. 소비자는 조합 이름을 **파싱하지 않고** 그 칸을 읽는다.
+  # 2단과 3단 중 어느 쪽으로 운영할지는 **재어 보고 정한다**. 플래그를 꺼서 한쪽만 돌리면
+  # 비교가 성립하지 않는다 — 두 프로파일을 같은 run 에서 돌려 같은 시나리오·같은 코드로
+  # 대조한다. 세 플래그를 **모두 명시**해 tri-state 자동 결정을 배제한다(D-225 ④·`.env` 비종속).
+  #
+  # 실측(2026-09-21 · 격리 프로세스에서 resolve_ladder_tier 확인):
+  #   tier2_intent → intent_orchestration (사유 intent_flag_on)
+  #   tier3_router → semantic_router      (사유 none)
+  #
+  # 주의: 1단(deep_agent)은 두 arm 모두 끈다. 1단을 함께 재려면 세 번째 arm 을 추가하되
+  # 오케스트레이터 가용성(ORCHESTRATOR_BASE_URL)이 전제다 — 불성립 시 조용히 하위 단으로
+  # 내려가 arm 이 무효가 된다(러너가 run.json.profiles[].tier 로 판독).
+  tier2_intent:
+    ENABLE_DEEPAGENTS_PACKAGE: "false"
+    ENABLE_INTENT_ORCHESTRATION: "true"
+    ENABLE_SEMANTIC_ROUTING: "true"
+
+  tier3_router:
+    ENABLE_DEEPAGENTS_PACKAGE: "false"
+    ENABLE_INTENT_ORCHESTRATION: "false"
+    ENABLE_SEMANTIC_ROUTING: "true"
+
+  # ── 재작성 감사 섀도 arm (2026-09-21 · plans/107 · plans/110 §3.1 `94·O-e`) ──
+  #
+  #   python -m scripts.scenario --run --arm tier2_intent_frame --arm tier3_intent_frame
+  #
+  # 프롬프트는 바꾸지 않는다 — 프레임을 만들어 기록만 하고(CANONICAL_QUERY_MODE 미주입 = off),
+  # 재작성문을 프레임과 대조한 결과를 `rewrite_trace` 로 남긴다. 리포트 `bottleneck.md` 의
+  # 「재작성 게이트·검증」 절이 게이트 통과(pass_through) 비율·검증 실패율을 낸다.
+  # arm 은 합성되지 않으므로 사다리 단 플래그를 함께 싣는다. 재작성(R1·R2·R6)은 1·2단에만
+  # 있으므로 **검증 실패율은 2단 arm 에서만 의미가 있고**, 3단 arm 은 게이트 비율만 본다.
+  tier2_intent_frame:
+    ENABLE_DEEPAGENTS_PACKAGE: "false"
+    ENABLE_INTENT_ORCHESTRATION: "true"
+    ENABLE_SEMANTIC_ROUTING: "true"
+    INTENT_FRAME_ENABLED: "true"
+    REWRITE_VERIFY_MODE: "shadow"
+
+  tier3_intent_frame:
+    ENABLE_DEEPAGENTS_PACKAGE: "false"
+    ENABLE_INTENT_ORCHESTRATION: "false"
+    ENABLE_SEMANTIC_ROUTING: "true"
+    INTENT_FRAME_ENABLED: "true"
+    REWRITE_VERIFY_MODE: "shadow"

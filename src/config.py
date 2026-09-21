@@ -466,7 +466,9 @@ class ServerConfig(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     cors_origins: list[str] = ["*"]
-    query_timeout: int = 60
+    # 일반 질의 전체 상한(초). 60 → 120(2026-09-21 사용자 확정): 은행존 DB2 질의가 SQL 재생성
+    # 1회로 60.6s에 끊겼다. 관리자 설정 화면(API_QUERY_TIMEOUT)에서 바꾸고 설정 리로드로 반영된다.
+    query_timeout: int = 120
     file_query_timeout: int = 120
     # plans/89 · D-204: SSE 진행 신호. **기본 on** — plans/80 §5.4-③(신규 플래그 기본 off)의
     # 명시 예외다. 근거: ①추가되는 이벤트(progress·heartbeat)는 부가적이고 구 클라이언트는
@@ -1128,6 +1130,13 @@ class CompositeConfig(BaseSettings):
     # 3단(semantic_router)·4단(legacy) 빌드에 `sequential_runner` 2-pass 노드를 등록한다. HITL 승인 플래그가
     # 켜져 있으면 진입하지 않는다(승인 게이트 우회 금지 — plans/88 §4.7).
     sequential_fallback_tiers_enabled: bool = True
+    # === [plans/111 C-3] 복합 질의 task 프레임 계약 — **기본 off**(plans/80 §5.4-③ 비트 동일) ===
+    # on이면 분해 LLM이 task마다 자유문 `sub_query` 대신 원문 조각 `spans`를 내고
+    # `sub_query`는 코드가 조각을 원문 순서로 이어 만든다 — 원문에 없는 값(`'critical'`·
+    # SQL 문장)이 task 질의로 들어갈 수 없다. 조각이 원문(또는 직전 맥락) 밖이거나 원문의
+    # 숫자를 덮지 못하면 원문 단일 task로 폴백하고 사유를 남긴다. 계획의 **모든 분기 출구**
+    # (사전 처리 조기 반환 포함)에 알람·프로세스 에이전트 교정을 적용한다(111 D-1).
+    task_frame_enabled: bool = False
     # === [D-203 후속 · plans/88 R-E · 2026-09-10 사용자 확정 (c)] 1단 선행 스코프 — 값 일치 우선 · 없으면 직전 1건 ===
     # off(현행)면 1단은 성공한 선행 결과를 **전부** 합집합으로 주입한다(4번째 호출이 3번째 결과 10대를 가리켜도 54대).
     # on이면 후속 sub_query에 식별자가 열거되면(G1) 그 값을 가진 선행 결과만, 없으면 가장 최근 성공 선행 1건만 주입한다.
@@ -1186,6 +1195,74 @@ class HostAuthzConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+#: 정규 질의 모드 — off(무동작) · shadow(프레임·렌더 기록만) · augment(해석 블록 병기).
+#: replace(대체)는 G-2에 따라 소비자별 측정 뒤에 연다 — 지금은 받지 않는다.
+CANONICAL_QUERY_MODES: frozenset[str] = frozenset({"off", "shadow", "augment"})
+#: 재작성 게이트·검증 모드. 검증 enforce는 G-5(측정 뒤 사용자 확인) 전까지 받지 않는다.
+REWRITE_GATE_MODES: frozenset[str] = frozenset({"off", "shadow", "enforce"})
+REWRITE_VERIFY_MODES: frozenset[str] = frozenset({"off", "shadow"})
+
+
+class IntentFrameConfig(BaseSettings):
+    """의도 프레임·정규 질의·재작성 게이트/검증 (plans/107 W1~W3·W5).
+
+    **전부 기본 off = 현행과 비트 동일**(plans/80 §5.4-③). `INTENT_FRAME_ENABLED`가 꺼져 있으면
+    프레임을 만들지도 기록하지도 않는다. 켜면 섀도(기록만)부터 시작하고, 소비자 프롬프트를 바꾸는
+    것은 `CANONICAL_QUERY_MODE=augment` + `CANONICAL_QUERY_CONSUMERS`에 이름을 올린 소비자뿐이다.
+
+    env_prefix를 두지 않는 이유: plans/107 §5.1이 확정한 환경변수명이 서로 다른 접두
+    (`INTENT_FRAME_*`·`CANONICAL_QUERY_*`·`REWRITE_*`)라 필드마다 별칭으로 매핑한다.
+    `CANONICAL_QUERY_CONSUMERS`는 CSV 문자열이다(`.env` list 필드의 JSON 배열 함정 회피).
+    받지 않는 모드 값은 기동 시 경고를 남기고 off로 본다(침묵 강등 금지).
+    """
+
+    enabled: bool = Field(default=False, validation_alias=AliasChoices("INTENT_FRAME_ENABLED"))
+    canonical_query_mode: str = Field(
+        default="off", validation_alias=AliasChoices("CANONICAL_QUERY_MODE"),
+    )
+    canonical_query_consumers: str = Field(
+        default="", validation_alias=AliasChoices("CANONICAL_QUERY_CONSUMERS"),
+    )
+    rewrite_gate_mode: str = Field(
+        default="off", validation_alias=AliasChoices("REWRITE_GATE_MODE"),
+    )
+    rewrite_verify_mode: str = Field(
+        default="off", validation_alias=AliasChoices("REWRITE_VERIFY_MODE"),
+    )
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @staticmethod
+    def _checked(value: str, allowed: frozenset[str], name: str) -> str:
+        normalized = (value or "off").strip().lower()
+        if normalized in allowed:
+            return normalized
+        logging.getLogger(__name__).warning(
+            "%s=%r 은(는) 지원하지 않는 값이다(허용: %s) — off로 본다",
+            name, value, ", ".join(sorted(allowed)),
+        )
+        return "off"
+
+    def query_mode(self) -> str:
+        """정규 질의 모드(검증된 값)."""
+        return self._checked(
+            self.canonical_query_mode, CANONICAL_QUERY_MODES, "CANONICAL_QUERY_MODE",
+        )
+
+    def gate_mode(self) -> str:
+        """재작성 게이트 모드(검증된 값)."""
+        return self._checked(self.rewrite_gate_mode, REWRITE_GATE_MODES, "REWRITE_GATE_MODE")
+
+    def verify_mode(self) -> str:
+        """재작성 검증 모드(검증된 값)."""
+        return self._checked(self.rewrite_verify_mode, REWRITE_VERIFY_MODES, "REWRITE_VERIFY_MODE")
+
+    def consumers(self) -> frozenset[str]:
+        """병기를 켤 소비자 이름 집합(CSV 파싱)."""
+        raw = self.canonical_query_consumers or ""
+        return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
 class DrmConfig(BaseSettings):
     """Softcamp ServiceLinker DRM 해제 설정 (Plan 74 / D-156).
 
@@ -1237,6 +1314,8 @@ class AppConfig(BaseSettings):
     composite: CompositeConfig = Field(default_factory=CompositeConfig)  # Plan 78: 복합 질의 호스트 조사
     router: RouterConfig = Field(default_factory=RouterConfig)  # Plan 79 트랙 B·C: 라우터 2단 분리·신뢰도
     host_authz: HostAuthzConfig = Field(default_factory=HostAuthzConfig)  # Plan 78 W3-5: 호스트 인가
+    # plans/107: 의도 프레임·정규 질의
+    intent_frame: IntentFrameConfig = Field(default_factory=IntentFrameConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

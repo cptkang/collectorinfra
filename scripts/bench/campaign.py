@@ -4,7 +4,7 @@
 카테고리별로 나눠서 단계적으로 테스트가 될 수 있도록"*.
 
 전 축을 한 번에 돌리면 약 98시간이다(run 20260914-185540 실측 93.4시간 · 62 arm). 게다가 스위프는
-중단되면 이어지지 않는다(`plans/109` 실행 가이드 A.7). 그래서 축을 **구간**으로 나누고, 구간마다
+중단되면 처음부터 다시 돈다(`plans/109` 실행 가이드 A.7). 그래서 축을 **구간**으로 나누고, 구간마다
 **자기 기준선을 맨 앞에** 둔 독립 스위프로 돌린다. 개발자는 같은 명령(`--segment next`)을 반복해서
 치고, 진행 상태는 이 모듈이 **캠페인 상태 파일**에 남긴다.
 
@@ -16,15 +16,20 @@
   **추정이 예산을 넘는 구간은 만들지 않는다.** 한 축만으로 예산을 넘으면 구간을 만들지 않고
   「예산 초과」로 남긴다(조용히 빠뜨리지 않는다).
 
-  **미완 구간은 저장하지 않고 매번 다시 짠다.** 완료·실패 구간만 상태 파일에 고정한다.
+  **미완 구간은 저장하지 않고 매번 다시 짠다.** 완료·실패·진행 구간만 상태 파일에 고정한다.
   그래서 첫 구간의 실측 속도가 기본값과 다르면 남은 구간이 그 속도로 다시 나뉜다 —
   기본값이 과소 추정이어도 다음 구간부터는 예산을 지킨다.
+
+구간 **안**에서 끊기면 다음 실행이 **같은 run 을 잇는다.** 구간을 시작하기 전에 run_id 를 「진행」
+기록으로 남기고, 다음 `--segment next` 가 그 기록을 만나면 94 러너의 이어쓰기(`resume_from` —
+성공한 턴은 건너뛰고 무효 턴은 다시 돈다)로 넘긴다.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +64,8 @@ DRIFT_MIN_RATIO = 0.05
 DONE = "완료"
 FAILED = "실패"
 PENDING = "미완"
+#: 시작했지만 끝을 기록하지 못한 구간 — 돌고 있거나(pid 생존) 끊겼다(재개 대상).
+RUNNING = "진행"
 
 
 @dataclass(frozen=True)
@@ -265,13 +272,13 @@ def segment_arms(
 
 @dataclass
 class SegmentRecord:
-    """실행된 구간 1건. 완료·실패만 상태 파일에 남는다(미완은 매번 다시 짠다)."""
+    """실행된 구간 1건. 완료·실패·진행만 상태 파일에 남는다(미완은 매번 다시 짠다)."""
 
     segment_id: str
     category: str
     axes: list[str]
     arm_ids: list[str]
-    status: str                        # 완료 | 실패
+    status: str                        # 완료 | 실패 | 진행
     mode: str
     run_id: Optional[str] = None
     out_dir: Optional[str] = None
@@ -285,6 +292,10 @@ class SegmentRecord:
     health: dict[str, Any] = field(default_factory=dict)
     #: 실행하지 않고 기준선 관측으로 대신한 arm(기준선과 실효 설정 동일 — 지문 판정).
     substituted: list[str] = field(default_factory=list)
+    #: 이 구간을 돌고 있는(또는 돌다 끊긴) 프로세스 — 같은 run 에 두 프로세스가 쓰지 않게 본다.
+    pid: Optional[int] = None
+    #: 끊긴 run 을 이어 돌았다 — 경과 시간이 마지막 시도분뿐이라 속도 실측에 쓰지 않는다.
+    resumed: bool = False
 
     @property
     def executed_arms(self) -> int:
@@ -352,6 +363,10 @@ class Campaign:
         return sorted((r for r in self.records.values() if r.status == DONE),
                       key=lambda r: r.segment_id)
 
+    def running(self) -> list[SegmentRecord]:
+        return sorted((r for r in self.records.values() if r.status == RUNNING),
+                      key=lambda r: r.segment_id)
+
     def used_ids(self) -> dict[str, set[int]]:
         """카테고리별로 이미 쓴 구간 번호 — 새 구간 이름이 겹치지 않게."""
         out: dict[str, set[int]] = {}
@@ -369,7 +384,7 @@ class Campaign:
         달라진다). 그래서 mock 캠페인은 **run 계획을 그대로 리허설한다.**
         """
         measured = [r for r in self.records.values()
-                    if r.mode == "run" and r.sec_per_turn and r.finished_at]
+                    if r.mode == "run" and r.sec_per_turn and r.finished_at and not r.resumed]
         if measured:
             last = max(measured, key=lambda r: r.finished_at or "")
             # **턴 수도 실측으로 바꾼다** — 역질문 자동응답이 답하는 턴이 늘면 arm 당 턴이
@@ -379,6 +394,36 @@ class Campaign:
                              source=f"구간 {last.segment_id} 실측 — 턴당 초·arm 당 턴 모두")
         return RateModel(sec_per_turn=DEFAULT_SEC_PER_TURN, turns_per_arm=turns_per_arm,
                          source="기본값 — run 20260914 그래프 진입 턴 평균 · 턴 수는 카탈로그")
+
+
+def pid_alive(pid: Optional[int]) -> bool:
+    """그 프로세스가 아직 살아 있는가(자기 자신은 아니다).
+
+    **신호를 보내지 않는다** — Windows 의 `os.kill` 은 신호 번호와 무관하게 대상 프로세스를
+    종료한다(`TerminateProcess`). 그래서 Windows 는 핸들의 종료 코드로 본다.
+    """
+    if not pid or pid == os.getpid():
+        return False
+    if os.name == "nt":  # pragma: no cover - 플랫폼 의존
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            alive = bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code)))
+            return alive and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def campaign_path(root: Path, name: str) -> Path:
@@ -407,6 +452,9 @@ def render_plan(campaign: Campaign, plan: Plan) -> list[str]:
         actual = (f"{record.elapsed_sec / 3600:.1f}실" if record.elapsed_sec
                   else f"{record.est_hours:.1f}")
         skip = f" · 생략 {len(record.substituted)}" if record.substituted else ""
+        if record.status == RUNNING:
+            skip += (f" (실행 중 · pid {record.pid})" if pid_alive(record.pid)
+                     else f" (끊김 — 다음 실행이 run {record.run_id} 를 잇는다)")
         lines.append(f"  {record.segment_id:22s} {record.status:4s} {record.category:14s} "
                      f"{record.executed_arms:3d} {actual:>6s}  {', '.join(record.axes)}{skip}")
     for seg in plan.segments:
@@ -420,7 +468,8 @@ def render_plan(campaign: Campaign, plan: Plan) -> list[str]:
     lines += [
         "",
         f"  합계: 완료 {len(campaign.done())} · 실패 {len(campaign.failed())} "
-        f"· 미완 {remaining}구간"
+        + (f"· 진행 {len(campaign.running())} " if campaign.running() else "")
+        + f"· 미완 {remaining}구간"
         f" · 미완 추정 {plan.total_hours:.1f}시간"
         + (f" · 구간 불가 {len(plan.unplaceable)}축" if plan.unplaceable else ""),
     ]
@@ -434,7 +483,10 @@ def unmeasured_reason(axis: str, campaign: Campaign, plan: Plan) -> Optional[str
     """이 축이 합산 표에서 왜 비는가. 측정됐으면 None."""
     for record in campaign.records.values():
         if axis in record.axes:
-            return None if record.status == DONE else f"미측정(구간 {record.segment_id} 실패)"
+            if record.status == DONE:
+                return None
+            state = "진행 중·끊김" if record.status == RUNNING else "실패"
+            return f"미측정(구간 {record.segment_id} {state})"
     for seg in plan.segments:
         if axis in seg.axes:
             return f"미측정(구간 {seg.segment_id} 미완)"

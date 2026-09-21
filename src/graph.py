@@ -54,15 +54,34 @@ from src.state import AgentState
 logger = logging.getLogger(__name__)
 
 
+#: 생성기가 SQL 대신 산문(되물음·불가 사유)을 반환한 경우의 재시도 예산.
+#: 전체 예산(`QUERY_MAX_RETRY_COUNT`)과 별도로 둔다 — 산문은 프롬프트가 지시한 동작이라
+#: (polestar 템플릿 [Strict Constraints] 1: *"모호하거나 스키마 범위를 벗어나면 쿼리를
+#: 생성하지 말고 추가 맥락을 요청하라"*) 같은 프롬프트를 다시 돌려도 대개 같은 산문이
+#: 돌아온다. run `20260918-182507` 실측(체인 39건): 회복은 retry=1 **7건**인데 retry=2·3은
+#: 합해 3건이고, 회복하지 못한 29건이 각 3회를 더 태워 턴을 60초 벽으로 밀어냈다.
+NON_SQL_RETRY_BUDGET = 1
+
+
+def _non_sql_exhausted(state: AgentState) -> bool:
+    """산문 응답이고 그 전용 예산을 소진했는가."""
+    return bool(
+        (state.get("validation_result") or {}).get("non_sql")
+    ) and state["retry_count"] >= NON_SQL_RETRY_BUDGET
+
+
 def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅을 결정한다.
 
     - 검증 통과: query_executor (또는 approval_gate)로 진행
+    - 산문(비-SQL) 응답 + 전용 예산 소진: error_response로 조기 종료
     - 검증 실패 + 재시도 가능: query_generator로 회귀
     - 검증 실패 + 재시도 초과: error_response로 종료
     """
     if state["validation_result"]["passed"]:
         return "query_executor"
+    if _non_sql_exhausted(state):
+        return "error_response"
     if state["retry_count"] >= max_retry:
         return "error_response"
     return "query_generator"
@@ -71,10 +90,12 @@ def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
 def route_after_validation_with_approval(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅 (SQL 승인 활성화 시).
 
-    검증 통과 시 approval_gate로 보낸다.
+    검증 통과 시 approval_gate로 보낸다. 산문 예산은 기본 경로와 대칭이다.
     """
     if state["validation_result"]["passed"]:
         return "approval_gate"
+    if _non_sql_exhausted(state):
+        return "error_response"
     if state["retry_count"] >= max_retry:
         return "error_response"
     return "query_generator"
@@ -208,6 +229,21 @@ def route_after_replanner(state: AgentState) -> str:
 
 def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
+    if (state.get("validation_result") or {}).get("non_sql"):
+        # 생성기가 남긴 되물음·불가 사유를 그대로 싣는다 — 그 텍스트가 사용자가 받아야 할
+        # 답이고, 종전에는 "재시도 3회 초과"로 덮여 통째로 버려졌다(침묵적 폐기 금지).
+        prose = (state.get("generated_sql") or "").strip()[:1500]
+        response = (
+            "요청을 SQL로 옮기지 못했습니다. 조회 엔진이 대신 남긴 설명입니다.\n\n"
+            f"{prose}\n\n"
+            "조회 대상(서버·지표·기간)을 구체적으로 지정해 주시면 다시 시도하겠습니다."
+        )
+        response = append_structure_missing_note(response, state)
+        return {
+            "final_response": response,
+            "current_node": "error_response",
+            "messages": [AIMessage(content=response)],
+        }
     error_msg = state.get("error_message") if state.get("error_message") is not None else "알 수 없는 에러가 발생했습니다."
     response = (
         f"죄송합니다. 요청을 처리하는 중 문제가 발생했습니다.\n"

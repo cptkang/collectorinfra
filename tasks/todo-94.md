@@ -1,6 +1,6 @@
 # todo-94 — 기능·성능 시나리오 자동 실행 하네스
 
-정본 스펙: `plans/94-WIP-feature-perf-scenario-suite.md` · 작업 계획: `tasks/plan-94.md`
+정본 스펙: `plans/94-feature-perf-scenario-suite.md`(2026-09-21 종료 · 잔여·실행 가이드는 `plans/110-WIP-scenario-test-consolidated.md`) · 작업 계획: `tasks/plan-94.md`
 
 ## 완료 (Wave S0~S4 · 전부 무과금)
 

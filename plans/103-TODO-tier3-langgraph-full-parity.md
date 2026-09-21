@@ -186,6 +186,19 @@ task_run 서브그래프(에이전트별 분기):
 **상태 추가(Q4)** — `AgentState`에 `task_outcomes: Annotated[list[dict], operator.add]` **하나만** 추가. 턴 시작 입력(`create_initial_state`·`create_followup_input`)에서 `Overwrite([])`로 비우고,
 같은 자리에서 `task_plan`·`task_results`·`replan_count`·`replan_history`도 초기화한다(K-5 — 2단 누수도 함께 해소).
 
+### 3.3.1 `plans/111` 델타 편입 (2026-09-21 · 111 G-2 확정 — 노드 구성 정본은 이 계획 하나)
+
+> 근거는 `plans/111` §2(run `20260918-182507` 복합 계획 45턴 재집계)이고 여기에는 **설계 변경만** 적는다(D-053).
+> 111 G-1·G-3·G-4 확정(2026-09-21 · 권고안)을 이 계획의 노드에 옮긴 것이다.
+
+| 노드 | 더하는 것 | 막는 실측(111) | 이미 있는 부품 |
+|---|---|---|---|
+| **`plan`** | 분해 출력 계약을 **자유문 `sub_query` → 원문 조각 `spans`**로(111 G-1). `sub_query`는 조각을 원문 순서로 이어 만든다. 나눌지 말지 규칙(에이전트·산출물·실행 그룹·조건 분기일 때만 나눔)을 계획 프롬프트에 둔다 | §2.5 발명·SQL 주입 44건 · §2.2 과·미분해 | `COMPOSITE_TASK_FRAME_ENABLED` 경로(`intent_planner._apply_task_frames` · `SpanDecomposedPlan` · 프롬프트 계약 절) — **2단 `_llm_decompose`에 랜딩**(기본 off). `plan` 노드는 이 함수를 그대로 부른다 |
+| **`normalize`**(신규 · `plan`의 **단일 출구**) | 사전 처리 ①~③.7의 조기 반환을 포함한 **모든 분기**가 지난다 — G-3 교정 3종 · `verify_task_frames`(발명 금지·숫자 합집합 커버·SQL 금지) · 불합격이면 원문 단일 task + 사유. **G-3의 "계획 경로에만"을 "계획 노드의 출구 전부에"로 좁혀 명시**한다 | §2.4 존 선택 재진입 교정 우회 27건 | `_normalize_plan_exit`(2단 · 플래그) · `src/domain/task_frame.py` |
+| **`task_run` 첫 노드 `task_prompt`**(신규) | task 텍스트를 107 렌더러로 찍는다. 선행 결과 스코프는 **값 목록이 아니라 참조 블록**으로 싣는다(값은 D-086·D-095 결정적 주입이 SQL에 넣는다) | §2.5 직전 엔티티 전량 주입 | `render_task_query` · 107 `render_canonical_block` |
+| **`join`**(변경) | **0행 선행 → 의존 task 미실행 + 사유**를 **기본 on**(111 G-4) | E-06 · R1-08 · SYN-I-06 | `_gate_level` · `assess_prior_dependency`(D-203 게이트) |
+| **`replan`**(변경) | **task 실패(산문·검증 소진·0행)를 재계획 입력에서 뺀다**(111 G-3) — task 서브그래프가 사유와 함께 종결한다(108 CU-A2 경로). 재계획은 ①선행 결과가 후속 조건을 바꾼 경우 ②요구 산출물 누락만. 새 task 텍스트에 SQL 금지 | §2.3 재계획 28턴(복구 0) | `replanner._filter_futile_retries` 위에 입력 범위 규칙 |
+
 ### 3.4 HITL — `interrupt()` + `Command(resume)` (G-6)
 
 - **SQL 승인**: 태스크 서브그래프의 `sql_approval` 게이트 노드(부작용 없음)에서 `interrupt({task_id, db_id, sql, 요약})`. 병렬 태스크가 동시에 멈추면 **대기 목록**을 한 번에 보인다.
@@ -228,13 +241,13 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 | **P0-1** | 기반 | K-1 추적 프록시 서브그래프·`config`·인터럽트 호환 | — | 토이 그래프 프록시 경유 통과 · 기존 트레이스 테스트 전건 |
 | **P0-2** | 기반 | K-2 팬인 키 · 턴 초기화(2단 누수 K-5 포함) | — | 병렬 쓰기 오류 0 · 턴 격리 테스트 · 2단 기존 테스트 전건 |
 | **P0-3** | 기반 | K-3 SSE 루트 종료 판정 · 폴백 재실행 제거 · 인터럽트 감지 이벤트 | — | `tests/test_api/test_stream_nested_events.py` 확장 — 중첩 종료·인터럽트 시나리오 |
-| **P1-1** | 태스크 | `task_run` 서브그래프 — 데이터·알람 파이프라인(기존 노드 조립) · `pack_outcome` · `output_schema` | P0 | 단일 DB·멀티 DB 결과가 현행 3단 노드 체인과 동일(골든 비교) |
+| **P1-1** | 태스크 | `task_run` 서브그래프 — 데이터·알람 파이프라인(기존 노드 조립) · `pack_outcome` · `output_schema` · **첫 노드 `task_prompt`(§3.3.1 · 111 C-4)** | P0 | 단일 DB·멀티 DB 결과가 현행 3단 노드 체인과 동일(골든 비교) |
 | **P1-2** | 태스크 | `resolve_targets` — D-1 고정 · D-2 승계 · D-3 지시어 · D-6 태스크 존 게이트 · D-4 실시간 사용률 | P1-1 | `tests/test_orchestration/test_turn_hint_pinning.py`·`test_zone_post_gate.py`·`tests/test_multiturn/*` 계열을 3단 경로로 재실행 |
 | **P1-3** | 태스크 | `process_query`·`host_inspect` 노드 · 라우터 의도 2종(플래그 종속 노출) · 프롬프트 | P1-1 | 프로세스 질의가 SQL로 가지 않음 · `host_inspect`는 `COMPOSITE_INVESTIGATION_ENABLED` off면 노출 0 · 플래그 off 라우터 골든 무변화 |
 | **P1-4** | 태스크 | E-1 사전 안내 3종 · E-2 답변 기록·고정 답 | — | 양식 패널 삭제가 3단에서 동작 · 멀티턴 이력 테스트 |
-| **P2-1** | 루프 | 라우터 `needs_plan` · `plan` 노드(사전 처리·분해·보정·1태스크 결정적) | P1 · G-1·G-2·G-3 | 표지 없는 복합 질의 진입 · 단일 의도 1태스크 · D-004 리뷰 체크(원문 문자열 판정 추가 0) |
-| **P2-2** | 루프 | `dispatch`(`Send`) · `join`(`defer`) · 게이트·사후 대조·충분성 재시도 | P2-1 | 레벨 병렬 실행 · 선행 실패·0건·식별자 없음 게이트 · `tests/test_composite/*` 3단 재실행 |
-| **P2-3** | 루프 | `replan`(명시 상한·결정적 중단) · `finalize`(합성 + `routing_intent` 전달) | P2-2 | `tests/test_orchestration/test_replanner.py`·`test_result_aggregator.py` 3단 재실행 · 알람 헤드라인 유지(C-2) |
+| **P2-1** | 루프 | 라우터 `needs_plan` · `plan` 노드(사전 처리·분해·보정·1태스크 결정적) · **`normalize` 단일 출구 + 원문 조각 계약(§3.3.1 · 111 C-3·C-4)** | P1 · G-1·G-2·G-3 | 표지 없는 복합 질의 진입 · 단일 의도 1태스크 · D-004 리뷰 체크(원문 문자열 판정 추가 0) |
+| **P2-2** | 루프 | `dispatch`(`Send`) · `join`(`defer`) · 게이트·사후 대조·충분성 재시도 · **0행 의존 게이트 기본 on(111 G-4)** | P2-1 | 레벨 병렬 실행 · 선행 실패·0건·식별자 없음 게이트 · `tests/test_composite/*` 3단 재실행 |
+| **P2-3** | 루프 | `replan`(명시 상한·결정적 중단 · **task 실패 입력 제외 111 G-3**) · `finalize`(합성 + `routing_intent` 전달) | P2-2 | `tests/test_orchestration/test_replanner.py`·`test_result_aggregator.py` 3단 재실행 · 알람 헤드라인 유지(C-2) |
 | **P2-4** | 루프 | F-1 진행 이벤트 — 태스크 총수·단계(`multi_db_executor`·`query_generator`·`fault_diagnosis`) | P2-2 | 이벤트 순서·필드가 D-204 페이로드와 동일 |
 | **P3-1** | HITL | `sql_approval` `interrupt()` 게이트 · 라우트 `Command(resume)` · 다중 대기 목록 | P0-3 · P1-1 · G-6 | 병렬 인터럽트 2건 · 재실행 0 · 거절 시 사유 · 승인어 판정 재사용 |
 | **P4-1** | 통합 | 단일 의도 데이터 조회를 태스크 서브그래프로 일원화(G-5) · 기존 3단 직결 체인 배선 제거 | P2 · P3 | 기존 3단 골든·시나리오 무회귀 |
@@ -312,6 +325,7 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 | `plans/104` | 구조 승인 HITL을 질의 경로에서 제거 — 3단 복합 실행의 HITL 차단(102 X-T8)을 원천 해소. 이 계획 P3은 **SQL 승인만** 다룬다 |
 | `plans/88`(D-203) | 게이트·사후 대조·경과 노트 함수를 그대로 재사용. `sequential_runner`는 P4-2에서 대체·삭제 |
 | `plans/94` | 동등성 판정 무대(P5-1) |
+| `plans/111` | **94 run 실측 기반 델타**(2026-09-21 · 111 게이트 확정 → §3.3.1에 편입) — `plan`의 모든 분기가 지나는 결정적 `normalize` 단일 출구(G-3 교정 3종 · task 프레임 검증) · `task_run` 첫 노드 `task_prompt`(107 렌더) · `replan` 입력에서 task 실패 제외 · 0행 의존 게이트 · 재진입 재파싱 생략. 분해 출력 계약을 `sub_query` 자유문에서 task 프레임으로(111 §5). 111 G-2 권고는 **이 계획 P1·P2에 편입**(정본 단일화) |
 
 ---
 
@@ -346,4 +360,5 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v1.1 | 2026-09-21 | **`plans/111` 델타 편입**(111 G-2 확정 · 사용자 *"권고에 맞게 진행하라"*) — §3.3.1 신설(`plan` 원문 조각 계약 · `normalize` 단일 출구 · `task_prompt` · 0행 의존 게이트 기본 on · 재계획 입력 범위) · P1-1·P2-1·P2-2·P2-3 작업 항목 확장. **이 계획의 게이트 G-1~G-7 상태는 바꾸지 않았다**(111 게이트만 확정) · 신규 D-번호 0 |
 | v1 | 2026-09-17 | 최초 작성(사용자 지시 *"3단 기능도 langgraph 기능을 이용하면 1단의 모든 기능을 구현할 수 있다. 검토하여 모두 구현하는 방향으로"*). 검토 결론: 가능 — LangGraph 1.2.11 설치본에 `Send`·`defer`·`Command`·`interrupt()`·서브그래프가 있고 토이 그래프로 계획→팬아웃→합류→루프→합성·서브그래프 안 인터럽트 재개를 확인. deepagents 0.6.10도 LangGraph 기반이며 실사용은 할 일 목록+1단계 도구 루프뿐. 기능 격차 20행(§1.2 · ★프로세스·호스트 점검 3단 미도달 · 재계획 없음 · 승계 없음 · 1단 ambient 결손으로 존 역질문 미발동) · 저장소 차단 4종(★추적 프록시·리듀서 부재·SSE 조기 종료·HITL 재개가 새 실행) + 2단 턴 누수 · 설계(태스크 서브그래프 단일화 · plan/dispatch/join/replan/finalize · 팬인 키 1개 · `interrupt()` HITL) · WU P-0~P5-3 · 게이트 G-1~G-7 · D-226 예약 |

@@ -301,6 +301,16 @@ class TestGetCacheManagerSingleton:
 class TestLoadSynonymsWithGlobalFallbackCaseInsensitive:
     """load_synonyms_with_global_fallback의 대소문자 무관 매칭 검증."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_profile_synonyms(self, monkeypatch, tmp_path):
+        """프로필 유사어 계층(config/db_profiles/{db_id}.yaml)을 밀어낸다.
+
+        load_synonyms_with_global_fallback은 db_synonyms > **profile_synonyms** >
+        global_synonyms 순으로 병합한다. 저장소 루트에서 돌리면 실 프로필의
+        cmm_resource.name 유사어 8개가 이겨 글로벌 폴백 단언이 깨진다(2026-09-21 실측).
+        """
+        monkeypatch.chdir(tmp_path)
+
     @pytest.mark.asyncio
     async def test_load_synonyms_case_insensitive_matching(self, mock_config):
         mgr = SchemaCacheManager(mock_config)

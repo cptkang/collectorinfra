@@ -118,6 +118,14 @@ class AgentSettings(BaseSettings):
     # 통과시키는 no-op이라 정상 경로가 비트 동일하고, off는 곧 "계속 실패"를 뜻한다.
     # **만료일 2027-03-11**(D-161 C1) — holmes 수정·모델 교체 시 유지/삭제를 그때 판정한다.
     system_message_position_fix: bool = True
+    # ── bash 쓰기 형태 거부 가드 (D-235) — **기본 on(명시적 예외)** ──
+    # holmes bash 허용목록은 prefix 매칭이라 `uptime`이 허용이면 `uptime > /tmp/x`도 통과한다(실측).
+    # 설정으로 막을 수 없어(`allow`·`deny`·`builtin_allowlist`뿐 · deny도 prefix) 검증 경계에서 거부한다.
+    # **기본 off가 아닌 이유**(plans/80 §5.4-③ 예외): 쓰기 형태가 아니면 원본 판정 객체를 그대로 돌려주는
+    # no-op이라 읽기 조사 경로가 비트 동일하고, off는 곧 "읽기 전용 프로파일이 파일을 쓸 수 있다"를 뜻한다.
+    # **만료일 2027-03-21**(D-161 ①) — holmes가 리다이렉션을 자체 판정하게 되면 유지/삭제를 그때 판정한다.
+    # 설치는 holmes 클래스 경계 교체라 **프로세스 전역·1회**다(같은 프로세스에서 한 에이전트라도 켜면 유지).
+    bash_write_guard_enabled: bool = True
     # 중요도 2차 판정(severity_judge) 활성화. 기본 off — 켜야 도구 원시 출력
     # 시그니처 매칭을 수행한다(escalate-only). off면 게이트 판정을 그대로 승계.
     severity_judge_enabled: bool = False

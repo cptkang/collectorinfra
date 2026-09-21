@@ -321,6 +321,12 @@ def test_write_proposals_does_not_touch_repo_config(tmp_path):
 # 사고가 정상 얼굴로 나가지 않게 하는 두 장치를 여기서 못박는다.
 
 
+def _scenario_profiles_catalog():
+    """94 카탈로그의 시나리오 자기 프로파일(`config/scenarios/profiles.yaml` 모양)."""
+    return type("P", (), {"profiles": {"baseline": {},
+                                       "optin_alarm": {"TEXT2SQL_ALARM_DETERMINISTIC": "true"}}})()
+
+
 def test_크레덴셜이_없어도_arm에_인증을_끄는_값을_싣지_않는다(monkeypatch) -> None:
     """인증을 끄고 재지 않는다(plans/94 G-3 · 사용자 확정 2026-09-15) — arm env 는 축 값뿐이다."""
     captured: dict = {}
@@ -343,6 +349,7 @@ def test_크레덴셜이_없어도_arm에_인증을_끄는_값을_싣지_않는�
         repeat: int = 1
         groups: list = dataclasses.field(default_factory=list)
         profiles: list = dataclasses.field(default_factory=list)
+        arms: list = dataclasses.field(default_factory=list)
         run_id: str = ""
         user_id: str = None
         user_password: str = None
@@ -353,6 +360,7 @@ def test_크레덴셜이_없어도_arm에_인증을_끄는_값을_싣지_않는�
 
     class FakeCatalogMod:
         Catalog = None
+        load_catalog = staticmethod(_scenario_profiles_catalog)
 
     fake_catalog = type("C", (), {
         "groups": {}, "scenarios": [], "profiles": {},
@@ -383,6 +391,7 @@ def test_로그인_크레덴셜이_있으면_인증을_끄지_않는다(monkeypa
         repeat: int = 1
         groups: list = dataclasses.field(default_factory=list)
         profiles: list = dataclasses.field(default_factory=list)
+        arms: list = dataclasses.field(default_factory=list)
         run_id: str = ""
         user_id: str = None
         user_password: str = None
@@ -399,7 +408,8 @@ def test_로그인_크레덴셜이_있으면_인증을_끄지_않는다(monkeypa
             return {}
 
     fake_catalog = type("C", (), {"groups": {}, "scenarios": [], "profiles": {}})()
-    monkeypatch.setattr(sweep, "scenario_harness", lambda: (object(), FakeRunner))
+    fake_mod = type("M", (), {"load_catalog": staticmethod(_scenario_profiles_catalog)})
+    monkeypatch.setattr(sweep, "scenario_harness", lambda: (fake_mod, FakeRunner))
     monkeypatch.setattr(sweep, "load_normal_catalog", lambda env="sandbox": fake_catalog)
     monkeypatch.setattr(sweep, "fanout_scenarios", lambda catalog, arms: [])
 
@@ -1274,3 +1284,127 @@ def test_실행_생략_arm은_기준선_관측으로_레벨_비교에_들어간�
     assert "레벨 `true` = 기준선과 동일 설정 → 기준선 관측 사용(실행 생략)" in opt.sentence
     body = (tmp_path / "axis_verdicts.md").read_text(encoding="utf-8")
     assert "`S2-K-true` **(기준선과 동일 설정)**" in body and "**실행 생략**" in body
+
+
+def test_이어_돈_run은_같은_턴의_마지막_행만_센다(tmp_path) -> None:
+    """재개(`resume_from`)는 무효였던 턴을 같은 파일에 한 번 더 적재한다 — 뒤 행이 결과다."""
+    ok = dict(func_verdict="pass", response_mode="answer", executed_sql="SELECT 1",
+              node_path=["q"])
+    raw = _write_raw(tmp_path, [
+        _sweep_row("baseline", "S-1", func_verdict="invalid", wall_ms=5),   # 끊기기 전 — 무효
+        _sweep_row("baseline", "S-2", wall_ms=7, **ok),
+        _sweep_row("baseline", "S-1", wall_ms=11, **ok),                    # 재개 뒤 — 결과
+    ])
+    result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
+
+    obs = {o.scenario_id: o for o in sweep.read_observations(raw)}
+    health = sweep.scan_health(result, raw)
+
+    # 옛 무효 행으로 시나리오를 버리거나 지연을 두 번 더하지 않는다.
+    assert obs["S-1"].passed and obs["S-1"].wall_ms == 11
+    assert health.turns == 2 and health.invalid_turns == 0
+
+
+# ── 단언 미평가 사유(D-241 · 벤치 쪽 · 36 합의 계약 `unevaluated_reason`) ─────────
+
+@pytest.mark.parametrize(("row", "expected"), [
+    ({"unevaluated_reason": "timeout", "func_verdict": "pass"}, "timeout"),   # 러너 칸이 정본
+    ({"unevaluated_reason": None, "func_verdict": "invalid"}, None),          # 칸 우선
+    ({"func_verdict": "invalid"}, "invalid"),
+    ({"func_verdict": "fail", "response_mode": "hang", "forbidden_mode": "hang",
+      "error": "처리 시간이 초과되었습니다. 질의를 단순화해주세요."}, "timeout"),   # 20260914 실측
+    ({"func_verdict": "error", "forbidden_mode": "hang"}, "timeout"),
+    ({"func_verdict": "error", "error": "HTTP 504 Gateway Timeout"}, "timeout"),
+    ({"func_verdict": "fail", "response_mode": "clarify"}, "clarify_blocked"),
+    ({"func_verdict": "manual", "response_mode": "clarify"}, "clarify_blocked"),
+    ({"func_verdict": "pass", "response_mode": "clarify"}, None),              # 기대된 역질문
+    ({"func_verdict": "fail", "response_mode": "clarify",                    # 기대한 역질문의 결함 → 분모에 남긴다
+      "failed_assertions": [{"key": "clarification.options_len", "expected": 2, "actual": 1}]}, None),
+    ({"func_verdict": "fail", "response_mode": "clarify",                    # 20260914 실측 2,311건 형태
+      "failed_assertions": [{"key": "status", "expected": "completed", "actual": "clarification"}]},
+     "clarify_blocked"),
+    ({"func_verdict": "fail", "response_mode": "clarify", "expects_question": True}, None),
+    ({"func_verdict": "fail", "response_mode": "clarify", "expects_question": False,  # 러너 칸이 추정보다 우선
+      "failed_assertions": [{"key": "clarification.options_len"}]}, "clarify_blocked"),
+    ({"func_verdict": "fail", "response_mode": "answer", "error": "행 5040건"}, None),
+])
+def test_단언_미평가_사유를_칸_또는_도출로_정한다(row, expected) -> None:
+    assert sweep.unevaluated_reason_of(row) == expected
+
+
+def test_미평가_시나리오는_정확도에서만_빠지고_완주율에는_남는다(tmp_path) -> None:
+    from scripts.bench import compare
+
+    ok = dict(func_verdict="pass", response_mode="answer", executed_sql="SELECT 1", node_path=["q"])
+    hang = dict(func_verdict="fail", response_mode="hang", forbidden_mode="hang",
+                error="처리 시간이 초과되었습니다.", node_path=["q"])
+    raw = _write_raw(tmp_path, [
+        *[_sweep_row("baseline", f"S-{i}", **ok) for i in range(4)],
+        *[_sweep_row("S2-K-true", f"S-{i}", **ok) for i in range(2)],
+        *[_sweep_row("S2-K-true", f"S-{i}", **hang) for i in range(2, 4)],
+    ])
+    grouped = sweep.group_by_arm(sweep.read_observations(raw))
+    result = {"profiles": [{"name": n, "valid": True, "reasons": []}
+                           for n in ("baseline", "S2-K-true")]}
+
+    accuracy = compare.paired_binary(grouped["baseline"], grouped["S2-K-true"], "passed")
+    completion = compare.paired_binary(grouped["baseline"], grouped["S2-K-true"], "completed",
+                                       drop_manual=False)
+
+    assert accuracy.n_pairs == 2, "타임아웃 2건은 기능 분모에서 빠진다"
+    assert completion.n_pairs == 4 and completion.discordant == 2, "완주율에는 남는다(성능 사건)"
+    assert sweep.scan_health(result, raw).unevaluated == {
+        "invalid": 0, "timeout": 2, "clarify_blocked": 0}
+
+
+def test_턴_키는_94_러너의_재개_키와_같다() -> None:
+    from scripts.scenario import runner as sc_runner
+
+    row = {"profile": "optin_alarm+baseline", "scenario_id": "D-01", "turn": 2, "repeat": 1}
+    assert sweep.turn_key(row) == sc_runner.row_key(row)
+
+
+def test_arm_은_시나리오_프로파일을_치환하지_않고_병합한다(monkeypatch) -> None:
+    """`110·N-2` — 종전 치환은 D군 8건(`optin_alarm`)이 알람 결정적 경로 플래그를 잃게 했다."""
+    captured: dict = {}
+    import dataclasses
+
+    @dataclasses.dataclass
+    class FakeRunConfig:
+        mode: str = "mock"
+        env: str = "closed"
+        repeat: int = 1
+        groups: list = dataclasses.field(default_factory=list)
+        profiles: list = dataclasses.field(default_factory=list)
+        arms: list = dataclasses.field(default_factory=list)
+        run_id: str = ""
+        user_id: str = None
+        user_password: str = None
+        admin_user: str = None
+        admin_password: str = None
+
+    class FakeRunner:
+        RunConfig = FakeRunConfig
+
+        @staticmethod
+        def execute(catalog, config):
+            captured.update(profiles=dict(catalog.profiles), scenarios=list(catalog.scenarios),
+                            config=config)
+            return {}
+
+    scenarios = [object(), object()]
+    fake_catalog = type("C", (), {"groups": {}, "scenarios": scenarios, "profiles": {}})()
+    fake_mod = type("M", (), {"load_catalog": staticmethod(_scenario_profiles_catalog)})
+    monkeypatch.setattr(sweep, "scenario_harness", lambda: (fake_mod, FakeRunner))
+    monkeypatch.setattr(sweep, "load_normal_catalog", lambda env="closed": fake_catalog)
+
+    arms = [sweep.ArmSpec(arm_id="baseline", axis=None, level=None, env={}),
+            sweep.ArmSpec(arm_id="S2-A-1", axis="A", level="1", env={"A": "1"})]
+    sweep.run_arms(arms, env="closed", credentials=sweep.Credentials())
+
+    assert captured["config"].arms == ["baseline", "S2-A-1"], "러너가 병합한다(merge_arm_profiles)"
+    assert captured["config"].profiles == [], "시나리오 프로파일로 거르지 않는다 — D군도 돈다"
+    assert captured["profiles"]["optin_alarm"] == {"TEXT2SQL_ALARM_DETERMINISTIC": "true"}
+    assert captured["profiles"]["S2-A-1"] == {"A": "1"}
+    assert captured["scenarios"] == scenarios, "시나리오를 arm 이름으로 복제·치환하지 않는다"
+

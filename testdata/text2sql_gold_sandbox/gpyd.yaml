@@ -1,0 +1,617 @@
+# 폐쇄망 골드(testdata/text2sql_gold/gp.yaml·yd.yaml) 21건을 로컬 샌드박스 db_id(polestar)로 옮긴 사본 — plans/107 로컬 MLX 상대 비교용.
+# 스키마는 공동존과 같고 픽스처(testdata/pg/init/07·09)가 비지 않는 결과를 보장한다(--check-gold 21/21 · 2026-09-21).
+# 원본을 고치면 이 파일도 다시 만든다: db_id 만 polestar 로 바꾼다(항목·골드 SQL 무변경).
+items:
+- id: gp-001
+  query: 전체 서버의 호스트명, OS종류, 벤더를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  gold_sql: "SELECT\n  r.hostname,\n  cc_ostype.stringvalue_short AS os_type,\n  cc_vendor.stringvalue_short\
+    \ AS vendor\nFROM polestar.cmm_resource r\nLEFT JOIN polestar.core_config_prop\
+    \ cc_ostype\n  ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name\
+    \ = 'OSType'\nLEFT JOIN polestar.core_config_prop cc_vendor\n  ON r.resource_conf_id\
+    \ = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'\nWHERE r.resource_type\
+    \ = 'server.Server'\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - hostname
+    - os_type
+    - vendor
+  gold_smq:
+    pattern: A
+    resource_types:
+    - server.Server
+    dimensions:
+    - Hostname
+    - OSType
+    - Vendor
+    measures: []
+    filters: []
+    time_grain: null
+  notes: 'EAV 피벗 — resource_conf_id=configuration_id 조인. 2026-07-20 실측 정비: platform.server%(yd
+    실측 0행)→server.Server, LIMIT 제거.'
+- id: gp-002
+  query: 전체 서버별 호스트명, IP, OS버전, 시리얼번호를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  gold_sql: "SELECT\n  r.hostname,\n  r.ipaddress,\n  cc_osver.stringvalue_short AS\
+    \ os_version,\n  cc_serial.stringvalue_short AS serial_number\nFROM polestar.cmm_resource\
+    \ r\nLEFT JOIN polestar.core_config_prop cc_osver\n  ON r.resource_conf_id = cc_osver.configuration_id\
+    \ AND cc_osver.name = 'OSVerson'\nLEFT JOIN polestar.core_config_prop cc_serial\n\
+    \  ON r.resource_conf_id = cc_serial.configuration_id AND cc_serial.name = 'SerialNumber'\n\
+    WHERE r.resource_type = 'server.Server'\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - hostname
+    - ipaddress
+    - os_version
+    - serial_number
+  notes: 'EAV 속성 추가마다 LEFT JOIN 누적 패턴. OSVerson은 실 스키마 표기(오타 아님). 2026-07-20 실측 정비:
+    server.Server, LIMIT 제거.'
+- id: gp-003
+  query: 서버 수를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  gold_sql: "SELECT COUNT(*) AS server_count\nFROM polestar.cmm_resource r\nWHERE\
+    \ r.resource_type = 'server.Server'\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: 1
+    columns:
+    - server_count
+  notes: 'EAV 조인 불필요한 단순 집계. 2026-07-20 실측 정비: server.Server.'
+- id: gp-004
+  query: 전체 서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘
+  db_id: polestar
+  category: complex
+  coverage: inside
+  gold_sql: "SELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname\
+    \  END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN\
+    \ c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server'\
+    \ AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,\n\
+    \    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'   \
+    \     THEN cc.stringvalue_short END) AS cpu_model,\n    MAX(CASE WHEN c.resource_type\
+    \ = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END)\
+    \ AS logicalcore,\n    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name\
+    \ = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size\nFROM polestar.cmm_resource\
+    \ c\nLEFT JOIN polestar.core_config_prop cc\n      ON c.resource_conf_id = cc.configuration_id\n\
+    WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')\n  AND\
+    \ c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id);\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - hostname
+    - ipaddress
+    - serialnumber
+    - cpu_model
+    - logicalcore
+    - mem_size
+  gold_smq:
+    pattern: A
+    resource_types:
+    - server.Server
+    - server.Cpus
+    - server.Memory
+    dimensions:
+    - hostname
+    - ipaddress
+    - SerialNumber
+    - MODEL
+    - LOGICALCORE
+    - TotalSize
+    measures: []
+    filters: []
+    time_grain: null
+  notes: '다중 resource_type EAV 피벗 — GROUP BY platform_resource_id (D-068 계열). 2026-07-20
+    실측 정비: 기술 컬럼 id 제거(yd-002 실측 cols 8vs7 근거, 7컬럼 정렬).'
+- id: gp-005
+  query: cocm-hdkapp01 서버의 OS 종류·버전, IP주소, 호스트네임, CPU 모델, 메모리 용량을 조회해줘
+  db_id: polestar
+  category: complex
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name,\
+    \ c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server'\
+    \ THEN c.hostname  END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server'\
+    \ THEN c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server'\
+    \ AND cc.name = 'OSType'    THEN cc.stringvalue_short END) AS ostype,\n    MAX(CASE\
+    \ WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'  THEN cc.stringvalue_short\
+    \ END) AS osversion,\n    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND\
+    \ cc.name = 'MODEL'     THEN cc.stringvalue_short END) AS cpu_model,\n    MAX(CASE\
+    \ WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize' THEN cc.stringvalue_short\
+    \ END) AS mem_size\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop\
+    \ cc\n      ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type\
+    \ IN ('server.Server','server.Cpus','server.Memory')\n  AND c.dtime IS NULL\n\
+    GROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type\
+    \ = 'server.Server' THEN c.name END) = 'cocm-hdkapp01';\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+    - hostname
+    - ipaddress
+    - ostype
+    - osversion
+    - cpu_model
+    - mem_size
+  notes: '단일 서버 지목 + 자식 리소스 → 서버 식별은 HAVING(WHERE 금지, D-050). 2026-07-20 실측 정비: 기술
+    컬럼 id 제거. cocm-hdkapp01(hostname fegwigo1)은 --check-gold [OK]로 실존 확인됨.'
+- id: gp-006
+  query: 비정상 서버 목록과 IP를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n  COALESCE(r.name, r.hostname) AS server_name,\n  r.ipaddress\n\
+    FROM polestar.cmm_resource r\nWHERE r.resource_type = 'server.Server'\n  AND r.avail_status\
+    \ != 0\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+    - ipaddress
+  notes: 'avail_status != 0 = 비정상 (규칙 13). 공동존은 서버명=r.name. 2026-07-20 실측 정비: 질의 명시
+    컬럼만 유지, LIMIT 제거. 2026-07-21: yd-003 실측 미러 — 커버리지 밖(LLM 폴백)이라 부가 컬럼이 비결정적으로 붙어
+    scoring=subset.'
+- id: gp-007
+  query: 장비명이 'cob0-bnndbp01'인 서버의 가용성 상태와 IP를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n  r.avail_status,\n  r.ipaddress\nFROM polestar.cmm_resource\
+    \ r\nWHERE r.resource_type = 'server.Server'\n  AND r.name = 'cob0-bnndbp01'\n\
+    \  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - avail_status
+    - ipaddress
+  notes: '장비명 필터는 r.name(hostname 아님, D-058). 2026-07-20 실측 정비 3차: 실존 서버 cob0-bnndbp01(hostname
+    mcsdbo01)로 다양화. 2026-07-21 실측(3/2, 미일치 server_name): pred가 질의 명시 컬럼(가용성 상태+IP)만
+    정확히 반환 — 골드의 server_name이 스코프 규약(질의 명시 컬럼만) 위반이었음 → 제거.'
+- id: gp-008
+  query: 호스트명이 sbhdbo53인 서버의 CPU 리소스를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  gold_sql: "SELECT child.id, child.name, child.resource_type\nFROM polestar.cmm_resource\
+    \ parent\nJOIN polestar.cmm_resource child\n  ON child.parent_resource_id = parent.id\n\
+    WHERE parent.hostname = 'sbhdbo53'\n  AND child.resource_type = 'server.Cpus'\n\
+    \  AND child.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - id
+    - name
+    - resource_type
+  notes: 'parent_resource_id 자기참조 계층 조인. 2026-07-20 실측 정비 3차: 실존 호스트명 sbhdbo53(서버
+    cob0-kejdbp08, 사용자 제공 목록)으로 교체. 재검 [ZERO]면 ① 표기 확인(sbhdbo53) ② 계층 조인 컬럼이 parent_resource_id가
+    아닐 수 있음 — `child.platform_resource_id = parent.id`로 교체 후 재검.'
+- id: gp-009
+  query: 전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로.
+  db_id: polestar
+  category: performance
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name\
+    \ END) AS pname,\n    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name\
+    \ = 'LOGICALCORE' THEN cc.stringvalue_short END) AS logicalcore,\n    MAX(CASE\
+    \ WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short\
+    \ END) AS mem_size,\n    ROUND(AVG(CASE WHEN c.resource_type = 'server.Cpus' \
+    \  AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN\
+    \ s.avg_val END)::numeric, 2) AS cpu_avg,\n    ROUND(MAX(CASE WHEN c.resource_type\
+    \ = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.max_val BETWEEN\
+    \ 0 AND 1000 THEN s.max_val END)::numeric, 2) AS cpu_max,\n    ROUND(AVG(CASE\
+    \ WHEN c.resource_type = 'server.Memory' AND s.definition_name = 'Utilization'\
+    \ AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS mem_avg,\n\
+    \    ROUND(MAX(CASE WHEN c.resource_type = 'server.Memory' AND s.definition_name\
+    \ = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric,\
+    \ 2) AS mem_max\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop\
+    \ cc\n      ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m\
+    \ s\n      ON s.resource_id = c.id\n     AND s.definition_name = 'Utilization'\n\
+    \     AND s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')\n\
+    WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')\n \
+    \ AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id);\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - pname
+    - logicalcore
+    - mem_size
+    - cpu_avg
+    - cpu_max
+    - mem_avg
+    - mem_max
+  gold_smq:
+    pattern: B
+    resource_types:
+    - server.Cpus
+    - server.Memory
+    dimensions:
+    - name
+    measures:
+    - agg: avg
+      definition_name: Utilization
+      resource_type: server.Cpus
+    - agg: max
+      definition_name: Utilization
+      resource_type: server.Cpus
+    - agg: avg
+      definition_name: Utilization
+      resource_type: server.Memory
+    - agg: max
+      definition_name: Utilization
+      resource_type: server.Memory
+    time_grain: month
+    filters: []
+  notes: '2026-07-20 실측 정비 10차(yd-004 미러): 질의에 ''평균·최대'' 명시, hostname 제거(질의 미명시 —
+    스코프 규약), 용량=LOGICALCORE·기간=지난달. pred의 cc.name=''Utilization'' 환각 감시 항목.'
+- id: gp-010
+  query: 지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘
+  db_id: polestar
+  category: performance
+  coverage: inside
+  scoring: subset
+  known_fail: '월별 분해는 트랙 C 미지원(결정적 게이트로 폴백 강제) — LLM 폴백의 행 모집단이 실행마다 미세 유동(실측 4725/4725
+    값일치 → 4725/4728, +3행은 진행 중인 달 월간 통계가 조기 적재된 서버로 추정). 값 정확성은 확인됨(값일치 마커 실측). 근본
+    해법: 트랙 C 월별 분해(time-series) 컴파일 지원(백로그). PASS 전환 시 폴백 안정화 또는 트랙 C 확장 완료 신호.'
+  gold_sql: "SELECT\n    svr.name AS pname,\n    svr.hostname AS hostname,\n    TO_DATE(s.stat_date\
+    \ || '01', 'YYYYMMDD') AS stat_date,\n    ROUND(AVG(CASE WHEN r.resource_type\
+    \ = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN\
+    \ 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS cpu_avg,\n    ROUND(AVG(CASE\
+    \ WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization'\
+    \ AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS mem_avg,\n\
+    \    ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name\
+    \ = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric,\
+    \ 2) AS fs_avg,\n    ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'    \
+    \   AND s.definition_name = 'MaxIORate'   THEN s.avg_val END)::numeric, 2) AS\
+    \ disks_io_avg\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_resource svr\n\
+    \    ON svr.id = r.platform_resource_id\n   AND svr.resource_type = 'server.Server'\n\
+    JOIN polestar.cmm_metric_stat_m s\n    ON r.id = s.resource_id\nWHERE r.resource_type\
+    \ IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')\n\
+    \  AND s.definition_name IN ('Utilization', 'MaxIORate')\n  AND s.stat_date BETWEEN\
+    \ TO_CHAR(CURRENT_DATE - INTERVAL '3 months', 'YYYYMM')\n                    \
+    \  AND TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')\n  AND r.dtime IS\
+    \ NULL\n  AND svr.dtime IS NULL\nGROUP BY svr.name, svr.hostname, TO_DATE(s.stat_date\
+    \ || '01', 'YYYYMMDD')\nORDER BY svr.hostname, stat_date;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - pname
+    - hostname
+    - stat_date
+    - cpu_avg
+    - mem_avg
+    - fs_avg
+    - disks_io_avg
+  notes: '4개 resource_type × 2개 definition_name 월간 피벗. 2026-07-20 실측 정비 5차: 전 기간 월별
+    분해가 rows 10000 상한 절단 — 질의에 ''지난 3개월간''을 명시(월별 행 유지, 직전 완결 3개월 = D-085 파서 의미론과
+    동일)해 행수를 상한 아래로. 이 항목이 D-085(N개월 범위) 회귀 감시를 겸함. Utilization에만 D-086 게이트(MaxIORate는
+    % 아님).'
+- id: gp-011
+  query: 장비명이 'cocm-xgzapp09'인 서버의 OS파라미터(커널 파라미터)를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  gold_sql: "SELECT r.name AS server_name, r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short)\
+    \ AS os_parameter\nFROM polestar.cmm_resource r\nJOIN polestar.core_config_prop\
+    \ cc ON r.resource_conf_id = cc.configuration_id\nWHERE r.resource_type = 'server.Server'\n\
+    \  AND r.name = 'cocm-xgzapp09'\n  AND cc.name = 'OSParameter'\n  AND r.dtime\
+    \ IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+    - hostname
+    - os_parameter
+  notes: 'OSParameter는 LOB → COALESCE(stringvalue, stringvalue_short) (Known Mistakes
+    2026-06-10). 2026-07-20 실측 정비 3차: 실존 서버 cocm-xgzapp09(hostname xgzapmvwp01)로 다양화.
+    재검 [ZERO]면 이 서버에 OSParameter 속성 부재 — 보유 서버로 교체.'
+- id: gp-012
+  query: 현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘
+  db_id: polestar
+  category: alarm
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n    CASE WHEN CA.ALARMSEVERITY = 3 THEN '심각'\n         WHEN CA.ALARMSEVERITY\
+    \ = 2 THEN '경고'\n         ELSE '기타' END AS severity_grade,\n    TO_CHAR(CA.CTIME,\
+    \ 'YYYY-MM-DD HH24:MI:SS') AS occurred_at,\n    SVR.NAME AS server_name,\n   \
+    \ SVR.IPADDRESS AS ipaddress,\n    D.NAME AS event_name,\n    CA.CONDITIONLOGTEXT\
+    \ AS detail\nFROM polestar.cmm_resource CR\nJOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID\
+    \ = CR.ID\nJOIN polestar.cmm_alarm_def D ON CA.DEFINITION_ID = D.ID\nJOIN polestar.cmm_alarm_active\
+    \ A ON A.ALARM_ID = CA.ID\nLEFT JOIN polestar.cmm_resource SVR\n    ON SVR.ID\
+    \ = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.SERVICE_RESOURCE_ID, CR.ID)\nWHERE CR.DTIME\
+    \ IS NULL\n  AND CA.ALARMSEVERITY = 3\nORDER BY CA.CTIME DESC, CA.ID DESC;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - severity_grade
+    - occurred_at
+    - server_name
+    - ipaddress
+    - event_name
+    - detail
+  gold_smq:
+    pattern: C
+    entities:
+    - CMM_ALARM
+    - CMM_ALARM_DEF
+    - CMM_ALARM_ACTIVE
+    - CMM_RESOURCE
+    dimensions: []
+    filters:
+    - field: ALARMSEVERITY
+      op: eq
+      value: 3
+    active_only: true
+  notes: '패턴 C 정규화 조인 — CA↔D↔ACTIVE, 활성 알람 severity=3. 2026-07-20 실측 정비: LIMIT 절단
+    제거, tiebreaker(CA.ID). 2026-07-21: 장비명/IP를 부모 서버(SVR) 기준으로 교정(yd-006 계열). 실측(219/219,
+    6/9, 미일치 severity): pred가 표준 알람 뷰 컴파일(9컬럼, 등급=텍스트) — 골드의 raw int severity가 정본과
+    어긋남 → severity_grade CASE 텍스트로 교체, gold_smq dimensions=[](컬럼 미명시→표준 뷰 규약). subset이라
+    pred의 +3컬럼(hostname 등)은 허용.'
+- id: gp-013
+  query: 김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘
+  db_id: polestar
+  category: complex
+  coverage: outside
+  scoring: subset
+  gold_sql: "SELECT\n    ROUND(AVG(s.avg_val)::numeric, 2) AS cpu_avg\nFROM polestar.cmm_resource\
+    \ r\nJOIN polestar.cmm_metric_stat_m s ON r.id = s.resource_id\nWHERE r.resource_type\
+    \ = 'server.Cpus'\n  AND s.definition_name = 'Utilization'\n  AND s.stat_date\
+    \ = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')\n  AND s.avg_val BETWEEN\
+    \ 0 AND 1000\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: 1
+    columns:
+    - cpu_avg
+  notes: '커버리지 밖 — DB 전체 스칼라 집계는 컴파일러(서버당 1행 GROUP BY 고정)로 표현 불가 → LLM 폴백 검증용. 2026-07-21
+    재정의: 구 질의(''김포와 여의도 비교'')는 멀티DB 교차 취합+판정이라 단일 SQL EX 하네스 스코프 밖(실측: LLM이 SQL 대신
+    산문 생성 → 재시도 소진 SKIP) — 교차 비교 평가는 orchestration 수준 평가(백로그)로 이관하고, 본 항목은 단일 DB 스칼라
+    집계로 축소. 기간은 운영 관행(지난달) 명시.'
+- id: gp-014
+  query: '''cocm-ngcapo91'' 서버와 유사한 사양(같은 CPU 코어수·메모리)을 가진 서버들을 찾아줘'
+  db_id: polestar
+  category: unhandled
+  coverage: outside
+  scoring: subset
+  known_fail: '유사 사양 자기조인(의역 최난도) — LLM 폴백이 실행마다 전혀 다른 SQL 구조를 생성(CR직접형/다중 CTE 등 4회
+    실측 4형태)하며, 개별 요소(서버명 r.name·LOGICALCORE/TotalSize·server.Cpus/Memory·dtime)는 전부
+    정상인데 조합 단계(앵커 연결·NULL 동등비교)에서 0행. 조합 비결정은 프롬프트로 수렴 불가 — 트랙 C 커버리지 확장(사양 동등 조인
+    패턴) 전까지 감시. PASS 전환 시 폴백 안정화 신호. 부수 성과: 이 항목이 CTE 실결함 2건(타입 거부·이름 추출)을 발굴함.'
+  gold_sql: "WITH spec AS (\n    SELECT\n        MAX(CASE WHEN c.resource_type = 'server.Cpus'\
+    \   AND cc.name = 'LOGICALCORE' THEN cc.stringvalue_short END) AS logicalcore,\n\
+    \        MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'\
+    \   THEN cc.stringvalue_short END) AS mem_size\n    FROM polestar.cmm_resource\
+    \ c\n    LEFT JOIN polestar.core_config_prop cc ON c.resource_conf_id = cc.configuration_id\n\
+    \    WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')\n\
+    \      AND c.dtime IS NULL\n    GROUP BY COALESCE(c.platform_resource_id, c.id)\n\
+    \    HAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) =\
+    \ 'cocm-ngcapo91'\n)\nSELECT MAX(CASE WHEN c.resource_type = 'server.Server' THEN\
+    \ c.name END) AS server_name\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop\
+    \ cc ON c.resource_conf_id = cc.configuration_id\nCROSS JOIN spec\nWHERE c.resource_type\
+    \ IN ('server.Server','server.Cpus','server.Memory')\n  AND c.dtime IS NULL\n\
+    GROUP BY COALESCE(c.platform_resource_id, c.id), spec.logicalcore, spec.mem_size\n\
+    HAVING MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'\
+    \ THEN cc.stringvalue_short END) = spec.logicalcore\n   AND MAX(CASE WHEN c.resource_type\
+    \ = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short END)\
+    \ = spec.mem_size\n   AND MAX(CASE WHEN c.resource_type = 'server.Server' THEN\
+    \ c.name END) <> 'cocm-ngcapo91';\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+  notes: '커버리지 밖 — ''유사한 사양'' 의역·기준 정의가 결정적 SMQ 밖. 2026-07-20: 실존 서버 cocm-ngcapo91로
+    다양화. 2026-07-21 실측(44/43, 1/6): CTE 허용(D-087 후속2) 후 첫 실행 성공 — 행 차이는 자기 자신 포함 여부(pred
+    제외가 자연어 의미 정합)라 골드에 자기 제외 추가(44→43), 부가 컬럼(사양 등)은 scoring=subset로 흡수. 실측 3~4차:
+    CTE 이름 추출 결함 수정 후 실행은 되나 매 실행 상이한 다중 CTE 조합이 0행(개별 필터·속성·타입은 전사 검증상 전부 정상) → known_fail
+    전환(2026-07-21).'
+- id: gp-015
+  query: 최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘
+  db_id: polestar
+  category: alarm
+  coverage: outside
+  scoring: subset
+  gold_sql: "SELECT\n    SVR.NAME AS server_name,\n    COUNT(*) AS alarm_count\nFROM\
+    \ polestar.cmm_resource CR\nJOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID = CR.ID\n\
+    LEFT JOIN polestar.cmm_resource SVR\n    ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID,\
+    \ CR.SERVICE_RESOURCE_ID, CR.ID)\nWHERE CR.DTIME IS NULL\n  AND CA.ALARMSEVERITY\
+    \ IN (2, 3)\n  AND CA.CTIME >= (CURRENT_DATE - INTERVAL '3 months')\nGROUP BY\
+    \ SVR.NAME, SVR.IPADDRESS\nORDER BY alarm_count DESC, SVR.NAME\nLIMIT 10;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+    - alarm_count
+  notes: '커버리지 밖 — 알람 이력 집계+기간창+랭킹 복합. 2026-07-21 실측(10/10, 3컬럼 전부 미일치): 골드가 알람 발생
+    자원(CR, 하위 자원 포함)을 그대로 서버로 집계 — 제품 정본(C-4·yd-006 계열)은 부모 서버(SVR COALESCE)로 승격 집계
+    → SVR 기준으로 교정(상위 10 모집단 자체가 달랐음). ''장애 알람'' 모호성은 확정 관행(경고 이상=severity 2,3)으로 질의
+    명확화. 잔존 변수: 기간창 해석(롤링 3개월 vs 월 경계)·동수 tiebreak은 pred 비결정 — 미수렴 시 known_fail 후보.
+    실측 2차(10/10, server_name·alarm_count 일치): 부모 승격·경고 이상·기간창 전부 수렴 — 잔여 미일치는 골드의
+    ipaddress뿐인데 질의(''서버를 알려줘'')가 IP를 명시하지 않으므로 골드 스코프 위반 → 제거(GROUP BY의 SVR.IPADDRESS는
+    동명 서버 병합 방지를 위해 유지).'
+- id: yd-001
+  query: 호스트명, OS종류, 벤더를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  gold_sql: "SELECT\n  r.hostname,\n  cc_ostype.stringvalue_short AS os_type,\n  cc_vendor.stringvalue_short\
+    \ AS vendor\nFROM polestar.cmm_resource r\nLEFT JOIN polestar.core_config_prop\
+    \ cc_ostype\n  ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name\
+    \ = 'OSType'\nLEFT JOIN polestar.core_config_prop cc_vendor\n  ON r.resource_conf_id\
+    \ = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'\nWHERE r.resource_type\
+    \ = 'server.Server'\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - hostname
+    - os_type
+    - vendor
+  gold_smq:
+    pattern: A
+    resource_types:
+    - server.Server
+    dimensions:
+    - Hostname
+    - OSType
+    - Vendor
+    measures: []
+    filters: []
+    time_grain: null
+  notes: '공동존 동형 스키마 — gp-001과 동일 SQL 형태(데이터만 상이). 2026-07-20 실측 정비: platform.server%(0행)→server.Server,
+    LIMIT 제거.'
+- id: yd-002
+  query: 서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘
+  db_id: polestar
+  category: complex
+  coverage: inside
+  gold_sql: "SELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname\
+    \  END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN\
+    \ c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server'\
+    \ AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,\n\
+    \    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'   \
+    \     THEN cc.stringvalue_short END) AS cpu_model,\n    MAX(CASE WHEN c.resource_type\
+    \ = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END)\
+    \ AS logicalcore,\n    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name\
+    \ = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size\nFROM polestar.cmm_resource\
+    \ c\nLEFT JOIN polestar.core_config_prop cc\n      ON c.resource_conf_id = cc.configuration_id\n\
+    WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')\n  AND\
+    \ c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id);\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - hostname
+    - ipaddress
+    - serialnumber
+    - cpu_model
+    - logicalcore
+    - mem_size
+  notes: '다중 resource_type EAV 피벗(D-068). 2026-07-20 실측 정비 6차: server_name 제거 — 질의
+    명시 6컬럼 규약 위반이 골드 쪽이었음(트랙 C 컴파일 출력 6컬럼이 규약 정합, 실측 cols 7/6). 컴파일 SQL과 EX 정합 기대.'
+- id: yd-003
+  query: 비정상 서버 목록과 IP를 조회해줘
+  db_id: polestar
+  category: server_config
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n  COALESCE(r.name, r.hostname) AS server_name,\n  r.ipaddress\n\
+    FROM polestar.cmm_resource r\nWHERE r.resource_type = 'server.Server'\n  AND r.avail_status\
+    \ != 0\n  AND r.dtime IS NULL;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+    - ipaddress
+  notes: 'avail_status != 0 = 비정상. 2026-07-20 실측 정비: 질의 명시 컬럼(서버 목록+IP)만 유지, LIMIT
+    제거(실측 53행). 2026-07-21 실측 14차: 실행마다 부가 컬럼(avail_status 등)이 붙었다 떨어졌다 하는 LLM 비결정(값은
+    일치) — avail_status 필터는 커버리지 밖(LLM 폴백 경로)이라 컬럼 스코프를 강제할 수 없어 scoring=subset 선언.'
+- id: yd-004
+  query: 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로.
+  db_id: polestar
+  category: performance
+  coverage: inside
+  scoring: subset
+  gold_sql: "SELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name\
+    \ END) AS pname,\n    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name\
+    \ = 'LOGICALCORE' THEN cc.stringvalue_short END) AS logicalcore,\n    MAX(CASE\
+    \ WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short\
+    \ END) AS mem_size,\n    ROUND(AVG(CASE WHEN c.resource_type = 'server.Cpus' \
+    \  AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN\
+    \ s.avg_val END)::numeric, 2) AS cpu_avg,\n    ROUND(MAX(CASE WHEN c.resource_type\
+    \ = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.max_val BETWEEN\
+    \ 0 AND 1000 THEN s.max_val END)::numeric, 2) AS cpu_max,\n    ROUND(AVG(CASE\
+    \ WHEN c.resource_type = 'server.Memory' AND s.definition_name = 'Utilization'\
+    \ AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS mem_avg,\n\
+    \    ROUND(MAX(CASE WHEN c.resource_type = 'server.Memory' AND s.definition_name\
+    \ = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric,\
+    \ 2) AS mem_max\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop\
+    \ cc\n      ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m\
+    \ s\n      ON s.resource_id = c.id\n     AND s.definition_name = 'Utilization'\n\
+    \     AND s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')\n\
+    WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')\n \
+    \ AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id);\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - pname
+    - logicalcore
+    - mem_size
+    - cpu_avg
+    - cpu_max
+    - mem_avg
+    - mem_max
+  notes: '2026-07-20 실측 정비 10차: ① 질의에 ''평균·최대'' 명시(사용자 결정 — 실사용 표현 반영) ② hostname
+    제거(질의 미명시 — 스코프 규약 자기적용) ③ 용량=LOGICALCORE·기간=지난달. 2026-07-21 실측 11차: --semantic-compose
+    ON에서 pred가 트랙 C 컴파일로 전환됨(788/788·7컬럼 정합) — 남은 결함은 LLM SMQ 선택 품질(서버 이름 dimension
+    누락 + LOGICALCORE·PHYSICALCORE 동시 선택)이었고, 컴파일러 결정적 가드(식별 dimension 주입 확장 + normalize_smq
+    PHYSICALCORE 제거)로 교정. 이 항목은 SMQ 선택 가드 회귀를 감시함. LLM 폴백 경로의 `cc.name=''Utilization''`
+    환각은 D-087 계열 잔존 이슈. 2026-07-21 실측 14차: SMQ가 실행에 따라 hostname 등 식별 dimension을 추가
+    선택(값 일치·스코프만 과잉) — 부가 식별 컬럼은 무해하므로 scoring=subset. 핵심 감시(서버명 pname 누락)는 subset에서도
+    실패로 잡힘.'
+- id: yd-005
+  query: 지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘
+  db_id: polestar
+  category: performance
+  coverage: outside
+  scoring: subset
+  known_fail: D-200(2026-09-07) 이후 이 질의의 정답은 SQL이 아니라 결정적 안내 단락이다 — '가동률'=가동 시간 비율(uptime)로
+    확정(사용자 결정), 폴스타 3존 미집계 실측으로 intent_planner ③.7 pre-gate가 UPTIME_RATE_GUIDANCE를
+    direct_response로 반환한다. 따라서 이 항목이 gold_sql과 일치하는 SQL을 생성하면 PASS가 아니라 **pre-gate
+    우회 회귀**다. gold_sql은 구 해석('가동률'=사용률 의역)의 참고 사본으로만 유지.
+  gold_sql: "SELECT\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name\
+    \ END) AS server_name,\n    ROUND(AVG(CASE WHEN c.resource_type = 'server.Cpus'\
+    \ AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN\
+    \ s.avg_val END)::numeric, 2) AS cpu_avg\nFROM polestar.cmm_resource c\nLEFT JOIN\
+    \ polestar.cmm_metric_stat_m s\n      ON s.resource_id = c.id\n     AND s.definition_name\
+    \ = 'Utilization'\n     AND s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month',\
+    \ 'YYYYMM')\nWHERE c.resource_type IN ('server.Server', 'server.Cpus')\n  AND\
+    \ c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY cpu_avg\
+    \ ASC NULLS LAST;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - server_name
+    - cpu_avg
+  notes: '[D-200 개정 2026-09-07] ''가동률''=사용률 의역이라는 구 전제(E5-4 임베딩 대상)를 폐기 — 실무 통용(가동
+    시간 비율)로 확정하고 pre-gate 안내가 정답. 검증 방법: 이 질의 실행 시 응답이 UPTIME_RATE_GUIDANCE(가용성/CPU
+    사용률 대체 질의 안내)면 정상, SQL이 생성되면 회귀. [구 이력] 2026-07-20 9차: ''지난달 통계 기준'' 명시. 07-21
+    15·16차: INNER/LEFT 플립플롭 비결정 확정, known_fail 선언(의도된 false-negative는 PASS로 맞추지 않음).'
+- id: yd-006
+  query: 경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘
+  db_id: polestar
+  category: alarm
+  coverage: outside
+  scoring: subset
+  gold_sql: "SELECT\n    CASE WHEN CA.ALARMSEVERITY = 3 THEN '심각'\n         WHEN CA.ALARMSEVERITY\
+    \ = 2 THEN '경고'\n         ELSE '기타' END AS severity_grade,\n    TO_CHAR(CA.CTIME,\
+    \ 'YYYY-MM-DD HH24:MI:SS') AS occurred_at,\n    SVR.NAME AS server_name,\n   \
+    \ SVR.IPADDRESS AS ipaddress,\n    SVR.HOSTNAME AS hostname,\n    CR.NAME AS resource_name,\n\
+    \    D.NAME AS event_name,\n    CA.CONDITIONLOGTEXT AS detail,\n    CA.ID AS alarm_id\n\
+    FROM polestar.cmm_resource CR\nJOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID =\
+    \ CR.ID\nJOIN polestar.cmm_alarm_def D ON CA.DEFINITION_ID = D.ID\nLEFT JOIN polestar.cmm_resource\
+    \ SVR\n    ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.SERVICE_RESOURCE_ID,\
+    \ CR.ID)\nWHERE CR.DTIME IS NULL\n  AND CA.ALARMSEVERITY IN (2, 3)\nORDER BY CA.CTIME\
+    \ DESC, CA.ID DESC\nLIMIT 100;\n"
+  gold_result_signature:
+    row_count: null
+    columns:
+    - severity_grade
+    - occurred_at
+    - server_name
+    - ipaddress
+    - hostname
+    - resource_name
+    - event_name
+    - detail
+    - alarm_id
+  notes: '2026-07-20 실측 정비 10차: scoring=subset 선언(알람 뷰류는 표준 컬럼+α가 정상 — 사용자 판단). 2026-07-21
+    실측 13차: subset 미일치 진단이 정확히 [ipaddress, hostname]을 지목 — 제품 알람 템플릿(C-1/C-2)은 장비명/IP/호스트명을
+    **부모 서버**(COALESCE(PLATFORM_RESOURCE_ID, SERVICE_RESOURCE_ID, ID) 조인)에서 가져오는데
+    골드가 알람 발생 자원(CR) 직접 컬럼으로 작성돼 하위 자원(CPU/메모리) 알람 행에서 값 불일치(pred가 제품 정본, 골드가 결함).
+    SVR 조인으로 교정 — server_name(장비명=부모)과 resource_name(리소스명=알람 자원)도 이제 제품 뷰대로 구분됨(중복
+    컬럼 해소). 잔존 유의: pred ORDER BY에 CA.ID tiebreak이 없으면 100번째 CTIME 동률 경계에서 행 상이 가능(재발
+    시 detail/alarm_id 미일치로 발현).'

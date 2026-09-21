@@ -55,9 +55,20 @@ from src.utils.query_gen_common import (
     resolve_comparison_periods,
     resolve_effective_limit,
     resolve_stat_month_range,
+    surface_query_for_judgment,
     template_context_text,
 )
-from src.nodes.key_bridge import bridge_prior_rows_block, key_bridge_enabled
+from src.nodes.intent_frame_builder import (
+    CONSUMER_QUERY_GENERATOR,
+    get_prompt_query,
+    observe_rewrite,
+)
+from src.nodes.key_bridge import (
+    bridge_prior_rows_block,
+    compile_skip_note,
+    key_bridge_enabled,
+    plan_target_scope,
+)
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
@@ -209,6 +220,22 @@ def _prior_server_scope(state: AgentState) -> Optional[tuple[str, list[str]]]:
         (식별컬럼, 값목록) 또는 None(선행 스코프 없음)
     """
     return prior_server_scope(state.get("prior_rows"))
+
+
+def _bridge_only_scope(state: AgentState, app_config: AppConfig) -> bool:
+    """종전 컬럼명 판정은 스코프를 못 잡았는데 **키 브리지는 잡았는가** (권고 H · D-099).
+
+    `prior_server_scope`는 컬럼 **이름**으로 판정하므로 선행이 자산 DB면 스코프가 None이 된다
+    (`sevrHostName` 등은 목록에 없다 — plans/102 §1.2). 그대로 두면 시맨틱 컴파일이
+    **스코프 없이** 조립돼 LIMIT 절단으로 정작 필요한 행이 빠진다. 브리지가 대상 컬럼·조건을
+    확정할 수 있는 상황이면 결정적 컴파일을 건너뛰고 브리지 스코프 블록이 실리는 일반(LLM)
+    경로로 보낸다.
+
+    브리지 off면 항상 False — 플래그 off 경로는 비트 동일이다.
+    """
+    if not key_bridge_enabled(app_config):
+        return False
+    return plan_target_scope(state.get("prior_rows"), state.get("active_db_id")) is not None
 
 
 def _try_build_form_fill_pivot_sql(
@@ -448,6 +475,9 @@ class _GenContext:
     conversation_context: Optional[dict]
     prior_scope: Optional[tuple[str, list[str]]]
     adapter_db_ids: Optional[set[str]]
+    #: 브리지는 대상 스코프를 잡았는데 종전(컬럼명 판정) 스코프가 없는가 — 결정적 컴파일을
+    #: 건너뛰는 조건(권고 H).
+    bridge_only_scope: bool = False
 
 
 def _prepare(
@@ -490,6 +520,7 @@ def _prepare(
     # 프로필 time_grain 선언 기반 전환은 P3(D-090). 프로필 부재 DB는 미주입 — 시스템 템플릿의
     # 일반 기간 규칙(CURRENT_DATE 동적 계산)만 남아 LLM이 스키마의 시간 컬럼으로 해석한다.
     polestar_db_ids = app_config.get_polestar_db_ids() or set()
+    _prior_scope = _prior_server_scope(state)
     return _GenContext(
         llm=llm,
         app_config=app_config,
@@ -504,8 +535,11 @@ def _prepare(
         # prior_rows(선행 task 결과 스코프)는 컴파일러에 server_scope로 결정적 전달한다(D-099).
         # 과거에는 SMQ가 스코프를 표현하지 못해 우회했으나(D-086), 이제 조립기가 HAVING으로
         # 강제하므로 이 형태(선행 스코프 + 메트릭 순위 + EAV 속성)도 결정적 조립 대상이다.
-        prior_scope=_prior_server_scope(state),
+        prior_scope=_prior_scope,
         adapter_db_ids=polestar_db_ids or None,
+        bridge_only_scope=(
+            _prior_scope is None and _bridge_only_scope(state, app_config)
+        ),
     )
 
 
@@ -576,21 +610,24 @@ def _try_spike(state: AgentState, ctx: _GenContext) -> Optional[dict]:
         return None
 
     terms = load_change_terms()
-    request = resolve_spike_request(ctx.user_query, terms)
+    # 표면어 판정은 원문 기준(plans/107 W0.5) — 오케스트레이션 재작성문이 "급증"·"80% 이상"·
+    # "지난달 대비"·"파일시스템"을 탈락·추가해도 조립 진입 판정이 흔들리지 않게 한다.
+    surface = surface_query_for_judgment(state, ctx.user_query)
+    request = resolve_spike_request(surface, terms)
     if not request:
         return None
 
-    periods = resolve_comparison_periods(ctx.user_query)
+    periods = resolve_comparison_periods(surface)
     if isinstance(periods, BlockedComparison):
         # 약속하고 조용히 누락시키는 것이 최악이다 — 사유와 대체 제안을 응답에 남기고
         # SQL은 LLM 경로에 맡긴다(§6.12 ③).
         logger.info("급증 조립 미진입 — %s", periods.reason)
         return {"spike_notes": [periods.reason, periods.suggestion]}
 
-    if not matched_filesystem_term(ctx.user_query, terms):
+    if not matched_filesystem_term(surface, terms):
         return None
 
-    threshold = resolve_absolute_threshold(ctx.user_query, terms)
+    threshold = resolve_absolute_threshold(surface, terms)
     if threshold is None:
         # 차분만으로 판정하면 5→10%(2배)가 75→85%를 이겨 저사용 파일시스템이 상위를
         # 점령한다(§6.10 ①). 절대 임계가 없으면 조립하지 않고 LLM 경로로 넘긴다 —
@@ -625,7 +662,7 @@ def _try_spike(state: AgentState, ctx: _GenContext) -> Optional[dict]:
         + f" · 절대 임계 {threshold:g}%",
         CAPACITY_CHANGE_NOTE,
     ]
-    others = matched_other_metric_terms(ctx.user_query, terms)
+    others = matched_other_metric_terms(surface, terms)
     if others:
         notes.append(
             f"이번 조회는 **파일시스템 사용률 급증만** 판정했습니다 — "
@@ -653,6 +690,14 @@ async def _try_semantic(
     if (ctx.is_retry or deterministic_sql or state.get("column_mapping")
             or not ctx.app_config.text2sql.semantic_compose):
         return None, False
+    if ctx.bridge_only_scope:
+        # 권고 H: 스코프 없이 컴파일하면 LIMIT 절단으로 선행이 지목한 행이 빠진다.
+        # 침묵 금지 — 사유를 로그와 경과 노트로 남긴다(노트는 호출부가 싣는다).
+        logger.info(
+            "시맨틱 결정적 컴파일 건너뜀 — 선행 스코프를 컬럼명으로 판정하지 못했고(D-099) "
+            "키 브리지가 대상 스코프를 잡았다. 브리지 스코프 블록이 실리는 LLM 경로로 진행한다."
+        )
+        return None, False
     value_index = (
         state.get("column_value_index")
         if ctx.app_config.synonym.value_retrieval else None
@@ -667,6 +712,7 @@ async def _try_semantic(
         stepwise_deps=_build_stepwise_deps(state, ctx.app_config, ctx.limit_value),
         derivation_sink=derivation_sink,
         parsed_filters=(state.get("parsed_requirements") or {}).get("filter_conditions"),
+        surface_query=surface_query_for_judgment(state, ctx.user_query),
     )
     if semantic_sql:
         logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", semantic_sql[:500])
@@ -753,6 +799,10 @@ async def _build_fallback_prompts(
         db_engine=state.get("active_db_engine"),
         db_id=state.get("active_db_id"),
         adapter_db_ids=ctx.adapter_db_ids,
+        prompt_query=get_prompt_query(
+            state, app_config, consumer=CONSUMER_QUERY_GENERATOR,
+            current=(state["parsed_requirements"] or {}).get("original_query", ""),
+        ),
     )
     # 기간 표현이 있으면 결정적으로 해석된 단일 월(YYYYMM)을 강제한다 — 시스템 템플릿의
     # "CURRENT_DATE 동적 계산" 일반 규칙을 LLM이 따르면 BETWEEN으로 진행 중인 달까지
@@ -1058,6 +1108,20 @@ async def query_generator(
             extra_return["form_fill_overrides"] = form_fill["overrides"]
         if form_fill.get("literals"):
             extra_return["form_fill_literals"] = form_fill["literals"]
+
+    if ctx.bridge_only_scope:
+        # 권고 H — 결정적 컴파일을 건너뛴 사실을 사용자에게 남긴다. `dependency_notes`는
+        # 리듀서가 없어 델타만 반환하면 기존 노트가 사라진다(docs/18 — 누적 키 병합).
+        extra_return["dependency_notes"] = [
+            *(state.get("dependency_notes") or []), compile_skip_note(),
+        ]
+
+    # 의도 프레임·재작성 감사(plans/107 W1·W2·W5 — 섀도). 꺼져 있으면 빈 dict(비트 동일).
+    # 재시도 턴은 같은 턴의 재생성이라 다시 기록하지 않는다.
+    if not ctx.is_retry:
+        extra_return.update(
+            await observe_rewrite(state, ctx.app_config, consumer=CONSUMER_QUERY_GENERATOR)
+        )
 
     logger.info(f"SQL 생성 완료 (retry={ctx.retry_count}): {sql[:1000]}...")
 
@@ -1521,6 +1585,7 @@ def _build_user_prompt(
     db_engine: Optional[str] = None,
     db_id: Optional[str] = None,
     adapter_db_ids: set[str] | None = None,
+    prompt_query: Optional[str] = None,
 ) -> str:
     """사용자 프롬프트를 구성한다.
 
@@ -1560,7 +1625,11 @@ def _build_user_prompt(
         )
 
     # 원본 질의
-    original = parsed_requirements.get("original_query", "")
+    # 정규 질의 채널(plans/107 W3) — 미지정·꺼짐이면 종전 그대로 R6(task 스코프 질의).
+    original = (
+        prompt_query if prompt_query is not None
+        else parsed_requirements.get("original_query", "")
+    )
     parts.append(f"## 사용자 질의\n{original}")
 
     # 구조화된 요구사항

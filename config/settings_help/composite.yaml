@@ -490,6 +490,30 @@ settings:
       - docs/02_decision.md (D-203)
       - plans/88 §4.2
 
+  COMPOSITE_TASK_FRAME_ENABLED:
+    example: >-
+      '현재 활성 상태인 심각 알람 목록'을 분해할 때 LLM이 task 질의를 "심각(alarm_severity='critical')…"처럼 원문에 없는 값을 넣어 다시 쓰면
+      SQL 생성이 그 값을 믿고 틀린다. 켜면 LLM은 원문 조각만 고르고 task 질의는 그 조각을 이어 만든다.
+    summary: 복합 질의 분해에서 LLM이 task 질의문을 새로 쓰지 않고 원문 조각만 고르게 할지.
+    behavior: >-
+      분해 LLM이 task마다 원문 부분 문자열 목록(spans)을 내고, task 질의는 조각을 원문 순서로 이어 만든다.
+      조각이 원문·직전 맥락 밖이거나 원문의 숫자를 어느 task도 덮지 못하면 원문 그대로 단일 task로 실행하고 사유를 남긴다.
+      계획의 모든 분기(존 선택 재진입 등 사전 처리 포함)에 알람·프로세스 담당 교정을 적용한다.
+    options:
+      - value: "false"
+        label: 끔(종전 동작)
+        effect: LLM이 쓴 자연문 task 질의를 그대로 쓴다. 존 선택 재진입 경로는 담당 교정 없이 데이터 조회로 고정된다.
+      - value: "true"
+        label: task 프레임
+        effect: task 질의가 원문 조각으로만 이뤄진다. 검증에 실패하면 단일 task로 되돌아간다.
+    performance: LLM 호출 수는 같다(분해 1회). 검증·조립은 결정적이라 추가 비용이 거의 없다.
+    stability: 같은 분해 결과에서 같은 task 질의가 나온다. 폴백은 원문 단일 실행이라 가장 보수적인 동작으로 돌아간다.
+    recommendation: 기본 끔. 로컬 MLX 대조(plans/111 §6 M-2) 결과를 보고 켠다.
+    related: [COMPOSITE_PLAN_DAG_VALIDATION_ENABLED, COMPOSITE_SEQUENTIAL_REPLAN_ENABLED]
+    references:
+      - plans/111 §5
+      - plans/107 G-1.5
+
   COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED:
     example: >-
       의도 오케스트레이션과 deepagents가 둘 다 꺼진 기동(3·4단)에서 '높은 서버를 찾아 그 서버들의…'는 원래 SQL 한 번으로 처리된다. 켜면 두 단계로 나눠

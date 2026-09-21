@@ -294,3 +294,103 @@ def test_graph_event_stream_reraises_producer_error():
                 pass
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# D-242 — 실패 경위: error 이벤트가 "어디서·어떻게" 끊겼는지를 싣는다
+# (운영 실측 2026-09-21: 은행존 질의가 SQL 검증 실패 → 재생성 도중
+#  60.6초에 끊겼는데
+#  화면에는 "처리 시간이 초과되었습니다" 한 줄뿐이었다)
+# ---------------------------------------------------------------------------
+
+
+def _step(name: str, phase: str, **data: Any) -> dict:
+    return {"event": "on_custom_event", "name": name, "data": {"phase": phase, **data}}
+
+
+_RETRY_THEN_STALL = (
+    _chain("deep_agent")
+    + [
+        {"event": "on_custom_event", "name": "task",
+         "data": {"task_id": "t1", "order": 1, "sub_query": "은행존 메모리 평균 80% 초과",
+                  "phase": "start", "status": "pending", "agent": "infra_db"}},
+        _step("pipeline.schema", "start", label="스키마 분석"),
+        _step("pipeline.schema", "end"),
+        _step("pipeline.generate", "start", label="SQL 생성"),
+        _step("pipeline.generate", "end"),
+        _step("pipeline.validate", "start", label="SQL 검증"),
+        _step("pipeline.validate", "end",
+              detail="SQL 검증 실패: 삭제 리소스 제외 필터가 없습니다"),
+        _step("pipeline.generate", "start", label="SQL 재생성 1회차"),
+        _final(),   # 여기 앞에서 멈춘다(delay_before)
+    ]
+)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_timeout_error_carries_failure_trace(route, app_config):
+    app_config.server.sse_heartbeat_interval_sec = 0.1
+    app_config.server.query_timeout = 0.4
+    app_config.server.file_query_timeout = 0.4
+    events = list(_RETRY_THEN_STALL)
+    graph = _Graph(events, delay_before={len(events) - 1: 5.0})
+    got = _post(_client(graph, app_config), route)
+    err = got[-1]
+    assert err["type"] == "error"
+    # 문구는 그대로(하네스가 문구로 분류) — 경위는 별도 필드
+    assert err["message"].startswith("처리 시간이 초과되었습니다")
+    assert err["code"] == "timeout" and err["limit_sec"] == 0.4
+    assert err["elapsed_ms"] >= 400
+    # 멈춘 곳: 가장 안쪽의 진행 중 단계
+    assert err["stage"]["label"] == "SQL 재생성 1회차" and err["stage"]["status"] == "running"
+    # 앞서 난 실패와 단계 목록
+    assert "검증 실패" in err["last_error"]
+    by_label = {(s["label"], s["status"]) for s in err["steps"]}
+    assert ("스키마 분석", "done") in by_label and ("SQL 검증", "failed") in by_label
+    assert [s["kind"] for s in err["steps"]][:2] == ["node", "task"]   # deep_agent → 작업
+    assert err["steps_dropped"] == 0
+    # 단계 실패 사유는 progress 이벤트에도 실린다
+    val_end = [e for e in got
+               if e.get("type") == "progress" and e.get("name") == "pipeline.validate"
+               and e.get("phase") == "end"]
+    assert val_end and "검증 실패" in val_end[0]["detail"]
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_exception_error_carries_failure_trace(route, app_config):
+    class _Boom(_Graph):
+        async def astream_events(self, input_state, config, version="v2"):
+            yield {"event": "on_chain_start", "name": "query_generator", "data": {}}
+            raise RuntimeError("DB 연결 끊김")
+
+    got = _post(_client(_Boom([]), app_config), route)
+    err = got[-1]
+    assert err["type"] == "error" and err["code"] == "exception"
+    assert "DB 연결 끊김" in err["message"]
+    assert err["stage"]["name"] == "query_generator"
+
+
+def test_trace_node_retry_and_step_cap():
+    """3단 경로: node_start SSE는 노드당 1회지만 경위는 재시도마다 남는다.
+
+    노드 출력의 error_message는 그 단계의 실패로 본다.
+    """
+    from src.api.stream_failure import StreamTrace
+
+    t = StreamTrace()
+    t.node_started("query_generator", 0)
+    t.node_ended("query_generator", {"generated_sql": "SELECT 1"}, 10)
+    t.node_started("query_validator", 10)
+    t.node_ended("query_validator", {"error_message": "SQL 검증 실패: X"}, 11)
+    t.node_started("query_generator", 11)
+    f = t.failure_fields(code="timeout", elapsed_ms=50, limit_sec=120)
+    assert [(s["name"], s["status"]) for s in f["steps"]] == [
+        ("query_generator", "done"), ("query_validator", "failed"), ("query_generator", "running")]
+    assert f["stage"]["name"] == "query_generator" and f["stage"]["ms"] == 39
+    assert f["last_error"] == "SQL 검증 실패: X"
+
+    capped = StreamTrace()
+    for i in range(40):
+        capped.start("step", f"s{i}", i)
+    f2 = capped.failure_fields(code="timeout", elapsed_ms=100, limit_sec=None)
+    assert len(f2["steps"]) == 30 and f2["steps_dropped"] == 10 and f2["steps"][0]["name"] == "s10"

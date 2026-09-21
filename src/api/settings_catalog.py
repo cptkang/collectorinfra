@@ -47,7 +47,7 @@ TOP_LEVEL_GROUP = "general"
 #: 재발 방지: `test_t2_group_order_covers_every_config_group`가 파생 등가성을 단언한다.
 GROUP_ORDER: tuple[str, ...] = (
     "llm", "orchestrator", "router", "dbhub", "query", "synonym", "text2sql",
-    "composite", "security", "host_authz", "server", "admin", "auth",
+    "intent_frame", "composite", "security", "host_authz", "server", "admin", "auth",
     "multi_db", "polestar_rest", "redis", "schema_cache", "audit", "observability",
     "alarm", "workb", "noise_gate", "drm", TOP_LEVEL_GROUP,
 )
@@ -60,6 +60,7 @@ GROUP_TITLES: dict[str, str] = {
     "query": "쿼리 정책",
     "synonym": "동의어 매칭",
     "text2sql": "Text2SQL",
+    "intent_frame": "의도 프레임·정규 질의",
     "composite": "복합 질의·조사",
     "security": "보안 마스킹",
     "host_authz": "호스트 조사 인가",

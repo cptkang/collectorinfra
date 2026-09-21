@@ -219,6 +219,8 @@ ROW_PARTIAL_FOUND = "partial_found"                    # ④ 두 시스템 모�
 ROW_AMBIGUOUS_ONE_FOUND = "ambiguous_one_found"        # ⑤ 소유 모호 · 한쪽만 발견
 ROW_AMBIGUOUS_BOTH_FOUND = "ambiguous_both_found"      # ⑥ 소유 모호 · 양쪽 발견
 ROW_UNVERIFIED = "unverified"                          # ⑦ 조회 실패로 판정이 갈렸다
+#: ② 변형 — 다른 시스템의 일치 근거가 **보조 컬럼뿐**이라 HALT하지 않는다(권고 K).
+ROW_WEAK_ELSEWHERE = "owner_missing_weak_elsewhere"
 #: 결정표 밖 — 확인할 수 있는 곳을 다 확인했는데 어디에도 없다. 조회를 막지 않는다
 #: (아래 `decide_systems`).
 ROW_NONE_FOUND = "none_found"
@@ -245,6 +247,13 @@ class SystemProbe:
     unchecked: tuple[str, ...] = ()
     #: db_id → 사용자 표시 라벨(실패 사유 표기용). 없으면 db_id.
     db_labels: Mapping[str, str] = field(default_factory=dict)
+    #: **보조 컬럼으로만** 일치한 식별자 — 이 시스템의 키 선언에 없는 컬럼이 근거다.
+    #: 존재의 증거로는 남기되(`hits`에 그대로 있다) **다른 시스템의 미등록을 단정하는 근거로는
+    #: 쓰지 않는다**(권고 K · D-061 — 등록명은 호스트명이 아니다). 어느 컬럼이 보조인지는
+    #: 호출부가 정한다 — 이 모듈은 컬럼을 모른다.
+    weak_only: tuple[str, ...] = ()
+    #: 보조 컬럼의 사용자 표기(예: "등록명"). 사유 문장에 쓴다.
+    weak_label: str = "보조 컬럼"
 
     @property
     def status(self) -> str:
@@ -282,6 +291,11 @@ class SystemProbe:
         """확인했는데 찾지 못한 식별자(확인 불가 식별자는 제외)."""
         skip = set(self.unchecked)
         return tuple(i for i in self.identifiers if i not in skip and not self.hits.get(i))
+
+    def strong_hits(self) -> tuple[str, ...]:
+        """키 선언 컬럼으로 일치한 식별자 — "여기 등록돼 있다"를 단정할 수 있는 증거(권고 K)."""
+        weak = set(self.weak_only)
+        return tuple(i for i in self.identifiers if self.hits.get(i) and i not in weak)
 
     def failure_text(self) -> str:
         """조회 실패 사유 표기 — `라벨(사유)` 나열."""
@@ -448,7 +462,8 @@ def decide_systems(
     | 모드 | 확인 결과 | 동작 · 행 |
     |---|---|---|
     | SINGLE | 소유 발견 | QUERY 소유 · ① |
-    | SINGLE | 소유 미발견 · 다른 시스템 발견 | **HALT** · ② |
+    | SINGLE | 소유 미발견 · 다른 시스템 발견(키 선언 컬럼) | **HALT** · ② |
+    | SINGLE | 소유 미발견 · 다른 시스템 일치가 **보조 컬럼뿐** | KEEP · ②′(`weak_elsewhere`) |
     | BOTH | 전부 발견 | QUERY 전부 · ③ |
     | BOTH | 일부만 발견 | QUERY 발견분 · ④ |
     | AMBIGUOUS | 한쪽만 발견 | QUERY 발견된 쪽 · ⑤ |
@@ -461,7 +476,8 @@ def decide_systems(
 
     `none_found`를 HALT로 하지 않는 이유: 확인은 고정 규칙(대소문자 무시 완전 일치·단축명·IP)이라
     본 조회가 다른 표기로 찾을 여지가 있고, 다른 시스템에 있다는 **반대 증거**도 없다. ②만 HALT인
-    것은 다른 시스템에서 찾았다는 증거가 있기 때문이다.
+    것은 다른 시스템에서 찾았다는 증거가 있기 때문이다 — 그래서 그 증거가 **보조 컬럼뿐**이면
+    ②′로 내려가 HALT하지 않는다(권고 K).
     """
     def get(system: str) -> SystemProbe:
         return probes.get(system) or _unprobed(system)
@@ -494,10 +510,22 @@ def decide_systems(
             return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=unverified_note)
         others = [get(s) for s in plan.others if s in probes]
         found = [p for p in others if p.status == SYSTEM_FOUND]
-        if found:
+        strong = [p for p in found if p.strong_hits()]
+        if strong:
             return verdict(ACTION_HALT, ROW_OWNER_MISSING_ELSEWHERE, message=_join(
-                f"{owner.label}에 등록되지 않은 서버입니다({_labels(found)}에는 있음): "
+                f"{owner.label}에 등록되지 않은 서버입니다({_labels(strong)}에는 있음): "
                 f"{_sample(owner.missing(), sample)}.",
+                unverified_note,
+            ))
+        if found:
+            # 권고 K: 다른 시스템의 근거가 보조 컬럼(등록명 등)뿐이면 "거기 있다"가 아니다 —
+            # 브리지 키가 아닌 컬럼으로 맞은 것이라 ②의 반대 증거가 성립하지 않는다.
+            # 조회를 막지 않고(KEEP) 무엇을 보고 그렇게 판단했는지만 남긴다.
+            weak = found[0]
+            return verdict(ACTION_KEEP, ROW_WEAK_ELSEWHERE, message=_join(
+                f"{owner.label}에서 찾지 못했습니다: {_sample(owner.missing(), sample)}.",
+                f"{_labels(found)}에서는 {weak.weak_label} 일치만 있어 "
+                "호스트명 기준 등록으로 보지 않았습니다 — 조회를 막지 않습니다.",
                 unverified_note,
             ))
         if unverified_probes:
@@ -610,6 +638,7 @@ def system_trace_payload(
                 "errors": dict(p.errors),
                 "missing": list(p.missing()),
                 "unchecked": list(p.unchecked),
+                "weak_only": list(p.weak_only),
             }
             for name, p in probes.items()
         },

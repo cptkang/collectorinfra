@@ -31,9 +31,17 @@ async def dispatch_progress_event(name: str, data: dict) -> None:
         logger.warning("progress event 발행 실패(%s): %s", name, e)
 
 
-async def emit_step(name: str, phase: str = "start", *, label: Optional[str] = None) -> None:
-    """노드 내부 마일스톤(예: `schema.sample`·`pipeline.generate`·`agent.resume`)을 낸다."""
+async def emit_step(
+    name: str, phase: str = "start", *, label: Optional[str] = None, detail: Optional[str] = None
+) -> None:
+    """노드 내부 마일스톤(예: `schema.sample`·`pipeline.generate`·`agent.resume`)을 낸다.
+
+    ``detail``은 그 단계의 **실패 사유**다(end에만 싣는다). 스트림이 실패로 끝나면 경위 표시에
+    쓰인다(D-242 · `src/api/stream_failure.py`).
+    """
     data: dict[str, Any] = {"phase": phase}
     if label:
         data["label"] = label
+    if detail:
+        data["detail"] = detail
     await dispatch_progress_event(name, data)

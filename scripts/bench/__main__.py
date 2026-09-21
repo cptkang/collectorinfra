@@ -12,13 +12,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
@@ -103,7 +105,13 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
     unfinished = _unfinished_run()
     if unfinished:
-        say(f"[INFO] 이전 실행     {unfinished.name} 미완 — 다음 실행에서 이어집니다")
+        # 트랙 T 는 **이어 돌지 않는다** — 매번 새 폴더에서 처음부터다. 종전 문구("다음 실행에서
+        # 이어집니다")는 사실이 아니었다(plans/109 CS-04).
+        say(f"[INFO] 이전 실행     {unfinished.name} 에 SUMMARY.md 가 없다(중단됨) — "
+            "트랙 T 는 이어 돌지 않고 다음 실행이 새 폴더에서 처음부터 돈다")
+    for name, record in _interrupted_segments():
+        say(f"[INFO] 구간 캠페인   `{name}` 의 구간 {record.segment_id} 이 끊겨 있다 — "
+            f"`--segment next` 가 run {record.run_id} 을 이어 돈다(성공한 턴은 건너뜀)")
 
     say("→ 실행 가능합니다.  python -m scripts.bench")
     return 0
@@ -115,12 +123,29 @@ def _free_gb(path: Path) -> float:
 
 
 def _unfinished_run() -> Optional[Path]:
+    """`SUMMARY.md` 가 없는 **트랙 T** 실행 폴더(`YYYYMMDD-NN`). 캠페인·반출 폴더는 보지 않는다."""
     if not _RESULTS_DIR.exists():
         return None
     for run in sorted(_RESULTS_DIR.iterdir(), reverse=True):
-        if run.is_dir() and not (run / "SUMMARY.md").exists():
+        if (run.is_dir() and re.fullmatch(r"\d{8}-\d{2}", run.name)
+                and not (run / "SUMMARY.md").exists()):
             return run
     return None
+
+
+def _interrupted_segments() -> list:
+    """끊긴(진행 기록이 남았는데 그 프로세스가 없는) 캠페인 구간 — `(캠페인 이름, 기록)`."""
+    found = []
+    for path in sorted((_RESULTS_DIR / "campaigns").glob("*/campaign.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for raw in data.get("records", []):
+            record = campaign_mod.SegmentRecord(**raw)
+            if record.status == campaign_mod.RUNNING and not campaign_mod.pid_alive(record.pid):
+                found.append((data.get("name", path.parent.name), record))
+    return found
 
 
 def cmd_show_env(args: argparse.Namespace) -> int:
@@ -283,7 +308,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
               snapshot: Optional[sweep_mod.ConfigSnapshot] = None,
-              substituted: Sequence = ()) -> SweepOutcome:
+              substituted: Sequence = (), run_id: str = "",
+              resume_from: Optional[str] = None,
+              on_start: Optional[Callable[[], None]] = None) -> SweepOutcome:
     """arm 목록 하나를 스위프한다.
 
     `cmd_sweep`(전 축·smoke)과 구간 캠페인(`cmd_segment`)이 같이 쓴다.
@@ -294,6 +321,9 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
     `substituted` 는 **실행하지 않는** arm 이다 — 실효 설정 지문이 기준선과 같아(A/A 반복) 그 레벨의
     관측을 **같은 실행의 기준선 관측**으로 대신한다. 같은 구간·같은 시간대라 쌍체 비교가 성립한다.
     `snapshot` 을 주면 설정 에코를 다시 뜨지 않는다(캠페인이 계획 때 뜬 것을 넘긴다).
+    `on_start` 는 **러너를 부르기 직전**에 한 번 불린다 — 환경 관문(계정·프로바이더·MLX)을 다
+    통과해 실제로 돌기 시작한다는 뜻이다. 캠페인이 여기서 「진행」 기록을 남긴다.
+    `resume_from` 은 그 run 을 이어 돈다(94 러너 이어쓰기 · 성공한 턴은 건너뛴다).
     """
     say(f"축 스위프 — arm {len(arms)}개 (기준선 포함) · {label} · 모드 {args.mode}")
 
@@ -414,10 +444,15 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
             skip = " → 실행 생략 · 기준선 관측 사용" if arm_id in sub_ids else ""
             say(f"     대조군 {arm_id} — 주입 {arm.injected} 이 기준선 실효값과 같다{skip}")
 
+    if resume_from:
+        say(f"  재개: run {resume_from} 을 잇는다 — 성공한 턴은 건너뛰고 무효 턴은 다시 돈다")
+    if on_start:
+        on_start()
     started = time.time()
     try:
         result = sweep_mod.run_arms(
-            arms, mode=args.mode, env=env, repeat=args.repeat, credentials=creds)
+            arms, mode=args.mode, env=env, repeat=args.repeat, credentials=creds,
+            run_id=run_id, **({"resume_from": resume_from} if resume_from else {}))
     except sweep_mod.SweepUnavailable as exc:
         say(f"스위프를 돌릴 수 없습니다: {exc}")
         return SweepOutcome(rc=2)
@@ -444,10 +479,12 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
 
     health = sweep_mod.scan_health(result, raw)
     say()
-    say(f"건전성 — 유효 프로파일 {health.valid_profiles}/{len(arms)} · 턴 {health.turns}건 "
+    launched = len(result.get("profiles") or []) or len(arms)   # arm × 시나리오 자기 프로파일
+    say(f"건전성 — 유효 프로파일 {health.valid_profiles}/{launched} · 턴 {health.turns}건 "
         f"· 판정 {dict(sorted(health.verdicts.items()))}")
     say(f"  워크로드 도달 — SQL 관측 {health.sql_rate:.0%} · 그래프 진입 "
         f"{health.graph_entry_rate:.0%} · 역질문 종료 {health.clarify_rate:.0%}")
+    say(f"  {_unevaluated_line(health.unevaluated)}")
     for name, reason in health.invalid_profiles:
         say(f"  INVALID {name}: {reason}")
     for mark, count in health.evidence:
@@ -526,7 +563,7 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
                      + (v.completion.discordant if v.completion else 0)
                      + (v.sql_rate.discordant if v.sql_rate else 0) for v in verdicts)
 
-    lines = ["# 축 스위프 판정", ""]
+    lines = ["# 축 스위프 판정", "", f"> {_unevaluated_line(health.unevaluated)}", ""]
     if all_unjudged:
         lines += [
             f"> **이 판정표는 무효다.** arm {len(verdicts)}개가 전부 "
@@ -646,7 +683,10 @@ def cmd_segment(args: argparse.Namespace) -> int:
     if args.mode == "dry":
         return 0
 
-    target_id, retry = args.segment, None
+    target_id, retry, resume = args.segment, None, None
+    running = campaign.running()
+    if target_id == "next" and running:
+        target_id = running[0].segment_id       # 끊긴 구간이 먼저다 — 새 구간을 열지 않는다
     if target_id == "next":
         failed = campaign.failed()
         if failed:
@@ -670,14 +710,23 @@ def cmd_segment(args: argparse.Namespace) -> int:
         if record and record.status == campaign_mod.DONE:
             say(f"\n구간 {target_id} 은 이미 완료됐습니다. 다음은 `--segment next`.")
             return 0
-        if record:                      # 실패 구간 재시도 — 같은 축·같은 생략으로 다시 돈다
+        if record and record.status == campaign_mod.RUNNING:
+            if campaign_mod.pid_alive(record.pid):
+                say(f"\n멈춥니다 — 구간 {target_id} 을 다른 프로세스(pid {record.pid})가 "
+                    "돌고 있습니다. 같은 run 에 두 프로세스가 쓰면 원시 로그가 섞입니다.")
+                say(f"  그 프로세스가 캠페인이 아니라면 `{campaign.path}` 에서 이 구간의 `pid` 를 "
+                    "지우고 다시 실행하세요.")
+                return 1
+            resume = record
+            say(f"\n구간 {target_id} 이 끊겨 있습니다 — run {record.run_id} 을 이어 돕니다.")
+        if record:                      # 실패 구간 재시도·끊긴 구간 재개 — 같은 축·같은 생략
             retry = record
             executed = tuple(a for a in record.arm_ids if a not in set(record.substituted))
             target = campaign_mod.Segment(
                 segment_id=record.segment_id, category=record.category, axes=tuple(record.axes),
                 arm_ids=executed, substituted=tuple(record.substituted),
                 est_hours=plan.rate.segment_hours(1 + len(executed), args.repeat))
-            if target.est_hours > plan.budget_hours:
+            if target.est_hours > plan.budget_hours and not resume:
                 say(f"\n구간 {target_id} 의 현재 추정 {target.est_hours:.1f}시간이 채움 상한 "
                     f"{plan.budget_hours:.1f}시간을 넘습니다 — 재시도하지 않습니다.")
                 return 1
@@ -696,11 +745,26 @@ def cmd_segment(args: argparse.Namespace) -> int:
     say(f"구간 {target.segment_id} — 카테고리 {target.category} · 축 {len(target.axes)}개 · "
         f"arm {len(arms)}개 실행" + (f"(생략 {len(substituted)}개)" if substituted else "")
         + f" · 추정 {target.est_hours:.1f}시간")
-    started = datetime.now().isoformat(timespec="seconds")
+    started = (resume.started_at if resume and resume.started_at
+               else datetime.now().isoformat(timespec="seconds"))
+    run_id = resume.run_id if resume and resume.run_id else datetime.now().strftime("%Y%m%d-%H%M%S")
+    attempts = (retry.attempts + 1) if retry else 1
     seg_snapshot = (snapshot.subset([a.arm_id for a in seg_arms if a.axis])
                     if snapshot is not None else None)
+
+    def mark_running() -> None:
+        # **돌기 전에 run_id 를 남긴다** — 끊기면(kill·전원·세션 종료) 이 기록이 재개점이다.
+        campaign.records[target.segment_id] = campaign_mod.SegmentRecord(
+            segment_id=target.segment_id, category=target.category, axes=list(target.axes),
+            arm_ids=list(target.arm_ids) + list(target.substituted),
+            substituted=list(target.substituted), status=campaign_mod.RUNNING, mode=args.mode,
+            run_id=run_id, started_at=started, est_hours=round(target.est_hours, 2),
+            attempts=attempts, pid=os.getpid(), resumed=bool(resume))
+        campaign.save()
+
     outcome = run_sweep(args, arms, label=f"구간 {target.segment_id}", snapshot=seg_snapshot,
-                        substituted=substituted)
+                        substituted=substituted, run_id=run_id,
+                        resume_from=resume.run_id if resume else None, on_start=mark_running)
     if not outcome.ran:
         # 환경 관문(계정·프로바이더·MLX)에서 멈췄다 — 구간을 돈 것이 아니므로 기록하지 않는다.
         say(f"\n구간 {target.segment_id} 을 시작하지 못했습니다 — 상태 파일은 바꾸지 않습니다.")
@@ -721,8 +785,8 @@ def cmd_segment(args: argparse.Namespace) -> int:
         out_dir=str(outcome.out_dir) if outcome.out_dir else None, started_at=started,
         finished_at=datetime.now().isoformat(timespec="seconds"),
         elapsed_sec=round(outcome.elapsed_sec, 1), turns=health.turns if health else 0,
-        est_hours=round(target.est_hours, 2), attempts=(retry.attempts + 1) if retry else 1,
-        stop_reasons=reasons,
+        est_hours=round(target.est_hours, 2), attempts=attempts,
+        stop_reasons=reasons, resumed=bool(resume),
         health={} if not health else {
             "sql_rate": round(health.sql_rate, 4),
             "graph_entry_rate": round(health.graph_entry_rate, 4),
@@ -731,6 +795,7 @@ def cmd_segment(args: argparse.Namespace) -> int:
             "auto_answered_turns": health.auto_answered_turns,
             "baseline_order": list(health.baseline_order) if health.baseline_order else None,
             "verdicts": health.verdicts,
+            "unevaluated": dict(health.unevaluated),
         })
     path = campaign.save()
 
@@ -756,13 +821,12 @@ def cmd_segment(args: argparse.Namespace) -> int:
     return 1
 
 
-def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Path]:
-    """캠페인 합산 리포트 — 끝난 구간의 축 판정을 모은다. 미완·실패 축은 **미측정으로 남긴다.**
+def _campaign_optima(campaign, all_arms):
+    """끝난 구간의 축 최적값을 모은다 — 합산 리포트와 `--propose` 가 같은 값을 본다.
 
-    축은 한 구간 안에서만 판정된다(레벨이 구간 사이로 갈리지 않으므로). 그래서 구간별 `optima` 를
-    모으면 된다. 구간을 넘는 것은 **기준선 반복**뿐이고, 그것은 노이즈 바닥으로만 쓴다.
+    돌려주는 것: `[(구간 id, AxisOptimum)]` · 첫 구간 스냅샷 · `[(구간 id, 기준선 관측)]` ·
+    구간 표 행 · 측정된 축 집합. 실행을 생략한 레벨은 같은 구간의 기준선 관측으로 채운다.
     """
-    out_dir = campaign.path.parent
     optima: list = []
     baselines: list = []
     seg_rows: list[str] = []
@@ -791,6 +855,25 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
         rate = sum(1 for o in base if o.passed) / len(base) * 100.0 if base else 0.0
         seg_rows.append(f"| `{record.segment_id}` | {record.category} | {len(record.axes)} | "
                         f"{record.elapsed_sec / 3600:.2f} | {rate:.1f}% | `{record.run_id}` |")
+    return optima, first_snapshot, baselines, seg_rows, measured
+
+
+def _unevaluated_line(counts) -> str:
+    """단언 미평가 턴의 사유별 건수(D-241). 0 도 적는다 — 「없음」과 「안 셌음」은 다르다."""
+    counts = counts or {}
+    return ("기능 분모 제외(단언 미평가 · D-241) — "
+            f"무효 {counts.get('invalid', 0)} · 타임아웃 {counts.get('timeout', 0)} · "
+            f"역질문 차단 {counts.get('clarify_blocked', 0)}턴. 완주율·지연 신호에는 남는다")
+
+
+def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Path]:
+    """캠페인 합산 리포트 — 끝난 구간의 축 판정을 모은다. 미완·실패 축은 **미측정으로 남긴다.**
+
+    축은 한 구간 안에서만 판정된다(레벨이 구간 사이로 갈리지 않으므로). 그래서 구간별 `optima` 를
+    모으면 된다. 구간을 넘는 것은 **기준선 반복**뿐이고, 그것은 노이즈 바닥으로만 쓴다.
+    """
+    out_dir = campaign.path.parent
+    optima, first_snapshot, baselines, seg_rows, measured = _campaign_optima(campaign, all_arms)
 
     floor_pp = compare.noise_floor([b for _, b in baselines])
     drift = []
@@ -830,6 +913,11 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
              f"측정된 축 {len(measured)}/{len(all_axes)}", ""]
     if campaign.mode == "mock":
         lines += ["> **모의 캠페인이다.** 배관 리허설이며 설정 판단의 근거가 아니다.", ""]
+    totals = {reason: 0 for reason in sweep_mod.UNEVALUATED_REASONS}
+    for record in campaign.done():
+        for reason, count in (record.health.get("unevaluated") or {}).items():
+            totals[reason] = totals.get(reason, 0) + int(count)
+    lines += [f"> {_unevaluated_line(totals)} — 끝난 구간 합", ""]
     skipped_total = sum(len(r.substituted) for r in campaign.done())
     if skipped_total:
         lines += [f"> 실행 생략 {skipped_total}개 arm — 실효 설정 지문이 기준선과 같아"
@@ -861,6 +949,29 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
     return path
 
 
+def _propose_campaign_inputs(args: argparse.Namespace):
+    """`--propose` 가 읽을 캠페인 — 기본은 실 캠페인(`run-<env>`)이다. mock 리허설은 기본에서 뺀다.
+
+    돌려주는 것: (캠페인 이름, 측정된 축의 `AxisOptimum` 목록, 첫 구간 스냅샷). 캠페인이 없거나
+    끝난 구간이 없으면 목록이 비고, 처분은 종전처럼 트랙 T 신호만으로 나간다.
+    """
+    env, _ = sweep_mod.resolve_env(args.env)
+    name = args.campaign or campaign_mod.default_name("run", env)
+    path = campaign_mod.campaign_path(_RESULTS_DIR, name)
+    if not path.exists():
+        return name, [], None
+    campaign = campaign_mod.Campaign.load_or_new(
+        path, name=name, env=env, mode="run", repeat=args.repeat, max_hours=args.max_hours)
+    if campaign.mode == "mock":
+        say(f"      ※ `{name}` 은 모의 캠페인이다 — 배관 확인용이며 처분 근거가 아니다")
+    try:
+        optima, snapshot, *_ = _campaign_optima(campaign, sweep_mod.build_arms())
+    except sweep_mod.SweepUnavailable as exc:
+        say(f"      캠페인 합산을 읽지 못했다 — {exc}")
+        return name, [], None
+    return name, [opt for _, opt in optima], snapshot
+
+
 def cmd_propose(args: argparse.Namespace) -> int:
     """트랙 C — 처분 제안서. **파일을 수정하지 않는다**(§6.1)."""
     knobs = catalog.load_knobs()
@@ -872,8 +983,18 @@ def cmd_propose(args: argparse.Namespace) -> int:
     if args.limit:
         targets = targets[: args.limit]
     say(f"[2/3] 처분 결정 — 대상 {len(targets)}건(참조 수 집계 포함)")
+    name, camp_optima, camp_snapshot = _propose_campaign_inputs(args)
+    verdicts = recommended = None
+    if camp_optima:
+        # **캠페인이 잰 축은 그 최적 레벨이 처분 입력이다**(D-238 번역 · D-239 구간 합산).
+        verdicts, recommended = optimize.axis_disposition_inputs(camp_optima)
+        say(f"      캠페인 `{name}` 합산 — 측정된 축 {len(camp_optima)}개의 "
+            "최적 레벨을 처분에 쓴다")
+    else:
+        say(f"      캠페인 `{name}` 에 끝난 구간이 없다 — 트랙 T 신호만으로 처분한다")
     dispositions = optimize.build_from_validation(
-        targets, integrity=integrity, shadowed=[], boot=[], consumption=[])
+        targets, integrity=integrity, shadowed=[], boot=[], consumption=[],
+        verdicts=verdicts, recommended=recommended)
 
     deletions = [d for d in dispositions
                  if d.action in (optimize.PROPOSE_DELETE, optimize.PROPOSE_CONSTANT)]
@@ -890,7 +1011,9 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     say("[3/3] 제안서 생성")
     out_dir = _RESULTS_DIR / _run_id() / "proposals"
-    paths = optimize.write_proposals(dispositions, evidences, pin, out_dir)
+    paths = optimize.write_proposals(
+        dispositions, evidences, pin, out_dir, optima=camp_optima,
+        baseline_effective=camp_snapshot.baseline_env_values() if camp_snapshot else None)
     from collections import Counter
     counts = Counter(d.action for d in dispositions)
     say()

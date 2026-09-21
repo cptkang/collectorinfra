@@ -191,6 +191,24 @@ def test_single_db_pipeline_retry_labels_count_regenerations(monkeypatch, captur
     assert len(exec_starts) == 2
 
 
+
+def test_single_db_pipeline_end_events_carry_failure_detail(monkeypatch, captured):
+    """검증·실행 실패 사유가 단계 종료 이벤트에 실린다.
+
+    스트림이 실패로 끝나면 화면의 실패 경위가 된다(D-242).
+    """
+    _patch_pipeline(
+        monkeypatch, validate_passes=[False, True, True], exec_errors=["db error", None]
+    )
+    asyncio.run(sub._run_single_db_pipeline({"user_query": "q"}, llm=None, app_config=_cfg()))
+    ends = [(n, d.get("detail")) for n, d in captured
+            if n in ("pipeline.validate", "pipeline.execute") and d["phase"] == "end"]
+    assert ends == [
+        ("pipeline.validate", "bad sql"),      # 실패 회차만 사유가 있다
+        ("pipeline.validate", None), ("pipeline.execute", "db error"),
+        ("pipeline.validate", None), ("pipeline.execute", None),
+    ]
+
 def test_data_query_pipeline_wraps_organizer_and_multi_db():
     src = (_ROOT / "src" / "orchestration" / "subagents.py").read_text(encoding="utf-8")
     assert "from src.utils.progress_events import emit_step" in src
