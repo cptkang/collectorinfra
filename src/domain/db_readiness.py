@@ -345,17 +345,18 @@ def _c9_synonyms(inp: ReadinessInputs) -> ReadinessItem:
 def _c10_access(inp: ReadinessInputs) -> ReadinessItem:
     """C10 권한·존 — 정보 항목(ok=None). 기본 허용 목록 포함 여부와 존 배정을 안내한다."""
     label = "권한·존"
-    # 실측(2026-09-17): `auth.default_allowed_db_ids`는 정의(src/config.py) 외 읽는 코드가 없다
-    # (설정 카탈로그 UNCONSUMED_KEYS). 신규 가입자는 allowed_db_ids=None(= 전체 허용)으로
-    # 만들어진다(src/api/routes/user_auth.py).
+    # 2026-09-21(plans/104 C-4 · D-232): 이 설정은 **신규 가입자의 초기 허용 목록**으로 실제
+    # 적용된다. 빈 값이면 신규 가입자는 조회 가능 DB가 없고(안전 실패), 기존 사용자의
+    # `None`(전체 허용)은 그대로다. 관리자 역할은 목록과 무관하게 전체를 본다.
     if inp.default_allowed_db_ids:
         included = "포함" if inp.db_id in inp.default_allowed_db_ids else "미포함"
         allowed = f"AUTH_DEFAULT_ALLOWED_DB_IDS에 {included}"
     else:
         allowed = "AUTH_DEFAULT_ALLOWED_DB_IDS 비어 있음"
     allowed += (
-        " — 이 설정은 현재 코드가 읽지 않으며(미소비), 개별 권한(allowed_db_ids)이 없는 사용자는"
-        " 전체 DB를 조회할 수 있습니다. 제한이 필요하면 사용자 관리에서 개별 권한을 지정하세요."
+        " — 신규 가입자는 이 값으로 초기화됩니다(빈 값이면 조회 가능 DB 없음)."
+        " 기존 사용자와 관리자 역할은 영향을 받지 않으며, 개별 권한은 관리자 페이지"
+        " 「사용자 관리」 탭에서 부여합니다."
     )
     zone = str((inp.registry_entry or {}).get("zone") or "").strip()
     if inp.registry_entry is None:

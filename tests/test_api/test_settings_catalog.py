@@ -603,11 +603,15 @@ def test_t6_requires_restart_matches_immediate_list():
 
 
 def test_t6_unconsumed_fields_flagged():
-    """미소비 필드 20개는 consumed=False로 구분된다(§6.2 재실측으로 4건 추가)."""
+    """미소비 필드 19개는 consumed=False로 구분된다(§6.2 재실측으로 4건 추가).
+
+    2026-09-21(plans/104 C-4 · D-232): `AUTH_DEFAULT_ALLOWED_DB_IDS`가 신규 가입자
+    초기 허용 목록으로 실제 소비돼 20 → 19가 됐다.
+    """
     index = field_index()
     unconsumed = {key for key, spec in index.items() if not spec.consumed}
     assert unconsumed == set(UNCONSUMED_KEYS)
-    assert len(unconsumed) == 20
+    assert len(unconsumed) == 19
 
 
 def test_t6_semantic_routing_is_tristate():

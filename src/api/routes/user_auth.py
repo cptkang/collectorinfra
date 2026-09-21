@@ -22,6 +22,7 @@ from src.api.schemas import (
     UserRegisterRequest,
 )
 from src.domain.user import User, UserRole, UserStatus
+from src.routing.db_authz import parse_allowed_db_ids
 from src.utils.password import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -174,7 +175,11 @@ async def register(
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
         department=body.department,
-        allowed_db_ids=None,
+        # 신규 가입자의 조회 가능 DB는 `AUTH_DEFAULT_ALLOWED_DB_IDS`로 정한다
+        # (plans/104 C-4 · D-232).
+        # 빈 설정이면 `[]` — 아무 DB도 열리지 않고 관리자가 명시 부여한다(안전 실패).
+        # 기존 사용자의 `None`(전체 허용)은 건드리지 않는다.
+        allowed_db_ids=parse_allowed_db_ids(config.auth.default_allowed_db_ids),
         auth_method="local",
     )
     await user_repo.create(user)

@@ -243,10 +243,13 @@ class TestC10Info:
         assert item.grade == "info"
         assert item.ok is None
 
-    def test_empty_default_allowed_explains_unconsumed_meaning(self) -> None:
+    def test_empty_default_allowed_explains_new_signup_effect(self) -> None:
+        """빈 설정의 뜻은 "신규 가입자는 조회 가능 DB 없음"이다(plans/104 C-4 · D-232)."""
         detail = _item(evaluate_readiness(_inputs(default_allowed_db_ids=())), "C10").detail
         assert "비어 있음" in detail
-        assert "미소비" in detail
+        assert "신규 가입자" in detail
+        assert "조회 가능 DB 없음" in detail
+        assert "미소비" not in detail          # 이제 실제로 소비된다
 
     def test_included_and_unzoned(self) -> None:
         inputs = _inputs(default_allowed_db_ids=("sample_db",), registry_entry=_registry(zone=""))

@@ -95,8 +95,11 @@ def _build_source_catalog(state: AgentState, app_config: AppConfig) -> str:
     if not active_ids:
         return ""
 
+    # `None`=전체 허용 · `[]`=조회 가능 DB 없음(plans/104 C-4 · D-232 — 다른 소비처와 같은 규약).
+    # 종전에는 `if allowed:`라 빈 목록을 전체 허용으로 읽어, 권한이 없는 사용자에게도
+    # 전 DB 카탈로그를 광고했다.
     allowed = state.get("allowed_db_ids")
-    if allowed:  # None/빈 값이면 전체 허용
+    if allowed is not None:
         active_ids = [db_id for db_id in active_ids if db_id in allowed]
     if not active_ids:
         return ""

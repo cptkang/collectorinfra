@@ -50,6 +50,10 @@
 
     // --- 헬스 체크 ---
 
+    // (plans/104 C-4) 사용자 DB 권한 편집의 후보 목록. 헬스 응답의 db_status_map 키를
+    // 그대로 쓴다(권한 편집 전용 API를 따로 두지 않는다). 헬스 조회 실패 시 빈 목록이다.
+    var activeDbIds = [];
+
     checkHealth();
 
     function updateAdminTooltip(statusMap) {
@@ -73,6 +77,7 @@
             var badge = document.getElementById("healthStatus");
             var statusMap = data.db_status_map || {};
             var dbIds = Object.keys(statusMap);
+            activeDbIds = dbIds.slice();
             updateAdminTooltip(statusMap);
 
             if (dbIds.length > 0) {
@@ -1529,11 +1534,18 @@
                     "</select></td>" +
                     deptCell +
                     zoneCell +
-                    "<td style='font-size:0.75rem'>" + escapeHtml(formatTsKst(u.last_login_at)) + "</td>" +
+                    "<td class='last-login-cell' style='font-size:0.75rem'>" + escapeHtml(formatTsKst(u.last_login_at)) + "</td>" +
                     "<td>" +
                         '<button class="btn btn-secondary btn-sm reset-pw-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;margin-right:4px"' + protAttr + ">PW초기화</button>" +
                         '<button class="btn btn-secondary btn-sm delete-user-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;color:#ef4444"' + protAttr + ">삭제</button>" +
                     "</td>";
+
+                // (plans/104 C-4) 「조회 가능 DB」 셀 — 서버 값이 들어가므로 DOM API로만 만들고
+                // 「마지막 로그인」 앞에 끼운다(헤더 순서와 일치). 보호 계정도 DB 권한은 편집 가능(D-083은 역할·상태·삭제만 보호).
+                var permTd = document.createElement("td");
+                renderPermCell(permTd, u.user_id, u.allowed_db_ids, u.role === "admin");
+                tr.insertBefore(permTd, tr.querySelector(".last-login-cell"));
+
                 usersBody.appendChild(tr);
             });
 
@@ -1623,6 +1635,157 @@
                 var err = await response.json();
                 showError(err.detail || "삭제 실패");
             }
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
+    // --- 사용자 DB 접근 권한 (plans/104 C-4) ---
+    //
+    // 표시·편집 모두 DOM API(createElement·textContent)로만 만든다 — 서버 값(db_id·user_id)을
+    // HTML 문자열로 잇지 않는다. 편집 결과는 PUT /api/v1/admin/users/{id}/permissions로 저장한다.
+    // 관리자(admin) 역할은 이 목록과 무관하게 전체 조회가 허용된다(서버 판정과 동일).
+
+    function permLabel(allowed) {
+        if (allowed === null || allowed === undefined) return "전체";
+        if (allowed.length === 0) return "없음(관리자 지정 필요)";
+        return allowed.join(", ");
+    }
+
+    function renderPermCell(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+        td.className = "perm-cell";
+
+        var value = document.createElement("span");
+        value.className = "perm-value";
+        value.style.fontSize = "0.72rem";
+        value.style.marginRight = "6px";
+        value.textContent = permLabel(allowed);
+        if (allowed === null || allowed === undefined) {
+            value.title = "제한 없음 — 모든 DB를 조회할 수 있습니다.";
+        } else if (allowed.length === 0) {
+            value.style.color = "var(--text-muted)";
+            value.title = "조회 가능한 DB가 없습니다 — 관리자가 지정해야 질의할 수 있습니다.";
+        }
+        td.appendChild(value);
+
+        if (isAdmin) {
+            var note = document.createElement("span");
+            note.style.fontSize = "0.68rem";
+            note.style.color = "var(--text-muted)";
+            note.style.marginRight = "6px";
+            note.textContent = "(관리자 전체 허용)";
+            note.title = "관리자 역할은 이 목록과 무관하게 전체 DB 조회가 허용됩니다.";
+            td.appendChild(note);
+        }
+
+        var editBtn = document.createElement("button");
+        editBtn.className = "btn btn-secondary btn-sm perm-edit-btn";
+        editBtn.style.fontSize = "0.7rem";
+        editBtn.style.padding = "3px 8px";
+        editBtn.textContent = "편집";
+        editBtn.addEventListener("click", function () {
+            openPermEditor(td, uid, allowed, isAdmin);
+        });
+        td.appendChild(editBtn);
+    }
+
+    function openPermEditor(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+
+        // 후보 = 활성 DB + 이미 부여돼 있으나 지금은 비활성인 db_id(저장 시 조용히 사라지지 않도록 함께 보인다)
+        var candidates = activeDbIds.slice();
+        (allowed || []).forEach(function (dbId) {
+            if (candidates.indexOf(dbId) < 0) candidates.push(dbId);
+        });
+
+        var box = document.createElement("div");
+        box.className = "zone-chk-group";   // 기존 체크박스 그룹 스타일 재사용
+        box.style.flexWrap = "wrap";
+        box.style.whiteSpace = "normal";
+
+        var allLabel = document.createElement("label");
+        var allChk = document.createElement("input");
+        allChk.type = "checkbox";
+        allChk.className = "perm-all-chk";
+        allChk.checked = (allowed === null || allowed === undefined);
+        allLabel.title = "제한 없음(null)으로 저장합니다.";
+        allLabel.appendChild(allChk);
+        allLabel.appendChild(document.createTextNode("전체 허용"));
+        box.appendChild(allLabel);
+
+        var dbChks = [];
+        if (candidates.length === 0) {
+            var empty = document.createElement("span");
+            empty.style.color = "var(--text-muted)";
+            empty.textContent = "활성 DB 없음";
+            empty.title = "헬스 응답에 등록된 DB가 없습니다 — 「전체 허용」만 지정할 수 있습니다.";
+            box.appendChild(empty);
+        } else {
+            candidates.forEach(function (dbId) {
+                var label = document.createElement("label");
+                var chk = document.createElement("input");
+                chk.type = "checkbox";
+                chk.className = "perm-db-chk";
+                chk.value = dbId;
+                chk.checked = !!(allowed && allowed.indexOf(dbId) >= 0);
+                if (activeDbIds.indexOf(dbId) < 0) {
+                    label.title = "현재 비활성 DB(이미 부여된 값)";
+                    label.style.color = "var(--text-muted)";
+                }
+                label.appendChild(chk);
+                label.appendChild(document.createTextNode(dbId));
+                box.appendChild(label);
+                dbChks.push(chk);
+            });
+        }
+
+        function syncDisabled() {
+            dbChks.forEach(function (chk) { chk.disabled = allChk.checked; });
+        }
+        allChk.addEventListener("change", syncDisabled);
+        syncDisabled();
+
+        var saveBtn = document.createElement("button");
+        saveBtn.className = "btn btn-secondary btn-sm perm-save-btn";
+        saveBtn.style.fontSize = "0.7rem";
+        saveBtn.style.padding = "3px 8px";
+        saveBtn.textContent = "저장";
+        saveBtn.addEventListener("click", function () {
+            var selected = dbChks.filter(function (chk) { return chk.checked; })
+                .map(function (chk) { return chk.value; });
+            savePermissions(td, uid, allChk.checked ? null : selected, isAdmin);
+        });
+        box.appendChild(saveBtn);
+
+        var cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary btn-sm perm-cancel-btn";
+        cancelBtn.style.fontSize = "0.7rem";
+        cancelBtn.style.padding = "3px 8px";
+        cancelBtn.textContent = "취소";
+        cancelBtn.addEventListener("click", function () {
+            renderPermCell(td, uid, allowed, isAdmin);
+        });
+        box.appendChild(cancelBtn);
+
+        td.appendChild(box);
+    }
+
+    async function savePermissions(td, uid, allowed, isAdmin) {
+        try {
+            var response = await apiRequest(
+                "PUT",
+                "/api/v1/admin/users/" + encodeURIComponent(uid) + "/permissions",
+                {allowed_db_ids: allowed}
+            );
+            var data = await response.json();
+            if (!response.ok) {
+                showError(errorMessage(data, "DB 권한 저장에 실패했습니다."));
+                return;   // 편집 상태를 유지해 사용자가 값을 다시 고칠 수 있게 둔다
+            }
+            // 서버가 돌려준 값으로 표를 갱신한다(클라이언트 추정값을 쓰지 않는다)
+            renderPermCell(td, uid, data.allowed_db_ids, data.role === "admin" || isAdmin);
+            showSuccess("사용자 '" + uid + "' DB 권한 저장 완료 (" + permLabel(data.allowed_db_ids) + ")");
         } catch (e) {
             showError("통신 실패");
         }

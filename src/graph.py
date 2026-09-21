@@ -47,6 +47,7 @@ from src.orchestration import (
 )
 from src.orchestration.entity_locator import entity_locator, probe_halted
 from src.orchestration.sequential_runner import sequential_entry, sequential_runner
+from src.routing.db_authz import ACCESS_DENIED_INTENT, authorized_router
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
 
@@ -146,6 +147,9 @@ def route_after_semantic_router(state: AgentState) -> str:
     # 존 역질문 후단 게이트(D-143 후속2): 역질문은 이번 턴의 최종 응답 — 즉시 종료.
     # 라우트가 zone_clarification 페이로드를 status="clarification"으로 변환한다.
     if intent == "zone_clarification":
+        return END
+    # 조회 가능 DB가 없는 사용자(plans/104 C-4 · D-232) — 사유를 final_response로 이미 실었다.
+    if intent == ACCESS_DENIED_INTENT:
         return END
     if state.get("is_multi_db"):
         return "multi_db_executor"
@@ -424,9 +428,14 @@ def build_graph(config: AppConfig, checkpointer=None):
     # 시멘틱 라우팅 노드 (멀티 DB 지원)
     # 트랙 B(deep_agent) 활성 시에는 등록하지 않는다(상호 배타, 죽은 노드 방지).
     if config.enable_semantic_routing and not use_deep_agent:
+        # 사용자별 DB 인가(plans/104 C-4 · D-232)는 라우터 노드 경계에서 한 번만 건다 —
+        # 라우터 본체는 반환 지점이 여러 곳이라 안에서 거르면 빠뜨린다.
         graph.add_node(
             "semantic_router",
-            partial(semantic_router, llm=llm, app_config=config),
+            partial(
+                authorized_router,
+                inner=partial(semantic_router, llm=llm, app_config=config),
+            ),
         )
         graph.add_node(
             "multi_db_executor",

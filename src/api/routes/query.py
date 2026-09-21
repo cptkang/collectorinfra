@@ -27,6 +27,7 @@ from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.llm import USER_RESPONSE_TAG
 from src.utils.json_extract import coerce_content_text
+from src.routing.db_authz import SELECTION_DENIED_MESSAGE, filter_selected_db_ids
 from src.state import create_followup_input, create_initial_state
 from src.routing.db_scope import build_db_scope
 from src.utils.query_gen_common import (
@@ -781,6 +782,16 @@ def _build_turn_input_state(
                 # 확정 존(pending.db_ids)을 selected_db_ids로 복원한다(이번 턴 명시
                 # 선택이 있으면 그것이 우선 — 요청 스코프 계약 유지).
                 restored_db_ids = body.selected_db_ids or pending_ff.get("db_ids") or None
+                # 복원 값도 인가를 통과해야 한다(plans/104 C-4 · D-232) — 체크포인트는
+                # 이전 턴의 산물이고 thread_id는 요청이 정하므로 권한 회수·타인 스레드
+                # 지정으로 비인가 DB가 되살아날 수 있다. 전부 걸러지면 선택 없음으로
+                # 되돌리고, 사유 통보는 라우터 경계(`authorized_router`)가 맡는다.
+                restored_db_ids, _ = filter_selected_db_ids(
+                    restored_db_ids,
+                    current_user.get("allowed_db_ids"),
+                    current_user.get("role"),
+                )
+                restored_db_ids = restored_db_ids or None
                 delta = create_followup_input(
                     body.query or "[양식 미해결 항목 답변]",
                     selected_db_ids=restored_db_ids,
@@ -1132,6 +1143,27 @@ def _zone_group_exclusive_or_none(
     )
 
 
+def apply_selection_authorization(
+    selected_db_ids: list[str] | None, current_user: dict[str, Any]
+) -> tuple[list[str] | None, bool]:
+    """요청이 지정한 DB 선택에 인가를 적용한다(plans/104 C-4 · D-232 — 요청 경계 단일 지점).
+
+    선택 값은 **외부 입력**이라 라우터 반환값 필터로는 막히지 않는다. 그대로 상태에 실리면
+    존 선택 재개 턴의 task 고정이 그 DB로 조회를 확정한다(순차 러너는 3단 기본 경로에서도
+    도달한다). 네 진입(텍스트·스트림·파일 2종)이 모두 이 함수를 지난다.
+
+    Returns:
+        `(상태에 실을 선택, 전부 비인가 여부)` — 전부 비인가면 호출부가 사유를 응답하고 멈춘다.
+    """
+    authorized, dropped = filter_selected_db_ids(
+        selected_db_ids, current_user.get("allowed_db_ids"), current_user.get("role")
+    )
+    if dropped and not authorized:
+        logger.info("DB 선택 전량 비인가 — 조회하지 않고 사유 반환: %s", dropped)
+        return None, True
+    return authorized, False
+
+
 def _zone_clarification_or_none(
     body: QueryRequest, checkpoint_state: dict | None, config
 ) -> dict | None:
@@ -1223,6 +1255,18 @@ async def process_query(
 
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
+
+    # 요청이 지정한 DB 선택의 인가(plans/104 C-4) — 존 게이트보다 먼저 건다.
+    body.selected_db_ids, _selection_denied = apply_selection_authorization(
+        body.selected_db_ids, current_user
+    )
+    if _selection_denied:
+        return QueryResponse(
+            query_id=query_id,
+            status="success",
+            response=SELECTION_DENIED_MESSAGE,
+            thread_id=thread_id,
+        )
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
@@ -1365,6 +1409,24 @@ async def process_query_stream(
 
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
+
+    # 요청이 지정한 DB 선택의 인가(plans/104 C-4) — /query와 대칭
+    body.selected_db_ids, _selection_denied = apply_selection_authorization(
+        body.selected_db_ids, current_user
+    )
+    if _selection_denied:
+        async def selection_denied_generator() -> AsyncGenerator[str, None]:
+            yield _sse_event({
+                "type": "done",
+                "response": SELECTION_DENIED_MESSAGE,
+                "query_id": query_id,
+                "thread_id": thread_id,
+            })
+        return StreamingResponse(
+            selection_denied_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
@@ -1737,6 +1799,17 @@ async def process_file_query(
 
     # 1.5 존 역질문 게이트 (Plan 75 §4 파일 경로 확장) — 무거운 처리 전에 조기 반환
     selected_list = _parse_selected_db_ids_form(selected_db_ids)
+    # 요청이 지정한 DB 선택의 인가(plans/104 C-4 · D-232) — 텍스트 경로와 대칭
+    selected_list, _selection_denied = apply_selection_authorization(
+        selected_list, current_user
+    )
+    if _selection_denied:
+        return QueryResponse(
+            query_id=str(uuid.uuid4()),
+            status="success",
+            response=SELECTION_DENIED_MESSAGE,
+            thread_id=thread_id,
+        )
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config
     )
@@ -1988,6 +2061,30 @@ async def process_file_query_stream(
 
     # 존 역질문 게이트 (Plan 75 §4 파일 경로 확장) — /query/file과 대칭
     selected_list = _parse_selected_db_ids_form(selected_db_ids)
+    # 요청이 지정한 DB 선택의 인가(plans/104 C-4 · D-232) — 네 진입 모두 같은 게이트를 지난다
+    selected_list, _selection_denied = apply_selection_authorization(
+        selected_list, current_user
+    )
+    if _selection_denied:
+        _denied_qid = str(uuid.uuid4())
+
+        async def selection_denied_file_generator() -> AsyncGenerator[str, None]:
+            yield _sse_event({
+                "type": "done",
+                "response": SELECTION_DENIED_MESSAGE,
+                "query_id": _denied_qid,
+                "thread_id": thread_id,
+            })
+
+        return StreamingResponse(
+            selection_denied_file_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config
     )
