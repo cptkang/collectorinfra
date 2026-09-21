@@ -135,6 +135,19 @@ async def investigation_trigger_node(
         )
         return {}
 
+    # ★ 조사 서비스 사전 도달성 확인 (D-243). 서비스가 없으면 SSE 연결 타임아웃·traceback
+    # 대신 한 줄 경고로 조사를 생략한다(통보는 그대로 진행). 확인 메서드가 없는 대역은 생략.
+    probe = getattr(client, "unreachable_reason", None)
+    if probe is not None:
+        unreachable = await probe()
+        if unreachable:
+            logger.warning(
+                "조사 서비스 미가용 — 조사 생략(통보는 진행): alarm_id=%s 사유=%s",
+                getattr(event, "alarm_id", ""), unreachable,
+            )
+            _audit(configurable.get("decision_store"), event, decision, None, "down", None)
+            return {}
+
     # ★ 가용성 사전 판정 (Plan 81 · D-175). 판정 결과를 페이로드에 실어 보내면
     # `sre_agent`가 조사 예산을 쓰기 전에 거부한다(같은 요구, 다른 수단 — `docs/25` L-5).
     # **여기서 트리거를 취소하지 않는다** — 거부 사유가 담긴 브리핑이 통보에 첨부되는 편이

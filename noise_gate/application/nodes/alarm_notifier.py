@@ -47,6 +47,10 @@ _SEVERITY_COLORS = {0: "#28a745", 1: "#ffc107", 2: "#fd7e14", 3: "#dc3545"}
 # 발송하지 않는 티어(§7) — PAGE/미상 티어는 기존 발송 경로로 폴백(보수적, 재현율 우선)
 _NON_PAGE_TIERS = frozenset({TIER_TICKET, TIER_DASHBOARD, TIER_SUPPRESS})
 
+
+class WorkbNotConfiguredError(ValueError):
+    """WORKB_BASE_URL 미설정 — worKB 미연동 환경이라 발송을 생략한다는 신호(D-243)."""
+
 # (Plan 66 3-E) 후속 브리핑 발송 태스크 참조 보관소. asyncio는 태스크를 약참조로만 들고 있어
 # 지역 변수로 두면 GC가 실행 중인 태스크를 수거할 수 있다 — 완료 시 discard로 자동 정리한다.
 _FOLLOWUP_TASKS: set[asyncio.Task] = set()
@@ -386,6 +390,14 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
                 "알람 알림 발송 완료: alarm_id=%s channel=%s",
                 result.alarm_event.alarm_id,
                 channel,
+            )
+        except WorkbNotConfiguredError:
+            # worKB 미연동 환경(.env에 WORKB_BASE_URL 없음) — 발송하지 않는다(D-243).
+            # 장애가 아니라 설정 상태이므로 traceback 없이 한 줄만 남긴다.
+            result.notifications_sent[channel] = False
+            logger.warning(
+                "worKB 미설정(WORKB_BASE_URL 없음) — 발송 생략: alarm_id=%s",
+                result.alarm_event.alarm_id,
             )
         except Exception:
             result.notifications_sent[channel] = False
@@ -897,7 +909,7 @@ async def _send_workb(
         investigation_escalation: escalate-only 상향 안내 (Plan 64 CW-C, None이면 첨부 생략)
     """
     if not workb_cfg.base_url:
-        raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")
+        raise WorkbNotConfiguredError("WORKB_BASE_URL이 설정되지 않았습니다.")
 
     ev = result.alarm_event
     msg_title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"

@@ -19,6 +19,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ class SreAgentClient:
 
     MAX_RECONNECT_ATTEMPTS: int = 3
     RECONNECT_DELAY: float = 2.0  # 초
+    # 사전 도달성 확인(D-243) — TCP 연결만 시도한다. 미가용 판정은 창 동안 재사용해
+    # 서비스가 없을 때 알람마다 대기가 반복되지 않게 한다.
+    PROBE_TIMEOUT: float = 2.0  # 초
+    UNREACHABLE_COOLDOWN: float = 30.0  # 초
 
     def __init__(
         self,
@@ -61,6 +66,46 @@ class SreAgentClient:
         self._connected: bool = False
         self._sse_context: Optional[Any] = None
         self._session_context: Optional[Any] = None
+        self._unreachable_until: float = 0.0
+        self._unreachable_reason: Optional[str] = None
+
+    async def unreachable_reason(self) -> Optional[str]:
+        """조사 서비스 포트에 TCP 연결만 시도해 도달 가능 여부를 사전 확인한다 (D-243).
+
+        서비스가 없을 때 SSE 연결이 타임아웃(5초)까지 매달리고 traceback을 남기는 대신,
+        호출부가 한 줄 경고로 조사를 생략할 수 있게 한다. 미가용 판정은
+        `UNREACHABLE_COOLDOWN` 동안 재사용한다(재확인 없이 즉시 반환).
+
+        Returns:
+            None(도달 가능) 또는 미가용 사유 문자열.
+        """
+        now = time.monotonic()
+        if now < self._unreachable_until:
+            return self._unreachable_reason
+        parts = urlsplit(self._server_url)
+        host = parts.hostname or ""
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        try:
+            # happy_eyeballs_delay: localhost가 ::1부터 풀릴 때 Windows는 거절 응답에도 1~2초를
+            # 재시도하므로, 주소를 병렬로 시도해 127.0.0.1 바인드 서비스를 오판하지 않게 한다.
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port, happy_eyeballs_delay=0.25),
+                timeout=self.PROBE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            reason = f"{host}:{port} 연결 시간 초과({self.PROBE_TIMEOUT:g}초)"
+        except OSError as e:
+            reason = f"{host}:{port} 연결 불가({e.strerror or e})"
+        else:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return None
+        self._unreachable_until = now + self.UNREACHABLE_COOLDOWN
+        self._unreachable_reason = reason
+        return reason
 
     def _auth_headers(self) -> Optional[dict[str, str]]:
         """Bearer 헤더를 구성한다(토큰 없으면 None — 무헤더)."""
