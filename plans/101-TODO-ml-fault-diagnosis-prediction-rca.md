@@ -1,15 +1,16 @@
 # 101. ML 기반 장애 진단·예측·RCA — 폴스타·제니퍼·DPM 연계, HolmesGPT에 정량 증거 공급
 
-> **작성일**: 2026-09-17 · **v2**(같은 날 — 사용자 지시로 ML 배치를 `sre_agent` 편입으로 재검토·변경 · 버전·라이브러리 제약 해제 반영 · `sre_agent` venv 의존성 해석 실측)
-> **성격**: 문헌 조사 + 구현 계획 · **상태: 계획(코드 0건 · 사용자 확정 게이트 G-1~G-11 대기(G-8은 허용 확정) · 확인 사항 J-1~J-10 대기)** — 파일명 `-TODO`
+> **작성일**: 2026-09-17 · **v2**(같은 날 — 사용자 지시로 ML 배치를 `sre_agent` 편입으로 재검토·변경 · 버전·라이브러리 제약 해제 반영 · `sre_agent` venv 의존성 해석 실측) · **v3**(2026-09-20 — 사용자 지시로 **Kaggle 경기·데이터셋 심층 조사** 반영: 구현 공학 원칙 K-1~K-10 · **누수 금지 목록 KL-1~KL-6** · 평가 규약 11~13 · GAP-11·12)
+> **성격**: 문헌·경기 조사 + 구현 계획 · **상태: 계획(코드 0건 · 사용자 확정 게이트 G-1~G-11 대기(G-8은 허용 확정) · 확인 사항 J-1~J-11 대기)** — 파일명 `-TODO`
 > **요청 취지(사용자 지시 원문)**: *"holmesgpt에서 분석하는 장애 분석과 관련하여 머신러닝을 이용하여 장애 분석과 예측 기능을 추가로 구축하려고 한다. 장애 진단, 예측, RCA 등과 관련된 머신러닝, AI 관련 문헌과 라이브러리를 심도있게 조사하여 현재 구현되었거나 계획하고 있는 폴스타, 재니퍼, DPM 솔루션을 연계하여 장애 대응 기능을 구현하려고 한다. 관련 문헌과 자료, 논문 등을 조사하여 구현 계획을 별도의 파일로 작성하라."*
 > **v2 지시(원문)**: *"버전과 라이브러리는 필요에 따라 수정하거나 사용할 수 있다. 패키지는 별도가 아니라 sre_agent에 구성하는 것을 검토하라."*
+> **v3 지시(원문)**: *"101 번은 장애 진단을 위한 ml 에 대한 계획이다. 이런 장애 진단을 위해 모니터링 정보와 로그 정보를 이용하여 ml 을 통해 장애를 진단하는 알고리즘을 캐글에서 심도 있게 찾아보고 분석하여 101번의 계획을 업데이트하라."*
 > **인수하는 공백**: `plans/62` §5.1 「예측·선제 탐지(C5)」 슬롯. 번호 63은 다른 주제(폴스타 과적합 분리)가 가져갔고, 예측 코드와 소유 계획은 **0건**이다(§2.6). 이 계획이 C5를 명시적으로 인수한다. RCA 축은 `plans/50` §0.8·`plans/91` C′의 **결정적 상관 위에 ML 계층을 얹는 확장**이다(대체하지 않는다).
 > **선행·접점 계획**: `plans/50`(RCA 설계 정본) · `plans/51`(L1/L2/L3 수집) · `plans/55`(APM·DPM 로드맵) · `plans/60`(E3 동적 baseline) · `plans/64`·`66`(조사 위임·조치 거버넌스) · `plans/83`(피드백 = 라벨 원천) · **`plans/87`(제니퍼 Open API · `apm_*`)** · `plans/91`(C′ 잔여 장부) · `plans/92`(Prometheus·OpenMetrics) · `plans/95`(ITAM)
 > **관련 결정**: D-003(읽기 전용) · **D-035**(결정적 수치 + LLM 해석) · **D-048**(.5·.11 "ML 미사용") · D-107(토폴로지) · **D-110·D-113**(HW·STL) · **D-114**(e5 임베딩 반입·주석 전용) · **D-118**(`sre_agent` 경계 — **범위 개정 대상** §4.2 C-6) · **D-119**(관측 데이터 읽기 경계 = `mcp_server`) · D-120(운영 데이터 외부 LLM 송신 금지) · **D-127**(과금 승인) · **D-139**(패키지 경계) · **D-161**(승격-폐기 동반·폐기 4항 실측) · D-162(플래그 만료) · D-174(개발 측정치 기준선 인용 금지) · D-176 ⑤(표본 <20 추정 문구 금지) · D-177(피드백) · D-181(공유 venv 파손) · D-189(L3 경로 B) · D-195(제니퍼 예약) · **D-197**(결정적 상관·가설 순위) · D-207~D-209(C′) · D-210(92 예약) · D-219(폐쇄망 산출물 축소 반출)
 > **신규 결정 예약**: **D-223**(「채번 이력」 표 등재 — §13). ※ 채번 실측 2026-09-17: `## D-` 헤더 최댓값 D-222 · 「변경 이력」 표 최댓값 D-222 · 「채번 이력」 표에 D-223 이상 예약 없음.
-> **실측 기준**: 브랜치 `multiintent` · HEAD `c64ef98` · 2026-09-17. 코드·계획 실측은 읽기 전용 조사 에이전트 2개, 문헌·라이브러리 조사는 에이전트 3개로 수행했다. **패키지 설치 0건 · 실 LLM 호출 0건 · 운영 DB 조회 0건.** 라이브러리 버전·라이선스는 이날 PyPI·GitHub·Hugging Face API로 실측했다. **v2**: holmesgpt 0.36.0 설치본 소스를 직접 읽었고(`additional_toolsets`), `uv pip compile`로 `sre_agent` venv 조건(Python 3.13)의 의존성 해석을 실측했다(설치 0건).
-> **동반 조사 문서(근거 정본)**: `docs/aiops_benchmark/ml_rca_literature.md`(RCA 49+22건) · `docs/aiops_benchmark/ml_anomaly_prediction_literature.md`(이상탐지·예측 60항목) · `docs/aiops_benchmark/ml_library_vendor_survey.md`(라이브러리·HolmesGPT·벤더 AI). 본문의 `RCA-*`·`PRED-*` ID는 이 문서들의 항목 ID다.
+> **실측 기준**: 브랜치 `multiintent` · HEAD `c64ef98` · 2026-09-17. 코드·계획 실측은 읽기 전용 조사 에이전트 2개, 문헌·라이브러리 조사는 에이전트 3개로 수행했다. **패키지 설치 0건 · 실 LLM 호출 0건 · 운영 DB 조회 0건.** 라이브러리 버전·라이선스는 이날 PyPI·GitHub·Hugging Face API로 실측했다. **v2**: holmesgpt 0.36.0 설치본 소스를 직접 읽었고(`additional_toolsets`), `uv pip compile`로 `sre_agent` venv 조건(Python 3.13)의 의존성 해석을 실측했다(설치 0건). **v3**(2026-09-20): Kaggle 조사는 웹 검색·1차 출처 페이지 fetch로만 했다. **Kaggle 경기·데이터셋 페이지는 JS 렌더링이라 정적으로 읽히지 않아 경기 메타데이터·라이선스 문자열은 대부분 3자 기록 기반(V3)**이며, 데이터 내려받기·계정 접속·패키지 설치는 0건이다. 확인이 필요한 항목은 J-11로 모았다.
+> **동반 조사 문서(근거 정본 · v3에서 4종)**: `docs/aiops_benchmark/ml_rca_literature.md`(RCA 49+22건) · `docs/aiops_benchmark/ml_anomaly_prediction_literature.md`(이상탐지·예측 60항목) · `docs/aiops_benchmark/ml_library_vendor_survey.md`(라이브러리·HolmesGPT·벤더 AI) · **`docs/aiops_benchmark/ml_kaggle_competition_survey.md`(v3 신설 — Kaggle 경기 10건·데이터셋 8계열·누수 사례 6종)**. 본문의 `RCA-*`·`PRED-*`·**`K-*`·`KC-*`·`KD-*`·`KL-*`·`KG-*`** ID는 이 문서들의 항목 ID다.
 > **▶ 결정만 필요하면 §10 「사용자 확정 게이트」만 읽으면 된다. 문헌 근거 요약은 §3, 단계별 작업은 §7이다.**
 
 ---
@@ -24,7 +25,7 @@ ML은 **판정자가 아니라 정량 증거 생산자**로 들인다. 점수·�
 - 판정은 지금처럼 결정적 규칙이 하고, LLM은 그 수치를 인용해 서술만 한다.
 - 첫 구현은 **폴스타 단독 · 강건 통계**다. 버전·라이브러리는 필요에 따라 올린다(holmesgpt 0.42.x 포함). 제니퍼·DPM 연계는 각 커넥터가 생긴 뒤 단계적으로 얹는다.
 
-### 0.2 문헌이 이 설계를 정한 방식 — 다섯 가지
+### 0.2 문헌·경기 증거가 이 설계를 정한 방식 — 여섯 가지
 
 | # | 문헌 결론 | 수치(원문 대조 V1) | 설계 반영 |
 |---|---|---|---|
@@ -33,6 +34,7 @@ ML은 **판정자가 아니라 정량 증거 생산자**로 들인다. 점수·�
 | ③ | **예측은 반대로 파운데이션 모델이 통계를 앞선다. 다만 가중치 라이선스가 1차 필터다** | GIFT-Eval WQL skill: Chronos-2 51.4% vs AutoARIMA 8.8%. 관측 데이터 BOOM MASE: Toto 0.617 vs Auto-ARIMA 0.824, **Time-MoE 0.881은 ARIMA보다 나쁨**. TimesFM 3.0·Moirai 전 계열은 비상업 가중치 | 파운데이션 모델은 **탐지기가 아니라 예측 구간·ETA 산출기**로만, 보안 심사 뒤 M7에 들인다 (PRED-G-02·G-06) |
 | ④ | **데이터에서 인과를 "발견"하는 RCA는 무작위 수준이다. 도메인 지식 그래프는 통한다** | PC/Granger/PCMCI + PageRank 계열 ≈ Dummy(ASE'24). SimpleRCA 0.58 > BARO 0.24(RCAEval Top-1, FSE'26). **대형 은행 Oracle AAS 장애 99건**: CIRCA(DBA 작성 구조 그래프) AC@1 0.404 · NSigma 0.323 · PC 기반 랜덤워크 0.086(KDD'22) | 자동 인과 발견은 운영 경로에서 회피한다. 이벤트 그래프·강건 점수·다차원 국소화 → DBA/운영자 검토 스켈레톤 그래프 순서로 간다 (RCA-B-01·B-04·A-05) |
 | ⑤ | **LLM 단독 RCA는 약하고, "결정은 코드 · LLM은 국소 해석"이 일관성을 높인다** | OpenRCA 최고 11.34%, 원인 요소 3개 과제 0%(ICLR'25). ITBench GPT-4o 진단 13.81% → **트레이스 없으면 9.52%**(ICML'25). EoG(결정적 컨트롤러)의 Majority@k F1은 ReAct의 7배(preprint). Cloud-OpsBench 정답률 0.76 vs 증거 폐포율 0.38(preprint) | LLM에 원시 시계열이나 재순위 권한을 주지 않는다. 브리핑은 원인 적중과 **증거 폐포율**로 함께 채점한다 (RCA-G-01·G-02·G-08·G-09) |
+| ⑥ | **(v3 · Kaggle) 표로 접은 시계열·이벤트에서는 GBDT가 정본이고, 점수를 만드는 것은 모델이 아니라 피처다. 그리고 경기 상위 해법의 "마법 피처"는 대부분 누수다** | M5 Accuracy는 상위가 **전부 순수 ML(대부분 LightGBM)**이고 모든 통계 기준선·조합을 유의미하게 앞선 첫 M-competition이다. ASHRAE GEPIII(3,614팀 · 건물 1,448 · 계량기 2,380) 상위는 LightGBM 앙상블이고 공식 lessons-learned 논문 제목이 *"Gradient boosting machines and careful pre-processing work best"*다. Telstra(974팀) 우승은 GBT·NN·RF 3층 스태킹 logloss 0.395인데, 상위권 자평은 *"feature engineering, rather than ensembling or XGBoost tuning"*이다. 반대편도 실측됐다 — **Bosch `mindate_id_diff`는 "실환경 배포에는 제거해야 한다"고 명시된 누수 피처**이고, Telstra의 "마법 피처"는 위치 그룹 내 행 번호(= 시간축 복원)였다 | 사건 위험 점수(F2c) 모델을 **GBDT로 못 박고**(§5.3 (c)) 피처를 경기 검증된 레시피(다중 창 롤링 · 엔티티 인코딩 · 마지막 이벤트 이후 경과)로 명세한다. 동시에 **누수 금지 목록 KL-1~KL-6을 평가셋 빌더가 구조적으로 차단**한다(§5.1 · §6.2 규약 11~13). 앙상블·스태킹으로 지표를 쥐어짜는 것은 하지 않는다(K-9 · §12) |
 
 ### 0.3 가장 큰 병목은 알고리즘이 아니라 데이터다
 
@@ -44,6 +46,7 @@ ML은 **판정자가 아니라 정량 증거 생산자**로 들인다. 점수·�
 | 조사 결과 휘발 | 브리핑 전문은 in-memory 잡(최대 500건 · **TTL 1시간**)에만 있고 감사 JSONL에는 요약만 남는다(`sre_agent/.../investigation_jobs.py:52-53`) | HolmesGPT 브리핑의 적중률을 사후 채점할 수 없다 |
 | 미사용 원천 | `cmm_alarm.root_alarm_id`·`prev_alarm_id`(폴스타 자체 연관), `cmm_alarm_note.alarmcause`, `cmm_alarm_knowledge`, `cmm_dependency_link`·`cmm_service_associate`는 **코드·설정 참조 0건**(grep 실측) | RCA 그래프·약한 라벨 원천이 이미 있을 수 있다. 채움률 실측이 먼저다 |
 | 외부 연계 | 제니퍼 `apm_*`는 계획만 있다(`plans/87` `-TODO`) · **DPM 전용 계획서 없음** · `PROMETHEUS_URL` 공란(`plans/92` §0.2) | 교차 계층 RCA의 입력이 아직 없다 |
+| **라벨·피처 경계**(v3) | 원인·조치 텍스트(`cmm_alarm_note.alarmcause`·`cmm_alarm_knowledge`)와 `resolution{duration}`·`recurrence`·ack 시각은 **사건이 끝난 뒤 사람이 기입한다** | 이 필드를 피처로 쓰면 누수다(KL-3). **라벨 원천으로만** 쓰고 피처 테이블 진입을 허용목록으로 막아야 한다. 이 경계를 세우지 않으면 리플레이셋 점수가 구조적으로 부풀어 채택 게이트 자체가 무의미해진다 |
 
 → **M0(데이터·전제 실측)이 모든 구현보다 앞선다.** 코드는 읽기 전용 실측 스크립트뿐이다.
 
@@ -183,10 +186,10 @@ ML은 **판정자가 아니라 정량 증거 생산자**로 들인다. 점수·�
 
   | 과업 | 의무 기준선 |
   |---|---|
-  | 탐지 | 무작위 · 입력값 자체 · Seasonal Naive · robust STL+MAD · PCA 재구성 · 1-NN 거리 |
-  | 예측 | Seasonal Naive · AutoETS · AutoARIMA |
+  | 탐지 | 무작위 · 입력값 자체 · Seasonal Naive · robust STL+MAD · PCA 재구성 · 1-NN 거리 · **다중 창 median 편차**(v3 · K-7) |
+  | 예측 | Seasonal Naive · AutoETS · AutoARIMA · **다중 창 median의 median**(v3 · K-7 · Web Traffic 경기의 표준 공개 기준선) |
   | RCA | Dummy · max-\|Z\| · 알람 건수 · BARO식 강건 점수 |
-  | 사건 예측 | 단순 스파이크 규칙(AirAlert에서 제안 기법과 0.6~2.7점 차이) · 연관규칙 |
+  | 사건 예측 | 단순 스파이크 규칙(AirAlert에서 제안 기법과 0.6~2.7점 차이) · 연관규칙 · **피처 엔지니어링 없는 기본 설정 GBDT**(v3 · K-2 검증용 — 피처가 점수를 만든 게 맞는지 이 기준선과의 차이로 본다) |
 
 - **P-10 합산 리더보드 금지 · 계층별 분리 보고.** OpenRCA·RCAEval·PetShop의 서브시스템 11개를 분석한 결과, 합산 1위를 고르면 최대 5개 서브시스템에서 더 나쁜 방법을 고르게 되고 후회가 최대 24.8%p였다(RCA-B-05, preprint V1). 존(은행존/공동존)·업무·계층(호스트/WAS/DB)별로 따로 보고한다.
 - **P-11 시간순 분할 · 섀도 운영.** rolling-origin 분할을 쓰고 셔플은 금지한다. 테스트 구간에 **월말을 2회 이상** 넣는다. 결정 경로에 연결하기 전에 섀도 모드로 월말 2회 이상 병행한다.
@@ -326,6 +329,61 @@ ML은 **판정자가 아니라 정량 증거 생산자**로 들인다. 점수·�
 | GAP-8 | 운영자 희소 피드백으로 탐지기·임계를 고르는 2024~2026 후속 연구가 드묾(원형: Opprentice 2015 · iSQUAD 2020) | 라벨 설계는 "군집당 1회 라벨"로 최소화한다 |
 | GAP-9 | 금융권 달력 효과를 다룬 이상탐지·예측 벤치마크 없음 | 달력 플래그를 결정적 공변량으로 두고 월말 2회 섀도로 검증 |
 | GAP-10 | 모델 가중치 **라이선스 변동**을 다룬 문헌 없음(산업 자료로만 확인) | 반입 계약에 라이선스 문자열·해시 고정을 넣는다 |
+| **GAP-11**(v3) | **경기(Kaggle)에도 "시간 집계 실데이터" 대조군이 없다.** 실데이터는 분 단위(SMD)·일 단위(Backblaze)이고, 시간 집계 사례(Azure PM)는 샘플·시뮬레이션이다(KD-01·KD-02·KD-05) | GAP-1·GAP-2가 경기 증거로도 메워지지 않음을 확정한다. Kaggle 데이터는 **구현 회귀·누수 점검 전용**이다(§6.2-7 · §3.8 K-8) |
+| **GAP-12**(v3) | **경기 데이터·Kaggle 데이터셋의 라이선스·사용 조건을 정적으로 확인할 수 없었다**(페이지가 JS 렌더링). 경기 데이터는 규칙 동의가 전제이고 비상업·경기 목적 한정이 흔하다. NAB는 MIT 주장과 AGPL-3.0 이력 주장이 엇갈린다(KD-03) | 라이선스 **원문 확인 전 반입·사용 금지**(§9 · J-11). AGPL·비상업이면 §9 배제 목록으로 간다 |
+
+### 3.8 경기(Kaggle) 조사 결과 — 구현 공학으로 옮긴 것 (v3 · 2026-09-20)
+
+> 동료심사 문헌(§3.1~3.6)은 **무엇이 옳은 방법인가**를 준다. 경기 증거는 그것으로 답이 되지 않는 것을 준다 — **같은 방법으로 누가 실제로 점수를 냈고, 그 점수의 얼마가 누수였는가.** 정본은 `docs/aiops_benchmark/ml_kaggle_competition_survey.md`이고 아래 `K-*`·`KC-*`·`KL-*`·`KG-*`는 그 문서의 항목 ID다.
+> **경기 수치도 P-12(공개 벤치마크 수치 인용 금지)의 적용 대상이다.** 아래 수치는 "그 방법이 그 데이터에서 통했다"는 존재 증명으로만 쓰고 사내 기대치로 옮기지 않는다. 경기 증거의 실제 산출은 알고리즘 목록이 아니라 **§3.8.1 누수 금지 목록과 §6.2 평가 규약**이다.
+
+- **K-1 표로 접은 시계열·이벤트에서는 GBDT가 정본이다.**
+  - M5 Accuracy는 상위가 전부 순수 ML(대부분 LightGBM)이고 **모든 통계 기준선과 그 조합보다 유의미하게 나았던 첫 M-competition**이다. ASHRAE GEPIII 상위는 LightGBM 앙상블이고, Telstra 우승은 GBT·NN·RF 3층 스태킹(logloss 0.395)이며, Bosch는 XGBoost였다. 동료심사 쪽 뒷받침도 있다 — Grinsztajn et al.(NeurIPS'22 D&B)은 **≈10K 표본 규모 표 데이터에서 딥 아키텍처를 충분히 튜닝한 뒤에도 트리 모델이 SOTA로 남는다**고 보고한다.
+  → **F2c(사건 위험 점수)의 모델을 GBDT로 확정한다**(§5.3 (c)). 신규 의존을 늘리지 않는 경로가 있다 — scikit-learn `HistGradientBoostingClassifier`가 LightGBM 계열 히스토그램 부스팅이고 `ml` extra에 이미 들어 있다. lightgbm·xgboost·catboost 추가는 리플레이셋에서 sklearn 구현 대비 우위가 신뢰구간 밖일 때만 하고, 추가하면 해석 검사(C-4)를 다시 돌린다.
+  → **탐지(F1)에는 옮기지 않는다.** 탐지는 라벨이 없고 P-1이 강건 통계를 지시한다. 경기 증거는 **라벨이 있는 표 문제에만** 적용한다.
+- **K-2 점수를 만드는 것은 모델이 아니라 피처와 전처리다.**
+  - Telstra 상위권 자평이 *"feature engineering, rather than ensembling or XGBoost tuning"*이고, ASHRAE 설문 응답자들은 **전처리·피처추출이 가장 중요한 단계**였다고 답했다. C-MAPSS 계열에서는 rolling 피처만으로 test RMSE 21.89 → 20.19였다.
+  → §5.3 (c)의 피처를 경기 검증된 네 계열로 명세한다. ① **다중 창 롤링 통계**(median·MAD 포함 — P-2와 같은 척도) ② **로그·알람 템플릿별 건수와 volume 집계**(min·mean·max·std·sum — Telstra KC-01) ③ **엔티티 범주형 인코딩**(호스트·존·제품군 · target 인코딩은 시간순 OOF 안에서만 — KL-4) ④ **마지막 변경·점검·재기동 이후 경과시간**(Azure PM의 부품 age에 대응 · 우리에게는 `lifecycle_history`·점검 창이 있다). 이 넷 밖의 피처를 넣으려면 근거를 적는다.
+- **K-3 경기 상위 해법의 "마법 피처"는 대부분 누수다.** → §3.8.1에서 금지 목록으로 다룬다.
+- **K-4 분포 이동은 추측하지 않고 측정한다(adversarial validation).** train/test를 이진 분류해 AUC가 0.7을 넘으면 두 구간은 같은 분포가 아니다.
+  → ① M0 데이터 카드에 **구간 간·존 간 adversarial AUC**를 넣는다 ② 재적합 시 드리프트 지표(§9)로 상시 계산한다 ③ AUC ≥ 0.7인 분할로 낸 성적은 채택 근거로 쓰지 않는다. 이 지표는 **P-11(테스트 구간에 월말 ≥2회)의 정량 검사**이기도 하다 — 월말 구간과 평시 구간의 adversarial AUC가 높다는 사실이 곧 월말을 테스트에 넣어야 하는 근거다.
+- **K-5 극단 불균형에서는 지표와 임계가 모델보다 중요하다.** Backblaze 실측 불균형 비는 11,501:1(문헌 범위 5,702~19,038:1)이고, VSB에서는 같은 MCC 지표에서 1위 임계 0.350 vs 다른 모델 0.434로 **임계 자체가 점수의 일부**였다.
+  → ① F2c 부지표에 **MCC**를 넣는다(§6.1) ② **임계는 학습 구간에서 고정하고 테스트·섀도에서 재조정하지 않는다**(규약 13) ③ 불균형 대응은 재표본이 아니라 `class_weight`/`scale_pos_weight` + 비용 민감 임계다(KL-6).
+- **K-6 "계열마다 이상 1개, top-1 채점" 과제에서는 matrix profile류가 상위권이다.** (Kaggle 외) KDD Cup 2021 TSAD에서 공개된 5위 해법은 계열별 subsequence 길이를 바꾼 matrix profile만으로 217/250 = 86.8%였다.
+  → `stumpy` matrix profile을 **단계 1의 보조 탐지기 후보로 승격**한다(§5.2). 라벨이 필요 없고, 시간 집계에서 "일·주 반복 패턴의 이탈"을 잡는 성격이 STL 잔차와 상보적이다. 채택은 리플레이셋 판정이다.
+- **K-7 예측에서 다중 창 median 기준선은 경기에서도 강했다.** Web Traffic 2위 해법의 핵심 아이디어 중 하나가 "원값 대신 median을 피처로"였고, 표준 공개 기준선이 다중 창 median의 median이었다.
+  → **의무 기준선에 추가한다**(§3.2 P-9 표). 구현 몇 줄·의존 0이며, 이것을 못 이기는 예측기는 들이지 않는다.
+- **K-8 Kaggle의 "IT 운영 모니터링" 데이터는 대부분 합성이거나 연구 데이터 재업로드다.** 실데이터 대조군은 Backblaze(일 단위)·SMD(분 단위·운영자 인시던트 보고 기반 라벨)·Loghub뿐이고, 네이티브 업로드 계열은 출처 서술이 없거나 합성 표기다.
+  → §6.2 규약 7을 확장한다: **Kaggle 데이터는 구현 회귀·누수 점검 연습 전용**이며 쓸 수 있는 것과 못 쓰는 것은 KD-01~KD-08이 구분한다. → GAP-11.
+  → 단 **KC-02(Azure Predictive Maintenance)는 "시간 집계 지표 + 오류 로그 → N시간 내 고장"이라는 우리와 같은 정식화의 공개 선례**다(100대 × 1년 × 시간 평균 · 876,099행 · 오류 유형별 건수 · 부품 교체 후 경과). 데이터는 샘플·시뮬레이션이라 성능 근거가 아니지만 **문제 정식화와 피처 명세는 M7c의 출발점으로 차용한다.** GAP-2는 그대로 남는다 — **선례가 있다는 것과 실증이 있다는 것은 다르다.**
+- **K-9 스태킹·다중 시드 앙상블의 이득은 소수점 셋째 자리다**(XGBoost 100 시드 ≈ MAP@3 0.379 vs 단일 시드 평균 0.376).
+  → §12 「하지 않는 것」에 명시한다. 운영에서는 해석성·지연·모델 관리 비용이 그 이득보다 크다.
+- **K-10 CV–LB 관계를 믿고 단일 최고점을 믿지 않는다.**
+  → 규약 12: **리플레이셋 점수(=CV)와 섀도 성적(=LB)을 쌍으로 기록하고 그 관계를 채택 판단에 쓴다.** 리플레이 최고점 하나로 채택하지 않는다. 경기의 "shakeup"이 우리에게는 "섀도에서 무너짐"이고, 그 사고를 미리 막는 장치가 이 규약이다.
+
+#### 3.8.1 누수 금지 목록 (KL-1~KL-6) — 리플레이 평가셋 설계의 1급 제약
+
+| ID | 누수 형태 | 경기 사례 | 우리 데이터에서 같은 것 | 차단 |
+|---|---|---|---|---|
+| **KL-1** | 레코드 순서·행 번호 | Telstra: 위치 그룹 내 행 번호가 시간축을 복원해 점수 급등(작성자 본인이 누수 의심) | `cmm_alarm` 적재 순서 · 조회 결과 행 순서 · 평가셋 파일 기록 순서 | 행 index·정렬 위치 계열 피처 전면 배제. 빌더는 **시각 기준으로만** 정렬하고 index를 산출물에 남기지 않는다 |
+| **KL-2** | 단조 증가 ID의 차이 | Bosch: `mindate_id_diff`·`..._reverse`가 public 점수를 만들었고 **실배포엔 제거 필요**로 명시됐다 | `alarm_id`·시퀀스 차이 · `investigation_id` 순번 · 사건 간 ID 간격 | ID는 조인 키로만 쓰고 수치 피처로 만들지 않는다 |
+| **KL-3** | **사후 기입 필드** | ASHRAE: 공개된 test 실측치로 앙상블 가중 결정 | **`cmm_alarm_note.alarmcause`·`cmm_alarm_knowledge`·ack 시각·`resolution{duration}`·`recurrence`·피드백 `note`** | **라벨로만** 쓴다. 피처 테이블 진입을 허용목록으로 구조적으로 막고, 평가 보고서에 **피처/라벨 분류표**를 싣는다 |
+| **KL-4** | 그룹(사건) 분할 실패 | Kaggle 실무 상시 지적 | 한 장애의 알람 수십 건 · 한 호스트의 연속 구간 · 한 변경의 대조군 쌍 | **사건 단위 group 분할 + 시간순(purged) 분할을 동시에** 적용하고 경계 구간은 버린다 |
+| **KL-5** | 미래 창 집계 | C-MAPSS 노트북들의 반복 경고 | rolling median·MAD · STL 재적합 · 로그 템플릿 사전 학습 | 모든 집계는 **좌측(과거) 창만**. **로그 템플릿 사전(Drain)은 학습 구간에서 고정한 아티팩트**로 테스트 구간에 적용하고 재적합하지 않으며, 미지 템플릿은 OOV 버킷으로 보낸다 |
+| **KL-6** | 재표본을 분할 전에 수행 | Kaggle 실무 상시 지적 | 불균형 대응 재표본(SMOTE 등)을 검증 분할 전에 적용 | 재표본 대신 `class_weight`/`scale_pos_weight` + 임계 조정. 필요하면 분할 **이후 train 폴드 안에서만** |
+
+- 이 목록은 경고가 아니라 **구현 요구**다. §5.1 평가셋 빌더가 KL-1·KL-2를 산출물 스키마에서 배제하고, KL-3을 허용목록으로 막고, KL-4를 분할기로 강제하고, KL-5를 집계 함수 계약으로 보장하고, KL-6을 학습 파이프라인 순서로 보장한다. 검사는 `scripts/ml/leakage_audit.py`(M1 CU-4)가 돌린다.
+- **왜 1급인가**: 누수는 성능을 과대평가하는 데서 끝나지 않는다. 채택 게이트(§6.3)가 전부 "기준선 대비 우위"로 쓰여 있으므로 누수가 섞이면 **게이트가 통과 도장을 찍는 기계로 변한다.** D-174(개발 측정치 기준선 인용 금지)·D-176 ⑤(표본 <20 문구 금지)와 같은 계열의 통제다.
+
+#### 3.8.2 경기가 주지 않는 것
+
+| ID | 공백 | 귀결 |
+|---|---|---|
+| KG-1 | 시간 집계 **실데이터**로 서버 장애를 선제 예측한 경기가 없다 | GAP-2·GAP-11 유지. 시간 집계는 추세·ETA·패턴 이탈에 쓴다(P-5) |
+| KG-2 | 메트릭 + 로그 + 변경을 **함께** 준 경기가 없다 | 교차 소스 결합은 여전히 우리 고유 영역이다(§3.6 말미와 같은 결론) |
+| KG-3 | RCA(원인 엔티티 순위)를 채점한 경기가 없다 — 경기 지표는 예측·분류·회귀뿐이다 | RCA 근거는 `ml_rca_literature.md`가 정본으로 남는다. §5.4 설계는 v3에서 바뀌지 않는다 |
+| KG-4 | 금융권 달력 효과를 다룬 경기 데이터가 없다 | GAP-9 유지 |
+| KG-5 | Kaggle 페이지 원문(규칙·라이선스·리더보드·토론)을 정적으로 확인하지 못했다 | J-11 |
 
 ---
 
@@ -496,10 +554,11 @@ ML 분석 함수는 `application/ml_analysis.py` **한 곳**에 구현한다. �
 | 산출물 | 내용 | 비고 |
 |---|---|---|
 | **데이터 카드**(`docs/`에 1건) | 원천별 해상도 · 보존 기간 · 적재 지연(시간 통계가 HH+몇 분에 생기는가) · 결측률 · 존별 결손 · 엔티티 정합률 | M0 실측값만 적는다. 추정 금지 |
-| **리플레이 평가셋 빌더**(`sre_agent/scripts/ml/build_replay_set.py`) | 사건 = `alarm_incidents`(사람 대응) ∪ `cmm_alarm_note.alarmcause` 채워진 알람 ∪ 장애 보고서(J-5). 라벨 스키마 = `{root_entity, layer, kind, change_related?, confirmed_by, source}` · 요소별 부분 점수(OpenRCA 형식) | **새 라벨 저장소를 만들지 않는다**(U-F (ii)). 기존 원천을 읽어 **평가 전용 축소 산출물**을 서버 내에서 만든다(I-7) |
+| **리플레이 평가셋 빌더**(`sre_agent/scripts/ml/build_replay_set.py`) | 사건 = `alarm_incidents`(사람 대응) ∪ `cmm_alarm_note.alarmcause` 채워진 알람 ∪ 장애 보고서(J-5). 라벨 스키마 = `{root_entity, layer, kind, change_related?, confirmed_by, source}` · 요소별 부분 점수(OpenRCA 형식) | **새 라벨 저장소를 만들지 않는다**(U-F (ii)). 기존 원천을 읽어 **평가 전용 축소 산출물**을 서버 내에서 만든다(I-7). **v3: 산출물은 시각 기준으로만 정렬하고 행 index·원천 ID 차이를 남기지 않는다(KL-1·KL-2). 사후 기입 필드는 라벨 쪽에만 둔다(KL-3). 분할기는 사건 group ∧ 시간순(purged)을 동시에 강제하고 경계 구간을 버린다(KL-4)** |
 | **피드백 이벤트 키 보강**(`plans/83` 편승) | `FeedbackStore.record`에 선택 필드 `alarm_id`·`fingerprint`·`root_cause{entity, layer, kind}` 추가. 값이 없으면 키를 넣지 않아 **기존 레코드 바이트 동일**(91 1-4 `investigation_id` 전례) | G-9. 20,000줄 회전이 평가셋을 자르지 않도록 빌더가 `.1`까지 읽는다 |
 | **조사 감사 상세화** | §4.5 마지막 행 | 브리핑 채점(P-24)의 전제 |
 | **골든셋 결함 점검** | 자명성(한 줄 규칙으로 풀리는가) · 이상 밀도 · 라벨 경계 오류 · 장애 직전 편향(PRED-D-01) | 평가 보고서 필수 절 |
+| **누수 감사기**(v3 · `sre_agent/scripts/ml/leakage_audit.py`) | KL-1~KL-6을 기계적으로 검사한다. ① 피처 목록에 행 index·정렬 위치·ID 차이 계열이 있는가(KL-1·KL-2) ② **피처/라벨 분류표**를 출력하고 사후 기입 필드가 피처 쪽에 있으면 실패(KL-3) ③ 분할이 사건 group ∧ 시간순(purged)인가, 경계 구간을 버렸는가(KL-4) ④ 모든 롤링·분해 집계가 좌측 창만 쓰는가, 템플릿 사전이 학습 구간 고정 아티팩트인가(KL-5) ⑤ 재표본이 분할 이후 train 폴드 안에서만 일어나는가(KL-6) ⑥ **구간 간·존 간 adversarial AUC**(K-4) | **평가 보고서의 필수 절이자 CI 대상**. 하나라도 실패하면 그 평가 결과는 채택 게이트(§6.3) 입력으로 쓰지 않는다. `plans/101` §3.8.1의 근거 |
 
 ### 5.2 F1 — 이상탐지
 
@@ -508,6 +567,7 @@ ML 분석 함수는 `application/ml_analysis.py` **한 곳**에 구현한다. �
 - **잔차 판정**: 중앙값·MAD 척도 점수 `|r − med| / (1.4826·MAD)`로 판정한다(P-2). 임계는 설정값이며, 달력 플래그(월말±1일·월초·급여일·배치 창)가 켜진 구간은 **별도 잔차 분포**로 판정한다.
 - **평활화 보완**: `avg_val` 외에 `max_val`·`top_val` 계열을 병행 판정한다. 시간 평균이 지우는 스파이크를 일부 보완한다(P-5). 두 계열 판정이 갈리면 둘 다 표기한다.
 - **변화점**: PELT(ruptures) 또는 순수 Python CUSUM으로 수준 이동 시각을 추정한다. 변경 이력·점검 창과 정렬해 "변경 직후 수준 이동"을 이벤트로 만든다(P-20).
+- **반복 패턴 이탈**(v3 · K-6 · 보조 후보): matrix profile(`stumpy`)로 계열 자기 유사도가 가장 낮은 구간을 찾는다. 라벨·학습이 필요 없고, 시간 집계에서 "일·주 반복 패턴의 이탈"을 잡는 성격이 STL 잔차 점수와 상보적이다. 창 길이(subsequence length)를 24h·168h 등 복수로 돌리고 계열별로 고정한다(KDD Cup 2021 상위 해법의 방식). **채택은 리플레이셋에서 STL+MAD 대비 이벤트 단위 지표 우위가 확인될 때**이며, 그때까지는 점수를 병기만 한다.
 - **피어 비교**(FUNNEL DiD 원리): 같은 역할 그룹(이중화 쌍·같은 호스트 그룹)이 있으면 대조군 대비 이탈을 계산한다. 그룹 정의는 **설정 파일**로 두고 자동 추정은 하지 않는다.
 
 **단계 2(M7a, 평가 게이트 통과 시)**
@@ -537,6 +597,7 @@ ML 분석 함수는 `application/ml_analysis.py` **한 곳**에 구현한다. �
 - 평가: ETA 절대오차 분포, 구간 실측 커버리지 vs 목표, 조기·지연 비대칭 비용(§6).
 
 **(b) 기대 대역 — M7b(보안 심사 후)**
+- **선행 기준선(v3 · KC-05)**: 파운데이션 모델을 들이기 전에 **분위수별 별도 모델 + 경험적(empirical) 구간**을 먼저 구현한다. M5 Uncertainty 상위권의 공통 기법이 이것이었고(우승자는 집계 수준·분위수마다 별도 LightGBM), 894팀 중 ARIMA 기준선을 이긴 팀이 202팀(22.6%)뿐이었다는 사실이 "구간 예측은 어렵고 단순 경로가 이미 강하다"는 근거다. 우리 구현은 잔차 분위수 + 다중 창 median(K-7)로 충분히 시작한다.
 - 파운데이션 모델을 **예측기로만** 쓴다. 분위수 대역이 단계 1 Seasonal Naive·STL·AutoETS 대비 MASE·CRPS에서 신뢰구간 밖으로 개선돼야 채택한다(P-14·P-15).
 - 후보 순서: Chronos-2 small(28M) → Toto-2.0 small → TimesFM 2.5 → TTM-R2(CPU 하한 기준).
 - 공변량(달력·배치 플래그)은 Chronos-2·TimesFM 2.5에 넣는다.
@@ -544,13 +605,21 @@ ML 분석 함수는 `application/ml_analysis.py` **한 곳**에 구현한다. �
 - 진입 조건: 가중치 라이선스 Apache-2.0/MIT · safetensors · 해시 고정 · **CPU 배치 창 안에 전 대상 추론 완료**(내부 측정 필수 · GAP-7).
 
 **(c) 사건 위험 점수 — M7c(라벨 조건부)**
-- 입력: 폴스타 알람 이력 → drain3 템플릿화 → eWarn식 특징(템플릿 빈도·통계·업무시간) + 단계 1 이상 점수.
-- 모델: 그래디언트 부스팅/랜덤포레스트(skops 저장) · 비용 민감 임계(MING·CDEF 원리) · 설명(특징 기여).
+- **입력(v3 — K-2 · KC-01·KC-02 레시피로 구체화)**: 폴스타 알람 이력 → **Drain 자체 구현**(v2 확정 · drain3 미사용 — §3.5) 템플릿화 → eWarn식 특징을 **경기 검증된 네 계열**로 명세한다.
+  1. **다중 창 롤링 통계** — 지표별 1h·6h·24h·168h 창의 median·MAD·max·기울기. **좌측(과거) 창만**(KL-5).
+  2. **템플릿·알람 건수** — 템플릿별 건수, 심각도별 건수, volume의 min·mean·max·std·sum(Telstra가 로그 피처에서 점수를 낸 형태).
+  3. **엔티티 인코딩** — 호스트·존·제품군·솔루션의 빈도 인코딩. target 인코딩은 **시간순 OOF 안에서만**(KL-4).
+  4. **경과시간** — 마지막 변경·점검·재기동·직전 알람 이후 경과(Azure PM의 부품 age에 대응).
+  - 여기에 단계 1의 이상 점수·ETA를 피처로 함께 넣는다. **사후 기입 필드(원인 텍스트·`resolution`·ack 시각)는 라벨로만 쓴다**(KL-3). 업무시간·달력 플래그는 결정적 공변량으로 둔다(P-3).
+  - 네 계열 밖의 피처를 추가하려면 근거를 평가 보고서에 적는다.
+- **모델(v3 — K-1로 확정)**: **GBDT**로 못 박는다. 1차는 **신규 의존이 없는 scikit-learn `HistGradientBoostingClassifier`**(LightGBM 계열 히스토그램 부스팅 · `ml` extra에 이미 포함)이고, lightgbm·xgboost·catboost 추가는 리플레이셋에서 sklearn 구현 대비 우위가 신뢰구간 밖일 때만 한다(추가 시 해석 검사 C-4 재실행). 저장은 skops. 불균형은 `class_weight`/`scale_pos_weight`로 다루고 **재표본은 분할 이후 train 폴드 안에서만**(KL-6). 비용 민감 임계(MING·CDEF 원리)는 **학습 구간에서 고정**하고 테스트·섀도에서 재조정하지 않는다(K-5 · 규약 13). 설명은 특징 기여로 낸다.
+- **하지 않는 것**: 스태킹·다중 시드 앙상블로 지표를 쥐어짜는 것(K-9 — 이득은 소수점 셋째 자리이고 해석성·지연을 잃는다) · 딥 표 모델(K-1의 반대 근거).
 - 진입 조건
   - 시스템당 확정 사건 **수십 건 이상**(eWarn 실측 26~227건/시스템 참고)
   - 운영 리드타임 요구치 Δt_w 합의
-  - 단순 스파이크 규칙·연관규칙 기준선 구현 완료
-- 채택 조건: 이벤트 단위 정밀도·재현율과 리드타임 분포에서 기준선 대비 우위가 신뢰구간 밖이어야 한다(AirAlert 격차 0.6~2.7점 교훈).
+  - 단순 스파이크 규칙·연관규칙 기준선 구현 완료 · **피처 엔지니어링 없는 기본 설정 GBDT 기준선**도 함께(K-2 검증용)
+  - **누수 감사기(§5.1) 통과** — 실패한 평가 결과는 채택 게이트 입력으로 쓰지 않는다
+- 채택 조건: 이벤트 단위 정밀도·재현율과 리드타임 분포에서 기준선 대비 우위가 신뢰구간 밖이어야 한다(AirAlert 격차 0.6~2.7점 교훈). **v3: MCC와 임계 민감도 곡선을 함께 보고한다**(K-5).
 
 ### 5.4 F3 — 진단·RCA
 
@@ -627,7 +696,7 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | 탐지(F1) | **VUS-PR**(보조 AUC-PR) · PA 금지 · best-F(오라클 임계) 금지 | 이벤트 단위 정밀도·재현율 · 탐지 지연 분포 · **알람 예산**(서버-일당 신규 표시·알람 수) |
 | 고갈 ETA(F2a) | ETA 절대오차 분포 · 구간 커버리지(목표 ± 허용폭) · 구간 폭 | 조기·지연 비대칭 비용 · 운영자 조치 유효율 |
 | 기대 대역(F2b) | MASE · CRPS/WQL(Seasonal Naive 정규화 · 기하평균) · 분위수 커버리지 | 단계 1 대비 알람 예산 변화 |
-| 사건 위험(F2c) | 이벤트 단위 P/R · **리드타임 분포**(Δt_w 미만 적중은 실패) · 창 단위 F1은 부지표 | 새 알람 폭풍 유발 여부 |
+| 사건 위험(F2c) | 이벤트 단위 P/R · **리드타임 분포**(Δt_w 미만 적중은 실패) · 창 단위 F1은 부지표 · **MCC와 임계 민감도 곡선**(v3 · K-5 — 불균형에서는 임계가 점수의 일부다) | 새 알람 폭풍 유발 여부 |
 | RCA(F3) | **AC@1 · AC@3 · Avg@5** · 요소별 부분 점수 · 실행시간 · 장애 시각 ±오차 민감도 · **해상도별**(원시 vs 1시간) | 계층·존별 성적 · 기준선 대비 우위 |
 | 브리핑(LLM) | **원인 적중 + 증거 폐포율(ECR) + Majority@k** | 운영자 "유용" 판정률 · 조사 시간 |
 
@@ -639,10 +708,13 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 4. **유의성**: 부트스트랩 신뢰구간 또는 Friedman–Nemenyi 임계차. 평균 차이만으로 채택하지 않는다.
 5. **표본 <20이면 성능 문구를 쓰지 않는다**(D-176 ⑤). 결과표에 `n`을 항상 적는다.
 6. **개발·샌드박스 측정치를 운영 기준선으로 인용하지 않는다**(D-174). 로컬 `testdata`는 계약·구현 정확성 테스트 전용이다.
-7. **공개 벤치마크 용도 제한**: RCAEval RE1(MIT)·PetShop(5분 · Apache-2.0)·TSB-AD(원천별 라이선스 선별)·BOOM(Apache-2.0)은 **구현 정확성 회귀**에만 쓴다. 사내 성능 기대치 근거로 쓰지 않는다(P-12). AIOps Challenge 데이터(비상업 조건)·LogHub(연구용)는 법무 확인 전 보류한다.
+7. **공개 벤치마크 용도 제한**: RCAEval RE1(MIT)·PetShop(5분 · Apache-2.0)·TSB-AD(원천별 라이선스 선별)·BOOM(Apache-2.0)은 **구현 정확성 회귀**에만 쓴다. 사내 성능 기대치 근거로 쓰지 않는다(P-12). AIOps Challenge 데이터(비상업 조건)·LogHub(연구용)는 법무 확인 전 보류한다. **v3 — Kaggle 데이터도 같은 범주다**: 구현 회귀·누수 점검 연습 전용이며(K-8) 사내 성능 기대치 근거로 쓰지 않는다. 쓸 수 있는 것과 못 쓰는 것은 `ml_kaggle_competition_survey.md` KD-01~KD-08이 구분한다 — **경기 데이터(Telstra·Bosch·ASHRAE·M5·VSB)는 규칙 동의가 전제이고 비상업 한정이 흔해 폐쇄망 반입 대상이 아니다**(GAP-12). NAB는 라이선스가 엇갈려 원문 확인 전 사용 보류다.
 8. **섀도 운영**: 결정 경로(게이트 상향·가설 병합·예측 통보)를 켜기 전에 월말 ≥2회 섀도 병행한다. 이벤트 단위 지표로 판정한다.
 9. **실 LLM 평가(브리핑 채점·LLM 재순위 A/B)는 건별 사용자 승인**(D-127)이다. 내부망 fabrix·vllm은 D-211 ⑪·D-216 ①·D-222의 면제 규정을 따른다.
 10. **A/B는 동일 커밋·subprocess 격리·설정 에코**로 한다(D-211 ⑧ · known mistakes L56·L123).
+11. **(v3) 누수 감사기를 통과하지 못한 평가 결과는 채택 게이트 입력이 아니다.** KL-1~KL-6(§3.8.1)을 기계 검사하고 **피처/라벨 분류표**를 평가 보고서에 싣는다. 분할은 **사건 group ∧ 시간순(purged)을 동시에** 만족해야 하며 경계 구간은 버린다.
+12. **(v3) 리플레이셋 점수와 섀도 성적을 쌍으로 기록하고 그 관계를 채택 판단에 쓴다**(K-10). 리플레이 최고점 하나로 채택하지 않는다. 두 값이 어긋나는 모델은 사유를 적고 보류한다.
+13. **(v3) 임계·컷오프는 학습 구간에서 고정한다.** 테스트·섀도 구간에서 재조정하면 오라클 임계이며 §6.1의 best-F 금지와 같은 위반이다(K-5). **구간 간·존 간 adversarial AUC ≥ 0.7인 분할**로 낸 성적도 채택 근거로 쓰지 않는다(K-4).
 
 ### 6.3 채택 게이트 표
 
@@ -678,6 +750,7 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | **J-8** | 운영 DPM 제품·버전 · REST API 유무 · XAIOps 도입 여부 | 운영 확인 | G-3 |
 | **J-9** | `sre_agent` 호스트의 배치 스코어링 가용 CPU·메모리(대상 서버 수 × 지표 수) · `run_service`와 공존 시 여유 | 운영 서버 여유 실측 | 배치 주기 · C-2 · M7b |
 | **J-10** | `alarm_incidents` 운영 활성 여부(`incident_tracking_enabled`)와 누적 건수 | `.env` 실제값 · 테이블 행 수 | 리플레이셋 원천 |
+| **J-11**(v3) | **공개 데이터 라이선스·사용 조건 원문**: 경기 규칙(Telstra·Bosch·ASHRAE·M5·VSB) · Backblaze 약관 · **NAB LICENSE**(MIT 주장과 AGPL-3.0 이력 주장이 엇갈린다) · SMD·Azure PM·AI4I 표기. 이 조사에서는 페이지가 JS 렌더링이라 정적 확인이 되지 않았다 | 해당 페이지를 사람이 직접 열어 라이선스 문자열을 확인한다(필요 시 법무) | 공개 데이터 사용 범위(§6.2-7) · 반입 가능 여부(§9) · GAP-12. **M1 착수를 막지는 않는다** — 공개 데이터를 실제로 쓰려 할 때의 선행 조건이다 |
 
 - **산출물**: `sre_agent/scripts/ml/data_card.py`(읽기 전용 · 기존 `mcp_tool_client` 경유 · 결과는 축소 JSON), 데이터 카드 문서 1건.
 - **완료 판정**: J-1~J-4·J-10 실측값이 문서에 있다. 확인 불가 항목은 "미확인 + 사유"로 적는다. **추정값을 적지 않는다.**
@@ -691,7 +764,7 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | CU-1 | `sre_agent/pyproject.toml` · `scripts/ml/resolve_check.sh` | **holmesgpt 0.42.x로 상향**(사용자 허용 · G-8) · extra `ml`(numpy · scipy · `pandas>=2.2,<3` · scikit-learn · statsmodels · ruptures · stumpy · pyod · river · skops · redis) · `ml-forecast`(statsforecast>=2.1) · `ml-causal`(dowhy · causal-learn) · `ml-tsfm`(chronos-forecasting · torch CPU) · `ml-embed`(sentence-transformers). 해석 검사 스크립트(C-4) · 실제 venv 설치 후 **`inspect`로 holmes SDK 시그니처 재실측**(`Config`·`additional_toolsets`·`ToolCallingLLM`·`build_initial_ask_messages`) | 중 |
 | CU-2 | 패키지 골격 | `sre_agent/domain/ml/`(순수) · `sre_agent/application/ml_analysis.py`·`ml_toolset.py`·`ml_batch_scorer.py` · `sre_agent/infrastructure/ml/`(lazy 어댑터) · `sre_agent/ml_batch.py`(엔트리) · `config/ml/` · `scripts/arch_check.py` `MODULE_LAYER_MAP`에 신규 모듈 등록(`ml_batch`=entry) · `tests/test_boundary.py` 스캔 대상에 ML 모듈 포함(I-1) · **`domain/ml` 외부 import 허용목록 스캔 테스트**(I-10) · **`ml` extra 설치 단언 테스트**(C-5) | 중 |
 | CU-3 | `application/ml_toolset.py` · `interface/mcp_service.py` | `status` 도구(②·③ 표면) · `ML_EVIDENCE_TOOLS_ENABLED`·`ML_MCP_TOOLS_ENABLED`(off) | 소 |
-| CU-4 | `domain/ml/metrics_eval.py` · `scripts/ml/build_replay_set.py` | VUS-PR · AC@k · 이벤트 단위 P/R · 리드타임 · 커버리지 · 기준선(Dummy·max-\|Z\|·알람 건수) | 중 |
+| CU-4 | `domain/ml/metrics_eval.py` · `scripts/ml/build_replay_set.py` · **`scripts/ml/leakage_audit.py`**(v3) | VUS-PR · AC@k · 이벤트 단위 P/R · 리드타임 · 커버리지 · 기준선(Dummy·max-\|Z\|·알람 건수 · **다중 창 median** K-7) · **MCC**(K-5) · **사건 group ∧ 시간순(purged) 분할기**(KL-4) · **누수 감사기 KL-1~KL-6 + adversarial AUC**(§3.8.1 · §5.1) | 중 |
 | CU-5 | `application/investigation_dispatcher.py` | 감사 상세화(§4.5) · `INVESTIGATION_AUDIT_DETAIL_ENABLED`(off) | 소 |
 | CU-6 | `noise_gate/infrastructure/feedback_store.py` + `src/api/routes/alarm.py` 요청 스키마 | 선택 필드 `alarm_id`·`fingerprint`·`root_cause` (값 없으면 키 미기록 → 바이트 동일) · **G-9 확정 후** | 소 |
 | CU-7 | 문서 | `sre_agent/README.md` 범위·개발 명령(`.[dev,ml]`) · `docs/26_sre_agent_guide.md` ML 절 · `CLAUDE.md` 저장소 지도·패키지 경계 표(C-6)·기동 명령(`ml_batch`) | 소 |
@@ -783,7 +856,7 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 |---|---|---|
 | **M7a** | 경량 ML: PCA 재구성 · IsolationForest(sklearn) · pyod(ECOD 등) · river HalfSpaceTrees 게이트 보조 점수 · Opprentice식 탐지기 선택 | 단계 1 섀도 결과가 있고, 리플레이셋에서 VUS-PR·이벤트 단위 지표가 단계 1 대비 신뢰구간 밖으로 우위 |
 | **M7b** | 파운데이션 모델 예측기(Chronos-2 small → Toto-2 small → TimesFM 2.5 → TTM-R2) · `ml-tsfm` extra · **`ml_batch` 프로세스에서만 추론**(C-2) · torch CPU wheel · safetensors | G-7 · 가중치 보안 심사 · J-9 CPU 실측 · MASE·CRPS 우위 · 해석 검사(C-4) 통과 |
-| **M7c** | 사건 위험 점수(eWarn식) · **Drain 자체 구현** 템플릿 · skops 모델 · 비용 민감 임계 | 라벨 수 · Δt_w 합의 · 단순 규칙 기준선 |
+| **M7c** | 사건 위험 점수(eWarn식 · **모델 = GBDT** 1차 sklearn `HistGradientBoostingClassifier` — K-1) · **Drain 자체 구현** 템플릿(학습 구간 고정 아티팩트 · KL-5) · 피처 4계열(K-2) · skops 모델 · 비용 민감 임계(학습 구간 고정 · K-5) | 라벨 수 · Δt_w 합의 · 단순 규칙 기준선 + **기본 설정 GBDT 기준선** · **누수 감사기 통과**(규약 11) |
 | **M7d** | CIRCA 스켈레톤 그래프(DB 계층부터) · DoWhy-GCM 기여도(`ml-causal` extra) | M6 완료 · DBA 스켈레톤 검토 기록 · R2 기준선 대비 우위 |
 | **M7e** | (선택) LLM 재순위 A/B: "서술만" vs "재순위 허용" | D-127 승인 · 별도 결정. 기본값은 "서술만" 유지 |
 
@@ -816,14 +889,14 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 
 | 영역 | 통제 |
 |---|---|
-| 라이선스 | **허용**: BSD · MIT · Apache-2.0 · PSF. **배제**: GPL 계열(결합 배포) · BSL(alibi-detect) · CC-BY-NC 가중치(Moirai) · 비상업 가중치(TimesFM 3.0) · NXAI Community(TiRex 1.x) · 라이선스 미표기 코드(Chain-of-Event·Eadro·RCRank·RUN·DBSherlock는 법무 확인 전 코드 반입 금지 · 방법 재구현은 가능). 버전은 필요에 따라 올릴 수 있으나(사용자 허용) **올릴 때마다 가중치·패키지 라이선스를 다시 확인**한다(TimesFM 2.5→3.0 선례) |
+| 라이선스 | **허용**: BSD · MIT · Apache-2.0 · PSF. **배제**: GPL 계열(결합 배포) · BSL(alibi-detect) · CC-BY-NC 가중치(Moirai) · 비상업 가중치(TimesFM 3.0) · NXAI Community(TiRex 1.x) · 라이선스 미표기 코드(Chain-of-Event·Eadro·RCRank·RUN·DBSherlock는 법무 확인 전 코드 반입 금지 · 방법 재구현은 가능). 버전은 필요에 따라 올릴 수 있으나(사용자 허용) **올릴 때마다 가중치·패키지 라이선스를 다시 확인**한다(TimesFM 2.5→3.0 선례). **v3 — 공개 데이터셋에도 같은 통제를 적용한다**: 경기 데이터(Kaggle Telstra·Bosch·ASHRAE·M5·VSB)는 규칙 동의가 전제이고 비상업·경기 목적 한정이 흔해 **반입 대상이 아니다**. 라이선스 원문을 확인하지 못한 데이터(NAB 등)는 사용 보류다(J-11 · GAP-12) |
 | 모델 파일 | skops · ONNX · safetensors만. `torch.load`는 `weights_only=True`에서만. 파일 SHA-256 · 라이선스 문자열 · 학습 구간 · 파라미터를 SQLite 모델 메타에 고정. 로컬 디렉토리 로드 · 런타임 다운로드 금지(`HF_HUB_OFFLINE=1`) |
 | 의존 격리 | `sre_agent` venv + extra 분리(C-1). holmes·ML 버전 변경 시 해석 검사 필수(C-4). 해석기가 조용히 구버전을 고르는 경우를 **핀으로 막는다**(`pandas<3` · `statsforecast>=2.1`) |
 | 프로세스 격리 | 배치·재적합·평가는 `ml_batch`·`scripts/ml`에서만(C-2 · I-9). `run_service` 온디맨드 분석은 사전수집 타임박스·동시성·메모리 상한 안에서만. ML 예외는 조사 잡을 실패시키지 않는다 |
 | 자원 | 배치 스코어러 동시성 상한 · 서버당 호출 타임아웃 · 배치 창 초과 시 다음 주기로 이월 + 지연 지표 발행(누적 금지) · `mcp_server` 호출 속도 상한(운영 DB 부하 · `docs/25` 부하 가드 자세) · J-9로 `run_service`와의 공존 여유 확인 |
 | 데이터 | 운영 데이터 외부 LLM 송신 금지(D-120) · 평가 산출물은 서버 내 축소 후 반출(D-219) · note 텍스트 마스킹 후 색인 |
 | 과금 | 실 LLM 평가·holmes 상향 e2e는 건별 승인(D-127) · `RUN_E2E=1` 코드 게이트 · 키 존재만으로 실행 금지 |
-| 수명 | 신규 플래그 만료일 부여·`docs/flag_audit.md` 등재(D-162). 모델 재적합 주기와 **드리프트 지표**(잔차 분포 이동·구간 커버리지 이탈)를 `status` 도구로 노출. 커버리지가 목표를 벗어나면 해당 도구가 `degraded` 사유를 반환 |
+| 수명 | 신규 플래그 만료일 부여·`docs/flag_audit.md` 등재(D-162). 모델 재적합 주기와 **드리프트 지표**(잔차 분포 이동·구간 커버리지 이탈·**학습 구간 대비 adversarial AUC** v3 · K-4)를 `status` 도구로 노출. 커버리지가 목표를 벗어나면 해당 도구가 `degraded` 사유를 반환 |
 | 감사 | ML 도구 호출(표면 ①②③ 공통) 감사 로그(도구·인자·방법 버전·지연). 모델 교체 이력 |
 | 읽기 전용 | `sre_agent`는 DB 자격증명이 없고 쓰기 경로가 없다(기존과 동일). Redis 발행은 `ml:*` 네임스페이스로 한정 |
 
@@ -845,7 +918,8 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | **G-10** | 평가 데이터 처리 위치 | (가) 폐쇄망 서버 내 평가 · 축소 지표만 반출(D-219 준용) (나) 원본 반출 후 개발망 평가 | **(가)** — D-219 · D-120 |
 | **G-11**(v2 신설) | 게이트로 ML 신호를 전달하는 방식 | (가) `ml_batch`가 Redis `ml:*` 발행 · 게이트는 키만 읽음 (나) 게이트가 알람마다 `sre_ml_*`를 동기 조회 | **(가)** — `alarm:baseline:*` 계약 선례 · 워커 지연 없음 · `sre_agent` 장애 시 키 만료로 E3 폴백(§4.6). (나)는 알람 처리 지연과 `sre_agent` 가용성이 결합된다 |
 
-**확인 사항(결정이 아니라 사실 확인)**: J-1~J-10(§7 M0). v2에서 J-6은 라이브러리 선택 제약이 아니라 **반입 일정** 확인으로 바뀌었다.
+**확인 사항(결정이 아니라 사실 확인)**: J-1~J-11(§7 M0). v2에서 J-6은 라이브러리 선택 제약이 아니라 **반입 일정** 확인으로 바뀌었다. v3에서 J-11(공개 데이터 라이선스 원문)이 추가됐다 — M1 착수를 막지 않는다.
+**v3은 사용자 확정 게이트를 늘리지 않는다.** Kaggle 조사 결과는 전부 (가) 기존 결정의 구체화(F2c 모델 = GBDT · 피처 명세) (나) 평가 규약 추가(누수·임계·adversarial) (다) 사실 확인 항목(J-11)이며, G-1~G-11의 선택지를 바꾸지 않는다.
 
 ---
 
@@ -871,6 +945,9 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | **R-16**(v2) | **holmesgpt 정확 핀과 ML 의존의 충돌** — 해석기가 조용히 구버전을 고른다(drain3 0.9.1 · statsforecast 2.0.1 실측) | 해석 검사 필수(C-4) · 핀 고정 · drain3 미사용(Drain 자체 구현) |
 | **R-17**(v2) | `sre_agent` venv 비대화(torch·transformers 수 GB) → 조사 서비스 배포 부담 | extra 분리(C-1) · `ml-tsfm`·`ml-embed`는 해당 단계에서만 설치 · 조사 서비스 노드와 `ml_batch` 노드를 분리 배치할 수 있게 엔트리를 분리해 둔다 |
 | **R-18**(v2) | D-118 정체성 확장이 향후 "sre_agent 별도 프로젝트 분리" 시 범위를 키움 | ML이 함께 이동하도록 경로·설정을 패키지 루트 안에만 둔다(`config/ml`·`.data/ml`) · 루트 `config/` 참조 금지 |
+| **R-19**(v3) | **누수로 부풀려진 사내 평가가 채택 게이트를 그대로 통과한다.** 경기에서 반복 확인된 형태다 — Telstra 행 번호, Bosch ID 차이(실배포엔 제거 필요로 명시), ASHRAE test 누수. 우리 데이터에는 **사후 기입 원인 텍스트**라는 더 강한 누수원이 있다 | 누수 감사기 통과를 채택 게이트 전제로 한다(규약 11) · 피처/라벨 분류표 · 사건 group ∧ purged 분할(KL-4) · 리플레이–섀도 관계 확인(규약 12) |
+| **R-20**(v3) | **공개·합성 데이터 성적을 사내 기대치로 오인한다.** Kaggle의 IT 모니터링 데이터는 대부분 합성이거나 연구 데이터 재업로드다(K-8 · GAP-11) | 규약 7 확장 — 공개 데이터는 구현 회귀·누수 점검 전용. D-174와 같은 통제 계열 |
+| **R-21**(v3) | **"GBDT로 확정"이 의존 추가 요구로 샌다**(lightgbm·xgboost·catboost 반입) | 1차는 sklearn `HistGradientBoostingClassifier`로 **신규 의존 0**. 추가는 리플레이셋 우위가 신뢰구간 밖일 때만 하고 해석 검사(C-4)를 다시 돌린다(R-16과 같은 경로) |
 
 ---
 
@@ -887,6 +964,10 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 - **별도 최상위 ML 패키지 신설(v1안) — v2에서 `sre_agent` 편입으로 대체**(§4.2).
 - `run_service` 프로세스 안에서의 배치 스코어링·재적합(C-2).
 - 사용자 승인 없는 실 LLM 호출(D-127).
+- **(v3) 스태킹·다중 시드 앙상블로 지표를 쥐어짜는 것**(K-9 — 경기 실측 이득이 소수점 셋째 자리이고, 운영에서는 해석성·지연·모델 관리 비용이 그보다 크다).
+- **(v3) 누수 피처를 쓰는 것**: 행 index·정렬 위치·단조 ID 차이·사후 기입 필드·미래 창 집계·분할 전 재표본(KL-1~KL-6). 사내 점수가 올라가도 쓰지 않는다.
+- **(v3) Kaggle 경기 데이터의 폐쇄망 반입**(경기 규칙 동의·비상업 한정 · GAP-12) · 라이선스 원문을 확인하지 못한 공개 데이터의 사용(J-11).
+- **(v3) 경기·합성 데이터 성적을 사내 기대치로 인용하는 것**(K-8 · 규약 7 · D-174).
 
 **보고(이 계획이 수정하지 않은 문서 정정 대상)**
 - `plans/62` L113 "Plan 63(예측)은 별도 작성됨"은 사실과 다르다 → C5 소유는 `plans/101`이다.
@@ -910,11 +991,12 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
    - **D-118 개정**: `sre_agent` 범위를 "HolmesGPT 조사"에서 "장애 조사·진단·예측(HolmesGPT + 결정적 분석·ML)"으로 넓힌다. 편입 조건 C-1~C-6(extra 분리 · 배치 프로세스 분리 · `domain/ml` 표준 라이브러리 · 해석 검사 · skip 금지 · 문서 갱신)을 따른다.
 3. **버전·라이브러리 정책**(사용자 허용 2026-09-17): 버전과 라이브러리는 필요에 따라 올리거나 추가한다. 선택 기준은 문헌 성능·라이선스·유지보수·해석 가능성이다. 변경마다 라이선스 재확인과 해석 검사를 거친다. holmesgpt는 0.42.x로 상향한다.
 4. **알고리즘 채택 순서**
-   - 탐지: 강건 통계(STL+MAD·변화점) → 경량 ML(PCA·IForest)
-   - 예측: 추세+conformal ETA → 라이선스 허용 파운데이션 모델(예측 전용)
+   - 탐지: 강건 통계(STL+MAD·변화점) → (보조 후보) matrix profile → 경량 ML(PCA·IForest)
+   - 예측: **다중 창 median·Seasonal Naive 기준선** → 추세+conformal ETA → 분위수별 경험적 구간 → 라이선스 허용 파운데이션 모델(예측 전용)
+   - **사건 위험(라벨 조건부): 모델을 GBDT로 고정한다** — 1차는 scikit-learn `HistGradientBoostingClassifier`로 신규 의존 0이며, 다른 GBDT 구현 추가는 리플레이셋 우위가 신뢰구간 밖일 때만 한다. 피처는 4계열(다중 창 롤링 · 템플릿·건수 집계 · 엔티티 인코딩 · 마지막 이벤트 이후 경과)로 명세한다. **딥 표 모델·스태킹·다중 시드 앙상블은 하지 않는다**(v3 · K-1·K-2·K-9)
    - RCA: 규칙·이벤트 그래프·강건 점수 → 계층별 분해(Squeeze·ADDM·iSQUAD) → 지식 스켈레톤(CIRCA)
    - **자동 인과 발견·딥 멀티모달·딥 탐지기는 운영 경로 회피**
-5. **평가 계약**: PA 금지 · VUS-PR · 이벤트 단위·알람 예산 · RCA AC@k 계층·존별 분리 · 의무 기준선 · n<20 문구 금지 · 섀도 월말 2회 · 공개 벤치 수치 인용 금지.
+5. **평가 계약**: PA 금지 · VUS-PR · 이벤트 단위·알람 예산 · RCA AC@k 계층·존별 분리 · 의무 기준선 · n<20 문구 금지 · 섀도 월말 2회 · 공개 벤치 수치 인용 금지. **v3 추가**: **누수 금지 6종(KL-1~KL-6)을 기계 검사**하고 통과하지 못한 결과는 채택 게이트 입력으로 쓰지 않는다 · 평가 보고서에 **피처/라벨 분류표** 필수 · 분할은 **사건 group ∧ 시간순(purged)** 동시 만족 · **임계·컷오프는 학습 구간에서 고정**(테스트·섀도 재조정 금지) · **adversarial AUC ≥ 0.7인 분할의 성적 불채택** · **리플레이셋 점수와 섀도 성적을 쌍으로 기록**하고 리플레이 최고점 단독 채택 금지 · 경기·합성 데이터 수치도 인용 금지.
 6. **반입 계약**: 허용 라이선스 목록 · skops/ONNX/safetensors · pickle 금지 · 해시·라이선스 고정 · 로컬 로드.
 7. **결정 경로 전환**: 게이트 신호(off→shadow→annotate→escalate) · 가설 병합 · 예측 통보는 §6.3 조건을 충족할 때만 연다. baseline 수렴 시 1순위 교체와 E3 폴백 규칙을 같은 번호에 넣는다(D-161).
 
@@ -1000,6 +1082,11 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | Soldani & Brogi, Anomaly Detection and Failure RCA in (Micro)Service-Based Cloud Applications: A Survey | ACM CSUR 2022 | 10.1145/3501297 | V2 | 분류 |
 | Zhang et al., Failure Diagnosis in Microservice Systems: A Comprehensive Survey | ACM TOSEM 2025 | 10.1145/3715005 | V2 | 데이터셋 색인 |
 | Chen et al., RCACopilot (기존 dossier) | EuroSys 2024 | 10.1145/3627703.3629553 | (기존) | F4 시간 감쇠 |
+| **(v3)** Grinsztajn, Oyallon, Varoquaux, Why do tree-based models still outperform deep learning on typical tabular data? | NeurIPS 2022 Datasets & Benchmarks | proceedings.neurips.cc(2022 D&B) | V2 | **K-1** — F2c 모델을 GBDT로 확정 |
+| **(v3)** Ali et al., A Comprehensive Study of Machine Learning Techniques for Log-Based Anomaly Detection | Empirical Software Engineering 2025 | arXiv 2307.16714 | V2 | 로그 축의 P-1 보강(전통 ML ≈ 딥 ML · 준지도는 열위) |
+| **(v3)** Bojer & Meldgaard, Kaggle forecasting competitions: An overlooked learning opportunity | Int. J. Forecasting 2021 | arXiv 2009.07701 | V2 | §3.8 배경(GBDT·신경망 병존 · 전역 앙상블 우세 · Kaggle 데이터의 높은 간헐성) |
+| **(v3)** Miller et al., The ASHRAE Great Energy Predictor III competition: Overview and results | Science and Technology for the Built Environment 26(10), 2020 | arXiv 2007.06933 | V3 | **K-1·K-2**(대규모 다-엔티티 시계열에서 GBDT 앙상블 + 전처리) |
+| **(v3)** Makridakis, Spiliotis, Assimakopoulos, The M5 Accuracy competition / The M5 uncertainty competition | Int. J. Forecasting 2022 | DOI 미확인(V3 · 원문 대조 필요) | V3 | **K-1·KC-05**(상위 전원 순수 ML · 분위수별 별도 모델 + 경험적 구간) |
 
 ### 14.2 Preprint (보조 근거 — 채택 근거는 사내 재현으로 보강)
 
@@ -1018,6 +1105,9 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 | Wang et al., Cloud-OpsBench | 2603.00468 | P-24 ECR |
 | Hochenbaum et al., Automatic Anomaly Detection in the Cloud Via Statistical Learning (S-H-ESD) | 1704.07706 | P-2 |
 | Adams & MacKay, Bayesian Online Changepoint Detection | 0710.3742 | §5.2 |
+| **(v3)** Miller et al., Gradient boosting machines and careful pre-processing work best (GEPIII lessons learned) | 2202.02898 | K-1·K-2 |
+| **(v3)** Kaggle Chronicles: 15 Years of Competitions | 2511.06304 | §3.8 배경(플랫폼 계량 · 정량 표는 초록 수준 미확인) |
+| **(v3)** Managing dataset shift by adversarial validation for credit scoring | 2112.10078 | K-4 |
 
 > ※ TimeRCD(arXiv 2509.21190)는 ICML 2026 포스터 페이지가 있으나 arXiv v5에 "withdrawn" 표기가 있어 근거에서 제외했다.
 
@@ -1032,14 +1122,15 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 - Azure AI Anomaly Detector 퇴역 공지(2026-10-01)
 - (v2 내부 실측) holmesgpt 0.36.0 설치본 `holmes/config.py:152`·`core/toolset_manager.py:195-198`·`core/tools.py:183,284,719` · PyPI `requires_dist`(holmesgpt 0.36.0/0.42.0 · drain3 0.9.1/0.9.11 · statsforecast 2.0.1/2.1.1) · `uv pip compile` 해석 결과(§3.5.1)
 - 데이터셋: RCAEval(MIT) · PetShop(Apache-2.0 · archived) · TSB-AD · BOOM(Apache-2.0) · GIFT-Eval · AIOps Challenge(비상업 조건) · LogHub(연구용)
+- **(v3) Kaggle 조사(2026-09-20)**: 경기 페이지 8건(`telstra-recruiting-network`·`bosch-production-line-performance`·`ashrae-energy-prediction`·`m5-forecasting-accuracy`·`m5-forecasting-uncertainty`·`web-traffic-time-series-forecasting`·`vsb-power-line-fault-detection`·`playground-series-s3e17`) · 데이터셋 페이지 8건(Azure PM·AI4I 2020·NAB·SMD·Backblaze·Loghub·모니터링 로그 업로드 계열·NASA C-MAPSS) · 해법·분석 글(gereleth Telstra writeup **V2** · Arturus 1위 저장소 · NVIDIA *Kaggle Grandmasters Playbook* **V2** · Playground S6E2 1위 writeup · Zak Jost adversarial validation · KDD Cup 2021 5위 해법 · 비판 측 *Kaggle Folklore Is Not Data Science*). **Kaggle 페이지 본문은 JS 렌더링으로 정적 확인 불가 → 경기 메타·라이선스는 대부분 V3**(J-11 · GAP-12). 상세는 `ml_kaggle_competition_survey.md` §8
 
 ### 14.4 내부 참조
 
-`plans/50` §0.8 · `plans/51` §5 · `plans/53` Wave 5 · `plans/55` C-1·M0~M5 · `plans/60` E3·§13·§15 · `plans/62` §5.1 · `plans/64` §8.3 · `plans/82` §17.3 · `plans/83` A3·A6·A9 · `plans/87` §2.2·§5.2·§5.3·§12 · `plans/91` 1-8·1-9·1-16·1-17 · `plans/92` §0.2·§4.6 · `plans/95` G-8 · `docs/aiops_benchmark/incident_investigation_literature.md` · `docs/aiops_benchmark/noise_cancellation_literature.csv` · `docs/flag_audit.md` · `docs/18_known_mistakes.md`
+`plans/50` §0.8 · `plans/51` §5 · `plans/53` Wave 5 · `plans/55` C-1·M0~M5 · `plans/60` E3·§13·§15 · `plans/62` §5.1 · `plans/64` §8.3 · `plans/82` §17.3 · `plans/83` A3·A6·A9 · `plans/87` §2.2·§5.2·§5.3·§12 · `plans/91` 1-8·1-9·1-16·1-17 · `plans/92` §0.2·§4.6 · `plans/95` G-8 · `docs/aiops_benchmark/incident_investigation_literature.md` · `docs/aiops_benchmark/noise_cancellation_literature.csv` · **`docs/aiops_benchmark/ml_kaggle_competition_survey.md`(v3 신설 — `K-*`·`KC-*`·`KD-*`·`KL-*`·`KG-*` 정본)** · `docs/flag_audit.md` · `docs/18_known_mistakes.md`
 
 ### 14.5 조사에서 확인한 공백
 
-§3.7 표(GAP-1~GAP-10)가 정본이다.
+§3.7 표(GAP-1~**GAP-12** · v3에서 11·12 추가)가 정본이다. 경기 조사가 메우지 못한 것은 §3.8.2(KG-1~KG-5)에 따로 적었다.
 
 ---
 
@@ -1049,3 +1140,4 @@ DPM 커넥터는 이 계획의 범위가 아니다. 다만 F1~F3가 요구하는
 |---|---|---|
 | v1 | 2026-09-17 | 최초 작성. 코드·계획 실측(읽기 전용 에이전트 2) + 문헌 조사(RCA 49+22건 · 이상탐지·예측 60항목 · 라이브러리·HolmesGPT·벤더) 종합. `plans/62` §5.1 C5 슬롯 인수. D-223 예약. 동반 조사 문서 3종을 `docs/aiops_benchmark/`에 저장 |
 | v2 | 2026-09-17 | 사용자 지시(*"버전과 라이브러리는 필요에 따라 수정하거나 사용할 수 있다. 패키지는 별도가 아니라 sre_agent에 구성하는 것을 검토하라"*) 반영. ①**배치 변경**: 별도 최상위 `fault_ml/` → **`sre_agent` 편입**(§4.2 비교표 · 편입 조건 C-1~C-6 · 불변식 I-9·I-10 신설 · 배치는 같은 패키지의 별도 엔트리 `ml_batch`) ②**실측 3건**: holmes 0.36.0 설치본에 in-process `additional_toolsets` 실재(`enabled` 기본 False 주의) · `sre_agent` venv(py3.13) ML 스택 전체 의존성 해석 OK(holmes 0.36·0.42 모두 · macOS arm64 포함) · **충돌 1건**(drain3 0.9.11 `cachetools==4.2.1` vs holmesgpt `<6,>=5.5`)과 **조용한 하향 2건**(drain3 0.9.1 · statsforecast 2.0.1) → `pandas<3` 고정 · Drain 자체 구현 · 해석 검사 필수(C-4) ③**라이브러리 기준 변경**: 반입 부담을 선택 순위에서 제외(§3.5) · F4 1차 TF-IDF ④G-8 holmesgpt 0.42.x 상향 **허용 확정** · G-11(게이트 신호 전달 방식) 신설 · J-6 의미 변경 ⑤리스크 R-15~R-18 추가 ⑥공백 ID를 게이트 ID와 구분하려고 `G-n` → `GAP-n`으로 변경 |
+| v3 | 2026-09-20 | 사용자 지시(*"모니터링 정보와 로그 정보를 이용하여 ml 을 통해 장애를 진단하는 알고리즘을 캐글에서 심도 있게 찾아보고 분석하여 101번의 계획을 업데이트하라"*) 반영. **동반 조사 문서 4종으로 확장** — `ml_kaggle_competition_survey.md` 신설(경기 10건 `KC-01~KC-10` · 데이터셋 8계열 `KD-01~KD-08` · 누수 6종 `KL-1~KL-6` · 공백 `KG-1~KG-5`). ①**§3.8 신설**: 경기 증거를 구현 공학 원칙 `K-1~K-10`으로 정리 ②**§3.8.1 누수 금지 목록을 1급 제약으로 승격** — 경기 상위 해법의 "마법 피처"가 대부분 누수라는 실측(Telstra 그룹 내 행 번호 · Bosch `mindate_id_diff`가 "실배포엔 제거 필요"로 명시 · ASHRAE test 누수)에 근거하며, 우리 데이터의 최대 누수원은 **사후 기입 원인 텍스트**(`alarmcause`·`resolution`·ack)로 확정 ③**§5.3 (c) 구체화**: 모델을 **GBDT로 고정**(1차 sklearn `HistGradientBoostingClassifier` — 신규 의존 0) · 피처를 경기 검증된 4계열로 명세 · **v2 결정과 어긋나 남아 있던 "drain3 템플릿화" 표기를 "Drain 자체 구현"으로 정정** ④**§6.2 규약 11~13 신설**(누수 감사기 통과 전제 · 리플레이–섀도 관계 기록 · 임계 학습 구간 고정 + adversarial AUC 0.7 기준) ⑤§3.2 P-9 의무 기준선에 **다중 창 median**·기본 설정 GBDT 추가, §6.1에 **MCC·임계 민감도** 추가, §5.2에 **matrix profile 보조 후보** 추가, §5.3 (b)에 **분위수별 경험적 구간 선행 기준선** 추가 ⑥§5.1 **누수 감사기**(`scripts/ml/leakage_audit.py`) 산출물 신설 · M1 CU-4 편입 ⑦GAP-11(시간 집계 실데이터 대조군 부재)·GAP-12(공개 데이터 라이선스 미확인) · J-11(라이선스 원문 확인) · R-19~R-21 추가 ⑧§9 라이선스 통제를 공개 데이터셋까지 확장, §12 「하지 않는 것」 4건 추가. **사용자 확정 게이트는 늘지 않았다**(G-1~G-11 불변). 코드 0건 유지 · 데이터 내려받기 0건 · 패키지 설치 0건 |
