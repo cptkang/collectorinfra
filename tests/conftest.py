@@ -33,9 +33,20 @@ from src.state import AgentState, create_initial_state
 # - 루프백·사설 대역(docker 픽스처 PG 5433/5434·Redis 6380·Prometheus 9190 등)은 허용
 # - 차단 시 어떤 테스트가 어디로 나가려 했는지 명시해 실패시킨다(침묵 skip 금지)
 # - RUN_E2E=1(사용자 승인)이면 가드를 설치하지 않는다
+# - RUN_LOCAL_LLM=1(로컬 MLX 등 비과금 LLM · 승인 불요 · D-240)은 live_llm 테스트를 돌리되
+#   가드를 **그대로 둔다** — 로컬 LLM은 루프백이라 통과하고, 과금 외부 API는 차단된다
 # ──────────────────────────────────────────────────────────────
 
+
+def _test_modes(environ) -> tuple[bool, bool]:
+    """(외부 접속 가드 설치, live_llm 실행) — D-127 · D-240."""
+    run_e2e = environ.get("RUN_E2E") == "1"
+    run_local_llm = environ.get("RUN_LOCAL_LLM") == "1"
+    return not run_e2e, run_e2e or run_local_llm
+
+
 RUN_E2E = os.environ.get("RUN_E2E") == "1"
+GUARD_EXTERNAL, LIVE_LLM = _test_modes(os.environ)
 
 _CURRENT_TEST = {"nodeid": "<세션 초기화 단계>"}
 _BLOCKED_ATTEMPTS: list[tuple[str, str, int]] = []
@@ -96,7 +107,8 @@ def _install_external_connection_guard() -> None:
             f"(해석된 공인 IP: {', '.join(external)})\n"
             f"  테스트: {_CURRENT_TEST['nodeid']}\n"
             "  과금 API 호출 가능성이 있는 테스트는 @pytest.mark.live_llm으로 표시하고, "
-            "실행이 필요하면 사용자 승인 후 RUN_E2E=1로 실행하세요."
+            "실 LLM 테스트는 로컬 MLX(RUN_LOCAL_LLM=1 · 외부 차단 유지)로 돌리세요. "
+            "외부 API가 꼭 필요하면 사용자 승인 후 RUN_E2E=1로 실행하세요."
         )
 
     def guarded_connect(self, address):  # type: ignore[no-untyped-def]
@@ -111,23 +123,25 @@ def _install_external_connection_guard() -> None:
     socket.socket.connect_ex = guarded_connect_ex
 
 
-if not RUN_E2E:
+if GUARD_EXTERNAL:
     _install_external_connection_guard()
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "live_llm: 실 LLM(과금 가능) 호출 — 사용자 승인(RUN_E2E=1) 시에만 실행 (D-127)",
+        "live_llm: 실 LLM 호출 — RUN_LOCAL_LLM=1(로컬 MLX · 외부 차단 유지 · D-240) "
+        "또는 RUN_E2E=1(외부 허용 · 건별 사용자 승인 · D-127) 시에만 실행",
     )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """RUN_E2E 미설정 시 live_llm 표시 테스트를 건너뛴다."""
-    if RUN_E2E:
+    """RUN_LOCAL_LLM·RUN_E2E 둘 다 없으면 live_llm 표시 테스트를 건너뛴다."""
+    if LIVE_LLM:
         return
     skip_live = pytest.mark.skip(
-        reason="실 LLM 호출(과금 가능) — 사용자 승인 필수(D-127): RUN_E2E=1 시에만 실행",
+        reason="실 LLM 호출 — RUN_LOCAL_LLM=1(로컬 MLX · 승인 불요 · D-240) "
+               "또는 RUN_E2E=1(외부 · 건별 승인 · D-127) 시에만 실행",
     )
     for item in items:
         if item.get_closest_marker("live_llm"):
@@ -189,7 +203,7 @@ class ColumnCoverageStubLLM:
 def coverage_llm_for_mode(run_e2e: bool) -> ColumnCoverageStubLLM | None:
     """컬럼 커버리지 LLM 이중 모드 선택 (D-127 · 사용자 확정 2026-07-29).
 
-    자동 실행(기본 스위트)은 스텁, 사용자 승인 실행(RUN_E2E=1)은 None을 반환한다 —
+    자동 실행(기본 스위트)은 스텁, 실 LLM 실행(RUN_LOCAL_LLM=1 · RUN_E2E=1)은 None을 반환한다 —
     None이면 소비 코드(_check_data_sufficiency)가 내부 경로로 실 LLM을 획득한다.
     """
     return None if run_e2e else ColumnCoverageStubLLM()
@@ -198,7 +212,7 @@ def coverage_llm_for_mode(run_e2e: bool) -> ColumnCoverageStubLLM | None:
 @pytest.fixture
 def column_coverage_llm() -> ColumnCoverageStubLLM | None:
     """컬럼 커버리지 판단 LLM(이중 모드) — 스텁 페이로드 단언은 `is not None` 가드 후 수행."""
-    return coverage_llm_for_mode(RUN_E2E)
+    return coverage_llm_for_mode(LIVE_LLM)
 
 
 @pytest.fixture

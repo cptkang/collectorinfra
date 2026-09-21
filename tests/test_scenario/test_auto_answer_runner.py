@@ -234,3 +234,100 @@ def test_모의_서버는_answer_가_있는_턴의_다음_요청을_같은_턴�
     assert resolver.resolve(None, "th")[1:] == (1, True)
     resolver.settle("th", {"row_count": 1})
     assert resolver.resolve(None, "th")[1:] == (2, False), "답을 받은 뒤에는 다음 턴으로 넘어간다"
+
+
+# --- 배선 회귀 감시 (D-237 · run 20260914-185540) -------------------------
+#
+# 그 런은 `clarify.py` 자체가 없던 커밋에서 돌아 6567턴 중 56%가 역질문에서 끝났고,
+# 판정표는 정상 형태로 나왔다. **정의가 있어도 배선이 없으면 무효**라는 반복 실수이므로
+# "자동 응답이 끊기면 턴이 역질문으로 끝난다"를 단언으로 못 박는다.
+
+
+def test_자동_응답_배선이_끊기면_턴이_역질문으로_끝난다(tmp_path: Path, monkeypatch) -> None:
+    """`_answer_questions` 를 무력화하면 같은 시나리오가 `clarify` 로 끝나야 한다.
+
+    이 테스트가 통과한다는 것은 **정상 경로의 통과가 배선 덕분**임을 뜻한다 —
+    배선 없이도 통과하면 위 정상 테스트들은 아무것도 지키지 못하는 것이다.
+    """
+    scenario = _scenario([Turn({"query": "전체 서버 수 알려줘"},
+                               {"status": "completed", "db_ids": ["polestar_cm_gp"]})])
+    responses = [_done(status="clarification", clarification=dict(ZONE)),
+                 _done(db_ids=["polestar_cm_gp"])]
+
+    # 1) 배선이 살아 있으면 역질문을 넘어간다.
+    _client, rows = _run(tmp_path, scenario, list(responses))
+    assert rows[0]["response_mode"] != "clarify"
+    assert rows[0]["auto_answers"], "자동 응답 기록이 없으면 배선을 확인할 수 없다"
+
+    # 2) 배선을 끊으면 같은 입력이 역질문으로 끝난다.
+    # 배선만 끊는다 — 받은 관측치를 그대로 돌려주는 no-op 으로 바꾼다.
+    monkeypatch.setattr(runner_mod, "_answer_questions",
+                        lambda _c, _s, _e, _u, _t, _q, obs, *a, **kw: obs)
+    _client2, rows2 = _run(tmp_path / "off", scenario, list(responses))
+    assert rows2[0]["response_mode"] == "clarify"
+    assert "auto_answers" not in rows2[0]
+
+
+def test_응답_본문_없는_구조화_턴은_직전_역질문_원문으로_채워진다(tmp_path: Path) -> None:
+    """`clarify.complete_payload` 배선 확인 — 없으면 서버가 422 로 끊는다.
+
+    run 20260914-185540 의 F군 314턴이 정확히 이 형태(`body.query Field required`)였다.
+    """
+    scenario = _scenario([
+        Turn({"query": "전체 서버 수 알려줘"}, {"status": "clarification"}, auto_answer=False),
+        Turn({"selected_db_ids": ["polestar_cm_gp"]}, {"status": "completed"}),
+    ])
+    client, _rows = _run(tmp_path, scenario, [
+        _done(status="clarification", clarification=dict(ZONE)),
+        _done(db_ids=["polestar_cm_gp"]),
+    ])
+
+    second = client.sent[1][1]
+    assert second["selected_db_ids"] == ["polestar_cm_gp"]
+    # query 가 비면 서버가 422 로 끊는다(`QueryRequest.query` min_length=1).
+    assert second.get("query")
+
+
+# --- 실행 순서는 호출부가 정한다 (R-6 · D-237) ---------------------------
+
+
+def _order_catalog(profiles: list[str]) -> Catalog:
+    import dataclasses
+    base = Scenario(id="S-01", group="T", plans=[94], title="t", env="both",
+                    turns=[Turn({"query": "q"}, {"status": "completed"})])
+    return Catalog(groups={"T": Group("T", "테스트군", 60000)},
+                   scenarios=[dataclasses.replace(base, profile=p) for p in profiles],
+                   profiles={p: {} for p in profiles})
+
+
+def test_프로파일_순서를_주면_그대로_돈다(tmp_path: Path) -> None:
+    """`"baseline"`(0x62) > `"S2-"`(0x53) 라 알파벳 정렬은 기준선을 늘 마지막에 놓는다.
+
+    93 스위프는 62 arm 을 93.4시간 연속 돌렸고 기준선이 4일차에 돌아 쌍체 지연이
+    실행 시각과 교란됐다(순서 대 중앙 지연 r=-0.267).
+    """
+    names = ["baseline", "S2-K-true", "S2-K-false"]
+    catalog = _order_catalog(names)
+
+    got = [p for p, _ in runner_mod.iter_executions(catalog, RunConfig(profiles=names))]
+
+    assert got == names
+    assert got[0] == "baseline", "기준선이 먼저 돌아야 시간 교란이 사라진다"
+
+
+def test_프로파일_지정이_없으면_종전대로_알파벳순이다(tmp_path: Path) -> None:
+    catalog = _order_catalog(["baseline", "S2-K-true", "S2-K-false"])
+
+    got = [p for p, _ in runner_mod.iter_executions(catalog, RunConfig())]
+
+    assert got == sorted(got), "94 단독 실행의 재현성은 그대로 둔다"
+
+
+def test_지정에_없는_프로파일도_빠뜨리지_않는다(tmp_path: Path) -> None:
+    """지정 순서를 지키되 **조용히 누락하지 않는다** — 뒤에 알파벳순으로 붙인다."""
+    catalog = _order_catalog(["baseline", "S2-K-true", "S2-K-false"])
+
+    got = [p for p, _ in runner_mod.iter_executions(
+        catalog, RunConfig(profiles=["baseline", "S2-K-true", "S2-K-false", "없는arm"]))]
+
+    assert got == ["baseline", "S2-K-true", "S2-K-false"]

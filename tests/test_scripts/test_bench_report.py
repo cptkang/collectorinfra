@@ -249,3 +249,36 @@ def test_cli_sweep_run_mode_stops_when_mlx_cannot_generate(monkeypatch, capsys):
 def test_cli_parser_defaults():
     args = cli.build_parser().parse_args([])
     assert not args.quick and not args.ci and not args.sweep
+
+
+# --- L5: 「판정 불가」는 「미실행」이 아니다 (D-237 ⑤) --------------------
+#
+# 종전 장부는 L5 미측정 사유를 "성능 스위프 미실행(실 LLM 필요)" 하나로 적었다.
+# 스위프를 **돌렸는데** 축이 판정 불가로 나온 경우까지 그렇게 적히면, 재측정 대상인지
+# 미착수인지 장부만 보고 구별할 수 없다(run 20260914-185540: 28축 중 27축이 판정 불가).
+
+
+def test_스위프를_돌린_축은_미실행이_아니라_판정_불가로_적는다():
+    rows = rp.build_ledger(
+        [_knob("TEXT2SQL_MULTI_CANDIDATE")],
+        l5_unjudged={"TEXT2SQL_MULTI_CANDIDATE": "불일치 쌍이 전부 0건이다"},
+    )
+    reason = rows[0].unmeasured_reason
+
+    assert "L5 판정 불가" in reason
+    assert "성능 스위프 미실행" not in reason, "돌렸는데 미실행이라고 적으면 거짓이다"
+
+
+def test_스위프를_안_돌린_축은_종전대로_미실행이다():
+    rows = rp.build_ledger([_knob("TEXT2SQL_MULTI_CANDIDATE")])
+    assert "L5 미측정 — 성능 스위프 미실행" in rows[0].unmeasured_reason
+
+
+def test_커버리지_요약의_L5는_장부에서_센다():
+    """종전에는 "0건"이 상수로 박혀 있어 스위프 뒤에도 미실행이라고 적혔다."""
+    ledger = rp.build_ledger([_knob("A"), _knob("B")], l5_unjudged={"A": "불일치 0건"})
+
+    body = rp.render_health(_report(ledger=ledger))
+
+    assert "판정 불가 1건" in body
+    assert "재측정 대기" in body

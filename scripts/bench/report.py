@@ -108,6 +108,7 @@ def build_ledger(
     env_keys: frozenset[str] = frozenset(),
     injection_checked: frozenset[str] = frozenset(),
     l5_measured: frozenset[str] = frozenset(),
+    l5_unjudged: Optional[Mapping[str, str]] = None,
 ) -> list[LedgerRow]:
     """전건 장부를 만든다. 입력이 없는 층은 사유와 함께 미측정으로 남는다."""
     shadow_keys = {s.env_key for s in shadowed}
@@ -149,8 +150,15 @@ def build_ledger(
         else:
             l4 = COVERED
 
+        # **「판정 불가」와 「미실행」은 다르다**(D-237 ⑤). 스위프를 돌렸는데 축이 판정
+        # 불가로 나온 것을 "성능 스위프 미실행"이라고 적으면 **사실이 아닌 사유**가 장부에
+        # 남는다 — 그러면 재측정 대상인지 미착수인지 구별할 수 없다.
+        unjudged_reason = (l5_unjudged or {}).get(knob.env_key)
         if knob.env_key in l5_measured:
             l5 = COVERED
+        elif unjudged_reason:
+            l5 = UNMEASURED
+            reason_bits.append(f"L5 판정 불가 — {unjudged_reason}")
         else:
             l5 = UNMEASURED
             reason_bits.append(
@@ -259,12 +267,21 @@ def render_health(report: HealthReport) -> str:
               "", "> 최종 심판은 신규 설치 시나리오다(§6.8.1) — 빈 `.env` + A등급만으로 기동·질의가 되는가.", ""]
 
     covered = sum(1 for r in report.ledger if r.l4 == COVERED)
+    # L5 는 **장부에서 센다**. 종전에는 "0건"이 상수로 박혀 있어 스위프를 돌린 뒤에도
+    # "미실행"이라고 적혔다(실측 2026-09-21 · D-237 ⑤).
+    l5_covered = sum(1 for r in report.ledger if r.l5 == COVERED)
+    l5_unjudged = sum(1 for r in report.ledger if "L5 판정 불가" in r.unmeasured_reason)
+    if l5_covered or l5_unjudged:
+        l5_line = (f"- L5 성능: **{l5_covered}건 판정** · 판정 불가 {l5_unjudged}건 "
+                   f"— 판정 불가는 미실행이 아니라 **재측정 대기**다")
+    else:
+        l5_line = "- L5 성능: **0건** — 실 LLM이 필요한 스위프는 별도 실행이다"
     lines += ["## 7. 커버리지 요약", "",
               f"- L1 정합: **{len(report.ledger)}건 전수**",
               f"- L2 기동: {len({b.env_key for b in report.boot})}건",
               f"- L3 주입: {len(report.consumption) or len(report.boot)}건",
               f"- L4 소비: {covered}건",
-              "- L5 성능: **0건** — 실 LLM이 필요한 스위프는 별도 실행이다",
+              l5_line,
               "", "상세는 `coverage_ledger.md`(전건 한 줄씩).", ""]
 
     for key, note in (report.notes or {}).items():

@@ -102,3 +102,20 @@ def test_coverage_llm_dual_mode_selection():
 
     assert isinstance(coverage_llm_for_mode(False), ColumnCoverageStubLLM)
     assert coverage_llm_for_mode(True) is None
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, (True, False)),                                     # 기본 스위트 — 가드 on · live skip
+        ({"RUN_LOCAL_LLM": "1"}, (True, True)),                  # 로컬 MLX — 가드 유지 · live 실행
+        ({"RUN_E2E": "1"}, (False, True)),                       # 외부 허용(건별 승인) — 가드 off
+        ({"RUN_E2E": "1", "RUN_LOCAL_LLM": "1"}, (False, True)),  # 승인(외부 허용) 우선
+        ({"RUN_LOCAL_LLM": "true"}, (True, False)),              # "1" 만 켠다
+    ],
+)
+def test_test_modes(environ, expected):
+    """(가드 설치, live_llm 실행) 결정 — 로컬 LLM 모드는 가드를 끄지 않는다(D-240)."""
+    from tests.conftest import _test_modes
+
+    assert _test_modes(environ) == expected

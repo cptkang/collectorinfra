@@ -61,6 +61,17 @@ class ProfileStatus:
     reasons: list[str] = field(default_factory=list)
     #: 서버 자신의 요청 상한(초) - `SERVER_TIMEOUT_KEYS` 중 에코에서 읽힌 것만 담는다.
     server_timeouts: dict[str, float] = field(default_factory=dict)
+    #: 이 기동이 **실제로 읽은 설정 전부**(`/admin/settings/schema` 에코).
+    #:
+    #: 종전에는 받아 놓고 `AUTH_ENABLED`·타임아웃·**불일치**만 남기고 버렸다. 그래서
+    #: *"이 프로파일의 주입값이 기준선 실효값과 같은가"*(= 대조군인가)를 사후에 판정할 수
+    #: 없었고, 93 스위프가 대조군 arm 의 노이즈를 축 효과로 렌더링했다(D-237 · D-219).
+    #: `plans/93` §4.5 가 *"arm: 실효 설정 전체 스냅샷"* 을 요구한 것이 이 칸이다.
+    #:
+    #: **시크릿은 들어오지 않는다** — `/admin/settings/schema` 가 `is_secret` 은
+    #: `effective_value=None` 으로, `is_sensitive` 는 `********` 로 내보낸다
+    #: (`src/api/settings_catalog.py:1040-1047`). 그래서 `run.json` 에 평문이 남지 않는다.
+    effective_settings: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -73,6 +84,7 @@ class ProfileStatus:
             "echo_mismatch": self.echo_mismatch,
             "auth_enabled": self.auth_enabled,
             "reasons": self.reasons,
+            "effective_settings": self.effective_settings,
         }
 
 
@@ -357,6 +369,9 @@ def verify_profile(
             "주입이 실효값에 반영됐는지 확인하지 못했으므로 이 프로파일은 재지 않는다"
         )
     else:
+        # **받은 것을 버리지 않는다**(D-237). 종전에는 아래 세 갈래로 추려 쓰고 원본을
+        # 흘려보냈는데, 그러면 대조군 판정·사후 재분석의 재료가 사라진다.
+        status.effective_settings = {str(k): str(v) for k, v in effective.items()}
         status.auth_enabled = effective.get("AUTH_ENABLED", "").strip().lower() == "true"
         for key in SERVER_TIMEOUT_KEYS:
             try:

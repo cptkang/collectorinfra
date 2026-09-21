@@ -204,6 +204,90 @@ def _last_change(env_key: str) -> str:
     return out or "현 브랜치 이력에서 찾지 못함"
 
 
+# ── 축 최적 레벨 → 처분 입력 (D-237) ────────────────────────────────
+#
+# `decide()` 는 **arm 5어휘**(`compare.ADOPT` 등)만 안다. 그 어휘는 "이 arm 이 기준선보다
+# 나은가"를 답하는 말이라, 축 판정(`compare.AxisOptimum` — "이 축의 최적 레벨은 무엇인가")을
+# 그대로 넣을 수 없다. 여기서 번역한다. **`decide()` 는 건드리지 않는다** — 처분 규칙
+# (§6.5.2)은 정본이고, 바뀐 것은 입력을 만드는 방법뿐이다.
+
+
+def axis_verdict_word(optimum: "cmp_mod.AxisOptimum") -> tuple[str, Optional[str], str]:
+    """축 판정 1건을 `(arm 5어휘, 권고값, 사람이 읽을 사유)` 로 옮긴다.
+
+    핵심은 **최적 레벨이 대조군일 때**다. 대조군은 기준선과 실효 설정이 같은 레벨이므로,
+    그것이 이겼다는 말은 *"현행이 최적이고 다른 레벨이 더 나쁘다"* 는 뜻이다 — 기본값을
+    바꾸는 `채택 권고`가 아니라 **`기각`**(기본값 유지 + '권장하지 않음')으로 가야 한다.
+    이 구분이 없으면 현행 유지가 기본값 변경 제안으로 둔갑한다.
+    """
+    controls = set(optimum.control_levels)
+    if optimum.verdict == cmp_mod.BEST_LEVEL and optimum.best_level:
+        if optimum.best_level in controls:
+            others = [lv for lv in optimum.levels if lv != optimum.best_level]
+            return (cmp_mod.REJECT, None,
+                    f"레벨 간 비교에서 **현행값 `{optimum.best_level}`(대조군)이 우세**하다 — "
+                    f"{'·'.join(others)} 는 더 나쁘다")
+        return (cmp_mod.ADOPT, optimum.best_level,
+                f"레벨 간 비교에서 `{optimum.best_level}` 가 우세하다")
+    if optimum.verdict == cmp_mod.LEVELS_TIED:
+        return (cmp_mod.NO_DIFFERENCE, None, "레벨 간 유의차 없음 — 기본값을 바꿀 근거가 없다")
+    return (cmp_mod.UNDERPOWERED, None, f"축 판정 불가 — {optimum.sentence[:120]}")
+
+
+def axis_disposition_inputs(
+    optima: Sequence["cmp_mod.AxisOptimum"],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """`build_from_validation(verdicts=…, recommended=…)` 에 그대로 넣을 두 매핑.
+
+    **축 id 가 곧 env_key 다**(`axes.expand_ofat` 이 `env_key` 를 축 id 로 쓴다) — 별도
+    매핑표가 필요 없다.
+    """
+    verdicts: dict[str, str] = {}
+    recommended: dict[str, str] = {}
+    for opt in optima:
+        word, value, _ = axis_verdict_word(opt)
+        verdicts[opt.axis] = word
+        if value is not None:
+            recommended[opt.axis] = value
+    return verdicts, recommended
+
+
+def render_recommended_env(
+    optima: Sequence["cmp_mod.AxisOptimum"],
+    *,
+    baseline_effective: Optional[Mapping[str, str]] = None,
+) -> str:
+    """`recommended.env.diff` — **기준선 대비 권고 설정만** 적는다(모듈 독스트링의 산출 ①).
+
+    종전에는 독스트링이 이 파일을 약속해 놓고 `write_proposals` 가 만들지 않았다
+    (실측 2026-09-21). 축 최적 레벨이 나오면 여기로 이어진다.
+    """
+    lines = [
+        "# 기준선 대비 권고 설정 (plans/93 §6.5 · D-237 레벨 간 비교)",
+        "#",
+        "# **제안일 뿐이다** — 이 블록을 `.env` 에 반영하는 것은 §6.6 R3 이고, 그 전에",
+        "# `migration_pin.env` 로 현재 실효값을 먼저 박는다(§6.7.1).",
+        "#",
+    ]
+    changes = 0
+    for opt in sorted(optima, key=lambda o: o.axis):
+        word, value, reason = axis_verdict_word(opt)
+        if word != cmp_mod.ADOPT or value is None:
+            lines.append(f"# {opt.axis}: 권고 없음 — {reason}")
+            continue
+        current = (baseline_effective or {}).get(opt.axis)
+        if current is not None and str(current).strip().lower() == value.strip().lower():
+            lines.append(f"# {opt.axis}: 이미 권고값({value})이다 — 변경 없음")
+            continue
+        lines.append(f"# {opt.axis}: {reason}"
+                     + (f" (현행 {current})" if current is not None else ""))
+        lines.append(f"{opt.axis}={value}")
+        changes += 1
+    if not changes:
+        lines += ["#", "# **권고 변경 0건.** 측정에서 기본값을 바꿀 근거가 나오지 않았다."]
+    return "\n".join(lines) + "\n"
+
+
 def render_dispositions(dispositions: Sequence[Disposition]) -> str:
     lines = [
         "# 노브 처분 제안",
@@ -261,8 +345,15 @@ def write_proposals(
     evidences: Sequence[Evidence],
     pin_values: Mapping[str, str],
     out_dir: Path,
+    *,
+    optima: Sequence["cmp_mod.AxisOptimum"] = (),
+    baseline_effective: Optional[Mapping[str, str]] = None,
 ) -> dict[str, Path]:
-    """제안 문서를 쓴다. **`.env`·`config.py`는 건드리지 않는다**(V5)."""
+    """제안 문서를 쓴다. **`.env`·`config.py`는 건드리지 않는다**(V5).
+
+    `optima` 가 있으면 `recommended.env.diff` 도 쓴다 — 모듈 독스트링이 약속한 산출 ①이고,
+    축 최적 레벨(D-237)이 실제로 설정 제안으로 이어지는 지점이다.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "disposition": out_dir / "knob_disposition.md",
@@ -272,6 +363,11 @@ def write_proposals(
     paths["disposition"].write_text(render_dispositions(dispositions), encoding="utf-8")
     paths["evidence"].write_text(render_evidence(evidences), encoding="utf-8")
     paths["pin"].write_text(render_migration_pin(pin_values), encoding="utf-8")
+    if optima:
+        paths["recommended"] = out_dir / "recommended.env.diff"
+        paths["recommended"].write_text(
+            render_recommended_env(optima, baseline_effective=baseline_effective),
+            encoding="utf-8")
     return paths
 
 

@@ -269,3 +269,34 @@ def test_서버_요청_상한이_없거나_숫자가_아니면_담지_않는다(
     patch_client({"API_QUERY_TIMEOUT": ""})
     status = verify_profile(FakeHandle(), {}, admin_token=None)
     assert status.server_timeouts == {}
+
+
+# --- 실효 설정 전체 보존 (R-9 · plans/93 §4.5 · D-237) -------------------
+#
+# 종전에는 `/admin/settings/schema` 에코를 받아 놓고 AUTH_ENABLED·타임아웃·**불일치**만
+# 남기고 버렸다. 그래서 "이 프로파일의 주입값이 기준선 실효값과 같은가"(=대조군인가)를
+# 사후에 판정할 수 없었고, 93 스위프가 대조군 arm 의 노이즈를 축 효과로 렌더링했다.
+
+
+def test_에코_받은_실효_설정_전체를_보존한다(patch_client) -> None:
+    patch_client({"TEXT2SQL_MULTI_CANDIDATE": "true", "SCHEMA_CACHE_BACKEND": "redis",
+                  "AUTH_ENABLED": "false"})
+
+    status = verify_profile(
+        FakeHandle(), {"TEXT2SQL_MULTI_CANDIDATE": "true"}, admin_token=None,
+        expected_tier="deep_agent")
+
+    assert status.effective_settings["SCHEMA_CACHE_BACKEND"] == "redis", \
+        "주입하지 않은 키도 남아야 대조군 판정이 가능하다"
+    assert status.effective_settings["TEXT2SQL_MULTI_CANDIDATE"] == "true"
+    assert status.as_dict()["effective_settings"] == status.effective_settings
+
+
+def test_에코를_못_읽으면_실효_설정은_비어_있다(patch_client) -> None:
+    """확인 못 한 것을 통과로 세지 않는다 — 빈 dict 는 '없음'이지 '같음'이 아니다."""
+    patch_client(None, "설정 에코 미확인 (http 401 - 관리자 토큰 필요)")
+
+    status = verify_profile(FakeHandle(), {"ENABLE_X": "true"}, admin_token=None)
+
+    assert status.effective_settings == {}
+    assert status.echo_ok is False

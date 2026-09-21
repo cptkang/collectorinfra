@@ -503,7 +503,16 @@ def _execution_order(scenario: Scenario) -> tuple[int, str, str]:
 def iter_executions(
     catalog: Catalog, config: RunConfig
 ) -> Iterator[tuple[str, list[Scenario]]]:
-    """프로파일별로 시나리오를 묶는다. 프로파일 1개 = 서버 기동 1회다(§3.5)."""
+    """프로파일별로 시나리오를 묶는다. 프로파일 1개 = 서버 기동 1회다(§3.5).
+
+    **`config.profiles` 가 주어지면 그 순서대로 돈다**(D-237). 종전에는 언제나 알파벳
+    정렬이었는데, 그러면 `"baseline"`(0x62)이 `"S2-…"`(0x53)보다 뒤라 **기준선이 항상
+    마지막**에 실행된다. 93 스위프는 62 arm 을 **연속 93.4시간** 돌렸고 기준선은 4일차에
+    돌았다 — 쌍체 지연 비교가 통째로 실행 시각과 교란됐다(실행 순서 대 중앙 지연 r=-0.267 ·
+    전반 31 arm 61.1초 → 후반 31 arm 56.6초, 축 효과 보고값과 같은 크기대).
+    호출부가 순서를 정하면(93은 기준선을 맨 앞에 놓는다) 그 교란이 사라진다.
+    지정이 없으면 **종전대로 알파벳 정렬**이다 — 94 단독 실행의 재현성을 위해서다.
+    """
     selected = catalog.select(config.groups, config.only, config.env)
     if config.profiles:
         wanted = set(config.profiles)
@@ -511,7 +520,19 @@ def iter_executions(
     grouped: dict[str, list[Scenario]] = {}
     for scenario in selected:
         grouped.setdefault(scenario.profile, []).append(scenario)
-    for profile in sorted(grouped):
+
+    if config.profiles:
+        # 지정 순서를 지키되 중복은 첫 등장만, 카탈로그에 없는 이름은 건너뛴다.
+        order, seen = [], set()
+        for name in config.profiles:
+            if name in grouped and name not in seen:
+                seen.add(name)
+                order.append(name)
+        order += sorted(p for p in grouped if p not in seen)
+    else:
+        order = sorted(grouped)
+
+    for profile in order:
         ordered = sorted(grouped[profile], key=_execution_order)
         yield profile, ordered
 

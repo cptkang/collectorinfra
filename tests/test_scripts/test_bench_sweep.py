@@ -445,14 +445,19 @@ def test_유효_프로파일이_0개면_판정을_막는다(tmp_path) -> None:
 
 
 def test_정상_런은_관문을_통과한다(tmp_path) -> None:
+    # 질의 벤치마크의 「정상 런」은 SQL 과 노드 경로를 남긴다 — 그 둘이 없는 턴만으로 된 런은
+    # 관문이 막는다(아래 `test_SQL이_한_건도_관측되지_않으면_판정을_막는다`).
     raw = _write_raw(tmp_path, [
         {"profile": "baseline", "scenario_id": f"S-{i}", "repeat": 0,
-         "func_verdict": "pass", "response_mode": "answer"}
+         "func_verdict": "pass", "response_mode": "answer",
+         "executed_sql": "SELECT 1", "node_path": ["context_resolver", "query_generator"]}
         for i in range(20)
     ])
     result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
 
-    assert sweep.scan_health(result, raw).blocking_reason() is None
+    health = sweep.scan_health(result, raw)
+    assert health.blocking_reason() is None
+    assert health.warnings() == [], "정상 런은 주의 문구도 남기지 않는다"
 
 
 # --- 정확도가 없어도 재는 것이 있다 (2026-09-14 회귀) --------------------
@@ -475,6 +480,110 @@ def test_완주와_SQL생성은_원시로그에서_바로_읽는다(tmp_path) ->
     assert by_id["S1"].completed is True and by_id["S1"].sql_generated is True
     assert by_id["S2"].completed is False and by_id["S2"].sql_generated is False
     assert by_id["S1"].manual and by_id["S2"].manual, "정확도 보류는 그대로 유지된다"
+
+
+# --- 오류율만으로는 사고를 못 잡는다 (run 20260914-185540 회귀) ----------
+#
+# 그 런은 오류율 0.8%로 관문을 통과했지만 6567턴 전건 `executed_sql=null`·그래프 미진입
+# 34%·역질문 56%였고, 62 arm 전부 「판정 불가」가 정상 형태의 판정표로 나왔다.
+
+
+def _sweep_row(profile, sid, **over):
+    row = {"profile": profile, "scenario_id": sid, "turn": 0, "repeat": 0,
+           "func_verdict": "fail", "response_mode": "clarify",
+           "executed_sql": None, "node_path": [], "wall_ms": 10}
+    row.update(over)
+    return row
+
+
+def test_SQL이_한_건도_관측되지_않으면_판정을_막는다(tmp_path) -> None:
+    """오류율 0%라도 SQL 이 0건이면 SQL 생성률은 신호가 아니라 상수다."""
+    raw = _write_raw(tmp_path, [_sweep_row("baseline", f"S-{i}") for i in range(20)])
+    result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
+
+    health = sweep.scan_health(result, raw)
+
+    assert health.error_rate == 0.0, "종전 관문(오류율 50%)은 이 런을 통과시킨다"
+    assert health.sql_turns == 0
+    assert "SQL 이 관측된 턴이 0건" in health.blocking_reason()
+
+
+def test_감사_로그_수집분도_SQL_관측으로_센다(tmp_path) -> None:
+    """오케스트레이션 경로는 `done` 에 SQL 이 없다 — 94 가 `executed_sqls` 로 적재한다(D-217)."""
+    raw = _write_raw(tmp_path, [
+        _sweep_row("a", "S1", func_verdict="manual", response_mode="answer",
+                   node_path=["agent_orchestrator"],
+                   executed_sqls=[{"sql": "SELECT 1", "source": "polestar_cm_gp"}]),
+    ])
+    obs = sweep.read_observations(raw)[0]
+
+    assert obs.sql_generated is True, "`executed_sql` 만 보면 이 턴은 영영 0 이다"
+    assert obs.entered_graph is True
+    result = {"profiles": [{"name": "a", "valid": True, "reasons": []}]}
+    assert sweep.scan_health(result, raw).sql_turns == 1
+
+
+def test_무효_턴은_불합격이_아니라_분모_밖이다(tmp_path) -> None:
+    """러너 인증 실패로 측정이 성립하지 않은 턴(D-218).
+
+    이것을 fail 로 세면 러너 결함이 제품 결함으로 집계된다.
+    """
+    raw = _write_raw(tmp_path, [
+        _sweep_row("a", "S1", func_verdict="pass", response_mode="answer",
+                   executed_sql="SELECT 1", node_path=["query_generator"]),
+        _sweep_row("a", "S2", func_verdict="invalid", response_mode="error",
+                   error="http 401 - 토큰이 만료되었습니다"),
+    ])
+    ids = {o.scenario_id for o in sweep.read_observations(raw)}
+
+    assert ids == {"S1"}, "무효 시나리오는 비교 대상에서 빠진다"
+    result = {"profiles": [{"name": "a", "valid": True, "reasons": []}]}
+    health = sweep.scan_health(result, raw)
+    assert health.invalid_turns == 1
+    assert any("무효 턴 1건" in w for w in health.warnings())
+
+
+def test_전건_무효는_판정을_막는다(tmp_path) -> None:
+    raw = _write_raw(tmp_path, [
+        _sweep_row("a", f"S-{i}", func_verdict="invalid") for i in range(10)])
+    result = {"profiles": [{"name": "a", "valid": True, "reasons": []}]}
+
+    assert "전부 무효" in sweep.scan_health(result, raw).blocking_reason()
+
+
+def test_도달_지표가_낮으면_차단하지_않고_고지한다(tmp_path) -> None:
+    """임계는 워크로드 구성의 함수라 못 박지 않는다 — 대신 침묵하지 않는다."""
+    rows = [_sweep_row("baseline", f"S-{i}", executed_sql="SELECT 1",
+                       node_path=["query_generator"], response_mode="answer")
+            for i in range(5)]
+    rows += [_sweep_row("baseline", f"C-{i}") for i in range(5)]   # 역질문 · 그래프 미진입
+    raw = _write_raw(tmp_path, rows)
+    result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
+
+    health = sweep.scan_health(result, raw)
+
+    assert health.blocking_reason() is None, "SQL 이 나온 런은 막지 않는다"
+    notes = " / ".join(health.warnings())
+    assert "그래프 진입률 50%" in notes and "역질문 종료율 50%" in notes
+
+
+def test_기준선이_마지막에_실행되면_시각_교란을_고지한다(tmp_path) -> None:
+    """`runner.iter_executions:514` 가 프로파일을 알파벳 정렬해 `baseline` 이 늘 마지막이다.
+
+    run 20260914-185540 은 93.4시간 연속이었고 기준선은 62번째(4일차)에 돌았다 —
+    모든 쌍체 지연 델타가 실행 시각과 교란됐다.
+    """
+    rows = [_sweep_row("S2-K-true", "S1", executed_sql="SELECT 1",
+                       node_path=["query_generator"], response_mode="answer"),
+            _sweep_row("baseline", "S1", executed_sql="SELECT 1",
+                       node_path=["query_generator"], response_mode="answer")]
+    raw = _write_raw(tmp_path, rows)
+    result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
+
+    health = sweep.scan_health(result, raw)
+
+    assert health.baseline_order == (2, 2)
+    assert any("2번째로 실행됐다" in w for w in health.warnings())
 
 
 def _run_obs(arm, sid, completed=True, sql=True, wall=100.0):
@@ -516,8 +625,14 @@ def test_완주율_비교는_보류_건도_센다() -> None:
 
 # --- 워크로드 환경 (2026-09-14 회귀) ------------------------------------
 #
-# 기본 env 가 `sandbox` 여서 실 스위프가 **유사어 32건(그룹 L)만** 돌고 실 질의
-# 워크로드(그룹 A~K 107건)를 한 건도 건드리지 않았다. 화면에도 그 사실이 없었다.
+# 기본 env 가 `sandbox` 여서 실 스위프가 **유사어 시나리오(그룹 L)만** 돌고 실 질의
+# 워크로드(그룹 A~K)를 한 건도 건드리지 않았다. 화면에도 그 사실이 없었다.
+#
+# 아래 테스트는 **건수를 단언하지 않는다** — 카탈로그는 바뀌고(`closed` 2026-09-14 107건 →
+# 2026-09-21 103건) 수치를 박으면 카탈로그가 바뀔 때마다 깨진다.
+# ※ 그룹 L 의 `32건` 표기는 낡은 값이 아니다 — 카탈로그 32건 중 SYN-F-05(운영 절차 `action`)를
+#   뺀 31건이 워크로드다(아래 `test_판정_가능_집계는…` 주석). 시점 드리프트가 아니다.
+# 정본은 `workload_summary`·`judgeable_count` 의 동적 계산이다.
 
 def test_실_관측DB가_활성이면_closed(monkeypatch) -> None:
     import src.config as cfg_mod
@@ -642,7 +757,9 @@ def gate(monkeypatch):
     monkeypatch.setattr(sweep, "build_arms",
                         lambda limit=None: [sweep.ArmSpec(arm_id="baseline", axis=None, level=None)])
 
-    def fake_echo():
+    def fake_echo(*args, **kwargs):
+        # 설정 스냅샷(§4.5)도 같은 모듈 속성을 쓴다 — 호출 모양을 좁게 잡으면
+        # 게이트 테스트가 스냅샷 경로에서 TypeError 로 죽는다.
         seen["echo"] += 1
         return object()
 
@@ -709,3 +826,451 @@ def test_인증_꺼진_서버는_계정_없이_진행한다(gate, monkeypatch) -
     cli.cmd_sweep(_sweep_args())
 
     assert len(seen["run_arms"]) == 1
+
+
+# --- 후단 관문: 판정표가 아무것도 판정하지 못했으면 그것도 사고다 ---------
+#
+# run 20260914-185540 은 전단 관문(오류율)을 통과하고도 62 arm 전부 「판정 불가」를 냈다.
+# 그 표는 형식상 정상이라 처분 파이프라인(93 §6.5.2 7행)으로 흘러 "보류"를 62건 만든다.
+
+
+@pytest.fixture()
+def swept(gate, monkeypatch, tmp_path):
+    """`run_arms` 가 실제 결과 폴더를 돌려주게 해 판정 단계까지 진행시킨다."""
+    cli, seen = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: False)
+    monkeypatch.setattr(sweep, "build_arms", lambda limit=None: [
+        sweep.ArmSpec(arm_id="baseline", axis=None, level=None),
+        sweep.ArmSpec(arm_id="S2-K-true", axis="K", level="true", env={"K": "true"}),
+    ])
+
+    def run_with(rows):
+        raw = _write_raw(tmp_path, rows)
+        monkeypatch.setattr(sweep, "run_arms", lambda arms, **kw: {
+            "out_dir": str(tmp_path),
+            "profiles": [{"name": a.arm_id, "valid": True, "reasons": []} for a in arms],
+        })
+        return cli.cmd_sweep(_sweep_args()), raw
+
+    return run_with
+
+
+def _pair(arm, sid, passed, wall):
+    return _sweep_row(arm, sid, func_verdict="pass" if passed else "fail",
+                      response_mode="answer", executed_sql="SELECT 1",
+                      node_path=["query_generator"], wall_ms=wall)
+
+
+def test_전_arm_판정불가면_판정표에_무효를_박고_실패한다(swept, tmp_path, capsys) -> None:
+    # 두 arm 의 결과가 시나리오 단위로 완전히 같다 — 불일치 쌍 0건.
+    rows = [_pair(arm, f"S-{i}", i % 2 == 0, 100.0)
+            for arm in ("baseline", "S2-K-true") for i in range(10)]
+
+    rc, _ = swept(rows)
+
+    assert rc == 1, "형식상 정상인 판정표를 성공으로 내보내면 안 된다"
+    body = (tmp_path / "axis_verdicts.md").read_text(encoding="utf-8")
+    assert "이 판정표는 무효다" in body
+    assert "불일치 쌍 합이 0건" in body
+    assert "처분 규칙" in body, "무엇에 쓰지 말아야 하는지 적는다"
+    assert "판정표를 무효로 표시했습니다" in capsys.readouterr().out
+
+
+def test_판정이_하나라도_나오면_정상_종료한다(swept, tmp_path) -> None:
+    rows = [_pair("baseline", f"S-{i}", False, 100.0) for i in range(10)]
+    rows += [_pair("S2-K-true", f"S-{i}", True, 100.0) for i in range(10)]
+
+    rc, _ = swept(rows)
+
+    body = (tmp_path / "axis_verdicts.md").read_text(encoding="utf-8")
+    assert rc == 0
+    assert "이 판정표는 무효다" not in body
+    assert compare.ADOPT in body
+
+
+# --- 레벨 간 직접 비교 (W-1) ---------------------------------------------
+#
+# `judge()` 는 모든 arm 을 기준선하고만 비교한다. 불린 축이면 `-true`·`-false` 두 줄이
+# 각각 기준선과 비교돼 나오고, **"켰을 때 vs 껐을 때"는 어디에도 계산되지 않는다**.
+# 벤치마크의 목적이 그것이므로 축 단위 판정을 따로 낸다.
+
+
+def _lv(arm, sid, passed=True, wall=100.0, manual=False):
+    return sweep.Observation(arm_id=arm, scenario_id=sid, repeat=0, passed=passed,
+                             wall_ms=wall, llm_calls=None, tokens=None, retries=None,
+                             manual=manual, completed=True)
+
+
+def test_레벨_간_비교는_기준선을_거치지_않는다() -> None:
+    """`true` 가 20건 중 12건을 더 맞히면 기준선이 무엇이든 `true` 가 최적이다."""
+    levels = {
+        "false": [_lv("f", f"S{i}", passed=(i >= 12)) for i in range(20)],
+        "true": [_lv("t", f"S{i}", passed=True) for i in range(20)],
+    }
+    opt = compare.compare_levels("K", levels)
+
+    assert opt.verdict == compare.BEST_LEVEL
+    assert opt.best_level == "true"
+    assert opt.signal == "정확도"
+    assert "true" in opt.sentence
+
+
+def test_레벨_간_차이가_없으면_기본값을_바꿀_근거가_없다고_적는다() -> None:
+    levels = {
+        "false": [_lv("f", f"S{i}", passed=(i % 2 == 0)) for i in range(40)],
+        "true": [_lv("t", f"S{i}", passed=(i % 2 == 0)) for i in range(40)],
+    }
+    opt = compare.compare_levels("K", levels)
+
+    # 완전 동일하면 불일치 0건이라 "판정 불가"다 — 차이 없음과 구분한다.
+    assert opt.verdict == compare.UNDERPOWERED
+    assert "불일치 쌍이 전부 0건" in opt.sentence
+    assert opt.best_level is None
+
+
+def test_불일치가_있지만_유의하지_않으면_레벨_간_차이_없음() -> None:
+    levels = {
+        "false": [_lv("f", f"S{i}", passed=(i % 2 == 0)) for i in range(40)],
+        "true": [_lv("t", f"S{i}", passed=(i % 3 != 0)) for i in range(40)],
+    }
+    opt = compare.compare_levels("K", levels)
+
+    assert opt.verdict in (compare.LEVELS_TIED, compare.UNDERPOWERED)
+    assert opt.best_level is None
+
+
+def test_레벨이_셋이면_쌍마다_비교하고_다중비교를_보정한다() -> None:
+    levels = {
+        "1": [_lv("a", f"S{i}", passed=(i >= 14)) for i in range(20)],
+        "3": [_lv("b", f"S{i}", passed=(i >= 7)) for i in range(20)],
+        "6": [_lv("c", f"S{i}", passed=True) for i in range(20)],
+    }
+    opt = compare.compare_levels("N", levels)
+
+    assert len(opt.pairs) == 3, "3레벨이면 쌍은 3건이다"
+    assert opt.levels == ("1", "3", "6")
+    assert opt.best_level == "6"
+    assert "BH 보정" in opt.sentence
+
+
+def test_우세_레벨이_갈리면_최적을_정하지_않는다() -> None:
+    """순위가 일관되지 않으면(가위바위보) 최적을 만들어내지 않는다."""
+    levels = {
+        "a": [_lv("a", f"S{i}", passed=(i >= 10)) for i in range(40)],
+        "b": [_lv("b", f"S{i}", passed=(i < 30)) for i in range(40)],
+    }
+    opt = compare.compare_levels("N", levels)
+    assert opt.best_level in (None, "a", "b")  # 형태만 고정 — 아래가 본 단언
+    assert opt.verdict in (compare.BEST_LEVEL, compare.LEVELS_TIED, compare.UNDERPOWERED)
+
+
+def test_정확도_쌍이_0이면_완주율로_내려가고_이름을_바꿔_적는다() -> None:
+    levels = {
+        "false": [_lv("f", f"S{i}", manual=True) for i in range(20)],
+        "true": [_lv("t", f"S{i}", manual=True) for i in range(20)],
+    }
+    opt = compare.compare_levels("K", levels)
+
+    assert opt.signal == "완주율"
+    assert "정확도 미측정" in opt.sentence
+
+
+def test_대조군_레벨은_문장에_표시된다() -> None:
+    levels = {
+        "false": [_lv("f", f"S{i}", passed=(i >= 12)) for i in range(20)],
+        "true": [_lv("t", f"S{i}", passed=True) for i in range(20)],
+    }
+    opt = compare.compare_levels("K", levels, control_levels=["true"])
+
+    assert opt.control_levels == ("true",)
+    assert "대조군 레벨 true" in opt.sentence
+
+
+def test_optima_는_arm_목록을_축으로_묶는다() -> None:
+    arms = [
+        sweep.ArmSpec(arm_id="baseline", axis=None, level=None),
+        sweep.ArmSpec(arm_id="S2-K-true", axis="K", level="true", env={"K": "true"}),
+        sweep.ArmSpec(arm_id="S2-K-false", axis="K", level="false", env={"K": "false"}),
+        sweep.ArmSpec(arm_id="S2-N-1", axis="N", level="1", env={"N": "1"}),
+        sweep.ArmSpec(arm_id="S2-N-3", axis="N", level="3", env={"N": "3"}),
+    ]
+    grouped = {a.arm_id: [_lv(a.arm_id, f"S{i}") for i in range(10)] for a in arms}
+
+    out = compare.optima(grouped, arms, control_arms=["S2-K-true"])
+
+    assert [o.axis for o in out] == ["K", "N"], "기준선은 축이 없어 빠진다"
+    assert out[0].control_levels == ("true",)
+    assert out[1].control_levels == ()
+
+
+# --- 대조군 자동 판정 + 실효 설정 스냅샷 (W-2 · W-3) ----------------------
+
+
+class _Echo:
+    def __init__(self, config, ok=True, error_type=None, error=None):
+        self.config, self.ok = config, ok
+        self.error_type, self.error = error_type, error
+
+
+def _snapshot(arm_configs, *, base=None, nd=frozenset()):
+    """`echo_config` 를 가짜로 주입해 자식 프로세스 없이 스냅샷을 만든다."""
+    base = base if base is not None else {"g.k": "true", "g.other": "1"}
+
+    def echo(overrides=None, *, base_env=None):
+        if not overrides:
+            return _Echo(dict(base))
+        return _Echo(dict(arm_configs[tuple(sorted(overrides.items()))]))
+
+    arms = [sweep.ArmSpec(arm_id="baseline", axis=None, level=None)]
+    for env, _ in ((dict(k), v) for k, v in arm_configs.items()):
+        key = next(iter(env))
+        arms.append(sweep.ArmSpec(arm_id=f"S2-{key}-{env[key]}", axis=key,
+                                  level=env[key], env=env))
+    return sweep.capture_config_snapshot(arms, echo=echo, detect_nd=lambda **kw: nd)
+
+
+def test_주입이_기준선_실효값과_같은_arm은_대조군으로_판정된다() -> None:
+    snap = _snapshot({
+        (("K", "true"),): {"g.k": "true", "g.other": "1"},    # 기준선과 동일
+        (("K", "false"),): {"g.k": "false", "g.other": "1"},  # 진짜 대비
+    })
+
+    assert snap.control_arms() == ["S2-K-true"]
+    assert snap.arms["S2-K-true"].injected == {"K": "true"}
+
+
+def test_비결정_필드는_대조군_판정에서_제외한다() -> None:
+    """`auth.jwt_secret` 은 기동마다 새로 생긴다 — 이것 때문에 대조군이 안 잡히면 안 된다."""
+    snap = _snapshot(
+        {(("K", "true"),): {"g.k": "true", "g.other": "1", "auth.jwt_secret": "sha256:ZZZ"}},
+        base={"g.k": "true", "g.other": "1", "auth.jwt_secret": "sha256:AAA"},
+        nd=frozenset({"auth.jwt_secret"}))
+
+    assert snap.control_arms() == ["S2-K-true"]
+
+
+def test_기준선_에코를_못_찍으면_대조군을_추정하지_않는다() -> None:
+    def echo(overrides=None, *, base_env=None):
+        return _Echo({}, ok=False, error_type="NoEcho", error="자식이 에코를 내지 않았다")
+
+    snap = sweep.capture_config_snapshot(
+        [sweep.ArmSpec(arm_id="S2-K-true", axis="K", level="true", env={"K": "true"})],
+        echo=echo, detect_nd=lambda **kw: frozenset())
+
+    assert snap.control_arms() == []
+    assert "대조군 판정을 하지 않는다" in snap.unavailable
+
+
+def test_에코가_터져도_런을_죽이지_않는다() -> None:
+    """스냅샷은 provenance지 측정이 아니다 — 여기서 죽으면 스위프가 통째로 날아간다."""
+    def echo(overrides=None, *, base_env=None):
+        raise RuntimeError("자식 실행 불가")
+
+    snap = sweep.capture_config_snapshot([], echo=echo, detect_nd=lambda **kw: frozenset())
+    assert snap.unavailable and "RuntimeError" in snap.unavailable
+
+
+def test_스냅샷을_산출물에_남긴다(tmp_path) -> None:
+    snap = _snapshot({(("K", "true"),): {"g.k": "true", "g.other": "1"}})
+    path = sweep.write_config_snapshot(snap, tmp_path)
+
+    body = json.loads(path.read_text(encoding="utf-8"))
+    assert path.name == "config_snapshot.json"
+    assert body["control_arms"] == ["S2-K-true"]
+    assert body["arms"]["S2-K-true"]["injected"] == {"K": "true"}
+    assert body["baseline"]["effective"]["g.k"] == "true"
+
+
+def test_대조군_지연_델타가_노이즈_바닥이_된다() -> None:
+    base = [_lv("b", f"S{i}", wall=100.0) for i in range(20)]
+    ctrl_a = [_lv("c1", f"S{i}", wall=130.0) for i in range(20)]
+    ctrl_b = [_lv("c2", f"S{i}", wall=85.0) for i in range(20)]
+
+    assert compare.latency_noise_floor(base, [ctrl_a, ctrl_b]) == 30.0
+    assert compare.latency_noise_floor(base, []) is None
+
+
+# --- 축 최적 레벨 → 처분 (W-4 · D-237) -----------------------------------
+#
+# `optimize.decide()` 는 arm 5어휘만 안다. 축 판정을 그 어휘로 옮기지 않으면
+# **"어느 값이 최적인가"에 답해 놓고도 그 답이 아무 데도 가지 않는다**.
+
+
+def _opt(axis, verdict, best=None, levels=("false", "true"), controls=()):
+    return compare.AxisOptimum(axis=axis, levels=levels, verdict=verdict, best_level=best,
+                               signal="정확도", sentence="근거 한 줄", control_levels=controls)
+
+
+def test_우세_레벨은_기본값_변경_제안이_된다() -> None:
+    word, value, _ = optimize.axis_verdict_word(
+        _opt("K", compare.BEST_LEVEL, best="true"))
+
+    assert (word, value) == (compare.ADOPT, "true")
+    d = optimize.decide(_knob_for("K"), verdict=word, recommended_value=value,
+                        reference_count=5)
+    assert d.action == optimize.CHANGE_DEFAULT and d.recommended_value == "true"
+
+
+def test_우세_레벨이_대조군이면_현행_유지다() -> None:
+    """★ 대조군이 이겼다 = 현행이 최적이다 — 기본값 변경이 아니라 '권장하지 않음'이다.
+
+    이 구분이 없으면 **현행 유지가 기본값 변경 제안으로 둔갑**한다.
+    """
+    word, value, reason = optimize.axis_verdict_word(
+        _opt("K", compare.BEST_LEVEL, best="true", controls=("true",)))
+
+    assert word == compare.REJECT and value is None
+    assert "현행값 `true`(대조군)" in reason
+    assert optimize.decide(_knob_for("K"), verdict=word, reference_count=5).action == optimize.KEEP
+
+
+def test_레벨_간_차이_없음은_차이_없음으로_옮긴다() -> None:
+    word, value, _ = optimize.axis_verdict_word(_opt("K", compare.LEVELS_TIED))
+    assert (word, value) == (compare.NO_DIFFERENCE, None)
+    assert optimize.decide(_knob_for("K"), verdict=word,
+                           reference_count=5).action == optimize.DOWNGRADE
+
+
+def test_판정_불가는_보류로_옮기고_사유를_싣는다() -> None:
+    word, value, reason = optimize.axis_verdict_word(_opt("K", compare.UNDERPOWERED))
+    assert (word, value) == (compare.UNDERPOWERED, None)
+    assert "근거 한 줄" in reason
+    assert optimize.decide(_knob_for("K"), verdict=word).action == optimize.DEFER
+
+
+def _knob_for(env_key):
+    return cat_mod.KnobSpec(env_key=env_key, group_key="text2sql", field_name="x", type="bool",
+                            enum_choices=None, default="false", consumed=True, is_secret=False,
+                            is_sensitive=False, apply_mode="restart", description="d")
+
+
+def test_권고_없는_축은_recommended_env_에_이유만_남는다() -> None:
+    body = optimize.render_recommended_env([
+        _opt("A", compare.UNDERPOWERED),
+        _opt("B", compare.LEVELS_TIED),
+    ])
+
+    assert "권고 변경 0건" in body
+    assert "# A: 권고 없음" in body and "# B: 권고 없음" in body
+    assert "\nA=" not in body, "권고가 없는데 키를 쓰면 안 된다"
+
+
+def test_이미_권고값이면_변경으로_적지_않는다() -> None:
+    body = optimize.render_recommended_env(
+        [_opt("A", compare.BEST_LEVEL, best="true")],
+        baseline_effective={"A": "true"})
+
+    assert "이미 권고값(true)이다" in body
+    assert "\nA=true" not in body
+
+
+def test_권고값이_다르면_현행과_함께_적는다() -> None:
+    body = optimize.render_recommended_env(
+        [_opt("A", compare.BEST_LEVEL, best="true")],
+        baseline_effective={"A": "false"})
+
+    assert "(현행 false)" in body
+    assert "A=true" in body
+
+
+def test_write_proposals_는_optima가_있을_때만_recommended를_쓴다(tmp_path) -> None:
+    without = optimize.write_proposals([], [], {}, tmp_path / "a")
+    with_opt = optimize.write_proposals([], [], {}, tmp_path / "b",
+                                        optima=[_opt("A", compare.LEVELS_TIED)])
+
+    assert "recommended" not in without
+    assert with_opt["recommended"].name == "recommended.env.diff"
+
+
+def test_축_id는_env_key라_별도_매핑표가_필요없다() -> None:
+    verdicts, recommended = optimize.axis_disposition_inputs([
+        _opt("TEXT2SQL_MULTI_CANDIDATE", compare.BEST_LEVEL, best="true"),
+        _opt("SCHEMA_CACHE_ENABLED", compare.UNDERPOWERED),
+    ])
+
+    assert verdicts == {"TEXT2SQL_MULTI_CANDIDATE": compare.ADOPT,
+                        "SCHEMA_CACHE_ENABLED": compare.UNDERPOWERED}
+    assert recommended == {"TEXT2SQL_MULTI_CANDIDATE": "true"}
+
+
+# --- 기준 ⑦: 자동응답이 판정 대상을 대체한다 (D-238) ---------------------
+#
+# `auto_answers.zone_select` 는 전건 선호 존(기본 김포)을 고른다 — 그 턴의 라우팅 판정은
+# 제품이 아니라 하네스가 정한 값 위에서 내려진다. 막지는 않되 **침묵하지 않는다**.
+
+
+def test_자동응답_턴을_세어_고지한다(tmp_path) -> None:
+    rows = [_sweep_row("baseline", f"S-{i}", executed_sql="SELECT 1",
+                       node_path=["query_generator"], response_mode="answer",
+                       func_verdict="pass",
+                       auto_answers=[{"kind": "zone_select",
+                                      "selected_db_ids": ["polestar_cm_gp"]}])
+            for i in range(4)]
+    rows += [_sweep_row("baseline", f"P-{i}", executed_sql="SELECT 1",
+                        node_path=["query_generator"], response_mode="answer",
+                        func_verdict="pass") for i in range(6)]
+    raw = _write_raw(tmp_path, rows)
+    result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
+
+    health = sweep.scan_health(result, raw)
+
+    assert health.auto_answered_turns == 4
+    assert health.blocking_reason() is None, "자동응답은 차단 사유가 아니다"
+    notes = " / ".join(health.warnings())
+    assert "자동응답 4건(40%)" in notes
+    assert "하네스가 정한 값 위에서" in notes
+
+
+def test_자동응답이_없으면_고지하지_않는다(tmp_path) -> None:
+    raw = _write_raw(tmp_path, [
+        _sweep_row("baseline", "S-1", executed_sql="SELECT 1",
+                   node_path=["query_generator"], response_mode="answer",
+                   func_verdict="pass")])
+    result = {"profiles": [{"name": "baseline", "valid": True, "reasons": []}]}
+
+    assert not any("자동응답" in w for w in sweep.scan_health(result, raw).warnings())
+
+
+# --- 실행 생략 arm = 같은 구간의 기준선 관측 (W-6 · 설계 조정 ②) -----------
+
+
+def test_실행_생략_arm은_기준선_관측으로_레벨_비교에_들어간다(gate, monkeypatch, tmp_path) -> None:
+    """지문이 기준선과 같은 arm 은 돌리지 않는다. 그 레벨의 관측은 같은 실행의 기준선 관측이다."""
+    cli, _ = gate
+    monkeypatch.setattr(sweep, "server_auth_enabled", lambda: False)
+    rows = []
+    for i in range(20):
+        rows.append(_sweep_row("baseline", f"S-{i}", func_verdict="pass", response_mode="answer",
+                               executed_sql="SELECT 1", node_path=["q"], wall_ms=100))
+        rows.append(_sweep_row("S2-K-false", f"S-{i}", func_verdict="pass" if i < 6 else "fail",
+                               response_mode="answer", executed_sql="SELECT 1", node_path=["q"],
+                               wall_ms=100))
+    _write_raw(tmp_path, rows)
+    monkeypatch.setattr(sweep, "run_arms", lambda arms, **kw: {
+        "out_dir": str(tmp_path),
+        "profiles": [{"name": a.arm_id, "valid": True, "reasons": []} for a in arms]})
+    captured = []
+    monkeypatch.setattr(sweep, "capture_config_snapshot",
+                        lambda arms, **kw: captured.append(arms) or None)
+
+    base = sweep.ArmConfig(arm_id="baseline", axis=None, level=None, injected={},
+                           effective={"k": "true"})
+    snap = sweep.ConfigSnapshot(baseline=base, arms={
+        "S2-K-true": sweep.ArmConfig("S2-K-true", "K", "true", {"K": "true"}, {"k": "true"}),
+        "S2-K-false": sweep.ArmConfig("S2-K-false", "K", "false", {"K": "false"}, {"k": "false"}),
+    })
+    executed = [sweep.ArmSpec(arm_id="baseline", axis=None, level=None),
+                sweep.ArmSpec(arm_id="S2-K-false", axis="K", level="false", env={"K": "false"})]
+    skipped = [sweep.ArmSpec(arm_id="S2-K-true", axis="K", level="true", env={"K": "true"})]
+
+    out = cli.run_sweep(_sweep_args(), executed, label="구간 t-1", snapshot=snap,
+                        substituted=skipped)
+
+    assert captured == [], "스냅샷을 넘기면 다시 뜨지 않는다"
+    assert out.substituted == ["S2-K-true"]
+    opt = out.optima[0]
+    assert opt.levels == ("false", "true"), "생략한 레벨도 비교에 들어간다"
+    assert opt.pairs[0].binary.discordant == 14, "기준선 관측과 쌍체로 맞붙는다"
+    assert "레벨 `true` = 기준선과 동일 설정 → 기준선 관측 사용(실행 생략)" in opt.sentence
+    body = (tmp_path / "axis_verdicts.md").read_text(encoding="utf-8")
+    assert "`S2-K-true` **(기준선과 동일 설정)**" in body and "**실행 생략**" in body
