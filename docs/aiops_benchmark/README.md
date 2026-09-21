@@ -29,6 +29,7 @@ collectorinfra AIOps 고도화를 위한 선진 솔루션 조사·분석 자료.
 - `ml_rca_literature.md` — RCA·장애 진단 49건 + 보조 22건(트레이스 없는 메트릭 RCA·벤치마크 비판·DB/APM 진단·변경 상관·LLM 에이전트), 원문 대조 등급 V1~V3
 - `ml_anomaly_prediction_literature.md` — 이상탐지·장애 예측·용량 예측·시계열 파운데이션 모델 60항목 + 평가 프로토콜 12조
 - `ml_library_vendor_survey.md` — Python 라이브러리 버전·라이선스 실측 · HolmesGPT 확장 지점 · 제니퍼·엑셈·와탭 AI 기능 · 데이터셋
+- `ml_kaggle_competition_survey.md` (2026-09-20 · `plans/101` v3) — Kaggle 경기 10건·데이터셋 8계열·**누수 사례 6종** 조사. 결론은 "무엇이 이기는가"가 아니라 **무엇이 실제로 점수를 만들고 무엇이 누수인가**다. 경기 페이지는 JS 렌더링으로 정적 확인이 안 돼 메타·라이선스는 대부분 V3
 
 ## 관련 계획
 - `../../plans/60-noise-cancellation-benchmark-refinement.md` — 노이즈 캔슬링 고도화 계획(E1~E5, D-067~071)
