@@ -129,3 +129,58 @@ scenarios:
           query: "담당자 없는 미확인 알람"
         expect:
           manual_review: "통보 다단 조인(yd-006 계열) - coverage=outside. 실패 허용 기록"
+  # ★ Y-10 (plans/94 §19.2 · 2026-09-21) — 존×알람 교차 단언 신설
+  #
+  # D-01~D-06 은 존을 **전혀 단언하지 않는다**(`db_ids` 0건 — grep 실측). 그래서 알람 경로의
+  # 오라우팅이 판정에 잡히지 않았다. 아래 둘은 그 공백을 메운다.
+  #
+  # 회귀 대상은 `plans/107` §2.4 의 2026-07-16 실측이다 — 플래너 LLM 이 **이번 턴 명시 위치와
+  # 직전 턴 위치를 병합**해 "은행존 알람"을 "김포 은행 공동존…"으로 재작성, gp 로 오라우팅했다.
+  # 현 방어는 `intent_planner.py:585-590`(명시 위치가 있으면 직전 위치 줄을 입력에서 제거)이며
+  # 이 시나리오가 그 방어의 회귀를 막는다.
+  #
+  # **`auto_answer: false` 가 필수다**(F-06 선례 `f_zone_hitl.yaml:160`). `plans/108` §1.5b 실측:
+  # 존 자동응답이 221/380턴(58.2%)에서 발동해 **정답 DB 로 교정**해 버리므로, 자동응답을 켠 채로는
+  # 오라우팅이 판정에 잡히지 않는다.
+  #
+  # 단일턴 은행존 라우팅 자체는 A-02 가 이미 단언한다(비알람 경로). 여기서 D-07 을 따로 두는 것은
+  # **알람 경로에서도 같은지**를 보기 위해서이고, D-08 의 대조군 역할을 겸한다 — D-07 이 함께
+  # 깨지면 원인은 멀티턴 병합이 아니라 존 라우팅 자체다.
+  - id: D-07
+    plans: [44, 45, 9]
+    title: "은행존에서 발생 중인 심각 알람 목록 보여줘"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "은행존에서 발생 중인 심각 알람 목록 보여줘"
+        # 자동응답이 답해 버리면 오라우팅이 가려진다(D-216 · plans/108 §1.5b).
+        auto_answer: false
+        expect:
+          status: completed
+          db_ids: ["polestar_b0"]
+    notes: "Y-10 대조군 — 알람 경로의 단일턴 존 라우팅. D-08 과 함께 깨지면 원인은 멀티턴 병합이 아니다"
+  - id: D-08
+    plans: [44, 45, 90]
+    title: "김포 알람 조회 후 은행존 알람 후속 — 직전 위치 병합 오라우팅 회귀"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포 공동존에서 발생 중인 알람 목록 보여줘"
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_gp"]
+      - send:
+          query: "은행존 알람 보여줘"
+        # 이번 턴에 위치가 **명시**돼 있다. 직전 턴 위치(김포)와 병합되면 회귀다.
+        auto_answer: false
+        expect:
+          status: completed
+          db_ids: ["polestar_b0"]
+    teardown: [drop_thread]
+    notes: "plans/107 §2.4 2026-07-16 — '은행존 알람'이 '김포 은행 공동존…'으로 재작성돼 gp 오라우팅. 방어는 intent_planner.py:585-590"
