@@ -60,12 +60,17 @@ scenarios:
           status: completed
           sql_must_match: ["(?i)\\blimit\\s+3\\b"]
           row_count: {eq: 3}
+      # 선행 턴 3대로 좁혔는지를 **구문 형태가 아니라 결과**로 본다(plans/114 M-6 · H-8).
+      # run 20260922-112010: SQL 이 `IN (…)` 대신 `(name AND hostname AND ip) OR …` 3조로
+      # 같은 3행을 정확히 조회했는데 `\bin\s*\(` 단언에 걸렸다(직전 run pass 는 LLM 변동).
+      # 하네스에 선행 턴 결과를 참조하는 단언이 없어, 동치 형태(IN · = ANY · OR 등치 사슬)를
+      # 모두 받는 정규식 + 행 수 3 으로 판정한다.
       - send:
           query: "그 서버들의 제조사와 모델"
         expect:
           status: completed
-          sql_must_match: ["(?i)\\bin\\s*\\("]
-          row_count: {max: 3}
+          sql_must_match: ["(?i)\\bin\\s*\\(|\\bany\\s*\\(|\\bor\\s*\\(?\\s*[\\w.]+\\s*=\\s*'"]
+          row_count: {eq: 3}
       - send:
           query: "전체 서버 제조사 분포"
         expect:

@@ -101,6 +101,12 @@ class Segment:
     #: 관측을 쓴다.
     substituted: tuple[str, ...] = ()
     calibration: bool = False          # 첫 구간 — 속도 보정용으로 일부러 작게 짰다
+    #: **구조 축 구간**(plans/114 M-0 · D-250 ①) — 사다리 단처럼 노드 집합 자체를 바꾸는 축이다.
+    #: 캠페인의 맨 앞에 오고, 보정 구간보다도 앞이다.
+    structural: bool = False
+    #: 예산을 넘는데도 만든 구간 — 구조 축은 **빼면 캠페인이 성립하지 않으므로** 「구간 불가」로
+    #: 조용히 떨구지 않고 사유와 함께 사람에게 넘긴다(D-250 주의 ②).
+    over_budget: bool = False
 
     @property
     def n_arms(self) -> int:
@@ -135,6 +141,8 @@ def plan_segments(
     used_ids: Optional[Mapping[str, set[int]]] = None,
     controls: frozenset[str] = frozenset(),
     calibrate: bool = False,
+    reasons: Optional[Mapping[str, str]] = None,
+    first_axis: Optional[str] = None,
 ) -> Plan:
     """축을 카테고리별 구간으로 나눈다.
 
@@ -152,10 +160,18 @@ def plan_segments(
     - `controls` 는 **실효 설정 지문이 기준선과 같은 arm**(`ConfigSnapshot.control_arms`)이다.
       그 arm 은 기준선을 다시 도는 A/A 반복이라 **실행하지 않고**, 그 레벨의 관측은 같은 구간의
       기준선 관측으로 대신한다. 그래서 구간 크기(예산)는 **실행하는 arm 만** 센다. 판정은
-      지문으로만 한다 — 비어 있으면(스냅샷 실패) 전부 돈다.
+      지문으로만 한다 — 비어 있으면(스냅샷 실패) 전부 돈다. 축 도달 불가 arm(plans/114 M-3)도
+      호출부가 여기 넣는다 — 설정은 달라도 실효는 A/A 다.
+    - `reasons` 는 생략 arm 의 사유(arm id → 문장 · 현재는 도달 불가만). 축의 모든 레벨이 생략돼
+      구간을 만들 수 없을 때 「구간 불가」 사유로 그 문장을 쓴다 — A/A 문구로 덮지 않는다.
     - `calibrate=True` 면 **첫 구간을 가장 작게**(기준선 + 축 1개) 따로 떼어 맨 앞에 둔다.
       기본 속도는 추정이라 첫 구간은 예산을 채우지 않고 보정에 쓴다. 그 뒤 구간은 첫 구간의
       실측 속도·턴 수로 다시 짜인다.
+    - `first_axis` 는 **구조 축**이다(사다리 단 · plans/114 M-0 · D-250 ①). 그 축만의 구간을
+      **보정 구간보다도 앞에** 따로 떼어 맨 앞에 둔다. 단은 노드 집합을 바꿔 다른 축의 효과를
+      조건부로 만들기 때문에, 그 뒤 구간은 전부 이 구간이 정한 단 위에서 돈다.
+      예산을 넘어도 **구간 불가로 떨구지 않는다** — 빼면 캠페인 자체가 성립하지 않으므로
+      `over_budget` 표시를 달아 호출부가 사람에게 사유와 함께 넘기게 한다.
 
     `arms` 원소는 `arm_id`·`axis`·`level` 속성만 있으면 된다(`sweep.ArmSpec`). 기준선은 무시한다.
     """
@@ -182,32 +198,56 @@ def plan_segments(
     segments: list[Segment] = []
     unplaceable: list[tuple[str, str]] = []
 
-    def _segment(category: str, k: int, group: Sequence[str], calibration: bool = False) -> Segment:
+    def _segment(category: str, k: int, group: Sequence[str], calibration: bool = False,
+                 structural: bool = False) -> Segment:
         arm_ids = tuple(arm_id for a in group for arm_id in by_axis[a])
+        hours = rate.segment_hours(1 + len(arm_ids), repeat)
         return Segment(segment_id=f"{category}-{k}", category=category, axes=tuple(group),
-                       arm_ids=arm_ids, est_hours=rate.segment_hours(1 + len(arm_ids), repeat),
+                       arm_ids=arm_ids, est_hours=hours,
                        substituted=tuple(s for a in group for s in subs.get(a, ())),
-                       calibration=calibration)
+                       calibration=calibration, structural=structural,
+                       over_budget=structural and hours > budget)
 
     taken_all = {c: set(v) for c, v in (used_ids or {}).items()}
+
+    def _take(category: str) -> int:
+        """이 카테고리에서 아직 쓰지 않은 가장 작은 구간 번호."""
+        taken = taken_all.setdefault(category, set())
+        k = 1
+        while k in taken:
+            k += 1
+        taken.add(k)
+        return k
+
+    def _pull(axis: str) -> None:
+        """이 축을 남은 카테고리 목록에서 뺀다 — 뒤 구간이 다시 담지 않게."""
+        cat = categories.get(axis, "unknown")
+        by_category[cat] = [a for a in by_category.get(cat, []) if a != axis]
+        if not by_category.get(cat):
+            by_category.pop(cat, None)
+
+    # **구조 축이 맨 앞이다**(D-250 ①) — 보정 구간보다도 앞이다. 보정은 속도 추정을 고치는
+    # 것이고 구조 축은 남은 구간 전부의 기준선을 정하므로, 순서가 뒤바뀌면 보정 구간이
+    # 「어느 단인지 모르는 단」 위에서 돈다.
+    if first_axis and by_axis.get(first_axis):
+        cat = categories.get(first_axis, "unknown")
+        segments.append(_segment(cat, _take(cat), [first_axis], structural=True))
+        _pull(first_axis)
+
     if calibrate:
         # 보정 구간: 실행 arm 이 가장 적은 축 하나. 같은 폭이면 **축이 적은 카테고리**의 축을 골라
         # 그 카테고리가 한 구간으로 끝나게 한다(이름이 카테고리와 1:1 로 남는다).
-        fitting = [a for a in by_axis if 0 < len(by_axis[a]) <= max_variants]
+        # 구조 축은 이미 자기 구간을 받았다 — 후보에서 뺀다(카테고리 목록에서도 빠져 있다).
+        fitting = [a for a in by_axis
+                   if a != first_axis and 0 < len(by_axis[a]) <= max_variants]
         if fitting:
             pick = min(fitting, key=lambda a: (len(by_axis[a]),
-                                               len(by_category[categories.get(a, "unknown")]),
+                                               len(by_category.get(categories.get(a, "unknown"),
+                                                                   [])),
                                                categories.get(a, "unknown"), a))
             cat = categories.get(pick, "unknown")
-            taken = taken_all.setdefault(cat, set())
-            k = 1
-            while k in taken:
-                k += 1
-            taken.add(k)
-            segments.append(_segment(cat, k, [pick], calibration=True))
-            by_category[cat] = [a for a in by_category[cat] if a != pick]
-            if not by_category[cat]:
-                del by_category[cat]
+            segments.append(_segment(cat, _take(cat), [pick], calibration=True))
+            _pull(pick)
 
     for category in sorted(by_category):
         bins: list[list[str]] = []
@@ -216,8 +256,10 @@ def plan_segments(
             width = len(by_axis[axis])
             if width == 0:
                 # 모든 레벨이 기준선과 같은 설정이다 — 비교할 것이 없다. 조용히 빼지 않는다.
-                unplaceable.append(
-                    (axis, "모든 레벨의 실효 설정이 기준선과 같다 — 비교할 레벨이 없다"))
+                known = reasons or {}
+                why = sorted({known[a] for a in subs.get(axis, ()) if a in known})
+                unplaceable.append((axis, " · ".join(why) if why else
+                                    "모든 레벨의 실효 설정이 기준선과 같다 — 비교할 레벨이 없다"))
                 continue
             if width > max_variants:
                 need = rate.segment_hours(1 + width, repeat)
@@ -245,9 +287,9 @@ def plan_segments(
     # **가장 짧은 구간이 먼저 돈다** — 첫 구간이 곧 관문(종전 smoke 단계)이라, 관문에서 실패하면
     # 버리는 시간이 가장 적어야 한다. 같은 길이면 카테고리·번호순(자연수 정렬 — `-10` 이 `-2` 앞에
     # 오지 않게)으로 고정한다.
-    # 보정 구간이 있으면 그것이 맨 앞이다.
-    segments.sort(key=lambda s: (not s.calibration, round(s.est_hours, 6), s.category,
-                                 int(s.segment_id.rpartition("-")[2])))
+    # **구조 축 구간이 그보다도 앞이다**(D-250 ①) — 보정 구간이 있으면 그 다음이다.
+    segments.sort(key=lambda s: (not s.structural, not s.calibration, round(s.est_hours, 6),
+                                 s.category, int(s.segment_id.rpartition("-")[2])))
     return Plan(segments=tuple(segments), unplaceable=tuple(unplaceable), max_arms=max_arms,
                 budget_hours=budget, max_hours=max_hours, rate=rate)
 
@@ -296,6 +338,15 @@ class SegmentRecord:
     pid: Optional[int] = None
     #: 끊긴 run 을 이어 돌았다 — 경과 시간이 마지막 시도분뿐이라 속도 실측에 쓰지 않는다.
     resumed: bool = False
+    #: 이 구간 **기준선**의 판(plans/114 M-2 ①b). 구간 간 기준선 반복이 노이즈 바닥이 되려면
+    #: 이 셋이 같아야 한다 — 다르면 반복이 아니라 다른 조건의 두 측정이다.
+    baseline_tier: Optional[str] = None        # 사다리 단
+    config_fingerprint: Optional[str] = None   # 실효 설정 지문(비결정 키 제외)
+    commit: Optional[str] = None               # 실행 시점 커밋
+    dirty: Optional[bool] = None               # 미커밋 변경이 있었는가
+    #: **구조 축 구간이었다**(사다리 단 · plans/114 M-0). 이 구간 뒤에는 기준선 단이 바뀌는 것이
+    #: 정상이다 — `continuity` 가 그 전이만 멈춤에서 뺀다.
+    structural: bool = False
 
     @property
     def executed_arms(self) -> int:
@@ -323,6 +374,11 @@ class Campaign:
     max_hours: float = DEFAULT_MAX_HOURS
     created_at: str = ""
     records: dict[str, SegmentRecord] = field(default_factory=dict)
+    #: **구조 축(사다리 단) 판정**(plans/114 M-0 · D-250 ②). 첫 구간이 끝나면 여기에 이긴 단이
+    #: 남고, 남은 구간의 **기준선 환경**에 그 3키가 주입된다. 키:
+    #: `segment_id`·`axis`·`verdict`·`level`·`tier`·`env`·`sentence`·`decided_at` ·
+    #: 판정 불가면 `blocked`(사유 문자열)만 있고 `level` 은 없다.
+    tier_decision: dict[str, Any] = field(default_factory=dict)
 
     # ── 입출력 ──
     @classmethod
@@ -334,7 +390,8 @@ class Campaign:
             return cls(name=data.get("name", name), path=path, env=data.get("env", env),
                        mode=data.get("mode", mode), repeat=int(data.get("repeat", repeat)),
                        max_hours=float(max_hours), created_at=data.get("created_at", ""),
-                       records=records)
+                       records=records,
+                       tier_decision=dict(data.get("tier_decision") or {}))
         return cls(name=name, path=path, env=env, mode=mode, repeat=repeat, max_hours=max_hours,
                    created_at=datetime.now().isoformat(timespec="seconds"))
 
@@ -344,12 +401,31 @@ class Campaign:
             "name": self.name, "env": self.env, "mode": self.mode, "repeat": self.repeat,
             "max_hours": self.max_hours, "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "tier_decision": self.tier_decision,
             "records": [asdict(r) for r in
                         sorted(self.records.values(), key=lambda r: r.segment_id)],
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                              encoding="utf-8")
         return self.path
+
+    # ── 구조 축(사다리 단) 판정 ──
+    def tier_winner_env(self) -> dict[str, str]:
+        """남은 구간의 **기준선에 주입할** 사다리 3키. 아직 못 정했으면 빈 딕셔너리다."""
+        return dict(self.tier_decision.get("env") or {})
+
+    def tier_blocked(self) -> Optional[str]:
+        """단 축 구간은 끝났는데 승자를 못 정한 사유. 없으면 None.
+
+        **사람이 봐야 한다** — 판정 불가인 채로 남은 구간을 돌면 어느 단으로 잰 것인지 모른 채
+        캠페인 전체가 진행된다(D-250 ②).
+        """
+        blocked = self.tier_decision.get("blocked")
+        return str(blocked) if blocked else None
+
+    def structural_done(self) -> Optional[SegmentRecord]:
+        """끝난 구조 축 구간. 없으면 None."""
+        return next((r for r in self.done() if r.structural), None)
 
     # ── 판정 ──
     def frozen_axes(self) -> set[str]:
@@ -366,6 +442,18 @@ class Campaign:
     def running(self) -> list[SegmentRecord]:
         return sorted((r for r in self.records.values() if r.status == RUNNING),
                       key=lambda r: r.segment_id)
+
+    def last_finished(self, exclude: str = "") -> Optional[SegmentRecord]:
+        """마지막으로 끝난 구간(완료 · `finished_at` 기준) — 구간 간 판 비교의 상대.
+
+        plans/114 M-2 ①b.
+
+        `segment_id` 정렬이 아니라 **끝난 시각** 순이다. 실패 구간을 다시 돌리면 번호 순서와
+        실행 순서가 갈린다.
+        """
+        finished = [r for r in self.records.values()
+                    if r.status == DONE and r.finished_at and r.segment_id != exclude]
+        return max(finished, key=lambda r: r.finished_at or "") if finished else None
 
     def used_ids(self) -> dict[str, set[int]]:
         """카테고리별로 이미 쓴 구간 번호 — 새 구간 이름이 겹치지 않게."""
@@ -458,7 +546,14 @@ def render_plan(campaign: Campaign, plan: Plan) -> list[str]:
         lines.append(f"  {record.segment_id:22s} {record.status:4s} {record.category:14s} "
                      f"{record.executed_arms:3d} {actual:>6s}  {', '.join(record.axes)}{skip}")
     for seg in plan.segments:
-        note = " (보정 구간)" if seg.calibration else ""
+        note = (" (★ 구조 축 — 첫 구간 · D-250 ①)" if seg.structural
+                else " (보정 구간)" if seg.calibration else "")
+        if seg.over_budget:
+            note += (f" ★ **예산 초과** — 추정 {seg.est_hours:.1f}시간 > 채움 상한 "
+                     f"{plan.budget_hours:.1f}시간. 구조 축은 빼면 캠페인이 성립하지 않으므로 "
+                     f"구간은 만들되 자동 실행하지 않는다 — `--max-hours` 를 "
+                     f"{math.ceil(seg.est_hours / (1 - SAFETY_MARGIN))} 이상으로 올리거나 "
+                     f"워크로드(`--groups`)를 줄여 사람이 판단한다")
         skip = f" · 생략 {len(seg.substituted)}" if seg.substituted else ""
         lines.append(f"  {seg.segment_id:22s} {PENDING:4s} {seg.category:14s} "
                      f"{seg.n_arms:3d} {seg.est_hours:6.1f}  {', '.join(seg.axes)}{skip}{note}")
@@ -476,7 +571,72 @@ def render_plan(campaign: Campaign, plan: Plan) -> list[str]:
     if remaining:
         lines.append(f"  달력: 하루 1구간이면 {remaining}일 · 하루 2구간(야간·주간)이면 "
                      f"{math.ceil(remaining / 2)}일")
+    lines += render_tier_decision(campaign)
     return lines
+
+
+def render_tier_decision(campaign: Campaign) -> list[str]:
+    """사다리 단 축 판정 상태 한 줄 — **어느 단으로 돌고 있는지**가 계획 표에 보여야 한다."""
+    decision = campaign.tier_decision
+    if not decision:
+        return ["  사다리 단: **미측정** — 첫 구간(구조 축)이 잰다. 그 전까지 남은 구간은 돌지 "
+                "않는다(D-250 ①)."]
+    blocked = campaign.tier_blocked()
+    if blocked:
+        return [f"  사다리 단: **판정 불가** — {blocked}",
+                "    승자를 정하지 않았다. 남은 구간은 돌지 않는다 — 사람이 본다(D-250 ②)."]
+    env = " · ".join(f"{k}={v}" for k, v in sorted((decision.get("env") or {}).items()))
+    return [f"  사다리 단: **`{decision.get('level')}`**(단 `{decision.get('tier')}`) 승 — "
+            f"구간 `{decision.get('segment_id')}` 판정 「{decision.get('verdict')}」",
+            f"    남은 구간 기준선 주입: {env or '(없음)'}"]
+
+
+def continuity(previous: Optional[SegmentRecord],
+               current: SegmentRecord) -> tuple[list[str], list[str]]:
+    """앞 구간과 판이 같은가 — `(멈춤 사유, 고지)`(plans/114 M-2 ①b · 팀 리드 정정 2026-09-22).
+
+    캠페인은 **구간 간 기준선 반복**으로 노이즈 바닥을 잰다(D-239). 구간 사이에 단·설정·판이
+    바뀌면 그 반복은 같은 조건의 반복이 아니다. 그런데 종전에는 그 셋을 아무 데도 남기지 않아
+    사후에 확인할 수조차 없었다.
+
+    **멈추는 것은 단이 바뀐 경우뿐이다** — 단은 노드 집합을 바꿔 다른 축의 효과를 조건부로
+    만든다(D-250 ②). 설정 지문·커밋 차이는 고지한다(실행 중 코드를 고친 것이 곧 사고는 아니지만,
+    구간 간 비교에는 실린다).
+
+    **예외 하나**: 앞 구간이 **구조 축 구간**(사다리 단 · M-0)이면 단이 바뀌는 것이 정상이다 —
+    그 구간이 이긴 단을 남은 구간 기준선에 주입하는 것이 설계다(D-250 ②). 멈추지 않고 고지한다.
+    """
+    if previous is None:
+        return [], []
+    stop: list[str] = []
+    notes: list[str] = []
+    if (previous.baseline_tier and current.baseline_tier
+            and previous.baseline_tier != current.baseline_tier):
+        moved = (f"앞 구간 `{previous.segment_id}` 의 기준선 단이 `{previous.baseline_tier}` 인데 "
+                 f"이 구간은 `{current.baseline_tier}` 다")
+        if previous.structural:
+            notes.append(
+                f"{moved} — 앞 구간이 **사다리 단 축 구간**이라 정상이다(D-250 ②: 이긴 단을 남은 "
+                "구간 기준선에 주입한다). 단 축 구간의 기준선 관측은 노이즈 바닥 계산에서 다른 "
+                "단의 반복과 섞어 읽지 말 것")
+        else:
+            stop.append(
+                f"{moved} — 캠페인 도중 단이 바뀌면 구간 간 기준선 "
+                "반복이 노이즈 바닥이 되지 못하고 축 효과가 단 차이와 교란된다")
+    if (previous.config_fingerprint and current.config_fingerprint
+            and previous.config_fingerprint != current.config_fingerprint):
+        notes.append(
+            f"기준선 실효 설정 지문이 앞 구간 `{previous.segment_id}` 와 다르다"
+            f"({previous.config_fingerprint} → {current.config_fingerprint}) — 구간 간 기준선 "
+            "반복을 노이즈 바닥으로 읽을 때 이 차이를 함께 본다")
+    if previous.commit and current.commit and previous.commit != current.commit:
+        notes.append(
+            f"판이 바뀌었다 — 앞 구간 `{previous.segment_id}` 커밋 {previous.commit[:8]} → "
+            f"이 구간 {current.commit[:8]}. 구간 사이의 차이에 코드 변경이 섞였다")
+    elif current.dirty and previous.dirty is not None and not previous.dirty:
+        notes.append("앞 구간은 깨끗한 작업 트리였는데 이 구간은 미커밋 변경이 있다 — "
+                     "같은 커밋이어도 실행한 코드가 다르다")
+    return stop, notes
 
 
 def unmeasured_reason(axis: str, campaign: Campaign, plan: Plan) -> Optional[str]:
@@ -490,7 +650,8 @@ def unmeasured_reason(axis: str, campaign: Campaign, plan: Plan) -> Optional[str
     for seg in plan.segments:
         if axis in seg.axes:
             return f"미측정(구간 {seg.segment_id} 미완)"
-    for unplaced, _ in plan.unplaceable:
+    for unplaced, why in plan.unplaceable:
         if unplaced == axis:
-            return "미측정(예산 초과 — 구간을 만들 수 없다)"
+            # 구간 불가 사유는 셋이다(예산 초과 · 전 레벨 A/A · 축 도달 불가) — 실제 사유를 싣는다.
+            return f"미측정({why})"
     return "미측정(캠페인 계획에 없음)"

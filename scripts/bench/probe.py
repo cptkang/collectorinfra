@@ -78,6 +78,42 @@ except Exception as exc:
 
 _MARKER = "__BENCH_ECHO__"
 
+#: 그래프 도달성 자식(plans/114 M-3). 그 arm 설정으로 `build_graph` 를 불러 **START 에서 엣지로
+#: 닿는 노드**를 낸다 — 등록만 되고 배선되지 않은 노드(2단 빌드의 `semantic_router` 등)는 빠진다.
+#:
+#: 네트워크는 **소켓 층에서 막는다.** 2·3단 빌드는 LLM·DB·네트워크를 부르지 않지만(2026-09-22
+#: 실측: 연결 시도 0건), 1단 플래그가 켜지면 오케스트레이터 헬스체크(`/v1/models`)가 나간다.
+#: 막힌 시도가 하나라도 있으면 그 결과는 실제 서버의 단과 다를 수 있으므로 `ok=False` 로 낸다.
+#: 체크포인터는 메모리 — 파일을 만들지 않는다.
+_GRAPH_SNIPPET = r"""
+import json, logging, socket, sys
+sys.path.insert(0, %(root)r)
+logging.disable(logging.CRITICAL)
+_attempts = []
+def _blocked(target):
+    _attempts.append(repr(target)[:200])
+    raise OSError("bench graph probe: network blocked")
+socket.socket.connect = lambda self, address: _blocked(address)
+socket.socket.connect_ex = lambda self, address: _blocked(address)
+socket.create_connection = lambda address, *a, **k: _blocked(address)
+socket.getaddrinfo = lambda host, *a, **k: _blocked(host)
+try:
+    from langgraph.checkpoint.memory import InMemorySaver
+    from scripts.bench.probe import reachable_from_start
+    from src.config import load_config
+    from src.graph import build_graph
+    compiled = build_graph(load_config(), checkpointer=InMemorySaver())
+    print("__BENCH_GRAPH__" + json.dumps({
+        "ok": not _attempts, "network_attempts": _attempts,
+        "reachable": reachable_from_start(compiled)}, ensure_ascii=False))
+except Exception as exc:
+    print("__BENCH_GRAPH__" + json.dumps({
+        "ok": False, "network_attempts": _attempts, "error_type": type(exc).__name__,
+        "error": str(exc)[:2000]}, ensure_ascii=False))
+"""
+
+_GRAPH_MARKER = "__BENCH_GRAPH__"
+
 
 @dataclass(frozen=True)
 class EchoResult:
@@ -112,7 +148,18 @@ def _default_runner(env: Mapping[str, str], timeout: float) -> "subprocess.Compl
     그러면 우리 판정에서는 "에코 없음"이 되어 **인코딩 문제가 설정 문제로 오판**된다.
     자식에게 `PYTHONIOENCODING=utf-8`을 주고 부모도 utf-8로 읽으면 코드페이지와 무관해진다.
     """
-    code = _ECHO_SNIPPET % {"root": str(_PROJECT_ROOT)}
+    return _run_child(_ECHO_SNIPPET, env, timeout)
+
+
+def _graph_runner(env: Mapping[str, str], timeout: float) -> "subprocess.CompletedProcess[str]":
+    """그래프 도달성 자식 — 실행 방식(인코딩 고정 포함)은 에코 자식과 같다."""
+    return _run_child(_GRAPH_SNIPPET, env, timeout)
+
+
+def _run_child(
+    snippet: str, env: Mapping[str, str], timeout: float
+) -> "subprocess.CompletedProcess[str]":
+    code = snippet % {"root": str(_PROJECT_ROOT)}
     child_env = dict(env)
     child_env["PYTHONIOENCODING"] = "utf-8"   # 자식이 무엇을 쓰든 utf-8로 낸다
     child_env.setdefault("PYTHONUTF8", "1")
@@ -146,14 +193,7 @@ def echo_config(
     Returns:
         `EchoResult`. 실패해도 예외를 던지지 않는다.
     """
-    env = dict(base_env if base_env is not None else os.environ)
-    for key, value in (overrides or {}).items():
-        if value is None:
-            env.pop(key, None)
-        else:
-            env[key] = str(value)
-    # 자식이 부모의 사이트 패키지 대신 프로젝트를 보게 한다(비-editable 사본 오독 방지 — D-162 실측).
-    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    env = _child_env(overrides, base_env)
     env.setdefault("__BENCH_SENSITIVE_PATHS__", json.dumps(sorted(sensitive_config_paths())))
 
     run = runner or _default_runner
@@ -183,6 +223,83 @@ def echo_config(
     return EchoResult(ok=True, config=dict(payload.get("config") or {}), stderr_tail=stderr_tail)
 
 
+def _child_env(
+    overrides: Optional[Mapping[str, str]], base_env: Optional[Mapping[str, str]]
+) -> dict[str, str]:
+    """자식 env — 기본 env 위에 주입값을 얹는다. `None` 값은 그 키를 **삭제**한다."""
+    env = dict(base_env if base_env is not None else os.environ)
+    for key, value in (overrides or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = str(value)
+    # 자식이 부모의 사이트 패키지 대신 프로젝트를 보게 한다(비-editable 사본 오독 방지 — D-162 실측).
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    return env
+
+
+def reachable_from_start(compiled: object) -> list[str]:
+    """컴파일된 LangGraph 에서 START 로부터 엣지(조건부 포함)로 닿는 노드 — 등록만 되고 배선되지
+    않은 노드는 빠진다.
+
+    ⚠ 경로 맵 없는 조건부 엣지는 LangGraph 가 `__end__` 로만 그린다(2026-09-22 실측) — 그 뒤의
+    노드를 **못 닿는 것으로** 센다. `src/graph.py` 의 조건부 엣지는 전부 경로 맵이 있고(같은 날
+    전수 확인), 3단 전 기능 빌드에서 등록 노드가 전부 닿는지를 테스트가 지킨다."""
+    drawn = compiled.get_graph()  # type: ignore[attr-defined]
+    edges: dict[str, set[str]] = {}
+    for edge in drawn.edges:
+        edges.setdefault(edge.source, set()).add(edge.target)
+    seen: set[str] = set()
+    stack = ["__start__"]
+    while stack:
+        node = stack.pop()
+        if node not in seen:
+            seen.add(node)
+            stack.extend(edges.get(node, ()))
+    return sorted(n for n in seen if not n.startswith("__"))
+
+
+@dataclass(frozen=True)
+class GraphReach:
+    """자식이 그 설정으로 빌드한 그래프에서 **START 로부터 닿는 노드**(plans/114 M-3).
+
+    `ok=False` 면 노드 집합을 믿지 않는다 — 빌드 실패이거나, 빌드가 네트워크를 시도했다
+    (실제 서버라면 그 호출 결과로 단이 달라질 수 있다). 실패도 예외가 아니라 데이터다.
+    """
+
+    ok: bool
+    reachable: tuple[str, ...] = ()
+    error: Optional[str] = None
+
+
+def graph_reach(
+    overrides: Optional[Mapping[str, str]] = None,
+    *,
+    base_env: Optional[Mapping[str, str]] = None,
+    timeout: float = 120.0,
+    runner: Optional[Runner] = None,
+) -> GraphReach:
+    """env 를 주입해 자식에서 그래프를 빌드하고 도달 노드를 돌려준다(LLM·DB·네트워크 0)."""
+    run = runner or _graph_runner
+    try:
+        proc = run(_child_env(overrides, base_env), timeout)
+    except subprocess.TimeoutExpired:
+        return GraphReach(ok=False, error=f"자식 프로세스가 {timeout}초 안에 끝나지 않았다")
+    except Exception as exc:
+        return GraphReach(ok=False, error=f"{type(exc).__name__}: {str(exc)[:500]}")
+    payload = _extract(proc.stdout or "", marker=_GRAPH_MARKER)
+    if payload is None:
+        tail = (proc.stderr or "").strip()[-300:]
+        return GraphReach(ok=False, error=f"자식이 결과를 내지 않았다 — {tail or '(stderr 없음)'}")
+    if payload.get("network_attempts"):
+        return GraphReach(ok=False, error=(
+            "그래프 빌드가 네트워크 연결을 시도했다(소켓 층에서 막음) — "
+            + ", ".join(payload["network_attempts"][:3])))
+    if not payload.get("ok"):
+        return GraphReach(ok=False, error=f"{payload.get('error_type')}: {payload.get('error')}")
+    return GraphReach(ok=True, reachable=tuple(payload.get("reachable") or ()))
+
+
 def sensitive_config_paths() -> frozenset[str]:
     """카탈로그가 민감으로 판정한 필드의 **에코 경로** 집합.
 
@@ -201,17 +318,17 @@ def sensitive_config_paths() -> frozenset[str]:
     return frozenset(paths)
 
 
-def _extract(stdout: str) -> Optional[dict]:
+def _extract(stdout: str, marker: str = _MARKER) -> Optional[dict]:
     """에코 마커가 붙은 줄만 골라 파싱한다.
 
     설정 로딩 중 경고·로그가 stdout에 섞일 수 있어 **마지막 줄 가정은 쓰지 않는다**
     (`eval_text2sql`가 감사 로그 때문에 겪은 것과 같은 유형의 오염).
     """
     for line in reversed(stdout.splitlines()):
-        idx = line.find(_MARKER)
+        idx = line.find(marker)
         if idx >= 0:
             try:
-                return json.loads(line[idx + len(_MARKER):])
+                return json.loads(line[idx + len(marker):])
             except json.JSONDecodeError:
                 continue
     return None

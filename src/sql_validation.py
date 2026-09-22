@@ -106,6 +106,9 @@ def validate_sql(
     statement_type = _get_statement_type(sql, parsed=parsed)  # 파스 재사용(Plan 69 P4-5)
     if statement_type != "SELECT":
         errors.append(f"SELECT 문만 허용됩니다. 감지된 타입: {statement_type}")
+    # 2.5. FROM 절 없는 상수 SELECT — 산문이 아니라 SQL이므로 일반 재시도 경로다(plans/114 P-6)
+    elif is_tableless_select(sql):
+        errors.append(TABLELESS_SELECT_ERROR)
 
     # 3. 금지 키워드 확인
     forbidden = guard.detect_forbidden_keywords(sql, FORBIDDEN_SQL_KEYWORDS)
@@ -258,6 +261,79 @@ def find_bare_hangul_tokens(sql: str) -> list[str]:
     body = re.sub(r"'(?:[^']|'')*'", " ", body)  # 문자열 리터럴 ('' 이스케이프 포함)
     body = re.sub(r'"[^"]*"', " ", body)  # 따옴표 식별자(별칭)
     return _HANGUL_RE.findall(body)
+
+
+#: 상수 SELECT 거부 사유 — 멀티 DB 간이 검증도 같은 문구를 쓴다(D-066 경로 대칭).
+#: ASCII 구두점만 쓴다(평가 하네스 cp949 콘솔 출력 — Known Mistakes 2026-07-16).
+TABLELESS_SELECT_ERROR = (
+    "테이블을 하나도 조회하지 않는 상수 SELECT입니다(FROM 절 없음) - 결과가 DB 데이터가 아니라 "
+    "SQL에 적은 상수가 됩니다. 스키마의 테이블을 FROM 절로 조회하는 SQL로 다시 작성하세요."
+)
+
+
+def is_tableless_select(sql: str) -> bool:
+    """FROM 절이 하나도 없는 SELECT인가 — 테이블을 읽지 않고 상수만 돌려주는 SQL(plans/114 P-6).
+
+    run 20260922-112010 D-03: 생성기가 알람 테이블이 없다고 보고 `SELECT 0 AS alarm_count
+    LIMIT 10000;`을 냈고, 검증을 통과해 사용자는 "알람 0건"을 받았다(침묵 오답).
+
+    범위를 좁게 못 박는다 — 주석·문자열 리터럴·따옴표 식별자와 `EXTRACT(… FROM …)`류 함수
+    인자를 걷어낸 본문에 `FROM`이 **한 번도 없을 때만** 참이다. `FROM (VALUES …)`·CTE만 읽는
+    형태·따옴표 식별자 테이블(`FROM "POLESTAR"."T"`)은 FROM이 있으므로 잡지 않는다.
+    """
+    body = re.sub(r'"[^"]*"', " ", _clean_sql_for_table_extraction(sql or ""))
+    return not re.search(r"\bFROM\b", body, re.IGNORECASE)
+
+
+def _sql_comment_spans(sql: str) -> list[tuple[int, int]]:
+    """주석 구간 `[시작, 끝)` 목록. 문자열 리터럴·따옴표 식별자 안의 `--`·`/*`는 주석이 아니다.
+
+    리터럴은 표준 SQL 이스케이프(`''`·`""`)를 따른다. 닫히지 않은 리터럴·블록 주석은 끝까지로 본다.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in "'\"":
+            i += 1
+            while i < n:
+                if sql[i] == ch:
+                    if sql.startswith(ch * 2, i):
+                        i += 2
+                        continue
+                    break
+                i += 1
+            i += 1
+        elif sql.startswith("--", i):
+            end = sql.find("\n", i)
+            end = n if end < 0 else end
+            spans.append((i, end))
+            i = end
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            spans.append((i, end))
+            i = end
+        else:
+            i += 1
+    return spans
+
+
+def strip_sql_comments(sql: str) -> str:
+    """SQL 주석(`--`·`/* */`)을 공백 하나로 바꾼 본문. 리터럴 안의 `--`(`'a--b'`)는 남긴다.
+
+    시나리오 하네스의 SQL 단언(`sql_must_match`·`sql_must_not_match`)이 이 본문에 매칭한다
+    (plans/114 M-6) — 주석의 `여의도`가 부정 단언에 걸리던 거짓 불합격을 없앤다.
+    """
+    sql = sql or ""
+    parts: list[str] = []
+    last = 0
+    for start, end in _sql_comment_spans(sql):
+        parts.append(sql[last:start])
+        parts.append(" ")
+        last = end
+    parts.append(sql[last:])
+    return "".join(parts)
 
 def _get_statement_type(sql: str, parsed: object | None = None) -> str:
     """SQL 문의 타입을 판별한다.
@@ -904,8 +980,24 @@ def _add_limit_clause(sql: str, limit: int, db_engine: str = "postgresql") -> st
     Returns:
         행 제한 절이 추가된 SQL
     """
-    sql = sql.rstrip().rstrip(";")
-    return f"{sql}\n{row_limit_clause(db_engine, limit)};"
+    # 끝의 공백·세미콜론·주석을 **반복해서** 걷어낸 뒤 붙인다. `rstrip(";")`만 하면
+    # `… BETWEEN 0 AND 1000;  -- 상한 게이트`처럼 세미콜론 뒤에 주석이 붙은 SQL에서 세미콜론이
+    # 남아 행 제한 절이 두 번째 문이 된다(run 20260922-112010 C-13: 실행기가 `다중 SQL 문 감지
+    # (2개)`로 거부 — plans/114 P-1). 중간 주석과 리터럴 안의 `--`는 건드리지 않는다.
+    spans = _sql_comment_spans(sql)
+    end = len(sql)
+    while True:
+        end = len(sql[:end].rstrip())
+        if not end:
+            break
+        comment_start = next((s for s, e in spans if s <= end - 1 < e), None)
+        if comment_start is not None:
+            end = comment_start
+        elif sql[end - 1] == ";":
+            end -= 1
+        else:
+            break
+    return f"{sql[:end]}\n{row_limit_clause(db_engine, limit)};"
 
 
 def _check_performance_risks(

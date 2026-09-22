@@ -29,7 +29,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 from scripts.bench import catalog
 
@@ -72,7 +72,11 @@ def _is_cap(knob: catalog.KnobSpec) -> bool:
 
 @dataclass(frozen=True)
 class AxisCandidate:
-    """축 후보 1건과 **왜 축인지**."""
+    """축 후보 1건과 **왜 축인지**.
+
+    `env_key` 는 **축 id** 다. 단일 키 축에서는 그것이 곧 env 키이고, 다중 키 축
+    (`109·CS-31` X1)에서는 env 키가 아니라 대표 이름이다 — 실제 주입은 `env_for()` 가 낸다.
+    """
 
     env_key: str
     group_key: str
@@ -81,6 +85,63 @@ class AxisCandidate:
     impact_paths: tuple[str, ...]
     rationale: str
     tier: str = "primary"   # primary(동작 모드) | secondary(상한·예산)
+    #: **다중 키 축**: 레벨 이름 → 그 레벨이 주입할 env 전체(키 여럿).
+    #: 비어 있으면 단일 키 축이고 `{env_key: level}` 하나를 주입한다.
+    #: 튜플로 두는 이유는 `frozen=True` 데이터클래스의 필드를 해시 가능하게 유지하기 위해서다.
+    level_env: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    #: 구조 축인가 — 노드 집합 자체를 바꿔 **다른 축의 효과를 조건부로 만든다**(plans/114 M-0).
+    #: 캠페인은 구조 축을 첫 구간에 둔다.
+    structural: bool = False
+
+    @property
+    def multi_key(self) -> bool:
+        return bool(self.level_env)
+
+    @property
+    def env_keys(self) -> tuple[str, ...]:
+        """이 축이 실제로 움직이는 env 키 전부."""
+        if not self.level_env:
+            return (self.env_key,)
+        seen: list[str] = []
+        for _, pairs in self.level_env:
+            for key, _value in pairs:
+                if key not in seen:
+                    seen.append(key)
+        return tuple(seen)
+
+    def env_for(self, level: str) -> dict[str, str]:
+        """이 레벨이 주입할 env. 단일 키 축이면 `{env_key: level}` 이다.
+
+        **모르는 레벨에는 빈 딕셔너리를 돌려주지 않는다** — 빈 주입은 곧 기준선이라
+        조용히 A/A arm 이 된다. 다중 키 축에서 모르는 레벨은 호출부의 버그이므로 드러낸다.
+        """
+        if not self.level_env:
+            return {self.env_key: level}
+        for name, pairs in self.level_env:
+            if name == level:
+                return {key: value for key, value in pairs}
+        raise KeyError(f"축 `{self.env_key}` 에 레벨 `{level}` 이 없다 — 레벨: {self.levels}")
+
+
+def multi_key_axis(
+    axis_id: str,
+    *,
+    group_key: str,
+    levels: Mapping[str, Mapping[str, str]],
+    impact_paths: Sequence[str],
+    rationale: str,
+    structural: bool = False,
+) -> AxisCandidate:
+    """레벨 → env 매핑으로 다중 키 축 1개를 만든다(`109·CS-31` X1 의 일반 기제).
+
+    레벨 순서는 **호출부가 준 순서 그대로** 둔다 — 첫 레벨이 표·계획에서 먼저 보인다.
+    """
+    return AxisCandidate(
+        env_key=axis_id, group_key=group_key, type="multi",
+        levels=tuple(levels), impact_paths=tuple(impact_paths), rationale=rationale,
+        level_env=tuple((name, tuple(sorted(env.items()))) for name, env in levels.items()),
+        structural=structural,
+    )
 
 
 @dataclass(frozen=True)
@@ -89,8 +150,97 @@ class AxisDecision:
 
     env_key: str
     included: bool
-    stage: str      # F1 | F2
+    stage: str      # F0(구조 축) | F1 | F2
     reason: str
+
+
+# ── 구조 축 — 사다리 단 (plans/114 M-0 · D-250 ① · `109·CS-31` X1) ────────────
+
+
+#: 사다리 단 축의 id. **env 키가 아니다** — 3키를 한 축으로 묶은 대표 이름이다.
+LADDER_AXIS = "LADDER_TIER"
+
+#: 사다리 3키. 이름 신호로는 어느 것도 영향 경로에 걸리지 않아 종전에는 축이 되지 못했다
+#: (`plans/114` §4.1 M-0) — 그래서 벤치는 서버 `.env` 가 우연히 확정한 단을 기준선으로 뒀다.
+LADDER_ENV_KEYS = ("ENABLE_DEEPAGENTS_PACKAGE", "ENABLE_INTENT_ORCHESTRATION",
+                   "ENABLE_SEMANTIC_ROUTING")
+
+#: 기본 레벨 = `config/scenarios/profiles.yaml` 의 arm 정의(`plans/110` 실행 가이드 ③).
+#:
+#: **1단(`deep_agent`)은 넣지 않는다** — 오케스트레이터 서빙(`ORCHESTRATOR_BASE_URL`)이 전제라
+#: 불성립 시 조용히 하위 단으로 내려가 arm 이 무효가 된다(D-250 ①). 재려면 profiles.yaml 에
+#: `ENABLE_DEEPAGENTS_PACKAGE: "true"` 인 프로파일(예: `tier1_deep`)을 더하고 이 목록에 그
+#: 이름을 넣는다 — 그러면 레벨 3개짜리 축이 되고 구간 예산이 arm 4개로 늘어난다.
+LADDER_LEVEL_PROFILES = ("tier2_intent", "tier3_router")
+
+#: 사다리 축의 설정 카테고리 — 구간 이름이 `ladder-1` 이 된다.
+LADDER_CATEGORY = "ladder"
+
+
+class StructuralAxisUnavailable(RuntimeError):
+    """구조 축 정의를 읽지 못했다. **조용히 빼지 않는다** — 사유를 들고 다닌다."""
+
+
+def ladder_axis(profiles: Optional[Mapping[str, Mapping[str, str]]] = None) -> AxisCandidate:
+    """사다리 단 축 1개. 레벨 값은 `config/scenarios/profiles.yaml` 을 **읽어서** 쓴다.
+
+    사본을 두지 않는다(D-053) — 110 의 재테스트 arm 과 벤치 축이 같은 정의를 봐야
+    *"두 하네스가 같은 단을 재고 있다"* 가 성립한다.
+
+    정의를 읽지 못하거나 프로파일이 사다리 3키를 다 싣지 않으면 `StructuralAxisUnavailable`
+    이다 — 축이 조용히 사라지면 캠페인이 종전처럼 `.env` 가 정한 단을 기준선으로 돈다.
+    """
+    if profiles is None:
+        try:
+            from scripts.scenario.catalog import load_profiles
+
+            profiles = load_profiles()
+        except Exception as exc:   # 하네스 부재·YAML 오류 — 사유를 들고 올라간다
+            raise StructuralAxisUnavailable(
+                f"`config/scenarios/profiles.yaml` 을 읽지 못했다 — "
+                f"{type(exc).__name__}: {str(exc)[:200]}") from exc
+
+    levels: dict[str, dict[str, str]] = {}
+    for name in LADDER_LEVEL_PROFILES:
+        env = profiles.get(name)
+        if env is None:
+            raise StructuralAxisUnavailable(
+                f"프로파일 `{name}` 이 profiles.yaml 에 없다 — 레벨 정의를 사본으로 두지 않는다")
+        missing = [k for k in LADDER_ENV_KEYS if k not in env]
+        if missing:
+            raise StructuralAxisUnavailable(
+                f"프로파일 `{name}` 이 사다리 키 {', '.join(missing)} 를 싣지 않는다 — "
+                "세 키를 모두 명시해야 tri-state 자동 결정이 배제된다(D-225 ④)")
+        levels[name] = {k: str(env[k]) for k in LADDER_ENV_KEYS}
+
+    return multi_key_axis(
+        LADDER_AXIS, group_key=LADDER_CATEGORY, levels=levels,
+        impact_paths=("llm_calls", "db_roundtrips", "prompt_size", "retry_budget"),
+        rationale=(
+            "**구조 축** — 사다리 3키를 한 축으로 전개한다(D-250 ①). 단은 노드 집합을 바꿔 "
+            "다른 축의 효과를 조건부로 만들므로 캠페인 첫 구간에서 잰다. 레벨 정의는 "
+            "`config/scenarios/profiles.yaml` 을 읽어 쓴다(사본 금지)"),
+        structural=True,
+    )
+
+
+def structural_axes() -> tuple[list[AxisCandidate], list[AxisDecision]]:
+    """구조 축 전부와 그 판정(F0). 현재는 사다리 단 하나다."""
+    try:
+        axis = ladder_axis()
+    except StructuralAxisUnavailable as exc:
+        return [], [AxisDecision(env_key=LADDER_AXIS, included=False, stage="F0",
+                                 reason=f"구조 축 정의를 읽지 못했다 — {exc}")]
+    return [axis], [AxisDecision(env_key=LADDER_AXIS, included=True, stage="F0",
+                                 reason=axis.rationale)]
+
+
+def find_axis(axis_id: str, candidates: Optional[Sequence[AxisCandidate]] = None
+              ) -> Optional[AxisCandidate]:
+    """축 id 로 축을 되찾는다 — 처분 제안이 다중 키 축을 실제 env 키로 펼칠 때 쓴다."""
+    if candidates is None:
+        candidates, _ = structural_axes()
+    return next((a for a in candidates if a.env_key == axis_id), None)
 
 
 def _impact_paths(knob: catalog.KnobSpec) -> tuple[str, ...]:
@@ -135,18 +285,40 @@ def _as_float(text: Optional[str]) -> Optional[float]:
 
 def select_axes(
     knobs: Optional[Iterable[catalog.KnobSpec]] = None,
+    *,
+    include_structural: Optional[bool] = None,
 ) -> tuple[list[AxisCandidate], list[AxisDecision]]:
-    """축을 자동으로 뽑고 전 판정을 함께 돌려준다."""
+    """축을 자동으로 뽑고 전 판정을 함께 돌려준다.
+
+    카탈로그 밖의 **구조 축**(사다리 단 · F0)을 맨 앞에 붙인다. 그 축은 노브 하나가 아니라
+    3키 묶음이라 F1·F2 선별을 지나지 않는다.
+
+    `include_structural` 기본값은 **`knobs` 를 주지 않았을 때만 True** 다 — *"이 노브들로
+    축을 뽑아라"* 라는 호출(단위 테스트·부분 검사)에 노브가 아닌 축을 끼워 넣지 않는다.
+    """
+    if include_structural is None:
+        include_structural = knobs is None
     knobs = list(knobs) if knobs is not None else catalog.load_knobs()
     kept, dropped = catalog.f1_filter(knobs)
 
-    decisions: list[AxisDecision] = [
+    structural, decisions = structural_axes() if include_structural else ([], [])
+    decisions = list(decisions)
+    decisions += [
         AxisDecision(env_key=d.env_key, included=False, stage="F1", reason=d.reason)
         for d in dropped
     ]
     axes: list[AxisCandidate] = []
+    #: 구조 축이 이미 전개하는 키는 단일 키 축으로 **또** 뽑지 않는다 — 같은 설정을 두 축이
+    #: 흔들면 구간이 갈리고 판정이 서로 모순된다.
+    claimed = {key for axis in structural for key in axis.env_keys}
 
     for knob in kept:
+        if knob.env_key in claimed:
+            owner = next(a.env_key for a in structural if knob.env_key in a.env_keys)
+            decisions.append(AxisDecision(
+                env_key=knob.env_key, included=False, stage="F2",
+                reason=f"구조 축 `{owner}` 이 다중 키로 전개한다 — 단일 키 축으로 중복 전개하지 않는다"))
+            continue
         paths = _impact_paths(knob)
         if not paths:
             decisions.append(AxisDecision(
@@ -174,7 +346,8 @@ def select_axes(
             env_key=knob.env_key, included=True, stage="F2", reason=rationale))
 
     axes.sort(key=lambda a: (a.tier != "primary", -len(a.impact_paths), a.env_key))
-    return axes, decisions
+    # 구조 축이 맨 앞이다 — 캠페인이 첫 구간으로 뽑는 것과 같은 순서를 화면에서도 본다.
+    return structural + axes, decisions
 
 
 def expand_ofat(axes: Sequence[AxisCandidate], *, baseline_label: str = "baseline") -> list[dict]:
@@ -189,7 +362,9 @@ def expand_ofat(axes: Sequence[AxisCandidate], *, baseline_label: str = "baselin
                 "arm_id": f"S2-{axis.env_key}-{level}",
                 "axis": axis.env_key,
                 "level": level,
-                "env": {axis.env_key: level},
+                # 다중 키 축이면 여기서 키 여럿이 나온다(`env_for`). arm id 는 축 id·레벨로
+                # 짓는다 — 키가 여럿이어도 쌍체 비교의 단위는 레벨 하나다.
+                "env": axis.env_for(level),
             })
     return arms
 
@@ -227,6 +402,14 @@ def to_yaml(axes: Sequence[AxisCandidate]) -> str:
             f"    tier: {axis.tier}",
             f"    rationale: \"{axis.rationale}\"",
         ]
+        if axis.multi_key:
+            # 다중 키 축은 **어느 키가 어떤 값이 되는지**가 보여야 검토가 된다.
+            lines.append(f"    keys: [{', '.join(axis.env_keys)}]")
+            lines.append("    structural: true" if axis.structural else "    structural: false")
+            lines.append("    level_env:")
+            for level in axis.levels:
+                pairs = ", ".join(f"{k}: {v}" for k, v in sorted(axis.env_for(level).items()))
+                lines.append(f"      {level}: {{{pairs}}}")
     return "\n".join(lines) + "\n"
 
 
@@ -252,8 +435,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(render_explain(decisions))
     else:
         for axis in shown:
-            mark = " " if axis.tier == "primary" else "~"
+            mark = "*" if axis.structural else (" " if axis.tier == "primary" else "~")
             print(f" {mark}{axis.env_key:46s} {'·'.join(axis.impact_paths):30s} {list(axis.levels)}")
+            if axis.multi_key:
+                print(f"  {'':46s} 키 {', '.join(axis.env_keys)}")
         if not args.all_tiers and secondary:
             print(f"\n  2차 축 {len(secondary)}개는 상한·예산이라 기본 스위프에서 제외한다(--all-tiers로 포함).")
     if args.write:

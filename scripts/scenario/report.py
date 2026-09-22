@@ -36,6 +36,50 @@ CANONICAL_TIER = "semantic_router"
 #: 판정표가 기준 단의 수치가 아니라는 사실은 여전히 해석을 바꾸기 때문이다.
 OPTIN_TIER = "deep_agent"
 
+#: 2단. 존 선택 재진입 경로가 알람 의도 교정을 건너뛴다(plans/111 §2.4) - 111 G-5 확정:
+#: *"2단을 재측정 arm 으로 쓰면 측정 왜곡(알람 질의 전건 오분류)을 리포트에 고지한다"*.
+INTENT_TIER = "intent_orchestration"
+#: 2단이 섞인 run 에서 알람 시나리오 행에 붙이는 문구(plans/114 M-7).
+TIER2_ALARM_NOTE = "2단 알람 교정 우회(plans/111 §2.4) - 해석 제외 권고"
+#: 알람 군(카탈로그 `d_alarm.yaml`).
+ALARM_GROUP = "D"
+
+
+def tier2_alarm_caveat(
+    verdicts: dict[str, dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    catalog: Optional[Catalog],
+) -> Optional[dict[str, Any]]:
+    """2단 프로파일이 섞인 run 이면 **해석에서 뺄 알람 시나리오**를 고른다(plans/114 M-7).
+
+    알람 시나리오 판별(결정적): 군이 `D` 이거나, 카탈로그의 어느 턴 질의문에서
+    `has_alarm_signal`(`src/orchestration/intent_planner.py`)이 참인 시나리오. 2단 교정
+    `_coerce_alarm_intent` 가 쓰는 판정 **그대로**다 - 우회되는 교정과 같은 술어로 골라야
+    고지 범위가 결함 범위와 맞는다. 목록을 손으로 두면 카탈로그가 바뀔 때 낡는다.
+    카탈로그 없이 부르면(`--report` 재생성 등) D군만 고르고 그 사실을 `criterion` 에 남긴다.
+    """
+    tier2 = [str(p.get("name")) for p in profiles or [] if p.get("tier") == INTENT_TIER]
+    if not tier2:
+        return None
+    signalled: set[str] = set()
+    if catalog:
+        # 함수 안 import - `optin_failure_profiles` 와 같은 관행(리포트는 산출물만 읽는 경로다).
+        from src.orchestration.intent_planner import has_alarm_signal
+
+        signalled = {
+            s.id for s in catalog.scenarios
+            if any(has_alarm_signal(str((t.send or {}).get("query") or "")) for t in s.turns)
+        }
+    return {
+        "profiles": tier2,
+        "scenario_ids": sorted(
+            sid for sid, info in verdicts.items()
+            if info.get("group") == ALARM_GROUP or sid in signalled
+        ),
+        "criterion": ("D군 + 질의문 알람 신호(has_alarm_signal)" if catalog
+                      else "D군만(카탈로그 없이 생성 - 다른 군의 알람 시나리오는 고르지 못했다)"),
+    }
+
 
 def _degraded_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
     """기준 단도 부가 경로 단도 아닌 단으로 돈 프로파일 (O-c).
@@ -561,6 +605,7 @@ def build_summary(
         "scenario_verdicts": verdicts,
         "invalid": invalid,
         "unevaluated": unevaluated,
+        "tier2_alarm_caveat": tier2_alarm_caveat(verdicts, run.get("profiles", []), catalog),
     }
 
 
@@ -813,6 +858,21 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
             "확인한 뒤 다시 측정한다."
         )
         add("")
+    alarm_caveat = summary.get("tier2_alarm_caveat") or {}
+    alarm_ids = set(alarm_caveat.get("scenario_ids") or [])
+    if alarm_caveat:
+        # plans/114 M-7 · 111 G-5 확정: 2단을 측정 arm 으로 쓰면 알람 왜곡을 고지한다.
+        add(
+            f"> **[{TIER2_ALARM_NOTE}]** 2단(`{INTENT_TIER}`) 프로파일 "
+            + " · ".join(f"`{name}`" for name in alarm_caveat.get("profiles") or [])
+            + " 이 섞였다. 2단 `intent_planner` 의 사전 처리 단락(존 선택·DB 매핑)이 알람 의도 "
+            "교정을 건너뛰어 알람 질의가 `data_query` 로 가고 알람 테이블이 빠진다 - "
+            "아래 알람 시나리오 "
+            f"{len(alarm_ids)}건의 판정·지연은 알람 기능이 아니라 이 우회를 잰 값이다. "
+            f"대상: {' · '.join(f'`{sid}`' for sid in sorted(alarm_ids)) or '없음'} "
+            f"(판별: {alarm_caveat.get('criterion')})."
+        )
+        add("")
     optin_failed = optin_failure_profiles(summary)
     if optin_failed:
         # 권고 B: 강등이 **아니다** - 확정 단은 기준 단(3단)이고 그 수치는 유효하다. 다만 이
@@ -937,6 +997,12 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         ] or [["(없음)", 0, 0, 0, 0, 0, 0, 0]],
     ))
     add("")
+    if alarm_ids:
+        verdicts = summary.get("scenario_verdicts") or {}
+        groups = sorted({str(verdicts[sid].get("group")) for sid in alarm_ids if sid in verdicts})
+        add(f"※ {TIER2_ALARM_NOTE}: {' · '.join(sorted(alarm_ids))} - 이 시나리오가 섞인 군"
+            f"({', '.join(groups)})의 수치를 알람 기능의 성적으로 읽지 말 것.")
+        add("")
 
     # 3
     add("## 3. 성능 목표 대조")
@@ -1009,6 +1075,8 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         for item in failures:
             add(f"### {item['scenario_id']} (턴 {item.get('turn')}) - `{item['kind']}`")
             add("")
+            if item["scenario_id"] in alarm_ids:
+                add(f"- **{TIER2_ALARM_NOTE}**")
             if item.get("forbidden_mode"):
                 add(f"- **금지 등급**: `{item['forbidden_mode']}`")
             for failed in item.get("failed_assertions", []):

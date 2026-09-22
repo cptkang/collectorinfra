@@ -2649,6 +2649,12 @@ def _validate_sql_simple(
         if re.search(rf"\b{kw}\b", sql, re.IGNORECASE):
             return f"금지 키워드 포함: {kw}"
 
+    # FROM 절 없는 상수 SELECT — 단일 경로(validate_sql 2.5)와 같은 판정·문구(plans/114 P-6 · D-066)
+    from src.sql_validation import TABLELESS_SELECT_ERROR, is_tableless_select
+
+    if is_tableless_select(sql):
+        return TABLELESS_SELECT_ERROR
+
     # LEFT JOIN 강등(WHERE 필터) 감지 — 단일 경로(query_validator 6.7)와 대칭 (D-085)
     demotion_errors = _check_left_join_where_demotion(sql)
     if demotion_errors:

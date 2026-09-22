@@ -233,15 +233,19 @@ async def intent_planner(
 ) -> dict[str, Any]:
     """사용자 질의를 sub-task 목록으로 분해한다(계획 본체 ``_plan_turn`` + 단일 출구 정규화).
 
-    ``COMPOSITE_TASK_FRAME_ENABLED``가 켜져 있으면 **모든 분기의 출구**에서 담당 교정(알람·
-    프로세스)을 다시 적용한다(plans/111 D-1) — 사전 처리 조기 반환(존 선택 재진입 ②.5 등)이
-    교정을 우회하던 구조(111 §2.4 · 27턴)를 닫는다. 꺼져 있으면 ``_plan_turn`` 결과 그대로다.
+    **모든 분기의 출구**에서 담당 교정(알람·프로세스)을 다시 적용한다(plans/111 D-1) — 사전 처리
+    조기 반환(존 선택 재진입 ②.5 등)이 교정을 우회하던 구조(111 §2.4 · 27턴)를 닫는다.
+
+    정규화는 **플래그와 무관하게 항상** 돈다(plans/114 T-1 · D-250 ⑤). 종전에는
+    ``COMPOSITE_TASK_FRAME_ENABLED``에 묶여 있었는데, 그 플래그는 프롬프트 계약(111 C-1~C-3)을
+    바꾸는 것이고 여기 교정은 LLM 출력을 고치지 않는 **순수 결정적 후처리**라 묶일 이유가 없었다.
+    묶인 채로 두면 2단 기본 설정에서 알람 질의가 전건 ``data_query``로 남아(run
+    ``20260922-112010``: 존 자동응답 105턴이 전부 이 경로) 사다리 단 비교가 공정하지 않다.
     """
     if app_config is None:
         app_config = load_config()
     result = await _plan_turn(state, llm=llm, app_config=app_config)
-    if _task_frame_on(app_config):
-        _normalize_plan_exit(result, state)
+    _normalize_plan_exit(result, state)
     return result
 
 

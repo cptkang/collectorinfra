@@ -506,7 +506,9 @@ async def _resolve_unmatched_via_llm(
         resolved: dict[str, str] = {}
         for field, db_col_val in unresolved_columns.items():
             matched_key = llm_mapping.get(db_col_val)
-            if matched_key and matched_key in result_keys:
+            # LLM이 값으로 리스트를 주면 `in result_keys`가 TypeError(unhashable)를 내 **나머지
+            # 필드까지** 스킵됐다(run 20260922-112010 · plans/114 P-8) — 문자열만 받는다.
+            if isinstance(matched_key, str) and matched_key in result_keys:
                 resolved[field] = matched_key
 
         return resolved if resolved else None

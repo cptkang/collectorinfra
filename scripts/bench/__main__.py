@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -297,6 +298,15 @@ class SweepOutcome:
     all_unjudged: bool = False
     discordant: int = 0
     elapsed_sec: float = 0.0
+    #: 이 구간 arm 중 축 도달 불가(plans/114 M-3)로 판정된 arm id — 후단 관문(M-2 ③)이 쓴다.
+    unreachable: list = field(default_factory=list)
+    #: 구간 간 비교(plans/114 M-2 ①b)가 캠페인 상태에 남길 것 — 이 구간 기준선의 사다리 단 ·
+    #: 실효 설정 지문(비결정 키 제외) · 판(커밋·작업 트리). 앞 구간과 다르면 구간 사이의
+    #: 기준선 반복(D-239 노이즈 바닥)이 같은 조건의 반복이 아니다.
+    baseline_tier: Optional[str] = None
+    config_fingerprint: Optional[str] = None
+    commit: Optional[str] = None
+    dirty: Optional[bool] = None
 
 
 def cmd_sweep(args: argparse.Namespace) -> int:
@@ -335,6 +345,7 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
     env, env_reason = sweep_mod.resolve_env(args.env)
     say(f"  환경: {env} — {env_reason}")
 
+    workload = None
     if args.mode != "dry":
         try:
             workload = sweep_mod.load_normal_catalog(env=env)
@@ -431,6 +442,8 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
     # arm(대조군)은 판정표가 축 효과로 렌더링하면 안 되는데, 그 판정에 이 스냅샷이 필요하다.
     snapshot = snapshot or sweep_mod.capture_config_snapshot(arms)
     controls = snapshot.control_arms()
+    #: 설정은 다르지만 축이 이 단의 그래프에 닿지 않는 arm(plans/114 M-3) — 델타는 노이즈다.
+    unreachable = snapshot.unreachable_arms()
     sub_ids = {a.arm_id for a in substituted}
     #: 노이즈 바닥은 **실제로 돈** 대조군으로만 잰다 — 생략한 arm 의 관측은 기준선 복사본이라
     #: 델타가 0이다.
@@ -446,6 +459,20 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
             arm = snapshot.arms[arm_id]
             skip = " → 실행 생략 · 기준선 관측 사용" if arm_id in sub_ids else ""
             say(f"     대조군 {arm_id} — 주입 {arm.injected} 이 기준선 실효값과 같다{skip}")
+        for arm_id, reason in unreachable.items():
+            skip = " → 실행 생략 · 기준선 관측 사용" if arm_id in sub_ids else ""
+            say(f"     {arm_id} — {reason}{skip}")
+
+    # **기대 단은 캠페인 상태가 안다**(plans/114 M-0 · D-250 ③) — 사람에게 묻지 않는다.
+    # 단 축 구간이면 arm 마다 자기 레벨의 단, 승자 주입 뒤 구간이면 전 arm 이 기준선의 단이다.
+    tier_axis, expected_tiers = sweep_mod.tier_context(list(arms) + list(substituted), snapshot)
+    if tier_axis:
+        listing = " · ".join(f"{a}={t}" for a, t in sorted(expected_tiers.items()))
+        say(f"  사다리 단 축 구간 — 기대 단: {listing or '(그래프를 못 떠 기대 없음)'}")
+        say(f"     {sweep_mod.TIER_AXIS_CAVEAT}")
+    elif expected_tiers:
+        say(f"  기대 단: `{sorted(set(expected_tiers.values()))[0]}` "
+            "(단 축 구간이 정한 승자 주입) — 실제와 다르면 차단한다")
 
     if resume_from:
         say(f"  재개: run {resume_from} 을 잇는다 — 성공한 턴은 건너뛰고 무효 턴은 다시 돈다")
@@ -474,13 +501,16 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
     # 순수 후처리(입력은 `raw.jsonl`)라 비용이 없고, 실패해도 축 판정은 계속한다.
     try:
         from scripts.scenario.report import write_report as _write_scenario_report
-        sc_paths = _write_scenario_report(out_dir)
+        # 카탈로그를 넘긴다 — 없으면 3절 `목표(ms)`가 전 칸 공란이고(run 20260922-112010),
+        # 2단 알람 고지가 D군 밖의 알람 시나리오를 고르지 못한다(plans/114 M-7).
+        sc_paths = _write_scenario_report(out_dir, workload)
         say(f"  94 리포트: {', '.join(sorted(p.name for p in sc_paths.values()))}")
     except Exception as exc:
         say(f"  94 리포트 생성 실패({type(exc).__name__}: {exc}) — "
             f"`summary.json` 이 없어 94 분석기(`scripts.scenario --analyze`)에는 넣을 수 없습니다.")
 
-    health = sweep_mod.scan_health(result, raw)
+    health = sweep_mod.scan_health(result, raw, tier_axis=tier_axis,
+                                   expected_tiers=expected_tiers)
     say()
     launched = len(result.get("profiles") or []) or len(arms)   # arm × 시나리오 자기 프로파일
     say(f"건전성 — 유효 프로파일 {health.valid_profiles}/{launched} · 턴 {health.turns}건 "
@@ -537,14 +567,16 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
             "구간 캠페인의 합산 리포트가 구간 간 기준선 반복으로 잰다.")
     say(f"{'arm':52s} {'판정':10s} 문장")
     for v in verdicts:
-        mark = " [대조군]" if v.arm_id in set(controls) else ""
+        mark = (" [대조군]" if v.arm_id in set(controls)
+                else " [도달 불가]" if v.arm_id in unreachable else "")
         say(f"  {v.arm_id:50s} {v.verdict:10s}{mark} {v.sentence}")
     for arm in substituted:
-        say(f"  {arm.arm_id:50s} {'—':10s} 기준선과 동일 설정 → 기준선 관측 사용(실행 생략)")
+        why = "도달 불가" if arm.arm_id in unreachable else "기준선과 동일 설정"
+        say(f"  {arm.arm_id:50s} {'—':10s} {why} → 기준선 관측 사용(실행 생략)")
 
     # **축 단위 판정 — 레벨 간 직접 비교(W-1).** 위 표는 전부 「arm vs 기준선」이라
     # "켰을 때 vs 껐을 때"가 어디에도 없다. 벤치마크의 목적이 그것이므로 따로 낸다.
-    optima = [sweep_mod.note_substitution(o, substituted)
+    optima = [sweep_mod.note_substitution(o, substituted, unreachable)
               for o in compare.optima(grouped, list(arms) + list(substituted),
                                       control_arms=list(controls)
                                       + sorted(sub_ids - set(controls)))]
@@ -588,6 +620,10 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
         lines += [f"> 대조군(기준선과 실효 설정 동일) {len(controls)}개: "
                   + " · ".join(f"`{a}`" for a in controls)
                   + " — 이 arm 의 델타는 축 효과가 아니라 **노이즈 바닥**이다.", ""]
+    if unreachable:
+        lines += [f"> **도달 불가 arm {len(unreachable)}개**(plans/114 M-3) — 설정은 다르지만 축이 "
+                  "이 단의 그래프에 닿지 않아 델타는 축 효과가 아니라 노이즈다: "
+                  + " · ".join(f"`{a}` ({reason})" for a, reason in unreachable.items()), ""]
     if lat_floor is not None:
         lines += [f"> 실측 노이즈 바닥 — 정확도 {floor_pp:.1f}%p · 지연 ±{lat_floor:.0f}ms", ""]
     lines += ["| 축 | 레벨 | 판정 | 최적 | 근거 |", "|---|---|---|---|---|"]
@@ -597,11 +633,15 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
 
     lines += ["", "## arm 판정 — 기준선 대비", "",
               "| arm | 축 | 값 | 판정 | 근거 |", "|---|---|---|---|---|"]
-    lines += [f"| `{v.arm_id}`{' **(대조군)**' if v.arm_id in set(controls) else ''} "
+    lines += [f"| `{v.arm_id}`{' **(대조군)**' if v.arm_id in set(controls) else ''}"
+              f"{' **(도달 불가)**' if v.arm_id in unreachable else ''} "
               f"| {v.axis or '—'} | {v.level or '—'} | **{v.verdict}** | {v.sentence} |"
               for v in verdicts]
-    lines += [f"| `{a.arm_id}` **(기준선과 동일 설정)** | {a.axis} | {a.level} | **실행 생략** | "
-              "기준선 관측 사용 — 실효 설정 지문이 기준선과 같아 A/A 반복이다 |"
+    lines += [(f"| `{a.arm_id}` **(도달 불가)** | {a.axis} | {a.level} | **실행 생략** | "
+               f"기준선 관측 사용 — {unreachable[a.arm_id]} |")
+              if a.arm_id in unreachable else
+              (f"| `{a.arm_id}` **(기준선과 동일 설정)** | {a.axis} | {a.level} | **실행 생략** | "
+               "기준선 관측 사용 — 실효 설정 지문이 기준선과 같아 A/A 반복이다 |")
               for a in substituted]
     if out_dir:
         (out_dir / "axis_verdicts.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -618,12 +658,118 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
         say(f"판정표를 무효로 표시했습니다 — arm {len(verdicts)}개 전부 「{compare.UNDERPOWERED}」 "
             f"· 불일치 쌍 합 {discordant}건.")
         say("  축이 아니라 워크로드를 먼저 고치세요(위 도달 지표 참조).")
+    meta = (result.get("meta") or {}) if isinstance(result, dict) else {}
     return SweepOutcome(rc=1 if all_unjudged else 0, ran=True, out_dir=out_dir, health=health,
                         optima=optima, substituted=sorted(sub_ids), all_unjudged=all_unjudged,
-                        discordant=discordant, elapsed_sec=elapsed)
+                        discordant=discordant, elapsed_sec=elapsed,
+                        unreachable=sorted(a.arm_id for a in list(arms) + list(substituted)
+                                           if a.arm_id in unreachable),
+                        baseline_tier=health.baseline_tier(),
+                        config_fingerprint=snapshot.fingerprint(sweep_mod.BASELINE_ARM),
+                        commit=meta.get("commit"), dirty=meta.get("dirty"))
 
 
 # ── 구간 캠페인 (사용자 지시 2026-09-21 · 1회 구동 ≤ 10시간) ─────────────────
+
+
+def _ladder_axis() -> tuple[Optional[str], Optional[str]]:
+    """`(축 id, 못 쓰는 사유)` — 구조 축을 쓸 수 있는가(plans/114 M-0).
+
+    정의를 못 읽으면 **조용히 없던 일로 하지 않는다** — 사유를 들고 다니다 계획 표에 찍는다.
+    그 상태에서는 종전처럼 `.env` 가 확정한 단으로 돌게 되므로, 그 사실이 보여야 한다.
+    """
+    _, decisions = axes_mod.structural_axes()
+    bad = next((d for d in decisions if not d.included), None)
+    return (None, bad.reason) if bad else (axes_mod.LADDER_AXIS, None)
+
+
+def _decide_tier_winner(campaign, segment, outcome) -> dict:
+    """단 축 구간이 끝났다 — **이긴 단**을 정한다(plans/114 M-0 · D-250 ②).
+
+    판정은 레벨 간 직접 비교(`compare.optima` · D-237)를 그대로 쓴다. 규칙 셋뿐이다.
+
+    - `최적 레벨` — 그 레벨이 승자다.
+    - `레벨 간 차이 없음` — **기준 경로 3단**(`semantic_router` · D-225)을 쓴다. 차이가 없으면
+      기준을 따르는 것이 기본값 정책이다.
+    - `판정 불가` — 승자를 정하지 **않는다**. 사유를 남기고 캠페인을 멈춘다(사람이 본다).
+
+    돌려주는 것은 `campaign.tier_decision` 에 그대로 들어갈 딕셔너리다.
+    """
+    base = {"segment_id": segment.segment_id, "axis": axes_mod.LADDER_AXIS,
+            "decided_at": datetime.now().isoformat(timespec="seconds")}
+    optimum = next((o for o in (outcome.optima or []) if o.axis == axes_mod.LADDER_AXIS), None)
+    if optimum is None:
+        return {**base, "blocked": "단 축 판정이 산출되지 않았다 — 구간 산출물에 이 축의 "
+                                   "레벨 비교가 없다(arm 이 실행되지 않았거나 관측이 비었다)"}
+    axis = axes_mod.find_axis(axes_mod.LADDER_AXIS)
+    if axis is None:
+        return {**base, "verdict": optimum.verdict,
+                "blocked": "구조 축 정의를 다시 읽지 못해 주입할 env 를 만들 수 없다"}
+
+    if optimum.verdict == compare.BEST_LEVEL and optimum.best_level:
+        level, why = optimum.best_level, f"레벨 간 비교에서 우세 — {optimum.sentence}"
+    elif optimum.verdict == compare.LEVELS_TIED:
+        canonical = sweep_mod.canonical_tier()
+        measured = outcome.health.tier_by_arm() if outcome.health else {}
+        level = next((lv for lv in axis.levels
+                      if measured.get(f"S2-{axes_mod.LADDER_AXIS}-{lv}") == canonical), None)
+        if level is None:
+            return {**base, "verdict": optimum.verdict,
+                    "blocked": (f"「{compare.LEVELS_TIED}」이라 기준 경로 `{canonical}`(D-225)를 "
+                                "써야 하는데, 그 단으로 확정된 레벨이 이 구간 관측에 없다 — "
+                                "어느 레벨이 기준 경로인지 확인하고 다시 판정한다")}
+        why = (f"「{compare.LEVELS_TIED}」 — 기준 경로 `{canonical}`(D-225)를 쓴다. "
+               f"{optimum.sentence}")
+    else:
+        return {**base, "verdict": optimum.verdict,
+                "blocked": f"단 축 판정이 「{optimum.verdict}」다 — {optimum.sentence}"}
+
+    measured = outcome.health.tier_by_arm() if outcome.health else {}
+    tier = measured.get(f"S2-{axes_mod.LADDER_AXIS}-{level}")
+    return {**base, "verdict": optimum.verdict, "level": level, "tier": tier,
+            "env": axis.env_for(level), "sentence": why}
+
+
+def _tier_gate(campaign, target, plan) -> Optional[str]:
+    """이 구간을 지금 돌아도 되는가 — 멈출 사유, 없으면 None(plans/114 M-0 · D-250 ①).
+
+    **구조 축 구간이 끝나기 전에는 다른 구간을 돌지 않는다.** 단은 노드 집합을 바꿔 다른 축의
+    효과를 조건부로 만들기 때문이다 — 2단에서 잰 축 결과는 3단으로 옮겨지지 않는다.
+
+    구조 축을 잴 수 없는 캠페인(축 정의를 못 읽거나 전 레벨이 기준선과 같은 설정)에서는
+    막지 않는다. 그 사실은 계획 표의 「사다리 단」 줄이 드러낸다 — 조용히 통과시키는 것이
+    아니라 **막을 근거가 없는 것**이다.
+    """
+    if target.structural:
+        if target.over_budget:
+            return (f"구조 축 구간 `{target.segment_id}` 의 추정 {target.est_hours:.1f}시간이 "
+                    f"채움 상한 {plan.budget_hours:.1f}시간(1회 구동 {plan.max_hours:g}시간 · "
+                    "D-239)을 넘습니다. 이 구간은 **빼면 캠페인이 성립하지 않으므로** 구간 불가로 "
+                    "떨구지 않았습니다 — 사람이 정하세요: `--max-hours` 를 "
+                    f"{math.ceil(target.est_hours / (1 - campaign_mod.SAFETY_MARGIN))} 이상으로 "
+                    "올리거나, `--groups` 로 워크로드를 줄여 다시 실행합니다.")
+        return None
+
+    done = campaign.structural_done()
+    if done is None:
+        waiting = (any(s.structural for s in plan.segments)
+                   or any(r.structural and r.status != campaign_mod.DONE
+                          for r in campaign.records.values()))
+        if waiting:
+            return ("사다리 단 축 구간이 아직 끝나지 않았습니다 — D-250 ①: *\"사다리 단은 벤치 "
+                    "캠페인 첫 구간의 다중 키 축으로 잰다\"*, ②: *\"구조 축을 먼저 잰다. 단은 노드 "
+                    "집합을 바꿔 다른 축의 효과를 조건부로 만든다\"*. 지금 다른 구간을 돌리면 그 "
+                    f"결과는 `.env` 가 우연히 확정한 단에 조건부입니다(구간 `{target.segment_id}`). "
+                    "먼저 `--segment next` 로 단 축 구간을 돌리세요.")
+        return None
+    blocked = campaign.tier_blocked()
+    if blocked:
+        return (f"단 축 구간 `{done.segment_id}` 은 끝났지만 **이긴 단을 정하지 못했습니다** — "
+                f"{blocked}. 승자 없이 남은 구간을 돌면 어느 단으로 잰 것인지 모른 채 캠페인이 "
+                "진행됩니다(D-250 ②). 사람이 판정을 확인한 뒤 진행하세요 — 상태 파일의 "
+                "`tier_decision` 을 보고, 다시 재려면 `--segment "
+                f"{done.segment_id}` 로 그 구간을 다시 돌립니다.")
+    return None
 
 
 def _campaign_context(args: argparse.Namespace, snapshot=None):
@@ -632,6 +778,10 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
     **계획 전에 남은 arm 의 실효 설정 지문을 뜬다**(`capture_config_snapshot` · 65 arm 약 36초
     · LLM 0). 지문이 기준선과 같은 arm 은 실행 목록에서 빠진다. 스냅샷을 못 뜨면 빼지 않는다
     (추정 금지).
+
+    **단 축이 이미 이긴 단을 정했으면 그 3키를 전 arm 에 주입한다**(plans/114 M-0 · D-250 ②).
+    기준선까지 포함해 주입하는 이유는 94 러너가 arm 마다 프로파일을 따로 띄우기 때문이다 —
+    기준선에만 넣으면 변이 arm 은 `.env` 의 단으로 돈다. arm 자신의 축 값이 우선한다.
     """
     env, env_reason = sweep_mod.resolve_env(args.env)
     name = args.campaign or campaign_mod.default_name(args.mode, env)
@@ -640,6 +790,9 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
         path, name=name, env=env, mode="run" if args.mode == "dry" else args.mode,
         repeat=args.repeat, max_hours=args.max_hours)
     all_arms = sweep_mod.build_arms()
+    winner_env = campaign.tier_winner_env()
+    if winner_env:
+        all_arms = [replace(a, env={**winner_env, **a.env}) for a in all_arms]
     categories = sweep_mod.axis_categories()
     turns_per_arm = sweep_mod.planned_turns_per_arm(sweep_mod.load_normal_catalog(env=env))
     rate = campaign.rate(turns_per_arm)
@@ -650,11 +803,17 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
         snapshot = sweep_mod.capture_config_snapshot(baseline + pending_arms)
     controls = (frozenset(snapshot.control_arms())
                 if snapshot is not None and not snapshot.unavailable else frozenset())
+    # 축 도달 불가 arm 도 돌리지 않는다 — 설정은 달라도 실효는 A/A 다(plans/114 M-3).
+    unreachable = snapshot.unreachable_arms() if snapshot is not None else {}
+    ladder, _ = _ladder_axis()
     plan = campaign_mod.plan_segments(
         pending_arms, categories, rate=rate, max_hours=args.max_hours,
-        repeat=args.repeat, used_ids=campaign.used_ids(), controls=controls,
+        repeat=args.repeat, used_ids=campaign.used_ids(),
+        controls=controls | frozenset(unreachable), reasons=unreachable,
         # 첫 구간은 보정용으로 가장 작게 — 아직 아무 구간도 돈 적이 없을 때만.
-        calibrate=not campaign.records)
+        calibrate=not campaign.records,
+        # 구조 축(사다리 단)이 그보다도 앞이다(plans/114 M-0 · D-250 ①).
+        first_axis=ladder)
     return env, env_reason, campaign, all_arms, categories, plan, snapshot
 
 
@@ -736,6 +895,8 @@ def cmd_segment(args: argparse.Namespace) -> int:
         skipped = sum(len(s.substituted) for s in plan.segments)
         say(f"  실행 생략: 미완 구간의 arm {skipped}개 — 실효 설정 지문이 기준선과 같다(A/A 반복). "
             "그 레벨은 같은 구간의 기준선 관측을 쓴다. 노이즈 바닥은 구간 간 기준선 반복으로 잰다.")
+        for arm_id, reason in snapshot.unreachable_arms().items():
+            say(f"  실행 생략(M-3): {arm_id} — {reason}")
 
     if args.mode == "dry":
         return 0
@@ -782,8 +943,11 @@ def cmd_segment(args: argparse.Namespace) -> int:
             target = campaign_mod.Segment(
                 segment_id=record.segment_id, category=record.category, axes=tuple(record.axes),
                 arm_ids=executed, substituted=tuple(record.substituted),
-                est_hours=plan.rate.segment_hours(1 + len(executed), args.repeat))
-            if target.est_hours > plan.budget_hours and not resume:
+                est_hours=plan.rate.segment_hours(1 + len(executed), args.repeat),
+                # 구조 축 구간을 다시 돌 때도 구조 축이다 — 관문·판정이 그 사실에 달렸다.
+                structural=record.structural)
+            if (target.est_hours > plan.budget_hours and not resume
+                    and not target.structural):
                 say(f"\n구간 {target_id} 의 현재 추정 {target.est_hours:.1f}시간이 채움 상한 "
                     f"{plan.budget_hours:.1f}시간을 넘습니다 — 재시도하지 않습니다.")
                 return 1
@@ -793,6 +957,12 @@ def cmd_segment(args: argparse.Namespace) -> int:
                 say(f"\n구간 `{target_id}` 을 찾지 못했습니다 — 위 표의 구간 id 를 쓰세요.")
                 return 1
             target = found[0]
+
+    blocked = _tier_gate(campaign, target, plan)
+    if blocked:
+        say()
+        say(f"멈춥니다 — {blocked}")
+        return 1
 
     seg_arms = campaign_mod.segment_arms(all_arms, target.axes, sweep_mod.BASELINE_ARM)
     skip_ids = set(target.substituted)
@@ -830,9 +1000,37 @@ def cmd_segment(args: argparse.Namespace) -> int:
     reasons = list(outcome.health.stop_reasons()) if outcome.health else ["건전성 판정 없음"]
     # 후단 관문: 설정을 바꿔도 결과가 한 건도 안 바뀌었다. **mock 은 제외한다** — 모의 응답은 arm 간
     # 같아 불일치 쌍이 늘 0이다(설계상). mock 에서 이걸 실패로 세면 리허설이 항상 멈춘다.
-    if args.mode == "run" and outcome.all_unjudged and outcome.discordant == 0:
-        reasons.append("전 arm 판정 불가 · 불일치 쌍 합 0건 — 워크로드가 축에 닿지 않았다")
+    if args.mode == "run" and outcome.all_unjudged:
+        # plans/114 M-2 ③: 판정표 무효인데 측정 자격 문제(단·타임아웃·도달 불가)가 겹치면
+        # 불일치 쌍이 있어도 그것은 축 효과가 아니다 — run 20260922-112010 은 불일치 17건
+        # (A/A 노이즈)으로 「완료」가 됐고, 콘솔은 "워크로드를 먼저 고치세요"라고 말하면서
+        # 다음 구간이 돌았다.
+        kinds = ([] if not outcome.health else
+                 (["사다리 단"] if outcome.health.tier_problems() else [])
+                 + (["타임아웃률"] if outcome.health.timeout_problem() else []))
+        kinds += ["도달 불가 arm"] if outcome.unreachable else []
+        if outcome.discordant == 0:
+            reasons.append("전 arm 판정 불가 · 불일치 쌍 합 0건 — 워크로드가 축에 닿지 않았다")
+        elif kinds:
+            reasons.append(
+                f"전 arm 판정 불가(판정표 무효) · 불일치 쌍 합 {outcome.discordant}건 — 측정 자격 "
+                f"문제({' · '.join(kinds)})가 겹쳐 불일치 쌍을 축 효과로 읽을 수 없다")
+        else:
+            say("\n판정표는 무효지만 측정 자격 문제(단·타임아웃·도달 불가)가 없다 — "
+                "「완료 · 검정력 부족」으로 기록한다(1축 구간의 작은 효과는 판정 불가가 정상이다).")
     health = outcome.health
+    record = campaign_mod.SegmentRecord(
+        segment_id=target.segment_id, category=target.category, axes=list(target.axes),
+        arm_ids=[], status="", mode=args.mode, structural=target.structural,
+        baseline_tier=outcome.baseline_tier, config_fingerprint=outcome.config_fingerprint,
+        commit=outcome.commit, dirty=outcome.dirty)
+    # **구간 간 판 비교**(plans/114 M-2 ①b) — 단이 바뀌면 멈추고, 설정 지문·커밋 차이는 고지한다.
+    # 앞 구간과 판이 다르면 구간 간 기준선 반복(D-239 노이즈 바닥)이 같은 조건의 반복이 아니다.
+    seg_stop, seg_notes = campaign_mod.continuity(
+        campaign.last_finished(exclude=target.segment_id), record)
+    reasons += seg_stop
+    for note in seg_notes:
+        say(f"  구간 간 주의: {note}")
     campaign.records[target.segment_id] = campaign_mod.SegmentRecord(
         segment_id=target.segment_id, category=target.category, axes=list(target.axes),
         arm_ids=list(target.arm_ids) + list(target.substituted),
@@ -843,7 +1041,9 @@ def cmd_segment(args: argparse.Namespace) -> int:
         finished_at=datetime.now().isoformat(timespec="seconds"),
         elapsed_sec=round(outcome.elapsed_sec, 1), turns=health.turns if health else 0,
         est_hours=round(target.est_hours, 2), attempts=attempts,
-        stop_reasons=reasons, resumed=bool(resume),
+        stop_reasons=reasons, resumed=bool(resume), structural=target.structural,
+        baseline_tier=outcome.baseline_tier, config_fingerprint=outcome.config_fingerprint,
+        commit=outcome.commit, dirty=outcome.dirty,
         health={} if not health else {
             "sql_rate": round(health.sql_rate, 4),
             "graph_entry_rate": round(health.graph_entry_rate, 4),
@@ -854,6 +1054,18 @@ def cmd_segment(args: argparse.Namespace) -> int:
             "verdicts": health.verdicts,
             "unevaluated": dict(health.unevaluated),
         })
+    # **단 축 구간이 끝나면 이긴 단을 정한다**(plans/114 M-0 · D-250 ②) — 남은 구간의 기준선에
+    # 주입될 값이다. 구간이 실패면 정하지 않는다(실패한 측정으로 기준선을 바꾸지 않는다).
+    if target.structural:
+        if campaign.records[target.segment_id].status == campaign_mod.DONE:
+            campaign.tier_decision = _decide_tier_winner(campaign, target, outcome)
+        else:
+            campaign.tier_decision = {
+                "segment_id": target.segment_id, "axis": axes_mod.LADDER_AXIS,
+                "decided_at": datetime.now().isoformat(timespec="seconds"),
+                "blocked": f"단 축 구간이 실패로 끝났다 — {' / '.join(reasons) or '사유 미기록'}"}
+        for line in campaign_mod.render_tier_decision(campaign):
+            say(line)
     path = campaign.save()
 
     # 상태가 바뀌었으니 남은 계획을 다시 짜서 합산 리포트를 낸다(실측 속도가 반영된다).
@@ -876,6 +1088,65 @@ def cmd_segment(args: argparse.Namespace) -> int:
     say("  다음 `--segment next` 는 이 구간에서 멈춥니다 — "
         "원인을 고친 뒤 이 구간 id 로 다시 돌리세요.")
     return 1
+
+
+def _campaign_tier_lines(campaign) -> list[str]:
+    """합산 리포트의 **단·판 고지**(plans/114 M-2 ①b·①c · D-250 ③).
+
+    셋을 낸다.
+      0. 단 축 판정 — **이긴 단과 주입 여부**(M-0 · D-250 ②). 아직 안 쟀거나 판정 불가면
+         그 사실을 적는다.
+      1. 끝난 구간의 기준선 단이 기준 경로(D-225)가 아니면 — 그 단에 **조건부**라는 고지.
+         멈추지 않는다: 어느 단이 이기는지는 사다리 단 축(M-0)이 재야 할 결과다.
+      2. 구간 사이에 단·설정 지문·커밋이 바뀌었으면 — 구간 간 기준선 반복이 같은 조건의
+         반복이 아니라는 고지(노이즈 바닥 해석 조건).
+    """
+    finished = sorted((r for r in campaign.done() if r.finished_at),
+                      key=lambda r: r.finished_at or "")
+    if not finished:
+        return []
+    lines: list[str] = []
+    decision = campaign.tier_decision
+    blocked = campaign.tier_blocked()
+    if decision and not blocked and decision.get("level"):
+        env = " · ".join(f"`{k}={v}`" for k, v in sorted((decision.get("env") or {}).items()))
+        lines += [f"> **사다리 단 축 판정 — `{decision['level']}`(단 `{decision.get('tier') or '?'}`) "
+                  f"승**(구간 `{decision.get('segment_id')}` · 판정 「{decision.get('verdict')}」). "
+                  f"{decision.get('sentence', '')} **남은 구간 기준선에 주입했다**: {env}.", "",
+                  f"> {sweep_mod.TIER_AXIS_CAVEAT}", ""]
+    elif blocked:
+        lines += [f"> **사다리 단 축 판정 불가 — 승자를 정하지 않았다.** {blocked} "
+                  "남은 구간은 돌지 않는다(D-250 ② · 사람이 본다).", ""]
+    canonical = sweep_mod.canonical_tier()
+    off = [r for r in finished if r.baseline_tier and r.baseline_tier != canonical
+           and not r.structural]
+    if off:
+        listing = " · ".join(f"`{r.segment_id}`={r.baseline_tier}" for r in off)
+        lines += [f"> **사다리 단 축(plans/114 M-0 · D-250) 미측정** — 기준선 단이 기준 경로 "
+                  f"`{canonical}`(D-225)가 아닌 구간: {listing}. 이 구간들의 축 결과는 **그 단에 "
+                  "조건부**다(다른 단으로 옮겨지지 않는다). 실패는 아니다 — 어느 단이 이기는지는 "
+                  "단 축 구간이 재야 할 값이다.", ""]
+    notes: list[str] = []
+    for previous, current in zip(finished, finished[1:]):
+        stop, seen = campaign_mod.continuity(previous, current)
+        notes += [f"`{current.segment_id}`: {note}" for note in stop + seen]
+    if notes:
+        lines += ["> **구간 사이에 판이 바뀌었다** — 구간 간 기준선 반복을 노이즈 바닥으로 읽을 때 "
+                  "이 차이를 함께 본다: " + " · ".join(notes), ""]
+    return lines
+
+
+def _segment_row(record, pass_rate: str) -> str:
+    """합산 리포트 「구간」 표의 한 줄 — **기준선의 판**(단·설정 지문·커밋)을 함께 싣는다.
+
+    구간 간 기준선 반복이 노이즈 바닥이 되려면 이 셋이 같아야 한다(plans/114 M-2 ①b). 옛 기록에는
+    칸이 없으므로 `-` 로 둔다 — 「없음」과 「안 잼」을 구별한다.
+    """
+    dirty = " (dirty)" if record.dirty else ""
+    return (f"| `{record.segment_id}` | {record.category} | {len(record.axes)} | "
+            f"{record.elapsed_sec / 3600:.2f} | {pass_rate} | {record.baseline_tier or '-'} | "
+            f"{record.config_fingerprint or '-'} | "
+            f"{(record.commit[:8] + dirty) if record.commit else '-'} | `{record.run_id}` |")
 
 
 def _campaign_optima(campaign, all_arms):
@@ -905,14 +1176,14 @@ def _campaign_optima(campaign, all_arms):
                       f"{' · '.join(str(p) for p in tried) or '경로 기록 없음'})")
             for axis in record.axes:
                 missing[axis] = reason
-            seg_rows.append(f"| `{record.segment_id}` | {record.category} | {len(record.axes)} | "
-                            f"{record.elapsed_sec / 3600:.2f} | 폴더 없음 | `{record.run_id}` |")
+            seg_rows.append(_segment_row(record, "폴더 없음"))
             continue
         raw = run_dir / "raw.jsonl"
         grouped = sweep_mod.group_by_arm(sweep_mod.read_observations(raw))
         snapshot = sweep_mod.load_config_snapshot(run_dir / "config_snapshot.json")
         first_snapshot = first_snapshot or snapshot
         controls = snapshot.control_arms() if snapshot and not snapshot.unavailable else []
+        unreachable = snapshot.unreachable_arms() if snapshot else {}
         arms = campaign_mod.segment_arms(all_arms, record.axes, sweep_mod.BASELINE_ARM)
         base = grouped.get(sweep_mod.BASELINE_ARM, [])
         substituted = [a for a in arms if a.arm_id in set(record.substituted)]
@@ -920,13 +1191,13 @@ def _campaign_optima(campaign, all_arms):
             grouped[arm.arm_id] = sweep_mod.baseline_as(base, arm.arm_id)
         for opt in compare.optima(grouped, arms,
                                   control_arms=sorted(set(controls) | set(record.substituted))):
-            optima.append((record.segment_id, sweep_mod.note_substitution(opt, substituted)))
+            optima.append((record.segment_id,
+                           sweep_mod.note_substitution(opt, substituted, unreachable)))
             measured.add(opt.axis)
         if base:
             baselines.append((record.segment_id, base))
         rate = sum(1 for o in base if o.passed) / len(base) * 100.0 if base else 0.0
-        seg_rows.append(f"| `{record.segment_id}` | {record.category} | {len(record.axes)} | "
-                        f"{record.elapsed_sec / 3600:.2f} | {rate:.1f}% | `{record.run_id}` |")
+        seg_rows.append(_segment_row(record, f"{rate:.1f}%"))
     return optima, first_snapshot, baselines, seg_rows, measured, missing
 
 
@@ -1006,12 +1277,15 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
                       "같은 설정(기준선)이 구간마다 다르게 나왔다. "
                       "구간이 다른 축끼리의 효과 크기는 비교하지 말 것."
                       + (" " + " · ".join(drift) if drift else ""), ""]
+    lines += _campaign_tier_lines(campaign)
     lines += ["## 축 최적 레벨 — 구간별 판정 모음", "",
               "| 축 | 카테고리 | 구간 | 레벨 | 판정 | 최적 | 근거 |",
               "|---|---|---|---|---|---|---|"]
     lines += rows
-    lines += ["", "## 구간", "", "| 구간 | 카테고리 | 축 | 실측 시간 | 기준선 통과율 | run_id |",
-              "|---|---|---:|---:|---:|---|"] + seg_rows
+    lines += ["", "## 구간", "",
+              "| 구간 | 카테고리 | 축 | 실측 시간 | 기준선 통과율 | 기준선 단 | 설정 지문 | "
+              "커밋 | run_id |",
+              "|---|---|---:|---:|---:|---|---|---|---|"] + seg_rows
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "campaign_verdicts.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

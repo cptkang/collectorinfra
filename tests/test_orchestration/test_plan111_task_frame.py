@@ -186,12 +186,16 @@ class TestExitNormalize:
         state["selected_db_ids"] = ["polestar_cm_gp"]
         return state
 
-    async def test_zone_resume_alarm_off_stays_data_query(self, mock_config):
-        """꺼져 있으면 종전 그대로 — 존 선택 재진입은 data_query 고정(108 G-2 보류 유지)."""
+    async def test_zone_resume_alarm_off_is_also_coerced(self, mock_config):
+        """**플래그 off 에서도** 교정된다(plans/114 T-1 · D-250 ⑤ — 111 G-5·108 G-2 개정).
+
+        종전 단언은 *"꺼져 있으면 data_query 고정"* 이었다. 그 동작이 2단 기본 설정에서
+        알람 질의를 전건 오분류시켜 단 비교를 불공정하게 만든다는 것이 개정 근거다.
+        """
         mock_config.composite.task_frame_enabled = False
         state = self._zone_state(self.ALARM_Q)
         out = await intent_planner(state, llm=_llm("{}"), app_config=mock_config)
-        assert out["task_plan"][0]["agent"] == "data_query"
+        assert out["task_plan"][0]["agent"] == "alarm_query"
 
     async def test_zone_resume_alarm_on_is_coerced(self, mock_config):
         """켜면 존 선택 재진입도 알람 교정을 지난다(111 §2.4 27턴 부류)."""

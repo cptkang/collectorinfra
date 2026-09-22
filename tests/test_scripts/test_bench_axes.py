@@ -157,7 +157,10 @@ def test_to_yaml_marks_generated_and_includes_tier():
 def test_real_selection_produces_axes_and_full_decisions():
     selected, decisions = axes.select_axes()
     assert selected, "축이 하나도 안 뽑혔다"
-    assert len(decisions) == len(catalog.load_knobs()), "판정이 전건을 덮지 않았다"
+    # **노브 전건을 덮는지**를 본다(건수 비교가 아니라 집합 비교) — 구조 축(F0 · plans/114 M-0)은
+    # 노브가 아니라 3키 묶음이라 판정 행이 하나 더 있다.
+    knob_keys = {k.env_key for k in catalog.load_knobs()}
+    assert knob_keys <= {d.env_key for d in decisions}, "판정이 전건을 덮지 않았다"
     assert all(a.levels and len(a.levels) >= 2 for a in selected)
 
 

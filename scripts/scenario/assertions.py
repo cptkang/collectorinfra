@@ -165,6 +165,20 @@ def observed_sqls(obs: Observation) -> list[str]:
     return [obs.executed_sql] if obs.executed_sql else []
 
 
+def sql_body(sql: str) -> str:
+    """SQL 단언이 매칭할 본문 — **주석(`--`·`/* */`)을 뺀다**(plans/114 M-6).
+
+    생성 규칙이 SQL 머리에 `-- 설명` 주석을 강제한다. 원문에 매칭하면 A-01 의
+    `sql_must_not_match: (?i)여의도` 가 주석 `-- 여의도 개발 서버들의 …` 에 걸리고(run
+    20260922-112010), 반대로 주석 속 테이블명이 `sql_must_match` 를 거짓 통과시킨다.
+    리터럴(`WHERE loc = '여의도'`)은 남긴다 — 그것이 부정 단언이 잡아야 할 것이다.
+    주석 판정은 제품 검증기와 같은 함수를 쓴다(사본을 두면 한쪽만 낡는다).
+    """
+    from src.sql_validation import strip_sql_comments
+
+    return strip_sql_comments(sql)
+
+
 #: 전송 계층 인증 실패를 **원시 로그 문자열에서** 알아보는 표지.
 #: `client._http_error` 가 `http 401 ...` / `http 403 ...` 형태로 적는다.
 _AUTH_ERROR_RE = re.compile(r"\bhttp\s+(401|403)\b", re.IGNORECASE)
@@ -682,11 +696,12 @@ def evaluate_turn(
             for pattern in must_match:
                 failures.append(Failure("sql_must_match", pattern, None))
     else:
+        bodies = [sql_body(sql) for sql in sqls]
         for pattern in must_match:
-            if not any(re.search(str(pattern), sql) for sql in sqls):
+            if not any(re.search(str(pattern), body) for body in bodies):
                 failures.append(Failure("sql_must_match", pattern, (sqls[0][:200] if sqls else None)))
     for pattern in expect.get("sql_must_not_match") or []:
-        hit = next((sql for sql in sqls if re.search(str(pattern), sql)), None)
+        hit = next((sql for sql in sqls if re.search(str(pattern), sql_body(sql))), None)
         if hit is not None:
             failures.append(Failure("sql_must_not_match", pattern, hit[:200]))
     if expect.get("sql_must_not_match") and not sqls and (obs.row_count or 0) > 0:

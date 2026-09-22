@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
@@ -35,6 +35,31 @@ BASELINE_ARM = "baseline"
 GRAPH_ENTRY_WARN = 0.8      # 그래프 진입률이 이보다 낮으면
 CLARIFY_WARN = 0.3          # 역질문 종료율이 이 이상이면
 INVALID_STOP = 0.05         # 무효 턴 비율이 이를 넘으면 구간 실패(D-219 ③)
+TIMEOUT_STOP = 0.2          # 타임아웃 턴 비율이 이 이상이면 구간 실패(plans/114 M-2 ②)
+
+#: 그래프 등록 조건 플래그 → 그 플래그가 등록하는 노드(plans/114 M-3 · 축 도달성).
+#:
+#: `src/graph.py` `build_graph` 의 `add_node` 조건을 전수 grep 해 뽑았다(2026-09-22). **플래그를
+#: 읽는 코드가 그 노드 안(또는 그 노드가 배선될 때만 도는 곳)뿐인 것만** 싣는다 — 그래야 「그 노드가
+#: START 에서 닿지 않는다 = 플래그 값이 결과를 바꿀 수 없다」가 성립한다.
+#:
+#: - 싣는 것: `cross_system_probe_enabled`(소비처 graph.py 뿐) · `tier3_plan_loop_enabled`(나머지
+#:   소비처 `semantic_router._plan_signal_enabled` 는 라우터가 배선되는 3단에서만 돈다 — 그때는 계획
+#:   노드도 등록된다) · `composite.sequential_fallback_tiers_enabled`(소비처는 러너 노드 안) ·
+#:   `enable_sql_approval`(`approval_gate` · 나머지 소비처는 계획 루프·순차 러너 노드 안)
+#: - 싣지 않는 것: 사다리 3키(단 자체를 바꾼다 — M-0 몫) · `noise_gate.fault_diagnosis_enabled`
+#:   (노드 밖 `orchestration/sufficiency.py` 가 2단 `agent_orchestrator` 에서도 읽는다) ·
+#:   `observability.trace_enabled`(노드 집합이 아니라 래핑만 바꾼다) ·
+#:   `worker_provider_override`(테스트 전용)
+#:
+#: 한계: 노드 **안**에서 읽는 대부분의 노브는 이 방법으로 판정하지 않는다 — 종전대로 잰다.
+GRAPH_REGISTRATION_FLAGS: dict[str, tuple[str, ...]] = {
+    "CROSS_SYSTEM_PROBE_ENABLED": ("entity_locator",),
+    "TIER3_PLAN_LOOP_ENABLED": ("plan", "normalize", "dispatch", "task_run", "join", "replan",
+                                "finalize"),
+    "COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED": ("sequential_runner",),
+    "ENABLE_SQL_APPROVAL": ("approval_gate",),
+}
 
 #: 러너 자신의 실패로 측정이 성립하지 않은 턴(94 `assertions.INVALID_VERDICT` · D-218).
 #: 여기서 문자열로 두는 이유는 94 하네스가 없는 환경에서도 원시 로그를 읽을 수 있어야 하기
@@ -362,6 +387,70 @@ class ArmConfig:
     effective: dict[str, Any] = field(default_factory=dict)
     ok: bool = True
     error: Optional[str] = None
+    #: 이 설정으로 빌드한 그래프에서 START 로부터 닿는 노드(plans/114 M-3). 뜨지 않았으면 None.
+    reachable: Optional[tuple[str, ...]] = None
+    #: 그래프를 뜨려다 실패한 사유(빌드 실패·네트워크 시도). 있으면 도달성을 판정하지 않는다.
+    graph_error: Optional[str] = None
+
+
+#: 단 축 판정을 읽을 때 반드시 함께 읽어야 하는 주의(D-250 주의 ① · `plans/110` 가이드 ③).
+#: 3단 기능 동등성이 미완이라(`plans/103` P5) 3단 레벨의 **기능** 불합격이 결함이 아니라
+#: "아직 옮겨지지 않은 기능"일 수 있다. 판정문·판정표·합산 리포트가 **같은 문장**을 쓴다.
+TIER_AXIS_CAVEAT = (
+    "사다리 단 축 구간이다 — 레벨마다 단이 다른 것이 측정 대상이다. **3단 기능 동등성은 "
+    "미완이다(`plans/103` P5)** — 3단 레벨의 기능 불합격은 결함이 아니라 아직 옮겨지지 않은 "
+    "기능일 수 있으니 103 잔여와 대조해 읽을 것")
+
+
+def tier_context(
+    arms: Sequence[ArmSpec], snapshot: Optional[ConfigSnapshot],
+) -> tuple[bool, dict[str, str]]:
+    """이 실행의 `(단 축 구간인가, {arm: 기대 단})` — **스냅샷에서만** 읽는다(plans/114 M-0).
+
+    사람에게 기대 단을 묻지 않는다(D-250 ③). 알 수 있는 경로는 둘뿐이고 둘 다 실측이다.
+
+    - **단 축 구간**: arm 하나하나가 자기 레벨의 단을 낸다 — 그 arm 의 그래프 도달 노드가 답이다.
+    - **승자 주입 뒤 구간**: 기준선에 사다리 3키가 주입돼 있고, 다른 축은 단을 바꾸지 않는다 —
+      기준선의 단이 곧 전 arm 의 기대 단이다.
+
+    스냅샷이 없거나 그래프를 못 떴으면 **빈 기대**다. 추정하지 않는다 — 기대가 비면
+    `tier_problems` 는 종전 규칙(단 갈림 = 사고)만 적용한다.
+    """
+    tier_axis = any(a.axis == axes_mod.LADDER_AXIS for a in arms)
+    if snapshot is None or snapshot.unavailable:
+        return tier_axis, {}
+    if tier_axis:
+        wanted = [a.arm_id for a in arms if a.axis == axes_mod.LADDER_AXIS]
+        base = snapshot.tier_of(BASELINE_ARM)
+        expected = snapshot.tier_expectations(wanted)
+        if base:
+            expected[BASELINE_ARM] = base
+        return True, expected
+    injected = snapshot.baseline.injected or {}
+    if not any(key in injected for key in axes_mod.LADDER_ENV_KEYS):
+        return False, {}
+    base = snapshot.tier_of(BASELINE_ARM)
+    if not base:
+        return False, {}
+    # 다른 축은 사다리 키를 건드리지 않는다(구조 축이 그 키를 독점한다 — `axes.select_axes`).
+    return False, {a.arm_id: base for a in arms}
+
+
+def ladder_tier_of(reachable: Optional[Sequence[str]]) -> Optional[str]:
+    """도달 노드로 사다리 단 이름을 읽는다(`src/graph.py` 배선 — 단마다 첫 분기 노드가 다르다).
+
+    노드를 못 떴으면(`None`) **추정하지 않는다** — 단을 모른다는 사실 자체가 판정 입력이다.
+    """
+    if reachable is None:
+        return None
+    nodes = set(reachable)
+    if "deep_agent" in nodes:
+        return "deep_agent"
+    if "intent_planner" in nodes:
+        return "intent_orchestration"
+    if "semantic_router" in nodes:
+        return "semantic_router"
+    return "legacy"
 
 
 @dataclass(frozen=True)
@@ -373,6 +462,28 @@ class ConfigSnapshot:
     nondeterministic: frozenset[str] = frozenset()
     #: 스냅샷을 못 찍었을 때의 사유. 있으면 대조군 판정은 **하지 않는다**(추정 금지).
     unavailable: Optional[str] = None
+
+    def arm_config(self, arm_id: str) -> Optional[ArmConfig]:
+        return self.baseline if arm_id == BASELINE_ARM else self.arms.get(arm_id)
+
+    def tier_of(self, arm_id: str) -> Optional[str]:
+        """이 arm 이 **실제로 확정할 사다리 단**. 그래프를 못 떴으면 None(추정 금지).
+
+        서버를 띄우기 전에 자식 프로세스로 뜬 값이다(`probe.graph_reach`) — 러너가 사후에
+        `run.json.profiles[].tier` 로 읽는 값과 같은 것을 **사전에** 안다. 그래서 캠페인이
+        *"이 arm 은 어느 단이어야 하는가"* 를 사람에게 묻지 않고 판정에 쓸 수 있다(D-250 ③).
+        """
+        arm = self.arm_config(arm_id)
+        return ladder_tier_of(arm.reachable) if arm is not None else None
+
+    def tier_expectations(self, arm_ids: Sequence[str]) -> dict[str, str]:
+        """`{arm_id: 기대 단}` — 못 뜬 arm 은 **싣지 않는다**(모르는 것을 기대로 만들지 않는다)."""
+        out: dict[str, str] = {}
+        for arm_id in arm_ids:
+            tier = self.tier_of(arm_id)
+            if tier:
+                out[arm_id] = tier
+        return out
 
     def fingerprint(self, arm_id: str) -> Optional[str]:
         """비결정 필드를 뺀 실효 설정 지문. 스냅샷이 없으면 None."""
@@ -425,17 +536,48 @@ class ConfigSnapshot:
         return sorted(arm_id for arm_id in self.arms
                       if self.fingerprint(arm_id) == base)
 
+    def unreachable_arms(self) -> dict[str, str]:
+        """**설정은 다르지만 축이 워크로드에 닿을 수 없는 arm** → 사유(plans/114 M-3).
+
+        축이 그래프 등록 조건 플래그(`GRAPH_REGISTRATION_FLAGS`)이고, 기준선과 arm 의 도달 노드
+        집합이 같으며, 그 플래그가 등록하는 노드가 어느 쪽에서도 START 로부터 닿지 않는다. 그러면
+        플래그 값이 달라도 실효는 A/A 다 — run 20260922-112010 의 `CROSS_SYSTEM_PROBE_ENABLED`
+        true arm 이 2단 기준선 위에서 4.4시간 중 절반을 그렇게 썼다(`entity_locator` 는 3단 전용).
+        도달성을 못 뜬 쪽(`reachable is None`)이 있으면 판정하지 않는다(추정 금지).
+        """
+        base = self.baseline.reachable
+        if base is None or self.unavailable:
+            return {}
+        out: dict[str, str] = {}
+        for arm_id, arm in sorted(self.arms.items()):
+            gated = GRAPH_REGISTRATION_FLAGS.get(arm.axis or "")
+            if not gated or arm.reachable is None or set(arm.reachable) != set(base):
+                continue
+            if set(gated) & set(base):
+                continue
+            out[arm_id] = (
+                f"도달 불가 — `{arm.axis}` 가 등록하는 노드({', '.join(gated)})가 이 단"
+                f"(`{ladder_tier_of(base)}`)의 그래프에서 START 로부터 닿지 않는다"
+                "(기준선·arm 도달 노드 동일). 플래그 값이 결과를 바꿀 수 없다")
+        return out
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "baseline": {"effective": self.baseline.effective, "ok": self.baseline.ok,
-                         "error": self.baseline.error},
+                         "error": self.baseline.error,
+                         "reachable": list(self.baseline.reachable)
+                         if self.baseline.reachable is not None else None,
+                         "graph_error": self.baseline.graph_error},
             "arms": {
                 arm_id: {"axis": arm.axis, "level": arm.level, "injected": arm.injected,
-                         "ok": arm.ok, "error": arm.error, "effective": arm.effective}
+                         "ok": arm.ok, "error": arm.error, "effective": arm.effective,
+                         "reachable": list(arm.reachable) if arm.reachable is not None else None,
+                         "graph_error": arm.graph_error}
                 for arm_id, arm in sorted(self.arms.items())
             },
             "nondeterministic": sorted(self.nondeterministic),
             "control_arms": self.control_arms(),
+            "unreachable_arms": self.unreachable_arms(),
             "unavailable": self.unavailable,
         }
 
@@ -458,14 +600,26 @@ def capture_config_snapshot(
     base_env: Optional[dict[str, str]] = None,
     echo: Any = None,
     detect_nd: Any = None,
+    graph: Any = None,
 ) -> ConfigSnapshot:
     """arm 마다 자식 파이썬을 띄워 **자식이 실제로 읽는 설정**을 모은다.
 
     서버를 띄우기 **전에** 돌린다(arm 당 1~2초 · 62 arm 이면 약 2분). 실패는 예외가 아니라
     데이터다 — 못 찍은 arm 은 `ok=False` 로 남기고, 기준선을 못 찍으면 전체를
     `unavailable` 로 표시해 **대조군 판정을 아예 하지 않는다**(추정 금지).
+
+    축이 그래프 등록 조건 플래그(`GRAPH_REGISTRATION_FLAGS`)인 arm 과 기준선은 **그래프 도달
+    노드**도 뜬다(`probe.graph_reach` · 자식 1회 약 2초 · LLM·DB·네트워크 0 — plans/114 M-3).
+    **사다리 단 축 arm 과 단이 주입된 기준선**도 같이 뜬다(plans/114 M-0) — 그 노드 집합이 곧
+    그 arm 의 단이라, 캠페인이 기대 단을 사람에게 묻지 않고 알 수 있다(D-250 ③).
+    해당하는 arm 이 하나도 없으면 그래프는 뜨지 않는다.
+
+    **기준선도 자기 주입값으로 에코한다.** 종전에는 기준선을 언제나 빈 주입으로 떴는데,
+    캠페인이 이긴 단을 남은 구간 기준선에 주입하면(M-0) 그 기준선의 실효값이 `.env` 값과
+    달라진다 — 빈 주입으로 뜨면 대조군 지문 판정이 통째로 빗나간다.
     """
     run_echo = echo or probe_mod.echo_config
+    run_graph = graph or probe_mod.graph_reach
     detect = detect_nd or probe_mod.detect_nondeterministic_keys
     shared = {**(base_env or {}), **isolation_env()}
 
@@ -480,21 +634,48 @@ def capture_config_snapshot(
         except Exception as exc:
             return {}, False, f"{type(exc).__name__}: {str(exc)[:300]}"
 
-    effective, ok, error = _echo(None)
-    baseline = ArmConfig(arm_id=BASELINE_ARM, axis=None, level=None, injected={},
+    base_arm = next((a for a in arms if a.arm_id == BASELINE_ARM), None)
+    base_injected = dict(base_arm.env) if base_arm is not None else {}
+    effective, ok, error = _echo(base_injected or None)
+    baseline = ArmConfig(arm_id=BASELINE_ARM, axis=None, level=None, injected=base_injected,
                          effective=effective, ok=ok, error=error)
     if not ok:
         return ConfigSnapshot(baseline=baseline, unavailable=(
             f"기준선 설정 에코 실패 ({error}) — 대조군 판정을 하지 않는다"))
+
+    def _graph(
+        overrides: Optional[dict[str, str]],
+    ) -> tuple[Optional[tuple[str, ...]], Optional[str]]:
+        """도달 노드 1회. 에코와 같이 **실패를 데이터로** 돌려준다."""
+        try:
+            res = run_graph(overrides, base_env=shared)
+            if not getattr(res, "ok", False):
+                return None, str(getattr(res, "error", "") or "그래프 도달성 확인 실패")
+            return tuple(getattr(res, "reachable", ()) or ()), None
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {str(exc)[:300]}"
+
+    def _needs_graph(axis: Optional[str]) -> bool:
+        """그래프를 떠야 하는 축인가 — 등록 조건 플래그(M-3)이거나 사다리 단 축(M-0)이다."""
+        return axis in GRAPH_REGISTRATION_FLAGS or axis == axes_mod.LADDER_AXIS
 
     captured: dict[str, ArmConfig] = {}
     for arm in arms:
         if arm.arm_id == BASELINE_ARM:
             continue
         arm_effective, arm_ok, arm_error = _echo(dict(arm.env))
+        reachable, graph_error = (_graph(dict(arm.env))
+                                  if _needs_graph(arm.axis) else (None, None))
         captured[arm.arm_id] = ArmConfig(
             arm_id=arm.arm_id, axis=arm.axis, level=arm.level, injected=dict(arm.env),
-            effective=arm_effective, ok=arm_ok, error=arm_error)
+            effective=arm_effective, ok=arm_ok, error=arm_error,
+            reachable=reachable, graph_error=graph_error)
+    # 기준선 그래프는 ①비교 대상 arm 이 있거나 ②기준선 자신에 사다리 키가 주입됐을 때 뜬다.
+    # ②가 승자 주입 뒤 구간이다 — 그 구간의 기대 단은 기준선의 단이다(M-2 ① (b)).
+    if (any(_needs_graph(arm.axis) for arm in captured.values())
+            or any(key in base_injected for key in axes_mod.LADDER_ENV_KEYS)):
+        reachable, graph_error = _graph(base_injected or None)
+        baseline = replace(baseline, reachable=reachable, graph_error=graph_error)
 
     try:
         nd = detect(base_env=shared)
@@ -510,15 +691,21 @@ def load_config_snapshot(path: Path) -> Optional[ConfigSnapshot]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    def _reach(info: dict[str, Any]) -> Optional[tuple[str, ...]]:
+        value = info.get("reachable")
+        return tuple(value) if isinstance(value, list) else None
+
     base = data.get("baseline") or {}
     baseline = ArmConfig(arm_id=BASELINE_ARM, axis=None, level=None, injected={},
                          effective=dict(base.get("effective") or {}), ok=bool(base.get("ok")),
-                         error=base.get("error"))
+                         error=base.get("error"), reachable=_reach(base),
+                         graph_error=base.get("graph_error"))
     arms = {
         arm_id: ArmConfig(arm_id=arm_id, axis=info.get("axis"), level=info.get("level"),
                           injected=dict(info.get("injected") or {}),
                           effective=dict(info.get("effective") or {}), ok=bool(info.get("ok")),
-                          error=info.get("error"))
+                          error=info.get("error"), reachable=_reach(info),
+                          graph_error=info.get("graph_error"))
         for arm_id, info in (data.get("arms") or {}).items()
     }
     return ConfigSnapshot(baseline=baseline, arms=arms,
@@ -782,6 +969,15 @@ class RunHealth:
     #: `meta.provenance_mixed`(109·CS-19③). **주의로만 싣는다** — 멈춤 기준으로 올릴지는
     #: 사용자 판단이다.
     provenance_mixed: Optional[str] = None
+    #: 유효 프로파일의 사다리 단 — `(프로파일, arm, 단)`(plans/114 M-2 ①). 모의(`mock`)·미관측은
+    #: 싣지 않는다 — 미관측을 강등으로 세면 주의가 상시 켜진다(94 리포트 O-c 와 같은 규칙).
+    tiers: tuple[tuple[str, str, str], ...] = ()
+    #: 이 실행이 **사다리 단 축 구간**인가(plans/114 M-0). 단이 갈리는 것이 곧 측정 대상이므로
+    #: 「프로파일마다 단이 다르다」를 실패로 세지 않는다.
+    tier_axis: bool = False
+    #: `{arm_id: 기대 단}` — 설정 스냅샷이 서버 기동 **전에** 뜬 값이다(`ConfigSnapshot.tier_of`).
+    #: 실제 단이 이것과 다르면 주입 실패·강등이므로 차단한다(D-250 ③ · M-2 ① (b)).
+    expected_tiers: dict[str, str] = field(default_factory=dict)
 
     @property
     def error_turns(self) -> int:
@@ -806,6 +1002,102 @@ class RunHealth:
     @property
     def invalid_rate(self) -> float:
         return (self.invalid_turns / self.turns) if self.turns else 0.0
+
+    @property
+    def timeout_turns(self) -> int:
+        return int(self.unevaluated.get("timeout", 0) or 0)
+
+    @property
+    def timeout_rate(self) -> float:
+        return (self.timeout_turns / self.turns) if self.turns else 0.0
+
+    def tier_problems(self) -> list[str]:
+        """**구간을 실패로 볼** 사다리 단 문제(plans/114 M-2 ① · D-250 ③).
+
+        기대 단을 사람에게 묻지 않는다 — 캠페인 상태가 안다.
+
+        - **arm 별 기대 단이 있으면**(`expected_tiers` — 설정 스냅샷이 기동 전에 뜬 값) 실제가
+          그것과 다른 arm 을 차단한다. 단 축 구간에서는 arm 마다 자기 레벨의 단이고, 승자 주입
+          뒤 구간에서는 전 arm 이 이긴 단이다.
+        - **단 축 구간에서는 단이 갈리는 것이 정상**이다 — 그것이 측정 대상이다.
+        - 그 밖에는 프로파일마다 단이 갈리면 주입·강등 사고다.
+
+        기준선이 기준 경로가 아닌 것은 **여기 넣지 않는다** — 고지다(`tier_notes`). 실패로 세면
+        D-250 ①이 정한 단 축(M-0)에서 2단이 이겼을 때 남은 구간이 전부 실패한다.
+        """
+        mismatched = [(name, arm, tier) for name, arm, tier in self.tiers
+                      if arm in self.expected_tiers and tier != self.expected_tiers[arm]]
+        if mismatched:
+            listing = " · ".join(f"{name}({arm})={tier} ≠ 기대 {self.expected_tiers[arm]}"
+                                 for name, arm, tier in mismatched)
+            return [f"사다리 단이 캠페인이 기대한 단과 다르다({listing}) — 주입이 먹지 않았거나 "
+                    "강등됐다. 이 구간의 결과는 기대한 단의 측정이 아니다"]
+        if self.tier_axis:
+            # 단 축 구간 — 레벨마다 단이 다른 것이 곧 측정이다(D-250 ①).
+            return []
+        observed = {tier for _, _, tier in self.tiers}
+        if len(observed) <= 1:
+            return []
+        listing = " · ".join(f"{name}={tier}" for name, _, tier in self.tiers)
+        return [f"사다리 단이 프로파일마다 다르다({listing}) — 사다리 축이 아닌데 단이 갈렸다"
+                "(주입·강등 사고). arm 차이가 단 차이와 교란된다"]
+
+    def tier_by_arm(self) -> dict[str, str]:
+        """`{arm: 관측된 단}` — 한 arm 이 여러 프로파일에서 단이 갈리면 **싣지 않는다**.
+
+        단 축 구간의 승자에게 어느 단을 주입할지 정할 때 쓴다(plans/114 M-0). 사전 프로브가
+        아니라 **실제로 돈 서버가 보고한 단**이다(`run.json.profiles[].tier`).
+        """
+        seen: dict[str, set[str]] = {}
+        for _, arm, tier in self.tiers:
+            seen.setdefault(arm, set()).add(tier)
+        return {arm: next(iter(tiers)) for arm, tiers in seen.items() if len(tiers) == 1}
+
+    def baseline_tier(self) -> Optional[str]:
+        """기준선 arm 의 사다리 단 — 구간 간 비교(plans/114 M-2 ①b)가 캠페인 상태에 남길 값.
+
+        관측이 없거나 갈리면 None 이다(갈린 것은 `tier_problems` 가 실패로 잡는다).
+        """
+        base = {tier for _, arm, tier in self.tiers if arm == BASELINE_ARM}
+        base = base or {tier for _, _, tier in self.tiers}
+        return next(iter(base)) if len(base) == 1 else None
+
+    def tier_notes(self) -> list[str]:
+        """고지만 하는 단 사실 — 기준선이 기준 경로(D-225)가 아니다(D-250 ③).
+
+        멈추지 않는다. 이 단으로 잰 축 결과가 **그 단에 조건부**라는 사실을 판정문에 남길 뿐이다.
+        단을 고르는 것은 사다리 단 축(M-0)의 몫이다 — 그 구간에서는 이 고지 대신 **103 잔여
+        대조 주의**를 싣는다(D-250 주의 ①).
+        """
+        observed = {tier for _, _, tier in self.tiers}
+        if not observed:
+            return []
+        if self.tier_axis:
+            return [TIER_AXIS_CAVEAT]
+        canonical = canonical_tier()
+        base = sorted({tier for _, arm, tier in self.tiers if arm == BASELINE_ARM} or observed)
+        if base == [canonical]:
+            return []
+        return [f"기준선 단이 {'·'.join(f'`{t}`' for t in base)} 다 — 기준 경로 `{canonical}`"
+                "(D-225)가 아니다. 사다리 단 축(plans/114 M-0 · D-250)을 재기 전에는 다른 축 "
+                "결과가 이 단에 조건부다"]
+
+    def timeout_problem(self) -> Optional[str]:
+        """타임아웃이 비교 표본을 깎았는가(plans/114 M-2 ②). D-241 은 기능 분모에서 빼는 규칙이지
+        측정 성립 판정이 아니다 — run 20260922-112010 은 42.6%로도 「완료」였다."""
+        if not self.turns or self.timeout_rate < TIMEOUT_STOP:
+            return None
+        return (f"타임아웃 {self.timeout_rate:.0%} ≥ {TIMEOUT_STOP:.0%}"
+                f"({self.timeout_turns}/{self.turns}턴) — 타임아웃 턴은 기능 분모에서 빠지므로"
+                "(D-241) 축 비교 표본이 줄었다")
+
+    def qualification_problems(self) -> list[str]:
+        """**구간 실패로 보는** 측정 자격 문제 — 단 갈림(①)·타임아웃률(②).
+
+        기준선 단 고지(`tier_notes`)는 넣지 않는다 — 판정문에만 실린다(D-250 ③).
+        """
+        timeout = self.timeout_problem()
+        return self.tier_problems() + ([timeout] if timeout else [])
 
     def warnings(self) -> list[str]:
         """판정을 막지는 않지만 **판정문에 함께 실려야 하는** 사실들.
@@ -844,6 +1136,8 @@ class RunHealth:
             notes.append(
                 f"출처가 섞인 재개다 — {self.provenance_mixed}. 끊긴 뒤 바뀐 판으로 이어 돌아 한 "
                 f"`raw.jsonl` 에 두 판의 결과가 있다 — arm 차이가 판 차이와 교란될 수 있다")
+        notes.extend(self.tier_notes())
+        notes.extend(self.qualification_problems())
         return notes
 
     def stop_reasons(self) -> list[str]:
@@ -867,6 +1161,7 @@ class RunHealth:
         if self.baseline_order and self.baseline_order[0] != 1:
             position, total = self.baseline_order
             reasons.append(f"기준선이 {total}개 중 {position}번째로 실행됐다")
+        reasons.extend(self.qualification_problems())
         return reasons
 
     def blocking_reason(self) -> Optional[str]:
@@ -891,7 +1186,9 @@ class RunHealth:
         return None
 
 
-def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
+def scan_health(result: dict[str, Any], raw_path: Path, *,
+                tier_axis: bool = False,
+                expected_tiers: Optional[Mapping[str, str]] = None) -> RunHealth:
     """원시 로그와 프로파일 상태를 읽어 런의 건전성을 낸다.
 
     93이 이것을 먼저 보지 않으면, 전건 401 같은 사고가 "판정 불가 62건"이라는
@@ -902,11 +1199,17 @@ def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
     통과했지만 SQL 관측 0건·그래프 미진입 34%·역질문 56%였고, 62 arm 전부 「판정 불가」가
     나왔다. 그래서 여기서 SQL 관측률·그래프 진입률·역질문률·무효율·기준선 실행 순서를
     함께 센다 — 차단은 SQL 0건과 전건 무효만, 나머지는 `warnings()` 로 고지한다.
+
+    `tier_axis`·`expected_tiers` 는 **캠페인이 아는 사실**이다(plans/114 M-0 · D-250 ③).
+    호출부가 설정 스냅샷에서 뽑아 넘긴다 — 사람에게 기대 단을 묻지 않는다.
     """
     profiles = result.get("profiles") or []
     valid = sum(1 for p in profiles if p.get("valid"))
     invalid = [(str(p.get("name")), "; ".join(p.get("reasons") or []) or "(사유 없음)")
                for p in profiles if not p.get("valid")]
+    tiers = tuple((str(p.get("name")), str(p.get("arm") or p.get("name")), str(p.get("tier")))
+                  for p in profiles
+                  if p.get("valid") and p.get("tier") and p.get("tier") != "mock")
 
     verdicts: dict[str, int] = {}
     evidence: dict[str, int] = {}
@@ -946,7 +1249,16 @@ def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
                      auto_answered_turns=auto_turns,
                      baseline_order=baseline_order,
                      unevaluated=unevaluated_counts(rows),
-                     provenance_mixed=(result.get("meta") or {}).get("provenance_mixed"))
+                     provenance_mixed=(result.get("meta") or {}).get("provenance_mixed"),
+                     tiers=tiers, tier_axis=tier_axis,
+                     expected_tiers=dict(expected_tiers or {}))
+
+
+def canonical_tier() -> str:
+    """기준 경로 단 이름(D-225) — 정본은 `src/observability/ladder.py` 다(사본 금지)."""
+    from src.observability.ladder import LadderTier
+
+    return LadderTier.SEMANTIC_ROUTER.value
 
 
 def baseline_as(baseline: Sequence[Observation], arm_id: str) -> list[Observation]:
@@ -962,15 +1274,21 @@ def baseline_as(baseline: Sequence[Observation], arm_id: str) -> list[Observatio
     return [dataclasses.replace(o, arm_id=arm_id) for o in baseline]
 
 
-def note_substitution(optimum: Any, substituted: Sequence[ArmSpec]) -> Any:
-    """축 판정 문장에 **실행을 생략한 레벨**을 적는다 — 조용히 빼지 않는다."""
+def note_substitution(optimum: Any, substituted: Sequence[ArmSpec],
+                      unreachable: Optional[dict[str, str]] = None) -> Any:
+    """축 판정 문장에 **실행을 생략한 레벨**을 적는다 — 조용히 빼지 않는다.
+
+    생략 사유는 둘이다 — 기준선과 같은 설정(A/A), 축 도달 불가(`unreachable` · plans/114 M-3).
+    """
     import dataclasses
 
-    levels = [a.level for a in substituted if a.axis == optimum.axis]
-    if not levels:
+    arms = [a for a in substituted if a.axis == optimum.axis]
+    if not arms:
         return optimum
-    note = " · ".join(f"레벨 `{lv}` = 기준선과 동일 설정 → 기준선 관측 사용(실행 생략)"
-                      for lv in levels)
+    note = " · ".join(
+        f"레벨 `{a.level}` = "
+        f"{'도달 불가' if a.arm_id in (unreachable or {}) else '기준선과 동일 설정'}"
+        " → 기준선 관측 사용(실행 생략)" for a in arms)
     return dataclasses.replace(optimum, sentence=f"{optimum.sentence} · {note}")
 
 
