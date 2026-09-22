@@ -54,6 +54,7 @@ from src.routing.capability_ownership import (
     sanitize_capability_list,
 )
 from src.routing.domain_config import DB_DOMAINS, DBDomainConfig
+from src.routing.location_hints import pin_targets_to_hints
 from src.routing.registry import get_registry
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
@@ -370,6 +371,15 @@ async def semantic_router(
     ]
     targets.sort(key=lambda x: x["relevance_score"], reverse=True)
 
+    # (plans/113 F-1) 이번 턴 원문 위치 힌트 결정적 고정 — 1·2단(`_apply_turn_hint_pinning`)과
+    # 대칭. LLM은 "공동존"(= 존 그룹의 DB 여럿)에도 DB를 하나만 고른다(113 §1.2 실측). 소유 검증·
+    # 존 역질문 게이트보다 앞이다 — 두 게이트가 고정된 집합 위에서 동작한다(1·2단 순서와 같다).
+    # 힌트 없음·해소 0건이면 targets를 그대로 돌려준다(종전과 동작·반환 동일).
+    targets, hint_pinned = _pin_turn_location_hints(
+        targets, parsed, user_query, active_db_ids,
+        zone_group_exclusive=bool(getattr(app_config.multi_db, "zone_group_exclusive", True)),
+    )
+
     # 결과가 없으면 기본 DB 사용
     if not targets:
         logger.warning("라우팅 결과 없음, 첫 번째 활성 DB 사용")
@@ -400,11 +410,16 @@ async def semantic_router(
         if t.get("user_specified"):
             user_specified_db = t["db_id"]
             break
+    if hint_pinned:
+        # 위치 힌트 고정은 집합 단위 지정이다 — 존 선택 고정(우선순위 2.5)과 같은 규칙으로 싣는다
+        # (항목별 표지는 분류 재사용 여부에 따라 섞여 있어 첫 표지 항목이 대표가 아니다).
+        user_specified_db = targets[0]["db_id"] if len(targets) == 1 else None
 
     # 존 역질문 후단 게이트 (D-143 후속2) — 레거시(비오케스트레이션) 경로 대칭.
     # 트랙 A(subagents._zone_clarification_or_none_task)와 동일 판정: 대화형 채널 +
     # 첫 턴 + 위치어·서버 식별·사용자 지정 신호 없음 + 폴스타 존 팬아웃이면 역질문.
-    zone_q = _zone_clarification_or_none_router(
+    # 위치 힌트로 고정했으면 존은 사용자가 이미 정했다 — 1·2단(`db_pinned`)과 같이 비발동.
+    zone_q = None if hint_pinned else _zone_clarification_or_none_router(
         state, targets, user_specified_db, app_config
     )
     if zone_q:
@@ -444,8 +459,9 @@ async def semantic_router(
         "active_db_id": active_db_id,
         "user_specified_db": user_specified_db,
         "routing_intent": intent,
-        # D-205 스코프 출처 — 사용자가 원문에서 DB를 지목했으면 hint, 아니면 LLM 분류.
-        "db_scope_source": "hint" if user_specified_db else "classified",
+        # D-205 스코프 출처 — 사용자가 원문에서 DB를 지목했거나 위치 힌트로 고정했으면 hint,
+        # 아니면 LLM 분류.
+        "db_scope_source": "hint" if (user_specified_db or hint_pinned) else "classified",
         "current_node": "semantic_router",
     }
     if ownership_on:
@@ -590,6 +606,39 @@ async def _keep_zoneless_targets(
             [k["db_id"] for k in kept], selected,
         )
     return kept
+
+
+def _pin_turn_location_hints(
+    targets: list[dict[str, Any]],
+    parsed: dict[str, Any] | None,
+    user_query: str,
+    active_db_ids: list[str],
+    *,
+    zone_group_exclusive: bool = True,
+) -> tuple[list[dict[str, Any]], bool]:
+    """이번 턴 원문 위치/DB 힌트로 대상 DB 집합을 결정적으로 고정한다 (plans/113 F-1).
+
+    입력은 입력 파서가 원문에서 결정적으로 보강한 `parsed_requirements.target_db_hints`뿐이다
+    (D-065 · D-004 — 라우터 안에서 원문을 새로 스캔하지 않고 의도 분류에도 쓰지 않는다).
+    판정은 1·2단 핸들러와 **같은 함수**(`routing.location_hints.pin_targets_to_hints`)다 —
+    규칙(분류 항목 재사용 · 존 없는 DB 보존 · 상호배타 2그룹 미고정)은 그 docstring이 정본이다.
+    라우터는 턴 전체 대상을 정하므로 task 범위(`task_query`)는 쓰지 않는다.
+
+    Args:
+        targets: 관련도 필터·정렬이 끝난 분류 결과
+        parsed: 이번 턴 parsed_requirements
+        user_query: 이번 턴 질의(합성 항목의 정제 질의 원료)
+        active_db_ids: 활성 DB 목록(해소 결과 순서의 기준)
+        zone_group_exclusive: 존 그룹 상호배타 설정(기본 True — 설정 부재 시 기존 규칙과 같다)
+
+    Returns:
+        (고정이 적용된 대상 목록 — 미적용이면 입력 그대로, 고정 여부)
+    """
+    hints = (parsed or {}).get("target_db_hints") or []
+    return pin_targets_to_hints(
+        targets, hints if isinstance(hints, list) else [], active_db_ids,
+        fill_query=user_query, zone_group_exclusive=zone_group_exclusive,
+    )
 
 
 def _zone_clarification_or_none_router(

@@ -304,6 +304,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     app.state.audit_repo = None
     app.state.auth_provider = None
     app.state.audit_service = None  # lifespan 이전 기본값
+    app.state.thread_repo = None  # 질의응답 스레드 이력(D-248) — 앱 DB 풀이 있을 때만
 
     if auth_db_url:
         try:
@@ -330,6 +331,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
             # DDL 자동 실행 (테이블이 없으면 생성)
             await _ensure_auth_tables(auth_pool)
+
+            # 질의응답 스레드 이력(D-248) — 감사 로그와 같은 앱 DB에 둔다
+            from src.infrastructure.thread_repository import PostgresThreadRepository
+
+            app.state.thread_repo = PostgresThreadRepository(auth_pool)
+            await app.state.thread_repo.ensure_tables()
+
             # break-glass seed admin 부트스트랩(활성 관리자 0명 시, 멱등, §9.2)
             await _seed_admin_user(app.state.user_repo, config)
             # 감사 로그 로테이션(Plan 59-a §11): 기동 시 1회 정리

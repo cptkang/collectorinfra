@@ -17,6 +17,7 @@ LLM_API_KEY=
 
 # FabriX API 키 (LLM_PROVIDER=fabrix 시)
 LLM_FABRIX_API_KEY=
+# FabriX 클라이언트 키 (LLM_PROVIDER=fabrix 시)
 LLM_FABRIX_CLIENT_KEY=
 
 # 운영자 비밀번호 (기본값 없음 — 운영 모드 AUTH_ENABLED=true 시 필수, 미설정이면 기동 거부)

@@ -26,6 +26,7 @@ from langchain_core.messages import HumanMessage
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.stream_failure import StreamTrace
+from src.api.thread_history import TurnRecorder
 from src.llm import USER_RESPONSE_TAG
 from src.utils.json_extract import coerce_content_text
 from src.routing.db_authz import SELECTION_DENIED_MESSAGE, filter_selected_db_ids
@@ -1364,6 +1365,8 @@ async def process_query(
         has_file=False,
         thread_id=thread_id,
     )
+    # 질의응답 스레드 기록(D-248) — 아래 반환 지점마다 turn.response()로 감싼다
+    turn = TurnRecorder(request, current_user, user_query=body.query, has_upload=False)
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 
@@ -1375,12 +1378,12 @@ async def process_query(
         body.selected_db_ids, current_user
     )
     if _selection_denied:
-        return QueryResponse(
+        return await turn.response(QueryResponse(
             query_id=query_id,
             status="success",
             response=SELECTION_DENIED_MESSAGE,
             thread_id=thread_id,
-        )
+        ))
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
     clarification = _zone_clarification_or_none(body, checkpoint_state, config)
@@ -1390,23 +1393,23 @@ async def process_query(
             body, checkpoint_state, config, current_user
         )
     if clarification:
-        return QueryResponse(
+        return await turn.response(QueryResponse(
             query_id=query_id,
             status="clarification",
             response=clarification["question"],
             thread_id=thread_id,
             clarification=clarification,
-        )
+        ))
     # D-187: 저장 값 패널 삭제 버튼 — 파이프라인·LLM 없이 결정적 처리(/query/stream과 대칭)
     mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
     if mem_delete:
-        return QueryResponse(
+        return await turn.response(QueryResponse(
             query_id=query_id,
             status="success",
             response=mem_delete["response"],
             thread_id=thread_id,
             form_memory_panel=mem_delete["form_memory_panel"],
-        )
+        ))
 
     # 승인 의사 해소는 async(LLM 보조 옵트인)라 동기 조립 헬퍼 밖에서 수행한다 — 두 텍스트
     # 라우트가 동일하게 호출해야 한다(SSE만 빠지는 비대칭 재발 방지, D-066).
@@ -1487,7 +1490,7 @@ async def process_query(
         "query_results": result.get("query_results", []),
     })
 
-    return QueryResponse(**response_data)
+    return await turn.response(QueryResponse(**response_data))
 
 
 @router.post(
@@ -1518,6 +1521,8 @@ async def process_query_stream(
         has_file=False,
         thread_id=thread_id,
     )
+    # 질의응답 스레드 기록(D-248) — 아래 스트림마다 turn.stream()으로 감싼다(/query와 대칭)
+    turn = TurnRecorder(request, current_user, user_query=body.query, has_upload=False)
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 
@@ -1537,7 +1542,7 @@ async def process_query_stream(
                 "thread_id": thread_id,
             })
         return StreamingResponse(
-            selection_denied_generator(),
+            turn.stream(selection_denied_generator()),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
@@ -1559,7 +1564,7 @@ async def process_query_stream(
                 "clarification": clarification,
             })
         return StreamingResponse(
-            clarification_generator(),
+            turn.stream(clarification_generator()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1580,7 +1585,7 @@ async def process_query_stream(
                 "form_memory_panel": mem_delete["form_memory_panel"],
             })
         return StreamingResponse(
-            mem_delete_generator(),
+            turn.stream(mem_delete_generator()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1872,7 +1877,7 @@ async def process_query_stream(
             ))
 
     return StreamingResponse(
-        event_generator(),
+        turn.stream(event_generator()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1909,6 +1914,8 @@ async def process_file_query(
         has_file=True,
         thread_id=thread_id,
     )
+    # 질의응답 스레드 기록(D-248) — 텍스트 경로와 대칭
+    turn = TurnRecorder(request, current_user, user_query=query, has_upload=True)
 
     # 1. 파일 타입 검증
     file_ext = _get_file_extension(file.filename)
@@ -1925,23 +1932,23 @@ async def process_file_query(
         selected_list, current_user
     )
     if _selection_denied:
-        return QueryResponse(
+        return await turn.response(QueryResponse(
             query_id=str(uuid.uuid4()),
             status="success",
             response=SELECTION_DENIED_MESSAGE,
             thread_id=thread_id,
-        )
+        ))
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config
     )
     if clarification:
-        return QueryResponse(
+        return await turn.response(QueryResponse(
             query_id=str(uuid.uuid4()),
             status="clarification",
             response=clarification["question"],
             thread_id=thread_id,
             clarification=clarification,
-        )
+        ))
 
     # 2. 파일 크기 검증 (최대 10MB)
     file_bytes = await file.read()
@@ -2050,7 +2057,7 @@ async def process_file_query(
         "uploaded_file_name": file.filename,
     })
 
-    return QueryResponse(**response_data)
+    return await turn.response(QueryResponse(**response_data))
 
 
 def _get_file_extension(filename: str | None) -> str:
@@ -2172,6 +2179,8 @@ async def process_file_query_stream(
         has_file=True,
         thread_id=thread_id,
     )
+    # 질의응답 스레드 기록(D-248) — 텍스트 경로와 대칭
+    turn = TurnRecorder(request, current_user, user_query=query, has_upload=True)
 
     file_ext = _get_file_extension(file.filename)
     if file_ext not in ("xlsx", "docx"):
@@ -2199,7 +2208,7 @@ async def process_file_query_stream(
             })
 
         return StreamingResponse(
-            selection_denied_file_generator(),
+            turn.stream(selection_denied_file_generator()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -2221,7 +2230,7 @@ async def process_file_query_stream(
                 "clarification": clarification,
             })
         return StreamingResponse(
-            file_clarification_generator(),
+            turn.stream(file_clarification_generator()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -2540,7 +2549,7 @@ async def process_file_query_stream(
             ))
 
     return StreamingResponse(
-        event_generator(),
+        turn.stream(event_generator()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

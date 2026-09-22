@@ -427,17 +427,24 @@ class TestZoneCoverageNotes:
         assert "polestar_cm_gp 0건" in out
         assert "polestar_b0 1,174건" in out
 
-    def test_all_zones_have_rows_no_note(self):
+    def test_all_zones_have_rows_renders_counts(self):
+        """정상 조회 턴(전 존 1행 이상)에도 존별 건수 1줄을 싣는다(plans/113 G-4 (가)).
+
+        종전에는 일부 존 0행일 때만 표기했다 — 종합 결과를 존 기준으로 읽을 근거가 없었다.
+        표시명은 요약의 `display_name`(레지스트리)이고, 없으면 db_id다.
+        """
         from src.nodes.output_generator import _append_zone_coverage_notes
 
         state = {
             "db_errors": {},
             "db_result_summary": {
-                "polestar_cm_gp": {"row_count": 114},
+                "polestar_cm_gp": {"row_count": 114, "display_name": "김포 표시명"},
                 "polestar_cm_yd": {"row_count": 116},
             },
         }
-        assert _append_zone_coverage_notes("응답", state) == "응답"
+        assert _append_zone_coverage_notes("응답", state) == (
+            "응답\n\n**[존별 결과]** 김포 표시명 114건 · polestar_cm_yd 116건"
+        )
 
     def test_single_db_noop(self):
         """단일 DB 조회는 바이트 무변경 — 기존 응답 회귀 0."""

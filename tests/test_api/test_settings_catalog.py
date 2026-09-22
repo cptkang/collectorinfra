@@ -25,6 +25,8 @@ from src.api.settings_catalog import (
     dry_run_updates,
     encenv_managed_keys,
     field_index,
+    parse_env_example_descriptions,
+    setting_grade,
     validate_updates,
 )
 from src.config import AppConfig, LLMConfig, MultiDBConfig, SecurityConfig
@@ -105,6 +107,72 @@ def test_t1_env_example_has_no_duplicate_keys():
     assert duplicates == {}, f".env 중복 키: {duplicates}"
 
 
+@pytest.fixture
+def _example_files(monkeypatch, tmp_path):
+    """도움말 원천(`.env.example`·`.encenv.example`)을 임시 파일로 바꾼다."""
+    env_example = tmp_path / ".env.example"
+    encenv_example = tmp_path / ".encenv.example"
+    monkeypatch.setattr("src.api.settings_catalog._ENV_EXAMPLE_FILE", env_example)
+    monkeypatch.setattr("src.api.settings_catalog._ENCENV_EXAMPLE_FILE", encenv_example)
+    parse_env_example_descriptions.cache_clear()
+    yield env_example, encenv_example
+    parse_env_example_descriptions.cache_clear()
+
+
+def test_t1_commented_key_takes_its_own_preceding_block(_example_files):
+    """주석 처리된 선택 키(`# KEY=값`)도 직전 블록을 도움말로 갖고, 다음 키로 새지 않는다."""
+    env_example, _ = _example_files
+    env_example.write_text(
+        "# 선택 키 설명\n"
+        "# OPT_KEY=value\n"
+        "NEXT_KEY=1\n",
+        encoding="utf-8",
+    )
+    result = parse_env_example_descriptions()
+    assert result["OPT_KEY"] == "선택 키 설명"
+    assert "NEXT_KEY" not in result
+
+
+def test_t1_commented_usage_example_keeps_active_description(_example_files):
+    """활성 키 뒤에 사용 예시로 다시 적힌 `#   KEY=값`은 앞선 설명을 덮지 않는다."""
+    env_example, _ = _example_files
+    env_example.write_text(
+        "# 운영 설명\n"
+        "MODE_KEY=a\n"
+        "# [테스트 모드] 예시\n"
+        "#   MODE_KEY=b\n",
+        encoding="utf-8",
+    )
+    assert parse_env_example_descriptions()["MODE_KEY"] == "운영 설명"
+
+
+def test_t1_prose_with_equals_is_not_a_key_line(_example_files):
+    """`예: FOO=true — …` 같은 산문 주석은 키 줄이 아니라 설명의 일부다."""
+    env_example, _ = _example_files
+    env_example.write_text(
+        "# 유연 매칭 on/off\n"
+        "# 활성화 예: FOO_FLAG=true — 배선 지점은 field_mapper\n"
+        "FOO_FLAG=false\n",
+        encoding="utf-8",
+    )
+    assert parse_env_example_descriptions()["FOO_FLAG"] == (
+        "유연 매칭 on/off 활성화 예: FOO_FLAG=true — 배선 지점은 field_mapper"
+    )
+
+
+def test_t1_encenv_example_describes_secrets_and_env_example_wins(_example_files):
+    """시크릿 도움말은 `.encenv.example`에서 읽고, 같은 키면 `.env.example`이 이긴다."""
+    env_example, encenv_example = _example_files
+    encenv_example.write_text(
+        "# 시크릿 설명\nSECRET_KEY=\n# 시크릿 쪽 설명\nSHARED_KEY=\n",
+        encoding="utf-8",
+    )
+    env_example.write_text("# 예시 쪽 설명\nSHARED_KEY=x\n", encoding="utf-8")
+    result = parse_env_example_descriptions()
+    assert result["SECRET_KEY"] == "시크릿 설명"
+    assert result["SHARED_KEY"] == "예시 쪽 설명"
+
+
 async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     """스키마 엔드포인트가 그룹 전체와 파일값을 함께 돌려준다."""
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
@@ -128,6 +196,46 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     assert items["LLM_MODEL"].file_value == "from-file"
     assert items["ORCHESTRATOR_TIMEOUT"].file_value is None  # 파일 미존재 = 기본값 사용 중
     assert items["ADMIN_PASSWORD"].file_value is None and items["ADMIN_PASSWORD"].is_secret
+
+
+# --- 노브 3등급 (plans/93 §6.3 · plans/109 §3.4.1 I-2) ---
+
+
+@pytest.mark.parametrize("key,group,consumed,secret,sensitive,expected", [
+    ("X_PASSWORD", "auth", True, True, False, "A"),
+    ("X_CONNECTION", "auth", True, False, True, "A"),
+    ("X_HOST", "redis", True, False, False, "A"),
+    ("ACTIVE_DB_IDS", "multi_db", True, False, False, "A"),
+    ("X_WEBHOOK_URL", "alarm", True, False, False, "A"),   # 접속 정보는 그룹과 무관하게 A
+    ("X_RETRY_COUNT", "query", False, False, False, "C"),  # 미소비
+    ("X_ENABLED", "alarm", True, False, False, "C"),       # 질의 경로 밖 그룹
+    ("X_CACHE_DIR", "schema_cache", True, False, False, "C"),  # 저장 정책 꼬리
+    ("X_SELECTION", "text2sql", True, False, False, "B"),
+])
+def test_t2_setting_grade(key, group, consumed, secret, sensitive, expected):
+    assert setting_grade(
+        env_key=key, group_key=group, consumed=consumed,
+        is_secret=secret, is_sensitive=sensitive,
+    ) == expected
+
+
+async def test_t2_schema_items_carry_grade(monkeypatch, tmp_path):
+    """웹UI가 C 등급을 고급으로 접을 수 있게 스키마 응답이 등급을 싣는다."""
+    _use_env_file(monkeypatch, tmp_path, "")
+    response = await get_settings_schema(_ADMIN)
+    items = {item.env_key: item for group in response.groups for item in group.settings}
+    assert {item.grade for item in items.values()} == {"A", "B", "C"}
+    assert items["ACTIVE_DB_IDS"].grade == "A"
+    assert items["TEXT2SQL_SELECTION"].grade == "B"
+    assert items["ALARM_ENABLED"].grade == "C"
+
+
+def test_t2_env_example_folds_every_c_grade_key():
+    """C 등급은 `.env.example`에 활성으로 적지 않는다 — 코드 기본값 그대로 `# KEY=값`으로 접는다."""
+    index = field_index()
+    active = _file_keys(_PROJECT_ROOT / ".env.example")
+    unfolded = sorted(key for key in active if key in index and index[key].grade == "C")
+    assert unfolded == [], f"C 등급인데 활성으로 적힌 키 — `# KEY=값`으로 접을 것: {unfolded}"
 
 
 async def test_t1_schema_warns_when_env_file_missing(monkeypatch, tmp_path):

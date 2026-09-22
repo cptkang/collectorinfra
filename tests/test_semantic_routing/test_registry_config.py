@@ -228,12 +228,13 @@ class TestSingleDefinitionSite:
     #    소비해 registry(infrastructure) 임포트가 계층 규칙상 불가 → 값 사본 + 동기 가드
     #    (tests/test_routing/test_location_terms_sync.py)로 강제. 파생물(ZONE_SKIP/
     #    ZONE_CLARIFY/_ZONE_GROUP_TERMS)도 이 파일 안에서만 파생한다.
-    # ② nodes.field_mapper._EXCLUSIVE_REGION_GROUPS: 상호 배타 지역 그룹 —
+    # ② routing.location_hints._EXCLUSIVE_REGION_GROUPS(종전 nodes.field_mapper — plans/113
+    #    F-1로 3단 라우터가 재사용하도록 routing 계층으로 이동): 상호 배타 지역 그룹 —
     #    registry locations와 입도가 달라(김포/여의도 분리, 공동존 제외) 파생 불가.
     #    locations 항목 추가 시 함께 갱신할 것.
     _ALLOWED_VALUE_COPY_FILES = {
         "src/utils/query_gen_common.py",
-        "src/nodes/field_mapper.py",
+        "src/routing/location_hints.py",
     }
 
     def test_no_location_term_tuple_in_src(self):

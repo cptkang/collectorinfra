@@ -404,6 +404,9 @@ DESCRIPTION_OVERRIDES: dict[str, str] = {
     "ADMIN_USERNAME": "운영자(break-glass) 계정 아이디. 비밀번호·시크릿은 .encenv에서 관리한다.",
     "ORCHESTRATOR_MAX_INPUT_TOKENS": "제어 평면 입력 토큰 상한. 현재 코드가 읽지 않는다(미소비).",
     "ORCHESTRATOR_CONTEXT_BUDGET_RATIO": "상한 대비 트리밍 시작 비율. 현재 코드가 읽지 않는다(미소비).",
+    "ORCHESTRATOR_MAX_HISTORY_TURNS": (
+        "제어 평면이 기억할 대화 턴 수. 현재 코드가 읽지 않는다(미소비)."
+    ),
     "QUERY_MAX_RETRY_COUNT": "재시도 상한. 현재 graph.py의 하드코딩 값(3)이 쓰인다(미소비).",
     "CONVERSATION_MAX_TURNS": "대화 최대 턴 수. 현재 코드가 읽지 않는다(미소비).",
     "CONVERSATION_TTL_HOURS": "대화 세션 유효 시간. 현재 코드가 읽지 않는다(미소비).",
@@ -416,6 +419,22 @@ DESCRIPTION_OVERRIDES: dict[str, str] = {
         "저장 즉시 새로 접속하는 사용자에게 적용된다. 개인이 자기 화면에서 고른 테마가 있으면 그 선택이 우선한다."
     ),
 }
+
+#: 노브 3등급(plans/93 §6.3) — A 환경 결속(설치마다 정한다) · B 운영 레버 · C 내부 상수급
+#: (기본값을 쓴다 — 웹UI 기본 화면에서 숨기고 `.env.example`에서 접는다). 초안 규칙이며 최종
+#: 판정은 신규 설치 시나리오(빈 `.env` + A만으로 기동·질의 — plans/109 §3.4.1 E-2)다.
+#: 벤치 장부(`scripts/bench/report.assign_grade`)와 F1 필터도 아래 상수·함수를 그대로 쓴다.
+GRADE_A_KEYS: frozenset[str] = frozenset({
+    "ACTIVE_DB_IDS", "LLM_PROVIDER", "ORCHESTRATOR_PROVIDER", "DB_BACKEND",
+})
+_GRADE_A_SUFFIXES: tuple[str, ...] = ("_url", "_host", "_port")
+#: 질의 응답 경로 밖 그룹 — 알람 파이프라인은 워크로드 성격이 달라 별도 벤치마크 대상이다.
+OUT_OF_QUERY_PATH_GROUPS: frozenset[str] = frozenset({"noise_gate", "alarm", "workb"})
+#: 접속 대상·저장 정책을 가리키는 이름 꼬리. 동작 모드가 아니다.
+STORAGE_POLICY_SUFFIXES: tuple[str, ...] = (
+    "_url", "_host", "_port", "_dir", "_path", "_file",
+    "_retention_days", "_maxlen", "_key", "_token", "_password", "_secret",
+)
 
 _MASK_VALUE = "********"
 
@@ -446,6 +465,7 @@ class SettingSchemaItem(BaseModel):
     apply_mode: str = "restart"            # immediate | reload | restart
     consumed: bool = True
     description: Optional[str] = None
+    grade: str = "B"                       # A|B|C — C는 웹UI 기본 화면에서 숨긴다
 
 
 class SettingGroupSchema(BaseModel):
@@ -482,6 +502,7 @@ class FieldSpec:
     consumed: bool
     section: Optional[str]
     description: Optional[str]
+    grade: str  # A|B|C — `setting_grade`
     group_cls: Optional[type[BaseSettings]]  # 그룹 dry-run 대상 (top-level은 None)
 
 
@@ -531,6 +552,24 @@ def _unwrap_optional(annotation: Any) -> tuple[Any, bool]:
         if len(args) == 1:
             return args[0], True
     return annotation, False
+
+
+def setting_grade(
+    *, env_key: str, group_key: str, consumed: bool, is_secret: bool, is_sensitive: bool,
+) -> str:
+    """노브 3등급 초안(A·B·C)을 결정적으로 배정한다(`GRADE_A_KEYS` 주석 참조)."""
+    if is_secret or is_sensitive:
+        return "A"
+    lowered = env_key.lower()
+    if lowered.endswith(_GRADE_A_SUFFIXES) or env_key in GRADE_A_KEYS:
+        return "A"
+    if (
+        not consumed
+        or group_key in OUT_OF_QUERY_PATH_GROUPS
+        or lowered.endswith(STORAGE_POLICY_SUFFIXES)
+    ):
+        return "C"
+    return "B"
 
 
 def _env_key_of(prefix: str, field_name: str, field: Any) -> str:
@@ -608,6 +647,8 @@ def field_index() -> dict[str, FieldSpec]:
             apply_mode = "reload"
         else:
             apply_mode = "restart"
+        is_sensitive = is_secret or env_key in SENSITIVE_VALUE_KEYS
+        consumed = env_key not in UNCONSUMED_KEYS
         index[env_key] = FieldSpec(
             env_key=env_key,
             group_key=group_key,
@@ -617,15 +658,19 @@ def field_index() -> dict[str, FieldSpec]:
             optional=optional,
             default=default,
             is_secret=is_secret,
-            is_sensitive=is_secret or env_key in SENSITIVE_VALUE_KEYS,
+            is_sensitive=is_sensitive,
             requires_restart=env_key not in IMMEDIATE_KEYS,
             apply_mode=apply_mode,
-            consumed=env_key not in UNCONSUMED_KEYS,
+            consumed=consumed,
             section=SECTION_BY_KEY.get(env_key),
             # 오버라이드는 사람이 쓴 운영자용 문구이므로 그대로, 원천 주석은 정제해서 내보낸다
             description=(
                 DESCRIPTION_OVERRIDES.get(env_key)
                 or sanitize_description(descriptions.get(env_key))
+            ),
+            grade=setting_grade(
+                env_key=env_key, group_key=group_key, consumed=consumed,
+                is_secret=is_secret, is_sensitive=is_sensitive,
             ),
             group_cls=group_cls,
         )
@@ -644,13 +689,38 @@ def field_index() -> dict[str, FieldSpec]:
 
 @lru_cache(maxsize=1)
 def parse_env_example_descriptions() -> dict[str, str]:
-    """`.env.example`의 키 직전 연속 주석 블록을 도움말로 매핑한다."""
-    if not _ENV_EXAMPLE_FILE.exists():
+    """`.env.example`의 키 직전 연속 주석 블록을 도움말로 매핑한다.
+
+    `.encenv` 관리 시크릿은 `.env.example`에 없으므로 `.encenv.example`의 주석도 읽는다
+    (같은 키면 `.env.example`이 이긴다).
+    """
+    result = _parse_comment_blocks(_ENCENV_EXAMPLE_FILE)
+    result.update(_parse_comment_blocks(_ENV_EXAMPLE_FILE))
+    return result
+
+
+def _commented_env_key(text: str) -> Optional[str]:
+    """주석 본문이 `KEY=값` 꼴이면 그 키를 돌려준다(산문 주석은 None)."""
+    if "=" not in text:
+        return None
+    candidate = text.split("=", 1)[0].strip()
+    if candidate and candidate.replace("_", "").isalnum() and candidate.isupper():
+        return candidate
+    return None
+
+
+def _parse_comment_blocks(path: Path) -> dict[str, str]:
+    """예시 파일 1개에서 키 → 직전 연속 주석 블록을 뽑는다.
+
+    주석 처리된 선택 키(`# KEY=값`)도 키 줄로 본다 — 그 위 블록이 그 키의 도움말이 되고,
+    다음 키의 도움말에 섞이지 않는다.
+    """
+    if not path.exists():
         return {}
 
     result: dict[str, str] = {}
     block: list[str] = []
-    for line in _ENV_EXAMPLE_FILE.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped:
             block = []
@@ -665,6 +735,14 @@ def parse_env_example_descriptions() -> dict[str, str]:
             if text[:2] in {"──", "══"} or text[:3] == "═══":
                 # `── E1 (현재 구현) ──` 류의 구획 소제목. 개별 키 설명이 아니며,
                 # 이어붙이면 바로 아래 키의 도움말에 개발 구획 코드가 섞인다.
+                block = []
+                continue
+            commented_key = _commented_env_key(text)
+            if commented_key:
+                # 활성 키 줄의 설명을 덮지 않는다 — 사용 예시로 다시 적힌 키
+                # (`#   ORCHESTRATOR_PROVIDER=gemini`)가 앞선 설명을 바꾸지 않게 한다.
+                if block and commented_key not in result:
+                    result[commented_key] = " ".join(block)
                 block = []
                 continue
             block.append(text)
@@ -1068,6 +1146,7 @@ def build_catalog(
             apply_mode=spec.apply_mode,
             consumed=spec.consumed,
             description=spec.description,
+            grade=spec.grade,
         ))
 
     groups = [

@@ -81,6 +81,23 @@ items:
     critical: multi_db
     note: "ITSM→ITAM 교차. sub_query_context가 DB별로 분리돼야 한다."
 
+  - id: r-013
+    query: "공동존의 vm 중 최대 cpu와 최대 memory 서버 top 10을 정리해줘"
+    expect:
+      intent: data_query
+      databases: [polestar_cm_gp, polestar_cm_yd]
+      forbid_databases: [polestar_b0]
+      min_databases: 2
+    critical: multi_db
+    note: >
+      존 단위 위치어(공동존 = 김포 + 여의도 · 레지스트리 locations) — plans/113. 이 하네스는
+      라우터 **LLM 분류(`_llm_classify`)만** 채점한다. 3단 노드 출력은 F-1 결정적 고정이 LLM과
+      무관하게 두 DB를 보장하므로(tests/test_semantic_routing/test_router_hint_pinning.py), 이
+      케이스의 실패는 운영 오라우팅이 아니라 분류 LLM이 존 단위 표면어를 한 DB로 좁힌다는
+      신호다. 로컬 MLX 9B 실측(2026-09-22): polestar_cm_gp 1곳 — **실 LLM에서는 실패가 예상된다**.
+      F-4(라우터 프롬프트 존 단위 규칙·예시 보강)는 같은 날 측정 후 기각했다 — 이 질의에 효과가 없고
+      r-073이 회귀했다(plans/113 §9 · 부록 C). 운영 모델·소유표 on 환경 재측정 전까지 이 실패는 정상이다.
+
   # ── 의도 분기 ───────────────────────────────────────────────────────
   - id: r-020
     query: "현재 활성 상태인 심각 알람 목록 보여줘"

@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=15">
+    <link rel="stylesheet" href="/static/css/style.css?v=16">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -63,9 +63,11 @@
                 </button>
                 <!-- 노이즈 관제(D-245): 수신한 알람이 어디서 걸러졌는지 보는 읽기 전용 화면.
                      로그인 사용자 누구나 열 수 있다 — 침묵·정책은 여전히 운영자 화면에만 있다. -->
-                <a id="noiseConsoleLink" href="/noise" class="btn btn-secondary"
+                <!-- 두 화면은 새 탭으로 연다(D-248) — 같은 탭에서 이동하면 이 페이지가 내려가
+                     질의응답 화면이 사라진다. 지난 대화는 질의 이력의 "대화"에서 다시 불러온다. -->
+                <a id="noiseConsoleLink" href="/noise" target="_blank" rel="noopener" class="btn btn-secondary"
                     style="font-size: 0.8125rem; padding: 7px 14px;">노이즈 관제</a>
-                <a id="adminEntryLink" href="/admin" class="btn btn-secondary"
+                <a id="adminEntryLink" href="/admin" target="_blank" rel="noopener" class="btn btn-secondary"
                     style="display: none; font-size: 0.8125rem; padding: 7px 14px;">Admin</a>
             </nav>
         </div>
@@ -86,9 +88,10 @@
     </div>
 
     <div class="chat-layout" id="chatView">
-        <!-- 질의 이력 사이드바(D-183): 이 브라우저에 저장된 질의 목록. 서버로 나가지 않는다.
+        <!-- 질의 이력 사이드바. 두 모드가 있다 — "대화"(D-248)는 서버 앱 DB에 저장된 스레드,
+             "질의"(D-183)는 이 브라우저에 저장된 질의 목록이며 서버로 나가지 않는다.
              오른쪽 진행 패널과 대칭인 접기 패턴을 쓴다 — 접힘 상태는 브라우저가 기억한다.
-             항목을 고르면 입력창에 채우기만 하고 전송하지 않는다 — 옛 질의가 지금도
+             질의 항목을 고르면 입력창에 채우기만 하고 전송하지 않는다 — 옛 질의가 지금도
              유효하다는 보장이 없고(존 개명·서버 폐기), 오전송은 되돌릴 수 없다. -->
         <aside class="history-panel" id="historyPanel">
             <div class="history-panel-header">
@@ -103,9 +106,17 @@
                 </button>
             </div>
             <div class="history-panel-body" id="historyPanelBody">
+                <!-- 대화/질의 전환(D-248). 대화 = 서버 앱 DB에 저장된 스레드(질의+응답, 누르면
+                     채팅 화면에 다시 그리고 이어서 질의할 수 있다). 질의 = 위 D-183 목록. -->
+                <div class="history-mode" role="group" aria-label="이력 종류">
+                    <button type="button" class="history-mode-btn active" data-mode="threads"
+                        aria-pressed="true">대화</button>
+                    <button type="button" class="history-mode-btn" data-mode="queries"
+                        aria-pressed="false">질의</button>
+                </div>
                 <div class="history-panel-tools">
                     <input type="search" class="history-search" id="historySearch"
-                        placeholder="질의 검색" aria-label="질의 이력 검색">
+                        placeholder="대화 검색" aria-label="질의 이력 검색">
                     <button type="button" class="btn btn-secondary" id="historyClearBtn"
                         style="font-size: 0.7rem; padding: 4px 10px;">모두 지우기</button>
                 </div>
@@ -333,7 +344,7 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=10"></script>
+    <script src="/static/js/app.js?v=11"></script>
 </body>
 
 </html>

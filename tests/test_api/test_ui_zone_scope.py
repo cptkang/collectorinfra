@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,9 @@ class TestMarkup:
             assert f'id="{id_}"' in index_html
 
     def test_cache_busting_bumped(self, index_html):
-        assert 'app.js?v=10' in index_html
+        # 이 변경이 올린 v=10 이상이면 된다 — 뒤의 변경이 또 올려도 깨지지 않게 하한으로 본다(D-248)
+        m = re.search(r"app\.js\?v=(\d+)", index_html)
+        assert m and int(m.group(1)) >= 10
 
 
 class TestMirror:

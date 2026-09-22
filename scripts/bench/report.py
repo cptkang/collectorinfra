@@ -85,17 +85,13 @@ def assign_grade(knob: catalog.KnobSpec, *, in_env: bool, excluded_reason: Optio
     """노브 3등급 초안 배정(§6.3).
 
     최종 심판은 신규 설치 시나리오(§6.8.1)다 — 여기서는 초안만 낸다.
+    규칙의 정본은 카탈로그 `setting_grade`다 — 웹UI가 C 등급을 고급으로 숨기는 규칙과 같아야
+    하기 때문이다. B는 F1 축 후보(`excluded_reason is None`) 중 A가 아닌 것이다(같은 상수를 쓴다).
     """
-    if knob.is_secret or knob.is_sensitive:
-        return "A"
-    lowered = knob.env_key.lower()
-    if any(lowered.endswith(s) for s in ("_url", "_host", "_port")) or knob.env_key in (
-        "ACTIVE_DB_IDS", "LLM_PROVIDER", "ORCHESTRATOR_PROVIDER", "DB_BACKEND",
-    ):
-        return "A"
-    if excluded_reason is None:
-        return "B"       # 축 후보 = 성능에 닿을 수 있다 = 운영 레버 후보
-    return "C"
+    return catalog.sc.setting_grade(
+        env_key=knob.env_key, group_key=knob.group_key, consumed=knob.consumed,
+        is_secret=knob.is_secret, is_sensitive=knob.is_sensitive,
+    )
 
 
 def build_ledger(

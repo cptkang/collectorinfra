@@ -133,6 +133,14 @@ def test_panel_state_is_remembered_and_defaults_closed(app_js: str) -> None:
     assert "return false" in body, "저장소가 막힌 환경의 기본값은 접힘이어야 한다"
 
 
+def test_panel_key_is_declared_before_init(app_js: str) -> None:
+    """초기화(setupViewTabs)가 키 선언보다 먼저 돌면 undefined 키를 읽어 펼친 상태가 복원되지 않고,
+    새로고침 뒤 첫 클릭이 패널을 열지 못한다(D-248 부수 교정 · 브라우저 실측)."""
+    assert app_js.index('var HISTORY_PANEL_KEY = "query_history_panel_open"') < app_js.index(
+        "\n    setupViewTabs();"
+    )
+
+
 def test_scroll_restore_only_on_chat(app_js: str) -> None:
     """복원 분기가 else면 이력 탭으로 *갈* 때도 돌아 엉뚱한 곳을 만진다."""
     body = app_js.split("function setActiveView(view)")[1].split("\n    }\n")[0]

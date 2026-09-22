@@ -22,6 +22,7 @@ from src.domain.empty_answer import render_diagnosis
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
 from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
+from src.routing.domain_config import get_domain_by_id
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
 from src.utils.prior_dependency import ADMIN_ASSET_NOTE_KINDS, CROSS_SYSTEM_NOTE_KINDS
@@ -289,6 +290,10 @@ async def _generate_text_response(
         summary=organized["summary"],
         rows=organized["rows"],
         reference_info=reference_info,
+        # 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용된 행은 이미 전체 순위다 — 앞 20건 그대로.
+        ranked=bool((organized.get("merge_ranking") or {}).get("applied")),
+        # 멀티 DB 집계 질의(plans/113 S-3) — 수치 요약을 DB별·전체 코드 계산값으로 바꾼다.
+        aggregates=organized.get("merge_aggregates"),
     )
 
     messages: list[BaseMessage] = [
@@ -472,6 +477,9 @@ def _build_response_prompt(
     summary: str,
     rows: list[dict],
     reference_info: dict | None = None,
+    *,
+    ranked: bool = False,
+    aggregates: dict[str, Any] | None = None,
 ) -> str:
     """응답 생성 프롬프트를 구성한다.
 
@@ -481,25 +489,29 @@ def _build_response_prompt(
         rows: 결과 데이터 행
         reference_info: `_build_reference_info` 산출(오늘·기준월·조회 기간) — 기간·연도 표기의
             결정적 근거(D-186). None이면 블록 생략(종전 프롬프트와 동일).
+        ranked: 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용된 행인지 — True면 미리보기를
+            DB별로 고르게 뽑지 않고 앞 20건(전체 순위 상위)을 그대로 싣는다.
+        aggregates: 멀티 DB 집계 종합(plans/113 S-3) — 적용됐으면 「수치 요약」을 DB별 값과
+            건수·합계·최대·최소의 전체 값으로 바꾼다(평균 전체 값은 만들지 않는다). 행 위 통계
+            (DB별 값끼리의 최소·최대·평균)는 DB를 넘나드는 무의미한 값이라 싣지 않는다.
 
     Returns:
         구성된 프롬프트 문자열
     """
-    # 결과가 많으면 상위 20건만 프롬프트에 포함.
+    # 결과가 많으면 20건만 프롬프트에 포함 — 멀티 DB 이어 붙이기는 DB별로 고르게(S-2).
     # 복합 필드명(그룹|서브, D-145)의 '|'는 Markdown 표 구분자와 충돌해 응답 표가
     # 깨진다(라이브 실측: 칼럼 분해·순서 뒤죽박죽) — 표시용 키로 결정적 치환.
-    display_rows = [
-        {_display_field_name(str(k)): v for k, v in r.items()} if isinstance(r, dict) else r
-        for r in rows[:20]
-    ]
+    preview, balanced = _preview_rows(rows, ranked=ranked)
+    display_rows = [_display_row(r) if isinstance(r, dict) else r for r in preview]
     truncated = len(rows) > 20
+    shown = "DB별로 고르게 20건" if balanced else "상위 20건"
 
     parts = [
         f"## 사용자 질의\n{original_query}",
         f"## 데이터 요약\n{summary}",
         (
             f"## 조회 결과 ({len(rows)}건"
-            f"{', 상위 20건 표시' if truncated else ''})\n"
+            f"{f', {shown} 표시' if truncated else ''})\n"
             f"```json\n"
             f"{json.dumps(display_rows, ensure_ascii=False, indent=2)}\n"
             f"```"
@@ -509,7 +521,17 @@ def _build_response_prompt(
     # 수치 요약(결정적, C-10~C-12): 응답 LLM은 위 20행 미리보기만 보므로 최대/최소/평균을
     # 직접 계산하면 전체와 어긋난다(라이브 실측: 전체 max 99.58%를 49.02%로 서술).
     # 전체 rows에서 코드가 계산한 값만 인용하도록 강제한다.
-    stats_lines = _numeric_summary_lines(rows)
+    agg_lines = _aggregate_summary_lines(aggregates)
+    if agg_lines:
+        parts.append(
+            "## 수치 요약 (DB별 집계 — 코드 계산값)\n"
+            "각 DB의 집계 값과, 건수·합계·최대·최소의 전체 값입니다. 수치를 서술할 때는 "
+            "**반드시 아래 값을 그대로** 쓰세요. \"전체 값 없음\" 항목(평균 등)은 "
+            "DB별 행 수 정보가 없어 합칠 수 없으니 전체를 계산하거나 추정해 서술하지 마세요. "
+            "이 블록 자체를 본문에 복창하지 마세요.\n"
+            + "\n".join(agg_lines)
+        )
+    stats_lines = [] if agg_lines else _numeric_summary_lines(rows)
     if stats_lines:
         parts.append(
             f"## 수치 요약 (전체 {len(rows)}건 전수 기준 — 코드 계산값)\n"
@@ -535,7 +557,7 @@ def _build_response_prompt(
         if truncated:
             # "N건 중 상위 20건(대표 서버)" 오서술 차단(D-186) — 절단은 표시 제한이지 데이터 특성이 아니다
             rule += (
-                f"\n전체 결과는 {len(rows)}건이며 위 JSON은 표시용으로 상위 20건만 실은 것입니다. "
+                f"\n전체 결과는 {len(rows)}건이며 위 JSON은 표시용으로 {shown}만 실은 것입니다. "
                 "요약에는 전체 건수만 쓰고, '상위 20건'·'대표 서버'처럼 절단을 데이터 특성으로 "
                 "서술하지 마세요."
             )
@@ -562,6 +584,103 @@ def _build_response_prompt(
         )
 
     return "\n\n".join(parts)
+
+
+#: 멀티 DB 병합 행의 출처 태그(`multi_db_executor._merge_results`) · 응답 표의 출처 칼럼 표시명.
+_SOURCE_KEY = "_source_db"
+_SOURCE_LABEL = "출처"
+_PREVIEW_LIMIT = 20
+
+
+def _preview_rows(
+    rows: list[Any], *, ranked: bool, limit: int = _PREVIEW_LIMIT,
+) -> tuple[list[Any], bool]:
+    """응답 LLM에 싣는 미리보기 행(최대 20건)과 DB 균형 추출 여부 (plans/113 S-2 · B-2).
+
+    멀티 DB 이어 붙이기 결과는 DB 실행 순서대로 이어져 있어 앞 20건으로 자르면 뒤 DB 행이
+    하나도 보이지 않는다("한쪽만 조회한 것처럼" 보이는 두 번째 경로). 행마다 출처 태그가 있고
+    출처가 2곳 이상이며 20건을 넘을 때만 DB별로 번갈아 뽑는다 — 대상 DB마다 1행 이상, DB 안
+    순서는 유지하고 출력은 원래 순서다. 단일 DB·전역 재정렬(S-1) 행은 종전 그대로 앞 20건이다.
+    1단 도구 결과 요약(`deepagents_tools._serialize_for_tool`)도 같은 규칙으로 자른다(`limit`).
+    """
+    head = rows[:limit]
+    if ranked or len(rows) <= limit:
+        return head, False
+    by_source: dict[Any, list[int]] = {}
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict) or _SOURCE_KEY not in row:
+            return head, False
+        by_source.setdefault(row[_SOURCE_KEY], []).append(idx)
+    if len(by_source) < 2:
+        return head, False
+    picked: list[int] = []
+    depth = 0
+    while len(picked) < limit:
+        took = False
+        for indices in by_source.values():
+            if depth < len(indices) and len(picked) < limit:
+                picked.append(indices[depth])
+                took = True
+        if not took:
+            break
+        depth += 1
+    return [rows[i] for i in sorted(picked)], True
+
+
+def _display_row(row: dict[str, Any]) -> dict[str, Any]:
+    """표시용 행 — 복합 필드명 치환(D-145) + 출처 태그를 레지스트리 표시명 칼럼으로(G-4).
+
+    출처 태그가 없는 행(단일 DB)은 종전 치환만 한다(프롬프트 바이트 동일).
+    """
+    out: dict[str, Any] = {}
+    for k, v in row.items():
+        if k == _SOURCE_KEY and _SOURCE_LABEL not in row:
+            out[_SOURCE_LABEL] = _db_display_name(v)
+        else:
+            out[_display_field_name(str(k))] = v
+    return out
+
+
+#: 집계 종류 표시명(plans/113 S-3).
+_AGG_KIND_LABELS = {
+    "COUNT": "건수", "SUM": "합계", "MAX": "최대", "MIN": "최소", "AVG": "평균",
+    "COUNT_DISTINCT": "중복 제외 건수", "OTHER": "값",
+}
+
+
+def _fmt_number(value: Any) -> str:
+    """집계 값 표기 — 정수는 천 단위 구분, 실수는 소수 둘째 자리."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, float):
+        return f"{int(value):,}" if value.is_integer() else f"{round(value, 2):,}"
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def _aggregate_summary_lines(aggregates: dict[str, Any] | None) -> list[str]:
+    """집계 종합(plans/113 S-3) 줄 — 항목마다 DB별 값 · 전체 값(건수·합계·최대·최소만)."""
+    if not isinstance(aggregates, dict) or not aggregates.get("applied"):
+        return []
+    lines: list[str] = []
+    for col in aggregates.get("columns") or []:
+        per_db = col.get("per_db") or {}
+        rendered = " · ".join(
+            f"{_db_display_name(d)} {_fmt_number(v)}" for d, v in per_db.items()
+        )
+        label = f"{_display_field_name(str(col.get('column')))}"
+        kind = _AGG_KIND_LABELS.get(str(col.get("kind")), "값")
+        total = col.get("total")
+        tail = f" → 전체 {_fmt_number(total)}" if total is not None else " (전체 값 없음)"
+        lines.append(f"- {label}({kind}): {rendered}{tail}")
+    return lines
+
+
+def _db_display_name(db_id: Any) -> str:
+    """DB 표시명(레지스트리 `display_name`) — 미등록이면 db_id 그대로."""
+    domain = get_domain_by_id(str(db_id)) if db_id else None
+    return domain.display_name if domain else str(db_id)
 
 
 _TABLE_SEP_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
@@ -778,19 +897,84 @@ def _append_zone_coverage_notes(response: str, state: AgentState) -> str:
         for db_id, err in db_errors.items():
             lines.append(f"- {db_id}: {str(err)[:150]}")
 
-    # 멀티 존 조회에서 일부 존만 0행이면 존별 건수를 명시한다 — "그 존에 없음(0건)"과
-    # "조회 누락"을 사용자가 구별할 수 있게 한다. 전 존 0행은 기존 0건 안내가 담당한다.
-    if len(summary) >= 2:
+    # 멀티 존 조회의 존별 건수 — "그 존에 없음(0건)"과 "조회 누락"을 사용자가 구별할 수 있게
+    # 한다. 전 존 0행은 기존 0건 안내가 담당한다. 정상 조회 턴(전 존 1행 이상)에도 싣는다 —
+    # 종합 결과를 존 기준으로 읽는 근거다(plans/113 G-4 (가) 존별 건수 1줄).
+    if len(summary) >= 2 and _rows_are_merged(state):
         counts = {d: (info or {}).get("row_count", 0) for d, info in summary.items()}
-        if any(c == 0 for c in counts.values()) and any(c > 0 for c in counts.values()):
-            rendered = " · ".join(
-                f"{d} {c:,}건" for d, c in counts.items()
+        if any(c > 0 for c in counts.values()):
+            names = {d: str((info or {}).get("display_name") or d) for d, info in summary.items()}
+            rendered = " · ".join(f"{names[d]} {c:,}건" for d, c in counts.items())
+            lines.append(
+                f"**[존별 결과]** {rendered}{_ranking_clause(state, names)}"
+                f"{_aggregate_skip_clause(state)}"
             )
-            lines.append(f"**[존별 결과]** {rendered}")
+            agg_lines = _aggregate_summary_lines(
+                (state.get("organized_data") or {}).get("merge_aggregates")
+                if isinstance(state.get("organized_data"), dict) else None
+            )
+            if agg_lines:
+                # 집계 질의(S-3)는 표보다 이 값이 답이다 — LLM 서술과 무관하게 결정적으로 싣는다.
+                lines.append("**[존별 집계]**")
+                lines.extend(agg_lines)
 
     if not lines:
         return response
     return (response or "") + "\n\n" + "\n".join(lines)
+
+
+def _aggregate_skip_clause(state: AgentState) -> str:
+    """집계 질의인데 DB별 값을 합치지 못한 사유(plans/113 S-3 · 침묵 강등 금지).
+
+    사유가 없으면 빈 문자열이다.
+    """
+    organized = state.get("organized_data")
+    aggregates = organized.get("merge_aggregates") if isinstance(organized, dict) else None
+    if not isinstance(aggregates, dict) or aggregates.get("applied"):
+        return ""
+    if not aggregates.get("reason"):
+        return ""
+    return f" — {aggregates['reason']} DB별 집계 값을 합치지 않았습니다"
+
+
+def _rows_are_merged(state: AgentState) -> bool:
+    """이번 응답 행이 멀티 DB 병합 행(출처 태그)인지 — 존별 건수 줄의 잔존 방어(plans/113).
+
+    `db_result_summary`는 멀티 DB 경로만 쓰므로, 같은 요청 안에서 단일 경로로 재시도하면 앞선
+    병합의 요약이 남는다. 이번 행에 출처 태그가 하나도 없으면 그 요약은 이번 행의 것이 아니다.
+    행 정보가 없으면(각주 함수 단독 호출) 종전 판정 그대로다.
+    """
+    organized = state.get("organized_data")
+    if not isinstance(organized, dict):
+        return True
+    rows = organized.get("rows") or []
+    return any(isinstance(r, dict) and _SOURCE_KEY in r for r in rows)
+
+
+def _ranking_clause(state: AgentState, names: dict[str, str]) -> str:
+    """존별 건수 줄 뒤에 붙는 전역 재정렬 경과(plans/113 S-1) — 경과가 없으면 빈 문자열.
+
+    적용: 표가 전체 기준 상위 N이라는 사실과 그 N건의 존별 분포 · 미적용: 순위 질의인데 DB별
+    결과를 이어 붙였다는 사실과 사유(침묵 강등 금지).
+    """
+    organized = state.get("organized_data") or {}
+    ranking = organized.get("merge_ranking") if isinstance(organized, dict) else None
+    if not isinstance(ranking, dict):
+        return ""
+    if not ranking.get("applied"):
+        reason = ranking.get("reason")
+        if not reason:
+            return ""
+        return f" — {reason} 전체 기준으로 다시 정렬하지 않고 존별 결과를 이어 붙였습니다"
+    rows = organized.get("rows") or []
+    top: dict[str, int] = {}
+    for row in rows:
+        if isinstance(row, dict) and row.get(_SOURCE_KEY):
+            src = str(row[_SOURCE_KEY])
+            top[src] = top.get(src, 0) + 1
+    # 조회한 존 순서로 싣는다(0건 존도 — 상위 N에 한 건도 들지 못했다는 사실이 정보다).
+    dist = " · ".join(f"{name} {top.get(d, 0):,}건" for d, name in names.items())
+    return f" → 전체 기준 상위 {len(rows):,}건({dist})"
 
 
 def _append_form_fill_notes(

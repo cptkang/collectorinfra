@@ -20,6 +20,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
 
 from src.config import AppConfig
+from src.nodes.output_generator import _preview_rows
 from src.orchestration.intent_planner import has_alarm_signal
 from src.orchestration.task_progress import emit_task_progress
 from src.utils.prior_dependency import (
@@ -142,7 +143,14 @@ def _serialize_for_tool(result: Any, app_config: Optional[AppConfig] = None) -> 
 
     rows = rows or []
     total = len(rows) if isinstance(rows, list) else 0
-    capped = rows[:_MAX_TOOL_ROWS] if isinstance(rows, list) else rows
+    # 멀티 DB 이어 붙이기 결과는 DB 순서라 앞에서 자르면 뒤 DB가 오케스트레이터에 안 보인다 —
+    # 응답 미리보기와 같은 규칙(DB별 번갈아 · 단일 DB·전역 재정렬 행은 앞에서 그대로)으로 자른다
+    # (plans/113 S-2 대칭).
+    ranked = bool((organized.get("merge_ranking") or {}).get("applied"))
+    capped = (
+        _preview_rows(rows, ranked=ranked, limit=_MAX_TOOL_ROWS)[0]
+        if isinstance(rows, list) else rows
+    )
     payload = {
         "summary": organized.get("summary") or "",
         "row_count": total,

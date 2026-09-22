@@ -297,6 +297,10 @@ class _MultiRun:
     # 분할 결과 선별 서버가 없어 미조회한 DB와 그 경과 노트(응답에 결정적으로 표기).
     skipped_dbs: list[str] = field(default_factory=list)
     dependency_notes: list[dict] = field(default_factory=list)
+    # DB별 실제 실행 SQL(성공분 · 소급 복구 포함) — 결과 병합(result_merger)의 순위 질의 전역
+    # 재정렬이 정렬 키·행 상한을 **실행한 SQL**에서 결정적으로 읽는다(plans/113 S-1).
+    # `all_attempts`(QueryAttempt)에는 DB 식별자가 없어 DB별 대조가 불가하다.
+    db_sqls: dict[str, str] = field(default_factory=dict)
 
 
 def _prior_for_db(run: _MultiRun, db_id: str) -> tuple[str | None, tuple[str, list[str]] | None]:
@@ -420,6 +424,7 @@ async def _record_success(
     elapsed_ms = (time.time() - exec_start) * 1000
 
     run.db_results[db_id] = result.rows
+    run.db_sqls[db_id] = sql
     run.all_attempts.append(QueryAttempt(
         sql=sql,
         success=True,
@@ -865,6 +870,7 @@ async def _run_groups(
             merged = run
         else:
             merged.db_results.update(run.db_results)
+            merged.db_sqls.update(run.db_sqls)
             merged.db_schemas.update(run.db_schemas)
             merged.db_errors.update(run.db_errors)
             merged.all_attempts.extend(run.all_attempts)
@@ -1011,6 +1017,7 @@ async def multi_db_executor(
             )
             continue
         run.db_results[_failed_db_id] = result.rows
+        run.db_sqls[_failed_db_id] = _recovery_sql
         run.db_errors.pop(_failed_db_id, None)
         run.all_attempts.append(QueryAttempt(
             sql=_recovery_sql,
@@ -1043,6 +1050,11 @@ async def multi_db_executor(
         "db_schemas": run.db_schemas,
         "db_errors": run.db_errors,
         "query_results": merged_results,
+        # DB별 실행 SQL — 항상 싣는다(요청 스코프 · 직전 실행분이 남지 않게 매번 덮어쓴다).
+        # isinstance 검사는 테스트 대역(MagicMock run)이 키를 오발생시키지 않게 한다.
+        "db_executed_sqls": (
+            dict(run.db_sqls) if isinstance(getattr(run, "db_sqls", None), dict) else {}
+        ),
         "query_attempts": run.all_attempts,
         "sql_candidates": run.mc_candidates or None,
         "smq_derivation": run.mc_derivations or None,

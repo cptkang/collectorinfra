@@ -236,6 +236,7 @@
     var settingsEdits = {};       // env_key -> {reset: true} | {value: "..."}
     var settingsRows = {};        // env_key -> {row, state, error}
     var groupExpanded = {};       // group_key -> 펼침 여부
+    var settingsFoldedCount = 0;  // 직전 렌더에서 고급(C등급)으로 접힌 항목 수
     var settingsLoaded = false;
     var settingsAllExpanded = false;
     var settingsHelpCache = {};   // env_key -> 도움말 응답 (탭 체류 중 재조회 방지)
@@ -360,12 +361,19 @@
         var query = document.getElementById("settingsSearch").value.trim().toLowerCase();
         var filter = document.getElementById("settingsFilter").value;
         var showUnconsumed = document.getElementById("showUnconsumed").checked;
+        var showAdvanced = document.getElementById("showAdvanced").checked;
         var narrowed = query !== "" || filter !== "all";
         var shown = 0;
+        settingsFoldedCount = 0;
 
         settingsGroups.forEach(function (group) {
             var items = (group.settings || []).filter(function (item) {
-                return matchesFilters(item, query, filter, showUnconsumed);
+                if (!matchesFilters(item, query, filter, showUnconsumed)) return false;
+                if (isFoldedAdvanced(item, query, showAdvanced)) {
+                    settingsFoldedCount += 1;
+                    return false;
+                }
+                return true;
             });
             if (!items.length) return;
             shown += items.length;
@@ -404,11 +412,21 @@
         return true;
     }
 
+    // C등급(내부 상수급 — 기본값을 쓰는 설정)은 기본 화면에서 접는다(plans/109 §3.4.1 I-2).
+    // 이 설치가 이미 값을 정한 항목(.env 등재·OS/.encenv 오버라이드)·편집 중인 항목·검색 결과는
+    // 그대로 보인다. 미소비 항목은 자기 토글(showUnconsumed)만 따른다.
+    function isFoldedAdvanced(item, query, showAdvanced) {
+        if (showAdvanced || item.grade !== "C" || !item.consumed) return false;
+        if (query || isDirty(item) || item.override) return false;
+        return item.file_value === undefined || item.file_value === null;
+    }
+
     function updateCount(shown) {
         var total = Object.keys(settingsItems).length;
         var label = document.getElementById("settingsCount");
         var dirty = dirtyCount();
         label.textContent = shown + " / " + total + "개 표시"
+            + (settingsFoldedCount ? " · 고급 " + settingsFoldedCount + "개 접힘" : "")
             + (dirty ? " · 미저장 " + dirty + "건" : "");
     }
 
@@ -1068,6 +1086,7 @@
     document.getElementById("settingsSearch").addEventListener("input", renderSettings);
     document.getElementById("settingsFilter").addEventListener("change", renderSettings);
     document.getElementById("showUnconsumed").addEventListener("change", renderSettings);
+    document.getElementById("showAdvanced").addEventListener("change", renderSettings);
 
     document.getElementById("toggleAllGroupsBtn").addEventListener("click", function () {
         settingsAllExpanded = !settingsAllExpanded;
@@ -1205,6 +1224,7 @@
         document.getElementById("settingsSearch").value = "";
         document.getElementById("settingsFilter").value = "all";
         document.getElementById("showUnconsumed").checked = true;
+        document.getElementById("showAdvanced").checked = true;
         errors.forEach(function (error) {
             var item = settingsItems[error.key];
             if (item) groupExpanded[item.group_key] = true;

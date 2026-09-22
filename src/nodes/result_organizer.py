@@ -67,6 +67,12 @@ async def result_organizer(
     parsed = state["parsed_requirements"]
     template = state.get("template_structure")
 
+    # 멀티 DB 순위 질의 전역 재정렬(plans/113 S-1) — 적용됐으면 응답용 행은 전역 상위 N이다.
+    # 원본 병합(query_results)은 그대로 둔다(CSV 다운로드 원천 · G-4).
+    ranking = _current_merge_ranking(state)
+    if ranking and ranking.get("applied"):
+        query_results = list(ranking.get("rows") or [])
+
     # 1. 민감 데이터 마스킹
     masker = DataMasker(app_config.security)
     masked_results = masker.mask_rows(query_results)
@@ -205,19 +211,72 @@ async def result_organizer(
 
     logger.info(f"결과 정리 완료: {len(formatted_results)}건")
 
+    organized = OrganizedData(
+        summary=summary,
+        rows=formatted_results,
+        column_mapping=column_mapping,
+        resolved_mapping=resolved_mapping,
+        is_sufficient=True,
+        sheet_mappings=sheet_mappings,
+    )
+    if ranking:
+        # 행과 함께 경과를 운반한다(1·2·3단 공통 — organized_data는 모든 경로가 전달한다).
+        organized["merge_ranking"] = {k: v for k, v in ranking.items() if k != "rows"}
+        if ranking.get("applied"):
+            organized["summary"] = _ranking_summary(ranking, len(formatted_results)) + summary
+    aggregates = _current_merge_aggregates(state)
+    if aggregates:
+        organized["merge_aggregates"] = dict(aggregates)
     return {
-        "organized_data": OrganizedData(
-            summary=summary,
-            rows=formatted_results,
-            column_mapping=column_mapping,
-            resolved_mapping=resolved_mapping,
-            is_sufficient=True,
-            sheet_mappings=sheet_mappings,
-        ),
+        "organized_data": organized,
         "error_message": None,
         "current_node": "result_organizer",
         **diagnosis_delta,
     }
+
+
+def _current_merge_ranking(state: AgentState) -> dict[str, Any] | None:
+    """이번 행에 해당하는 전역 재정렬 결과만 돌려준다(요청 안 재시도 경로의 잔존 방어).
+
+    `merged_ranking`은 `result_merger`가 매 실행 덮어쓰지만, 멀티 DB 결과가 데이터 부족으로
+    단일 경로(`query_generator → query_executor`)로 회귀하면 그 값이 state에 남는다. 병합 행
+    (`_source_db` 태그)이고 행 수가 재정렬 입력과 같을 때만 이번 행의 결과로 본다.
+    """
+    ranking = state.get("merged_ranking")
+    if not isinstance(ranking, dict):
+        return None
+    rows = state.get("query_results") or []
+    if not rows or not all(isinstance(r, dict) and "_source_db" in r for r in rows):
+        return None
+    if ranking.get("applied") and ranking.get("source_row_count") != len(rows):
+        return None
+    return ranking
+
+
+def _current_merge_aggregates(state: AgentState) -> dict[str, Any] | None:
+    """이번 행에 해당하는 집계 종합 결과만 돌려준다(plans/113 S-3).
+
+    재시도 잔존 방어는 전역 재정렬(`_current_merge_ranking`)과 같다.
+    """
+    aggregates = state.get("merged_aggregates")
+    if not isinstance(aggregates, dict):
+        return None
+    rows = state.get("query_results") or []
+    if not rows or not all(isinstance(r, dict) and "_source_db" in r for r in rows):
+        return None
+    if aggregates.get("applied") and aggregates.get("source_row_count") != len(rows):
+        return None
+    return aggregates
+
+
+def _ranking_summary(ranking: dict[str, Any], shown: int) -> str:
+    """전역 재정렬 요약 문장 — 응답 LLM이 표를 DB별 목록이 아니라 전체 순위로 읽게 한다."""
+    order = "큰" if ranking.get("descending") else "작은"
+    return (
+        f"{len(ranking.get('db_ids') or [])}개 DB에서 각각 상위 {ranking.get('limit')}건씩 조회한 "
+        f"{ranking.get('source_row_count')}건을 '{ranking.get('key')}' 값이 {order} 순으로 "
+        f"다시 정렬해 전체 기준 상위 {shown}건만 남겼습니다. "
+    )
 
 
 

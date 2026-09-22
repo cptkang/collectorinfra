@@ -27,13 +27,11 @@ from src.api import settings_catalog as sc  # noqa: E402
 
 #: 성능 축이 될 수 없는 그룹 — 질의 응답 경로 밖이다.
 #: 알람 파이프라인은 워크로드 성격이 완전히 다르므로 별도 벤치마크 대상(plans/93 G-4).
-_NON_QUERY_GROUPS: frozenset[str] = frozenset({"noise_gate", "alarm", "workb"})
+#: 정본은 카탈로그다 — 웹UI 등급(C = 고급)과 같은 규칙을 쓰기 위해서다.
+_NON_QUERY_GROUPS: frozenset[str] = sc.OUT_OF_QUERY_PATH_GROUPS
 
-#: 접속 대상·저장 정책을 가리키는 이름 꼬리. 동작 모드가 아니다.
-_INFRA_SUFFIXES: tuple[str, ...] = (
-    "_url", "_host", "_port", "_dir", "_path", "_file",
-    "_retention_days", "_maxlen", "_key", "_token", "_password", "_secret",
-)
+#: 접속 대상·저장 정책을 가리키는 이름 꼬리. 동작 모드가 아니다(정본은 카탈로그).
+_INFRA_SUFFIXES: tuple[str, ...] = sc.STORAGE_POLICY_SUFFIXES
 
 #: 타입 자체가 접속 정보인 것.
 _INFRA_TYPES: frozenset[str] = frozenset({"secret"})

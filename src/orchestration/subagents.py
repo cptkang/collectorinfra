@@ -24,9 +24,7 @@ from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
 from src.nodes.cache_management import cache_management
-from src.nodes.field_mapper import resolve_priority_db_ids
 from src.nodes.general_inference import general_inference
-from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
@@ -55,6 +53,7 @@ from src.routing.capability_ownership import (
 )
 from src.routing.db_scope import zone_selection_db_ids
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
+from src.routing.location_hints import pin_targets_to_hints, strip_location_terms
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
@@ -386,20 +385,9 @@ def _inject_demonstrative_hostname(isolated: dict) -> dict:
     return new_parsed
 
 
-def _strip_location_terms(text: str) -> str:
-    """질의 텍스트에서 위치/제품명 토큰을 제거한다(핀 대체 target의 정제 질의용).
-
-    classify_dbs의 sub_query_context(위치 제거 정제 질의)가 없는 합성 target에 원문을
-    그대로 넣으면 위치어가 SQL WHERE로 누출될 수 있어(과거 GROUP_PATH ILIKE '김포' 사례),
-    위치·제품명 토큰만 결정적으로 걷어낸다. 긴 토큰부터 제거해 부분 잔재("은행존"→"존")를 막는다.
-    """
-    stripped = text or ""
-    tokens = sorted(
-        (*LOCATION_HINT_TERMS, "폴스타", "polestar"), key=len, reverse=True
-    )
-    for token in tokens:
-        stripped = stripped.replace(token, " ")
-    return " ".join(stripped.split())
+# 핀 대체 target의 정제 질의 — 3단 라우터(plans/113 F-1)가 같은 규칙을 쓰도록 routing 계층으로
+# 옮겼다(사본 금지). 기존 이름은 소비처·테스트를 위해 유지한다.
+_strip_location_terms = strip_location_terms
 
 
 def _apply_turn_hint_pinning(
@@ -407,6 +395,8 @@ def _apply_turn_hint_pinning(
     isolated: dict,
     sub_query: str,
     active_db_ids: list[str],
+    *,
+    zone_group_exclusive: bool = False,
 ) -> tuple[list[dict], bool]:
     """이번 턴 원문 위치 힌트(target_db_hints)로 대상 DB 집합을 결정적으로 고정한다.
 
@@ -418,49 +408,35 @@ def _apply_turn_hint_pinning(
     D-065 계열)으로 DB 집합에 고정한다. classify_dbs 결과는 sub_query_context(위치 제거
     정제 질의) 재사용을 위해 유지하고 **DB 집합 결정권만** 이 함수가 갖는다.
 
-    적용 게이트(모두 충족):
-    - 단일 task 계획(is_composite 아님) — 전역 힌트는 task별 위치가 다른 복합 계획에 부정확.
-    - 힌트가 활성 DB로 1개 이상 해소됨.
+    판정은 3단 라우터와 **같은 함수**(`routing.location_hints.pin_targets_to_hints` — plans/113
+    F-2 · D-066 대칭)다. 존 그룹이 없는 DB의 분류 결과는 보존한다(종전 전량 탈락 교정).
+
+    복합 계획(is_composite)은 종전에 고정을 통째로 껐다(전역 힌트가 task별 위치를 덮으므로 —
+    그 결과 task마다 LLM 분류가 DB를 골라 "공동존"이 김포/여의도로 갈라졌다, plans/113 A-3).
+    이제는 **task 단위로 고정**한다 — task 질의가 원문 힌트 중 일부만 가리키면 그 부분집합,
+    가리키지 않으면 원문 힌트 전체다(`task_hint_scope`). 원문에 없는 위치어는 task 질의에
+    있어도 무시한다(위 2026-07-16 방어 유지). 단일 task(1단 도구 호출 포함)는 종전대로 원문 힌트
+    전체다 — 재작성 질의가 위치어 하나를 빠뜨리면 조용히 좁혀지므로(누락) 과포함 쪽을 택한다.
 
     Args:
         targets: classify_dbs가 반환한 후보 목록
         isolated: subagent 격리 입력(parsed_requirements/is_composite 포함)
-        sub_query: 이번 task 질의(합성 target의 정제 질의 원료)
+        sub_query: 이번 task 질의(합성 target의 정제 질의 원료 · 복합 계획의 task 범위 근거)
         active_db_ids: 활성 DB 목록
+        zone_group_exclusive: 존 그룹 상호배타 설정(호출부가 설정에서 넘긴다 · 기본 False는
+            종전 동작 — 두 존 그룹 해소도 고정)
 
     Returns:
         (적용된 targets, 핀 적용 여부)
     """
-    if isolated.get("is_composite"):
-        return targets, False
     parsed = isolated.get("parsed_requirements") or {}
     hints = parsed.get("target_db_hints") or []
-    if not isinstance(hints, list) or not hints:
-        return targets, False
-    pinned = resolve_priority_db_ids([str(h) for h in hints], active_db_ids)
-    if not pinned:
-        return targets, False
-
-    by_id = {t.get("db_id"): t for t in targets if isinstance(t, dict)}
-    final: list[dict] = []
-    for db_id in pinned:
-        existing = by_id.get(db_id)
-        if existing:
-            final.append(existing)  # classify의 sub_query_context 재사용
-        else:
-            final.append({
-                "db_id": db_id,
-                "relevance_score": 1.0,
-                "sub_query_context": _strip_location_terms(sub_query),
-                "user_specified": True,
-                "reason": "이번 턴 원문 위치/DB 힌트 결정적 해소(target_db_hints)",
-            })
-    dropped = [i for i in by_id if i not in set(pinned)]
-    logger.info(
-        "이번 턴 위치 힌트 결정적 DB 고정: hints=%s → %s (classify 제외분=%s)",
-        hints, pinned, dropped or "없음",
+    return pin_targets_to_hints(
+        targets, hints if isinstance(hints, list) else [], active_db_ids,
+        fill_query=sub_query,
+        task_query=sub_query if isolated.get("is_composite") else None,
+        zone_group_exclusive=zone_group_exclusive,
     )
-    return final, True
 
 
 def _apply_db_succession(
@@ -838,8 +814,8 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         "llm_inference_details": state.get("llm_inference_details"),
         "pending_synonym_registrations": state.get("pending_synonym_registrations"),
         "pending_synonym_reuse": state.get("pending_synonym_reuse"),
-        # 이번 턴 원문 위치 힌트의 결정적 DB 고정(_apply_turn_hint_pinning)은 전역 힌트를
-        # 쓰므로 단일 task 계획에서만 안전 — 복합 여부를 게이트 신호로 전달한다.
+        # 이번 턴 원문 위치 힌트의 결정적 DB 고정(_apply_turn_hint_pinning)은 복합 계획이면
+        # task 질의가 가리키는 원문 힌트 부분집합으로 좁힌다(plans/113 F-2) — 그 판정 신호.
         "is_composite": bool(state.get("is_composite")),
         # 존 역질문 후단 게이트(D-143 후속2): 채널 플래그(대화형 텍스트 라우트만 True)와
         # 원문 질의(호출부가 user_query를 sub_query로 덮어써도 게이트 판정·재전송 페이로드는
@@ -1155,7 +1131,10 @@ async def run_data_query_pipeline(
         # ① 이번 턴 원문 위치 힌트가 해소되면 DB 집합을 결정적으로 고정한다
         #    (LLM 분해/분류가 직전 턴 위치를 병합해도 원문 힌트가 이긴다 — 2026-07-16).
         targets, db_pinned = _apply_turn_hint_pinning(
-            targets, isolated, sub_query, app_config.multi_db.get_active_db_ids()
+            targets, isolated, sub_query, app_config.multi_db.get_active_db_ids(),
+            zone_group_exclusive=(
+                getattr(app_config.multi_db, "zone_group_exclusive", True) is True
+            ),
         )
         if not db_pinned:
             targets, db_succeeded = _apply_db_succession(
@@ -1327,6 +1306,19 @@ def _pack_pipeline_result(
         "query_results": s.get("query_results"),
         "source": targets,
     }
+    # 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용됐으면 선행 결과 전달(`prior_rows`·
+    # `prior_targets`·순차 경과 판정)도 응답에 보인 **전체 기준 상위 N**을 쓴다 — 세 판독처가
+    # `rows`를 1순위로 읽는다. 원본 병합(`query_results` — CSV 원천)은 그대로다. 적용 여부는
+    # 결과 정리가 이번 행에 대해 확정한 표지(`organized_data.merge_ranking`)로 판정한다.
+    _organized = s.get("organized_data")
+    _ranking = s.get("merged_ranking")
+    if (
+        isinstance(_organized, dict)
+        and (_organized.get("merge_ranking") or {}).get("applied")
+        and isinstance(_ranking, dict)
+        and _ranking.get("applied")
+    ):
+        result["rows"] = list(_ranking.get("rows") or [])
     error = pipeline_error or s.get("error_message")
     if error:
         result["error"] = error

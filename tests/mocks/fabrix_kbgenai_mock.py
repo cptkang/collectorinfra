@@ -35,6 +35,9 @@ SCRIPT: dict[str, tuple[str, list[tuple[str, float]]]] = {
                        ("polestar_cm_yd", 0.83), ("cloud_portal", 0.80)]),
     "인시던트가 발생한 서버들의 자산 정보와 현재 사양을 보여줘": (
         "data_query", [("itsm", 0.88), ("itam", 0.82)]),
+    # 존 단위 위치어(plans/113) — 정답 대본은 두 DB. 실 LLM은 한 곳만 고르는 것이 관측됐다.
+    "공동존의 vm 중 최대 cpu와 최대 memory 서버 top 10을 정리해줘": (
+        "data_query", [("polestar_cm_gp", 0.93), ("polestar_cm_yd", 0.91)]),
     "현재 활성 상태인 심각 알람 목록 보여줘": ("alarm_query", [("polestar_b0", 0.9)]),
     "이번 달 CPU 임계값 초과 알람 이력 조회": ("alarm_query", [("polestar_b0", 0.88)]),
     "polestar DB의 스키마 캐시를 갱신해줘": ("cache_management", []),

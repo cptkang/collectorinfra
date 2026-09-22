@@ -204,7 +204,10 @@ class TestTaskOwnership:
         assert res["target_db_ids"] == ["polestar_cm_gp"]
         assert res["db_origin"] == "hint"
         assert res.get("db_hint_pinning", {}).get("pinned") is True
-        assert "dependency_notes" not in res  # 제한으로 뺀 DB가 없다
+        # (plans/113 F-2) 위치 힌트 고정은 존 없는 DB(itam)를 더 이상 조용히 버리지 않는다 —
+        # 그 DB를 빼는 것은 답변 영역 소유 제한이고, 제한은 뺀 사실을 노트로 남긴다(침묵 탈락 금지).
+        notes = _notes(res, NOTE_OWNERSHIP)
+        assert [n.get("from_db_ids") for n in notes] == [["itam"]]
 
     async def test_task_with_db_ids_is_untouched(self, pipeline):
         task = {

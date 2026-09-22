@@ -7,7 +7,7 @@ LangGraph 에이전트의 전역 상태(AgentState)와 관련 타입을 정의�
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Any, NotRequired, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import add_messages
@@ -39,6 +39,12 @@ class OrganizedData(TypedDict):
     resolved_mapping: Optional[dict[str, str]]
     is_sufficient: bool
     sheet_mappings: Optional[list[SheetMappingResult]]
+    # 멀티 DB 순위 질의 전역 재정렬 경과(plans/113 S-1) — `rows`가 무엇인지(전역 상위 N ·
+    # 재정렬 미적용 사유)를 행과 함께 운반한다. 응답 미리보기 균형·존별 건수 줄이 읽는다.
+    # 없으면 종전과 같다.
+    merge_ranking: NotRequired[dict[str, Any] | None]
+    # 멀티 DB 집계 질의의 DB별·전체 값(plans/113 S-3) — 수치 요약·존별 줄이 읽는다.
+    merge_aggregates: NotRequired[dict[str, Any] | None]
 
 
 class SmqDerivation(TypedDict):
@@ -278,6 +284,11 @@ class AgentState(TypedDict):
     group_results: Optional[dict[str, dict]] # {group_key: {row_count, elapsed_ms, errors, sqls}}
     group_packets: Optional[list[dict]]      # peer 그룹의 부분 결과(완료 즉시 노출용 — 문헌 정정 ②)
     db_result_summary: Optional[dict[str, dict]]  # result_merger의 DB별 요약(종전 폐기분 승격)
+    # (plans/113 S-1) DB별 실제 실행 SQL(multi_db_executor)과 순위 질의 전역 재정렬 결과
+    # (result_merger → result_organizer). 요청 스코프 — 라우트가 매 턴 명시 초기화한다.
+    db_executed_sqls: dict[str, str] | None
+    merged_ranking: dict[str, Any] | None
+    merged_aggregates: dict[str, Any] | None  # 집계 질의 DB별·전체 값(plans/113 S-3)
     # 0건 원인 진단(D-176 후속1 · §6). `src.domain.empty_answer.as_payload()` 산출물 —
     # 체크포인터 직렬화 대상이라 dataclass가 아니라 dict로 싣는다.
     empty_diagnosis: Optional[dict]
@@ -405,6 +416,12 @@ def create_followup_input(
         # 3단 계획 신호(plans/103 · 요청 스코프) — 라우터 사전 처리 분기는 이 값을 쓰지 않으므로
         # 직전 턴 값이 남으면 양식·존 선택 턴이 계획 루프로 샌다.
         "needs_plan": None,
+        # 멀티 DB 결과 요약·실행 SQL·전역 재정렬(plans/113 · 요청 스코프) — 단일 DB 턴은 이 키들을
+        # 쓰지 않으므로, 비우지 않으면 직전 멀티 DB 턴의 존별 건수가 새 턴 응답에 붙는다.
+        "db_result_summary": None,
+        "db_executed_sqls": None,
+        "merged_ranking": None,
+        "merged_aggregates": None,
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -555,6 +572,9 @@ def create_initial_state(
         group_results=None,
         group_packets=None,
         db_result_summary=None,
+        db_executed_sqls=None,  # 요청 스코프(plans/113 S-1)
+        merged_ranking=None,  # 요청 스코프(plans/113 S-1)
+        merged_aggregates=None,  # 요청 스코프(plans/113 S-3)
         empty_diagnosis=None,
         spike_notes=None,
         discovery_trace=None,

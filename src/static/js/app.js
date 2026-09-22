@@ -69,7 +69,35 @@
         if (token) {
             headers["Authorization"] = "Bearer " + token;
         }
+        var clientId = getClientId();
+        if (clientId) headers["X-Client-Id"] = clientId;
         return headers;
+    }
+
+    // 브라우저 식별자(D-248) — 인증이 꺼져 전원이 anonymous일 때 서버가 대화 이력을
+    // 브라우저별로 나누는 키다(D-183 G-1: 한 사람으로 뭉치면 남의 대화가 섞인다).
+    // crypto.randomUUID는 보안 컨텍스트(https·localhost)에서만 있어 내부망 http에서 없다 —
+    // 어디서나 되는 getRandomValues로 만든다. 저장소가 막히면 식별자 없이 간다(이력 미기록).
+    var CLIENT_ID_KEY = "query_client_id";
+    var _clientId = null;
+
+    function getClientId() {
+        if (_clientId) return _clientId;
+        try {
+            var id = localStorage.getItem(CLIENT_ID_KEY);
+            if (!id) {
+                var bytes = new Uint8Array(16);
+                window.crypto.getRandomValues(bytes);
+                id = Array.prototype.map.call(bytes, function (b) {
+                    return (b < 16 ? "0" : "") + b.toString(16);
+                }).join("");
+                localStorage.setItem(CLIENT_ID_KEY, id);
+            }
+            _clientId = id;
+        } catch (e) {
+            console.warn("[history] 브라우저 식별자 생성 실패:", e);
+        }
+        return _clientId;
     }
 
     function redirectToLogin() {
@@ -260,6 +288,17 @@
     var pendingDbIds = null;
     var pendingReset = false;
     var scopeAxes = null;   // GET /api/v1/scope/options 결과(1회 로드)
+
+    // 질의 이력 사이드바의 대화 모드(D-248) — 서버에 저장된 스레드 목록의 캐시.
+    // 초기화(setupViewTabs)가 이력 코드보다 먼저 돌기 때문에 여기서 선언한다.
+    // 사이드바 펼침 상태 키도 같은 이유로 여기 둔다. 이력 코드 옆에 있을 때는 초기화 시점에
+    // undefined여서 펼친 상태가 복원되지 않았고, 새로고침 뒤 첫 클릭이 패널을 열지 못했다.
+    var HISTORY_PANEL_KEY = "query_history_panel_open";
+    var historyMode = "threads";   // threads(서버 대화) | queries(이 브라우저의 질의문 · D-183)
+    var threadItems = [];
+    var threadsState = "stale";    // stale | loading | ready | unavailable | error
+    var threadsReason = "";
+    var threadsSeq = 0;            // 늦게 도착한 옛 목록 응답을 버리기 위한 순번
 
     // ─── Scroll (stick-to-bottom) State ───
     var stickToBottom = true;          // 맨 아래 고정 여부
@@ -1072,7 +1111,8 @@
                     downloadActionsHtml +
                     reportHtml +
                 '</div>' +
-                '<div class="message-time">' + formatTime(new Date()) + '</div>' +
+                // data.time: 저장된 대화를 다시 그릴 때의 원래 시각(D-248)
+                '<div class="message-time">' + formatTime(data.time || new Date()) + '</div>' +
             '</div>';
 
         chatMessages.appendChild(el);
@@ -1642,7 +1682,7 @@
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
-            currentThreadId = metaData.thread_id || currentThreadId;
+            setCurrentThread(metaData.thread_id);
             renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205 — 서버 보고값으로 칩 갱신
             messages.push({
                 role: "agent",
@@ -2253,7 +2293,7 @@
 
             renderAgentMessage(data);
             showPostHocProgress(data);
-            currentThreadId = data.thread_id || currentThreadId;
+            setCurrentThread(data.thread_id);
             renderDbScopeChip(data.db_scope);   // Plan 90 D-205
             messages.push({ role: "agent", data: data, time: new Date() });
 
@@ -2328,7 +2368,7 @@
                 renderAgentMessage(jsonData);
                 showPostHocProgress(jsonData);
                 attachDownloadToLastFileCard(jsonData.query_id);
-                currentThreadId = jsonData.thread_id || currentThreadId;
+                setCurrentThread(jsonData.thread_id);
                 messages.push({ role: "agent", data: jsonData, time: new Date() });
                 appendZoneClarificationToLastBubble(jsonData.clarification);
                 return;
@@ -2408,7 +2448,7 @@
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
             // D-187: '?' 조회(파일 첨부) 응답의 저장 값 패널
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
-            currentThreadId = metaData.thread_id || currentThreadId;
+            setCurrentThread(metaData.thread_id);
             renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205
             messages.push({
                 role: "agent",
@@ -2461,7 +2501,7 @@
             renderAgentMessage(data);
             showPostHocProgress(data);
             attachDownloadToLastFileCard(data.query_id);
-            currentThreadId = data.thread_id || currentThreadId;
+            setCurrentThread(data.thread_id);
             renderDbScopeChip(data.db_scope);   // Plan 90 D-205
             messages.push({ role: "agent", data: data, time: new Date() });
             appendZoneClarificationToLastBubble(data.clarification);
@@ -3628,6 +3668,7 @@
         // 접힌 동안의 렌더는 낭비다(보이지 않는다). 펼칠 때 applyHistoryPanelState가 부른다.
         var layout = document.querySelector(".chat-layout");
         if (layout && layout.classList.contains("history-collapsed")) return;
+        if (historyMode === "threads") { renderThreadList(); return; }
         var items = loadHistory();
         var keyword = historySearch ? historySearch.value.trim().toLowerCase() : "";
         // 저장은 오래된 순, 표시는 최신순. 검색은 서버 왕복 없이 부분일치로 거른다.
@@ -3699,12 +3740,222 @@
         if (historyClearBtn) historyClearBtn.style.display = items.length ? "" : "none";
     }
 
+    // ─── 대화(스레드) 이력 (D-248) ───
+    //
+    // 사이드바의 "대화" 모드. 서버가 완결된 턴(질의+응답)을 앱 DB에 남기고, 여기서는 그
+    // 목록을 보여 주며 고른 대화를 채팅 화면에 다시 그린다. 불러온 대화는 이어서 질의할 수
+    // 있다 — thread_id와 스코프 칩을 그 대화에 맞춘다. "질의" 모드(D-183)는 그대로 둔다.
+
+    var THREAD_UNAVAILABLE_TEXT = {
+        no_store: "대화 저장소(앱 DB)가 구성되지 않아 대화를 보관하지 않습니다.",
+        no_owner: "이 브라우저를 식별할 수 없어 대화를 보관하지 않습니다.",
+    };
+
+    // 턴이 끝날 때마다 부른다. 서버는 done을 보내기 전에 기록을 마치므로 곧바로 다시 받아도 된다.
+    function setCurrentThread(threadId) {
+        if (threadId) currentThreadId = threadId;
+        threadsState = "stale";
+        renderHistoryList();   // 접혀 있으면 아무것도 안 하고, 펼칠 때 다시 받는다
+    }
+
+    function loadThreads() {
+        var seq = ++threadsSeq;
+        threadsState = "loading";
+        fetch("/api/v1/threads", { headers: getAuthHeaders() })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.json();
+            })
+            .then(function (body) {
+                if (seq !== threadsSeq) return;
+                threadItems = body.threads || [];
+                threadsState = body.available ? "ready" : "unavailable";
+                threadsReason = body.reason || "";
+                renderHistoryList();
+            })
+            .catch(function (e) {
+                if (seq !== threadsSeq) return;
+                threadItems = [];
+                threadsState = "error";
+                threadsReason = e.message;
+                renderHistoryList();
+            });
+    }
+
+    function renderThreadList() {
+        if (threadsState === "stale") loadThreads();
+        var keyword = historySearch ? historySearch.value.trim().toLowerCase() : "";
+        // 검색은 대화 안의 모든 질의문을 본다(서버가 queries로 이어 붙여 준다).
+        var rows = threadItems.filter(function (t) {
+            return !keyword || (t.queries || t.title || "").toLowerCase().indexOf(keyword) !== -1;
+        });
+
+        historyList.innerHTML = "";
+        rows.forEach(function (t) {
+            var el = document.createElement("div");
+            el.className = "history-row" + (t.thread_id === currentThreadId ? " history-row--active" : "");
+            el.tabIndex = 0;
+            el.setAttribute("role", "button");
+            el.setAttribute("aria-label", "대화 불러오기: " + (t.title || ""));
+
+            var text = document.createElement("div");
+            text.className = "history-row-query";
+            text.textContent = t.title || "(빈 질의)";
+            text.title = t.queries || t.title || "";
+
+            var meta = document.createElement("div");
+            meta.className = "history-row-meta";
+
+            var time = document.createElement("span");
+            time.className = "history-row-time";
+            var updated = Date.parse(t.updated_at);
+            time.textContent = (isNaN(updated) ? "" : formatHistoryTime(updated)) + " · " + t.turn_count + "턴";
+
+            var delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.className = "history-row-btn";
+            delBtn.title = "이 대화 삭제";
+            delBtn.setAttribute("aria-label", "이 대화 삭제");
+            delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line>' +
+                '<line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+            delBtn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                deleteThread(t.thread_id);
+            });
+
+            el.addEventListener("click", function () { openThread(t.thread_id); });
+            el.addEventListener("keydown", function (e) {
+                if (e.target === el && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    openThread(t.thread_id);
+                }
+            });
+
+            meta.appendChild(time);
+            meta.appendChild(delBtn);
+            el.appendChild(text);
+            el.appendChild(meta);
+            historyList.appendChild(el);
+        });
+
+        if (historyEmpty) {
+            historyEmpty.style.display = rows.length ? "none" : "flex";
+            var emptyText = historyEmpty.querySelector("p");
+            if (emptyText) {
+                if (threadsState === "error") {
+                    emptyText.textContent = "대화 목록을 불러오지 못했습니다(" + threadsReason + ").";
+                } else if (threadsState === "unavailable") {
+                    emptyText.textContent = THREAD_UNAVAILABLE_TEXT[threadsReason] || "대화 이력을 사용할 수 없습니다.";
+                } else if (threadsState === "loading" && !threadItems.length) {
+                    emptyText.textContent = "대화 목록을 불러오는 중...";
+                } else {
+                    emptyText.innerHTML = keyword
+                        ? "검색어와 일치하는 대화가 없습니다."
+                        : "저장된 대화가 없습니다.<br>질의를 보내면 대화 단위로 쌓입니다.";
+                }
+            }
+        }
+        if (historyPanelCount) {
+            historyPanelCount.textContent = threadItems.length
+                ? (keyword ? rows.length + " / " + threadItems.length + "개" : threadItems.length + "개 대화")
+                : "";
+        }
+        if (historyClearBtn) historyClearBtn.style.display = threadItems.length ? "" : "none";
+    }
+
+    function openThread(threadId) {
+        if (isProcessing) {
+            showError("처리 중인 질의가 끝난 뒤 대화를 불러올 수 있습니다.");
+            return;
+        }
+        fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
+            .then(function (res) {
+                if (res.status === 404) throw new Error("대화를 찾을 수 없습니다");
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.json();
+            })
+            .then(function (body) { showThreadTurns(threadId, body.turns || []); })
+            .catch(function (e) { showError("대화를 불러오지 못했습니다: " + e.message); });
+    }
+
+    function showThreadTurns(threadId, turns) {
+        // 불러오는 사이 새 질의가 시작됐으면 그 화면을 덮지 않는다
+        if (isProcessing) return;
+        hideError();
+        hidePromptConfirm();
+        Array.prototype.forEach.call(chatMessages.querySelectorAll(".message"), function (el) { el.remove(); });
+        if (chatWelcome) chatWelcome.classList.toggle("hidden", turns.length > 0);
+
+        var lastScope = null;
+        turns.forEach(function (t) {
+            var at = t.created_at ? new Date(t.created_at) : new Date();
+            renderUserMessage({ role: "user", content: t.user_query, time: at, file: null });
+            // query_id를 넘기지 않는다 — 다운로드·CSV 원본은 서버 메모리(_results_store)에만 있어
+            // 지난 대화에서는 대개 사라졌다. 없으면 renderAgentMessage가 링크를 만들지 않는다.
+            renderAgentMessage({
+                response: t.response,
+                executed_sql: t.executed_sql,
+                row_count: t.row_count,
+                processing_time_ms: t.processing_time_ms,
+                time: at,
+            });
+            // 역질문 턴은 db_scope가 없다 — 직전 보고값을 유지하는 renderDbScopeChip 규칙과 같다
+            if (t.db_scope) lastScope = t.db_scope;
+        });
+
+        // 이어서 질의하면 이 대화의 맥락(체크포인트)으로 이어진다
+        currentThreadId = threadId;
+        currentDbScope = lastScope;
+        pendingDbIds = null;
+        pendingReset = false;
+        updateDbScopeChip();
+        showProgressEmpty();
+        stickToBottom = true;
+        scrollToBottom();
+        renderHistoryList();   // 현재 대화 강조
+    }
+
+    function deleteThread(threadId) {
+        if (!confirm("이 대화를 목록에서 삭제할까요? 되돌릴 수 없습니다.")) return;
+        fetch("/api/v1/threads/" + encodeURIComponent(threadId), { method: "DELETE", headers: getAuthHeaders() })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                threadsState = "stale";
+                renderHistoryList();
+            })
+            .catch(function (e) { showError("대화를 삭제하지 못했습니다: " + e.message); });
+    }
+
+    function clearThreads() {
+        if (!threadItems.length) return;
+        if (!confirm("저장된 대화 " + threadItems.length + "개를 모두 삭제할까요? 되돌릴 수 없습니다.")) return;
+        fetch("/api/v1/threads", { method: "DELETE", headers: getAuthHeaders() })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                threadsState = "stale";
+                renderHistoryList();
+            })
+            .catch(function (e) { showError("대화를 삭제하지 못했습니다: " + e.message); });
+    }
+
+    function setHistoryMode(mode) {
+        historyMode = mode;
+        document.querySelectorAll(".history-mode-btn").forEach(function (b) {
+            var on = b.dataset.mode === mode;
+            b.classList.toggle("active", on);
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        if (historySearch) historySearch.placeholder = mode === "threads" ? "대화 검색" : "질의 검색";
+        if (mode === "threads") threadsState = "stale";   // 전환할 때마다 최신 목록
+        renderHistoryList();
+    }
+
     // ─── 이력 사이드바 접기 (D-183) ───
     //
     // 기본은 **접힘**이다 — 첫 방문 화면이 종전(2열)과 같아 회귀가 없고, 필요한 사람만 펼친다.
     // 편 상태는 브라우저가 기억한다(D-178·D-180의 "개인 선호는 브라우저"와 같은 계열).
 
-    var HISTORY_PANEL_KEY = "query_history_panel_open";
+    // HISTORY_PANEL_KEY는 상단 State 구역에 있다 — 여기 두면 초기화가 undefined 키를 읽는다(D-248 부수 교정).
 
     function isHistoryPanelOpen() {
         try {
@@ -3723,6 +3974,9 @@
     }
 
     function setupHistoryPanel() {
+        document.querySelectorAll(".history-mode-btn").forEach(function (b) {
+            b.addEventListener("click", function () { setHistoryMode(b.dataset.mode); });
+        });
         applyHistoryPanelState(isHistoryPanelOpen());
         if (!historyToggle) return;
         historyToggle.addEventListener("click", function () {
@@ -3789,7 +4043,9 @@
             });
         }
         if (historyClearBtn) {
-            historyClearBtn.addEventListener("click", function () { clearHistory(); });
+            historyClearBtn.addEventListener("click", function () {
+                if (historyMode === "threads") clearThreads(); else clearHistory();
+            });
         }
         if (historySearch) {
             historySearch.addEventListener("input", function () { renderHistoryList(); });

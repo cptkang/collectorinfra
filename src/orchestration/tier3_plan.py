@@ -74,6 +74,7 @@ from src.orchestration.subagents import (
     _pack_pipeline_result,
 )
 from src.orchestration.task_progress import emit_task_progress
+from src.routing.location_hints import pin_targets_to_hints
 from src.state import AgentState
 from src.utils.prior_dependency import NOTE_DECOMPOSE, has_sequential_marker
 
@@ -259,7 +260,34 @@ def task_payload(
             })
         else:
             payload.update({k: state.get(k) for k in _ROUTING_KEYS})
+            if state.get("is_composite"):
+                _narrow_routed_targets_to_task(payload, state)
     return payload
+
+
+def _narrow_routed_targets_to_task(payload: dict[str, Any], state: AgentState) -> None:
+    """복합 계획 task의 대상을 task가 가리키는 원문 위치 힌트 범위로 좁힌다(plans/113 F-2 · 제자리).
+
+    라우터가 원문 힌트로 고정한 턴(`db_scope_source="hint"`)만 대상이다 — 그 고정 집합 **안에서만**
+    1·2단과 같은 함수(`pin_targets_to_hints`, task 범위 규칙 `task_hint_scope`)로 좁힌다. 원문 "김포
+    CPU top10과 여의도 메모리 top10"의 두 task가 각자 [gp] / [yd]를 받고, 위치어 없는 task는 라우터
+    대상 전체를 그대로 받는다(원문에 없는 위치어는 무시 · 존 없는 DB는 보존).
+    """
+    routed = [t for t in payload.get("target_databases") or [] if isinstance(t, dict)]
+    if len(routed) < 2 or state.get("db_scope_source") != "hint":
+        return
+    hints = (state.get("parsed_requirements") or {}).get("target_db_hints") or []
+    task_query = str(payload.get("user_query") or "")
+    targets, pinned = pin_targets_to_hints(
+        routed, hints if isinstance(hints, list) else [],
+        [str(t.get("db_id")) for t in routed],
+        fill_query=task_query, task_query=task_query,
+    )
+    if pinned and targets:
+        payload.update({
+            "target_databases": targets, "is_multi_db": len(targets) > 1,
+            "active_db_id": targets[0]["db_id"],
+        })
 
 
 async def run_task(payload: dict[str, Any], *, task_graph: Any) -> dict[str, Any]:

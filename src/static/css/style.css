@@ -970,6 +970,52 @@ button.alarm-prompt-trigger:hover {
     stroke-width: 1.8;
 }
 
+/* 대화/질의 전환(D-248) — 좁은 열에 맞춘 2칸 세그먼트 */
+.history-mode {
+    display: flex;
+    gap: 2px;
+    margin: 10px 12px 0;
+    padding: 2px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    flex: 0 0 auto;
+}
+
+.history-mode-btn {
+    flex: 1 1 0;
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+
+.history-mode-btn:hover {
+    color: var(--text);
+}
+
+.history-mode-btn.active {
+    background: var(--surface-active);
+    color: var(--text);
+    font-weight: 600;
+}
+
+.history-mode-btn:focus-visible,
+.history-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* 지금 채팅 화면에 떠 있는 대화 */
+.history-row--active {
+    background: var(--surface-active);
+}
+
 .chat-layout {
     display: grid;
     grid-template-columns: 260px 1fr 380px;

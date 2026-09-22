@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import importlib
+
 from src.orchestration.intent_planner import _build_context_block
 from src.orchestration.subagents import (
     _apply_turn_hint_pinning,
@@ -98,8 +100,13 @@ class TestApplyTurnHintPinning:
         assert pinned is False
         assert targets == classified
 
-    def test_composite_plan_skips_pinning(self):
-        """복합 계획(task별 위치가 다를 수 있음)에는 전역 힌트 고정을 적용하지 않는다."""
+    def test_composite_task_ignores_location_absent_from_original(self):
+        """복합 계획도 task 단위로 고정한다(plans/113 F-2 — 종전엔 통째로 해제했다).
+
+        task 질의의 "김포"는 원문 힌트(["은행존"])에 없으므로 무시한다 — LLM이 task 질의에
+        다른 위치를 섞는 오염(2026-07-16)에 대한 원문 우선 방어가 복합 계획에서도 유지된다.
+        (종전 `test_composite_plan_skips_pinning`은 해제 동작 자체를 단언했다 — A-3 결함.)
+        """
         classified = [_classify_target("polestar_cm_gp")]
         targets, pinned = _apply_turn_hint_pinning(
             classified,
@@ -107,8 +114,117 @@ class TestApplyTurnHintPinning:
             "은행존 알람과 김포 서버 현황",
             _ACTIVE,
         )
+        assert pinned is True
+        assert [t["db_id"] for t in targets] == ["polestar_b0"]
+
+
+class TestCompositeTaskPinning:
+    """복합 계획의 task 단위 결정적 고정 (plans/113 F-2 · 계획서 A-3 교정)."""
+
+    def test_task_without_location_gets_whole_original_hint(self):
+        """"공동존 CPU top10과 메모리 top10" — 위치어 없는 두 task가 모두 [gp, yd]."""
+        for sub_query, classified in (
+            ("VM 최대 CPU 사용률 상위 10개 서버", "polestar_cm_gp"),
+            ("VM 최대 메모리 사용률 상위 10개 서버", "polestar_cm_yd"),
+        ):
+            targets, pinned = _apply_turn_hint_pinning(
+                [_classify_target(classified)],
+                _isolated(["공동존"], composite=True), sub_query, _ACTIVE,
+            )
+            assert pinned is True
+            assert [t["db_id"] for t in targets] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+    def test_task_naming_zone_gets_whole_zone(self):
+        targets, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp")],
+            _isolated(["공동존"], composite=True), "공동존 VM 최대 메모리 top 10", _ACTIVE,
+        )
+        assert [t["db_id"] for t in targets] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+    def test_location_split_tasks_pin_their_own_location(self):
+        """"김포 CPU top10과 여의도 메모리 top10" → task별 [gp] / [yd]."""
+        hints = ["김포", "여의도"]
+        gp, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_yd")],
+            _isolated(hints, composite=True), "김포 서버 CPU 상위 10개", _ACTIVE,
+        )
+        yd, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp")],
+            _isolated(hints, composite=True), "여의도 서버 메모리 상위 10개", _ACTIVE,
+        )
+        assert [t["db_id"] for t in gp] == ["polestar_cm_gp"]
+        assert [t["db_id"] for t in yd] == ["polestar_cm_yd"]
+
+    def test_compound_original_hint_split_by_region_term(self):
+        """원문 힌트가 한 덩어리("김포와 여의도")여도 task 질의의 지역 표면어로 가른다."""
+        targets, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp")],
+            _isolated(["김포와 여의도"], composite=True), "여의도 메모리 top 5", _ACTIVE,
+        )
+        assert [t["db_id"] for t in targets] == ["polestar_cm_yd"]
+
+    def test_task_narrowing_never_widens_original(self):
+        """원문 "공동존 김포"인데 task 질의가 "공동존"만 담아도 김포 밖으로 넓히지 않는다."""
+        targets, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp")],
+            _isolated(["공동존 김포"], composite=True), "공동존 메모리 top 5", _ACTIVE,
+        )
+        assert [t["db_id"] for t in targets] == ["polestar_cm_gp"]
+
+    def test_hallucinated_split_inside_zone_is_ignored(self):
+        """원문은 "공동존"뿐인데 LLM이 task를 김포/여의도로 나눠 적어도 원문 전체로 고정한다."""
+        targets, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp")],
+            _isolated(["공동존"], composite=True), "김포 서버 CPU 상위 10개", _ACTIVE,
+        )
+        assert [t["db_id"] for t in targets] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+    def test_single_task_keeps_whole_original_hint(self):
+        """단일 task(1단 도구 호출 포함)는 task 질의로 좁히지 않는다 — 재작성 질의가 위치어를
+        빠뜨려도 한 존이 조용히 빠지지 않게(과포함 쪽을 택한다)."""
+        targets, _ = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp")],
+            _isolated(["김포", "여의도"]), "김포 서버 CPU 사용률 비교", _ACTIVE,
+        )
+        assert [t["db_id"] for t in targets] == ["polestar_cm_gp", "polestar_cm_yd"]
+
+
+class TestZonelessTargetsPreserved:
+    """존 그룹이 없는 DB의 분류 결과는 보존한다 — 3단 라우터와 같은 함수·같은 규칙(F-2)."""
+
+    def test_zoneless_classification_survives_zone_hint(self):
+        itam = _classify_target("itam", ctx="유지보수 계약 만료일")
+        targets, pinned = _apply_turn_hint_pinning(
+            [_classify_target("polestar_cm_gp"), itam],
+            _isolated(["공동존"]), "공동존 서버의 유지보수 계약 만료일",
+            [*_ACTIVE, "itam"],
+        )
+        assert pinned is True
+        assert [t["db_id"] for t in targets] == ["polestar_cm_gp", "polestar_cm_yd", "itam"]
+        assert targets[-1] is itam
+
+    def test_exclusive_does_not_pin_across_zone_groups(self):
+        """상호배타(ZONE_GROUP_EXCLUSIVE=true)에서 두 존 그룹 해소(제품명 단독)는 고정 안 함."""
+        classified = [_classify_target("polestar_b0")]
+        targets, pinned = _apply_turn_hint_pinning(
+            classified, _isolated(["폴스타"]), "폴스타 서버 목록", _ACTIVE,
+            zone_group_exclusive=True,
+        )
         assert pinned is False
         assert targets == classified
+
+    def test_same_function_as_tier3_router(self):
+        """1·2단과 3단이 같은 판정 함수를 쓴다(D-053 사본 금지 · D-066 대칭)."""
+        import inspect
+
+        from src.orchestration import subagents
+        from src.routing import location_hints
+
+        router = importlib.import_module("src.routing.semantic_router")
+        assert "pin_targets_to_hints(" in inspect.getsource(subagents._apply_turn_hint_pinning)
+        assert "pin_targets_to_hints(" in inspect.getsource(router._pin_turn_location_hints)
+        assert subagents.pin_targets_to_hints is location_hints.pin_targets_to_hints
+        assert router.pin_targets_to_hints is location_hints.pin_targets_to_hints
 
 
 class TestStripLocationTerms:
