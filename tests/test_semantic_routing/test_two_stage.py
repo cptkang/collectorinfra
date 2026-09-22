@@ -390,8 +390,15 @@ def test_both_paths_share_the_entry_validator():
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         and "_validate_db_entries" in ast.dump(n)
     ]
-    assert "_llm_classify" in users
+    # 단일 호출 경로의 응답 검증부는 `_classify_parsed`로 추출됐다(plans/103 P2-1 — 계획 신호를
+    # 모든 반환에 같은 규칙으로 싣기 위해). `_llm_classify`가 그것을 부르는지까지 본다.
+    assert "_classify_parsed" in users
     assert "_llm_classify_two_stage" in users
+    single = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_llm_classify"
+    )
+    assert "_classify_parsed" in ast.dump(single)
 
 
 @pytest.mark.asyncio

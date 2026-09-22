@@ -6,6 +6,7 @@ LangGraph 에이전트의 전역 상태(AgentState)와 관련 타입을 정의�
 
 from __future__ import annotations
 
+import operator
 from typing import Annotated, Any, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -314,6 +315,15 @@ class AgentState(TypedDict):
     needs_replan: bool               # replanner → 라우팅 신호 (True면 agent_orchestrator 재진입)
     replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
 
+    # === [plans/103 P0-2 · P2] 3단 계획 루프 (`TIER3_PLAN_LOOP_ENABLED` · 기본 off) ===
+    # 라우터 구조화 출력의 계획 필요 신호(103 §3.2 · G-1) — 플래그 on일 때만 라우터가 쓴다.
+    # 요청 스코프.
+    needs_plan: Optional[bool]
+    # `Send`로 병렬 실행되는 task 서브그래프의 **유일한 팬인 키**(103 Q4). 기존 키에는 리듀서를
+    # 달지 않는다(2·4단 의미 불변). 턴 초기화는 루프 입구(`plan` 노드)가 `Overwrite([])`로 한다 —
+    # 이 키를 읽는 것은 같은 루프의 `join`뿐이고, 입력 델타는 평범한 값으로 둔다.
+    task_outcomes: Annotated[list[dict[str, Any]], operator.add]
+
 
 def create_followup_input(
     user_query: str,
@@ -392,6 +402,9 @@ def create_followup_input(
         "display_query": user_query if raw_user_query is not None else None,
         "intent_frame": None,
         "rewrite_trace": None,
+        # 3단 계획 신호(plans/103 · 요청 스코프) — 라우터 사전 처리 분기는 이 값을 쓰지 않으므로
+        # 직전 턴 값이 남으면 양식·존 선택 턴이 계획 루프로 샌다.
+        "needs_plan": None,
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -563,4 +576,7 @@ def create_initial_state(
         replan_count=0,
         needs_replan=False,
         replan_history=[],
+        # plans/103 3단 계획 루프(요청 스코프)
+        needs_plan=None,
+        task_outcomes=[],
     )

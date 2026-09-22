@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 
@@ -118,16 +118,10 @@ async def agent_orchestrator(
         level_results = await asyncio.gather(*coros, return_exceptions=True)
 
         for task, res in zip(runnable, level_results):
-            norm = _normalize(res)
-            # 사후 대조(D-203 · plans/88 §4.3): 선행 스코프 밖 서버 행 제거·미조회 서버 표기.
-            if task.get("agent") in POSTCHECK_AGENTS:
-                tid = task.get("task_id", "")
-                if bridges is not None and tid in bridges:
-                    norm = apply_bridge_postcheck(bridges[tid], verdicts.get(tid), norm, tid)
-                elif postcheck_on:
-                    norm = apply_scope_postcheck(verdicts.get(tid), norm, tid)
-                else:
-                    observe_scope_postcheck(verdicts.get(tid), norm, tid)  # off = 로그만(결과 불변)
+            norm = _postcheck_result(
+                task, _normalize(res),
+                verdicts=verdicts, bridges=bridges, postcheck_on=postcheck_on,
+            )
             task["status"] = "failed" if norm.get("error") else "completed"
             results[task["task_id"]] = norm
             await emit_task_progress(task, "end", result=norm, total=len(tasks))
@@ -190,6 +184,46 @@ def _scope_postcheck_on(app_config: object) -> bool:
     return bool(getattr(composite, "scope_postcheck_enabled", False))
 
 
+def _postcheck_result(
+    task: dict[str, Any], norm: dict[str, Any], *, verdicts: dict[str, DependencyVerdict],
+    bridges: dict[str, BridgeContext] | None, postcheck_on: bool,
+) -> dict[str, Any]:
+    """사후 대조(D-203 · plans/88 §4.3) — 선행 스코프 밖 서버 행 제거·미조회 서버 표기.
+
+    2단 레벨 루프와 3단 `join`(plans/103 P2-2)이 같은 함수를 쓴다(D-053).
+    """
+    if task.get("agent") in POSTCHECK_AGENTS:
+        tid = task.get("task_id", "")
+        if bridges is not None and tid in bridges:
+            norm = apply_bridge_postcheck(bridges[tid], verdicts.get(tid), norm, tid)
+        elif postcheck_on:
+            norm = apply_scope_postcheck(verdicts.get(tid), norm, tid)
+        else:
+            observe_scope_postcheck(verdicts.get(tid), norm, tid)  # off = 로그만(결과 불변)
+    return norm
+
+
+def _task_verdict(
+    task: dict[str, Any], results: dict[str, dict[str, Any]],
+    bridges: dict[str, BridgeContext] | None,
+) -> DependencyVerdict | None:
+    """task 하나의 선행 결과 판정(``input_from``이 없으면 None).
+
+    `bridges`(키 브리지 on일 때만 dict)가 주어지면 선행 키를 값으로 골라 판정에 넘기고, 값으로 고른
+    task의 문맥을 기록한다(plans/102 §3.3-② — 값으로 안 잡히면 종전 컬럼명 판정 + 사유 보강).
+    결정적이다 — 같은 선행 결과면 같은 판정이 나온다(3단 `join`이 사후 대조용으로 다시 계산한다).
+    """
+    if bridges is not None and task.get("input_from"):
+        gate = resolve_gate_identity(task, results)
+        verdict = assess_prior_dependency(
+            task, results, identity=gate.identity, no_identity_hint=gate.no_identity_hint,
+        )
+        if gate.context is not None:
+            bridges[task.get("task_id", "")] = gate.context
+        return verdict
+    return assess_prior_dependency(task, results)
+
+
 def _gate_level(
     level: list[dict], results: dict[str, dict], *, gate_on: bool, notes: list[dict],
     verdicts: Optional[dict[str, DependencyVerdict]] = None,
@@ -209,15 +243,7 @@ def _gate_level(
     """
     runnable: list[dict] = []
     for task in level:
-        if bridges is not None and task.get("input_from"):
-            gate = resolve_gate_identity(task, results)
-            verdict = assess_prior_dependency(
-                task, results, identity=gate.identity, no_identity_hint=gate.no_identity_hint,
-            )
-            if gate.context is not None:
-                bridges[task.get("task_id", "")] = gate.context
-        else:
-            verdict = assess_prior_dependency(task, results)
+        verdict = _task_verdict(task, results, bridges)
         if verdict is None:
             runnable.append(task)
             continue

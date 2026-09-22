@@ -259,3 +259,80 @@ class TestProxyEdgeCases:
 
         assert getattr(raw, "some_marker") == 42
         assert g.some_marker == 42
+
+
+class TestLangGraphPrimitives:
+    """plans/103 K-1 — 서브그래프·``config`` 주입·인터럽트와의 호환."""
+
+    async def test_compiled_subgraph_registers_unwrapped(self):
+        """컴파일된 서브그래프(Runnable)는 감싸지 않고 등록한다(종전엔 빌드가 깨졌다)."""
+        inner = StateGraph(_State)
+
+        async def leaf(state):
+            return {"hits": ["inner"]}
+
+        inner.add_node("leaf", leaf)
+        inner.add_edge(START, "leaf")
+        inner.add_edge("leaf", END)
+
+        g = TracedGraph(StateGraph(_State))
+        g.add_node("sub", inner.compile())
+        g.add_edge(START, "sub")
+        g.add_edge("sub", END)
+
+        tc.start_request("req1")
+        result = await g.compile().ainvoke({"request_id": "req1"})
+
+        assert result["hits"] == ["inner"]
+        # 서브그래프 노드는 자기 그래프(프록시 밖)에서 실행되므로 이 요청 버퍼에 남지 않는다
+        assert "sub" not in [s.node for s in tc.steps_for("req1")]
+
+    async def test_config_injection_reaches_wrapped_node(self):
+        """``config``를 선언한 노드는 래핑 뒤에도 LangGraph 주입을 받는다(``__wrapped__`` 경유)."""
+        from functools import partial
+
+        from langchain_core.runnables import RunnableConfig
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        async def node(state, config: RunnableConfig, *, tag: str = ""):
+            return {"hits": [f"{tag}:{config['configurable']['thread_id']}"]}
+
+        g = TracedGraph(StateGraph(_State))
+        g.add_node("n", partial(node, tag="T"))
+        g.add_edge(START, "n")
+        g.add_edge("n", END)
+
+        tc.start_request("req1")
+        result = await g.compile(checkpointer=InMemorySaver()).ainvoke(
+            {"request_id": "req1"}, {"configurable": {"thread_id": "th-1"}},
+        )
+
+        assert result["hits"] == ["T:th-1"]
+
+    async def test_interrupt_is_recorded_as_interrupt_not_error(self):
+        """HITL 일시정지(``interrupt()``)는 ERROR가 아니라 ``node.interrupt``로 남는다."""
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.types import Command, interrupt
+
+        from src.observability.levels import TraceLevel
+
+        async def gate(state):
+            answer = interrupt({"q": "진행할까요?"})
+            return {"hits": [str(answer)]}
+
+        g = TracedGraph(StateGraph(_State))
+        g.add_node("gate", gate)
+        g.add_edge(START, "gate")
+        g.add_edge("gate", END)
+        compiled = g.compile(checkpointer=InMemorySaver())
+        cfg = {"configurable": {"thread_id": "th-2"}}
+
+        tc.start_request("req1")
+        paused = await compiled.ainvoke({"request_id": "req1"}, cfg)
+        steps = [(s.node, s.event, s.level) for s in tc.steps_for("req1")]
+
+        assert "__interrupt__" in paused
+        assert ("gate", "node.interrupt", TraceLevel.INFO) in steps
+        assert not any(level is TraceLevel.ERROR for _, _, level in steps)
+        resumed = await compiled.ainvoke(Command(resume="예"), cfg)
+        assert resumed["hits"] == ["예"]

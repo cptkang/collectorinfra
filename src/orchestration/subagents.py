@@ -1300,6 +1300,28 @@ async def run_data_query_pipeline(
     s.update(await result_organizer(s, llm=llm, app_config=app_config))
     await emit_step("pipeline.organize", "end")
 
+    return _pack_pipeline_result(
+        s, targets, pipeline_error,
+        ownership_notes=ownership_notes, db_origin=db_origin,
+        db_succeeded=db_succeeded, db_pinned=db_pinned,
+    )
+
+
+def _pack_pipeline_result(
+    s: dict[str, Any],
+    targets: list[dict[str, Any]],
+    pipeline_error: str | None,
+    *,
+    ownership_notes: list[dict[str, Any]],
+    db_origin: str,
+    db_succeeded: bool,
+    db_pinned: bool,
+) -> dict[str, Any]:
+    """조회 파이프라인 상태(``s``)를 task 결과 dict로 접는다.
+
+    2단 핸들러(``run_data_query_pipeline``)와 3단 task 서브그래프의 ``pack_outcome``
+    (plans/103 P1-1)이 같은 함수를 쓴다 — 결과 모양이 두 경로에서 갈라지지 않게 한다(D-053).
+    """
     result: dict = {
         "organized_data": s.get("organized_data"),
         "query_results": s.get("query_results"),

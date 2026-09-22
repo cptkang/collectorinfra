@@ -11,7 +11,9 @@ import logging
 from collections.abc import Callable
 from contextlib import contextmanager
 from functools import partial
+from typing import Any
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -47,6 +49,27 @@ from src.orchestration import (
 )
 from src.orchestration.entity_locator import entity_locator, probe_halted
 from src.orchestration.sequential_runner import sequential_entry, sequential_runner
+from src.orchestration.tier3_plan import (
+    TASK_RUN_NODE,
+    TaskOutcomeState,
+    TaskRunState,
+    dispatch as plan_dispatch,
+    join as plan_join,
+    normalize as plan_normalize,
+    pack_outcome,
+    plan as plan_node,
+    plan_loop_entry,
+    plan_loop_on,
+    replan as plan_replan,
+    route_after_join,
+    route_after_replan,
+    route_dispatch,
+    route_task_entry,
+    run_task,
+    task_error,
+    task_handler,
+    task_prompt,
+)
 from src.routing.db_authz import ACCESS_DENIED_INTENT, authorized_router
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
@@ -187,6 +210,81 @@ def route_after_semantic_router_sequential(state: AgentState, *, config: AppConf
     if sequential_entry(state, config):
         return "sequential_runner"
     return route_after_semantic_router(state)
+
+
+def route_after_semantic_router_plan(
+    state: AgentState, *, app_config: AppConfig, delegate: Callable[[AgentState], str],
+) -> str:
+    """3단 + 계획 루프 등록 시의 라우팅 (plans/103 P2-1 · `TIER3_PLAN_LOOP_ENABLED`).
+
+    계획 필요(`needs_plan`)·순차 표지가 있는 데이터·알람 질의만 `plan`으로 보내고, 나머지는
+    뒤에 있던 분기 함수(`delegate`)를 그대로 부른다 — 단일 의도는 현행 직결 체인이다.
+    """
+    if plan_loop_entry(state, app_config):
+        return "plan"
+    return delegate(state)
+
+
+def _build_task_run_graph(config: AppConfig, llm: BaseChatModel, *, trace_enabled: bool) -> Any:
+    """3단 task 서브그래프(plans/103 P1-1 · §3.1) — 기존 노드 함수·분기 함수를 그대로 조립한다.
+
+    데이터·알람 task는 3단 직결 체인과 같은 노드·같은 재시도 분기(검증 회귀 · 산문 조기 종결 ·
+    실행 회귀 · 데이터 부족 회귀)를 탄다. 종결 지점만 다르다 — `output_generator`·`error_response`
+    대신 `pack_outcome`·`task_error`로 가서 최종 응답을 쓰지 않는다(103 §3.1: task가
+    `final_response`를 내면 SSE가 부분 답으로 닫힌다). SQL 승인 게이트는 없다 — 승인이 켜진
+    기동은 계획 루프에 진입하지 않는다(`plan_loop_entry`).
+    """
+    max_retry = config.query.max_retry_count
+    sub = TracedGraph(
+        StateGraph(TaskRunState, output_schema=TaskOutcomeState), enabled=trace_enabled,
+    )
+    sub.add_node("task_prompt", task_prompt)
+    sub.add_node("task_handler", partial(task_handler, llm=llm, app_config=config))
+    sub.add_node("schema_analyzer", partial(schema_analyzer, llm=llm, app_config=config))
+    sub.add_node("query_generator", partial(query_generator, llm=llm, app_config=config))
+    sub.add_node("query_validator", partial(query_validator, app_config=config))
+    sub.add_node("query_executor", partial(query_executor, app_config=config))
+    sub.add_node("multi_db_executor", partial(multi_db_executor, llm=llm, app_config=config))
+    sub.add_node("result_merger", partial(result_merger, app_config=config))
+    sub.add_node("result_organizer", partial(result_organizer, llm=llm, app_config=config))
+    sub.add_node("task_error", task_error)
+    sub.add_node("pack_outcome", pack_outcome)
+
+    sub.add_edge(START, "task_prompt")
+    sub.add_conditional_edges(
+        "task_prompt", route_task_entry,
+        {
+            "task_handler": "task_handler",
+            "schema_analyzer": "schema_analyzer",
+            "multi_db_executor": "multi_db_executor",
+        },
+    )
+    sub.add_edge("task_handler", "pack_outcome")
+    sub.add_edge("schema_analyzer", "query_generator")
+    sub.add_edge("query_generator", "query_validator")
+    sub.add_conditional_edges(
+        "query_validator", partial(route_after_validation, max_retry=max_retry),
+        {
+            "query_executor": "query_executor", "query_generator": "query_generator",
+            "error_response": "task_error",
+        },
+    )
+    sub.add_conditional_edges(
+        "query_executor", partial(route_after_execution, max_retry=max_retry),
+        {
+            "result_organizer": "result_organizer", "query_generator": "query_generator",
+            "error_response": "task_error",
+        },
+    )
+    sub.add_edge("multi_db_executor", "result_merger")
+    sub.add_edge("result_merger", "result_organizer")
+    sub.add_conditional_edges(
+        "result_organizer", partial(route_after_organization, max_retry=max_retry),
+        {"output_generator": "pack_outcome", "query_generator": "query_generator"},
+    )
+    sub.add_edge("task_error", "pack_outcome")
+    sub.add_edge("pack_outcome", END)
+    return sub.compile()
 
 
 def route_after_entity_locator(state: AgentState, *, delegate: Callable[[AgentState], str]) -> str:
@@ -502,12 +600,43 @@ def build_graph(config: AppConfig, checkpointer=None):
                 partial(fault_diagnosis_node, app_config=config),
             )
 
+    # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프 — 3단으로 확정되는 빌드 + 플래그 on일 때만
+    # 등록한다. off면 노드·엣지·분기 함수·라우터 프롬프트가 현행과 같다.
+    plan_loop_tier = (
+        plan_loop_on(config)
+        and bool(config.enable_semantic_routing)
+        and not use_deep_agent
+        and not config.enable_intent_orchestration
+    )
+    trace_on = bool(getattr(getattr(config, "observability", None), "trace_enabled", False))
+    if plan_loop_tier:
+        graph.add_node("plan", partial(plan_node, llm=llm, app_config=config))
+        graph.add_node("normalize", partial(plan_normalize, app_config=config))
+        graph.add_node("dispatch", partial(plan_dispatch, app_config=config))
+        graph.add_node(
+            TASK_RUN_NODE,
+            partial(
+                run_task,
+                task_graph=_build_task_run_graph(config, llm, trace_enabled=trace_on),
+            ),
+        )
+        graph.add_node("join", partial(plan_join, app_config=config), defer=True)
+        graph.add_node("replan", partial(plan_replan, llm=llm, app_config=config))
+        # 합성은 2단과 같은 노드 함수(D-062 · 1태스크면 output_generator 통과 ·
+        # 2개 이상이면 LLM 1회 합성)
+        graph.add_node(
+            "finalize",
+            partial(result_aggregator, llm=llm, app_config=config, synthesize=True),
+        )
+
     # D-203 (plans/88 §4.7): 3단·4단 빌드 전용 순차 2-pass 노드 — 1·2단 빌드에는 등록하지 않는다
     # (1단은 도구 루프, 2단은 task DAG가 이미 순차를 갖는다). 플래그 off면 등록도 하지 않는다.
+    # 3단 계획 루프가 등록되면 같은 질의를 루프가 맡으므로 등록하지 않는다(4단은 그대로).
     sequential_tier = (
         bool(getattr(getattr(config, "composite", None), "sequential_fallback_tiers_enabled", False))
         and not use_deep_agent
         and not config.enable_intent_orchestration
+        and not plan_loop_tier
     )
     if sequential_tier:
         graph.add_node(
@@ -619,6 +748,23 @@ def build_graph(config: AppConfig, checkpointer=None):
             graph.add_edge("sequential_runner", END)
         else:
             _router_route = route_after_semantic_router
+        if plan_loop_tier:
+            # plans/103 P2-1: 계획 필요 질의만 plan으로 — 불성립이면 위 분기 함수 그대로 위임.
+            _router_targets["plan"] = "plan"
+            _router_route = partial(
+                route_after_semantic_router_plan, app_config=config, delegate=_router_route,
+            )
+            graph.add_edge("plan", "normalize")
+            graph.add_edge("normalize", "dispatch")
+            graph.add_conditional_edges("dispatch", route_dispatch, [TASK_RUN_NODE, "join"])
+            graph.add_edge(TASK_RUN_NODE, "join")
+            graph.add_conditional_edges(
+                "join", route_after_join, {"dispatch": "dispatch", "replan": "replan"},
+            )
+            graph.add_conditional_edges(
+                "replan", route_after_replan, {"dispatch": "dispatch", "finalize": "finalize"},
+            )
+            graph.add_edge("finalize", END)
         if probe_tier:
             # plans/102 §3.4: semantic_router → entity_locator → (위 분기 함수 그대로).
             # 사유 노출 행만 END(END는 이미 대상에 있다 — 존 역질문).
@@ -746,6 +892,8 @@ def build_graph(config: AppConfig, checkpointer=None):
         config.enable_semantic_routing,
         config.enable_sql_approval,
     )
+    if plan_loop_tier:
+        logger.info("3단 계획 루프 등록(TIER3_PLAN_LOOP_ENABLED · plans/103 P2 · 111 C-4·C-5)")
 
     # 확정된 사다리 단과 그 사유를 기록한다(D-161 / plans/70 P0-1 · D-225 기준 개정).
     # 경로 4종은 병존이 아니라 한 단만 확정되는 사다리(기준 3단 · 1단 부가)이며,

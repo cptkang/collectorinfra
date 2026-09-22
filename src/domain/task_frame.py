@@ -46,6 +46,14 @@ def _squash(text: str) -> str:
     return _WS.sub("", text or "").lower()
 
 
+def contains_sql_statement(text: str) -> bool:
+    """SQL 문장 형태(동사 + 절 키워드)가 들어 있는가.
+
+    분해 조각 검증과 3단 재계획 task 질의의 SQL 금지(plans/111 D-3)가 같은 판정을 쓴다.
+    """
+    return bool(_SQL_STATEMENT.search(text or ""))
+
+
 def task_spans(task: Mapping[str, Any]) -> list[str]:
     """task의 원문 조각 목록(빈 조각 제거). 없거나 형식이 틀리면 빈 목록."""
     raw = task.get("spans")
@@ -80,7 +88,7 @@ def verify_task_frames(
             squashed = _squash(span)
             if squashed not in src and not (ctx and squashed in ctx):
                 violations.append(f"{tid}: 원문·직전 맥락에 없는 조각 {span!r}")
-            if _SQL_STATEMENT.search(span):
+            if contains_sql_statement(span):
                 violations.append(f"{tid}: SQL 문장 조각 {span!r}")
             covered.update(_NUM.findall(span))
     missing = [n for n in dict.fromkeys(_NUM.findall(original)) if n not in covered]

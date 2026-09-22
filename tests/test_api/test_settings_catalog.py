@@ -116,7 +116,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
         item.env_key: item
         for group in response.groups for item in group.settings
     }
-    assert len(items) == 349  # plans/107 intent_frame 설정 +5 · plans/111 COMPOSITE_TASK_FRAME_ENABLED +1
+    # plans/107 intent_frame 설정 +5 · plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 ·
+    # plans/103 TIER3_PLAN_LOOP_ENABLED +1
+    assert len(items) == 350
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -215,8 +217,10 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     assert len(group_keys) == 25
-    assert len(index) == 349  # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1
-    assert len([s for s in index.values() if s.group_key == "general"]) == 19
+    # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 · plans/103 TIER3_PLAN_LOOP_ENABLED +1
+    assert len(index) == 350
+    # plans/103 TIER3_PLAN_LOOP_ENABLED +1
+    assert len([s for s in index.values() if s.group_key == "general"]) == 20
 
 
 def test_t2_group_order_covers_every_config_group():

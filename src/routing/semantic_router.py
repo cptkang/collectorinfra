@@ -40,6 +40,7 @@ from src.prompts.semantic_router import (
     SEMANTIC_ROUTER_CAPABILITY_FIELD_LINE,
     SEMANTIC_ROUTER_OWNERSHIP_EXAMPLES,
     SEMANTIC_ROUTER_OWNERSHIP_SECTION_TEMPLATE,
+    SEMANTIC_ROUTER_PLAN_SIGNAL_SECTION,
 )
 from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
@@ -60,7 +61,9 @@ from src.routing.schemas import (
     DatabaseSelection,
     IntentDecision,
     OwnershipDatabaseSelection,
+    OwnershipPlanRouterDecision,
     OwnershipRouterDecision,
+    PlanRouterDecision,
     RouterDecision,
 )
 from src.utils.json_extract import extract_json_from_response
@@ -262,11 +265,14 @@ async def semantic_router(
     # `_llm_classify`는 dict를 돌려주지만 아래 실패 분기가 같은 이름에 목록을 넣는다
     # (종전 구조 유지).
     llm_results: Any
+    # 3단 계획 필요 신호(plans/103 §3.2) — 켜졌을 때만 인자를 넘긴다(off 호출은 종전과 같다).
+    plan_signal_on = _plan_signal_enabled(app_config)
     try:
         llm_results = await _llm_classify(
             llm, user_query, active_domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_dx_on,
+            **({"plan_signal": True} if plan_signal_on else {}),
         )
     except Exception as e:
         logger.error("LLM 라우팅 분류 실패: %s", e)
@@ -289,10 +295,12 @@ async def semantic_router(
     # 캐시 관리 의도 확인
     intent = "data_query"
     capability_chain: list[str] = []
+    needs_plan = False
     if isinstance(llm_results, dict):
         # _llm_classify가 dict를 반환한 경우 (intent 포함)
         intent = llm_results.get("intent", "data_query")
         capability_chain = list(llm_results.get("chain") or [])
+        needs_plan = llm_results.get("needs_plan") is True
         llm_results = llm_results.get("databases", [])
 
     # (Plan 64 CW-B) 옵트인 off인데 LLM이 fault_diagnosis를 산출했다면(할루시네이션 방어)
@@ -442,7 +450,15 @@ async def semantic_router(
     }
     if ownership_on:
         routed.update(_ownership_state_fields(state, targets, capability_chain, ownership_notes))
+    if plan_signal_on:
+        # plans/102 교차 체인(`chain`)이 있으면 계획 필요로 본다(103 §3.2).
+        routed["needs_plan"] = needs_plan or bool(capability_chain)
     return routed
+
+
+def _plan_signal_enabled(app_config: AppConfig) -> bool:
+    """3단 계획 루프 플래그 — 호출부 설정에서 읽는다(기동 시 1회 해석 · `is True` 판정)."""
+    return getattr(app_config, "tier3_plan_loop_enabled", False) is True
 
 
 def _ownership_enabled() -> bool:
@@ -702,6 +718,7 @@ async def _llm_classify(
     *,
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
+    plan_signal: bool = False,
 ) -> dict[str, Any]:
     """LLM을 사용하여 질의의 대상 DB를 분류한다.
 
@@ -719,6 +736,8 @@ async def _llm_classify(
         분류 결과 dict — `{intent, databases, dropped}`. 답변 영역 소유 플래그
         (`ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) on이면 각 DB 항목에 `capabilities`
         (카탈로그 코드만)가, 결과에 `chain`이 더해진다. off면 키 추가 없음(종전 계약 그대로).
+        `plan_signal`(3단 계획 루프 · plans/103 §3.2)이면 프롬프트 말미에 계획 필요 절이 붙고
+        결과에 `needs_plan`(bool)이 더해진다 — 2단 분리 위임 경로는 이 신호를 내지 않는다.
     """
     # 2단 분리 위임 (Plan 79 트랙 B / WU-D2). **기본 off** — off면 아래 단일 호출 경로가
     # 종전과 비트동일하게 실행된다. 켜는 판정은 S-1·S-2 이후다(SPEC 「미검증으로 남는 것」).
@@ -735,6 +754,8 @@ async def _llm_classify(
         db_descriptions=db_descriptions,
         fault_diagnosis_enabled=fault_diagnosis_enabled,
     )
+    if plan_signal:
+        system_prompt += SEMANTIC_ROUTER_PLAN_SIGNAL_SECTION
 
     messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
     if isinstance(llm, KBGenAIChat):
@@ -747,7 +768,8 @@ async def _llm_classify(
     parsed: Optional[dict] = None
     try:
         model = await try_structured_call(
-            llm, messages, OwnershipRouterDecision if ownership_on else RouterDecision,
+            llm, messages,
+            _router_decision_model(ownership_on=ownership_on, plan_signal=plan_signal),
             backend=_structured_backend(),
             max_retries=_structured_max_retries(),
         )
@@ -767,6 +789,28 @@ async def _llm_classify(
             return {"intent": "data_query", "databases": [], "dropped": [], "chain": []}
         return {"intent": "data_query", "databases": []}
 
+    if plan_signal:
+        # 모든 반환에 같은 규칙으로 싣는다 — 파싱이 된 경로만 신호를 갖는다(`is True` 판정).
+        return {**_classify_parsed(parsed, domains, query, ownership_on, fault_diagnosis_enabled),
+                "needs_plan": parsed.get("needs_plan") is True}
+    return _classify_parsed(parsed, domains, query, ownership_on, fault_diagnosis_enabled)
+
+
+def _router_decision_model(*, ownership_on: bool, plan_signal: bool) -> type[RouterDecision]:
+    """구조화 출력 모델 — 켜진 플래그의 필드만 가진 서브클래스(off 스키마는 종전 그대로)."""
+    if plan_signal:
+        return OwnershipPlanRouterDecision if ownership_on else PlanRouterDecision
+    return OwnershipRouterDecision if ownership_on else RouterDecision
+
+
+def _classify_parsed(
+    parsed: dict[str, Any],
+    domains: list[DBDomainConfig],
+    query: str,
+    ownership_on: bool,
+    fault_diagnosis_enabled: bool,
+) -> dict[str, Any]:
+    """파싱된 라우터 응답을 반환 계약으로 검증·변환한다(단일 호출 경로)."""
     # 의도 추출 — 허용 집합과 대조한다 (E-1 · Plan 79 §3.6 발견 ⑦).
     # 종전에는 parsed["intent"]가 그대로 흘러, 오타·환각 intent가 하류의 동등 비교
     # (`intent == "cache_management"` 등)에 걸리지 않고 **조용히 DB 조회 경로로 낙하**했다.

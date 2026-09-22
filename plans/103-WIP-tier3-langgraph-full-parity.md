@@ -1,8 +1,8 @@
 # 103. 사다리 3단 기능 동등성 — LangGraph 네이티브 구성으로 1단(deep_agent)·2단 전 기능을 3단에서 제공
 
 > **작성일**: 2026-09-17
-> **상태**: 계획(미구현) — 사용자 확정 게이트 G-1~G-7 대기(§7) · 파일명 `-TODO`
-> **성격**: 구현 계획(실측 완료 · 코드 0건)
+> **상태**: **부분 구현**(2026-09-22 · `plans/111` C-4·C-5 범위 — P0-1·P0-2 · P1-1 · P2-1~P2-3 · 플래그 `TIER3_PLAN_LOOP_ENABLED` **기본 off**) — 사용자 확정 게이트 G-1~G-7은 **미응답이라 §7 기본 가정으로 진행**(§7 채택 기록) · 파일명 `-WIP`(잔여: §4.1)
+> **성격**: 구현 계획 · 부분 구현(§4.1 구현 현황)
 > **요청 취지(사용자 지시 원문, 2026-09-17)**: *"3단 기능도 langgraph 기능을 이용하면 1단의 모든 기능을 구현할 수 있다. 검토하여 모두 구현하는 방향으로 계획을 작성하라."*
 > 선행 기준(같은 날): *"기본은 시멘틱 라우터를 사용한다. 모든 동작은 시멘틱 라우터에서 동작되어야 한다. deepagents는 부가적으로 사용할 예정"* → `plans/102` v2 · D-225 예약
 > **상위/연결 계획**: **`plans/102`** v3(G-10 "3단 미도달 기능" → 이 계획으로 확정 · 트랙 L-5 운영 전환의 선행) · **`plans/104`**(구조 승인 HITL을 관리자 페이지로 이동 — 3단 복합 실행을 막던 HITL 차단 해소) ·
@@ -54,7 +54,7 @@
 | 재귀 한도 | 기본 **10007**(`LANGGRAPH_DEFAULT_RECURSION_LIMIT`) — `src/config.py:128-131` 주석의 "기본값 25"는 낡았다. 라우트는 `thread_id`만 넘긴다 → **재계획 루프는 명시 카운터로 끊어야 한다** |
 | 토이 그래프 실측 | 계획 → `[Send("run_task", …)]` → 컴파일된 서브그래프 노드 → `join`(`defer=True`) → 조건부 루프 → 합성: **동작**. `Annotated[dict, merge]`·`Annotated[list, operator.add]` 팬인 **동작** |
 | 인터럽트 실측 | `Send`된 서브그래프 노드 안 `interrupt()` + `AsyncSqliteSaver`: **동작**. `Command(resume=…)`에서 **중단된 노드만 처음부터 재실행**, 끝난 형제 태스크·앞 노드는 재실행 안 됨. 대기 인터럽트가 2개 이상이면 **`{interrupt_id: 값}`으로 재개해야 한다**(단일 값은 `RuntimeError`) |
-| 서브그래프 함정 | `Send` 대상 서브그래프는 **부모와 공유하는 키를 전부 되쓴다**(바꾸지 않았어도) → 공유 일반 키가 `InvalidUpdateError`. **`StateGraph(T, output_schema=리듀서 키만)`으로 해결** |
+| 서브그래프 함정 | `Send` 대상 서브그래프는 **부모와 공유하는 키를 전부 되쓴다**(바꾸지 않았어도) → 공유 일반 키가 `InvalidUpdateError`. ~~`StateGraph(T, output_schema=리듀서 키만)`으로 해결~~ **정정(2026-09-22 실측)**: `output_schema`는 `ainvoke`·`astream(updates/values)`에서만 충분하다 — **`astream_events(v2)`(SSE 라우트의 실행 방식)에서는 `output_schema`를 줘도 같은 오류**가 난다. 컴파일 서브그래프를 `Send` 대상으로 직접 등록하지 않고 **함수 노드 안에서 `ainvoke`**하면 세 방식 모두 동작하고, 서브그래프 안 노드 이벤트도 부모 스트림에 전파된다(`parent_ids` 깊이 ≥2) — 구현 `src/orchestration/tier3_plan.py` `run_task` |
 | 진행 이벤트 | `astream_events(v2)`에서 `get_stream_writer()` 출력은 **보이지 않고**, `adispatch_custom_event`는 `Send`된 서브그래프 안에서도 **보인다** — 현행 `emit_task_progress` 채널을 그대로 쓸 수 있다 |
 | deepagents 조립 | `deepagents/graph.py:236-866` `create_deep_agent` → `create_agent(...)`(`:844`, `recursion_limit` 9999). 미들웨어: 할 일 목록 · 파일시스템 · 서브에이전트 `task` 도구 · 요약 · 도구 호출 패치 · (조건부) HITL. 저장소 사용: `src/orchestration/deep_agent.py:132-136`(체크포인터·서브에이전트·`interrupt_on` 없이) |
 | 저장소 사용 현황 | `Send(`·`Command(`·`interrupt(`·`get_stream_writer`·`RetryPolicy`·서브그래프 노드 — **`src/` 사용 0건.** HITL은 `interrupt_before`(`src/graph.py:696-706`)뿐, 2단 병렬은 `asyncio.gather`(`agent_orchestrator.py:106`) |
@@ -93,7 +93,7 @@
 
 | # | 차단 | `file:line` | 증상(토이 그래프 실측 포함) |
 |---|---|---|---|
-| **K-1** | **노드 추적 프록시** | `src/observability/graph_proxy.py:45-64` → `trace_collector.py:248-277` `traced()`의 `async def _wrapper(state, *args, **kwargs)` · `OBS_TRACE_ENABLED` 기본 **True**(`config.py:629`, 운영 `.env` 미설정) | 컴파일된 서브그래프를 넘기면 실행 시 `TypeError: 'CompiledStateGraph' object is not callable`. `config`를 선언한 노드는 주입을 못 받는다(`get_config()`는 동작). `GraphInterrupt`가 `Exception` 하위라 **HITL 일시정지가 매번 ERROR 트레이스**로 남는다 |
+| **K-1** | **노드 추적 프록시** | `src/observability/graph_proxy.py:45-64` → `trace_collector.py:248-277` `traced()`의 `async def _wrapper(state, *args, **kwargs)` · `OBS_TRACE_ENABLED` 기본 **True**(`config.py:629`, 운영 `.env` 미설정) | 컴파일된 서브그래프를 넘기면 실행 시 `TypeError: 'CompiledStateGraph' object is not callable`. `config`를 선언한 노드는 주입을 못 받는다(`get_config()`는 동작). `GraphInterrupt`가 `Exception` 하위라 **HITL 일시정지가 매번 ERROR 트레이스**로 남는다. **정정(2026-09-22 HEAD 실측)**: `config` 주입은 이미 동작한다 — 래퍼의 `__wrapped__`로 LangGraph가 원본 시그니처를 읽어 `**kwargs`로 넘긴다. 남은 결함은 서브그래프 등록 불가·인터럽트 ERROR 기록 2건이었고 P0-1에서 해소 |
 | **K-2** | **상태 리듀서 부재** | `src/state.py:79-294` — 리듀서는 `messages`(`:216`) 하나. `task_plan`·`task_results`·`db_results`·`dependency_notes`·`prior_rows`·`replan_count` 등 전부 일반 키 | 병렬 `Send` 대상이 같은 키를 쓰면 `InvalidUpdateError` |
 | **K-3** | **SSE 종료 판정** | `src/api/routes/query.py:1476-1549`(첫 `on_chain_end` 중 출력에 `final_response`가 있으면 `done` 후 return) · 폴백 `:1552-1559`(`ainvoke` **재실행**) | 서브그래프 노드·서브그래프 종료가 루트보다 먼저 끝난다(루트·서브그래프 기본 이름 모두 `"LangGraph"`) → 태스크가 `final_response`를 내면 **부분 답으로 스트림 종료**. 인터럽트 시 루트 종료 출력에 `final_response`·`__interrupt__`가 없어 폴백 `ainvoke`가 **처음부터 다시 돌고 다시 멈춘다** |
 | **K-4** | **HITL 재개 방식** | `query.py:466-475` `_resolve_turn_approval` · `:689-722` `_build_turn_input_state` · `_get_checkpoint_state`(`:288-306`)는 `.values`만 읽음 | 승인 턴이 `Command(resume=…)`가 아니라 **새 dict 입력** → 멈춘 스레드에서 **START부터 새 실행**(토이 실측). 노드가 `approval_action`을 스스로 읽는 방식 |
@@ -186,6 +186,8 @@ task_run 서브그래프(에이전트별 분기):
 **상태 추가(Q4)** — `AgentState`에 `task_outcomes: Annotated[list[dict], operator.add]` **하나만** 추가. 턴 시작 입력(`create_initial_state`·`create_followup_input`)에서 `Overwrite([])`로 비우고,
 같은 자리에서 `task_plan`·`task_results`·`replan_count`·`replan_history`도 초기화한다(K-5 — 2단 누수도 함께 해소).
 
+> **구현(2026-09-22) — 초기화 자리를 바꿨다.** 턴 초기화는 입력 델타가 아니라 **루프 입구 `plan` 노드**가 `Overwrite([])`로 한다 — 이 키를 읽는 것은 같은 루프의 `join`뿐이고, 입력 델타는 평범한 값(JSON 직렬화 가능)으로 둔다. `task_plan`·`task_results`·`replan_count`·`replan_history`도 `plan`이 비운다(**루프 한정**). 입력 델타(`create_followup_input`)에는 라우터 신호 `needs_plan: None`만 더했다(사전 처리 분기가 이 값을 쓰지 않아 직전 턴 값이 남으면 양식·존 선택 턴이 루프로 샌다). **2단 누수 K-5는 해소하지 않았다** — `create_followup_input`에서 2단 키를 비우면 2단 동작이 바뀌는데, 2단 전용 결함은 `plans/108` G-2 · `plans/111` G-5(사용자 확정)가 보류한다.
+
 ### 3.3.1 `plans/111` 델타 편입 (2026-09-21 · 111 G-2 확정 — 노드 구성 정본은 이 계획 하나)
 
 > 근거는 `plans/111` §2(run `20260918-182507` 복합 계획 45턴 재집계)이고 여기에는 **설계 변경만** 적는다(D-053).
@@ -231,6 +233,8 @@ task_run 서브그래프(에이전트별 분기):
 
 P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초기화는 **현행 동작을 바꾸지 않는 교정**이어야 하고, 그 사실을 기존 테스트 전건 통과로 보인다.
 
+> **구현(2026-09-22)**: 만든 플래그는 **`TIER3_PLAN_LOOP_ENABLED` 하나**다(`AppConfig.tier3_plan_loop_enabled` · 기본 off · `config/settings_help/general.yaml` 등재). task 서브그래프(P1-1)는 이 플래그로 등록된다 — 단독으로 켤 대상(P1-3 의도 2종 · P1-4 사전 안내)이 아직 없어 `TIER3_TASK_GRAPH_ENABLED`를 만들면 효과 없는 설정이 된다(P1-3·P1-4 착수 때 만든다). `TIER3_INTERRUPT_HITL_ENABLED`는 P3와 함께.
+
 ---
 
 ## 4. 작업 분해
@@ -263,6 +267,28 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 - **`plans/102` L-5(운영 `.env` 3단 전환)는 이 계획 P5 완료 뒤**다.
 - 실 LLM 실행: 현재 로컬 `.env`는 워커·오케스트레이터 모두 `mlx`(D-222 비과금)다. **실행 직전 `scripts/scenario --preflight`로 과금 평면을 확인**하고, 과금 provider면 D-127 건별 승인 + `RUN_E2E=1` 뒤에만 돌린다.
 - 병행 세션: `deep_agent.py`·`config.py`·`llm.py`는 `plans/100` 세션이 미커밋 수정 중 — P0·P4-3 착수 전 `git status`·`ListAgents` 확인.
+
+### 4.1 구현 현황 (2026-09-22 · `plans/111` C-4·C-5 범위 — 111 델타를 실현하는 데 필요한 WU까지)
+
+> 상태: ✅ 랜딩 · ◐ 부분 · ❌ 미착수. 코드는 전부 **`TIER3_PLAN_LOOP_ENABLED`(기본 off) 뒤**다 — P0만 플래그 없이 랜딩했다.
+> 새 판단 로직은 없다 — 2단 함수를 노드로 옮겼다(D-053): `_plan_turn` · `_normalize_plan_exit` · `_coerce_host_inspect_intent` · `_apply_task_frames` · `_gate_level`(+ 추출 `_task_verdict`) · `_postcheck_result`(추출) · `_make_isolated_input` · `_pack_pipeline_result`(추출) · `replanner` · `result_aggregator`.
+
+| WU | 상태 | 산출물 | 남긴 것과 이유 |
+|---|---|---|---|
+| **P0-1** K-1 | ✅ | `graph_proxy.TracedGraph.add_node` — Runnable(컴파일 서브그래프)은 감싸지 않음 · `trace_collector.traced` — `GraphBubbleUp`을 `node.interrupt`(INFO)로 기록 | `config` 주입은 이미 동작해 손대지 않았다(§1.3 정정) |
+| **P0-2** K-2 | ✅(루프 한정) | `AgentState.task_outcomes`(`operator.add` — 유일한 팬인 키) · `needs_plan` · 턴 초기화는 `plan` 노드(§3.3 구현 주) | **K-5(2단 누수) 미해소** — 2단 전용 결함 보류(108 G-2 · 111 G-5) |
+| **P0-3** K-3 | ◐ | SSE 두 라우트(`/query/stream` · `/query/file/stream`)가 `parent_ids` 깊이 ≥2(서브그래프 안) 종료를 `done` 판정에서 뺀다(`_is_subgraph_event`) · `_STREAM_KNOWN_NODES`에 루프 노드 7종 · 진행 요약 매핑 | **인터럽트 감지(`awaiting_approval`)·폴백 `ainvoke` 재실행 제거 미착수** — 인터럽트를 내는 경로가 P3(SQL 승인 `interrupt()`)뿐이고, 루프는 SQL 승인이 켜지면 진입하지 않는다. 현행 `interrupt_before` 승인 흐름을 바꾸면 P0 "무변경" 원칙에 걸린다 |
+| **P1-1** | ✅ | `task_run` 서브그래프(`graph._build_task_run_graph`): `task_prompt` → 데이터·알람은 3단 직결 체인과 **같은 노드·같은 분기 함수**(검증 회귀 · 산문 조기 종결 · 실행 회귀 · 데이터 부족 회귀) · 멀티 DB는 `multi_db_executor → result_merger → result_organizer` · 그 외 담당은 2단 레지스트리 핸들러(`task_handler`) → `pack_outcome`. 종결은 `final_response`를 쓰지 않는 `task_error`·`pack_outcome` | 서브그래프는 **함수 노드 안 `ainvoke`**(§1.1 정정). SQL 승인 게이트 없음(루프 미진입으로 대신). **골든 비교(현행 3단 체인과 결과 동일) 미실시** — 대역 노드로 배선만 검증했다 |
+| P1-2 | ❌ | — | task는 이번 턴 라우터의 조회 대상을 이어 받는다(`_ROUTING_KEYS`) · 사전 처리가 DB를 고정한 task(`db_ids`)만 2단과 같은 정규화. task별 재분류·위치 힌트 고정·승계·존 게이트·실시간 사용률은 없다 |
+| P1-3 · P1-4 | ❌ | — | 111 델타와 무관 |
+| **P2-1** | ✅ | 라우터 `needs_plan`(플래그 on일 때만 프롬프트 말미 절 + 구조화 서브클래스 `PlanRouterDecision`·`OwnershipPlanRouterDecision` · `chain` 비면 안 됨 → 계획 필요) · 진입 `plan_loop_entry`(데이터·알람 의도 + `needs_plan` 또는 순차 표지 · SQL 승인·양식 제외) · `plan`(= `_plan_turn`) · **`normalize` 단일 출구**(111 D-1) | 2단 분리 라우터(`ROUTER_TWO_STAGE_ENABLED`) 경로는 `needs_plan`을 내지 않는다 — 순차 표지 OR만 남는다 |
+| **P2-2** | ◐ | `dispatch`(다음 레벨 · `_gate_level` · `in_progress` 표시) → 분기 함수 `route_dispatch`가 `Send(task_run)` · `join`(`defer=True` · 사후 대조) · **0행 의존 게이트 = D-203 게이트 기본 on 그대로**(111 G-4) | **충족도 재시도(78 W5) 미이식** — 대상 주입(`prior_targets`)은 `process_query`류에만 생기고 111 델타와 무관 |
+| **P2-3** | ◐ | `replan`(111 D-3 — 입력 = 행을 돌려준 task · 행 있는 task가 없으면 LLM 0회 · 계획에 있는 담당의 독립 후속·SQL 문장 후속 제거 · 전체 계획 기준 재채번 · 상한 도달 노트) · `finalize` = `result_aggregator(synthesize=True)` | **C-2(`routing_intent` 전달 — 알람 헤드라인) 미착수** — 단일 의도는 루프에 들어오지 않아(G-5) 3단 고유 출력이 유지되지만, 복합 계획의 합성 경로에는 아직 없다 |
+| P2-4 | ◐ | `dispatch`·`join`이 task 시작·종료 이벤트(`emit_task_progress` — 2단과 같은 페이로드) | 단계 이벤트(`multi_db_executor`·`query_generator`) 없음 |
+| P3 · P4 · P5 | ❌ | — | 범위 밖 |
+
+**검증** — `tests/test_orchestration/test_plan103_tier3_plan_loop.py` 22건(배선 · 진입 · 라우터 off 바이트 동일/on 절 추가 · normalize · 0행 게이트 · task_prompt · replan 입력 범위 · 그래프 실행 **`ainvoke`·`astream_events` 두 방식** · 턴 격리) · `tests/test_api/test_stream_subgraph_done.py` 2건 · `tests/test_observability/test_graph_proxy.py` +3건 · 전체 스위트 회귀 0(구조 단언 1건 갱신 — `test_two_stage.py`: 라우터 응답 검증부가 `_classify_parsed`로 추출됨).
+**실 노드 통합 스모크**(저장소 밖 스크립트 · 2026-09-22): 계획·라우터·입력 파서만 대역, `schema_analyzer`~`result_organizer`는 **실제 노드**, DB는 로컬 샌드박스(MCP 9099 · 읽기 전용), LLM은 스크립트 대역(네트워크·과금 0), 실행은 `astream_events` — t1 알람 2행 → t2 SQL 프롬프트에 선행 스코프 블록 주입 · 2행 → 합성(`result_aggregator` 식별자 병합) · 경과 노트 1건 · SSE 종료 판정 `finalize` 1회 · 루트 노드 순서 `plan→normalize→dispatch→task_run→join→dispatch→task_run→join→replan→finalize`. **실 LLM 실행 0회**(M-4 미측정).
 
 ---
 
@@ -315,6 +341,9 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 | **G-6** | **SQL 승인 HITL**(운영 off)을 3단 전 경로(단일·멀티·복합)에서 `interrupt()`로 제공할 것인가 | P3 범위 | **제공** — 운영 기본값은 off 유지 |
 | **G-7** | `host_inspect` 운영 노출 — 기존 플래그 `COMPOSITE_INVESTIGATION_ENABLED`(기본 off)를 그대로 따를 것인가 | P1-3 | **기존 플래그를 따른다**(3단 추가 플래그 없음) |
 
+> **2026-09-22 착수 시 채택한 기본 가정**(게이트 답 없음 · teammate 지시 "기본 가정으로 진행하되 보고서에 명시") — **확정이 아니다.**
+> G-1 `needs_plan` 정본 + 순차 표지 OR(구현) · G-2 워커 LLM(`plan`·`replan`이 워커 `llm`) · G-3 교정은 계획 경로에만 — `normalize` 출구 전부에(111 D-1) · 라우터 단일 의도에는 없음(구현) · G-4 G2/G3 미이식 — `input_from` DAG + D-203 게이트(구현) · G-5 단일 의도 일원화는 P5-1 뒤 — 이번에는 **단일 의도가 루프에 들어오지 않는다**(현행 직결 체인) · G-6·G-7 해당 WU 미착수.
+
 ---
 
 ## 8. 다른 계획과의 관계
@@ -360,5 +389,6 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v1.2 | 2026-09-22 | **부분 구현**(`plans/111` C-4·C-5 범위 · teammate 지시 *"111번 계획을 구현하라"*) — §4.1 구현 현황: P0-1 ✅ · P0-2 ✅(루프 한정 · K-5 미해소) · P0-3 ◐ · P1-1 ✅ · P2-1 ✅ · P2-2 ◐ · P2-3 ◐ · P2-4 ◐. 플래그 `TIER3_PLAN_LOOP_ENABLED` 1개(기본 off · §3.7 구현 주). **실측 정정 2건**: §1.1 서브그래프 함정 — `output_schema`는 `astream_events`에서 불충분(함수 노드 안 `ainvoke`로 해결) · §1.3 K-1 — `config` 주입은 이미 동작. §3.3 턴 초기화 자리를 `plan` 노드로. §7 게이트는 **미응답 — 기본 가정 채택 기록**만 더했다(확정 아님). 파일명 `-TODO` → `-WIP` · 신규 D-번호 0 |
 | v1.1 | 2026-09-21 | **`plans/111` 델타 편입**(111 G-2 확정 · 사용자 *"권고에 맞게 진행하라"*) — §3.3.1 신설(`plan` 원문 조각 계약 · `normalize` 단일 출구 · `task_prompt` · 0행 의존 게이트 기본 on · 재계획 입력 범위) · P1-1·P2-1·P2-2·P2-3 작업 항목 확장. **이 계획의 게이트 G-1~G-7 상태는 바꾸지 않았다**(111 게이트만 확정) · 신규 D-번호 0 |
 | v1 | 2026-09-17 | 최초 작성(사용자 지시 *"3단 기능도 langgraph 기능을 이용하면 1단의 모든 기능을 구현할 수 있다. 검토하여 모두 구현하는 방향으로"*). 검토 결론: 가능 — LangGraph 1.2.11 설치본에 `Send`·`defer`·`Command`·`interrupt()`·서브그래프가 있고 토이 그래프로 계획→팬아웃→합류→루프→합성·서브그래프 안 인터럽트 재개를 확인. deepagents 0.6.10도 LangGraph 기반이며 실사용은 할 일 목록+1단계 도구 루프뿐. 기능 격차 20행(§1.2 · ★프로세스·호스트 점검 3단 미도달 · 재계획 없음 · 승계 없음 · 1단 ambient 결손으로 존 역질문 미발동) · 저장소 차단 4종(★추적 프록시·리듀서 부재·SSE 조기 종료·HITL 재개가 새 실행) + 2단 턴 누수 · 설계(태스크 서브그래프 단일화 · plan/dispatch/join/replan/finalize · 팬인 키 1개 · `interrupt()` HITL) · WU P-0~P5-3 · 게이트 G-1~G-7 · D-226 예약 |

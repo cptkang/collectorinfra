@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from langchain_core.runnables import Runnable
+
 from src.observability.trace_collector import traced
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,10 @@ class TracedGraph:
         if action is None:
             action, name = name, getattr(name, "__name__", "unnamed")
 
-        if not self._enabled:
+        # Runnable(컴파일된 서브그래프 포함)은 감싸지 않는다 — 함수 래퍼가 호출 불가 객체를
+        # 부르게 되고(`CompiledStateGraph' object is not callable`), 내부 노드는 자기 그래프에서
+        # 따로 추적된다(plans/103 K-1).
+        if not self._enabled or isinstance(action, Runnable):
             return self.raw.add_node(name, action, **kwargs)
 
         try:

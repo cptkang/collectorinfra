@@ -157,7 +157,21 @@ _STREAM_KNOWN_NODES: frozenset[str] = frozenset({
     "replanner", "result_aggregator",
     # plans/89 · D-204: 사다리 1단(부가 경로) + 옵트인 노드
     "deep_agent", "fault_diagnosis", "cache_management",
+    # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프(`TIER3_PLAN_LOOP_ENABLED`)
+    "plan", "normalize", "dispatch", "task_run", "join", "replan", "finalize",
 })
+
+
+def _is_subgraph_event(event: Any) -> bool:
+    """서브그래프 **안**에서 난 이벤트인가 (plans/103 K-3).
+
+    ``astream_events(v2)``의 ``parent_ids``는 루트 실행 0개 · 루트 직속 노드 1개이고, 노드 안에서
+    도는 그래프(3단 `task_run` 서브그래프 · 1단 deep_agent 내부 그래프)의 이벤트는 2개 이상이다
+    (2026-09-22 langgraph 1.2.11 토이 그래프 실측). 종료 판정은 루트 직속까지만 본다 — 서브그래프
+    노드가 ``final_response``를 내도 스트림이 부분 답으로 닫히지 않게 한다. 키가 없으면(테스트 대역)
+    루트로 본다(종전 동작).
+    """
+    return len(event.get("parent_ids") or ()) > 1
 
 
 _PRODUCER_CANCEL_GRACE_SEC = 1.0   # 생산자 취소 완료를 기다리는 상한(D-198 F2 정합)
@@ -711,7 +725,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 return {"awaiting_approval": True, "sql": output.get("approval_context", {}).get("sql", "")}
             return None
 
-        elif node_name == "intent_planner":
+        elif node_name in ("intent_planner", "plan", "normalize"):
             tasks = output.get("task_plan", [])
             if not tasks:
                 return None
@@ -721,7 +735,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 "tasks": _summarize_tasks(tasks),
             }
 
-        elif node_name == "agent_orchestrator":
+        elif node_name in ("agent_orchestrator", "join"):
             tasks = output.get("task_plan", [])
             if not tasks:
                 return None
@@ -730,7 +744,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 "tasks": _summarize_tasks(tasks, results=output.get("task_results")),
             }
 
-        elif node_name == "replanner":
+        elif node_name in ("replanner", "replan"):
             needs = output.get("needs_replan", False)
             history = output.get("replan_history") or []
             data: dict = {"needs_replan": needs}
@@ -740,7 +754,7 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
                 data["replan_count"] = output.get("replan_count", 0)
             return data
 
-        elif node_name == "result_aggregator":
+        elif node_name in ("result_aggregator", "finalize"):
             return {"status": "응답 통합 완료"}
 
         elif node_name == "deep_agent":
@@ -1692,7 +1706,7 @@ async def process_query_stream(
                                             "content": token_text,
                                         })
 
-                            elif kind == "on_chain_end":
+                            elif kind == "on_chain_end" and not _is_subgraph_event(event):
                                 output = event.get("data", {}).get("output", {})
                                 if isinstance(output, dict) and "final_response" in output:
                                     elapsed_ms = (time.time() - start_time) * 1000
@@ -2373,7 +2387,7 @@ async def process_file_query_stream(
                                             "content": token_text,
                                         })
 
-                            elif kind == "on_chain_end":
+                            elif kind == "on_chain_end" and not _is_subgraph_event(event):
                                 output = event.get("data", {}).get("output", {})
                                 if isinstance(output, dict) and "final_response" in output:
                                     elapsed_ms = (time.time() - start_time) * 1000

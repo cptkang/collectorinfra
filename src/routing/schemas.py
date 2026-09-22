@@ -108,3 +108,20 @@ class OwnershipDatabaseSelection(DatabaseSelection):
 
     databases: list[OwnershipRouterDatabase] = Field(default_factory=list)
     chain: list[str] = Field(default_factory=list)
+
+
+# ── 3단 계획 필요 신호(plans/103 §3.2 · `TIER3_PLAN_LOOP_ENABLED`) ──
+# 소유 서브클래스와 같은 이유로 **켜졌을 때만 쓰는 서브클래스**다 — 기존 모델에 필드를 더하면
+# 플래그 off에서도 instructor 스키마 블록이 바뀐다. 소유 플래그와 곱으로 조합된다.
+
+
+class PlanRouterDecision(RouterDecision):
+    """라우터 분류 결과 + 계획 필요 신호(하위 조회가 둘 이상이거나 앞 결과가 뒤 조회를 정함)."""
+
+    needs_plan: bool = False
+
+
+class OwnershipPlanRouterDecision(OwnershipRouterDecision):
+    """답변 영역 소유 분류 결과 + 계획 필요 신호."""
+
+    needs_plan: bool = False

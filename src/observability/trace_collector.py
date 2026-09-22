@@ -18,6 +18,8 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
+from langgraph.errors import GraphBubbleUp
+
 from src.observability.levels import TraceLevel
 
 logger = logging.getLogger(__name__)
@@ -261,6 +263,8 @@ def traced(
 
     Returns:
         같은 시그니처의 async 래퍼. 원본 반환값·예외를 그대로 전달한다.
+        LangGraph의 ``config`` 주입은 ``__wrapped__``(아래)로 원본 시그니처를 읽어 이 래퍼의
+        ``**kwargs``로 들어오므로 그대로 넘어간다.
     """
 
     async def _wrapper(state: Any, *args: Any, **kwargs: Any) -> Any:
@@ -289,6 +293,17 @@ def traced(
             result = fn(state, *args, **kwargs)
             if inspect.isawaitable(result):
                 result = await result
+        except GraphBubbleUp:
+            # 인터럽트(HITL 일시정지)·부모 명령은 실패가 아니다 — ERROR로 남기면 승인 대기마다
+            # 실패 트레이스가 쌓인다(plans/103 K-1). 기록만 하고 그대로 올려 보낸다.
+            _safe_record(
+                request_id,
+                node=name,
+                level=TraceLevel.INFO,
+                event="node.interrupt",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+            )
+            raise
         except Exception as e:
             observe_state(request_id, {"error_message": str(e)[:500]})
             _safe_record(
