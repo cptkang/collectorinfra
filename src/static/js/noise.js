@@ -1,26 +1,41 @@
 /**
- * 알람 노이즈 캔슬링 관제 화면 (Plan 54 모듈 6).
+ * 알람 노이즈 캔슬링 관제 화면 (Plan 54 모듈 6 · D-245로 사용자 화면 공용화).
  *
  * 억제는 곧 "보여주지 않음"이므로 이 화면은 그 반대로 **억제 내역을 가장 잘 보여주는 곳**이다.
  * 집계(KPI·퍼널·추이)·메타모니터링·실시간 피드·결정 추적·침묵 관리·정책 열람을 담당한다.
  *
+ * 한 파일이 두 화면을 그린다 — `<body data-noise-mode>`가 모드를 정한다:
+ *     admin : `/static/admin/noise.html` — 읽기 전량 + 메타모니터링 + 침묵 + 정책 + SSE.
+ *     user  : `/static/noise.html`       — 읽기 5종만. 침묵·정책·메타·SSE는 **호출하지 않는다**
+ *                                          (그 DOM도 없다). API base가 `/api/v1/noise`로 갈린다.
+ * 복제하지 않는 이유는 단순하다 — 두 벌이면 한쪽만 고쳐진다.
+ *
  * 스택 정합: 바닐라 JS · 외부 CDN 0(폐쇄망) · 색은 전부 테마 토큰(라이트/다크 양쪽).
  *
  * 피드의 완전성에 관하여: PAGE 티어는 즉시 통보 경로라 SSE(alarm_bus)에 실리지 않는다.
- * 그래서 피드는 **SSE(즉시성) + 주기 재동기화(완전성)** 를 병행한다 — 스트림만 믿으면
- * 가장 중요한 알람이 관제 화면에서 빠진다.
+ * 그래서 운영자 피드는 **SSE(즉시성) + 주기 재동기화(완전성)** 를 병행한다 — 스트림만 믿으면
+ * 가장 중요한 알람이 관제 화면에서 빠진다. 사용자 화면은 스트림을 열지 않으므로(D-196 ⑤ 유지)
+ * 재동기화만으로 채운다 — 최대 RESYNC_MS 만큼 늦게 보일 뿐 빠지는 결정은 없다.
  */
 
 (function () {
     "use strict";
 
-    var token = localStorage.getItem("admin_token") || localStorage.getItem("user_token");
+    // 모드는 페이지가 선언한다(미선언이면 종전 동작 = 운영자).
+    var IS_ADMIN = (document.body.getAttribute("data-noise-mode") || "admin") === "admin";
+    var PAGE_PATH = IS_ADMIN ? "/static/admin/noise.html" : "/noise";
+
+    // 운영자 화면은 운영자 토큰을, 사용자 화면은 사용자 토큰을 먼저 본다.
+    // (서버가 최종 판정하므로 여기 순서는 "먼저 시도할 토큰"을 고르는 것뿐이다.)
+    var token = IS_ADMIN
+        ? (localStorage.getItem("admin_token") || localStorage.getItem("user_token"))
+        : (localStorage.getItem("user_token") || localStorage.getItem("admin_token"));
     if (!token) {
-        window.location.href = "/login?next=/static/admin/noise.html";
+        window.location.href = "/login?next=" + encodeURIComponent(PAGE_PATH);
         return;
     }
 
-    var API = "/api/v1/admin/noise";
+    var API = IS_ADMIN ? "/api/v1/admin/noise" : "/api/v1/noise";
     var RESYNC_MS = 30000;     // 피드 재동기화 주기 — PAGE가 최대 이 시간 안에 나타난다
     var SUMMARY_MS = 60000;    // 집계 갱신 주기
     var FEED_MAX = 60;         // 피드 보관 상한(메모리·DOM 가드)
@@ -51,8 +66,8 @@
         if (body) options.body = JSON.stringify(body);
         return fetch(url, options).then(function (res) {
             if (res.status === 401) {
-                localStorage.removeItem("admin_token");
-                window.location.href = "/login?next=/static/admin/noise.html";
+                if (IS_ADMIN) localStorage.removeItem("admin_token");
+                window.location.href = "/login?next=" + encodeURIComponent(PAGE_PATH);
             }
             return res;
         });
@@ -72,16 +87,18 @@
     }
 
     function showError(message) {
+        if (!alertError) return;
         alertError.textContent = message;
         alertError.style.display = "block";
-        alertSuccess.style.display = "none";
+        if (alertSuccess) alertSuccess.style.display = "none";
         setTimeout(function () { alertError.style.display = "none"; }, 6000);
     }
 
     function showSuccess(message) {
+        if (!alertSuccess) return;
         alertSuccess.textContent = message;
         alertSuccess.style.display = "block";
-        alertError.style.display = "none";
+        if (alertError) alertError.style.display = "none";
         setTimeout(function () { alertSuccess.style.display = "none"; }, 4000);
     }
 
@@ -483,7 +500,8 @@
     });
 
     // 드로어에서 곧바로 침묵 규칙을 준비한다(억제 교정 동선 — 값만 채우고 저장은 사용자가).
-    document.getElementById("silenceThisBtn").addEventListener("click", function () {
+    // 사용자 화면에는 이 버튼이 없다(침묵은 운영 통제라 운영자에게 남는다).
+    if (IS_ADMIN) document.getElementById("silenceThisBtn").addEventListener("click", function () {
         if (!drawerContext) return;
         closeDrawer();
         switchPane("silence");
@@ -686,6 +704,7 @@
         if (name === "silence") loadSilences();
     }
 
+    // 관리 탭(침묵·결정 이력·정책)은 운영자 화면에만 있다 — 사용자 화면은 결정 이력을 바로 편다.
     document.querySelectorAll(".mgmt-tabs button").forEach(function (button) {
         button.addEventListener("click", function () { switchPane(button.dataset.pane); });
     });
@@ -700,8 +719,10 @@
         refreshAggregates();
     });
 
-    document.getElementById("addSilenceBtn").addEventListener("click", addSilence);
-    document.getElementById("showInactive").addEventListener("change", loadSilences);
+    if (IS_ADMIN) {
+        document.getElementById("addSilenceBtn").addEventListener("click", addSilence);
+        document.getElementById("showInactive").addEventListener("change", loadSilences);
+    }
     document.getElementById("decSearchBtn").addEventListener("click", loadDecisions);
     document.getElementById("decSearch").addEventListener("keydown", function (e) {
         if (e.key === "Enter") loadDecisions();
@@ -714,16 +735,26 @@
         loadSummary().catch(function (err) { showError("집계 조회 실패: " + err.message); });
         loadTimeseries().catch(function (err) { showError("추이 조회 실패: " + err.message); });
         loadTopSuppressed().catch(function () { /* 표시 실패는 조용히 넘긴다 */ });
-        resyncFeed().catch(function () { /* 피드는 SSE가 보완한다 */ });
+        // 운영자 화면은 SSE가 즉시성을 맡고 이 호출이 완전성을 맡는다.
+        // 사용자 화면은 SSE가 없어 이 호출 하나가 피드 전부다 — 실패를 삼키지 않는다.
+        resyncFeed().catch(function (err) {
+            if (!IS_ADMIN) showError("결정 이력 조회 실패: " + err.message);
+        });
+        if (!IS_ADMIN) loadDecisions().catch(function () { /* 조회 버튼으로 재시도된다 */ });
     }
 
     refreshAggregates();
-    loadHealth().catch(function (err) { showError("헬스 조회 실패: " + err.message); });
-    loadSilences().catch(function () { /* 탭 진입 시 재시도된다 */ });
-    connectStream();
+    if (IS_ADMIN) {
+        loadHealth().catch(function (err) { showError("헬스 조회 실패: " + err.message); });
+        loadSilences().catch(function () { /* 탭 진입 시 재시도된다 */ });
+        connectStream();
+    } else {
+        // 사용자 화면은 스트림을 열지 않는다(D-196 ⑤ 유지) — 갱신 주기를 그대로 알린다.
+        setStreamPill("ok", Math.round(RESYNC_MS / 1000) + "초마다 갱신");
+    }
 
     setInterval(function () {
-        loadHealth().catch(function () {});
+        if (IS_ADMIN) loadHealth().catch(function () {});
         loadSummary().catch(function () {});
     }, SUMMARY_MS);
     setInterval(function () {

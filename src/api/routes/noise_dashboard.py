@@ -1,7 +1,12 @@
-"""알람 노이즈 캔슬링 관제 API (Plan 54 모듈 5 — `/admin/noise/*`).
+"""알람 노이즈 캔슬링 관제 API (Plan 54 모듈 5 — `/admin/noise/*` · `/noise/*`).
 
 억제는 곧 "보여주지 않음"이므로, 이 라우트는 그 반대로 **억제 내역을 가장 잘 보여주는 곳**이다.
 집계(퍼널·추이·상위 억제)·조회(결정 추적)·메타모니터링·침묵 관리·정책 열람을 제공한다.
+
+경로는 둘이고 핸들러는 하나다(D-245):
+    - `/admin/noise/*` — 운영자. 읽기 전량 + 메타모니터링 + 침묵 관리 + 정책 + 실시간 스트림.
+    - `/noise/*` — 로그인 사용자. **읽기 5종만**(집계 3 · 결정 목록 · 결정 추적). 침묵·정책·
+      스트림은 걸지 않는다 — 운영 통제와 설정값은 운영자에게 남는다.
 
 원칙:
     - **읽기 우선**: 변경은 침묵 생성/해제 둘뿐이며 전부 감사에 남는다.
@@ -24,11 +29,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import require_admin_user
+from src.api.dependencies import require_admin_user, require_user
 from src.security.audit_logger import log_silence_change
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+# 읽기 전용 집계·조회 — 운영자 경로(`/admin/noise/*`)와 사용자 경로(`/noise/*`) 양쪽에
+# **같은 핸들러**를 건다(D-245). 인가는 라우터 레벨 의존성이 갈라 붙이므로 핸들러는
+# 권한을 모른다 — 두 벌로 복제하면 한쪽만 고쳐지는 비대칭이 생긴다.
+read_router = APIRouter()
 
 # 조회 창 — 닫힌 집합만 받는다(임의 초 입력은 스캔 비용을 예측 불가하게 만든다).
 _RANGES: dict[str, int] = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
@@ -270,8 +279,8 @@ def _to_item(rule, now: datetime) -> SilenceItem:  # noqa: ANN001
 # ─── 집계 (읽기) ────────────────────────────────────────────────────────
 
 
-@router.get(
-    "/admin/noise/summary",
+@read_router.get(
+    "/summary",
     response_model=NoiseSummaryResponse,
     summary="노이즈 캔슬링 KPI + 퍼널",
     description=(
@@ -283,7 +292,6 @@ def _to_item(rule, now: datetime) -> SilenceItem:  # noqa: ANN001
 async def noise_summary(
     request: Request,
     range: str = Query(default="24h", description="조회 범위(1h·24h·7d·30d)"),
-    _admin: dict = Depends(require_admin_user),
 ) -> NoiseSummaryResponse:
     """결정 감사에서 KPI와 퍼널을 집계해 돌려준다."""
     window = _resolve_range(range)
@@ -299,8 +307,8 @@ async def noise_summary(
     )
 
 
-@router.get(
-    "/admin/noise/timeseries",
+@read_router.get(
+    "/timeseries",
     response_model=TimeseriesResponse,
     summary="티어 분포 추이",
     description="버킷별 티어 분포를 반환합니다. 버킷 경계는 UTC 고정 격자입니다.",
@@ -310,7 +318,6 @@ async def noise_timeseries(
     request: Request,
     range: str = Query(default="24h"),
     bucket: str = Query(default="2h"),
-    _admin: dict = Depends(require_admin_user),
 ) -> TimeseriesResponse:
     """버킷별 티어 분포를 돌려준다(빈 버킷도 0으로 채운다)."""
     window = _resolve_range(range)
@@ -323,8 +330,8 @@ async def noise_timeseries(
     )
 
 
-@router.get(
-    "/admin/noise/top-suppressed",
+@read_router.get(
+    "/top-suppressed",
     response_model=TopSuppressedResponse,
     summary="상위 억제 알람 유형",
     description="억제된 알람을 (알람명 × 단계)로 묶어 상위 항목을 반환합니다.",
@@ -334,7 +341,6 @@ async def noise_top_suppressed(
     request: Request,
     range: str = Query(default="24h"),
     limit: int = Query(default=10, ge=1, le=50),
-    _admin: dict = Depends(require_admin_user),
 ) -> TopSuppressedResponse:
     """무엇이 캔슬되고 있는지를 사람이 읽는 형태로 돌려준다."""
     window = _resolve_range(range)
@@ -387,8 +393,8 @@ async def noise_health(
 # ─── 결정 조회 (설명가능성) ─────────────────────────────────────────────
 
 
-@router.get(
-    "/admin/noise/decisions",
+@read_router.get(
+    "/decisions",
     response_model=DecisionsResponse,
     summary="발송 판단 목록",
     description=(
@@ -405,7 +411,6 @@ async def noise_decisions(
     q: Optional[str] = Query(default=None, description="알람명·서버명·사유 부분일치"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
-    _admin: dict = Depends(require_admin_user),
 ) -> DecisionsResponse:
     """결정 감사 목록을 필터·페이지로 돌려준다."""
     window = _resolve_range(range)
@@ -421,8 +426,8 @@ async def noise_decisions(
     return DecisionsResponse(**result)
 
 
-@router.get(
-    "/admin/noise/decisions/{alarm_id}",
+@read_router.get(
+    "/decisions/{alarm_id}",
     summary="발송 판단 추적(단일)",
     description=(
         "알람 1건의 가장 최근 결정을 파이프라인 단계·신호 스냅샷과 함께 반환합니다.<br/>"
@@ -433,7 +438,6 @@ async def noise_decisions(
 async def noise_decision_trace(
     alarm_id: str,
     request: Request,
-    _admin: dict = Depends(require_admin_user),
 ) -> dict:
     """결정 1건 + 단계 타임라인을 돌려준다(없으면 404)."""
     from noise_gate.domain.notification_policy import STAGE_LABELS, STAGE_ORDER
@@ -677,3 +681,23 @@ async def noise_policy(
     return PolicyResponse(
         matrix=matrix, settings=settings, editor_path="/static/admin/dashboard.html"
     )
+
+
+# ─── 경로 등록 — 같은 읽기 핸들러를 두 인가 아래에 건다 (D-245) ──────────
+
+
+# 운영자 경로: 종전 그대로. 개별 핸들러에 있던 `Depends(require_admin_user)`를
+# 라우터 레벨로 옮긴 것뿐이라 외부 URL·응답·인가 판정은 비트 동일하다.
+router.include_router(
+    read_router,
+    prefix="/admin/noise",
+    dependencies=[Depends(require_admin_user)],
+)
+# 사용자 경로: **읽기 전용 5종만**. 침묵(쓰기)·정책(설정값 열람)·실시간 스트림은
+# 여기에 걸지 않는다 — 운영 통제와 설정값은 운영자에게 남고, 전 존 억제 내역이 흐르는
+# 스트림의 인가는 D-196 ⑤ 그대로 관리자 전용이다(사용자 화면은 주기 재동기화로 채운다).
+router.include_router(
+    read_router,
+    prefix="/noise",
+    dependencies=[Depends(require_user)],
+)

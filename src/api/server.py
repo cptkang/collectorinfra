@@ -669,6 +669,11 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         """사용자 가입 화면."""
         return FileResponse(static_dir / "register.html")
 
+    @application.get("/noise", include_in_schema=False)
+    async def user_noise_console_page() -> FileResponse:
+        """사용자 노이즈 관제 화면(읽기 전용 — D-245)."""
+        return FileResponse(static_dir / "noise.html")
+
     @application.get("/admin/login", include_in_schema=False)
     async def admin_login_page() -> FileResponse:
         """운영자 로그인 화면."""

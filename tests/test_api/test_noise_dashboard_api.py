@@ -1,8 +1,9 @@
-"""Plan 54 모듈 5 — 노이즈 관제 API(`/admin/noise/*`) 계약·인가·안전 가드 테스트.
+"""Plan 54 모듈 5 — 노이즈 관제 API(`/admin/noise/*` · `/noise/*`) 계약·인가·안전 가드 테스트.
 
 이 라우트는 **억제를 보여주는 곳**이자 **알람을 억제하는 규칙을 만드는 곳**이다.
 따라서 세 가지를 겨눈다:
-    1. 인가 — 운영자가 아니면 아무것도 볼 수 없다(SSE 포함).
+    1. 인가 — 운영자 경로는 운영자만(SSE 포함). 사용자 경로(D-245)는 읽기 5종만 열리고,
+       침묵·정책·메타모니터링·스트림은 **등록 자체가 없다**.
     2. 안전 가드 — 전체 침묵·심각도 상한·만료 없는 침묵을 **서버가** 막는다.
     3. 강건성 — 게이트 off·저장소 부재에도 200과 빈 집계를 준다(화면이 깨지지 않는다).
 """
@@ -17,7 +18,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from src.api.dependencies import require_admin_user
+from src.api.dependencies import require_admin_user, require_user
 from src.api.routes import noise_dashboard as noise_routes
 
 ADMIN = {"sub": "adm", "role": "admin"}
@@ -389,3 +390,85 @@ def test_policy_provides_env_keys_for_deeplink(tmp_path):
 def test_policy_has_no_write_endpoint(tmp_path):
     client = _make_client(_make_config(tmp_path))
     assert client.put("/api/v1/admin/noise/policy", json={}).status_code == 405
+
+
+# ─── 사용자 경로 `/noise/*` (D-245) ──────────────────────────────────────
+
+
+USER = {"sub": "u1", "role": "user"}
+
+# 사용자에게 여는 것: 집계 3종 + 결정 목록 + 결정 추적. 그 이상은 열지 않는다.
+USER_READ_PATHS = [
+    "/api/v1/noise/summary",
+    "/api/v1/noise/timeseries",
+    "/api/v1/noise/top-suppressed",
+    "/api/v1/noise/decisions",
+]
+# 사용자에게 열지 않는 것: 운영 통제(침묵)·설정값(정책)·메타모니터링·전 존 스트림.
+USER_ABSENT_PATHS = [
+    "/api/v1/noise/health",
+    "/api/v1/noise/silences",
+    "/api/v1/noise/policy",
+    "/api/v1/noise/stream",
+]
+
+
+def _make_user_client(config, *, user=USER, authorized=True) -> TestClient:
+    """사용자 인가(`require_user`)만 통과시키는 클라이언트."""
+    app = FastAPI()
+    app.include_router(noise_routes.router, prefix="/api/v1")
+    app.state.config = config
+
+    def _deny_admin():
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+
+    app.dependency_overrides[require_admin_user] = _deny_admin
+    if authorized:
+        app.dependency_overrides[require_user] = lambda: user
+    else:
+        def _deny_user():
+            raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+
+        app.dependency_overrides[require_user] = _deny_user
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("path", USER_READ_PATHS)
+def test_user_can_read_console_aggregates(tmp_path, path):
+    # 운영자가 아니어도 억제 내역을 볼 수 있어야 한다 — 관리자 의존성은 거부로 고정돼 있다.
+    client = _make_user_client(_make_config(tmp_path))
+    assert client.get(path).status_code == 200
+
+
+def test_user_can_trace_a_single_decision(tmp_path):
+    _seed_decisions(tmp_path, [_decision_record()])
+    client = _make_user_client(_make_config(tmp_path))
+    body = client.get("/api/v1/noise/decisions/a1").json()
+    assert body["decision"]["alarm_id"] == "a1"
+    assert any(step["status"] == "decided" for step in body["timeline"])
+
+
+@pytest.mark.parametrize("path", USER_ABSENT_PATHS)
+def test_user_path_does_not_expose_control_or_policy(tmp_path, path):
+    # 등록 자체가 없어야 한다(403이 아니라 404) — 인가 판정 하나에 기대지 않는다.
+    client = _make_user_client(_make_config(tmp_path))
+    assert client.get(path).status_code == 404
+
+
+def test_user_path_has_no_silence_write(tmp_path):
+    client = _make_user_client(_make_config(tmp_path))
+    assert client.post("/api/v1/noise/silences", json=_silence_body()).status_code == 404
+    assert client.delete("/api/v1/noise/silences/slc_x").status_code == 404
+
+
+@pytest.mark.parametrize("path", USER_READ_PATHS)
+def test_unauthenticated_cannot_read_user_console(tmp_path, path):
+    client = _make_user_client(_make_config(tmp_path), authorized=False)
+    assert client.get(path).status_code == 401
+
+
+def test_admin_paths_still_require_admin_after_split(tmp_path):
+    # 사용자 경로를 연 것이 운영자 경로의 인가를 느슨하게 만들지 않았는지 확인한다.
+    client = _make_user_client(_make_config(tmp_path))
+    for path in READ_PATHS:
+        assert client.get(path).status_code == 403, path
