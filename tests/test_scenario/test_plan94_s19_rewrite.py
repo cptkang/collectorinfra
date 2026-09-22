@@ -220,6 +220,33 @@ class TestV29Baseline:
         assert "비교 가능한 직전 run 이 없다." in text
         assert "프로파일·arm 구성이 다르다" in text
 
+    def test_mock_run_is_never_a_baseline_for_a_real_run(self, tmp_path: Path, monkeypatch):
+        """109·CS-43 — mock 은 tier 가 미관측(None)이라 비교 키를 통과한다. 모드로 거른다."""
+        runs = _runs(tmp_path, "20260901-000000", "20260902-000000", "20260903-000000")
+        real, mock = _summary("semantic_router", "fail"), _summary("mock", "pass")
+        real["meta"]["mode"], mock["meta"]["mode"] = "run", "mock"
+        fake = {"20260901-000000": real, "20260902-000000": mock}
+        monkeypatch.setattr(analyze, "build_summary", lambda path, _cat: fake[path.name])
+        now = _summary("semantic_router", "pass")
+        now["meta"]["mode"] = "run"
+        text = analyze.regression(runs / "20260903-000000", now)
+        assert "직전 비교 대상: `20260901-000000`" in text
+        assert "`20260902-000000`(모드가 다르다(mock → run))" in text
+
+    def test_unfinished_run_is_not_a_baseline(self, tmp_path: Path, monkeypatch):
+        """109·CS-19③ — 끊긴 run 도 시작 시점에 `run.json` 을 쓴다.
+
+        일부만 돈 run 과는 비교하지 않는다.
+        """
+        runs = _runs(tmp_path, "20260901-000000", "20260902-000000", "20260903-000000")
+        cut = _summary("semantic_router")
+        cut["meta"]["in_progress"] = True
+        fake = {"20260901-000000": _summary("semantic_router"), "20260902-000000": cut}
+        monkeypatch.setattr(analyze, "build_summary", lambda path, _cat: fake[path.name])
+        text = analyze.regression(runs / "20260903-000000", _summary("semantic_router"))
+        assert "직전 비교 대상: `20260901-000000`" in text
+        assert "`20260902-000000`(끝나지 않은 run" in text
+
     def test_unobserved_tier_does_not_block_comparison(self, tmp_path: Path, monkeypatch):
         """미관측(tier 없음)은 강등으로 세지 않는다(O-c) — 비교를 막지 않는다."""
         runs = _runs(tmp_path, "20260901-000000", "20260902-000000")

@@ -201,9 +201,38 @@ class ServerHandle:
         env["PYTHONUNBUFFERED"] = "1"
         return env
 
+    def _keep_previous_log(self) -> None:
+        """이전 시도의 서버 로그를 옮겨 둔다(109·CS-16).
+
+        재개는 끊기기 전에 끝난 arm 까지 서버를 다시 띄운다. 로그를 `"w"` 로 다시 열면 끊기기 전
+        시도의 진단 근거(ERROR·기동 로그)가 사라진다. **덧붙이지 않고 옮긴다** - 소비자
+        (`SqlAuditTail` 의 크기 오프셋 · 사다리 판독)는 이번 시도의 로그만 읽으면 되고, 보존본 이름
+        `server-<arm>.log.prev-<마지막 기록 시각>` 은 `server-*.log` glob 에 걸리지 않는다.
+        새 run 은 파일이 없어 아무것도 하지 않는다. 옮기지 못하면 종전처럼 덮어쓰되 알린다 -
+        로그 보존 실패로 기동을 막지 않는다.
+        """
+        try:
+            stat = self.log_path.stat()
+        except OSError:
+            return
+        if stat.st_size == 0:
+            return
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(stat.st_mtime))
+        target = self.log_path.with_name(f"{self.log_path.name}.prev-{stamp}")
+        suffix = 1
+        while target.exists():
+            suffix += 1
+            target = self.log_path.with_name(f"{self.log_path.name}.prev-{stamp}-{suffix}")
+        try:
+            self.log_path.rename(target)
+        except OSError as exc:
+            print(f"       [경고] 이전 서버 로그를 보존하지 못했다({type(exc).__name__}: {exc}) - "
+                  f"{self.log_path.name} 를 덮어쓴다", flush=True)
+
     def start(self) -> None:
         module = "scripts.scenario.mockserver" if self.mock else "scripts.scenario._serve"
         self._health = None   # 기동마다 새로 판정한다
+        self._keep_previous_log()
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
         self._proc = subprocess.Popen(
             [sys.executable, "-m", module],

@@ -778,6 +778,10 @@ class RunHealth:
     #: 단언 미평가 턴 수 — 사유별(`invalid`·`timeout`·`clarify_blocked` · D-241).
     #: 기능 분모 제외분이다.
     unevaluated: dict[str, int] = field(default_factory=dict)
+    #: 재개한 run 의 시도 사이에 판(커밋·작업 트리)이 바뀌었으면 그 사유 — 94 러너
+    #: `meta.provenance_mixed`(109·CS-19③). **주의로만 싣는다** — 멈춤 기준으로 올릴지는
+    #: 사용자 판단이다.
+    provenance_mixed: Optional[str] = None
 
     @property
     def error_turns(self) -> int:
@@ -836,6 +840,10 @@ class RunHealth:
                 notes.append(
                     f"기준선 arm 이 {total}개 중 {position}번째로 실행됐다 — 쌍체 지연 비교가 "
                     f"실행 시각과 교란된다. 장시간 런일수록 지연 델타를 효과로 읽지 말 것")
+        if self.provenance_mixed:
+            notes.append(
+                f"출처가 섞인 재개다 — {self.provenance_mixed}. 끊긴 뒤 바뀐 판으로 이어 돌아 한 "
+                f"`raw.jsonl` 에 두 판의 결과가 있다 — arm 차이가 판 차이와 교란될 수 있다")
         return notes
 
     def stop_reasons(self) -> list[str]:
@@ -937,7 +945,8 @@ def scan_health(result: dict[str, Any], raw_path: Path) -> RunHealth:
                      invalid_turns=verdicts.get(INVALID_VERDICT, 0),
                      auto_answered_turns=auto_turns,
                      baseline_order=baseline_order,
-                     unevaluated=unevaluated_counts(rows))
+                     unevaluated=unevaluated_counts(rows),
+                     provenance_mixed=(result.get("meta") or {}).get("provenance_mixed"))
 
 
 def baseline_as(baseline: Sequence[Observation], arm_id: str) -> list[Observation]:

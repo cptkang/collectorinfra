@@ -277,20 +277,38 @@ def unevaluated_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def turn_key(row: dict[str, Any]) -> tuple[str, str, int, int]:
+    """한 턴을 유일하게 가리키는 키 - 94 러너 `row_key` 와 **같은 정의**다(테스트가 대조한다).
+
+    러너를 임포트하지 않는다 - 러너가 이 모듈을 임포트한다.
+    """
+    return (str(row.get("profile")), str(row.get("scenario_id")),
+            int(row.get("turn", 0)), int(row.get("repeat", 0)))
+
+
 def load_rows(run_dir: Path) -> list[dict[str, Any]]:
+    """`raw.jsonl` 을 읽되 **같은 턴은 마지막 행만** 남긴다(109·CS-17).
+
+    재개는 같은 키를 한 번 더 적재한다 - 무효 턴 재실행(X-1)과 일부만 끝난 멀티턴의 1턴부터
+    재실행(CS-17). 러너(`RawLog._remember`)와 벤치(`sweep.read_raw_rows`)는 *"파일 순서 = 시간
+    순서, 뒤 행이 결과"* 로 읽는데 리포트만 전부 세면 무효·지연·판정이 두 번 들어간다. 순서는
+    **처음 적재된 위치**를 지킨다(무효 구간의 실행 순서가 이것을 쓴다). `turn` 칸이 없는 행은
+    접지 않는다.
+    """
     path = run_dir / "raw.jsonl"
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
+    rows: dict[Any, dict[str, Any]] = {}
     with utf8_open(path, "r") as handle:
-        for line in handle:
+        for index, line in enumerate(handle):
             line = line.strip()
             if line:
                 try:
-                    rows.append(json.loads(line))
+                    row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-    return rows
+                rows[turn_key(row) if "turn" in row else ("#", index)] = row
+    return list(rows.values())
 
 
 def load_run_meta(run_dir: Path) -> dict[str, Any]:
@@ -850,22 +868,31 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     # 1
     add("## 1. 실행 요약")
     add("")
-    add(_table(
-        ["항목", "값"],
-        [
-            ["run_id", meta.get("run_id")],
-            ["실행 성격", meta.get("mode")],
-            ["대상 환경", meta.get("env")],
-            ["LLM 프로바이더", meta.get("provider")],
-            ["커밋", meta.get("commit")],
-            ["작업 트리 dirty", meta.get("dirty")],
-            ["시작 시각", meta.get("started_at")],
-            ["반복", meta.get("repeat")],
-            ["플랫폼", (meta.get("platform") or {}).get("os")],
-            ["콘솔 인코딩", (meta.get("platform") or {}).get("encoding")],
-            ["PYTHONUTF8", (meta.get("platform") or {}).get("pythonutf8")],
-        ],
-    ))
+    summary_rows: list[list[Any]] = [
+        ["run_id", meta.get("run_id")],
+        ["실행 성격", meta.get("mode")],
+        ["대상 환경", meta.get("env")],
+        ["LLM 프로바이더", meta.get("provider")],
+        ["커밋", meta.get("commit")],
+        ["작업 트리 dirty", meta.get("dirty")],
+        ["시작 시각", meta.get("started_at")],
+        ["반복", meta.get("repeat")],
+        ["플랫폼", (meta.get("platform") or {}).get("os")],
+        ["콘솔 인코딩", (meta.get("platform") or {}).get("encoding")],
+        ["PYTHONUTF8", (meta.get("platform") or {}).get("pythonutf8")],
+    ]
+    # 재개한 run 만 싣는다(109·CS-17·CS-19③) - 새 run 의 표는 종전과 같다.
+    attempts = meta.get("attempts") or []
+    if len(attempts) > 1:
+        summary_rows.append(["시도(재개)", f"{len(attempts)}회 - 커밋·시작 시각은 마지막 "
+                                         "시도 값이다(`run.json` `meta.attempts`)"])
+    if meta.get("provenance_mixed"):
+        summary_rows.append(["출처 섞임", f"**{meta['provenance_mixed']}** - 한 `raw.jsonl` 에 "
+                                        "다른 판의 결과가 함께 있다"])
+    if meta.get("rerun_partial"):
+        summary_rows.append(["1턴부터 다시 돈 멀티턴", f"{len(meta['rerun_partial'])}건 - 재개 때 "
+                                                 "일부 턴만 끝나 있었다(`meta.rerun_partial`)"])
+    add(_table(["항목", "값"], summary_rows))
     add("")
     add("### 프로파일별 기동 결과")
     add("")

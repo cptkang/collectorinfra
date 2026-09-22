@@ -544,3 +544,121 @@ def test_propose_는_캠페인이_없으면_트랙T_신호만_쓴다(tmp_path, m
     args = cli.build_parser().parse_args(["--propose"])
 
     assert cli._propose_campaign_inputs(args) == ("run-closed", [], None)
+
+
+# ── 재개 조건 · 합산 경로 (109 CS-18 · CS-19) ─────────────────────────────
+
+
+def test_합산_재계산은_기록된_경로가_없으면_run_id_로_94_결과_폴더를_찾는다(
+        seg, monkeypatch) -> None:
+    """CS-18 — `out_dir` 은 실행 기계의 절대 경로다.
+
+    폴더를 옮겨도 `results/scenario/<run_id>` 로 찾는다.
+    """
+    import shutil
+
+    from scripts.bench import __main__ as cli
+
+    run, _, _, root = seg
+    assert run("next", "--mode", "mock") == 0
+    rec = _state(root, "mock-closed")["records"][0]
+    scenario_root = root.parent.parent / "scenario"
+    monkeypatch.setattr(cli, "_SCENARIO_RESULTS_DIR", scenario_root, raising=False)
+    shutil.move(rec["out_dir"], scenario_root / rec["run_id"])
+
+    args = cli.build_parser().parse_args(["--segment", "next", "--mode", "mock"])
+    _, _, campaign, all_arms, categories, plan, _ = cli._campaign_context(args)
+    report = cli._write_campaign_report(campaign, plan, categories, all_arms)
+    body = report.read_text(encoding="utf-8")
+
+    assert "측정된 축 1/3" in body
+    assert f"| `{rec['segment_id']}` | y | 1 |" in body and "| 100.0% |" in body, \
+        "기준선 관측을 옮긴 폴더에서 읽었다(못 읽으면 0.0%)"
+
+
+def test_합산_재계산은_구간_폴더가_없으면_그_축을_미측정으로_표기한다(seg, monkeypatch) -> None:
+    """CS-18 — 종전에는 빈 관측으로 「판정 불가」가 되고 「측정된 축」으로도 세졌다."""
+    import shutil
+
+    from scripts.bench import __main__ as cli
+
+    run, _, _, root = seg
+    assert run("next", "--mode", "mock") == 0
+    rec = _state(root, "mock-closed")["records"][0]
+    monkeypatch.setattr(cli, "_SCENARIO_RESULTS_DIR", root.parent.parent / "scenario",
+                        raising=False)
+    shutil.rmtree(rec["out_dir"])
+
+    args = cli.build_parser().parse_args(["--segment", "next", "--mode", "mock"])
+    _, _, campaign, all_arms, categories, plan, _ = cli._campaign_context(args)
+    report = cli._write_campaign_report(campaign, plan, categories, all_arms)
+    body = report.read_text(encoding="utf-8")
+
+    assert "측정된 축 0/3" in body
+    assert f"미측정(구간 {rec['segment_id']} 폴더 없음 — {rec['out_dir']}" in body
+
+
+@pytest.mark.parametrize("argv, why", [
+    (["--mode", "run", "--campaign", "mock-closed"], "모드"),
+    (["--mode", "mock", "--repeat", "2"], "반복"),
+])
+def test_기존_캠페인과_실행_조건이_다르면_돌리기_전에_멈춘다(seg, capsys, argv, why) -> None:
+    """CS-19 ① — 대조하지 않으면 mock 구간이 실 캠페인에 「완료」로 기록되거나,
+    반복 수가 섞인 구간이 한 캠페인에 모인다.
+    """
+    run, calls, _, root = seg
+    assert run("next", "--mode", "mock") == 0
+    before = _state(root, "mock-closed")["records"]
+
+    assert run("next", *argv) == 1
+    assert len(calls) == 1, "돌리지 않는다"
+    out = capsys.readouterr().out
+    assert "멈춥니다" in out and why in out
+    assert _state(root, "mock-closed")["records"] == before, "상태 파일을 바꾸지 않는다"
+
+
+def test_dry_는_모드가_달라도_계획을_보여준다(seg) -> None:
+    """`--mode dry` 는 실 캠페인 계획을 보는 명령이다 — 모드 대조 대상이 아니다."""
+    run, _, _, _ = seg
+    assert run("next", "--mode", "mock") == 0
+    assert run("next", "--mode", "dry", "--campaign", "mock-closed") == 0
+
+
+def test_env_판정이_바뀌어_끊긴_캠페인을_못_찾으면_이으라고_안내하고_멈춘다(
+        seg, monkeypatch, capsys) -> None:
+    """CS-19 ② — 이름 기본값이 `<mode>-<env>` 라 `--env auto` 판정이 바뀌면 새 캠페인이 열렸다."""
+    run, calls, _, root = seg
+    run.interrupts.append(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        run("next", "--mode", "mock")                      # mock-closed 구간이 끊긴 채 남는다
+    monkeypatch.setattr(sweep, "resolve_env", lambda explicit=None: ("sandbox", "테스트"))
+
+    assert run("next", "--mode", "mock") == 1
+    assert len(calls) == 1 and not (root / "mock-sandbox").exists(), "새 캠페인을 열지 않는다"
+    out = capsys.readouterr().out
+    assert "--env closed" in out and "--campaign mock-closed" in out
+
+
+def test_env_가_바뀌어도_다른_모드의_끊긴_구간은_막지_않는다(seg, monkeypatch) -> None:
+    run, calls, _, _ = seg
+    run.interrupts.append(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        run("next", "--mode", "mock")
+    monkeypatch.setattr(sweep, "resolve_env", lambda explicit=None: ("sandbox", "테스트"))
+
+    assert run("next", "--mode", "run") == 0
+    assert len(calls) == 2
+
+
+def test_출처가_섞인_재개는_건전성_주의로만_알린다() -> None:
+    """CS-19 ③ — 94 러너가 `meta.provenance_mixed` 를 남기면 주의 문장이 된다.
+
+    멈춤 사유는 아니다(사용자 판단).
+    """
+    health = sweep.scan_health(
+        {"profiles": [], "meta": {"provenance_mixed": "커밋이 다르다(aaa → bbb)"}}, Path("/없음"))
+
+    assert any("커밋이 다르다(aaa → bbb)" in w for w in health.warnings())
+    assert not any("커밋" in r for r in health.stop_reasons())
+    clean = sweep.scan_health({"profiles": []}, Path("/없음"))
+    assert not any("출처" in w for w in clean.warnings())

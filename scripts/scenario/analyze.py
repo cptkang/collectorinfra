@@ -359,13 +359,15 @@ def _incompatible(now: set[tuple[Any, ...]], prev: set[tuple[Any, ...]]) -> Opti
 def select_baseline(
     run_dir: Path, summary: dict[str, Any],
 ) -> tuple[Optional[Path], dict[str, Any], dict[str, str]]:
-    """회귀 기준선 run 을 고른다 — 같은 env · 무효율 상한 이내 · 비교 키가 맞는 가장 최근 run.
+    """회귀 기준선 run 을 고른다 — 같은 env · 같은 모드 · 끝난 run · 무효율 상한 이내 · 비교 키가
+    맞는 가장 최근 run.
 
     Returns:
         (기준선 run 디렉터리 또는 None, 기준선 요약, {건너뛴 run: 사유}) — env 불일치·무효율
         초과는 종전처럼 사유 없이 건너뛴다(비교 대상이 될 수 없는 run 이다).
     """
     meta = summary.get("meta", {})
+    mode = meta.get("mode")
     now = comparison_keys(summary)
     skipped: dict[str, str] = {}
     candidates = sorted(
@@ -374,7 +376,19 @@ def select_baseline(
     )
     for candidate in candidates:
         prev = build_summary(candidate, None)
-        if prev.get("meta", {}).get("env") != meta.get("env"):
+        prev_meta = prev.get("meta", {})
+        if prev_meta.get("env") != meta.get("env"):
+            continue
+        # 109·CS-43: mock 은 tier 가 미관측(None)이라 비교 키를 통과한다 — arm 구성이 같은
+        # mock 리허설 폴더가 실 run 의 기준선이 될 수 있었다. 이번 run 의 모드를 모르면(옛 형식)
+        # 제약하지 않는다.
+        if mode and prev_meta.get("mode") != mode:
+            skipped[candidate.name] = f"모드가 다르다({prev_meta.get('mode') or '미기록'} → {mode})"
+            continue
+        # 109·CS-19③: 러너는 시작 시점에도 `run.json` 을 쓴다 — 끊긴 run 은 일부 시나리오만
+        # 돈 run 이다.
+        if prev_meta.get("in_progress"):
+            skipped[candidate.name] = "끝나지 않은 run(중단됐거나 진행 중)"
             continue
         if (prev.get("invalid") or {}).get("over_threshold"):
             continue

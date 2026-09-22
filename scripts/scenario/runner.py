@@ -8,6 +8,7 @@ JSONL 한 줄로 적재한다. **한 시나리오의 예외는 그 건만 ERROR 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import platform
 import signal
@@ -166,6 +167,84 @@ def run_meta(config: RunConfig, catalog: Catalog) -> dict[str, Any]:
         "platform": platform_provenance(),
         "host": platform.node(),
     }
+
+
+def _tree_digest() -> str:
+    """작업 트리 지문 - `git status --porcelain` 과 `git diff HEAD` 의 해시(109·CS-19③).
+
+    커밋이 같아도 미커밋 변경이 바뀌면 다른 판이다. dirty 가 아닐 때는 커밋이 곧 판이라
+    부르지 않는다.
+    """
+    status = run_capture(["git", "-C", str(REPO_ROOT), "status", "--porcelain"], timeout=5)
+    diff = run_capture(["git", "-C", str(REPO_ROOT), "diff", "HEAD"])
+    return hashlib.sha256(f"{status}\0{diff}".encode()).hexdigest()[:16]
+
+
+def attempt_provenance(meta: dict[str, Any]) -> dict[str, Any]:
+    """시도(시작·재개) 1회의 출처. `run.json` `meta.attempts` 에 누적된다(109·CS-19③)."""
+    return {
+        "started_at": meta.get("started_at"),
+        "commit": meta.get("commit"),
+        "dirty": meta.get("dirty"),
+        "tree_digest": _tree_digest() if meta.get("dirty") else None,
+    }
+
+
+def provenance_mix(attempts: list[dict[str, Any]]) -> Optional[str]:
+    """시도 사이에 판이 바뀌었으면 그 사유, 같으면 None(109·CS-19③).
+
+    재개는 같은 `raw.jsonl` 에 이어 쓴다. 끊긴 뒤 코드·`.env` 를 바꾸고 이으면 한 파일에 두 판의
+    결과가 섞이는데, 종전에는 `run.json` 이 마지막 시도의 커밋만 남겨 그 사실이 드러나지 않았다.
+    **모르는 것은 같다고 보지 않는다** - 출처가 없는 시도가 있으면 확인할 수 없다고 말한다.
+    콘솔에도 찍히므로 ASCII 구두점만 쓴다(cp949 - 모듈 독스트링).
+    """
+    if len(attempts) < 2:
+        return None
+    first = attempts[0]
+    for number, later in enumerate(attempts[1:], start=2):
+        if first.get("commit") is None or later.get("commit") is None:
+            return (f"시도 1 과 시도 {number} 중 출처(커밋)가 기록되지 않은 시도가 있다 - "
+                    "같은 판인지 확인할 수 없다")
+        if later["commit"] != first["commit"]:
+            return (f"커밋이 다르다(시도 1 {str(first['commit'])[:12]} -> "
+                    f"시도 {number} {str(later['commit'])[:12]})")
+        if later.get("dirty") != first.get("dirty"):
+            return (f"작업 트리 dirty 가 다르다(시도 1 {first.get('dirty')} -> "
+                    f"시도 {number} {later.get('dirty')})")
+        if first.get("dirty") and first.get("tree_digest") != later.get("tree_digest"):
+            if first.get("tree_digest") is None or later.get("tree_digest") is None:
+                return (f"작업 트리 지문이 없는 시도가 있다(시도 1 과 시도 {number}) - "
+                        "같은 커밋 위의 미커밋 변경이 같은지 확인할 수 없다")
+            return (f"작업 트리가 다르다 - 같은 커밋 {str(first['commit'])[:12]} 위의 "
+                    f"미커밋 변경이 시도 1 과 시도 {number} 사이에 바뀌었다")
+    return None
+
+
+def _previous_run(out_dir: Path) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]]:
+    """같은 run_id 폴더에 남은 이전 시도의 `run.json` 과 출처 목록(109·CS-19③).
+
+    이 수정 전에 적재된 폴더는 출처 목록이 없다 - 끝난 run 이면 `meta` 에서 한 건을 되살리고,
+    `run.json` 없이 `raw.jsonl` 만 있으면(끊긴 run) **출처를 모르는 시도** 한 건으로 둔다.
+    """
+    previous: Optional[dict[str, Any]] = None
+    path = out_dir / "run.json"
+    if path.exists():
+        try:
+            with utf8_open(path, "r") as handle:
+                previous = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            previous = None
+    prior_meta = (previous or {}).get("meta") or {}
+    attempts = list(prior_meta.get("attempts") or [])
+    if not attempts and prior_meta:
+        attempts = [{
+            "started_at": prior_meta.get("started_at"), "commit": prior_meta.get("commit"),
+            "dirty": prior_meta.get("dirty"), "tree_digest": None,
+        }]
+    raw = out_dir / "raw.jsonl"
+    if not attempts and raw.exists() and raw.stat().st_size > 0:
+        attempts = [{"started_at": None, "commit": None, "dirty": None, "tree_digest": None}]
+    return previous, attempts
 
 
 def segments(scenarios: list[Scenario], size: Optional[int]) -> list[list[Scenario]]:
@@ -354,6 +433,9 @@ class RawLog:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._done: set[tuple[str, str, int, int]] = set()
+        # 키별 **마지막 행의** 판정. 재개가 "앞 턴이 깨져 뒤 턴을 일부러 건너뛴 시나리오"를
+        # "중간에 끊긴 시나리오"와 가르는 데 쓴다(`_resume_state` · 109·CS-17).
+        self._verdicts: dict[tuple[str, str, int, int], str] = {}
         # 동시 부하(K-06·K-07)의 작업 스레드가 함께 적재한다 - 한 줄이 섞이면 재개 원본이 깨진다.
         self._lock = threading.Lock()
         if path.exists():
@@ -373,6 +455,7 @@ class RawLog:
         # 같은 키가 여러 번 나오면(재개 run) **뒤에 적재된 행이 결과**다 - 파일 순서가
         # 곧 시간 순서이므로 마지막 것을 반영한다.
         key = row_key(row)
+        self._verdicts[key] = str(row.get("func_verdict"))
         if row_is_invalid(row):
             self._done.discard(key)
         else:
@@ -380,6 +463,10 @@ class RawLog:
 
     def already(self, profile: str, scenario_id: str, turn: int, repeat: int) -> bool:
         return (profile, scenario_id, turn, repeat) in self._done
+
+    def verdict(self, profile: str, scenario_id: str, turn: int, repeat: int) -> Optional[str]:
+        """그 턴의 마지막 적재 판정. 적재된 적이 없으면 None."""
+        return self._verdicts.get((profile, scenario_id, turn, repeat))
 
     def append(self, row: dict[str, Any]) -> None:
         line = json.dumps(row, ensure_ascii=False) + "\n"
@@ -945,6 +1032,32 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "logs").mkdir(exist_ok=True)
     (out_dir / "artifacts").mkdir(exist_ok=True)
+
+    # 109·CS-19③: 시도(시작·재개)마다 출처를 누적한다. 종전에는 끝에서만 `run.json` 을
+    # 써서 끊긴 run 에는 출처가 없었고, 재개하면 마지막 시도의 커밋만 남아 두 판이 섞여도
+    # 드러나지 않았다.
+    previous, prior_attempts = _previous_run(out_dir)
+    prior_meta = (previous or {}).get("meta") or {}
+    if prior_meta.get("rerun_partial"):
+        # 앞 시도가 1턴부터 다시 돈 기록도 잃지 않는다(109·CS-17).
+        meta["rerun_partial"] = list(prior_meta["rerun_partial"])
+    meta["attempts"] = prior_attempts + [attempt_provenance(meta)]
+    mixed = provenance_mix(meta["attempts"])
+    if mixed:
+        meta["provenance_mixed"] = mixed
+        print(f"       [주의] 출처 섞임 - {mixed}. 한 raw.jsonl 에 두 판의 결과가 함께 있다",
+              flush=True)
+    # 시작 시점에도 남긴다 - 끊겨도 출처가 있어야 재개 때 대조할 수 있다. 이전 시도의 프로파일·
+    # 제외 목록은 끝의 기록이 덮을 때까지 그대로 둔다(또 끊기면 그것이 남은 기록이다).
+    # `in_progress` 는 끝의 기록에 없다 - 분석기가 끊긴 run 을 기준선으로 고르지 않는 표지다.
+    started = dict(previous or {"profiles": [], "executed_turns": 0, "skipped": []})
+    started.update({
+        "meta": {**meta, "in_progress": True},
+        "raw_path": str(out_dir / "raw.jsonl"),
+        "out_dir": str(out_dir),
+    })
+    with utf8_open(out_dir / "run.json", "w") as handle:
+        json.dump(started, handle, ensure_ascii=False, indent=2)
 
     raw = RawLog(out_dir / "raw.jsonl")
     statuses: list[ProfileStatus] = []
@@ -1711,6 +1824,35 @@ def _hold_for_env(turn: Turn, scenario: Scenario, run_env: Optional[str]) -> Tur
     return Turn(send=turn.send, expect=expect, endpoint=turn.endpoint, auto_answer=turn.auto_answer)
 
 
+def _resume_state(
+    raw: RawLog, profile: str, scenario_id: str, repeat: int, turn_nos: list[int]
+) -> tuple[str, list[int]]:
+    """재개 때 이 시나리오 실행 1회를 어떻게 다룰지 - (상태, 이미 끝난 턴 번호) (109·CS-17).
+
+    재개는 **턴이 아니라 시나리오**로 판단한다(사용자 결정 2026-09-22 "멀티턴은 다시 돌려라").
+    멀티턴 승계는 한 thread 안에서만 성립하는데 thread_id 는 실행마다 새로 만든다. 끝난 턴을
+    건너뛰고 남은 턴만 돌리면 남은 턴이 **새 thread 에서 이전 턴 문맥·역질문 응답 재료 없이** 돈다 -
+    승계를 재는 시나리오가 다른 것을 잰다(`segments` 가 턴 경계에서 자르지 않는 것과 같은 이유).
+
+    - `new` - 끝난 턴이 없다. 새 run 과 똑같이 돈다.
+    - `done` - 전 턴이 끝났거나, 앞 턴이 fail/error 로 끝나 러너가 뒤 턴을 **일부러** 건너뛴
+      시나리오다(`_run_once` 의 break). 다시 돌지 않는다 - 뒤 턴만 돌리면 위와 같은 왜곡이다.
+    - `partial` - 일부만 끝났다(중간에 끊겼거나 뒤 턴이 무효). **1턴부터 새 thread 로 전부
+      다시 돈다.** 같은 키의 행이 한 번 더 적재되고, 소비자는 뒤 행을 결과로 읽는다
+      (`RawLog._remember` · `report.load_rows` · 벤치 `sweep.read_raw_rows`).
+    """
+    done = [turn_no for turn_no in turn_nos if raw.already(profile, scenario_id, turn_no, repeat)]
+    if not done:
+        return "new", done
+    if len(done) == len(turn_nos):
+        return "done", done
+    if done == turn_nos[:len(done)] and raw.verdict(
+        profile, scenario_id, done[-1], repeat
+    ) in ("fail", "error"):
+        return "done", done
+    return "partial", done
+
+
 def _run_once(
     catalog: Catalog,
     config: RunConfig,
@@ -1768,12 +1910,37 @@ def _run_once(
             })
             return 0
 
+    turn_nos = [turn_offset + index for index in range(1, len(scenario.turns) + 1)]
+    resume_state, done_turns = _resume_state(raw, profile, scenario.id, repeat, turn_nos)
+    if resume_state == "partial":
+        # 다시 돈 사실을 조용히 넘기지 않는다 - run.json 과 콘솔에 남긴다(109·CS-17).
+        meta.setdefault("rerun_partial", []).append({
+            "profile": profile, "scenario_id": scenario.id, "repeat": repeat,
+            "done_turns": done_turns, "turns": len(turn_nos),
+            "attempt": len(meta.get("attempts") or []) or None,
+        })
+        print(
+            f"       [재개] {scenario.id} (반복 {repeat}) 턴 {len(done_turns)}/{len(turn_nos)} 만 "
+            "끝나 있어 1턴부터 새 thread 로 다시 돈다",
+            flush=True,
+        )
+    elif resume_state == "done" and len(done_turns) < len(turn_nos):
+        # 앞 턴이 fail/error 로 끊겨 끝난 시나리오다. `run.json` 은 끝에서 이번 시도의 `skipped` 로
+        # 새로 쓰이므로, 앞 시도가 남긴 건너뜀 사유를 같은 문구로 다시 적는다 - 안 적으면 사라진다.
+        verdict = raw.verdict(profile, scenario.id, done_turns[-1], repeat)
+        for remaining in turn_nos[len(done_turns):]:
+            skipped.append({
+                "scenario_id": scenario.id,
+                "turn": remaining,
+                "reason": f"선행 턴 {done_turns[-1]} 이 {verdict} - 후속 턴 판정 불가",
+            })
+
     last_obs: Optional[Observation] = None
     last_query = ""
     try:
         for index, turn in enumerate(scenario.turns, start=1):
             turn_no = turn_offset + index
-            if raw.already(profile, scenario.id, turn_no, repeat):
+            if resume_state == "done":
                 continue
             if token_source is not None:
                 # T-b: 재발급은 **턴 경계에서만** 한다. 턴 중간(역질문 왕복·멀티턴 승계)에

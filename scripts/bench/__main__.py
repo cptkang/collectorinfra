@@ -42,6 +42,9 @@ def say(message: str = "") -> None:
     print(message, flush=True)
 
 _RESULTS_DIR = _ROOT / "results" / "bench"
+#: 94 러너 `RESULTS_ROOT` 와 같은 위치 — 구간 폴더(`results/scenario/<run_id>`)를 기록된
+#: 절대 경로 대신 찾을 때 쓴다(109·CS-18). 러너를 임포트하지 않는다 — 트랙 T 는 94 없이도 돈다.
+_SCENARIO_RESULTS_DIR = _ROOT / "results" / "scenario"
 
 
 def _providers_of(echo: probe.EchoResult) -> tuple[str, str]:
@@ -655,6 +658,51 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
     return env, env_reason, campaign, all_arms, categories, plan, snapshot
 
 
+def _campaign_guard(args: argparse.Namespace) -> Optional[str]:
+    """재개 조건이 캠페인과 같은지 — 돌리기 전에 멈출 사유, 없으면 None (109·CS-19 ①②).
+
+    ① 기존 캠페인과 `--repeat`·`--mode` 가 다르면 멈춘다. 상태 파일은 처음 값을 들고 있는데 계획·
+       실행은 인자를 쓴다 — 대조하지 않으면 `--campaign run-closed --mode mock` 의 mock 구간이 실
+       캠페인에 「완료」로 기록된다. `--mode dry` 는 계획 보기라 모드는 대조하지 않는다.
+    ② `--campaign` 없이 기본 이름(`<mode>-<env>`)으로 **새** 캠페인을 열려는데 같은 모드의 다른
+       캠페인에 끊긴 구간이 있으면 멈춘다 — `--env auto` 판정이 바뀌어 이름이 달라진 것이다.
+       끊긴 run 을 잇지 않고 처음부터 새 캠페인을 돌면 그 run 은 버려진다.
+    """
+    env, _ = sweep_mod.resolve_env(args.env)
+    name = args.campaign or campaign_mod.default_name(args.mode, env)
+    path = campaign_mod.campaign_path(_RESULTS_DIR, name)
+    mode = "run" if args.mode == "dry" else args.mode
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        diffs = []
+        if int(data.get("repeat", args.repeat)) != args.repeat:
+            diffs.append(f"반복 — 상태 파일 {data.get('repeat')} · 인자 --repeat {args.repeat}")
+        if args.mode != "dry" and data.get("mode", mode) != args.mode:
+            diffs.append(f"모드 — 상태 파일 {data.get('mode')} · 인자 --mode {args.mode}")
+        if diffs:
+            return (f"캠페인 `{name}` 과 실행 조건이 다릅니다({' / '.join(diffs)}). "
+                    f"한 캠페인의 구간은 같은 조건이어야 합산됩니다 — 처음 옵션"
+                    f"(--mode {data.get('mode')} "
+                    f"--repeat {data.get('repeat')})으로 다시 실행하세요.")
+        return None
+    if args.campaign:
+        return None
+    for other, record in _interrupted_segments():
+        if other == name or record.mode != mode:
+            continue
+        try:
+            other_env = json.loads(campaign_mod.campaign_path(_RESULTS_DIR, other)
+                                   .read_text(encoding="utf-8")).get("env", "?")
+        except (OSError, json.JSONDecodeError):
+            other_env = "?"
+        return (f"캠페인 `{other}`(환경 {other_env})의 구간 {record.segment_id} 이 끊겨 "
+                f"있는데, 이번 실행은 새 캠페인 `{name}`(환경 {env})을 엽니다 — "
+                f"`--env {args.env}` 판정이 바뀐 것입니다. 이으려면 `--env {other_env}` 또는 "
+                f"`--campaign {other}` 로 다시 실행하세요. 새 캠페인이 맞다면 "
+                f"`--campaign {name}` 으로 명시하세요.")
+    return None
+
+
 def cmd_segment(args: argparse.Namespace) -> int:
     """구간 캠페인 — `--segment next` 를 반복해서 치면 다음 미완 구간이 돈다.
 
@@ -662,7 +710,16 @@ def cmd_segment(args: argparse.Namespace) -> int:
     - **실패 구간이 있으면 `next` 는 멈춘다.** 건너뛰면 같은 원인으로 다음 구간도 버린다.
       원인을 고친 뒤 `--segment <구간id>` 로 그 구간을 다시 돈다.
     - 구간 판정은 그 구간 기준선으로만 한다. 합산 리포트는 끝난 구간을 모은 것이다.
+    - 재개 조건(모드·반복·환경)이 캠페인과 다르면 **돌리기 전에** 멈춘다(`_campaign_guard`).
     """
+    try:
+        problem = _campaign_guard(args)
+    except Exception as exc:
+        say(f"캠페인 상태 확인 실패: {type(exc).__name__}: {exc}")
+        return 1
+    if problem:
+        say(f"멈춥니다 — {problem}")
+        return 1
     try:
         env, env_reason, campaign, all_arms, categories, plan, snapshot = _campaign_context(args)
     except Exception as exc:
@@ -825,17 +882,32 @@ def _campaign_optima(campaign, all_arms):
     """끝난 구간의 축 최적값을 모은다 — 합산 리포트와 `--propose` 가 같은 값을 본다.
 
     돌려주는 것: `[(구간 id, AxisOptimum)]` · 첫 구간 스냅샷 · `[(구간 id, 기준선 관측)]` ·
-    구간 표 행 · 측정된 축 집합. 실행을 생략한 레벨은 같은 구간의 기준선 관측으로 채운다.
+    구간 표 행 · 측정된 축 집합 · `{축: 미측정 사유}`(구간 폴더를 못 찾은 축). 실행을 생략한 레벨은
+    같은 구간의 기준선 관측으로 채운다.
+
+    구간 폴더는 기록된 절대 경로(`out_dir` — 실행 기계 기준)에서 먼저 찾고, 없으면 94 결과
+    폴더의 `run_id` 로 찾는다(109·CS-18). 둘 다 없으면 그 구간의 축을 **측정된 축에서 빼고**
+    사유를 돌려준다 — 종전에는 빈 관측이 「판정 불가」로 들어가 측정된 축으로 세졌다.
     """
     optima: list = []
     baselines: list = []
     seg_rows: list[str] = []
     first_snapshot = None
     measured: set[str] = set()
+    missing: dict[str, str] = {}
     for record in campaign.done():
-        if not record.out_dir:
+        tried = [Path(record.out_dir)] if record.out_dir else []
+        if record.run_id:
+            tried.append(_SCENARIO_RESULTS_DIR / record.run_id)
+        run_dir = next((p for p in tried if (p / "raw.jsonl").exists()), None)
+        if run_dir is None:
+            reason = (f"미측정(구간 {record.segment_id} 폴더 없음 — "
+                      f"{' · '.join(str(p) for p in tried) or '경로 기록 없음'})")
+            for axis in record.axes:
+                missing[axis] = reason
+            seg_rows.append(f"| `{record.segment_id}` | {record.category} | {len(record.axes)} | "
+                            f"{record.elapsed_sec / 3600:.2f} | 폴더 없음 | `{record.run_id}` |")
             continue
-        run_dir = Path(record.out_dir)
         raw = run_dir / "raw.jsonl"
         grouped = sweep_mod.group_by_arm(sweep_mod.read_observations(raw))
         snapshot = sweep_mod.load_config_snapshot(run_dir / "config_snapshot.json")
@@ -855,7 +927,7 @@ def _campaign_optima(campaign, all_arms):
         rate = sum(1 for o in base if o.passed) / len(base) * 100.0 if base else 0.0
         seg_rows.append(f"| `{record.segment_id}` | {record.category} | {len(record.axes)} | "
                         f"{record.elapsed_sec / 3600:.2f} | {rate:.1f}% | `{record.run_id}` |")
-    return optima, first_snapshot, baselines, seg_rows, measured
+    return optima, first_snapshot, baselines, seg_rows, measured, missing
 
 
 def _unevaluated_line(counts) -> str:
@@ -873,7 +945,8 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
     모으면 된다. 구간을 넘는 것은 **기준선 반복**뿐이고, 그것은 노이즈 바닥으로만 쓴다.
     """
     out_dir = campaign.path.parent
-    optima, first_snapshot, baselines, seg_rows, measured = _campaign_optima(campaign, all_arms)
+    optima, first_snapshot, baselines, seg_rows, measured, missing = _campaign_optima(
+        campaign, all_arms)
 
     floor_pp = compare.noise_floor([b for _, b in baselines])
     drift = []
@@ -900,7 +973,8 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
     for axis in all_axes:
         if axis in measured:
             continue
-        reason = campaign_mod.unmeasured_reason(axis, campaign, plan) or "미측정"
+        reason = (missing.get(axis) or campaign_mod.unmeasured_reason(axis, campaign, plan)
+                  or "미측정")
         rows.append(f"| `{axis}` | {categories.get(axis, '?')} | — | {' · '.join(levels[axis])} | "
                     f"**{reason}** | — | 이 축은 아직 판정되지 않았다 — 표에서 빼지 않는다 |")
         everything.append(compare.AxisOptimum(
@@ -965,10 +1039,13 @@ def _propose_campaign_inputs(args: argparse.Namespace):
     if campaign.mode == "mock":
         say(f"      ※ `{name}` 은 모의 캠페인이다 — 배관 확인용이며 처분 근거가 아니다")
     try:
-        optima, snapshot, *_ = _campaign_optima(campaign, sweep_mod.build_arms())
+        optima, snapshot, *_, missing = _campaign_optima(campaign, sweep_mod.build_arms())
     except sweep_mod.SweepUnavailable as exc:
         say(f"      캠페인 합산을 읽지 못했다 — {exc}")
         return name, [], None
+    for reason in sorted(set(missing.values())):
+        # 109·CS-18: 폴더를 못 찾은 구간의 축은 처분 입력에서 빠진다 — 조용히 빼지 않는다.
+        say(f"      ※ {reason} — 그 구간의 축은 처분 입력에서 빠진다")
     return name, [opt for _, opt in optima], snapshot
 
 

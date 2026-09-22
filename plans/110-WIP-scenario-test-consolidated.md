@@ -73,7 +73,7 @@ python -m scripts.scenario --analyze [RUN_ID]  # 분석·대안 수립 (무과�
 | `--only <ID,…>` | 개별 시나리오(쉼표 목록) |
 | `--repeat <n>` | run 단위 반복. **기본 1이고 R군만 3**이다(`runner.py:286·1440`). 시나리오별 반복은 카탈로그 `repeat:` 필드로 준다 |
 | `--env closed\|sandbox` | 대상 환경을 강제로 좁힌다. **보통 생략**한다. 미지정이면 서버 활성 DB로 판정하고, 환경이 다른 시나리오는 데이터 의존 단언을 보류한다(D-216) |
-| `--resume <RUN_ID>` | 중단된 run을 **같은 run_id**로 이어서. 무효 턴은 다시 돈다 |
+| `--resume <RUN_ID>` | 중단된 run을 **같은 run_id**로 이어서. 무효 턴은 다시 돈다. **일부 턴만 끝난 멀티턴 시나리오는 1턴부터 새 thread로 다시 돈다**(콘솔 `[재개]` · `meta.rerun_partial`). 이전 서버 로그는 `logs/server-<프로파일>.log.prev-<시각>`으로 남고, 끊기기 전과 판이 다르면 `[주의] 출처 섞임`이 뜬다(`109·CS-16`·`CS-17`·`CS-19③`) |
 | `--resume-failed <RUN_ID>` | 끝난 run의 무효·오류 시나리오만 **새 run_id**로. 원본은 읽기만 하고 `meta.rerun_of`에 출처가 남는다. `fail`은 대상이 아니다. `--resume`과 동시에 줄 수 없다(D-221) |
 | `--segment <N>` | 시나리오 N건마다 토큰을 새로 잡는다. 서버는 재기동하지 않는다(⑤) |
 | `--no-db` | preflight의 DB 조회 2건 생략 |
@@ -202,6 +202,11 @@ python -m scripts.scenario --resume <RUN_ID>         # 중단 복구 — 같은 
 python -m scripts.scenario --resume-failed <RUN_ID>  # 사후 복구 — 무효·오류만 새 run_id 로
 ```
 
+- **`--resume`은 턴이 아니라 시나리오 단위로 잇는다**(2026-09-22 · `109·CS-17`).
+  - 일부 턴만 끝난 멀티턴은 1턴부터 새 thread로 다시 돈다. 앞 턴이 fail/error로 끊겨 뒤 턴을 일부러 건너뛴 시나리오는 끝난 것으로 본다.
+  - 같은 턴이 두 번 적재되면 뒤 행이 결과다. 리포트·분석기도 같은 규칙으로 센다.
+  - 끊기기 전 서버 로그는 `.log.prev-<시각>`으로 보존된다(`CS-16`). 시도별 출처는 `run.json` `meta.attempts`에 쌓인다(`CS-19③`).
+  - 그래도 **끊긴 뒤 코드·`.env`를 바꾸지 않고 잇는다.** 바꾸면 `[주의] 출처 섞임`이 떠도 결과는 섞인다.
 - **세그먼트 크기는 시나리오 수 기준이다**(D-221 ③). 예상 소요 기준이었던 99 §3.3은 폐기됐다.
   - 이유: 소요 추정치(`--estimate`)가 군 목표치 기반이라 체계적으로 틀린다. 같은 `--segment 40`은 언제 돌려도 같은 경계를 만든다.
   - 균등한 소요가 필요하면 `--group`으로 끊는다.
@@ -476,6 +481,10 @@ Windows 고유 절차는 **부록 A**에 있다(원 94 부록 A를 옮겼다).
 | **`94·O-d`** ≡ `96·O-3` | 체크포인트 비대(20260918 `checkpoints-baseline.db` 804 MB). "plans/70 후보"로 넘긴다고 적었지만 70에 기록이 없다. 반출 측면은 D-219 ②(축소본 반출 · 109)가 대응한다 | 94 §17 · 96 §6 | plans/70 또는 여기서 종결 | 이관 기록 또는 종결 사유 | 없음 | 미처리(문서) |
 | **`94·양식 자리표`** | H·I군이 자리표 `fixtures/form_sample.xlsx`를 2회 참조 → 실물 양식으로 교체 | `tasks/todo-94.md` B | h/i yaml | 실물 양식 | 사람 | 부분 |
 | **`94·V19·V20·A.7`** ≡ `94·S5` | Windows 실단말에서 무과금 전 경로·고아 프로세스 0 · Playwright Windows · sre_agent py≥3.13 병존 · DRM(폐쇄망 전용). 지금까지 Windows 실 run은 1회(20260914-154940)와 MLX 스모크뿐이다 | 94 §10 · 부록 A.7 · §9 S5 | 폐쇄망 Windows 단말 | V19·V20 | S5 규모 run | 부분 |
+| **`109·CS-17`** | **멀티턴 도중 재개 시 문맥 없이 이어 돎.** 러너는 시나리오 실행마다 새 `thread_id`를 만들고, 재개 때 끝난 턴을 `continue`로 건너뛰었다. 그래서 남은 턴이 **새 thread에서 이전 턴 문맥·역질문 응답 재료 없이** 돌았다. **사용자 결정(2026-09-22 "멀티턴은 다시 돌려라" · 표지만 붙이는 안 기각)**: 일부 턴만 끝난 시나리오는 `already`를 무시하고 **1턴부터 새 thread로 전부 다시 돈다.** 다시 돈 사실은 `run.json` `meta.rerun_partial`(profile·scenario_id·repeat·done_turns·turns·attempt)과 콘솔 `[재개]`에 남는다. 같은 수정으로 두 가지를 함께 막았다. ①앞 턴이 fail/error로 끊겨 러너가 뒤 턴을 **일부러** 건너뛴 시나리오를 재개가 뒤 턴만 돌리던 것 — 이제 끝난 것으로 보고, 남은 턴의 건너뜀 사유(「선행 턴 N 이 fail - 후속 턴 판정 불가」)를 `skipped`에 다시 적는다(`run.json`은 끝에서 이번 시도의 `skipped`로 새로 쓰인다). ②94 리포트·분석기(`report.load_rows`)가 같은 키를 두 번 세던 것 — 벤치 `read_raw_rows`와 같은 규칙(뒤 행이 결과 · 위치는 처음 자리)으로 맞췄다. ②는 기존 무효 턴 재실행(X-1)에도 걸리던 중복 집계다. 벤치 `--segment` 재개와 `--resume` 공통 | 109 §3.1 CS-17 · 94 X-1(D-218 ③ · 부기 2026-09-22) | `runner._resume_state`·`_run_once`·`RawLog.verdict` · `report.turn_key`·`load_rows` | `tests/test_scenario/test_resume_integrity.py` — 부분 멀티턴 1턴부터 재실행·재실행 행의 `profile`·`arm`·`base_profile` 보존·뒤 턴 무효·전 턴 완료·앞 턴 불합격 끊김·끊긴 시나리오의 건너뜀 사유 재기록·새 run 불변 7건 + 리포트 마지막 행·키 동일성 4건 | 없음 | **랜딩**(2026-09-22 · 109 세션) |
+| **`109·CS-16`** | **재개하면 끊기기 전 서버 로그가 사라짐.** 재개는 끝난 arm까지 서버를 다시 띄우고 `ServerHandle._pump_log`가 `logs/server-<프로파일>.log`를 `"w"`로 열었다. 이제 기동 시 기존 로그(0바이트 초과)를 `server-<프로파일>.log.prev-<마지막 기록 시각>`으로 옮긴다. **덧붙이지 않고 옮기는 이유**: 소비자(`SqlAuditTail` 크기 오프셋 · 사다리 판독)는 이번 시도 로그만 읽으면 된다. 보존본은 `server-*.log` glob에 걸리지 않는다. 옮기지 못하면 종전처럼 덮어쓰고 콘솔에 경고한다. 새 run은 파일이 없어 동작이 같다 | 109 §3.1 CS-16 | `server.ServerHandle._keep_previous_log`·`start` | `test_resume_integrity.py` 서버 로그 2건(보존·새 run 불변) | 없음 | **랜딩**(2026-09-22 · 109 세션) — 109 가이드의 「재개 전 서버 로그 복사」 우회 절차를 뺐다 |
+| **`109·CS-19③`** | **재개 시 출처(커밋·dirty)가 덮여 두 판이 섞여도 드러나지 않음.** 러너는 `run.json`을 `_execute` 끝에서만 `"w"`로 썼다. 그래서 끊긴 run에는 출처가 없었고, 재개하면 재개 시점 값만 남았다. 고친 동작 넷: ①**시작 시점에도** `run.json`을 쓴다. `meta.in_progress: true`를 달고, 끝의 기록에서는 뺀다. 이전 시도의 `profiles`·`skipped`는 끝의 기록이 덮을 때까지 둔다. ②`meta.attempts`에 시도별 출처를 누적한다 — started_at·commit·dirty, dirty면 작업 트리 지문(`git status --porcelain`+`git diff HEAD` 해시). ③판이 다르면 `meta.provenance_mixed`를 남긴다(콘솔 `[주의]` · `report.md` §1 「출처 섞임」·「시도(재개)」 행). 출처가 없는 옛 시도는 「확인할 수 없다」로 적는다. ④분석기 `select_baseline`은 `in_progress` run을 기준선에서 빼고 사유를 적는다. 벤치는 `RunHealth.provenance_mixed`로 **건전성 주의만** 낸다(멈춤 기준 아님) | 109 §3.1 CS-19 ③ | `runner.attempt_provenance`·`provenance_mix`·`_previous_run`·`_execute` · `report.render_markdown` §1 · `analyze.select_baseline` · 벤치 `sweep.RunHealth` | `test_resume_integrity.py` 출처 6건 + §1 표기 2건 · `test_plan94_s19_rewrite.py::TestV29Baseline::test_unfinished_run_is_not_a_baseline` · `test_bench_campaign.py::test_출처가_섞인_재개는_건전성_주의로만_알린다` | 출처 섞임을 **멈춤 기준으로 올릴지는 사용자 판단**(정책 변경) | **랜딩**(2026-09-22 · 109 세션) · 멈춤 승격은 판단 대기 |
+| **`109·CS-43`** | **회귀 기준선이 mock 폴더일 수 있음.** `analyze.select_baseline`이 모드를 보지 않았다. mock은 tier가 미관측(None)이라 `_incompatible`을 통과한다. 그래서 arm 구성이 같은 mock 리허설 폴더가 실 run의 기준선이 될 수 있었다. 이제 모드(`meta.mode`)가 다른 후보는 `skipped`에 `모드가 다르다(mock → run)`로 남기고 건너뛴다. 이번 run의 모드를 모르면(옛 형식) 제약하지 않는다 | 109 §3.3 CS-43 | `analyze.select_baseline` | `test_plan94_s19_rewrite.py::TestV29Baseline::test_mock_run_is_never_a_baseline_for_a_real_run` | 없음 | **랜딩**(2026-09-22 · 109 세션 · 코드 판독 결함 — 실 캠페인으로는 확인하지 않았다) |
 
 **`108·G-6` 교차 대조**(108 §5.2e — 이 규칙이 특정 run의 숫자를 좋게 만들려는 것이 아님을 보인다)
 
@@ -568,6 +577,7 @@ A. 지금 · 사람 판단 ─ ~~108·G-6(판정 계약)~~ **승인·랜딩(2026
       │
 B. 재테스트 전 · 하네스 코드(무과금 · 제품 동작 불변) ─ ~~110·N-1 arm 적용 수단~~ **랜딩(2026-09-21)** · 94·§4.4 PII 마스킹 · 108·CU-B3 teardown
       │   · 94·O-a column_mapping · (G-6 승인 시) 판정 계약 구현
+      │   · ~~109·CS-16·CS-17·CS-19③·CS-43 재개·분석 결함~~ **랜딩(2026-09-22)**
       │
 C. 폐쇄망 실행 ─ --preflight(E-0·E-1) → 표적 재현(3.5단 · J-1 · J-2 · arm 2종)
       │   → 전체 재테스트(`--arm tier2_intent --arm tier3_router`) → 단별 기준선 선언(94·V29 기준선)
@@ -654,6 +664,7 @@ E. 장기 ─ off B arm(108·CU-B6) · 카탈로그 확장(M/N/O/P · R군 · ma
 
 | 날짜 | 내용 |
 |---|---|
+| 2026-09-22 | **`109·CS-16`·`CS-17`·`CS-19③`·`CS-43` 이관·랜딩**(사용자 지시 "이관하고 멀티턴은 다시 돌려라" · "발견된 오류는 수정하라" · 109 세션 — 109가 구간 재개를 코드와 대조하다 발견해 임시 등재했던 94 러너·분석기 결함 4건을 장부 규칙 1·3에 따라 원 번호로 옮겼다). ①일부만 끝난 멀티턴은 재개 때 1턴부터 새 thread로 다시 돈다(`meta.rerun_partial`). 앞 턴 fail/error로 끊긴 시나리오는 끝난 것으로 본다. 리포트·분석기는 같은 키의 마지막 행만 센다. ②이전 서버 로그를 `.log.prev-<시각>`으로 보존한다. ③`run.json`을 시작 시점에도 쓰고(`in_progress`) 시도별 출처 `meta.attempts`를 누적한다. 판이 다르면 `provenance_mixed`(콘솔·`report.md` §1·벤치 건전성 주의)를 남긴다. ④회귀 기준선은 모드가 다른 run과 끝나지 않은 run을 사유와 함께 건너뛴다. **새 run의 `raw.jsonl`·실행 순서는 비트 동일**하다. 신규 테스트: 시나리오 23건, 벤치 1건(CS-19③ 주의). D-218 ③ 부기. 출처 섞임을 멈춤 기준으로 올릴지는 사용자 판단으로 남겼다. d7·36 세션에 착수를 통지했다. |
 | 2026-09-21 | **`108·G-6` 판정 계약 승인·랜딩**(사용자 "판정 계약 수용하라" · D-241 d9 등재). 단언 미평가 턴을 기능 합격률 분모에서 빼고 사유 3종을 **합치지 않고** 각각 집계한다. 행에 `unevaluated_reason` 칸 1개(`func_verdict` 어휘 불변), 규칙 정본은 `report.unevaluated_reason` 한 곳. `report.md` 2절에 제거 사다리(`제거 합 + 분모 == 전체` 단언)와 **벤치와 통일한 표기** `역질문 차단 N건 (자동응답 M건 · 발동률 P%)`를 싣고, 제거 사유 `timeout`과 6절 실패 유형 `timeout`은 절 제목으로 축을 갈랐다. §3.4에서 확정 게이트로 옮기고 가이드 ⑥ 판독 순서를 계약 적용본으로 고쳤다. |
 | 2026-09-21 | **`94·Y-11`·`94·Y-12`·`94·O-e` 랜딩 · `94·V28~V31`·`94·V29 기준선` 부분 랜딩**(d7 · plans/107 v2.5 구현 연동). 재작성 감사 단언 `expect.rewrite.{gate,slots_preserved}`(레코드 없으면 보류 — 카탈로그 선언 0건, 섀도 run 뒤 선언) · `rewrite_trace` 수집(done 1순위 · 서버 로그 폴백) · `raw.jsonl` 칸 · `bottleneck.md` 「재작성 게이트·검증」 절과 `REWRITE_TRACE_UNMEASURABLE` · 실패 분류 `rewrite` · 측정 arm `tier2_intent_frame`·`tier3_intent_frame` · 회귀 비교 키 `(env, tier, base_profile, arm)`와 `summary.meta.regression_baseline` 기록. 수동 기준선 지정·실 run 대조는 열려 있다 |
 | 2026-09-21 | **`110·N-1` 랜딩** — 시나리오 CLI에 `--arm <프로파일>`(반복 가능)을 넣어 2단·3단을 같은 run의 arm으로 나란히 잰다. 덧씌움은 **치환이 아니라 병합**이라 D군 8건이 알람 플래그를 유지한다. 조합 이름 `<프로파일>+<arm>`(ASCII — `profile` 값이 곧 파일명이다)과 함께 **`arm`(arm id 원본)·`base_profile` 두 칸을 `raw.jsonl` 행·`run.json` `profiles[]` 양쪽에 싣는다**(피어 확정 계약 — 소비자가 조합 이름을 파싱하지 않는다). `summary.json` `by_profile[]`·`report.md` 1절 「프로파일(arm)별 판정」이 arm별로 분리 집계한다. 가이드 ②③④⑥·§3.1·§3.2·§4를 실제 사용법으로 교체했다. 스위프 치환 결함 교정은 `110·N-2`로 분리해 보류했다(영역 조율). |
