@@ -10,6 +10,8 @@
 > R-6 범위 선택 발동률·범위 축소 감사 · R-7 예상 시간 문구 배선. **R-4(3단에서 존 순회 탐색 미도달)는 `plans/103` P1-3에 맡긴다**(사용자 결정).
 > **잔여**: Wave 4(U3) · Wave 6 나머지 — 그룹 섹션·다중 다운로드·탐색 경과 렌더(U8) · Wave 7(`plans/87` J2 선행 · 실행자 훅은 `backend: mcp`) — 순서는 §0.5.5.
 > 테스트: 82 관련 mock 18개 파일 351 passed(v7) + v7.1 신규 3개 파일 37건.
+> **작업 기록(2026-09-23 복원)**: v7.1 세션은 문서 정리 도중 끊겼다. 처리 결과는 §0.5.7에 복원했고, **D-249 본문 등재와 INDEX 갱신이 남았다.**
+> 뒤이은 "82·113 통합 검토" 요청은 미착수 상태로 중단됐다(§0.5.8).
 >
 > **v6 시점 상태 기록 (2026-08-28 — 이후 변경은 §0.5.4에서 대체 서술을 찾을 것)**
 > **상태**: **1차 구현 완료** (2026-08-28 · D-176 등재) — Wave 1·2·3·3.5 착지.
@@ -229,6 +231,9 @@ peer/pipeline은 그룹 간 *관계*다. 이 둘을 분리해야 APM·DPM 편입
 
 ### 0.5.3 신규 결함·갭 (v7 실측)
 
+> v7 시점의 발견 기록이다(파일:라인은 v7 기준). **R-4를 뺀 전부를 v7.1에서 수정했다 — 처리 결과는 §0.5.7.**
+> R-7은 v7.1 작업 중 R-5·R-6을 고치다 발견해 추가했다.
+
 | # | 심각도 | 내용 | 근거 | 조치 방향 |
 |---|---|---|---|---|
 | **R-1** | **높음** — 운영에서 실제로 도는 경로 | **그룹 경로에서 D-153 동일 스키마 소급 복구가 동작하지 않는다.** 공동존 gp가 검증에 실패하고 같은 스키마 yd가 성공해도 gp를 복구하지 않아 **공동존 김포 결과가 빠진다.** 단일 run 경로에서는 복구된다 | `_run_groups`의 run 병합(:869-882)이 `sql_by_schema`를 합치지 않는다. 그래서 병합 run은 **첫 그룹(은행존)의 `sql_by_schema`만** 갖고, 복구 루프(:1005)는 공동존 키를 찾지 못한 채 **로그 없이 `continue`** 한다. 재현: `ZONE_GROUP_EXCLUSIVE=true` → gp 복구 / `false` → 복구 0, gp 에러 잔존. 그룹 경로 테스트 2종(`test_multi_db_group_loop`·`test_multi_db_auto_groups`)에는 이 조합이 없다 | §4.9 원안대로 **소급 복구를 그룹 내부로 옮긴다**(`_run_groups`에서 그룹 run마다 수행). 회귀 테스트: 그룹 경로에서 gp 실패·yd 성공 → gp 복구. 결함 수정이라 승인 게이트는 없다 |
@@ -237,6 +242,7 @@ peer/pipeline은 그룹 간 *관계*다. 이 둘을 분리해야 APM·DPM 편입
 | R-4 | 중 — 3단 전환 때 드러남 | Wave 5 탐색에 **3단에서 도달할 수 없다**(프로세스 질의가 SQL로 분류된다) | `plans/103` A-1·D-5 3단 ❌ · P1-3 ❌ | **`plans/103` P1-3 소관.** 82는 수용 시나리오 S2가 3단에서도 성립해야 한다는 계약만 남긴다 |
 | R-5 | 낮음 | 그룹 계측이 프로세스 로컬 인메모리라 재기동마다 초기화된다. n≥20에 도달하기 어렵고, 어느 그룹이 느린지 사후 분석할 재료도 남지 않는다 | `group_metrics.py` 독스트링 "영속 저장은 범위 밖" | 신규 저장소 없이 감사 로그에 그룹별 `elapsed_ms`를 남기는 방법이 있다. U11로 시간 임계가 사라졌으므로 우선순위는 낮다 |
 | R-6 | 중 | 범위 선택의 **상쇄 장치 2건을 이행하지 않았다** — ①발동률 관측 카운터 없음(`spec/SPEC-scope-select.md` 수용 기준 "관측 카운터가 증가한다" · U9·U11 채택의 전제) ②`scope_narrowed` 감사 기록 없음(§5.3 불변식 6 ③) | `src/` grep 결과 카운터 0건 · `scope_narrowed`는 state·응답 문구·`query.py`에만 있고 `src/security/audit_logger.py`에 해당 이벤트가 없다 · `_scope_narrowed_or_none` 독스트링은 "응답과 감사 로그 양쪽에 남아야 한다"고 적었고 `tasks/todo-82-w56.md` T8 수용 기준("감사 로그에도 남긴다")도 **완료로 표기**돼 있다 · 질의 이력은 `status="clarification"`만 남기고 kind(`zone_select`/`scope_select`)를 구분하지 않는다(`thread_history._turn_status`) | 질의 이력 레코드에 `clarification.kind` 1필드, 좁힌 턴에 `scope_narrowed` 기록을 더한다. 둘 다 기존 기록 경로를 재사용한다 |
+| R-7 | 낮음 — 안전 측 | 범위 질문의 **예상 시간 문구가 영영 나오지 않는다.** `scope_question_or_none`은 그룹별 `p50_ms`·`p90_ms`와 `samples`를 받아야 문구를 내는데, 라우트가 둘 다 넘기지 않아 표본이 쌓여도 `samples=0`으로 판정된다. §5.5 S-C의 "n≥20이면 범위 표시"가 죽은 경로다 | `query._scope_select_or_none`이 `scope_question_or_none(groups=…, ctx=…, enabled=…)`만 호출 · `group_metrics.group_stats` 소비처는 모듈 내부뿐 | 라우트가 `group_stats`로 그룹 분포를 싣고, **표본이 가장 적은 그룹**을 `samples`로 넘긴다(한 그룹이라도 미달이면 합계 추정의 근거가 없다) |
 
 ### 0.5.4 본문 중 무효가 된 서술 — 읽을 때 대체할 것
 
@@ -250,7 +256,7 @@ peer/pipeline은 그룹 간 *관계*다. 이 둘을 분리해야 APM·DPM 편입
 | §3.1 ④ · §4.8 | 후단 게이트 `data_query` 전용 · 조기 반환 유지 | D-220 — `{data_query, alarm_query}` + 복합 개방(§0.5.2 #13) |
 | §4.2 레지스트리 예시 | apm·dpm `backend: rest` | `backend: mcp`(§0.5.2 #12) |
 | §4.7 State 확장 | `execution_groups`·`group_results`·`resolved_scope`·`output_files` | 신설된 것은 `execution_groups`·`group_results`·`group_packets`·`scope_narrowed`. `resolved_scope`·`output_files`는 없다 |
-| §4.9 | `_emit_group_packet` SSE 방출 · 소급 복구 그룹 내부 이동 | 방출하지 않는다(R-2) · 이동하지 않았다(**R-1**) |
+| §4.9 | `_emit_group_packet` SSE 방출 · 소급 복구 그룹 내부 이동 | v7 시점에는 둘 다 미이행(R-2·**R-1**). **v7.1에서 이행** — 방출은 SSE 직접이 아니라 진행 이벤트(D-204 채널)의 `group` 종류로, 행 미리보기는 **마스킹 후** 앞 N행(`API_SSE_GROUP_PREVIEW_ROWS`, 기본 10)만 싣는다(§0.5.7) |
 | §5.3 불변식 1 · §5.4 · §7.4-② · §14 U9 권고 | 존 축은 묻지 않는다 | **존 축도 묻는다**(U9 확정) |
 | §5.4 · Wave 6.5 · §12.6 | `COMPOSITE_SCOPE_SELECT_MIN_SECONDS`(30초 잠정) · 기본 off | **만들지 않았다**(U11 — 테스트가 상수 부재를 단언) · 기본 ON |
 | §5.6 · §7.6 ① · §14 U12 권고 | 탐색 캐시 TTL 0 · Wave 6.5 선행에서 제외 | 60초 기본 on(0건·실패는 캐시하지 않음) |
@@ -260,7 +266,21 @@ peer/pipeline은 그룹 간 *관계*다. 이 둘을 분리해야 APM·DPM 편입
 | §8 Wave 6 선행조건 | PII 판정 미해결이면 `.env` 옵트인만 | 옵트인으로 열었다(위 행) |
 | §8 Wave 6 착수 조건(2026-09-10 추가) | 운영 `TEXT2SQL_PATH_PARITY=true` 전환 뒤 존 편입 | **존 개방(D-206, 09-09)이 이 조건 추가(09-10)보다 먼저다.** 운영 `.env` 값은 이 체크아웃에서 확인할 수 없다(`.env.example`은 `false`). 조건을 충족하지 않은 채 열렸을 수 있으므로 확인이 필요하다(§0.5.6) |
 
-### 0.5.5 잔여 작업 재정의 (v7)
+### 0.5.5 잔여 작업 재정의 (v7.1)
+
+**순서 원칙은 그대로다** — 결함 수정 → 비용 0·무개입 레버 → 계측 → 사용자 확정이 필요한 것.
+v7이 1~3순위로 둔 R-1·R-6·Wave 6a(부분 결과 방출)는 **v7.1에서 끝났다**(§0.5.7). 남은 순서는 다음과 같다.
+
+| 순서 | 항목 | 내용 | 선행·게이트 | 수용 기준 |
+|---:|---|---|---|---|
+| 1 | **Wave 4** 그룹별 산출물 | 원안(§8 Wave 4) | **U3** | 원안 |
+| 2 | **Wave 6b** 그룹 섹션·다중 다운로드·탐색 경과 렌더 | Wave 6의 나머지. 부분 결과 카드(v7.1)는 이미 있으므로 **최종 응답의 그룹 섹션**과 다중 다운로드가 남는다 | Wave 4 · **U8** | 원안 + 탐색 트레이스(`discovery`) 렌더 |
+| 3 | **Wave 7** 솔루션 파이프라인 | 원안 + **`backend: mcp` 실행자 훅** · D-205 ⑤(`intent_planner` ②.5 "대상 치환" → "폴스타 그룹 필터" 재정의) · D-224 소유 판정(`capability_owners`)과 `capability_providers`의 역할 정리 | `plans/87` J2. 가짜 솔루션으로 구조·테스트만 먼저 착지할 수 있다(원안) | 원안 S3 |
+| — | R-4 3단 탐색 | **`plans/103` P1-3 소관**(사용자 결정 2026-09-22). 82는 수용 시나리오 S2가 3단에서도 성립해야 한다는 계약만 둔다 | `plans/103` P1-3 | — |
+| — | 실 브라우저 확인 | 부분 결과 카드의 체감(두 존 선택 → 은행존 카드가 공동존 완료 전에 뜸 · 완료 시 접힘 · 시간 초과 시 남음) | 폐쇄망 또는 로컬 MLX(D-240) | S1 |
+| — | U17 보존기간 프로브 | 폐쇄망에서 읽기 전용 1회 | 운영 DB 접근(사용자) | 14일 이상이면 주 단위를 연다 |
+
+<details><summary>v7 원표(이력 보존)</summary>
 
 **순서 원칙은 그대로다** — 결함 수정 → 비용 0·무개입 레버 → 계측 → 사용자 확정이 필요한 것.
 
@@ -276,6 +296,8 @@ peer/pipeline은 그룹 간 *관계*다. 이 둘을 분리해야 APM·DPM 편입
 | — | R-5 계측 영속화 | 보류(우선순위 낮음) | — | — |
 | — | U17 보존기간 프로브 | 폐쇄망에서 읽기 전용 1회 | 운영 DB 접근(사용자) | 14일 이상이면 주 단위를 연다 |
 
+</details>
+
 ### 0.5.6 사용자 확정 현황 (v7)
 
 | # | 상태 |
@@ -290,6 +312,48 @@ peer/pipeline은 그룹 간 *관계*다. 이 둘을 분리해야 APM·DPM 편입
 | U14 · U15 (b) · U16 (a) · U18 (+20%p) · U19 (파일시스템 단위) | 확정(D-176 후속1·후속2) |
 | U17 | 승인됐으나 **미실행**(DBHub 연결 불가 — 폐쇄망에서 1회 필요) |
 | **(신규) 운영 `TEXT2SQL_PATH_PARITY`** | 존 개방이 `plans/88` Q4 이관 조건보다 먼저 이뤄졌다. 운영 값 확인 필요(§0.5.4 마지막 행) |
+
+### 0.5.7 v7.1 처리 결과 (2026-09-22 · D-249 예정)
+
+> **사용자 지시**: *"발견된 문제를 개선하여 계획을 업데이트하라."*(2026-09-22) — R-1~R-6 수정 · R-4는 `plans/103` P1-3로 넘김(사용자 결정).
+> 작업 중 R-7을 발견해 함께 고쳤다. 코드·테스트는 커밋 `ae67749`(2026-09-23)에 들어갔다.
+> **이 절은 2026-09-23에 작업 기록(세션 transcript)과 코드 실측으로 복원해 적었다.** 원 작업 세션은 이 절을 쓰던 중
+> 다른 요청(82·113 통합 검토 — §0.5.8)으로 끊겼고, 곧이어 PC가 꺼졌다.
+
+| # | 조치 | 위치 | 테스트 |
+|---|---|---|---|
+| **R-1** | 소급 복구를 `_retro_recover_same_schema(run)`으로 떼어 냈다. 단일 run 경로는 종전 위치에서, 그룹 경로는 **그룹 run마다** 호출한다. 병합 run에서 부르면 첫 그룹의 `sql_by_schema`만 보이던 결함을 없앴다 | `src/nodes/multi_db_executor.py` `_retro_recover_same_schema`(:798) · 그룹 루프 호출(:969) · 단일 경로 호출(:1143) | `tests/test_nodes/test_multi_db_group_v7.py` |
+| **R-2** | 그룹 시작·완료를 진행 이벤트 `group` 종류로 낸다(`_emit_group_event`). 완료 이벤트에 건수·소요·**마스킹한** 앞 N행을 싣는다. 오류는 DB 표시 이름만 싣는다. UI는 커서 아래에 존별 부분 결과 카드를 그리고, 완료되면 접으며, 중단·오류가 나도 카드를 남긴다 | `multi_db_executor.py` `_emit_group_event`(:895) · `src/api/routes/query.py` 진행 이벤트 변환(`name == "group"`) · `src/static/js/app.js` `stream-partial` 카드 · `src/static/css/style.css` · 설정 `API_SSE_GROUP_PREVIEW_ROWS`(기본 10 · `src/config.py:485` · `.env.example` · `config/settings_help/infrastructure.yaml`) | `tests/test_api/test_group_progress_v7.py` · `tests/test_api/test_ui_stream_status.py`(수정) |
+| **R-3** | R-2 이벤트를 노드 안에서 내므로 사다리 전 단(1·2·3단)의 처리현황에 그룹 경과가 보인다 | `src/api/stream_failure.py` `group` 종류 처리 · `app.js` 처리현황 | 같은 파일 |
+| **R-5** | 그룹 1건의 **전체** 소요(스키마 분석·생성·재생성·소급 복구 포함)를 감사 파일에 남긴다. 신규 저장소는 만들지 않았다 | `src/security/audit_logger.py` `log_group_execution`(이벤트 `group_execution`) · `multi_db_executor.py` 그룹 루프 | `test_multi_db_group_v7.py`(감사 실패가 실행을 막지 않음 포함) |
+| **R-6** | ①파이프라인 전 역질문 발동을 `clarification_issued`(kind·axis·option_count — 원문 미포함, D-183)로 남긴다. 발동률의 분자이고 분모는 `user_request`다. 4개 진입점(텍스트 2 · 파일 2)에 배선했다 ②좁힌 턴을 `scope_narrowed`(selected·skipped·skipped_db_ids)로 남긴다 | `audit_logger.py` `log_clarification`·`log_scope_narrowed` · `query.py` 호출부 | `tests/test_scope_select/test_v7_audit_and_estimate.py` |
+| **R-7** | 라우트가 `group_stats`로 그룹별 p50·p90을 싣고, **표본이 가장 적은 그룹**의 표본 수를 `samples`로 넘긴다. n≥20이면 예상 시간 문구가 나온다 | `query.py` `_scope_select_or_none` | 같은 파일 |
+| R-4 | 미수정 — `plans/103` P1-3 소관 | — | — |
+
+**검증 (2026-09-22, Windows 체크아웃 · mock 전용 · LLM·MCP·DB 호출 0)**
+- 신규 테스트 3개 파일 34건(`test_multi_db_group_v7.py` 12 · `test_v7_audit_and_estimate.py` 12 · `test_group_progress_v7.py` 10)
+  · `test_ui_stream_status.py`를 수정했다. 머리말의 "37건"은 parametrize를 펼친 수로 보인다.
+- 설정 카탈로그 필드 수 단언 2건(`tests/test_api/test_settings_catalog.py`)을 새 키에 맞게 갱신했다.
+- 전체 pytest를 격리 worktree(HEAD `048c2be`)와 작업 트리에서 나란히 돌렸다. **실패 집합이 23 대 23으로 같다**(신규 실패 0 · 기준선
+  실패는 Windows 인코딩 등 환경 요인). 도중에 `dispatch_progress_event` 임포트 누락을 찾아 고쳤다.
+- **실 브라우저 확인은 하지 않았다**(§0.5.5 "실 브라우저 확인").
+
+**중단으로 남은 기록 작업** (코드가 아니라 문서)
+- ✗ **D-249 본문 미등재** — `docs/02_decision.md` 안내 라인은 "다음 D-249"인 채로 남아 있다. 이 계획서와 코드 주석·독스트링은 이미
+  D-249를 인용한다. 등재 전에 `## D-` 헤더·「변경 이력」·「채번 이력」 3곳을 다시 실측할 것.
+- ✗ `plans/INDEX.md` 82 행이 v7 표기다(v7.1 미반영).
+- ✗ §0.5.6(사용자 확정 현황)은 v7 표 그대로다 — v7.1에서 확정 항목 변동은 R-4 이관(사용자 결정) 1건이다.
+
+### 0.5.8 중단된 요청 — 82·113 통합 검토 (2026-09-22 · 미착수)
+
+> **사용자 지시**: *"82번 계획과 113번 계획이 유사해 보인다. 같이 검토하여 정리하라."*(2026-09-22)
+> 원 세션은 `plans/113` 전문을 읽고 겹치는 코드(`result_merger.plan_global_ranking` · `output_generator._preview_rows` ·
+> `surface_query_for_judgment`)의 호출부를 grep하던 중 끊겼다. **판단·산출물은 없다.** 두 계획서 모두 이 요청으로 바뀐 곳이 없다.
+> 재개할 때 볼 겹침 후보(원 세션이 조사하던 축):
+> - 둘 다 **멀티 DB 결과를 DB·존별로 모아 종합**한다 — 82는 실행 그룹(존 순차)·그룹별 부분 결과(R-2 카드 · `sse_group_preview_rows`),
+>   113은 존 위치어의 전 DB 팬아웃(F-1)·순위 질의 전역 재정렬(S-1 `plan_global_ranking`)·응답 미리보기 DB 균형(`_preview_rows`).
+> - 미리보기 행 상한이 두 곳에 따로 있다(`API_SSE_GROUP_PREVIEW_ROWS` ↔ `output_generator._PREVIEW_LIMIT`).
+> - 82 R-4(3단 탐색)와 113 F-1(3단 라우터 위치 힌트)이 모두 3단 라우팅 결손을 다룬다.
 
 ---
 
