@@ -19,7 +19,7 @@ ALARM_HISTORY_ENABLED=false이면 기존 2-노드 구조를 유지한다 (완전
 
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -59,6 +59,14 @@ class AlarmState(TypedDict):
     investigation_escalation: Optional[dict]            # Plan 64 CW-C: escalate-only 후속 통보 승격 데이터(fault_escalation_enabled + verdict.escalate 시에만 채워짐·notifier가 상향 안내 첨부·게이트 판정 소급 변경 없음)
     investigation_id: Optional[str]                     # plans/91 1-4: 인라인 조사 경로의 조사 ID(트리거가 채움 · 없으면 None) — notifier가 SSE·incident 페이로드에 실어 카드 피드백이 되돌린다
     investigation_pending: Optional[dict]               # Plan 66 3-E: 후속 모드에서 submit만 된 조사 식별자(investigation_followup_enabled 시에만 채워짐·notifier가 즉시 통보 후 백그라운드로 poll·후속 발송)
+    # Plan 54 모듈 4: 워커가 읽어 넘긴 활성 침묵 규칙(silence_enabled 시에만 · off/없으면 빈 목록).
+    # D-196 구현 때 선언이 빠져 게이트에 닿지 않았다 — plans/112(D-247)에서 보강
+    # (침묵 on 구성에서만 판정이 바뀐다).
+    silence_rules: list[Any] | None
+    # plans/112 S6: 워커 탐지가 True였던 단계의 근거 {stage: dict}(감사 전용·판정 무관).
+    # 게이트가 결정 단계의 것만 골라 기록한다. **선언 필수** — LangGraph는 이 TypedDict에
+    # 없는 입력 키를 노드에 넘기지 않는다(누락 시 근거가 조용히 사라진다).
+    detection_evidence: dict[str, Any] | None
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001

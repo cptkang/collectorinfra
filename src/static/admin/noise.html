@@ -6,7 +6,7 @@
     <title>노이즈 캔슬링 관제 - 인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/css/style.css?v=13">
-    <link rel="stylesheet" href="/static/css/noise-console.css?v=1">
+    <link rel="stylesheet" href="/static/css/noise-console.css?v=8">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -38,35 +38,35 @@
 
         <!-- ── KPI ── -->
         <section class="kpis">
-            <div class="kpi t-in">
-                <div class="lab"><span class="tag" style="background:var(--text-muted)"></span>수신 알람</div>
+            <div class="kpi t-in" data-drill="raw">
+                <div class="lab" data-help="kpi.raw"><span class="tag" style="background:var(--text-muted)"></span>수신 알람</div>
                 <div class="num" id="kpiRaw">0</div>
                 <div class="sub" id="kpiRawSub">— · raw ingress</div>
             </div>
-            <div class="kpi t-page">
-                <div class="lab"><span class="tag" style="background:var(--tier-page)"></span>PAGE</div>
+            <div class="kpi t-page" data-drill="page">
+                <div class="lab" data-help="kpi.page"><span class="tag" style="background:var(--tier-page)"></span>PAGE</div>
                 <div class="num c-page" id="kpiPage">0</div>
                 <div class="sub">즉시 통보</div>
             </div>
-            <div class="kpi t-ticket">
-                <div class="lab"><span class="tag" style="background:var(--tier-ticket)"></span>TICKET</div>
+            <div class="kpi t-ticket" data-drill="ticket">
+                <div class="lab" data-help="kpi.ticket"><span class="tag" style="background:var(--tier-ticket)"></span>TICKET</div>
                 <div class="num c-ticket" id="kpiTicket">0</div>
                 <div class="sub">대기열·기록</div>
             </div>
-            <div class="kpi t-dash">
-                <div class="lab"><span class="tag" style="background:var(--tier-dash)"></span>DASHBOARD</div>
+            <div class="kpi t-dash" data-drill="dashboard">
+                <div class="lab" data-help="kpi.dashboard"><span class="tag" style="background:var(--tier-dash)"></span>DASHBOARD</div>
                 <div class="num c-dash" id="kpiDashboard">0</div>
                 <div class="sub">UI 표시만</div>
             </div>
-            <div class="kpi t-sup">
-                <div class="lab"><span class="tag" style="background:var(--tier-suppress)"></span>SUPPRESS</div>
+            <div class="kpi t-sup" data-drill="suppress">
+                <div class="lab" data-help="kpi.suppress"><span class="tag" style="background:var(--tier-suppress)"></span>SUPPRESS</div>
                 <div class="num c-sup" id="kpiSuppress">0</div>
                 <div class="sub">억제(기록 유지)</div>
             </div>
             <div class="kpi t-rate">
-                <div class="lab"><span class="tag" style="background:var(--accent)"></span>억제율 / 액션가능</div>
-                <div class="num c-acc" id="kpiRatio">0%</div>
-                <div class="sub" id="kpiActionable">액션가능 —</div>
+                <div class="lab" data-help="kpi.ratio"><span class="tag" style="background:var(--accent)"></span>억제율 / 액션가능</div>
+                <div class="num c-acc" id="kpiRatio" data-drill="suppress_ratio">0%</div>
+                <div class="sub" id="kpiActionable" data-drill="actionable">액션가능 —</div>
             </div>
         </section>
 
@@ -74,29 +74,25 @@
         <div class="noise-grid">
             <div>
                 <div class="card" style="margin-bottom:14px;">
-                    <h2>노이즈 캔슬링 퍼널<span class="hint">결정 파이프라인 · 단계별 억제량</span></h2>
+                    <h2 data-help="funnel">노이즈 캔슬링 퍼널<span class="hint">결정 파이프라인 · 단계별 억제량</span></h2>
                     <div class="funnel-head">
-                        <span class="big" id="funnelRaw">0</span><span class="lab">수신</span>
-                        <span class="big c-page" id="funnelPage" style="margin-left:auto">0</span><span class="lab">PAGE</span>
+                        <span class="big" id="funnelRaw" data-drill="raw">0</span><span class="lab">수신</span>
+                        <span class="big c-page" id="funnelPage" data-drill="page" style="margin-left:auto">0</span><span class="lab">PAGE</span>
                     </div>
                     <div class="stages" id="stages"></div>
                     <div class="tiers" id="tierCards"></div>
                 </div>
 
                 <div class="card">
-                    <h2>티어 분포 추이<span class="hint" id="chartHint">—</span></h2>
+                    <h2 data-help="chart">티어 분포 추이<span class="hint" id="chartHint">—</span></h2>
                     <div class="chart" id="chart"></div>
-                    <div class="chart-legend">
-                        <span><i style="background:var(--tier-page)"></i>PAGE</span>
-                        <span><i style="background:var(--tier-ticket)"></i>TICKET</span>
-                        <span><i style="background:var(--tier-dash)"></i>DASHBOARD</span>
-                        <span><i style="background:var(--tier-suppress)"></i>SUPPRESS</span>
-                    </div>
+                    <!-- 범례·축·읽는 법은 noise.js가 그린다(기간 합계 포함 — plans/112 S5) -->
+                    <div class="chart-legend" id="chartLegend"></div>
                 </div>
             </div>
 
             <div class="card">
-                <h2>실시간 결정 피드<span class="hint right">클릭 → 결정 추적</span></h2>
+                <h2 data-help="feed.admin">실시간 결정 피드<span class="hint right">클릭 → 결정 추적</span></h2>
                 <div class="feed" id="feed"><div class="empty">결정 이력을 불러오는 중…</div></div>
                 <p class="sub" style="font-size:10.5px;color:var(--text-muted);margin-top:10px;line-height:1.5;">
                     PAGE는 즉시 통보 경로라 실시간 스트림에 실리지 않습니다 —
@@ -108,21 +104,21 @@
         <!-- ── 메타모니터링 ── -->
         <div class="meta-row">
             <div class="card">
-                <h2>억제율 감시<span class="hint">메타모니터링</span></h2>
+                <h2 data-help="meta.ratio">억제율 감시<span class="hint">메타모니터링</span></h2>
                 <div class="gauge">
                     <div class="ring" id="ratioRing"><b id="ratioText">—</b><small>SUPPRESS</small></div>
                     <div class="meta-note" id="ratioNote">집계를 불러오는 중…</div>
                 </div>
             </div>
             <div class="card">
-                <h2>워치독<span class="hint">무수신 감지</span></h2>
+                <h2 data-help="meta.watchdog">워치독<span class="hint">무수신 감지</span></h2>
                 <div class="gauge">
                     <div class="ring" id="watchRing"><b id="watchText" style="font-size:13px">—</b><small>LAST</small></div>
                     <div class="meta-note" id="watchNote">집계를 불러오는 중…</div>
                 </div>
             </div>
             <div class="card">
-                <h2>상위 억제 알람 유형<span class="hint">무엇이 캔슬되는가</span></h2>
+                <h2 data-help="top">상위 억제 알람 유형<span class="hint">무엇이 캔슬되는가</span></h2>
                 <table class="kv"><tbody id="topSuppressed"></tbody></table>
             </div>
         </div>
@@ -130,16 +126,16 @@
         <!-- ── 관리 ── -->
         <div class="card">
             <div class="mgmt-tabs">
-                <button class="on" data-pane="silence">침묵(Silence)</button>
-                <button data-pane="decisions">결정 이력</button>
-                <button data-pane="policy">정책(읽기 전용)</button>
+                <button class="on" data-pane="silence" data-help="mgmt.silence">침묵(Silence)</button>
+                <button data-pane="decisions" data-help="mgmt.decisions">결정 이력</button>
+                <button data-pane="policy" data-help="mgmt.policy">정책(읽기 전용)</button>
             </div>
 
             <!-- 침묵 -->
             <div class="pane on" id="pane-silence">
                 <div id="silenceDisabledNote" class="alert alert-warning" style="display:none;font-size:12px;margin-bottom:12px;">
                     침묵 기능이 꺼져 있습니다 — 규칙을 만들어도 게이트가 적용하지 않습니다.
-                    설정에서 <code>NOISE_GATE_SILENCE_ENABLED</code>를 켜십시오.
+                    설정에서 <code>NOISE_SILENCE_ENABLED</code>를 켜십시오.
                 </div>
                 <div class="form-row">
                     <div>
@@ -182,10 +178,12 @@
                         심각도 3은 어떤 규칙으로도 침묵되지 않습니다.
                     </span>
                 </div>
-                <table class="tbl">
-                    <thead><tr><th>매처</th><th>사유</th><th>생성자</th><th>만료</th><th></th></tr></thead>
-                    <tbody id="silenceBody"></tbody>
-                </table>
+                <div class="tbl-wrap">
+                    <table class="tbl">
+                        <thead><tr><th>매처</th><th>사유</th><th>생성자</th><th>만료</th><th></th></tr></thead>
+                        <tbody id="silenceBody"></tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- 결정 이력 -->
@@ -206,10 +204,12 @@
                     <button class="btn btn-secondary" id="decSearchBtn" style="padding:7px 14px;font-size:12px;">조회</button>
                     <span id="decTotal" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);"></span>
                 </div>
-                <table class="tbl">
-                    <thead><tr><th>시각</th><th>알람</th><th>서버</th><th>티어</th><th>결정 단계</th><th>사유</th></tr></thead>
-                    <tbody id="decisionBody"></tbody>
-                </table>
+                <div class="tbl-wrap">
+                    <table class="tbl">
+                        <thead><tr><th>시각</th><th>알람</th><th>서버</th><th>티어</th><th>결정 단계</th><th>사유</th></tr></thead>
+                        <tbody id="decisionBody"></tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- 정책 -->
@@ -231,13 +231,14 @@
         <h3 id="drawerName">—</h3>
         <div class="meta-id" id="drawerMeta">—</div>
         <div class="trace" id="drawerTrace"></div>
-        <h2 style="font-size:12px;margin:0 0 8px;">신호 스냅샷</h2>
+        <h2 class="drawer-sub" data-help="drawer.signals">신호 스냅샷</h2>
         <table class="signals"><tbody id="drawerSignals"></tbody></table>
         <div class="noise-actions" style="margin-top:16px;">
             <button class="btn btn-secondary" id="silenceThisBtn" style="padding:7px 14px;font-size:12px;">이 패턴 침묵</button>
         </div>
     </aside>
 
-    <script src="/static/js/noise.js?v=2"></script>
+    <script src="/static/js/noise-help.js?v=4"></script>
+    <script src="/static/js/noise.js?v=9"></script>
 </body>
 </html>

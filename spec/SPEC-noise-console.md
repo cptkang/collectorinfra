@@ -65,6 +65,17 @@ STAGE_MATRIX = "matrix"                # step 8~9  매트릭스 + 보조 조정(
    기존 `noise_gate/tests` 전량 통과가 그 증거다.
 3. `stage` 없는 **기존 JSONL 레코드도** 집계에서 탈락하지 않는다(모듈 2의 폴백 매핑이 처리).
 
+**plans/112 확장 (2026-09-22 · D-247)** — 판정(tier·reason·priority·signals·fingerprint·stage)은 비트 동일하고, 레코드에 **최상위 가산 필드**만 더한다.
+- `NotificationDecision.evidence: dict`(맨 뒤 기본값) — 결정 지점이 이미 아는 근거: 비운영 마커(`non_alarm_markers` — `is_operational_alarm`과 같은 정규식) ·
+  침묵 규칙 스냅샷(`rule_id`·`matcher_summary`·`expires_at`·`created_by`) · 의존성 모드(`multi_hop`/`one_hop`·`root_notified`·`root_resource_name`) ·
+  주석 코로보레이션 출처 · 매트릭스(`base_tier`·`promote`·`demote`).
+- 워커 탐지 근거(자가복구 소요·인히비터·플래핑 %·스톰 창)는 탐지 함수 반환형을 바꾸지 않고 `_last_*_evidence`에 남겨 그래프 입력 `detection_evidence`로 싣는다.
+  **`AlarmState`에 선언 필수** — LangGraph는 TypedDict에 없는 입력 키를 노드에 넘기지 않는다.
+- 게이트 노드가 **결정 단계의 근거만** 합쳐 `record(stage_evidence=…)`로 넘긴다. 같은 호출로 `db_id`·`resource_name`·`condition_log`(**200자 상한**)도 기록한다. 빈 값이면 키 없음.
+- 단계 설명 정본 `STAGE_DESCRIPTIONS`(14단계 + `unknown`)를 `STAGE_LABELS` 옆에 둔다 — overfit 게이트가 이 파일의 문자열을 스캔하므로 스키마 리터럴·제품명을 쓰지 않는다.
+- 수용 기준 추가: ④ 대표 입력 57건의 판정 6값 스냅샷이 변경 전과 바이트 동일(`noise_gate/tests/test_decision_snapshot.py`) ⑤ 결정 단계가 아닌 단계의 탐지값은 기록되지 않는다 ⑥ `detection_evidence` 선언을 빼면 도달 테스트가 실패한다.
+- **모듈 4 배선 결함 수정(D-247 · 사용자 결정)**: 워커가 싣던 `silence_rules`도 `AlarmState`에 선언돼 있지 않아 게이트에 닿지 않았다 — 선언을 보강했다(`noise_gate/tests/test_silence_graph_wiring.py`). **침묵 on 구성에서만 판정이 바뀐다**(의도 동작 최초 발효 · 기본 off는 비트 동일).
+
 ## 모듈 2 — `decision-analytics` (퍼널·시계열·상위 억제)
 
 **대상**: `noise_gate/infrastructure/decision_store.py`(메서드 추가)
@@ -89,6 +100,10 @@ def top_suppressed(self, *, window_seconds: int, limit: int = 10) -> list[dict] 
 3. 창 밖 레코드는 집계되지 않는다(`window_seconds` 경계 테스트).
 4. 전량 stage 없는 구파일만으로도 퍼널이 그려진다(폴백 경로).
 
+**plans/112 확장 (D-247)** — `timeseries(..., tz_offset_minutes=None)`: 주면 버킷 경계를 로컬 시각 격자로 정렬한다(`(b + offset) % bucket == 0` — +540이면 2시간 구간이 KST 짝수 시, 1일 구간이 KST 자정).
+**미지정이면 종전 UTC 격자와 비트 동일**. `bucket_ts`는 어느 경우든 UTC 표기다.
+`timeseries_report()`는 같은 값에 `excluded_no_ts`(창 안 결정 중 시각으로 구간을 정할 수 없어 막대에서 뺀 건수)를 더해 돌려준다 — 4티어 레코드면 `Σ구간 + excluded_no_ts == funnel.raw`(같은 창). `timeseries()` 반환 형태는 종전 그대로.
+
 ## 모듈 3 — `decision-lookup` (결정 조회 + 마스킹)
 
 **대상**: `noise_gate/infrastructure/decision_store.py`(메서드 추가)
@@ -110,6 +125,13 @@ def get_decision(self, alarm_id: str) -> dict | None     # 최신 1건
 2. `get_decision`은 동일 `alarm_id` 다중 레코드 중 **가장 최근** 것을 돌려준다.
 3. `mask_fn` 주입 시 `signals`의 문자열 값에 적용되고, 미주입이면 원문 그대로다(저장소 단독 테스트 가능).
 4. 파일 부재·비활성이면 빈 결과(예외 아님).
+
+**plans/112 확장 (D-247)** — 전부 가산(새 인자 미지정이면 items·total 종전과 같음). 목록·facets·related는 **파일 1회 읽기**로 만든다.
+- `tier`는 티어 **집합**도 받는다(단일 문자열은 종전 그대로). `alarm_name` 정확 일치 · `since`/`until`(`since <= ts < until`, 창과 AND).
+- 응답 `facets`: `tiers`는 **tier 필터만 뺀** 집합에서 4키 항상, `stages`는 **stage 필터만 뺀** 집합에서 0보다 큰 키만 — 분포 칩이 자기 선택에 줄어들지 않게.
+- `related=True`: 상관 행은 `correlation_meta.representative_fp`의 대표 판단(자기 제외 · ts ≤ 행), 자가복구 행은 같은 지문의 직전 발생(`signals.severity >= 1`) 판단. 범위는 tail 전체(창 밖 포함), 못 찾으면 `found: False`.
+- `_view(..., operator_view=False)`: **기본은 사용자 뷰**라 운영자 전용 키(`condition_log` · `stage_evidence.created_by` — 침묵 규칙을 만든 운영자 계정)를 뺀다(fail-closed). 마스킹 대상에 `resource_name`·`condition_log`·`stage_evidence`(중첩 문자열)·`related`의 알람명·서버명을 더한다.
+- `get_decision`은 계약 불변(가장 최근 1건) — 목록 행의 과거 판단은 화면이 행 레코드로 그린다(plans/112 F-5).
 
 ## 모듈 4 — `noise-silence` (침묵 규칙)
 
@@ -138,7 +160,7 @@ def match_rules(rules, event, *, effective_severity, now) -> SilenceRule | None
 | `max_severity`는 `suppress_max_severity` 이하 | API 생성 시 검증(400) |
 | **전 필드 공백 규칙 금지**(전체 침묵) | API 생성 시 검증(400) + 도메인 `matches()`가 전 필드 공백이면 False |
 | 만료 필수 | `expires_at` 없거나 `silence_max_duration_seconds`(기본 7일) 초과면 400 |
-| 기본 off | `NOISE_GATE_SILENCE_ENABLED=false`면 워커가 조회조차 하지 않는다(회귀 0) |
+| 기본 off | `NOISE_SILENCE_ENABLED=false`면 워커가 조회조차 하지 않는다(회귀 0) |
 
 ### 저장소 (append-only JSONL · `FeedbackStore` 전례)
 
@@ -201,6 +223,12 @@ append 하고, 조회 시 재생(replay)해 활성 목록을 만든다. **파일
 4. `summary`의 항등식이 API 응답 수준에서도 성립한다.
 5. 게이트 비활성·저장소 부재에도 200과 빈 집계를 준다(대시보드가 깨지지 않는다).
 
+**D-245 · plans/112 개정** — 읽기 5종은 공용 `read_router`로 `/admin/noise/*`(운영자)와 `/noise/*`(로그인 사용자 · 전 존)에 같이 걸린다(D-245).
+plans/112(D-247)가 더한 계약: `GET /decisions`의 `tier` 쉼표 복수값(닫힌 집합 밖 **400**)·`facets`·`related`·`alarm_name`·`since`/`until` ·
+`GET /summary`의 `stages[].description`·`enabled`·`enable_key`(8단계만 키가 있고 게이트 off면 전 단계 false) · `GET /timeseries`의 `tz_offset_minutes`(−720~+840) ·
+`GET /admin/noise/policy`의 env 키 접두 교정(`NOISE_GATE_*` → **`NOISE_*`** — 설정 카탈로그에 실재하는 키, 정책 키·단계 활성 키가 한 헬퍼에서 나온다) · 정책 항목 = 기존 14개 ∪ 단계 활성 필드(순서 보존 · 추가만) · `GET /timeseries`의 가산 필드 `excluded_no_ts`.
+`condition_log`와 침묵 근거의 `created_by`는 **운영자 경로 응답에만** 싣는다 — 운영자 `include_router`에 뷰 모드 표시 의존성을 걸고, 표시가 없으면 사용자 뷰다(핸들러 공유 유지).
+
 ## 모듈 6 — `noise-console-ui` (관제 화면)
 
 **대상**: `src/static/admin/noise.html`(신규) · `src/static/js/noise.js`(신규) ·
@@ -222,6 +250,18 @@ append 하고, 조회 시 재생(replay)해 활성 목록을 만든다. **파일
 3. 피드 항목 클릭 → 드로어에 그 알람의 단계 타임라인과 signals 표가 뜬다.
 4. 침묵 추가·해제가 화면에서 되고, 실패 사유(400)가 사용자에게 그대로 보인다.
 5. 정책 탭은 **읽기 전용**이며 각 항목에서 설정 화면으로 이동할 수 있다.
+
+**D-245 · plans/112 개정** — 화면은 두 벌(`admin/noise.html` · 사용자 `noise.html`)이 `js/noise.js`·`css/noise-console.css`를 공유하고 `data-noise-mode`로 운영자 전용 호출을 가른다(D-245).
+plans/112(D-247)가 더한 것:
+- **세부 리스트 패널 1개 + 열 프로파일** — KPI 6·티어 카드 4·퍼널 15행·상위 억제 행·추이 막대가 같은 패널을 연다(항목별 화면 금지). 패널·팝오버·툴팁 DOM은 `noise.js`가 만들고 HTML에는 `data-drill`·`data-help` 표지만 둔다.
+- **(!) 설명 팝오버** — 글리프는 느낌표, 원형 외곽선·중립색(경고 pill과 다른 모양). 화면 문구는 `js/noise-help.js`, 단계 설명은 API `description`(복제 금지).
+- **추이 그래프** — 축·눈금·시각 라벨·읽는 법·막대 합계·호버/포커스 툴팁·범례 합계·건수/비율 전환 · 높이는 축과 정확히 비례.
+- **오버레이 층** — 상단 바(sticky) 1 · 패널 스크림 30 · 패널 31 · 드로어 스크림 40 · 드로어 41 · 팝오버·툴팁 50. 오버레이는 전부 헤더보다 위 · `position: fixed` · body 직계 — 헤더 z를 다시 올리면 표 전체를 그 위로 옮긴다.
+- **좁은 화면** — 그리드 칸 `min-width: 0`(한 열 전환 시 가로 넘침 방지) · 480px 이하 퍼널 칸 축소·KPI 2열 · 표는 `.tbl-wrap` 가로 스크롤.
+- 사용자 화면은 운영자 전용 API(health·silences·policy·stream)를 호출하지 않고, 침묵 버튼·`condition_log` 칸이 없다.
+- **범례 토글** — 범례 항목(버튼 · `aria-pressed`)으로 티어를 숨기면 막대·합계·툴팁·비율 분모·축 최대에서 빠진다(범례 기간 합계는 원값 · 마지막 한 티어는 잠금 · 범위 전환에도 유지). `excluded_no_ts > 0`이면 범례 옆에 안내 한 줄.
+- **포커스 복귀** — 진입점에 `data-focus-key`를 달아, 닫을 때 원 노드가 다시 그려져 빠졌으면 같은 키의 새 노드로, 없으면 가장 가까운 카드 제목으로 돌린다.
+- **인증 실패** — 401이면 실제로 보낸 토큰의 키를 지우고 로그인으로(D-245 결함 수정), 403이면 토큰을 두고 첫 화면으로.
 
 ## Commands
 
@@ -265,7 +305,7 @@ python -m src.main --server   # → http://localhost:8000/static/admin/noise.htm
   noise_gate/domain/notification_policy.py         stage 상수·필드·단계 라벨 + 침묵 단계
   noise_gate/infrastructure/decision_store.py      stage 기록 + funnel/timeseries/top_suppressed/list/get
   noise_gate/application/alarm_worker.py           침묵 신호 산출·state 주입
-  src/config.py                                    NOISE_GATE_SILENCE_*(4건) · decision_store_max_lines
+  src/config.py                                    NOISE_SILENCE_*(4건) · decision_store_max_lines
   noise_gate/application/nodes/notification_gate.py  알람명·서버명 기록 전달
   noise_gate/application/nodes/alarm_notifier.py     SSE 페이로드에 stage 추가
   src/api/server.py                                라우터 등록

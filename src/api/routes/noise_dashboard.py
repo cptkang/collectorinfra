@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -44,23 +44,61 @@ _RANGES: dict[str, int] = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 259200
 # 시계열 버킷 — 창과 조합이 과하면 막대가 수천 개가 되므로 역시 닫힌 집합.
 _BUCKETS: dict[str, int] = {"5m": 300, "1h": 3600, "2h": 7200, "6h": 21600, "1d": 86400}
 
-# 정책 화면이 설정 편집기로 딥링크할 때 쓰는 키 — 값은 읽기만 하고 변경은 저기서 한다.
-_POLICY_ENV_KEYS: tuple[tuple[str, str], ...] = (
-    ("enable_noise_gate", "NOISE_GATE_ENABLE_NOISE_GATE"),
-    ("suppress_max_severity", "NOISE_GATE_SUPPRESS_MAX_SEVERITY"),
-    ("enable_ai_severity_boost", "NOISE_GATE_ENABLE_AI_SEVERITY_BOOST"),
-    ("ai_severity_escalate_only", "NOISE_GATE_AI_SEVERITY_ESCALATE_ONLY"),
-    ("dependency_suppression", "NOISE_GATE_DEPENDENCY_SUPPRESSION"),
-    ("inhibition_enabled", "NOISE_GATE_INHIBITION_ENABLED"),
-    ("flapping_enabled", "NOISE_GATE_FLAPPING_ENABLED"),
-    ("storm_grouping_enabled", "NOISE_GATE_STORM_GROUPING_ENABLED"),
-    ("cross_host_correlation_enabled", "NOISE_GATE_CROSS_HOST_CORRELATION_ENABLED"),
-    ("enable_llm_actionability", "NOISE_GATE_ENABLE_LLM_ACTIONABILITY"),
-    ("silence_enabled", "NOISE_GATE_SILENCE_ENABLED"),
-    ("meta_alert_suppress_ratio", "NOISE_GATE_META_ALERT_SUPPRESS_RATIO"),
-    ("meta_alert_window_seconds", "NOISE_GATE_META_ALERT_WINDOW_SECONDS"),
-    ("meta_alert_min_events", "NOISE_GATE_META_ALERT_MIN_EVENTS"),
+# 판단 결과 4티어 — 목록의 `tier` 쉼표 복수값은 이 닫힌 집합 밖이면 400이다(plans/112 S2).
+_TIERS: tuple[str, ...] = ("page", "ticket", "dashboard", "suppress")
+
+# 노이즈 게이트 설정의 env 접두 — `NoiseGateConfig`(`src/config.py`)의 `env_prefix`와 같아야 한다.
+# 정책 딥링크 키와 단계 활성 키가 **이 한 곳**에서 만들어진다(plans/112 F-1 — 종전
+# `NOISE_GATE_` 접두는 설정 카탈로그에 없는 키를 가리켰다).
+_NOISE_ENV_PREFIX = "NOISE_"
+
+
+def _env_key(field_name: str) -> str:
+    """노이즈 게이트 설정 필드명 → 설정 편집기가 쓰는 env 키."""
+    return _NOISE_ENV_PREFIX + field_name.upper()
+
+
+# 정책 화면이 설정 편집기로 딥링크할 때 쓰는 필드 — 값은 읽기만 하고 변경은 저기서 한다.
+# 최종 목록 `_POLICY_FIELDS`는 아래에서 단계 활성 필드와 합쳐 만든다(순서 보존 · 추가만).
+_BASE_POLICY_FIELDS: tuple[str, ...] = (
+    "enable_noise_gate",
+    "suppress_max_severity",
+    "enable_ai_severity_boost",
+    "ai_severity_escalate_only",
+    "dependency_suppression",
+    "inhibition_enabled",
+    "flapping_enabled",
+    "storm_grouping_enabled",
+    "cross_host_correlation_enabled",
+    "enable_llm_actionability",
+    "silence_enabled",
+    "meta_alert_suppress_ratio",
+    "meta_alert_window_seconds",
+    "meta_alert_min_events",
 )
+
+# 단계 → 그 단계를 켜는 설정 필드(plans/112 S4). 여기 없는 단계는 게이트가 켜져 있으면 항상
+# 평가된다. env 키는 config 관심사라 도메인이 아니라 이 계층에 둔다.
+_STAGE_ENABLE_FIELDS: dict[str, str] = {
+    "non_alarm": "non_alarm_filter_enabled",
+    "silence": "silence_enabled",
+    "dependency": "dependency_suppression",
+    "inhibition": "inhibition_enabled",
+    "flapping": "flapping_enabled",
+    "storm": "storm_grouping_enabled",
+    "correlation": "cross_host_correlation_enabled",
+    "annotation": "annotation_planned_suppress",
+}
+
+# 정책 탭 = 기존 정책 필드 ∪ 단계 활성 필드(plans/112 m-5). 단계 설명이 "켜는 설정"으로 인용하는
+# 키가 정책 탭에 빠지지 않게 **표 하나에서 파생**한다 — 기존 항목의 순서는 그대로, 없던 것만 뒤에.
+_POLICY_FIELDS: tuple[str, ...] = _BASE_POLICY_FIELDS + tuple(
+    field for field in dict.fromkeys(_STAGE_ENABLE_FIELDS.values())
+    if field not in _BASE_POLICY_FIELDS
+)
+
+# 운영자 경로로 들어온 요청 표시(`request.state`). 표시가 없으면 사용자 뷰다 — fail-closed.
+_OPERATOR_PATH_FLAG = "noise_operator_path"
 
 
 # ─── 요청/응답 모델 ──────────────────────────────────────────────────────
@@ -74,6 +112,11 @@ class FunnelStage(BaseModel):
     residual: int = Field(description="이 단계에 도달한 건수")
     terminated: int = Field(description="이 단계에서 결정이 확정된 건수")
     cut: int = Field(description="그중 통보되지 않은 건수(SUPPRESS·DASHBOARD)")
+    description: str = Field(default="", description="단계 설명(판정 코드 옆 도메인 정본)")
+    enabled: bool = Field(default=True, description="현재 설정에서 이 단계가 평가되는지")
+    enable_key: str | None = Field(
+        default=None, description="이 단계를 켜는 설정 env 키(항상 평가되는 단계는 null)"
+    )
 
 
 class NoiseSummaryResponse(BaseModel):
@@ -102,6 +145,10 @@ class TimeseriesResponse(BaseModel):
     points: list[TimeseriesPoint]
     range: str
     bucket: str
+    excluded_no_ts: int = Field(
+        default=0,
+        description="창 안 결정 중 시각으로 구간을 정할 수 없어 막대에서 뺀 건수(KPI에는 포함)",
+    )
 
 
 class TopSuppressedItem(BaseModel):
@@ -135,6 +182,13 @@ class DecisionsResponse(BaseModel):
     total: int
     page: int
     size: int
+    facets: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description=(
+            "분포 칩용 건수 — tiers는 tier 필터만 뺀 집합(4키 항상), "
+            "stages는 stage 필터만 뺀 집합(0보다 큰 키만)"
+        ),
+    )
 
 
 class SilenceCreateRequest(BaseModel):
@@ -261,6 +315,78 @@ def _mask_fn(request: Request):  # noqa: ANN201
     return _mask
 
 
+def _mark_operator_path(request: Request) -> None:
+    """운영자 경로(`/admin/noise/*`)로 들어온 요청임을 표시한다(라우터 레벨 의존성).
+
+    읽기 핸들러는 두 경로가 공유하므로(D-245) 경로를 모른다. 운영자 전용 필드(G-2 (c) —
+    `condition_log`)를 가를 때 이 표시만 본다 — 표시가 없으면 사용자 뷰(fail-closed)라,
+    새 경로를 걸면서 이 의존성을 빠뜨려도 실측값이 새지 않는다.
+    """
+    setattr(request.state, _OPERATOR_PATH_FLAG, True)
+
+
+def _is_operator_path(request: Request) -> bool:
+    """요청이 운영자 경로로 들어왔는지(`_mark_operator_path` 표시 여부)."""
+    return bool(getattr(request.state, _OPERATOR_PATH_FLAG, False))
+
+
+def _parse_tiers(value: str | None) -> frozenset[str] | None:
+    """`tier` 쉼표 복수값을 집합으로 바꾼다(빈 값·None = 필터 없음, 닫힌 집합 밖이면 400).
+
+    종전에는 임의 문자열이 조용히 0건이 됐다 — 오타를 "해당 없음"으로 보이게 하지 않는다.
+    """
+    if value is None:
+        return None
+    tokens = [token.strip() for token in value.split(",")]
+    tokens = [token for token in tokens if token]
+    if not tokens:
+        return None
+    unknown = [token for token in tokens if token not in _TIERS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 티어입니다: {', '.join(unknown)} (가능: {', '.join(_TIERS)})",
+        )
+    return frozenset(tokens)
+
+
+def _parse_instant(value: str | None, name: str) -> datetime | None:
+    """ISO-8601 시각을 datetime으로 바꾼다(빈 값 = 미지정, 시간대 없으면 UTC, 실패는 400)."""
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} 시각 형식이 올바르지 않습니다(ISO-8601): {value}",
+        ) from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _stage_meta(stage: str, ng: Any) -> dict[str, Any]:
+    """퍼널 단계 1칸의 설명·활성 여부·켜는 설정 키를 만든다 (plans/112 S4).
+
+    게이트가 꺼지면 전 단계가 평가되지 않는다. 게이트가 켜지면 `_STAGE_ENABLE_FIELDS`의
+    8단계만 설정값을 따르고, 나머지(와 `unknown`)는 항상 평가된다.
+    """
+    from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS
+
+    field_name = _STAGE_ENABLE_FIELDS.get(stage)
+    gate_on = bool(ng.enable_noise_gate)
+    if field_name is None:
+        enabled = gate_on
+    else:
+        enabled = gate_on and bool(getattr(ng, field_name, False))
+    return {
+        "description": STAGE_DESCRIPTIONS.get(stage, ""),
+        "enabled": enabled,
+        "enable_key": _env_key(field_name) if field_name else None,
+    }
+
+
 def _actor(user: dict) -> str:
     """감사에 남길 행위자 식별자."""
     return str(user.get("sub") or user.get("name") or user.get("username") or "unknown")
@@ -285,7 +411,9 @@ def _to_item(rule, now: datetime) -> SilenceItem:  # noqa: ANN001
     summary="노이즈 캔슬링 KPI + 퍼널",
     description=(
         "티어별 건수·억제율·액션가능 비율과 **단계별 억제량(퍼널)**을 반환합니다.<br/>"
-        "모든 결정은 정확히 한 단계에서 종결되므로 단계별 종결 수의 합은 수신 건수와 같습니다."
+        "모든 결정은 정확히 한 단계에서 종결되므로 단계별 종결 수의 합은 수신 건수와 같습니다.<br/>"
+        "단계마다 설명(`description`)·현재 설정의 평가 여부(`enabled`)·켜는 설정 키"
+        "(`enable_key`)를 함께 줍니다."
     ),
     tags=["noise-console"],
 )
@@ -296,14 +424,15 @@ async def noise_summary(
     """결정 감사에서 KPI와 퍼널을 집계해 돌려준다."""
     window = _resolve_range(range)
     funnel = _decision_store(request).funnel(window_seconds=window)
+    ng = _gate_cfg(request)
     return NoiseSummaryResponse(
         raw=funnel["raw"],
         tiers=funnel["tiers"],
         suppress_ratio=funnel["suppress_ratio"],
         actionable_ratio=funnel["actionable_ratio"],
-        stages=[FunnelStage(**s) for s in funnel["stages"]],
+        stages=[FunnelStage(**s, **_stage_meta(s["stage"], ng)) for s in funnel["stages"]],
         range=range,
-        gate_enabled=bool(_gate_cfg(request).enable_noise_gate),
+        gate_enabled=bool(ng.enable_noise_gate),
     )
 
 
@@ -311,22 +440,37 @@ async def noise_summary(
     "/timeseries",
     response_model=TimeseriesResponse,
     summary="티어 분포 추이",
-    description="버킷별 티어 분포를 반환합니다. 버킷 경계는 UTC 고정 격자입니다.",
+    description=(
+        "버킷별 티어 분포를 반환합니다. 버킷 경계는 고정 격자이며, 기본은 UTC 격자입니다.<br/>"
+        "`tz_offset_minutes`를 주면 그 로컬 시각 기준으로 정렬합니다(예: 540이면 2시간 구간이 "
+        "KST 짝수 시에 시작). `bucket_ts`는 어느 경우든 UTC 표기입니다."
+    ),
     tags=["noise-console"],
 )
 async def noise_timeseries(
     request: Request,
     range: str = Query(default="24h"),
     bucket: str = Query(default="2h"),
+    tz_offset_minutes: int | None = Query(
+        default=None,
+        ge=-720,
+        le=840,
+        description="로컬 시각의 UTC 대비 오프셋(분) — 브라우저 `-getTimezoneOffset()`",
+    ),
 ) -> TimeseriesResponse:
     """버킷별 티어 분포를 돌려준다(빈 버킷도 0으로 채운다)."""
     window = _resolve_range(range)
     bucket_seconds = _resolve_bucket(bucket)
-    points = _decision_store(request).timeseries(
-        window_seconds=window, bucket_seconds=bucket_seconds
+    report = _decision_store(request).timeseries_report(
+        window_seconds=window,
+        bucket_seconds=bucket_seconds,
+        tz_offset_minutes=tz_offset_minutes,
     )
     return TimeseriesResponse(
-        points=[TimeseriesPoint(**p) for p in points], range=range, bucket=bucket
+        points=[TimeseriesPoint(**p) for p in report["points"]],
+        range=range,
+        bucket=bucket,
+        excluded_no_ts=report["excluded_no_ts"],
     )
 
 
@@ -400,15 +544,23 @@ async def noise_health(
     description=(
         "티어·단계·검색어로 거른 결정 목록을 최신순으로 반환합니다.<br/>"
         "PAGE 티어는 즉시 통보 경로라 실시간 스트림에 실리지 않으므로, 피드의 완전성은 이 조회가 맡습니다."
+        "<br/>`tier`는 쉼표 복수값(`page,ticket`)을 받고, `facets`는 분포 칩용 건수입니다. "
+        "`related=true`면 상관·자가복구 행에 대표/원 발생 판단을 붙입니다."
     ),
     tags=["noise-console"],
 )
 async def noise_decisions(
     request: Request,
     range: str = Query(default="24h"),
-    tier: Optional[str] = Query(default=None),
+    tier: Optional[str] = Query(
+        default=None, description="티어(쉼표 복수값 · page·ticket·dashboard·suppress)"
+    ),
     stage: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None, description="알람명·서버명·사유 부분일치"),
+    alarm_name: str | None = Query(default=None, description="알람명 정확 일치"),
+    since: str | None = Query(default=None, description="구간 시작(ISO-8601, 포함)"),
+    until: str | None = Query(default=None, description="구간 끝(ISO-8601, 제외)"),
+    related: bool = Query(default=False, description="대표/원 발생 판단 해석"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
 ) -> DecisionsResponse:
@@ -416,12 +568,17 @@ async def noise_decisions(
     window = _resolve_range(range)
     result = _decision_store(request).list_decisions(
         window_seconds=window,
-        tier=tier,
+        tier=_parse_tiers(tier),
         stage=stage,
         q=q,
+        alarm_name=alarm_name,
+        since=_parse_instant(since, "since"),
+        until=_parse_instant(until, "until"),
+        related=related,
         page=page,
         size=size,
         mask_fn=_mask_fn(request),
+        operator_view=_is_operator_path(request),
     )
     return DecisionsResponse(**result)
 
@@ -442,7 +599,9 @@ async def noise_decision_trace(
     """결정 1건 + 단계 타임라인을 돌려준다(없으면 404)."""
     from noise_gate.domain.notification_policy import STAGE_LABELS, STAGE_ORDER
 
-    decision = _decision_store(request).get_decision(alarm_id, mask_fn=_mask_fn(request))
+    decision = _decision_store(request).get_decision(
+        alarm_id, mask_fn=_mask_fn(request), operator_view=_is_operator_path(request)
+    )
     if decision is None:
         raise HTTPException(status_code=404, detail="해당 알람의 발송 판단이 없습니다.")
 
@@ -671,12 +830,12 @@ async def noise_policy(
     settings = [
         PolicySetting(
             key=key,
-            env_key=env_key,
+            env_key=_env_key(key),
             value=getattr(ng, key, None),
             # 상향 전용 잠금은 안전 고정 — 화면에서 끌 수 있는 것처럼 보이면 안 된다.
             locked=(key == "ai_severity_escalate_only"),
         )
-        for key, env_key in _POLICY_ENV_KEYS
+        for key in _POLICY_FIELDS
     ]
     return PolicyResponse(
         matrix=matrix, settings=settings, editor_path="/static/admin/dashboard.html"
@@ -688,10 +847,12 @@ async def noise_policy(
 
 # 운영자 경로: 종전 그대로. 개별 핸들러에 있던 `Depends(require_admin_user)`를
 # 라우터 레벨로 옮긴 것뿐이라 외부 URL·응답·인가 판정은 비트 동일하다.
+# (plans/112 G-2 (c)) `_mark_operator_path`는 인가가 아니라 **뷰 모드 표시**다 — 운영자 전용
+# 필드(`condition_log`)는 이 표시가 있을 때만 응답에 실린다(사용자 경로에는 걸지 않는다).
 router.include_router(
     read_router,
     prefix="/admin/noise",
-    dependencies=[Depends(require_admin_user)],
+    dependencies=[Depends(require_admin_user), Depends(_mark_operator_path)],
 )
 # 사용자 경로: **읽기 전용 5종만**. 침묵(쓰기)·정책(설정값 열람)·실시간 스트림은
 # 여기에 걸지 않는다 — 운영 통제와 설정값은 운영자에게 남고, 전 존 억제 내역이 흐르는

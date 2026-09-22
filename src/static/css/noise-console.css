@@ -2,7 +2,23 @@
    운영자 화면(`admin/noise.html`)과 사용자 화면(`noise.html`)이 같은 레이아웃을 쓴다 —
    두 벌로 복제하면 한쪽만 고쳐지는 비대칭이 생기므로 한 파일에 둔다.
    색은 전부 테마 토큰(style.css)에서 온다. 라이트/다크 양쪽에서 대비가 유지되도록
-   하드코딩 색을 두지 않는다(D-180 정합). */
+   하드코딩 색을 두지 않는다(D-180 정합).
+
+   ── 오버레이 층(z-index) 표 (plans/112 §2.6) ──────────────────────────────
+     층                        요소                        z-index
+     상단 바(sticky)            .noise-top                  1   (D-245)
+     세부 리스트 스크림          .scrim.scrim--panel         30
+     세부 리스트 패널            .detail-panel               31
+     결정 추적 스크림            .scrim                      40  (현행)
+     결정 추적 드로어            .drawer                     41  (현행)
+     설명 팝오버 · 차트 툴팁     .info-pop · .chart-tip      50
+   세부 리스트 패널 위에 결정 추적 드로어가 열리므로 패널이 드로어보다 낮다.
+   **모든 오버레이는 헤더(`.noise-top` · sticky · z 1)보다 위여야 한다.** 누가 헤더 z를 다시
+   올리면(예: 전역 `header`의 100으로 되돌리면) 헤더가 스크림·패널·드로어 위로 떠서 닫기
+   버튼을 다시 가린다 — 그때는 표 전체를 헤더 위(예: 200·210·220·230·240)로 옮겨야 한다.
+   오버레이는 전부 `position: fixed`로 body 직계에 둔다(헤더의 쌓임 맥락 안에 넣지 않는다).
+   어느 경우든 전역 스플래시(z 2000)·앱 툴팁(z 9999)보다는 늘 아래에 둔다.
+   닫기 규칙(JS): Esc·✕·스크림은 맨 위 층 하나만 닫는다(팝오버 > 드로어 > 패널). */
 .noise-wrap { max-width: 1440px; margin: 0 auto; padding: 20px 24px 60px; }
 
 /* 헤더 */
@@ -92,8 +108,15 @@
 .funnel-head .big { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums }
 .funnel-head .lab { font-size: 11.5px; color: var(--text-muted) }
 .stages { display: flex; flex-direction: column; gap: 5px }
-.stage-row { display: grid; grid-template-columns: 120px 1fr 92px; align-items: center; gap: 10px }
-.stage-row .name { font-size: 11.5px; color: var(--text-secondary); text-align: right }
+.stage-row { display: grid; grid-template-columns: 136px 1fr 92px; align-items: center; gap: 10px }
+.stage-row .name {
+    font-size: 11.5px; color: var(--text-secondary); text-align: right;
+    display: flex; align-items: center; justify-content: flex-end; gap: 4px; line-height: 1.3;
+}
+/* 단계 행 = 그 단계 판단 목록 진입점(plans/112 S3) — 행 전체가 마우스 영역, 라벨이 키보드 대상 */
+.stage-row.is-drill { border-radius: 5px }
+.stage-row.is-drill:hover { background: var(--surface-hover) }
+.stage-row.is-drill:hover .stage-link { color: var(--text) }
 .stage-row .bar {
     height: 16px; background: var(--bg-deep); border-radius: 4px;
     position: relative; overflow: hidden; border: 1px solid var(--border);
@@ -117,17 +140,81 @@
 .tier-card .v { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 3px }
 .tier-card .p { font-size: 10.5px; color: var(--text-muted); margin-top: 2px }
 
-/* 추이 차트 */
-.chart { display: flex; align-items: flex-end; gap: 3px; height: 128px; margin-top: 4px }
-.chart .col { flex: 1; display: flex; flex-direction: column-reverse; gap: 1px; min-width: 0 }
-.chart .seg-bar { width: 100%; border-radius: 1px }
+/* 추이 차트 (plans/112 S5 · §2.8) — y축(눈금·격자)·x축(구간 시작 시각)·막대 위 합계·툴팁.
+   막대 영역 높이 128px는 noise.js의 CHART_H와 같아야 한다(높이를 px로 계산해 넣는다). */
+.chart-title { flex-wrap: wrap }
+.chart-mode { margin-left: auto }
+.chart-read { font-size: 11.5px; color: var(--text-secondary); margin: -4px 0 8px; line-height: 1.5 }
+.chart-axis-name { font-size: 10.5px; color: var(--text-muted); margin-bottom: 2px }
+.chart-axis-name.x { text-align: right; margin: 2px 0 0 }
+.chart-plot { display: grid; grid-template-columns: 40px 1fr; gap: 6px; margin-top: 16px }
+.chart-yaxis { position: relative; height: 128px }
+.chart-yaxis .yl {
+    position: absolute; right: 0; transform: translateY(50%);
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); white-space: nowrap;
+}
+.chart-area { position: relative; height: 128px; min-width: 0 }
+.chart-grid { position: absolute; inset: 0; pointer-events: none }
+.chart-grid .gl { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--border) }
+.chart-grid .gl.base { border-top: 1px solid var(--text-muted) }
+.chart { position: relative; display: flex; align-items: flex-end; gap: 3px; height: 128px; margin: 0 }
+.chart .col {
+    position: relative; flex: 1; min-width: 0; height: 100%; cursor: pointer; border-radius: 2px;
+    display: flex; flex-direction: column-reverse; justify-content: flex-start;
+}
+.chart .col:hover, .chart .col:focus-visible { background: var(--surface-hover) }
+.chart .col:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.chart .seg-bar { width: 100%; flex: none; border-radius: 1px }
 .chart .seg-bar.t-page { background: var(--tier-page) }
 .chart .seg-bar.t-ticket { background: var(--tier-ticket) }
 .chart .seg-bar.t-dash { background: var(--tier-dash) }
 .chart .seg-bar.t-sup { background: var(--tier-suppress) }
-.chart-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap }
+.chart .tot {
+    position: absolute; left: -4px; right: -4px; text-align: center; pointer-events: none;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);
+}
+/* 0건 구간 — 기준선 위 점(데이터 없음이 아니라 0건) */
+.chart .zero-dot {
+    position: absolute; left: 50%; bottom: -2px; width: 4px; height: 4px; margin-left: -2px;
+    border-radius: 50%; background: var(--text-muted);
+}
+.chart-xaxis { display: flex; gap: 3px; margin-left: 46px; height: 16px; margin-top: 4px }
+.chart-xaxis .xl { position: relative; flex: 1; min-width: 0 }
+.chart-xaxis .xl span {
+    position: absolute; left: 0; top: 0; white-space: nowrap;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+}
+.chart-legend { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; align-items: center }
 .chart-legend span { display: inline-flex; align-items: center; gap: 5px }
 .chart-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block }
+.chart-legend b { font-family: var(--font-mono); font-weight: 600; color: var(--text) }
+.chart-legend .note { font-size: 10.5px }
+/* 범례 항목 = 티어 표시/숨김 토글(C-6). 숨긴 항목은 흐리게 — 기간 합계 숫자는 원값 그대로. */
+.chart-legend .lg-item {
+    display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 2px 7px;
+    border: 1px solid var(--border); border-radius: 999px; background: transparent;
+    font: inherit; color: inherit; cursor: pointer;
+}
+.chart-legend .lg-item:hover { background: var(--surface-hover) }
+.chart-legend .lg-item.off { opacity: .45 }
+.chart-legend .lg-item.off .sw { background: transparent; box-shadow: inset 0 0 0 1px var(--text-muted) }
+.chart-legend .lg-item[aria-disabled="true"] { cursor: default }
+.chart-legend .lg-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+/* 시각으로 구간을 정할 수 없어 막대에서 뺀 건수 안내(m-2) */
+.chart-legend .note--warn { color: var(--warning) }
+/* 막대 툴팁 — body 직속 1개 · 층 50(머리 주석 표) · 툴팁 토큰 */
+.chart-tip {
+    position: fixed; top: 0; left: 0; z-index: 50; display: none; pointer-events: none;
+    padding: 8px 10px; border-radius: var(--radius-sm); box-shadow: var(--shadow-lg);
+    background: var(--tooltip-bg); color: var(--tooltip-text); border: 1px solid var(--border);
+    font-size: 11px; line-height: 1.6; white-space: nowrap;
+}
+.chart-tip.on { display: block }
+.chart-tip .tt-range { font-family: var(--font-mono); font-weight: 700 }
+.chart-tip .tt-total { margin-bottom: 2px }
+.chart-tip .tt-row { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono) }
+.chart-tip .tt-row .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block }
+.chart-tip .tt-hint { margin-top: 3px; font-size: 10px; color: var(--text-muted) }
 
 /* 피드 */
 .feed { display: flex; flex-direction: column; gap: 7px; max-height: 470px; overflow-y: auto }
@@ -170,6 +257,10 @@
 .kv td { padding: 5px 0; border-bottom: 1px solid var(--border) }
 .kv td:last-child { text-align: right; font-family: var(--font-mono); color: var(--tier-suppress) }
 .kv tr:last-child td { border-bottom: 0 }
+/* 상위 억제 알람 유형 행 = 그 알람·단계의 캔슬 판단 목록 진입점(plans/112 S7) */
+.kv tr.is-drill { cursor: pointer }
+.kv tr.is-drill:hover td { background: var(--surface-hover) }
+.kv tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
 
 /* 관리 탭 */
 .mgmt-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap }
@@ -218,10 +309,13 @@
 .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 92vw);
     background: var(--surface); border-left: 1px solid var(--border);
-    transform: translateX(100%); transition: transform .24s ease; z-index: 41;
+    transform: translateX(100%); z-index: 41;
     overflow-y: auto; padding: 20px 22px 40px;
+    /* 닫힌 동안에는 화면 밖에 있어도 Tab 포커스가 들어가지 않게 숨긴다(plans/112 — 키보드
+       동선). 여닫이 애니메이션이 끝난 뒤에 숨도록 visibility 전환을 늦춘다. */
+    visibility: hidden; transition: transform .24s ease, visibility 0s linear .24s;
 }
-.drawer.on { transform: translateX(0) }
+.drawer.on { transform: translateX(0); visibility: visible; transition: transform .24s ease, visibility 0s }
 .drawer .x {
     position: absolute; top: 14px; right: 16px; background: transparent;
     border: 0; color: var(--text-muted); font-size: 16px; cursor: pointer;
@@ -242,6 +336,99 @@
 .signals td { padding: 5px 6px; border-bottom: 1px solid var(--border) }
 .signals td:first-child { color: var(--text-muted); width: 46% }
 .signals td:last-child { font-family: var(--font-mono) }
+/* 드로어 추가 칸(plans/112 — 판단 요약·판단 경로·단계 근거) */
+.drawer-facts { margin-bottom: 14px }
+.drawer-facts td:last-child { font-family: var(--font-display); color: var(--text) }
+.drawer-sub {
+    font-size: 12px; font-weight: 700; margin: 4px 0 8px;
+    display: flex; align-items: center; gap: 6px;
+}
+.trace-note { margin: 0 0 8px; font-size: 11px; color: var(--text-muted) }
+.signals .sig-name { color: var(--text-secondary) }
+.signals .sig-key { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted) }
+.signals .sig-desc { font-size: 10.5px; color: var(--text-muted); line-height: 1.5; margin-top: 2px }
+
+/* 드릴다운 진입점(plans/112 §2.1) — 카드 전체가 마우스 클릭 영역, 숫자가 키보드 대상이다 */
+.is-drill { cursor: pointer }
+.kpi.is-drill:hover, .tier-card.is-drill:hover { border-color: var(--text-muted) }
+.drill { cursor: pointer; border-radius: 4px }
+.drill:hover { text-decoration: underline; text-underline-offset: 3px }
+.drill:focus-visible, .chip:focus-visible, .mini-btn:focus-visible, .dp-tbl tr:focus-visible,
+.tbl tr:focus-visible, .seg button:focus-visible, .detail-panel .x:focus-visible, .drawer .x:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* 세부 리스트 패널(plans/112 §2.1) — 층은 머리 주석 표 참조 */
+.scrim--panel { z-index: 30 }
+.detail-panel {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(1080px, 96vw);
+    background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
+    transform: translateX(100%); z-index: 31;
+    display: flex; flex-direction: column;
+    visibility: hidden; transition: transform .24s ease, visibility 0s linear .24s;
+}
+.detail-panel.on { transform: translateX(0); visibility: visible; transition: transform .24s ease, visibility 0s }
+.detail-panel .x {
+    position: absolute; top: 14px; right: 16px; background: transparent;
+    border: 0; color: var(--text-muted); font-size: 16px; cursor: pointer;
+}
+.dp-head { flex: none; padding: 18px 22px 12px; border-bottom: 1px solid var(--border) }
+.dp-titlebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-right: 32px }
+.dp-titlebar h3 { font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px }
+.dp-scope { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); white-space: nowrap }
+.seg--sm button { padding: 5px 9px; font-size: 11px }
+.dp-question { font-size: 12px; font-weight: 600; color: var(--text); margin: 8px 0 2px }
+.dp-lead { font-size: 11.5px; color: var(--text-secondary); line-height: 1.6; margin: 2px 0 }
+.dp-note {
+    font-size: 11.5px; line-height: 1.5; margin: 8px 0 0; padding: 7px 10px; border-radius: 6px;
+    background: var(--warning-bg); color: var(--warning);
+}
+.dp-note code { font-family: var(--font-mono); font-size: 11px }
+.dp-formula { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); margin: 6px 0 0 }
+.dp-conds { font-size: 11px; color: var(--text-muted); margin: 4px 0 0 }
+.dp-chips { display: flex; flex-direction: column; gap: 6px; margin-top: 10px }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center }
+.chip-row .lab { font-size: 10.5px; color: var(--text-muted); min-width: 28px }
+.chip {
+    display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-display);
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-secondary);
+}
+.chip b { font-family: var(--font-mono); font-weight: 600; color: var(--text) }
+.chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-glow) }
+.chip.is-zero { opacity: .5 }
+.chip .sw { width: 7px; height: 7px; border-radius: 2px; display: inline-block }
+.sw.t-page { background: var(--tier-page) }
+.sw.t-ticket { background: var(--tier-ticket) }
+.sw.t-dashboard { background: var(--tier-dash) }
+.sw.t-suppress { background: var(--tier-suppress) }
+.dp-search { display: flex; gap: 8px; margin-top: 10px }
+.dp-search input {
+    flex: 1; min-width: 160px; padding: 7px 10px; font-size: 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text);
+}
+.dp-search .btn { padding: 7px 14px; font-size: 12px }
+.dp-body { flex: 1; overflow: auto; padding: 0 22px 12px }
+.dp-tbl th { position: sticky; top: 0; background: var(--surface); white-space: nowrap }
+.dp-tbl td { vertical-align: top }
+.dp-tbl td.wrap { min-width: 160px; max-width: 360px; word-break: break-word }
+.dp-tbl td.nowrap { white-space: nowrap }
+.dp-tbl tr.row { cursor: pointer }
+.dp-tbl tr.row:hover td { background: var(--surface-hover) }
+.cell-muted { color: var(--text-muted) }
+.row-act { white-space: nowrap }
+.mini-btn {
+    font-family: var(--font-display); font-size: 11px; padding: 3px 8px; margin: 0 4px 2px 0;
+    border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elevated);
+    color: var(--text-secondary); cursor: pointer; white-space: nowrap;
+}
+.mini-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted) }
+.mini-btn:disabled { opacity: .45; cursor: default }
+.dp-pager {
+    flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+    padding: 10px 22px; border-top: 1px solid var(--border);
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+}
 
 .noise-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px }
 .empty { font-size: 12px; color: var(--text-muted); padding: 18px 4px; text-align: center }
@@ -252,8 +439,66 @@
     border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text);
 }
 
+/* 항목 설명 (!) 버튼(plans/112 S4 · §2.7) — 원형 외곽선·중립색. 채운 주황 `pill--warn`·
+   오류 알림의 채운 원(!)과 모양을 달리해 "경고"로 읽히지 않게 한다. 보이는 원은 16px이고
+   누르는 영역은 ::after로 26px까지 넓힌다(터치). */
+.info-btn {
+    position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; padding: 0; margin: 0 2px; border-radius: 50%;
+    border: 1.5px solid var(--text-muted); background: transparent; color: var(--text-muted);
+    /* 고정폭 10px 700에서는 "!"가 1배율 화면에서 "i"처럼 읽혔다(부모 실측 캡처) — 본문 글꼴 굵게 */
+    font-family: var(--font-display, sans-serif); font-size: 11px; font-weight: 800; line-height: 1;
+    cursor: pointer; vertical-align: middle; letter-spacing: 0;
+}
+.info-btn::after { content: ""; position: absolute; inset: -5px }
+.info-btn:hover, .info-btn[aria-expanded="true"] { color: var(--text); border-color: var(--text) }
+.info-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+/* 관리 탭 사이의 (!) — `.mgmt-tabs button` 탭 모양을 덮는다 */
+.mgmt-tabs .info-btn {
+    align-self: center; width: 16px; height: 16px; padding: 0; margin: 0 6px 0 -4px;
+    border: 1.5px solid var(--text-muted); border-radius: 50%; font-size: 11px; color: var(--text-muted);
+}
+.mgmt-tabs .info-btn:hover, .mgmt-tabs .info-btn[aria-expanded="true"] { color: var(--text); border-color: var(--text) }
+
+/* 설명 팝오버 — body 직속 1개. 층은 머리 주석 표(50). 색은 툴팁 토큰(라이트/다크). */
+.info-pop {
+    position: fixed; top: 0; left: 0; z-index: 50; display: none;
+    width: max-content; max-width: min(360px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+    overflow: auto; padding: 12px 14px; border-radius: var(--radius-sm);
+    background: var(--tooltip-bg); color: var(--tooltip-text);
+    border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+    font-size: 12px; line-height: 1.6; text-align: left; font-weight: 400;
+}
+.info-pop.on { display: block }
+.info-pop h4 { font-size: 12.5px; font-weight: 700; margin: 0 0 6px }
+.info-pop .st { font-size: 11.5px; margin: 0 0 8px; padding: 5px 8px; border-radius: 6px; background: var(--success-bg); color: var(--success) }
+.info-pop .st.off { background: var(--warning-bg); color: var(--warning) }
+.info-pop dl { margin: 0 }
+.info-pop dt { font-size: 10.5px; font-weight: 700; color: var(--text-muted); margin-top: 6px }
+.info-pop dd { margin: 1px 0 0 }
+.info-pop code, .dp-note code {
+    font-family: var(--font-mono); font-size: 10.5px; padding: 0 4px; border-radius: 4px;
+    background: var(--bg-deep); color: var(--text); word-break: break-all;
+}
+.tier-card .t { display: flex; align-items: center; gap: 4px }
+
+/* 표가 카드 폭보다 넓으면(좁은 화면) 카드 안에서 가로 스크롤한다 — 페이지 전체가 밀리지 않게 */
+.tbl-wrap { overflow-x: auto }
+/* 그리드 칸의 min-content가 열 폭을 밀어내지 않게 한다(한 열이 되는 1080px 이하에서 가로 넘침 원인) */
+.noise-grid > *, .meta-row > * { min-width: 0 }
+
 @media (max-width: 1080px) {
     .noise-grid { grid-template-columns: 1fr }
     .kpis { grid-template-columns: repeat(3, 1fr) }
     .meta-row { grid-template-columns: 1fr }
+}
+@media (max-width: 480px) {
+    .stage-row { grid-template-columns: 112px 1fr 72px; gap: 6px }
+    .kpis, .tiers { grid-template-columns: repeat(2, 1fr) }
+}
+@media (max-width: 640px) {
+    .dp-head { padding: 14px 14px 10px }
+    .dp-body { padding: 0 14px 10px }
+    .dp-pager { padding: 8px 14px }
+    .dp-scope { margin-left: 0 }
 }

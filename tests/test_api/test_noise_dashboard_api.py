@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -381,9 +381,16 @@ def test_policy_marks_escalate_only_as_locked(tmp_path):
 
 def test_policy_provides_env_keys_for_deeplink(tmp_path):
     # 변경은 설정 화면에서만 한다 — 그래서 화면이 이동할 키를 서버가 준다.
+    # (plans/112 F-1) 종전 단언 `startswith("NOISE_GATE_")`는 **틀린 접두를 정답으로 굳혔다** —
+    # 실제 접두는 `NOISE_`였고 딥링크가 존재하지 않는 키를 가리켰다. 접두를 하드코딩하지 않고
+    # "설정 카탈로그에 실재하는 키"로 단언한다.
+    from src.api.settings_catalog import field_index
+
+    catalog = set(field_index())
     client = _make_client(_make_config(tmp_path))
     body = client.get("/api/v1/admin/noise/policy").json()
-    assert all(s["env_key"].startswith("NOISE_GATE_") for s in body["settings"])
+    missing = [s["env_key"] for s in body["settings"] if s["env_key"] not in catalog]
+    assert body["settings"] and missing == []
     assert body["editor_path"]
 
 
@@ -472,3 +479,407 @@ def test_admin_paths_still_require_admin_after_split(tmp_path):
     client = _make_user_client(_make_config(tmp_path))
     for path in READ_PATHS:
         assert client.get(path).status_code == 403, path
+
+
+# ─── plans/112 드릴다운 · 설명 · 가독성 — 운영자·사용자 경로 대칭 ─────────
+# 읽기 핸들러는 두 경로가 공유한다(D-245). 새 파라미터·필드가 한쪽에서만 동작하는 비대칭 회귀를
+# 막기 위해 **같은 케이스를 두 경로에서** 돌린다. 경로별 차이는 condition_log(운영자 전용) 하나다.
+
+MODES = ["admin", "user"]
+
+
+def _mode_client(mode: str, config) -> tuple[TestClient, str]:
+    if mode == "admin":
+        return _make_client(config), "/api/v1/admin/noise"
+    return _make_user_client(config), "/api/v1/noise"
+
+
+def _drill_records() -> list[dict]:
+    now = datetime.now(UTC)
+
+    def at(minutes: int) -> str:
+        return (now - timedelta(minutes=60 - minutes)).isoformat()
+
+    return [
+        _decision_record(alarm_id="p1", tier="page", stage="severity3", ts=at(1),
+                         fingerprint="fp-rep", server_name="AP-01", alarm_name="대표 알람"),
+        _decision_record(alarm_id="t1", tier="ticket", stage="matrix", ts=at(2)),
+        _decision_record(alarm_id="d1", tier="dashboard", stage="matrix", ts=at(3)),
+        _decision_record(alarm_id="s1", tier="suppress", stage="flapping", ts=at(4)),
+        _decision_record(
+            alarm_id="c1", tier="suppress", stage="correlation", ts=at(5),
+            correlation_meta={"representative_fp": "fp-rep", "member_seq": 3, "similarity": 0.9},
+        ),
+        _decision_record(alarm_id="f1", tier="ticket", stage="matrix", ts=at(6),
+                         fingerprint="fp-heal", signals={"severity": 1}),
+        _decision_record(alarm_id="h1", tier="suppress", stage="self_heal", ts=at(7),
+                         fingerprint="fp-heal", signals={"severity": 0}),
+    ]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_decisions_tier_accepts_comma_separated_set(tmp_path, mode):
+    _seed_decisions(tmp_path, _drill_records())
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    body = client.get(f"{base}/decisions?tier=page,ticket").json()
+    assert body["total"] == 3
+    assert {i["tier"] for i in body["items"]} == {"page", "ticket"}
+    # 토큰 앞뒤 공백은 무시한다.
+    assert client.get(f"{base}/decisions?tier= page , ticket ").json()["total"] == 3
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("value", ["bogus", "page,bogus", "PAGE"])
+def test_decisions_unknown_tier_is_400(tmp_path, mode, value):
+    # 종전에는 오타가 조용히 0건이었다 — "해당 없음"으로 보이지 않게 거부한다.
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    resp = client.get(f"{base}/decisions?tier={value}")
+    assert resp.status_code == 400
+    assert "티어" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_decisions_empty_tier_is_no_filter(tmp_path, mode):
+    # 현행 화면이 `tier=` 빈 값을 보낸다 — 400이 아니라 필터 없음이다.
+    _seed_decisions(tmp_path, _drill_records())
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    resp = client.get(f"{base}/decisions?tier=")
+    assert resp.status_code == 200 and resp.json()["total"] == 7
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_single_tier_response_is_unchanged_except_facets(tmp_path, mode):
+    records = _drill_records()
+    _seed_decisions(tmp_path, records)
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    body = client.get(f"{base}/decisions?tier=page").json()
+    assert set(body) == {"items", "total", "page", "size", "facets"}
+    # 변경 전 뷰 = 레코드 전체 + stage_label (S6 필드가 없는 레코드는 키가 늘지 않는다).
+    expected = [
+        {**rec, "stage_label": "심각도3 단락"} for rec in records if rec["tier"] == "page"
+    ]
+    assert body["items"] == expected
+    assert (body["total"], body["page"], body["size"]) == (1, 1, 50)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_decisions_facets_identities(tmp_path, mode):
+    _seed_decisions(tmp_path, _drill_records())
+    client, base = _mode_client(mode, _make_config(tmp_path))
+
+    body = client.get(f"{base}/decisions").json()
+    assert body["facets"]["tiers"] == {"page": 1, "ticket": 2, "dashboard": 1, "suppress": 3}
+    assert sum(body["facets"]["tiers"].values()) == body["total"]
+    assert sum(body["facets"]["stages"].values()) == body["total"]
+
+    body = client.get(f"{base}/decisions?tier=page,ticket").json()
+    assert body["facets"]["tiers"]["page"] + body["facets"]["tiers"]["ticket"] == body["total"]
+
+    body = client.get(f"{base}/decisions?stage=matrix").json()
+    assert body["facets"]["stages"]["matrix"] == body["total"] == 3
+    assert sum(body["facets"]["tiers"].values()) == body["total"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_decisions_related_representative_and_origin(tmp_path, mode):
+    _seed_decisions(tmp_path, _drill_records())
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    items = {i["alarm_id"]: i for i in client.get(f"{base}/decisions?related=true").json()["items"]}
+
+    rep = items["c1"]["related"]
+    assert rep["kind"] == "representative" and rep["found"] is True
+    assert (rep["alarm_id"], rep["alarm_name"], rep["server_name"]) == ("p1", "대표 알람", "AP-01")
+    origin = items["h1"]["related"]
+    assert origin["kind"] == "origin" and origin["found"] is True and origin["alarm_id"] == "f1"
+    # 상관·자가복구가 아닌 행에는 키가 없다 · related 미지정이면 어디에도 없다.
+    assert "related" not in items["t1"]
+    assert all("related" not in i for i in client.get(f"{base}/decisions").json()["items"])
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_decisions_related_outside_tail_is_marked_not_found(tmp_path, mode):
+    _seed_decisions(tmp_path, _drill_records())
+    config = _make_config(tmp_path)
+    config.noise_gate.decision_store_max_lines = 3  # 대표(p1)가 tail 밖으로 밀려난다
+    client, base = _mode_client(mode, config)
+    items = {i["alarm_id"]: i for i in client.get(f"{base}/decisions?related=true").json()["items"]}
+    assert items["c1"]["related"] == {"kind": "representative", "found": False}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_decisions_alarm_name_exact_and_interval(tmp_path, mode):
+    records = _drill_records()
+    _seed_decisions(tmp_path, records)
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    assert client.get(f"{base}/decisions", params={"alarm_name": "대표 알람"}).json()["total"] == 1
+    assert client.get(f"{base}/decisions", params={"alarm_name": "대표"}).json()["total"] == 0
+
+    since = records[1]["ts"]  # t1(포함)
+    until = records[3]["ts"]  # s1(제외)
+    body = client.get(f"{base}/decisions", params={"since": since, "until": until}).json()
+    assert [i["alarm_id"] for i in body["items"]] == ["d1", "t1"]
+    # 시간대 없는 값은 UTC로 본다.
+    naive = datetime.fromisoformat(since).astimezone(UTC).replace(tzinfo=None)
+    body = client.get(f"{base}/decisions", params={"since": naive.isoformat()}).json()
+    assert body["total"] == 6
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("param", ["since", "until"])
+def test_decisions_bad_instant_is_400(tmp_path, mode, param):
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    resp = client.get(f"{base}/decisions", params={param: "어제쯤"})
+    assert resp.status_code == 400
+
+
+# ─── summary 단계 설명 · 활성 여부 ───────────────────────────────────────
+
+_EXPECTED_ENABLE_KEYS = {
+    "non_alarm": "NOISE_NON_ALARM_FILTER_ENABLED",
+    "silence": "NOISE_SILENCE_ENABLED",
+    "dependency": "NOISE_DEPENDENCY_SUPPRESSION",
+    "inhibition": "NOISE_INHIBITION_ENABLED",
+    "flapping": "NOISE_FLAPPING_ENABLED",
+    "storm": "NOISE_STORM_GROUPING_ENABLED",
+    "correlation": "NOISE_CROSS_HOST_CORRELATION_ENABLED",
+    "annotation": "NOISE_ANNOTATION_PLANNED_SUPPRESS",
+}
+_ENABLE_FIELDS = {
+    "non_alarm": "non_alarm_filter_enabled",
+    "silence": "silence_enabled",
+    "dependency": "dependency_suppression",
+    "inhibition": "inhibition_enabled",
+    "flapping": "flapping_enabled",
+    "storm": "storm_grouping_enabled",
+    "correlation": "cross_host_correlation_enabled",
+    "annotation": "annotation_planned_suppress",
+}
+
+
+def _stages(client, base) -> dict[str, dict]:
+    return {s["stage"]: s for s in client.get(f"{base}/summary").json()["stages"]}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_summary_stages_carry_description_and_enable_key(tmp_path, mode):
+    from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS, STAGE_ORDER
+
+    # unknown 단계가 나오도록 판별 불가 사유의 구 레코드를 하나 넣는다.
+    _seed_decisions(tmp_path, [_decision_record(stage=None, reason="정체불명 사유")])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    stages = _stages(client, base)
+    assert set(stages) == set(STAGE_ORDER) | {"unknown"}
+    for key, row in stages.items():
+        assert row["description"] == STAGE_DESCRIPTIONS[key] and row["description"]
+        assert row["enable_key"] == _EXPECTED_ENABLE_KEYS.get(key)
+
+
+def test_stage_descriptions_cover_every_stage_and_unknown():
+    from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS, STAGE_ORDER
+
+    assert set(STAGE_DESCRIPTIONS) == set(STAGE_ORDER) | {"unknown"}
+    assert all(text.strip() for text in STAGE_DESCRIPTIONS.values())
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("stage", sorted(_ENABLE_FIELDS))
+@pytest.mark.parametrize("flag", [True, False])
+def test_summary_enabled_follows_stage_flag(tmp_path, mode, stage, flag):
+    config = _make_config(tmp_path)
+    for field_name in _ENABLE_FIELDS.values():
+        setattr(config.noise_gate, field_name, not flag)  # 다른 단계는 반대값 — 섞이면 드러난다
+    setattr(config.noise_gate, _ENABLE_FIELDS[stage], flag)
+    client, base = _mode_client(mode, config)
+    stages = _stages(client, base)
+    assert stages[stage]["enabled"] is flag
+    for always in ("severity3", "self_heal", "resolved", "collection_failed",
+                   "maintenance", "matrix"):
+        assert stages[always]["enabled"] is True  # 게이트 on이면 항상 평가된다
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_summary_gate_off_disables_every_stage(tmp_path, mode):
+    config = _make_config(tmp_path, gate=False)
+    for field_name in _ENABLE_FIELDS.values():
+        setattr(config.noise_gate, field_name, True)
+    client, base = _mode_client(mode, config)
+    assert all(row["enabled"] is False for row in _stages(client, base).values())
+
+
+def test_every_console_env_key_exists_in_settings_catalog():
+    # 정책 딥링크 키와 단계 활성 키가 모두 설정 편집기에 실재해야 한다(F-1 재발 방지).
+    from src.api.settings_catalog import field_index
+
+    catalog = set(field_index())
+    keys = [noise_routes._env_key(f) for f in noise_routes._POLICY_FIELDS]
+    keys += [noise_routes._env_key(f) for f in noise_routes._STAGE_ENABLE_FIELDS.values()]
+    assert [k for k in keys if k not in catalog] == []
+    assert set(noise_routes._STAGE_ENABLE_FIELDS) == set(_EXPECTED_ENABLE_KEYS)
+
+
+# ─── timeseries 로컬 격자 ────────────────────────────────────────────────
+
+_FROZEN = datetime(2026, 9, 22, 4, 37, 12, 345678, tzinfo=UTC)
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):  # noqa: ANN001, ANN206
+        return _FROZEN if tz is not None else _FROZEN.replace(tzinfo=None)
+
+
+@pytest.fixture()
+def frozen_store_clock(monkeypatch):
+    import noise_gate.infrastructure.decision_store as decision_store_module
+
+    monkeypatch.setattr(decision_store_module, "datetime", _FrozenDatetime)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_timeseries_local_grid_starts_on_even_kst_hours(tmp_path, mode, frozen_store_clock):
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    points = client.get(
+        f"{base}/timeseries?range=24h&bucket=2h&tz_offset_minutes=540"
+    ).json()["points"]
+    kst = timezone(timedelta(hours=9))
+    assert points
+    for p in points:
+        local = datetime.fromisoformat(p["bucket_ts"]).astimezone(kst)
+        assert local.hour % 2 == 0 and local.minute == 0
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_timeseries_unspecified_offset_is_legacy_utc_grid(tmp_path, mode, frozen_store_clock):
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    points = client.get(f"{base}/timeseries?range=24h&bucket=2h").json()["points"]
+    now = _FROZEN.timestamp()
+    start = int((now - 86400) // 7200 * 7200)
+    end = int(now // 7200 * 7200)
+    assert [p["bucket_ts"] for p in points] == [
+        datetime.fromtimestamp(ts, UTC).isoformat()
+        for ts in range(start, end + 7200, 7200)
+    ]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("offset", [-721, 841])
+def test_timeseries_offset_out_of_range_is_422(tmp_path, mode, offset):
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    assert client.get(f"{base}/timeseries?tz_offset_minutes={offset}").status_code == 422
+
+
+# ─── S6 식별·근거 필드 — condition_log는 운영자 경로만 ────────────────────
+
+
+def _s6_record() -> dict:
+    return _decision_record(
+        alarm_id="e1", db_id="db1", resource_name="svr-01-CPU",
+        condition_log="CPU 97% > 90%",
+        stage_evidence={"flap_percent": 62.5, "high": 50.0, "low": 25.0, "samples": 12},
+    )
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_s6_fields_and_condition_log_visibility(tmp_path, mode):
+    _seed_decisions(tmp_path, [_s6_record()])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    listed = client.get(f"{base}/decisions").json()["items"][0]
+    traced = client.get(f"{base}/decisions/e1").json()["decision"]
+    for item in (listed, traced):
+        assert item["db_id"] == "db1" and item["resource_name"] == "svr-01-CPU"
+        assert item["stage_evidence"]["samples"] == 12
+        if mode == "admin":
+            assert item["condition_log"] == "CPU 97% > 90%"
+        else:
+            assert "condition_log" not in item  # 사용자 경로에는 키 자체가 없다(G-2 (c))
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_silence_evidence_creator_is_operator_only(tmp_path, mode):
+    # 침묵 관리가 운영자 전용이듯(D-245) 규칙을 만든 운영자 계정도 사용자 경로에는 내보내지 않는다.
+    _seed_decisions(tmp_path, [_decision_record(
+        alarm_id="z1", stage="silence", reason="침묵 규칙(slc_1) — 월간 배포 점검",
+        stage_evidence={"rule_id": "slc_1", "matcher_summary": "server=WEB-*",
+                        "expires_at": "2026-09-22T12:00:00+00:00", "created_by": "adm"},
+    )])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    listed = client.get(f"{base}/decisions").json()["items"][0]
+    traced = client.get(f"{base}/decisions/z1").json()["decision"]
+    for item in (listed, traced):
+        evidence = item["stage_evidence"]
+        assert evidence["rule_id"] == "slc_1" and evidence["matcher_summary"] == "server=WEB-*"
+        if mode == "admin":
+            assert evidence["created_by"] == "adm"
+        else:
+            assert "created_by" not in evidence
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_s6_string_fields_are_masked(tmp_path, mode):
+    secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
+    _seed_decisions(tmp_path, [_decision_record(
+        alarm_id="m1", resource_name=secret, condition_log=secret,
+        stage_evidence={"inhibitor": secret, "inhibitor_severity": 2},
+    )])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    item = client.get(f"{base}/decisions").json()["items"][0]
+    assert item["resource_name"] == "***"
+    assert item["stage_evidence"] == {"inhibitor": "***", "inhibitor_severity": 2}
+    if mode == "admin":
+        assert item["condition_log"] == "***"
+
+
+# ─── plans/112 잔여 처리 — m-2 시각 불명 레코드 · m-5 정책 탭 키 ─────────
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_timeseries_reports_zero_excluded_when_all_ts_readable(tmp_path, mode):
+    _seed_decisions(tmp_path, [_decision_record(alarm_id="t1")])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    body = client.get(f"{base}/timeseries?range=24h&bucket=2h").json()
+    assert body["excluded_no_ts"] == 0
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_timeseries_excluded_records_close_the_summary_identity(tmp_path, mode):
+    # 시각을 읽을 수 없는 레코드는 창 판정에서 포함되므로 KPI(summary.raw)에는 세지고 막대에는
+    # 못 들어간다 — 그 차이가 excluded_no_ts로 드러나 `Σ구간 + excluded_no_ts == raw`가 된다.
+    _seed_decisions(tmp_path, [
+        _decision_record(alarm_id="ok1", tier="page"),
+        _decision_record(alarm_id="ok2", tier="suppress"),
+        _decision_record(alarm_id="bad1", tier="ticket", ts="not-a-timestamp"),
+        _decision_record(alarm_id="bad2", tier="suppress", ts=""),
+    ])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    series = client.get(f"{base}/timeseries?range=24h&bucket=2h").json()
+    summary = client.get(f"{base}/summary?range=24h").json()
+    placed = sum(
+        p["page"] + p["ticket"] + p["dashboard"] + p["suppress"] for p in series["points"]
+    )
+    assert series["excluded_no_ts"] == 2
+    assert placed + series["excluded_no_ts"] == summary["raw"] == 4
+
+
+def test_policy_tab_includes_every_stage_enable_key_and_keeps_existing_order(tmp_path):
+    # 단계 설명이 "켜는 설정"으로 인용하는 키가 정책 탭에 빠지면 안 된다(m-5). 기존 14개 항목의
+    # 순서·값은 그대로 두고 없던 키만 뒤에 붙는다(추가만).
+    config = _make_config(tmp_path)
+    config.noise_gate.non_alarm_filter_enabled = True
+    config.noise_gate.annotation_planned_suppress = False
+    client = _make_client(config)
+    settings = client.get("/api/v1/admin/noise/policy").json()["settings"]
+    env_keys = [s["env_key"] for s in settings]
+
+    enable_keys = {noise_routes._env_key(f) for f in noise_routes._STAGE_ENABLE_FIELDS.values()}
+    assert enable_keys <= set(env_keys)
+
+    base = list(noise_routes._BASE_POLICY_FIELDS)
+    assert [s["key"] for s in settings[: len(base)]] == base  # 기존 순서 그대로
+    assert [s["key"] for s in settings[len(base):]] == [
+        "non_alarm_filter_enabled", "annotation_planned_suppress",
+    ]
+    values = {s["key"]: s["value"] for s in settings}
+    assert values["silence_enabled"] is True and values["enable_noise_gate"] is True
+    assert values["non_alarm_filter_enabled"] is True
+    assert values["annotation_planned_suppress"] is False
+    assert len(env_keys) == len(set(env_keys))  # 중복 없음

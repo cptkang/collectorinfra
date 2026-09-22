@@ -73,6 +73,14 @@ async def notification_gate_node(
     store = configurable.get("decision_store")
     if store is not None:
         try:
+            # (plans/112 S6) 결정 단계의 근거만 모은다 — 도메인이 아는 것(decision.evidence) +
+            # 워커 탐지가 아는 것(detection_evidence[결정 단계]). 다른 단계의 탐지값은 싣지 않는다
+            # (예: 스톰이 탐지됐어도 인히비션이 먼저 결정했다면 스톰 창은 이 판단의 근거가 아니다).
+            detected = state.get("detection_evidence") or {}
+            stage_evidence = {
+                **(getattr(decision, "evidence", None) or {}),
+                **(detected.get(getattr(decision, "stage", "")) or {}),
+            }
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
             # (Plan 60 E2) 상관 억제 시 클러스터 메타를 최상위 correlation_meta 필드로 첨부.
             # (Plan 60 B-7 L-2 · §15.4 D-035) 의미적 근접중복 후보 주석을 최상위
@@ -89,6 +97,11 @@ async def notification_gate_node(
                 recurrence=state.get("recurrence"),
                 correlation_meta=state.get("correlation_meta"),
                 semantic_annotation=state.get("semantic_annotation"),
+                # (plans/112 S6 · G-2) 결정 단계 근거 + 식별 필드 — 빈 값이면 키를 넣지 않는다.
+                stage_evidence=stage_evidence or None,
+                db_id=str(getattr(event, "db_id", "") or ""),
+                resource_name=str(getattr(event, "resource_name", "") or ""),
+                condition_log=str(getattr(event, "condition_log", "") or ""),
             )
         except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
             logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)

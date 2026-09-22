@@ -18,6 +18,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from noise_gate.domain.silence import match_rules
 
@@ -129,6 +130,74 @@ _REASON_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
 # 매핑 실패 레코드가 모이는 자리 — **버리지 않는다**(합계 항등식이 깨지면 퍼널이 거짓말을 한다).
 STAGE_UNKNOWN = "unknown"
 
+# 단계 설명(관제 화면 (!) 팝오버 · plans/112 S4). 판정 순서·라벨과 같은 파일에 두어, 판정을
+# 고치는 사람이 설명을 함께 보게 한다. **판정에 관여하지 않는다**(관측 전용). 문구는 아래
+# decide_notification의 결정 지점과 대조해 썼다 — 판정을 바꾸면 이 표도 같이 고친다.
+STAGE_DESCRIPTIONS: dict[str, str] = {
+    STAGE_NON_ALARM: (
+        "알람 표지(가용성·사용률·임계·초과·장애·경고 등)가 하나도 없고 승인·요청·안내·공지·"
+        "문의성 문구가 있는 메시지를 억제합니다. 애매하면 알람으로 봅니다(재현율 우선). "
+        "심각도3 단락보다 앞에서 평가합니다."
+    ),
+    STAGE_SEVERITY3: (
+        "실효 심각도(수신 심각도와, 켜져 있을 때 AI 상향 등급 중 큰 값)가 3이면 뒤 단계를 "
+        "거치지 않고 PAGE입니다. 침묵 규칙·억제 단계 어느 것으로도 억제되지 않습니다"
+        "(앞 단계인 비운영 알람 판정에 걸린 메시지만 예외)."
+    ),
+    STAGE_SELF_HEAL: (
+        "해소 이벤트가 자가복구 창 안의 같은 알람 발생(억제 상한 이하 심각도)과 짝지어지면 "
+        "스스로 복구된 것으로 보고 억제합니다."
+    ),
+    STAGE_RESOLVED: (
+        "짝지을 발생이 없는 해소 이벤트입니다. 기본은 기록만(SUPPRESS), 설정하면 화면 "
+        "표시(DASHBOARD)입니다."
+    ),
+    STAGE_COLLECTION_FAILED: (
+        "중요도·유지보수 등 부가 신호를 가져오지 못하면, 심각도 1 이상은 보수적으로 "
+        "PAGE입니다(재현율 우선)."
+    ),
+    STAGE_MAINTENANCE: (
+        "수집원이 유지보수 모드로 알려준 자원의 알람은 신규 발송을 억제합니다"
+        "(감사 기록은 남습니다)."
+    ),
+    STAGE_SILENCE: (
+        "운영자가 건 침묵 규칙(존·서버·알람·자원 글롭, 심각도 상한, 만료 필수)에 걸리면 "
+        "억제합니다. 규칙의 심각도 상한은 실효 심각도와 대조합니다."
+    ),
+    STAGE_DEPENDENCY: (
+        "상위 자원이 비정상이면 하위 알람을 연쇄 노이즈로 봅니다. 다홉 모드에서는 근본원인이 "
+        "이미 통보됐으면 억제, 아니면 화면 표시로 낮춥니다. 상위 상태를 모르면 억제하지 않습니다."
+    ),
+    STAGE_INHIBITION: (
+        "같은 서버에서 더 높은 심각도의 다른 알람이 창 안에 활성이면 하위 알람을 누릅니다."
+    ),
+    STAGE_FLAPPING: (
+        "발생·해소가 진동(가중 상태 변화율이 상한 초과)하면 안정될 때까지 통보를 보류합니다. "
+        "억제 상한 이하 심각도만 해당합니다."
+    ),
+    STAGE_STORM: (
+        "같은 서버에서 창 안 발생이 임계를 넘으면, 임계 건수까지는 통상대로 판단하고 그 뒤 "
+        "건은 억제합니다."
+    ),
+    STAGE_CORRELATION: (
+        "같은 존의 여러 호스트 알람을 유사도로 묶어, 먼저 온 대표 외 알람을 억제합니다"
+        "(같은 서버 다발인 스톰과 구분)."
+    ),
+    STAGE_ANNOTATION: (
+        "계획 작업 주석이 있고 해소·상관·변경 근접 중 하나가 함께 뒷받침하면 화면 표시로 "
+        "낮춥니다. 주석만으로는 낮추지 않습니다."
+    ),
+    STAGE_MATRIX: (
+        "앞 단계를 모두 지난 알람의 최종 관문입니다. 심각도×중요도 표로 기본 티어를 정하고, "
+        "보조 신호(통보 정책·일상 패턴·LLM 판단·변경 근접)로 최대 한 단계 올리거나 내립니다. "
+        "둘이 충돌하면 올립니다."
+    ),
+    STAGE_UNKNOWN: (
+        "단계 라벨이 없고 사유 문구로도 판별되지 않은 옛 레코드입니다. 버리지 않고 모아 "
+        "둡니다(합계가 맞도록)."
+    ),
+}
+
 
 def stage_from_reason(reason: str) -> str:
     """사유 문자열에서 결정 단계를 역추정한다(구 레코드 폴백 전용).
@@ -160,6 +229,9 @@ class NotificationDecision:
     fingerprint: str = ""
     # (Plan 54 모듈 1) 결정이 난 단계 — 관측 전용. 맨 뒤 기본값이라 기존 위치 인자 호출은 무영향.
     stage: str = ""
+    # (plans/112 S6) 결정 단계에서 도메인이 아는 구체 근거(비알람 마커·침묵 규칙·의존성 모드·
+    # 주석 코로보레이션·매트릭스 조정) — 감사 전용. 위 판정 필드 산출에 관여하지 않는다.
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def compute_fingerprint(event) -> str:
@@ -211,6 +283,30 @@ def is_operational_alarm(event) -> bool:
     return True  # 애매하면 알람(재현율 우선)
 
 
+def non_alarm_markers(event: object) -> list[str]:
+    """이벤트 텍스트에 걸린 **비알람 마커 단어**를 등장 순서대로(중복 제거) 돌려준다 (plans/112 S6).
+
+    `is_operational_alarm`과 **같은 정규식·같은 텍스트 조합**을 쓴다 — 비운영 판정의 근거를
+    감사에 남기기 위한 것이며 판정 자체는 `is_operational_alarm`이 한다(이 함수는 판정 무관).
+
+    Args:
+        event: 알람 이벤트(alarm_name/condition_log/conditions/resource_name/resource_type 속성).
+
+    Returns:
+        걸린 비알람 마커 단어 목록(없으면 빈 목록).
+    """
+    parts = [
+        str(getattr(event, "alarm_name", "") or ""),
+        str(getattr(event, "condition_log", "") or ""),
+        str(getattr(event, "conditions", "") or ""),
+        str(getattr(event, "resource_name", "") or ""),
+        str(getattr(event, "resource_type", "") or ""),
+        str(getattr(event, "description", "") or ""),
+    ]
+    text = " ".join(parts)
+    return list(dict.fromkeys(_NON_ALARM_MARKERS.findall(text)))
+
+
 def map_importance(importance_id, importance_value_map: dict[str, str]) -> str:
     """IMPORTANCE_ID 원값을 '낮음'|'보통'|'높음'으로 매핑한다.
 
@@ -237,6 +333,23 @@ def _matrix_tier(effective_severity: int, importance: str) -> str:
         # (E3 결정: 저중요도 주의알람은 묵살 아닌 대시보드 강등) "낮음" SUPPRESS→DASHBOARD
         return {"높음": TIER_TICKET, "보통": TIER_DASHBOARD, "낮음": TIER_DASHBOARD}[importance]
     return TIER_PAGE
+
+
+def _silence_evidence(rule: object) -> dict[str, str]:
+    """걸린 침묵 규칙의 판단 시점 스냅샷을 만든다 (plans/112 S6 · 감사 전용).
+
+    규칙이 나중에 해제·만료돼도 "무엇이 조용히 시켰나"가 레코드에 남게 한다. 근거 추출이
+    판정을 깨면 안 되므로 속성은 전부 안전 접근한다(덕 타이핑 규칙도 예외 없이 통과).
+    """
+    expires_at = getattr(rule, "expires_at", None)
+    return {
+        "rule_id": str(getattr(rule, "id", "") or ""),
+        "matcher_summary": str(getattr(rule, "matcher_summary", "") or ""),
+        "expires_at": (
+            expires_at.isoformat() if isinstance(expires_at, datetime) else str(expires_at or "")
+        ),
+        "created_by": str(getattr(rule, "created_by", "") or ""),
+    }
 
 
 def _priority(tier: str, effective_severity: int, importance: str) -> int:
@@ -419,10 +532,13 @@ def decide_notification(
             "correlated": bool(correlated),
         }
 
-    def _decision(tier: str, reason: str, stage: str) -> NotificationDecision:
+    def _decision(
+        tier: str, reason: str, stage: str, evidence: dict[str, Any] | None = None
+    ) -> NotificationDecision:
         """티어·사유·**결정 단계**로 판단 결과를 만든다.
 
         stage는 관측 전용(Plan 54 퍼널)이며 tier/reason/priority/signals 산출에 관여하지 않는다.
+        evidence(plans/112 S6)도 같다 — 결정 지점이 이미 계산한 값을 옮겨 담을 뿐이다.
         """
         return NotificationDecision(
             tier=tier,
@@ -431,6 +547,7 @@ def decide_notification(
             signals=_signals(),
             fingerprint=compute_fingerprint(event),
             stage=stage,
+            evidence=dict(evidence or {}),
         )
 
     # ── step 0.5(E7-b): 비알람 사전분류 — 승인/안내성 메시지 억제(§17.4) ──
@@ -442,6 +559,7 @@ def decide_notification(
             TIER_SUPPRESS,
             "비운영 알람 — 승인/안내성 메시지(마커 기반 사전 억제)",
             STAGE_NON_ALARM,
+            {"markers": non_alarm_markers(event)},
         )
 
     # ── step 3: 심각도 3 → 즉시 PAGE(단락, 억제 금지 D-035) ──
@@ -493,24 +611,38 @@ def decide_notification(
                 TIER_SUPPRESS,
                 f"침묵 규칙({matched_rule.id}) — {matched_rule.reason or '운영자 지정 기간 억제'}",
                 STAGE_SILENCE,
+                _silence_evidence(matched_rule),
             )
 
     # ── step 6.4(E2·E4): 의존성 억제 — 조상 비정상 시 자식 연쇄 노이즈(§3.6·§6.2) ──
     # dependency_suppression=False(기본)면 단계 자체를 평가하지 않아 E1 무변경.
     if dependency_suppression:
+        # (plans/112 S6) 근본원인 자원명은 다홉 조상 탐색이 채울 때만 싣는다(1홉이면 보통 없음).
+        root_name = noise_ctx.get("root_resource_name") if noise_ctx else None
+        root_name_evidence = (
+            {"root_resource_name": root_name} if isinstance(root_name, str) and root_name else {}
+        )
         # E4 다홉 하이브리드(§6.2): cascaded(다홉 조상 비정상)면 root 통보 여부로 억제 강도 분기.
         # cascaded 미제공(1홉 모드·수집 실패)이면 아래 현행 parent_avail_status 판정으로 폴백.
         if noise_ctx and noise_ctx.get("cascaded"):
+            root_notified = bool(noise_ctx.get("root_notified"))
+            multi_hop_evidence = {
+                "mode": "multi_hop",
+                "root_notified": root_notified,
+                **root_name_evidence,
+            }
             if noise_ctx.get("root_notified"):
                 return _decision(
                     TIER_SUPPRESS,
                     "의존성 억제(다홉) — 근본원인 노드 통보됨",
                     STAGE_DEPENDENCY,
+                    multi_hop_evidence,
                 )
             return _decision(
                 TIER_DASHBOARD,
                 "의존성 연쇄(다홉) — 근본원인 미통보, 대시보드 강등",
                 STAGE_DEPENDENCY,
+                multi_hop_evidence,
             )
         # 1홉 폴백(현행 무변경): parent_avail_status 0=정상, ≠0=비정상, None=미수집(보수적 비억제·R-3).
         parent_avail_status = noise_ctx.get("parent_avail_status") if noise_ctx else None
@@ -520,6 +652,7 @@ def decide_notification(
                 f"의존성 억제 — 부모 리소스 비정상(AVAIL_STATUS={parent_avail_status}),"
                 " 자식 연쇄 노이즈",
                 STAGE_DEPENDENCY,
+                {"mode": "one_hop", **root_name_evidence},
             )
 
     # ── step 6.5(E2): 인히비션 — 동일 서버 상위 심각도 발생 중 하위 음소거(§3.4) ──
@@ -574,10 +707,21 @@ def decide_notification(
             or bool(noise_ctx and noise_ctx.get("change_nearby"))
         )
         if corroborated:
+            # (plans/112 S6) 강등을 뒷받침한 출처 — 위 corroborated와 같은 세 조건을 따로 적는다.
+            corroborated_by = [
+                source
+                for source, hit in (
+                    ("resolution", bool(annotation.get("resolution"))),
+                    ("correlation", bool(correlated)),
+                    ("change_nearby", bool(noise_ctx and noise_ctx.get("change_nearby"))),
+                )
+                if hit
+            ]
             return _decision(
                 TIER_DASHBOARD,
                 "계획-무해 주석(코로보레이션) — 대시보드 강등(계획작업+해소/상관/변경근접)",
                 STAGE_ANNOTATION,
+                {"corroborated_by": corroborated_by},
             )
 
     # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
@@ -624,4 +768,10 @@ def decide_notification(
         f"매트릭스(심각도{effective_severity}×중요도{importance}) → {base_tier}{adjust_note}"
         f" → 최종 {tier}"
     )
-    return _decision(tier, reason, STAGE_MATRIX)
+    # (plans/112 S6) 사유 문자열에 합쳐 있던 산식 조각을 구조화해 함께 남긴다(판정 무관).
+    return _decision(
+        tier,
+        reason,
+        STAGE_MATRIX,
+        {"base_tier": base_tier, "promote": list(promote), "demote": list(demote)},
+    )

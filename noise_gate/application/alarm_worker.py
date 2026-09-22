@@ -20,7 +20,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import redis.asyncio as aioredis
 
@@ -39,7 +39,13 @@ from noise_gate.domain.correlation import (
     signature_tokens,
 )
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
-from noise_gate.domain.notification_policy import compute_fingerprint
+from noise_gate.domain.notification_policy import (
+    STAGE_FLAPPING,
+    STAGE_INHIBITION,
+    STAGE_SELF_HEAL,
+    STAGE_STORM,
+    compute_fingerprint,
+)
 from noise_gate.application.server_identity import attach_server_identity
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
@@ -98,6 +104,13 @@ class AlarmWorker:
         # (D-049) 직전 self-heal 매칭 소요시간(초) — _update_firing_registry가 설정,
         # _process가 decision_store.record_resolution 기록에 사용(매칭 없으면 None).
         self._last_self_heal_duration: Optional[float] = None
+        # (plans/112 S6) 탐지 함수가 **직전 호출에서 True를 낸 근거** — 반환형(bool)을 바꾸지 않고
+        # 옆에 남긴다. 각 탐지 함수가 호출 시작에 None으로 리셋하므로 이전 알람 값이 새지 않는다.
+        # _process가 탐지가 True였던 단계만 골라 그래프 입력 `detection_evidence`로 싣는다.
+        self._last_self_heal_evidence: dict[str, Any] | None = None
+        self._last_inhibition_evidence: dict[str, Any] | None = None
+        self._last_flapping_evidence: dict[str, Any] | None = None
+        self._last_storm_evidence: dict[str, Any] | None = None
         # 핑거프린트 dedup(재발생 억제, §6.1 · Plan 60 E1) — alarm_id dedup과 별개 경로.
         # 레코드 = {first_seen, last_notified, last_seen, count}.
         #   판정 필드 last_notified = 마지막 *통보* 시각(중복 판정 시 갱신 안 함 → 고정창).
@@ -668,6 +681,9 @@ class AlarmWorker:
             # 비해소·비중복 이벤트에 대해 annotation_planned_suppress 시에만 산출(§17.3).
             # off/마커 없으면 None → decide_notification이 평가 안 함(회귀 0).
             annotation_signal_dict: Optional[dict] = None
+            # (plans/112 S6) 탐지가 True였던 단계의 구체 근거 {stage: dict} — 게이트가 결정 단계의
+            # 것만 골라 감사에 남긴다(판정 무관). 탐지 미수행·미탐지면 비어 None으로 넘긴다.
+            detection_evidence: dict[str, dict[str, Any]] = {}
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
@@ -729,6 +745,8 @@ class AlarmWorker:
 
                 # 자가복구 상관 시드(§3.7) — 발생 기록/해소 매칭.
                 self_heal = self._update_firing_registry(event, fingerprint, now)
+                if self_heal and self._last_self_heal_evidence:
+                    detection_evidence[STAGE_SELF_HEAL] = dict(self._last_self_heal_evidence)
 
                 # (D-049) 해소 이벤트 시 incident resolved 발행(트래커 off면 스킵) +
                 # self-heal 매칭 시 자가복구 소요시간을 decision_store에 기록(편향 부분지표).
@@ -749,16 +767,24 @@ class AlarmWorker:
                 # getattr 기본 False — 경량 설정(테스트 SimpleNamespace 등)도 안전 처리.
                 if getattr(self._config.noise_gate, "inhibition_enabled", False):
                     inhibited = self._detect_inhibition(event, now)
+                    if inhibited and self._last_inhibition_evidence:
+                        detection_evidence[STAGE_INHIBITION] = dict(
+                            self._last_inhibition_evidence
+                        )
 
                 # 플래핑 시드(§3.7·E2) — flapping_enabled일 때만 탐지(아니면 스킵 → 회귀 0).
                 # 핑거프린트별 상태 시퀀스로 Nagios 가중 %-state-change·히스테리시스 산출.
                 if getattr(self._config.noise_gate, "flapping_enabled", False):
                     flapping = self._detect_flapping(fingerprint, event, now)
+                    if flapping and self._last_flapping_evidence:
+                        detection_evidence[STAGE_FLAPPING] = dict(self._last_flapping_evidence)
 
                 # 스톰 시드(§3.8·E2) — storm_grouping_enabled일 때만 탐지(아니면 스킵 → 회귀 0).
                 # 스코프(db_id|server) 사건창 내 발생 다발 시 대표 외 storm=True.
                 if getattr(self._config.noise_gate, "storm_grouping_enabled", False):
                     storm = self._detect_storm(event, now)
+                    if storm and self._last_storm_evidence:
+                        detection_evidence[STAGE_STORM] = dict(self._last_storm_evidence)
 
                 # 크로스-호스트 상관 시드(§4·E2) — cross_host_correlation_enabled일 때만
                 # 탐지(아니면 미수행 → detection 스킵·회귀 0). storm(동일 서버)과 독립 병존.
@@ -849,6 +875,8 @@ class AlarmWorker:
                     "annotation": annotation_signal_dict,
                     # (Plan 54 모듈 4) 활성 침묵 규칙(off/없으면 빈 목록 → 침묵 단계 미평가).
                     "silence_rules": silence_rules,
+                    # (plans/112 S6) 탐지가 True였던 단계의 근거(감사 전용·판정 무관, 없으면 None).
+                    "detection_evidence": detection_evidence or None,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
                     "enrichment": None,
                     # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).
@@ -1215,6 +1243,8 @@ class AlarmWorker:
         self_heal = False
         # (D-049) 직전 self-heal 소요시간 리셋 — 매칭 시에만 채운다(호출부가 기록).
         self._last_self_heal_duration = None
+        # (plans/112 S6) 근거도 같이 리셋 — 매칭 시에만 채운다.
+        self._last_self_heal_evidence = None
         if event.is_clear:
             rec = self._firing_registry.pop(fingerprint, None)
             if rec is not None:
@@ -1222,6 +1252,10 @@ class AlarmWorker:
                 if now - fired_ts <= window and 1 <= fired_sev <= suppress_max:
                     self_heal = True
                     self._last_self_heal_duration = now - fired_ts
+                    self._last_self_heal_evidence = {
+                        "heal_seconds": round(now - fired_ts, 3),
+                        "fired_severity": fired_sev,
+                    }
         elif 1 <= event.severity <= suppress_max:
             self._firing_registry[fingerprint] = (now, event.severity)
 
@@ -1251,7 +1285,9 @@ class AlarmWorker:
 
         Returns:
             inhibited 여부(상위 심각도 다른 알람이 활성이면 True).
+            (plans/112 S6) True일 때 누른 상위 알람을 `_last_inhibition_evidence`에 남긴다.
         """
+        self._last_inhibition_evidence = None
         if event.is_clear or event.severity <= 0:
             return False
 
@@ -1269,6 +1305,12 @@ class AlarmWorker:
                 and rec_key != alarm_key
             ):
                 inhibited = True
+                self._last_inhibition_evidence = {
+                    "inhibitor": rec_key,
+                    "inhibitor_severity": rec_sev,
+                    "age_seconds": round(now - rec_ts, 3),
+                    "window_seconds": window,
+                }
 
         # 활성 기록 갱신 — 스코프별 최고 심각도 인히비터 유지(만료·동급/상위 발생 시 교체).
         if rec is None or now - rec[1] > window or event.severity >= rec[0]:
@@ -1302,7 +1344,9 @@ class AlarmWorker:
 
         Returns:
             갱신된 플래핑 상태(True=플래핑 중 → 게이트에서 억제 대상).
+            (plans/112 S6) True일 때 변화율·임계·표본 수를 `_last_flapping_evidence`에 남긴다.
         """
+        self._last_flapping_evidence = None
         states = self._flap_states.get(fingerprint)
         if states is None:
             states = deque(maxlen=MAX_STATES)
@@ -1317,6 +1361,13 @@ class AlarmWorker:
         )
         self._flap_flag[fingerprint] = new
         self._flap_last_seen[fingerprint] = now
+        if new:
+            self._last_flapping_evidence = {
+                "flap_percent": round(percent, 2),
+                "high": cfg.flap_high_threshold,
+                "low": cfg.flap_low_threshold,
+                "samples": len(states),
+            }
 
         # 만료 핑거프린트 정리(메모리 누수 방지) — ttl은 재통보 간격 재사용(관대한 4h).
         # getattr 가드 — 경량 설정(테스트 SimpleNamespace 등)은 기본 4h로 폴백(무변경).
@@ -1350,7 +1401,9 @@ class AlarmWorker:
 
         Returns:
             storm 여부(창 크기가 임계를 초과하면 True).
+            (plans/112 S6) True일 때 창 내 발생 수·임계·창 길이를 `_last_storm_evidence`에 남긴다.
         """
+        self._last_storm_evidence = None
         if event.is_clear:
             return False
 
@@ -1370,7 +1423,14 @@ class AlarmWorker:
         # window_sec<=0 등 경계에서 모두 만료되면 빈 키를 남기지 않는다.
         if not win:
             del self._storm_window[scope]
-        return len(win) > threshold
+        storm = len(win) > threshold
+        if storm:
+            self._last_storm_evidence = {
+                "window_count": len(win),
+                "threshold": threshold,
+                "window_seconds": window_sec,
+            }
+        return storm
 
     def _sweep_correlation_clusters(self, now: float, window_sec: int) -> None:
         """만료된 상관 클러스터를 제거하고 빈 스코프 키를 정리한다 (Plan 60 E2·§10).

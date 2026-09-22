@@ -13,14 +13,17 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from noise_gate.domain.notification_policy import (
     NotificationDecision,
+    STAGE_CORRELATION,
     STAGE_LABELS,
     STAGE_ORDER,
+    STAGE_SELF_HEAL,
     STAGE_UNKNOWN,
     TIER_DASHBOARD,
     TIER_PAGE,
@@ -34,6 +37,55 @@ logger = logging.getLogger(__name__)
 # 퍼널에서 "캔슬됐다"고 세는 티어 — 운영자에게 통보되지 않은 결과다.
 # DASHBOARD는 통보 없이 화면에만 남으므로 억제분에 포함한다(계획서 §4 퍼널 정의).
 _CANCELLED_TIERS = frozenset({TIER_SUPPRESS, TIER_DASHBOARD})
+
+# 4티어 표시 순서(시급한 것부터) — facets.tiers가 이 4키를 항상 담는다(plans/112 §2.5).
+_TIER_KEYS: tuple[str, ...] = (TIER_PAGE, TIER_TICKET, TIER_DASHBOARD, TIER_SUPPRESS)
+
+# (plans/112 S6 · G-2) "이 알람이 울린 실제 값"은 값이 섞이므로 기록 시점에 이 길이로 자른다.
+_CONDITION_LOG_MAX = 200
+
+# 운영자 경로에서만 응답에 싣는 키(G-2 (c)) — 사용자 경로는 전 존 집계라 실측값까지 열지 않는다.
+_OPERATOR_ONLY_KEYS: tuple[str, ...] = ("condition_log",)
+# 운영자 경로에서만 싣는 `stage_evidence` 안의 키 — 침묵 규칙을 만든 운영자 계정. 침묵 관리
+# (`/silences`)가 운영자 전용인 것(D-245)과 같은 이유로 사용자 경로에는 내보내지 않는다(D-247).
+_OPERATOR_ONLY_EVIDENCE_KEYS: tuple[str, ...] = ("created_by",)
+
+# 화면에 내보내기 전 마스킹하는 최상위 문자열 키.
+_MASKED_TEXT_KEYS: tuple[str, ...] = (
+    "alarm_name",
+    "server_name",
+    "reason",
+    "resource_name",
+    "condition_log",
+)
+# related(대표·원 발생 판단)에서 마스킹하는 키 — 목록 행의 같은 필드와 같은 규칙이다.
+_RELATED_MASKED_KEYS: tuple[str, ...] = ("alarm_name", "server_name")
+
+
+def _mask_nested(value: Any, mask_fn: Callable[[str], str]) -> Any:
+    """JSON 값의 문자열을 재귀적으로 마스킹한다(숫자·불리언은 판정 근거라 그대로 둔다)."""
+    if isinstance(value, str):
+        return mask_fn(value)
+    if isinstance(value, list):
+        return [_mask_nested(v, mask_fn) for v in value]
+    if isinstance(value, dict):
+        return {k: _mask_nested(v, mask_fn) for k, v in value.items()}
+    return value
+
+
+def _as_tier_set(tier: object) -> frozenset[str]:
+    """티어 필터를 집합으로 정규화한다(빈 값·None = 필터 없음 = 빈 집합).
+
+    단일 문자열은 종전 호출(`tier="suppress"`)과 같게 한 원소 집합으로 본다. 쉼표 분해·
+    닫힌 집합 검증은 라우트 계층이 한다(잘못된 토큰은 400 — 저장소는 받은 대로 거른다).
+    """
+    if not tier:
+        return frozenset()
+    if isinstance(tier, str):
+        return frozenset({tier})
+    if isinstance(tier, Iterable):
+        return frozenset(str(t) for t in tier if t)
+    return frozenset()
 
 
 class DecisionStore:
@@ -65,6 +117,10 @@ class DecisionStore:
         recurrence: Optional[dict] = None,
         correlation_meta: Optional[dict] = None,
         semantic_annotation: Optional[dict] = None,
+        stage_evidence: dict[str, Any] | None = None,
+        db_id: str = "",
+        resource_name: str = "",
+        condition_log: str = "",
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -96,6 +152,14 @@ class DecisionStore:
         alarm_name·server_name(Plan 54 모듈 2·3): 관제 화면이 "무엇이 억제됐는가"를 보여주려면
         사람이 읽는 식별자가 필요하다 — fingerprint는 해시라 역인용이 불가능하다. 최상위 필드로
         기록하며(동결 스키마 밖), 빈 값이면 키를 넣지 않는다.
+
+        stage_evidence(plans/112 S6 · G-1): **결정 단계의 구체 근거**(인히비터·플래핑 %·스톰 창·
+        침묵 규칙·매트릭스 조정 등)를 최상위 필드로 기록한다. 판정(tier/reason/priority/signals/
+        fingerprint/stage)과 무관한 감사 가산 필드이며, 빈 dict·None이면 키를 넣지 않는다.
+
+        db_id·resource_name·condition_log(plans/112 S6 · G-2): 침묵 매처가 쓰는 식별 필드와 "이
+        알람이 울린 실제 값"이다. condition_log는 값이 섞이므로 `_CONDITION_LOG_MAX`자에서 자르고,
+        관제 조회는 운영자 경로에서만 내보낸다(`_view`). 빈 값이면 키를 넣지 않는다.
         """
         if not self.enabled:
             return
@@ -124,6 +188,15 @@ class DecisionStore:
             record["correlation_meta"] = correlation_meta
         if semantic_annotation is not None:
             record["semantic_annotation"] = semantic_annotation
+        # (plans/112 S6) 식별 필드·근거 — 빈 값이면 키를 넣지 않아 기존 스냅샷과 같다.
+        if db_id:
+            record["db_id"] = db_id
+        if resource_name:
+            record["resource_name"] = resource_name
+        if condition_log:
+            record["condition_log"] = condition_log[:_CONDITION_LOG_MAX]
+        if stage_evidence:
+            record["stage_evidence"] = stage_evidence
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
@@ -585,49 +658,86 @@ class DecisionStore:
         }
 
     def timeseries(
-        self, *, window_seconds: int, bucket_seconds: int
+        self,
+        *,
+        window_seconds: int,
+        bucket_seconds: int,
+        tz_offset_minutes: int | None = None,
     ) -> list[dict]:
+        """버킷별 티어 분포만 돌려준다 — `timeseries_report`의 `points`(종전 반환 형태 그대로)."""
+        points: list[dict[str, Any]] = self.timeseries_report(
+            window_seconds=window_seconds,
+            bucket_seconds=bucket_seconds,
+            tz_offset_minutes=tz_offset_minutes,
+        )["points"]
+        return points
+
+    def timeseries_report(
+        self,
+        *,
+        window_seconds: int,
+        bucket_seconds: int,
+        tz_offset_minutes: int | None = None,
+    ) -> dict[str, Any]:
         """버킷별 티어 분포를 산출한다 (Plan 54 §4 티어 추이).
 
-        버킷 경계는 **UTC 고정 격자**(`floor(ts / bucket) * bucket`)다 — 요청 시각에 맞춰
+        버킷 경계는 **고정 격자**(`floor(ts / bucket) * bucket`)다 — 요청 시각에 맞춰
         경계를 잡으면 새로고침마다 막대가 흔들린다. 데이터가 없는 버킷도 0으로 채워
         그래프에 구멍이 나지 않게 한다.
+
+        tz_offset_minutes(plans/112 S5 · G-3): 격자를 **로컬 시각** 기준으로 정렬한다 — 경계 b가
+        `(b + offset) % bucket == 0`을 만족한다(예: +540이면 2시간 구간이 KST 짝수 시, 1일 구간이
+        KST 자정에 시작). 미지정(None)이면 종전 UTC 격자와 비트 동일하다. `bucket_ts`는 어느
+        경우든 경계의 **UTC** ISO 표기다.
 
         Args:
             window_seconds: 집계 창.
             bucket_seconds: 버킷 크기(초).
+            tz_offset_minutes: 로컬 시각의 UTC 대비 오프셋(분). None이면 UTC 격자.
+
+        excluded_no_ts(plans/112 m-2): 창 안 결정이지만 **시각으로 구간을 정할 수 없어** 막대에
+        넣지 못한 건수(시각 판독 불가 · 격자 밖 미래 시각). 퍼널(`funnel`)은 이 레코드도 세므로
+        4티어 레코드라면 `Σ구간 + excluded_no_ts == funnel.raw`(같은 창)이다 — 범례 합계가 KPI와
+        어긋나는 이유를 화면이 밝힐 수 있게 한다.
 
         Returns:
-            오래된 버킷부터의 `[{bucket_ts, page, ticket, dashboard, suppress}]`.
+            `{points: 오래된 버킷부터의 [{bucket_ts, page, ticket, dashboard, suppress}],
+            excluded_no_ts: int}`.
         """
         bucket = max(1, int(bucket_seconds))
+        # 로컬 격자 이동량(초). 0이면 아래 산식이 종전 UTC 격자 산식과 같은 값을 낸다.
+        shift = int(tz_offset_minutes) * 60 if tz_offset_minutes is not None else 0
         now = datetime.now(timezone.utc).timestamp()
-        start = int((now - window_seconds) // bucket * bucket)
-        end = int(now // bucket * bucket)
+        start = int((now - window_seconds + shift) // bucket * bucket) - shift
+        end = int((now + shift) // bucket * bucket) - shift
 
         buckets: dict[int, dict[str, int]] = {
             ts: {TIER_PAGE: 0, TIER_TICKET: 0, TIER_DASHBOARD: 0, TIER_SUPPRESS: 0}
             for ts in range(start, end + bucket, bucket)
         }
+        excluded = 0
         for rec in self._tail_records(window_seconds):
             parsed = self._parse_ts(rec.get("ts"))
             if parsed is None:
+                excluded += 1  # 창 판정은 "파싱 실패 시 포함"이라 퍼널에는 세진다
                 continue
-            key = int(parsed.timestamp() // bucket * bucket)
+            key = int((parsed.timestamp() + shift) // bucket * bucket) - shift
             slot = buckets.get(key)
             if slot is None:
-                continue  # 창 경계 밖(파싱 실패 포함 정책과 무관하게 그래프에는 넣지 않는다)
+                excluded += 1  # 격자 밖(시계 어긋남으로 현재 구간보다 뒤인 시각)
+                continue
             tier = str(rec.get("tier", ""))
             if tier in slot:
                 slot[tier] += 1
 
-        return [
+        points = [
             {
                 "bucket_ts": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
                 **counts,
             }
             for ts, counts in sorted(buckets.items())
         ]
+        return {"points": points, "excluded_no_ts": excluded}
 
     def top_suppressed(
         self, *, window_seconds: Optional[int] = None, limit: int = 10
@@ -667,12 +777,17 @@ class DecisionStore:
         self,
         *,
         window_seconds: Optional[int] = None,
-        tier: Optional[str] = None,
+        tier=None,  # noqa: ANN001 — str | Iterable[str] | None (plans/112 S2 — 티어 집합)
         stage: Optional[str] = None,
         q: Optional[str] = None,
+        alarm_name: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        related: bool = False,
         page: int = 1,
         size: int = 50,
         mask_fn=None,  # noqa: ANN001 — Callable[[str], str] | None (덕 타이핑)
+        operator_view: bool = False,
     ) -> dict:
         """결정 레코드를 필터·페이지로 조회한다 (Plan 54 모듈 3 — 근거 조회).
 
@@ -680,24 +795,47 @@ class DecisionStore:
         최신이 먼저 오도록 역순으로 정렬한다. 필터는 AND로 결합하며, `q`는 알람명·서버명·
         사유의 부분일치(대소문자 무시)다 — 정규식이 아니다(오작성·ReDoS 방지).
 
+        plans/112 확장(전부 가산 — 새 인자 미지정이면 items·total은 종전과 같다):
+            - `tier`는 **티어 집합**도 받는다(단일 문자열은 종전 그대로).
+            - `alarm_name`은 저장 원문 **정확 일치**, `since`/`until`은 `since <= ts < until`
+              (창과 AND — 시각을 읽을 수 없는 레코드는 구간 필터에서 제외한다).
+            - `facets`: 분포 칩용 건수. `tiers`는 **tier 필터만 뺀** 나머지 필터 집합에서 4키를
+              항상, `stages`는 **stage 필터만 뺀** 나머지 필터 집합에서 0보다 큰 키만 센다.
+            - `related=True`면 상관·자가복구 행에 대표/원 발생 판단을 붙인다(`_related_of`).
+            목록·facets·related는 **파일 1회 읽기**로 만든다 — related는 창 밖 tail까지 봐야
+            하므로 tail을 창 없이 한 번 읽고 창은 여기서 건다(`_tail_records(window)`와 같은 판정).
+
         Args:
             window_seconds: 조회 창(None이면 전체).
-            tier: 티어 필터.
+            tier: 티어 필터(문자열 1개 또는 집합).
             stage: 결정 단계 필터.
             q: 부분일치 검색어.
+            alarm_name: 알람명 정확 일치 필터.
+            since: 구간 시작(포함).
+            until: 구간 끝(제외).
+            related: 대표/원 발생 판단 해석 여부.
             page: 1부터 시작하는 페이지 번호.
             size: 페이지 크기.
             mask_fn: 표시 전 문자열 마스킹 함수(미주입이면 원문 그대로).
+            operator_view: 운영자 전용 키(`condition_log`)를 싣는지 — 기본은 싣지 않는다.
 
         Returns:
-            `{items, total, page, size}`. 파일 부재·비활성이면 빈 목록.
+            `{items, total, page, size, facets}`. 파일 부재·비활성이면 빈 목록.
         """
+        tiers = _as_tier_set(tier)
         needle = (q or "").strip().lower()
-        matched: list[dict] = []
-        for rec in self._tail_records(window_seconds):
-            if tier and str(rec.get("tier", "")) != tier:
-                continue
-            if stage and self._stage_of(rec) != stage:
+        since_ts = since.timestamp() if since is not None else None
+        until_ts = until.timestamp() if until is not None else None
+        cutoff_ts: float | None = None
+        if window_seconds is not None:
+            cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+
+        tail = self._tail_records(None)
+        facet_tiers: dict[str, int] = {t: 0 for t in _TIER_KEYS}
+        facet_stages: dict[str, int] = {}
+        matched: list[int] = []  # tail 인덱스(시간순)
+        for index, rec in enumerate(tail):
+            if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
                 continue
             if needle:
                 haystack = " ".join(
@@ -706,17 +844,140 @@ class DecisionStore:
                 ).lower()
                 if needle not in haystack:
                     continue
-            matched.append(rec)
+            if alarm_name and str(rec.get("alarm_name", "") or "") != alarm_name:
+                continue
+            if since_ts is not None or until_ts is not None:
+                epoch = self._epoch_of(rec)
+                if epoch is None:
+                    continue
+                if since_ts is not None and epoch < since_ts:
+                    continue
+                if until_ts is not None and epoch >= until_ts:
+                    continue
+            rec_tier = str(rec.get("tier", ""))
+            rec_stage = self._stage_of(rec)
+            tier_ok = not tiers or rec_tier in tiers
+            stage_ok = not stage or rec_stage == stage
+            if stage_ok and rec_tier in facet_tiers:
+                facet_tiers[rec_tier] += 1
+            if tier_ok:
+                facet_stages[rec_stage] = facet_stages.get(rec_stage, 0) + 1
+            if tier_ok and stage_ok:
+                matched.append(index)
 
         matched.reverse()  # 최신 우선
         total = len(matched)
         page = max(1, int(page))
         size = max(1, int(size))
         start = (page - 1) * size
-        items = [self._view(rec, mask_fn) for rec in matched[start : start + size]]
-        return {"items": items, "total": total, "page": page, "size": size}
+        page_indexes = matched[start : start + size]
 
-    def get_decision(self, alarm_id: str, *, mask_fn=None) -> Optional[dict]:  # noqa: ANN001
+        fp_index: dict[str, list[int]] | None = None
+        items: list[dict[str, Any]] = []
+        for index in page_indexes:
+            rec = tail[index]
+            if related and self._stage_of(rec) in (STAGE_CORRELATION, STAGE_SELF_HEAL):
+                if fp_index is None:
+                    fp_index = self._fingerprint_index(tail)
+                rec = {**rec, "related": self._related_of(index, tail, fp_index)}
+            items.append(self._view(rec, mask_fn, operator_view=operator_view))
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "size": size,
+            "facets": {"tiers": facet_tiers, "stages": facet_stages},
+        }
+
+    @classmethod
+    def _epoch_of(cls, rec: dict[str, Any]) -> float | None:
+        """레코드 ts를 epoch 초로 바꾼다(읽을 수 없으면 None — 창 판정과 같은 파서)."""
+        parsed = cls._parse_ts(rec.get("ts"))
+        if parsed is None:
+            return None
+        try:
+            return parsed.timestamp()
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _fingerprint_index(tail: list[dict[str, Any]]) -> dict[str, list[int]]:
+        """지문 → tail 인덱스 목록(시간순) 색인을 만든다(related 해석용 · 추가 스캔 0)."""
+        index: dict[str, list[int]] = {}
+        for position, rec in enumerate(tail):
+            fingerprint = rec.get("fingerprint")
+            if fingerprint:
+                index.setdefault(str(fingerprint), []).append(position)
+        return index
+
+    def _related_of(
+        self, index: int, tail: list[dict[str, Any]], fp_index: dict[str, list[int]]
+    ) -> dict[str, Any]:
+        """상관·자가복구 행이 가리키는 **다른 판단**을 찾는다 (plans/112 S3 · §2.5).
+
+        - 크로스-호스트 상관(`representative`): `correlation_meta.representative_fp`와 지문이 같은
+          판단 중 자기 자신이 아니고 ts가 이 행 이하인 가장 최근 것 — 묶인 대표 알람이다.
+        - 자가복구(`origin`): 같은 지문 중 ts가 이 행보다 앞서고 발생(`signals.severity >= 1`)인
+          가장 최근 판단 — 스스로 복구된 원 발생이다.
+        범위는 tail 전체(창 밖 포함)다. 못 찾으면 `found: False`를 돌려준다 — 조용히 비우면
+        "대표가 조회 범위 밖"과 "대표 없음"을 화면이 구분하지 못한다.
+        """
+        rec = tail[index]
+        if self._stage_of(rec) == STAGE_CORRELATION:
+            kind = "representative"
+            meta = rec.get("correlation_meta")
+            target = str(meta.get("representative_fp") or "") if isinstance(meta, dict) else ""
+            inclusive, firing_only = True, False
+        else:
+            kind = "origin"
+            target = str(rec.get("fingerprint") or "")
+            inclusive, firing_only = False, True
+
+        item_ts = self._epoch_of(rec)
+        found: dict[str, Any] | None = None
+        if target and item_ts is not None:
+            best_ts: float | None = None
+            for position in fp_index.get(target, ()):
+                if position == index:
+                    continue
+                cand = tail[position]
+                cand_ts = self._epoch_of(cand)
+                if cand_ts is None or cand_ts > item_ts:
+                    continue
+                if not inclusive and cand_ts == item_ts:
+                    continue
+                if firing_only and not self._is_firing(cand):
+                    continue
+                # 동시각이면 파일에서 뒤(나중에 적재된) 것을 취한다.
+                if best_ts is None or cand_ts >= best_ts:
+                    found, best_ts = cand, cand_ts
+        if found is None:
+            return {"kind": kind, "found": False}
+        return {
+            "kind": kind,
+            "found": True,
+            "alarm_id": str(found.get("alarm_id", "") or ""),
+            "alarm_name": str(found.get("alarm_name", "") or ""),
+            "server_name": str(found.get("server_name", "") or ""),
+            "ts": found.get("ts"),
+            "tier": str(found.get("tier", "") or ""),
+            "stage": self._stage_of(found),
+        }
+
+    @staticmethod
+    def _is_firing(rec: dict[str, Any]) -> bool:
+        """판단이 발생 이벤트(심각도 1 이상)였는지 — 해소(0)는 원 발생이 아니다."""
+        signals = rec.get("signals")
+        severity = signals.get("severity") if isinstance(signals, dict) else None
+        return isinstance(severity, (int, float)) and severity >= 1
+
+    def get_decision(
+        self,
+        alarm_id: str,
+        *,
+        mask_fn=None,  # noqa: ANN001 — Callable[[str], str] | None
+        operator_view: bool = False,
+    ) -> Optional[dict]:
         """알람 1건의 **가장 최근** 결정을 돌려준다 (결정 추적 드로어용).
 
         동일 alarm_id로 여러 결정이 남을 수 있으므로(재통보 등) 마지막 것을 취한다.
@@ -725,6 +986,7 @@ class DecisionStore:
         Args:
             alarm_id: 알람 식별자.
             mask_fn: 표시 전 문자열 마스킹 함수.
+            operator_view: 운영자 전용 키(`condition_log`)를 싣는지 — 기본은 싣지 않는다.
 
         Returns:
             결정 뷰 dict 또는 None.
@@ -736,25 +998,54 @@ class DecisionStore:
         for rec in self._tail_records(None):
             if str(rec.get("alarm_id", "")) == target:
                 found = rec
-        return self._view(found, mask_fn) if found is not None else None
+        if found is None:
+            return None
+        return self._view(found, mask_fn, operator_view=operator_view)
 
-    def _view(self, rec: dict, mask_fn=None) -> dict:  # noqa: ANN001
-        """레코드를 화면용 뷰로 정규화한다(단계 보강 + 선택적 마스킹).
+    def _view(
+        self,
+        rec: dict,
+        mask_fn=None,  # noqa: ANN001 — Callable[[str], str] | None
+        *,
+        operator_view: bool = False,
+    ) -> dict:
+        """레코드를 화면용 뷰로 정규화한다(단계 보강 + 운영자 전용 키 제거 + 선택적 마스킹).
 
         `stage`가 없는 구 레코드에도 폴백 단계를 채워, 화면이 빈 칸을 그리지 않게 한다.
+        운영자 뷰가 아니면 `_OPERATOR_ONLY_KEYS`와 근거 안의 `_OPERATOR_ONLY_EVIDENCE_KEYS`를
+        뺀다 — **기본이 사용자 뷰**라 호출부가 모드를 빠뜨려도 실측값·운영자 계정이 새지 않는다
+        (fail-closed · G-2 (c) · D-247).
         마스킹은 문자열 값에만 적용한다 — 숫자·불리언 신호는 판정 근거라 가려지면 안 된다.
         """
         view = dict(rec)
         view["stage"] = self._stage_of(rec)
         view["stage_label"] = STAGE_LABELS.get(view["stage"], view["stage"])
+        if not operator_view:
+            for key in _OPERATOR_ONLY_KEYS:
+                view.pop(key, None)
+            evidence = view.get("stage_evidence")
+            if isinstance(evidence, dict):
+                # 새 dict로 만든다 — 원 레코드(related 해석에도 쓰는 tail)를 건드리지 않는다.
+                view["stage_evidence"] = {
+                    k: v for k, v in evidence.items() if k not in _OPERATOR_ONLY_EVIDENCE_KEYS
+                }
         if mask_fn is None:
             return view
-        for key in ("alarm_name", "server_name", "reason"):
+        for key in _MASKED_TEXT_KEYS:
             if isinstance(view.get(key), str):
                 view[key] = mask_fn(view[key])
         signals = view.get("signals")
         if isinstance(signals, dict):
             view["signals"] = {
                 k: (mask_fn(v) if isinstance(v, str) else v) for k, v in signals.items()
+            }
+        evidence = view.get("stage_evidence")
+        if isinstance(evidence, dict):
+            view["stage_evidence"] = _mask_nested(evidence, mask_fn)
+        related = view.get("related")
+        if isinstance(related, dict):
+            view["related"] = {
+                k: (mask_fn(v) if k in _RELATED_MASKED_KEYS and isinstance(v, str) else v)
+                for k, v in related.items()
             }
         return view

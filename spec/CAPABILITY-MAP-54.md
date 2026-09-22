@@ -15,7 +15,7 @@
 | §5 `/noise/summary`·`/health` | 신설 | **부분 존재** — `/api/v1/alarm/metrics`가 KPI·메타경보를 이미 노출 |
 | §6 SSE 확장 | "페이로드에 tier/reason 추가" | **이미 됨** — `alarm_notifier._tier_sse_payload`가 `tier`·`tier_reason` 포함, 존 RBAC·SUPPRESS 가시성까지 적용 |
 | §5 `/noise/feedback` | 신설 | **이미 있음** — `/alarm/feedback`·`/retract`·`/summary`(Plan 83) + `FeedbackStore` |
-| §5 `/noise/policy` PUT | 신설 | **중복** — `/admin/settings` PUT이 `NOISE_GATE_*` 전 키를 검증·감사·리로드까지 편집(Plan 68) |
+| §5 `/noise/policy` PUT | 신설 | **중복** — `/admin/settings` PUT이 `NOISE_*`(노이즈 게이트 설정 접두 — 2026-09-22 plans/112 F-1로 표기 정정) 전 키를 검증·감사·리로드까지 편집(Plan 68) |
 | §6 퍼널 stage tag | "각 단계가 억제/통과 기록" | **없음** — `NotificationDecision`에 stage 필드 없음, reason 문자열만 단계별로 고유 |
 | §5 침묵 CRUD | 신설 | **없음** — `grep -i silence` 0건 |
 | §10 UI | 신설 | **없음** — `admin/noise.html`·`js/noise.js` 0건 |
