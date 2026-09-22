@@ -20,7 +20,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 원 요구사항: `spec.md` (초기 스펙 — 현 구현은 이보다 훨씬 확장됨)
 - **의사결정 정본: `docs/02_decision.md`** — 작업 전 필독, 작업 후 갱신 (아래 「의사결정 기록」 참조)
 - 계획서 전건 인덱스: `plans/INDEX.md` (113건) — **미완 계획서는 파일명의 번호 바로 뒤에 상태 태그를 단다**(`NN-TODO-slug.md` / `NN-WIP-slug.md`): `TODO`(코드 0건) · `WIP`(잔여 있음) · 무표기(완료·로드맵). 파일을 열기 전에 목록만으로 잔여를 판단할 수 있다(규칙: INDEX 「파일명 상태 접미사」) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
-- 최근 작업 단위는 `plans/NN-*.md` + 루트 `SPEC-*.md` + `CAPABILITY-MAP-*.md` 조합으로 진행된다.
+- 최근 작업 단위는 `plans/NN-*.md` + `spec/SPEC-*.md` + `spec/CAPABILITY-MAP-*.md` 조합으로 진행된다
+  (스펙 산출물은 `spec/`에만 둔다 — 아래 「SDD 산출물 위치」).
 
 ## 저장소 지도
 
@@ -32,6 +33,7 @@ mcp_server/     관측 데이터 읽기 MCP 서버 (자체 pyproject·별도 프
 config/         런타임 정본 YAML (DB 레지스트리·프로필·시맨틱 모델·지식·유사어 시드)
 docs/           설계·가이드·의사결정(02)·실수 이력(18)·사다리(21)
 plans/          영역별 구현 계획서 (INDEX.md가 전건 인덱스)
+spec/           SDD 산출물 — SPEC-*.md · CAPABILITY-MAP-*.md (D-244)
 scripts/        품질 게이트(arch_check·overfit_check)·평가(eval_*)·운영 CLI
 tests/          본체 테스트 (pytest가 noise_gate/tests와 함께 수집)
 testdata/       픽스처·골드셋(text2sql_gold·routing_gold·pg init·prometheus)
@@ -39,6 +41,25 @@ db/ db2/ redis/ 로컬 개발용 docker-compose (PostgreSQL·DB2·Redis)
 tools/          부속 도구 (drm-wrapper·migdata·redis_migration)
 agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 ```
+
+## SDD 산출물 위치 — `spec/` (D-244)
+
+스펙 단계 산출물은 **`spec/` 한 폴더에 평면으로**(하위 폴더 없이) 둔다. **루트에 만들지 않는다.**
+
+| 산출물 | 위치 |
+|---|---|
+| 기능 맵 `CAPABILITY-MAP-<NN 또는 slug>.md` | `spec/` |
+| 모듈 스펙 `SPEC-<module-id>.md` (모듈이 하나뿐인 단일 스펙 포함) | `spec/` |
+| 구현 계획·태스크 `plan-*.md` · `todo-*.md` | `tasks/` (종전 그대로) |
+| 원 요구사항 `spec.md` | 루트 (종전 그대로 — `.claude/agents/` 3종이 루트 경로로 읽는다) |
+
+- **agent-skills 플러그인 기본값을 이 규칙으로 대체한다.** `spec-driven-development` 스킬은 맵과 스펙을
+  "project root"에, `/spec`은 루트 `SPEC.md`에 쓰라고 한다. 이 저장소에서는 둘 다 `spec/`에 쓴다.
+  `/build`는 `spec/` 아래 파일을 스펙으로 인식하므로 따로 설정할 것이 없다.
+- **루트 `SPEC.md` 생성 금지.** 개발 맥 파일시스템(APFS)은 대소문자를 구분하지 않아서 `SPEC.md`와
+  원 요구사항 `spec.md`가 같은 파일이다(inode 동일 실측 2026-09-22). 루트에 쓰면 원 요구사항을 덮어쓴다.
+- 새 문서에서 참조할 때는 `spec/SPEC-x.md`처럼 경로를 적는다. 2026-09-22 이전 문서가 파일명만 적은
+  참조(`SPEC-x.md`)는 `spec/`에서 찾는다. 이력 기록이라 일괄 치환하지 않았다.
 
 ## 실행 경로 — 오케스트레이션 사다리
 
