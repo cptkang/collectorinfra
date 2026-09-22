@@ -1,0 +1,17 @@
+# HELP mock_cpu_usage_percent 결정적 단언용 CPU 사용률(고정값)
+# TYPE mock_cpu_usage_percent gauge
+mock_cpu_usage_percent{mode="user"} 97.5
+mock_cpu_usage_percent{mode="system"} 1.5
+# HELP mock_memory_used_bytes 결정적 단언용 메모리 사용량(고정값)
+# TYPE mock_memory_used_bytes gauge
+mock_memory_used_bytes 8589934592
+# HELP mock_oom_kills_total 결정적 단언용 OOM 카운터(고정값)
+# TYPE mock_oom_kills_total counter
+mock_oom_kills_total 3
+# HELP mock_boot_time_seconds 밀리초 타임스탬프가 붙은 샘플(0.0.4 규약)
+# TYPE mock_boot_time_seconds gauge
+mock_boot_time_seconds 1699000000 1700000000000
+# HELP mock_restarts _total 접미사가 없는 counter(노출 이름 그대로 저장돼야 한다)
+# TYPE mock_restarts counter
+mock_restarts{service="api"} 5
+mock_untyped_probe{kind="probe"} 1

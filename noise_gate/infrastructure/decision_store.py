@@ -5,6 +5,8 @@
 기록 실패가 알람 발송을 막아서는 안 되므로, 실패는 logger.warning 후 무시한다(graceful degradation).
 
 표준 라이브러리(json/pathlib/datetime/logging)만 사용한다. 외부 패키지·Redis 금지.
+예외 1건: `record()`가 결정 카운터(`noise_gate.infrastructure.metrics` → pip `prometheus_client`)를
+증가시킨다(plans/92 O4 — 파일 퍼널과 병존, 값이 다르면 파일 퍼널이 정본).
 NotificationDecision은 domain 계층이므로 infrastructure에서 import 가능하다.
 """
 
@@ -31,6 +33,7 @@ from noise_gate.domain.notification_policy import (
     TIER_TICKET,
     stage_from_reason,
 )
+from noise_gate.infrastructure.metrics import record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +200,8 @@ class DecisionStore:
             record["condition_log"] = condition_log[:_CONDITION_LOG_MAX]
         if stage_evidence:
             record["stage_evidence"] = stage_evidence
+        # (plans/92 O4) Prometheus 증가 카운터 — 파일 퍼널과 병존한다(값이 다르면 파일 퍼널이 정본).
+        record_decision(stage=stage, reason=str(decision.reason or ""), tier=str(decision.tier))
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)

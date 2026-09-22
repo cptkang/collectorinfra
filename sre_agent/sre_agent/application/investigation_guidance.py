@@ -6,7 +6,9 @@
 
 구성(순서 고정): ① REMOTE_VM_SHELL_NOTE(원격 프로파일) ② 사건 구간 지침(잡의 reference_time —
 도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
-결정적 문구) ⑤ settings.investigation_guidance_extra(운영자 자유 지침). 부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
+결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
+plans/92 O3 · R-12) ⑥ settings.investigation_guidance_extra(운영자 자유 지침).
+부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
 
 계층: application. LLM을 호출하지 않는다(문자열 조립만).
 """
@@ -172,10 +174,37 @@ def playbook_note(kind: str | None) -> str | None:
     return PLAYBOOK_NOTES.get(kind) if kind else None
 
 
+# ---------------------------------------------------------------------
+# OpenMetrics 서술 노트 (plans/92 O3 · R-12 · D-035 — 결정적 문구, LLM 0)
+#
+# `om_*`는 **현재값 전용**이라 ANCHORED_TOOLS에 넣지 않는다 — 사건 구간 노트가 "앵커 인자 없이
+# 호출하면 사건 증거가 아니다"라고 지시하는데 `om_*`에는 앵커 인자가 없다. 대신 "현재 상태로만
+# 서술"을 여기서 못 박는다. 설정(`openmetrics_guidance_enabled`)이 꺼져 있으면 붙이지 않는다 —
+# 조립 문자열이 종전과 바이트 동일해 조사 LLM 프롬프트 접두(KV 캐시)가 흔들리지 않는다.
+# ---------------------------------------------------------------------
+
+OPENMETRICS_NOTE: str = (
+    "OpenMetrics 현재값 도구(om_metric_instant · om_metric_catalog) 서술 지침:\n"
+    "- om_* 결과는 조회 시점(observed_at)의 현재 상태다. "
+    "사건 구간 증거로 인용하지 말고 '현재 상태'로만 서술하라. "
+    "이력·rate는 없고 counter는 누적값이다(types 참조).\n"
+    "- prom_* 도구가 PROMETHEUS_URL 미설정 오류와 hint를 함께 돌려주면 "
+    "hint의 도구로 현재값을 조회하라. "
+    "메트릭 이름은 om_metric_catalog로 먼저 확인하고 추측하지 마라.\n"
+    "- 메트릭 도구 결과의 source_kind가 openmetrics면 "
+    "Prometheus 대신 exporter에서 직접 읽은 현재값이다. "
+    "fallback_reason이 있으면 그대로 언급하라.\n"
+    "- target_identity가 mismatch면 스크레이프 허용목록 오등록 가능성을 명시하고, "
+    "그 값을 그 서버의 증거로 쓰지 마라."
+)
+
+
 def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
 
-    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 ④ **kind별 플레이북**(plans/91 1-5) ⑤ 운영자 자유 지침.
+    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 ④ **kind별 플레이북**(plans/91 1-5)
+    ⑤ **OpenMetrics 서술 노트**(`openmetrics_guidance_enabled`일 때만 · plans/92 O3)
+    ⑥ 운영자 자유 지침.
     """
     parts: list[str] = []
     if remote:
@@ -191,11 +220,14 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     playbook = playbook_note(alarm_kind_from_job(job))
     if playbook:
         parts.append(playbook)
+    if getattr(settings, "openmetrics_guidance_enabled", False):
+        parts.append(OPENMETRICS_NOTE)
     extra = (getattr(settings, "investigation_guidance_extra", None) or "").strip()
     if extra:
         parts.append(extra)
     return "\n\n".join(parts) or None
 
 
-__all__ = ["ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES", "incident_scope_note", "correlation_note",
-           "classify_alarm_kind", "alarm_kind_from_job", "playbook_note", "build_guidance"]
+__all__ = ["ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES", "OPENMETRICS_NOTE",
+           "incident_scope_note", "correlation_note", "classify_alarm_kind", "alarm_kind_from_job",
+           "playbook_note", "build_guidance"]

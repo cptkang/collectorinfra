@@ -478,6 +478,11 @@ class ServerConfig(BaseSettings):
     # 무이벤트 구간에 heartbeat를 내는 주기(초). 0 이하면 하트비트 없음. 무이벤트 상한
     # (query_timeout/file_query_timeout)의 의미는 바뀌지 않는다.
     sse_heartbeat_interval_sec: int = 5
+    # plans/82 v7 R-2 · D-249: 존 동시 조회에서 먼저 끝난 존 그룹의 **행 미리보기** 행 수.
+    # 0이면 행 없이 "은행존 12건 완료 · 3.2s" 알림만 낸다. 행은 최종 응답과 같은 `DataMasker`로
+    # **마스킹한 뒤** 나간다. **기본 10** — 사용자 결정(2026-09-22, 부분 결과 즉시 노출을 행
+    # 미리보기까지)으로 plans/80 §5.4-③의 명시 예외다. sse_progress_events가 off면 함께 꺼진다.
+    sse_group_preview_rows: int = 10
 
     model_config = {"env_prefix": "API_", "env_file": ".env", "extra": "ignore"}
 
@@ -633,6 +638,17 @@ class ObservabilityConfig(BaseSettings):
     # 요청당 링버퍼 단계 상한. 노드 20개 × 재시도 3회 + 여유를 감안한 값으로, 초과 시
     # 가장 오래된 단계부터 밀어낸다(in-memory 버퍼는 bound 필수 — Known Mistakes).
     trace_max_steps: int = 200
+    # ── plans/92 트랙 B-1(O4): 본체 자기 관측 `GET /api/v1/metrics`(Prometheus 노출 형식) ──
+    # on이면 라우트와 HTTP 계측 미들웨어를 등록한다. 기본 off = 라우트 부재(404)·미들웨어 미추가로
+    # 현행과 비트 동일. 기동 시 1회 해석(리로드 무효 — 재시작 필요).
+    # **만료일 2027-03-22**(D-161 ① · 6개월) — 본체를 긁는 수집기가 생겼는지로
+    # 삭제 또는 사유부 연장.
+    metrics_endpoint_enabled: bool = False
+    # 정적 Bearer 토큰(G-5 (ii)). on인데 비어 있으면 503으로 거부한다
+    # (fail-closed — 무인증 노출 금지).
+    # SecretStr: 웹UI 편집 차단·repr 마스킹 — `.env` 전용 그룹의 정적 Bearer 전례
+    # (`NoiseGateConfig.investigation_service_token`)와 같다.
+    metrics_bearer_token: SecretStr = SecretStr("")
 
     model_config = {"env_prefix": "OBS_", "env_file": ".env", "extra": "ignore"}
 

@@ -32,3 +32,4 @@ services:
     volumes:
       - ./mock_exporter/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./mock_exporter/metrics.txt:/data/metrics.txt:ro
+      - ./mock_exporter/metrics_om.txt:/data/metrics_om.txt:ro

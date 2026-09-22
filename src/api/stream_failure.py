@@ -86,6 +86,14 @@ class StreamTrace:
             else:
                 failed = task.get("status") == "failed"
                 self.end("task", name, at, error=(task.get("error") or "실패") if failed else None)
+        elif kind == "group":  # 존 그룹 순차 실행(plans/82 v7 R-2 · D-249)
+            group = payload.get("group") or {}
+            name = str(group.get("group_key") or "group")
+            if phase == "start":
+                self.start("group", name, at, group.get("label"))
+            else:
+                failed = bool(group.get("error_dbs")) and not group.get("row_count")
+                self.end("group", name, at, error="조회 실패" if failed else None)
         elif kind in ("tool", "step"):
             name = str(payload.get("name") or "")
             if phase == "start":

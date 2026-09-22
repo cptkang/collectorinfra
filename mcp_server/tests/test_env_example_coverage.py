@@ -144,3 +144,23 @@ def test_prometheus_keys_documented_together():
     for key in ("PROMETHEUS_URL", "PROMETHEUS_AUTH_HEADER",
                 "PROMETHEUS_QUERY_TIMEOUT", "EXPOSE_RAW_PROMQL"):
         assert key in documented, f"{key} 미문서화 (docs/27 §3.1)"
+
+
+#: OpenMetrics 키는 단계별로 묶어 문서화한다(plans/92 §4.7 [v3] — 한 목록이던 "7키"가 어긋난 교훈).
+_OPENMETRICS_KEYS_BY_STAGE: dict[str, tuple[str, ...]] = {
+    "s0_tools": ("EXPOSE_OPENMETRICS_TOOLS", "OPENMETRICS_SCRAPE_TIMEOUT",
+                 "OPENMETRICS_MAX_BODY_BYTES", "OPENMETRICS_MAX_SERIES"),
+    "s1_ladder": ("OPENMETRICS_FALLBACK_POLICY", "OPENMETRICS_COVERAGE_TTL_SECONDS",
+                  "OPENMETRICS_CROSS_CHECK_TOLERANCE", "OPENMETRICS_SCRAPE_INTERVAL_HINT"),
+    "b2_bridge": ("EXPOSE_POLESTAR_EXPORTER", "OPENMETRICS_BRIDGE_CACHE_SECONDS"),
+}
+
+
+@pytest.mark.parametrize("stage", sorted(_OPENMETRICS_KEYS_BY_STAGE))
+def test_openmetrics_keys_documented_together(stage):
+    """OpenMetrics 단계별 키는 함께 문서화하고, 전부 `_apply_env_overrides`가 실제로 읽는다."""
+    documented = _documented_keys()
+    overrides = _override_keys()
+    for key in _OPENMETRICS_KEYS_BY_STAGE[stage]:
+        assert key in overrides, f"{key}를 `_apply_env_overrides`가 읽지 않는다 (plans/92 §4.7)"
+        assert key in documented, f"{key} 미문서화 (plans/92 §4.7 · docs/27 §10)"

@@ -20,6 +20,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
 from src.utils.llm_compat import is_kbgenai
+from src.utils.progress_events import dispatch_progress_event
 from src.observability.group_metrics import record_group
 from src.utils.sql_dialect import is_db2
 from src.config import AppConfig, load_config
@@ -30,7 +31,8 @@ from src.nodes.semantic_compiler import compile_from_nl
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
-from src.security.audit_logger import log_query_execution
+from src.security.audit_logger import log_group_execution, log_query_execution
+from src.security.data_masker import DataMasker
 from src.security.pii_filter import (
     diagnose_blocked_prompt,
     is_filter_blocked,
@@ -793,6 +795,129 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
 
 
 
+async def _retro_recover_same_schema(run: _MultiRun) -> None:
+    """동일 스키마 소급 복구 (D-153 — D-066 후속6 재사용 시맨틱의 대칭 완성).
+
+    생성·검증 실패로 누락된 DB를, 같은 (엔진, 스키마)의 다른 DB에서 검증 통과한 SQL로
+    재실행한다. 첫 DB(예: gp)가 LLM 출력 형식 비결정성으로 두 번 연속 추출·검증에 실패해도,
+    뒤 DB(yd)가 성공하면 존 누락 없이 복구된다. 복구 실패 시 원 에러를 유지하고 사유를
+    로그로 남긴다(침묵 폴백 금지).
+
+    **run 단위로 부른다** — 복구원은 그 run의 `sql_by_schema`다. 그룹 실행은 그룹마다 run을
+    새로 만들므로 그룹 안에서 불러야 한다. 병합 run에서 부르면 첫 그룹의 `sql_by_schema`만
+    보여 뒤 그룹(공동존)의 복구가 로그 없이 빠진다(plans/82 v7 R-1).
+    """
+    for _failed_db_id, _failed_key in run.validation_failed.items():
+        _recovery_sql = run.sql_by_schema.get(_failed_key)
+        if not _recovery_sql:
+            logger.info(
+                "DB '%s' 동일 스키마%s 복구원 없음 — 원 검증 에러 유지", _failed_db_id, _failed_key
+            )
+            continue
+        try:
+            async with run.registry.get_client(_failed_db_id) as client:
+                start_time = time.time()
+                result = await client.execute_sql(_recovery_sql)
+                elapsed_ms = (time.time() - start_time) * 1000
+        except Exception as e:  # noqa: BLE001 — 복구 실패는 원 검증 에러 유지
+            logger.warning(
+                "DB '%s' 동일 스키마 소급 복구 실패(원 에러 유지): %s", _failed_db_id, e
+            )
+            continue
+        run.db_results[_failed_db_id] = result.rows
+        run.db_sqls[_failed_db_id] = _recovery_sql
+        run.db_errors.pop(_failed_db_id, None)
+        run.all_attempts.append(QueryAttempt(
+            sql=_recovery_sql,
+            success=True,
+            error=None,
+            row_count=result.row_count,
+            execution_time_ms=round(elapsed_ms, 2),
+        ))
+        await log_query_execution(
+            sql=_recovery_sql,
+            row_count=result.row_count,
+            execution_time_ms=elapsed_ms,
+            success=True,
+            retry_attempt=2,
+            user_id=run.state.get("user_id"),
+            thread_id=run.state.get("thread_id"),
+            source_name=_failed_db_id,
+        )
+        logger.info(
+            "DB '%s' 동일 스키마%s 소급 복구 성공: %d건, %.0fms (검증 통과 SQL 재실행)",
+            _failed_db_id, _failed_key, result.row_count, elapsed_ms,
+        )
+
+
+#: 부분 결과 미리보기의 셀 길이 상한 — 긴 텍스트 한 칸이 말풍선을 차지하지 않게 한다.
+_PREVIEW_CELL_MAX = 200
+
+
+def _preview_cell(value: Any) -> Any:
+    """미리보기 셀을 JSON 안전 값으로 만든다 — SSE는 `json.dumps`로 나가고 브라우저는
+    `JSON.parse`로 읽는다. Decimal·날짜는 문자열로, NaN·무한대는 `JSON.parse`가 거부하므로
+    문자열로 바꾼다(스트림 한 줄이 깨지면 이후 이벤트가 전부 무시된다)."""
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else str(value)
+    return str(value)[:_PREVIEW_CELL_MAX]
+
+
+def _group_preview(rows: list[dict], app_config: AppConfig | None) -> dict | None:
+    """peer 그룹의 부분 결과 미리보기 — **마스킹한 뒤** 상위 N행만 싣는다 (plans/82 v7 R-2 · D-249).
+
+    최종 응답의 마스킹은 `result_organizer`(이 노드 뒤)에서 일어난다. 미리보기는 그보다 먼저
+    화면으로 나가므로 **같은 `DataMasker`를 여기서 먼저 적용**한다. 설정이 없거나(테스트 대역)
+    상한이 0이면 행을 싣지 않는다 — 행 없이 건수만 나가는 것이 안전한 기본이다.
+    """
+    server = getattr(app_config, "server", None)
+    limit = getattr(server, "sse_group_preview_rows", 0)
+    security = getattr(app_config, "security", None)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0 or not rows:
+        return None
+    if security is None:
+        return None
+    head = DataMasker(security).mask_rows(rows[:limit])
+    columns: list[str] = []
+    for row in head:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    return {
+        "columns": columns,
+        "rows": [[_preview_cell(row.get(c)) for c in columns] for row in head],
+        "truncated": max(0, len(rows) - len(head)),
+    }
+
+
+async def _emit_group_event(phase: str, group: dict, result: dict | None = None) -> None:
+    """실행 그룹의 시작·완료를 진행 이벤트로 낸다 (plans/82 v7 R-2·R-3 · D-249).
+
+    노드 안에서 내므로 사다리 전 단(1·2·3단)이 같은 이벤트를 받는다 — 3단에서 처리현황에
+    그룹 경과가 보이지 않던 것(R-3)도 이것으로 풀린다. 오류는 **DB 표시 이름만** 싣는다
+    (에러 문자열에는 SQL·값이 섞일 수 있다). 부모 run이 없으면(단위 테스트·CLI) 생략된다.
+    """
+    payload: dict[str, Any] = {
+        "group_key": group.get("group_key", ""),
+        "label": group.get("label", ""),
+        "kind": group.get("kind", "peer"),
+        "db_ids": list(group.get("db_ids") or []),
+    }
+    if result is not None:
+        payload["row_count"] = result["row_count"]
+        payload["elapsed_ms"] = result["elapsed_ms"]
+        error_dbs: list[str] = []
+        for db_id in result["errors"]:
+            domain = get_domain_by_id(db_id)
+            error_dbs.append(domain.display_name if domain else db_id)
+        payload["error_dbs"] = error_dbs
+        if result.get("preview"):
+            payload["preview"] = result["preview"]
+    await dispatch_progress_event("group", {"phase": phase, "group": payload})
+
+
 async def _run_groups(
     state: AgentState,
     groups: list[dict],
@@ -805,10 +930,15 @@ async def _run_groups(
     그룹마다 `_prepare_multi_run`을 새로 부른다 — `sql_by_schema`가 그룹 스코프로
     격리돼 공동존(gp/yd)은 SQL을 공유하고 은행존(b0)은 분리된다. 그룹별 LLM 재료가
     섞이지 않는 것은 b0+gp 조합의 PII 차단 가설 검증(plans/82 §10.1 H1)에도 필요하다.
+    같은 이유로 **동일 스키마 소급 복구도 그룹 안에서** 끝낸다(plans/82 v7 R-1).
 
     한 그룹의 실패가 다음 그룹을 막지 않는다 — 그룹은 실패 격리 단위다(§4.1 원칙 4).
     결과는 **하나의 누적 run**으로 합쳐 반환해, 호출부의 후단 처리(병합·폼필 승격)가
     단일 그룹 경로와 동일하게 동작하게 한다.
+
+    그룹이 끝나는 즉시 결과를 진행 이벤트로 낸다(부분 결과 즉시 노출 — plans/82 정정 ②).
+    peer 그룹만 행 미리보기를 싣는다: discovery는 결과가 아니라 경과이고, dependent는 앞
+    그룹만으로 답이 되지 않아 부분 노출이 오해를 만든다(§4.9).
 
     Args:
         state: 에이전트 상태
@@ -831,10 +961,12 @@ async def _run_groups(
         ]
         if not group_targets:
             continue
+        await _emit_group_event("start", group)
         run = await _prepare_multi_run(state, llm, app_config)
         started = time.time()
         for target in group_targets:
             await _run_single_target(target, run)
+        await _retro_recover_same_schema(run)
         elapsed_ms = (time.time() - started) * 1000
         # 유형별 분포 수집(P13 — 측정이 최적화보다 먼저). 계측 실패가 조회를 막지 않는다.
         try:
@@ -853,10 +985,27 @@ async def _run_groups(
             "errors": errors,
             "sqls": [a.sql for a in run.all_attempts if getattr(a, "sql", None)],
         }
-        # 부분 결과 — 그룹 완료 즉시 노출용(문헌 정정 ② · Online Aggregation).
+        # 그룹 소요는 감사 로그에도 남긴다 — 인메모리 계측은 재기동마다 비어 사후 분석
+        # 재료가 남지 않는다(plans/82 v7 R-5). 기록 실패가 조회를 막지 않는다.
+        try:
+            await log_group_execution(
+                group_key=group["group_key"],
+                label=group.get("label", ""),
+                kind=group.get("kind", "peer"),
+                db_ids=db_ids,
+                row_count=len(rows),
+                elapsed_ms=elapsed_ms,
+                error_db_ids=sorted(errors),
+                user_id=state.get("user_id"),
+                thread_id=state.get("thread_id"),
+            )
+        except Exception:  # noqa: BLE001 — 감사 기록 실패는 본 경로에 영향을 주지 않는다
+            logger.warning("그룹 소요 감사 기록 실패(무시)", exc_info=True)
+        # 부분 결과 — 그룹 완료 즉시 노출(문헌 정정 ② · Online Aggregation).
         # peer 그룹만이다: discovery는 결과가 아니라 경과이고, dependent는 앞 그룹만으로
         # 답이 되지 않아 부분 노출이 오해를 만든다(plans/82 §4.9).
-        if group.get("kind", "peer") == "peer":
+        is_peer = group.get("kind", "peer") == "peer"
+        if is_peer:
             group_packets.append({
                 "group_key": group["group_key"],
                 "label": group.get("label", ""),
@@ -865,6 +1014,10 @@ async def _run_groups(
                 "errors": errors,
                 "elapsed_ms": round(elapsed_ms, 2),
             })
+        await _emit_group_event("end", group, {
+            **group_results[group["group_key"]],
+            "preview": _group_preview(rows, app_config) if is_peer else None,
+        })
 
         if merged is None:
             merged = run
@@ -987,58 +1140,16 @@ async def multi_db_executor(
         run = await _prepare_multi_run(state, llm, app_config)
         for target in targets:
             await _run_single_target(target, run)
+        await _retro_recover_same_schema(run)
         group_results: dict[str, dict] = {}
         group_packets: list[dict] = []
     else:
         # 그룹 순차 실행(D-176 · plans/82 §4.9) — 순서 정본은 레지스트리 query_order이지
         # relevance_score(LLM 자기보고)가 아니다(D-035). 그룹마다 _prepare_multi_run을
         # 새로 부르므로 sql_by_schema가 그룹 스코프로 격리된다(gp/yd 공유·b0 분리).
+        # 소급 복구는 그룹 안에서 끝난다(_run_groups — plans/82 v7 R-1).
         run, group_results, group_packets = await _run_groups(
             state, groups, targets, llm, app_config
-        )
-
-    # 동일 스키마 소급 복구(D-153 — D-066 후속6 재사용 시맨틱의 대칭 완성): 생성·검증
-    # 실패로 누락된 DB를, 같은 (엔진, 스키마)의 다른 DB에서 검증 통과한 SQL로 재실행한다.
-    # 첫 DB(예: gp)가 LLM 출력 형식 비결정성으로 두 번 연속 추출·검증에 실패해도, 뒤
-    # DB(yd)가 성공하면 존 누락 없이 복구된다. 복구 실패 시 원 에러를 유지하고 사유를
-    # 로그로 남긴다(침묵 폴백 금지).
-    for _failed_db_id, _failed_key in run.validation_failed.items():
-        _recovery_sql = run.sql_by_schema.get(_failed_key)
-        if not _recovery_sql:
-            continue
-        try:
-            async with run.registry.get_client(_failed_db_id) as client:
-                start_time = time.time()
-                result = await client.execute_sql(_recovery_sql)
-                elapsed_ms = (time.time() - start_time) * 1000
-        except Exception as e:  # noqa: BLE001 — 복구 실패는 원 검증 에러 유지
-            logger.warning(
-                "DB '%s' 동일 스키마 소급 복구 실패(원 에러 유지): %s", _failed_db_id, e
-            )
-            continue
-        run.db_results[_failed_db_id] = result.rows
-        run.db_sqls[_failed_db_id] = _recovery_sql
-        run.db_errors.pop(_failed_db_id, None)
-        run.all_attempts.append(QueryAttempt(
-            sql=_recovery_sql,
-            success=True,
-            error=None,
-            row_count=result.row_count,
-            execution_time_ms=round(elapsed_ms, 2),
-        ))
-        await log_query_execution(
-            sql=_recovery_sql,
-            row_count=result.row_count,
-            execution_time_ms=elapsed_ms,
-            success=True,
-            retry_attempt=2,
-            user_id=state.get("user_id"),
-            thread_id=state.get("thread_id"),
-            source_name=_failed_db_id,
-        )
-        logger.info(
-            "DB '%s' 동일 스키마%s 소급 복구 성공: %d건, %.0fms (검증 통과 SQL 재실행)",
-            _failed_db_id, _failed_key, result.row_count, elapsed_ms,
         )
 
     # 전체 병합 결과 생성 — 엔진별 칼럼명 차이(DB2 소문자화 등)를 양식 필드 기준으로 통일

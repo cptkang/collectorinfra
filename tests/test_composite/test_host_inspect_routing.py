@@ -17,8 +17,11 @@ import pytest
 
 from src.config import AppConfig, load_config
 from src.orchestration.host_inspect import (
+    _PROFILE_IDENTIFIER,
+    _PROFILE_KEYWORDS,
     DEGRADED_KEY,
     HOST_INSPECT_AGENT,
+    _metric_filter,
     detect_profile,
     run_host_inspect,
 )
@@ -249,3 +252,297 @@ def test_s8_handler_never_touches_execute_sql():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     assert "execute_sql" not in called
+
+
+# ──────────────────────────────────────────────
+# metrics_live — exporter 현재값 (plans/92 O3 · F-4 · D-225 ⑦ 2단·3단 공통 함수)
+# ──────────────────────────────────────────────
+
+_STATE_WITH_SERVER = {
+    "parsed_requirements": {
+        "filter_conditions": [{"field": "server_name", "value": "svweb001"}]
+    },
+    "conversation_context": {},
+}
+
+
+def _fake_client_ctx(monkeypatch, payload: dict):
+    """`get_db_client`를 대역으로 바꾸고 `inspect_host` 호출 인자를 기록한다."""
+
+    class _FakeClient:
+        seen: dict | None = None
+
+        async def inspect_host(self, **kwargs):
+            _FakeClient.seen = kwargs
+            return dict(payload)
+
+    class _Ctx:
+        async def __aenter__(self):
+            return _FakeClient()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("src.orchestration.host_inspect.get_db_client", lambda *a, **k: _Ctx())
+    return _FakeClient
+
+
+_OM_PAYLOAD = {
+    "data": {
+        "resultType": "vector",
+        "result": [
+            {"metric": {"__name__": "node_load1", "nodename": "svweb001"},
+             "value": [1790000000.0, "0.42"]},
+        ],
+    },
+    "queried_at": "2026-09-22T12:00:00",
+    "source_kind": "openmetrics",
+    "query": 'node_load1{nodename="svweb001"}',
+    "endpoint": "/metrics",
+    "result_count": 1,
+    "content_type": "application/openmetrics-text; version=1.0.0",
+    "target": "svweb001",
+    "truncated": False,
+    "series_total": 1,
+    "types": {"node_load1": "gauge"},
+    "observed_at": "2026-09-22T12:00:00",
+    "target_identity": "match",
+}
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("svweb001 실시간 메트릭 node_load1", "metrics_live"),
+        ("실시간 지표 보여줘", "metrics_live"),
+        ("현재 메트릭 node_ 전부", "metrics_live"),
+        ("Exporter 메트릭 조회", "metrics_live"),
+        ("익스포터 메트릭 확인", "metrics_live"),
+        # 우선순위 — metrics_live는 맨 뒤라 기존 판정을 뺏지 않는다
+        ("실시간 메트릭 추세 보여줘", "metric_trend"),
+        ("OS 정보와 실시간 메트릭", "os_config"),
+        ("자원 현황 실시간 메트릭", "resource_status"),
+        # 좁다 — 단순 "메트릭"·"실시간"만으로는 이 경로가 아니다
+        ("svweb001 메트릭 보여줘", None),
+        ("실시간 프로세스 목록", None),
+    ],
+)
+def test_metrics_live_keyword_detection(text, expected):
+    assert detect_profile(text) == expected
+
+
+def test_existing_profile_keywords_unchanged_and_metrics_live_last():
+    """기존 세 프로파일의 키워드·순서는 그대로고 `metrics_live`는 최저 우선순위(맨 뒤)다."""
+    assert _PROFILE_KEYWORDS[:3] == (
+        ("os_config", ("os 정보", "os정보", "운영체제", "커널", "os 버전", "os 구성", "os구성")),
+        ("resource_status", ("자원 현황", "자원현황", "리소스 현황", "리소스현황")),
+        ("metric_trend", ("메트릭 추세", "지표 추세", "사용률 추세")),
+    )
+    assert _PROFILE_KEYWORDS[-1][0] == "metrics_live"
+
+
+def test_profile_identifier_table_matches_client_specs():
+    """식별자 표 — `metrics_live`는 server_name이다(도구 인자명 `hostname`과 혼동 금지 · D-119)."""
+    from src.dbhub.client import DBHubClient
+
+    assert _PROFILE_IDENTIFIER == {
+        "os_config": "hostname",
+        "resource_status": "server_name",
+        "metric_trend": "server_name",
+        "metrics_live": "server_name",
+    }
+    for profile, ident in _PROFILE_IDENTIFIER.items():
+        assert DBHubClient.HOST_INSPECT_PROFILES[profile]["identifier"] == ident
+
+
+@pytest.mark.parametrize(
+    "text,exclude,expected",
+    [
+        ("svweb001 node_load1 실시간 메트릭", (), {"metric": "node_load1"}),
+        ("mock_cpu_usage_percent 현재 메트릭", (), {"metric": "mock_cpu_usage_percent"}),
+        ("node_load1을 실시간 메트릭으로 보여줘", (), {"metric": "node_load1"}),  # 조사 붙은 토큰
+        ("node_ 실시간 메트릭 전부", (), {"prefix": "node_"}),
+        ("node_memory_ 현재 메트릭", (), {"prefix": "node_memory_"}),
+        ("실시간 메트릭 보여줘", (), None),
+        ("svweb001 실시간 메트릭", (), None),               # `_` 없는 토큰은 후보가 아니다
+        ("svr-web_01 실시간 메트릭", (), None),             # 하이픈 포함 토큰은 bare 이름이 아니다
+        ("web_01.example.com 실시간 메트릭", (), None),     # FQDN도 통째로 탈락
+        ("web_01 서버 node_load1 실시간 메트릭", ("web_01",), {"metric": "node_load1"}),
+        ("WEB_01 서버 node_load1 실시간 메트릭", ("web_01", None), {"metric": "node_load1"}),
+    ],
+)
+def test_metric_filter_extraction_is_deterministic(text, exclude, expected):
+    assert _metric_filter(text, exclude=exclude) == expected
+    assert _metric_filter(text, exclude=exclude) == expected
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_without_metric_is_refused_not_silent(monkeypatch):
+    """메트릭 토큰이 없으면 **호출하지 않고** 사유를 구조화해 돌려준다(침묵 금지)."""
+    fake = _fake_client_ctx(monkeypatch, _OM_PAYLOAD)
+    result = await run_host_inspect(
+        {"sub_query": "svweb001 실시간 메트릭 보여줘"},
+        _STATE_WITH_SERVER,
+        llm=None,
+        app_config=_cfg(investigation=True),
+    )
+    assert result == {
+        "error": (
+            "실시간 메트릭 조회에는 메트릭 이름(예: node_load1) 또는 접두(예: node_)가 필요합니다."
+        ),
+        DEGRADED_KEY: "metric_unspecified",
+        "organized_data": "",
+    }
+    assert fake.seen is None
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_calls_with_server_name_and_filter(monkeypatch):
+    """server_name 대상 + 추출한 필터로 부르고, 서버 계약은 변형 없이 싣는다(D-122)."""
+    fake = _fake_client_ctx(monkeypatch, _OM_PAYLOAD)
+    result = await run_host_inspect(
+        {"sub_query": "svweb001 실시간 메트릭 node_load1 보여줘"},
+        _STATE_WITH_SERVER,
+        llm=None,
+        app_config=_cfg(investigation=True),
+    )
+    assert fake.seen == {
+        "profile": "metrics_live", "hostname": None, "server_name": "svweb001",
+        "metric": "node_load1",
+    }
+    for key, value in _OM_PAYLOAD.items():
+        assert result[key] == value, f"{key}가 변형됐다"
+    assert result["profile"] == "metrics_live"
+    # 서버 계약의 `target`(허용목록 타깃 이름)은 덮어쓰지 않고 조사 대상은 `inspect_target`에 싣는다
+    assert result["target"] == "svweb001"
+    assert result["inspect_target"]["server_name"] == "svweb001"
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_prefix_filter(monkeypatch):
+    fake = _fake_client_ctx(monkeypatch, _OM_PAYLOAD)
+    await run_host_inspect(
+        {"sub_query": "svweb001 현재 메트릭 node_ 전부"},
+        _STATE_WITH_SERVER,
+        llm=None,
+        app_config=_cfg(investigation=True),
+    )
+    assert fake.seen["prefix"] == "node_" and "metric" not in fake.seen
+
+
+@pytest.mark.asyncio
+async def test_existing_profile_call_kwargs_unchanged(monkeypatch):
+    """★ 기존 프로파일은 옵션 없이 종전 인자 그대로 부른다(`**{}` — 비트 동일)."""
+    fake = _fake_client_ctx(monkeypatch, {"rows": [], "row_count": 0})
+    await run_host_inspect(
+        {"sub_query": "svweb001 OS 정보 보여줘"}, _STATE_WITH_HOST, llm=None,
+        app_config=_cfg(investigation=True),
+    )
+    assert fake.seen == {"profile": "os_config", "hostname": "svweb001", "server_name": None}
+    fake.seen = None
+    await run_host_inspect(
+        {"sub_query": "svweb001 자원 현황 보여줘"}, _STATE_WITH_SERVER, llm=None,
+        app_config=_cfg(investigation=True),
+    )
+    assert fake.seen == {"profile": "resource_status", "hostname": None, "server_name": "svweb001"}
+
+
+@pytest.mark.asyncio
+async def test_existing_profile_payload_has_no_organized_rows(monkeypatch):
+    """기존 프로파일의 성공 payload는 종전 키 그대로다 — 행 펼치기는 `metrics_live`에만 적용된다."""
+    server = {"rows": [{"k": "v"}], "row_count": 1, "queried_at": "t",
+              "source_kind": "polestar_db", "source": "s", "engine": "postgres"}
+    _fake_client_ctx(monkeypatch, server)
+    result = await run_host_inspect(
+        {"sub_query": "svweb001 OS 정보 보여줘"}, _STATE_WITH_HOST, llm=None,
+        app_config=_cfg(investigation=True),
+    )
+    assert set(result) == set(server) | {"profile", "target"}
+
+
+def test_metrics_live_flag_off_no_coercion():
+    """플래그 off면 실시간 메트릭 질의도 교정하지 않는다(비트 동일)."""
+    tasks = [{"agent": "data_query", "sub_query": "svweb001 실시간 메트릭 node_load1"}]
+    out = _coerce_host_inspect_intent(tasks, _STATE_WITH_HOST, _cfg(investigation=False))
+    assert out[0]["agent"] == "data_query"
+
+
+def test_metrics_live_flag_on_coerces():
+    tasks = [{"agent": "data_query", "sub_query": "svweb001 실시간 메트릭 node_load1"}]
+    out = _coerce_host_inspect_intent(tasks, _STATE_WITH_HOST, _cfg(investigation=True))
+    assert out[0]["agent"] == HOST_INSPECT_AGENT
+
+
+# ── 결과 소비 — 응답 조립기가 metrics_live 결과를 실제로 읽는다 (실측 2026-09-22) ──────────
+
+async def _metrics_live_result(monkeypatch, payload: dict) -> dict:
+    _fake_client_ctx(monkeypatch, payload)
+    return await run_host_inspect(
+        {"sub_query": "svweb001 실시간 메트릭 node_load1"}, _STATE_WITH_SERVER, llm=None,
+        app_config=_cfg(investigation=True),
+    )
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_vector_is_flattened_to_rows(monkeypatch):
+    """vector(`data.result`)는 `rows`가 아니라 조립기가 읽지 못한다 — 행으로 펼쳐 더한다."""
+    result = await _metrics_live_result(monkeypatch, _OM_PAYLOAD)
+    rows = [{"server_name": "svweb001", "metric": "node_load1", "value": "0.42"}]
+    assert result["organized_data"]["rows"] == rows
+    assert result["query_results"] == rows
+    summary = result["organized_data"]["summary"]
+    assert "현재값" in summary and "2026-09-22T12:00:00" in summary and "누적값" in summary
+    assert "절단" not in summary and "mismatch" not in summary
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_summary_surfaces_truncation_and_identity_mismatch(monkeypatch):
+    payload = {
+        **_OM_PAYLOAD,
+        "data": {"resultType": "vector", "result": [
+            {"metric": {"__name__": "node_cpu_seconds_total", "cpu": "0", "mode": "idle",
+                        "nodename": "svweb001", "exported_nodename": "other"},
+             "value": [1790000000.0, "12.5"]},
+        ]},
+        "truncated": True, "series_total": 40, "target_identity": "mismatch",
+    }
+    result = await _metrics_live_result(monkeypatch, payload)
+    assert result["organized_data"]["rows"] == [{
+        "server_name": "svweb001", "metric": "node_cpu_seconds_total", "cpu": "0", "mode": "idle",
+        "exported_nodename": "other", "value": "12.5",
+    }]
+    summary = result["organized_data"]["summary"]
+    assert "40개 중 1개" in summary and "target_identity=mismatch" in summary
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_result_reaches_response_assembly(monkeypatch):
+    """★ `_finalize_task`가 metrics_live 결과를 output_generator로 넘긴다("처리 결과가 없습니다" X).
+
+    세 경로(1단 deep_agent · 2단 · 3단)가 모두 이 함수로 task 결과를 최종화한다.
+    """
+    import importlib
+
+    from src.orchestration.deepagents_tools import _serialize_for_tool
+
+    # 패키지 `src.orchestration`이 같은 이름의 함수를 재노출하므로 모듈을 직접 잡는다
+    ra = importlib.import_module("src.orchestration.result_aggregator")
+
+    result = await _metrics_live_result(monkeypatch, _OM_PAYLOAD)
+    captured: dict = {}
+
+    async def _fake_output_generator(state, **kwargs):
+        captured.update(state)
+        return {"final_response": "node_load1 현재값 0.42"}
+
+    monkeypatch.setattr(ra, "output_generator", _fake_output_generator)
+    task = {"task_id": "t1", "agent": HOST_INSPECT_AGENT,
+            "sub_query": "svweb001 실시간 메트릭 node_load1"}
+    out = await ra._finalize_task(
+        task, result, {"parsed_requirements": {}}, llm=None, app_config=None,
+    )
+    assert out["text"] == "node_load1 현재값 0.42"
+    assert captured["organized_data"]["rows"][0]["value"] == "0.42"
+    assert out["query_results"] == result["query_results"]
+    # 1단(deep_agent) 제어 평면 요약도 행을 싣는다
+    assert '"row_count": 1' in _serialize_for_tool(result)

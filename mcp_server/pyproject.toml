@@ -13,6 +13,8 @@ dependencies = [
                             # 폐쇄망 반입이 wheel 2개로 끝난다(plans/95 W-1)
     "sqlparse>=0.5.0",       # SQL 파싱 (읽기 전용 검증)
     "uvicorn",               # SSE ASGI 앱 서빙 (전송 인증 미들웨어 조립 — Plan 04 §6-4)
+    "prometheus-client>=0.20",  # OpenMetrics/text 0.0.4 파서·노출 (plans/92 · D-210) — 순수 파이썬·의존성 0
+                            # 루트 venv를 공유하므로 루트 pyproject.toml dependencies에도 같은 줄을 둔다
 ]
 
 [project.optional-dependencies]

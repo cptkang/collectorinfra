@@ -204,6 +204,25 @@ settings:
     stability: 하트비트 자체는 판정에 쓰이지 않으므로 값이 커도 타임아웃이 빨라지거나 늦어지지 않는다.
     related: [API_SSE_PROGRESS_EVENTS, API_QUERY_TIMEOUT]
 
+  API_SSE_GROUP_PREVIEW_ROWS:
+    example: >-
+      은행존과 공동존을 함께 조회하면 은행존이 먼저 끝난다. 이 값이 10이면 공동존을 기다리는 동안 "은행존 · 12건 · 3.2s" 아래에 은행존 결과 앞 10행이
+      먼저 보이고, 종합 응답이 오면 그 표는 "먼저 표시된 존별 결과"로 접힌다.
+    summary: 존 동시 조회에서 먼저 끝난 존 그룹 결과를 몇 행까지 미리 보여 줄지.
+    behavior: >-
+      존 그룹(은행존 → 공동존)이 하나 끝날 때마다 건수·소요와 함께 앞 N행을 진행 신호로 보낸다.
+      행은 최종 응답과 같은 민감정보 마스킹을 거친 뒤 나간다. 0이면 행 없이 건수·소요 알림만 보낸다.
+      종합 응답을 대신하지 않고 앞에 덧붙일 뿐이다. API_SSE_PROGRESS_EVENTS가 꺼져 있으면 함께 꺼진다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 먼저 끝난 존의 앞 10행이 종합 응답 전에 보인다.
+      - value: "0"
+        effect: 행을 보내지 않고 "은행존 12건 완료" 같은 알림만 보낸다. 조회 행이 화면에 먼저 나가는 것을 원치 않을 때 쓴다.
+    performance: 존 그룹당 이벤트 1건에 N행이 실린다. 셀은 200자에서 자른다. LLM 호출은 늘지 않는다.
+    stability: 미리보기를 만들거나 보내다 실패해도 질의는 계속된다. 존이 하나뿐인 질의에서는 이 값이 쓰이지 않는다.
+    related: [API_SSE_PROGRESS_EVENTS, ZONE_GROUP_EXCLUSIVE]
+
   REDIS_HOST:
     example: >-
       Redis를 껐다 켜면 캐시가 비는 데 그치지 않는다 — 알람 스트림에 쌓여 있던 미처리 메시지와 pub/sub 중계가 함께 끊겨, 그 사이 도착한 알람이 화면에 뜨지

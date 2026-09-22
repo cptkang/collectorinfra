@@ -101,6 +101,41 @@ settings:
     stability: 산발적 실패의 패턴을 보려면 2주로는 짧을 수 있다 — 조사 중에는 임시로 늘린다.
     related: [OBS_TRACE_ENABLED]
 
+  OBS_METRICS_ENDPOINT_ENABLED:
+    summary: Prometheus가 긁어 갈 자기 관측 지표 주소(/api/v1/metrics)를 열지.
+    behavior: >-
+      켜면 요청 수·응답 코드·처리 시간과 노이즈 게이트 판단 수를 Prometheus 노출 형식으로 내보낸다.
+      수집기가 OpenMetrics를 요청하면 OpenMetrics 1.0으로, 그 밖에는 기존 text 형식으로 답한다.
+      **꺼져 있으면 주소 자체가 없고(404) 요청 계측도 하지 않는다** — 현행과 같다.
+      알람 화면이 쓰는 JSON 운영 지표(/api/v1/alarm/metrics)와는 다른 주소다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 지표 주소가 없다. 요청 처리 경로도 지금과 같다.
+      - value: "true"
+        effect: >-
+          /api/v1/metrics가 열리고 모든 요청의 처리 시간을 잰다. 인증 토큰이 비어 있으면
+          주소는 열리지만 모든 요청을 거부한다(503).
+    example: >-
+      사내 Prometheus에 scrape 대상으로 이 서버를 등록할 때 켠다. metrics_path는
+      /api/v1/metrics이고, authorization.credentials에 인증 토큰과 같은 값을 넣는다.
+      토큰 없이 켜면 기동 로그에 경고가 남고 수집은 503으로 실패한다.
+    performance: 요청마다 메모리 카운터 갱신 한 번이 더해진다. 지표 조회는 메모리 값 직렬화뿐이라 DB를 치지 않는다.
+    stability: 라벨에는 경로 템플릿·메서드·응답 코드만 쓴다 — 원 주소·호스트명·사용자 식별자는 싣지 않는다.
+    recommendation: 이 서버를 긁는 수집기가 실제로 있을 때만 켠다. 재시작해야 반영된다.
+    related: [OBS_METRICS_BEARER_TOKEN]
+
+  OBS_METRICS_BEARER_TOKEN:
+    summary: 지표 주소(/api/v1/metrics) 인증 토큰 — 시크릿이라 이 화면에서 편집할 수 없다.
+    behavior: >-
+      수집기는 `Authorization: Bearer <토큰>` 헤더로 이 값을 보내야 한다. 헤더가 없거나 값이
+      다르면 401이다. 지표 주소를 켰는데 이 값이 비어 있으면 인증 없이 노출하지 않고 전부 503으로 거부한다.
+    example: >-
+      Prometheus scrape 설정의 authorization.credentials 값이 이 토큰과 한 글자라도 다르면 수집이
+      401로 실패하고, 해당 대상이 수집 실패(up=0)로 표시된다.
+    stability: 값을 바꾸면 수집기 설정도 함께 바꿔야 한다. 재시작해야 반영된다.
+    related: [OBS_METRICS_ENDPOINT_ENABLED]
+
   POLESTAR_REST_REALTIME_USAGE_ENABLED:
     summary: >-
       "지금·실시간" CPU·메모리 질의를 SQL 대신 폴스타 REST API로 조회할지.

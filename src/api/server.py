@@ -576,6 +576,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.info("서버 종료")
 
 
+def _metrics_endpoint_enabled(config: object) -> bool:
+    """`/metrics` 노출 여부를 판정한다(plans/92 O4 — 기동 시 1회).
+
+    정확히 `True`일 때만 켠다. 테스트가 넘기는 `MagicMock` 설정은 속성이 참으로 평가되므로,
+    진리값으로 판정하면 옵트인 노출면이 의도 없이 열린다.
+    """
+    observability = getattr(config, "observability", None)
+    return getattr(observability, "metrics_endpoint_enabled", False) is True
+
+
 def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     """FastAPI 앱을 생성한다.
 
@@ -617,6 +627,14 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 
     application.add_middleware(AuditMiddleware)
 
+    # (plans/92 O4 · 트랙 B-1) 본체 자기 관측 — 기본 off면 계측 미들웨어도 `/metrics` 라우트도 없다
+    # (현행과 비트 동일). 마지막에 추가해 가장 바깥에서 CORS·감사까지 포함한 지연을 잰다.
+    metrics_enabled = _metrics_endpoint_enabled(config)
+    if metrics_enabled:
+        from src.api.middleware.metrics_middleware import MetricsMiddleware
+
+        application.add_middleware(MetricsMiddleware)
+
     # 라우트 등록
     application.include_router(health.router, prefix="/api/v1", tags=["health"])
     application.include_router(query.router, prefix="/api/v1", tags=["query"])
@@ -645,6 +663,19 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.include_router(ui.router, prefix="/api/v1", tags=["ui"])
     # (plans/90 · D-205) 스코프 칩 선택지 — 축 배열
     application.include_router(scope.router, prefix="/api/v1", tags=["scope"])
+    if metrics_enabled:
+        from src.api.routes.metrics import build_metrics_router
+
+        # 토큰은 기동 시 1회 읽는다. 비어 있으면 라우트는 503으로 거부한다(fail-closed).
+        metrics_token = config.observability.metrics_bearer_token.get_secret_value()
+        if not metrics_token:
+            logger.warning(
+                "OBS_METRICS_ENDPOINT_ENABLED=true인데 OBS_METRICS_BEARER_TOKEN이 비어 있다 — "
+                "/api/v1/metrics는 503으로 거부한다(무인증 노출 금지)"
+            )
+        application.include_router(
+            build_metrics_router(metrics_token), prefix="/api/v1", tags=["metrics"]
+        )
 
     # 정적 파일 디렉토리
     static_dir = Path(__file__).resolve().parent.parent / "static"

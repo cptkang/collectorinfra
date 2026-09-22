@@ -137,6 +137,13 @@ class AgentSettings(BaseSettings):
     # 조사 지침 추가 문구(plans/50 G5 · D-197). 기본 None — 운영자가 .env로 넣는 자유 지침이며
     # Plan 51 §6 플레이북의 편입점이다. `investigation_guidance.build_guidance`가 말미에 덧붙인다.
     investigation_guidance_extra: str | None = None
+    # OpenMetrics 서술 노트(plans/92 O3 · R-12). 기본 off = 조사 지침 문자열 비트 동일
+    # (프롬프트 접두·KV 캐시 불변). 켜면 `build_guidance`가 플레이북 뒤·자유 지침 앞에
+    # `OPENMETRICS_NOTE`를 붙인다(`om_*`는 현재 상태로만 서술).
+    # 운영 메모: mcp_server `EXPOSE_OPENMETRICS_TOOLS=true` 배치와 **함께** 켠다 — 도구가 없는데
+    # 노트만 켜면 없는 도구를 가리킨다. **만료일 2027-03-22**(D-161 ① · 6개월) — OM 배치 운영
+    # 실측 후 상시화 또는 삭제를 판정한다.
+    openmetrics_guidance_enabled: bool = False
     # 사건 구간 증거 사전수집 + 결정적 상관(plans/50 G4 · D-197). 기본 off — 켜면 잡에 reference_time이
     # 있을 때 조사 전에 mcp_server 도구(전 알람 1 + 지표 4)를 코드가 호출해 선행 신호·타임라인을 계산하고
     # 조사 지침·브리핑에 싣는다. LLM 호출 0. 실패해도 조사를 막지 않는다(상관 없음 + 감사).

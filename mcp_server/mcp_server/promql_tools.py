@@ -415,12 +415,32 @@ def _prom_config(ctx: Context) -> PrometheusConfig:
     return config.prometheus
 
 
+# ``_prom_get``의 URL 미설정 오류와 같은 문자열이어야 한다(테스트가 고정).
+_URL_UNSET_ERROR = _err("PROMETHEUS_URL 미설정 — PromQL 조회 불가")
+_OPENMETRICS_HINT_TOOL = "om_metric_instant"
+
+
+def _with_openmetrics_hint(result: str) -> str:
+    """결과가 정확히 URL 미설정 오류일 때만 ``"hint": "om_metric_instant"``를 더한다.
+
+    plans/92 §4.8.2 [v3] ② — S0(Prometheus 없음)에서 LLM이 대체 도구를 결정적으로 알게 한다.
+    그 밖의 결과는 그대로 돌려준다.
+    """
+    if result != _URL_UNSET_ERROR:
+        return result
+    payload = json.loads(result)
+    payload["hint"] = _OPENMETRICS_HINT_TOOL
+    return json.dumps(payload, ensure_ascii=False)
+
+
 # =====================================================================
 # 도구 등록
 # =====================================================================
 
 
-def register_promql_tools(mcp: FastMCP, expose_raw_promql: bool = False) -> None:
+def register_promql_tools(
+    mcp: FastMCP, expose_raw_promql: bool = False, openmetrics_hint: bool = False
+) -> None:
     """PromQL 조사 도구를 MCP 서버에 등록한다.
 
     고수준(hostname 앵커) 2종은 항상 등록한다. 원시 패스스루 5종
@@ -430,6 +450,9 @@ def register_promql_tools(mcp: FastMCP, expose_raw_promql: bool = False) -> None
     Args:
         mcp: FastMCP 서버 인스턴스.
         expose_raw_promql: 원시 PromQL 패스스루 도구 노출 여부(기본 비노출).
+        openmetrics_hint: True면 고수준 2종의 URL 미설정 오류에 OpenMetrics 대체 도구 힌트를
+            더한다(OM 도구 노출과 함께 켠다). False면 결과 문자열이 종전과 바이트 동일하다.
+            도구 시그니처·설명은 어느 쪽이든 같다(``tools/list`` 불변 — plans/92 I-6).
     """
 
     @mcp.tool()
@@ -451,7 +474,8 @@ def register_promql_tools(mcp: FastMCP, expose_raw_promql: bool = False) -> None
         Returns:
             JSON 문자열 {data, queried_at, source_kind} 또는 {error}.
         """
-        return await run_metric_instant(_prom_config(ctx), hostname, metric)
+        result = await run_metric_instant(_prom_config(ctx), hostname, metric)
+        return _with_openmetrics_hint(result) if openmetrics_hint else result
 
     @mcp.tool()
     async def prom_metric_range(
@@ -478,9 +502,10 @@ def register_promql_tools(mcp: FastMCP, expose_raw_promql: bool = False) -> None
         Returns:
             JSON 문자열 {data, queried_at, source_kind} 또는 {error}.
         """
-        return await run_metric_range(
+        result = await run_metric_range(
             _prom_config(ctx), hostname, metric, window, step, reference_time=reference_time
         )
+        return _with_openmetrics_hint(result) if openmetrics_hint else result
 
     if not expose_raw_promql:
         logger.info("원시 PromQL 도구 비노출 (기본) — 고수준 hostname 앵커 도구만")

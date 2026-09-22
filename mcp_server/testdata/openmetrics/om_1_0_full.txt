@@ -1,0 +1,49 @@
+# TYPE app_temperature_celsius gauge
+# UNIT app_temperature_celsius celsius
+# HELP app_temperature_celsius Current temperature.
+app_temperature_celsius{zone="front"} 21.5
+app_temperature_celsius{zone="rear"} 23.25
+# TYPE app_requests counter
+# HELP app_requests Total HTTP requests.
+app_requests_total{code="200"} 1027 # {trace_id="abc123"} 1.0 1700000000.5
+app_requests_created{code="200"} 1699990000.0
+app_requests_total{code="500"} 3
+app_requests_created{code="500"} 1699990000.0
+# TYPE app_build info
+# HELP app_build Build information.
+app_build_info{version="1.2.3",revision="deadbeef"} 1
+# TYPE app_feature_state stateset
+# HELP app_feature_state Feature toggle state.
+app_feature_state{app_feature_state="enabled"} 1
+app_feature_state{app_feature_state="disabled"} 0
+# TYPE app_latency_seconds histogram
+# UNIT app_latency_seconds seconds
+# HELP app_latency_seconds Request latency.
+app_latency_seconds_bucket{le="0.1"} 3
+app_latency_seconds_bucket{le="1.0"} 4
+app_latency_seconds_bucket{le="+Inf"} 5
+app_latency_seconds_count 5
+app_latency_seconds_sum 1.25
+app_latency_seconds_created 1699990000.0
+# TYPE app_rpc_seconds summary
+# UNIT app_rpc_seconds seconds
+# HELP app_rpc_seconds RPC duration.
+app_rpc_seconds{quantile="0.5"} 0.2
+app_rpc_seconds{quantile="0.9"} 0.75
+app_rpc_seconds_count 10
+app_rpc_seconds_sum 3.5
+app_rpc_seconds_created 1699990000.0
+# TYPE app_mystery unknown
+# HELP app_mystery Metric without a declared type.
+app_mystery 42
+# TYPE app_job_created gauge
+# HELP app_job_created Job creation time - a gauge whose name merely ends with _created.
+app_job_created 1699000000
+# TYPE app_labeled gauge
+# HELP app_labeled Series that already carry a nodename label.
+app_labeled{nodename="inner-node"} 7
+app_labeled{exported_nodename="relayed",nodename="inner-node"} 8 1700000001.25
+# TYPE node_uname_info gauge
+# HELP node_uname_info Labeled system information as provided by the uname system call.
+node_uname_info{domainname="(none)",machine="x86_64",nodename="host-a01.example.internal",release="5.15.0",sysname="Linux",version="#1 SMP"} 1
+# EOF

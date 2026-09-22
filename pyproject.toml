@@ -15,6 +15,11 @@ dependencies = [
     # 상한을 풀면 mcp_server가 임포트 단계에서 깨진다(D-181).
     "mcp<2",
 
+    # OpenMetrics/text 0.0.4 파서·노출 (plans/92 · D-210) — 순수 파이썬·의존성 0.
+    # mcp_server(om_* 도구·폴스타 브리지)는 자체 venv 없이 이 venv를 공유하고, 본체 /metrics(B-1)도 쓴다.
+    # mcp_server/pyproject.toml에만 두면 루트 venv에 설치되지 않는다(ibm-db 전례 — CLAUDE.md).
+    "prometheus-client>=0.20",
+
     # DB 직접 연결 (direct 모드)
     "asyncpg>=0.29.0",
 

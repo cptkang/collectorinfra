@@ -859,6 +859,18 @@ SSH 키·LB API)은 독립 프로세스·독립 venv에 두어 본체·조사와
 - **라벨 규약**: `nodename` = 폴스타 hostname(`apm_instance_map` 해소 · D-119 규약 — node_exporter·폴스타 브리지와 **같은 키로
   조인**) · **미정합 인스턴스는 `nodename` 없이 내지 않는다**(info의 `match_confidence="none"`로만 표시 — 잘못된 조인 방지).
   트랜잭션명·URL·SQL·txid·client IP는 **라벨 금지**(카디널리티·PII — §8.3).
+  **[정정 2026-09-22 · `plans/92` v3 §0.0.4]** `nodename`의 값은 폴스타 **`server_name`**이다(OS hostname이 아니다).
+  D-119 ③은 도구 인자 이름이 `hostname`일 뿐 그 값을 "`hostname(=server_name)`"로 규정한다. PromQL 도구(`promql_tools.py:447`)와
+  `plans/92` B-2 폴스타 브리지도 `nodename = server_name`이다. 반면 §5.3의 `apm_instance_map`은 인스턴스를 **OS hostname**
+  (`was_object.hostname` · 정합 파일 `hostname`)으로 해소한다. 공동존은 name≠hostname이다(D-046).
+  따라서 J7은 해소한 OS hostname을 폴스타 `cmm_resource`(`server.Server` · `dtime IS NULL`)의 `name`으로 **한 번 더 결정적으로 역해소**해 `nodename`에 넣는다.
+  이것은 D-046 해소기의 역방향이다. 역해소가 0건이나 다건이면 위 규칙대로 `nodename` 없이 `match_confidence="none"`으로만 낸다.
+  은행존처럼 name = hostname인 존에서는 이 단계가 항등이다. 조사 경로(§5.3 · `REQUIRED_EVENT_FIELDS`)의 hostname 해소는 그대로 둔다.
+  이 정정은 J7 노출 라벨에만 적용된다.
+- **[부기 2026-09-22 · `plans/92` v3 §4.5 착수 조건 1]** `custom_route` 핸들러는 `mcp_server` lifespan 컨텍스트에 닿지 않는다.
+  lifespan은 SSE 세션마다 열리고, 폴스타 DB 풀·설정은 도구의 `ctx.request_context.lifespan_context`에만 있기 때문이다.
+  J7이 쓰는 폴스타 SQL(`was_object` 1순위 브릿지 · 위 역해소)과 Open API 클라이언트 설정도 B-2와 같은 방식으로 얻는다 —
+  **브리지 전용 지연 자원**(첫 스크레이프 때 생성)이다. 공용 노출 모듈은 92 v3의 `om_exposition.py` 제안과 같은 것이다(아래 overfit 항목의 "공용 직렬화기").
 - **내지 않는 것**: 이벤트·액티브 서비스 목록·X-View·프로파일·SQL 통계(규격 밖 O-2 또는 고카디널리티) → `apm_*` 도구(API)로만.
 - **부하 가드**: 스크레이프마다 Open API를 치지 않는다 — 응답 캐시 TTL(기본 60s) · 스크레이프당 호출 = 도메인당 1회 ·
   인스턴스 상한 · **토큰 사용량 제한(§8.4)을 조사 경로와 공유**하므로 J7 전용 호출 예산을 둔다.
@@ -1046,7 +1058,8 @@ list/dict 값은 JSON 배열 형식 · 인라인 주석 금지(Known Mistakes).
 `config/db_registry.yaml` 주석(`apm` `backend: rest` → `mcp`) · `docs/18_known_mistakes.md`(J0에서 실수 발생 시).
 **v2 파급(각 소유 계획 착수 시 반영 — 본 갱신에서는 편집하지 않음)**: `plans/82` Wave 7(그룹 실행자 훅의 `mcp` 변형이
 J5 선행) · `plans/90` §9 A3 표(`jennifer_export` db_id 혼입 우려 → 소멸) · `plans/92` 머리말("벤더 exporter가
-OpenMetrics를 내면 같은 파서 재사용" → 제니퍼는 OpenMetrics 노출 ✖로 해당 없음).
+OpenMetrics를 내면 같은 파서 재사용" → 제니퍼는 OpenMetrics 노출 ✖로 해당 없음) — **2026-09-22 `plans/92` v3에서 반영 완료**
+(F-12 · 관계를 "87 J7이 92 B-2 노출 기계를 재사용"으로 정정).
 
 ---
 
@@ -1180,3 +1193,4 @@ OpenMetrics를 내면 같은 파서 재사용" → 제니퍼는 OpenMetrics 노�
 | 2026-09-03 | **v1.1** — 서브에이전트 보고 반영. ① **정정 2건**: RCACopilot 게재처 ICSE→**EuroSys 2024** · 철회본(arXiv 2511.15755) 인용 삭제 · DiLink 표기 정정 ② **폴스타 스키마의 제니퍼 연동 필드 발견**(`was_connection.jennifer_*` · `was_object.agent_id/hostname/obj_name`) → §3.3 실측 · §5.3 **1순위 브릿지** · U-10 · R-1 완화 ③ 벤치마크 정량 근거(OpenRCA 11.34% · ITBench 13.8%) → L3 범위 밖 ④ 문헌 추가(MicroRank·TraceRCA·Nezha·GIRA·Nurse·JDK 21 Troubleshooting·WebLogic·JEUS·Cork) → **P15~P17** 신설(반증·정체 가드 / 결정적 후보 축소 / 일반 완화 분리) · §4.6 WAS 시그니처 임계 구체화(stuck 600s · OOM 7종 · old gen 계단 상승) ⑤ 병렬 작업 주의(§3 — D-194 작업이 같은 파일 수정 중) · 착수 시 SDD 양식(§6) |
 | 2026-09-17 | **v2** — 사용자 지시 *"db가 아닌 제니퍼 api를 사용하거나 표준 연동 규격으로 연동"* 에 따른 재조사. ① **SQL(RDB Export 적재본) 경로 철회 → Open API 단일 조회 경로**(§0.4 근거 6건 · 빼는 비용 3건 · G-1 권고 ⓒ→ⓐ) ② **"표준 연동 규격" 4갈래 분해**(제니퍼 공식 규격 채택 · 업계 표준은 SNMP trap·Kafka·MCP만 송신 가능, OTLP 수신만·Prometheus/OpenMetrics ✖ · 국내 공공·금융 표준 근거 없음 · 조직 내부 규격은 **G-2 개정**으로 사용자 확인) ③ **정정 6건**: 공식 MCP 서버 ✖→✔(§2.7·§2.8 신설·**G-8**) · 강제 GC API ✖→도메인 단위 ✔ · Kafka 트랜잭션 Export ✖→✔ · OTel 메트릭 수용 ✖→△ · [J-1] 인용 문구 · 정본 스펙 `spec.json`→`openapi.jennifersoft.com`(5.6.4 · v1 "no longer maintained") ④ **통제 격상**: 같은 토큰에 쓰기·제어 API 공존 실측 → GET·경로 허용목록을 1차 통제로(§8.1·§8.2 · R-4) · 토큰 사용량 제한(§8.4) · 폴스타 저장 토큰 재사용 금지 ⑤ 이벤트 2단계 = **2-A SNMP trap 공식 어댑터 / 2-B 커스텀 어댑터**(§5.5 · G-4) ⑥ 질의 경로 `backend: sql`→**`mcp`**(DB 등록 철회 · Plan 82 Wave 7 선행 · G-5) ⑦ Wave 재편(J1=API 기반·J2=도구 표면 직렬) · U-2·U-3·U-5·U-8·U-9·U-10 개정 · U-11·U-12 신설 · R-2 개정 · R-12~R-14 신설 · 출처 [J-17]~[J-20]·[S-6] 추가(원문 재확인) · 최신 버전 5.7.0(2026-08-13) 반영 ⑧ `docs/02` D-195 예약 행 · `plans/INDEX.md` 87행 갱신. 코드 0건 유지 → `-TODO` 유지 |
 | 2026-09-17 | **v2.1** — 사용자 확정 *"표준 연동 규격은 cncf openmatric에 정의된 규격을 말한다. api 위주로 가자. 3번은 실측하여 판정하라."* ① **G-2 확정 = CNCF OpenMetrics**: §0.4 (2) 네 갈래 표를 OpenMetrics 실측 O-1~O-5로 교체(1.0 Published·2.0 Experimental · 규격 범위 = 수치 지표만 · 제니퍼 정본 스펙에 OpenMetrics/Prometheus/OTLP 0건 → 네이티브 노출 ✖) → **선택 트랙 J7**(§5.9 `GET /metrics/apm` OpenMetrics 1.0 브리지 · `plans/92` B-2 기계 공유 · **G-9** 신설) · R-14 해소 · R-15 신설 ② **G-1 확정 = API 위주(ⓐ)** · 이벤트 2단계 push에서 "표준" 라벨 제거 → 폴링 부족이 실측될 때만 착수(§5.5 · G-4) ③ **G-8 실측 판정 = 공식 MCP 미채택 · Open API 직접 호출 확정**(§0.5 신설 — M-1 LLM 프록시 운영 전제 · M-2 권한 이점 0 · M-3 계약 가시성 상실 · M-4 공개 프록시 모드 · M-5 데이터 범위 · M-6 `mcp` 1.29.1 헤더 주입 가능 실측. 런타임 `tools/list`는 설치본 비공개·`insight.jennifersoft.com` 302→/login으로 **실측 불가를 명시**하고 최선값 가정에서도 결론 불변 확인 · 재검토 트리거 ⓐ~ⓒ) → §5.2(d) 백엔드 인터페이스 삭제(단일 구현 추상화 금지) · U-11 축소 · §2.8 표 판정 갱신 ④ 출처 [J-22]·[OM-1]~[OM-3] 추가(원문 확인) ⑤ `docs/02` D-195 예약 행 · `plans/INDEX.md` 87행 갱신. 코드 0건 유지 → `-TODO` 유지 |
+| 2026-09-22 | **v2.1 부기** — `plans/92` v3 재검토(사용자 지시 *"고치지 않은 것들을 권고에 맞게 모두 수정하라"*)의 교차 정정. ① **§5.9 J7 `nodename` 어휘 정정**: 값은 폴스타 `server_name`이다(D-119 ③ `hostname(=server_name)` · `promql_tools.py:447` · 92 B-2와 같은 키). `apm_instance_map`이 해소한 OS hostname을 `cmm_resource.name`으로 결정적으로 역해소하는 단계를 추가했다(D-046 역방향 · 0건·다건이면 `match_confidence="none"` · 조사 경로 hostname 해소는 무변경) ② **§5.9 부기**: `custom_route` 핸들러는 SSE 세션 lifespan 자원에 닿지 않는다 → 브리지 전용 지연 자원(92 v3 §4.5 착수 조건 1과 같다) ③ §11 파급 목록의 `plans/92` 머리말 항목 = **반영 완료** 표기. 게이트·범위 변경 없음 · 코드 0건 `-TODO` 유지 |

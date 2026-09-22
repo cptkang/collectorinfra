@@ -410,6 +410,13 @@ class DBHubClient:
     # `metric_trend`·`resource_status`는 `server_name`을, `os_config`·`process_snapshot`은
     # `hostname`을 받는다. 폴스타는 server_name ≠ hostname이므로(D-046) 섞으면 0건이 된다.
     # `process_snapshot`은 프로세스 API 직결이라 **`source` 인자 자체가 없다.**
+    #
+    # `metrics_live`(plans/92 O3 · F-4)는 exporter를 직접 읽는 현재값 도구(`om_metric_instant`)다.
+    # ★ 식별자는 폴스타 **server_name**인데 도구 인자명은 `hostname`이다 — D-119 ③ 이름 과적
+    # (`hostname(=server_name)`)이라 OS hostname이 아니다. 그래서 인자명을 `arg_name`으로
+    # 따로 적는다(없으면 식별자 이름 그대로). DB가 아니라 exporter라 `source`가 없고, 서버의
+    # `EXPOSE_OPENMETRICS_TOOLS=true` 배치에서만 도구가 등록된다(기본 off — 미등록이면
+    # 호출 실패가 구조화돼 돌아온다).
 
     HOST_INSPECT_PROFILES: dict[str, dict[str, Any]] = {
         "processes": {
@@ -432,6 +439,12 @@ class DBHubClient:
             "identifier": "server_name",
             "needs_source": True,
         },
+        "metrics_live": {
+            "tool": "om_metric_instant",
+            "identifier": "server_name",
+            "arg_name": "hostname",  # D-119 ③ — 값은 server_name이다(위 주석)
+            "needs_source": False,
+        },
     }
 
     #: 서버가 받는 열거값. **호출 전에** 여기서 거른다 — 왕복 한 번을 아끼는 것보다,
@@ -439,6 +452,8 @@ class DBHubClient:
     _METRIC_KINDS: frozenset[str] = frozenset({"cpu", "memory", "filesystem", "disk_io"})
     _METRIC_GRANULARITIES: frozenset[str] = frozenset({"h", "d", "m"})
     _PROCESS_SORTS: frozenset[str] = frozenset({"cpu", "mem"})
+    #: `metrics_live`의 `metric`·`prefix` — bare 메트릭 이름(서버 `_METRIC_NAME_RE`와 같은 패턴).
+    _METRIC_NAME_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
 
     def _validate_inspect_args(
         self,
@@ -478,6 +493,18 @@ class DBHubClient:
             top_n = options.get("top_n", 10)
             if not isinstance(top_n, int) or top_n < 1:
                 return f"top_n은 1 이상의 정수여야 합니다: {top_n!r}"
+        elif profile == "metrics_live":
+            metric, prefix = options.get("metric"), options.get("prefix")
+            if metric is None and prefix is None:
+                return "profile 'metrics_live'에는 metric 또는 prefix가 필요합니다"
+            for arg, value in (("metric", metric), ("prefix", prefix)):
+                if value is not None and not (
+                    isinstance(value, str) and self._METRIC_NAME_RE.match(value)
+                ):
+                    return f"{arg}는 bare 메트릭 이름 형식이어야 합니다: {value!r}"
+            max_series = options.get("max_series")
+            if max_series is not None and (not isinstance(max_series, int) or max_series < 1):
+                return f"max_series는 1 이상의 정수여야 합니다: {max_series!r}"
         return None
 
     async def inspect_host(
@@ -498,18 +525,21 @@ class DBHubClient:
         도구는 전부 서버가 SQL을 조립하는 고수준 도구다.
 
         Args:
-            profile: processes | os_config | resource_status | metric_trend
+            profile: processes | os_config | resource_status | metric_trend | metrics_live
             hostname: OS 호스트명 (processes · os_config)
-            server_name: 폴스타 등록 서버명 (resource_status · metric_trend)
+            server_name: 폴스타 등록 서버명 (resource_status · metric_trend · metrics_live —
+                metrics_live는 도구 인자명 `hostname`으로 실린다, D-119 ③)
             source: 데이터소스(db_id). 미지정 시 설정된 source_name.
-                `processes`는 프로세스 API 직결이라 사용하지 않는다
+                `processes`·`metrics_live`는 DB가 아니라 사용하지 않는다
             **options: 프로파일별 인자 — metric_trend(kind, granularity, periods) ·
-                processes(top_n, sort)
+                processes(top_n, sort) · metrics_live(metric 또는 prefix 필수, max_series)
 
         Returns:
-            서버 반환 계약 `{rows, row_count, queried_at, source_kind, source, engine}`
-            그대로. 실패는 **예외가 아니라** `{error: 사유}`로 돌려준다 —
-            모델에게 구조화된 실패를 주어야 다음 행동을 고를 수 있다(W3-4).
+            서버 반환 계약 그대로 — DB 프로파일은 `{rows, row_count, queried_at, source_kind,
+            source, engine}`, `metrics_live`는 instant vector `{data: {resultType, result},
+            observed_at, types, truncated, target_identity, ...}`. 실패는 **예외가 아니라**
+            `{error: 사유}`로 돌려준다 — 모델에게 구조화된 실패를 주어야 다음 행동을 고를 수
+            있다(W3-4).
         """
         problem = self._validate_inspect_args(profile, hostname, server_name, options)
         if problem:
@@ -520,10 +550,11 @@ class DBHubClient:
         arguments: dict[str, Any] = {}
         if spec["needs_source"]:
             arguments["source"] = source or self._config.source_name
+        arg_name = spec.get("arg_name", spec["identifier"])
         if spec["identifier"] == "hostname":
-            arguments["hostname"] = str(hostname).strip()
+            arguments[arg_name] = str(hostname).strip()
         else:
-            arguments["server_name"] = str(server_name).strip()
+            arguments[arg_name] = str(server_name).strip()
         arguments.update({k: v for k, v in options.items() if v is not None})
 
         try:

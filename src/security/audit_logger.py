@@ -359,6 +359,94 @@ async def log_investigation(
     await _write_audit_file(entry)
 
 
+async def _record_event(event: str, **fields: Any) -> None:
+    """이벤트 1건을 구조화 로그와 날짜별 JSONL에 남긴다(아래 실행 그룹 계열 공용)."""
+    entry = AuditEntry(timestamp=datetime.now(timezone.utc).isoformat(), event=event, **fields)
+    log_data = {k: v for k, v in entry.to_dict().items() if k != "event"}
+    logger.info(event, **log_data)
+    await _write_audit_file(entry)
+
+
+async def log_group_execution(
+    *,
+    group_key: str,
+    label: str,
+    kind: str,
+    db_ids: list[str],
+    row_count: int,
+    elapsed_ms: float,
+    error_db_ids: Optional[list[str]] = None,
+    user_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> None:
+    """실행 그룹 1건의 소요를 기록한다 (plans/82 v7 R-5 · D-249).
+
+    그룹 계측(`observability.group_metrics`)은 프로세스 로컬 인메모리라 재기동마다 비는데,
+    어느 존 그룹이 느린지는 사후에 봐야 한다. 신규 저장소를 만들지 않고 감사 파일에 남긴다.
+    ``elapsed_ms``는 SQL 실행만이 아니라 스키마 분석·SQL 생성·재생성·소급 복구를 포함한
+    **그룹 전체** 소요다(`query_execution`의 ``execution_time_ms``와 다르다).
+    """
+    await _record_event(
+        "group_execution",
+        group_key=group_key,
+        label=label,
+        kind=kind,
+        db_ids=db_ids,
+        row_count=row_count,
+        elapsed_ms=round(elapsed_ms, 2),
+        error_db_ids=error_db_ids or None,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
+async def log_clarification(
+    *,
+    kind: str,
+    axis: Optional[str] = None,
+    option_count: int = 0,
+    user_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> None:
+    """파이프라인 전 역질문의 발동을 기록한다 — 발동률의 분자 (plans/82 v7 R-6 · D-249).
+
+    분모는 같은 파일의 ``user_request``다. 범위 선택(`scope_select`)은 시간 임계 없이
+    그룹 2개 이상이면 묻기 때문에(U11) 습관화를 **발동률로** 통제하기로 했다 — 그 관측이
+    이 레코드다. 원문은 싣지 않는다(``user_request``에만 둔다 — D-183).
+    """
+    await _record_event(
+        "clarification_issued",
+        kind=kind,
+        axis=axis,
+        option_count=option_count,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
+async def log_scope_narrowed(
+    *,
+    selected: list[str],
+    skipped: list[str],
+    skipped_db_ids: list[str],
+    user_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> None:
+    """사용자가 조회 범위를 좁힌 턴을 기록한다 (plans/82 §5.3 불변식 6 · v7 R-6 · D-249).
+
+    범위 축소는 복구되지 않는 절단이라 무엇을 보지 않았는지가 응답(미조회 범위 문구)과
+    **감사 양쪽**에 남아야 한다 — 이 레코드가 감사 쪽이다.
+    """
+    await _record_event(
+        "scope_narrowed",
+        selected=selected,
+        skipped=skipped,
+        skipped_db_ids=skipped_db_ids,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
 async def _write_audit_file(entry: AuditEntry) -> None:
     """감사 로그를 날짜별 JSONL 파일에 추가한다.
 

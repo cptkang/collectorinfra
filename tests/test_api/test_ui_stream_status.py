@@ -91,9 +91,14 @@ class TestStateMachine:
         body = app_js[app_js.index("function endStreamStatus(outcome, meta)"):]
         body = body[:body.index("function appendPipelineSubStep")]
         assert 'doneEl.className = "stream-status-done"' in body
-        assert "tasks.hidden = true" in body
+        # 단계 목록(과 존 그룹 부분 결과 — plans/82 v7 R-2)은 hidden으로 접힌다
+        assert "var folded = [tasks, partials].filter(Boolean);" in body
+        assert "folded.forEach(function (el) { el.hidden = true; });" in body
         assert 'doneEl.setAttribute("aria-expanded"' in body
-        assert 'if (outcome !== "done" || !st) { box.remove(); return; }' in body
+        # 중단·오류는 영역을 지운다 — 먼저 끝난 존의 부분 결과만 말풍선으로 옮겨 남긴다
+        err = body[body.index('if (outcome !== "done" || !st) {'):]
+        err = err[:err.index("return;")]
+        assert "box.remove();" in err
 
 
 class TestLabels:

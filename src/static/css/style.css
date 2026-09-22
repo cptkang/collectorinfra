@@ -5539,6 +5539,35 @@ select:focus {
 .stream-status-done[aria-expanded="true"]::before { content: '\25BE '; }
 .stream-status-done:not(:disabled):hover { color: var(--text-secondary); }
 .stream-status--done .stream-status-tasks { margin-top: 6px; }
+/* 존 그룹 부분 결과(plans/82 v7 R-2 · D-249) — 먼저 끝난 존의 행 미리보기. display는 지정하지 않는다
+   (완료 후 hidden 속성으로 접히는데, display를 주면 hidden이 무시된다) */
+.stream-partials { margin-top: 8px; }
+.stream-partial {
+    margin-top: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elevated);
+}
+.stream-partial--failed { border-color: var(--error); background: var(--error-bg); }
+.stream-partial-head {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+}
+.stream-partial-note { color: var(--text-muted); }
+.stream-partial-table-wrap { margin-top: 4px; max-height: 240px; overflow: auto; }
+.stream-partial-table { border-collapse: collapse; font-size: 0.6875rem; }
+.stream-partial-table th,
+.stream-partial-table td {
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+}
+.stream-partial-table th { color: var(--text-muted); font-weight: 600; }
+.stream-partial-more { margin-top: 4px; font-size: 0.6875rem; color: var(--text-muted); }
+.stream-partial-error { margin-top: 4px; font-size: 0.6875rem; color: var(--error); }
 /* 오른쪽 패널 도구/단계 하위 행(G-4) */
 .pipeline-substeps li { white-space: normal; }
 @media (prefers-reduced-motion: reduce) {

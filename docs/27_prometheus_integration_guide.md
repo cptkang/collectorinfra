@@ -5,6 +5,7 @@
 > 절차의 원본은 `docs/23` §8.2, 조사 서비스 기동은 `docs/26_sre_agent_guide.md` §5.4에 있다.
 > 여기서는 그 조각들을 **연동 관점 하나로** 재구성하고, **2026-08-28 실측 상태**를 명시한다.
 > **2026-09-10 갱신**: §0 요약을 당일 실측으로 갱신하고, §3.3을 **게이트 측 플래그 처리 방침**(사용자 확정 ③ 예비 코드 + 판정 기한 2027-02-20 — `plans/91` 1-10 · 구 `plans/70` P1-1)으로 확장했다. 조사 경로 접속 URL은 여전히 비어 있다.
+> **2026-09-22 갱신**(`plans/92` v3 재검토 후속): 낡은 서술 세 곳을 HEAD `048c2be` 실측으로 정정했다. §3.4는 `inspect_host`에 프로덕션 호출부가 **있다**. §8.1 ②의 ITAM 유령 키는 D-214로 해소됐다. §9 코드 위치의 줄 번호도 바꿨다. §0의 본체 채팅 행도 함께 고쳤다. §4.3에는 루트 `uv.lock` 재생성(`mcp` 2.1.1 → 1.30.0 · D-181 부기)을 적었다. 접속 URL이 비어 있는 상태는 그대로다.
 
 ---
 
@@ -18,7 +19,7 @@
 | **접속 URL 설정** | ❌ **여전히 비어 있음(2026-09-10)** — `config.toml` `url = ""` · `mcp_server/.env`에 `PROMETHEUS_*` 0건 · 루트 `.env` 0건. `.env.example`에는 문서화됨(G-3 해소) |
 | **`mcp_server` 기동 가능 여부** | ✅ 가능 — `mcp<2` 상한 고정 (D-181 · §4.3). 2026-09-10 실 기동 확인(plans/88 검증에서 9099 SSE 기동) |
 | 게이트(노이즈 캔슬링) 측 Prometheus | ⚠️ 클라이언트만 존재 · 프로덕션 호출부 0건 → **2026-09-10 사용자 확정: ③ 예비 코드 명시 + 판정 기한 2027-02-20**(§3.3) |
-| 본체 채팅(text2sql) 경로 | ❌ PromQL 프로파일 없음 — `HOST_INSPECT_PROFILES` 4종 전부 폴스타 SQL (§3.4) |
+| 본체 채팅(text2sql) 경로 | ❌ PromQL 프로파일 없음 — `HOST_INSPECT_PROFILES` 4종(폴스타 SQL 도구 3 + 프로세스 API 1)에 PromQL이 없다 (§3.4 · 2026-09-22 정정) |
 | 품질 게이트(D-119 채택 조건) | ✅ **통과 확정** — 2026-08-06 A/B 실측 "열화 없음" (§7.3) |
 
 **한 줄 결론**: 코드는 완성돼 있고 품질 게이트도 통과했으나, **주소가 비어 있어 실제로는 동작하지
@@ -189,9 +190,20 @@ ALARM_PROMETHEUS_TIMEOUT_SECONDS=3
 
 ### 3.4 본체 채팅(text2sql) 경로 — PromQL 프로파일 없음
 
-`src/dbhub/client.py:281` `HOST_INSPECT_PROFILES`는 4종(`processes` · `os_config` ·
-`resource_status` · `metric_trend`)이며 **전부 폴스타 SQL 도구**다. PromQL 프로파일은 없고
-`inspect_host` 자체도 프로덕션 호출부가 0건이다. **채팅에서 PromQL을 쓰려면 신규 배선이 필요**하다.
+`src/dbhub/client.py:414` `HOST_INSPECT_PROFILES`는 4종(`processes` · `os_config` ·
+`resource_status` · `metric_trend`)이다. `os_config`·`resource_status`·`metric_trend`는 폴스타 SQL 도구이고,
+`processes`(`polestar_process_snapshot`)는 폴스타 **실시간 프로세스 API** 직결이다(`client.py:412` — `source` 인자 없음).
+PromQL 프로파일은 없다.
+
+**`inspect_host`(`client.py:483`)에는 프로덕션 호출부가 있다** — `src/orchestration/host_inspect.py:209` `run_host_inspect`
+(Plan 78 W3 · 2026-08-31). 실행 함수 `run_host_inspect`는 `subagents.py:1427`이 서브에이전트로 등록한다. 판정 함수
+(`detect_profile`·`has_target_signal`)는 `intent_planner.py:204` `_coerce_host_inspect_intent`가 쓰고, 3단 `tier3_plan.py:191`이 그 교정을 재사용한다.
+경로는 `COMPOSITE_INVESTIGATION_ENABLED`(기본 off · `src/config.py:1110`) 뒤에 있다.
+종전 판(2026-08-28)의 "호출부 0건"은 틀린 서술이었다(2026-09-22 정정 · `docs/18` 기록).
+
+**채팅에서 PromQL을 쓰려면** 프로파일 표에 한 행을 더하는 것만으로는 부족하다. `host_inspect.py`의 `_PROFILE_KEYWORDS`
+(`:47-51`)와 `_PROFILE_IDENTIFIER`(`:54-58` — 현재 3종)도 함께 고쳐야 한다. 이 모듈이 2·3단 공통 함수이므로 D-225 ⑦에 맞는 자리다.
+계획은 `plans/92` O3(`metrics_live` · 선택)에 있다.
 
 ### 3.5 ★ 진짜 전제는 `nodename` 라벨 규약이다
 
@@ -284,6 +296,12 @@ PYTHONPATH="$PWD/mcp_server" .venv/bin/python -m mcp_server
 ```
 
 `pyproject.toml`(루트)·`mcp_server/pyproject.toml` 양쪽에 **`mcp<2` 상한을 고정**해 재발을 막았다.
+
+> **2026-09-22 추가 — 루트 `uv.lock` 재생성(D-181 부기).** 상한을 고정한 뒤에도 `uv.lock`은 옛 상태(`mcp` **2.1.1** · 지정자 없음)였다.
+> 그래서 `uv sync --frozen`으로 설치하면 위 파손이 그대로 재현될 수 있었다. `uv lock`으로 재생성해 **`mcp` 1.30.0**(`specifier = "<2"`)으로 맞췄다.
+> 버전 변화는 `mcp` 계열 4건뿐이다. 1.30.0과 1.29.1로 `mcp_server` 스위트를 나란히 돌린 결과(스크래치 venv · Windows)
+> **회귀 0**이었다. 1.30.0은 245 passed / 2 failed, 1.29.1은 246 passed / 1 failed다. 실패는 둘 다 `test_sql_log.py` 동시 쓰기 테스트로,
+> Windows에서 `O_APPEND` 원자성이 성립하지 않아 생기는 플랫폼 실패이며 `mcp`와 무관하다.
 
 | venv | `mcp` 버전 | 상태 |
 |---|---|---|
@@ -501,7 +519,7 @@ RUN_E2E=1 python sre_agent/scripts/ab_promql_gate.py --trials 2
 | G-7 | 임포트 가드 skip이 *환경 부재*와 *환경 파손*을 구별하지 못함 | 파손이 통과로 보인다 | "skip이 지배적이면 실패"하는 CI 게이트 검토(미착수) |
 | ~~G-3~~ | ~~`.env.example` 오버라이드 키 9종 누락 + 유령 키 + 존 3종 미문서화~~ | — | ✅ **해소(2026-08-28)** — 키 보강 + 커버리지 테스트 8건 신설 · §8.1 |
 | G-4 | 게이트 측 Prometheus 채널 미배선 | 존별 CSV가 무효 | ✅ **처리 방침 확정(2026-09-10)** — ③ 예비 코드 + 판정 기한 2027-02-20(§3.3 · `plans/91` 1-10). 배선은 1-12 해소 시 §3.3.3 |
-| G-5 | 본체 채팅 경로에 PromQL 프로파일 없음 | 채팅에서 메트릭 조회 불가 | 필요 시 `HOST_INSPECT_PROFILES` 확장 (미요청) |
+| G-5 | 본체 채팅 경로에 PromQL 프로파일 없음 | 채팅에서 메트릭 조회 불가 | 필요 시 `HOST_INSPECT_PROFILES` 확장 + `host_inspect.py` 키워드·식별자 표 동반 수정(§3.4 · `plans/92` O3 선택) (미요청) |
 | G-6 | 실 Prometheus `nodename` 규약 미확인 | 조회가 **조용히 빈 결과** | §6.1 실측 후 인프라 소유자 협의 |
 
 ### 8.1 G-3 상세 — `mcp_server/.env.example`의 문서화 공백
@@ -539,6 +557,12 @@ RUN_E2E=1 python sre_agent/scripts/ab_promql_gate.py --trials 2
 `{name을 대문자로}_CONNECTION`이므로 이 키는 **아무 소스에도 매핑되지 않고 조용히 무시된다.**
 배포자가 값을 채워도 아무 일이 일어나지 않는데, 그 사실을 알려주는 신호가 없다.
 
+> **2026-09-22 갱신 — D-214로 해소(더는 유령 키가 아니다).** `plans/95` 구현(2026-09-17)이 `config.toml`에
+> `[[sources]] name = "itam"`(`type = "mariadb"` · `:131-140`)을 추가했다. `.env.example`도 `ITAM_CONNECTION`을
+> **유효 키로 다시 넣었다**(`:105` · 로컬 샌드박스 3307 예시).
+> `test_defined_sources_have_documented_connection_key`의 파라미터도 `itam`을 포함한 4종이 됐다.
+> 역방향 검사 `test_no_ghost_connection_keys`가 이 상태를 계속 지킨다. 아래 조치 2의 "삭제"는 당시(08-28)의 처리이고, 이후 D-214가 대체했다.
+
 **③ 운영 존 3종 미문서화 — `POLESTAR_B0`·`POLESTAR_CM_GP`·`POLESTAR_CM_YD`**
 
 `config.toml`은 이 세 소스를 정의하고, **실제 `mcp_server/.env`도 `POLESTAR_CM_GP_CONNECTION`·
@@ -560,7 +584,7 @@ RUN_E2E=1 python sre_agent/scripts/ab_promql_gate.py --trials 2
    |---|---|
    | `test_every_override_key_is_documented` | 코드가 읽는 키 ⊆ 예제가 제시하는 키 |
    | `test_no_ghost_connection_keys` | 예제의 `*_CONNECTION` ⊆ `config.toml` 소스 (유령 키 차단) |
-   | `test_defined_sources_have_documented_connection_key` | 존 3종이 예제에 있다 |
+   | `test_defined_sources_have_documented_connection_key` | 존 3종이 예제에 있다 (2026-09-17 D-214 이후 `itam` 포함 4종) |
    | `test_prometheus_keys_documented_together` | Prometheus 4키를 함께 문서화 |
    | `test_extractor_finds_the_known_keys` | **추출기 자가 검증** — 정규식이 빈 집합을 뽑으면 위 단언들이 공허하게 통과한다 |
 
@@ -603,9 +627,11 @@ mcp_server/mcp_server/promql_tools.py          도구 7종 · 셀렉터 조립 �
 mcp_server/mcp_server/config.py:54,270         PrometheusConfig · env 오버라이드
 mcp_server/mcp_server/server.py:133            register_promql_tools 호출
 mcp_server/config.toml:27                      [prometheus] 섹션
-sre_agent/sre_agent/toolset_profiles.py:202    내장 prometheus/metrics 비활성
-sre_agent/sre_agent/interface/mcp_service.py:93 _build_mcp_servers (SSE 등록)
+sre_agent/sre_agent/toolset_profiles.py:239    내장 prometheus/metrics 비활성 (원격 프로파일 remote_vm_profile · bash도 off — D-233)
+sre_agent/sre_agent/interface/mcp_service.py:105 _build_mcp_servers (SSE 등록 · 주입은 :137-141)
 noise_gate/infrastructure/prometheus_client.py 게이트 경로 클라이언트(호출부 0건 · 예비 코드 · 판정 기한 2027-02-20)
-src/config.py:615                              ALARM_PROMETHEUS_* 필드
+src/config.py:713-719                          ALARM_PROMETHEUS_* 필드(예비 코드 주석 포함)
+src/dbhub/client.py:414                        HOST_INSPECT_PROFILES (PromQL 프로파일 없음 · §3.4)
+src/orchestration/host_inspect.py:209          inspect_host 프로덕션 호출부 (run_host_inspect)
 testdata/prometheus/                           Docker 픽스처(compose·scrape·mock exporter)
 ```

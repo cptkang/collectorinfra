@@ -36,6 +36,47 @@ query_timeout = 30
 expose_raw_promql = false
 
 # ============================================================
+# OpenMetrics (exporter 직접 스크레이프·폴스타 브리지 — plans/92 · D-210 · docs/27 §10)
+# ============================================================
+# 기본값은 현행 동작과 비트 동일이다 — om_* 도구 미등록 · /metrics 라우트 부재 · prom_* 스키마 불변.
+[openmetrics]
+# om_metric_instant·om_metric_catalog 도구 등록 여부 (EXPOSE_OPENMETRICS_TOOLS). 배치 표면 스위치(D-122).
+expose_openmetrics_tools = false
+# 스크레이프 1회에 서버가 강제하는 timeout(초) (OPENMETRICS_SCRAPE_TIMEOUT)
+scrape_timeout = 10
+# 응답 본문 상한(바이트). 넘으면 오류 — node_exporter 전량은 수백 KB~수 MB (OPENMETRICS_MAX_BODY_BYTES)
+max_body_bytes = 4194304
+# 도구 1회 반환 시리즈 상한. 넘으면 절단하고 truncated=true를 싣는다 (OPENMETRICS_MAX_SERIES)
+max_series = 200
+# ── PromQL 병행(S1) — PROMETHEUS_URL이 설정된 배치에서만 의미가 있다 ──
+# prom_metric_instant source="auto"의 강등 정책: off(강등 없음) | on_unavailable | on_empty (OPENMETRICS_FALLBACK_POLICY)
+fallback_policy = "off"
+# Prometheus nodename 커버리지 캐시 TTL(초) (OPENMETRICS_COVERAGE_TTL_SECONDS)
+coverage_ttl_seconds = 600
+# 교차 검증 value_drift 상대 허용 오차 (OPENMETRICS_CROSS_CHECK_TOLERANCE)
+cross_check_tolerance = 0.05
+# stale 판정 기준 스크레이프 주기(초) (OPENMETRICS_SCRAPE_INTERVAL_HINT)
+scrape_interval_hint = 15
+# ── 폴스타 → OpenMetrics 브리지(B-2) — GET /metrics 를 Prometheus가 스크레이프한다 ──
+# 라우트 등록 여부 (EXPOSE_POLESTAR_EXPORTER). 전송 인증은 MCP_BEARER_TOKEN 미들웨어를 그대로 탄다.
+expose_polestar_exporter = false
+# 브리지 응답 캐시 TTL(초). 원천이 시간 통계라 스크레이프마다 SQL을 치지 않는다 (OPENMETRICS_BRIDGE_CACHE_SECONDS)
+bridge_cache_seconds = 300
+
+# 스크레이프 허용목록 — hostname은 폴스타 server_name(도구 인자와 같은 값). 목록 밖 hostname은 HTTP 0회로 거부된다.
+# LLM은 URL을 넘기지 못한다. 타깃별 인증 헤더는 1차 범위 밖이다(plans/92 §4.7 [v3]).
+# [[openmetrics.targets]]
+# hostname = "svr-web-01"
+# url = "http://localhost:9102/metrics"   # 픽스처 mock(0.0.4) · /metrics-om 은 OpenMetrics 1.0 · node_exporter는 9101
+# kind = "exporter"                        # exporter | federate(url = Prometheus 주소 → /federate?match[]={nodename=…})
+# os_hostname = "svr-web-01"               # 선택 — node_uname_info 신원 대조 기준(폴스타 OS hostname)
+
+# 브리지가 읽는 폴스타 소스 — name은 아래 [[sources]] 이름, zone은 선택 라벨.
+# [[openmetrics.bridge_sources]]
+# name = "polestar_cm_gp"
+# zone = "gongjon"
+
+# ============================================================
 # 데이터소스 정의
 # ============================================================
 # 여기서 정의한 name 값이 MCP 프로토콜의 source 식별자로 사용된다.

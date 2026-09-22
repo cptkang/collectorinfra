@@ -1245,8 +1245,64 @@
             if (event.phase === "start" && _streamStatus.phase !== "streaming") {
                 setStreamStatusText((event.label || stepLabels[event.name] || event.name) + "...");
             }
+        } else if (event.kind === "group" && event.group) {
+            handleGroupProgress(event);
         }
         appendPipelineSubStep(event);
+    }
+
+    // 존 그룹 순차 조회(plans/82 v7 R-2·R-3 · D-249) — 그룹 시작·완료를 상태줄에 싣고, 먼저 끝난
+    // peer 그룹의 행 미리보기(서버가 마스킹한 뒤 보낸다)를 커서 아래 "부분 결과" 카드로 보여 준다.
+    // 카드는 종합 응답을 대신하지 않는다 — 완료되면 요약 버튼 아래로 접힌다(append-only).
+    function groupLabel(g) { return g.label || g.group_key || "실행 그룹"; }
+
+    function groupFailed(g) { return !!(g.error_dbs && g.error_dbs.length) && !g.row_count; }
+
+    function handleGroupProgress(event) {
+        var g = event.group;
+        if (_streamStatus.phase !== "streaming") {
+            _streamStatus.phase = "active";
+            setStreamStatusText(event.phase === "start"
+                ? groupLabel(g) + " 조회 중..."
+                : groupLabel(g) + " 조회 완료 · " + (g.row_count || 0) + "건");
+        }
+        if (event.phase === "end") renderGroupPartial(g);
+    }
+
+    function renderGroupPartial(g) {
+        var box = document.getElementById("streamingStatus");
+        if (!box) return;
+        var wrap = box.querySelector(".stream-partials");
+        if (!wrap) {
+            wrap = document.createElement("div");
+            wrap.className = "stream-partials";
+            box.appendChild(wrap);
+        }
+        var html = '<div class="stream-partial-head"><strong>' + escapeHtml(groupLabel(g)) + "</strong> · " +
+                   (g.row_count || 0) + "건 · " + ((g.elapsed_ms || 0) / 1000).toFixed(1) + "s" +
+                   ' <span class="stream-partial-note">먼저 조회된 결과</span></div>';
+        var p = g.preview;
+        if (p && p.columns && p.columns.length && p.rows && p.rows.length) {
+            html += '<div class="stream-partial-table-wrap"><table class="stream-partial-table"><thead><tr>' +
+                p.columns.map(function (c) { return "<th>" + escapeHtml(String(c)) + "</th>"; }).join("") +
+                "</tr></thead><tbody>" +
+                p.rows.map(function (r) {
+                    return "<tr>" + r.map(function (v) {
+                        return "<td>" + escapeHtml(v == null ? "" : String(v)) + "</td>";
+                    }).join("") + "</tr>";
+                }).join("") +
+                "</tbody></table></div>";
+            if (p.truncated) html += '<div class="stream-partial-more">외 ' + p.truncated + "건은 종합 응답에서 확인하세요</div>";
+        }
+        if (g.error_dbs && g.error_dbs.length) {
+            html += '<div class="stream-partial-error">조회 실패: ' + escapeHtml(g.error_dbs.join(", ")) + "</div>";
+        }
+        var card = document.createElement("div");
+        card.className = "stream-partial" + (groupFailed(g) ? " stream-partial--failed" : "");
+        card.setAttribute("data-group", g.group_key || "");
+        card.innerHTML = html;
+        wrap.appendChild(card);
+        scrollToBottomIfSticky();
     }
 
     function taskOrdinal(t) {
@@ -1316,26 +1372,36 @@
         var st = _streamStatus;
         _streamStatus = null;
         if (!box) return;
-        if (outcome !== "done" || !st) { box.remove(); return; }
+        var partials = box.querySelector(".stream-partials");
+        if (outcome !== "done" || !st) {
+            // 중단·오류여도 먼저 끝난 존의 부분 결과는 남긴다 — 공동존이 시간 초과로 끊겨도
+            // 은행존 결과는 이미 받은 것이다(plans/82 v7 R-2 · Online Aggregation의 이득이 여기서 난다).
+            if (partials && box.parentNode) box.parentNode.insertBefore(partials, box);
+            box.remove();
+            return;
+        }
         var elapsed = (meta && meta.processing_time_ms != null)
             ? meta.processing_time_ms / 1000 : (Date.now() - st.startedAt) / 1000;
         var count = st.taskOrder.length || st.stepCount;
         var summary = "완료 · " + (count ? count + "단계 · " : "") + elapsed.toFixed(1) + "s";
+        if (partials) summary += " · 먼저 표시된 존별 결과 " + partials.children.length + "개";
         var line = box.querySelector(".stream-status-line");
         if (line) line.remove();
         var chips = box.querySelector(".stream-status-steps");
         if (chips) chips.remove();
         var tasks = box.querySelector(".stream-status-tasks");
+        var folded = [tasks, partials].filter(Boolean);
         var doneEl = document.createElement("button");
         doneEl.type = "button";
         doneEl.className = "stream-status-done";
         doneEl.textContent = summary;
-        if (tasks) {
-            tasks.hidden = true;
+        if (folded.length) {
+            folded.forEach(function (el) { el.hidden = true; });
             doneEl.setAttribute("aria-expanded", "false");
             doneEl.addEventListener("click", function () {
-                tasks.hidden = !tasks.hidden;
-                doneEl.setAttribute("aria-expanded", String(!tasks.hidden));
+                var open = folded[0].hidden;
+                folded.forEach(function (el) { el.hidden = !open; });
+                doneEl.setAttribute("aria-expanded", String(open));
             });
         } else {
             doneEl.disabled = true;
@@ -1362,7 +1428,9 @@
             stepEl.classList.add("expanded");
         }
         var isTask = event.kind === "task" && event.task;
-        var key = event.kind + ":" + (isTask ? (event.task.task_id || event.task.order) : event.name);
+        var isGroup = event.kind === "group" && event.group;  // 존 그룹 순차 조회(plans/82 v7 R-3)
+        var key = event.kind + ":" + (isTask ? (event.task.task_id || event.task.order)
+                                     : isGroup ? (event.group.group_key || "") : event.name);
         var li = list.querySelector('li[data-key="' + key + '"]');
         if (!li) {
             li = document.createElement("li");
@@ -1371,11 +1439,12 @@
             list.appendChild(li);
         }
         var label = isTask ? (taskOrdinal(event.task) + " " + (event.task.sub_query || agentLabel(event.task.agent)))
+                  : isGroup ? (groupLabel(event.group) + " 조회" + (event.phase === "end" ? " — " + (event.group.row_count || 0) + "건" : ""))
                   : event.kind === "tool" ? (toolLabel(event.name) + (event.label ? " — " + event.label : ""))
                   : (event.label || stepLabels[event.name] || event.name);
         var status = "진행 중";
         if (event.phase === "end") {
-            var ts = isTask ? event.task.status : "completed";
+            var ts = isTask ? event.task.status : (isGroup && groupFailed(event.group)) ? "failed" : "completed";
             status = (ts === "skipped" || (isTask && event.task.reason)) ? "건너뜀" : ts === "failed" ? "실패" : "완료";
         }
         var badgeCls = status === "완료" ? "success" : status === "진행 중" ? "info" : "error";

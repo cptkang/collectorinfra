@@ -50,3 +50,17 @@ def test_existing_fields_preserved():
     assert s.model == "test/model"
     assert s.api_key is None
     assert s.max_steps == 3
+
+
+def test_openmetrics_guidance_default_off(monkeypatch):
+    """plans/92 O3 — 기본 off(조사 지침 비트 동일). 만료일 2027-03-22(D-161 ①)."""
+    monkeypatch.delenv("OPENMETRICS_GUIDANCE_ENABLED", raising=False)
+    assert make_settings().openmetrics_guidance_enabled is False
+
+
+def test_openmetrics_guidance_env_loading(monkeypatch):
+    """env 키 `OPENMETRICS_GUIDANCE_ENABLED`(필드명 대문자 — 별칭 없음)로 켠다."""
+    monkeypatch.setenv("OPENMETRICS_GUIDANCE_ENABLED", "true")
+    assert make_settings().openmetrics_guidance_enabled is True
+    monkeypatch.setenv("OPENMETRICS_GUIDANCE_ENABLED", "false")
+    assert make_settings().openmetrics_guidance_enabled is False

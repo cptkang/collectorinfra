@@ -94,6 +94,115 @@ async def test_metric_trend_passes_all_options(client):
     assert args["kind"] == "cpu" and args["granularity"] == "d" and args["periods"] == 7
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs,tool,expected_args",
+    [
+        ({"profile": "os_config", "hostname": "svweb001"},
+         "polestar_os_config", {"source": "polestar_gimpo", "hostname": "svweb001"}),
+        ({"profile": "resource_status", "server_name": "웹서버01"},
+         "polestar_resource_status", {"source": "polestar_gimpo", "server_name": "웹서버01"}),
+        ({"profile": "processes", "hostname": "svweb001"},
+         "polestar_process_snapshot", {"hostname": "svweb001"}),
+        ({"profile": "metric_trend", "server_name": "웹서버01",
+          "kind": "cpu", "granularity": "d", "periods": 7},
+         "polestar_metric_trend",
+         {"source": "polestar_gimpo", "server_name": "웹서버01",
+          "kind": "cpu", "granularity": "d", "periods": 7}),
+    ],
+)
+async def test_existing_four_profiles_args_unchanged_by_metrics_live(
+    client, kwargs, tool, expected_args
+):
+    """★ plans/92 O3 — `arg_name` 도입 뒤에도 기존 4프로파일 호출 인자는 종전과 같다(키 순서)."""
+    await client.inspect_host(**kwargs)
+    called_tool, args = client._test_calls[0]
+    assert called_tool == tool
+    assert args == expected_args
+    assert list(args) == list(expected_args)
+
+
+def _spec(tool: str, identifier: str, needs_source: bool) -> dict:
+    return {"tool": tool, "identifier": identifier, "needs_source": needs_source}
+
+
+def test_existing_four_profile_specs_unchanged():
+    """기존 4프로파일 스펙은 그대로다 — `arg_name`은 `metrics_live`에만 있다."""
+    specs = DBHubClient.HOST_INSPECT_PROFILES
+    existing = ("processes", "os_config", "resource_status", "metric_trend")
+    assert {k: specs[k] for k in existing} == {
+        "processes": _spec("polestar_process_snapshot", "hostname", False),
+        "os_config": _spec("polestar_os_config", "hostname", True),
+        "resource_status": _spec("polestar_resource_status", "server_name", True),
+        "metric_trend": _spec("polestar_metric_trend", "server_name", True),
+    }
+
+
+# ──────────────────────────────────────────────
+# metrics_live — exporter 현재값 (plans/92 O3 · F-4)
+# ──────────────────────────────────────────────
+
+def test_metrics_live_spec():
+    """식별자는 server_name, 도구 인자명은 `hostname`이다(D-119 ③ 이름 과적) · `source` 없음."""
+    assert DBHubClient.HOST_INSPECT_PROFILES["metrics_live"] == {
+        "tool": "om_metric_instant",
+        "identifier": "server_name",
+        "arg_name": "hostname",
+        "needs_source": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_sends_server_name_as_hostname_argument(client):
+    """★ server_name 값이 도구 인자 `hostname`으로 실린다 — `server_name`·`source` 인자는 없다."""
+    await client.inspect_host(profile="metrics_live", server_name="웹서버01", metric="node_load1")
+    tool, args = client._test_calls[0]
+    assert tool == "om_metric_instant"
+    assert args == {"hostname": "웹서버01", "metric": "node_load1"}
+    assert "source" not in args and "server_name" not in args
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_prefix_and_max_series_pass_through(client):
+    await client.inspect_host(
+        profile="metrics_live", server_name="s1", prefix="node_", max_series=20,
+    )
+    _, args = client._test_calls[0]
+    assert args == {"hostname": "s1", "prefix": "node_", "max_series": 20}
+
+
+@pytest.mark.asyncio
+async def test_metrics_live_ignores_os_hostname(client):
+    """OS hostname만 주면 호출하지 않는다 — server_name을 요구한다(대체 금지 · D-046)."""
+    result = await client.inspect_host(
+        profile="metrics_live", hostname="svweb001", metric="node_load1",
+    )
+    assert "server_name" in result["error"]
+    assert client._test_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "options,token",
+    [
+        ({}, "metric 또는 prefix"),
+        ({"metric": None, "prefix": None}, "metric 또는 prefix"),
+        ({"metric": "node-load1"}, "metric"),
+        ({"metric": "1node"}, "metric"),
+        ({"metric": 123}, "metric"),
+        ({"prefix": "node memory_"}, "prefix"),
+        ({"metric": "node_load1", "prefix": "bad-prefix"}, "prefix"),
+        ({"metric": "node_load1", "max_series": 0}, "max_series"),
+        ({"metric": "node_load1", "max_series": "10"}, "max_series"),
+    ],
+)
+async def test_metrics_live_args_are_validated_before_call(client, options, token):
+    """필터 부재·형식 오류·상한 오류는 **호출 전에** 구조화 오류로 돌려준다(W3-4)."""
+    result = await client.inspect_host(profile="metrics_live", server_name="s1", **options)
+    assert token in result["error"]
+    assert client._test_calls == []
+
+
 # ──────────────────────────────────────────────
 # 반환 계약 그대로 소비 (W3-1)
 # ──────────────────────────────────────────────
@@ -177,11 +286,14 @@ async def test_unparseable_response_is_reported(client, monkeypatch):
 # 도구 수를 늘리지 않는다 · 읽기 전용 (W3-4 · D-122 ④)
 # ──────────────────────────────────────────────
 
-def test_one_public_entry_absorbs_four_tools():
-    """★ "적지만 더 나은 도구" — 공개 API는 하나고 `profile`이 도구를 고른다."""
-    assert len(DBHubClient.HOST_INSPECT_PROFILES) == 4
+def test_one_public_entry_absorbs_five_tools():
+    """★ "적지만 더 나은 도구" — 공개 API는 하나고 `profile`이 도구를 고른다.
+
+    프로파일 5종 = 폴스타 고수준 4 + exporter 현재값 `metrics_live`(plans/92 O3).
+    """
+    assert len(DBHubClient.HOST_INSPECT_PROFILES) == 5
     assert not any(
-        name.startswith("polestar_") for name in dir(DBHubClient)
+        name.startswith(("polestar_", "om_")) for name in dir(DBHubClient)
     ), "도구별 공개 메서드를 만들면 도구 수를 늘린 것이다"
 
 
@@ -205,7 +317,9 @@ def test_inspect_host_never_touches_execute_sql():
     assert "execute_sql" not in called
 
     tools = {spec["tool"] for spec in DBHubClient.HOST_INSPECT_PROFILES.values()}
-    assert all(t.startswith("polestar_") for t in tools)
+    # 폴스타 고수준 도구 + OpenMetrics 현재값 도구(plans/92 O3)뿐이다 — 원시 SQL 도구는 없다.
+    assert all(t.startswith(("polestar_", "om_")) for t in tools)
+    assert "execute_sql" not in tools
 
     # 인자 조립에 SQL이 섞이지 않는다(본체는 SQL을 만들지 않는다 — 서버가 조립한다).
     vtree = ast.parse(textwrap.dedent(inspect.getsource(DBHubClient._validate_inspect_args)))

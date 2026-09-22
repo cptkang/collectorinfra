@@ -105,6 +105,15 @@ git log --reverse -1 --format='%ad|%h' --date=short -S'<flag>' -- <참조 파일
 | **1** | `audit.db_enabled` · `audit.jsonl_enabled` · `noise_gate.anomaly_stl_enabled` |
 | **2** | `noise_gate.change_correlation_enabled` · `noise_gate.decision_store_enabled` · `noise_gate.enable_agentic_enricher` · `observability.sql_log_enabled` |
 
+## 감사 이후 신설 플래그 (추가 등재)
+
+위 감사표(43행)와 판정 집계는 2026-08-20 스냅샷이다. 그 뒤 신설한 플래그는 같은 열·같은 판정 규칙으로
+여기에 등재한다(위 집계에는 넣지 않는다). 만료일은 D-161 ①에 따라 **신설일 + 6개월**이다.
+
+| # | 플래그 (`.env` 키) | 생성 D-번호 | 코드 기본값 | `.env` 실제값 | 참조 | 생성일 | 실질 최종 변경 | 판정 | 근거 |
+|---:|---|---|---|---|---:|---|---|---|---|
+| 44 | `observability.metrics_endpoint_enabled`<br>`OBS_METRICS_ENDPOINT_ENABLED` | — *(plans/92 O4 · D-210 예약)* | `False` | *(미명시)* | 1 | 2026-09-22 *(미커밋)* | 2026-09-22 *(미커밋)* | **기한부 · 만료 2027-03-22** | 규칙 5(참조 1건·기본 OFF). 본체 자기 관측 `GET /api/v1/metrics` + HTTP 계측 미들웨어 — off면 라우트 부재·미들웨어 미추가(비트 동일). 기한 도래 시 본체를 긁는 수집기가 실재하는지로 삭제 또는 사유부 연장 |
+
 ## 개별 주의 사항
 
 - **`alarm.prometheus_enabled` (참조 0)** — 구현체 `noise_gate/infrastructure/prometheus_client.py`는

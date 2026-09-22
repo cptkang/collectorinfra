@@ -17,6 +17,9 @@ from starlette.types import Receive, Scope, Send
 from mcp_server import sql_log
 from mcp_server.config import AppServerConfig, load_config
 from mcp_server.db import DBPoolManager
+from mcp_server.om_exposition import install_shutdown_hooks
+from mcp_server.openmetrics_tools import register_openmetrics_tools
+from mcp_server.polestar_exporter import register_polestar_exporter
 from mcp_server.polestar_tools import register_polestar_tools
 from mcp_server.promql_tools import register_promql_tools
 from mcp_server.tools import register_tools
@@ -78,6 +81,8 @@ def build_asgi_app(mcp: FastMCP, token: str | None) -> Starlette:
         Bearer 인증 미들웨어가 씌워진 Starlette ASGI 앱.
     """
     app = mcp.sse_app()
+    # 노출 브리지 전용 자원(지연 DB 풀)을 앱 종료 시 닫는다 — 등록된 것이 없으면 앱 불변.
+    install_shutdown_hooks(app, mcp)
     app.add_middleware(StaticBearerAuthMiddleware, token=token)
     return app
 
@@ -130,18 +135,30 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
         register_polestar_tools(mcp)
     else:
         logger.info("폴스타 고수준 도구 비노출 (expose_polestar_tools=False)")
+    # OpenMetrics(plans/92 S0): 켜면 om_* 2종 등록 + prom_* URL 미설정 오류에 대체 도구 힌트.
+    # 끄면 도구 미등록·오류 문자열 종전 그대로(비트 동일).
+    om_on = config.openmetrics.expose_openmetrics_tools
     register_promql_tools(
-        mcp, expose_raw_promql=config.prometheus.expose_raw_promql
+        mcp,
+        expose_raw_promql=config.prometheus.expose_raw_promql,
+        openmetrics_hint=om_on,
     )
+    register_openmetrics_tools(mcp, expose=om_on)
+    # 폴스타 → OpenMetrics 브리지(plans/92 B-2): 켜면 GET /metrics 라우트 등록.
+    # 끄면 라우트 부재(404 — 비트 동일).
+    if config.openmetrics.expose_polestar_exporter:
+        register_polestar_exporter(mcp, config)
 
     logger.info(
         "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s, raw_promql노출=%s, "
-        "폴스타도구노출=%s, 폴스타도메인가드=%s",
+        "폴스타도구노출=%s, 폴스타도메인가드=%s, openmetrics도구노출=%s, 폴스타브리지노출=%s",
         config.server.name,
         config.server.transport,
         config.server.expose_execute_sql,
         config.prometheus.expose_raw_promql,
         config.server.expose_polestar_tools,
         config.server.polestar_domain_guard,
+        om_on,
+        config.openmetrics.expose_polestar_exporter,
     )
     return mcp

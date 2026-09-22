@@ -71,6 +71,9 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
 EXCLUDE_DIRS: tuple[str, ...] = (
     "src/db_adapters",
     "mcp_server/mcp_server/polestar_tools.py",
+    # plans/92 §4.5 — 폴스타 → OpenMetrics 브리지(SQL·패밀리 정의 전용, polestar_tools와 대칭).
+    # 벤더 중립 노출 기계 om_exposition.py는 스캔 대상에 남긴다.
+    "mcp_server/mcp_server/polestar_exporter.py",
 )
 
 # ──────────────────────────────────────────────

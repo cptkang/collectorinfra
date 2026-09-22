@@ -274,6 +274,8 @@ def _progress_sse_payload(event: dict, current_node: str | None, start_time: flo
 
     - ``on_tool_start``/``on_tool_end`` → ``kind:"tool"``(``name``=도구명, 시작 시 ``sub_query``를 label로)
     - ``on_custom_event`` name ``"task"`` → ``kind:"task"`` + ``task`` 페이로드(plans/88 verdict 필드명 동일)
+    - ``on_custom_event`` name ``"group"`` → ``kind:"group"`` + ``group`` 페이로드 — 존 그룹 시작·완료와
+      peer 그룹의 **마스킹된** 행 미리보기(plans/82 v7 R-2 · D-249 — D-204 "라벨만" 원칙의 명시 예외)
     - 그 외 ``on_custom_event`` → ``kind:"step"``
     라벨은 클라이언트가 붙인다 — 서버는 원시 이름만 낸다.
     """
@@ -302,6 +304,9 @@ def _progress_sse_payload(event: dict, current_node: str | None, start_time: flo
     if name == "task":
         base["kind"] = "task"
         base["task"] = data
+    elif name == "group":
+        base["kind"] = "group"
+        base["group"] = data.get("group") if isinstance(data.get("group"), dict) else {}
     else:
         base["kind"] = "step"
         if data.get("label"):
@@ -980,6 +985,53 @@ def _scope_narrowed_or_none(body, config, current_user: dict | None) -> dict | N
     return record
 
 
+async def _audit_clarification(
+    clarification: dict, current_user: dict | None, thread_id: str | None
+) -> None:
+    """파이프라인 전 역질문의 발동을 감사에 남긴다 — 발동률 관측 (plans/82 v7 R-6 · D-249).
+
+    범위 선택은 시간 임계 없이 묻기로 했고(U11) 그 대가인 습관화를 **발동률로** 통제한다.
+    분모는 같은 감사 파일의 `user_request`다. 4개 진입점이 모두 부른다(경로 대칭).
+    기록 실패는 질의를 막지 않는다.
+    """
+    from src.security.audit_logger import log_clarification
+
+    try:
+        await log_clarification(
+            kind=str(clarification.get("kind") or ""),
+            axis=clarification.get("axis"),
+            option_count=len(clarification.get("options") or []),
+            user_id=(current_user or {}).get("sub"),
+            thread_id=thread_id,
+        )
+    except Exception as e:  # noqa: BLE001 — 감사 실패는 경고로 남기고 진행한다
+        logger.warning("역질문 발동 감사 기록 실패: %s", e)
+
+
+async def _audit_scope_narrowed(
+    input_state: dict, current_user: dict | None, thread_id: str | None
+) -> None:
+    """범위를 좁힌 턴을 감사에 남긴다 — §5.3 불변식 6의 감사 쪽 (plans/82 v7 R-6 · D-249).
+
+    응답 쪽(미조회 범위 문구)은 `output_generator`가 붙인다. 좁히지 않은 턴은 기록하지 않는다.
+    """
+    record = input_state.get("scope_narrowed")
+    if not record:
+        return
+    from src.security.audit_logger import log_scope_narrowed
+
+    try:
+        await log_scope_narrowed(
+            selected=list(record.get("selected") or []),
+            skipped=list(record.get("skipped") or []),
+            skipped_db_ids=list(record.get("skipped_db_ids") or []),
+            user_id=(current_user or {}).get("sub"),
+            thread_id=thread_id,
+        )
+    except Exception as e:  # noqa: BLE001 — 감사 실패는 경고로 남기고 진행한다
+        logger.warning("범위 축소 감사 기록 실패: %s", e)
+
+
 def build_scope_reexpand(record: dict | None, original_query: str) -> dict | None:
     """미조회 범위를 되돌릴 **사후 패널**을 만든다(폼필 역질문 패널과 동형).
 
@@ -1050,6 +1102,15 @@ def _scope_select_or_none(
     targets = [d for d in active if allowed is None or d in set(allowed)]
     groups = partition_execution_groups(targets)
 
+    # 예상 시간 문구의 재료(§5.5 S-C · plans/82 v7 R-7) — 그룹 유형별 실측 분포를 싣는다.
+    # 표본이 가장 적은 그룹이 기준이다: 한 그룹이라도 표본 미달이면 합계 추정이 근거를 잃어
+    # 문구를 내지 않는다(scope_question_or_none이 samples < 20이면 생략).
+    from src.observability.group_metrics import group_stats
+
+    stats = [group_stats(g) for g in groups]
+    groups = [
+        {**g, "p50_ms": s["p50_ms"], "p90_ms": s["p90_ms"]} for g, s in zip(groups, stats)
+    ]
     return scope_question_or_none(
         groups=groups,
         ctx={
@@ -1057,6 +1118,7 @@ def _scope_select_or_none(
             "original_query": query,
         },
         enabled=getattr(config.composite, "scope_select_enabled", False),
+        samples=min((s["sample_size"] for s in stats), default=0),
     )
 
 async def _form_memory_delete_or_none(
@@ -1393,6 +1455,7 @@ async def process_query(
             body, checkpoint_state, config, current_user
         )
     if clarification:
+        await _audit_clarification(clarification, current_user, thread_id)
         return await turn.response(QueryResponse(
             query_id=query_id,
             status="clarification",
@@ -1417,6 +1480,7 @@ async def process_query(
     input_state = _build_turn_input_state(
         body, thread_id, checkpoint_state, current_user, approval=approval, config=config
     )
+    await _audit_scope_narrowed(input_state, current_user, thread_id)
 
     # FIX-18: 폼필 답변 턴은 양식 재채움 전체 파이프라인(파일 런과 동일 부하)이므로
     # 텍스트 타임아웃이 아니라 파일 타임아웃을 적용한다(라이브 실측 2026-07-31:
@@ -1555,6 +1619,8 @@ async def process_query_stream(
             body, checkpoint_state, config, current_user
         )
     if clarification:
+        await _audit_clarification(clarification, current_user, thread_id)
+
         async def clarification_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
                 "type": "done",
@@ -1599,6 +1665,7 @@ async def process_query_stream(
     input_state = _build_turn_input_state(
         body, thread_id, checkpoint_state, current_user, approval=approval, config=config
     )
+    await _audit_scope_narrowed(input_state, current_user, thread_id)
 
     # FIX-18: 폼필 답변 턴은 파일 런과 동일 부하 — 파일 타임아웃 적용(/query와 대칭)
     effective_timeout = (
@@ -1942,6 +2009,7 @@ async def process_file_query(
         query, selected_list, request.app.state.config
     )
     if clarification:
+        await _audit_clarification(clarification, current_user, thread_id)
         return await turn.response(QueryResponse(
             query_id=str(uuid.uuid4()),
             status="clarification",
@@ -2220,6 +2288,7 @@ async def process_file_query_stream(
         query, selected_list, request.app.state.config
     )
     if clarification:
+        await _audit_clarification(clarification, current_user, thread_id)
         _clar_qid = str(uuid.uuid4())
         async def file_clarification_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
