@@ -19,11 +19,20 @@
 
 이름 주의: 같은 패키지의 `noise_gate/infrastructure/prometheus_client.py`는 PromQL 조회 클라이언트로
 이 모듈과 무관하다. 아래 `import prometheus_client`는 절대 import라 pip 패키지로 해석된다.
+
+패키지가 설치되지 않은 환경에서는 카운터만 끈다(WARNING 1회) — 이 모듈은 `DecisionStore`가
+import하므로, 여기서 ImportError가 나면 관제 대시보드 API가 500이 되고 알람 워커는 결정 감사
+적재 전체를 생략한다. 부가 카운터 하나 때문에 정본(감사 파일)을 잃지 않게 한다.
 """
 
 from __future__ import annotations
 
-from prometheus_client import Counter
+import logging
+
+try:
+    from prometheus_client import Counter
+except ImportError:  # pragma: no cover - 설치 환경에서는 타지 않는다
+    Counter = None  # type: ignore[assignment,misc]
 
 from noise_gate.domain.notification_policy import (
     STAGE_ORDER,
@@ -43,11 +52,20 @@ _KNOWN_DECISIONS: frozenset[str] = frozenset(
     {TIER_PAGE, TIER_TICKET, TIER_DASHBOARD, TIER_SUPPRESS}
 )
 
-NOISE_GATE_DECISIONS_TOTAL = Counter(
-    "noise_gate_decisions",
-    "노이즈 게이트 발송 판단 수(결정 단계·티어별). 정본은 결정 감사 파일 퍼널이다.",
-    ("stage", "decision"),
-)
+logger = logging.getLogger(__name__)
+
+if Counter is None:
+    logger.warning(
+        "prometheus_client 미설치 — noise_gate_decisions 카운터를 끈다"
+        "(결정 감사 파일은 정상 적재). 설치: pip install 'prometheus-client>=0.20'"
+    )
+    NOISE_GATE_DECISIONS_TOTAL = None
+else:
+    NOISE_GATE_DECISIONS_TOTAL = Counter(
+        "noise_gate_decisions",
+        "노이즈 게이트 발송 판단 수(결정 단계·티어별). 정본은 결정 감사 파일 퍼널이다.",
+        ("stage", "decision"),
+    )
 
 
 def record_decision(*, stage: str, reason: str, tier: str) -> None:
@@ -58,6 +76,8 @@ def record_decision(*, stage: str, reason: str, tier: str) -> None:
         reason: 결정 사유(단계가 빌 때만 쓴다)
         tier: 결정 티어
     """
+    if NOISE_GATE_DECISIONS_TOTAL is None:
+        return
     resolved = stage or stage_from_reason(reason)
     NOISE_GATE_DECISIONS_TOTAL.labels(
         stage=resolved if resolved in _KNOWN_STAGES else OTHER_LABEL,
