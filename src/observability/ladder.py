@@ -6,9 +6,10 @@
 그런데 그 구조가 코드·설정·문서 어디에도 명시되지 않아, `plans/70` v1이 `graph.py`의
 `if/elif` 형태만 보고 "4경로 병존"으로 오독해 운영 경로를 붕괴시킬 폐기를 권고했다.
 
-**기준 경로는 3단 `semantic_router`다**(D-225 ①, 2026-09-17). 1단 `deep_agent`는 폐기 대상이
-아닌 **부가 경로(opt-in)** 이고(D-225 ②), 2단 `intent_orchestration`·4단 `legacy`는 기준이 아닌
-단이다. 종전(D-161)에는 1단을 정본으로 보고 나머지를 "강등"으로 기록했다.
+**기준 경로(기준 운영 단)는 2단 `intent_orchestration`이다**(D-251 ①, 2026-09-23 — D-225 ①의
+3단 기준을 전면 개정). 3단 `semantic_router`는 2단 대비 성능을 재는 **비교 arm**이고, 1단
+`deep_agent`는 폐기 대상이 아닌 **부가 경로(opt-in)** 다(D-225 ② 유지). 4단 `legacy`는 기준이 아닌
+단이다. 종전(D-161)에는 1단을 정본으로, D-225에서는 3단을 기준으로 보았다.
 
 이 모듈은 **기동 시 확정된 단과 그 사유를 로그 1줄로 판독 가능**하게 만든다.
 
@@ -32,14 +33,14 @@ class LadderTier(str, Enum):
     """사다리 단. 값이 곧 로그 표기다."""
 
     DEEP_AGENT = "deep_agent"                    # 1단(부가 경로 opt-in) — deepagents 패키지
-    INTENT_ORCHESTRATION = "intent_orchestration"  # 2단 — 의도 분해(트랙 A) · 배선 기본 off
-    SEMANTIC_ROUTER = "semantic_router"          # 3단(기준 경로) — 시멘틱 라우팅
+    INTENT_ORCHESTRATION = "intent_orchestration"  # 2단(기준 경로 · D-251) — 의도 분해(트랙 A)
+    SEMANTIC_ROUTER = "semantic_router"          # 3단(비교 arm) — 시멘틱 라우팅
     LEGACY = "legacy"                            # 4단 — field_mapper → schema_analyzer 직행
 
     @property
     def is_canonical(self) -> bool:
-        """기준 경로 단인지 (D-225 ① — 3단 `semantic_router`)."""
-        return self is LadderTier.SEMANTIC_ROUTER
+        """기준 경로 단인지 (D-251 ① — 2단 `intent_orchestration` · D-225 ①의 3단을 개정)."""
+        return self is LadderTier.INTENT_ORCHESTRATION
 
     @property
     def is_optin(self) -> bool:
@@ -47,12 +48,13 @@ class LadderTier(str, Enum):
         return self is LadderTier.DEEP_AGENT
 
 
-#: 확정 사유. 기준 단(3단)이 아니거나 opt-in이 성립하지 않았을 때 **왜**인지를 구분한다 —
-#: 사유 없는 확정은 진단이 안 된다. 로그 필드명(`degraded_reason`)은 판독 도구 호환을 위해 유지한다.
-#: - none: 기준 경로(3단) 확정, 또는 부가 경로(1단) opt-in 확정
+#: 확정 사유. 어느 단으로 왜 확정됐는지, opt-in이 성립하지 않았으면 **왜**인지를 구분한다 —
+#: 사유 없는 확정은 진단이 안 된다. 로그 필드명(`degraded_reason`)과 어휘 5종은 판독 도구·러너
+#: 정규식 호환을 위해 D-251(기준 단 2단 전환) 뒤에도 그대로 둔다.
+#: - none: 3단(비교 arm — 2단 플래그 명시 off) 확정, 또는 부가 경로(1단) opt-in 확정
 #: - orchestrator_unavailable: 1단 플래그는 on인데 오케스트레이터(vLLM/Gemini/mlx) 미가용
 #: - package_missing: 백엔드는 1단을 골랐으나 deepagents 조립 실패(폐쇄망 wheel 미반입 등)
-#: - intent_flag_on: 1단 플래그 off · `ENABLE_INTENT_ORCHESTRATION=true`로 2단 확정(운영자 선택)
+#: - intent_flag_on: 1단 플래그 off · 2단 플래그 on(미입력 포함)으로 **기준 단(2단)** 확정(D-251)
 #: - semantic_routing_off: 1단 플래그 off · 2·3단 플래그도 off라 4단 확정
 #: 종전 `flag_off`(1단 플래그 off)는 D-225로 폐기했다 — 1단 off가 기준 상태가 됐으므로
 #: 그 자체로는 사유가 아니고, 실제로 어느 비기준 단으로 갔는지를 위 두 어휘가 대신 말한다.
@@ -111,8 +113,9 @@ def resolve_flag_origin(flag_value: bool | None) -> str:
     `enable_semantic_routing`은 tri-state다 — `None`이면 "멀티 DB 등록 여부"로 자동
     결정된다. 운영 경로가 DB 상태에 종속되므로 그 사실이 로그에 드러나야 한다.
 
-    `enable_intent_orchestration`도 tri-state지만 D-225 ④ 이후 `None`은 DB 등록과 무관하게
-    **항상 off**다 — 이 함수가 돌려주는 `auto_multidb`에 해당하지 않는다. 기동 로그의 실제
+    `enable_intent_orchestration`도 tri-state지만 `None`은 DB 등록과 무관하게 **항상 on**이다
+    (D-251 ① — 종전 D-225 ④는 항상 off) — 이 함수가 돌려주는 `auto_multidb`에 해당하지
+    않는다. 기동 로그의 실제
     `resolved_by`(`auto_multidb` / `code_default` / `explicit_env`)는 두 플래그를 함께 보는
     `src/config.py` `model_post_init`의 `_orchestration_resolved_by`가 정한다.
 
@@ -135,8 +138,8 @@ def log_ladder_resolution(
     추가 줄은 **최대 1줄**이다(빌드 시 1회 호출이므로 스팸이 되지 않는다):
       - 1단 opt-in 실패(`OPTIN_FAILURE_REASONS`) → WARNING
       - 1단 opt-in 확정 → INFO (부가 경로 선택은 강등이 아니다 — D-225 ②)
-      - 2단·4단 확정 → WARNING (기준 경로가 아니다)
-      - 3단 확정 + 사유 없음 → 추가 줄 없음
+      - 3단·4단 확정 → WARNING (기준 경로가 아니다 — D-251. 3단은 비교 arm)
+      - 2단(기준) 확정 → 추가 줄 없음
     """
     logger.info(
         "오케스트레이션 사다리 확정: tier=%s degraded_reason=%s resolved_by=%s",
@@ -151,14 +154,16 @@ def log_ladder_resolution(
         )
     elif tier.is_optin:
         logger.info(
-            "부가 경로(deep_agent) opt-in으로 확정됐습니다 — 기준 경로는 semantic_router(3단)이며 "
-            "1단은 ENABLE_DEEPAGENTS_PACKAGE=true일 때만 선택됩니다(D-225) — "
+            "부가 경로(deep_agent) opt-in으로 확정됐습니다 — "
+            "기준 경로는 intent_orchestration(2단)이며 "
+            "1단은 ENABLE_DEEPAGENTS_PACKAGE=true일 때만 선택됩니다(D-225 ② · D-251) — "
             "docs/21_orchestration_ladder.md",
         )
     elif not tier.is_canonical:
         logger.warning(
-            "기준 경로(semantic_router)가 아닌 %s 단으로 확정됐습니다 (사유: %s). "
-            "의도한 구성인지 확인하세요 — docs/21_orchestration_ladder.md §4",
+            "기준 경로(intent_orchestration)가 아닌 %s 단으로 확정됐습니다 (사유: %s). "
+            "3단은 2단 대비 비교 arm입니다(D-251) — 의도한 구성인지 확인하세요 "
+            "— docs/21_orchestration_ladder.md §4",
             tier.value, reason,
         )
 

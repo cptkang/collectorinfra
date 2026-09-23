@@ -567,10 +567,11 @@ def _summary_with_tier(tier: str, reason: str = "intent_flag_on") -> dict[str, A
 
 @pytest.mark.parametrize(
     "tier,reason",
-    [("intent_orchestration", "intent_flag_on"), ("legacy", "semantic_routing_off")],
+    [("semantic_router", "none"), ("legacy", "semantic_routing_off")],
 )
 def test_Oc_기준_단이_아니면_최상단에_경고가_뜬다(tier: str, reason: str, tmp_path: Path) -> None:
-    """지난 run 은 2단으로 돌았는데 그 사실이 1절 표의 한 칸이었다. 기준 단은 3단이다(D-225)."""
+    """비기준 단으로 돈 사실이 1절 표의 한 칸에만 있으면 안 된다. 기준 단은 2단이다(D-251 ·
+    D-225의 3단 기준을 개정) - 3단은 2단 대비 비교 arm 이다."""
     summary = _summary_with_tier(tier, reason)
     head = render_markdown(summary, tmp_path, None).split("## 1.")[0]
 
@@ -579,13 +580,16 @@ def test_Oc_기준_단이_아니면_최상단에_경고가_뜬다(tier: str, rea
     assert "[안내]" not in head
 
 
-@pytest.mark.parametrize("tier,notice", [("semantic_router", False), ("deep_agent", True)])
+@pytest.mark.parametrize(
+    "tier,notice", [("intent_orchestration", False), ("deep_agent", True)]
+)
 def test_Oc_기준_단과_부가_경로_단은_경고하지_않는다(
     tier: str, notice: bool, tmp_path: Path
 ) -> None:
-    """기준 3단은 아무것도 올리지 않는다. 1단 opt-in 은 강등이 아니지만, 판정표가 기준 단
+    """기준 2단은 아무것도 올리지 않는다(D-251). 1단 opt-in 은 강등이 아니지만, 판정표가 기준 단
     수치가 아니라는 사실은 **안내**로 남긴다(D-225 ②)."""
-    summary = _summary_with_tier(tier, "none")
+    reason = "intent_flag_on" if tier == "intent_orchestration" else "none"
+    summary = _summary_with_tier(tier, reason)
     head = render_markdown(summary, tmp_path, None).split("## 1.")[0]
     assert "기준 단이 아닌" not in head
     assert ("[안내] 부가 경로(opt-in) 단으로 측정됐다" in head) is notice

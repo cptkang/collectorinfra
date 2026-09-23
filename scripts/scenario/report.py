@@ -29,8 +29,9 @@ _VERDICT_ORDER = ("fail", "error", "manual", "pass")
 INVALID_RATIO_WARN = 0.05
 
 
-#: 기준 실행 단(D-225 ① - 3단). 이것이 아니면 리포트 최상단에 경고를 올린다(O-c).
-CANONICAL_TIER = "semantic_router"
+#: 기준 실행 단(D-251 ① - 2단 · D-225 의 3단 기준을 개정). 이것이 아니면 리포트 최상단에 경고를
+#: 올린다(O-c). 3단은 2단 대비 비교 arm 이라 경고 대상이다.
+CANONICAL_TIER = "intent_orchestration"
 
 #: 부가 경로 단(D-225 ② - 1단 opt-in). 강등이 아니므로 경고하지 않고 **안내**만 올린다 -
 #: 판정표가 기준 단의 수치가 아니라는 사실은 여전히 해석을 바꾸기 때문이다.
@@ -104,7 +105,9 @@ def optin_failure_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
     `UNINTENDED_DEGRADATION` → `status.valid = False`). 그 사실이 10절에만 남으면, 리포트를
     읽는 사람은 **측정하지 않은 시나리오군을 측정한 것으로 읽는다**.
 
-    `_degraded_profiles` 와 겹치지 않는다 - 확정된 단은 기준 단(3단)이라 그 값 자체는 유효하다.
+    보통 `_degraded_profiles` 와 겹치지 않는다 - 2단 플래그가 켜진 구성이면 확정된 단은
+    기준 단(2단 · D-251)이라 그 값 자체는 유효하다. 2단 플래그를 끈 구성(3단 비교 arm)에서는
+    두 경고가 함께 뜬다.
 
     사유 집합은 **정본**(`src/observability/ladder.py` `OPTIN_FAILURE_REASONS`)에서 읽는다 -
     `server.py` 의 `UNINTENDED_DEGRADATION` 은 같은 값을 러너 쪽에 다시 적은 사본이다(D-053).
@@ -844,15 +847,16 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     if degraded:
         # O-c: **기준 단이 아닌 단으로 측정됐다**는 사실은 판정표 전체의 해석을 바꾼다.
         # run 20260915-131903 은 2단(`intent_orchestration`)으로 돌았는데 그 사실이
-        # 1절 표의 한 칸에만 있었다. 기준 단은 D-225(2026-09-17)부터 3단 `semantic_router`다
-        # (그 run 당시 기록 어휘는 1단 정본 기준의 `degraded_reason=flag_off`).
+        # 1절 표의 한 칸에만 있었다. 기준 단은 D-251(2026-09-23)부터 2단 `intent_orchestration`이다
+        # (D-225 기간 2026-09-17~22 에는 3단 · 그 전 run 기록 어휘는 1단 정본 기준 `flag_off`).
         add(
             "> **[경고] 기준 단이 아닌 실행 단으로 측정됐다.** "
             + " · ".join(
                 f"`{p.get('name')}` = **{p.get('tier')}**(사유 `{p.get('degraded_reason')}`)"
                 for p in degraded
             )
-            + ". 기준 경로는 사다리 3단 `semantic_router`이고(D-225) 단마다 노드 구성·지연 특성이 "
+            + ". 기준 경로는 사다리 2단 `intent_orchestration`이고(D-251 - 3단은 비교 arm) "
+            "단마다 노드 구성·지연 특성이 "
             "다르다(`docs/21_orchestration_ladder.md`) - **아래 판정·지연을 기준 단의 성능으로 "
             "읽지 말 것.** 의도한 구성이면 그 사실을 run 기록에 남기고, 아니면 `.env` 플래그를 "
             "확인한 뒤 다시 측정한다."
@@ -875,18 +879,18 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         add("")
     optin_failed = optin_failure_profiles(summary)
     if optin_failed:
-        # 권고 B: 강등이 **아니다** - 확정 단은 기준 단(3단)이고 그 수치는 유효하다. 다만 이
+        # 권고 B: 강등이 **아니다** - 확정 단은 하위 단(기준 2단 또는 비교 3단)이고 그 수치는
+        # 유효하다. 다만 이
         # 프로파일의 시나리오는 한 건도 돌지 않았다(INVALID 제외). 위 「기준 단이 아님」 경고와
         # 구분되게 [안내]로 올리고, 못 잰 건수를 여기서 바로 말한다.
         excluded = optin_failure_excluded(summary, optin_failed)
         add(
-            "> **[안내] 1단(deep_agent) opt-in 이 성립하지 않아 기준 단(3단 "
-            "`semantic_router`)에서 측정됐다.** "
+            "> **[안내] 1단(deep_agent) opt-in 이 성립하지 않아 하위 단에서 측정됐다.** "
             + " · ".join(
                 f"`{p.get('name')}`(사유 `{p.get('degraded_reason')}`)" for p in optin_failed
             )
             + f". 이 프로파일은 러너가 INVALID 로 제외해 **시나리오 {excluded}건을 재지 않았다** "
-            "(사유·목록은 10절). 기준 단에서 측정된 값 자체는 유효하므로 아래 판정표를 "
+            "(사유·목록은 10절). 하위 단에서 측정된 값 자체는 유효하므로 아래 판정표를 "
             "그대로 읽되, **제외된 만큼은 커버리지가 아니다** - 1단을 의도했다면 "
             "오케스트레이터 서빙과 deepagents 설치를 확인한 뒤 다시 잰다."
         )
@@ -896,11 +900,12 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     ]
     if optin:
         # 1단은 강등이 아니라 부가 경로 opt-in 이라 경고하지 않는다(D-225 ②). 다만 판정표가
-        # 기준 단(3단)의 수치가 아니라는 사실은 남긴다 - 안 남기면 두 단의 run 이 섞여 비교된다.
+        # 기준 단(2단 · D-251)의 수치가 아니라는 사실은 남긴다 - 안 남기면 두 단의 run 이
+        # 섞여 비교된다.
         add(
             "> **[안내] 부가 경로(opt-in) 단으로 측정됐다.** "
             + " · ".join(f"`{p.get('name')}` = **{p.get('tier')}**" for p in optin)
-            + ". 기준 경로는 사다리 3단 `semantic_router`다(D-225) - 아래 판정·지연은 "
+            + ". 기준 경로는 사다리 2단 `intent_orchestration`이다(D-251) - 아래 판정·지연은 "
             "부가 경로의 수치이므로 기준 단 run 과 섞어 비교하지 말 것."
         )
         add("")

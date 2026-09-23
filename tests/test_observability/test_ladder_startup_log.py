@@ -4,7 +4,9 @@
 `build_graph()` 내부에서 1회 일어나는 **빌드 타임 배타**다(요청별 강등이 아니다).
 따라서 관측 대상은 "요청별 분포"가 아니라 **기동 시 확정된 단 1건**이다.
 
-기준 경로는 3단 `semantic_router`, 1단 `deep_agent`는 부가 경로 opt-in이다(D-225 · plans/102 L-2).
+기준 경로는 2단 `intent_orchestration`(D-251 · 2026-09-23 — D-225의 3단 기준을 개정),
+3단은 비교 arm,
+1단 `deep_agent`는 부가 경로 opt-in이다(D-225 ② 유지).
 
 이 로그가 게이트 6(레거시 4단 제거 여부) 판정의 근거가 된다 — 추정으로 지우면
 plans/70 v1의 오독을 반복한다.
@@ -83,11 +85,12 @@ class TestTierResolution:
 
 
 class TestCanonicalTier:
-    """기준 단 = 3단, 부가 경로 = 1단 (D-225 ①②)."""
+    """기준 단 = 2단, 부가 경로 = 1단 (D-251 ① · D-225 ② 유지). 3단은 비교 arm이다."""
 
-    def test_semantic_router_is_canonical(self):
-        assert LadderTier.SEMANTIC_ROUTER.is_canonical is True
-        assert [t for t in LadderTier if t.is_canonical] == [LadderTier.SEMANTIC_ROUTER]
+    def test_intent_orchestration_is_canonical(self):
+        assert LadderTier.INTENT_ORCHESTRATION.is_canonical is True
+        assert LadderTier.SEMANTIC_ROUTER.is_canonical is False
+        assert [t for t in LadderTier if t.is_canonical] == [LadderTier.INTENT_ORCHESTRATION]
 
     def test_deep_agent_is_optin_not_canonical(self):
         assert LadderTier.DEEP_AGENT.is_optin is True
@@ -96,7 +99,7 @@ class TestCanonicalTier:
 
 
 class TestDegradationReason:
-    """왜 기준 단(3단)이 아니거나 opt-in이 성립하지 않았는지 — 사유가 구분되어야 진단이 된다."""
+    """어느 단으로 왜 확정됐는지, opt-in이 성립하지 않았는지 — 사유가 구분되어야 진단이 된다."""
 
     def test_package_missing_when_selected_but_not_buildable(self):
         """백엔드는 deep_agent를 골랐는데 조립이 안 되는 경우."""
@@ -230,24 +233,26 @@ class TestStartupLog:
         infos = [r.getMessage() for r in records if r.levelno == logging.INFO]
         assert len(infos) == 2 and "부가 경로(deep_agent) opt-in" in infos[1]
 
-    def test_tier3_canonical_logs_single_info_line(self, caplog):
-        """기준 단 + 사유 없음이면 확정 1줄뿐이다 — 추가 안내·경고 없음."""
+    def test_tier2_canonical_logs_single_info_line(self, caplog):
+        """기준 단(2단)이면 확정 1줄뿐이다 — 추가 안내·경고 없음(D-251 ①)."""
         from src.observability.ladder import log_ladder_resolution
 
         with caplog.at_level(logging.DEBUG, logger="src.observability.ladder"):
-            log_ladder_resolution(LadderTier.SEMANTIC_ROUTER, "none", flag_origin="auto_multidb")
+            log_ladder_resolution(
+                LadderTier.INTENT_ORCHESTRATION, "intent_flag_on", flag_origin="explicit_env"
+            )
 
         records = [r for r in caplog.records if r.name == "src.observability.ladder"]
         assert [(r.levelno, r.getMessage()) for r in records] == [(
             logging.INFO,
-            "오케스트레이션 사다리 확정: tier=semantic_router degraded_reason=none "
-            "resolved_by=auto_multidb",
+            "오케스트레이션 사다리 확정: tier=intent_orchestration degraded_reason=intent_flag_on "
+            "resolved_by=explicit_env",
         )]
 
     @pytest.mark.parametrize(
         "tier,reason",
         [(LadderTier.LEGACY, "semantic_routing_off"),
-         (LadderTier.INTENT_ORCHESTRATION, "intent_flag_on")],
+         (LadderTier.SEMANTIC_ROUTER, "none")],
     )
     def test_non_canonical_tier_warns_once(self, caplog, tier, reason):
         """기준 단이 아니면 경고를 남긴다 — 다만 기동당 1회다(스팸 없음)."""
@@ -258,7 +263,7 @@ class TestStartupLog:
 
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert len(warnings) == 1
-        assert "기준 경로(semantic_router)가 아닌" in warnings[0].getMessage()
+        assert "기준 경로(intent_orchestration)가 아닌" in warnings[0].getMessage()
 
     @pytest.mark.parametrize(
         "tier,reason",
@@ -312,10 +317,10 @@ class TestGraphWiring:
         src = Path("src/graph.py").read_text(encoding="utf-8")
         assert "ladder_resolution" in src, "build_graph가 사다리 판정을 기록하지 않음"
 
-    def test_unset_flags_with_multi_db_start_on_tier3(self, caplog):
-        """plans/102 성공 기준 11 — 설정 미입력 + 멀티 DB면 기동 로그가 `tier=semantic_router`다.
+    def test_unset_flags_with_multi_db_start_on_tier2(self, caplog):
+        """D-251 ① — 설정 미입력이면 기동 로그가 기준 단 `tier=intent_orchestration`이다.
 
-        종전(D-037)에는 2단 플래그 미입력 + 멀티 DB가 2단으로 자동 확정됐다(X-T11).
+        D-225 ④(미입력 = off · 3단 기준)를 전면 개정했다. 2단 미입력은 DB 등록과 무관하게 on이다.
         실제 `build_graph()`를 돌려 기동 로그 1줄을 읽는다 — 판정 함수만 부르면
         배선 누락을 못 잡는다.
         """
@@ -354,15 +359,16 @@ class TestGraphWiring:
         finally:
             ld.reset_ladder()
 
-        assert snap == {"tier": "semantic_router", "degraded_reason": "none",
+        assert snap == {"tier": "intent_orchestration", "degraded_reason": "intent_flag_on",
                         "resolved_by": "auto_multidb"}
         ladder_records = [r for r in caplog.records if r.name == "src.observability.ladder"]
         assert [r.getMessage() for r in ladder_records] == [
-            "오케스트레이션 사다리 확정: tier=semantic_router degraded_reason=none "
+            "오케스트레이션 사다리 확정: tier=intent_orchestration degraded_reason=intent_flag_on "
             "resolved_by=auto_multidb"
         ]
         names = set(compiled.get_graph().nodes.keys())
-        assert "semantic_router" in names and "intent_planner" not in names
+        # 2단 배선(3단 라우터 노드는 2단에서도 등록될 수 있다 — 진입은 intent_planner다)
+        assert {"intent_planner", "agent_orchestrator", "result_aggregator"} <= names
 
     def test_no_new_flag_introduced(self):
         """관측을 위해 새 enable_* 플래그를 만들지 않는다 (자기모순 회피)."""

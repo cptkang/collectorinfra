@@ -64,15 +64,16 @@ agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 ## 실행 경로 — 오케스트레이션 사다리
 
 **실행 경로 4종은 대등하게 병존하지 않는다. 위에서부터 성립하는 한 단만 확정되며, 기준 경로는
-3단 `semantic_router`다(D-225).**
+2단 `intent_orchestration`이다(D-251 — D-225의 3단 기준을 2026-09-23 개정). 3단 `semantic_router`는
+2단 대비 성능을 재는 비교 arm이며 3단 기능 동등성(`plans/103`)은 계속 진행한다.**
 단일 출처는 `docs/21_orchestration_ladder.md`이며, 판정 코드는 `src/observability/ladder.py`,
 배선은 `src/graph.py`의 `build_graph()`다.
 
 | 단 | 이름 | 배선 | 활성 조건(앞 단이 전부 불성립일 때) |
 |---:|---|---|---|
 | 1 (부가 경로 · opt-in) | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 조립 성공 |
-| 2 | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration`(미입력 = off) |
-| **3 (기준 경로)** | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
+| **2 (기준 경로)** | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration`(미입력 = **on** · D-251) |
+| 3 (비교 arm) | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
 | 4 | `legacy` | `field_mapper → schema_analyzer` 직행 | 위 셋 모두 불성립 |
 
 - **배타성은 런타임이 아니라 빌드 타임이다** — 상위 단이 성립하면 하위 단은 노드조차 등록되지
@@ -80,9 +81,9 @@ agents/         Claude Agent SDK 실행 스크립트 (멀티에이전트 빌드)
 - `enable_semantic_routing`·`enable_intent_orchestration`은 **tri-state**다. `enable_semantic_routing`
   미입력(None)은 `ACTIVE_DB_IDS` 등록 여부로 자동 결정되고 경고를 남긴다 — 실행 경로가 DB 등록
   상태에 종속되므로 고정하려면 `.env`에 명시한다. **`enable_intent_orchestration` 미입력은 항상
-  off**다(`resolved_by=code_default` · D-225 ④ — 미입력 + 멀티 DB가 2단으로 자동 확정되던 것을 막는다).
-- 1단 확정은 강등이 아니라 **부가 경로 opt-in 기록(INFO)**이고, 2·4단 확정과 1단 opt-in 실패
-  (`orchestrator_unavailable`·`package_missing`)가 WARNING이다. 종전 사유 어휘 `flag_off`는
+  on**이다(`resolved_by=code_default` · D-251 — 종전 D-225 ④ "항상 off"를 개정).
+- 1단 확정은 강등이 아니라 **부가 경로 opt-in 기록(INFO)**이고, 3·4단 확정과 1단 opt-in 실패
+  (`orchestrator_unavailable`·`package_missing`)가 WARNING이다(D-251). 종전 사유 어휘 `flag_off`는
   **D-225로 폐기**했다 — 2026-09-17 이전 로그·run 기록의 `flag_off`는 옛 어휘다.
 - **"코드에 분기가 남아 있다"는 사실만으로 죽은 경로를 판정하지 말 것.** 어느 단을 지우려면 그
   단이 확정되는 설정 조합이 실제로 쓰이지 않음을 먼저 보여야 한다(D-161 · plans/70 v1 오판 사례).
@@ -188,8 +189,8 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
 - 운영 실측(`.env`, 2026-08-31): `LLM_PROVIDER=gemini` · `ORCHESTRATOR_PROVIDER=gemini` ·
   `DB_BACKEND=dbhub` · `ACTIVE_DB_IDS=polestar` · 사다리 1·2·3단 플래그 모두 true.
   **코드 기본값이 아니라 이 실제값을 근거로 판단할 것.** 세 플래그를 모두 명시하므로 운영은
-  아직 1단으로 확정된다 — 기준 경로(3단)로의 운영 전환(`plans/102` L-5)은 3단 기능 동등성
-  (`plans/103` P5 · D-226) 완료 뒤 사용자 확인 사항이다.
+  아직 1단으로 확정된다 — 기준 경로(2단)로의 운영 전환은 `ENABLE_DEEPAGENTS_PACKAGE=false`를
+  사용자가 폐쇄망 `.env`에 반영하는 것이다(D-251 · 절차 `plans/110` 부록 B.4).
 - 신규 기능 플래그는 **기본 off = 현행 동작과 비트 동일**이 원칙이다(`plans/80` §5.4-③).
   명시적 예외는 근거와 함께 config 주석에 남긴다(예: `COMPOSITE_AVAILABILITY_PRECHECK_ENABLED`,
   `COMPOSITE_HOST_DISCOVERY_ENABLED`, `COMPOSITE_SCOPE_SELECT_ENABLED`, D-203 순차 의존 계약 7종은 기본 on).

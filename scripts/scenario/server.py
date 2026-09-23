@@ -38,8 +38,9 @@ HEALTH_WAIT_SEC = 90.0
 #: 부가 경로 1단(deep_agent)을 플래그로 opt-in 했는데 **가용성 때문에** 성립하지 않은 사유
 #: (`src/observability/ladder.py` `OPTIN_FAILURE_REASONS` 와 같은 집합).
 #: 이 사유로 확정된 프로파일은 의도하지 않은 경로를 재므로 INVALID 다(§4.5 조용한 강등 차단).
-#: 운영자가 플래그로 고른 비기준 단(`intent_flag_on` 2단 · `semantic_routing_off` 4단)은 의도한
-#: 선택이라 여기 넣지 않는다 - 리포트 경고로만 남는다(D-221 O-c · D-225 기준 3단).
+#: 운영자가 플래그로 고른 단(`intent_flag_on` 2단 기준 · `none` 3단 비교 arm ·
+#: `semantic_routing_off` 4단)은 의도한 선택이라 여기 넣지 않는다 - 비기준 단은 리포트 경고로만
+#: 남는다(D-221 O-c · D-251 기준 2단).
 UNINTENDED_DEGRADATION = frozenset({"orchestrator_unavailable", "package_missing"})
 
 #: 비스트리밍 요청의 대기 상한을 정하는 서버 실효값(설정 에코에서 읽는다 - `client._nonstream_timeout`).

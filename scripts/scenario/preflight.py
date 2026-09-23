@@ -404,24 +404,27 @@ def _check_ladder(cfg: Any, report: Report) -> None:
     tier, reason = resolve_ladder_tier(cfg, backend=backend, buildable=buildable)
     tier_value = getattr(tier, "value", str(tier))
 
-    # 기준 경로는 3단이고 1단은 부가 경로 opt-in 이다(D-225). 둘 다 의도한 단이라 OK 다.
-    if tier_value == "semantic_router" and reason == "none":
-        report.add("사다리 단", "semantic_router (3단 기준 경로)", VERDICT_OK,
-                   "그대로 진행한다(기준 경로 D-225). 1단(부가 경로)도 재야 하면 "
-                   "ENABLE_DEEPAGENTS_PACKAGE=true 로 바꾸고 재기동한다 - 안 바꾸면 "
+    # 기준 경로는 2단이고(D-251 · D-225 의 3단 기준을 개정) 1단은 부가 경로 opt-in 이다(D-225 ②).
+    # 둘 다 의도한 단이라 OK 다. 3단은 2단 대비 비교 arm 이라 .env 가 아니라 --arm 으로 잰다.
+    if tier_value == "intent_orchestration" and reason == "intent_flag_on":
+        report.add("사다리 단", "intent_orchestration (2단 기준 경로)", VERDICT_OK,
+                   "그대로 진행한다(기준 경로 D-251). 3단(비교 arm)은 .env 를 바꾸지 말고 "
+                   "--arm tier3_router 로 같은 run 에서 잰다(plans/110 부록 B). 1단(부가 경로)도 "
+                   "재야 하면 ENABLE_DEEPAGENTS_PACKAGE=true 로 바꾸고 재기동한다 - 안 바꾸면 "
                    "plans/99 §0 「답하지 못하는 것」에 1단이 남는다.")
         return
     if tier_value == "deep_agent":
         report.add("사다리 단", "deep_agent (1단 부가 경로)", VERDICT_OK,
-                   "그대로 진행한다. 부가 경로 opt-in 이라 기준 경로(3단 semantic_router) 수치가 "
+                   "그대로 진행한다. 부가 경로 opt-in 이라 기준 경로(2단 intent_orchestration) "
+                   "수치가 "
                    "아니다 - run 기록에 남긴다. plans/99 목표 9 달성.")
         return
 
     actions = {
-        "intent_flag_on": "기준 경로는 3단이다(D-225). 2단을 의도하지 않았으면 "
-                          "ENABLE_INTENT_ORCHESTRATION=false 를 명시하고 재기동한다. "
-                          "의도했으면 run 기록에 남긴다.",
-        "semantic_routing_off": "기준 경로는 3단이다(D-225). ENABLE_SEMANTIC_ROUTING=true 를 "
+        "none": "기준 경로는 2단이다(D-251). 3단은 비교 arm 이라 --arm tier3_router 로 잰다. "
+                ".env 로 3단을 의도하지 않았으면 ENABLE_INTENT_ORCHESTRATION=true 를 명시하고 "
+                "재기동한다. 의도했으면 run 기록에 남긴다.",
+        "semantic_routing_off": "기준 경로는 2단이다(D-251). ENABLE_INTENT_ORCHESTRATION=true 를 "
                                 "명시하고 재기동한다. 4단(legacy)을 의도했으면 run 기록에 남긴다.",
         "orchestrator_unavailable": "ORCHESTRATOR_PROVIDER 를 본다. vllm·mlx 면 서빙 여부와 "
                                     "ORCHESTRATOR_BASE_URL 의 /v1/models 를, gemini 면 api_key 와 D-127 승인을 확인한다.",

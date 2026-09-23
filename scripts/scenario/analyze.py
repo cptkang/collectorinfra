@@ -114,6 +114,87 @@ def rewrite_trace_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: 응답 서술 노드 — 2단은 `result_aggregator`(단일 task면 안에서 `output_generator` 를 부른다),
+#: 3단은 `output_generator` 노드다. 서술 LLM 호출은 두 단이 같은 함수를 쓴다.
+_NARRATION_NODES = ("result_aggregator", "output_generator")
+#: 이보다 짧은 서술 노드 시간은 LLM 을 부르지 않은 결정적 응답으로 본다
+#: (존 역질문·전 행 null 안내 등).
+NARRATION_MIN_ELAPSED_MS = 100.0
+#: 응답 길이 구간(자) — run 20260922-093837 분석 표와 같은 경계.
+_NARRATION_BANDS = ((0, 500), (500, 1500), (1500, 3000), (3000, None))
+
+
+def narration_cost(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """서술 노드 지연 대 응답 길이(자) — `llm_calls`·`tokens` 부재(O-b) 동안의 대리 지표.
+
+    상관이 높으면 서술 비용은 "여러 번 부르는 것"이 아니라 **한 번의 호출이 출력 길이만큼
+    느린 것**이다(run 20260922-093837 실측 r=0.91). 추정이므로 결론은 사람이 내린다.
+
+    Returns:
+        ``{measured, samples, nodes, pearson_r, ms_per_char_p50, bands}`` — 표본이
+        `MIN_NODE_SAMPLE` 미만이면 ``measured=False`` 이고 수치 키는 None 이다.
+    """
+    points: list[tuple[float, int]] = []
+    nodes: set[str] = set()
+    for row in rows:
+        text = row.get("response_text")
+        if not text:
+            continue
+        elapsed_map = row.get("node_elapsed_ms") or {}
+        for node in _NARRATION_NODES:
+            elapsed = elapsed_map.get(node)
+            if elapsed is not None and float(elapsed) >= NARRATION_MIN_ELAPSED_MS:
+                points.append((float(elapsed), len(text)))
+                nodes.add(node)
+                break
+    empty = {"measured": False, "samples": len(points), "nodes": sorted(nodes),
+             "pearson_r": None, "ms_per_char_p50": None, "bands": []}
+    if len(points) < MIN_NODE_SAMPLE:
+        return empty
+    elapsed_values = [p[0] for p in points]
+    lengths = [p[1] for p in points]
+    try:
+        pearson: float | None = round(statistics.correlation(lengths, elapsed_values), 3)
+    except statistics.StatisticsError:  # 길이나 지연이 전부 같다 — 상관이 정의되지 않는다
+        pearson = None
+    bands = []
+    for low, high in _NARRATION_BANDS:
+        values = [e for e, n in points if n >= low and (high is None or n < high)]
+        label = f"{low}~{high}" if high is not None else f"{low}~"
+        bands.append([label, len(values),
+                      round(statistics.median(values), 1) if values else "-"])
+    return {
+        "measured": True,
+        "samples": len(points),
+        "nodes": sorted(nodes),
+        "pearson_r": pearson,
+        "ms_per_char_p50": round(statistics.median(e / n for e, n in points), 2),
+        "bands": bands,
+    }
+
+
+def replan_followup(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """재계획이 실제로 후속 실행을 만든 턴 — `plans/98` CU-4 의 선행 측정("유효 비율").
+
+    `agent_orchestrator` 가 2회 이상 돈 턴을 후속 실행으로 센다. 재계획 노드가 없는 단
+    (3단)의 턴은 분모에 들어가지 않는다.
+    """
+    replanner_turns = followup = followup_timeout = followup_pass = 0
+    for row in rows:
+        calls = row.get("node_calls") or {}
+        if not calls.get("replanner"):
+            continue
+        replanner_turns += 1
+        if (calls.get("agent_orchestrator") or 0) >= 2:
+            followup += 1
+            if row.get("unevaluated_reason") == "timeout":
+                followup_timeout += 1
+            if row.get("func_verdict") == "pass":
+                followup_pass += 1
+    return {"replanner_turns": replanner_turns, "followup_turns": followup,
+            "followup_timeout": followup_timeout, "followup_pass": followup_pass}
+
+
 def _table(header: list[str], rows: list[list[Any]]) -> str:
     lines = ["| " + " | ".join(header) + " |",
              "|" + "|".join(["---"] * len(header)) + "|"]
@@ -198,6 +279,49 @@ def bottleneck(run_dir: Path, rows: list[dict[str, Any]]) -> str:
     if not calls or not tokens:
         out.append(LLM_COST_UNMEASURABLE)
         out.append("")
+
+    out.append("## 응답 서술 비용 (대리 지표)")
+    out.append("")
+    out.append(f"서술 노드({' · '.join(_NARRATION_NODES)}) 지연 대 응답 길이(자). "
+               f"{NARRATION_MIN_ELAPSED_MS:.0f}ms 미만(LLM 미호출로 보이는 결정적 응답)과 "
+               "응답 없는 턴(타임아웃 등)은 뺐다.")
+    out.append("")
+    narration = narration_cost(rows)
+    if not narration["measured"]:
+        out.append(f"- 판정 불가: 표본 {narration['samples']}건 < {MIN_NODE_SAMPLE}.")
+    else:
+        pearson = narration["pearson_r"]
+        out.append(_table(
+            ["지표", "값", "비고"],
+            [
+                ["표본", narration["samples"], ", ".join(narration["nodes"])],
+                ["피어슨 r (길이·지연)", "판정 불가" if pearson is None else pearson,
+                 "높으면 호출 횟수가 아니라 출력 길이가 지연을 정한다(추정)"],
+                ["ms/자 중앙값", narration["ms_per_char_p50"], "-"],
+            ],
+        ))
+        out.append("")
+        out.append(_table(["응답 길이(자)", "표본", "서술 노드 중앙값(ms)"], narration["bands"]))
+    out.append("")
+
+    out.append("## 재계획 후속 실행 (plans/98 CU-4 선행 측정)")
+    out.append("")
+    replan = replan_followup(rows)
+    if not replan["replanner_turns"]:
+        out.append("- 재계획 노드가 돈 턴이 없다(재계획이 없는 실행 단).")
+    else:
+        rate = replan["followup_turns"] / replan["replanner_turns"]
+        out.append(_table(
+            ["지표", "값"],
+            [
+                ["재계획 노드 통과 턴", replan["replanner_turns"]],
+                ["후속 실행 턴(agent_orchestrator ≥2회)",
+                 f"{replan['followup_turns']} ({rate:.1%})"],
+                ["그중 타임아웃", replan["followup_timeout"]],
+                ["그중 합격", replan["followup_pass"]],
+            ],
+        ))
+    out.append("")
 
     out.append("## 재작성 게이트·검증 (plans/107 · O-e)")
     out.append("")

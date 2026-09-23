@@ -1351,8 +1351,9 @@ class AppConfig(BaseSettings):
     enable_semantic_routing: bool | None = None
 
     # 의도 분해 오케스트레이션(사다리 2단 = 트랙 A) 활성화 여부 (Plan 48 / D-037)
-    # None(미입력) = off — 기준 경로는 3단 semantic_router다(D-225 ④ · plans/102 L-1). 종전의
-    # "멀티 DB 환경이면 자동 on"은 DB 등록만으로 2단이 조용히 확정되는 경로라 폐지했다(X-T11).
+    # None(미입력) = **on** — 기준 경로(기준 운영 단)는 2단 intent_orchestration이다(D-251 ① ·
+    # 2026-09-23 · D-225 ④ "미입력 = off"를 개정). DB 등록 상태와는 무관하다 — 종전(D-037)의
+    # "멀티 DB 환경이면 자동 on"은 DB 등록만으로 단이 바뀌는 경로라 폐지된 채로 둔다(X-T11).
     # True/False = 명시적 강제(.env·OS env 모두 반영). 사다리 상위 단(deep_agent)이 성립하면
     # 이 플래그가 true여도 2단 노드는 등록되지 않는다 — docs/21_orchestration_ladder.md §1·§2
     #
@@ -1458,7 +1459,7 @@ class AppConfig(BaseSettings):
         object.__setattr__(
             self,
             "_orchestration_resolved_by",
-            # 2단 플래그만 미입력이면 DB 등록 상태와 무관하게 코드 기본값(off)이다(D-225 ④).
+            # 2단 플래그만 미입력이면 DB 등록 상태와 무관하게 코드 기본값(on)이다(D-251 ①).
             "auto_multidb" if self.enable_semantic_routing is None
             else "code_default" if self.enable_intent_orchestration is None
             else "explicit_env",
@@ -1510,22 +1511,22 @@ class AppConfig(BaseSettings):
             )
         if self.enable_intent_orchestration is None:
             logger.warning(
-                "enable_intent_orchestration 미입력 → off로 확정합니다(3단 기준 · D-225). "
-                "2단을 쓰려면 .env에 ENABLE_INTENT_ORCHESTRATION=true를 명시하세요 "
+                "enable_intent_orchestration 미입력 → on으로 확정합니다(2단 기준 · D-251). "
+                "3단(비교 arm)으로 돌리려면 .env에 ENABLE_INTENT_ORCHESTRATION=false를 명시하세요 "
                 "— docs/21_orchestration_ladder.md §6",
             )
 
         if self.enable_semantic_routing is None:
             self.enable_semantic_routing = bool(self.multi_db.get_active_db_ids())
 
-        # D-225 ④(plans/102 L-1): 플래그 미입력(None)이면 **항상 off**다 — 기준 경로는 3단
-        # semantic_router이고 2단 배선은 기본 off다. 종전(Plan 48 / D-037)에는 멀티 DB 환경에서
-        # 자동 on이라, 3단 기준으로 운영하다 DB를 하나 더 등록하는 순간 2단으로 조용히
-        # 확정됐다(X-T11).
+        # D-251 ①(2026-09-23 · D-225 ④ 개정): 플래그 미입력(None)이면 **항상 on**이다 — 기준
+        # 운영 단은 2단 intent_orchestration이고 3단은 비교 arm이다. DB 등록 상태와 무관하게
+        # 고정한다 — 종전(Plan 48 / D-037)의 "멀티 DB면 자동 on"은 DB 등록만으로 단이 바뀌는
+        # 경로였다(X-T11).
         # 명시적 true/false는 pydantic-settings가 .env·OS env에서 필드로 직접 읽어 그대로 존중한다
         # (os.getenv 미사용 — .env-only 설정도 반영, Known Mistakes 2026-06-10).
         if self.enable_intent_orchestration is None:
-            self.enable_intent_orchestration = False
+            self.enable_intent_orchestration = True
 
 
 @lru_cache(maxsize=1)

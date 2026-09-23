@@ -1,6 +1,7 @@
 # 오케스트레이션 사다리 — 실행 경로 단일 출처
 
 > **작성** 2026-08-24 (plans/70 P2-2 / L1) · **개정** 2026-09-17 (plans/102 L-4 · D-225 기준 전환) ·
+> **재개정** 2026-09-23 (**D-251 — 기준 운영 단 2단 `intent_orchestration` · 3단은 비교 arm**) ·
 > **대상 코드** `src/graph.py` `build_graph()` · `src/orchestration/deep_agent.py` · `src/observability/ladder.py`
 >
 > 이 문서는 "지금 어느 실행 경로로 도는가"의 **단일 출처**다. `graph.py`의 분기 주석과
@@ -15,7 +16,22 @@
 정적 읽기로는 "죽은 경로처럼 보이는 것"과 "실제로 죽은 경로"가 구별되지 않는다.
 이 문서와 기동 로그(아래 §5)가 그 구별을 대신한다.
 
-### 기준 전환 — D-225 (2026-09-17)
+### 기준 재전환 — D-251 (2026-09-23) · 현행
+
+사용자 지시 *"2단은 기본 운영 단으로 보고 3단은 비교하여 2단 대비 성능을 확인할 수 있도록 한다."*에 따라
+**기준 경로(기준 운영 단)는 2단 `intent_orchestration`이다.** D-225의 3단 기준을 전면 개정했다.
+
+- **3단 `semantic_router`는 2단 대비 성능을 재는 비교 arm**이다 — 시나리오 하네스 `--arm tier3_router`
+  (`plans/110` 부록 B). 3단 기능 동등성(`plans/103` · D-226)은 계속 진행한다.
+- **1단 `deep_agent`는 운영에서 끄고 부가 경로(opt-in)로 유지**한다(D-225 ② 유지). 코드 기본값은 이미 off다.
+  운영 `.env`의 `ENABLE_DEEPAGENTS_PACKAGE=false` 반영은 사용자가 한다(`plans/110` 부록 B.4).
+- **`enable_intent_orchestration` 미입력 = on**(§6). DB 등록과 무관하다는 성질(X-T11 해소)은 유지된다.
+- 정본 판정 `ladder.py` `is_canonical` = `INTENT_ORCHESTRATION`. 사유 어휘 5종은 **바꾸지 않았다**(판독 도구
+  호환) — 2단 확정은 `intent_flag_on`(이제 기준 단의 사유), 3단 확정은 `none`이고, 3단이 기준이 아니라는
+  사실은 WARNING 문구가 말한다(§5).
+- 아래 「기준 전환 — D-225」 절과 본문 중 "기준 경로(3단)" 서술은 **D-225 시점 기록**이다. 서로 다르면 이 절이 이긴다.
+
+### 기준 전환 — D-225 (2026-09-17) · *D-251로 개정됨*
 
 사용자 지시 *"기본은 시멘틱 라우터를 사용한다. … deepagents는 부가적으로 사용할 예정"*에 따라
 **기준 경로는 3단 `semantic_router`다.**
@@ -34,13 +50,14 @@
 | 단 | 이름 | 진입 배선 | 활성 조건 (앞 단이 전부 불성립일 때) |
 |---:|---|---|---|
 | 1 (부가 경로 · opt-in) | `deep_agent` | `field_mapper → deep_agent → END` | `enable_deepagents_package` **AND** 오케스트레이터 가용 **AND** deepagents 패키지 조립 성공 |
-| 2 (배선 기본 off) | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration` (미입력 = off, §6) |
-| **3 (기준 경로)** | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
+| **2 (기준 경로 · D-251)** | `intent_orchestration` | `field_mapper → intent_planner → agent_orchestrator → [replanner 루프] → result_aggregator → END` | `enable_intent_orchestration` (미입력 = **on**, §6) |
+| 3 (비교 arm) | `semantic_router` | `field_mapper → semantic_router → 조건부 분기` | `enable_semantic_routing` |
 | 4 | `legacy` | `field_mapper → schema_analyzer` | 위 셋 모두 불성립 (`else`) |
 
-**"앞 단이 전부 불성립일 때"가 핵심이다.** 기준은 3단이지만 확정 순서는 여전히 위에서 아래다 —
+**"앞 단이 전부 불성립일 때"가 핵심이다.** 확정 순서는 위에서 아래다 —
 2·3단의 플래그가 켜져 있어도 1단이 성립하면 2·3단은 **노드조차 등록되지 않고**, 2단 플래그가
-켜져 있으면 3단은 등록되지 않는다. 그래서 3단 기준으로 돌리려면 1·2단 플래그가 off여야 한다.
+켜져 있으면 3단은 등록되지 않는다. 그래서 기준 단(2단)으로 돌리려면 1단 플래그가 off여야 하고,
+3단(비교 arm)으로 돌리려면 1·2단 플래그가 모두 off여야 한다(D-251).
 
 **대상 DB 선정 규칙 — 사다리 전 단 공용(plans/113 F-1·F-2 · D-246):** 이번 턴 원문 위치 힌트
 (`parsed_requirements.target_db_hints`)의 결정적 고정은 **한 함수**(`routing/location_hints.pin_targets_to_hints`)가
@@ -96,9 +113,9 @@ _deep_agent_buildable(config, llm)          # ② 실제 조립 시도(폐쇄망
 
 | 사유 | 확정 단 | 의미 | 대응 |
 |---|---|---|---|
-| `none` | 3단 · 1단 | 기준 경로(3단) 확정, 또는 부가 경로(1단) opt-in 확정 | — |
-| `intent_flag_on` | 2단 | 1단 플래그 off · `ENABLE_INTENT_ORCHESTRATION=true`로 2단 확정(운영자 선택) | 의도하지 않았으면 `false` 명시 |
-| `semantic_routing_off` | 4단 | 1단 플래그 off · 2·3단 플래그도 off | 의도하지 않았으면 `ENABLE_SEMANTIC_ROUTING=true` 명시 |
+| `intent_flag_on` | 2단 | 1단 플래그 off · 2단 플래그 on(미입력 포함)으로 **기준 단** 확정(D-251) | — |
+| `none` | 3단 · 1단 | 3단(비교 arm — 2단 플래그 명시 off) 확정, 또는 부가 경로(1단) opt-in 확정 | 3단을 의도하지 않았으면 `ENABLE_INTENT_ORCHESTRATION=true` 명시 |
+| `semantic_routing_off` | 4단 | 1단 플래그 off · 2·3단 플래그도 off | 의도하지 않았으면 `ENABLE_INTENT_ORCHESTRATION=true` 명시 |
 | `orchestrator_unavailable` | 2·3·4단 | 1단 플래그는 on인데 오케스트레이터(vLLM/Gemini/mlx) 미가용 | health check·api_key 확인 |
 | `package_missing` | 2·3·4단 | 백엔드는 1단을 골랐으나 deepagents 조립 실패 | 폐쇄망 wheel 반입 |
 
@@ -117,26 +134,27 @@ _deep_agent_buildable(config, llm)          # ② 실제 조립 시도(폐쇄망
 INFO  오케스트레이션 사다리 확정: tier=<단> degraded_reason=<사유> resolved_by=<출처>   ← 항상 1줄 (형식 불변)
 INFO  부가 경로(deep_agent) opt-in으로 확정됐습니다 — …                                 ← 1단 확정일 때만
 WARN  부가 경로(deep_agent) opt-in이 성립하지 않아 <단> 단으로 확정됐습니다 (사유: <사유>). …  ← opt-in 실패일 때만
-WARN  기준 경로(semantic_router)가 아닌 <단> 단으로 확정됐습니다 (사유: <사유>). …        ← 2·4단 확정일 때만
+WARN  기준 경로(intent_orchestration)가 아닌 <단> 단으로 확정됐습니다 (사유: <사유>). …  ← 3·4단 확정일 때만(D-251)
 ```
 
-추가 줄은 **최대 1줄**이다. 3단 확정 + 사유 `none`이면 첫 줄만 남는다.
+추가 줄은 **최대 1줄**이다. 2단(기준) 확정 + 사유 `intent_flag_on`이면 첫 줄만 남는다.
 첫 줄 형식은 바꾸지 않는다 — `scripts/scenario/server.py`가 정규식으로 읽는다.
 
 - `tier` — 확정된 단 (§1의 이름)
 - `degraded_reason` — §4의 사유
 - `resolved_by` — `explicit_env`(플래그를 명시 설정) / `auto_multidb`(`enable_semantic_routing` 미입력 →
   멀티 DB 등록 여부로 자동 해석, §6) / `code_default`(`enable_semantic_routing`은 명시했고
-  `enable_intent_orchestration`만 미입력 → 코드 기본값 off, §6)
+  `enable_intent_orchestration`만 미입력 → 코드 기본값 **on**(D-251), §6)
 
-**D-225 이후 기대 로그 (설정 미입력 + 멀티 DB):**
+**D-251 이후 기대 로그 (설정 미입력 + 멀티 DB):**
 
 ```
-오케스트레이션 사다리 확정: tier=semantic_router degraded_reason=none resolved_by=auto_multidb
+오케스트레이션 사다리 확정: tier=intent_orchestration degraded_reason=intent_flag_on resolved_by=auto_multidb
 ```
 
-→ 기준 3단 확정 · 추가 줄 없음. `tests/test_observability/test_ladder_startup_log.py`
-`test_unset_flags_with_multi_db_start_on_tier3`가 실제 `build_graph()`로 이 줄을 고정한다.
+→ 기준 2단 확정 · 추가 줄 없음. `tests/test_observability/test_ladder_startup_log.py`
+`test_unset_flags_with_multi_db_start_on_tier2`가 실제 `build_graph()`로 이 줄을 고정한다.
+(D-225 시점 기대 로그는 `tier=semantic_router degraded_reason=none`이었다.)
 
 **실측 (2026-08-20, 운영 `.env` · D-225 이전 어휘):**
 
@@ -158,15 +176,16 @@ WARN  기준 경로(semantic_router)가 아닌 <단> 단으로 확정됐습니�
 | 플래그 | `None`(미입력)일 때 | 기동 경고 |
 |---|---|---|
 | `enable_semantic_routing` (3단) | **멀티 DB 등록 여부로 자동 결정** — 활성 DB가 있으면 on | "멀티 DB 등록 여부로 자동 결정합니다" |
-| `enable_intent_orchestration` (2단) | **항상 off** — DB 등록과 무관 (D-225 ④ · `plans/102` L-1) | "off로 확정합니다 … 2단을 쓰려면 `ENABLE_INTENT_ORCHESTRATION=true`를 명시" |
+| `enable_intent_orchestration` (2단) | **항상 on** — DB 등록과 무관 (D-251 ① · 종전 D-225 ④는 항상 off) | "on으로 확정합니다 … 3단(비교 arm)으로 돌리려면 `ENABLE_INTENT_ORCHESTRATION=false`를 명시" |
 
 3단 플래그는 여전히 운영 경로가 **DB 등록 상태에 종속**된다. DB를 하나 등록/해제하는 것만으로
 3단↔4단이 바뀔 수 있다. 자동 해석이 발동했는지는 로그의 `resolved_by=auto_multidb`로만 알 수 있다 —
 `model_post_init`이 `None`을 bool로 덮어쓴 뒤에는 명시 설정과 구별되지 않는다.
 
 2단 플래그는 종전(D-037)에 3단과 같이 "멀티 DB면 자동 on"이었다. 그래서 3단 기준으로 운영하다
-DB를 하나 더 등록하는 순간 2단으로 **조용히** 확정됐다(`plans/102` X-T11). 지금은 미입력이면
-off이고, 3단 플래그를 명시한 채 2단만 미입력이면 `resolved_by=code_default`로 남는다.
+DB를 하나 더 등록하는 순간 2단으로 **조용히** 확정됐다(`plans/102` X-T11). D-225는 미입력을 항상 off로,
+D-251은 **항상 on**(기준 단)으로 고정했다 — 어느 쪽이든 DB 등록과 무관하다. 3단 플래그를 명시한 채
+2단만 미입력이면 `resolved_by=code_default`로 남는다.
 
 ## 7. 모듈 의존 방향 — 상위 단이 하위 단 모듈을 **재사용한다**
 

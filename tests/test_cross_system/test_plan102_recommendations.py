@@ -87,7 +87,8 @@ def _verdict(values: list[str], col: str = "hostname") -> DependencyVerdict:
 
 
 def _summary(**profile) -> dict:
-    base = {"name": "p1", "port": 1, "valid": False, "tier": "semantic_router"}
+    # 기준 단(D-251 — 2단). 2단 플래그가 켜진 구성에서 1단 opt-in 이 실패하면 2단에 떨어진다.
+    base = {"name": "p1", "port": 1, "valid": False, "tier": "intent_orchestration"}
     return {
         "meta": {"run_id": "R", "mode": "live"},
         "profiles": [{**base, **profile}],
@@ -102,7 +103,7 @@ def _summary(**profile) -> dict:
 
 class TestOptinFailureNotice:
     def test_optin_failure_is_announced_at_top_with_excluded_count(self, tmp_path):
-        """★ 1단 opt-in 이 성립하지 않아 3단에서 잰 run — 최상단 안내 + 못 잰 건수."""
+        """★ 1단 opt-in 이 성립하지 않아 기준 단(2단)에서 잰 run — 최상단 안내 + 못 잰 건수."""
         summary = _summary(degraded_reason="orchestrator_unavailable")
         assert [p["name"] for p in rp.optin_failure_profiles(summary)] == ["p1"]
         assert rp.optin_failure_excluded(summary, rp.optin_failure_profiles(summary)) == 2
@@ -120,9 +121,9 @@ class TestOptinFailureNotice:
         assert rp.optin_failure_profiles(summary)
         assert "package_missing" in rp.render_markdown(summary, tmp_path, None)
 
-    def test_healthy_tier3_run_has_no_notice(self, tmp_path):
-        """반대 케이스 — 정상 3단 run 에는 이 안내가 없다(경고 상시화 금지)."""
-        summary = _summary(valid=True, degraded_reason="none")
+    def test_healthy_tier2_run_has_no_notice(self, tmp_path):
+        """반대 케이스 — 정상 기준 단(2단) run 에는 이 안내가 없다(경고 상시화 금지)."""
+        summary = _summary(valid=True, degraded_reason="intent_flag_on")
         assert rp.optin_failure_profiles(summary) == []
         assert "opt-in 이 성립하지 않아" not in rp.render_markdown(summary, tmp_path, None)
 
