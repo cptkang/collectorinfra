@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from src.config import AppConfig
+from src.db_adapters import log_adapter_ownership_startup
 from src.llm import create_llm
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
@@ -909,5 +910,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     # 사다리 로그와 나란히 두는 이유: 둘 다 "무엇이 켜진 채 돌고 있는가"의 재구성 재료이고,
     # 호출 지점이 흩어지면 한쪽만 남는 상태가 생긴다(ladder record/log를 묶은 것과 같은 이유).
     log_investigation_startup(config)
+    # 어댑터 제품군 DB가 활성인데 담당 ID 설정이 비면 경고 1줄(plans/116 §10.3 — 동작 불변).
+    log_adapter_ownership_startup(config)
 
     return compiled
