@@ -829,6 +829,36 @@ button.alarm-prompt-trigger:hover {
     min-height: 0;
 }
 
+.btn.history-new-chat {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin: 10px 12px 0;
+    font-size: 0.75rem;
+    padding: 6px 10px;
+    flex: 0 0 auto;
+}
+
+.history-new-chat svg {
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    flex: 0 0 auto;
+}
+
+/* 접힌 손잡이(44px)에서는 글자를 숨기고 + 아이콘만 남긴다. */
+.chat-layout.history-collapsed .history-new-chat {
+    margin: 8px auto 0;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+}
+
+.chat-layout.history-collapsed .history-new-chat-label {
+    display: none;
+}
+
 .history-panel-tools {
     display: flex;
     align-items: center;
@@ -5574,3 +5604,18 @@ select:focus {
     .stream-status-spinner,
     .stream-task--active .stream-task-mark { animation: none; }
 }
+
+/* 매뉴얼 메뉴 (plans/116) — 머리글의 「매뉴얼 ▾」 */
+.manual-menu { position: relative; }
+.manual-menu > summary { list-style: none; cursor: pointer; }
+.manual-menu > summary::-webkit-details-marker { display: none; }
+.manual-menu-list {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 150px;
+    display: flex; flex-direction: column; padding: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+.manual-menu-list a {
+    padding: 8px 10px; border-radius: 6px; font-size: 0.8125rem; color: var(--text); text-decoration: none; white-space: nowrap;
+}
+.manual-menu-list a:hover { background: var(--surface-hover); }

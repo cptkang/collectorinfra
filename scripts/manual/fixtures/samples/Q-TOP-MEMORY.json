@@ -1,0 +1,61 @@
+{
+ "id": "Q-TOP-MEMORY",
+ "turns": [
+  {
+   "query": "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘",
+   "file": null,
+   "key": "3e60100feff12375",
+   "elapsed_s": 129.1,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| server_name | os_hostname | ipaddress | memory_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 82.6 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 64.3 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- **주의**: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "memory_avg_utilization": 82.6
+    },
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "memory_avg_utilization": 64.3
+    },
+    {
+     "server_name": "SV-WEB-001",
+     "os_hostname": "svweb001",
+     "ipaddress": "10.61.0.1",
+     "memory_avg_utilization": 58.7
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T11:29:45",
+ "review": {
+  "verdict": "ok",
+  "notes": "2026-06 Memory 평균 82.6·64.3·58.7 원본 순서·값 일치",
+  "at": "2026-09-23"
+ }
+}

@@ -335,12 +335,16 @@ def _om_config(ctx: Context) -> OpenMetricsConfig:
     return config.openmetrics
 
 
-def register_openmetrics_tools(mcp: FastMCP, expose: bool = False) -> None:
+def register_openmetrics_tools(
+    mcp: FastMCP, expose: bool = False, source_ladder: bool = False
+) -> None:
     """OpenMetrics 도구 2종을 등록한다. ``expose=False``면 아무것도 등록하지 않는다(비트 동일).
 
     Args:
         mcp: FastMCP 서버 인스턴스.
         expose: ``expose_openmetrics_tools`` 설정값(기본 비노출).
+        source_ladder: True면 ``om_metric_catalog``를 여기서 등록하지 않는다 — 가용 소스를 싣는
+            판을 ``metric_source.register_source_ladder_tools``가 대신 등록한다(plans/92 §4.8.4).
     """
     if not expose:
         logger.info("OpenMetrics 도구 비노출 (기본 — expose_openmetrics_tools=False)")
@@ -377,6 +381,10 @@ def register_openmetrics_tools(mcp: FastMCP, expose: bool = False) -> None:
         return await run_om_metric_instant(
             _om_config(ctx), hostname, metric, prefix, max_series
         )
+
+    if source_ladder:
+        logger.info("OpenMetrics 도구 노출됨 — instant (catalog은 소스 사다리 판으로 등록)")
+        return
 
     @mcp.tool()
     async def om_metric_catalog(

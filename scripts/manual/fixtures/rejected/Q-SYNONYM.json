@@ -1,0 +1,37 @@
+{
+ "id": "Q-SYNONYM",
+ "turns": [
+  {
+   "query": "vcore, cpu, core은 동의어이다. 캐시에 등록하라.",
+   "file": null,
+   "key": "d650509aec482ce3",
+   "elapsed_s": 16.5,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "Redis에 연결할 수 없어 동의어를 등록할 수 없습니다. Redis 상태를 확인해 주세요.",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:21:38"
+}

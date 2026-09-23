@@ -1,0 +1,93 @@
+{
+ "id": "Q-SERVER-LIST",
+ "turns": [
+  {
+   "query": "전체 서버의 호스트명, OS종류, 벤더를 조회해줘",
+   "file": null,
+   "key": "165073d402aba5ad",
+   "elapsed_s": 130.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 호스트명은 `svr-web` 및 `svr-was` 시리즈로 구성되며, 운영체제는 모두 LINUX 입니다. 벤더는 VMware, Inc., HPE, Dell Inc. 가 혼재되어 있습니다.\n\n| hostname | os_type | vendor |\n|---|---|---|\n| svr-web-01 | LINUX | VMware, Inc. |\n| svr-web-02 | LINUX | VMware, Inc. |\n| svr-web-03 | LINUX | VMware, Inc. |\n| svr-web-04 | LINUX | VMware, Inc. |\n| svr-web-05 | LINUX | VMware, Inc. |\n| svr-web-06 | LINUX | VMware, Inc. |\n| svr-web-07 | LINUX | HPE |\n| svr-web-08 | LINUX | HPE |\n| svr-web-09 | LINUX | VMware, Inc. |\n| svr-web-10 | LINUX | VMware, Inc. |\n| svr-was-01 | LINUX | VMware, Inc. |\n| svr-was-02 | LINUX | VMware, Inc. |\n| svr-was-03 | LINUX | HPE |\n| svr-was-04 | LINUX | HPE |\n| svr-was-05 | LINUX | VMware, Inc. |\n| svr-was-06 | LINUX | VMware, Inc. |\n| svr-was-07 | LINUX | Dell Inc. |\n| svr-was-08 | LINUX | Dell Inc. |\n| svr-was-09 | LINUX | VMware, Inc. |\n| svr-was-10 | LINUX | HPE |\n\n참고사항\n- 전체 54 건 중 위 표는 첫 20 건을 예시적으로 표시했습니다.\n- 운영체제는 모든 서버에서 LINUX 로 통일되어 있습니다.\n- 벤더별 분포는 VMware, Inc. 가 주류를 이루며, HPE 와 Dell Inc. 가 일부 서버에 분산되어 있습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 54,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "hostname": "svr-web-01",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-02",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-03",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-04",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-05",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-06",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-07",
+     "os_type": "LINUX",
+     "vendor": "HPE"
+    },
+    {
+     "hostname": "svr-web-08",
+     "os_type": "LINUX",
+     "vendor": "HPE"
+    },
+    {
+     "hostname": "svr-web-09",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-10",
+     "os_type": "LINUX",
+     "vendor": "VMware, Inc."
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T10:19:55",
+ "review": {
+  "verdict": "ok",
+  "notes": "샌드박스 서버 54대 = row_count 54 · 앞 행 호스트명·OS·벤더 원본 일치(독립 SQL 대조)",
+  "at": "2026-09-23"
+ }
+}

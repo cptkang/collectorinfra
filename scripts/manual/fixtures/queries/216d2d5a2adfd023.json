@@ -1,0 +1,369 @@
+{
+ "key": "216d2d5a2adfd023",
+ "query": "polestar DB의 스키마 캐시를 갱신해줘",
+ "has_file": false,
+ "has_answers": false,
+ "recorded_at": "2026-09-23T11:21:58",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [
+      "서버설정"
+     ],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [
+      "polestar"
+     ],
+     "synonym_registration": null,
+     "original_query": "polestar DB의 스키마 캐시를 갱신해줘"
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "current_node": "input_parser",
+    "error_message": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "current_node": "field_mapper",
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "cache_management",
+      "sub_query": "polestar DB 스키마 캐시 갱신",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending"
+     }
+    ],
+    "is_composite": false,
+    "current_node": "intent_planner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "cache_management",
+    "sub_query": "polestar DB 스키마 캐시 갱신",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "cache_management",
+    "sub_query": "polestar DB 스키마 캐시 갱신",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed"
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "cache_management",
+      "sub_query": "polestar DB 스키마 캐시 갱신",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "final_response": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다).",
+      "current_node": "cache_management",
+      "error_message": null
+     }
+    },
+    "current_node": "agent_orchestrator"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다).",
+    "current_node": "result_aggregator",
+    "query_results": [],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다)."
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "polestar DB의 스키마 캐시를 갱신해줘",
+    "uploaded_file": null,
+    "file_type": null,
+    "parsed_requirements": {
+     "query_targets": [
+      "서버설정"
+     ],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [
+      "polestar"
+     ],
+     "synonym_registration": null,
+     "original_query": "polestar DB의 스키마 캐시를 갱신해줘"
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "csv_sheet_data": null,
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": null,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null,
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": null,
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [],
+    "active_db_id": null,
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "zone_clarification_allowed": true,
+    "zone_clarification": null,
+    "db_scope_source": null,
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "polestar DB의 스키마 캐시를 갱신해줘"
+     },
+     {
+      "__msg__": "ai",
+      "content": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다)."
+     }
+    ],
+    "thread_id": "41e03bdc-6e23-467a-a2a0-2bb1c796e9f5",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "final_response": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다).",
+    "output_file": null,
+    "output_file_name": null,
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "cache_management",
+      "sub_query": "polestar DB 스키마 캐시 갱신",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "final_response": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다).",
+      "current_node": "cache_management",
+      "error_message": null
+     }
+    },
+    "is_composite": false,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": null,
+    "replan_count": 0,
+    "needs_replan": false,
+    "replan_history": [],
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

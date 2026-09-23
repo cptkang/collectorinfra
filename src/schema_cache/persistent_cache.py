@@ -304,6 +304,7 @@ class PersistentSchemaCache:
                     "fingerprint": data.get("_fingerprint", ""),
                     "cached_at": data.get("_cached_at_iso", ""),
                     "cache_version": data.get("_cache_version", 0),
+                    "table_count": len((data.get("schema") or {}).get("tables") or {}),
                     "file_path": str(cache_file),
                 })
             except (json.JSONDecodeError, OSError):

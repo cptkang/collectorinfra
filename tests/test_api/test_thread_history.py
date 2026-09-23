@@ -425,3 +425,14 @@ def test_thread_id_updates_go_through_one_helper(app_js: str) -> None:
 def test_history_mode_state_is_declared_before_init(app_js: str) -> None:
     # setupViewTabs()가 이력 코드보다 먼저 돈다 — 상태가 그 뒤에 선언되면 undefined로 그린다
     assert app_js.index('var historyMode = "threads"') < app_js.index("\n    setupViewTabs();")
+
+
+def test_new_chat_button_starts_fresh_thread(index_html: str, app_js: str) -> None:
+    # 불러온 대화를 본 뒤 새 대화를 열 수 있어야 한다 — 다음 전송이 thread_id 없이 나가야 새 스레드다
+    assert 'id="newChatBtn"' in index_html
+    body = app_js.split("function startNewChat()", 1)[1].split("\n    }\n", 1)[0]
+    assert "currentThreadId = null" in body
+    assert 'querySelectorAll(".message")' in body
+    assert 'newChatBtn.addEventListener("click", startNewChat)' in app_js
+    # 패널을 접어도 보여야 한다 — 접히면 숨는 본문(historyPanelBody) 밖에 둔다
+    assert index_html.index('id="newChatBtn"') < index_html.index('id="historyPanelBody"')

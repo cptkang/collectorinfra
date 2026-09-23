@@ -17,6 +17,7 @@ from src.config import AppConfig, load_config
 from src.domain.user import UserRole
 from src.llm import create_llm
 from src.prompts.cache_management import CACHE_MANAGEMENT_PARSE_PROMPT
+from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids
 from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
@@ -154,6 +155,13 @@ async def cache_management(
             app_config=app_config,
             llm=llm,
             db_ids_override=db_ids_override,
+            # DB 목록 안내는 활성∩허용(관리자 전체)만 — 권한 0 사용자에게 DB 이름을
+            # 노출하지 않는다(plans/116 §10.3 · D-232 규약)
+            visible_db_ids=authorized_db_ids(
+                app_config.multi_db.get_active_db_ids(),
+                state.get("allowed_db_ids"),
+                state.get("user_role"),
+            ),
         )
         # 전개가 일어났으면 그 사실을 응답에 명시한다(침묵 확대 실행 금지)
         if db_note and isinstance(result, str):
@@ -291,6 +299,7 @@ async def _execute_cache_action(
     app_config: AppConfig,
     llm: BaseChatModel,
     db_ids_override: Optional[list[str]] = None,
+    visible_db_ids: Optional[list[str]] = None,
 ) -> str | dict:
     """캐시 관리 작업을 수행하고 응답 텍스트를 생성한다.
 
@@ -341,7 +350,7 @@ async def _execute_cache_action(
             cache_mgr, target_column, description
         )
     elif action == "db-guide":
-        return await _handle_db_guide(cache_mgr)
+        return await _handle_db_guide(cache_mgr, visible_db_ids or [])
     elif action == "invalidate":
         return await _handle_invalidate(
             cache_mgr, db_id, db_ids_override=db_ids_override
@@ -759,13 +768,26 @@ async def _handle_set_db_description(
     return f"{db_id} DB 설명 설정에 실패했습니다."
 
 
-async def _handle_db_guide(cache_mgr: Any) -> str:
-    """DB 목록과 설명을 안내한다."""
-    db_descriptions = await cache_mgr.get_db_descriptions()
+async def _handle_db_guide(cache_mgr: Any, visible_db_ids: list[str]) -> str:
+    """DB 목록과 설명을 안내한다.
+
+    Args:
+        cache_mgr: 캐시 매니저
+        visible_db_ids: 이 사용자가 조회할 수 있는 DB(`authorized_db_ids` 결과) — 이 밖의
+            캐시된 DB 는 이름도 내보내지 않는다
+    """
+    if not visible_db_ids:
+        return ACCESS_DENIED_MESSAGE
+    visible = set(visible_db_ids)
+    db_descriptions = {
+        db_id: desc
+        for db_id, desc in (await cache_mgr.get_db_descriptions()).items()
+        if db_id in visible
+    }
 
     if not db_descriptions:
         # DB 설명이 없으면 캐시 상태에서 DB 목록만 반환
-        statuses = await cache_mgr.get_all_status()
+        statuses = [s for s in await cache_mgr.get_all_status() if s.db_id in visible]
         if not statuses:
             return "현재 등록된 DB가 없습니다."
         lines = ["사용 가능한 DB 목록:\n"]

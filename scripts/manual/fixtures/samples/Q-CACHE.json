@@ -1,0 +1,42 @@
+{
+ "id": "Q-CACHE",
+ "turns": [
+  {
+   "query": "polestar DB의 스키마 캐시를 갱신해줘",
+   "file": null,
+   "key": "216d2d5a2adfd023",
+   "elapsed_s": 19.5,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 (CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다).",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T11:21:58",
+ "review": {
+  "verdict": "ok",
+  "notes": "일반 사용자 요청은 거절되고 관리자 「DB 구조」 탭으로 안내(역할 판정 정상)",
+  "at": "2026-09-23"
+ }
+}

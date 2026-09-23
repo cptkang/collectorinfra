@@ -629,3 +629,20 @@ async def test_registration_answer_without_pending_still_guided():
     )
     result = await field_mapper(state)
     assert "등록할 유사어 매핑이 없습니다" in result["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_misclassified_registration_on_form_query_is_ignored():
+    """양식 채우기 질의를 LLM 이 유사어 등록으로 오분류해도 등록 분기로 종결하지 않는다.
+
+    D-252 부기.
+
+    대기 목록이 없고 질의에 「등록」이 없으면 등록 신호를 버린다 — 2026-09-23 로컬 MLX 실측에서
+    「첨부한 양식을 채워줘」가 {mode: all} 로 분류되어 양식 채우기가 시작 전에 끝났다.
+    """
+    state = _make_state(
+        user_query="첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    result = await field_mapper(state)
+    assert "등록할 유사어 매핑이 없습니다" not in (result.get("final_response") or "")

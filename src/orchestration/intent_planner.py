@@ -47,6 +47,7 @@ from src.orchestration.schemas import (
 from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_DECOMPOSE, has_sequential_marker
 from src.utils.synonym_set_parser import parse_synonym_set
+from src.utils.usage_query import is_usage_query
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +408,13 @@ async def _plan_turn(
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _UPTIME_RATE_GUIDANCE
         return plan
+
+    # ③.8 사용법·지원 소스 문의 → general_inference 단일 task (plans/116 §10.3, D-038).
+    # LLM 분해에 맡기면 분류가 흔들린다(분해 실패 시 data_query 폴백). 안내문은 노드가
+    # 사용자 권한(allowed_db_ids)을 반영해 결정적으로 조립하므로 direct_response 는 두지 않는다.
+    if is_usage_query(user_query):
+        logger.info("intent_planner: 사용법 문의 감지 — general_inference 단일 task(plans/116)")
+        return _single_task_plan("general_inference", user_query)
 
     # [계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1).
     conversation_context = state.get("conversation_context")

@@ -1,0 +1,123 @@
+{
+ "id": "Q-EXCEL-OUT",
+ "turns": [
+  {
+   "query": "전체 서버 목록을 엑셀로 만들어줘",
+   "file": null,
+   "key": "72df63ab53ac2237",
+   "elapsed_s": 233.5,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "업로드하신 XLSX 양식을 채우지 못했습니다.\n사유: 양식을 채우는 데 필요한 정보가 state에서 누락되었습니다: template_structure(양식 구조), uploaded_file(원본 파일 바이너리). (오케스트레이션 경로의 상태 전파 누락 가능성 — 원본 파일이면 D-053 계열)\n아래 원본 조회 데이터(CSV 다운로드)로 결과를 확인하실 수 있습니다.\n\n조회 결과\n\n총 54건의 서버 데이터를 조회했습니다. 전체 서버 중 52건이 정상 상태 (avail_status 0.0) 이며, 2건이 알 수 없음 (avail_status 2.0) 으로 표시되었고, 1건이 비정상 상태 (avail_status 1.0) 입니다.\n\n| server_name | os_hostname | ipaddress | avail_status | resource_type | name |\n|---|---|---|---|---|---|\n| cob0-bnndbp01 | cob0-bnndbp01 | 10.68.0.1 | 0.0 | server.Server | cob0-bnndbp01 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 0.0 | server.Server | cocm-hdkapp01 |\n| cocm-ngcapo91 | cocm-ngcapo91 | 10.68.0.4 | 0.0 | server.Server | cocm-ngcapo91 |\n| cocm-xgzapp09 | cocm-xgzapp09 | 10.68.0.3 | 0.0 | server.Server | cocm-xgzapp09 |\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 0.0 | server.Server | DB-ORA-023 |\n| hostapo01 (빅데이터 까페 WAS#1) | hostapo01 | 10.2.3.1 | 0.0 | server.Server | hostapo01 (빅데이터 까페 WAS#1) |\n| hostapo02 (빅데이터 까페 WAS#2) | hostapo02 | 10.2.3.2 | 0.0 | server.Server | hostapo02 (빅데이터 까페 WAS#2) |\n| sbhdbo53 | sbhdbo53 | 10.68.0.2 | 0.0 | server.Server | sbhdbo53 |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 2.0 | server.Server | SV-BATCH-009 |\n| svr-app-01 | svr-app-01 | 10.1.1.1 | 0.0 | server.Server | svr-app-01 |\n| svr-app-02 | svr-app-02 | 10.1.1.2 | 0.0 | server.Server | svr-app-02 |\n| svr-app-03 | svr-app-03 | 10.1.1.3 | 1.0 | server.Server | svr-app-03 |\n| svr-bat-01 | svr-bat-01 | 10.1.3.1 | 0.0 | server.Server | svr-bat-01 |\n| svr-bat-02 | svr-bat-02 | 10.1.3.2 | 1.0 | server.Server | svr-bat-02 |\n| svr-bkp-01 | svr-bkp-01 | 10.1.5.1 | 0.0 | server.Server | svr-bkp-01 |\n| svr-db-01 | svr-db-01 | 10.0.3.1 | 0.0 | server.Server | svr-db-01 |\n| svr-db-02 | svr-db-02 | 10.0.3.2 | 0.0 | server.Server | svr-db-02 |\n| svr-db-03 | svr-db-03 | 10.0.3.3 | 0.0 | server.Server | svr-db-03 |\n| svr-db-04 | svr-db-04 | 10.0.3.4 | 1.0 | server.Server | svr-db-04 |\n| svr-db-05 | svr-db-05 | 10.0.3.5 | 0.0 | server.Server | svr-db-05 |\n\n참고사항\n- **비정상 서버**: `svr-app-03`, `svr-bat-02`, `svr-db-04` 는 `avail_status` 가 1.0 으로 비정상 상태입니다.\n- **알 수 없음 서버**: `SV-BATCH-009` 는 `avail_status` 가 2.0 으로 상태 확인이 불가능합니다.\n- **정상 서버**: 나머지 49건은 `avail_status` 0.0 으로 정상 상태입니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 54,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "cob0-bnndbp01",
+     "os_hostname": "cob0-bnndbp01",
+     "ipaddress": "10.68.0.1",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "cob0-bnndbp01"
+    },
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "cocm-hdkapp01"
+    },
+    {
+     "server_name": "cocm-ngcapo91",
+     "os_hostname": "cocm-ngcapo91",
+     "ipaddress": "10.68.0.4",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "cocm-ngcapo91"
+    },
+    {
+     "server_name": "cocm-xgzapp09",
+     "os_hostname": "cocm-xgzapp09",
+     "ipaddress": "10.68.0.3",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "cocm-xgzapp09"
+    },
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "DB-ORA-023"
+    },
+    {
+     "server_name": "hostapo01 (빅데이터 까페 WAS#1)",
+     "os_hostname": "hostapo01",
+     "ipaddress": "10.2.3.1",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "hostapo01 (빅데이터 까페 WAS#1)"
+    },
+    {
+     "server_name": "hostapo02 (빅데이터 까페 WAS#2)",
+     "os_hostname": "hostapo02",
+     "ipaddress": "10.2.3.2",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "hostapo02 (빅데이터 까페 WAS#2)"
+    },
+    {
+     "server_name": "sbhdbo53",
+     "os_hostname": "sbhdbo53",
+     "ipaddress": "10.68.0.2",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "sbhdbo53"
+    },
+    {
+     "server_name": "SV-BATCH-009",
+     "os_hostname": "svbatch009",
+     "ipaddress": "10.61.0.4",
+     "avail_status": 2.0,
+     "resource_type": "server.Server",
+     "name": "SV-BATCH-009"
+    },
+    {
+     "server_name": "svr-app-01",
+     "os_hostname": "svr-app-01",
+     "ipaddress": "10.1.1.1",
+     "avail_status": 0.0,
+     "resource_type": "server.Server",
+     "name": "svr-app-01"
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T11:09:02",
+ "review": {
+  "verdict": "partly",
+  "notes": "양식 없이 「엑셀로」 요청 시 파일 미생성 · 올리지 않은 양식을 「채우지 못했다」고 안내(결함) · 데이터 54행과 CSV 는 정상 — 본문에 실제 동작으로 밝힘",
+  "at": "2026-09-23"
+ }
+}

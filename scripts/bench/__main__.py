@@ -705,9 +705,9 @@ def _decide_tier_winner(
     판정은 레벨 간 직접 비교(`compare.optima` · D-237)를 그대로 쓴다. 규칙 셋뿐이다.
 
     - `최적 레벨` — 그 레벨이 승자다.
-    - `레벨 간 차이 없음` — **기준 경로 3단**(`semantic_router` · D-225)을 쓴다. 차이가 없으면
-      기준을 따르는 것이 기본값 정책이다.
-    - `판정 불가` — 차이를 **보이지 못한 것**이므로 「차이 없음」과 같이 기준 경로 3단으로
+    - `레벨 간 차이 없음` — **기준 경로**(2단 `intent_orchestration` · D-251 — D-225 의 3단을
+      개정 · 정본 `ladder.is_canonical`)를 쓴다. 차이가 없으면 기준을 따르는 것이 기본값 정책이다.
+    - `판정 불가` — 차이를 **보이지 못한 것**이므로 「차이 없음」과 같이 기준 경로로
       고정하고, `caveat` 를 남겨 이후 전 구간 판정문에 고지한다(멈추지 않는다 — d9 2026-09-23).
       기준 경로로 확정된 레벨이 관측에 없을 때만 `blocked` 다.
 
@@ -733,14 +733,14 @@ def _decide_tier_winner(
                       if measured.get(f"S2-{axes_mod.LADDER_AXIS}-{lv}") == canonical), None)
         if level is None:
             return {**base, "verdict": optimum.verdict,
-                    "blocked": (f"「{compare.LEVELS_TIED}」이라 기준 경로 `{canonical}`(D-225)를 "
+                    "blocked": (f"「{compare.LEVELS_TIED}」이라 기준 경로 `{canonical}`(D-251)를 "
                                 "써야 하는데, 그 단으로 확정된 레벨이 이 구간 관측에 없다 — "
                                 "어느 레벨이 기준 경로인지 확인하고 다시 판정한다")}
-        why = (f"「{compare.LEVELS_TIED}」 — 기준 경로 `{canonical}`(D-225)를 쓴다. "
+        why = (f"「{compare.LEVELS_TIED}」 — 기준 경로 `{canonical}`(D-251)를 쓴다. "
                f"{optimum.sentence}")
     else:
         # 「판정 불가」(검정력 부족)도 **차이를 보이지 못한 것**이다 — 「차이 없음」과 같은 처분을
-        # 쓴다: 기준 경로 3단(D-225)으로 고정하고, 그 사실을 남은 전 구간에 고지로 싣는다.
+        # 쓴다: 기준 경로(D-251 · 2단)로 고정하고, 그 사실을 남은 전 구간에 고지로 싣는다.
         # 멈추지 않는 이유(collectorinfra-d9 2026-09-23 지적): 반복 1회 설계에서 판정 불가는
         # 흔하고(run 20260914 는 전 축이 그랬다), 멈추면 캠페인 전체가 진행되지 못한다. 반대로
         # `.env` 가 우연히 준 단으로 계속 가는 것도 D-250 이 고치려던 바로 그 상태다.
@@ -751,12 +751,12 @@ def _decide_tier_winner(
         if level is None:
             return {**base, "verdict": optimum.verdict,
                     "blocked": (f"단 축 판정이 「{optimum.verdict}」인데 기준 경로 "
-                                f"`{canonical}`(D-225)로 확정된 레벨이 이 구간 관측에 없다 — "
+                                f"`{canonical}`(D-251)로 확정된 레벨이 이 구간 관측에 없다 — "
                                 f"{optimum.sentence}")}
-        why = (f"「{optimum.verdict}」 — 차이를 보이지 못해 기준 경로 `{canonical}`(D-225)로 "
+        why = (f"「{optimum.verdict}」 — 차이를 보이지 못해 기준 경로 `{canonical}`(D-251)로 "
                f"고정한다. {optimum.sentence}")
         caveat = (f"사다리 단 축이 「{optimum.verdict}」다 — 승자를 재서 고른 것이 아니라 기준 "
-                  f"경로 `{canonical}`(D-225)로 고정했다. 이후 구간의 축 결과는 그 단에 조건부다")
+                  f"경로 `{canonical}`(D-251)로 고정했다. 이후 구간의 축 결과는 그 단에 조건부다")
         measured_tier = measured.get(f"S2-{axes_mod.LADDER_AXIS}-{level}")
         return {**base, "verdict": optimum.verdict, "level": level, "tier": measured_tier,
                 "env": axis.env_for(level), "sentence": why, "caveat": caveat,
@@ -868,9 +868,14 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
     rate = campaign.rate(turns_per_arm)
     frozen = campaign.frozen_axes()
     pending_arms = [a for a in all_arms if a.axis and a.axis not in frozen]
-    if snapshot is None and pending_arms:
+    # **스냅샷은 재시도·재개 구간의 arm 도 뜬다**(plans/118 B-2). 계획은 그 축을 다시 배정하지
+    # 않지만(`frozen_axes`), 그 구간이 곧 돌 대상이다 — 빼면 `seg_snapshot` 이 빈 arm 이 되고
+    # `run_sweep` 은 받은 스냅샷을 그대로 써서 다시 뜨지 않는다.
+    reopened = campaign.reopened_axes()
+    snap_arms = [a for a in all_arms if a.axis and (a.axis not in frozen or a.axis in reopened)]
+    if snapshot is None and snap_arms:
         baseline = [a for a in all_arms if a.arm_id == sweep_mod.BASELINE_ARM]
-        snapshot = sweep_mod.capture_config_snapshot(baseline + pending_arms)
+        snapshot = sweep_mod.capture_config_snapshot(baseline + snap_arms)
     controls = (frozenset(snapshot.control_arms())
                 if snapshot is not None and not snapshot.unavailable else frozenset())
     # 축 도달 불가 arm 도 돌리지 않는다 — 설정은 달라도 실효는 A/A 다(plans/114 M-3).
@@ -884,6 +889,12 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
         calibrate=not campaign.records,
         # 구조 축(사다리 단)이 그보다도 앞이다(plans/114 M-0 · D-250 ①).
         first_axis=ladder)
+    # **소비처 없는 축은 축에서 조용히 사라지지 않는다**(plans/118 B-3 ③) — 구간 불가 행으로
+    # 사유와 함께 계획 표·합산 판정표 「미측정」 행에 싣는다.
+    excluded = [(axis, reason) for axis, reason in sorted(sweep_mod.excluded_axes().items())
+                if axis not in {u for u, _ in plan.unplaceable}]
+    if excluded:
+        plan = replace(plan, unplaceable=plan.unplaceable + tuple(excluded))
     return env, env_reason, campaign, all_arms, categories, plan, snapshot
 
 
@@ -988,8 +999,8 @@ def cmd_segment(args: argparse.Namespace) -> int:
         if not plan.segments:
             say()
             say("캠페인의 모든 구간이 끝났습니다."
-                + (f" 예산 초과로 구간을 만들 수 없는 축 {len(plan.unplaceable)}개는 "
-                   "미측정으로 남습니다." if plan.unplaceable else ""))
+                + (f" 구간을 만들 수 없는 축 {len(plan.unplaceable)}개(예산 초과·A/A·도달 불가·"
+                   "소비처 없음)는 미측정으로 남습니다." if plan.unplaceable else ""))
             _write_campaign_report(campaign, plan, categories, all_arms)
             return 0
         target = plan.segments[0]
@@ -1168,7 +1179,7 @@ def _campaign_tier_lines(campaign: campaign_mod.Campaign) -> list[str]:
     셋을 낸다.
       0. 단 축 판정 — **이긴 단과 주입 여부**(M-0 · D-250 ②). 아직 안 쟀거나 판정 불가면
          그 사실을 적는다.
-      1. 끝난 구간의 기준선 단이 기준 경로(D-225)가 아니면 — 그 단에 **조건부**라는 고지.
+      1. 끝난 구간의 기준선 단이 기준 경로(D-251)가 아니면 — 그 단에 **조건부**라는 고지.
          멈추지 않는다: 어느 단이 이기는지는 사다리 단 축(M-0)이 재야 할 결과다.
       2. 구간 사이에 단·설정 지문·커밋이 바뀌었으면 — 구간 간 기준선 반복이 같은 조건의
          반복이 아니라는 고지(노이즈 바닥 해석 조건).
@@ -1200,7 +1211,7 @@ def _campaign_tier_lines(campaign: campaign_mod.Campaign) -> list[str]:
     if off:
         listing = " · ".join(f"`{r.segment_id}`={r.baseline_tier}" for r in off)
         lines += [f"> **사다리 단 축(plans/114 M-0 · D-250) 미측정** — 기준선 단이 기준 경로 "
-                  f"`{canonical}`(D-225)가 아닌 구간: {listing}. 이 구간들의 축 결과는 **그 단에 "
+                  f"`{canonical}`(D-251)가 아닌 구간: {listing}. 이 구간들의 축 결과는 **그 단에 "
                   "조건부**다(다른 단으로 옮겨지지 않는다). 실패는 아니다 — 어느 단이 이기는지는 "
                   "단 축 구간이 재야 할 값이다.", ""]
     notes: list[str] = []
@@ -1275,7 +1286,15 @@ def _campaign_optima(campaign, all_arms):
         # 승자 주입으로 그 뒤 구간의 기준선 설정이 바뀌므로, 단 축 구간의 기준선 관측은 다른
         # 구간의 기준선 반복과 **같은 조건의 반복이 아니다**. 조용히 빼지 않고 리포트가 적는다.
         if base and not record.structural:
-            baselines.append((record.segment_id, base))
+            # 설정 지문을 함께 싣는다(plans/118 B-4) — 노이즈 바닥은 같은 지문끼리만 잰다.
+            # 옛 기록에는 지문 칸이 없으므로 그 구간 스냅샷에서 다시 계산한다.
+            fp = record.config_fingerprint or (snapshot.fingerprint(sweep_mod.BASELINE_ARM)
+                                               if snapshot and not snapshot.unavailable else None)
+            baselines.append(campaign_mod.BaselineRepeat(
+                segment_id=record.segment_id, observations=base, fingerprint=fp,
+                effective=dict(snapshot.baseline.effective) if snapshot else {},
+                nondeterministic=snapshot.nondeterministic if snapshot else frozenset(),
+                finished_at=record.finished_at or ""))
         rate = sum(1 for o in base if o.passed) / len(base) * 100.0 if base else 0.0
         seg_rows.append(_segment_row(record, f"{rate:.1f}%"))
     return optima, first_snapshot, baselines, seg_rows, measured, missing
@@ -1299,22 +1318,37 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
     optima, first_snapshot, baselines, seg_rows, measured, missing = _campaign_optima(
         campaign, all_arms)
 
-    floor_pp = compare.noise_floor([b for _, b in baselines])
+    # **노이즈 바닥·시간 교란은 같은 기준선 설정 지문끼리만 잰다**(plans/118 B-4 · 114 M-2 ①b
+    # 잔여). run-closed 의 14.6%p·−23.7초는 60초 상한 구간과 180초 상한 구간을 섞은 값이었다 —
+    # 그것은 시간 교란이 아니라 설정 차이다.
+    groups = campaign_mod.fingerprint_groups(baselines)
+    repeated = [g for g in groups if len(g) >= 2]
+    floors = [(g, compare.noise_floor([r.observations for r in g])) for g in repeated]
+    floor_pp = max((f for _, f in floors), default=0.0)
     drift = []
-    if len(baselines) >= 2:
-        ref_id, ref = baselines[0]
-        ref_walls = [o.wall_ms for o in ref if o.wall_ms]
+    for group in repeated:
+        ref = group[0]
+        ref_walls = [o.wall_ms for o in ref.observations if o.wall_ms]
         ref_mean = (sum(ref_walls) / len(ref_walls)) if ref_walls else 0.0
-        for seg_id, other in baselines[1:]:
-            metric = compare.paired_metric(ref, other, "wall_ms")
+        for other in group[1:]:
+            metric = compare.paired_metric(ref.observations, other.observations, "wall_ms")
             # 유의(CI 가 0 을 안 지남) **그리고** 의미 있는 크기일 때만 고지한다.
             if (metric is not None and not metric.crosses_zero and ref_mean
                     and abs(metric.mean_delta) >= campaign_mod.DRIFT_MIN_RATIO * ref_mean):
-                drift.append(f"`{ref_id}`↔`{seg_id}` 기준선 지연 {metric.mean_delta:+.0f}ms "
+                drift.append(f"`{ref.segment_id}`↔`{other.segment_id}` 기준선 지연 "
+                             f"{metric.mean_delta:+.0f}ms "
                              f"(CI [{metric.ci_low:+.0f}, {metric.ci_high:+.0f}])")
+    # 지문이 다른 이웃 구간 쌍(실행 순서) — 비교하지 않고 바뀐 키를 적는다.
+    ordered = sorted(baselines, key=lambda r: r.finished_at)
+    unlike = [f"`{a.segment_id}`↔`{b.segment_id}` — 설정이 달라 비교하지 않는다"
+              f"(바뀐 키: {campaign_mod.config_diff(a, b)})"
+              for a, b in zip(ordered, ordered[1:])
+              if a.fingerprint != b.fingerprint or not a.fingerprint]
 
-    all_axes = sorted({a.axis for a in all_arms if a.axis})
-    levels = {axis: tuple(sorted(a.level for a in all_arms if a.axis == axis)) for axis in all_axes}
+    # 소비처 없음(F3)으로 arm 이 전개되지 않은 축도 「미측정」 행으로 싣는다(plans/118 B-3 ③).
+    all_axes = sorted({a.axis for a in all_arms if a.axis} | {axis for axis, _ in plan.unplaceable})
+    levels = {axis: tuple(sorted(a.level for a in all_arms if a.axis == axis)) or ("—",)
+              for axis in all_axes}
     rows: list[str] = []
     everything: list = [opt for _, opt in optima]
     # **구조 축이 표의 맨 위다** — 다른 축의 결과가 그 단에 조건부이므로 먼저 읽어야 한다.
@@ -1368,13 +1402,25 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
                   + ". 승자 주입으로 그 뒤 구간의 기준선 설정이 바뀌므로 같은 조건의 반복이 "
                   "아니다. 아래 반복 횟수가 적은 것은 그 때문이다.", ""]
     if len(baselines) >= 2:
-        lines += [f"> 기준선 반복 {len(baselines)}회(구간마다 1회 · 단 축 구간 제외) — "
-                  f"정확도 노이즈 바닥 **{floor_pp:.1f}%p**", ""]
+        if floors:
+            per = " · ".join(f"지문 `{g[0].fingerprint}` {len(g)}회"
+                             f"({', '.join(f'`{r.segment_id}`' for r in g)}) {f:.1f}%p"
+                             for g, f in floors)
+            lines += [f"> 기준선 반복 {len(baselines)}회(구간마다 1회 · 단 축 구간 제외) — "
+                      f"**같은 설정 지문끼리만** 잰 정확도 노이즈 바닥 **{floor_pp:.1f}%p** "
+                      f"({per})", ""]
+        else:
+            lines += [f"> 기준선 반복 {len(baselines)}회 — **노이즈 바닥 미측정**: 같은 기준선 "
+                      "설정 지문의 반복이 2회 미만이다(plans/118 B-4). 지문이 다른 구간끼리의 "
+                      "차이는 노이즈가 아니라 설정 차이다.", ""]
         if floor_pp >= compare.MIN_MEANINGFUL_PP or drift:
             lines += ["> **구간 간 시간 교란이 크다** — "
-                      "같은 설정(기준선)이 구간마다 다르게 나왔다. "
+                      "같은 설정(기준선 · 같은 지문)이 구간마다 다르게 나왔다. "
                       "구간이 다른 축끼리의 효과 크기는 비교하지 말 것."
                       + (" " + " · ".join(drift) if drift else ""), ""]
+        if unlike:
+            lines += ["> **구간 간 기준선 설정이 다르다** — " + " · ".join(unlike)
+                      + ". 이 쌍의 차이를 시간 교란으로 읽지 말 것.", ""]
     lines += _campaign_tier_lines(campaign)
     lines += ["## 축 최적 레벨 — 구간별 판정 모음", "",
               "| 축 | 카테고리 | 구간 | 레벨 | 판정 | 최적 | 근거 |",

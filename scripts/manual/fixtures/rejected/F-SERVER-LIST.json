@@ -1,0 +1,33 @@
+{
+ "id": "F-SERVER-LIST",
+ "turns": [
+  {
+   "query": "전체 서버로 채워줘",
+   "file": "서버목록_양식.xlsx",
+   "key": "35283fcdf7cf826d",
+   "elapsed_s": 10.0,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper"
+   ],
+   "done": {
+    "type": "done",
+    "response": "등록할 유사어 매핑이 없습니다. 먼저 양식 기반 조회를 수행해 주세요.",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:22:08"
+}

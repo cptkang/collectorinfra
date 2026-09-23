@@ -1,0 +1,49 @@
+{
+ "id": "Q-MEM-OVER",
+ "turns": [
+  {
+   "query": "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘",
+   "file": null,
+   "key": "f411ccdf18c9a2c2",
+   "elapsed_s": 316.1,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "2026 년 9 월 기준, 메모리 이용률이 90% 를 초과한 서버는 총 1 건으로 확인되었습니다.\n\n| server_name | os_hostname | ipaddress | max_memory_usage_pct |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 95.2% |\n\n**상세 내용**\n- **DB-ORA-023** 서버의 최대 메모리 사용률은 **95.2%**로, 90% 임계치를 크게 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 1,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "max_memory_usage_pct": 95.2
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T10:41:04",
+ "review": {
+  "verdict": "partly",
+  "notes": "행(DB-ORA-023 95.2%)은 원본(2026-06 Memory max 95.2) 일치. 요약 문장의 「2026년 9월 기준」은 부정확 — 본문 포인트에 밝힘",
+  "at": "2026-09-23"
+ }
+}

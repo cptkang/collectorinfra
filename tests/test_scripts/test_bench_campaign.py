@@ -284,6 +284,8 @@ def seg(monkeypatch, tmp_path):
     monkeypatch.setattr(sweep, "build_arms", lambda limit=None: arms)
     monkeypatch.setattr(sweep, "axis_categories",
                         lambda tier="primary": {"A": "x", "B": "x", "C": "y"})
+    # 소비처 없음(F3 · plans/118 B-3) 제외 축은 실 저장소 판정이다 — 가짜 축 캠페인에 섞지 않는다.
+    monkeypatch.setattr(sweep, "excluded_axes", lambda tier="primary": {})
     monkeypatch.setattr(sweep, "planned_turns_per_arm", lambda catalog: 100)
     monkeypatch.setattr(sweep, "load_normal_catalog", lambda env="closed": object())
     monkeypatch.setattr(sweep, "resolve_env", lambda explicit=None: ("closed", "테스트"))

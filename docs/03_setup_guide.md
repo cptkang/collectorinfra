@@ -965,3 +965,28 @@ ollama pull llama3.1:8b
 # 6. 서버 실행
 python -m src.main --server
 ```
+
+## 10. 사용자·관리자 매뉴얼 (plans/116 · D-252)
+
+매뉴얼은 앱과 함께 배포되는 정적 HTML이다. 서버를 띄우면 `/manual/user`·`/manual/admin` 으로 열리고, 메인 화면 머리글의 **매뉴얼 ▾** 에서도 연다(관리자 매뉴얼 항목은 관리자 계정에만 보인다). 배포 서버에서는 따로 할 일이 없다 — 산출물(`src/static/manual/`)이 저장소에 커밋돼 있다.
+
+UI 를 바꾸면 `pytest tests/test_manual` 이 실패할 수 있다(사라진 버튼·새 버튼 감시). 그때 매뉴얼을 다시 만든다 — **개발 맥에서만**:
+
+```bash
+# 전제: 샌드박스 PG(polestar_pg, 5434) · Redis(6380) 가동, playwright 캐시 브라우저(chromium) 존재
+python -m scripts.manual.run_capture          # 캡처 51장(녹화 재생 · LLM 호출 0) → HTML 빌드
+python -m scripts.manual.build --draft        # 본문만 고칠 때(없는 캡처·샘플은 자리 표시)
+pytest tests/test_manual                      # manifest·절·캡처·사례 대조
+```
+
+| 고칠 것 | 파일 |
+|---|---|
+| 본문 | `scripts/manual/content/{user,admin}.md` |
+| 기능 목록(“모든 기능”의 정본) | `scripts/manual/features.yaml` |
+| 캡처 장면 | `scripts/manual/captures.yaml` |
+| 사용자 사례 | `scripts/manual/cases.yaml` — 새 사례는 로컬 MLX 로 녹화한다(`python -m scripts.manual.samples --run`, 녹화 서버는 `snapshot record` + `_serve` `MANUAL_MODE=record`). 녹화한 샘플은 원본과 대조해 `--review <ID> ok|partly|wrong "<근거>"` 로 판정한다 |
+| 사례 샘플 사람 확인 | `python -m scripts.manual.samples --sheet` → `build/manual_capture/review_sheet.html`(사례별 입력·응답 전문·결과 행·생성 SQL·대리 판정)을 원본 데이터와 대조한 뒤 `--confirm <ID> --by <이름>`. 틀렸으면 `--review <ID> wrong "<근거>"`. `python -m scripts.manual.samples`(check)는 사람 확인이 없는 사례를 「사람 확인 대기」로 보고하고 exit 1 로 끝난다 |
+
+캡처는 찍기 직전 화면 텍스트를 검사한다 — 저장소 루트 `.env` 의 호스트·IP·시크릿 값이 보이거나 설정 화면에 루프백이 아닌 IP 가 보이면 그 장면이 실패한다. 역할별 매뉴얼 링크 노출(일반 사용자 = 사용자 매뉴얼만, 관리자 = 둘 다)도 캡처 중에 단언한다(`captures.yaml` 의 `assert_visible`·`assert_hidden`).
+
+캡처·녹화 서버는 `build/manual_capture/` 의 스냅샷에서 캡처 전용 `.env` 로 뜬다 — 저장소의 `.env`·`.encenv` 를 읽지 않는다(스냅샷 생성 시 설정 해석을 자동 검증한다).

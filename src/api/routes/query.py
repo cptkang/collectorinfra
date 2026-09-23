@@ -29,7 +29,7 @@ from src.api.stream_failure import StreamTrace
 from src.api.thread_history import TurnRecorder
 from src.llm import USER_RESPONSE_TAG
 from src.utils.json_extract import coerce_content_text
-from src.routing.db_authz import SELECTION_DENIED_MESSAGE, filter_selected_db_ids
+from src.routing.db_authz import SELECTION_DENIED_MESSAGE, authorized_db_ids, filter_selected_db_ids
 from src.state import create_followup_input, create_initial_state
 from src.routing.db_scope import build_db_scope
 from src.utils.query_gen_common import (
@@ -609,6 +609,54 @@ def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dic
     return summarized
 
 
+_SQL_STATE_KEYS = ("generated_sql", "task_plan", "task_results", "db_executed_sqls")
+
+
+def _track_sql_state(tracked: dict, output: Any) -> None:
+    """루트 직속 노드 출력에서 실행 SQL 출처 키를 누적한다 (plans/116 §10.3).
+
+    스트림은 `final_response`를 낸 첫 노드 출력(2단 result_aggregator · 3단 output_generator)에서
+    닫히는데 그 출력에는 SQL이 없다. 앞 노드들이 낸 값을 모아 두었다가 `_executed_sql`로 조립한다.
+    빈 값은 덮어쓰지 않는다.
+    """
+    if not isinstance(output, dict):
+        return
+    for key in _SQL_STATE_KEYS:
+        if output.get(key):
+            tracked[key] = output[key]
+
+
+def _executed_sql(state: dict) -> str | None:
+    """「실행된 SQL 보기」에 보일 SQL 문자열 (plans/116 §10.3).
+
+    출처 우선순위: ①top-level `generated_sql`(3단 단일 DB) ②`task_results`의 작업별
+    `generated_sql`(2단 — top-level 은 빈 문자열이다) ③`db_executed_sqls`(멀티 DB).
+    프론트(app.js)는 문자열 하나를 `<pre>`로 그리므로 여러 건은 머리 주석을 달아 잇는다.
+    """
+    sql = state.get("generated_sql")
+    if sql:
+        return sql
+    parts: list[tuple[str, str]] = []
+    results = state.get("task_results")
+    if isinstance(results, dict) and results:
+        plan = state.get("task_plan") or []
+        order = [t.get("task_id") for t in sorted(plan, key=lambda t: t.get("order", 0))]
+        order += [tid for tid in results if tid not in order]
+        for tid in order:
+            res = results.get(tid)
+            if isinstance(res, dict) and res.get("generated_sql"):
+                parts.append((str(tid), res["generated_sql"]))
+    if not parts:
+        db_sqls = state.get("db_executed_sqls")
+        if isinstance(db_sqls, dict):
+            parts = [(str(k), v) for k, v in db_sqls.items() if v]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0][1]
+    return "\n\n".join(f"-- [{label}]\n{body}" for label, body in parts)
+
+
 def _extract_node_progress(node_name: str, output: dict) -> dict | None:
     """노드 완료 시 오른쪽 패널에 표시할 진행 데이터를 추출한다."""
     try:
@@ -1185,8 +1233,34 @@ async def _form_memory_delete_or_none(
     return {"response": text, "form_memory_panel": panel}
 
 
+def _authorized_zone_clarification(
+    config, current_user: dict | None, query: str, **kwargs
+) -> dict | None:
+    """존 선택 역질문 — 선택지를 사용자 조회 권한(D-232)으로 거른다 (plans/116 §10.3).
+
+    종전에는 활성 DB 전체로 선택지를 만들어, 샌드박스 권한만 있는 사용자에게도 은행존·공동존을
+    물었다(고르면 요청 경계 인가가 「권한 없음」으로 막는 막다른 길). 선택지 수 규칙은 종전과
+    같다 — 권한 내 존이 0이면 묻지 않고(`build_zone_clarification`의 "존 전부 비활성" 폴백과 같은
+    처리 · 인가 0이면 파이프라인이 D-232 ③ 사유를 알린다), 1이상이면 묻는다.
+
+    Args:
+        config: AppConfig
+        current_user: 요청 사용자(`allowed_db_ids`·`role`). None이면 거르지 않는다(종전 동작)
+        query: 원문 질의
+        **kwargs: `build_zone_clarification` 인자(question·has_file·group_exclusive)
+    """
+    active = config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS]
+    user = current_user or {}
+    ids = authorized_db_ids(active, user.get("allowed_db_ids"), user.get("role"))
+    if not ids:
+        # 빈 목록을 넘기면 build_zone_clarification은 "제한 없음"으로 읽어 전 존을 낸다
+        logger.info("존 역질문 생략 — 조회 권한 내 DB 0개(D-232)")
+        return None
+    return build_zone_clarification(ids, query, **kwargs)
+
+
 def _file_zone_clarification_or_none(
-    query: str, selected_db_ids: list[str] | None, config
+    query: str, selected_db_ids: list[str] | None, config, current_user: dict | None = None
 ) -> dict | None:
     """파일(폼필) 경로 존 역질문 (Plan 75 §4 확장, 2026-07-24 실측 요구).
 
@@ -1202,7 +1276,7 @@ def _file_zone_clarification_or_none(
         return None
     # 존 그룹 상호배타(D-143 후속3) — 텍스트 경로와 대칭(혼합 선택·혼합 텍스트)
     exclusive = _zone_group_exclusive_or_none(
-        q, selected_db_ids, config, has_file=True
+        q, selected_db_ids, config, has_file=True, current_user=current_user
     )
     if exclusive:
         return exclusive
@@ -1210,15 +1284,18 @@ def _file_zone_clarification_or_none(
         return None  # 선택 재개 턴
     # 미등록 존 지목(plans/108 CU-B2 · G-3) — 텍스트 경로와 대칭. 종전에도 위치어 미해소라
     # 역질문은 떴지만 "그 존이 없다"는 사실은 전달되지 않았다.
-    unregistered = _unregistered_zone_clarification_or_none(q, config, has_file=True)
+    unregistered = _unregistered_zone_clarification_or_none(
+        q, config, has_file=True, current_user=current_user
+    )
     if unregistered:
         return unregistered
     if _ZONE_PLACEHOLDER not in q:
         from src.nodes.input_parser import LOCATION_HINT_TERMS
         if any(t in q for t in LOCATION_HINT_TERMS):
             return None  # 위치어 해소 — D-065 결정적 보강이 처리
-    return build_zone_clarification(
-        config.multi_db.get_active_db_ids(),
+    return _authorized_zone_clarification(
+        config,
+        current_user,
         q,
         question=(
             "양식을 채울 대상 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
@@ -1242,7 +1319,8 @@ def _parse_selected_db_ids_form(raw: str | None) -> list[str] | None:
 
 
 def _zone_group_exclusive_or_none(
-    query: str, selected_db_ids: list[str] | None, config, *, has_file: bool = False
+    query: str, selected_db_ids: list[str] | None, config, *, has_file: bool = False,
+    current_user: dict | None = None,
 ) -> dict | None:
     """존 그룹 상호배타 위반이면 안내 문구를 붙인 존 선택 clarification을 반환한다.
 
@@ -1260,8 +1338,9 @@ def _zone_group_exclusive_or_none(
             return None  # 단일 그룹 선택 — 정상 재개
     elif not has_mixed_zone_group_terms(query or ""):
         return None
-    return build_zone_clarification(
-        config.multi_db.get_active_db_ids(),
+    return _authorized_zone_clarification(
+        config,
+        current_user,
         query or "",
         question=ZONE_GROUP_EXCLUSIVE_QUESTION,
         has_file=has_file,
@@ -1270,7 +1349,7 @@ def _zone_group_exclusive_or_none(
 
 
 def _unregistered_zone_clarification_or_none(
-    query: str, config, *, has_file: bool = False
+    query: str, config, *, has_file: bool = False, current_user: dict | None = None
 ) -> dict | None:
     """원문이 **등록되지 않은 존**을 지목하면 존 선택 역질문을 돌려준다 (plans/108 CU-B2 · G-3).
 
@@ -1286,6 +1365,7 @@ def _unregistered_zone_clarification_or_none(
         query: 사용자 원문 질의
         config: AppConfig (활성 DB·존 그룹 배타 설정)
         has_file: 파일(폼필) 경로 여부 — 프론트가 보관 파일과 함께 재전송한다
+        current_user: 요청 사용자 — 선택지를 조회 권한으로 거른다(plans/116 §10.3)
 
     Returns:
         clarification 페이로드 dict. 미등록 존이 없으면 None.
@@ -1298,8 +1378,9 @@ def _unregistered_zone_clarification_or_none(
     named = ", ".join(f"'{t}'" for t in unknown)
     logger.info("미등록 존 지목 감지(plans/108 CU-B2): %s — 존 선택 역질문 발행", named)
     exclusive = getattr(config.multi_db, "zone_group_exclusive", True)
-    return build_zone_clarification(
-        config.multi_db.get_active_db_ids(),
+    return _authorized_zone_clarification(
+        config,
+        current_user,
         query or "",
         question=(
             f"{named}은(는) 등록되지 않은 존입니다. 조회할 수 있는 존은 아래 목록뿐입니다. "
@@ -1336,12 +1417,12 @@ def apply_selection_authorization(
 
 
 def _zone_clarification_or_none(
-    body: QueryRequest, checkpoint_state: dict | None, config
+    body: QueryRequest, checkpoint_state: dict | None, config, current_user: dict | None = None
 ) -> dict | None:
     """존 선택 역질문이 필요하면 clarification 컨텍스트를, 아니면 None을 반환한다."""
     # 존 그룹 상호배타(D-143 후속3) — 혼합 선택·혼합 텍스트는 턴 유형 무관 최우선 발동
     exclusive = _zone_group_exclusive_or_none(
-        body.query or "", body.selected_db_ids, config
+        body.query or "", body.selected_db_ids, config, current_user=current_user
     )
     if exclusive:
         return exclusive
@@ -1351,7 +1432,9 @@ def _zone_clarification_or_none(
     # 미등록 존 지목(plans/108 CU-B2 · G-3)은 아래 좁히기 조건("모든/전체"·"서버"·위치어 해소)
     # 보다 **앞선다** — "판교존 서버 목록"은 대량 조회 표현이 아니라 종전 규칙에 걸리지 않았고,
     # 그 결과 지목이 조용히 버려졌다. 지목이 틀렸다는 사실 자체가 되물을 이유다.
-    unregistered = _unregistered_zone_clarification_or_none(query, config)
+    unregistered = _unregistered_zone_clarification_or_none(
+        query, config, current_user=current_user
+    )
     if unregistered:
         return unregistered
     placeholder = _ZONE_PLACEHOLDER in query
@@ -1368,8 +1451,9 @@ def _zone_clarification_or_none(
         if any(t in query for t in LOCATION_HINT_TERMS):
             return None
     # 페이로드 조립은 공용 헬퍼로(D-143 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
-    return build_zone_clarification(
-        config.multi_db.get_active_db_ids(),
+    return _authorized_zone_clarification(
+        config,
+        current_user,
         query,
         group_exclusive=getattr(config.multi_db, "zone_group_exclusive", True),
     )
@@ -1448,7 +1532,7 @@ async def process_query(
         ))
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
-    clarification = _zone_clarification_or_none(body, checkpoint_state, config)
+    clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
     # 범위 사전 선택은 **모호성 해소 다음**이다(2연속 질문 금지 — D-176 후속4).
     if not clarification:
         clarification = _scope_select_or_none(
@@ -1527,7 +1611,7 @@ async def process_query(
         "approval_context": result.get("approval_context"),
         "has_file": result.get("output_file") is not None,
         "file_name": result.get("output_file_name"),
-        "executed_sql": result.get("generated_sql"),
+        "executed_sql": _executed_sql(result),
         "row_count": len(result.get("query_results", [])),
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
@@ -1612,7 +1696,7 @@ async def process_query_stream(
         )
 
     # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
-    clarification = _zone_clarification_or_none(body, checkpoint_state, config)
+    clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
     # 범위 사전 선택은 **모호성 해소 다음**이다(2연속 질문 금지 — D-176 후속4).
     if not clarification:
         clarification = _scope_select_or_none(
@@ -1681,6 +1765,7 @@ async def process_query_stream(
         _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
+        _sql_state: dict = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
         _trace = StreamTrace()   # 실패 시 경위(D-242)
 
         try:
@@ -1761,6 +1846,10 @@ async def process_query_stream(
                                         })
 
                             # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
+                            # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
+                            if kind == "on_chain_end" and not _is_subgraph_event(event):
+                                _track_sql_state(_sql_state, event.get("data", {}).get("output"))
+
                             if kind == "on_chat_model_stream":
                                 # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
                                 # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
@@ -1795,7 +1884,7 @@ async def process_query_stream(
 
                                     yield _sse_event({
                                         "type": "meta",
-                                        "executed_sql": output.get("generated_sql"),
+                                        "executed_sql": _executed_sql(_sql_state),
                                         "row_count": _final_row_count,
                                     })
 
@@ -1813,7 +1902,7 @@ async def process_query_stream(
                                         "thread_id": thread_id,
                                         "has_file": output.get("output_file") is not None,
                                         "file_name": output.get("output_file_name"),
-                                        "executed_sql": output.get("generated_sql"),
+                                        "executed_sql": _executed_sql(_sql_state),
                                         "row_count": _final_row_count,
                                         "processing_time_ms": elapsed_ms,
                                         "turn_count": turn_count,
@@ -1873,7 +1962,7 @@ async def process_query_stream(
 
             yield _sse_event({
                 "type": "meta",
-                "executed_sql": result.get("generated_sql"),
+                "executed_sql": _executed_sql(result),
                 "row_count": len(result.get("query_results", [])),
             })
 
@@ -1891,7 +1980,7 @@ async def process_query_stream(
                 "thread_id": thread_id,
                 "has_file": result.get("output_file") is not None,
                 "file_name": result.get("output_file_name"),
-                "executed_sql": result.get("generated_sql"),
+                "executed_sql": _executed_sql(result),
                 "row_count": len(result.get("query_results", [])),
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,
@@ -2006,7 +2095,7 @@ async def process_file_query(
             thread_id=thread_id,
         ))
     clarification = _file_zone_clarification_or_none(
-        query, selected_list, request.app.state.config
+        query, selected_list, request.app.state.config, current_user
     )
     if clarification:
         await _audit_clarification(clarification, current_user, thread_id)
@@ -2101,7 +2190,7 @@ async def process_file_query(
         "thread_id": actual_thread_id,
         "has_file": result.get("output_file") is not None,
         "file_name": result.get("output_file_name"),
-        "executed_sql": result.get("generated_sql"),
+        "executed_sql": _executed_sql(result),
         "row_count": len(result.get("query_results", [])),
         "processing_time_ms": elapsed_ms,
         "turn_count": turn_count,
@@ -2285,7 +2374,7 @@ async def process_file_query_stream(
             },
         )
     clarification = _file_zone_clarification_or_none(
-        query, selected_list, request.app.state.config
+        query, selected_list, request.app.state.config, current_user
     )
     if clarification:
         await _audit_clarification(clarification, current_user, thread_id)
@@ -2373,6 +2462,7 @@ async def process_file_query_stream(
         _current_node: str | None = None
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
+        _sql_state: dict = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
         _trace = StreamTrace()   # 실패 시 경위(D-242)
 
         try:
@@ -2448,6 +2538,10 @@ async def process_file_query_stream(
                                             "timestamp_ms": (time.time() - start_time) * 1000,
                                         })
 
+                            # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
+                            if kind == "on_chain_end" and not _is_subgraph_event(event):
+                                _track_sql_state(_sql_state, event.get("data", {}).get("output"))
+
                             if kind == "on_chat_model_stream":
                                 # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
                                 # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
@@ -2480,7 +2574,7 @@ async def process_file_query_stream(
 
                                     yield _sse_event({
                                         "type": "meta",
-                                        "executed_sql": output.get("generated_sql"),
+                                        "executed_sql": _executed_sql(_sql_state),
                                         "row_count": _final_row_count,
                                     })
 
@@ -2492,7 +2586,7 @@ async def process_file_query_stream(
                                         "thread_id": actual_thread_id,
                                         "has_file": output.get("output_file") is not None,
                                         "file_name": output.get("output_file_name"),
-                                        "executed_sql": output.get("generated_sql"),
+                                        "executed_sql": _executed_sql(_sql_state),
                                         "row_count": _final_row_count,
                                         "processing_time_ms": elapsed_ms,
                                         "turn_count": turn_count,
@@ -2552,7 +2646,7 @@ async def process_file_query_stream(
             _final_row_count = len(result.get("query_results", []))
             yield _sse_event({
                 "type": "meta",
-                "executed_sql": result.get("generated_sql"),
+                "executed_sql": _executed_sql(result),
                 "row_count": _final_row_count,
             })
             turn_count = _count_human_messages(result.get("messages", []))
@@ -2563,7 +2657,7 @@ async def process_file_query_stream(
                 "thread_id": actual_thread_id,
                 "has_file": result.get("output_file") is not None,
                 "file_name": result.get("output_file_name"),
-                "executed_sql": result.get("generated_sql"),
+                "executed_sql": _executed_sql(result),
                 "row_count": _final_row_count,
                 "processing_time_ms": elapsed_ms,
                 "turn_count": turn_count,

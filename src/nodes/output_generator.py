@@ -101,6 +101,25 @@ async def _run_output_generator(
     parsed = state["parsed_requirements"]
     output_format = parsed.get("output_format", "text")
 
+    # 양식 없이 파일 형식만 요청("…을 엑셀로 만들어줘", plans/116 §10.3). 파일 산출은 첨부 양식을
+    # 채우는 방식뿐이라 만들 파일이 없다 — 첨부하지 않은 양식을 "채우지 못했다"고 하지 않고
+    # 실제 동작(텍스트 응답 + CSV)을 알린다. 첨부했는데 양식이 전파되지 않은 경우(file_type 있음)는
+    # 아래 파일 분기가 D-059 사유를 그대로 노출한다.
+    no_template_notice: str | None = None
+    if (
+        output_format in ("xlsx", "docx")
+        and not state.get("template_structure")
+        and not state.get("uploaded_file")
+        and not state.get("file_type")
+    ):
+        no_template_notice = _no_template_file_notice(
+            output_format, bool((organized or {}).get("rows"))
+        )
+        logger.info("양식 없는 %s 요청 — 파일 없이 텍스트 응답으로 처리", output_format)
+        output_format = "text"
+        parsed = {**parsed, "output_format": "text"}
+        state = {**state, "parsed_requirements": parsed}
+
     if output_format == "text":
         response = await _generate_text_response(
             app_config, state, llm=llm, stream_user_response=stream_user_response
@@ -115,6 +134,8 @@ async def _run_output_generator(
         response = append_structure_missing_note(response, state)
         response = _append_cross_system_notes(response, state)
         response = _prepend_alarm_headline(response, state, app_config)
+        if no_template_notice:
+            response = f"{no_template_notice}\n\n{response}"
         return {
             "final_response": response,
             "output_file": None,
@@ -236,6 +257,22 @@ async def _run_output_generator(
             "current_node": "output_generator",
             "error_message": None,
         }
+
+
+def _no_template_file_notice(output_format: str, has_rows: bool) -> str:
+    """양식 없이 Excel/Word 파일을 요청했을 때의 안내 (plans/116 §10.3).
+
+    파일 산출은 첨부 양식을 채우는 방식만 지원한다(요구사항 Phase 2 「양식 기반 문서 생성」).
+    CSV 안내는 내려받을 행이 있을 때만 붙인다(행이 없으면 CSV 다운로드가 404다).
+    """
+    kind = "Excel" if output_format == "xlsx" else "Word"
+    text = (
+        f"양식 파일이 첨부되지 않아 {kind} 파일은 만들지 않았습니다. "
+        "파일은 첨부한 양식(Excel/Word)을 채우는 방식으로만 만들 수 있습니다."
+    )
+    if has_rows:
+        text += " 아래 조회 결과는 「CSV 다운로드」로 내려받아 Excel에서 열 수 있습니다."
+    return text
 
 
 async def _generate_text_response(

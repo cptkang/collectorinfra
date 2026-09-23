@@ -951,6 +951,9 @@ def _has_limit_clause(sql: str) -> bool:
 
     서브쿼리 내부 LIMIT에 오매칭되면 외곽 자동 보정이 억제되어 무제한 반환이
     가능했다(Plan 69 P0-⑦) — 괄호 내부를 제거한 최상위 텍스트만 검사한다.
+    주석은 먼저 걷어낸다 — 주석 속 홑괄호(`-- 조건 완화(부분 일치`)가 깊이를 어긋나게 하면
+    외곽 LIMIT을 못 보고 두 번째 LIMIT을 붙여 실행이 `syntax error at or near "LIMIT"`로
+    깨졌고(plans/116 §10.3 오타 질의), 주석 속 `LIMIT 10`은 없는 제한을 있다고 판정했다.
 
     Args:
         sql: SQL 쿼리
@@ -958,7 +961,7 @@ def _has_limit_clause(sql: str) -> bool:
     Returns:
         최상위 행 제한 절 존재 여부
     """
-    top_level = _strip_parenthesized(sql)
+    top_level = _strip_parenthesized(strip_sql_comments(sql))
     return bool(
         re.search(r"\bLIMIT\s+\d+", top_level, re.IGNORECASE)
         or re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS?\s+ONLY\b", top_level, re.IGNORECASE)

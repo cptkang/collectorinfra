@@ -1,0 +1,42 @@
+{
+ "id": "Q-BAD-TYPO",
+ "turns": [
+  {
+   "query": "cocm-hdkapp1 서버의 OS",
+   "file": null,
+   "key": "b306ef9077569872",
+   "elapsed_s": 295.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "현재 인프라 데이터베이스에서 **cocm-hdkapp1** 서버의 OS 정보를 조회할 수 없습니다.\n\n다수의 조회 시도 결과, 해당 서버에 대한 OS 데이터가 존재하지 않거나, 시스템 오류로 인해 데이터가 정상적으로 수집되지 않았습니다.\n\n*   **조회 결과**: 데이터 없음\n*   **오류 원인**: 데이터 조회 중 SQL 문법 오류 (LIMIT 키워드 관련) 가 발생하여 처리가 중단되었습니다.\n\n따라서 현재는 OS 정보 (예: Linux, Windows 등) 를 확인할 수 없으며, 데이터베이스 점검 또는 쿼리 수정이 필요할 수 있습니다.\n\n---\n## 순차 처리 경과\n- [t4] 선행 작업(t3)이 실패해 이 단계를 실행하지 않았습니다: SQL 실행 에러: syntax error at or near \"LIMIT\"\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T11:05:09",
+ "review": {
+  "verdict": "partly",
+  "notes": "틀린 이름은 결과 없음(맞음). 후속 작업에서 SQL 문법 오류(LIMIT) 발생·문구 노출(결함) — 본문 포인트에 밝힘",
+  "at": "2026-09-23"
+ }
+}

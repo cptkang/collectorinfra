@@ -1,0 +1,6701 @@
+{
+ "key": "87052e91f31743ef",
+ "query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+ "has_file": true,
+ "has_answers": false,
+ "recorded_at": "2026-09-23T13:06:58",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [
+      "서버"
+     ],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "xlsx",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": [
+      "서버담당"
+     ],
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "synonym_registration": {
+      "mode": "all"
+     },
+     "original_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+     "_sheet_name": "서버담당"
+    },
+    "template_structure": {
+     "file_type": "xlsx",
+     "sheets": [
+      {
+       "name": "서버담당",
+       "headers": [
+        "호스트명",
+        "OS종류",
+        "담당자",
+        "담당자 연락처"
+       ],
+       "title_text": "",
+       "header_row": 1,
+       "data_start_row": 2,
+       "data_end_row": null,
+       "header_cells": [
+        {
+         "col": 1,
+         "value": "호스트명"
+        },
+        {
+         "col": 2,
+         "value": "OS종류"
+        },
+        {
+         "col": 3,
+         "value": "담당자"
+        },
+        {
+         "col": 4,
+         "value": "담당자 연락처"
+        }
+       ],
+       "header_block_rows": [
+        1
+       ],
+       "merged_cells": [],
+       "formula_cells": [],
+       "max_column": 4
+      }
+     ],
+     "placeholders": [],
+     "tables": []
+    },
+    "target_sheets": [
+     "서버담당"
+    ],
+    "current_node": "input_parser",
+    "error_message": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "column_mapping": {
+     "OS종류": "EAV:OSType",
+     "호스트명": "EAV:Hostname",
+     "담당자": null,
+     "담당자 연락처": null
+    },
+    "db_column_mapping": {
+     "polestar": {
+      "OS종류": "EAV:OSType",
+      "호스트명": "EAV:Hostname"
+     }
+    },
+    "mapping_sources": {
+     "OS종류": "eav_synonym",
+     "호스트명": "eav_synonym"
+    },
+    "mapped_db_ids": [
+     "polestar"
+    ],
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": "# 필드 매핑 보고서\n\n> 생성일시: 2026-09-23 13:05:08\n> 원본 양식: (알 수 없음)\n> 매핑 성공: 2/4 필드 (50%)\n\n## 매핑 결과 요약\n\n| # | 양식 필드 | 매핑 대상 | DB | 매핑 방법 | 신뢰도 |\n|---|----------|----------|-----|----------|--------|\n| 1 | 호스트명 | EAV:Hostname | polestar | eav_synonym | - |\n| 2 | OS종류 | EAV:OSType | polestar | eav_synonym | - |\n| 3 | 담당자 | (매핑 불가) | - | - | - |\n| 4 | 담당자 연락처 | (매핑 불가) | - | - | - |\n\n## 피드백 안내\n\n매핑을 수정하려면 이 파일을 다운로드하여 '매핑 결과 요약' 테이블을 직접 편집한 후 업로드하세요.\n- 매핑 대상 컬럼을 수정하면 Redis에 반영됩니다.\n- 행을 삭제하면 해당 매핑이 Redis에서 제거됩니다.\n- 매핑 불가 항목에 컬럼을 추가하면 새 매핑이 등록됩니다.\n",
+    "current_node": "field_mapper"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending",
+      "db_ids": [
+       "polestar"
+      ]
+     }
+    ],
+    "is_composite": false,
+    "current_node": "intent_planner",
+    "last_form_signature": "4f66fba8ce04a2cd"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "data_query",
+    "sub_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "스키마 분석"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 1/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 2/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 3/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 4/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 5/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 6/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "end",
+    "label": "샘플 수집 완료 6/6"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 생성"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 검증"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 실행"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "결과 정리"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "data_query",
+    "sub_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed",
+    "row_count": 54
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed",
+      "db_ids": [
+       "polestar"
+      ]
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 54건의 데이터를 조회했습니다. 조회 대상: 서버.",
+       "rows": [
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-06"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-06"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "svweb001"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "hostapo02"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-bkp-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-03"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cob0-bnndbp01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-app-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-08"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-10"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-app-03"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cocm-hdkapp01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-mon-01"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cocm-ngcapo91"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-05"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-04"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-08"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-10"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-09"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "AIX",
+         "호스트명": "svbatch009"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-04"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-app-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-01"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cocm-xgzapp09"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-08"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-07"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-bat-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-06"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-03"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-05"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-10"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "sbhdbo53"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-09"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-log-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-bat-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-mid-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-04"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-02"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-07"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "hostapo01"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "dbora023"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-07"
+        }
+       ],
+       "column_mapping": {
+        "OS종류": "EAV:OSType",
+        "호스트명": "EAV:Hostname",
+        "담당자": null,
+        "담당자 연락처": null
+       },
+       "resolved_mapping": {
+        "OS종류": "OS종류",
+        "호스트명": "호스트명",
+        "담당자": null,
+        "담당자 연락처": null
+       },
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-06"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-06"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "svweb001"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "hostapo02"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-bkp-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-03"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cob0-bnndbp01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-app-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-08"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-10"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-app-03"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cocm-hdkapp01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-mon-01"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cocm-ngcapo91"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-05"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-04"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-08"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-10"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-09"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "AIX",
+        "호스트명": "svbatch009"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-04"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-app-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-01"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cocm-xgzapp09"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-08"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-07"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-bat-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-06"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-03"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-05"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-10"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "sbhdbo53"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-09"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-log-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-bat-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-mid-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-04"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-02"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-07"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "hostapo01"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "dbora023"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-07"
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 1.0,
+        "sub_query_context": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+        "user_specified": false,
+        "reason": "필드 매핑 결과에서 식별된 DB"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "form_fill_candidates": [
+       {
+        "value": "column:avail_status",
+        "label": "cmm_resource.avail_status",
+        "kind": "column"
+       },
+       {
+        "value": "column:description",
+        "label": "cmm_resource.description — 리소스 설명(비고)",
+        "kind": "column"
+       },
+       {
+        "value": "column:group_path",
+        "label": "cmm_resource.group_path",
+        "kind": "column"
+       },
+       {
+        "value": "column:hostname",
+        "label": "cmm_resource.hostname — OS가 인식하는 실제 호스트명",
+        "kind": "column"
+       },
+       {
+        "value": "column:id_ancestry",
+        "label": "cmm_resource.id_ancestry",
+        "kind": "column"
+       },
+       {
+        "value": "column:identifier",
+        "label": "cmm_resource.identifier",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_inherit_avail_depend",
+        "label": "cmm_resource.is_inherit_avail_depend",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_inherit_custom_conf",
+        "label": "cmm_resource.is_inherit_custom_conf",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_inherit_manager_zone",
+        "label": "cmm_resource.is_inherit_manager_zone",
+        "kind": "column"
+       },
+       {
+        "value": "column:invisible",
+        "label": "cmm_resource.invisible",
+        "kind": "column"
+       },
+       {
+        "value": "column:ipaddress",
+        "label": "cmm_resource.ipaddress — IP 주소",
+        "kind": "column"
+       },
+       {
+        "value": "column:lc",
+        "label": "cmm_resource.lc",
+        "kind": "column"
+       },
+       {
+        "value": "column:location",
+        "label": "cmm_resource.location",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_maintenance",
+        "label": "cmm_resource.is_maintenance",
+        "kind": "column"
+       },
+       {
+        "value": "column:manager_zone",
+        "label": "cmm_resource.manager_zone",
+        "kind": "column"
+       },
+       {
+        "value": "column:modifiedby",
+        "label": "cmm_resource.modifiedby",
+        "kind": "column"
+       },
+       {
+        "value": "column:name",
+        "label": "cmm_resource.name — VM명 — 폴스타 등록 이름(서버 식별 대표 칼럼)",
+        "kind": "column"
+       },
+       {
+        "value": "column:optlock",
+        "label": "cmm_resource.optlock",
+        "kind": "column"
+       },
+       {
+        "value": "column:order_num",
+        "label": "cmm_resource.order_num",
+        "kind": "column"
+       },
+       {
+        "value": "column:pollingpolicy",
+        "label": "cmm_resource.pollingpolicy",
+        "kind": "column"
+       },
+       {
+        "value": "column:priority",
+        "label": "cmm_resource.priority",
+        "kind": "column"
+       },
+       {
+        "value": "column:resourceicon",
+        "label": "cmm_resource.resourceicon",
+        "kind": "column"
+       },
+       {
+        "value": "column:resource_key",
+        "label": "cmm_resource.resource_key",
+        "kind": "column"
+       },
+       {
+        "value": "column:resourcestatus",
+        "label": "cmm_resource.resourcestatus",
+        "kind": "column"
+       },
+       {
+        "value": "column:resource_type",
+        "label": "cmm_resource.resource_type",
+        "kind": "column"
+       },
+       {
+        "value": "column:resourcetypeversion",
+        "label": "cmm_resource.resourcetypeversion",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_sync_desc",
+        "label": "cmm_resource.is_sync_desc",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_sync_name",
+        "label": "cmm_resource.is_sync_name",
+        "kind": "column"
+       },
+       {
+        "value": "column:uuid",
+        "label": "cmm_resource.uuid",
+        "kind": "column"
+       },
+       {
+        "value": "column:version",
+        "label": "cmm_resource.version",
+        "kind": "column"
+       },
+       {
+        "value": "column:system",
+        "label": "cmm_resource.system",
+        "kind": "column"
+       },
+       {
+        "value": "column:avail_depend_resource_id_2",
+        "label": "cmm_resource.avail_depend_resource_id_2",
+        "kind": "column"
+       },
+       {
+        "value": "eav:OSType",
+        "label": "OSType — 운영체제 종류 (예: Linux, Windows)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:OSVerson",
+        "label": "OSVerson — 운영체제 버전 (주의: Polestar 제품 오탈자 반영)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:OSParameter",
+        "label": "OSParameter — OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:PatchLevel",
+        "label": "PatchLevel — OS 패치 레벨 / 커널 버전",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:Vendor",
+        "label": "Vendor — 서버 제조사 (예: Dell, HP)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:Model",
+        "label": "Model — 서버 모델명",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:SerialNumber",
+        "label": "SerialNumber — 시리얼 번호",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:Hostname",
+        "label": "Hostname — 호스트명 (EAV). '서버명/서버 이름'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지. hostname 값은 직접 컬럼(cmm_resource.hostname) 사용",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:IPaddress",
+        "label": "IPaddress — IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:GMT",
+        "label": "GMT — 시간대 (GMT offset)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:AgentID",
+        "label": "AgentID — 모니터링 에이전트 ID",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:AgentVersion",
+        "label": "AgentVersion — 에이전트 버전",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:InstallPath",
+        "label": "InstallPath — 에이전트 설치 경로",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:MODEL",
+        "label": "MODEL — CPU 모델명 (예: Intel Xeon Gold 6248R)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:LOGICALCORE",
+        "label": "LOGICALCORE — 논리 CPU 코어 수 (하이퍼스레딩 포함)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:PHYSICALCORE",
+        "label": "PHYSICALCORE — 물리 CPU 코어 수",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:PHYSICALCPU",
+        "label": "PHYSICALCPU — 물리 CPU 소켓 수",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:SPEED",
+        "label": "SPEED — CPU 클럭 속도 MHz (예: 2100.0)",
+        "kind": "eav"
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "planned",
+      "generated_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='OSType' THEN cc.stringvalue_short END) AS \"OS종류\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='Hostname' THEN cc.stringvalue_short END) AS \"호스트명\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nWHERE c.resource_type IN ('server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nLIMIT 10000;"
+     }
+    },
+    "current_node": "agent_orchestrator"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 결과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "총"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "건의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 서버"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 정보를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "했습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기준"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "일은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " OS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "종"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "류"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 호"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "스트"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "명"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "--------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "----------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-w"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "as"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-web"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "web"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " host"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "apo"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " null"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " null"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-b"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "kp"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-w"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "as"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " cob"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-b"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "nd"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "bp"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-app"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-w"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "as"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "8"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-web"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-app"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " coc"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "m"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-h"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "dk"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "app"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-mon"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " coc"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "m"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-ng"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "cap"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "o"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-db"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-db"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-web"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "8"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-w"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "as"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " LINUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "r"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-web"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "참"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "사항"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "된"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 데이터"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " `"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "OS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "종"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "류"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "`"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 와"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " `"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "호"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "스트"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "명"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "`"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 컬"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "럼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "만"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 포함되어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 있으며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기타"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 인프라"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 상세"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 정보"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "CPU"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 메모"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 사용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "률"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 포함"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 않았습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " `"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "OS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "종"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "류"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "`"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 컬"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "럼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 대"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "소"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "문"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 차이가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 있는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 값"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "L"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "INUX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " `"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "null"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "`"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 값"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 혼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "재"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 있습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다.\n\n| OS종류 | 호스트명 |\n|---|---|\n| LINUX | svr-was-06 |\n| LINUX | svr-web-06 |\n| Linux | svweb001 |\n| LINUX | hostapo02 |\n| null | null |\n| LINUX | svr-bkp-01 |\n| LINUX | svr-was-03 |\n| Linux | cob0-bnndbp01 |\n| LINUX | svr-app-01 |\n| LINUX | svr-was-08 |\n| LINUX | svr-web-10 |\n| LINUX | svr-app-03 |\n| Linux | cocm-hdkapp01 |\n| LINUX | svr-mon-01 |\n| Linux | cocm-ngcapo91 |\n| LINUX | svr-db-05 |\n| LINUX | svr-db-04 |\n| LINUX | svr-web-08 |\n| LINUX | svr-was-10 |\n| LINUX | svr-web-09 |\n\n참고사항\n- 조회된 데이터에는 `OS종류` 와 `호스트명` 컬럼만 포함되어 있으며, 기타 인프라 상세 정보 (CPU, 메모리, 사용률 등) 는 포함되지 않았습니다.\n- `OS종류` 컬럼에는 대소문자 차이가 있는 값 (LINUX, Linux) 과 `null` 값이 혼재되어 있습니다.\n\n---\n**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):\n  - 담당자\n  - 담당자 연락처\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "current_node": "result_aggregator",
+    "query_results": [
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-06"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-06"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "svweb001"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "hostapo02"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-bkp-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-03"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cob0-bnndbp01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-app-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-08"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-10"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-app-03"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cocm-hdkapp01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-mon-01"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cocm-ngcapo91"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-05"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-04"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-08"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-10"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-09"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "AIX",
+      "호스트명": "svbatch009"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-04"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-app-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-01"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cocm-xgzapp09"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-08"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-07"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-bat-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-06"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-03"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-05"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-10"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "sbhdbo53"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-09"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-log-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-bat-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-mid-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-04"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-02"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-07"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "hostapo01"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "dbora023"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-07"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-09"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-03"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-05"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-mid-02"
+     }
+    ],
+    "output_file": {
+     "__bytes__": "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"
+    },
+    "output_file_name": "result_20260923_130646.xlsx",
+    "form_fill_clarification": {
+     "question": "채우지 못한 항목이 2건 있습니다. 각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요. '?'만 입력하면 이 양식에 저장된 값을 조회합니다.",
+     "fields": [
+      {
+       "name": "담당자",
+       "label": "담당자"
+      },
+      {
+       "name": "담당자 연락처",
+       "label": "담당자 연락처"
+      }
+     ],
+     "candidates": [
+      {
+       "value": "column:avail_status",
+       "label": "cmm_resource.avail_status",
+       "kind": "column"
+      },
+      {
+       "value": "column:description",
+       "label": "cmm_resource.description — 리소스 설명(비고)",
+       "kind": "column"
+      },
+      {
+       "value": "column:group_path",
+       "label": "cmm_resource.group_path",
+       "kind": "column"
+      },
+      {
+       "value": "column:hostname",
+       "label": "cmm_resource.hostname — OS가 인식하는 실제 호스트명",
+       "kind": "column"
+      },
+      {
+       "value": "column:id_ancestry",
+       "label": "cmm_resource.id_ancestry",
+       "kind": "column"
+      },
+      {
+       "value": "column:identifier",
+       "label": "cmm_resource.identifier",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_avail_depend",
+       "label": "cmm_resource.is_inherit_avail_depend",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_custom_conf",
+       "label": "cmm_resource.is_inherit_custom_conf",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_manager_zone",
+       "label": "cmm_resource.is_inherit_manager_zone",
+       "kind": "column"
+      },
+      {
+       "value": "column:invisible",
+       "label": "cmm_resource.invisible",
+       "kind": "column"
+      },
+      {
+       "value": "column:ipaddress",
+       "label": "cmm_resource.ipaddress — IP 주소",
+       "kind": "column"
+      },
+      {
+       "value": "column:lc",
+       "label": "cmm_resource.lc",
+       "kind": "column"
+      },
+      {
+       "value": "column:location",
+       "label": "cmm_resource.location",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_maintenance",
+       "label": "cmm_resource.is_maintenance",
+       "kind": "column"
+      },
+      {
+       "value": "column:manager_zone",
+       "label": "cmm_resource.manager_zone",
+       "kind": "column"
+      },
+      {
+       "value": "column:modifiedby",
+       "label": "cmm_resource.modifiedby",
+       "kind": "column"
+      },
+      {
+       "value": "column:name",
+       "label": "cmm_resource.name — VM명 — 폴스타 등록 이름(서버 식별 대표 칼럼)",
+       "kind": "column"
+      },
+      {
+       "value": "column:optlock",
+       "label": "cmm_resource.optlock",
+       "kind": "column"
+      },
+      {
+       "value": "column:order_num",
+       "label": "cmm_resource.order_num",
+       "kind": "column"
+      },
+      {
+       "value": "column:pollingpolicy",
+       "label": "cmm_resource.pollingpolicy",
+       "kind": "column"
+      },
+      {
+       "value": "column:priority",
+       "label": "cmm_resource.priority",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourceicon",
+       "label": "cmm_resource.resourceicon",
+       "kind": "column"
+      },
+      {
+       "value": "column:resource_key",
+       "label": "cmm_resource.resource_key",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourcestatus",
+       "label": "cmm_resource.resourcestatus",
+       "kind": "column"
+      },
+      {
+       "value": "column:resource_type",
+       "label": "cmm_resource.resource_type",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourcetypeversion",
+       "label": "cmm_resource.resourcetypeversion",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_sync_desc",
+       "label": "cmm_resource.is_sync_desc",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_sync_name",
+       "label": "cmm_resource.is_sync_name",
+       "kind": "column"
+      },
+      {
+       "value": "column:uuid",
+       "label": "cmm_resource.uuid",
+       "kind": "column"
+      },
+      {
+       "value": "column:version",
+       "label": "cmm_resource.version",
+       "kind": "column"
+      },
+      {
+       "value": "column:system",
+       "label": "cmm_resource.system",
+       "kind": "column"
+      },
+      {
+       "value": "column:avail_depend_resource_id_2",
+       "label": "cmm_resource.avail_depend_resource_id_2",
+       "kind": "column"
+      },
+      {
+       "value": "eav:OSType",
+       "label": "OSType — 운영체제 종류 (예: Linux, Windows)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:OSVerson",
+       "label": "OSVerson — 운영체제 버전 (주의: Polestar 제품 오탈자 반영)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:OSParameter",
+       "label": "OSParameter — OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PatchLevel",
+       "label": "PatchLevel — OS 패치 레벨 / 커널 버전",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Vendor",
+       "label": "Vendor — 서버 제조사 (예: Dell, HP)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Model",
+       "label": "Model — 서버 모델명",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SerialNumber",
+       "label": "SerialNumber — 시리얼 번호",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Hostname",
+       "label": "Hostname — 호스트명 (EAV). '서버명/서버 이름'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지. hostname 값은 직접 컬럼(cmm_resource.hostname) 사용",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:IPaddress",
+       "label": "IPaddress — IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:GMT",
+       "label": "GMT — 시간대 (GMT offset)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:AgentID",
+       "label": "AgentID — 모니터링 에이전트 ID",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:AgentVersion",
+       "label": "AgentVersion — 에이전트 버전",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:InstallPath",
+       "label": "InstallPath — 에이전트 설치 경로",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MODEL",
+       "label": "MODEL — CPU 모델명 (예: Intel Xeon Gold 6248R)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:LOGICALCORE",
+       "label": "LOGICALCORE — 논리 CPU 코어 수 (하이퍼스레딩 포함)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PHYSICALCORE",
+       "label": "PHYSICALCORE — 물리 CPU 코어 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PHYSICALCPU",
+       "label": "PHYSICALCPU — 물리 CPU 소켓 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SPEED",
+       "label": "SPEED — CPU 클럭 속도 MHz (예: 2100.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:HYPERTHREADING",
+       "label": "HYPERTHREADING — 하이퍼스레딩 활성 여부 (on/off)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:TotalSize",
+       "label": "TotalSize — 총 물리 메모리 크기 (예: 62.1 GB)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SwapTotalSize",
+       "label": "SwapTotalSize — Swap 메모리 총 크기 (예: 3.9 GB)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:DiskCount",
+       "label": "DiskCount — 디스크 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:IP",
+       "label": "IP — 네트워크 인터페이스 IP 주소",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MAC",
+       "label": "MAC — MAC 주소 (예: b4:96:91:0e:bd:a6)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:BANDW",
+       "label": "BANDW — 대역폭 (예: 10 Gb)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MTU",
+       "label": "MTU — MTU 크기 (예: 1500.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:NETMASK",
+       "label": "NETMASK — 서브넷 마스크 (예: 255.255.255.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:STATUS",
+       "label": "STATUS — 인터페이스 상태 (UP/DOWN)",
+       "kind": "eav"
+      }
+     ]
+    },
+    "pending_form_fill": {
+     "uploaded_file": {
+      "__bytes__": "UEsDBBQAAAAIAKhkN11Gx01IlQAAAM0AAAAQAAAAZG9jUHJvcHMvYXBwLnhtbE3PTQvCMAwG4L9SdreZih6kDkQ9ip68zy51hbYpbYT67+0EP255ecgboi6JIia2mEXxLuRtMzLHDUDWI/o+y8qhiqHke64x3YGMsRoPpB8eA8OibdeAhTEMOMzit7Dp1C5GZ3XPlkJ3sjpRJsPiWDQ6sScfq9wcChDneiU+ixNLOZcrBf+LU8sVU57mym/8ZAW/B7oXUEsDBBQAAAAIAKhkN13DPwBm7wAAACsCAAARAAAAZG9jUHJvcHMvY29yZS54bWzNksFqwzAMhl9l+J4oiaFlJs1lpacNBits7GZstTWLY2NrJH37OV6bMrYH2NHS70+fQK3yQrmAz8F5DGQw3k22H6JQfsNORF4ARHVCK2OZEkNqHlywktIzHMFL9SGPCE1VrcAiSS1Jwgws/EJkXauVUAEluXDBa7Xg/WfoM0wrwB4tDhShLmtg3TzRn6e+hRtghhEGG78LqBdirv6JzR1gl+QUzZIax7Ecec6lHWp4e3p8yesWZogkB4XpVzSCzh437Dr5lT9s9zvWNVWzKqr7ouH7igu+FvX6fXb94XcTtk6bg/nHxlfBroVfd9F9AVBLAwQUAAAACACoZDddmVycIxAGAACcJwAAEwAAAHhsL3RoZW1lL3RoZW1lMS54bWztWltz2jgUfu+v0Hhn9m0LxjaBtrQTc2l227SZhO1OH4URWI1seWSRhH+/RzYQy5YN7ZJNups8BCzp+85FR+foOHnz7i5i6IaIlPJ4YNkv29a7ty/e4FcyJBFBMBmnr/DACqVMXrVaaQDDOH3JExLD3IKLCEt4FMvWXOBbGi8j1uq0291WhGlsoRhHZGB9XixoQNBUUVpvXyC05R8z+BXLVI1lowETV0EmuYi08vlsxfza3j5lz+k6HTKBbjAbWCB/zm+n5E5aiOFUwsTAamc/VmvH0dJIgILJfZQFukn2o9MVCDINOzqdWM52fPbE7Z+Mytp0NG0a4OPxeDi2y9KLcBwE4FG7nsKd9Gy/pEEJtKNp0GTY9tqukaaqjVNP0/d93+ubaJwKjVtP02t33dOOicat0HgNvvFPh8Ouicar0HTraSYn/a5rpOkWaEJG4+t6EhW15UDTIABYcHbWzNIDll4p+nWUGtkdu91BXPBY7jmJEf7GxQTWadIZljRGcp2QBQ4AN8TRTFB8r0G2iuDCktJckNbPKbVQGgiayIH1R4Ihxdyv/fWXu8mkM3qdfTrOa5R/aasBp+27m8+T/HPo5J+nk9dNQs5wvCwJ8fsjW2GHJ247E3I6HGdCfM/29pGlJTLP7/kK6048Zx9WlrBdz8/knoxyI7vd9lh99k9HbiPXqcCzIteURiRFn8gtuuQROLVJDTITPwidhphqUBwCpAkxlqGG+LTGrBHgE323vgjI342I96tvmj1XoVhJ2oT4EEYa4pxz5nPRbPsHpUbR9lW83KOXWBUBlxjfNKo1LMXWeJXA8a2cPB0TEs2UCwZBhpckJhKpOX5NSBP+K6Xa/pzTQPCULyT6SpGPabMjp3QmzegzGsFGrxt1h2jSPHr+BfmcNQockRsdAmcbs0YhhGm78B6vJI6arcIRK0I+Yhk2GnK1FoG2camEYFoSxtF4TtK0EfxZrDWTPmDI7M2Rdc7WkQ4Rkl43Qj5izouQEb8ehjhKmu2icVgE/Z5ew0nB6ILLZv24fobVM2wsjvdH1BdK5A8mpz/pMjQHo5pZCb2EVmqfqoc0PqgeMgoF8bkePuV6eAo3lsa8UK6CewH/0do3wqv4gsA5fy59z6XvufQ9odK3NyN9Z8HTi1veRm5bxPuuMdrXNC4oY1dyzcjHVK+TKdg5n8Ds/Wg+nvHt+tkkhK+aWS0jFpBLgbNBJLj8i8rwKsQJ6GRbJQnLVNNlN4oSnkIbbulT9UqV1+WvuSi4PFvk6a+hdD4sz/k8X+e0zQszQ7dyS+q2lL61JjhK9LHMcE4eyww7ZzySHbZ3oB01+/ZdduQjpTBTl0O4GkK+A226ndw6OJ6YkbkK01KQb8P56cV4GuI52QS5fZhXbefY0dH758FRsKPvPJYdx4jyoiHuoYaYz8NDh3l7X5hnlcZQNBRtbKwkLEa3YLjX8SwU4GRgLaAHg69RAvJSVWAxW8YDK5CifEyMRehw55dcX+PRkuPbpmW1bq8pdxltIlI5wmmYE2eryt5lscFVHc9VW/Kwvmo9tBVOz/5ZrcifDBFOFgsSSGOUF6ZKovMZU77nK0nEVTi/RTO2EpcYvOPmx3FOU7gSdrYPAjK5uzmpemUxZ6by3y0MCSxbiFkS4k1d7dXnm5yueiJ2+pd3wWDy/XDJRw/lO+df9F1Drn723eP6bpM7SEycecURAXRFAiOVHAYWFzLkUO6SkAYTAc2UyUTwAoJkphyAmPoLvfIMuSkVzq0+OX9FLIOGTl7SJRIUirAMBSEXcuPv75Nqd4zX+iyBbYRUMmTVF8pDicE9M3JD2FQl867aJguF2+JUzbsaviZgS8N6bp0tJ//bXtQ9tBc9RvOjmeAes4dzm3q4wkWs/1jWHvky3zlw2zreA17mEyxDpH7BfYqKgBGrYr66r0/5JZw7tHvxgSCb/NbbpPbd4Ax81KtapWQrET9LB3wfkgZjjFv0NF+PFGKtprGtxtoxDHmAWPMMoWY434dFmhoz1YusOY0Kb0HVQOU/29QNaPYNNByRBV4xmbY2o+ROCjzc/u8NsMLEjuHti78BUEsDBBQAAAAIAKhkN10GVbAJkQEAAAgDAAAYAAAAeGwvd29ya3NoZWV0cy9zaGVldDEueG1slVJNb9swDP0rggr0WNmxHDuNbWBNMKyHYUGDdWclpmOhkuVJytz9+4nKB4qhPfQkPn48PlKsJmNfXA/gyatWg6tp7/14z5jb96CFuzMjDCHSGauFD9AemBstiDYWacVmSTJnWsiBNlX0bWxTmaNXcoCNJe6otbB/H0CZqaYpvTie5KH36GBNNYoDbMH/HDc2IHZlaaWGwUkzEAtdTb+k9+uYHxOeJUzujU1wkp0xLwge25omKAgU7D0yiPD8gRUohURBxu8zJ722xMK39oX9a5w9zLITDlZG/ZKt72taUtJCJ47KP5npG5znya8C18KLprJmIhbnbKo9Gtg75MkB97P1NvhlaOSb25uclzxZ3t7wRTkrw5tnC84RFwVfLCvmgzjMZfsz18NHXD+2oTrNsixWc16+V736WAnPy3S2PL0FKkmT8l2O9Wc5SDCSeRED80WBAvNZVsz/I2dhbZevOO0Rb+S7sAc5OKKgC02TuyKnxJ72fgLejPHGdsZ7o6PZh1MFiwkh3hnjLwC//Xr8zT9QSwMEFAAAAAgAqGQ3XXzzo9xRAgAA9gkAAA0AAAB4bC9zdHlsZXMueG1s3VbbitswEP0V4Q+ok5g1cUnyUENgoS0Luw99VWI5EejiyvKS9Os7Izl2s6tZKH2rTfDMHJ25G2fT+6sSz2chPLtoZfptdva++5zn/fEsNO8/2U4YQFrrNPegulPed07wpkeSVvlqsShzzaXJdhsz6L32PTvawfhttsjy3aa1ZrYss2iAo1wL9srVNqu5kgcnw1mupbpG8woNR6usYx5SEUgGS/8rwsuoYZajHy2NdWjMY4Tw6MGpVGpKYJVFw27Tce+FM3tQAicY30FslF+uHWRwcvy6XD1kMyE8IMjBuka4uzqjabdRovVAcPJ0xqe3XY6g91aD0Eh+soaHHG6MUQC3R6HUM47oR3vn+9Ky2OvHBtvMsNSbCAmNYnQTFfT/p7fo+5/dsk6+Wv9lgGpM0H8O1osnJ1p5CfqlvY8/hQ6J3EWfrAyXY5t9x51Tswt2GKTy0ozaWTaNMO9qA/eeH2Cp7/zD+Ua0fFD+ZQK32Sx/E40cdDWdesKyxlOz/BVnuCynzYRY0jTiIpp6VN3pEEQGAkQdLyS8RfbhSiMUJ2JpBDEqDpUBxYksKs7/VM+arCdiVG7rJLImOWuSE1kppA43FSfNqeBKV1pVRVGWVEfrOplBTfWtLPGX9kblhgwqDkb6u17T06Y35OM9oGb60YZQldKbSFVK9xqRdN+QUVXpaVNxkEFNgdodjJ+OgzuV5hQFTpXKjXqDaaSqKAR3Mb2jZUl0p8Q7PR/qLSmKqkojiKUzKAoKwbeRRqgMMAcKKYrwHXzzPcpv36l8/qe3+w1QSwMEFAAAAAgAqGQ3XZeKuxzAAAAAEwIAAAsAAABfcmVscy8ucmVsc52SuW7DMAxAf8XQnjAH0CGIM2XxFgT5AVaiD9gSBYpFnb+v2qVxkAsZeT08EtweaUDtOKS2i6kY/RBSaVrVuAFItiWPac6RQq7ULB41h9JARNtjQ7BaLD5ALhlmt71kFqdzpFeIXNedpT3bL09Bb4CvOkxxQmlISzMO8M3SfzL38ww1ReVKI5VbGnjT5f524EnRoSJYFppFydOiHaV/Hcf2kNPpr2MitHpb6PlxaFQKjtxjJYxxYrT+NYLJD+x+AFBLAwQUAAAACACoZDddZdt4J0cBAAApAgAADwAAAHhsL3dvcmtib29rLnhtbI1RQU7DMBD8SuQHkLSCSlRNL1RAJQQVRb27yaZZ1fZG9raFnnvrF3gF4sKbyiPYJIqoxIWTPbOr8cx4tCO/XhKto1drXEhVyVwN4zhkJVgdLqgCJ5OCvNUs0K/iUHnQeSgB2Jq4nySD2Gp0ajzqtGY+PgfEkDGSE7ImFgi78DuvYbTFgEs0yG+pau4GVGTRocU95KlKVBRK2t2Txz051maeeTImVb12sADPmP2h57XJF70MDcN6+azFSKoGiQgW6AM3G42+Fo9bkOUWbZhu0TD4iWa487Sp0K1qGUkRn8VoeujOtsSh/0+NVBSYwYSyjQXHbY8eTG3QhRKroCKnLaTq+/B++jicjp+n41cdS96Z5m1EFm9nhfkhysBP89ZlZy2HAh3kj6IWhJeaspmP6qPR6V9e9a6ljo0xN8I9uQfSeZe0+6XxD1BLAwQUAAAACACoZDddJB6boq0AAAD4AQAAGgAAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxztZE9DoMwDIWvEuUANVCpQwVMXVgrLhAF8yMSEsWuCrcvhQGQOnRhsp4tf+/JTp9oFHduoLbzJEZrBspky+zvAKRbtIouzuMwT2oXrOJZhga80r1qEJIoukHYM2Se7pminDz+Q3R13Wl8OP2yOPAPMLxd6KlFZClKFRrkTMJotjbBUuLLTJaiqDIZiiqWcFog4skgbWlWfbBPTrTneRc390WuzeMJrt8McHh0/gFQSwMEFAAAAAgAqGQ3XWWQeZIZAQAAzwMAABMAAABbQ29udGVudF9UeXBlc10ueG1srZNNTsMwEIWvEmVbJS4sWKCmG2ALXXABY08aq/6TZ1rS2zNO2kqgEhWFTax43rzPnpes3o8RsOid9diUHVF8FAJVB05iHSJ4rrQhOUn8mrYiSrWTWxD3y+WDUMETeKooe5Tr1TO0cm+peOl5G03wTZnAYlk8jcLMakoZozVKEtfFwesflOpEqLlz0GBnIi5YUIqrhFz5HXDqeztASkZDsZGJXqVjleitQDpawHra4soZQ9saBTqoveOWGmMCqbEDIGfr0XQxTSaeMIzPu9n8wWYKyMpNChE5sQR/x50jyd1VZCNIZKaveCGy9ez7QU5bg76RzeP9DGk35IFiWObP+HvGF/8bzvERwu6/P7G81k4af+aL4T9efwFQSwECFAMUAAAACACoZDddRsdNSJUAAADNAAAAEAAAAAAAAAAAAAAAgAEAAAAAZG9jUHJvcHMvYXBwLnhtbFBLAQIUAxQAAAAIAKhkN13DPwBm7wAAACsCAAARAAAAAAAAAAAAAACAAcMAAABkb2NQcm9wcy9jb3JlLnhtbFBLAQIUAxQAAAAIAKhkN12ZXJwjEAYAAJwnAAATAAAAAAAAAAAAAACAAeEBAAB4bC90aGVtZS90aGVtZTEueG1sUEsBAhQDFAAAAAgAqGQ3XQZVsAmRAQAACAMAABgAAAAAAAAAAAAAAICBIggAAHhsL3dvcmtzaGVldHMvc2hlZXQxLnhtbFBLAQIUAxQAAAAIAKhkN11886PcUQIAAPYJAAANAAAAAAAAAAAAAACAAekJAAB4bC9zdHlsZXMueG1sUEsBAhQDFAAAAAgAqGQ3XZeKuxzAAAAAEwIAAAsAAAAAAAAAAAAAAIABZQwAAF9yZWxzLy5yZWxzUEsBAhQDFAAAAAgAqGQ3XWXbeCdHAQAAKQIAAA8AAAAAAAAAAAAAAIABTg0AAHhsL3dvcmtib29rLnhtbFBLAQIUAxQAAAAIAKhkN10kHpuirQAAAPgBAAAaAAAAAAAAAAAAAACAAcIOAAB4bC9fcmVscy93b3JrYm9vay54bWwucmVsc1BLAQIUAxQAAAAIAKhkN11lkHmSGQEAAM8DAAATAAAAAAAAAAAAAACAAacPAABbQ29udGVudF9UeXBlc10ueG1sUEsFBgAAAAAJAAkAPgIAAPEQAAAAAA=="
+     },
+     "file_type": "xlsx",
+     "original_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+     "unresolved": [
+      "담당자",
+      "담당자 연락처"
+     ],
+     "db_ids": [
+      "polestar"
+     ]
+    },
+    "active_db_id": "polestar",
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "db_scope_source": "planned",
+    "dependency_notes": [
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다.\n\n| OS종류 | 호스트명 |\n|---|---|\n| LINUX | svr-was-06 |\n| LINUX | svr-web-06 |\n| Linux | svweb001 |\n| LINUX | hostapo02 |\n| null | null |\n| LINUX | svr-bkp-01 |\n| LINUX | svr-was-03 |\n| Linux | cob0-bnndbp01 |\n| LINUX | svr-app-01 |\n| LINUX | svr-was-08 |\n| LINUX | svr-web-10 |\n| LINUX | svr-app-03 |\n| Linux | cocm-hdkapp01 |\n| LINUX | svr-mon-01 |\n| Linux | cocm-ngcapo91 |\n| LINUX | svr-db-05 |\n| LINUX | svr-db-04 |\n| LINUX | svr-web-08 |\n| LINUX | svr-was-10 |\n| LINUX | svr-web-09 |\n\n참고사항\n- 조회된 데이터에는 `OS종류` 와 `호스트명` 컬럼만 포함되어 있으며, 기타 인프라 상세 정보 (CPU, 메모리, 사용률 등) 는 포함되지 않았습니다.\n- `OS종류` 컬럼에는 대소문자 차이가 있는 값 (LINUX, Linux) 과 `null` 값이 혼재되어 있습니다.\n\n---\n**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):\n  - 담당자\n  - 담당자 연락처\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+    "uploaded_file": {
+     "__bytes__": "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"
+    },
+    "file_type": "xlsx",
+    "parsed_requirements": {
+     "query_targets": [
+      "서버"
+     ],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "xlsx",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": [
+      "서버담당"
+     ],
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "synonym_registration": {
+      "mode": "all"
+     },
+     "original_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+     "_sheet_name": "서버담당"
+    },
+    "template_structure": {
+     "file_type": "xlsx",
+     "sheets": [
+      {
+       "name": "서버담당",
+       "headers": [
+        "호스트명",
+        "OS종류",
+        "담당자",
+        "담당자 연락처"
+       ],
+       "title_text": "",
+       "header_row": 1,
+       "data_start_row": 2,
+       "data_end_row": null,
+       "header_cells": [
+        {
+         "col": 1,
+         "value": "호스트명"
+        },
+        {
+         "col": 2,
+         "value": "OS종류"
+        },
+        {
+         "col": 3,
+         "value": "담당자"
+        },
+        {
+         "col": 4,
+         "value": "담당자 연락처"
+        }
+       ],
+       "header_block_rows": [
+        1
+       ],
+       "merged_cells": [],
+       "formula_cells": [],
+       "max_column": 4
+      }
+     ],
+     "placeholders": [],
+     "tables": []
+    },
+    "target_sheets": [
+     "서버담당"
+    ],
+    "csv_sheet_data": {
+     "서버담당": {
+      "sheet_name": "서버담당",
+      "headers": [
+       "호스트명",
+       "OS종류",
+       "담당자",
+       "담당자 연락처"
+      ],
+      "example_rows": [],
+      "csv_text": "호스트명,OS종류,담당자,담당자 연락처\r\n",
+      "header_row_index": 1,
+      "data_start_row": 2
+     }
+    },
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-06"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-06"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "svweb001"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "hostapo02"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-bkp-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-03"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cob0-bnndbp01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-app-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-08"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-10"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-app-03"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cocm-hdkapp01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-mon-01"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cocm-ngcapo91"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-05"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-04"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-08"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-10"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-09"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "AIX",
+      "호스트명": "svbatch009"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-04"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-app-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-01"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "cocm-xgzapp09"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-08"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-07"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-bat-02"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-06"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-03"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-05"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-10"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "sbhdbo53"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-09"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-log-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-bat-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-mid-01"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-04"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-02"
+     },
+     {
+      "OS종류": null,
+      "호스트명": null
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-web-07"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "hostapo01"
+     },
+     {
+      "OS종류": "Linux",
+      "호스트명": "dbora023"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-07"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-09"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-db-03"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-was-05"
+     },
+     {
+      "OS종류": "LINUX",
+      "호스트명": "svr-mid-02"
+     }
+    ],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": 10000,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": {
+     "OS종류": "EAV:OSType",
+     "호스트명": "EAV:Hostname",
+     "담당자": null,
+     "담당자 연락처": null
+    },
+    "db_column_mapping": {
+     "polestar": {
+      "OS종류": "EAV:OSType",
+      "호스트명": "EAV:Hostname"
+     }
+    },
+    "mapping_sources": {
+     "OS종류": "eav_synonym",
+     "호스트명": "eav_synonym"
+    },
+    "mapped_db_ids": [
+     "polestar"
+    ],
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": "# 필드 매핑 보고서\n\n> 생성일시: 2026-09-23 13:05:08\n> 원본 양식: (알 수 없음)\n> 매핑 성공: 2/4 필드 (50%)\n\n## 매핑 결과 요약\n\n| # | 양식 필드 | 매핑 대상 | DB | 매핑 방법 | 신뢰도 |\n|---|----------|----------|-----|----------|--------|\n| 1 | 호스트명 | EAV:Hostname | polestar | eav_synonym | - |\n| 2 | OS종류 | EAV:OSType | polestar | eav_synonym | - |\n| 3 | 담당자 | (매핑 불가) | - | - | - |\n| 4 | 담당자 연락처 | (매핑 불가) | - | - | - |\n\n## 피드백 안내\n\n매핑을 수정하려면 이 파일을 다운로드하여 '매핑 결과 요약' 테이블을 직접 편집한 후 업로드하세요.\n- 매핑 대상 컬럼을 수정하면 Redis에 반영됩니다.\n- 행을 삭제하면 해당 매핑이 Redis에서 제거됩니다.\n- 매핑 불가 항목에 컬럼을 추가하면 새 매핑이 등록됩니다.\n",
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": {
+     "uploaded_file": {
+      "__bytes__": "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"
+     },
+     "file_type": "xlsx",
+     "original_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+     "unresolved": [
+      "담당자",
+      "담당자 연락처"
+     ],
+     "db_ids": [
+      "polestar"
+     ]
+    },
+    "form_fill_clarification": {
+     "question": "채우지 못한 항목이 2건 있습니다. 각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요. '?'만 입력하면 이 양식에 저장된 값을 조회합니다.",
+     "fields": [
+      {
+       "name": "담당자",
+       "label": "담당자"
+      },
+      {
+       "name": "담당자 연락처",
+       "label": "담당자 연락처"
+      }
+     ],
+     "candidates": [
+      {
+       "value": "column:avail_status",
+       "label": "cmm_resource.avail_status",
+       "kind": "column"
+      },
+      {
+       "value": "column:description",
+       "label": "cmm_resource.description — 리소스 설명(비고)",
+       "kind": "column"
+      },
+      {
+       "value": "column:group_path",
+       "label": "cmm_resource.group_path",
+       "kind": "column"
+      },
+      {
+       "value": "column:hostname",
+       "label": "cmm_resource.hostname — OS가 인식하는 실제 호스트명",
+       "kind": "column"
+      },
+      {
+       "value": "column:id_ancestry",
+       "label": "cmm_resource.id_ancestry",
+       "kind": "column"
+      },
+      {
+       "value": "column:identifier",
+       "label": "cmm_resource.identifier",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_avail_depend",
+       "label": "cmm_resource.is_inherit_avail_depend",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_custom_conf",
+       "label": "cmm_resource.is_inherit_custom_conf",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_manager_zone",
+       "label": "cmm_resource.is_inherit_manager_zone",
+       "kind": "column"
+      },
+      {
+       "value": "column:invisible",
+       "label": "cmm_resource.invisible",
+       "kind": "column"
+      },
+      {
+       "value": "column:ipaddress",
+       "label": "cmm_resource.ipaddress — IP 주소",
+       "kind": "column"
+      },
+      {
+       "value": "column:lc",
+       "label": "cmm_resource.lc",
+       "kind": "column"
+      },
+      {
+       "value": "column:location",
+       "label": "cmm_resource.location",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_maintenance",
+       "label": "cmm_resource.is_maintenance",
+       "kind": "column"
+      },
+      {
+       "value": "column:manager_zone",
+       "label": "cmm_resource.manager_zone",
+       "kind": "column"
+      },
+      {
+       "value": "column:modifiedby",
+       "label": "cmm_resource.modifiedby",
+       "kind": "column"
+      },
+      {
+       "value": "column:name",
+       "label": "cmm_resource.name — VM명 — 폴스타 등록 이름(서버 식별 대표 칼럼)",
+       "kind": "column"
+      },
+      {
+       "value": "column:optlock",
+       "label": "cmm_resource.optlock",
+       "kind": "column"
+      },
+      {
+       "value": "column:order_num",
+       "label": "cmm_resource.order_num",
+       "kind": "column"
+      },
+      {
+       "value": "column:pollingpolicy",
+       "label": "cmm_resource.pollingpolicy",
+       "kind": "column"
+      },
+      {
+       "value": "column:priority",
+       "label": "cmm_resource.priority",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourceicon",
+       "label": "cmm_resource.resourceicon",
+       "kind": "column"
+      },
+      {
+       "value": "column:resource_key",
+       "label": "cmm_resource.resource_key",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourcestatus",
+       "label": "cmm_resource.resourcestatus",
+       "kind": "column"
+      },
+      {
+       "value": "column:resource_type",
+       "label": "cmm_resource.resource_type",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourcetypeversion",
+       "label": "cmm_resource.resourcetypeversion",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_sync_desc",
+       "label": "cmm_resource.is_sync_desc",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_sync_name",
+       "label": "cmm_resource.is_sync_name",
+       "kind": "column"
+      },
+      {
+       "value": "column:uuid",
+       "label": "cmm_resource.uuid",
+       "kind": "column"
+      },
+      {
+       "value": "column:version",
+       "label": "cmm_resource.version",
+       "kind": "column"
+      },
+      {
+       "value": "column:system",
+       "label": "cmm_resource.system",
+       "kind": "column"
+      },
+      {
+       "value": "column:avail_depend_resource_id_2",
+       "label": "cmm_resource.avail_depend_resource_id_2",
+       "kind": "column"
+      },
+      {
+       "value": "eav:OSType",
+       "label": "OSType — 운영체제 종류 (예: Linux, Windows)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:OSVerson",
+       "label": "OSVerson — 운영체제 버전 (주의: Polestar 제품 오탈자 반영)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:OSParameter",
+       "label": "OSParameter — OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PatchLevel",
+       "label": "PatchLevel — OS 패치 레벨 / 커널 버전",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Vendor",
+       "label": "Vendor — 서버 제조사 (예: Dell, HP)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Model",
+       "label": "Model — 서버 모델명",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SerialNumber",
+       "label": "SerialNumber — 시리얼 번호",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Hostname",
+       "label": "Hostname — 호스트명 (EAV). '서버명/서버 이름'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지. hostname 값은 직접 컬럼(cmm_resource.hostname) 사용",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:IPaddress",
+       "label": "IPaddress — IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:GMT",
+       "label": "GMT — 시간대 (GMT offset)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:AgentID",
+       "label": "AgentID — 모니터링 에이전트 ID",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:AgentVersion",
+       "label": "AgentVersion — 에이전트 버전",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:InstallPath",
+       "label": "InstallPath — 에이전트 설치 경로",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MODEL",
+       "label": "MODEL — CPU 모델명 (예: Intel Xeon Gold 6248R)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:LOGICALCORE",
+       "label": "LOGICALCORE — 논리 CPU 코어 수 (하이퍼스레딩 포함)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PHYSICALCORE",
+       "label": "PHYSICALCORE — 물리 CPU 코어 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PHYSICALCPU",
+       "label": "PHYSICALCPU — 물리 CPU 소켓 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SPEED",
+       "label": "SPEED — CPU 클럭 속도 MHz (예: 2100.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:HYPERTHREADING",
+       "label": "HYPERTHREADING — 하이퍼스레딩 활성 여부 (on/off)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:TotalSize",
+       "label": "TotalSize — 총 물리 메모리 크기 (예: 62.1 GB)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SwapTotalSize",
+       "label": "SwapTotalSize — Swap 메모리 총 크기 (예: 3.9 GB)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:DiskCount",
+       "label": "DiskCount — 디스크 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:IP",
+       "label": "IP — 네트워크 인터페이스 IP 주소",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MAC",
+       "label": "MAC — MAC 주소 (예: b4:96:91:0e:bd:a6)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:BANDW",
+       "label": "BANDW — 대역폭 (예: 10 Gb)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MTU",
+       "label": "MTU — MTU 크기 (예: 1500.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:NETMASK",
+       "label": "NETMASK — 서브넷 마스크 (예: 255.255.255.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:STATUS",
+       "label": "STATUS — 인터페이스 상태 (UP/DOWN)",
+       "kind": "eav"
+      }
+     ]
+    },
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": "4f66fba8ce04a2cd",
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "active_db_id": "polestar",
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "zone_clarification_allowed": false,
+    "zone_clarification": null,
+    "db_scope_source": "planned",
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘"
+     },
+     {
+      "__msg__": "ai",
+      "content": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다.\n\n| OS종류 | 호스트명 |\n|---|---|\n| LINUX | svr-was-06 |\n| LINUX | svr-web-06 |\n| Linux | svweb001 |\n| LINUX | hostapo02 |\n| null | null |\n| LINUX | svr-bkp-01 |\n| LINUX | svr-was-03 |\n| Linux | cob0-bnndbp01 |\n| LINUX | svr-app-01 |\n| LINUX | svr-was-08 |\n| LINUX | svr-web-10 |\n| LINUX | svr-app-03 |\n| Linux | cocm-hdkapp01 |\n| LINUX | svr-mon-01 |\n| Linux | cocm-ngcapo91 |\n| LINUX | svr-db-05 |\n| LINUX | svr-db-04 |\n| LINUX | svr-web-08 |\n| LINUX | svr-was-10 |\n| LINUX | svr-web-09 |\n\n참고사항\n- 조회된 데이터에는 `OS종류` 와 `호스트명` 컬럼만 포함되어 있으며, 기타 인프라 상세 정보 (CPU, 메모리, 사용률 등) 는 포함되지 않았습니다.\n- `OS종류` 컬럼에는 대소문자 차이가 있는 값 (LINUX, Linux) 과 `null` 값이 혼재되어 있습니다.\n\n---\n**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):\n  - 담당자\n  - 담당자 연락처\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "thread_id": "e45df10b-702e-4582-9fa8-bd846761a9df",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [
+     "polestar"
+    ],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "final_response": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다.\n\n| OS종류 | 호스트명 |\n|---|---|\n| LINUX | svr-was-06 |\n| LINUX | svr-web-06 |\n| Linux | svweb001 |\n| LINUX | hostapo02 |\n| null | null |\n| LINUX | svr-bkp-01 |\n| LINUX | svr-was-03 |\n| Linux | cob0-bnndbp01 |\n| LINUX | svr-app-01 |\n| LINUX | svr-was-08 |\n| LINUX | svr-web-10 |\n| LINUX | svr-app-03 |\n| Linux | cocm-hdkapp01 |\n| LINUX | svr-mon-01 |\n| Linux | cocm-ngcapo91 |\n| LINUX | svr-db-05 |\n| LINUX | svr-db-04 |\n| LINUX | svr-web-08 |\n| LINUX | svr-was-10 |\n| LINUX | svr-web-09 |\n\n참고사항\n- 조회된 데이터에는 `OS종류` 와 `호스트명` 컬럼만 포함되어 있으며, 기타 인프라 상세 정보 (CPU, 메모리, 사용률 등) 는 포함되지 않았습니다.\n- `OS종류` 컬럼에는 대소문자 차이가 있는 값 (LINUX, Linux) 과 `null` 값이 혼재되어 있습니다.\n\n---\n**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):\n  - 담당자\n  - 담당자 연락처\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "output_file": {
+     "__bytes__": "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"
+    },
+    "output_file_name": "result_20260923_130646.xlsx",
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed",
+      "db_ids": [
+       "polestar"
+      ]
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 54건의 데이터를 조회했습니다. 조회 대상: 서버.",
+       "rows": [
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-06"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-06"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "svweb001"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "hostapo02"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-bkp-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-03"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cob0-bnndbp01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-app-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-08"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-10"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-app-03"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cocm-hdkapp01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-mon-01"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cocm-ngcapo91"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-05"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-04"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-08"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-10"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-09"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "AIX",
+         "호스트명": "svbatch009"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-04"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-app-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-01"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "cocm-xgzapp09"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-08"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-07"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-bat-02"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-06"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-03"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-05"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-10"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "sbhdbo53"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-09"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-log-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-bat-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-mid-01"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-04"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-02"
+        },
+        {
+         "OS종류": null,
+         "호스트명": null
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-web-07"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "hostapo01"
+        },
+        {
+         "OS종류": "Linux",
+         "호스트명": "dbora023"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-07"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-09"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-db-03"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-was-05"
+        },
+        {
+         "OS종류": "LINUX",
+         "호스트명": "svr-mid-02"
+        }
+       ],
+       "column_mapping": {
+        "OS종류": "EAV:OSType",
+        "호스트명": "EAV:Hostname",
+        "담당자": null,
+        "담당자 연락처": null
+       },
+       "resolved_mapping": {
+        "OS종류": "OS종류",
+        "호스트명": "호스트명",
+        "담당자": null,
+        "담당자 연락처": null
+       },
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-06"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-06"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "svweb001"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "hostapo02"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-bkp-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-03"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cob0-bnndbp01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-app-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-08"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-10"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-app-03"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cocm-hdkapp01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-mon-01"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cocm-ngcapo91"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-05"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-04"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-08"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-10"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-09"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "AIX",
+        "호스트명": "svbatch009"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-04"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-app-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-01"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "cocm-xgzapp09"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-08"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-07"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-bat-02"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-06"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-03"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-05"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-10"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "sbhdbo53"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-09"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-log-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-bat-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-mid-01"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-04"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-02"
+       },
+       {
+        "OS종류": null,
+        "호스트명": null
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-web-07"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "hostapo01"
+       },
+       {
+        "OS종류": "Linux",
+        "호스트명": "dbora023"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-07"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-09"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-db-03"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-was-05"
+       },
+       {
+        "OS종류": "LINUX",
+        "호스트명": "svr-mid-02"
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 1.0,
+        "sub_query_context": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+        "user_specified": false,
+        "reason": "필드 매핑 결과에서 식별된 DB"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "form_fill_candidates": [
+       {
+        "value": "column:avail_status",
+        "label": "cmm_resource.avail_status",
+        "kind": "column"
+       },
+       {
+        "value": "column:description",
+        "label": "cmm_resource.description — 리소스 설명(비고)",
+        "kind": "column"
+       },
+       {
+        "value": "column:group_path",
+        "label": "cmm_resource.group_path",
+        "kind": "column"
+       },
+       {
+        "value": "column:hostname",
+        "label": "cmm_resource.hostname — OS가 인식하는 실제 호스트명",
+        "kind": "column"
+       },
+       {
+        "value": "column:id_ancestry",
+        "label": "cmm_resource.id_ancestry",
+        "kind": "column"
+       },
+       {
+        "value": "column:identifier",
+        "label": "cmm_resource.identifier",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_inherit_avail_depend",
+        "label": "cmm_resource.is_inherit_avail_depend",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_inherit_custom_conf",
+        "label": "cmm_resource.is_inherit_custom_conf",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_inherit_manager_zone",
+        "label": "cmm_resource.is_inherit_manager_zone",
+        "kind": "column"
+       },
+       {
+        "value": "column:invisible",
+        "label": "cmm_resource.invisible",
+        "kind": "column"
+       },
+       {
+        "value": "column:ipaddress",
+        "label": "cmm_resource.ipaddress — IP 주소",
+        "kind": "column"
+       },
+       {
+        "value": "column:lc",
+        "label": "cmm_resource.lc",
+        "kind": "column"
+       },
+       {
+        "value": "column:location",
+        "label": "cmm_resource.location",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_maintenance",
+        "label": "cmm_resource.is_maintenance",
+        "kind": "column"
+       },
+       {
+        "value": "column:manager_zone",
+        "label": "cmm_resource.manager_zone",
+        "kind": "column"
+       },
+       {
+        "value": "column:modifiedby",
+        "label": "cmm_resource.modifiedby",
+        "kind": "column"
+       },
+       {
+        "value": "column:name",
+        "label": "cmm_resource.name — VM명 — 폴스타 등록 이름(서버 식별 대표 칼럼)",
+        "kind": "column"
+       },
+       {
+        "value": "column:optlock",
+        "label": "cmm_resource.optlock",
+        "kind": "column"
+       },
+       {
+        "value": "column:order_num",
+        "label": "cmm_resource.order_num",
+        "kind": "column"
+       },
+       {
+        "value": "column:pollingpolicy",
+        "label": "cmm_resource.pollingpolicy",
+        "kind": "column"
+       },
+       {
+        "value": "column:priority",
+        "label": "cmm_resource.priority",
+        "kind": "column"
+       },
+       {
+        "value": "column:resourceicon",
+        "label": "cmm_resource.resourceicon",
+        "kind": "column"
+       },
+       {
+        "value": "column:resource_key",
+        "label": "cmm_resource.resource_key",
+        "kind": "column"
+       },
+       {
+        "value": "column:resourcestatus",
+        "label": "cmm_resource.resourcestatus",
+        "kind": "column"
+       },
+       {
+        "value": "column:resource_type",
+        "label": "cmm_resource.resource_type",
+        "kind": "column"
+       },
+       {
+        "value": "column:resourcetypeversion",
+        "label": "cmm_resource.resourcetypeversion",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_sync_desc",
+        "label": "cmm_resource.is_sync_desc",
+        "kind": "column"
+       },
+       {
+        "value": "column:is_sync_name",
+        "label": "cmm_resource.is_sync_name",
+        "kind": "column"
+       },
+       {
+        "value": "column:uuid",
+        "label": "cmm_resource.uuid",
+        "kind": "column"
+       },
+       {
+        "value": "column:version",
+        "label": "cmm_resource.version",
+        "kind": "column"
+       },
+       {
+        "value": "column:system",
+        "label": "cmm_resource.system",
+        "kind": "column"
+       },
+       {
+        "value": "column:avail_depend_resource_id_2",
+        "label": "cmm_resource.avail_depend_resource_id_2",
+        "kind": "column"
+       },
+       {
+        "value": "eav:OSType",
+        "label": "OSType — 운영체제 종류 (예: Linux, Windows)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:OSVerson",
+        "label": "OSVerson — 운영체제 버전 (주의: Polestar 제품 오탈자 반영)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:OSParameter",
+        "label": "OSParameter — OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:PatchLevel",
+        "label": "PatchLevel — OS 패치 레벨 / 커널 버전",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:Vendor",
+        "label": "Vendor — 서버 제조사 (예: Dell, HP)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:Model",
+        "label": "Model — 서버 모델명",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:SerialNumber",
+        "label": "SerialNumber — 시리얼 번호",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:Hostname",
+        "label": "Hostname — 호스트명 (EAV). '서버명/서버 이름'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지. hostname 값은 직접 컬럼(cmm_resource.hostname) 사용",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:IPaddress",
+        "label": "IPaddress — IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:GMT",
+        "label": "GMT — 시간대 (GMT offset)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:AgentID",
+        "label": "AgentID — 모니터링 에이전트 ID",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:AgentVersion",
+        "label": "AgentVersion — 에이전트 버전",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:InstallPath",
+        "label": "InstallPath — 에이전트 설치 경로",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:MODEL",
+        "label": "MODEL — CPU 모델명 (예: Intel Xeon Gold 6248R)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:LOGICALCORE",
+        "label": "LOGICALCORE — 논리 CPU 코어 수 (하이퍼스레딩 포함)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:PHYSICALCORE",
+        "label": "PHYSICALCORE — 물리 CPU 코어 수",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:PHYSICALCPU",
+        "label": "PHYSICALCPU — 물리 CPU 소켓 수",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:SPEED",
+        "label": "SPEED — CPU 클럭 속도 MHz (예: 2100.0)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:HYPERTHREADING",
+        "label": "HYPERTHREADING — 하이퍼스레딩 활성 여부 (on/off)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:TotalSize",
+        "label": "TotalSize — 총 물리 메모리 크기 (예: 62.1 GB)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:SwapTotalSize",
+        "label": "SwapTotalSize — Swap 메모리 총 크기 (예: 3.9 GB)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:DiskCount",
+        "label": "DiskCount — 디스크 수",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:IP",
+        "label": "IP — 네트워크 인터페이스 IP 주소",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:MAC",
+        "label": "MAC — MAC 주소 (예: b4:96:91:0e:bd:a6)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:BANDW",
+        "label": "BANDW — 대역폭 (예: 10 Gb)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:MTU",
+        "label": "MTU — MTU 크기 (예: 1500.0)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:NETMASK",
+        "label": "NETMASK — 서브넷 마스크 (예: 255.255.255.0)",
+        "kind": "eav"
+       },
+       {
+        "value": "eav:STATUS",
+        "label": "STATUS — 인터페이스 상태 (UP/DOWN)",
+        "kind": "eav"
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "planned",
+      "generated_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='OSType' THEN cc.stringvalue_short END) AS \"OS종류\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='Hostname' THEN cc.stringvalue_short END) AS \"호스트명\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nWHERE c.resource_type IN ('server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nLIMIT 10000;"
+     }
+    },
+    "is_composite": false,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": [
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "replan_count": 0,
+    "needs_replan": false,
+    "replan_history": [],
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

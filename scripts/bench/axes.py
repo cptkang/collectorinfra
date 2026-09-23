@@ -29,7 +29,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from scripts.bench import catalog
 
@@ -92,6 +92,10 @@ class AxisCandidate:
     #: 구조 축인가 — 노드 집합 자체를 바꿔 **다른 축의 효과를 조건부로 만든다**(plans/114 M-0).
     #: 캠페인은 구조 축을 첫 구간에 둔다.
     structural: bool = False
+    #: 소비처가 **전부** 이 단 전용 모듈이다(plans/118 B-3 ② · `TIER_EXCLUSIVE_MODULES`).
+    #: 기준선 단이 이 단이 아니면 `sweep.ConfigSnapshot.unreachable_arms` 가 도달 불가로 뺀다.
+    tier_only: Optional[str] = None
+    consumers: tuple[str, ...] = ()
 
     @property
     def multi_key(self) -> bool:
@@ -150,8 +154,11 @@ class AxisDecision:
 
     env_key: str
     included: bool
-    stage: str      # F0(구조 축) | F1 | F2
+    stage: str      # F0(구조 축) | F1 | F2 | F3(소비처 · plans/118 B-3)
     reason: str
+    #: F3 제외 축이 **제외되지 않았다면** 받았을 등급(primary·secondary). 캠페인이 같은 등급의
+    #: 제외 축만 「미측정」 행으로 싣는다(118 B-3 ③). 다른 단계에서는 None.
+    tier: Optional[str] = None
 
 
 # ── 구조 축 — 사다리 단 (plans/114 M-0 · D-250 ① · `109·CS-31` X1) ────────────
@@ -243,6 +250,176 @@ def find_axis(axis_id: str, candidates: Optional[Sequence[AxisCandidate]] = None
     return next((a for a in candidates if a.env_key == axis_id), None)
 
 
+# ── 소비처 정적 판정 (plans/118 B-3) ─────────────────────────────────────
+
+
+#: 소비처를 세는 패키지 — 설정을 읽어 **동작을 바꾸는** 코드가 사는 곳이다(`plans/118` §2.5).
+#: 패키지 안의 `tests/`·`scripts/` 는 제품 동작이 아니므로 뺀다(arch_check 와 같은 경계).
+CONSUMER_ROOTS: tuple[str, ...] = ("src", "noise_gate")
+
+#: 필드명이 나와도 **소비처가 아닌** 모듈 — 저장소 루트 기준 경로.
+#:
+#: - `src/config.py` — 정의다.
+#: - `src/observability/investigation_metrics.py` — 기동 로그 에코다(값을 읽지만 동작을 바꾸지
+#:   않는다 · 118 §1 ①의 오인 원천).
+#: - `src/api/settings_catalog.py` — 전 필드를 `getattr(holder, spec.field_name)` 로 **일괄**
+#:   읽는 설정 화면·리로드 diff 인트로스펙션이다. 소비처로 세면 모든 필드가 「동적 접근」이
+#:   되어 판정 자체가 사라진다(계획서 목록 밖 — 118 §4 랜딩 기록에 적는다).
+NON_CONSUMER_MODULES: frozenset[str] = frozenset({
+    "src/config.py",
+    "src/observability/investigation_metrics.py",
+    "src/api/settings_catalog.py",
+})
+
+#: **단 전용 모듈** → 그 모듈이 도는 사다리 단(`ladder.LadderTier` 값). 짧은 명시 표다 —
+#: import 그래프로 추정하지 않는다(M-3 원칙: 모르는 것은 판정하지 않는다). 소비처가 **전부**
+#: 이 표의 같은 단 모듈이면 그 축은 그 단이 아닐 때 도달 불가다(`sweep.ConfigSnapshot`).
+TIER_EXCLUSIVE_MODULES: Mapping[str, str] = {
+    "src/orchestration/deepagents_tools.py": "deep_agent",
+    "src/orchestration/deep_agent.py": "deep_agent",
+}
+
+#: 설정 루트(AppConfig)를 가리키는 관용 이름 — `general` 그룹 필드의 동적 접근 판정에 쓴다.
+_ROOT_CONFIG_NAMES: frozenset[str] = frozenset({"config", "app_config", "cfg", "settings"})
+
+
+@dataclass(frozen=True)
+class ConsumerIndex:
+    """AST 로 모은 설정 읽기 흔적 — 판정은 `consumers_of()` 가 한다."""
+
+    #: 이름(속성 이름·문자열 상수) → 그 이름을 읽는 모듈 경로 집합
+    reads: Mapping[str, frozenset[str]]
+    #: 동적 접근 지점 `(모듈 경로, 행, 대상 식의 식별자들, 모듈이 속성으로 쓰는 이름들)`
+    dynamic: tuple[tuple[str, int, frozenset[str], frozenset[str]], ...] = ()
+
+
+@dataclass(frozen=True)
+class ConsumerVerdict:
+    """축 1개의 소비처 판정."""
+
+    modules: tuple[str, ...]            # 소비 모듈(정렬)
+    undetermined: Optional[str] = None  # 판정하지 않는 사유(동적 접근) — 있으면 종전대로 잰다
+    tier_only: Optional[str] = None     # 소비처가 전부 이 단 전용 모듈이다
+
+    @property
+    def none(self) -> bool:
+        return not self.modules and self.undetermined is None
+
+
+def _docstring_nodes(tree: Any) -> set[int]:
+    """모듈·클래스·함수 독스트링 상수 노드의 id — 소비처로 세지 않는다(118 §2.5 오탐 사례)."""
+    import ast
+
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", [])
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                out.add(id(body[0].value))
+    return out
+
+
+def _identifiers(node: Any) -> frozenset[str]:
+    import ast
+
+    names: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            names.add(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            names.add(sub.attr)
+    return frozenset(names)
+
+
+def scan_consumers(root: Optional[Any] = None,
+                   packages: Sequence[str] = CONSUMER_ROOTS) -> ConsumerIndex:
+    """`packages` 아래 `.py` 를 AST 로 읽어 **읽기 형태 3종**을 모은다(정규식 grep 금지 — 118 B-3).
+
+    1. 속성 접근 `x.field` (Load 문맥만 — 대입은 읽기가 아니다)
+    2. `getattr(x, "field")` — 문자열 상수라 3에 포함된다
+    3. 필드명 문자열 상수 — `_KNOWLEDGE_RENDER_FIELD = "prompt_knowledge_render"` 형태.
+       **독스트링은 뺀다**(`process_query.py:230` 이 필드를 언급만 한다).
+
+    `getattr`·`hasattr` 의 이름 인자가 상수가 아니면 동적 접근으로 따로 남긴다. 단 그 인자가
+    **같은 모듈의 문자열 상수 이름**이면 3에서 이미 셌으므로 동적으로 보지 않는다.
+    """
+    import ast
+    from pathlib import Path
+
+    base = Path(root) if root is not None else Path(__file__).resolve().parent.parent.parent
+    reads: dict[str, set[str]] = {}
+    dynamic: list[tuple[str, int, frozenset[str], frozenset[str]]] = []
+    for package in packages:
+        for path in sorted((base / package).rglob("*.py")):
+            rel = path.relative_to(base).as_posix()
+            parts = rel.split("/")
+            if "tests" in parts[1:] or "scripts" in parts[1:] or rel in NON_CONSUMER_MODULES:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            docs = _docstring_nodes(tree)
+            consts = {t.id for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                      and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+                      for t in node.targets if isinstance(t, ast.Name)}
+            attrs: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                    reads.setdefault(node.attr, set()).add(rel)
+                    attrs.add(node.attr)
+                elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                      and id(node) not in docs and node.value.isidentifier()):
+                    reads.setdefault(node.value, set()).add(rel)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in ("getattr", "hasattr") and len(node.args) >= 2):
+                    name_arg = node.args[1]
+                    if isinstance(name_arg, ast.Constant):
+                        continue
+                    if isinstance(name_arg, ast.Name) and name_arg.id in consts:
+                        continue
+                    dynamic.append((rel, node.lineno, _identifiers(node.args[0]),
+                                    frozenset(attrs)))
+    return ConsumerIndex(reads={k: frozenset(v) for k, v in reads.items()},
+                         dynamic=tuple(dynamic))
+
+
+_CONSUMER_INDEX: Optional[ConsumerIndex] = None
+
+
+def consumer_index() -> ConsumerIndex:
+    """저장소 소비처 색인(프로세스당 1회 · 약 1~2초)."""
+    global _CONSUMER_INDEX
+    if _CONSUMER_INDEX is None:
+        _CONSUMER_INDEX = scan_consumers()
+    return _CONSUMER_INDEX
+
+
+def consumers_of(knob: catalog.KnobSpec, index: ConsumerIndex) -> ConsumerVerdict:
+    """이 노브의 소비 모듈 · 동적 접근으로 판정 불가 사유 · 단 전용 여부."""
+    modules = set(index.reads.get(knob.field_name, frozenset()))
+    modules |= index.reads.get(knob.env_key, frozenset())      # os.getenv("KEY") 등
+    tier_only: Optional[str] = None
+    if modules:
+        tiers = {TIER_EXCLUSIVE_MODULES.get(m) for m in modules}
+        if len(tiers) == 1 and None not in tiers:
+            tier_only = next(iter(tiers))
+        return ConsumerVerdict(modules=tuple(sorted(modules)), tier_only=tier_only)
+    # 정적 읽기가 0건이다 — 이 그룹을 동적으로 읽는 지점이 있으면 판정하지 않는다(추정 금지).
+    general = knob.group_key == "general"
+    for rel, line, target, module_attrs in index.dynamic:
+        hit = (bool(target & _ROOT_CONFIG_NAMES) if general
+               else knob.group_key in target or knob.group_key in module_attrs)
+        if hit:
+            return ConsumerVerdict(modules=(), undetermined=(
+                f"정적 읽기 0건이지만 `{rel}:{line}` 이 이 그룹을 동적으로 읽을 수 있다 — "
+                "판정하지 않는다(종전대로 잰다)"))
+    return ConsumerVerdict(modules=())
+
+
 def _impact_paths(knob: catalog.KnobSpec) -> tuple[str, ...]:
     """이 노브가 닿는 영향 경로."""
     haystack = f"{knob.env_key} {knob.field_name}".lower()
@@ -287,8 +464,17 @@ def select_axes(
     knobs: Optional[Iterable[catalog.KnobSpec]] = None,
     *,
     include_structural: Optional[bool] = None,
+    consumers: Optional[ConsumerIndex] = None,
+    check_consumers: Optional[bool] = None,
 ) -> tuple[list[AxisCandidate], list[AxisDecision]]:
     """축을 자동으로 뽑고 전 판정을 함께 돌려준다.
+
+    **F3 소비처 판정**(plans/118 B-3) — F2 를 통과한 노브의 설정 필드를 읽는 코드를 AST 로 센다
+    (`scan_consumers`). 소비처가 0 이면 「소비처 없음」으로 제외한다 — 값을 바꿔도 동작이 같은
+    A/A 축이 구간을 통째로 쓰지 않게 한다(run `20260922-162132` 5.47시간). 소비처가 전부 단 전용
+    모듈이면 축은 남기고 `tier_only` 를 단다(도달 여부는 기준선 단을 아는 스냅샷이 정한다).
+    `check_consumers` 기본값은 `include_structural` 과 같은 규칙(**`knobs` 를 주지 않았을 때만**)
+    이다 — 가짜 노브로 부른 단위 테스트가 저장소 코드에 묶이지 않게 한다.
 
     카탈로그 밖의 **구조 축**(사다리 단 · F0)을 맨 앞에 붙인다. 그 축은 노브 하나가 아니라
     3키 묶음이라 F1·F2 선별을 지나지 않는다.
@@ -298,6 +484,8 @@ def select_axes(
     """
     if include_structural is None:
         include_structural = knobs is None
+    if check_consumers is None:
+        check_consumers = knobs is None or consumers is not None
     knobs = list(knobs) if knobs is not None else catalog.load_knobs()
     kept, dropped = catalog.f1_filter(knobs)
 
@@ -335,13 +523,27 @@ def select_axes(
             ))
             continue
         tier = "secondary" if _is_cap(knob) else "primary"
+        verdict = (consumers_of(knob, consumers if consumers is not None else consumer_index())
+                   if check_consumers else None)
+        if verdict is not None and verdict.none:
+            decisions.append(AxisDecision(
+                env_key=knob.env_key, included=False, stage="F3", tier=tier,
+                reason=(f"소비처 없음 — `{knob.group_key}.{knob.field_name}` 을 읽는 코드가 "
+                        f"{'·'.join(CONSUMER_ROOTS)} 에 0건이다(정의·기동 에코 제외 · AST 판정). "
+                        "값을 바꿔도 동작이 같다(plans/118 B-3)")))
+            continue
         if tier == "secondary":
             rationale = (f"영향 경로 {'·'.join(paths)} · **상한·예산** — 정상 경로에서는 발동하지 않아 2차 축")
         else:
             rationale = f"영향 경로 {'·'.join(paths)} — 동작 모드를 바꾼다"
+        if verdict is not None and verdict.tier_only:
+            rationale += (f" · 소비처가 `{verdict.tier_only}` 단 전용 모듈뿐이다"
+                          f"({', '.join(verdict.modules)})")
         axes.append(AxisCandidate(
             env_key=knob.env_key, group_key=knob.group_key, type=knob.type,
             levels=levels, impact_paths=paths, rationale=rationale, tier=tier,
+            tier_only=verdict.tier_only if verdict is not None else None,
+            consumers=verdict.modules if verdict is not None else (),
         ))
         decisions.append(AxisDecision(
             env_key=knob.env_key, included=True, stage="F2", reason=rationale))
@@ -349,6 +551,22 @@ def select_axes(
     axes.sort(key=lambda a: (a.tier != "primary", -len(a.impact_paths), a.env_key))
     # 구조 축이 맨 앞이다 — 캠페인이 첫 구간으로 뽑는 것과 같은 순서를 화면에서도 본다.
     return structural + axes, decisions
+
+
+def consumer_exclusions(tier: str = "primary") -> dict[str, str]:
+    """F3 로 제외된 축 → 사유 — 계획 표·합산 판정표의 「미측정」 행 원천(plans/118 B-3 ③).
+
+    `tier` 는 `sweep.build_arms` 와 같은 규칙이다(`all` 이면 전 등급).
+    """
+    _, decisions = select_axes()
+    return {d.env_key: d.reason for d in decisions
+            if d.stage == "F3" and not d.included and (tier == "all" or d.tier == tier)}
+
+
+def tier_exclusive_axes() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """축 id → (그 축만 소비하는 단, 소비 모듈) — 단 전용 축만(plans/118 B-3 ②)."""
+    axes, _ = select_axes()
+    return {a.env_key: (a.tier_only, a.consumers) for a in axes if a.tier_only}
 
 
 def expand_ofat(axes: Sequence[AxisCandidate], *, baseline_label: str = "baseline") -> list[dict]:

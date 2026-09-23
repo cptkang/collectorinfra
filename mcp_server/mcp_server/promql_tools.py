@@ -439,7 +439,10 @@ def _with_openmetrics_hint(result: str) -> str:
 
 
 def register_promql_tools(
-    mcp: FastMCP, expose_raw_promql: bool = False, openmetrics_hint: bool = False
+    mcp: FastMCP,
+    expose_raw_promql: bool = False,
+    openmetrics_hint: bool = False,
+    source_ladder: bool = False,
 ) -> None:
     """PromQL 조사 도구를 MCP 서버에 등록한다.
 
@@ -453,7 +456,18 @@ def register_promql_tools(
         openmetrics_hint: True면 고수준 2종의 URL 미설정 오류에 OpenMetrics 대체 도구 힌트를
             더한다(OM 도구 노출과 함께 켠다). False면 결과 문자열이 종전과 바이트 동일하다.
             도구 시그니처·설명은 어느 쪽이든 같다(``tools/list`` 불변 — plans/92 I-6).
+        source_ladder: True면 ``prom_metric_instant``를 여기서 등록하지 않는다 — 확장 시그니처
+            (``source``·``cross_check``)를 ``metric_source.register_source_ladder_tools``가 대신
+            등록한다(plans/92 §4.8.2 [v3] 분기 등록). False면 종전 그대로다.
     """
+
+    if not source_ladder:
+        _register_legacy_instant(mcp, openmetrics_hint)
+    _register_range_and_raw(mcp, expose_raw_promql, openmetrics_hint)
+
+
+def _register_legacy_instant(mcp: FastMCP, openmetrics_hint: bool) -> None:
+    """종전 ``prom_metric_instant``(hostname·metric)를 등록한다 — 스키마·설명 불변(I-6)."""
 
     @mcp.tool()
     async def prom_metric_instant(
@@ -476,6 +490,12 @@ def register_promql_tools(
         """
         result = await run_metric_instant(_prom_config(ctx), hostname, metric)
         return _with_openmetrics_hint(result) if openmetrics_hint else result
+
+
+def _register_range_and_raw(
+    mcp: FastMCP, expose_raw_promql: bool, openmetrics_hint: bool
+) -> None:
+    """``prom_metric_range``와 (옵트인) 원시 패스스루 5종을 등록한다."""
 
     @mcp.tool()
     async def prom_metric_range(

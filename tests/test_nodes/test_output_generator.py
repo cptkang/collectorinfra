@@ -223,6 +223,8 @@ class TestAllNullDegrade:
     async def test_xlsx_format_not_degraded(self):
         """폼필(xlsx) 동반 텍스트는 강등하지 않는다 — H-06 의도적 공란 보호."""
         state = create_initial_state(user_query="양식 채워줘")
+        # 양식 첨부 턴(file_type) — 양식 없는 xlsx 요청은 텍스트 경로로 간다(plans/116 §10.3)
+        state["file_type"] = "xlsx"
         state["organized_data"] = {
             "summary": "요약",
             "rows": [
@@ -347,8 +349,12 @@ class TestOutputGeneratorNode:
         assert "데이터가 없습니다" in result["final_response"]
 
     @pytest.mark.asyncio
-    async def test_xlsx_output_fallback_without_template(self):
-        """양식/매핑 없이 Excel 출력 시 텍스트 응답으로 폴백한다."""
+    async def test_xlsx_output_without_attached_template(self):
+        """양식을 첨부하지 않은 Excel 요청 — 첨부하지 않은 양식을 "채우지 못했다"고 하지 않는다.
+
+        plans/116 §10.3 「전체 서버 목록을 엑셀로 만들어줘」: 파일 산출은 첨부 양식 채우기뿐이라
+        파일 없이 텍스트 응답 + CSV 안내가 실제 동작이다.
+        """
         state = create_initial_state(user_query="test")
         state["organized_data"] = {
             "summary": "3건",
@@ -367,10 +373,58 @@ class TestOutputGeneratorNode:
 
         result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
 
-        # D-059: 침묵적 강등 대신 실패 사유를 노출한다.
+        text = result["final_response"]
+        assert "채우지 못했습니다" not in text
+        assert "state에서 누락" not in text
+        assert text.startswith("양식 파일이 첨부되지 않아 Excel 파일은 만들지 않았습니다.")
+        assert "CSV 다운로드" in text
+        assert "텍스트 응답" in text
+        assert result["output_file"] is None
+
+    @pytest.mark.asyncio
+    async def test_attached_template_lost_keeps_failure_reason(self):
+        """양식을 첨부했는데(file_type) 양식이 전파되지 않은 경우는 D-059 사유를 그대로 노출한다."""
+        state = create_initial_state(user_query="test")
+        state["file_type"] = "xlsx"
+        state["organized_data"] = {
+            "summary": "3건",
+            "rows": [{"hostname": "web-01"}],
+            "column_mapping": None,
+            "is_sufficient": True,
+        }
+        state["parsed_requirements"] = {
+            "query_targets": ["서버"],
+            "output_format": "xlsx",
+            "original_query": "첨부한 양식에 서버 목록",
+        }
+
+        mock_llm = _make_streaming_llm("텍스트 응답")
+
+        result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
+
         assert "채우지 못했습니다" in result["final_response"]
         assert "사유:" in result["final_response"]
         assert result["output_file"] is None
+
+    @pytest.mark.asyncio
+    async def test_docx_without_template_no_rows_omits_csv(self):
+        """행이 없으면 CSV 안내를 붙이지 않는다(CSV 다운로드가 404다)."""
+        state = create_initial_state(user_query="test")
+        state["organized_data"] = {
+            "summary": "", "rows": [], "column_mapping": None, "is_sufficient": True,
+        }
+        state["parsed_requirements"] = {
+            "query_targets": ["서버"],
+            "output_format": "docx",
+            "original_query": "서버 목록 워드로",
+            "filter_conditions": [],
+        }
+
+        result = await output_generator(state, app_config=MagicMock())
+
+        text = result["final_response"]
+        assert text.startswith("양식 파일이 첨부되지 않아 Word 파일은 만들지 않았습니다.")
+        assert "CSV" not in text.split("\n\n")[0]
 
     @pytest.mark.asyncio
     async def test_unsupported_format(self):

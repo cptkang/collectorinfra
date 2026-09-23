@@ -153,6 +153,32 @@ class TestHasLimitClause:
         sql = "SELECT * FROM servers WHERE note = '(draft' LIMIT 50"
         assert _has_limit_clause(sql) is True
 
+    def test_paren_inside_comment_does_not_break_detection(self):
+        """주석 속 홑괄호가 최상위 판정을 깨지 않는다 (plans/116 §10.3 오타 질의).
+
+        LLM 주석(`-- 조건 완화(부분 일치`)의 여는 괄호가 깊이를 어긋나게 하면 외곽 LIMIT을
+        못 보고 두 번째 LIMIT을 붙여 `syntax error at or near "LIMIT"`로 실행이 깨졌다.
+        """
+        sql = (
+            "SELECT name FROM servers -- 조건 완화(부분 일치\n"
+            "WHERE name LIKE '%app%'\n"
+            "LIMIT 1000;"
+        )
+        assert _has_limit_clause(sql) is True
+
+    def test_apostrophe_inside_comment_does_not_break_detection(self):
+        """주석 속 홑따옴표가 이후 괄호 판정을 뒤집지 않는다."""
+        sql = (
+            "SELECT name FROM servers -- host's name\n"
+            "WHERE id IN (SELECT id FROM t) -- ')\n"
+            "LIMIT 100"
+        )
+        assert _has_limit_clause(sql) is True
+
+    def test_limit_only_in_comment_is_not_a_limit(self):
+        sql = "SELECT name FROM servers -- LIMIT 10 은 넣지 않는다\n"
+        assert _has_limit_clause(sql) is False
+
 
 class TestAddLimitClause:
     """LIMIT 절 자동 추가 검증."""

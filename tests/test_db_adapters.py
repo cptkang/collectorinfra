@@ -745,6 +745,18 @@ class TestActiveStatusLiteralFilter:
         )
         assert errors
 
+    def test_function_wrapped_and_reversed_compare_rejected(self):
+        """함수로 감싼 칼럼·좌우 뒤집힌 비교도 같은 오답이다(plans/116 §10.3 — 'active' 0건)."""
+        from src.db_adapters.polestar.validators import check_active_status_literal_filter
+
+        for where in (
+            "LOWER(a.currentalarmstatus) = 'active'",
+            "UPPER(TRIM(a.currentalarmstatus)) = 'ACTIVE'",
+            "'active' = a.currentalarmstatus",
+        ):
+            sql = f"SELECT * FROM polestar.cmm_alarm a WHERE {where} LIMIT 100"
+            assert check_active_status_literal_filter(sql), where
+
     def test_ack_vocabulary_passes(self):
         """확인(ACK) 상태 어휘 비교는 정당하다 — 미확인 알람 질의 (2026-09-02 실측:
         cmm_alarm_active.currentalarmstatus='NOT_ACK' 9건 실반환)."""
@@ -798,6 +810,18 @@ class TestActiveAlarmAssembly:
     def test_recognize_warning_or_above(self):
         spec = self._spec("활성 경고 이상 알람 보여줘")
         assert spec is not None and spec.severity == 2 and spec.severity_op == ">="
+
+    def test_severity_word_in_sort_phrase_is_not_a_filter(self):
+        """「심각도가 높은 순서로」의 '심각'은 등급어가 아니다(plans/116 §10.3).
+
+        종전에는 부분 문자열로 심각(3) 필터가 걸려 경고·주의 활성 알람이 빠졌다.
+        """
+        spec = self._spec("현재 발생 중인 알람을 심각도가 높은 순서로 보여줘")
+        assert spec is not None and spec.mode == "active"
+        assert spec.severity is None
+        # 등급어는 그대로 인식한다
+        assert self._spec("현재 발생 중인 심각 알람 보여줘").severity == 3
+        assert self._spec("현재 발생 중인 심각도 2 알람 보여줘").severity == 2
 
     def test_recognize_unack_count(self):
         spec = self._spec("현재 활성 미확인 알람 몇 건이야")
@@ -1347,3 +1371,137 @@ class TestAlarmResourceServerTypeFilter:
         adapter = get_adapter("polestar", {"polestar"})
         names = {c.__name__ for c in adapter.validator_checks()}
         assert "check_alarm_resource_server_type_filter" in names
+
+
+class TestEnsureEavValueOrder:
+    """LLM 경로 EAV 문자열 값 순위 정렬 교정 (plans/116 §10.3 — 메모리 상위 3대 8GB 결함).
+
+    원본·교정 SQL을 sqlite(샌드박스 실측 값 분포)에 실제로 돌려 상위 행을 비교한다.
+    """
+
+    _PIVOT = (
+        "SELECT\n"
+        "    COALESCE(c.platform_resource_id, c.id) AS id,\n"
+        "    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS server_name,\n"
+        "    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'"
+        " THEN cc.stringvalue_short END) AS mem_size  -- 메모리(GB\n"
+        "FROM polestar.cmm_resource c\n"
+        "LEFT JOIN polestar.core_config_prop cc ON c.resource_conf_id = cc.configuration_id\n"
+        "WHERE c.resource_type IN ('server.Server', 'server.Memory') AND c.dtime IS NULL\n"
+        "GROUP BY COALESCE(c.platform_resource_id, c.id)\n"
+        "ORDER BY mem_size DESC\n"
+        "LIMIT 3;"
+    )
+
+    @staticmethod
+    def _db():
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("ATTACH ':memory:' AS polestar")
+        conn.execute(
+            "CREATE TABLE polestar.cmm_resource (id INT, name TEXT, resource_type TEXT, "
+            "platform_resource_id INT, resource_conf_id INT, dtime TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE polestar.core_config_prop "
+            "(configuration_id INT, name TEXT, stringvalue_short TEXT)"
+        )
+        mem = {"s8a": "8.0 GB", "s8b": "8.0 GB", "s8c": "8.0 GB", "s64": "1.0 TB",
+               "s64g": "64.0 GB", "s32": "512 MB", "s62": "62.1 GB", "s16": "16.0 GB"}
+        for i, (name, value) in enumerate(mem.items(), start=1):
+            conn.execute("INSERT INTO polestar.cmm_resource VALUES (?,?,?,?,?,NULL)",
+                         (i, name, "server.Server", None, 100 + i))
+            conn.execute("INSERT INTO polestar.cmm_resource VALUES (?,?,?,?,?,NULL)",
+                         (50 + i, "Memory", "server.Memory", i, 200 + i))
+            conn.execute("INSERT INTO polestar.core_config_prop VALUES (?,?,?)",
+                         (200 + i, "TotalSize", value))
+        return conn
+
+    def _top_names(self, sql):
+        return [r[1] for r in self._db().execute(sql.rstrip().rstrip(";"))]
+
+    def test_pivot_alias_order_becomes_capacity_order(self):
+        from src.db_adapters.polestar.validators import ensure_eav_value_order
+        # 결함 재현: 문자열 순 1위가 8GB
+        assert self._top_names(self._PIVOT)[0] in {"s8a", "s8b", "s8c"}
+        fixed = ensure_eav_value_order(self._PIVOT)
+        assert set(self._top_names(fixed)) == {"s64", "s64g", "s62"}
+        assert fixed.startswith(self._PIVOT[: self._PIVOT.index("ORDER BY")])  # SELECT 표시값 불변
+        assert "DESC NULLS LAST" in fixed and fixed.rstrip().endswith("LIMIT 3;")
+
+    def test_join_alias_value_order(self):
+        from src.db_adapters.polestar.validators import ensure_eav_value_order
+        sql = (
+            "SELECT r.name, cc_mem.stringvalue_short AS mem FROM polestar.cmm_resource r\n"
+            "JOIN polestar.cmm_resource m ON m.platform_resource_id = r.id\n"
+            "LEFT JOIN polestar.core_config_prop cc_mem ON m.resource_conf_id = "
+            "cc_mem.configuration_id AND cc_mem.name = 'TotalSize'\n"
+            "WHERE r.resource_type = 'server.Server'\n"
+            "ORDER BY \"mem\" DESC, r.name LIMIT 3"
+        )
+        fixed = ensure_eav_value_order(sql)
+        rows = self._db().execute(fixed).fetchall()
+        assert {r[0] for r in rows} == {"s64", "s64g", "s62"}
+        assert ", r.name LIMIT 3" in fixed
+
+    def test_cast_string_and_distinct_are_unchanged(self):
+        from src.db_adapters.polestar.validators import ensure_eav_value_order
+        casted = self._PIVOT.replace(
+            "THEN cc.stringvalue_short END", "THEN CAST(cc.stringvalue_short AS NUMERIC) END")
+        assert ensure_eav_value_order(casted) == casted
+        os_sql = self._PIVOT.replace("'TotalSize'", "'OSType'")
+        assert ensure_eav_value_order(os_sql) == os_sql
+        distinct = self._PIVOT.replace("SELECT\n", "SELECT DISTINCT\n", 1)
+        assert ensure_eav_value_order(distinct) == distinct
+
+    def test_window_order_by_is_not_rewritten(self):
+        from src.db_adapters.polestar.validators import ensure_eav_value_order
+        sql = self._PIVOT.replace(
+            "ORDER BY mem_size DESC",
+            "ORDER BY id",
+        ).replace(
+            "AS id,", "AS id, ROW_NUMBER() OVER (ORDER BY mem_size) AS rn,", 1)
+        assert ensure_eav_value_order(sql) == sql
+
+
+class TestAdapterOwnershipStartupWarning:
+    """활성 DB가 어댑터 제품군인데 담당 ID 설정(POLESTAR_DB_IDS)이 비면 기동 WARNING 1줄.
+
+    plans/116 §10.3 — 사례 녹화 .env에 POLESTAR_DB_IDS가 없어 폴스타 검증기·결정적 조립·
+    시맨틱 컴파일이 전부 꺼진 채 돌았고, 로그에는 아무 흔적이 없었다. 동작은 바꾸지 않는다.
+    """
+
+    def _config(self, active: str, owned: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            multi_db=SimpleNamespace(get_active_db_ids=lambda: [
+                x for x in active.split(",") if x]),
+            get_polestar_db_ids=lambda: {x for x in owned.split(",") if x},
+        )
+
+    def test_warns_when_adapter_family_db_active_but_unowned(self, caplog):
+        import logging
+        from src.db_adapters import log_adapter_ownership_startup
+
+        with caplog.at_level(logging.WARNING, logger="src.db_adapters"):
+            unowned = log_adapter_ownership_startup(self._config("polestar,itam", ""))
+        assert unowned == {"polestar": ["polestar"]}
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "POLESTAR_DB_IDS" in warnings[0].getMessage()
+
+    def test_silent_when_owned_or_no_adapter_family(self, caplog):
+        import logging
+        from src.db_adapters import log_adapter_ownership_startup
+
+        with caplog.at_level(logging.WARNING, logger="src.db_adapters"):
+            assert log_adapter_ownership_startup(self._config("polestar", "polestar")) == {}
+            assert log_adapter_ownership_startup(self._config("cloud_portal", "")) == {}
+            assert log_adapter_ownership_startup(self._config("", "")) == {}
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_wired_at_graph_build(self):
+        import inspect
+        import src.graph as graph_module
+
+        assert "log_adapter_ownership_startup(" in inspect.getsource(graph_module.build_graph)

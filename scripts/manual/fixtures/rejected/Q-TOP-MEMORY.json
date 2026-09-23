@@ -1,0 +1,64 @@
+{
+ "id": "Q-TOP-MEMORY",
+ "turns": [
+  {
+   "query": "메모리 사이즈가 큰 순서로 상위 3대 서버를 보여줘",
+   "file": null,
+   "key": "9da56dd48e5cd878",
+   "elapsed_s": 129.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n메모리 용량이 8.0 GB로 동일한 3 대의 서버를 조회했습니다.\n\n| id | server_name | hostname | ipaddress | mem_size |\n|---|---|---|---|---|\n| 300131.0 | svr-web-06 | svr-web-06 | 10.0.1.6 | 8.0 GB |\n| 400234.0 | svr-bkp-01 | svr-bkp-01 | 10.1.5.1 | 8.0 GB |\n| 300345.0 | svr-was-03 | svr-was-03 | 10.0.2.3 | 8.0 GB |\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "id": 300131.0,
+     "server_name": "svr-web-06",
+     "hostname": "svr-web-06",
+     "ipaddress": "10.0.1.6",
+     "mem_size": "8.0 GB"
+    },
+    {
+     "id": 400234.0,
+     "server_name": "svr-bkp-01",
+     "hostname": "svr-bkp-01",
+     "ipaddress": "10.1.5.1",
+     "mem_size": "8.0 GB"
+    },
+    {
+     "id": 300345.0,
+     "server_name": "svr-was-03",
+     "hostname": "svr-was-03",
+     "ipaddress": "10.0.2.3",
+     "mem_size": "8.0 GB"
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T10:23:24",
+ "review": {
+  "verdict": "wrong",
+  "notes": "메모리 값이 단위 섞인 문자열이라 문자열 순서로 정렬 — 64GB 서버 대신 8.0GB 3대. 문장 교체 후 재녹화",
+  "at": "2026-09-23"
+ }
+}

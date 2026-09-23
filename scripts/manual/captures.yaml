@@ -1,0 +1,405 @@
+# 매뉴얼 캡처 장면 (plans/116 §4.5). 실행: scripts/manual/capture.py
+#
+#   id        → src/static/manual/img/<id>.png
+#   login     user(demo_user) | admin | 없음(로그인 전 화면)
+#   steps     goto·click·hover·fill·press·check·select·upload·send·send_nowait·wait·scroll·eval
+#             assert_visible·assert_hidden — 요소 자신의 display 단언(이미지 불변 · 역할별 링크 노출 V-2)
+#   clip      잘라낼 요소(없으면 뷰포트 전체) · pad 여백(px)
+#   callouts  [번호, 셀렉터] — 매뉴얼 「화면 요소」 표의 번호와 같다. 대상이 없으면 캡처 실패
+#   theme     dark 면 다크 테마
+captures:
+  # ── 사용자: 시작하기 ─────────────────────────────────────
+  - id: login
+    steps:
+      - goto: /login
+      - fill: ["#userId", "demo_user"]
+    callouts: [[1, "#userId"], [2, "#password"], [3, "#loginBtn"], [4, "a[href='/register']"]]
+  - id: register
+    steps:
+      - goto: /register
+      - fill: ["#userId", "hong_gildong"]
+      - fill: ["#username", "홍길동"]
+      - fill: ["#department", "인프라운영팀"]
+    callouts: [[1, "#userId"], [2, "#username"], [3, "#password"], [4, "#department"], [5, "#registerBtn"]]
+  - id: main-welcome
+    login: user
+    callouts: [[1, ".chat-welcome-hint:nth-child(1)"], [2, ".chat-welcome-hint--help"], [3, "#prompt"]]
+  - id: main-layout
+    login: user
+    steps:
+      - click: "#historyToggle"
+      - send: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+    callouts: [[1, "header"], [2, "#historyPanel"], [3, ".chat-messages"], [4, "#progressPanel"], [5, ".input-row"]]
+  - id: header
+    login: user
+    steps:
+      - assert_visible: "#userManualLink"   # V-2 — 일반 사용자는 사용자 매뉴얼만
+      - assert_hidden: "#adminManualLink"
+      - assert_hidden: "#adminEntryLink"
+    clip: header
+    pad: 0
+    callouts: [[1, "#statusBadge"], [2, "#userDisplayName"], [3, "#userLogoutBtn"], [4, "#themeToggle"], [5, "#noiseConsoleLink"], [6, "#manualMenu"]]
+  - id: header-manual
+    login: admin
+    height: 260
+    steps:
+      - click: "#manualMenu > summary"
+      - wait: 300
+      - assert_visible: "#adminManualLink"   # V-2 — 관리자는 둘 다(Admin 링크와 같은 분기)
+      - assert_visible: "#adminEntryLink"
+    callouts: [[1, "#manualMenu > summary"], [2, "#userManualLink"], [3, "#adminManualLink"]]
+  - id: header-status
+    login: user
+    steps:
+      - hover: "#statusBadge"
+      - wait: 400
+    clip: header
+    pad: 0
+    height: 900
+  - id: main-dark
+    login: user
+    theme: dark
+    steps:
+      - send: "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘"
+    callouts: [[1, "#themeToggle"]]
+  # ── 사용자: 질의하기 ─────────────────────────────────────
+  - id: query-input
+    login: user
+    steps:
+      - fill: ["#prompt", "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"]
+    clip: ".input-bar"
+    callouts: [[1, "#prompt"], [2, "#attachBtn"], [3, "#sendBtn"], [4, "#dbScopeChip"], [5, ".input-hint"]]
+  - id: query-streaming
+    login: user
+    steps:
+      - send_nowait: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+      - wait: 2600
+    callouts: [[1, ".message--agent:last-child .message-bubble"], [2, "#sendBtn"], [3, "#progressPanel"]]
+  - id: progress-panel
+    login: user
+    steps:
+      - send: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+      - scroll_top: "#progressPanel .progress-panel-body"
+    clip: "#progressPanel"
+    pad: 0
+  - id: answer-table
+    login: user
+    steps:
+      - send: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+      - eval: "(() => { const t = document.querySelector('.message--agent:last-child .response-text table tbody tr:nth-child(12)'); if (t) t.scrollIntoView({block: 'start'}); })()"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .response-text table"], [2, ".message--agent:last-child .message-meta"], [3, ".message--agent:last-child .message-download--csv"]]
+  - id: answer-sql
+    login: user
+    steps:
+      - send: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+      - click: ".message--agent:last-child .message-sql-toggle"
+      - eval: "(() => { const t = document.querySelector('.message--agent:last-child .message-sql-toggle'); if (t) t.scrollIntoView({block: 'center'}); })()"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .message-sql-toggle"], [2, ".message--agent:last-child .message-sql-code"]]
+  - id: answer-file
+    login: user
+    steps:
+      - send: "전체 서버 목록을 엑셀로 만들어줘"
+    callouts: [[1, ".message--agent:last-child .message-download"]]
+  - id: answer-synonym
+    login: user
+    steps:
+      - send: "vcore, cpu, core은 동의어이다. 캐시에 등록하라."
+  # ── 사용자: 조회 범위와 역질문 ───────────────────────────
+  # 존 장면은 전 존 권한인 관리자로 찍고 대화 영역만 잘라 낸다(사례 계정은 샌드박스 권한만 — run_capture.py)
+  - id: scope-chip
+    server: capture-zones
+    login: admin
+    steps:
+      - click: "#dbScopePick"
+      - wait: "#dbScopePopover:not([hidden])"
+      - wait: 400
+    clip: ".chat-main"
+    pad: 0
+    callouts: [[1, "#dbScopePick"], [2, "#dbScopePopover"]]
+  - id: zone-clarify
+    server: capture-zones
+    login: admin
+    steps:
+      - send: "ㅇㅇ존 서버 CPU 사용률"
+      - wait: ".zone-clarify-items"
+    clip: ".chat-main"
+    pad: 0
+    callouts: [[1, ".zone-clarify-items"], [2, ".zone-clarify-confirm"]]
+  # ── 사용자: 양식 채우기 ─────────────────────────────────
+  - id: file-attached
+    login: user
+    steps:
+      - upload: ["#fileInput", 서버목록_양식.xlsx]
+      - fill: ["#prompt", "첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘"]
+    clip: ".input-bar"
+    callouts: [[1, "#filePreview"], [2, "#removeFile"], [3, "#prompt"]]
+  - id: form-result
+    login: user
+    steps:
+      - upload: ["#fileInput", 서버목록_양식.xlsx]
+      - send: "첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘"
+    callouts: [[1, ".message--agent:last-child .message-download"]]
+  - id: form-file-card
+    login: user
+    steps:
+      - upload: ["#fileInput", 서버목록_양식.xlsx]
+      - send: "첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘"
+      - eval: "(() => { const c = [...document.querySelectorAll('.message--user .message-file-card')].pop(); if (c) c.scrollIntoView({block: 'center'}); })()"
+      - wait: 300
+    callouts: [[1, ".message--user:nth-last-child(2) .message-file-card"]]
+  - id: form-clarify
+    login: user
+    steps:
+      - upload: ["#fileInput", 서버담당_양식.xlsx]
+      - send: "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘"
+      - eval: "(() => { const r = document.querySelector('.form-fill-row'); if (r) r.scrollIntoView({block: 'center'}); })()"
+      - wait: 300
+    callouts: [[1, ".form-fill-label"], [2, ".form-fill-action"]]
+  # ── 사용자: 대화와 이력 ─────────────────────────────────
+  - id: multiturn
+    login: user
+    steps:
+      - send: "cocm-hdkapp01 서버의 IP 주소와 OS 종류를 보여줘"
+      - send: "해당 서버의 메모리 용량도 보여줘"
+  - id: history-threads
+    login: user
+    steps:
+      - send: "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘"
+      - click: "#historyToggle"
+      - wait: 600
+    clip: "#historyPanel"
+    pad: 0
+    callouts: [[1, ".history-mode-btn[data-mode='threads']"], [2, "#historySearch"], [3, "#historyClearBtn"], [4, "#historyList"]]
+  - id: history-queries
+    login: user
+    steps:
+      - send: "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘"
+      - send: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+      - click: "#historyToggle"
+      - click: ".history-mode-btn[data-mode='queries']"
+      - wait: 400
+    clip: "#historyPanel"
+    pad: 0
+    callouts: [[1, ".history-mode-btn[data-mode='queries']"], [2, "#historyList"]]
+  # ── 사용자: 이벤트 알람(관리자 계정 — 전 존 수신 · 머리글은 잘라 낸다) · 노이즈 관제 ──
+  - id: header-alarm
+    login: admin
+    steps:
+      - hover: "#alarmReceiveToggle"
+      - wait: 400
+    clip: header
+    pad: 0
+    callouts: [[1, "#alarmReceiveToggle"], [2, "#alarmViewLevel"]]
+  - id: alarm-list
+    login: admin
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: 1500
+      - alarm_replay: {only: incident}
+      - wait: ".message--alarm"
+      - wait: 1500
+    clip: ".alarm-view, #alarmView, main"
+    pad: 0
+    callouts: [[1, ".alarm-level-filter"], [2, "#alarmSearch"], [3, "#alarmList .message--alarm"]]
+  - id: alarm-feedback
+    login: admin
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: 1500
+      - alarm_replay: {}
+      - wait: ".message--alarm .alarm-feedback-section"
+      - wait: 1000
+      - scroll: "#alarmList .message--alarm .alarm-feedback-section"
+    clip: "#alarmList .message--alarm:has(.alarm-feedback-section)"
+    pad: 8
+  - id: alarm-suggest
+    login: admin
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: 1500
+      - alarm_replay: {only: incident}
+      - wait: ".message--alarm .alarm-prompt-trigger"
+      - wait: 1000
+      - eval: "(() => { const card = [...document.querySelectorAll('.message--alarm')].find(c => c.querySelector('.alarm-prompt-chip')); const sec = card.querySelector('.alarm-prompt-section'); sec.classList.remove('alarm-prompt-section--collapsed'); card.querySelector('.alarm-prompt-chip').click(); })()"
+      - wait: "#promptConfirm"
+      - wait: 500
+    callouts: [[1, "#promptConfirm"], [2, "#prompt"]]
+  - id: noise-user
+    login: user
+    steps:
+      - goto: /noise
+      - wait: 2500
+  - id: noise-drawer
+    login: user
+    steps:
+      - goto: /noise
+      - wait: 2500
+      - click: "#decisionBody tr >> nth=0"
+      - wait: "#drawer"
+      - wait: 800
+  - id: noise-admin
+    login: admin
+    steps:
+      - goto: /static/admin/noise.html
+      - wait: 3000
+    callouts: [[1, "#streamPill"], [2, "#healthPill"], [3, "#feed"]]
+  - id: noise-admin-health
+    login: admin
+    steps:
+      - goto: /static/admin/noise.html
+      - wait: 3000
+      - scroll: "#watchRing"
+    clip: ".card:has(#ratioRing)"
+    pad: 8
+  - id: noise-silence
+    login: admin
+    steps:
+      - goto: /static/admin/noise.html
+      - wait: 2500
+      - click: "[data-pane='silence']"
+      - fill: ["#slcServer", "svr-web-*"]
+      - fill: ["#slcReason", "웹 서버 정기 점검"]
+      - scroll: "#addSilenceBtn"
+      - wait: 400
+    clip: ".card:has(.mgmt-tabs)"
+    pad: 8
+    callouts: [[1, "#slcServer"], [2, "#slcSeverity"], [3, "#slcDuration"], [4, "#addSilenceBtn"], [5, "#showInactive"]]
+  - id: noise-policy
+    login: admin
+    steps:
+      - goto: /static/admin/noise.html
+      - wait: 2500
+      - click: "[data-pane='policy']"
+      - scroll: "#policyMatrix"
+      - wait: 400
+    clip: ".card:has(.mgmt-tabs)"
+    pad: 8
+
+  # ── 관리자 ───────────────────────────────────────────
+  - id: admin-login
+    steps:
+      - goto: /admin/login
+    callouts: [[1, "input[type=text], #username"], [2, "input[type=password]"], [3, "a[href='/']"]]
+  - id: admin-overview
+    login: admin
+    steps:
+      - goto: /admin
+      - wait: ".settings-group"
+    callouts: [[1, ".tabs, .admin-tabs, nav"], [2, "#themeToggle"], [3, "#logoutBtn"]]
+  - id: settings-list
+    login: admin
+    steps:
+      - goto: /admin
+      - wait: ".settings-group"
+    callouts: [[1, "#settingsSearch"], [2, "#toggleAllGroupsBtn"], [3, "#reloadSettingsBtn"], [4, "#saveSettingsBtn"]]
+  - id: settings-group
+    login: admin
+    steps:
+      - goto: /admin
+      - wait: ".settings-group"
+      - click: ".settings-group-header >> nth=0"
+      - wait: 300
+  - id: settings-help
+    login: admin
+    steps:
+      - goto: /admin
+      - wait: ".settings-group"
+      - click: ".settings-group-header >> nth=0"
+      - click: ".setting-help-btn >> nth=0"
+      - wait: 800
+  - id: settings-diff
+    login: admin
+    steps:
+      - goto: /admin
+      - wait: ".settings-group"
+      - fill: ["#settingsSearch", "LLM_MLX_MAX_TOKENS"]
+      - wait: 400
+      - fill: [".setting-row:has-text('LLM_MLX_MAX_TOKENS') input", "8192"]
+      - click: "#saveSettingsBtn"
+      - wait: "#settingsDiffModal"
+      - wait: 400
+    callouts: [[1, "#diffConfirmBtn"], [2, "#diffCancelBtn"]]
+  - id: dbconfig
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbconfig']"
+      - wait: 600
+    callouts: [[1, "#testDbBtn"], [2, "#saveDbBtn"]]
+  - id: dbs-list
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbstructure']"
+      - wait: 1200
+  - id: dbs-detail
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbstructure']"
+      - wait: 1200
+      - click: "button:has-text('상세') >> nth=0"
+      - wait: 1500
+  - id: dbs-register
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbstructure']"
+      - wait: 1200
+      - click: "button:has-text('신규 연동') >> nth=0"
+      - wait: 1500
+  - id: users
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='users']"
+      - wait: 800
+    callouts: [[1, "#refreshUsersBtn"]]
+  - id: users-permissions
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='users']"
+      - wait: 800
+      - click: ".perm-edit-btn >> nth=0"
+      - wait: 300
+  - id: audit
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='auditlogs']"
+      - wait: 1200
+    callouts: [[1, "#searchLogsBtn"], [2, "#cleanupLogsBtn"]]
+  - id: audit-alerts
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='auditlogs']"
+      - wait: 1200
+      - scroll: "#refreshAlertsBtn"
+  - id: incidents
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='incidents']"
+      - wait: 1000
+  - id: feedback
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='feedback']"
+      - wait: 1000
+  - id: drm
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='drm']"
+      - wait: 1000
+    height: 1250
+    callouts: [[1, "#refreshDrmBtn"], [2, "#drmVerifyBtn"]]
+  - id: swagger
+    steps:
+      - goto: /docs
+      - wait: 2500

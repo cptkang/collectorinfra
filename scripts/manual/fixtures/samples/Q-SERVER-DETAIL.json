@@ -1,0 +1,53 @@
+{
+ "id": "Q-SERVER-DETAIL",
+ "turns": [
+  {
+   "query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘",
+   "file": null,
+   "key": "f0b1473da180f4b0",
+   "elapsed_s": 203.4,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\ncocm-hdkapp01 서버는 Red Hat Enterprise Linux 8.6 환경이며, Intel Xeon Gold 6248R CPU 와 64GB 메모리 사양을 갖추고 있습니다.\n\n| id | server_name | hostname | ipaddress | os_type | os_version | cpu_model | memory_capacity |\n|---|---|---|---|---|---|---|---|\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | Linux | Red Hat Enterprise Linux 8.6 | Intel Xeon Gold 6248R | 65536 |\n\n참고사항\n- 메모리 용량 (memory_capacity) 은 단위가 명시되지 않은 수치 (65536) 로 조회되었습니다. 일반적으로 이 값은 MB 를 의미할 가능성이 높으나, 데이터 원본에 단위가 포함되어 있지 않으므로 그대로 표기합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 1,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "id": 9610003.0,
+     "server_name": "cocm-hdkapp01",
+     "hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "os_type": "Linux",
+     "os_version": "Red Hat Enterprise Linux 8.6",
+     "cpu_model": "Intel Xeon Gold 6248R",
+     "memory_capacity": "65536"
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T10:30:31",
+ "review": {
+  "verdict": "ok",
+  "notes": "IP 10.61.0.3 · OS Linux · CPU Intel Xeon Gold 6248R · 메모리 65536 원본 일치. OS 버전 RHEL 8.6 은 속성 표에서 별도 확인 안 함",
+  "at": "2026-09-23"
+ }
+}

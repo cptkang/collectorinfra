@@ -1,0 +1,103 @@
+{
+ "id": "F-CPU-MONTH",
+ "turns": [
+  {
+   "query": "첨부한 양식에 2026년 5월 기준 서버별 성능 통계를 넣어서 파일로 만들어줘",
+   "file": "성능요약_양식.xlsx",
+   "key": "c7128511e553df19",
+   "elapsed_s": 173.9,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n2026 년 5 월 기준 서버별 성능 통계 조회 결과입니다. 총 54 건의 서버 중 CPU 및 메모리 데이터가 수집된 서버는 4 건이며, 나머지 50 건은 데이터가 누락되었습니다.\n\n| 호스트명 | CPU 평균 | CPU 최고 | 메모리 평균 |\n|---|---|---|---|\n| svr-app-03 | null | null | null |\n| svr-web-08 | null | null | null |\n| svr-was-10 | null | null | null |\n| svr-web-09 | null | null | null |\n| svbatch009 | 15.8 | 42.6 | 38.4 |\n| svr-web-02 | null | null | null |\n| svr-bat-02 | null | null | null |\n| svr-was-01 | null | null | null |\n| svr-web-03 | null | null | null |\n| sbhdbo53 | null | null | null |\n| svr-mid-01 | null | null | null |\n| svr-was-02 | null | null | null |\n| svr-web-07 | null | null | null |\n| dbora023 | 68.4 | 89.2 | 78.3 |\n| svr-db-07 | null | null | null |\n| svr-was-05 | null | null | null |\n| svweb001 | 35.2 | 61.7 | 55.1 |\n| hostapo02 | null | null | null |\n| cob0-bnndbp01 | null | null | null |\n| cocm-hdkapp01 | 45.6 | 71.8 | 61.8 |\n\n참고사항\n- 조회 기간: 2026 년 5 월\n- 전체 데이터 건수: 54 건 (표시된 건수는 일부입니다)\n- 데이터 수집 현황: 총 54 건 중 데이터가 있는 서버는 4 건 (svbatch009, dbora023, svweb001, cocm-hdkapp01)이며, 나머지 50 건은 null 입니다.\n- 주요 수치 요약:\n  - CPU 평균: 최소 15.8, 최대 68.4, 평균 41.25\n  - CPU 최고: 최소 42.6, 최대 89.2, 평균 66.33\n  - 메모리 평균: 최소 38.4, 최대 78.3, 평균 58.4\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 54,
+    "executed_sql": null,
+    "has_file": true,
+    "file_name": "result_20260923_123158.xlsx",
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "호스트명": "svr-app-03",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svr-web-08",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svr-was-10",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svr-web-09",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svbatch009",
+     "CPU 평균": 15.8,
+     "CPU 최고": 42.6,
+     "메모리 평균": 38.4
+    },
+    {
+     "호스트명": "svr-web-02",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svr-bat-02",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svr-was-01",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "svr-web-03",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    },
+    {
+     "호스트명": "sbhdbo53",
+     "CPU 평균": null,
+     "CPU 최고": null,
+     "메모리 평균": null
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T12:32:17",
+ "review": {
+  "verdict": "ok",
+  "notes": "2026-05 데이터가 있는 4대만 CPU·메모리 채움 — 원본과 일치(나머지는 데이터 없음)",
+  "at": "2026-09-23"
+ }
+}

@@ -442,9 +442,9 @@ class TestReturnContract:
 #
 # 실 폴스타 PG 픽스처(Plan 04 §5 · sre-agent/06 §8.1)를 대상으로 고수준 도구를
 # **실 호출**해 반환 계약({rows, source_kind, engine})·PG 방언(polestar. 스키마·LIMIT)·
-# 픽스처 데이터(cmm_resource 1581행·svr-web-01·SV-WEB-001 상태)를 단언한다.
+# 픽스처 데이터(cmm_resource 1597행·svr-web-01·SV-WEB-001 상태)를 단언한다.
 # 연결 정보는 env 주입(하드코딩 금지)하며, 기본값은 문서화된 폴스타 픽스처 값
-# (localhost:5434/infradb, 소스명 polestar). 단언값(1581·8 등)은 픽스처 결정값이므로
+# (localhost:5434/infradb, 소스명 polestar). 단언값(1597·8 등)은 픽스처 결정값이므로
 # 하드코딩이 정상이다(그게 검증 대상). 읽기 전용(D-003) — SELECT만.
 
 
@@ -542,7 +542,7 @@ class TestDockerIntegration:
             cnt = await pool.execute(
                 _PG_SOURCE, "SELECT count(*) AS n FROM polestar.cmm_resource"
             )
-            assert cnt[0]["n"] == 1581
+            assert cnt[0]["n"] == 1597
 
             # ── 2) svr-web-01 존재(Prometheus nodename 정렬) · 컬럼 단언 ──
             web = await pool.execute(

@@ -17,6 +17,7 @@ from src.utils.sql_dialect import is_db2, row_limit_clause
 from src.utils.sql_dialect import sql_literal as _sql_literal  # 이동(Plan 69 P2) — 동작 불변
 from src.utils.query_gen_common import (
     StatMonth,
+    _unit_normalized_expr,
     drop_entries_missing_columns,
     normalize_stat_month as _normalize_stat_month,
     resolve_stat_month_range,
@@ -56,6 +57,37 @@ _SERVER_RESOURCE_TYPE = "server.Server"
 _STAT_COLUMN = "stat_date"
 # 시계열 행 분해에서 식별 컬럼을 가져오는 부모 서버 조인 alias.
 _PARENT_ALIAS = "svr"
+
+#: EAV 값이 **단위 섞인 크기 문자열**인 속성('8.0 GB'·'2 TB'). 문자열 그대로 정렬하면
+#: '8.0 GB' > '64.0 GB'라 「메모리 큰 상위 3대」가 8GB 서버를 냈다(plans/116 §10.3).
+#: 환산 규칙은 D-199 단위 정규화 식 하나를 재사용한다(TB×1024·GB·MB÷1024·KB÷1048576·
+#: 무단위=원값). 샌드박스 시드의 무단위 MB 값('65536')이 맨 위로 오는 것은 시드 모양 문제다
+#: (D-199 ③).
+_SIZE_EAV_ATTRIBUTES: frozenset[str] = frozenset({"TotalSize"})
+
+
+def eav_sort_expr(value_expr: str, attribute: str) -> str | None:
+    """EAV 값 식을 **값 크기 순**으로 정렬하는 식으로 감싼다(문자열 정렬 방지).
+
+    숫자 속성(`_NUMERIC_EAV_ATTRIBUTES` — '8.0'·'16')은 NUMERIC 캐스트, 크기 속성
+    (`_SIZE_EAV_ATTRIBUTES`)은 D-199 GB 기준 환산식(`_unit_normalized_expr`)을 돌려준다.
+    그 밖의 속성(OS·모델 등 문자열)은 None — 호출부는 원래 정렬을 유지한다.
+
+    Args:
+        value_expr: EAV 값을 내는 SQL 식(예: ``cc.stringvalue_short``)
+        attribute: EAV 속성명(대소문자 구분)
+
+    Returns:
+        정렬용 SQL 식 또는 None
+    """
+    from src.db_adapters.polestar.prompts import _NUMERIC_EAV_ATTRIBUTES
+
+    if attribute in _NUMERIC_EAV_ATTRIBUTES:
+        return f"CAST(NULLIF(TRIM({value_expr}), '') AS NUMERIC)"
+    if attribute in _SIZE_EAV_ATTRIBUTES:
+        return _unit_normalized_expr(value_expr)
+    return None
+
 
 #: 월별 통계 테이블 기본값 — 진입 함수 2개와 조립 코어가 공유한다(기본값 드리프트 차단).
 _DEFAULT_METRIC_TABLE = "cmm_metric_stat_m"
@@ -1040,8 +1072,21 @@ def _build_pivot_sql(
     if order_by:
         alias, direction = order_by
         dir_kw = "DESC" if str(direction).upper() != "ASC" else "ASC"
+        # EAV 값은 문자열이다 — 숫자·크기 속성 정렬은 값 크기 순 식으로 건다(plans/116 §10.3).
+        # 출력 alias는 식에 쓸 수 없으므로(PostgreSQL) SELECT와 같은 집계를 값 정렬식으로 다시 쓴다.
+        sort_key = f'"{alias}"'
+        eav_attrs = {f: (a, _SERVER_RESOURCE_TYPE) for f, a in server_eav}
+        eav_attrs.update({f: (a, rt) for f, a, rt in child_eav})
+        if alias in eav_attrs:
+            attr, rt = eav_attrs[alias]
+            expr = eav_sort_expr(f"cc.{val_col}", attr)
+            if expr:
+                sort_key = (
+                    f"MAX(CASE WHEN c.resource_type='{rt}' "
+                    f"AND cc.{attr_col}='{attr}' THEN {expr} END)"
+                )
         # NULLS LAST 필수: 값이 없는 서버가 정렬 선두를 차지해 임의 서버가 1위로 뽑히는 것을 방지(D-098).
-        sql += f'\nORDER BY "{alias}" {dir_kw} NULLS LAST'
+        sql += f"\nORDER BY {sort_key} {dir_kw} NULLS LAST"
     if limit:
         sql += "\n" + row_limit_clause(db_engine, limit)
     return sql + ";"
@@ -1311,7 +1356,9 @@ def _parse_alarm_severity(q: str) -> tuple[int | None, str]:
         severity = int(m.group(1))
     else:
         for word, level in _ALARM_SEV_WORDS:
-            if word in q:
+            # '심각도'(축 이름 — 「심각도가 높은 순서로」)는 등급어 '심각'이 아니다
+            # (plans/116 §10.3).
+            if re.search(rf"{word}(?!도)", q):
                 severity = level
                 break
     op = ">=" if (severity is not None and re.search(r"이상", q)) else "="

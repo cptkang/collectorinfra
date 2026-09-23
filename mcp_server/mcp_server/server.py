@@ -17,6 +17,7 @@ from starlette.types import Receive, Scope, Send
 from mcp_server import sql_log
 from mcp_server.config import AppServerConfig, load_config
 from mcp_server.db import DBPoolManager
+from mcp_server.metric_source import register_source_ladder_tools
 from mcp_server.om_exposition import install_shutdown_hooks
 from mcp_server.openmetrics_tools import register_openmetrics_tools
 from mcp_server.polestar_exporter import register_polestar_exporter
@@ -138,12 +139,19 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
     # OpenMetrics(plans/92 S0): 켜면 om_* 2종 등록 + prom_* URL 미설정 오류에 대체 도구 힌트.
     # 끄면 도구 미등록·오류 문자열 종전 그대로(비트 동일).
     om_on = config.openmetrics.expose_openmetrics_tools
+    # PromQL 병행(plans/92 S1 · O2b): OM 켜짐 + PROMETHEUS_URL 설정이면 prom_metric_instant를
+    # source·cross_check 확장 시그니처로, om_metric_catalog를 가용 소스 동반 판으로 바꿔 등록한다.
+    # 어느 하나라도 아니면 종전 시그니처 그대로(tools/list 불변 — I-6).
+    ladder_on = om_on and bool(config.prometheus.url)
     register_promql_tools(
         mcp,
         expose_raw_promql=config.prometheus.expose_raw_promql,
         openmetrics_hint=om_on,
+        source_ladder=ladder_on,
     )
-    register_openmetrics_tools(mcp, expose=om_on)
+    register_openmetrics_tools(mcp, expose=om_on, source_ladder=ladder_on)
+    if ladder_on:
+        register_source_ladder_tools(mcp)
     # 폴스타 → OpenMetrics 브리지(plans/92 B-2): 켜면 GET /metrics 라우트 등록.
     # 끄면 라우트 부재(404 — 비트 동일).
     if config.openmetrics.expose_polestar_exporter:
@@ -151,7 +159,8 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
 
     logger.info(
         "MCP 서버 생성: name=%s, transport=%s, execute_sql노출=%s, raw_promql노출=%s, "
-        "폴스타도구노출=%s, 폴스타도메인가드=%s, openmetrics도구노출=%s, 폴스타브리지노출=%s",
+        "폴스타도구노출=%s, 폴스타도메인가드=%s, openmetrics도구노출=%s, 소스사다리=%s, "
+        "폴스타브리지노출=%s",
         config.server.name,
         config.server.transport,
         config.server.expose_execute_sql,
@@ -159,6 +168,7 @@ def create_server(config: AppServerConfig | None = None) -> FastMCP:
         config.server.expose_polestar_tools,
         config.server.polestar_domain_guard,
         om_on,
+        ladder_on,
         config.openmetrics.expose_polestar_exporter,
     )
     return mcp

@@ -64,6 +64,21 @@ async def field_mapper(
     # 유사어 등록 요청 처리 (멀티턴 대화에서 이전 상태 참조)
     parsed = state.get("parsed_requirements", {})
     synonym_reg = parsed.get("synonym_registration")
+    # 결정적 가드(D-252 부기): 등록 대기 목록도 없고 질의에 「등록」도 없으면 LLM 의 등록 신호를
+    # 버린다. 양식 첨부 질의(「첨부한 양식을 채워줘」)를 입력 분석 LLM 이 {mode: all} 로 오분류해
+    # 「등록할 유사어 매핑이 없습니다」로 양식 채우기가 시작 전에 종결됐다
+    # (2026-09-23 로컬 MLX 실측).
+    if (
+        synonym_reg
+        and not state.get("pending_synonym_registrations")
+        and "등록" not in (state.get("user_query") or "")
+    ):
+        logger.warning(
+            "synonym_registration 신호 무시 — 대기 목록 없음·질의에 「등록」 없음"
+            "(LLM 오분류 가드): %r",
+            (state.get("user_query") or "")[:80],
+        )
+        synonym_reg = None
     if synonym_reg:
         # 신규 동의어 집합 선언("vcore, cpu, core은 동의어이다. 등록하라")은 이 분기의
         # 소관이 아니다 — pending 없이 가로채면 "등록할 매핑 없음"으로 오종결되어

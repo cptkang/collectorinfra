@@ -1,0 +1,397 @@
+{
+ "id": "F-CLARIFY",
+ "turns": [
+  {
+   "query": "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘",
+   "file": "서버담당_양식.xlsx",
+   "key": "87052e91f31743ef",
+   "elapsed_s": 175.1,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다.\n\n| OS종류 | 호스트명 |\n|---|---|\n| LINUX | svr-was-06 |\n| LINUX | svr-web-06 |\n| Linux | svweb001 |\n| LINUX | hostapo02 |\n| null | null |\n| LINUX | svr-bkp-01 |\n| LINUX | svr-was-03 |\n| Linux | cob0-bnndbp01 |\n| LINUX | svr-app-01 |\n| LINUX | svr-was-08 |\n| LINUX | svr-web-10 |\n| LINUX | svr-app-03 |\n| Linux | cocm-hdkapp01 |\n| LINUX | svr-mon-01 |\n| Linux | cocm-ngcapo91 |\n| LINUX | svr-db-05 |\n| LINUX | svr-db-04 |\n| LINUX | svr-web-08 |\n| LINUX | svr-was-10 |\n| LINUX | svr-web-09 |\n\n참고사항\n- 조회된 데이터에는 `OS종류` 와 `호스트명` 컬럼만 포함되어 있으며, 기타 인프라 상세 정보 (CPU, 메모리, 사용률 등) 는 포함되지 않았습니다.\n- `OS종류` 컬럼에는 대소문자 차이가 있는 값 (LINUX, Linux) 과 `null` 값이 혼재되어 있습니다.\n\n---\n**[미작성 항목]** 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):\n  - 담당자\n  - 담당자 연락처\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 54,
+    "executed_sql": null,
+    "has_file": true,
+    "file_name": "result_20260923_130646.xlsx",
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": {
+     "question": "채우지 못한 항목이 2건 있습니다. 각 항목의 처리 방법(공란 유지 / DB 항목 선택 / 직접 입력)을 지정해 주세요. '?'만 입력하면 이 양식에 저장된 값을 조회합니다.",
+     "fields": [
+      {
+       "name": "담당자",
+       "label": "담당자"
+      },
+      {
+       "name": "담당자 연락처",
+       "label": "담당자 연락처"
+      }
+     ],
+     "candidates": [
+      {
+       "value": "column:avail_status",
+       "label": "cmm_resource.avail_status",
+       "kind": "column"
+      },
+      {
+       "value": "column:description",
+       "label": "cmm_resource.description — 리소스 설명(비고)",
+       "kind": "column"
+      },
+      {
+       "value": "column:group_path",
+       "label": "cmm_resource.group_path",
+       "kind": "column"
+      },
+      {
+       "value": "column:hostname",
+       "label": "cmm_resource.hostname — OS가 인식하는 실제 호스트명",
+       "kind": "column"
+      },
+      {
+       "value": "column:id_ancestry",
+       "label": "cmm_resource.id_ancestry",
+       "kind": "column"
+      },
+      {
+       "value": "column:identifier",
+       "label": "cmm_resource.identifier",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_avail_depend",
+       "label": "cmm_resource.is_inherit_avail_depend",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_custom_conf",
+       "label": "cmm_resource.is_inherit_custom_conf",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_inherit_manager_zone",
+       "label": "cmm_resource.is_inherit_manager_zone",
+       "kind": "column"
+      },
+      {
+       "value": "column:invisible",
+       "label": "cmm_resource.invisible",
+       "kind": "column"
+      },
+      {
+       "value": "column:ipaddress",
+       "label": "cmm_resource.ipaddress — IP 주소",
+       "kind": "column"
+      },
+      {
+       "value": "column:lc",
+       "label": "cmm_resource.lc",
+       "kind": "column"
+      },
+      {
+       "value": "column:location",
+       "label": "cmm_resource.location",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_maintenance",
+       "label": "cmm_resource.is_maintenance",
+       "kind": "column"
+      },
+      {
+       "value": "column:manager_zone",
+       "label": "cmm_resource.manager_zone",
+       "kind": "column"
+      },
+      {
+       "value": "column:modifiedby",
+       "label": "cmm_resource.modifiedby",
+       "kind": "column"
+      },
+      {
+       "value": "column:name",
+       "label": "cmm_resource.name — VM명 — 폴스타 등록 이름(서버 식별 대표 칼럼)",
+       "kind": "column"
+      },
+      {
+       "value": "column:optlock",
+       "label": "cmm_resource.optlock",
+       "kind": "column"
+      },
+      {
+       "value": "column:order_num",
+       "label": "cmm_resource.order_num",
+       "kind": "column"
+      },
+      {
+       "value": "column:pollingpolicy",
+       "label": "cmm_resource.pollingpolicy",
+       "kind": "column"
+      },
+      {
+       "value": "column:priority",
+       "label": "cmm_resource.priority",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourceicon",
+       "label": "cmm_resource.resourceicon",
+       "kind": "column"
+      },
+      {
+       "value": "column:resource_key",
+       "label": "cmm_resource.resource_key",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourcestatus",
+       "label": "cmm_resource.resourcestatus",
+       "kind": "column"
+      },
+      {
+       "value": "column:resource_type",
+       "label": "cmm_resource.resource_type",
+       "kind": "column"
+      },
+      {
+       "value": "column:resourcetypeversion",
+       "label": "cmm_resource.resourcetypeversion",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_sync_desc",
+       "label": "cmm_resource.is_sync_desc",
+       "kind": "column"
+      },
+      {
+       "value": "column:is_sync_name",
+       "label": "cmm_resource.is_sync_name",
+       "kind": "column"
+      },
+      {
+       "value": "column:uuid",
+       "label": "cmm_resource.uuid",
+       "kind": "column"
+      },
+      {
+       "value": "column:version",
+       "label": "cmm_resource.version",
+       "kind": "column"
+      },
+      {
+       "value": "column:system",
+       "label": "cmm_resource.system",
+       "kind": "column"
+      },
+      {
+       "value": "column:avail_depend_resource_id_2",
+       "label": "cmm_resource.avail_depend_resource_id_2",
+       "kind": "column"
+      },
+      {
+       "value": "eav:OSType",
+       "label": "OSType — 운영체제 종류 (예: Linux, Windows)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:OSVerson",
+       "label": "OSVerson — 운영체제 버전 (주의: Polestar 제품 오탈자 반영)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:OSParameter",
+       "label": "OSParameter — OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PatchLevel",
+       "label": "PatchLevel — OS 패치 레벨 / 커널 버전",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Vendor",
+       "label": "Vendor — 서버 제조사 (예: Dell, HP)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Model",
+       "label": "Model — 서버 모델명",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SerialNumber",
+       "label": "SerialNumber — 시리얼 번호",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:Hostname",
+       "label": "Hostname — 호스트명 (EAV). '서버명/서버 이름'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지. hostname 값은 직접 컬럼(cmm_resource.hostname) 사용",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:IPaddress",
+       "label": "IPaddress — IP 주소 (EAV, cmm_resource.ipaddress와 동일 값)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:GMT",
+       "label": "GMT — 시간대 (GMT offset)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:AgentID",
+       "label": "AgentID — 모니터링 에이전트 ID",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:AgentVersion",
+       "label": "AgentVersion — 에이전트 버전",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:InstallPath",
+       "label": "InstallPath — 에이전트 설치 경로",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MODEL",
+       "label": "MODEL — CPU 모델명 (예: Intel Xeon Gold 6248R)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:LOGICALCORE",
+       "label": "LOGICALCORE — 논리 CPU 코어 수 (하이퍼스레딩 포함)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PHYSICALCORE",
+       "label": "PHYSICALCORE — 물리 CPU 코어 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:PHYSICALCPU",
+       "label": "PHYSICALCPU — 물리 CPU 소켓 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SPEED",
+       "label": "SPEED — CPU 클럭 속도 MHz (예: 2100.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:HYPERTHREADING",
+       "label": "HYPERTHREADING — 하이퍼스레딩 활성 여부 (on/off)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:TotalSize",
+       "label": "TotalSize — 총 물리 메모리 크기 (예: 62.1 GB)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:SwapTotalSize",
+       "label": "SwapTotalSize — Swap 메모리 총 크기 (예: 3.9 GB)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:DiskCount",
+       "label": "DiskCount — 디스크 수",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:IP",
+       "label": "IP — 네트워크 인터페이스 IP 주소",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MAC",
+       "label": "MAC — MAC 주소 (예: b4:96:91:0e:bd:a6)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:BANDW",
+       "label": "BANDW — 대역폭 (예: 10 Gb)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:MTU",
+       "label": "MTU — MTU 크기 (예: 1500.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:NETMASK",
+       "label": "NETMASK — 서브넷 마스크 (예: 255.255.255.0)",
+       "kind": "eav"
+      },
+      {
+       "value": "eav:STATUS",
+       "label": "STATUS — 인터페이스 상태 (UP/DOWN)",
+       "kind": "eav"
+      }
+     ]
+    },
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "OS종류": "LINUX",
+     "호스트명": "svr-was-06"
+    },
+    {
+     "OS종류": "LINUX",
+     "호스트명": "svr-web-06"
+    },
+    {
+     "OS종류": "Linux",
+     "호스트명": "svweb001"
+    },
+    {
+     "OS종류": "LINUX",
+     "호스트명": "hostapo02"
+    },
+    {
+     "OS종류": null,
+     "호스트명": null
+    },
+    {
+     "OS종류": "LINUX",
+     "호스트명": "svr-bkp-01"
+    },
+    {
+     "OS종류": "LINUX",
+     "호스트명": "svr-was-03"
+    },
+    {
+     "OS종류": "Linux",
+     "호스트명": "cob0-bnndbp01"
+    },
+    {
+     "OS종류": "LINUX",
+     "호스트명": "svr-app-01"
+    },
+    {
+     "OS종류": "LINUX",
+     "호스트명": "svr-was-08"
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T13:06:58",
+ "review": {
+  "verdict": "ok",
+  "notes": "역질문 발동 — 채우지 못한 2건(담당자·담당자 연락처) · 파일 생성 · 54행 조회",
+  "at": "2026-09-23"
+ }
+}

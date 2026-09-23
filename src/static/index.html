@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>인프라 데이터 조회 에이전트</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=16">
+    <link rel="stylesheet" href="/static/css/style.css?v=19">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -20,7 +20,7 @@
     </div>
     <header>
         <div class="container">
-            <h1>INFRA QUERY AGENT</h1>
+            <h1>KB AIOps 포탈</h1>
             <nav>
                 <span class="status-badge-wrapper">
                     <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
@@ -67,6 +67,16 @@
                      질의응답 화면이 사라진다. 지난 대화는 질의 이력의 "대화"에서 다시 불러온다. -->
                 <a id="noiseConsoleLink" href="/noise" target="_blank" rel="noopener" class="btn btn-secondary"
                     style="font-size: 0.8125rem; padding: 7px 14px;">노이즈 관제</a>
+                <!-- 매뉴얼(plans/116 · D-252): 사용자 매뉴얼은 누구나, 관리자 매뉴얼은 Admin 링크와 같은 조건에서만
+                     보인다(app.js 가 같은 분기에서 함께 연다). 새 탭 — D-248 과 같은 이유. 버튼 두 개를 나란히
+                     두면 관리자 머리글이 1440px 에서 줄바꿈돼 메뉴 하나로 묶었다(plans/116 G-5). -->
+                <details class="manual-menu" id="manualMenu">
+                    <summary class="btn btn-secondary" style="font-size: 0.8125rem; padding: 7px 14px;">매뉴얼 ▾</summary>
+                    <div class="manual-menu-list">
+                        <a id="userManualLink" href="/manual/user" target="_blank" rel="noopener">사용자 매뉴얼</a>
+                        <a id="adminManualLink" href="/manual/admin" target="_blank" rel="noopener" style="display: none;">관리자 매뉴얼</a>
+                    </div>
+                </details>
                 <a id="adminEntryLink" href="/admin" target="_blank" rel="noopener" class="btn btn-secondary"
                     style="display: none; font-size: 0.8125rem; padding: 7px 14px;">Admin</a>
             </nav>
@@ -105,6 +115,17 @@
                     </svg>
                 </button>
             </div>
+            <!-- 새 대화: 불러온 대화를 보다가 새 thread로 질의를 시작한다. 화면·thread_id·스코프 칩만
+                 비우고 저장된 대화는 지우지 않는다. 패널을 접어도 보이도록 본문 밖에 두고,
+                 접힌 44px 손잡이에서는 아이콘만 남긴다. -->
+            <button type="button" class="btn btn-secondary history-new-chat" id="newChatBtn"
+                title="새 대화" aria-label="새 대화">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                <span class="history-new-chat-label">새 대화</span>
+            </button>
             <div class="history-panel-body" id="historyPanelBody">
                 <!-- 대화/질의 전환(D-248). 대화 = 서버 앱 DB에 저장된 스레드(질의+응답, 누르면
                      채팅 화면에 다시 그리고 이어서 질의할 수 있다). 질의 = 위 D-183 목록. -->
@@ -344,7 +365,7 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=11"></script>
+    <script src="/static/js/app.js?v=12"></script>
 </body>
 
 </html>

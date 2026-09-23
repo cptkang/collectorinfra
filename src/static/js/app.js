@@ -60,6 +60,7 @@
     var historyPanelCount = document.getElementById("historyPanelCount");
     var historySearch = document.getElementById("historySearch");
     var historyClearBtn = document.getElementById("historyClearBtn");
+    var newChatBtn = document.getElementById("newChatBtn");
 
     // ─── Auth Helpers ───
 
@@ -144,11 +145,13 @@
                 // 통합 RBAC(D-069): role==admin 사용자에게만 어드민 진입 링크 노출.
                 // 개발 모드(auth 비활성, anonymous)에서는 항상 노출해 진입성을 보존한다.
                 var adminLink = document.getElementById("adminEntryLink");
+                var adminManualLink = document.getElementById("adminManualLink");  // plans/116 — 같은 조건
                 if (adminLink && userInfo &&
                     (userInfo.role === "admin" || !data.auth_enabled)) {
                     // inline-block으로 두면 .btn의 inline-flex(수직 중앙정렬)가 덮여
                     // 헤더 고정 높이(32px)에서 글자가 위로 붙는다 — 클래스 표시값 복원
                     adminLink.style.display = "inline-flex";
+                    if (adminManualLink) adminManualLink.style.display = "block";
                 }
                 // Plan 59 §17: 알림 존 권한을 확정한 뒤 구독을 시작한다(권한 없으면 미구독).
                 initAlarmSubscription(userInfo, data.auth_enabled);
@@ -615,6 +618,14 @@
     }
 
     // ─── Auto-resize Textarea ───
+
+    // 매뉴얼 메뉴(plans/116): 링크를 누르거나 바깥을 누르면 닫는다(<details> 는 스스로 닫히지 않는다)
+    (function () {
+        var menu = document.getElementById("manualMenu");
+        if (!menu) return;
+        menu.addEventListener("click", function (e) { if (e.target.tagName === "A") menu.open = false; });
+        document.addEventListener("click", function (e) { if (!menu.contains(e.target)) menu.open = false; });
+    })();
 
     function autoResizeTextarea() {
         this.style.height = "auto";
@@ -3728,7 +3739,7 @@
         savedCurrentInput = "";
         // 뷰 전환은 필요 없다 — 사이드바는 채팅 뷰 안에 있어서, 여기를 누를 수 있다는 것은
         // 이미 채팅 뷰라는 뜻이다.
-        autoResizeTextarea();
+        autoResizeTextarea.call(promptEl);   // this 가 입력창이어야 한다 — 인자 없이 부르면 TypeError(plans/116)
         promptEl.focus();
     }
 
@@ -3984,6 +3995,29 @@
         renderHistoryList();   // 현재 대화 강조
     }
 
+    // 새 대화 — 다음 전송이 thread_id 없이 나가 서버가 새 스레드를 연다. 저장된 대화는 그대로다.
+    function startNewChat() {
+        if (isProcessing) {
+            showError("처리 중인 질의가 끝난 뒤 새 대화를 시작할 수 있습니다.");
+            return;
+        }
+        hideError();
+        hidePromptConfirm();
+        Array.prototype.forEach.call(chatMessages.querySelectorAll(".message"), function (el) { el.remove(); });
+        if (chatWelcome) chatWelcome.classList.remove("hidden");
+        messages = [];
+        currentThreadId = null;
+        lastUploadedFile = null;
+        currentDbScope = null;
+        pendingDbIds = null;
+        pendingReset = false;
+        updateDbScopeChip();
+        showProgressEmpty();
+        stickToBottom = true;
+        renderHistoryList();   // 현재 대화 강조 해제
+        if (promptEl) promptEl.focus();
+    }
+
     function deleteThread(threadId) {
         if (!confirm("이 대화를 목록에서 삭제할까요? 되돌릴 수 없습니다.")) return;
         fetch("/api/v1/threads/" + encodeURIComponent(threadId), { method: "DELETE", headers: getAuthHeaders() })
@@ -4119,6 +4153,7 @@
         if (historySearch) {
             historySearch.addEventListener("input", function () { renderHistoryList(); });
         }
+        if (newChatBtn) newChatBtn.addEventListener("click", startNewChat);
         updateAlarmViewState();
         setupHistoryPanel();
     }
@@ -4453,7 +4488,7 @@
         if (!text || !promptEl) return;
         setActiveView("chat");
         promptEl.value = text;
-        autoResizeTextarea();
+        autoResizeTextarea.call(promptEl);   // 인자 없이 부르면 TypeError 로 확인 바가 뜨지 않았다(plans/116)
         showPromptConfirm(text);
         promptEl.focus();
     }

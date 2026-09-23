@@ -1,0 +1,93 @@
+{
+ "id": "Q-ALARM-HISTORY",
+ "turns": [
+  {
+   "query": "경고 이상 알람 이력을 최근 발생 순으로 20건 조회해줘",
+   "file": null,
+   "key": "891027ffc83c7214",
+   "elapsed_s": 134.4,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n최근 20 건 중 5 건의 경고 이상 알람이 조회되었습니다. 발생 시간은 2026 년 5 월 20 일부터 7 월 13 일까지이며, 심각도 3(중요) 과 2(주의) 가 혼재되어 있습니다.\n\n| alarm_id | occurrence_time | severity | condition_id | status | resource_id | resource_name | resource_hostname |\n|---|---|---|---|---|---|---|---|\n| 9610001.0 | 2026-07-13T10:15:00 | 3.0 | null | ACTIVE | 9610001.0 | SV-WEB-001 | svweb001 |\n| 9610002.0 | 2026-07-10T03:42:00 | 3.0 | null | CLEARED | 9610002.0 | DB-ORA-023 | dbora023 |\n| 9610003.0 | 2026-06-25T14:08:00 | 2.0 | null | CLEARED | 9610002.0 | DB-ORA-023 | dbora023 |\n| 9610004.0 | 2026-06-05T22:31:00 | 2.0 | null | CLEARED | 9610004.0 | SV-BATCH-009 | svbatch009 |\n| 9610005.0 | 2026-05-20T07:55:00 | 3.0 | null | ACTIVE | 9610004.0 | SV-BATCH-009 | svbatch009 |\n\n참고사항\n- **이상 징후**: 현재 ACTIVE(활동 중) 상태인 알람이 2 건(SV-WEB-001, SV-BATCH-009) 존재하며, 모두 심각도 3.0 입니다.\n- **반복 발생**: DB-ORA-023 와 SV-BATCH-009 서버는 과거에 발생한 알람이 현재까지 유지되거나 재발생한 것으로 보입니다.\n- **데이터 범위**: 요청하신 20 건 중 실제 조회된 건수는 5 건입니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 5,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "alarm_id": 9610001.0,
+     "occurrence_time": "2026-07-13T10:15:00",
+     "severity": 3.0,
+     "condition_id": null,
+     "status": "ACTIVE",
+     "resource_id": 9610001.0,
+     "resource_name": "SV-WEB-001",
+     "resource_hostname": "svweb001"
+    },
+    {
+     "alarm_id": 9610002.0,
+     "occurrence_time": "2026-07-10T03:42:00",
+     "severity": 3.0,
+     "condition_id": null,
+     "status": "CLEARED",
+     "resource_id": 9610002.0,
+     "resource_name": "DB-ORA-023",
+     "resource_hostname": "dbora023"
+    },
+    {
+     "alarm_id": 9610003.0,
+     "occurrence_time": "2026-06-25T14:08:00",
+     "severity": 2.0,
+     "condition_id": null,
+     "status": "CLEARED",
+     "resource_id": 9610002.0,
+     "resource_name": "DB-ORA-023",
+     "resource_hostname": "dbora023"
+    },
+    {
+     "alarm_id": 9610004.0,
+     "occurrence_time": "2026-06-05T22:31:00",
+     "severity": 2.0,
+     "condition_id": null,
+     "status": "CLEARED",
+     "resource_id": 9610004.0,
+     "resource_name": "SV-BATCH-009",
+     "resource_hostname": "svbatch009"
+    },
+    {
+     "alarm_id": 9610005.0,
+     "occurrence_time": "2026-05-20T07:55:00",
+     "severity": 3.0,
+     "condition_id": null,
+     "status": "ACTIVE",
+     "resource_id": 9610004.0,
+     "resource_name": "SV-BATCH-009",
+     "resource_hostname": "svbatch009"
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T10:50:02",
+ "review": {
+  "verdict": "partly",
+  "notes": "5행 모두 심각도 2 이상이라 표는 맞으나 SQL 에 심각도 조건이 없다(서버 자원 조인으로 우연히 일치). 요약의 심각도 이름(중요·주의) 오기 — 본문 포인트에 밝힘",
+  "at": "2026-09-23"
+ }
+}

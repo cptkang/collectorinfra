@@ -49,6 +49,7 @@ max_body_bytes = 4194304
 # 도구 1회 반환 시리즈 상한. 넘으면 절단하고 truncated=true를 싣는다 (OPENMETRICS_MAX_SERIES)
 max_series = 200
 # ── PromQL 병행(S1) — PROMETHEUS_URL이 설정된 배치에서만 의미가 있다 ──
+# expose_openmetrics_tools=true + PROMETHEUS_URL 설정이면 prom_metric_instant에 source·cross_check 인자가 붙는다(아니면 스키마 불변).
 # prom_metric_instant source="auto"의 강등 정책: off(강등 없음) | on_unavailable | on_empty (OPENMETRICS_FALLBACK_POLICY)
 fallback_policy = "off"
 # Prometheus nodename 커버리지 캐시 TTL(초) (OPENMETRICS_COVERAGE_TTL_SECONDS)

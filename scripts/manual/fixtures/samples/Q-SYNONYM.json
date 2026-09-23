@@ -1,0 +1,72 @@
+{
+ "id": "Q-SYNONYM",
+ "turns": [
+  {
+   "query": "vcore, cpu, core은 동의어이다. 캐시에 등록하라.",
+   "file": null,
+   "key": "d650509aec482ce3",
+   "elapsed_s": 17.4,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "'vcore, cpu, core' 중 **실제 컬럼(또는 등록된 속성)으로 찾지 못했습니다**.\n\n동의어는 기준이 되는 컬럼에 붙여서 저장합니다. 어느 컬럼의 동의어인지 알려주시면 등록하겠습니다.\n예: `hostname에 'vcore' 유사 단어를 추가해줘`",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  },
+  {
+   "query": "hostname에 '장비이름' 유사 단어를 추가해줘",
+   "file": null,
+   "key": "ccef6f33b53c474b",
+   "elapsed_s": 32.5,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "'장비이름'을(를) hostname의 유사 단어로 추가했습니다.\n- 글로벌 사전에 등록 완료\n- polestar DB (polestar.sms_active_agent.hostname)에 동기화 완료\n- polestar DB (polestar.webapm_agent.hostname)에 동기화 완료\n- polestar DB (polestar.cmm_resource_system.hostname)에 동기화 완료\n- polestar DB (polestar.cmm_resource.hostname)에 동기화 완료\n- polestar DB (polestar.was_object.hostname)에 동기화 완료",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T12:41:26",
+ "review": {
+  "verdict": "ok",
+  "notes": "1턴: 앵커 없는 낱말 묶음은 등록 0건 + 방법 안내(D-142 정상) · 2턴: hostname 에 '장비이름' 등록(캡처 전용 Redis DB 13)",
+  "at": "2026-09-23"
+ }
+}

@@ -410,6 +410,152 @@ def ensure_ranking_nulls_last(sql: str) -> str:
     return sql[: m.start(1)] + fixed + sql[m.end(1):]
 
 
+# ── plans/116 §10.3: EAV 문자열 값 순위 정렬 교정 ─────────────────────────────
+# EAV 값 컬럼은 문자열이다. LLM이 크기·숫자 속성을 캐스트 없이 뽑아 그 별칭으로 정렬하면
+# '8.0 GB' > '65536' > '64.0 GB'(문자열 순)가 되어 「메모리 큰 상위 3대」가 8GB 서버를 냈다.
+# 결정적 조립(assembler)과 같은 정렬식을 LLM 경로 SQL에도 건다.
+_EAV_VALUE_COLUMN = "stringvalue_short"
+_ORDER_ITEM_RE = re.compile(
+    r'\s*("?)(\w+(?:\.\w+)?)\1(\s+(?:ASC|DESC))?(\s+NULLS\s+(?:FIRST|LAST))?\s*',
+    re.IGNORECASE,
+)
+_THEN_VALUE_RE = re.compile(rf"(\bTHEN\s+)((?:\w+\.)?{_EAV_VALUE_COLUMN})(\s+END\b)", re.IGNORECASE)
+
+
+def _blank_comments_and_depth(sql: str) -> tuple[str, list[int]]:
+    """주석을 같은 길이 공백으로 지운 본문과 글자별 괄호 깊이(문자열 리터럴 안 괄호 제외)."""
+    out = list(sql)
+    depth: list[int] = [0] * len(sql)
+    level, i, n = 0, 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            j = i + 1
+            while j < n and not (sql[j] == "'" and not sql.startswith("''", j)):
+                j += 2 if sql.startswith("''", j) else 1
+            for k in range(i, min(j + 1, n)):
+                depth[k] = level
+            i = j + 1
+            continue
+        if sql.startswith("--", i) or sql.startswith("/*", i):
+            end = sql.find("\n", i) if ch == "-" else sql.find("*/", i + 2)
+            end = n if end < 0 else (end if ch == "-" else end + 2)
+            for k in range(i, end):
+                out[k] = " " if sql[k] != "\n" else "\n"
+                depth[k] = level
+            i = end
+            continue
+        if ch == "(":
+            level += 1
+        depth[i] = level
+        if ch == ")":
+            level = max(0, level - 1)
+        i += 1
+    return "".join(out), depth
+
+
+def _eav_value_aliases(code: str) -> dict[str, str]:
+    """정렬 키(SELECT 별칭·조인 별칭 값 컬럼) → 값 크기 순 정렬식. 숫자·크기 속성만 모은다."""
+    from src.db_adapters.polestar.assembler import eav_sort_expr
+
+    found: dict[str, str] = {}
+    # 형태 1 — 피벗: MAX(CASE WHEN … <x>.name = '<속성>' THEN <x>.stringvalue_short END) AS 별칭
+    for m in re.finditer(r"\b(?:MAX|MIN)\s*\(", code, re.IGNORECASE):
+        open_pos, level, close = m.end() - 1, 0, None
+        for k in range(open_pos, len(code)):
+            if code[k] == "(":
+                level += 1
+            elif code[k] == ")":
+                level -= 1
+                if level == 0:
+                    close = k
+                    break
+        if close is None:
+            continue
+        inner = code[open_pos + 1: close]
+        am = re.search(rf"\bTHEN\s+(?:\w+\.)?{_EAV_VALUE_COLUMN}\s+END\b", inner, re.IGNORECASE)
+        lm = re.findall(r"\.name\s*=\s*'([^']+)'", inner, re.IGNORECASE)
+        alias_m = re.match(r'\s+AS\s+"?(\w+)"?', code[close + 1:], re.IGNORECASE)
+        if not (am and len(set(lm)) == 1 and alias_m) or re.search(r"CAST|::", inner, re.I):
+            continue
+        sort_expr = eav_sort_expr(am.group(0).split()[1], lm[0])
+        if sort_expr is not None:
+            # 집계 안쪽의 값 컬럼만 정렬식으로 바꾼다(피벗은 서버당 값 1개 — MAX 선택 불변).
+            agg = code[m.start(): close + 1]
+            found[alias_m.group(1)] = _THEN_VALUE_RE.sub(
+                lambda t: f"{t.group(1)}{sort_expr}{t.group(3)}", agg, count=1
+            )
+    # 형태 2 — 속성별 조인 별칭: JOIN … <a> ON … <a>.name = '<속성>'
+    #         + SELECT <a>.stringvalue_short AS 별칭
+    per_alias: dict[str, set[str]] = {}
+    for m in re.finditer(r"\b(\w+)\.name\s*=\s*'([^']+)'", code, re.IGNORECASE):
+        per_alias.setdefault(m.group(1), set()).add(m.group(2))
+    for join_alias, attrs in per_alias.items():
+        if len(attrs) != 1:
+            continue  # 한 별칭이 여러 속성을 거르면 피벗 형태 — 형태 1이 맡는다
+        expr = f"{join_alias}.{_EAV_VALUE_COLUMN}"
+        sort_expr = eav_sort_expr(expr, next(iter(attrs)))
+        if sort_expr is None:
+            continue
+        found[expr.lower()] = sort_expr
+        for am in re.finditer(
+            rf'\b{re.escape(expr)}\s+AS\s+"?(\w+)"?', code, re.IGNORECASE
+        ):
+            found[am.group(1)] = sort_expr
+    return found
+
+
+def ensure_eav_value_order(sql: str) -> str:
+    """최상위 ORDER BY가 캐스트 없는 EAV 숫자·크기 값이면 값 크기 순 식으로 바꾼다.
+
+    대상: 정렬 항목이 ①그런 값을 뽑은 SELECT 별칭이거나 ②속성별 조인 별칭의 값 컬럼
+    그 자체일 때. 출력 칼럼(표시값 '8.0 GB')은 그대로 두고 정렬 키만 바꾼다. 내림차순에는
+    NULLS LAST를 붙인다(PostgreSQL DESC 기본 NULLS FIRST — D-098). SELECT DISTINCT·집합
+    연산은 ORDER BY 식이 SELECT 목록에 있어야 하므로 건드리지 않는다. 비대상은 바이트 불변.
+    """
+    if not sql or _EAV_VALUE_COLUMN not in sql.lower():
+        return sql
+    code, depth = _blank_comments_and_depth(sql)
+    if re.search(r"\bSELECT\s+DISTINCT\b|\bUNION\b|\bINTERSECT\b|\bEXCEPT\b", code, re.I):
+        return sql
+    tops = [m for m in re.finditer(r"\bORDER\s+BY\b", code, re.I) if depth[m.start()] == 0]
+    if not tops:
+        return sql
+    seg_start = tops[-1].end()
+    seg_end = len(code)
+    for m in re.finditer(r"\bLIMIT\b|\bFETCH\b|\bOFFSET\b|;", code[seg_start:], re.I):
+        if depth[seg_start + m.start()] == 0:
+            seg_end = seg_start + m.start()
+            break
+    aliases = _eav_value_aliases(code)
+    if not aliases:
+        return sql
+    # 최상위 콤마로 정렬 항목 분할
+    items: list[tuple[int, int]] = []
+    last = seg_start
+    for k in range(seg_start, seg_end):
+        if code[k] == "," and depth[k] == 0:
+            items.append((last, k))
+            last = k + 1
+    items.append((last, seg_end))
+    out, changed = sql, False
+    for start, end in reversed(items):  # 뒤에서부터 치환해 앞 오프셋을 보존한다
+        m = _ORDER_ITEM_RE.fullmatch(code[start:end])
+        key = m and (aliases.get(m.group(2)) or aliases.get(m.group(2).lower()))
+        if not key:
+            continue
+        direction = (m.group(3) or "").strip().upper()
+        tail = m.group(3) or ""
+        if direction == "DESC" and not m.group(4):
+            tail += " NULLS LAST"
+        tail += m.group(4) or ""
+        last_group = 4 if m.group(4) else 3 if m.group(3) else None
+        span_end = start + (m.end(last_group) if last_group else m.end(2) + len(m.group(1)))
+        out = out[: start + m.start(1)] + key + tail + out[span_end:]
+        changed = True
+    return out if changed else sql
+
+
 def check_alarm_resource_server_type_filter(sql: str) -> list[str]:
     """알람 자원에 대한 WHERE `resource_type = 'server.Server'` 필터를 탐지한다 (D-202 2차).
 
@@ -674,8 +820,15 @@ def check_severity_label_filter(sql: str) -> list[str]:
 # 이 칼럼의 실제 어휘는 'NOT_ACK' 등 **확인(ACK) 상태**로 실측됨). 따라서 활성 판정은
 # cmm_alarm_active 존재로만 하고, ACTIVE류 리터럴 비교만 반려한다 — ACK 어휘 비교
 # ("미확인 알람" 질의의 NOT_ACK 등)는 정당하므로 손대지 않는다.
+# 칼럼을 LOWER/UPPER/TRIM으로 감싼 형태(`LOWER(a.currentalarmstatus) = 'active'`)도 같은
+# 오답이다 — 닫는 괄호를 건너 비교 연산자를 잡는다(plans/116 §10.3).
 _ACTIVE_STATUS_CMP_RE = re.compile(
-    r"\bcurrentalarmstatus\s*(?:=|!=|<>|NOT\s+I?LIKE|I?LIKE)\s*'([^']*)'",
+    r"\bcurrentalarmstatus\s*\)*\s*(?:=|!=|<>|NOT\s+I?LIKE|I?LIKE)\s*'([^']*)'",
+    re.IGNORECASE,
+)
+# 좌우가 뒤집힌 비교: 'active' = [함수(]a.currentalarmstatus
+_ACTIVE_STATUS_CMP_REVERSED_RE = re.compile(
+    r"'([^']*)'\s*(?:=|!=|<>)\s*(?:(?:LOWER|UPPER|TRIM)\s*\(\s*)*(?:\w+\.)?currentalarmstatus\b",
     re.IGNORECASE,
 )
 _ACTIVE_STATUS_IN_RE = re.compile(
@@ -709,9 +862,10 @@ def check_active_status_literal_filter(sql: str) -> list[str]:
     """
     text = sqlparse.format(sql, strip_comments=True)
     offending: list[str] = []
-    for m in _ACTIVE_STATUS_CMP_RE.finditer(text):
-        if _ACTIVE_LIKE_LITERAL_RE.match(m.group(1)):
-            offending.append(m.group(1))
+    for regex in (_ACTIVE_STATUS_CMP_RE, _ACTIVE_STATUS_CMP_REVERSED_RE):
+        for m in regex.finditer(text):
+            if _ACTIVE_LIKE_LITERAL_RE.match(m.group(1)):
+                offending.append(m.group(1))
     for m in _ACTIVE_STATUS_IN_RE.finditer(text):
         for lit in re.findall(r"'([^']*)'", m.group(1)):
             if _ACTIVE_LIKE_LITERAL_RE.match(lit):

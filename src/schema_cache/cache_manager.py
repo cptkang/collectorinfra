@@ -1817,6 +1817,9 @@ class SchemaCacheManager:
                     db_id=db_id,
                     fingerprint=file_info.get("fingerprint", ""),
                     cached_at=file_info.get("cached_at", ""),
+                    # 빠뜨리면 파일 캐시에만 있는 DB 가 항상 「테이블 0개」로 나온다
+                    # (plans/116 §10.3)
+                    table_count=file_info.get("table_count", 0),
                     backend="file",
                 ))
 

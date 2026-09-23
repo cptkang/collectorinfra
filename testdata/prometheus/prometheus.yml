@@ -19,3 +19,11 @@ scrape_configs:
       - targets: ["mock-exporter:80"]
         labels:
           nodename: svr-web-01
+
+  # plans/92 O5(B-2) 폴스타 → OpenMetrics 브리지 — 호스트에서 EXPOSE_POLESTAR_EXPORTER=true로 띄운
+  # mcp_server(임시 포트 9098 · 9099/9097 상주 인스턴스와 별개)의 GET /metrics를 긁는다.
+  # 미기동이면 up{job="polestar"} == 0 — 나머지 job에는 영향 없다. 기동 절차는 docs/27 §4.1.
+  # MCP_BEARER_TOKEN을 켠 인스턴스면 authorization(credentials)을 추가한다.
+  - job_name: polestar
+    static_configs:
+      - targets: ["host.docker.internal:9098"]

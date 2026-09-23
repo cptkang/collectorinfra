@@ -73,17 +73,20 @@ def test_이번_run_형태는_단과_타임아웃으로_구간_실패다(tmp_pat
     assert "축 비교 표본이 줄었다" in timeout[0]
     assert [r for r in reasons if "기준선 단" in r] == []
 
-    tier = [n for n in health.warnings() if "기준선 단" in n]
-    assert len(tier) == 1
-    assert "`intent_orchestration`" in tier[0] and "`semantic_router`" in tier[0]
+    # D-251 — 이 run 의 2단은 **기준 경로**다(D-225 의 3단을 개정 · plans/118 B-5). 고지가 없다.
+    assert [n for n in health.warnings() if "기준선 단" in n] == []
+    # 3단 기준선이면 기준 경로(2단)가 아니라는 고지가 나온다.
+    off = [n for n in _run_shape(tmp_path, tier=TIER3).warnings() if "기준선 단" in n]
+    assert len(off) == 1
+    assert "`semantic_router`" in off[0] and "기준 경로 `intent_orchestration`" in off[0]
     assert "사다리 단 축(plans/114 M-0 · D-250)을 재기 전에는 다른 축 결과가 이 단에 조건부다" \
-        in tier[0]
+        in off[0]
     # 실패 사유는 고지에도 실린다(둘이 갈리면 화면은 주의인데 구간은 완료가 된다)
     assert set(health.qualification_problems()) <= set(health.warnings())
 
 
 def test_기준_경로_단이고_타임아웃이_적으면_자격_문제가_없다(tmp_path) -> None:
-    health = _run_shape(tmp_path, tier=TIER3, timeouts=20)          # 9%
+    health = _run_shape(tmp_path, tier=TIER2, timeouts=20)          # 9% · 기준 경로 2단(D-251)
 
     assert health.qualification_problems() == []
     assert health.stop_reasons() == []
@@ -239,7 +242,8 @@ def test_구간_기록에_단_지문_커밋이_남는다(seg) -> None:
     assert record["commit"] == "deadbeefcafe" and record["dirty"] is True
 
     report = (root / "run-closed" / "campaign_verdicts.md").read_text(encoding="utf-8")
-    assert "사다리 단 축(plans/114 M-0 · D-250) 미측정" in report
+    # 2단은 기준 경로다(D-251 · plans/118 B-5) — 「기준 경로가 아닌 구간」 고지가 없다.
+    assert "사다리 단 축(plans/114 M-0 · D-250) 미측정" not in report
     assert "deadbeef (dirty)" in report and "abc12345" in report
 
 

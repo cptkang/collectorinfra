@@ -422,7 +422,8 @@ class Campaign:
     def tier_caveat(self) -> Optional[str]:
         """승자가 **재서 고른 것이 아닐 때**의 고지. 없으면 None(plans/114 M-0 · D-250 ②).
 
-        판정이 「판정 불가」면 기준 경로(D-225)로 고정하고 캠페인을 계속 돌린다 — 멈추면 반복 1회
+        판정이 「판정 불가」면 기준 경로(D-251 · 2단)로 고정하고 캠페인을 계속 돌린다 — 멈추면
+        반복 1회
         설계에서 캠페인 전체가 진행되지 못한다(벤치 소유 검토 ④ 2026-09-23). 대신 이후 구간의 축
         결과가 그 단에 조건부라는 사실을 판정문·계획 표·합산 리포트에 싣는다.
 
@@ -450,7 +451,22 @@ class Campaign:
 
     # ── 판정 ──
     def frozen_axes(self) -> set[str]:
+        """계획이 **다시 배정하지 않는** 축 — 완료·실패·진행 기록 전부.
+
+        실패·진행 구간의 축도 얼린다. 그 구간은 `--segment <id>` 재시도·재개로 **같은 구간**으로
+        다시 돌고, 새 구간에 다시 배정되면 한 축이 두 구간에 걸린다.
+        """
         return {axis for r in self.records.values() for axis in r.axes}
+
+    def reopened_axes(self) -> set[str]:
+        """재시도·재개로 **다시 돌 수 있는** 구간(실패·진행)의 축(plans/118 B-2).
+
+        `frozen_axes` 는 계획에서 이 축을 빼지만, 설정 스냅샷은 이 축의 arm 도 떠야 한다 —
+        빠지면 재개 구간의 `config_snapshot.json` 이 `arms: []` 가 되어 대조군·도달성 판정이
+        빈 입력으로 돈다(run `20260922-162132` 실측).
+        """
+        return {axis for r in self.records.values() if r.status in (FAILED, RUNNING)
+                for axis in r.axes}
 
     def failed(self) -> list[SegmentRecord]:
         return sorted((r for r in self.records.values() if r.status == FAILED),
@@ -691,6 +707,55 @@ def continuity(previous: Optional[SegmentRecord],
         notes.append("앞 구간은 깨끗한 작업 트리였는데 이 구간은 미커밋 변경이 있다 — "
                      "같은 커밋이어도 실행한 코드가 다르다")
     return stop, notes
+
+
+@dataclass(frozen=True)
+class BaselineRepeat:
+    """끝난 구간 1개의 기준선 관측과 **그 기준선의 설정 판**(plans/118 B-4).
+
+    구간 간 기준선 반복은 설정 지문이 같을 때만 반복이다. 지문이 다르면(예: 구간 도중 `.env` 의
+    `API_QUERY_TIMEOUT` 60 → 180) 두 관측의 차이는 시간 교란이 아니라 **설정 차이**다.
+    """
+
+    segment_id: str
+    observations: Sequence[Any]
+    fingerprint: Optional[str] = None
+    effective: Mapping[str, Any] = field(default_factory=dict)
+    nondeterministic: frozenset[str] = frozenset()
+    finished_at: str = ""              # 실행 순서 — 이웃 구간 쌍을 이 순서로 짓는다
+
+
+def fingerprint_groups(repeats: Sequence[BaselineRepeat]) -> list[list[BaselineRepeat]]:
+    """같은 설정 지문끼리 묶는다(입력 순서 유지). **지문이 없는 구간은 어느 묶음에도 넣지 않는다**
+    — 같은지 모르는 것을 같다고 치면 설정 차이가 노이즈 바닥으로 들어간다(추정 금지)."""
+    groups: dict[str, list[BaselineRepeat]] = {}
+    for repeat in repeats:
+        if repeat.fingerprint:
+            groups.setdefault(repeat.fingerprint, []).append(repeat)
+    return list(groups.values())
+
+
+def config_diff(before: BaselineRepeat, after: BaselineRepeat, *, limit: int = 6) -> str:
+    """두 기준선의 **바뀐 키** 한 줄 — `server.query_timeout 60 → 180`. 비결정 키는 뺀다.
+
+    어느 쪽이든 실효값을 못 읽었으면(스냅샷 없음) 그렇다고 적는다 — 빈 문자열로 두지 않는다.
+    """
+    if not before.effective or not after.effective:
+        return "확인 불가 — 설정 스냅샷이 없다"
+    skip = set(before.nondeterministic) | set(after.nondeterministic)
+    keys = sorted(k for k in set(before.effective) | set(after.effective)
+                  if k not in skip and before.effective.get(k) != after.effective.get(k))
+    if not keys:
+        return "실효값 차이 없음(지문 산정 규칙 차이)"
+
+    def _short(value: Any) -> str:
+        text = "없음" if value is None else str(value)
+        return text if len(text) <= 40 else text[:37] + "…"
+
+    shown = [f"`{k}` {_short(before.effective.get(k))} → {_short(after.effective.get(k))}"
+             for k in keys[:limit]]
+    more = f" 외 {len(keys) - limit}개" if len(keys) > limit else ""
+    return " · ".join(shown) + more
 
 
 def unmeasured_reason(axis: str, campaign: Campaign, plan: Plan) -> Optional[str]:

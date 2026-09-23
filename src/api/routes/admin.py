@@ -1537,6 +1537,8 @@ async def get_audit_logs_paginated(
             page=page,
             page_size=page_size,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"날짜 형식 오류: {e}") from e
     except AttributeError:
         # query_logs_paginated 미구현 시 기존 메서드 폴백
         logs = await audit_repo.query_logs(
@@ -1584,6 +1586,8 @@ async def get_audit_stats(
             start_date=start_date,
             end_date=end_date,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"날짜 형식 오류: {e}") from e
     except AttributeError:
         return {"error": "통계 기능이 지원되지 않습니다."}
 

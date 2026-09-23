@@ -9,7 +9,15 @@
 
     // 통합 RBAC(D-069): 사용자 로그인 토큰(role==admin)으로도 어드민 진입을 허용한다.
     // break-glass 운영자 토큰(admin_token)이 있으면 우선, 없으면 사용자 토큰을 사용한다.
-    var token = localStorage.getItem("admin_token") || localStorage.getItem("user_token");
+    // 고른 토큰의 키 이름을 기억한다 — 401이면 바로 그 키를 지워야 한다(noise.js D-245 수정과 같은 이유:
+    // 만료 user_token을 남기면 로그인 화면이 그 토큰을 보고 곧바로 /admin으로 되돌려 무한 리다이렉트가 난다).
+    var TOKEN_KEYS = ["admin_token", "user_token"];
+    var tokenKey = null;
+    var token = null;
+    for (var i = 0; i < TOKEN_KEYS.length && !token; i++) {
+        token = localStorage.getItem(TOKEN_KEYS[i]);
+        if (token) tokenKey = TOKEN_KEYS[i];
+    }
     var alertError = document.getElementById("alertError");
     var alertSuccess = document.getElementById("alertSuccess");
 
@@ -43,8 +51,9 @@
     }
 
     function redirectUnauthenticated() {
-        // 미인증/만료 토큰 → 정상 로그인으로 유도(break-glass 아님)
-        localStorage.removeItem("admin_token");
+        // 미인증/만료 토큰 → 정상 로그인으로 유도(break-glass 아님). 실제로 보낸 토큰의 키를 지운다.
+        localStorage.removeItem(tokenKey);
+        if (tokenKey === "user_token") localStorage.removeItem("user_info");
         window.location.href = "/login?next=/admin";
     }
 

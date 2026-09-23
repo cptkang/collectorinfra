@@ -26,7 +26,7 @@ def test_page_load(page: Page) -> None:
 
     # 헤더 h1 텍스트 확인
     h1 = page.locator("h1")
-    expect(h1).to_have_text("INFRA QUERY AGENT")
+    expect(h1).to_have_text("KB AIOps 포탈")
 
     # ONLINE 배지 표시 확인
     badge = page.locator(".status-badge.status-badge--online")

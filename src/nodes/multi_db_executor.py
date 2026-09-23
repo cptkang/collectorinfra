@@ -113,7 +113,10 @@ from src.db_adapters.polestar.assembler import (
     resolve_form_fill_answers,
 )
 # 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
-from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+from src.db_adapters.polestar.validators import (
+    ensure_eav_value_order,
+    ensure_ranking_nulls_last,
+)
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
 from src.tools.metrics import classify_metric_field
@@ -1559,8 +1562,9 @@ async def _invoke_llm_for_sql(
             # + EAV 숫자 값 정수 캐스트 교정(D-160) — 값 컬럼은 구조 메타 선언에서 도출
             # + 단위 문자열 캐스트 GB 정규화(D-199) — 단일 경로와 대칭
             # + 순위 정렬 NULLS LAST 부가(D-202 2차) — 단일 경로와 대칭
+            # + EAV 숫자·크기 값 순위 정렬 교정(plans/116 §10.3) — 단일 경로와 대칭
             _eav_cols = eav_value_cast_columns(first_eav_pattern(schema_info))
-            return ensure_ranking_nulls_last(
+            return ensure_ranking_nulls_last(ensure_eav_value_order(
                 normalize_eav_unit_casts(
                     normalize_eav_numeric_casts(
                         enforce_all_query_limit(
@@ -1571,7 +1575,7 @@ async def _invoke_llm_for_sql(
                     ),
                     _eav_cols,
                 )
-            )
+            ))
 
     messages: list[BaseMessage] = [
         SystemMessage(content=system_prompt)
@@ -1595,6 +1599,8 @@ async def _invoke_llm_for_sql(
     sql = normalize_eav_numeric_casts(sql, _eav_cols)
     # 단위 문자열("14.9 GB"/"2 TB") 캐스트의 GB 기준 정규화(D-199) — B-11 실측, 단일 대칭.
     sql = normalize_eav_unit_casts(sql, _eav_cols)
+    # EAV 숫자·크기 값(문자열) 순위 정렬을 값 크기 순으로(plans/116 §10.3) — 단일 대칭.
+    sql = ensure_eav_value_order(sql)
     # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락 재시도 소진 실측, 단일 대칭.
     sql = ensure_ranking_nulls_last(sql)
     # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).

@@ -9,6 +9,9 @@ services:
       - "9190:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # job polestar(호스트 mcp_server 브리지) 도달용 — Docker Desktop 밖(리눅스 엔진)에서도 해석되게
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - target-vm
       - mock-exporter

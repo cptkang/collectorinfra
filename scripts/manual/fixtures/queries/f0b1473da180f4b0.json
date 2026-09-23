@@ -1,0 +1,2759 @@
+{
+ "key": "f0b1473da180f4b0",
+ "query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘",
+ "has_file": false,
+ "has_answers": false,
+ "recorded_at": "2026-09-23T10:30:31",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [
+      "서버",
+      "CPU",
+      "메모리"
+     ],
+     "filter_conditions": [
+      {
+       "field": "hostname",
+       "op": "=",
+       "value": "cocm-hdkapp01"
+      }
+     ],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "original_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "current_node": "input_parser",
+    "error_message": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "current_node": "field_mapper",
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending"
+     }
+    ],
+    "is_composite": false,
+    "current_node": "intent_planner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "data_query",
+    "sub_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "스키마 분석"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 1/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 2/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 3/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 4/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 5/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "end",
+    "label": "샘플 수집 완료 5/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 생성"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 검증"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 실행"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "결과 정리"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "data_query",
+    "sub_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed",
+    "row_count": 1
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 1건의 데이터를 조회했습니다. 조회 대상: 서버, CPU, 메모리.",
+       "rows": [
+        {
+         "id": 9610003.0,
+         "server_name": "cocm-hdkapp01",
+         "hostname": "cocm-hdkapp01",
+         "ipaddress": "10.61.0.3",
+         "os_type": "Linux",
+         "os_version": "Red Hat Enterprise Linux 8.6",
+         "cpu_model": "Intel Xeon Gold 6248R",
+         "memory_capacity": "65536"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "id": 9610003.0,
+        "server_name": "cocm-hdkapp01",
+        "hostname": "cocm-hdkapp01",
+        "ipaddress": "10.61.0.3",
+        "os_type": "Linux",
+        "os_version": "Red Hat Enterprise Linux 8.6",
+        "cpu_model": "Intel Xeon Gold 6248R",
+        "memory_capacity": "65536"
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.95,
+        "sub_query_context": "서버 OS 종류·버전, IP 주소, CPU 모델, 메모리 용량 조회",
+        "user_specified": false,
+        "reason": "서버 OS, IP, CPU, 메모리 등 상세 사양 조회"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회\n-- ★ 폴스타(로컬 샌드박스) 전용: 필터 조건 \"hostname\"이 전달되었으나, 원문 \"서버의\"로 인해 장비명(name) 필터로 매핑\n-- ★ 서버 식별은 HAVING 절에서 수행 (WHERE 에 name 필터를 두면 CPU/메모리 행이 걸러져 NULL이 됨)\n-- ★ IP주소는 cmm_resource.ipaddress 직접 컬럼 사용 (EAV 'IPaddress' 속성은 NULL)\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'    THEN cc.stringvalue_short END) AS os_type,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'  THEN cc.stringvalue_short END) AS os_version,\n    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'     THEN cc.stringvalue_short END) AS cpu_model,\n    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize' THEN cc.stringvalue_short END) AS memory_capacity\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n      ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = 'cocm-hdkapp01'\nLIMIT 1000;"
+     }
+    },
+    "current_node": "agent_orchestrator"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 결과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "coc"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "m"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-h"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "dk"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "app"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 서버"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Red"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Hat"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Enterprise"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 8"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 환경"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Intel"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " X"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "eon"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Gold"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "8"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "R"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " CPU"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 와"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "GB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 메모"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 사양"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 갖추고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 있습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " id"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " server"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_name"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " hostname"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ip"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "address"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " os"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_type"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " os"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_version"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " cpu"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_model"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " memory"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_capacity"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "----"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-------------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "----------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-----------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "------------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-----------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "----------------"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " coc"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "m"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-h"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "dk"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "app"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " coc"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "m"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-h"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "dk"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "app"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Red"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Hat"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Enterprise"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 8"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Intel"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " X"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "eon"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Gold"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "8"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "R"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "참"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "사항"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 메모"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "량"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "memory"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_capacity"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "위가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 명시"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 않은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 수치"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되었습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 일반적으로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 값"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " MB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 의미"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "할"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 가능성이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 높"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으나"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 데이터"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 원"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "본"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "위가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 포함되어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 있지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 않으"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "므로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 그대로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 표"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "기"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "합니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "조회 결과\n\ncocm-hdkapp01 서버는 Red Hat Enterprise Linux 8.6 환경이며, Intel Xeon Gold 6248R CPU 와 64GB 메모리 사양을 갖추고 있습니다.\n\n| id | server_name | hostname | ipaddress | os_type | os_version | cpu_model | memory_capacity |\n|---|---|---|---|---|---|---|---|\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | Linux | Red Hat Enterprise Linux 8.6 | Intel Xeon Gold 6248R | 65536 |\n\n참고사항\n- 메모리 용량 (memory_capacity) 은 단위가 명시되지 않은 수치 (65536) 로 조회되었습니다. 일반적으로 이 값은 MB 를 의미할 가능성이 높으나, 데이터 원본에 단위가 포함되어 있지 않으므로 그대로 표기합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "current_node": "result_aggregator",
+    "query_results": [
+     {
+      "id": 9610003.0,
+      "server_name": "cocm-hdkapp01",
+      "hostname": "cocm-hdkapp01",
+      "ipaddress": "10.61.0.3",
+      "os_type": "Linux",
+      "os_version": "Red Hat Enterprise Linux 8.6",
+      "cpu_model": "Intel Xeon Gold 6248R",
+      "memory_capacity": "65536"
+     }
+    ],
+    "active_db_id": "polestar",
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "db_scope_source": "classified",
+    "dependency_notes": [
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "조회 결과\n\ncocm-hdkapp01 서버는 Red Hat Enterprise Linux 8.6 환경이며, Intel Xeon Gold 6248R CPU 와 64GB 메모리 사양을 갖추고 있습니다.\n\n| id | server_name | hostname | ipaddress | os_type | os_version | cpu_model | memory_capacity |\n|---|---|---|---|---|---|---|---|\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | Linux | Red Hat Enterprise Linux 8.6 | Intel Xeon Gold 6248R | 65536 |\n\n참고사항\n- 메모리 용량 (memory_capacity) 은 단위가 명시되지 않은 수치 (65536) 로 조회되었습니다. 일반적으로 이 값은 MB 를 의미할 가능성이 높으나, 데이터 원본에 단위가 포함되어 있지 않으므로 그대로 표기합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘",
+    "uploaded_file": null,
+    "file_type": null,
+    "parsed_requirements": {
+     "query_targets": [
+      "서버",
+      "CPU",
+      "메모리"
+     ],
+     "filter_conditions": [
+      {
+       "field": "hostname",
+       "op": "=",
+       "value": "cocm-hdkapp01"
+      }
+     ],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "original_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "csv_sheet_data": null,
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [
+     {
+      "id": 9610003.0,
+      "server_name": "cocm-hdkapp01",
+      "hostname": "cocm-hdkapp01",
+      "ipaddress": "10.61.0.3",
+      "os_type": "Linux",
+      "os_version": "Red Hat Enterprise Linux 8.6",
+      "cpu_model": "Intel Xeon Gold 6248R",
+      "memory_capacity": "65536"
+     }
+    ],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": null,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null,
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": null,
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "active_db_id": "polestar",
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "zone_clarification_allowed": true,
+    "zone_clarification": null,
+    "db_scope_source": "classified",
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+     },
+     {
+      "__msg__": "ai",
+      "content": "조회 결과\n\ncocm-hdkapp01 서버는 Red Hat Enterprise Linux 8.6 환경이며, Intel Xeon Gold 6248R CPU 와 64GB 메모리 사양을 갖추고 있습니다.\n\n| id | server_name | hostname | ipaddress | os_type | os_version | cpu_model | memory_capacity |\n|---|---|---|---|---|---|---|---|\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | Linux | Red Hat Enterprise Linux 8.6 | Intel Xeon Gold 6248R | 65536 |\n\n참고사항\n- 메모리 용량 (memory_capacity) 은 단위가 명시되지 않은 수치 (65536) 로 조회되었습니다. 일반적으로 이 값은 MB 를 의미할 가능성이 높으나, 데이터 원본에 단위가 포함되어 있지 않으므로 그대로 표기합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "thread_id": "ef2023ff-3053-4bb0-aad2-1d791f2853a8",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "final_response": "조회 결과\n\ncocm-hdkapp01 서버는 Red Hat Enterprise Linux 8.6 환경이며, Intel Xeon Gold 6248R CPU 와 64GB 메모리 사양을 갖추고 있습니다.\n\n| id | server_name | hostname | ipaddress | os_type | os_version | cpu_model | memory_capacity |\n|---|---|---|---|---|---|---|---|\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | Linux | Red Hat Enterprise Linux 8.6 | Intel Xeon Gold 6248R | 65536 |\n\n참고사항\n- 메모리 용량 (memory_capacity) 은 단위가 명시되지 않은 수치 (65536) 로 조회되었습니다. 일반적으로 이 값은 MB 를 의미할 가능성이 높으나, 데이터 원본에 단위가 포함되어 있지 않으므로 그대로 표기합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "output_file": null,
+    "output_file_name": null,
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 1건의 데이터를 조회했습니다. 조회 대상: 서버, CPU, 메모리.",
+       "rows": [
+        {
+         "id": 9610003.0,
+         "server_name": "cocm-hdkapp01",
+         "hostname": "cocm-hdkapp01",
+         "ipaddress": "10.61.0.3",
+         "os_type": "Linux",
+         "os_version": "Red Hat Enterprise Linux 8.6",
+         "cpu_model": "Intel Xeon Gold 6248R",
+         "memory_capacity": "65536"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "id": 9610003.0,
+        "server_name": "cocm-hdkapp01",
+        "hostname": "cocm-hdkapp01",
+        "ipaddress": "10.61.0.3",
+        "os_type": "Linux",
+        "os_version": "Red Hat Enterprise Linux 8.6",
+        "cpu_model": "Intel Xeon Gold 6248R",
+        "memory_capacity": "65536"
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.95,
+        "sub_query_context": "서버 OS 종류·버전, IP 주소, CPU 모델, 메모리 용량 조회",
+        "user_specified": false,
+        "reason": "서버 OS, IP, CPU, 메모리 등 상세 사양 조회"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량 조회\n-- ★ 폴스타(로컬 샌드박스) 전용: 필터 조건 \"hostname\"이 전달되었으나, 원문 \"서버의\"로 인해 장비명(name) 필터로 매핑\n-- ★ 서버 식별은 HAVING 절에서 수행 (WHERE 에 name 필터를 두면 CPU/메모리 행이 걸러져 NULL이 됨)\n-- ★ IP주소는 cmm_resource.ipaddress 직접 컬럼 사용 (EAV 'IPaddress' 속성은 NULL)\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'    THEN cc.stringvalue_short END) AS os_type,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'  THEN cc.stringvalue_short END) AS os_version,\n    MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'     THEN cc.stringvalue_short END) AS cpu_model,\n    MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize' THEN cc.stringvalue_short END) AS memory_capacity\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n      ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = 'cocm-hdkapp01'\nLIMIT 1000;"
+     }
+    },
+    "is_composite": false,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": [
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "replan_count": 0,
+    "needs_replan": false,
+    "replan_history": [],
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

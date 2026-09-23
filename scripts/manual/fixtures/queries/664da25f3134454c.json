@@ -1,0 +1,3862 @@
+{
+ "key": "664da25f3134454c",
+ "query": "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘",
+ "has_file": false,
+ "has_answers": false,
+ "recorded_at": "2026-09-23T11:42:44",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [
+      "서버"
+     ],
+     "filter_conditions": [
+      {
+       "field": "alarm_severity",
+       "op": "=",
+       "value": "심각"
+      }
+     ],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "original_query": "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "current_node": "input_parser",
+    "error_message": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "current_node": "field_mapper",
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "alarm_query",
+      "sub_query": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending"
+     },
+     {
+      "task_id": "t2",
+      "agent": "data_query",
+      "sub_query": "선행 결과의 서버들에 대해 IP 주소와 OS 종류 조회",
+      "depends_on": [
+       "t1"
+      ],
+      "input_from": [
+       "t1"
+      ],
+      "order": 2,
+      "status": "pending"
+     }
+    ],
+    "is_composite": true,
+    "current_node": "intent_planner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 2,
+    "agent": "alarm_query",
+    "sub_query": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "스키마 분석"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 1/4"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 2/4"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 3/4"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 4/4"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "end",
+    "label": "샘플 수집 완료 4/4"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 생성"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 검증"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 실행"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "결과 정리"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 2,
+    "agent": "alarm_query",
+    "sub_query": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed",
+    "row_count": 3
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t2",
+    "order": 2,
+    "total": 2,
+    "agent": "data_query",
+    "sub_query": "선행 결과의 서버들에 대해 IP 주소와 OS 종류 조회",
+    "input_from": [
+     "t1"
+    ],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "스키마 분석"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 1/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 2/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 3/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 4/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 5/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "end",
+    "label": "샘플 수집 완료 5/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 생성"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 검증"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 실행"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "결과 정리"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t2",
+    "order": 2,
+    "total": 2,
+    "agent": "data_query",
+    "sub_query": "선행 결과의 서버들에 대해 IP 주소와 OS 종류 조회",
+    "input_from": [
+     "t1"
+    ],
+    "phase": "end",
+    "status": "completed",
+    "row_count": 3
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "alarm_query",
+      "sub_query": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     },
+     {
+      "task_id": "t2",
+      "agent": "data_query",
+      "sub_query": "선행 결과의 서버들에 대해 IP 주소와 OS 종류 조회",
+      "depends_on": [
+       "t1"
+      ],
+      "input_from": [
+       "t1"
+      ],
+      "order": 2,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버.",
+       "rows": [
+        {
+         "server_name": "DB-ORA-023",
+         "os_hostname": "dbora023",
+         "ipaddress": "10.61.0.2",
+         "avail_status": 0.0
+        },
+        {
+         "server_name": "SV-BATCH-009",
+         "os_hostname": "svbatch009",
+         "ipaddress": "10.61.0.4",
+         "avail_status": 2.0
+        },
+        {
+         "server_name": "SV-WEB-001",
+         "os_hostname": "svweb001",
+         "ipaddress": "10.61.0.1",
+         "avail_status": 0.0
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_name": "DB-ORA-023",
+        "os_hostname": "dbora023",
+        "ipaddress": "10.61.0.2",
+        "avail_status": 0.0
+       },
+       {
+        "server_name": "SV-BATCH-009",
+        "os_hostname": "svbatch009",
+        "ipaddress": "10.61.0.4",
+        "avail_status": 2.0
+       },
+       {
+        "server_name": "SV-WEB-001",
+        "os_hostname": "svweb001",
+        "ipaddress": "10.61.0.1",
+        "avail_status": 0.0
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 심각 알람이 발생한 적이 있는 서버 목록 조회\n-- polestar.cmm_alarm 테이블에서 alarmseverity가 3(심각)인 기록이 있는 resource_id를 추출\n-- 해당 resource_id로 polestar.cmm_resource 테이블과 조인하여 서버 목록을 조회\nSELECT\n  COALESCE(r.name, r.hostname) AS server_name,\n  r.hostname AS os_hostname,\n  r.ipaddress,\n  r.avail_status\nFROM polestar.cmm_resource r\nWHERE r.resource_type = 'server.Server'\n  AND r.dtime IS NULL\n  AND r.id IN (\n    SELECT DISTINCT resource_id\n    FROM polestar.cmm_alarm\n    WHERE alarmseverity = 3\n  )\nORDER BY r.hostname\nLIMIT 10000;"
+     },
+     "t2": {
+      "organized_data": {
+       "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버.",
+       "rows": [
+        {
+         "server_hostname": "svweb001",
+         "ip_address": "10.61.0.1",
+         "os_type": "Linux"
+        },
+        {
+         "server_hostname": "dbora023",
+         "ip_address": "10.61.0.2",
+         "os_type": "Linux"
+        },
+        {
+         "server_hostname": "svbatch009",
+         "ip_address": "10.61.0.4",
+         "os_type": "AIX"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_hostname": "svweb001",
+        "ip_address": "10.61.0.1",
+        "os_type": "Linux"
+       },
+       {
+        "server_hostname": "dbora023",
+        "ip_address": "10.61.0.2",
+        "os_type": "Linux"
+       },
+       {
+        "server_hostname": "svbatch009",
+        "ip_address": "10.61.0.4",
+        "os_type": "AIX"
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.9,
+        "sub_query_context": "선행 결과에 포함된 서버들의 IP 주소 및 OS 종류 조회",
+        "user_specified": false,
+        "reason": "선행 결과의 서버 목록에 대해 IP 주소와 OS 종류 정보를 조회하는 데이터 쿼리"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 선행 결과의 서버들 (hostname: 'dbora023', 'svbatch009', 'svweb001') 에 대한 IP 주소와 OS 종류 조회\nSELECT\n  r.hostname AS server_hostname,\n  r.ipaddress AS ip_address,\n  cc_ostype.stringvalue_short AS os_type\nFROM polestar.cmm_resource r\nLEFT JOIN polestar.core_config_prop cc_ostype\n  ON r.resource_conf_id = cc_ostype.configuration_id\n  AND cc_ostype.name = 'OSType'\nWHERE r.resource_type = 'server.Server'\n  AND r.dtime IS NULL\n  AND r.hostname IN ('dbora023', 'svbatch009', 'svweb001')\nLIMIT 10000;"
+     }
+    },
+    "current_node": "agent_orchestrator",
+    "dependency_notes": [
+     {
+      "kind": "trace",
+      "task_id": "t2",
+      "reason": "ok",
+      "detail": "선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.",
+      "source_task_ids": [
+       "t1"
+      ],
+      "scope_col": "hostname",
+      "scope_size": 3,
+      "sample": [
+       "dbora023",
+       "svbatch009",
+       "svweb001"
+      ],
+      "selection_basis": "정렬 hostname 오름차순 · 상한 10000건"
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "조회"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 결과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "심"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "각"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "람"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 발생"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "했던"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 서버"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 건"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 중"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 건"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 비"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "정상"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 상태"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "avail"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_status"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 나머지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 건"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 정상"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "avail"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_status"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " server"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_name"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " os"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_hostname"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ip"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "address"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " avail"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_status"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ip"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_address"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " os"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_type"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " :"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " :"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " :"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " :"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " :"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " :"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " DB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ORA"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " db"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ora"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " SV"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-B"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ATCH"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "batch"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " A"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "IX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " SV"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-W"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "EB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " sv"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "web"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "참"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "사항"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " **"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "비"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "정상"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 서버"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "**:"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " SV"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-B"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ATCH"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "IP"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ":"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "성"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 상태"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 으로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 비"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "정상"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "UNKNOWN"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " **"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "OS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 분"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "포"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "**:"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " Linux"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 대"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " A"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "IX"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 대"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "조회 결과\n\n심각 알람이 발생했던 서버 3 건 중 1 건이 비정상 상태 (avail_status 2.0) 이며, 나머지 2 건은 정상 (avail_status 0.0) 입니다.\n\n| server_name | os_hostname | ipaddress | avail_status | ip_address | os_type |\n|---|---|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 0.0 | 10.61.0.2 | Linux |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 2.0 | 10.61.0.4 | AIX |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 0.0 | 10.61.0.1 | Linux |\n\n참고사항\n- **비정상 서버**: SV-BATCH-009 (IP: 10.61.0.4) 의 가용성 상태가 2.0 으로 비정상 (UNKNOWN) 입니다.\n- **OS 분포**: Linux 2 대, AIX 1 대.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "current_node": "result_aggregator",
+    "query_results": [
+     {
+      "server_name": "DB-ORA-023",
+      "os_hostname": "dbora023",
+      "ipaddress": "10.61.0.2",
+      "avail_status": 0.0,
+      "ip_address": "10.61.0.2",
+      "os_type": "Linux"
+     },
+     {
+      "server_name": "SV-BATCH-009",
+      "os_hostname": "svbatch009",
+      "ipaddress": "10.61.0.4",
+      "avail_status": 2.0,
+      "ip_address": "10.61.0.4",
+      "os_type": "AIX"
+     },
+     {
+      "server_name": "SV-WEB-001",
+      "os_hostname": "svweb001",
+      "ipaddress": "10.61.0.1",
+      "avail_status": 0.0,
+      "ip_address": "10.61.0.1",
+      "os_type": "Linux"
+     }
+    ],
+    "active_db_id": "polestar",
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "db_scope_source": "classified",
+    "dependency_notes": [
+     {
+      "kind": "trace",
+      "task_id": "t2",
+      "reason": "ok",
+      "detail": "선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.",
+      "source_task_ids": [
+       "t1"
+      ],
+      "scope_col": "hostname",
+      "scope_size": 3,
+      "sample": [
+       "dbora023",
+       "svbatch009",
+       "svweb001"
+      ],
+      "selection_basis": "정렬 hostname 오름차순 · 상한 10000건"
+     },
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "조회 결과\n\n심각 알람이 발생했던 서버 3 건 중 1 건이 비정상 상태 (avail_status 2.0) 이며, 나머지 2 건은 정상 (avail_status 0.0) 입니다.\n\n| server_name | os_hostname | ipaddress | avail_status | ip_address | os_type |\n|---|---|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 0.0 | 10.61.0.2 | Linux |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 2.0 | 10.61.0.4 | AIX |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 0.0 | 10.61.0.1 | Linux |\n\n참고사항\n- **비정상 서버**: SV-BATCH-009 (IP: 10.61.0.4) 의 가용성 상태가 2.0 으로 비정상 (UNKNOWN) 입니다.\n- **OS 분포**: Linux 2 대, AIX 1 대.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘",
+    "uploaded_file": null,
+    "file_type": null,
+    "parsed_requirements": {
+     "query_targets": [
+      "서버"
+     ],
+     "filter_conditions": [
+      {
+       "field": "alarm_severity",
+       "op": "=",
+       "value": "심각"
+      }
+     ],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "original_query": "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "csv_sheet_data": null,
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [
+     {
+      "server_name": "DB-ORA-023",
+      "os_hostname": "dbora023",
+      "ipaddress": "10.61.0.2",
+      "avail_status": 0.0,
+      "ip_address": "10.61.0.2",
+      "os_type": "Linux"
+     },
+     {
+      "server_name": "SV-BATCH-009",
+      "os_hostname": "svbatch009",
+      "ipaddress": "10.61.0.4",
+      "avail_status": 2.0,
+      "ip_address": "10.61.0.4",
+      "os_type": "AIX"
+     },
+     {
+      "server_name": "SV-WEB-001",
+      "os_hostname": "svweb001",
+      "ipaddress": "10.61.0.1",
+      "avail_status": 0.0,
+      "ip_address": "10.61.0.1",
+      "os_type": "Linux"
+     }
+    ],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": null,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null,
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": null,
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "active_db_id": "polestar",
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "zone_clarification_allowed": true,
+    "zone_clarification": null,
+    "db_scope_source": "classified",
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘"
+     },
+     {
+      "__msg__": "ai",
+      "content": "조회 결과\n\n심각 알람이 발생했던 서버 3 건 중 1 건이 비정상 상태 (avail_status 2.0) 이며, 나머지 2 건은 정상 (avail_status 0.0) 입니다.\n\n| server_name | os_hostname | ipaddress | avail_status | ip_address | os_type |\n|---|---|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 0.0 | 10.61.0.2 | Linux |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 2.0 | 10.61.0.4 | AIX |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 0.0 | 10.61.0.1 | Linux |\n\n참고사항\n- **비정상 서버**: SV-BATCH-009 (IP: 10.61.0.4) 의 가용성 상태가 2.0 으로 비정상 (UNKNOWN) 입니다.\n- **OS 분포**: Linux 2 대, AIX 1 대.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "thread_id": "cbfa298c-3e1e-4096-a509-dd611e4175e2",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "final_response": "조회 결과\n\n심각 알람이 발생했던 서버 3 건 중 1 건이 비정상 상태 (avail_status 2.0) 이며, 나머지 2 건은 정상 (avail_status 0.0) 입니다.\n\n| server_name | os_hostname | ipaddress | avail_status | ip_address | os_type |\n|---|---|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 0.0 | 10.61.0.2 | Linux |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 2.0 | 10.61.0.4 | AIX |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 0.0 | 10.61.0.1 | Linux |\n\n참고사항\n- **비정상 서버**: SV-BATCH-009 (IP: 10.61.0.4) 의 가용성 상태가 2.0 으로 비정상 (UNKNOWN) 입니다.\n- **OS 분포**: Linux 2 대, AIX 1 대.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "output_file": null,
+    "output_file_name": null,
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "alarm_query",
+      "sub_query": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     },
+     {
+      "task_id": "t2",
+      "agent": "data_query",
+      "sub_query": "선행 결과의 서버들에 대해 IP 주소와 OS 종류 조회",
+      "depends_on": [
+       "t1"
+      ],
+      "input_from": [
+       "t1"
+      ],
+      "order": 2,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버.",
+       "rows": [
+        {
+         "server_name": "DB-ORA-023",
+         "os_hostname": "dbora023",
+         "ipaddress": "10.61.0.2",
+         "avail_status": 0.0
+        },
+        {
+         "server_name": "SV-BATCH-009",
+         "os_hostname": "svbatch009",
+         "ipaddress": "10.61.0.4",
+         "avail_status": 2.0
+        },
+        {
+         "server_name": "SV-WEB-001",
+         "os_hostname": "svweb001",
+         "ipaddress": "10.61.0.1",
+         "avail_status": 0.0
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_name": "DB-ORA-023",
+        "os_hostname": "dbora023",
+        "ipaddress": "10.61.0.2",
+        "avail_status": 0.0
+       },
+       {
+        "server_name": "SV-BATCH-009",
+        "os_hostname": "svbatch009",
+        "ipaddress": "10.61.0.4",
+        "avail_status": 2.0
+       },
+       {
+        "server_name": "SV-WEB-001",
+        "os_hostname": "svweb001",
+        "ipaddress": "10.61.0.1",
+        "avail_status": 0.0
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "심각 알람이 발생한 적이 있는 서버 목록 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 심각 알람이 발생한 적이 있는 서버 목록 조회\n-- polestar.cmm_alarm 테이블에서 alarmseverity가 3(심각)인 기록이 있는 resource_id를 추출\n-- 해당 resource_id로 polestar.cmm_resource 테이블과 조인하여 서버 목록을 조회\nSELECT\n  COALESCE(r.name, r.hostname) AS server_name,\n  r.hostname AS os_hostname,\n  r.ipaddress,\n  r.avail_status\nFROM polestar.cmm_resource r\nWHERE r.resource_type = 'server.Server'\n  AND r.dtime IS NULL\n  AND r.id IN (\n    SELECT DISTINCT resource_id\n    FROM polestar.cmm_alarm\n    WHERE alarmseverity = 3\n  )\nORDER BY r.hostname\nLIMIT 10000;"
+     },
+     "t2": {
+      "organized_data": {
+       "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버.",
+       "rows": [
+        {
+         "server_hostname": "svweb001",
+         "ip_address": "10.61.0.1",
+         "os_type": "Linux"
+        },
+        {
+         "server_hostname": "dbora023",
+         "ip_address": "10.61.0.2",
+         "os_type": "Linux"
+        },
+        {
+         "server_hostname": "svbatch009",
+         "ip_address": "10.61.0.4",
+         "os_type": "AIX"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_hostname": "svweb001",
+        "ip_address": "10.61.0.1",
+        "os_type": "Linux"
+       },
+       {
+        "server_hostname": "dbora023",
+        "ip_address": "10.61.0.2",
+        "os_type": "Linux"
+       },
+       {
+        "server_hostname": "svbatch009",
+        "ip_address": "10.61.0.4",
+        "os_type": "AIX"
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.9,
+        "sub_query_context": "선행 결과에 포함된 서버들의 IP 주소 및 OS 종류 조회",
+        "user_specified": false,
+        "reason": "선행 결과의 서버 목록에 대해 IP 주소와 OS 종류 정보를 조회하는 데이터 쿼리"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 선행 결과의 서버들 (hostname: 'dbora023', 'svbatch009', 'svweb001') 에 대한 IP 주소와 OS 종류 조회\nSELECT\n  r.hostname AS server_hostname,\n  r.ipaddress AS ip_address,\n  cc_ostype.stringvalue_short AS os_type\nFROM polestar.cmm_resource r\nLEFT JOIN polestar.core_config_prop cc_ostype\n  ON r.resource_conf_id = cc_ostype.configuration_id\n  AND cc_ostype.name = 'OSType'\nWHERE r.resource_type = 'server.Server'\n  AND r.dtime IS NULL\n  AND r.hostname IN ('dbora023', 'svbatch009', 'svweb001')\nLIMIT 10000;"
+     }
+    },
+    "is_composite": true,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": [
+     {
+      "kind": "trace",
+      "task_id": "t2",
+      "reason": "ok",
+      "detail": "선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.",
+      "source_task_ids": [
+       "t1"
+      ],
+      "scope_col": "hostname",
+      "scope_size": 3,
+      "sample": [
+       "dbora023",
+       "svbatch009",
+       "svweb001"
+      ],
+      "selection_basis": "정렬 hostname 오름차순 · 상한 10000건"
+     },
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "replan_count": 0,
+    "needs_replan": false,
+    "replan_history": [],
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

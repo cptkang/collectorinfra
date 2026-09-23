@@ -20,6 +20,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
 from src.utils.synonym_set_parser import parse_synonym_set
+from src.utils.usage_query import is_usage_query
 from src.config import AppConfig, load_config
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.llm import create_llm
@@ -42,6 +43,7 @@ from src.prompts.semantic_router import (
     SEMANTIC_ROUTER_OWNERSHIP_SECTION_TEMPLATE,
     SEMANTIC_ROUTER_PLAN_SIGNAL_SECTION,
 )
+from src.routing.db_authz import authorized_db_ids
 from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
@@ -69,6 +71,7 @@ from src.routing.schemas import (
 )
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import (
+    ZONE_CLARIFY_OPTIONS,
     ZONE_SKIP_SIGNAL_TERMS,
     build_zone_clarification,
     has_host_identifier_filter,
@@ -231,6 +234,20 @@ async def semantic_router(
             "user_specified_db": None,
             "routing_intent": "data_query",
             "db_scope_source": "planned",  # D-205: 양식 매핑으로 고정된 DB
+            "current_node": "semantic_router",
+        }
+
+    # [우선순위 4.5] 사용법·지원 소스 문의 → general_inference (plans/116 §10.3 · 2단 ③.8 대칭).
+    # LLM 라우팅은 「조회」 동사 음성 조건 때문에 버튼 문장을 data_query 로 보낼 수 있다.
+    # 양식 업로드(우선순위 4)보다 뒤 — 2단(③ mapped_db_ids > ③.8)과 같은 순서다.
+    if is_usage_query(user_query):
+        logger.info("사용법 문의 감지(결정적), general_inference로 라우팅")
+        return {
+            "target_databases": [],
+            "is_multi_db": False,
+            "active_db_id": None,
+            "user_specified_db": None,
+            "routing_intent": "general_inference",
             "current_node": "semantic_router",
         }
 
@@ -687,8 +704,17 @@ def _zone_clarification_or_none_router(
     target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
     if not target_ids or not all(d in polestar_ids for d in target_ids):
         return None
+    # 선택지는 사용자 조회 권한(D-232)으로 거른다 — 라우트 pre-gate
+    # (`_authorized_zone_clarification`)와 같은 규칙(plans/116 §10.3). 빈 목록을 넘기면
+    # build_zone_clarification이 "제한 없음"으로 읽으므로 권한 0이면 묻지 않는다.
+    allowed = authorized_db_ids(
+        app_config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS],
+        state.get("allowed_db_ids"), state.get("user_role"),
+    )
+    if not allowed:
+        return None
     return build_zone_clarification(
-        app_config.multi_db.get_active_db_ids(), user_query,
+        allowed, user_query,
         # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
         group_exclusive=bool(
             getattr(app_config.multi_db, "zone_group_exclusive", True)

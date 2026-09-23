@@ -4,6 +4,7 @@
 > **성격**: 구현 계획(조사·설계 완료, 구현 전) · **상태: 계획(미구현) — 사용자 확정 게이트 G-1~G-8 대기(§9)** · 코드 0건이라 파일명 `-TODO` · **v2(2026-09-10)**: PromQL 기반 연동과의 **병행(공존) 모델** 검토 추가(§4.8)
 > · **v3(2026-09-22) — 현 구현 심층 재실측 · 적정성 판정(§0.0)**: 방향은 유지한다. 사실 전제 정정 12건, 설계 결함 7건 수정, **범위 재편**(S0 = 트랙 A 최소형 · O2b는 S1 트리거 뒤 · B-1·C 보류)을 반영했다. 게이트는 여전히 전건 미응답이다(G-1·G-7 권고 변경)
 > · **v4(2026-09-22 착수 · 2026-09-23 기록) — 구현 착수 후 중단(§5.1)**: 사용자가 G-1(계획 전체 O0~O6)·G-3(exporter 있음/일부)·G-4(`prometheus-client` 승인)를 확정했다(§9 [v4]). team-lead 에이전트가 **O1·O2·O3·O4·O5를 구현**했고(전부 기본 off), **통합 회귀 검증 도중 PC가 꺼져 중단**됐다. **남은 것**: 통합 회귀 마무리 · O2b · O6 · D-210 본문 등재 · docs/27 §10. 코드가 생겨 파일명을 `-WIP`로 바꿨다
+> · **v5(2026-09-23) — 회귀 재개·O2b(§5.2)**: 통합 회귀는 92 기인 신규 실패 0이다. O0 잔여 실측을 마쳤고 O5 실 스크레이프도 통과했다. **O2b를 구현**했다(6판정 + 판정 보류 · OM off 바이트 동일). **남은 것**: O6 · D-210 본문 등재 · docs/27 §10
 > **요청 취지(사용자 지시 원문)**: ① *"프로메테우스 연동시 오픈매트릭을 이용하는 방법을 추가할 계획을 추가하라"* · ② (v2) *"실제 promql 기반 연동과 함께 오픈매트릭을 추가적으로 연동하는 방안에 대해 검토하여 계획서에 추가하라"* — ②는 **대체가 아니라 병행**이다: PromQL 경로를 정본으로 두고 OpenMetrics 경로를 그 옆에 붙였을 때 소스 선택·정합·전환을 어떻게 다루는가(§4.8)
 > **⚠ 해석 정정(§0.1)**: "Prometheus 연동에 OpenMetrics를 쓴다"는 한 문장이지만 실측하면 **방향이 다른 세 경로**로 갈라진다 —
 > ① exporter의 `/metrics`를 **직접 읽는다**(Prometheus 서버 없이) · ② 우리가 OpenMetrics를 **내보낸다**(Prometheus가 우리를
@@ -659,6 +660,76 @@ metric_instant(hostname, metric, source="auto")
 - O4: FastAPI 비공개 키 의존 수용 · 저장소 off 시 미계수 · 알람 워커의 `prometheus_client` 하드 의존(배포 재설치 노트) · `OBS_METRICS_BEARER_TOKEN`은 `.env` 전용인데 UI 문구는 ".encenv".
 - O5: 첫 스크레이프에서 풀 생성이 실패하면 재기동 전까지 `source_up 0` · 실패 결과도 TTL 300초 캐시 · `plans/87` J7의 "1.0 고정" 요구(`make_exposition_endpoint` 인자 1개) · mcp_server와 폴스타 DB의 시간대 동일 가정 · EXPLAIN 비용·`core_config_prop` 조인 인덱스 미실측 · Docker IT용 픽스처 `prometheus.yml` job `polestar` 미추가.
 
+### 5.2 [v5] 통합 회귀 재개 · O0 잔여 실측 (2026-09-23)
+
+> **사용자 지시**: *"92번 계획의 진행사항을 파악하고 에이전트를 이용하여 테스트를 진행하라."* → 검증 에이전트 3개(mcp_server+sre_agent · 본체+noise_gate · Docker IT+O0)가 병렬로 돌았다.
+> 이 절은 §5.1 재개 순서 ①에 해당한다. 기준선은 92 구현 직전 커밋 `048c2be`(`ae67749^`)의 격리 worktree다. 현재는 HEAD `2ba8360`이다. 두 트리가 각자 자기 코드를 임포트하는 것을 확인했다(editable 설치 간섭 없음).
+> 실행 venv는 루트 `.venv`(`mcp` 1.29.1 · `prometheus-client` 0.26.0)와 `sre_agent/.venv`다. §5.1의 "공유 venv 소실"은 재현되지 않았다.
+
+**회귀 대조 — 92 구현 때문에 생긴 새 실패는 없다**
+
+| 스위트 | 현재 HEAD | 기준선 `048c2be` | 92 신규 테스트 | 92 기인 새 실패 |
+|---|---|---|---|---|
+| mcp_server | 468 passed · 0 failed · 10 skipped | 247 · 0 · 7 | 218 passed · 3 skipped(Docker 옵트인) | 0 |
+| sre_agent | 534 · 0 · 3 | 464 · 0 · 3 | 70 passed | 0 |
+| 본체 `tests/` + `noise_gate/tests` | 9274 · **2** · 31 | 9007 · 17 · 31 · 3 errors | 26 passed(`/metrics` 19 · 결정 계수 7) | 0 |
+| Docker IT(`RUN_DOCKER_IT=1`) | 11 passed · **2 failed** | — | 2 passed · 1 failed(전제 미충족) | 0 |
+
+- **본체 실패 2건**은 `2ba8360`에 함께 커밋된 로컬 샌드박스 승인본 `config/db_profiles/itam.yaml`(`environment: local_sandbox`) 때문이다. 이 파일은 D-214 ⑥ 게이트에 걸린다. 사용자 승인에 따라 **git 추적을 해제**했고(`git rm --cached` · 로컬 파일은 유지), `test_repository_manual_profiles_are_detected`가 로컬 승인본을 "수동 프로필 없음" 반례에서 빼도록 보정했다.
+- **기준선에만 있는 실패 20건**은 기준선 사본에 `.env`가 없어서 생겼다. `.env`를 뺀 HEAD 사본에서 같은 20건이 재현됐다. 코드 차이가 아니다. 다만 해당 테스트가 `.env`에 의존한다는 점은 기존 문제로 남는다.
+- **Docker 실패 1**: `test_polestar_tools.py:545`는 기대값이 1581인데 실제는 1597이다. 16행이 `testdata/pg/init/09_plan67_e1_gold_missing_servers.sql`(2026-08-05)에서 추가된 뒤 상수를 갱신하지 않았다. 92와 무관하며, 사용자 승인에 따라 **1597로 갱신**했다.
+- **Docker 실패 2**: O5 `test_fixture_prometheus_scrapes_bridge` — 픽스처 `prometheus.yml`에 job `polestar`가 없고 브리지를 켠 서버도 없었다. 이 검증은 아래 O5 실 스크레이프 항목에서 이어 한다.
+- 게이트: `arch_check --ci` error 0 · `overfit_check --ci` 신규 유입 0 · ruff는 92 신규 모듈 4개와 신규 테스트 2개 파일의 신규 지적이 0이다.
+
+**O0 잔여 실측(§5 [v3] O0 추가 실측 ①~⑤ · 픽스처 로컬 캐시 이미지만)**
+
+| # | 항목 | 결과 |
+|---|---|---|
+| ① | node_exporter v1.8.1 협상 | OM 1.0 Accept에도 `text/plain; version=0.0.4; charset=utf-8; escaping=values`로 답한다(**P-4 확정: 0.0.4 고정**). 실 exporter 주 경로는 0.0.4 파서이고, 구현이 두 형식을 모두 받으므로 영향이 없다. mock `/metrics-om`은 `application/openmetrics-text; version=1.0.0` |
+| ② | staleness(F-2) | mock-exporter를 정지하고 12초·32초 뒤 조회했다. 값 instant는 `result: []`, `up{job="mock"}`는 `0`으로 **둘 다 성립**한다. 원복 후 `up`=1 |
+| ③ | `node_uname_info{nodename}` | `svr-web-01` — 픽스처 신원 기준값 `match` |
+| ④ | `prometheus-client` 0.26.0 시그니처 | 두 `text_string_to_metric_families(text)` · `choose_encoder(accept_header)` — `openmetrics.py:160-162`·`om_exposition.py:185` 호출과 일치 |
+| ⑤ | `mcp` 버전 | 루트 venv **1.29.1**. `uv.lock`(1.30.0)과 다르다. 이 상태에서 전 스위트가 통과했다. venv 동기화는 별건이다 |
+
+**O5 실 스크레이프(사용자 승인 — "픽스처에 polestar job을 추가하여 검증")**
+- 픽스처 변경은 세 곳이다. ①`testdata/prometheus/prometheus.yml`에 job `polestar`(`host.docker.internal:9098` · 경로 `/metrics` · 무인증)를 추가했다 ②`docker-compose.yml` prometheus 서비스에 `extra_hosts: host.docker.internal:host-gateway`를 넣었다 ③docs/27 §4.1에 기동 전제 4줄을 보충했다.
+- 기동: `mcp_server`를 `127.0.0.1:9098`에 `EXPOSE_POLESTAR_EXPORTER=true`로 따로 띄웠다(상주 9099·9097은 건드리지 않았다). `[[openmetrics.bridge_sources]]`는 **TOML 전용**이라(env 키 없음 · `config.py:288`) 스크래치 사본 TOML에 소스 `polestar` 1건을 넣어 기동했다. 레포 `config.toml`·`.env`는 무수정이다.
+- 결과: 브리지 응답은 200 · `application/openmetrics-text; version=1.0.0` · 73줄 · `# EOF`였다. Prometheus 쪽 값은 다음과 같다.
+  - **`up{job="polestar"} = 1`**, `polestar_bridge_source_up{db_id="polestar"} = 1`
+  - `count(polestar_server_info) = 54`, `polestar_server_info{nodename="svr-web-01"}`가 node·mock job의 `nodename`과 정렬된다
+  - `polestar_alarm_active` 2건
+- `polestar_metric_utilization_percent`는 0건이다. 결함이 아니다. 샌드박스 `cmm_metric_stat_h/d`가 각 5행뿐이고 `stat_date`가 자리표시자 문자열이라 24시간 하한에 걸리지 않는다.
+- Docker IT 재실행: `RUN_DOCKER_IT=1` mcp_server 전체 **478 passed · 0 failed · 0 skipped**.
+- 정리: 띄운 PID만 종료했다. 픽스처 컨테이너 3개는 Exited로 되돌렸다. 이미지 pull·빌드는 0건이다.
+- **발견(미수정 · 결정 필요)** ①`test_fixture_prometheus_scrapes_bridge`는 `up==1`만 단언한다. 소스가 빈 브리지(레포 `config.toml` 그대로)도 샘플 0개 본문을 200으로 내므로 통과한다(실측). `polestar_bridge_source_up == 1` 단언을 추가하면 이 빈틈이 막힌다 ②`bridge_sources`에 env 설정 경로가 없고, CLI에도 설정 파일 경로 인자가 없다. 운영에서 브리지를 켜려면 TOML 관리 방식을 정해야 한다.
+
+**O2b 병행 사다리·교차 검증 구현(사용자 지시 "권고에 맞게 진행" · G-7 단계형 · G-8 `off`)**
+- 산출물(미커밋):
+  - 신규: `mcp_server/mcp_server/metric_source.py`(사다리·가용 소스·6판정 순수 함수 + 얇은 I/O · 기존 `_prom_get`·`run_metric_instant`·`run_om_metric_instant` 재사용) · `mcp_server/tests/test_metric_source_ladder.py`(110건) · `mcp_server/scripts/prom_om_cross_check.py`
+  - 수정: `promql_tools.py`·`openmetrics_tools.py`·`server.py`·`config.toml`·`.env.example`
+  - CLI는 §6의 루트 `scripts/`가 아니라 **`mcp_server/scripts/`**에 두었다. D-139 ①의 패키지 소유 규칙을 따른 것이다
+- 분기 등록 조건은 **`EXPOSE_OPENMETRICS_TOOLS` AND 기동 시 `PROMETHEUS_URL` 설정**이다. 성립하면 `prom_metric_instant(hostname, metric, source="auto", cross_check=False)`와 `om_metric_catalog`(+`sources_available`·`prometheus_coverage`)가 확장판으로 등록된다. 불성립이면 종전 도구를 그대로 등록한다(S0 = (α)+힌트).
+- **바이트 동일(I-6)**: `tools/list` 전 도구 dump를 5개 설정에서 변경 전후로 대조했다. OM off 계열 3개와 OM on·URL 미설정 1개는 동일하다. OM on + URL에서는 2종만 바뀐다(설계대로). `source` 미지정·정책 `off`·`cross_check=false`는 종전 경로를 그대로 탄다. 응답·요청이 바이트 동일함을 6케이스로 고정했고, 이 경우만 `fallback_reason` 필드가 없다. 그 밖의 결과에는 `fallback_reason`이 최상위에 항상 실린다(강등이 없으면 `null`).
+- 사다리 사유 어휘: `prometheus_unavailable` · `host_not_covered` · `prometheus_error`(원 오류는 `fallback_detail`) · `prometheus_empty`. 둘 다 실패하면 `{"error":"조회 가능한 소스 없음","tried":[...]}`를 낸다. 강등은 호출당 1회이고 데이터 왕복은 2회 이하다.
+- 교차 검증은 **6판정**이다: `scrape_down` · `label_mismatch` · `not_scraped` · `stale`(`timestamp()`) · `value_drift`(gauge만) · `consistent`. 왕복은 4회 이하다. 여기에 **판정 보류**(`verdict=null` + `inconclusive_reason` ∈ `prometheus_error`·`exporter_error`·`no_common_series`)를 추가했다. 한쪽이 오류이거나 짝 시리즈가 0일 때 `consistent`로 오판하지 않게 하려는 것이다.
+- 검증:
+  - mcp_server 전체 **591 passed · 0 failed · 11 skipped**(전 468/0/10 · 강등·전환 7경로 × exporter 성공/실패 14건에 `fallback_reason`·감사 로그 단언 추가)
+  - `RUN_DOCKER_IT=1` 사다리 파일 **110 passed**(9190 + 9102 동시 읽기 `consistent` 포함 · 팀 리드 재실행)
+  - `arch_check --ci`·`overfit_check --ci` exit 0 · 신규 파일 ruff 통과
+- **계획과 다르게 한 점 — 팀 리드 수용, 사용자 미확정**
+  - ① 등록 조건에 URL을 포함했다
+  - ② 판정 보류를 추가했다
+  - ③ `not_scraped`의 조건을 "up 시리즈 없음"이 아니라 "up=0 없음"으로 잡았다
+  - ④ `value_drift`는 gauge만 보고, 시각을 모르는 짝은 건너뛴다
+  - ⑤ 빈 결과 + `on_empty` + 타깃 없음은 PromQL 빈 결과를 정본으로 그대로 준다
+  - ⑥ 커버리지 메타 조회는 R5 "왕복 2회"에서 빼고, 교차 검증 4회 상한에는 넣었다
+  - ⑦ `prom_metric_range`에는 `source`를 넣지 않았다(range는 Prometheus 전용)
+  - ⑧ `cross_check=true`는 응답 모양이 따로 있다
+- **후속 기록 대상**
+  - §4.8.7·§10 D-210 예약 문구의 "5판정"을 "6판정 + 판정 보류"로 고친다(D-210 등재 때 반영)
+  - sre_agent 조사 지침에는 반영하지 않았다(범위 밖)
+  - 상주 MCP 9099·9097은 재기동해야 반영된다
+
 ---
 
 ## 6. 산출물·파일 배치
@@ -831,3 +902,4 @@ Prometheus docs *Querying basics — Staleness* · *HTTP API — instant queries
 | 2026-09-22 | **v3** — 사용자 지시("현재 구현된 내용을 심도있게 분석하여 92번 계획의 적정한지 검토하고 업데이트하라") → **§0.0 적정성 판정** 신설. 결론: 방향 적정, 전제·설계·범위를 고친다. **사실 정정 12건**(F-1~F-12: exporter `nodename`·staleness·instant 타임스탬프·`inspect_host` 호출부·sre_agent 배선 줄·지침 위치·B-1 `OBS_` 키 이름·퍼널 기존재·단일 워커·`_METRIC_KIND_MAP`/`disk_io`·C 원천 부재·Plan 87 방향 역전) · **설계 결함 7건**(D-1 B-2 lifespan 접근 불가 · D-2 `nodename` 충돌/신원 확인 · D-3 `stale` 오판정 → `scrape_down` 신설 6판정 · D-4 (γ) 스키마 변경 → 분기 등록 · D-5 시간 통계 신선도·일괄 SQL·절단 · D-6 동적 키 커버리지 · D-7 세션 단위 설정) · **범위 재편**(1차 = O0~O3 S0형 · O2b는 S1 트리거 뒤 · B-1·C 보류 · B-2는 87 J7 공유 기계) · G-1 권고 (b)→(a) · G-7 권고 (γ)→단계형 · P-5·I-8·R-11~R-13 신설 · §5 과금 경계 D-240 정정 · §0.0.4 09-10 이후 결정·계획 정합(충돌 0건 · 87 `nodename` 어휘 불일치 · 101 트랙 A 인용 오류 · D-161 `expose_*` 만료일 전례 부재). 옛 서술은 지우지 않고 `[v3 정정]` 표지. 코드 0건이라 `-TODO` 유지 | 본 세션 재실측(HEAD `048c2be` · 병렬 조사 2건 + 직접 확인 · mcp 1.26.0 소스 · 픽스처·PG init 파일) |
 | 2026-09-22 | **v3.1** — 사용자 지시("고치지 않은 것들을 권고에 맞게 모두 수정하라") → v3가 "기록만" 한 교차 항목 4건을 실제로 고쳤다. ①**R-11 해소**: 루트 `uv.lock`을 `uv lock`으로 재생성했다(`mcp` 2.1.1 → **1.30.0** · `httpx-sse` 추가 · `mcp-types`·`opentelemetry-api` 제거 · 그 외 버전 변화 0). `mcp_server` 스위트를 1.30.0/1.29.1로 나란히 돌려 회귀 0을 확인했다(실패는 두 버전 공통인 Windows 전용 `test_sql_log.py` 동시 쓰기뿐). D-181 부기와 변경 이력 행을 등재했다 ②**`plans/87` §5.9 J7 `nodename` = `server_name` 정정** + OS hostname 역해소 단계 + `custom_route` lifespan 부기 + 변경 이력 ③**`plans/101` §5.6** Prometheus 행 선행 조건을 트랙 A에서 `prom_metric_range`로 바꿨다(+ 참조·변경 이력 v3.1) ④**docs/27** §0 본체 채팅 행 · §3.4(`inspect_host` 호출부 있음) · §4.3(uv.lock) · §8.1 ②(ITAM — D-214로 해소) · §9 코드 위치 정정. O3에는 docs/27 §10 신설만 남는다. P-5·D-1의 SDK 근거를 1.30.0 소스로 재확인했다(`Server.run` lifespan 진입 · `sse_app` 연결별 `run` · 커스텀 라우트 말미). 계획 범위·게이트 변경 없음 · 코드 0건 `-TODO` 유지 | 본 세션 실행(uv 0.11.3 · 스크래치 venv 2개 · 저장소 밖) |
 | 2026-09-22 | **v4** — 사용자 지시("이 계획파일을 구현하라.") · G-1(전체)·G-3·G-4 사용자 확정, 나머지 게이트는 권고 적용(§9 [v4]) → team-lead-92가 **O1·O2·O3·O4·O5 구현**(전부 기본 off · Wave마다 회귀 0 보고) · O2b·O6 미착수 · **통합 회귀 대조 도중 PC 종료로 중단** · D-210 미등재 · docs/27 §10 미작성. 작업 기록은 2026-09-23에 세션 기록으로 복원해 §5.1에 적었다. 코드가 생겨 파일명 `-TODO` → `-WIP` | 세션 `2e48a49b` 기록 · 커밋 `ae67749` · 코드 실측(2026-09-23) |
+| 2026-09-23 | **v5** — 사용자 지시("92번 계획의 진행사항을 파악하고 에이전트를 이용하여 테스트를 진행하라" → 후속 "1번은 권고에 따라 진행하고 2번은 추가하여 검증하고 3번은 갱신하고 4번은 권고에 맞게 진행하라") → **§5.2 신설**: 통합 회귀 재개(기준선 `048c2be` 대조 · 92 기인 신규 실패 0) · O0 잔여 실측 ①~⑤(node_exporter 0.0.4 고정 · staleness 빈 결과+up 0 · `svr-web-01` · 시그니처 일치 · venv `mcp` 1.29.1) · 범위 밖 수정 2건(`itam.yaml` 추적 해제 + 게이트 테스트 보정 · 픽스처 행 수 상수 1597) · O5 실 스크레이프 통과(픽스처 job `polestar` 추가) · **O2b 구현**(`metric_source.py` · 6판정 + 판정 보류 · 바이트 동일 확인 · 577 passed). 잔여: O6 · D-210 본문 등재 · docs/27 §10 · `-WIP` 유지 | 검증 에이전트 3 + 구현 에이전트 2 · 팀 리드 재실행 |

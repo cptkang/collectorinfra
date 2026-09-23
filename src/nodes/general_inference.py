@@ -20,9 +20,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_GENERAL_INFERENCE, get_prompt_query
+from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids
 from src.routing.domain_config import get_domain_by_id
 from src.routing.registry import get_registry
 from src.state import AgentState
+from src.utils.usage_query import is_usage_query
 
 logger = logging.getLogger(__name__)
 
@@ -92,16 +94,14 @@ def _build_source_catalog(state: AgentState, app_config: AppConfig) -> str:
     Returns:
         소스 카탈로그 텍스트. 활성 소스가 없으면 빈 문자열.
     """
-    active_ids = app_config.multi_db.get_active_db_ids()
-    if not active_ids:
-        return ""
-
-    # `None`=전체 허용 · `[]`=조회 가능 DB 없음(plans/104 C-4 · D-232 — 다른 소비처와 같은 규약).
-    # 종전에는 `if allowed:`라 빈 목록을 전체 허용으로 읽어, 권한이 없는 사용자에게도
-    # 전 DB 카탈로그를 광고했다.
-    allowed = state.get("allowed_db_ids")
-    if allowed is not None:
-        active_ids = [db_id for db_id in active_ids if db_id in allowed]
+    # `None`=전체 허용 · `[]`=조회 가능 DB 없음 · 관리자는 전체(plans/104 C-4 · D-232 — 질의
+    # 경로 인가와 같은 `authorized_db_ids` 규약). 종전에는 `if allowed:`라 빈 목록을 전체 허용으로
+    # 읽어, 권한이 없는 사용자에게도 전 DB 카탈로그를 광고했다.
+    active_ids = authorized_db_ids(
+        app_config.multi_db.get_active_db_ids(),
+        state.get("allowed_db_ids"),
+        state.get("user_role"),
+    )
     if not active_ids:
         return ""
 
@@ -112,6 +112,34 @@ def _build_source_catalog(state: AgentState, app_config: AppConfig) -> str:
         desc = (domain.description if domain else "").strip()
         lines.append(f"- {name}: {desc}" if desc else f"- {name}")
     return "\n".join(lines)
+
+
+def _build_usage_answer(state: AgentState, app_config: AppConfig) -> str:
+    """사용법 안내를 활성∩허용 소스와 지원 조회 유형으로 조립한다(D-038 — 사실은 코드 조립).
+
+    조회 가능한 소스가 없으면 소스·조회 유형을 광고하지 않고 권한 요청을 안내한다.
+    """
+    catalog = _build_source_catalog(state, app_config)
+    if not catalog:
+        return (
+            "이 에이전트는 등록된 데이터 소스를 자연어 질문으로 조회해 답하는 "
+            "인프라 조회 도우미입니다.\n\n"
+            + ACCESS_DENIED_MESSAGE
+        )
+    return (
+        "이 에이전트는 아래 데이터 소스를 **자연어 질문으로 직접 조회**해 답합니다. "
+        "질문을 SQL·API 조회로 바꿔 실행하고, 결과를 표와 요약으로 보여 드립니다.\n\n"
+        "### 현재 조회 가능한 소스\n"
+        + catalog
+        + "\n\n### 조회할 수 있는 항목\n"
+        + _SUPPORTED_CAPABILITIES
+        + "\n\n### 사용법\n"
+        "- 조회할 대상과 항목을 한 문장으로 적어 주세요. 소스가 여럿이면 어느 소스인지 함께 적으면 "
+        "정확해집니다.\n"
+        "- 앞 질문의 결과를 이어서 물을 수 있습니다(예: 「그 서버들의 OS 종류는?」).\n"
+        "- Excel(.xlsx) 양식을 첨부하면 양식 항목을 조회 결과로 채워 드립니다.\n\n"
+        "어떤 것을 확인해 드릴까요?"
+    )
 
 
 def _build_context_grounding(state: AgentState) -> str:
@@ -242,6 +270,18 @@ async def general_inference(
         llm = create_llm(app_config, purpose="answer")
 
     user_query = state["user_query"]
+
+    # 사용법·지원 소스 문의는 LLM 을 거치지 않는다(plans/116 §10.3). 2단은 task sub_query 로
+    # user_query 를 덮으므로 원문(original_user_query)으로도 판정한다.
+    if is_usage_query(user_query) or is_usage_query(state.get("original_user_query") or ""):
+        logger.info("general_inference: 사용법 문의 — 결정적 안내 반환(LLM 미호출)")
+        answer = _build_usage_answer(state, app_config)
+        return {
+            "final_response": answer,
+            "routing_intent": "general_inference",
+            "current_node": "general_inference",
+            "messages": [AIMessage(content=answer)],
+        }
 
     # 멀티턴 대화 컨텍스트를 참조하여 메시지 구성
     # 사용법/능력 문의에 대비해 활성·허용 소스 카탈로그를 시스템 프롬프트에 그라운딩한다.

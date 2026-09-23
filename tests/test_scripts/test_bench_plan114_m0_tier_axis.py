@@ -11,8 +11,8 @@
   3. 구간이 끝나면 **이긴 레벨**이 `campaign.json` 에 남고 남은 구간 **전 arm** 에 주입된다
   4. 주입 뒤 구간에서 실제 단이 승자와 다르면 **차단**
   5. 단 축 구간에서는 단이 갈리는 것이 **정상**(예외)
-  6. **판정 불가면 기준 경로(D-225)로 고정하고 고지와 함께 계속 돈다** — 멈추는 것은 주입할
-     env 를 만들 수 없을 때뿐이다(D-250 ② 2026-09-23 개정)
+  6. **판정 불가면 기준 경로(D-251 · 2단 — D-225 개정)로 고정하고 고지와 함께 계속 돈다** —
+     멈추는 것은 주입할 env 를 만들 수 없을 때뿐이다(D-250 ② 2026-09-23 개정)
 
 서버·LLM·DB 0 — 스위프 1회는 가짜다.
 """
@@ -397,6 +397,8 @@ def ladder_seg(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_RESULTS_DIR", tmp_path / "bench")
     monkeypatch.setattr(sweep, "build_arms", lambda limit=None: list(arms))
     monkeypatch.setattr(sweep, "axis_categories", lambda tier="primary": _cats(others))
+    # 소비처 없음(F3 · plans/118 B-3) 제외 축은 실 저장소 판정이다 — 가짜 축 캠페인에 섞지 않는다.
+    monkeypatch.setattr(sweep, "excluded_axes", lambda tier="primary": {})
     monkeypatch.setattr(sweep, "planned_turns_per_arm", lambda catalog: 100)
     monkeypatch.setattr(sweep, "load_normal_catalog", lambda env="closed": object())
     monkeypatch.setattr(sweep, "resolve_env", lambda explicit=None: ("closed", "테스트"))
@@ -477,15 +479,17 @@ def test_첫_구간이_단_축이고_승자가_남은_구간에_주입된다(lad
         or run.envs[1][[a for a in calls[1] if a != "baseline"][0]].get("B") is not None
 
 
-def test_레벨_간_차이가_없으면_기준_경로_3단을_쓴다(ladder_seg) -> None:
+def test_레벨_간_차이가_없으면_기준_경로_2단을_쓴다(ladder_seg) -> None:
+    """D-251 — 기준 경로는 2단이다(D-225 의 3단을 개정 · plans/118 B-5 가 정본을 읽게 고쳤다)."""
     run, _, outcomes, root = ladder_seg
     outcomes.append(_won(verdict=compare.LEVELS_TIED))
 
     assert run("next", "--mode", "mock") == 0
 
     decision = _state(root, "mock-closed")["tier_decision"]
-    assert decision["level"] == L3 and decision["tier"] == sweep.canonical_tier()
-    assert "기준 경로" in decision["sentence"]
+    assert sweep.canonical_tier() == TIER2
+    assert decision["level"] == L2 and decision["tier"] == TIER2
+    assert "기준 경로" in decision["sentence"] and "D-251" in decision["sentence"]
 
 
 def test_판정_불가면_기준_경로로_고정하고_고지와_함께_계속_돈다(ladder_seg, capsys) -> None:
@@ -501,7 +505,7 @@ def test_판정_불가면_기준_경로로_고정하고_고지와_함께_계속_
     assert run("next", "--mode", "mock") == 0
     decision = _state(root, "mock-closed")["tier_decision"]
     assert "blocked" not in decision
-    assert decision["level"] == L3 and decision["tier"] == sweep.canonical_tier()
+    assert decision["level"] == L2 and decision["tier"] == sweep.canonical_tier() == TIER2
     assert "기준 경로" in decision["sentence"] and compare.UNDERPOWERED in decision["caveat"]
     capsys.readouterr()
 

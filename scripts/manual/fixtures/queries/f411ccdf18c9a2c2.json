@@ -1,0 +1,2454 @@
+{
+ "key": "f411ccdf18c9a2c2",
+ "query": "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘",
+ "has_file": false,
+ "has_answers": false,
+ "recorded_at": "2026-09-23T10:41:04",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [
+      "서버",
+      "메모리"
+     ],
+     "filter_conditions": [
+      {
+       "field": "memory_usage_pct",
+       "op": ">",
+       "value": 90
+      }
+     ],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "original_query": "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "current_node": "input_parser",
+    "error_message": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "current_node": "field_mapper",
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending"
+     }
+    ],
+    "is_composite": false,
+    "current_node": "intent_planner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "data_query",
+    "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "스키마 분석"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 1/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 2/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 3/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 4/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 5/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "end",
+    "label": "샘플 수집 완료 5/5"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 생성"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 검증"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 실행"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "결과 정리"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "data_query",
+    "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed",
+    "row_count": 1
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 1건의 데이터를 조회했습니다. 조회 대상: 서버, 메모리.",
+       "rows": [
+        {
+         "server_name": "DB-ORA-023",
+         "os_hostname": "dbora023",
+         "ipaddress": "10.61.0.2",
+         "max_memory_usage_pct": "95.2%"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_name": "DB-ORA-023",
+        "os_hostname": "dbora023",
+        "ipaddress": "10.61.0.2",
+        "max_memory_usage_pct": 95.2
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회\n-- 조건: 메모리 사용률 (Utilization) 의 최대값 (max_val) 이 90 보다 큰 서버\n-- 기간: 보관 기간이 가장 긴 월간 통계 (cmm_metric_stat_m) 사용\nSELECT\n    svr.name AS server_name,\n    svr.hostname AS os_hostname,\n    svr.ipaddress AS ipaddress,\n    MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric AS max_memory_usage_pct\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_resource svr\n    ON svr.id = r.platform_resource_id\n   AND svr.resource_type = 'server.Server'\nJOIN polestar.cmm_metric_stat_m s\n    ON r.id = s.resource_id\n   AND s.definition_name = 'Utilization'\nWHERE r.resource_type = 'server.Memory'\n  AND r.dtime IS NULL\n  AND svr.dtime IS NULL\n  -- 임계값 90 초과 여부 확인 (max_val 기준)\n  AND s.max_val > 90\nGROUP BY svr.name, svr.hostname, svr.ipaddress, svr.id\nORDER BY svr.hostname\nLIMIT 1000;"
+     }
+    },
+    "current_node": "agent_orchestrator"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     },
+     {
+      "task_id": "t2",
+      "agent": "alarm_query",
+      "sub_query": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+      "depends_on": [
+       "t1"
+      ],
+      "input_from": [
+       "t1"
+      ],
+      "supersedes": [],
+      "order": 2,
+      "status": "pending"
+     }
+    ],
+    "needs_replan": true,
+    "replan_count": 1,
+    "replan_history": [
+     {
+      "count": 1,
+      "reason": "메모리 이용률이 90%를 초과한 적이 있는 서버 1건(DB-ORA-023)이 조회되어 사용자의 질의가 충족되었으나, '이용률이 90%를 초과한 적이 있는'이라는 조건은 과거의 최대치(max_memory_usage_pct)를 의미하므로, 해당 서버의 상세 알람 이력이나 모니터링 이벤트가 있는지 확인하여 추가 정보를 제공하는 것이 적절함",
+      "added": 1
+     }
+    ],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t2",
+    "order": 2,
+    "total": 2,
+    "agent": "alarm_query",
+    "sub_query": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+    "input_from": [
+     "t1"
+    ],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "스키마 분석"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 1/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 2/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 3/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 4/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 5/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 6/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 7/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 8/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 9/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 10/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "샘플 수집 11/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "schema.sample",
+   "depth": 1,
+   "data": {
+    "phase": "end",
+    "label": "샘플 수집 완료 11/11"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.schema",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 생성"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.generate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 검증"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.validate",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "SQL 실행"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.execute",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "start",
+    "label": "결과 정리"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "pipeline.organize",
+   "depth": 1,
+   "data": {
+    "phase": "end"
+   }
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t2",
+    "order": 2,
+    "total": 2,
+    "agent": "alarm_query",
+    "sub_query": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+    "input_from": [
+     "t1"
+    ],
+    "phase": "end",
+    "status": "completed",
+    "row_count": 0
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     },
+     {
+      "task_id": "t2",
+      "agent": "alarm_query",
+      "sub_query": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+      "depends_on": [
+       "t1"
+      ],
+      "input_from": [
+       "t1"
+      ],
+      "supersedes": [],
+      "order": 2,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 1건의 데이터를 조회했습니다. 조회 대상: 서버, 메모리.",
+       "rows": [
+        {
+         "server_name": "DB-ORA-023",
+         "os_hostname": "dbora023",
+         "ipaddress": "10.61.0.2",
+         "max_memory_usage_pct": "95.2%"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_name": "DB-ORA-023",
+        "os_hostname": "dbora023",
+        "ipaddress": "10.61.0.2",
+        "max_memory_usage_pct": 95.2
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회\n-- 조건: 메모리 사용률 (Utilization) 의 최대값 (max_val) 이 90 보다 큰 서버\n-- 기간: 보관 기간이 가장 긴 월간 통계 (cmm_metric_stat_m) 사용\nSELECT\n    svr.name AS server_name,\n    svr.hostname AS os_hostname,\n    svr.ipaddress AS ipaddress,\n    MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric AS max_memory_usage_pct\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_resource svr\n    ON svr.id = r.platform_resource_id\n   AND svr.resource_type = 'server.Server'\nJOIN polestar.cmm_metric_stat_m s\n    ON r.id = s.resource_id\n   AND s.definition_name = 'Utilization'\nWHERE r.resource_type = 'server.Memory'\n  AND r.dtime IS NULL\n  AND svr.dtime IS NULL\n  -- 임계값 90 초과 여부 확인 (max_val 기준)\n  AND s.max_val > 90\nGROUP BY svr.name, svr.hostname, svr.ipaddress, svr.id\nORDER BY svr.hostname\nLIMIT 1000;"
+     },
+     "t2": {
+      "organized_data": {
+       "summary": "조건에 해당하는 데이터가 없습니다.",
+       "rows": [],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 선행 결과의 메모리 이용률 90% 초과 서버 (dbora023) 에 대한 관련 알람 이력 조회\n-- 대상 서버는 선행 작업에서 hostname 'dbora023' 로 선별됨\n-- 알람 이력 (cmm_alarm) 과 리소스 (cmm_resource) 를 조인하여 서버별 알람 내역을 조회\nSELECT\n    COALESCE(r.name, r.hostname) AS server_name,  -- 서버 식별자: name 우선, name 이 NULL 이면 hostname 폴백\n    r.hostname AS os_hostname,\n    r.ipaddress,\n    r.avail_status,\n    a.id AS alarm_id,\n    a.ctime AS alarm_time,\n    a.alarmseverity,\n    a.currentalarmstatus,\n    a.conditionlogtext,\n    a.acktime,\n    a.ackusername\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_alarm a\n    ON a.resource_id = r.id\nWHERE r.resource_type = 'server.Server'\n    AND r.dtime IS NULL\n    AND r.hostname = 'dbora023'  -- 선행 결과에서 선별된 서버 (hostname 기준)\n    AND a.currentalarmstatus = 'active'  -- 활성 상태의 알람만 조회 (선행 작업의 '선행 결과' 맥락에 부합)\nORDER BY a.ctime DESC\nLIMIT 1000;"
+     }
+    },
+    "current_node": "agent_orchestrator",
+    "dependency_notes": [
+     {
+      "kind": "trace",
+      "task_id": "t2",
+      "reason": "ok",
+      "detail": "선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.",
+      "source_task_ids": [
+       "t1"
+      ],
+      "scope_col": "hostname",
+      "scope_size": 1,
+      "sample": [
+       "dbora023"
+      ],
+      "selection_basis": "정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90"
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [
+     {
+      "count": 1,
+      "reason": "메모리 이용률이 90%를 초과한 적이 있는 서버 1건(DB-ORA-023)이 조회되어 사용자의 질의가 충족되었으나, '이용률이 90%를 초과한 적이 있는'이라는 조건은 과거의 최대치(max_memory_usage_pct)를 의미하므로, 해당 서버의 상세 알람 이력이나 모니터링 이벤트가 있는지 확인하여 추가 정보를 제공하는 것이 적절함",
+      "added": 1
+     }
+    ],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 년"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 월"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기준"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 메모"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 이용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "률이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "%"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 초과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "한"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 서버"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 총"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 건"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 확인"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되었습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " server"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_name"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " os"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_hostname"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ip"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "address"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " max"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_memory"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_usage"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "_pct"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "---"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "|"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " DB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ORA"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " db"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ora"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "6"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "1"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "%"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " |"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "**"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "상"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "세"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 내용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "**"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " **"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "DB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ORA"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "-"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "3"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "**"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 서버"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 최대"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 메모"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 사용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "률은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " **"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "5"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "%**"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 9"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "0"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "%"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 임"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "계"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "치를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 크게"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 초과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하여"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 주의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 필요합니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "2026 년 9 월 기준, 메모리 이용률이 90% 를 초과한 서버는 총 1 건으로 확인되었습니다.\n\n| server_name | os_hostname | ipaddress | max_memory_usage_pct |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 95.2% |\n\n**상세 내용**\n- **DB-ORA-023** 서버의 최대 메모리 사용률은 **95.2%**로, 90% 임계치를 크게 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "current_node": "result_aggregator",
+    "query_results": [
+     {
+      "server_name": "DB-ORA-023",
+      "os_hostname": "dbora023",
+      "ipaddress": "10.61.0.2",
+      "max_memory_usage_pct": 95.2
+     }
+    ],
+    "active_db_id": "polestar",
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "db_scope_source": "classified",
+    "dependency_notes": [
+     {
+      "kind": "trace",
+      "task_id": "t2",
+      "reason": "ok",
+      "detail": "선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.",
+      "source_task_ids": [
+       "t1"
+      ],
+      "scope_col": "hostname",
+      "scope_size": 1,
+      "sample": [
+       "dbora023"
+      ],
+      "selection_basis": "정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90"
+     },
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "2026 년 9 월 기준, 메모리 이용률이 90% 를 초과한 서버는 총 1 건으로 확인되었습니다.\n\n| server_name | os_hostname | ipaddress | max_memory_usage_pct |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 95.2% |\n\n**상세 내용**\n- **DB-ORA-023** 서버의 최대 메모리 사용률은 **95.2%**로, 90% 임계치를 크게 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘",
+    "uploaded_file": null,
+    "file_type": null,
+    "parsed_requirements": {
+     "query_targets": [
+      "서버",
+      "메모리"
+     ],
+     "filter_conditions": [
+      {
+       "field": "memory_usage_pct",
+       "op": ">",
+       "value": 90
+      }
+     ],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "original_query": "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "csv_sheet_data": null,
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [
+     {
+      "server_name": "DB-ORA-023",
+      "os_hostname": "dbora023",
+      "ipaddress": "10.61.0.2",
+      "max_memory_usage_pct": 95.2
+     }
+    ],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": null,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null,
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": null,
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [
+     {
+      "db_id": "polestar"
+     }
+    ],
+    "active_db_id": "polestar",
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "zone_clarification_allowed": true,
+    "zone_clarification": null,
+    "db_scope_source": "classified",
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+     },
+     {
+      "__msg__": "ai",
+      "content": "2026 년 9 월 기준, 메모리 이용률이 90% 를 초과한 서버는 총 1 건으로 확인되었습니다.\n\n| server_name | os_hostname | ipaddress | max_memory_usage_pct |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 95.2% |\n\n**상세 내용**\n- **DB-ORA-023** 서버의 최대 메모리 사용률은 **95.2%**로, 90% 임계치를 크게 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "thread_id": "960f7001-d655-46c9-9f4e-b4bc1ed8b5aa",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "final_response": "2026 년 9 월 기준, 메모리 이용률이 90% 를 초과한 서버는 총 1 건으로 확인되었습니다.\n\n| server_name | os_hostname | ipaddress | max_memory_usage_pct |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 95.2% |\n\n**상세 내용**\n- **DB-ORA-023** 서버의 최대 메모리 사용률은 **95.2%**로, 90% 임계치를 크게 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "output_file": null,
+    "output_file_name": null,
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "data_query",
+      "sub_query": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed"
+     },
+     {
+      "task_id": "t2",
+      "agent": "alarm_query",
+      "sub_query": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+      "depends_on": [
+       "t1"
+      ],
+      "input_from": [
+       "t1"
+      ],
+      "supersedes": [],
+      "order": 2,
+      "status": "completed"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "organized_data": {
+       "summary": "총 1건의 데이터를 조회했습니다. 조회 대상: 서버, 메모리.",
+       "rows": [
+        {
+         "server_name": "DB-ORA-023",
+         "os_hostname": "dbora023",
+         "ipaddress": "10.61.0.2",
+         "max_memory_usage_pct": "95.2%"
+        }
+       ],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [
+       {
+        "server_name": "DB-ORA-023",
+        "os_hostname": "dbora023",
+        "ipaddress": "10.61.0.2",
+        "max_memory_usage_pct": 95.2
+       }
+      ],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 메모리 이용률이 90%를 초과한 적이 있는 서버 목록 조회\n-- 조건: 메모리 사용률 (Utilization) 의 최대값 (max_val) 이 90 보다 큰 서버\n-- 기간: 보관 기간이 가장 긴 월간 통계 (cmm_metric_stat_m) 사용\nSELECT\n    svr.name AS server_name,\n    svr.hostname AS os_hostname,\n    svr.ipaddress AS ipaddress,\n    MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN s.max_val END)::numeric AS max_memory_usage_pct\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_resource svr\n    ON svr.id = r.platform_resource_id\n   AND svr.resource_type = 'server.Server'\nJOIN polestar.cmm_metric_stat_m s\n    ON r.id = s.resource_id\n   AND s.definition_name = 'Utilization'\nWHERE r.resource_type = 'server.Memory'\n  AND r.dtime IS NULL\n  AND svr.dtime IS NULL\n  -- 임계값 90 초과 여부 확인 (max_val 기준)\n  AND s.max_val > 90\nGROUP BY svr.name, svr.hostname, svr.ipaddress, svr.id\nORDER BY svr.hostname\nLIMIT 1000;"
+     },
+     "t2": {
+      "organized_data": {
+       "summary": "조건에 해당하는 데이터가 없습니다.",
+       "rows": [],
+       "column_mapping": null,
+       "resolved_mapping": null,
+       "is_sufficient": true,
+       "sheet_mappings": null
+      },
+      "query_results": [],
+      "source": [
+       {
+        "db_id": "polestar",
+        "relevance_score": 0.5,
+        "sub_query_context": "선행 결과의 메모리 이용률 90% 초과 서버(DB-ORA-023 등)에 대한 관련 알람 이력 조회",
+        "user_specified": false,
+        "reason": "DB 분류 결과 없음, 기본 DB 사용"
+       }
+      ],
+      "dependency_notes": [
+       {
+        "kind": "descriptions_missing",
+        "task_id": null,
+        "db_id": "polestar",
+        "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+       }
+      ],
+      "target_db_ids": [
+       "polestar"
+      ],
+      "db_origin": "classified",
+      "generated_sql": "-- 선행 결과의 메모리 이용률 90% 초과 서버 (dbora023) 에 대한 관련 알람 이력 조회\n-- 대상 서버는 선행 작업에서 hostname 'dbora023' 로 선별됨\n-- 알람 이력 (cmm_alarm) 과 리소스 (cmm_resource) 를 조인하여 서버별 알람 내역을 조회\nSELECT\n    COALESCE(r.name, r.hostname) AS server_name,  -- 서버 식별자: name 우선, name 이 NULL 이면 hostname 폴백\n    r.hostname AS os_hostname,\n    r.ipaddress,\n    r.avail_status,\n    a.id AS alarm_id,\n    a.ctime AS alarm_time,\n    a.alarmseverity,\n    a.currentalarmstatus,\n    a.conditionlogtext,\n    a.acktime,\n    a.ackusername\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_alarm a\n    ON a.resource_id = r.id\nWHERE r.resource_type = 'server.Server'\n    AND r.dtime IS NULL\n    AND r.hostname = 'dbora023'  -- 선행 결과에서 선별된 서버 (hostname 기준)\n    AND a.currentalarmstatus = 'active'  -- 활성 상태의 알람만 조회 (선행 작업의 '선행 결과' 맥락에 부합)\nORDER BY a.ctime DESC\nLIMIT 1000;"
+     }
+    },
+    "is_composite": false,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": [
+     {
+      "kind": "trace",
+      "task_id": "t2",
+      "reason": "ok",
+      "detail": "선행 작업(t1) 결과 1대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90.",
+      "source_task_ids": [
+       "t1"
+      ],
+      "scope_col": "hostname",
+      "scope_size": 1,
+      "sample": [
+       "dbora023"
+      ],
+      "selection_basis": "정렬 hostname 오름차순 · 상한 1000건 · 조건 max_val > 90"
+     },
+     {
+      "kind": "descriptions_missing",
+      "task_id": null,
+      "db_id": "polestar",
+      "detail": "polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+     }
+    ],
+    "replan_count": 1,
+    "needs_replan": false,
+    "replan_history": [
+     {
+      "count": 1,
+      "reason": "메모리 이용률이 90%를 초과한 적이 있는 서버 1건(DB-ORA-023)이 조회되어 사용자의 질의가 충족되었으나, '이용률이 90%를 초과한 적이 있는'이라는 조건은 과거의 최대치(max_memory_usage_pct)를 의미하므로, 해당 서버의 상세 알람 이력이나 모니터링 이벤트가 있는지 확인하여 추가 정보를 제공하는 것이 적절함",
+      "added": 1
+     }
+    ],
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

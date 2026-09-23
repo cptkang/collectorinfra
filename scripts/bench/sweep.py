@@ -329,6 +329,15 @@ def axis_categories(tier: str = "primary") -> dict[str, str]:
     return {a.env_key: a.group_key for a in found if tier == "all" or a.tier == tier}
 
 
+def excluded_axes(tier: str = "primary") -> dict[str, str]:
+    """축 선별에서 **소비처 없음**(F3)으로 빠진 축 → 사유(plans/118 B-3 ③).
+
+    arm 이 전개되지 않으므로 `build_arms` 에는 없다. 캠페인 계획 표·합산 판정표가 이 목록으로
+    「미측정」 행을 싣는다 — 축에서 조용히 사라지지 않게.
+    """
+    return axes_mod.consumer_exclusions(tier)
+
+
 def workload_summary(catalog) -> str:
     """돌릴 워크로드를 한 줄로 적는다. **무엇을 재는지 보이지 않으면 빗나가도 모른다.**"""
     import collections
@@ -469,6 +478,9 @@ class ConfigSnapshot:
     nondeterministic: frozenset[str] = frozenset()
     #: 스냅샷을 못 찍었을 때의 사유. 있으면 대조군 판정은 **하지 않는다**(추정 금지).
     unavailable: Optional[str] = None
+    #: 단 전용 축 → (그 단, 소비 모듈)(plans/118 B-3 ② · `axes.tier_exclusive_axes`).
+    #: `unreachable_arms` 가 기준선 단과 대조한다. 비어 있으면 그 판정을 하지 않는다.
+    tier_only: Mapping[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
 
     def arm_config(self, arm_id: str) -> Optional[ArmConfig]:
         return self.baseline if arm_id == BASELINE_ARM else self.arms.get(arm_id)
@@ -507,7 +519,8 @@ class ConfigSnapshot:
         wanted = set(arm_ids)
         return ConfigSnapshot(baseline=self.baseline,
                               arms={k: v for k, v in self.arms.items() if k in wanted},
-                              nondeterministic=self.nondeterministic, unavailable=self.unavailable)
+                              nondeterministic=self.nondeterministic, unavailable=self.unavailable,
+                              tier_only=self.tier_only)
 
     def baseline_env_values(self) -> dict[str, str]:
         """기준선 실효값을 **env 키로** 돌려준다 — `recommended.env.diff` 의 「현행값」.
@@ -551,12 +564,28 @@ class ConfigSnapshot:
         플래그 값이 달라도 실효는 A/A 다 — run 20260922-112010 의 `CROSS_SYSTEM_PROBE_ENABLED`
         true arm 이 2단 기준선 위에서 4.4시간 중 절반을 그렇게 썼다(`entity_locator` 는 3단 전용).
         도달성을 못 뜬 쪽(`reachable is None`)이 있으면 판정하지 않는다(추정 금지).
+
+        **단 전용 축**(plans/118 B-3 ②)도 같은 사유 경로로 낸다 — 소비처가 전부 한 단의 전용
+        모듈(`axes.TIER_EXCLUSIVE_MODULES`)인 축은, 기준선과 arm 이 둘 다 그 단이 아니면 값이
+        결과를 바꿀 수 없다. 노드 **안**에서 읽는 플래그라 위 등록 판정으로는 잡히지 않는다
+        (`COMPOSITE_PRIOR_SCOPE_LATEST_ONLY` — 1단 `deepagents_tools.py` 만 읽는다).
         """
         base = self.baseline.reachable
         if base is None or self.unavailable:
             return {}
         out: dict[str, str] = {}
+        base_tier = ladder_tier_of(base)
         for arm_id, arm in sorted(self.arms.items()):
+            only = self.tier_only.get(arm.axis or "")
+            if only and arm.reachable is not None:
+                tier, modules = only
+                arm_tier = ladder_tier_of(arm.reachable)
+                if base_tier != tier and arm_tier != tier:
+                    out[arm_id] = (
+                        f"도달 불가 — `{arm.axis}` 의 소비처가 `{tier}` 단 전용 모듈"
+                        f"({', '.join(modules)})뿐인데 이 단은 `{base_tier}` 다"
+                        "(plans/118 B-3). 플래그 값이 결과를 바꿀 수 없다")
+                continue
             gated = GRAPH_REGISTRATION_FLAGS.get(arm.axis or "")
             if not gated or arm.reachable is None or set(arm.reachable) != set(base):
                 continue
@@ -586,6 +615,8 @@ class ConfigSnapshot:
             "control_arms": self.control_arms(),
             "unreachable_arms": self.unreachable_arms(),
             "unavailable": self.unavailable,
+            "tier_only": {axis: {"tier": tier, "modules": list(modules)}
+                          for axis, (tier, modules) in sorted(self.tier_only.items())},
         }
 
 
@@ -608,8 +639,12 @@ def capture_config_snapshot(
     echo: Any = None,
     detect_nd: Any = None,
     graph: Any = None,
+    tier_only: Optional[Mapping[str, tuple[str, tuple[str, ...]]]] = None,
 ) -> ConfigSnapshot:
     """arm 마다 자식 파이썬을 띄워 **자식이 실제로 읽는 설정**을 모은다.
+
+    `tier_only` 는 단 전용 축 표다(plans/118 B-3 ②). 주지 않으면 `axes.tier_exclusive_axes()`
+    (저장소 AST 판정)를 쓴다. 그 축의 arm 과 기준선도 그래프를 뜬다 — 단을 알아야 판정한다.
 
     서버를 띄우기 **전에** 돌린다(arm 당 1~2초 · 62 arm 이면 약 2분). 실패는 예외가 아니라
     데이터다 — 못 찍은 arm 은 `ok=False` 로 남기고, 기준선을 못 찍으면 전체를
@@ -625,6 +660,11 @@ def capture_config_snapshot(
     캠페인이 이긴 단을 남은 구간 기준선에 주입하면(M-0) 그 기준선의 실효값이 `.env` 값과
     달라진다 — 빈 주입으로 뜨면 대조군 지문 판정이 통째로 빗나간다.
     """
+    if tier_only is None:
+        try:
+            tier_only = axes_mod.tier_exclusive_axes()
+        except Exception:   # 판정 원천을 못 읽으면 그 판정만 하지 않는다(추정 금지)
+            tier_only = {}
     run_echo = echo or probe_mod.echo_config
     run_graph = graph or probe_mod.graph_reach
     detect = detect_nd or probe_mod.detect_nondeterministic_keys
@@ -648,7 +688,7 @@ def capture_config_snapshot(
                          effective=effective, ok=ok, error=error)
     if not ok:
         return ConfigSnapshot(baseline=baseline, unavailable=(
-            f"기준선 설정 에코 실패 ({error}) — 대조군 판정을 하지 않는다"))
+            f"기준선 설정 에코 실패 ({error}) — 대조군 판정을 하지 않는다"), tier_only=tier_only)
 
     def _graph(
         overrides: Optional[dict[str, str]],
@@ -663,8 +703,10 @@ def capture_config_snapshot(
             return None, f"{type(exc).__name__}: {str(exc)[:300]}"
 
     def _needs_graph(axis: Optional[str]) -> bool:
-        """그래프를 떠야 하는 축인가 — 등록 조건 플래그(M-3)이거나 사다리 단 축(M-0)이다."""
-        return axis in GRAPH_REGISTRATION_FLAGS or axis == axes_mod.LADDER_AXIS
+        """그래프를 떠야 하는 축인가 — 등록 조건 플래그(M-3) · 사다리 단 축(M-0) ·
+        단 전용 축(118 B-3)이다."""
+        return (axis in GRAPH_REGISTRATION_FLAGS or axis == axes_mod.LADDER_AXIS
+                or axis in (tier_only or {}))
 
     captured: dict[str, ArmConfig] = {}
     for arm in arms:
@@ -688,7 +730,8 @@ def capture_config_snapshot(
         nd = detect(base_env=shared)
     except Exception:
         nd = frozenset()
-    return ConfigSnapshot(baseline=baseline, arms=captured, nondeterministic=nd)
+    return ConfigSnapshot(baseline=baseline, arms=captured, nondeterministic=nd,
+                          tier_only=dict(tier_only or {}))
 
 
 def load_config_snapshot(path: Path) -> Optional[ConfigSnapshot]:
@@ -715,9 +758,12 @@ def load_config_snapshot(path: Path) -> Optional[ConfigSnapshot]:
                           graph_error=info.get("graph_error"))
         for arm_id, info in (data.get("arms") or {}).items()
     }
+    tier_only = {axis: (str(info.get("tier")), tuple(info.get("modules") or ()))
+                 for axis, info in (data.get("tier_only") or {}).items()
+                 if isinstance(info, dict) and info.get("tier")}
     return ConfigSnapshot(baseline=baseline, arms=arms,
                           nondeterministic=frozenset(data.get("nondeterministic") or ()),
-                          unavailable=data.get("unavailable"))
+                          unavailable=data.get("unavailable"), tier_only=tier_only)
 
 
 def write_config_snapshot(snapshot: ConfigSnapshot, out_dir: Path) -> Path:
@@ -1070,7 +1116,7 @@ class RunHealth:
         return next(iter(base)) if len(base) == 1 else None
 
     def tier_notes(self) -> list[str]:
-        """고지만 하는 단 사실 — 기준선이 기준 경로(D-225)가 아니다(D-250 ③).
+        """고지만 하는 단 사실 — 기준선이 기준 경로(D-251)가 아니다(D-250 ③).
 
         멈추지 않는다. 이 단으로 잰 축 결과가 **그 단에 조건부**라는 사실을 판정문에 남길 뿐이다.
         단을 고르는 것은 사다리 단 축(M-0)의 몫이다 — 그 구간에서는 이 고지 대신 **103 잔여
@@ -1086,7 +1132,7 @@ class RunHealth:
         if base == [canonical]:
             return []
         return [f"기준선 단이 {'·'.join(f'`{t}`' for t in base)} 다 — 기준 경로 `{canonical}`"
-                "(D-225)가 아니다. 사다리 단 축(plans/114 M-0 · D-250)을 재기 전에는 다른 축 "
+                "(D-251)가 아니다. 사다리 단 축(plans/114 M-0 · D-250)을 재기 전에는 다른 축 "
                 "결과가 이 단에 조건부다"]
 
     def timeout_problem(self) -> Optional[str]:
@@ -1281,10 +1327,19 @@ def scan_health(result: dict[str, Any], raw_path: Path, *,
 
 
 def canonical_tier() -> str:
-    """기준 경로 단 이름(D-225) — 정본은 `src/observability/ladder.py` 다(사본 금지)."""
+    """기준 경로 단 이름(D-251 — 2단 `intent_orchestration` · D-225 의 3단을 개정).
+
+    정본은 `src/observability/ladder.py` 의 `LadderTier.is_canonical` 이다 — 단 이름을 여기
+    박지 않고 **정본이 기준이라고 답하는 단**을 돌려준다(사본 금지 · D-251 ⓐ · plans/118 B-5).
+    종전에는 `SEMANTIC_ROUTER` 를 직접 돌려줘 D-251 이후에도 단 축 동률·판정 불가가 3단으로
+    고정됐다.
+    """
     from src.observability.ladder import LadderTier
 
-    return LadderTier.SEMANTIC_ROUTER.value
+    canonical = [tier for tier in LadderTier if tier.is_canonical]
+    if len(canonical) != 1:
+        raise RuntimeError(f"기준 경로 단이 {len(canonical)}개다 — ladder.is_canonical 정본 확인")
+    return canonical[0].value
 
 
 def arm_rate(raw_path: Path, arm_id: str, elapsed_sec: float) -> Optional[tuple[float, int]]:

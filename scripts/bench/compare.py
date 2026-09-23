@@ -186,6 +186,38 @@ def paired_metric(
     )
 
 
+def finished_latency_spread(
+    baseline: Sequence[Observation], variant: Sequence[Observation]
+) -> Optional[tuple[int, float]]:
+    """**둘 다 완주한 쌍**의 지연 차 표준편차 `(쌍 수, ms)`(plans/118 B-6). 2쌍 미만이면 None.
+
+    완주 = 타임아웃·무효가 아니고 지연이 기록됐다. 타임아웃 턴은 상한에서 잘린(검열된) 값이라
+    넣으면 분산이 상한에 묶인다 — run-closed 에서 60초 상한 6.5초 · 180초 상한 38.7초로 6배
+    갈렸다(118 §2.4). 새 통계 기법이 아니라 표본 표준편차 하나다.
+    """
+    import statistics
+
+    def _ok(o: Observation) -> bool:
+        return not o.invalid and o.unevaluated != "timeout" and o.wall_ms is not None
+
+    base_idx, var_idx = _index(baseline), _index(variant)
+    deltas = [float(var_idx[k].wall_ms or 0) - float(base_idx[k].wall_ms or 0)
+              for k in sorted(set(base_idx) & set(var_idx))
+              if _ok(base_idx[k]) and _ok(var_idx[k])]
+    if len(deltas) < 2:
+        return None
+    return len(deltas), round(statistics.stdev(deltas), 1)
+
+
+def latency_power_note(effect_ms: float, spread: Optional[tuple[int, float]]) -> str:
+    """지연 행 꼬리 — 그 구간의 지연 노이즈 크기와, 효과가 그보다 작으면 「검정력 부족」 표기."""
+    if spread is None:
+        return ""
+    n, sd = spread
+    weak = " — **지연 신호 검정력 부족**" if abs(effect_ms) < sd else ""
+    return f"(둘 다 완주 {n}쌍 지연 차 표준편차 {sd:.0f}ms{weak})"
+
+
 def judge(
     arm_id: str,
     axis: Optional[str],
@@ -239,7 +271,10 @@ def judge(
         return AxisVerdict(arm_id, axis, level, kind, acc, latency, calls, detail,
                            signal=label, completion=run, sql_rate=sql)
 
-    lat_txt = f"지연 {latency.mean_delta:+.0f}ms" if latency else "지연 미측정"
+    lat_txt = (f"지연 {latency.mean_delta:+.0f}ms"
+               + latency_power_note(latency.mean_delta,
+                                    finished_latency_spread(baseline, variant))
+               if latency else "지연 미측정")
     call_txt = f" · {cost_label} {calls.mean_delta:+.2f}" if calls else ""
     main_txt = f"{acc_unavailable}{label} {primary.delta_pp:+.1f}%p"
 
@@ -392,8 +427,12 @@ def compare_levels(
         if lat:
             fastest = min(lat, key=lambda p: p.latency.mean_delta)
             faster = (fastest.level_b if fastest.latency.mean_delta < 0 else fastest.level_a)
+            spread = finished_latency_spread(level_obs[fastest.level_a],
+                                             level_obs[fastest.level_b])
+            note = latency_power_note(getattr(fastest.latency, "mean_delta", 0.0), spread)
             lat_txt = (f" 다만 지연은 `{faster}` 가 "
-                       f"{abs(fastest.latency.mean_delta):.0f}ms 빠르다(CI가 0을 지나지 않음).")
+                       f"{abs(fastest.latency.mean_delta):.0f}ms 빠르다(CI가 0을 지나지 않음)"
+                       f"{note}.")
         return _out(LEVELS_TIED, None,
                     f"{unavailable}{label} 기준 레벨 간 유의차 없음 — 불일치 쌍 {discordant}건, "
                     f"보정 후 유의한 쌍 0건{ctrl_txt}.{lat_txt} 기본값을 바꿀 근거가 없다.")

@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>사용자 매뉴얼 — Infra Query Agent</title>
+<script src="/static/js/theme.js"></script>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/manual/manual.css">
+</head>
+<body data-manual="user">
+<header class="m-header">
+  <button type="button" class="toc-toggle" aria-label="목차 열기">☰</button>
+  <div class="m-title"><span class="dot"></span><span class="brand">INFRA QUERY AGENT</span> <b>사용자 매뉴얼</b></div>
+  <input type="search" class="toc-filter" placeholder="기능 찾기 (예: CSV, 존, 침묵)" aria-label="기능 찾기">
+  <nav class="m-links">
+    <a href="/manual/admin">관리자 매뉴얼</a>
+    <a href="/" target="_blank" rel="noopener">질의 화면</a>
+    <button type="button" class="theme-btn" aria-label="테마 전환">◐</button>
+  </nav>
+</header>
+<div class="m-wrap">
+  <aside class="toc"><ol><li><a href="#ch-1">1. 시작하기</a><ol><li><a href="#u-01"><span class="fid">U-01</span>이 시스템으로 할 수 있는 일</a></li><li><a href="#u-02"><span class="fid">U-02</span>회원가입</a></li><li><a href="#u-03"><span class="fid">U-03</span>로그인</a></li><li><a href="#u-04"><span class="fid">U-04</span>로그아웃</a></li><li><a href="#u-05"><span class="fid">U-05</span>화면 구성 한눈에 보기</a></li></ol></li><li><a href="#ch-2">2. 머리글</a><ol><li><a href="#u-06"><span class="fid">U-06</span>서버·DB 상태 배지</a></li><li><a href="#u-07"><span class="fid">U-07</span>DB 연결 경고 배너</a></li><li><a href="#u-08"><span class="fid">U-08</span>화면 테마(라이트·다크)</a></li><li><a href="#u-09"><span class="fid">U-09</span>알림 수신과 표시 레벨</a></li><li><a href="#u-10"><span class="fid">U-10</span>노이즈 관제·매뉴얼 바로가기</a></li></ol></li><li><a href="#ch-3">3. 질의하기</a><ol><li><a href="#u-11"><span class="fid">U-11</span>질문 입력과 전송</a></li><li><a href="#u-12"><span class="fid">U-12</span>이전 질문 다시 불러오기(↑·↓)</a></li><li><a href="#u-13"><span class="fid">U-13</span>응답 중단</a></li><li><a href="#u-14"><span class="fid">U-14</span>진행 상황 표시</a></li><li><a href="#u-15"><span class="fid">U-15</span>처리 현황 패널</a></li><li><a href="#u-16"><span class="fid">U-16</span>실패했을 때 다시 시도</a></li><li><a href="#u-17"><span class="fid">U-17</span>예시 질문 버튼</a></li><li><a href="#u-18"><span class="fid">U-18</span>사용법 묻기(❓ 사용법)</a></li><li><a href="#u-19"><span class="fid">U-19</span>질문 잘 쓰는 법</a></li></ol></li><li><a href="#ch-4">4. 결과 읽기·내려받기</a><ol><li><a href="#u-20"><span class="fid">U-20</span>결과 읽기</a></li><li><a href="#u-21"><span class="fid">U-21</span>실행된 SQL 보기</a></li><li><a href="#u-22"><span class="fid">U-22</span>CSV로 내려받기</a></li><li><a href="#u-23"><span class="fid">U-23</span>결과 파일 내려받기</a></li></ol></li><li><a href="#ch-5">5. 조회 범위와 역질문</a><ol><li><a href="#u-24"><span class="fid">U-24</span>조회 대상(스코프) 칩</a></li><li><a href="#u-25"><span class="fid">U-25</span>존 선택 역질문</a></li></ol></li><li><a href="#ch-6">6. 양식 채우기(Excel·Word)</a><ol><li><a href="#u-26"><span class="fid">U-26</span>양식 파일 첨부</a></li><li><a href="#u-27"><span class="fid">U-27</span>양식 채우기 결과 받기</a></li><li><a href="#u-28"><span class="fid">U-28</span>첨부한 원본 다시 받기</a></li><li><a href="#u-29"><span class="fid">U-29</span>채우지 못한 항목 역질문</a></li><li><a href="#u-30"><span class="fid">U-30</span>저장된 답 관리</a></li><li><a href="#u-31"><span class="fid">U-31</span>매핑 보고서 받기·고쳐 올리기</a></li><li><a href="#u-32"><span class="fid">U-32</span>양식 만드는 요령</a></li><li><a href="#u-33"><span class="fid">U-33</span>보안(DRM) 문서 첨부</a></li></ol></li><li><a href="#ch-7">7. 대화와 이력</a><ol><li><a href="#u-34"><span class="fid">U-34</span>이어서 묻기(멀티턴)</a></li><li><a href="#u-35"><span class="fid">U-35</span>질의 이력 — 대화</a></li><li><a href="#u-36"><span class="fid">U-36</span>질의 이력 — 질의</a></li></ol></li><li><a href="#ch-8">8. 채팅으로 하는 일</a><ol><li><a href="#u-37"><span class="fid">U-37</span>유사어 등록</a></li><li><a href="#u-38"><span class="fid">U-38</span>SQL 실행 승인</a></li><li><a href="#u-39"><span class="fid">U-39</span>스키마 캐시 갱신(관리자 전용)</a></li></ol></li><li><a href="#ch-9">9. 이벤트 알람</a><ol><li><a href="#u-40"><span class="fid">U-40</span>알람 탭과 알람 카드</a></li><li><a href="#u-41"><span class="fid">U-41</span>알람 거르기·찾기</a></li><li><a href="#u-42"><span class="fid">U-42</span>알람에서 바로 조회하기</a></li><li><a href="#u-43"><span class="fid">U-43</span>알람 확인(ack)·피드백</a></li></ol></li><li><a href="#ch-10">10. 노이즈 관제</a><ol><li><a href="#u-44"><span class="fid">U-44</span>노이즈 관제 화면 읽기</a></li><li><a href="#u-45"><span class="fid">U-45</span>알람이 걸러지는 원리</a></li></ol></li><li><a href="#ch-부록">부록</a><ol></ol></li></ol></aside>
+  <main class="m-main">
+    <div class="edition">기준 커밋 <code>d957fc0</code> · 빌드 2026-09-23 · 캡처 2026-09-23 (커밋 <code>d957fc0</code>) · 기능 45개 · 화면은 모의 백엔드 위에서 자동 캡처했고, 사례 결과는 로컬 샌드박스에서 실제로 실행한 결과입니다.</div>
+    <p>이 매뉴얼은 <strong>Infra Query Agent</strong>를 쓰는 분을 위한 안내서입니다. 서버·성능·알람 데이터를 한국어로 물어보면 답을 표로 돌려주고, Excel·Word 양식도 채워 줍니다.</p>
+<ul>
+<li>처음이라면 <a href="#ch-1">1장 시작하기</a>와 <a href="#ch-3">3장 질의하기</a>부터 보세요.</li>
+<li>각 기능은 <strong>사례 → 사용 방법 → 화면 요소 → 주의</strong> 순서로 설명합니다. 사례의 「입력」은 그대로 복사해 쓸 수 있습니다.</li>
+<li>사례의 결과는 테스트용 샌드박스 데이터로 실제로 실행한 결과입니다. 운영 환경에서는 서버 이름과 숫자가 다르게 나옵니다.</li>
+<li>관리자 기능은 <a href="/manual/admin">관리자 매뉴얼</a>에 있습니다.</li>
+</ul>
+
+    <section class="chapter" id="ch-1"><h2>1. 시작하기</h2><p>계정을 만들고 로그인해서 첫 화면을 둘러봅니다.</p>
+<section class="feature" id="u-01"><h3><span class="fid">U-01</span>이 시스템으로 할 수 있는 일</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>이 시스템은 인프라 관측 데이터를 <strong>자연어로 조회</strong>하는 도구입니다. 할 수 있는 일은 크게 네 가지입니다.</p>
+<table>
+<thead>
+<tr>
+<th>할 수 있는 일</th>
+<th>예</th>
+<th>설명 장</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>서버 구성·성능·알람 조회</td>
+<td>「2026년 6월 메모리 사용률 평균 상위 3대」</td>
+<td><a href="#ch-3">3장</a></td>
+</tr>
+<tr>
+<td>양식(Excel·Word) 채우기</td>
+<td>서버 목록 양식을 올리고 「채워줘」</td>
+<td><a href="#ch-6">6장</a></td>
+</tr>
+<tr>
+<td>실시간 알람 받기</td>
+<td>알람 카드에서 바로 조회</td>
+<td><a href="#ch-9">9장</a></td>
+</tr>
+<tr>
+<td>알람이 왜 걸러졌는지 보기</td>
+<td>노이즈 관제 화면</td>
+<td><a href="#ch-10">10장</a></td>
+</tr>
+</tbody>
+</table>
+<p>조회만 합니다. 데이터를 바꾸거나 지우는 요청은 실행하지 않습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>로그인하면 질의응답 화면이 열립니다.</li>
+<li>아래 입력창에 궁금한 것을 한국어로 적고 <strong>Enter</strong>를 누르세요.</li>
+<li>답이 표로 나오면 그대로 읽거나 CSV로 내려받습니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/main-welcome.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/main-welcome.png" alt="첫 화면" loading="lazy"></a><figcaption>첫 화면</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>예시 질문 버튼 — 누르면 입력창에 예시 문장이 채워집니다(<a href="#u-17">U-17</a>).</span></li><li><span class="badge-n">2</span><span>「❓ 사용법」 — 지금 조회할 수 있는 데이터를 안내받습니다(<a href="#u-18">U-18</a>).</span></li><li><span class="badge-n">3</span><span>입력창 — 여기에 질문을 적습니다.</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>답은 조회 시점에 수집된 데이터를 기준으로 합니다. 성능 통계는 시간·일·월 단위로 모아 둔 값이라 「지금 이 순간」 값과 다를 수 있습니다.</li>
+<li>조회할 수 있는 DB는 관리자가 정해 줍니다. 원하는 데이터가 나오지 않으면 관리자에게 권한을 확인하세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-11">U-11 질문 입력과 전송</a></li>
+<li><a href="#u-19">U-19 질문 잘 쓰는 법</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-02"><h3><span class="fid">U-02</span>회원가입</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>처음 쓰는 분은 계정을 직접 만듭니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>로그인 화면 아래의 <strong>회원가입</strong>을 누르세요.</li>
+<li>사용자 ID, 이름, 비밀번호, 부서를 입력하세요.
+<ul>
+<li>사용자 ID: 영문·숫자·밑줄(_)로 3~50자</li>
+<li>비밀번호: 8자 이상. 확인란에 한 번 더 입력합니다.</li>
+</ul>
+</li>
+<li><strong>가입하기</strong>를 누르면 로그인 화면으로 돌아갑니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/register.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/register.png" alt="회원가입 화면" loading="lazy"></a><figcaption>회원가입 화면</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>사용자 ID</span></li><li><span class="badge-n">2</span><span>이름 — 화면 오른쪽 위에 표시되는 이름입니다.</span></li><li><span class="badge-n">3</span><span>비밀번호(확인 포함)</span></li><li><span class="badge-n">4</span><span>부서</span></li><li><span class="badge-n">5</span><span>가입하기</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>가입만으로는 조회할 수 있는 DB가 없을 수 있습니다. 설치 설정에 따라 기본 권한이 없으면 관리자가 「조회 가능 DB」를 지정해 줘야 합니다.</li>
+<li>비밀번호를 잊으면 관리자에게 초기화를 요청하세요. 화면에서 직접 바꾸는 기능은 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-03">U-03 로그인</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-03"><h3><span class="fid">U-03</span>로그인</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>사용자 ID와 비밀번호로 로그인합니다. 다른 화면 주소로 들어왔다가 로그인 화면으로 넘어온 경우, 로그인하면 원래 가려던 화면으로 돌아갑니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>사용자 ID와 비밀번호를 입력하세요.</li>
+<li><strong>로그인</strong>을 누르세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/login.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/login.png" alt="로그인 화면" loading="lazy"></a><figcaption>로그인 화면</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>사용자 ID</span></li><li><span class="badge-n">2</span><span>비밀번호</span></li><li><span class="badge-n">3</span><span>로그인</span></li><li><span class="badge-n">4</span><span>회원가입 — 계정이 없을 때</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>비밀번호를 여러 번 틀리면 계정이 잠깁니다. 잠긴 계정은 일정 시간이 지나거나 관리자가 풀어 줘야 합니다.</li>
+<li>로그인은 8시간 동안 유지됩니다(설치 설정에 따라 다름). 시간이 지나면 다시 로그인하세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-02">U-02 회원가입</a></li>
+<li><a href="#u-04">U-04 로그아웃</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-04"><h3><span class="fid">U-04</span>로그아웃</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>사용을 마치면 로그아웃합니다. 공용 PC에서는 꼭 로그아웃하세요.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>화면 오른쪽 위의 <strong>Logout</strong>을 누르세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/header.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/header.png" alt="머리글" loading="lazy"></a><figcaption>머리글</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>서버 상태 배지</span></li><li><span class="badge-n">2</span><span>로그인한 이름</span></li><li><span class="badge-n">3</span><span>Logout</span></li><li><span class="badge-n">4</span><span>테마 전환</span></li><li><span class="badge-n">5</span><span>노이즈 관제</span></li><li><span class="badge-n">6</span><span>매뉴얼 메뉴(이 문서)</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>로그아웃해도 서버에 저장된 대화 이력은 남습니다. 다음에 로그인하면 이력에서 다시 불러올 수 있습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-35">U-35 질의 이력 — 대화</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-05"><h3><span class="fid">U-05</span>화면 구성 한눈에 보기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>질의응답 화면은 네 구역으로 나뉩니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>왼쪽 <strong>질의 이력</strong>은 <code>›</code> 버튼으로 열고 닫습니다.</li>
+<li>가운데에 대화가 쌓입니다. 아래로 많이 내려가면 오른쪽 아래 <strong>↓</strong> 버튼으로 맨 아래로 이동합니다.</li>
+<li>오른쪽 <strong>처리 현황</strong>에서 답을 만드는 과정을 봅니다. <code>›</code> 버튼으로 접을 수 있습니다.</li>
+<li>맨 아래 입력줄에서 질문하고 파일을 첨부합니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/main-layout.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/main-layout.png" alt="화면 구성" loading="lazy"></a><figcaption>화면 구성</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>머리글 — 상태·계정·알림·테마·바로가기</span></li><li><span class="badge-n">2</span><span>질의 이력 — 지난 대화와 질문</span></li><li><span class="badge-n">3</span><span>대화 영역 — 질문과 답</span></li><li><span class="badge-n">4</span><span>처리 현황 — 단계별 진행과 미리보기</span></li><li><span class="badge-n">5</span><span>입력줄 — 질문 입력·파일 첨부·전송</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>화면 폭이 좁으면 처리 현황 패널을 접어 두는 것이 편합니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-15">U-15 처리 현황 패널</a></li>
+<li><a href="#u-35">U-35 질의 이력 — 대화</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-2"><h2>2. 머리글</h2><p>화면 맨 위 머리글의 표시와 버튼입니다.</p>
+<section class="feature" id="u-06"><h3><span class="fid">U-06</span>서버·DB 상태 배지</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p><strong>ONLINE</strong> 배지는 서버와 DB 연결 상태를 보여 줍니다. 마우스를 올리면 DB별 연결 상태가 나옵니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>배지 색을 보세요. 초록이면 정상입니다.</li>
+<li>배지에 마우스를 올리면 DB마다 연결 여부가 보입니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/header-status.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/header-status.png" alt="상태 배지에 마우스를 올린 모습" loading="lazy"></a><figcaption>상태 배지에 마우스를 올린 모습</figcaption></figure><p>DB 이름 옆 점이 초록이면 연결, 빨강이면 끊김입니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>배지가 빨갛다면 질문해도 해당 DB의 답이 나오지 않습니다. 관리자에게 알리세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-07">U-07 DB 연결 경고 배너</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-07"><h3><span class="fid">U-07</span>DB 연결 경고 배너</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>DB 연결에 문제가 생기면 대화 영역 위에 경고 배너가 뜹니다. 정상일 때는 보이지 않습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>배너 문구에서 어느 DB가 문제인지 확인하세요.</li>
+<li>그 DB를 쓰는 질문은 잠시 미루고, 관리자에게 알리세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 장애가 있을 때만 나타나는 표시라 정상 환경에서는 찍히지 않습니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>배너가 떠 있어도 다른 DB에 대한 질문은 정상으로 동작합니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-06">U-06 서버·DB 상태 배지</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-08"><h3><span class="fid">U-08</span>화면 테마(라이트·다크)</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>화면을 밝게(라이트) 또는 어둡게(다크) 봅니다. 고른 테마는 이 브라우저에 저장됩니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>머리글의 달·해 모양 버튼을 누를 때마다 테마가 바뀝니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/main-dark.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/main-dark.png" alt="다크 테마" loading="lazy"></a><figcaption>다크 테마</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>테마 전환 버튼</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>테마는 브라우저마다 따로 저장됩니다. 다른 PC에서는 관리자가 정한 기본 테마로 시작합니다.</li>
+<li>이 매뉴얼의 ◐ 버튼도 같은 설정을 씁니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-04">U-04 로그아웃</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-09"><h3><span class="fid">U-09</span>알림 수신과 표시 레벨</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>실시간 알람을 받을지와, 어떤 수준의 알람까지 볼지를 정합니다. 알람 수신 권한이 있는 계정에만 보입니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li><strong>알림 수신</strong> 체크를 켜거나 끕니다.</li>
+<li>옆의 목록에서 표시 수준을 고르세요.
+<ul>
+<li><strong>긴급만</strong>: 즉시 통보(PAGE) 알람만</li>
+<li><strong>통보 대상</strong>: PAGE와 TICKET</li>
+<li><strong>전체</strong>(기본): 화면 표시용(DASHBOARD)까지</li>
+</ul>
+</li>
+<li><strong>알림 수신</strong>에 마우스를 올리면 내가 받을 수 있는 존이 보입니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/header-alarm.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/header-alarm.png" alt="알림 수신 토글과 표시 수준" loading="lazy"></a><figcaption>알림 수신 토글과 표시 수준</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>알림 수신 켜기·끄기</span></li><li><span class="badge-n">2</span><span>표시 수준</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>표시 수준은 이 브라우저에만 저장됩니다. 다른 PC에서는 다시 골라야 합니다.</li>
+<li>어떤 존의 알람을 받는지는 관리자가 정합니다(알림그룹). 이 화면에서 바꿀 수 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-40">U-40 알람 탭과 알람 카드</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-10"><h3><span class="fid">U-10</span>노이즈 관제·매뉴얼 바로가기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>머리글 오른쪽의 버튼으로 다른 화면을 <strong>새 탭</strong>으로 엽니다.</p>
+<table>
+<thead>
+<tr>
+<th>버튼</th>
+<th>여는 화면</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>노이즈 관제</td>
+<td>알람이 어디서 걸러졌는지 보는 화면(<a href="#ch-10">10장</a>)</td>
+</tr>
+<tr>
+<td>매뉴얼 ▾</td>
+<td>사용자 매뉴얼(이 문서) · 관리자 매뉴얼(관리자 계정에만 보입니다)</td>
+</tr>
+<tr>
+<td>Admin</td>
+<td>관리자 화면 — 관리자 계정에만 보입니다</td>
+</tr>
+</tbody>
+</table>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>버튼을 누르면 새 탭이 열립니다. 질의응답 화면은 그대로 남습니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/header.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/header.png" alt="머리글" loading="lazy"></a><figcaption>머리글</figcaption></figure><ol class="callouts"><li><span class="badge-n">5</span><span>노이즈 관제</span></li><li><span class="badge-n">6</span><span>매뉴얼 메뉴</span></li></ol><!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/header-manual.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/header-manual.png" alt="매뉴얼 메뉴를 연 모습(관리자 계정)" loading="lazy"></a><figcaption>매뉴얼 메뉴를 연 모습(관리자 계정)</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>매뉴얼 ▾ — 누르면 목록이 열립니다</span></li><li><span class="badge-n">2</span><span>사용자 매뉴얼</span></li><li><span class="badge-n">3</span><span>관리자 매뉴얼 — 관리자 계정에만 보입니다</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>새 탭으로 여는 이유는 지금 보던 대화를 잃지 않게 하기 위해서입니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-44">U-44 노이즈 관제 화면 읽기</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-3"><h2>3. 질의하기</h2><p>한국어로 질문하고 답을 받는 방법입니다. 이 장의 사례가 이 시스템의 핵심 사용법입니다.</p>
+<section class="feature" id="u-11"><h3><span class="fid">U-11</span>질문 입력과 전송</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>입력창에 질문을 적고 보내면, 시스템이 알맞은 데이터를 찾아 조회하고 답을 표로 정리합니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-SERVER-LIST"><div class="case-head">사례 · <span>Q-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>전체 서버의 호스트명, OS종류, 벤더를 조회해줘</code><button type="button" class="copy-btn" data-copy="전체 서버의 호스트명, OS종류, 벤더를 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 호스트명은 <code>svr-web</code> 및 <code>svr-was</code> 시리즈로 구성되며, 운영체제는 모두 LINUX 입니다. 벤더는 VMware, Inc., HPE, Dell Inc. 가 혼재되어 있습니다.</p><div class="case-table"><table><thead><tr><th>hostname</th><th>os_type</th><th>vendor</th></tr></thead><tbody><tr><td>svr-web-01</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-02</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-03</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-04</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-05</td><td>LINUX</td><td>VMware, Inc.</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>무엇을(「서버」) + 어떤 항목을(「호스트명, OS종류, 벤더」) 순서로 적으면 가장 잘 알아듣습니다. 항목 이름은 화면에 보이는 말 그대로 써도 됩니다.</p>
+</div></div><div class="case-row"><div class="case-k">바꿔 보기</div><div class="case-v"><code class="case-vary">전체 서버의 IP와 OS 버전을 보여줘</code> <code class="case-vary">서버 수를 조회해줘</code></div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>입력창을 누르고 질문을 적으세요.</li>
+<li><strong>Enter</strong>를 누르거나 오른쪽 전송 버튼(▷)을 누르세요. 줄을 바꾸려면 <strong>Shift+Enter</strong>입니다.</li>
+<li>답이 나올 때까지 진행 상황이 표시됩니다(<a href="#u-14">U-14</a>).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/query-input.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/query-input.png" alt="입력줄" loading="lazy"></a><figcaption>입력줄</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>질문 입력창</span></li><li><span class="badge-n">2</span><span>파일 첨부(<a href="#ch-6">6장</a>)</span></li><li><span class="badge-n">3</span><span>전송</span></li><li><span class="badge-n">4</span><span>조회 대상 칩(<a href="#u-24">U-24</a>)</span></li><li><span class="badge-n">5</span><span>단축키 안내</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>질문 하나에 한 가지를 묻는 것이 가장 정확합니다. 여러 가지를 묻는 복합 질문도 되지만 시간이 더 걸립니다.</li>
+<li>조회 결과는 기본으로 최대 1,000행까지 가져옵니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-19">U-19 질문 잘 쓰는 법</a></li>
+<li><a href="#u-20">U-20 결과 읽기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-12"><h3><span class="fid">U-12</span>이전 질문 다시 불러오기(↑·↓)</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>전에 보낸 질문을 다시 불러와 고쳐 쓸 수 있습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>커서가 입력창 첫 줄에 있을 때 <strong>↑</strong> 키를 누르면 바로 전 질문이 채워집니다. 쓰던 문장은 따로 기억해 두었다가 <strong>↓</strong> 끝에서 돌려줍니다.</li>
+<li>더 누르면 더 이전 질문으로, <strong>↓</strong> 키는 다시 최근 쪽으로 이동합니다.</li>
+<li>고친 뒤 <strong>Enter</strong>로 보내세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 입력창 아래 안내 「↑↓ 이전 질의」가 이 기능입니다(<a href="#u-11">U-11</a> 그림 5번).</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>불러오는 목록은 이 브라우저에 저장된 질문입니다(<a href="#u-36">U-36</a>).</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-36">U-36 질의 이력 — 질의</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-13"><h3><span class="fid">U-13</span>응답 중단</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>답을 만드는 중에 멈출 수 있습니다. 질문을 잘못 보냈을 때 쓰세요.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>답을 만드는 동안 전송 버튼이 빨간 <strong>■</strong>(응답 중단)으로 바뀝니다.</li>
+<li>이 버튼을 누르면 즉시 멈춥니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/query-streaming.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/query-streaming.png" alt="답을 만드는 중" loading="lazy"></a><figcaption>답을 만드는 중</figcaption></figure><ol class="callouts"><li><span class="badge-n">2</span><span>응답 중단(■)</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>멈춘 질문의 결과는 남지 않습니다. 다시 보내려면 ↑ 키로 불러오세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-14">U-14 진행 상황 표시</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-14"><h3><span class="fid">U-14</span>진행 상황 표시</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>답이 완성되기 전에도 무엇을 하고 있는지 보입니다. 오래 걸리는 질문도 멈춘 것인지 진행 중인지 알 수 있습니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-SERVER-LIST"><div class="case-head">사례 · <span>Q-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>전체 서버의 호스트명, OS종류, 벤더를 조회해줘</code><button type="button" class="copy-btn" data-copy="전체 서버의 호스트명, OS종류, 벤더를 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 호스트명은 <code>svr-web</code> 및 <code>svr-was</code> 시리즈로 구성되며, 운영체제는 모두 LINUX 입니다. 벤더는 VMware, Inc., HPE, Dell Inc. 가 혼재되어 있습니다.</p><div class="case-table"><table><thead><tr><th>hostname</th><th>os_type</th><th>vendor</th></tr></thead><tbody><tr><td>svr-web-01</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-02</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-03</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-04</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-05</td><td>LINUX</td><td>VMware, Inc.</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>답의 글자가 먼저 흘러나오고, 아래에 단계 칩(입력 분석 → 에이전트 실행 → 스키마 탐색 → SQL 생성 → 쿼리 실행 → 결과 정리)과 경과 시간이 보입니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>질문을 보내면 답 말풍선이 바로 생기고 글자가 조금씩 채워집니다.</li>
+<li>말풍선 아래 단계 칩에서 지금 단계가 강조됩니다.</li>
+<li>완료되면 칩이 사라지고 결과 정보가 표시됩니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/query-streaming.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/query-streaming.png" alt="답을 만드는 중" loading="lazy"></a><figcaption>답을 만드는 중</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>답 말풍선 — 글자와 단계 칩, 경과 시간</span></li><li><span class="badge-n">2</span><span>응답 중단(■)</span></li><li><span class="badge-n">3</span><span>처리 현황 패널 — 단계별 상세</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>복합 질문은 여러 단계로 나뉘어 「1/2 단계」처럼 진행이 표시됩니다.</li>
+<li>한동안 변화가 없어도 서버가 계속 작업 중이면 멈추지 않습니다. 설정된 제한 시간을 넘으면 오류로 끝납니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-15">U-15 처리 현황 패널</a></li>
+<li><a href="#u-16">U-16 실패했을 때 다시 시도</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-15"><h3><span class="fid">U-15</span>처리 현황 패널</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>오른쪽 <strong>처리 현황</strong> 패널은 답을 만드는 단계를 자세히 보여 줍니다. 원하는 결과가 안 나왔을 때 원인을 짐작하는 데 쓰입니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-SERVER-LIST"><div class="case-head">사례 · <span>Q-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>전체 서버의 호스트명, OS종류, 벤더를 조회해줘</code><button type="button" class="copy-btn" data-copy="전체 서버의 호스트명, OS종류, 벤더를 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 호스트명은 <code>svr-web</code> 및 <code>svr-was</code> 시리즈로 구성되며, 운영체제는 모두 LINUX 입니다. 벤더는 VMware, Inc., HPE, Dell Inc. 가 혼재되어 있습니다.</p><div class="case-table"><table><thead><tr><th>hostname</th><th>os_type</th><th>vendor</th></tr></thead><tbody><tr><td>svr-web-01</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-02</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-03</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-04</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-05</td><td>LINUX</td><td>VMware, Inc.</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>「의도 분석」에서 질문이 몇 개의 작업으로 나뉘었는지, 「작업 실행」에서 어느 DB에서 몇 건을 읽었는지 확인할 수 있습니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>질문을 보내면 패널에 단계가 차례로 추가됩니다.</li>
+<li>단계 제목을 누르면 상세를 펴고 접습니다.</li>
+<li>조회 단계에는 결과 <strong>미리보기</strong>(최대 10행)가 나옵니다.</li>
+<li>패널이 길면 오른쪽 아래 버튼으로 맨 아래로 이동합니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/progress-panel.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/progress-panel.png" alt="처리 현황 패널" loading="lazy"></a><figcaption>처리 현황 패널</figcaption></figure><p>단계마다 소요 시간(오른쪽)과 상세(파싱된 요구사항, 필드 매핑, 작업 목록, 대상 DB와 건수)가 표시됩니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>패널 내용은 진단용입니다. 답을 읽을 때는 대화 영역의 결과를 보세요.</li>
+<li>새 질문을 보내면 패널이 새 질문 기준으로 바뀝니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-14">U-14 진행 상황 표시</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-16"><h3><span class="fid">U-16</span>실패했을 때 다시 시도</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>답을 만들다 실패하면 이유와 함께 <strong>다시 시도</strong> 버튼이 나옵니다. 자동으로 다시 보내지는 않습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>실패 메시지를 읽으세요. 시간 초과인지, 어느 단계에서 멈췄는지 나옵니다.</li>
+<li>같은 질문으로 다시 해 보려면 <strong>다시 시도</strong>를 누르세요.</li>
+<li>계속 실패하면 질문을 더 좁혀 보세요(기간·서버·항목 줄이기).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 오류가 있을 때만 나타나는 버튼입니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>시간 초과는 대개 질문 범위가 너무 넓을 때 납니다. 「전체 서버 × 2년 × 시간 단위」 같은 질문은 나눠서 하세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-19">U-19 질문 잘 쓰는 법</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-17"><h3><span class="fid">U-17</span>예시 질문 버튼</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>첫 화면의 예시 버튼은 자주 쓰는 질문을 입력창에 채워 줍니다. 바로 보내지는 않습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>예시 버튼(예: <strong>CPU 사용률 현황</strong>)을 누르세요.</li>
+<li>입력창에 채워진 문장의 「ㅇㅇ존」을 원하는 존 이름으로 바꾸세요. 「ㅇㅇ존」은 자리 표시라, 그대로 보내면 어느 존을 조회할지 되묻습니다(<a href="#u-25">U-25</a>).</li>
+<li><strong>Enter</strong>로 보내세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/main-welcome.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/main-welcome.png" alt="예시 버튼" loading="lazy"></a><figcaption>예시 버튼</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>예시 질문 버튼</span></li><li><span class="badge-n">2</span><span>사용법 버튼</span></li><li><span class="badge-n">3</span><span>입력창</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>흐리게 표시된 버튼(「월보 데이터 추출」)은 아직 준비 중이라 누를 수 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-25">U-25 존 선택 역질문</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-18"><h3><span class="fid">U-18</span>사용법 묻기(❓ 사용법)</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>무엇을 물을 수 있는지 모를 때 시스템에게 직접 물어보세요. <strong>지금 내 계정으로 조회할 수 있는</strong> 데이터 원천을 기준으로 안내합니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>첫 화면의 <strong>❓ 사용법</strong> 버튼을 누르세요. 입력창에 문장이 채워지고 바로 전송됩니다.</li>
+<li>대화 중에는 입력창에 「사용법 알려줘」처럼 물어도 됩니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/main-welcome.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/main-welcome.png" alt="첫 화면" loading="lazy"></a><figcaption>첫 화면</figcaption></figure><ol class="callouts"><li><span class="badge-n">2</span><span>「❓ 사용법」 버튼 — 보내는 문장은 「이 에이전트의 사용법과 현재 지원 가능한 소스, 조회 가능한 데이터를 알려줘」입니다.</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>안내 내용은 내 계정 권한에 따라 다릅니다. 권한이 없는 DB는 안내하지 않습니다.</li>
+<li>사용법 질문의 답은 시스템이 현재 설정과 내 권한에서 직접 만듭니다(LLM이 지어내지 않습니다). 조회할 수 있는 DB가 하나도 없으면 관리자에게 권한을 요청하라는 안내만 나옵니다.</li>
+<li>「쿠버네티스 사용법」처럼 다른 도구의 사용법을 물으면 일반 질문으로 답합니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-19">U-19 질문 잘 쓰는 법</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-19"><h3><span class="fid">U-19</span>질문 잘 쓰는 법</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>같은 내용도 질문을 어떻게 쓰느냐에 따라 결과가 달라집니다. 아래 사례로 잘 쓰는 법과 잘 안 되는 경우를 익히세요.</p>
+<p><strong>잘 쓰는 법 다섯 가지</strong></p>
+<ol>
+<li><strong>대상을 분명히</strong> — 「서버」, 「cocm-hdkapp01 서버」, 「김포 서버」</li>
+<li><strong>항목을 나열</strong> — 「OS 종류, IP, 메모리 용량」</li>
+<li><strong>기간은 구체적으로</strong> — 「2026년 5월」, 「지난 30일」. 「이번 달」은 월초에는 데이터가 거의 없습니다.</li>
+<li><strong>순서·개수를 명시</strong> — 「큰 순서로 상위 3대」</li>
+<li><strong>조건은 숫자로</strong> — 「메모리 이용률 90% 초과」, 「논리코어 8개 이상」</li>
+</ol>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-TOP-MEMORY"><div class="case-head">사례 · <span>Q-TOP-MEMORY</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘</code><button type="button" class="copy-btn" data-copy="2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>memory_avg_utilization</th></tr></thead><tbody><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>82.6</td></tr><tr><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>64.3</td></tr><tr><td>SV-WEB-001</td><td>svweb001</td><td>10.61.0.1</td><td>58.7</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>「높은 순서로 상위 3대」처럼 정렬과 개수를 함께 쓰면 그 수만큼만 가져옵니다. 기준 월(「2026년 6월」)도 함께 적었습니다.</p>
+</div></div><div class="case-row"><div class="case-k">바꿔 보기</div><div class="case-v"><code class="case-vary">2026년 6월 CPU 사용률 평균이 낮은 서버 5대</code> <code class="case-vary">논리코어가 많은 순서로 상위 5대 서버</code></div></div></div><!--/slot--></div><div class="case" data-case="Q-SERVER-DETAIL"><div class="case-head">사례 · <span>Q-SERVER-DETAIL</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘</code><button type="button" class="copy-btn" data-copy="cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>cocm-hdkapp01 서버는 Red Hat Enterprise Linux 8.6 환경이며, Intel Xeon Gold 6248R CPU 와 64GB 메모리 사양을 갖추고 있습니다.</p><div class="case-table"><table><thead><tr><th>id</th><th>server_name</th><th>hostname</th><th>ipaddress</th><th>os_type</th><th>os_version</th></tr></thead><tbody><tr><td>9610003.0</td><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>Linux</td><td>Red Hat Enterprise Linux 8.6</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>서버 이름(호스트명)을 정확히 쓰면 그 서버 한 대의 여러 항목을 한 번에 봅니다.</p>
+</div></div></div><div class="case" data-case="Q-CORE-FILTER"><div class="case-head">사례 · <span>Q-CORE-FILTER</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘</code><button type="button" class="copy-btn" data-copy="논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>논리코어 8 개 이상인 서버 43 건을 논리코어 수 내림차순으로 조회했습니다. 논리코어 32 개를 가진 서버 5 대와 16 개를 가진 서버 38 대가 확인되었으며, 메모리 용량은 64 GB 에서 65536 까지 다양합니다.</p><div class="case-table"><table><thead><tr><th>id</th><th>server_name</th><th>hostname</th><th>ipaddress</th><th>ostype</th><th>osversion</th></tr></thead><tbody><tr><td>301060.0</td><td>svr-db-10</td><td>svr-db-10</td><td>10.0.3.10</td><td>LINUX</td><td>5.14.0-70.el9.x86_64</td></tr><tr><td>300892.0</td><td>svr-db-07</td><td>svr-db-07</td><td>10.0.3.7</td><td>LINUX</td><td>5.14.0-70.el9.x86_64</td></tr><tr><td>301004.0</td><td>svr-db-09</td><td>svr-db-09</td><td>10.0.3.9</td><td>LINUX</td><td>4.18.0-305.el8.x86_64</td></tr><tr><td>300836.0</td><td>svr-db-06</td><td>svr-db-06</td><td>10.0.3.6</td><td>LINUX</td><td>4.18.0-305.el8.x86_64</td></tr><tr><td>300948.0</td><td>svr-db-08</td><td>svr-db-08</td><td>10.0.3.8</td><td>LINUX</td><td>3.10.0-957.el7.x86_64</td></tr></tbody></table></div><p class="case-more">… 외 38행 (전체 43행)</p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>조건(「8개 이상」) · 보여줄 항목 · 정렬을 한 문장에 담았습니다.</p>
+</div></div></div><div class="case" data-case="Q-CPU-MONTH"><div class="case-head">사례 · <span>Q-CPU-MONTH</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘</code><button type="button" class="copy-btn" data-copy="2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>2026 년 5 월 기준, 서버별 CPU 평균 사용률 상위 5 대 중 4 대를 조회했습니다. 전체 데이터 전수 조사를 통해 최대 사용률은 68.4%이며, 평균 사용률은 41.25%로 확인됩니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>cpu_avg_utilization</th></tr></thead><tbody><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>68.4</td></tr><tr><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>45.6</td></tr><tr><td>SV-WEB-001</td><td>svweb001</td><td>10.61.0.1</td><td>35.2</td></tr><tr><td>SV-BATCH-009</td><td>svbatch009</td><td>10.61.0.4</td><td>15.8</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>성능 통계는 「2026년 5월」처럼 기준 월을 적어야 정확합니다. 데이터가 있는 달만 결과가 나옵니다.</p>
+</div></div><div class="case-row"><div class="case-k">바꿔 보기</div><div class="case-v"><code class="case-vary">지난달 서버별 메모리 사용률 평균 상위 10대</code> <code class="case-vary">2026년 1월부터 6월까지 메모리 사용률 최대값</code></div></div></div><div class="case" data-case="Q-MEM-OVER"><div class="case-head">사례 · <span>Q-MEM-OVER</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘</code><button type="button" class="copy-btn" data-copy="메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>2026 년 9 월 기준, 메모리 이용률이 90% 를 초과한 서버는 총 1 건으로 확인되었습니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>max_memory_usage_pct</th></tr></thead><tbody><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>95.2</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>「초과한 적이 있는」처럼 기간 중 한 번이라도 조건을 넘은 서버를 찾습니다. 요약 문장의 「2026년 9월 기준」은 조회한 시점을 말한 것이고, 표의 95.2%는 월 통계의 최댓값입니다. <strong>숫자는 요약 문장보다 표를 기준으로 읽으세요.</strong></p>
+</div></div></div><div class="case" data-case="Q-ALARM-HISTORY"><div class="case-head">사례 · <span>Q-ALARM-HISTORY</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>경고 이상 알람 이력을 최근 발생 순으로 20건 조회해줘</code><button type="button" class="copy-btn" data-copy="경고 이상 알람 이력을 최근 발생 순으로 20건 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>최근 20 건 중 5 건의 경고 이상 알람이 조회되었습니다. 발생 시간은 2026 년 5 월 20 일부터 7 월 13 일까지이며, 심각도 3(중요) 과 2(주의) 가 혼재되어 있습니다.</p><div class="case-table"><table><thead><tr><th>alarm_id</th><th>occurrence_time</th><th>severity</th><th>condition_id</th><th>status</th><th>resource_id</th></tr></thead><tbody><tr><td>9610001.0</td><td>2026-07-13T10:15:00</td><td>3.0</td><td>—</td><td>ACTIVE</td><td>9610001.0</td></tr><tr><td>9610002.0</td><td>2026-07-10T03:42:00</td><td>3.0</td><td>—</td><td>CLEARED</td><td>9610002.0</td></tr><tr><td>9610003.0</td><td>2026-06-25T14:08:00</td><td>2.0</td><td>—</td><td>CLEARED</td><td>9610002.0</td></tr><tr><td>9610004.0</td><td>2026-06-05T22:31:00</td><td>2.0</td><td>—</td><td>CLEARED</td><td>9610004.0</td></tr><tr><td>9610005.0</td><td>2026-05-20T07:55:00</td><td>3.0</td><td>—</td><td>ACTIVE</td><td>9610004.0</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>「최근 발생 순으로 20건」처럼 정렬과 건수를 주면 목록이 짧고 읽기 좋습니다. 요약 문장이 심각도를 「3(중요)·2(주의)」로 불렀지만 표준 표기는 <strong>3=심각, 2=경고</strong>입니다. 설명 문장의 이름보다 표의 숫자를 기준으로 보세요.</p>
+</div></div></div><div class="case" data-case="Q-COMPOSITE"><div class="case-head">사례 · <span>Q-COMPOSITE</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘</code><button type="button" class="copy-btn" data-copy="심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>심각 알람이 발생했던 서버 3 건 중 1 건이 비정상 상태 (avail_status 2.0) 이며, 나머지 2 건은 정상 (avail_status 0.0) 입니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>avail_status</th><th>ip_address</th><th>os_type</th></tr></thead><tbody><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>0.0</td><td>10.61.0.2</td><td>Linux</td></tr><tr><td>SV-BATCH-009</td><td>svbatch009</td><td>10.61.0.4</td><td>2.0</td><td>10.61.0.4</td><td>AIX</td></tr><tr><td>SV-WEB-001</td><td>svweb001</td><td>10.61.0.1</td><td>0.0</td><td>10.61.0.1</td><td>Linux</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>알람 데이터와 서버 구성 데이터를 이어 붙이는 <strong>복합 질문</strong>입니다. 시스템이 두 단계로 나눠 처리합니다.</p>
+</div></div></div><div class="case" data-case="Q-GENERAL"><div class="case-head">사례 · <span>Q-GENERAL</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>쿠버네티스란 뭐야?</code><button type="button" class="copy-btn" data-copy="쿠버네티스란 뭐야?">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>안녕하세요! 쿠버네티스 (Kubernetes, 줄여서 K8s) 에 대해 궁금하시군요. 인프라 관리 시스템의 AI 어시스턴트로서, 쿠버네티스의 핵심 개념을 쉽게 설명해 드릴게요. 쿠버네티스는 <strong>오픈소스 컨테이너 오케스트레이션 플랫폼</strong>입니다. 쉽게 말해, 수많은 컨테이너 (애플리케이션을 실행하는 단위) 를 효율적으로 관리하고, 배포하며, 확장하고, 모니터링하는 '지능형 관리자' 역할을 하는 소프트웨어입니다.</p><ul><li>1.  <strong>자동화된 배포 및 관리</strong>: 애플리케이션을 컨테이너로 패키징하면, 쿠버네티스가 이를 자동으로 서버에 배포하고 관리합니다. 수동으로 서버를 켜고 끄거나 설정을 조정할 필요가 없습니다.</li><li>2.  <strong>확장성 (Scaling)</strong>: 트래픽이 갑자기 늘어나면 자동으로 컨테이너를 추가하고, 트래픽이 줄면 컨테이너를 줄여줍니다. 이를 통해 리소스를 효율적으로 사용하고 비용을 절감할 수 있습니다.</li><li>3.  <strong>고용량 (High Availability)</strong>: 만약 어떤 서버가 고장 나더라도, 쿠버네티스는 자동으로 다른 정상적인 서버로 애플리케이션을 이동시켜 서비스 중단 없이 운영을 계속할 수 있게 합니다.</li><li>4.  <strong>자가 치유 (Self-healing)</strong>: 실행 중 컨테이너가 죽거나 오류가 발생하면, 쿠버네티스가 이를 감지하고 자동으로 다시 시작하거나 대체합니다.</li></ul></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>데이터 조회가 아닌 일반 지식 질문에도 답합니다. 이런 답은 DB를 조회하지 않은 <strong>참고용 설명</strong>이라 용어가 부정확할 수 있습니다(이 사례에서는 High Availability를 「고용량」이라고 옮겼습니다).</p>
+</div></div></div><div class="case" data-case="Q-BAD-DELETE"><div class="case-head">사례 · <span>Q-BAD-DELETE</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>서버 테이블 전부 삭제해줘</code><button type="button" class="copy-btn" data-copy="서버 테이블 전부 삭제해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>조건에 해당하는 서버 데이터가 없습니다.</p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p><strong>잘 안 되는 예</strong> — 데이터를 바꾸거나 지우는 요청은 실행하지 않습니다. 이 시스템은 조회 전용입니다. 다만 현재 버전은 이 사례처럼 거절 이유를 말하지 않고 「데이터가 없다」고 답할 수 있습니다. 데이터가 지워진 것이 아닙니다.</p>
+</div></div></div><div class="case" data-case="Q-BAD-UPTIME"><div class="case-head">사례 · <span>Q-BAD-UPTIME</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>서버 가동률 보여줘</code><button type="button" class="copy-btn" data-copy="서버 가동률 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>'가동률'은 서버 가동 시간 비율(uptime/availability)을 뜻하는 용어로 해석합니다. 폴스타는 가동 시간 비율을 통계 지표로 집계하지 않아 해당 조회를 제공할 수 없습니다(은행존·공동존 전체 실측 확인).</p><ul><li>다음 중 원하시는 조회로 다시 질의해 주세요:</li></ul></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p><strong>잘 안 되는 예</strong> — 「가동률」은 모니터링 데이터에 집계되지 않는 지표입니다. 시스템이 그 이유를 설명하고 대신 쓸 질문을 제안합니다. 제안된 문장을 그대로 보내면 됩니다.</p>
+</div></div><div class="case-row"><div class="case-k">바꿔 보기</div><div class="case-v"><code class="case-vary">가용 상태가 비정상인 서버 목록 보여줘</code> <code class="case-vary">지난달 CPU 사용률이 낮은 서버 순으로 보여줘</code></div></div></div><div class="case" data-case="Q-BAD-TYPO"><div class="case-head">사례 · <span>Q-BAD-TYPO</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>cocm-hdkapp1 서버의 OS</code><button type="button" class="copy-btn" data-copy="cocm-hdkapp1 서버의 OS">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>현재 인프라 데이터베이스에서 <strong>cocm-hdkapp1</strong> 서버의 OS 정보를 조회할 수 없습니다. 다수의 조회 시도 결과, 해당 서버에 대한 OS 데이터가 존재하지 않거나, 시스템 오류로 인해 데이터가 정상적으로 수집되지 않았습니다.</p><ul><li>따라서 현재는 OS 정보 (예: Linux, Windows 등) 를 확인할 수 없으며, 데이터베이스 점검 또는 쿼리 수정이 필요할 수 있습니다.</li></ul></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p><strong>잘 안 되는 예</strong> — 서버 이름을 틀리게 쓰면(<code>hdkapp1</code> ↔ <code>hdkapp01</code>) 결과가 없습니다. 현재 버전은 이때 「SQL 문법 오류」 같은 내부 문구를 함께 보여 줄 수 있습니다. 이름은 결과 표에서 복사해 쓰세요.</p>
+</div></div><div class="case-row"><div class="case-k">바꿔 보기</div><div class="case-v"><code class="case-vary">cocm-hdkapp01 서버의 OS</code></div></div></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>위 다섯 가지를 떠올리며 질문을 적으세요.</li>
+<li>결과가 기대와 다르면 <a href="#u-15">처리 현황</a>에서 어떻게 이해했는지 보고, 질문을 고쳐 다시 보내세요.</li>
+<li>이어서 좁혀 가려면 「그 서버들의 ~」처럼 이어서 물으세요(<a href="#u-34">U-34</a>).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/answer-table.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-table.png" alt="표로 나온 답" loading="lazy"></a><figcaption>표로 나온 답</figcaption></figure><p>결과 표 아래의 ROWS(건수)·TIME(걸린 시간)을 확인하세요(<a href="#u-20">U-20</a>).</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>데이터에 없는 개념(가동률, 응답 시간, 패킷 손실률 등)은 정확히 답할 수 없습니다. 답의 설명 문장을 꼭 읽으세요.</li>
+<li><strong>메모리·디스크 용량처럼 단위가 붙어 저장된 값</strong>(「8.0 GB」, 「65536」)으로 정렬하거나 크기를 비교하면 순서가 틀릴 수 있습니다. 「큰 순서」 결과는 표의 값을 직접 확인하세요. 사용률(%)·코어 수 같은 숫자 항목은 정상입니다.</li>
+<li>존(은행존·공동존)을 적지 않고 전체를 묻는 대량 조회는 존을 되묻습니다(<a href="#u-25">U-25</a>).</li>
+<li>결과 끝에 「컬럼 설명 미등록」 같은 <strong>관리자 안내</strong>가 붙을 수 있습니다. 조회는 정상이며, 관리자가 DB 설명을 등록하면 사라집니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-34">U-34 이어서 묻기</a></li>
+<li><a href="#u-25">U-25 존 선택 역질문</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-4"><h2>4. 결과 읽기·내려받기</h2><p>답을 읽고 파일로 내려받는 방법입니다.</p>
+<section class="feature" id="u-20"><h3><span class="fid">U-20</span>결과 읽기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>답은 <strong>요약 문장 + 표 + 참고사항</strong> 순서로 나오고, 맨 아래에 결과 정보가 붙습니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-SERVER-LIST"><div class="case-head">사례 · <span>Q-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>전체 서버의 호스트명, OS종류, 벤더를 조회해줘</code><button type="button" class="copy-btn" data-copy="전체 서버의 호스트명, OS종류, 벤더를 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 호스트명은 <code>svr-web</code> 및 <code>svr-was</code> 시리즈로 구성되며, 운영체제는 모두 LINUX 입니다. 벤더는 VMware, Inc., HPE, Dell Inc. 가 혼재되어 있습니다.</p><div class="case-table"><table><thead><tr><th>hostname</th><th>os_type</th><th>vendor</th></tr></thead><tbody><tr><td>svr-web-01</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-02</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-03</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-04</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-05</td><td>LINUX</td><td>VMware, Inc.</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p></div></div><figure class="shot"><a href="/static/manual/img/answer-table.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-table.png" alt="answer-table" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>표는 앞부분만 보여 주고(예: 54건 중 20건), 전체는 CSV로 받습니다. 요약 문장에 전체 건수가 나옵니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>요약 문장에서 몇 건을 찾았는지 확인하세요.</li>
+<li>표를 읽으세요. 열 이름은 DB 항목 이름 그대로일 수 있습니다(예: <code>os_type</code>).</li>
+<li>아래 <strong>ROWS</strong>(결과 건수), <strong>TIME</strong>(걸린 시간), <strong>ID</strong>(질의 번호)를 확인하세요. 문의할 때 ID를 알려 주면 찾기 쉽습니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/answer-table.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-table.png" alt="결과" loading="lazy"></a><figcaption>결과</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>결과 표</span></li><li><span class="badge-n">2</span><span>결과 정보(ROWS·TIME·ID)</span></li><li><span class="badge-n">3</span><span>내려받기 버튼</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>화면 표는 길이를 줄여 보여 줍니다. 전체 결과는 CSV로 받으세요(<a href="#u-22">U-22</a>).</li>
+<li>「순차 처리 결과」 칸은 여러 단계로 처리한 경우의 단계별 안내입니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-22">U-22 CSV로 내려받기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-21"><h3><span class="fid">U-21</span>실행된 SQL 보기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>답을 만들 때 실행한 <strong>SQL</strong>을 확인할 수 있습니다. 결과를 검증하거나 다른 도구에서 같은 조회를 할 때 씁니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>답 아래 <strong>▶ 실행된 SQL 보기</strong>를 누르면 이 답을 만들 때 실행한 SQL이 펼쳐집니다. 작업이 여러 개였으면 작업마다 <code>-- [t1]</code>처럼 머리 주석이 붙어 이어집니다.</li>
+<li>작업별 진행과 함께 보려면 오른쪽 <strong>처리 현황</strong> 패널에서 「작업 실행」(또는 「SQL 생성」) 단계를 펼치세요.</li>
+<li>필요한 부분을 복사해 쓰세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/answer-sql.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-sql.png" alt="실행된 SQL 보기" loading="lazy"></a><figcaption>실행된 SQL 보기</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>실행된 SQL 보기 — 누르면 펼쳐지고 다시 누르면 접힙니다</span></li><li><span class="badge-n">2</span><span>실행한 SQL</span></li></ol><!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/progress-panel.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/progress-panel.png" alt="처리 현황 패널 — 작업별 SQL" loading="lazy"></a><figcaption>처리 현황 패널 — 작업별 SQL</figcaption></figure><p>「작업 진행」의 각 작업 아래 회색 상자가 실행된 SQL입니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>SQL을 쓰지 않은 답(사용법 안내, 캐시 관리 등)에는 버튼이 나오지 않습니다.</li>
+<li>SQL은 읽기 전용 조회문입니다. 복사해 쓸 때도 조회 목적으로만 쓰세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-15">U-15 처리 현황 패널</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-22"><h3><span class="fid">U-22</span>CSV로 내려받기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>결과 전체를 CSV 파일로 받습니다. Excel에서 바로 열 수 있습니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-SERVER-LIST"><div class="case-head">사례 · <span>Q-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>전체 서버의 호스트명, OS종류, 벤더를 조회해줘</code><button type="button" class="copy-btn" data-copy="전체 서버의 호스트명, OS종류, 벤더를 조회해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 호스트명은 <code>svr-web</code> 및 <code>svr-was</code> 시리즈로 구성되며, 운영체제는 모두 LINUX 입니다. 벤더는 VMware, Inc., HPE, Dell Inc. 가 혼재되어 있습니다.</p><div class="case-table"><table><thead><tr><th>hostname</th><th>os_type</th><th>vendor</th></tr></thead><tbody><tr><td>svr-web-01</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-02</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-03</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-04</td><td>LINUX</td><td>VMware, Inc.</td></tr><tr><td>svr-web-05</td><td>LINUX</td><td>VMware, Inc.</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p></div></div><figure class="shot"><a href="/static/manual/img/answer-table.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-table.png" alt="answer-table" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>버튼에 전체 건수가 표시됩니다(「CSV 다운로드 (54건)」). 화면 표에 20건만 보여도 CSV에는 54건이 모두 들어 있습니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>결과 아래 <strong>CSV 다운로드 (N건)</strong>을 누르세요.</li>
+<li>파일이 내려받기 폴더에 저장됩니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/answer-table.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-table.png" alt="결과" loading="lazy"></a><figcaption>결과</figcaption></figure><ol class="callouts"><li><span class="badge-n">3</span><span>CSV 다운로드</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>결과가 없는 질문에는 버튼이 나오지 않습니다.</li>
+<li>내려받기 링크는 서버에 결과가 남아 있는 동안만 동작합니다. 서버가 재시작된 뒤 예전 답의 버튼이 동작하지 않으면 질문을 다시 보내세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-23">U-23 결과 파일 내려받기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-23"><h3><span class="fid">U-23</span>결과 파일 내려받기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>결과를 파일로 받는 방법은 두 가지입니다 — 모든 조회 결과에 붙는 <strong>CSV 다운로드</strong>와, 양식을 첨부해 채운 <strong>결과 파일 다운로드</strong>입니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-EXCEL-OUT"><div class="case-head">사례 · <span>Q-EXCEL-OUT</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>전체 서버 목록을 엑셀로 만들어줘</code><button type="button" class="copy-btn" data-copy="전체 서버 목록을 엑셀로 만들어줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>업로드하신 XLSX 양식을 채우지 못했습니다. 사유: 양식을 채우는 데 필요한 정보가 state에서 누락되었습니다: template_structure(양식 구조), uploaded_file(원본 파일 바이너리). (오케스트레이션 경로의 상태 전파 누락 가능성 — 원본 파일이면 D-053 계열)</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>avail_status</th><th>resource_type</th><th>name</th></tr></thead><tbody><tr><td>cob0-bnndbp01</td><td>cob0-bnndbp01</td><td>10.68.0.1</td><td>0.0</td><td>server.Server</td><td>cob0-bnndbp01</td></tr><tr><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>0.0</td><td>server.Server</td><td>cocm-hdkapp01</td></tr><tr><td>cocm-ngcapo91</td><td>cocm-ngcapo91</td><td>10.68.0.4</td><td>0.0</td><td>server.Server</td><td>cocm-ngcapo91</td></tr><tr><td>cocm-xgzapp09</td><td>cocm-xgzapp09</td><td>10.68.0.3</td><td>0.0</td><td>server.Server</td><td>cocm-xgzapp09</td></tr><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>0.0</td><td>server.Server</td><td>DB-ORA-023</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p></div></div><figure class="shot"><a href="/static/manual/img/answer-file.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-file.png" alt="answer-file" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p><strong>양식 없이</strong> 「엑셀로 만들어줘」라고만 하면 현재 버전은 Excel 파일을 만들지 않습니다. 대신 「양식을 채우지 못했습니다」라는 안내와 함께 조회 결과와 <strong>CSV 다운로드</strong> 버튼을 줍니다(첨부하지 않은 양식을 언급하는 안내는 현재 버전의 문구 오류입니다). Excel 파일이 필요하면 CSV를 받아 Excel에서 여세요.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>결과를 표 그대로 받으려면 <strong>CSV 다운로드</strong>를 누르세요(<a href="#u-22">U-22</a>).</li>
+<li>정해진 모양의 Excel·Word 파일이 필요하면 양식을 첨부해서 채우세요. 결과 아래 <strong>{파일명} 다운로드</strong>가 생깁니다(<a href="#u-27">U-27</a>).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/answer-file.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-file.png" alt="양식 없이 「엑셀로」를 요청한 결과" loading="lazy"></a><figcaption>양식 없이 「엑셀로」를 요청한 결과</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>내려받기 버튼(CSV)</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>양식 없이 파일 형식만 말하면 결과 파일이 만들어지지 않습니다. 양식을 첨부하세요(<a href="#ch-6">6장</a>).</li>
+<li>메일로 보내기, 매일 자동 발송 같은 예약 기능은 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-27">U-27 양식 채우기 결과 받기</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-5"><h2>5. 조회 범위와 역질문</h2><p>어느 DB·존을 조회할지 정하는 방법입니다.</p>
+<section class="feature" id="u-24"><h3><span class="fid">U-24</span>조회 대상(스코프) 칩</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>입력줄 위의 <strong>조회 대상</strong> 칩은 이 대화가 어느 DB를 조회하고 있는지 보여 줍니다. 한 번 조회한 DB는 이어지는 질문에서 계속 쓰입니다(「승계 중」).</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>첫 질문 전에는 「존 미지정 — 첫 질의처럼 확인」으로 표시됩니다.</li>
+<li>조회하면 칩에 DB 이름이 나오고 「승계 중」이 붙습니다.</li>
+<li><strong>▾</strong>를 누르면 조회 대상을 직접 고를 수 있습니다.</li>
+<li><strong>×</strong>를 누르면 승계를 풀고 다음 질문을 처음처럼 판단합니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/scope-chip.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/scope-chip.png" alt="조회 대상 고르기" loading="lazy"></a><figcaption>조회 대상 고르기</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>조회 대상 칩 — 누르면 선택 창이 열립니다</span></li><li><span class="badge-n">2</span><span>선택 창 — 조회할 DB·존을 고릅니다</span></li></ol><p>한 번 조회한 뒤에는 칩 오른쪽에 <strong>×</strong>(승계 해제)가 생깁니다. 화면은 테스트 환경의 존 구성입니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>다른 지역 서버를 물을 때 이전 대상이 승계돼 결과가 없으면 <strong>×</strong>로 풀고 다시 물으세요.</li>
+<li>권한이 없는 DB는 선택지에 나오지 않습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-25">U-25 존 선택 역질문</a></li>
+<li><a href="#u-34">U-34 이어서 묻기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-25"><h3><span class="fid">U-25</span>존 선택 역질문</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>존(은행존·공동존)을 적지 않고 전체를 묻는 대량 조회는, 어느 존을 조회할지 먼저 되묻습니다. 여러 존을 한 번에 조회하면 오래 걸리고 결과가 섞이기 때문입니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>예: 「ㅇㅇ존 서버 CPU 사용률」처럼 존을 정하지 않고 보내면, 답 말풍선에 존 선택 상자가 나옵니다(조회는 아직 하지 않습니다).</li>
+<li>조회할 존을 체크하세요. 여러 개를 고르면 존마다 차례로 조회합니다.</li>
+<li><strong>선택한 존으로 조회</strong>를 누르세요.</li>
+<li>존과 상관없이 전체를 보려면 <strong>건너뛰고 전체 조회</strong>를 누르세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/zone-clarify.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/zone-clarify.png" alt="존 선택(화면 예시 — 테스트 환경의 존 구성)" loading="lazy"></a><figcaption>존 선택(화면 예시 — 테스트 환경의 존 구성)</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>존 선택 상자</span></li><li><span class="badge-n">2</span><span>선택한 존으로 조회</span></li></ol><p>질문에 따라 <strong>건너뛰고 전체 조회</strong> 버튼이 함께 나올 수 있습니다(존을 고르지 않고 전체를 조회).</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>기본 설정에서는 은행존과 공동존을 함께 고를 수 있습니다. 관리자가 존 그룹 상호배타(<code>ZONE_GROUP_EXCLUSIVE</code>)를 켠 환경에서는 한 그룹(은행존 또는 공동존) 안에서만 고를 수 있으니, 둘 다 필요하면 따로 두 번 물으세요.</li>
+<li>질문에 「김포」, 「여의도」, 「은행존」처럼 위치를 적으면 되묻지 않고 바로 조회합니다.</li>
+<li>선택지에는 <strong>내 계정이 조회할 수 있는 DB가 속한 존만</strong> 나옵니다. 원하는 존이 없으면 관리자에게 권한을 요청하세요.</li>
+<li>이 사례 화면은 테스트 환경에서 찍었습니다. 선택지는 설치 환경의 존 구성에 따라 다릅니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-24">U-24 조회 대상 칩</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-6"><h2>6. 양식 채우기(Excel·Word)</h2><p>정해진 양식 파일을 올리면 알맞은 데이터로 채워 돌려줍니다.</p>
+<section class="feature" id="u-26"><h3><span class="fid">U-26</span>양식 파일 첨부</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>Excel(.xlsx) 또는 Word(.docx) 양식을 질문과 함께 보냅니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="F-SERVER-LIST"><div class="case-head">사례 · <span>F-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘</code><button type="button" class="copy-btn" data-copy="첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘">복사</button></div> <span class="case-attach">📎 서버목록_양식.xlsx</span></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 상태 0(정상) 이 46건, 상태 1(비정상) 이 6건, 상태 2(알 수 없음) 가 1건이며, 나머지 1건은 상태 정보가 누락(null) 되었습니다.</p><div class="case-table"><table><thead><tr><th>상태</th><th>호스트명</th><th>IP주소</th><th>OS종류</th><th>제조사</th><th>CPU코어수</th></tr></thead><tbody><tr><td>0.0</td><td>svr-web-06</td><td>10.0.1.6</td><td>LINUX</td><td>VMware, Inc.</td><td>8.0</td></tr><tr><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>0.0</td><td>svr-bkp-01</td><td>10.1.5.1</td><td>LINUX</td><td>Dell Inc.</td><td>8.0</td></tr><tr><td>1.0</td><td>svr-was-03</td><td>10.0.2.3</td><td>LINUX</td><td>HPE</td><td>8.0</td></tr><tr><td>0.0</td><td>svr-was-08</td><td>10.0.2.8</td><td>LINUX</td><td>Dell Inc.</td><td>16.0</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p><p class="case-file">📄 결과 파일: <code>result_20260923_122629.xlsx</code></p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>양식을 첨부하고 <strong>어떤 데이터로</strong> 채울지와 「파일로 만들어줘」를 함께 말하세요. 열 이름은 양식에서 읽습니다. 「채워줘」 한마디만 쓰기보다 이 사례처럼 풀어 쓰는 편이 정확합니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>입력줄의 <strong>클립(📎)</strong> 버튼을 누르고 파일을 고르세요.</li>
+<li>입력줄 위에 파일 이름과 크기가 표시됩니다. 잘못 골랐으면 <strong>Remove</strong>로 빼세요.</li>
+<li>질문을 적고 보내세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/file-attached.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/file-attached.png" alt="파일을 첨부한 입력줄" loading="lazy"></a><figcaption>파일을 첨부한 입력줄</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>첨부한 파일</span></li><li><span class="badge-n">2</span><span>첨부 취소(Remove)</span></li><li><span class="badge-n">3</span><span>채울 데이터를 말하는 질문</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>.xlsx·.docx만 됩니다. .xls·.csv는 변환해서 올리세요.</li>
+<li>파일 크기는 10MB까지입니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-27">U-27 양식 채우기 결과 받기</a></li>
+<li><a href="#u-32">U-32 양식 만드는 요령</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-27"><h3><span class="fid">U-27</span>양식 채우기 결과 받기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>채운 양식을 내려받습니다. 원래 양식의 서식·병합셀·수식은 그대로 둡니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="F-SERVER-LIST"><div class="case-head">사례 · <span>F-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘</code><button type="button" class="copy-btn" data-copy="첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘">복사</button></div> <span class="case-attach">📎 서버목록_양식.xlsx</span></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 상태 0(정상) 이 46건, 상태 1(비정상) 이 6건, 상태 2(알 수 없음) 가 1건이며, 나머지 1건은 상태 정보가 누락(null) 되었습니다.</p><div class="case-table"><table><thead><tr><th>상태</th><th>호스트명</th><th>IP주소</th><th>OS종류</th><th>제조사</th><th>CPU코어수</th></tr></thead><tbody><tr><td>0.0</td><td>svr-web-06</td><td>10.0.1.6</td><td>LINUX</td><td>VMware, Inc.</td><td>8.0</td></tr><tr><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>0.0</td><td>svr-bkp-01</td><td>10.1.5.1</td><td>LINUX</td><td>Dell Inc.</td><td>8.0</td></tr><tr><td>1.0</td><td>svr-was-03</td><td>10.0.2.3</td><td>LINUX</td><td>HPE</td><td>8.0</td></tr><tr><td>0.0</td><td>svr-was-08</td><td>10.0.2.8</td><td>LINUX</td><td>Dell Inc.</td><td>16.0</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p><p class="case-file">📄 결과 파일: <code>result_20260923_122629.xlsx</code></p></div></div><figure class="shot"><a href="/static/manual/img/form-result.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-result.png" alt="form-result" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>답 말풍선에 <strong>결과 파일 다운로드</strong> 버튼이 생깁니다. 양식의 머리글(호스트명·IP주소·OS종류…)에 맞춰 행이 채워집니다. <strong>받은 파일은 꼭 열어 확인하세요</strong> — 이 사례에서는 50대 중 8대의 IP 칸이 비었고(원본에는 값이 있음), 호스트명이 없는 서버는 빈 행으로 남았습니다.</p>
+</div></div></div><!--/slot--></div><div class="case" data-case="F-CPU-MONTH"><div class="case-head">사례 · <span>F-CPU-MONTH</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>첨부한 양식에 2026년 5월 기준 서버별 성능 통계를 넣어서 파일로 만들어줘</code><button type="button" class="copy-btn" data-copy="첨부한 양식에 2026년 5월 기준 서버별 성능 통계를 넣어서 파일로 만들어줘">복사</button></div> <span class="case-attach">📎 성능요약_양식.xlsx</span></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>2026 년 5 월 기준 서버별 성능 통계 조회 결과입니다. 총 54 건의 서버 중 CPU 및 메모리 데이터가 수집된 서버는 4 건이며, 나머지 50 건은 데이터가 누락되었습니다.</p><div class="case-table"><table><thead><tr><th>호스트명</th><th>CPU 평균</th><th>CPU 최고</th><th>메모리 평균</th></tr></thead><tbody><tr><td>svr-app-03</td><td>—</td><td>—</td><td>—</td></tr><tr><td>svr-web-08</td><td>—</td><td>—</td><td>—</td></tr><tr><td>svr-was-10</td><td>—</td><td>—</td><td>—</td></tr><tr><td>svr-web-09</td><td>—</td><td>—</td><td>—</td></tr><tr><td>svbatch009</td><td>15.8</td><td>42.6</td><td>38.4</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p><p class="case-file">📄 결과 파일: <code>result_20260923_123158.xlsx</code></p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>성능 양식은 기준 기간(「2026년 5월 기준」)을 꼭 적으세요. 그 기간에 통계가 있는 서버(이 샌드박스에서는 4대)만 채워지고 나머지는 빈칸으로 남습니다.</p>
+</div></div></div><div class="case" data-case="F-WORD"><div class="case-head">사례 · <span>F-WORD</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>첨부한 보고서 양식에 전체 서버 현황을 넣어서 파일로 만들어줘. 부서는 인프라운영팀</code><button type="button" class="copy-btn" data-copy="첨부한 보고서 양식에 전체 서버 현황을 넣어서 파일로 만들어줘. 부서는 인프라운영팀">복사</button></div> <span class="case-attach">📎 서버현황_보고서.docx</span></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>인프라운영팀 소속 서버 54 건의 전체 현황을 조회했습니다. 호스트명, OS 종류, 제조사, 메모리 용량 정보를 포함하여 표로 정리합니다. <strong>[미작성 항목]</strong> 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):</p><div class="case-table"><table><thead><tr><th>호스트명</th><th>OS종류</th><th>제조사</th><th>메모리용량</th></tr></thead><tbody><tr><td>svr-web-06</td><td>LINUX</td><td>VMware, Inc.</td><td>8.0 GB</td></tr><tr><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>svr-bkp-01</td><td>LINUX</td><td>Dell Inc.</td><td>8.0 GB</td></tr><tr><td>svr-was-03</td><td>LINUX</td><td>HPE</td><td>8.0 GB</td></tr><tr><td>svr-was-08</td><td>LINUX</td><td>Dell Inc.</td><td>16.0 GB</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p><p class="case-file">📄 결과 파일: <code>result_20260923_123541.docx</code></p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>Word 양식의 <strong>표</strong>는 조회 결과로 채워집니다. 이 사례에서는 질문에 부서를 적었지만 <code>{{부서}}</code>·<code>{{서버수}}</code> 자리 표시는 비어 있었습니다(현재 버전의 한계). 자리 표시 값은 받은 파일에서 직접 채우세요.</p>
+</div></div></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>답이 끝나면 <strong>{파일명} 다운로드</strong>를 누르세요.</li>
+<li>채우지 못한 항목이 있으면 되묻는 상자가 나옵니다(<a href="#u-29">U-29</a>).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/form-result.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-result.png" alt="양식 채우기 결과" loading="lazy"></a><figcaption>양식 채우기 결과</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>결과 파일·매핑 보고서 내려받기</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>양식의 열 이름이 DB 항목과 전혀 다르면 채우지 못할 수 있습니다. 매핑 보고서로 어떻게 연결했는지 확인하세요(<a href="#u-31">U-31</a>).</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-29">U-29 채우지 못한 항목 역질문</a></li>
+<li><a href="#u-31">U-31 매핑 보고서</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-28"><h3><span class="fid">U-28</span>첨부한 원본 다시 받기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>대화에 남은 첨부 파일 카드를 누르면 <strong>내가 올렸던 원본 양식</strong>을 다시 받을 수 있습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>내 질문 말풍선의 파일 카드를 누르세요.</li>
+<li>원본 파일이 내려받아집니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/form-file-card.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-file-card.png" alt="내 질문 말풍선의 원본 파일 카드" loading="lazy"></a><figcaption>내 질문 말풍선의 원본 파일 카드</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>원본 파일 카드</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>원본 파일 카드는 내 계정으로 로그인했을 때만 내려받을 수 있습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-26">U-26 양식 파일 첨부</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-29"><h3><span class="fid">U-29</span>채우지 못한 항목 역질문</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>양식 항목 중 DB에서 찾을 수 없는 것이 있으면, 어떻게 채울지 되묻습니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="F-CLARIFY"><div class="case-head">사례 · <span>F-CLARIFY</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘</code><button type="button" class="copy-btn" data-copy="첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘">복사</button></div> <span class="case-attach">📎 서버담당_양식.xlsx</span></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다. <strong>[미작성 항목]</strong> 다음 칼럼은 수집 데이터에 해당 항목이 없어 비워두었습니다(임의 기재 금지):</p><div class="case-table"><table><thead><tr><th>OS종류</th><th>호스트명</th></tr></thead><tbody><tr><td>LINUX</td><td>svr-was-06</td></tr><tr><td>LINUX</td><td>svr-web-06</td></tr><tr><td>Linux</td><td>svweb001</td></tr><tr><td>LINUX</td><td>hostapo02</td></tr><tr><td>—</td><td>—</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p><p class="case-file">📄 결과 파일: <code>result_20260923_130646.xlsx</code></p><p class="case-note">채우지 못한 항목을 되묻습니다: 담당자, 담당자 연락처</p></div></div><figure class="shot"><a href="/static/manual/img/form-clarify.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-clarify.png" alt="form-clarify" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>「담당자」·「담당자 연락처」처럼 DB에 없는 항목은 비워 둘지, 다른 DB 항목으로 채울지, 직접 적을지 고르게 합니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>항목마다 방법을 고르세요.
+<ul>
+<li><strong>공란 유지</strong>: 비워 둡니다.</li>
+<li><strong>DB 항목 선택</strong>: 목록에서 대신 쓸 항목을 고릅니다.</li>
+<li><strong>직접 입력</strong>: 입력한 값으로 채웁니다.</li>
+</ul>
+</li>
+<li>같은 양식을 자주 쓰면 <strong>이 답을 기억</strong>을 체크하세요. 다음부터 묻지 않습니다.</li>
+<li><strong>선택한 방법으로 다시 채우기</strong>를 누르세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/form-clarify.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-clarify.png" alt="채우지 못한 항목 되묻기" loading="lazy"></a><figcaption>채우지 못한 항목 되묻기</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>채우지 못한 항목(한 줄에 한 항목)</span></li><li><span class="badge-n">2</span><span>처리 방법 — 공란 유지 / DB 항목 선택 / 직접 입력</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>기억한 답은 양식별로 저장됩니다. 잘못 기억시켰으면 <a href="#u-30">U-30</a>에서 지우세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-30">U-30 저장된 답 관리</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-30"><h3><span class="fid">U-30</span>저장된 답 관리</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>「이 답을 기억」으로 저장한 답을 보고 지웁니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>같은 양식을 첨부하고 입력창에 <code>?</code> 만 적어 보내세요.</li>
+<li><strong>저장 값 관리 — {양식}</strong> 패널이 나옵니다.</li>
+<li>지울 항목을 체크하고 <strong>선택 삭제</strong>, 또는 <strong>전체 삭제</strong>를 누르세요(확인 창이 뜹니다).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 저장된 답이 있을 때만 나타나는 패널입니다. 패널 모양은 <a href="#u-29">U-29</a>의 되묻기 상자와 비슷합니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>삭제하면 다음번에 그 항목을 다시 묻습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-29">U-29 채우지 못한 항목 역질문</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-31"><h3><span class="fid">U-31</span>매핑 보고서 받기·고쳐 올리기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>양식의 각 항목을 어느 DB 항목으로 채웠는지 적은 <strong>매핑 보고서</strong>를 받습니다. 잘못된 연결을 고쳐 올리면 다음부터 반영됩니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="F-SERVER-LIST"><div class="case-head">사례 · <span>F-SERVER-LIST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘</code><button type="button" class="copy-btn" data-copy="첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘">복사</button></div> <span class="case-attach">📎 서버목록_양식.xlsx</span></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>총 54건의 서버 정보를 조회했습니다. 상태 0(정상) 이 46건, 상태 1(비정상) 이 6건, 상태 2(알 수 없음) 가 1건이며, 나머지 1건은 상태 정보가 누락(null) 되었습니다.</p><div class="case-table"><table><thead><tr><th>상태</th><th>호스트명</th><th>IP주소</th><th>OS종류</th><th>제조사</th><th>CPU코어수</th></tr></thead><tbody><tr><td>0.0</td><td>svr-web-06</td><td>10.0.1.6</td><td>LINUX</td><td>VMware, Inc.</td><td>8.0</td></tr><tr><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>0.0</td><td>svr-bkp-01</td><td>10.1.5.1</td><td>LINUX</td><td>Dell Inc.</td><td>8.0</td></tr><tr><td>1.0</td><td>svr-was-03</td><td>10.0.2.3</td><td>LINUX</td><td>HPE</td><td>8.0</td></tr><tr><td>0.0</td><td>svr-was-08</td><td>10.0.2.8</td><td>LINUX</td><td>Dell Inc.</td><td>16.0</td></tr></tbody></table></div><p class="case-more">… 외 49행 (전체 54행)</p><p class="case-file">📄 결과 파일: <code>result_20260923_122629.xlsx</code></p></div></div><figure class="shot"><a href="/static/manual/img/form-result.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-result.png" alt="form-result" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>결과 파일 버튼 옆의 <strong>매핑 보고서 다운로드</strong>로 받습니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li><strong>매핑 보고서 다운로드</strong>를 눌러 .md 파일을 받으세요.</li>
+<li>잘못 연결된 줄을 고치세요.</li>
+<li><strong>수정된 보고서 업로드</strong>로 올리세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/form-result.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/form-result.png" alt="결과" loading="lazy"></a><figcaption>결과</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>매핑 보고서 내려받기·올리기</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>원래 결과가 서버에 남아 있어야 올릴 수 있습니다. 서버가 재시작된 뒤에는 같은 양식으로 다시 채운 다음 보고서를 받아 고치세요.</li>
+<li>표 구조는 그대로 두고 값만 고치세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-27">U-27 양식 채우기 결과 받기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-32"><h3><span class="fid">U-32</span>양식 만드는 요령</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>양식을 잘 만들면 채우기가 정확해집니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li><strong>Excel</strong>: 첫 몇 줄 안에 열 이름(머리글) 한 줄을 두세요. 그 아래가 채울 칸입니다. 여러 줄 머리글, 병합셀, 월별 가로 배치(1월~6월)도 됩니다.</li>
+<li><strong>Word</strong>: 채울 곳에 <code>{{항목}}</code> 자리 표시를 두거나, 머리글이 있는 표를 두세요.</li>
+<li>열 이름은 흔히 쓰는 말(호스트명, IP주소, OS종류, CPU 평균)로 쓰세요.</li>
+<li>시트가 여러 개면 질문에 시트 이름을 적으세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 양식 파일 작성 요령입니다. 사례 양식은 <a href="#u-26">U-26</a>과 <a href="#u-27">U-27</a>을 보세요.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>수식 칸은 채우지 않고 그대로 둡니다.</li>
+<li>머리글이 없는 양식은 어느 칸을 채울지 알 수 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-26">U-26 양식 파일 첨부</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-33"><h3><span class="fid">U-33</span>보안(DRM) 문서 첨부</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>사내 보안(DRM)이 걸린 Excel·Word 파일도 그대로 첨부할 수 있습니다. 서버가 자동으로 풀어서 읽습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>보통 파일처럼 첨부해서 보내세요. 따로 할 일은 없습니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 자동으로 처리되어 화면에 따로 표시되지 않습니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>풀지 못하면 「DRM 해제 실패」 안내가 나옵니다. 관리자에게 알리세요(관리자 매뉴얼 <a href="/manual/admin#a-40">DRM 연동</a>).</li>
+<li>DRM 기능이 설치되지 않은 환경에서는 보안 파일을 읽을 수 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-26">U-26 양식 파일 첨부</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-7"><h2>7. 대화와 이력</h2><p>앞 질문에 이어서 묻고, 지난 대화를 다시 여는 방법입니다.</p>
+<section class="feature" id="u-34"><h3><span class="fid">U-34</span>이어서 묻기(멀티턴)</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>앞 질문의 결과를 이어받아 「그 서버」, 「해당 서버」처럼 물을 수 있습니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-MULTI-HOST"><div class="case-head">사례 · <span>Q-MULTI-HOST</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력 1</div><div class="case-v"><div class="case-prompt"><code>cocm-hdkapp01 서버의 IP 주소와 OS 종류를 보여줘</code><button type="button" class="copy-btn" data-copy="cocm-hdkapp01 서버의 IP 주소와 OS 종류를 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>cocm-hdkapp01 서버의 IP 주소는 10.61.0.3 이며, 운영체제는 Linux 입니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ip_address</th><th>os_type</th></tr></thead><tbody><tr><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>Linux</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">입력 2</div><div class="case-v"><div class="case-prompt"><code>해당 서버의 메모리 용량도 보여줘</code><button type="button" class="copy-btn" data-copy="해당 서버의 메모리 용량도 보여줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>cocm-hdkapp01 서버의 메모리 용량은 65,536 단위로 조회되었습니다.</p><div class="case-table"><table><thead><tr><th>id</th><th>server_name</th><th>hostname</th><th>memory_size</th></tr></thead><tbody><tr><td>9610003.0</td><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>65536</td></tr></tbody></table></div></div></div><figure class="shot"><a href="/static/manual/img/multiturn.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/multiturn.png" alt="multiturn" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>두 번째 질문에는 서버 이름이 없지만 「해당 서버」로 앞 질문의 서버를 이어받습니다.</p>
+</div></div></div><!--/slot--></div><div class="case" data-case="Q-MULTI-TOP"><div class="case-head">사례 · <span>Q-MULTI-TOP</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력 1</div><div class="case-v"><div class="case-prompt"><code>2026년 6월 CPU 사용률 평균이 높은 상위 3대 서버를 알려줘</code><button type="button" class="copy-btn" data-copy="2026년 6월 CPU 사용률 평균이 높은 상위 3대 서버를 알려줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>2026 년 6 월 기준 CPU 사용률 평균이 높은 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 72.1%로 가장 높은 사용률을 보이며, 전체 평균은 54.6%입니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>cpu_avg_utilization</th></tr></thead><tbody><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>72.1</td></tr><tr><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>48.9</td></tr><tr><td>SV-WEB-001</td><td>svweb001</td><td>10.61.0.1</td><td>42.8</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">입력 2</div><div class="case-v"><div class="case-prompt"><code>그 서버들의 제조사와 OS 종류</code><button type="button" class="copy-btn" data-copy="그 서버들의 제조사와 OS 종류">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>요청하신 3 대 서버 (DB-ORA-023, cocm-hdkapp01, SV-WEB-001) 의 제조사와 OS 정보를 조회했습니다.</p><div class="case-table"><table><thead><tr><th>server_name</th><th>os_hostname</th><th>ipaddress</th><th>vendor</th><th>os_type</th></tr></thead><tbody><tr><td>SV-WEB-001</td><td>svweb001</td><td>10.61.0.1</td><td>HPE</td><td>Linux</td></tr><tr><td>DB-ORA-023</td><td>dbora023</td><td>10.61.0.2</td><td>Dell</td><td>Linux</td></tr><tr><td>cocm-hdkapp01</td><td>cocm-hdkapp01</td><td>10.61.0.3</td><td>HPE</td><td>Linux</td></tr></tbody></table></div></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>여러 대를 찾은 뒤 「그 서버들의」로 그 목록 전체에 대해 다시 묻습니다.</p>
+</div></div></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>첫 질문으로 대상을 찾으세요.</li>
+<li>같은 대화에서 「해당 서버의 ~」, 「그 서버들의 ~」로 이어서 물으세요.</li>
+<li>새 주제로 넘어가려면 대상을 새로 명시하거나 조회 대상 칩의 <strong>×</strong>를 누르세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/multiturn.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/multiturn.png" alt="이어서 묻기" loading="lazy"></a><figcaption>이어서 묻기</figcaption></figure><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>이어받는 대상은 직전 결과의 앞부분(최대 20건)입니다. 많은 서버를 이어받아야 하면 조건을 다시 적으세요.</li>
+<li>새로고침하거나 이력에서 다른 대화를 열면 이어지지 않습니다. 이력의 「대화」에서 그 대화를 다시 열면 이어집니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-24">U-24 조회 대상 칩</a></li>
+<li><a href="#u-35">U-35 질의 이력 — 대화</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-35"><h3><span class="fid">U-35</span>질의 이력 — 대화</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>지난 대화는 서버에 저장됩니다. 왼쪽 <strong>질의 이력</strong>의 「대화」에서 다시 열고 이어서 물을 수 있습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>왼쪽 가장자리의 <code>›</code> 버튼으로 이력을 여세요.</li>
+<li><strong>대화</strong> 모드에서 목록을 누르면 그 대화가 열립니다. 이어서 질문하면 같은 대화로 이어집니다.</li>
+<li>검색창으로 대화를 찾습니다.</li>
+<li>항목의 삭제 버튼으로 하나씩, <strong>모두 지우기</strong>로 전부 지웁니다.</li>
+<li>지난 대화를 보다가 새 주제로 묻고 싶으면 <strong>+ 새 대화</strong>를 누르세요. 화면이 비워지고 다음 질문부터 새 대화로 시작합니다. 이력을 접어 두었을 때는 왼쪽 가장자리의 <code>+</code> 아이콘이 같은 버튼입니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/history-threads.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/history-threads.png" alt="질의 이력 — 대화" loading="lazy"></a><figcaption>질의 이력 — 대화</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>대화 모드</span></li><li><span class="badge-n">2</span><span>검색</span></li><li><span class="badge-n">3</span><span>모두 지우기</span></li><li><span class="badge-n">4</span><span>대화 목록</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>대화는 내 계정에만 보입니다.</li>
+<li>지운 대화는 되돌릴 수 없습니다.</li>
+<li><strong>새 대화</strong>는 화면만 비웁니다. 보던 대화는 목록에 그대로 남아 다시 열 수 있습니다. 질문을 처리하는 중에는 누를 수 없습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-36">U-36 질의 이력 — 질의</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-36"><h3><span class="fid">U-36</span>질의 이력 — 질의</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p><strong>질의</strong> 모드는 내가 보낸 질문 문장만 모아 둡니다. 이 브라우저에 저장됩니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>질의 이력에서 <strong>질의</strong>를 누르세요.</li>
+<li>항목을 누르면 <strong>입력창에 불러오기</strong>만 합니다. 바로 보내지 않으니 고쳐서 보내세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/history-queries.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/history-queries.png" alt="질의 이력 — 질의" loading="lazy"></a><figcaption>질의 이력 — 질의</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>질의 모드</span></li><li><span class="badge-n">2</span><span>질문 목록</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>브라우저를 바꾸거나 저장소를 지우면 목록이 사라집니다. 대화 전체는 「대화」 모드에 남습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-12">U-12 이전 질문 다시 불러오기</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-8"><h2>8. 채팅으로 하는 일</h2><p>화면에 버튼이 없고, 입력창에 문장으로 요청하는 기능입니다.</p>
+<section class="feature" id="u-37"><h3><span class="fid">U-37</span>유사어 등록</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>우리 팀에서 쓰는 말을 시스템에 가르칩니다. 예를 들어 「vcore」와 「cpu」가 같은 뜻이라고 등록하면, 다음부터 「vcore」로 물어도 알아듣습니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-SYNONYM"><div class="case-head">사례 · <span>Q-SYNONYM</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력 1</div><div class="case-v"><div class="case-prompt"><code>vcore, cpu, core은 동의어이다. 캐시에 등록하라.</code><button type="button" class="copy-btn" data-copy="vcore, cpu, core은 동의어이다. 캐시에 등록하라.">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>'vcore, cpu, core' 중 <strong>실제 컬럼(또는 등록된 속성)으로 찾지 못했습니다</strong>. 동의어는 기준이 되는 컬럼에 붙여서 저장합니다. 어느 컬럼의 동의어인지 알려주시면 등록하겠습니다.</p><ul><li>예: <code>hostname에 'vcore' 유사 단어를 추가해줘</code></li></ul></div></div><div class="case-row"><div class="case-k">입력 2</div><div class="case-v"><div class="case-prompt"><code>hostname에 &#x27;장비이름&#x27; 유사 단어를 추가해줘</code><button type="button" class="copy-btn" data-copy="hostname에 &#x27;장비이름&#x27; 유사 단어를 추가해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>'장비이름'을(를) hostname의 유사 단어로 추가했습니다.</p></div></div><figure class="shot"><a href="/static/manual/img/answer-synonym.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-synonym.png" alt="answer-synonym" loading="lazy"></a></figure><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>1번 입력처럼 <strong>기준이 되는 항목(컬럼) 없이</strong> 낱말끼리만 묶으면, 어느 항목의 유사어인지 알 수 없어 등록하지 않고 방법을 안내합니다. 2번 입력처럼 기준 항목(<code>hostname</code>)을 밝히면 등록합니다.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>입력창에 「(항목)에 '(낱말)' 유사 단어를 추가해줘」처럼 <strong>기준 항목</strong>과 낱말을 함께 적으세요.</li>
+<li>답에서 무엇이 어떤 항목에 등록됐는지 확인하세요.</li>
+<li>기준 항목을 모르면 낱말만 묶어 보내 보세요. 시스템이 기준 항목을 찾을 수 있으면 등록하고, 못 찾으면 방법을 안내합니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/answer-synonym.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/answer-synonym.png" alt="유사어 등록 답변" loading="lazy"></a><figcaption>유사어 등록 답변</figcaption></figure><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>등록한 말은 모든 사용자에게 적용됩니다. 확실한 것만 등록하세요.</li>
+<li>뜻이 모호하면 등록하지 않고 다시 묻습니다.</li>
+<li>잘못 등록했으면 관리자에게 삭제를 요청하세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-19">U-19 질문 잘 쓰는 법</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-38"><h3><span class="fid">U-38</span>SQL 실행 승인</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>관리자가 <strong>SQL 실행 승인</strong> 기능을 켠 환경에서는, 조회를 실행하기 전에 SQL을 보여 주고 승인을 받습니다. 기본은 꺼져 있습니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>질문을 보내면 처리 현황에 <strong>SQL 승인 대기</strong>가 표시되고, 답에 실행할 SQL이 나옵니다.</li>
+<li>실행하려면 입력창에 「실행」 또는 「승인」이라고 보내세요.</li>
+<li>그만두려면 「취소」 또는 「거부」라고 보내세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 승인 기능이 꺼진 기본 설정에서는 나타나지 않습니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>승인 대기 중에는 승인·취소부터 답하세요. 「네」, 「확인」도 승인으로, 「아니요」도 취소로 알아듣습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-21">U-21 실행된 SQL 보기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-39"><h3><span class="fid">U-39</span>스키마 캐시 갱신(관리자 전용)</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>DB 구조가 바뀌었는데 답에 반영되지 않는 것 같을 때 구조 정보(스키마 캐시)를 새로 읽는 작업입니다. <strong>이 작업은 관리자만 할 수 있습니다.</strong> 일반 사용자가 채팅으로 요청하면 거절하고 관리자 화면을 안내합니다.</p>
+<!--/slot--></div><div class="slot slot-case" data-slot="case"><h4>사례</h4><div class="case" data-case="Q-CACHE"><div class="case-head">사례 · <span>Q-CACHE</span><span class="case-when">실행 2026-09-23 · 샌드박스</span></div><div class="case-row"><div class="case-k">입력</div><div class="case-v"><div class="case-prompt"><code>polestar DB의 스키마 캐시를 갱신해줘</code><button type="button" class="copy-btn" data-copy="polestar DB의 스키마 캐시를 갱신해줘">복사</button></div></div></div><div class="case-row"><div class="case-k">결과</div><div class="case-v case-result"><p>캐시 생성·무효화는 관리자만 할 수 있습니다. 관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. 터미널에서는 <code>python scripts/schema_cache_cli.py</code>로 같은 작업을 할 수 있습니다 (CLI 대화(<code>python -m src.main</code>)에는 역할 정보가 없어 이 경로로 거절됩니다).</p></div></div><div class="case-row"><div class="case-k">포인트</div><div class="case-v"><p>일반 사용자 계정으로 요청한 결과입니다. 캐시 갱신은 관리자 「DB 구조」 탭에서 합니다. 필요하면 관리자에게 요청하세요.</p>
+</div></div></div><!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>구조 변경이 답에 반영되지 않는다고 느끼면 관리자에게 알리세요.</li>
+<li>관리자는 관리자 화면 「DB 구조」 탭에서 변경 점검·구조 분석을 합니다(관리자 매뉴얼 <a href="/manual/admin#ch-4">4장</a>).</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. 답은 일반 텍스트로 나옵니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>구조 정보 자체의 등록·승인은 관리자 기능입니다. 캐시 갱신으로 해결되지 않으면 관리자에게 알리세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-37">U-37 유사어 등록</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-9"><h2>9. 이벤트 알람</h2><p>실시간 알람을 받고 바로 조회로 이어 가는 방법입니다. 알람 수신 권한이 있는 계정에만 <strong>이벤트 알람</strong> 탭이 보입니다.</p>
+<section class="feature" id="u-40"><h3><span class="fid">U-40</span>알람 탭과 알람 카드</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p><strong>이벤트 알람</strong> 탭에는 모니터링 시스템이 보낸 알람이 실시간 카드로 쌓입니다. 탭 옆 숫자는 아직 보지 않은 알람 수입니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li><strong>이벤트 알람</strong> 탭을 누르세요.</li>
+<li>최신 알람이 위에 쌓입니다. 카드에는 서버, 알람 내용, 심각도, 이력 근거, 영향 받는 프로세스가 나옵니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/alarm-list.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/alarm-list.png" alt="알람 카드 목록" loading="lazy"></a><figcaption>알람 카드 목록</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>레벨 필터</span></li><li><span class="badge-n">2</span><span>검색</span></li><li><span class="badge-n">3</span><span>알람 카드</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>모든 알람이 오지는 않습니다. 중복·연쇄·유지보수 중 알람은 걸러집니다. 걸러진 이유는 <a href="#u-44">노이즈 관제</a>에서 봅니다.</li>
+<li>창을 닫아 있는 동안 온 알람은 다시 받지 않습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-09">U-09 알림 수신과 표시 레벨</a></li>
+<li><a href="#u-44">U-44 노이즈 관제 화면 읽기</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-41"><h3><span class="fid">U-41</span>알람 거르기·찾기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>알람이 많을 때 심각도로 거르거나 검색합니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>레벨 칩(<strong>전체·심각·경고·주의·해소</strong>)을 눌러 거르세요.</li>
+<li>검색창에 서버명·IP·알람명을 적으세요.</li>
+<li><strong>초기화</strong>로 필터를 풀고, <strong>모두 지우기</strong>로 목록을 비웁니다.</li>
+<li>목록이 길면 맨 위로 버튼으로 올라갑니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/alarm-list.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/alarm-list.png" alt="알람 목록" loading="lazy"></a><figcaption>알람 목록</figcaption></figure><ol class="callouts"><li><span class="badge-n">1</span><span>레벨 필터</span></li><li><span class="badge-n">2</span><span>검색</span></li></ol><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li><strong>모두 지우기</strong>는 이 화면의 목록만 비웁니다. 알람 기록은 서버에 남습니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-40">U-40 알람 탭과 알람 카드</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-42"><h3><span class="fid">U-42</span>알람에서 바로 조회하기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>알람 카드에서 관련 조회를 바로 시작합니다. 카드가 추천하는 질문을 누르면 입력창에 채워집니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>카드의 서버명 버튼이나 「이 알람을 조회해 볼까요?」 추천을 누르세요.</li>
+<li>질의응답 탭으로 넘어가고, 입력창 위에 <strong>알람에서 생성</strong> 표시와 함께 질문이 채워집니다.</li>
+<li><strong>이대로 조회</strong>를 누르면 보내고, <strong>수정</strong>을 누르면 고쳐서 보냅니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/alarm-suggest.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/alarm-suggest.png" alt="알람에서 생성한 질문" loading="lazy"></a><figcaption>알람에서 생성한 질문</figcaption></figure><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>추천 질문은 알람 내용으로 만든 초안입니다. 기간·범위를 확인하고 보내세요.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-19">U-19 질문 잘 쓰는 법</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-43"><h3><span class="fid">U-43</span>알람 확인(ack)·피드백</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>알람을 확인했다고 표시하고(ack), 유용했는지 알려 줍니다. 피드백은 알람 거르기를 개선하는 데 쓰입니다.</p>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>즉시 통보된 사건이면 카드에 <strong>확인</strong> 버튼이 있습니다. 누르면 확인 처리됩니다.</li>
+<li>「이 알람이 유용했나요?」에서 <strong>유효</strong> 또는 <strong>노이즈</strong>를 누르세요. 메모를 남길 수 있습니다.</li>
+<li>잘못 눌렀으면 <strong>되돌리기</strong>를 누르세요.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/alarm-feedback.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/alarm-feedback.png" alt="알람 카드의 확인·피드백" loading="lazy"></a><figcaption>알람 카드의 확인·피드백</figcaption></figure><!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>피드백 버튼은 관리자가 피드백 기능을 켠 환경에서만 보입니다.</li>
+<li>피드백은 알람을 바로 막지 않습니다. 관리자가 피드백 반영 기능을 켜 두면 같은 이름의 <strong>다음</strong> 알람을 판단할 때 참고 예시로 쓰입니다. 원리는 <a href="#u-45">U-45</a>에서 봅니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-40">U-40 알람 탭과 알람 카드</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-10"><h2>10. 노이즈 관제</h2><p>받은 알람이 어디서, 왜 걸러졌는지 보는 읽기 전용 화면입니다. 머리글의 <strong>노이즈 관제</strong>로 엽니다.</p>
+<section class="feature" id="u-44"><h3><span class="fid">U-44</span>노이즈 관제 화면 읽기</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>알람 거르기(노이즈 게이트)가 내린 판단을 기간별로 봅니다. 판단은 네 가지입니다.</p>
+<table>
+<thead>
+<tr>
+<th>판단</th>
+<th>뜻</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PAGE</td>
+<td>즉시 통보</td>
+</tr>
+<tr>
+<td>TICKET</td>
+<td>즉시 호출 없이 대기열·기록으로</td>
+</tr>
+<tr>
+<td>DASHBOARD</td>
+<td>통보 없이 화면에만</td>
+</tr>
+<tr>
+<td>SUPPRESS</td>
+<td>통보하지 않고 기록만(삭제가 아님)</td>
+</tr>
+</tbody>
+</table>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li>위쪽 기간 버튼(<strong>1H·24H·7D·30D</strong>)을 고르세요.</li>
+<li><strong>KPI 카드</strong>에서 수신 알람 수와 판단별 건수, 억제율을 봅니다.</li>
+<li><strong>노이즈 캔슬링 퍼널</strong>에서 어느 단계에서 몇 건이 걸러졌는지 봅니다.</li>
+<li><strong>티어 분포 추이</strong>에서 시간대별 변화를 봅니다.</li>
+<li><strong>결정 이력</strong>에서 티어·단계·검색어로 찾고, 행을 누르면 <strong>결정 추적</strong>이 열립니다.</li>
+<li>항목 옆 <strong>(!)</strong> 를 누르면 그 지표의 정의와 읽는 법이 나옵니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/noise-user.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/noise-user.png" alt="노이즈 관제" loading="lazy"></a><figcaption>노이즈 관제</figcaption></figure><!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><figure class="shot"><a href="/static/manual/img/noise-drawer.png" class="zoom" target="_blank" rel="noopener"><img src="/static/manual/img/noise-drawer.png" alt="결정 추적 — 이 알람이 왜 이렇게 판단됐는지" loading="lazy"></a><figcaption>결정 추적 — 이 알람이 왜 이렇게 판단됐는지</figcaption></figure><p>판단 경로(통과한 단계와 결정한 단계)와 판단 순간의 신호 값이 나옵니다.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li>이 화면은 조회만 합니다. 알람을 멈추는(침묵) 설정은 관리자 기능입니다.</li>
+<li>모든 존의 판단이 합산되어 보입니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-40">U-40 알람 탭과 알람 카드</a></li>
+</ul>
+<!--/slot--></div></section><section class="feature" id="u-45"><h3><span class="fid">U-45</span>알람이 걸러지는 원리</h3><div class="slot slot-what" data-slot="what"><h4>무엇을 하나</h4><p>알람 거르기(노이즈 게이트)는 <strong>미리 정한 규칙</strong>으로 판단합니다. AI(LLM)는 알람을 요약하고 &quot;평소와 같은 알람인지&quot; 같은 참고 의견을 낼 뿐, 걸러낼지 말지는 규칙이 정합니다. 학습된 머신러닝 모델은 쓰지 않습니다.</p>
+<p>규칙은 아래 순서로 적용되고, <strong>먼저 걸린 규칙이 결과가 됩니다.</strong></p>
+<table>
+<thead>
+<tr>
+<th>순서</th>
+<th>규칙</th>
+<th>결과</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>같은 서버·같은 알람·같은 자원이 정해진 시간(기본 4시간) 안에 다시 오면</td>
+<td>다시 알리지 않고 횟수만 기록</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>심각</strong> 알람이면</td>
+<td><strong>항상 즉시 통보(PAGE)</strong> — 아래 규칙을 거치지 않습니다</td>
+</tr>
+<tr>
+<td>3</td>
+<td>해소 알람이거나, 발생 뒤 금방 스스로 복구됐으면</td>
+<td>통보하지 않고 기록</td>
+</tr>
+<tr>
+<td>4</td>
+<td>서버가 유지보수 중이거나 관리자가 건 침묵 규칙에 걸리면</td>
+<td>통보하지 않고 기록</td>
+</tr>
+<tr>
+<td>5</td>
+<td>상위 장비 장애로 생긴 연쇄 알람, 짧은 시간에 몰린 알람, 켜졌다 꺼졌다를 반복하는 알람</td>
+<td>대표만 알리거나 보류(관리자가 켠 경우)</td>
+</tr>
+<tr>
+<td>6</td>
+<td>위에 걸리지 않으면 <strong>심각도 × 서버 중요도</strong> 표로 기본 판단</td>
+<td>PAGE·TICKET·DASHBOARD 중 하나</td>
+</tr>
+<tr>
+<td>7</td>
+<td>보조 신호(모니터링 시스템의 통보 정책, AI 의견, 운영자 피드백, 최근 변경 작업)로 조정</td>
+<td><strong>최대 한 단계</strong> 올리거나 내림. 올릴 이유가 하나라도 있으면 내리지 않습니다</td>
+</tr>
+</tbody>
+</table>
+<!--/slot--></div><div class="slot slot-how" data-slot="how"><h4>사용 방법</h4><ol>
+<li><strong>노이즈 관제</strong>를 열고 <strong>결정 이력</strong>에서 궁금한 알람 행을 누르세요.</li>
+<li><strong>결정 추적</strong>의 <strong>판단 경로</strong>에서 어느 단계에서 결과가 정해졌는지 봅니다.</li>
+<li><strong>신호 스냅샷</strong>에서 판단 순간의 값(실효 심각도, 중요도, 일상 반복, 통보 정책, LLM 액션가능성 등)을 봅니다.</li>
+<li>7번 조정이 있었다면 사유에 「승격:」 또는 「강등:」 뒤에 이유가 적혀 있습니다.</li>
+</ol>
+<!--/slot--></div><div class="slot slot-ui" data-slot="ui"><h4>화면 요소</h4><p>화면 캡처가 없습니다. <a href="#u-44">U-44</a>의 결정 추적 그림을 보세요.</p>
+<!--/slot--></div><div class="slot slot-caution" data-slot="caution"><h4>주의·제약</h4><ul>
+<li><strong>심각 알람은 침묵 규칙이나 피드백으로 걸러지지 않습니다.</strong> 예외는 하나뿐입니다 — 관리자가 비운영 알람 필터를 켠 환경에서, 알람 표시 없이 승인·안내 문구만 있는 메시지는 심각도와 관계없이 기록만 남깁니다.</li>
+<li>걸러진 알람도 지워지지 않습니다. 판단 이유와 함께 기록에 남습니다.</li>
+<li>5번과 7번의 일부는 관리자가 켜야 동작합니다. 그래서 환경마다 걸러지는 양이 다를 수 있습니다.</li>
+<li><strong>노이즈</strong> 피드백은 그 알람을 바로 막지 않습니다. 같은 이름의 <strong>다음</strong> 알람을 판단할 때 참고 예시로 쓰이고, 그것도 최대 한 단계만 내립니다.</li>
+</ul>
+<!--/slot--></div><div class="slot slot-related" data-slot="related"><h4>관련 항목</h4><ul>
+<li><a href="#u-43">U-43 알람 확인(ack)·피드백</a></li>
+<li><a href="#u-44">U-44 노이즈 관제 화면 읽기</a></li>
+</ul>
+<!--/slot--></div></section></section><section class="chapter" id="ch-부록"><h2>부록</h2><p>자주 묻는 질문, 화면에 뜨는 오류 메시지와 대응, 이 매뉴얼에 나오는 용어를 모았습니다.</p>
+<h4>자주 묻는 질문</h4>
+<p><strong>무엇부터 물어보면 좋을까요?</strong>
+서버 목록부터 조회해 보세요. 예: 「전체 서버의 호스트명, OS종류, 벤더를 조회해줘」. 질문을 잘 쓰는 요령은 <a href="#u-19">U-19</a>에 있습니다.</p>
+<p><strong>「상위 N대」는 어떻게 묻나요?</strong>
+기준 기간, 지표, 정렬 방향, 개수를 한 문장에 담으세요. 예: 「2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘」. 사용률(%)이나 코어 수처럼 숫자로 저장된 항목을 기준으로 삼으세요. 메모리·디스크 용량처럼 단위가 붙어 저장된 값으로 정렬하면 순서가 틀릴 수 있습니다(<a href="#u-19">U-19</a>).</p>
+<p><strong>앞 질문의 결과에 이어서 물을 수 있나요?</strong>
+네. 같은 대화에서 「그 서버들의 ~」처럼 물으면 됩니다. 예: 「2026년 6월 CPU 사용률 평균이 높은 상위 3대 서버를 알려줘」 다음에 「그 서버들의 제조사와 OS 종류」. 자세한 내용은 <a href="#u-34">U-34</a>를 보세요.</p>
+<p><strong>결과를 Excel로 받고 싶어요.</strong>
+모든 조회 결과 아래에 <strong>CSV 다운로드</strong> 버튼이 있습니다. CSV는 Excel에서 바로 열립니다(<a href="#u-22">U-22</a>). 「전체 서버 목록을 엑셀로 만들어줘」처럼 양식 없이 요청하면 Excel 파일은 만들어지지 않습니다. 정해진 모양의 파일이 필요하면 양식을 첨부하세요(<a href="#ch-6">6장</a>).</p>
+<p><strong>데이터를 고치거나 지울 수 있나요?</strong>
+아니요. 이 시스템은 조회만 합니다. 「서버 테이블 전부 삭제해줘」 같은 요청은 실행하지 않습니다(<a href="#u-19">U-19</a>).</p>
+<p><strong>「가동률」을 물었더니 원하는 답이 나오지 않아요.</strong>
+가동률은 모니터링 데이터에 집계되지 않는 지표입니다. 답에 함께 나오는 대체 질문을 그대로 보내 보세요(<a href="#u-19">U-19</a>).</p>
+<p><strong>우리 팀에서 쓰는 말로 물어도 되나요?</strong>
+유사어를 등록하면 됩니다. 예: 「hostname에 '장비이름' 유사 단어를 추가해줘」. 등록한 말은 모든 사용자에게 적용되니 확실한 것만 등록하세요(<a href="#u-37">U-37</a>).</p>
+<p><strong>비밀번호를 바꾸고 싶어요.</strong>
+사용자 화면에는 비밀번호 변경 기능이 없습니다. 관리자에게 비밀번호 초기화를 요청하세요. 관리자가 임시 비밀번호를 발급해 전달합니다.</p>
+<p><strong>비밀번호를 여러 번 틀려 계정이 잠겼어요.</strong>
+기본 설정에서는 30분이 지나면 다시 로그인할 수 있습니다(설치 설정에 따라 다름). 급하면 관리자에게 잠금 해제를 요청하세요(<a href="#u-03">U-03</a>).</p>
+<p><strong>원하는 DB가 조회 대상에 없어요.</strong>
+조회할 수 있는 DB는 관리자가 정합니다. 권한이 없는 DB는 선택지에 나오지 않으니 관리자에게 권한을 요청하세요(<a href="#u-24">U-24</a>).</p>
+<h4>오류 메시지와 대응</h4>
+<p>화면에 나오는 문구를 그대로 적었습니다. 괄호 안의 숫자(N)는 설치 설정에 따라 다릅니다.</p>
+<p><strong>로그인 화면</strong></p>
+<table>
+<thead>
+<tr>
+<th>표시 문구</th>
+<th>뜻</th>
+<th>대응</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ID 또는 비밀번호가 올바르지 않습니다.</td>
+<td>ID가 없거나 비밀번호가 틀렸습니다.</td>
+<td>입력값을 확인하고 다시 입력하세요.</td>
+</tr>
+<tr>
+<td>로그인 N회 실패로 계정이 잠겼습니다.</td>
+<td>비밀번호를 연속으로 틀려 계정이 잠겼습니다(기본 5회).</td>
+<td>잠금 시간이 지난 뒤 다시 로그인하거나 관리자에게 해제를 요청하세요.</td>
+</tr>
+<tr>
+<td>계정이 잠겼습니다. N분 후 다시 시도하세요.</td>
+<td>잠긴 계정으로 로그인을 시도했습니다(기본 30분).</td>
+<td>표시된 시간이 지난 뒤 다시 로그인하세요.</td>
+</tr>
+<tr>
+<td>비활성 계정입니다.</td>
+<td>관리자가 계정을 사용 중지했습니다.</td>
+<td>관리자에게 문의하세요.</td>
+</tr>
+<tr>
+<td>로그인에 실패했습니다.</td>
+<td>서버가 이유를 알려 주지 않은 실패입니다.</td>
+<td>잠시 후 다시 시도하고, 계속되면 관리자에게 알리세요.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>로그인이 만료됐을 때</strong></p>
+<ul>
+<li>화면을 열거나 새로고침했을 때 로그인이 만료되어 있으면 <strong>안내 없이 로그인 화면으로 이동</strong>합니다. 다시 로그인하세요.</li>
+<li>질문을 보내는 중에 만료되면 답 말풍선에 「⚠ 토큰이 만료되었습니다.」와 응답 코드 401이 나옵니다. 이때는 <strong>다시 시도</strong>를 눌러도 같은 오류가 납니다. 화면을 새로고침해 다시 로그인한 뒤 질문을 다시 보내세요.</li>
+</ul>
+<p><strong>DB 연결 경고 배너</strong></p>
+<p>대화 영역 위에 뜨는 배너입니다. 30초마다 상태를 다시 확인하고, 정상이 되면 저절로 사라집니다(<a href="#u-07">U-07</a>).</p>
+<table>
+<thead>
+<tr>
+<th>표시 문구</th>
+<th>뜻</th>
+<th>대응</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>일부 DB 연결 불가: (DB 이름). 쿼리 결과가 불완전할 수 있습니다.</td>
+<td>적힌 DB에만 연결할 수 없습니다. 상태 배지는 WARNING입니다.</td>
+<td>다른 DB에 대한 질문은 정상입니다. 적힌 DB가 필요한 질문은 미루고 관리자에게 알리세요.</td>
+</tr>
+<tr>
+<td>모든 DB 서버에 연결할 수 없습니다. MCP 서버 상태를 확인하세요.</td>
+<td>어떤 DB에도 연결할 수 없습니다. 상태 배지는 OFFLINE입니다.</td>
+<td>조회가 되지 않습니다. 관리자에게 알리세요.</td>
+</tr>
+<tr>
+<td>DB 서버(MCP Server)에 연결할 수 없습니다. 쿼리 실행이 불가능합니다. MCP 서버 상태를 확인하세요.</td>
+<td>DB 하나만 쓰는 설치에서 그 DB에 연결할 수 없습니다. 상태 배지는 DB OFFLINE입니다.</td>
+<td>관리자에게 알리세요.</td>
+</tr>
+<tr>
+<td>API 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.</td>
+<td>이 화면이 서버와 통신하지 못했습니다.</td>
+<td>잠시 후 새로고침하고, 계속되면 관리자에게 알리세요.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>질문 처리 중 오류</strong></p>
+<table>
+<thead>
+<tr>
+<th>표시 문구</th>
+<th>뜻</th>
+<th>대응</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>⚠ 처리 시간이 초과되었습니다. 질의를 단순화해주세요.</td>
+<td>답을 만드는 시간이 상한을 넘었습니다. 말풍선에 「상한 N초 · 경과 …」와 멈춘 단계가 함께 나올 수 있습니다.</td>
+<td>기간·서버·항목을 줄여 다시 물으세요. 같은 질문을 한 번 더 해 보려면 <strong>다시 시도</strong>를 누르세요(<a href="#u-16">U-16</a>).</td>
+</tr>
+<tr>
+<td>⚠ 서버와의 통신에 실패했습니다: (사유)</td>
+<td>답을 받는 도중 연결이 끊겼습니다.</td>
+<td><strong>다시 시도</strong>를 누르세요. 계속되면 DB 연결 경고 배너가 떠 있는지 확인하세요.</td>
+</tr>
+<tr>
+<td>⚠ 처리 중 오류가 발생했습니다.</td>
+<td>서버가 질문을 처리하지 못했습니다.</td>
+<td><strong>다시 시도</strong>를 누르고, 계속되면 질문을 바꿔 보세요.</td>
+</tr>
+<tr>
+<td>⏹ 응답이 중단되었습니다</td>
+<td>내가 <strong>■</strong>(응답 중단)을 눌러 멈췄습니다. 오류가 아닙니다.</td>
+<td>다시 보내려면 ↑ 키로 질문을 불러오세요(<a href="#u-13">U-13</a>).</td>
+</tr>
+<tr>
+<td>처리 중인 질의가 끝난 뒤 다시 시도해 주세요.</td>
+<td>다른 질문을 처리하는 중에 <strong>다시 시도</strong>를 눌렀습니다.</td>
+<td>진행 중인 답이 끝난 뒤 누르세요.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>다시 시도</strong>는 자동으로 실행되지 않습니다. 누를 때만 같은 질문을 다시 보냅니다.</p>
+<h4>용어집</h4>
+<table>
+<thead>
+<tr>
+<th>용어</th>
+<th>뜻</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>존</td>
+<td>데이터를 조회하고 알람을 받는 지역 단위입니다. 예: 은행존, 공동존. 어떤 존의 알람을 받을지는 관리자가 정합니다(<a href="#u-09">U-09</a>).</td>
+</tr>
+<tr>
+<td>존 그룹</td>
+<td>존을 묶은 상위 구분입니다. 여러 존을 조회할 때 조회 순서와 선택 범위를 정합니다. 관리자가 존 그룹 상호배타를 켠 환경에서는 한 번에 한 그룹 안에서만 존을 고를 수 있습니다(<a href="#u-25">U-25</a>).</td>
+</tr>
+<tr>
+<td>조회 대상</td>
+<td>이 대화가 조회하는 DB입니다. 입력줄 위 칩에 표시됩니다(<a href="#u-24">U-24</a>).</td>
+</tr>
+<tr>
+<td>승계</td>
+<td>한 번 조회한 대상을 다음 질문에서도 그대로 쓰는 것입니다. 칩의 <strong>×</strong>로 풀 수 있습니다(<a href="#u-24">U-24</a>).</td>
+</tr>
+<tr>
+<td>역질문</td>
+<td>질문만으로 정할 수 없는 것(존, 양식 항목 등)을 시스템이 되묻는 것입니다(<a href="#u-25">U-25</a>, <a href="#u-29">U-29</a>).</td>
+</tr>
+<tr>
+<td>유사어</td>
+<td>같은 뜻으로 쓰는 다른 말입니다. 등록하면 그 말로 물어도 알아듣습니다(<a href="#u-37">U-37</a>).</td>
+</tr>
+<tr>
+<td>심각도</td>
+<td>알람의 심한 정도입니다. 3=심각, 2=경고입니다.</td>
+</tr>
+<tr>
+<td>노이즈 게이트</td>
+<td>받은 알람을 미리 정한 규칙으로 걸러, 통보할지와 어떻게 통보할지 판단하는 기능입니다(<a href="#u-45">U-45</a>).</td>
+</tr>
+<tr>
+<td>티어</td>
+<td>노이즈 게이트의 판단 결과입니다. PAGE(즉시 통보) · TICKET(즉시 호출 없이 대기열·기록으로) · DASHBOARD(통보 없이 화면에만) · SUPPRESS(통보하지 않고 기록만) 네 가지입니다(<a href="#u-44">U-44</a>).</td>
+</tr>
+<tr>
+<td>억제</td>
+<td>알람을 통보하지 않고 기록만 남기는 판단(SUPPRESS)입니다. 삭제가 아니며 결정 추적에서 이유를 볼 수 있습니다. 심각 알람은 억제되지 않습니다(비운영 알람 예외 — <a href="#u-45">U-45</a>).</td>
+</tr>
+<tr>
+<td>억제율</td>
+<td>받은 알람 중 억제(SUPPRESS)된 비율입니다.</td>
+</tr>
+<tr>
+<td>침묵</td>
+<td>관리자가 기간을 정해 특정 서버·알람·자원의 통보를 멈추는 규칙입니다. 기록은 남고, 심각 알람은 침묵되지 않습니다.</td>
+</tr>
+<tr>
+<td>결정 추적</td>
+<td>알람 하나가 왜 그렇게 판단됐는지 판단 경로와 당시 신호 값을 보여 주는 화면입니다(<a href="#u-44">U-44</a>).</td>
+</tr>
+</tbody>
+</table>
+</section>
+  </main>
+</div>
+<script src="/static/manual/manual.js"></script>
+</body>
+</html>

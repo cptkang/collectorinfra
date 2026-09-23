@@ -723,6 +723,17 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         """운영자 대시보드 화면."""
         return FileResponse(static_dir / "admin" / "dashboard.html")
 
+    # 매뉴얼(plans/116 · D-252) — 다른 HTML 화면과 같이 서버 인증 없이 서빙한다(G-2 확정).
+    @application.get("/manual/user", include_in_schema=False)
+    async def user_manual_page() -> FileResponse:
+        """사용자 매뉴얼."""
+        return FileResponse(static_dir / "manual" / "user.html")
+
+    @application.get("/manual/admin", include_in_schema=False)
+    async def admin_manual_page() -> FileResponse:
+        """관리자 매뉴얼."""
+        return FileResponse(static_dir / "manual" / "admin.html")
+
     # 정적 파일 서빙 (라우트 등록 후에 마운트해야 우선순위 보장)
     if static_dir.exists():
         application.mount(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
 
 import asyncpg
@@ -15,6 +16,28 @@ import asyncpg
 from src.domain.user import AuditRepository
 
 logger = logging.getLogger(__name__)
+
+# 관리자 화면의 날짜 입력(YYYY-MM-DD)은 KST 기준 하루로 해석한다(표시도 KST).
+_KST = timezone(timedelta(hours=9))
+
+
+def _to_bound(value: str, *, end: bool) -> datetime:
+    """날짜 필터 문자열을 timestamptz 비교용 datetime으로 바꾼다.
+
+    asyncpg는 timestamptz 인자로 str을 받지 않는다(DataError) — 변환 없이 넘기면
+    조회가 예외로 끝나 날짜를 넣은 검색이 항상 0건이 된다.
+    날짜만 주면 KST 그날의 시작(start)·끝(end, 당일 포함)으로 해석하고,
+    시각이 있는데 오프셋이 없으면 KST로 본다.
+
+    Raises:
+        ValueError: ISO 8601 형식이 아닐 때
+    """
+    parsed = datetime.fromisoformat(value.strip())
+    if len(value.strip()) == 10:  # 날짜만(YYYY-MM-DD)
+        parsed = datetime.combine(parsed.date(), time.max if end else time.min)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_KST)
+    return parsed
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
@@ -135,13 +158,13 @@ class PostgresAuditRepository(AuditRepository):
         idx = 1
 
         if start_date:
-            conditions.append(f"created_at >= ${idx}::timestamptz")
-            params.append(start_date)
+            conditions.append(f"created_at >= ${idx}")
+            params.append(_to_bound(start_date, end=False))
             idx += 1
 
         if end_date:
-            conditions.append(f"created_at <= ${idx}::timestamptz")
-            params.append(end_date)
+            conditions.append(f"created_at <= ${idx}")
+            params.append(_to_bound(end_date, end=True))
             idx += 1
 
         if user_id:
@@ -219,13 +242,13 @@ class PostgresAuditRepository(AuditRepository):
         idx = 1
 
         if start_date:
-            conditions.append(f"created_at >= ${idx}::timestamptz")
-            params.append(start_date)
+            conditions.append(f"created_at >= ${idx}")
+            params.append(_to_bound(start_date, end=False))
             idx += 1
 
         if end_date:
-            conditions.append(f"created_at <= ${idx}::timestamptz")
-            params.append(end_date)
+            conditions.append(f"created_at <= ${idx}")
+            params.append(_to_bound(end_date, end=True))
             idx += 1
 
         where_clause = ""

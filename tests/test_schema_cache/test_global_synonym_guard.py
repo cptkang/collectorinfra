@@ -226,9 +226,15 @@ class TestExplicitPathsUnchanged:
 
 def test_repository_manual_profiles_are_detected():
     """현행 수동 프로필 DB는 정본으로 판정된다 — 프로필 없는 등록 DB는 아니다."""
+    from src.domain.profile_merge import LOCAL_SANDBOX_ENVIRONMENT
     from src.schema_cache.cache_manager import _has_manual_profile
+    from src.schema_cache.catalog_builder import load_structure_profile
 
     for db_id in ("polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "polestar"):
         assert _has_manual_profile(db_id), db_id
     for db_id in ("itam", "itsm", "cloud_portal", "test_db"):
+        # 로컬 관리자 승인본(plans/104 · 추적 금지)은 이 머신에서만 수동 프로필이다
+        profile = load_structure_profile(db_id)
+        if isinstance(profile, dict) and profile.get("environment") == LOCAL_SANDBOX_ENVIRONMENT:
+            continue
         assert not _has_manual_profile(db_id), db_id

@@ -1,0 +1,66 @@
+{
+ "id": "Q-SQL",
+ "turns": [
+  {
+   "query": "논리코어가 16개 이상인 서버의 호스트명과 논리코어 수를 보여줘",
+   "file": null,
+   "key": "4dcece8ba6166e7d",
+   "elapsed_s": 107.2,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "semantic_router",
+    "schema_analyzer",
+    "query_generator",
+    "query_validator",
+    "query_executor",
+    "result_organizer",
+    "output_generator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n논리코어가 16개 이상인 서버 5건을 확인했습니다. 모든 서버의 논리코어 수는 16.0으로 동일하며, 특정 이상 징후는 없습니다.\n\n| hostname | logical_cores |\n|---|---|\n| cocm-hdkapp01 | 16.0 |\n| cocm-ngcapo91 | 16.0 |\n| dbora023 | 16.0 |\n| hostapo01 | 16.0 |\n| hostapo02 | 16.0 |\n\n[안내] polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 5,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "hostname": "cocm-hdkapp01",
+     "logical_cores": 16.0
+    },
+    {
+     "hostname": "cocm-ngcapo91",
+     "logical_cores": 16.0
+    },
+    {
+     "hostname": "dbora023",
+     "logical_cores": 16.0
+    },
+    {
+     "hostname": "hostapo01",
+     "logical_cores": 16.0
+    },
+    {
+     "hostname": "hostapo02",
+     "logical_cores": 16.0
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T13:08:53",
+ "review": {
+  "verdict": "wrong",
+  "notes": "3단에서도 done.executed_sql 비어 있음(스트림이 SQL 없는 output_generator 출력에서 종료) · 결과 5건(원본 LOGICALCORE>=16 은 43대) — 사례 제외",
+  "at": "2026-09-23"
+ }
+}

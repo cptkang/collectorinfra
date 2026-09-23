@@ -257,6 +257,11 @@ mock_oom_kills_total                       3
 `nodename` 값은 PG 픽스처 `polestar.cmm_resource.server_name`과 **동일하게 정렬**돼 있다
 (`svr-web-01`) — 그래야 서버측 조립과 소스 교차 검증이 픽스처에서 실제로 단언된다.
 
+**job `polestar`(폴스타 브리지 B-2)** 는 호스트 `host.docker.internal:9098/metrics`를 긁는다. 그 포트에
+`EXPOSE_POLESTAR_EXPORTER=true`·`SERVER_PORT=9098`로 `mcp_server`를 따로 띄워야 `up{job="polestar"} == 1`이
+된다(미기동이면 0 — 다른 job은 무관). 브리지 소스 `[[openmetrics.bridge_sources]]`는 **TOML 전용**(env 키 없음)이라
+레포 `config.toml`(비어 있음)로 띄우면 `polestar_bridge_*`·서버 시리즈가 비어 나온다 — 소스를 넣은 사본 TOML로 기동한다.
+
 ### 4.2 `mcp_server` 조사 프로파일 기동
 
 `mcp_server`는 전용 venv가 없다. 루트 `.venv`에 `PYTHONPATH`를 얹어 띄운다.

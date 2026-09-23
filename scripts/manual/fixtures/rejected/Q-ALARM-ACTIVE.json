@@ -1,0 +1,42 @@
+{
+ "id": "Q-ALARM-ACTIVE",
+ "turns": [
+  {
+   "query": "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘",
+   "file": null,
+   "key": "00eda67faa5b9f66",
+   "elapsed_s": 403.3,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "현재 심각도 3(severity 3) 의 알람이 확인되지 않았습니다.\n\n시스템 조회 결과, 해당 조건에 맞는 에이전트 데이터가 존재하지 않거나, 관련 작업 처리 중 오류로 인해 데이터 수집이 완료되지 않아 결과가 0 건으로 반환되었습니다. 필터 조건을 완화하거나 다른 심각도 범위를 확인해 보시는 것을 권장합니다.\n\n---\n## 순차 처리 경과\n- [t3] 선행 작업(t1, t2)의 결과가 0건이라 이 단계를 실행하지 않았습니다.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T10:47:47",
+ "review": {
+  "verdict": "wrong",
+  "notes": "상태값을 'active'(실제 'ACTIVE')로 지어내 0건. 문장 교체 후 재녹화",
+  "at": "2026-09-23"
+ }
+}

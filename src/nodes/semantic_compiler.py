@@ -318,11 +318,13 @@ def _resolve_ab_dimensions(
     결과 행을 식별할 수 없다 — 실측상 LLM SMQ가 자주 범하는 선택 누락으로, dimension이 완전히
     빈 경우뿐 아니라 속성(용량 등)만 고른 경우에도 발생한다(2026-07-21 yd-004: 서버명 없는
     사용률 리스트). 프롬프트 유도 대신 모델 pattern_b.default_dimensions를 결정적으로
-    앞에 주입한다(D-035, D-076 후속).
+    앞에 주입한다(D-035, D-076 후속). 측정치 없이 속성으로 **순위**를 매긴 경우도 같다 —
+    「메모리 큰 상위 3대」가 용량 칼럼 하나만 내 어느 서버인지 알 수 없었다(plans/116 §10.3).
     """
     dimensions = list(smq.dimensions)
     # 전역 집계(S-IR1)는 식별 컬럼 자체가 없어야 단일 값이 나오므로 주입 대상이 아니다.
-    if smq.measures and not smq.global_aggregate and not _has_identity_dim(dimensions, dim_index):
+    ranked = bool(smq.measures) or smq.order_by is not None
+    if ranked and not smq.global_aggregate and not _has_identity_dim(dimensions, dim_index):
         chosen = {
             e["name"] for d in dimensions
             if (e := _resolve_dim(str(d), dim_index)) is not None

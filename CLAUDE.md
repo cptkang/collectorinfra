@@ -226,6 +226,22 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
   우회한다(실패 시에만 폴백) — LLM 비결정성 대응.
 - 업로드 양식의 DRM 해제는 `src/infrastructure/drm/`(`DRM_*` 설정, `docs/22_drm_deployment_guide.md`).
 
+## 매뉴얼 동반 정책 (D-255)
+
+**사용자·관리자가 직접 쓰는 기능을 새로 만들거나 사용법·화면을 바꾸면, 같은 작업에서 매뉴얼을 함께 갱신한다.**
+매뉴얼은 `src/static/manual/{user,admin}.html`(D-252)이며 원천은 `scripts/manual/`이다. 사용자 접점이 없는 변경
+(내부 리팩터·성능·벤치·하네스·운영 스크립트)은 대상이 아니다.
+
+1. `scripts/manual/features.yaml` 항목 추가 또는 `anchors` 갱신 (화면 버튼 없는 채팅·API 기능은 `no_ui`)
+2. `scripts/manual/content/{user,admin}.md` 해당 절 5칸 작성·갱신. 사용자 절은 사례(`cases`) 또는 `case_na` 사유
+3. 화면이 바뀌면 `captures.yaml` 갱신 → `python -m scripts.manual.run_capture --only <캡처ID>`(LLM 0 ·
+   포트 18981·18982 점유 먼저 확인 · 자기 PID만 종료)
+4. `python -m scripts.manual.build` → `pytest tests/test_manual` 통과
+5. 완료 보고에 매뉴얼 반영 여부를 적는다. 못 한 부분은 사유와 잔여로 남긴다
+
+역방향 가드(`test_reverse_every_button_and_tab_is_documented`)는 `<button id>`·탭 값만 잡는다. 링크·메뉴 항목·
+채팅 명령·API는 가드가 모르므로 스스로 챙긴다. 가드를 `ignore`로 우회하지 말 것(사유 없는 우회 금지).
+
 ## 보안 · 제약
 
 - **읽기 전용 DB 접근만** — INSERT/UPDATE/DELETE/DDL 생성 금지. 3중 방어(D-003):
