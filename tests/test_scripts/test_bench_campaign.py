@@ -311,7 +311,7 @@ def seg(monkeypatch, tmp_path):
     outcomes: list = []
 
     def fake_run(args, run_arms, *, label, snapshot=None, substituted=(), run_id="",
-                 resume_from=None, on_start=None):
+                 resume_from=None, on_start=None, **_extra):
         calls.append([a.arm_id for a in run_arms])
         subs.append([a.arm_id for a in substituted])
         resumes.append(resume_from)

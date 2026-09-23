@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -81,6 +83,58 @@ class TestFlagIndependent:
         out = await intent_planner(state, llm=_llm(), app_config=frame_off)
 
         assert out["task_plan"][0]["agent"] == "data_query"
+
+
+@pytest.mark.asyncio
+class TestContractStaysGated:
+    """**상시화 대상은 결정적 교정뿐이다**(`plans/111` 소유자 요청 · 111 §2.7 실측).
+
+    조각 계약(`_apply_task_frames`·`verify_task_frames`)까지 상시화하면 안 된다 — 2026-09-22
+    측정에서 9B 모델이 8건 중 4건에서 조각을 내지 못해 **원문 단일 task 폴백**이 됐다. 계약이
+    항상 돌면 그 폴백이 기본 동작이 되어 2단 분해가 사실상 꺼진다.
+
+    경계는 호출부가 갈라져 있어서 지켜진다 — 교정은 `intent_planner` 출구, 계약은 `_plan_turn`
+    안(`_task_frame_on` 뒤)이다.
+    """
+
+    async def test_flag_off_skips_span_contract_but_coerces(self, frame_off, monkeypatch):
+        # `src.orchestration` 패키지의 `intent_planner` 속성은 **함수**다(`__init__` 재노출) —
+        # `import … as` 로는 모듈을 못 잡는다. 모듈은 `sys.modules` 에서 꺼낸다.
+        planner = sys.modules["src.orchestration.intent_planner"]
+
+        called: list[str] = []
+        monkeypatch.setattr(planner, "_apply_task_frames",
+                            lambda *a, **kw: called.append("_apply_task_frames"))
+        monkeypatch.setattr(planner, "verify_task_frames",
+                            lambda *a, **kw: called.append("verify_task_frames"))
+
+        out = await intent_planner(_zone_resume_state(ALARM_Q), llm=_llm(), app_config=frame_off)
+
+        assert out["task_plan"][0]["agent"] == "alarm_query", "교정은 적용된다"
+        assert called == [], "조각 계약은 플래그 뒤에 그대로 있다"
+
+    async def test_flag_off_keeps_llm_sub_query_verbatim(self):
+        """계약이 꺼져 있으면 `sub_query` 는 LLM 문장 그대로다(조각으로 다시 만들지 않는다)."""
+        from unittest.mock import MagicMock
+
+        from src.orchestration.intent_planner import _llm_decompose
+
+        config = MagicMock()
+        config.composite.task_frame_enabled = False
+        config.composite.plan_dag_validation_enabled = False
+        config.composite.sequential_replan_enabled = False
+        config.router.capability_ownership_enabled = False
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content=json.dumps(
+            {"clarification_needed": None,
+             "tasks": [{"task_id": "t1", "agent": "data_query", "sub_query": "LLM 문장",
+                        "spans": ["은행존 서버 목록"], "depends_on": [], "input_from": []}]},
+            ensure_ascii=False))
+
+        out = await _llm_decompose(llm, "은행존 서버 목록 보여줘", config)
+
+        assert out["tasks"][0]["sub_query"] == "LLM 문장"
+        assert "spans" not in out["tasks"][0]
 
 
 class TestIdempotent:

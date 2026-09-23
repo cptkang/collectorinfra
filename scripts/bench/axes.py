@@ -317,7 +317,8 @@ def select_axes(
             owner = next(a.env_key for a in structural if knob.env_key in a.env_keys)
             decisions.append(AxisDecision(
                 env_key=knob.env_key, included=False, stage="F2",
-                reason=f"구조 축 `{owner}` 이 다중 키로 전개한다 — 단일 키 축으로 중복 전개하지 않는다"))
+                reason=f"구조 축 `{owner}` 이 다중 키로 전개한다 — "
+                       "단일 키 축으로 중복 전개하지 않는다"))
             continue
         paths = _impact_paths(knob)
         if not paths:

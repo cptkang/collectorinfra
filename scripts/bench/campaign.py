@@ -415,13 +415,34 @@ class Campaign:
         return dict(self.tier_decision.get("env") or {})
 
     def tier_blocked(self) -> Optional[str]:
-        """단 축 구간은 끝났는데 승자를 못 정한 사유. 없으면 None.
-
-        **사람이 봐야 한다** — 판정 불가인 채로 남은 구간을 돌면 어느 단으로 잰 것인지 모른 채
-        캠페인 전체가 진행된다(D-250 ②).
-        """
+        """단 축 구간은 끝났는데 승자를 못 정한 사유. 없으면 None."""
         blocked = self.tier_decision.get("blocked")
         return str(blocked) if blocked else None
+
+    def tier_caveat(self) -> Optional[str]:
+        """승자가 **재서 고른 것이 아닐 때**의 고지. 없으면 None(plans/114 M-0 · D-250 ②).
+
+        판정이 「판정 불가」면 기준 경로(D-225)로 고정하고 캠페인을 계속 돌린다 — 멈추면 반복 1회
+        설계에서 캠페인 전체가 진행되지 못한다(벤치 소유 검토 ④ 2026-09-23). 대신 이후 구간의 축
+        결과가 그 단에 조건부라는 사실을 판정문·계획 표·합산 리포트에 싣는다.
+
+        **두 경우를 덮는다.**
+
+        - `caveat` — 레벨은 정했으나 **재서 고른 승자가 아니다**(기준 경로 고정). 주입은 있다.
+        - `blocked` — 레벨조차 못 정했다(관측에 기준 경로 단이 없다 · 축 정의를 못 읽었다).
+          주입이 없으므로 서버 `.env` 가 확정하는 단으로 돈다 — 그 사실까지 적어야 나중에
+          "어느 단에서 잰 값인가"를 복원할 수 있다.
+        """
+        caveat = self.tier_decision.get("caveat")
+        if caveat:
+            return str(caveat)
+        blocked = self.tier_blocked()
+        if not blocked:
+            return None
+        return ("**M-0 미측정(판정 불가) — 이 결과는 현재 서버 단에 조건부다.** 사다리 단 축 "
+                f"구간은 돌았지만 이긴 단을 정하지 못했다({blocked}). 승자를 주입하지 않고 "
+                "서버 `.env` 가 확정하는 단으로 진행한다 — 다른 단으로 옮겨지는 결과가 아니다"
+                "(D-250 ②).")
 
     def structural_done(self) -> Optional[SegmentRecord]:
         """끝난 구조 축 구간. 없으면 None."""
@@ -470,11 +491,29 @@ class Campaign:
         **run 모드 구간의 실측만 반영한다** — 가장 최근에 끝난 run 구간의 `경과 ÷ 턴`이다.
         mock 구간은 반영하지 않는다(모의 속도로 짜면 남은 구간이 한 덩어리로 뭉쳐 run 계획과
         달라진다). 그래서 mock 캠페인은 **run 계획을 그대로 리허설한다.**
+
+        **단 축 구간은 구간 평균을 쓰지 않는다**(plans/114 M-0 · 벤치 소유 검토 ②) — 그 구간에는
+        속도가 다른 두 단이 섞여 있고 남은 구간은 **이긴 단으로만** 돈다. 승자 arm 의 실측
+        (`tier_decision.winner_sec_per_turn`·`winner_turns_per_arm`)을 쓰고, 그것이 없으면
+        섞인 평균 대신 **기본값으로 내려간다**.
         """
         measured = [r for r in self.records.values()
                     if r.mode == "run" and r.sec_per_turn and r.finished_at and not r.resumed]
         if measured:
             last = max(measured, key=lambda r: r.finished_at or "")
+            if last.structural:
+                winner = self.tier_decision
+                sec = winner.get("winner_sec_per_turn")
+                turns = winner.get("winner_turns_per_arm")
+                if sec and turns:
+                    return RateModel(
+                        sec_per_turn=float(sec), turns_per_arm=int(turns),
+                        source=(f"구간 {last.segment_id} **승자 arm** `{winner.get('level')}` 실측 "
+                                "— 단 축 구간은 단이 섞여 구간 평균을 쓰지 않는다"))
+                return RateModel(
+                    sec_per_turn=DEFAULT_SEC_PER_TURN, turns_per_arm=turns_per_arm,
+                    source=("기본값 — 마지막 구간이 단 축이라 구간 평균을 쓰지 않는다"
+                            "(승자 arm 실측 없음)"))
             # **턴 수도 실측으로 바꾼다** — 역질문 자동응답이 답하는 턴이 늘면 arm 당 턴이
             # 카탈로그보다 많아진다.
             return RateModel(sec_per_turn=float(last.sec_per_turn),
@@ -584,11 +623,26 @@ def render_tier_decision(campaign: Campaign) -> list[str]:
     blocked = campaign.tier_blocked()
     if blocked:
         return [f"  사다리 단: **판정 불가** — {blocked}",
-                "    승자를 정하지 않았다. 남은 구간은 돌지 않는다 — 사람이 본다(D-250 ②)."]
+                "    승자를 주입하지 않고 **현재 서버 단으로 진행**한다. 남은 구간의 축 결과는 "
+                "그 단에 조건부이고, 판정문·합산 리포트에 그 사실이 실린다(D-250 ②)."]
     env = " · ".join(f"{k}={v}" for k, v in sorted((decision.get("env") or {}).items()))
-    return [f"  사다리 단: **`{decision.get('level')}`**(단 `{decision.get('tier')}`) 승 — "
-            f"구간 `{decision.get('segment_id')}` 판정 「{decision.get('verdict')}」",
-            f"    남은 구간 기준선 주입: {env or '(없음)'}"]
+    lines = [f"  사다리 단: **`{decision.get('level')}`**(단 `{decision.get('tier')}`) 승 — "
+             f"구간 `{decision.get('segment_id')}` 판정 「{decision.get('verdict')}」",
+             f"    남은 구간 기준선 주입: {env or '(없음)'}"]
+    # 단 축 구간에서 타임아웃은 실패가 아니라 **측정 결과**다 — 판정 옆에 같이 읽는다.
+    if decision.get("turns"):
+        lines.append(f"    타임아웃 {decision.get('timeout_turns', 0)}/{decision['turns']}턴"
+                     f"({float(decision.get('timeout_rate') or 0):.0%}) — 단이 지연을 바꾸므로 "
+                     "이 값 자체가 단 축의 측정 결과다(기능 분모에서 빠지고 완주율·지연에 남는다)")
+    if decision.get("winner_sec_per_turn"):
+        lines.append(f"    남은 구간 재계획 속도: 승자 arm 실측 "
+                     f"{decision['winner_sec_per_turn']:.1f}초/턴 · "
+                     f"{decision.get('winner_turns_per_arm')}턴/arm (구간 평균 아님)")
+    # 재서 고른 승자가 아니라 기준 경로 고정이면 그 사실을 계획 표에서도 읽게 한다(D-250 ②).
+    caveat = campaign.tier_caveat()
+    if caveat:
+        lines.append(f"    ⚠ {caveat}")
+    return lines
 
 
 def continuity(previous: Optional[SegmentRecord],

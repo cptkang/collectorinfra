@@ -1,7 +1,7 @@
 # 114. 벤치 캠페인 `run-closed` 1구간(general-1) 분석 — 측정이 성립하지 않은 이유와 수정 계획
 
 > **작성일**: 2026-09-22
-> **상태**: 부분 구현 — **1단계 7건 랜딩**(§4.0 · P-1·P-6·P-8·M-2·M-3·M-6·M-7 · 커밋 없음) · 파일명 `-WIP`.
+> **상태**: 부분 구현 — **1단계 7건**(§4.0 · P-1·P-6·P-8·M-2·M-3·M-6·M-7) + **2단계 M-0·T-1**(§4.0-b · D-250 구현 완료) 랜딩 · 파일명 `-WIP` 유지(잔여는 **전부 사용자 게이트 대기**: M-4=G-C · P-3=G-D · P-2=G-E · P-4②=G-F · M-5·T-2·P-5·P-7은 타 계획서 소유·후순위).
 > **G-A 확정**(2026-09-22 사용자 *"G-A는 권고대로 개정해"* → **D-250**). 남은 게이트 **G-C~G-F 대기**(§5 · G-B는 v1.1에서 M-0으로 흡수).
 > **대상 산출물**: `results/run-closed-seg1-triage.tar/` — 이름은 `.tar`지만 **디렉터리**다.
 > - 구간 run `20260922-112010` — `general-1` · 보정 구간 · 4 프로파일 · **223턴** · 4.40시간
@@ -288,7 +288,49 @@
 1. 구현 중 `기준선 단 ≠ 기준 경로`가 **구간 실패**로 들어갔던 것을 **고지**로 되돌렸다(D-250 ③). 실패로 두면 단 축(M-0)에서 2단이 이겼을 때 남은 구간이 전부 실패한다. 그 단언을 하던 테스트 2건도 함께 고쳤다.
 2. M-2 ①b(구간 간 판 비교)에서 **노이즈 바닥 계산을 지문이 같은 구간끼리로 제한하는 것은 넣지 않았다** — 기록·고지까지만 했다(팀 리드가 허용한 잔여). 합산 리포트의 「기준선 반복」 노이즈 바닥은 여전히 끝난 구간 전체로 계산하고, 판이 달랐다는 사실을 바로 위 줄에 함께 싣는다. 제한을 넣으려면 `compare.noise_floor` 입력 분할과 「지문이 같은 반복이 2회 미만이면 바닥 미측정」 처리가 필요하다(§4.1 M-2 잔여).
 
-**미착수**: M-0 · M-4 · M-5 · T-1 · T-2 · P-2 · P-3 · P-4 · P-5 · P-7(§4.1~§4.3 · 게이트 G-C~G-F 및 D-250 구현 대기).
+### 4.0-b 랜딩 기록 — 2단계 M-0·T-1 (2026-09-23 · 커밋 없음 → 랜딩 중 `43d81bc` 로 커밋됨)
+
+사용자 지시 *"이어서 구현하라"*. D-250 ①~⑤의 구현이다. 실 LLM·DB·서버 기동 0회 · 과금 0.
+
+| ID | 상태 | 앵커(현 작업 트리) | 테스트 |
+|---|---|---|---|
+| **M-0** | ✅ 랜딩 | **다중 키 축**(`109·CS-31` X1 일반 기제): `scripts/bench/axes.py` `AxisCandidate.level_env`·`env_keys`·`env_for()`·`multi_key_axis()` — **축 id ≠ env 키**가 됐다. **구조 축**: `LADDER_AXIS="LADDER_TIER"`·`LADDER_ENV_KEYS` 3키·`ladder_axis()`(레벨은 `config/scenarios/profiles.yaml` `tier2_intent`·`tier3_router` 를 **읽는다** — 사본 금지 D-053)·`structural_axes()`·`find_axis()`. `select_axes(include_structural=…)` 가 구조 축을 맨 앞에 붙이고 **3키의 단일 키 축 중복 전개를 F2 에서 사유와 함께 제외**한다. **구간 배치**: `campaign.py` `Segment.structural`·`over_budget` · `plan_segments(first_axis=…)`(보정 구간보다 앞) · 정렬 키에 `structural` 추가. **승자**: `Campaign.tier_decision`·`tier_winner_env()`·`tier_blocked()`·`structural_done()` · `render_tier_decision()` · `__main__._decide_tier_winner()`(`compare.optima` D-237 → 「최적 레벨」=그 레벨 · 「레벨 간 차이 없음」=기준 경로 3단 D-225 · 「판정 불가」=기준 경로 고정 + `caveat` 고지 — 멈추지 않는다). **주입**: `__main__._campaign_context` 가 **전 arm**(기준선 포함)에 3키를 얹는다 · `sweep.capture_config_snapshot` 이 기준선을 **자기 주입값으로** 에코(종전엔 언제나 빈 주입). **관문**: `sweep.tier_context()`·`ConfigSnapshot.tier_of`·`tier_expectations` · `RunHealth.tier_axis`·`expected_tiers`·`tier_by_arm()` · `tier_problems()` 3규칙 · `TIER_AXIS_CAVEAT`(103 P5 주의) · `__main__._tier_gate()`(단 축 전 다른 구간 차단 · 판정 불가 = 기준 경로 고정·고지 · 예산 초과 고지) · `campaign.continuity()` 구조 축 예외. **리포트**: 합산 판정표 단 축 행이 맨 위 + 주입·103 주의 · `optimize.render_recommended_env` 가 다중 키를 **실제 env 키로** 펼치고 구조 축을 1순위로 싣는다 | `tests/test_scripts/test_bench_plan114_m0_tier_axis.py` **49건**(축 정의·profiles 동등성·1단 제외·모르는 레벨 오류 · 첫 구간 배치·예산 초과·계획표 · 기대 단 5종·`tier_context` 4종 · `continuity` 예외 · 권고 diff 전개·1순위 · 승자 주입 전 arm·기준 경로 폴백·판정 불가 = 기준 경로 고정·고지·단 축 전 차단·실패 시 미결정·리포트·dry 첫 행) |
+| **T-1** | ✅ 랜딩 | `src/orchestration/intent_planner.py` — `intent_planner()` 가 `_task_frame_on(app_config)` 없이 **항상** `_normalize_plan_exit(result, state)` 를 부른다(D-250 ⑤). 양식 턴 제외·`input_from` 의존 제외(D-086)는 그대로 | `tests/test_orchestration/test_plan114_t1_exit_normalize.py` **11건**(off 에서 알람·프로세스 교정 · on 동작 불변 · 폼필/업로드 제외 · 멱등 · 비-`data_query` 불변 · 의존 task 불변 · 빈 계획 no-op) |
+
+**벤치 소유 세션 검토 5건 — 전부 반영(2026-09-23)**
+
+| # | 요구 | 구현 |
+|---|---|---|
+| **①** ★교착 방지 | 새 타임아웃 관문(≥20%)이 **단 축 구간 자체를 실패**로 만들면 승자를 뽑기 전에 캠페인이 멈춘다(1구간 실측 42.6% · 3단에서도 텍스트 타임아웃 93턴 중 최소 59턴이 60초 초과 — 운영 `.env` 가 `API_QUERY_TIMEOUT=60` 명시라 D-242 코드 기본 120 미적용) | `RunHealth.qualification_problems()` 가 `tier_axis` 면 타임아웃을 **뺀다**. 단 축에서는 타임아웃이 곧 측정 대상이다(단이 지연을 바꾼다). **고지는 `warnings()` 에 남고**(「단 축 구간이라 실패로 세지 않는다 … 승자 판정의 완주율·지연으로 읽을 것」) 판정에도 `timeout_turns`·`timeout_rate` 로 실린다. **예외는 단 축 구간에만** — 그 뒤 구간은 종전대로 실패 |
+| **②** 재계획 속도 | 단 축 구간에는 속도가 다른 두 단이 섞인다 — 남은 구간 재계획은 **승자 arm 의 턴만으로** | `sweep.arm_rate(raw, arm, elapsed)` — 턴 수는 원시 로그에서 정확히 세고, 초/턴은 구간 경과를 그 arm 의 `wall_ms` 몫으로 배분한다(러너가 arm 별 경과를 남기지 않아 유일한 방법 · 추정임을 `RateModel.source` 에 적는다). `Campaign.rate()` 가 구조 축 구간이면 `winner_sec_per_turn`·`winner_turns_per_arm` 을 쓰고, **없으면 섞인 구간 평균 대신 기본값으로 내려간다** |
+| **③** 노이즈 바닥 | 단 축 구간은 기여하지 않는다는 것을 **명시** | `_campaign_optima` 가 구조 축 구간의 기준선을 반복에서 빼고, 합산 리포트가 「**단 축 구간은 노이즈 바닥에 기여하지 않는다** … 아래 반복 횟수가 적은 것은 그 때문이다」를 적는다 |
+| **④** 판정 불가 | **멈추지 않는다** — 진행하되 이후 전 구간에 조건부 고지 | 기준 경로 3단(D-225)으로 고정하고 계속 돈다. `tier_decision.caveat`(레벨은 정했으나 재서 고른 승자가 아님)와 `blocked`(레벨조차 못 정함 → 주입 없음 → 서버 `.env` 단)를 `Campaign.tier_caveat()` 가 모아 **판정문 `axis_verdicts.md` 머리말 · 계획 표 · 합산 리포트**에 싣는다. `_tier_gate` 의 차단 분기는 제거했다 |
+| **⑤** 묶음 축 귀속 | *"3종 묶음의 효과이지 개별 키의 효과가 아니다"* 명시 + 대조군 동작 확인 | `sweep.TIER_AXIS_ATTRIBUTION` 을 판정문·합산 판정표에 싣는다. 기준선 실효값이 한 레벨과 같으면 그 레벨 arm 은 **다중 키 축에서도 지문 일치로 대조군** 처리돼 실행이 생략되고 기준선 관측을 쓴다(의도한 동작 · 테스트로 고정) |
+
+**T-1 경계 — 상시화는 결정적 교정뿐**(`plans/111` 소유 세션 요청 · 111 §2.7 실측)
+
+조각 계약(`_apply_task_frames`·`verify_task_frames`)은 **플래그 뒤에 그대로 둔다.** 2026-09-22
+측정에서 9B 모델이 8건 중 4건에서 조각을 내지 못해 원문 단일 task 로 폴백했고, 계약까지
+상시화하면 그 폴백이 **기본 동작**이 되어 2단 분해가 사실상 꺼진다. 호출부가 갈라져 있어
+(`intent_planner.py:248` 교정 · `:777` 계약) 243행 한 줄만 풀면 지켜진다 — 호출 스파이
+테스트(`TestContractStaysGated`)로 고정했다.
+
+**설계에서 버린 것**
+- 축마다 `Axis` 서브클래스 — 소비처 4곳(`sweep`·`campaign`·`compare`·`optimize`)이 전부 `env_key` 문자열로 묶여 있어 파급이 크다. `level_env` 한 필드가 최소 침습이다.
+- 3키를 arm 하나에 키 하나씩 쪼개 전개 — `intent=true·routing=false` 같은 무의미 조합이 생긴다. 사다리는 **레벨 단위로만** 뜻이 있다.
+- 사람이 기대 단을 주는 `--expect-tier` — D-250 ③이 금지한다. 기대는 설정 스냅샷의 그래프 도달 노드에서만 읽는다(못 뜨면 기대를 비운다 · 추정 금지).
+
+**검증 실측(2026-09-23 · 실 LLM·DB·서버 기동 0)**: `tests/test_scripts`·`tests/test_scenario`·`tests/test_orchestration`·`tests/test_nodes` **2,725 passed · 3 skipped** · `arch_check --ci` **위반 0** · `overfit_check --ci` **신규 유입 없음** · `048c2be` 클린 worktree 대비 **ruff 신규 0**(남은 `UP045`·`UP035`·`N818`은 주변 코드와 같은 표기 — 같은 파일의 `SweepUnavailable` 도 N818) · **mypy 신규 0**(`--python-version 3.12 --explicit-package-bases`).
+
+**예산 실측**: `python -m scripts.bench --segment next --mode dry`(무과금 · 실 카탈로그) 계획표 **첫 행 = `ladder-1`** · arm **3개**(기준선 + 2레벨) · 추정 **8.3시간** ≤ 채움 상한 9.0시간(1회 구동 10시간 · D-239). 21구간 · 합계 161.3시간.
+
+**계획과 다르게 한 것 2건**
+1. **`continuity()`(M-2 ①b)에 구조 축 예외를 넣었다.** 그 관문은 *"구간 간 기준선 단이 바뀌면 멈춤"* 인데 M-0 의 승자 주입이 **정확히 그 전이**다. 넣지 않으면 이긴 단을 주입한 직후 남은 구간이 전부 멈춘다. 앞 구간이 구조 축이면 멈춤 대신 고지다(`SegmentRecord.structural`). 되돌리는 비용: 예외를 빼면 M-0 이 동작하지 않는다.
+2. **기존 단언 2건을 개정했다.** `test_plan111_task_frame.py::test_zone_resume_alarm_off_stays_data_query`(off 면 `data_query` 고정 → off 에서도 교정 — T-1 이 바꾸는 바로 그 동작) · `test_bench_axes.py::test_real_selection_produces_axes_and_full_decisions`(판정 **건수** 일치 → 노브 **집합** 포함 — 구조 축은 노브가 아니라 판정 행이 하나 더 있다. 집합 비교가 원래 의도에 더 맞는다).
+
+**병행 세션 실측(2026-09-23)**: 작업 중 `scripts/bench/campaign.py`·`__main__.py`·`sweep.py` 가 **다른 세션에 의해 같은 시각에** 편집됐다(M-2 ①b 구간 간 판 비교). 내용 충돌은 위 「계획과 다르게 한 것 1」 하나였고 코드 유실은 없었다(`Edit` 는 디스크 현재 내용을 읽고 쓴다). 랜딩 도중 D-249 → **D-250** 재부여와 커밋 `43d81bc` 도 다른 세션이 했다 — §7 v1.3 부기.
+
+**미착수**: M-4 · M-5 · T-2 · P-2 · P-3 · P-4 · P-5 · P-7(§4.1~§4.3 · 전부 게이트 G-C~G-F 대기 또는 다른 계획서 소유). **D-250 구현 대기는 없다.**
 
 트랙은 셋이다.
 - **M** = 측정·하네스 — 무과금 · 제품 동작 불변
@@ -372,7 +414,7 @@
 | ID | 결함(§) | 처방 | 검증 | 비고 |
 |---|---|---|---|---|
 | **P-1** | LIMIT 다중문(§2.8-①) | `_add_limit_clause`가 **끝의 줄 주석·공백·세미콜론을 반복 제거**한 뒤 행 제한을 붙인다. 문자열 리터럴 안의 `--`는 건드리지 않는다. 멀티 DB 경로도 같은 함수를 쓰는지 착수 시 확인한다(대칭) | 재현 케이스(`…1000;  -- 주석`) · `…;` · `/* */` 끝 · 리터럴 안 `--` · DB2 `FETCH FIRST` 4+1건. `sqlparse.split` 결과 1문 | 즉시 착수 가능 · 게이트 없음 |
-| **P-2** | 서술 중 타임아웃 시 결과 폐기(§2.3) | 전체 경과 상한 도달 시 체크포인터 상태(`aget_state`)에 조회 결과가 있으면 **결정적 표 렌더(상위 N행) + "서술 생성이 시간 상한을 넘어 표로 대신합니다" 사유 + CSV 다운로드**로 **완료** 응답한다. 결과가 없으면 종전 오류다 | 모의 그래프에 서술 노드 지연을 주입해 상한 초과 → `status=completed`·사유 문구·`query_results` 승격. 결과 없는 경로는 종전 오류 | 게이트 **G-E**. 2단은 `task_results`, 3단은 `query_results`/`organized_data` — 두 경로 대칭. ⚠ `src/api/routes/query.py` 진입점 4곳의 반환·스트림은 **D-248 `TurnRecorder`로 감싸져 있다**(collectorinfra-07 · 2026-09-22 미커밋). 새 완료 경로도 그 래핑 안에서 내보내야 한다 — 누락은 `tests/test_api/test_thread_history.py::test_entry_points_wrap_every_exit`가 잡는다(래핑 지점 반환 7 · 스트림 7 실측). ⚠ done 페이로드에 **`status: "partial"`**을 싣는다. 싣지 않으면 기록기가 `completed`로 남기고(`src/api/thread_history.py:50-58` `_turn_status`), 시나리오 러너도 done의 `status`를 그대로 읽는다(`scripts/scenario/client.py:139-144`). 그러면 `status: completed` 단언과 D-241 분류(`scripts/bench/sweep.py:620-645` — 타임아웃 문구가 없으면 평가 대상)가 함께 걸린다. **`partial`을 기능 분모에서 어떻게 다룰지**(타임아웃과 같은 제거 사유로 볼지, 평가하고 성능 불합격만 매길지)를 P-2 착수 전에 110과 합의한다 |
+| **P-2** | 서술 중 타임아웃 시 결과 폐기(§2.3) | 전체 경과 상한 도달 시 체크포인터 상태(`aget_state`)에 조회 결과가 있으면 **결정적 표 렌더(상위 N행) + "서술 생성이 시간 상한을 넘어 표로 대신합니다" 사유 + CSV 다운로드**로 **완료** 응답한다. 결과가 없으면 종전 오류다 | 모의 그래프에 서술 노드 지연을 주입해 상한 초과 → done·`QueryResponse` 모두 `status=partial`·사유 문구·`query_results` 승격. 결과 없는 경로는 종전 오류. **판정 쪽**: `partial` 행이 `report.unevaluated_reason`·`sweep.unevaluated_reason_of` 양쪽에서 `timeout`, `RunHealth.timeout_turns`에 합산(타임아웃률 불변) | 게이트 **G-E**. 2단은 `task_results`, 3단은 `query_results`/`organized_data` — 두 경로 대칭. ⚠ `src/api/routes/query.py` 진입점 4곳의 반환·스트림은 **D-248 `TurnRecorder`로 감싸져 있다**(collectorinfra-07 · 2026-09-22 미커밋). 새 완료 경로도 그 래핑 안에서 내보내야 한다 — 누락은 `tests/test_api/test_thread_history.py::test_entry_points_wrap_every_exit`가 잡는다(래핑 지점 반환 7 · 스트림 7 실측). ⚠ done 페이로드와 `QueryResponse`에 **`status: "partial"`**을 싣는다. 싣지 않으면 기록기가 `completed`로 남긴다(`src/api/thread_history.py:50-58` `_turn_status`). **`partial` 판정 처리 — 확정(collectorinfra-07 실측 · 2026-09-23): 기능 분모에서 `timeout`과 같은 사유로 뺀다.** 실측 근거 넷. ① **지금 규칙대로면 기능 불합격이다** — 러너는 done의 `status`를 그대로 옮기고(`scripts/scenario/client.py:134-144` `_derive_status`), 카탈로그의 `status: completed` 기대 124턴 **전부**가 `status` 단언을 가진다. 모의 관측치(A-01 1턴 · partial done · SQL·행수 정상)를 `evaluate_turn`에 넣으면 `func=fail`(`status` 기대 completed · 실제 partial)이고, `report.unevaluated_reason`·`sweep.unevaluated_reason_of` 모두 `None`(평가 대상)이다 — 사유 문구에 `처리 시간이 초과`가 없어서다. ② **아무것도 안 하면 타임아웃률 관문이 조용히 약해진다** — 지금 이 턴들은 타임아웃이라 `RunHealth.timeout_turns`→M-2 ② `TIMEOUT_STOP`에 잡히는데, P-2 뒤에는 제품이 빨라지지 않았는데도 타임아웃률만 내려간다(H-2 은폐). `timeout`으로 두면 P-2 전후 기능 합격률·타임아웃률이 **같은 뜻으로 이어진다**(캠페인 구간 간 비교 유지). ③ **서술 의존 단언은 공정하게 평가할 수 없다** — 124턴 중 `manual_review` 52 · `response_must_contain` 8턴이 서술 본문을 본다. ④ **어휘를 늘리지 않는다** — 사유 3종(D-241 · 2026-09-21 사용자 승인)과 `func_verdict` 어휘(docs/18:272 교훈) 그대로다. `timeout` 정의("요청 상한 초과 — 제품 성능 축")에 `partial`이 그대로 들어간다. **기각한 대안**: 평가하고 성능 불합격만 매기기 — `status` 단언이 124/124 실패하므로 단언 규칙(`completed`≈`partial` 동치)을 바꿔야 하고, 그러면 `partial`이 판정표에서 사라진다. **P-2와 같이 바꿀 곳**(러너 행에 `status` 칸이 **없다** — 실측): (a) `scripts/scenario/runner.py` `_row`에 `"status": obs.status` 칸 추가 · (b) `scripts/scenario/report.py` `unevaluated_reason` — `invalid` 다음·역질문 검사 앞에 `row.get("status") == "partial"` → `timeout` · (c) `scripts/bench/sweep.py` `unevaluated_reason_of` 폴백에 같은 규칙(러너 칸이 정본이라 새 행에는 영향 없음 — 두 규칙 대칭 유지용) · (d) 시험: partial 행이 양쪽에서 `timeout`, `unevaluated_counts`·`timeout_turns`에 합산. (b)는 110 소유 규칙(`108·G-6`)이라 착수 시 110에 통지한다(합의가 아니라 통지 — D-241 정의 안의 적용이다). 프런트(`app.js`)와 스레드 복원(`showThreadTurns`)은 `status`로 분기하지 않는다(grep 실측) — 화면 쪽 추가 수정 없음 |
 | **P-3** | 서술 비용 · 서술 환각(§2.3 · §2.7) | ①**표는 코드가 렌더**하고(상위 20행 · 존 라벨) ②LLM은 **요약 N문장**만 쓴다(`max_tokens` 상한). ③서술 프롬프트에 **스코프 사실**(선택 DB→존 라벨 · 적용 필터 · 총 행수)을 싣는다 | 서술 입력 스냅샷 테스트 · I-01·I-03 픽스처에서 "추정 IP 대역"·"추출 불가" 문구 부재(결정적 부분) · 서술 토큰 상한 적용 확인. 효과(지연)는 재측정으로만 판정 | 게이트 **G-D**(응답 형식 변경). 108 B-2 재개 |
 | **P-4** | 동의어 강제 보충 · 범용어 오염(§2.8-②③) | ①단일 DB `schema_analyzer`의 Step 2 강제 보충을 **수동 프로필 `allowed_tables`만**으로 좁힌다. 동의어 매칭 테이블은 **허용만** 한다 — 멀티 게이트(`multi_db_executor.py:1165-1188`)와 대칭. ②동의어 **등록 지점**에서 범용어(서버·메모·평균·상태·종류·기준 등 — 목록 대신 "다수 테이블에 걸리는 단어" 규칙 권장)를 결정적으로 차단한다. Known Mistakes 「LLM 자동 등록은 쓰기 지점에서 차단」 | ①A-02 로그 형태(`'용량'`→`FILE_SIZE` 5개 테이블) 픽스처에서 잡음 테이블이 `relevant`에 들지 않음 · 화이트리스트 5개 보충은 유지. ②등록 거부 단위 테스트 | ②의 **운영 Redis 오염 정리**는 운영 데이터 쓰기라 게이트 **G-F** |
 | **P-5** | 필드 매퍼가 존 선택 무시(§2.8-④) · H-03 서브 테이블 동의어 우선(§2.7) | ①`selected_db_ids`(및 폼필 재개의 복원 DB)가 있으면 그것을 `priority_db_ids`로 쓴다. 원문 위치어보다 우선하고 나머지 DB는 싣지 않는다 → 413·교차 DB 매핑 제거. ②서브 테이블 정확 매칭이 **실행 DB의 `allowed_tables` 밖**이면 핵심 테이블 후보보다 뒤로 미룬다 | 재개 턴 픽스처: 매핑 DB=선택 DB · 프롬프트에 비선택 DB 부재 · H-03 `리소스유형`→`cmm_resource.resource_type` | **`plans/113`이 같은 파일을 편집 중**(`location_hints` 이관) — 착수 전 통지·순서 협의 |
@@ -443,3 +485,5 @@
 | 2026-09-22 | v1 | 최초 작성 — run `20260922-112010`(223턴) · `20260922-162132`(15턴) · 캠페인 `run-closed` 분석. 코드 0건 · 게이트 G-A~G-F 대기 |
 | 2026-09-22 | v1.1 | **사용자 지적 반영**(*"bench 스크립트가 어떤 config옵션으로 구동중인지 확인하고 그 옵션을 어떻게 수정하면 최적화되는지를 테스트 하는 코드가 아니냐? 왜 운영 서버 .env에서 벤치를 어느 단으로 돌리는지 물어보지?"*). 구판 G-A(운영 서버 단 확인)·G-B(벤치를 어느 단으로)를 **철회**하고, 사다리 단을 벤치 첫 구간의 축으로 재는 **M-0**(`109·CS-31` X1)을 신설했다. 신 G-A는 그에 따른 `109` 결정 ⑦ 개정 확인이다. M-2 `--expect-tier`(사람 지정)를 캠페인 상태 기반 단 일관성 검사로 바꿨다. §1 ①·권고·§3·§4.3·§6 갱신. P-2에 D-248 래핑 제약과 `status: partial` 처리를 추가했다(collectorinfra-07 통지 · 코드 실측 확인) |
 | 2026-09-23 | v1.2 | **G-A 확정(D-250 등재)** · **1단계 7건 랜딩**(§4.0 — P-1·P-6·P-8·M-2·M-3·M-6·M-7 · 신규 테스트 62건 + 기존 스위트 회귀 0 · 게이트 2종 통과). 구현 중 `기준선 단 ≠ 기준 경로`가 구간 실패로 들어간 것을 D-250 ③대로 고지로 되돌리고, **M-2 ①b(구간 간 기준선 단·설정 지문·커밋 기록·비교)**를 더했다(노이즈 바닥 제한은 잔여). 작업 중 트리 HEAD가 `ae67749`로 이동해 게이트를 새 HEAD 기준으로 다시 쟀다. 병행 세션 5곳(97·e3·36·d7·d9) 겹침 없음 회신 · e3의 113 회귀 테스트 2종 포함 실행 · d9의 관문 설계 조언 3건 반영 |
+| 2026-09-23 | v1.3 | **2단계 M-0·T-1 랜딩**(§4.0-b · D-250 ①~⑤ 구현 · 사용자 지시 *"이어서 구현하라"*). 다중 키 축(`109·CS-31` X1)을 일반 기제로 만들고 사다리 3키를 구조 축 `LADDER_TIER` 로 전개해 **캠페인 첫 구간**에 고정했다. 승자는 `compare.optima`(D-237)로 정해 `campaign.json` 에 남기고 남은 구간 **전 arm** 기준선에 주입한다. 관문은 캠페인 상태 기반(단 축 구간은 단 갈림 예외 · 주입 뒤는 승자 불일치 차단 · 단 축 전 다른 구간 차단 · 판정 불가는 멈춤). `continuity()` 에 구조 축 예외를 넣었다(승자 주입이 곧 단 전이라 예외 없이는 남은 구간이 전부 멈춘다). T-1 은 `_normalize_plan_exit` 를 `COMPOSITE_TASK_FRAME_ENABLED` 에서 뗐다. 신규 테스트 60건 · 4개 스위트 **2,725 passed** · 게이트 2종 통과 · ruff·mypy 신규 0 · `--mode dry` 첫 행 `ladder-1` arm 3 · **8.3시간**(≤ 9.0). 벤치 소유 세션 검토 5건(교착 방지 · 승자 arm 속도 · 노이즈 바닥 제외 · 판정 불가는 멈추지 않음 · 묶음 축 귀속)과 T-1 경계(조각 계약은 플래그 뒤 유지)를 반영했다. **랜딩 중 병행 세션이 D-249 → D-250 재부여와 커밋 `43d81bc` 를 했다** — 번호·커밋은 그 세션 소유이고 내용 유실은 없다 |
+| 2026-09-23 | v1.4 | **P-2 `status: partial` 판정 처리 확정**(사용자 지시 *"니가 직접 검증하여 계획을 업데이트하라"* · collectorinfra-07 실측). 110과 합의하기로 미뤄 둔 항목을 코드로 확인해 닫았다. 모의 partial done이 지금 규칙에서는 기능 불합격이고(카탈로그 `status: completed` 기대 124턴 전부 `status` 단언), 타임아웃 사유도 붙지 않아 타임아웃률이 내려간다. 그래서 **`timeout`과 같은 제거 사유**로 확정했다. 사유 어휘는 늘리지 않는다. 러너 행 `status` 칸 신설 등 같이 바꿀 곳 (a)~(d)를 P-2 행에 적었다. 검증 열의 `status=completed` 표기도 `partial`로 바로잡았고, 줄 번호가 흘러간 `sweep.py:620-645` 참조는 함수명으로 바꿨다 |

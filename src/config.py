@@ -564,11 +564,16 @@ class MultiDBConfig(BaseSettings):
     )
 
     # 존 그룹 상호배타(D-143 후속3): 은행존(b0)과 공동존(gp/yd)의 동시 조회 차단.
-    # 근거: ①담당 조직 분리로 존 조합 실수요 없음(사용자 확정 2026-08-05)
-    # ②b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈 회피.
-    # 원인 종결 시 off로 되돌릴 수 있도록 플래그화(ZONE_GROUP_EXCLUSIVE=false).
+    # **기본값 False = 동시 선택 개방**(D-206 · 2026-09-23 사용자 지시로 코드 기본값 전환).
+    # 도입 근거 ①"담당 조직 분리로 존 조합 실수요 없음"(2026-08-05 확정)은 2026-09-09
+    # 사용자 지시로 뒤집혔고, ②b0+gp 조합의 FabriX PII 차단(D-155 미종결)은 실행기가 존
+    # 그룹별로 `_prepare_multi_run`을 새로 불러 한 run에 재료를 섞지 않는 것으로 회피한다.
+    # 종전 기본값 True는 운영 `.env` 한 줄(ZONE_GROUP_EXCLUSIVE=false)로만 열려 있었는데,
+    # `.env`는 git 미추적이라 그 줄이 없는 배포·클론이 확정과 반대로 동작했다.
+    # `plans/80` §5.4-③(신규 플래그 기본 off = 비트 동일)의 명시적 예외 — 기존 플래그의
+    # 기본 동작 전환이다. True로 되돌리면 D-143 후속3 동작(그룹 간 라디오)이 전부 복원된다.
     zone_group_exclusive: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices(
             "ZONE_GROUP_EXCLUSIVE", "MULTI_DB_ZONE_GROUP_EXCLUSIVE"
         ),

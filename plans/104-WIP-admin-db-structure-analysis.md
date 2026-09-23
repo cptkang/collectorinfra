@@ -1,7 +1,7 @@
 # 104. DB 구조 분석을 질의 경로 HITL에서 관리자 페이지로 — MCP 연결 DB 목록 · 신규 시스템 연동(스키마 수집·캐시 등록·준비도) · 스키마 변경·신규 내용 점검 · 구조 분석 초안·승인·버전
 
 > **작성일**: 2026-09-17 · **v2** 2026-09-17(신규 시스템 연동 보완) · **v4** 2026-09-17(게이트 확정 · 구현)
-> **상태**: **구현 완료 — 계획 WU 잔여 0**(2026-09-21) — 게이트 G-1~G-11 사용자 확정(§7) · A-1~A-8·A-10·B-1~B-8 · 후속 C-1~C-6(§11.4 · A-9는 목 검증 · C-4는 **D-232 본문 등재**) 전건 완료. **남은 것**: 1·2단 경로의 인가 미적용(§11.5 U-6) · 사용자 몫(실 mlx 실측 §3.8.7 · 실브라우저 · 운영 MCP bearer 요구 여부 · 운영 반영 전 체크 2건) — 그래서 파일명은 `-WIP`
+> **상태**: **구현 완료 — 계획 WU 잔여 0**(2026-09-21) — 게이트 G-1~G-11 사용자 확정(§7) · A-1~A-8·A-10·B-1~B-8 · 후속 C-1~C-6(§11.4 · A-9는 목 검증 · C-4는 **D-232 본문 등재**) 전건 완료. **남은 것**: 1·2단 경로의 인가 미적용(§11.5 U-6) · **(v9 · 2026-09-23) A-9 실 mlx 실측 완료 — 결함·잔여 R-1~R-7(§11.6)** · 사용자 몫(실브라우저 · 운영 MCP bearer 요구 여부 · 운영 반영 전 체크 2건 · `itam.yaml` 처분 결정) — 그래서 파일명은 `-WIP`
 > **성격**: 구현 계획 + 구현 현황(§11)
 > **요청 취지(사용자 지시 원문, 2026-09-17)**: *"구조 승인 기능은 admin 페이지에 mcp로 연결된 db리스트를 보여주고 각 db별 스키마 업데이트나 신규 내용을 조회하여 구조 분석을 통해 향후 사용할 수 있도록 정리하는 기능을 추가하라. 위 요건에 맞게 계획을 수정하라."*
 > **v2 보완 지시(원문, 2026-09-17)**: *"104번 계획에서 신규 시스템 연동시 db 스키마 분석 및 캐스 등록 등에 대한 기능을 계획서에 보완하라."* — "캐스"는 **캐시**로 읽었다(스키마 캐시 등록). 반영: U5·U6(§0.1) · 실측 §1.7 · R8~R11(§2) · 설계 §3.8 · S5(§3.7) · 트랙 B(§4) · G-7~G-9(§7)
@@ -393,7 +393,7 @@
 
 #### 3.8.7 (v6) 사용자 직접 실측 절차 — 로컬 mlx·MCP로 A-9 전 과정 돌리기
 
-> A-9의 **자동 검증은 목**으로 끝냈다(`tests/test_schema_cache/test_plan104_a9_mock_rig.py` 10건 — 목 MCP·목 LLM·인메모리 Redis·tmp 프로필). 아래는 **사용자가 실제 서버로 직접 확인할 때** 쓰는 절차다. 에이전트는 이 절차를 실행하지 않는다(공유 자원 사용 승인 없음).
+> A-9의 **자동 검증은 목**으로 끝냈다(`tests/test_schema_cache/test_plan104_a9_mock_rig.py` 10건 — 목 MCP·목 LLM·인메모리 Redis·tmp 프로필). 아래는 실제 서버로 확인할 때 쓰는 절차다. **(v9) 2026-09-23 사용자 지시("에이전트를 이용하여 실측해봐라")로 에이전트가 이 절차를 실행했고**, 그때 드러난 절차 오류 4건(D1~D4)을 아래에 고쳐 두었다 — 결과는 §11.6.
 
 **0. 사전 확인(과금·공유 자원)**
 ```bash
@@ -403,15 +403,19 @@ grep -nE '^(LLM_PROVIDER|ORCHESTRATOR_PROVIDER|DB_BACKEND|DBHUB_SERVER_URL|ACTIV
 
 **1. 격리 환경으로 서버 기동**(공유 Redis db0·기본 캐시 디렉터리를 건드리지 않는다)
 ```bash
-REDIS_DB=15 SCHEMA_CACHE_DIR=.cache/schema_rig SERVER_PORT=18140   .venv/bin/python -m src.main --server
+REDIS_DB=15 SCHEMA_CACHE_CACHE_DIR=.cache/schema_rig API_HOST=127.0.0.1 API_PORT=18140 \
+  .venv/bin/python -c "import uvicorn; uvicorn.run('src.api.server:app', host='127.0.0.1', port=18140, reload=False)"
 ```
 `REDIS_DB=15`가 스키마 캐시·잡·적용본 캐시를 전부 격리한다. 버전 이력은 `.cache/structure/`(gitignore)에 쌓인다.
+- **(v9 D1 정정)** 초판의 `SERVER_PORT`·`SCHEMA_CACHE_DIR`는 **없는 변수라 조용히 무시된다**(기본 포트 8000·기본 캐시 디렉터리로 떠서 공유 캐시 격리가 깨진다). 실제 변수는 `API_PORT`(`ServerConfig` env_prefix `API_` · `src/config.py:467`)와 `SCHEMA_CACHE_CACHE_DIR`(`src/config.py:664`)다. 기동 로그의 `Redis 연결 성공: localhost:6380/15`와 포트로 격리가 먹었는지 확인한다.
+- **(v9 D2 정정)** `python -m src.main --server`는 `reload=True`로 뜬다(`src/main.py:106`). 여러 세션이 파일을 동시에 고치는 작업 트리에서는 측정 중 서버가 재기동돼 잡·in-memory 상태가 사라지므로 위처럼 **reload 없이** 띄운다.
+- Redis는 이 맥에서 도커 `collectorinfra-redis`의 **6380**이다(`.env` `REDIS_PORT`). `redis-cli`에는 항상 `-p 6380`을 붙인다.
 
 **2. 관리자 화면**: `http://127.0.0.1:18140/admin` → 「DB 구조」 탭.
 1. 목록에서 대상 소스(예: `itam`)의 연결·엔진·등록·활성·구조 상태를 확인한다.
 2. **신규 연동**: O-1 연결·서버 변수 → O-2 스키마 수집·캐시 등록 → O-3 범위·예상 LLM 호출 수 확인 → O-4 설명 초안 → 검토 후 적용 → O-5 DB 설명 → O-6 구조 분석 → 초안의 **검증 4종**과 **필드별 diff**를 보고 승인.
 3. 승인 직후 `config/db_profiles/{db_id}.yaml`과 `.cache/structure/{db_id}/versions/`를 확인한다(로컬이면 프로필에 `environment: local_sandbox` 표기).
-4. 「되돌리기」로 v0 복원이 원문 그대로인지 한 번 확인한다.
+4. 「되돌리기」로 복원이 원문 그대로인지 한 번 확인한다. **(v9 D4 정정)** v0(`baseline`)는 승인 직전에 **현행 프로필 파일이 있을 때만** 생긴다(`src/schema_cache/structure_store.py:499`). 신규 DB(itam 등)는 v0가 없어 `versions/0/rollback`이 404이고, "구조 없음"으로 되돌리는 API도 없다(§11.6 잔여 R-4) — 신규 DB에서는 승인 버전(v1)으로 되돌려 새 버전(v2 `rollback`)이 생기고 현행 파일이 v1 원문과 바이트 동일한지 본다. 기존 프로필이 있는 DB(폴스타 로컬 `polestar`)면 v0 복원을 확인할 수 있다.
 
 **3. 질의 확인**(같은 서버에서)
 ```bash
@@ -423,7 +427,7 @@ curl -s -X POST http://127.0.0.1:18140/api/v1/query -H 'Content-Type: applicatio
 **4. 결과 처리**
 - **승인으로 생긴 `config/db_profiles/{db_id}.yaml`은 지우지 않고 남긴다**(사용자 결정 2026-09-17). 같은 저장소를 쓰는 **병행 세션에 통지**한다 — 그 DB의 질의 경로가 즉시 이 파일을 읽는다.
 - 커밋은 사람이 판단한다. 로컬 샌드박스 표기(`environment: local_sandbox`)가 붙은 프로필은 **커밋하면 품질 게이트 테스트가 실패한다**(`test_plan104_local_sandbox_profile_gate.py` — D-214 ⑥ 준수 장치).
-- 원상복구: 임시 서버 종료 · `redis-cli -n 15 flushdb` · `.cache/schema_rig` 삭제. 버전 이력을 지우려면 `.cache/structure/{db_id}/` 삭제(적용본 캐시 복원 원천이 사라지므로 프로필 파일이 있는지 먼저 확인).
+- 원상복구: 임시 서버 종료 · `redis-cli -p 6380 -n 15 flushdb`(**(v9 D3 정정)** 초판은 `-p 6380`이 빠져 기본 6379로 붙는다 — 2026-09-23 이 맥에서는 6379가 떠 있지 않아 연결 거부로 끝나 **격리 db15가 비워지지 않고**, 6379에 다른 Redis가 뜬 환경이면 엉뚱한 db15를 비운다) · `.cache/schema_rig` 삭제. 버전 이력을 지우려면 `.cache/structure/{db_id}/` 삭제(적용본 캐시 복원 원천이 사라지므로 프로필 파일이 있는지 먼저 확인).
 
 ---
 
@@ -572,6 +576,7 @@ curl -s -X POST http://127.0.0.1:18140/api/v1/query -H 'Content-Type: applicatio
 | v6 | 2026-09-17 | **재개 권고 정리**(사용자 지시 *"권고에 맞게 계획파일에 정리하라."*). §11.5 신설 — 미검증 항목 5건(C-1 뒤 넓은 스위트 · C-1 코드 검토 · 실 환경 종단 · 실브라우저 · 운영 MCP bearer 요구 여부) · 재개 순서 R-0(C-1 확정 검증) → C-5 → C-2 → C-3 → C-6 → C-4 · 순서 근거 · 운영 반영 전 체크 위치. 머리말 상태 줄에 순서 요약 |
 | v7 | 2026-09-21 | **중단 작업 재개 — C-1~C-3·C-5·C-6 완료**(사용자 지시 *"중단한 작업을 재개하라"*). C-2 후속·승인·폼필 답변 턴 델타에 현재 토큰 `user_role`·`allowed_db_ids` 재주입(강등 사용자 거절 테스트 포함) · C-3 거절 문구에 `scripts/schema_cache_cli.py` 안내 · C-5 소스 오버라이드를 `model_copy`로 바꿔 `bearer_token` 누락 해소(두 경로) · C-6 A-9 목 통합 검증 10건 + **§3.8.7 사용자 직접 실측 절차서** 신설 · `docs/18` 2건 기록. 검증: 재개 기준선(C-1 반영본) 3,692 passed·5 failed(기존) → 변경 뒤 관련 스위트 3,282 passed·10 failed(기존 4 + 병행 세션 plans/102 진행 중 편집 5 + 동시 편집으로 흔들린 쓰기 지문 1 — 단독 실행 통과) · arch error 0 · overfit 신규 0 · ruff·mypy 파일별 기준선 동일. 잔여: **C-4**(코드 0 · D-232 예약) |
 | v8 | 2026-09-21 | **C-4 구현 — 사용자별 DB 조회 인가 강제**(사용자 결정 "(a) 범위 확장" · **D-232 본문 등재**). 신규 `src/routing/db_authz.py`(`None`=전체·`[]`=없음·목록=교집합 · 관리자 전체 허용) · `graph.py`가 라우터 노드를 감싸 모든 반환 경로에 한 번 강제하고 인가 0이면 `access_denied`+사유로 END · 가입 기본값 = `AUTH_DEFAULT_ALLOWED_DB_IDS`(빈 값이면 없음 · 기존 사용자 불변) · `general_inference` `[]` 의미 통일 · 미소비 키 20→19 · 준비도 C10·도움말 정정 · 관리자 DB 권한 편집 UI. 테스트 52건 신규(인가 32 · UI 20) + 기존 2건 새 계약 교체 · 회귀 2,774 passed·5 failed(기존 4 + 병행 세션 동시 편집으로 흔들린 쓰기 지문 1 — 단독 통과) · arch 0 · overfit 0 · ruff·mypy 기준선 동일 |
+| v9 | 2026-09-23 | **A-9 실 환경 실측(에이전트 실행)**(사용자 지시 *"에이전트를 이용하여 실측해봐라"* · *"반영하라"*). 로컬 mlx(두 평면 비과금 확인)·MCP 9099·MariaDB 3307·Redis 6380 db15 격리·임시 포트 18140으로 itam O-1~O-6·승인·되돌리기·준비도·질의 전 과정 수행 — 흐름 통과 · 필수 준비도 4/7→7/7. **결함 1**(넓은 테이블 설명 초안 결정적 실패) · **절차서 오류 4건 정정**(§3.8.7 D1 변수명 · D2 reload · D3 `redis-cli -p` · D4 신규 DB v0 없음) · 품질 관찰 5건 · 로컬 MCP 9099 무인증 확인. 결과·잔여 = §11.6. 코드 변경 0 |
 ---
 
 ## 11. 구현 현황 (v4 · 2026-09-17)
@@ -589,7 +594,7 @@ curl -s -X POST http://127.0.0.1:18140/api/v1/query -H 'Content-Type: applicatio
 | A-6 | 완료(G-2·G-4 확정 설계) | `src/domain/profile_merge.py` · `StructureStore.apply_profile`·`rollback`·버전 `.cache/structure/{db_id}/versions/` · 승인·반려·되돌리기·차이 보고서 |
 | A-7 | 완료 | `dashboard.html` 「DB 구조」 탭 · `src/static/js/admin-db-structure.js` · 비로그인 401·비관리자 403·관리자 200(TestClient) — 실브라우저 미검증 |
 | A-8 | 완료 | 구조 승인 HITL·질의 중 LLM 분석·자동 기록·`ENABLE_STRUCTURE_APPROVAL` 삭제 · 사유 노출(3단 본문 `[안내]` · 2단 집계 블록 1회 · 멀티 대칭) · 구 승인 대기 스레드 해제 |
-| **A-9** | **목 검증 완료** | 사용자 확정대로 **목으로만** 검증(MCP 9099·mlx 8080·실 Redis·임시 앱 서버 미사용). `tests/test_schema_cache/test_plan104_a9_mock_rig.py` 10건 — 목록(MCP만 있음·활성인데 구조 없음) → 등록(`get_table_schema` 호출 = 테이블 수 · 지문 SQL 미호출) → 설명 초안·제외 적용 → 점검(타입 변경·구조 영향·신규 코드값) → 분석·승인(tmp 프로필에 `source: manual` · v0 baseline 보관 · `rollback(0)` 원문 바이트 동일) → 질의(캐시 히트 · 수집·LLM 설명·구조 분석 0 · `_structure_meta` 부착) → 준비도(조각 반영 뒤 필수 7/7·권장 2/2) → **실제 `config/`·`.cache/structure/` 쓰기 0 지문 비교**. 실 mlx·실 MCP 실측은 **사용자가 직접** 수행한다 — 절차서 §3.8.7 |
+| **A-9** | **목 검증 + 실측 완료(잔여 §11.6)** | 사용자 확정대로 **목으로만** 검증(MCP 9099·mlx 8080·실 Redis·임시 앱 서버 미사용). `tests/test_schema_cache/test_plan104_a9_mock_rig.py` 10건 — 목록(MCP만 있음·활성인데 구조 없음) → 등록(`get_table_schema` 호출 = 테이블 수 · 지문 SQL 미호출) → 설명 초안·제외 적용 → 점검(타입 변경·구조 영향·신규 코드값) → 분석·승인(tmp 프로필에 `source: manual` · v0 baseline 보관 · `rollback(0)` 원문 바이트 동일) → 질의(캐시 히트 · 수집·LLM 설명·구조 분석 0 · `_structure_meta` 부착) → 준비도(조각 반영 뒤 필수 7/7·권장 2/2) → **실제 `config/`·`.cache/structure/` 쓰기 0 지문 비교**. **(v9) 실 mlx·실 MCP 실측 완료(2026-09-23 · 에이전트 실행 · 사용자 지시)** — 흐름 통과, 결함·잔여는 §11.6 |
 | A-10 | 완료 | D-227 등재 · D-011·D-020·D-135·D-203·D-228 부기 · `docs/05`·`06`·`07`·`09`(새 DB 추가 절차 교체)·`flag_audit` · `docs/18` 4건 · INDEX · `plans/102` X-T8·G-8 부기 |
 | B-1 | 완료 | `schema:{db_id}:registration` · 준비도 C1~C10 순수 함수(`src/domain/db_readiness.py`) · `/status` 설명·유사어 실제 건수 |
 | B-2 | 완료 | 관계를 MCP 테이블별 FK 응답에서 파생 — PG 동등성 실측(로컬 5433 FK 4=4 · polestar 0=0) 후 일원화 · 종전 PG 전용 FK SQL 삭제 · MariaDB(itam 샌드박스 FK 0 — 종전 SQL은 `constraint_column_usage` 부재로 실패) · DB2 목 |
@@ -658,3 +663,38 @@ curl -s -X POST http://127.0.0.1:18140/api/v1/query -H 'Content-Type: applicatio
 - 각 단계 뒤 `arch_check --ci`·`overfit_check --ci`(기준선 전면 재생성 금지)와 해당 테스트를 돌린다. 커밋 시점은 사용자가 정한다.
 - **운영 반영 전 체크 2건**(§11.3 — 운영 Redis 설명 건수 실측·선채움 · 운영 `.env` `SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS` 줄 삭제)은 위 순서와 무관하게 **배포 직전**에 한다. 운영에서 달라지는 동작: 질의 중 LLM 설명 생성 없음 · 구조 정보·설명이 없는 DB 응답에 `[안내]` 노트.
 - 기존 결함 2건(§11.4 아래)은 이 순서에 넣지 않는다 — 별도 과제.
+
+### 11.6 (v9) A-9 실 환경 실측 결과 — 2026-09-23
+
+**조건**: 사용자 지시로 에이전트가 §3.8.7(정정본)을 실행. 두 평면 `mlx`(`scripts.bench --show-env` 확인 · 비과금) · MCP 9099(읽기) · itam MariaDB 3307 · Redis 6380 **db15** 격리(기동 로그 `Redis 연결 성공: localhost:6380/15`) · 임시 포트 18140 · reload 없음. LLM 호출 수는 계측 프록시(18081→8080, 본문 그대로 전달), MCP 호출 수는 스크래치 런처의 `DBHubClient._call_tool` 래핑으로 셌다(추적 파일 수정 0). 인증이 꺼진 환경(`AUTH_ENABLED` 미설정)이라 관리자 작업은 `anonymous`로 기록됐다. 증거는 세션 스크래치 `a9/`(server.log · llm_calls.jsonl · mcp_calls.jsonl · 단계별 응답 JSON 13건). **MLX 결과라 성능 결론은 내지 않는다**(D-174).
+
+| 단계 | 결과 | 근거 |
+|---|---|---|
+| 소스 목록 | 통과 | itam: mariadb · MCP 있음 · 등록·활성 · 구조 없음 경고 `active_without_structure` · 준비도 필수 4/7(C5·C6·C7 미충족) |
+| O-1·O-2 | 통과 | 서버 변수(11.4.13-MariaDB · `lower_case_table_names=0` 등) · 테이블 2 · MCP `get_table_schema` 2회 = 테이블 수 · `execute_sql`은 서버 변수 SELECT 1회뿐(지문 SQL 0) |
+| O-3 | 통과 | 예상 LLM: 설명 2 · 구조 1 · DB 설명 1 · 동시성 1(env 반영) |
+| O-4 | **부분 실패** | TCDMSIF79(9컬럼) 성공 14.8s · **TCDMSIF80(68컬럼) `finish_reason=length`로 잘려 파싱 실패**(90s · 실패분 재실행도 같은 길이로 재현) · 예상 2 = 실측 2 · TCDMSIF80 제외 적용 = LLM 0 · 설명·유사어 9건 |
+| O-5 | 통과 | 초안 LLM 1회 = 예상 · 출처 `llm`으로 적용 |
+| O-6·승인 | 통과(품질 문제) | 구조 LLM 1회 = 예상 · 검증 4종 통과 · field_diff 4건 · 차이 보고서 `# LOCAL SANDBOX` · v1 승인 · 프로필에 `source: manual`·`environment: local_sandbox` |
+| 되돌리기 | 절차서와 다름 → §3.8.7 D4 정정 | 신규 DB라 v0 없음(404) · v1로 되돌려 v2(`rollback`) 생성 · 현행 파일 = v1 원문 바이트 동일 |
+| 준비도 | 통과 | 필수 4/7 → 7/7 · 권장 0/2 → 2/2 |
+| 질의 | 통과(품질 문제) | "자산관리 DB에서 서버 호스트명과 IP 주소를 10건 보여줘" → 10행 정확 · 로그 `Redis/파일 캐시 히트` · `수동 프로필 로드` · 질의 중 MCP는 `execute_sql` 3회뿐(전체 수집 0) · 컬럼 설명·구조 분석 LLM 0 · 경로는 `.env` 확정 1단 `deep_agent` |
+| MCP 9099 bearer | **로컬만** 무인증 | 토큰 없는 `GET /sse`가 200 · `mcp_server/.env`에 토큰 키 없음 · 운영 MCP 요구 여부(U-5)는 여전히 미확인 |
+
+**미해소 → U-3 해소**(실 환경 종단). **U-4**(실브라우저)·**U-5**(운영 MCP)는 유지.
+
+**잔여(코드 변경 0 — 착수는 사용자 결정)**
+
+| # | 종류 | 내용 | 근거 |
+|---|---|---|---|
+| R-1 | **결함** | 넓은 테이블은 설명 초안이 구조적으로 실패한다 — 테이블당 LLM 1회에 컬럼 전부를 싣고 나누지 않아 출력이 `max_tokens`(4096)를 넘는다. 폴스타의 넓은 테이블도 같은 위험이 있다(운영 FabriX 재현 여부 미확인). 방향: 컬럼 묶음 분할 호출 또는 테이블 컬럼 수 기준 분할 | `src/schema_cache/description_generator.py` `generate_for_table`(:135) |
+| R-2 | 품질 | 구조 분석이 FK 없는 복합키 조인을 못 보고 `query_guide`에 "JOIN 관계 없음"으로 적었다 — 이 문장이 질의 프롬프트에 주입된다. 검증 4종은 이런 **부재 단정**을 거르지 못한다 | `config/db_profiles/itam.yaml` · 실제 조인 `testdata/itam/schema.yaml:139-140`(3열 복합) |
+| R-3 | 품질 | 질의에 쓰인 테이블의 설명이 0건이어도 `[안내]`가 없다 — `descriptions_missing`은 DB 전체 설명이 비었을 때만 발동해 부분 커버리지는 조용히 품질이 떨어진다 | `src/nodes/schema_analyzer.py:763` |
+| R-4 | 기능 공백 | 신규 DB를 "구조 없음"으로 되돌리는 경로가 없다(v0 부재) | `src/schema_cache/structure_store.py:499` |
+| R-5 | 비대칭 | 질의 경로는 수동 프로필에서 `source`만 빼고 `environment`를 남긴다 — 관리자 서비스는 둘 다 뺀다 | `src/nodes/schema_analyzer.py:709` vs `src/schema_cache/db_structure_service.py:644` |
+| R-6 | 품질(104 밖) | 1단 `deep_agent` 오케스트레이터가 질문을 없는 테이블명(`asset_management`) SQL로 바꿔 워커에 넘겨 응답 본문에 노출(데이터는 정확) | 1단 경로 — plans/103·D-225 소관 |
+| R-7 | **결정 대기** | 실측이 남긴 `config/db_profiles/itam.yaml`(untracked · `local_sandbox`)을 병행 세션의 itam 질의가 지금 읽는다 — R-2 문구 포함. 또 `testdata/itam/README.md:9`의 **파생 금지** 문구와 충돌한다(v4 로컬 샌드박스 규칙 이전 문구). 처분(문구 수정 / 파일 치움 · README 개정 여부)은 사용자 결정 | §3.8.7 4. 결과 처리 |
+
+**측정 못 한 것**: D-232 비관리자 인가(인증 꺼짐 — 계정 생성 회피) · O-7 시드·값 인덱스(시드 파일 없음 · 값 인덱스는 EAV 전용) · O-9 설정 탭 활성화(itam 이미 활성) · 점검 잡 · 운영 Redis 설명 건수.
+
+**남은 산출물**: `config/db_profiles/itam.yaml`(untracked — 커밋하면 `test_plan104_local_sandbox_profile_gate.py` 실패) · `.cache/structure/itam/`(v1·v2·descriptions.yaml · gitignore). 임시 서버·프록시 종료 · db15 비움 · `.cache/schema_rig` 삭제 완료. 공유 감사 로그와 `checkpoints.db`에 이번 관리자 작업·질의 1건이 남았다.

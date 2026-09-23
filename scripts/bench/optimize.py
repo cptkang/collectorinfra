@@ -24,6 +24,7 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from scripts.bench import axes as axes_mod
 from scripts.bench import catalog as cat_mod
 from scripts.bench import compare as cmp_mod
 from scripts.bench import validate as val_mod
@@ -252,6 +253,33 @@ def axis_disposition_inputs(
     return verdicts, recommended
 
 
+def _structural_axis(axis_id: str) -> Optional[axes_mod.AxisCandidate]:
+    """구조 축이면 그 정의, 아니면 None. 정의를 못 읽으면 None(단일 키로 취급한다)."""
+    try:
+        return axes_mod.find_axis(axis_id)
+    except Exception:
+        return None
+
+
+def _is_structural(axis_id: str) -> bool:
+    return _structural_axis(axis_id) is not None
+
+
+def _axis_env_pairs(axis_id: str, level: str) -> list[tuple[str, str]]:
+    """축 id·레벨 → **실제로 `.env` 에 적을 키·값**.
+
+    단일 키 축이면 `[(축 id, 레벨)]` 그대로다(종전 동작). 다중 키 축(`109·CS-31` X1)이면 그
+    레벨이 정하는 키 전부다 — 축 id 를 env 키로 적으면 존재하지 않는 설정이 제안서에 실린다.
+    """
+    axis = _structural_axis(axis_id)
+    if axis is None:
+        return [(axis_id, level)]
+    try:
+        return sorted(axis.env_for(level).items())
+    except KeyError:
+        return [(axis_id, level)]
+
+
 def render_recommended_env(
     optima: Sequence["cmp_mod.AxisOptimum"],
     *,
@@ -270,18 +298,34 @@ def render_recommended_env(
         "#",
     ]
     changes = 0
-    for opt in sorted(optima, key=lambda o: o.axis):
+    # **구조 축(사다리 단)이 1순위다**(plans/114 M-0 · D-250 ②) — 서버 `.env` 의 단과 이긴 단이
+    # 다르면 그것이 가장 큰 설정 차이이고, 나머지 축 권고는 전부 그 단 위에서 잰 값이다.
+    for opt in sorted(optima, key=lambda o: (not _is_structural(o.axis), o.axis)):
         word, value, reason = axis_verdict_word(opt)
         if word != cmp_mod.ADOPT or value is None:
             lines.append(f"# {opt.axis}: 권고 없음 — {reason}")
             continue
-        current = (baseline_effective or {}).get(opt.axis)
-        if current is not None and str(current).strip().lower() == value.strip().lower():
-            lines.append(f"# {opt.axis}: 이미 권고값({value})이다 — 변경 없음")
+        # 다중 키 축은 축 id 가 env 키가 아니다 — 레벨이 주입하는 **실제 키들**로 펼친다.
+        pairs = _axis_env_pairs(opt.axis, value)
+        stale = [(key, val) for key, val in pairs
+                 if str((baseline_effective or {}).get(key, "")).strip().lower()
+                 != val.strip().lower()]
+        single = len(pairs) == 1
+        if not stale:
+            shown = value if single else ", ".join(f"{k}={v}" for k, v in pairs)
+            lines.append(f"# {opt.axis}: 이미 권고값({shown})이다 — 변경 없음")
             continue
-        lines.append(f"# {opt.axis}: {reason}"
-                     + (f" (현행 {current})" if current is not None else ""))
-        lines.append(f"{opt.axis}={value}")
+        if single:
+            current = (baseline_effective or {}).get(opt.axis)
+            note = f" (현행 {current})" if current is not None else ""
+        else:
+            note = " (현행: " + ", ".join(
+                f"{k}={(baseline_effective or {}).get(k, '?')}" for k, _ in pairs) + ")"
+        lines.append(f"# {opt.axis}: {reason}{note}")
+        if len(pairs) > 1:
+            lines.append(f"#   `{opt.axis}` 은 **다중 키 축**이다 — 레벨 `{value}` 가 아래 "
+                         f"{len(pairs)}키를 함께 정한다(따로 바꾸면 그 레벨이 아니다)")
+        lines += [f"{key}={val}" for key, val in pairs]
         changes += 1
     if not changes:
         lines += ["#", "# **권고 변경 0건.** 측정에서 기본값을 바꿀 근거가 나오지 않았다."]

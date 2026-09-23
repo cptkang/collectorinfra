@@ -401,6 +401,13 @@ TIER_AXIS_CAVEAT = (
     "미완이다(`plans/103` P5)** — 3단 레벨의 기능 불합격은 결함이 아니라 아직 옮겨지지 않은 "
     "기능일 수 있으니 103 잔여와 대조해 읽을 것")
 
+#: 묶음 축의 **효과 귀속** 주의(벤치 소유 검토 ⑤). 레벨 하나가 `ENABLE_*` 3키를 함께 정하므로
+#: 델타를 어느 한 키의 효과로 읽으면 안 된다 — 키를 따로 바꾸면 그 레벨이 아니다.
+TIER_AXIS_ATTRIBUTION = (
+    "이 판정은 **플래그 3종 묶음**(`" + "`·`".join(axes_mod.LADDER_ENV_KEYS) + "`)의 효과이지 "
+    "개별 키의 효과가 아니다 — 레벨 하나가 세 키를 함께 정한다. 한 키만 바꾼 값은 이 측정의 "
+    "어느 레벨도 아니다")
+
 
 def tier_context(
     arms: Sequence[ArmSpec], snapshot: Optional[ConfigSnapshot],
@@ -1095,8 +1102,18 @@ class RunHealth:
         """**구간 실패로 보는** 측정 자격 문제 — 단 갈림(①)·타임아웃률(②).
 
         기준선 단 고지(`tier_notes`)는 넣지 않는다 — 판정문에만 실린다(D-250 ③).
+
+        **사다리 단 축 구간에서는 타임아웃률을 실패로 세지 않는다**(D-250 · 벤치 소유 검토 ①
+        교착 방지). 이유 둘. ①단 축 구간에서는 **타임아웃 자체가 비교 대상**이다 — 단이 지연을
+        바꾸므로 한쪽 단의 타임아웃이 많은 것이 곧 그 단의 측정 결과다. ②첫 구간에서 승자를 못
+        뽑으면 **이후 모든 구간이 막힌다** — 1구간 실측이 42.6%였고(`plans/114` §2.3) 3단에서도
+        텍스트 타임아웃 93턴 중 최소 59턴은 60초를 넘는다(§2.4 · 운영 `.env` 는
+        `API_QUERY_TIMEOUT=60` 을 명시해 D-242 코드 기본 120이 적용되지 않는다). 실패로 두면
+        사다리 축이 자기 관문에 걸려 캠페인이 시작조차 못 한다.
+        **고지는 남는다**(`warnings()`) — 조용히 빼지 않고, 승자 판정에도 완주율·지연으로 실린다.
+        이 예외는 **단 축 구간에만** 걸린다. 그 뒤 구간은 종전대로 실패다.
         """
-        timeout = self.timeout_problem()
+        timeout = None if self.tier_axis else self.timeout_problem()
         return self.tier_problems() + ([timeout] if timeout else [])
 
     def warnings(self) -> list[str]:
@@ -1138,6 +1155,15 @@ class RunHealth:
                 f"`raw.jsonl` 에 두 판의 결과가 있다 — arm 차이가 판 차이와 교란될 수 있다")
         notes.extend(self.tier_notes())
         notes.extend(self.qualification_problems())
+        # 단 축 구간의 타임아웃은 **실패가 아니라 고지**다(위 `qualification_problems` 참조).
+        # 빠뜨리면 42.6% 짜리 구간이 화면에 아무 표시 없이 「완료」로 지나간다.
+        if self.tier_axis:
+            timeout = self.timeout_problem()
+            if timeout:
+                notes.append(
+                    f"{timeout} — **단 축 구간이라 실패로 세지 않는다**(승자를 못 뽑으면 이후 "
+                    "모든 구간이 막힌다). 단이 지연을 바꾸므로 타임아웃 차이 자체가 이 구간의 "
+                    "측정 결과다 — 승자 판정의 완주율·지연으로 읽을 것")
         return notes
 
     def stop_reasons(self) -> list[str]:
@@ -1259,6 +1285,39 @@ def canonical_tier() -> str:
     from src.observability.ladder import LadderTier
 
     return LadderTier.SEMANTIC_ROUTER.value
+
+
+def arm_rate(raw_path: Path, arm_id: str, elapsed_sec: float) -> Optional[tuple[float, int]]:
+    """arm 하나의 `(턴당 초, arm 당 턴)` — **구간 평균을 쓰지 않으려고** 낸다(plans/114 M-0).
+
+    단 축 구간에는 **속도가 다른 두 단이 섞인다**(3단은 `intent_planner`·`replanner` 가 빠지고
+    라우터 LLM 1회가 붙는다). 그 구간의 평균으로 남은 구간을 재계획하면 지지 않은 단의 속도가
+    섞여 들어간다 — 남은 구간은 **이긴 단으로만** 돌기 때문이다(벤치 소유 검토 ②).
+
+    턴 수는 원시 로그에서 정확히 센다. 초/턴은 구간 전체 경과를 **그 arm 의 응답 시간 몫**
+    (`wall_ms` 비율)으로 나눠 배분한다 — 러너 오버헤드(기동·검증)까지 포함한 값을 유지하면서
+    arm 간 속도 차이를 반영하는 유일한 방법이다(러너는 arm 별 경과를 따로 남기지 않는다).
+    **추정임을 감춘 값이 아니다** — 호출부가 `RateModel.source` 에 그 사실을 적는다.
+
+    쓸 수 없으면 None(턴 0 · `wall_ms` 전무 · 경과 0). 그때는 구간 평균으로 내려가지 말고
+    기본값을 쓴다 — 섞인 평균보다 낫다.
+    """
+    rows = read_raw_rows(raw_path)
+    if not rows or elapsed_sec <= 0:
+        return None
+    turns = 0
+    wall = 0.0
+    total_wall = 0.0
+    for row in rows:
+        value = row.get("wall_ms")
+        value = float(value) if isinstance(value, (int, float)) else 0.0
+        total_wall += value
+        if arm_of(row) == arm_id:
+            turns += 1
+            wall += value
+    if not turns or total_wall <= 0 or wall <= 0:
+        return None
+    return (elapsed_sec * (wall / total_wall)) / turns, turns
 
 
 def baseline_as(baseline: Sequence[Observation], arm_id: str) -> list[Observation]:
