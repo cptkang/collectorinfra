@@ -37,7 +37,8 @@ def _req(user_repo):
         user_repo=user_repo,
         config=SimpleNamespace(audit=SimpleNamespace(retention_days=90)),
     )
-    return SimpleNamespace(app=SimpleNamespace(state=state))
+    # 실제 Request처럼 request.state를 둔다 — 사용자 관리 변경은 감사 기록 시 이를 읽는다
+    return SimpleNamespace(app=SimpleNamespace(state=state), state=SimpleNamespace())
 
 
 def _repo(target: User):

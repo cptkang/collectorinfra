@@ -56,6 +56,7 @@ from noise_gate.infrastructure.redis_queue import (
     read_messages,
 )
 from noise_gate.orchestration.alarm_graph import build_alarm_graph
+from noise_gate.orchestration.ticket_summary import run_ticket_summary_loop
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,8 @@ class AlarmWorker:
         # 활성 규칙 캐시 (만료 epoch, 규칙 목록) — 알람 1건마다 파일을 다시 읽지 않게 한다.
         self._silence_cache: tuple[float, list] = (0.0, [])
         self._ticket_queue = None  # (E3) TICKET 티어 일배치 요약 큐
+        # (결함 ⑬) 큐를 읽어 요약을 보내고 보존 한도를 지키는 주기 루프 — 큐가 있을 때만 뜬다.
+        self._ticket_summary_task: asyncio.Task | None = None
         self._feedback_store = None  # (E4) 운영자 피드백 few-shot 저장소
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
@@ -567,6 +570,11 @@ class AlarmWorker:
             group,
             self._config.alarm.min_severity,
         )
+        # (결함 ⑬) TICKET 일배치 요약·보존 정리 루프 — 큐가 없으면(게이트·큐 off) 띄우지 않는다.
+        if self._ticket_queue is not None:
+            self._ticket_summary_task = asyncio.create_task(
+                run_ticket_summary_loop(self._ticket_queue, self._config)
+            )
 
         try:
             while True:
@@ -580,6 +588,8 @@ class AlarmWorker:
                 for msg_id, fields in messages:
                     await self._process(r, stream_key, group, msg_id, fields, dedup)
         finally:
+            if self._ticket_summary_task is not None:
+                self._ticket_summary_task.cancel()
             await r.aclose()
             logger.info("알람 워커 종료")
 
@@ -1335,6 +1345,7 @@ class AlarmWorker:
 
         - 발생·해소 모두 상태 전이의 한 점이므로 시퀀스에 append한다(is_clear 제외하지 않음).
         - 직전 플래핑 상태(self._flap_flag)를 히스테리시스 입력으로 사용하고 갱신한다.
+        - 상태가 표본 하한(MIN_STATES=5) 미만이면 플래핑이 아니다(발생→해소→재발생 한 번 억제 방지).
         - flapping_enabled일 때만 호출된다(_process 게이트 경로) — off면 detection 미수행(회귀 0).
 
         만료 키 정리(메모리 일관성): 핑거프린트별 마지막 갱신 시각(self._flap_last_seen)을
@@ -1357,7 +1368,8 @@ class AlarmWorker:
         prev = self._flap_flag.get(fingerprint, False)
         cfg = self._config.noise_gate
         new = update_flap_state(
-            prev, percent, cfg.flap_high_threshold, cfg.flap_low_threshold
+            prev, percent, cfg.flap_high_threshold, cfg.flap_low_threshold,
+            samples=len(states),
         )
         self._flap_flag[fingerprint] = new
         self._flap_last_seen[fingerprint] = now

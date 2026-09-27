@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.orchestration.db_access import is_access_denied_result
 from src.prompts.replanner import REPLANNER_SYSTEM_TEMPLATE
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
@@ -90,6 +91,15 @@ async def replanner(
     ):
         logger.info("replanner: 존 역질문 대기 — 재계획 스킵(D-143 후속2)")
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
+    # 조회 권한 거부(D-232)는 결정적이다 — 다시 계획해도 같은 거부가 나온다. 전 task가 거부면
+    # LLM 재평가 없이 종료해 3단 `access_denied` 종결과 같은 응답을 남긴다(plans/116 §10.3 결함 ②).
+    # 일부만 거부된 복합 계획은 부분 실패처럼 종전대로 LLM이 평가한다(D-251 ⑤).
+    if _results_now and all(is_access_denied_result(r) for r in _results_now.values()):
+        logger.info("replanner: 전 task 조회 권한 없음(D-232) — 재계획 스킵")
+        return {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
 
     decision = await _llm_evaluate(
         llm,

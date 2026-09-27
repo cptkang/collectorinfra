@@ -27,6 +27,7 @@ from langchain_core.language_models import BaseChatModel
 
 from src.config import AppConfig
 from src.db import get_db_client
+from src.orchestration.db_access import access_denied_result, authorize_targets
 from src.utils.prior_targets import TargetRef
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,13 @@ async def run_host_inspect(
     )
 
     db_id = _resolve_db_id(task, isolated, sub_query, app_config)
+    # 사용자별 DB 인가(D-232 · plans/116 §10.3 결함 ②) — 존이 확정되지 않으면 아래
+    # `get_db_client`가 기본 소스(DBHUB_SOURCE_NAME)로 붙으므로 그 소스로 판정한다
+    # (대상 미확정을 인가 통과로 읽지 않는다).
+    inspect_db_id = db_id or getattr(getattr(app_config, "dbhub", None), "source_name", None)
+    if authorize_targets([{"db_id": inspect_db_id or "default"}], isolated) is None:
+        logger.info("host_inspect 인가 거부: db_id=%s", inspect_db_id)
+        return access_denied_result()
     resolution = resolve_investigation_targets(isolated, db_id=db_id)
     if not resolution.targets:
         logger.info("host_inspect 0건: 대상 미식별 db_id=%s source=%s", db_id, resolution.source)

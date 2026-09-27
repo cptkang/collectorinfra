@@ -73,6 +73,55 @@ code { font-family: 'D2Coding', ui-monospace, monospace; font-size: .92em; backg
 .slot pre { background: var(--code-bg); padding: 10px 14px; border-radius: 8px; overflow-x: auto; }
 .slot pre code { background: none; padding: 0; }
 
+/* 상세 설명(plans/116 §11.2 · 2026-09-27 개정) — 일반 설명은 본문에 보이고, 자세한 설명만 항목마다 「자세히」로 연다 */
+.slot-detail { border-top: 1px solid var(--border); padding-top: 12px; }
+.slot-detail > h4 { margin-bottom: 8px; }
+.detail-index { list-style: none; margin: 0 0 12px; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; font-size: 13px; }
+.detail-index > li { margin: 3px 0; }
+.detail-index > li > a { font-weight: 700; color: var(--text); text-decoration: none; margin-right: 8px; }
+.detail-index-items a { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px;
+    color: var(--accent); text-decoration: none; background: var(--surface); }
+.detail-index-items a:hover { background: var(--accent-bg); }
+.detail-topic { margin: 14px 0 6px; }
+.detail-topic-title { margin: 0 0 6px; font-size: 16px; color: var(--text); padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.detail-item { margin: 10px 0 12px; padding-left: 12px; border-left: 3px solid var(--accent-line); }
+.detail-item-title { margin: 0 0 2px; font-size: 14.5px; color: var(--accent); }
+.detail-item-lead p { margin: 2px 0; }
+.detail-more > summary { list-style: none; cursor: pointer; display: inline-flex; gap: 6px; align-items: baseline; font-size: 12.5px;
+    color: var(--muted); padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; margin: 4px 0; }
+.detail-more > summary::-webkit-details-marker { display: none; }
+.detail-more > summary::before { content: "▸"; color: var(--accent); transition: transform .15s; }
+.detail-more[open] > summary::before { transform: rotate(90deg); }
+.detail-more > summary:hover { background: var(--accent-bg); color: var(--accent); }
+.detail-more > summary:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+.detail-more-body { padding: 4px 4px 6px 12px; margin-top: 2px; background: var(--surface-2); border-radius: 8px; }
+.slot-detail { overflow-wrap: anywhere; }  /* 「a·b·c」처럼 공백 없는 긴 나열도 줄을 바꾼다 */
+/* 본문 속 항목 이름 — 누르면 그 자리 바로 아래에 설명이 펼쳐진다(manual.js) */
+a.term { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+a.term::after { content: " ▾"; font-size: .75em; }
+a.term[aria-expanded="true"]::after { content: " ▴"; }
+a.term:hover { background: var(--accent-bg); border-radius: 3px; }
+.term-panel { margin: 6px 0 10px; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--accent-line);
+    border-radius: 8px; font-size: 14px; overflow-wrap: anywhere; font-weight: 400; }
+.term-panel p { margin: 4px 0; }
+.term-panel-lead { font-weight: 500; }
+.term-jump { display: inline-block; margin-top: 4px; font-size: 12.5px; }
+.term-row > td { background: var(--surface-2); }
+.term-row .term-panel { margin: 0; border: 0; padding: 4px 2px; background: none; }
+.term-lead { color: var(--text); }
+.term-list { margin: 10px 0 4px; line-height: 2.1; }
+.term-list-label { font-size: 12px; font-weight: 700; color: var(--muted); margin-right: 6px; }
+.term-list a.term { display: inline-block; margin: 0 4px 0 0; padding: 0 8px; line-height: 1.8; border: 1px solid var(--border);
+    border-radius: 999px; text-decoration: none; background: var(--surface); }
+.term-list a.term[aria-expanded="true"] { border-color: var(--accent-line); background: var(--accent-bg); }
+.detail-empty { display: none; }
+/* 긴 설정 키·경로는 줄을 바꾸고, 그래도 넓은 표는 표 안에서만 가로로 스크롤한다(본문 폭을 넘기지 않게) */
+.slot code { overflow-wrap: anywhere; }
+.slot table { display: block; max-width: 100%; overflow-x: auto; }
+.detail-all { white-space: nowrap; font-size: 13px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); background: var(--surface); cursor: pointer; font-family: inherit; }
+.detail-all[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-line); }
+
 /* 그림 + 콜아웃 */
 .shot { margin: 10px 0; }
 .shot img { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
@@ -119,7 +168,7 @@ code { font-family: 'D2Coding', ui-monospace, monospace; font-size: .92em; backg
     body.toc-open .toc { transform: none; }
     .toc-toggle { display: inline-block; }
     .toc-filter { display: none; }
-    .m-links a:not(:first-child) { display: none; }
+    .m-links a:not(:first-of-type) { display: none; }
     .m-title { font-size: 13px; }
     .m-title .brand { display: none; }
     .m-header { gap: 10px; padding: 0 12px; }
@@ -136,4 +185,8 @@ code { font-family: 'D2Coding', ui-monospace, monospace; font-size: .92em; backg
     .feature { box-shadow: none; break-inside: avoid-page; border-color: #ccc; }
     .chapter { break-before: page; }
     .shot img { max-height: 60vh; object-fit: contain; }
+    .detail-index, .detail-more > summary { display: none; }
+    .detail-store[hidden], .detail-empty { display: block !important; }  /* 종이에는 본문 링크로 펼칠 수 없으니 모두 싣는다 */
+    a.term::after { content: none; }
+    .detail-more-body { background: none; }
 }

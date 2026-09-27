@@ -9,6 +9,7 @@
 #   cases       사용자 절의 프롬프트 사례 ID(cases.yaml)
 #   case_na     사례가 성립하지 않는 사유(순수 UI 항목) — cases 와 둘 중 하나는 있어야 한다(사용자만)
 #   no_ui       화면 버튼 없이 채팅·API 로 쓰는 기능
+#   detail_src  「자세히 보기」의 근거 파일(저장소 상대 경로) — 이 필드가 있는 항목만 자세히 보기를 싣는다(plans/116 §11)
 #
 # ignore: 역방향 감시(화면 버튼·탭 id 중 manifest 미등재)에서 제외할 id — 사유 필수
 
@@ -35,7 +36,7 @@ user:
   - {id: U-09, title: 알림 수신과 표시 레벨, anchors: ["#alarmReceiveToggle", "#alarmViewLevel", "#alarmZonesTooltip"], files: *IDX, captures: [header-alarm], case_na: 설정 토글}
   - {id: U-10, title: 노이즈 관제·매뉴얼 바로가기, anchors: ["#noiseConsoleLink", "#manualMenu", "#userManualLink", "#adminManualLink"], files: *IDX, captures: [header, header-manual], case_na: 링크}
   # 3. 질의하기
-  - {id: U-11, title: 질문 입력과 전송, anchors: ["#prompt", "#sendBtn", "data-view=\"chat\""], files: *IDX, captures: [query-input], cases: [Q-SERVER-LIST]}
+  - {id: U-11, title: 질문 입력과 전송, anchors: ["#prompt", "#sendBtn", "data-view=\"chat\""], files: *IDX, captures: [query-input], cases: [Q-SERVER-LIST], detail_src: [src/api/schemas.py, src/utils/query_gen_common.py, src/config.py, src/static/js/app.js]}
   - {id: U-12, title: 이전 질문 다시 불러오기(↑·↓), anchors: ["이전 질의"], files: *IDX, captures: [], case_na: 키보드 조작}
   - {id: U-13, title: 응답 중단, anchors: ["응답 중단"], files: *IDX, captures: [query-streaming], case_na: 버튼 한 번}
   - {id: U-14, title: 진행 상황 표시, anchors: ["#sendBtn"], files: *IDX, captures: [query-streaming], cases: [Q-SERVER-LIST]}
@@ -53,7 +54,7 @@ user:
   - {id: U-24, title: 조회 대상(스코프) 칩, anchors: ["#dbScopeChip", "#dbScopePick", "#dbScopeClear"], files: *IDX, captures: [scope-chip], case_na: 칩 조작 — 질문과 함께 쓰는 법은 U-25 사례}
   - {id: U-25, title: 존 선택 역질문, anchors: ["선택한 존으로 조회", "건너뛰고 전체 조회"], files: *IDX, captures: [zone-clarify], case_na: "파이프라인 전에 라우트가 답하는 제어 화면 — 샌드박스 단일 DB 에서는 발동하지 않아 화면 예시로 싣는다(G-6)"}
   # 6. 양식 채우기
-  - {id: U-26, title: 양식 파일 첨부, anchors: ["#attachBtn", "#fileInput", "#filePreview", "#removeFile"], files: *IDX, captures: [file-attached], cases: [F-SERVER-LIST]}
+  - {id: U-26, title: 양식 파일 첨부, anchors: ["#attachBtn", "#fileInput", "#filePreview", "#removeFile"], files: *IDX, captures: [file-attached], cases: [F-SERVER-LIST], detail_src: [src/static/js/app.js, src/api/routes/query.py, src/utils/query_gen_common.py]}
   - {id: U-27, title: 양식 채우기 결과 받기, anchors: ["다운로드"], files: *IDX, captures: [form-result], cases: [F-SERVER-LIST, F-CPU-MONTH, F-WORD]}
   - {id: U-28, title: 첨부한 원본 다시 받기, anchors: ["attachment"], files: *IDX, captures: [form-file-card], case_na: 말풍선의 파일 카드 클릭}
   - {id: U-29, title: 채우지 못한 항목 역질문, anchors: ["공란 유지", "이 답을 기억", "선택한 방법으로 다시 채우기"], files: *IDX, captures: [form-clarify], cases: [F-CLARIFY]}
@@ -75,9 +76,8 @@ user:
   - {id: U-42, title: 알람에서 바로 조회하기, anchors: ["이대로 조회", "#promptConfirmRun", "#promptConfirmEdit"], files: *IDX, captures: [alarm-suggest], case_na: 알람 카드의 추천 질문을 누르는 조작 — 결과는 3장 사례와 같다}
   - {id: U-43, title: 알람 확인(ack)·피드백, anchors: ["이 알람이 유용했나요?", "유효", "노이즈"], files: *IDX, captures: [alarm-feedback], case_na: 카드 버튼}
   # 10. 노이즈 관제
-  - {id: U-44, title: 노이즈 관제 화면 읽기, anchors: ["#decSearchBtn", "#closeDrawer", "data-range=\"24h\""], files: *NOISE, captures: [noise-user, noise-drawer], case_na: 읽기 전용 화면}
-  - {id: U-45, title: 알람이 걸러지는 원리, anchors: ["판단 경로", "신호 스냅샷"], files: [src/static/js/noise-help.js], captures: [], case_na: 판단 원리 설명 절}
-
+  - {id: U-44, title: 노이즈 관제 화면 읽기, anchors: ["#decSearchBtn", "#closeDrawer", "data-range=\"24h\""], files: *NOISE, captures: [noise-user, noise-drawer], case_na: 읽기 전용 화면, detail_src: [src/static/noise.html, src/static/js/noise.js, src/static/js/noise-help.js, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, noise_gate/domain/notification_policy.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/alarm_worker.py, src/config.py]}
+  - {id: U-45, title: 알람이 걸러지는 원리, anchors: ["판단 경로", "신호 스냅샷"], files: [src/static/js/noise-help.js], captures: [], case_na: 판단 원리 설명 절, detail_src: [noise_gate/domain/notification_policy.py, noise_gate/domain/severity.py, noise_gate/domain/flapping.py, noise_gate/domain/correlation.py, noise_gate/domain/silence.py, noise_gate/application/alarm_worker.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/nodes/alarm_analyzer.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/ticket_queue.py, noise_gate/infrastructure/incident_events.py, noise_gate/orchestration/alarm_graph.py, src/config.py, src/static/js/app.js, docs/28_noise_cancellation_operator_guide.md]}
 admin:
   # 1. 관리자 개요
   - {id: A-01, title: 권한 체계, anchors: ["#adminEntryLink"], files: *IDX, captures: []}
@@ -89,7 +89,7 @@ admin:
   - {id: A-06, title: "항목 상세 설명(?)", anchors: ["#settingsHelpClose"], files: *DASH, captures: [settings-help]}
   - {id: A-07, title: 등급과 반영 시점, anchors: ["리로드"], files: *DASH, captures: [settings-group]}
   - {id: A-08, title: 기본값으로 되돌리기, anchors: ["기본값으로"], files: *DASH, captures: [settings-group]}
-  - {id: A-09, title: 저장과 변경 확인, anchors: ["#saveSettingsBtn", "#diffConfirmBtn", "#diffCancelBtn"], files: *DASH, captures: [settings-diff]}
+  - {id: A-09, title: 저장과 변경 확인, anchors: ["#saveSettingsBtn", "#diffConfirmBtn", "#diffCancelBtn"], files: *DASH, captures: [settings-diff], detail_src: [src/api/routes/admin.py, src/api/settings_catalog.py]}
   - {id: A-10, title: 설정 리로드, anchors: ["#reloadSettingsBtn"], files: *DASH, captures: [settings-list]}
   - {id: A-11, title: 시크릿 항목, anchors: ["시크릿"], files: *DASH, captures: []}
   - {id: A-12, title: 다른 곳에서 덮인 값, anchors: ["settings"], files: *DASH, captures: []}
@@ -129,15 +129,15 @@ admin:
   - {id: A-40, title: DRM 상태, anchors: ["#refreshDrmBtn", "data-tab=\"drm\""], files: *DASH, captures: [drm]}
   - {id: A-41, title: 복호화 진단, anchors: ["#drmVerifyBtn"], files: *DASH, captures: [drm]}
   # 9. 노이즈 캔슬링 관제(관리자)
-  - {id: A-42, title: 사용자 화면과 다른 점, anchors: ["#streamPill", "#healthPill", "data-pane=\"decisions\""], files: *ANOISE, captures: [noise-admin]}
-  - {id: A-43, title: 실시간 결정 피드, anchors: ["#feed", "#streamPill"], files: *ANOISE, captures: [noise-admin]}
-  - {id: A-44, title: 억제기 상태와 워치독, anchors: ["#ratioRing", "#watchRing", "#healthPill"], files: *ANOISE, captures: [noise-admin-health]}
-  - {id: A-45, title: 침묵(Silence) 규칙, anchors: ["#addSilenceBtn", "#showInactive", "#silenceThisBtn", "data-pane=\"silence\""], files: *ANOISE, captures: [noise-silence]}
-  - {id: A-46, title: 정책 조회, anchors: ["#policyMatrix", "#policySettings", "data-pane=\"policy\""], files: *ANOISE, captures: [noise-policy]}
-  - {id: A-47, title: 운영 판단 요령, anchors: ["#topSuppressed"], files: *ANOISE, captures: []}
-  - {id: A-59, title: 처리 흐름과 판단 주체, anchors: ["def decide_notification", "STAGE_LABELS"], files: [noise_gate/domain/notification_policy.py], captures: []}
-  - {id: A-60, title: 결정 단계와 우선순위 매트릭스, anchors: ["def _matrix_tier", "심각도3 단락", "우선순위 매트릭스"], files: [noise_gate/domain/notification_policy.py], captures: []}
-  - {id: A-61, title: "보조 신호 — LLM·통계·운영자 피드백", anchors: ["LLM 액션가능성", "def find_similar"], files: [noise_gate/domain/notification_policy.py, noise_gate/infrastructure/feedback_store.py, src/static/js/noise-help.js], captures: []}
+  - {id: A-42, title: 사용자 화면과 다른 점, anchors: ["#streamPill", "#healthPill", "data-pane=\"decisions\""], files: *ANOISE, captures: [noise-admin], detail_src: [src/static/admin/noise.html, src/static/js/noise.js, src/static/noise.html, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, src/api/dependencies.py, src/config.py]}
+  - {id: A-43, title: 실시간 결정 피드, anchors: ["#feed", "#streamPill"], files: *ANOISE, captures: [noise-admin], detail_src: [src/static/js/noise.js, src/api/routes/noise_dashboard.py, src/api/dependencies.py, src/api/server.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/sse_bridge.py, noise_gate/infrastructure/incident_events.py, src/api/routes/alarm.py, src/api/routes/user_auth.py, src/api/settings_catalog.py, src/config.py]}
+  - {id: A-44, title: 억제기 상태와 워치독, anchors: ["#ratioRing", "#watchRing", "#healthPill"], files: *ANOISE, captures: [noise-admin-health], detail_src: [src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, src/static/js/noise.js, src/config.py, src/api/settings_catalog.py, noise_gate/application/alarm_worker.py]}
+  - {id: A-45, title: 침묵(Silence) 규칙, anchors: ["#addSilenceBtn", "#showInactive", "#silenceThisBtn", "data-pane=\"silence\""], files: *ANOISE, captures: [noise-silence], detail_src: [src/api/routes/noise_dashboard.py, src/static/admin/noise.html, src/static/js/noise.js, src/config.py, src/security/audit_logger.py, noise_gate/application/alarm_worker.py, noise_gate/domain/silence.py, noise_gate/infrastructure/silence_store.py, noise_gate/domain/notification_policy.py]}
+  - {id: A-46, title: 정책 조회, anchors: ["#policyMatrix", "#policySettings", "data-pane=\"policy\""], files: *ANOISE, captures: [noise-policy], detail_src: [src/api/routes/noise_dashboard.py, src/static/js/noise.js, src/static/admin/noise.html, src/config.py, src/api/settings_catalog.py, noise_gate/domain/notification_policy.py]}
+  - {id: A-47, title: 운영 판단 요령, anchors: ["#topSuppressed"], files: *ANOISE, captures: [], detail_src: [docs/28_noise_cancellation_operator_guide.md, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, src/static/js/noise.js, src/static/admin/noise.html]}
+  - {id: A-59, title: 처리 흐름과 판단 주체, anchors: ["def decide_notification", "STAGE_LABELS"], files: [noise_gate/domain/notification_policy.py], captures: [], detail_src: [noise_gate/alarm_server/config.py, noise_gate/alarm_server/tcp_receiver.py, noise_gate/alarm_server/base_receiver.py, noise_gate/application/alarm_worker.py, noise_gate/infrastructure/redis_queue.py, noise_gate/domain/severity.py, noise_gate/application/server_identity.py, noise_gate/orchestration/alarm_graph.py, noise_gate/application/nodes/alarm_context_enricher.py, noise_gate/infrastructure/polestar_noise_context.py, noise_gate/application/nodes/alarm_analyzer.py, noise_gate/application/nodes/notification_gate.py, noise_gate/domain/notification_policy.py, noise_gate/application/nodes/investigation_trigger.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/host_diagnostic_collector.py, noise_gate/infrastructure/decision_store.py, noise_gate/infrastructure/ticket_queue.py, src/config.py, src/api/server.py, src/api/routes/alarm.py, src/api/routes/noise_dashboard.py, docs/28_noise_cancellation_operator_guide.md]}
+  - {id: A-60, title: 결정 단계와 우선순위 매트릭스, anchors: ["def _matrix_tier", "심각도3 단락", "우선순위 매트릭스"], files: [noise_gate/domain/notification_policy.py], captures: [], detail_src: [noise_gate/domain/notification_policy.py, noise_gate/domain/silence.py, noise_gate/domain/flapping.py, noise_gate/domain/correlation.py, noise_gate/domain/severity.py, noise_gate/application/alarm_worker.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/nodes/alarm_context_enricher.py, noise_gate/application/nodes/agentic_enricher.py, noise_gate/application/nodes/alarm_analyzer.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/polestar_noise_context.py, noise_gate/infrastructure/decision_store.py, noise_gate/infrastructure/ticket_queue.py, noise_gate/infrastructure/incident_events.py, noise_gate/prompts/alarm_analyzer.py, src/config.py, src/static/js/app.js, docs/28_noise_cancellation_operator_guide.md]}
+  - {id: A-61, title: "보조 신호 — LLM·통계·운영자 피드백", anchors: ["LLM 액션가능성", "def find_similar"], files: [noise_gate/domain/notification_policy.py, noise_gate/infrastructure/feedback_store.py, src/static/js/noise-help.js], captures: [], detail_src: [noise_gate/application/nodes/alarm_analyzer.py, noise_gate/prompts/alarm_analyzer.py, noise_gate/domain/severity_signatures.py, noise_gate/domain/alarm_pattern.py, noise_gate/infrastructure/polestar_metric_baseline.py, noise_gate/domain/anomaly.py, noise_gate/application/nodes/agentic_enricher.py, noise_gate/infrastructure/noise_signal_tools.py, noise_gate/infrastructure/feedback_store.py, noise_gate/infrastructure/polestar_noise_context.py, noise_gate/domain/change_correlation.py, noise_gate/domain/annotation_signal.py, noise_gate/application/annotation_classifier.py, noise_gate/application/alarm_worker.py, noise_gate/domain/notification_policy.py, src/api/routes/alarm.py, src/api/routes/noise_dashboard.py, src/config.py, docs/28_noise_cancellation_operator_guide.md]}
   # 10. 화면 없는 관리 기능
   - {id: A-48, title: 스키마 캐시 API, anchors: ["/admin/schema-cache"], files: [src/api/routes/schema_cache.py], captures: [], no_ui: true}
   - {id: A-49, title: 사용자 활동 조회 API, anchors: ["/admin/audit/users/"], files: [src/api/routes/admin.py], captures: [], no_ui: true}

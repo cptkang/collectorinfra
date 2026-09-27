@@ -745,27 +745,41 @@ class DecisionStore:
         return {"points": points, "excluded_no_ts": excluded}
 
     def top_suppressed(
-        self, *, window_seconds: Optional[int] = None, limit: int = 10
+        self,
+        *,
+        window_seconds: Optional[int] = None,
+        limit: int = 10,
+        mask_fn: Callable[[str], str] | None = None,
     ) -> list[dict]:
         """억제된 알람을 (알람명 × 단계)로 묶어 상위 항목을 돌려준다 (Plan 54 §4).
 
         "무엇이 캔슬되고 있는가"를 사람이 읽는 형태로 보여주기 위한 집계다. 알람명이 기록되지
         않은 구 레코드는 `(미기록)`으로 모은다 — 세지 않으면 억제 총량과 어긋난다.
 
+        `mask_fn`을 주면 알람명을 **묶기 전에** 가린다 — 결정 목록·추적(`_view`)과 같은 규칙이라
+        같은 알람이 한쪽에서만 원문으로 보이지 않는다. 가린 이름은 화면에서 구분되지 않으므로 한
+        행으로 모인다(가린 행 수로 서로 다른 원문의 개수가 드러나지 않게). 가린 행은
+        `masked=True`다 — 가린 문자열로는 원 레코드를 알람명으로 거를 수 없다.
+
         Args:
             window_seconds: 집계 창(None이면 전체).
             limit: 반환 상한.
+            mask_fn: 표시 전 문자열 마스킹 함수(미주입이면 원문 그대로).
 
         Returns:
-            건수 내림차순 `[{alarm_name, stage, label, count}]`.
+            건수 내림차순 `[{alarm_name, stage, label, count, masked}]`.
         """
         counter: dict[tuple[str, str], int] = {}
+        masked_keys: set[tuple[str, str]] = set()
         for rec in self._tail_records(window_seconds):
             if str(rec.get("tier", "")) not in _CANCELLED_TIERS:
                 continue
-            name = str(rec.get("alarm_name") or "(미기록)")
+            raw = str(rec.get("alarm_name") or "")
+            name = mask_fn(raw) if raw and mask_fn is not None else (raw or "(미기록)")
             key = (name, self._stage_of(rec))
             counter[key] = counter.get(key, 0) + 1
+            if raw and name != raw:
+                masked_keys.add(key)
 
         ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0][0]))
         return [
@@ -774,6 +788,7 @@ class DecisionStore:
                 "stage": stage,
                 "label": STAGE_LABELS.get(stage, stage),
                 "count": count,
+                "masked": (name, stage) in masked_keys,
             }
             for (name, stage), count in ranked[: max(1, int(limit))]
         ]

@@ -93,6 +93,148 @@ def test_section_has_all_slots(manual: str, item: dict) -> None:
         assert m and re.sub(r"<[^>]+>|\s", "", m.group(1)), f"{item['id']}: '{slot}' 칸이 비었다"
 
 
+# ── 상세 설명(plans/116 §11 · R8 — 옛 이름 「자세히 보기」) ──────────────────
+# 대상은 manifest 에 detail_src(근거 파일)가 있는 항목이다. 전개 중이라 대상 목록으로 한정하고,
+# D2 끝에 「전 항목 detail_src 필수」로 바꾼다(§11.5 — 가드를 끄는 대신 대상을 좁혔다).
+_DETAIL_TOPICS = {
+    "user": {
+        "이렇게 동작합니다",
+        "단계별로 자세히",
+        "상황별 결과",
+        "입력 규칙과 한도",
+        "이럴 땐 이렇게",
+        "자주 묻는 질문",
+        "더 알아보기",
+        "항목별 설명",
+    },
+    "admin": {
+        "동작 원리",
+        "항목 전수",
+        "반영 시점과 영향",
+        "권한과 보안",
+        "문제 해결",
+        "근거와 참고 문서",
+    },
+}
+# 사용자 매뉴얼에 쓰지 않는 내부 어휘(§4.3 문체) — 결정 번호·계획서·소스 경로·설정 키·코드 식별자
+_INTERNAL_WORDS = re.compile(
+    r"\bD-\d{3}\b|plans/|\bsrc/|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|\b[a-z]+_[a-z_]+\b"
+)
+_DETAIL_RE = re.compile(r'<div class="slot slot-detail"[^>]*>(.*?)<!--/slot--></div>', re.S)
+_TOPIC_RE = re.compile(r'<h5 class="detail-topic-title">(.*?)</h5>')
+_TERM_LEAD_RE = re.compile(r'<span class="term-lead"[^>]*>.*?</span>', re.S)
+_TERM_LINK_RE = re.compile(r'<a class="term" href="#([^"]+)" data-term="([^"]+)">')
+_ITEM_SPLIT = re.compile(r'(?=<div class="detail-item" id=)')
+_ITEM_HEAD = re.compile(
+    r'<h6 class="detail-item-title">(.*?)</h6><div class="detail-item-lead">(.*?)</div>', re.S
+)
+
+
+def _detail_item_parts(body: str) -> list[tuple[str, str, str]]:
+    """상세 칸의 항목마다 (제목, 본문에 보이는 일반 설명, 항목 전체 글)."""
+    out = []
+    for chunk in _ITEM_SPLIT.split(body)[1:]:
+        m = _ITEM_HEAD.search(chunk)
+        if m:
+            out.append((_text(m.group(1)).strip(), _text(m.group(2)).strip(), _text(chunk)))
+    return out
+
+
+def _detail_items() -> list[tuple[str, dict]]:
+    return [(m, i) for m, i in _all_items() if i.get("detail_src")]
+
+
+def _text(fragment: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", " ", fragment))
+
+
+def _sentences(fragment: str) -> list[str]:
+    """블록 요소·문장 끝으로 나눈 문장(공백·문장부호를 뺀 정규형) — 짧은 조각은 뺀다."""
+    out = []
+    for block in re.split(r"</(?:p|li|td|th|summary)>", fragment):
+        for sent in re.split(r"(?<=[.!?])\s+", _text(block)):
+            norm = re.sub(r"[\s.,·:;!?()「」『』\"'`—-]", "", sent)
+            if len(norm) >= 20:
+                out.append(norm)
+    return out
+
+
+def test_details_start_closed() -> None:
+    """V-12 — 처음 열면 자세히 보기가 전부 접혀 있다(open 속성 0)."""
+    for manual in ("user", "admin"):
+        opened = re.findall(r"<details\b[^>]*\bopen\b", _html(manual))
+        assert not opened, f"{manual}.html 에 펼쳐진 채 시작하는 상세가 있다: {opened[:3]}"
+
+
+@pytest.mark.parametrize(
+    "manual,item", _all_items(), ids=lambda v: v["id"] if isinstance(v, dict) else v
+)
+def test_detail_matches_manifest(manual: str, item: dict) -> None:
+    """자세히 보기가 있는 절과 manifest detail_src 가 있는 항목이 같다(근거 없는 상세 금지)."""
+    has_detail = 'data-slot="detail"' in _section(_html(manual), item["id"])
+    assert has_detail == bool(item.get("detail_src")), (
+        f"{item['id']}: 자세히 보기 {'있음' if has_detail else '없음'} · detail_src "
+        f"{'있음' if item.get('detail_src') else '없음'} — 둘을 함께 쓴다"
+    )
+
+
+@pytest.mark.parametrize(
+    "manual,item", _detail_items(), ids=lambda v: v["id"] if isinstance(v, dict) else v
+)
+def test_detail_content(manual: str, item: dict) -> None:
+    """V-11·V-13 — 소제목 2개 이상(정해진 어휘) · 본문 300자 이상 · 항목마다 본문에 보이는
+    일반 설명이 있고 설명 30자 이상 · 근거 파일 실존 · 보이는 칸과 문장이 겹치지 않는다 ·
+    사용자 매뉴얼은 내부 어휘를 쓰지 않는다."""
+    sec = _section(_html(manual), item["id"])
+    m = _DETAIL_RE.search(sec)
+    assert m, f"{item['id']}: 자세히 보기 없음"
+    body = m.group(1)
+    topics = [_text(t).strip() for t in _TOPIC_RE.findall(body)]
+    assert len(topics) >= 2, f"{item['id']}: 소제목 {len(topics)}개 — 2개 이상"
+    odd = [t for t in topics if t not in _DETAIL_TOPICS[manual]]
+    assert not odd, f"{item['id']}: 정해진 소제목이 아니다 {odd} — plans/116 §11.3"
+    size = len(re.sub(r"\s", "", _text(body)))
+    assert size >= 300, f"{item['id']}: 상세 본문 {size}자 — 300자 이상"
+    parts = _detail_item_parts(body)
+    no_lead = [name for name, lead, _ in parts if not lead]
+    assert not no_lead, f"{item['id']}: 본문에 보일 일반 설명이 없는 항목 {no_lead}"
+    thin = [name for name, _, full in parts if len(re.sub(r"\s", "", full)) - len(name) < 30]
+    assert not thin, f"{item['id']}: 설명이 30자 미만인 항목 {thin}"
+    missing = [p for p in item["detail_src"] if not (REPO / p).exists()]
+    assert not missing, f"{item['id']}: detail_src 근거 파일 없음 {missing}"
+    # 표에 {{항목}}으로 채운 일반 설명(span.term-lead)은 항목 문장을 가져온 것이라
+    # 중복 대조에서 뺀다
+    shown = _TERM_LEAD_RE.sub("", _DETAIL_RE.sub("", sec))
+    visible = re.sub(r"[\s.,·:;!?()「」『』\"'`—-]", "", _text(shown))
+    dup = [s for s in _sentences(body) if s in visible]
+    assert not dup, f"{item['id']}: 보이는 칸과 겹치는 문장 {dup[:2]}"
+    if manual == "user":
+        words = sorted(set(_INTERNAL_WORDS.findall(_text(body))))
+        assert not words, f"{item['id']}: 사용자 상세에 내부 어휘 {words}"
+
+
+@pytest.mark.parametrize(
+    "manual,item", _detail_items(), ids=lambda v: v["id"] if isinstance(v, dict) else v
+)
+def test_term_links_resolve(manual: str, item: dict) -> None:
+    """본문 속 항목 이름 링크(a.term)·채운 일반 설명(span.term-lead)이
+    같은 절의 실제 항목을 가리킨다."""
+    sec = _section(_html(manual), item["id"])
+    ids = set(re.findall(r'<div class="detail-item" id="([^"]+)"', sec))
+    links = _TERM_LINK_RE.findall(sec)
+    bad = [h for h, d in links if h != d or h not in ids]
+    leads = re.findall(r'<span class="term-lead" data-term="([^"]+)"', sec)
+    bad += [d for d in leads if d not in ids]
+    assert not bad, f"{item['id']}: 없는 항목을 가리키는 본문 링크 {bad}"
+    # 본문에 연결된 항목은 아래 상세 설명 목록에 다시 나오지 않는다
+    # (숨은 저장소에만 둔다 — 2026-09-27 지시)
+    listed = _DETAIL_RE.search(sec).group(1).split('<div class="detail-store"')[0]
+    shown = re.findall(r'<div class="detail-item" id="([^"]+)"', listed)
+    linked = {d for _, d in links}
+    again = sorted(set(shown) & linked)
+    assert not again, f"{item['id']}: 본문에 연결됐는데 상세 설명 목록에도 나오는 항목 {again}"
+
+
 @pytest.mark.parametrize(
     "manual,item", _all_items(), ids=lambda v: v["id"] if isinstance(v, dict) else v
 )

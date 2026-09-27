@@ -305,3 +305,22 @@ class TestSummarize:
 
     def test_empty_when_no_file(self, tmp_path):
         assert FeedbackStore(str(tmp_path / "none.jsonl")).summarize() == []
+
+    def test_db_id_filter_applies_before_aggregation(self, tmp_path):
+        """결함 ⑤: 필터는 집계 전에 레코드 단위로 건다 — 걸러진 라벨이 카운트·작성자에 안 남는다."""
+        store = FeedbackStore(str(tmp_path / "fb.jsonl"))
+        store.record_feedback(label="noise", alarm_name="CPU", db_id="a", labeled_by="op1")
+        store.record_feedback(label="valid", alarm_name="CPU", db_id="b", labeled_by="op2")
+        store.record_feedback(label="valid", alarm_name="MEM", db_id="b")
+
+        items = store.summarize(db_id_filter=lambda db_id: db_id == "a")
+        assert len(items) == 1
+        assert (items[0]["alarm_name"], items[0]["noise"], items[0]["valid"]) == ("CPU", 1, 0)
+        assert items[0]["last_labeled_by"] == "op1"
+
+    def test_db_id_filter_none_is_unchanged(self, tmp_path):
+        """필터 미지정은 종전 결과와 같다."""
+        store = FeedbackStore(str(tmp_path / "fb.jsonl"))
+        store.record_feedback(label="noise", alarm_name="CPU", db_id="a")
+        store.record_feedback(label="valid", alarm_name="CPU", db_id="b")
+        assert store.summarize(db_id_filter=None) == store.summarize()

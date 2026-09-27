@@ -8,7 +8,8 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
     - enable_noise_gate=False면 그래프에 노드 자체가 포함되지 않으나, 방어적으로 노드
       진입부에서도 재확인하여 게이트 비활성 시 결정을 만들지 않는다(회귀 0).
     - 감사 기록(store.record) 실패는 발송을 막지 않는다(graceful — warning 후 진행).
-    - analysis_result가 없거나 error 상태면 결정을 만들지 않는다.
+    - analysis_result가 없거나 error 상태면 결정을 만들지 않는다. AI 분석 실패는 analyzer가
+      원문 알람으로 만든 결과(result.error 표시)를 넘기므로 여기서도 판단·기록한다.
 
 계층: application → domain(notification_policy.decide_notification) 단방향 의존만 사용한다.
 """
@@ -81,6 +82,9 @@ async def notification_gate_node(
                 **(getattr(decision, "evidence", None) or {}),
                 **(detected.get(getattr(decision, "stage", "")) or {}),
             }
+            # AI 분석이 실패해 원문 알람으로 판단한 건 — 결정 추적에서 구별되게 남긴다
+            if getattr(result, "error", None):
+                stage_evidence["analysis"] = "AI 분석 실패 — 원문 알람으로 판단"
             # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
             # (Plan 60 E2) 상관 억제 시 클러스터 메타를 최상위 correlation_meta 필드로 첨부.
             # (Plan 60 B-7 L-2 · §15.4 D-035) 의미적 근접중복 후보 주석을 최상위

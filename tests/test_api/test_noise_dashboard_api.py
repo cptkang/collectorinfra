@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -883,3 +885,183 @@ def test_policy_tab_includes_every_stage_enable_key_and_keeps_existing_order(tmp
     assert values["non_alarm_filter_enabled"] is True
     assert values["annotation_planned_suppress"] is False
     assert len(env_keys) == len(set(env_keys))  # 중복 없음
+
+
+# ─── 결함 ⑧ 상위 억제 알람명 마스킹 — 결정 목록·추적과 같은 규칙 ─────────────
+
+_SECRET_NAME = "sk-abcdefghijklmnopqrstuvwxyz012345"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_top_suppressed_masks_alarm_name_like_decision_list(tmp_path, mode):
+    # 같은 알람이 결정 목록에서는 가려지고 상위 억제에서는 원문으로 보이면 안 된다.
+    _seed_decisions(tmp_path, [_decision_record(alarm_id="m1", alarm_name=_SECRET_NAME)])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    listed = client.get(f"{base}/decisions").json()["items"][0]
+    top = client.get(f"{base}/top-suppressed").json()["items"]
+    assert listed["alarm_name"] == "***"
+    assert [item["alarm_name"] for item in top] == ["***"]
+    assert _SECRET_NAME not in json.dumps(top, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_top_suppressed_groups_masked_names_and_flags_them(tmp_path, mode):
+    # 가린 이름은 화면에서 구분되지 않으므로 한 행으로 모인다(가린 행 수로 원문 개수가 드러나지
+    # 않게). 가린 행은 `masked`로 표시해 화면이 알람명 정확 일치 드릴다운을 걸지 않게 한다 —
+    # 가린 문자열로 거르면 0건이라 "패널 건수 = 행 건수"(plans/112 S7)가 깨진다.
+    _seed_decisions(tmp_path, [
+        _decision_record(alarm_id="m1", alarm_name=_SECRET_NAME),
+        _decision_record(alarm_id="m2", alarm_name="ghp_" + "a" * 36),
+        _decision_record(alarm_id="n1", alarm_name="ntpd 감시"),
+        _decision_record(alarm_id="u1", alarm_name=""),
+    ])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    items = client.get(f"{base}/top-suppressed").json()["items"]
+    rows = {item["alarm_name"]: (item["count"], item["masked"]) for item in items}
+    assert rows == {"***": (2, True), "ntpd 감시": (1, False), "(미기록)": (1, False)}
+
+
+# ─── 결함 ⑨ 관제 스트림 — 운영자(break-glass) 토큰 인가 ─────────────────────
+
+_USER_SECRET = "user-secret-for-tests-0123456789abcdef"
+_ADMIN_SECRET = "admin-secret-for-tests-0123456789abcdef"
+_STREAM = "/api/v1/admin/noise/stream"
+
+
+class _ReachedSubscribeError(Exception):
+    """인가를 통과해 버스 구독까지 왔다는 표지(무한 SSE 본문을 열지 않고 판정만 본다)."""
+
+
+class _AuthorizedOnlyBus:
+    def subscribe(self):  # noqa: ANN201
+        raise _ReachedSubscribeError
+
+    def unsubscribe(self, queue):  # noqa: ANN001, ANN201
+        return None
+
+
+def _jwt(secret: str, **claims) -> str:
+    import jwt
+
+    payload = {"exp": datetime.now(UTC) + timedelta(hours=1), **claims}
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def _operator_token(**over) -> str:
+    return _jwt(_ADMIN_SECRET, **{"sub": "ops", "type": "admin", **over})
+
+
+def _user_token(role: str) -> str:
+    return _jwt(_USER_SECRET, sub="u-" + role, name=role, role=role, type="user")
+
+
+def _stream_client(tmp_path) -> TestClient:
+    """실제 인증 의존성으로 스트림만 판정하는 클라이언트(`user_repo` 없음 = 토큰 payload 판정)."""
+    config = _make_config(tmp_path)
+    config.auth.jwt_secret = _USER_SECRET
+    config.admin = SimpleNamespace(jwt_secret=_ADMIN_SECRET)
+    app = FastAPI()
+    app.include_router(noise_routes.router, prefix="/api/v1")
+    app.state.config = config
+    app.state.alarm_bus = _AuthorizedOnlyBus()
+    return TestClient(app)
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_operator_token_in_header_opens_control_stream(tmp_path):
+    # 운영자 토큰만 가진 관리자(쿠키 없음)도 관제 스트림을 열 수 있어야 한다(D-069 break-glass).
+    client = _stream_client(tmp_path)
+    with pytest.raises(_ReachedSubscribeError):
+        client.get(_STREAM, headers=_bearer(_operator_token()))
+
+
+def test_operator_header_is_not_shadowed_by_leftover_user_cookie(tmp_path):
+    # 같은 브라우저에 남은 일반 사용자 쿠키가 명시한 운영자 헤더를 가리면 안 된다
+    # (`require_admin_user`처럼 운영자 토큰을 먼저 본다).
+    client = _stream_client(tmp_path)
+    client.cookies.set("user_token", _user_token("user"))
+    with pytest.raises(_ReachedSubscribeError):
+        client.get(_STREAM, headers=_bearer(_operator_token()))
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        _operator_token(type="user"),  # 운영자 시크릿이지만 type이 admin이 아님
+        _jwt(_ADMIN_SECRET, sub="ops"),  # type 클레임 없음
+        _operator_token(sub=""),  # sub 없음
+        _jwt(_ADMIN_SECRET, sub="ops", type="admin", exp=datetime.now(UTC) - timedelta(minutes=1)),
+        _jwt("wrong-secret-0123456789abcdef0123456789", sub="ops", type="admin"),
+    ],
+    ids=["type-user", "type-missing", "sub-missing", "expired", "bad-signature"],
+)
+def test_operator_path_checks_signature_type_and_sub(tmp_path, token):
+    # 서명만으로 통과시키지 않는다 — type·sub 클레임을 명시 검증한다(CLAUDE.md 보안 원칙).
+    client = _stream_client(tmp_path)
+    assert client.get(_STREAM, headers=_bearer(token)).status_code == 401
+
+
+def test_admin_type_claim_signed_with_user_secret_is_not_operator(tmp_path):
+    # type=admin이어도 사용자 시크릿 서명이면 운영자가 아니다 — 사용자 경로에서 역할로 403.
+    client = _stream_client(tmp_path)
+    forged = _jwt(_USER_SECRET, sub="u1", type="admin", role="user")
+    assert client.get(_STREAM, headers=_bearer(forged)).status_code == 403
+
+
+def test_operator_token_is_not_accepted_from_query(tmp_path):
+    # 운영자 토큰은 URL(쿼리)로 받지 않는다 — 접근 로그·프록시에 남는다.
+    client = _stream_client(tmp_path)
+    assert client.get(_STREAM, params={"token": _operator_token()}).status_code == 401
+
+
+@pytest.mark.parametrize("role, expected", [("admin", None), ("user", 403)])
+def test_user_cookie_path_is_unchanged(tmp_path, role, expected):
+    # 사용자 토큰 경로(쿠키 우선)는 종전 그대로 — 관리자 역할만 열리고 일반 사용자는 403.
+    client = _stream_client(tmp_path)
+    client.cookies.set("user_token", _user_token(role))
+    if expected is None:
+        with pytest.raises(_ReachedSubscribeError):
+            client.get(_STREAM)
+    else:
+        assert client.get(_STREAM).status_code == expected
+
+
+_NOISE_JS = Path(__file__).resolve().parents[2] / "src" / "static" / "js" / "noise.js"
+
+
+def _js_function_body(src: str, name: str) -> str:
+    start = src.index(f"function {name}(")
+    depth = 0
+    for index in range(src.index("{", start), len(src)):
+        if src[index] == "{":
+            depth += 1
+        elif src[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : index + 1]
+    raise AssertionError(f"{name} 본문을 찾지 못했다")
+
+
+def test_noise_js_stream_sends_token_in_header_not_url():
+    # EventSource는 헤더를 실을 수 없어 쿠키 없는 운영자 세션이 401 → 재연결을 되풀이했다.
+    # 스트림은 Authorization 헤더로 토큰을 싣고, 토큰을 URL에 붙이지 않는다.
+    body = _js_function_body(_NOISE_JS.read_text(encoding="utf-8"), "connectStream")
+    assert "new EventSource(" not in body
+    assert re.search(r'"Authorization"\s*:\s*"Bearer "\s*\+\s*token', body)
+    assert re.search(r'fetch\(\s*API\s*\+\s*"/stream"\s*,', body)
+    assert "token=" not in body
+
+
+def test_noise_js_does_not_drill_masked_top_suppressed_rows():
+    # (⑧) 가린 알람명으로 결정 목록을 거르면 0건이다 — `(미기록)`처럼 드릴다운을 걸지 않는다.
+    body = _js_function_body(_NOISE_JS.read_text(encoding="utf-8"), "loadTopSuppressed")
+    assert "!item.masked" in body
+
+
+def test_noise_js_stream_stops_retrying_on_401_403():
+    # 인가 실패는 재시도해도 같은 판정이다 — 재연결 루프를 돌지 않는다.
+    body = _js_function_body(_NOISE_JS.read_text(encoding="utf-8"), "connectStream")
+    assert re.search(r"res\.status\s*===\s*401\s*\|\|\s*res\.status\s*===\s*403", body)

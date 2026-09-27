@@ -1186,6 +1186,44 @@ async def _ensure_not_last_active_admin(user_repo, target_user_id: str) -> None:
         )
 
 
+async def _audit_admin_action(
+    request: Request, admin: dict, action: str, **fields: Any
+) -> None:
+    """사용자 관리·감사 로그 정리를 `ADMIN_ACTION`으로 감사 기록한다.
+
+    형식은 DB 구조 작업(`db_structure._audit`)과 같다 — `{"action": ..., 필드...}`.
+    비밀번호 등 비밀값은 호출부가 넘기지 않는다. 기록 실패는 헬퍼가 경고 로그로 남긴다.
+    """
+    from src.domain.audit import AuditEvent
+
+    await _log_settings_event(
+        request,
+        admin.get("sub"),
+        AuditEvent.ADMIN_ACTION.value,
+        {"action": action, **fields},
+    )
+
+
+def _user_audit_fields(user) -> dict[str, Any]:
+    """감사 변경 전후 비교에 쓰는 사용자 속성(비밀값 제외)."""
+    return {
+        "username": user.username,
+        "role": user.role.value,
+        "department": user.department,
+        "alarm_zones": list(user.alarm_zones) if user.alarm_zones is not None else None,
+        "status": user.status.value,
+    }
+
+
+def _changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """두 스냅샷에서 달라진 필드만 `{필드: {"before": 이전, "after": 이후}}`로 모은다."""
+    return {
+        key: {"before": before[key], "after": after[key]}
+        for key in after
+        if before.get(key) != after[key]
+    }
+
+
 @router.get(
     "/admin/users",
     response_model=list[UserInfoResponse],
@@ -1263,6 +1301,7 @@ async def update_user(
             detail="보호된 root 계정의 역할·상태는 변경할 수 없습니다.",
         )
 
+    before = _user_audit_fields(user)
     if body.username is not None:
         user.username = body.username
     if body.role is not None:
@@ -1287,6 +1326,11 @@ async def update_user(
 
     await user_repo.update(user)
     logger.info("관리자가 사용자 수정: %s (by %s)", user_id, _admin.get("sub"))
+    await _audit_admin_action(
+        request, _admin, "user_update",
+        target_user_id=user_id,
+        changes=_changes(before, _user_audit_fields(user)),
+    )
 
     return UserInfoResponse(
         user_id=user.user_id,
@@ -1340,6 +1384,15 @@ async def delete_user(
 
     await user_repo.delete(user_id)
     logger.info("관리자가 사용자 삭제: %s (by %s)", user_id, _admin.get("sub"))
+    await _audit_admin_action(
+        request, _admin, "user_delete",
+        target_user_id=user_id,
+        before={
+            "role": target.role.value,
+            "status": target.status.value,
+            "allowed_db_ids": target.allowed_db_ids,
+        },
+    )
 
     return {"message": f"사용자 '{user_id}'가 삭제되었습니다."}
 
@@ -1386,12 +1439,19 @@ async def reset_user_password(
     temp_password = secrets.token_urlsafe(12)
     user.hashed_password = hash_password(temp_password)
     user.login_fail_count = 0
+    status_before = user.status.value
     if user.status.value == "locked":
         from src.domain.user import UserStatus
         user.status = UserStatus.ACTIVE
 
     await user_repo.update(user)
     logger.info("관리자가 비밀번호 초기화: %s (by %s)", user_id, _admin.get("sub"))
+    # 임시 비밀번호는 남기지 않는다 — 초기화 사실과 잠금 해제 여부만 남긴다
+    await _audit_admin_action(
+        request, _admin, "user_password_reset",
+        target_user_id=user_id,
+        changes=_changes({"status": status_before}, {"status": user.status.value}),
+    )
 
     return {
         "message": f"사용자 '{user_id}'의 비밀번호가 초기화되었습니다.",
@@ -1428,11 +1488,19 @@ async def update_user_permissions(
     if not user:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
+    allowed_before = user.allowed_db_ids
     user.allowed_db_ids = body.allowed_db_ids
     await user_repo.update(user)
     logger.info(
         "관리자가 사용자 권한 수정: %s -> allowed_db_ids=%s (by %s)",
         user_id, body.allowed_db_ids, _admin.get("sub"),
+    )
+    await _audit_admin_action(
+        request, _admin, "user_permissions_update",
+        target_user_id=user_id,
+        changes=_changes(
+            {"allowed_db_ids": allowed_before}, {"allowed_db_ids": user.allowed_db_ids}
+        ),
     )
 
     return UserInfoResponse(
@@ -1687,6 +1755,9 @@ async def cleanup_audit_logs(
         raise HTTPException(status_code=500, detail="감사 로그 정리 중 오류가 발생했습니다.")
 
     logger.info("관리자 감사 로그 정리: %s일 경과 %s건 삭제 (by %s)", days, deleted, _admin.get("sub"))
+    await _audit_admin_action(
+        request, _admin, "audit_cleanup", retention_days=days, deleted=deleted,
+    )
     return {"deleted": deleted, "retention_days": days}
 
 

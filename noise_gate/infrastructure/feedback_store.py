@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -184,12 +185,21 @@ class FeedbackStore:
         candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
         return [item for _, _, item in candidates[: max(limit, 0)]]
 
-    def summarize(self, *, limit: int = 100) -> list[dict]:
+    def summarize(
+        self,
+        *,
+        limit: int = 100,
+        db_id_filter: Callable[[str], bool] | None = None,
+    ) -> list[dict]:
         """(alarm_name, resource_name)별 라벨 집계를 최근 활동 순으로 반환한다 (Plan 83 T13).
 
         여러 운영자가 같은 알람에 **상반된 라벨**을 남기면 조회 랭킹상 최신 1건이 이기는데,
         그 상충을 사람이 볼 수 있게 하는 것이 목적이다 — **판정 로직은 바꾸지 않는다**.
         철회(tombstone)된 레코드는 집계에서 빠진다(find_similar와 같은 규약).
+
+        db_id_filter는 라벨 레코드의 db_id(없으면 "")를 받아 집계 포함 여부를 돌려준다.
+        집계 **전에** 레코드 단위로 걸러야 걸러진 라벨이 카운트·최근 작성자에 남지 않는다.
+        판정 규칙은 호출자(라우트의 존 판정)가 가진다. None이면 전 레코드(종전과 같다).
 
         반환 dict 키: alarm_name, resource_name, valid, noise, last_label, last_labeled_by, last_ts.
         비활성·파일 없음·읽기 실패면 빈 리스트(graceful).
@@ -208,6 +218,8 @@ class FeedbackStore:
         for rec in rows:
             label = rec.get("label")
             if label not in _VALID_LABELS or rec.get("ts") in retracted:
+                continue
+            if db_id_filter is not None and not db_id_filter(rec.get("db_id") or ""):
                 continue
             key = (rec.get("alarm_name", ""), rec.get("resource_name", ""))
             item = agg.setdefault(key, {

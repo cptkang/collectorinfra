@@ -14,9 +14,14 @@
 판정: 서버가 기록하는 결정 감사 JSONL(logs/alarm_decisions.jsonl)에서 주입한 alarm_id의
 tier를 읽어 기대 티어와 비교한다(서버와 같은 호스트/리포지토리 루트에서 실행 전제).
 
+계정: api 경로(analyze-test)는 **관리자 전용**이다 — 관리자 역할(role=admin) 계정으로 로그인해야
+하고, 일반 계정이면 403이다. `--register`로 새로 만든 계정은 일반 계정이므로 관리자 화면
+「사용자 관리」에서 역할을 관리자로 바꾼 뒤 써야 한다. redis 경로는 역할과 무관하다.
+
 사용 예:
     python scripts/noise_gate_scenario_test.py --list
-    python scripts/noise_gate_scenario_test.py --mode api --user tester --password 'pass123!' --register
+    python scripts/noise_gate_scenario_test.py --mode api --user <관리자ID> --password '<비밀번호>'
+    python scripts/noise_gate_scenario_test.py --mode redis --register   # 기본 계정(일반)으로 가입
     python scripts/noise_gate_scenario_test.py --mode all
     python scripts/noise_gate_scenario_test.py --only api-sev3-page,worker-maint-suppress
 """
@@ -49,6 +54,12 @@ SRV_MAINT = "noise-test-maint"  # is_maintenance=1
 OOM_LOG = "kernel: Out of memory: Killed process 12345 (java) score 900"
 
 RUN_ID = uuid.uuid4().hex[:8]
+
+ADMIN_REQUIRED_HINT = (
+    "analyze-test는 관리자 전용입니다(403) — 관리자 역할 계정으로 --user/--password를 주거나, "
+    "관리자 화면 「사용자 관리」에서 이 계정의 역할을 관리자로 바꾸세요. "
+    "--register로 만든 계정은 일반 계정입니다."
+)
 
 
 # ─── 이벤트 생성/주입 ─────────────────────────────────────────────────────────
@@ -99,6 +110,8 @@ def inject_api(ctx: dict, payload: dict, *, dry_run: bool = False) -> dict:
         },
         timeout=ctx["timeout"],
     )
+    if resp.status_code == 403:
+        raise RuntimeError(ADMIN_REQUIRED_HINT)
     resp.raise_for_status()
     return resp.json()
 
@@ -282,7 +295,10 @@ SCENARIOS: list[tuple[str, str, object]] = [
 # ─── 인증 ─────────────────────────────────────────────────────────────────────
 
 def get_token(ctx: dict, user: str, password: str, register: bool) -> str:
-    """로그인해서 토큰을 받는다. --register면 계정이 없을 때 즉시 가입 후 재시도."""
+    """로그인해서 토큰을 받는다. --register면 계정이 없을 때 즉시 가입 후 재시도.
+
+    가입으로 만든 계정은 일반 계정이라 api 경로(관리자 전용)에는 403이 난다(`ADMIN_REQUIRED_HINT`).
+    """
     login = {"user_id": user, "password": password}
     resp = ctx["http"].post(f"{ctx['base_url']}/api/v1/auth/login", json=login, timeout=15)
     if resp.status_code == 401 and register:
@@ -295,7 +311,10 @@ def get_token(ctx: dict, user: str, password: str, register: bool) -> str:
             raise SystemExit(f"계정 가입 실패({reg.status_code}): {reg.text}")
         resp = ctx["http"].post(f"{ctx['base_url']}/api/v1/auth/login", json=login, timeout=15)
     if resp.status_code != 200:
-        raise SystemExit(f"로그인 실패({resp.status_code}): {resp.text} — --register 옵션 참고")
+        raise SystemExit(
+            f"로그인 실패({resp.status_code}): {resp.text} — api 모드는 관리자 계정이 필요하다"
+            " (redis 모드만 쓸 때는 --register로 일반 계정을 만들어도 된다)"
+        )
     return resp.json()["access_token"]
 
 
@@ -304,9 +323,12 @@ def get_token(ctx: dict, user: str, password: str, register: bool) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base-url", default=os.getenv("NG_BASE_URL", DEFAULT_BASE_URL))
-    parser.add_argument("--user", default=os.getenv("NG_TEST_USER", "ng_tester"))
+    parser.add_argument("--user", default=os.getenv("NG_TEST_USER", "ng_tester"),
+                        help="로그인 ID — api 모드는 관리자 역할 계정이어야 한다(일반 계정은 403)")
     parser.add_argument("--password", default=os.getenv("NG_TEST_PASSWORD", "ng_tester_pw1!"))
-    parser.add_argument("--register", action="store_true", help="계정 없으면 자동 가입")
+    parser.add_argument("--register", action="store_true",
+                        help="계정 없으면 자동 가입 — 일반 계정으로 만들어지므로 api 모드에는 "
+                             "관리자가 역할을 관리자로 바꿔 줘야 한다")
     parser.add_argument("--redis-url", default=os.getenv("NG_REDIS_URL", DEFAULT_REDIS_URL))
     parser.add_argument("--db-id", default=DEFAULT_DB_ID, help="이벤트 dbId (기본: 도커 폴스타)")
     parser.add_argument("--decision-log", default=DEFAULT_DECISION_LOG)

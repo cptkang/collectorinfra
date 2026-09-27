@@ -2036,7 +2036,9 @@
                 var sevColor = severity === "critical" ? "var(--error)" : severity === "warning" ? "#f59e0b" : "var(--text-muted)";
                 var userId = a.user_id || "-";
                 var ip = a.ip_address || "-";
-                var detail = (a.detail && a.detail.detail) || JSON.stringify(a.detail || {});
+                // AuditService.log_security_alert는 경고 문구를 상세의 extra.detail에 둔다
+                var detail = (a.detail && (a.detail.detail || (a.detail.extra && a.detail.extra.detail)))
+                    || JSON.stringify(a.detail || {});
                 tr.innerHTML =
                     "<td style='font-size:0.75rem;white-space:nowrap'>" + escapeHtml(time) + "</td>" +
                     "<td><span style='font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:3px;color:" + sevColor + ";background:color-mix(in srgb," + sevColor + " 15%,transparent)'>" + escapeHtml(severity.toUpperCase()) + "</span></td>" +

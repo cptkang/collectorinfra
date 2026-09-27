@@ -8,6 +8,7 @@ flapping, 기본 임계 low 5.0 / high 20.0).
     - 순수함수(부작용·전역상태·I/O 없음)·결정적. 동일 입력 → 동일 출력.
     - 최신 전이일수록 큰 가중(1.0→1.5 선형 보간)을 부여해 최근 불안정성을 강조.
     - 부동소수 오차를 줄이기 위해 가중합을 산출한 뒤 마지막에 비율을 계산한다.
+    - 상태가 표본 하한(MIN_STATES) 미만이면 비율과 무관하게 플래핑으로 보지 않는다.
 
 이 모듈은 domain 계층에 위치하므로 표준 라이브러리만 의존한다(src 내 다른 모듈 import 금지).
 """
@@ -20,6 +21,13 @@ DEFAULT_FLAP_LOW = 5.0
 
 # 최근 상태 시퀀스 최대 길이(Nagios: 21개 결과 → 최대 20개 전이)
 MAX_STATES = 21
+
+# 플래핑 판정에 필요한 최소 상태 수(표본 하한). 이보다 적으면 플래핑으로 보지 않는다.
+# 근거: `flap_percent`는 관측한 전이만으로 비율을 내므로 상태가 적으면 전이 1~2회로도
+# 100%가 된다(발생→해소→재발생 한 번 = 정상 재발생). Nagios 원식은 창 전체(MAX_STATES-1=20
+# 전이)로 나누므로 기본 시작 임계 20%에 닿으려면 전이가 최소 20% × 20 = 4회 필요하다
+# → 상태 5개. 창이 가득 찬 이 모듈 식에서도 최신 전이 3회는 17.7%, 4회는 23.4%로 같은 결론이다.
+MIN_STATES = 5
 
 
 def flap_percent(states: list[bool]) -> float:
@@ -67,6 +75,8 @@ def update_flap_state(
     percent: float,
     high: float = DEFAULT_FLAP_HIGH,
     low: float = DEFAULT_FLAP_LOW,
+    *,
+    samples: int = MAX_STATES,
 ) -> bool:
     """히스테리시스로 플래핑 상태를 갱신한다 (Nagios).
 
@@ -75,15 +85,19 @@ def update_flap_state(
         percent: `flap_percent`로 산출한 가중 %-state-change.
         high: 플래핑 시작 임계(기본 20.0). percent >= high면 시작.
         low: 플래핑 종료 임계(기본 5.0). percent <= low면 종료.
+        samples: percent 산출에 쓴 상태 수. 생략하면 창이 가득 찬 것(MAX_STATES)으로 본다.
 
     Returns:
         갱신된 플래핑 상태.
 
     히스테리시스(§3.7):
+        - samples < MIN_STATES(표본 하한)면 percent와 무관하게 False(플래핑 아님).
         - 비플래핑(prev=False)에서 percent >= high → True(시작).
         - 플래핑(prev=True)에서 percent <= low → False(종료).
         - 그 사이(low < percent < high)는 prev 유지.
     """
+    if samples < MIN_STATES:
+        return False
     if not prev_flapping:
         if percent >= high:
             return True

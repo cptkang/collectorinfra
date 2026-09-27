@@ -6,6 +6,7 @@
 - 혼합 시퀀스의 가중 % 손계산(최신 전이가 더 큰 영향)
 - 히스테리시스(시작 20% / 종료 5%, 양방향)
 - 21개 초과 입력 방어(뒤 21개 사용)
+- 표본 하한(MIN_STATES=5) 미만은 플래핑 아님(결함 ⑫ — 재발생 한 번 억제 방지)
 """
 
 import pytest
@@ -14,6 +15,7 @@ from noise_gate.domain.flapping import (
     DEFAULT_FLAP_HIGH,
     DEFAULT_FLAP_LOW,
     MAX_STATES,
+    MIN_STATES,
     flap_percent,
     update_flap_state,
 )
@@ -145,6 +147,40 @@ def test_custom_thresholds():
     assert update_flap_state(False, 30.0, high=30.0, low=10.0) is True
     assert update_flap_state(True, 10.0, high=30.0, low=10.0) is False
     assert update_flap_state(False, 20.0, high=30.0, low=10.0) is False  # 중간 → 유지
+
+
+# ── update_flap_state: 표본 하한(결함 ⑫) ──────────────────────
+def _full_window_with_recent_transitions(k: int) -> list[bool]:
+    """창(21개)이 가득 찼고 최신 k개 전이만 변화한 시퀀스."""
+    return [True] * (MAX_STATES - k) + [j % 2 == 1 for j in range(k)]
+
+
+def test_min_states_matches_nagios_default_start():
+    """하한 근거: 창이 가득 찼을 때 기본 시작 임계(20%)에 닿는 최소 전이 수 = MIN_STATES-1."""
+    assert MIN_STATES == 5
+    below = flap_percent(_full_window_with_recent_transitions(MIN_STATES - 2))
+    at = flap_percent(_full_window_with_recent_transitions(MIN_STATES - 1))
+    assert below < DEFAULT_FLAP_HIGH <= at
+    assert below == pytest.approx(17.68, abs=0.01)
+    assert at == pytest.approx(23.37, abs=0.01)
+
+
+def test_single_recurrence_below_min_states_not_flapping():
+    """발생→해소→재발생 한 번(상태 3개)은 변화율 100%여도 플래핑이 아니다."""
+    states = [True, False, True]
+    assert flap_percent(states) == pytest.approx(100.0)
+    assert update_flap_state(False, flap_percent(states), samples=len(states)) is False
+
+
+def test_below_min_states_never_flapping():
+    for samples in range(MIN_STATES):
+        assert update_flap_state(False, 100.0, samples=samples) is False
+        assert update_flap_state(True, 100.0, samples=samples) is False
+
+
+def test_at_min_states_starts_flapping():
+    states = [bool(i % 2 == 0) for i in range(MIN_STATES)]
+    assert update_flap_state(False, flap_percent(states), samples=len(states)) is True
 
 
 # ── 통합: flap_percent → update_flap_state ─────────────────────

@@ -2814,6 +2814,63 @@
         codeEl.classList.toggle("open");
     };
 
+    // ─── 결과·파일 받기 (헤더 인증) ───
+    // 결과·CSV·생성 파일·매핑 보고서·첨부 원본 API는 로그인과 소유자(질의한 사람)를 확인한다.
+    // 링크로 바로 이동하면 Authorization 헤더가 실리지 않으므로(토큰은 URL에 싣지 않는다) 클릭을
+    // 가로채 헤더를 실은 fetch로 받고 Blob으로 저장한다. 만료(401)는 기존 재로그인 흐름을 따른다.
+
+    // 한글 파일명은 filename*=UTF-8''(퍼센트 인코딩)에 있고 filename="..."은 ASCII 대체 이름이다
+    // (RFC 6266·5987) — UTF-8 이름을 먼저 읽는다.
+    function filenameFromDisposition(header) {
+        var h = header || "";
+        var star = /filename\*=UTF-8''([^;]+)/i.exec(h);
+        if (star) {
+            try { return decodeURIComponent(star[1].trim()); } catch (_e) { /* 깨진 인코딩이면 대체 이름 */ }
+        }
+        var m = /filename="([^"]+)"/.exec(h);
+        return m ? m[1] : null;
+    }
+
+    async function downloadWithAuth(url, fallbackName) {
+        try {
+            var res = await fetch(url, { headers: getAuthHeaders() });
+            if (res.status === 401) {
+                redirectToLogin();
+                return;
+            }
+            if (!res.ok) {
+                var detail = "다운로드에 실패했습니다 (HTTP " + res.status + ")";
+                try {
+                    var body = await res.json();
+                    if (body && body.detail) detail = body.detail;
+                } catch (_e) { /* 본문이 JSON이 아니면 기본 문구 */ }
+                showError(detail);
+                return;
+            }
+            var blob = await res.blob();
+            var objectUrl = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = objectUrl;
+            a.download = filenameFromDisposition(res.headers.get("content-disposition")) || fallbackName || "download";
+            a.style.display = "none";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+        } catch (err) {
+            showError("다운로드에 실패했습니다: " + err.message);
+        }
+    }
+
+    chatMessages.addEventListener("click", function (e) {
+        var link = e.target.closest("a.message-download, a.message-file-card");
+        var href = link ? link.getAttribute("href") : null;
+        if (!href || href.indexOf("/api/v1/query/") !== 0) return;
+        e.preventDefault();
+        var nameEl = link.querySelector(".message-file-card-name");
+        downloadWithAuth(href, nameEl ? nameEl.textContent : null);
+    });
+
     // ─── Mapping Feedback Upload Handler ───
 
     window.handleMappingFeedbackUpload = async function (inputEl) {
@@ -2840,6 +2897,11 @@
                 headers: getAuthHeaders(),
                 body: formData,
             });
+
+            if (response.status === 401) {
+                redirectToLogin();   // 만료 — 기존 재로그인 흐름
+                return;
+            }
 
             var result = await response.json();
 

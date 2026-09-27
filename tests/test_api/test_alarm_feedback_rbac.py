@@ -312,3 +312,122 @@ def test_feedback_investigation_id_cross_zone_still_denied(tmp_path):
     assert resp.status_code == 403
     import os
     assert not os.path.exists(config.noise_gate.feedback_store_path)
+
+
+# ─── 결함 ⑤: 조회 경로(사건 목록·피드백 요약)에도 쓰기 경로와 같은 존 판정 ─────────
+# 종전에는 ack·피드백 적재만 존을 확인하고, 두 조회 API는 로그인 사용자에게 전 존을 돌려줬다.
+
+
+def _incident(iid: int, db_id):  # noqa: ANN001
+    return {"id": iid, "status": "open", "db_id": db_id, "server_name": f"srv-{iid}"}
+
+
+class _FakeIncidentListStore:
+    """IncidentStore 대역 — list_open만 쓴다(포트 시그니처 그대로: limit만 받는다)."""
+
+    def __init__(self, incidents: list[dict]) -> None:
+        self._incidents = incidents
+
+    async def list_open(self, *, limit: int = 100) -> list[dict]:
+        return self._incidents[:limit]
+
+
+_MIXED_INCIDENTS = [
+    _incident(1, GONGJON_DB),
+    _incident(2, BANKJON_DB),
+    _incident(3, "cloud_portal"),  # 존 매핑 없는 db_id
+    _incident(4, None),            # db_id 미상
+]
+
+
+def _incident_ids(client) -> list[int]:  # noqa: ANN001
+    resp = client.get("/api/v1/alarm/incidents")
+    assert resp.status_code == 200, resp.text
+    return [i["id"] for i in resp.json()["incidents"]]
+
+
+def test_incident_list_hides_other_zone(tmp_path):
+    """공동존 운영자에게 은행존 사건이 보이지 않는다(수정 전: 전 존이 보였다)."""
+    store = _FakeIncidentListStore(_MIXED_INCIDENTS)
+    client = _make_client(_make_config(tmp_path), user=OPERATOR_GONGJON, incident_store=store)
+    ids = _incident_ids(client)
+    assert 1 in ids
+    assert 2 not in ids
+
+
+def test_incident_list_follows_write_path_rule(tmp_path):
+    """판정은 ack와 같다 — 매핑 없는 db_id는 숨기고, db_id 미상은 막지 않는다."""
+    store = _FakeIncidentListStore(_MIXED_INCIDENTS)
+    client = _make_client(_make_config(tmp_path), user=OPERATOR_BANKJON, incident_store=store)
+    assert _incident_ids(client) == [2, 4]
+
+
+def test_incident_list_admin_sees_all_zones(tmp_path):
+    store = _FakeIncidentListStore(_MIXED_INCIDENTS)
+    client = _make_client(_make_config(tmp_path), user=ADMIN, incident_store=store)
+    assert _incident_ids(client) == [1, 2, 3, 4]
+
+
+def test_incident_list_dev_mode_sees_all_zones(tmp_path):
+    store = _FakeIncidentListStore(_MIXED_INCIDENTS)
+    config = _make_config(tmp_path, auth_enabled=False)
+    client = _make_client(config, user={}, incident_store=store)
+    assert _incident_ids(client) == [1, 2, 3, 4]
+
+
+def test_incident_list_general_user_denied(tmp_path):
+    """알림 존이 없는 사용자는 ack와 같이 403이다."""
+    store = _FakeIncidentListStore(_MIXED_INCIDENTS)
+    client = _make_client(_make_config(tmp_path), user=GENERAL_USER, incident_store=store)
+    assert client.get("/api/v1/alarm/incidents").status_code == 403
+
+
+def _seed_feedback(config) -> None:  # noqa: ANN001
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
+
+    store = FeedbackStore(config.noise_gate.feedback_store_path)
+    # 같은 (알람명, 자원명)이 두 존에 걸친 경우 — 다른 존의 카운트·작성자가 섞이면 안 된다.
+    store.record_feedback(label="noise", alarm_name="CPU", resource_name="cpu",
+                          db_id=GONGJON_DB, labeled_by="op1")
+    store.record_feedback(label="valid", alarm_name="CPU", resource_name="cpu",
+                          db_id=BANKJON_DB, labeled_by="op2")
+    # 은행존에만 있는 알람
+    store.record_feedback(label="valid", alarm_name="BANK_ONLY", resource_name="disk",
+                          db_id=BANKJON_DB, labeled_by="op2")
+    # db_id 없이 남은 라벨(구 클라이언트 — 적재 경로가 무판정으로 통과시킨 것)
+    store.record_feedback(label="noise", alarm_name="LEGACY", resource_name="",
+                          labeled_by="old")
+
+
+def _summary(client) -> dict:  # noqa: ANN001
+    resp = client.get("/api/v1/alarm/feedback/summary")
+    assert resp.status_code == 200, resp.text
+    return {(i["alarm_name"], i["resource_name"]): i for i in resp.json()["items"]}
+
+
+def test_feedback_summary_hides_other_zone(tmp_path):
+    """공동존 운영자에게 은행존 라벨이 집계·작성자로 새지 않는다(수정 전: 전 존 집계)."""
+    config = _make_config(tmp_path)
+    _seed_feedback(config)
+    items = _summary(_make_client(config, user=OPERATOR_GONGJON))
+    assert ("BANK_ONLY", "disk") not in items
+    cpu = items[("CPU", "cpu")]
+    assert (cpu["noise"], cpu["valid"]) == (1, 0)
+    assert cpu["last_labeled_by"] == "op1"
+    # db_id 미상 레코드는 적재 경로와 같이 막지 않는다
+    assert ("LEGACY", "") in items
+
+
+def test_feedback_summary_admin_sees_all_zones(tmp_path):
+    config = _make_config(tmp_path)
+    _seed_feedback(config)
+    items = _summary(_make_client(config, user=ADMIN))
+    assert set(items) == {("CPU", "cpu"), ("BANK_ONLY", "disk"), ("LEGACY", "")}
+    assert (items[("CPU", "cpu")]["noise"], items[("CPU", "cpu")]["valid"]) == (1, 1)
+
+
+def test_feedback_summary_general_user_denied(tmp_path):
+    config = _make_config(tmp_path)
+    _seed_feedback(config)
+    client = _make_client(config, user=GENERAL_USER)
+    assert client.get("/api/v1/alarm/feedback/summary").status_code == 403

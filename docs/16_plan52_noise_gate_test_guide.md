@@ -38,7 +38,7 @@ python -m src.main --server
 # 기동 로그 확인: "알람 워커 시작 (... min_severity=1)" / "인증 DB 초기화 완료"
 
 # ④ 시나리오 실행 — 토큰 발급·이벤트 주입·티어 판정 자동 (§6.6)
-python scripts/noise_gate_scenario_test.py --register --mode api      # 서버+LLM만 필요
+python scripts/noise_gate_scenario_test.py --user <관리자ID> --password <비밀번호> --mode api      # 서버+LLM만 필요 · analyze-test는 관리자 전용(D-263 부기)
 python scripts/noise_gate_scenario_test.py --mode redis \
   --redis-url redis://localhost:${REDIS_PORT:-6379}/0                 # 워커 운영 경로
 
@@ -240,7 +240,7 @@ python -m src.main --server
 
 - **LLM**: `LLM_PROVIDER`(ollama | fabrix | gemini) + 해당 접속 정보 — alarm_analyzer가 실호출된다.
   운영은 fabrix, 개발은 ollama 로컬 또는 gemini+API 키.
-- **인증 DB 주의**: 로그인/analyze-test는 `require_user`라 인증 DB가 필요하다.
+- **인증 DB 주의**: 로그인은 `require_user`, analyze-test는 `require_admin_user`(관리자 역할 사용자 또는 운영자 토큰 — 2026-09-27 D-263 부기)라 인증 DB가 필요하다. `--register`로 만든 계정은 일반 계정이라 「사용자 관리」에서 역할을 admin으로 바꿔야 한다.
   `AUTH_AUTH_DB_URL`(미설정 시 `DB_CONNECTION_STRING` 폴백)이 접속 가능한 PostgreSQL을
   가리켜야 하며, 실패 시 기동 로그에 "인증 DB 초기화 실패"가 남고 로그인이 503을 반환한다.
 - **신호 DB(매트릭스 시나리오)**: 중요도/유지보수 신호는 워커 enricher가 이벤트 `dbId`
@@ -366,8 +366,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 # 시나리오 목록
 python scripts/noise_gate_scenario_test.py --list
 
-# API 경로 시나리오 (서버+LLM만 필요, 계정 없으면 --register로 자동 가입)
-python scripts/noise_gate_scenario_test.py --base-url http://localhost:8000 --register --mode api
+# API 경로 시나리오 (서버+LLM만 필요 · 관리자 계정 필요 — --register 계정은 일반 계정이라 역할을 admin으로 바꾼 뒤 쓴다)
+python scripts/noise_gate_scenario_test.py --base-url http://localhost:8000 --user <관리자ID> --password <비밀번호> --mode api
 
 # 워커(운영 경로) 시나리오 — redis-url은 .env REDIS_PORT와 일치시킬 것
 python scripts/noise_gate_scenario_test.py --base-url http://localhost:8000 \

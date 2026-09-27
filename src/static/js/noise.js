@@ -722,8 +722,8 @@
             row.appendChild(el("td", "k", item.alarm_name));
             row.appendChild(el("td", null, fmtInt(item.count) + " · " + item.label));
             // (plans/112 S7) 행 → 알람명 정확 일치 + 단계 + 캔슬 티어 목록(총 건수 = 이 행의 수).
-            // 알람명이 기록되지 않은 묶음은 알람명으로 거를 수 없어 열지 않는다.
-            if (item.alarm_name && item.alarm_name !== "(미기록)") {
+            // 알람명이 기록되지 않은 묶음과 알람명이 마스킹된 묶음은 알람명으로 거를 수 없어 열지 않는다.
+            if (item.alarm_name && item.alarm_name !== "(미기록)" && !item.masked) {
                 row.setAttribute("data-focus-key", "top:" + item.alarm_name + "|" + item.stage);
                 wireDrill(row, row, item.alarm_name + " · " + item.label + " 캔슬 판단 목록 열기", function () {
                     openTopSuppressed(item, row);
@@ -798,47 +798,87 @@
         renderFeed();
     }
 
+    // 스트림은 EventSource가 아니라 fetch로 읽는다 — EventSource는 Authorization 헤더를 실을 수
+    // 없어, 쿠키가 없는 운영자(break-glass) 토큰 세션이 401 → 재연결을 되풀이했다. 다른 API와 같은
+    // 토큰을 헤더로 싣고 URL에는 싣지 않는다(접근 로그·프록시에 남는다). 운영자 판정은 서버가 한다.
+    // `state.es`는 진행 중인 연결의 AbortController다.
     function connectStream() {
-        if (state.es) state.es.close();
-        // EventSource는 헤더를 실을 수 없어 쿠키 인증에 기댄다(운영자 판정은 서버가 한다).
-        var es = new EventSource(API + "/stream");
-        state.es = es;
+        if (state.es) state.es.abort();
+        var ctrl = new AbortController();
+        state.es = ctrl;
 
-        es.onopen = function () {
+        fetch(API + "/stream", {
+            headers: { "Authorization": "Bearer " + token, "Accept": "text/event-stream" },
+            cache: "no-store",
+            signal: ctrl.signal,
+        }).then(function (res) {
+            // 인가 실패는 다시 붙어도 같은 판정이다 — 재연결을 되풀이하지 않는다(피드는 재동기화가 채운다).
+            if (res.status === 401 || res.status === 403) {
+                state.es = null;
+                setStreamPill("err", "스트림 인가 실패 (" + res.status + ")");
+                return;
+            }
+            if (!res.ok || !res.body) throw new Error("스트림 응답 " + res.status);
             state.esRetryMs = 1000;
             setStreamPill("ok", "스트림 연결됨");
-        };
-        es.onmessage = function (event) {
-            var payload;
-            try { payload = JSON.parse(event.data); } catch (e) { return; }
-            if (!payload || payload.type === "ping") return;
-            if (!payload.tier) return;
-
-            var item = {
-                alarm_id: payload.alarm_id,
-                alarm_name: payload.alarm_name,
-                server_name: payload.server_name || payload.hostname,
-                tier: payload.tier,
-                stage: payload.stage,
-                stage_label: "",
-                reason: payload.tier_reason,
-                ts: payload.received_at || payload.alarm_time || new Date().toISOString(),
-            };
-            var exists = state.feed.some(function (f) { return feedKey(f) === feedKey(item); });
-            if (!exists) {
-                state.feed.unshift(item);
-                state.feed = state.feed.slice(0, FEED_MAX);
-                renderFeed();
-            }
-        };
-        es.onerror = function () {
-            setStreamPill("err", "스트림 끊김 — 재연결 중");
-            es.close();
+            return readStream(res.body.getReader()).then(function () {
+                throw new Error("스트림 종료");  // 서버가 닫았다 — 다시 붙는다
+            });
+        }).catch(function () {
+            if (state.es !== ctrl) return;  // 이미 새 연결로 바뀌었다
             state.es = null;
+            setStreamPill("err", "스트림 끊김 — 재연결 중");
             // 지수 백오프(최대 30초) — 서버 재시작 중에 재연결 폭주를 만들지 않는다.
             setTimeout(connectStream, state.esRetryMs);
             state.esRetryMs = Math.min(state.esRetryMs * 2, 30000);
+        });
+    }
+
+    // SSE 본문을 읽어 빈 줄로 끝나는 이벤트마다 `data:` 줄을 이어 붙여 넘긴다(끝나면 resolve).
+    function readStream(reader) {
+        var decoder = new TextDecoder();
+        var buffer = "";
+        function pump() {
+            return reader.read().then(function (chunk) {
+                if (chunk.done) return;
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var blocks = buffer.split(/\r?\n\r?\n/);
+                buffer = blocks.pop();  // 아직 빈 줄이 오지 않은 조각은 다음 청크와 잇는다
+                blocks.forEach(function (block) {
+                    var data = block.split(/\r?\n/)
+                        .filter(function (line) { return line.indexOf("data:") === 0; })
+                        .map(function (line) { return line.slice(5).replace(/^ /, ""); })
+                        .join("\n");
+                    if (data) onStreamMessage(data);
+                });
+                return pump();
+            });
+        }
+        return pump();
+    }
+
+    function onStreamMessage(data) {
+        var payload;
+        try { payload = JSON.parse(data); } catch (e) { return; }
+        if (!payload || payload.type === "ping") return;
+        if (!payload.tier) return;
+
+        var item = {
+            alarm_id: payload.alarm_id,
+            alarm_name: payload.alarm_name,
+            server_name: payload.server_name || payload.hostname,
+            tier: payload.tier,
+            stage: payload.stage,
+            stage_label: "",
+            reason: payload.tier_reason,
+            ts: payload.received_at || payload.alarm_time || new Date().toISOString(),
         };
+        var exists = state.feed.some(function (f) { return feedKey(f) === feedKey(item); });
+        if (!exists) {
+            state.feed.unshift(item);
+            state.feed = state.feed.slice(0, FEED_MAX);
+            renderFeed();
+        }
     }
 
     function setStreamPill(kind, text) {

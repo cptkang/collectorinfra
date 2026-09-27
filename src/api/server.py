@@ -554,8 +554,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         except Exception:
             pass
 
-    # 종료 시: 인증 DB 풀 정리
+    # 종료 시: 인증 DB 풀 정리 — 그 전에 조회 경로가 띄워 둔 쿼리 실행 감사 DB 쓰기를 마친다(D-261 부기)
     if app.state.auth_pool:
+        try:
+            from src.security.audit_logger import wait_pending_db_mirrors
+
+            await wait_pending_db_mirrors()
+        except Exception:
+            logger.warning("쿼리 실행 감사 DB 쓰기 종료 대기 실패(무시)", exc_info=True)
         try:
             await app.state.auth_pool.close()
         except Exception:

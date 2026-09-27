@@ -18,6 +18,7 @@ import time
 import uuid
 from collections import OrderedDict
 from typing import Any, AsyncGenerator, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -27,13 +28,16 @@ from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.stream_failure import StreamTrace
 from src.api.thread_history import TurnRecorder
+from src.config import SecurityConfig
 from src.domain.partial_result import (
     PARTIAL_STATUS,
     PartialAnswer,
     extract_partial_answer,
     render_partial_text,
 )
+from src.domain.user import UserRole
 from src.llm import USER_RESPONSE_TAG
+from src.security.data_masker import DataMasker
 from src.utils.json_extract import coerce_content_text
 from src.routing.db_authz import SELECTION_DENIED_MESSAGE, authorized_db_ids, filter_selected_db_ids
 from src.state import create_followup_input, create_initial_state
@@ -135,11 +139,97 @@ async def _audit_user_request(
         logger.warning("사용자 질의 감사 기록 실패: %s", e)
 
 
-def _store_result(query_id: str, data: dict) -> None:
-    """결과를 저장하고, 최대 크기를 초과하면 오래된 항목을 제거한다."""
-    _results_store[query_id] = data
+def _store_result(query_id: str, data: dict, *, owner: str | None) -> None:
+    """결과를 저장하고, 최대 크기를 초과하면 오래된 항목을 제거한다.
+
+    ``owner``는 질의한 사용자의 ``sub``다 — 결과·파일 조회 라우트가 소유자 확인에 쓴다
+    (`_owned_result`). 키워드 필수로 둬 저장 지점이 소유자를 빠뜨리지 못하게 한다.
+    """
+    _results_store[query_id] = {**data, "owner_sub": owner}
     while len(_results_store) > _MAX_RESULTS_STORE_SIZE:
         _results_store.popitem(last=False)
+
+
+def _owned_result(
+    request: Request,
+    query_id: str,
+    current_user: dict[str, Any],
+    *,
+    not_found: str = "결과를 찾을 수 없습니다.",
+    allow_admin: bool = True,
+    denied: str = "이 결과는 질의한 사용자만 받을 수 있습니다.",
+) -> dict[str, Any]:
+    """저장된 결과를 돌려주되, 요청자가 질의한 사람(또는 관리자)이 아니면 403.
+
+    - 없는 query_id는 404(종전 문구 유지).
+    - 인증 비활성(`AUTH_ENABLED=false`)은 종전 동작 그대로 통과한다 — 전원이 `anonymous`
+      한 명이라 소유자를 가를 수 없다.
+    - 관리자(`role == admin`, DB 실시간 값)는 통과한다(D-069 통합 RBAC). 단 ``allow_admin=False``
+      (첨부 원본)는 관리자도 소유자여야 한다 — DRM 해제된 평문 원본이라 관리자 복호화
+      다운로드(D-156 후속1 「승인 전 범위 밖」)와 같은 효과가 되기 때문이다.
+    - 소유자가 없는 결과는 일반 사용자에게 내주지 않는다(fail-closed).
+    """
+    stored = _results_store.get(query_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    if not request.app.state.config.auth.enabled:
+        return stored
+    if allow_admin and current_user.get("role") == UserRole.ADMIN.value:
+        return stored
+    owner = stored.get("owner_sub")
+    if not owner or owner != current_user.get("sub"):
+        logger.warning(
+            "질의 결과 접근 거부: query_id=%s 요청자=%s (소유자 아님)",
+            query_id[:8], current_user.get("sub"),
+        )
+        raise HTTPException(status_code=403, detail=denied)
+    return stored
+
+
+def _attachment_disposition(file_name: str) -> str:
+    """다운로드 `Content-Disposition` 값을 만든다(RFC 6266 · RFC 5987).
+
+    헤더는 latin-1로만 나가므로 한글 파일명을 그대로 넣으면 응답 생성이 500으로 끝난다.
+    원래 이름은 `filename*=UTF-8''<퍼센트 인코딩>`으로 싣고, `filename=`에는 인쇄 가능한
+    ASCII만 남긴 대체 이름을 둔다(따옴표·역슬래시·제어 문자도 `_`). 대체할 것이 없는 ASCII
+    이름은 종전 헤더 그대로다.
+    """
+    fallback = "".join(
+        c if " " <= c <= "~" and c not in '"\\' else "_" for c in file_name
+    )
+    if fallback == file_name:
+        return f'attachment; filename="{file_name}"'
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(file_name, safe='')}"
+
+
+async def _audit_file_download(
+    request: Request,
+    current_user: dict[str, Any],
+    *,
+    file_name: str,
+    file_type: str,
+    file_size: int,
+) -> None:
+    """파일 다운로드를 감사에 기록한다(`AuditService.log_file_download`).
+
+    감사 실패는 다운로드를 막지 않는다 — 다만 삼키지 않고 경고로 남긴다
+    (`_audit_user_request`와 같다).
+    """
+    audit_service = getattr(request.app.state, "audit_service", None)
+    if not audit_service:
+        return
+    try:
+        await audit_service.log_file_download(
+            user_id=current_user.get("sub") if current_user else None,
+            file_name=file_name,
+            file_type=file_type,
+            file_size=file_size,
+            client_ip=getattr(request.state, "client_ip", None)
+            or (request.client.host if request.client else None),
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.warning("파일 다운로드 감사 기록 실패: %s", e)
 
 
 def _sse_event(data: dict) -> str:
@@ -663,8 +753,14 @@ def _executed_sql(state: dict) -> str | None:
     return "\n\n".join(f"-- [{label}]\n{body}" for label, body in parts)
 
 
-def _extract_node_progress(node_name: str, output: dict) -> dict | None:
-    """노드 완료 시 오른쪽 패널에 표시할 진행 데이터를 추출한다."""
+def _extract_node_progress(
+    node_name: str, output: dict, *, security: SecurityConfig
+) -> dict | None:
+    """노드 완료 시 오른쪽 패널에 표시할 진행 데이터를 추출한다.
+
+    ``security``는 미리보기 행을 화면 답·CSV와 같은 `DataMasker` 규칙으로 가리는 데 쓴다 —
+    가리기 전 행을 브라우저로 보내지 않는다(D-249 원칙).
+    """
     try:
         if node_name == "input_parser":
             parsed = output.get("parsed_requirements", {})
@@ -710,7 +806,9 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
             error = output.get("error_message")
             data = {
                 "row_count": len(results),
-                "preview_rows": results[:10],
+                "preview_rows": DataMasker(security).mask_rows(
+                    [r for r in results[:10] if isinstance(r, dict)]
+                ),
             }
             if error:
                 data["error"] = error
@@ -1716,7 +1814,7 @@ async def process_query(
         "output_file": result.get("output_file"),
         "mapping_report_md": result.get("mapping_report_md"),
         "query_results": result.get("query_results", []),
-    })
+    }, owner=current_user.get("sub"))
 
     return await turn.response(QueryResponse(**response_data))
 
@@ -1914,7 +2012,9 @@ async def process_query_stream(
                                         if isinstance(node_qr, list):
                                             _tracked_row_count = len(node_qr)
                                             _tracked_query_results = node_qr
-                                    progress_data = _extract_node_progress(name, node_output)
+                                    progress_data = _extract_node_progress(
+                                        name, node_output, security=config.security
+                                    )
                                     if progress_data:
                                         yield _sse_event({
                                             "type": "node_complete",
@@ -1997,7 +2097,7 @@ async def process_query_stream(
                                         "output_file": output.get("output_file"),
                                         "mapping_report_md": output.get("mapping_report_md"),
                                         "query_results": output.get("query_results") or _tracked_query_results,
-                                    })
+                                    }, owner=current_user.get("sub"))
 
                                     yield _sse_event({
                                         "type": "done",
@@ -2076,7 +2176,7 @@ async def process_query_stream(
                 "output_file": result.get("output_file"),
                 "mapping_report_md": result.get("mapping_report_md"),
                 "query_results": result.get("query_results", []),
-            })
+            }, owner=current_user.get("sub"))
 
             yield _sse_event({
                 "type": "done",
@@ -2303,7 +2403,7 @@ async def process_file_query(
         #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
         "uploaded_file": file_bytes,
         "uploaded_file_name": file.filename,
-    })
+    }, owner=current_user.get("sub"))
 
     return await turn.response(QueryResponse(**response_data))
 
@@ -2620,7 +2720,9 @@ async def process_file_query_stream(
                                         if isinstance(node_qr, list):
                                             _tracked_row_count = len(node_qr)
                                             _tracked_query_results = node_qr
-                                    progress_data = _extract_node_progress(name, node_output)
+                                    progress_data = _extract_node_progress(
+                                        name, node_output, security=config.security
+                                    )
                                     if progress_data:
                                         yield _sse_event({
                                             "type": "node_complete",
@@ -2698,7 +2800,7 @@ async def process_file_query_stream(
                                         #   TTL/공유 스토리지 도입 검토.
                                         "uploaded_file": file_bytes,
                                         "uploaded_file_name": file.filename,
-                                    })
+                                    }, owner=current_user.get("sub"))
 
                                     yield _sse_event({
                                         "type": "done",
@@ -2769,7 +2871,7 @@ async def process_file_query_stream(
                 # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
                 "uploaded_file": file_bytes,
                 "uploaded_file_name": file.filename,
-            })
+            }, owner=current_user.get("sub"))
             yield _sse_event({
                 "type": "done",
                 "response": response_data["response"],
@@ -2820,12 +2922,13 @@ async def process_file_query_stream(
     "/query/{query_id}/result",
     response_model=QueryResponse,
 )
-async def get_query_result(query_id: str) -> QueryResponse:
-    """비동기 질의의 결과를 조회한다."""
-    if query_id not in _results_store:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
-
-    stored = _results_store[query_id]
+async def get_query_result(
+    request: Request,
+    query_id: str,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> QueryResponse:
+    """비동기 질의의 결과를 조회한다(질의한 사용자·관리자만)."""
+    stored = _owned_result(request, query_id, current_user)
     return QueryResponse(
         query_id=stored["query_id"],
         status=stored["status"],
@@ -2842,24 +2945,31 @@ async def get_query_result(query_id: str) -> QueryResponse:
 
 
 @router.get("/query/{query_id}/mapping-report")
-async def download_mapping_report(query_id: str) -> StreamingResponse:
-    """매핑 보고서 MD 파일을 다운로드한다."""
-    if query_id not in _results_store:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
-
-    stored = _results_store[query_id]
+async def download_mapping_report(
+    request: Request,
+    query_id: str,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> StreamingResponse:
+    """매핑 보고서 MD 파일을 다운로드한다(질의한 사용자·관리자만)."""
+    stored = _owned_result(request, query_id, current_user)
     report_md = stored.get("mapping_report_md")
 
     if not report_md:
         raise HTTPException(status_code=404, detail="매핑 보고서가 없습니다.")
 
-    return StreamingResponse(
-        io.BytesIO(report_md.encode("utf-8")),
+    report_bytes = report_md.encode("utf-8")
+    file_name = f"mapping_report_{query_id[:8]}.md"
+    response = StreamingResponse(
+        io.BytesIO(report_bytes),
         media_type="text/markdown; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="mapping_report_{query_id[:8]}.md"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
+    await _audit_file_download(
+        request, current_user, file_name=file_name, file_type="md", file_size=len(report_bytes)
+    )
+    return response
 
 
 @router.post("/query/mapping-feedback")
@@ -2867,25 +2977,27 @@ async def process_mapping_feedback(
     request: Request,
     file: UploadFile = File(...),
     query_id: str = Form(...),
+    current_user: dict[str, Any] = Depends(require_user),
 ) -> dict:
     """수정된 매핑 보고서 MD 파일을 업로드하여 Redis에 반영한다.
 
     사용자가 매핑 보고서를 다운로드 -> 수정 -> 업로드하면
     원본과 비교하여 변경사항을 Redis synonyms에 반영한다.
+    원본 결과를 질의한 사용자·관리자만 올릴 수 있다.
 
     Args:
         request: FastAPI Request (app.state.config 접근용)
         file: 수정된 매핑 보고서 MD 파일
         query_id: 원본 결과의 query_id
+        current_user: 인증 사용자(소유자 확인)
 
     Returns:
         반영 결과 딕셔너리
     """
     # 1. 원본 보고서 조회
-    if query_id not in _results_store:
-        raise HTTPException(status_code=404, detail="원본 결과를 찾을 수 없습니다.")
-
-    stored = _results_store[query_id]
+    stored = _owned_result(
+        request, query_id, current_user, not_found="원본 결과를 찾을 수 없습니다."
+    )
     original_md = stored.get("mapping_report_md")
     if not original_md:
         raise HTTPException(status_code=404, detail="원본 매핑 보고서가 없습니다.")
@@ -2954,12 +3066,13 @@ async def process_mapping_feedback(
 
 
 @router.get("/query/{query_id}/download")
-async def download_file(query_id: str) -> StreamingResponse:
-    """생성된 파일을 다운로드한다."""
-    if query_id not in _results_store:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
-
-    stored = _results_store[query_id]
+async def download_file(
+    request: Request,
+    query_id: str,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> StreamingResponse:
+    """생성된 파일을 다운로드한다(질의한 사용자·관리자만)."""
+    stored = _owned_result(request, query_id, current_user)
     file_bytes = stored.get("output_file")
     file_name = stored.get("file_name", "download")
 
@@ -2972,30 +3085,37 @@ async def download_file(query_id: str) -> StreamingResponse:
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
 
-    return StreamingResponse(
+    response = StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
+    await _audit_file_download(
+        request, current_user, file_name=file_name,
+        file_type=_get_file_extension(file_name), file_size=len(file_bytes),
+    )
+    return response
 
 
 @router.get("/query/{query_id}/attachment")
 async def download_attachment(
+    request: Request,
     query_id: str,
     current_user: dict = Depends(require_user),
 ) -> StreamingResponse:
     """사용자가 업로드한 원본 양식 파일을 그대로 다운로드한다(§14).
 
     첨부 파일 카드 클릭 시 호출된다. 생성 결과 파일(`/download`)이 아니라
-    업로드 원본(`uploaded_file`)을 서빙한다. 로그인 사용자로 접근을 제한한다.
-    (향후: 본인 소유 query_id로만 제한하는 소유자 확인 추가 검토 — §14.5)
+    업로드 원본(`uploaded_file`)을 서빙한다. 그 파일을 올린 사용자만 받는다(§14.5 소유자
+    확인). 저장본은 DRM 해제 뒤의 평문이라 관리자도 남의 원본은 받지 않는다 — 관리자 복호화
+    다운로드는 승인 전 범위 밖이다(D-156 후속1 · D-262 후속).
     """
-    if query_id not in _results_store:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
-
-    stored = _results_store[query_id]
+    stored = _owned_result(
+        request, query_id, current_user,
+        allow_admin=False, denied="원본 첨부 파일은 올린 사용자만 받을 수 있습니다.",
+    )
     file_bytes = stored.get("uploaded_file")
     file_name = stored.get("uploaded_file_name") or "attachment"
 
@@ -3014,26 +3134,40 @@ async def download_attachment(
     else:
         content_type = "application/octet-stream"
 
-    return StreamingResponse(
+    response = StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
+    await _audit_file_download(
+        request, current_user, file_name=file_name, file_type=ext, file_size=len(file_bytes)
+    )
+    return response
 
 
 @router.get("/query/{query_id}/download-csv")
-async def download_csv(query_id: str) -> StreamingResponse:
-    """조회 결과를 CSV 파일로 다운로드한다."""
-    if query_id not in _results_store:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+async def download_csv(
+    request: Request,
+    query_id: str,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> StreamingResponse:
+    """조회 결과를 CSV 파일로 다운로드한다(질의한 사용자·관리자만).
 
-    stored = _results_store[query_id]
+    행은 화면 응답과 같은 규칙(`DataMasker` — `result_organizer`가 응답 행에 적용하는 것)으로
+    가린다. 저장된 `query_results`는 전량·원순서 그대로 두고(D-047 · plans/113 G-4) 내보낼
+    때만 가린다.
+    """
+    stored = _owned_result(request, query_id, current_user)
     rows = stored.get("query_results", [])
 
     if not rows:
         raise HTTPException(status_code=404, detail="다운로드할 조회 결과가 없습니다.")
+
+    rows = DataMasker(request.app.state.config.security).mask_rows(
+        [r for r in rows if isinstance(r, dict)]
+    )
 
     # CSV 생성 (BOM 포함하여 Excel에서 한글 깨짐 방지)
     output = io.StringIO()
@@ -3057,11 +3191,16 @@ async def download_csv(query_id: str) -> StreamingResponse:
     writer.writerows(r for r in rows if isinstance(r, dict))
 
     csv_bytes = output.getvalue().encode("utf-8")
+    file_name = f"query_result_{query_id[:8]}.csv"
 
-    return StreamingResponse(
+    response = StreamingResponse(
         io.BytesIO(csv_bytes),
         media_type="text/csv; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="query_result_{query_id[:8]}.csv"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
+    await _audit_file_download(
+        request, current_user, file_name=file_name, file_type="csv", file_size=len(csv_bytes)
+    )
+    return response
