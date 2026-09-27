@@ -80,7 +80,7 @@ VALUES
 
 -- ----------------------------------------------------------------------------
 -- 4. EAV (core_config_prop)
---    서버 conf: Hostname/OSType/OSVerson/Vendor/SerialNumber/MODEL/IPAddress
+--    서버 conf: Hostname/OSType/OSVerson/Vendor/SerialNumber/Model/IPAddress
 --               (+cocm-xgzapp09만 OSParameter LOB — gp-011)
 --    Cpus conf: MODEL/LOGICALCORE/PHYSICALCORE
 --    Memory conf: TotalSize (MB)
@@ -94,7 +94,7 @@ VALUES
   ('SIMPLE', 200200003, 454, 9681001, 'OSVerson',     'Red Hat Enterprise Linux 8.8', NULL),
   ('SIMPLE', 200200004, 454, 9681001, 'Vendor',       'HPE', NULL),
   ('SIMPLE', 200200005, 454, 9681001, 'SerialNumber', 'KR2024BNN0001', NULL),
-  ('SIMPLE', 200200006, 454, 9681001, 'MODEL',        'ProLiant DL380 Gen11', NULL),
+  ('SIMPLE', 200200006, 454, 9681001, 'Model',        'ProLiant DL380 Gen11', NULL),
   ('SIMPLE', 200200007, 454, 9681001, 'IPAddress',    '10.68.0.1', NULL),
   -- sbhdbo53 서버 conf(9681002)
   ('SIMPLE', 200200011, 454, 9681002, 'Hostname',     'sbhdbo53', NULL),
@@ -102,7 +102,7 @@ VALUES
   ('SIMPLE', 200200013, 454, 9681002, 'OSVerson',     'Red Hat Enterprise Linux 8.6', NULL),
   ('SIMPLE', 200200014, 454, 9681002, 'Vendor',       'Dell', NULL),
   ('SIMPLE', 200200015, 454, 9681002, 'SerialNumber', 'KR2023DBO0053', NULL),
-  ('SIMPLE', 200200016, 454, 9681002, 'MODEL',        'PowerEdge R650', NULL),
+  ('SIMPLE', 200200016, 454, 9681002, 'Model',        'PowerEdge R650', NULL),
   ('SIMPLE', 200200017, 454, 9681002, 'IPAddress',    '10.68.0.2', NULL),
   -- cocm-xgzapp09 서버 conf(9681003) — OSParameter LOB 포함(gp-011)
   ('SIMPLE', 200200021, 454, 9681003, 'Hostname',     'cocm-xgzapp09', NULL),
@@ -110,7 +110,7 @@ VALUES
   ('SIMPLE', 200200023, 454, 9681003, 'OSVerson',     'Red Hat Enterprise Linux 8.6', NULL),
   ('SIMPLE', 200200024, 454, 9681003, 'Vendor',       'HPE', NULL),
   ('SIMPLE', 200200025, 454, 9681003, 'SerialNumber', 'KR2024XGZ0009', NULL),
-  ('SIMPLE', 200200026, 454, 9681003, 'MODEL',        'ProLiant DL360 Gen10', NULL),
+  ('SIMPLE', 200200026, 454, 9681003, 'Model',        'ProLiant DL360 Gen10', NULL),
   ('SIMPLE', 200200027, 454, 9681003, 'IPAddress',    '10.68.0.3', NULL),
   ('SIMPLE', 200200028, 454, 9681003, 'OSParameter',  NULL,
    E'kernel.shmmax = 68719476736\nkernel.shmall = 4294967296\nnet.core.somaxconn = 65535\nvm.swappiness = 10\nfs.file-max = 6815744'),
@@ -120,7 +120,7 @@ VALUES
   ('SIMPLE', 200200033, 454, 9681004, 'OSVerson',     'Red Hat Enterprise Linux 8.6', NULL),
   ('SIMPLE', 200200034, 454, 9681004, 'Vendor',       'HPE', NULL),
   ('SIMPLE', 200200035, 454, 9681004, 'SerialNumber', 'KR2024NGC0091', NULL),
-  ('SIMPLE', 200200036, 454, 9681004, 'MODEL',        'ProLiant DL360 Gen10', NULL),
+  ('SIMPLE', 200200036, 454, 9681004, 'Model',        'ProLiant DL360 Gen10', NULL),
   ('SIMPLE', 200200037, 454, 9681004, 'IPAddress',    '10.68.0.4', NULL),
   -- Cpus conf
   ('SIMPLE', 200200041, 454, 9682501, 'MODEL',        'Intel Xeon Gold 6338', NULL),

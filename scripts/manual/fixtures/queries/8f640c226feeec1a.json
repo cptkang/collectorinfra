@@ -3,7 +3,7 @@
  "query": "서버 가동률 보여줘",
  "has_file": false,
  "has_answers": false,
- "recorded_at": "2026-09-23T11:00:13",
+ "recorded_at": "2026-09-23T17:58:15",
  "events": [
   {
    "event": "on_chain_start",
@@ -306,7 +306,7 @@
       "content": "'가동률'은 서버 가동 시간 비율(uptime/availability)을 뜻하는 용어로 해석합니다.\n폴스타는 가동 시간 비율을 통계 지표로 집계하지 않아 해당 조회를 제공할 수 없습니다(은행존·공동존 전체 실측 확인).\n\n다음 중 원하시는 조회로 다시 질의해 주세요:\n- 현재 가동(가용성) 상태 기준: \"가용 상태가 비정상인 서버 목록 보여줘\"\n- CPU 사용률 기준: \"지난달 CPU 사용률이 낮은 서버 순으로 보여줘\""
      }
     ],
-    "thread_id": "f27e7cc8-1d61-4fd9-bba5-d441b5ecf971",
+    "thread_id": "7f8d75af-406e-4a38-b91c-a3775868303f",
     "conversation_context": null,
     "awaiting_approval": false,
     "approval_context": null,
@@ -315,7 +315,9 @@
     "user_id": "demo_user",
     "user_department": "인프라운영팀",
     "user_role": "user",
-    "allowed_db_ids": [],
+    "allowed_db_ids": [
+     "polestar"
+    ],
     "request_id": null,
     "client_ip": null,
     "accessed_tables": [],

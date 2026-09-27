@@ -383,7 +383,7 @@ TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title} — Infra Query Agent</title>
+<title>{title} — KB AIOps 포탈</title>
 <script src="/static/js/theme.js"></script>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/manual/manual.css">
@@ -391,7 +391,7 @@ TEMPLATE = """<!DOCTYPE html>
 <body data-manual="{manual}">
 <header class="m-header">
   <button type="button" class="toc-toggle" aria-label="목차 열기">☰</button>
-  <div class="m-title"><span class="dot"></span><span class="brand">INFRA QUERY AGENT</span> <b>{title}</b></div>
+  <div class="m-title"><img class="brand-mark" src="/static/img/kb-mark.svg" alt=""><span class="brand">KB AIOps 포탈</span> <b>{title}</b></div>
   <input type="search" class="toc-filter" placeholder="기능 찾기 (예: CSV, 존, 침묵)" aria-label="기능 찾기">
   <nav class="m-links">
     <a href="/manual/{other}">{other_title}</a>

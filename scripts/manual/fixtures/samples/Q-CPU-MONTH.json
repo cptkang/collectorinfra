@@ -5,7 +5,7 @@
    "query": "2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘",
    "file": null,
    "key": "a73f2a75dd97ec4a",
-   "elapsed_s": 149.7,
+   "elapsed_s": 109.3,
    "nodes": [
     "context_resolver",
     "input_parser",
@@ -17,9 +17,9 @@
    ],
    "done": {
     "type": "done",
-    "response": "조회 결과\n\n2026 년 5 월 기준, 서버별 CPU 평균 사용률 상위 5 대 중 4 대를 조회했습니다. 전체 데이터 전수 조사를 통해 최대 사용률은 68.4%이며, 평균 사용률은 41.25%로 확인됩니다.\n\n| server_name | os_hostname | ipaddress | cpu_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 68.4 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 45.6 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 35.2 |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 15.8 |\n\n참고사항\n- **주의**: 서버 `DB-ORA-023` 의 CPU 평균 사용률이 68.4%로 가장 높게 나타났으며, 이는 전체 평균 (41.25%) 보다 2 배 이상 높은 수준입니다.\n- 조회 기간은 2026 년 5 월이며, 총 4 건의 서버 데이터가 반환되었습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
-    "row_count": 4,
-    "executed_sql": null,
+    "response": "조회 결과\n\n2026 년 5 월 기준, 서버별 CPU 사용률 평균이 높은 상위 5 대를 조회했습니다. DB-ORA-023 서버가 68.4% 로 가장 높은 사용률을 보이며, svr-bkp-01 서버는 데이터가 누락되었습니다.\n\n| name | cpus_avg |\n|---|---|\n| DB-ORA-023 | 68.4 |\n| cocm-hdkapp01 | 45.6 |\n| SV-WEB-001 | 35.2 |\n| SV-BATCH-009 | 15.8 |\n| svr-bkp-01 | null |\n\n참고사항\n- 조회 기간: 2026 년 5 월\n- 이상 징후: DB-ORA-023 서버의 CPU 사용률 (68.4%) 이 상대적으로 높게 나타났으며, svr-bkp-01 서버는 사용률 데이터가 존재하지 않습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 5,
+    "executed_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  ROUND(AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS \"cpus_avg\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m s ON s.resource_id = c.id AND s.definition_name = 'Utilization' AND s.stat_date = '202605'\nWHERE c.resource_type IN ('server.Cpus', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY \"cpus_avg\" DESC NULLS LAST\nLIMIT 5;",
     "has_file": false,
     "file_name": null,
     "awaiting_approval": false,
@@ -31,37 +31,28 @@
    },
    "rows_head": [
     {
-     "server_name": "DB-ORA-023",
-     "os_hostname": "dbora023",
-     "ipaddress": "10.61.0.2",
-     "cpu_avg_utilization": 68.4
+     "name": "DB-ORA-023",
+     "cpus_avg": 68.4
     },
     {
-     "server_name": "cocm-hdkapp01",
-     "os_hostname": "cocm-hdkapp01",
-     "ipaddress": "10.61.0.3",
-     "cpu_avg_utilization": 45.6
+     "name": "cocm-hdkapp01",
+     "cpus_avg": 45.6
     },
     {
-     "server_name": "SV-WEB-001",
-     "os_hostname": "svweb001",
-     "ipaddress": "10.61.0.1",
-     "cpu_avg_utilization": 35.2
+     "name": "SV-WEB-001",
+     "cpus_avg": 35.2
     },
     {
-     "server_name": "SV-BATCH-009",
-     "os_hostname": "svbatch009",
-     "ipaddress": "10.61.0.4",
-     "cpu_avg_utilization": 15.8
+     "name": "SV-BATCH-009",
+     "cpus_avg": 15.8
+    },
+    {
+     "name": "svr-bkp-01",
+     "cpus_avg": null
     }
    ]
   }
  ],
- "reviewed": true,
- "recorded_at": "2026-09-23T10:35:48",
- "review": {
-  "verdict": "ok",
-  "notes": "2026-05 Cpus Utilization 평균 1위 DB-ORA-023 68.4 원본 일치 · 5월 데이터가 있는 서버 4대",
-  "at": "2026-09-23"
- }
+ "reviewed": false,
+ "recorded_at": "2026-09-23T16:27:48"
 }

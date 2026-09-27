@@ -27,6 +27,12 @@ from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.stream_failure import StreamTrace
 from src.api.thread_history import TurnRecorder
+from src.domain.partial_result import (
+    PARTIAL_STATUS,
+    PartialAnswer,
+    extract_partial_answer,
+    render_partial_text,
+)
 from src.llm import USER_RESPONSE_TAG
 from src.utils.json_extract import coerce_content_text
 from src.routing.db_authz import SELECTION_DENIED_MESSAGE, authorized_db_ids, filter_selected_db_ids
@@ -1474,6 +1480,70 @@ def _exceeded_total_timeout(start_time: float, limit: float) -> bool:
     return (time.time() - start_time) > limit
 
 
+async def _partial_on_timeout(
+    graph, thread_config: dict, tracked_rows: list[dict] | None = None
+) -> PartialAnswer | None:
+    """상한에 걸린 턴에서 **이미 조회한 행**을 건진다 (plans/114 P-2 · G-E).
+
+    스트림 경로는 노드 출력에서 행을 이미 추적하고 있으므로(`_tracked_query_results`)
+    그것을 먼저 쓴다 — 취소된 그래프의 체크포인트는 마지막 노드 경계까지만 쓰여 있어
+    더 적을 수 있다. 추적분이 없으면 체크포인트를 읽는다(비스트림 경로).
+    """
+    tracked = [row for row in (tracked_rows or []) if isinstance(row, dict)]
+    if tracked:
+        return PartialAnswer(rows=tracked, source="query_results")
+    return extract_partial_answer(await _get_checkpoint_state(graph, thread_config))
+
+
+def _partial_response_data(
+    answer: PartialAnswer,
+    *,
+    query_id: str,
+    thread_id: str | None,
+    start_time: float,
+    limit_sec: float,
+) -> dict:
+    """부분 결과 응답 본문. 비스트림 반환과 스트림 `done` 이 **같은 값**을 쓴다(D-066)."""
+    return {
+        "query_id": query_id,
+        "status": PARTIAL_STATUS,
+        "response": render_partial_text(answer, limit_sec=limit_sec),
+        "thread_id": thread_id,
+        "row_count": len(answer.rows),
+        "processing_time_ms": (time.time() - start_time) * 1000,
+    }
+
+
+async def _timeout_sse_event(
+    graph,
+    thread_config: dict,
+    *,
+    tracked_rows: list[dict] | None,
+    query_id: str,
+    thread_id: str | None,
+    start_time: float,
+    limit_sec: float,
+    trace: StreamTrace,
+    message: str,
+) -> str:
+    """상한에 걸린 스트림이 내보낼 마지막 이벤트 (plans/114 P-2 · G-E).
+
+    행이 있으면 `done`(`status=partial`), 없으면 종전 오류 이벤트다. **`done` 으로 나가야
+    기록기가 턴을 남긴다** — 오류 이벤트는 `TurnRecorder.stream` 이 기록하지 않는다.
+    """
+    partial = await _partial_on_timeout(graph, thread_config, tracked_rows)
+    if partial is not None:
+        data = _partial_response_data(
+            partial, query_id=query_id, thread_id=thread_id,
+            start_time=start_time, limit_sec=limit_sec,
+        )
+        _store_result(query_id, {**data, "query_results": partial.rows})
+        return _sse_event({"type": "done", **data})
+    return _sse_event(_stream_error_payload(
+        message, trace, code="timeout", start_time=start_time, limit_sec=limit_sec,
+    ))
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -1580,6 +1650,16 @@ async def process_query(
             timeout=effective_timeout,
         )
     except asyncio.TimeoutError:
+        # G-E(plans/114 P-2): 조회까지 끝내고 서술에서 상한을 넘긴 턴은 행을 버리지 않는다.
+        # 행이 없으면 종전 504 그대로다.
+        partial = await _partial_on_timeout(graph, thread_config)
+        if partial is not None:
+            data = _partial_response_data(
+                partial, query_id=query_id, thread_id=thread_id,
+                start_time=start_time, limit_sec=effective_timeout,
+            )
+            _store_result(query_id, {**data, "query_results": partial.rows})
+            return await turn.response(QueryResponse(**data))
         raise HTTPException(
             status_code=504,
             detail="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
@@ -1784,17 +1864,15 @@ async def process_query_stream(
                     )) as _events:
                         async for _ev_kind, _ev_payload in _events:
                             # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
-                            if _exceeded_total_timeout(start_time, effective_timeout):
-                                yield _sse_event(_stream_error_payload(
-                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                    _trace, code="timeout", start_time=start_time, limit_sec=effective_timeout,
-                                ))
-                                return
-                            if _ev_kind == "timeout":
-                                yield _sse_event(_stream_error_payload(
-                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                    _trace, code="timeout", start_time=start_time, limit_sec=effective_timeout,
-                                ))
+                            if _exceeded_total_timeout(start_time, effective_timeout) or _ev_kind == "timeout":
+                                yield await _timeout_sse_event(
+                                    graph, thread_config,
+                                    tracked_rows=_tracked_query_results,
+                                    query_id=query_id, thread_id=thread_id,
+                                    start_time=start_time, limit_sec=effective_timeout,
+                                    trace=_trace,
+                                    message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                )
                                 return
                             if _ev_kind == "heartbeat":
                                 yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
@@ -2021,10 +2099,14 @@ async def process_query_stream(
             })
 
         except asyncio.TimeoutError:
-            yield _sse_event(_stream_error_payload(
-                "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                _trace, code="timeout", start_time=start_time, limit_sec=effective_timeout,
-            ))
+            yield await _timeout_sse_event(
+                graph, thread_config,
+                tracked_rows=_tracked_query_results,
+                query_id=query_id, thread_id=thread_id,
+                start_time=start_time, limit_sec=effective_timeout,
+                trace=_trace,
+                message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+            )
         except Exception as e:
             logger.error(f"SSE 스트리밍 에러: {e}")
             yield _sse_event(_stream_error_payload(
@@ -2172,6 +2254,15 @@ async def process_file_query(
             timeout=config.server.file_query_timeout,
         )
     except asyncio.TimeoutError:
+        # G-E(plans/114 P-2) — 텍스트 경로와 대칭. 양식은 못 채웠어도 조회한 행은 준다.
+        partial = await _partial_on_timeout(graph, thread_config)
+        if partial is not None:
+            data = _partial_response_data(
+                partial, query_id=query_id, thread_id=actual_thread_id,
+                start_time=start_time, limit_sec=config.server.file_query_timeout,
+            )
+            _store_result(query_id, {**data, "query_results": partial.rows})
+            return await turn.response(QueryResponse(**data))
         raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
     except Exception as e:
         logger.error(f"파일 질의 처리 에러: {e}")
@@ -2480,17 +2571,17 @@ async def process_file_query_stream(
                     )) as _events:
                         async for _ev_kind, _ev_payload in _events:
                             # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
-                            if _exceeded_total_timeout(start_time, config.server.file_query_timeout):
-                                yield _sse_event(_stream_error_payload(
-                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                    _trace, code="timeout", start_time=start_time, limit_sec=config.server.file_query_timeout,
-                                ))
-                                return
-                            if _ev_kind == "timeout":
-                                yield _sse_event(_stream_error_payload(
-                                    "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                    _trace, code="timeout", start_time=start_time, limit_sec=config.server.file_query_timeout,
-                                ))
+                            if (_exceeded_total_timeout(start_time, config.server.file_query_timeout)
+                                    or _ev_kind == "timeout"):
+                                yield await _timeout_sse_event(
+                                    graph, thread_config,
+                                    tracked_rows=_tracked_query_results,
+                                    query_id=query_id, thread_id=actual_thread_id,
+                                    start_time=start_time,
+                                    limit_sec=config.server.file_query_timeout,
+                                    trace=_trace,
+                                    message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                )
                                 return
                             if _ev_kind == "heartbeat":
                                 yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
@@ -2698,11 +2789,14 @@ async def process_file_query_stream(
             })
 
         except asyncio.TimeoutError:
-            yield _sse_event(_stream_error_payload(
-                "처리 시간이 초과되었습니다.",
-                _trace, code="timeout", start_time=start_time,
-                limit_sec=config.server.file_query_timeout,
-            ))
+            yield await _timeout_sse_event(
+                graph, thread_config,
+                tracked_rows=_tracked_query_results,
+                query_id=query_id, thread_id=actual_thread_id,
+                start_time=start_time, limit_sec=config.server.file_query_timeout,
+                trace=_trace,
+                message="처리 시간이 초과되었습니다.",
+            )
         except Exception as e:
             logger.error(f"파일 SSE 스트리밍 에러: {e}")
             yield _sse_event(_stream_error_payload(

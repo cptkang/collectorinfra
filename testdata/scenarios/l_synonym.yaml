@@ -51,7 +51,7 @@ scenarios:
       - send:
           query: "SV-WEB-001, DB-ORA-023, cocm-hdkapp01 세 서버의 제조사, 일련번호, 모델명을 표로 보여줘"
         expect:
-          manual_review: "\"제조사\"→`Vendor`, \"일련번호\"→`SerialNumber`, \"모델명\"→`MODEL` — **3개 서버 IN × 3개 속성 동시 피벗** / SV-WEB-001: HPE/KR2024WEB0001/ProLiant DL380 Gen10 · DB-ORA-023: Dell/KR2023ORA0023/PowerEdge R750 · cocm-hdkapp01: HPE/KR2024APP0001/ProLiant DL360 Gen10"
+          manual_review: "\"제조사\"→`Vendor`, \"일련번호\"→`SerialNumber`, \"모델명\"→`Model` — **3개 서버 IN × 3개 속성 동시 피벗** / SV-WEB-001: HPE/KR2024WEB0001/ProLiant DL380 Gen10 · DB-ORA-023: Dell/KR2023ORA0023/PowerEdge R750 · cocm-hdkapp01: HPE/KR2024APP0001/ProLiant DL360 Gen10"
   - id: SYN-A-04
     plans: [37, 61]
     title: "hostapo01과 hostapo02의 타임존과 제조사를 함께 보여줘"

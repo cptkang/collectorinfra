@@ -32,6 +32,7 @@ code { font-family: 'D2Coding', ui-monospace, monospace; font-size: .92em; backg
 .m-title { font-weight: 700; letter-spacing: .02em; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
 .m-title b { color: var(--accent); margin-left: 6px; }
 .m-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.m-title .brand-mark { height: 18px; width: auto; flex-shrink: 0; }
 .toc-filter { flex: 1; max-width: 360px; margin-left: auto; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--surface-2); color: var(--text); font: inherit; font-size: 14px; }
 .m-links { display: flex; gap: 8px; align-items: center; }

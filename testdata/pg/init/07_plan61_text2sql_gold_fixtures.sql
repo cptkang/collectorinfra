@@ -85,7 +85,7 @@ VALUES
 
 -- ----------------------------------------------------------------------------
 -- 3. EAV 속성 (core_config_prop)
---    서버 conf: OSType/OSVerson/Vendor/SerialNumber/MODEL/Hostname/IPAddress/OSParameter
+--    서버 conf: OSType/OSVerson/Vendor/SerialNumber/Model/Hostname/IPAddress/OSParameter
 --    Cpus conf: MODEL/LOGICALCORE/PHYSICALCORE — DB-ORA-023 == cocm-hdkapp01 (gp-014 동일사양)
 --    Memory conf: TotalSize — DB-ORA-023 == cocm-hdkapp01
 --    OSParameter는 LOB(stringvalue) 사용 — stringvalue_short는 NULL
@@ -100,7 +100,7 @@ VALUES
   ('SIMPLE', 200100003, 454, 9611001, 'OSVerson',     'Red Hat Enterprise Linux 8.6', NULL),
   ('SIMPLE', 200100004, 454, 9611001, 'Vendor',       'HPE', NULL),
   ('SIMPLE', 200100005, 454, 9611001, 'SerialNumber', 'KR2024WEB0001', NULL),
-  ('SIMPLE', 200100006, 454, 9611001, 'MODEL',        'ProLiant DL380 Gen10', NULL),
+  ('SIMPLE', 200100006, 454, 9611001, 'Model',        'ProLiant DL380 Gen10', NULL),
   ('SIMPLE', 200100007, 454, 9611001, 'IPAddress',    '10.61.0.1', NULL),
   ('SIMPLE', 200100008, 454, 9611001, 'OSParameter',  NULL,
    E'kernel.shmmax = 68719476736\nkernel.shmall = 4294967296\nnet.core.somaxconn = 1024\nvm.swappiness = 10\nfs.file-max = 6815744'),
@@ -110,7 +110,7 @@ VALUES
   ('SIMPLE', 200100013, 454, 9611002, 'OSVerson',     'Red Hat Enterprise Linux 8.4', NULL),
   ('SIMPLE', 200100014, 454, 9611002, 'Vendor',       'Dell', NULL),
   ('SIMPLE', 200100015, 454, 9611002, 'SerialNumber', 'KR2023ORA0023', NULL),
-  ('SIMPLE', 200100016, 454, 9611002, 'MODEL',        'PowerEdge R750', NULL),
+  ('SIMPLE', 200100016, 454, 9611002, 'Model',        'PowerEdge R750', NULL),
   ('SIMPLE', 200100017, 454, 9611002, 'IPAddress',    '10.61.0.2', NULL),
   ('SIMPLE', 200100018, 454, 9611002, 'OSParameter',  NULL,
    E'kernel.shmmax = 137438953472\nkernel.sem = 250 32000 100 128\nnet.ipv4.ip_local_port_range = 9000 65500'),
@@ -120,7 +120,7 @@ VALUES
   ('SIMPLE', 200100023, 454, 9611003, 'OSVerson',     'Red Hat Enterprise Linux 8.6', NULL),
   ('SIMPLE', 200100024, 454, 9611003, 'Vendor',       'HPE', NULL),
   ('SIMPLE', 200100025, 454, 9611003, 'SerialNumber', 'KR2024APP0001', NULL),
-  ('SIMPLE', 200100026, 454, 9611003, 'MODEL',        'ProLiant DL360 Gen10', NULL),
+  ('SIMPLE', 200100026, 454, 9611003, 'Model',        'ProLiant DL360 Gen10', NULL),
   ('SIMPLE', 200100027, 454, 9611003, 'IPAddress',    '10.61.0.3', NULL),
   -- SV-BATCH-009 서버 conf(9611004)
   ('SIMPLE', 200100031, 454, 9611004, 'Hostname',     'svbatch009', NULL),

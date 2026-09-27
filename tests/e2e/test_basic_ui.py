@@ -22,7 +22,7 @@ def test_page_load(page: Page) -> None:
     타이틀, 헤더 텍스트, ONLINE 상태 배지를 검증한다.
     """
     # 타이틀 확인
-    assert page.title() == "인프라 데이터 조회 에이전트"
+    assert page.title() == "KB AIOps 포탈"
 
     # 헤더 h1 텍스트 확인
     h1 = page.locator("h1")

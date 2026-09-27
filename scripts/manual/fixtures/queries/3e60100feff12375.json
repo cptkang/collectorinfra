@@ -3,7 +3,7 @@
  "query": "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘",
  "has_file": false,
  "has_answers": false,
- "recorded_at": "2026-09-23T11:29:45",
+ "recorded_at": "2026-09-23T16:17:42",
  "events": [
   {
    "event": "on_chain_start",
@@ -300,22 +300,16 @@
        "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버, 메모리.",
        "rows": [
         {
-         "server_name": "DB-ORA-023",
-         "os_hostname": "dbora023",
-         "ipaddress": "10.61.0.2",
-         "memory_avg_utilization": 82.6
+         "name": "DB-ORA-023",
+         "memory_avg": 82.6
         },
         {
-         "server_name": "cocm-hdkapp01",
-         "os_hostname": "cocm-hdkapp01",
-         "ipaddress": "10.61.0.3",
-         "memory_avg_utilization": 64.3
+         "name": "cocm-hdkapp01",
+         "memory_avg": 64.3
         },
         {
-         "server_name": "SV-WEB-001",
-         "os_hostname": "svweb001",
-         "ipaddress": "10.61.0.1",
-         "memory_avg_utilization": 58.7
+         "name": "SV-WEB-001",
+         "memory_avg": 58.7
         }
        ],
        "column_mapping": null,
@@ -325,22 +319,16 @@
       },
       "query_results": [
        {
-        "server_name": "DB-ORA-023",
-        "os_hostname": "dbora023",
-        "ipaddress": "10.61.0.2",
-        "memory_avg_utilization": 82.6
+        "name": "DB-ORA-023",
+        "memory_avg": 82.6
        },
        {
-        "server_name": "cocm-hdkapp01",
-        "os_hostname": "cocm-hdkapp01",
-        "ipaddress": "10.61.0.3",
-        "memory_avg_utilization": 64.3
+        "name": "cocm-hdkapp01",
+        "memory_avg": 64.3
        },
        {
-        "server_name": "SV-WEB-001",
-        "os_hostname": "svweb001",
-        "ipaddress": "10.61.0.1",
-        "memory_avg_utilization": 58.7
+        "name": "SV-WEB-001",
+        "memory_avg": 58.7
        }
       ],
       "source": [
@@ -364,7 +352,7 @@
        "polestar"
       ],
       "db_origin": "classified",
-      "generated_sql": "-- 2026 년 6 월 메모리 사용률 평균이 높은 순서로 상위 3 대 서버 조회\n-- 기간: 2026-06-01 ~ 2026-06-30 (월간 통계)\n-- 지표: 메모리 사용률 (definition_name = 'Utilization', resource_type = 'server.Memory')\n-- 정렬: 메모리 평균 사용률 내림차순\n-- 제한: 상위 3 대\n\nSELECT\n    svr.name AS server_name,\n    svr.hostname AS os_hostname,\n    svr.ipaddress AS ipaddress,\n    ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS memory_avg_utilization\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_resource svr\n    ON svr.id = r.platform_resource_id\n   AND svr.resource_type = 'server.Server'\nJOIN polestar.cmm_metric_stat_m s\n    ON r.id = s.resource_id\n   AND s.definition_name = 'Utilization'\n   AND s.stat_date = '202606'\nWHERE r.resource_type = 'server.Memory'\n  AND r.dtime IS NULL\n  AND svr.dtime IS NULL\nGROUP BY svr.name, svr.hostname, svr.ipaddress\nORDER BY memory_avg_utilization DESC NULLS LAST\nLIMIT 3;"
+      "generated_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  ROUND(AVG(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS \"memory_avg\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m s ON s.resource_id = c.id AND s.definition_name = 'Utilization' AND s.stat_date = '202606'\nWHERE c.resource_type IN ('server.Memory', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY \"memory_avg\" DESC NULLS LAST\nLIMIT 3;"
      }
     },
     "current_node": "agent_orchestrator"
@@ -1248,77 +1236,7 @@
    "tags": [
     "user_response"
    ],
-   "content": " server"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "_name"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " os"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "_hostname"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " ip"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "address"
+   "content": " name"
   },
   {
    "event": "on_chat_model_stream",
@@ -1358,26 +1276,6 @@
    "tags": [
     "user_response"
    ],
-   "content": "_util"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "ization"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
    "content": " |"
   },
   {
@@ -1408,7 +1306,7 @@
    "tags": [
     "user_response"
    ],
-   "content": "---"
+   "content": "------"
   },
   {
    "event": "on_chat_model_stream",
@@ -1428,47 +1326,7 @@
    "tags": [
     "user_response"
    ],
-   "content": "---"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "|"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "---"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "|"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "---"
+   "content": "------------"
   },
   {
    "event": "on_chat_model_stream",
@@ -1569,166 +1427,6 @@
     "user_response"
    ],
    "content": "3"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " db"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "ora"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "2"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "3"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " 1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "6"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "2"
   },
   {
    "event": "on_chat_model_stream",
@@ -1898,186 +1596,6 @@
    "tags": [
     "user_response"
    ],
-   "content": " coc"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "m"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "-h"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "dk"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "app"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " 1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "6"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "3"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
    "content": " 6"
   },
   {
@@ -2199,166 +1717,6 @@
     "user_response"
    ],
    "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " sv"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "web"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " |"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": " 1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "6"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "1"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "0"
-  },
-  {
-   "event": "on_chat_model_stream",
-   "name": "MLXChatOpenAI",
-   "depth": 2,
-   "node": "result_aggregator",
-   "tags": [
-    "user_response"
-   ],
-   "content": "."
   },
   {
    "event": "on_chat_model_stream",
@@ -2618,7 +1976,7 @@
    "tags": [
     "user_response"
    ],
-   "content": " **"
+   "content": " 이상"
   },
   {
    "event": "on_chat_model_stream",
@@ -2628,7 +1986,7 @@
    "tags": [
     "user_response"
    ],
-   "content": "주의"
+   "content": " 징"
   },
   {
    "event": "on_chat_model_stream",
@@ -2638,7 +1996,17 @@
    "tags": [
     "user_response"
    ],
-   "content": "**:"
+   "content": "후"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "result_aggregator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ":"
   },
   {
    "event": "on_chat_model_stream",
@@ -2965,26 +2333,20 @@
    "name": "result_aggregator",
    "depth": 1,
    "output": {
-    "final_response": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| server_name | os_hostname | ipaddress | memory_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 82.6 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 64.3 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- **주의**: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "final_response": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| name | memory_avg |\n|---|---|\n| DB-ORA-023 | 82.6 |\n| cocm-hdkapp01 | 64.3 |\n| SV-WEB-001 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- 이상 징후: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
     "current_node": "result_aggregator",
     "query_results": [
      {
-      "server_name": "DB-ORA-023",
-      "os_hostname": "dbora023",
-      "ipaddress": "10.61.0.2",
-      "memory_avg_utilization": 82.6
+      "name": "DB-ORA-023",
+      "memory_avg": 82.6
      },
      {
-      "server_name": "cocm-hdkapp01",
-      "os_hostname": "cocm-hdkapp01",
-      "ipaddress": "10.61.0.3",
-      "memory_avg_utilization": 64.3
+      "name": "cocm-hdkapp01",
+      "memory_avg": 64.3
      },
      {
-      "server_name": "SV-WEB-001",
-      "os_hostname": "svweb001",
-      "ipaddress": "10.61.0.1",
-      "memory_avg_utilization": 58.7
+      "name": "SV-WEB-001",
+      "memory_avg": 58.7
      }
     ],
     "active_db_id": "polestar",
@@ -3005,7 +2367,7 @@
     "messages": [
      {
       "__msg__": "ai",
-      "content": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| server_name | os_hostname | ipaddress | memory_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 82.6 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 64.3 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- **주의**: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+      "content": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| name | memory_avg |\n|---|---|\n| DB-ORA-023 | 82.6 |\n| cocm-hdkapp01 | 64.3 |\n| SV-WEB-001 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- 이상 징후: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
      }
     ]
    }
@@ -3061,22 +2423,16 @@
     },
     "query_results": [
      {
-      "server_name": "DB-ORA-023",
-      "os_hostname": "dbora023",
-      "ipaddress": "10.61.0.2",
-      "memory_avg_utilization": 82.6
+      "name": "DB-ORA-023",
+      "memory_avg": 82.6
      },
      {
-      "server_name": "cocm-hdkapp01",
-      "os_hostname": "cocm-hdkapp01",
-      "ipaddress": "10.61.0.3",
-      "memory_avg_utilization": 64.3
+      "name": "cocm-hdkapp01",
+      "memory_avg": 64.3
      },
      {
-      "server_name": "SV-WEB-001",
-      "os_hostname": "svweb001",
-      "ipaddress": "10.61.0.1",
-      "memory_avg_utilization": 58.7
+      "name": "SV-WEB-001",
+      "memory_avg": 58.7
      }
     ],
     "organized_data": {
@@ -3142,10 +2498,10 @@
      },
      {
       "__msg__": "ai",
-      "content": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| server_name | os_hostname | ipaddress | memory_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 82.6 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 64.3 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- **주의**: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+      "content": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| name | memory_avg |\n|---|---|\n| DB-ORA-023 | 82.6 |\n| cocm-hdkapp01 | 64.3 |\n| SV-WEB-001 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- 이상 징후: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
      }
     ],
-    "thread_id": "14ff5bd0-4c49-4305-a17a-b7ced2cca25a",
+    "thread_id": "e9b41097-dfa9-4cbc-ac78-10124a87fbd0",
     "conversation_context": null,
     "awaiting_approval": false,
     "approval_context": null,
@@ -3154,7 +2510,9 @@
     "user_id": "demo_user",
     "user_department": "인프라운영팀",
     "user_role": "user",
-    "allowed_db_ids": [],
+    "allowed_db_ids": [
+     "polestar"
+    ],
     "request_id": null,
     "client_ip": null,
     "accessed_tables": [],
@@ -3169,7 +2527,7 @@
     "spike_notes": null,
     "discovery_trace": null,
     "scope_narrowed": null,
-    "final_response": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| server_name | os_hostname | ipaddress | memory_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 82.6 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 64.3 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- **주의**: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "final_response": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| name | memory_avg |\n|---|---|\n| DB-ORA-023 | 82.6 |\n| cocm-hdkapp01 | 64.3 |\n| SV-WEB-001 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- 이상 징후: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
     "output_file": null,
     "output_file_name": null,
     "task_plan": [
@@ -3189,22 +2547,16 @@
        "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버, 메모리.",
        "rows": [
         {
-         "server_name": "DB-ORA-023",
-         "os_hostname": "dbora023",
-         "ipaddress": "10.61.0.2",
-         "memory_avg_utilization": 82.6
+         "name": "DB-ORA-023",
+         "memory_avg": 82.6
         },
         {
-         "server_name": "cocm-hdkapp01",
-         "os_hostname": "cocm-hdkapp01",
-         "ipaddress": "10.61.0.3",
-         "memory_avg_utilization": 64.3
+         "name": "cocm-hdkapp01",
+         "memory_avg": 64.3
         },
         {
-         "server_name": "SV-WEB-001",
-         "os_hostname": "svweb001",
-         "ipaddress": "10.61.0.1",
-         "memory_avg_utilization": 58.7
+         "name": "SV-WEB-001",
+         "memory_avg": 58.7
         }
        ],
        "column_mapping": null,
@@ -3214,22 +2566,16 @@
       },
       "query_results": [
        {
-        "server_name": "DB-ORA-023",
-        "os_hostname": "dbora023",
-        "ipaddress": "10.61.0.2",
-        "memory_avg_utilization": 82.6
+        "name": "DB-ORA-023",
+        "memory_avg": 82.6
        },
        {
-        "server_name": "cocm-hdkapp01",
-        "os_hostname": "cocm-hdkapp01",
-        "ipaddress": "10.61.0.3",
-        "memory_avg_utilization": 64.3
+        "name": "cocm-hdkapp01",
+        "memory_avg": 64.3
        },
        {
-        "server_name": "SV-WEB-001",
-        "os_hostname": "svweb001",
-        "ipaddress": "10.61.0.1",
-        "memory_avg_utilization": 58.7
+        "name": "SV-WEB-001",
+        "memory_avg": 58.7
        }
       ],
       "source": [
@@ -3253,7 +2599,7 @@
        "polestar"
       ],
       "db_origin": "classified",
-      "generated_sql": "-- 2026 년 6 월 메모리 사용률 평균이 높은 순서로 상위 3 대 서버 조회\n-- 기간: 2026-06-01 ~ 2026-06-30 (월간 통계)\n-- 지표: 메모리 사용률 (definition_name = 'Utilization', resource_type = 'server.Memory')\n-- 정렬: 메모리 평균 사용률 내림차순\n-- 제한: 상위 3 대\n\nSELECT\n    svr.name AS server_name,\n    svr.hostname AS os_hostname,\n    svr.ipaddress AS ipaddress,\n    ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS memory_avg_utilization\nFROM polestar.cmm_resource r\nJOIN polestar.cmm_resource svr\n    ON svr.id = r.platform_resource_id\n   AND svr.resource_type = 'server.Server'\nJOIN polestar.cmm_metric_stat_m s\n    ON r.id = s.resource_id\n   AND s.definition_name = 'Utilization'\n   AND s.stat_date = '202606'\nWHERE r.resource_type = 'server.Memory'\n  AND r.dtime IS NULL\n  AND svr.dtime IS NULL\nGROUP BY svr.name, svr.hostname, svr.ipaddress\nORDER BY memory_avg_utilization DESC NULLS LAST\nLIMIT 3;"
+      "generated_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  ROUND(AVG(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS \"memory_avg\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m s ON s.resource_id = c.id AND s.definition_name = 'Utilization' AND s.stat_date = '202606'\nWHERE c.resource_type IN ('server.Memory', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY \"memory_avg\" DESC NULLS LAST\nLIMIT 3;"
      }
     },
     "is_composite": false,
