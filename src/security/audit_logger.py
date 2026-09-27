@@ -30,6 +30,14 @@ MAX_LOG_SIZE_MB = 100
 # (앱 종료·테스트 종료) 복제도 멈춘다. 등록이 없으면(CLI 등) 종전처럼 파일에만 남는다.
 _db_mirror: weakref.ReferenceType | None = None
 
+# DB 복제 1건(행 + 대량 조회 경보)의 시간 제한(초). 조회 경로는 복제를 기다리지 않으므로 이 값은
+# 조회 지연이 아니라, 앱 DB가 느리거나 멈췄을 때 복제 태스크가 쌓여 남지 않게 하는 상한이다.
+_DB_MIRROR_TIMEOUT_S = 5.0
+
+# 진행 중인 복제 태스크. 이벤트 루프는 태스크를 약한 참조로만 들고 있어 참조를 따로 두지 않으면
+# 끝나기 전에 GC될 수 있다(asyncio.create_task 문서). 끝난 태스크는 스스로 빠진다.
+_pending_mirrors: set[asyncio.Task] = set()
+
 
 def register_db_mirror(service: Any) -> None:
     """쿼리 실행을 DB에도 남길 `AuditService`를 등록한다(`mirror_query_execution` 보유)."""
@@ -37,24 +45,56 @@ def register_db_mirror(service: Any) -> None:
     _db_mirror = weakref.ref(service)
 
 
-async def _mirror_query_execution(**fields: Any) -> None:
-    """등록된 서비스가 있으면 쿼리 실행 1건을 DB에 복제한다. 실패는 삼키지 않고 로그로 남긴다.
+def _schedule_query_execution_mirror(**fields: Any) -> None:
+    """등록된 서비스가 있으면 쿼리 실행 1건의 DB 복제를 백그라운드 태스크로 띄운다(기다리지 않는다).
 
-    요청 식별자·클라이언트 IP는 감사 미들웨어가 structlog 컨텍스트에 묶어 둔 값을 쓴다
-    (요청 밖 실행이면 비어 있다).
+    요청 식별자·클라이언트 IP는 감사 미들웨어가 structlog 컨텍스트에 묶어 둔 값을 **띄우는 지금**
+    읽는다(요청 밖 실행이면 비어 있다). 호출자는 코루틴(`log_query_execution`)이라 실행 중인
+    이벤트 루프가 항상 있다 — 루프 없는 동기 CLI 경로는 이 함수에 닿지 않고, CLI는 복제 대상을
+    등록하지도 않는다(`AuditService`는 API 서버 기동 시에만 만든다).
     """
     service = _db_mirror() if _db_mirror is not None else None
     if service is None:
         return
     context = structlog.contextvars.get_contextvars()
-    try:
-        await service.mirror_query_execution(
+    task = asyncio.get_running_loop().create_task(
+        _mirror_query_execution(
+            service,
             request_id=context.get("request_id"),
             client_ip=context.get("client_ip"),
             **fields,
         )
+    )
+    _pending_mirrors.add(task)
+    task.add_done_callback(_pending_mirrors.discard)
+
+
+async def _mirror_query_execution(service: Any, **fields: Any) -> None:
+    """쿼리 실행 1건을 DB에 복제한다. 시간 초과·실패는 경고 로그로 남기고 삼킨다.
+
+    조회 결과와 JSONL 1줄은 이미 조회 경로에서 끝났으므로 여기서의 실패는 DB 행 하나(와 대량 조회
+    경보)가 빠지는 것에 그친다.
+    """
+    try:
+        await asyncio.wait_for(service.mirror_query_execution(**fields), _DB_MIRROR_TIMEOUT_S)
+    except TimeoutError:
+        logging.getLogger(__name__).warning(
+            "쿼리 실행 DB 감사 기록 시간 초과(%s초) — DB 행 누락, JSONL에는 남음",
+            _DB_MIRROR_TIMEOUT_S,
+        )
     except Exception as e:
-        logging.getLogger(__name__).error("쿼리 실행 DB 감사 기록 실패: %s", e)
+        logging.getLogger(__name__).warning("쿼리 실행 DB 감사 기록 실패: %s", e)
+
+
+async def wait_pending_db_mirrors() -> None:
+    """이 루프에서 진행 중인 쿼리 실행 DB 복제가 끝나기를 기다린다(종료 정리·테스트용).
+
+    복제마다 시간 제한이 있어 무한히 기다리지 않는다. 다른(닫힌) 루프의 태스크는 건너뛴다.
+    """
+    loop = asyncio.get_running_loop()
+    tasks = [t for t in _pending_mirrors if not t.done() and t.get_loop() is loop]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class AuditEntry:
@@ -146,8 +186,9 @@ async def log_query_execution(
     # 파일에 기록 (Phase 1)
     await _write_audit_file(entry)
 
-    # DB에도 한 행 — 관리자 화면(성공률·「쿼리 실행」 필터·대량 조회 경보)은 DB를 읽는다
-    await _mirror_query_execution(
+    # DB에도 한 행 — 관리자 화면(성공률·「쿼리 실행」 필터·대량 조회 경보)은 DB를 읽는다.
+    # 백그라운드로 띄우고 기다리지 않는다 — 앱 DB 지연이 조회 경로에 얹히지 않게 한다.
+    _schedule_query_execution_mirror(
         sql=sql,
         row_count=row_count,
         execution_time_ms=execution_time_ms,

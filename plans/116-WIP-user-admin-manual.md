@@ -665,6 +665,11 @@ tests/test_manual/
 - **결정 필요로 남긴 것**: ⓐ 쿼리 실행 감사의 DB 쓰기 지연(D-261 ④) ⓑ `POST /alarm/analyze-test` 존·권한 정책(D-263) ⓒ 인증 꺼진 설치의 결과 API 보호(D-262) ⓓ 관리자의 타인 DRM 해제 원본 수령(D-262 · D-156 후속1).
 - **발견한 결함(범위 밖 · 미수정)**: 처리 현황 패널 미리보기 10행 원본 노출 · 한글 첨부 파일명 원본 받기 500 · 4단 legacy 직결 체인 무인가 · `host_sweep.authorized_zones` 관리자 예외 없음.
 
+#### 남은 결정 4건과 후속 결함 2건 (2026-09-27 · 사용자 「권고대로 진행하라」 · D-261·D-262·D-263 부기)
+
+- **결정**: ⓐ 쿼리 실행 감사 → 백그라운드 쓰기(5초 제한 · 서버 종료 시 대기) ⓑ `analyze-test` → 관리자 전용 ⓒ 인증 꺼진 설치 → 코드 변경 없이 A-01에 경고 ⓓ 첨부 원본 → 올린 본인 전용(관리자 포함 403). 함께 고친 결함: 한글 파일명 다운로드 500(RFC 5987) · 처리 현황 미리보기 원본 노출(마스킹).
+- **진행**: 에이전트 2개(P `query.py`·`app.js` · Q `alarm.py`·`src/security/audit_*`·점검 스크립트) — 재현 테스트 먼저(P 16건·Q 8+3건 수정 전 실패) · 각자 HEAD 격리 사본과 실패 목록 동일(신규 0) 확인. 작성자는 `server.py` 종료 대기 한 줄, 매뉴얼(user U-15·U-28·오류 표 / admin A-01·A-34·A-36·A-43·A-51·A-59·문제 해결)·`docs/11`·`docs/16` 반영.
+
 #### 결함 ⑧~⑬ 수정과 매뉴얼 동반 갱신 (2026-09-27 · 사용자 지시 「나머지 결함도 에이전트를 통해 수정하라」 · D-257~D-260)
 
 - **진행**: 파일이 겹치지 않게 에이전트 4개로 나눴다 — A ⑧⑨(`noise_dashboard.py`·`decision_store.py`·`noise.js`) · B ⑩⑪(`agentic_enricher.py`·`notification_policy.py`) · C ⑫(`domain/flapping.py`·워커 플래핑 부분) · D ⑬(별도 worktree — `ticket_queue.py`·`orchestration/ticket_summary.py`·워커 루프·설정 3키). 모두 **재현 테스트를 먼저 쓰고 수정 전 실패 → 수정 후 통과**를 확인했다. D의 worktree 커밋(`eb01de9`)은 `git apply --check` 뒤 작업 트리에 적용(충돌 없음). `noise.js?v=10`(캐시 무효화)은 작성자가 올렸다.

@@ -18,6 +18,7 @@ import time
 import uuid
 from collections import OrderedDict
 from typing import Any, AsyncGenerator, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -27,6 +28,7 @@ from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.stream_failure import StreamTrace
 from src.api.thread_history import TurnRecorder
+from src.config import SecurityConfig
 from src.domain.user import UserRole
 from src.llm import USER_RESPONSE_TAG
 from src.security.data_masker import DataMasker
@@ -148,13 +150,17 @@ def _owned_result(
     current_user: dict[str, Any],
     *,
     not_found: str = "결과를 찾을 수 없습니다.",
+    allow_admin: bool = True,
+    denied: str = "이 결과는 질의한 사용자만 받을 수 있습니다.",
 ) -> dict[str, Any]:
     """저장된 결과를 돌려주되, 요청자가 질의한 사람(또는 관리자)이 아니면 403.
 
     - 없는 query_id는 404(종전 문구 유지).
     - 인증 비활성(`AUTH_ENABLED=false`)은 종전 동작 그대로 통과한다 — 전원이 `anonymous`
       한 명이라 소유자를 가를 수 없다.
-    - 관리자(`role == admin`, DB 실시간 값)는 통과한다(D-069 통합 RBAC).
+    - 관리자(`role == admin`, DB 실시간 값)는 통과한다(D-069 통합 RBAC). 단 ``allow_admin=False``
+      (첨부 원본)는 관리자도 소유자여야 한다 — DRM 해제된 평문 원본이라 관리자 복호화
+      다운로드(D-156 후속1 「승인 전 범위 밖」)와 같은 효과가 되기 때문이다.
     - 소유자가 없는 결과는 일반 사용자에게 내주지 않는다(fail-closed).
     """
     stored = _results_store.get(query_id)
@@ -162,7 +168,7 @@ def _owned_result(
         raise HTTPException(status_code=404, detail=not_found)
     if not request.app.state.config.auth.enabled:
         return stored
-    if current_user.get("role") == UserRole.ADMIN.value:
+    if allow_admin and current_user.get("role") == UserRole.ADMIN.value:
         return stored
     owner = stored.get("owner_sub")
     if not owner or owner != current_user.get("sub"):
@@ -170,8 +176,24 @@ def _owned_result(
             "질의 결과 접근 거부: query_id=%s 요청자=%s (소유자 아님)",
             query_id[:8], current_user.get("sub"),
         )
-        raise HTTPException(status_code=403, detail="이 결과는 질의한 사용자만 받을 수 있습니다.")
+        raise HTTPException(status_code=403, detail=denied)
     return stored
+
+
+def _attachment_disposition(file_name: str) -> str:
+    """다운로드 `Content-Disposition` 값을 만든다(RFC 6266 · RFC 5987).
+
+    헤더는 latin-1로만 나가므로 한글 파일명을 그대로 넣으면 응답 생성이 500으로 끝난다.
+    원래 이름은 `filename*=UTF-8''<퍼센트 인코딩>`으로 싣고, `filename=`에는 인쇄 가능한
+    ASCII만 남긴 대체 이름을 둔다(따옴표·역슬래시·제어 문자도 `_`). 대체할 것이 없는 ASCII
+    이름은 종전 헤더 그대로다.
+    """
+    fallback = "".join(
+        c if " " <= c <= "~" and c not in '"\\' else "_" for c in file_name
+    )
+    if fallback == file_name:
+        return f'attachment; filename="{file_name}"'
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(file_name, safe='')}"
 
 
 async def _audit_file_download(
@@ -725,8 +747,14 @@ def _executed_sql(state: dict) -> str | None:
     return "\n\n".join(f"-- [{label}]\n{body}" for label, body in parts)
 
 
-def _extract_node_progress(node_name: str, output: dict) -> dict | None:
-    """노드 완료 시 오른쪽 패널에 표시할 진행 데이터를 추출한다."""
+def _extract_node_progress(
+    node_name: str, output: dict, *, security: SecurityConfig
+) -> dict | None:
+    """노드 완료 시 오른쪽 패널에 표시할 진행 데이터를 추출한다.
+
+    ``security``는 미리보기 행을 화면 답·CSV와 같은 `DataMasker` 규칙으로 가리는 데 쓴다 —
+    가리기 전 행을 브라우저로 보내지 않는다(D-249 원칙).
+    """
     try:
         if node_name == "input_parser":
             parsed = output.get("parsed_requirements", {})
@@ -772,7 +800,9 @@ def _extract_node_progress(node_name: str, output: dict) -> dict | None:
             error = output.get("error_message")
             data = {
                 "row_count": len(results),
-                "preview_rows": results[:10],
+                "preview_rows": DataMasker(security).mask_rows(
+                    [r for r in results[:10] if isinstance(r, dict)]
+                ),
             }
             if error:
                 data["error"] = error
@@ -1904,7 +1934,9 @@ async def process_query_stream(
                                         if isinstance(node_qr, list):
                                             _tracked_row_count = len(node_qr)
                                             _tracked_query_results = node_qr
-                                    progress_data = _extract_node_progress(name, node_output)
+                                    progress_data = _extract_node_progress(
+                                        name, node_output, security=config.security
+                                    )
                                     if progress_data:
                                         yield _sse_event({
                                             "type": "node_complete",
@@ -2597,7 +2629,9 @@ async def process_file_query_stream(
                                         if isinstance(node_qr, list):
                                             _tracked_row_count = len(node_qr)
                                             _tracked_query_results = node_qr
-                                    progress_data = _extract_node_progress(name, node_output)
+                                    progress_data = _extract_node_progress(
+                                        name, node_output, security=config.security
+                                    )
                                     if progress_data:
                                         yield _sse_event({
                                             "type": "node_complete",
@@ -2835,7 +2869,7 @@ async def download_mapping_report(
         io.BytesIO(report_bytes),
         media_type="text/markdown; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
     await _audit_file_download(
@@ -2961,7 +2995,7 @@ async def download_file(
         io.BytesIO(file_bytes),
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
     await _audit_file_download(
@@ -2980,10 +3014,14 @@ async def download_attachment(
     """사용자가 업로드한 원본 양식 파일을 그대로 다운로드한다(§14).
 
     첨부 파일 카드 클릭 시 호출된다. 생성 결과 파일(`/download`)이 아니라
-    업로드 원본(`uploaded_file`)을 서빙한다. 그 질의를 한 사용자(와 관리자)만 받는다
-    (§14.5 소유자 확인).
+    업로드 원본(`uploaded_file`)을 서빙한다. 그 파일을 올린 사용자만 받는다(§14.5 소유자
+    확인). 저장본은 DRM 해제 뒤의 평문이라 관리자도 남의 원본은 받지 않는다 — 관리자 복호화
+    다운로드는 승인 전 범위 밖이다(D-156 후속1 · D-262 후속).
     """
-    stored = _owned_result(request, query_id, current_user)
+    stored = _owned_result(
+        request, query_id, current_user,
+        allow_admin=False, denied="원본 첨부 파일은 올린 사용자만 받을 수 있습니다.",
+    )
     file_bytes = stored.get("uploaded_file")
     file_name = stored.get("uploaded_file_name") or "attachment"
 
@@ -3006,7 +3044,7 @@ async def download_attachment(
         io.BytesIO(file_bytes),
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
     await _audit_file_download(
@@ -3065,7 +3103,7 @@ async def download_csv(
         io.BytesIO(csv_bytes),
         media_type="text/csv; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": _attachment_disposition(file_name)
         },
     )
     await _audit_file_download(

@@ -2819,8 +2819,15 @@
     // 링크로 바로 이동하면 Authorization 헤더가 실리지 않으므로(토큰은 URL에 싣지 않는다) 클릭을
     // 가로채 헤더를 실은 fetch로 받고 Blob으로 저장한다. 만료(401)는 기존 재로그인 흐름을 따른다.
 
+    // 한글 파일명은 filename*=UTF-8''(퍼센트 인코딩)에 있고 filename="..."은 ASCII 대체 이름이다
+    // (RFC 6266·5987) — UTF-8 이름을 먼저 읽는다.
     function filenameFromDisposition(header) {
-        var m = /filename="([^"]+)"/.exec(header || "");
+        var h = header || "";
+        var star = /filename\*=UTF-8''([^;]+)/i.exec(h);
+        if (star) {
+            try { return decodeURIComponent(star[1].trim()); } catch (_e) { /* 깨진 인코딩이면 대체 이름 */ }
+        }
+        var m = /filename="([^"]+)"/.exec(h);
         return m ? m[1] : null;
     }
 

@@ -22,7 +22,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import alarm_zones_for_user, require_user, resolve_stream_user
+from src.api.dependencies import (
+    alarm_zones_for_user,
+    require_admin_user,
+    require_user,
+    resolve_stream_user,
+)
 from src.routing.zones import all_zones, db_id_to_zone
 from noise_gate.domain.severity import coerce_severity, parse_severity
 from noise_gate.domain.alarm import (
@@ -835,6 +840,7 @@ def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
     summary="알람 분석 테스트",
     description=(
         "폴스타 알람 페이로드를 직접 입력하여 알람 분석 에이전트를 실행합니다.<br/>"
+        "<b>관리자 전용</b>(관리자 역할 사용자 또는 운영자 토큰 · 그 밖은 403).<br/>"
         "<b>dry_run=true</b>(기본값): 분석 결과 + 발송될 메시지 미리보기만 반환, 실제 발송 안 함.<br/>"
         "<b>dry_run=false, send_notification=true</b>: 설정된 채널로 실제 알림 발송.<br/>"
         "<b>channels</b>: 특정 채널만 테스트하고 싶을 때 지정 (예: [\"workb\"])."
@@ -844,7 +850,8 @@ def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
 async def analyze_alarm_test(
     request: Request,
     body: AlarmTestRequest,
-    current_user: dict = Depends(require_user),
+    # 시험 도구 — 임의 db_id 조회·화면 게시·실제 발송이 되므로 관리자 전용(D-263 잔여 후속)
+    current_user: dict = Depends(require_admin_user),
 ) -> AlarmTestResponse:
     """알람 페이로드를 입력받아 LLM 분석 및 알림 미리보기(또는 실제 발송)를 반환한다."""
     start_time = time.time()
@@ -1668,14 +1675,16 @@ def _build_alarm_event_from_payload(
     description=(
         "폴스타 TCP 소켓으로 전달되는 <b>단일행 JSON 원문</b>을 그대로 붙여넣어 분석합니다.<br/>"
         "소켓 수신 → JSON 파싱 → AlarmEvent 변환 → LLM 분석 전체 파이프라인을 시뮬레이션합니다.<br/>"
-        "실제 폴스타 메시지를 복사해서 테스트할 때 사용하세요."
+        "실제 폴스타 메시지를 복사해서 테스트할 때 사용하세요.<br/>"
+        "<b>관리자 전용</b>(관리자 역할 사용자 또는 운영자 토큰 · 그 밖은 403)."
     ),
     tags=["alarm"],
 )
 async def analyze_alarm_raw(
     request: Request,
     body: AlarmRawTestRequest,
-    current_user: dict = Depends(require_user),
+    # 시험 도구 — 관리자 전용(`analyze_alarm_test`와 같은 가드)
+    current_user: dict = Depends(require_admin_user),
 ) -> AlarmTestResponse:
     """폴스타 원문 JSON을 파싱해 AlarmEvent를 구성하고 LLM 분석을 실행한다."""
     start_time = time.time()

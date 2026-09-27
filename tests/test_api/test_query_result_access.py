@@ -5,6 +5,12 @@
   CSV는 화면(`result_organizer`의 `DataMasker`)과 달리 가리지 않은 원본 행이었다.
 - ④ `GET /query/{id}/attachment`는 로그인만 보고 **그 질문을 한 사람인지**는 보지 않았다.
 
+D-262 후속 결함 3건:
+
+- 첨부 원본(DRM 해제된 평문)은 **올린 본인만** 받는다 — 관리자도 남의 원본은 403(D-156 후속1).
+- 한글 파일명 다운로드가 latin-1 헤더 인코딩에서 500이었다 → RFC 6266/5987 헤더.
+- 처리 현황 패널 미리보기(`preview_rows`)가 가리지 않은 원본 행이었다 → 같은 `DataMasker`(D-249).
+
 인증(`AUTH_ENABLED=true`)은 실제 `require_user`를 지나게 한다 — 의존성 대역을 쓰면 무인증
 결함 자체가 가려진다. 익명 모드(`AUTH_ENABLED=false`) 동작은 종전과 같아야 한다.
 """
@@ -14,9 +20,13 @@ from __future__ import annotations
 import ast
 import csv
 import io
+import json
 import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 import jwt
 import pytest
@@ -39,7 +49,7 @@ _RAW_ROWS = [
 _GET_ROUTES = ("result", "mapping-report", "download", "download-csv", "attachment")
 
 
-def _final_output() -> dict:
+def _final_output(output_file_name: str = "result_20260927_000000.xlsx") -> dict:
     from langchain_core.messages import HumanMessage
 
     return {
@@ -47,21 +57,39 @@ def _final_output() -> dict:
         "generated_sql": "SELECT 1",
         "query_results": [dict(r) for r in _RAW_ROWS],
         "output_file": b"PK\x03\x04generated-xlsx",
-        "output_file_name": "result_20260927_000000.xlsx",
+        "output_file_name": output_file_name,
         "mapping_report_md": _MAPPING_MD,
         "messages": [HumanMessage(content="q")],
     }
 
 
 class _Graph:
+    def __init__(self, output_file_name: str = "result_20260927_000000.xlsx") -> None:
+        self._output_file_name = output_file_name
+
     def get_state(self, config: dict) -> None:
         return None
 
     async def ainvoke(self, input_state: dict, config: dict) -> dict:
-        return _final_output()
+        return _final_output(self._output_file_name)
 
     async def astream_events(self, input_state: dict, config: dict, version: str = "v2"):
         yield {"event": "on_chain_start", "name": "input_parser", "data": {}}
+        yield {
+            "event": "on_chain_end", "name": "LangGraph",
+            "data": {"output": _final_output(self._output_file_name)},
+        }
+
+
+class _ExecutorGraph(_Graph):
+    """`query_executor` 노드가 원본 행을 내는 스트림 — 처리 현황 미리보기 검증용."""
+
+    async def astream_events(self, input_state: dict, config: dict, version: str = "v2"):
+        yield {"event": "on_chain_start", "name": "query_executor", "data": {}}
+        yield {
+            "event": "on_chain_end", "name": "query_executor",
+            "data": {"output": {"query_results": [dict(r) for r in _RAW_ROWS]}},
+        }
         yield {"event": "on_chain_end", "name": "LangGraph", "data": {"output": _final_output()}}
 
 
@@ -103,12 +131,14 @@ def _config(*, auth_enabled: bool):
     )
 
 
-def _client(*, auth_enabled: bool = True, audit: _Audit | None = None) -> TestClient:
+def _client(
+    *, auth_enabled: bool = True, audit: _Audit | None = None, graph: _Graph | None = None
+) -> TestClient:
     from src.api.routes import query as query_routes
 
     app = FastAPI()
     app.state.config = _config(auth_enabled=auth_enabled)
-    app.state.graph = _Graph()
+    app.state.graph = graph or _Graph()
     if audit is not None:
         app.state.audit_service = audit
     app.include_router(query_routes.router, prefix="/api/v1")
@@ -124,29 +154,39 @@ def _auth(sub: str, role: str = "user") -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _ask(client: TestClient, headers: dict, route: str = "/query") -> str:
-    """질의를 실제 라우트로 보내 결과를 저장시키고 query_id를 돌려준다."""
-    import json
-
+def _post_query(
+    client: TestClient, headers: dict, route: str = "/query", filename: str = "form.xlsx"
+):
+    """질의를 실제 라우트로 보낸다(응답 그대로)."""
     if route.startswith("/query/file"):
         # 존을 지정해 존 역질문(조기 반환)을 건너뛴다 — 결과 저장 지점까지 가야 한다
         r = client.post(
             "/api/v1" + route,
             data={"query": "양식 채워줘", "thread_id": "th-file", "selected_db_ids": "polestar"},
-            files={"file": ("form.xlsx", io.BytesIO(b"PK\x03\x04upload-original"),
+            files={"file": (filename, io.BytesIO(b"PK\x03\x04upload-original"),
                             "application/octet-stream")},
             headers=headers,
         )
     else:
         r = client.post("/api/v1" + route, json={"query": "서버 목록"}, headers=headers)
     assert r.status_code == 200, r.text
+    return r
+
+
+def _sse_events(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+def _ask(
+    client: TestClient, headers: dict, route: str = "/query", filename: str = "form.xlsx"
+) -> str:
+    """질의를 실제 라우트로 보내 결과를 저장시키고 query_id를 돌려준다."""
+    r = _post_query(client, headers, route, filename)
     if not route.endswith("/stream"):
         return r.json()["query_id"]
-    for line in r.text.splitlines():
-        if line.startswith("data: "):
-            ev = json.loads(line[6:])
-            if ev.get("type") == "done":
-                return ev["query_id"]
+    for ev in _sse_events(r.text):
+        if ev.get("type") == "done":
+            return ev["query_id"]
     raise AssertionError(f"done 이벤트가 없다: {r.text[:500]}")
 
 
@@ -227,7 +267,11 @@ def test_mapping_feedback_requires_login_and_ownership() -> None:
 
 @pytest.mark.parametrize("route", ["/query/file", "/query/file/stream"])
 def test_attachment_is_owner_only(route: str) -> None:
-    """남은 로그인만으로 원본을 받지 못한다(수정 전 bob 200). 파일 경로 두 진입점 모두."""
+    """남은 로그인만으로 원본을 받지 못한다(수정 전 bob 200). 파일 경로 두 진입점 모두.
+
+    관리자도 남이 올린 원본은 받지 못한다 — DRM 해제된 평문 원본이라 관리자 복호화
+    다운로드(D-156 후속1 「승인 전 범위 밖」)와 같은 효과가 된다(D-262 후속 · 수정 전 admin 200).
+    """
     client = _client()
     qid = _ask(client, _auth("alice"), route=route)
     assert client.get(_url(qid, "attachment")).status_code == 401
@@ -236,7 +280,150 @@ def test_attachment_is_owner_only(route: str) -> None:
     assert r.status_code == 200
     assert r.content == b"PK\x03\x04upload-original"
     admin = client.get(_url(qid, "attachment"), headers=_auth("root", role="admin"))
-    assert admin.status_code == 200
+    assert admin.status_code == 403
+    assert admin.json()["detail"] == "원본 첨부 파일은 올린 사용자만 받을 수 있습니다."
+    assert b"upload-original" not in admin.content
+
+
+def test_admin_keeps_other_file_query_downloads_but_not_the_original() -> None:
+    """원본 받기만 좁힌다 — 같은 파일 질의의 결과·생성 파일·CSV·보고서는 종전대로 관리자 허용."""
+    audit = _Audit()
+    client = _client(audit=audit)
+    qid = _ask(client, _auth("alice"), route="/query/file")
+    root = _auth("root", role="admin")
+    for route in ("result", "download", "download-csv", "mapping-report"):
+        assert client.get(_url(qid, route), headers=root).status_code == 200, route
+    audit.downloads.clear()
+    assert client.get(_url(qid, "attachment"), headers=root).status_code == 403
+    assert audit.downloads == [], "거부된 원본 요청을 다운로드로 기록하면 안 된다"
+
+
+def test_admin_can_take_own_attachment() -> None:
+    """관리자도 자기가 올린 원본은 받는다(소유자 확인이지 역할 차단이 아니다)."""
+    client = _client()
+    root = _auth("root", role="admin")
+    qid = _ask(client, root, route="/query/file")
+    r = client.get(_url(qid, "attachment"), headers=root)
+    assert r.status_code == 200
+    assert r.content == b"PK\x03\x04upload-original"
+
+
+def test_anonymous_mode_attachment_is_unchanged() -> None:
+    """`AUTH_ENABLED=false`는 종전대로 원본을 내준다(전원이 anonymous 한 명)."""
+    client = _client(auth_enabled=False)
+    qid = _ask(client, {}, route="/query/file")
+    r = client.get(_url(qid, "attachment"))
+    assert r.status_code == 200
+    assert r.content == b"PK\x03\x04upload-original"
+
+
+# ---------------------------------------------------------------------------
+# 한글 파일명 — RFC 6266/5987 헤더 (수정 전 latin-1 인코딩 실패 → 500)
+# ---------------------------------------------------------------------------
+
+_KO_NAME = "서버 현황 양식(2026년 9월).xlsx"
+
+
+def _disposition_name(header: str) -> str:
+    """브라우저 규칙대로 `filename*`(UTF-8)을 먼저, 없으면 `filename`을 읽는다."""
+    for part in header.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "filename*":
+            charset, _, encoded = value.partition("''")
+            assert charset.upper() == "UTF-8", header
+            return unquote(encoded, encoding="utf-8")
+    for part in header.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "filename":
+            return value.strip('"')
+    raise AssertionError(f"파일명이 없다: {header}")
+
+
+@pytest.mark.parametrize("route", ["/query/file", "/query/file/stream"])
+def test_korean_attachment_name_downloads(route: str) -> None:
+    """한글 원본 파일명도 받는다 — 헤더는 ASCII만, 원래 이름은 `filename*`로 되살린다."""
+    client = _client()
+    qid = _ask(client, _auth("alice"), route=route, filename=_KO_NAME)
+    r = client.get(_url(qid, "attachment"), headers=_auth("alice"))
+    assert r.status_code == 200
+    assert r.content == b"PK\x03\x04upload-original"
+    cd = r.headers["content-disposition"]
+    assert cd.isascii(), cd
+    assert cd.startswith("attachment; filename=\""), "ASCII 대체 filename=이 없다"
+    assert "filename*=UTF-8''" in cd
+    assert _disposition_name(cd) == _KO_NAME
+
+
+def test_korean_generated_file_name_downloads() -> None:
+    """생성 결과 파일도 같은 헤더 규칙 — 공용 헬퍼 하나로 만든다."""
+    name = "결과_서버목록.xlsx"
+    client = _client(graph=_Graph(output_file_name=name))
+    qid = _ask(client, _auth("alice"))
+    r = client.get(_url(qid, "download"), headers=_auth("alice"))
+    assert r.status_code == 200
+    cd = r.headers["content-disposition"]
+    assert cd.isascii(), cd
+    assert _disposition_name(cd) == name
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        # ASCII 이름은 종전 헤더 그대로
+        ("query_result_abcd1234.csv", 'attachment; filename="query_result_abcd1234.csv"'),
+        # 한글 — ASCII 대체 이름 + UTF-8 퍼센트 인코딩
+        ("양식.xlsx", "attachment; filename=\"__.xlsx\"; filename*=UTF-8''%EC%96%91%EC%8B%9D.xlsx"),
+        # 따옴표·역슬래시·제어 문자는 대체 이름에서 지우고 원래 이름은 filename*로 보존
+        (
+            'a"b\\c\r\n.docx',
+            "attachment; filename=\"a_b_c__.docx\"; filename*=UTF-8''a%22b%5Cc%0D%0A.docx",
+        ),
+    ],
+)
+def test_attachment_disposition_header(name: str, expected: str) -> None:
+    from src.api.routes.query import _attachment_disposition
+
+    assert _attachment_disposition(name) == expected
+
+
+def test_every_download_route_uses_the_disposition_helper() -> None:
+    """다운로드 헤더를 f-string으로 직접 만드는 곳이 남지 않는다(한 라우트만 빠지는 비대칭 방지)."""
+    src = (ROOT / "src/api/routes/query.py").read_text(encoding="utf-8")
+    total = src.count('"Content-Disposition":')
+    assert total >= 4, "다운로드 라우트가 줄었다 — 이 단언을 실측으로 갱신할 것"
+    assert src.count('"Content-Disposition": _attachment_disposition(') == total
+
+
+def _filename_from_disposition_js() -> str:
+    js = _app_js()
+    start = js.index("function filenameFromDisposition(")
+    return js[start:js.index("\n    }\n", start) + len("\n    }\n")]
+
+
+def test_ui_reads_utf8_filename_first() -> None:
+    """화면은 `filename*`(UTF-8)을 먼저 읽는다 — ASCII 대체 이름(`__.xlsx`)으로 저장하지 않는다."""
+    body = _filename_from_disposition_js()
+    assert "filename\\*=UTF-8''" in body
+    assert "decodeURIComponent" in body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 미설치 — 정적 검사로 대신한다")
+def test_ui_filename_parser_runs_against_server_headers() -> None:
+    """실제 서버 헤더를 화면 함수에 넣어 원래 이름이 나오는지 node로 실행해 본다."""
+    from src.api.routes.query import _attachment_disposition
+
+    cases = [_KO_NAME, "query_result_abcd1234.csv", "결과_서버목록.xlsx"]
+    headers = [_attachment_disposition(n) for n in cases]
+    script = (
+        _filename_from_disposition_js()
+        + "\nprocess.stdout.write(JSON.stringify("
+        + json.dumps(headers)
+        + ".map(filenameFromDisposition)));"
+    )
+    out = subprocess.run(
+        ["node", "-e", script], capture_output=True, check=True, timeout=30
+    ).stdout.decode("utf-8")
+    assert json.loads(out) == cases
 
 
 def test_every_store_call_names_the_owner() -> None:
@@ -284,6 +471,47 @@ def test_csv_masks_rows_like_the_screen() -> None:
     expected = DataMasker(_config(auth_enabled=True).security).mask_rows(_RAW_ROWS)
     got = list(csv.DictReader(io.StringIO(body)))
     assert got == [{k: str(v) for k, v in row.items()} for row in expected]
+
+
+# ---------------------------------------------------------------------------
+# 처리 현황 패널 미리보기 — 화면 답·CSV와 같은 규칙 (D-249 원칙)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("route", ["/query/stream", "/query/file/stream"])
+def test_progress_preview_rows_are_masked(route: str) -> None:
+    """`query_executor` 완료 이벤트의 미리보기 10행도 가린다(수정 전 원문 노출).
+
+    텍스트·파일 스트림 두 곳 모두.
+    """
+    from src.security.data_masker import DataMasker
+
+    client = _client(graph=_ExecutorGraph())
+    r = _post_query(client, _auth("alice"), route)
+    assert "p@ssw0rd-raw" not in r.text and "hunter2-raw" not in r.text
+
+    done = [
+        e for e in _sse_events(r.text)
+        if e.get("type") == "node_complete" and e.get("node") == "query_executor"
+    ]
+    assert len(done) == 1, r.text[:500]
+    data = done[0]["data"]
+    assert data["row_count"] == len(_RAW_ROWS)
+    expected = DataMasker(_config(auth_enabled=True).security).mask_rows(_RAW_ROWS[:10])
+    assert data["preview_rows"] == expected
+
+
+def test_progress_preview_keeps_first_ten_rows_only() -> None:
+    """가려도 행 수 상한(10)과 건수 표시는 종전 그대로다."""
+    from src.api.routes.query import _extract_node_progress
+
+    security = _config(auth_enabled=True).security
+    rows = [{"hostname": f"h{i}", "token": f"t-{i}"} for i in range(25)]
+    data = _extract_node_progress("query_executor", {"query_results": rows}, security=security)
+    assert data["row_count"] == 25
+    assert [r["hostname"] for r in data["preview_rows"]] == [f"h{i}" for i in range(10)]
+    assert all(r["token"] == "***MASKED***" for r in data["preview_rows"])
+    assert rows[0]["token"] == "t-0", "저장·후속 노드가 쓰는 원본 행을 바꾸면 안 된다"
 
 
 # ---------------------------------------------------------------------------
@@ -365,4 +593,5 @@ def test_app_js_cache_version_bumped() -> None:
 
     html = (ROOT / "src/static/index.html").read_text(encoding="utf-8")
     m = re.search(r"app\.js\?v=(\d+)", html)
-    assert m and int(m.group(1)) >= 13
+    # 14: 파일명 읽기(`filename*` 우선) 변경 — 옛 app.js 캐시가 ASCII 대체 이름으로 저장하지 않게
+    assert m and int(m.group(1)) >= 14

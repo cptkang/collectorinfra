@@ -233,6 +233,8 @@ class AuditService:
 
         `log_query_execution`을 쓰면 JSONL에 같은 실행이 두 번 남는다(D-183이 막은 이중 기록).
         대량 조회 경보는 JSONL에 없던 이벤트라 `log_security_alert`로 양쪽에 남긴다.
+        호출자(`audit_logger`)가 백그라운드 태스크로 시간 제한을 걸어 부른다 — 조회 경로는
+        이 메서드(행 + 경보 판정)를 기다리지 않는다.
         """
         extra: dict = {}
         if retry_attempt:
