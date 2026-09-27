@@ -142,7 +142,8 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
     STAGE_SEVERITY3: (
         "실효 심각도(수신 심각도와, 켜져 있을 때 AI 상향 등급 중 큰 값)가 3이면 뒤 단계를 "
         "거치지 않고 PAGE입니다. 침묵 규칙·억제 단계 어느 것으로도 억제되지 않습니다"
-        "(앞 단계인 비운영 알람 판정에 걸린 메시지만 예외)."
+        "(앞 단계인 비운영 알람 판정에 걸린 메시지만 예외). 해소 알람에는 AI 상향을 적용하지 "
+        "않습니다."
     ),
     STAGE_SELF_HEAL: (
         "해소 이벤트가 자가복구 창 안의 같은 알람 발생(억제 상한 이하 심각도)과 짝지어지면 "
@@ -468,9 +469,14 @@ def decide_notification(
     # 실효심각도 = max(폴스타 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
     # 보강 비활성(enable_ai_severity_boost=False)이면 AI 값을 무시한다(이중 안전·E2 회귀 0).
     # step3의 심각도3 단락은 effective_severity 기준이므로 AI가 2→3 상향 시에도 올바르게 PAGE 단락.
+    # 해소(is_clear) 알람에는 상향을 적용하지 않는다 — 조건 로그에 3급 시그니처가 남은 해소 알림이
+    # 심각도3 단락(PAGE)에 걸리면 안 되고 step4(해소·자가복구)로 가야 한다. 상향 원천(시그니처 스캔·
+    # LLM 해석·동적 baseline·agentic 보강)이 모두 이 슬롯 하나로 들어오므로 여기서 한 번에 막는다.
     severity = int(getattr(event, "severity", 0) or 0)
     ai_severity = getattr(analysis, "ai_message_severity", None)
-    if not getattr(config, "enable_ai_severity_boost", False):
+    if not getattr(config, "enable_ai_severity_boost", False) or bool(
+        getattr(event, "is_clear", False)
+    ):
         ai_severity = None
     effective_severity = max(severity, ai_severity) if ai_severity is not None else severity
 

@@ -41,6 +41,7 @@ from src.domain.host_availability import (
     describe as describe_availability,
 )
 from src.observability.investigation_metrics import record_compaction
+from src.orchestration.db_access import access_denied_result, authorize_targets, denied_for_all
 from src.orchestration.investigation_cache import (
     InvestigationCache,
     freshness_note,
@@ -778,6 +779,10 @@ async def run_process_query(
         (정렬·마스킹은 select_top_processes가 결정적으로 수행 — D-047-1 정합)
     """
     sub_query = task.get("sub_query", isolated.get("user_query", ""))
+    # 사용자별 DB 인가(D-232 · plans/116 §10.3 결함 ②) — 프로세스 API도 존(db_id) 단위 조회다.
+    if denied_for_all(isolated):
+        logger.info("process_query 인가 거부: 조회 가능 DB 없음")
+        return access_denied_result()
     db_id = _resolve_db_id(task, isolated, sub_query, app_config)
     resolution = resolve_investigation_targets(isolated, db_id=db_id)
     identifier = _resolve_hostname(isolated)
@@ -805,6 +810,10 @@ async def run_process_query(
             # 탐색이 존을 확정했으므로 대상 해소를 다시 돌린다(선행 스코프 배관 재사용).
             resolution = resolve_investigation_targets(isolated, db_id=db_id)
             logger.info("탐색으로 대상 존 확정: db_id=%s identifier=%s", db_id, identifier)
+
+    # 확정된 존(①~⑤ 어느 출처든)이 인가 밖이면 조회하지 않는다(D-232 — 3단과 같은 필터).
+    if db_id and authorize_targets([{"db_id": db_id}], isolated) is None:
+        return access_denied_result()
 
     # 대상 미식별 → graceful 안내 (없는 테이블 조회로 폴백하지 않음 — SQL0204N 방지)
     if not db_id:

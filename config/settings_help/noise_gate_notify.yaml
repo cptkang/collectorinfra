@@ -94,11 +94,12 @@ settings:
 
   NOISE_AI_SEVERITY_ESCALATE_ONLY:
     example: >-
-      하향을 막으려고 이 값을 켜 두어도, 어차피 하향은 구현 자체에 없다 — 코드가 이 값을 읽지 않는다.
-    summary: 심각도 조정을 올리는 방향으로만 허용할지 — 현재 코드가 읽지 않는다.
+      하향을 막으려고 이 값을 켜 두어도, 어차피 하향은 구현 자체에 없다 — 판정 코드가 이 값을 읽지 않는다.
+    summary: 심각도 조정을 올리는 방향으로만 허용할지 — 현재 판정 코드가 읽지 않는다.
     behavior: >-
-      내리는 방향을 금지해 안전을 확보하려는 항목이다. 지금 코드에는 이 값을 읽는
-      곳이 없으며, 상향 전용 동작은 구현 자체에 고정돼 있다.
+      내리는 방향을 금지해 안전을 확보하려는 항목이다. 지금 판정 코드에는 이 값을 읽는
+      곳이 없으며(관제 정책 화면이 잠금 표시로 값만 보여 준다), 상향 전용 동작은 구현 자체에
+      고정돼 있다.
     performance: 영향 없다(소비되지 않음).
     stability: 영향 없다(소비되지 않음). 하향은 어차피 일어나지 않는다.
     related: [NOISE_ENABLE_AI_SEVERITY_BOOST]
@@ -114,11 +115,12 @@ settings:
 
   NOISE_TICKET_BATCH_QUEUE_ENABLED:
     example: >-
-      TICKET은 즉시 대응할 것은 아니지만 기록해 둘 알람이다. 큐에 쌓아 두면 주간 리뷰에서 묶어 볼 수 있고, 끄면 그 층의 알람이 어디에도 남지 않는다.
+      TICKET은 즉시 대응할 것은 아니지만 기록해 둘 알람이다. 큐에 쌓아 두면 하루 1회 요약(NOISE_TICKET_BATCH_SUMMARY_ENABLED)으로 묶어 받을 수 있다. 꺼도 판단 기록(감사 파일)에는 TICKET 판단이 그대로 남는다 — 요약만 못 받는다.
     summary: TICKET 티어 알람을 일괄 요약용 큐에 쌓을지 — 기본으로 켜져 있다.
     behavior: >-
-      TICKET은 즉시 대응할 것은 아니지만 기록해 둘 알람이다. 큐에 쌓아 두면 나중에
-      묶어서 요약할 수 있다.
+      TICKET은 즉시 대응할 것은 아니지만 기록해 둘 알람이다. 큐에 쌓아 두면 요약 발송이
+      켜져 있을 때 매일 지정 시각에 묶어서 요약해 보낸다. 워커의 요약·정리 루프도 이 큐가
+      있을 때만 뜬다.
     options:
       - value: "true"
         label: 기본
@@ -126,17 +128,75 @@ settings:
       - value: "false"
         effect: 쌓지 않는다. TICKET 알람의 일괄 요약이 불가능해진다.
     performance: 한 줄 append다. 비용이 거의 없다.
-    stability: 큐 파일이 계속 커지므로 정리 정책이 필요하다.
-    related: [NOISE_TICKET_BATCH_QUEUE_PATH]
+    stability: >-
+      보낸 항목은 큐에서 지워지고, 보존 한도(NOISE_TICKET_BATCH_QUEUE_MAX_LINES)를 넘는
+      오래된 줄도 지워진다. 한도를 0으로 두면 종전처럼 계속 커진다.
+    related: [NOISE_TICKET_BATCH_QUEUE_PATH, NOISE_TICKET_BATCH_SUMMARY_ENABLED, NOISE_TICKET_BATCH_QUEUE_MAX_LINES]
 
   NOISE_TICKET_BATCH_QUEUE_PATH:
     example: >-
-      상대 경로는 서버 작업 디렉터리 기준이다. 파일이 계속 커지므로 정리 정책이 없으면 언젠가 디스크를 압박한다.
+      상대 경로는 서버 작업 디렉터리 기준이다. 보낸 항목과 보존 한도를 넘는 오래된 줄이 지워지므로 파일은 한도 안에서 오르내린다.
     summary: TICKET 일괄 요약 큐 파일 경로.
     behavior: 상대 경로는 서버 작업 디렉터리 기준이다.
     performance: 영향 없다.
     stability: 경로를 바꾸면 이전 큐는 옛 경로에 남는다.
     related: [NOISE_TICKET_BATCH_QUEUE_ENABLED]
+
+  NOISE_TICKET_BATCH_SUMMARY_ENABLED:
+    example: >-
+      켜 두면 매일 아침 9시에 전날부터 쌓인 TICKET 알람이 「CPU High — srv-1 3건」 식의 목록 한 통으로 worKB 기본 수신자에게 온다. worKB 주소(WORKB_BASE_URL)가 비어 있으면 보내지 않고 경고 한 줄만 남기며, 쌓인 항목은 연동 뒤 첫 요약에 실린다.
+    summary: TICKET 알람을 하루 1회 요약해 worKB로 보낼지 — 기본으로 꺼져 있다.
+    behavior: >-
+      켜면 워커가 매일 NOISE_TICKET_BATCH_SUMMARY_HOUR시(서버 로컬 시각)에 요약 큐를 읽어
+      알람 종류별 건수 목록 한 통을 worKB 기본 수신자(WORKB_USER_IDS_CSV)에게 보내고, 보낸
+      항목은 큐에서 지운다 — 같은 항목을 다시 보내지 않는다. 쌓인 것이 없으면 보내지 않는다.
+      발송이 실패하면 항목을 남겨 두었다가 다음 날 함께 보낸다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 요약을 보내지 않는다. 큐는 쌓이고 보존 한도에 따라 오래된 줄이 지워진다.
+      - value: "true"
+        effect: 매일 지정 시각에 요약 한 통이 나간다.
+    performance: 하루 한 번 큐 파일을 읽고 쪽지 한 통을 보낸다. 알람 처리 경로에는 영향이 없다.
+    stability: >-
+      발송 직후 서버가 죽으면 같은 요약이 한 번 더 나갈 수 있다. 워커가 꺼져 있는 동안의
+      발송 시각은 건너뛰고, 쌓인 항목은 다음 발송에 실린다.
+    recommendation: TICKET 알람을 따로 챙겨 볼 담당자가 있으면 켠다.
+    related: [NOISE_TICKET_BATCH_SUMMARY_HOUR, NOISE_TICKET_BATCH_QUEUE_ENABLED, WORKB_BASE_URL, WORKB_USER_IDS_CSV]
+
+  NOISE_TICKET_BATCH_SUMMARY_HOUR:
+    example: >-
+      9로 두면 매일 09:00(서버 로컬 시각)에 보낸다. 0~23 밖의 값을 넣으면 경고를 남기고 9시로 보낸다.
+    summary: TICKET 요약을 보낼 시각(0~23시).
+    behavior: 서버 로컬 시각 기준으로 매일 이 시각 정각에 요약을 보낸다.
+    options:
+      - value: "9"
+        label: 기본
+        effect: 업무 시작 무렵 전날 쌓인 TICKET을 받는다.
+      - value: "18"
+        effect: 퇴근 무렵 그날 쌓인 TICKET을 받는다.
+    performance: 영향 없다.
+    stability: 재시작해도 발송 시각은 바뀌지 않는다 — 기동 시점이 아니라 시계 기준이다.
+    related: [NOISE_TICKET_BATCH_SUMMARY_ENABLED]
+
+  NOISE_TICKET_BATCH_QUEUE_MAX_LINES:
+    example: >-
+      요약 발송을 꺼 둔 채 TICKET이 하루 1000건씩 쌓이면 20일쯤 뒤부터 가장 오래된 줄이 지워진다. 지울 때마다 경고 한 줄이 남고, TICKET 판단 자체는 판단 기록(감사 파일)에 그대로 남는다.
+    summary: TICKET 요약 큐에 남길 최대 줄 수 — 넘으면 오래된 줄부터 지운다.
+    behavior: >-
+      발송 여부와 무관하게 서버 기동 시와 매일 요약 시각에 검사해 이 줄 수를 넘는 오래된
+      항목을 지운다. 큐는 요약 대기열일 뿐 감사 기록이 아니다 — 지워진 항목은 요약에 실리지
+      못할 뿐 판단 기록에는 남는다. 0이면 지우지 않는다(종전 동작).
+    options:
+      - value: "20000"
+        label: 기본
+        effect: 최근 2만 건까지 남긴다.
+      - value: "0"
+        effect: 지우지 않는다. 요약을 보내지 않으면 파일이 계속 커진다.
+    performance: 검사할 때 파일 전체를 한 번 읽는다. 하루 한 번이라 부담이 작다.
+    stability: 검사가 하루 한 번이라 파일은 한도에 하루치 유입만큼 더 커질 수 있다.
+    recommendation: 기본 2만 유지.
+    related: [NOISE_TICKET_BATCH_QUEUE_PATH, NOISE_TICKET_BATCH_SUMMARY_ENABLED]
 
   NOISE_MESSAGE_ENRICHMENT_ENABLED:
     example: >-

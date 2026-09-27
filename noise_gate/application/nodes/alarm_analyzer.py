@@ -206,6 +206,80 @@ def _render_feedback_section(examples: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _apply_severity_boost(
+    result: AlarmAnalysisResult,
+    event: AlarmEvent,
+    parsed: dict,
+    cfg,  # noqa: ANN001 — AppConfig
+    state: dict[str, Any],
+) -> None:
+    """AI 심각도 보강(상향 전용)을 결과에 채운다.
+
+    LLM 응답이 없으면(``parsed={}``) 결정적 원천(시그니처 스캔·동적 baseline)만 쓴다.
+
+    Plan 52 E3: 결정적 시그니처 스캔(항상)과 LLM 메시지 해석(메시지형 알람만)을 결합하여, 후보가
+    원 severity보다 클 때만(상향) 채운다. 정책 계층이 max()로 결합하여 하향은 불가하다.
+    Plan 60 E3: 동적 baseline 이상탐지 상향 후처리(결정적·LLM 무관, §5.2 확정 설계) —
+    dynamic_baseline_enabled AND enable_ai_severity_boost + 후보>event.severity
+    + 후보>기존 ai일 때만.
+    """
+    ai_sev: Optional[int] = None
+    ai_reason = ""
+    if cfg.noise_gate.enable_ai_severity_boost:
+        sig = scan_signature_severity(event.condition_log or "")
+        llm_sev = (
+            _coerce_severity_int(parsed.get("ai_message_severity"))
+            if is_message_alarm(event)
+            else None
+        )
+        cands = [s for s in ((sig[0] if sig else None), llm_sev) if isinstance(s, int)]
+        cand = max(cands) if cands else None
+        if cand is not None and cand > event.severity:  # 상향일 때만
+            ai_sev = cand
+            ai_reason = (sig[1] if sig else "") or "LLM 메시지 해석"
+    result.ai_message_severity = ai_sev
+    result.ai_severity_reason = ai_reason
+
+    anomaly_sev = state.get("anomaly_severity")
+    if (
+        anomaly_sev is not None
+        and getattr(cfg.noise_gate, "dynamic_baseline_enabled", False)
+        and cfg.noise_gate.enable_ai_severity_boost
+        and anomaly_sev > event.severity
+        and anomaly_sev > (result.ai_message_severity or 0)
+    ):
+        result.ai_message_severity = anomaly_sev
+        result.ai_severity_reason = "동적 baseline 이상탐지 (z-score 상향)"
+
+
+def _fallback_result(
+    event: AlarmEvent,
+    severity_label: str,
+    pre_classification: str,
+    error: Exception,
+    cfg,  # noqa: ANN001 — AppConfig
+) -> AlarmAnalysisResult:
+    """AI 분석 실패 시 원문 알람만으로 만든 결과 — 규칙 판단(게이트)·통보를 계속하게 한다.
+
+    분석 실패가 알람을 삼키면 심각(3) 알람도 통보·결정 기록 없이 사라진다(재현 확인 2026-09-27 ·
+    plans/116 §11.8.3 ⑦ · D-035 「분석·발송 절대 차단 금지」 취지). LLM 산출 필드(패턴 해석·
+    일상 반복·액션가능성)는 비워 두므로 정책 계층이 「판단 없음」으로 다룬다. 사유는 예외 종류만
+    남긴다(예외 문구에 접속 정보가 섞일 수 있다 — 상세는 로그).
+    """
+    where = " · ".join(p for p in (event.server_name or event.hostname, event.resource_name) if p)
+    return AlarmAnalysisResult(
+        alarm_event=event,
+        severity_label=severity_label,
+        summary=f"AI 분석에 실패해 원문 알람으로 판단했습니다: {event.alarm_name}"
+        + (f" ({where})" if where else ""),
+        probable_cause=f"AI 분석 실패로 추정 원인을 만들지 못했습니다({type(error).__name__}).",
+        recommended_action="원문 알람 조건과 모니터링 시스템 화면을 직접 확인하세요.",
+        notification_channels=cfg.alarm.get_notification_channels(),
+        error=f"analysis_failed: {type(error).__name__}",
+        pre_classification=pre_classification,
+    )
+
+
 async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """알람 이벤트를 LLM으로 분석하여 AlarmAnalysisResult를 반환한다.
 
@@ -215,7 +289,8 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         config: LangGraph configurable 설정 (app_config 필드 필수)
 
     Returns:
-        analysis_result 또는 error 업데이트
+        analysis_result 업데이트 — LLM 분석이 실패해도 원문 알람으로 만든 결과를 돌려준다
+        (``result.error`` 에 실패 표시 · 규칙 판단과 통보는 계속된다)
     """
     event = state["alarm_event"]
     cfg = config["configurable"]["app_config"]
@@ -305,43 +380,7 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
             pre_classification=pre_classification,
         )
 
-        # Plan 52 E3: AI 메시지 심각도 보강(상향 전용) — 추가 LLM 호출 없이 기존 응답 재파싱.
-        # 결정적 시그니처 스캔(항상)과 LLM 메시지 해석(메시지형 알람만)을 결합하여, 후보가
-        # 원 severity보다 클 때만(상향) 채운다. 정책 계층이 max()로 결합하여 하향은 불가하다.
-        ai_sev: Optional[int] = None
-        ai_reason = ""
-        if cfg.noise_gate.enable_ai_severity_boost:
-            sig = scan_signature_severity(event.condition_log or "")
-            llm_sev = (
-                _coerce_severity_int(parsed.get("ai_message_severity"))
-                if is_message_alarm(event)
-                else None
-            )
-            cands = [
-                s for s in ((sig[0] if sig else None), llm_sev) if isinstance(s, int)
-            ]
-            cand = max(cands) if cands else None
-            if cand is not None and cand > event.severity:  # 상향일 때만
-                ai_sev = cand
-                ai_reason = (sig[1] if sig else "") or "LLM 메시지 해석"
-        result.ai_message_severity = ai_sev
-        result.ai_severity_reason = ai_reason
-
-        # Plan 60 E3: 동적 baseline 이상탐지 상향 후처리(결정적·LLM 무관, §5.2 확정 설계).
-        # enricher가 산출한 anomaly_severity(baseline z-score 상향 후보)를 **상향 전용** 가드로
-        # ai_message_severity에 병합한다. dynamic_baseline_enabled AND enable_ai_severity_boost
-        # (AND 조건) + 후보>event.severity + 후보>기존 ai일 때만 반영 → agentic_enricher·기존
-        # sig/llm 보강과 공존해도 셋 다 "후보>기존" 상향 전용이라 결과는 max와 동일(게이트 무변경).
-        anomaly_sev = state.get("anomaly_severity")
-        if (
-            anomaly_sev is not None
-            and getattr(cfg.noise_gate, "dynamic_baseline_enabled", False)
-            and cfg.noise_gate.enable_ai_severity_boost
-            and anomaly_sev > event.severity
-            and anomaly_sev > (result.ai_message_severity or 0)
-        ):
-            result.ai_message_severity = anomaly_sev
-            result.ai_severity_reason = "동적 baseline 이상탐지 (z-score 상향)"
+        _apply_severity_boost(result, event, parsed, cfg, state)
 
         # Plan 52 E4: LLM 액션가능성 재파싱(추가 호출 없이 기존 응답 재파싱) — 게이트 활성 시에만.
         # enable off면 필드가 기본 None/""로 남아 정책 계층(step 9)이 무시한다(이중 안전·회귀 0).
@@ -358,5 +397,10 @@ async def alarm_analyzer_node(state: dict[str, Any], config: RunnableConfig) -> 
         )
         return {"analysis_result": result}
     except Exception as e:
-        logger.exception("알람 LLM 분석 실패: alarm_id=%s", event.alarm_id)
-        return {"error": str(e)}
+        # 분석 실패가 알람을 삼키지 않게 원문 알람으로 규칙 판단·통보를 계속한다(_fallback_result).
+        logger.exception(
+            "알람 LLM 분석 실패 — 원문 알람으로 규칙 판단 계속: alarm_id=%s", event.alarm_id
+        )
+        result = _fallback_result(event, severity_label, pre_classification, e, cfg)
+        _apply_severity_boost(result, event, {}, cfg, state)
+        return {"analysis_result": result}

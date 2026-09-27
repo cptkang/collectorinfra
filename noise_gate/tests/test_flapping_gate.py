@@ -16,7 +16,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from noise_gate.application.alarm_worker import AlarmWorker
-from noise_gate.domain.flapping import MAX_STATES
+from noise_gate.domain.flapping import MAX_STATES, MIN_STATES
 from noise_gate.domain.notification_policy import (
     TIER_PAGE,
     TIER_SUPPRESS,
@@ -41,12 +41,27 @@ def _fev(is_clear: bool) -> SimpleNamespace:
 
 
 class TestDetectFlapping:
+    def test_single_recurrence_is_not_flapping(self):
+        # 결함 ⑫ 재현: 발생 → 해소 → 재발생(→ 해소) 한 번은 변화율이 100%여도
+        # 표본(상태 수)이 판정 하한에 못 미치므로 플래핑이 아니다(정상 재발생 억제 금지).
+        w = _flap_worker()
+        fp = "fp-recur"
+        results = [
+            w._detect_flapping(fp, _fev(is_clear), now=float(i))
+            for i, is_clear in enumerate([False, True, False, True])
+        ]
+        assert results == [False, False, False, False]
+        assert w._flap_flag[fp] is False
+
     def test_alternation_triggers_flapping(self):
         w = _flap_worker()
         fp = "fp-flap"
-        # 발생→해소 단일 교대만으로 100% → 시작 임계(20%) 초과 → True
-        assert w._detect_flapping(fp, _fev(False), now=1.0) is False  # 첫 상태
-        assert w._detect_flapping(fp, _fev(True), now=2.0) is True    # 전이 → 플래핑
+        # 교대가 표본 하한(MIN_STATES)만큼 쌓인 뒤에야 시작 임계(20%) 초과 → True
+        results = [
+            w._detect_flapping(fp, _fev(i % 2 == 1), now=float(i))
+            for i in range(MIN_STATES)
+        ]
+        assert results == [False] * (MIN_STATES - 1) + [True]
 
     def test_longer_alternation_stays_flapping(self):
         w = _flap_worker()

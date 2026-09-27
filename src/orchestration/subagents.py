@@ -42,6 +42,7 @@ from src.orchestration.process_query import (
     _resolve_hostname,
     run_process_query,
 )
+from src.orchestration.db_access import access_denied_result, authorize_targets, denied_for_all
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT, run_host_inspect
 from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
@@ -51,6 +52,7 @@ from src.routing.capability_ownership import (
     restrict_targets_to_owner,
     routing_fallback_note,
 )
+from src.routing.db_authz import authorized_db_ids
 from src.routing.db_scope import zone_selection_db_ids
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.location_hints import pin_targets_to_hints, strip_location_terms
@@ -59,6 +61,7 @@ from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
 from src.utils.progress_events import emit_step
 from src.utils.query_gen_common import (
+    ZONE_CLARIFY_OPTIONS,
     build_zone_clarification,
     has_host_identifier_filter,
     is_realtime_usage_query,
@@ -309,8 +312,17 @@ def _zone_clarification_or_none_task(
     target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
     if not target_ids or not all(d in polestar_ids for d in target_ids):
         return None
+    # 선택지는 사용자 조회 권한(D-232)으로 거른다 — 3단 라우터·라우트 사전 게이트와 같은 규칙
+    # (plans/116 §10.3). 빈 목록을 넘기면 build_zone_clarification이 "제한 없음"으로 읽으므로
+    # 권한 내 존이 없으면 묻지 않는다(뒤이은 인가 필터가 사유를 알린다).
+    zone_ids = authorized_db_ids(
+        app_config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS],
+        isolated.get("allowed_db_ids"), isolated.get("user_role"),
+    )
+    if not zone_ids:
+        return None
     payload = build_zone_clarification(
-        app_config.multi_db.get_active_db_ids(), original_query,
+        zone_ids, original_query,
         # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
         group_exclusive=bool(
             getattr(app_config.multi_db, "zone_group_exclusive", True)
@@ -1075,6 +1087,12 @@ async def run_data_query_pipeline(
     """
     sub_query = task.get("sub_query", isolated.get("user_query", ""))
 
+    # 사용자별 DB 인가(D-232 · plans/116 §10.3 결함 ②) — 3단은 라우터 노드 경계에서 거르지만
+    # 1·2단은 이 핸들러가 대상을 정한다. 조회 가능 DB가 없는 사용자는 분류(LLM)도 부르지 않는다.
+    if denied_for_all(isolated):
+        logger.info("data_query 인가 거부: 조회 가능 DB 없음 (task=%s)", task.get("task_id"))
+        return access_denied_result()
+
     # (plans/102 X-7) 소유 검증 지점 ② — 분해 task의 답변 영역(LLM 구조화 출력 · D-004 원문
     # 스캔 0)으로 대상 시스템을 맞춘다. 플래그 off거나 task에 답변 영역이 없으면 종전 경로 그대로다.
     #   단일 DB 시스템 소유 → `db_ids` 고정(classify_dbs 재분류를 건너뛰는 기존 우선 배관)
@@ -1195,6 +1213,14 @@ async def run_data_query_pipeline(
                 # (_collect_db_promotion)이 임의 분류 결과를 previous_db_ids로 체크포인터에
                 # 남겨 재개·후속 턴 승계를 오염시키는 것을 차단(요청 스코프 원칙).
             }
+
+    # 사용자별 DB 인가(D-232) — 대상 출처(계획 고정·존 선택·분류·위치 힌트 고정·승계·소유 제한)와
+    # 무관하게 확정된 대상에 3단과 같은 필터를 건다. 존 역질문 뒤에 두는 것도 3단과 같다(라우터 안의
+    # 존 게이트 → `authorized_router`). 인가된 대상이 없으면 조회하지 않고 사유를 돌려준다.
+    authorized = authorize_targets(targets, isolated)
+    if authorized is None:
+        return access_denied_result()
+    targets = authorized
 
     # Plan 71: 실시간 사용률 분기 (옵트인 기본 OFF, B안 게이트 — 원문 기준 승격 신호).
     # 대상이 전부 폴스타이고 measurement 조회가 성공하면 SQL 파이프라인을 건너뛴다.

@@ -1217,7 +1217,34 @@ def event_visible_to(
     return zone is not None and zone in allowed_zones
 
 
-# ─── 존(zone) 접근 판정 — 피드백·ack 공용 (Plan 83 T2·T3) ────────────────────
+# ─── 존(zone) 접근 판정 — 피드백·ack·사건 목록·피드백 요약 공용 (Plan 83 T2·T3) ──
+
+def _alarm_zone_scope(request: Request, current_user: dict) -> set[str] | None:
+    """요청 사용자의 알람 존 범위를 산출한다 — 전 존이면 None(거를 것 없음).
+
+    Raises:
+        HTTPException: 존 집합이 비면 403(스트림의 구독 거부와 같은 의미).
+    """
+    zones = alarm_zones_for_user(current_user, request.app.state.config.auth.enabled)
+    if not zones:
+        raise HTTPException(status_code=403, detail="알람 수신 권한이 없습니다.")
+    if zones >= set(all_zones()):
+        return None
+    return zones
+
+
+def _zone_permits(scope: set[str] | None, db_id: str | None) -> bool:
+    """`_alarm_zone_scope` 범위가 이 db_id의 알람을 허용하는지 판정한다(순수 함수).
+
+    - 전 존(None)이면 db_id와 무관하게 허용.
+    - db_id가 없으면 **막지 않는다** — 판정 불가를 거부로 바꾸지 않는다(하위호환).
+    - 그 외에는 대상 존이 사용자 존에 속할 때만 허용(존 매핑 없는 db_id는 거부).
+    """
+    if scope is None or not db_id:
+        return True
+    zone = db_id_to_zone(db_id)
+    return zone is not None and zone in scope
+
 
 def _assert_zone_access(
     request: Request, current_user: dict, db_id: Optional[str]
@@ -1226,6 +1253,7 @@ def _assert_zone_access(
 
     SSE 스트림(`alarm_notifications_stream`의 `_visible`)과 **동일한 규약**을 쓴다 —
     쓰기 경로만 무방비였던 비대칭을 없애는 것이 목적이다(docs/28 실측).
+    조회 경로(사건 목록·피드백 요약)도 같은 `_alarm_zone_scope`·`_zone_permits`로 거른다.
 
     - 존 집합이 비면 403(스트림의 구독 거부와 같은 의미).
     - 전 존(관리자·개발 모드)이면 db_id와 무관하게 통과.
@@ -1235,15 +1263,7 @@ def _assert_zone_access(
     Raises:
         HTTPException: 권한 없음(403).
     """
-    zones = alarm_zones_for_user(current_user, request.app.state.config.auth.enabled)
-    if not zones:
-        raise HTTPException(status_code=403, detail="알람 수신 권한이 없습니다.")
-    if zones >= set(all_zones()):
-        return
-    if not db_id:
-        return
-    zone = db_id_to_zone(db_id)
-    if zone is None or zone not in zones:
+    if not _zone_permits(_alarm_zone_scope(request, current_user), db_id):
         raise HTTPException(
             status_code=403, detail="해당 존의 알람에 대한 권한이 없습니다."
         )
@@ -1299,6 +1319,7 @@ async def ack_incident(
     summary="열린 incident 목록",
     description=(
         "열린(open) incident 목록을 최신순으로 반환합니다.<br/>"
+        "요청자의 알림 존에 속한 사건만 반환합니다(ack와 같은 존 판정 · 관리자는 전 존).<br/>"
         "incident 계측이 비활성이면 빈 배열을 반환합니다."
     ),
     tags=["alarm"],
@@ -1309,11 +1330,16 @@ async def list_incidents(
     limit: int = 100,
     current_user: dict = Depends(require_user),
 ) -> IncidentListResponse:
-    """열린 incident 목록을 반환한다(트래커 비활성 시 빈 배열)."""
+    """열린 incident 목록을 요청자 존으로 걸러 반환한다(트래커 비활성 시 빈 배열)."""
+    # 결함 ⑤ — ack(쓰기)와 같은 존 판정. 존이 없으면 403, 전 존이면 거르지 않는다.
+    scope = _alarm_zone_scope(request, current_user)
     store = getattr(request.app.state, "incident_store", None)
     if store is None:
         return IncidentListResponse(incidents=[])
     incidents = await store.list_open(limit=limit)
+    # 저장소 포트(list_open)에 존 인자가 없어 조회 뒤에 거른다 — 스코프 사용자는 limit보다
+    # 적게 받을 수 있다(상위 limit건 안에서만 거른 결과).
+    incidents = [i for i in incidents if _zone_permits(scope, i.get("db_id"))]
     return IncidentListResponse(incidents=incidents)
 
 
@@ -1496,6 +1522,7 @@ async def retract_alarm_feedback(
     summary="운영자 피드백 라벨 집계",
     description=(
         "(알람명, 자원명)별 유효/노이즈 라벨 수와 최근 라벨·작성자를 반환합니다.<br/>"
+        "요청자의 알림 존에 속한 라벨만 집계합니다(적재와 같은 존 판정 · 관리자는 전 존).<br/>"
         "상반된 라벨이 쌓였는지 사람이 확인하기 위한 조회이며 판정에는 관여하지 않습니다."
     ),
     tags=["alarm"],
@@ -1505,7 +1532,10 @@ async def alarm_feedback_summary(
     limit: int = 100,
     current_user: dict = Depends(require_user),
 ) -> AlarmFeedbackSummaryResponse:
-    """피드백 라벨을 집계해 반환한다(저장소 비활성·파일 부재면 빈 목록)."""
+    """피드백 라벨을 요청자 존으로 걸러 집계한다(저장소 비활성·파일 부재면 빈 목록)."""
+    # 결함 ⑤ — 적재(쓰기)와 같은 존 판정. 집계 전에 레코드 단위로 걸러야
+    # 다른 존 라벨이 카운트·최근 작성자에 섞이지 않는다.
+    scope = _alarm_zone_scope(request, current_user)
     ng = request.app.state.config.noise_gate
 
     from noise_gate.infrastructure.feedback_store import FeedbackStore
@@ -1515,7 +1545,11 @@ async def alarm_feedback_summary(
         getattr(ng, "feedback_store_enabled", True),
         getattr(ng, "feedback_store_max_lines", 20000),
     )
-    return AlarmFeedbackSummaryResponse(items=store.summarize(limit=limit))
+    items = store.summarize(
+        limit=limit,
+        db_id_filter=None if scope is None else (lambda db_id: _zone_permits(scope, db_id)),
+    )
+    return AlarmFeedbackSummaryResponse(items=items)
 
 
 @router.get(

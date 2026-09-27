@@ -756,8 +756,15 @@ async def _route_non_page_tier(
     alarm_id = result.alarm_event.alarm_id
     if decision.tier == TIER_TICKET:
         if ticket_queue is not None:
+            ev = result.alarm_event
             try:
-                ticket_queue.enqueue(decision, alarm_id=alarm_id)
+                # 일배치 요약이 사람이 읽는 이름을 쓰도록 식별자를 싣는다(지문은 해시 — 결함 ⑬).
+                ticket_queue.enqueue(
+                    decision,
+                    alarm_id=alarm_id,
+                    alarm_name=str(ev.alarm_name or ""),
+                    server_name=str(ev.server_name or ev.hostname or ""),
+                )
             except Exception:  # noqa: BLE001 — 큐 적재 실패가 파이프라인을 막지 않는다
                 logger.warning("TICKET 일배치 큐 적재 실패(무시): alarm_id=%s", alarm_id)
         await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)

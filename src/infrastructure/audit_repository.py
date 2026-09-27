@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import asyncpg
 
+from src.domain.audit import event_type_filter_values
 from src.domain.user import AuditRepository
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,9 @@ class PostgresAuditRepository(AuditRepository):
             idx += 1
 
         if event_type:
-            conditions.append(f"event_type = ${idx}")
-            params.append(event_type)
+            # 옛 기록 이름(`login` 등)까지 함께 찾는다
+            conditions.append(f"event_type = ANY(${idx}::text[])")
+            params.append(event_type_filter_values(event_type))
             idx += 1
 
         where_clause = ""
@@ -173,8 +175,9 @@ class PostgresAuditRepository(AuditRepository):
             idx += 1
 
         if event_type:
-            conditions.append(f"event_type = ${idx}")
-            params.append(event_type)
+            # 옛 기록 이름(`login` 등)까지 함께 찾는다
+            conditions.append(f"event_type = ANY(${idx}::text[])")
+            params.append(event_type_filter_values(event_type))
             idx += 1
 
         if target_db:

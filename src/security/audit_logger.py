@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +24,37 @@ logger = structlog.get_logger("audit")
 # Phase 1: 파일 기반 감사 로그 (날짜별 분리)
 AUDIT_LOG_DIR = Path("logs")
 MAX_LOG_SIZE_MB = 100
+
+# 쿼리 실행의 DB 복제 대상(D-027 이중 기록). 노드는 `app.state`에 닿지 못하므로(D-183)
+# DB 감사가 구성된 `AuditService`가 생성될 때 자신을 등록한다. 약한 참조라 서비스가 사라지면
+# (앱 종료·테스트 종료) 복제도 멈춘다. 등록이 없으면(CLI 등) 종전처럼 파일에만 남는다.
+_db_mirror: weakref.ReferenceType | None = None
+
+
+def register_db_mirror(service: Any) -> None:
+    """쿼리 실행을 DB에도 남길 `AuditService`를 등록한다(`mirror_query_execution` 보유)."""
+    global _db_mirror
+    _db_mirror = weakref.ref(service)
+
+
+async def _mirror_query_execution(**fields: Any) -> None:
+    """등록된 서비스가 있으면 쿼리 실행 1건을 DB에 복제한다. 실패는 삼키지 않고 로그로 남긴다.
+
+    요청 식별자·클라이언트 IP는 감사 미들웨어가 structlog 컨텍스트에 묶어 둔 값을 쓴다
+    (요청 밖 실행이면 비어 있다).
+    """
+    service = _db_mirror() if _db_mirror is not None else None
+    if service is None:
+        return
+    context = structlog.contextvars.get_contextvars()
+    try:
+        await service.mirror_query_execution(
+            request_id=context.get("request_id"),
+            client_ip=context.get("client_ip"),
+            **fields,
+        )
+    except Exception as e:
+        logging.getLogger(__name__).error("쿼리 실행 DB 감사 기록 실패: %s", e)
 
 
 class AuditEntry:
@@ -113,6 +145,21 @@ async def log_query_execution(
 
     # 파일에 기록 (Phase 1)
     await _write_audit_file(entry)
+
+    # DB에도 한 행 — 관리자 화면(성공률·「쿼리 실행」 필터·대량 조회 경보)은 DB를 읽는다
+    await _mirror_query_execution(
+        sql=sql,
+        row_count=row_count,
+        execution_time_ms=execution_time_ms,
+        success=success,
+        error=error,
+        user_id=user_id,
+        session_id=thread_id,
+        target_db=source_name,
+        retry_attempt=retry_attempt,
+        masked_columns=masked_columns,
+        validation_warnings=validation_warnings,
+    )
 
 
 async def log_user_request(

@@ -21,6 +21,7 @@ from src.api.schemas import (
     UserLoginResponse,
     UserRegisterRequest,
 )
+from src.domain.audit import AuditEvent
 from src.domain.user import User, UserRole, UserStatus
 from src.routing.db_authz import parse_allowed_db_ids
 from src.utils.password import hash_password, verify_password
@@ -90,6 +91,37 @@ async def _log_audit_event(request: Request, event: dict) -> None:
             await audit_repo.log_event(event)
         except Exception as e:
             logger.error("감사 로그 기록 실패: %s", e)
+
+
+async def _audit_login_failure(
+    request: Request, user_id: str, fail_count: int, locked: bool
+) -> None:
+    """비밀번호 불일치를 감사에 남기고, 연속 실패가 임계에 닿으면 보안 경고를 남긴다.
+
+    연속 실패 수는 계정 잠금 카운터(`login_fail_count`)를 그대로 쓴다. 이 카운터는 로그인
+    성공·관리자 잠금 해제·잠금 만료 때 0으로 돌아가므로 누적 실패가 아니라 "연속" 실패다.
+    잠금과 경보가 같은 수를 세므로 두 임계를 같은 값으로 두면 잠김과 경보가 함께 남는다.
+    """
+    await _log_audit_event(request, {
+        "event_type": AuditEvent.LOGIN_FAIL.value,
+        "user_id": user_id,
+        "detail": {"fail_count": fail_count, "locked": locked},
+        "ip_address": _get_client_ip(request),
+    })
+
+    audit_service = getattr(request.app.state, "audit_service", None)
+    if not audit_service:
+        return
+    try:
+        await audit_service.alert_on_login_failures(
+            user_id=user_id,
+            client_ip=_get_client_ip(request),
+            consecutive_failures=fail_count,
+            locked=locked,
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.error("로그인 실패 경고 기록 실패: %s", e)
 
 
 @router.get(
@@ -186,7 +218,7 @@ async def register(
 
     # 감사 로그
     await _log_audit_event(request, {
-        "event_type": "register",
+        "event_type": AuditEvent.REGISTER.value,
         "user_id": body.user_id,
         "detail": {"username": body.username, "department": body.department},
         "ip_address": _get_client_ip(request),
@@ -256,6 +288,8 @@ async def login(
             user.status = UserStatus.LOCKED
             await user_repo.update(user)
             logger.warning("계정 잠금: %s (로그인 %d회 실패)", body.user_id, user.login_fail_count)
+            # 잠그는 실패도 감사에 남긴다 — 연속 실패 경보가 바로 이 시점에 판정된다
+            await _audit_login_failure(request, body.user_id, user.login_fail_count, locked=True)
             raise HTTPException(
                 status_code=423,
                 detail=f"로그인 {config.auth.max_login_attempts}회 실패로 계정이 잠겼습니다.",
@@ -264,12 +298,7 @@ async def login(
         await user_repo.update(user)
 
         # 감사 로그
-        await _log_audit_event(request, {
-            "event_type": "login_fail",
-            "user_id": body.user_id,
-            "detail": {"fail_count": user.login_fail_count},
-            "ip_address": _get_client_ip(request),
-        })
+        await _audit_login_failure(request, body.user_id, user.login_fail_count, locked=False)
 
         raise HTTPException(status_code=401, detail="ID 또는 비밀번호가 올바르지 않습니다.")
 
@@ -296,7 +325,7 @@ async def login(
 
     # 감사 로그
     await _log_audit_event(request, {
-        "event_type": "login",
+        "event_type": AuditEvent.USER_LOGIN.value,
         "user_id": body.user_id,
         "detail": {"role": user.role.value},
         "ip_address": _get_client_ip(request),
@@ -335,7 +364,7 @@ async def logout(
     """
     response.delete_cookie(key="user_token", path="/")
     await _log_audit_event(request, {
-        "event_type": "logout",
+        "event_type": AuditEvent.USER_LOGOUT.value,
         "user_id": current_user.get("sub"),
         "detail": {},
         "ip_address": _get_client_ip(request),
@@ -397,7 +426,7 @@ async def change_password(
 
     # 감사 로그
     await _log_audit_event(request, {
-        "event_type": "password_change",
+        "event_type": AuditEvent.PASSWORD_CHANGE.value,
         "user_id": current_user["sub"],
         "detail": {},
         "ip_address": _get_client_ip(request),

@@ -23,6 +23,11 @@
     ::: ui 캡처ID                        ← 그림 + 번호 설명(번호 = captures.yaml 콜아웃)
     1. ...
     :::
+    ::: detail                           ← 상세 설명(「주의·제약」 뒤·「관련」 앞 — plans/116 §11)
+    #### 소제목                          ← 본문 제목(접지 않음) · 칸 머리 바로가기에 나온다
+    ##### 항목                           ← 제목 + 일반 설명(첫 문단·첫 글머리표)이 보이고 나머지는 「자세히」로 접힌다
+    ...
+    :::
 
 ``markdown-it-py`` 는 ``rich`` 의 의존성으로 들어와 있다 — 이 빌드에서만 쓴다(앱 런타임 무관).
 """
@@ -58,6 +63,7 @@ SLOT_LABEL = {
     "ui": "화면 요소",
     "caution": "주의·제약",
     "related": "관련 항목",
+    "detail": "상세 설명",
 }
 TITLES = {"user": "사용자 매뉴얼", "admin": "관리자 매뉴얼"}
 OTHER = {"user": ("admin", "관리자 매뉴얼"), "admin": ("user", "사용자 매뉴얼")}
@@ -276,9 +282,210 @@ def render_ui(arg: str, body: str) -> str:
 _DIRECTIVE = re.compile(r"^:::\s*(\w+)\s*(.*)$")
 
 
+_LEAD_LABEL = re.compile(r"^\s*(?:-\s*)?\*\*무엇인가요?\*\*\s*[—:]\s*")
+
+
+def _lead_and_rest(text: str) -> tuple[str, str]:
+    """본문에 보일 일반 설명(첫 글머리표 또는 첫 문단)과 「자세히」로 접을 나머지로 나눈다.
+
+    「**무엇인가(요)** —」·「- **무엇인가(요)**:」 머리말은 항목 제목이 이미 말하므로 뗀다."""
+    text = text.strip("\n")
+    lines = text.splitlines()
+    if lines and re.match(r"^\s*-\s", lines[0]):  # 글머리표 목록 — 첫 항목(이어지는 들여쓴 줄 포함)
+        k = 1
+        while k < len(lines) and lines[k].startswith(" ") and not re.match(r"^\s*-\s", lines[k]):
+            k += 1
+        lead, rest = "\n".join(lines[:k]), "\n".join(lines[k:])
+        lead = re.sub(r"^\s*-\s*", "", lead)
+    elif lines and lines[0].lstrip().startswith("|"):  # 표로 시작 — 일반 설명 없이 전부 접는다
+        return "", text
+    else:
+        parts = re.split(r"\n\s*\n", text, maxsplit=1)
+        lead, rest = parts[0], parts[1] if len(parts) > 1 else ""
+    return _LEAD_LABEL.sub("", lead).strip(), rest.strip()
+
+
+def _more(rest: str, label: str = "자세히") -> str:
+    if not rest:
+        return ""
+    return f'<details class="detail-more"><summary>{label}</summary><div class="detail-more-body">{md(rest)}</div></details>'
+
+
+def _split_heads(text: str, mark: str) -> tuple[str, list[tuple[str, str]]]:
+    """``mark`` 제목 줄로 나눈다 — (첫 제목 앞 글, [(제목, 본문)…])."""
+    parts = re.split(rf"^{re.escape(mark)} (.+)$", text, flags=re.M)
+    return parts[0], [(parts[k].strip(), parts[k + 1]) for k in range(1, len(parts), 2)]
+
+
+def render_detail(fid: str, body: str, linked: frozenset[str] = frozenset()) -> str:
+    """상세 설명 — 본문에 연결되지 않은 항목만 여기 보인다(사용자 지시 2026-09-27).
+
+    - 소제목(``####``)은 접지 않는 제목이다. 칸 머리에 소제목별 항목 바로가기 링크를 둔다.
+    - 항목(``#####``)은 제목 + 일반 설명(첫 문단 또는 첫 글머리표)이 보이고, 나머지는 「자세히」에 접힌다.
+    - 항목이 없는 소제목은 첫 문단만 보이고 나머지(표 등)는 「자세히」에 접힌다.
+    - ``linked`` (본문 링크·표 채움이 가리키는 항목 id)는 목록에서 빼고 보이지 않는 저장소(``.detail-store``)에만
+      둔다 — 본문 링크를 누르면 manual.js 가 그 자리 아래에 펼친다. 항목이 모두 빠진 소제목은 목록에서 없앤다."""
+    lead, topics = _split_heads(body, "####")
+    if lead.strip() or not topics:
+        raise SystemExit(f"{fid}: 상세 설명은 소제목(####)으로 시작해야 한다")
+    base = fid.lower()
+    out, index, store = [], [], []
+    for t, (title, text) in enumerate(topics, 1):
+        intro, items = _split_heads(text, "#####")
+        if items:
+            inner = md(intro) if intro.strip() else ""
+        else:
+            gen, rest = _lead_and_rest(intro)
+            inner = (md(gen) if gen else "") + _more(rest)
+        links, shown, hidden = [], 0, []
+        for k, (name, desc) in enumerate(items, 1):
+            gen, rest = _lead_and_rest(desc)
+            if not gen and not rest:
+                raise SystemExit(f"{fid}: 항목 「{name}」 설명이 비었다")
+            iid = f"{base}-d-{t}-{k}"
+            title_html = MD.renderInline(_bold(name))
+            block = (
+                f'<div class="detail-item" id="{iid}"><h6 class="detail-item-title">{title_html}</h6>'
+                f'<div class="detail-item-lead">{md(gen) if gen else ""}</div>{_more(rest)}</div>'
+            )
+            if iid in linked:
+                hidden.append(block)
+                continue
+            shown += 1
+            links.append(f'<a href="#{iid}">{title_html}</a>')
+            inner += block
+        if hidden:
+            store.append(f'<h5 class="detail-topic-title">{esc(title)}</h5>' + "".join(hidden))
+        if items and not shown:
+            continue  # 항목이 모두 본문에 연결된 소제목 — 목록에서 뺀다
+        index.append(
+            f'<li><a href="#{base}-d-{t}">{esc(title)}</a>'
+            + (f'<span class="detail-index-items">{"".join(links)}</span>' if links else "")
+            + "</li>"
+        )
+        out.append(
+            f'<div class="detail-topic" id="{base}-d-{t}"><h5 class="detail-topic-title">{esc(title)}</h5>'
+            f"{inner}</div>"
+        )
+    head = (
+        f'<h4>{SLOT_LABEL["detail"]}</h4><ul class="detail-index">{"".join(index)}</ul>'
+        if out
+        else ""
+    )
+    return (
+        f'<div class="slot slot-detail{"" if out else " detail-empty"}" data-slot="detail" id="{base}-detail">'
+        f'{head}{"".join(out)}'
+        f'<div class="detail-store" hidden>{"".join(store)}</div><!--/slot--></div>'
+    )
+
+
+# ── 본문 ↔ 항목 연결 (사용자 지시 2026-09-27) ──────────────────────────────
+# 보이는 칸(무엇·사용 방법·화면 요소·주의)의 화면 이름을 그 절 상세 설명의 항목에 잇는다.
+#   자동: 굵은 글씨 전체(「·」로 이은 나열은 하나씩) · 표 칸 전체 · 화면 요소 번호 설명의 첫 이름이 항목 이름과 같을 때
+#   수동: [[항목명]] · [[보일 글자|항목명]]  → 링크 / {{항목명}} → 그 항목의 일반 설명(첫 문단)을 그 자리에 채운다
+# 누르면 manual.js 가 그 줄(표면 그 행) 바로 아래에 항목 설명을 펼친다. JS 가 없으면 상세 설명 항목으로 이동한다.
+_LINKED_SLOTS = ("what", "how", "ui", "caution")
+_DETAIL_BLOCK = re.compile(r"^::: detail\n(.*?)^:::\s*$", re.M | re.S)
+
+
+def _plain(name: str) -> str:
+    return re.sub(r"[*`]", "", name).strip()
+
+
+def _detail_terms(fid: str, text: str) -> dict[str, tuple[str, str]]:
+    """절의 상세 설명 항목 — {항목명: (앵커 id, 일반 설명 마크다운)}. 번호는 render_detail 과 같다."""
+    m = _DETAIL_BLOCK.search(text)
+    if not m:
+        return {}
+    terms: dict[str, tuple[str, str]] = {}
+    _, topics = _split_heads(m.group(1), "####")
+    for t, (_, ttext) in enumerate(topics, 1):
+        _, items = _split_heads(ttext, "#####")
+        for k, (name, desc) in enumerate(items, 1):
+            terms.setdefault(_plain(name), (f"{fid.lower()}-d-{t}-{k}", _lead_and_rest(desc)[0]))
+    return terms
+
+
+# 이 소제목의 항목은 「화면 요소」 칸에 링크 줄로 모두 올린다 — 본문에서 이어지므로 아래 목록에서는 빠진다
+_INDEX_TOPICS = ("항목별 설명", "항목 전수")
+
+
+def _term_list(fid: str, text: str) -> str:
+    """「항목별 설명」·「항목 전수」 소제목의 항목 전부를 본문 링크 줄로 만든다(누르면 줄 아래에 펼친다)."""
+    m = _DETAIL_BLOCK.search(text)
+    if not m:
+        return ""
+    rows = []
+    _, topics = _split_heads(m.group(1), "####")
+    for t, (title, ttext) in enumerate(topics, 1):
+        _, items = _split_heads(ttext, "#####")
+        if title in _INDEX_TOPICS and items:
+            links = " ".join(
+                _term_a(MD.renderInline(_bold(name)), f"{fid.lower()}-d-{t}-{k}")
+                for k, (name, _) in enumerate(items, 1)
+            )
+            rows.append(f'<p class="term-list"><span class="term-list-label">{esc(title)}</span> {links}</p>')
+    return "".join(rows)
+
+
+def _term_a(label: str, iid: str) -> str:
+    return f'<a class="term" href="#{iid}" data-term="{iid}">{label}</a>'
+
+
+def _expand_terms(fid: str, body: str, terms: dict[str, tuple[str, str]]) -> str:
+    """원천의 [[…]]·{{…}} 를 링크·일반 설명으로 바꾼다 — 없는 항목명이면 빌드 실패."""
+
+    def need(name: str) -> tuple[str, str]:
+        if _plain(name) not in terms:
+            raise SystemExit(f"{fid}: 상세 설명에 없는 항목 「{name}」")
+        return terms[_plain(name)]
+
+    def link(m: re.Match) -> str:
+        label, _, name = m.group(1).partition("|")
+        return _term_a(esc(label), need(name or label)[0])
+
+    def lead(m: re.Match) -> str:
+        iid, text = need(m.group(1))
+        return f'<span class="term-lead" data-term="{iid}">{MD.renderInline(_bold(text))}</span>'
+
+    # 코드 표기(`{{placeholder}}` 같은 Word 양식 설명)는 건드리지 않는다
+    body = re.sub(r"(?<!`)\[\[([^\]`]+)\]\](?!`)", link, body)
+    return re.sub(r"(?<!`)\{\{([^}`]+)\}\}(?!`)", lead, body)
+
+
+def _link_terms(h: str, terms: dict[str, tuple[str, str]]) -> str:
+    """렌더된 보이는 칸에서 화면 이름을 항목 링크로 바꾼다(자동 규칙 — 모듈 주석)."""
+
+    def find(s: str) -> str | None:
+        hit = terms.get(_plain(html.unescape(s)))
+        return hit[0] if hit else None
+
+    def strong(m: re.Match) -> str:
+        parts = m.group(1).split("·")
+        if not any(find(p) for p in parts):
+            return m.group(0)
+        return "<strong>" + "·".join(_term_a(p, find(p)) if find(p) else p for p in parts) + "</strong>"
+
+    def cell(m: re.Match) -> str:
+        iid = find(m.group(2))
+        return f"{m.group(1)}{_term_a(m.group(2), iid)}</td>" if iid else m.group(0)
+
+    def callout(m: re.Match) -> str:
+        iid = find(m.group(2))
+        return f"{m.group(1)}{_term_a(m.group(2), iid)}{m.group(3)}" if iid else m.group(0)
+
+    h = re.sub(r"<strong>([^<]+)</strong>", strong, h)
+    h = re.sub(r"(<td[^>]*>)([^<]+)</td>", cell, h)
+    return re.sub(r'(<span class="badge-n">\d+</span><span>)([^<]+?)( — |\(|</span>)', callout, h)
+
+
 def render_section(fid: str, title: str, text: str) -> str:
+    terms = _detail_terms(fid, text)
+    term_list = _term_list(fid, text)
+    detail_body: str | None = None
     out, lines, i = [], text.splitlines(), 0
     slots_seen = set()
+    order: list[str] = []
     loose: list[str] = []
     while i < len(lines):
         m = _DIRECTIVE.match(lines[i])
@@ -292,6 +499,8 @@ def render_section(fid: str, title: str, text: str) -> str:
             j += 1
         body = "\n".join(lines[i + 1 : j])
         i = j + 1
+        if kind in _LINKED_SLOTS:
+            body = _expand_terms(fid, body, terms)
         if kind == "case":
             cid, *fig = arg.split()
             inner = render_case(cid, body, fig[0] if fig else None)
@@ -299,6 +508,12 @@ def render_section(fid: str, title: str, text: str) -> str:
         elif kind == "ui":
             inner = render_ui(arg, body)
             slot = "ui"
+        elif kind == "detail":
+            detail_body = body
+            out.append("@@DETAIL@@")  # 본문 링크를 다 모은 뒤 그린다(연결된 항목을 목록에서 빼려고)
+            slots_seen.add("detail")
+            order.append("detail")
+            continue
         elif kind in SLOT_LABEL:
             inner = md(body)
             slot = kind
@@ -307,12 +522,27 @@ def render_section(fid: str, title: str, text: str) -> str:
         if slot == "case" and "case" in slots_seen:
             out.append(inner)  # 사례가 여럿이면 같은 칸 제목 아래 이어 붙인다
             continue
+        if slot in _LINKED_SLOTS and terms:
+            inner = _link_terms(inner, terms)
+        if slot == "ui" and term_list:
+            inner += term_list
+            term_list = ""
         slots_seen.add(slot)
+        order.append(slot)
         out.append(
             f'<div class="slot slot-{slot}" data-slot="{slot}"><h4>{SLOT_LABEL[slot]}</h4>{inner}<!--/slot--></div>'
         )
     if "".join(loose).strip():
         raise SystemExit(f"{fid}: 칸 밖에 본문이 있다 — {''.join(loose)[:60]}")
+    if term_list:
+        raise SystemExit(f"{fid}: 「항목별 설명」 링크 줄을 둘 「화면 요소」 칸이 없다")
+    if detail_body is not None:
+        linked = frozenset(re.findall(r'data-term="([^"]+)"', "".join(out)))
+        out[out.index("@@DETAIL@@")] = render_detail(fid, detail_body, linked)
+    if "detail" in order:
+        k = order.index("detail")
+        if "caution" not in order[:k] or "related" not in order[k:]:
+            raise SystemExit(f"{fid}: 자세히 보기는 「주의·제약」 뒤, 「관련 항목」 앞에 둔다")
     return (
         f'<section class="feature" id="{fid.lower()}"><h3><span class="fid">{fid}</span>{esc(title)}</h3>'
         + "".join(out)
@@ -394,6 +624,7 @@ TEMPLATE = """<!DOCTYPE html>
   <div class="m-title"><span class="dot"></span><span class="brand">INFRA QUERY AGENT</span> <b>{title}</b></div>
   <input type="search" class="toc-filter" placeholder="기능 찾기 (예: CSV, 존, 침묵)" aria-label="기능 찾기">
   <nav class="m-links">
+    <button type="button" class="detail-all" aria-pressed="false">모두 펼치기</button>
     <a href="/manual/{other}">{other_title}</a>
     {screens}
     <button type="button" class="theme-btn" aria-label="테마 전환">◐</button>

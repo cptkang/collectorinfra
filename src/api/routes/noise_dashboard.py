@@ -156,6 +156,10 @@ class TopSuppressedItem(BaseModel):
     stage: str
     label: str
     count: int
+    masked: bool = Field(
+        default=False,
+        description="알람명이 마스킹됐는지(가린 행은 알람명으로 결정 목록을 거를 수 없다)",
+    )
 
 
 class TopSuppressedResponse(BaseModel):
@@ -478,7 +482,10 @@ async def noise_timeseries(
     "/top-suppressed",
     response_model=TopSuppressedResponse,
     summary="상위 억제 알람 유형",
-    description="억제된 알람을 (알람명 × 단계)로 묶어 상위 항목을 반환합니다.",
+    description=(
+        "억제된 알람을 (알람명 × 단계)로 묶어 상위 항목을 반환합니다.<br/>"
+        "알람명은 결정 목록과 같은 규칙으로 마스킹한 뒤 묶습니다(가린 행은 `masked=true`)."
+    ),
     tags=["noise-console"],
 )
 async def noise_top_suppressed(
@@ -486,9 +493,11 @@ async def noise_top_suppressed(
     range: str = Query(default="24h"),
     limit: int = Query(default=10, ge=1, le=50),
 ) -> TopSuppressedResponse:
-    """무엇이 캔슬되고 있는지를 사람이 읽는 형태로 돌려준다."""
+    """무엇이 캔슬되고 있는지를 사람이 읽는 형태로 돌려준다(알람명은 결정 목록과 같은 마스킹)."""
     window = _resolve_range(range)
-    items = _decision_store(request).top_suppressed(window_seconds=window, limit=limit)
+    items = _decision_store(request).top_suppressed(
+        window_seconds=window, limit=limit, mask_fn=_mask_fn(request)
+    )
     return TopSuppressedResponse(
         items=[TopSuppressedItem(**i) for i in items], range=range
     )
@@ -640,19 +649,31 @@ async def noise_decision_trace(
 )
 async def noise_stream(
     request: Request,
-    token: Optional[str] = Query(default=None, description="내부망 폴백 토큰"),
+    token: Optional[str] = Query(
+        default=None, description="내부망 폴백 토큰(사용자 토큰만 — 운영자 토큰은 헤더로)"
+    ),
 ) -> StreamingResponse:
     """알람 버스를 구독해 결정 이벤트를 SSE로 전달한다(존 필터 없음 — 관제 전 범위).
 
-    브라우저 EventSource는 Authorization 헤더를 실을 수 없으므로 쿠키를 우선 보고
-    쿼리 토큰으로 폴백한다(`/alarm/notifications/stream` 전례). **운영자 판정은 여기서
-    따로 한다** — 이 스트림에는 전 존의 억제 내역이 흐르므로 사용자 토큰으로는 열 수 없다.
+    사용자 토큰은 쿠키를 우선 보고 Authorization 헤더·쿼리 토큰으로 폴백한다
+    (`/alarm/notifications/stream` 전례). **운영자 판정은 여기서 따로 한다** — 이 스트림에는
+    전 존의 억제 내역이 흐르므로 관리자 역할이 아닌 사용자 토큰으로는 열 수 없다.
+
+    운영자(break-glass) 토큰은 **Authorization 헤더로만** 받는다 — `require_admin_user`와 같은
+    판정(운영자 시크릿 서명 + `type == "admin"` + `sub` · D-069)이며, 쿠키보다 먼저 본다(같은
+    브라우저에 남은 다른 사용자 쿠키가 명시한 헤더를 가리지 않게). 운영자 로그인은 쿠키를
+    세팅하지 않으므로 화면(`noise.js`)은 EventSource 대신 fetch 스트림으로 헤더를 싣는다.
+    쿼리 토큰으로는 받지 않는다 — URL은 접근 로그·프록시에 남는다.
     """
-    from src.api.dependencies import resolve_stream_user
+    from src.api.dependencies import _try_break_glass_admin, resolve_stream_user
     from src.domain.user import UserRole
 
     config = request.app.state.config
-    user = await resolve_stream_user(request, token)
+    user = None
+    if config.auth.enabled:
+        user = _try_break_glass_admin(request, request.headers.get("authorization"))
+    if user is None:
+        user = await resolve_stream_user(request, token)
     if config.auth.enabled:
         if user is None:
             raise HTTPException(status_code=401, detail="인증이 필요합니다.")

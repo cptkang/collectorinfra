@@ -926,6 +926,16 @@ class NoiseGateConfig(BaseSettings):
     silence_cache_ttl_seconds: int = 10          # 워커의 활성 규칙 캐시 TTL(hot-path 보호)
     ticket_batch_queue_path: str = "logs/alarm_ticket_queue.jsonl"   # (E3) TICKET 일배치 요약 큐
     ticket_batch_queue_enabled: bool = True   # (E3) TICKET 티어를 일배치 요약 큐에 적재할지
+    # ── 결함 ⑬: TICKET 일배치 요약의 소비 측(D-048.9) — noise_gate/orchestration/ticket_summary ──
+    # 요약 발송은 밖으로 나가는 새 동작이라 기본 off(현행과 발송 비트 동일). 켜면 매일
+    # hour시(로컬)에 큐를 읽어 worKB 기본 수신자에게 요약 1통을 보내고, 보낸 항목은 큐에서 지운다.
+    ticket_batch_summary_enabled: bool = False
+    ticket_batch_summary_hour: int = 9        # 요약 발송 시각(로컬 0~23시)
+    # 큐 보존 한도(줄) — **명시적 예외: 기본 on**. 발송 여부와 무관하게 기동 시·매일 오래된 줄을
+    # 지운다. 큐는 요약 대기열일 뿐 감사 정본이 아니다(판단 감사는 decision_store — D-048.4)라서
+    # 지워도 기록이 사라지지 않고, 기본 off로 두면 무한 증가(결함 ⑬)가 기본 설정에서 그대로 남는다.
+    # 0이면 정리하지 않는다(종전 동작).
+    ticket_batch_queue_max_lines: int = 20000
     # ── E3 후속: 워커→UI 실시간 SSE Redis pub/sub 브리지 (D-048.9 한계 해소) ──
     # 워커는 cross-process라 API의 in-memory alarm_bus를 공유 못 함 → Redis pub/sub로 중계.
     # 기본 off면 워커 경로 티어 SSE는 로그 폴백(E3 무변경, 회귀 0). 스칼라라 .env JSON 회피.

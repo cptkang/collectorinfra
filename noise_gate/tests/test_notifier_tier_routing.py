@@ -116,7 +116,7 @@ class _RecordingQueue:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def enqueue(self, decision, *, alarm_id="") -> None:  # noqa: ANN001
+    def enqueue(self, decision, *, alarm_id="", **labels) -> None:  # noqa: ANN001, ANN003
         self.calls.append((decision, alarm_id))
 
 

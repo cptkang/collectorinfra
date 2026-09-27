@@ -41,6 +41,20 @@ class AuditEvent(str, Enum):
     SECURITY_ALERT = "security_alert"
 
 
+# 옛 기록 이름. 2026-09-27 이전에는 로그인·로그아웃 라우트가 `login`·`logout`으로 기록했다.
+# DB 행은 고치지 않고 조회가 두 이름을 함께 찾는다. 옛 행은 보관 기간(`AUDIT_RETENTION_DAYS`)이
+# 지나면 자동 정리되므로, 그 뒤에는 이 표를 지워도 된다.
+LEGACY_EVENT_ALIASES: dict[str, tuple[str, ...]] = {
+    AuditEvent.USER_LOGIN.value: ("login",),
+    AuditEvent.USER_LOGOUT.value: ("logout",),
+}
+
+
+def event_type_filter_values(event_type: str) -> list[str]:
+    """이벤트 필터 값에 해당하는 저장 이름 목록(현행 이름 + 옛 이름)을 돌려준다."""
+    return [event_type, *LEGACY_EVENT_ALIASES.get(event_type, ())]
+
+
 class AlertSeverity(str, Enum):
     """보안 경고 심각도."""
 
