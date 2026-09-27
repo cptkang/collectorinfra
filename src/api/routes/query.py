@@ -1623,6 +1623,7 @@ async def _timeout_sse_event(
     limit_sec: float,
     trace: StreamTrace,
     message: str,
+    owner: str | None,
 ) -> str:
     """상한에 걸린 스트림이 내보낼 마지막 이벤트 (plans/114 P-2 · G-E).
 
@@ -1635,7 +1636,7 @@ async def _timeout_sse_event(
             partial, query_id=query_id, thread_id=thread_id,
             start_time=start_time, limit_sec=limit_sec,
         )
-        _store_result(query_id, {**data, "query_results": partial.rows})
+        _store_result(query_id, {**data, "query_results": partial.rows}, owner=owner)
         return _sse_event({"type": "done", **data})
     return _sse_event(_stream_error_payload(
         message, trace, code="timeout", start_time=start_time, limit_sec=limit_sec,
@@ -1756,7 +1757,9 @@ async def process_query(
                 partial, query_id=query_id, thread_id=thread_id,
                 start_time=start_time, limit_sec=effective_timeout,
             )
-            _store_result(query_id, {**data, "query_results": partial.rows})
+            _store_result(
+                query_id, {**data, "query_results": partial.rows}, owner=current_user.get("sub")
+            )
             return await turn.response(QueryResponse(**data))
         raise HTTPException(
             status_code=504,
@@ -1970,6 +1973,7 @@ async def process_query_stream(
                                     start_time=start_time, limit_sec=effective_timeout,
                                     trace=_trace,
                                     message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                    owner=current_user.get("sub"),
                                 )
                                 return
                             if _ev_kind == "heartbeat":
@@ -2206,6 +2210,7 @@ async def process_query_stream(
                 start_time=start_time, limit_sec=effective_timeout,
                 trace=_trace,
                 message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                owner=current_user.get("sub"),
             )
         except Exception as e:
             logger.error(f"SSE 스트리밍 에러: {e}")
@@ -2361,7 +2366,9 @@ async def process_file_query(
                 partial, query_id=query_id, thread_id=actual_thread_id,
                 start_time=start_time, limit_sec=config.server.file_query_timeout,
             )
-            _store_result(query_id, {**data, "query_results": partial.rows})
+            _store_result(
+                query_id, {**data, "query_results": partial.rows}, owner=current_user.get("sub")
+            )
             return await turn.response(QueryResponse(**data))
         raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
     except Exception as e:
@@ -2681,6 +2688,7 @@ async def process_file_query_stream(
                                     limit_sec=config.server.file_query_timeout,
                                     trace=_trace,
                                     message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                    owner=current_user.get("sub"),
                                 )
                                 return
                             if _ev_kind == "heartbeat":
@@ -2898,6 +2906,7 @@ async def process_file_query_stream(
                 start_time=start_time, limit_sec=config.server.file_query_timeout,
                 trace=_trace,
                 message="처리 시간이 초과되었습니다.",
+                owner=current_user.get("sub"),
             )
         except Exception as e:
             logger.error(f"파일 SSE 스트리밍 에러: {e}")
